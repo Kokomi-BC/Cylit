@@ -1,0 +1,6 @@
+# 依赖目录（运行期不需要：后端只托管 dist/）
+node_modules/
+
+# 构建产物：**保留**（离线演示/答辩时 pr.py serve 直接可用）
+# 如需干净树可删除，然后 `npm run build` 重新生成
+!dist/

@@ -1,0 +1,229 @@
+"""FastAPI 应用入口（规划 §6 架构、§20 API）。
+
+单进程：挂载 REST + SSE + 静态资源 + TaskRunner 启停。
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.api import (
+    annotations_router, knowledge_router, models_router, papers_router,
+    reader_router, settings_router, tasks_router,
+)
+from backend.core.config import get_settings
+from backend.core.errors import NotFoundError, PaperMindError
+from backend.core.logging import get_logger, setup_logging
+from backend.core.utils import json_dumps
+
+log = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    s = get_settings()
+    setup_logging()
+    s.ensure_dirs()
+    log.info("启动 %s v%s（data=%s）", s.app_name, s.app_version, s.data_dir)
+
+    # 数据库就绪 + 内置模型 + 任务系统
+    from backend.repositories.mysql.session import init_db
+
+    try:
+        info = init_db()
+        log.info("业务库就绪：%s", info["backend"])
+        from backend.services.model import model_service
+
+        model_service.ensure_builtin_models()
+    except Exception as exc:  # noqa: BLE001
+        log.error("数据库初始化失败：%s", exc)
+
+    from backend.services.task.handlers import register_all
+    from backend.services.task.task_service import task_runner
+
+    register_all()
+    task_runner.start()
+    try:
+        yield
+    finally:
+        task_runner.stop()
+        log.info("已停止 %s", s.app_name)
+
+
+def create_app() -> FastAPI:
+    s = get_settings()
+    setup_logging()
+    app = FastAPI(
+        title=f"{s.app_name} API",
+        version=s.app_version,
+        description="智能论文阅读与知识管理系统 —— 后端（解析 / 逐段翻译 / 任务 / 模型）",
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],          # 本地单用户应用
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # ---------------- 统一响应 {data, error, trace_id}（规划 §20 约定）---------
+    @app.middleware("http")
+    async def envelope(request: Request, call_next):
+        trace_id = uuid.uuid4().hex[:12]
+        request.state.trace_id = trace_id
+        t0 = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except PaperMindError as exc:
+            return _error_response(exc, trace_id)
+        response.headers["x-trace-id"] = trace_id
+        response.headers["x-elapsed-ms"] = f"{(time.perf_counter() - t0) * 1000:.1f}"
+        return response
+
+    @app.exception_handler(PaperMindError)
+    async def _handle_papermind(request: Request, exc: PaperMindError):
+        return _error_response(exc, getattr(request.state, "trace_id", ""))
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation(request: Request, exc: RequestValidationError):
+        return JSONResponse(status_code=422, content={
+            "data": None,
+            "error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败",
+                      "detail": {"errors": exc.errors()[:10]}},
+            "trace_id": getattr(request.state, "trace_id", ""),
+        })
+
+    @app.exception_handler(Exception)
+    async def _handle_unexpected(request: Request, exc: Exception):
+        log.exception("未处理异常：%s", exc)
+        return JSONResponse(status_code=500, content={
+            "data": None,
+            "error": {"code": "INTERNAL_ERROR",
+                      "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                      "detail": {}},
+            "trace_id": getattr(request.state, "trace_id", ""),
+        })
+
+    # ---------------- 路由 ----------------
+    app.include_router(papers_router, prefix=s.api_prefix)
+    app.include_router(reader_router, prefix=s.api_prefix)
+    app.include_router(tasks_router, prefix=s.api_prefix)
+    app.include_router(models_router, prefix=s.api_prefix)
+    app.include_router(annotations_router, prefix=s.api_prefix)
+    app.include_router(knowledge_router, prefix=s.api_prefix)
+    app.include_router(settings_router, prefix=s.api_prefix)
+
+    # 兼容：同时挂一份到 /papers 等无前缀路径（便于直接打开资源链接）
+    app.include_router(reader_router)
+    app.include_router(papers_router)
+
+    @app.get("/health", tags=["system"])
+    async def health():
+        from backend.repositories.mysql.session import healthcheck
+        from backend.services.task.task_service import task_runner
+
+        return {
+            "data": {
+                "ok": True, "app": s.app_name, "version": s.app_version,
+                "database": healthcheck(),
+                "task_runner": {"workers": task_runner.workers,
+                                "queues": task_runner.queues,
+                                "running": task_runner.running_tasks},
+                "data_dir": str(s.data_dir),
+            },
+            "error": None, "trace_id": "",
+        }
+
+    _mount_static(app)
+    return app
+
+
+def _error_response(exc: PaperMindError, trace_id: str) -> JSONResponse:
+    return JSONResponse(status_code=exc.http_status, content={
+        "data": None, "error": exc.to_dict(), "trace_id": trace_id,
+    })
+
+
+def _mount_static(app: FastAPI) -> None:
+    """受控静态路由：前端构建产物 + data/ 下论文资源（规划 §6.2 第 3 条硬约束）。
+
+    前端是 Vite 构建的 SPA（history 路由，`base=/app/`）：
+    - `/app/<file>` 命中 `frontend/dist/` 里的真实文件就直接返回（assets/*.js|css、字体…）；
+    - 否则回退 `index.html`，让前端路由自己解析（`/app/reader/xxx` 刷新不会 404）；
+    - 未构建时给出**明确的构建指引页**（503），不静默 404、也不暴露 `node_modules`。
+    """
+    s = get_settings()
+    papers_dir = s.papers_dir
+    papers_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/papers", StaticFiles(directory=str(papers_dir), html=False),
+              name="papers")
+
+    dist = Path(s.project_root) / "frontend" / "dist"
+    index_file = dist / "index.html"
+
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect():
+        return RedirectResponse("/app/")
+
+    @app.get("/app", include_in_schema=False)
+    async def _frontend_redirect():
+        return RedirectResponse("/app/")
+
+    if not index_file.is_file():
+        @app.get("/app/{path:path}", include_in_schema=False)
+        async def _frontend_not_built(path: str):  # noqa: ARG001
+            return HTMLResponse(_BUILD_HINT_HTML, status_code=503)
+        return
+
+    dist_root = dist.resolve()
+
+    @app.get("/app/{path:path}", include_in_schema=False)
+    async def _frontend_spa(path: str):
+        if path:
+            candidate = (dist / path).resolve()
+            try:
+                candidate.relative_to(dist_root)
+            except ValueError:                      # 路径穿越：一律回退到入口
+                return FileResponse(index_file)
+            if candidate.is_file():
+                return FileResponse(candidate)
+            # 带扩展名的资源（assets/*.js、字体、图片）缺失时应当 404：
+            # 返回 index.html 会让浏览器把 HTML 当 JS/CSS 解析，报出更难懂的 MIME 错误。
+            if "." in Path(path).name:
+                raise NotFoundError(f"静态资源不存在：{path}")
+        return FileResponse(index_file)
+
+
+_BUILD_HINT_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>前端尚未构建</title>
+<style>body{font-family:system-ui,"Microsoft YaHei",sans-serif;max-width:720px;margin:80px auto;line-height:1.7;color:#1c2027}
+code{background:#eef0f4;padding:2px 6px;border-radius:4px}pre{background:#eef0f4;padding:12px;border-radius:8px;overflow:auto}</style>
+</head><body>
+<h2>前端尚未构建（API 正常可用）</h2>
+<p>后端已启动，但没有找到 <code>frontend/dist/index.html</code>。请先构建前端：</p>
+<pre>cd frontend
+npm install        # 首次；本机 npm 已配置 npmmirror 镜像
+npm run build      # 产物输出到 frontend/dist</pre>
+<p>然后刷新本页。<code>pr.py serve</code> 会自动托管 <code>frontend/dist</code> 到 <code>/app/</code>。</p>
+<p>开发模式（热更新）也可以：<code>cd frontend &amp;&amp; npm run dev</code>，访问
+<code>http://127.0.0.1:5173/app/</code>（已把 <code>/api</code>、<code>/papers</code> 代理到 8710）。</p>
+<p>接口文档：<a href="/docs">/docs</a> ｜ 健康检查：<a href="/health">/health</a></p>
+</body></html>
+"""
+
+
+app = create_app()

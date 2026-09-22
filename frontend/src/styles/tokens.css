@@ -1,0 +1,105 @@
+/* 设计令牌：WinUI 3 / Fluent 设计语言（浅色 + 深色跟随系统）。
+ *
+ * 取值依据 WinUI 3 的 Fluent 颜色体系：窗口底色 Mica 回退色、卡片层、控件描边、
+ * 强调色（默认 #0078D4，深色 #60CDFF）。**不使用紫色**，强调色只有一支。
+ */
+
+:root {
+  /* ---- 层（Fluent 的 SolidBackgroundFillColorBase / CardBackground / Layer） ---- */
+  --bg: #f3f3f3;
+  --bg-elev: #ffffff;
+  --bg-sunken: #f9f9f9;
+  --bg-layer: #fbfbfb;
+  --bg-hover: rgba(0, 0, 0, .037);
+  --bg-pressed: rgba(0, 0, 0, .07);
+  --bg-subtle: rgba(0, 0, 0, .02);
+  --smoke: rgba(0, 0, 0, .3);
+
+  /* ---- 描边（Fluent ControlStroke / DividerStroke） ---- */
+  --border: #e5e5e5;
+  --border-strong: #d6d6d6;
+  --border-input: #8a8a8a;
+  --divider: rgba(0, 0, 0, .08);
+
+  /* ---- 文本（Fluent TextFill） ---- */
+  --text: #1a1a1a;
+  --text-dim: #5d5d5d;
+  --text-faint: #8a8a8a;
+  --text-on-accent: #ffffff;
+
+  /* ---- 强调色 ---- */
+  --accent: #0078d4;
+  --accent-hover: #0067c0;
+  --accent-soft: #ebf3fc;
+  --accent-text: #005a9e;
+
+  /* ---- 语义色（Fluent SystemFillSuccess/Caution/Critical） ---- */
+  --ok: #0f7b0f;
+  --ok-soft: #dff6dd;
+  --warn: #9d5d00;
+  --warn-soft: #fff4ce;
+  --danger: #c42b1c;
+  --danger-soft: #fde7e9;
+
+  /* ---- 形状 ---- */
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+  --control-h: 32px;
+  --control-h-sm: 26px;
+
+  /* ---- 阴影（Fluent 的弱投影：卡片几乎不用重投影） ---- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .06);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, .10);
+  --shadow-flyout: 0 8px 16px rgba(0, 0, 0, .14);
+
+  /* ---- 字体 ---- */
+  --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+          "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI",
+             system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  /* 论文原文（英文）用衬线，与中文译文观感一致（阅读对照用） */
+  --serif: Cambria, "Source Serif Pro", Georgia, "Times New Roman", serif;
+
+  --header-h: 48px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #202020;
+    --bg-elev: #2b2b2b;
+    --bg-sunken: #1c1c1c;
+    --bg-layer: #272727;
+    --bg-hover: rgba(255, 255, 255, .06);
+    --bg-pressed: rgba(255, 255, 255, .04);
+    --bg-subtle: rgba(255, 255, 255, .03);
+    --smoke: rgba(0, 0, 0, .5);
+
+    --border: #3a3a3a;
+    --border-strong: #4a4a4a;
+    --border-input: #8a8a8a;
+    --divider: rgba(255, 255, 255, .09);
+
+    --text: #ffffff;
+    --text-dim: #c5c5c5;
+    --text-faint: #9a9a9a;
+    --text-on-accent: #10222e;
+
+    --accent: #60cdff;
+    --accent-hover: #7fd7ff;
+    --accent-soft: #0b2d43;
+    --accent-text: #60cdff;
+
+    --ok: #6ccb5f;
+    --ok-soft: #1d331a;
+    --warn: #fce100;
+    --warn-soft: #3a2f0b;
+    --danger: #ff99a4;
+    --danger-soft: #3d1b1b;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-2: 0 2px 8px rgba(0, 0, 0, .4);
+    --shadow-flyout: 0 8px 16px rgba(0, 0, 0, .5);
+  }
+}

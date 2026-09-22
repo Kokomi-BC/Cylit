@@ -1,0 +1,20 @@
+# 统一换行：仓库里文本存 LF，检出时按平台（Windows 下 git 会按 core.autocrlf 处理）
+* text=auto
+
+# 二进制：不要做文本转换与 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.ico binary
+*.sqlite binary
+*.sqlite3 binary
+
+# 生成物不参与 diff 统计
+frontend/dist/** linguist-generated=true
+docs/dev-log.md linguist-documentation=true

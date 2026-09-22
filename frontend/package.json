@@ -1,0 +1,27 @@
+{
+  "name": "papermind-frontend",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "PaperMind 前端：Vite + Vue 3 + TypeScript（SFC），构建产物由后端同进程托管在 /app/",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "katex": "^0.16.9",
+    "marked": "^18.0.14",
+    "marked-katex-extension": "^5.1.13",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

@@ -1,0 +1,509 @@
+#!/usr/bin/env python
+"""命令行入口 ``pr.py``（规划 §23 cli/、§6.1：CLI 与服务端共用解析代码）。
+
+用法::
+
+    python cli/pr.py init                      # 建库建表 + 写入内置模型
+    python cli/pr.py import <pdf> [--id X] [--parse]
+    python cli/pr.py parse <paper_id> [--pages N] [--llm-repair]
+    python cli/pr.py structure <paper_id>      # 打印阅读顺序与块结构（人工核对）
+    python cli/pr.py qa <paper_id>             # 质保报告（A/B/C 占比、一致性命中、插图体检）
+    python cli/pr.py build <pdf> [--id X]      # 导入 + 解析一步到位
+    python cli/pr.py translate <paper_id> [--mode resume|retranslate] [--pages 3,4]
+    python cli/pr.py index <paper_id>          # chunk + embedding + LanceDB
+    python cli/pr.py reconcile [paper_id]      # 三存储对账（只报告）
+    python cli/pr.py serve [--host] [--port] [--reload]
+    python cli/pr.py bench <pdf> [--mode fixed|adaptive] [--concurrency 4]
+    python cli/pr.py stats                     # 论文/任务总览
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from backend.core.config import get_settings  # noqa: E402
+from backend.core.logging import get_logger, setup_logging  # noqa: E402
+from backend.core.utils import json_dumps  # noqa: E402
+
+log = get_logger("pr")
+
+
+def _print(obj, title: str | None = None) -> None:
+    if title:
+        print(f"\n=== {title} ===")
+    if isinstance(obj, str):
+        print(obj)
+    else:
+        print(json_dumps(obj, indent=2))
+
+
+# --------------------------------------------------------------------------
+# init
+# --------------------------------------------------------------------------
+
+
+def cmd_init(args) -> int:
+    from backend.repositories.mysql.session import init_db
+    from backend.services.model import model_service
+
+    info = init_db(drop=args.drop)
+    _print(info, "数据库初始化")
+    n = model_service.ensure_builtin_models()
+    print(f"内置模型：新增 {n} 个")
+    s = get_settings()
+    print(f"数据目录：{s.data_dir}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# import / parse / build
+# --------------------------------------------------------------------------
+
+
+def cmd_import(args) -> int:
+    from backend.services.paper import paper_service
+
+    pdf = Path(args.pdf)
+    row = paper_service.import_pdf(
+        pdf, pdf.name, title=args.title, tags=args.tags,
+        paper_id=args.id, auto_parse=args.parse,
+    )
+    _print(row, "导入完成")
+    if args.parse:
+        print("已排队 PARSE 任务；可用 `pr.py parse` 同步执行查看结果")
+    return 0
+
+
+def _run_parse_sync(paper_id: str, *, max_pages: int = 0, llm_repair: bool = False,
+                    show: bool = True) -> int:
+    """同步执行解析（CLI 不走任务队列，便于调试）。"""
+    from backend.core.config import get_settings
+    from backend.parsing.pipeline import PaperBuilder
+    from backend.services.paper import paper_service, parse_hooks
+
+    paths = paper_service.paper_paths(paper_id)
+    pdf = paper_service.resolve_pdf(paper_id)
+    t0 = time.time()
+    last = {"stage": "", "at": 0.0}
+
+    def progress(stage: str, done: int, total: int) -> None:
+        now = time.time()
+        if stage != last["stage"] or now - last["at"] > 0.6 or done == total:
+            last["stage"], last["at"] = stage, now
+            print(f"  [{stage}] {done}/{total}", flush=True)
+
+    # 与服务层共用同一份钩子：公式修复 + 扫描件读页（避免"CLI 少注一个钩子"）
+    builder = PaperBuilder(pdf, paper_id, paths["root"], max_pages=max_pages,
+                           use_llm_repair=llm_repair,
+                           repair_fn=parse_hooks.build_repair_fn(),
+                           vision_fn=parse_hooks.build_vision_fn({}),
+                           vision_dpi=get_settings().parse_vision_dpi,
+                           progress=progress if show else None)
+    result = builder.build()
+
+    from backend.services.task.handlers import _sync_to_mysql
+
+    _sync_to_mysql(paper_id, result)
+    from backend.services.paper import reader_service
+
+    reader_service.invalidate_cache(paper_id)
+
+    if show:
+        _print({
+            "paper_id": paper_id, "title": result.title,
+            "counts": result.counts(),
+            "grades": result.grade_distribution(),
+            "duration_s": round(time.time() - t0, 2),
+            "stage_ms": result.stats.get("stage_ms"),
+            "scanned_pages": result.stats.get("scanned_pages"),
+            "markdown": result.stats.get("markdown"),
+            "quality": result.stats.get("quality", {}).get("checks"),
+            "warnings": result.warnings[:6],
+        }, "解析结果")
+    return 0
+
+
+def cmd_parse(args) -> int:
+    return _run_parse_sync(args.paper_id, max_pages=args.pages,
+                           llm_repair=args.llm_repair)
+
+
+def cmd_build(args) -> int:
+    from backend.services.paper import paper_service
+
+    pdf = Path(args.pdf)
+    row = paper_service.import_pdf(pdf, pdf.name, title=args.title,
+                                   paper_id=args.id, auto_parse=False)
+    print(f"已导入：{row['id']}（{row['page_count']} 页）")
+    return _run_parse_sync(row["id"], max_pages=args.pages,
+                           llm_repair=args.llm_repair)
+
+
+# --------------------------------------------------------------------------
+# structure / qa
+# --------------------------------------------------------------------------
+
+
+def cmd_structure(args) -> int:
+    from backend.parsing.ir.ir_reader import IRReader
+    from backend.services.paper import paper_service
+
+    ir = IRReader(paper_service.paper_paths(args.paper_id)["ir"])
+    if not ir.exists:
+        print("IR 不存在：请先执行 parse")
+        return 1
+    pages = ir.pages()
+    two_col = sum(1 for p in pages if p["columns"] > 1)
+    print(f"=== 结构概览（{len(pages)} 页，双栏页 {two_col}）===")
+    for p in pages[: args.pages or len(pages)]:
+        print(f"  p{p['page_no']:>3} {p['width']:.0f}x{p['height']:.0f} "
+              f"cols={p['columns']} gutter={p['gutter_x']} blocks={p['block_count']} "
+              f"chars={p['text_chars']}")
+    print("\n=== 抽检块（前 25）===")
+    for b in ir.blocks()[:25]:
+        print(f"  {b['id']} {b['type']:8} col={b['col']} order={b['order_global']:>4} "
+              f"y={b['y0']:6.1f} L={b['line_count']:>2} :: "
+              f"{(b['text_clean'] or '')[:70]}")
+    return 0
+
+
+def cmd_qa(args) -> int:
+    from backend.parsing.ir.ir_reader import IRReader
+    from backend.services.paper import paper_service
+
+    ir = IRReader(paper_service.paper_paths(args.paper_id)["ir"])
+    if not ir.exists:
+        print("IR 不存在：请先执行 parse")
+        return 1
+    formulas = ir.formulas()
+    dist = {"A": 0, "B": 0, "C": 0}
+    for f in formulas:
+        dist[f["grade"] or "C"] = dist.get(f["grade"] or "C", 0) + 1
+    total = max(1, sum(dist.values()))
+    print(f"=== 公式分级（{sum(dist.values())} 条）===")
+    for k in ("A", "B", "C"):
+        print(f"  {k}: {dist.get(k, 0):>4}  ({dist.get(k, 0) / total * 100:.1f}%)")
+    print("\n=== 插图体检 ===")
+    for f in ir.figures():
+        print(f"  {f['block_id']} p{f['page_number']} dpi={f['effective_dpi']} "
+              f"edge_ink={f['edge_ink']} status={f['status']} :: "
+              f"{(f['caption'] or '')[:60]}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# translate / index / reconcile
+# --------------------------------------------------------------------------
+
+
+def cmd_translate(args) -> int:
+    from backend.services.paper import paper_service
+    from backend.services.translation import translation_service
+    from backend.services.translation.page_translate import list_pages
+
+    paper_service.get_paper(args.paper_id)
+    pages = list_pages(args.paper_id)
+    store = translation_service.page_store(args.paper_id)
+    done = len(store.done_pages())
+    pending = len(pages) if args.mode == "retranslate" else max(0, len(pages) - done)
+
+    class Ctx:
+        def __init__(self) -> None:
+            self.paper_id = args.paper_id
+            self.params = {"mode": args.mode, "brief": not args.no_brief}
+            if args.pages:
+                self.params["pages"] = [int(p) for p in args.pages.split(",") if p.strip()]
+            self.cursor: dict = {}
+            self.task_id = "cli"
+            self.done_items = 0
+            self.total_items = 0
+            self._t0 = time.time()
+
+        def progress(self, done, total, message=None, force=False, **kw):
+            print(f"  进度 {done}/{total} {message or ''}", flush=True)
+
+        def set_cursor(self, **kw):
+            self.cursor.update(kw)
+
+        def check_control(self):
+            return None
+
+        def should_stop(self):
+            return False
+
+        def should_pause(self):
+            return False
+
+        def _flush(self, **kw):
+            pass
+
+    print(f"共 {len(pages)} 页，已有产物 {done} 页，本次待翻译 {pending} 页（模式 {args.mode}）")
+    if not pending:
+        print("没有需要翻译的页")
+        return 0
+    from backend.core.config import get_settings as _gs
+
+    s = _gs()
+    ctx = Ctx()
+    if args.concurrency:
+        s.translate_concurrency = args.concurrency
+    result = translation_service.run_translate_task(ctx)
+    _print(result, "翻译结果")
+    return 0
+
+
+def cmd_index(args) -> int:
+    from backend.services.knowledge import knowledge_service
+
+    result = knowledge_service.index_paper(args.paper_id, rebuild=args.rebuild)
+    _print(result, "索引结果")
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    from backend.services.paper import paper_service
+
+    report = paper_service.reconcile(args.paper_id)
+    _print(report, "三存储对账")
+    return 0 if report.get("ok") else 2
+
+
+def cmd_stats(args) -> int:
+    from backend.services.knowledge import knowledge_service
+    from backend.services.paper import paper_service
+    from backend.services.task.task_service import task_service
+
+    papers = paper_service.list_papers(page_size=200)
+    print(f"=== 论文 {papers['total']} 篇 ===")
+    for p in papers["items"]:
+        print(f"  {p['id']:<28} {p['status']:<12} 页 {p['page_count']:>3} "
+              f"翻译 {p['translate_done']}/{p['translate_total']} :: "
+              f"{(p['title'] or '')[:50]}")
+    _print(task_service.stats(), "任务统计")
+    _print(knowledge_service.overview(), "知识库概览")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# serve / bench
+# --------------------------------------------------------------------------
+
+
+def cmd_serve(args) -> int:
+    import uvicorn
+
+    s = get_settings()
+    host = args.host or s.host
+    port = args.port or s.port
+    print(f"启动后端：http://{host}:{port}  （API 文档 /docs）")
+    fe = Path(s.project_root) / "frontend" / "index.html"
+    if fe.is_file():
+        print(f"前端界面：http://{host}:{port}/app/   "
+              f"（或直接打开 http://{host}:{port}/ 会跳转）")
+    else:
+        print("未找到 frontend/index.html —— 只有 API 可用")
+    uvicorn.run("backend.main:app", host=host, port=port, reload=args.reload,
+                log_level="info")
+    return 0
+
+
+def cmd_bench(args) -> int:
+    """并发策略对比实验（规划 §26 实验一/二：固定并发 vs 自适应并发）。"""
+    from backend.providers.generation.mock import MockGeneration
+    from backend.services.task.scheduler import (
+        AdaptiveScheduler, ScheduleItem, SchedulerConfig,
+    )
+
+    s = get_settings()
+    scenarios = []
+    if args.mode in ("fixed", "both"):
+        scenarios.append(("固定并发无重试", None, args.concurrency))
+    if args.mode in ("adaptive", "both"):
+        scenarios.append(("自适应并发", SchedulerConfig(
+            initial=args.concurrency, maximum=s.translate_max_concurrency,
+            minimum=s.translate_min_concurrency,
+            breaker_threshold=s.translate_breaker_threshold,
+        ), args.concurrency))
+
+    results = []
+    for name, cfg, conc in scenarios:
+        if cfg is None:
+            # 固定并发 + 无重试：直接用线程池，失败即失败
+            from concurrent.futures import ThreadPoolExecutor
+
+            provider = MockGeneration({"parameters": {
+                "rate_limit_every": args.rate_limit_every,
+                "fail_every": args.fail_every, "delay_ms": args.delay_ms,
+            }})
+            items = list(range(args.n))
+
+            def call_one(_i):
+                from backend.providers.base import GenerationResult
+
+                class Payload:
+                    def __init__(self, i):
+                        self.i = i
+                        self.prompt_tokens = 0
+                        self.completion_tokens = 0
+
+                res = provider.generate(f"item {_i}")
+                p = Payload(_i)
+                p.prompt_tokens = res.prompt_tokens
+                p.completion_tokens = res.completion_tokens
+                return p
+
+            t0 = time.time()
+            done = failed = 0
+            with ThreadPoolExecutor(max_workers=conc) as pool:
+                for r in pool.map(lambda i: _safe(call_one, i), items):
+                    if r:
+                        done += 1
+                    else:
+                        failed += 1
+            results.append({"scenario": name, "concurrency": conc,
+                            "total": args.n, "done": done, "failed": failed,
+                            "success_rate": round(done / args.n, 4),
+                            "duration_s": round(time.time() - t0, 2)})
+            continue
+
+        provider = MockGeneration({"parameters": {
+            "rate_limit_every": args.rate_limit_every,
+            "fail_every": args.fail_every, "delay_ms": args.delay_ms,
+        }})
+        sched = AdaptiveScheduler(cfg)
+        items = [ScheduleItem(key=f"i{i}", payload=i) for i in range(args.n)]
+        t0 = time.time()
+        stats = sched.run(items, lambda i: provider.generate(f"item {i}"))
+        results.append({"scenario": name, "concurrency": conc,
+                        "total": stats.total, "done": stats.done,
+                        "failed": stats.failed,
+                        "success_rate": round(stats.success_rate, 4),
+                        "retries": stats.retries,
+                        "duration_s": round(time.time() - t0, 2),
+                        "concurrency_peak": stats.concurrency_peak,
+                        "concurrency_min": stats.concurrency_min,
+                        "timeline": stats.timeline[:40]})
+    _print(results, f"并发对比实验（{args.n} 项，429 每 {args.rate_limit_every} 次）")
+    return 0
+
+
+def _safe(fn, arg):
+    try:
+        return fn(arg)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="pr.py", description="PaperMind CLI")
+    p.add_argument("--log-level", default="INFO")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sp = sub.add_parser("init", help="建库建表 + 内置模型")
+    sp.add_argument("--drop", action="store_true", help="先删除所有表（危险）")
+    sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("import", help="导入 PDF")
+    sp.add_argument("pdf")
+    sp.add_argument("--id", default=None)
+    sp.add_argument("--title", default=None)
+    sp.add_argument("--tags", default=None)
+    sp.add_argument("--parse", action="store_true", help="同时创建解析任务")
+    sp.set_defaults(func=cmd_import)
+
+    sp = sub.add_parser("parse", help="同步解析（CLI 调试用）")
+    sp.add_argument("paper_id")
+    sp.add_argument("--pages", type=int, default=0)
+    sp.add_argument("--llm-repair", action="store_true")
+    sp.set_defaults(func=cmd_parse)
+
+    sp = sub.add_parser("build", help="导入 + 解析一步到位")
+    sp.add_argument("pdf")
+    sp.add_argument("--id", default=None)
+    sp.add_argument("--title", default=None)
+    sp.add_argument("--pages", type=int, default=0)
+    sp.add_argument("--llm-repair", action="store_true")
+    sp.set_defaults(func=cmd_build)
+
+    sp = sub.add_parser("structure", help="打印结构（人工核对阅读顺序）")
+    sp.add_argument("paper_id")
+    sp.add_argument("--pages", type=int, default=6)
+    sp.set_defaults(func=cmd_structure)
+
+    sp = sub.add_parser("qa", help="质保报告")
+    sp.add_argument("paper_id")
+    sp.set_defaults(func=cmd_qa)
+
+    sp = sub.add_parser("translate", help="逐页翻译（产线 A）")
+    sp.add_argument("paper_id")
+    sp.add_argument("--mode", default="resume",
+                    choices=["resume", "retranslate"])
+    sp.add_argument("--pages", default="",
+                    help="只翻指定页，逗号分隔（如 3,4,7）")
+    sp.add_argument("--concurrency", type=int, default=0)
+    sp.add_argument("--no-brief", action="store_true",
+                    help="不生成文档简报（少一次调用，术语一致性下降）")
+    sp.set_defaults(func=cmd_translate)
+
+    sp = sub.add_parser("index", help="chunk + embedding + LanceDB")
+    sp.add_argument("paper_id")
+    sp.add_argument("--rebuild", action="store_true")
+    sp.set_defaults(func=cmd_index)
+
+    sp = sub.add_parser("reconcile", help="三存储对账")
+    sp.add_argument("paper_id", nargs="?", default=None)
+    sp.set_defaults(func=cmd_reconcile)
+
+    sp = sub.add_parser("stats", help="总览")
+    sp.set_defaults(func=cmd_stats)
+
+    sp = sub.add_parser("serve", help="启动后端")
+    sp.add_argument("--host", default=None)
+    sp.add_argument("--port", type=int, default=None)
+    sp.add_argument("--reload", action="store_true")
+    sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("bench", help="并发策略对比实验")
+    sp.add_argument("pdf", nargs="?", default=None)
+    sp.add_argument("--mode", default="both", choices=["fixed", "adaptive", "both"])
+    sp.add_argument("--n", type=int, default=60)
+    sp.add_argument("--concurrency", type=int, default=4)
+    sp.add_argument("--rate-limit-every", type=int, default=7, dest="rate_limit_every")
+    sp.add_argument("--fail-every", type=int, default=11, dest="fail_every")
+    sp.add_argument("--delay-ms", type=int, default=120, dest="delay_ms")
+    sp.set_defaults(func=cmd_bench)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    setup_logging(args.log_level)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("\n已中断")
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        log.error("命令失败：%s: %s", type(exc).__name__, exc)
+        if get_settings().debug:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

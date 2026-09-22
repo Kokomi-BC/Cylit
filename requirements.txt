@@ -1,0 +1,42 @@
+# 智能论文阅读与知识管理系统 —— 后端依赖
+# 目标环境：conda env "scenemind"（Python 3.13, torch+CUDA 可选）
+# 安装：conda run -n scenemind python -m pip install -r requirements.txt
+
+# --- Web 框架 ---
+# 注意：FastAPI < 0.118 使用 Starlette 的 on_startup 参数，与 Starlette >= 1.0 不兼容
+fastapi>=0.118
+uvicorn>=0.34
+python-multipart>=0.0.18
+sse-starlette>=3.0
+pydantic>=2.10
+pydantic-settings>=2.7
+
+# --- 数据存储 ---
+SQLAlchemy>=2.0.30
+PyMySQL>=1.1            # MySQL 8（推荐）
+greenlet>=3.0           # SQLAlchemy 异步/同步桥接
+lancedb>=0.20           # 嵌入式向量库（产线 C，可选）
+pyarrow>=15             # LanceDB 依赖
+
+# --- PDF 解析与渲染（★ 解析主干核心）---
+PyMuPDF>=1.24           # 文本层/矢量层/位图层/页面渲染/PDF 生成
+pypdf>=5.0              # PDF 元数据兜底
+Pillow>=10.0            # 裁图与插图体检
+
+# --- 模型接入 ---
+openai>=1.50            # OpenAI 兼容 API（DeepSeek/通义/本地 vLLM 等）
+httpx>=0.27
+tenacity>=9.0
+tiktoken>=0.7           # token 统计（成本记录）
+
+# --- 中文处理 ---
+jieba>=0.42             # 中文分词（术语表/词法检索）
+
+# --- 工程 ---
+python-dotenv>=1.0
+pytest>=8.0
+
+# --- 可选：本地模型（按需安装，未安装时自动降级）---
+# sentence-transformers>=3.0     # 本地 Embedding / Reranker
+# transformers>=4.40
+# torch>=2.2                     # 已随 scenemind 环境提供
