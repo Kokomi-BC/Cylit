@@ -103,16 +103,32 @@ def load_page_store(paper_id: str, force: bool = False) -> PageStore:
 
 
 def page_translations(paper_id: str) -> list[dict]:
-    """阅读器用：逐页的原文/译文 Markdown + 对齐后的行。"""
+    """阅读器用：逐页的原文/译文 Markdown + 对齐后的行。
+
+    这里会**顺带做跨页衔接处理**（读时计算，不写盘）：
+    - 给页尾/页首的打 `continues` / `continued_from_prev` 标记；
+    - 清掉续句开头的「……」/「（承接上页）」与页尾悬空的连字符这类边界噪声。
+    放在读时而不是写时，好处是**老产物不用重翻**也能拿到同样的阅读体验；
+    标记由解析器的原文确定性推出（与并发顺序无关），行先复制一份再改，
+    避免污染 `PageStore` 的内存缓存。
+    """
+    from backend.services.translation.page_translate import (
+        mark_rows_continuity, page_continuity,
+    )
+
     store = load_page_store(paper_id)
     out: list[dict] = []
     for page, payload in sorted(store.all_pages().items()):
+        rows = [dict(row) for row in (payload.get("rows") or [])]
+        if rows:
+            flags = page_continuity(paper_id, page)
+            mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
         out.append({
             "page": page,
             "page_total": int(payload.get("page_total") or 0),
             "original_md": payload.get("original_md") or "",
             "translation_md": payload.get("translation_md") or "",
-            "rows": payload.get("rows") or [],
+            "rows": rows,
             "align": payload.get("align"),
             "model": payload.get("model"),
             "updated_at": payload.get("updated_at"),

@@ -16,7 +16,7 @@
 | `GET /` | 307 → `/app/` |
 | `GET /app/` | 返回 `dist/index.html` |
 | `GET /app/<真实文件>` | 直接返回（`assets/*.js|css`、KaTeX 字体…） |
-| `GET /app/<前端路由>` | 回退 `index.html`（如 `/app/reader/turboquant-iclr26`，刷新不 404） |
+| `GET /app/<前端路由>` | 回退 `index.html`（如 `/app/reader/turboquant-online-vector-iclr-26`，刷新不 404） |
 | `GET /app/<带扩展名但不存在>` | **404**（返回 HTML 会让浏览器把 HTML 当 JS/CSS 解析，报更难懂的 MIME 错误） |
 | `GET /app/...`（未构建） | 503 + 构建指引页（`cd frontend && npm install && npm run build`），不静默 404 |
 
@@ -38,7 +38,7 @@
 | PUT | `/papers/{id}` | 更新元数据（title/authors/venue/year/tags/status/in_knowledge_base/abstract） |
 | DELETE | `/papers/{id}?hard=false` | 删除：**先删索引 → 取消任务 → 清 chunk → 文件移入 trash** |
 | POST | `/papers/{id}/parse?force=false` | 触发解析（幂等） |
-| GET | `/papers/{id}/file` | PDF 流（供 pdf.js） |
+| GET | `/papers/{id}/file` | PDF 流（阅读器左栏「原 PDF」由 pdf.js 渲染；`Content-Disposition: inline`，新标签页可直开） |
 | GET | `/papers/{id}/pages/{n}` | 页面图（150dpi PNG） |
 | GET | `/papers/{id}/markdown` | Markdown 单一事实源全文 |
 | GET | `/papers/{id}/reconcile` | 三存储对账（只报告不自动删） |
@@ -105,7 +105,7 @@ heading_level / translation / translation_status / translation_revision / formul
 | `row` / `block` | 行 id / block_id | 打开后自动定位到该行（`block` 为兼容旧链接保留） |
 | `view` | `original`\|`translation`\|`bilingual` | 覆盖服务端记录的视图模式 |
 | `order` | `en_left`\|`zh_left` | 覆盖左右顺序（旧值 `en_top`/`zh_top` 仍接受） |
-| `left` | `page`\|`text` | 左栏显示原 PDF 版面页图 / 原文文本 |
+| `left` | `page`\|`text` | 左栏显示原 PDF / 原文文本（非扫描页的 PDF 栏是**真 PDF**：pdf.js 矢量页 + 可复制文字层；扫描页仍是位图页图） |
 | `side` | `toc`\|`annotations`\|`notes`\|`formulas`\|`figures`\|`terms`\|`tasks` | 打开左栏（唯一侧栏）的某个页签 |
 | `size` | `sm`\|`md`\|`lg` | 正文字号 |
 | `md` / `mdpage` | `1` / 页号 | 直接打开 Markdown 视图并定位到第 N 页 |

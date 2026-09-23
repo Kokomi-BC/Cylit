@@ -47,14 +47,14 @@ python scripts/e2e_check.py
 | **质保层** | 一致性约束（常数/幂次/定理↔附录）、插图体检、质量指标表（复核清单已随复核模式移除） | §13.3 C2–C4、§14.6 |
 | **IR** | 每篇一个 SQLite（9 张表，`review` 表已随复核模式删除）+ `block_id` 稳定重绑定（page + bbox + 文本指纹） | §9 |
 | **Markdown** | 解析单一事实源：块标记 + 锚点 + `blocks.json` 阅读器索引；**译文产物独立**在 `md/pages.json`（页级）；另有**带插图的双语 Markdown** 导出（`md/translated.md`，`GET /papers/{id}/markdown/translated`） | §8、§15 |
-| **业务库** | MySQL 12 张表（原 `review` 表已随复核模式删除，含 `setting`），绝不存正文（只存 ≤200 字预览） | §10 |
+| **业务库** | MySQL 12 张表（原 `review` 表已随复核模式删除，含 `setting`），绝不存正文（只存 ≤200 字预览）；**启动时 `init_db()` 会幂等加宽历史窄列**（如 `chunk.id = "{paper_id}:{type}:{块范围}"` 最长 ~105 字，老库 `varchar(64)` 会报 1406） | §10 |
 | **模型层** | Provider 抽象（generation/embedding/reranker）+ ModelManager（默认路由/能力探测/维度校验）+ Mock 离线兜底 + OpenAI 兼容 + 本地 BGE（可选） | §12 |
 | **任务系统** | MySQL 任务表 + 租约 + 心跳 + 断点续跑 + 暂停/取消（页边界生效）+ 回收过期租约 | §10 ⑨、R13 |
 | **自适应并发** | N∈[1,8] 动态窗口、429 退避（遵守 `Retry-After`）、连续成功回升、连续失败熔断、token/耗时记录、并发时间线 | §3.1 A3 |
 | **翻译产线 A** | **页级翻译（唯一粒度）**：页图（PNG, 150dpi）+ 页内文本 + 稳定前缀 → 同一次调用产出 `original_md` / `translation_md` 两份逐块对应的 Markdown → 行对齐落盘；断点续跑 + 暂停取消 + 逐页 SSE | §15、§21.3 |
 | **API** | 约 40 个端点：论文/阅读器/内容/译文（按页）/公式（**从 Markdown 提取**）/插图（含按需裁图）/双语 Markdown/进度/任务/模型/设置/高亮/笔记/批注/知识库 + SSE | §20 |
 | **CLI** | `init / import / parse / build / structure / qa / translate / index / reconcile / stats / serve / bench` | §23 |
-| **测试** | 单元测试（解析/调度/页级翻译/Markdown 往返/插图裁图）+ 端到端（真实 PDF）+ 35 项验收脚本 + 40 项前端渲染自检（`pytest` 87 passed / 1 skipped） | §24 每阶段验收 |
+| **测试** | 单元测试（解析/调度/页级翻译/Markdown 往返/插图裁图/列宽守卫）+ 端到端（真实 PDF）+ 35 项验收脚本 + **41 项前端渲染自检**（含原 PDF 文字层 / 扫描件位图回退两个用例）+ 跨页衔接体检（`scripts/check_boundaries.py`）（`pytest` 102 passed / 1 skipped） | §24 每阶段验收 |
 
 **明确未做（下一轮）**：RAG 检索与问答（阶段 14–17，接口占位并返回 `implemented: false`）、
 版面保留 PDF（阶段 18–20，任务类型已注册但返回"未实现"）、AI 辅助阅读与结构分析（P1）、Vision/OCR（P2）。
@@ -262,7 +262,7 @@ python cli/pr.py bench --mode both          # 自适应 vs 固定并发对照实
 python cli/pr.py serve --port 8710
 python -m pytest tests -q                   # 单元 + 端到端
 python scripts/e2e_check.py                 # 35 项验收自检
-python scripts/frontend_check.py --block-markers   # 40 项前端验收自检（真实浏览器渲染）
+python scripts/frontend_check.py --block-markers   # 41 项前端验收自检（真实浏览器渲染）
 
 # ---- 扫描件（影印 PDF）----
 python scripts/make_scanned_pdf.py --src 论文.pdf --out scanned.pdf --pages 3-4 --gray

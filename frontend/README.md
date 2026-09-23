@@ -31,6 +31,7 @@ Vite 已把 `/api`、`/papers`、`/health` 代理到 `127.0.0.1:8710`，
 python scripts/frontend_check.py --block-markers
 # → data/logs/frontend_check.json，退出码 0 = 全通过
 # 36 项 = 静态资源 17 + 打包产物 3 + 12 个路由真实渲染 + 4 个阅读器形态/整屏布局断言
+# 当前为 41 项（路由用例已增至 14 个，含「原 PDF」真 PDF / 扫描件位图两个用例）
 ```
 
 ## 2. 技术选型
@@ -41,6 +42,7 @@ python scripts/frontend_check.py --block-markers
 | 框架 | **Vue 3.5 + `<script setup>` + TypeScript** | 规划原写 React + TS；经确认改为 Vue（**框架不受限**），因为已有实现可整体迁移、风险最低 |
 | 路由 | vue-router 4（history 模式） | 后端对 `/app/*` 做 SPA 回退，刷新任意路由不 404 |
 | Markdown | marked + marked-katex-extension + katex | 公式在 tokenizer 阶段接管（见 §4） |
+| 原 PDF | **pdfjs-dist**（本地依赖，按路由懒加载） | 阅读器左栏的「原 PDF」用 pdf.js 渲染矢量页 + 文字层（可选中/复制）；扫描页回退后端位图页图（见 §4.9） |
 | 状态 | `reactive` 全局 store + composables | 规模不大，不引 Pinia |
 | 样式 | 设计令牌 + `base.css` + 组件 `<style scoped>` | 组件私有样式随组件走，不再堆在一个大 CSS 里 |
 
@@ -206,6 +208,55 @@ projection matrix …`、`6: r ← x − DEQUANT(idx)`）和表格数值行（`1
   `GET /papers/{id}/review`、`PUT /review/{reviewId}`、`reader.reviews` / `reviews_open`、
   `paper.review_open`（含 MySQL 列与 `review` 表）全部删除。解析阶段的一致性检查与插图体检仍做，
   只落进质量报告，不再进人力队列。
+
+### 4.9 左栏「原 PDF」是真 PDF（pdf.js），不是位图
+
+之前左栏挂的是 `/api/v1/papers/{id}/pages/{n}` 返回的 **150dpi PNG**：**选不中、搜不到、复制不了**，
+放大还发虚。现在交给 `PdfPage.vue`（**pdfjs-dist**）按页渲染：
+
+- `canvas` 出矢量图（按 `宽度 × dpr`，`dpr ≤ 2`）+ `TextLayer` 出**真文字**（可选中/复制/Ctrl+F）；
+- **同一篇只加载一次 PDF**（模块级 Promise 缓存），22 页共用一份 document；
+- **进入视口附近才渲染**（`IntersectionObserver`，`rootMargin: 900px`）：实测 22 个 canvas 里只有 2 个真出图；
+- 渲染前用 `PageInfo.width/height`（PDF 点）撑 `aspect-ratio`，避免"先扁后弹"；
+- 渲染失败 → 自动回退后端位图页图（宁可退回位图也不开天窗）。
+
+**分流**：`PageInfo.has_text_layer === true` → pdf.js；扫描页（`false`）继续用位图 ——
+扫描件的 PDF 里就是一整页图，走 pdf.js 白搭内存；未解析/拿不到页信息也回退位图。
+
+**划词**：选区落在 `[data-pdf-page]` 里时进 `anchored: false`，
+浮层只留「AI 解释 / 复制」（高亮与笔记靠 `block_id + 字符偏移`，PDF 文字映射不回去），
+解释弹窗也不再提供"存为批注"。后端 `explain_selection` 对 `block_id` 本来就是可选的，**后端零改动**。
+**页上不挂任何点击行为**（点一下不该弹东西；要开原生阅读器用工具栏的「打开原 PDF」）。
+**文字层的 CSS 照官方抄，别手写最小集**：pdf.js v6 用
+`font-size = --total-scale-factor × --min-font-size × --font-height`，
+span 上再 `scale(1/--min-font-size)` 抵消。`--font-height` 是**页面单位**（实测 10pt 正文→ 9.96），
+**不随视口缩放**。只写"透明 + 绝对定位"、漏掉 `font-size`，隐形文字就会用继承字号 →
+**选中的框与看到的文字对不上**（用户报过）。`--min-font-size` / `--min-font-size-inv` 缺一个也会整体缩放。
+
+**出图与显示解耦（性能关键）**：页面内容放在固定尺寸的 `.pdf-surface` 里，
+外层只用 `transform: scale(k)` 跟随容器宽度 —— 开合侧栏/拖页宽滑杆**不重新光栅化**。
+重出只在"实时几何还在视口附近 + 倍率偏离 >15%"时防抖 450ms 补一次。
+★ 不要用"曾经可见"的粘性标志做重出判据：滚过全篇后它会让 22 页全算可见，
+一次侧栏开合就把全篇重画（实测卡顿就是这么来的）。宿主元素上的 `data-renders` 是出图计数器，便于排查。
+
+**四个已经踩过的坑**（都实测过）：
+
+1. **渲染宽度只能来自容器 `clientWidth`**：入参是"期望宽度"，外框（`.media-box` 带 `max-width:100%`）
+   可能把它夹窄 —— 按入参出图会比外框宽，被 `overflow:hidden` 裁掉，看起来就是"页面偏右、右边被切"。
+2. **首次进入视口时容器可能还没排版**（`clientWidth = 0`）。**不要用 `requestAnimationFrame` 重试**：
+   隐藏/未聚焦标签页里 rAF 被节流到几乎不跑。改成依赖 `ResizeObserver` + 定时器 + `visibilitychange` 三道。
+3. **隐藏标签页里 IO / RO / rAF 全都不回调**（`document.visibilityState === 'hidden'`）：
+   pdf.js 的**分片渲染靠 rAF 推进**，于是会停在"画了一半、promise 永不 resolve"。
+   已加一个仅隐藏期生效的 rAF 垫片（隐藏时 = `setTimeout`，可见即还原）。
+4. **文字层要显式 `z-index`**：canvas 会被浏览器提升为独立合成层，光靠 DOM 顺序不保证文字层在上，
+   否则**选中底色根本看不到**。
+
+**划词选中色全站唯一来源**：`tokens.css` 的 `--selection-bg` + `base.css` 的全局 `::selection`；
+`PdfPage.vue` 引用同一令牌（并保持 `color: transparent`，字形仍由画布提供）。
+
+**为什么不用浏览器原生阅读器**：每页一个 `<iframe>` ＝ 每页一个 PDF 插件实例（内存吃不消）；
+单实例整篇 `<iframe>` 与"每页贴在该页译文旁"的对照布局冲突，换页靠 `#page=` 重载还会闪。
+想要原生体验时用工具栏「打开原 PDF」（`Content-Disposition: inline` 直接开原生阅读器）。
 
 ### 4.6 CSS Grid 只写 columns 不写 rows → 侧栏不滚、整页滚
 

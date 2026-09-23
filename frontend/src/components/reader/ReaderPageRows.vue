@@ -16,6 +16,7 @@ import type { Highlight, OriginalMode, PageInfo, PageRow, PairOrder, ViewMode } 
 import type { PageGroup } from '@/composables/usePageRows';
 import { pageStats } from '@/composables/usePageRows';
 import AppIcon from '@/components/AppIcon.vue';
+import PdfPage from './PdfPage.vue';
 import ReaderRow from './ReaderRow.vue';
 
 type Media = NonNullable<PageInfo['media']>[number];
@@ -30,6 +31,8 @@ const props = defineProps<{
   currentRowId: string;
   highlights: Highlight[];
   showRefs: boolean;
+  /** 后台正在翻译这篇论文：未译的行显示「等待翻译」而不是「未翻译」 */
+  translating: boolean;
   /** 正文字号（px）；标题/图注用 em 跟随缩放 */
   fontSize: number;
 }>();
@@ -62,6 +65,13 @@ const sides = computed<Array<'en' | 'zh'>>(() => {
 });
 
 const pageImage = (page: number) => assetUrl(`/api/v1/papers/${props.paperId}/pages/${page}`);
+/**
+ * 左侧“原 PDF”用**真实 PDF**（pdf.js）还是后端页图：
+ *   - `has_text_layer = true`（正常电子版）：走 pdf.js → 矢量清晰、文字可选中复制；
+ *   - 扫描页：PDF 里就是一整页位图，走页图更省内存（且本来也没字可选）。
+ * 解析前的论文拿不到页信息（`info` 为 null）→ 继续用页图。
+ */
+const useRealPdf = (g: PageGroup) => g.info?.has_text_layer === true;
 const rowClass = (id: string) => ({ current: id === props.currentRowId });
 const isBadAlign = (g: PageGroup) => g.align === 'structure';
 /**
@@ -139,10 +149,18 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
         </button>
       </header>
 
-      <!-- ① 原文 + 原 PDF：整页页图（通栏，单栏阅读） -->
+      <!-- ① 原文 + 原 PDF：整页（通栏，单栏阅读） -->
       <div v-if="imageOnly" class="pg-image-only">
         <div class="media-box" :style="{ width: `${props.pageWidth}px` }">
-          <img :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
+          <PdfPage
+            v-if="useRealPdf(g)"
+            :paper-id="props.paperId"
+            :page="g.page"
+            :width="props.pageWidth"
+            :page-width="g.info?.width"
+            :page-height="g.info?.height"
+          />
+          <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
         </div>
       </div>
 
@@ -154,7 +172,15 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
       >
         <div class="col-image">
           <div class="media-box" :style="{ width: `${props.pageWidth}px` }">
-            <img :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
+            <PdfPage
+              v-if="useRealPdf(g)"
+              :paper-id="props.paperId"
+              :page="g.page"
+              :width="props.pageWidth"
+              :page-width="g.info?.width"
+              :page-height="g.info?.height"
+            />
+            <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
           </div>
         </div>
         <div class="col-rows">
@@ -180,6 +206,7 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :side="pageRowSide"
               :highlights="props.highlights"
               :missing="pageRowSide === 'zh' && !r.translation"
+              :pending="props.translating"
               @copy="emit('copy', $event)"
             />
           </div>
@@ -218,6 +245,7 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :side="s"
               :highlights="props.highlights"
               :missing="s === 'zh' && !r.translation"
+              :pending="props.translating"
               @copy="emit('copy', $event)"
             />
           </div>
@@ -316,12 +344,18 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
 .pg-pair.image-right { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .pg-pair.image-right .col-image { order: 2; }
 .pg-pair .col-image { min-width: 0; }
-.pg-pair .col-image .media-box { position: sticky; top: 34px; }
+/* sticky 的参照物是**滚动容器**（`.reader-content`，它的上边就是工具栏下沿），
+   所以 `top` 不需要给工具栏留位：原来写 34px → 页图顶部白空多出 34px（用户报过）。
+   这里贴顶 2px，只留一丝缝。 */
+.pg-pair .col-image .media-box { position: sticky; top: 2px; }
 .pg-pair .col-rows { min-width: 0; border-left: 1px solid var(--divider); padding-left: 20px; }
 
 .pg-image-only { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0 4px; }
 .media-box { max-width: 100%; margin: 0 auto; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .media-box img { display: block; width: 100%; height: auto; }
+/* 点一下开大图（不然半栏的 A4 页上正文只有几像素高，根本看不清） */
+.media-box.zoomable { cursor: zoom-in; }
+.media-box.zoomable:hover { border-color: var(--accent); }
 
 .rows-foot { display: flex; justify-content: center; padding: 14px 0 4px; }
 

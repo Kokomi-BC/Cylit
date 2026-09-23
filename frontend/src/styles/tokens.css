@@ -34,6 +34,8 @@
   --accent-hover: #0b6472;
   --accent-soft: #e6f3f5;
   --accent-text: #0a5a66;
+  /* 划词选中底色：**全站唯一来源**（正文、PDF 文字层、输入框都用它，避免左右两侧选中色不一样） */
+  --selection-bg: color-mix(in srgb, var(--accent) 26%, transparent);
 
   /* ---- 语义色（只用于状态，不参与装饰；绿/黄/红要与青绿强调色拉开色相） ---- */
   --ok: #2a7d32;

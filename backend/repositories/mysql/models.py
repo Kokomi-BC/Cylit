@@ -101,7 +101,8 @@ class Block(Base):
 
     # 规划 §9.3 扩展字段
     section_id: Mapped[str | None] = mapped_column(String(64))
-    chunk_id: Mapped[str | None] = mapped_column(String(64))
+    # 指向 Chunk.id（见上），同样按 128 预留。
+    chunk_id: Mapped[str | None] = mapped_column(String(128))
     char_count: Mapped[int] = mapped_column(Integer, default=0)
     preview: Mapped[str | None] = mapped_column(String(200))  # ≤200 字预览，非正文
     meta_json: Mapped[str | None] = mapped_column(Text)
@@ -290,7 +291,10 @@ class ModelConfig(Base):
 class Chunk(Base):
     __tablename__ = "chunk"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # chunk.id = ``{paper_id}:{chunk_type}:{首块 id}[-{末块 id}]``，
+    # 最长约 48 + 1 + 16 + 1 + 19 + 1 + 19 = 105 字符（长论文 id 会直奔上限），
+    # 所以给到 128；老库若仍是 64，启动时由 session._repair_column_widths 自动加宽。
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
     paper_id: Mapped[str] = mapped_column(String(64), index=True)
     block_id: Mapped[str | None] = mapped_column(String(32))
     chunk_type: Mapped[str] = mapped_column(String(16), default="text")

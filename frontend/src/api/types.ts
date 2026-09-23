@@ -121,6 +121,12 @@ export interface PageRow {
   number: string;
   original: string;
   translation: string;
+  /** 本行与下一页相连（页尾被版面折断）：译文由下页的完整句承载 */
+  continues?: boolean;
+  /** 本行是上一页末句的延续（后端已清掉「……」/「承接上页」这类占位噪声） */
+  continued_from_prev?: boolean;
+  /** 前端派生：本行译文让位给下页，显示「续下页」 */
+  zhDeferred?: boolean;
 }
 
 /** 一页的页级翻译产物（两份逐块对应的 Markdown + 对齐后的行）。 */

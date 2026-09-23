@@ -13,8 +13,8 @@ from backend.services.translation.brief import DocumentBrief
 from backend.services.translation.page_translate import (
     PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
     build_stable_prefix, call_page, effective_max_tokens, history_context,
-    next_max_tokens, pair_rows, parse_pair, prefix_hash, render_page_prompt,
-    split_blocks,
+    mark_rows_continuity, next_max_tokens, pair_rows, parse_pair, prefix_hash,
+    render_page_prompt, split_blocks,
 )
 
 PAGE_MD = """# TurboQuant: Online Vector Quantization
@@ -302,3 +302,104 @@ def test_max_tokens_ladder():
     assert effective_max_tokens(16384) == 16384
     assert next_max_tokens(8192) == 16384
     assert next_max_tokens(65536) is None
+
+
+# --------------------------------------------------------------------------
+# 跨页衔接：断词/续句标记 + 输出卫生 + 搭接片段
+# --------------------------------------------------------------------------
+
+
+def test_prompt_states_boundary_rules():
+    """提示里必须写清"译文不许留断词连字符 / 续句不许加省略号 / 搭接块不许输出"。"""
+    import inspect
+
+    from backend.services.translation import page_translate as pt
+
+    src = inspect.getsource(pt) + pt.SYSTEM_PROMPT + pt.PAGE_USER_TEMPLATE
+    assert "禁止保留断词连字符" in src
+    assert "不要用「……」" in src
+    assert "不要把这里的内容输出" in src
+
+
+def test_mark_rows_continuity_cleans_and_flags():
+    """实测 p001-06 → p002-00 那两个噪声：「通信瓶-」与开头的「……」都要清掉并打标。"""
+    rows = [
+        {"id": "p002-00", "type": "para", "original": "tlenecks …",
+         "translation": "……在加速器上的 HBM 与 SRAM 之间的瓶颈。"},
+        {"id": "p002-01", "type": "para", "original": "x", "translation": "正常行"},
+    ]
+    mark_rows_continuity(rows, head=True, tail=False)
+    assert rows[0]["continued_from_prev"] is True
+    assert rows[0]["translation"].startswith("在加速器上")          # 「……」已剥掉
+    assert "continued_from_prev" not in rows[1]
+
+    tail_rows = [
+        {"id": "p001-05", "type": "para", "original": "…", "translation": "正常行"},
+        {"id": "p001-06", "type": "para", "original": "…communication bot-",
+         "translation": "该延迟主要归因于通信瓶-"},
+    ]
+    mark_rows_continuity(tail_rows, head=False, tail=True)
+    assert tail_rows[-1]["continues"] is True
+    assert not tail_rows[-1]["translation"].endswith("-")           # 悬空连字符已去掉
+    assert tail_rows[-1]["translation"].endswith("通信瓶")
+
+
+def test_mark_rows_continuity_handles_empty_rows():
+    rows: list[dict] = []
+    mark_rows_continuity(rows, head=True, tail=True)                # 不应抛异常
+    assert rows == []
+
+
+def test_render_page_prompt_carries_lookahead():
+    prompt = render_page_prompt(page=1, page_total=22, body="Body.",
+                                lookahead="【下一页开头】\ntlenecks between HBM and SRAM")
+    assert "下一页开头" in prompt and "tlenecks between" in prompt
+    # 搭接必须在【本页输出】之前（模型先看到上下文再被要求输出）
+    assert prompt.index("tlenecks between") < prompt.index("【本页输出】")
+    assert "下一页开头" not in render_page_prompt(page=1, page_total=22, body="Body.")
+
+
+def test_page_lookahead_and_continuity_use_parser_evidence(monkeypatch):
+    """搭接只取下一页开头几行；末页没有下一页 → 空串。"""
+    import backend.services.translation.page_translate as pt
+
+    pages = {
+        1: "first line of p1\nsecond line of p1",
+        2: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8",
+        3: "",
+    }
+    monkeypatch.setattr(pt, "page_source_text", lambda pid, page: (pages.get(page, ""), ""))
+    la = pt.page_lookahead("p", 1, lines=3)
+    assert "l1" in la and "l3" in la and "l4" not in la             # 只取前 3 行
+    assert pt.page_lookahead("p", 3) == ""                          # 下一页没有文本
+
+
+def test_page_continuity_judges_from_block_evidence(monkeypatch):
+    """续句/断词判定：两侧同时成立才认；公式/表格结尾不算；证毕号算句末。"""
+    import backend.services.translation.page_translate as pt
+
+    def blocks(mapping):
+        def fake(pid, page):
+            return mapping.get((pid, page), [])
+        return fake
+
+    cases = {
+        # 断词（p1 末 `bot-` → p2 首 `tlenecks…`）+ 断句（p2 末 `…of the` → p3 首小写起头）
+        ("p", 1): [{"type": "para", "order": 1, "text": "…communication bot-"}],
+        ("p", 2): [
+            {"type": "para", "order": 1, "text": "tlenecks between HBM and SRAM on accelerators."},
+            {"type": "para", "order": 2, "text": "…over the randomness of the"},
+        ],
+        ("p", 3): [{"type": "para", "order": 1, "text": "quantizer's output. Thus, we aim …"}],
+        # 页尾是公式 → 不按断句处理
+        ("q", 1): [{"type": "formula", "order": 1, "text": "$$ x = 1 $$"}],
+        ("q", 2): [{"type": "para", "order": 1, "text": "along with a sign vector"}],
+        # 页尾以证毕号收尾 → 完整句，且下页是标题
+        ("r", 1): [{"type": "para", "order": 1, "text": "we get the desired lower bound. □"}],
+        ("r", 2): [{"type": "heading", "order": 1, "text": "B.2 QJL: 1-BIT INNER PRODUCT"}],
+    }
+    monkeypatch.setattr(pt, "_page_text_blocks", blocks(cases))
+    assert pt.page_continuity("p", 2) == {"head": True, "tail": True}
+    assert pt.page_continuity("p", 1)["tail"] is True        # 页尾断词
+    assert pt.page_continuity("q", 2)["head"] is False       # 上页是公式结尾
+    assert pt.page_continuity("r", 1)["tail"] is False       # 证毕号收尾 = 完整句

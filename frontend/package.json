@@ -15,6 +15,7 @@
     "katex": "^0.16.9",
     "marked": "^18.0.14",
     "marked-katex-extension": "^5.1.13",
+    "pdfjs-dist": "^6.3.289",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },

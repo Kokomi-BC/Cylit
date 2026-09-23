@@ -2,7 +2,7 @@
 
 - 单进程应用，使用全局单例 Engine（pool_pre_ping 防 MySQL 断连）。
 - ``session_scope()`` 提供事务上下文；异常自动回滚。
-- ``init_db()`` 幂等：自动建库（MySQL）+ 建表（12 张业务表）。
+- ``init_db()`` 幂等：自动建库（MySQL）+ 建表（12 张业务表）+ 修补历史窄列。
 """
 
 from __future__ import annotations
@@ -108,6 +108,48 @@ def ensure_database() -> None:
         conn.close()
 
 
+# 需要保证最小宽度的文本列：(表, 列, 最小长度)
+# 只在实际窄于要求时才 ALTER（幂等，可反复启动）。
+_MIN_COLUMN_WIDTHS: tuple[tuple[str, str, int], ...] = (
+    # chunk.id = "{paper_id}:{chunk_type}:{首块 id}[-{末块 id}]"，长论文 id 下约 105 字符
+    ("chunk", "id", 128),
+    ("block", "chunk_id", 128),  # 指向 Chunk.id，同步预留
+)
+
+
+def repair_column_widths(engine: Engine | None = None) -> list[str]:
+    """把历史库里偏窄的列加宽（MySQL 的 ``create_all`` 不会 ALTER 既有列）。
+
+    背景：``chunk.id`` 由论文 id + 类型 + 块 id 范围拼成，长论文 id
+    （如 ``turboquant-online-vector-iclr-26``）会超过早期的 ``varchar(64)``，
+    插入时报 ``1406 Data too long for column 'id'``。
+    返回被修改的列描述列表（空表示无需修补）。
+    """
+    if get_settings().db_backend == "sqlite":
+        return []  # SQLite 不强制字符串长度
+    engine = engine or get_engine()
+    repaired: list[str] = []
+    with engine.begin() as conn:
+        for table, column, want in _MIN_COLUMN_WIDTHS:
+            row = conn.execute(text(
+                "SELECT CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE "
+                "FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = :t AND COLUMN_NAME = :c"
+            ), {"t": table, "c": column}).first()
+            if row is None or row[0] is None or int(row[0]) >= want:
+                continue
+            nullable = "NULL" if str(row[1]).upper() == "YES" else "NOT NULL"
+            conn.execute(text(
+                f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` "
+                f"VARCHAR({want}) {nullable}"
+            ))
+            repaired.append(f"{table}.{column}: varchar({int(row[0])}) -> varchar({want})")
+    if repaired:
+        log.info("已加宽历史窄列：%s", "；".join(repaired))
+    return repaired
+
+
 def init_db(drop: bool = False) -> dict:
     """建库建表，可重复执行（规划阶段 05 验收）。"""
     s = get_settings()
@@ -116,10 +158,11 @@ def init_db(drop: bool = False) -> dict:
     if drop:
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    repaired = repair_column_widths(engine)
     tables = sorted(inspect(engine).get_table_names())
     log.info("数据库就绪：%s（%d 张表）", s.db_name if s.db_backend == "mysql"
              else s.database_url, len(tables))
-    return {"backend": s.db_backend, "tables": tables}
+    return {"backend": s.db_backend, "tables": tables, "repaired": repaired}
 
 
 def healthcheck() -> dict:

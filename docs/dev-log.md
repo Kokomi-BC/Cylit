@@ -186,6 +186,9 @@ p03-b19 实际上没被翻译。
 
 **现象**：反复出现"论文不存在：turboquant-iclr26"，演示论文每隔几轮就被删掉。
 
+> 留档说明：该论文 2026-09 按标题重建后 id 变为 `turboquant-online-vector-iclr-26`，
+> 下面这条教训本身与 id 无关（同 sha256 被复用 → 被测试删掉）。
+
 **根因**：`test_import_reuses_existing_paper` 用**真实示例 PDF** 导入，
 而 `import_pdf` 对同 sha256 会**复用**已有论文 —— 于是它复用了演示论文，
 再在清理时把它硬删了。测试污染了开发数据。

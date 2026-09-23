@@ -87,7 +87,25 @@ export function buildPageGroups(
       align: tr?.align ?? (rows.length ? 'parsed' : 'empty'),
     });
   }
+  markBoundaries(groups);
   return groups;
+}
+
+/**
+ * 跨页句的显示归属：上页末行译文**让位**给下页首行，避免「半截词 + 整句重译」同时出现。
+ *
+ * 背景（实测 p001-06 → p002-00）：页图把 `communication bot-` 折断在两页，上页译成「通信瓶-」、
+ * 下页又从头译了整句「…间的瓶颈。」——读者看到的是半截 + 重复。
+ * 处理：上页末行标 `zhDeferred`（译文格显示「续下页」），下页首行（`continued_from_prev`）
+ * 承载完整句子。标记由后端按**原文**判定（`continues` / `continued_from_prev`）。
+ */
+function markBoundaries(groups: PageGroup[]): void {
+  for (let i = 0; i < groups.length - 1; i += 1) {
+    const tail = groups[i].rows[groups[i].rows.length - 1];
+    const head = groups[i + 1].rows[0];
+    if (!tail || !head) continue;
+    if (tail.continues && head.continued_from_prev) tail.zhDeferred = true;
+  }
 }
 
 /** 全局行序（跨页递增）：搜索、上一段/下一段导航用。 */

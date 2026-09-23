@@ -38,8 +38,8 @@ from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
     CONTEXT_MAX_CHARS, PAGES_FILENAME, PageStore, build_outline_skeleton,
     build_stable_prefix, call_page, build_page_payload, effective_max_tokens,
-    history_context, list_pages, load_page_image, next_max_tokens, page_source_text,
-    prefix_hash, render_page_prompt,
+    history_context, list_pages, load_page_image, next_max_tokens, page_lookahead,
+    page_source_text, prefix_hash, render_page_prompt,
 )
 
 log = get_logger(__name__)
@@ -212,9 +212,12 @@ def run_translate_task(ctx) -> dict:
         # 完整前文（第 1..N-1 页）——追加式渲染，与上一页 prompt 共享最长前缀 → 命中前缀缓存
         history = (history_context(store, paper_id, page_no, max_chars=context_chars)
                    if use_context else "")
+        # 下一页开头（仅上下文）：页尾被版面折断成 `bot-` 时，让模型知道后面接什么词，
+        # 从而把**译文**补成完整词（原文转录仍只写本页页图内容）。
+        lookahead = page_lookahead(paper_id, page_no) if use_context else ""
         prompt = render_page_prompt(page=page_no, page_total=page_total,
                                     body=source, prefix=prefix, section=section,
-                                    previous=history)
+                                    previous=history, lookahead=lookahead)
         image = load_page_image(paper_id, page_no)
         try:
             result = call_page(provider, prompt, image, max_tokens=max_tokens_current)
@@ -234,6 +237,7 @@ def run_translate_task(ctx) -> dict:
         payload = build_page_payload(page=page_no, page_total=page_total,
                                      result=result, source_chars=len(source))
         payload["prev_context_chars"] = len(history)
+        payload["lookahead_chars"] = len(lookahead)
         if not payload.get("model"):
             payload["model"] = model_id or ""
         emit(page_no, payload)

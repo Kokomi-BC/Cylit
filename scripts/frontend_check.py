@@ -51,8 +51,13 @@ ROUTES: list[dict] = [
      "markers": ["katex-display"], "absent": ["$$"]},
     {"name": "reader-块对齐", "path": "/reader/{paper}?view=bilingual&left=text",
      "markers": ["row-pair", "two-col", "rr-body", "side-zh"]},
+    # 「原 PDF」栏必须是**真实 PDF**：pdf.js 渲染的矢量页 + 文字层（可选中/复制）。
+    # 回归：这里以前是 `<img src="…/pages/N">` 位图，读者选不中文字。
     {"name": "reader-原PDF在左", "path": "/reader/{paper}?view=bilingual&left=page",
-     "markers": ["pg-pair", "col-image", "pages/"]},
+     "markers": ["pg-pair", "col-image", "pdf-text-layer", "canvas"]},
+    # 扫描件反过来：PDF 里没有文字层 → 必须继续用后端位图页图（不白跑 pdf.js）
+    {"name": "reader-原PDF(扫描件)", "path": "/reader/{scan}?view=bilingual&left=page",
+     "markers": ["pg-pair", "col-image", "/pages/"]},
     {"name": "reader-深链定位", "path": "/reader/{paper}?block={block}",
      "markers": ["data-row-id", "rrow"]},
     {"name": "reader-窄屏退化", "path": "/reader/{paper}?view=bilingual", "size": NARROW,
@@ -172,6 +177,25 @@ def fetch(url: str, timeout: int = 25) -> tuple[int, bytes]:
         return -1, b""
 
 
+def find_scanned_paper(base: str, items: list[dict], exclude: str = "") -> str:
+    """找一个**含无文字层页**的论文（扫描件），用来断言「原 PDF 栏回退位图」。
+
+    每篇要拉一次 `/reader`，所以只看前几篇；找不到就返回空串（用例会 SKIP 而不是硬失败）。
+    """
+    for item in items[:8]:
+        pid = item.get("id") or ""
+        if not pid or pid == exclude:
+            continue
+        try:
+            _st, body = fetch(f"{base}/api/v1/papers/{pid}/reader", timeout=40)
+            pages = json.loads(body.decode("utf-8"))["data"].get("pages") or []
+        except Exception:  # noqa: BLE001
+            continue
+        if any(p.get("has_text_layer") is False for p in pages):
+            return pid
+    return ""
+
+
 def render(browser: str, url: str, budget_ms: int = 20000, size: str = DESKTOP) -> str:
     with tempfile.TemporaryDirectory(prefix="pm-render-") as profile:
         cmd = [
@@ -206,6 +230,7 @@ def main() -> int:
     print("① 静态资源与接口冒烟")
     print("=" * 78)
     paper_hint = args.paper
+    items: list[dict] = []
     if not paper_hint:
         status, body = fetch(base + "/api/v1/papers")
         try:
@@ -217,6 +242,12 @@ def main() -> int:
             paper_hint = pool[0]["id"] if pool else ""
         except Exception:  # noqa: BLE001
             paper_hint = ""
+    else:
+        try:
+            _st, body = fetch(base + "/api/v1/papers")
+            items = json.loads(body.decode("utf-8"))["data"]["items"]
+        except Exception:  # noqa: BLE001
+            items = []
 
     for path, expect, label in ASSETS:
         real = path.format(paper=paper_hint)
@@ -244,6 +275,10 @@ def main() -> int:
 
     paper = paper_hint
     print(f"\n用于阅读器的论文：{paper or '（无）'}")
+
+    # 扫描件论文（含无文字层页）：给「原 PDF(扫描件)」用例用；没有则 SKIP 该用例
+    scan_paper = find_scanned_paper(base, items, exclude=paper)
+    print(f"用于扫描件用例的论文：{scan_paper or '（库里没有扫描件）'}")
 
     block = ""
     if paper:
@@ -275,7 +310,10 @@ def main() -> int:
             markers = route["markers"]
             absent = route.get("absent", [])
             size = route.get("size", DESKTOP)
-            url_path = path.format(paper=paper, block=block)
+            url_path = path.format(paper=paper, block=block, scan=scan_paper)
+            if "{scan}" in path and not scan_paper:
+                print(f"[SKIP] {name:<16} {url_path}  （库里没有扫描件论文）")
+                continue
             if "{paper}" in path and not paper:
                 print(f"[SKIP] {name:<16} {url_path}  （库内没有可用的论文）")
                 continue

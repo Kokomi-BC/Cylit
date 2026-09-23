@@ -99,10 +99,15 @@ async def trigger_parse(paper_id: str, request: Request,
 
 @router.get("/papers/{paper_id}/file")
 async def paper_pdf(paper_id: str):
-    """PDF 流（供 pdf.js 渲染原 PDF）。"""
+    """PDF 流：阅读器「原 PDF」栏由 pdf.js 渲染，也支持新标签页直接打开。
+
+    `content_disposition_type="inline"` 是必需的：带 `filename` 的 FileResponse
+    默认发 `attachment`，浏览器会**下载**而不是就地浏览（新标签页里也开不了阅读器）。
+    """
     path = paper_service.resolve_pdf(paper_id)
     return FileResponse(str(path), media_type="application/pdf",
-                        filename=f"{paper_id}.pdf")
+                        filename=f"{paper_id}.pdf",
+                        content_disposition_type="inline")
 
 
 @router.get("/papers/{paper_id}/pages/{page_no}")

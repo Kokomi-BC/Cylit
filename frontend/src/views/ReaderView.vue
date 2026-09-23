@@ -109,8 +109,12 @@ function onToolbarAction(key: string) {
 
 const selection = reactive({
   show: false, x: 0, y: 0, text: '', rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
+  /** 选区是否有块锚点（原 PDF 划词只有文字）—— 决定能不能写高亮/笔记 */
+  anchored: true,
 });
-const explainCard = reactive({ open: false, loading: false, text: '', data: null as any, rowId: '' });
+const explainCard = reactive({
+  open: false, loading: false, text: '', data: null as any, rowId: '', anchored: true,
+});
 const noteModal = reactive({ open: false, text: '', rowId: '', selected: '' });
 const zoomImage = ref('');
 const briefDraft = reactive<BriefDraft>({ domain: '', style: '', notes: '', glossaryText: '' });
@@ -253,6 +257,8 @@ const activeTask = computed(() => liveTask.value
   ?? tasks.value.find((t) => t.type === 'TRANSLATE_MD'
     && ['processing', 'pending', 'paused'].includes(t.status))
   ?? null);
+/** 后台正在翻译这篇论文：还没译文的行显示「等待翻译」，而不是「未翻译」 */
+const translating = computed(() => !!activeTask.value);
 const isEmpty = computed(() => !loading.value && !fatal.value && !pages.value.length && !allRows.value.length);
 /** 原 PDF 栏的列宽（对照时只占一半，单栏时可放大） */
 const pageWidth = computed(() => {
@@ -732,6 +738,14 @@ function runSearch() {
 function clearSearch() { searchQuery.value = ''; searchHits.value = []; }
 
 /* ------------------------------ 划词 ------------------------------ */
+/** 划词浮层的定位（贴着选区上方，不跑出屏幕） */
+function menuPos(rect: DOMRect) {
+  return {
+    x: Math.min(window.innerWidth - 320, Math.max(8, rect.left)),
+    y: Math.max(8, rect.top - 46),
+  };
+}
+
 function onMouseUp() {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed) { selection.show = false; return; }
@@ -739,6 +753,19 @@ function onMouseUp() {
   if (!text) { selection.show = false; return; }
   const node = sel.anchorNode;
   const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+
+  /* 原 PDF 划词：文字来自 pdf.js 的文字层，**没有块锚点**，
+   * 因此只提供「AI 解释 / 复制」（高亮与笔记靠 block_id + 偏移定位，映射不回去）。 */
+  const pdfEl = el?.closest?.('[data-pdf-page]') as HTMLElement | null;
+  if (pdfEl) {
+    Object.assign(selection, {
+      show: true, ...menuPos(rect), text: truncate(text, 600),
+      rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
+    });
+    return;
+  }
+
   const rowEl = el?.closest?.('[data-row-id]') as HTMLElement | null;
   if (!rowEl?.dataset.rowId) { selection.show = false; return; }
 
@@ -747,27 +774,29 @@ function onMouseUp() {
   const side = (el?.closest('[data-side]') as HTMLElement | null)?.dataset.side === 'zh' ? 'zh' : 'en';
   const source = side === 'zh' ? (row?.translation ?? '') : (row?.original ?? '');
   const at = source.indexOf(text);
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
   Object.assign(selection, {
-    show: true,
-    x: Math.min(window.innerWidth - 320, Math.max(8, rect.left)),
-    y: Math.max(8, rect.top - 46),
-    text: truncate(text, 600),
-    rowId, side,
-    start: at >= 0 ? at : 0,
-    end: at >= 0 ? at + text.length : text.length,
+    show: true, ...menuPos(rect), text: truncate(text, 600),
+    rowId, side, start: at >= 0 ? at : 0, end: at >= 0 ? at + text.length : text.length,
+    anchored: true,
   });
 }
 
 const hideMenu = () => { selection.show = false; };
 
 async function explainSelection() {
-  const payload = { paper_id: paperId.value, block_id: selection.rowId, selected_text: selection.text };
+  // 无块锚点（原 PDF 划词）时只传 paper_id + 选中文字：后端 `explain_selection` 对 block_id 是可选的
+  const payload = {
+    paper_id: paperId.value,
+    block_id: selection.anchored ? selection.rowId : null,
+    selected_text: selection.text,
+  };
+  const anchored = selection.anchored;
   hideMenu();
   explainCard.open = true;
   explainCard.loading = true;
   explainCard.text = '';
-  explainCard.rowId = selection.rowId;
+  explainCard.rowId = anchored ? selection.rowId : '';
+  explainCard.anchored = anchored;
   try {
     const data = await api.post<any>('/annotations/from-selection', payload);
     explainCard.data = data;
@@ -1152,6 +1181,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :page-width="pageWidth"
           :current-row-id="currentRowId"
           :highlights="highlights"
+          :translating="translating"
           :font-size="readerFont"
           @focus="focusRow"
           @copy="copyRow"
@@ -1166,6 +1196,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       :x="selection.x"
       :y="selection.y"
       :colors="HIGHLIGHT_COLORS"
+      :anchored="selection.anchored"
       @explain="explainSelection"
       @note="openNoteModal"
       @copy="copySelection"
@@ -1180,11 +1211,17 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         <div class="tiny faint" style="margin-top:8px">
           模型：{{ explainCard.data?.model_name ?? '—' }}
           <span v-if="explainCard.data?.cached"> · 命中缓存</span>
+          <span v-if="!explainCard.anchored"> · 来自原 PDF 划词（无段落上下文与锚点）</span>
         </div>
       </div>
       <template #footer>
         <button class="btn" @click="explainCard.open = false">关闭</button>
-        <button class="btn primary" :disabled="explainCard.loading" @click="saveExplanationAsAnnotation">
+        <button
+          v-if="explainCard.anchored"
+          class="btn primary"
+          :disabled="explainCard.loading"
+          @click="saveExplanationAsAnnotation"
+        >
           存为批注
         </button>
       </template>
@@ -1298,7 +1335,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
   color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
 /* 正文区自身是**唯一**的滚动容器 */
-.reader-content { overflow: auto; background: var(--bg); scrollbar-width: thin; }
+.reader-content { overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-gutter: stable; }
 
 @media (max-width: 1100px) {
   .reader, .reader.no-aside { grid-template-columns: minmax(0, 1fr); }

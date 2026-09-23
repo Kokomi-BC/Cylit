@@ -16,6 +16,8 @@ const props = defineProps<{
   highlights: Highlight[];
   /** 纯译文模式下：该行还没有译文 */
   missing?: boolean;
+  /** 后台正在翻译这篇论文：此时没译文的行显示「等待翻译」而不是「未翻译」 */
+  pending?: boolean;
   /** 紧凑模式（窄屏 / 纯原文译文单栏时用） */
   compact?: boolean;
 }>();
@@ -31,6 +33,14 @@ const html = computed(() => {
 });
 const level = computed(() => (props.row.type === 'heading' ? Math.min(4, Math.max(1, props.row.level || 2)) : 0));
 const isEmpty = computed(() => !String(text.value ?? '').trim());
+/** 页尾跨页句：译文让位给下页（否则会出现"半截词 + 整句重译"） */
+const deferred = computed(() => props.side === 'zh' && !!props.row.zhDeferred);
+/** 未译空位的文案：任务在跑 → 等待翻译；否则 → 未翻译 */
+const emptyLabel = computed(() => {
+  if (props.side !== 'zh') return '—';
+  if (props.pending) return '等待翻译';
+  return props.missing ? '未翻译' : '—';
+});
 </script>
 
 <template>
@@ -39,12 +49,13 @@ const isEmpty = computed(() => !String(text.value ?? '').trim());
              { heading: level > 0, [`lvl-${level}`]: level > 0, empty: isEmpty, compact: props.compact }]"
     :data-side="props.side"
   >
-    <div v-if="html" class="rr-body md" v-html="html" />
+    <div v-if="deferred" class="rr-body rr-deferred" title="本句跨页，完整译文在下一页">续下页</div>
+    <div v-else-if="html" class="rr-body md" v-html="html" />
     <div v-else class="rr-empty">
-      {{ props.side === 'zh' ? (props.missing ? '未翻译' : '—') : '—' }}
+      {{ emptyLabel }}
     </div>
     <button
-      v-if="!isEmpty"
+      v-if="!isEmpty && !deferred"
       class="rr-copy"
       :title="props.side === 'zh' ? '复制译文' : '复制原文'"
       @click.stop="emit('copy', { row: props.row, side: props.side })"
@@ -71,6 +82,8 @@ const isEmpty = computed(() => !String(text.value ?? '').trim());
    ⚠️ 不要在这里加 `p:last-child { margin-bottom: 0 }`：那会让相邻块贴在一起，
    本来分成两段的正文会看起来连成一段。 */
 .rr-body :deep(p) { margin: 0 0 .55em; }
+/* 页尾跨页句的占位：淡色小字，不抢注意力，也不是“错误”样式 */
+.rr-deferred { font-size: .82em; color: var(--text-faint); line-height: 1.4; }
 .rr-body :deep(h1), .rr-body :deep(h2), .rr-body :deep(h3), .rr-body :deep(h4) {
   margin: 0 0 .35em; font-weight: 600; line-height: 1.35;
 }

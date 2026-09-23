@@ -28,6 +28,11 @@ body {
 }
 
 a { color: var(--accent-text); text-decoration: none; }
+
+/* 划词选中底色：**全站唯一来源**。
+ * 以前正文用浏览器默认（蓝），而 PDF 文字层另有自己的青绿 → 左右两侧选中色不一样（用户报过）。
+ * 只改 background：文字颜色保持原样（PDF 文字层是 `color: transparent`，维持字形由画布提供）。 */
+::selection { background: var(--selection-bg); }
 a:hover { text-decoration: underline; }
 h1, h2, h3, h4 {
   margin: 0 0 .4em; line-height: 1.3; font-weight: 600; font-family: var(--display);

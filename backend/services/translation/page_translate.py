@@ -89,6 +89,17 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
 【前文衔接】prompt 里可能给出**已经处理过的前文结尾**：只用它保持术语、句式、段落衔接一致
 （尤其是段落跨页的情况），**不要把它重复输出到本次结果里**。
 
+【跨页衔接（三 条硬规则，页尾/页首最容易出错）】
+1. **译文里禁止保留断词连字符**：页尾原文被版面折断成 `communication bot-` 这种，是**折行**不是连字符词；
+   译文写完整词（→「通信瓶颈」），不许写成「通信瓶-」或半截词。
+2. **本页首块若是上一页句子的延续，直接续译成完整通顺的中文**：
+   不要用「……」/「…」/「（承接上页）」之类的占位或标记开头，也不要重译上一页已经翻过的内容。
+3. 搭接块（【下一页开头】）**只用于理解句子怎么接下去**：
+   - 原文转录（original_md）仍**只转录本页页图能看到的内容**，不要把搭接块抄进来；
+   - 但译文可以据它把页尾的半截词补成完整词。
+4. **标记不许跨页悬空**：若上一页把 `*`（斜体/加粗）或 `$$` 打开却没闭合，本页首块要把标记补齐成对；
+   本页末尾同理 —— 宁可把标记收在本页，也不要留给下一页一个孤立的 `*` 或 `$$`。
+
 【输出格式】只输出一个 JSON 对象，不要解释、不要代码块：
 {"original_md": "……", "translation_md": "……"}"""
 
@@ -98,7 +109,7 @@ PAGE_USER_TEMPLATE = """{prefix}{previous}
 【解析器抽出的本页文本（**仅供参考**；与页图冲突时以页图为准）】
 <页面文本>
 {body}
-</页面文本>
+</页面文本>{lookahead}
 
 【本页输出】按系统提示输出 JSON：original_md 为忠实转录（一切以页图显示的内容为准，
 表格逐格照抄、图注编号与页图一致），translation_md 为逐块对应的中文译文。"""
@@ -282,13 +293,129 @@ def prefix_hash(prefix: str) -> str:
     return sha256_text(prefix or "")[:16]
 
 
+# --------------------------------------------------------------------------
+# 跨页衔接（页尾断词 / 断句 / 下页续句）
+# --------------------------------------------------------------------------
+
+
+def page_lookahead(paper_id: str, page: int, *, lines: int = 6,
+                   max_chars: int = 1200) -> str:
+    """**下一页开头**的原文片段，作为"仅上下文"塞进本页 prompt。
+
+    为什么需要：页尾被版面折断时（`communication bot-` | `tlenecks …`），只看本页的
+    模型无法知道 `bot-` 是什么词，只能照抄半截；把下一页开头给它，它就能把**译文**里的
+    词补全（原文转录仍严格只写本页页图内容）。
+    """
+    try:
+        body, _section = page_source_text(paper_id, page + 1)
+    except Exception:  # noqa: BLE001  最后一页 / 索引缺失都不值得中断翻译
+        return ""
+    picked: list[str] = []
+    size = 0
+    for line in (body or "").split("\n"):
+        text = line.strip()
+        if not text:
+            continue
+        picked.append(text)
+        size += len(text)
+        if len(picked) >= lines or size >= max_chars:
+            break
+    if not picked:
+        return ""
+    return ("【下一页开头（**仅上下文**：只用来理解本页末尾的句子/断词怎么接下去，"
+            "**不要把这里的内容输出**）】\n<下一页文本>\n" + "\n".join(picked) + "\n</下一页文本>")
+
+
+#: 句末标点（含数理论文里的证毕号 □）：页尾见到这些就不算"半句"
+_TERMINAL_PUNCT = tuple(".。!！?？:：;；\"')）】”`…□■▪")
+_BREAK_TYPES = ("formula", "table", "code")     # 页尾/页首是这些块 → 不按"断句"处理
+
+
+def _page_text_blocks(paper_id: str, page: int) -> list[dict]:
+    """该页的块（按阅读顺序），用于判断页尾/页首是正文还是公式表格。"""
+    from backend.services.paper import reader_service
+
+    index = reader_service.load_block_index(paper_id)      # 内部有 mtime 缓存
+    rows = [b for b in (index.get("blocks") or [])
+            if int(b.get("page") or 0) == int(page) and (b.get("text") or "").strip()]
+    rows.sort(key=lambda b: b.get("order") or 0)
+    return rows
+
+
+def page_continuity(paper_id: str, page: int) -> dict:
+    """判断本页与**上/下页**之间是否"跨页续句 / 断词"，返回 ``{head, tail}``。
+
+    判据只用**解析器的原文**（确定性、与并发顺序无关），并且要两侧同时成立才认：
+    - ``tail``：本页末块以连字符结尾，或"末块不以句末标点收尾 **且** 下页首块小写起头"；
+    - ``head``：本页首块小写起头，或上页末块以连字符结尾（断词正好落在页边界）。
+    页尾/页首是公式、表格、伪代码时一律不判 —— 那时不存在"句子被切断"的问题
+    （实测 p16→p17 的"…lower bound. □ | ## B.2 …"就是被启发式误报的那类）。
+    """
+    head_blocks = _page_text_blocks(paper_id, page)
+    prev_blocks = _page_text_blocks(paper_id, page - 1)
+    next_blocks = _page_text_blocks(paper_id, page + 1)
+
+    def is_text(block: dict | None) -> bool:
+        return bool(block) and (block.get("type") or "para") not in _BREAK_TYPES
+
+    head = head_blocks[0] if head_blocks else None
+    prev_tail = prev_blocks[-1] if prev_blocks else None
+    next_head = next_blocks[0] if next_blocks else None
+
+    head_text = (head or {}).get("text", "").strip()
+    prev_text = (prev_tail or {}).get("text", "").strip()
+    next_text = (next_head or {}).get("text", "").strip()
+    ends_hyphen = prev_text.endswith(("-", "‐", "–"))       # 断词正好落在页边界
+    starts_lower = bool(head_text) and head_text[:1].islower()
+
+    head_continues = bool(
+        is_text(head)
+        and ((starts_lower and is_text(prev_tail)) or (ends_hyphen and starts_lower))
+    )
+
+    this_tail = head_blocks[-1] if head_blocks else None
+    tail_text = (this_tail or {}).get("text", "").strip()
+    tail_continues = bool(
+        is_text(this_tail) and is_text(next_head) and tail_text and next_text
+        and (tail_text.endswith(("-", "‐", "–"))
+             or (next_text[:1].islower() and not tail_text.endswith(_TERMINAL_PUNCT)))
+    )
+    return {"head": head_continues, "tail": tail_continues}
+
+
+#: 续句开头常见的占位噪声（模型被"页尾半截"误导时会写这些）
+_LEAD_JUNK = re.compile(r"^\s*(?:（?承?接上页）?|\(?承?接上页\)?|【接上页】|…+|\.{2,}|—{2,}|–\s*)+")
+
+
+def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
+    """把跨页衔接标到行上，并清掉续句开头/断词结尾的噪声（**只动译文**）。
+
+    - 首行 ``continued_from_prev``：译文去掉「……」/「（承接上页）」这类占位——
+      它们正是"模型知道被切断、却被契约禁止补全"留下的痕迹（实测 p002-00 就是「……在加速器上…」）。
+    - 末行 ``continues``：译文去掉结尾悬空的连字符（实测「通信瓶-」）。
+      屏幕上的合并显示由前端负责（上页末行的译文让位给下页的完整句）。
+    """
+    if not rows:
+        return
+    if head:
+        rows[0]["continued_from_prev"] = True
+        rows[0]["translation"] = _LEAD_JUNK.sub("", str(rows[0].get("translation") or "")).lstrip()
+    if tail:
+        rows[-1]["continues"] = True
+        rows[-1]["translation"] = re.sub(
+            r"[-\u2010\u2013\u2014]\s*$", "", str(rows[-1].get("translation") or "")
+        ).rstrip()
+
+
 def render_page_prompt(*, page: int, page_total: int, body: str,
-                       prefix: str = "", section: str = "", previous: str = "") -> str:
+                       prefix: str = "", section: str = "", previous: str = "",
+                       lookahead: str = "") -> str:
     section_line = f"；章节：{section}" if section else ""
     return PAGE_USER_TEMPLATE.format(
         prefix=prefix, previous=f"\n\n{previous}" if previous else "",
         page=page, page_total=page_total,
         section_line=section_line, body=body or "（解析器没有抽到文本，请完全依据页图）",
+        lookahead=f"\n\n{lookahead}" if lookahead else "",
     )
 
 
