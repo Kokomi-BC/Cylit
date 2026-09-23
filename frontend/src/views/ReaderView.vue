@@ -1194,7 +1194,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       </div>
 
       <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务（可整体折叠） ============ -->
-      <aside class="reader-aside" v-if="asideVisible">
+      <aside class="reader-aside">
         <div class="side-tabs">
           <button
             v-for="t in SIDE_TABS"
@@ -1356,14 +1356,15 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 <style scoped>
 .reader {
   display: grid;
-  /* **左右栏已合并**：只有"侧栏 + 正文"两列，正文因此更宽（对照时两侧都更好读） */
-  grid-template-columns: 300px minmax(0, 1fr);
+  /* **左右栏已合并**：只有"侧栏 + 正文"两列，正文因此更宽（对照时两侧都更好读）。
+     第一列用 auto：宽度由侧栏自己的 width 决定 —— width 过渡是全浏览器都支持的，
+     （直接过渡 grid-template-columns 在含 minmax(0,1fr) 时 Chrome 会"启动但不插值"，实测卡死） */
+  grid-template-columns: auto minmax(0, 1fr);
   /* 关键：两行必须显式声明。否则内容行会被内容撑高，侧栏自身不滚、整页跟着滚。 */
   grid-template-rows: auto minmax(0, 1fr);
   height: calc(100vh - var(--header-h));
   overflow: hidden;
 }
-.reader.no-aside { grid-template-columns: minmax(0, 1fr); }
 
 .reader-toolbar {
   grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -1390,6 +1391,20 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .reader-aside {
   border-right: 1px solid var(--border); background: var(--bg-elev);
   overflow: hidden; display: flex; flex-direction: column;
+  width: 300px;                        /* 展开宽度（收起时过渡到 0） */
+  transition: width .24s cubic-bezier(.4, 0, .2, 1), opacity .18s ease,
+              border-right-width .24s ease, border-right-color .24s ease;
+}
+@media (min-width: 1101px) {
+  /* 收起/展开期间侧栏**只被裁掉、不跟着变窄**：内容保持展开宽度。
+     不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，
+     又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。 */
+  .reader-aside > * { min-width: 300px; }
+  /* 收起：宽度收到 0 + 内容轻微左移淡出；右侧 1px 分隔线宽度与颜色一起收掉（否则会留一条竖线） */
+  .reader.no-aside .reader-aside {
+    width: 0; border-right-width: 0; opacity: 0; transform: translateX(-10px);
+    border-right-color: transparent; pointer-events: none;
+  }
 }
 /* 侧栏页签：**图标 + 文字**（只用图标不直观）；窄栏时自动两行排布 */
 .side-tabs {
@@ -1415,11 +1430,18 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
 @media (max-width: 1100px) {
   .reader, .reader.no-aside { grid-template-columns: minmax(0, 1fr); }
-  .reader-aside { display: none; }
-  .reader.mobile-aside .reader-aside {
-    display: flex; flex-direction: column; position: fixed; top: var(--header-h); bottom: 0; z-index: 60;
+  /* 窄屏侧栏是**抽屉**：一直在 DOM 里，靠 transform 滑入滑出（display 切换没法做动画） */
+  .reader-aside {
+    position: fixed; top: var(--header-h); bottom: 0; z-index: 60;
     left: 0; width: min(360px, 88vw); box-shadow: var(--shadow-2);
+    transform: translateX(-102%); visibility: hidden;
+    transition: transform .24s cubic-bezier(.4, 0, .2, 1), visibility .24s;
   }
+  .reader.mobile-aside .reader-aside { transform: none; visibility: visible; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader, .reader-aside { transition: none; }
 }
 
 @media print {

@@ -62,8 +62,7 @@ function splitLabel(latex: string): { label: string; body: string } {
 /** 列表项（顺手把要显示/复制的内容算好，模板里不再重复解析）。 */
 const rows = computed(() => filtered.value.map((f) => {
   const { label, body } = splitLabel(f.latex);
-  const ctx = splitLabel(f.context || '').body;
-  return { ...f, label, body, context: ctx };
+  return { ...f, label, body };
 }));
 </script>
 
@@ -87,10 +86,10 @@ const rows = computed(() => filtered.value.map((f) => {
     <div v-else-if="!filtered.length" class="empty small">这一篇还没有可提取的公式</div>
 
     <div v-for="f in rows" :key="f.id" class="fitem">
+      <!-- 页码放最左侧（用户要求）：先扫页码，再看公式名；「行间/行内」胶囊已去掉（上面有分组筛选）。 -->
       <div class="row tiny">
-        <span class="badge">{{ f.display ? '行间' : '行内' }}</span>
+        <span class="faint fpage">p{{ f.page }}</span>
         <span v-if="f.label" class="badge dim" :title="`论文里这条公式的名字：${f.label}`">{{ f.label }}</span>
-        <span class="faint">p{{ f.page }}</span>
         <span class="spacer" />
         <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
           <AppIcon name="copy" :size="13" />
@@ -105,14 +104,18 @@ const rows = computed(() => filtered.value.map((f) => {
         </button>
       </div>
       <div class="fbody" :class="{ display: f.display }" v-html="latexToHtml(f.body, f.display)" />
-      <div v-if="f.context" class="fctx tiny faint" :title="f.context">{{ f.context }}</div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .fl { display: flex; flex-direction: column; gap: 6px; }
-.fl-bar { position: sticky; top: 0; z-index: 2; background: var(--bg-elev); padding-bottom: 4px; }
+/* top: -8px 吸收滚动容器的 padding-top：否则 sticky 栏头上会留 8px 缝，
+   下面的公式正好从缝里露出半行（用户截图报过）。负数 offset 是 sticky 允许的。 */
+.fl-bar {
+  position: sticky; top: -8px; z-index: 2; padding: 8px 0 4px;
+  background: var(--bg-elev);
+}
 .fitem {
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-layer); padding: 6px 8px;
@@ -121,5 +124,7 @@ const rows = computed(() => filtered.value.map((f) => {
 /* 窄栏里居中会让超长公式"看着被切"；左对齐从行首开始读，需要时横向滚动。 */
 .fbody.display { text-align: left; }
 .fbody :deep(.katex) { font-size: 1.02em; }
-.fctx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 页码不许折行（窄栏里 "p3" 曾被拆成两行，看着像错位）；标签过长则省略，别把按钮挤出去 */
+.fpage { white-space: nowrap; }
+.fitem .badge.dim { max-width: 116px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

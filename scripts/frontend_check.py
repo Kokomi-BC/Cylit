@@ -143,12 +143,14 @@ f.addEventListener('load', () => setTimeout(() => {
       overflowing: over.slice(0, 8),
     });
   };
-  // 窄屏（<1100px）时侧栏是**抽屉**：默认收起，DOM 里根本没有 .reader-aside（v-if）。
-  // 那是设计行为（A2-5：单栏退化 + 抽屉），所以先点一下工具栏的开关再断言它真的渲染出来了。
-  const closedNarrow = !d.querySelector('.reader-aside') && !!d.querySelector('[data-aside-toggle]');
-  if (closedNarrow) {
-    d.querySelector('[data-aside-toggle]').click();
-    setTimeout(() => { collectOverflow(); report(true); }, 600);
+  // 侧栏有两种收起形态：窄屏是**抽屉**（靠 transform 移出屏幕），宽屏是**宽度收 0**。
+  // 两种都不是“没渲染”（aside 一直在 DOM 里，否则做不了过渡），所以判据改成“看不见就点开”。
+  const asideRect = (() => { const a = d.querySelector('.reader-aside'); return a ? a.getBoundingClientRect() : null; })();
+  const asideOpen = !!asideRect && asideRect.width > 40 && asideRect.right > 0;
+  if (!asideOpen) {
+    d.querySelector('[data-aside-toggle]')?.click();
+    // 开合动画 240ms，留足时间再断言
+    setTimeout(() => { collectOverflow(); report(true); }, 700);
   } else {
     collectOverflow();
     report(false);

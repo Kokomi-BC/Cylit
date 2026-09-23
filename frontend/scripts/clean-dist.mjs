@@ -13,9 +13,14 @@
  * 1) 递归**逐个文件**删除（一个文件删不掉不影响其它文件），删不掉的单独记下来重试；
  * 2) 自底向上删空目录（`dist/assets` 作为某个进程的 cwd 时删不掉也没关系：里面已经空了）；
  * 3) 仍有删不掉的文件时给出明确排查提示，但**不中断构建**（dist 里最多留点旧文件）。
+ *
+ * ⚠️ 删文件必须用 `unlinkSync`，删空目录必须用 `rmdirSync` —— **`rmSync` 在本项目的 Windows 环境下
+ * 会"静默失败"**（不抛错、也不删）：实测反复 `rmSync(file, {maxRetries})` 后文件依然在。
+ * 后果就是每轮构建的"清 dist"都是空操作，dist/assets 里攒到 **753 个孤儿哈希文件**（每改一行 CSS
+ * 就多几个），排查时很迷惑。换成 unlinkSync 后一次就清干净了。
  */
 
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,7 +58,7 @@ for (let round = 1; round <= ROUNDS; round += 1) {
   stuck = [];
   for (const f of files) {
     try {
-      rmSync(f, { maxRetries: 3, retryDelay: 100 });
+      unlinkSync(f);
       removed += 1;
     } catch {
       stuck.push(f);
@@ -61,7 +66,7 @@ for (let round = 1; round <= ROUNDS; round += 1) {
   }
   for (const d of dirs) {
     try {
-      rmSync(d, { recursive: false });
+      rmdirSync(d);
     } catch {
       /* 目录自身删不掉（多半是某个进程的 cwd）——里面已经空了，忽略 */
     }
