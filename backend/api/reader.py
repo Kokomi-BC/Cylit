@@ -7,9 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.api.response import envelope
 from backend.core.events import (
-    EVENT_ANNOTATION, EVENT_BLOCK_TRANSLATED, EVENT_PAGE_TRANSLATED,
-    EVENT_PAPER_STATUS, EVENT_PDF_PAGE_DONE, EVENT_RAG_TOKEN, EVENT_TASK_PROGRESS,
-    bus,
+    EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus,
 )
 from backend.services.paper import reader_service
 
@@ -110,41 +108,21 @@ async def put_progress(paper_id: str, request: Request, payload: dict = Body(...
 # SSE（规划 §20：block_translated / pdf_page_done / task_progress / rag_token）
 # --------------------------------------------------------------------------
 
-ALL_EVENTS = {EVENT_PAGE_TRANSLATED, EVENT_BLOCK_TRANSLATED, EVENT_PDF_PAGE_DONE,
-              EVENT_TASK_PROGRESS, EVENT_RAG_TOKEN, EVENT_PAPER_STATUS,
-              EVENT_ANNOTATION}
-
-
-@router.get("/events/stream")
-async def events_stream(request: Request,
-                        topic: str = Query("global"),
-                        since_seq: int = Query(0),
-                        types: str | None = Query(None, description="逗号分隔的事件类型过滤"),
-                        heartbeat: float = Query(15.0)):
-    """通用 SSE 流（任务进度 / 译文 / 批注）。"""
-    wanted = {t.strip() for t in types.split(",") if t.strip()} if types else None
-    if topic not in ("global", "tasks", "papers", "rag"):
-        topic = "global"
-    generator = bus.stream(topic, since_seq=since_seq, heartbeat=heartbeat,
-                           wanted=wanted)
-    return StreamingResponse(
-        generator, media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                 "Connection": "keep-alive"},
-    )
-
-
 @router.get("/papers/{paper_id}/translations/stream")
 async def translation_stream(paper_id: str, request: Request,
                              since_seq: int = Query(0),
                              heartbeat: float = Query(15.0)):
-    """产线 A 逐页译文流（前端 LiveUpdater 订阅，规划 §22 关键点 2）。"""
+    """产线 A 逐页译文流（前端 LiveUpdater 订阅，规划 §22 关键点 2）。
+
+    只发 `page_translated`（逐页译文）与 `paper_status`（整篇状态）。
+    旧版逐块事件 `block_translated` 已删除：页级翻译上线后它没有任何发布方，
+    前端也没在用（保留只是让白名单多一个永远收不到的字符串）。
+    """
 
     async def filtered():
         async for frame in bus.stream("papers", since_seq=since_seq,
                                       heartbeat=heartbeat,
                                       wanted={EVENT_PAGE_TRANSLATED,
-                                              EVENT_BLOCK_TRANSLATED,
                                               EVENT_PAPER_STATUS}):
             if paper_id in frame:
                 yield frame

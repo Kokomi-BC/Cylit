@@ -12,8 +12,9 @@ from backend.providers.generation.mock import MockGeneration
 from backend.services.translation.brief import DocumentBrief
 from backend.services.translation.page_translate import (
     PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
-    build_stable_prefix, call_page, effective_max_tokens, next_max_tokens,
-    pair_rows, parse_pair, prefix_hash, render_page_prompt, split_blocks,
+    build_stable_prefix, call_page, effective_max_tokens, history_context,
+    next_max_tokens, pair_rows, parse_pair, prefix_hash, render_page_prompt,
+    split_blocks,
 )
 
 PAGE_MD = """# TurboQuant: Online Vector Quantization
@@ -76,6 +77,104 @@ def test_render_page_prompt_carries_body_and_json_contract():
 def test_render_page_prompt_without_text_says_use_image():
     prompt = render_page_prompt(page=1, page_total=1, body="")
     assert "请完全依据页图" in prompt
+
+
+def test_stable_prefix_carries_outline_skeleton():
+    """骨架在稳定前缀里（前缀缓存仍然命中），且跟着简报/术语表。"""
+    brief = DocumentBrief(paper_id="p", domain="向量量化")
+    skeleton = "【全文标题骨架】\n# 1 EXPERIMENTS\n## 1.1 EMPIRICAL VALIDATION"
+    prefix = build_stable_prefix(brief, "- quantization → 量化", skeleton=skeleton)
+    assert "1 EXPERIMENTS" in prefix and prefix.endswith(skeleton)
+    # 不传骨架时不能多出一段空行
+    assert build_stable_prefix(brief, "- quantization → 量化") == build_stable_prefix(
+        brief, "- quantization → 量化", skeleton="")
+
+
+def test_render_page_prompt_carries_previous_context():
+    prompt = render_page_prompt(page=6, page_total=22, body="Body.",
+                                previous="【前文结尾】上一页的最后一句")
+    assert "上一页的最后一句" in prompt
+    # 前文必须在【本页】之前（前缀缓存的稳定段在前、动态段在后）
+    assert prompt.index("上一页的最后一句") < prompt.index("【本页】")
+    assert "上一页的最后一句" not in render_page_prompt(page=6, page_total=22, body="Body.")
+
+
+def test_history_context_is_complete_and_append_only(tmp_path):
+    """前文必须**完整**（第 1..N-1 页整页）且**追加式**（升序、模板逐字相同、表头不带页码）。"""
+    store = PageStore("p", tmp_path / PAGES_FILENAME)
+    for page in (1, 2, 3):
+        store.put(page, build_page_payload(
+            page=page, page_total=4,
+            result=_result(original=f"ORIGINAL-OF-PAGE-{page}",
+                           translation=f"TRANSLATION-OF-PAGE-{page}"),
+            source_chars=10))
+
+    text = history_context(store, "p", 4)
+    for page in (1, 2, 3):                                  # 完整：前几页一个不少
+        assert f"ORIGINAL-OF-PAGE-{page}" in text
+        assert f"TRANSLATION-OF-PAGE-{page}" in text
+    assert text.index("PAGE-1") < text.index("PAGE-2") < text.index("PAGE-3")   # 升序
+    assert "不要" in text and "完整内容" in text
+    assert history_context(store, "p", 1) == ""             # 第一页没有前文
+
+
+def test_next_page_prompt_extends_the_previous_one(tmp_path):
+    """缓存命中的充要条件：第 N+1 页的 prompt 以第 N 页的"稳定前缀 + 历史"开头。
+
+    这是本设计的核心性质 —— 历史只要完整且逐页追加，前文就全部命中前缀缓存；
+    一旦改成"最近几页的尾巴"或让表头带上页码，公共前缀会被截断，缓存就白丢。
+    """
+    store = PageStore("p", tmp_path / PAGES_FILENAME)
+    for page in (1, 2, 3):
+        store.put(page, build_page_payload(
+            page=page, page_total=4,
+            result=_result(original=f"原始第{page}页", translation=f"译文第{page}页"),
+            source_chars=10))
+
+    prefix = build_stable_prefix(DocumentBrief(paper_id="p", domain="向量量化"),
+                                 "- quantization → 量化", skeleton="【全文标题骨架】\n# 1 EXPERIMENTS")
+
+    def prompt(page_no: int) -> str:
+        return render_page_prompt(page=page_no, page_total=4, body=f"本页正文{page_no}",
+                                  prefix=prefix,
+                                  previous=history_context(store, "p", page_no))
+
+    p3, p4 = prompt(3), prompt(4)
+    history_of_3 = history_context(store, "p", 3)     # 第 3 页看到的历史（第 1~2 页）
+    head = prefix + "\n\n" + history_of_3
+    assert p3.startswith(head) and p4.startswith(head)
+    # 下一句：第 3 页的**整页内容**又成为第 4 页历史的一部分（追加式）
+    assert history_context(store, "p", 4).endswith(
+        "<第 3 页｜译文>\n译文第3页\n</第 3 页｜译文>")
+
+
+def test_history_context_stops_at_the_first_gap(tmp_path):
+    """并发场景：只取紧邻且连续完成的页，遇到缺口就停（避免"缺一页"的错位拼接）。"""
+    store = PageStore("p", tmp_path / PAGES_FILENAME)
+    for page in (1, 3, 4):        # 第 2 页还没落盘
+        store.put(page, build_page_payload(
+            page=page, page_total=5,
+            result=_result(original=f"原始第{page}页", translation=f"译文第{page}页"),
+            source_chars=10))
+
+    text = history_context(store, "p", 5)
+    assert "原始第4页" in text and "原始第3页" in text
+    assert "原始第1页" not in text     # 被缺口（第 2 页）挡住
+
+
+def test_history_context_has_overflow_guard(tmp_path):
+    """超长论文的兜底：超上限就从**最早的页**开始丢，保住最近的内容。"""
+    store = PageStore("p", tmp_path / PAGES_FILENAME)
+    for page in (1, 2, 3, 4):
+        store.put(page, build_page_payload(
+            page=page, page_total=5,
+            result=_result(original="x" * 4000 + f" tail-of-page{page}", translation=f"译文{page}"),
+            source_chars=10))
+
+    text = history_context(store, "p", 5, max_chars=4200)
+    assert "tail-of-page4" in text
+    assert "tail-of-page1" not in text
+    assert len(text) < 4200 + 120                          # 表头 + 溢出裁剪后的正文
 
 
 # --------------------------------------------------------------------------

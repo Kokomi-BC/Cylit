@@ -116,22 +116,38 @@ f.addEventListener('load', () => setTimeout(() => {
     return false;
   };
   const over = [];
-  d.querySelectorAll('body *').forEach((el) => {
-    if (el.tagName === 'svg' || el.closest('svg')) return;
-    const b = el.getBoundingClientRect();
-    if (b.right > w.innerWidth + 1 && !clippedByAncestor(el)) {
-      over.push(el.tagName + '.' + String(el.className).slice(0, 24) + ' right=' + Math.round(b.right));
-    }
-  });
-  document.getElementById('out').textContent = JSON.stringify({
-    viewport: [w.innerWidth, w.innerHeight],
-    docScroll: [d.documentElement.scrollWidth, d.documentElement.scrollHeight],
-    panel: box('.reader-aside'),
-    panelBody: box('.reader-aside .toc') || box('.reader-aside .panel-body'),
-    aside: box('.reader-aside'),
-    reader: box('.reader'),
-    overflowing: over.slice(0, 8),
-  });
+  const collectOverflow = () => {
+    over.length = 0;
+    d.querySelectorAll('body *').forEach((el) => {
+      if (el.tagName === 'svg' || el.closest('svg')) return;
+      const b = el.getBoundingClientRect();
+      if (b.right > w.innerWidth + 1 && !clippedByAncestor(el)) {
+        over.push(el.tagName + '.' + String(el.className).slice(0, 24) + ' right=' + Math.round(b.right));
+      }
+    });
+  };
+  const report = (drawer) => {
+    document.getElementById('out').textContent = JSON.stringify({
+      viewport: [w.innerWidth, w.innerHeight],
+      docScroll: [d.documentElement.scrollWidth, d.documentElement.scrollHeight],
+      panel: box('.reader-aside'),
+      panelBody: box('.reader-aside .toc') || box('.reader-aside .panel-body'),
+      aside: box('.reader-aside'),
+      reader: box('.reader'),
+      drawer,
+      overflowing: over.slice(0, 8),
+    });
+  };
+  // 窄屏（<1100px）时侧栏是**抽屉**：默认收起，DOM 里根本没有 .reader-aside（v-if）。
+  // 那是设计行为（A2-5：单栏退化 + 抽屉），所以先点一下工具栏的开关再断言它真的渲染出来了。
+  const closedNarrow = !d.querySelector('.reader-aside') && !!d.querySelector('[data-aside-toggle]');
+  if (closedNarrow) {
+    d.querySelector('[data-aside-toggle]').click();
+    setTimeout(() => { collectOverflow(); report(true); }, 600);
+  } else {
+    collectOverflow();
+    report(false);
+  }
 }, __WAIT__));
 </script>
 """
@@ -335,9 +351,12 @@ def main() -> int:
                     if panel and panel[3] > vh + 1:
                         problems.append(f"侧栏超出视口底部（{panel[3]} > {vh}）")
                     if not data.get("panel") or not data.get("panelBody"):
-                        problems.append("侧栏/侧栏内容未渲染")
+                        problems.append("侧栏/侧栏内容未渲染（抽屉也没能展开？）")
                     ok = not problems
-                    detail = "整屏无滚动、侧栏在视口内" if ok else "；".join(problems)
+                    if ok and data.get("drawer"):
+                        detail = "整屏无滚动、窄屏抽屉可展开"
+                    else:
+                        detail = "整屏无滚动、侧栏在视口内" if ok else "；".join(problems)
                 failures += 0 if ok else 1
                 results.append({"kind": "layout", "path": label, "ok": ok, "detail": detail})
                 print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")

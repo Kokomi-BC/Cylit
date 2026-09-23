@@ -604,7 +604,7 @@ async function pollTranslations() {
 
 useEventStream({
   url: sseUrl(`/papers/${paperId.value}/translations/stream`),
-  events: ['page_translated', 'block_translated', 'paper_status'],
+  events: ['page_translated', 'paper_status'],
   onEvent: (name, frame) => {
     const payload = frame?.payload ?? {};
     if (name === 'page_translated') applyPage(payload);
@@ -999,9 +999,10 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
     >
       <!-- ============ 工具栏 ============ -->
       <div class="reader-toolbar">
-        <!-- 最左：侧栏开合（返回论文库已上提到全局页头） -->
+        <!-- 最左：侧栏开合（返回论文库已上提到全局页头）；`data-aside-toggle` 供自检脚本使用 -->
         <button
           class="btn icon"
+          data-aside-toggle
           :title="asideVisible ? '收起侧栏（[）' : '展开侧栏（[）'"
           :aria-pressed="asideVisible"
           @click="toggleAside"

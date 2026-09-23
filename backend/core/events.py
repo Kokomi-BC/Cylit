@@ -15,11 +15,12 @@ from typing import Any, AsyncIterator
 from backend.core.utils import json_dumps, now_iso
 
 # 规划 §20 定义的事件类型
+# ⚠️ 已删除 `block_translated`（旧版逐块译文）：页级翻译上线后就没有任何发布方，
+#    SSE 走的是 `page_translated`。块级那套的其它残留见 docs/进度.md §16。
 EVENT_PAGE_TRANSLATED = "page_translated"     # 产线 A 逐页译文（页级粒度）
-EVENT_BLOCK_TRANSLATED = "block_translated"   # 旧版逐块译文（保留兼容）
-EVENT_PDF_PAGE_DONE = "pdf_page_done"         # 产线 B 逐页
+EVENT_PDF_PAGE_DONE = "pdf_page_done"         # 产线 B 逐页（未实现，占位）
 EVENT_TASK_PROGRESS = "task_progress"
-EVENT_RAG_TOKEN = "rag_token"
+EVENT_RAG_TOKEN = "rag_token"                 # RAG 流式（未实现，占位）
 EVENT_PAPER_STATUS = "paper_status"
 EVENT_ANNOTATION = "annotation_created"
 

@@ -29,8 +29,6 @@ from backend.core.config import get_settings
 from backend.core.errors import ValidationError
 from backend.core.events import EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus
 from backend.core.logging import get_logger
-from backend.repositories.mysql.models import Block
-from backend.repositories.mysql.session import session_scope
 from backend.services.model.model_manager import model_manager
 from backend.services.paper import paper_service, reader_service
 from backend.services.task.scheduler import (
@@ -38,9 +36,10 @@ from backend.services.task.scheduler import (
 )
 from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
-    PAGES_FILENAME, PageStore, build_stable_prefix, call_page,
-    build_page_payload, effective_max_tokens, list_pages, load_page_image,
-    next_max_tokens, page_source_text, prefix_hash, render_page_prompt,
+    CONTEXT_MAX_CHARS, PAGES_FILENAME, PageStore, build_outline_skeleton,
+    build_stable_prefix, call_page, build_page_payload, effective_max_tokens,
+    history_context, list_pages, load_page_image, next_max_tokens, page_source_text,
+    prefix_hash, render_page_prompt,
 )
 
 log = get_logger(__name__)
@@ -159,8 +158,15 @@ def run_translate_task(ctx) -> dict:
                          brief.domain[:40], len(brief.glossary), brief.source)
         except Exception as exc:  # noqa: BLE001
             log.warning("文档简报生成失败，退化为无简报模式：%s", exc)
-    prefix = build_stable_prefix(brief, glossary_text(load_glossary(paper_id)))
+    # 稳定前缀：简报 + 术语表 + **全文标题骨架**。三者都对整篇不变，所以前缀缓存仍然命中；
+    # 骨架让模型对"编号 → 层级"有统一依据（否则每页各自猜 # 深度，同一层级在全文不一致）。
+    skeleton = build_outline_skeleton(paper_id, store)
+    prefix = build_stable_prefix(brief, glossary_text(load_glossary(paper_id)), skeleton=skeleton)
     prefix_sha = prefix_hash(prefix)
+    use_context = params.get("context", True) is not False
+    context_chars = int(params.get("context_chars") or CONTEXT_MAX_CHARS)
+    if skeleton:
+        log.info("标题骨架就绪：%d 行；前文历史上限 %d 字", skeleton.count("\n"), context_chars)
 
     scheduler = AdaptiveScheduler(SchedulerConfig(
         initial=s.translate_concurrency,
@@ -190,7 +196,6 @@ def run_translate_task(ctx) -> dict:
         with cursor_lock:
             done.add(page_no)
             ctx.set_cursor(done_pages=sorted(done), total_all=page_total)
-        _mark_blocks_translated(paper_id, page_no)
         bus.publish("papers", EVENT_PAGE_TRANSLATED, {
             "paper_id": paper_id, "page": page_no, "page_total": page_total,
             "rows": payload.get("rows") or [],
@@ -204,8 +209,12 @@ def run_translate_task(ctx) -> dict:
     def process(page_no: int) -> None:
         nonlocal max_tokens_current
         source, section = page_source_text(paper_id, page_no)
+        # 完整前文（第 1..N-1 页）——追加式渲染，与上一页 prompt 共享最长前缀 → 命中前缀缓存
+        history = (history_context(store, paper_id, page_no, max_chars=context_chars)
+                   if use_context else "")
         prompt = render_page_prompt(page=page_no, page_total=page_total,
-                                    body=source, prefix=prefix, section=section)
+                                    body=source, prefix=prefix, section=section,
+                                    previous=history)
         image = load_page_image(paper_id, page_no)
         try:
             result = call_page(provider, prompt, image, max_tokens=max_tokens_current)
@@ -224,6 +233,7 @@ def run_translate_task(ctx) -> dict:
         counters["reasoning_tokens"] += result.reasoning_tokens
         payload = build_page_payload(page=page_no, page_total=page_total,
                                      result=result, source_chars=len(source))
+        payload["prev_context_chars"] = len(history)
         if not payload.get("model"):
             payload["model"] = model_id or ""
         emit(page_no, payload)
@@ -302,17 +312,6 @@ def _current_model_id() -> str | None:
         except Exception:  # noqa: BLE001
             continue
     return None
-
-
-def _mark_blocks_translated(paper_id: str, page_no: int) -> None:
-    """把该页的块标记为"已有译文"（只影响状态显示与对账，不存译文）。"""
-    try:
-        with session_scope() as sess:
-            (sess.query(Block)
-             .filter(Block.paper_id == paper_id, Block.page_no == page_no)
-             .update({"has_translation": True}, synchronize_session=False))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("标记第 %d 页块状态失败：%s", page_no, exc)
 
 
 def _finish_paper_status(paper_id: str) -> None:

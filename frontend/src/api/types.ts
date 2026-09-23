@@ -75,11 +75,8 @@ export interface Block {
   anchor: string;
   text: string;
   heading_level: number | null;
+  /** 块级译文：页级时代只有历史产物里才有（新论文一律空串），用于未翻译页退回解析块时的占位 */
   translation: string;
-  translation_status: string | null;
-  translation_revision: number;
-  translation_confidence: number | null;
-  has_translation: boolean;
   content_hash: string | null;
   section: string | null;
   formula?: FormulaCard;

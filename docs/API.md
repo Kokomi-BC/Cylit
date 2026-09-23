@@ -132,13 +132,15 @@ heading_level / translation / translation_status / translation_revision / formul
 | `mode` | `resume` | `resume` = 只翻还没有产物的页（断点续跑）；`retranslate` = 忽略已有产物全部重来（旧值 `retry_failed` 仍接受，按 `resume` 处理） |
 | `force` | `false` | 强制重来（等价于 `retranslate`，且不复用进行中的同类任务） |
 | `brief` | `true` | 文档简报（每篇 1 次调用，固化术语）；`false` 省一次调用但术语一致性下降 |
+| `context` | `true` | 是否把**完整前文**（第 1..N-1 页原文+译文）放进本页 prompt（连贯记忆 + 前缀缓存） |
+| `context_chars` | `2000000` | 前文长度上限（**仅护栏**：目标模型窗口 1M token，正常论文不截断） |
 | `pages` | 无 | 只翻指定页（如 `[3,4]`），重跑个别页用 |
 
 **粒度**：只有 `page`（一页一次调用）。调用输入 = 该页**页图（PNG，150dpi）** + 解析器抽出的
-页内文本 + 稳定前缀（简报 + 术语表）；输出 = `{"original_md", "translation_md"}` 两份**块划分
-一一对应**的 Markdown，再对齐成 `rows` 落盘 `md/pages.json`。
-`granularity` / `block_ids` / `strict_validation` / 回退补译 / 三层缓存**均已删除**
-（`block_translated` 常量仅为兼容保留）。
+页内文本 + 稳定前缀（简报 + 术语表 + **全文标题骨架**）+ **完整前文历史**；输出 = `{"original_md", "translation_md"}`
+两份**块划分一一对应**的 Markdown，再对齐成 `rows` 落盘 `md/pages.json`。
+前文历史必须**完整且逐页追加**（表头不带页码），这样相邻两页的 prompt 共享最长前缀 → 命中前缀缓存；
+`granularity` / `block_ids` / `strict_validation` / 回退补译 / 三层缓存**均已删除**。
 
 **完全信任模型**：不做校验、不做回退补译。思考模式把 `max_tokens` 吃光导致正文为空时，
 按阶梯升档重试（8192 → 16384 → 32768 → 65536），统计 `max_tokens_escalations`。
@@ -163,9 +165,11 @@ reasoning_tokens) / elapsed_s / scheduler.* / concurrency_timeline`，可直接�
 
 | 端点 | 事件 |
 |---|---|
-| `GET /api/v1/events/stream?topic=global\|tasks\|papers\|rag&since_seq=&types=` | 通用事件流 |
-| `GET /api/v1/papers/{id}/translations/stream` | `page_translated`（**逐页**译文，payload：`paper_id/page/page_total/rows/align/model/done/total/task_id`）、`paper_status`（`block_translated` 仅保留常量兼容，不再发布） |
+| `GET /api/v1/papers/{id}/translations/stream` | `page_translated`（**逐页**译文，payload：`paper_id/page/page_total/rows/align/model/done/total/task_id`）、`paper_status` |
 | `GET /api/v1/tasks/stream` | `task_progress` |
+
+> 旧版逐块事件 `block_translated` 与通用流 `GET /events/stream` 已删除（前者没有任何发布方，
+> 后者零调用方 —— 前端只用上面两个专用流）。事件总线与 `bus.stream()` 本身保留。
 
 SSE 断线时前端按 `GET /api/v1/papers/{id}/translations?since_page=N` 轮询补齐（按**页**返回）。
 

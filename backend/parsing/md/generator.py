@@ -268,6 +268,23 @@ def heading_level(text: str, font_size: float = 0.0) -> int:
     return heading_level_or_none(text, font_size) or 2
 
 
+def section_depth(number: str, *, unnumbered: int = 1) -> int:
+    """章节编号 → **语义层级**：``1`` → 1、``1.2`` → 2、``B.1`` → 2、``1.2.3.4`` → 4（封顶 4）。
+
+    与 `heading_level_or_none` 的区别（**别混用**）：
+    - `heading_level_or_none` 返回的是 `2 + 点号数`（``1`` → 2 级、``1.1`` → 3 级），那是
+      "标题在版面上一律比正文深一层"的经验值，用来排 Markdown 是可以的，但它**不是章节语义层级**；
+    - 凡是需要"`1` 是顶级、`1.1` 是它的子节"这种判断的地方（目录树、标题骨架、阅读区层级），
+      都应该用本函数，否则同一篇论文会出现两套层级（目录一套、正文一套）。
+
+    无编号的标题（``ABSTRACT`` / ``REFERENCES`` / 附录大标题）按 ``unnumbered``（默认 1 级 = 章节级）。
+    """
+    text = (number or "").strip()
+    if not text:
+        return max(1, min(int(unnumbered or 1), 4))
+    return max(1, min(len(text.split(".")), 4))
+
+
 def _figure_markdown(b: Block) -> str:
     text = (b.text_clean or b.text or "").strip()
     img = b.meta.get("image_rel") if b.meta else None

@@ -20,7 +20,6 @@ from backend.core.logging import get_logger
 from backend.core.utils import json_loads
 from backend.repositories.mysql.models import (
     Annotation, Block, Formula, Highlight, Note, Paper, ReadingProgress, Task,
-    Translation,
 )
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import paper_service
@@ -202,8 +201,6 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                   .order_by(Block.order_global.asc()).all())
         formulas = (sess.query(Formula)
                     .filter(Formula.paper_id == paper_id).all())
-        translations = (sess.query(Translation)
-                        .filter(Translation.paper_id == paper_id).all())
         progress = sess.get(ReadingProgress, (user_id, paper_id))
         annotations = []
         if include_annotations:
@@ -220,9 +217,6 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                  .filter(Task.paper_id == paper_id)
                  .order_by(Task.created_at.desc()).limit(10).all())
 
-        latest_tr: dict[str, Translation] = {}
-        for t in sorted(translations, key=lambda x: (x.version, x.revision)):
-            latest_tr[t.block_id] = t
         f_map = {f.id: f for f in formulas}
 
         out_blocks = []
@@ -231,7 +225,6 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                 continue
             md_node = md_map.get(b.id, {})
             idx_node = indexed.get(b.id, {})
-            tr = latest_tr.get(b.id)
             f = f_map.get(b.id)
             meta = json_loads(b.meta_json, {}) or {}
             # 正文优先取阅读器索引（纯文本），其次 Markdown，最后 MySQL 预览
@@ -248,11 +241,9 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                 "anchor": b.md_anchor or f"blk-{b.id}",
                 "text": text,
                 "heading_level": _heading_level(b, text, idx_node),
+                # 块级译文：页级时代只有历史产物里才有（新论文一律为空字符串）。
+                # 前端拿它做"未翻译页退回解析块"时的占位显示，所以字段保留。
                 "translation": md_node.get("translation") or "",
-                "translation_status": tr.status if tr else None,
-                "translation_revision": tr.revision if tr else 0,
-                "translation_confidence": tr.confidence if tr else None,
-                "has_translation": bool(md_node.get("translation")),
                 "content_hash": b.content_hash,
                 "section": idx_node.get("section") or meta.get("section_title")
                 or b.section_id,
@@ -463,6 +454,10 @@ def build_outline(paper_id: str) -> dict:
 
     返回 ``{items: [扁平], tree: [嵌套], count}``；每项含
     ``block_id / page / level / number / text / text_zh / children``。
+
+    **层级与父子关系由章节编号决定**（``level`` 只作兜底）：产物里的 ``#`` 深度是模型给的、
+    原生页是解析器按字号判定的，两者都不可信，直接拿来建树会把目录挂错、顺序也会乱 ——
+    详见 `_apply_semantic_levels` 与 `_nest_outline`。
     """
     flat: list[dict] = []
     for page_payload in page_translations(paper_id):
@@ -486,26 +481,93 @@ def build_outline(paper_id: str) -> dict:
     if not flat:
         flat = _outline_from_index(paper_id)
 
-    # 嵌套：往上找第一个更浅的标题当父节点；**编号断链时视为顶级**。
-    # 为什么必须有"断链"判断：论文里 "0.1 PROBLEM DEFINITION" 的父标题（0）没被识别出来，
-    # 若不判断就会把它挂到上一个无关的二级标题（如 ABSTRACT）下面 —— 目录语义就错了。
+    _adopt_appendix_letters(flat)
+    has_numbers = _apply_semantic_levels(flat)
+    return {"items": flat, "tree": _nest_outline(flat, has_numbers), "count": len(flat)}
+
+
+def _adopt_appendix_letters(flat: list[dict]) -> None:
+    """让「B MATHEMATICAL PRELIMINARIES」这类**没有编号的附录大标题**认领它的字母。
+
+    为什么需要：附录子节 `B.1 SHANNON…` 的编号能抽出来，父标题 `B MATHEMATICAL PRELIMINARIES`
+    却抽不出来（字母编号只在"带点号"时可靠），于是 `B.1` 会因为"找不到编号为 `B` 的父节点"
+    被甩成顶级 —— 附录子节就不在附录下面了。
+
+    做法是**数据驱动**的：先从 `X.n` 形式的编号里收集"哪些字母真的有子节"（如 {B, C}），
+    再让**以该字母单独成词**开头的标题认领它（`^A …`、`^APPENDIX A …`）。
+    这样 "A NOVEL FRAMEWORK"（没有 A.1 子节）不会被误判成附录 A，
+    ABSTRACT / REFERENCES 也不受影响（首字母后面不是词边界）。
+    """
+    letters = {
+        str(item.get("number") or "").split(".")[0].upper()
+        for item in flat
+        if "." in str(item.get("number") or "") and str(item.get("number") or "")[:1].isalpha()
+    }
+    if not letters:
+        return
+    for item in flat:
+        if str(item.get("number") or "").strip():
+            continue
+        match = re.match(r"^(?:APPENDIX\s+)?([A-Za-z])\b", str(item.get("text") or "").strip())
+        if match and match.group(1).upper() in letters:
+            item["number"] = match.group(1).upper()
+
+
+def _apply_semantic_levels(flat: list[dict]) -> bool:
+    """把每项的 ``level`` 换成**由章节编号推出的语义层级**；返回这篇论文是否有编号体系。
+
+    为什么不能直接信产物里的 ``level``：页级产物的 ``#`` 深度是**模型**写的（原生页由解析器
+    按字号判定），两者都不稳定 —— 实测同一篇论文里 ``1 TURBOQUANT…`` 是 1 级、``2 EXPERIMENTS``
+    却是 2 级、``1.2 INNER-PRODUCT…`` 又是 3 级、``B.1 SHANNON…`` 只有 2 级。层级不可信时，
+    任何"按 level 建树"的算法都会把目录挂错，顺序也就跟着乱。
+    """
+    has_numbers = any(str(item.get("number") or "").strip() for item in flat)
+    from backend.parsing.md.generator import section_depth
+
+    for item in flat:
+        number = str(item.get("number") or "").strip()
+        # 层级 = 编号语义（1 → 1、1.2 → 2、B.1 → 2），与标题骨架 / 阅读区同一套（见 generator.section_depth）
+        item["level"] = section_depth(number) if has_numbers else int(item.get("level") or 1)
+    return has_numbers
+
+def _nest_outline(flat: list[dict], has_numbers: bool) -> list[dict]:
+    """把扁平标题建成树：**编号优先，`level` 兜底**（层级来源见 `_apply_semantic_levels`）。
+
+    规则：
+    - 有编号：父节点 = 前面最近的、编号是本文编号**严格前缀**的标题（`1` 之于 `1.2`、`B` 之于 `B.1`）；
+      找不到父节点（如 `0.1` 而目录里根本没有 `0`）→ 按**顶级**处理。这条"宁可当顶级，
+      也不要挂到上一个无关标题下面"是刻意保留的（否则 `0.1 PROBLEM DEFINITION` 会挂到
+      `ABSTRACT` 底下，目录语义就错了）。
+    - 无编号：在有编号体系的论文里一律按顶级（它们本来就是章节级）；
+      整篇都没有编号（老论文 / 扫描件）时才退回经典的"往上找第一个更浅的标题当父节点"。
+    """
     tree: list[dict] = []
-    for i, item in enumerate(flat):
-        parent = None
-        for j in range(i - 1, -1, -1):
-            cand = flat[j]
-            if cand["level"] < item["level"]:
-                item_num, cand_num = item["number"], cand["number"]
-                if item_num and "." in item_num and not (cand_num and item_num.startswith(f"{cand_num}.")):
-                    parent = None            # 编号前缀对不上 → 顶级
-                else:
-                    parent = cand
-                break
+    by_number: dict[str, dict] = {}      # 编号 → 最近一次出现的标题（供后代认亲）
+    stack: list[dict] = []               # 只在"整篇无编号"时用：深度递增的祖先链
+    for item in flat:
+        number = str(item.get("number") or "").strip()
+        parent: dict | None = None
+        if number:
+            parts = number.split(".")
+            for cut in range(len(parts) - 1, 0, -1):     # 1.2 → 先试 "1"；B.1 → 先试 "B"
+                parent = by_number.get(".".join(parts[:cut]))
+                if parent is not None:
+                    break
+        elif not has_numbers:
+            while stack and int(stack[-1].get("level") or 1) >= int(item.get("level") or 1):
+                stack.pop()
+            parent = stack[-1] if stack else None
+
         if parent is None:
             tree.append(item)
         else:
             parent["children"].append(item)
-    return {"items": flat, "tree": tree, "count": len(flat)}
+
+        if number:
+            by_number[number] = item
+        if not has_numbers:
+            stack.append(item)
+    return tree
 
 
 _NUM_RE = re.compile(r"^(\d{1,2}(?:\.\d{1,2}){0,3}|[A-Z](?:\.\d{1,2}){1,3})\b")

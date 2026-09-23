@@ -38,6 +38,9 @@ from backend.core.logging import get_logger
 from backend.core.utils import (
     json_loads, now_iso, read_json, sha256_text, write_json,
 )
+from backend.parsing.md.generator import (
+    heading_level_or_none, normalize_heading_text, section_depth,
+)
 
 log = get_logger(__name__)
 
@@ -59,7 +62,10 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
 - 看不清的字符写 [?]，禁止猜测、禁止用常识补全。
 
 【original_md：原文转录】
-1. 标题保留层级与编号：用 # / ## / ### 表示，编号（1、1.1、A.2）原样保留。
+1. 标题层级**必须与【全文标题骨架】一致**（骨架里写 `# 1 TURBOQUANT…`，这一页再遇到它就必须用 `#`）。
+   骨架里没有的标题按编号深度推断：`1` / `A` / `ABSTRACT` / `REFERENCES` 这类章节级用 `#`，
+   `1.1` / `B.2` 用 `##`，`1.1.1` 用 `###`。**同一层级在全文必须一致**，
+   不要因为这一页看起来像子节就多加一个 `#`；编号（1、1.1、A.2）原样保留。
 2. 正文按页图分段，段间空行分隔；行内公式写 $...$，独立公式写 $$...$$ 并单独成段。
 3. **插图**：图注单独成段，写成 **Figure 1: ...** / **Table 2: ...**，编号必须与页图上实际编号一致
    （页图上是 Figure 2 就写 Figure 2）。图内的子图标题（(a)/(b)…）、坐标轴名、刻度、图例、
@@ -73,17 +79,20 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
 【translation_md：中文译文】
 1. **块划分必须与 original_md 一一对应**：第 i 块译第 i 块，块的数量、顺序、类型完全一致
    （标题对标题、段落对段落、公式对公式、图注对图注、表格对表格）。
-2. 标题保留编号（例：## 3.2.1 子中心弧面损失）。
+2. 标题的层级与编号必须与 original_md 的**对应块完全一致**（例：## 3.2.1 子中心弧面损失）。
 3. 公式的 LaTeX 逐字符原样保留，不改任何符号。
 4. 图注/表注保留编号（例：**图 1：…**）；**表格里的数字、单位、方法名、数据集名原样保留**，
    只翻译行名/列名这类自然语言表头。
 5. 参考文献条目**不翻译**：与 original_md 的对应块保持相同文本。
 6. 术语按给定术语表统一；学术书面语；不增删任何内容。
 
+【前文衔接】prompt 里可能给出**已经处理过的前文结尾**：只用它保持术语、句式、段落衔接一致
+（尤其是段落跨页的情况），**不要把它重复输出到本次结果里**。
+
 【输出格式】只输出一个 JSON 对象，不要解释、不要代码块：
 {"original_md": "……", "translation_md": "……"}"""
 
-PAGE_USER_TEMPLATE = """{prefix}
+PAGE_USER_TEMPLATE = """{prefix}{previous}
 
 【本页】第 {page} 页 / 共 {page_total} 页{section_line}
 【解析器抽出的本页文本（**仅供参考**；与页图冲突时以页图为准）】
@@ -110,6 +119,20 @@ SAFE_MAX_TOKENS = MAX_TOKENS_LADDER[0]
 # 单页原文文本送入 prompt 的上限（页图才是事实来源，文本只是辅助）
 MAX_PAGE_TEXT_CHARS = 16000
 
+# 前文（完整历史）的长度上限。
+#
+# 为什么默认给得这么大（≈ 200 万字）：目标模型窗口 **1M token**（约 200~300 万字，
+# 实测演示论文的前 21 页原文+译文合计 13.4 万字），所以**正常论文根本不该截断** ——
+# 这个数就只是"别真把十几 MB 塞进去"的护栏。
+#
+# 为什么不做"只带最近几页"的小预算：前缀缓存比的是**最长公共前缀**，历史只要完整且逐页追加，
+# 第 N 页与第 N+1 页的 prompt 从稳定前缀到"第 N-1 页结束"逐字节一致 → 前文全部命中缓存
+# （命中部分约 0.1× 计费）；而滑窗式的小尾巴每页都在挪，反而把公共前缀截断在头部，
+# 既丢记忆又丢缓存。
+#
+# 真要控成本/蹭窗口上限时用任务参数 `context_chars` 调小，`context=false` 完全关闭。
+CONTEXT_MAX_CHARS = 2_000_000
+
 
 def effective_max_tokens(configured: int | None) -> int:
     if configured and configured > 0:
@@ -124,8 +147,11 @@ def next_max_tokens(current: int) -> int | None:
     return None
 
 
-def build_stable_prefix(brief, glossary_text: str = "") -> str:
-    """整篇字节级不变的前缀（论文简报 + 术语表），放在 prompt 最前以命中前缀缓存。"""
+def build_stable_prefix(brief, glossary_text: str = "", skeleton: str = "") -> str:
+    """整篇字节级不变的前缀（论文简报 + 术语表 + **全文标题骨架**），放最前以命中前缀缓存。
+
+    `skeleton` 也必须是整篇不变的（调用方在任务开始时算一次），否则前缀缓存全失效。
+    """
     parts: list[str] = []
     if brief is not None and getattr(brief, "enabled", False):
         block = brief.prompt_block()
@@ -133,7 +159,123 @@ def build_stable_prefix(brief, glossary_text: str = "") -> str:
             parts.append(block)
     if glossary_text:
         parts.append(f"【术语表（必须遵守）】\n{glossary_text}")
+    if skeleton:
+        parts.append(skeleton)
     return "\n\n".join(parts)
+
+
+def build_outline_skeleton(paper_id: str, store: "PageStore | None" = None,
+                           *, limit_lines: int = 80) -> str:
+    """【全文标题骨架】：整篇字节级不变，因此可以放进**稳定前缀**（前缀缓存仍然命中）。
+
+    为什么必须有它 —— 页级翻译是"一页一次"的独立调用，模型**没有任何跳页记忆**，
+    每页各自猜 `#` 深度，于是同一层级在不同页拿到不同深度。实测 TurboQuant：
+    `1 TURBOQUANT…`（一级）回来是 `#`，`2 EXPERIMENTS`（同为一级）却是 `##`，
+    `1.2 INNER-PRODUCT…`（二级）回来是 `###`。把"编号 → 层级"的权威映射一次给全，
+    深度就不再逐页飘（并彮由 `reader_service` 的编号优先建树 / 阅读区层级）。
+
+    来源优先用解析索引（原生页有字号证据）；扫描件没有文本层时，退回**任务开始时**
+    已有页产物里的标题行（取到什么算什么，一次定下来）。
+    """
+    from backend.services.paper import reader_service
+
+    lines: list[str] = []
+    index = reader_service.load_block_index(paper_id)
+    for node in index.get("blocks") or []:
+        if node.get("type") != "heading":
+            continue
+        raw = str(node.get("text") or "")
+        # 解析会把伪代码行（`3: Generate …`）与表格数值行也标成 `type=heading`
+        # （heading_level=0）；它们一旦进骨架，模型就会拿它当标题的依据 → 用同一套判据剔掉。
+        if heading_level_or_none(raw) is None:
+            continue
+        text = normalize_heading_text(raw)
+        if not text:
+            continue
+        lines.append(f"{'#' * section_depth(_number_of(text))} {text}")
+        if len(lines) >= limit_lines:
+            break
+
+    if not lines and store is not None:          # 扫描件：用已有产物里的标题行兜底
+        for _page, payload in sorted(store.all_pages().items()):
+            for row in payload.get("rows") or []:
+                if row.get("type") != "heading":
+                    continue
+                text = normalize_heading_text(str(row.get("original") or ""))
+                if text:
+                    lines.append(f"{'#' * section_depth(str(row.get('number') or _number_of(text)))} {text}")
+            if len(lines) >= limit_lines:
+                break
+
+    if not lines:
+        return ""
+    return ("【全文标题骨架（转录原文时**必须**用这里的层级；全文同一层级保持一致）】\n"
+            + "\n".join(lines[:limit_lines]))
+
+
+def history_context(store: "PageStore", paper_id: str, page_no: int, *,
+                    max_chars: int = CONTEXT_MAX_CHARS) -> str:
+    """**完整前文**（第 1..N-1 页的原文 + 译文），逐页追加，供模型做连贯记忆。
+
+    ## 为什么必须是"完整 + 追加式"，而不是"最近几页的尾巴"
+
+    前缀缓存（DeepSeek 命中部分约 0.1× 计费）比的是**最长公共前缀**：第 N 页与第 N+1 页的
+    prompt 只有在"从头开始逐字节相同"的那一段才命中。于是：
+
+    - **完整**：把第 1..N-1 页**整页**放进去。第 N 页的 prompt 是
+      `[稳定前缀] + [第 1..N-1 页] + [第 N 页]`，第 N+1 页是 `[稳定前缀] + [第 1..N 页] + …`，
+      两者从头到"第 N-1 页结束"完全一致 → **前文全部命中缓存**。
+    - **追加式**：每页的渲染模板逐字相同、按页号升序拼装，且**表头不带页码/页数/时间**
+      （任何随页变化的东西都会把公共前缀截断在它那里，后面整段历史全部作废）。
+    - 若改成"最近两页的尾巴"（滑窗），窗口每页都在挪 → 头部一变，后面全部重新计费，
+      既丢记忆又丢缓存。这就是这个函数存在的理由。
+
+    ## 并发与缺页
+
+    页级翻译是**并发**跑的（窗口 1~8），第 N-1 页此刻可能还没落地。这里只取
+    **紧邻 N 且连续已完成**的那一串页（`N-1, N-2, …` 直到遇到缺口为止）：正常顺序推进时
+    它等于"完整前文"，偶尔乱序时也不会出现"第 4 页缺席但第 5 页在场"这种会错位的拼接。
+
+    ## 溢出保护
+
+    `max_chars` 默认 200 万字，而目标模型窗口是 **1M token**（≈ 200~300 万字）、
+    演示论文整篇历史才 13.4 万字 —— 也就是说**正常论文永远不会截断**，这个参数只是"别真塞
+    十几 MB"的护栏。真触顶时会**整页地**从最早的页丢（保住最近内容、不切碎块边界），
+    代价是公共前缀从被丢的那页起失效（记忆与缓存同时打折），届时会记一条 warning。
+    """
+    if page_no <= 1 or max_chars <= 0:
+        return ""
+
+    products = store.all_pages()
+    blocks: list[str] = []       # 按页号升序（追加式的关键：顺序固定、模板逐字相同）
+    used = 0
+    truncated = False
+    earliest = page_no - 1
+    for page in range(page_no - 1, 0, -1):
+        payload = products.get(page) or {}
+        original = str(payload.get("original_md") or "").strip()
+        translation = str(payload.get("translation_md") or "").strip()
+        if not original and not translation:
+            break                # 缺口：不再往前找（避免错位拼接）
+        block = (f"<第 {page} 页｜原文>\n{original}\n</第 {page} 页｜原文>\n"
+                 f"<第 {page} 页｜译文>\n{translation}\n</第 {page} 页｜译文>")
+        if blocks and used + len(block) > max_chars:
+            truncated = True     # 整页丢弃（不把一页切成半页）
+            break
+        blocks.append(block)
+        earliest = page
+        used += len(block) + 2
+    if not blocks:
+        return ""
+    if truncated:
+        log.warning("前文超出 %d 字上限：第 %d 页之前的内容不再作为上下文（记忆与缓存同时打折）",
+                    max_chars, earliest)
+
+    blocks.reverse()
+    body = "\n\n".join(blocks)
+    # ⚠️ 表头必须**逐字固定**：不要写页码/页数/时间，否则每页一变就把前缀缓存截断在这里。
+    return ("【前文（已处理过的完整内容，逐页附上；仅供衔接与术语/句式统一，"
+            "**不要**重复输出）】\n" + body)
 
 
 def prefix_hash(prefix: str) -> str:
@@ -141,10 +283,11 @@ def prefix_hash(prefix: str) -> str:
 
 
 def render_page_prompt(*, page: int, page_total: int, body: str,
-                       prefix: str = "", section: str = "") -> str:
+                       prefix: str = "", section: str = "", previous: str = "") -> str:
     section_line = f"；章节：{section}" if section else ""
     return PAGE_USER_TEMPLATE.format(
-        prefix=prefix, page=page, page_total=page_total,
+        prefix=prefix, previous=f"\n\n{previous}" if previous else "",
+        page=page, page_total=page_total,
         section_line=section_line, body=body or "（解析器没有抽到文本，请完全依据页图）",
     )
 
@@ -609,7 +752,10 @@ def page_source_text(paper_id: str, page: int) -> tuple[str, str]:
             continue
         btype = b.get("type") or "para"
         if btype == "heading" and not text.lstrip().startswith("#"):
-            text = f"{'#' * max(1, min(6, int(b.get('heading_level') or 2)))} {text}"
+            # 层级用**编号语义**（1 → `#`、1.1 → `##`），与【全文标题骨架】/ 目录同一套。
+            # ⚠️ 不要用 b["heading_level"]：它是 `2 + 点号数`，会让模型看到 `## 1 TURBOQUANT`
+            # 这种偏一层的参照，模型再自己判断一次，输出的层级就更乱了。
+            text = f"{'#' * section_depth(_number_of(text))} {text}"
         if size + len(text) > MAX_PAGE_TEXT_CHARS:
             truncated = True
             break
