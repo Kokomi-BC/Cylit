@@ -38,9 +38,9 @@ from backend.services.task.scheduler import (
 from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
     CONTEXT_MAX_CHARS, PAGES_FILENAME, PageStore, build_outline_skeleton,
-    build_stable_prefix, call_page, build_page_payload, effective_max_tokens,
-    history_context, list_pages, load_page_image, next_max_tokens, page_continuity,
-    page_lookahead, page_source_text, prefix_hash, render_page_prompt,
+    build_stable_prefix, call_page, build_page_payload, drop_declared_fragment,
+    effective_max_tokens, history_context, list_pages, load_page_image, next_max_tokens,
+    page_continuity, page_lookahead, page_source_text, prefix_hash, render_page_prompt,
 )
 
 log = get_logger(__name__)
@@ -223,8 +223,19 @@ def run_translate_task(ctx) -> dict:
         # 只用解析器原文判定（确定性、与并发顺序无关），直接告诉模型"该停就停、该接就接"，
         # 否则它会自作主张把半句补成一个完整句 → 同一句话被拆成两句（用户报过）。
         edges = page_continuity(paper_id, page_no)
+        # 上一页在自己产物里申报了"它从本页开头借走的那段原文"（carry_md）→
+        # 本页正文把这截删掉再送模型：重复从结构上不可能发生，行对齐也不会因"少译一句"而错位。
+        # 不靠提示词让模型"自己跳过"（实测执行不稳），也不用启发式猜（会把题注误剪）。
+        body = source
+        prev_payload = store.page(page_no - 1) if page_no > 1 else None
+        carried = str((prev_payload or {}).get("carry_md") or "").strip()
+        if carried:
+            body = drop_declared_fragment(source, carried)
+            if body != source:
+                log.info("第 %d 页：正文剪掉上一页已译完的头部 %d 字符",
+                         page_no, len(source) - len(body))
         prompt = render_page_prompt(page=page_no, page_total=page_total,
-                                    body=source, prefix=prefix, section=section,
+                                    body=body, prefix=prefix, section=section,
                                     previous=history, lookahead=lookahead, edges=edges)
         image = load_page_image(paper_id, page_no)
         try:
@@ -254,8 +265,8 @@ def run_translate_task(ctx) -> dict:
         payload["lookahead_chars"] = len(lookahead)
         payload["cache_hit_tokens"] = result.cache_hit_tokens
         payload["cache_miss_tokens"] = result.cache_miss_tokens
-        payload["edges"] = {"starts_mid": bool(edges.get("head")),
-                            "ends_mid": bool(edges.get("tail"))}
+        payload["edges"] = {"head": bool(edges.get("head")),
+                            "tail": bool(edges.get("tail"))}
         if not payload.get("model"):
             payload["model"] = model_id or ""
         emit(page_no, payload)

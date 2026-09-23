@@ -976,11 +976,6 @@ async function deleteNote(id: string) {
   } catch (err) { reportError(err, '删除失败'); }
 }
 
-async function copyRow(payload: { row: PageRow; side: 'en' | 'zh' }) {
-  await copyText(payload.side === 'zh' ? (payload.row.translation ?? '') : (payload.row.original ?? ''));
-  toast('已复制', 'ok', 1600);
-}
-
 async function copySelection() {
   await copyText(selection.text);
   hideMenu();
@@ -1266,7 +1261,6 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :translating="translating"
           :font-size="readerFont"
           @focus="focusRow"
-          @copy="copyRow"
           @zoom="zoomImage = $event"
           @translate-page="(p: number) => startTranslate('resume', [p])"
         />

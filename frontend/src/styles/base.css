@@ -217,6 +217,8 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .badge.accent { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+/* 中性/弱化徽章：用来放"论文给公式起的名字"这类附属信息，不抢强调色。 */
+.badge.dim { background: var(--bg-sunken); color: var(--text-dim); border-color: transparent; }
 
 /* 进度条：细轨 + 圆头；完成态用极浅强调色，不做满格色带 */
 .bar { height: 5px; border-radius: var(--radius-ctl); background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }

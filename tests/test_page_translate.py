@@ -391,7 +391,8 @@ def test_render_page_prompt_carries_lookahead():
     assert "下一页开头" in prompt and "tlenecks between" in prompt
     # 搭接必须在【本页输出】之前（模型先看到上下文再被要求输出）
     assert prompt.index("tlenecks between") < prompt.index("【本页输出】")
-    assert "下一页开头" not in render_page_prompt(page=1, page_total=22, body="Body.")
+    # 没有 lookahead 时不出现搭接块（【本页输出】里解释 carry_md 时会提到"下一页开头"四个字）
+    assert "<下一页文本>" not in render_page_prompt(page=1, page_total=22, body="Body.")
 
 
 def test_page_lookahead_and_continuity_use_parser_evidence(monkeypatch):
@@ -400,7 +401,8 @@ def test_page_lookahead_and_continuity_use_parser_evidence(monkeypatch):
 
     pages = {
         1: "first line of p1\nsecond line of p1",
-        2: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8",
+        # 每行都收句 → 窗口就是 lines 行（没收句时会再往后多取几行，见 lookahead 那条测试）
+        2: "l1 ends here.\nl2 ends here.\nl3 ends here.\nl4 ends here.\nl5 ends here.",
         3: "",
     }
     monkeypatch.setattr(pt, "page_source_text", lambda pid, page: (pages.get(page, ""), ""))
@@ -438,3 +440,181 @@ def test_page_continuity_judges_from_block_evidence(monkeypatch):
     assert pt.page_continuity("p", 1)["tail"] is True        # 页尾断词
     assert pt.page_continuity("q", 2)["head"] is False       # 上页是公式结尾
     assert pt.page_continuity("r", 1)["tail"] is False       # 证毕号收尾 = 完整句
+
+
+def test_page_lookahead_skips_figure_area_noise(monkeypatch):
+    """页首是整块图区（子图标签/坐标轴刻度/图片占位）时要跳过它，把真正的正文续句取回来。
+
+    实测 p20 页尾 `…applied to the`，p21 开头是图 5 的图区 —— 旧实现取回的前 6 行
+    全是 `(a) TURBOQUANT` / `$$ \\times 10 $$` / `![](...png)`，模型只好写「…施加于……」。
+    """
+    import backend.services.translation.page_translate as pt
+
+    p21 = "\n".join([
+        "(a) TURBOQUANT$_{\\text{prod}}$",
+        "",
+        "$$ \\times 10 $$",
+        "",
+        "![−0.050.000.05 (b) TUR](figures/p21-b02.png)",
+        "",
+        "*−0.050.000.05−0.050.000.05 (b) TURBOQUANT*",
+        "",
+        "**Figure 5: The variance of Inner-product error remains constant for TURBOQUANT, while in**",
+        "",
+        "TURBOQUANTincreases with the average inner product. Bit-width is b = 2.",
+        "",
+        "input embedding vectors during both quantization and dequantization stages. This transformation is crucial…",
+    ])
+    monkeypatch.setattr(pt, "page_source_text",
+                        lambda pid, page: (p21 if page == 21 else "本页正文", ""))
+    la = pt.page_lookahead("p", 20)
+    assert "input embedding vectors during both quantization" in la        # 续句进来了
+    assert "![" not in la and "(a) TURBOQUANT" not in la                   # 图片占位与子图标签被跳过
+    assert "\\times 10" not in la                                          # 坐标轴刻度被跳过
+
+
+def test_page_continuity_falls_back_to_prose_behind_figure_area(monkeypatch):
+    """图区顶在页首时，按"块"判会漏；回退到"同一窗口内第一行小写正文"来判续句。"""
+    import backend.services.translation.page_translate as pt
+
+    block_map = {
+        ("fig", 20): [{"type": "para", "order": 1, "text": "…rotation matrices applied to the"}],
+        # 下页首块是子图标签（既不是公式也不是正文）
+        ("fig", 21): [{"type": "caption", "order": 1, "text": "(a) TURBOQUANT"}],
+        # 反例：下页首行正文是大写起头的新句子 → 不认续句
+        ("new", 1): [{"type": "para", "order": 1, "text": "…stops in the middle of the"}],
+        ("new", 2): [{"type": "para", "order": 1, "text": "(a) TURBOQUANT"}],
+        ("new", 3): [{"type": "para", "order": 1, "text": "Figure 5: caption line here"}],
+    }
+    src = {
+        ("fig", 21): "(a) TURBOQUANT\n\n$$ \\times 10 $$\n\ninput embedding vectors during both stages.",
+        ("new", 2): "(a) TURBOQUANT\n\nFigure 5: caption line here\n\nThe whole method is summarised above.",
+    }
+    monkeypatch.setattr(pt, "_page_text_blocks",
+                        lambda pid, page: block_map.get((pid, page), []))
+    monkeypatch.setattr(pt, "page_source_text",
+                        lambda pid, page: (src.get((pid, page), ""), ""))
+
+    assert pt.page_continuity("fig", 20)["tail"] is True     # 图区挡不住正文续句
+    assert pt.page_continuity("fig", 21)["head"] is True     # 同理，本页在承接上页
+    assert pt.page_continuity("new", 1)["tail"] is False     # 下页正文是大写起头 → 不认
+
+
+def test_mark_rows_continuity_strips_page_tail_ellipsis():
+    """页尾的「……」是占位不是内容（用户截图：…将随机旋转矩阵施加于……）。"""
+    rows = [
+        {"id": "p020-16", "type": "para", "original": "…applied to the",
+         "translation": "将随机旋转矩阵施加于……"},
+    ]
+    mark_rows_continuity(rows, head=False, tail=True)
+    assert rows[-1]["translation"] == "将随机旋转矩阵施加于"
+    assert rows[-1]["continues"] is True
+
+
+def test_edge_facts_tell_model_what_to_do_when_lookahead_cannot_help():
+    """【下一页开头】里看不到后半截（图/表/公式）时，要明确"停在断处"，别写「……」也别硬凑。"""
+    from backend.services.translation.page_translate import render_edge_facts
+
+    text = render_edge_facts({"head": False, "tail": True})
+    assert "把这句在本页译成完整句" in text
+    assert "不要留半句" in text
+    assert "不要写「……」" in text
+    assert "停在断处" in text
+    assert "不要硬凑句号" in text
+
+
+def test_lookahead_window_reaches_the_end_of_the_carried_sentence(monkeypatch):
+    """跨页那句常常拖到图/算法块后面才收尾：窗口要一直取到句末，否则上一页只能补半句。"""
+    import backend.services.translation.page_translate as pt
+
+    body = "\n".join([
+        "**Algorithm 2 TURBOQUANT: optimized for inner product**",
+        "",
+        "$$ d\\times d $$",
+        "",
+        "# 3: Generate a random projection matrix S",
+        "",
+        "this index vector is passed to the primitive DEQUANT(idx), it produces a reconstructed vector",
+        "",
+        "x̃ ∈ Rthat satisfies the following distortion bounds: • MSE defined as D := E is bounded",
+        "",
+        "for any b ≥ 0.",
+        "",
+        "第二段正文，窗口到这里就够了。",
+    ])
+    monkeypatch.setattr(pt, "page_source_text", lambda pid, page: (body, ""))
+    lines = pt._leading_lines("p", 6)
+    assert pt._ends_sentence(lines[-1])                     # 最后一行落在句末
+    assert "for any b ≥ 0." in lines
+    la = pt.page_lookahead("p", 5)
+    assert "for any b ≥ 0." in la                          # 完整那句都在 lookahead 里
+
+
+def test_carry_md_contract_and_fragment_drop():
+    """模型的 carry_md 申报"从下一页借用的原文"，服务端据此精确剪掉下一页的重复部分。"""
+    from backend.services.translation.page_translate import (
+        SYSTEM_PROMPT, drop_declared_fragment, parse_carry,
+    )
+
+    assert "carry_md" in SYSTEM_PROMPT                  # 契约里有这个字段
+    assert parse_carry('{"carry_md": "stages. This transformation"}') == "stages. This transformation"
+    assert parse_carry('{"original_md": "x"}') == ""   # 缺字段 → 空串（不报错）
+    assert parse_carry("不是 JSON") == ""
+
+    next_page = ("input embedding vectors during both quantization and dequantization stages. "
+                 "This transformation is crucial for the algorithm's performance.")
+    trimmed = drop_declared_fragment(
+        next_page, "input embedding vectors during both quantization and dequantization stages.")
+    assert trimmed.startswith("This transformation is crucial")
+    assert "input embedding vectors" not in trimmed
+
+    # 换行/多空格抄得不一致也能匹配（模型偶尔把换行抄成空格）
+    assert drop_declared_fragment("alpha beta\ngamma delta rest", "alpha beta gamma delta").startswith("rest")
+    # 空申报 / 找不到 / 位置太后 → 原样返回（宁重勿丢）
+    assert drop_declared_fragment(next_page, "") == next_page
+    assert drop_declared_fragment(next_page, "完全不在正文里的一段") == next_page
+    assert drop_declared_fragment("x" * 4000 + " tail", "tail") == "x" * 4000 + " tail"
+
+
+def test_heuristic_head_trim_is_gone():
+    """启发式剪头（按第一句句末猜）已废弃：它会把 `**Algorithm 1 …: optimized for MSE**` 误剪。"""
+    from backend.services.translation import page_translate as pt
+
+    assert not hasattr(pt, "head_fragment_len")
+    assert not hasattr(pt, "drop_head_fragment")
+
+
+def test_pair_rows_aligns_by_type_not_text():
+    """配对键只能用类型/公式/编号：中英正文文本永不相同，用文本签名会让一侧少一块时整体错位一行。
+
+    实测 p19：译文侧故意少掉"上一页已译完的承接句"，于是「证明。…」被挂到上一条 bullet 上、
+    最后一行空成「未翻译」（用户截图报过）。
+    """
+    from backend.services.translation.page_translate import pair_rows
+
+    en = "\n\n".join([
+        "along with a sign vector qjl applied to the residual vector",   # 承接上一页 → 译文侧没有
+        "- **Expected inner-product** $\\mathbb{E}$",
+        "- **For small bit-widths** $b = 1, 2, 3, 4$",
+        "*Proof.* First we compute the conditional expectation.",
+        "$$ \\mathbb{E}[Y] = 1 $$",
+        "where the first equality follows from the definition.",
+    ])
+    zh = "\n\n".join([
+        "- **期望内积** $\\mathbb{E}$",
+        "- **对于小位宽** $b = 1, 2, 3, 4$",
+        "*证明。* 我们首先如下计算条件期望。",
+        "$$ \\mathbb{E}[Y] = 1 $$",
+        "其中第一个等号来自定义。",
+    ])
+    rows, quality = pair_rows(en, zh, 19)
+    assert quality == "structure"
+    assert rows[0]["translation"] == ""                        # 承接句只在上一页，本页留空
+    assert rows[0]["original"].startswith("along with a sign vector")
+    assert rows[1]["translation"].startswith("- **期望内积**")
+    assert rows[2]["translation"].startswith("- **对于小位宽**")
+    assert rows[3]["translation"].startswith("*证明。*")        # 不再错位到上一条 bullet
+    assert rows[4]["type"] == "formula" and rows[4]["translation"].startswith("$$")
+    assert rows[5]["translation"].startswith("其中第一个等号")
+
+

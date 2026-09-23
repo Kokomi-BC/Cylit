@@ -32,6 +32,39 @@ const counts = computed(() => ({
   display: props.items.filter((f) => f.display).length,
   inline: props.items.filter((f) => !f.display).length,
 }));
+
+/**
+ * 去掉公式右侧的编号：解析出来的 LaTeX 常带 `\tag{1}`（页面上那是排版里的公式号，
+ * 放在这个窄栏里会跟公式挤在一起，也没必要）。`\qquad(1)` / `\quad(12)` 这种写法一并去掉。
+ * 页面正文里渲染的公式**不受影响**（那里保留 (1)(2) 才和原论文一致）。
+ */
+function stripEqTag(latex: string): string {
+  return String(latex ?? '')
+    .replace(/\s*\\tag\*?\{[^{}]*\}/g, '')
+    .replace(/\s*\\(?:qquad|quad)\s*\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    // 兜底：`\hfill (2)` / `\hspace{1em}(2)` / 行尾裸 `(2)`（模型偶尔不写 \tag）
+    .replace(/\s*\\(?:hfill|hspace\{[^{}]*\})\s*\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    .replace(/\s{2,}\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    .trim();
+}
+
+/** 公式左侧的小标签：`(\text{MSE})\quad …` 是论文给公式起的名字（MSE / inner-prod error）。
+ *  留在公式里会把窄栏挤爆（用户反馈"挤压"），所以抽出来单独显示成徽章。 */
+const LABEL_RE = /^\(\s*\\text\{([^{}]{1,40})\}\s*\)\s*(?:\\quad|\\qquad)?\s*/;
+
+function splitLabel(latex: string): { label: string; body: string } {
+  const text = stripEqTag(latex);
+  const m = LABEL_RE.exec(text);
+  if (!m) return { label: '', body: text };
+  return { label: m[1].trim(), body: text.slice(m[0].length).trim() };
+}
+
+/** 列表项（顺手把要显示/复制的内容算好，模板里不再重复解析）。 */
+const rows = computed(() => filtered.value.map((f) => {
+  const { label, body } = splitLabel(f.latex);
+  const ctx = splitLabel(f.context || '').body;
+  return { ...f, label, body, context: ctx };
+}));
 </script>
 
 <template>
@@ -53,12 +86,13 @@ const counts = computed(() => ({
     <div v-if="props.loading" class="empty small">正在提取公式…</div>
     <div v-else-if="!filtered.length" class="empty small">这一篇还没有可提取的公式</div>
 
-    <div v-for="f in filtered" :key="f.id" class="fitem">
+    <div v-for="f in rows" :key="f.id" class="fitem">
       <div class="row tiny">
         <span class="badge">{{ f.display ? '行间' : '行内' }}</span>
+        <span v-if="f.label" class="badge dim" :title="`论文里这条公式的名字：${f.label}`">{{ f.label }}</span>
         <span class="faint">p{{ f.page }}</span>
         <span class="spacer" />
-        <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.latex)">
+        <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
           <AppIcon name="copy" :size="13" />
         </button>
         <button
@@ -70,7 +104,7 @@ const counts = computed(() => ({
           <AppIcon name="locate" :size="13" />
         </button>
       </div>
-      <div class="fbody" :class="{ display: f.display }" v-html="latexToHtml(f.latex, f.display)" />
+      <div class="fbody" :class="{ display: f.display }" v-html="latexToHtml(f.body, f.display)" />
       <div v-if="f.context" class="fctx tiny faint" :title="f.context">{{ f.context }}</div>
     </div>
   </div>
@@ -83,8 +117,9 @@ const counts = computed(() => ({
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-layer); padding: 6px 8px;
 }
-.fbody { margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; font-size: 13px; }
-.fbody.display { text-align: center; }
+.fbody { margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; font-size: 12.5px; padding-bottom: 2px; }
+/* 窄栏里居中会让超长公式"看着被切"；左对齐从行首开始读，需要时横向滚动。 */
+.fbody.display { text-align: left; }
 .fbody :deep(.katex) { font-size: 1.02em; }
 .fctx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

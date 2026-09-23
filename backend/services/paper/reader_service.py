@@ -113,13 +113,22 @@ def page_translations(paper_id: str) -> list[dict]:
     避免污染 `PageStore` 的内存缓存。
     """
     from backend.services.translation.page_translate import (
-        mark_rows_continuity, page_continuity,
+        mark_rows_continuity, page_continuity, pair_rows,
     )
 
     store = load_page_store(paper_id)
     out: list[dict] = []
     for page, payload in sorted(store.all_pages().items()):
         rows = [dict(row) for row in (payload.get("rows") or [])]
+        # `align != exact` 的页（两侧块数不一致 → 结构兜底）**读时重新配对**：
+        # 老产物的配对是按"正文文本签名"做的，中英文本永不相同 → 会整体错位一行，
+        # 表现为"每一行配的是邻行的译文"+最后一行空成「未翻译」（用户报过）。
+        # 现在 `pair_rows` 只按类型/公式/编号配对，重跑一次就能修好，**不用重译**。
+        if rows and str(payload.get("align") or "") == "structure":
+            re_rows, _quality = pair_rows(payload.get("original_md") or "",
+                                         payload.get("translation_md") or "", page)
+            if re_rows:
+                rows = re_rows
         if rows:
             flags = page_continuity(paper_id, page)
             mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])

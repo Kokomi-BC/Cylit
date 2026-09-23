@@ -14,7 +14,6 @@ import { computed } from 'vue';
 import { assetUrl } from '@/api/client';
 import type { Highlight, OriginalMode, PageInfo, PageRow, PairOrder, ViewMode } from '@/api/types';
 import type { PageGroup } from '@/composables/usePageRows';
-import { pageStats } from '@/composables/usePageRows';
 import AppIcon from '@/components/AppIcon.vue';
 import PdfPage from './PdfPage.vue';
 import ReaderRow from './ReaderRow.vue';
@@ -39,7 +38,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string): void;
-  (e: 'copy', payload: { row: PageRow; side: 'en' | 'zh' }): void;
   (e: 'translate-page', page: number): void;
   (e: 'zoom', url: string): void;
   (e: 'update:showRefs', value: boolean): void;
@@ -73,7 +71,9 @@ const pageImage = (page: number) => assetUrl(`/api/v1/papers/${props.paperId}/pa
  */
 const useRealPdf = (g: PageGroup) => g.info?.has_text_layer === true;
 const rowClass = (id: string) => ({ current: id === props.currentRowId });
-const isBadAlign = (g: PageGroup) => g.align === 'structure';
+/* 页头原来的「结构对齐」徽章**已按用户要求删除**：它只是在说"模型给的块数与解析器不一致、
+ * 走了结构兜底对齐"，人工复核内容并没有问题，白示一个告警只会让人以为译错了。
+ * `align` 字段仍在产物与接口里（供自检脚本审计），前端不再展示。 */
 /**
  * 宽对象（表格）：半栏放不下（9 列表格会把 "45.29" 折成两行），
  * 因此**跨两列通栏**、两侧上下排（EN 表在上、ZH 表在下），与论文里通栏表格一致。
@@ -133,14 +133,9 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
     <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg">
       <header class="pg-head">
         <span class="pg-no">第 {{ g.page }} 页</span>
-        <span v-if="g.translated" class="badge">{{ pageStats(g).done }}/{{ pageStats(g).total }} 行</span>
-        <span
-          v-if="isBadAlign(g)"
-          class="badge warn"
-          title="模型给出的原文与译文块数不一致，已按结构对齐"
-        >结构对齐</span>
-        <span class="spacer" />
-        <button
+        <!-- 「x/y 行」徽章**已按用户要求删除**：原文行数与译文行数本来就不必相同
+             （跨页承接句、列表合并都会差一行），写出来只会让人以为少了内容。 -->
+        <span class="spacer" />        <button
           v-if="!g.translated"
           class="btn sm ghost"
           @click="emit('translate-page', g.page)"
@@ -205,9 +200,8 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :row="r"
               :side="pageRowSide"
               :highlights="props.highlights"
-              :missing="pageRowSide === 'zh' && !r.translation"
+              :missing="pageRowSide === 'zh' && !r.translation && !g.translated"
               :pending="props.translating"
-              @copy="emit('copy', $event)"
             />
           </div>
           <div v-if="!g.rows.length" class="empty small">这一页还没有内容</div>
@@ -244,9 +238,8 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :row="r"
               :side="s"
               :highlights="props.highlights"
-              :missing="s === 'zh' && !r.translation"
+              :missing="s === 'zh' && !r.translation && !g.translated"
               :pending="props.translating"
-              @copy="emit('copy', $event)"
             />
           </div>
         </div>
@@ -303,7 +296,7 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
    - 不留垂直内边距（否则相邻块之间会多出 12px 空白，不像一段连续的 markdown）
    - **不做 hover 底色**：鼠标停在哪一块，那一块就变成一块灰色圆角块，
      在"原 PDF 在左"模式下只有右栏有底色，看起来就像凭空多出一个变体（用户报过）。
-   正文的悬浮反馈交给行右侧的复制按钮（.rr-copy），文字本身保持干净。
+   正文不做任何悬浮装饰（行内复制按钮已按用户要求删除），文字本身保持干净。
    "当前行"仍由 ReaderView 的滚动跟踪维护（目录高亮 / j·k 跳转 / 进度保存），只是不画出来。 */
 .row-pair { position: relative; padding: 0 4px; }
 

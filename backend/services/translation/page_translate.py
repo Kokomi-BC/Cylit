@@ -103,8 +103,11 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
    这一句的译文**只在本页出现一次**（下一页不会再译它）。例：
    - 本页末尾原文：`…This latency is primarily attributed to communication bot-`
    - 【下一页开头】：`tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`
+   - `carry_md`：`tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`
    - 本页末句译文：`…这种延迟主要归因于通信瓶颈，它出现在加速器上的 HBM 与 SRAM 之间，或跨分布式集群。`
    （被版面折断的 `bot-` 要补成完整词「瓶颈」，不许写成「通信瓶-」或半截词。）
+   ⚠ `carry_md` **只放原文**（照抄【下一页开头】里用到的那段，一个字符都不要改、不要翻译、不要加标点），
+   它是给**下一页**用的——下一页会把这段原文从自己的正文里删掉，所以**少抄会漏译、多抄会造成重复**。
 3. **页首那半句已由上一页译完，本页跳过它**：原文被页边界切断时，本页开头往往是上一页那句的后半截
    （形如 `tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`）。
    **跳过这半句**，从**下一个句子**开始译（例：直接译 `By compressing or quantizing model weights …`）。
@@ -116,8 +119,13 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
    【下一页开头】只用来补全页尾那句，**不要把搭接块里其他句子的内容输出到本页**
    （原文转录一如既往：只转录本页页图能看到的内容）。
 
-【输出格式】只输出一个 JSON 对象，不要解释、不要代码块：
-{"original_md": "……", "translation_md": "……"}"""
+【output_md：只输出一个 JSON 对象】不要解释、不要代码块：
+{"original_md": "……", "translation_md": "……", "carry_md": "……"}
+
+【carry_md：你到底从【下一页开头】借了哪段原文】
+- 本页末尾那句靠【下一页开头】补完时，把**你实际用到的那段原文**逐字符照抄进来（原文，不是译文）。
+- 没借用（本页句子本来就完整、或下一页开头接不上）就写空字符串 `""`。
+- 这段会被**下一页**用来从它的正文里删掉重复部分 —— 照抄准确两边就刚好衔接，抄错就是漏译或重复。"""
 
 PAGE_USER_TEMPLATE = """{prefix}{previous}
 
@@ -128,13 +136,15 @@ PAGE_USER_TEMPLATE = """{prefix}{previous}
 </页面文本>{lookahead}{edges}
 
 【本页输出】按系统提示输出 JSON：original_md 为忠实转录（一切以页图显示的内容为准，
-表格逐格照抄、图注编号与页图一致），translation_md 为逐块对应的中文译文。"""
+表格逐格照抄、图注编号与页图一致），translation_md 为逐块对应的中文译文，
+carry_md 为本页末尾那句从【下一页开头】借用的原文片段（没借就写空串）。"""
 
 PAGE_SCHEMA = {
     "type": "object",
     "properties": {
         "original_md": {"type": "string"},
         "translation_md": {"type": "string"},
+        "carry_md": {"type": "string"},
     },
     "required": ["original_md", "translation_md"],
 }
@@ -314,28 +324,21 @@ def prefix_hash(prefix: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def page_lookahead(paper_id: str, page: int, *, lines: int = 6,
-                   max_chars: int = 1200) -> str:
+def page_lookahead(paper_id: str, page: int, *, lines: int = 14,
+                   max_chars: int = 2200) -> str:
     """**下一页开头**的原文片段，作为"仅上下文"塞进本页 prompt。
 
     为什么需要：页尾被版面折断时（`communication bot-` | `tlenecks …`），只看本页的
     模型无法知道 `bot-` 是什么词，只能照抄半截；把下一页开头给它，它就能把**译文**里的
     词补全（原文转录仍严格只写本页页图内容）。
+
+    ⚠ 必须跳掉"图区噪声"（子图标签 / 坐标轴刻度 / 图片占位）：实测 p20 页尾是
+    `…random rotation matrices applied to the`，而 p21 开头是图 5 的整块图区 ——
+    旧实现把前 6 个非空行原样塞进去（`(a) TURBOQUANT`、`$$ \times 10 $$`、`![](...png)`），
+    真正的续句 `input embedding vectors during…` 根本没进来，模型只能写
+    「…矩阵施加于……」这种占位省略号（用户截图报的就是这一行）。
     """
-    try:
-        body, _section = page_source_text(paper_id, page + 1)
-    except Exception:  # noqa: BLE001  最后一页 / 索引缺失都不值得中断翻译
-        return ""
-    picked: list[str] = []
-    size = 0
-    for line in (body or "").split("\n"):
-        text = line.strip()
-        if not text:
-            continue
-        picked.append(text)
-        size += len(text)
-        if len(picked) >= lines or size >= max_chars:
-            break
+    picked = _leading_lines(paper_id, page + 1, lines=lines, max_chars=max_chars)
     if not picked:
         return ""
     return ("【下一页开头（**仅上下文**：只用来理解本页末尾的句子/断词怎么接下去，"
@@ -345,6 +348,132 @@ def page_lookahead(paper_id: str, page: int, *, lines: int = 6,
 #: 句末标点（含数理论文里的证毕号 □）：页尾见到这些就不算"半句"
 _TERMINAL_PUNCT = tuple(".。!！?？:：;；\"')）】”`…□■▪")
 _BREAK_TYPES = ("formula", "table", "code")     # 页尾/页首是这些块 → 不按"断句"处理
+#: 页首"图区噪声"：图片占位、坐标轴刻度、子图标签 —— 都不是正文，要找续句就跳过它继续往后看。
+_NOISE_LINE = re.compile(
+    r"^(?:"
+    r"!\["                                                        # 图片 markdown
+    r"|\*{0,2}\(?[a-dA-D]\)\*{0,2}[\s$\\{}_a-zA-Z]{0,44}$"       # 子图标签：(a) TURBOQUANT$_{\text{prod}}$
+    r"|\$+\s*[\s$\\times×xX\d.,+\-−–()⋅·]*\$*$"                    # 纯数字公式 / 坐标轴刻度（\times 10）
+    r"|\*{0,2}[\-−+]?\d+(?:[.\s\-−+]\d+)*\s*(?:\(?[a-dA-D]\)?)?\s*[\\$_{}a-zA-Z]*\*{0,2}$"   # 裸刻度串（含 (b) 混排）
+    r")"
+)
+
+#: 题注/标题/参考文献这类"结构性"行：可以当上下文给模型，但**不能**当作"续句"的证据。
+_STRUCT_LINE = re.compile(
+    r"^(?:#{1,6}\s|\$\$|\|"
+    r"|\*{0,2}(?:Figure|Fig\.|Table|Algorithm|Listing|图|表|算法)\s*[\dA-Z]"
+    r"|[A-Z][a-z]+,\s+[A-Z])"
+)
+
+
+def _is_prose(line: str) -> bool:
+    """这一行像不像"正文句子"（续句证据只认它）。"""
+    text = line.strip()
+    if not text or _NOISE_LINE.match(text) or _STRUCT_LINE.match(text):
+        return False
+    return sum(1 for ch in text if ch.isalpha()) >= 8
+
+
+def _leading_lines(paper_id: str, page: int, *, lines: int = 6,
+                   max_chars: int = 1600) -> list[str]:
+    """该页开头的有效行（跳过图区噪声），按阅读顺序，最多 ``lines`` 行。"""
+    try:
+        body, _section = page_source_text(paper_id, page)
+    except Exception:  # noqa: BLE001  最后一页 / 索引缺失都不值得中断翻译
+        return []
+    picked: list[str] = []
+    size = 0
+    for line in (body or "").split("\n"):
+        text = line.strip()
+        if not text or _NOISE_LINE.match(text):
+            continue
+        picked.append(text)
+        size += len(text)
+        if len(picked) >= lines or size >= max_chars:
+            break
+    return picked
+
+
+def _starts_lower(line: str) -> bool:
+    """这一行是不是"小写字母起头"（= 很可能是上一页那半句的后半截）。"""
+    text = line.lstrip(" \t*_$\\([{—–-")
+    return bool(text) and text[:1].islower()
+
+
+#: 句末标点（用于判断"这一行是不是把句子说完了"）
+_SENT_END = ".。!！?？:：;；"
+
+
+def _ends_sentence(line: str) -> bool:
+    """这一行是否以句末标点收尾（Markdown 尾巴 `*` / `$` / 引号先剥掉）。"""
+    text = line.strip().rstrip("*_`）)】”\"'")
+    return bool(text) and text[-1] in _SENT_END
+
+
+def _leading_lines(paper_id: str, page: int, *, lines: int = 14,
+                   max_chars: int = 2200) -> list[str]:
+    """该页开头的有效行（跳过图区噪声），按阅读顺序。
+
+    额外规则：如果最后一行还没收句，就继续多要几行 —— 跨页那句往往在图/算法块后面才收尾，
+    拿不到句尾，上一页就只能补半句、下一页再译一遍（实测 p5→p6）。
+    """
+    try:
+        body, _section = page_source_text(paper_id, page)
+    except Exception:  # noqa: BLE001  最后一页 / 索引缺失都不值得中断翻译
+        return []
+    kept = [line.strip() for line in (body or "").split("\n")
+            if line.strip() and not _NOISE_LINE.match(line.strip())]
+    picked: list[str] = []
+    size = 0
+    for text in kept:
+        picked.append(text)
+        size += len(text)
+        if len(picked) >= lines or size >= max_chars:
+            break
+    # 没收句：再多看几行，直到看到句末标点 / 硬上限
+    if picked and not _ends_sentence(picked[-1]):
+        extra = 0
+        for text in kept[len(picked):]:
+            picked.append(text)
+            size += len(text)
+            extra += 1
+            if _ends_sentence(text) or extra >= 8 or size >= max_chars + 900:
+                break
+    return picked
+
+
+def _continuation_line(paper_id: str, page: int, *, lines: int = 14,
+                       max_chars: int = 2200) -> str:
+    """该页开头**第一行"小写起头的正文"** —— 有它才敢说"下页开头在接着本页那半句"。
+
+    只看 ``page_lookahead`` 用的**同一个窗口**：判定与提示词必须一致，
+    否则会出现"提示词让它用【下一页开头】补完，可窗口里根本没那半句"。
+    跳过：图区噪声（子图标签/坐标轴刻度/图片）、题注与标题（结构行）、大写起头的新句。
+    """
+    for line in _leading_lines(paper_id, page, lines=lines, max_chars=max_chars):
+        if _is_prose(line) and _starts_lower(line):
+            return line
+    return ""
+
+
+def drop_declared_fragment(source: str, fragment: str, *, scan_chars: int = 3000) -> str:
+    """把下一页的正文里"上一页已译完的那半句"删掉。
+
+    片段是**上一页自己在 ``carry_md`` 里申报的**（它从【下一页开头】借用了哪段原文），
+    不是启发式猜的 —— 启发式会把 `**Algorithm 1 …: optimized for MSE**` 这种题注也能误剪
+    （实测），而申报的片段只在真发生跨页续句时才非空。
+
+    空白不敏感匹配（模型偶尔把换行抄成空格）；找不到 / 位置太后就原样返回（宁重勿丢）。
+    """
+    text = source or ""
+    frag = (fragment or "").strip()
+    if not text or not frag:
+        return text
+    pattern = re.compile(r"\s+".join(re.escape(tok) for tok in frag.split()))
+    match = pattern.search(text[:scan_chars])
+    if match is None:
+        return text
+    return text[match.end():].lstrip()
 
 
 def _page_text_blocks(paper_id: str, page: int) -> list[dict]:
@@ -396,6 +525,13 @@ def page_continuity(paper_id: str, page: int) -> dict:
         and (tail_text.endswith(("-", "‐", "–"))
              or (next_text[:1].islower() and not tail_text.endswith(_TERMINAL_PUNCT)))
     )
+    # 图区顶在页首/页尾时，上面按"块"判会漏：p21 开头是图 5 的子图标签+刻度（被当成 caption/ref），
+    # 真正的续句 `input embedding vectors during…` 在图区后面。所以再加一层**正文回退**：
+    # 只要本页/上页那半句没有句末标点，且对面那页开头的**第一行正文**是小写起头，就认它是续句。
+    if not tail_continues and tail_text and not tail_text.endswith(_TERMINAL_PUNCT):
+        tail_continues = bool(_continuation_line(paper_id, page + 1))
+    if not head_continues and prev_text and not prev_text.endswith(_TERMINAL_PUNCT):
+        head_continues = bool(_continuation_line(paper_id, page))
     return {"head": head_continues, "tail": tail_continues}
 
 
@@ -422,6 +558,12 @@ def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
         rows[-1]["continues"] = True
         rows[-1]["translation"] = re.sub(
             r"[-\u2010\u2013\u2014]\s*$", "", str(rows[-1].get("translation") or "")
+        ).rstrip()
+    if rows:
+        # 页尾的「……」是"知道被切断却没接上"的占位（用户截图：…矩阵施加于……）。
+        # 它不是内容，一律剥掉 —— 读时处理，所以**存量产物不用重译**也已经干净了。
+        rows[-1]["translation"] = re.sub(
+            r"[.．…]{2,}\s*$", "", str(rows[-1].get("translation") or "")
         ).rstrip()
 
 
@@ -453,7 +595,9 @@ def render_edge_facts(edges: dict) -> str:
         return ""
     head = ("承接上一页的句子（原文上半截在上一页；**这句已由上一页译完，本页跳过它、从下一句开始**）"
             if edges.get("head") else "新起句子")
-    tail = ("句子在本页被截断（**请用【下一页开头】把这句在本页译成完整句**，不要留半句）"
+    tail = ("句子在本页被截断（**请用【下一页开头】把这句在本页译成完整句**，不要留半句；"
+            "若【下一页开头】里看不到这句的后半截（全是图/表/公式或不相关内容），"
+            "就把这句停在断处 —— 不要写「……」，不要硬凑句号，也不要自己编后半句）"
             if edges.get("tail") else "本页句子已结束（页尾正常收句）")
     return (f"\n\n{EDGE_FACTS_HEADER}（解析器判定，**仅供参考**：用来看句子在哪里被页边界切开，"
             f"别为它牺牲中文的自然断句）】"
@@ -469,6 +613,7 @@ def render_edge_facts(edges: dict) -> str:
 class PageCallResult:
     original_md: str
     translation_md: str
+    carry_md: str = ""
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -504,6 +649,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
     usage_raw = (getattr(res, "raw", None) or {}).get("usage") or {}
     return PageCallResult(
         original_md=original.strip(), translation_md=translation.strip(),
+        carry_md=parse_carry(res.text or ""),
         model=getattr(res, "model", "") or provider.model_name,
         prompt_tokens=int(getattr(res, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(res, "completion_tokens", 0) or 0),
@@ -531,6 +677,15 @@ def parse_pair(text: str) -> tuple[str, str]:
     orig = _between(raw, "【原文】", "【译文】") or _between(raw, "<original_md>", "</original_md>")
     trans = _between(raw, "【译文】", None) or _between(raw, "<translation_md>", "</translation_md>")
     return orig or "", trans or ""
+
+
+def parse_carry(text: str) -> str:
+    """从模型回复里取 ``carry_md``（本页从【下一页开头】借用的那段**原文**）。容错，缺就空串。"""
+    data = _loads_lenient((text or "").strip())
+    if isinstance(data, dict):
+        value = data.get("carry_md")
+        return str(value).strip() if isinstance(value, str) else ""
+    return ""
 
 
 def _loads_lenient(raw: str) -> dict | None:
@@ -730,13 +885,22 @@ def _sequence_pairs(left: list[dict], right: list[dict]
 
 
 def _row_key(block: dict) -> tuple:
+    """配对用的块签名 —— **别用正文文本**。
+
+    中英文本永不相同，拿 `text[:40]` 当签名会让 `SequenceMatcher` 对正文全部退化成
+    "按序号替换"，于是只要一侧少一块，后面全部**错位一行**（实测 p19：ZH 少的是
+    上一页已译完的承接句，结果「证明。…」被挂到了上一条 bullet 上，最后一行空成「未翻译」）。
+
+    所以：公式用 LaTeX 文本（两边一字不差，是真锚点），标题用层级 + 编号，
+    其余只用**块类型** —— 序列对齐就变成纯结构对齐，错位自然消失。
+    """
     btype = block.get("type") or "para"
     text = (block.get("text") or "").strip()
     if btype == "heading":
-        return ("h", int(block.get("level") or 0), block.get("number") or _norm(text)[:24])
+        return ("h", int(block.get("level") or 0), block.get("number") or "")
     if btype == "formula":
         return ("f", _norm(text)[:60])
-    return (btype, _norm(text)[:40])
+    return (btype,)
 
 
 def _norm(text: str) -> str:
@@ -759,6 +923,7 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
         "translation_md": result.translation_md,
         "rows": rows,
         "align": align_override or quality,
+        "carry_md": result.carry_md,
         "model": result.model,
         "prompt_tokens": result.prompt_tokens,
         "completion_tokens": result.completion_tokens,

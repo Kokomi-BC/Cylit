@@ -8,7 +8,6 @@
 import { computed } from 'vue';
 import type { Highlight, PageRow } from '@/api/types';
 import { htmlWithHighlights } from '@/composables/useMarkdown';
-import AppIcon from '@/components/AppIcon.vue';
 
 const props = defineProps<{
   row: PageRow;
@@ -22,10 +21,6 @@ const props = defineProps<{
   compact?: boolean;
 }>();
 
-const emit = defineEmits<{
-  (e: 'copy', payload: { row: PageRow; side: 'en' | 'zh' }): void;
-}>();
-
 const text = computed(() => (props.side === 'zh' ? props.row.translation : props.row.original));
 const html = computed(() => {
   const list = (props.highlights ?? []).filter((h) => h.block_id === props.row.id);
@@ -36,11 +31,12 @@ const isEmpty = computed(() => !String(text.value ?? '').trim());
 /* 跨页的两个徽章（「承上页」「续下页」）**已按用户要求拿掉**：
  * 译文现在以自然断句为先（页边界只是排版），半句直接读下去就好，不需要任何页边装饰。
  * 后端仍在行上打 `continues` / `continued_from_prev`（供脚本审计），前端不再展示。 */
-/** 未译空位的文案：任务在跑 → 等待翻译；否则 → 未翻译 */
+/** 未译空位的文案：任务在跑 → 等待翻译；整页确实没译文 → 未翻译；
+ *  其余（跨页承接句已在上页译完、配对边界）**留空不显示** —— 写个「—」反而像漏了东西。 */
 const emptyLabel = computed(() => {
-  if (props.side !== 'zh') return '—';
+  if (props.side !== 'zh') return '';
   if (props.pending) return '等待翻译';
-  return props.missing ? '未翻译' : '—';
+  return props.missing ? '未翻译' : '';
 });
 </script>
 
@@ -51,17 +47,9 @@ const emptyLabel = computed(() => {
     :data-side="props.side"
   >
     <div v-if="html" class="rr-body md" v-html="html" />
-    <div v-else class="rr-empty">
+    <div v-else-if="emptyLabel" class="rr-empty">
       {{ emptyLabel }}
     </div>
-    <button
-      v-if="!isEmpty"
-      class="rr-copy"
-      :title="props.side === 'zh' ? '复制译文' : '复制原文'"
-      @click.stop="emit('copy', { row: props.row, side: props.side })"
-    >
-      <AppIcon name="copy" :size="13" />
-    </button>
   </div>
 </template>
 
@@ -69,13 +57,7 @@ const emptyLabel = computed(() => {
 /* 字号继承 `.rows-wrap` 的 --reader-font-size：这里全部用 em，正文/标题/图注/公式一起缩放。
    两侧只有字体族不同（英文衬线 / 中文无衬线），字号与行距完全一致。 */
 .rrow { min-width: 0; cursor: text; position: relative; font-size: 1em; }
-.rr-copy {
-  position: absolute; top: -2px; right: 0; border: 0; background: var(--bg-elev);
-  color: var(--text-faint); border-radius: var(--radius-sm); padding: 2px 4px;
-  cursor: pointer; opacity: 0; transition: opacity .12s; box-shadow: var(--shadow-1);
-}
-.rrow:hover .rr-copy { opacity: 1; }
-.rr-copy:hover { color: var(--text); }
+/* 行内悬浮复制按钮已按用户要求删除：要复制就选词用划词菜单（或直接 Ctrl+C）。 */
 .rr-body { font-size: 1em; line-height: 1.78; overflow-wrap: anywhere; }
 /* 段落间距就交给 markdown 自己的 margin：行容器已不再额外留垂直内边距，
    所以相邻块之间正好是一个正常段落间距（约 .55em），不多不少。
