@@ -310,15 +310,50 @@ def test_max_tokens_ladder():
 
 
 def test_prompt_states_boundary_rules():
-    """提示里必须写清"译文不许留断词连字符 / 续句不许加省略号 / 搭接块不许输出"。"""
+    """提示里必须写清：以自然断句为先 / 不许留断词连字符 / 不重复上页 / 搭接块不输出。"""
     import inspect
 
     from backend.services.translation import page_translate as pt
 
     src = inspect.getsource(pt) + pt.SYSTEM_PROMPT + pt.PAGE_USER_TEMPLATE
-    assert "禁止保留断词连字符" in src
-    assert "不要用「……」" in src
-    assert "不要把这里的内容输出" in src
+    assert "不许写成「通信瓶-」或半截词" in src        # 断词连字符仍然禁止
+    assert "页面只是**排版单位**，不是语义单位" in src   # 不再"强行按页"翻译
+    assert "不要为了迁就页面边界去拆句" in src
+    # 边界那句**整句归上一页**、下一页跳过（这样读起来不会有半句，也不会两页各写一遍）
+    assert "页尾那句尽量在本页收成完整句" in src
+    assert "页首那半句已由上一页译完，本页跳过它" in src
+    assert "绝不能两页各写一遍" in src
+    assert "不要把搭接块里其他句子的内容输出到本页" in src
+    assert "承上页" in src and "续下页" in src            # 明确禁止输出这类页标记
+    # 数学必须写进定界符（否则前端会把 LaTeX 原样显示出来）
+    assert "所有数学都必须写进公式定界符" in src
+
+
+def test_edge_facts_are_rendered_into_prompt():
+    """页边界事实要进 prompt，但只当**参考**（不再"必须遵守"）。"""
+    from backend.services.translation.page_translate import (
+        EDGE_FACTS_HEADER, render_edge_facts, render_page_prompt,
+    )
+
+    both = render_edge_facts({"head": True, "tail": True})
+    assert EDGE_FACTS_HEADER in both
+    assert "承接上一页的句子" in both
+    assert "已由上一页译完，本页跳过它" in both        # 页首：跳过已被上一页译完的半句
+    assert "把这句在本页译成完整句" in both            # 页尾：用搭接块把整句收在本页
+    assert "仅供参考" in both
+    assert "别为它牺牲中文的自然断句" in both
+
+    clean = render_edge_facts({"head": False, "tail": False})
+    assert "新起句子" in clean and "本页句子已结束" in clean
+    assert render_edge_facts({}) == ""                     # 没有事实就不写这块
+
+    prompt = render_page_prompt(page=2, page_total=22, body="Body.",
+                                edges={"head": True, "tail": True})
+    assert EDGE_FACTS_HEADER in prompt
+    # 参考块必须在【本页输出】之前（先看约束再产出）
+    assert prompt.index(EDGE_FACTS_HEADER) < prompt.index("【本页输出】")
+    # 不传 edges 时不应出现该块（兼容旧调用）
+    assert EDGE_FACTS_HEADER not in render_page_prompt(page=2, page_total=22, body="Body.")
 
 
 def test_mark_rows_continuity_cleans_and_flags():

@@ -29,6 +29,51 @@ marked.use({
 const CACHE_LIMIT = 3000;
 const cache = new Map<string, string>();
 
+/** 高置信度的 LaTeX 命令（整行都是这些命令时，按独立公式处理） */
+const STRONG_TEX = /\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|iint|oint|begin|end|tag|quad|qquad|mathbb|mathcal|mathfrak|operatorname|overline|widehat|widetilde|langle|rangle|lVert|rVert|Vert|partial|nabla|infty|cdot|cdots|ldots|dots|times|div|pm|le|leq|ge|geq|neq|approx|sim|equiv|propto|subset|supset|cup|cap|oplus|otimes|to|mapsto)\b/;
+/** 同上，但要计数出现次数（`g` 标志） */
+const STRONG_TEX_G = new RegExp(STRONG_TEX.source, 'g');
+const CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
+/** 行内裸公式的“词”：连续的非空白/非中文标点字符 */
+const TOKEN = /[^\s，。；：、（）()【】「」“”《》,.;:]+/g;
+
+/**
+ * 把**裸写的 LaTeX**补上公式定界符。
+ *
+ * 为什么会裸写：模型偶尔忘了包 `$…$`，直接写 `Q_mse^{-1}`、`S^{d-1}`、`\text{(MSE)} \quad \mathbb{E}`。
+ * 渲染出来就是原文带花括号/反斜杠的样子（用户报过 "markdown 问题"），而且 `_` 还可能被当成强调。
+ * 提示词已经加了硬要求（见 `page_translate.SYSTEM_PROMPT`），这里再挡一道，**存量产物不用重译也能好看**。
+ *
+ * 守则：宁可少补，也不要误把普通文字塞进公式 —— 只在两种情况下动手：
+ *   ① 整行就是一段公式（含高置信 LaTeX 命令且**没有中文**）→ 整行包 `$$…$$`；
+ *   ② 某个“词”里出现 `^{` / `_{` → 只把这个词包进 `$…$`。
+ * 已有 `$` 的行、代码围栏、以及不常见的写法一律不动。
+ */
+export function wrapBareMath(src: string): string {
+  if (!src || (!src.includes('\\') && !src.includes('^{') && !src.includes('_{'))) return src;
+  let inFence = false;
+  let inBlockMath = false;
+  return src.split('\n').map((line) => {
+    if (line.trimStart().startsWith('```')) { inFence = !inFence; return line; }
+    if (inFence) return line;
+    const dollars = (line.match(/\$\$/g) || []).length;
+    if (inBlockMath) { if (dollars % 2 === 1) inBlockMath = false; return line; }
+    if (dollars % 2 === 1) { inBlockMath = true; return line; }
+    if (line.includes('$')) return line;                  // 这行已经有公式了，别添乱
+    const t = line.trim();
+    /* 整行当公式要更严：至少两个高置信命令，或者带 `^{`/`_{` ——
+     * 免得把 "we map x \\to y" 这种英文句子整句当成公式。 */
+    const strong = t ? (t.match(STRONG_TEX_G) || []).length : 0;
+    if (t && !CJK.test(t) && STRONG_TEX.test(t) && (strong >= 2 || /[_^]\{/.test(t))) return `$$${t}$$`;
+    return line.replace(TOKEN, (tok) => {
+      if (!/[_^]\{/.test(tok)) return tok;
+      if (tok.includes('$') || tok.includes('`') || tok.includes('\\') || tok.startsWith('http')) return tok;
+      if (tok.length > 60 || CJK.test(tok)) return tok;
+      return `$${tok}$`;
+    });
+  }).join('\n');
+}
+
 export function escapeHtml(text: unknown): string {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -107,7 +152,7 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
   const key = paperId ? `${paperId}\u0000${src0}` : src0;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const { text: src, math } = extractBlockMath(src0);
+  const { text: src, math } = extractBlockMath(wrapBareMath(src0));
   let html: string;
   try {
     html = marked.parse(src) as string;

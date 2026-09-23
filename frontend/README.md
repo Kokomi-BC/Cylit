@@ -250,6 +250,15 @@ span 上再 `scale(1/--min-font-size)` 抵消。`--font-height` 是**页面单�
    已加一个仅隐藏期生效的 rAF 垫片（隐藏时 = `setTimeout`，可见即还原）。
 4. **文字层要显式 `z-index`**：canvas 会被浏览器提升为独立合成层，光靠 DOM 顺序不保证文字层在上，
    否则**选中底色根本看不到**。
+5. **往下拖进空白区要把焦点拉回真文字**：文字层只管"有字的地方"，页面下部空白不属于任何文本节点。
+   实测（真实拖拽 + 逐事件记录）Chrome 一进空白就把 `focus` 给**文字层容器**（offset = 子节点序号）：
+   offset 在 0 时选区**倒长到页首**，递增时**一路覆盖到层末**（实测 131 字 → 3176 字）。
+   所以：每次 `selectionchange` 只把"与本层同一个 `.pdf-text-layer` 里的文本节点"视为有效焦点并记为 `lastGood`，
+   否则（容器／别的层／别的栏）用 `setBaseAndExtent` 把焦点拉回 `lastGood` —— 选区就"只铺到已选中的地方"。
+   占位元素 `.endOfContent` 保留，但**盒子只对齐当前选区的外接矩形**（JS 写 `top`/`height`），
+   `::selection` 置透明；它永远待在层末，别插到锤点旁边（曾因此被塞进 `.pdf-surface`，变成静态整页大块）。
+   ★ 不要用"铺满整页的安全港"，也不要在 `pointerup` 里复位 DOM —— 后者会让浏览器重新归一化，
+   实测把刚选好的文字直接收掉（选区变空、浮层不出）。
 
 **划词选中色全站唯一来源**：`tokens.css` 的 `--selection-bg` + `base.css` 的全局 `::selection`；
 `PdfPage.vue` 引用同一令牌（并保持 `color: transparent`，字形仍由画布提供）。

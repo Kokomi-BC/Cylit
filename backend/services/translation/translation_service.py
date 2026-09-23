@@ -29,6 +29,7 @@ from backend.core.config import get_settings
 from backend.core.errors import ValidationError
 from backend.core.events import EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus
 from backend.core.logging import get_logger
+from backend.core.utils import now
 from backend.services.model.model_manager import model_manager
 from backend.services.paper import paper_service, reader_service
 from backend.services.task.scheduler import (
@@ -38,8 +39,8 @@ from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
     CONTEXT_MAX_CHARS, PAGES_FILENAME, PageStore, build_outline_skeleton,
     build_stable_prefix, call_page, build_page_payload, effective_max_tokens,
-    history_context, list_pages, load_page_image, next_max_tokens, page_lookahead,
-    page_source_text, prefix_hash, render_page_prompt,
+    history_context, list_pages, load_page_image, next_max_tokens, page_continuity,
+    page_lookahead, page_source_text, prefix_hash, render_page_prompt,
 )
 
 log = get_logger(__name__)
@@ -169,9 +170,9 @@ def run_translate_task(ctx) -> dict:
         log.info("标题骨架就绪：%d 行；前文历史上限 %d 字", skeleton.count("\n"), context_chars)
 
     scheduler = AdaptiveScheduler(SchedulerConfig(
-        initial=s.translate_concurrency,
-        maximum=s.translate_max_concurrency,
-        minimum=s.translate_min_concurrency,
+        initial=(1 if s.translate_sequential else s.translate_concurrency),
+        maximum=(1 if s.translate_sequential else s.translate_max_concurrency),
+        minimum=1,
         backoff_base=s.translate_backoff_base,
         backoff_cap=s.translate_backoff_cap,
         breaker_threshold=s.translate_breaker_threshold,
@@ -180,6 +181,7 @@ def run_translate_task(ctx) -> dict:
 
     counters = {"done": 0, "failed": 0, "rows": 0, "escalations": 0,
                 "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+                "cache_hit_tokens": 0, "cache_miss_tokens": 0,
                 "align_structure": 0}
     cursor_lock = threading.Lock()
     t_start = time.time()
@@ -196,6 +198,8 @@ def run_translate_task(ctx) -> dict:
         with cursor_lock:
             done.add(page_no)
             ctx.set_cursor(done_pages=sorted(done), total_all=page_total)
+        # 卡片进度条读的就是论文行 —— 每完成一页就写回，否则翻译跑到一半卡片还是旧数字
+        paper_service.set_translate_progress(paper_id, done=len(done), total=page_total)
         bus.publish("papers", EVENT_PAGE_TRANSLATED, {
             "paper_id": paper_id, "page": page_no, "page_total": page_total,
             "rows": payload.get("rows") or [],
@@ -215,9 +219,13 @@ def run_translate_task(ctx) -> dict:
         # 下一页开头（仅上下文）：页尾被版面折断成 `bot-` 时，让模型知道后面接什么词，
         # 从而把**译文**补成完整词（原文转录仍只写本页页图内容）。
         lookahead = page_lookahead(paper_id, page_no) if use_context else ""
+        # 页边界事实（本页开头是否承接上页、末尾是否延续到下页）：
+        # 只用解析器原文判定（确定性、与并发顺序无关），直接告诉模型"该停就停、该接就接"，
+        # 否则它会自作主张把半句补成一个完整句 → 同一句话被拆成两句（用户报过）。
+        edges = page_continuity(paper_id, page_no)
         prompt = render_page_prompt(page=page_no, page_total=page_total,
                                     body=source, prefix=prefix, section=section,
-                                    previous=history, lookahead=lookahead)
+                                    previous=history, lookahead=lookahead, edges=edges)
         image = load_page_image(paper_id, page_no)
         try:
             result = call_page(provider, prompt, image, max_tokens=max_tokens_current)
@@ -234,10 +242,20 @@ def run_translate_task(ctx) -> dict:
         counters["prompt_tokens"] += result.prompt_tokens
         counters["completion_tokens"] += result.completion_tokens
         counters["reasoning_tokens"] += result.reasoning_tokens
+        counters["cache_hit_tokens"] += result.cache_hit_tokens
+        counters["cache_miss_tokens"] += result.cache_miss_tokens
+        if result.prompt_tokens:
+            log.info("第 %d 页：prompt %d token（缓存命中 %d / 未命中 %d）",
+                     page_no, result.prompt_tokens,
+                     result.cache_hit_tokens, result.cache_miss_tokens)
         payload = build_page_payload(page=page_no, page_total=page_total,
                                      result=result, source_chars=len(source))
         payload["prev_context_chars"] = len(history)
         payload["lookahead_chars"] = len(lookahead)
+        payload["cache_hit_tokens"] = result.cache_hit_tokens
+        payload["cache_miss_tokens"] = result.cache_miss_tokens
+        payload["edges"] = {"starts_mid": bool(edges.get("head")),
+                            "ends_mid": bool(edges.get("tail"))}
         if not payload.get("model"):
             payload["model"] = model_id or ""
         emit(page_no, payload)
@@ -282,7 +300,9 @@ def run_translate_task(ctx) -> dict:
         "brief": brief.to_dict() if brief else None,
         "usage": {"prompt_tokens": counters["prompt_tokens"],
                   "completion_tokens": counters["completion_tokens"],
-                  "reasoning_tokens": counters["reasoning_tokens"]},
+                  "reasoning_tokens": counters["reasoning_tokens"],
+                  "cache_hit_tokens": counters["cache_hit_tokens"],
+                  "cache_miss_tokens": counters["cache_miss_tokens"]},
         "elapsed_s": elapsed,
         "scheduler": stats.to_dict(include_attempts=False),
         "concurrency_timeline": stats.timeline,
@@ -335,35 +355,59 @@ def _finish_paper_status(paper_id: str) -> None:
 def start_translation(paper_id: str, *, mode: str = "resume",
                       force: bool = False, brief: bool = True,
                       pages: list[int] | None = None) -> dict:
-    """触发产线 A（幂等：已有**活着**的翻译任务则复用）。"""
+    """触发产线 A（幂等：已有**活着**的翻译任务则复用）。
+
+    复用**连 `force`（重译）也不例外**：同一篇论文同时跑两套页翻译会互相覆盖
+    `pages.json` 里的页产物，只会更难收拾。前端拿到 `reused=True` 后提示"沿用已有任务"，
+    想真正重来就先停止当前任务。返回值多一个 `reused` 字段（新建为 False）。
+    """
     paper_service.get_paper(paper_id)
     if not list_pages(paper_id):
         raise ValidationError("这篇论文还没有页面图，请先完成解析")
-    existing = None if force else _active_translate_task(paper_id)
+    existing = _active_translate_task(paper_id)
     if existing is not None and not _task_is_live(existing):
         # 已请求取消 / 心跳早就停了的僵尸任务不能挡住新翻译：
         # 否则前端点「继续翻译」会拿回一个永远不会执行的任务，表现为"点了没反应"。
         _drop_task(existing["id"], "已请求取消或租约过期，本次触发不再复用")
         existing = None
     if existing:
-        return existing
+        return {**existing, "reused": True}
     store = page_store(paper_id)
     total = len(list_pages(paper_id))
     done = len(store.done_pages())
-    return _create_translate_task(paper_id, {
+    created = _create_translate_task(paper_id, {
         "mode": mode, "force": force, "brief": brief, "pages": pages,
-    }, total_items=total if force else max(0, total - done))
+    }, total_items=_target_count(pages, total, done, force))
+    return {**created, "reused": False}
+
+
+def _target_count(pages: list[int] | None, total: int, done: int,
+                  force: bool) -> int:
+    """任务进度的分母：**指定页时就是指定的页数**。
+
+    以前忽略了 `pages`（只按"总页数 - 已完成"算），于是"重跑第 1、2 页"的任务
+    在任务页显示成 `0/0`，看着像什么都没做。
+    """
+    if pages:
+        return len({int(p) for p in pages})
+    return total if force else max(0, total - done)
 
 
 def _task_is_live(task: dict) -> bool:
-    """进行中的任务是否还会被真正执行（取消请求与僵尸都算不活）。"""
+    """进行中的任务是否还会被真正执行（取消请求与僵尸都算不活）。
+
+    ★ 时间戳是 `utils.now()` 写的 **UTC**（naive），这里必须用同一个时钟。
+      之前用 `datetime.now()`（本地时差 +8h）去减 → 刚建的任务看着像 8 小时前的"僵尸"，
+      于是被误判为不活 → 旧任务被取消、又新建一个；而旧任务可能正在 worker 里跑 →
+      **同一篇两套翻译并发**（用户报过"重复运行翻译任务"）。
+    """
     if task.get("cancel_requested"):
         return False
     stamp = task.get("updated_at") or task.get("created_at")
     if not stamp:
         return True
     try:
-        age = (datetime.now() - datetime.fromisoformat(str(stamp))).total_seconds()
+        age = (now() - datetime.fromisoformat(str(stamp))).total_seconds()
     except (TypeError, ValueError):
         return True
     lease = int(get_settings().task_lease_seconds or 120)

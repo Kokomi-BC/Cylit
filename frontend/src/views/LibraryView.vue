@@ -5,7 +5,7 @@
  * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`，进度条走 `ProgressBar`。
  * 删除语义：软删除会先清理索引与知识库记录，PDF 文件移入 data/trash（不物理删除）。
  */
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { Paper } from '@/api/types';
@@ -78,7 +78,61 @@ async function refresh() {
   }
 }
 
-onMounted(refresh);
+onMounted(async () => {
+  await refresh();
+  void pollTick();      // 进页面时若已有解析/翻译任务在跑，直接跟上状态
+});
+onBeforeUnmount(stopPolling);
+
+/* --------------------------- 后台任务状态轮询 ---------------------------
+ * 列表里的徽章/进度/按钮文案全取自后端论文行，所以只要**有解析或翻译任务在跑**就自动刷新，
+ * 用户不需要手动点「重新加载」；没有任务在跑时立即停下（不做无谓轮询）。 */
+let pollTimer: number | null = null;
+
+function stopPolling(): void {
+  if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null; }
+}
+
+function startPolling(): void {
+  if (pollTimer !== null) return;
+  pollTimer = window.setInterval(() => { void pollTick(); }, 4000);
+}
+
+async function pollTick(): Promise<void> {
+  try {
+    const res = await api.get<{ items: Array<{
+      id: string; type: string; status?: string; paper_id?: string;
+      done_items?: number; total_items?: number; message?: string;
+    }> }>(
+      '/tasks', { limit: 200 });
+    const items = res.items || [];
+    // 逐页翻译任务：卡片据它把按钮换成「暂停翻译 / 继续翻译」，并显示实时页数
+    const map: Record<string, LiveTask> = {};
+    for (const t of items) {
+      if (t.type !== 'TRANSLATE_MD' || !t.paper_id) continue;
+      if (!['pending', 'processing', 'paused'].includes(String(t.status))) continue;
+      // 后端按 created_at 倒序返回：同一篇论文只认最新的那个任务，
+      // 否则历史任务会把当前状态盖掉（卡片会出现莫名其妙的「继续翻译」）。
+      if (map[t.paper_id]) continue;
+      map[t.paper_id] = {
+        id: t.id,
+        status: String(t.status),
+        done: Number(t.done_items ?? 0),
+        total: Number(t.total_items ?? 0),
+        message: String(t.message ?? ''),
+      };
+    }
+    paperTasks.value = map;
+    const busy = items.some((t) =>
+      (t.type === 'PARSE' || t.type === 'TRANSLATE_MD')
+      && (t.status === 'processing' || t.status === 'pending'));
+    if (!busy) { stopPolling(); return; }
+    await refresh();
+    startPolling();
+  } catch {
+    stopPolling();    // 拉不到就别一直打（下轮操作会重新拉起）
+  }
+}
 
 /* ------------------------------ 导入 ------------------------------ */
 
@@ -155,24 +209,37 @@ async function submitImport() {
 
 /* ------------------------------ 行内操作 ------------------------------ */
 
-async function runParse(paper: Paper, force = false) {
+async function runParse(paper: Paper, force = false, thenTranslate = false) {
   busyKey.value = `parse:${paper.id}`;
   try {
-    await api.post(`/papers/${paper.id}/parse`, {}, { force, vision: true });
-    toast(`已创建解析任务：${paper.title}`, 'ok');
+    const task = await api.post<any>(`/papers/${paper.id}/parse`, {},
+      { force, vision: true, then_translate: thenTranslate });
+    const msg = metaMessage(task);
+    toast(msg || `已创建解析任务：${paper.title}`, 'ok', 3600);
     await refresh();
+    startPolling();
   } catch (err) { reportError(err, '触发解析失败'); } finally { busyKey.value = ''; }
+}
+
+/** 后端 `envelope(message=…)` 的文案（client 挂在 `__meta` 上）——直接用它，前后端话术就不再各写一套 */
+function metaMessage(res: any): string {
+  return String(res?.__meta?.message ?? '');
 }
 
 type TranslateMode = 'resume' | 'retranslate';
 
-/** 翻译只有一种粒度（逐页）：`retranslate` 走 force，忽略已有产物重来。 */
+/** 翻译只有一种粒度（逐页）：`retranslate` 走 force，忽略已有产物重来。
+ *  未解析的论文**不需要**前端特殊处理：后端会把解析串起来（解析完成自动开翻译）。 */
 async function runTranslate(paper: Paper, mode: TranslateMode = 'resume') {
   busyKey.value = `tr:${paper.id}`;
   try {
-    await api.post(`/papers/${paper.id}/translate`, { mode, brief: true });
-    toast(mode === 'retranslate' ? '已创建重译任务' : '已创建逐页翻译任务', 'ok');
+    const task = await api.post<any>(`/papers/${paper.id}/translate`, { mode, brief: true });
+    const msg = metaMessage(task);
+    if (msg && !task?.reused) toast(msg, 'ok', 4200);      // 未解析→已创建解析任务（完成后自动翻译）
+    else if (task?.reused) toast('这篇论文已有翻译任务在跑，已沿用该任务', 'warn', 2600);
+    else toast(mode === 'retranslate' ? '已创建重译任务' : '已创建逐页翻译任务', 'ok');
     await refresh();
+    startPolling();
   } catch (err) { reportError(err, '触发翻译失败'); } finally { busyKey.value = ''; }
 }
 
@@ -208,13 +275,13 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 次要操作（解析 / 重译 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单，
- * 卡片上只留「阅读（主）+ 继续翻译（次）」两个按钮，避免一排同权重按钮。 */
+/** 次要操作（重新解析 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
+ * 卡片上只留「阅读（主）+ 翻译（次）」两个按钮 —— 翻译与解析**不再并列暴露**（选项 B）：
+ * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。 */
 function rowMenu(p: Paper): RowAction[] {
   const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
   return [
-    { key: 'parse', label: '解析 PDF', icon: 'document', disabled: busy('parse') },
-    { key: 'translate', label: '重新翻译', icon: 'translate', disabled: busy('tr') },
+    { key: 'parse', label: '重新解析', icon: 'document', disabled: busy('parse') },
     { key: 'index', label: '建立索引', icon: 'layers', disabled: busy('idx') },
     {
       key: 'kb',
@@ -228,13 +295,95 @@ function rowMenu(p: Paper): RowAction[] {
 }
 
 function onRowAction(p: Paper, key: string) {
-  if (key === 'parse') { runParse(p); return; }
-  if (key === 'translate') { runTranslate(p, 'retranslate'); return; }
+  if (key === 'parse') { runParse(p, true); return; }   // 强制重来；不附带翻译（用户得自己点翻译）
   if (key === 'index') { runIndex(p); return; }
   if (key === 'kb') { toggleKb(p); return; }
   if (key === 'edit') { openEdit(p); return; }
   if (key === 'delete') { askRemove(p, false); return; }
   if (key === 'purge') { askRemove(p, true); }
+}
+
+/* --------------------------- 流水线状态（前后端对齐） --------------------------- */
+
+/** 这篇论文在流水线上的位置。没任务时看后端论文行，有任务时以任务为准。 */
+function stage(p: Paper): 'unparsed' | 'translating' | 'translated' {
+  if (!p.page_count) return 'unparsed';
+  if (activeTaskOf(p)) return 'translating';
+  return (p.translate_done || 0) < (p.translate_total || 0) ? 'translating' : 'translated';
+}
+
+/** 正在跑的逐页翻译任务（轮询刷新）：`paperId -> {id,status,done,total,message}`。
+ *  任务在跑时**它才是真相来源**：磁盘产物还是上一轮的（重新翻译时尤其明显），
+ *  只看论文行会出现「已翻译」徽章 +「暂停翻译」按钮同时出现的矛盾画面。 */
+interface LiveTask { id: string; status: string; done: number; total: number; message: string }
+const paperTasks = ref<Record<string, LiveTask>>({});
+
+/** 这篇论文当前的翻译任务（没有就是 null） */
+function activeTaskOf(p: Paper): LiveTask | null {
+  return paperTasks.value[p.id] ?? null;
+}
+
+/** 卡片徽章：有任务看任务（翻译中 / 已暂停），没任务看论文行。 */
+function cardStatus(p: Paper): { label: string; cls: string } {
+  const t = activeTaskOf(p);
+  if (!t) return paperStatus(p.status);
+  return t.status === 'paused'
+    ? { label: '已暂停', cls: 'warn' }
+    : { label: '翻译中', cls: 'accent' };
+}
+
+/** 进度条数据：优先用论文行（后端每译完一页就回写，最接近磁盘事实），
+ *  行里还是上一轮的「已完成」时退回任务的计数器；两者都没有就不显示进度条。 */
+function progressOf(p: Paper): { done: number; total: number } | null {
+  const t = activeTaskOf(p);
+  const rd = p.translate_done || 0;
+  const rt = p.translate_total || 0;
+  if (t) {
+    if (rt > 0 && rd < rt) return { done: rd, total: rt };
+    if (t.total > 0) return { done: t.done, total: t.total };
+    return null;
+  }
+  if (rt > 0 && rd < rt) return { done: rd, total: rt };
+  return null;
+}
+
+/** 「逐页翻译已完成」那行：有任务在跑就不算完成（重新翻译时就该显示进行中）。 */
+function showDoneLine(p: Paper): boolean {
+  return !activeTaskOf(p) && isTranslated(p);
+}
+
+async function pauseTask(taskId: string) {
+  try {
+    await api.post(`/tasks/${taskId}/pause`);
+    toast('已请求暂停：当前这一页译完就停下', 'ok', 2600);
+    await pollTick();
+  } catch (err) { reportError(err, '暂停失败'); }
+}
+
+async function resumeTask(taskId: string) {
+  try {
+    await api.post(`/tasks/${taskId}/resume`);
+    toast('已继续翻译', 'ok', 2200);
+    await pollTick();
+  } catch (err) { reportError(err, '继续失败'); }
+}
+
+/** 卡片按钮文案：任务在跑 → 「暂停翻译」；已暂停 → 「继续翻译」；
+ *  否则按流水线位置：未解析 → 「翻译」（点了会先解析）；翻译中 → 「继续翻译」；译完 → 「重新翻译」。 */
+function pipelineLabel(p: Paper): string {
+  const t = activeTaskOf(p);
+  if (t) return t.status === 'paused' ? '继续翻译' : '暂停翻译';
+  const s = stage(p);
+  return s === 'unparsed' ? '翻译' : s === 'translating' ? '继续翻译' : '重新翻译';
+}
+
+function runPipeline(p: Paper) {
+  const t = activeTaskOf(p);
+  if (t) {
+    void (t.status === 'paused' ? resumeTask(t.id) : pauseTask(t.id));
+    return;
+  }
+  void runTranslate(p, stage(p) === 'translated' ? 'retranslate' : 'resume');
 }
 
 /* ---------------------------- 删除确认 ---------------------------- */
@@ -406,7 +555,7 @@ async function submitEdit() {
           <RouterLink class="pc-title" :to="{ name: 'reader', params: { paperId: p.id } }">
             {{ p.title }}
           </RouterLink>
-          <span class="badge" :class="paperStatus(p.status).cls">{{ paperStatus(p.status).label }}</span>
+          <span class="badge" :class="cardStatus(p).cls">{{ cardStatus(p).label }}</span>
         </header>
 
         <div class="pc-meta">
@@ -421,13 +570,16 @@ async function submitEdit() {
           <span class="badge" v-for="t in p.tags" :key="t">{{ t }}</span>
         </div>
 
-        <!-- 进度：只在"正在翻译"时出现；100% 用一行文案收尾，不再铺一条满格色带 -->
-        <div class="pc-progress" v-if="p.translate_total && (p.translate_done || 0) < p.translate_total">
+        <!-- 进度：只在"正在翻译"时出现；100% 用一行文案收尾，不再铺一条满格色带。
+             数据优先取正在跑的翻译任务（逐页实时），没任务才用论文行。 -->
+        <div class="pc-progress"
+             v-if="progressOf(p)"
+             :title="activeTaskOf(p)?.message || ''">
           <div class="pc-progress-top">
             <span class="faint">逐页翻译</span>
-            <span class="tnum">{{ p.translate_done || 0 }} / {{ p.translate_total }}</span>
+            <span class="tnum">{{ progressOf(p)!.done }} / {{ progressOf(p)!.total }}</span>
           </div>
-          <ProgressBar :done="p.translate_done || 0" :total="p.translate_total" />
+          <ProgressBar :done="progressOf(p)!.done" :total="progressOf(p)!.total" />
         </div>
         <div class="pc-progress" v-if="p.pdf_translate_total && (p.pdf_translate_done || 0) < p.pdf_translate_total">
           <div class="pc-progress-top">
@@ -436,10 +588,11 @@ async function submitEdit() {
           </div>
           <ProgressBar :done="p.pdf_translate_done || 0" :total="p.pdf_translate_total" />
         </div>
-        <div class="pc-done tiny" v-if="isTranslated(p)">
+        <div class="pc-done tiny" v-if="showDoneLine(p)">
           <AppIcon name="check_circle" :size="14" />逐页翻译已完成（{{ p.translate_total }} 页）
         </div>
-        <div class="tiny faint" v-if="!p.translate_total && !p.pdf_translate_total">尚未开始翻译</div>
+        <div class="tiny faint"
+             v-if="!p.translate_total && !p.pdf_translate_total && !activeTaskOf(p)">尚未开始翻译</div>
 
         <footer class="pc-actions">
           <!-- 知识库归属：只在"已入库"时现身，避免每张卡片都挂一个同义徒章 -->
@@ -452,10 +605,12 @@ async function submitEdit() {
           </RouterLink>
           <button
             class="btn sm"
-            v-if="(p.translate_done || 0) < (p.translate_total || 0)"
-            :disabled="busyKey === 'tr:' + p.id"
-            @click="runTranslate(p, 'resume')"
-          >继续翻译</button>
+            :disabled="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
+            :title="activeTaskOf(p)
+              ? (activeTaskOf(p)!.status === 'paused' ? '继续这个翻译任务' : '暂停：当前这一页译完就停')
+              : (stage(p) === 'unparsed' ? '还没解析：点一下会先解析，解析完自动接着翻译' : '')"
+            @click="runPipeline(p)"
+          >{{ pipelineLabel(p) }}</button>
           <Menu
             :items="rowMenu(p)"
             :label="`更多操作：${p.title}`"

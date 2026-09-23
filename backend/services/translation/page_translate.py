@@ -66,7 +66,9 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
    骨架里没有的标题按编号深度推断：`1` / `A` / `ABSTRACT` / `REFERENCES` 这类章节级用 `#`，
    `1.1` / `B.2` 用 `##`，`1.1.1` 用 `###`。**同一层级在全文必须一致**，
    不要因为这一页看起来像子节就多加一个 `#`；编号（1、1.1、A.2）原样保留。
-2. 正文按页图分段，段间空行分隔；行内公式写 $...$，独立公式写 $$...$$ 并单独成段。
+2. 正文按页图分段，段间空行分隔；行内公式写 $...$，独立公式写 $$...$$ 并单独成段，编号用 `\\tag{n}`。
+   **页图上的任何数学符号都要包进定界符**（连方法名下标也算：`$\\text{TurboQuant}_{\\text{mse}}$`），
+   不许裸写 `\\text{…}` / `^{…}` / `_{…}`（前端会原样显示成 `Q_mse^{-1}` 这种文字，用户报过）。
 3. **插图**：图注单独成段，写成 **Figure 1: ...** / **Table 2: ...**，编号必须与页图上实际编号一致
    （页图上是 Figure 2 就写 Figure 2）。图内的子图标题（(a)/(b)…）、坐标轴名、刻度、图例、
    旁边标注的文字，若页图看得清就一并写进图注所在段的下一行，看不清就省略，不要编造。
@@ -85,20 +87,34 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
    只翻译行名/列名这类自然语言表头。
 5. 参考文献条目**不翻译**：与 original_md 的对应块保持相同文本。
 6. 术语按给定术语表统一；学术书面语；不增删任何内容。
+7. **所有数学都必须写进公式定界符**：行内 `$…$`、独立公式 `$$…$$`（单独成段，编号用 `\\tag{n}`）。
+   禁止裸写 LaTeX —— `Q_mse^{-1}`、`S^{d-1}`、`\\text{…}`、`\\mathbb{E}`、`R^{d×d}` 这类**必须包在 `$…$` 里**；
+   方法名带下标写成 `$\\text{TurboQuant}_{\\text{mse}}$`。公式块里不要塞中文（中文说明放在公式外的段落）。
+8. **不要输出任何页边界痕迹**：页码、「承上页」「续下页」、分隔线、页注释一律不要。
 
 【前文衔接】prompt 里可能给出**已经处理过的前文结尾**：只用它保持术语、句式、段落衔接一致
 （尤其是段落跨页的情况），**不要把它重复输出到本次结果里**。
 
-【跨页衔接（三 条硬规则，页尾/页首最容易出错）】
-1. **译文里禁止保留断词连字符**：页尾原文被版面折断成 `communication bot-` 这种，是**折行**不是连字符词；
-   译文写完整词（→「通信瓶颈」），不许写成「通信瓶-」或半截词。
-2. **本页首块若是上一页句子的延续，直接续译成完整通顺的中文**：
-   不要用「……」/「…」/「（承接上页）」之类的占位或标记开头，也不要重译上一页已经翻过的内容。
-3. 搭接块（【下一页开头】）**只用于理解句子怎么接下去**：
-   - 原文转录（original_md）仍**只转录本页页图能看到的内容**，不要把搭接块抄进来；
-   - 但译文可以据它把页尾的半截词补成完整词。
-4. **标记不许跨页悬空**：若上一页把 `*`（斜体/加粗）或 `$$` 打开却没闭合，本页首块要把标记补齐成对；
-   本页末尾同理 —— 宁可把标记收在本页，也不要留给下一页一个孤立的 `*` 或 `$$`。
+【跨页衔接：页面只是**排版单位**，不是语义单位】
+1. **以自然流畅为先**：译文要读起来像一篇完整的中文论文。一句话该在哪里断句就在哪里断，
+   **不要为了迁就页面边界去拆句、补句或改写句子结构**。
+2. **页尾那句尽量在本页收成完整句**：原文在页边界被切断时，若【下一页开头】里能看到这句话的剩余部分，
+   就用它**把这一整句译完**（一直译到真正的句末：句号/问号/分号等），不要留半句、不要写「……」占位。
+   这一句的译文**只在本页出现一次**（下一页不会再译它）。例：
+   - 本页末尾原文：`…This latency is primarily attributed to communication bot-`
+   - 【下一页开头】：`tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`
+   - 本页末句译文：`…这种延迟主要归因于通信瓶颈，它出现在加速器上的 HBM 与 SRAM 之间，或跨分布式集群。`
+   （被版面折断的 `bot-` 要补成完整词「瓶颈」，不许写成「通信瓶-」或半截词。）
+3. **页首那半句已由上一页译完，本页跳过它**：原文被页边界切断时，本页开头往往是上一页那句的后半截
+   （形如 `tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`）。
+   **跳过这半句**，从**下一个句子**开始译（例：直接译 `By compressing or quantizing model weights …`）。
+   同一个词/同一句话**绝不能两页各写一遍**（用户报过「瓶颈」出现两次）。判断依据就是原文本身，
+   看不到【前文衔接】时也照此处理；能看到时，别重复上一页已经写出来的词。
+4. **页内需要时可以用「——」把补充成分接上**；不要用「也就是说」这类重新起句的引导词。
+5. **译文里不要输出任何页边界痕迹**：页码、「承上页」「续下页」、分隔线、页注释一律不要。
+6. **标记不许跨页悬空**：本页打开的 `*`（斜体/加粗）或 `$$` 要在本页闭合；
+   【下一页开头】只用来补全页尾那句，**不要把搭接块里其他句子的内容输出到本页**
+   （原文转录一如既往：只转录本页页图能看到的内容）。
 
 【输出格式】只输出一个 JSON 对象，不要解释、不要代码块：
 {"original_md": "……", "translation_md": "……"}"""
@@ -109,7 +125,7 @@ PAGE_USER_TEMPLATE = """{prefix}{previous}
 【解析器抽出的本页文本（**仅供参考**；与页图冲突时以页图为准）】
 <页面文本>
 {body}
-</页面文本>{lookahead}
+</页面文本>{lookahead}{edges}
 
 【本页输出】按系统提示输出 JSON：original_md 为忠实转录（一切以页图显示的内容为准，
 表格逐格照抄、图注编号与页图一致），translation_md 为逐块对应的中文译文。"""
@@ -383,8 +399,10 @@ def page_continuity(paper_id: str, page: int) -> dict:
     return {"head": head_continues, "tail": tail_continues}
 
 
-#: 续句开头常见的占位噪声（模型被"页尾半截"误导时会写这些）
-_LEAD_JUNK = re.compile(r"^\s*(?:（?承?接上页）?|\(?承?接上页\)?|【接上页】|…+|\.{2,}|—{2,}|–\s*)+")
+#: 续句开头常见的**占位噪声**（模型被"页尾半截"误导时会写这些）。
+#: 注意**不包含「——」**：当上一页确实停在句中时，「——它出现在…」是合法的同位语衔接，
+#: 剥掉反而会把两句粘成病句（实测「…通信瓶颈——它出现在加速器上…」是最好的读法）。
+_LEAD_JUNK = re.compile(r"^\s*(?:（?承?接上页）?|\(?承?接上页\)?|【接上页】|…+|\.{2,})+")
 
 
 def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
@@ -409,14 +427,37 @@ def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
 
 def render_page_prompt(*, page: int, page_total: int, body: str,
                        prefix: str = "", section: str = "", previous: str = "",
-                       lookahead: str = "") -> str:
+                       lookahead: str = "", edges: dict | None = None) -> str:
     section_line = f"；章节：{section}" if section else ""
     return PAGE_USER_TEMPLATE.format(
         prefix=prefix, previous=f"\n\n{previous}" if previous else "",
         page=page, page_total=page_total,
         section_line=section_line, body=body or "（解析器没有抽到文本，请完全依据页图）",
         lookahead=f"\n\n{lookahead}" if lookahead else "",
+        edges=render_edge_facts(edges or {}),
     )
+
+
+#: 页边界参考块的开头（供测试/排查引用）
+EDGE_FACTS_HEADER = "【页边界参考"
+
+
+def render_edge_facts(edges: dict) -> str:
+    """把解析器判定的页边界事实写进 prompt（键名与 `page_continuity` 一致：head / tail）。
+
+    为什么给这个参考："本页末尾是不是半句" 在页图上并不显眼（往往只是没写句号），
+    模型拿不准时容易把半句补成一个完整句，于是同一句被拆成两句（用户报过）。
+    但**它只是参考** —— 以自然流畅为先，别为了迁就页边界去拆句。
+    """
+    if not edges:
+        return ""
+    head = ("承接上一页的句子（原文上半截在上一页；**这句已由上一页译完，本页跳过它、从下一句开始**）"
+            if edges.get("head") else "新起句子")
+    tail = ("句子在本页被截断（**请用【下一页开头】把这句在本页译成完整句**，不要留半句）"
+            if edges.get("tail") else "本页句子已结束（页尾正常收句）")
+    return (f"\n\n{EDGE_FACTS_HEADER}（解析器判定，**仅供参考**：用来看句子在哪里被页边界切开，"
+            f"别为它牺牲中文的自然断句）】"
+            f"\n- 本页开头：{head}\n- 本页末尾：{tail}")
 
 
 # --------------------------------------------------------------------------
@@ -434,6 +475,9 @@ class PageCallResult:
     reasoning_tokens: int = 0
     latency_ms: float = 0.0
     max_tokens: int = 0
+    #: DeepSeek 前缀缓存：命中 / 未命中的 prompt token 数（用于验证"逐页追加式前文"真的吃到缓存）
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
 
 
 def call_page(provider, prompt: str, image: bytes | None, *,
@@ -457,6 +501,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
             "模型未返回完整的 original_md / translation_md（页级调用）",
             retryable=True,
         )
+    usage_raw = (getattr(res, "raw", None) or {}).get("usage") or {}
     return PageCallResult(
         original_md=original.strip(), translation_md=translation.strip(),
         model=getattr(res, "model", "") or provider.model_name,
@@ -465,6 +510,8 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         reasoning_tokens=int(getattr(res, "reasoning_tokens", 0) or 0),
         latency_ms=float(getattr(res, "latency_ms", 0.0) or 0.0),
         max_tokens=max_tokens,
+        cache_hit_tokens=int(usage_raw.get("prompt_cache_hit_tokens") or 0),
+        cache_miss_tokens=int(usage_raw.get("prompt_cache_miss_tokens") or 0),
     )
 
 

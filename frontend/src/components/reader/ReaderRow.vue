@@ -33,8 +33,9 @@ const html = computed(() => {
 });
 const level = computed(() => (props.row.type === 'heading' ? Math.min(4, Math.max(1, props.row.level || 2)) : 0));
 const isEmpty = computed(() => !String(text.value ?? '').trim());
-/** 页尾跨页句：译文让位给下页（否则会出现"半截词 + 整句重译"） */
-const deferred = computed(() => props.side === 'zh' && !!props.row.zhDeferred);
+/* 跨页的两个徽章（「承上页」「续下页」）**已按用户要求拿掉**：
+ * 译文现在以自然断句为先（页边界只是排版），半句直接读下去就好，不需要任何页边装饰。
+ * 后端仍在行上打 `continues` / `continued_from_prev`（供脚本审计），前端不再展示。 */
 /** 未译空位的文案：任务在跑 → 等待翻译；否则 → 未翻译 */
 const emptyLabel = computed(() => {
   if (props.side !== 'zh') return '—';
@@ -49,13 +50,12 @@ const emptyLabel = computed(() => {
              { heading: level > 0, [`lvl-${level}`]: level > 0, empty: isEmpty, compact: props.compact }]"
     :data-side="props.side"
   >
-    <div v-if="deferred" class="rr-body rr-deferred" title="本句跨页，完整译文在下一页">续下页</div>
-    <div v-else-if="html" class="rr-body md" v-html="html" />
+    <div v-if="html" class="rr-body md" v-html="html" />
     <div v-else class="rr-empty">
       {{ emptyLabel }}
     </div>
     <button
-      v-if="!isEmpty && !deferred"
+      v-if="!isEmpty"
       class="rr-copy"
       :title="props.side === 'zh' ? '复制译文' : '复制原文'"
       @click.stop="emit('copy', { row: props.row, side: props.side })"
@@ -82,8 +82,6 @@ const emptyLabel = computed(() => {
    ⚠️ 不要在这里加 `p:last-child { margin-bottom: 0 }`：那会让相邻块贴在一起，
    本来分成两段的正文会看起来连成一段。 */
 .rr-body :deep(p) { margin: 0 0 .55em; }
-/* 页尾跨页句的占位：淡色小字，不抢注意力，也不是“错误”样式 */
-.rr-deferred { font-size: .82em; color: var(--text-faint); line-height: 1.4; }
 .rr-body :deep(h1), .rr-body :deep(h2), .rr-body :deep(h3), .rr-body :deep(h4) {
   margin: 0 0 .35em; font-weight: 600; line-height: 1.35;
 }

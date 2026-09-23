@@ -83,7 +83,6 @@ const asideOpen = ref(localStorage.getItem(asideKey) !== '0');
 const asideVisible = computed(() => (isNarrow.value ? mobilePane.value === 'side' : asideOpen.value));
 const isNarrow = ref(false);
 const paneWidth = ref(1200);
-const useBrief = ref(true);
 
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
 interface ToolbarAction {
@@ -625,16 +624,38 @@ useEventStream({
 });
 
 /* ------------------------------ 翻译动作 ------------------------------ */
+/** 请求在途（防连点）：任务创建本身很快，但双击会发两次 POST */
+const busyTranslating = ref(false);
+
 async function startTranslate(mode: 'resume' | 'retranslate' = 'resume', pages?: number[]) {
+  if (busyTranslating.value) return;
+  /* **不重复起任务**：已有活着的翻译任务时直接告知并返回（后端也会复用，但前端先说清楚，
+   * 否则用户以为又开了一个）。想看进度用「N/M 页」徽章。 */
+  if (activeTask.value) {
+    const t = activeTask.value;
+    toast(`已有翻译任务在跑（${t.done_items ?? 0}/${t.total_items ?? 0}），先停止或等它结束`, 'warn', 2600);
+    return;
+  }
+  busyTranslating.value = true;
   try {
-    const task = await api.post<TaskInfo>(`/papers/${paperId.value}/translate`, {
-      mode, brief: useBrief.value, pages,
+    const task = await api.post<TaskInfo & { reused?: boolean }>(`/papers/${paperId.value}/translate`, {
+      mode, brief: true, pages,
       force: mode === 'retranslate',
     });
+    const msg = String((task as unknown as { __meta?: { message?: string } })?.__meta?.message ?? '');
+    if (task.type === 'PARSE') {
+      // 还没解析：后端把解析串起来了（解析完成自动开翻译）——后端文案直接给用户看
+      toast(msg || '已创建解析任务，完成后自动开始翻译', 'ok', 4200);
+      void fetchTasks();
+      return;
+    }
     liveTask.value = task;
-    toast(pages?.length ? `已创建第 ${pages.join('、')} 页的翻译任务` : '已创建逐页翻译任务', 'ok');
+    if (task.reused) toast('沿用正在进行的翻译任务', 'ok');
+    else if (pages?.length) toast(`已创建第 ${pages.join('、')} 页的翻译任务`, 'ok');
+    else if (msg) toast(msg, 'ok', 4200);
+    else toast('已创建逐页翻译任务', 'ok');
     void fetchTasks();
-  } catch (err) { reportError(err, '触发翻译失败'); }
+  } catch (err) { reportError(err, '触发翻译失败'); } finally { busyTranslating.value = false; }
 }
 
 async function cancelTranslate(task: TaskInfo | null) {
@@ -649,8 +670,14 @@ async function cancelTranslate(task: TaskInfo | null) {
 
 async function triggerParse() {
   try {
-    await api.post(`/papers/${paperId.value}/parse`, {}, { force: false, vision: true });
-    toast('已创建解析任务，完成后刷新本页', 'ok');
+    // 阅读器空状态的那个按钮：一次点击把「解析 + 翻译」都排上（解析依赖在导航时才会拉起，
+    // 但翻译必须在**用户点了**之后才开始 —— 所以这里显式带上 then_translate）。
+    const task = await api.post<{ __meta?: { message?: string } }>(
+      `/papers/${paperId.value}/parse`, {},
+      { force: false, vision: true, then_translate: true });
+    toast(String(task?.__meta?.message ?? '')
+      || '已创建解析任务，完成后会自动开始翻译；完成后刷新本页', 'ok', 4200);
+    void fetchTasks();
   } catch (err) { reportError(err, '触发解析失败'); }
 }
 
@@ -684,6 +711,7 @@ onMounted(async () => {
   mq.addEventListener('change', onMqChange);
   window.addEventListener('resize', syncPaneWidth);
   document.addEventListener('mouseup', onMouseUp);
+  document.addEventListener('selectionchange', clampSelection);
 
   await loadAll();
   await loadSide();
@@ -705,6 +733,7 @@ onUnmounted(() => {
   mq?.removeEventListener('change', onMqChange);
   window.removeEventListener('resize', syncPaneWidth);
   document.removeEventListener('mouseup', onMouseUp);
+  document.removeEventListener('selectionchange', clampSelection);
   contentRo?.disconnect();
   scroller.value?.removeEventListener('scrollend', onScrollEnd);
   if (taskTimer) clearInterval(taskTimer);
@@ -738,6 +767,49 @@ function runSearch() {
 function clearSearch() { searchQuery.value = ''; searchHits.value = []; }
 
 /* ------------------------------ 划词 ------------------------------ */
+/** 元素属于哪一侧：'pdf' = 左栏原 PDF 文字层，'rows' = 正文/译文行，'' = 其他地方。 */
+function sideOf(node: Node | null): 'pdf' | 'rows' | '' {
+  const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
+  if (!el?.closest) return '';
+  if (el.closest('[data-pdf-page]')) return 'pdf';
+  if (el.closest('[data-row-id]')) return 'rows';
+  return '';
+}
+
+/**
+ * 划词**不跨栏**：左栏是原 PDF（文字层是隐形文字），右栏是正文/译文行，两者是并排的独立内容。
+ * 从右栏往左拖时，选区会继续往左"吞"进 PDF 那串隐形文字（选中的东西跟看到的不一样）—— 用户报过。
+ *
+ * 做法：记住**最后一次两侧同栏**的选区（`lastGood`），一旦发现锚点/焦点分属两栏，
+ * 就回退到那个选区。而不是去改 `getRangeAt(0)`：拖拽向左产生的是"反向选区"，
+ * range 的 start/end 与 anchor/focus 不是一回事，直接 `setEnd` 会把选区翻到另一栏去（实测过）。
+ */
+let clampingSelection = false;
+let lastGood: { node: Node; offset: number; focusNode: Node; focusOffset: number } | null = null;
+
+function clampSelection() {
+  if (clampingSelection) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.anchorNode) return;
+  const anchorSide = sideOf(sel.anchorNode);
+  const focusSide = sideOf(sel.focusNode);
+  if (!anchorSide || !focusSide) return;                 // 其他地方（弹窗等）不管
+  if (anchorSide === focusSide) {                        // 同栏 → 记住，作为回退目标
+    lastGood = {
+      node: sel.anchorNode, offset: sel.anchorOffset,
+      focusNode: sel.focusNode ?? sel.anchorNode, focusOffset: sel.focusOffset,
+    };
+    return;
+  }
+  clampingSelection = true;
+  try {
+    if (lastGood) sel.setBaseAndExtent(lastGood.node, lastGood.offset, lastGood.focusNode, lastGood.focusOffset);
+    else sel.collapse(sel.anchorNode, sel.anchorOffset);
+  } catch { /* 回退失败就算了，不要影响阅读 */ } finally {
+    clampingSelection = false;
+  }
+}
+
 /** 划词浮层的定位（贴着选区上方，不跑出屏幕） */
 function menuPos(rect: DOMRect) {
   return {
@@ -1010,10 +1082,10 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
     <div v-else-if="isEmpty" class="card">
       <div class="card-body">
         <h3>这篇论文还没有解析结果</h3>
-        <p class="muted small">阅读器依赖解析产出（页图 + 页级翻译）。</p>
+        <p class="muted small">阅读器依赖解析产出（页图 + 页级翻译）。点一下会先解析，解析完自动接着翻译。</p>
         <div class="row">
           <button class="btn primary" @click="triggerParse">
-            <AppIcon name="bolt" :size="14" />解析这篇论文
+            <AppIcon name="bolt" :size="14" />解析并翻译
           </button>
           <RouterLink class="btn" :to="{ name: 'library' }">返回论文库</RouterLink>
         </div>
@@ -1090,19 +1162,29 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           </span>
         </template>
         <template v-else>
+          <!-- SSE 连得好不好是**实现细节**，连上时不再刷存在感；
+               只有降级轮询 / 连接中才值得提醒一下。 -->
           <span
-            class="badge"
-            :class="sseStatus === 'open' ? 'ok' : (sseStatus === 'polling' ? 'warn' : '')"
-            :title="sseStatus === 'open' ? 'SSE 已连接：逐页译文实时上线' : 'SSE 不可用，已降级轮询'"
-          >{{ sseStatus === 'open' ? '实时' : (sseStatus === 'polling' ? '轮询' : '连接中') }}</span>
+            v-if="sseStatus !== 'open'"
+            class="badge warn nowrap"
+            :title="sseStatus === 'polling' ? 'SSE 不可用，已降级轮询（4s 一次）' : 'SSE 连接中'"
+          >{{ sseStatus === 'polling' ? '轮询' : '连接中' }}</span>
           <span class="badge accent nowrap">{{ stats.pages_done ?? 0 }}/{{ stats.pages ?? 0 }} 页</span>
+          <span v-if="activeTask" class="badge nowrap" :title="`任务 ${activeTask.id}：${activeTask.status}`">
+            翻译中
+          </span>
         </template>
 
-        <label class="tiny faint row nowrap" style="gap:4px" title="文档简报：翻译前固化术语">
-          <input v-model="useBrief" type="checkbox"> 简报
-        </label>
-        <button class="btn primary" v-if="!translateDone" @click="startTranslate('resume')">
-          <AppIcon name="play" :size="15" />继续翻译
+        <!-- 文档简报不需要开关：有就用、没有就自动生成（在左栏「术语」页签里可编辑）。
+             brief=false 的参数仍保留在 API 上供脚本使用。 -->
+        <button
+          v-if="!translateDone"
+          class="btn primary"
+          :disabled="!!activeTask || busyTranslating"
+          :title="activeTask ? '已有翻译任务在跑（可先「停止」或等它结束）' : '从断点继续翻译剩余的页'"
+          @click="startTranslate('resume')"
+        >
+          <AppIcon name="play" :size="15" />{{ activeTask || busyTranslating ? '翻译中…' : '继续翻译' }}
         </button>
         <button v-if="activeTask" class="btn danger" @click="cancelTranslate(activeTask)">
           <AppIcon name="stop" :size="15" />停止

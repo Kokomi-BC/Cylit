@@ -119,7 +119,7 @@ heading_level / translation / translation_status / translation_revision / formul
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers/{id}/translate` | 产线 A（**逐页翻译，唯一粒度**）：`{"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}` |
+| POST | `/papers/{id}/translate` | 产线 A（**逐页翻译，唯一粒度**）：`{"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**幂等**：已有活着的同类任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同篇并发两套页翻译会互相覆盖产物） |
 | GET | `/papers/{id}/translation/stats` | `{total, done, stale}`（**以页为单位**：total = 页数，done = 已有对齐行的页数） |
 | GET/POST | `/papers/{id}/brief` | 文档简报（全文脉络 + 统一术语）；POST 可重新生成或写入人工修订（`{"apply":{"glossary":{...}}}`） |
 | GET/DELETE | `/papers/{id}/translation/cache` | 页级产物状态（已翻译页数 / 行数 / token 用量 / 对齐质量分布）/ 清空（等于全篇重译） |
@@ -130,7 +130,7 @@ heading_level / translation / translation_status / translation_revision / formul
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `resume` | `resume` = 只翻还没有产物的页（断点续跑）；`retranslate` = 忽略已有产物全部重来（旧值 `retry_failed` 仍接受，按 `resume` 处理） |
-| `force` | `false` | 强制重来（等价于 `retranslate`，且不复用进行中的同类任务） |
+| `force` | `false` | 强制重来（等价于 `retranslate`）。**仍会复用进行中的任务**（不新建、不取消旧的） |
 | `brief` | `true` | 文档简报（每篇 1 次调用，固化术语）；`false` 省一次调用但术语一致性下降 |
 | `context` | `true` | 是否把**完整前文**（第 1..N-1 页原文+译文）放进本页 prompt（连贯记忆 + 前缀缓存） |
 | `context_chars` | `2000000` | 前文长度上限（**仅护栏**：目标模型窗口 1M token，正常论文不截断） |

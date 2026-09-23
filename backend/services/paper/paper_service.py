@@ -204,6 +204,24 @@ def touch_read(paper_id: str) -> None:
             row.last_read_at = now()
 
 
+def set_translate_progress(paper_id: str, *, done: int, total: int) -> None:
+    """逐页翻译**进行中**的轻量写回（只 UPDATE 两列，不读磁盘）。
+
+    为什么必须实时写：论文库卡片上的进度条读的就是 `translate_done/translate_total`。
+    以前只在任务**结束时**才回写，于是翻译跑到一半卡片还停在旧数字（用户报"已完成一半但未显示进度"）。
+    """
+    with session_scope() as sess:
+        row = sess.get(Paper, paper_id)
+        if row is None or row.deleted_at is not None:
+            return
+        row.translate_done = max(0, int(done))
+        if total:
+            row.translate_total = int(total)
+        if row.status != "failed" and row.translate_done < (row.translate_total or 0):
+            row.status = "translating"
+        sess.flush()
+
+
 def refresh_progress_counters(paper_id: str) -> dict:
     """按 MySQL 与 Markdown 的真实状态回写论文进度字段（服务端权威）。"""
     stats = translation_stats(paper_id)
@@ -442,7 +460,7 @@ def reconcile(paper_id: str | None = None, *, include_deleted: bool = True) -> d
 
 
 def _to_dict(row: Paper) -> dict:
-    return {
+    data = {
         "id": row.id, "title": row.title, "authors": row.authors,
         "venue": row.venue, "year": row.year, "page_count": row.page_count,
         "status": row.status, "tags": [t for t in (row.tags or "").split(",") if t],
@@ -461,6 +479,70 @@ def _to_dict(row: Paper) -> dict:
         "deleted_at": row.deleted_at.isoformat(timespec="seconds")
         if row.deleted_at else None,
     }
+    return _align_with_disk(row, data)
+
+
+# 正在跑逐页翻译的论文 id 缓存：{时刻, 集合}。查询很便宜但要被每篇论文的序列化调用，
+# 所以缓存 3 秒，避免列表接口对同一个查询打 N 次。
+_LIVE_CACHE: dict[str, object] = {"at": 0.0, "ids": set()}
+_LIVE_TTL_S = 3.0
+
+
+def _papers_being_translated() -> set[str]:
+    """当前有 TRANSLATE_MD 任务在跑（排队/执行/暂停）的论文 id 集合。
+
+    为什么必须看任务：任务在跑时**磁盘上还是上一轮的产物**（重新翻译时尤其明显），
+    单纯"以磁盘为准"会把卡片改回「已翻译 22/22」，而任务其实刚开始 —— 正是用户反复
+    反馈的"前后端状态对不上"。跑任务期间以库里/任务里的实时值为准。
+    """
+    import time
+
+    now_ts = time.monotonic()
+    if now_ts - float(_LIVE_CACHE["at"]) < _LIVE_TTL_S:  # type: ignore[arg-type]
+        return _LIVE_CACHE["ids"]  # type: ignore[return-value]
+    ids: set[str] = set()
+    try:
+        rows = task_service.list(type_="TRANSLATE_MD", limit=200)
+        ids = {str(r["paper_id"]) for r in rows
+               if r.get("paper_id") and str(r.get("status")) in ("pending", "processing", "paused")}
+    except Exception as exc:  # noqa: BLE001 —— 查不到就退化成旧行为，别把列表接口打挂
+        log.debug("查活跃翻译任务失败：%s", exc)
+    _LIVE_CACHE["at"] = now_ts
+    _LIVE_CACHE["ids"] = ids
+    return ids
+
+
+def _align_with_disk(row: Paper, data: dict) -> dict:
+    """把 MySQL 里的统计**按磁盘真实情况**修正（只改返回值，不写库）。
+
+    为什么需要：`data/papers/<id>/` 被手动删掉（测试/清理）后，MySQL 里的
+    `page_count` / `translate_*` / `status` 仍是陈旧值 —— 论文卡片就会显示
+    「继续翻译」+「11/22」这种与事实完全不符的状态（用户报"看的一头雾水"）。
+    判据只有磁盘：解析产物 = `ir.sqlite` + `pages/`，翻译产物 = `md/pages.json`。
+
+    例外：这篇论文**正在跑翻译任务**时不做翻译相关的修正（磁盘不是真相，任务才是）。
+    """
+    if row.deleted_at is not None:
+        return data
+    live = row.id in _papers_being_translated()
+    try:
+        paths = paper_paths(row.id)
+        parsed = paths["ir"].is_file() and paths["pages"].is_dir()
+        translated = (paths["md"] / "pages.json").is_file()
+    except Exception:  # noqa: BLE001 —— 路径算不出来就按库里的值返回，不因统计口径把接口打挂
+        return data
+    if not parsed:
+        data["page_count"] = 0
+        data["translate_done"] = 0
+        data["translate_total"] = 0
+        if data.get("status") != "failed":
+            data["status"] = "imported"
+    elif not translated and not live:
+        data["translate_done"] = 0
+        data["translate_total"] = 0
+        if data.get("status") in ("translating", "translated", "indexed"):
+            data["status"] = "parsed"
+    return data
 
 
 def dumps(obj) -> str:

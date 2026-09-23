@@ -92,6 +92,9 @@ def handle_parse(ctx: TaskContext) -> dict:
 
     ctx.progress(len(PARSE_STAGES) * 100, len(PARSE_STAGES) * 100,
                  message="解析完成", force=True)
+    # 「解析并翻译」：解析完自动接着开翻译任务（前端只按一次，关掉页面也不影响）
+    if ctx.params.get("then_translate"):
+        _chain_translate(paper_id)
     summary = result.counts()
     return {
         "message": (f"解析完成：{summary['blocks']} 块（公式 {summary['formulas']}，"
@@ -102,6 +105,22 @@ def handle_parse(ctx: TaskContext) -> dict:
         "stats": {k: v for k, v in result.stats.items()
                   if k in ("stage_ms", "markdown", "rebind")},
     }
+
+
+def _chain_translate(paper_id: str) -> None:
+    """解析完成后自动接着开一个逐页翻译任务。
+
+    走 `translation_service.start_translation` 而不是裸 `task_service.create`：
+    它带"已有活动任务就复用"的幂等判断（否则会重复建两个翻译任务）。
+    """
+    from backend.services.translation import translation_service
+
+    try:
+        task = translation_service.start_translation(paper_id, mode="resume")
+        log.info("解析完成 → 自动开始逐页翻译：%s（任务 %s%s）", paper_id,
+                 task.get("id"), "，复用已有任务" if task.get("reused") else "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("解析完成后的自动翻译没能启动：%s", exc)
 
 
 def _sync_to_mysql(paper_id: str, result) -> None:
@@ -151,7 +170,10 @@ def _sync_to_mysql(paper_id: str, result) -> None:
             row.title = result.title or row.title
             row.authors = result.authors or row.authors
             row.page_count = len(result.pages) or row.page_count
-            row.translate_total = len(result.blocks)
+            # 翻译是**页级**（唯一粒度）：分母必须是**页数**，不是块数 ——
+            # 旧块级时代这里写的是 len(result.blocks)，卡片就会显示「0 / 480」这种假进度（用户报过）。
+            row.translate_total = len(result.pages) or row.translate_total
+            row.translate_done = 0
             row.parse_summary_json = json_dumps({
                 "counts": result.counts(),
                 "grades": result.grade_distribution(),

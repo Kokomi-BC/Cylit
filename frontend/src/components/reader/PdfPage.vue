@@ -1,3 +1,23 @@
+<script lang="ts">
+/* 划词接管的**共享状态**：22 个 PdfPage 实例必须共用一份 —— 跨页拖拽的两端分属不同实例，
+ * 各持一份状态的话永远拼不出跨页选区（实测踩到：拖到第二页文字上什么都不发生）。
+ * 所以放模块级（<script>），不要放 <script setup>（那里每个实例各一份）。 */
+type SelPoint = { node: Node; offset: number };
+const textLayers = new Set<HTMLElement>();
+/** 本次拖拽的固定端（按下点） */
+let dragFrom: SelPoint | null = null;
+/** 位移超过阈值后为 true：这段拖拽由我们自己驱动 */
+let dragTakenOver = false;
+const dragStart = { x: 0, y: 0 };
+const dragPoint = { x: 0, y: 0 };
+/** 最后一次落在 PDF 真文字上的焦点（空白/译文处的回退目标） */
+let lastGood: SelPoint | null = null;
+/** 这一轮按下不允许浏览器自己划词（见 onDocPointerDown 里的说明） */
+let suppressSelect = false;
+let listenerBound = false;
+let autoScrollRaf = 0;
+</script>
+
 <script setup lang="ts">
 /**
  * 原 PDF 页渲染（**真实 PDF**：矢量页 + 文字层，可选中/复制/搜索）。
@@ -130,6 +150,209 @@ function nearViewport(margin = 900): boolean {
   return r.bottom > -margin && r.top < window.innerHeight + margin;
 }
 
+/* ------------------------------ 划词：PDF 文字层自己接管 ------------------------------
+ * 为什么不能交给浏览器（都是真实鼠标拖拽 + 逐事件记录实测出来的）：
+ * ① 指针拖进页面空白（没有文本节点的地方）时，Chrome 交回来的 focus 是**文字层容器本身**
+ *    （`focusNode = .pdf-text-layer`，offset = "第几个子节点"）：offset 递增时选区从锚点一路铺到层末
+ *    （实测 131 字 → 3176 字，矩形从 -212 铺到 766，即整页）；offset 落在 0 时反过来倒长到页首。
+ * ② 这个错误状态**会被画出来一帧**（selectionchange 交到手上时，本帧已经画过了）——
+ *    所以"事后把焦点拉回来"一定会看到"瞬间整页全选"的闪烁，必须一开始就不让浏览器划词。
+ * ③ 本阅读器是"每页 PDF 一栏、旁边紧跟该页译文"，浏览器原生选区跨页时会把中间的**译文**一起圈进去：
+ *    复制出来混着非 PDF 内容。
+ *
+ * 做法：按下时若落在 PDF 文字上，就接管这次拖拽 ——
+ *   · `selectstart` 里 `preventDefault` 挡掉浏览器自己的划词（从按下那一刻就挡：
+ *     它"一开始划"就把焦点给了层容器，事后修一定会闪一帧；双击/三击 detail ≥ 2 放行，选词/选行照旧）；
+ *   · 焦点自己用 `caretRangeFromPoint` 算，**只接受"某个 PDF 文字层里的文本节点"**
+ *     （页内点不到就上下探几个像素找最近一行）：落在页面空白或右侧译文上，
+ *     就停在**最后一次有效位置**（不膨胀、也不圈进非 PDF 内容）；跨页则落到那一页的文字上，照常选；
+ *   · 拖拽期间给 `<html>` 加 `pm-pdf-drag`（见 applySelection 的说明）：跨页时中间的译文行
+ *     不进选区也不进剪贴板；拖到容器上下边缘还会自己滚动，方便跨页选。
+ *
+ * 状态声明在文件顶部的模块级 `<script>` 里（必须多个实例共享，否则跨页两端凑不到一起）。
+ */
+
+/** 节点所在的文字层（不在任何文字层里 → null） */
+function layerOf(node: Node | null): HTMLElement | null {
+  if (!node) return null;
+  const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement);
+  const tl = (el?.closest?.('.pdf-text-layer') ?? null) as HTMLElement | null;
+  return tl && textLayers.has(tl) ? tl : null;
+}
+
+/** 命中点处的"PDF 文字层里的文本节点"；元素容器、译文、页面外一律算无效。
+ *
+ * 注意：文字层的 span 是**绝对定位**的，层自己没有行盒 —— 点在行间、词间的空白上时
+ * `caretRangeFromPoint` 会交回**层容器**（这也是原生划词会"整页闪一下"的根源）。
+ * 所以上下一路探几个点，取最近的文字位置；探不到（真空句、插图区）就返回 null，
+ * 由调用方停在最后一次有效位置。 */
+function textPointAt(x: number, y: number): SelPoint | null {
+  const at = (px: number, py: number): SelPoint | null => {
+    const c = document.caretRangeFromPoint?.(px, py);
+    const n = c?.startContainer ?? null;
+    if (!n || n.nodeType !== Node.TEXT_NODE || !layerOf(n)) return null;
+    return { node: n, offset: c!.startOffset };
+  };
+  const exact = at(x, y);
+  if (exact) return exact;
+  const NEAR = [2, 4, 7, 11, 16, 22];
+  for (const d of NEAR) {
+    const up = at(x, y - d);
+    if (up) return up;
+    const down = at(x, y + d);
+    if (down) return down;
+  }
+  return null;
+}
+
+/** 把选区放到两点之间。同页、跨页都只是一段 range ——
+ *  Chrome 的 Selection 实际只保留一段（`addRange` 第二段会合并成一段，实测），
+ *  所以"跨页不圈进中间的译文"不是靠多段选区，而是靠拖拽期间给非 PDF 内容加 `user-select:none`
+ *  （见 `pm-pdf-drag`）：Chrome 会把不可选的内容从选区里跳过，`toString()` / 复制都不会带上（实测 4984 → 3631 字）。 */
+function applySelection(a: SelPoint, b: SelPoint): void {
+  const sel = document.getSelection();
+  if (!sel) return;
+  if (!layerOf(a.node) || !layerOf(b.node)) return;
+  try { sel.setBaseAndExtent(a.node, a.offset, b.node, b.offset); }
+  catch { /* 层刚好被重渲染掉了就算了，别影响阅读 */ }
+}
+
+/** 拖拽期间给 `<html>` 加这个类：非 PDF 内容不参与本次选区（见 applySelection 的说明） */
+function setDragClass(on: boolean): void {
+  document.documentElement.classList.toggle('pm-pdf-drag', on);
+}
+
+/** 离文字层最近的滚动容器（拖到边缘时自己滚） */
+function scrollerOf(el: HTMLElement): HTMLElement | null {
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    if (n.scrollHeight > n.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(n).overflowY)) return n;
+  }
+  return null;
+}
+
+/** 用当前拖拽点更新选区（空白处停在 lastGood，不膨胀） */
+function extendDragTo(x: number, y: number): void {
+  if (!dragFrom) return;
+  const p = textPointAt(x, y);
+  if (p) lastGood = p;
+  if (lastGood) applySelection(dragFrom, lastGood);
+}
+
+function autoScrollTick(): void {
+  if (!dragFrom || !dragTakenOver) { autoScrollRaf = 0; return; }
+  const tl = layerOf(lastGood?.node ?? null) ?? layerOf(dragFrom.node);
+  const sc = tl ? scrollerOf(tl) : null;
+  if (sc) {
+    const r = sc.getBoundingClientRect();
+    const EDGE = 48;
+    let dy = 0;
+    if (dragPoint.y < r.top + EDGE) dy = -14;
+    else if (dragPoint.y > r.bottom - EDGE) dy = 14;
+    if (dy) {
+      const before = sc.scrollTop;
+      sc.scrollTop = before + dy;
+      if (sc.scrollTop !== before) extendDragTo(dragPoint.x, dragPoint.y);
+    }
+  }
+  autoScrollRaf = requestAnimationFrame(autoScrollTick);
+}
+
+function onDocPointerDown(ev: PointerEvent): void {
+  dragFrom = null;
+  dragTakenOver = false;
+  suppressSelect = false;
+  lastGood = null;
+  if (ev.button !== 0) return;
+  const p = textPointAt(ev.clientX, ev.clientY);
+  if (!p) return;
+  dragFrom = p;
+  lastGood = p;
+  dragStart.x = dragPoint.x = ev.clientX;
+  dragStart.y = dragPoint.y = ev.clientY;
+  /* **从按下这一刻就**不让浏览器自己划词：它"一开始划"就先把焦点给了层容器（整页闪一下），
+   * 等 selectionchange 交到手上时本帧已经画过了 —— 事后修一定会看到闪烁。
+   * 双击/三击（detail ≥ 2，选词/选行）放行，保持原生手感。 */
+  suppressSelect = ev.detail < 2;
+  setDragClass(true);            // 本次拖拽的选区只算 PDF 文字（见 applySelection 的说明）
+}
+
+function onDocPointerMove(ev: PointerEvent): void {
+  if (!dragFrom || !(ev.buttons & 1)) return;
+  dragPoint.x = ev.clientX;
+  dragPoint.y = ev.clientY;
+  if (!dragTakenOver) {
+    if (Math.abs(ev.clientX - dragStart.x) < 3 && Math.abs(ev.clientY - dragStart.y) < 3) return;
+    dragTakenOver = true;                       // 从这一刻起挡掉原生划词
+    if (!autoScrollRaf) autoScrollRaf = requestAnimationFrame(autoScrollTick);
+  }
+  extendDragTo(ev.clientX, ev.clientY);
+}
+
+function onSelectStart(ev: Event): void {
+  if (suppressSelect) ev.preventDefault();      // 这次拖拽由我们自己驱动
+}
+
+function endDrag(): void {
+  dragFrom = null;
+  dragTakenOver = false;
+  suppressSelect = false;
+  // 注意：**不能**在这里无条件摘掉 pm-pdf-drag —— 松手后选区还在（跨页那段 range 依旧罩着中间的译文），
+  // 摘掉它会让 `toString()` / 复制立刻又把译文算回来（实测 2106 → 3400 字）。
+  // 交给 selectionchange 按"选区还在不在 PDF 上"决定。
+  keepDragClass(document.getSelection());
+  if (autoScrollRaf) { cancelAnimationFrame(autoScrollRaf); autoScrollRaf = 0; }
+}
+
+/** 选区只要还盖在某个 PDF 文字层上（且非空），就保持"非 PDF 内容不可选" */
+function keepDragClass(sel: Selection | null): void {
+  let keep = false;
+  if (sel && sel.rangeCount && !sel.isCollapsed) {
+    for (let i = 0; i < sel.rangeCount && !keep; i++) {
+      const r = sel.getRangeAt(i);
+      for (const tl of textLayers) if (r.intersectsNode(tl)) { keep = true; break; }
+    }
+  }
+  setDragClass(keep);
+}
+
+/**
+ * 兜底（不参与接管的那几条路径：键盘 Shift+方向键、双击选词、程序化选区）：
+ * 焦点一旦被浏览器丢给"元素"（容器）或者跑到 PDF 文字之外，就拉回最后一次有效位置。
+ * 拖拽期间我们自己已经把选区放好了，这里不插手。
+ */
+function onDocSelectionChange(): void {
+  const cur = document.getSelection();
+  if (!dragTakenOver) keepDragClass(cur);   // 选区离开 PDF 就收掉（见 endDrag 的说明）
+  if (dragTakenOver) return;
+  if (!cur || cur.rangeCount !== 1 || !cur.anchorNode || !cur.focusNode) return;
+  if (!layerOf(cur.anchorNode) || cur.anchorNode.nodeType !== Node.TEXT_NODE) return;
+  if (cur.focusNode.nodeType === Node.TEXT_NODE && layerOf(cur.focusNode)) {
+    lastGood = { node: cur.focusNode, offset: cur.focusOffset };
+    return;
+  }
+  if (!lastGood) return;
+  try { cur.setBaseAndExtent(cur.anchorNode, cur.anchorOffset, lastGood.node, lastGood.offset); }
+  catch { /* 拉不回来就算了，别影响阅读 */ }
+}
+
+function registerTextLayer(tl: HTMLElement): void {
+  textLayers.add(tl);
+  if (listenerBound) return;
+  document.addEventListener('selectionchange', onDocSelectionChange);
+  document.addEventListener('selectstart', onSelectStart, true);
+  document.addEventListener('pointerdown', onDocPointerDown, true);
+  document.addEventListener('pointermove', onDocPointerMove, true);
+  document.addEventListener('pointerup', endDrag, true);
+  document.addEventListener('pointercancel', endDrag, true);
+  window.addEventListener('blur', endDrag);
+  listenerBound = true;
+}
+
+/** 页面组件卸载时把它那层摘掉（跨页选区里若还有它的节点，交给 applySelection 的 try/catch 兜） */
+function unregisterTextLayer(tl: HTMLElement): void {
+  textLayers.delete(tl);
+}
+
 let task: RenderTask | null = null;
 let destroyed = false;
 let renderedFor = '';
@@ -230,6 +453,8 @@ async function render() {
         viewport,
       });
       void textLayer.render();
+      // 划词由我们自己接管（见文件上方说明：空白处会闪整页、跨页会圈进译文）
+      registerTextLayer(tlHost);
     }
     syncScale(measuredWidth());
     state.value = 'ready';
@@ -311,6 +536,8 @@ onBeforeUnmount(() => {
   observer = null;
   resizeObserver?.disconnect();
   resizeObserver = null;
+  const tl = textHost.value;
+  if (tl) unregisterTextLayer(tl);
   document.removeEventListener('visibilitychange', onVisibility);
   if (bootTimer) clearTimeout(bootTimer);
   if (rerenderTimer) clearTimeout(rerenderTimer);
@@ -387,10 +614,8 @@ onBeforeUnmount(() => {
 }
 .pdf-text-layer :deep(.markedContent) { display: contents; }
 .pdf-text-layer :deep(span[role="img"]) { user-select: none; cursor: default; }
-.pdf-text-layer :deep(.endOfContent) {
-  display: block; position: absolute; inset: 100% 0 0; z-index: -1;
-  cursor: default; user-select: none;
-}
+/* "拖出文字区"的历史遗迹已删：占位元素（.endOfContent）不再需要 ——
+ * 划词改由文字层自己驱动，焦点只接受真文字，跨页按多段选区拼（详见文件上方说明）。 */
 /* 选中底色与正文同一令牌（仅换底色，字形仍由画布提供，不做重影） */
 .pdf-text-layer :deep(::selection) { background: var(--selection-bg); color: transparent; }
 .pdf-text-layer :deep(br::selection) { background: transparent; }

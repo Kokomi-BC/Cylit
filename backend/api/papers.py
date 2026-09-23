@@ -89,10 +89,13 @@ async def trigger_parse(paper_id: str, request: Request,
                                                 description="启用 LLM 公式修复（需真实模型）"),
                         vision: bool = Query(True,
                                              description="扫描页交视觉模型读页（默认开）"),
+                        then_translate: bool = Query(False,
+                                                     description="解析完成后自动接着开始逐页翻译"),
                         vision_model: str | None = Query(None,
                                                          description="指定视觉模型 id")):
     task = paper_service.create_parse_task(paper_id, force=force, params={
         "llm_repair": llm_repair, "vision": vision, "vision_model": vision_model,
+        "then_translate": then_translate,
     })
     return envelope(task, message="已创建解析任务", request=request)
 
@@ -165,6 +168,26 @@ async def trigger_translate(paper_id: str, request: Request,
     if mode == "retry_failed":
         mode = "resume"
     pages = payload.get("pages") or None
+
+    # 还没解析（没有页图）→ 解析是翻译的前置步骤，这里替用户串起来。
+    # 只有**用户点了「翻译」**才会走到这里（导入时的自动解析不会串，见 §"解析完不自动翻译"），
+    # 串起来的方式是给解析任务带上 `then_translate`，解析完成后由 handlers 自动开翻译任务。
+    from backend.services.task import task_service
+    from backend.services.translation.page_translate import list_pages
+
+    if not list_pages(paper_id):
+        running = task_service.find_active("PARSE", paper_id, "system") or {}
+        if running.get("params", {}).get("then_translate"):
+            msg = "这篇论文正在解析，完成后会自动开始翻译"
+        elif running:
+            msg = "这篇论文正在解析：等它完成后再点一次「翻译」"
+        else:
+            running = paper_service.create_parse_task(
+                paper_id, force=False,
+                params={"vision": True, "then_translate": True})
+            msg = "这篇论文还没解析：已创建解析任务，完成后自动开始翻译"
+        return envelope(running, message=msg, request=request)
+
     task = translation_service.start_translation(
         paper_id, mode=mode, force=bool(payload.get("force")),
         brief=payload.get("brief", True),
