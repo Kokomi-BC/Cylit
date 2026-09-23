@@ -66,8 +66,11 @@ const isEmpty = computed(() => !String(text.value ?? '').trim());
 .rrow:hover .rr-copy { opacity: 1; }
 .rr-copy:hover { color: var(--text); }
 .rr-body { font-size: 1em; line-height: 1.78; overflow-wrap: anywhere; }
+/* 段落间距就交给 markdown 自己的 margin：行容器已不再额外留垂直内边距，
+   所以相邻块之间正好是一个正常段落间距（约 .55em），不多不少。
+   ⚠️ 不要在这里加 `p:last-child { margin-bottom: 0 }`：那会让相邻块贴在一起，
+   本来分成两段的正文会看起来连成一段。 */
 .rr-body :deep(p) { margin: 0 0 .55em; }
-.rr-body :deep(p:last-child) { margin-bottom: 0; }
 .rr-body :deep(h1), .rr-body :deep(h2), .rr-body :deep(h3), .rr-body :deep(h4) {
   margin: 0 0 .35em; font-weight: 600; line-height: 1.35;
 }

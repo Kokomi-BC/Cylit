@@ -10,16 +10,10 @@ const wide = computed(() => route.name === 'reader');
 </script>
 
 <template>
+  <a class="skip-link" href="#main">跳到主内容</a>
   <AppHeader />
-  <main :class="['app-main', { wide }]">
-    <RouterView v-slot="{ Component }">
-      <Suspense>
-        <component :is="Component" />
-        <template #fallback>
-          <div class="empty">正在加载页面…</div>
-        </template>
-      </Suspense>
-    </RouterView>
+  <main id="main" :class="['app-main', { wide }]">
+    <RouterView />
   </main>
   <ToastHost />
 </template>

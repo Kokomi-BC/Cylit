@@ -4,10 +4,18 @@
  *
  * 数据来自后端 `outline`：标题行由页级翻译同一次调用产出（英文 `text` / 中文 `text_zh`），
  * 因此中英始终成对；没有页级产物的论文只有英文（`text_zh` 为空）。
+ *
+ * 标题里的 **行内 Markdown / LaTeX** 必须渲染出来（`C.1 TURBOQUANT$_{\mathrm{mse}}$` 之前
+ * 直接把 `$…$` 原样显示，目录里全是反斜杠）。用 `inlineHtml()` 而不是 `mdToHtml()`：
+ * 标题是单行文本，`parseInline` 不会套上 `<p>` 造成行高跳动。
+ *
+ * 另外 `number` 与 `text` 是**包含关系**（后端 text 自带 "C.1 " 前缀），两个都渲染就会出现
+ * "C.1C.1 TURBOQUANT…"，所以文本侧要把已单独显示的前缀去掉。
  */
 import { computed } from 'vue';
 import type { TocRow } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
+import { inlineHtml } from '@/composables/useMarkdown';
 
 const props = defineProps<{
   rows: TocRow[];
@@ -26,6 +34,23 @@ const emit = defineEmits<{
 }>();
 
 const collapsedSet = computed(() => new Set(props.collapsed));
+
+/** 标题正文里若已包含单独显示的编号前缀，就去掉它（`C.1 C.1 xxx` → `C.1 xxx`）。 */
+function dropNumber(text: string, number: string): string {
+  const n = (number || '').trim();
+  const t = (text || '').replace(/^\s+/, '');
+  if (!n || !t.startsWith(n)) return text;
+  return t.slice(n.length).replace(/^[\s.:、)\]]+/, '');
+}
+
+/** 渲染结果一次性算好：目录行数不少，别在每次滚动触发的重渲染里重复解析。 */
+const items = computed(() =>
+  props.rows.map((row) => ({
+    row,
+    html: inlineHtml(dropNumber(row.text, row.number)),
+    zhHtml: row.textZh ? inlineHtml(dropNumber(row.textZh, row.number)) : '',
+  })),
+);
 </script>
 
 <template>
@@ -42,28 +67,29 @@ const collapsedSet = computed(() => new Set(props.collapsed));
     </div>
 
     <div
-      v-for="row in props.rows"
-      :key="row.id"
+      v-for="it in items"
+      :key="it.row.id"
       class="toc-item"
-      :class="[`depth-${Math.min(row.depth, 4)}`, { active: row.id === props.currentRowId }]"
-      @click="emit('focus', row.id)"
+      :class="[`depth-${Math.min(it.row.depth, 4)}`, { active: it.row.id === props.currentRowId }]"
+      @click="emit('focus', it.row.id)"
     >
       <button
-        v-if="row.hasChildren"
+        v-if="it.row.hasChildren"
         class="caret"
-        :title="collapsedSet.has(row.id) ? '展开' : '折叠'"
-        @click.stop="emit('toggle', row.id)"
+        :title="collapsedSet.has(it.row.id) ? '展开' : '折叠'"
+        @click.stop="emit('toggle', it.row.id)"
       >
-        <AppIcon :name="collapsedSet.has(row.id) ? 'chevron-right' : 'chevron-down'" :size="13" />
+        <AppIcon :name="collapsedSet.has(it.row.id) ? 'chevron-right' : 'chevron-down'" :size="13" />
       </button>
       <span v-else class="caret-space" />
       <span class="txt">
         <span class="en truncate">
-          <span v-if="row.number" class="num">{{ row.number }}</span>{{ row.text }}
+          <span v-if="it.row.number" class="num">{{ it.row.number }}</span>
+          <span class="md" v-html="it.html" />
         </span>
-        <span v-if="row.textZh" class="zh truncate">{{ row.textZh }}</span>
+        <span v-if="it.zhHtml" class="zh truncate md" v-html="it.zhHtml" />
       </span>
-      <span class="pg">p{{ row.page }}</span>
+      <span class="pg">p{{ it.row.page }}</span>
     </div>
     <div v-if="!props.rows.length" class="tiny faint" style="padding:8px">未识别到标题结构</div>
 
@@ -100,6 +126,10 @@ const collapsedSet = computed(() => new Set(props.collapsed));
 .toc-item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .toc-item .en { font-size: 12.5px; font-weight: 500; }
 .toc-item .zh { font-size: 11.5px; color: var(--text-faint); }
+/* KaTeX 默认 1.21em，在 11.5~12.5px 的目录行里会显得比中文大一圈；压回正文尺寸。 */
+.toc-item .md :deep(.katex) { font-size: 1em; }
+.toc-item .md :deep(strong) { font-weight: 600; }
+.toc-item .md :deep(code) { font-size: .95em; padding: 0 3px; }
 .toc-item .num { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
 .toc-item .pg { font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: 4px; }
 .caret {

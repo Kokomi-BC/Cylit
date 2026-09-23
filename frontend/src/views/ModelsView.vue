@@ -15,6 +15,7 @@ import {
 } from '@/stores/app';
 import { fmtDate, fmtRelative, roundMs, truncate } from '@/utils/format';
 import Modal from '@/components/Modal.vue';
+import Menu from '@/components/Menu.vue';
 import AppIcon from '@/components/AppIcon.vue';
 
 /** 模型类型中文标签（类型是产品概念，不是硬编码的模型名）。 */
@@ -41,6 +42,35 @@ const secretForm = reactive({ name: '', value: '' });
 const testResults = ref<Record<string, any>>({});   // model_id -> 最近一次测试结果
 
 /* ------------------------------ 表单状态 ------------------------------ */
+
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface RowAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** 行内只留「测试」；设为默认 / 编辑 / 删除收进「⋯」菜单。 */
+function rowMenu(m: ModelConfig): RowAction[] {
+  return [
+    {
+      key: 'default',
+      label: '设为默认',
+      icon: 'check_circle',
+      disabled: !!m.is_default || rowBusy('def:' + m.id),
+    },
+    { key: 'edit', label: '编辑配置', icon: 'edit' },
+    { key: 'delete', label: '删除模型', icon: 'trash', danger: true, disabled: rowBusy('del:' + m.id) },
+  ];
+}
+
+function onRowAction(m: ModelConfig, key: string) {
+  if (key === 'default') { setDefault(m); return; }
+  if (key === 'edit') { openEdit(m); return; }
+  if (key === 'delete') removeModel(m);
+}
 
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
@@ -496,29 +526,12 @@ async function submitForm() {
                 <div class="tiny faint" v-if="m.last_tested_at">{{ fmtRelative(m.last_tested_at) }}</div>
               </td>
               <td class="ops">
-                <div class="row nowrap" style="gap:4px">
+                <div class="row nowrap" style="gap: 6px">
                   <button class="btn sm" :disabled="rowBusy('test:' + m.id)" @click="testModel(m)">
                     <AppIcon name="bolt" :size="14" />{{ rowBusy('test:' + m.id) ? '测试中' : '测试' }}
                   </button>
-                  <button
-                    class="btn icon sm"
-                    title="设为默认"
-                    :disabled="!!m.is_default || rowBusy('def:' + m.id)"
-                    @click="setDefault(m)"
-                  >
-                    <AppIcon name="check_circle" :size="14" />
-                  </button>
-                  <button class="btn icon sm" title="编辑" @click="openEdit(m)">
-                    <AppIcon name="edit" :size="14" />
-                  </button>
-                  <button
-                    class="btn icon sm danger"
-                    title="删除"
-                    :disabled="rowBusy('del:' + m.id)"
-                    @click="removeModel(m)"
-                  >
-                    <AppIcon name="trash" :size="14" />
-                  </button>
+                  <Menu :items="rowMenu(m)" up :label="`更多操作：${m.name || m.id}`"
+                        @select="onRowAction(m, $event)" />
                 </div>
                 <div class="tiny gap-4" v-if="testResults[m.id]">
                   <template v-if="testResults[m.id].ok">
@@ -662,5 +675,11 @@ async function submitForm() {
 .card-body.tight { overflow-x: auto; }
 table.data { min-width: 940px; }
 table.data td:not(:first-child), table.data th:not(:first-child) { white-space: nowrap; }
-table.data td.ops { width: 1%; }
+table.data td.ops { width: 132px; }
+/* 名称列：id / base_url / secret_ref / 参数都是长字符串，必须能截断，
+   否则整张表会被这一列撑出横向滚动条。 */
+table.data td:first-child { max-width: 340px; }
+table.data td:first-child > div {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 </style>

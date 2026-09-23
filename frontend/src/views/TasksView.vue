@@ -18,6 +18,7 @@ import {
   TASK_TYPE_LABEL, fmtRelative, pct, taskStatus, truncate,
 } from '@/utils/format';
 import Modal from '@/components/Modal.vue';
+import Menu from '@/components/Menu.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import AppIcon from '@/components/AppIcon.vue';
 
@@ -84,13 +85,36 @@ function typeLabel(t?: string | null): string {
   return TASK_TYPE_LABEL[key] || key || '未知';
 }
 
-function statusCount(key: string): number {
-  return byStatus.value[key] || 0;
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface RowAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
 }
 
-/** 可操作状态集合（SFC 里模板是真正的表达式，条件直接写 `&&` / includes 即可）。 */
+/* 可操作状态集合（SFC 里模板是真正的表达式，条件直接写 `&&` / includes 即可）。 */
 const CANCELLABLE_STATUS: string[] = ['pending', 'processing', 'paused'];
 const RETRYABLE_STATUS: string[] = ['failed', 'cancelled', 'paused'];
+
+/** 行内只留「当前该做的那一个动作」；取消这类次要操作收进「⋯」菜单。 */
+function rowMenu(t: TaskInfo): RowAction[] {
+  if (CANCELLABLE_STATUS.includes(t.status) && !t.cancel_requested) {
+    return [{
+      key: 'cancel',
+      label: '取消任务',
+      icon: 'stop',
+      danger: true,
+      disabled: busyKey.value === `cancel:${t.id}`,
+    }];
+  }
+  return [];
+}
+
+function onRowAction(t: TaskInfo, key: string) {
+  if (key === 'cancel') cancel(t);
+}
 
 function progressOf(t: TaskInfo): number {
   return t.progress || pct(t.done_items, t.total_items);
@@ -295,23 +319,16 @@ watch([status, type, queue], () => { refresh(true); });
         <span class="badge" :class="live === 'sse' ? 'ok' : (live === 'poll' ? 'warn' : '')">
           {{ live === 'sse' ? '实时' : (live === 'poll' ? '轮询' : '离线') }}
         </span>
-        <select v-model="queue" title="按队列筛选">
-          <option value="">全部队列</option>
-          <option v-for="q in QUEUE_OPTIONS" :key="q.value" :value="q.value">{{ q.label }}</option>
-        </select>
-        <select v-model="type" title="按任务类型筛选">
-          <option value="">全部类型</option>
-          <option v-for="t in typeOptions" :key="t.value" :value="t.value">{{ t.label }}</option>
-        </select>
-        <button class="btn sm" :disabled="state.loading.tasks" @click="goRefresh">
-          <AppIcon name="refresh" :size="14" />{{ state.loading.tasks ? '刷新中…' : '刷新' }}
+        <button class="btn icon" title="刷新任务列表" :disabled="state.loading.tasks" @click="goRefresh">
+          <AppIcon name="refresh" :size="15" />
         </button>
-        <button class="btn primary sm" :disabled="reconciling" @click="reconcile">
-          <AppIcon name="layers" :size="14" />{{ reconciling ? '触发中…' : '触发对账' }}
+        <button class="btn primary" :disabled="reconciling" @click="reconcile">
+          <AppIcon name="layers" :size="15" />{{ reconciling ? '触发中…' : '触发对账' }}
         </button>
       </div>
     </div>
 
+    <!-- 筛选：状态分段自带计数，队列 / 类型各一个下拉（不再重复一行文字统计） -->
     <div class="toolbar">
       <div class="seg">
         <button v-for="s in segments" :key="s.value || 'all'"
@@ -320,11 +337,14 @@ watch([status, type, queue], () => { refresh(true); });
         </button>
       </div>
       <span class="spacer"></span>
-      <span class="tiny faint">
-        排队 {{ statusCount('pending') }} · 执行中 {{ statusCount('processing') }} ·
-        暂停 {{ statusCount('paused') }} · 完成 {{ statusCount('completed') + statusCount('done') }} ·
-        失败 {{ statusCount('failed') }} · 取消 {{ statusCount('cancelled') }}
-      </span>
+      <select v-model="queue" title="按队列筛选">
+        <option value="">全部队列</option>
+        <option v-for="q in QUEUE_OPTIONS" :key="q.value" :value="q.value">{{ q.label }}</option>
+      </select>
+      <select v-model="type" title="按任务类型筛选">
+        <option value="">全部类型</option>
+        <option v-for="t in typeOptions" :key="t.value" :value="t.value">{{ t.label }}</option>
+      </select>
     </div>
 
     <div class="card">
@@ -334,7 +354,7 @@ watch([status, type, queue], () => { refresh(true); });
         <p>没有符合条件的任务。</p>
       </div>
 
-      <table class="data" v-else>
+      <table class="data fixed" v-else>
         <thead>
           <tr>
             <th class="w-type">类型</th>
@@ -351,14 +371,14 @@ watch([status, type, queue], () => { refresh(true); });
             <td>
               <div>{{ typeLabel(t.type) }}</div>
               <div class="tiny faint">队列 {{ t.queue || '—' }}<span v-if="t.queue_code"> ({{ t.queue_code }})</span></div>
-              <div class="tiny faint mono">{{ t.id }}</div>
+              <div class="tiny faint mono truncate" :title="t.id">{{ t.id }}</div>
             </td>
             <td>
-              <RouterLink v-if="t.paper_id"
+              <RouterLink v-if="t.paper_id" class="truncate"
                           :to="{ name: 'reader', params: { paperId: t.paper_id ?? '' } }"
                           :title="paperTitle(t.paper_id)">{{ paperTitle(t.paper_id) }}</RouterLink>
               <span v-else class="faint">—</span>
-              <div class="tiny faint mono" v-if="t.paper_id">{{ t.paper_id }}</div>
+              <div class="tiny faint mono truncate" :title="t.paper_id" v-if="t.paper_id">{{ t.paper_id }}</div>
             </td>
             <td>
               <span class="badge" :class="taskStatus(t.status).cls">{{ taskStatus(t.status).label }}</span>
@@ -366,39 +386,44 @@ watch([status, type, queue], () => { refresh(true); });
               <div class="tiny danger" v-if="t.cancel_requested">待取消</div>
             </td>
             <td>
-              <div class="row tiny faint">
-                <span>{{ t.done_items || 0 }} / {{ t.total_items || 0 }}</span>
-                <span class="spacer"></span>
-                <span>{{ progressOf(t) }}%</span>
+              <!-- 100% 不画满格色带：一页 39 行绿条会抢掉全部注意力 -->
+              <div class="prog" v-if="progressOf(t) < 100">
+                <div class="prog-top">
+                  <span class="tnum">{{ t.done_items || 0 }} / {{ t.total_items || 0 }}</span>
+                  <span class="spacer"></span>
+                  <span class="tnum">{{ progressOf(t) }}%</span>
+                </div>
+                <ProgressBar :value="progressOf(t)" :ok-at="100" />
               </div>
-              <ProgressBar :value="progressOf(t)" :ok-at="100" />
+              <span class="prog-done tiny" v-else>
+                <AppIcon name="check_circle" :size="14" />
+                {{ t.done_items || 0 }} / {{ t.total_items || 0 }} 已完成
+              </span>
             </td>
             <td>
-              <div class="small" :title="t.message || ''">{{ truncate(t.message || '—', 90) }}</div>
-              <div class="tiny danger" v-if="t.error" :title="t.error">{{ truncate(t.error, 90) }}</div>
+              <div class="small clamp-2" :title="t.message || ''">{{ t.message || '—' }}</div>
+              <div class="tiny danger clamp-2" v-if="t.error" :title="t.error">{{ t.error }}</div>
             </td>
             <td class="tiny faint nowrap">{{ fmtRelative(t.updated_at || t.created_at) }}</td>
-            <td>
-              <div class="row wrap">
+            <td class="ops">
+              <div class="row nowrap" style="gap: 6px">
                 <button class="btn sm" v-if="t.status === 'processing' && !t.pause_requested"
                         :disabled="busyKey === 'pause:' + t.id" @click="pause(t)">
                   <AppIcon name="pause" :size="14" />暂停
                 </button>
-                <button class="btn sm" v-if="t.status === 'paused'"
+                <button class="btn sm" v-else-if="t.status === 'paused'"
                         :disabled="busyKey === 'resume:' + t.id" @click="resume(t)">
                   <AppIcon name="play" :size="14" />继续
                 </button>
-                <button class="btn sm danger" v-if="CANCELLABLE_STATUS.includes(t.status) && !t.cancel_requested"
-                        :disabled="busyKey === 'cancel:' + t.id" @click="cancel(t)">
-                  <AppIcon name="stop" :size="14" />取消
-                </button>
-                <button class="btn sm" v-if="RETRYABLE_STATUS.includes(t.status)"
+                <button class="btn sm" v-else-if="RETRYABLE_STATUS.includes(t.status)"
                         :disabled="busyKey === 'retry:' + t.id" @click="retry(t)">
                   <AppIcon name="refresh" :size="14" />重试
                 </button>
-                <button class="btn sm ghost" @click="openLog(t)">
-                  <AppIcon name="document" :size="14" />日志
+                <button class="btn icon sm" title="任务详情与日志" @click="openLog(t)">
+                  <AppIcon name="document" :size="14" />
                 </button>
+                <Menu v-if="rowMenu(t).length" :items="rowMenu(t)" up
+                      :label="`更多操作：${typeLabel(t.type)}`" @select="onRowAction(t, $event)" />
               </div>
             </td>
           </tr>
@@ -476,22 +501,31 @@ watch([status, type, queue], () => { refresh(true); });
 </template>
 
 <style scoped>
-/* 筛选条（新版全局样式未包含 .toolbar，这里补齐旧实现的行为） */
-.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.w-type { width: 132px; }
-.w-paper { width: 190px; }
-.w-status { width: 96px; }
-.w-progress { width: 210px; }
-.w-time { width: 104px; }
-.w-ops { width: 236px; }
+/* 列宽显式声明：表格用 table-layout: fixed，列宽就不会被长文本抢走 */
+.w-type { width: 124px; }
+.w-paper { width: 172px; }
+.w-status { width: 92px; }
+.w-progress { width: 128px; }
+.w-time { width: 92px; }
+.w-ops { width: 152px; }
+/* 进度格：未完成才画条 */
+.prog { display: flex; flex-direction: column; gap: 5px; }
+.prog-top {
+  display: flex; align-items: center; font-size: 11px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.prog-done { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); }
+.prog-done .icon { color: var(--ok); }
+/* 表格单元格里的 a / div 都要能被截断，否则会顶破固定列宽 */
+td a.truncate { display: block; }
 .gap-top { margin-top: 14px; }
 .gap-10 { margin-top: 10px; }
 .log-error { color: var(--danger); }
 .log-pre {
   margin: 6px 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: var(--bg-sunken);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   white-space: pre-wrap;
   overflow: auto;
 }

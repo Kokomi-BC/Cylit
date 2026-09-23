@@ -1,6 +1,7 @@
 # 依赖目录（运行期不需要：后端只托管 dist/）
 node_modules/
 
-# 构建产物：**保留**（离线演示/答辩时 pr.py serve 直接可用）
-# 如需干净树可删除，然后 `npm run build` 重新生成
-!dist/
+# 构建产物：**不进版本库**（文件名带哈希，入库会让每次提交多出几十个噪声文件）。
+# 按需生成：`npm run build`（会先跑 scripts/clean-dist.mjs 稳健清空 dist/，再 vite build）
+dist/
+.vite/

@@ -55,7 +55,7 @@ frontend/
 ├─ index.html            入口（开发期引 /src/main.ts，构建后引 /app/assets/*）
 ├─ vite.config.ts        base=/app/ · 手动分包(vue/markdown) · dev 代理到 8710
 ├─ tsconfig.json         strict + paths(@/*)，vue-tsc 做类型检查
-├─ dist/                 构建产物（保留：离线演示直接可用）
+├─ dist/                 构建产物（**不入版本库**：文件名带哈希，按需 `npm run build` 生成）
 └─ src/
    ├─ main.ts            建应用、挂路由、全局错误提示、引入 KaTeX 样式
    ├─ App.vue            头部 + <RouterView> + Toast；阅读器用通栏布局

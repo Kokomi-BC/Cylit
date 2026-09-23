@@ -268,14 +268,14 @@ onMounted(async () => {
       </div>
       <div class="grow"></div>
       <div class="page-actions">
-        <span class="badge" :class="changed.length ? 'warn' : ''">
-          {{ changed.length ? ('有 ' + changed.length + ' 项未保存') : '无改动' }}
+        <span class="badge warn" v-if="changed.length">
+          有 {{ changed.length }} 项未保存
         </span>
-        <button class="btn sm" :disabled="busy || !changed.length" @click="reset">
-          <AppIcon name="refresh" :size="14" />撤销改动
+        <button class="btn" :disabled="busy || !changed.length" @click="reset">
+          <AppIcon name="refresh" :size="15" />撤销改动
         </button>
-        <button class="btn primary sm" :disabled="!canSave" @click="save">
-          <AppIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存设置' }}
+        <button class="btn primary" :disabled="!canSave" @click="save">
+          <AppIcon name="check" :size="15" />{{ busy ? '保存中…' : '保存设置' }}
         </button>
       </div>
     </div>
@@ -298,21 +298,19 @@ onMounted(async () => {
           <div class="grid cols-2">
             <template v-for="f in g.fields" :key="f.key">
               <label class="field" v-if="f.type === 'number'">
-                {{ f.label }}
+                <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
                 <input type="number" :min="f.min" v-model.number="form[f.key]" />
-                <span class="tiny faint mono">{{ f.key }}</span>
               </label>
               <label class="field" v-else-if="f.type === 'text'">
-                {{ f.label }}
+                <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
                 <input type="text" v-model="form[f.key]" placeholder="留空 = mock provider" />
-                <span class="tiny faint mono">{{ f.key }}</span>
               </label>
               <label class="field" v-else>
-                <span class="row">
+                <span class="field-top inline">
                   <input type="checkbox" v-model="form[f.key]" />
                   <span>{{ f.label }}</span>
+                  <code class="field-key">{{ f.key }}</code>
                 </span>
-                <span class="tiny faint mono">{{ f.key }}</span>
               </label>
             </template>
           </div>
@@ -336,8 +334,8 @@ onMounted(async () => {
           <div class="card-head">
             健康检查
             <span class="spacer"></span>
-            <button class="btn sm ghost" @click="loadHealthCard">
-              <AppIcon name="refresh" :size="14" />重新检测
+            <button class="btn icon" title="重新检测" @click="loadHealthCard">
+              <AppIcon name="refresh" :size="15" />
             </button>
           </div>
           <div class="card-body">
@@ -385,8 +383,16 @@ onMounted(async () => {
 <style scoped>
 /* 设置页私有细节（其余样式复用 base.css 的通用类） */
 .load-error { color: var(--danger); }
-.hint { margin: 8px 0 0; }
+.hint { margin: 10px 0 0; }
 .health-row { margin-top: 8px; }
+
+/* 表单项：标签与"后端的键名"同一行，键名右对齐靠灰，不再占一整行高度 */
+.field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
+.field-top.inline { align-items: center; }
+.field-key {
+  margin-left: auto; font-family: var(--mono); font-size: 11px; font-weight: 400;
+  color: var(--text-faint);
+}
 
 /* 只读值 / 健康信息的长路径：占一半宽度并省略 */
 .ro-value { max-width: 56%; }

@@ -5,8 +5,9 @@
 
 > **版本库约定**：仓库根就是这个目录（`paper-reader/`）。
 > `data/`（论文、页图、IR、译文产物、密钥、日志）已被忽略，目录由代码自动创建；
-> `frontend/dist/` 是**故意纳入**的构建产物（离线演示时 `pr.py serve` 直接可用）。
-> 首次克隆后：`npm install`（前端依赖）→ 需要真实模型时把 key 放进 `data/secrets/`。
+> `frontend/dist/`（前端构建产物）也**不入库**——文件名带哈希，入库只会让每次提交多出几十个噪声文件，
+> 按需构建即可（`scripts/start.bat` 发现 dist 缺失会直接提示并代跑 `npm run build`）。
+> 首次克隆后：`npm install`（前端依赖）→ `npm run build` → 需要真实模型时把 key 放进 `data/secrets/`。
 
 | 文档 | 内容 |
 |---|---|
@@ -21,7 +22,7 @@
 ```powershell
 conda run -n scenemind python -m pip install -r requirements.txt
 cd frontend; npm install; npm run build; cd ..   # 前端构建（产物 dist/，后端托管在 /app/）
-.\scripts\start.ps1                                   # 起后端 → 前端 /app/ ｜ 接口文档 /docs
+.\scripts\start.bat                                 # 起后端 → 前端 /app/ ｜ 接口文档 /docs
 python cli/pr.py build "论文.pdf" --id my-paper        # 导入 + 解析
 python cli/pr.py translate my-paper                   # 逐页翻译（未配模型时用 Mock）
 python scripts/e2e_check.py                           # 35 项后端验收自检

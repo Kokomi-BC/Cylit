@@ -10,6 +10,8 @@ import { RouterLink, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { Paper } from '@/api/types';
 import Modal from '@/components/Modal.vue';
+import Menu from '@/components/Menu.vue';
+import ConfirmModal from '@/components/ConfirmModal.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import {
@@ -33,8 +35,29 @@ const loadError = ref('');
 /** 状态筛选项（与后端 PaperStatus 取值一致）。 */
 const STATUS_OPTIONS = ['imported', 'parsed', 'translating', 'translated', 'indexed', 'failed'] as const;
 
+/** 排序：把「字段 + 方向」合并成一个下拉，页面上少一个冗余控件。 */
+const SORT_OPTIONS = [
+  { value: 'last_read_at:desc', label: '最近阅读优先' },
+  { value: 'created_at:desc', label: '最新导入' },
+  { value: 'created_at:asc', label: '最早导入' },
+  { value: 'title:asc', label: '标题 A→Z' },
+] as const;
+const sortKey = computed({
+  get: () => `${sort.value}:${order.value}`,
+  set: (v: string) => {
+    const [s, o] = v.split(':');
+    sort.value = s || 'last_read_at';
+    order.value = o === 'asc' ? 'asc' : 'desc';
+  },
+});
+
 const filtered = computed<Paper[]>(() => state.papers);
 const loading = computed(() => !!state.loading.papers);
+
+/** 逐页翻译是否已全部完成（完成时用一行文案代替整条进度条）。 */
+function isTranslated(p: Paper): boolean {
+  return !!p.translate_total && (p.translate_done || 0) >= p.translate_total;
+}
 const showLoading = computed(() => loading.value && filtered.value.length === 0 && !loadError.value);
 const showLoadError = computed(() => !!loadError.value && filtered.value.length === 0);
 const showEmpty = computed(() => !loading.value && filtered.value.length === 0 && !loadError.value);
@@ -174,15 +197,74 @@ interface DeleteResult {
   steps?: unknown[];
 }
 
-async function removePaper(paper: Paper, hard = false) {
-  const label = hard ? '彻底删除（含 trash 与数据库记录）' : '删除（先清索引，PDF 文件移入 trash）';
-  if (!window.confirm(`确认${label}：${paper.title}？`)) return;
-  busyKey.value = `del:${paper.id}`;
+/* ---------------------------- 行内操作菜单 ---------------------------- */
+
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface RowAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** 次要操作（解析 / 重译 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单，
+ * 卡片上只留「阅读（主）+ 继续翻译（次）」两个按钮，避免一排同权重按钮。 */
+function rowMenu(p: Paper): RowAction[] {
+  const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
+  return [
+    { key: 'parse', label: '解析 PDF', icon: 'document', disabled: busy('parse') },
+    { key: 'translate', label: '重新翻译', icon: 'translate', disabled: busy('tr') },
+    { key: 'index', label: '建立索引', icon: 'layers', disabled: busy('idx') },
+    {
+      key: 'kb',
+      label: p.in_knowledge_base ? '移出知识库' : '纳入知识库',
+      icon: p.in_knowledge_base ? 'link-off' : 'link',
+    },
+    { key: 'edit', label: '编辑元数据', icon: 'edit' },
+    { key: 'delete', label: '删除（移入回收站）', icon: 'trash', danger: true },
+    { key: 'purge', label: '彻底删除', icon: 'trash', danger: true },
+  ];
+}
+
+function onRowAction(p: Paper, key: string) {
+  if (key === 'parse') { runParse(p); return; }
+  if (key === 'translate') { runTranslate(p, 'retranslate'); return; }
+  if (key === 'index') { runIndex(p); return; }
+  if (key === 'kb') { toggleKb(p); return; }
+  if (key === 'edit') { openEdit(p); return; }
+  if (key === 'delete') { askRemove(p, false); return; }
+  if (key === 'purge') { askRemove(p, true); }
+}
+
+/* ---------------------------- 删除确认 ---------------------------- */
+
+interface ConfirmState {
+  open: boolean;
+  hard: boolean;
+  paper: Paper | null;
+}
+
+const confirmBox = reactive<ConfirmState>({ open: false, hard: false, paper: null });
+
+/** 删除不可逆：用站内弹窗确认（不再用原生 window.confirm，风格与动效统一）。 */
+function askRemove(paper: Paper, hard = false) {
+  confirmBox.paper = paper;
+  confirmBox.hard = hard;
+  confirmBox.open = true;
+}
+
+async function doRemove() {
+  const p = confirmBox.paper;
+  if (!p) return;
+  const hard = confirmBox.hard;
+  confirmBox.open = false;
+  busyKey.value = `del:${p.id}`;
   try {
-    const res = await api.del<DeleteResult>(`/papers/${paper.id}`, { hard });
-    toast(`已删除 ${paper.id}${res?.steps?.length ? `（${res.steps.length} 步）` : ''}`, 'ok');
+    const res = await api.del<DeleteResult>(`/papers/${p.id}`, { hard });
+    toast(`${hard ? '已彻底删除' : '已删除'} ${p.id}${res?.steps?.length ? `（${res.steps.length} 步）` : ''}`, 'ok');
     await refresh();
-  } catch (err) { reportError(err, '删除失败'); } finally { busyKey.value = ''; }
+  } catch (err) { reportError(err, '删除失败'); } finally { busyKey.value = ''; confirmBox.paper = null; }
 }
 
 /* ------------------------------ 编辑元数据 ------------------------------ */
@@ -240,62 +322,76 @@ async function submitEdit() {
     <div class="page-head">
       <div>
         <h1>论文库</h1>
-        <div class="sub">共 {{ state.papersTotal }} 篇</div>
+        <div class="sub">共 {{ state.papersTotal }} 篇论文</div>
       </div>
       <div class="grow"></div>
       <div class="page-actions">
-        <input
-          class="small"
-          style="width: 200px"
-          v-model="keyword"
-          placeholder="搜索标题 / 作者"
-          @keyup.enter="refresh"
-        />
-        <select v-model="statusFilter" @change="refresh">
-          <option value="">全部状态</option>
-          <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ paperStatus(s).label }}</option>
-        </select>
-        <select v-model="sort" @change="refresh">
-          <option value="last_read_at">按最近阅读</option>
-          <option value="created_at">按导入时间</option>
-          <option value="title">按标题</option>
-        </select>
-        <select v-model="order" @change="refresh">
-          <option value="desc">降序</option>
-          <option value="asc">升序</option>
-        </select>
-        <button class="btn sm" :disabled="loading" @click="refresh">
-          <AppIcon name="refresh" :size="14" />刷新
+        <button class="btn icon" title="刷新列表" :disabled="loading" @click="refresh">
+          <AppIcon name="refresh" :size="15" />
         </button>
-        <button class="btn primary sm" @click="importOpen = true">
-          <AppIcon name="upload" :size="14" />导入 PDF
+        <button class="btn primary" @click="importOpen = true">
+          <AppIcon name="upload" :size="15" />导入 PDF
         </button>
       </div>
     </div>
 
-    <!-- 加载中 -->
-    <div class="empty card" v-if="showLoading">正在加载论文列表…</div>
-
-    <!-- 请求失败（可重试） -->
-    <div class="empty card" v-else-if="showLoadError">
-      <p class="load-error">论文列表加载失败：{{ loadError }}</p>
-      <button class="btn sm" @click="refresh">
-        <AppIcon name="refresh" :size="14" />重试
-      </button>
+    <!-- 筛选条：一个搜索 + 两个下拉，其余交给列表本身 -->
+    <div class="toolbar">
+      <label class="search-field">
+        <AppIcon name="search" :size="15" />
+        <input v-model="keyword" placeholder="搜索标题 / 作者" @keyup.enter="refresh" />
+      </label>
+      <select v-model="statusFilter" title="按状态筛选" @change="refresh">
+        <option value="">全部状态</option>
+        <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ paperStatus(s).label }}</option>
+      </select>
+      <select v-model="sortKey" title="排序方式" @change="refresh">
+        <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
     </div>
 
-    <!-- 空列表（含拖拽导入入口） -->
-    <div class="empty card" v-else-if="showEmpty">
-      <p>还没有论文，点右上角「导入 PDF」或拖拽 PDF 到此处。</p>
+    <!-- 加载中：与真实卡片同高的骨架，不用一行灰字 -->
+    <div class="paper-cards" v-if="showLoading" aria-busy="true">
+      <span class="sr-only">正在加载论文列表…</span>
+      <div class="card paper-card" v-for="i in 3" :key="i" aria-hidden="true">
+        <div class="sk sk-title" style="width: 74%"></div>
+        <div class="sk sk-line" style="width: 42%"></div>
+        <div class="sk sk-line" style="width: 58%"></div>
+        <div class="sk sk-bar" style="width: 100%"></div>
+        <div class="pc-actions">
+          <div class="sk" style="width: 76px; height: 26px; border-radius: var(--radius-ctl)"></div>
+          <div class="sk" style="width: 62px; height: 26px; border-radius: var(--radius-ctl)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 请求失败（可重试） -->
+    <div class="card empty-state" v-else-if="showLoadError">
+      <span class="es-icon bad"><AppIcon name="warning" :size="20" /></span>
+      <span class="es-title">论文列表加载失败</span>
+      <span class="es-hint">{{ loadError }}</span>
+      <div class="es-actions">
+        <button class="btn primary sm" @click="refresh">
+          <AppIcon name="refresh" :size="14" />重新加载
+        </button>
+      </div>
+    </div>
+
+    <!-- 空列表（直接把导入入口放在这里） -->
+    <div class="card empty-state" v-else-if="showEmpty">
+      <span class="es-icon"><AppIcon name="library" :size="20" /></span>
+      <span class="es-title">还没有论文</span>
+      <span class="es-hint">导入一篇 PDF，即可开始解析、逐页翻译与中英对照阅读。</span>
       <div
-        class="drop-zone"
+        class="drop-zone drop-zone-inline"
         :class="{ over: dragOver }"
         @dragover.prevent="dragOver = true"
         @dragleave="dragOver = false"
         @drop.prevent="onDrop"
         @click="importOpen = true"
       >
-        拖拽 PDF 到此处，或点击选择文件
+        <AppIcon name="upload" :size="18" />
+        <span>拖拽 PDF 到此处，或点击选择文件</span>
       </div>
     </div>
 
@@ -304,71 +400,84 @@ async function submitEdit() {
       刷新失败：{{ loadError }}（下方为上次成功加载的数据）
     </p>
 
-    <div class="paper-cards">
-      <div class="card paper-card" v-for="p in filtered" :key="p.id">
-        <div class="row">
-          <h3 class="grow" style="margin: 0">{{ p.title }}</h3>
+    <div class="paper-cards" v-if="!showLoading && filtered.length">
+      <article class="card hoverable paper-card" v-for="p in filtered" :key="p.id">
+        <header class="pc-head">
+          <RouterLink class="pc-title" :to="{ name: 'reader', params: { paperId: p.id } }">
+            {{ p.title }}
+          </RouterLink>
           <span class="badge" :class="paperStatus(p.status).cls">{{ paperStatus(p.status).label }}</span>
+        </header>
+
+        <div class="pc-meta">
+          <span v-if="p.authors" class="truncate">{{ p.authors }}</span>
+          <span>{{ p.page_count || '?' }} 页</span>
+          <span v-if="p.venue">{{ p.venue }}</span>
+          <span v-if="p.year">{{ p.year }}</span>
+          <span v-if="p.last_read_at">读于 {{ fmtRelative(p.last_read_at) }}</span>
         </div>
-        <div class="meta truncate">{{ p.authors || '—' }}</div>
-        <div class="meta row wrap tiny">
-          <span class="mono">{{ p.id }}</span>
-          <span>· {{ p.page_count || '?' }} 页</span>
-          <span v-if="p.venue">· {{ p.venue }}</span>
-          <span v-if="p.year">· {{ p.year }}</span>
-          <span v-if="p.last_read_at">· 读于 {{ fmtRelative(p.last_read_at) }}</span>
-        </div>
-        <div class="row wrap tiny" v-if="(p.tags || []).length">
+
+        <div class="pc-tags" v-if="(p.tags || []).length">
           <span class="badge" v-for="t in p.tags" :key="t">{{ t }}</span>
         </div>
 
-        <div class="bars">
-          <div>
-            <div class="row tiny faint">
-              <span>翻译</span><span class="spacer"></span>
-              <span>{{ p.translate_done || 0 }} / {{ p.translate_total || 0 }}</span>
-            </div>
-            <ProgressBar :done="p.translate_done || 0" :total="p.translate_total || 0" />
+        <!-- 进度：只在"正在翻译"时出现；100% 用一行文案收尾，不再铺一条满格色带 -->
+        <div class="pc-progress" v-if="p.translate_total && (p.translate_done || 0) < p.translate_total">
+          <div class="pc-progress-top">
+            <span class="faint">逐页翻译</span>
+            <span class="tnum">{{ p.translate_done || 0 }} / {{ p.translate_total }}</span>
           </div>
-          <div>
-            <div class="row tiny faint">
-              <span>版面 PDF 翻译</span><span class="spacer"></span>
-              <span>{{ p.pdf_translate_done || 0 }} / {{ p.pdf_translate_total || 0 }}</span>
-            </div>
-            <ProgressBar :done="p.pdf_translate_done || 0" :total="p.pdf_translate_total || 0" />
-          </div>
+          <ProgressBar :done="p.translate_done || 0" :total="p.translate_total" />
         </div>
+        <div class="pc-progress" v-if="p.pdf_translate_total && (p.pdf_translate_done || 0) < p.pdf_translate_total">
+          <div class="pc-progress-top">
+            <span class="faint">版面 PDF 翻译</span>
+            <span class="tnum">{{ p.pdf_translate_done || 0 }} / {{ p.pdf_translate_total }}</span>
+          </div>
+          <ProgressBar :done="p.pdf_translate_done || 0" :total="p.pdf_translate_total" />
+        </div>
+        <div class="pc-done tiny" v-if="isTranslated(p)">
+          <AppIcon name="check_circle" :size="14" />逐页翻译已完成（{{ p.translate_total }} 页）
+        </div>
+        <div class="tiny faint" v-if="!p.translate_total && !p.pdf_translate_total">尚未开始翻译</div>
 
-        <div class="row wrap small">
-          <span class="badge" :class="p.in_knowledge_base ? 'accent' : ''">
-            {{ p.in_knowledge_base ? '已在知识库' : '未入知识库' }}
+        <footer class="pc-actions">
+          <!-- 知识库归属：只在"已入库"时现身，避免每张卡片都挂一个同义徒章 -->
+          <span class="badge accent" v-if="p.in_knowledge_base">
+            <AppIcon name="knowledge" :size="13" />已在知识库
           </span>
-        </div>
-
-        <div class="row wrap">
-          <RouterLink class="btn primary sm" :to="{ name: 'reader', params: { paperId: p.id } }">阅读</RouterLink>
-          <button class="btn sm" :disabled="busyKey === 'parse:' + p.id" @click="runParse(p)">解析</button>
+          <span class="spacer"></span>
+          <RouterLink class="btn primary sm" :to="{ name: 'reader', params: { paperId: p.id } }">
+            <AppIcon name="document" :size="14" />阅读
+          </RouterLink>
           <button
             class="btn sm"
+            v-if="(p.translate_done || 0) < (p.translate_total || 0)"
             :disabled="busyKey === 'tr:' + p.id"
             @click="runTranslate(p, 'resume')"
-          >
-            继续翻译
-          </button>
-          <button class="btn sm" @click="runTranslate(p, 'retranslate')">重译</button>
-          <button class="btn sm" :disabled="busyKey === 'idx:' + p.id" @click="runIndex(p)">建索引</button>
-          <button class="btn sm ghost" @click="toggleKb(p)">
-            {{ p.in_knowledge_base ? '移出知识库' : '纳入知识库' }}
-          </button>
-          <button class="btn icon sm" title="编辑元数据" @click="openEdit(p)">
-            <AppIcon name="edit" :size="14" />
-          </button>
-          <button class="btn icon sm" title="删除论文" @click="removePaper(p)">
-            <AppIcon name="trash" :size="14" />
-          </button>
-        </div>
-      </div>
+          >继续翻译</button>
+          <Menu
+            :items="rowMenu(p)"
+            :label="`更多操作：${p.title}`"
+            @select="onRowAction(p, $event)"
+          />
+        </footer>
+      </article>
     </div>
+
+    <!-- 删除确认（站内弹窗，不用原生 confirm） -->
+    <ConfirmModal
+      :open="confirmBox.open"
+      :title="confirmBox.hard ? '彻底删除论文' : '删除论文'"
+      :body="confirmBox.hard
+        ? '这一步不可撤销：数据库记录与论文文件都会被删除。'
+        : '会先清理索引与知识库记录，PDF 文件移入 data/trash（可从回收站恢复）。'"
+      :target="confirmBox.paper?.title || ''"
+      :confirm-label="confirmBox.hard ? '彻底删除' : '删除'"
+      danger
+      @confirm="doRemove"
+      @cancel="confirmBox.open = false"
+    />
 
     <!-- 导入 PDF -->
     <Modal :open="importOpen" title="导入 PDF" @close="importOpen = false">
@@ -433,35 +542,74 @@ async function submitEdit() {
 </template>
 
 <style scoped>
-/* 论文卡网格（基础层未提供的库页私有布局） */
+/* 论文卡网格：列宽下限跟着正文行宽走，宽屏下自然排 2–4 列 */
 .paper-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 16px;
+  align-items: stretch;
 }
 
 .paper-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
+  padding: 18px;
 }
 
 /* 网格内相邻卡片不再叠加基础层的 .card + .card 外边距 */
 .paper-card + .paper-card { margin-top: 0; }
 
-.paper-card h3 { font-size: 15px; }
+.pc-head { display: flex; align-items: flex-start; gap: 10px; }
+.pc-title {
+  flex: 1; min-width: 0;
+  color: var(--text); font-weight: 600; font-size: 14.5px; line-height: 1.35;
+  letter-spacing: -.011em; text-wrap: balance;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.pc-title:hover { color: var(--accent-text); text-decoration: none; }
+.pc-head .badge { flex: none; margin-top: 1px; }
 
-.paper-card .meta {
-  font-size: 12px;
-  color: var(--text-dim);
+.pc-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  font-size: 12px; color: var(--text-dim);
+}
+.pc-meta > span + span::before { content: "·"; margin-right: 10px; color: var(--text-faint); }
+.pc-meta > span:first-child { max-width: 100%; }
+
+.pc-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.pc-progress { display: flex; flex-direction: column; gap: 5px; }
+.pc-progress-top {
+  display: flex; align-items: center; font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pc-progress-top > span:last-child { margin-left: auto; color: var(--text-dim); }
+/* 完成态：一行小字 + 对勾，比一整条满格色带安静得多 */
+.pc-done {
+  display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim);
+}
+.pc-done .icon { color: var(--ok); }
+
+/* 操作区永远贴在卡片底部，同一行卡片的主操作排成一条线 */
+.pc-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: auto; padding-top: 4px;
 }
 
-.paper-card .bars {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.confirm-text { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+.confirm-target {
+  margin: 0; padding: 10px 12px; font-size: 13px; font-weight: 600;
+  background: var(--bg-sunken); border-radius: var(--r-sm); overflow-wrap: anywhere;
 }
 
+.drop-zone-inline {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: min(460px, 100%); margin-top: 4px; font-size: 13px;
+}
+.drop-zone-inline .icon { color: var(--text-faint); }
+.drop-zone-inline.over .icon { color: var(--accent); }
+
+.es-icon.bad { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .load-error { color: var(--danger); }
 </style>

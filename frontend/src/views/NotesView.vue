@@ -19,7 +19,48 @@ import {
 } from '@/utils/format';
 import { mdToHtml } from '@/composables/useMarkdown';
 import Modal from '@/components/Modal.vue';
+import ConfirmModal from '@/components/ConfirmModal.vue';
+import Menu from '@/components/Menu.vue';
 import AppIcon from '@/components/AppIcon.vue';
+
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface RowAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/* ---------------------------- 删除确认（站内弹窗） ---------------------------- */
+
+interface ConfirmBox {
+  open: boolean;
+  title: string;
+  body: string;
+  target: string;
+  label: string;
+  action: (() => Promise<void>) | null;
+}
+
+const confirmBox = reactive<ConfirmBox>({
+  open: false, title: '', body: '', target: '', label: '删除', action: null,
+});
+
+function askConfirm(opts: { title: string; body: string; target: string; action: () => Promise<void> }) {
+  confirmBox.title = opts.title;
+  confirmBox.body = opts.body;
+  confirmBox.target = opts.target;
+  confirmBox.action = opts.action;
+  confirmBox.open = true;
+}
+
+async function runConfirm() {
+  const action = confirmBox.action;
+  confirmBox.open = false;
+  confirmBox.action = null;
+  if (action) await action();
+}
 
 /** 三类条目都由 overview 带上 paper_title；批注还可能带 status。 */
 type NoteRow = Note & { paper_title?: string };
@@ -191,45 +232,102 @@ async function submitEdit(): Promise<void> {
 /* ------------------------------ 删除 ------------------------------ */
 
 async function removeNote(note: NoteRow): Promise<void> {
-  if (!window.confirm(`确认删除这条笔记？\n${truncate(note.content_md || note.selected_text || note.id, 80)}`)) return;
-  busyKey.value = `del:${note.id}`;
-  try {
-    await api.del(`/notes/${note.id}`);
-    toast('笔记已删除', 'ok');
-    await refreshAll();
-  } catch (err) {
-    reportError(err, '删除笔记失败');
-  } finally {
-    busyKey.value = '';
-  }
+  askConfirm({
+    title: '删除笔记',
+    body: '笔记删除后无法恢复。',
+    target: truncate(note.content_md || note.selected_text || note.id, 120) || '（空笔记）',
+    action: async () => {
+      busyKey.value = `del:${note.id}`;
+      try {
+        await api.del(`/notes/${note.id}`);
+        toast('笔记已删除', 'ok');
+        await refreshAll();
+      } catch (err) {
+        reportError(err, '删除笔记失败');
+      } finally {
+        busyKey.value = '';
+      }
+    },
+  });
 }
 
 async function removeHighlight(highlight: HighlightRow): Promise<void> {
-  if (!window.confirm(`确认删除这条高亮？\n${truncate(highlight.text || highlight.id, 80)}`)) return;
-  busyKey.value = `del:${highlight.id}`;
-  try {
-    await api.del(`/highlights/${highlight.id}`);
-    toast('高亮已删除', 'ok');
-    await refreshAll();
-  } catch (err) {
-    reportError(err, '删除高亮失败');
-  } finally {
-    busyKey.value = '';
-  }
+  askConfirm({
+    title: '删除高亮',
+    body: '高亮删除后无法恢复。',
+    target: truncate(highlight.text || highlight.id, 120),
+    action: async () => {
+      busyKey.value = `del:${highlight.id}`;
+      try {
+        await api.del(`/highlights/${highlight.id}`);
+        toast('高亮已删除', 'ok');
+        await refreshAll();
+      } catch (err) {
+        reportError(err, '删除高亮失败');
+      } finally {
+        busyKey.value = '';
+      }
+    },
+  });
 }
 
 async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
-  if (!window.confirm(`确认删除这条批注？\n${truncate(annotation.content_md || annotation.id, 80)}`)) return;
-  busyKey.value = `del:${annotation.id}`;
-  try {
-    await api.del(`/annotations/${annotation.id}`);
-    toast('批注已删除', 'ok');
-    await refreshAll();
-  } catch (err) {
-    reportError(err, '删除批注失败');
-  } finally {
-    busyKey.value = '';
-  }
+  askConfirm({
+    title: '删除批注',
+    body: '批注删除后无法恢复。',
+    target: truncate(annotation.content_md || annotation.id, 120),
+    action: async () => {
+      busyKey.value = `del:${annotation.id}`;
+      try {
+        await api.del(`/annotations/${annotation.id}`);
+        toast('批注已删除', 'ok');
+        await refreshAll();
+      } catch (err) {
+        reportError(err, '删除批注失败');
+      } finally {
+        busyKey.value = '';
+      }
+    },
+  });
+}
+
+/* ---------------------------- 行内操作菜单 ---------------------------- */
+
+/** 笔记：主操作是回原文，编辑 / 删除收进「⋯」。 */
+function noteMenu(n: NoteRow): RowAction[] {
+  return [
+    { key: 'edit', label: '编辑笔记', icon: 'edit' },
+    { key: 'delete', label: '删除笔记', icon: 'trash', danger: true, disabled: busyKey.value === `del:${n.id}` },
+  ];
+}
+
+function onNoteAction(n: NoteRow, key: string) {
+  if (key === 'edit') { openEdit('note', n); return; }
+  if (key === 'delete') removeNote(n);
+}
+
+/** 高亮：只有一个删除操作，同样收进「⋯」。 */
+function highlightMenu(h: HighlightRow): RowAction[] {
+  return [
+    { key: 'delete', label: '删除高亮', icon: 'trash', danger: true, disabled: busyKey.value === `del:${h.id}` },
+  ];
+}
+
+function onHighlightAction(h: HighlightRow, key: string) {
+  if (key === 'delete') removeHighlight(h);
+}
+
+/** 批注：同上，主操作是回原文。 */
+function annotationMenu(a: AnnotationRow): RowAction[] {
+  return [
+    { key: 'edit', label: '编辑批注', icon: 'edit' },
+    { key: 'delete', label: '删除批注', icon: 'trash', danger: true, disabled: busyKey.value === `del:${a.id}` },
+  ];
+}
+
+function onAnnotationAction(a: AnnotationRow, key: string) {
+  if (key === 'edit') { openEdit('annotation', a); return; }
+  if (key === 'delete') removeAnnotation(a);
 }
 </script>
 
@@ -238,28 +336,24 @@ async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
     <div class="page-head">
       <div>
         <h1>笔记</h1>
-        <div class="sub">
-          笔记 {{ notes.length }} · 高亮 {{ highlights.length }} · 批注 {{ annotations.length }}
-        </div>
+        <div class="sub">跨论文汇总的笔记、高亮与批注</div>
       </div>
       <div class="grow"></div>
       <div class="page-actions">
-        <input class="small" style="width:220px" v-model="keyword"
-               placeholder="搜索笔记"
-               @keyup.enter="doSearch" />
-        <button class="btn sm" @click="doSearch" :disabled="state.loading['notes-search']">
-          <AppIcon name="search" :size="14" />搜索
+        <label class="search-field">
+          <AppIcon name="search" :size="15" />
+          <input v-model="keyword" placeholder="搜索笔记，回车确认" @keyup.enter="doSearch" />
+        </label>
+        <button class="btn icon" v-if="searching" title="清除搜索" @click="clearSearch">
+          <AppIcon name="close" :size="15" />
         </button>
-        <button class="btn sm ghost" v-if="searching" @click="clearSearch">
-          <AppIcon name="close" :size="14" />清除搜索
-        </button>
-        <button class="btn sm" @click="refreshAll" :disabled="state.loading['notes-overview']">
-          <AppIcon name="refresh" :size="14" />{{ state.loading['notes-overview'] ? '刷新中…' : '刷新' }}
+        <button class="btn icon" title="刷新" @click="refreshAll" :disabled="state.loading['notes-overview']">
+          <AppIcon name="refresh" :size="15" />
         </button>
       </div>
     </div>
 
-    <div class="tiny faint" v-if="searching" style="margin-bottom:8px">
+    <div class="tiny faint search-hint" v-if="searching">
       关键词「{{ keyword }}」命中 {{ notes.length }} 条笔记。
     </div>
 
@@ -287,26 +381,31 @@ async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
           <div class="row wrap tiny" style="margin-top:8px" v-if="(n.tags || []).length">
             <span class="badge" v-for="t in n.tags" :key="t">{{ t }}</span>
           </div>
-          <div class="row wrap" style="margin-top:10px">
+          <div class="row wrap note-actions">
             <RouterLink class="btn sm" v-if="n.block_id" :to="readerTo(n.paper_id, n.block_id)">
               <AppIcon name="locate" :size="14" />跳回原文
             </RouterLink>
             <span class="tiny faint" v-else>无关联原文块</span>
-            <button class="btn sm ghost" @click="openEdit('note', n)">
-              <AppIcon name="edit" :size="14" />编辑
-            </button>
-            <button class="btn sm danger" :disabled="busyKey === 'del:' + n.id" @click="removeNote(n)">
-              <AppIcon name="trash" :size="14" />删除
-            </button>
             <span class="spacer"></span>
-            <span class="tiny faint" v-if="n.block_id">block {{ n.block_id }}</span>
+            <span class="tiny faint mono" v-if="n.block_id">block {{ n.block_id }}</span>
+            <Menu :items="noteMenu(n)" up :label="`更多操作：${n.id}`"
+                  @select="onNoteAction(n, $event)" />
           </div>
         </div>
       </div>
-      <div class="card empty" v-if="!notes.length">
-        {{ state.loading['notes-overview'] || state.loading['notes-search']
+      <div class="card empty-state" v-if="!notes.length">
+        <span class="es-icon"><AppIcon name="note" :size="20" /></span>
+        <span class="es-title">{{ searching ? '没有匹配的笔记' : '还没有笔记' }}</span>
+        <span class="es-hint">
+          {{ state.loading['notes-overview'] || state.loading['notes-search']
             ? '正在读取笔记…'
-            : (searching ? '没有匹配的笔记。' : '还没有笔记，在阅读器中选中文本即可新建。') }}
+            : (searching ? '换个关键词再试，或清除搜索条件。' : '在阅读器里选中一段文字，即可新建笔记。') }}
+        </span>
+        <div class="es-actions" v-if="searching && !state.loading['notes-overview']">
+          <button class="btn sm" @click="clearSearch">
+            <AppIcon name="close" :size="14" />清除搜索
+          </button>
+        </div>
       </div>
     </div>
 
@@ -329,19 +428,25 @@ async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
             <span>偏移 {{ h.start }} – {{ h.end }}</span>
             <span v-if="h.color">· 颜色 {{ h.color }}</span>
           </div>
-          <div class="row wrap" style="margin-top:10px">
+          <div class="row wrap note-actions">
             <RouterLink class="btn sm" v-if="h.block_id" :to="readerTo(h.paper_id, h.block_id)">
               <AppIcon name="locate" :size="14" />跳回原文
             </RouterLink>
             <span class="tiny faint" v-else>无关联原文块</span>
-            <button class="btn sm danger" :disabled="busyKey === 'del:' + h.id" @click="removeHighlight(h)">
-              <AppIcon name="trash" :size="14" />删除
-            </button>
+            <span class="spacer"></span>
+            <Menu :items="highlightMenu(h)" up :label="`更多操作：${h.id}`"
+                  @select="onHighlightAction(h, $event)" />
           </div>
         </div>
       </div>
-      <div class="card empty" v-if="!highlights.length">
-        {{ state.loading['notes-overview'] ? '正在读取高亮…' : '还没有高亮。' }}
+      <div class="card empty-state" v-if="!highlights.length">
+        <span class="es-icon"><AppIcon name="quote" :size="20" /></span>
+        <span class="es-title">还没有高亮</span>
+        <span class="es-hint">
+          {{ state.loading['notes-overview']
+            ? '正在读取高亮…'
+            : '在阅读器里选中文本后，用浮动菜单标记高亮颜色。' }}
+        </span>
       </div>
     </div>
 
@@ -362,25 +467,39 @@ async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
         <div class="tiny muted" style="margin-top:4px" v-for="(s, i) in (a.sources || [])" :key="i">
           来源：{{ s.paper_id }} · {{ s.block_id }} — {{ truncate(s.snippet || '', 120) }}
         </div>
-        <div class="row wrap" style="margin-top:10px">
+        <div class="row wrap note-actions">
           <RouterLink class="btn sm" v-if="a.block_id" :to="readerTo(a.paper_id, a.block_id)">
             <AppIcon name="locate" :size="14" />跳回原文
           </RouterLink>
           <span class="tiny faint" v-else>无关联原文块</span>
-          <button class="btn sm ghost" @click="openEdit('annotation', a)">
-            <AppIcon name="edit" :size="14" />编辑
-          </button>
-          <button class="btn sm danger" :disabled="busyKey === 'del:' + a.id" @click="removeAnnotation(a)">
-            <AppIcon name="trash" :size="14" />删除
-          </button>
           <span class="spacer"></span>
-          <span class="tiny faint mono">{{ a.id }}</span>
+          <span class="tiny faint mono truncate" :title="a.id">{{ a.id }}</span>
+          <Menu :items="annotationMenu(a)" up :label="`更多操作：${a.id}`"
+                @select="onAnnotationAction(a, $event)" />
         </div>
       </div>
-      <div class="card empty" v-if="!annotations.length">
-        {{ state.loading['notes-overview'] ? '正在读取批注…' : '还没有批注。' }}
+      <div class="card empty-state" v-if="!annotations.length">
+        <span class="es-icon"><AppIcon name="sparkle" :size="20" /></span>
+        <span class="es-title">还没有批注</span>
+        <span class="es-hint">
+          {{ state.loading['notes-overview']
+            ? '正在读取批注…'
+            : '选中文本后点「AI 解释」，或直接写一段手动批注。' }}
+        </span>
       </div>
     </div>
+
+    <!-- 删除确认（站内弹窗） -->
+    <ConfirmModal
+      :open="confirmBox.open"
+      :title="confirmBox.title"
+      :body="confirmBox.body"
+      :target="confirmBox.target"
+      :confirm-label="confirmBox.label"
+      danger
+      @confirm="runConfirm"
+      @cancel="confirmBox.open = false"
+    />
 
     <Modal :open="editOpen" :title="editKind === 'note' ? '编辑笔记' : '编辑批注'" @close="editOpen = false">
       <label class="field">
@@ -401,17 +520,21 @@ async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
 
 <style scoped>
 /* 高亮色点与高亮文本配色（旧实现里在全局 app.css，这里按页收拢到 scoped）。 */
-.swatch { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border-strong); cursor: pointer; }
+.swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); border: 1px solid var(--border-strong); cursor: pointer; }
 
-.hl { border-radius: 4px; padding: 0 1px; }
+.hl { border-radius: var(--r-xs); padding: 0 1px; }
 .hl.yellow { background: rgba(255, 214, 64, .45); }
 .hl.green { background: rgba(90, 220, 150, .38); }
 .hl.blue { background: rgba(110, 180, 255, .38); }
 .hl.pink { background: rgba(255, 150, 190, .38); }
 .hl.purple { background: rgba(140, 140, 140, .32); }
 
+/* 卡片底部操作行：主操作（回原文）在左，⋯ 在右，形成一条基线 */
+.note-actions { margin-top: 10px; }
+.search-hint { margin-bottom: 8px; }
+
 /* 批注卡片：问答 / 手动批注用不同左边框区分。 */
-.annotation-item { border-left: 3px solid var(--border-strong); background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 8px; }
+.annotation-item { border-left: 3px solid var(--border-strong); background: var(--bg-sunken); border-radius: var(--r-sm); padding: 10px 12px; margin-bottom: 8px; }
 .annotation-item.manual { border-left-color: var(--accent); }
 .annotation-item.qa { border-left-color: var(--ok); }
 </style>

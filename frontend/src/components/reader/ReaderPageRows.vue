@@ -259,18 +259,25 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
 }
 
 .pg { margin-bottom: 18px; }
+/* 页头**不吸顶**。
+ * 吸顶（position: sticky）会在正文顶部压出一条只放了页码的空带，并把紧跟着的那行
+ * 切掉上半截 —— 看起来像一条"莫名的遮罩"。页码是页与页之间的分隔，跟着内容滚动即可。 */
 .pg-head {
-  display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 3;
-  padding: 5px 2px; background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(6px); border-bottom: 1px solid var(--divider);
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 2px; border-bottom: 1px solid var(--divider);
   font-size: 11.5px; color: var(--text-faint);
 }
 .pg-no { font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
-.row-pair { position: relative; border-radius: var(--radius-sm); padding: 6px 4px; }
-.row-pair + .row-pair { border-top: 1px solid var(--divider); }
-.row-pair:hover { background: var(--bg-hover); }
-.row-pair.current { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+/* 行容器 = 纯排版块，**不带任何装饰**：
+   - 不画 border-top 分隔线（之前每块一条横线，密而卙）
+   - 不加 border-radius（只画上边框时圆角会把两端掰弯，看着像凭空多一个"圆角框"）
+   - 不留垂直内边距（否则相邻块之间会多出 12px 空白，不像一段连续的 markdown）
+   - **不做 hover 底色**：鼠标停在哪一块，那一块就变成一块灰色圆角块，
+     在"原 PDF 在左"模式下只有右栏有底色，看起来就像凭空多出一个变体（用户报过）。
+   正文的悬浮反馈交给行右侧的复制按钮（.rr-copy），文字本身保持干净。
+   "当前行"仍由 ReaderView 的滚动跟踪维护（目录高亮 / j·k 跳转 / 进度保存），只是不画出来。 */
+.row-pair { position: relative; padding: 0 4px; }
 
 /* 文本对照：一行两列；两侧只有字体不同，字号/行距完全一致 */
 .pg-rows.two-col .row-pair.two-col {
@@ -280,11 +287,11 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
   border-left: 1px solid var(--divider); padding-left: 20px;
 }
 .cell { min-width: 0; }
-/* 通栏行（表格）：两侧改为上下排，各自占满正文宽度 */
+/* 通栏行（表格）：两侧改为上下排，各自占满正文宽度。
+   上下之间**不画虚线**：每块一条横线太碎，看起来像被切成一条条卡片；靠间距分层就够了。 */
 .pg-rows.two-col .row-pair.wide { display: block; }
 .row-pair.wide > .cell + .cell {
-  border-left: 0; padding-left: 0; margin-top: 8px; padding-top: 8px;
-  border-top: 1px dashed var(--divider);
+  border-left: 0; padding-left: 0; margin-top: 10px; padding-top: 0;
 }
 .pg-rows:not(.two-col) { max-width: 880px; margin: 0 auto; }
 
@@ -325,8 +332,8 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
   .pg-pair.image-right { grid-template-columns: minmax(0, 1fr); }
   .pg-pair.image-right .col-image { order: 0; }
   .row-pair.two-col > .cell + .cell {
-    border-left: 0; border-top: 1px dashed var(--divider);
-    padding-left: 0; margin-top: 6px; padding-top: 6px;
+    border-left: 0; border-top: 0;
+    padding-left: 0; margin-top: 8px; padding-top: 0;
   }
   .pg-pair .col-rows { border-left: 0; padding-left: 0; }
   .pg-pair .col-image .media-box { position: static; }

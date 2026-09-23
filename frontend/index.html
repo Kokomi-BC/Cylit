@@ -4,13 +4,63 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PaperMind · 智能论文阅读</title>
+<meta name="description" content="PaperMind：本地论文解析、逐页中英翻译、对照阅读与知识库检索工具。" />
+<meta name="color-scheme" content="light dark" />
+<meta name="theme-color" content="#f2f4f5" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#1a1e20" media="(prefers-color-scheme: dark)" />
+<meta property="og:title" content="PaperMind · 智能论文阅读" />
+<meta property="og:description" content="本地论文解析、逐页中英翻译、对照阅读与知识库检索。" />
+<meta property="og:type" content="website" />
+<!-- 站点图标：与顶栏品牌标记同一套青绿圆角方块（内联 SVG，不依赖额外文件） -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230f7b8a'/%3E%3Cpath d='M9 8.5h4.6v15H9z' fill='%23ffffff'/%3E%3Cpath d='M16 8.5h7v15h-7z' fill='%23ffffff' fill-opacity='.72'/%3E%3C/svg%3E" />
+<style>
+  /* 首屏内联样式：JS 还没跑起来之前也要和成品观感一致（圆角 + 青绿 + 骨架） */
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #f2f4f5; color: #171b1d;
+    font: 14px/1.55 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+          "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .boot { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 12px; }
+  .boot-mark {
+    width: 40px; height: 40px; border-radius: 14px; background: #0f7b8a;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .boot-mark i { display: block; width: 16px; height: 16px; border-radius: 5px; background: #fff; opacity: .9; }
+  .boot-title { font-size: 15px; font-weight: 600; letter-spacing: -.015em; }
+  .boot-hint { max-width: 42ch; text-align: center; font-size: 12.5px; color: #5b6469; }
+  .boot-hint code {
+    font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px;
+    background: rgba(13, 32, 38, .06); padding: 1px 5px; border-radius: 6px;
+  }
+  .sk-line { position: relative; overflow: hidden; width: 180px; height: 5px; border-radius: 999px; background: rgba(13, 32, 38, .10); }
+  .sk-line::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .85), transparent);
+    animation: boot-sweep 1.5s cubic-bezier(.2, .8, .2, 1) infinite;
+  }
+  @keyframes boot-sweep { to { transform: translateX(100%); } }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1e20; color: #f1f5f6; }
+    .boot-hint { color: #b6c1c4; }
+    .boot-hint code { background: rgba(255, 255, 255, .08); }
+    .sk-line { background: rgba(255, 255, 255, .14); }
+  }
+  @media (prefers-reduced-motion: reduce) { .sk-line::after { animation: none; } }
+</style>
 </head>
 <body>
 <div id="app">
   <div class="boot">
-    <div class="boot-spinner"></div>
-    <p>正在加载 PaperMind 前端…</p>
-    <p class="boot-hint">若长时间停留在此页：确认后端已启动（<code>python cli/pr.py serve --port 8710</code>）且前端已构建（<code>cd frontend &amp;&amp; npm run build</code>）。</p>
+    <div class="boot-mark"><i></i></div>
+    <div class="boot-title">PaperMind</div>
+    <div class="sk-line"></div>
+    <p class="boot-hint">
+      若长时间停留在此页：确认后端已启动
+      （<code>python cli/pr.py serve --port 8710</code>）且前端已构建（<code>cd frontend &amp;&amp; npm run build</code>）。
+    </p>
   </div>
 </div>
 <script type="module" src="/src/main.ts"></script>

@@ -30,6 +30,7 @@ import {
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
+import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
@@ -75,9 +76,36 @@ const zoom = ref(1);
 const searchQuery = ref('');
 const searchHits = ref<Array<{ id: string; page: number; side: string; snippet: string }>>([]);
 const mobilePane = ref<'' | 'side'>('');
+/** 宽屏下侧栏是否展开（窄屏走 mobilePane 抽屉，见 asideVisible）。 */
+const asideKey = 'pm.reader.aside';
+const asideOpen = ref(localStorage.getItem(asideKey) !== '0');
+/** 侧栏当前是否可见：窄屏 = 抽屉打开；宽屏 = 用户没收起。 */
+const asideVisible = computed(() => (isNarrow.value ? mobilePane.value === 'side' : asideOpen.value));
 const isNarrow = ref(false);
 const paneWidth = ref(1200);
 const useBrief = ref(true);
+
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface ToolbarAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** 阅读器工具条：低频动作收进「⋯」，避免一排同权重按钮把主操作淹没。 */
+const toolbarMenu: ToolbarAction[] = [
+  { key: 'retranslate', label: '重新翻译', icon: 'refresh' },
+  { key: 'pdf', label: '打开原 PDF', icon: 'external' },
+  { key: 'markdown', label: 'Markdown 视图', icon: 'document' },
+];
+
+function onToolbarAction(key: string) {
+  if (key === 'retranslate') { startTranslate('retranslate'); return; }
+  if (key === 'pdf') { openPdf(); return; }
+  if (key === 'markdown') openMarkdownView();
+}
 
 const selection = reactive({
   show: false, x: 0, y: 0, text: '', rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
@@ -193,6 +221,29 @@ const rowById = computed(() => {
 });
 const currentRow = computed(() => rowById.value.get(currentRowId.value) ?? null);
 const currentPage = computed(() => currentRow.value?.page ?? 1);
+
+/** 逐页翻译是否已全部完成（完成时不再需要实时状态/继续翻译）。 */
+const translateDone = computed(() => {
+  const total = stats.value.pages ?? 0;
+  return total > 0 && (stats.value.pages_done ?? 0) >= total;
+});
+
+/**
+ * 目录高亮：当前内容行 → **文档顺序中它之前最近的一个标题**。
+ *
+ * 直接把 currentRowId 交给目录是不对的：滚动经过正文时当前行是段落，
+ * 段落 id 永远匹配不上任何标题 id，于是目录高亮会“亮了又灭、灭了又亮”（乱跳）。
+ */
+const tocActiveId = computed(() => {
+  const order = allRows.value;
+  const idx = order.findIndex((r) => r.id === currentRowId.value);
+  if (idx < 0) return '';
+  const headingIds = new Set(tocRows.value.map((r) => r.id));
+  for (let i = idx; i >= 0; i -= 1) {
+    if (headingIds.has(order[i].id)) return order[i].id;
+  }
+  return '';
+});
 const progressPercent = computed(() => pct(stats.value.pages_done ?? 0, stats.value.pages ?? 0));
 const originalVisible = computed(() => viewMode.value !== 'translation');
 const originalIsPage = computed(() => originalVisible.value && originalMode.value === 'page');
@@ -337,7 +388,18 @@ async function focusRow(id: string, opts: { smooth?: boolean; save?: boolean; pa
   const el = scroller.value;
   const node = (id ? el?.querySelector<HTMLElement>(`[data-row-id="${id}"]`) : null)
     ?? el?.querySelector<HTMLElement>(`[data-page="${page}"]`);
-  node?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+  if (el) spyLockUntil = performance.now() + 1200;
+  if (node && el) {
+    // 把目标行停在**阅读线**上（而不是居中）：滚动结束后"当前行"正好还是它，
+    // 目录高亮才不会落到上一个章节。
+    // 视口位置 = 行内容坐标 - scrollTop，要让它落在阅读线上就解 scrollTop = top - line；
+    // 再 +2px 让行顶略微越过阅读线，避免浮点误差把"当前行"判给上一行。
+    const base = el.getBoundingClientRect().top - el.scrollTop;
+    const top = node.getBoundingClientRect().top - base;
+    el.scrollTo({ top: Math.max(0, top - readingLine() + 2), behavior: smooth ? 'smooth' : 'auto' });
+  } else {
+    node?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+  }
   if (save) saveProgressDebounced();
 }
 
@@ -418,6 +480,22 @@ const expandAll = () => { collapsed.value = []; };
 let offsets: Array<{ id: string; top: number }> = [];
 let offsetsHeight = -1;
 
+/**
+ * 内容高度一变就让偏移缓存失效。
+ *
+ * KaTeX / 插图 / 字体都是**异步**就位的，只比较 scrollHeight 会漏（变化不足 2px 不失效），
+ * 缓存过期后二分查找就会落到错行 —— 表现出来就是"当前行"乱跳、目录跟着闪。
+ */
+let contentRo: ResizeObserver | null = null;
+function watchContentSize() {
+  contentRo?.disconnect();
+  const el = scroller.value?.querySelector<HTMLElement>('.rows-wrap');
+  if (!el || typeof ResizeObserver === 'undefined') return;
+  contentRo = new ResizeObserver(() => { offsetsHeight = -1; });
+  contentRo.observe(el);
+  bindScrollerEvents();
+}
+
 function measureRows() {
   const el = scroller.value;
   if (!el) return;
@@ -428,11 +506,40 @@ function measureRows() {
   offsetsHeight = el.scrollHeight;
 }
 
+/**
+ * 阅读线："当前行"按视口上方约 30% 处判定，而不是贴顶那一行。
+ * 贴顶判定的问题：点目录是让目标行居中（在 30% 线下方），按定义就不算当前行，
+ * 于是目录高亮会落到**上一个**章节 —— 看起来就是"乱跳"。
+ */
+function readingLine(): number {
+  const el = scroller.value;
+  if (!el) return 120;
+  return Math.min(260, Math.max(80, el.clientHeight * 0.3));
+}
+
+/** 程序化跳转（点目录 / 点批注 / 快捷键）期间锁住跟踪，避免平滑滚动扫过一串章节。 */
+let spyLockUntil = 0;
+
+/** 滚动停下来就立即放行并重算一次（不必等锁定超时）。 */
+function onScrollEnd() {
+  spyLockUntil = 0;
+  onScroll();
+}
+
+/** 把 scrollend 绑到真正的滚动元素上（支持则生效，不支持就靠锁定超时）。 */
+function bindScrollerEvents() {
+  const el = scroller.value;
+  if (!el) return;
+  el.removeEventListener('scrollend', onScrollEnd);
+  if ('onscrollend' in el) el.addEventListener('scrollend', onScrollEnd, { passive: true });
+}
+
 function onScroll() {
   const el = scroller.value;
   if (!el) return;
   if (!offsets.length || Math.abs(offsetsHeight - el.scrollHeight) > 2) measureRows();
-  const y = el.scrollTop + 60;
+  if (performance.now() < spyLockUntil) { saveProgressDebounced(); return; }
+  const y = el.scrollTop + readingLine();
   let lo = 0;
   let hi = offsets.length - 1;
   let best = offsets[0]?.id ?? '';
@@ -445,7 +552,10 @@ function onScroll() {
 }
 
 /** 行模型/视图形态/字号变化后让偏移缓存失效（行高会变） */
-watch([groups, viewMode, originalMode, pairOrder, zoom, textSize], () => { offsetsHeight = -1; });
+watch([groups, viewMode, originalMode, pairOrder, zoom, textSize], () => {
+  offsetsHeight = -1;
+  nextTick(() => watchContentSize());
+});
 
 /* ------------------------------ LiveUpdater ------------------------------ */
 function applyPage(payload: {
@@ -559,7 +669,7 @@ let mq: MediaQueryList | null = null;
 let taskTimer: ReturnType<typeof setInterval> | null = null;
 function onMqChange() {
   isNarrow.value = !!mq?.matches;
-  nextTick(() => syncPaneWidth());
+  nextTick(() => { syncPaneWidth(); watchContentSize(); });
 }
 
 onMounted(async () => {
@@ -573,6 +683,7 @@ onMounted(async () => {
   await loadSide();
   await nextTick();
   syncPaneWidth();
+  watchContentSize();
   restorePosition(reader.value?.progress ?? null);
   await applyDeepLink();
   if (route.query.md) {                       // ?md=1[&mdpage=8] 直接打开 Markdown 视图
@@ -588,6 +699,8 @@ onUnmounted(() => {
   mq?.removeEventListener('change', onMqChange);
   window.removeEventListener('resize', syncPaneWidth);
   document.removeEventListener('mouseup', onMouseUp);
+  contentRo?.disconnect();
+  scroller.value?.removeEventListener('scrollend', onScrollEnd);
   if (taskTimer) clearInterval(taskTimer);
   saveProgressDebounced.cancel();
   void saveProgressNow();
@@ -828,6 +941,7 @@ useHotkeys({
   p: () => { setOriginalMode(originalMode.value === 'page' ? 'text' : 'page'); },
   j: () => { void stepRow(1); },
   k: () => { void stepRow(-1); },
+  '[': () => { toggleAside(); },
   '/': () => { (document.querySelector('input[placeholder="搜索"]') as HTMLInputElement | null)?.focus(); },
   Escape: () => { hideMenu(); mobilePane.value = ''; },
 }, () => !loading.value && !fatal.value);
@@ -835,6 +949,18 @@ useHotkeys({
 /* ------------------------------ 其它 ------------------------------ */
 const openPdf = () => window.open(assetUrl(`/api/v1/papers/${paperId.value}/file`), '_blank');
 const togglePane = (name: 'side') => { mobilePane.value = mobilePane.value === name ? '' : name; };
+
+/** 侧栏开合：窄屏=抽屉，宽屏=收起列（选择记住到 localStorage） */
+async function toggleAside() {
+  if (isNarrow.value) {
+    togglePane('side');
+  } else {
+    asideOpen.value = !asideOpen.value;
+    localStorage.setItem(asideKey, asideOpen.value ? '1' : '0');
+  }
+  await nextTick();
+  syncPaneWidth();
+}
 const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 </script>
 
@@ -868,14 +994,20 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
     <div
       v-else
       :class="['reader',
-               isNarrow ? 'no-aside' : '',
+               asideVisible ? '' : 'no-aside',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '']"
     >
       <!-- ============ 工具栏 ============ -->
       <div class="reader-toolbar">
-        <RouterLink class="btn icon sm" :to="{ name: 'library' }" title="返回论文库">
-          <AppIcon name="back" :size="14" />
-        </RouterLink>
+        <!-- 最左：侧栏开合（返回论文库已上提到全局页头） -->
+        <button
+          class="btn icon"
+          :title="asideVisible ? '收起侧栏（[）' : '展开侧栏（[）'"
+          :aria-pressed="asideVisible"
+          @click="toggleAside"
+        >
+          <AppIcon name="panel" :size="15" />
+        </button>
         <span class="small truncate doc-title" :title="reader?.paper.title">
           {{ reader?.paper.title }}
         </span>
@@ -901,12 +1033,12 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         </div>
 
         <div v-if="originalIsPage" class="row">
-          <button class="btn icon sm" title="缩小" @click="zoom = Math.max(0.4, zoom - 0.15)">
-            <AppIcon name="zoom-out" :size="14" />
+          <button class="btn icon" title="缩小" @click="zoom = Math.max(0.4, zoom - 0.15)">
+            <AppIcon name="zoom-out" :size="15" />
           </button>
           <span class="tiny faint nowrap">{{ Math.round(zoom * 100) }}%</span>
-          <button class="btn icon sm" title="放大" @click="zoom = Math.min(3, zoom + 0.15)">
-            <AppIcon name="zoom-in" :size="14" />
+          <button class="btn icon" title="放大" @click="zoom = Math.min(3, zoom + 0.15)">
+            <AppIcon name="zoom-in" :size="15" />
           </button>
         </div>
 
@@ -921,43 +1053,41 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
         <span class="spacer" />
 
-        <span
-          class="badge"
-          :class="sseStatus === 'open' ? 'ok' : (sseStatus === 'polling' ? 'warn' : '')"
-          :title="sseStatus === 'open' ? 'SSE 已连接：逐页译文实时上线' : 'SSE 不可用，已降级轮询'"
-        >{{ sseStatus === 'open' ? '实时' : (sseStatus === 'polling' ? '轮询' : '连接中') }}</span>
-        <span class="badge accent nowrap">{{ stats.pages_done ?? 0 }}/{{ stats.pages ?? 0 }} 页</span>
+        <!-- 翻译完成时：实时状态与进度就没意义了（整篇本来就不在跑），合并为一行完成文案 -->
+        <template v-if="translateDone">
+          <span class="badge ok nowrap">
+            <AppIcon name="check_circle" :size="13" />全部 {{ stats.pages }} 页已翻译
+          </span>
+        </template>
+        <template v-else>
+          <span
+            class="badge"
+            :class="sseStatus === 'open' ? 'ok' : (sseStatus === 'polling' ? 'warn' : '')"
+            :title="sseStatus === 'open' ? 'SSE 已连接：逐页译文实时上线' : 'SSE 不可用，已降级轮询'"
+          >{{ sseStatus === 'open' ? '实时' : (sseStatus === 'polling' ? '轮询' : '连接中') }}</span>
+          <span class="badge accent nowrap">{{ stats.pages_done ?? 0 }}/{{ stats.pages ?? 0 }} 页</span>
+        </template>
 
         <label class="tiny faint row nowrap" style="gap:4px" title="文档简报：翻译前固化术语">
           <input v-model="useBrief" type="checkbox"> 简报
         </label>
-        <button class="btn primary sm" @click="startTranslate('resume')">
-          <AppIcon name="play" :size="14" />继续翻译
+        <button class="btn primary" v-if="!translateDone" @click="startTranslate('resume')">
+          <AppIcon name="play" :size="15" />继续翻译
         </button>
-        <button class="btn sm" @click="startTranslate('retranslate')">
-          <AppIcon name="refresh" :size="14" />重译
+        <button v-if="activeTask" class="btn danger" @click="cancelTranslate(activeTask)">
+          <AppIcon name="stop" :size="15" />停止
         </button>
-        <button v-if="activeTask" class="btn sm danger" @click="cancelTranslate(activeTask)">
-          <AppIcon name="stop" :size="14" />停止
-        </button>
-        <button class="btn icon sm" title="在新标签打开原 PDF" @click="openPdf">
-          <AppIcon name="external" :size="14" />
-        </button>
-        <button class="btn icon sm" title="Markdown 视图（含插图）" @click="openMarkdownView">
-          <AppIcon name="document" :size="14" />
-        </button>
+        <!-- 低频动作（重译 / 打开 PDF / Markdown 视图）收进「⋯」，工具栏只留主次两个动作 -->
+        <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
 
-        <div v-if="isNarrow" class="row">
-          <button class="btn icon sm" title="侧栏（目录 / 批注 / 公式 …）" @click="togglePane('side')">
-            <AppIcon name="panel" :size="14" />
-          </button>
-        </div>
-
-        <input v-model="searchQuery" class="small search" placeholder="搜索" @keyup.enter="runSearch">
+        <label class="search-field search-compact">
+          <AppIcon name="search" :size="14" />
+          <input v-model="searchQuery" placeholder="搜索" @keyup.enter="runSearch">
+        </label>
       </div>
 
-      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务（合并成一栏） ============ -->
-      <aside class="reader-aside">
+      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务（可整体折叠） ============ -->
+      <aside class="reader-aside" v-if="asideVisible">
         <div class="side-tabs">
           <button
             v-for="t in SIDE_TABS"
@@ -975,7 +1105,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         <ReaderToc
           v-if="sideTab === 'toc'"
           :rows="tocRows"
-          :current-row-id="currentRowId"
+          :current-row-id="tocActiveId"
           :page-count="pages.length"
           :collapsed="collapsed"
           :search-hits="searchHits"
@@ -1088,12 +1218,12 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           >{{ m.label }}</button>
         </div>
         <span class="spacer" />
-        <button class="btn icon sm" title="上一页" @click="stepMarkdownPage(-1)">
-          <AppIcon name="chevron-left" :size="14" />
+        <button class="btn icon" title="上一页" @click="stepMarkdownPage(-1)">
+          <AppIcon name="chevron-left" :size="15" />
         </button>
         <span class="tiny faint nowrap">第 {{ mdView.page }} 页 / {{ mdPages.length }}</span>
-        <button class="btn icon sm" title="下一页" @click="stepMarkdownPage(1)">
-          <AppIcon name="chevron-right" :size="14" />
+        <button class="btn icon" title="下一页" @click="stepMarkdownPage(1)">
+          <AppIcon name="chevron-right" :size="15" />
         </button>
       </div>
       <div v-if="mdView.loading" class="muted">正在加载 Markdown…</div>
@@ -1126,7 +1256,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
   padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev);
 }
 .doc-title { max-width: 220px; font-weight: 600; }
-.search { width: 120px; }
+/* 阅读器工具栏窄一些：搜索框只要 130px */
+.search-compact input { width: 130px; }
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

@@ -40,6 +40,8 @@ const ICONS: Record<string, string> = {
   'chevron-right': '<path d="M9.5 6l6 6-6 6"/>',
   'unfold-more': '<path d="M8 9.5 12 5.5l4 4"/><path d="M8 14.5l4 4 4-4"/>',
   'unfold-less': '<path d="M8 5.5l4 4 4-4"/><path d="M8 18.5l4-4 4 4"/>',
+  // 溢出菜单（等价于 Phosphor 的 DotsThree）：把次要操作收起来，避免按钮墙
+  more: '<circle cx="6" cy="12" r="1.35"/><circle cx="12" cy="12" r="1.35"/><circle cx="18" cy="12" r="1.35"/>',
 
   // ---- 动作 ----
   add: '<path d="M12 5v14M5 12h14"/>',

@@ -18,8 +18,8 @@ PDF 论文 → 可靠解析 → 结构化(paper/page/block) → 公式与图片�
 # 1) 依赖（conda 环境 scenemind）
 conda run -n scenemind python -m pip install -r requirements.txt
 
-# 2) 一键启动（自动：检查环境 → 初始化库 → 起后端）
-.\scripts\start.ps1
+# 2) 一键启动（自动：检查环境 → 初始化库 → 起后端；dist 缺失时会提示并代跑 npm run build）
+.\scripts\start.bat
 #    打开 http://127.0.0.1:8710/docs 查看全部 API
 
 # 3) 导入 + 解析一篇论文
@@ -88,7 +88,7 @@ paper-reader/
 │  ├─ core/           config · logging · errors · utils · events
 │  └─ main.py         入口（REST + SSE + 静态资源 + TaskRunner）
 ├─ cli/pr.py          命令行（与服务端共用 parsing）
-├─ scripts/           start.ps1（一键启动） · e2e_check.py · frontend_check.py（验收）
+├─ scripts/           start.bat（一键启动） · e2e_check.py · frontend_check.py（验收）
 ├─ tests/             pytest（单元 + 端到端）
 ├─ data/              papers/ · index/ · secrets/ · logs/ · trash/
 └─ docs/              README · dev-log · API 说明

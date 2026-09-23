@@ -6,6 +6,7 @@
   "description": "PaperMind 前端：Vite + Vue 3 + TypeScript（SFC），构建产物由后端同进程托管在 /app/",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/clean-dist.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json"

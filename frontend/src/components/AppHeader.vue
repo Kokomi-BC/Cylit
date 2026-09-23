@@ -1,8 +1,10 @@
 <script setup lang="ts">
-/** 顶部导航：品牌 + 路由入口 + 后端健康指示灯。 */
-import { computed, onMounted, ref } from 'vue';
+/** 顶部导航：品牌 + 路由入口。
+ * 阅读器路由下在最左侧多一个「返回论文库」入口（返回是全局导航，放在整页最顶上）。
+ * 右上角不挂状态文字/小圆点（后端健康在「设置 → 健康检查」里看）。
+ */
+import { computed } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
-import { loadHealth, state } from '@/stores/app';
 import AppIcon from '@/components/AppIcon.vue';
 
 const route = useRoute();
@@ -15,69 +17,71 @@ const nav = [
   { name: 'settings', label: '设置', icon: 'settings' },
 ];
 
-const health = ref<Record<string, any> | null>(null);
-onMounted(async () => { health.value = await loadHealth(); });
-
-const healthCls = computed(() => {
-  const h = state.health;
-  if (!h) return '';
-  if (h.error) return 'bad';
-  return h.database?.ok ? 'ok' : 'bad';
-});
-const healthTitle = computed(() => {
-  const h = state.health;
-  if (!h) return '未检测';
-  if (h.error) return `后端异常：${h.error}`;
-  return `数据库 ${h.database?.backend ?? '?'} · 任务池 ${h.task_runner?.running ?? 0} 运行中 · 数据目录 ${h.data_dir ?? ''}`;
-});
 const active = (name: string) => route.name === name
   || (name === 'library' && route.name === 'reader');
+
+/** 阅读器等详情页需要在页头给一个明确的「返回」。 */
+const showBack = computed(() => route.name === 'reader');
 </script>
 
 <template>
   <header class="app-header">
+    <RouterLink v-if="showBack" class="btn icon back" :to="{ name: 'library' }" title="返回论文库">
+      <AppIcon name="back" :size="15" />
+    </RouterLink>
     <div class="brand">
-      <span class="logo"><AppIcon name="library" :size="14" /></span>PaperMind
+      <span class="logo"><AppIcon name="library" :size="15" /></span>PaperMind
     </div>
-    <nav class="nav">
+    <nav class="nav" aria-label="主导航">
       <RouterLink v-for="n in nav" :key="n.name" :to="{ name: n.name }"
                   :class="{ active: active(n.name) }">
         <AppIcon :name="n.icon" :size="15" />{{ n.label }}
       </RouterLink>
     </nav>
-    <div class="header-right">
-      <span class="tiny faint" :title="String(route.meta?.title ?? '')">{{ route.meta?.title }}</span>
-      <span class="health-dot" :class="healthCls" :title="healthTitle" />
-    </div>
   </header>
 </template>
 
 <style scoped>
+/* 顶栏：单行不换行；导航本体是一个圆角胶囊组，而不是一排散落的链接。
+ * 背景必须**不透明**：半透明 + backdrop blur 会在页面最顶部形成一层"纱/遮罩"，
+ * 底下如果正好有内容滚动还会透出半截字形。 */
 .app-header {
   position: sticky; top: 0; z-index: 40; height: var(--header-h);
-  display: flex; align-items: center; gap: 4px; padding: 0 14px;
-  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-  backdrop-filter: saturate(1.4) blur(8px);
+  display: flex; align-items: center; gap: 12px; padding: 0 14px;
+  background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; margin-right: 10px; }
-/* 品牌标记：中性单色方形（WinUI 观感），不用渐变 */
+/* 返回入口：只在详情页出现，占位与导航胶囊同高 */
+.app-header .back { flex: none; margin-right: 2px; }
+.brand {
+  display: flex; align-items: center; gap: 8px; font-weight: 700;
+  letter-spacing: -.015em; font-size: 15px; white-space: nowrap;
+}
+/* 品牌标记：中性单色圆角块（不用渐变） */
 .brand .logo {
   display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; border-radius: 4px;
+  width: 26px; height: 26px; border-radius: var(--r-sm);
   background: var(--accent); color: var(--text-on-accent);
 }
-.nav { display: flex; align-items: center; gap: 2px; flex: 1; overflow-x: auto; scrollbar-width: none; }
-.nav::-webkit-scrollbar { display: none; }
-.nav a {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 11px; border-radius: var(--radius-sm); color: var(--text-dim);
-  font-weight: 500; white-space: nowrap;
+.nav {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+  padding: 3px; border-radius: var(--radius-ctl);
+  background: var(--bg-sunken); border: 1px solid var(--border);
 }
+.nav::-webkit-scrollbar { display: none; }
+/* 高度写死为 30px：保证 6 个入口完全等高（之前 33.7px 的“半像素差”就来自行高） */
+.nav a {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 13px;
+  border-radius: var(--radius-ctl); color: var(--text-dim);
+  font-weight: 500; font-size: 13px; line-height: 1; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.nav a :deep(.icon) { display: block; }
 .nav a:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
-.nav a.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
-.header-right { display: flex; align-items: center; gap: 8px; }
-.health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
-.health-dot.ok { background: var(--ok); }
-.health-dot.bad { background: var(--danger); }
+.nav a.active {
+  background: var(--bg-elev); color: var(--accent-text); font-weight: 600;
+  box-shadow: var(--shadow-1);
+}
 </style>

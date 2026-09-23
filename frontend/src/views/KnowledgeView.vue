@@ -19,6 +19,7 @@ import {
   copyText, paperStatus, pct, truncate,
 } from '@/utils/format';
 import { mdToHtml } from '@/composables/useMarkdown';
+import Menu from '@/components/Menu.vue';
 import AppIcon from '@/components/AppIcon.vue';
 
 /** 四类 chunk（与后端 knowledge_service.CHUNK_TYPES 一致）。 */
@@ -51,6 +52,33 @@ const overview = ref<KnowledgeOverview | null>(null);
 const indexStatus = ref<KnowledgeIndexStatus | null>(null);
 const chunks = ref<ChunkMeta[]>([]);
 const busyKey = ref('');
+
+/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
+interface RowAction {
+  key: string;
+  label: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** 行内只留「建索引」；重建与纳入/移出这类低频操作收进「⋯」菜单。 */
+function rowMenu(p: KbPaper): RowAction[] {
+  return [
+    { key: 'rebuild', label: '重建索引', icon: 'refresh', disabled: busyKey.value === `idx:${p.id}` },
+    {
+      key: 'kb',
+      label: p.in_knowledge_base ? '移出知识库' : '纳入知识库',
+      icon: p.in_knowledge_base ? 'link-off' : 'link',
+      disabled: busyKey.value === `kb:${p.id}`,
+    },
+  ];
+}
+
+function onRowAction(p: KbPaper, key: string) {
+  if (key === 'rebuild') { runIndex(p.id, true); return; }
+  if (key === 'kb') toggleKb(p);
+}
 
 // chunk 元数据查询条件（后端要求 paper_id 必填）
 const chunkPaperId = ref('');
@@ -276,8 +304,8 @@ function jsonPreview(value: unknown): string {
       </div>
       <div class="grow"></div>
       <div class="page-actions">
-        <button class="btn sm" @click="refreshAll" :disabled="state.loading['kb-overview']">
-          <AppIcon name="refresh" :size="14" />{{ state.loading['kb-overview'] ? '刷新中…' : '刷新' }}
+        <button class="btn icon" title="刷新知识库概览" @click="refreshAll" :disabled="state.loading['kb-overview']">
+          <AppIcon name="refresh" :size="15" />
         </button>
       </div>
     </div>
@@ -312,22 +340,21 @@ function jsonPreview(value: unknown): string {
     <div class="card" style="margin-top:14px" v-if="overview">
       <div class="card-head">
         <span>论文与知识库归属</span>
-        <span class="spacer"></span>
-        <span class="tiny faint">纳入 / 移出 · 建索引 · 重建索引</span>
       </div>
       <div class="card-body tight">
-        <table class="data" v-if="papers.length">
+        <table class="data fixed" v-if="papers.length">
           <thead>
             <tr>
-              <th>论文</th><th>状态</th><th>知识库</th>
-              <th class="num">chunks</th><th>索引版本</th><th>操作</th>
+              <th class="w-paper">论文</th><th class="w-status">状态</th><th class="w-kb">知识库</th>
+              <th class="num w-num">chunks</th><th class="w-ver">索引版本</th><th class="w-ops">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="p in papers" :key="p.id">
               <td>
-                <RouterLink :to="{ name: 'reader', params: { paperId: p.id } }">{{ p.title }}</RouterLink>
-                <div class="tiny faint mono">{{ p.id }}</div>
+                <RouterLink class="truncate" :to="{ name: 'reader', params: { paperId: p.id } }"
+                            :title="p.title">{{ p.title }}</RouterLink>
+                <div class="tiny faint mono truncate" :title="p.id">{{ p.id }}</div>
               </td>
               <td><span class="badge" :class="paperStatus(p.status).cls">{{ paperStatus(p.status).label }}</span></td>
               <td>
@@ -337,13 +364,13 @@ function jsonPreview(value: unknown): string {
               </td>
               <td class="num">{{ p.chunks }}</td>
               <td class="mono tiny">{{ versionOf(p.id) }}</td>
-              <td>
-                <div class="row wrap">
-                  <button class="btn sm" :disabled="busyKey === 'idx:' + p.id" @click="runIndex(p.id, false)">建索引</button>
-                  <button class="btn sm" :disabled="busyKey === 'idx:' + p.id" @click="runIndex(p.id, true)">重建索引</button>
-                  <button class="btn sm ghost" :disabled="busyKey === 'kb:' + p.id" @click="toggleKb(p)">
-                    {{ p.in_knowledge_base ? '移出知识库' : '纳入知识库' }}
+              <td class="ops">
+                <div class="row nowrap" style="gap: 6px">
+                  <button class="btn sm" :disabled="busyKey === 'idx:' + p.id" @click="runIndex(p.id, false)">
+                    <AppIcon name="layers" :size="14" />建索引
                   </button>
+                  <Menu :items="rowMenu(p)" up :label="`更多操作：${p.title}`"
+                        @select="onRowAction(p, $event)" />
                 </div>
               </td>
             </tr>
@@ -362,8 +389,8 @@ function jsonPreview(value: unknown): string {
           <option value="">全部知识库</option>
           <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
         </select>
-        <button class="btn sm" @click="loadStatus" :disabled="state.loading['kb-status']">
-          <AppIcon name="refresh" :size="14" />刷新状态
+        <button class="btn icon" title="刷新索引状态" @click="loadStatus" :disabled="state.loading['kb-status']">
+          <AppIcon name="refresh" :size="15" />
         </button>
       </div>
       <div class="card-body">
@@ -427,7 +454,9 @@ function jsonPreview(value: unknown): string {
           <option :value="100">100 条</option>
           <option :value="200">200 条</option>
         </select>
-        <button class="btn sm" @click="loadChunks" :disabled="state.loading['kb-chunks']">查询</button>
+        <button class="btn" @click="loadChunks" :disabled="state.loading['kb-chunks']">
+          <AppIcon name="search" :size="15" />查询
+        </button>
       </div>
       <div class="card-body tight">
         <table class="data" v-if="chunks.length">
@@ -475,7 +504,7 @@ function jsonPreview(value: unknown): string {
         <span class="spacer"></span>
       </div>
       <div class="card-body">
-        <div class="row wrap">
+        <div class="row wrap" style="margin-top:10px">
           <div class="seg">
             <button :class="{ active: ragScope === 'current_paper' }" @click="ragScope = 'current_paper'">当前论文</button>
             <button :class="{ active: ragScope === 'knowledge_base' }" @click="ragScope = 'knowledge_base'">全部知识库</button>
@@ -484,7 +513,6 @@ function jsonPreview(value: unknown): string {
             <option value="">选择论文…</option>
             <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
           </select>
-          <span class="tiny faint">范围：{{ ragScope === 'current_paper' ? '当前论文' : '全部知识库' }}</span>
         </div>
 
         <div class="col" style="margin-top:10px">
@@ -501,7 +529,6 @@ function jsonPreview(value: unknown): string {
           <template v-if="ragResult.implemented === false">
             <div class="annotation-item manual">
               <div class="row wrap">
-                <span class="badge warn">尚未实现</span>
                 <b>RAG 问答尚未实现</b>
                 <span class="spacer"></span>
               </div>
@@ -556,8 +583,20 @@ function jsonPreview(value: unknown): string {
 </template>
 
 <style scoped>
+/* 论文归属表：固定列宽，徽章不会被拆成两行 */
+.w-paper { width: 300px; }
+.w-status { width: 92px; }
+.w-kb { width: 88px; }
+.w-num { width: 76px; }
+.w-ver { width: 84px; }
+.w-ops { width: 150px; }
+td a.truncate { display: block; }
+
+/* 卡头里的下拉不撑满整行（卡片头是 flex，select 容易被拉长） */
+.card-head select { max-width: 300px; }
+
 /* `.annotation-item`：问答 / 手动批注的条目标记，用中性左边框 + 语义色区分。 */
-.annotation-item { border-left: 3px solid var(--border-strong); background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 8px; }
+.annotation-item { border-left: 3px solid var(--border-strong); background: var(--bg-sunken); border-radius: var(--r-sm); padding: 10px 12px; margin-bottom: 8px; }
 .annotation-item.manual { border-left-color: var(--accent); }
 .annotation-item.qa { border-left-color: var(--ok); }
 </style>
