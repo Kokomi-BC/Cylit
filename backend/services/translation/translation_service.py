@@ -14,7 +14,7 @@
 两份 Markdown 的块序号天然一一对应（``pair_rows`` 只在块数不等时才做一次
 difflib 序列对齐），不需要锚点、不需要 DP、不需要"回退补译"。
 
-保留的工程能力：自适应并发调度、max_tokens 升档（思考模式吃光预算时）、
+保留的工程能力：重试/退避/熔断（调度器）、max_tokens 升档（思考模式吃光预算时）、
 断点续跑（``cursor.done_pages`` + ``pages.json``）、暂停/取消、SSE 实时上线。
 """
 
@@ -169,10 +169,10 @@ def run_translate_task(ctx) -> dict:
     if skeleton:
         log.info("标题骨架就绪：%d 行；前文历史上限 %d 字", skeleton.count("\n"), context_chars)
 
+    # 页级翻译**固定串行**（窗口=1）：并发设置已移除，理由见 `config.py` 翻译段注释。
+    # 调度器仍保留「重试 / 退避 / 熔断」——它们与并发无关，仍然有用。
     scheduler = AdaptiveScheduler(SchedulerConfig(
-        initial=(1 if s.translate_sequential else s.translate_concurrency),
-        maximum=(1 if s.translate_sequential else s.translate_max_concurrency),
-        minimum=1,
+        initial=1, maximum=1, minimum=1,
         backoff_base=s.translate_backoff_base,
         backoff_cap=s.translate_backoff_cap,
         breaker_threshold=s.translate_breaker_threshold,

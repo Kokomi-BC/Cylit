@@ -249,12 +249,8 @@ def cmd_translate(args) -> int:
     if not pending:
         print("没有需要翻译的页")
         return 0
-    from backend.core.config import get_settings as _gs
-
-    s = _gs()
+    # 页级翻译固定串行（没有并发设置），这里不再覆盖任何并发参数。
     ctx = Ctx()
-    if args.concurrency:
-        s.translate_concurrency = args.concurrency
     result = translation_service.run_translate_task(ctx)
     _print(result, "翻译结果")
     return 0
@@ -316,21 +312,23 @@ def cmd_serve(args) -> int:
 
 
 def cmd_bench(args) -> int:
-    """并发策略对比实验（规划 §26 实验一/二：固定并发 vs 自适应并发）。"""
+    """并发策略对比实验（规划 §26 实验一/二：固定并发 vs 自适应调度器）。
+
+    这是**独立的压测工具**（用 mock provider，不碰真实产物）：调度器本身仍然通用，
+    但页级翻译已经固定串行，所以并发上下限在这里**显式写死**，不再读 `translate_*` 设置。
+    """
     from backend.providers.generation.mock import MockGeneration
     from backend.services.task.scheduler import (
         AdaptiveScheduler, ScheduleItem, SchedulerConfig,
     )
 
-    s = get_settings()
     scenarios = []
     if args.mode in ("fixed", "both"):
         scenarios.append(("固定并发无重试", None, args.concurrency))
     if args.mode in ("adaptive", "both"):
         scenarios.append(("自适应并发", SchedulerConfig(
-            initial=args.concurrency, maximum=s.translate_max_concurrency,
-            minimum=s.translate_min_concurrency,
-            breaker_threshold=s.translate_breaker_threshold,
+            initial=args.concurrency, maximum=args.concurrency * 2,
+            minimum=1, breaker_threshold=8,
         ), args.concurrency))
 
     results = []
@@ -447,13 +445,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("paper_id")
     sp.set_defaults(func=cmd_qa)
 
-    sp = sub.add_parser("translate", help="逐页翻译（产线 A）")
+    sp = sub.add_parser("translate", help="逐页翻译（产线 A，固定串行）")
     sp.add_argument("paper_id")
     sp.add_argument("--mode", default="resume",
                     choices=["resume", "retranslate"])
     sp.add_argument("--pages", default="",
                     help="只翻指定页，逗号分隔（如 3,4,7）")
-    sp.add_argument("--concurrency", type=int, default=0)
     sp.add_argument("--no-brief", action="store_true",
                     help="不生成文档简报（少一次调用，术语一致性下降）")
     sp.set_defaults(func=cmd_translate)

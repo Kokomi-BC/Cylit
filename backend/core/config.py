@@ -67,14 +67,10 @@ class Settings(BaseSettings):
     parse_vision_dpi: int = 200         # 读页专用 dpi（高于阅读器页图，保住上下标）
 
     # ---------- 翻译 ----------
-    translate_concurrency: int = 4      # 初始并发 N
-    translate_max_concurrency: int = 8
-    translate_min_concurrency: int = 1
-    #: 逐页翻译是否**严格串行**（默认开，即并发窗口=1）。
-    #: 并发会让第 N 页在"第 N-1 页还没落盘"时拿不到前文（实测 prev_context_chars=0），
-    #: 既丢连贯性、又把"逐页追加式前文"的前缀缓存打碎（每页 prompt 的历史尾巴形状不一致）。
-    #: 串行后第 N 页的 prompt 与第 N+1 页共享最长公共前缀 → 命中率最高。
-    translate_sequential: bool = True
+    # 逐页翻译**固定串行**（并发窗口恒为 1），**不再提供并发设置**：
+    # 并发会让第 N 页在"第 N-1 页还没落盘"时拿不到前文（实测 prev_context_chars=0），
+    # 既丢连贯性、又把"逐页追加式前文"的前缀缓存打碎；串行后相邻页 prompt 共享最长公共前缀，
+    # 命中率最高（实测稳定态 80%+，逐页 35%→99% 递增）。
     translate_backoff_base: float = 1.0
     translate_backoff_cap: float = 30.0
     translate_breaker_threshold: int = 8

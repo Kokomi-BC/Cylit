@@ -66,7 +66,7 @@ ROUTES: list[dict] = [
     {"name": "notes", "path": "/notes", "markers": ["笔记", "高亮", "批注"]},
     {"name": "models", "path": "/models", "markers": ["模型", "类型"]},
     {"name": "tasks", "path": "/tasks", "markers": ["任务中心", "队列"]},
-    {"name": "settings", "path": "/settings", "markers": ["设置", "并发"]},
+    {"name": "settings", "path": "/settings", "markers": ["设置", "渲染"]},
 ]
 
 ASSETS = [

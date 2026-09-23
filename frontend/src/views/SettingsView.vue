@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 设置：并发 / 渲染 / RAG 参数的白名单编辑 + 只读系统信息与健康检查。
+ * 设置：任务线程数 / 渲染 / RAG 参数的白名单编辑 + 只读系统信息与健康检查。
  *
  * 数据面 `GET /settings`（values + stored + editable 白名单）、`PUT /settings`（仅提交变更项）、
  * `GET /settings/health`（库 / 向量库 / 任务池）。设置写入 setting 表，重启后仍生效。
@@ -17,7 +17,6 @@ import AppIcon from '@/components/AppIcon.vue';
 
 /** 可编辑项键（必须落在后端 EDITABLE 白名单内）。 */
 type EditableKey =
-  | 'translate_concurrency' | 'translate_max_concurrency' | 'translate_min_concurrency'
   | 'task_worker_count' | 'render_dpi' | 'crop_dpi'
   | 'rag_top_k_vector' | 'rag_top_k_lexical' | 'rag_top_k_fused' | 'rag_top_n_rerank'
   | 'allow_general_knowledge' | 'default_generation_model';
@@ -49,13 +48,10 @@ interface ReadonlyDef {
 /** 分组表单：键必须在后端白名单内。 */
 const GROUPS: GroupDef[] = [
   {
-    key: 'concurrency',
-    title: '并发',
-    hint: '翻译并发（AIMD 自适应上下限）与任务工作线程数；改小更省额度，改大更快但更易触发限流。',
+    key: 'task',
+    title: '任务',
+    hint: '后台任务的工作线程数。翻译本身固定串行（没有并发开关）：串行才能保住跨页前文与前缀缓存。',
     fields: [
-      { key: 'translate_concurrency', label: '翻译并发（初始 N）', type: 'number', min: 1 },
-      { key: 'translate_max_concurrency', label: '翻译并发上限', type: 'number', min: 1 },
-      { key: 'translate_min_concurrency', label: '翻译并发下限', type: 'number', min: 1 },
       { key: 'task_worker_count', label: '任务工作线程数', type: 'number', min: 1 },
     ],
   },
@@ -104,9 +100,6 @@ const READONLY_KEYS: ReadonlyDef[] = [
 
 /** 当前编辑值与「当前生效值」，用于变更检测与撤销。 */
 const form = reactive<SettingsForm>({
-  translate_concurrency: '',
-  translate_max_concurrency: '',
-  translate_min_concurrency: '',
   task_worker_count: '',
   render_dpi: '',
   crop_dpi: '',

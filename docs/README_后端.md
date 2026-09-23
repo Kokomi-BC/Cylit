@@ -50,7 +50,7 @@ python scripts/e2e_check.py
 | **业务库** | MySQL 12 张表（原 `review` 表已随复核模式删除，含 `setting`），绝不存正文（只存 ≤200 字预览）；**启动时 `init_db()` 会幂等加宽历史窄列**（如 `chunk.id = "{paper_id}:{type}:{块范围}"` 最长 ~105 字，老库 `varchar(64)` 会报 1406） | §10 |
 | **模型层** | Provider 抽象（generation/embedding/reranker）+ ModelManager（默认路由/能力探测/维度校验）+ Mock 离线兜底 + OpenAI 兼容 + 本地 BGE（可选） | §12 |
 | **任务系统** | MySQL 任务表 + 租约 + 心跳 + 断点续跑 + 暂停/取消（页边界生效）+ 回收过期租约 | §10 ⑨、R13 |
-| **自适应并发** | N∈[1,8] 动态窗口、429 退避（遵守 `Retry-After`）、连续成功回升、连续失败熔断、token/耗时记录、并发时间线 | §3.1 A3 |
+| **自适应并发调度** | N∈[1,8] 动态窗口、429 退避（遵守 `Retry-After`）、连续成功回升、连续失败熔断、token/耗时记录、并发时间线。⚠️ **页级翻译现在固定串行**（窗口=1，见进度 §19.19），这套能力只剩 `bench` 压测与其它任务类型在用 | §3.1 A3 |
 | **翻译产线 A** | **页级翻译（唯一粒度）**：页图（PNG, 150dpi）+ 页内文本 + 稳定前缀 → 同一次调用产出 `original_md` / `translation_md` 两份逐块对应的 Markdown → 行对齐落盘；断点续跑 + 暂停取消 + 逐页 SSE | §15、§21.3 |
 | **API** | 约 40 个端点：论文/阅读器/内容/译文（按页）/公式（**从 Markdown 提取**）/插图（含按需裁图）/双语 Markdown/进度/任务/模型/设置/高亮/笔记/批注/知识库 + SSE | §20 |
 | **CLI** | `init / import / parse / build / structure / qa / translate / index / reconcile / stats / serve / bench` | §23 |
@@ -181,16 +181,20 @@ render_pages(150dpi) → pages/*.png
 **277 行全部 `exact`**；prompt 60.7k tokens、completion 143.6k（推理 97.6k）；
 3 页触发过 max_tokens 升档。
 
-### 4.3 自适应并发（实验亮点）
+### 4.3 自适应并发（⤵ 页级翻译已不用，只剩 `bench` 压测）
+
+> ⚠️ 现状（进度 §19.19）：**页级翻译固定串行**，`translate_*` 并发设置已全部移除。
+> 下面的窗口/回升/熔断只描述**调度器本身**（`backend/services/task/scheduler.py`），
+> 它仍被 `python cli/pr.py bench` 用作第 5 章的对照实验，也被其它任务类型复用。
 
 | 机制 | 实现 |
 |---|---|
-| 并发窗口 | N ∈ [1, 8]，默认 4（`PR_TRANSLATE_CONCURRENCY`） |
+| 并发窗口 | **固定 1（串行）** —— 页级翻译已移除并发设置（见进度 §19.19）；调度器仍保留重试/退避/熔断 |
 | 降速 | 429/超时/连接错误 → N 减半，退避 `Retry-After` 或 `base×2^k×rand(0.8,1.2)`，上限 30s |
 | 恢复 | 连续 5 次成功 → N +1 |
 | 熔断 | 连续失败 ≥8 → 暂停任务并写明原因 |
 | 幂等 | 已有页级产物（`pages.json`）与 `cursor.done_pages` 里的页不再调用模型 |
-| 观测 | 每次调用记 token/耗时/并发窗口，输出 `concurrency_timeline` |
+| 观测 | 每次调用记 token/耗时/并发窗口，输出 `concurrency_timeline`（页级翻译串行后该时间线恒为 1） |
 
 对照实验（可复现）：`python cli/pr.py bench --mode both --n 60 --rate-limit-every 7`
 

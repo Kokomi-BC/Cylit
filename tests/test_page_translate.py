@@ -618,3 +618,40 @@ def test_pair_rows_aligns_by_type_not_text():
     assert rows[5]["translation"].startswith("其中第一个等号")
 
 
+def test_page_source_text_keeps_every_block(monkeypatch):
+    """组装侧不做任何"图内文字"删减（曾做过一轮，已按用户要求撤掉：死规则容易误判、
+    把图注/正文一起吞掉）。是否把图内文字写进正文，交给提示词去判。"""
+    import backend.services.translation.page_translate as pt
+    from backend.services.paper import reader_service as rs
+
+    blocks = {"blocks": [
+        {"id": "b01", "page": 13, "order": 1, "type": "heading",
+         "rect": "[108,72,230,84]", "text": "Attention Visualizations",
+         "section": "Attention Visualizations"},
+        {"id": "b02", "page": 13, "order": 2, "type": "ref",
+         "rect": "[434,241,503,263]", "text": "<pad><pad><pad><pad><pad><pad>"},
+        {"id": "b03", "page": 13, "order": 3, "type": "caption",
+         "rect": "[108,312,504,355]", "text": "**Figure 3: An example of the attention mechanism …**"},
+    ]}
+    monkeypatch.setattr(rs, "load_block_index", lambda paper_id: blocks)
+
+    text, section = pt.page_source_text("p", 13)
+    assert "Attention Visualizations" in text
+    assert "<pad>" in text                # 块照给，不做图内文字过滤
+    assert "Figure 3" in text
+    assert section == "Attention Visualizations"
+
+
+def test_prompt_forbids_copying_figure_internal_text():
+    """提示词要明确"只写图注本身"：图内文字（示例句/图例/刻度/子图标签）不许抄成正文行。"""
+    from backend.services.translation.page_translate import SYSTEM_PROMPT
+
+    assert "只写图注本身" in SYSTEM_PROMPT
+    assert "图内部的成段文字一律不要抄" in SYSTEM_PROMPT or "图里面的一切文字都不要抄" in SYSTEM_PROMPT
+    assert "示例句子" in SYSTEM_PROMPT
+    assert "图例" in SYSTEM_PROMPT                     # 图例行（实测 TurboQuant 图 3）
+    assert "每一行的原文都必须逐字来自给你的文本" in SYSTEM_PROMPT
+    # 旧的"允许短标注跟一行"的口子必须堵住，否则图例会又被抄成一行
+    assert "这类**短标注**" not in SYSTEM_PROMPT
+
+

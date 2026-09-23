@@ -1,4 +1,7 @@
-"""设置 API（规划 §20.7）：并发上限 / RAG 参数 / 允许通用知识 / 数据目录。"""
+"""设置 API（规划 §20.7）：任务线程数 / RAG 参数 / 允许通用知识 / 数据目录。
+
+注意：**翻译没有并发设置** —— 页级翻译固定串行（见 `core/config.py` 翻译段注释）。
+"""
 
 from __future__ import annotations
 
@@ -14,9 +17,6 @@ router = APIRouter(tags=["settings"])
 
 # 允许通过 /settings 覆盖的白名单（避免任意键写入）
 EDITABLE = {
-    "translate_concurrency": int,
-    "translate_max_concurrency": int,
-    "translate_min_concurrency": int,
     "task_worker_count": int,
     "render_dpi": int,
     "crop_dpi": int,
