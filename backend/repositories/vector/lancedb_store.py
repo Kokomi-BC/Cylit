@@ -17,6 +17,17 @@ from backend.core.utils import json_loads
 log = get_logger(__name__)
 
 TABLE_NAME = "paper_chunks"
+# 词法检索 / 按 id 取行需要的列（按 schema 取交集，见 LanceDBStore._select）
+_ROW_FIELDS = ["chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
+               "section", "lang", "content", "metadata_json"]
+
+
+def _row_out(r: dict) -> dict:
+    return {**{k: r.get(k) for k in
+               ("chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
+                "section", "content")},
+            "lang": r.get("lang") or "en",
+            "metadata": json_loads(r.get("metadata_json"), {}) or {}}
 
 
 class LanceDBStore:
@@ -64,6 +75,31 @@ class LanceDBStore:
         if TABLE_NAME not in names:
             return None
         return db.open_table(TABLE_NAME)
+
+    def columns(self) -> set[str]:
+        """当前表的列名（旧索引没有 ``lang`` 列 —— 本轮之后才加的）。"""
+        table = self._table()
+        if table is None:
+            return set()
+        try:
+            return {f.name for f in table.schema}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def has_lang(self) -> bool:
+        return "lang" in self.columns()
+
+    def _select(self, wanted: list[str]) -> list[str]:
+        """只 select 表里真有的列。
+
+        ★ 踩过的坑：旧索引没有 ``lang`` 列，``select([... "lang" ...])`` 会直接报错，
+        而调用方是"失败就返回空列表"的语义 → **整条词法检索静默失效**
+        （实测：查询词明明在正文里，`lexical_hits` 还是 0）。所以这里按 schema 取交集。
+        """
+        have = self.columns()
+        if not have:
+            return wanted
+        return [c for c in wanted if c in have]
 
     # ------------------------------------------------------------------
     def upsert_chunks(self, chunks: list[dict], vectors: list[list[float]],
@@ -183,7 +219,12 @@ class LanceDBStore:
             if chunk_types:
                 filters.append(_where_in("chunk_type", chunk_types))
             if langs:
-                filters.append(_where_in("lang", langs))
+                if self.has_lang():
+                    filters.append(_where_in("lang", langs))
+                else:
+                    # 旧索引没有 lang 列：**宁可不筛，也不返回空**（上层会在
+                    # retrieval.notes 里说明"语言过滤未生效，请重建索引"）
+                    log.warning("索引里没有 lang 列（旧索引）：本次忽略语言过滤 %s", langs)
             if exclude_paper:
                 filters.append(f"paper_id != '{_escape(exclude_paper)}'")
             if exclude_chunk:
@@ -207,6 +248,20 @@ class LanceDBStore:
             })
         return out
 
+    def get_rows(self, chunk_ids: list[str]) -> list[dict]:
+        """按 chunk_id 取行（"以某段为查询"的相似检索要用）。"""
+        table = self._table()
+        if table is None or not chunk_ids:
+            return []
+        try:
+            rows = (table.search().select(self._select(_ROW_FIELDS))
+                    .where(_where_in("chunk_id", chunk_ids))
+                    .limit(len(chunk_ids)).to_list())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LanceDB 按 id 读取失败：%s", exc)
+            return []
+        return [_row_out(r) for r in rows]
+
     def all_rows(self, *, paper_ids: list[str] | None = None) -> list[dict]:
         """整表扫描（词法检索用：本库规模只有几千条，Python 侧 BM25 足够快）。
 
@@ -217,20 +272,14 @@ class LanceDBStore:
         if table is None:
             return []
         try:
-            q = table.search().select(
-                ["chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
-                 "section", "lang", "content", "metadata_json"])
+            q = table.search().select(self._select(_ROW_FIELDS))
             if paper_ids:
                 q = q.where(_where_in("paper_id", paper_ids))
             rows = q.limit(100000).to_list()
         except Exception as exc:  # noqa: BLE001
             log.warning("LanceDB 全表读取失败：%s", exc)
             return []
-        return [{**{k: r.get(k) for k in
-                    ("chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
-                     "section", "content")},
-                 "lang": r.get("lang") or "en",
-                 "metadata": json_loads(r.get("metadata_json"), {}) or {}} for r in rows]
+        return [_row_out(r) for r in rows]
 
 
 def _vector_dim(table) -> int | None:

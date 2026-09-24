@@ -547,3 +547,96 @@ def index_status(paper_id: str | None = None) -> dict:
 
 def new_chunk_id(paper_id: str, chunk_type: str) -> str:
     return f"{paper_id}:{chunk_type}:{new_id('c')[-8:]}"
+
+
+# --------------------------------------------------------------------------
+# 相似检索（规划 §19.1 / §20.4；任务书功能⑥「跨文献技术比对」）
+# --------------------------------------------------------------------------
+
+
+def similar(payload: dict) -> dict:
+    """跨文献技术相似度检索：向量 + 词法 → RRF → 重排。
+
+    查询可以是**一段文本**，也可以是**库里已有的 chunk**（`chunk_id`）——
+    后者是"我这篇的这段技术，别的论文里谁在做类似的"这个用法的主路径：
+    直接拿该 chunk 的原文当查询，并把它自己排除掉。
+    """
+    from backend.services.knowledge import retrieval
+
+    query = str(payload.get("query") or "").strip()
+    chunk_id = payload.get("chunk_id")
+    paper_id = payload.get("paper_id") or None
+    source = None
+    exclude_chunks: list[str] = []
+
+    if chunk_id:
+        from backend.repositories.vector.lancedb_store import vector_store
+
+        rows = vector_store.get_rows([chunk_id])
+        if not rows:
+            raise NotFoundError(f"chunk 不存在或还没入库：{chunk_id}")
+        row = rows[0]
+        query = query or str(row.get("content") or "").strip()
+        paper_id = paper_id or row.get("paper_id")
+        exclude_chunks = [chunk_id]
+        source = {"chunk_id": chunk_id, "paper_id": row.get("paper_id"),
+                  "block_id": row.get("block_id"), "page": row.get("page_no"),
+                  "lang": row.get("lang")}
+
+    if not query:
+        raise ValidationError("要么给 query，要么给库里已有的 chunk_id")
+
+    scope = str(payload.get("scope") or ("cross" if paper_id else "all"))
+    if scope not in ("all", "cross", "paper"):
+        raise ValidationError("scope 只能是 all / cross / paper")
+
+    chunk_types = payload.get("chunk_types") or None
+    langs = payload.get("langs") or None
+    top_k = payload.get("top_k")
+    result = retrieval.search(
+        query, mode="similar", scope=scope, paper_id=paper_id,
+        chunk_types=chunk_types, langs=langs, exclude_chunks=exclude_chunks,
+        top_k=int(top_k) if top_k else None,
+    )
+    items = _decorate_items(result["items"])
+    return {
+        "implemented": True,
+        "query": query,
+        "source": source,
+        "scope": scope,
+        "items": items,
+        "retrieval": result["retrieval"],
+    }
+
+
+def _decorate_items(items: list[dict]) -> list[dict]:
+    """补上论文标题与展示用摘录（检索层不该知道"标题"这种业务字段）。"""
+    titles = _paper_titles(sorted({i.get("paper_id") for i in items if i.get("paper_id")}))
+    out = []
+    for i in items:
+        out.append({
+            "chunk_id": i.get("chunk_id"), "paper_id": i.get("paper_id"),
+            "paper_title": titles.get(i.get("paper_id") or "", ""),
+            "block_id": i.get("block_id"), "page": i.get("page_no"),
+            "section": i.get("section"), "chunk_type": i.get("chunk_type"),
+            "lang": i.get("lang") or "en",
+            "langs": i.get("langs") or [i.get("lang") or "en"],
+            "snippet": truncate(str(i.get("content") or ""), 260),
+            "scores": {
+                "vector": i.get("vector_score"), "lexical": i.get("lexical_score"),
+                "rrf": round(float(i.get("rrf") or 0.0), 6),
+                "rerank": i.get("rerank_score"),
+            },
+            "ranks": {"rrf": i.get("rrf_rank"), "rerank": i.get("rerank_rank"),
+                      **{f"{k}_rank": v for k, v in (i.get("sources") or {}).items()}},
+        })
+    return out
+
+
+def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
+    if not paper_ids:
+        return {}
+    with session_scope() as sess:
+        rows = (sess.query(Paper.id, Paper.title)
+                .filter(Paper.id.in_(paper_ids)).all())
+    return {pid: title or pid for pid, title in rows}

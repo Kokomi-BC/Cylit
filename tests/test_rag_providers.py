@@ -295,3 +295,35 @@ def test_vector_store_filters_by_lang(tmp_path) -> None:
     assert only_zh[0]["lang"] == "zh"
     assert {r["chunk_id"] for r in store.all_rows()} == {"c1:zh", "c1:en"}
     assert all("content" in r for r in store.all_rows())
+
+
+def test_vector_store_reads_legacy_table_without_lang_column(tmp_path) -> None:
+    """旧索引（本轮之前建的）没有 lang 列：读取与"语言过滤"都不能因此报错/变空。
+
+    ★ 真实踩坑：`select([... "lang" ...])` 在旧表上直接抛错，而调用方语义是
+    "失败 → 返回空列表"，于是**整条词法检索静默失效**（查询词明明在正文里，
+    lexical_hits 仍是 0）。这里把旧表结构固化下来当回归。
+    """
+    lancedb = pytest.importorskip("lancedb")
+    import pyarrow as pa
+
+    path = tmp_path / "lancedb"
+    path.mkdir()
+    db = lancedb.connect(str(path))
+    db.create_table("paper_chunks", data=pa.Table.from_pylist([{
+        "chunk_id": "c1", "paper_id": "p1", "chunk_type": "text", "page_no": 1,
+        "order_global": 1, "block_id": "b1", "section": "S1",
+        "content": "TurboQuant online vector quantization",
+        "content_hash": "h1", "index_version": 1, "embedding_model_id": "mock-embedding",
+        "metadata_json": "{}", "vector": [1.0, 0.0],
+    }]))
+
+    from backend.repositories.vector.lancedb_store import LanceDBStore
+
+    store = LanceDBStore(path)
+    assert store.has_lang() is False
+    rows = store.all_rows()
+    assert rows and rows[0]["lang"] == "en"          # 旧行按 en 处理
+    assert store.get_rows(["c1"])[0]["content"].startswith("TurboQuant")
+    hits = store.search([1.0, 0.0], top_k=5, langs=["zh"])   # 旧表忽略过滤，而不是返回空
+    assert [h["chunk_id"] for h in hits] == ["c1"]

@@ -78,23 +78,24 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
     return envelope({"items": items, "count": len(items)}, request=request)
 
 
-# ---------------- §20.4 RAG（下一轮实现，接口先占位） ----------------
+# ---------------- §20.4 相似检索（RAG 问答见下一轮的 /rag/query） ----------------
+
+
+@router.post("/rag/similar")
+async def rag_similar(request: Request, payload: dict = Body(default={})):
+    """跨文献 / 全库相似检索：向量 + 词法 → RRF → 重排（任务书功能⑥）。
+
+    请求体：``{query?}`` 或 ``{chunk_id?}``；``scope`` = all | cross | paper；
+    可选 ``paper_id`` / ``chunk_types`` / ``langs`` / ``top_k``。
+    """
+    return envelope(knowledge_service.similar(payload), request=request)
 
 
 @router.post("/rag/query")
 async def rag_query(request: Request, payload: dict = Body(...)):
     return envelope({
         "implemented": False,
-        "message": "RAG 问答在阶段 14–17 实现（本轮交付解析与阅读主干）。",
+        "message": "RAG 问答在阶段 14–17 的最后一轮实现（检索内核与相似检索已通）。",
         "answer": "", "sources": [], "grounded": False,
         "retrieval_metadata": {"scope": payload.get("scope") or "current_paper"},
-    }, request=request)
-
-
-@router.post("/rag/similar")
-async def rag_similar(request: Request, payload: dict = Body(...)):
-    return envelope({
-        "implemented": False,
-        "message": "相似内容检索复用 VectorRetriever，在阶段 14–15 实现。",
-        "items": [],
     }, request=request)

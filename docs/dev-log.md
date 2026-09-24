@@ -2199,6 +2199,48 @@ PDF 对照（`left=page`）时每行只有一个 `.rr-body`，所以正常；文
 可能与英文侧边界差一句。对检索无影响（嵌入按整段编码），但**不能拿 zh chunk 做逐字引用校验** ——
 `/rag/query` 那一轮的答案校验要走原文（en）侧。
 
+### 17.35 第三十三轮 —— 检索内核 + `POST /rag/similar`（向量 + 词法 BM25 → RRF → 重排降级链）
+
+按用户选的口径，先交付**跨文献技术相似度**（任务书功能⑥）。内核一次写成通用的，两条链路共用
+（`backend/services/knowledge/retrieval.py`）。
+
+**五段结构**
+
+1. **向量召回**：`qwen3-vl-embedding`，查询侧带 instruct、入库侧不带；LanceDB 用 cosine，距离 → 相似度；
+2. **词法 BM25**：整表在内存里打分（本库几百~几千条 chunk），不引外部全文索引 —— 少一层索引就少一处不一致；
+3. **RRF 融合**（k=60）：两路分数不可比（余弦 ∈ [-1,1]、BM25 无上界），只按**名次**融合，省掉一套要调的归一化参数；
+4. **重排降级链**：`qwen3-vl-rerank` 优先；调用失败或没配模型 → 词法启发式，且**必须标明降级**（不能让启发式看起来像模型打分）；
+5. **编排** `search(scope=all|cross|paper)`：`cross` = 排除来源论文（"我这篇的做法，别人怎么做的"）。
+
+**踩到并修掉的三个真问题（都是实测暴露的，不是推出来的）**
+
+| 现象 | 真因 | 修法 |
+|---|---|---|
+| 同一个 chunk 的 zh / en 两行占掉 top-k 里两个位置（实测查 `QJL 1-bit inner product quantization`，前两名是同一个标题块的两行） | 双语索引里一个逻辑 chunk 有两行，而 RRF 按 chunk_id 去重 | RRF **按 `pair_id` 聚合**：分数求和（两种语言都召回 = 更强的相关信号），展示取**名次最好**的那一行，并回传 `langs` 给前端标注 |
+| 查询 `QJL 1-bit inner product quantization`（正文里一字不差）却 `lexical_hits=0` | **用户现有索引没有 `lang` 列**（本轮之前建的）→ `select([... "lang" ...])` 抛错，被"失败即返回空列表"的语义吞掉 | 按 schema **取列交集**再 select；旧表 `lang` 默认 `en`；语言过滤在旧表上忽略并在 `retrieval.notes` 里明说"重建索引后可用" |
+| 查询"量化"匹配不上含"向量量化"的段落 | jieba 把"向量量化"切成**一个词** | 中文分词**词 + 单字**都给（"的/在/是"这类高频字噪声由 idf 自然压下去） |
+
+**接口**：`POST /api/v1/rag/similar`
+
+- 请求：`{query? | chunk_id?, scope: all|cross|paper, paper_id?, chunk_types?, langs?, top_k?}`；
+- 响应：`{implemented, query, source, scope, items[{paper_title, page, block_id, lang, langs, snippet, scores{vector,lexical,rrf,rerank}, ranks}], retrieval{vector_hits, lexical_hits, fused, returned, rrf_k, vector_model, rerank{model,degraded,reason}, notes[]}}`；
+- 错误：空请求 → 400 `VALIDATION_ERROR`；chunk 不存在 → 404 `NOT_FOUND`；非法 scope → 400。
+
+**验证**
+
+| 用例 | 结果 |
+|---|---|
+| `pytest tests/test_rag_retrieval.py -q` | **18 项通过**（分词与字级兜底 / RRF 聚合与加权与 top_k / BM25 排序与四类过滤 / 重排降级三态 / 编排元信息 / 服务层装饰 / 三个错误码） |
+| `pytest -q -m "not e2e"`（全量离线） | **176 项通过** |
+| 真实链路（临时向量库 + 真 `qwen3-vl-embedding` 2560 维 395 行 + 真 `qwen3-vl-rerank`） | 「如何在没有校准数据的情况下做在线向量量化」→ 全中量化那篇（rerank 0.844/0.828）；「自注意力为什么除以根号 d」→ 命中 3.2.1 缩放点积注意力（0.812）；术语查询 → 词法 + 向量双路命中 QJL 小节；跨文献（排除 TurboQuant）→ 返回 Attention 的公式/正文块 |
+| 用户真实环境（临时 8712 + 现有 139 条旧索引 + 默认 mock/heuristic） | `implemented=true`；**`lexical_hits` 20（修复前是 0）**；`rerank.degraded=true` 且 reason 写"未配置重排模型"；语言过滤给 `notes` 而不是返回空；三种错误码都对 |
+| 无头 Edge 截图（`/app/knowledge`） | 「跨文献技术相似检索」卡片渲染正常（分段控件 + 论文下拉 + 描述框 + 找相似按钮）；chunk 表多出语言列 |
+| 前端 | `vue-tsc` + `vite build` 干净 |
+
+**一点说明**：重排分数是**请求内的相对分**（官方明确），`scores.rerank` 只用于本次排序、跨查询不可比，
+UI 也不拿它做阈值过滤。
+
+
 
 
 

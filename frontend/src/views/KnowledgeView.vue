@@ -296,6 +296,74 @@ function sourceSnippet(source: RagSource): string {
 function jsonPreview(value: unknown): string {
   try { return truncate(JSON.stringify(value), 300); } catch { return String(value); }
 }
+
+/* ------------------------- 跨文献技术相似检索（/rag/similar） ------------------------- */
+
+interface SimilarItem {
+  chunk_id: string;
+  paper_id: string;
+  paper_title?: string;
+  block_id?: string;
+  page?: number;
+  section?: string | null;
+  chunk_type?: string;
+  lang?: string;
+  langs?: string[];
+  snippet?: string;
+  scores?: Record<string, number | null>;
+  ranks?: Record<string, number | null>;
+}
+
+interface SimilarResult {
+  implemented?: boolean;
+  query?: string;
+  scope?: string;
+  items?: SimilarItem[];
+  retrieval?: Record<string, any>;
+}
+
+const simQuery = ref('');
+const simScope = ref<'cross' | 'paper' | 'all'>('cross');
+const simPaperId = ref('');
+const simBusy = ref(false);
+const simResult = ref<SimilarResult | null>(null);
+const simError = ref('');
+
+/** 找相似：跨文献 = 排除所选论文（"我这篇的做法，别人怎么做的"）。 */
+async function findSimilar(): Promise<void> {
+  const text = simQuery.value.trim();
+  if (!text) { toast('请先描述一段技术', 'warn'); return; }
+  if (simScope.value !== 'all' && !simPaperId.value) {
+    toast('请先选择论文', 'warn');
+    return;
+  }
+  simBusy.value = true;
+  simError.value = '';
+  simResult.value = null;
+  try {
+    const payload: Record<string, unknown> = {
+      query: text, scope: simScope.value, top_k: 6,
+    };
+    if (simPaperId.value) payload.paper_id = simPaperId.value;
+    simResult.value = (await api.post<SimilarResult>('/rag/similar', payload)) || {};
+  } catch (err) {
+    simError.value = (err as any)?.message || String(err);
+    reportError(err, '相似检索失败');
+  } finally {
+    simBusy.value = false;
+  }
+}
+
+function scoreOf(item: SimilarItem, key: string): string {
+  const value = item?.scores?.[key];
+  return value === null || value === undefined ? '—' : Number(value).toFixed(3);
+}
+
+/** 双语句：`中` / `原` / `中+原`（两行都被召回时标注） */
+function langLabel(item: SimilarItem): string {
+  const langs = item?.langs?.length ? item.langs : [item?.lang || 'en'];
+  return langs.map((l) => (l === 'zh' ? '中' : '原')).join('+');
+}
 </script>
 
 <template>
@@ -501,6 +569,75 @@ function jsonPreview(value: unknown): string {
         <div class="empty" v-else-if="state.loading['kb-chunks']">正在读取 chunk…</div>
         <div class="empty" v-else-if="!chunkPaperId">请选择论文后查询 chunk 元数据。</div>
         <div class="empty" v-else>没有符合条件的 chunk（该论文可能尚未建索引）。</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-head">
+        <span>跨文献技术相似检索</span>
+        <span class="badge ok">向量 + 词法 + 重排</span>
+        <span class="spacer"></span>
+      </div>
+      <div class="card-body">
+        <div class="row wrap" style="margin-top:10px">
+          <div class="seg">
+            <button :class="{ active: simScope === 'cross' }" @click="simScope = 'cross'">跨文献（排除所选）</button>
+            <button :class="{ active: simScope === 'paper' }" @click="simScope = 'paper'">只在该篇内</button>
+            <button :class="{ active: simScope === 'all' }" @click="simScope = 'all'">全部知识库</button>
+          </div>
+          <select v-if="simScope !== 'all'" v-model="simPaperId" style="min-width:240px">
+            <option value="">选择论文…</option>
+            <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
+          </select>
+        </div>
+
+        <div class="col" style="margin-top:10px">
+          <textarea v-model="simQuery" rows="2"
+                    placeholder="描述一段技术，例如「无需校准数据的在线向量量化」——去别的论文里找谁在做类似的事"></textarea>
+          <div class="row wrap">
+            <button class="btn primary sm" :disabled="simBusy" @click="findSimilar">
+              <AppIcon name="search" :size="14" />{{ simBusy ? '检索中…' : '找相似' }}
+            </button>
+            <span class="tiny faint" v-if="simResult?.retrieval">
+              向量 {{ simResult.retrieval.vector_hits }} / 词法 {{ simResult.retrieval.lexical_hits }}
+              → 融合 {{ simResult.retrieval.fused }} → 返回 {{ simResult.retrieval.returned }}
+              · 重排 {{ simResult.retrieval.rerank?.model || '—' }}
+            </span>
+          </div>
+        </div>
+
+        <div style="margin-top:12px" v-if="simResult">
+          <div v-for="note in (simResult.retrieval?.notes || [])" :key="note"
+               class="annotation-item manual">
+            <div class="row wrap">
+              <span class="badge warn">提示</span>
+              <span class="small">{{ note }}</span>
+            </div>
+          </div>
+
+          <div v-for="(it, i) in (simResult.items || [])" :key="it.chunk_id"
+               class="annotation-item" style="margin-top:8px">
+            <div class="row wrap tiny">
+              <span class="badge accent">{{ i + 1 }}</span>
+              <span class="badge">{{ it.paper_title || it.paper_id }}</span>
+              <span class="badge">p{{ it.page }}</span>
+              <span class="badge" :class="{ accent: (it.lang || 'en') === 'zh' }">{{ langLabel(it) }}</span>
+              <span class="badge">{{ it.chunk_type }}</span>
+              <span class="spacer"></span>
+              <span class="mono faint">rrf {{ scoreOf(it, 'rrf') }} · rerank {{ scoreOf(it, 'rerank') }}</span>
+              <RouterLink :to="sourceTo(it)">跳回原文</RouterLink>
+            </div>
+            <div class="small clamp-2" style="margin-top:4px">{{ it.snippet }}</div>
+            <div class="tiny faint">
+              向量 #{{ it.ranks?.vector_rank ?? '—' }} · 词法 #{{ it.ranks?.lexical_rank ?? '—' }}
+              <span v-if="it.section"> · {{ it.section }}</span>
+            </div>
+          </div>
+          <div class="empty" v-if="!(simResult.items || []).length">没有找到相似内容（索引可能还没建）。</div>
+        </div>
+        <div class="small" style="margin-top:12px;color:var(--danger)" v-else-if="simError">
+          相似检索失败：{{ simError }}
+        </div>
       </div>
     </div>
 
