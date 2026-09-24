@@ -277,14 +277,37 @@ async function setDefault(m: ModelConfig) {
 }
 
 async function removeModel(m: ModelConfig) {
-  if (!window.confirm(`确认删除模型配置「${m.name || m.id}」？此操作不可撤销。`)) return;
+  // 内置占位模型（离线兜底）删掉后**不会再自动重建** —— 这一点必须说清楚，
+  // 因为以前它是"删了下次重启又回来"（用户报的"删不掉的占位模型"）。
+  const tip = m.builtin
+    ? `确认删除内置占位模型「${m.name || m.id}」？\n\n`
+      + '它只是离线兜底（没有可用模型时才会用到）；删除后**不会**再自动重建，'
+      + '需要时可以在「模型配置」卡头点「恢复内置占位」找回来。'
+    : `确认删除模型配置「${m.name || m.id}」？此操作不可撤销。`;
+  if (!window.confirm(tip)) return;
   busyKey.value = `del:${m.id}`;
   try {
     await api.del(`/models/${m.id}`);
-    toast('已删除模型配置', 'ok');
+    toast(m.builtin ? '已删除内置占位模型（不会再自动重建）' : '已删除模型配置', 'ok');
     await refresh();
   } catch (err) {
     reportError(err, '删除失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
+/** 把删过的内置占位模型找回来（清掉"已删除"记录，缺谁补谁）。 */
+async function restoreBuiltin() {
+  busyKey.value = 'restore-builtin';
+  try {
+    const res = await withLoading('restore-builtin',
+      () => api.post<{ created?: number }>('/models/builtin/restore'), { silent: true });
+    const n = res?.created ?? 0;
+    toast(n ? `已恢复 ${n} 个内置占位模型` : '内置占位模型都在，无需恢复', 'ok', 3600);
+    await refresh();
+  } catch (err) {
+    reportError(err, '恢复内置占位模型失败');
   } finally {
     busyKey.value = '';
   }
@@ -478,6 +501,10 @@ async function submitForm() {
         <span>模型配置</span>
         <span class="badge">{{ filtered.length }} 项</span>
         <span class="spacer"></span>
+        <button class="btn sm ghost" :disabled="rowBusy('restore-builtin')" @click="restoreBuiltin"
+                title="把删过的内置占位模型（离线兜底）找回来：删掉它们不会再自动重建，点这里恢复">
+          <AppIcon name="refresh" :size="14" />恢复内置占位
+        </button>
         <div class="seg">
           <button :class="{ active: activeType === '' }" @click="setType('')">全部</button>
           <button v-for="t in allTypes" :key="t" :class="{ active: activeType === t }" @click="setType(t)">
@@ -504,7 +531,11 @@ async function submitForm() {
           <tbody>
             <tr v-for="m in filtered" :key="m.id">
               <td>
-                <div>{{ m.name || '（未命名）' }}</div>
+                <div>
+                  {{ m.name || '（未命名）' }}
+                  <span v-if="m.builtin" class="badge dim" style="margin-left: 6px"
+                        title="内置占位模型（离线兜底）：删掉后不会再自动重建">内置</span>
+                </div>
                 <div class="tiny faint mono">{{ m.id }}</div>
                 <div class="tiny faint truncate" v-if="m.base_url">{{ m.base_url }}</div>
                 <div class="tiny faint" v-if="m.secret_ref">密钥：{{ m.secret_ref }}</div>

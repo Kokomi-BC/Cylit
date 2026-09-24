@@ -2886,6 +2886,62 @@ review_note = '文本层无歧义，无结构性符号'
 | `/knowledge/index/status` | MySQL 391 = LanceDB 391，`consistent=True` |
 | preview 里还剩 `†` 的 | 2 条，都是**正文**（作者单位那段含 `\* †`、脚注正文"†在 Google Brain 工作期间完成"）——本来就该留 |
 
+### 17.47 第四十轮（再续）—— "删不掉的占位模型"：启动时按 id 缺了就补
+
+用户报：模型页有几个**占位模型删不掉**。
+
+#### 现状与复现（隔离环境：sqlite + 临时 data 目录 + 真重启，绝不碰用户数据）
+
+8710 上 `/models` 返回 8 个配置，其中 4 个是内置占位：
+`mock-generation` / `mock-embedding` / `heuristic-reranker` / `mock-vision`（provider `mock`/`heuristic`）。
+
+隔离复现脚本（`PR_DB_BACKEND=sqlite`、`PR_DATA_DIR=<temp>`、起停真进程）：
+
+```
+① 空库启动 → ['heuristic-reranker', 'mock-embedding', 'mock-generation', 'mock-vision']
+② DELETE /models/mock-vision → {'deleted': 'mock-vision'}，列表里确实没了
+③ 重启（同一个 data 目录）→ 它又回来了 ✗  ← 复现了用户报的问题
+```
+
+#### 根因
+
+`backend/main.py` 启动时调 `model_service.ensure_builtin_models()`，而它是**按 id"缺了就补"**
+（`sess.get(ModelConfig, d["id"]) is None` 就插入）。于是"删除内置占位模型"这件事**在下次重启后失效** ——
+用户每重启一次（这几轮我们一直在让他重启），界面上的"删除"就白删一次。
+
+#### 改法：删过一次就记一笔（复用 `setting` 表，不动表结构）
+
+| 位置 | 改动 |
+|---|---|
+| `model_manager.SUPPRESS_KEY` | `models.builtin_suppressed`：`setting` 表里存一个 JSON 数组 |
+| `delete()` | 删的是内置档（`builtin_ids()`）→ 把 id 写进名单 |
+| `ensure_builtin_models()` | 名单里的不再补，并打日志「内置占位模型已被用户删除、不再自动补」 |
+| `restore_builtin_models()` + `POST /models/builtin/restore` | **后悔药**：清空名单 + 缺谁补谁 |
+| `_row_to_config()` | 增加 `builtin` 字段；模型页据此显示「内置」徽章、删除确认里写清"不会再自动重建"，卡头加「恢复内置占位」按钮 |
+| 纯函数 `builtin_ids()` / `parse_suppressed()` / `missing_builtins()` | 判定与解析抽出来（可离线测）；`_insert_builtins()` 保留第 38 轮的规矩：该类型已有真默认时，内置档只能 `is_default=False` |
+
+**删掉它们不会让系统不可用**：`get_config` 在没有可用配置时会回落到**内存里的** `BUILTIN_DEFAULTS`
+（不落库），离线兜底能力仍在 —— 这也是"可以放心让用户删"的前提。
+
+#### 验证
+
+| 用例 | 结果 |
+|---|---|
+| 修前：删 `mock-vision` → 重启 | **回来**（复现） |
+| 修后：删 `mock-vision` → 重启 | **仍然不在**（列表 `['heuristic-reranker','mock-embedding','mock-generation']`） |
+| 修后：`POST /models/builtin/restore` | `{'created': 1, 'ids': ['mock-vision']}` → 列表里回来了 |
+| `tests/test_model_defaults.py`（新增 3 项） | `missing_builtins` 跳过被删的、`parse_suppressed` 容忍坏值、`builtin` 标记 |
+| 离线 / e2e | **233 通过** / **29 通过 + 1 跳过** |
+| `vue-tsc` + `vite build` | 干净（dist 已重建） |
+
+#### 排查途中踩的坑（记一下）
+
+第一次跑隔离复现时脚本在 ② 崩了、没走到 `stop()`，**8712 上留了个旧代码的服务进程**；
+第二次跑复现时新进程绑不上端口（`Popen` 静默失败），请求全打到那个旧进程上，报了一个
+与我改动无关的 `NameError: name 'json_dumps' is not defined`，白查了一轮。
+**教训：复现/探针脚本要 `try/finally` 收尾，或者开跑前先清端口。**
+
+
 
 
 

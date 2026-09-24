@@ -46,3 +46,8 @@ def types_summary() -> dict:
 
 def ensure_builtin_models() -> int:
     return model_manager.ensure_builtin_models()
+
+
+def restore_builtin_models() -> dict:
+    """把用户删过的内置占位模型找回来（清掉"已删除"记录，缺谁补谁）。"""
+    return model_manager.restore_builtin_models()

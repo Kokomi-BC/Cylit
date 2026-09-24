@@ -343,6 +343,8 @@ export interface ModelConfig {
   last_tested_at?: string | null;
   has_secret?: boolean;
   is_mock?: boolean;
+  /** 内置占位模型（离线兜底）：删掉后不会再自动重建，可在模型页「恢复内置占位」找回 */
+  builtin?: boolean;
   /** 兼容旧接口：连通性测试结果可能直接挂在模型记录上 */
   latency_ms?: number | null;
 }
