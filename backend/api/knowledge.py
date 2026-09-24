@@ -76,7 +76,11 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
                       chunk_type: str | None = Query(None),
                       lang: str | None = Query(None),
                       limit: int = Query(50, le=500)):
-    """列出 chunk 元数据（**不返回全文**：全文在 LanceDB，规划 §8 三条禁止）。"""
+    """列出 chunk 元数据（**不返回全文**：全文在 LanceDB，规划 §8 三条禁止）。
+
+    `image_url` 是插图/表格/公式的裁图（浏览器可直接取，用于知识库页的缩略图 / 图库）；
+    正文条目为 `None`。
+    """
     from backend.core.utils import json_loads
     from backend.repositories.mysql.models import Chunk
     from backend.repositories.mysql.session import session_scope
@@ -95,12 +99,25 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
                           "chunk_type": c.chunk_type, "page": c.page_no,
                           "lang": meta.get("lang") or "en",
                           "section": c.section, "preview": c.content_preview,
+                          "caption": meta.get("caption"),
                           "hash": c.content_hash, "tokens": c.token_count,
                           "index_version": c.index_version,
-                          "embedding_model_id": c.embedding_model_id})
+                          "embedding_model_id": c.embedding_model_id,
+                          "image_url": knowledge_service.chunk_image_url(
+                              c.paper_id, c.chunk_type, int(c.page_no or 0), meta)})
             if len(items) >= limit:
                 break
     return envelope({"items": items, "count": len(items)}, request=request)
+
+
+@router.get("/knowledge/chunk")
+async def chunk_detail(request: Request, chunk_id: str = Query(...)):
+    """**单个 chunk 的完整正文**（知识库页「展开全文」）。
+
+    列表接口只给 200 字 preview（规划 §8：全文只在向量库）；这条只读那一条向量行，
+    不触发任务、不写状态。不做中英对照 —— 完整阅读回阅读器。
+    """
+    return envelope(knowledge_service.chunk_detail(chunk_id), request=request)
 
 
 # ---------------- §20.4 相似检索（RAG 问答见下一轮的 /rag/query） ----------------

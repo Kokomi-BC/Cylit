@@ -19,11 +19,11 @@ const router = useRouter();
 
 const NAV = [
   { name: 'library', label: '论文库', icon: 'library', hint: '导入 / 解析 / 翻译 / 阅读' },
-  { name: 'knowledge', label: '知识库', icon: 'knowledge', hint: '向量索引与检索问答' },
+  { name: 'knowledge', label: '知识库', icon: 'knowledge', hint: '跨论文检索与浏览（含插图/公式/表格）' },
   { name: 'notes', label: '笔记', icon: 'note', hint: '批注、笔记与高亮' },
   { name: 'models', label: '模型', icon: 'model', hint: '生成 / 向量 / 视觉模型配置' },
   { name: 'tasks', label: '任务', icon: 'task', hint: '队列、进度与失败重试' },
-  { name: 'settings', label: '设置', icon: 'settings', hint: '参数、知识库索引与搜索记录' },
+  { name: 'settings', label: '设置', icon: 'settings', hint: '参数、索引管理与搜索记录' },
 ];
 
 const papers = computed<Paper[]>(() => state.papers ?? []);

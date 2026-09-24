@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
+from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, new_id, now, sha256_text, truncate
@@ -658,6 +660,133 @@ def new_chunk_id(paper_id: str, chunk_type: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# 知识条目的图片（插图 / 表格 / 公式的裁图）
+#
+# 用户口径：**图片也是知识库的一类内容** —— 检索命中插图/表格/公式时要能看到缩略图，
+# 浏览"插图"时要能像图库一样翻。所以每个条目都带一个浏览器能直接取的 `image_url`。
+#
+# 两个来源，优先级不同：
+# 1. 插图 / 表格 → **按图注锚定的裁图**（`figure_regions`），与阅读器里显示的是**同一张**
+#    （阅读器早就因为"解析阶段的裁图会把相邻的图和小标题一起裁进来"换成了这张）；
+# 2. 公式（以及匹配不到区域时的插图/表格）→ **解析阶段已经落盘的裁图**，
+#    走 `data/papers/` 的静态挂载（`main._mount_static` 把 `/papers` 指到它）。
+#
+# 拿不到图就返回 `None`：前端不显示缩略图，**绝不塞一张错图**。
+# --------------------------------------------------------------------------
+
+#: 图号识别（`Figure 3` / `Fig. 3` / `Table 1` / `图 2`）—— 与 figure_regions 同一套规则
+_FIG_NUMBER_RE = re.compile(r"(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})", re.IGNORECASE)
+
+
+def _static_crop_url(image_path: str | None) -> str | None:
+    """解析阶段的裁图文件 → 浏览器可取的 URL（不在论文目录下 / 文件不在 → None）。"""
+    if not image_path:
+        return None
+    try:
+        root = Path(get_settings().papers_dir).resolve()
+        path = Path(str(image_path)).resolve()
+        rel = path.relative_to(root)
+    except (ValueError, OSError):        # 不在 data/papers 下（或路径非法）
+        return None
+    if not path.is_file():
+        return None
+    return f"/papers/{rel.as_posix()}"
+
+
+def _figure_region_url(paper_id: str, chunk_type: str, page_no: int,
+                       caption: str) -> str | None:
+    """插图/表格 → 「按图注锚定的裁图」URL（同页 + 同类 + 图号相同）。
+
+    图号缺失时用图注文本前缀兜底；仍匹配不到返回 `None`（退到解析阶段那张裁图）。
+    """
+    from backend.services.paper import figure_regions
+
+    if not paper_id or page_no <= 0:
+        return None
+    try:
+        regions = figure_regions.page_regions(paper_id, int(page_no))
+    except Exception as exc:  # noqa: BLE001 —— 缺 IR / 读盘失败都不该让检索整条失败
+        log.debug("读取插图区域失败（%s p%s）：%s", paper_id, page_no, exc)
+        return None
+    kind = "figure" if chunk_type == "figure" else "table"
+    match = _FIG_NUMBER_RE.search(caption or "")
+    number = match.group(1) if match else ""
+    head = (caption or "").strip()[:40]
+    for i, region in enumerate(regions):
+        if region.get("kind") != kind:
+            continue
+        if number and str(region.get("number") or "") == number:
+            return (f"{get_settings().api_prefix}/papers/{paper_id}"
+                    f"/figures/region/{int(page_no)}/{i}")
+        if not number and head and (region.get("caption") or "").strip()[:40] == head:
+            return (f"{get_settings().api_prefix}/papers/{paper_id}"
+                    f"/figures/region/{int(page_no)}/{i}")
+    return None
+
+
+def chunk_image_url(paper_id: str, chunk_type: str, page_no: int,
+                    metadata: dict | None = None) -> str | None:
+    """知识条目的缩略图 URL；正文（text）没有图，返回 `None`。"""
+    meta = metadata or {}
+    if chunk_type in ("figure", "table"):
+        url = _figure_region_url(paper_id, chunk_type, page_no,
+                                 str(meta.get("caption") or ""))
+        return url or _static_crop_url(meta.get("image_path"))
+    if chunk_type == "formula":
+        return _static_crop_url(meta.get("crop"))
+    return None
+
+
+def _chunk_row_meta(chunk_id: str) -> dict:
+    """MySQL 里那条 chunk 元数据（token 数 / 索引版本）；没有就返回空。"""
+    with session_scope() as sess:
+        row = sess.get(Chunk, chunk_id)
+        if row is None:
+            return {}
+        return {"tokens": row.token_count, "index_version": row.index_version,
+                "content_hash": row.content_hash}
+
+
+def chunk_detail(chunk_id: str) -> dict:
+    """单个 chunk 的**完整正文**（知识库页「展开全文」用，规划 §8：全文只在向量库）。
+
+    为什么单独开一个接口：列表接口按规划 §8 只下发 200 字 preview，而"展开全文"要的正是全文。
+    这里只读那一条向量行（顺便把 MySQL 的 token/版本补齐），不触发任何任务、不写任何状态。
+
+    **不下发同 `pair_id` 的对侧语种**（用户口径：展开全文只看当前 chunk，中英对照回阅读器）。
+    只给 `pair_id`，需要时前端/后续再取。
+    """
+    from backend.repositories.vector.lancedb_store import vector_store
+
+    cid = str(chunk_id or "").strip()
+    if not cid:
+        raise ValidationError("缺少 chunk_id")
+    rows = vector_store.get_rows([cid])
+    if not rows:
+        raise NotFoundError(f"chunk 不存在或还没入库：{cid}")
+    row = rows[0]
+    meta = row.get("metadata") or {}
+    paper_id = str(row.get("paper_id") or "")
+    page_no = int(row.get("page_no") or 0)
+    chunk_type = str(row.get("chunk_type") or "")
+    content = str(row.get("content") or "")
+    extra = _chunk_row_meta(cid)
+    return {
+        "chunk_id": cid,
+        "paper_id": paper_id,
+        "paper_title": _paper_titles([paper_id]).get(paper_id, paper_id) if paper_id else "",
+        "block_id": row.get("block_id"), "page": page_no,
+        "section": row.get("section"), "chunk_type": chunk_type,
+        "lang": row.get("lang") or "en",
+        "pair_id": meta.get("pair_id") or None,
+        "content": content, "chars": len(content),
+        "preview": truncate(content, 200),
+        "tokens": extra.get("tokens"), "index_version": extra.get("index_version"),
+        "image_url": chunk_image_url(paper_id, chunk_type, page_no, meta),
+    }
+
+
+# --------------------------------------------------------------------------
 # 相似检索（规划 §19.1 / §20.4；任务书功能⑥「跨文献技术比对」）
 # --------------------------------------------------------------------------
 
@@ -727,6 +856,10 @@ def _decorate_items(items: list[dict]) -> list[dict]:
     titles = _paper_titles(sorted({i.get("paper_id") for i in items if i.get("paper_id")}))
     out = []
     for i in items:
+        paper_id = str(i.get("paper_id") or "")
+        chunk_type = str(i.get("chunk_type") or "")
+        page_no = int(i.get("page_no") or 0)
+        metadata = i.get("metadata") or {}
         out.append({
             "chunk_id": i.get("chunk_id"), "paper_id": i.get("paper_id"),
             "paper_title": titles.get(i.get("paper_id") or "", ""),
@@ -735,8 +868,13 @@ def _decorate_items(items: list[dict]) -> list[dict]:
             "lang": i.get("lang") or "en",
             "langs": i.get("langs") or [i.get("lang") or "en"],
             "snippet": truncate(str(i.get("content") or ""), 260),
+            # 图注本身（插图/表格 chunk 的正文就是"插图 <块 id>：<图注>"，
+            # 列表里显示图注更干净；正文 chunk 没有这个字段）
+            "caption": metadata.get("caption"),
             "content": i.get("content"),
-            "metadata": i.get("metadata") or {},
+            "metadata": metadata,
+            # 插图 / 表格 / 公式的裁图（正文条目为 None）——知识库页靠它出缩略图
+            "image_url": chunk_image_url(paper_id, chunk_type, page_no, metadata),
             "scores": {
                 "vector": i.get("vector_score"), "lexical": i.get("lexical_score"),
                 "rrf": round(float(i.get("rrf") or 0.0), 6),
@@ -750,8 +888,8 @@ def _decorate_items(items: list[dict]) -> list[dict]:
 
 #: 只给前端看的字段（`content` / `metadata` / 内部校验用文本都不下发）
 PUBLIC_ITEM_FIELDS = ("chunk_id", "paper_id", "paper_title", "block_id", "page",
-                      "section", "chunk_type", "lang", "langs", "snippet",
-                      "scores", "ranks")
+                      "section", "chunk_type", "lang", "langs", "snippet", "caption",
+                      "image_url", "scores", "ranks")
 
 
 def public_item(item: dict) -> dict:

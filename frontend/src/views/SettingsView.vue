@@ -115,7 +115,7 @@ const READONLY_KEYS: ReadonlyDef[] = [
 /** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落到"知识库与索引"）。 */
 const SECTIONS = [
   { id: 'general', label: '常规参数', icon: 'settings' },
-  { id: 'kb', label: '知识库与索引', icon: 'knowledge' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge' },
   { id: 'history', label: '搜索记录', icon: 'search' },
   { id: 'about', label: '系统信息', icon: 'server' },
 ];
@@ -505,10 +505,10 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- ② 知识库与索引（管理/诊断，即时生效，没有"保存"） -->
+      <!-- ② 索引管理（管理/诊断，即时生效，没有"保存"） -->
       <section id="kb" class="sec">
         <div class="sec-head">
-          <h2 class="sec-title">知识库与索引</h2>
+          <h2 class="sec-title">索引管理</h2>
           <span class="tiny faint">建索引、索引状态与 chunk 元数据；知识库页只负责检索与浏览。</span>
         </div>
         <KbIndexPanel />
