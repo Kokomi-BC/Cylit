@@ -223,6 +223,30 @@ def test_pair_rows_exact_when_block_counts_match():
     assert rows[3]["original"] == rows[3]["translation"]
 
 
+def test_split_blocks_keeps_markdown_hard_breaks():
+    """行尾两个空格是 Markdown 的**硬换行**标记，切块时不能被 rstrip 剥掉。
+
+    剥掉之后块文本里的单换行成了软换行，前端 marked 会把整块折成一段 —— 表现就是
+    "Markdown 视图正常（它读的是原文 md），对照 / 原文 / 译文里算法块糊成一坨"。
+    """
+    md = "1: **输入：** a  \n2: b  \n3: c\n\n下一段"
+    blocks = split_blocks(md)
+    assert blocks[0]["text"] == "1: **输入：** a  \n2: b  \n3: c"
+    assert blocks[1]["text"] == "下一段"
+    # 单个行尾空格仍然清掉（不是硬换行标记，留着会污染对照文本）
+    assert split_blocks("a \nb")[0]["text"] == "a\nb"
+    # 代码围栏里是字面量（本来就 rstrip），不会补标记回去
+    assert split_blocks("```\nx  \ny\n```")[0]["text"] == "```\nx\ny\n```"
+
+
+def test_pair_rows_keeps_hard_breaks_for_structured_blocks():
+    algo = "1: input $d$  \n2: rotate  \n3: output"
+    rows, quality = pair_rows(algo, algo, page=5)
+    assert quality == "exact"
+    assert rows[0]["original"] == algo
+    assert rows[0]["original"].count("  \n") == 2
+
+
 def test_pair_rows_structure_fallback_keeps_every_block():
     # 译文漏掉了一段：块数不等，必须走结构对齐且**不丢任何块**
     broken = PAGE_MD_ZH.replace(

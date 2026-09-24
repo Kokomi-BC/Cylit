@@ -772,6 +772,13 @@ def split_blocks(md: str) -> list[dict]:
 
     for raw in lines:
         line = raw.rstrip()
+        # ⚠️ 行尾那两个空格是 Markdown 的**硬换行**标记，不能跟着 rstrip 一起剥掉：
+        # 算法步骤、作者单位这类"一块里每行各自成行"的内容全靠它。剥掉之后，块文本里的
+        # 单换行就成了软换行，前端 marked 会把整块折成一段 —— 表现是「Markdown 视图正常，
+        # 对照 / 原文 / 译文里糊成一坨」（用户报过：算法 1 的 11 行粘成一段）。
+        # 代码围栏里是字面量，不补。
+        if mode != "code" and line and raw.endswith("  "):
+            line += "  "
         stripped = line.strip()
 
         if mode == "code":

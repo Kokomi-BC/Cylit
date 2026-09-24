@@ -120,15 +120,21 @@ def page_translations(paper_id: str) -> list[dict]:
     out: list[dict] = []
     for page, payload in sorted(store.all_pages().items()):
         rows = [dict(row) for row in (payload.get("rows") or [])]
-        # `align != exact` 的页（两侧块数不一致 → 结构兜底）**读时重新配对**：
-        # 老产物的配对是按"正文文本签名"做的，中英文本永不相同 → 会整体错位一行，
-        # 表现为"每一行配的是邻行的译文"+最后一行空成「未翻译」（用户报过）。
-        # 现在 `pair_rows` 只按类型/公式/编号配对，重跑一次就能修好，**不用重译**。
-        if rows and str(payload.get("align") or "") == "structure":
-            re_rows, _quality = pair_rows(payload.get("original_md") or "",
-                                         payload.get("translation_md") or "", page)
-            if re_rows:
-                rows = re_rows
+        # 行**读时重算**，两种情况：
+        #   · `align == structure` 的页（两侧块数不一致 → 结构兜底）：老产物的配对是按"正文文本签名"
+        #     做的，中英文本永不相同 → 会整体错位一行，表现为"每一行配的是邻行的译文"+最后一行空成
+        #     「未翻译」（用户报过）。现在 `pair_rows` 只按类型/公式/编号配对，重跑一次就能修好，**不用重译**。
+        #   · 其余页也重算一次，是为了把 `split_blocks` 后来修的东西带到**老产物**上：存下来的行是
+        #     翻译时切的，行尾那两个空格（Markdown 硬换行标记）早被剥掉了，于是算法块、作者单位
+        #     这类"一块里每行各自成行"的内容在「对照 / 原文 / 译文」里糊成一整段 ——
+        #     而 Markdown 视图看的是原文 md，行还在（用户报的正是"Markdown 视图正常，行视图不正常"）。
+        # 只在**块数一致**时替换：行 id 是位置编号（`p{page}-{i:02}`），块数一变 id 就挪位，
+        # 已有的高亮 / 笔记会指到别的文字上 —— 宁可那一页保持旧样，也不动 id。
+        re_rows, _quality = pair_rows(payload.get("original_md") or "",
+                                      payload.get("translation_md") or "", page)
+        if re_rows and (str(payload.get("align") or "") == "structure"
+                        or len(re_rows) == len(rows)):
+            rows = re_rows
         if rows:
             flags = page_continuity(paper_id, page)
             mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
