@@ -128,13 +128,23 @@ function titleOf(paperId?: string | null): string {
   return hit?.paper_title || paperTitle(paperId);
 }
 
-/** 跳回阅读器原文（**开/激活一个标签页**）：`{ name: 'reader', params, query: { block } }`。 */
-function readerTo(paperId?: string | null, blockId?: string | null) {
-  return openTab({
+/**
+ * ⚠️ 拆成"纯位置 + 点击开标签"两半：`:to="fn()"` 会在**每次渲染**调用 `fn`，
+ * 而 `openTab()` 会改响应式 tabs 状态（每次都赋新的 `query` 对象 → 永远"变了"）→
+ * "渲染 → 改状态 → 再渲染"死循环，页面直接卡死。知识库页已经这么炸过一次，
+ * 这里（笔记 / 高亮 / 批注三处）是同一个写法，一并改掉。
+ */
+function readerLocation(paperId?: string | null, blockId?: string | null) {
+  return {
     name: 'reader',
     params: { paperId: paperId ?? '' },
     query: blockId ? { block: blockId } : {},
-  });
+  };
+}
+
+/** 点击时才开/激活阅读器标签（已开着就切过去）。 */
+function openReader(paperId?: string | null, blockId?: string | null) {
+  openTab(readerLocation(paperId, blockId) as never);
 }
 
 function colorHex(color?: string | null): string {
@@ -383,7 +393,7 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
             <span class="badge" v-for="t in n.tags" :key="t">{{ t }}</span>
           </div>
           <div class="row wrap note-actions">
-            <RouterLink class="btn sm" v-if="n.block_id" :to="readerTo(n.paper_id, n.block_id)">
+            <RouterLink class="btn sm" v-if="n.block_id" :to="readerLocation(n.paper_id, n.block_id)" @click="openReader(n.paper_id, n.block_id)">
               <AppIcon name="locate" :size="14" />跳回原文
             </RouterLink>
             <span class="tiny faint" v-else>无关联原文块</span>
@@ -430,7 +440,7 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
             <span v-if="h.color">· 颜色 {{ h.color }}</span>
           </div>
           <div class="row wrap note-actions">
-            <RouterLink class="btn sm" v-if="h.block_id" :to="readerTo(h.paper_id, h.block_id)">
+            <RouterLink class="btn sm" v-if="h.block_id" :to="readerLocation(h.paper_id, h.block_id)" @click="openReader(h.paper_id, h.block_id)">
               <AppIcon name="locate" :size="14" />跳回原文
             </RouterLink>
             <span class="tiny faint" v-else>无关联原文块</span>
@@ -469,7 +479,7 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
           来源：{{ s.paper_id }} · {{ s.block_id }} — {{ truncate(s.snippet || '', 120) }}
         </div>
         <div class="row wrap note-actions">
-          <RouterLink class="btn sm" v-if="a.block_id" :to="readerTo(a.paper_id, a.block_id)">
+          <RouterLink class="btn sm" v-if="a.block_id" :to="readerLocation(a.paper_id, a.block_id)" @click="openReader(a.paper_id, a.block_id)">
             <AppIcon name="locate" :size="14" />跳回原文
           </RouterLink>
           <span class="tiny faint" v-else>无关联原文块</span>

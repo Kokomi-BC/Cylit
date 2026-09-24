@@ -2397,6 +2397,46 @@ reranker    默认=['heuristic-reranker', 'reranker-94cd6b92']  ← 同上
 | 用户正在跑的 8710（**未重启**） | 修复后 `/rag/similar`：`rerank=qwen3-vl-rerank degraded=False`，分数 0.880 / 0.787 / 0.784 |
 | 日志污染 | 加固后最后一条 `__test_*` 记录只是清理日志，**再无测试任务被执行** |
 
+### 17.40 第三十八轮 —— 知识库页"搜索必定卡死"：`:to` 里调了会改状态的东西
+
+用户口径：*在这个页面搜索测试必定页面卡死*（后端日志里 `POST /rag/similar 200 OK`，前端一直"检索中…"）。
+
+**根因**：`KnowledgeView` 把开标签的函数直接塞给了 `:to`：
+
+```html
+<RouterLink :to="sourceTo(it)">跳回原文</RouterLink>
+<!-- function sourceTo(source) { return openTab({...}) } -->
+```
+
+模板里的函数**每次渲染都会被调用**，而 `openTab()` 会改响应式 `tabsState`：
+新建标签是 `tabs.push(...)`，已存在时是 `exists.query = {}` —— **每次都赋一个新对象**，
+Vue 的 `hasChanged` 判定永远为真 → 触发依赖更新 → 再渲染 → 再调 `openTab` →
+**"渲染 ↔ 改状态"死循环，主线程被占满，整页卡死**。
+
+**复现 vs 修复（同一探针，真浏览器 + 真后端）**：
+
+| 状态 | 探针结果 |
+|---|---|
+| 撤掉修复 | 第 1 秒就 `Runtime.evaluate` 超时：**主线程无响应** ✗ |
+| 修复后 | 1s 后 6 条结果渲染完成、标签数稳定 2、主线程正常 ✓ |
+
+**改法**（把"渲染期副作用"拆成"纯位置 + 点击副作用"）：
+
+- `KnowledgeView`：`readerLocation(source)` 只算 `{name,params,query}` 给 `:to`；
+  新增 `openSource(source)` 在 `@click` 里调 `openTab`（"已开着就切过去"的行为保留）；
+- `NotesView` 三处（笔记 / 高亮 / 批注）是**同一个写法**，一并改成 `readerLocation` + `openReader`；
+- `stores/tabs.ts` 顺手拆雷：已存在的标签**只在 query 真的非空时**才清，
+  不再无条件 `= {}`（这样即便将来又有人在渲染期调用，也不会立刻变成死循环）。
+
+**验证**
+
+| 用例 | 结果 |
+|---|---|
+| `scripts/_probe_kb_freeze.py`（真浏览器、每步带超时，卡死即超时暴露） | 修复前**卡死复现**、修复后**主线程存活 + 6 条结果 + 标签数 2**；查询"缓存"首条命中 KV 缓存那张图的说明 |
+| `vue-tsc` + `vite build` | 干净 |
+| 探针踩坑 | 第一次"修复后仍显示卡死"是**探针自己的锅**：上一轮冻结的 Edge 没退，同 profile/同调试端口 → 新会话接到了旧标签。清进程 + 换 profile 后正常 —— **卡死类问题排查要先确认自己连的是新页面** |
+
+
 
 
 

@@ -117,7 +117,10 @@ export function openTab(target: RouteLocationRaw & { name?: string; params?: Rec
   const key = routeKey({ name, params } as RouteLocationNormalizedLoaded);
   const exists = tabsState.tabs.find((t) => t.key === key);
   if (exists) {
-    exists.query = {};
+    // 只在**真的非空**时清空：无条件 `= {}` 每次都赋新对象，Vue 会认为"变了"，
+    // 于是一旦有人在渲染期调 openTab（曾被当成 `:to="fn()"` 用），就是
+    // "渲染 → 改状态 → 再渲染"的死循环。这里顺手把这颗雷拆掉。
+    if (Object.keys(exists.query).length) exists.query = {};
   } else {
     tabsState.tabs.push({
       key, name, params, query: {}, title: meta.title, icon: meta.icon,

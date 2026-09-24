@@ -316,13 +316,25 @@ async function ask(): Promise<void> {
   }
 }
 
-/** 来源 → 阅读器标签页（跳回原文；已开着就激活它）。 */
-function sourceTo(source: RagSource) {
-  return openTab({
+/**
+ * `:to` 必须是**纯函数**：模板里的函数**每次渲染都会被调用**，而 `openTab()` 会改
+ * 响应式 tabs 状态（`exists.query = {}` 每次都赋一个新对象 → Vue 永远认为"变了"）——
+ * 于是"渲染 → 改状态 → 再渲染"死循环，搜索结果一渲染整页卡死（真实事故：
+ * 知识库页搜索必定卡死，后端日志里请求是 200）。
+ *
+ * 所以拆成两半：`:to` 只算位置；**开/激活标签放到点击时**。
+ */
+function readerLocation(source: RagSource) {
+  return {
     name: 'reader',
     params: { paperId: source.paper_id ?? '' },
     query: source.block_id ? { block: source.block_id } : {},
-  });
+  };
+}
+
+/** 点击时才开（或激活）阅读器标签 —— 已开着就切过去。 */
+function openSource(source: RagSource) {
+  openTab(readerLocation(source) as never);
 }
 
 function sourceSnippet(source: RagSource): string {
@@ -672,7 +684,7 @@ function langLabel(item: SimilarItem): string {
               <span class="badge">{{ it.chunk_type }}</span>
               <span class="spacer"></span>
               <span class="mono faint">rrf {{ scoreOf(it, 'rrf') }} · rerank {{ scoreOf(it, 'rerank') }}</span>
-              <RouterLink :to="sourceTo(it)">跳回原文</RouterLink>
+              <RouterLink :to="readerLocation(it)" @click="openSource(it)">跳回原文</RouterLink>
             </div>
             <div class="small clamp-2" style="margin-top:4px">{{ it.snippet }}</div>
             <div class="tiny faint">
@@ -782,7 +794,7 @@ function langLabel(item: SimilarItem): string {
                     <span class="mono faint" v-if="s.score !== null && s.score !== undefined">
                       rerank {{ Number(s.score).toFixed(3) }}
                     </span>
-                    <RouterLink :to="sourceTo(s)">跳回原文</RouterLink>
+                    <RouterLink :to="readerLocation(s)" @click="openSource(s)">跳回原文</RouterLink>
                   </div>
                   <div class="small clamp-2" style="margin-top:4px">{{ sourceSnippet(s) }}</div>
                 </div>
