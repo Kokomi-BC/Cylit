@@ -362,12 +362,6 @@ function langLabel(item: SimilarItem): string {
   return langs.map((l) => (l === 'zh' ? '中' : '原')).join('+');
 }
 
-function paperName(paperId?: string | null): string {
-  if (!paperId) return '（未知论文）';
-  const hit = papers.value.find((p) => p.id === paperId);
-  return hit?.title || paperId;
-}
-
 /**
  * 跳回原文：**唯一入口**，统一回 Reader 定位到对应 block。
  *
@@ -413,125 +407,127 @@ onUnmounted(() => {
 
 <template>
   <div class="kb">
-    <div class="page-head">
-      <h1>知识库</h1>
-      <div class="seg" role="tablist" aria-label="知识库模式">
-        <button :class="{ active: mode === 'search' }" @click="setMode('search')">
-          <AppIcon name="search" :size="14" />搜索
-        </button>
-        <button :class="{ active: mode === 'browse' }" @click="setMode('browse')">
-          <AppIcon name="list" :size="14" />浏览
-        </button>
-      </div>
-      <span class="spacer"></span>
+    <!-- 右上角一行库规模小字（不是统计卡）：全库检索时"库里有什么"直接影响怎么读结果 -->
+    <div class="kb-status" v-if="!libraryEmpty">
       <span class="tiny faint nowrap" :title="statusTitle">{{ statusText }}</span>
     </div>
 
-    <!-- 库里还没内容：明确说清 + 一个去处（不在本页做管理） -->
-    <div class="card empty-state" v-if="libraryEmpty">
-      <span class="es-icon"><AppIcon name="knowledge" :size="20" /></span>
-      <div class="es-title">知识库里还没有内容</div>
-      <div class="es-hint">先在「设置 → 索引管理」给论文建索引，之后就能在这里跨论文检索与浏览。</div>
-      <div class="es-actions">
-        <button class="btn primary sm" @click="goIndexSettings">
-          <AppIcon name="settings" :size="14" />去建索引
-        </button>
+    <!-- 搜索主页式的头部：标题 + 模式 + 大搜索框 + 控件一行，全部居中 -->
+    <section class="hero" :class="{ compact: mode === 'browse' }">
+      <h1 class="hero-title">知识库</h1>
+      <div class="seg" role="tablist" aria-label="知识库模式">
+        <button :class="{ active: mode === 'search' }" @click="setMode('search')">搜索</button>
+        <button :class="{ active: mode === 'browse' }" @click="setMode('browse')">浏览</button>
       </div>
-    </div>
 
-    <template v-else>
-      <!-- ------------------------------ 搜索 ------------------------------ -->
       <template v-if="mode === 'search'">
-        <section class="card">
-          <div class="card-body">
-            <div class="search-wrap">
-              <div class="search-field wide">
-                <AppIcon name="search" :size="15" />
-                <input
-                  v-model="query"
-                  type="text"
-                  placeholder="描述一段技术，或直接输入关键词…"
-                  aria-label="检索知识库"
-                  @focus="histOpen = true"
-                  @click="histOpen = true"
-                  @blur="histOpen = false"
-                  @keydown="onSearchKey"
-                >
-                <button v-if="query" class="btn icon sm ghost" title="清空" @click="query = ''">
-                  <AppIcon name="close" :size="13" />
-                </button>
-              </div>
+        <div class="search-wrap">
+          <div class="search-field hero-search">
+            <AppIcon name="search" :size="17" />
+            <input
+              v-model="query"
+              type="text"
+              placeholder="描述一段技术，或输入关键词…"
+              aria-label="检索知识库"
+              @focus="histOpen = true"
+              @click="histOpen = true"
+              @blur="histOpen = false"
+              @keydown="onSearchKey"
+            >
+            <button v-if="query" class="btn icon sm ghost" title="清空" @click="query = ''">
+              <AppIcon name="close" :size="13" />
+            </button>
+          </div>
 
-              <!-- 最近搜索：聚焦即出，↑↓ 选、Enter 重跑、单条可删 -->
-              <div class="hist" v-if="histOpen && shownHistory.length">
-                <button
-                  v-for="(e, i) in shownHistory"
-                  :key="e.ts + e.q"
-                  type="button"
-                  class="hist-item"
-                  :class="{ active: i === histIndex }"
-                  @mousedown.prevent="applyHistory(e)"
-                >
-                  <AppIcon name="search" :size="13" />
-                  <span class="truncate">{{ e.q }}</span>
-                  <span class="tiny faint nowrap">{{ entryScope(e) }}</span>
-                  <span class="tiny faint nowrap" v-if="e.hits !== null">{{ e.hits }} 条</span>
-                  <span
-                    class="hist-del"
-                    title="删除这条记录"
-                    @mousedown.prevent.stop="dropHistory(e)"
-                  ><AppIcon name="close" :size="12" /></span>
-                </button>
-                <div class="hist-foot">
-                  <span class="tiny faint">只存在本机浏览器</span>
-                  <span class="spacer"></span>
-                  <button type="button" class="btn sm ghost" @mousedown.prevent="clearAllHistory">清空记录</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="row wrap controls">
-              <div class="seg">
-                <button :class="{ active: scope === 'all' }" @click="scope = 'all'">全部</button>
-                <button :class="{ active: scope === 'paper' }" @click="scope = 'paper'">本论文</button>
-              </div>
-              <label class="row tiny" v-if="scope === 'all'"
-                     title="跨文献比对：库里别的论文里谁在做类似的事">
-                <input type="checkbox" v-model="excludeSelf"> 排除所选论文
-              </label>
-              <select
-                v-if="scope === 'paper' || excludeSelf"
-                v-model="paperId"
-                :title="scope === 'paper' ? '在选中的这篇论文里检索' : '检索时排除这篇论文'"
-                style="min-width:240px"
-              >
-                <option value="">选择论文…</option>
-                <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-              </select>
+          <!-- 最近搜索：聚焦/点击即出，↑↓ 选、Enter 重跑、单条可删 -->
+          <div class="hist" v-if="histOpen && shownHistory.length">
+            <button
+              v-for="(e, i) in shownHistory"
+              :key="e.ts + e.q"
+              type="button"
+              class="hist-item"
+              :class="{ active: i === histIndex }"
+              @mousedown.prevent="applyHistory(e)"
+            >
+              <AppIcon name="search" :size="13" />
+              <span class="truncate">{{ e.q }}</span>
+              <span class="tiny faint nowrap">{{ entryScope(e) }}</span>
+              <span class="tiny faint nowrap" v-if="e.hits !== null">{{ e.hits }} 条</span>
+              <span
+                class="hist-del"
+                title="删除这条记录"
+                @mousedown.prevent.stop="dropHistory(e)"
+              ><AppIcon name="close" :size="12" /></span>
+            </button>
+            <div class="hist-foot">
               <span class="spacer"></span>
-              <span class="tiny faint nowrap">Ctrl/⌘ + Enter 检索</span>
-              <button class="btn primary" :disabled="busy" @click="runSearch">
-                <AppIcon name="search" :size="15" />{{ busy ? '检索中…' : '检索' }}
-              </button>
-            </div>
-
-            <div class="tiny faint hint" v-if="!history.length">
-              例：无需校准的在线向量量化 · 训练数据怎么构造 · 3D 重建损失
+              <button type="button" class="btn sm ghost" @mousedown.prevent="clearAllHistory">清空记录</button>
             </div>
           </div>
-        </section>
+        </div>
 
-        <section class="results" v-if="result || error">
-          <div class="row wrap result-head" v-if="result">
-            <span class="tiny faint">{{ (result.items || []).length }} 条</span>
-            <span class="tiny faint" v-if="simMeta" :title="simMeta.full">· {{ simMeta.short }}</span>
+        <div class="hero-actions">
+          <div class="seg">
+            <button :class="{ active: scope === 'all' }" @click="scope = 'all'">全部</button>
+            <button :class="{ active: scope === 'paper' }" @click="scope = 'paper'">本论文</button>
+          </div>
+          <label class="row tiny" v-if="scope === 'all'"
+                 title="跨文献比对：库里别的论文里谁在做类似的事">
+            <input type="checkbox" v-model="excludeSelf">排除所选论文
+          </label>
+          <select
+            v-if="scope === 'paper' || excludeSelf"
+            v-model="paperId"
+            :title="scope === 'paper' ? '在选中的这篇论文里检索' : '检索时排除这篇论文'"
+            style="min-width:220px"
+          >
+            <option value="">选择论文…</option>
+            <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
+          </select>
+          <button class="btn primary" :disabled="busy" title="Ctrl/⌘ + Enter" @click="runSearch">
+            <AppIcon name="search" :size="15" />{{ busy ? '检索中…' : '检索' }}
+          </button>
+        </div>
+      </template>
+
+      <div class="hero-actions" v-else>
+        <select v-model="bPaperId" @change="loadChunks" style="min-width:220px">
+          <option value="">选择论文…</option>
+          <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
+        </select>
+        <select v-model="bType" @change="loadChunks">
+          <option value="">全部类型</option>
+          <option v-for="t in CHUNK_TYPES" :key="t.key" :value="t.key">{{ t.label }}</option>
+        </select>
+        <select v-model="bLang" @change="loadChunks">
+          <option value="">全部语言</option>
+          <option v-for="l in LANG_OPTIONS" :key="l.key" :value="l.key">{{ l.label }}</option>
+        </select>
+      </div>
+    </section>
+
+    <div class="kb-body">
+      <div class="empty-state" v-if="libraryEmpty">
+        <div class="es-title">知识库还是空的</div>
+        <div class="es-actions">
+          <button class="btn primary sm" @click="goIndexSettings">
+            <AppIcon name="settings" :size="14" />去「设置 → 索引管理」建索引
+          </button>
+        </div>
+      </div>
+
+      <!-- ------------------------------ 搜索 ------------------------------ -->
+      <template v-else-if="mode === 'search'">
+        <template v-if="result">
+          <div class="result-head" :title="simMeta ? simMeta.full : ''">
+            {{ (result.items || []).length }} 条<template v-if="simMeta"> · {{ simMeta.short }}</template>
           </div>
 
-          <div v-for="note in (result?.retrieval?.notes || [])" :key="note" class="note">
+          <div v-for="note in (result.retrieval?.notes || [])" :key="note" class="note">
             <span class="badge warn">提示</span><span class="small">{{ note }}</span>
           </div>
 
-          <div v-for="(it, i) in (result?.items || [])" :key="it.chunk_id" class="hit">
+          <div v-for="(it, i) in (result.items || [])" :key="it.chunk_id" class="hit">
             <div class="hit-row">
               <img v-if="it.image_url" class="thumb" :src="it.image_url" loading="lazy"
                    :alt="`${typeMeta(it.chunk_type).label}裁图`">
@@ -557,40 +553,17 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div class="empty" v-if="result && !(result.items || []).length">
-            没有找到相似内容（这篇论文可能还没建索引）。
-          </div>
-          <div class="small error-line" v-if="error">检索失败：{{ error }}</div>
-        </section>
+          <div class="empty" v-if="!(result.items || []).length">没有找到内容。</div>
+        </template>
 
-        <div class="empty card" v-else-if="!error">输入一段技术描述或关键词开始检索。</div>
+        <div class="small error-line" v-if="error">检索失败：{{ error }}</div>
       </template>
 
       <!-- ------------------------------ 浏览 ------------------------------ -->
       <template v-else>
-        <section class="card">
-          <div class="card-head">
-            <span>筛选</span>
-            <span class="spacer"></span>
-            <select v-model="bPaperId" @change="loadChunks" style="min-width:240px">
-              <option value="">选择论文…</option>
-              <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-            </select>
-            <select v-model="bType" @change="loadChunks">
-              <option value="">全部类型</option>
-              <option v-for="t in CHUNK_TYPES" :key="t.key" :value="t.key">{{ t.label }}</option>
-            </select>
-            <select v-model="bLang" @change="loadChunks">
-              <option value="">全部语言</option>
-              <option v-for="l in LANG_OPTIONS" :key="l.key" :value="l.key">{{ l.label }}</option>
-            </select>
-          </div>
-        </section>
-
         <!-- 展开全文：只当前这一条（中英对照/完整阅读回 Reader） -->
         <section class="card detail" id="kb-detail" v-if="detailId">
           <div class="card-head">
-            <AppIcon name="document" :size="15" />展开全文
             <span class="badge accent" v-if="detail">
               {{ typeMeta(detail.chunk_type).label }}·{{ langShort(detail.lang) }}
             </span>
@@ -609,14 +582,11 @@ onUnmounted(() => {
             </button>
           </div>
           <div class="card-body">
-            <div class="empty" v-if="!detail">正在读取全文…</div>
+            <div class="empty" v-if="!detail">正在读取…</div>
             <template v-else>
               <img v-if="detail.image_url" class="detail-img" :src="detail.image_url"
                    :alt="`${typeMeta(detail.chunk_type).label}裁图`">
               <div class="full">{{ detail.content }}</div>
-              <p class="tiny faint detail-note">
-                只显示这一条 chunk（{{ detail.chars }} 字）；中英对照与完整阅读请回阅读器。
-              </p>
             </template>
           </div>
         </section>
@@ -624,15 +594,16 @@ onUnmounted(() => {
         <!-- 图库网格：选「插图」时按图翻 -->
         <div class="gallery" v-if="chunks.length && isGallery">
           <figure class="fig-card" v-for="c in chunks" :key="c.id" :class="{ active: detailId === c.id }">
-            <button type="button" class="fig-thumb" :title="c.preview"
+            <button type="button" class="fig-thumb" :title="c.caption || c.preview"
                     @click="toggleDetail(c.id)">
               <img v-if="c.image_url" :src="c.image_url" loading="lazy"
                    :alt="`插图 p${c.page}`">
               <span v-else class="tiny faint">无裁图</span>
             </button>
             <figcaption>
-              <div class="tiny truncate" :title="paperName(c.paper_id)">{{ paperName(c.paper_id) }}</div>
-              <div class="tiny faint">p{{ c.page }} · {{ c.section || '—' }} · {{ langShort(c.lang) }}</div>
+              <div class="tiny faint">
+                p{{ c.page }}<template v-if="c.section"> · {{ c.section }}</template> · {{ langShort(c.lang) }}
+              </div>
               <div class="fig-cap">{{ c.caption || c.preview }}</div>
               <div class="row nowrap fig-ops">
                 <button class="btn sm" @click="toggleDetail(c.id)">
@@ -656,7 +627,6 @@ onUnmounted(() => {
                 <span class="badge accent">{{ typeMeta(c.chunk_type).label }}·{{ langShort(c.lang) }}</span>
                 <span class="badge">p{{ c.page }}</span>
                 <span class="hit-sec" v-if="c.section" :title="c.section">{{ c.section }}</span>
-                <span class="tiny faint" v-if="c.tokens">{{ c.tokens }} tok</span>
                 <span class="spacer"></span>
                 <button class="btn sm ghost" @click="toggleDetail(c.id)">
                   <AppIcon name="document" :size="13" />{{ detailId === c.id ? '收起' : '展开全文' }}
@@ -670,22 +640,34 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <div class="empty card" v-else-if="state.loading['kb-chunks']">正在读取…</div>
-        <div class="empty card" v-else-if="!bPaperId">请选择要浏览的论文。</div>
-        <div class="empty card" v-else>这篇论文在所选类型/语言下没有 chunk。</div>
+        <div class="empty" v-else-if="state.loading['kb-chunks']">正在读取…</div>
+        <div class="empty" v-else-if="!bPaperId">选一篇论文</div>
+        <div class="empty" v-else>没有符合条件的 chunk</div>
       </template>
-    </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* ------------------------------ 搜索区 ------------------------------ */
-.search-wrap { position: relative; }
-/* 整行宽的搜索框：`.search-field` 自带 32px 高与圆角，这里只让它撑满 */
-.search-field.wide { display: flex; width: 100%; }
-.search-field.wide input { flex: 1; width: auto; min-width: 0; }
-.controls { margin-top: 10px; }
-.hint { margin-top: 8px; }
+/* ------------------------------ 骨架：居中一列（搜索主页式） ------------------------------ */
+.kb { max-width: 880px; margin: 0 auto; }
+.kb-status { display: flex; justify-content: flex-end; }
+
+.hero {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 40px 0 4px;
+}
+/* 浏览模式不需要大段留白（没有搜索框可聚焦） */
+.hero.compact { padding: 6px 0 4px; }
+.hero-title { margin: 0; font-size: 22px; color: var(--accent-text); }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.kb-body { margin-top: 26px; }
+
+/* 大号搜索框：`.search-field` 自带 32px 高与圆角，这里只把它放大到"主页"尺寸 */
+.search-wrap { position: relative; width: min(620px, 100%); }
+.search-field.hero-search { display: flex; width: 100%; height: 46px; padding: 0 16px; }
+.search-field.hero-search .icon { color: var(--text-dim); }
+.search-field.hero-search input { flex: 1; width: auto; min-width: 0; font-size: 14.5px; }
 
 /* 最近搜索：浮在搜索框下方（不推挤布局），键盘与鼠标都能用 */
 .hist {
@@ -712,24 +694,27 @@ onUnmounted(() => {
   padding: 4px 6px 2px; border-top: 1px solid var(--divider); margin-top: 3px;
 }
 
-/* ------------------------------ 结果（扁平列表） ------------------------------ */
-.results { margin-top: 14px; }
-.result-head { margin-bottom: 4px; }
+/* ------------------------------ 结果：扁平一列 ------------------------------ */
+.result-head {
+  font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+}
 .error-line { margin-top: 10px; color: var(--danger); }
 
-.hit { padding: 8px 0; border-top: 1px solid var(--divider); }
-.hit:first-child { border-top: 0; }
+.hit { padding: 10px 0; border-top: 1px solid var(--divider); }
+.hit:first-of-type { border-top: 0; }
 .hit-row { display: flex; align-items: flex-start; gap: 10px; }
 .hit-main { min-width: 0; flex: 1; }
 .hit-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hit-idx { min-width: 14px; text-align: right; color: var(--text-faint); font-size: 11px; }
-.hit-title { font-weight: 600; font-size: 12.5px; max-width: 300px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+/* 标题用强调色：像搜索结果里的链接一样，一眼能点 */
+.hit-title { font-weight: 600; font-size: 13.5px; color: var(--accent-text);
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hit-sec { font-size: 11px; color: var(--text-faint); max-width: 200px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .hit-score { font-family: var(--mono); font-size: 11px; color: var(--text-faint);
   font-variant-numeric: tabular-nums; }
-.hit-text { margin-top: 2px; font-size: 12px; color: var(--text-dim); line-height: 1.5;
+.hit-text { margin-top: 2px; font-size: 12px; color: var(--text-dim); line-height: 1.55;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* 插图 / 表格 / 公式的缩略图（拿不到裁图就不显示，不留空框） */
@@ -739,14 +724,13 @@ onUnmounted(() => {
 }
 .thumb.sm { width: 88px; height: 66px; }
 
-/* 提示 / 校验一条 */
+/* 提示一条 */
 .note { display: flex; align-items: flex-start; gap: 6px; padding: 5px 0; }
 
-/* ------------------------------ 浏览：图库网格 ------------------------------ */
+/* ------------------------------ 图库网格 ------------------------------ */
 .gallery {
-  margin-top: 14px;
   display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
 }
 .fig-card { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .fig-card.active .fig-thumb { border-color: var(--accent); box-shadow: var(--ring); }
@@ -764,17 +748,15 @@ onUnmounted(() => {
 }
 .fig-ops { gap: 6px; margin-top: 2px; }
 
-/* ------------------------------ 浏览：紧凑列表 ------------------------------ */
-.chunks { margin-top: 14px; }
+/* ------------------------------ 紧凑列表 ------------------------------ */
 .chunk-row {
   display: flex; align-items: flex-start; gap: 10px;
-  padding: 8px 0; border-top: 1px solid var(--divider);
+  padding: 10px 0; border-top: 1px solid var(--divider);
 }
 .chunk-row:first-child { border-top: 0; }
-.chunk-row.active .hit-head .badge.accent { border-color: transparent; }
 
 /* ------------------------------ 展开全文 ------------------------------ */
-.detail { margin-top: 14px; scroll-margin-top: calc(var(--header-h) + 12px); }
+.detail { scroll-margin-top: calc(var(--header-h) + 12px); }
 .detail-img {
   display: block; max-width: 100%; max-height: 360px; object-fit: contain;
   margin: 0 auto 12px; background: var(--bg-sunken);
@@ -787,5 +769,4 @@ onUnmounted(() => {
   background: var(--bg-sunken); border-radius: var(--r-sm); padding: 10px 12px;
   max-height: 46vh; overflow: auto;
 }
-.detail-note { margin: 8px 0 0; }
 </style>

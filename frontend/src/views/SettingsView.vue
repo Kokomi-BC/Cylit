@@ -436,7 +436,7 @@ onUnmounted(() => {
     <div class="page-head">
       <div>
         <h1>设置</h1>
-        <div class="sub">参数、知识库索引与搜索记录。带「保存设置」的只有<strong>常规参数</strong>，其余是即时操作。</div>
+        <div class="sub">参数、索引管理与搜索记录。</div>
       </div>
     </div>
 
@@ -509,7 +509,6 @@ onUnmounted(() => {
       <section id="kb" class="sec">
         <div class="sec-head">
           <h2 class="sec-title">索引管理</h2>
-          <span class="tiny faint">建索引、索引状态与 chunk 元数据；知识库页只负责检索与浏览。</span>
         </div>
         <KbIndexPanel />
       </section>
@@ -518,7 +517,6 @@ onUnmounted(() => {
       <section id="history" class="sec">
         <div class="sec-head">
           <h2 class="sec-title">搜索记录</h2>
-          <span class="tiny faint">知识库页每次检索记一条，只存在本机浏览器。</span>
         </div>
         <SearchHistoryPanel />
       </section>
