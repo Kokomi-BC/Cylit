@@ -2800,6 +2800,65 @@ RAG 后端接口 `/rag/query`、`/rag/query/stream` **原样保留**，只是前
 | 安全 | 全流程 `GET 41 / POST 4`（POST 全是只读检索），**无任何写请求** |
 | `vue-tsc` + `vite build` | 干净 |
 
+### 17.46 第四十轮（再续）—— 知识库里那条 `公式 attentionisa-p01-b06：* †`：脚注符号被当成了公式
+
+用户报："感觉公式块的存储有点问题，例如公式 **attentionisa-p01-b06：* †**"。
+
+#### 排查（只读，IR + 页产物 + MySQL 三方对照）
+
+`attentionisa-p01-b06` 的 IR 记录说得很清楚：
+
+```
+raw_text = '∗†'                       ← 页脚的"同等贡献/单位"脚注符号
+bbox = 319.3,234.5 → 330.3,241.5      ← 11 × 7 pt 的一小块
+latex_candidate = '["* †"]'   latex_final = '* †'
+confidence = 0.92   grade = A   source = 'text+vector'
+review_note = '文本层无歧义，无结构性符号'
+```
+
+链条是三段，**噪声从解析阶段一路带到了知识库**：
+
+1. **解析**：`_line_is_formula_like` 只看"数学字体占比 / 符号密度 / 强运算符"——
+   `∗†` 三个条件都"像"，于是判成公式行；`pipeline` 建了 FormulaBlock、裁了图，
+   连 `md/page-001.md` 里都写出了 `$$ * † $$`（解析阶段 Markdown，第 34 行，注释写着 `type:formula grade:A`）。
+2. **知识库 chunk**：`_collect_chunks` 拿 IR 的 formula 记录做 chunk →
+   `公式 attentionisa-p01-b06：* †`（`en` / `zh` 两行），还带缩略图（裁的就是那两个符号）。
+3. **阅读器公式列表**：走的是页级产物（模型转录），实测那两份 JSON 里**没有** `* †`，
+   所以列表本来就是干净的 —— 用户看到的是**知识库**里那条。
+
+#### 改法：一条共用的"这不是数学"判据，三处都拦
+
+新增 `backend/parsing/formula/noise.py::is_noise_formula(text)`：
+**既没有字母/数字（Unicode，希腊字母算字母），也没有任何强运算符（`=` `+` `∑` `→` …）** → 噪声。
+刻意保守（`\alpha`、`α = β`、`x^2`、`E[x]` 全部保留）：**误删一条真公式的代价远大于多留一条噪声**。
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| 解析（根因） | `structure/formula_block.py::_line_is_formula_like` | 这样的行不再进公式候选 |
+| 解析（兜底） | `pipeline.py` 建 FormulaBlock **之前** | 候选与原文都是噪声 → 直接 `continue`（**放在 `_find_host_block`/`_make_orphan_block` 之前**，否则会给它补一个孤儿块） |
+| 阅读器 | `reader_service.markdown_formulas` | 旧产物里的 `$$ * † $$` 也不进公式列表 |
+| 知识库 | `knowledge_service._formula_chunk_text`（新纯函数） | 返回 `None` → 不建这条 chunk（**旧 IR 不用重新解析**，重建索引即清） |
+
+#### 验证（真数据，只读）
+
+| 检查 | 结果 |
+|---|---|
+| 两篇论文 IR 里的 formula 记录 | attention 9 条 / turboquant 68 条，判为"不是数学"的**只有 1 条**：`attentionisa-p01-b06`（`* †`）——零误伤 |
+| 现存将要被清掉的 chunk | **2 条**（`…:formula:attentionisa-p01-b06:en` / `:zh`），preview 正是 `公式 attentionisa-p01-b06：* †` |
+| 阅读器公式列表 | 过滤后 attention 90 条 / turboquant 349 条，**没有任何 `*`/`†` 条目** |
+| 页级产物（阅读器事实源） | 本来就干净（131 / 416 条公式里纯符号 0 条）—— 证实噪声只在解析产物与知识库里 |
+| `tests/test_formula_noise.py`（新，8 项） | 通过（判据正反例 + chunk 跳过/保留/兜底 + 公式行识别 + 公式列表过滤） |
+| 离线 / e2e | **230 通过** / **29 通过 + 1 跳过** |
+
+#### 还剩一件事（需要用户点头）
+
+那条 chunk 现在**还在索引里**（MySQL + LanceDB）。重建索引后会自动消失：
+
+- 设置 → 索引管理 → 对 `attention-is-all-you-need` 点「重建索引」；
+- 解析产物里的 `$$ * † $$`（`md/page-001.md`）要等**重新解析**才会消失（不影响阅读器，阅读器用的是页级产物）。
+
+我没有替用户触发重建索引 —— 那会写用户的索引（跑一个 INDEX 任务、重新嵌入 137 条），先问一句。
+
 
 
 

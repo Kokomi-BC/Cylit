@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 
 from backend.parsing.extract.vector_layer import Drawing
+from backend.parsing.formula.noise import is_noise_formula
 from backend.parsing.models import (
     RawBlock, Rect, TextLine, is_greek, is_math_operator,
 )
@@ -112,6 +113,9 @@ def _line_is_formula_like(line: TextLine) -> tuple[bool, float, str]:
     density = sym / total
     font_ratio = math_font / total
     text = line.text.strip()
+    # 纯脚注符号（`∗†`）符号密度很高，但没有任何数学内容 —— 不是公式（用户报过）
+    if is_noise_formula(text):
+        return False, density, ""
     reasons = []
     if font_ratio >= MATH_FONT_RATIO:
         reasons.append("math_font")

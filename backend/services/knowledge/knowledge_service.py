@@ -18,6 +18,7 @@ from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, new_id, now, sha256_text, truncate
+from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import Block, Chunk, Paper
 from backend.repositories.mysql.session import session_scope
 from backend.services.model.model_manager import model_manager
@@ -245,6 +246,22 @@ def build_chunks_for_paper(paper_id: str, *,
                            langs)
 
 
+def _formula_chunk_text(f: dict) -> str | None:
+    """公式 chunk 的正文；**不是数学的返回 `None`**（那条 chunk 就不该存在）。
+
+    为什么单独判一道：解析阶段把页脚的 `∗†` 认成了公式（小而符号密度高），
+    于是知识库里出现 `公式 attentionisa-p01-b06：* †` 这种条目（还带一张裁图）——
+    用户报过。解析侧已经修了，这里再兜一层：**旧产物（IR）不用重新解析也能干净**，
+    重建索引时这类条目会自然消失（`_collect_chunks` 返回 None 就跳过）。
+    """
+    latex = f.get("latex_final") or f.get("latex_repaired") or ""
+    cands = f.get("latex_candidate") or []
+    body = latex or (cands[0] if cands else "") or (f.get("raw_text") or "")
+    if is_noise_formula(body) and is_noise_formula(f.get("raw_text")):
+        return None
+    return f"公式 {f.get('block_id')}：{body}"
+
+
 def _collect_chunks(paper_id: str) -> list[dict]:
     """单语（原文）chunk：与旧实现一致，只是额外留下 ``_parts`` 供译文对齐。"""
     md_map = reader_service.load_markdown_map(paper_id)
@@ -290,11 +307,13 @@ def _collect_chunks(paper_id: str) -> list[dict]:
         if b["type"] in ("ref",):
             continue
         if bid in formulas:
-            flush_text()
             f = formulas[bid]
+            text = _formula_chunk_text(f)
+            if text is None:                      # 纯脚注符号，不是公式 → 不建这条 chunk
+                log.info("跳过非数学公式 chunk：%s（%r）", bid, f.get("raw_text"))
+                continue
+            flush_text()
             latex = f.get("latex_final") or f.get("latex_repaired") or ""
-            cands = f.get("latex_candidate") or []
-            text = f"公式 {bid}：{latex or (cands[0] if cands else f.get('raw_text') or '')}"
             chunks.append(_make_chunk(
                 paper_id, "formula", text, b, b, section=b.get("section") or "",
                 metadata={"latex": latex, "grade": f.get("grade"),

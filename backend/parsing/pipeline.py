@@ -34,6 +34,7 @@ from backend.parsing.extract.text_layer import extract_page_blocks, page_has_tex
 from backend.parsing.extract.vector_layer import extract_drawings
 from backend.parsing.formula.audit import audit_formula_vectors
 from backend.parsing.formula.latex_recover import recover_candidates
+from backend.parsing.formula.noise import is_noise_formula
 from backend.parsing.formula.validate import grade_formula, validate_formula
 from backend.parsing.ir.ir_writer import IRWriter
 from backend.parsing.metadata import extract_paper_meta, extract_metadata, meta_from_text
@@ -509,13 +510,6 @@ class PaperBuilder:
             candidates.extend(cands)
 
         for cand in candidates:
-            # 找到对应的结构化 block（bbox 重合度最高者）
-            host = _find_host_block(result.blocks, cand.page_no, cand.rect)
-            if host is None:
-                # 公式区域落在非正文行上（图内标注/表内公式等）：补一个孤儿块，
-                # 保证 formula.block_id 的外键一致，并在 Markdown/阅读器中可见
-                host = _make_orphan_block(result, cand)
-            block_id = host.id
             page_drawings = drawings_by_page.get(cand.page_no, [])
             local_drawings = [d for d in page_drawings
                               if cand.rect.expand(6, 6).intersects(d.rect)]
@@ -525,12 +519,29 @@ class PaperBuilder:
                 font_height=max((ln.size for ln in cand.lines), default=10.0),
             )
             latex_cands = recover_candidates(cand.raw_text, audit, spans)
+            latex_list = [c.latex for c in latex_cands] or [""]
+
+            # 纯脚注符号（`∗†`）不是公式：连候选与原文都没有一点数学内容时直接跳过。
+            # ⚠️ 必须在 `_find_host_block` / `_make_orphan_block` **之前**跳过 ——
+            # 否则会为它补一个孤儿块（块进了 IR，公式却不在），也会裁图、进公式列表、进知识库。
+            if is_noise_formula(cand.raw_text) and all(is_noise_formula(x) for x in latex_list):
+                log.info("跳过非数学公式候选：p%s %r（%s）",
+                         cand.page_no, cand.raw_text, cand.reason or "候选")
+                continue
+
+            # 找到对应的结构化 block（bbox 重合度最高者）
+            host = _find_host_block(result.blocks, cand.page_no, cand.rect)
+            if host is None:
+                # 公式区域落在非正文行上（图内标注/表内公式等）：补一个孤儿块，
+                # 保证 formula.block_id 的外键一致，并在 Markdown/阅读器中可见
+                host = _make_orphan_block(result, cand)
+            block_id = host.id
 
             fb = FormulaBlock(
                 block_id=block_id, paper_id=self.paper_id, page_number=cand.page_no,
                 rect=cand.rect, raw_text=cand.raw_text,
                 vector_data=audit, is_inline=cand.is_inline,
-                latex_candidates=[c.latex for c in latex_cands] or [""],
+                latex_candidates=latex_list,
                 source="text+vector" + ("+geometry" if audit.has_structure else ""),
             )
 

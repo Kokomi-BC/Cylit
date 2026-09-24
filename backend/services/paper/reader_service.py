@@ -18,6 +18,7 @@ from pathlib import Path
 from backend.core.errors import NotFoundError
 from backend.core.logging import get_logger
 from backend.core.utils import json_loads
+from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import (
     Annotation, Block, Formula, Highlight, Note, Paper, ReadingProgress, Task,
 )
@@ -400,6 +401,9 @@ def markdown_formulas(paper_id: str) -> dict:
                 continue
             for _s, _e, latex, display in _extract_math(text):
                 if not display and len(latex) < 4 and "\\" not in latex:
+                    continue
+                # 页脚脚注符号被模型写成了 `$$ * † $$` —— 没有任何数学内容，不进公式列表
+                if is_noise_formula(latex):
                     continue
                 items.append({
                     "id": f"f{page:03d}-{len(items):04d}",
