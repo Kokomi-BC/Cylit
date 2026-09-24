@@ -2353,6 +2353,51 @@ UI 也不拿它做阈值过滤。
 | 受影响面 | 论文 3 篇状态与译文完好、chunk 395/395、用户高亮仍在；**`task` 表 0 行（我的错）** |
 | 前端 | `vue-tsc` + `vite build` 干净 |
 
+### 17.39 第三十七轮 —— 用户报"搜索知识库时报错"：查出**两个真 bug**（都不是搜索本身）
+
+用户截图：日志里一条 `任务失败：t-2db2dbfe069ee98f(INDEX) paper=__test_kb_lifecycle__`
+→ `ValidationError: 没有可用 chunk`。追下去发现两件事：
+
+**① 那条报错是我上一轮的测试留下的脏任务**：`task_service.create()` 会写一条 `pending` 行，
+而**用户的 TaskRunner 就在同一个库上跑着** —— 它把测试造的伪论文 INDEX 任务捞去执行，必然失败。
+（顺带确认：这条报错与"搜索"无关；用户搜索失败是因为当时后端正在重启，8710 一瞬是拒连的。）
+加固：`tests/test_kb_lifecycle.py` 的任务测试改成**直接插行**（不经 `create`），
+`processing` 行给远未来租约免得被 `recycle_stale` 回收；新增守门用例断言
+"本文件造的 task 行一律不是 pending"。同时确认没有残留脏数据（`task` 0 行、无伪论文/伪 chunk）。
+
+**② 真 bug：重排在用户无感的情况下静默降级。** 用户重启后 `/rag/similar` 报
+`rerank=heuristic-overlap degraded=true`，而它本该是 `qwen3-vl-rerank`。查 `model_config`：
+
+```
+embedding   默认=['embedding-7036089f', 'mock-embedding']     ← 两行都是默认
+generation  默认=['generation-e6715c60', 'mock-generation']   ← 同上
+reranker    默认=['heuristic-reranker', 'reranker-94cd6b92']  ← 同上
+```
+
+`get_config` 取的是"按 id 排序的第一个默认"，`heuristic-reranker` 恰好排在前面 →
+**重排永远走词法启发式**（embedding/generation 只是碰巧 id 排序让真模型赢了）。
+根因是 `ensure_builtin_models()` 补插内置档时无条件按 `BUILTIN_DEFAULTS` 里的 `is_default`
+写入，不检查该类型是否已有默认（用户那次内置行缺失后重建，就盖出了双默认）。
+
+修法三处：
+- 抽出纯函数 `pick_default(candidates)`：**先排降级档（mock/hash/heuristic/local）**，
+  再看 `status == "ok"`，最后按 id 稳定 —— `get_config` 与修复逻辑共用同一套判定；
+- `ensure_builtin_models()`：该类型已有默认时，内置档只能以 `is_default=False` 插入；
+- 新增 `repair_defaults()`（启动时随 `ensure_builtin_models` 自动跑）：同类型多默认时
+  只留 `pick_default` 选中的那个，其余清掉并**写警告日志**（这种状态必须留痕）。
+
+**验证**
+
+| 用例 | 结果 |
+|---|---|
+| `pytest tests/test_model_defaults.py` | **5 项通过**（真模型优先于内置、优先探测通过、只有内置时回退、结果确定性、降级档名单与工厂对齐） |
+| `pytest tests/test_kb_lifecycle.py -m e2e` | **10 项通过**（含"测试不留下 pending 任务"守门） |
+| `pytest -m "not e2e"` / `pytest -m e2e` | **201 通过 / 29 通过 + 1 跳过** |
+| 真实库修复 | 启动修复日志：`generation 清 mock-generation`、`embedding 清 mock-embedding`、`reranker 清 heuristic-reranker`；解析结果四种类型都指向真模型 |
+| 用户正在跑的 8710（**未重启**） | 修复后 `/rag/similar`：`rerank=qwen3-vl-rerank degraded=False`，分数 0.880 / 0.787 / 0.784 |
+| 日志污染 | 加固后最后一条 `__test_*` 记录只是清理日志，**再无测试任务被执行** |
+
+
 
 
 

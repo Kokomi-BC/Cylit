@@ -199,39 +199,76 @@ def test_overview_resolves_embedding_model_labels(fake_paper, temp_store) -> Non
 # --------------------------------------------------------------------------
 
 
+def _insert_task(task_id: str, status: str, *, paper_id: str = FAKE,
+                 type_: str = "INDEX") -> str:
+    """**直接插行**做任务记录测试。
+
+    ⚠️ 不能用 `task_service.create()`：那会写一条 ``pending`` 行，而**用户的
+    TaskRunner 就在这个库上跑着**，会立刻把它捞去执行 —— 我在这一轮真的踩了两次：
+    日志里出现 `__test_kb_lifecycle__` 的 INDEX 失败堆栈（用户截图来问），
+    更早一次是裸调 `cleanup_finished()` 把用户的任务记录整表清空。
+    `processing` 行给一个远未来的租约，免得被 `recycle_stale` 回收成 pending 再被执行。
+    """
+    from datetime import timedelta
+
+    from backend.core.utils import json_dumps, now
+    from backend.repositories.mysql.models import Task
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        sess.add(Task(
+            id=task_id[:32], type=type_, queue="kb", paper_id=paper_id,
+            status=status, done_items=0, total_items=1, progress=0.0,
+            params_json=json_dumps({}), cursor_json=json_dumps({}),
+            message="测试任务（直接插行，不经 create）",
+            lease_expire_at=(now() + timedelta(days=1)) if status == "processing" else None,
+        ))
+    return task_id
+
+
 def test_task_delete_requires_terminal_and_cleanup(fake_paper) -> None:
     from backend.core.errors import ConflictError
     from backend.services.task.task_service import task_service
 
-    done = task_service.create("INDEX", "knowledge", FAKE, total_items=1)
-    running = task_service.create("INDEX", "knowledge", FAKE, total_items=1)
+    done = _insert_task("__test_task_done__", "completed")
+    running = _insert_task("__test_task_run__", "processing")
 
     with pytest.raises(ConflictError):
-        task_service.delete(running["id"])                  # 运行中的不许删
+        task_service.delete(running)                        # 运行中的不许删
 
-    task_service.finish(done["id"], "completed", message="ok")
-    assert task_service.delete(done["id"])["deleted"] == done["id"]
+    assert task_service.delete(done)["deleted"] == done
     with pytest.raises(Exception):
-        task_service.get(done["id"])                        # 记录真的没了
+        task_service.get(done)                              # 记录真的没了
 
     # ⚠️ 清理**必须带 paper_id**：裸调 cleanup_finished() 是全库清理，
     # 我在这一轮真的把用户的任务记录（含 stats_json 实验数据）清空了。
-    assert task_service.cleanup_finished(paper_id=FAKE)["deleted"] == 0   # running 还在跑
-    task_service.finish(running["id"], "cancelled", message="测试收尾")
+    assert task_service.cleanup_finished(paper_id=FAKE)["deleted"] == 0   # processing 不算终态
+    task_service.finish(running, "cancelled", message="测试收尾")
     cleaned = task_service.cleanup_finished(paper_id=FAKE)
     assert cleaned["deleted"] == 1 and cleaned["paper_id"] == FAKE
     with pytest.raises(Exception):
-        task_service.get(running["id"])
+        task_service.get(running)
 
 
 def test_cleanup_with_bogus_status_does_not_wipe_everything(fake_paper) -> None:
     """显式给了非法状态 → 清 0 条，**不能**回落到"全清"（否则前端传错就把历史清光）。"""
     from backend.services.task.task_service import task_service
 
-    t = task_service.create("INDEX", "knowledge", FAKE, total_items=1)
-    task_service.finish(t["id"], "completed", message="ok")
+    task_id = _insert_task("__test_task_bogus__", "completed")
 
     result = task_service.cleanup_finished(statuses=["done", "finished"], paper_id=FAKE)
     assert result["deleted"] == 0 and "note" in result
-    assert task_service.get(t["id"])["status"] == "completed"   # 记录还在
-    task_service.delete(t["id"])
+    assert task_service.get(task_id)["status"] == "completed"   # 记录还在
+    task_service.delete(task_id)
+
+
+def test_tests_never_leave_pending_tasks_in_the_live_queue(fake_paper) -> None:
+    """守门用例：本文件造的 task 行**一律不是 pending** —— 用户跑着 worker，pending 会被执行。"""
+    from backend.repositories.mysql.models import Task
+    from backend.repositories.mysql.session import session_scope
+
+    _insert_task("__test_task_guard__", "completed")
+    with session_scope() as sess:
+        pending = (sess.query(Task)
+                   .filter(Task.paper_id == FAKE, Task.status == "pending").count())
+    assert pending == 0

@@ -26,6 +26,26 @@ log = get_logger(__name__)
 MODEL_TYPES = ("generation", "embedding", "reranker", "vision", "ocr")
 # 本地模型 LRU 上限（省显存，规划 §12.2）
 CACHE_SIZE = 4
+# 需要密钥才能用的真模型之外，这些 provider 是"离线降级档"：同一类型里
+# **不能**让它们压过真模型当默认（真实踩过：内置 mock 被重新插入时又盖了个 is_default，
+# 于是 reranker 取到 heuristic-overlap，重排静默降级 —— 检索质量掉了但界面看不出来）
+MOCK_PROVIDERS = ("mock", "hash", "heuristic", "local")
+
+
+def pick_default(candidates: list[dict]) -> dict | None:
+    """从同类型的候选里挑默认：**先排降级档**，再看状态是否探测通过，最后按 id 稳定排序。
+
+    纯函数（可离线测）：`get_config` 与 `repair_defaults` 共用同一套判定，避免两处不一致。
+    """
+    if not candidates:
+        return None
+
+    def key(cfg: dict) -> tuple:
+        return (1 if str(cfg.get("provider")) in MOCK_PROVIDERS else 0,
+                0 if cfg.get("status") == "ok" else 1,
+                str(cfg.get("id") or ""))
+
+    return min(candidates, key=key)
 
 # 内置默认（provider=mock，不需要任何密钥即可运行；规划 §1.2）
 BUILTIN_DEFAULTS: list[dict] = [
@@ -96,16 +116,23 @@ class ModelManager:
         return out
 
     def get_config(self, model_id: str | None, model_type: str = "generation") -> dict:
-        """取配置：指定 id > 该类型默认 > 内置 mock。"""
+        """取配置：指定 id > 该类型默认 > 该类型任一可用 > 内置 mock。
+
+        ★ 「该类型默认」可能有多行（历史遗留 / 内置档补插时又盖了一次默认）——
+        以前取"按 id 排序的第一个"，于是 `heuristic-reranker` 会压过 `qwen3-vl-rerank`，
+        重排静默降级。现在统一走 `pick_default`（真模型优先）。
+        """
         rows = self._rows()
         if model_id:
             for r in rows:
                 if r.id == model_id:
                     return self._row_to_config(r)
             raise ValidationError(f"模型不存在：{model_id}")
-        for r in rows:
-            if r.model_type == model_type and r.is_default and r.enabled:
-                return self._row_to_config(r)
+        defaults = [self._row_to_config(r) for r in rows
+                    if r.model_type == model_type and r.is_default and r.enabled]
+        chosen = pick_default(defaults)
+        if chosen is not None:
+            return chosen
         for r in rows:
             if r.model_type == model_type and r.enabled:
                 return self._row_to_config(r)
@@ -242,21 +269,63 @@ class ModelManager:
 
         created = 0
         with session_scope() as sess:
+            # 该类型**已有**默认（真模型）时，内置档只能以 is_default=False 插入 ——
+            # 否则就出现"两行都是默认"，而按 id 排序取第一个会把真模型顶掉。
+            has_default = {
+                t: any(r.is_default and r.enabled for r in
+                       sess.query(ModelConfig).filter(ModelConfig.model_type == t))
+                for t in MODEL_TYPES
+            }
             for d in BUILTIN_DEFAULTS:
                 if sess.get(ModelConfig, d["id"]) is not None:
                     continue
+                want_default = bool(d["is_default"]) and not has_default.get(d["model_type"])
                 sess.add(ModelConfig(
                     id=d["id"], name=d["name"], provider=d["provider"],
                     model_type=d["model_type"], model_name=d["model_name"],
                     base_url=None, device=None,
                     parameters_json=_dumps(d["parameters"]),
-                    secret_ref=None, enabled=True, is_default=d["is_default"],
+                    secret_ref=None, enabled=True, is_default=want_default,
                     status="unknown",
                 ))
+                if want_default:
+                    has_default[d["model_type"]] = True
                 created += 1
         if created:
             log.info("写入 %d 个内置模型配置（离线可跑）", created)
+        self.repair_defaults()
         return created
+
+    def repair_defaults(self) -> dict:
+        """同一类型出现多个 ``is_default`` 时只留一个（启动时自动修）。
+
+        保留规则与 `get_config` 完全一致（`pick_default`）：真模型 > 探测通过 > id 稳定。
+        修完写日志 —— 这种状态会让检索/翻译**静默用降级档**，必须留痕。
+        """
+        from backend.repositories.mysql.models import ModelConfig
+        from backend.repositories.mysql.session import session_scope
+
+        fixed: dict = {}
+        with session_scope() as sess:
+            for mtype in MODEL_TYPES:
+                rows = [r for r in sess.query(ModelConfig).filter(
+                    ModelConfig.model_type == mtype) if r.is_default]
+                if len(rows) <= 1:
+                    continue
+                keeper = pick_default([self._row_to_config(r) for r in rows])
+                keep_id = (keeper or {}).get("id")
+                cleared = []
+                for r in rows:
+                    if r.id != keep_id:
+                        r.is_default = False
+                        cleared.append(r.id)
+                fixed[mtype] = {"kept": keep_id, "cleared": cleared}
+            if fixed:
+                sess.flush()
+        if fixed:
+            log.warning("修复重复的默认模型（同类型多行 is_default）：%s", fixed)
+            self._cache.clear()
+        return fixed
 
     def create(self, payload: dict) -> dict:
         from backend.repositories.mysql.models import ModelConfig
