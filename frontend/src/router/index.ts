@@ -27,6 +27,9 @@ export const router = createRouter({
   scrollBehavior(to, from, saved) {
     // 阅读器自己管理滚动位置（服务端权威进度），不参与全局滚动恢复
     if (to.name === 'reader') return false;
+    // 带锚点的路由（如 `/app/settings#kb`）：交给页面自己滚到分区。
+    // 这里若返回 `{top: 0}`，就会和页面的锚点滚动**抢**，落点取决于谁后执行 —— 随机。
+    if (to.hash) return false;
     return saved ?? { top: 0 };
   },
 });

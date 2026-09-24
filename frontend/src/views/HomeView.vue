@@ -23,7 +23,7 @@ const NAV = [
   { name: 'notes', label: '笔记', icon: 'note', hint: '批注、笔记与高亮' },
   { name: 'models', label: '模型', icon: 'model', hint: '生成 / 向量 / 视觉模型配置' },
   { name: 'tasks', label: '任务', icon: 'task', hint: '队列、进度与失败重试' },
-  { name: 'settings', label: '设置', icon: 'settings', hint: '数据目录、裁图与健康检查' },
+  { name: 'settings', label: '设置', icon: 'settings', hint: '参数、知识库索引与搜索记录' },
 ];
 
 const papers = computed<Paper[]>(() => state.papers ?? []);

@@ -1,17 +1,29 @@
 <script setup lang="ts">
 /**
- * 设置：任务线程数 / 渲染 / RAG 参数的白名单编辑 + 只读系统信息与健康检查。
+ * 设置：**分区**的参数编辑 + 只读系统信息与健康检查。
  *
- * 数据面 `GET /settings`（values + stored + editable 白名单）、`PUT /settings`（仅提交变更项）、
- * `GET /settings/health`（库 / 向量库 / 任务池）。设置写入 setting 表，重启后仍生效。
+ * 分区（顶部悬浮药丸导航可跳，支持 `/app/settings#kb` 这类深链）：
+ * 1. **常规参数** —— 任务线程数 / 渲染 / RAG 参数 / 其他；**只有这一区有"保存设置"**
+ *    （数据面 `PUT /settings`，仅提交变更项）。
+ * 2. **知识库与索引** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据。
+ *    这些原本长在「知识库」页上，用户口径是"那页全是设置"，于是整体搬到这里；
+ *    它们都是**即时操作**，没有"保存"这一步。
+ * 3. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
+ * 4. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
+ *
+ * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
+ * `GET /settings/health`。设置写入 setting 表，重启后仍生效。
  */
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { HealthPayload } from '@/api/types';
 import {
   loadHealth, loadSettings, reportError, state, toast, withLoading,
 } from '@/stores/app';
 import AppIcon from '@/components/AppIcon.vue';
+import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
+import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 
 /* ---------------------------- 表单结构定义 ---------------------------- */
 
@@ -97,6 +109,146 @@ const READONLY_KEYS: ReadonlyDef[] = [
   { key: 'secrets_dir', label: '密钥目录' },
   { key: 'user_id', label: '用户 ID' },
 ];
+
+/* ---------------------------- 分区导航 ---------------------------- */
+
+/** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落到"知识库与索引"）。 */
+const SECTIONS = [
+  { id: 'general', label: '常规参数', icon: 'settings' },
+  { id: 'kb', label: '知识库与索引', icon: 'knowledge' },
+  { id: 'history', label: '搜索记录', icon: 'search' },
+  { id: 'about', label: '系统信息', icon: 'server' },
+];
+
+const route = useRoute();
+const router = useRouter();
+const active = ref<string>(SECTIONS[0].id);
+
+/* ------------------------- 锚点对齐（异步内容会顶偏落点） ------------------------- */
+
+/**
+ * **为什么要一套对齐逻辑**：本页内容（统计数字、论文索引表、chunk 表）都是异步长出来的。
+ * 只在跳转那一刻滚一次，滚动会发生在数据到达**之前** —— 上面那一节随后变高，把目标分区往下顶。
+ * 实测（把网络拖慢到 400ms/请求、从其它页面深链到 `#history`）：
+ * 滚完是可见的，等 50 行 chunk 表到达后文档高度从 2384 → 4893，
+ * `#history` 被顶到视口下方 **3087px** —— 用户"跳到了搜索记录"，屏幕上却是别的分区。
+ *
+ * 这和阅读器"深链与恢复位置抢滚动"是同一类坑：**滚动必须发生在布局稳定之后**。
+ * 做法：跳转后开一个**有界**的对齐循环（250ms 一次，最长 6 秒），
+ * 位置偏了就补一次；用户任何真实手势（滚轮 / 触摸 / 按键 / 按下鼠标）立刻停手，绝不跟人抢。
+ */
+const ALIGN_INTERVAL = 250;    // 轮询间隔
+const ALIGN_HOLD_MS = 6000;    // 最长对齐窗口：之后页面爱怎么长都不再动用户的滚动
+const ALIGN_TOLERANCE = 6;     // 偏差容忍（px）
+const pendingAlign = ref('');
+let alignTimer: number | null = null;
+let alignDeadline = 0;
+
+/** 分区落点偏移：**取自样式**（`.sec` 的 `scroll-margin-top`），改导航高度不用回来改 JS。 */
+function sectionOffset(el: HTMLElement): number {
+  const raw = getComputedStyle(el).scrollMarginTop;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** 对齐到某分区的目标滚动位置（页面到底时**夹到最大可滚位置** —— 最后两节本来就够不到顶部）。 */
+function alignTarget(el: HTMLElement): number {
+  const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  const raw = el.getBoundingClientRect().top + window.scrollY - sectionOffset(el);
+  return Math.min(Math.max(0, raw), max);
+}
+
+function scrollToSection(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // 瞬时跳转：平滑滚动会和"内容长出来后纠偏"互相打架（纠偏会打断动画），
+  // 而页内锚点跳转本来就是瞬时的（浏览器原生 `#anchor` 也是）。
+  window.scrollTo({ top: alignTarget(el), behavior: 'auto' });
+}
+
+function stopAlign() {
+  if (alignTimer) { window.clearTimeout(alignTimer); alignTimer = null; }
+  pendingAlign.value = '';
+}
+
+function alignTick() {
+  alignTimer = null;
+  const id = pendingAlign.value;
+  if (!id || Date.now() > alignDeadline) { stopAlign(); return; }
+  const el = document.getElementById(id);
+  if (el) {
+    const want = alignTarget(el);
+    if (Math.abs(window.scrollY - want) > ALIGN_TOLERANCE) {
+      window.scrollTo({ top: want, behavior: 'auto' });
+    }
+  }
+  alignTimer = window.setTimeout(alignTick, ALIGN_INTERVAL);
+}
+
+/** 跳转后登记目标：接下来一段时间内持续纠偏，直到用户自己动手。 */
+function markPending(id: string) {
+  pendingAlign.value = id;
+  alignDeadline = Date.now() + ALIGN_HOLD_MS;
+  if (alignTimer) window.clearTimeout(alignTimer);
+  alignTimer = window.setTimeout(alignTick, ALIGN_INTERVAL);
+}
+
+/** 用户的手势：停掉对齐，并从这一刻起让高亮跟滚动位置走。 */
+function onUserGesture() {
+  userScrolled = true;
+  stopAlign();
+}
+
+/** 点分区：改地址栏的 hash（用 replace，不堆历史）并滚过去。 */
+function go(id: string) {
+  active.value = id;
+  userScrolled = false;          // 这次跳转由我们接管高亮，别让滚动过程改写它
+  if (route.hash !== `#${id}`) void router.replace({ hash: `#${id}` });
+  scrollToSection(id);
+  markPending(id);
+}
+
+/**
+ * 高亮当前分区。
+ *
+ * **只在"用户自己滚"的时候重算**：点药丸 / 深链是**有明确意图**的跳转，滚动过程中
+ * 经过谁就点亮谁的话，落点还没到、高亮已经跳到别人身上了；更糟的是最后两节
+ * （搜索记录 / 系统信息）本来就不可能滚到顶部（后面没有内容了，最多滚到页面底部）——
+ * 那种情况下按位置重算会把"我点的搜索记录"直接改成"系统信息"。
+ */
+let scrollRaf = 0;
+let userScrolled = false;     // 用户自己滚动过才允许位置判定改写高亮
+
+function onScroll() {
+  if (!userScrolled) return;
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    const line = window.scrollY + 126;   // 顶栏 + 悬浮导航 + 一点余量
+    let current = SECTIONS[0].id;
+    for (const s of SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el && el.getBoundingClientRect().top + window.scrollY <= line) current = s.id;
+    }
+    // 滚到底时最后一节可能永远够不到那条线（页面已经不能再滚），直接认它
+    const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+    if (atBottom) current = SECTIONS[SECTIONS.length - 1].id;
+    active.value = current;
+  });
+}
+
+watch(() => route.hash, (hash) => {
+  const id = String(hash || '').replace('#', '');
+  if (!SECTIONS.some((s) => s.id === id)) return;
+  active.value = id;
+  userScrolled = false;
+  void nextTick(() => {
+    scrollToSection(id);
+    markPending(id);
+  });
+});
+
+/* ---------------------------- 表单状态 ---------------------------- */
 
 /** 当前编辑值与「当前生效值」，用于变更检测与撤销。 */
 const form = reactive<SettingsForm>({
@@ -250,6 +402,32 @@ function valueOf(key: string): string {
 onMounted(async () => {
   await load();
   await loadHealthCard();
+  // 深链（/app/settings#kb）：内容按锚点滚过去；首屏不做平滑滚动，避免刚进来就"滑一段"。
+  // 数据还在路上，所以同时 markPending —— 面板 settled 时会再对一次。
+  const id = String(route.hash || '').replace('#', '');
+  if (id && SECTIONS.some((s) => s.id === id)) {
+    active.value = id;
+    userScrolled = false;
+    await nextTick();
+    scrollToSection(id);
+    markPending(id);
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  // 用户一动，就停掉自动对齐（不跟人抢滚动条），高亮也从那一刻起跟位置走
+  window.addEventListener('wheel', onUserGesture, { passive: true });
+  window.addEventListener('touchstart', onUserGesture, { passive: true });
+  window.addEventListener('pointerdown', onUserGesture, { passive: true });
+  window.addEventListener('keydown', onUserGesture);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('scroll', onScroll);
+  window.removeEventListener('wheel', onUserGesture);
+  window.removeEventListener('touchstart', onUserGesture);
+  window.removeEventListener('pointerdown', onUserGesture);
+  window.removeEventListener('keydown', onUserGesture);
+  if (scrollRaf) cancelAnimationFrame(scrollRaf);
+  stopAlign();
 });
 </script>
 
@@ -258,20 +436,21 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1>设置</h1>
-      </div>
-      <div class="grow"></div>
-      <div class="page-actions">
-        <span class="badge warn" v-if="changed.length">
-          有 {{ changed.length }} 项未保存
-        </span>
-        <button class="btn" :disabled="busy || !changed.length" @click="reset">
-          <AppIcon name="refresh" :size="15" />撤销改动
-        </button>
-        <button class="btn primary" :disabled="!canSave" @click="save">
-          <AppIcon name="check" :size="15" />{{ busy ? '保存中…' : '保存设置' }}
-        </button>
+        <div class="sub">参数、知识库索引与搜索记录。带「保存设置」的只有<strong>常规参数</strong>，其余是即时操作。</div>
       </div>
     </div>
+
+    <nav class="sec-nav" aria-label="设置分区">
+      <button
+        v-for="s in SECTIONS"
+        :key="s.id"
+        type="button"
+        :class="{ active: active === s.id }"
+        @click="go(s.id)"
+      >
+        <AppIcon :name="s.icon" :size="14" />{{ s.label }}
+      </button>
+    </nav>
 
     <!-- 首次加载 -->
     <div class="empty card" v-if="loading">正在加载设置…</div>
@@ -285,90 +464,129 @@ onMounted(async () => {
     </div>
 
     <template v-else>
-      <div class="card" v-for="g in GROUPS" :key="g.key">
-        <div class="card-head">{{ g.title }}</div>
-        <div class="card-body">
-          <div class="grid cols-2">
-            <template v-for="f in g.fields" :key="f.key">
-              <label class="field" v-if="f.type === 'number'">
-                <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
-                <input type="number" :min="f.min" v-model.number="form[f.key]" />
-              </label>
-              <label class="field" v-else-if="f.type === 'text'">
-                <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
-                <input type="text" v-model="form[f.key]" placeholder="留空 = mock provider" />
-              </label>
-              <label class="field" v-else>
-                <span class="field-top inline">
-                  <input type="checkbox" v-model="form[f.key]" />
-                  <span>{{ f.label }}</span>
-                  <code class="field-key">{{ f.key }}</code>
-                </span>
-              </label>
-            </template>
-          </div>
-          <p class="tiny faint hint">{{ g.hint }}</p>
+      <!-- ① 常规参数：唯一需要"保存"的一区 -->
+      <section id="general" class="sec">
+        <div class="sec-head">
+          <h2 class="sec-title">常规参数</h2>
+          <span class="badge warn" v-if="changed.length">有 {{ changed.length }} 项未保存</span>
+          <span class="spacer"></span>
+          <button class="btn sm" :disabled="busy || !changed.length" @click="reset">
+            <AppIcon name="refresh" :size="15" />撤销改动
+          </button>
+          <button class="btn primary sm" :disabled="!canSave" @click="save">
+            <AppIcon name="check" :size="15" />{{ busy ? '保存中…' : '保存设置' }}
+          </button>
         </div>
-      </div>
 
-      <div class="grid cols-2" style="margin-top: 14px">
-        <div class="card">
-          <div class="card-head">只读信息（不可编辑）</div>
+        <div class="card" v-for="g in GROUPS" :key="g.key">
+          <div class="card-head">{{ g.title }}</div>
           <div class="card-body">
-            <div class="row small" v-for="r in READONLY_KEYS" :key="r.key">
-              <span class="muted">{{ r.label }}</span>
+            <div class="grid cols-2">
+              <template v-for="f in g.fields" :key="f.key">
+                <label class="field" v-if="f.type === 'number'">
+                  <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
+                  <input type="number" :min="f.min" v-model.number="form[f.key]" />
+                </label>
+                <label class="field" v-else-if="f.type === 'text'">
+                  <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
+                  <input type="text" v-model="form[f.key]" placeholder="留空 = mock provider" />
+                </label>
+                <label class="field" v-else>
+                  <span class="field-top inline">
+                    <input type="checkbox" v-model="form[f.key]" />
+                    <span>{{ f.label }}</span>
+                    <code class="field-key">{{ f.key }}</code>
+                  </span>
+                </label>
+              </template>
+            </div>
+            <p class="tiny faint hint">{{ g.hint }}</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ② 知识库与索引（管理/诊断，即时生效，没有"保存"） -->
+      <section id="kb" class="sec">
+        <div class="sec-head">
+          <h2 class="sec-title">知识库与索引</h2>
+          <span class="tiny faint">建索引、索引状态与 chunk 元数据；知识库页只负责检索与浏览。</span>
+        </div>
+        <KbIndexPanel />
+      </section>
+
+      <!-- ③ 搜索记录（本机 localStorage） -->
+      <section id="history" class="sec">
+        <div class="sec-head">
+          <h2 class="sec-title">搜索记录</h2>
+          <span class="tiny faint">知识库页每次检索记一条，只存在本机浏览器。</span>
+        </div>
+        <SearchHistoryPanel />
+      </section>
+
+      <!-- ④ 系统信息（只读） -->
+      <section id="about" class="sec">
+        <div class="sec-head">
+          <h2 class="sec-title">系统信息</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-head">只读信息（不可编辑）</div>
+            <div class="card-body">
+              <div class="row small" v-for="r in READONLY_KEYS" :key="r.key">
+                <span class="muted">{{ r.label }}</span>
+                <span class="spacer"></span>
+                <span class="mono tiny truncate ro-value" :title="valueOf(r.key)">{{ valueOf(r.key) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              健康检查
               <span class="spacer"></span>
-              <span class="mono tiny truncate ro-value" :title="valueOf(r.key)">{{ valueOf(r.key) }}</span>
+              <button class="btn icon" title="重新检测" @click="loadHealthCard">
+                <AppIcon name="refresh" :size="15" />
+              </button>
+            </div>
+            <div class="card-body">
+              <div class="empty" v-if="!health">检测中…</div>
+              <div class="empty load-error" v-else-if="healthError">健康检查失败：{{ healthError }}</div>
+              <template v-else>
+                <div class="row small">
+                  <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '数据库正常' : '数据库异常' }}</span>
+                  <span class="mono tiny">{{ db.backend || '—' }}</span>
+                  <span class="spacer"></span>
+                  <span class="mono tiny truncate ro-value" :title="String(db.database ?? db.error ?? '')">
+                    {{ db.database || db.error || '' }}
+                  </span>
+                </div>
+                <div class="row small health-row">
+                  <span class="badge" :class="vectorOk ? 'ok' : 'danger'">
+                    {{ vectorOk ? '向量库可用' : '向量库不可用' }}
+                  </span>
+                  <span class="tiny faint">chunk {{ vector.chunks ?? '—' }}</span>
+                  <span class="spacer"></span>
+                  <span class="mono tiny truncate ro-value" :title="String(vector.path ?? vector.error ?? '')">
+                    {{ vector.path || vector.error || '' }}
+                  </span>
+                </div>
+                <div class="row small health-row">
+                  <span class="badge">任务池</span>
+                  <span class="tiny faint">workers {{ runner.workers ?? '—' }}</span>
+                  <span class="tiny faint">运行中 {{ runningText }}</span>
+                  <span class="spacer"></span>
+                  <span class="mono tiny truncate ro-value" :title="queueText">队列 {{ queueText }}</span>
+                </div>
+                <div class="row small health-row">
+                  <span class="badge">数据目录</span>
+                  <span class="spacer"></span>
+                  <span class="mono tiny truncate ro-value" :title="health.data_dir">{{ health.data_dir || '—' }}</span>
+                </div>
+              </template>
             </div>
           </div>
         </div>
-
-        <div class="card">
-          <div class="card-head">
-            健康检查
-            <span class="spacer"></span>
-            <button class="btn icon" title="重新检测" @click="loadHealthCard">
-              <AppIcon name="refresh" :size="15" />
-            </button>
-          </div>
-          <div class="card-body">
-            <div class="empty" v-if="!health">检测中…</div>
-            <div class="empty load-error" v-else-if="healthError">健康检查失败：{{ healthError }}</div>
-            <template v-else>
-              <div class="row small">
-                <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '数据库正常' : '数据库异常' }}</span>
-                <span class="mono tiny">{{ db.backend || '—' }}</span>
-                <span class="spacer"></span>
-                <span class="mono tiny truncate ro-value" :title="String(db.database ?? db.error ?? '')">
-                  {{ db.database || db.error || '' }}
-                </span>
-              </div>
-              <div class="row small health-row">
-                <span class="badge" :class="vectorOk ? 'ok' : 'danger'">
-                  {{ vectorOk ? '向量库可用' : '向量库不可用' }}
-                </span>
-                <span class="tiny faint">chunk {{ vector.chunks ?? '—' }}</span>
-                <span class="spacer"></span>
-                <span class="mono tiny truncate ro-value" :title="String(vector.path ?? vector.error ?? '')">
-                  {{ vector.path || vector.error || '' }}
-                </span>
-              </div>
-              <div class="row small health-row">
-                <span class="badge">任务池</span>
-                <span class="tiny faint">workers {{ runner.workers ?? '—' }}</span>
-                <span class="tiny faint">运行中 {{ runningText }}</span>
-                <span class="spacer"></span>
-                <span class="mono tiny truncate ro-value" :title="queueText">队列 {{ queueText }}</span>
-              </div>
-              <div class="row small health-row">
-                <span class="badge">数据目录</span>
-                <span class="spacer"></span>
-                <span class="mono tiny truncate ro-value" :title="health.data_dir">{{ health.data_dir || '—' }}</span>
-              </div>
-            </template>
-          </div>
-        </div>
-      </div>
+      </section>
     </template>
   </div>
 </template>
@@ -378,6 +596,33 @@ onMounted(async () => {
 .load-error { color: var(--danger); }
 .hint { margin: 10px 0 0; }
 .health-row { margin-top: 8px; }
+
+/**
+ * 分区药丸导航：**吸顶悬浮**（页面很长，滚到下面也要能跳回去）。
+ * `top` 让开顶栏高度；底色必须不透明，否则正文会从底下透出来。
+ */
+.sec-nav {
+  position: sticky; top: calc(var(--header-h) + 8px); z-index: 20;
+  display: inline-flex; align-items: center; gap: 2px; padding: 4px;
+  margin-bottom: 4px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius-ctl); box-shadow: var(--shadow-1);
+}
+.sec-nav button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: calc(var(--control-h-sm) + 2px); padding: 0 12px;
+  border: 0; border-radius: var(--radius-ctl); background: transparent;
+  color: var(--text-dim); font-family: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sec-nav button:hover { background: var(--bg-hover); color: var(--text); }
+.sec-nav button.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+
+/* 分区：标题行 + 内容；锚点落点用 scroll-margin 兜底（浏览器原生滚动也不会被顶栏盖住） */
+.sec { margin-top: 22px; scroll-margin-top: calc(var(--header-h) + 62px); }
+.sec-head { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; flex-wrap: wrap; }
+.sec-title { font-size: 15px; margin: 0; }
 
 /* 表单项：标签与"后端的键名"同一行，键名右对齐靠灰，不再占一整行高度 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
