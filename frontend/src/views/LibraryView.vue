@@ -17,9 +17,15 @@ import AppIcon from '@/components/AppIcon.vue';
 import {
   loadPapers, reportError, state, toast, withLoading,
 } from '@/stores/app';
+import { openTab } from '@/stores/tabs';
 import { fmtRelative, paperStatus } from '@/utils/format';
 
 const router = useRouter();
+
+/** 打开论文 = **开一个新标签页**（`openTab` 负责登记，重复点同一篇只会激活已有标签）。 */
+function openPaper(id: string) {
+  void router.push(openTab({ name: 'reader', params: { paperId: id } }) as never);
+}
 
 /* ------------------------------ 筛选与列表 ------------------------------ */
 
@@ -199,7 +205,7 @@ async function submitImport() {
     importOpen.value = false;
     importForm.file = null;
     await refresh();
-    if (data.reused) router.push({ name: 'reader', params: { paperId: data.id } });
+    if (data.reused) openPaper(data.id);
   } catch (err) {
     reportError(err, '导入失败');
   } finally {
@@ -275,12 +281,19 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 次要操作（重新解析 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
+/** 次要操作（重新翻译 / 重新解析 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
  * 卡片上只留「阅读（主）+ 翻译（次）」两个按钮 —— 翻译与解析**不再并列暴露**（选项 B）：
- * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。 */
+ * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。
+ *
+ * ⚠️ 已译完的论文：**「重新翻译」也收进这里**（用户口径：放到二级界面）—— 译完的卡片上
+ * 只留「阅读」一个一级动作，重译属于"偶尔才做一次、而且会覆盖已有译文"的操作。
+ * 点击时会弹 **HTML 原生 confirm** 二次确认（见 `askRetranslate`）。 */
 function rowMenu(p: Paper): RowAction[] {
   const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
   return [
+    ...(stage(p) === 'translated'
+      ? [{ key: 'retranslate', label: '重新翻译', icon: 'refresh' } as RowAction]
+      : []),
     { key: 'parse', label: '重新解析', icon: 'document', disabled: busy('parse') },
     { key: 'index', label: '建立索引', icon: 'layers', disabled: busy('idx') },
     {
@@ -294,7 +307,20 @@ function rowMenu(p: Paper): RowAction[] {
   ];
 }
 
+/** 重新翻译（忽略已有产物、按页重跑）：用**HTML 原生 confirm** 二次确认（用户口径）。
+ *  删除那条路仍然走站内弹窗（不可逆、还要显示论文名与影响范围）；重译只是"重跑一遍"，
+ *  原生确认足够，也不用为一个确认框维护状态。 */
+function askRetranslate(p: Paper) {
+  const pages = p.translate_total || 0;
+  const ok = window.confirm(
+    `重新翻译《${p.title || p.id}》？\n\n`
+    + `会忽略已有的 ${pages} 页译文，从第 1 页重跑（现有对齐结果会被覆盖）。`);
+  if (!ok) return;
+  void runTranslate(p, 'retranslate');
+}
+
 function onRowAction(p: Paper, key: string) {
+  if (key === 'retranslate') { askRetranslate(p); return; }
   if (key === 'parse') { runParse(p, true); return; }   // 强制重来；不附带翻译（用户得自己点翻译）
   if (key === 'index') { runIndex(p); return; }
   if (key === 'kb') { toggleKb(p); return; }
@@ -446,6 +472,38 @@ function openEdit(paper: Paper) {
   editOpen.value = true;
 }
 
+/* ------------------------------ 自动补全元数据 ------------------------------ */
+/** `''` 空闲 / `'pdf'` 正在离线读 PDF / `'model'` 正在问模型 */
+const metaBusy = ref<'' | 'pdf' | 'model'>('');
+
+/**
+ * 一键补全：先离线读 PDF（会议、年份、摘要、标题都能从首页读出来），
+ * 还有缺的再交给模型（与术语同一次产出，见后端 `metadata_fill`）。
+ * 后端**只填空字段**，所以这个按钮不会覆盖已经填好的值。
+ */
+async function autoMeta(model: boolean) {
+  const p = editTarget.value;
+  if (!p || metaBusy.value) return;
+  metaBusy.value = model ? 'model' : 'pdf';
+  try {
+    const res = await api.post<{ paper: Paper; applied: Record<string, unknown> }>(
+      `/papers/${p.id}/metadata/auto`, { model });
+    const np = res?.paper;
+    if (np) {
+      Object.assign(editForm, {
+        title: np.title || editForm.title,
+        authors: np.authors || editForm.authors,
+        venue: np.venue || editForm.venue,
+        year: np.year === null || np.year === undefined ? editForm.year : String(np.year),
+        tags: (np.tags || []).join(','),
+        abstract: np.abstract || editForm.abstract,
+      });
+    }
+    toast(metaMessage(res) || '已自动补全', 'ok');
+    await refresh();
+  } catch (err) { reportError(err, '自动补全失败'); } finally { metaBusy.value = ''; }
+}
+
 async function submitEdit() {
   const p = editTarget.value;
   if (!p) return;
@@ -552,9 +610,9 @@ async function submitEdit() {
     <div class="paper-cards" v-if="!showLoading && filtered.length">
       <article class="card hoverable paper-card" v-for="p in filtered" :key="p.id">
         <header class="pc-head">
-          <RouterLink class="pc-title" :to="{ name: 'reader', params: { paperId: p.id } }">
+          <button class="pc-title" :title="`在新标签页打开：${p.title}`" @click="openPaper(p.id)">
             {{ p.title }}
-          </RouterLink>
+          </button>
           <span class="badge" :class="cardStatus(p).cls">{{ cardStatus(p).label }}</span>
         </header>
 
@@ -600,10 +658,13 @@ async function submitEdit() {
             <AppIcon name="knowledge" :size="13" />已在知识库
           </span>
           <span class="spacer"></span>
-          <RouterLink class="btn primary sm" :to="{ name: 'reader', params: { paperId: p.id } }">
+          <button class="btn primary sm" title="在新标签页打开阅读器" @click="openPaper(p.id)">
             <AppIcon name="document" :size="14" />阅读
-          </RouterLink>
+          </button>
+          <!-- 译完的论文不再把「重新翻译」摆在一级（用户口径）：它进了「⋯」菜单，
+               卡片上只留「阅读」一个动作。翻译中/未解析的论文照旧给「翻译 / 继续翻译 / 暂停翻译」。 -->
           <button
+            v-if="stage(p) !== 'translated'"
             class="btn sm"
             :disabled="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
             :title="activeTaskOf(p)
@@ -688,7 +749,17 @@ async function submitEdit() {
       <label class="field" style="margin-top: 10px">
         摘要<textarea v-model="editForm.abstract" rows="4"></textarea>
       </label>
+      <div class="tiny faint" style="margin-top: 6px">
+        会议 / 期刊、年份、摘要、标签都可以自动补全：先读 PDF（离线、不花钱），读不出来再交给模型。
+      </div>
       <template #footer>
+        <button class="btn sm" :disabled="!!metaBusy" title="从 PDF 首页读出会议、年份、摘要（离线）" @click="autoMeta(false)">
+          <AppIcon name="sparkle" :size="13" />{{ metaBusy === 'pdf' ? '识别中…' : '从论文识别' }}
+        </button>
+        <button class="btn sm" :disabled="!!metaBusy" title="PDF 里读不出来的字段交给模型判断" @click="autoMeta(true)">
+          <AppIcon name="model" :size="13" />{{ metaBusy === 'model' ? '补全中…' : '模型补全' }}
+        </button>
+        <span class="grow"></span>
         <button class="btn" @click="editOpen = false">取消</button>
         <button class="btn primary" @click="submitEdit">保存</button>
       </template>
@@ -716,10 +787,12 @@ async function submitEdit() {
 .paper-card + .paper-card { margin-top: 0; }
 
 .pc-head { display: flex; align-items: flex-start; gap: 10px; }
+/* 标题现在是 <button>（点一下在新标签页打开阅读器）：外观按**文字**来，
+   只保留"可点 + 键盘可达"。base.css 已把 UA 的按钮盒子重置掉，这里只补字色与光标。 */
 .pc-title {
   flex: 1; min-width: 0;
   color: var(--text); font-weight: 600; font-size: 14.5px; line-height: 1.35;
-  letter-spacing: -.011em; text-wrap: balance;
+  letter-spacing: -.011em; text-wrap: balance; cursor: pointer;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .pc-title:hover { color: var(--accent-text); text-decoration: none; }

@@ -556,6 +556,8 @@ class ParseResult:
     paper_id: str
     title: str = ""
     authors: str = ""
+    # 首页抽出来的摘要原文（元数据用；正文照旧走 block，别拿它当内容源）
+    abstract: str = ""
     page_count: int = 0
     pages: list[PageInfo] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)

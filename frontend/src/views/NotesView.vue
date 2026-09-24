@@ -14,6 +14,7 @@ import type { Annotation, Highlight, Note } from '@/api/types';
 import {
   loadPapers, paperTitle, reportError, state, toast, withLoading,
 } from '@/stores/app';
+import { openTab } from '@/stores/tabs';
 import {
   fmtDate, fmtRelative, truncate,
 } from '@/utils/format';
@@ -127,13 +128,13 @@ function titleOf(paperId?: string | null): string {
   return hit?.paper_title || paperTitle(paperId);
 }
 
-/** 跳回阅读器原文：`{ name: 'reader', params: { paperId }, query: { block } }`。 */
+/** 跳回阅读器原文（**开/激活一个标签页**）：`{ name: 'reader', params, query: { block } }`。 */
 function readerTo(paperId?: string | null, blockId?: string | null) {
-  return {
+  return openTab({
     name: 'reader',
     params: { paperId: paperId ?? '' },
     query: blockId ? { block: blockId } : {},
-  };
+  });
 }
 
 function colorHex(color?: string | null): string {
@@ -519,15 +520,8 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
 </template>
 
 <style scoped>
-/* 高亮色点与高亮文本配色（旧实现里在全局 app.css，这里按页收拢到 scoped）。 */
+/* 高亮色点；**高亮文本的配色在 base.css**（全站唯一来源，正文/Markdown 视图/这里共用）。 */
 .swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); border: 1px solid var(--border-strong); cursor: pointer; }
-
-.hl { border-radius: var(--r-xs); padding: 0 1px; }
-.hl.yellow { background: rgba(255, 214, 64, .45); }
-.hl.green { background: rgba(90, 220, 150, .38); }
-.hl.blue { background: rgba(110, 180, 255, .38); }
-.hl.pink { background: rgba(255, 150, 190, .38); }
-.hl.purple { background: rgba(140, 140, 140, .32); }
 
 /* 卡片底部操作行：主操作（回原文）在左，⋯ 在右，形成一条基线 */
 .note-actions { margin-top: 10px; }

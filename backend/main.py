@@ -191,6 +191,18 @@ def _mount_static(app: FastAPI) -> None:
 
     dist_root = dist.resolve()
 
+    # 缓存策略：**index.html 一律回源校验**（`no-cache` + ETag，命中就是 304，很便宜），
+    # `assets/` 下的文件名带内容哈希，可以长缓存 `immutable`。
+    # 这不是性能优化而是**正确性**：以前 index.html 一条 Cache-Control 都没有，浏览器按
+    # 启发式规则把它缓存住，于是"前端改完、用户刷新看到的还是旧界面"真实发生过
+    # （用户截图里的首页还是旧构建，同一个问题被反复报）。文件名带哈希的 assets 一旦和
+    # index.html 的引用错位，用户就会一直跑旧 bundle，且没有任何报错。
+    _NO_CACHE = {"Cache-Control": "no-cache"}
+    _IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+    def _dist_file(file: Path, path: str = "") -> FileResponse:
+        return FileResponse(file, headers=_IMMUTABLE if path.startswith("assets/") else _NO_CACHE)
+
     @app.get("/app/{path:path}", include_in_schema=False)
     async def _frontend_spa(path: str):
         if path:
@@ -198,14 +210,14 @@ def _mount_static(app: FastAPI) -> None:
             try:
                 candidate.relative_to(dist_root)
             except ValueError:                      # 路径穿越：一律回退到入口
-                return FileResponse(index_file)
+                return _dist_file(index_file)
             if candidate.is_file():
-                return FileResponse(candidate)
+                return _dist_file(candidate, path)
             # 带扩展名的资源（assets/*.js、字体、图片）缺失时应当 404：
             # 返回 index.html 会让浏览器把 HTML 当 JS/CSS 解析，报出更难懂的 MIME 错误。
             if "." in Path(path).name:
                 raise NotFoundError(f"静态资源不存在：{path}")
-        return FileResponse(index_file)
+        return _dist_file(index_file)
 
 
 _BUILD_HINT_HTML = """<!DOCTYPE html>

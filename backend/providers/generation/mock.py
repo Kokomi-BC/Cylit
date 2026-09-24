@@ -338,6 +338,9 @@ def _mock_brief(prompt: str) -> dict:
         "keep_as_is": ["TurboQuant", "QJL", "MSE", "Transformer"],
         "style": "学术论文正文，简洁书面语，公式与符号保留",
         "notes": ["符号 d/b 保持原样", "缩写首次出现可保留英文"],
+        # 元数据与术语同一次产出：mock 只给标签，会议/年份/摘要留给离线抽取
+        "meta": {"venue": "", "year": 0, "tags": ["向量量化", "近似最近邻", "占位标签"],
+                 "abstract_zh": ""},
     }
 
 

@@ -164,6 +164,11 @@ class Formula(Base):
 
 
 # ---------------------------------------------------------------- ⑤ 高亮
+HIGHLIGHT_SIDES = ("en", "zh")
+# 高亮出现的"面"：正文行（锚点 = 行 id） / Markdown 视图（锚点 = `md:p<页号>`）
+HIGHLIGHT_SCOPES = ("row", "markdown")
+
+
 class Highlight(Base):
     __tablename__ = "highlight"
 
@@ -175,6 +180,15 @@ class Highlight(Base):
     start_offset: Mapped[int] = mapped_column(Integer, default=0)
     end_offset: Mapped[int] = mapped_column(Integer, default=0)
     color: Mapped[str] = mapped_column(String(16), default="yellow")
+    # 偏移量是相对**哪一侧**的文本：原文 en / 译文 zh。
+    # 为什么必须存：一行对照里两侧共用同一个 `block_id`，光有偏移量根本分不清
+    # 标的是原文还是译文 —— 原文的高亮会按同样的偏移量画到译文上（实测就是这个 bug）。
+    side: Mapped[str] = mapped_column(String(4), default="en")
+    # 哪个视图里标的：正文行（`block_id` = 行 id）/ Markdown 视图（`block_id` = `md:p<页号>`）
+    scope: Mapped[str] = mapped_column(String(16), default="row")
+    # 一次划词**跨了多行**时会拆成多条记录（每行一条，偏移量各自相对本行），这些记录共用
+    # 同一个 `group_id`：删除时整组一起删，用户眼里就是"一条高亮"。单行高亮为 NULL（老数据同）。
+    group_id: Mapped[str | None] = mapped_column(String(32))
     anchor_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

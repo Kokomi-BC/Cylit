@@ -120,15 +120,20 @@ async def paper_page_image(paper_id: str, page_no: int):
 
 
 @router.get("/papers/{paper_id}/figures/region/{page_no}/{index}")
-async def paper_figure_region(paper_id: str, page_no: int, index: int):
+async def paper_figure_region(paper_id: str, page_no: int, index: int,
+                              card: bool = False):
     """插图裁图（**按图注锚定**重算，600dpi 按需渲染并落盘缓存）。
 
     为什么不用解析阶段切的 figure 裁图：那些裁图会把相邻的另一张图/小标题一起裁进来，
     前端就会看到同一张图出现两次。这里按"紧贴图注的那一簇图块"重新裁剪。
+
+    ``card=1`` 出的是**图表卡片**（图 + 图注合成一张），放大看大图与导出用。
+    同一张图被切成多段（内部夹着别的图注 / 跨页续图）时，各段是**独立的区域下标**，
+    因此段号不需要出现在 URL 里（见 ``figure_regions.media_of_page``）。
     """
     from backend.services.paper import figure_regions
 
-    path = figure_regions.ensure_region_crop(paper_id, page_no, index)
+    path = figure_regions.ensure_region_crop(paper_id, page_no, index, card=card)
     return FileResponse(str(path), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
@@ -196,6 +201,40 @@ async def trigger_translate(paper_id: str, request: Request,
     return envelope(task, message="已创建逐页翻译任务（产线 A）", request=request)
 
 
+@router.post("/papers/{paper_id}/metadata/auto")
+async def auto_metadata(paper_id: str, request: Request,
+                        payload: dict = Body(default={})):
+    """自动补全论文元数据（会议 / 年份 / 标签 / 摘要）。
+
+    - 默认**只读 PDF**（离线、不花钱）：标题/作者/会议/年份/摘要都能从首页读出来；
+    - ``model=true``：仍缺的字段再交给模型（读抽样内容，判断不出就留空）；
+    - ``overwrite=true``：连已有值一起覆盖（默认只填空字段 —— 元数据没有来源标记，
+      覆盖掉用户手改过的值是不可逆的）。
+    """
+    from backend.services.paper import metadata_fill
+
+    report = metadata_fill.auto(
+        paper_id,
+        model=bool(payload.get("model", False)),
+        overwrite=bool(payload.get("overwrite", False)),
+    )
+    applied = report.get("applied") or {}
+    errors = report.get("errors") or []
+    if applied:
+        msg = "已补全：" + "、".join(_META_LABELS.get(k, k) for k in applied)
+    elif errors:
+        # 别把"读取失败"说成"没有可补全的"：扫描件/加密 PDF 走的就是这里
+        msg = "自动补全没成功：" + str(errors[0])[:120]
+    else:
+        msg = "没有可自动补全的字段（论文里读不出来，可试试点「模型补全」）"
+    return envelope(report, message=msg, request=request)
+
+
+# 元数据字段的中文名（只用于回执文案）
+_META_LABELS = {"title": "标题", "authors": "作者", "venue": "会议 / 期刊",
+                "year": "年份", "tags": "标签", "abstract": "摘要"}
+
+
 @router.get("/papers/{paper_id}/brief")
 async def get_brief(paper_id: str, request: Request):
     """文档简报（全文脉络 + 统一术语，注入每次翻译调用）。"""
@@ -217,12 +256,16 @@ async def regenerate_brief(paper_id: str, request: Request,
     if apply:
         current = brief_mod.load_brief(paper_id) or brief_mod.DocumentBrief(
             paper_id=paper_id)
-        if apply.get("domain"):
-            current.domain = apply["domain"]
-        if apply.get("style"):
-            current.style = apply["style"]
-        if apply.get("notes"):
-            current.notes = list(apply["notes"])
+        # 一律用 `is not None` 判存在：编辑界面会**整份**提交，把某个字段清空也是合法修订
+        # （以前用真值判断，"清空领域/要点"会被静默丢掉，用户以为改了其实没改）。
+        if apply.get("domain") is not None:
+            current.domain = str(apply["domain"]).strip()
+        if apply.get("style") is not None:
+            current.style = str(apply["style"]).strip()
+        if apply.get("notes") is not None:
+            current.notes = [str(x) for x in apply["notes"] if str(x).strip()][:6]
+        if apply.get("keep_as_is") is not None:
+            current.keep_as_is = [str(x) for x in apply["keep_as_is"] if str(x).strip()][:20]
         if apply.get("glossary"):
             current.glossary.update({str(k): str(v)
                                      for k, v in apply["glossary"].items()})

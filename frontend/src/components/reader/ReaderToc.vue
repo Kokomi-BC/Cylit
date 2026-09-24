@@ -22,7 +22,6 @@ const props = defineProps<{
   currentRowId: string;
   pageCount: number;
   collapsed: string[];
-  searchHits: Array<{ id: string; page: number; side: string; snippet: string }>;
 }>();
 
 const emit = defineEmits<{
@@ -30,7 +29,6 @@ const emit = defineEmits<{
   (e: 'toggle', rowId: string): void;
   (e: 'collapse-all'): void;
   (e: 'expand-all'): void;
-  (e: 'clear-search'): void;
 }>();
 
 const collapsedSet = computed(() => new Set(props.collapsed));
@@ -92,29 +90,14 @@ const items = computed(() =>
       <span class="pg">p{{ it.row.page }}</span>
     </div>
     <div v-if="!props.rows.length" class="tiny faint" style="padding:8px">未识别到标题结构</div>
-
-    <div v-if="props.searchHits.length" class="hits">
-      <div class="toc-head">
-        <span class="tiny faint">命中 {{ props.searchHits.length }}</span>
-        <span class="spacer" />
-        <button class="btn icon sm" title="清空搜索" @click="emit('clear-search')">
-          <AppIcon name="close" :size="14" />
-        </button>
-      </div>
-      <div v-for="hit in props.searchHits" :key="hit.id" class="toc-item" @click="emit('focus', hit.id)">
-        <span class="caret-space" />
-        <span class="txt">
-          <span class="tiny faint">p{{ hit.page }} · {{ hit.side === 'en' ? '原文' : '译文' }}</span>
-          <span class="tiny truncate">{{ hit.snippet }}</span>
-        </span>
-      </div>
-    </div>
   </div>
 </template>
 
 <style scoped>
 .toc { padding: 6px 6px 32px; height: 100%; overflow-y: auto; overflow-x: hidden; box-sizing: border-box; }
 .toc-head { display: flex; align-items: center; gap: 4px; padding: 3px 6px; }
+/* 搜索命中**不再挂在目录里**：搜索已经独立成侧栏的「搜索」页签（`ReaderSearch`），
+   一份结果放两处既冗余、又会在翻目录时被顶开。 */
 .toc-item {
   display: flex; align-items: flex-start; gap: 3px;
   padding: 4px 6px; border-radius: var(--radius-sm); cursor: pointer;

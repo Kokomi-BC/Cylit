@@ -5,14 +5,17 @@
  * 两侧用同一套排版参数（字号 / 行距 / 内边距），差别只在字体族：
  * 英文用衬线、中文用无衬线 —— 这是"对照时两侧文字观感一致"的关键。
  */
-import { computed } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Highlight, PageRow } from '@/api/types';
-import { htmlWithHighlights } from '@/composables/useMarkdown';
+import { mdToHtml } from '@/composables/useMarkdown';
+import { markRanges, markSearchTerm } from '@/utils/domMarks';
 
 const props = defineProps<{
   row: PageRow;
   side: 'en' | 'zh';
   highlights: Highlight[];
+  /** 搜索词：命中处全部加 `mark.srch`（浏览器 Ctrl+F 那种全量高亮） */
+  searchTerm?: string;
   /** 纯译文模式下：该行还没有译文 */
   missing?: boolean;
   /** 后台正在翻译这篇论文：此时没译文的行显示「等待翻译」而不是「未翻译」 */
@@ -22,10 +25,28 @@ const props = defineProps<{
 }>();
 
 const text = computed(() => (props.side === 'zh' ? props.row.translation : props.row.original));
-const html = computed(() => {
-  const list = (props.highlights ?? []).filter((h) => h.block_id === props.row.id);
-  return htmlWithHighlights(text.value ?? '', list);
-});
+/** 只渲染 Markdown；**高亮在 DOM 上画**（公式按整体标，见 `utils/domMarks.ts`） */
+const html = computed(() => mdToHtml(text.value ?? ''));
+/** 本侧要画的高亮（偏移量相对**渲染后的文字**，公式算 1 个字符） */
+const myMarks = computed(() => (props.highlights ?? [])
+  .filter((h) => h.block_id === props.row.id
+    && (h.scope ?? 'row') === 'row'
+    && (h.side ?? 'en') === props.side)
+  .map((h) => ({ start: h.start, end: h.end, color: h.color, id: h.id, text: h.text })));
+
+/**
+ * 画标记：**先高亮、后搜索命中**（顺序有讲究 —— 重画高亮时会把搜索标记所在的文本拍平，
+ * 所以搜索标记必须最后画）。见 `utils/domMarks.ts`。
+ * `flush: 'post'` + nextTick：等 `v-html` 真正写进 DOM 之后再包，否则会在旧节点上白跑一趟。
+ */
+const body = ref<HTMLElement | null>(null);
+async function paintMarks() {
+  await nextTick();
+  markRanges(body.value, myMarks.value);
+  markSearchTerm(body.value, props.searchTerm ?? '');
+}
+watch([html, myMarks, () => props.searchTerm], () => { void paintMarks(); }, { flush: 'post' });
+onMounted(() => { void paintMarks(); });
 const level = computed(() => (props.row.type === 'heading' ? Math.min(4, Math.max(1, props.row.level || 2)) : 0));
 const isEmpty = computed(() => !String(text.value ?? '').trim());
 /* 跨页的两个徽章（「承上页」「续下页」）**已按用户要求拿掉**：
@@ -46,7 +67,7 @@ const emptyLabel = computed(() => {
              { heading: level > 0, [`lvl-${level}`]: level > 0, empty: isEmpty, compact: props.compact }]"
     :data-side="props.side"
   >
-    <div v-if="html" class="rr-body md" v-html="html" />
+    <div v-if="html" ref="body" class="rr-body md" v-html="html" />
     <div v-else-if="emptyLabel" class="rr-empty">
       {{ emptyLabel }}
     </div>
@@ -93,5 +114,16 @@ const emptyLabel = computed(() => {
   text-align: left;
 }
 .rr-empty { font-size: 1em; color: var(--text-faint); }
+/* `---` 在正文里也不画横线（用户口径：移除分割线），只当一段空白 —— 与 Markdown 视图同一口径 */
+.rr-body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
 .rrow.compact .rr-body { font-size: .96em; line-height: 1.7; }
+/* 搜索命中：全量高亮。用**主题色**而不是黄色 —— 黄/绿/蓝/粉已经被用户高亮占了，
+   主题色一眼就能区分"这是搜索标出来的"；`:deep` 是因为标记是运行时插进 v-html 里的。 */
+.rr-body :deep(mark.srch) {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: inherit; border-radius: 3px; padding: 0 1px;
+}
+/* 搜索命中落在用户高亮里时，两层的底色叠起来会更重，稍微收一点 */
+.rr-body :deep(mark.hl mark.srch) { background: color-mix(in srgb, var(--accent) 34%, transparent); }
 </style>
+

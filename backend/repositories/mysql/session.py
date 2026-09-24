@@ -2,7 +2,7 @@
 
 - 单进程应用，使用全局单例 Engine（pool_pre_ping 防 MySQL 断连）。
 - ``session_scope()`` 提供事务上下文；异常自动回滚。
-- ``init_db()`` 幂等：自动建库（MySQL）+ 建表（12 张业务表）+ 修补历史窄列。
+- ``init_db()`` 幂等：自动建库（MySQL）+ 建表（12 张业务表）+ 修补历史窄列 + 补加后加的列。
 """
 
 from __future__ import annotations
@@ -24,6 +24,14 @@ log = get_logger(__name__)
 _lock = threading.Lock()
 _engine: Engine | None = None
 _session_factory: sessionmaker | None = None
+
+# 后加的列（表名, 列名, ALTER 用的列定义）：`create_all` 不会给既有表补列，见 `ensure_columns`。
+# 默认值必须给，否则老库里的既有行会变成 NULL，读出来就是 None（而不是 'en'/'row'）。
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("highlight", "side", "`side` VARCHAR(4) NOT NULL DEFAULT 'en'"),
+    ("highlight", "scope", "`scope` VARCHAR(16) NOT NULL DEFAULT 'row'"),
+    ("highlight", "group_id", "`group_id` VARCHAR(32) NULL"),
+)
 
 
 def get_engine() -> Engine:
@@ -150,6 +158,29 @@ def repair_column_widths(engine: Engine | None = None) -> list[str]:
     return repaired
 
 
+def ensure_columns(engine: Engine | None = None) -> list[str]:
+    """给历史库**补上后加的列**（MySQL/SQLite 的 ``create_all`` 都不会 ALTER 既有表）。
+
+    目前只有一个：``highlight.side`` / ``highlight.scope``（原文/译文分开存高亮，
+    以及区分"正文行"与"Markdown 视图"两种锚点）。老数据一律按 ``en`` / ``row`` 处理 ——
+    它们的偏移量本来就是照着某一侧的文本记的，只是当时没存这一列。
+    """
+    engine = engine or get_engine()
+    added: list[str] = []
+    inspector = inspect(engine)
+    for table, column, ddl in _ADDED_COLUMNS:
+        if table not in inspector.get_table_names():
+            continue
+        if any(c["name"] == column for c in inspector.get_columns(table)):
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN {ddl}"))
+        added.append(f"{table}.{column}")
+    if added:
+        log.info("已补加历史列：%s", "；".join(added))
+    return added
+
+
 def init_db(drop: bool = False) -> dict:
     """建库建表，可重复执行（规划阶段 05 验收）。"""
     s = get_settings()
@@ -159,10 +190,11 @@ def init_db(drop: bool = False) -> dict:
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     repaired = repair_column_widths(engine)
+    added = ensure_columns(engine)
     tables = sorted(inspect(engine).get_table_names())
     log.info("数据库就绪：%s（%d 张表）", s.db_name if s.db_backend == "mysql"
              else s.database_url, len(tables))
-    return {"backend": s.db_backend, "tables": tables, "repaired": repaired}
+    return {"backend": s.db_backend, "tables": tables, "repaired": repaired, "added": added}
 
 
 def healthcheck() -> dict:

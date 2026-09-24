@@ -8,12 +8,13 @@
 
 from __future__ import annotations
 
+import ast
 import time
 from typing import Any, Iterator
 
 from backend.core.errors import ProviderError, RateLimitError
 from backend.core.logging import get_logger
-from backend.core.utils import json_loads
+from backend.core.utils import json_dumps, json_loads
 from backend.providers.base import GenerationProvider, GenerationResult, ModelInfo
 
 log = get_logger(__name__)
@@ -194,13 +195,19 @@ class OpenAICompatibleGeneration(GenerationProvider):
 
     def structured(self, prompt: str, schema: dict, *, system: str | None = None,
                    **kwargs: Any) -> dict:
-        """要求返回 JSON object；解析失败时返回 ``{}`` 并记录告警。"""
+        """要求返回 JSON object；解析失败时返回 ``{}`` 并记录告警。
+
+        两个踩过的坑都修在这里：
+        1. schema 必须用 ``json.dumps`` 展开 —— 直接 f-string 插 Python 字典会得到**单引号**，
+           模型会照着抄成 ``{'venue': ''}``，``json.loads`` 当场失败（实测一次真实调用就中招）；
+        2. 即便如此，仍用 ``ast.literal_eval`` 兜一层：模型偶尔交回 Python 风格的字典。
+        """
         sys_prompt = (system or "") + (
             "\n\n只输出一个 JSON 对象，不要输出解释或 Markdown 代码块。"
-            f"\nJSON 必须满足以下结构：{schema}"
+            f"\nJSON 必须满足以下结构：{json_dumps(schema)}"
         )
         result = self.generate(prompt, system=sys_prompt.strip(), **kwargs)
-        data = json_loads(_strip_code_fence(result.text), None)
+        data = _loads_loose(_strip_code_fence(result.text))
         if not isinstance(data, dict):
             log.warning("结构化输出解析失败，原始文本前 200 字：%s", result.text[:200])
             return {}
@@ -293,6 +300,17 @@ class OpenAICompatibleGeneration(GenerationProvider):
         if status in (400, 401, 403, 404, 422):
             return ProviderError(f"请求被拒绝（{status}）：{detail}", retryable=False)
         return ProviderError(f"{name}: {detail}", retryable=True)
+
+
+def _loads_loose(text: str) -> Any:
+    """宽松 JSON 解析：先按 JSON 解，失败再用 ``ast.literal_eval`` 兜单引号/Python 字面量。"""
+    data = json_loads(text, None)
+    if data is not None:
+        return data
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
 
 
 def _strip_code_fence(text: str) -> str:

@@ -5,11 +5,11 @@
  * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务（目录由 ReaderToc 负责）。
  * 公式**只读**：来自 Markdown 提取（ReaderFormulaList），不做复核、不分级、不比对裁图。
  */
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import type {
-  Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, ReaderStats, TaskInfo,
+  Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, ReaderStats, TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
@@ -20,6 +20,7 @@ export interface BriefDraft {
   domain: string;
   style: string;
   notes: string;
+  keepAsIsText: string;
   glossaryText: string;
 }
 
@@ -35,17 +36,21 @@ const props = withDefaults(defineProps<{
   figures: FigureItem[];
   glossary: GlossaryTerm[];
   briefDraft: BriefDraft;
+  /** 简报来源（model / manual / cached），只用于视图上的一枚小徽章 */
+  briefSource?: string;
   stats: ReaderStats;
   progressPercent: number;
   activeTask: TaskInfo | null;
-}>(), { formulasLoading: false });
+}>(), { formulasLoading: false, briefSource: '' });
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
   (e: 'copy', text: string): void;
-  (e: 'zoom', url: string): void;
+  (e: 'zoom', target: ZoomTarget): void;
   (e: 'save-brief'): void;
   (e: 'regenerate-brief'): void;
+  /** 取消编辑：让父组件用服务端的简报**重新灌一次草稿**（丢弃本地未保存的改动） */
+  (e: 'reload-brief'): void;
   (e: 'delete-annotation', id: string): void;
   (e: 'delete-note', id: string): void;
   (e: 'cancel-task', task: TaskInfo): void;
@@ -69,6 +74,68 @@ interface MergedItem {
   quote: string;
   contentMd: string;
   at: string | null;
+}
+
+/* ------------------------------ 术语 / 文档简报 ------------------------------ */
+/** 只读是默认态：进页签先看到**内容**，点「编辑」才展开输入框（用户口径）。 */
+const editing = ref(false);
+/** 换页签就退出编辑态，免得切回来还停在半改一半的输入框上。 */
+watch(() => props.tab, () => { editing.value = false; });
+
+const briefSourceLabel = computed(() => {
+  const s = props.briefSource;
+  return s === 'model' ? '模型生成' : s === 'manual' ? '人工修订'
+    : s === 'cached' ? '已有简报' : '';
+});
+/** 简报卡片的左边框色沿用批注/笔记的语义：人工=主题色、模型=绿、其它=中性。 */
+const briefCardClass = computed(() => (
+  props.briefSource === 'manual' ? 'item manual'
+    : props.briefSource === 'model' ? 'item auto' : 'item'));
+/** 视图态判空：只要有任何一段内容就算「有简报」，不要因为 domain 为空就整块空掉。 */
+const hasBrief = computed(() => Boolean(
+  props.briefDraft.domain || props.briefDraft.style
+  || props.briefDraft.notes.trim() || props.briefDraft.keepAsIsText.trim()
+  || props.briefDraft.glossaryText.trim() || props.glossary.length,
+));
+const noteLines = computed(() => props.briefDraft.notes.split('\n').map(s => s.trim()).filter(Boolean));
+const keepLines = computed(() => props.briefDraft.keepAsIsText.split('\n').map(s => s.trim()).filter(Boolean));
+
+/**
+ * 术语表的展示行 = **简报里的统一译法**（就是编辑框里那份）+ IR 术语表，按英文去重。
+ *
+ * 为什么必须合并：只列 IR 术语表时，简报里明明有 20 条统一译法，视图却显示"没有术语"
+ * （用户看到的就是这个）；而编辑框里那些才是真正注入每次翻译 prompt 的那一份。
+ */
+const termRows = computed(() => {
+  const rows: Array<{ en: string; zh: string }> = [];
+  const seen = new Set<string>();
+  for (const line of props.briefDraft.glossaryText.split('\n')) {
+    const [k, ...rest] = line.split('=');
+    const en = (k ?? '').trim();
+    const zh = rest.join('=').trim();
+    if (!en || !zh || seen.has(en)) continue;
+    seen.add(en);
+    rows.push({ en, zh });
+  }
+  for (const t of props.glossary) {
+    const en = String(t.source ?? t.en ?? '').trim();
+    const zh = String(t.target ?? t.zh ?? '').trim();
+    if (!en || seen.has(en)) continue;
+    seen.add(en);
+    rows.push({ en, zh });
+  }
+  return rows;
+});
+
+function startEdit() { editing.value = true; }
+function cancelEdit() {
+  editing.value = false;
+  emit('reload-brief');          // 丢弃本地改动，回到服务端那一份
+}
+/** 保存：先退出编辑态（视图立刻回到排版好的内容），失败时父组件会把草稿退回服务端那版。 */
+function saveNow() {
+  editing.value = false;
+  emit('save-brief');
 }
 
 const merged = computed<MergedItem[]>(() => {
@@ -132,56 +199,128 @@ const merged = computed<MergedItem[]>(() => {
       />
     </template>
 
-    <!-- 插图 -->
+    <!-- 插图：**图注（卡片标题）一行 + 图 + 页码/图号一行**（论文自己就是这么排的）。
+         「定位到图注」跟着**图注标题**走、落在它的右侧：它是"回到正文里这张图的图注"这个动作，
+         属于标题行的一部分，比浮在图片右上角更好找，也不会挡住图。
+         图与"点开看大图"都用后端的「图 + 图注」卡片（`?card=1`）—— 与正文里的图同源，
+         点开就是它的放大版（范围完全一致，用户口径）。 -->
     <template v-if="props.tab === 'figures'">
-      <div v-for="fig in props.figures" :key="fig.block_id" class="item">
-        <div class="row tiny">
-          <span class="badge">p{{ fig.page }}</span>
-          <span v-if="fig.number" class="badge accent">图 {{ fig.number }}</span>
-          <span class="spacer" />
-          <button class="btn icon sm" title="定位到图注" @click="locate(fig.row_id || fig.block_id, fig.page)">
+      <div v-for="fig in props.figures" :key="fig.block_id" class="item fig-card">
+        <div class="fig-head">
+          <div v-if="fig.caption" class="fig-caption">{{ fig.caption }}</div>
+          <span v-else class="spacer" />
+          <button
+            class="btn icon sm fig-locate"
+            title="定位到图注"
+            @click="locate(fig.row_id || fig.block_id, fig.page)"
+          >
             <AppIcon name="locate" :size="13" />
           </button>
         </div>
-        <img
-          v-if="fig.image_url"
-          :src="fig.image_url"
-          class="figure"
-          loading="lazy"
-          :title="fig.caption"
-          @click="emit('zoom', fig.image_url)"
-        >
-        <div class="tiny faint">{{ fig.caption }}</div>
+        <div class="fig-body">
+          <img
+            v-if="fig.image_url"
+            :src="fig.image_url"
+            class="figure"
+            loading="lazy"
+            :title="`${fig.caption || '插图'}（点击看大图）`"
+            @click="emit('zoom', {
+              url: fig.card_url || fig.image_url,
+              caption: fig.caption, page: fig.page, number: fig.number,
+            })"
+          >
+        </div>
+        <div class="row tiny fig-meta">
+          <span class="badge">p{{ fig.page }}</span>
+          <span v-if="fig.part_label" class="badge dim">{{ fig.part_label }}</span>
+          <span class="spacer" />
+          <span v-if="fig.number" class="badge accent">图 {{ fig.number }}</span>
+        </div>
       </div>
       <div v-if="!props.figures.length" class="empty small">没有插图</div>
     </template>
 
-    <!-- 术语 / 文档简报 -->
+    <!-- 术语 / 文档简报：默认**只读**（与页面其它内容同一套排版），点「编辑」才出现输入框。
+         为什么：以前一进这个页签就是四个输入框（领域/风格/要点/术语表），看起来像"永远在编辑态"，
+         既不像页面内容，也容易误改（用户口径：仅在编辑时才显示编辑框，其他时候为正常样式内容）。 -->
     <template v-if="props.tab === 'terms'">
-      <div class="row tiny" style="margin-bottom:6px">
+      <div class="row tiny brief-bar">
         <span class="muted">文档简报</span>
+        <span v-if="briefSourceLabel" class="badge dim">{{ briefSourceLabel }}</span>
         <span class="spacer" />
-        <button class="btn sm" @click="emit('regenerate-brief')">
-          <AppIcon name="refresh" :size="13" />重新生成
-        </button>
-        <button class="btn sm primary" @click="emit('save-brief')">
-          <AppIcon name="check" :size="13" />保存
-        </button>
+        <template v-if="editing">
+          <button class="btn sm" @click="cancelEdit"><AppIcon name="close" :size="13" />取消</button>
+          <button class="btn sm primary" @click="saveNow">
+            <AppIcon name="check" :size="13" />保存
+          </button>
+        </template>
+        <template v-else>
+          <button class="btn sm" title="编辑简报与术语" @click="startEdit">
+            <AppIcon name="edit" :size="13" />编辑
+          </button>
+          <button class="btn sm" title="让模型重读全文，重新生成简报与术语" @click="emit('regenerate-brief')">
+            <AppIcon name="refresh" :size="13" />重新生成
+          </button>
+        </template>
       </div>
-      <label class="field">领域<input v-model="props.briefDraft.domain" placeholder="向量量化 / 近似最近邻"></label>
-      <label class="field" style="margin-top:6px">风格<input v-model="props.briefDraft.style" placeholder="学术、术语统一"></label>
-      <label class="field" style="margin-top:6px">
-        要点（每行一条）
-        <textarea v-model="props.briefDraft.notes" rows="3" />
-      </label>
-      <label class="field" style="margin-top:6px">
-        术语表（每行 <span class="mono">english=中文</span>）
-        <textarea v-model="props.briefDraft.glossaryText" rows="8" />
-      </label>
-      <div v-for="(t, i) in props.glossary.slice(0, 60)" :key="t.source ?? t.en ?? i" class="term-row">
-        <span class="en truncate">{{ t.source ?? t.en }}</span>
-        <span class="zh truncate">{{ t.target ?? t.zh }}</span>
+
+      <!-- 编辑态：只有这里会出现输入框 -->
+      <template v-if="editing">
+        <label class="field">领域<input v-model="props.briefDraft.domain" placeholder="向量量化 / 近似最近邻"></label>
+        <label class="field" style="margin-top:6px">风格<input v-model="props.briefDraft.style" placeholder="学术、术语统一"></label>
+        <label class="field" style="margin-top:6px">
+          要点（每行一条）
+          <textarea v-model="props.briefDraft.notes" rows="3" />
+        </label>
+        <label class="field" style="margin-top:6px">
+          保持英文不译（每行一个）
+          <textarea v-model="props.briefDraft.keepAsIsText" rows="2" />
+        </label>
+        <label class="field" style="margin-top:6px">
+          术语表（每行 <span class="mono">english=中文</span>）
+          <textarea v-model="props.briefDraft.glossaryText" rows="8" />
+        </label>
+      </template>
+
+      <!-- 只读态：和批注/笔记一样是**卡片 + 排版好的内容**（不再是一组表单框） -->
+      <template v-else>
+        <div :class="briefCardClass">
+          <template v-if="hasBrief">
+            <div v-if="props.briefDraft.domain" class="brief-sec">
+              <div class="brief-k">领域</div>
+              <div class="brief-v">{{ props.briefDraft.domain }}</div>
+            </div>
+            <div v-if="props.briefDraft.style" class="brief-sec">
+              <div class="brief-k">风格</div>
+              <div class="brief-v">{{ props.briefDraft.style }}</div>
+            </div>
+            <div v-if="noteLines.length" class="brief-sec">
+              <div class="brief-k">要点</div>
+              <ul class="brief-list"><li v-for="n in noteLines" :key="n">{{ n }}</li></ul>
+            </div>
+            <div v-if="keepLines.length" class="brief-sec last">
+              <div class="brief-k">保持英文不译</div>
+              <div class="brief-chips">
+                <span v-for="k in keepLines" :key="k" class="badge mono">{{ k }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-else class="empty small">
+            还没有简报 —— 点上方「重新生成」，让模型通读全文后给出领域、要点与统一术语。
+          </div>
+        </div>
+      </template>
+
+      <!-- 术语表：编辑态在文本框里改，只读态逐行看（两份来源合并后去重，见 termRows） -->
+      <div class="row tiny brief-terms-head">
+        <span class="muted">术语表</span>
+        <span v-if="termRows.length" class="badge dim">{{ termRows.length }}</span>
       </div>
+      <div v-for="(t, i) in termRows.slice(0, 80)" :key="t.en + i" class="term-row">
+        <span class="en truncate" :title="t.en">{{ t.en }}</span>
+        <span class="zh truncate" :title="t.zh">{{ t.zh }}</span>
+      </div>
+      <div v-if="!termRows.length" class="empty small">没有术语</div>
     </template>
 
     <!-- 任务 + 进度 -->
@@ -237,6 +376,40 @@ const merged = computed<MergedItem[]>(() => {
   max-width: 100%; background: #fff; border-radius: var(--radius-sm);
   margin: 6px 0 2px; cursor: zoom-in;
 }
+/* 插图卡片：图注（=卡片标题）在图上方、页码/图号在图下方一行。
+ * 「定位到图注」在图注**标题行的最右侧**（用户口径；以前浮在图片右上角，会压住图）。
+ * 图注可能换行，所以按钮 `flex:none` 顶部对齐，只跟**首行**同高。 */
+.fig-card { display: flex; flex-direction: column; }
+.fig-head { display: flex; align-items: flex-start; gap: 6px; margin: 0 0 2px; }
+.fig-caption {
+  flex: 1; min-width: 0;
+  font-size: 12px; line-height: 1.5; color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.fig-head .spacer { flex: 1; }
+/* 光学对齐：按钮 26px、图注行盒 18px，上移 4px 后两者的**中心线**才对得上（图标不会看起来偏低）。 */
+.fig-locate { flex: none; margin-top: -4px; color: var(--text-dim); }
+.fig-locate:hover { color: var(--accent-text); }
+.fig-body { display: flex; }
+.fig-body .figure { width: 100%; }
+.fig-meta { margin-top: 2px; gap: 6px; }
+/* 简报：只读态是「小标题 + 正文」的排版（跟侧栏其它内容一致），不是一组表单框。
+   编辑态的输入框由 `.field` 提供样式，两者互斥出现。 */
+.brief-bar { gap: 6px; margin-bottom: 8px; }
+.brief-sec { margin: 0 0 10px; }
+.brief-sec.last { margin-bottom: 0; }
+.brief-k {
+  font-size: 10.5px; color: var(--text-faint); letter-spacing: .04em;
+  text-transform: uppercase; margin-bottom: 2px;
+}
+.brief-v { font-size: 12.5px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.brief-list {
+  margin: 0; padding-left: 16px;
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+}
+.brief-list li { margin: 1px 0; }
+.brief-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.brief-terms-head { margin: 12px 0 2px; gap: 6px; }
 .term-row { display: flex; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--divider); font-size: 12.5px; }
 .term-row .en { flex: 1; font-family: var(--mono); font-size: 12px; }
 .term-row .zh { flex: 1; }

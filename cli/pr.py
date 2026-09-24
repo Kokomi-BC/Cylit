@@ -272,6 +272,68 @@ def cmd_reconcile(args) -> int:
     return 0 if report.get("ok") else 2
 
 
+def cmd_refresh_progress(args) -> int:
+    """按磁盘（页图 + `md/pages.json`）重算论文行的 translate_done/translate_total/status。
+
+    为什么要这个命令：这两个字段是**派生数据**，正常路径由解析 / 翻译任务自己回写；
+    老版本"解析时无条件清零"曾经把它们写坏（卡片显示 0 / 15 而译文其实都在），
+    这里给一个**一次性修复**入口（磁盘是权威，不会误删任何产物）。
+    """
+    from backend.services.paper import paper_service
+
+    if args.paper_id:
+        targets = [args.paper_id]
+        before = {args.paper_id: paper_service.get_paper(args.paper_id)}
+    else:
+        listing = paper_service.list_papers(page_size=1000)["items"]
+        before = {p["id"]: p for p in listing}
+        targets = [p["id"] for p in listing]
+    fixed = 0
+    for pid in targets:
+        row = paper_service.refresh_progress_counters(pid)
+        old = before.get(pid) or {}
+        changed = (old.get("translate_done"), old.get("translate_total"), old.get("status")) != (
+            row["translate_done"], row["translate_total"], row["status"])
+        fixed += 1 if changed else 0
+        print(f"  {'*' if changed else ' '} {pid:<28} {row['status']:<12} "
+              f"翻译 {row['translate_done']}/{row['translate_total']}"
+              + (f"（原 {old.get('translate_done')}/{old.get('translate_total')} "
+                 f"{old.get('status')}）" if changed else "")
+              + f" :: {(row['title'] or '')[:44]}")
+    print(f"共 {len(targets)} 篇，修正 {fixed} 篇")
+    return 0
+
+
+def cmd_metadata_auto(args) -> int:
+    """补全论文元数据（会议 / 年份 / 摘要 / 标题）：先离线读 PDF，`--model` 再补模型那一路。
+
+    为什么要这个命令：元数据以前只有导入/解析两个入口会自动写，历史论文行里
+    「会议 / 期刊」「年份」「摘要」大面积为空；这个入口给它们一次补齐的机会
+    （只填空字段，`--overwrite` 才覆盖已有值）。
+    """
+    from backend.services.paper import metadata_fill, paper_service
+
+    if args.paper_id:
+        targets = [args.paper_id]
+    else:
+        targets = [p["id"] for p in paper_service.list_papers(page_size=1000)["items"]]
+    for pid in targets:
+        report = metadata_fill.auto(pid, model=bool(args.model),
+                                    overwrite=bool(args.overwrite))
+        applied = report.get("applied") or {}
+        paper = report.get("paper") or {}
+        bits = "、".join(f"{k}={str(v)[:40]}" for k, v in applied.items()) or "（无可补全）"
+        print(f"  {pid:<32} {bits}")
+        print(f"      → {(paper.get('title') or '')[:70]}")
+        meta_bits = [paper.get("authors") or "", paper.get("venue") or "",
+                     str(paper.get("year") or ""), "、".join(paper.get("tags") or [])]
+        print(f"        {' · '.join(b for b in meta_bits if b) or '（作者/会议/年份/标签仍为空）'}")
+        for err in report.get("errors") or []:
+            print(f"        ! {err}")
+    print(f"共 {len(targets)} 篇")
+    return 0
+
+
 def cmd_stats(args) -> int:
     from backend.services.knowledge import knowledge_service
     from backend.services.paper import paper_service
@@ -463,6 +525,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("reconcile", help="三存储对账")
     sp.add_argument("paper_id", nargs="?", default=None)
     sp.set_defaults(func=cmd_reconcile)
+
+    sp = sub.add_parser("refresh-progress", help="按磁盘重算论文行的翻译进度（修历史脏数据）")
+    sp.add_argument("paper_id", nargs="?", default=None)
+    sp.set_defaults(func=cmd_refresh_progress)
+
+    sp = sub.add_parser("metadata-auto", help="补全论文元数据（会议/年份/摘要/标题）")
+    sp.add_argument("paper_id", nargs="?", default=None)
+    sp.add_argument("--model", action="store_true", help="PDF 里读不出来的再交给模型")
+    sp.add_argument("--overwrite", action="store_true", help="连已有值一起覆盖（默认只填空）")
+    sp.set_defaults(func=cmd_metadata_auto)
 
     sp = sub.add_parser("stats", help="总览")
     sp.set_defaults(func=cmd_stats)

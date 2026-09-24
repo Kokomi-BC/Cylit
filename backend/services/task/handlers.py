@@ -169,11 +169,37 @@ def _sync_to_mysql(paper_id: str, result) -> None:
             row.status = "parsed"
             row.title = result.title or row.title
             row.authors = result.authors or row.authors
+            # 会议/年份/摘要：**只填空字段**（解析重跑不该覆盖用户手改过的元数据；
+            # 想要强制重填走 `POST /papers/{id}/metadata/auto`）。
+            venue = str(result.stats.get("venue") or "").strip()
+            if venue and not (row.venue or "").strip():
+                row.venue = venue[:128]
+            year = result.stats.get("year")
+            if year and not row.year:
+                row.year = int(year)
+            abstract = (result.abstract or "").strip()
+            if abstract and not (row.abstract or "").strip():
+                row.abstract = abstract[:2000]
             row.page_count = len(result.pages) or row.page_count
             # 翻译是**页级**（唯一粒度）：分母必须是**页数**，不是块数 ——
             # 旧块级时代这里写的是 len(result.blocks)，卡片就会显示「0 / 480」这种假进度（用户报过）。
-            row.translate_total = len(result.pages) or row.translate_total
-            row.translate_done = 0
+            #
+            # ⚠️ 这里**不能**把 translate_done 清零：解析只重建 block/formula（见上面两条 delete），
+            # **不会删掉已译好的页**（`md/pages.json` 与页图都还在）。曾经无条件写 0，于是对一篇
+            # 已译完的论文点一次「解析」，论文库卡片立刻退回「逐页翻译 0 / 15」+「继续翻译」按钮，
+            # 而阅读器里 15 页译文一条不少（用户报过："点击解析后翻译进度清零，实际翻译完成"）。
+            # 正确做法：进度**以磁盘为权威**重新数一遍（与 `translation_stats` 同一套判据），
+            # 论文行状态也一并对齐，别让"已译完"显示成"已解析"。
+            stats = paper_service.translation_stats(paper_id)
+            total = stats["total"] or len(result.pages) or row.translate_total
+            log.info("解析后按磁盘重算进度 %s：done=%s total=%s（本次解析出 %s 页）",
+                     paper_id, stats["done"], total, len(result.pages))
+            row.translate_total = total
+            row.translate_done = stats["done"]
+            if total and stats["done"] >= total:
+                row.status = "translated"
+            elif stats["done"] > 0:
+                row.status = "translating"
             row.parse_summary_json = json_dumps({
                 "counts": result.counts(),
                 "grades": result.grade_distribution(),

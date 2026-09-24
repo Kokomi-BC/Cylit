@@ -10,8 +10,13 @@ from __future__ import annotations
 import pytest
 
 from backend.services.paper.figure_regions import (
-    SEP_PAD, _number_of, _tighten, inject_images,
+    SEP_PAD, _number_of, _parts_of, _snap_edges, _tighten, inject_images,
 )
+from backend.parsing.extract.render import ink_bbox
+from backend.parsing.models import Rect
+
+
+PAGE = Rect(0, 0, 612, 792)
 
 
 def test_tighten_figure_excludes_heading_above():
@@ -67,6 +72,110 @@ def test_number_of_reads_figure_and_table_numbers():
     assert _number_of("**Table 12**: results") == "12"
     assert _number_of("图 5：方差") == "5"
     assert _number_of("no number here") == ""
+
+
+# --------------------------------------------------------------------------
+# 贴边：边界不能"离文字太近"（多截）也不能"离文字太远留白缝"（少截）
+# 真实故障 1（attention p4）：图块 bbox 的 y0=79.7，图题文字块是 [71.2, 81.2]，
+#   出图余量把图题切掉半行 —— 图顶上多一条"被切一半的字"。
+# 真实故障 2（TurboQuant p8）：图 2 的 bbox 底边 229.8，图注顶边 231.0，
+#   只差 1.2pt，裁出来图注顶部被切掉一条。
+# --------------------------------------------------------------------------
+
+
+def test_snap_edges_pushes_top_below_intruding_title():
+    """边界切进图题里 → 推到图题下方（图题不再被切成半行）。"""
+    title = Rect(147.78, 71.2, 450.2, 81.16)
+    out = _snap_edges([171.96, 81.0, 470.01, 273.19], [title], PAGE)
+    assert out[1] == pytest.approx(81.16 + 1.2)
+    assert (out[0], out[2], out[3]) == (171.96, 470.01, 273.19)
+
+
+def test_snap_edges_keeps_top_when_gap_is_safe():
+    """边界在图题下方 1.5pt 以上（安全距离之外）时不动它 —— 免得把图体上沿裁掉。"""
+    title = Rect(147.78, 71.2, 450.2, 81.16)          # 文字块底边 81.16
+    rect = [171.96, 79.69, 470.01, 273.19]            # 79.69 已经比 81.16+TEXT_PAD 低
+    assert _snap_edges(rect, [title], PAGE) == rect
+
+
+def test_snap_edges_pushes_bottom_above_caption():
+    """边界离下方图注不足 TEXT_PAD → 推到图注上方（图注顶部不再被切）。"""
+    caption = Rect(108.0, 231.0, 504.0, 240.96)
+    out = _snap_edges([117.57, 95.8, 494.42, 229.8], [caption], PAGE)
+    assert out[3] == pytest.approx(231.0 - 1.2)
+
+
+def test_snap_edges_ignores_distant_text():
+    """远处正文不该动边界（否则图体 bbox 会被平白推掉一大截）。"""
+    body_para = Rect(108.0, 465.09, 505.66, 540.74)
+    rect = [193.56, 69.0, 418.44, 404.75]
+    assert _snap_edges(rect, [body_para], PAGE) == rect
+
+
+def test_snap_edges_bails_out_when_region_would_collapse():
+    """贴到文字边上会把区域收到最小高度以下 → 保留原边界（宁可多裁一点也不要裁空）。"""
+    caption = Rect(108.0, 60.0, 504.0, 100.5)         # 边界正好切进图注里
+    rect = [104.0, 40.0, 508.0, 100.5]
+    assert _snap_edges(rect, [caption], PAGE) == rect  # 收到 98.8 后只剩 58.8 高 → 放弃贴边
+
+
+# --------------------------------------------------------------------------
+# 一张图截成两份：区域内部夹着别的图注（TurboQuant p8 的 Figure 3 框住了 Figure 2 的图注）
+# --------------------------------------------------------------------------
+
+
+def test_parts_of_splits_at_inner_caption():
+    inner = [{"id": "b02", "type": "caption", "y0": 231.0, "y1": 240.96}]
+    pieces = _parts_of([112.84, 95.8, 499.15, 535.01], inner, PAGE)
+    assert len(pieces) == 2
+    assert pieces[0][0][3] == pytest.approx(231.0 - 1.2)      # 上段止于图注上方
+    assert pieces[1][0][1] == pytest.approx(240.96 + 1.2)     # 下段起于图注下方
+    assert pieces[0][1] is None and pieces[1][1] is None
+
+
+def test_parts_of_keeps_single_piece_without_inner_caption():
+    pieces = _parts_of([117.57, 95.8, 494.42, 229.8],
+                       [{"id": "x", "type": "para", "y0": 231.0, "y1": 241.0}], PAGE)
+    assert pieces == [([117.57, 95.8, 494.42, 229.8], None)]
+
+
+def test_parts_of_marks_tail_touching_page_footer():
+    """图体画到页脚 → 最后一段标记 continues（跨页续图由调用方补下一页的条目）。"""
+    pieces = _parts_of([104.0, 100.0, 508.0, 790.0], [], PAGE)
+    assert len(pieces) == 1 and pieces[0][1] == {"continues": True}
+
+
+# --------------------------------------------------------------------------
+# 墨迹裁白
+# --------------------------------------------------------------------------
+
+
+def test_ink_bbox_trims_white_margin():
+    """按 bbox 裁出来四周的白边要被量掉（TurboQuant p8 右侧近 40% 是空白）。"""
+    import pymupdf as fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    shape = page.new_shape()
+    shape.draw_rect(fitz.Rect(50, 60, 150, 120))
+    shape.finish(color=(0, 0, 0), fill=(0, 0, 0))
+    shape.commit()
+    got = ink_bbox(doc, 1, Rect(0, 0, 200, 200), pad=0.0)
+    assert got.x0 == pytest.approx(50, abs=1.5)
+    assert got.y0 == pytest.approx(60, abs=1.5)
+    assert got.x1 == pytest.approx(150, abs=1.5)
+    assert got.y1 == pytest.approx(120, abs=1.5)
+    doc.close()
+
+
+def test_ink_bbox_returns_input_for_blank_region():
+    import pymupdf as fitz
+
+    doc = fitz.open()
+    doc.new_page(width=200, height=200)
+    rect = Rect(10, 10, 100, 100)
+    assert ink_bbox(doc, 1, rect, pad=0.0) == rect
+    doc.close()
 
 
 # --------------------------------------------------------------------------

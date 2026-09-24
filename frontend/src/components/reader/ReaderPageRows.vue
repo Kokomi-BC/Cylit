@@ -12,7 +12,7 @@
  */
 import { computed } from 'vue';
 import { assetUrl } from '@/api/client';
-import type { Highlight, OriginalMode, PageInfo, PageRow, PairOrder, ViewMode } from '@/api/types';
+import type { Highlight, OriginalMode, PageInfo, PageRow, PairOrder, ViewMode, ZoomTarget } from '@/api/types';
 import type { PageGroup } from '@/composables/usePageRows';
 import AppIcon from '@/components/AppIcon.vue';
 import PdfPage from './PdfPage.vue';
@@ -29,6 +29,10 @@ const props = defineProps<{
   pageWidth: number;
   currentRowId: string;
   highlights: Highlight[];
+  /** 搜索词：命中处全部高亮（见 `utils/searchMarks.ts`） */
+  searchTerm: string;
+  /** 需要"闪一下"提醒的行 id（点搜索命中 / 目录跳转后短暂提示"就是这一块"） */
+  flashRowId: string;
   showRefs: boolean;
   /** 后台正在翻译这篇论文：未译的行显示「等待翻译」而不是「未翻译」 */
   translating: boolean;
@@ -39,7 +43,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'focus', rowId: string): void;
   (e: 'translate-page', page: number): void;
-  (e: 'zoom', url: string): void;
+  (e: 'zoom', target: ZoomTarget): void;
   (e: 'update:showRefs', value: boolean): void;
 }>();
 
@@ -70,7 +74,7 @@ const pageImage = (page: number) => assetUrl(`/api/v1/papers/${props.paperId}/pa
  * 解析前的论文拿不到页信息（`info` 为 null）→ 继续用页图。
  */
 const useRealPdf = (g: PageGroup) => g.info?.has_text_layer === true;
-const rowClass = (id: string) => ({ current: id === props.currentRowId });
+const rowClass = (id: string) => ({ current: id === props.currentRowId, flash: id === props.flashRowId });
 /* 页头原来的「结构对齐」徽章**已按用户要求删除**：它只是在说"模型给的块数与解析器不一致、
  * 走了结构兜底对齐"，人工复核内容并没有问题，白示一个告警只会让人以为译错了。
  * `align` 字段仍在产物与接口里（供自检脚本审计），前端不再展示。 */
@@ -124,6 +128,22 @@ const mediaPlan = computed(() => {
 
 const mediaFor = (rowId: string): Media[] => mediaPlan.value.byRow.get(rowId) ?? [];
 const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [];
+/**
+ * 正文里的插图与"点开看大图"用**同一张**：后端的「图 + 图注」卡片（`?card=1`）。
+ *
+ * 口径返工记录：一开始正文用纯图（`region/N/0`）、放大用卡片，两张图上下范围不一致
+ * （卡片多了图注与外边距）→ 用户反馈"点击查看和在论文内的范围不一致"；
+ * 我先把放大改成纯图，用户又指出**纯图那张才是裁得不好的那张**（贴边、少了图注）——
+ * 所以最终统一到卡片：正文里看到什么，点开就是它的放大版（范围完全一致）。
+ * 实测 5 张图的纯图与卡片图体墨迹范围逐行一致（差 0~34 行 = 重采样误差），
+ * 卡片只是多了图注与外边距，不会丢内容。
+ */
+const zoomUrl = (m: Media) => assetUrl(m.card_url || m.url);
+const figureSrc = (m: Media) => assetUrl(m.card_url || m.url);
+/** 放大目标：URL + **图注**（弹窗标题显示图注，见 `ZoomTarget`）；页码取所在页组 */
+const zoomTarget = (m: Media, page: number): ZoomTarget => ({
+  url: zoomUrl(m), caption: m.caption ?? '', page, number: m.number ?? null,
+});
 </script>
 
 <template>
@@ -192,14 +212,15 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :key="`m-${i}`"
               class="row-figure"
               :title="`${m.caption || '插图'}（点击看大图）`"
-              @click="emit('zoom', assetUrl(m.url))"
+              @click="emit('zoom', zoomTarget(m, g.page))"
             >
-              <img :src="assetUrl(m.url)" :alt="m.caption || '插图'" loading="lazy">
+              <img :src="figureSrc(m)" :alt="m.caption || '插图'" loading="lazy">
             </figure>
             <ReaderRow
               :row="r"
               :side="pageRowSide"
               :highlights="props.highlights"
+              :search-term="props.searchTerm"
               :missing="pageRowSide === 'zh' && !r.translation && !g.translated"
               :pending="props.translating"
             />
@@ -223,9 +244,9 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
             :key="`m-${i}`"
             class="row-figure"
             :title="`${m.caption || '插图'}（点击看大图）`"
-            @click="emit('zoom', assetUrl(m.url))"
+            @click="emit('zoom', zoomTarget(m, g.page))"
           >
-            <img :src="assetUrl(m.url)" :alt="m.caption || '插图'" loading="lazy">
+            <img :src="figureSrc(m)" :alt="m.caption || '插图'" loading="lazy">
           </figure>
 
           <div
@@ -238,6 +259,7 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
               :row="r"
               :side="s"
               :highlights="props.highlights"
+              :search-term="props.searchTerm"
               :missing="s === 'zh' && !r.translation && !g.translated"
               :pending="props.translating"
             />
@@ -250,9 +272,9 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
           :key="`tail-${i}`"
           class="row-figure tail"
           :title="`${m.caption || '插图'}（点击看大图）`"
-          @click="emit('zoom', assetUrl(m.url))"
+          @click="emit('zoom', zoomTarget(m, g.page))"
         >
-          <img :src="assetUrl(m.url)" :alt="m.caption || '插图'" loading="lazy">
+          <img :src="figureSrc(m)" :alt="m.caption || '插图'" loading="lazy">
         </figure>
 
         <div v-if="!g.rows.length" class="empty small">这一页还没有内容</div>
@@ -279,16 +301,23 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
   font-size: var(--reader-font-size, 13.5px);
 }
 
-.pg { margin-bottom: 18px; }
+.pg { margin-bottom: 26px; }
 /* 页头**不吸顶**。
  * 吸顶（position: sticky）会在正文顶部压出一条只放了页码的空带，并把紧跟着的那行
- * 切掉上半截 —— 看起来像一条"莫名的遮罩"。页码是页与页之间的分隔，跟着内容滚动即可。 */
+ * 切掉上半截 —— 看起来像一条"莫名的遮罩"。页码是页与页之间的分隔，跟着内容滚动即可。
+ * **不画下划线**（用户口径）：页码只是一枚很淡的标注，横线纯属噪声。 */
 .pg-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 2px; border-bottom: 1px solid var(--divider);
+  padding: 6px 2px 0;
   font-size: 11.5px; color: var(--text-faint);
 }
 .pg-no { font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* 正文内容**顶部留一点白**（用户口径）：左边是论文页图，页图里自带纸面页边距，
+ * 右边如果贴着页头就开始，两栏顶部一高一低看着突兀；给**右侧 markdown** 下移一点点就顺眼了。
+ * 只给内容列（不包含页图那一列）：`.pg-rows` 是文本对照，`.col-rows` 是"原 PDF 在左"时的右侧。
+ * `:where()` 保持 0 特异性，别干扰下面 `.pg-rows.two-col` 那些布局规则。 */
+:where(.pg-rows, .col-rows) { padding-top: 18px; }
 
 /* 行容器 = 纯排版块，**不带任何装饰**：
    - 不画 border-top 分隔线（之前每块一条横线，密而卙）
@@ -299,6 +328,27 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
    正文不做任何悬浮装饰（行内复制按钮已按用户要求删除），文字本身保持干净。
    "当前行"仍由 ReaderView 的滚动跟踪维护（目录高亮 / j·k 跳转 / 进度保存），只是不画出来。 */
 .row-pair { position: relative; padding: 0 4px; }
+
+/* 「就是这一块」：点搜索命中 / 目录跳过来之后，整行短暂亮一下再淡出。
+ * 用 ::before 覆盖层而不是给行本身上底色 —— 行是纯排版块，改它的 background 会连图片、
+ * 表格一起变色；覆盖层只负责"闪"，且 `pointer-events:none` 不挡点击。
+ * 底色默认就是**可见**的（不是靠动画从 0 淡入）：万一动画没跑（无头浏览器冻结 CSS 动画、
+ * 或者被系统设置关掉），这层照样亮着，1.6s 后由 JS 摘掉类 → 效果依旧成立。 */
+.row-pair.flash::before {
+  content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
+  border-radius: 8px; opacity: .95;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  animation: row-flash 1.5s ease-out forwards;
+}
+@keyframes row-flash {
+  0% { opacity: .95; }
+  60% { opacity: .6; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 尊重系统设置：不做淡出动画，亮着等 JS 摘类即可 */
+  .row-pair.flash::before { animation: none; opacity: .5; }
+}
 
 /* 文本对照：一行两列；两侧只有字体不同，字号/行距完全一致 */
 .pg-rows.two-col .row-pair.two-col {
@@ -317,16 +367,28 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
 .pg-rows:not(.two-col) { max-width: 880px; margin: 0 auto; }
 
 /* 插图：按论文的排法——图在上、图注在下；对照时跨两列，页图模式则占满译文列。
-   点击打开大图（浏览器里"图能看清"和 PDF 一样重要）。 */
+   点击打开大图（浏览器里"图能看清"和 PDF 一样重要）。
+   ⚠️ `.row-figure` 自己必须**跨满两列**：否则它只是两列里的一个 shrink-to-fit 格子，
+   里面的 `max-width: 100%` 会去参考一个"由内容决定的"宽度（循环依赖），实测同一张图
+   一会 780px 一会 483px。 */
 .row-figure {
-  margin: 10px auto 4px; cursor: zoom-in; max-width: 100%;
+  margin: 10px auto 4px; cursor: zoom-in; max-width: 100%; width: 100%;
   display: flex; justify-content: center;
 }
 .row-pair.two-col > .row-figure { grid-column: 1 / -1; }
 .col-rows > .row-pair > .row-figure { max-width: 100%; }
+/* ⚠️ 两条尺寸约束都是**用户口径**：
+   1. `padding` + 白底：后端的裁图是按墨迹裁到边的（没有留白），贴着边看就像"上下被裁掉了"，
+      而点开的大图是"图+图注"卡片（合成时四周留了 12px 白边）—— 两者观感不一致。这里补一圈
+      6px 白边，两边看起来就是同一个范围；`border-radius` 照旧负责圆角裁剪。
+   2. `max-height`：又高又窄的整页插图（比如 attention 的 Figure 1，1834×2699）按列宽铺满会
+      高到要滚好几屏。**同时给 max-width 和 max-height**：浏览器会保持宽高比缩到都满足为止，
+      既不裁也不变形，只是整张图完整地变小（不再"显示过大"）。 */
 .row-figure img {
-  display: block; max-width: min(100%, 780px); height: auto; background: #fff;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  display: block; max-width: min(100%, 780px); height: auto;
+  max-height: min(74vh, 840px);
+  padding: 6px; box-sizing: border-box;
+  background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .row-figure:hover img { border-color: var(--accent); }
 .row-figure.tail { margin: 10px auto 8px; }
@@ -366,3 +428,5 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
   .pg-pair .col-image .media-box { position: static; }
 }
 </style>
+
+

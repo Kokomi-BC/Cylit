@@ -40,11 +40,22 @@ BROWSERS = [
 DESKTOP = "1680,1050"
 NARROW = "900,900"
 ROUTES: list[dict] = [
-    {"name": "library", "path": "/library", "markers": ["论文库", "导入 PDF"]},
+    # 应用外壳：顶栏是**标签条**（不再是主导航）；导航入口在首页
+    # `tab active pinned` = 常驻的「首页」标签确实"当前页 + 常驻"（它不铺填充胶囊，见 TabBar）；
+    # 反过来在别的页面上这个组合**必须不存在**（否则就是"首页一直亮着"那个回归）。
+    {"name": "home", "path": "/home",
+     "markers": ["tab-strip", "nav-card", "继续阅读", "tab active pinned"]},
+    {"name": "library", "path": "/library",
+     "markers": ["论文库", "导入 PDF", "tab-strip"], "absent": ["tab active pinned"]},
     {"name": "reader", "path": "/reader/{paper}",
      "markers": ["reader-toolbar", "side-tabs", "对照", "目录"]},
     {"name": "reader-公式页签", "path": "/reader/{paper}?side=formulas",
      "markers": ["fl-bar", "行间", "katex"]},
+    # 术语页签默认**只读**（用户口径：仅在编辑时才显示编辑框）。编辑态的四个输入框由 `v-if` 控制，
+    # 不在 DOM 里，所以这里用"编辑态独有文案"做负向断言 —— 一旦有人把 v-if 改成 v-show 就会红。
+    {"name": "reader-术语只读", "path": "/reader/{paper}?side=terms",
+     "markers": ["brief-bar", "brief-k", "文档简报", "编辑"],
+     "absent": ["术语表（每行", "保持英文不译（每行", "要点（每行一条"]},
     # 回归：多行 `$$\begin{aligned}…$$`（定界符与内容同行）曾经整块掉成段落、`_` 变 <em>，
     # 断言公式渲染成 KaTeX、且页面里不再残留 `$$`
     {"name": "reader-多行公式", "path": "/reader/{paper}?view=bilingual&left=text&row=p019-08",
@@ -62,6 +73,17 @@ ROUTES: list[dict] = [
      "markers": ["data-row-id", "rrow"]},
     {"name": "reader-窄屏退化", "path": "/reader/{paper}?view=bilingual", "size": NARROW,
      "markers": ["row-pair"], "absent": []},
+    # 搜索：`?q=` 深链直接跑一遍，结果落在侧栏**独立的「搜索」页签**里（命中条目 + 命中词高亮 +
+    # 清空按钮）；工具栏不再有搜索框（负向断言）。命中条数由页签角标表示，面板里不再写状态文案。
+    # `class="srch"` = 正文里**所有**命中都打了高亮标记（不只是当前那一条）。
+    {"name": "reader-搜索", "path": "/reader/{paper}?view=bilingual&q=attention",
+     "markers": ["side-search", "ss-hit", "ss-snippet", "清空搜索", "class=\"srch\""],
+     "absent": ["search-compact"]},
+    # Markdown 视图（`?md=1` 深链直接打开）：工具行 + 正文 +「下载<当前版本>」+ 右上角「全屏」。
+    # `data-md-page="3"` = **整篇一次性渲染**（不再翻页，所以"上一页/下一页"必须不存在）。
+    {"name": "reader-Markdown视图", "path": "/reader/{paper}?md=1",
+     "markers": ["md-doc", "md-bar", "data-md-page=\"3\"", "下载中英对照 Markdown", "全屏"],
+     "absent": ["title=\"上一页\"", "title=\"下一页\""]},
     {"name": "knowledge", "path": "/knowledge", "markers": ["知识库", "chunk"]},
     {"name": "notes", "path": "/notes", "markers": ["笔记", "高亮", "批注"]},
     {"name": "models", "path": "/models", "markers": ["模型", "类型"]},
@@ -156,6 +178,856 @@ f.addEventListener('load', () => setTimeout(() => {
     report(false);
   }
 }, __WAIT__));
+</script>
+"""
+
+
+# 网格卡片几何探针：首页的"圆角矩形"必须一样大。
+# 曾经 `.card + .card { margin-top: 12px }`（本是给竖向堆叠留间距的）在 `.grid` 里也生效，
+# 于是每排第一张卡（前面没有 `.card` 兄弟）被拉伸得比同排高 12px、底部两张卡一高一低。
+# 分组用"竖直重叠"而不是"top 相等"：被 margin 顶下去的卡片会另起一行，用它分行就抓不到这个 bug。
+GRID_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>grid probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:520px;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const f = document.getElementById('f');
+f.addEventListener('load', () => setTimeout(() => {
+  const d = f.contentDocument;
+  const grids = [...d.querySelectorAll('.grid')].map((g) => {
+    const cards = [...g.children].filter((c) => c.classList && c.classList.contains('card'));
+    const boxes = cards.map((c) => {
+      const b = c.getBoundingClientRect();
+      return { w: Math.round(b.width), h: Math.round(b.height),
+               top: Math.round(b.top), bottom: Math.round(b.bottom) };
+    }).sort((a, b) => a.top - b.top);
+    const rows = [];
+    boxes.forEach((b) => {
+      const row = rows[rows.length - 1];
+      if (row && b.top < row.bottom - 1) {
+        row.cards.push(b); row.bottom = Math.max(row.bottom, b.bottom);
+      } else {
+        rows.push({ top: b.top, bottom: b.bottom, cards: [b] });
+      }
+    });
+    return {
+      cls: String(g.className),
+      uniform: g.classList.contains('nav-grid'),   // 这 6 张导航卡结构一致 → 跨排也必须等高
+      rows: rows.map((r) => ({ top: r.top, cards: r.cards.map((c) => ({ w: c.w, h: c.h })) })),
+    };
+  });
+  document.getElementById('out').textContent = JSON.stringify(grids);
+}, __WAIT__));
+</script>
+"""
+
+
+# 多标签页切换探针：两个论文标签之间来回点。
+#
+# 回归点：`RouterView` 曾经没有 `:key`，vue-router 会复用同一个阅读器实例 ——
+# 实例里的数据是挂载那篇论文的，而 `paperId` 读的是"当前路由"，于是切到另一篇的标签后
+# 要么内容不变、要么被轮询进来的另一篇页行**串台**（实测行数 123 → 266 → 211，越切越乱）。
+# 判据用"每个标签每次的正文行数必须一致"，它对串台极敏感，且不依赖任何文案。
+TABS_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>tabs probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:640px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="about:blank"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const A = '__A__', B = '__B__';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+// 预置两个论文标签（同源 localStorage）：这样不必绕论文库，也不会因为点标签丢掉
+// nosse=1（标签会记住自己的 query）而让 headless 被长连接卡住。
+const mk = (id) => ({
+  key: 'reader:paperId=' + id, name: 'reader', params: { paperId: id },
+  query: { nosse: '1' }, title: 'TAB-' + id.slice(0, 6), icon: 'document',
+});
+localStorage.setItem('pm.shell.tabs', JSON.stringify([
+  { key: 'home', name: 'home', params: {}, query: {}, title: '首页', icon: 'home' },
+  mk(B), mk(A),
+]));
+localStorage.setItem('pm.shell.tabs.active', 'reader:paperId=' + A);
+
+const snap = (w, d) => {
+  const rows = [...d.querySelectorAll('[data-row-id]')];
+  const btn = d.querySelector('.btn');
+  return {
+    path: w.location.pathname.replace('/app', ''),
+    rows: rows.length,
+    text: (rows[0] ? rows[0].textContent : '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+    // 触摸高亮：浏览器给可点元素叠的原生灰色遮罩（Chrome 默认 rgba(0,0,0,0.18)）
+    tap: btn ? w.getComputedStyle(btn).webkitTapHighlightColor : '',
+    tapBody: w.getComputedStyle(d.body).webkitTapHighlightColor,
+  };
+};
+
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  const clickTab = (id) => {
+    const el = [...d.querySelectorAll('a.tab')]
+      .find((t) => (t.getAttribute('href') || '').includes(id));
+    if (el) el.click();
+    return !!el;
+  };
+  try {
+    await sleep(__WAIT__);
+    res.a = snap(w, d);
+    res.clickedB = clickTab(B);
+    await sleep(__WAIT__);
+    res.b = snap(w, d);
+    res.clickedA = clickTab(A);
+    await sleep(__WAIT__);
+    res.aAgain = snap(w, d);
+    res.clickedB2 = clickTab(B);
+    await sleep(__WAIT__);
+    res.bAgain = snap(w, d);
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+f.src = location.origin + '/app/reader/' + A + '?nosse=1';
+</script>
+"""
+
+
+# 插图放大探针：点开正文里的第一张插图，看弹窗**标题**。
+#
+# 回归点：标题以前写死成"插图"，看大图时不知道在看哪一张（用户口径：应显示图片标题）。
+# 图注本来就在 Markdown 产物里（`media.caption`，形如 `Figure 3: …`），标题必须来自它；
+# 图注可能很长，所以还要断言"标题被一行截断、关闭按钮没被顶出弹窗"。
+ZOOM_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>zoom probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    await sleep(__WAIT__);
+    const fig = d.querySelector('.row-figure');
+    res.hasFigure = !!fig;
+    res.inlineTitle = (fig?.getAttribute('title') || '').slice(0, 40);
+    fig.click();
+    await sleep(600);
+    const modal = [...d.querySelectorAll('.modal')].find((x) => x.querySelector('.modal-title'));
+    const titleEl = modal.querySelector('.modal-title');
+    const head = modal.querySelector('.modal-head');
+    const closeBtn = [...head.querySelectorAll('button')].find((b) => b.getAttribute('title') === '关闭');
+    // ① 标题本身：必须来自图注（不是写死的"插图"）
+    res.caption = (titleEl.textContent || '').trim();
+    res.tooltip = titleEl.getAttribute('title') || '';
+    res.hasImage = !!modal.querySelector('img');
+    // ② 超长图注（用户截图那种一句话几十上百字）：一行截断，且不把关闭按钮顶出弹窗
+    const long = 'Figure 9: ' + 'long caption text '.repeat(24);
+    titleEl.textContent = long;
+    await sleep(200);
+    const mb = modal.getBoundingClientRect();
+    res.truncated = titleEl.scrollWidth > titleEl.clientWidth + 1;
+    res.textOverflow = w.getComputedStyle(titleEl).textOverflow;
+    res.headFits = head.scrollWidth <= head.clientWidth + 1;
+    res.closeInside = closeBtn.getBoundingClientRect().right <= mb.right + 1;
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+# 高亮分侧探针：在同一行的**原文**与**译文**上各标一条，断言两边互不影响。
+#
+# 回归点两个：
+# 1. 一行对照的两侧共用同一个 `block_id`，只按 block_id 过滤的话原文的高亮会按同样的偏移量
+#    画到译文上（`highlight.side` 就是为它加的）；
+# 2. **点色块必须走真实的鼠标时序**（mousedown → 浏览器默认动作清选区 → mouseup → click）：
+#    以前只写 `@mousedown.stop`，于是 mouseup 时选区已被清掉，`onMouseUp` 把菜单卸载在自己的
+#    click 之前 → 点高亮毫无反应。这里显式模拟"默认动作把选区清掉"，并断言菜单没被卸载。
+#    （只 `swatch.click()` 的合成事件不会触发默认动作，所以那种写法测不出这个 bug。）
+# 探针自己造的高亮在 §⑦ 结尾由 Python 侧删掉（不留垃圾数据）。
+HL_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>highlight probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  const flush = () => out(res);
+  const ev = (type, rect) => new w.MouseEvent(type, {
+    bubbles: true, cancelable: true, clientX: rect.left + 3, clientY: rect.top + 3 });
+  const selectInRow = (side, chars) => {
+    const bodies = [...d.querySelectorAll('[data-row-id] .rrow.side-' + side + ' .rr-body')];
+    for (const body of bodies) {
+      const walker = d.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        const raw = node.nodeValue || '';
+        const at = raw.search(/\\S/);
+        if (at >= 0 && raw.length - at > chars + 4) {
+          const range = d.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + chars);
+          const sel = w.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          const rect = range.getBoundingClientRect();
+          node.parentElement.dispatchEvent(ev('mouseup', rect));
+          return { row: body.closest('[data-row-id]')?.getAttribute('data-row-id'), side, rect };
+        }
+        node = walker.nextNode();
+      }
+    }
+    return null;
+  };
+  /** 真实鼠标点菜单：mousedown → （浏览器默认动作）清选区 → mouseup → click */
+  const clickSwatch = async (cls, rect) => {
+    const menu = d.querySelector('.selection-menu');
+    const swatch = menu && menu.querySelector('.swatch.' + cls);
+    if (!swatch) return { ok: false, reason: '没有色块' };
+    swatch.dispatchEvent(ev('mousedown', rect));
+    w.getSelection().collapseToEnd();          // 模拟默认动作：点菜单会清掉页面选区
+    // mouseup 必须打在**色块自己**身上（真实鼠标就是这样，事件再冒泡到 document）：
+    // 打在 document 上会让 `ev.target` 变成 document，跟真实点击不是一回事
+    swatch.dispatchEvent(ev('mouseup', rect));
+    await sleep(200);
+    const survived = swatch.isConnected;
+    if (!survived) {
+      // 真实浏览器不会把 click 交给已被卸载的元素（target 会变成最近的共同祖先）
+      return { ok: false, reason: '菜单在 click 之前被卸载（点高亮会毫无反应）' };
+    }
+    swatch.dispatchEvent(ev('click', rect));
+    await sleep(1000);
+    return { ok: true };
+  };
+  /* 只认**这一轮探针自己造的**标记：库里本来就有别的用户高亮时，按"总数"断言会误判
+   * （踩过：上一次失败的运行留下两条，导致"原文侧只画原文"变成 2 条）。 */
+  const seen = new Set([...d.querySelectorAll('mark.hl[data-hl]')]
+    .map((m) => m.getAttribute('data-hl')));
+  const fresh = () => {
+    const out = [...d.querySelectorAll('mark.hl[data-hl]')]
+      .map((m) => m.getAttribute('data-hl')).filter((i) => i && !seen.has(i));
+    out.forEach((i) => seen.add(i));       // 认领掉，下一次 fresh() 只报**再新**的
+    return out;
+  };
+  const countIn = (row, side, ids) => [...d.querySelectorAll(
+    '[data-row-id="' + row + '"] .rrow.side-' + side + ' mark.hl[data-hl]')]
+    .filter((m) => ids.includes(m.getAttribute('data-hl'))).length;
+  /** 选中某个元素（可能是含公式的一整段）→ 弹菜单 → 点色块 */
+  const selectElement = async (el, cls) => {    const range = d.createRange();
+    range.selectNodeContents(el);
+    const sel = w.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(ev('mouseup', rect));
+    await sleep(450);
+    const menu = d.querySelector('.selection-menu');
+    if (!menu) return { ok: false, reason: '菜单没出来' };
+    const swatch = menu.querySelector('.swatch.' + cls);
+    if (!swatch) return { ok: false, reason: '没有该色块' };
+    swatch.dispatchEvent(ev('mousedown', rect));
+    w.getSelection().collapseToEnd();
+    swatch.dispatchEvent(ev('mouseup', rect));
+    await sleep(200);
+    if (!swatch.isConnected) return { ok: false, reason: '菜单在 click 前被卸载' };
+    swatch.dispatchEvent(ev('click', rect));
+    await sleep(1100);
+    return { ok: true };
+  };
+  /** 点一个已有高亮 → 菜单应出现「删除高亮」→ 点它 → 返回删前后条数 */
+  const deleteViaMenu = async (mark) => {
+    const rect = mark.getBoundingClientRect();
+    mark.dispatchEvent(new w.MouseEvent('click', {
+      bubbles: true, cancelable: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
+    await sleep(400);
+    const menu = d.querySelector('.selection-menu');
+    const buttons = menu ? [...menu.querySelectorAll('button')]
+      .map((b) => b.textContent.trim()).filter(Boolean) : [];
+    const ban = menu && menu.querySelector('button.danger');
+    const before = d.querySelectorAll('mark.hl[data-hl]').length;
+    if (!ban) return { buttons, before, after: before, ok: false };
+    ban.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await sleep(1300);
+    return { buttons, before, after: d.querySelectorAll('mark.hl[data-hl]').length, ok: true,
+             banIcon: !!ban.querySelector('svg') };
+  };
+  try {
+    await sleep(__WAIT__);
+    const a = selectInRow('en', 10);
+    res.pickEn = a && { row: a.row, side: a.side };
+    await sleep(400);
+    let menu = d.querySelector('.selection-menu');
+    res.menuHasNote = !!(menu && [...menu.querySelectorAll('button')]
+      .find((b) => b.textContent.includes('笔记')));
+    res.clickEn = await clickSwatch('hl-green', a.rect);
+    res.newEn = fresh();
+    res.afterEn = { en: countIn(a.row, 'en', res.newEn), zh: countIn(a.row, 'zh', res.newEn) };
+    const b = selectInRow('zh', 8);
+    res.pickZh = b && { row: b.row, side: b.side };
+    await sleep(400);
+    res.clickZh = await clickSwatch('hl-blue', b.rect);
+    res.newZh = fresh();
+    // "两侧各自独立"看的是**这一刻**该行的全貌（这一轮自己造的两条都在）
+    res.afterZh = { en: countIn(a.row, 'en', [...res.newEn, ...res.newZh]),
+                    zh: countIn(a.row, 'zh', [...res.newEn, ...res.newZh]) };
+    res.sameRow = a.row === b.row;
+    res.ids = {
+      en: res.newEn[0], zh: res.newZh[0],
+    };
+    res.colors = {
+      en: (() => { const m = res.newEn[0]
+        ? d.querySelector('mark.hl[data-hl="' + res.newEn[0] + '"]') : null;
+        return m ? w.getComputedStyle(m).backgroundColor : ''; })(),
+      zh: (() => { const m = res.newZh[0]
+        ? d.querySelector('mark.hl[data-hl="' + res.newZh[0] + '"]') : null;
+        return m ? w.getComputedStyle(m).backgroundColor : ''; })(),
+    };
+    flush();
+
+    // ③ 公式（含跨行的 aligned）：必须整块被 mark 包住，KaTeX 结构不坏
+    const fRow = [...d.querySelectorAll('[data-row-id]')]
+      .find((r) => r.querySelector('.rr-body .katex'));
+    res.hasFormulaRow = !!fRow;
+    if (fRow) {
+      const body = fRow.querySelector('.rr-body');
+      res.formulaClick = await selectElement(body, 'hl-yellow');
+      res.formula = {
+        wrapped: !!fRow.querySelector('mark.hl > .katex, mark.hl > .katex-display'),
+        katexIntact: !!fRow.querySelector('.katex'),
+        marks: fRow.querySelectorAll('mark.hl').length,
+      };
+      res.formulaIds = [...fRow.querySelectorAll('mark.hl[data-hl]')]
+        .map((m) => m.getAttribute('data-hl'));
+    }
+    flush();
+
+    // ③b 多行**显示公式**：底色必须覆盖整块。
+    //     回归点：`mark` 以前套在内层行内 `.katex` 上，而 `.katex-display` 是块级 ——
+    //     浏览器只把底色画在内层那一条行高上，三行公式看起来"只有中间一行被标黄"（用户报过）。
+    const dispEl = [...d.querySelectorAll('[data-row-id] .rr-body .katex-display')]
+      .find((k) => k.getBoundingClientRect().height > 40);
+    res.hasDisp = !!dispEl;
+    if (dispEl) {
+      const dRow = dispEl.closest('[data-row-id]');
+      const before = new Set([...d.querySelectorAll('mark.hl[data-hl]')]
+        .map((m) => m.getAttribute('data-hl')));
+      res.dispClick = await selectElement(dispEl, 'hl-green');
+      const mk = [...dRow.querySelectorAll('mark.hl')].find((m) => m.classList.contains('block'));
+      const dh = dispEl.getBoundingClientRect().height;
+      res.disp = {
+        hasBlockClass: !!mk,
+        markH: mk ? Math.round(mk.getBoundingClientRect().height) : 0,
+        dispH: Math.round(dh),
+        covers: !!mk && mk.getBoundingClientRect().height >= dh * 0.8,
+        wrapped: !!dRow.querySelector('mark.hl > .katex-display'),
+        katexIntact: !!dRow.querySelector('.katex'),
+        ids: [...dRow.querySelectorAll('mark.hl[data-hl]')]
+          .map((m) => m.getAttribute('data-hl')).filter((i) => i && !before.has(i)),
+      };
+      res.formulaIds = [...(res.formulaIds || []), ...res.disp.ids];
+    }
+    flush();
+
+    // ④ 跨行选择：同一侧的相邻两行各选一半 → 两条记录共用一个分组
+    //    → 点其中一条，从菜单删除，两条必须一起消失
+    const textEnds = (el) => {
+      const walker = d.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let n = walker.nextNode(), first = null, last = null;
+      while (n) {
+        // 只取**有实际文字**的节点：末尾的纯空白节点不在偏移量坐标系里（选它等于没选）
+        if ((n.nodeValue || '').trim()) { if (!first) first = n; last = n; }
+        n = walker.nextNode();
+      }
+      return { first, last };
+    };
+    /** 节点属于哪一"列"：pdf / rows:en / rows:zh（与 ReaderView 的 columnOf 同一口径） */
+    const colOf = (node) => {
+      const el = (node && node.nodeType === 3 ? node.parentElement : node);
+      if (!el?.closest) return '';
+      if (el.closest('[data-pdf-page]')) return 'pdf';
+      const side = el.closest('[data-side]');
+      return side ? 'rows:' + side.getAttribute('data-side') : 'rows';
+    };
+    const bodies = [...d.querySelectorAll('[data-row-id] .rrow.side-zh .rr-body')]
+      .filter((x) => (x.textContent || '').trim().length > 40).slice(0, 2);
+    res.hasTwoRows = bodies.length === 2;
+    if (bodies.length === 2) {
+      const a1 = textEnds(bodies[0]), a2 = textEnds(bodies[1]);
+      const range = d.createRange();
+      range.setStart(a1.last, Math.max(0, (a1.last.nodeValue || '').length - 6));
+      range.setEnd(a2.first, Math.min(6, (a2.first.nodeValue || '').length));
+      const sel = w.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      res.crossPicked = bodies.map((b) => b.closest('[data-row-id]')?.getAttribute('data-row-id'));
+      res.crossSelText = (sel.toString() || '').slice(0, 26);
+      const idsBefore = new Set([...d.querySelectorAll('mark.hl[data-hl]')]
+        .map((m) => m.getAttribute('data-hl')));
+      const picked = res.crossPicked || [];
+      const rect = range.getBoundingClientRect();
+      a1.last.parentElement.dispatchEvent(ev('mouseup', rect));
+      await sleep(550);
+      const menu2 = d.querySelector('.selection-menu');
+      const sw = menu2 && menu2.querySelector('.swatch.hl-pink');
+      res.crossMenu = menu2
+        ? [...menu2.querySelectorAll('button')].map((b) => b.textContent.trim()).filter(Boolean) : null;
+      if (sw) {
+        sw.dispatchEvent(ev('mousedown', rect));
+        w.getSelection().collapseToEnd();
+        sw.dispatchEvent(ev('mouseup', rect));
+        await sleep(200);
+        if (sw.isConnected) sw.dispatchEvent(ev('click', rect));
+        await sleep(1400);
+      }
+      // 这次跨行高亮**新造出来的**那几条（按前后差集认，不受前面几步的高亮干扰）
+      const newIds = [...d.querySelectorAll('mark.hl[data-hl]')]
+        .map((m) => m.getAttribute('data-hl')).filter((i) => i && !idsBefore.has(i));
+      const rowEls = [...d.querySelectorAll('[data-row-id]')]
+        .filter((r) => picked.includes(r.getAttribute('data-row-id'))
+          && [...r.querySelectorAll('.rrow.side-zh mark.hl[data-hl]')]
+            .some((m) => newIds.includes(m.getAttribute('data-hl'))));
+      res.crossRow = {
+        rowsWithMarks: rowEls.length,
+        rowIds: rowEls.map((r) => r.getAttribute('data-row-id')),
+        newIds,
+      };
+      const target = newIds.length
+        ? d.querySelector('mark.hl[data-hl="' + newIds[0] + '"]') : null;
+      if (target) res.crossDelete = await deleteViaMenu(target);
+      res.crossRowAfterDelete = newIds.filter((i) => d.querySelector('mark.hl[data-hl="' + i + '"]')).length;
+    }
+
+    // ⑤ 跨列选区必须被夹回本列，而且必须**在拖拽那个任务里**就夹掉：
+    //    只靠异步派发的 `selectionchange`，浏览器可能已经画过一帧跨列底色
+    //    （用户看到的就是"选区还是不独立"）。这里派发一次**真实 mousemove（按住左键）**，
+    //    然后**立刻**读选区 —— 中间不 await，测的就是"同一个任务里有没有夹"。
+    const enBody = d.querySelector('[data-row-id] .rrow.side-en .rr-body');
+    const zhBody = d.querySelector('[data-row-id] .rrow.side-zh .rr-body');
+    if (enBody && zhBody) {
+      const t1 = textEnds(enBody).last, t2 = textEnds(zhBody).first;
+      if (t1 && t2) {
+        enBody.scrollIntoView({ block: 'center' });
+        await sleep(80);
+        const tail = Math.max(0, (t1.nodeValue || '').length - 6);
+        const range = d.createRange();
+        range.setStart(t1, tail);
+        range.setEnd(t2, Math.min(6, (t2.nodeValue || '').length));
+        const sel = w.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        const snap = () => ({ anchor: colOf(sel.anchorNode), focus: colOf(sel.focusNode),
+                              text: (sel.toString() || '').slice(0, 24) });
+        res.crossColumnRaw = snap();
+        // 鼠标放在**锚点那一行的高度**、横向落在译文列里：真实用户拖到对面列就是这样
+        const mark = d.createRange();
+        mark.setStart(t1, tail);
+        mark.setEnd(t1, Math.min(tail + 4, (t1.nodeValue || '').length));
+        const mr = mark.getBoundingClientRect();
+        const zb = zhBody.getBoundingClientRect();
+        const px = Math.round(zb.left + 20);
+        const py = Math.round(mr.top + mr.height / 2);
+        zhBody.dispatchEvent(new w.MouseEvent('mousemove', {
+          bubbles: true, cancelable: true, buttons: 1, clientX: px, clientY: py }));
+        res.crossColumnSync = snap();
+        await sleep(400);                       // 再看异步那一路有没有漏
+        res.crossColumn = snap();
+      }
+    }
+    // ⑥ 纵向拖多行时，选区**必然**从对面列的单元格之间穿过（两列在 DOM 里交错）：
+    //    这时"顺带被圈进来"的对面列高亮**不能**算作选中（菜单里的「删除高亮」只该删本列的）。
+    const twoCol = [...d.querySelectorAll('[data-row-id]')].filter((r) =>
+      r.querySelector('.rrow.side-en .rr-body') && r.querySelector('.rrow.side-zh .rr-body')).slice(0, 3);
+    res.has3Rows = twoCol.length === 3;
+    if (twoCol.length === 3) {
+      // 中间那一行的**原文**上先造一条高亮（粉色；可选色只有 yellow/green/blue/pink）
+      const midEn = twoCol[1].querySelector('.rrow.side-en .rr-body');
+      const mt = textEnds(midEn).first;
+      const mrange = d.createRange();
+      mrange.setStart(mt, 0);
+      mrange.setEnd(mt, Math.min(10, (mt.nodeValue || '').length));
+      const msel = w.getSelection();
+      msel.removeAllRanges();
+      msel.addRange(mrange);
+      const mrect = mrange.getBoundingClientRect();
+      midEn.dispatchEvent(ev('mouseup', mrect));
+      await sleep(420);
+      res.intraClick = await clickSwatch('hl-pink', mrect);
+      const otherIds = [...twoCol[1].querySelectorAll('.rrow.side-en mark.hl[data-hl]')]
+        .map((m) => m.getAttribute('data-hl'));
+      // 再在**译文列**里从第一行拖到最后一行（选区把中间那些原文单元格圈在中间）
+      const z0 = textEnds(twoCol[0].querySelector('.rrow.side-zh .rr-body')).first;
+      const z2 = textEnds(twoCol[2].querySelector('.rrow.side-zh .rr-body')).last;
+      const zr = d.createRange();
+      zr.setStart(z0, 0);
+      zr.setEnd(z2, (z2.nodeValue || '').length);
+      const zsel = w.getSelection();
+      zsel.removeAllRanges();
+      zsel.addRange(zr);
+      const zrect = zr.getBoundingClientRect();
+      const zBody = twoCol[0].querySelector('.rrow.side-zh .rr-body');
+      zBody.dispatchEvent(ev('mouseup', zrect));
+      await sleep(500);
+      const m3 = d.querySelector('.selection-menu');
+      const ban3 = m3 && m3.querySelector('button.danger');
+      const m3rect = m3 ? m3.getBoundingClientRect() : null;
+      const zcellRect = twoCol[0].querySelector('.cell-zh').getBoundingClientRect();
+      res.intra = { rows: twoCol.map((r) => r.getAttribute('data-row-id')),
+                    hasDelete: !!ban3, otherIds,
+                    fixture: !!(res.intraClick || {}).ok,
+                    /* 菜单位置必须落在**本列**（以前拿整段选区的 bbox 定位，纵向跨行时
+                     * bbox 的左边界是对面列 → 菜单跑到左边头上，用户报过"胶囊菜单在左侧"） */
+                    menuX: m3rect ? Math.round(m3rect.left) : null,
+                    zhLeft: Math.round(zcellRect.left),
+                    menuInColumn: !!m3rect && m3rect.left >= zcellRect.left - 4 };
+      /* 松手之后"选区在哪一列"的标记必须**留着**：一摘掉，浏览器立刻把整段连续选区
+       * （中间那些原文单元格）重新涂上底色 —— 用户看到的就是"拖拽时不会到左侧，一松手回到左侧"。 */
+      res.colFlag = {
+        afterUp: { cls: d.documentElement.classList.contains('pm-col-sel'),
+                   col: d.documentElement.getAttribute('data-pm-col') || '' },
+      };
+      if (ban3) {
+        ban3.dispatchEvent(ev('mousedown', zrect));
+        w.getSelection().collapseToEnd();
+        ban3.dispatchEvent(ev('mouseup', zrect));
+        await sleep(150);
+        if (ban3.isConnected) ban3.dispatchEvent(ev('click', zrect));
+        await sleep(1400);
+      }
+      // 对面列那条粉色高亮必须**活着**（说明删除只按本列过滤）
+      res.intraEnAlive = otherIds.length > 0
+        && otherIds.every((i) => !!d.querySelector('mark.hl[data-hl="' + i + '"]'));
+      // 选区一清掉，标记就得摘掉（不然对面列会因为 ::selection 透明而"看着选不中"）
+      w.getSelection().removeAllRanges();
+      await sleep(300);
+      if (res.colFlag) {
+        res.colFlag.afterClear = { cls: d.documentElement.classList.contains('pm-col-sel'),
+                                   col: d.documentElement.getAttribute('data-pm-col') || '' };
+      }
+    }
+
+    // ⑦b 端点是**元素**（在单元格空白处按下、或程序设置选区）时判侧不能默认成原文：
+    //     以前 `closest('[data-side]')` 拿不到就 default 成 en → 菜单跑到左列、复制出原文、
+    //     高亮记到原文侧（"选区在右、结果全在左"的半对半错）。现在判侧统一走 columnOf。
+    const twoColB = [...d.querySelectorAll('[data-row-id]')].filter((r) =>
+      r.querySelector('.rrow.side-zh .rr-body')).slice(0, 3);
+    if (twoColB.length === 3) {
+      const cellZh = twoColB[0].querySelector('.cell-zh');
+      const zEnd = textEnds(twoColB[2].querySelector('.rrow.side-zh .rr-body')).last;
+      if (cellZh && zEnd) {
+        const er2 = d.createRange();
+        er2.setStart(cellZh, 0);                       // ← 锚点是**元素**，不是文字节点
+        er2.setEnd(zEnd, Math.min(12, (zEnd.nodeValue || '').length));
+        const esel = w.getSelection();
+        esel.removeAllRanges();
+        esel.addRange(er2);
+        const erect = er2.getBoundingClientRect();
+        cellZh.dispatchEvent(ev('mouseup', erect));
+        await sleep(500);
+        const emenu = d.querySelector('.selection-menu');
+        const emr = emenu ? emenu.getBoundingClientRect() : null;
+        const ezr = cellZh.getBoundingClientRect();
+        const before2 = new Set([...d.querySelectorAll('mark.hl[data-hl]')]
+          .map((m) => m.getAttribute('data-hl')));
+        const esw = emenu && emenu.querySelector('.swatch.hl-blue');
+        if (esw) {
+          esw.dispatchEvent(ev('mousedown', erect));
+          w.getSelection().collapseToEnd();
+          esw.dispatchEvent(ev('mouseup', erect));
+          await sleep(200);
+          if (esw.isConnected) esw.dispatchEvent(ev('click', erect));
+          await sleep(1400);
+        }
+        const newIds2 = [...d.querySelectorAll('mark.hl[data-hl]')]
+          .map((m) => m.getAttribute('data-hl'))
+          .filter((i) => i && !before2.has(i));
+        res.elemAnchor = {
+          menu: !!emenu,
+          menuInColumn: !!emr && emr.left >= ezr.left - 4,
+          menuX: emr ? Math.round(emr.left) : null, zhLeft: Math.round(ezr.left),
+          zhMarks: countIn(twoColB[0].getAttribute('data-row-id'), 'zh', newIds2),
+          enMarks: countIn(twoColB[0].getAttribute('data-row-id'), 'en', newIds2),
+        };
+        w.getSelection().removeAllRanges();
+        await sleep(250);
+      }
+    }
+
+    // ⑦ 复制：选区跨列时，剪贴板里不能出现对面列的文字（浏览器复制的是整段连续选区）
+    const cEn = d.querySelector('[data-row-id] .rrow.side-en .rr-body');
+    const cZh = d.querySelector('[data-row-id] .rrow.side-zh .rr-body');
+    if (cEn && cZh) {
+      const t1 = textEnds(cEn).last, t2 = textEnds(cZh).first;
+      const cr = d.createRange();
+      cr.setStart(t1, 0);
+      cr.setEnd(t2, (t2.nodeValue || '').length);
+      const csel = w.getSelection();
+      csel.removeAllRanges();
+      csel.addRange(cr);
+      res.copyWholeLen = (csel.toString() || '').length;
+      const dt = new w.DataTransfer();
+      d.dispatchEvent(new w.ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt }));
+      const copied = dt.getData('text/plain') || '';
+      res.copy = { len: copied.length, hasCjk: /[\u4e00-\u9fff]/.test(copied),
+                   head: copied.slice(0, 30) };
+      csel.removeAllRanges();
+    }
+
+    // 收尾：把这一轮探针造的高亮 id 全部报上去（Python 侧统一删干净）
+    res.createdIds = [...d.querySelectorAll('mark.hl[data-hl]')]
+      .map((m) => m.getAttribute('data-hl'));
+    flush();
+  } catch (err) { res.error = String(err); flush(); }
+});
+</script>
+"""
+
+
+# Markdown 视图划词探针（用户报过：那边"两列选区不独立、公式不能高亮"）。
+#
+# 用**逐点扩展选区**模拟真实拖拽（`caretRangeFromPoint` + `setBaseAndExtent`），
+# 因为夹取逻辑是靠 `selectionchange` 起作用的，一次性 `addRange` 反而测不全。
+# 点必须落在**滚动容器的可见区**里：页面很长时随手取元素中心会落到工具栏上，
+# 那样测的就不是内容区了（踩过）。
+MD_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>markdown selection probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  const visible = (r) => r && r.width > 6 && r.height > 5 && r.top > 70 && r.bottom < w.innerHeight - 30;
+  const scrollerOf = (el) => {
+    let p = el?.parentElement;
+    while (p) { const cs = w.getComputedStyle(p);
+      if (/(auto|scroll)/.test(cs.overflowY) && p.clientHeight > 80) return p; p = p.parentElement; }
+    return null;
+  };
+  const insideScroller = (rect, el) => {
+    const sc = scrollerOf(el); if (!sc) return true;
+    const b = sc.getBoundingClientRect();
+    return rect.top >= b.top + 6 && rect.bottom <= b.bottom - 6;
+  };
+  const colOf = (node) => {
+    const el = (node && node.nodeType === 3 ? node.parentElement : node);
+    if (!el?.closest) return '';
+    const md = el.closest('[data-md-side]');
+    return md ? 'md:' + (md.getAttribute('data-md-side') || '?') : 'out';
+  };
+  const pointIn = (el, off = 6) => {
+    if (!el) return null;
+    const walker = d.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let n = walker.nextNode();
+    while (n) {
+      const value = n.nodeValue || '';
+      if (value.trim().length > off + 4) {
+        const r = d.createRange();
+        r.setStart(n, Math.min(off, value.length));
+        r.setEnd(n, Math.min(off + 8, value.length));
+        const rect = r.getBoundingClientRect();
+        if (visible(rect) && insideScroller(rect, el)) {
+          return { x: Math.round(rect.left + 3), y: Math.round(rect.top + rect.height / 2) };
+        }
+      }
+      n = walker.nextNode();
+    }
+    return null;
+  };
+  const firstPoint = (sel) => {
+    for (const el of d.querySelectorAll(sel)) { const p = pointIn(el); if (p) return p; }
+    return null;
+  };
+  const drag = async (from, to, steps = 8) => {
+    const a = d.caretRangeFromPoint(from.x, from.y);
+    if (!a) return false;
+    const s = w.getSelection();
+    s.removeAllRanges(); s.addRange(a);
+    await sleep(60);
+    for (let i = 1; i <= steps; i += 1) {
+      const x = from.x + (to.x - from.x) * i / steps, y = from.y + (to.y - from.y) * i / steps;
+      const r = d.caretRangeFromPoint(x, y);
+      if (!r) continue;
+      try { s.setBaseAndExtent(a.startContainer, a.startOffset, r.startContainer, r.startOffset); }
+      catch (e) { res.dragErr = String(e); }
+      // 每一步都补一次真实 mousemove：应用的夹取在**拖拽的任务里**跑（`dragPoint` 也靠它更新）
+      (d.elementFromPoint(x, y) || d.body).dispatchEvent(new w.MouseEvent('mousemove', {
+        bubbles: true, cancelable: true, buttons: 1, clientX: x, clientY: y }));
+      await sleep(35);
+    }
+    /* 真实鼠标还会派发 mousemove：夹取必须在**同一个任务里**完成（不能等异步的 selectionchange，
+     * 否则浏览器可能已经画过一帧跨面底色）。这里补一次真实 mousemove，然后立刻读选区。 */
+    const el = d.elementFromPoint(to.x, to.y) || d.body;
+    el.dispatchEvent(new w.MouseEvent('mousemove', {
+      bubbles: true, cancelable: true, buttons: 1, clientX: to.x, clientY: to.y }));
+    res.syncs = [...(res.syncs || []), { anchor: colOf(s.anchorNode), focus: colOf(s.focusNode),
+                                         collapsed: s.isCollapsed, len: (s.toString() || '').length }];
+    el.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: to.x, clientY: to.y }));
+    await sleep(450);
+    return true;
+  };
+  try {
+    await sleep(__WAIT__);
+    const doc = d.querySelector('.md-doc');
+
+    // ① 原文面 → 译文面：选区必须被夹回同一面
+    let p1 = null, p2 = null;
+    for (const frac of [0, 0.12, 0.25, 0.38, 0.5, 0.62, 0.75, 0.88, 0.06, 0.19, 0.31, 0.44]) {
+      if (doc && doc.scrollHeight > doc.clientHeight) {
+        doc.scrollTop = Math.round((doc.scrollHeight - doc.clientHeight) * frac);
+        await sleep(150);
+      }
+      p1 = firstPoint('[data-md-side="en"]');
+      p2 = firstPoint('[data-md-side="zh"]');
+      if (p1 && p2) { res.scrollFrac = frac; break; }
+    }
+    res.hasBoth = !!(p1 && p2);
+    if (p1 && p2) {
+      await drag(p1, p2);
+      const s = w.getSelection();
+      res.cross = { anchor: colOf(s.anchorNode), focus: colOf(s.focusNode),
+                    collapsed: s.isCollapsed, text: (s.toString() || '').slice(0, 20) };
+      w.getSelection().removeAllRanges();
+      await sleep(250);
+    }
+
+    // ② 公式：拖过公式 → 菜单应出色块 → 点色块后公式整块被 mark 包住
+    //    优先挑**多行显示公式**（`.katex-display`）：底色必须覆盖整块，不能只黄中间一行。
+    //    整篇 Markdown 很长，显示公式未必在第一屏 —— 逐段滚下去找，找到就用它。
+    let katex = null;
+    const pickDisp = () => [...d.querySelectorAll('[data-md-side] .katex-display')]
+      .find((k) => { const r = k.getBoundingClientRect();
+        return visible(r) && insideScroller(r, k) && r.height > 40; });
+    katex = pickDisp();
+    if (!katex && doc) {
+      for (const frac of [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]) {
+        doc.scrollTop = Math.round((doc.scrollHeight - doc.clientHeight) * frac);
+        await sleep(140);
+        katex = pickDisp();
+        if (katex) break;
+      }
+    }
+    for (const k of (katex ? [] : d.querySelectorAll('[data-md-side] .katex'))) {
+      const r = k.getBoundingClientRect();
+      if (visible(r) && insideScroller(r, k) && r.width > 90) { katex = k; break; }
+    }
+    res.hasFormula = !!katex;
+    res.isDisplay = !!katex && (katex.classList.contains('katex-display')
+      || !!katex.closest('.katex-display'));
+    if (katex) {
+      const r = katex.getBoundingClientRect();
+      await drag({ x: Math.round(r.left + 8), y: Math.round(r.top + r.height / 2) },
+                 { x: Math.round(r.right - 8), y: Math.round(r.top + r.height / 2) }, 6);
+      const menu = d.querySelector('.selection-menu');
+      res.swatches = menu ? menu.querySelectorAll('.swatch').length : 0;
+      const sw = menu && menu.querySelector('.swatch.hl-yellow');
+      if (sw) {
+        const sr = sw.getBoundingClientRect();
+        const at = { x: Math.round(sr.left + sr.width / 2), y: Math.round(sr.top + sr.height / 2) };
+        const mk = (t) => new w.MouseEvent(t, { bubbles: true, cancelable: true, ...at });
+        sw.dispatchEvent(mk('mousedown'));
+        w.getSelection().collapseToEnd();
+        sw.dispatchEvent(mk('mouseup'));
+        await sleep(200);
+        if (sw.isConnected) { sw.dispatchEvent(mk('click')); await sleep(1300); }
+        else res.menuGone = true;
+      }
+      const part = katex.closest('[data-md-side]');
+      const blockMark = part && part.querySelector('mark.hl.block');
+      const disp = katex.classList.contains('katex-display') ? katex : katex.closest('.katex-display');
+      res.formula = {
+        wrapped: !!(part && part.querySelector('mark.hl > .katex, mark.hl .katex')),
+        intact: !!(part && part.querySelector('.katex')),
+        marks: part ? part.querySelectorAll('mark.hl').length : 0,
+        hasBlockClass: !!blockMark,
+        markH: blockMark ? Math.round(blockMark.getBoundingClientRect().height) : 0,
+        dispH: disp ? Math.round(disp.getBoundingClientRect().height) : 0,
+        covers: !!blockMark && !!disp
+          && blockMark.getBoundingClientRect().height >= disp.getBoundingClientRect().height * 0.8,
+      };
+    }
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+# 原 PDF 栏划词菜单探针：那一栏没有块锚点，菜单只该有「AI 解释 / 复制」——
+# **不再有**「原 PDF 栏不支持高亮」那行说明（用户口径：完全移除该字样）。
+#
+# 回归点：那行说明是上一轮加的，用户明确要求移除（菜单里不该出现解释性文案）。
+PDF_MENU_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>pdf menu probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:700px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    await sleep(__WAIT__);
+    /* pdf.js 的文字层是异步渲染的：轮询等它出来，别只 sleep 一个固定时长（早先就是这里没等到） */
+    let spans = [];
+    for (let i = 0; i < 40; i += 1) {
+      spans = [...d.querySelectorAll('.pdf-text-layer span')]
+        .filter((s) => (s.textContent || '').trim().length > 6);
+      if (spans.length) break;
+      await sleep(500);
+    }
+    res.spans = spans.length;
+    if (!spans.length) { out(res); return; }
+    const node = [...spans[0].childNodes].find((n) => n.nodeType === 3);
+    if (!node) { res.noText = true; out(res); return; }
+    const len = (node.nodeValue || '').length;
+    const range = d.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, Math.max(1, Math.min(len, 8)));
+    const sel = w.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const rect = range.getBoundingClientRect();
+    spans[0].dispatchEvent(new w.MouseEvent('mouseup',
+      { bubbles: true, cancelable: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
+    await sleep(450);
+    const menu = d.querySelector('.selection-menu');
+    res.menu = !!menu;
+    if (menu) {
+      res.buttons = [...menu.querySelectorAll('button')].map((b) => b.textContent.trim()).filter(Boolean);
+      res.swatches = menu.querySelectorAll('.swatch').length;
+      res.hasHint = (menu.textContent || '').includes('不支持高亮');
+    }
+    res.bodyHasHint = (d.body.textContent || '').includes('不支持高亮');
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
 </script>
 """
 
@@ -405,6 +1277,406 @@ def main() -> int:
     else:
         print("[SKIP] 需要浏览器与论文数据")
 
+    # ---------------- ④ 网格卡片等高（`.card + .card` 的竖向间距曾经把网格卡片拉歪） ----------------
+    print()
+    print("=" * 78)
+    print("④ 网格卡片等高等宽（首页圆角矩形必须一样大）")
+    print("=" * 78)
+    if browser:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_grid_probe.html"
+        try:
+            probe_file.write_text(
+                GRID_PROBE.replace('__URL__', f"{base}/app/home")
+                .replace('__WAIT__', '6000'), encoding='utf-8')
+            dom = render(browser, f"{base}/app/_grid_probe.html", 25000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            grids = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    grids = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    grids = None
+            if not grids:
+                failures += 1
+                results.append({"kind": "grid", "path": "/home", "ok": False,
+                                "detail": "未取到测量结果"})
+                print("[FAIL] home-grid        未取到测量结果")
+            else:
+                for g in grids:
+                    problems: list[str] = []
+                    for row in g["rows"]:
+                        hs = {c["h"] for c in row["cards"]}
+                        ws = {c["w"] for c in row["cards"]}
+                        if len(row["cards"]) > 1 and (max(hs) - min(hs) > 1 or max(ws) - min(ws) > 1):
+                            problems.append(f"同排 {len(row['cards'])} 张卡尺寸不一：高{sorted(hs)} 宽{sorted(ws)}")
+                    # 同一个网格里跨行的卡片高度也必须一致（首页两行导航卡一样高）
+                    allh = {c["h"] for row in g["rows"] for c in row["cards"]}
+                    if g.get("uniform") and max(allh) - min(allh) > 1:
+                        problems.append(f"网格内卡片高度不一致：{sorted(allh)}")
+                    label = g["cls"] or "(grid)"
+                    ok = not problems
+                    failures += 0 if ok else 1
+                    results.append({"kind": "grid", "path": label, "ok": ok,
+                                    "detail": "同排卡片等高等宽" if ok else "；".join(problems)})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} "
+                          f"{results[-1]['detail']}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器")
+
+    # ---------------- ⑤ 多标签页切论文（实例复用会串台） + 触摸原生遮罩 ----------------
+    print()
+    print("=" * 78)
+    print("⑤ 多标签页切换论文（每个标签的正文必须各归各）")
+    print("=" * 78)
+    other = next((it.get("id") for it in items if it.get("id") and it["id"] != paper), "")
+    if browser and paper and other:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_tabs_probe.html"
+        try:
+            probe_file.write_text(
+                TABS_PROBE.replace('__A__', paper).replace('__B__', other)
+                .replace('__WAIT__', '3400'), encoding='utf-8')
+            dom = render(browser, f"{base}/app/_tabs_probe.html", 34000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data or "a" not in data:
+                failures += 1
+                results.append({"kind": "tabs", "path": "多标签页", "ok": False,
+                                "detail": "未取到测量结果"})
+                print("[FAIL] 多标签页            未取到测量结果")
+            else:
+                base_rows = {"A": data["a"]["rows"], "B": data["b"]["rows"]}
+                checks = [
+                    ("标签A首次", data["a"], None, "A"),
+                    ("标签B首次", data["b"], None, "B"),
+                    ("B→A 切回", data["aAgain"], base_rows["A"], "A"),
+                    ("A→B 切回", data["bAgain"], base_rows["B"], "B"),
+                ]
+                for label, s, expect, who in checks:
+                    problems: list[str] = []
+                    if not s["rows"]:
+                        problems.append("正文没渲染")
+                    if expect is not None and s["rows"] != expect:
+                        problems.append(f"行数变了（{s['rows']} ≠ {expect}）"
+                                        f"：切论文时数据串台")
+                    if who == "A" and s["text"] and s["text"] == data["b"]["text"]:
+                        problems.append("显示的还是另一篇论文")
+                    ok = not problems
+                    failures += 0 if ok else 1
+                    detail = (f"{s['rows']} 行 · {s['text'][:22]}" if ok
+                              else "；".join(problems))
+                    results.append({"kind": "tabs", "path": label, "ok": ok,
+                                    "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+                # 触摸原生灰色遮罩必须已关闭（Chrome 默认 rgba(0, 0, 0, 0.18)）
+                tap = data["a"].get("tap", "")
+                ok = tap in ("rgba(0, 0, 0, 0)", "transparent")
+                failures += 0 if ok else 1
+                results.append({"kind": "tabs", "path": "触摸高亮", "ok": ok,
+                                "detail": f"-webkit-tap-highlight-color = {tap}"})
+                print(f"[{'PASS' if ok else 'FAIL'}] {'触摸原生遮罩':<16} {tap}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与至少两篇论文")
+
+    # ---------------- ⑥ 插图放大：弹窗标题 = 图注（不是写死的"插图"） ----------------
+    print()
+    print("=" * 78)
+    print("⑥ 插图放大（标题必须是图片标题，且长图注不挤坏标题栏）")
+    print("=" * 78)
+    if browser and paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_zoom_probe.html"
+        try:
+            probe_file.write_text(
+                ZOOM_PROBE.replace('__URL__', f"{base}/app/reader/{paper}?view=bilingual&left=text&nosse=1")
+                .replace('__WAIT__', '7000'), encoding='utf-8')
+            dom = render(browser, f"{base}/app/_zoom_probe.html", 25000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data or not data.get("hasFigure"):
+                failures += 1
+                results.append({"kind": "zoom", "path": "插图放大", "ok": False,
+                                "detail": "没有可点开的插图 / 未取到测量结果"})
+                print("[FAIL] 插图放大            没有可点开的插图 / 未取到测量结果")
+            else:
+                caption = str(data.get("caption") or "").strip()
+                checks = [
+                    ("标题=图注", bool(caption) and caption != "插图" and len(caption) >= 8,
+                     f"{len(caption)} 字：{caption[:34]}"),
+                    ("有图片", bool(data.get("hasImage")), "弹窗里有 <img>"),
+                    ("长图注一行截断", bool(data.get("truncated"))
+                     and data.get("textOverflow") == "ellipsis", "省略号截断"),
+                    ("标题栏不溢出", bool(data.get("headFits")) and bool(data.get("closeInside")),
+                     "关闭按钮仍在弹窗内"),
+                ]
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "zoom", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑦ 划词高亮：原文 / 译文分开存 ----------------
+    print()
+    print("=" * 78)
+    print("⑦ 划词高亮（原文与译文各标一条，互不影响）")
+    print("=" * 78)
+    if browser and paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_hl_probe.html"
+        # 探针会**真的往库里写高亮**（自检不该留垃圾）：先记下已有的 id，跑完把新增的删干净。
+        # 只信"跑之前 vs 跑之后"的差集 —— 探针自己报的 id 未必覆盖全部（比如跨行那两条）。
+        def _paper_highlight_ids() -> set[str]:
+            try:
+                _st, body = fetch(f"{base}/api/v1/highlights?paper_id={paper}", timeout=20)
+                return {r["id"] for r in json.loads(body.decode("utf-8"))["data"]["items"]}
+            except Exception:  # noqa: BLE001
+                return set()
+
+        pre_ids = _paper_highlight_ids()
+        try:
+            probe_file.write_text(
+                HL_PROBE.replace('__URL__',
+                                 f"{base}/app/reader/{paper}?view=bilingual&left=text&nosse=1")
+                .replace('__PAPER__', paper)
+                .replace('__WAIT__', '7000'), encoding='utf-8')
+            dom = render(browser, f"{base}/app/_hl_probe.html", 25000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            ids = (data or {}).get("ids") or {}
+            extra = (data or {}).get("formulaIds") or []
+            created = [v for v in list(ids.values()) + list(extra)
+                       + list((data or {}).get("createdIds") or []) if v]
+            created = list(dict.fromkeys(created))
+            if not data or "afterZh" not in data:
+                failures += 1
+                results.append({"kind": "highlight", "path": "划词高亮", "ok": False,
+                                "detail": f"未取到测量结果（探针报错：{(data or {}).get('error')}）"})
+                print(f"[FAIL] 划词高亮            未取到测量结果（探针报错：{(data or {}).get('error')}）")
+            else:
+                if data.get("error"):
+                    # 探针抛错时后面的测量项会整段缺失，直接把原因打出来（不然只看到一堆 None）
+                    print(f"         （探针报错：{data.get('error')}）")
+                cross = data.get("crossRow") or {}
+                formula = data.get("formula") or {}
+                disp = data.get("disp") or {}
+                crossDel = data.get("crossDelete") or {}
+                sync = data.get("crossColumnSync") or {}
+                checks = [
+                    ("点色块真能生效", bool(data.get("clickEn", {}).get("ok"))
+                     and bool(data.get("clickZh", {}).get("ok")),
+                     (data.get("clickEn", {}).get("reason")
+                      or data.get("clickZh", {}).get("reason") or "菜单没在 click 之前被卸载")),
+                    ("原文侧只画原文", data["afterEn"]["en"] == 1 and data["afterEn"]["zh"] == 0,
+                     f"原文 {data['afterEn']['en']} 条 / 译文 {data['afterEn']['zh']} 条"),
+                    ("两侧各自独立", data["afterZh"]["en"] == 1 and data["afterZh"]["zh"] == 1
+                     and bool(data.get("sameRow")),
+                     f"同一行：原文 {data['afterZh']['en']} 条 / 译文 {data['afterZh']['zh']} 条"),
+                    ("颜色真的生效", data["colors"]["en"] != data["colors"]["zh"]
+                     and "rgba" in data["colors"]["en"],
+                     f"{data['colors']['en']} vs {data['colors']['zh']}"),
+                    ("公式能整体高亮", bool(formula.get("wrapped")) and bool(formula.get("katexIntact"))
+                     and (formula.get("marks") or 0) >= 1
+                     and bool((data.get("formulaClick") or {}).get("ok")),
+                     f"整块包住 katex={formula.get('wrapped')}，公式结构完好={formula.get('katexIntact')}，"
+                     f"{formula.get('marks')} 段"),
+                    ("多行公式底色覆盖整块", bool(disp.get("covers")) and bool(disp.get("hasBlockClass")),
+                     f"mark 高 {disp.get('markH')}px / 公式块高 {disp.get('dispH')}px，"
+                     f"block 类={disp.get('hasBlockClass')}（点色块={bool((data.get('dispClick') or {}).get('ok'))}）"),
+                    ("跨行选择分成同组多条", cross.get("rowsWithMarks") == 2
+                     and len(cross.get("rowIds") or []) == 2,
+                     f"选中 {data.get('crossPicked')}（{data.get('crossSelText')}）→ "
+                     f"命中 {cross.get('rowsWithMarks')} 行：{cross.get('rowIds')}"),
+                    ("菜单删除整条高亮", bool(crossDel.get("ok"))
+                     and (cross.get("newIds") or []) != []
+                     and data.get("crossRowAfterDelete") == 0,
+                     f"菜单项 {crossDel.get('buttons')}；这次新造 {len(cross.get('newIds') or [])} 段 → "
+                     f"删后还剩 {data.get('crossRowAfterDelete')} 段"),
+                    ("正文行仍可写笔记", bool(data.get("menuHasNote")), "菜单里有「笔记」"),
+                    ("拖拽当帧即夹回本列", bool(sync.get("anchor")) and sync.get("anchor") == sync.get("focus"),
+                     f"跨列原始选区 {data.get('crossColumnRaw')} → 同一次 mousemove 内已夹成 {sync}"),
+                    ("跨列选区最终仍在本列", bool((data.get("crossColumn") or {}).get("anchor"))
+                     and (data.get("crossColumn") or {}).get("anchor")
+                     == (data.get("crossColumn") or {}).get("focus"),
+                     f"原文列→译文列拖选后停在 {data.get('crossColumn')}"),
+                    ("纵向跨行的对面列高亮不算选中", bool((data.get("intra") or {}).get("fixture"))
+                     and bool((data.get("intra") or {}).get("hasDelete"))
+                     and bool(data.get("intraEnAlive")),
+                     f"译文列里跨 {len((data.get('intra') or {}).get('rows') or [])} 行选择 → "
+                     f"对面列造的 fixture={((data.get('intra') or {}).get('otherIds'))}"
+                     f"（点色块={(data.get('intraClick') or {}).get('ok')}），"
+                     f"菜单有删除={((data.get('intra') or {}).get('hasDelete'))}，"
+                     f"删完后对面列那条仍在={data.get('intraEnAlive')}"),
+                    ("复制只带本列文字", (data.get("copy") or {}).get("hasCjk") is False
+                     and 0 < ((data.get("copy") or {}).get("len") or 0)
+                     < (data.get("copyWholeLen") or 0),
+                     f"整段选区 {data.get('copyWholeLen')} 字 → 剪贴板 "
+                     f"{(data.get('copy') or {}).get('len')} 字"
+                     f"（含中文={((data.get('copy') or {}).get('hasCjk'))}）"),
+                    ("松手后不发白对面列（标记跟着选区）",
+                     bool((data.get("colFlag") or {}).get("afterUp", {}).get("cls"))
+                     and (data.get("colFlag") or {}).get("afterUp", {}).get("col") == "zh"
+                     and (data.get("colFlag") or {}).get("afterClear", {}).get("cls") is False,
+                     f"松手后 {((data.get('colFlag') or {}).get('afterUp'))} → "
+                     f"清空选区后 {((data.get('colFlag') or {}).get('afterClear'))}"),
+                    ("胶囊菜单落在本列（不是对面列）", bool((data.get("intra") or {}).get("menuInColumn")),
+                     f"菜单 x={((data.get('intra') or {}).get('menuX'))}，"
+                     f"译文列 left={((data.get('intra') or {}).get('zhLeft'))}"),
+                    ("端点是元素时判侧仍正确", bool((data.get("elemAnchor") or {}).get("menuInColumn"))
+                     and ((data.get("elemAnchor") or {}).get("zhMarks") or 0) >= 1
+                     and ((data.get("elemAnchor") or {}).get("enMarks") or 0) == 0,
+                     f"元素锚点：菜单 x={((data.get('elemAnchor') or {}).get('menuX'))}"
+                     f"（译文列 left={((data.get('elemAnchor') or {}).get('zhLeft'))}），"
+                     f"新造高亮 译文={((data.get('elemAnchor') or {}).get('zhMarks'))} / "
+                     f"原文={((data.get('elemAnchor') or {}).get('enMarks'))}"),
+                ]
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "highlight", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+            # 探针造的高亮**自己删掉**：自检不该往用户库里留垃圾。
+            # 按"跑之前 vs 跑之后"的差集删，比只信探针报上来的 id 靠谱（跨行那两条探针不报）。
+            leftovers = sorted(_paper_highlight_ids() - pre_ids)
+            for hid in leftovers:
+                try:
+                    req = urllib.request.Request(f"{base}/api/v1/highlights/{hid}", method="DELETE")
+                    urllib.request.urlopen(req, timeout=15).read()
+                except Exception:  # noqa: BLE001
+                    pass
+            if leftovers:
+                print(f"         （已清理探针造的 {len(leftovers)} 条高亮）")
+    else:
+        print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑧ Markdown 视图划词：两列独立 + 公式能整体高亮 ----------------
+    print()
+    print("=" * 78)
+    print("⑧ Markdown 视图划词（原文/译文两面独立；公式能整体高亮）")
+    print("=" * 78)
+    if browser and paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_md_probe.html"
+        pre_ids = _paper_highlight_ids()
+        try:
+            probe_file.write_text(
+                MD_PROBE.replace('__URL__', f"{base}/app/reader/{paper}?md=1&nosse=1")
+                .replace('__WAIT__', '7000'), encoding='utf-8')
+            dom = render(browser, f"{base}/app/_md_probe.html", 26000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data or "hasBoth" not in data:
+                failures += 1
+                results.append({"kind": "md-select", "path": "Markdown 视图划词", "ok": False,
+                                "detail": "未取到测量结果"})
+                print("[FAIL] Markdown 划词      未取到测量结果")
+            else:
+                cross = data.get("cross") or {}
+                formula = data.get("formula") or {}
+                syncs = data.get("syncs") or []
+                checks = [
+                    ("两面选区互不串", bool(cross.get("anchor")) and cross.get("anchor") == cross.get("focus"),
+                     f"原文面→译文面拖选后停在 {cross}"),
+                    ("拖拽当帧即夹回同面", bool(syncs) and all(
+                        s.get("anchor") and s.get("anchor") == s.get("focus") for s in syncs),
+                     f"每次 mousemove 之后：{syncs}"),
+                    ("公式能整体高亮", bool(formula.get("wrapped")) and bool(formula.get("intact"))
+                     and (formula.get("marks") or 0) >= 1,
+                     f"包住 katex={formula.get('wrapped')}，结构完好={formula.get('intact')}，"
+                     f"{formula.get('marks')} 段（色块 {data.get('swatches')} 个）"),
+                    ("多行公式底色覆盖整块", bool(formula.get("covers")) and bool(formula.get("hasBlockClass")),
+                     f"mark 高 {formula.get('markH')}px / 公式块高 {formula.get('dispH')}px，"
+                     f"block 类={formula.get('hasBlockClass')}（显示公式={data.get('isDisplay')}）"),
+                ]
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "md-select", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+            for hid in sorted(_paper_highlight_ids() - pre_ids):
+                try:
+                    req = urllib.request.Request(f"{base}/api/v1/highlights/{hid}", method="DELETE")
+                    urllib.request.urlopen(req, timeout=15).read()
+                except Exception:  # noqa: BLE001
+                    pass
+    else:
+        print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑨ 原 PDF 栏划词：菜单只该有解释/复制，且不含任何说明文案 ----------------
+    print()
+    print("=" * 78)
+    print("⑨ 原 PDF 栏划词菜单（只有解释/复制；不再有「不支持高亮」字样）")
+    print("=" * 78)
+    if browser and paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_pdf_probe.html"
+        try:
+            probe_file.write_text(
+                PDF_MENU_PROBE.replace('__URL__', f"{base}/app/reader/{paper}?view=bilingual&left=page&nosse=1")
+                .replace('__WAIT__', '2500'), encoding="utf-8")
+            dom = render(browser, f"{base}/app/_pdf_probe.html", 30000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data or not data.get("spans"):
+                failures += 1
+                results.append({"kind": "pdf-menu", "path": "原 PDF 划词菜单", "ok": False,
+                                "detail": f"没取到 PDF 文字层（{data}）"})
+                print(f"[FAIL] 原 PDF 划词菜单     没取到 PDF 文字层（{data}）")
+            else:
+                checks = [
+                    ("PDF 栏菜单只有解释/复制", bool(data.get("menu"))
+                     and not data.get("swatches")
+                     and any('解释' in b for b in (data.get("buttons") or []))
+                     and any('复制' in b for b in (data.get("buttons") or []))
+                     and not any('笔记' in b for b in (data.get("buttons") or [])),
+                     f"菜单项 {data.get('buttons')}，色块 {data.get('swatches')} 个"),
+                    ("已移除「不支持高亮」字样", data.get("hasHint") is False
+                     and data.get("bodyHasHint") is False,
+                     f"菜单里={data.get('hasHint')}，整页={data.get('bodyHasHint')}"),
+                ]
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "pdf-menu", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与论文数据")
+
     print()
     print("=" * 78)
     total = len(results)
@@ -421,3 +1693,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

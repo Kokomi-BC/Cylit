@@ -71,16 +71,23 @@ def import_pdf(temp_path: str | Path, original_name: str,
     page_count = 0
     detected_title = title or ""
     detected_authors = authors or ""
+    detected_venue = venue or ""
+    detected_year = year
+    detected_abstract = ""
     try:
         import pymupdf as fitz
-        from backend.parsing.pipeline import extract_metadata
+        from backend.parsing.metadata import extract_paper_meta
 
         doc = fitz.open(str(src))
         page_count = doc.page_count
-        if not detected_title:
-            t, a = extract_metadata(doc, Path(original_name))
-            detected_title = t or Path(original_name).stem
-            detected_authors = detected_authors or a
+        # 元数据能自动抽的就别让用户手打：只有用户**没填**的字段才用抽出来的值
+        # （见 `backend/parsing/metadata.py`）。
+        meta = extract_paper_meta(doc, Path(original_name))
+        detected_title = detected_title or meta.title or Path(original_name).stem
+        detected_authors = detected_authors or meta.authors
+        detected_venue = detected_venue or meta.venue
+        detected_year = detected_year or meta.year
+        detected_abstract = meta.abstract
         doc.close()
     except Exception as exc:  # noqa: BLE001
         raise ValidationError(
@@ -94,7 +101,8 @@ def import_pdf(temp_path: str | Path, original_name: str,
     with session_scope() as sess:
         row = Paper(
             id=pid, title=detected_title or Path(original_name).stem,
-            authors=detected_authors or None, venue=venue, year=year,
+            authors=detected_authors or None, venue=detected_venue or None,
+            year=detected_year, abstract=detected_abstract[:2000] or None,
             page_count=page_count, source_hash=digest, status="imported",
             tags=tags,
         )

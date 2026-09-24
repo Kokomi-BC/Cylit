@@ -15,6 +15,7 @@ import type {
 import {
   loadPapers, paperTitle, reportError, state, toast, withLoading,
 } from '@/stores/app';
+import { openTab } from '@/stores/tabs';
 import {
   copyText, paperStatus, pct, truncate,
 } from '@/utils/format';
@@ -278,13 +279,13 @@ async function ask(): Promise<void> {
   }
 }
 
-/** 来源 → 阅读器路由（跳回原文）。 */
+/** 来源 → 阅读器标签页（跳回原文；已开着就激活它）。 */
 function sourceTo(source: RagSource) {
-  return {
+  return openTab({
     name: 'reader',
     params: { paperId: source.paper_id ?? '' },
     query: source.block_id ? { block: source.block_id } : {},
-  };
+  });
 }
 
 function sourceSnippet(source: RagSource): string {

@@ -4,6 +4,7 @@ import { createApp } from 'vue';
 import App from '@/App.vue';
 import { router } from '@/router';
 import { reportError } from '@/stores/app';
+import { restoreTabs } from '@/stores/tabs';
 import '@/styles/base.css';
 import 'katex/dist/katex.min.css';
 
@@ -17,6 +18,7 @@ window.addEventListener('error', (ev) => {
   console.error('[window.error]', ev.error ?? ev.message);
 });
 
+restoreTabs();          // 多标签页：先把上次开着的标签恢复出来，再挂载
 const app = createApp(App);
 app.config.errorHandler = (err) => { reportError(err, '界面异常'); };
 app.use(router);

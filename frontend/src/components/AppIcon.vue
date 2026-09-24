@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
 /** name → <svg> 内部标记（纯静态，无用户数据参与，故可安全用 v-html）。 */
 const ICONS: Record<string, string> = {
   // ---- 导航 / 结构 ----
+  home: '<path d="M4 10.6 12 4l8 6.6"/><path d="M6 9.4V19a1 1 0 0 0 1 1h3.2v-5.2h3.6V20H17a1 1 0 0 0 1-1V9.4"/>',
   library: '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M12 4h4.5A1.5 1.5 0 0 1 18 5.5v13a1.5 1.5 0 0 1-1.5 1.5H12z"/>',
   knowledge: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
   note: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3h11A1.5 1.5 0 0 1 19 4.5V15l-5 6H6.5A1.5 1.5 0 0 1 5 19.5z"/><path d="M19 15h-5v6"/><path d="M9 8h6M9 12h4"/>',
@@ -40,6 +41,11 @@ const ICONS: Record<string, string> = {
   'chevron-right': '<path d="M9.5 6l6 6-6 6"/>',
   'unfold-more': '<path d="M8 9.5 12 5.5l4 4"/><path d="M8 14.5l4 4 4-4"/>',
   'unfold-less': '<path d="M8 5.5l4 4 4-4"/><path d="M8 18.5l4-4 4 4"/>',
+  // 全屏 / 退出全屏（四角括号，WinUI 的 FullScreen / BackToWindow）
+  expand: '<path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9"/><path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9"/><path d="M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15"/><path d="M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/>',
+  collapse: '<path d="M4 9h3.5A1.5 1.5 0 0 0 9 7.5V4"/><path d="M20 9h-3.5A1.5 1.5 0 0 1 15 7.5V4"/><path d="M15 20v-3.5a1.5 1.5 0 0 1 1.5-1.5H20"/><path d="M9 20v-3.5A1.5 1.5 0 0 0 7.5 15H4"/>',
+  // 「删除高亮」用的禁止符号（圆 + 斜杠）
+  ban: '<circle cx="12" cy="12" r="8.5"/><path d="M6.6 17.4 17.4 6.6"/>',
   // 溢出菜单（等价于 Phosphor 的 DotsThree）：把次要操作收起来，避免按钮墙
   more: '<circle cx="6" cy="12" r="1.35"/><circle cx="12" cy="12" r="1.35"/><circle cx="18" cy="12" r="1.35"/>',
 
@@ -65,6 +71,11 @@ const ICONS: Record<string, string> = {
   locate: '<circle cx="12" cy="12" r="7"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/><circle cx="12" cy="12" r="1.4"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3A4 4 0 0 0 13 5.34l-1.4 1.4"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3A4 4 0 0 0 11 18.66l1.4-1.4"/>',
   'link-off': '<path d="M10 14a4 4 0 0 0 5.66 0l1.1-1.1"/><path d="M13 5.34l1.4-1.4M4.5 4.5l15 15"/>',
+
+  // ---- 版面位置（对照时"原文/译文谁在左"）----
+  // 左格是实心块（= 原文所在侧），右格是"译文"线框，一眼能看出哪一栏是原文
+  'layout-original-left': '<rect x="2.6" y="4" width="18.8" height="16" rx="2.4"/><path d="M12 4v16"/><rect x="5.1" y="7.2" width="4.4" height="9.6" rx="1.1" fill="currentColor" stroke="none"/><path d="M14.6 8.4h4M14.6 10.6h4M14.6 12.8h2.6"/>',
+  'layout-original-right': '<rect x="2.6" y="4" width="18.8" height="16" rx="2.4"/><path d="M12 4v16"/><rect x="14.5" y="7.2" width="4.4" height="9.6" rx="1.1" fill="currentColor" stroke="none"/><path d="M5.4 8.4h4M5.4 10.6h4M5.4 12.8h2.6"/>',
 
   // ---- 内容类型 ----
   document: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',

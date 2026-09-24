@@ -21,7 +21,7 @@ from pathlib import Path
 from backend.core.errors import ProviderError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, read_json, sha256_text, write_json
-from backend.services.paper import paper_service, reader_service
+from backend.services.paper import metadata_fill, paper_service, reader_service
 
 log = get_logger(__name__)
 
@@ -31,7 +31,7 @@ BRIEF_VERSION = 1
 SAMPLE_LIMIT = 6000
 
 BRIEF_SYSTEM = """你是学术论文翻译项目的术语负责人。请阅读给定论文的标题、摘要与章节开头，
-产出一份**供后续逐页翻译使用的简报**，用简体中文填写。
+产出一份**供后续逐页翻译使用的简报**，并顺带整理这篇论文自己的元数据（用简体中文填写）。
 
 要求：
 1. domain：用一句话说明论文领域与核心方法（≤40 字）。
@@ -40,7 +40,10 @@ BRIEF_SYSTEM = """你是学术论文翻译项目的术语负责人。请阅读�
    - 只列这篇论文里反复出现、且译法确实需要统一的词，不要罗列普通词汇。
 3. style：语体说明（如"学术论文正文，简洁书面语，公式与符号保留"）。
 4. notes：2~4 条翻译注意点（符号约定、专有名词、易错点）。
-5. 只输出 JSON，不要输出解释或 Markdown 代码块。"""
+5. meta：论文自身的元数据（和术语一次产出，用户不必手打）——
+   - venue 会议或期刊名（文中明确出现才填，判断不出留空）、year 发表年份（判断不出填 0）、
+     tags 3~6 个中文关键词、abstract_zh 摘要的中文译文（抽样里没有摘要就留空）。
+6. 只输出 JSON，不要输出解释或 Markdown 代码块。"""
 
 BRIEF_SCHEMA = {
     "type": "object",
@@ -69,6 +72,8 @@ BRIEF_SCHEMA = {
             "description": "翻译注意点",
             "items": {"type": "string"},
         },
+        # 论文元数据与术语表**同一次调用**产出（翻译流程里零额外成本）
+        "meta": metadata_fill.META_SCHEMA,
     },
     "required": ["domain"],
 }
@@ -83,6 +88,10 @@ class DocumentBrief:
     keep_as_is: list[str] = field(default_factory=list)
     style: str = ""
     notes: list[str] = field(default_factory=list)
+    # 论文元数据（venue/year/tags/abstract_zh）：与术语同一次调用产出，也一并写回论文行。
+    # **刻意不进 `prompt_block()`**：它不是翻译指令，进前缀只会让"人工改元数据"把
+    # provider 的 prompt 前缀缓存打掉（简报前缀必须字节级稳定）。
+    meta: dict = field(default_factory=dict)
     source: str = "model"          # model | manual | cached | none
     model_id: str | None = None
     prompt_hash: str = ""
@@ -118,7 +127,8 @@ class DocumentBrief:
         d = {
             "paper_id": self.paper_id, "title": self.title, "domain": self.domain,
             "glossary": self.glossary, "keep_as_is": self.keep_as_is,
-            "style": self.style, "notes": self.notes, "source": self.source,
+            "style": self.style, "notes": self.notes, "meta": self.meta,
+            "source": self.source,
             "model_id": self.model_id, "version": BRIEF_VERSION,
         }
         if include_prompt:
@@ -133,6 +143,7 @@ class DocumentBrief:
             glossary=dict(d.get("glossary") or {}),
             keep_as_is=list(d.get("keep_as_is") or []),
             style=d.get("style", ""), notes=list(d.get("notes") or []),
+            meta=dict(d.get("meta") or {}),
             source=d.get("source", "cached"), model_id=d.get("model_id"),
         )
 
@@ -206,8 +217,12 @@ def sample_paper_text(paper_id: str, limit: int = SAMPLE_LIMIT) -> str:
 
 
 def generate_brief(paper_id: str, *, provider=None, force: bool = False,
-                   max_terms: int = 24) -> DocumentBrief:
-    """生成简报（已有且非 force 时直接复用缓存）。"""
+                   max_terms: int = 24, apply_meta: bool = True) -> DocumentBrief:
+    """生成简报（已有且非 force 时直接复用缓存）。
+
+    ``apply_meta``：把同一次调用产出的论文元数据（venue/year/tags/abstract_zh）
+    **只填空字段**地写回论文行（用户口径："元数据要么从论文获取，要么模型翻译后填写"）。
+    """
     if not force:
         cached = load_brief(paper_id)
         if cached is not None and cached.enabled:
@@ -259,12 +274,22 @@ def generate_brief(paper_id: str, *, provider=None, force: bool = False,
         keep_as_is=[str(x) for x in (data.get("keep_as_is") or [])][:20],
         style=str(data.get("style") or "").strip(),
         notes=[str(x) for x in (data.get("notes") or [])][:6],
+        meta=dict(data.get("meta") or {}) if isinstance(data.get("meta"), dict) else {},
         source="model" if data else "none",
         model_id=_model_id(),
         prompt_hash=sha256_text(prompt)[:16],
     )
     if brief.enabled:
         save_brief(brief)
+    if apply_meta and brief.meta:
+        # 元数据与术语同一次产出 → 顺手写回论文行（只填空字段，不动用户手改的值）
+        try:
+            applied = metadata_fill.apply_fills(paper_id,
+                                               metadata_fill.normalize_meta(brief.meta))
+            if applied:
+                log.info("简报同时补全元数据 %s：%s", paper_id, list(applied))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("简报元数据写回失败（不影响翻译）：%s", exc)
     return brief
 
 

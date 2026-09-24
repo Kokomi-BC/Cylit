@@ -14,7 +14,7 @@ from backend.core.utils import (
     json_dumps, json_loads, new_id, now, sha256_text, short_hash, truncate,
 )
 from backend.repositories.mysql.models import (
-    Annotation, Block, Highlight, Note, Paper,
+    HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Block, Highlight, Note, Paper,
 )
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import reader_service
@@ -37,6 +37,13 @@ EXPLAIN_SYSTEM = """你是论文阅读助手。基于给定的段落与上下文
 
 
 def create_highlight(payload: dict, user_id: int = 1) -> dict:
+    """存一条高亮。
+
+    **原文 / 译文分开存**（`side`）：一行对照里两侧共用同一个 `block_id`，
+    只存偏移量的话原文的高亮会按同样的偏移量画到译文上。
+    `scope` 区分在哪标的：正文行（`block_id` = 行 id）还是 Markdown 视图（`md:p<页号>`）。
+    `group_id`：一次划词跨了多行时，每行一条记录共用同一个分组 id（删除时整组一起删）。
+    """
     paper_id = payload.get("paper_id")
     block_id = payload.get("block_id")
     if not paper_id or not block_id:
@@ -44,15 +51,22 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
     color = payload.get("color") or "yellow"
     if color not in HIGHLIGHT_COLORS:
         color = "yellow"
+    side = str(payload.get("side") or "en").lower()
+    if side not in HIGHLIGHT_SIDES:
+        side = "en"
+    scope = str(payload.get("scope") or "row").lower()
+    if scope not in HIGHLIGHT_SCOPES:
+        scope = "row"
+    group_id = str(payload.get("group_id") or "").strip()[:32] or None
     with session_scope() as sess:
         row = Highlight(
             id=new_id("h"), user_id=user_id, paper_id=paper_id, block_id=block_id,
             selected_text=payload.get("selected_text"),
             start_offset=int(payload.get("start_offset") or 0),
             end_offset=int(payload.get("end_offset") or 0),
-            color=color,
+            color=color, side=side, scope=scope, group_id=group_id,
             anchor_hash=sha256_text(
-                (payload.get("selected_text") or "") + block_id)[:64],
+                (payload.get("selected_text") or "") + block_id + side)[:64],
         )
         sess.add(row)
         sess.flush()
@@ -68,18 +82,32 @@ def list_highlights(paper_id: str, user_id: int = 1) -> dict:
 
 
 def delete_highlight(highlight_id: str) -> dict:
+    """删一条高亮；如果它属于某个跨行分组，**整组一起删**（用户眼里那是一条高亮）。
+
+    返回被删掉的 id 列表：前端据此把本地那几条一起摘掉，不用重新拉一遍列表。
+    """
     with session_scope() as sess:
         row = sess.get(Highlight, highlight_id)
         if row is None:
             raise NotFoundError(f"高亮不存在：{highlight_id}")
-        sess.delete(row)
-    return {"deleted": highlight_id}
+        rows = [row]
+        if row.group_id:
+            rows = (sess.query(Highlight)
+                    .filter(Highlight.group_id == row.group_id,
+                            Highlight.paper_id == row.paper_id,
+                            Highlight.user_id == row.user_id).all())
+        ids = [r.id for r in rows]
+        for r in rows:
+            sess.delete(r)
+    return {"deleted": highlight_id, "deleted_ids": ids, "count": len(ids)}
 
 
 def _highlight_dict(row: Highlight) -> dict:
     return {"id": row.id, "paper_id": row.paper_id, "block_id": row.block_id,
             "text": row.selected_text, "start": row.start_offset,
             "end": row.end_offset, "color": row.color,
+            "side": row.side or "en", "scope": row.scope or "row",
+            "group_id": row.group_id,
             "created_at": row.created_at.isoformat(timespec="seconds")
             if row.created_at else None}
 

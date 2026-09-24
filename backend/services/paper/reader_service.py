@@ -292,6 +292,8 @@ def build_reader(paper_id: str, *, user_id: int = 1,
             "highlights": [{"id": h.id, "block_id": h.block_id,
                             "start": h.start_offset, "end": h.end_offset,
                             "color": h.color, "text": h.selected_text,
+                            "side": h.side or "en", "scope": h.scope or "row",
+                            "group_id": h.group_id,
                             "page": _anchor_page(h.block_id, row_pages, block_pages)}
                            for h in highlights],
             "notes": [{"id": n.id, "block_id": n.block_id, "content_md": n.content_md,
@@ -315,9 +317,14 @@ def build_reader(paper_id: str, *, user_id: int = 1,
 
 def _anchor_page(block_id: str | None, row_pages: dict[str, int],
                  block_pages: dict[str, int]) -> int | None:
-    """锚点（行 id 或块 id）→ 页码；都查不到返回 None（前端只提示、不乱跳）。"""
+    """锚点（行 id / 块 id / Markdown 视图的 `md:p<页号>`）→ 页码；查不到返回 None。"""
     if not block_id:
         return None
+    if block_id.startswith("md:p"):
+        try:
+            return int(block_id[4:])
+        except ValueError:
+            return None
     return row_pages.get(block_id) or block_pages.get(block_id)
 
 
@@ -758,6 +765,10 @@ def figures_payload(paper_id: str) -> dict:
 
     ``block_id`` / ``row_id`` 给的是**图注行的行 id**（存在时），前端"定位"直接可用；
     另带 ``page``，即使行 id 失效（重译后行号变了）也能退化为按页定位。
+
+    ``image_url`` 与 ``card_url`` 都是**「图 + 图注」卡片**（图 + 图注合成一张）：侧栏是把图当
+    "一张能看懂的图"来展示的，卡片自带图注更实用；正文里也用同一张（用户口径：
+    **点开看大图和论文里的范围必须一致**，纯图那张"贴着边、少了图注"，是裁得不好的那张）。
     """
     from backend.services.paper import figure_regions
 
@@ -767,13 +778,17 @@ def figures_payload(paper_id: str) -> dict:
             if r["kind"] != "figure":
                 continue
             row_id = row_id_of_caption(paper_id, page_no, r["number"])
+            base = f"/api/v1/papers/{paper_id}/figures/region/{page_no}/{i}"
             items.append({
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",
                 "row_id": row_id,
                 "page": page_no, "caption": r["caption"], "bbox": r["bbox"],
                 "number": r["number"],
+                "part": int(r.get("part", 0)), "parts": int(r.get("parts", 1)),
+                "part_label": r.get("part_label") or "",
                 "status": "ok", "audit": {},
-                "image_url": f"/api/v1/papers/{paper_id}/figures/region/{page_no}/{i}",
+                "image_url": f"{base}?card=1",
+                "card_url": f"{base}?card=1",
             })
     return {"items": items, "count": len(items)}
 

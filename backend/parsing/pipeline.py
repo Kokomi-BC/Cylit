@@ -36,6 +36,7 @@ from backend.parsing.formula.audit import audit_formula_vectors
 from backend.parsing.formula.latex_recover import recover_candidates
 from backend.parsing.formula.validate import grade_formula, validate_formula
 from backend.parsing.ir.ir_writer import IRWriter
+from backend.parsing.metadata import extract_paper_meta, extract_metadata, meta_from_text
 from backend.parsing.ir.rebind import (
     assign_ids_in_order, id_prefix, make_block_id, rebind_block_ids,
 )
@@ -162,12 +163,24 @@ class PaperBuilder:
             log.info("扫描件兜底：%d 页由视觉模型读出（%s）",
                      len(out), sorted(out))
             result.stats["scanned_pages"] = sorted(out)
-            # 第 1 页是扫描页时，``extract_metadata`` 只能拿文件名当标题，
-            # 用模型读出来的第一个标题覆盖它（更准）
+            # 第 1 页是扫描页时，文本层是空的（元数据只能拿文件名当标题），
+            # 用模型读出来的内容覆盖：标题取第一个大标题，摘要/会议/年份同样从这段文字里抽。
             if 1 in out:
                 vision_title = title_from_markdown(out[1]).strip()
                 if vision_title:
                     result.title = vision_title
+                vmeta = meta_from_text(out[1], title=vision_title)
+                if not result.abstract and vmeta.abstract:
+                    result.abstract = vmeta.abstract
+                if not result.stats.get("venue") and vmeta.venue:
+                    result.stats["venue"] = vmeta.venue
+                if not result.stats.get("year") and vmeta.year:
+                    result.stats["year"] = vmeta.year
+                if vmeta.sources:
+                    result.stats["meta_sources"] = {
+                        **(result.stats.get("meta_sources") or {}),
+                        **{k: f"vision-{v}" for k, v in vmeta.sources.items()},
+                    }
         return out
 
     # ------------------------------------------------------------------
@@ -250,7 +263,14 @@ class PaperBuilder:
                 if self.max_pages:
                     page_numbers = page_numbers[: self.max_pages]
                 result = ParseResult(paper_id=self.paper_id, page_count=len(page_numbers))
-                result.title, result.authors = extract_metadata(doc, self.pdf_path)
+                # 元数据（标题/作者/会议/年份/摘要）一次读全：论文库那几个字段长期是空的，
+                # 用户只能手打（见 `backend/parsing/metadata.py` 顶部说明）。
+                paper_meta = extract_paper_meta(doc, self.pdf_path)
+                result.title, result.authors = paper_meta.title, paper_meta.authors
+                result.abstract = paper_meta.abstract
+                result.stats["venue"] = paper_meta.venue
+                result.stats["year"] = paper_meta.year
+                result.stats["meta_sources"] = paper_meta.sources
 
                 # ------------- 1. 页面渲染 -------------
                 with Timer() as stat:
@@ -1122,45 +1142,8 @@ def _annotate_sections(blocks: list[Block]) -> None:
             b.type = "ref"
 
 
-def extract_metadata(doc: "fitz.Document", pdf_path: Path) -> tuple[str, str]:
-    """标题与作者：优先 PDF 元数据，其次首页最大字号行。"""
-    meta = doc.metadata or {}
-    title = normalize_text(meta.get("title") or "")
-    authors = normalize_text(meta.get("author") or "")
-    if not title or title.lower().endswith(".pdf") or len(title) < 6:
-        title = _title_from_first_page(doc) or pdf_path.stem
-    return title, authors
-
-
-def _title_from_first_page(doc: "fitz.Document", max_lines: int = 3) -> str:
-    if doc.page_count == 0:
-        return ""
-    page = doc[0]
-    raw = page.get_text("dict")
-    cands: list[tuple[float, float, str]] = []
-    for b in raw.get("blocks", []):
-        if b.get("type", 0) != 0:
-            continue
-        for ln in b.get("lines", []):
-            spans = ln.get("spans", [])
-            if not spans:
-                continue
-            text = "".join(s.get("text", "") for s in spans).strip()
-            if len(text) < 8:
-                continue
-            size = max(float(s.get("size", 0)) for s in spans)
-            y0 = min(float(s.get("bbox", (0, 0, 0, 0))[1]) for s in spans)
-            # 只看页面上部 35%
-            if y0 > page.rect.height * 0.35:
-                continue
-            cands.append((size, y0, text))
-    if not cands:
-        return ""
-    max_size = max(c[0] for c in cands)
-    top = [c for c in cands if c[0] >= max_size - 0.6]
-    top.sort(key=lambda c: c[1])
-    joined = " ".join(c[2] for c in top[:max_lines])
-    return joined[:300]
+# 元数据抽取（标题/作者/会议/年份/摘要）已搬到 `backend/parsing/metadata.py`：
+# 本模块仍从那里**再导出** `extract_metadata`，旧的 `from ...pipeline import extract_metadata` 不受影响。
 
 
 def _structure_changed(a: str, b: str) -> bool:

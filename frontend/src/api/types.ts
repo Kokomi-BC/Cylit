@@ -100,12 +100,20 @@ export interface PageInfo {
   /** 该页的插图（按图注锚定的裁图；`url` 指向按需裁图接口） */
   media?: Array<{
     url: string;
+    /** 图 + 图注合成的「图表卡片」（放大看大图 / 导出用） */
+    card_url?: string;
     caption: string;
     status?: string | null;
     /** figure | table */
     kind?: string;
     /** 图号（用于把图挂到对应的图注行） */
     number?: string;
+    /** 同一张图被切成多段时的段号（从 0 开始） */
+    part?: number;
+    /** 总段数 */
+    parts?: number;
+    /** 段标签：上段 / 下段 / 跨页续图 */
+    part_label?: string;
   }>;
 }
 
@@ -218,11 +226,18 @@ export interface Annotation {
 export interface Highlight {
   id: string;
   paper_id?: string;
+  /** 锚点：正文行 = 行 id；Markdown 视图 = `md:p<页号>` */
   block_id: string;
   text: string | null;
   start: number;
   end: number;
   color: 'yellow' | 'green' | 'blue' | 'pink' | 'purple' | string;
+  /** 偏移量相对哪一侧的文字：**原文 en / 译文 zh 分开存**（同一行两侧共用一个 block_id） */
+  side?: 'en' | 'zh';
+  /** 在哪个视图标的：正文行 row / Markdown 视图 markdown */
+  scope?: 'row' | 'markdown';
+  /** 跨行高亮的分组：同一次划词切出来的几条记录共用它，删除时整组一起删 */
+  group_id?: string | null;
   page?: number | null;
   created_at?: string | null;
 }
@@ -394,6 +409,26 @@ export interface FigureItem {
   status: string;
   audit: Record<string, any>;
   image_url: string | null;
+  /** 图 + 图注合成的「图表卡片」（放大看大图 / 导出用）；缺省时退回 image_url */
+  card_url?: string | null;
+  /** 同一张图被切成多段时的段号 / 总段数 / 段标签 */
+  part?: number;
+  parts?: number;
+  part_label?: string;
+}
+
+/**
+ * 「点击看大图」的目标。
+ *
+ * 不只带 URL，还带图注 —— 放大弹窗的标题要显示**这张图的标题**（用户口径），
+ * 而不是干巴巴的"插图"两个字；图注本身通常已含图号（"Figure 3: …"），所以不再另加前缀。
+ */
+export interface ZoomTarget {
+  url: string;
+  caption?: string | null;
+  /** 图注所在页（没有图注时兜底显示"插图 · 第 N 页"） */
+  page?: number | null;
+  number?: string | null;
 }
 
 export interface GlossaryTerm {
@@ -410,7 +445,11 @@ export interface BriefPayload {
   domain?: string;
   style?: string;
   notes?: string[];
+  /** 保持英文不译的词/缩写（模型给出，人工可改） */
+  keep_as_is?: string[];
   glossary?: Record<string, string>;
+  /** 与术语同一次调用产出的论文元数据（venue/year/tags/abstract_zh 等） */
+  meta?: Record<string, any>;
   source?: string;
   prompt?: string;
   [key: string]: any;
