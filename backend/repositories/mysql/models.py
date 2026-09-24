@@ -244,7 +244,19 @@ class ReadingProgress(Base):
     percent: Mapped[float] = mapped_column(Float, default=0.0)
     view_mode: Mapped[str] = mapped_column(String(16), default="bilingual")
     pair_order: Mapped[str] = mapped_column(String(16), default="en_top")
+    # 原文栏呈现：`text` = 转录的原文文本；`page` = 原 PDF 页图。
+    # 与 view_mode / pair_order 一起构成"这篇论文上次是怎么看的"（前端切标签/重开时还原）。
+    original_mode: Mapped[str] = mapped_column(String(8), default="text")
     scroll_ratio: Mapped[float] = mapped_column(Float, default=0.0)
+    # 阅读时的**界面状态**（用户口径："记录侧栏展开状态、字号等信息"）。
+    # 一律允许为空：NULL = 这篇论文还没记过 → 前端回退到本地偏好/默认值
+    # （不能给 `default`，否则"没记过"和"记成了默认值"就分不出来了）。
+    aside_open: Mapped[bool | None] = mapped_column(Boolean)
+    text_size: Mapped[str | None] = mapped_column(String(4))
+    show_refs: Mapped[bool | None] = mapped_column(Boolean)
+    zoom: Mapped[float | None] = mapped_column(Float)
+    # 对照 + 原 PDF 时，右侧文字列放哪一侧：`zh` 译文（默认）/ `en` 原文
+    page_side: Mapped[str] = mapped_column(String(4), default="zh")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 

@@ -222,6 +222,31 @@ function setDragClass(on: boolean): void {
   document.documentElement.classList.toggle('pm-pdf-drag', on);
 }
 
+/** 当前选区是否还盖在某个 PDF 文字层上（非空） */
+function selectionOnPdf(sel: Selection | null): boolean {
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
+  for (let i = 0; i < sel.rangeCount; i++) {
+    const r = sel.getRangeAt(i);
+    for (const tl of textLayers) if (r.intersectsNode(tl)) return true;
+  }
+  return false;
+}
+
+/**
+ * 在**非 PDF 内容**（译文列 / 原文列 / 工具栏）上按下时：把上一次的 PDF 选区连同
+ * `pm-pdf-drag` 一起收掉。
+ *
+ * 不做这一步的后果（用户报过）：在 PDF 里选完一段，那段选区还罩着 → `pm-pdf-drag` 还挂着
+ * → 非 PDF 内容一直是 `user-select: none`；而 Chrome **不允许在不可选的内容上开始新选区**，
+ * 于是在译文里怎么拖都选不中（"选了 PDF 之后译文就选不了了"）。
+ * 只有"按下点不在 PDF 文字上"才收：按在 PDF 上时这个类正是我们要的（跨页选区不圈进中间的译文）。
+ */
+function clearPdfSelection(): void {
+  const sel = document.getSelection();
+  if (sel && selectionOnPdf(sel)) sel.removeAllRanges();
+  setDragClass(false);
+}
+
 /** 离文字层最近的滚动容器（拖到边缘时自己滚） */
 function scrollerOf(el: HTMLElement): HTMLElement | null {
   for (let n = el.parentElement; n; n = n.parentElement) {
@@ -264,7 +289,9 @@ function onDocPointerDown(ev: PointerEvent): void {
   lastGood = null;
   if (ev.button !== 0) return;
   const p = textPointAt(ev.clientX, ev.clientY);
-  if (!p) return;
+  // 按在非 PDF 内容上：先把上一次的 PDF 选区与 `pm-pdf-drag` 收掉，否则译文那侧一直是
+  // `user-select: none`，新的划词压根开始不了（详见 clearPdfSelection 的说明）。
+  if (!p) { clearPdfSelection(); return; }
   dragFrom = p;
   lastGood = p;
   dragStart.x = dragPoint.x = ev.clientX;
@@ -305,14 +332,7 @@ function endDrag(): void {
 
 /** 选区只要还盖在某个 PDF 文字层上（且非空），就保持"非 PDF 内容不可选" */
 function keepDragClass(sel: Selection | null): void {
-  let keep = false;
-  if (sel && sel.rangeCount && !sel.isCollapsed) {
-    for (let i = 0; i < sel.rangeCount && !keep; i++) {
-      const r = sel.getRangeAt(i);
-      for (const tl of textLayers) if (r.intersectsNode(tl)) { keep = true; break; }
-    }
-  }
-  setDragClass(keep);
+  setDragClass(selectionOnPdf(sel));
 }
 
 /**

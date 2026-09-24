@@ -181,6 +181,16 @@ export interface ReadingProgress {
   percent: number;
   view_mode: ViewMode;
   pair_order: PairOrder;
+  /** 原文栏呈现（`text` 原文文本 / `page` 原 PDF）—— 与 `view_mode`/`pair_order` 一起按论文保存 */
+  original_mode: OriginalMode;
+  /** 界面状态：侧栏展开 / 正文字号 / 显示参考文献 / 原 PDF 缩放。
+   *  `null` = 这篇论文还没记过 → 回退到本地偏好 / 默认值。 */
+  aside_open: boolean | null;
+  text_size: 'sm' | 'md' | 'lg' | null;
+  show_refs: boolean | null;
+  zoom: number | null;
+  /** 对照 + 原 PDF 时右侧文字列放哪一侧（`zh` 译文 / `en` 原文） */
+  page_side: 'en' | 'zh';
   scroll_ratio: number;
   updated_at?: string;
 }

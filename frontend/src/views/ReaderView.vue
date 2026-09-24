@@ -12,7 +12,7 @@
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, sseUrl } from '@/api/client';
 import type {
   Annotation, Block, BriefPayload, FigureItem, GlossaryTerm, Highlight,
@@ -41,6 +41,7 @@ import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
 const route = useRoute();
+const router = useRouter();
 const paperId = computed(() => String(route.params.paperId ?? ''));
 
 /**
@@ -405,6 +406,9 @@ function downloadMarkdown() {
   downloadText(`${paperId.value}-${mdModeMeta.value.suffix}.md`, withOrigin);
 }
 
+/** 对照 + 原 PDF 时，右侧文字列放哪一侧（默认译文；可切原文） */
+const pageSide = ref<'en' | 'zh'>('zh');
+
 /* 正文字号：小 / 中 / 大（**默认小**），选中后记在本地（纯展示偏好，不进服务端进度）。 */
 const TEXT_SIZES = { sm: 13, md: 15, lg: 17 } as const;
 type TextSizeKey = keyof typeof TEXT_SIZES;
@@ -463,6 +467,8 @@ const tocActiveId = computed(() => {
 const progressPercent = computed(() => pct(stats.value.pages_done ?? 0, stats.value.pages ?? 0));
 const originalVisible = computed(() => viewMode.value !== 'translation');
 const originalIsPage = computed(() => originalVisible.value && originalMode.value === 'page');
+/** 对照 + 原 PDF：一边是页图、一边是文字行 —— 只有这时"文字列放译文还是原文"才是个选择 */
+const pageLeft = computed(() => viewMode.value === 'bilingual' && originalMode.value === 'page');
 const leftIsOriginal = computed(() => pairOrder.value !== 'zh_left' && pairOrder.value !== 'zh_top');
 const tocRows = computed(() => flattenOutline(outline.value.tree, new Set(collapsed.value)));
 const activeTask = computed(() => liveTask.value
@@ -500,6 +506,16 @@ async function loadAll() {
     const p = data.progress;
     viewMode.value = p?.view_mode ?? 'bilingual';
     pairOrder.value = (p?.pair_order as PairOrder) ?? 'en_left';
+    // 原文栏呈现也按论文存（`text` / `page`）：上次看的是原 PDF，切标签或重开时还是原 PDF
+    originalMode.value = (p?.original_mode as OriginalMode) ?? 'text';
+    // 界面状态（侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放）：**服务端那份优先**（按论文记的），
+    // 没记过才用本地偏好（`localStorage`）或默认值。
+    if (typeof p?.aside_open === 'boolean') asideOpen.value = p.aside_open;
+    if (p?.text_size && p.text_size in TEXT_SIZES) textSize.value = p.text_size as TextSizeKey;
+    if (typeof p?.show_refs === 'boolean') showRefs.value = p.show_refs;
+    if (typeof p?.zoom === 'number') zoom.value = Math.min(3, Math.max(0.4, p.zoom));
+    // 对照 + 原 PDF 时文字列放哪一侧（`zh` 译文 / `en` 原文）
+    pageSide.value = p?.page_side === 'en' ? 'en' : 'zh';
     const saved = p?.last_block_id ?? '';
     currentRowId.value = (saved && rowById.value.has(saved))
       ? saved
@@ -515,6 +531,7 @@ async function loadAll() {
     if (q.order === 'en_left' || q.order === 'en_top') pairOrder.value = 'en_left';
     else if (q.order === 'zh_left' || q.order === 'zh_top') pairOrder.value = 'zh_left';
     if (q.left === 'page' || q.left === 'text') originalMode.value = q.left;
+    if (q.pside === 'en' || q.pside === 'zh') pageSide.value = q.pside;
     if (q.size === 'sm' || q.size === 'md' || q.size === 'lg') setTextSize(q.size);
     // 深链搜索：?q=xxx 直接跑一遍（自检脚本与"分享一条检索"都用得上）；?scope=all|en|zh 指定范围
     if (q.scope === 'all' || q.scope === 'en' || q.scope === 'zh') searchScope.value = q.scope;
@@ -678,10 +695,56 @@ async function saveProgressNow() {
       scroll_ratio: Number(ratio.toFixed(4)),
       view_mode: viewMode.value,
       pair_order: pairOrder.value,
+      original_mode: originalMode.value,
+      // 界面状态也一起带着：它们和视图模式同属"这篇论文上次是怎么看的"
+      aside_open: asideOpen.value,
+      text_size: textSize.value,
+      show_refs: showRefs.value,
+      zoom: Number(zoom.value.toFixed(2)),
+      page_side: pageSide.value,
     });
   } catch (err) { console.warn('保存阅读进度失败', err); }
 }
 const saveProgressDebounced = debounce(saveProgressNow, 900);
+
+/**
+ * 界面状态（侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放）一变就**立刻**存一次：
+ * 它们和视图模式一样是"这篇论文上次是怎么看的"，切标签或重开时要还原（用户口径）。
+ *
+ * `loading` 期间不回存：那一刻正把服务端那份灌进来，回存等于自己写自己。
+ * （灌值发生在 `loadAll()` 里，而它的 `await nextTick()` 正好让这个 watcher 在
+ *  `loading` 还是 true 的时候跑完。）
+ */
+watch([asideOpen, textSize, showRefs, zoom], () => {
+  if (loading.value || fatal.value) return;
+  void saveProgressNow();
+});
+
+/**
+ * 把"这篇论文现在是怎么看的"（视图 / 原文栏呈现 / 左右顺序）同步进 URL query。
+ *
+ * 为什么同时要写 URL：标签条记住的是**每个标签上次的路由位置（含 query）**，
+ * 点标签切回来时由 `tabLocation` 原样跳回去 —— 写进 query，切标签就能立刻还原，
+ * 不必等服务端进度那趟往返（快切标签时它可能还没落库）。
+ * 服务端那份（`reading_progress`）负责"关掉标签/重开浏览器之后仍然记得"。
+ * 用 `replace`：这不是一次导航，别往历史里塞垃圾。
+ */
+function syncViewQuery() {
+  if (loading.value || fatal.value) return;
+  const q = route.query;
+  if (String(q.view ?? '') === viewMode.value
+      && String(q.left ?? '') === originalMode.value
+      && String(q.order ?? '') === pairOrder.value
+      && String(q.pside ?? '') === pageSide.value) return;
+  void router.replace({
+    // 显式带上当前 path：只给 `query` 的写法在 vue-router 4 里不一定能解析成"当前位置改 query"
+    path: route.path,
+    query: {
+      ...q, view: viewMode.value, left: originalMode.value,
+      order: pairOrder.value, pside: pageSide.value,
+    },
+  });
+}
 
 /* ------------------------------ 视图切换 ------------------------------ */
 async function setViewMode(mode: ViewMode) {
@@ -690,6 +753,7 @@ async function setViewMode(mode: ViewMode) {
   mobilePane.value = '';
   await nextTick();
   syncPaneWidth();
+  syncViewQuery();
   void saveProgressNow();
   void focusRow(currentRowId.value, { smooth: false, save: false });
 }
@@ -698,6 +762,7 @@ async function setPairOrder(order: PairOrder) {
   if (pairOrder.value === order) return;
   pairOrder.value = order;
   await nextTick();
+  syncViewQuery();
   void saveProgressNow();
   void focusRow(currentRowId.value, { smooth: false, save: false });
 }
@@ -706,7 +771,18 @@ function setOriginalMode(mode: OriginalMode) {
   if (originalMode.value === mode) return;
   originalMode.value = mode;
   zoom.value = 1;
+  syncViewQuery();
+  void saveProgressNow();          // 以前这里不落库，于是"原 PDF"切标签就丢了
   nextTick(() => { syncPaneWidth(); void focusRow(currentRowId.value, { smooth: false, save: false }); });
+}
+
+/** 对照 + 原 PDF 时，右侧文字列在**译文 / 原文**之间切换（默认译文） */
+function setPageSide(side: 'en' | 'zh') {
+  if (pageSide.value === side) return;
+  pageSide.value = side;
+  syncViewQuery();
+  void saveProgressNow();
+  nextTick(() => { void focusRow(currentRowId.value, { smooth: false, save: false }); });
 }
 
 /* ------------------------------ 目录折叠 ------------------------------ */
@@ -794,8 +870,8 @@ function onScroll() {
   saveProgressDebounced();
 }
 
-/** 行模型/视图形态/字号变化后让偏移缓存失效（行高会变） */
-watch([groups, viewMode, originalMode, pairOrder, zoom, textSize], () => {
+/** 行模型/视图形态/字号/文字列侧变化后让偏移缓存失效（行高会变） */
+watch([groups, viewMode, originalMode, pairOrder, pageSide, zoom, textSize], () => {
   offsetsHeight = -1;
   nextTick(() => watchContentSize());
 });
@@ -1868,6 +1944,13 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           </button>
         </div>
 
+        <!-- 对照 + 原 PDF 时，右侧文字列放译文还是原文（用户口径："对照 pdf 时有原文、译文模式"）。
+             `pageLeft` 才出现：只有那时另一列才是页图，"文字列放哪一侧"才成为一个选择。 -->
+        <div v-if="pageLeft" class="seg" title="页图旁的文字列">
+          <button :class="{ active: pageSide === 'zh' }" @click="setPageSide('zh')">译文</button>
+          <button :class="{ active: pageSide === 'en' }" @click="setPageSide('en')">原文</button>
+        </div>
+
         <!-- 左右顺序：只放**位置图标**（原文块在左 / 原文块在右），靠 tooltip 说明；
              文字标签会把工具栏挤爆，而且这两个按钮本来就是在讲"版面位置"。 -->
         <div v-if="viewMode === 'bilingual'" class="seg" title="左右顺序">
@@ -2040,6 +2123,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :groups="groups"
           :mode="viewMode"
           :original-mode="originalMode"
+          :page-side="pageSide"
           :pair-order="pairOrder"
           :paper-id="paperId"
           :page-width="pageWidth"

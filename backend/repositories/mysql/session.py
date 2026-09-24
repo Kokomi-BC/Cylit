@@ -31,6 +31,17 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("highlight", "side", "`side` VARCHAR(4) NOT NULL DEFAULT 'en'"),
     ("highlight", "scope", "`scope` VARCHAR(16) NOT NULL DEFAULT 'row'"),
     ("highlight", "group_id", "`group_id` VARCHAR(32) NULL"),
+    # 阅读进度里记下"原文栏呈现"（`text` 原文文本 / `page` 原 PDF）：
+    # 与 view_mode / pair_order 一起，切标签或重开这篇论文时还原成上次的样子
+    ("reading_progress", "original_mode", "`original_mode` VARCHAR(8) NOT NULL DEFAULT 'text'"),
+    # 界面状态（侧栏开合 / 正文字号 / 显示参考文献 / 原 PDF 缩放）：按论文记，切标签与重开时还原。
+    # 允许 NULL = 还没记过（前端回退到本地偏好），所以不给 NOT NULL 默认值。
+    ("reading_progress", "aside_open", "`aside_open` TINYINT(1) NULL"),
+    ("reading_progress", "text_size", "`text_size` VARCHAR(4) NULL"),
+    ("reading_progress", "show_refs", "`show_refs` TINYINT(1) NULL"),
+    ("reading_progress", "zoom", "`zoom` FLOAT NULL"),
+    # 对照 + 原 PDF 时右侧文字列放哪一侧（zh 译文 / en 原文）
+    ("reading_progress", "page_side", "`page_side` VARCHAR(4) NOT NULL DEFAULT 'zh'"),
 )
 
 

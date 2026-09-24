@@ -278,15 +278,44 @@ f.addEventListener('load', async () => {
     if (el) el.click();
     return !!el;
   };
+  const clickText = (txt) => {
+    const b = [...d.querySelectorAll('.reader-toolbar button')]
+      .find((x) => x.textContent.trim() === txt);
+    if (b) b.click();
+    return !!b;
+  };
+  const clickTitle = (t) => {
+    const b = [...d.querySelectorAll('.reader-toolbar button')].find((x) => x.title === t);
+    if (b) b.click();
+    return !!b;
+  };
+  /** "这篇论文现在是怎么看的"：URL query + 版面（原 PDF 在左 / 译文在左） */
+  const viewState = () => ({
+    search: w.location.search,
+    pgPair: !!d.querySelector('.pg-pair'),
+    imageRight: !!d.querySelector('.pg-pair.image-right'),
+    colImage: !!d.querySelector('.col-image'),
+    active: [...d.querySelectorAll('.seg button.active')]
+      .map((b) => b.textContent.trim() || b.title),
+  });
   try {
     await sleep(__WAIT__);
     res.a = snap(w, d);
+    // 在 A 上设成「原 PDF + 译文在左」：先切到另一套状态，保证下面两次点击真的改变状态
+    clickText('原文'); await sleep(320);
+    clickText('原文文本'); await sleep(320);
+    clickText('对照'); await sleep(320);
+    clickTitle('原文在左（译文在右）'); await sleep(420);
+    clickText('原 PDF'); await sleep(420);
+    clickTitle('译文在左（原文在右）'); await sleep(700);
+    res.viewA1 = viewState();
     res.clickedB = clickTab(B);
     await sleep(__WAIT__);
     res.b = snap(w, d);
     res.clickedA = clickTab(A);
     await sleep(__WAIT__);
     res.aAgain = snap(w, d);
+    res.viewA2 = viewState();          // 切回来：上次的打开状态必须还在
     res.clickedB2 = clickTab(B);
     await sleep(__WAIT__);
     res.bAgain = snap(w, d);
@@ -774,14 +803,18 @@ f.addEventListener('load', async () => {
     const cEn = d.querySelector('[data-row-id] .rrow.side-en .rr-body');
     const cZh = d.querySelector('[data-row-id] .rrow.side-zh .rr-body');
     if (cEn && cZh) {
-      const t1 = textEnds(cEn).last, t2 = textEnds(cZh).first;
+      // 不管左右顺序是哪一种：起止点按**文档顺序**取，锚点落在哪一侧就断言那一侧
+      const enBeforeZh = !!(cEn.compareDocumentPosition(cZh) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const first = textEnds(enBeforeZh ? cEn : cZh).first;
+      const last = textEnds(enBeforeZh ? cZh : cEn).last;
       const cr = d.createRange();
-      cr.setStart(t1, 0);
-      cr.setEnd(t2, (t2.nodeValue || '').length);
+      cr.setStart(first, 0);
+      cr.setEnd(last, (last.nodeValue || '').length);
       const csel = w.getSelection();
       csel.removeAllRanges();
       csel.addRange(cr);
       res.copyWholeLen = (csel.toString() || '').length;
+      res.copyAnchorSide = enBeforeZh ? 'en' : 'zh';
       const dt = new w.DataTransfer();
       d.dispatchEvent(new w.ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt }));
       const copied = dt.getData('text/plain') || '';
@@ -1025,11 +1058,150 @@ f.addEventListener('load', async () => {
       res.hasHint = (menu.textContent || '').includes('不支持高亮');
     }
     res.bodyHasHint = (d.body.textContent || '').includes('不支持高亮');
+
+    /* ② 选了 PDF 之后，在**译文里按下**必须能把那次 PDF 选区收掉。
+     * 回归点（用户报过）：PDF 选区还罩着时 `pm-pdf-drag` 一直挂着 → 非 PDF 内容
+     * 是 `user-select: none`，而 Chrome 不允许在不可选的内容上开始新选区 →
+     * "选了 PDF 之后译文再也选不中"。 */
+    const zhRow = d.querySelector('.rrow.side-zh') || d.querySelector('.col-rows .rr-body');
+    const zhBody2 = d.querySelector('.rrow.side-zh .rr-body');
+    if (node && zhBody2 && zhRow) {
+      const p = d.createRange();
+      p.setStart(node, 0);
+      p.setEnd(node, Math.max(1, Math.min((node.nodeValue || '').length, 8)));
+      const psel = w.getSelection();
+      psel.removeAllRanges();
+      psel.addRange(p);
+      await sleep(350);                       // selectionchange 是异步的（keepDragClass 靠它）
+      res.afterPdfSel = {
+        dragClass: d.documentElement.classList.contains('pm-pdf-drag'),
+        zhUserSelect: w.getComputedStyle(zhRow).userSelect,
+      };
+      // 在译文文字上按下（合成 pointerdown，坐标落在译文文字里）
+      const tw = d.createTreeWalker(zhBody2, NodeFilter.SHOW_TEXT);
+      let tn = tw.nextNode();
+      while (tn && (tn.nodeValue || '').trim().length < 12) tn = tw.nextNode();
+      if (tn) {
+        const tr = d.createRange();
+        tr.setStart(tn, 2);
+        tr.setEnd(tn, 8);
+        const rect = tr.getBoundingClientRect();
+        zhBody2.dispatchEvent(new w.PointerEvent('pointerdown', {
+          bubbles: true, cancelable: true, button: 0, buttons: 1,
+          clientX: Math.round(rect.left + 2), clientY: Math.round(rect.top + rect.height / 2) }));
+        await sleep(300);
+        res.afterZhPress = {
+          dragClass: d.documentElement.classList.contains('pm-pdf-drag'),
+          zhUserSelect: w.getComputedStyle(zhRow).userSelect,
+          selLen: (psel.toString() || '').length,
+        };
+      }
+    }
     out(res);
   } catch (err) { res.error = String(err); out(res); }
 });
 </script>
 """
+
+
+# 论文"打开状态"探针：点工具栏的三个开关（视图 / 原文栏呈现 / 左右顺序），
+# 断言它们被写进 URL query —— 标签条记住的就是"每个标签上次的位置（含 query）"，
+# 切标签时靠它还原；服务端那份 `reading_progress` 负责重开也记得。
+VIEW_STATE_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>view state probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:560px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  const active = (sel) => [...d.querySelectorAll(sel + ' button')]
+    .filter((b) => b.classList.contains('active'))
+    .map((b) => (b.textContent.trim() || b.title));
+  const clickText = (txt) => {
+    const b = [...d.querySelectorAll('.reader-toolbar button')]
+      .find((x) => x.textContent.trim() === txt);
+    if (b) { b.click(); return true; }
+    return false;
+  };
+  const clickTitle = (t) => {
+    const b = [...d.querySelectorAll('.reader-toolbar button')].find((x) => x.title === t);
+    if (b) { b.click(); return true; }
+    return false;
+  };
+  try {
+    await sleep(__WAIT__);
+    /* 打开时的界面状态（服务端按论文记的那份）：侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放 */
+    const uiState = () => {
+      const reader = d.querySelector('.reader');
+      const sizeBtn = [...d.querySelectorAll('.reader-toolbar .seg button')]
+        .find((b) => b.classList.contains('active')
+          && ['小', '中', '大'].includes(b.textContent.trim()));
+      const zoomLabel = [...d.querySelectorAll('.reader-toolbar .tiny.faint.nowrap')]
+        .map((s) => s.textContent.trim())[0] || '';
+      const cb = d.querySelector('.rows-foot input[type="checkbox"]');
+      return {
+        asideHidden: !!reader && reader.classList.contains('no-aside'),
+        font: sizeBtn ? sizeBtn.textContent.trim() : null,
+        showRefs: cb ? cb.checked : null,
+        zoomLabel,
+      };
+    };
+    res.before = { search: w.location.search, view: active('.seg'), ui: uiState() };
+    /* 先切到"另一套"状态，保证下面三个点击**确实改变了状态** ——
+     * 点已经选中的按钮时 `setXxx` 会提前 return（不会写 URL），那样测的就不是这条路径了
+     * （踩过：进来时恰好已经是目标状态 → 三次点击全是空操作）。 */
+    clickText('原文');            // view = original
+    await sleep(300);
+    clickText('原文文本');         // 原文栏呈现 = text
+    await sleep(300);
+    clickText('对照');            // 回到对照（顺序开关才会出现）
+    await sleep(300);
+    clickTitle('原文在左（译文在右）');   // order = en_left
+    await sleep(400);
+    res.reset = { search: w.location.search, view: active('.seg') };
+    // 目标状态：原 PDF + 译文在左
+    res.clicked = { page: clickText('原 PDF') };
+    await sleep(500);
+    res.clicked.zhLeft = clickTitle('译文在左（原文在右）');
+    await sleep(700);
+    res.after = { search: w.location.search, view: active('.seg') };
+    res.dom = {
+      pgPair: !!d.querySelector('.pg-pair'),
+      imageRight: !!d.querySelector('.pg-pair.image-right'),
+      imageLeft: !!d.querySelector('.pg-pair.image-left'),
+      colImage: !!d.querySelector('.col-image'),
+    };
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+def put_progress(base: str, paper: str, payload: dict) -> dict:
+    """写回阅读进度（自检用它做"测试前置状态"与"跑完还原"）。"""
+    req = urllib.request.Request(
+        f"{base}/api/v1/papers/{paper}/progress", method="PUT",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("data") or {}
+
+
+def read_progress(base: str, paper: str) -> dict | None:
+    code, body = fetch(f"{base}/api/v1/papers/{paper}/progress")
+    if code != 200:
+        return None
+    try:
+        return json.loads(body.decode("utf-8")).get("data") or None
+    except json.JSONDecodeError:
+        return None
 
 
 def find_browser(explicit: str | None) -> str | None:
@@ -1173,6 +1345,10 @@ def main() -> int:
     print(f"      窗口默认 {DESKTOP}（断言桌面左右对照），窄屏用例用 {NARROW}（断言 <1100px 退化）。")
 
     browser = find_browser(args.browser)
+    # 打开阅读器会**把当时的视图状态存回服务端**（阅读进度里含 view_mode/original_mode/pair_order），
+    # 而下面的路由用例、⑤ 的标签用例、⑩ 都在用不同视图打开同一篇论文 ——
+    # 所以在**任何渲染之前**先记下这篇论文原来的打开状态，全部跑完再原样写回。
+    progress_snapshot = read_progress(base, paper) if paper else None
     if not browser:
         print("未找到 Edge / Chrome，跳过渲染检查（可传 --browser 指定路径）")
         failures += 1
@@ -1327,6 +1503,8 @@ def main() -> int:
         print("[SKIP] 需要浏览器")
 
     # ---------------- ⑤ 多标签页切论文（实例复用会串台） + 触摸原生遮罩 ----------------
+    # 注意：这一节与 ⑩ 会真的去点工具栏开关 → 阅读器把新状态存回服务端；
+    # 打开状态由 main 开头记下的 `progress_snapshot` 在最后统一还原。
     print()
     print("=" * 78)
     print("⑤ 多标签页切换论文（每个标签的正文必须各归各）")
@@ -1383,6 +1561,23 @@ def main() -> int:
                 results.append({"kind": "tabs", "path": "触摸高亮", "ok": ok,
                                 "detail": f"-webkit-tap-highlight-color = {tap}"})
                 print(f"[{'PASS' if ok else 'FAIL'}] {'触摸原生遮罩':<16} {tap}")
+                # 打开状态随标签走：在 A 上设成「原 PDF + 译文在左」，切到 B 再切回来必须还在
+                v1 = data.get("viewA1") or {}
+                v2 = data.get("viewA2") or {}
+                q1, q2 = str(v1.get("search") or ""), str(v2.get("search") or "")
+                for label, ok, detail in [
+                    ("状态写进标签 URL",
+                     all(k in q1 for k in ("view=", "left=page", "order=zh_left")),
+                     f"设完之后的 URL = {q1 or '(空)'}，按钮 = {v1.get('active')}"),
+                    ("切标签回来后还原",
+                     bool(v2.get("imageRight")) and bool(v2.get("colImage"))
+                     and "left=page" in q2 and "order=zh_left" in q2,
+                     f"切回 A 之后 URL = {q2 or '(空)'}，原PDF在左={v2.get('imageRight')}，"
+                     f"按钮 = {v2.get('active')}"),
+                ]:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "tabs", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
         finally:
             probe_file.unlink(missing_ok=True)
     else:
@@ -1529,11 +1724,13 @@ def main() -> int:
                      f"（点色块={(data.get('intraClick') or {}).get('ok')}），"
                      f"菜单有删除={((data.get('intra') or {}).get('hasDelete'))}，"
                      f"删完后对面列那条仍在={data.get('intraEnAlive')}"),
-                    ("复制只带本列文字", (data.get("copy") or {}).get("hasCjk") is False
+                    ("复制只带本列文字", ((data.get("copy") or {}).get("hasCjk") is False
+                      if data.get("copyAnchorSide") == "en"
+                      else (data.get("copy") or {}).get("hasCjk") is True)
                      and 0 < ((data.get("copy") or {}).get("len") or 0)
                      < (data.get("copyWholeLen") or 0),
-                     f"整段选区 {data.get('copyWholeLen')} 字 → 剪贴板 "
-                     f"{(data.get('copy') or {}).get('len')} 字"
+                     f"锚点在{data.get('copyAnchorSide')}侧，整段选区 {data.get('copyWholeLen')} 字 → "
+                     f"剪贴板 {(data.get('copy') or {}).get('len')} 字"
                      f"（含中文={((data.get('copy') or {}).get('hasCjk'))}）"),
                     ("松手后不发白对面列（标记跟着选区）",
                      bool((data.get("colFlag") or {}).get("afterUp", {}).get("cls"))
@@ -1667,6 +1864,13 @@ def main() -> int:
                     ("已移除「不支持高亮」字样", data.get("hasHint") is False
                      and data.get("bodyHasHint") is False,
                      f"菜单里={data.get('hasHint')}，整页={data.get('bodyHasHint')}"),
+                    ("选了 PDF 后译文仍可选",
+                     bool((data.get("afterPdfSel") or {}).get("dragClass"))
+                     and (data.get("afterPdfSel") or {}).get("zhUserSelect") == "none"
+                     and (data.get("afterZhPress") or {}).get("dragClass") is False
+                     and (data.get("afterZhPress") or {}).get("zhUserSelect") != "none"
+                     and (data.get("afterZhPress") or {}).get("selLen") == 0,
+                     f"PDF 选区后 {data.get('afterPdfSel')} → 在译文里按下后 {data.get('afterZhPress')}"),
                 ]
                 for label, ok, detail in checks:
                     failures += 0 if ok else 1
@@ -1676,6 +1880,96 @@ def main() -> int:
             probe_file.unlink(missing_ok=True)
     else:
         print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑩ 论文打开状态：按论文保存 + 切标签还原 ----------------
+    print()
+    print("=" * 78)
+    print("⑩ 打开状态（对照 / 原 PDF / 译文在左）：按论文保存、切标签与重开都能还原")
+    print("=" * 78)
+    if browser and paper:
+        def put_progress_local(payload: dict) -> dict:      # noqa: D401 - 局部简写
+            return put_progress(base, paper, payload)
+
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_view_probe.html"
+        try:
+            # ① 服务端那一份：写进去 → 不带任何 query 打开 → 界面必须就是那个状态
+            #    （含界面状态：侧栏收起 / 字号=大 / 显示参考文献 / 原 PDF 缩放 150%）
+            got = put_progress_local({"view_mode": "bilingual", "pair_order": "zh_left",
+                                      "original_mode": "page", "aside_open": False,
+                                      "text_size": "lg", "show_refs": True, "zoom": 1.5})
+            results.append({"kind": "view-state", "path": "进度接口回读", "ok": True,
+                            "detail": f"original_mode={got.get('original_mode')} "
+                                      f"pair_order={got.get('pair_order')} "
+                                      f"view_mode={got.get('view_mode')} "
+                                      f"aside={got.get('aside_open')} size={got.get('text_size')} "
+                                      f"refs={got.get('show_refs')} zoom={got.get('zoom')}"})
+            print(f"[PASS] 进度接口回读        original_mode={got.get('original_mode')} "
+                  f"pair_order={got.get('pair_order')} view_mode={got.get('view_mode')} "
+                  f"aside={got.get('aside_open')} size={got.get('text_size')} "
+                  f"refs={got.get('show_refs')} zoom={got.get('zoom')}")
+            dom_bare = render(browser, f"{base}/app/reader/{paper}?nosse=1", 22000, DESKTOP)
+            checks = [
+                ("重开时还原「原 PDF + 译文在左」",
+                 "pg-pair" in dom_bare and "image-right" in dom_bare and "col-image" in dom_bare,
+                 "不带 query 打开 → " + ("左侧原 PDF、译文在右变体（image-right）都渲染了"
+                                        if "image-right" in dom_bare else "没看到 pg-pair/image-right")),
+                ("对照方向也还原", "image-right" in dom_bare and "image-left" not in dom_bare.split("pg-pair")[1][:200],
+                 "译文在左 → .pg-pair.image-right"),
+            ]
+            # ② 标签条那一份：点三个开关 → URL query 必须带上三个值（切标签靠它还原）
+            probe_file.write_text(
+                VIEW_STATE_PROBE.replace('__URL__', f"{base}/app/reader/{paper}?nosse=1")
+                .replace('__WAIT__', '4500'), encoding="utf-8")
+            dom = render(browser, f"{base}/app/_view_probe.html", 30000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data:
+                checks.append(("开关写进 URL（切标签还原用）", False, "探针没取到结果"))
+            else:
+                ui = (data.get("before") or {}).get("ui") or {}
+                checks.append((
+                    "界面状态按论文还原（侧栏/字号/参考文献/缩放）",
+                    ui.get("asideHidden") is True and ui.get("font") == "大"
+                    and ui.get("showRefs") is True and ui.get("zoomLabel") == "150%",
+                    f"打开时：侧栏收起={ui.get('asideHidden')} 字号={ui.get('font')} "
+                    f"参考文献={ui.get('showRefs')} 缩放={ui.get('zoomLabel')}"))
+                q = str((data.get("after") or {}).get("search") or "")
+                checks.append((
+                    "开关写进 URL（切标签还原用）",
+                    "view=" in q and "left=page" in q and "order=zh_left" in q,
+                    f"点完「原 PDF + 对照 + 译文在左」后 URL = {q or '(空)'}（点中情况：{data.get('clicked')}）"))
+                checks.append((
+                    "URL 里的状态能直接还原",
+                    bool((data.get("dom") or {}).get("imageRight"))
+                    and bool((data.get("dom") or {}).get("colImage")),
+                    f"DOM：{data.get('dom')}"))
+            for label, ok, detail in checks:
+                failures += 0 if ok else 1
+                results.append({"kind": "view-state", "path": label, "ok": ok, "detail": detail})
+                print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与论文数据")
+
+    # 全部跑完：把这篇论文的打开状态还原成**跑之前**的样子
+    # （路由用例 / ⑤ 标签用例 / ⑩ 都会用不同视图打开它，阅读器会把状态存回去）
+    if progress_snapshot and paper:
+        try:
+            put_progress(base, paper, {k: progress_snapshot.get(k) for k in (
+                "last_block_id", "last_page", "percent", "view_mode",
+                "pair_order", "original_mode", "scroll_ratio")})
+            print(f"         （已把打开状态还原成跑之前：{progress_snapshot.get('view_mode')}/"
+                  f"{progress_snapshot.get('original_mode')}/"
+                  f"{progress_snapshot.get('pair_order')}）")
+        except Exception:  # noqa: BLE001
+            pass
 
     print()
     print("=" * 78)

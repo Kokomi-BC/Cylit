@@ -1819,5 +1819,131 @@ PDF 对照（`left=page`）时每行只有一个 `.rr-body`，所以正常；文
 否则一抛错后面全是 `None`，只看结果看不出原因）。
 
 
+### 17.24 选了 PDF 之后译文选不中（在译文里按下要收掉 PDF 选区）
+
+用户报：*解决选中 pdf 后，无法选中译文内容的问题*，随后澄清：*指的是选中译文内容时取消 pdf 的选中状态*。
+
+**真因**：`PdfPage.vue` 为了让"跨页选 PDF"不把中间的译文圈进选区，拖拽期间给 `<html>` 加
+`pm-pdf-drag`（`base.css` 让非 PDF 内容 `user-select: none`，Chrome 会把不可选内容从选区里跳过），
+而且**松手之后只要选区还在 PDF 上就一直留着**（这是刻意的，见 `endDrag` 的注释）。
+问题是：这时用户在**译文列**里按下时，`onDocPointerDown` 发现落点不在 PDF 文字上就 `return` 了 ——
+类没摘、选区还罩着，于是译文一直是 `user-select: none`；而 Chrome **不允许在不可选的内容上开始新选区**，
+结果就是"选了 PDF 之后译文再也选不中"（不是"选到一半被吃"，而是压根开始不了）。
+
+**改法**：落点不在 PDF 文字上时，先把上一次的 PDF 选区连同 `pm-pdf-drag` 一起收掉
+（`clearPdfSelection()`：只在"当前选区确实盖着 PDF 文字层"时才 `removeAllRanges()`，然后摘类）。
+按在 PDF 上时行为完全不变（那个类正是跨页选区需要的）。
+
+**实测（CDP 真实鼠标，`left=page`）**
+
+| 步骤 | 结果 |
+|---|---|
+| 1. 在 PDF 文字上拖一段 | `pm-pdf-drag` 挂上、译文列 `user-select: none`（这就是复现出来的前置状态） |
+| 2. **不点别处**，直接去译文列拖一段 | 类已摘、译文列 `user-select: auto`、选区落在 `rows:zh`、划词菜单正常弹出 |
+| 3. 再在 PDF 上拖一段 | 类照旧挂上（跨页选区行为未受影响） |
+
+**验证**：`frontend_check.py` **79/79**（⑨ 节新增 `选了 PDF 后译文仍可选`：先造一个 PDF 选区、
+断言此时译文 `user-select: none`，再往译文里派发 `pointerdown`，断言类已摘、译文恢复可选、PDF 选区被清空）。
+
+
+### 17.25 按论文保存"打开状态"，切标签/重开都还原
+
+用户口径：*希望能分别保存论文的打开状态（对照、原 PDF、译文在右），并且支持多标签切换时还原这个状态*。
+
+**原来是什么样**：`reading_progress` 里只存了 `view_mode`（原文/译文/对照）与 `pair_order`（原文在左/译文在左），
+**`original_mode`（原文文本 / 原 PDF）根本没存** —— `setOriginalMode()` 既不落库也不进 URL，
+于是"切到原 PDF → 切个标签回来"就变回原文文本；只靠 `?left=page` 这种深链才记得住。
+
+**这一轮**：
+
+1. **落库**：`reading_progress` 加 `original_mode`（`models.py` + `session.py` 的 `_ADDED_COLUMNS` 补列，
+   启动自动 ALTER），`_progress_payload` 读写它、`save_progress` 只接受 `text|page`（非法值不覆盖已有状态）。
+2. **进 URL**：三处开关（视图 / 原文栏呈现 / 左右顺序）改完都调 `syncViewQuery()`，
+   用 `router.replace({ path, query })` 把 `view/left/order` 写进当前 query。
+   为什么非要有这一步：标签条记住的是**每个标签上次的路由位置（含 query）**，
+   点标签切回来时 `tabLocation` 原样跳回去 —— 写进 query 就能**立刻**还原，
+   不必等服务端进度那趟往返（快切标签时它可能还没落库）。服务端那份负责"关掉标签/重开浏览器还记得"。
+3. `setOriginalMode()` 以前**不落库**，现在和其他两个开关一样立即保存。
+
+**实测（真机 Edge；`frontend_check.py` 新增两处）**
+
+| 用例 | 结果 |
+|---|---|
+| 进度接口往返 | PUT `bilingual/zh_left/page` → GET 回读一致（`original_mode` 已落库） |
+| 不带任何 query 重开 | 左侧就是原 PDF、译文在左（`.pg-pair.image-right` + `.col-image`）→ 从服务端还原 |
+| A 标签切成「原 PDF + 译文在左」 | URL 变成 `?nosse=1&view=bilingual&left=page&order=zh_left` |
+| 切到 B 标签再切回 A | 状态还在（URL 三个参数都在、`.col-image` 在、工具栏按钮仍是 对照/原 PDF/译文在左） |
+| `pytest tests -q` | 新增 `tests/test_reader_progress.py`（纯映射 + 落库往返；不可用 MySQL 自动跳过）全绿 |
+
+**顺手修的自检卫生问题**：这些用例会**真的去点工具栏开关**、也会用 `?left=page` 之类的深链渲染阅读器，
+而阅读器在卸载时会把"当前视图状态"存回服务端 —— 于是跑一次自检就把**用户真实的阅读状态**改了
+（实测：跑完变成 `bilingual/page/zh_left`）。现在 `main()` 在**任何渲染之前**先读一份进度快照，
+全部跑完原样写回；⑩ 节内也保留了它自己的快照/还原（它要显式写测试状态）。
+
+
+### 17.26 界面状态也按论文记：侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放
+
+用户口径：*记录一下侧栏展开状态，字号等信息吧*（承接上一条"按论文保存打开状态"）。
+
+**原来是什么样**：侧栏开合与字号只存在**全局** `localStorage`（`pm.reader.aside` / `pm-reader-text-size`）——
+换一篇论文也是同一个值，多标签之间更是没法"各记各的"；`showRefs`（显示参考文献）与 `zoom`（原 PDF 缩放）
+**根本没持久化**，切个标签就回默认。
+
+**改法**（和 17.25 同一套两层结构，不再新增一套机制）：
+
+- 后端 `reading_progress` 再加四列：`aside_open`(bool) / `text_size`(sm|md|lg) / `show_refs`(bool) / `zoom`(float)。
+  **都允许 NULL**：NULL = 这篇论文还没记过 → 前端回退到本地偏好/默认值
+  （所以不给 `NOT NULL DEFAULT`，否则"没记过"和"记成了默认值"就分不出来）。
+  `save_progress` 只接受合法值：字号白名单、`zoom` 夹到 0.4~3、布尔必须是真布尔
+  （非法值当作"没说"，不覆盖已有记录）。
+- 前端：`loadAll` 里**服务端那份优先**，没记过才用 `localStorage`/默认值；
+  新增一个 watcher `[asideOpen, textSize, showRefs, zoom]` → 一变就**立刻**存一次
+  （`loading` 期间跳过：那一刻正把服务端那份灌进来，回存等于自己写自己）。
+  于是 `toggleAside` / `setTextSize` / `v-model:show-refs` / 缩放按钮都不用各自加保存代码。
+
+**定点验证**（按用户要求**没跑全流程自检**，只测这一件事）：
+
+| 步骤 | 结果 |
+|---|---|
+| PUT `aside_open=false / text_size=lg / show_refs=true / zoom=1.5` | 回读一致 |
+| 不带任何 query 打开阅读器 | 侧栏收起（`.reader.no-aside`）、字号按钮「大」且 `.rows-wrap` 实测 `font-size: 17px`（= `TEXT_SIZES.lg`）、「显示参考文献」勾上、缩放标签 `150%` |
+| `pytest tests/test_reader_progress.py -q` | 4 项通过（新增两条：默认值必须是 `None`；非法值不覆盖 + `zoom` 超范围夹到上限） |
+
+`frontend_check.py` 的 ⑩ 节也补了对应断言（`界面状态按论文还原（侧栏/字号/参考文献/缩放）`，
+判据与上面这次定点验证完全一致），但**这一轮没有跑整套自检**（用户要求），
+下次跑 `frontend_check.py` 时会一并覆盖。
+
+
+### 17.27 对照「原 PDF」模式下的文字列支持 译文 / 原文 切换
+
+用户口径：*对照增加译文/原文模式*，澄清后是 *对照 pdf 时有原文，译文模式* ——
+即"**对照 + 原 PDF**"时，右侧文字列能在**译文（默认）/ 原文**之间切换，并且这个选择也要记下来。
+
+**原来**：`ReaderPageRows.pageRowSide` 写死 `'zh'`（注释里还留着"以前跟着 `pairOrder` 走 → 原文出现两次、
+译文消失"的教训）—— 想在页图旁边对着原文核对/复制是没有办法的。
+
+**现在**：
+- 新增 `pageSide`（`zh` 默认 / `en`）；工具栏只在 `pageLeft`（对照 + 原 PDF）时多一个「译文 / 原文」分段控件
+  （`title="页图旁的文字列"`）—— 只有那时"另一列是页图"，文字列放哪一侧才是个选择。
+- `pageRowSide` 改成读它，**仍然不跟 `pairOrder` 走**，所以那个"原文出现两次"的老毛病不会回来。
+- 按论文记录：`reading_progress.page_side`（`NOT NULL DEFAULT 'zh'`，老记录自动补上默认值）+
+  `save_progress` 白名单；同时写进 URL `?pside=`，切标签**立刻**还原（与 17.25 的 view/left/order 同一套两层结构）。
+
+**定点验证**（仍然**没跑全流程自检**）：
+
+| 用例 | 结果 |
+|---|---|
+| PUT `page_side=en` → 回读 | `en`；PUT 非法值 `xx` 被忽略（仍是 `en`） |
+| 不带 query 重开（进度里是 en） | 文字列 266 行 `rrow side-en`、**0 行** `side-zh`，仍是 `.pg-pair`（页图 + 文字） |
+| 进度里是 zh（默认） | 266 行 `side-zh`、0 行 `side-en` |
+| 深链 `?view=bilingual&left=page&pside=en` | 266 行 `side-en`（切标签还原走的就是 query） |
+| 工具栏 | 出现 `title="页图旁的文字列"` 的分段控件，默认「译文」高亮 |
+| `pytest tests/test_reader_progress.py -q` | 5 项通过（新增 `page_side` 默认值/往返/非法值） |
+
+
+
+
+
+
 
 

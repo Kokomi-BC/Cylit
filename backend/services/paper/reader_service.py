@@ -639,14 +639,22 @@ def _progress_payload(row: ReadingProgress | None) -> dict:
     if row is None:
         return {"last_block_id": None, "last_page": 1, "percent": 0.0,
                 "view_mode": "bilingual", "pair_order": "en_left",
-                "scroll_ratio": 0.0}
+                "original_mode": "text", "scroll_ratio": 0.0,
+                "page_side": "zh",
+                # 界面状态：没有记录时给 None（前端据此回退到本地偏好/默认值）
+                "aside_open": None, "text_size": None, "show_refs": None, "zoom": None}
     # 兼容旧记录里的上下对照取值：映射到左右对照的等价语义
     pair_order = row.pair_order or "en_left"
     pair_order = {"en_top": "en_left", "zh_top": "zh_left"}.get(pair_order, pair_order)
     return {
         "last_block_id": row.last_block_id, "last_page": row.last_page,
         "percent": float(row.percent or 0), "view_mode": row.view_mode,
-        "pair_order": pair_order, "scroll_ratio": float(row.scroll_ratio or 0),
+        "pair_order": pair_order, "original_mode": row.original_mode or "text",
+        "page_side": row.page_side or "zh",
+        "scroll_ratio": float(row.scroll_ratio or 0),
+        "aside_open": row.aside_open, "text_size": row.text_size,
+        "show_refs": row.show_refs,
+        "zoom": float(row.zoom) if row.zoom is not None else None,
         "updated_at": row.updated_at.isoformat(timespec="seconds")
         if row.updated_at else None,
     }
@@ -801,6 +809,14 @@ def figures_payload(paper_id: str) -> dict:
 VALID_VIEW_MODES = ("original", "translation", "bilingual")
 # 对照方向：`en_left/zh_left`（左右对照，当前前端默认）与旧的 `en_top/zh_top`（上下对照）都接受
 VALID_PAIR_ORDERS = ("en_left", "zh_left", "en_top", "zh_top")
+# 原文栏呈现：`text` = 转录的原文文本；`page` = 原 PDF 页图
+VALID_ORIGINAL_MODES = ("text", "page")
+# 正文字号（前端 TEXT_SIZES 的三个档）
+VALID_TEXT_SIZES = ("sm", "md", "lg")
+# 对照 + 原 PDF 时右侧文字列放哪一侧：`zh` 译文（默认）/ `en` 原文
+VALID_PAGE_SIDES = ("en", "zh")
+# 原 PDF 缩放的合法区间（与前端工具栏按钮的夹取一致）
+ZOOM_MIN, ZOOM_MAX = 0.4, 3.0
 
 
 def save_progress(paper_id: str, payload: dict, user_id: int = 1) -> dict:
@@ -820,6 +836,22 @@ def save_progress(paper_id: str, payload: dict, user_id: int = 1) -> dict:
             row.view_mode = payload["view_mode"]
         if payload.get("pair_order") in VALID_PAIR_ORDERS:
             row.pair_order = payload["pair_order"]
+        if payload.get("original_mode") in VALID_ORIGINAL_MODES:
+            row.original_mode = payload["original_mode"]
+        if payload.get("page_side") in VALID_PAGE_SIDES:
+            row.page_side = payload["page_side"]
+        # 界面状态：类型不对就当作"没说"，不覆盖已有记录（一个手滑的请求不该改坏用户的选择）
+        if isinstance(payload.get("aside_open"), bool):
+            row.aside_open = payload["aside_open"]
+        if payload.get("text_size") in VALID_TEXT_SIZES:
+            row.text_size = payload["text_size"]
+        if isinstance(payload.get("show_refs"), bool):
+            row.show_refs = payload["show_refs"]
+        if payload.get("zoom") is not None:
+            try:
+                row.zoom = min(ZOOM_MAX, max(ZOOM_MIN, float(payload["zoom"])))
+            except (TypeError, ValueError):
+                pass
         if payload.get("scroll_ratio") is not None:
             row.scroll_ratio = float(payload["scroll_ratio"])
         sess.flush()

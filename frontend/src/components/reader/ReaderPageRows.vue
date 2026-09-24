@@ -24,6 +24,8 @@ const props = defineProps<{
   groups: PageGroup[];
   mode: ViewMode;
   originalMode: OriginalMode;
+  /** 页图模式（对照 + 原 PDF）下文字列放哪一侧：`zh` 译文（默认）/ `en` 原文 */
+  pageSide: 'en' | 'zh';
   pairOrder: PairOrder;
   paperId: string;
   pageWidth: number;
@@ -53,9 +55,11 @@ const enLeft = computed(() => props.pairOrder !== 'zh_left' && props.pairOrder !
 const pageLeft = computed(() => props.mode === 'bilingual' && props.originalMode === 'page');
 const textCompare = computed(() => props.mode === 'bilingual' && props.originalMode === 'text');
 const imageOnly = computed(() => props.mode === 'original' && props.originalMode === 'page');
-/** 页图模式下文字列**永远放译文**：另一列就是原 PDF 页图（原始内容），
- *  之前跟着 `pairOrder` 走会导致"译文在左"时文字列也放原文 —— 原文出现两次、译文消失。 */
-const pageRowSide = 'zh' as const;
+/** 页图模式下**文字列放哪一侧**：默认译文（另一列就是原 PDF 页图，等于"原 PDF 对照译文"），
+ *  可以切成原文（"原 PDF 对照原文"：想照页图核对原文/复制时用）。
+ *  ⚠️ 它由用户显式选择（`pageSide`），**不要**再跟着 `pairOrder` 走 ——
+ *  以前那样做在"译文在左"时文字列也会放原文，结果是原文出现两次、译文消失。 */
+const pageRowSide = computed<'en' | 'zh'>(() => props.pageSide);
 /** 正文里是否显示插图（只有"纯原 PDF"单栏不显示：那一种整页就是页图，没有行可挂） */
 const showFigures = computed(() => !imageOnly.value);
 
