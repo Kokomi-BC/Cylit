@@ -404,6 +404,69 @@ export interface ChunkMeta {
   embedding_model_id: string | null;
 }
 
+/** `/knowledge/chunks` 的一条（知识库页「浏览」用）。 */
+export interface KnowledgeChunkRow {
+  id: string;
+  paper_id: string;
+  block_id: string;
+  chunk_type: string;
+  page: number;
+  lang?: string;
+  section: string | null;
+  preview: string;
+  /** 图注（插图/表格 chunk 有）——列表里显示它比显示 "插图 <块 id>：…" 干净 */
+  caption?: string | null;
+  tokens: number;
+  index_version: number;
+  /** 插图/表格/公式的裁图；正文为 null */
+  image_url?: string | null;
+}
+
+/** `/knowledge/chunk`（知识库页「展开全文」）：只有当前这一条，不做中英对照。 */
+export interface KnowledgeChunkDetail {
+  chunk_id: string;
+  paper_id: string;
+  paper_title?: string;
+  block_id?: string | null;
+  page: number;
+  section?: string | null;
+  chunk_type: string;
+  lang: string;
+  content: string;
+  chars: number;
+  tokens?: number | null;
+  index_version?: number | null;
+  image_url?: string | null;
+  pair_id?: string | null;
+}
+
+/** `/rag/similar` 的一条命中（后端按白名单裁剪后的字段）。 */
+export interface SimilarItem {
+  chunk_id: string;
+  paper_id: string;
+  paper_title?: string;
+  block_id?: string | null;
+  page?: number;
+  section?: string | null;
+  chunk_type?: string;
+  lang?: string;
+  langs?: string[];
+  snippet?: string;
+  /** 图注（插图/表格条目）——比 snippet 的 "插图 <块 id>：…" 干净 */
+  caption?: string | null;
+  image_url?: string | null;
+  scores?: Record<string, number | null>;
+  ranks?: Record<string, number | null>;
+}
+
+export interface SimilarResult {
+  implemented?: boolean;
+  query?: string;
+  scope?: string;
+  items?: SimilarItem[];
+  retrieval?: Record<string, any>;
+}
+
 export interface RagSource {
   paper_id?: string;
   paper_title?: string;

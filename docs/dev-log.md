@@ -2762,6 +2762,45 @@ RAG 后端接口 `/rag/query`、`/rag/query/stream` **原样保留**，只是前
 于是第 3 步读到「下拉 0」，看起来像"勾选坏了"——其实是我没点到。
 **教训：改结构后要把探针里所有旧选择器（`querySelector` 与 `querySelectorAll` 两种写法）都 grep 一遍。**
 
+### 17.45 第四十轮（再续）—— 切走再回来内容被清空（视图是按"标签键"重建的）
+
+用户报：**"知识库跳转到其他页面时，然后再返回，内容就被清空了。"**
+
+#### 根因：外壳按标签键重建视图，组件里的状态跟着实例一起没了
+
+`App.vue` 是 `<RouterView :key="viewKey">`，`viewKey = routeKey(route)`（路由名 + 参数）。
+这套机制在第 39 轮是**故意**的（`/reader/A` → `/reader/B` 必须重建阅读器），但它对**知识库页**是反效果：
+切到别的标签时 `KnowledgeView` 被卸载，写在组件里的 `ref`（搜索词、结果、浏览筛选、展开的全文）
+全部随实例消失；切回来是一个全新的空页面。
+
+#### 改法：把"这个页面在看什么"放进模块级 store
+
+- 新增 `stores/knowledge.ts`：`kbState = reactive({...})`（与 `stores/app.ts` 同一套做法），
+  放 `mode / query / scope / paperId / excludeSelf / result / error / bPaperId / bType / bLang /
+  chunks / detailId / detail`。
+- 视图里用 `toRefs(kbState)` 取出来 —— 模板照旧写 `mode`、`result`，脚本照旧 `.value`，
+  改动面小；纯瞬时的界面状态（`busy`、历史下拉开合/高亮、`detailBusy`）仍留在组件里。
+- `overview`（库规模 + 论文列表）**不进 store**：它必须反映真实索引状态，每次进页面重新取。
+- `onMounted`：只有"上次就是浏览模式 + 选了论文 + 条目是空的"才补一次 `loadChunks()`，
+  否则直接渲染 store 里的结果 —— **切回来不重复请求**。
+- 顺带把接口形状搬进 `api/types.ts`（`KnowledgeChunkRow` / `KnowledgeChunkDetail` /
+  `SimilarItem` / `SimilarResult`），store 与视图共用一份定义。
+
+**作用域是"本次页面会话"**：切标签、切页面回来都在；**刷新（F5）会重置** ——
+搜索词本身落在 `utils/searchHistory` 的 localStorage 里，输入框一点就能重跑。
+要连刷新也保住，加一层 sessionStorage 即可（约 15 行），等用户发了话再做。
+
+#### 验证（新增探针第 9 步，走真实标签条）
+
+| 用例 | 结果 |
+|---|---|
+| 搜索一次（6 条）→ 点「首页」标签 → 点回「知识库」标签 | `搜索词还在`、`结果还在：6 条`、漏斗一行照旧 |
+| 回来后是否重新检索 | **0 次**（用的 store，没有重复打 `/rag/similar`） |
+| 浏览（全部类型，137 行）→ 切走 → 切回 | 模式仍是 `浏览`、`137 行`、**重拉 chunks 0 次** |
+| 安全 | 全流程 `GET 41 / POST 4`（POST 全是只读检索），**无任何写请求** |
+| `vue-tsc` + `vite build` | 干净 |
+
+
 
 
 

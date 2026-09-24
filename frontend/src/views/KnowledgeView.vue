@@ -15,11 +15,14 @@
  * 搜索记录是浏览器式的（`utils/searchHistory`，本机 localStorage，管理入口在设置页 `#history`）。
  */
 
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, toRefs } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { KnowledgeOverview } from '@/api/types';
+import type {
+  KnowledgeChunkDetail, KnowledgeChunkRow, KnowledgeOverview, SimilarItem, SimilarResult,
+} from '@/api/types';
 import { reportError, state, toast, withLoading } from '@/stores/app';
+import { kbState } from '@/stores/knowledge';
 import { openTab } from '@/stores/tabs';
 import { readerTarget } from '@/utils/navigation';
 import {
@@ -45,74 +48,22 @@ const BROWSE_LIMIT = 200;
 
 type KbPaper = KnowledgeOverview['items'][number];
 
-/** 浏览条目（`GET /knowledge/chunks`）。 */
-interface ChunkRow {
-  id: string;
-  paper_id: string;
-  block_id: string;
-  chunk_type: string;
-  page: number;
-  lang?: string;
-  section: string | null;
-  preview: string;
-  /** 图注（插图/表格 chunk 有；正文没有）——列表里显示它比显示 "插图 <块 id>：…" 干净 */
-  caption?: string | null;
-  tokens: number;
-  index_version: number;
-  /** 插图 / 表格 / 公式的裁图（正文为 null） */
-  image_url?: string | null;
-}
-
-/** 「展开全文」（`GET /knowledge/chunk`）：只有当前这一条。 */
-interface ChunkDetail {
-  chunk_id: string;
-  paper_id: string;
-  paper_title?: string;
-  block_id?: string | null;
-  page: number;
-  section?: string | null;
-  chunk_type: string;
-  lang: string;
-  content: string;
-  chars: number;
-  tokens?: number | null;
-  index_version?: number | null;
-  image_url?: string | null;
-  pair_id?: string | null;
-}
-
-/** 相似检索条目（`POST /rag/similar`，字段按后端裁剪后的白名单）。 */
-interface SimilarItem {
-  chunk_id: string;
-  paper_id: string;
-  paper_title?: string;
-  block_id?: string | null;
-  page?: number;
-  section?: string | null;
-  chunk_type?: string;
-  lang?: string;
-  langs?: string[];
-  snippet?: string;
-  /** 图注（插图/表格条目）——比 snippet 的 "插图 <块 id>：…" 干净 */
-  caption?: string | null;
-  image_url?: string | null;
-  scores?: Record<string, number | null>;
-  ranks?: Record<string, number | null>;
-}
-
-interface SimilarResult {
-  implemented?: boolean;
-  query?: string;
-  scope?: string;
-  items?: SimilarItem[];
-  retrieval?: Record<string, any>;
-}
-
 const router = useRouter();
 
 /* ------------------------------ 页面状态 ------------------------------ */
 
-const mode = ref<'search' | 'browse'>('search');
+/**
+ * 输入、结果、浏览筛选、展开的全文都放在 `stores/knowledge`（模块级 reactive）里：
+ * 外壳按"标签键"重建视图，切走再切回来组件是新的 —— 状态放组件里就会丢（用户报过）。
+ * 用 `toRefs` 取出来，模板照旧写 `mode` / `result`，脚本里照旧 `.value`。
+ */
+const {
+  mode, query, scope, paperId, excludeSelf, result, error,
+  bPaperId, bType, bLang, chunks, detailId, detail,
+} = toRefs(kbState);
+
+/** 纯瞬时的界面状态留在组件里：忙碌标记、历史下拉开合/高亮。 */
+const busy = ref(false);
 const overview = ref<KnowledgeOverview | null>(null);
 
 const papers = computed<KbPaper[]>(() => overview.value?.items || []);
@@ -142,14 +93,6 @@ function setMode(next: 'search' | 'browse') {
 }
 
 /* ------------------------------ 搜索 ------------------------------ */
-
-const query = ref('');
-const scope = ref<'all' | 'paper'>('all');
-const paperId = ref('');
-const excludeSelf = ref(false);
-const busy = ref(false);
-const result = ref<SimilarResult | null>(null);
-const error = ref('');
 
 /**
  * 界面范围 → 后端 scope：
@@ -295,11 +238,6 @@ function clearAllHistory(): void {
 
 /* ------------------------------ 浏览 ------------------------------ */
 
-const bPaperId = ref('');
-const bType = ref('');
-const bLang = ref('');
-const chunks = ref<ChunkRow[]>([]);
-
 /** 「插图」= 图库网格；其余类型用紧凑列表（列表里也带小缩略图）。 */
 const isGallery = computed(() => bType.value === 'figure');
 
@@ -307,7 +245,7 @@ async function loadChunks(): Promise<void> {
   if (!bPaperId.value) { chunks.value = []; return; }
   closeDetail();
   await withLoading('kb-chunks', async () => {
-    const data = await api.get<{ items: ChunkRow[] }>('/knowledge/chunks', {
+    const data = await api.get<{ items: KnowledgeChunkRow[] }>('/knowledge/chunks', {
       paper_id: bPaperId.value,
       chunk_type: bType.value || undefined,
       lang: bLang.value || undefined,
@@ -319,8 +257,6 @@ async function loadChunks(): Promise<void> {
 
 /* ------------------------------ 展开全文 ------------------------------ */
 
-const detail = ref<ChunkDetail | null>(null);
-const detailId = ref('');
 const detailBusy = ref(false);
 
 /** 点同一条再点一次 = 收起（按钮文案跟着变）。 */
@@ -330,7 +266,7 @@ async function toggleDetail(chunkId: string): Promise<void> {
   detail.value = null;
   detailBusy.value = true;
   try {
-    detail.value = await api.get<ChunkDetail>('/knowledge/chunk', { chunk_id: chunkId });
+    detail.value = await api.get<KnowledgeChunkDetail>('/knowledge/chunk', { chunk_id: chunkId });
     await nextTick();
     document.getElementById('kb-detail')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   } catch (err) {
@@ -397,6 +333,9 @@ onMounted(async () => {
   refreshHistory();
   unsubscribeHistory = subscribeHistory(refreshHistory);
   await refreshOverview();
+  // 上次是浏览模式、筛选还在、但条目已经被清掉（例如中途重建过索引）→ 补一次；
+  // 有数据就直接渲染 store 里的（切走再切回来不重复请求）
+  if (mode.value === 'browse' && bPaperId.value && !chunks.value.length) await loadChunks();
 });
 
 onUnmounted(() => {
