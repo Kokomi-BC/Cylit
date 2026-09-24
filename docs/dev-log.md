@@ -1940,6 +1940,37 @@ PDF 对照（`left=page`）时每行只有一个 `.rr-body`，所以正常；文
 | 工具栏 | 出现 `title="页图旁的文字列"` 的分段控件，默认「译文」高亮 |
 | `pytest tests/test_reader_progress.py -q` | 5 项通过（新增 `page_side` 默认值/往返/非法值） |
 
+### 17.28 阅读器数据加载占位：圆圈旋转动画
+
+用户口径：*增加加载阅读器数据加一个圆圈旋转动画*，随后补一句 *不一定匀速旋转哦*。
+
+**原来**：`<div v-if="loading" class="empty">正在加载阅读器数据…</div>` —— 一行灰字，
+而且阅读器是整屏布局（`.app-main.wide`），`.empty` 的 `padding` 会把这行字贴在左上角。
+
+**现在**：
+- 占位换成 `.reader-loading`（`ReaderView.vue` 的 scoped 样式）：**圈 + 文案居中**，
+  高度 `calc(100vh - var(--header-h))` 与 `.reader` 网格对齐，加载完切正文不会跳一下。
+- 圈是 `base.css` 里的通用 `.spinner`（顺手删掉没人用的 `.boot-spinner`，它和 `index.html`
+  里的首屏骨架不是一回事）。标记固定为
+  `<svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /></svg>`。
+- **不做匀速转**（按用户那句补正）：外圈 `spin 1.6s linear` 稳速旋转，弧长本身再用
+  `spin-arc 1.4s ease-in-out` 一伸一缩（Material 那套循环进度）。只让圈匀速转的话，
+  每一圈都一样快慢，看着像秒针/计时器；弧长伸缩才让"在转"有呼吸感。
+  注释里标了"调的时候别把 `spin-arc` 删了"。
+- `prefers-reduced-motion` 要单独收尾：全局规则只是把动画时长压到 ~0，弧长会**停在最短那一帧**
+  （`dasharray: 1`，几乎看不见），所以这里显式 `animation: none` + `stroke-dasharray: none`，
+  静态也留一个完整的环。
+
+**定点验证**（无头 Edge + CDP 采计算样式，不靠截图 —— 转不转截图看不出来）：
+
+| 用例 | 结果 |
+|---|---|
+| 只放 `.spinner` 标记（引构建产物 CSS）采样 32 次 | 弧长 `1.04 → 42`、32 次里 **16 个不同值** → 弧长在伸缩，不是匀速 |
+| 同上，两圈动画 | `spin` 1600ms `linear`（外圈）/ `spin-arc` 1400ms **`ease-in-out`**（弧长）；计算尺寸 22px、描边 `rgb(15,123,138)` |
+| 减少动效（`Emulation.setEmulatedMedia`） | 动画数 0、`stroke-dasharray: none` → 静态整环（不是"停在最短帧的隐身圈"） |
+| **真实阅读器页面**：Fetch 域扣住 `/reader` 与 `/progress`，让 `loading` 一直挂着采样 | `.reader-loading` 在、文案「正在加载阅读器数据…」、容器 750×433（= 视口 485 − 顶栏 52）、圈心 x=375 = 视口中心；`spin`/`spin-arc` 时钟 5883→6316ms（真在跑）；旧的 `.empty` 占位已不存在 |
+| 同一次页面加载里被扣住的请求 | 只有 `GET /papers/…/reader` —— 进度 PUT 没发出去，**这轮验证没写数据库** |
+
 
 
 

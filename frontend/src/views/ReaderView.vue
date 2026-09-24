@@ -1885,7 +1885,12 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
 <template>
   <div>
-    <div v-if="loading" class="empty">正在加载阅读器数据…</div>
+    <div v-if="loading" class="reader-loading" role="status" aria-live="polite">
+      <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="9" />
+      </svg>
+      <span>正在加载阅读器数据…</span>
+    </div>
 
     <div v-else-if="fatal" class="card">
       <div class="card-body">
@@ -2252,6 +2257,14 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 </template>
 
 <style scoped>
+/* 阅读器数据加载占位：整屏布局下正文区还是空的，把圈 + 文案**居中**摆（用 `.empty` 会贴在左上角）。
+   高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
+.reader-loading {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; height: calc(100vh - var(--header-h));
+  color: var(--text-dim); font-size: 13px;
+}
+
 .reader {
   display: grid;
   /* **左右栏已合并**：只有"侧栏 + 正文"两列，正文因此更宽（对照时两侧都更好读）。
