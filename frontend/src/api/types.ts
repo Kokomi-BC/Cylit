@@ -397,10 +397,29 @@ export interface ChunkMeta {
 
 export interface RagSource {
   paper_id?: string;
+  paper_title?: string;
   block_id?: string;
+  page?: number;
+  section?: string | null;
+  chunk_type?: string;
+  lang?: string;
+  /** 来源编号（`S1`、`S2`…），与答案里的 `[S1]` 对应 */
+  label?: string;
+  index?: number;
   snippet?: string;
   score?: number;
   [key: string]: any;
+}
+
+export interface RagValidation {
+  grounded: boolean;
+  cited: string[];
+  unknown_citations: string[];
+  quotes: number;
+  unsupported_quotes: Array<{ quote: string; matched: string | null }>;
+  math_quotes_unchecked?: string[];
+  problems: string[];
+  notes?: string[];
 }
 
 export interface RagAnswer {
@@ -409,6 +428,11 @@ export interface RagAnswer {
   answer?: string;
   sources?: RagSource[];
   grounded?: boolean;
+  /** 模型明确表示"库内文献不足以回答"（回答以【无法回答】开头） */
+  insufficient?: boolean;
+  validation?: RagValidation;
+  context?: { sources: number; chars: number; truncated: number };
+  usage?: Record<string, any>;
   retrieval_metadata?: Record<string, any>;
 }
 

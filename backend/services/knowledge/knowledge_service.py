@@ -598,7 +598,7 @@ def similar(payload: dict) -> dict:
         chunk_types=chunk_types, langs=langs, exclude_chunks=exclude_chunks,
         top_k=int(top_k) if top_k else None,
     )
-    items = _decorate_items(result["items"])
+    items = [public_item(i) for i in _decorate_items(result["items"])]
     return {
         "implemented": True,
         "query": query,
@@ -610,7 +610,12 @@ def similar(payload: dict) -> dict:
 
 
 def _decorate_items(items: list[dict]) -> list[dict]:
-    """补上论文标题与展示用摘录（检索层不该知道"标题"这种业务字段）。"""
+    """补上论文标题与展示用摘录（检索层不该知道"标题"这种业务字段）。
+
+    **保留 `content` / `metadata`**：RAG 的 ContextBuilder 要用原文与 `pair_id`
+    （踩过一次：装饰时把 `content` 丢了，上下文里一条来源都拼不出来）。
+    对外响应在各接口边界上再裁掉这两个字段。
+    """
     titles = _paper_titles(sorted({i.get("paper_id") for i in items if i.get("paper_id")}))
     out = []
     for i in items:
@@ -622,6 +627,8 @@ def _decorate_items(items: list[dict]) -> list[dict]:
             "lang": i.get("lang") or "en",
             "langs": i.get("langs") or [i.get("lang") or "en"],
             "snippet": truncate(str(i.get("content") or ""), 260),
+            "content": i.get("content"),
+            "metadata": i.get("metadata") or {},
             "scores": {
                 "vector": i.get("vector_score"), "lexical": i.get("lexical_score"),
                 "rrf": round(float(i.get("rrf") or 0.0), 6),
@@ -631,6 +638,16 @@ def _decorate_items(items: list[dict]) -> list[dict]:
                       **{f"{k}_rank": v for k, v in (i.get("sources") or {}).items()}},
         })
     return out
+
+
+#: 只给前端看的字段（`content` / `metadata` / 内部校验用文本都不下发）
+PUBLIC_ITEM_FIELDS = ("chunk_id", "paper_id", "paper_title", "block_id", "page",
+                      "section", "chunk_type", "lang", "langs", "snippet",
+                      "scores", "ranks")
+
+
+def public_item(item: dict) -> dict:
+    return {k: item.get(k) for k in PUBLIC_ITEM_FIELDS if k in item}
 
 
 def _paper_titles(paper_ids: list[str]) -> dict[str, str]:

@@ -644,7 +644,7 @@ function langLabel(item: SimilarItem): string {
     <div class="card" style="margin-top:14px">
       <div class="card-head">
         <span>问答（RAG）</span>
-        <span class="badge warn">尚未实现</span>
+        <span class="badge ok">混合检索 + 引用校验</span>
         <span class="spacer"></span>
       </div>
       <div class="card-body">
@@ -688,16 +688,53 @@ function langLabel(item: SimilarItem): string {
                 <div class="md" v-html="mdToHtml(ragResult.answer || '')"></div>
                 <div class="row wrap tiny" style="margin-top:8px">
                   <span class="badge" :class="ragResult.grounded ? 'ok' : 'warn'">
-                    {{ ragResult.grounded ? '有原文依据' : '无原文依据' }}
+                    {{ ragResult.grounded ? '引用可校验' : '存在未通过校验的引用' }}
                   </span>
+                  <span class="badge warn" v-if="ragResult.insufficient">库内文献不足</span>
                   <span class="faint">来源 {{ (ragResult.sources || []).length }} 条</span>
+                  <span class="faint" v-if="ragResult.usage?.model">
+                    · {{ ragResult.usage.model }}
+                    <template v-if="ragResult.usage.completion_tokens">
+                      · 输出 {{ ragResult.usage.completion_tokens }} tok
+                    </template>
+                    <template v-if="ragResult.usage.reasoning_tokens">
+                      （推理 {{ ragResult.usage.reasoning_tokens }}）
+                    </template>
+                  </span>
+                  <span class="faint" v-if="ragResult.context">
+                    · 上下文 {{ ragResult.context.chars }} 字<template
+                      v-if="ragResult.context.truncated">，截断 {{ ragResult.context.truncated }} 条</template>
+                  </span>
                 </div>
-                <div v-for="(s, i) in (ragResult.sources || [])" :key="i"
+
+                <div v-for="p in (ragResult.validation?.problems || [])" :key="p"
+                     class="annotation-item manual" style="margin-top:8px">
+                  <div class="row wrap">
+                    <span class="badge warn">校验</span>
+                    <span class="small">{{ p }}</span>
+                  </div>
+                </div>
+                <div v-for="n in (ragResult.validation?.notes || [])" :key="n"
+                     class="annotation-item manual" style="margin-top:6px">
+                  <div class="row wrap">
+                    <span class="badge">提示</span>
+                    <span class="small">{{ n }}</span>
+                  </div>
+                </div>
+
+                <div v-for="(s, i) in (ragResult.sources || [])" :key="s.chunk_id || i"
                      class="annotation-item" style="margin-top:8px">
                   <div class="row wrap tiny">
-                    <span class="badge accent">{{ titleOf(s.paper_id) }}</span>
-                    <span class="mono faint">{{ s.block_id }}</span>
+                    <span class="badge accent">{{ s.label || ('S' + (i + 1)) }}</span>
+                    <span class="badge">{{ s.paper_title || titleOf(s.paper_id) }}</span>
+                    <span class="badge">p{{ s.page }}</span>
+                    <span class="badge" :class="{ accent: s.lang === 'zh' }">
+                      {{ s.lang === 'zh' ? '中' : '原' }}
+                    </span>
                     <span class="spacer"></span>
+                    <span class="mono faint" v-if="s.score !== null && s.score !== undefined">
+                      rerank {{ Number(s.score).toFixed(3) }}
+                    </span>
                     <RouterLink :to="sourceTo(s)">跳回原文</RouterLink>
                   </div>
                   <div class="small clamp-2" style="margin-top:4px">{{ sourceSnippet(s) }}</div>

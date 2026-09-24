@@ -93,9 +93,28 @@ async def rag_similar(request: Request, payload: dict = Body(default={})):
 
 @router.post("/rag/query")
 async def rag_query(request: Request, payload: dict = Body(...)):
-    return envelope({
-        "implemented": False,
-        "message": "RAG 问答在阶段 14–17 的最后一轮实现（检索内核与相似检索已通）。",
-        "answer": "", "sources": [], "grounded": False,
-        "retrieval_metadata": {"scope": payload.get("scope") or "current_paper"},
-    }, request=request)
+    """RAG 问答（§20.4）：混合检索 → ContextBuilder → 生成 → AnswerValidator。
+
+    请求体：``{question, scope: current_paper|knowledge_base|cross, paper_id?, top_k?}``；
+    响应：``{implemented, answer, sources[], grounded, validation, retrieval_metadata, usage}``。
+    """
+    from backend.services.knowledge import rag_service
+
+    return envelope(rag_service.answer(payload), request=request)
+
+
+@router.post("/rag/query/stream")
+def rag_query_stream(payload: dict = Body(...)):
+    """RAG 流式问答（SSE）：``rag_meta`` → ``rag_token``* → ``rag_done`` / ``rag_error``。
+
+    同步生成器 + ``StreamingResponse``：同步 SDK 的流式接口在线程池里迭代，
+    不阻塞事件循环。
+    """
+    from fastapi.responses import StreamingResponse
+
+    from backend.services.knowledge import rag_service
+
+    return StreamingResponse(rag_service.stream_answer(payload),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
