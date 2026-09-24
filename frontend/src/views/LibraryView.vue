@@ -258,12 +258,18 @@ async function runIndex(paper: Paper, rebuild = false) {
   } catch (err) { reportError(err, '触发索引失败'); } finally { busyKey.value = ''; }
 }
 
-async function toggleKb(paper: Paper) {
+/** 从知识库移除：清向量 + 清 chunk 元数据（论文、译文、笔记、高亮都不动）。
+ *  「纳入」那个开关已经取消 —— **建立索引即纳入**（用户口径：合并冗余说法与按钮）。 */
+async function removeFromKb(paper: Paper) {
+  if (!confirm(`从知识库移除《${paper.title}》？\n\n`
+    + '会清掉它的 chunk 元数据与向量（论文、译文、笔记、高亮不受影响）。'
+    + '需要时可以重新「建立索引」加回来。')) return;
+  busyKey.value = `remove:${paper.id}`;
   try {
-    await api.post('/knowledge/papers', { paper_id: paper.id, include: !paper.in_knowledge_base });
-    toast(paper.in_knowledge_base ? '已移出知识库' : '已纳入知识库', 'ok', 2200);
+    const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
+    toast(`已从知识库移除（清 ${res?.removed_chunks ?? 0} 条 chunk）`, 'ok', 3200);
     await refresh();
-  } catch (err) { reportError(err, '更新知识库归属失败'); }
+  } catch (err) { reportError(err, '移除失败'); } finally { busyKey.value = ''; }
 }
 
 interface DeleteResult {
@@ -295,11 +301,13 @@ function rowMenu(p: Paper): RowAction[] {
       ? [{ key: 'retranslate', label: '重新翻译', icon: 'refresh' } as RowAction]
       : []),
     { key: 'parse', label: '重新解析', icon: 'document', disabled: busy('parse') },
-    { key: 'index', label: '建立索引', icon: 'layers', disabled: busy('idx') },
+    { key: 'index', label: '建立索引（纳入知识库）', icon: 'layers', disabled: busy('idx') },
     {
-      key: 'kb',
-      label: p.in_knowledge_base ? '移出知识库' : '纳入知识库',
-      icon: p.in_knowledge_base ? 'link-off' : 'link',
+      key: 'remove-kb',
+      label: '从知识库移除',
+      icon: 'link-off',
+      danger: true,
+      disabled: busy('remove') || !p.in_knowledge_base,
     },
     { key: 'edit', label: '编辑元数据', icon: 'edit' },
     { key: 'delete', label: '删除（移入回收站）', icon: 'trash', danger: true },
@@ -323,7 +331,7 @@ function onRowAction(p: Paper, key: string) {
   if (key === 'retranslate') { askRetranslate(p); return; }
   if (key === 'parse') { runParse(p, true); return; }   // 强制重来；不附带翻译（用户得自己点翻译）
   if (key === 'index') { runIndex(p); return; }
-  if (key === 'kb') { toggleKb(p); return; }
+  if (key === 'remove-kb') { removeFromKb(p); return; }
   if (key === 'edit') { openEdit(p); return; }
   if (key === 'delete') { askRemove(p, false); return; }
   if (key === 'purge') { askRemove(p, true); }

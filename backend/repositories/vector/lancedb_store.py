@@ -262,6 +262,22 @@ class LanceDBStore:
             return []
         return [_row_out(r) for r in rows]
 
+    def chunk_ids(self, *, paper_id: str | None = None) -> list[str]:
+        """只取 chunk_id（对账用：不读正文，几千条也很轻）。"""
+        table = self._table()
+        if table is None:
+            return []
+        try:
+            fields = self._select(["chunk_id", "paper_id"])
+            q = table.search().select(fields)
+            if paper_id and "paper_id" in fields:
+                q = q.where(f"paper_id = '{_escape(paper_id)}'")
+            rows = q.limit(1000000).to_list()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LanceDB 读取 chunk_id 失败：%s", exc)
+            return []
+        return [str(r.get("chunk_id")) for r in rows if r.get("chunk_id")]
+
     def all_rows(self, *, paper_ids: list[str] | None = None) -> list[dict]:
         """整表扫描（词法检索用：本库规模只有几千条，Python 侧 BM25 足够快）。
 

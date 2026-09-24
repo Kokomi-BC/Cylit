@@ -80,3 +80,22 @@ async def run_reconcile(request: Request, payload: dict = Body(default={})):
     task = task_service.create("RECONCILE", "system", paper_id,
                                params={}, total_items=1, message="对账中")
     return envelope(task, message="已创建对账任务", request=request)
+
+
+@router.post("/tasks/cleanup")
+async def cleanup_tasks(request: Request, payload: dict = Body(default={})):
+    """清空**已结束**的任务记录（pending/processing/paused 一律不动）。
+
+    不传 ``paper_id`` 就是**全库清理**（界面上的「清空已结束」按钮就是这个语义）；
+    传了就只清那篇论文的。
+    """
+    result = task_service.cleanup_finished(statuses=payload.get("statuses"),
+                                           paper_id=payload.get("paper_id"))
+    return envelope(result, message=f"已删除 {result['deleted']} 条任务记录", request=request)
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, request: Request):
+    """删除单条任务记录（运行中的任务要先取消）。"""
+    return envelope(task_service.delete(task_id), message="任务记录已删除",
+                    request=request)

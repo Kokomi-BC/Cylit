@@ -97,23 +97,66 @@ interface RowAction {
 /* 可操作状态集合（SFC 里模板是真正的表达式，条件直接写 `&&` / includes 即可）。 */
 const CANCELLABLE_STATUS: string[] = ['pending', 'processing', 'paused'];
 const RETRYABLE_STATUS: string[] = ['failed', 'cancelled', 'paused'];
+/** 已结束（可删除记录）的状态 —— 与后端 TERMINAL 对齐。 */
+const TERMINAL_STATUS: string[] = ['completed', 'failed', 'cancelled'];
 
-/** 行内只留「当前该做的那一个动作」；取消这类次要操作收进「⋯」菜单。 */
+/** 行内只留「当前该做的那一个动作」；取消 / 删除记录这类收进「⋯」菜单。 */
 function rowMenu(t: TaskInfo): RowAction[] {
+  const items: RowAction[] = [];
   if (CANCELLABLE_STATUS.includes(t.status) && !t.cancel_requested) {
-    return [{
+    items.push({
       key: 'cancel',
       label: '取消任务',
       icon: 'stop',
       danger: true,
       disabled: busyKey.value === `cancel:${t.id}`,
-    }];
+    });
   }
-  return [];
+  if (TERMINAL_STATUS.includes(t.status)) {
+    items.push({
+      key: 'delete',
+      label: '删除记录',
+      icon: 'trash',
+      danger: true,
+      disabled: busyKey.value === `del:${t.id}`,
+    });
+  }
+  return items;
 }
 
 function onRowAction(t: TaskInfo, key: string) {
-  if (key === 'cancel') cancel(t);
+  if (key === 'cancel') { cancel(t); return; }
+  if (key === 'delete') deleteTask(t);
+}
+
+/** 删除一条任务记录（运行中的要先取消 —— 后端也会拦）。 */
+async function deleteTask(t: TaskInfo): Promise<void> {
+  if (!confirm(`删除任务记录 ${t.id}？\n\n只删这条记录，不影响任何已产出的译文 / 索引。`)) return;
+  busyKey.value = `del:${t.id}`;
+  try {
+    await api.del(`/tasks/${t.id}`);
+    toast('任务记录已删除', 'ok', 2400);
+    await refresh();
+  } catch (err) {
+    reportError(err, '删除任务记录失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
+/** 清空所有已结束的任务记录（进行中的一律不动）。 */
+async function cleanupTasks(): Promise<void> {
+  if (!confirm('清空所有「已完成 / 失败 / 已取消」的任务记录？\n\n进行中的任务不受影响。')) return;
+  busyKey.value = 'cleanup';
+  try {
+    const res = await api.post<{ deleted?: number }>('/tasks/cleanup', {});
+    toast(`已删除 ${res?.deleted ?? 0} 条任务记录`, 'ok', 3200);
+    await refresh();
+  } catch (err) {
+    reportError(err, '清空失败');
+  } finally {
+    busyKey.value = '';
+  }
 }
 
 function progressOf(t: TaskInfo): number {
@@ -324,6 +367,10 @@ watch([status, type, queue], () => { refresh(true); });
         </button>
         <button class="btn primary" :disabled="reconciling" @click="reconcile">
           <AppIcon name="layers" :size="15" />{{ reconciling ? '触发中…' : '触发对账' }}
+        </button>
+        <button class="btn" :disabled="busyKey === 'cleanup'" title="删除所有已结束的任务记录"
+                @click="cleanupTasks">
+          <AppIcon name="trash" :size="15" />{{ busyKey === 'cleanup' ? '清理中…' : '清空已结束' }}
         </button>
       </div>
     </div>

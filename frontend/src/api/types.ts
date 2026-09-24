@@ -373,7 +373,8 @@ export interface KnowledgeOverview {
   chunks_by_type: Record<string, number>;
   /** 双语索引的行数：`{zh: n, en: m}` */
   chunks_by_lang?: Record<string, number>;
-  embedding_models: string[];
+  /** 已入库 chunk 用到的 embedding 模型（后端解析成可读名字） */
+  embedding_models: Array<{ id: string; label: string; model_name?: string | null }>;
   index_versions: Record<string, number>;
   vector_store: Record<string, any>;
   items: Array<{ id: string; title: string; status: string; in_knowledge_base: boolean; chunks: number }>;

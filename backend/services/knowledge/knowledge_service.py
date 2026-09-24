@@ -408,9 +408,9 @@ def index_paper(paper_id: str, *, rebuild: bool = False,
                 index_version=index_version, embedding_model_id=model_id,
                 metadata_json=json_dumps(c["metadata"]),
             ))
-        if row is not None and row.status not in ("translated", "indexed"):
-            if row.status == "parsed":
-                row.status = "parsed"
+        if row is not None:
+            # **建索引即纳入知识库**（用户口径：两个动作合并，不再有单独的"纳入"开关）
+            row.in_knowledge_base = True
 
     embedded = 0
     vector_error = None
@@ -495,11 +495,40 @@ def overview() -> dict:
         "chunks": int(chunk_count),
         "chunks_by_type": by_type,
         "chunks_by_lang": by_lang,
-        "embedding_models": [m for m in model_ids if m],
+        "embedding_models": _model_labels([m for m in model_ids if m]),
         "index_versions": index_versions,
         "vector_store": vector,
         "items": _overview_items(papers),
     }
+
+
+def _model_labels(model_ids: list[str]) -> list[dict]:
+    """把 ``embedding_model_id`` 换成**人能看的名字**。
+
+    以前这里直接把 id 贴出去，界面上就出现 `embedding-7036089f` 这种看不懂的徽标
+    （用户报"模型显示错误"）。id 认不出来时原样回退，不隐藏。
+    """
+    import json
+
+    from backend.repositories.mysql.models import ModelConfig
+
+    if not model_ids:
+        return []
+    with session_scope() as sess:
+        rows = (sess.query(ModelConfig.id, ModelConfig.name, ModelConfig.model_name,
+                           ModelConfig.parameters_json)
+                .filter(ModelConfig.id.in_(model_ids)).all())
+    known = {}
+    for mid, name, model_name, params_json in rows:
+        try:
+            dim = (json.loads(params_json or "{}") or {}).get("dim")
+        except ValueError:
+            dim = None
+        label = model_name or name or mid
+        known[mid] = {"id": mid, "label": f"{label}（{dim} 维）" if dim else label,
+                      "model_name": model_name, "dim": dim}
+    return [known.get(m, {"id": m, "label": m, "model_name": None, "dim": None})
+            for m in model_ids]
 
 
 def _overview_items(papers: list[Paper]) -> list[dict]:
@@ -523,6 +552,77 @@ def set_kb_membership(paper_id: str, include: bool) -> dict:
         return {"paper_id": paper_id, "in_knowledge_base": include}
 
 
+def remove_from_kb(paper_id: str) -> dict:
+    """**从知识库移除**：删向量 + 删 chunk 元数据 + 取消"已纳入"标记。
+
+    「纳入 / 移出」原来是只翻一个布尔（索引还留着），用户口径是把它和索引合并：
+    纳入 = 建索引；所以"移除"必须真的把索引清掉，否则 MySQL 与向量库会长期不一致。
+    论文本体、译文、笔记、高亮**都不动** —— 移除的是知识库（派生数据），不是论文。
+    """
+    paper_service.get_paper(paper_id)
+    from backend.repositories.vector.lancedb_store import vector_store
+
+    vectors = 0
+    vector_error = None
+    try:
+        vectors = vector_store.delete_paper(paper_id)
+    except Exception as exc:  # noqa: BLE001
+        vector_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        log.warning("移除向量失败（继续清元数据）：%s", exc)
+    with session_scope() as sess:
+        chunks = (sess.query(Chunk).filter(Chunk.paper_id == paper_id)
+                  .delete(synchronize_session=False))
+        row = sess.get(Paper, paper_id)
+        if row is not None:
+            row.in_knowledge_base = False
+    return {"paper_id": paper_id, "removed_chunks": int(chunks),
+            "removed_vectors": int(vectors), "in_knowledge_base": False,
+            "vector_error": vector_error,
+            "at": now().isoformat(timespec="seconds")}
+
+
+def reconcile(*, paper_id: str | None = None, fix: bool = False) -> dict:
+    """MySQL chunk 元数据 ↔ 向量库 对账。
+
+    - ``orphans``：MySQL 有、向量库没有 —— 换 embedding 模型时向量表被整体重建，
+      旧元数据就留了下来（真实案例：`scanned-demo` 的 10 条，导致概览显示"两侧条数不一致"
+      且 embedding 模型徽标里多出一个陈旧的 `mock-embedding`）；
+    - ``missing``：向量库有、MySQL 没有（元数据被删但向量还在）。
+
+    ``fix=True`` 时两边都清掉（向量库是派生数据，规划 §6.2）。
+    """
+    from backend.repositories.vector.lancedb_store import vector_store
+
+    store_ids = set(vector_store.chunk_ids(paper_id=paper_id))
+    with session_scope() as sess:
+        q = sess.query(Chunk.id)
+        if paper_id:
+            q = q.filter(Chunk.paper_id == paper_id)
+        db_ids = {i for (i,) in q.all()}
+
+    orphans = sorted(db_ids - store_ids)
+    missing = sorted(store_ids - db_ids)
+    removed_meta = removed_vectors = 0
+    if fix:
+        if missing:
+            removed_vectors = vector_store.delete_chunks(missing)
+        for i in range(0, len(orphans), 500):
+            part = orphans[i:i + 500]
+            with session_scope() as sess:
+                removed_meta += int(sess.query(Chunk).filter(Chunk.id.in_(part))
+                                    .delete(synchronize_session=False))
+    return {
+        "paper_id": paper_id,
+        "mysql_chunks": len(db_ids), "vector_chunks": len(store_ids),
+        "orphans": len(orphans), "missing": len(missing),
+        "orphan_sample": orphans[:5], "missing_sample": missing[:5],
+        "consistent": not orphans and not missing,
+        "fixed": bool(fix), "removed_metadata": removed_meta,
+        "removed_vectors": int(removed_vectors),
+        "at": now().isoformat(timespec="seconds"),
+    }
+
+
 def index_status(paper_id: str | None = None) -> dict:
     from sqlalchemy import func
 
@@ -534,15 +634,23 @@ def index_status(paper_id: str | None = None) -> dict:
         with_hash = q.filter(Chunk.content_hash.isnot(None)).count()
         versions = (sess.query(Chunk.paper_id, func.max(Chunk.index_version))
                     .group_by(Chunk.paper_id).all())
+        db_ids = {i for (i,) in sess.query(Chunk.id).all()}
     vector = None
+    store_ids: set[str] = set()
     try:
         from backend.repositories.vector.lancedb_store import vector_store
 
-        vector = {"available": True, "count": vector_store.count(paper_id=paper_id)}
+        store_ids = set(vector_store.chunk_ids(paper_id=paper_id))
+        vector = {"available": True, "count": len(store_ids)}
     except Exception as exc:  # noqa: BLE001
         vector = {"available": False, "error": str(exc)[:200]}
+    orphans = len(db_ids - store_ids) if not paper_id else None
+    missing = len(store_ids - db_ids) if not paper_id else None
     return {"paper_id": paper_id, "chunks": total, "chunks_with_hash": with_hash,
-            "index_versions": dict(versions), "vector": vector}
+            "index_versions": dict(versions), "vector": vector,
+            # 只看**全库**对账（单篇视图下这两个数没意义，交给 /knowledge/reconcile）
+            "orphan_chunks": orphans, "missing_vectors": missing,
+            "consistent": None if paper_id else (not orphans and not missing)}
 
 
 def new_chunk_id(paper_id: str, chunk_type: str) -> str:

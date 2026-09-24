@@ -22,10 +22,35 @@ async def overview(request: Request):
 
 @router.post("/knowledge/papers")
 async def set_membership(request: Request, payload: dict = Body(...)):
+    """兼容保留：只翻"已纳入"标记（不动索引）。
+
+    界面已经不用它了 —— 用户口径是**建索引即纳入**、要退出就用 ``/knowledge/remove``
+    （那条会把索引一起清掉，两侧不会长期不一致）。
+    """
     paper_id = payload.get("paper_id")
     include = bool(payload.get("include", True))
     return envelope(knowledge_service.set_kb_membership(paper_id, include),
                     request=request)
+
+
+@router.post("/knowledge/remove")
+async def remove_from_kb(request: Request, payload: dict = Body(...)):
+    """**从知识库移除**：清向量 + 清 chunk 元数据 + 取消"已纳入"（论文与译文不动）。"""
+    paper_id = payload.get("paper_id")
+    if not paper_id:
+        from backend.core.errors import ValidationError
+
+        raise ValidationError("缺少 paper_id")
+    result = knowledge_service.remove_from_kb(paper_id)
+    return envelope(result, message=f"已从知识库移除（清 {result['removed_chunks']} 条 chunk）",
+                    request=request)
+
+
+@router.post("/knowledge/reconcile")
+async def reconcile_knowledge(request: Request, payload: dict = Body(default={})):
+    """对账：MySQL chunk 元数据 ↔ 向量库；``{fix: true}`` 时顺手清掉孤儿。"""
+    return envelope(knowledge_service.reconcile(
+        paper_id=payload.get("paper_id"), fix=bool(payload.get("fix"))), request=request)
 
 
 @router.post("/knowledge/index")

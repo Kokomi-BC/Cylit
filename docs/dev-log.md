@@ -2307,6 +2307,53 @@ UI 也不拿它做阈值过滤。
 所以知识库概览显示"已纳入 0%"，但检索（scope=all/cross）**并不看这个标志**、照常命中。
 要么让"建索引"顺带置位，要么让检索按它过滤 —— 这是产品口径，等用户定，我没有擅自改语义。
 
+### 17.38 第三十六轮 —— 知识库页三处返工 + **一次真实事故（我把用户的 task 表清空了）**
+
+用户口径（附截图）：① 索引状态"不一致"、embedding 模型徽标显示成 `embedding-7036089f`/`mock-embedding`
+（"模型显示错误"）；② 「建索引」与「纳入知识库」合并，减少冗余按钮与说法；③ 要能"从知识库移除"和删除任务记录。
+
+**① 的根因是同一个**：`scanned-demo` 的 10 条旧 chunk 元数据留在 MySQL，而向量表在换模型时被整体重建 ——
+于是 405 ≠ 395（"不一致"），且这 10 条带着陈旧的 `embedding_model_id=mock-embedding`。
+修法不是"让数字相等"，而是**真对账**：
+
+- `LanceDBStore.chunk_ids()`（只读 id，不读正文）+ `knowledge_service.reconcile(fix=)`：
+  报出 `orphans`（MySQL 有、向量库没有）与 `missing`（反过来），`fix=True` 时两边都清；
+- `index_status()` 直接返回 `consistent / orphan_chunks / missing_vectors`，
+  界面不再"比大小"，而是"有 N 条旧元数据 → 一键清理"；
+- `overview().embedding_models` 从 id 换成**可读名字 + 维度**（认不出的 id 原样回退，不隐藏）。
+
+**② 合并**：`index_paper()` 现在顺带把 `in_knowledge_base=True`（**建索引即纳入**）；
+`POST /knowledge/papers` 只翻标记的老接口保留兼容，但界面不再用它。
+
+**③ 新增**：`remove_from_kb()`（清向量 + 清 chunk 元数据 + 取消标记，**论文/译文/笔记/高亮都不动**）、
+`POST /knowledge/remove`、`DELETE /tasks/{id}`（运行中的先拒绝，要取消后才能删）、
+`POST /tasks/cleanup`（默认清 TERMINAL，支持 `paper_id` 限范围）；前端知识库/论文库的行菜单里
+「纳入·移出」换成「从知识库移除」，任务页加「删除记录」与「清空已结束」。
+
+**⚠️ 事故：我用测试把用户的 task 表清空了。** 新写的 e2e 测试里裸调了
+`task_service.cleanup_finished()`（默认全库清理），第一次跑就把用户 `task` 表的**全部已结束记录**
+删掉了 —— 包括注释里明确写着"token/耗时统计（实验用）"的 `stats_json`。
+论文、译文（22/22、15/15）、chunk/向量（395/395）、高亮（`h-ed0d97f0fa125794`）、笔记都没受影响，
+`docs/进度.md` §4.2 里记过的那些汇总数据也还在，但**逐任务的统计行已不可恢复**（库里没有备份表，
+也没有 binlog 可用）。已做的补救与加固：
+
+- `cleanup_finished(statuses=None, paper_id=None)`：留 `paper_id` 安全阀，并在 docstring 里写明
+  "写测试必须传 paper_id —— 我踩过"；
+- 显式传状态列表但一个都不合法时**返回 0**，不再回落到全清（否则前端拼错一个状态就清光历史）；
+- 测试改成 `cleanup_finished(paper_id=FAKE)`，并新增一条"非法状态不清任何东西"的守门用例。
+
+**验证**
+
+| 用例 | 结果 |
+|---|---|
+| `pytest tests/test_kb_lifecycle.py -m e2e` | **9 项通过**（对账报孤儿/清孤儿/清孤儿向量、移除清向量+元数据+标记、幂等、未知论文 404、单篇视角不判定一致、模型标签回退、任务删除要终态、非法状态不清） |
+| `pytest -m "not e2e"`（全量离线） | **196 项通过** |
+| 真实库（临时 8712，同一 MySQL / 同一索引目录） | 对账：`mysql=405 vector=395 孤儿=10`；`fix=true` 清 10 条 → **395/395 consistent=True**；模型徽标从 `embedding-7036089f` + `mock-embedding（512 维）` 变成只剩 `qwen3-vl-embedding（2560 维）` |
+| 任务接口 | `DELETE /tasks/__nope__` → 404；`cleanup {statuses:["done"]}` → `deleted=0`（保护生效） |
+| 受影响面 | 论文 3 篇状态与译文完好、chunk 395/395、用户高亮仍在；**`task` 表 0 行（我的错）** |
+| 前端 | `vue-tsc` + `vite build` 干净 |
+
+
 
 
 

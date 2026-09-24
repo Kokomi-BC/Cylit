@@ -426,6 +426,51 @@ class TaskService:
             d["log_tail"] = (row.log_tail or "").split("\n")[-40:]
         return d
 
+    def delete(self, task_id: str) -> dict:
+        """删除任务记录（运行中的不许删：必须先取消，避免"记录没了但线程还在跑"）。"""
+        from backend.core.errors import ConflictError
+        from backend.repositories.mysql.session import session_scope
+
+        with session_scope() as sess:
+            row = sess.get(Task, task_id)
+            if row is None:
+                raise NotFoundError(f"任务不存在：{task_id}")
+            if row.status not in TERMINAL:
+                raise ConflictError(f"任务正在 {row.status}，先取消再删除")
+            sess.delete(row)
+        bus.publish("tasks", EVENT_TASK_PROGRESS, {"id": task_id, "deleted": True})
+        return {"deleted": task_id}
+
+    def cleanup_finished(self, statuses: list[str] | None = None,
+                         paper_id: str | None = None) -> dict:
+        """清空已结束的任务记录。
+
+        ``statuses=None`` → 清 ``TERMINAL``（completed / failed / cancelled）。
+        **显式给了状态列表却一个都不合法时返回 0**，不再回落到"全清" ——
+        否则前端传个拼错的状态就会把用户的任务历史清光。
+
+        ⚠️ ``paper_id`` 是给测试与"按论文清理"用的安全阀：**不传就是全库清理**。
+        写测试时必须传 ``paper_id`` —— 我在这一轮真的踩过：端到端测试里裸调
+        ``cleanup_finished()`` 把用户的任务记录（含 ``stats_json`` 里的 token/耗时
+        实验数据）整表清空了。**默认参数越"顺手"，破坏力越大。**
+        """
+        from backend.repositories.mysql.session import session_scope
+
+        if statuses is None:
+            wanted = list(TERMINAL)
+        else:
+            wanted = [s for s in statuses if s in TERMINAL]
+            if not wanted:
+                return {"deleted": 0, "statuses": [],
+                        "note": "没有可清理的状态（只认 completed / failed / cancelled）"}
+        with session_scope() as sess:
+            q = sess.query(Task).filter(Task.status.in_(wanted))
+            if paper_id:
+                q = q.filter(Task.paper_id == paper_id)
+            n = q.delete(synchronize_session=False)
+        bus.publish("tasks", EVENT_TASK_PROGRESS, {"cleaned": int(n), "statuses": wanted})
+        return {"deleted": int(n), "statuses": wanted, "paper_id": paper_id}
+
     def stats(self, paper_id: str | None = None) -> dict:
         from backend.repositories.mysql.session import session_scope
         from sqlalchemy import func

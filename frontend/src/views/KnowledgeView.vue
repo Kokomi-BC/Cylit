@@ -47,6 +47,11 @@ interface KnowledgeIndexStatus {
   chunks_with_hash: number;
   index_versions: Record<string, number>;
   vector: VectorStatus;
+  /** 全库对账：MySQL 有、向量库没有的旧 chunk 元数据条数 */
+  orphan_chunks?: number | null;
+  /** 全库对账：向量库有、MySQL 没有的条数 */
+  missing_vectors?: number | null;
+  consistent?: boolean | null;
 }
 
 const overview = ref<KnowledgeOverview | null>(null);
@@ -63,22 +68,25 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 行内只留「建索引」；重建与纳入/移出这类低频操作收进「⋯」菜单。 */
+/** 行内只留「建索引」；重建 / 移除这类低频且不可逆的操作收进「⋯」菜单。
+ *  ⚠️ 不再有单独的「纳入知识库」开关：**建索引即纳入**（用户口径：合并两个说法），
+ *  退出知识库 = 「移除」（连索引一起清掉，两侧不会长期不一致）。 */
 function rowMenu(p: KbPaper): RowAction[] {
   return [
     { key: 'rebuild', label: '重建索引', icon: 'refresh', disabled: busyKey.value === `idx:${p.id}` },
     {
-      key: 'kb',
-      label: p.in_knowledge_base ? '移出知识库' : '纳入知识库',
-      icon: p.in_knowledge_base ? 'link-off' : 'link',
-      disabled: busyKey.value === `kb:${p.id}`,
+      key: 'remove',
+      label: '从知识库移除',
+      icon: 'link-off',
+      danger: true,
+      disabled: busyKey.value === `remove:${p.id}` || !p.chunks,
     },
   ];
 }
 
 function onRowAction(p: KbPaper, key: string) {
   if (key === 'rebuild') { runIndex(p.id, true); return; }
-  if (key === 'kb') toggleKb(p);
+  if (key === 'remove') removeFromKb(p);
 }
 
 // chunk 元数据查询条件（后端要求 paper_id 必填）
@@ -101,7 +109,8 @@ const papers = computed<KbPaper[]>(() => overview.value?.items || []);
 const chunksByType = computed<Record<string, number>>(() => overview.value?.chunks_by_type || {});
 const chunksByLang = computed<Record<string, number>>(() => overview.value?.chunks_by_lang || {});
 const vectorStore = computed<Record<string, any> | null>(() => overview.value?.vector_store || null);
-const embeddingModels = computed<string[]>(() => overview.value?.embedding_models || []);
+const embeddingModels = computed<Array<{ id: string; label: string }>>(
+  () => (overview.value?.embedding_models || []) as Array<{ id: string; label: string }>);
 
 const vectorAvailable = computed(() => !!vectorStore.value?.available);
 const vectorCount = computed<string | number>(() => {
@@ -111,11 +120,14 @@ const vectorCount = computed<string | number>(() => {
   return v.available ? (v.count ?? 0) : '不可用';
 });
 /** MySQL chunk 数 与 LanceDB 条数 是否一致；null = 尚不清楚。 */
+/** 索引一致（判定依据是**对账**，不是"两个数字是否相等"：MySQL 里可能留着
+ *  向量已被重建丢掉的旧元数据，那种情况直接比条数就会误报成"不一致"）。 */
 const statusMatch = computed<boolean | null>(() => {
   const s = indexStatus.value;
   if (!s) return null;
   const v = s.vector || { available: false };
   if (!v.available) return false;
+  if (typeof s.consistent === 'boolean') return s.consistent;
   return Number(s.chunks || 0) === Number(v.count || 0);
 });
 const statusClass = computed(() => {
@@ -124,8 +136,11 @@ const statusClass = computed(() => {
 });
 const statusText = computed(() => {
   if (statusMatch.value === null) return '未知';
-  return statusMatch.value ? '一致' : '不一致';
+  if (statusMatch.value) return '一致';
+  const orphans = indexStatus.value?.orphan_chunks || 0;
+  return orphans ? `有 ${orphans} 条旧元数据` : '不一致';
 });
+const orphanChunks = computed(() => Number(indexStatus.value?.orphan_chunks || 0));
 
 function titleOf(paperId?: string | null): string {
   if (!paperId) return '（未知论文）';
@@ -211,19 +226,40 @@ onMounted(async () => {
   await refreshAll();
 });
 
-/* --------------------------- 纳入 / 移出 --------------------------- */
+/* --------------------------- 移除 / 对账 --------------------------- */
 
-async function toggleKb(paper: KbPaper): Promise<void> {
-  busyKey.value = `kb:${paper.id}`;
+/** 从知识库移除：清向量 + 清 chunk 元数据（论文与译文不动）。 */
+async function removeFromKb(paper: KbPaper): Promise<void> {
+  if (!confirm(`从知识库移除《${paper.title}》？\n\n会清掉它的 ${paper.chunks} 条 chunk 与向量`
+    + '（论文、译文、笔记、高亮都不受影响）。需要时可以重新「建立索引」加回来。')) return;
+  busyKey.value = `remove:${paper.id}`;
   try {
-    await api.post('/knowledge/papers', {
-      paper_id: paper.id,
-      include: !paper.in_knowledge_base,
-    });
-    toast(paper.in_knowledge_base ? '已移出知识库' : '已纳入知识库', 'ok', 2200);
+    const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
+    toast(`已从知识库移除（清 ${res?.removed_chunks ?? 0} 条 chunk）`, 'ok', 3200);
     await refresh();
   } catch (err) {
-    reportError(err, '更新知识库归属失败');
+    reportError(err, '移除失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
+/** 对账：清掉 MySQL 里那些"向量已经不在了"的旧 chunk 元数据。 */
+async function reconcileNow(fix: boolean): Promise<void> {
+  busyKey.value = 'reconcile';
+  try {
+    const res = await api.post<{ orphans?: number; missing?: number; removed_metadata?: number }>(
+      '/knowledge/reconcile', { fix });
+    if (fix) {
+      toast(`已清理 ${res?.removed_metadata ?? 0} 条孤儿元数据`
+        + (res?.missing ? `、${res.missing} 条孤儿向量` : ''), 'ok', 3600);
+    } else {
+      toast(`对账完成：孤儿元数据 ${res?.orphans ?? 0} 条、孤儿向量 ${res?.missing ?? 0} 条`,
+        res?.orphans || res?.missing ? 'warn' : 'ok', 4200);
+    }
+    await refresh();
+  } catch (err) {
+    reportError(err, '对账失败');
   } finally {
     busyKey.value = '';
   }
@@ -486,7 +522,13 @@ function langLabel(item: SimilarItem): string {
               <span class="badge" :class="statusClass">{{ statusText }}</span>
             </div>
             <div class="k">
-              {{ statusMatch ? '两侧条数一致' : '两侧条数不一致，需重建索引' }}
+              <template v-if="statusMatch">两侧一致</template>
+              <template v-else-if="orphanChunks">
+                MySQL 多出 {{ orphanChunks }} 条旧元数据（向量已被重建丢弃）→
+                <button class="btn sm" :disabled="busyKey === 'reconcile'"
+                        @click="reconcileNow(true)">清理</button>
+              </template>
+              <template v-else>两侧不一致，需重建索引</template>
             </div>
           </div>
         </div>
@@ -500,8 +542,13 @@ function langLabel(item: SimilarItem): string {
           <span class="faint" v-if="!Object.keys(indexStatus.index_versions || {}).length">（无）</span>
           <span class="spacer"></span>
           <span class="faint">embedding 模型：</span>
-          <span class="badge" v-for="m in embeddingModels" :key="m">{{ m }}</span>
+          <span class="badge" v-for="m in embeddingModels" :key="m.id"
+                :title="m.id">{{ m.label }}</span>
           <span class="faint" v-if="!embeddingModels.length">（未记录）</span>
+          <span class="spacer"></span>
+          <button class="btn sm" :disabled="busyKey === 'reconcile'"
+                  title="对账 MySQL chunk 元数据与向量库（不修改任何东西，只报告）"
+                  @click="reconcileNow(false)">对账</button>
         </div>
         <div class="small" style="margin-top:8px;color:var(--danger)"
              v-if="indexStatus && indexStatus.vector && !indexStatus.vector.available">
