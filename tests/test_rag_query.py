@@ -104,6 +104,16 @@ def test_build_context_respects_source_cap_and_budget(monkeypatch) -> None:
     assert build_context([])["sources"] == [] and build_context([])["text"] == ""
 
 
+def test_build_context_snippet_follows_item_language(twin) -> None:
+    """双语来源：片段必须跟 `lang` 一致（英文条目就给英文片段），否则徽标与内容对不上。"""
+    ctx = build_context([_item(1, lang="en")])
+
+    src = ctx["sources"][0]
+    assert src["lang"] == "en"
+    assert src["snippet"].startswith(EN[:20]) and ZH not in src["snippet"]
+    assert ZH in src["text"]                              # 校验用文本仍含双语
+
+
 def test_build_prompt_rules_and_general_knowledge_switch(twin) -> None:
     ctx = build_context([_item()])
     plain = build_prompt("什么是向量量化？", ctx)

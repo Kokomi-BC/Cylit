@@ -128,6 +128,9 @@ def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
             continue
         used += len(block)
         blocks.append(block)
+        # 片段用**这一条自己的语言**：双语来源都会进上下文，但展示的缩略要跟语言徽标一致
+        # （真实跑出来过：S4 标着「原」，片段却是中文 —— 因为无条件优先取了译文）
+        own = zh if (item.get("lang") or "en") == "zh" else en
         sources.append({
             "index": index, "label": f"S{index}",
             "chunk_id": item.get("chunk_id"), "paper_id": item.get("paper_id"),
@@ -135,7 +138,7 @@ def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
             "block_id": item.get("block_id"), "page": item.get("page"),
             "section": item.get("section"), "chunk_type": item.get("chunk_type"),
             "lang": item.get("lang") or "en",
-            "snippet": truncate(zh or en, 200),
+            "snippet": truncate(own or zh or en, 200),
             "text": "\n".join([t for t in (zh, en) if t]),
             "score": (item.get("scores") or {}).get("rerank"),
         })
