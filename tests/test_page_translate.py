@@ -14,7 +14,7 @@ from backend.services.translation.page_translate import (
     PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
     build_stable_prefix, call_page, effective_max_tokens, history_context,
     mark_rows_continuity, next_max_tokens, pair_rows, parse_pair, prefix_hash,
-    render_page_prompt, split_blocks,
+    render_page_prompt, split_blocks, _row_key,
 )
 
 PAGE_MD = """# TurboQuant: Online Vector Quantization
@@ -245,6 +245,38 @@ def test_pair_rows_keeps_hard_breaks_for_structured_blocks():
     assert quality == "exact"
     assert rows[0]["original"] == algo
     assert rows[0]["original"].count("  \n") == 2
+
+
+def test_row_key_separates_step_blocks():
+    """编号步骤块（算法伪代码）必须和正文段落**不同键**。
+
+    这是上面那条对齐 bug 的**直接守门**：真页（p006，13 块 vs 12 块）里才复现，
+    缩小样本就失去复现条件（SequenceMatcher 的选择依赖整页块序列），所以这里盯最里面的键。
+    """
+    steps = {"type": "para", "text": "1: a  \n2: b  \n3: c"}
+    prose = {"type": "para", "text": "just one sentence"}
+    assert _row_key(steps) == ("para", "steps")
+    assert _row_key(prose) == ("para",)
+    # 只有一行序号、或整块只有一行 → 还是普通段落
+    assert _row_key({"type": "para", "text": "1: only one line"}) == ("para",)
+    assert _row_key({"type": "para", "text": "1: a  \nno number here"}) == ("para",)
+
+
+def test_pair_rows_keeps_step_blocks_together():
+    """一侧多出一段正文时，编号步骤块应当仍然两侧配对（记录预期行为；守门见上一条）。"""
+    en = ("**Algorithm 2**\n\n"
+          "1: input  \n2: rotate  \n3: output\n\n"
+          "this index vector is passed to the primitive\n\n"
+          "- a bullet\n")
+    zh = ("**算法 2**\n\n"
+          "1: 输入  \n2: 旋转  \n3: 输出\n\n"
+          "- 一条要点\n")
+    rows, quality = pair_rows(en, zh, page=6)
+    assert quality == "structure"
+    steps = [r for r in rows if r["original"].startswith("1:")]
+    assert steps and steps[0]["translation"].startswith("1: 输入")
+    lone = [r for r in rows if r["original"].startswith("this index")]
+    assert lone and not lone[0]["translation"]        # 多出来的正文单独成行，不抢算法译文
 
 
 def test_pair_rows_structure_fallback_keeps_every_block():

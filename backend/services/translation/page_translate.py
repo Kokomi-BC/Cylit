@@ -911,6 +911,12 @@ def _row_key(block: dict) -> tuple:
 
     所以：公式用 LaTeX 文本（两边一字不差，是真锚点），标题用层级 + 编号，
     其余只用**块类型** —— 序列对齐就变成纯结构对齐，错位自然消失。
+
+    唯一的例外是**编号步骤块**（算法伪代码那种，见 `_is_step_block`）：它和正文段落都是
+    `para`，只按类型配不出区别。实测 p006：EN 比 ZH 多一段正文（定理那句在上一页已译完），
+    `SequenceMatcher` 于是"删掉"先出现的算法块、让后一段正文去配算法译文 ——
+    对照时算法左右不挨着，单栏（译文）里还留下一个空行。给它一个独立的键即可；
+    这类块两侧的行数与序号天然一一对应，是最可靠的锚点。
     """
     btype = block.get("type") or "para"
     text = (block.get("text") or "").strip()
@@ -918,7 +924,26 @@ def _row_key(block: dict) -> tuple:
         return ("h", int(block.get("level") or 0), block.get("number") or "")
     if btype == "formula":
         return ("f", _norm(text)[:60])
+    if btype == "para" and _is_step_block(text):
+        return (btype, "steps")
     return (btype,)
+
+
+# 「1: 」「2. 」「3、」这类行首序号（算法伪代码 / 编号清单）
+_STEP_LINE = re.compile(r"^\s*\d+\s*[:：.、)）]")
+
+
+def _is_step_block(text: str) -> bool:
+    """多行、且至少两行以序号开头 → 当作编号步骤块（算法伪代码）。
+
+    阈值故意松（两行即可），因为**假阳性代价很小**：两侧都是算法块时它照样配对成功；
+    真正要避免的是"一侧被误判成步骤块、另一侧没有" —— 那需要给译文里的普通段落也配上
+    两行序号的排版，正常翻译不会有。
+    """
+    lines = [ln for ln in (text or "").split("\n") if ln.strip()]
+    if len(lines) < 2:
+        return False
+    return sum(1 for ln in lines if _STEP_LINE.match(ln)) >= 2
 
 
 def _norm(text: str) -> str:

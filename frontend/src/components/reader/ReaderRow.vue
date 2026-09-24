@@ -62,9 +62,13 @@ const emptyLabel = computed(() => {
 </script>
 
 <template>
+  <!-- ⚠️ 「本侧没有内容」这个状态类**不能叫 `empty`**：`base.css` 里的 `.empty` 是全局空态工具类
+       （`padding: 28px 16px`，给"列表空了"那种占位用的）。名字撞上之后，每个空行都会吃进
+       28px 的上下内边距 —— 一行空空如也却占 56px 高，看上去就是"算法块标题和正文之间多空了几行"
+       （用户报过）。改叫 `is-empty`，只做标记，不带任何样式。 -->
   <div
     :class="['rrow', `side-${props.side}`, `t-${props.row.type}`,
-             { heading: level > 0, [`lvl-${level}`]: level > 0, empty: isEmpty, compact: props.compact }]"
+             { heading: level > 0, [`lvl-${level}`]: level > 0, 'is-empty': isEmpty, compact: props.compact }]"
     :data-side="props.side"
   >
     <div v-if="html" ref="body" class="rr-body md" v-html="html" />
