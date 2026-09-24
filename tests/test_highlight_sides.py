@@ -122,3 +122,19 @@ def test_delete_single_highlight_keeps_others() -> None:
     out = svc.delete_highlight(a["id"])
     assert out["count"] == 1
     assert svc.list_highlights(FAKE_PAPER)["count"] == 1
+
+
+def test_delete_highlight_is_idempotent() -> None:
+    """重复删同一条**不该报错**：跨行高亮是"整组删"，前端（或多标签页同开一篇）天然会重复请求。
+
+    以前再删一次会 404，日志里看着像删除失败（用户报过）。现在返回空列表 + `missing` 标记。
+    """
+    from backend.services.annotation import annotation_service as svc
+
+    a = svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p003-00",
+                              "selected_text": "x", "color": "yellow"})
+    assert svc.delete_highlight(a["id"])["count"] == 1
+    again = svc.delete_highlight(a["id"])
+    assert again["count"] == 0
+    assert again["deleted_ids"] == []
+    assert again["missing"] is True

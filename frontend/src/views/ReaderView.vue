@@ -1724,11 +1724,26 @@ async function deleteSelectionHighlights() {
   // 逐条删。**单条失败不能中断**：跨行高亮是"同组多条"，删第一条时后端已经把整组删掉并
   // 回传了 `deleted_ids`，后面那些 id 再删就是 404 —— 以前这里一个异常就把整段跳过，
   // 结果是"库里的确删了、界面上的高亮还在"（自检里就是这么抓到的）。
-  await Promise.all(ids.map(async (id) => {
+  //
+  // 但**同一分组只发一次请求**：既然后端删一条就带走整组，兄弟 id 就没必要再问一遍 ——
+  // 以前对每个 id 都发一次（`Promise.all` 并发），日志里固定出现一条 404，
+  // 看着像删除失败（用户报过："其实能正常删除和保存高亮"）。分组从本地列表查
+  // （`hlIds` 里同组的记录共享 `group_id`；没分组的自然各发各的）。
+  const seenGroups = new Set<string>();
+  const targets: string[] = [];
+  for (const id of ids) {
+    const group = highlights.value.find((h) => h.id === id)?.group_id;
+    if (group) {
+      if (seenGroups.has(group)) continue;
+      seenGroups.add(group);
+    }
+    targets.push(id);
+  }
+  await Promise.all(targets.map(async (id) => {
     try {
       const res = await api.del<{ deleted_ids?: string[] }>(`/highlights/${id}`);
       (res?.deleted_ids ?? []).forEach((x) => gone.add(x));
-    } catch { /* 已经不存在了（同组兄弟）：忽略 */ }
+    } catch { /* 已经被删掉了（另一个标签页 / 同组兄弟）：忽略 */ }
   }));
   highlights.value = highlights.value.filter((h) => !gone.has(h.id));
   toast(`已删除 ${gone.size} 处高亮`, 'ok', 1800);

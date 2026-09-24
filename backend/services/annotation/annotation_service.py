@@ -85,11 +85,15 @@ def delete_highlight(highlight_id: str) -> dict:
     """删一条高亮；如果它属于某个跨行分组，**整组一起删**（用户眼里那是一条高亮）。
 
     返回被删掉的 id 列表：前端据此把本地那几条一起摘掉，不用重新拉一遍列表。
+
+    **幂等**：id 不存在时返回空列表，而不是 404。因为"整组删"这件事天然会带来重复请求 ——
+    前端点一次删除可能对同组的几条各发一次（多标签页同开一篇也会撞车），
+    重复删同一条不该算失败；以前会往日志里丢 404，看着像删除坏了（用户报过）。
     """
     with session_scope() as sess:
         row = sess.get(Highlight, highlight_id)
         if row is None:
-            raise NotFoundError(f"高亮不存在：{highlight_id}")
+            return {"deleted": highlight_id, "deleted_ids": [], "count": 0, "missing": True}
         rows = [row]
         if row.group_id:
             rows = (sess.query(Highlight)
