@@ -231,11 +231,12 @@ function parametersPreview(m: ModelConfig): string {
   return truncate(parts.join(' · '), 120);
 }
 
-/** 预设的结构由后端决定（可能带 generation / embedding / vision 字段），按动态 JSON 读。 */
+/** 预设的结构由后端决定（可能带 generation / embedding / reranker / vision 字段），按动态 JSON 读。 */
 function presetTypes(p: any): string {
   const out: string[] = [];
   if (p?.generation) out.push(TYPE_LABEL.generation);
   if (p?.embedding) out.push(TYPE_LABEL.embedding);
+  if (p?.reranker) out.push(TYPE_LABEL.reranker);
   if (p?.vision) out.push(TYPE_LABEL.vision);
   return out.length ? out.join(' / ') : '可能无可导入项';
 }

@@ -12,6 +12,7 @@ from backend.providers.base import (
     EmbeddingProvider, GenerationProvider, RerankerProvider,
 )
 from backend.providers.embedding.providers import (
+    DashScopeMultimodalEmbedding, DashScopeReranker,
     HeuristicReranker, LocalCrossEncoderReranker,
     LocalSentenceTransformerEmbedding, OpenAICompatibleEmbedding,
 )
@@ -46,6 +47,10 @@ EMBEDDING_PROVIDERS = {
     "dashscope": OpenAICompatibleEmbedding,
     "qwen": OpenAICompatibleEmbedding,
     "zhipu": OpenAICompatibleEmbedding,
+    # 多模态向量（qwen3-vl-embedding）：**不是** OpenAI 兼容端点，单独一条路
+    "dashscope_multimodal": DashScopeMultimodalEmbedding,
+    "dashscope_vl": DashScopeMultimodalEmbedding,
+    "qwen_vl": DashScopeMultimodalEmbedding,
 }
 
 RERANKER_PROVIDERS = {
@@ -54,6 +59,10 @@ RERANKER_PROVIDERS = {
     "local": LocalCrossEncoderReranker,
     "cross_encoder": LocalCrossEncoderReranker,
     "sentence_transformers": LocalCrossEncoderReranker,
+    # DashScope 原生排序端点（qwen3-vl-rerank / qwen3.7-text-rerank / …）
+    "dashscope": DashScopeReranker,
+    "qwen": DashScopeReranker,
+    "dashscope_rerank": DashScopeReranker,
 }
 
 

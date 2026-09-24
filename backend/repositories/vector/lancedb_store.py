@@ -96,6 +96,18 @@ class LanceDBStore:
             names = set(db.table_names())
             if TABLE_NAME in names:
                 table = db.open_table(TABLE_NAME)
+                old_dim = _vector_dim(table)
+                new_dim = len(rows[0]["vector"])
+                if old_dim and old_dim != new_dim:
+                    # 换 embedding 模型 → 维度变了。LanceDB 表的向量列是定长类型，
+                    # 维度不同无法追加；而向量库是**派生数据、任何时刻可全量重建**
+                    # （规划 §6.2 第 4 条），所以直接丢表重建，不静默写坏索引。
+                    log.warning("向量维度变化（%d → %d）：丢弃并重建 LanceDB 表 %s",
+                                old_dim, new_dim, TABLE_NAME)
+                    db.drop_table(TABLE_NAME)
+                    names.discard(TABLE_NAME)
+            if TABLE_NAME in names:
+                table = db.open_table(TABLE_NAME)
                 # 先按 chunk_id 删除旧行，再追加（LanceDB 无原生 upsert）
                 ids = [c["id"] for c in chunks]
                 try:
@@ -191,6 +203,16 @@ class LanceDBStore:
                 "metadata": json_loads(r.get("metadata_json"), {}) or {},
             })
         return out
+
+
+def _vector_dim(table) -> int | None:
+    """读表里向量列的定长维度（拿不到就返回 None，调用方按"未知"处理）。"""
+    try:
+        field = table.schema.field("vector")
+        size = int(getattr(field.type, "list_size", 0) or 0)
+        return size or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _where_in(column: str, values: list[str]) -> str:

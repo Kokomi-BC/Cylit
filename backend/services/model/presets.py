@@ -109,13 +109,37 @@ PRESETS: dict[str, dict] = {
                       "base_url": None, "secret_ref": None,
                       "parameters": {"dim": 512, "batch": 32}},
     },
+    # ---- RAG 检索档：多模态向量 + 重排（2026-09 实测选定）----
+    "dashscope_rag": {
+        "label": "通义千问 · RAG 检索（qwen3-vl-embedding + qwen3-vl-rerank）",
+        "provider": "dashscope",
+        "generation": None,
+        # qwen3-vl-embedding：2560 维，文本与图片同一空间。
+        # 不在这里写 instruct —— instruct 是**查询侧**参数，入库时传了就会让
+        # 文档侧语义整体偏移；由检索服务在 query 时才带上。
+        "embedding": {
+            "provider": "dashscope_multimodal",
+            "model_name": "qwen3-vl-embedding",
+            "base_url": None, "secret_ref": "dashscope.key",
+            "parameters": {"dim": 2560, "batch": 10},
+        },
+        # qwen3-vl-rerank：与向量模型同一条 Qwen3-VL 底座，文本/图片都能排。
+        # 其余候选：qwen3.7-text-rerank（纯文本最强、单条 30k token）、
+        # qwen3-rerank（4k token/条）；gte-rerank-v2 官方公告 2026-05-30 下线，不选。
+        "reranker": {
+            "provider": "dashscope",
+            "model_name": "qwen3-vl-rerank",
+            "base_url": None, "secret_ref": "dashscope.key",
+            "parameters": {},
+        },
+    },
 }
 
 
 def list_presets() -> list[dict]:
     return [{"id": k, "label": v["label"], "provider": v["provider"],
              "generation": v.get("generation"), "embedding": v.get("embedding"),
-             "vision": v.get("vision")}
+             "reranker": v.get("reranker"), "vision": v.get("vision")}
             for k, v in PRESETS.items()]
 
 
@@ -126,7 +150,7 @@ def create_preset(name: str, *, base_url: str | None = None,
     if preset is None:
         raise ValidationError(f"未知预设：{name}（可选：{list(PRESETS)}）")
     created = []
-    for mtype in ("generation", "embedding", "vision"):
+    for mtype in ("generation", "embedding", "reranker", "vision"):
         spec = preset.get(mtype)
         if not spec:
             continue
@@ -134,7 +158,7 @@ def create_preset(name: str, *, base_url: str | None = None,
             continue
         payload = {
             "name": f"{preset['label']} · {mtype}",
-            "provider": preset["provider"],
+            "provider": spec.get("provider") or preset["provider"],
             "model_type": mtype,
             "model_name": model_name or spec["model_name"],
             "base_url": base_url or spec.get("base_url"),

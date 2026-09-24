@@ -2092,6 +2092,66 @@ PDF 对照（`left=page`）时每行只有一个 `.rr-body`，所以正常；文
 | `pytest tests/test_highlight_sides.py -q` | **7 项通过**（新增"重复删同一条返回 `count: 0` 而不是报错"） |
 | 库状态 | 跑完仍是 1 条用户自己的高亮（假高亮只存在于被拦截的响应里） |
 
+### 17.33 第三十一轮 —— RAG 接入层：`qwen3-vl-embedding` + `qwen3-vl-rerank` 真的调通了
+
+用户给了百炼 API Key 与向量模型（Qwen3-VL-Embedding-8B），问重排选哪个。先把**模型事实**用真调用敲死
+（不抄文档），再把两层 provider 接进现有 `model_config` 路由，最后用**项目自己的 provider** 跑通
+"中文问句 → 向量召回 → 重排 → 跨模态 → 跨文献"。
+
+**实测事实（2026-09 真实调用，探针 `scripts/_probe_dashscope.py`）**：
+
+| 问题 | 实测答案 |
+|---|---|
+| 模型名 | 百炼上就叫 **`qwen3-vl-embedding`**：`qwen3-vl-embedding-8b` → `Model not exist`（`-8b` 是**开源权重**名，不是 API 模型名），`-2b` → `Access denied` |
+| 端点 | **不是** OpenAI 兼容的 `/embeddings`，而是原生 `POST /api/v1/services/embeddings/multimodal-embedding/multimodal-embedding` |
+| 维度 | 默认 **2560**，可降到 2048/1536/1024/768/512/256（`parameters.dimension`） |
+| 文本 + 图片 | 同一语义空间（返回 `type=vl`），图片用 base64 data URI → **本机公式裁图/插图不需要公网可访问** |
+| 上限 | 单请求 contents ≤ 20（provider 按 `parameters.batch` 自动切片，硬上限也夹住） |
+| 重排 | `qwen3-vl-rerank` / `qwen3.7-text-rerank` / `qwen3-rerank` / `gte-rerank-v2` **四个都在同一个 native 端点可用**（不必分两条路） |
+
+**重排模型的取舍（结论：默认 `qwen3-vl-rerank`）**：
+
+- 与向量模型同一条 Qwen3-VL 底座，语义空间最一致；
+- **唯一支持图片文档**的选项 → 公式裁图 / 插图能与中文问句落在同一次排序里
+  （本项目 chunk 本来就有 formula / figure / table 三类带裁图）；
+- 单条 8k token、单请求 100 条文本，我们的 chunk（≈900 字）远远够用。
+- 纯文本最强是 `qwen3.7-text-rerank`（30k/条、201 语种），`qwen3-rerank`（4k/条）次之；
+  `gte-rerank-v2` 官方公告 **2026-05-30 下线**，不选。
+- 四者的 `input` / `parameters` 结构一致 → **换模型只是改一行配置**。
+
+**落地的东西**：
+
+- `DashScopeMultimodalEmbedding`：`embed` / `embed_images` / `embed_mixed`；`instruct` 是**查询侧**参数，
+  入库不传、检索才传（预设里刻意不写，避免文档侧语义整体偏移）；
+- `DashScopeReranker`：`rerank(query, docs, top_n, instruct=, images=, query_image=)`；
+  注释写明分数是**本次请求内的相对分**、跨请求不可比（上层不许拿它做绝对阈值）；
+- 工厂：`dashscope_multimodal` → 多模态向量；`dashscope` → 重排。
+  **没动** 老的 `dashscope` → OpenAI 兼容向量映射（`text-embedding-v3` 不受影响）；
+- 预设 `dashscope_rag`；`create_preset` 补上 `reranker` 类型（以前只导 generation/embedding/vision，
+  重排预设会被**静默丢掉**）；
+- `lancedb_store.upsert_chunks`：**向量维度变了就丢表重建**（LanceDB 向量列定长，512 维 mock 向量
+  追加 2560 维会直接失败；向量库是派生数据，规划 §6.2 允许全量重建）；
+- 前端 `ModelsView.presetTypes` 补 reranker（否则新预设的徽标少一项）。
+
+**验证**：
+
+| 用例 | 结果 |
+|---|---|
+| `pytest tests/test_rag_providers.py -q` | **13 项通过**（请求体形状 / 乱序索引重排 / 20 条切片 / data URI / 401 不重试 / 429 限流 / 条数不符报错 / 混模态同质文档 / 工厂接线 / 预设 / 维度重建） |
+| `pytest -q -m "not e2e"`（全量离线） | **141 项通过** |
+| 真实调用（走项目自己的 provider） | 12 条中文段落 × **2560 维**，嵌入 1.05s / 重排 0.32s；向量 top1 = 0.595 → 重排把"期望失真定义"顶到 **0.734** |
+| 跨模态 | "量化误差的期望形式怎么写" → 公式裁图 **0.749**（文本 0.784，同档）；"这一页插图在讲什么" → 插图 **0.767**（第一） |
+| 跨文献 | 用 TurboQuant p3 段落找相似技术：同篇 0.845 / 0.807（跨篇未进 top3，符合"几乎同一段话"的预期） |
+| `GET /models/presets`（临时 8711） | 预设 7 个；`dashscope_rag` 带 `embedding.provider=dashscope_multimodal` + `reranker=qwen3-vl-rerank`；现有默认仍是 mock-embedding / heuristic（**没动用户库**） |
+| 前端 | `vue-tsc` + `vite build` 干净（`ModelsView-C9iUp5nq.js`） |
+
+两个坑（实测撞出来的，不是推的）：
+
+1. **混模态时 `documents` 必须同质**：一旦有图片项，文本项也得写成 `{"text": …}`，
+   字符串与字典混着传 → `400 InvalidParameter: Input should be a valid string…`（provider 已统一处理）；
+2. 密钥落在 `data/secrets/dashscope.key`（`/data/` 已在 `.gitignore`），**不进 `.env`、不进版本库**。
+
+
 
 
 
