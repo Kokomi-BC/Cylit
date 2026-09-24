@@ -251,10 +251,11 @@ def test_preset_declares_reranker_and_multimodal_embedding() -> None:
 # --------------------------------------------------------------------------
 
 
-def _chunk(cid: str) -> dict:
+def _chunk(cid: str, lang: str = "en") -> dict:
     return {"id": cid, "paper_id": "p1", "chunk_type": "text", "page_no": 1,
             "order_global": 1, "block_id": f"b-{cid}", "section": "S1",
-            "content": f"content {cid}", "content_hash": f"h-{cid}", "metadata": {}}
+            "lang": lang, "content": f"content {cid}", "content_hash": f"h-{cid}",
+            "metadata": {"lang": lang}}
 
 
 def test_vector_store_rebuilds_when_dimension_changes(tmp_path) -> None:
@@ -275,4 +276,22 @@ def test_vector_store_rebuilds_when_dimension_changes(tmp_path) -> None:
     assert store.count() == 2
     hits = store.search([1.0, 0.0, 0.0, 0.0, 0.0], top_k=1)
     assert hits and hits[0]["chunk_id"] == "c1"
-    assert hits[0]["metadata"] == {}
+    assert hits[0]["metadata"] == {"lang": "en"}
+    assert hits[0]["lang"] == "en"
+
+
+def test_vector_store_filters_by_lang(tmp_path) -> None:
+    pytest.importorskip("lancedb")
+    from backend.repositories.vector.lancedb_store import LanceDBStore
+
+    store = LanceDBStore(tmp_path / "lancedb")
+    chunks = [_chunk("c1:zh", "zh"), _chunk("c1:en", "en")]
+    store.upsert_chunks(chunks, [[1.0, 0.0], [1.0, 0.0]], 1)
+    assert store.count() == 2
+
+    assert [r["chunk_id"] for r in store.search([1.0, 0.0], top_k=5)] == ["c1:zh", "c1:en"]
+    only_zh = store.search([1.0, 0.0], top_k=5, langs=["zh"])
+    assert [r["chunk_id"] for r in only_zh] == ["c1:zh"]
+    assert only_zh[0]["lang"] == "zh"
+    assert {r["chunk_id"] for r in store.all_rows()} == {"c1:zh", "c1:en"}
+    assert all("content" in r for r in store.all_rows())

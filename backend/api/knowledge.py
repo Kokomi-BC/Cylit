@@ -49,8 +49,10 @@ async def index_status(request: Request, paper_id: str | None = Query(None)):
 @router.get("/knowledge/chunks")
 async def list_chunks(request: Request, paper_id: str = Query(...),
                       chunk_type: str | None = Query(None),
+                      lang: str | None = Query(None),
                       limit: int = Query(50, le=500)):
     """列出 chunk 元数据（**不返回全文**：全文在 LanceDB，规划 §8 三条禁止）。"""
+    from backend.core.utils import json_loads
     from backend.repositories.mysql.models import Chunk
     from backend.repositories.mysql.session import session_scope
 
@@ -58,13 +60,21 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
         q = sess.query(Chunk).filter(Chunk.paper_id == paper_id)
         if chunk_type:
             q = q.filter(Chunk.chunk_type == chunk_type)
-        rows = q.order_by(Chunk.order_global.asc()).limit(limit).all()
-        items = [{"id": c.id, "paper_id": c.paper_id, "block_id": c.block_id,
-                  "chunk_type": c.chunk_type, "page": c.page_no,
-                  "section": c.section, "preview": c.content_preview,
-                  "hash": c.content_hash, "tokens": c.token_count,
-                  "index_version": c.index_version,
-                  "embedding_model_id": c.embedding_model_id} for c in rows]
+        rows = q.order_by(Chunk.order_global.asc()).limit(limit if not lang else 5000).all()
+        items = []
+        for c in rows:
+            meta = json_loads(c.metadata_json, {}) or {}
+            if lang and (meta.get("lang") or "en") != lang:
+                continue
+            items.append({"id": c.id, "paper_id": c.paper_id, "block_id": c.block_id,
+                          "chunk_type": c.chunk_type, "page": c.page_no,
+                          "lang": meta.get("lang") or "en",
+                          "section": c.section, "preview": c.content_preview,
+                          "hash": c.content_hash, "tokens": c.token_count,
+                          "index_version": c.index_version,
+                          "embedding_model_id": c.embedding_model_id})
+            if len(items) >= limit:
+                break
     return envelope({"items": items, "count": len(items)}, request=request)
 
 

@@ -82,6 +82,7 @@ class LanceDBStore:
                 "order_global": int(c["order_global"]),
                 "block_id": c.get("block_id") or "",
                 "section": c.get("section") or "",
+                "lang": c.get("lang") or "en",
                 "content": c["content"], "content_hash": c["content_hash"],
                 "index_version": int(index_version),
                 "embedding_model_id": embedding_model_id or "",
@@ -96,14 +97,12 @@ class LanceDBStore:
             names = set(db.table_names())
             if TABLE_NAME in names:
                 table = db.open_table(TABLE_NAME)
-                old_dim = _vector_dim(table)
-                new_dim = len(rows[0]["vector"])
-                if old_dim and old_dim != new_dim:
-                    # 换 embedding 模型 → 维度变了。LanceDB 表的向量列是定长类型，
-                    # 维度不同无法追加；而向量库是**派生数据、任何时刻可全量重建**
+                why = _schema_mismatch(table, rows[0])
+                if why:
+                    # 换 embedding 模型（维度变）或加字段（本轮加 lang）都会让表结构与
+                    # 新数据对不上。向量库是**派生数据、任何时刻可全量重建**
                     # （规划 §6.2 第 4 条），所以直接丢表重建，不静默写坏索引。
-                    log.warning("向量维度变化（%d → %d）：丢弃并重建 LanceDB 表 %s",
-                                old_dim, new_dim, TABLE_NAME)
+                    log.warning("LanceDB 表结构变化（%s）：丢弃并重建 %s", why, TABLE_NAME)
                     db.drop_table(TABLE_NAME)
                     names.discard(TABLE_NAME)
             if TABLE_NAME in names:
@@ -168,7 +167,8 @@ class LanceDBStore:
 
     # ------------------------------------------------------------------
     def search(self, vector: list[float], *, paper_ids: list[str] | None = None,
-               chunk_types: list[str] | None = None, top_k: int = 20,
+               chunk_types: list[str] | None = None, langs: list[str] | None = None,
+               top_k: int = 20,
                exclude_paper: str | None = None,
                exclude_chunk: str | None = None) -> list[dict]:
         """向量检索（规划 §19.1 VectorRetriever 的底层）。"""
@@ -182,6 +182,8 @@ class LanceDBStore:
                 filters.append(_where_in("paper_id", paper_ids))
             if chunk_types:
                 filters.append(_where_in("chunk_type", chunk_types))
+            if langs:
+                filters.append(_where_in("lang", langs))
             if exclude_paper:
                 filters.append(f"paper_id != '{_escape(exclude_paper)}'")
             if exclude_chunk:
@@ -198,11 +200,37 @@ class LanceDBStore:
                 "chunk_id": r.get("chunk_id"), "paper_id": r.get("paper_id"),
                 "chunk_type": r.get("chunk_type"), "page_no": r.get("page_no"),
                 "block_id": r.get("block_id"), "section": r.get("section"),
+                "lang": r.get("lang") or "en",
                 "content": r.get("content"),
                 "score": r.get("_distance"),
                 "metadata": json_loads(r.get("metadata_json"), {}) or {},
             })
         return out
+
+    def all_rows(self, *, paper_ids: list[str] | None = None) -> list[dict]:
+        """整表扫描（词法检索用：本库规模只有几千条，Python 侧 BM25 足够快）。
+
+        真正的全文索引（LanceDB FTS / SQLite FTS5）留到"库大到扫不动"再上，
+        现在多一层外部索引只会多一处不一致。
+        """
+        table = self._table()
+        if table is None:
+            return []
+        try:
+            q = table.search().select(
+                ["chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
+                 "section", "lang", "content", "metadata_json"])
+            if paper_ids:
+                q = q.where(_where_in("paper_id", paper_ids))
+            rows = q.limit(100000).to_list()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LanceDB 全表读取失败：%s", exc)
+            return []
+        return [{**{k: r.get(k) for k in
+                    ("chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
+                     "section", "content")},
+                 "lang": r.get("lang") or "en",
+                 "metadata": json_loads(r.get("metadata_json"), {}) or {}} for r in rows]
 
 
 def _vector_dim(table) -> int | None:
@@ -213,6 +241,25 @@ def _vector_dim(table) -> int | None:
         return size or None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _schema_mismatch(table, sample: dict) -> str | None:
+    """旧表结构和新数据不一致的原因（没有则返回 None）。
+
+    两种情况都必须重建：**缺列**（本轮加 ``lang``）和**向量维度变化**
+    （换 embedding 模型）。LanceDB 不支持加列后直接 add，也不支持不同维度的向量列。
+    """
+    try:
+        have = {f.name for f in table.schema}
+    except Exception:  # noqa: BLE001
+        return None
+    missing = set(sample) - have
+    if missing:
+        return f"缺列 {sorted(missing)}"
+    dim, new_dim = _vector_dim(table), len(sample.get("vector") or [])
+    if dim and new_dim and dim != new_dim:
+        return f"向量维度 {dim} → {new_dim}"
+    return None
 
 
 def _where_in(column: str, values: list[str]) -> str:

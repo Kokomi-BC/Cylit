@@ -371,6 +371,8 @@ export interface KnowledgeOverview {
   papers_in_kb: number;
   chunks: number;
   chunks_by_type: Record<string, number>;
+  /** 双语索引的行数：`{zh: n, en: m}` */
+  chunks_by_lang?: Record<string, number>;
   embedding_models: string[];
   index_versions: Record<string, number>;
   vector_store: Record<string, any>;
@@ -383,6 +385,8 @@ export interface ChunkMeta {
   block_id: string;
   chunk_type: string;
   page: number;
+  /** 双语索引：`zh` 中文行 / `en` 原文行（同一 chunk 各一条） */
+  lang?: string;
   section: string | null;
   preview: string;
   hash: string;

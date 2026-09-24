@@ -99,6 +99,7 @@ const asking = ref(false);
 
 const papers = computed<KbPaper[]>(() => overview.value?.items || []);
 const chunksByType = computed<Record<string, number>>(() => overview.value?.chunks_by_type || {});
+const chunksByLang = computed<Record<string, number>>(() => overview.value?.chunks_by_lang || {});
 const vectorStore = computed<Record<string, any> | null>(() => overview.value?.vector_store || null);
 const embeddingModels = computed<string[]>(() => overview.value?.embedding_models || []);
 
@@ -322,11 +323,15 @@ function jsonPreview(value: unknown): string {
       </div>
       <div class="card stat">
         <div class="n">{{ overview.chunks }}</div>
-        <div class="k">chunk 总数</div>
+        <div class="k">chunk 总数（双语行）</div>
         <div class="row wrap" style="margin-top:6px">
           <span class="badge" v-for="t in CHUNK_TYPES" :key="t.key">
             {{ t.label }} {{ chunksByType[t.key] || 0 }}
           </span>
+        </div>
+        <div class="row wrap" style="margin-top:4px">
+          <span class="badge accent">中文 {{ chunksByLang.zh || 0 }}</span>
+          <span class="badge">原文 {{ chunksByLang.en || 0 }}</span>
         </div>
       </div>
       <div class="card stat">
@@ -463,7 +468,7 @@ function jsonPreview(value: unknown): string {
         <table class="data" v-if="chunks.length">
           <thead>
             <tr>
-              <th>chunk</th><th>类型</th><th class="num">页</th><th>章节</th>
+              <th>chunk</th><th>类型</th><th>语言</th><th class="num">页</th><th>章节</th>
               <th>preview</th><th class="num">tokens</th><th>hash</th>
               <th class="num">版本</th><th>操作</th>
             </tr>
@@ -472,6 +477,7 @@ function jsonPreview(value: unknown): string {
             <tr v-for="c in chunks" :key="c.id">
               <td class="mono tiny truncate" style="max-width:220px" :title="c.id">{{ c.id }}</td>
               <td><span class="badge accent">{{ c.chunk_type }}</span></td>
+              <td><span class="badge" :class="{ accent: c.lang === 'zh' }">{{ c.lang === 'zh' ? '中文' : '原文' }}</span></td>
               <td class="num">{{ c.page }}</td>
               <td class="tiny truncate" style="max-width:140px" :title="c.section || ''">{{ c.section || '—' }}</td>
               <td class="small clamp-2" style="max-width:320px" :title="c.preview || ''">{{ c.preview || '—' }}</td>
