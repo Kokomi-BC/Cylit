@@ -307,6 +307,14 @@ export interface ReaderPayload {
   pages: PageInfo[];
   /** 页级翻译产物（原文/译文两份 Markdown + 对齐后的行） */
   page_translations?: PageTranslation[];
+  /**
+   * 解析块 id → 正文行 id（如 `attentionisa-p01-b06` → `p001-06`）。
+   *
+   * 两套 id 命名空间不通用：已翻译页的正文行来自页级产物（位置编号 `p{页}-{序}`），
+   * 检索/RAG 侧存的却是解析块 id。深链定位靠这张表把块锚点翻成行锚点；
+   * 表里没有的块（公式 / 插图 / 表格，正文行里没有独立段落）退化为按 `page` 跳。
+   */
+  block_rows?: Record<string, string>;
   progress: ReadingProgress;
   annotations: Annotation[];
   highlights: Highlight[];

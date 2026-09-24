@@ -22,7 +22,7 @@ from backend.repositories.mysql.models import (
     Annotation, Block, Formula, Highlight, Note, Paper, ReadingProgress, Task,
 )
 from backend.repositories.mysql.session import session_scope
-from backend.services.paper import paper_service
+from backend.services.paper import anchor_map, paper_service
 from backend.services.translation.page_translate import (
     PAGES_FILENAME, PageStore,
 )
@@ -216,10 +216,13 @@ def build_reader(paper_id: str, *, user_id: int = 1,
     index = load_block_index(paper_id)
     indexed = {b["id"]: b for b in (index.get("blocks") or [])}
     paper_dir = paper_service.paper_paths(paper_id)["root"]
+    # 页级产物**只装一次**：行 id→页、正文行、锚点映射都要它，而它内部会重跑
+    # `pair_rows`（不便宜），装载三次纯属浪费。
+    page_payloads = page_translations(paper_id)
     # 锚点 → 页码：批注/笔记/高亮存的是行 id（当前产物）或历史的 block id，
     # 前端"定位"要能在行 id 失效时退化为按页跳转。
     row_pages: dict[str, int] = {}
-    for page_payload in page_translations(paper_id):
+    for page_payload in page_payloads:
         for row in page_payload.get("rows") or []:
             if row.get("id"):
                 row_pages[row["id"]] = int(page_payload["page"])
@@ -287,8 +290,12 @@ def build_reader(paper_id: str, *, user_id: int = 1,
             "paper": paper,
             "blocks": out_blocks,
             "pages": _pages_payload(paper_id, store=load_page_store(paper_id)),
-            "page_translations": page_translations(paper_id),
-            "progress": _progress_payload(progress),
+            "page_translations": page_payloads,
+            # 块 id → 正文行 id：检索/RAG 给的是**块 id**（`attentionisa-p01-b06`），
+            # 已翻译页的正文行 id 却是页级产物的位置编号（`p001-06`）—— 两套命名空间。
+            # 没有这张表，"跳回原文"就是空跳（真实事故）。见 anchor_map 模块头。
+            "block_rows": anchor_map.build_block_row_map(
+                out_blocks, anchor_map.rows_by_page(page_payloads)),            "progress": _progress_payload(progress),
             "annotations": [{"id": a.id, "block_id": a.block_id, "type": a.type,
                              "content_md": a.content_md, "source": a.source,
                              "confidence": a.confidence,

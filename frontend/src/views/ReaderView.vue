@@ -478,6 +478,10 @@ const activeTask = computed(() => liveTask.value
 /** 后台正在翻译这篇论文：还没译文的行显示「等待翻译」，而不是「未翻译」 */
 const translating = computed(() => !!activeTask.value);
 const isEmpty = computed(() => !loading.value && !fatal.value && !pages.value.length && !allRows.value.length);
+/** 行数据到齐没（深链定位据此决定"再等等"还是"确实找不到"） */
+const rowsReady = computed(() => !loading.value && !fatal.value && allRows.value.length > 0);
+/** 后端有没有下发"块 id → 正文行 id"的映射表（老后端没有，就只能按页跳） */
+const rowMapReady = computed(() => Object.keys(reader.value?.block_rows ?? {}).length > 0);
 /** 原 PDF 栏的列宽（对照时只占一半，单栏时可放大） */
 const pageWidth = computed(() => {
   const col = viewMode.value === 'bilingual' ? paneWidth.value / 2 - 40 : paneWidth.value - 40;
@@ -549,14 +553,96 @@ async function loadAll() {
   }
 }
 
-/** 深链定位：`?row=<id>`（或兼容旧的 `?block=`）——必须在拿到滚动容器之后再跳。 */
-async function applyDeepLink() {
-  const target = (route.query.row ?? route.query.block) as string | undefined;
-  if (!target || !rowById.value.has(target)) return;
-  currentRowId.value = target;
-  await nextTick();
-  await focusRow(target, { smooth: false, save: false });
+/**
+ * 深链定位：`?row=<锚点>`（兼容旧的 `?block=`）+ 可选 `?page=<页码>`。
+ *
+ * **三级解析**（缺一不可，2026-09 修的真实事故：知识库点「跳回原文」什么都不发生）：
+ *
+ * 1. `row` 直接是正文行 id（`p001-06`）或该页未翻译时的块 id → 精确落行；
+ * 2. 检索/RAG 给的是**解析块 id**（`attentionisa-p01-b06`），已翻译页的正文行是页级产物的
+ *    位置编号，两边根本不是一套 id → 用后端下发的 `block_rows` 翻成行 id；
+ * 3. 还没有（公式/插图/表格在正文行里没有独立段落，或锚点因重译失效）→ 退到 `page` 那一页，
+ *    并**明确说明**"已跳到第 N 页"，不假装精确。
+ *
+ * `deepLinkDone` 记的是"已经执行过的定位签名"：既防重复滚动，也防下面 `syncViewQuery()`
+ * 写回 URL（`replace`）时把自己再触发一遍。
+ */
+const deepLinkDone = ref('');
+/** 已经"尽力过"的锚点签名：只提示一次，别在 SSE 逐页回填时反复弹 */
+const deepLinkTried = ref('');
+/** 挂载流程（载数据 → 恢复位置 → 深链定位）走完没 */
+const bootDone = ref(false);
+
+/** 请求里带没带深链锚点（`?row=` / 兼容的 `?block=` / `?page=`）。 */
+function hasDeepLink(): boolean {
+  const q = route.query;
+  return Boolean(q.row ?? q.block ?? q.page);
 }
+
+async function applyDeepLink(): Promise<boolean> {
+  const raw = route.query.row ?? route.query.block;
+  const anchor = raw === undefined || raw === null ? '' : String(raw);
+  const wantPage = Number(route.query.page ?? 0) || 0;
+  if (!anchor && !wantPage) return true;
+  const sig = `${anchor}|${wantPage}`;
+  if (deepLinkDone.value === sig) return true;
+
+  const mapped = anchor
+    ? (rowById.value.has(anchor) ? anchor : String(reader.value?.block_rows?.[anchor] ?? ''))
+    : '';
+  const row = mapped ? rowById.value.get(mapped) : undefined;
+  if (row) {
+    deepLinkDone.value = sig;
+    currentRowId.value = row.id;
+    await nextTick();
+    await focusRow(row.id, { smooth: false, save: false, flash: true });
+    return true;
+  }
+
+  if (wantPage) {
+    deepLinkDone.value = sig;
+    const first = allRows.value.find((r) => r.page === wantPage);
+    if (first) {
+      currentRowId.value = first.id;
+      await nextTick();
+      await focusRow(first.id, { smooth: false, save: false, flash: true });
+    } else {
+      await focusPage(wantPage);
+    }
+    if (anchor && !loading.value) {
+      // 有映射表 + 行齐了，才敢断言"这一段在正文里没有独立行"（公式/插图/表格）；
+      // 否则老实说"没找到精确位置"（老后端不下发 block_rows 时也会走到这里）。
+      const precise = rowMapReady.value && rowsReady.value;
+      toast(precise
+        ? `该段落没有独立正文行（公式 / 插图 / 表格），已跳到第 ${wantPage} 页`
+        : `未找到该段落的精确位置，已跳到第 ${wantPage} 页`, 'warn', 3200);
+    }
+    return true;
+  }
+
+  // 锚点查不到、也没有页码兜底：等数据到齐（行是 payload + SSE 分两批来的）再判定
+  if (rowsReady.value && deepLinkTried.value !== sig) {
+    deepLinkTried.value = sig;
+    toast('该定位锚点已失效（重译后行号已变）', 'warn', 2600);
+  }
+  return false;
+}
+
+/** 目标变了（点了另一个检索结果 / 从别处再跳一次同一个锚点）就重新定位。 */
+watch(() => `${route.query.row ?? ''}|${route.query.block ?? ''}|${route.query.page ?? ''}`,
+  () => { void applyDeepLink(); });
+
+/**
+ * 行是**分两批**到的（reader payload + SSE 逐页回填），深链可能在第一批里还查不到目标：
+ * 每来一行就再试一次，直到解析成功。已经定位过的直接跳过（不再打扰用户的滚动）。
+ *
+ * `bootDone` 之前不重试：挂载流程里 `restorePosition`（恢复上次读到哪）与深链定位
+ * 都是"滚到某一行"，谁后跑谁赢 —— 让重试在挂载流程之后才介入，顺序才是确定的。
+ */
+watch(() => allRows.value.length, () => {
+  if (!bootDone.value || deepLinkDone.value) return;
+  void applyDeepLink();
+});
 
 async function loadSide() {
   try {
@@ -1041,8 +1127,13 @@ onMounted(async () => {
   await nextTick();
   syncPaneWidth();
   watchContentSize();
-  restorePosition(reader.value?.progress ?? null);
-  await applyDeepLink();
+  // **深链优先**：带锚点时不先恢复"上次读到哪" —— 两者都是"滚到某一行"，
+  // 而 `focusRow` 内部 `await nextTick()` 才滚动（异步），先发起的那次可能后落地，
+  // 于是刚跳过去的深链结果被恢复位置那一次滚动盖掉。真实现象：点「跳回原文」
+  // 有时跳到、有时停在上一篇的进度上；直接打开带锚点的链接则看起来"完全没反应"。
+  const applied = hasDeepLink() ? await applyDeepLink() : false;
+  if (!applied) restorePosition(reader.value?.progress ?? null);
+  bootDone.value = true;
   if (route.query.md) {                       // ?md=1[&mdpage=8] 直接打开 Markdown 视图
     const want = Number(route.query.mdpage ?? 0);
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始

@@ -8,7 +8,7 @@
  */
 
 import { computed, onMounted, reactive, ref } from 'vue';
-import { RouterLink } from 'vue-router';
+import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { Annotation, Highlight, Note } from '@/api/types';
 import {
@@ -18,11 +18,14 @@ import { openTab } from '@/stores/tabs';
 import {
   fmtDate, fmtRelative, truncate,
 } from '@/utils/format';
+import { readerTarget } from '@/utils/navigation';
 import { mdToHtml } from '@/composables/useMarkdown';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 import Menu from '@/components/Menu.vue';
 import AppIcon from '@/components/AppIcon.vue';
+
+const router = useRouter();
 
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
 interface RowAction {
@@ -129,22 +132,17 @@ function titleOf(paperId?: string | null): string {
 }
 
 /**
- * ⚠️ 拆成"纯位置 + 点击开标签"两半：`:to="fn()"` 会在**每次渲染**调用 `fn`，
- * 而 `openTab()` 会改响应式 tabs 状态（每次都赋新的 `query` 对象 → 永远"变了"）→
- * "渲染 → 改状态 → 再渲染"死循环，页面直接卡死。知识库页已经这么炸过一次，
- * 这里（笔记 / 高亮 / 批注三处）是同一个写法，一并改掉。
+ * 跳回原文：登记/激活阅读器标签 + 带上锚点（`row`）与页码（`page`）。
+ *
+ * ⚠️ 只能在**点击回调**里调：`:to="fn()"` 会在每次渲染调用 `fn`，而 `openTab()` 会改响应式
+ * tabs 状态（以前每次都赋新的 `query` 对象 → 永远"变了"）→ "渲染 → 改状态 → 再渲染"死循环，
+ * 页面直接卡死。知识库页已经这么炸过一次，这里（笔记 / 高亮 / 批注三处）是同一个写法。
+ *
+ * 锚点可能是正文行 id（`p001-06`，本页读到的）也可能是**解析块 id**（历史的 / 检索侧的）：
+ * 阅读器做三级解析（行 id → `block_rows` → `page`），所以这里把 `page` 一并带上当兜底。
  */
-function readerLocation(paperId?: string | null, blockId?: string | null) {
-  return {
-    name: 'reader',
-    params: { paperId: paperId ?? '' },
-    query: blockId ? { block: blockId } : {},
-  };
-}
-
-/** 点击时才开/激活阅读器标签（已开着就切过去）。 */
-function openReader(paperId?: string | null, blockId?: string | null) {
-  openTab(readerLocation(paperId, blockId) as never);
+function openReader(paperId?: string | null, blockId?: string | null, page?: number | null) {
+  void router.push(openTab(readerTarget(paperId ?? '', blockId, page)) as never);
 }
 
 function colorHex(color?: string | null): string {
@@ -393,9 +391,10 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
             <span class="badge" v-for="t in n.tags" :key="t">{{ t }}</span>
           </div>
           <div class="row wrap note-actions">
-            <RouterLink class="btn sm" v-if="n.block_id" :to="readerLocation(n.paper_id, n.block_id)" @click="openReader(n.paper_id, n.block_id)">
+            <button class="btn sm" v-if="n.block_id" title="跳到这一段原文"
+                    @click="openReader(n.paper_id, n.block_id, n.page)">
               <AppIcon name="locate" :size="14" />跳回原文
-            </RouterLink>
+            </button>
             <span class="tiny faint" v-else>无关联原文块</span>
             <span class="spacer"></span>
             <span class="tiny faint mono" v-if="n.block_id">block {{ n.block_id }}</span>
@@ -440,9 +439,10 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
             <span v-if="h.color">· 颜色 {{ h.color }}</span>
           </div>
           <div class="row wrap note-actions">
-            <RouterLink class="btn sm" v-if="h.block_id" :to="readerLocation(h.paper_id, h.block_id)" @click="openReader(h.paper_id, h.block_id)">
+            <button class="btn sm" v-if="h.block_id" title="跳到这一段原文"
+                    @click="openReader(h.paper_id, h.block_id, h.page)">
               <AppIcon name="locate" :size="14" />跳回原文
-            </RouterLink>
+            </button>
             <span class="tiny faint" v-else>无关联原文块</span>
             <span class="spacer"></span>
             <Menu :items="highlightMenu(h)" up :label="`更多操作：${h.id}`"
@@ -479,9 +479,10 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
           来源：{{ s.paper_id }} · {{ s.block_id }} — {{ truncate(s.snippet || '', 120) }}
         </div>
         <div class="row wrap note-actions">
-          <RouterLink class="btn sm" v-if="a.block_id" :to="readerLocation(a.paper_id, a.block_id)" @click="openReader(a.paper_id, a.block_id)">
+          <button class="btn sm" v-if="a.block_id" title="跳到这一段原文"
+                  @click="openReader(a.paper_id, a.block_id, a.page)">
             <AppIcon name="locate" :size="14" />跳回原文
-          </RouterLink>
+          </button>
           <span class="tiny faint" v-else>无关联原文块</span>
           <span class="spacer"></span>
           <span class="tiny faint mono truncate" :title="a.id">{{ a.id }}</span>
