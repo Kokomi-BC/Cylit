@@ -2859,6 +2859,34 @@ review_note = '文本层无歧义，无结构性符号'
 
 我没有替用户触发重建索引 —— 那会写用户的索引（跑一个 INDEX 任务、重新嵌入 137 条），先问一句。
 
+#### 已执行（用户点头后）：重建 attention 索引，清掉那两条
+
+**为什么直接调服务、不走 `/knowledge/index` 建任务**：用户的 8710 是**旧代码**进程，
+它的 TaskRunner 也在轮询同一张 `task` 表 —— 建任务有可能被它抢走，用旧逻辑把噪声 chunk 又建回来。
+所以在当前工作区（新代码）里直接调 `knowledge_service.index_paper(rebuild=True)`，结果确定。
+
+```
+重建前：MySQL 137 条 chunk（公式 18）· 向量库 139
+重建：  index_version 1 → 2，133 条（正文 97 / 插图 10 / 公式 16 / 表格 10），向量嵌入 133/133
+重建后：b06 元数据 0 条，但 **b06 向量还在**（upsert_chunks 只按 chunk_id 覆盖）
+对账清理：missing=6 → 删掉 6 条孤儿向量（b06 的 en/zh + 4 条因"噪声公式不再切断正文"而
+        合并/改名的 text chunk 向量），removed_metadata=0
+最终对账：MySQL 133 = 向量库 133，orphans 0 / missing 0 / consistent=True
+```
+
+**安全闸门**：只有第 1 步真的写入了向量（`embedded == chunks`）才执行 `reconcile(fix=True)` ——
+否则那一句会把"元数据在、向量不在"的**全部元数据**当孤儿删掉（该篇索引会被清空）。
+
+线上复核（读用户正在跑的 8710，只读）：
+
+| 检查 | 结果 |
+|---|---|
+| `/knowledge/overview` | chunk 总数 395 → **391** |
+| attention 的公式 chunk | **16 条**（8 条真公式 × 中/英），含 `b06` 的 **0 条** |
+| `/knowledge/index/status` | MySQL 391 = LanceDB 391，`consistent=True` |
+| preview 里还剩 `†` 的 | 2 条，都是**正文**（作者单位那段含 `\* †`、脚注正文"†在 Google Brain 工作期间完成"）——本来就该留 |
+
+
 
 
 
