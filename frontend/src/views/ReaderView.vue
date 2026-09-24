@@ -1031,6 +1031,10 @@ onMounted(async () => {
   document.addEventListener('mouseup', onMouseUp);
   document.addEventListener('mousemove', onDragMove);
   document.addEventListener('selectionchange', onSelectionChange);
+  // 划词菜单跟着"当前视角"走：滚动 / 窗口失焦 / 点到别处就收掉（见 `onAnyScroll`）
+  window.addEventListener('scroll', onAnyScroll, { capture: true, passive: true });
+  window.addEventListener('blur', hideMenu);
+  document.addEventListener('pointerdown', onDocPointerDown, true);
 
   await loadAll();
   await loadSide();
@@ -1055,6 +1059,9 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', onMouseUp);
   document.removeEventListener('mousemove', onDragMove);
   document.removeEventListener('selectionchange', onSelectionChange);
+  window.removeEventListener('scroll', onAnyScroll, { capture: true });
+  window.removeEventListener('blur', hideMenu);
+  document.removeEventListener('pointerdown', onDocPointerDown, true);
   setColSide('');               // 离开阅读器时别把 `<html>` 上的标记留在页面上
   contentRo?.disconnect();
   scroller.value?.removeEventListener('scrollend', onScrollEnd);
@@ -1577,6 +1584,29 @@ function highlightIdsInRange(range: Range, target?: HTMLElement | null, onlyCol?
 }
 
 const hideMenu = () => { selection.show = false; };
+
+/**
+ * 滚动 / 失去焦点时收掉划词菜单。
+ *
+ * 菜单是 `position: fixed`，位置是**划词那一刻**按选区 rect 算好的 —— 一旦滚动就与文字脱开，
+ * 变成一枚浮在页面中间、跟谁都不挨着的胶囊（用户报的正是这个）；它本来也不该"钉在屏幕上"。
+ * 所以：任何容器滚动、窗口失焦、点到菜单以外的地方，一律收掉。
+ *
+ * 三条必须分开写，缺一条就有漏：
+ *   · `scroll` 要**捕获**（`capture: true`）：滚动事件不冒泡，只有捕获能在 window 上收到
+ *     "栏内滚动"（正文栏、侧栏、Markdown、原 PDF 各自是独立滚动容器）；
+ *   · `blur` 收窗口失焦（切标签页 / 切到别的应用）；
+ *   · `pointerdown` 补"点了别处" —— **点已有高亮弹出的那个菜单没有选区**，点空白处不会走到
+ *     `onMouseUp` 里"选区已折叠 → 收起"那条分支，不收的话菜单会一直留在屏幕上。
+ *     点菜单自己（色块/按钮）**绝不能**收：mousedown 的默认动作会清掉选区，菜单会在自己的
+ *     click 触发前被卸载 —— 表现就是"点高亮毫无反应"（见 `SelectionMenu.vue` 顶部那段说明）。
+ */
+function onAnyScroll() { hideMenu(); }
+function onDocPointerDown(ev: PointerEvent) {
+  const target = ev.target as HTMLElement | null;
+  if (target?.closest?.('[data-selection-menu]')) return;
+  hideMenu();
+}
 
 /**
  * Ctrl+C：**选区跨到了对面列时，剪贴板只放本列的文字**。
