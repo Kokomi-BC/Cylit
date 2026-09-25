@@ -110,6 +110,23 @@ def _block_sig(text: str) -> str:
     return _COMPACT_RE.sub("", (text or "").lower())
 
 
+def _safe_preview(content: str, limit: int = 200) -> str:
+    r"""预览文本：截断后若 `$` 没配对就补一个收尾定界符。
+
+    为什么单独给预览做：左侧结果列表走通用 markdown 渲染，**截断切进公式中间**会留下
+    没闭合的 `$` → 那一条就整段变纯文本（用户看到的"左侧不渲染"）。这只影响预览展示，
+    不动 chunk 正文本身。
+    """
+    text = truncate(content, limit)
+    if text.count("$") % 2:
+        # 补定界符**不能超列长**（content_preview 有长度上限）；重截一次后要**再判一次**
+        # 奇偶（少截一个字符可能刚好把一个 `$` 切掉）
+        text = truncate(content, limit - 1)
+        if text.count("$") % 2:
+            text += "$"
+    return text
+
+
 def _zh_index(pages: list[dict]) -> dict[int, list[tuple[str, str]]]:
     """``{页号: [(行签名, 译文), …]}``：页级翻译产物的译文索引（保持行序）。
 
@@ -306,7 +323,7 @@ def _variant_row(c: dict, lang: str, content: str) -> dict:
         "lang": lang,
         "content": content,
         "content_hash": sha256_text(content),
-        "content_preview": truncate(content, 200),
+        "content_preview": _safe_preview(content),
         "token_count": _approx_tokens(content),
         "metadata": meta,
     }
@@ -595,9 +612,12 @@ def _canonical_formula_chunks(paper_id: str, rows: list[dict],
         # 有解析块的用块 id（一个解析块最多对一条公式）。
         unique_key = e.get("formula_block_id") or e.get("id")
         cid = f"{paper_id}:formula:{unique_key}"
-        # 展示用前缀仍取"人看得懂"的定位（row_id / 解析块 id）
+        # 展示前缀用"人看得懂"的定位（row_id / 解析块 id）
         label = e.get("row_id") or e.get("formula_block_id") or e.get("id")
-        content = f"公式 {label}：{latex}"
+        # 正文里的 LaTeX **必须带定界符**：左侧结果列表走的是通用 markdown 渲染，
+        # 不带 `$…$` 的裸 LaTeX 会被当纯文本原样显示（用户看到的"左侧不渲染"就是这个）。
+        # 右侧详情用的是 `metadata.latex` + KaTeX，所以一直是对的。
+        content = f"公式 {label}：$${latex}$$"
         meta = {
             "latex": latex, "display": bool(e.get("display")),
             "row_id": e.get("row_id"), "page": e.get("page"),
@@ -679,7 +699,7 @@ def _merge_chunks(a: dict, b: dict) -> dict:
         "end_block_id": b["end_block_id"],
         "order_global": min(a["order_global"], b["order_global"]),
         "content_hash": sha256_text(content),
-        "content_preview": truncate(content, 200),
+        "content_preview": _safe_preview(content),
         "token_count": _approx_tokens(content),
         "metadata": meta,
         "_parts": list(a.get("_parts") or []) + list(b.get("_parts") or []),
@@ -757,7 +777,7 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
         "block_id": first["id"], "end_block_id": last["id"],
         "section": section, "content": content,
         "content_hash": sha256_text(content),
-        "content_preview": truncate(content, 200),
+        "content_preview": _safe_preview(content),
         "token_count": _approx_tokens(content),
         "metadata": meta,
         "_parts": parts or [],
@@ -1315,6 +1335,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
