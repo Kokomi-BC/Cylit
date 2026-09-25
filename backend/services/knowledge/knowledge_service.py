@@ -428,24 +428,17 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
         return None
     # 每条：(片段, 来源行键 或 None, 行内起点, 行内终点, 行全文)
     pieces: list[tuple[str, tuple[int, int] | None, int, int, str]] = []
+    formula_slots: list[int] = []      # pieces 里哪些是"待定的公式片段"（见下面的去重）
     text_parts = 0
     cursor: dict[int, int] = {}
     covered: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    emitted_canon: list[str] = []      # 已拼进正文的片段（规范符号串），用于挡重复公式
     for item in parts:
         page, text = item[0], item[1]
         kind = item[2] if len(item) > 2 else "text"
         if kind == "formula":
-            # 公式片段原样插入（LaTeX 无语言之分）—— 但**译文里已经有了就不再插**：
-            # 中文侧的事实源是译文行，而译文行本身就把公式带了进来（`为分布为 $f_X…$`）。
-            # 解析侧那条公式块只是同一条公式的（被撞碎的）转写，再插一遍就是用户看到的
-            # "同一条公式连着出现两次"。判据是规范串包含，不做模糊匹配。
-            fc = formula_source._canon_loose(text)      # noqa: SLF001 —— 同模块内部约定
-            if len(fc) >= _MIN_DUP_CANON and any(fc in c for c in emitted_canon):
-                log.debug("公式片段已在译文里出现，跳过：%s", text[:48])
-                continue
+            # 公式片段原样插入（LaTeX 无语言之分）—— 但**译文里已经有了就不插**（见下）。
+            formula_slots.append(len(pieces))
             pieces.append((text, None, 0, len(text), text))
-            emitted_canon.append(fc)
             continue
         text_parts += 1
         got = _lookup_zh(zh, page, text, cursor.get(page, 0))
@@ -473,12 +466,34 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
         cov.append((g_lo, g_hi))
         cursor[page] = idx
         pieces.append((piece, (page, idx), g_lo, g_hi, dst))
-        emitted_canon.append(formula_source._canon_loose(piece))   # noqa: SLF001
     if not pieces:
         return None
     if text_parts and len(pieces) < len(parts):
         log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
                   len(pieces), len(parts))
+    # 公式片段去重：**中文侧的事实源是译文行**，而译文行本身就把公式带了进来
+    # （`为分布为 $f_X…$`、列表项 `- $D_{\prod} := …$，对任意 $b \ge 0$。`）。
+    # 解析侧那条公式块只是同一条公式的（被撞碎的）转写，再插一遍就是用户看到的
+    # "同一条公式连着出现两次"。判据是**规范符号串包含**（不做模糊匹配），
+    # 且与两侧出现顺序无关 —— 公式块可能在译文行之前，也可能在之后。
+    if formula_slots:
+        text_canon = [formula_source._canon_loose(t)       # noqa: SLF001
+                      for i, (t, k, _a, _b, _c) in enumerate(pieces)
+                      if k is not None]
+        kept_canon: list[str] = []
+        drop: set[int] = set()
+        for pos in formula_slots:
+            fc = formula_source._canon_loose(pieces[pos][0])   # noqa: SLF001
+            if len(fc) < _MIN_DUP_CANON:
+                kept_canon.append(fc)
+                continue
+            if any(fc in c for c in text_canon) or any(fc in c for c in kept_canon):
+                log.debug("公式片段已在译文里出现，跳过：%s", pieces[pos][0][:48])
+                drop.add(pos)
+                continue
+            kept_canon.append(fc)
+        if drop:
+            pieces = [p for i, p in enumerate(pieces) if i not in drop]
     # 一、**同一个页级行的连续片段合成一段**：它们本来就是同一段文字（解析块在一句话
     # 中间断开，而译文行是完整段落）。合并直接取行里的原文区间，行内原有的换行/缩进
     # 一并保留 —— 算法框那种"一行多步"的结构不会被压成一行。
