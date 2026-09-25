@@ -143,23 +143,37 @@ def _join_lines(parts: list[str]) -> str:
 
 
 def group_continuations(items: list[dict]) -> list[dict]:
-    """把**同一行**里的多行推导合成一条（纯过滤/规范化，不涉及公式识别）。
+    r"""把**同一条多行推导**合成一条（纯过滤/规范化，不涉及公式识别）。
 
-    页级产物按行给出；一条多行推导有时被拆成同一行里的几个 `$$` 片段
-    （`D_mse = Σ…` / `= Σ…` / `≥ 1/4^b.`）。续行（以关系符/运算符开头且够长）并回上一条，
-    ``source_item_ids`` 保留原始条目 id —— 回溯不变式照旧成立。
+    页级产物有两种拆法，两种都要处理（用户报的"多行公式不支持"就是第二种）：
+
+    1. 同一行内几个 `$$` 片段（`D_mse = Σ…` / `= Σ…` / `≥ 1/4^b.`）；
+    2. **相邻行**各一段 —— 实测 p20 那条推导就是 `p020-09`（`D_mse = Σ…`）、
+       `p020-10`（`= Σ…`）、`p020-11`（`≥ 1/4^b.`）**三行**，阅读器里渲染成一条多行公式，
+       而知识库原先只收了第一行。
+
+    合并条件（当前项以关系符/运算符开头且够长）：同一行的直接接上；
+    不同行则要求**同一页**、且前一项本身是行间公式（`display=True`）——
+    避免把正文里以 `=` 开头的行内小式子并到上一行的公式上。
     """
     out: list[dict] = []
     for item in items:
         latex = (item.get("latex") or "").strip()
         if not latex:
             continue
-        if (out and out[-1]["row_id"] == item.get("row_id")
+        prev = out[-1] if out else None
+        same_row = bool(prev) and prev.get("row_id") == item.get("row_id")
+        next_row = (bool(prev) and not same_row
+                    and prev.get("page") == item.get("page")
+                    and bool(prev.get("display")))
+        if (prev and (same_row or next_row)
                 and CONTINUATION.match(latex)
                 and len(_canon(latex)) >= MIN_CONTINUATION_CHARS):
-            prev = out[-1]
             prev["latex"] = _join_lines([prev["latex"], latex])
             prev["source_item_ids"] = list(prev.get("source_item_ids") or []) + [item.get("id")]
+            # 合并后仍是"一条行间公式"：取成员里 display 的并集（便于后续 C 判定）
+            prev["display"] = bool(prev.get("display") or item.get("display"))
+            prev["row_id"] = prev.get("row_id") or item.get("row_id")
             continue
         out.append({**item, "latex": latex, "source_item_ids": [item.get("id")]})
     return out
@@ -250,6 +264,18 @@ def kb_formula_entries(paper_id: str, formulas: dict[str, dict],
     # ② 同行续行合并（过滤之后的**规范化**，不涉及公式识别）——
     #    合并会让条目数略少于"通过 C 的条数"，`source_item_ids` 保住回溯关系
     kept = group_continuations(kept_raw)
+    # ③ 同页去重：页级产物里同一条公式常重复出现（实测 p20 的 `D_mse ≥ 1/4^b` 出现两次，
+    #    同一行 `$Q:…$ 与 $Q^{-1}:…$` 是两条不同公式、不能误合）。按规范串去重、保留首次出现。
+    seen: dict[tuple[int, str], dict] = {}
+    deduped: list[dict] = []
+    for it in kept:
+        key = (int(it.get("page") or 0), _canon(it["latex"]))
+        if key in seen:
+            seen[key].setdefault("duplicate_rows", []).append(it.get("row_id"))
+            continue
+        seen[key] = it
+        deduped.append(it)
+    kept = deduped
     if not kept:
         return []
 
@@ -286,6 +312,7 @@ def kb_formula_entries(paper_id: str, formulas: dict[str, dict],
                 "context": cand.get("context"), "context_zh": cand.get("context_zh"),
                 "formula_number": formula_number(cand["latex"]),
                 "source_item_ids": list(cand.get("source_item_ids") or []),
+                "duplicate_rows": cand.get("duplicate_rows"),
                 "latex_source": "page_vision",
             }
             if block is not None:
@@ -324,4 +351,5 @@ def is_noise_latex(latex: str | None) -> bool:
     from backend.parsing.formula.noise import is_noise_formula
 
     return is_noise_formula(latex or "")
+
 

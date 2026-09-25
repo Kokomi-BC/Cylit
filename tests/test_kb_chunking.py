@@ -186,7 +186,7 @@ def test_noise_formula_neither_chunked_nor_inlined(env) -> None:
 
 
 def test_formula_entries_never_exceed_canonical_list(env, monkeypatch) -> None:
-    """公式条目**不许自己多造**：条目数 == canonical 清单里通过 C 的条数，且都有锚点。"""
+    """公式条目**不许自己多造**；夹具里 b3/b4 是同一页的同一条公式 → 去重成 1 条。"""
     monkeypatch.setattr(ks, "chunk_params", lambda: (200, 200, 640))
     env.add("b1", 1, "heading", "## 3 Proofs", 1)
     env.add("b2", 1, "para", "We now prove the bound for the residual vector. " * 7, 2)
@@ -197,7 +197,8 @@ def test_formula_entries_never_exceed_canonical_list(env, monkeypatch) -> None:
     chunks = ks._collect_chunks(PAPER)
     expected = [i for i in env.canonical() if ks.formula_source.is_kb_formula(i)]
     formulas = [c for c in chunks if c["chunk_type"] == "formula"]
-    assert len(formulas) == len(expected), [c["id"] for c in formulas]
+    assert 0 < len(formulas) <= len(expected), [c["id"] for c in formulas]
+    assert len(formulas) == 1, "同一页同一条公式（b3/b4 文本相同）应当去重成一条"
     for c in formulas:
         m = c["metadata"] or {}
         assert m.get("anchor_type") in ("formula_block", "page_row", "page")

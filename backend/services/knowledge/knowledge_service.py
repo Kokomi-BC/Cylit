@@ -301,6 +301,10 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
                 content = _zh_content(parts, zh)
                 if not content:
                     continue                  # 还没翻译 → 不出 zh 行
+            if c["chunk_type"] == "text":
+                # 内容卫生在这里再兜一道：zh 文本是**在这里**按 parts 拼的（绕过了建 chunk 那步），
+                # 而且 `_merge_small_chunks` 合并之后 `$` 奇偶可能又变坏（实测 16 条 zh chunk 仍为奇数）。
+                content = _balance_dollars(_dedupe_paragraphs(content))
             # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] == "text" and len(content) < floor:
@@ -572,6 +576,7 @@ def _canonical_formula_chunks(paper_id: str, rows: list[dict],
             "anchor_type": e.get("anchor_type"),
             "anchor_precision": e.get("anchor_precision"),
             "source_item_ids": e.get("source_item_ids"),
+            "duplicate_rows": e.get("duplicate_rows"),
         }
         if e.get("formula_block_id"):
             meta.update({"formula_block_id": e["formula_block_id"],
@@ -703,6 +708,42 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
             "section_kind": meta.get("section_kind") or "body"}
 
 
+def _balance_dollars(text: str) -> str:
+    r"""把**落单的 `$`** 去掉：`$` 个数为奇数时渲染端配不上对，后半段全变纯文本。
+
+    实测：`turboquant...p21-b14-p22-b03:zh` 那条正文 chunk 里有 99 个 `$`，
+    知识库页从"反量化原语"那句往后全不渲染 —— 用户报的"公式显示破碎"就是这个。
+    只修奇偶（去掉最后一个落单的 `$`），不动配好对的数学。
+    """
+    if (text or "").count("$") % 2 == 0:
+        return text
+    idx = text.rfind("$")
+    log.debug("去掉落单的 $（第 %d 字符处）", idx)
+    return text[:idx] + text[idx + 1:]
+
+
+def _dedupe_paragraphs(text: str) -> str:
+    r"""去掉 chunk 内**完全重复的段落**（保留首次出现）。
+
+    来源：解析块 → 页级译文行是"多对一"（`anchor_map` 的回退匹配会让两个块落到同一行），
+    于是同一个译文段落被拼进 chunk 两次（实测 `反量化原语` 那句重复 2 次、`第二个内积` 2 次）。
+    用户看到的就是"正文片段整段重复"。
+    """
+    parts = re.split(r"(\n+)", text or "")
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        key = part.strip()
+        if "\n" in part or not key:
+            out.append(part)
+            continue
+        if key in seen and len(key) > 20:
+            continue
+        seen.add(key)
+        out.append(part)
+    return "".join(out)
+
+
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
                 last: dict, *, section: str = "", section_path: str = "",
                 metadata: dict | None = None, parts: list[tuple] | None = None,
@@ -711,6 +752,10 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if not chunk_id and chunk_type == "text" and first["id"] != last["id"]:
         cid = f"{paper_id}:text:{first['id']}-{last['id']}"
     meta = dict(metadata or {})
+    if chunk_type == "text":
+        # 正文 chunk 的两道内容卫生（用户报的"整段重复 / 公式显示破碎"就是这两条）：
+        # ① 段级去重；② `$` 奇偶校正（落单 `$` 会让渲染端后半段全变纯文本）
+        content = _balance_dollars(_dedupe_paragraphs(content))
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1279,5 +1324,6 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
