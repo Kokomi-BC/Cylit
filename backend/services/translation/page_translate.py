@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -129,8 +129,28 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
    【下一页开头】只用来补全页尾那句，**不要把搭接块里其他句子的内容输出到本页**
    （原文转录一如既往：只转录本页页图能看到的内容）。
 
+【breaks：语义边界锚点（给**检索分块**用，跟渲染无关）】
+- 用途：标出「一个完整语义单元说完了、下一个语义单元开始」的位置。知识库按这些边界切分，
+  所以**你标在哪里，就决定了检索怎么切** —— 不要按字数机械切，只按语义判断。
+- 写法：每条锚点 = **新语义单元开头那一块的起始原文片段**，从该段/该标题的**第一个字符**开始
+  **逐字照抄** 12~40 个字符（公式符号原样抄，不要译成中文、不要补省略号），
+  要求它能在这页的 original_md 里**唯一定位**。
+- **该标**（典型边界）：定义 → 新定义；背景 → 方法；方法 → 实验；问题 → 解决方案；
+  一段推导 → 下一段推导；算法描述 → 实验结果；一个独立论点 → 下一个独立论点；
+  新小节的**标题行本身**（表示这个小节从这里开始）。
+- **不要标**（标了会被判非法，整页退回机械切分）：
+  · 本页**第一块**（页首没有"上一个语义单元"；跨页那句归上一页管）；
+  · 一句话中间、一个连续论证的中间；
+  · 公式与紧随其后的解释之间（公式要和它的解释在一起）；
+  · 表格标题与表体之间、图注与图的说明之间；
+  · 公式内部、表格内部、代码块内部、图内文字内部；
+  · 标题行的**下一行**（标题必须和它下面第一段在一起）。
+- **语义完整性优先于长度**：不要为了凑长度硬标。一页一般 2~6 条；确实没有自然边界就写 `[]`。
+- 锚点落在**块边界**上（块 = 空行分隔的段落 / 标题 / 公式 / 表格）。只给**原文**锚点即可 ——
+  translation_md 的块与 original_md 一一对应，不需要另给中文锚点。
+
 【output_md：只输出一个 JSON 对象】不要解释、不要代码块：
-{"original_md": "……", "translation_md": "……", "carry_md": "……"}
+{"original_md": "……", "translation_md": "……", "carry_md": "……", "breaks": ["……", "……"]}
 
 【carry_md：你到底从【下一页开头】借了哪段原文】
 - 本页末尾那句靠【下一页开头】补完时，把**你实际用到的那段原文**逐字符照抄进来（原文，不是译文）。
@@ -147,7 +167,8 @@ PAGE_USER_TEMPLATE = """{prefix}{previous}
 
 【本页输出】按系统提示输出 JSON：original_md 为忠实转录（一切以页图显示的内容为准，
 表格逐格照抄、图注编号与页图一致），translation_md 为逐块对应的中文译文，
-carry_md 为本页末尾那句从【下一页开头】借用的原文片段（没借就写空串）。"""
+carry_md 为本页末尾那句从【下一页开头】借用的原文片段（没借就写空串），
+breaks 为本页的语义边界锚点（新语义单元开头那块的起始原文片段，没有就写空数组）。"""
 
 PAGE_SCHEMA = {
     "type": "object",
@@ -155,6 +176,9 @@ PAGE_SCHEMA = {
         "original_md": {"type": "string"},
         "translation_md": {"type": "string"},
         "carry_md": {"type": "string"},
+        # 语义边界锚点：检索分块用（见 SYSTEM_PROMPT 的【breaks】一节）。
+        # 只给**原文**锚点 —— translation_md 与 original_md 块一一对应，不需要中文锚点。
+        "breaks": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["original_md", "translation_md"],
 }
@@ -625,6 +649,8 @@ class PageCallResult:
     original_md: str
     translation_md: str
     carry_md: str = ""
+    #: 语义边界锚点（新语义单元开头那块的起始原文片段）—— 只服务检索分块，见 SYSTEM_PROMPT【breaks】
+    breaks: list[str] = field(default_factory=list)
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -661,6 +687,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
     return PageCallResult(
         original_md=original.strip(), translation_md=translation.strip(),
         carry_md=parse_carry(res.text or ""),
+        breaks=parse_breaks(res.text or ""),
         model=getattr(res, "model", "") or provider.model_name,
         prompt_tokens=int(getattr(res, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(res, "completion_tokens", 0) or 0),
@@ -697,6 +724,28 @@ def parse_carry(text: str) -> str:
         value = data.get("carry_md")
         return str(value).strip() if isinstance(value, str) else ""
     return ""
+
+
+def parse_breaks(text: str) -> list[str]:
+    """从模型回复里取 ``breaks``（语义边界锚点）。容错：缺字段、类型不对、夹空串都不报错。
+
+    为什么容错到底：锚点是**加分项** —— 它缺失或写坏只应该让这一页退回"按块机械切分"，
+    绝不能让整页翻译作废（重跑一页视觉模型很贵，而且页级任务是逐页落盘的）。
+    """
+    data = _loads_lenient((text or "").strip())
+    if not isinstance(data, dict):
+        return []
+    value = data.get("breaks")
+    if isinstance(value, str):                  # 模型偶尔给单个字符串而不是数组
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        anchor = str(item or "").strip()
+        if anchor:
+            out.append(anchor)
+    return out
 
 
 def _loads_lenient(raw: str) -> dict | None:
@@ -951,6 +1000,128 @@ def _norm(text: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# 语义边界锚点（breaks）→ 行边界
+# --------------------------------------------------------------------------
+#: 锚点规范化后至少要有多长才算"能唯一定位"（太短的锚点会撞上别处 —— 宁可判非法回退）
+MIN_BREAK_ANCHOR_KEY = 12
+#: 短锚点的下限：低于这个长度连标题行都不认（`# 6 Results` 规范化后只有 8 个字符，是合法标题）
+MIN_BREAK_ANCHOR_HEADING_KEY = 6
+#: 结构块类型：表格 / 表注图注 / 图 —— 相邻的这类块构成"不许切开的连续结构"
+_STRUCT_TYPES = ("table", "caption", "figure")
+_ANCHOR_STRIP = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+#: 合法的句末字符（段落尾）：句末标点，或右括号/引号（`…(see Fig. 3)` 也算收句了）
+_TAIL_OK = "。！？；：.!?;:）)』】]》」”’\"'"
+#: 段落尾还要先剥掉这些 Markdown 装饰符再看最后一个字符（`… **` 的句子其实收在 `*` 之前）
+_TAIL_TRIM = "*_` \t"
+
+
+def anchor_key(text: str) -> str:
+    """锚点 / 块首的规范化键：只留小写字母、数字、汉字。
+
+    和 `anchor_map` 的块签名同一口径（只留字母数字汉字）：模型照抄锚点时层级符、空格、
+    标点都可能与块文本有出入，压掉这些差异之后仍能唯一定位。
+    """
+    return _ANCHOR_STRIP.sub("", (text or "").lower())
+
+
+def apply_semantic_breaks(rows: list[dict], breaks: list[str] | None) -> dict:
+    """把 LLM 的语义边界锚点落成**行边界标记**（``row["semantic_break"] = True``）。
+
+    这是 marker 的**校验层**：锚点不可信，必须逐条验证。任何一条不合法只丢它自己，
+    这一页剩下的锚点照用；全部不合法就等于"按块机械切分"（旧行为）。
+    宁可少一条边界，也不许切点落在句子中间、公式内部或表格中间。
+
+    合法锚点要同时满足：
+    1. 规范化后 ≥ `MIN_BREAK_ANCHOR_HEADING_KEY` 个字符，且能在**某一行原文的块首**唯一匹配
+       （原文匹配不到时退回译文块首 —— 模型偶尔给中文锚点；撞车则一律判非法，不猜）。
+       短于 `MIN_BREAK_ANCHOR_KEY` 的锚点**只允许落在标题行**：标题本来就短
+       （`# 6 Results` 规范化后只有 8 个字符），只认标题行就不会撞上正文段落的开头，
+       判定仍然精确；落在正文段上的短锚点一律拒（原因 `short_not_heading`）；
+    2. 不是第 0 行（页首没有"上一个语义单元"，跨页那句归上一页管）；
+    3. 前一行不是标题（标题必须和它下面的第一段在一起）、不是公式（公式要与解释在一起）、
+       不以冒号结尾（`… as follows:` 这种是在引出下一块）；
+    4. 不在结构块内部切（表格 / 表注 / 图注相邻处不许切）；
+    5. 两侧都是正文时，前一行要**真的收句了**（句末标点），否则就是切在一句话中间。
+    """
+    stats: dict = {"anchors": len(breaks or []), "accepted": 0, "duplicate": 0,
+                   "rejected": [], "by_side": {"original": 0, "translation": 0},
+                   "short_heading": 0, "flagged_rows": 0}
+    for row in rows:
+        row.pop("semantic_break", None)
+    if not rows or not breaks:
+        return stats
+
+    wanted: set[int] = set()
+    for anchor in breaks:
+        key = anchor_key(anchor)
+        if len(key) < MIN_BREAK_ANCHOR_HEADING_KEY:
+            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": "too_short"})
+            continue
+        heading_only = len(key) < MIN_BREAK_ANCHOR_KEY
+        side, idx, why = _locate_anchor(rows, key, heading_only=heading_only)
+        if side is None:
+            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": why})
+            continue
+        reason = _break_reject_reason(rows, idx)
+        if reason:
+            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": reason})
+            continue
+        stats["by_side"][side] += 1
+        if heading_only:
+            stats["short_heading"] += 1
+        if idx in wanted:
+            stats["duplicate"] += 1
+            continue
+        wanted.add(idx)
+    for idx in sorted(wanted):
+        rows[idx]["semantic_break"] = True
+    stats["accepted"] = len(wanted)
+    stats["flagged_rows"] = len(wanted)
+    return stats
+
+
+def _locate_anchor(rows: list[dict], key: str, *, heading_only: bool = False
+                   ) -> tuple[str | None, int, str]:
+    """锚点 → （匹配到哪一侧, 行下标, 失败原因）。只认**块首**匹配：锚点定义为"新单元开头那块的起始片段"。
+
+    同一侧命中多行 = 锚点太普适（如 `In this section`），一律判非法 —— 猜错会把边界落到
+    完全无关的位置，比少一条边界坏得多。`heading_only=True`（短锚点）时只在标题行里找。
+    """
+    for side, name in (("original", "original"), ("translation", "translation")):
+        hits = [i for i, r in enumerate(rows)
+                if (not heading_only or (r.get("type") or "") == "heading")
+                and anchor_key(r.get(name) or "").startswith(key)]
+        if len(hits) == 1:
+            return side, hits[0], ""
+        if len(hits) > 1:
+            return None, -1, "ambiguous"
+    return None, -1, ("short_not_heading" if heading_only else "unmatched")
+
+
+def _break_reject_reason(rows: list[dict], idx: int) -> str:
+    """这个边界位置上允不允许切（返回空串 = 允许）。判据见 `apply_semantic_breaks` 的 2~5 条。"""
+    if idx <= 0:
+        return "page_start"
+    prev, cur = rows[idx - 1], rows[idx]
+    ptype = prev.get("type") or "para"
+    ctype = cur.get("type") or "para"
+    if ptype == "heading":
+        return "after_heading"
+    if ptype == "formula":
+        return "after_formula"
+    if ptype in _STRUCT_TYPES and ctype in _STRUCT_TYPES:
+        return "inside_structure"
+    prev_text = (prev.get("original") or "").strip()
+    if prev_text.endswith((":", "：")):
+        return "dangling_colon"
+    if ptype == "para" and ctype == "para":
+        tail = prev_text.rstrip(_TAIL_TRIM)
+        if tail and tail[-1] not in _TAIL_OK:
+            return "mid_sentence"
+    return ""
+
+
+# --------------------------------------------------------------------------
 # 页产物
 # --------------------------------------------------------------------------
 
@@ -959,12 +1130,19 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
                        source_chars: int = 0, cached: bool = False,
                        align_override: str | None = None) -> dict:
     rows, quality = pair_rows(result.original_md, result.translation_md, page)
+    # 语义边界锚点在这里就落到行上（读时 `page_translations` 会用同一个函数再落一次：
+    # 行是读时重算的，标记必须跟着行一起重算，否则重算出来的行会丢掉标记）。
+    break_stats = apply_semantic_breaks(rows, result.breaks)
     return {
         "page": page,
         "page_total": page_total,
         "original_md": result.original_md,
         "translation_md": result.translation_md,
         "rows": rows,
+        # 原始锚点**原样存盘**：行 id 是位置编号，将来若块数变化（换模型重译），
+        # 锚点还能重新落到新行上，不用回头看模型的原始回复。
+        "breaks": list(result.breaks),
+        "break_stats": break_stats,
         "align": align_override or quality,
         "carry_md": result.carry_md,
         "model": result.model,

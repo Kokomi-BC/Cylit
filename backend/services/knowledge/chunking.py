@@ -1,0 +1,570 @@
+"""正文 chunk 的分块（**TOC 层级 + 页级行原子 + LLM 语义锚点**，三个输入一个输出）。
+
+设计口径（见 docs/分块方案-语义单元.md）：
+
+```
+pages.json 的行（原子，en=original / zh=translation）
+      +  阅读器目录（宏观层级边界：TOC 节点之间不许因为长度合适而合并）
+      +  LLM 语义锚点（节点内部的语义单元边界，`breaks`，见 page_translate.apply_semantic_breaks）
+   ↓ 确定性组装（target 软阈值 / hard 硬上限 / 父节引言并入首个子节）
+   ↓ 校验层（覆盖一次、顺序不变、不跨节、≤ hard、公式表格完整；不合法就退化成行边界切分）
+final chunk（正文从行**重新拼装**得到，绝不重新生成正文）
+```
+
+为什么不在这里碰公式 / 图 / 表：它们的原子 chunk 由 `knowledge_service` 独立生成
+（公式来自 canonical 清单、图表来自 IR 裁图），本模块只负责**正文**。
+正文装配里遇到这几类行时会跳过（结构行由各自的 chunk 承载），所以正文 chunk 里
+永远不会出现表格串行、图内文字这类东西。
+
+三个不变量（`validate` 逐条断言，失败即回退）：
+
+1. **覆盖**：每个"该进正文的行"恰好出现一次；
+2. **顺序**：chunk 的先后 = 行的先后（不重排、不丢行）；
+3. **不跨节**：一个 chunk 的行必须落在同一个 TOC 子树里（祖先链上的关系不算跨界）。
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Iterable
+
+from backend.core.logging import get_logger
+from backend.services.knowledge.preprocess import (
+    first_body_index, is_front_matter, strip_presentation)
+from backend.services.paper import reader_service
+
+log = get_logger(__name__)
+
+#: 结构行类型（由图/表 chunk 承载，不进正文块）
+STRUCT_TYPES = ("caption", "table", "figure")
+#: 参考文献小节名（整节不入库 —— 与改造前一致：解析侧 `type == "ref"` 的块被跳过）
+_REF_SECTION = re.compile(r"^\s*(references?|bibliography|参考文献)\s*$", re.I)
+#: 图注编号：`Table 3: …` / `Figure 2: …` / `表 1：…`
+_CAPTION_NUMBER = re.compile(
+    r"^\s*\**\s*(?:Table|Figure|Fig\.?|Algorithm|Listing|表|图|算法)\s*\.?\s*(\d{1,3})", re.I)
+#: 小节标题里的编号前缀（TOC 节点的 key 用它，而不是标题文本 —— 同一节可能被改写过）
+_SECTION_NUMBER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,3}|[A-Z](?:\.\d{1,2}){1,3})\b")
+
+
+# --------------------------------------------------------------------------
+# 1. TOC：宏观边界
+# --------------------------------------------------------------------------
+
+
+def section_tree(paper_id: str, rows: list[dict] | None = None) -> list[dict]:
+    """阅读器目录 → 分块用的节点树（节点带 ``row_index`` = 它的标题行在行序里的下标）。
+
+    为什么用目录而不是解析侧 Markdown 标题（实测，两篇论文）：
+
+    - 解析侧**漏标题**：turboquant 漏 `2.4 NEAR NEIGHBOUR SEARCH EXPERIMENTS`，
+      attention 漏 `3.4 Embeddings and Softmax` 与 `6.2 Model Variations` —— 漏掉的节
+      会被静默并进邻节，`section_path` 也就跟着错（旧索引里 `q13` 命中的小节名是 2.3、`q23` 是 6.1）；
+    - 解析侧**多假标题**：算法框行 `6: r ←x −DEQUANT(idx)`、图内文字 `*PyramidKV Score: 0.981*`、
+      表行 `GNMT + RL [38]` 都被标成 heading，进了旧索引的 `section_path`；
+    - 目录是**页级标题行 + 章节编号**推出来的（`reader_service.build_outline` 里
+      `_apply_semantic_levels` 按编号定层级），24 / 27 个节点全部能定位到行，且与阅读器左侧目录一致。
+
+    没有页级产物时 `build_outline` 自己会退回解析索引（`_outline_from_index`）；连索引都没有
+    （老产物 / 未解析）就返回空树，`assemble` 会退化成"整篇一个合成节点"。
+    ``rows`` 传进来时顺带把节点的 ``row_index`` 定好（不传就留给调用方自己定）。
+    """
+    try:
+        outline = reader_service.build_outline(paper_id) or {}
+    except Exception as exc:  # noqa: BLE001 —— 目录读不到不该让建索引挂掉（退化成无层级）
+        log.debug("读取目录失败（%s）：%s", paper_id, exc)
+        outline = {}
+    items = outline.get("items") or []
+    by_key: dict[str, dict] = {}
+
+    def make(node: dict) -> dict:
+        number = str(node.get("number") or "").strip()
+        key = number or f"@{node.get('page')}:{node.get('block_id')}"
+        item = {
+            "key": key,
+            "number": number,
+            "title": (node.get("text") or "").strip(),
+            "title_zh": (node.get("text_zh") or "").strip(),
+            "level": int(node.get("level") or 1),
+            "page": int(node.get("page") or 0),
+            "row_id": node.get("block_id"),
+            "children": [],
+            "parent": None,
+        }
+        by_key[key] = item
+        item["children"] = [make(c) for c in (node.get("children") or [])]
+        for child in item["children"]:
+            child["parent"] = item
+        return item
+
+    tree = [make(n) for n in (outline.get("tree") or [])]
+    index_of_row = {r["id"]: r["index"] for r in (rows or [])}
+    for item in _walk(tree):
+        item["path"] = _path_of(item)
+        item["row_index"] = index_of_row.get(str(item.get("row_id")))
+    return tree
+
+
+def load(paper_id: str, *, authors: str = "",
+         structural_caption_ids: set[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """``(行, TOC 树)`` 一起取，并**用同一棵树**做行归属（节点 ``row_index`` 必须来自同一批行）。
+
+    ``structural_caption_ids``：IR 认证过的图注行 id。**不传就等于"没有图注"** ——
+    页级行里以 Figure/Table 开头的行不都是图注（attention 的
+    `Table 2 summarizes our results…` 是正文），认错了会从正文里删掉一段真内容。
+    """
+    rows = row_units(paper_id, authors=authors,
+                     structural_caption_ids=structural_caption_ids)
+    tree = section_tree(paper_id, rows)
+    _assign_sections(rows, tree)
+    return rows, tree
+
+
+def _is_structural(row: dict) -> bool:
+    """这一行是不是"结构行"（由图/表 chunk 承载，不进正文块）。判据在 `row_units` 里定。"""
+    if "structural" in row:
+        return bool(row["structural"])
+    return row.get("type") in STRUCT_TYPES
+
+
+def _walk(tree: Iterable[dict]) -> list[dict]:
+    out: list[dict] = []
+    for node in tree:
+        out.append(node)
+        out.extend(_walk(node["children"]))
+    return out
+
+
+def _path_of(node: dict) -> str:
+    parts, cur = [], node
+    while cur is not None:
+        parts.append(cur["title"])
+        cur = cur["parent"]
+    return " / ".join(reversed([p for p in parts if p]))
+
+
+# --------------------------------------------------------------------------
+# 2. 行原子
+# --------------------------------------------------------------------------
+
+
+def row_units(paper_id: str, *, authors: str = "",
+              structural_caption_ids: set[str] | None = None) -> list[dict]:
+    """页级行 → 归一化行对象；**行是唯一的内容来源**。
+
+    每个行对象：``{id, page, index, type, level, number, original, translation,
+    section_key, section_path, section_title, semantic_break, skip_reason}``。
+
+    跳过（与改造前口径一致）：
+    - 参考文献（行类型 ``ref``，或整节标题是 REFERENCES —— turboquant 的参考文献行是 ``para``）；
+    - 前沿元数据（作者/单位/邮箱/arXiv/会议行，复用 `preprocess.is_front_matter`）；
+    - 空行。
+
+    没有页级产物（未翻译论文）时用**解析块合成行**：一块一行、``translation=""``、
+    ``id = block_id``（与前端 `usePageRows.rowFromBlock` 同一语义），这样下游只有一条代码路径。
+    """
+    pages = reader_service.page_translations(paper_id)
+    raw_rows: list[dict] = []
+    for payload in pages:
+        page = int(payload.get("page") or 0)
+        for row in payload.get("rows") or []:
+            raw_rows.append({**row, "page": page})
+    if not raw_rows:
+        raw_rows = _synthetic_rows(paper_id)
+        if not raw_rows:
+            return []
+
+    rows = [{
+        "id": str(r.get("id") or ""),
+        "page": int(r.get("page") or 0),
+        "index": i,
+        "type": str(r.get("type") or "para"),
+        "level": int(r.get("level") or 0),
+        "number": str(r.get("number") or ""),
+        "original": str(r.get("original") or ""),
+        "translation": str(r.get("translation") or ""),
+        "semantic_break": bool(r.get("semantic_break")),
+    } for i, r in enumerate(raw_rows)]
+
+    body_start = first_body_index([{"type": r["type"], "text": r["original"]} for r in rows])
+    verified = {str(x) for x in (structural_caption_ids or set())}
+    for i, row in enumerate(rows):
+        row["skip_reason"] = _skip_reason(row, i, body_start, authors)
+        # 结构行 = 表体/图本身，或**IR 认证过的**图注行；其余 `caption` 行是正文（判据见 load 的说明）
+        row["structural"] = (row["type"] in ("table", "figure")
+                             or (row["type"] == "caption" and row["id"] in verified))
+    _assign_sections(rows, section_tree(paper_id, rows))
+    # 参考文献**整节**不入库：turboquant 的条目行是 `para`（不是 `ref`），只按行类型判会漏掉
+    # 整节参考文献（用户口径 §11：REFERENCES 子树不进普通 RAG chunk，不因为语义锚点而变）。
+    for row in rows:
+        if not row["skip_reason"] and _REF_SECTION.match(
+                strip_presentation(str(row.get("section_title") or "")).strip()):
+            row["skip_reason"] = "ref_section"
+    return rows
+
+
+def _skip_reason(row: dict, index: int, body_start: int, authors: str) -> str:
+    if not (row["original"] or row["translation"]).strip():
+        return "empty"
+    if row["type"] == "ref":
+        return "ref"
+    if _REF_SECTION.match(strip_presentation(row["original"]).strip()):
+        return "ref_section"
+    if is_front_matter(row["original"], page_no=row["page"],
+                       before_body=index < body_start, authors=authors):
+        return "front_matter"
+    return ""
+
+
+def _synthetic_rows(paper_id: str) -> list[dict]:
+    """未翻译论文的兜底：用解析块合成行（一块一行，译文为空）。"""
+    from backend.parsing.ir.ir_reader import IRReader
+    from backend.repositories.mysql.models import Block
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.paper import paper_service
+
+    md_map = reader_service.load_markdown_map(paper_id)
+    ir = IRReader(paper_service.paper_paths(paper_id)["ir"])
+    formulas = {f["block_id"] for f in ir.formulas()}
+    figures = {f["block_id"] for f in ir.figures()}
+    tables = {t["block_id"] for t in ir.tables()}
+    with session_scope() as sess:
+        blocks = (sess.query(Block).filter(Block.paper_id == paper_id)
+                  .order_by(Block.order_global.asc()).all())
+    out: list[dict] = []
+    for b in blocks:
+        text = ((md_map.get(b.id) or {}).get("text") or b.preview or "").strip()
+        if not text:
+            continue
+        btype = ("formula" if b.id in formulas else
+                 "table" if b.id in tables else
+                 "figure" if b.id in figures else
+                 "heading" if b.type == "heading" else "para")
+        out.append({"id": b.id, "page": int(b.page_no or 0), "type": btype,
+                    "level": 0, "number": "", "original": text, "translation": "",
+                    "semantic_break": False})
+    return out
+
+
+def _assign_sections(rows: list[dict], tree: list[dict]) -> None:
+    """把每个行归到"标题行在它之前、层级最深"的 TOC 节点（行序即文档序）。
+
+    节点自身的行（标题行）也归自己 —— 标题是它那一块的**第一行**，不是上一块的尾巴。
+    """
+    nodes = _walk(tree)
+    located = sorted([n for n in nodes if n.get("row_index") is not None],
+                     key=lambda n: n["row_index"])
+    # 参考文献之后的节点都算"后置内容"（附录 / 可视化页）—— `Attention Visualizations`
+    # 这种既没有编号、标题也不以单个大写字母开头的附录，只能靠"排在 REFERENCES 之后"认出来。
+    back_matter = False
+    for node in located:
+        if _REF_SECTION.match(strip_presentation(str(node.get("title") or "")).strip()):
+            back_matter = True
+        node["_back_matter"] = back_matter
+
+    current: dict | None = None
+    cursor = 0
+    for row in rows:
+        while cursor < len(located) and located[cursor]["row_index"] <= row["index"]:
+            current = located[cursor]
+            cursor += 1
+        row["section_key"] = (current or {}).get("key") or ""
+        row["section_path"] = (current or {}).get("path") or ""
+        row["section_title"] = (current or {}).get("title") or ""
+        row["section_kind"] = ("appendix"
+                               if _is_appendix(current) or (current or {}).get("_back_matter")
+                               else "body")
+
+
+def _is_appendix(node: dict | None) -> bool:
+    """这一节是不是附录内容（检索侧可以用来降权/过滤，也是回归报告里的 appendix 列）。
+
+    两条判据，都用得上：
+    - 编号首字符是字母（`B`、`B.1`、`C.2`）—— 目录里带子节的附录大标题会拿到字母编号；
+    - 编号抽不出来时看**标题本身**：`A EXTENDED PRIOR WORK` / `E IMPLEMENTATION` 这类
+      **单个大写字母 + 空白**开头的标题就是附录大标题（实测目录里 E / D 没有编号，
+      只看编号会把它们误判成正文 —— 旧索引里这一列是 100%，改造后掉到 88% 就是这个原因）。
+      `Attention Visualizations` 这种"首字母恰好是 A 的单词标题"不会命中（A 后面不是空白）。
+    """
+    if node is None:
+        return False
+    number = str(node.get("number") or "").strip()
+    if number and number[:1].isalpha():
+        return True
+    return bool(re.match(r"^[A-Z]\s+\S", str(node.get("title") or "").strip()))
+
+
+# --------------------------------------------------------------------------
+# 3. 语义单元
+# --------------------------------------------------------------------------
+
+
+def semantic_units(rows: list[dict], *, use_breaks: bool = True) -> list[dict]:
+    """正文行 → 语义单元（连续行的一段），边界 = TOC 节点边界 ∪ LLM 锚点。
+
+    结构行（图/表）不参与：它们由各自的 chunk 承载，且**天然是单元的边界**
+    （所以"表注与表体之间"永远不会被锚点切开）。
+
+    ``use_breaks=False`` 就是 arm 2（只有 TOC，没有 LLM 锚点），用来量锚点到底带来多少收益。
+    """
+    units: list[dict] = []
+    cur: list[dict] = []
+
+    def flush() -> None:
+        nonlocal cur
+        if cur:
+            units.append({"rows": cur})
+            cur = []
+
+    for row in rows:
+        if row.get("skip_reason") or _is_structural(row):
+            flush()
+            continue
+        if cur and (row["section_key"] != cur[-1]["section_key"]
+                    or (use_breaks and row.get("semantic_break"))):
+            flush()
+        cur.append(row)
+    flush()
+    return units
+
+
+# --------------------------------------------------------------------------
+# 4. 确定性组装
+# --------------------------------------------------------------------------
+
+
+def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
+             use_breaks: bool = True) -> tuple[list[dict], dict]:
+    """行 + TOC + 语义单元 → 正文 chunk 列表（外加一份装配统计）。
+
+    规则（自上而下，与设计文档一致）：
+
+    1. 一个 TOC 节点的**整棵子树**能装进 ``target`` → 整棵成一块（主题完整，如 `2.2 Needle`、
+       `D Additional Experiment`）；否则递归到子节点；
+    2. 节点自己的行（标题 + 引言）单独成一块；短于 ``floor`` 且有子节点时**并进首个子块**
+       （祖先→后代，不是兄弟跨越 —— 唯一允许的"跨界"）；
+    3. 同一节点内：先按语义单元切，再**贪心累加**到 ``target`` 之上即封口，
+       但 ``当前 + 下一个 > hard`` 必须停；
+    4. 单个单元自身 > ``hard``（只可能是多行合并出来的）→ 退回**行边界**继续切
+       （单行最长 1487 字 < hard=2240，所以永远不会切进公式 / 表格 / 句子中间）。
+    """
+    text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
+    # 行归属必须在装配前定好（`load()` 已经做过一次）；这里再调一次是幂等的，
+    # 保证"装配看到的 section_path"与"校验看到的"是同一份。
+    _assign_sections(rows, tree)
+    if not tree and text_rows:
+        # 没有目录（未翻译 / 缺索引）→ 整篇当一个合成节点，只靠 target/hard 切。
+        # 这是**降级**而不是失败：内容与顺序不变，只是没有小节边界。
+        tree = [{"key": "", "number": "", "title": "", "title_zh": "", "level": 1,
+                 "page": text_rows[0]["page"], "row_id": text_rows[0]["id"],
+                 "children": [], "parent": None, "path": "",
+                 "row_index": text_rows[0]["index"]}]
+    all_nodes = _walk(tree)
+    stats = {"nodes": 0, "whole_subtree": 0, "own_chunk": 0, "intro_merged": 0,
+             "unit_split": 0, "row_fallback": 0, "chunks": 0}
+    chunks: list[dict] = []
+
+    def chars(items: list[dict]) -> int:
+        return sum(len(r["original"]) for r in items)
+
+    def emit(items: list[dict], node: dict | None) -> None:
+        if not items:
+            return
+        stats["chunks"] += 1
+        chunks.append({"rows": items, "node": node})
+
+    def pack_node(node: dict) -> None:
+        stats["nodes"] += 1
+        own = _own_rows(node, rows, text_rows, all_nodes)
+        subtree = _subtree_rows(node, rows, text_rows, all_nodes)
+        if not subtree:
+            for child in node["children"]:
+                pack_node(child)
+            return
+        if chars(subtree) <= target:
+            stats["whole_subtree"] += 1
+            emit(subtree, node)
+            return
+
+        intro_merged = False
+        if own:
+            if chars(own) < floor and node["children"]:
+                intro_merged = True
+                stats["intro_merged"] += 1
+            else:
+                stats["own_chunk"] += 1
+                emit(own, node)
+        mark = len(chunks)
+        for child in node["children"]:
+            pack_node(child)
+        # 引言并进"本节点子树里第一个 chunk"：拼在它的行前面（祖先→后代，不是兄弟跨越）
+        if intro_merged and own:
+            tail = own[-1]["index"]
+            for chunk in chunks[mark:]:
+                if all(r["index"] > tail for r in chunk["rows"]):
+                    chunk["rows"] = own + chunk["rows"]
+                    break
+            else:
+                emit(own, node)
+
+    for node in tree:
+        pack_node(node)
+
+    # 节点内按语义单元 / 行边界二次切分（超过 hard 的才切）
+    out: list[dict] = []
+    for chunk in chunks:
+        items = chunk["rows"]
+        if chars(items) <= hard:
+            out.append(chunk)
+            continue
+        stats["unit_split"] += 1
+        pieces, used_rows = _split_rows(items, target=target, hard=hard, use_breaks=use_breaks)
+        if used_rows:
+            stats["row_fallback"] += 1
+        for piece in pieces:
+            out.append({"rows": piece, "node": chunk["node"]})
+    out.sort(key=lambda c: c["rows"][0]["index"])
+    stats["chunks"] = len(out)
+    return out, stats
+
+
+def _own_rows(node: dict, rows: list[dict], text_rows: list[dict],
+              all_nodes: list[dict]) -> list[dict]:
+    """节点自己的行：从它的标题行起，到第一个子孙标题行（没有子孙就到下一个非子孙标题行）之前。"""
+    start = node.get("row_index")
+    if start is None:
+        return []
+    inner = [c["row_index"] for c in _walk(node["children"]) if c.get("row_index") is not None]
+    if inner:
+        end = min(inner)
+    else:
+        end = len(rows)
+        for other in all_nodes:
+            if other is node or _is_descendant(other, node):
+                continue
+            if other.get("row_index") is not None and other["row_index"] > start:
+                end = min(end, other["row_index"])
+    return [r for r in text_rows if start <= r["index"] < end]
+
+
+def _subtree_rows(node: dict, rows: list[dict], text_rows: list[dict],
+                  all_nodes: list[dict]) -> list[dict]:
+    own = _own_rows(node, rows, text_rows, all_nodes)
+    for child in _walk(node["children"]):
+        own.extend(_own_rows(child, rows, text_rows, all_nodes))
+    own.sort(key=lambda r: r["index"])
+    return own
+
+
+def _is_descendant(node: dict, ancestor: dict) -> bool:
+    cur = node.get("parent")
+    while cur is not None:
+        if cur is ancestor:
+            return True
+        cur = cur.get("parent")
+    return False
+
+
+def _split_rows(items: list[dict], *, target: int, hard: int,
+                use_breaks: bool) -> tuple[list[list[dict]], bool]:
+    """把超 ``hard`` 的行段切成若干块：语义单元优先，单元自身还超就退回行边界。
+
+    返回 ``(块列表, 是否用到行边界兜底)``。单行最长 1487 字（实测）< hard，所以
+    "单元自身超上限"只可能是多行合并出来的 —— 退回行边界即可，**永远不必按句子切**。
+    """
+    units = semantic_units(items, use_breaks=use_breaks)
+    out: list[list[dict]] = []
+    buf: list[dict] = []
+    size = 0
+    used_rows = False
+
+    def flush() -> None:
+        nonlocal buf, size
+        if buf:
+            out.append(buf)
+        buf, size = [], 0
+
+    def add(rows: list[dict]) -> None:
+        nonlocal size
+        buf.extend(rows)
+        size += sum(len(r["original"]) for r in rows)
+
+    for unit in units:
+        unit_rows = unit["rows"]
+        unit_size = sum(len(r["original"]) for r in unit_rows)
+        if unit_size > hard:                      # 单元自身超上限 → 按行边界切
+            used_rows = True
+            flush()
+            for row in unit_rows:
+                if buf and size + len(row["original"]) > hard:
+                    flush()
+                add([row])
+                if size >= target:
+                    flush()
+            flush()
+            continue
+        if buf and size + unit_size > hard:
+            flush()
+        add(unit_rows)
+        if size >= target:
+            flush()
+    flush()
+    return out, used_rows
+
+
+# --------------------------------------------------------------------------
+# 5. 校验层
+# --------------------------------------------------------------------------
+
+
+def validate(chunks: list[dict], rows: list[dict], *, hard: int) -> dict:
+    """校验装配结果；任何一条不满足都记下来（调用方据此回退到确定性行边界切分）。
+
+    校验项（对应设计文档 §14）：
+    - **覆盖**：该进正文的行恰好出现一次；
+    - **顺序**：chunk 内的行下标递增，chunk 之间不交叉、不重排；
+    - **不跨节**：一个 chunk 的行不落在两个不可比的 TOC 节点里（祖先/后代关系不算跨界）；
+    - **长度**：英文侧 ≤ hard（一行不可拆，所以单行超限时只告警不失败）；
+    - **结构完整**：正文块里不出现表格行 / 图注行 / 参考文献行（这些由图/表 chunk 承载）。
+    """
+    errors: list[dict] = []
+    expected = [r for r in rows
+                if not r.get("skip_reason") and not _is_structural(r)]
+    seen: list[int] = []
+    prev_index = -1
+    for chunk in chunks:
+        items = chunk["rows"]
+        indices = [r["index"] for r in items]
+        if indices != sorted(indices):
+            errors.append({"kind": "order_in_chunk", "chunk_first": items[0]["id"]})
+        if indices and indices[0] <= prev_index:
+            errors.append({"kind": "order_between_chunks", "chunk_first": items[0]["id"]})
+        prev_index = indices[-1] if indices else prev_index
+        seen.extend(indices)
+        content = "\n\n".join(r["original"] for r in items)
+        if len(content) > hard and len(items) > 1:
+            errors.append({"kind": "over_hard", "chunk_first": items[0]["id"],
+                           "chars": len(content)})
+        for row in items:
+            if _is_structural(row):
+                errors.append({"kind": "structure_in_text", "row": row["id"]})
+            if row.get("skip_reason"):
+                errors.append({"kind": "skipped_row_in_text", "row": row["id"]})
+        nodes = {r.get("section_path") or "" for r in items}
+        nodes.discard("")
+        if len(nodes) > 1 and not _paths_comparable(nodes):
+            errors.append({"kind": "cross_section", "chunk_first": items[0]["id"],
+                           "paths": sorted(nodes)[:3]})
+    if seen != [r["index"] for r in expected]:
+        missing = sorted(set(r["index"] for r in expected) - set(seen))
+        dup = sorted(i for i in set(seen) if seen.count(i) > 1)
+        errors.append({"kind": "coverage", "missing": missing[:8], "duplicate": dup[:8]})
+    return {"ok": not errors, "errors": errors,
+            "chunks": len(chunks), "rows": len(expected),
+            "covered": len(seen)}
+
+
+def _paths_comparable(paths: set[str]) -> bool:
+    """这些 section_path 是不是同一条祖先链上的（`A / B` 与 `A / B / C` 可比，`A / B` 与 `A / D` 不可比）。"""
+    split = [p.split(" / ") for p in paths]
+    base = min(split, key=len)
+    return all(s[:len(base)] == base or base[:len(s)] == s for s in split)

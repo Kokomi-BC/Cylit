@@ -114,7 +114,7 @@ def page_translations(paper_id: str) -> list[dict]:
     避免污染 `PageStore` 的内存缓存。
     """
     from backend.services.translation.page_translate import (
-        mark_rows_continuity, page_continuity, pair_rows,
+        apply_semantic_breaks, mark_rows_continuity, page_continuity, pair_rows,
     )
 
     store = load_page_store(paper_id)
@@ -139,12 +139,18 @@ def page_translations(paper_id: str) -> list[dict]:
         if rows:
             flags = page_continuity(paper_id, page)
             mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
+        # 语义边界锚点（LLM 在页级转录时给出的 `breaks`）：同样**读时重算** ——
+        # 行是上面重算出来的，标记必须跟着一起重算。旧产物没有 `breaks` 字段 →
+        # `apply_semantic_breaks` 拿到空列表，行为与改造前完全一致（不重译也不受影响）。
+        break_stats = apply_semantic_breaks(rows, payload.get("breaks") or [])
         out.append({
             "page": page,
             "page_total": int(payload.get("page_total") or 0),
             "original_md": payload.get("original_md") or "",
             "translation_md": payload.get("translation_md") or "",
             "rows": rows,
+            "breaks": payload.get("breaks") or [],
+            "break_stats": break_stats,
             "align": payload.get("align"),
             "model": payload.get("model"),
             "updated_at": payload.get("updated_at"),

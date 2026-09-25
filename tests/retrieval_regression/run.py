@@ -113,6 +113,7 @@ def run_question(spec: dict, *, paper_id: str, top_k: int) -> dict:
 
     return {
         "id": spec["id"], "q": spec["q"], "note": spec.get("note", ""),
+        "paper_id": paper_id,
         "want_formula": bool(spec.get("want_formula")),
         "want_appendix": bool(spec.get("want_appendix")),
         "first_match_rank": first,
@@ -135,7 +136,10 @@ def evaluate(spec: dict | None = None, *, top_k: int | None = None,
     spec = spec or load_spec()
     pid = paper_id or spec["paper_id"]
     k = int(top_k or spec.get("top_k") or 6)
-    rows = [run_question(s, paper_id=pid, top_k=k) for s in spec["questions"]]
+    # 单题可用 `paper_id` 覆盖题库级默认值：题库扩到两篇论文之后，一份 spec 就能跑完
+    # （改造前只有 turboquant 一篇，所以历史 10 题没有这个字段）。
+    rows = [run_question(s, paper_id=(paper_id or s.get("paper_id") or pid), top_k=k)
+            for s in spec["questions"]]
     n = len(rows) or 1
     mrr = sum(1.0 / r["first_match_rank"] for r in rows if r["first_match_rank"]) / n
     want_f = [r for r in rows if r["want_formula"]]
@@ -164,9 +168,11 @@ def _pct(value: float | None) -> str:
 
 
 def to_markdown(report: dict, *, env_note: str = "") -> str:
+    papers = sorted({r.get("paper_id") or report["paper_id"] for r in report["rows"]})
     out = [f"### 检索回归 {env_note}".rstrip(),
            "",
-           f"- 论文：`{report['paper_id']}` · top_k={report['top_k']} · 题数 {report['questions']}",
+           f"- 论文：{'、'.join(f'`{p}`' for p in papers)} · top_k={report['top_k']} · "
+           f"题数 {report['questions']}",
            f"- hit@{report['top_k']}：**{_pct(report['hit_at_k'])}**（正文命中 "
            f"**{_pct(report['content_hit_at_k'])}**）· MRR **{report['mrr']}**"
            f"（正文 {report['content_mrr']}） · "
@@ -174,14 +180,16 @@ def to_markdown(report: dict, *, env_note: str = "") -> str:
            f"附录覆盖 {_pct(report['appendix_coverage'])} · "
            f"语义块含公式 {_pct(report['formula_context_coverage'])}",
            "",
-           "| # | 问题 | 首次命中 rank | 正文命中 rank | 公式专项 rank | 公式上下文 | appendix | 命中小节 |",
-           "|---|---|---|---|---|---|---|---|"]
+           "| # | 论文 | 问题 | 首次命中 rank | 正文命中 rank | 公式专项 rank | 公式上下文 | appendix | 命中小节 |",
+           "|---|---|---|---|---|---|---|---|---|"]
     for r in report["rows"]:
         sec = next((h["section"] for h in r["hits"] if h["matched"]), "—")
         fz = ("—" if not r["want_formula"]
               else (r.get("formula_first_match_rank") or "✗"))
+        pid = (r.get("paper_id") or "").replace("turboquant-online-vector-iclr-26", "turbo") \
+                                       .replace("attention-is-all-you-need", "attn")
         out.append(
-            f"| {r['id']} | {r['q']} | {r['first_match_rank'] or '✗'} | "
+            f"| {r['id']} | {pid} | {r['q']} | {r['first_match_rank'] or '✗'} | "
             f"{r.get('content_first_match_rank') or '✗'} | {fz} | "
             f"{'✓' if r['formula_context'] else '·'} | {'✓' if r['appendix'] else '·'} | "
             f"{(sec or '—')[:34]} |")

@@ -3535,3 +3535,343 @@ live API（8710）返回的 chunk 与库内逐字一致。
 （`$\boldsymbol{\Pi} \cdot \boldsymbol{x}$`、`$D_{\text{mse}} \ge \frac{1}{4^b}$`），
 不是重复插入 —— 不动。重建 v45 / v40：288 行、orphans/missing 0、检索指标不变
 （q05 的"附录覆盖"标记由 ✓ 变 ·，四道断言项未变）。
+
+### 17.61 第四十二轮 —— 知识库裸 LaTeX 的三个源头；原文侧也改取页级行
+
+用户截图（知识库详情页）：一段**裸 LaTeX 带着报错样式**直接漏在正文里。前两轮都在**展示层**
+兜（`KnowledgeView` 按位置判据清洗 + `base.css` 把 `.katex-error` 的源码藏掉），
+但用户那句"能不能别再打补丁、从源头解决"是对的 —— 继续追下去是**三个独立的源头**，
+两个在索引层、一个在取源策略上：
+
+| # | 现象 | 真正的源头 | 修法 |
+|---|---|---|---|
+| 1 | `$$\left[\langle y, Q^{-1}(Q(x))\rangle\right]$$` **整段源码漏出来** | `_wrap_bare_latex` 的配对是"从每个 `$` 找下一个 `$`"，于是 `$$…$$` 被配成**两个空的 `$…$` 对**——公式**内部**落进 `plain` 片段，规则②又在它中间包了一层 `$`（`…\langle y, $Q^{-1}(Q(x))\rangle\right]$ …`），`\left[…\right]` 被劈开，KaTeX 报 `Expected group as argument to '\right'`；而**报错节点的 `title` 属性里带引号**，把 HTML 属性撕开，源码就成了可见文本。字符位置可复现：chunk 那行 `$` 在 `0,1,64,91,117,118`，正确的是 `0,1,115,116` | 新增 `_scan_math()`：`$$…$$` 当**一个整体**配对，并报告"本行是否留下未闭合定界符"；`_wrap_bare_latex` 改成**跨行有状态**：配不平/跨行时，这一行与后续行一律原样保留（补错比不补更糟） |
+| 2 | p18 那条 `\begin{aligned}` 推导整段不渲染（早前扫出 `err:3 raw:26`），正文还被吃掉字（`\|y-\tilde{y}\|_2^2` → `<em>2^2`） | 公式块**内联进正文**时用了 `$…$`，而这段 LaTeX **自带换行**；行内定界符**不跨行** —— 用真实渲染管线实测：`$…$` 跨行 **katex=0**（整段回落纯文本）、`$$…$$` 跨行 katex≥1 / err=0 | 新增 `_inline_formula_block()`：多行公式（或含 `\begin{`）→ 独立成段的 `$$…$$`；单行仍 `$…$` |
+| 3 | 同一段内容**中文侧干净、英文侧是 OCR 汤**（`(unbiased inner-prod)E⟨y, Q(Q(x))⟩= ⟨y, x⟩.`、`Q : R→{0, 1}` 公式全丢） | 中文侧的事实源一直是**页级行**（`_zh_index` + `_lookup_zh`），英文侧却直接用解析块文本 —— 两侧用了同一页的**两次不同转写**。页级行（页图视觉转写）是完整的 `$$…$$`；解析块的 PDF 文本层会把数学抽掉/撞碎 | 取源统一：新增 `_row_index(pages, field)`（`_zh_index` / `_src_index` 是它的两个薄封装）与 `_row_content`（原 `_zh_content` 泛化）。英文侧**优先取页级 `original`**，取不到、或比解析文本**明显更短**（`< _ROW_SRC_MIN_RATIO = 0.6`，本次 173 条正文行**无一触发**）就回退解析文本。原文行按解析侧同一口径过 `strip_presentation`（去 `#` / `**`，**公式一字不改**） |
+
+顺手修掉一个自己写出来的隐蔽 bug：`_row_content` 里 `dst, idx, lo, hi = got` 把**新参数名 `idx`
+遮蔽**成了行号（int），第二段文本就会拿 int 去 `.get(page)` —— 单测没走到这条路径，是跑真论文时
+炸出来的（`'int' object has no attribute 'get'`）。
+
+**口径**：三条都不是"加内容清洗规则"，而是改**配对 / 定界符 / 取源**这三处确定性逻辑；
+`_ROW_SRC_MIN_RATIO` 是唯一新增阈值，且只做"别把召回面缩小"的兜底。
+
+**换源只对正文块，不碰图/表块**：图/表块的内容是 `插图 f003-b01：<caption>` 这种**带定位前缀**
+的模板，换源会把前缀吃掉（第一版就是这么写的，实测 9 条 en 图注的前缀被丢）。它们的图注走
+`figure_regions` 那条独立管线，另案处理。顺带量到的"另一案"：这些图注在解析侧同样被抽掉了公式
+（`Figure 1 … TURBOQUANTand TURBOQUANT.` 丢了 `$_{\text{prod}}$`/`$_{\text{mse}}$`），
+页级行是好的 —— 要修得先决定"前缀还留不留"。
+
+复核（重建 v47 / v42，289 行）：
+- 全库正文行（**跨行感知**的定界符扫描）`$` 不成对 **0 条**；线上 LanceDB 289 行**同样 0 条**；
+  改前那条是 p03 zh，`$` 在 `0,1,66,93,117,118`；
+- **旧源 vs 新源 A/B**（同一批 chunk、同一套已修好的配对逻辑，过真实 `useMarkdown` 管线）：
+  173 条正文行里换源 **78 行**（变长 73 / 变短 5，且都过 `_ROW_SRC_MIN_RATIO`）；
+  KaTeX 报错段 **3 → 0**、漏出的裸 LaTeX **8 → 0**、渲染出的公式 **612 → 1121**
+  （解析块丢掉的数学回来了）、**变差 0 行 / 变好 1 行**（p16 en `err 3→0 raw 8→0`）；
+- 之前坏掉的 6 条 chunk（p03 zh/en、p18 ×3、p20 en）逐条过渲染管线：`err=0 raw=0`，公式全渲染；
+- 检索回归：hit@6 **100%** / MRR **0.95（与基线逐题名次完全一致：新增命中 0、名次更差 0、丢失 0）**
+  / 公式专项 100% / 附录 100%，唯一变化是 q05 的附录覆盖 · → ✓
+  —— 也就是说这次换源**没有拿检索指标换渲染质量**；
+- 离线 **389 通过 + 1 跳过**、前端自检 **87/87**；MySQL == LanceDB、live API（8710）返回的 chunk
+  与库内逐字一致。
+
+**一次没保留的尝试（记下来，免得下次重走）**：第一版换源把**图/表块也算进去**，当时检索回归
+是 MRR **0.95 → 1.0**（q08 首次命中 2 → 1）。但那个提升来自一条**图注**取代了正文块的位置
+（`Figure 5` 的 caption 恢复了 `$_{\text{prod}}$`），代价是丢掉定位前缀 —— 用一个概念题的首位
+命中换一条图注前缀，不是想要的取舍，所以按上面的口径收窄，并把"图注换源"留成独立议题。
+
+**与待拍板方案的关系**：`docs/分块方案-页级行为单位.md` 提的是把 chunk 彻底改成"以页级行为原子
+单位"（要删 `_lookup_zh` / `_slice_zh_span` / `_uncovered` 等约 300 行）。这一轮**只取了其中的
+"取源"一条**，切分与对齐机器一律不动；那份方案 §5 记的风险"页级 `original` 自己可能也有转写噪声
+→ 先抽样验收，不达标就不上"，本轮的 A/B（173 条正文行、78 行内容有变、**0 变差**、
+变长的 73 / 变短的 5）就是它的抽样结果。切分侧改造仍未拍板。
+
+**保留的展示层兜底**：`KnowledgeView` 的位置判据清洗与 `base.css` 的 `.katex-error` 隐藏当时**没有撤**
+—— 保留的理由见下一节：用户看到的那张"左右不一致"的表格，把方向指到了"别在展示层再加一层"。
+
+### 17.62 第四十二轮（收口）—— 表格被拼装规则切断；展示层兜底按用户要求全部撤掉
+
+用户截图（知识库 → 搜索）：**同一张表，左栏对、右栏错** —— 右栏只剩"表头 + 2 行"的真表格，
+其余行掉成正文、`|` 原样露出来。用户的口径是"删除右侧额外的兜底"。
+
+**先量，不要猜**（这轮的关键）：用 CDP 把真实页面抓下来，对同一条 chunk 比左右两栏的 DOM ——
+
+| | `<table>` | `<tr>` | 露出的 `\|` |
+|---|---|---|---|
+| 左栏（摘要） | 1 | **5**（表头 + 4 行） | **0** |
+| 右栏（完整片段） | 1 | 3（表头 + 2 行） | **2** |
+
+差异不在那层"兜底"（实测 `sanitizeChunkMarkdown` 对这条内容是**空操作**），而在**数据**：
+
+1. `_row_content` 拼装用 `\n\n` 分段 —— 表格被切开。**markdown 表格要求行连续**，
+   空行之后的行就变成普通段落（`|` 露出来）。左栏之所以"对"，只是因为 `summaryBody`
+   顺手把空行压掉了（那本是"给 2 行截断做准备"）。
+2. 表格中间还插着一条**解析侧公式回声**：页级行里是
+   `| Convolutional | $O(k \cdot n \cdot d^2)$ | $O(1)$ | $O(log_k(n))$ |`，
+   而 IR 公式块给的是 `$O(k \cdot n \cdot d) O(log(n))$`（同一批单元格的降质转写）——
+   规范串既不相等也不互相包含，`_MIN_DUP_CANON` 那条去重闸**认不出来**。
+3. 表格被按比例切片切成了三段：en 侧因此**丢了 Recurrent 行**（左栏有、右栏没有）。
+
+**三条修法都在源头，都是结构性的（不含模糊匹配）**：
+
+| # | 修法 | 位置 |
+|---|---|---|
+| 1 | **表格整行端走**：`_lookup_zh` 命中表格行时不按比例切，直接 `return dst, idx, 0, len(dst)`。表格是 `\|` 分列的，切一段只能得到"少行/多行"的假表。区间消费（`covered`）保证表格只落进一个 chunk | `knowledge_service.py` `_lookup_zh` |
+| 2 | **表格行之间只换行**：拼装时若"上一段以 `\|` 结尾、这一段以 `\|` 开头"→ `\n` 而不是 `\n\n` | `_row_content` 拼装段 |
+| 3 | **表格里不插解析侧公式**：公式片段紧跟在表格片段之后就跳过（表格每格的公式本来就写在行文本里，而且这条公式另有独立 chunk，不会丢内容） | `_row_content` 的 `kind == "formula"` 分支 |
+
+改完同一条 chunk：左右两栏都是 **5 行 <tr>、0 条泄漏**（表格两边逐字一致）。
+
+**前端：按用户要求撤掉展示层兜底**（`KnowledgeView.vue`）
+- 删 `sanitizeChunkMarkdown`（删 `$$…$$` 里杂散 `$` + 给裸公式行补定界符）、`allDollarsInsideText`、
+  `wrapBareFormulaLine`、`repairLatex`（给公式补 `\right` / `{`）。
+- **保留 `dropUnclosedMath`**：它管的是"检索片段被截到 260 字"这个**前端行为**，不是数据缺陷。
+  实测去掉它会漏 **27 处裸 `$`**（23 行）、留着是 4 处 —— 这不是兜底，是截断的必要配套。
+- 撤之前先确认它是冗余的：线上 289 行（187 正文 + 102 公式）**不过任何清洗**直接渲染，
+  KaTeX 报错 **0 处**（正文/公式各 0）。留着的唯一效果是"多一层改写"，让左右两栏的渲染
+  多一个不一致的变量 —— 排查时纯属干扰。
+- `base.css` 里的 `.katex-error` 隐藏**仍保留**：它是全局的（阅读器也吃），且在无错时完全不可见；
+  要一起去掉说一声即可。
+
+**顺带做完用户要的第二件事：左栏图片预览**（`KnowledgeView.vue`）
+- 条目在摘要左边出 **76×56 缩略图**（`object-fit: cover` + 边框，`.chunk-item` 改成两列 flex，
+  `.chunk-main` 带 `min-width:0` 免得长公式把行撑破）。
+- **只给插图**（`hasThumb`）。另两类"也有裁图"，实测都不该摆：
+  - **表格**：条目带的裁图是**图注文字条** —— 把 `figures/region/8/0`（attention Table 2）、
+    `region/9/0`（turboquant Table 1）下下来量过，都是 **3316×126、约 26:1 的一行文字**，
+    缩到 76×56 只剩几个字母，看着像坏图。这跟 §4 记的"表格 chunk 只有图注、没有表体"是同一件事，
+    要等**表格裁图改成截表体**再放开；
+  - **公式**：正文已经渲染成可选中、可复制的 KaTeX 文字，再摆裁图是重复。
+
+复核（重建 v48 / v43，289 行）：
+- **全局表格检查**：线上含 markdown 表格的行 **12 条 → 12 个 `<table>`、露出的 `|` 0 处**；
+- **旧源 vs 新源 A/B**（173 条正文行，换源 78 行）：KaTeX 报错 **3 → 0**、漏出裸 LaTeX **7 → 0**、
+  **漏出表格竖线 5 → 0**、渲染出的公式 **626 → 1150**、**变差 0 行 / 变好 4 行**；
+- **真实页面（CDP）**：p6 那张表左右两栏各 5 行、0 泄漏、无 `katex-error`（截图
+  `data/logs/table-both-panes.png`）；插图条目左栏缩略图指向真实的图（截图
+  `data/logs/left-thumbnail.png`，6 张热力图），表格条目不再出缩略图；
+- 检索回归：hit@6 **100%** / MRR **0.95**（与基线逐题名次一致：新增 0、更差 0、丢失 0）/
+  公式专项 100% / 附录 100%；
+- 离线 **390 通过 + 1 跳过**、前端 `typecheck` + `build` 通过、前端自检 **87/87**、`/health` 200。
+
+### 17.63 第四十三轮 —— 分块换成「TOC 层级 + 页级行原子 + LLM 语义锚点」
+
+用户口径（原话）：**"chunk 的划分应该按已有的 markdown 层级进行切分"**，随后给出完整设计：
+TOC 管宏观边界 → LLM 在转录时给出节内语义边界 → 代码确定性组装成最终 chunk；
+并且**语义单元 ≠ 最终 chunk**、正文必须由已有 row 重新拼装（不重新生成）、
+必须加校验层、第一阶段不许动检索参数。两个关键选择由用户拍板：
+**① 直接改转录提示词并重跑两篇；② marker 用结构化字段 `breaks: [...]` 而不是内联 HTML 注释。**
+
+#### 一、先量：旧切分到底哪里不对（这是"换骨架"的判据）
+
+| 量的是什么 | 结果 |
+|---|---|
+| 旧索引 `section_path` 里的**假小节名** | `6: r ←x −DEQUANT(idx) / CPROOFS AND TECHNICAL REMARKS / C.2TURBOQUANT`、`*PyramidKV Score: 0.981*`、`3: Generate a random projection matrix S ∈R…` |
+| 解析侧**漏标题** | turboquant 漏 `2.4 NEAR NEIGHBOUR SEARCH EXPERIMENTS`；attention 漏 `3.4 Embeddings and Softmax`、`6.2 Model Variations`（旧索引里这两个小节**完全不存在**） |
+| 目录（页级标题行 + 编号推层级） | **24 / 27 个节点全部能定位到行**，含上面漏掉的三个 |
+| 页级行 vs 解析块正文量 | turbo 82056 vs 50970 字（**1.61×**）、attention 40188 vs 29486（**1.36×**） |
+| 没有解析块认领的行 | 31 行 / 8 行（含 turbo p008-03 正文段、attention p002-00 正文段、7 条公式）—— 旧索引里根本没有 |
+| 单行长度（决定"行能不能当原子"） | turbo 中位 225 / max **1487**；attention 中位 192 / max **1238**；**没有一行超过 hard=2240** |
+| 行里 `$` 配对 | 两篇都 **0 行不成对**（公式在行级别天然完整） |
+
+最后两条是这次设计的支点：**行的粒度 + 单行永不超上限 ⇒ "语义单元超 hard"只可能是多行合并出来的，
+回退就是"退回行边界"，句子级切分永远用不上，公式/表格/图注不可能被切断**（可证明，不靠模型自觉）。
+
+#### 二、改了什么
+
+**1. 转录提示词产出 `breaks`（结构化锚点）** —— `page_translate.py`
+
+- `SYSTEM_PROMPT` 新增【breaks：语义边界锚点】一节：锚点 = **新语义单元开头那一块的起始原文片段**，
+  逐字照抄 12~40 字符；写清"该标"（定义→新定义、背景→方法、方法→实验、问题→解决方案、
+  一段推导→下一段推导、算法描述→实验结果、小节标题行本身）与"**不要标**"
+  （本页第一块、一句话中间、公式与紧随其后的解释之间、表格标题与表体之间、公式/表格/代码/图内文字内部、
+  标题的下一行）；`语义完整性优先于长度`。
+- `PAGE_SCHEMA` 加 `breaks: [str]`（非必填）；`parse_breaks()` 容错（缺字段 / 字符串 / 夹空串 / 非 JSON 都退化成 `[]`）。
+- 存盘：`build_page_payload` 写 `breaks` + `break_stats`；**锚点原文原样留档**（将来换模型重译，
+  锚点还能重新落到新行上）。
+
+**2. marker 的校验层**（`apply_semantic_breaks`，纯函数，读时也算一遍）
+
+锚点不可信，逐条验证；**任何一条不合法只丢它自己**，这一页剩下的照用：
+
+| 判据 | 拒绝原因 |
+|---|---|
+| 规范化（只留小写字母数字汉字）后 < 6 字符 | `too_short` |
+| 6~11 字符但没落在**标题行**上 | `short_not_heading`（`# 6 Results` 规范化后只有 8 字符，是合法标题） |
+| 块首匹配不到 | `unmatched` |
+| 同侧命中多行（`In this section` 这种） | `ambiguous` —— 猜错比少一条边界坏得多 |
+| 落在本页第 0 行 | `page_start` |
+| 前一行是标题 / 公式 / 以冒号结尾 | `after_heading` / `after_formula` / `dangling_colon` |
+| 表格、表注、图注相邻处 | `inside_structure` |
+| 两侧都是正文但前一行没收句 | `mid_sentence` |
+
+**3. 分块层换成"行 + 目录 + 单元"** —— 新增 `backend/services/knowledge/chunking.py`
+
+```
+section_tree(paper_id)     阅读器目录 → 节点树（序号 → 行的下标）
+row_units(paper_id)        pages.json 行 → 原子（含 section_path / section_kind / semantic_break）
+semantic_units(rows)       连续性段：TOC 边界 ∪ 锚点边界（use_breaks=False 就是 arm2）
+assemble(rows, tree, ...)  子树 ≤ target 整棵成一块；否则节点自己的行成一块（< floor 且
+                           有子节点 → 并进首个子块，**唯一允许的"跨界"**）；同一节点内先按语义
+                           单元、再贪心累加到 target 之上封口（current + next > hard 必停）；
+                           单元自身 > hard → 退回行边界
+validate(chunks, rows)     覆盖恰好一次 / 顺序不变 / 不跨节（祖孙不算）/ ≤ hard /
+                           正文里不混结构行；**不通过就先退回"不用锚点"重装，仍不通过则原样入库并 error 日志**
+```
+
+**4. 索引层的两处关键配套**（`knowledge_service.py`）
+
+- **哪些"图注行"是真图注**：页级行里以 `Figure/Table` 开头的行不都是图注
+  （attention 的 `Table 2 summarizes our results…` 是正文）。判据 = IR/`figure_regions` 里真有这一项
+  （页号 + 图号能对上），认证结果由 `chunking.row_units(structural_caption_ids=…)` 落到行上。
+  没有这一步，那段正文会被当结构行从库里删掉（旧的 `attached_caption_ids` 就是为它加的）。
+- **REFERENCES 整节不入库**：turboquant 的参考文献条目行是 `para`（不是 `ref`），只按行类型判会漏 ——
+  按"所属节点的标题是 REFERENCES"补一条（实测 turbo 跳过 **77 行**）。不因为锚点而改变这一行为。
+- 图注与表体的配对按"同页 + 同图号"（实测 turbo 图注在表体**下方**、attention 在**上方**，两种都要能配）；
+  表体（markdown）**进 chunk 正文** —— 旧路径英文侧一条表体都没有。
+
+#### 三、重跑两篇（用户选择"直接改提示词重跑"）
+
+`python cli/pr.py translate <paper> --mode retranslate`，37 页视觉调用（turbo 22 + attention 15）。
+
+| | turboquant | attention |
+|---|---|---|
+| 有锚点的页 | 19 / 22 | — |
+| 锚点总数 | 79 | 47 行带锚点 |
+| 落到行上（legal） | **70（89%）** | — |
+| 被校验层拒掉 | 9：`after_formula` 5、`dangling_colon` 2、`after_heading` 2 | — |
+| 短标题锚点（< 12 字符但落在标题行） | 3 | — |
+| 0 条 `unmatched` / `ambiguous` | ✅ | ✅ |
+
+即"模型标的都能定位，被拒的全是设计上明确不许切的位置"（公式与解释之间、冒号引出下一块、标题的下一行）。
+单页彩排（turbo p5 / attention p8）确认契约可被遵守后再付的 37 页成本。
+
+#### 四、三臂对比（30 问题库，同一份 pages.json、同一套代码，只差一个 setting）
+
+题库从 10 扩到 30（表格数值 / 新暴露的 2.4·3.4·6.2 / 中英各半 / 多跳各若干），
+每题的关键词都先在**页级行原文**里核实过存在。
+
+| 指标 | arm1 旧（解析块 + 按比例取译文） | arm2 只按 TOC 切 | arm3 TOC + LLM 锚点 |
+|---|---|---|---|
+| hit@6 | 100% | 100% | 100% |
+| **正文命中 hit@6** | 90% | **97%** | **97%** |
+| MRR | 0.9417 | **0.9778** | **0.9778** |
+| **正文 MRR** | 0.8083 | **0.9011** | 0.8983 |
+| 公式专项命中 | 92% | 92% | 92% |
+| appendix 覆盖 | 100% | 100% | 100% |
+| **语义块含公式** | 70% | 90% | **93%** |
+
+逐题：arm1→arm2 **新增命中 2、名次更好 4、更差 0、丢失 0**（q20 图注 `✗→1`、q11 表格数值 `2→1`、
+q08/q10/q16/q17 各升一名）；arm2→arm3 **0 更好、1 更差（q19 3→4）、0 丢失**。
+
+**诚实结论：这一轮"检索更准"的收益几乎全部来自 TOC + 行原子那一层；LLM 锚点在 30 问上看不出净收益。**
+锚点的作用是**结构性**的，量在别处：
+
+| | arm2 | arm3 |
+|---|---|---|
+| turbo 正文块 | 46（中位 1501） | 46（中位 1464） |
+| turbo **切点（chunk 起始行）不同** | — | **30 个**（arm3 的 46 个切点里 40 个落在锚点行上） |
+| attention 切点不同 | — | **2 个**（target=900 时 **0 个**） |
+| 超 hard 后被迫按行边界切 | **12** | **1** |
+
+> ⚠️ 本节初稿在这里写的是"turbo 25 / 46 条边界不同"——那个算法是错的
+> （`len(starts_arm2) - len(共同块)`，把"起点不同"和"终点不同"混在一起，还受两臂块数影响）。
+> 正确口径是"切点集合的对称差"，即上表的 30 / 2。数字见 `scripts/kb_anchor_effect.py`。
+
+**锚点为什么没换来指标：量出来的两个原因**（同一脚本）：
+
+| | turbo（70 锚点） | attention（47 锚点） |
+|---|---|---|
+| target=1400 时锚点**被吞进块内**（没当成切点） | **30（43%）** | **27（57%）** |
+| target=700 时被吞 | 22（31%） | 25（53%） |
+| target=500 时被吞 | 17（24%） | 25（53%） |
+| 语义单元粒度 | 69 个单元，每单元中位 **2 行** | 42 个单元，中位 **2 行** |
+| 结构原因 | target≈1400 装的下一块 ≈ 5~7 行 → 每 3 个锚点只有 1 个能当切点 | 小节本来就 ≤ target → 走"整棵子树成一块"分支，**锚点无处可施** |
+
+所以"LLM 分得不好"不是主因：**它标的 70/47 条边界里，四到六成被长度约束合并掉了**；
+attention 更是整节成块（12~14 / 27 个节点走整棵分支）。
+**下一根杠杆是 target（把粒度调细）+ 让语义单元本身可检索**，不是再加规则。
+
+#### 五、渲染与其它验收
+
+- 线上 **267 行**（arm3，改后索引）过真实渲染器 bundle：**KaTeX 报错 0、残留 `$` 0、裸 LaTeX 0、
+  泄漏表格竖线 0**，渲染出 **1178 个公式**、**10 个 `<table>`**（= 5 张表 × zh/en，且带表格分隔行的
+  行**只出现在 `table` chunk 里**）。
+- 校验层在两篇真实语料上：turbo **186 / 186 行覆盖**、attention **109 / 109**，顺序 / 不跨节 / 长度全过。
+- 迁移影响：chunk id 全变（必须重建索引）；`Annotation` 的 30 条锚在**解析块 id** 上（重译不动解析，未受影响）；
+  `Highlight` 1 条锚在行 id 上（attention `p009-06`，重译后行号会挪，需人工核对）。
+- 旧路径（`kb.chunk_mode=block` + `_collect_chunks` / `_chunk_variants`）在下一轮**已删除**（见 §17.64）；
+  新路径由 `kb.chunk_use_breaks`（默认 1）控制。
+
+#### 六、新增 / 改动的文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/services/knowledge/chunking.py` | **新增**：TOC 树 / 行原子 / 语义单元 / 组装 / 校验 |
+| `backend/services/knowledge/knowledge_service.py` | 新增 `_base_chunks` 一路（行级）；`_row_text_chunk` / `_row_structure_chunks` / `_row_formula_chunks` / `_caption_rows` / `_structure_groups` / `_attach_formula_ids`；旧路径改名调用 |
+| `backend/services/translation/page_translate.py` | `breaks` 契约（SYSTEM_PROMPT / PAGE_SCHEMA / `parse_breaks` / `PageCallResult.breaks`）+ 校验层 `apply_semantic_breaks` |
+| `backend/services/paper/reader_service.py` | 读时把 `breaks` 落到行上（与行重算同步，旧产物无字段 = 行为不变） |
+| `tests/test_semantic_breaks.py` | **新增 12 个**：契约 / 容错解析 / 九条位置规则逐条钉 / 中文锚点 / 去重 / 幂等 / 向后兼容 |
+| `tests/test_kb_row_chunking.py` | **新增 15 个**：归属 / 单元 / 组装 / 校验五项不变量 / 无目录降级 |
+| `tests/retrieval_regression/questions.json` | 10 → **30 问**（含多论文 `paper_id`），`run.py` 支持单题覆盖论文 |
+| `scripts/kb_break_rehearsal.py` | **新增**：全量重译前的单页彩排（1 次视觉调用，看锚点合不合法） |
+| `scripts/kb_arm_compare.py` | **新增**：A/B 两臂（`kb.chunk_use_breaks` 0/1）各建索引 + 跑题库 |
+| `scripts/kb_render_scan.py` | **新增**：把线上每一条行喂真实渲染器，量 KaTeX 报错 / 泄漏竖线 / 裸 LaTeX |
+| `docs/分块方案-语义单元.md` | **新增**：本方案的 as-built 文档（旧草稿《分块方案-页级行为单位》已并入） |
+| `data/logs/snapshot/**` | arm1 产物快照（pages.json / chunk 行 / 三臂报告与对比表 / 渲染扫描 / 行快照） |
+
+### 17.64 第四十三轮（收口）—— 删掉旧路径：净减 760 行，产出逐题一致
+
+上一轮结束时旧路径还挂在 `kb.chunk_mode=block` 上当回退。这一轮把它连根删掉：
+**"两侧同源"是不变量，留着第二个实现只会让不变量有两个版本。**
+
+#### 删了什么（`knowledge_service.py` 2197 → 1437 行，**-760 行**）
+
+| 类别 | 具体 |
+|---|---|
+| 块↔行按比例对齐 | `_row_index` `_zh_index` `_src_index` `_overlap` `_overlap_span` `_snap_sentence` `_snap_math` `_slice_zh_span` `_slice_zh` `_uncovered` `_lookup_zh` `_row_content`（**128 行**）`_zh_content` `_src_content` |
+| 旧分块主循环 | `_collect_chunks`（**197 行**）`_chunk_variants` `_section_timeline` `_block_row` 之外的 `_row_to_block_map` `_canonical_formula_chunks`（被 `_row_formula_chunks` 取代） |
+| 事后合并 | `_mergeable` `_merge_chunks` `_merge_small_chunks`（新方案里"合并"只发生在"子树 ≤ target"与"父节引言并入首个子节"两处结构事实，不再有按长度的合并） |
+| 判据常量 | `_block_sig` `_COMPACT_RE` `_WS_RE` `_MIN_ALIGN_CHARS` `_MIN_DUP_CANON` `_ROW_SRC_MIN_RATIO` `_SENT_END` `_CLOSERS` `_SENT_END_ASCII` `_looks_complete_formula` `_is_table_line` |
+| 开关 | `CHUNK_MODE_SETTING` `_setting_str`（setting 表里那行 `kb.chunk_mode` 也删了；现在只剩 `kb.chunk_use_breaks`） |
+
+保留的都是**与分块策略无关**的：`_block_row` / `_block_row_ids`（公式条目定位用）、
+`_make_chunk` / `_variant_row` / `_safe_preview` / `_approx_tokens`、展示层三个 LaTeX 兜底
+（`_scan_math` / `_wrap_bare_latex` / `_inline_formula_block`）、`_link_formulas`。
+
+#### 测试：删 2 个文件、改写 1 个、新增 1 个
+
+| 文件 | 处置 |
+|---|---|
+| `tests/test_rag_chunks.py` | **删除**（28 个用例全在测 `_lookup_zh` / `_slice_zh` / `_row_content` / `_chunk_variants`）|
+| `tests/test_kb_chunking.py` | **删除**（19 个用例全在测旧路径；夹具是"解析块 + 假 IR"那一套）|
+| `tests/test_kb_latex_wrap.py` | **新增 11 个**：把仍活着的三个展示层函数按真实契约重写（`$$…$$` 要整体配对、未闭合不补、整行裸 LaTeX 成展示公式、`\tag` 行内必须去掉…） |
+| `tests/test_kb_row_chunking.py` | 从 15 → **22 个**：补 `chunk_params`（2）、`_chunk_variants_rows`（4）、以及**索引层端到端 1 个**（前沿元数据丢弃 / 公式双向关联 / 图注+表体同块 / ≤ hard）—— 这一条正是被删掉的旧文件里最有价值的覆盖 |
+
+#### 验收：删前删后逐题一致
+
+| 指标 | 删旧路径前 | 删后 | |
+|---|---|---|---|
+| hit@6 / 正文命中 | 100% / 97% | 100% / 97% | 一致 |
+| MRR / 正文 MRR | 0.9778 / 0.8983 | 0.9778 / 0.8983 | 一致 |
+| appendix / 公式上下文 | 100% / 93% | 100% / 93% | 一致 |
+| **逐题 rank（30 题）** | — | — | **全部一致** |
+| 公式专项命中 | 91.7% | 100% | **口径变化、非检索变化** |
+
+公式专项那一格的差异要解释清楚：`91.7% = 11/12` 是旧分母 —— `q24`（"自注意力的每层复杂度与
+最大路径长度"）被误标成公式题，实际是**表格题**（formula 条目里没有它的特征词）。
+把它改成 `want_formula: false` 后分母变 11、全部命中。**逐题 rank 前后完全一致**，
+说明这次删除对产出是零影响。
+
+其余验收：`pytest tests` 全绿（**383 通过 / 1 跳过**；上一轮是 422 —— 少的正是删掉的旧路径用例，
+新增的分块层用例已计入）；
+重建索引 turbo v53 / attention v48（191 + 76 = **267 行**，与删前逐条相同）；
+渲染扫描 **KaTeX 0 / 裸 `$` 0 / 裸 LaTeX 0 / 泄漏竖线 0**、1178 公式、10 张表。
+
+#### 复现旧方案的办法（不再留代码）
+
+`tests/retrieval_regression/build_baseline.py` 仍能从**指定 git revision** 取旧代码到隔离环境里
+建索引（`old_chunk_module(rev)` → `old._collect_chunks`），arm1 的数字与产物也已快照在
+`data/logs/snapshot/`（`*-chunks-arm1.json` / `retrieval-arm1-30q.*`）。所以"回退能力"没有丢，
+只是不再由产品代码里的一份死代码承担。

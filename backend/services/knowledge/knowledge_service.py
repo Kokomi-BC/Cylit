@@ -62,16 +62,8 @@ LANGS = ("zh", "en")
 ANY_LANG = "any"
 # 中文侧的最小长度门槛按**字**算：中文 1 字的信息量约等于英文 2~3 字符，沿用 40 字符
 # 会把大量正常的中文块误杀（实测把 "## B.2 QJL：1 比特内积量化" 这类小节标题全丢了）。
-# 门槛只用来兜"取到的是残渣"，不承担质量判断 —— 对不上译文的行压根不会出（见 _lookup_zh）。
+# 门槛只用来兜"取到的是残渣"：译文缺失的行压根不会出 zh 行（见 `_chunk_variants_rows`）。
 MIN_ZH_CHARS = 8
-
-_WS_RE = re.compile(r"\s+")
-# 只保留小写字母 / 数字 / 汉字
-_COMPACT_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
-# 页内对齐的最小可信重叠（签名字符数）
-_MIN_ALIGN_CHARS = 12
-# "这条公式译文侧已经有了"的判定长度（规范符号串，压掉排版噪音）
-_MIN_DUP_CANON = 12
 
 
 def _setting_int(key: str, default: int) -> int:
@@ -100,16 +92,6 @@ def chunk_params() -> tuple[int, int, int]:
     return target, floor, hard
 
 
-def _block_sig(text: str) -> str:
-    """块匹配签名：只留小写字母 / 数字 / 汉字。
-
-    为什么这么狠：**入库的原文来自解析产物**（``md/full.md``），**译文来自页级产物**
-    （``pages.json`` 的 ``original_md`` / ``translation_md``，由视觉模型按页图转写）——
-    同一页的两次转写，标题层级符（``#`` vs ``##``）、冒号后空格、LaTeX 里的空格
-    都会有差异。第一版只压空白，在真实论文上正文块只有 **52%** 能对上（实测），
-    换成"只留字母数字汉字"后这些差异全部消失，块与块之间仍然区分得开。
-    """
-    return _COMPACT_RE.sub("", (text or "").lower())
 
 
 def _safe_preview(content: str, limit: int = 200) -> str:
@@ -151,6 +133,23 @@ def _inline_embed_math(text: str) -> str:
 _TAG_RE = re.compile(r"\\tag\*?\{[^}]*\}")
 
 
+def _inline_formula_block(latex: str) -> str:
+    r"""把公式块的 LaTeX 变成**能进正文的定界形式**。
+
+    - 单行公式 → `$…$`（行内；`$` 后不能有空格，渲染端不认 `$ x$`，会显示成纯文本）；
+    - **多行公式**（`\begin{aligned}…\end{aligned}`）→ 独立成段的 `$$…$$`。
+
+    为什么多行必须换定界符：行内定界符**不跨行** —— marked 的行内数学规则匹配不到
+    （实测 `$…$` 跨行 katex=0 段、整段回落成纯文本），而且里面的 `_` / `*` 会被当 markdown
+    解析（`\|y-\tilde{y}\|_2^2` 变成 `<em>2^2`，正文被吃掉字）；换成 `$$…$$` 后
+    跨行正常渲染（katex≥1、err=0）。p18 的 `\begin{aligned}` 就是这条。
+    """
+    body = _strip_tag_inline(latex)
+    if "\n" in body.strip() or "\\begin{" in body:
+        return f"\n\n$$\n{body.strip()}\n$$"
+    return f"${body}$"
+
+
 def _strip_tag_inline(latex: str) -> str:
     r"""去掉 `\tag{n}`：**行内模式下 KaTeX 会直接报错**（`\tag works only in display equations`），
     渲染端于是回退成纯文本 —— 用户看到的"公式变裸 LaTeX"就是它。
@@ -169,6 +168,47 @@ _STRONG_TEX_RE = re.compile(
 _TEX_TOKEN_RE = re.compile(r"[^\s，。；：、！？（）【】《》]+")
 
 
+def _scan_math(line: str) -> tuple[list[tuple[str, str]], str | None]:
+    r"""把一行切成 ``[(kind, 片段)]``（``kind`` = ``plain`` / ``math``），并报告行末**未闭合**的定界符。
+
+    为什么必须单独抽出来：`$$…$$` 要当**一个整体**配对。第一版是"从每个 `$` 找下一个 `$`"，
+    于是 `$$(\text{unbiased inner-prod}) \quad \mathbb{E}_Q\left[\langle y, Q^{-1}(Q(x))\rangle\right]$$`
+    被配成"`$$`（空公式）+ 正文 + `$$`（空公式）"——公式**内部**落进了 ``plain`` 片段，
+    规则②紧接着在展示公式中间又包了一层 `$`（`…\langle y, $Q^{-1}(Q(x))\rangle\right]$ …`），
+    `\left[…\right]` 被劈开，KaTeX 报 `Expected group as argument to '\right'`，
+    它那个报错节点的 `title` 里带引号、把 HTML 属性撕开，整段源码就漏进正文了（用户截图那处）。
+
+    第二个返回值给调用方做**跨行**判定：`$…$` / `$$…$$` 都可能被排版噪声拆到多行
+    （`\begin{aligned}` 那种），下一行再补定界符就会把公式切碎。``None`` = 本行配平。
+    """
+    pieces: list[tuple[str, str]] = []
+    cursor = 0
+    i = 0
+    leftover: str | None = None
+    while True:
+        i = line.find("$", i)
+        if i < 0:
+            break
+        if line.startswith("$$", i):
+            j = line.find("$$", i + 2)
+            if j < 0:
+                leftover = "$$"
+                break
+            pieces.append(("plain", line[cursor:i]))
+            pieces.append(("math", line[i:j + 2]))
+            cursor = i = j + 2
+            continue
+        j = line.find("$", i + 1)
+        if j < 0:
+            leftover = "$"
+            break
+        pieces.append(("plain", line[cursor:i]))
+        pieces.append(("math", line[i:j + 1]))
+        cursor = i = j + 1
+    pieces.append(("plain", line[cursor:]))
+    return [(k, s) for k, s in pieces if s], leftover
+
+
 def _wrap_bare_latex(text: str) -> str:
     r"""给**裸写的 LaTeX**补定界符：按"未包裹的片段"补，**不**因为"这行已有 `$`"整行放弃。
 
@@ -179,34 +219,32 @@ def _wrap_bare_latex(text: str) -> str:
 
     守则（与前端一致，宁可少补）：
     ① 整行无 `$`、无中文、含高置信命令（≥2 个或带 `^{`/`_{`）→ 整行包 `$$…$$`；
-    ② 其余按 `$…$` 配对切开，只在**公式之外**的片段里，把"含 `^{`/`_{`、无中文、不过长"的
-       连续片段包成 `$…$`（已包好的数学不动）。
+    ② 其余按 `$…$` / `$$…$$` 配对切开（见 `_scan_math`），只在**公式之外**的片段里，把
+       "含 `^{`/`_{`、无中文、不过长"的连续片段包成 `$…$`（已包好的数学不动）；
+    ③ 定界符**配不平**或**跨行**（本行留下未闭合的 `$`/`$$`）→ 这一行与后续行一律原样保留：
+       补错比不补更糟，会把公式劈开、让 KaTeX 整段报错。
     """
     if not text or ("\\" not in text and "^{" not in text and "_{" not in text):
         return text
     out: list[str] = []
+    carry: str | None = None        # 上一行留下的未闭合定界符
     for line in text.split("\n"):
+        if carry is not None:
+            out.append(line)
+            if carry in line:
+                carry = None
+            continue
         t = line.strip()
         if "$" not in line and t and not _CJK_RE.search(t):
             strong = len(_STRONG_TEX_RE.findall(t))
             if _STRONG_TEX_RE.search(t) and (strong >= 2 or re.search(r"[_^]\{", t)):
                 out.append(f"$${t}$$")
                 continue
-        pieces: list[tuple[str, str]] = []
-        cursor = 0
-        i = 0
-        while True:
-            i = line.find("$", i)
-            if i < 0:
-                pieces.append(("plain", line[cursor:]))
-                break
-            j = line.find("$", i + 1)
-            if j < 0:
-                pieces.append(("plain", line[cursor:]))
-                break
-            pieces.append(("plain", line[cursor:i]))
-            pieces.append(("math", line[i:j + 1]))
-            cursor, i = j + 1, j + 1
+        pieces, leftover = _scan_math(line)
+        if leftover is not None:
+            out.append(line)
+            carry = leftover
+            continue
 
         def _wrap(m: "re.Match[str]") -> str:
             tok = m.group(0)
@@ -234,297 +272,39 @@ def _strip_unpaired_bold(text: str) -> str:
         out.append(line)
     return "\n".join(out)
 
-def _zh_index(pages: list[dict]) -> dict[int, list[tuple[str, str]]]:
-    """``{页号: [(行签名, 译文), …]}``：页级翻译产物的译文索引（保持行序）。
-
-    为什么不直接建 ``{(页号, 签名): 译文}`` 字典就完事：解析块与译文行的**切分边界
-    不一样**（同一个段落，解析切成"…quantizer's output." + "Thus, we aim…"，页级产物
-    切成一整行）。实测只按签名精确匹配，正文块覆盖率只有 55% —— 剩下的不是"没翻译"，
-    而是**切分不同**。所以索引保留整页的行序列，由 `_lookup_zh` 做页内对齐。
-    """
-    out: dict[int, list[tuple[str, str]]] = {}
-    for page in pages or []:
-        try:
-            pno = int(page.get("page") or 0)
-        except (TypeError, ValueError):
-            continue
-        rows: list[tuple[str, str]] = []
-        for row in page.get("rows") or []:
-            src = _block_sig(row.get("original"))
-            dst = str(row.get("translation") or "").strip()
-            if src and dst:
-                rows.append((src, dst))
-        if rows:
-            out[pno] = rows
-    return out
 
 
-def _overlap(a: str, b: str) -> int:
-    """两个签名的最长公共子序列长度（用 difflib，字符级，够用且稳）。"""
-    return _overlap_span(a, b)[0]
 
 
-def _overlap_span(a: str, b: str) -> tuple[int, int, int]:
-    """``(公共字符数, 在 b 中的起始位置, 结束位置)``。"""
-    from difflib import SequenceMatcher
-
-    matcher = SequenceMatcher(None, a, b, autojunk=False)
-    total, lo, hi = 0, -1, -1
-    for tag, _, _, j1, j2 in matcher.get_opcodes():
-        if tag != "equal":
-            continue
-        total += j2 - j1
-        lo = j1 if lo < 0 else min(lo, j1)
-        hi = max(hi, j2)
-    return total, lo, hi
 
 
-_SENT_END = "。！？；\n"
-# 片段以这些字符开头、或本身全是这些字符时，直接接上一段（不另起一行）
-_CLOSERS = "。，、；：！？）】》”’.,;:!?)]}"
-_SENT_END_ASCII = ".!?;"
 
 
-def _snap_sentence(text: str, pos: int, *, forward: bool) -> int:
-    """把比例切点吸附到最近的句子边界（找不到就原样返回）。
-
-    ⚠️ 循环上界必须是 ``i <= n``：句末标点**正好落在整行末尾**时（``…生成 Π。``），
-    旧写法 ``i < n`` 会在查 ``text[n-1]`` 之前就退出、退回原始比例位置 ——
-    于是切点停在词中间（用户截图里"…对其随机化。我 / 们可以通过…"这种断词）。
-    """
-    n = len(text)
-    pos = max(0, min(n, pos))
-    step = 1 if forward else -1
-    i = pos
-    while 0 < i <= n:
-        ch = text[i - 1]
-        if ch in _SENT_END or (ch in _SENT_END_ASCII and (i >= n or text[i] in " \n")):
-            return i
-        i += step
-    return pos
 
 
-def _snap_math(text: str, pos: int, *, forward: bool) -> int:
-    r"""把切点移出 `$…$` 之外。
-
-    为什么必须：`_slice_zh` 原先只吸附到句号，若比例切点落在公式中间，
-    切出来的片段就带着**没闭合的 `$`** —— 渲染端从那里开始整段变纯文本
-    （用户截图里"第一段是裸 LaTeX、后面同一段却渲染正常"就是这个）。
-    向前切就移到公式**末尾**，向后切就移到公式**开头**。
-    """
-    from backend.services.paper.reader_service import _extract_math
-
-    try:
-        spans = _extract_math(text or "")
-    except Exception:  # noqa: BLE001
-        return pos
-    for start, end, _body, _display in spans:
-        if start < pos < end:
-            return end if forward else start
-    return pos
 
 
-def _slice_zh_span(text: str, lo: float, hi: float) -> tuple[str, int, int]:
-    """``_slice_zh`` 的带偏移版：``(片段, 起始, 结束)``（偏移是**在整行译文里的字符位置**）。
-
-    为什么要给偏移：同一行译文会被多个解析块命中、各切一段，两段可能**重叠** ——
-    重叠部分就是用户看到的"多出来的残缺公式"。有了偏移，调用方才能记录"这一行已经用掉了哪一段"。
-    """
-    n = len(text)
-    if n <= 1:
-        return text, 0, n
-    edge = max(3, int(0.05 * n))
-    raw_lo, raw_hi = int(round(lo * n)), int(round(hi * n))
-    start = 0 if raw_lo <= edge else _snap_math(
-        text, _snap_sentence(text, raw_lo, forward=False), forward=False)
-    end = n if raw_hi >= n - edge else _snap_math(
-        text, _snap_sentence(text, raw_hi, forward=True), forward=True)
-    if end <= start:
-        # 兜底**不能**用原始偏移：那会把 LaTeX 从中间切断，产出 `$\sqrt{2 /\pi }$` 这类
-        # 半截公式（用户截图里的残片就是这么来的 —— 源头行里根本没有这些字符串）。
-        start = _snap_math(text, raw_lo, forward=False)
-        end = _snap_math(text, raw_hi, forward=True)
-        if end <= start:
-            return text, 0, len(text)      # 实在切不干净 → 整行端走（宁可多要，不可切坏）
-    return text[start:end], start, end
 
 
-def _slice_zh(text: str, lo: float, hi: float) -> str:
-    """按比例切一段译文，切点吸附到句子/公式边界（对外契约不变，返回文本）。"""
-    piece = _slice_zh_span(text, lo, hi)[0]
-    return piece.strip() or text.strip()
 
 
-def _looks_complete_formula(latex: str | None) -> bool:
-    r"""解析侧的公式块看起来是不是**一条完整公式**（而不是被拆出来的碎片）。
-
-    判据用"规范符号串够长"：碎片 `\sqrt{2 /\pi }`（8）、`, \pm`（4）、`\frac{\sqrt{}}`（4）
-    都过不去；而 `\mathbb{E}[\|\boldsymbol{x}-\tilde{\boldsymbol{x}}\|_2^2]\geq\frac{d}{4^b}`
-    这类完整公式能过。用途只有一个：**没对上 canonical 条目的公式块**该不该内联进正文。
-    """
-    return len(formula_source._canon(latex)) >= 12       # noqa: SLF001 —— 同模块内部约定
 
 
-def _uncovered(lo: int, hi: int, covered: list[tuple[int, int]]) -> tuple[int, int] | None:
-    """在 ``[lo, hi)`` 里找**第一段还没被用过**的区间；全被覆盖则返回 None。"""
-    cur = lo
-    for a, b in sorted(covered):
-        if b <= cur:
-            continue
-        if a >= hi:
-            break
-        if a > cur:
-            return cur, min(a, hi)
-        cur = max(cur, b)
-        if cur >= hi:
-            return None
-    return (cur, hi) if cur < hi else None
 
 
-def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str,
-               start: int = 0) -> tuple[str, int, int, int] | None:
-    """取某段原文的中文：先精确签名，再在**本页内**做字符级对齐取重叠最多的行。
-
-    ``start`` = "本页已用到第几行"，且**一行只用一次**（单调消费）。为什么必须这样：
-    原先每个块各自找最优行，多个块会命中同一行 —— 同一段中文被拼进 chunk 两次，
-    用户看到的"整段重复"就是这么来的（在源头修，而不是事后去擦）。
-    返回 ``(译文行全文, 行号, 起始, 结束)``（区间是整行译文里的字符位置，供区间消费）；``None`` = 没配上。
-    """
-    rows = zh.get(page)
-    sig = _block_sig(text)
-    if not rows or not sig:
-        return None
-    for idx in range(start, len(rows)):
-        row_sig, dst = rows[idx]
-        if row_sig == sig:
-            return dst, idx, 0, len(dst)
-    if len(sig) < _MIN_ALIGN_CHARS:
-        return None
-    best: tuple[int, str, str, int, int, int] | None = None
-    for idx in range(start, len(rows)):
-        row_sig, dst = rows[idx]
-        hit, j1, j2 = _overlap_span(sig, row_sig)
-        if best is None or hit > best[0]:
-            best = (hit, dst, row_sig, j1, j2, idx)
-    if best is None:
-        return None
-    hit, dst, row_sig, j1, j2, idx = best
-    if hit < _MIN_ALIGN_CHARS or hit * 2 < min(len(sig), len(row_sig)):
-        return None
-    if len(row_sig) <= len(sig) * 1.2 or j1 < 0:   # 行不比这段大多少 → 整行端走
-        return dst, idx, 0, len(dst)
-    _piece, s, e = _slice_zh_span(dst, j1 / len(row_sig), j2 / len(row_sig))
-    return dst, idx, s, e
 
 
-def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str | None:
-    """按块拼中文正文；**公式片段原样插入**（LaTeX 无语言之分，两侧同串）。
 
-    ``parts`` 的元素是 ``(页号, 文本, kind)``（``kind`` 缺省视为 ``text``，兼容旧数据）。
-    译文行**单调消费**（一行最多用一次）—— "整段重复"在这里被源头解决，
-    所以不需要事后做段级/句级去重。
-    """
-    if not parts:
-        return None
-    # 每条：(片段, 来源行键 或 None, 行内起点, 行内终点, 行全文)
-    pieces: list[tuple[str, tuple[int, int] | None, int, int, str]] = []
-    formula_slots: list[int] = []      # pieces 里哪些是"待定的公式片段"（见下面的去重）
-    text_parts = 0
-    cursor: dict[int, int] = {}
-    covered: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    for item in parts:
-        page, text = item[0], item[1]
-        kind = item[2] if len(item) > 2 else "text"
-        if kind == "formula":
-            # 公式片段原样插入（LaTeX 无语言之分）—— 但**译文里已经有了就不插**（见下）。
-            formula_slots.append(len(pieces))
-            pieces.append((text, None, 0, len(text), text))
-            continue
-        text_parts += 1
-        got = _lookup_zh(zh, page, text, cursor.get(page, 0))
-        if not got:
-            continue
-        dst, idx, lo, hi = got
-        # 同一行可能被多个块命中（两侧切分不同）→ 用**区间消费**：重叠部分不再拼第二遍。
-        # 之前只做了"整段包含"判定，重叠但互不包含的两段会各自保留 → 用户看到
-        # "多出来的残缺公式"（切片把一条公式切了一半，又重复渲染一次）。
-        cov = covered.setdefault((page, idx), [])
-        gap = _uncovered(lo, hi, cov)
-        if gap is None:
-            log.debug("译文行 p%d-%02d 的区间已被前面的块用掉，跳过", page, idx)
-            continue
-        g_lo, g_hi = gap
-        # 裁出来的余段边界也要**移出公式**：否则会吐半个公式（`$\sqrt{2/\pi}$` 这种残片）。
-        # 落在公式里 → 起点跳到公式之后、终点退到公式之前（宁可少要，也不要残片）。
-        g_lo = _snap_math(dst, g_lo, forward=True)
-        g_hi = _snap_math(dst, g_hi, forward=False)
-        if g_hi <= g_lo:
-            continue
-        piece = dst[g_lo:g_hi].strip()
-        if not piece:
-            continue
-        cov.append((g_lo, g_hi))
-        cursor[page] = idx
-        pieces.append((piece, (page, idx), g_lo, g_hi, dst))
-    if not pieces:
-        return None
-    if text_parts and len(pieces) < len(parts):
-        log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
-                  len(pieces), len(parts))
-    # 公式片段去重：**中文侧的事实源是译文行**，而译文行本身就把公式带了进来
-    # （`为分布为 $f_X…$`、列表项 `- $D_{\prod} := …$，对任意 $b \ge 0$。`）。
-    # 解析侧那条公式块只是同一条公式的（被撞碎的）转写，再插一遍就是用户看到的
-    # "同一条公式连着出现两次"。判据是**规范符号串包含**（不做模糊匹配），
-    # 且与两侧出现顺序无关 —— 公式块可能在译文行之前，也可能在之后。
-    if formula_slots:
-        text_canon = [formula_source._canon_loose(t)       # noqa: SLF001
-                      for i, (t, k, _a, _b, _c) in enumerate(pieces)
-                      if k is not None]
-        kept_canon: list[str] = []
-        drop: set[int] = set()
-        for pos in formula_slots:
-            fc = formula_source._canon_loose(pieces[pos][0])   # noqa: SLF001
-            if len(fc) < _MIN_DUP_CANON:
-                kept_canon.append(fc)
-                continue
-            if any(fc in c for c in text_canon) or any(fc in c for c in kept_canon):
-                log.debug("公式片段已在译文里出现，跳过：%s", pieces[pos][0][:48])
-                drop.add(pos)
-                continue
-            kept_canon.append(fc)
-        if drop:
-            pieces = [p for i, p in enumerate(pieces) if i not in drop]
-    # 一、**同一个页级行的连续片段合成一段**：它们本来就是同一段文字（解析块在一句话
-    # 中间断开，而译文行是完整段落）。合并直接取行里的原文区间，行内原有的换行/缩进
-    # 一并保留 —— 算法框那种"一行多步"的结构不会被压成一行。
-    # 只在两段之间**只剩空白**时合并（否则宁可分段，不猜）。
-    grouped: list[list] = []
-    for text, key, g_lo, g_hi, dst in pieces:
-        prev = grouped[-1] if grouped else None
-        if (key is not None and prev and prev[1] == key
-                and not prev[4][prev[3]:g_lo].strip()):
-            prev[0] = prev[4][prev[2]:g_hi]      # 行原文（含行内换行/缩进）
-            prev[3] = g_hi
-            continue
-        grouped.append([text, key, g_lo, g_hi, dst])
-    # 二、拼装：**纯标点片段**（区间切分后常出现孤零零的 `。`）或以标点开头的片段
-    # 直接接在上一段后面，不另起一行 —— 否则渲染出来就是一个句号独占一行。
-    out = ""
-    for text, _key, _lo, _hi, _dst in grouped:
-        p = (text or "").strip()
-        if not p:
-            continue
-        if not out:
-            out = p
-        elif p[0] in _CLOSERS or all(ch in _CLOSERS for ch in p):
-            out += p
-        elif out.endswith("$") and p[0] in "与和及或":
-            # 唯一一条"跨片段接续"规则，且极窄：上一段**以公式结尾**、下一段以「与/和/及/或」
-            # 起头 → 同一句被切片切开（标题/算法框不会以 `$` 结尾，所以不会误粘）
-            out += " " + p
-        else:
-            out += "\n\n" + p
-    return out or None
+
+
+
+
+
+
+
+
+
+
 
 
 def _variant_row(c: dict, lang: str, content: str) -> dict:
@@ -544,31 +324,30 @@ def _variant_row(c: dict, lang: str, content: str) -> dict:
     }
 
 
-def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
-                    langs: tuple[str, ...]) -> list[dict]:
-    """把「单语 chunk」展开成语言行。
+def _chunk_variants_rows(base: list[dict], langs: tuple[str, ...]) -> list[dict]:
+    """把「单语 chunk」展开成语言行（**新路径**：两侧内容在建块时就都在 chunk 上了）。
 
     - **公式原子 chunk 只出 1 行**（``lang = any``）：正文是 LaTeX，与语言无关。
       旧实现 zh/en 各出一行、正文完全相同（实测 76 组冗余行）—— 语言过滤那边
       （``retrieval._filter_rows`` / ``/knowledge/chunks``）把 ``any`` 视为"两种语言都通过"，
-      所以中文、英文检索都召得回，中/英文 RAG 上下文也都能直接用这段公式。
-    - 正文 / 图注块：译文缺失就**不出 zh 行**（不拿原文冒充译文，否则索引里会出现
-      "中文行其实是英文"的脏数据）。
+      所以中文、英文检索都召得回。
+    - 正文：中文来自 ``chunk["_zh"]``（同一批行的 ``translation`` 拼出来的，与英文**逐行对位**）；
+      整块都没有译文 → 不出 zh 行（不拿原文冒充译文）。
+    - 展示层清洗（去落单加粗 / 句中展示公式降级 / 裸 LaTeX 补定界符）两侧都要做 ——
+      它们修的是**渲染**问题，与语种无关。
     """
     out: list[dict] = []
     for c in base:
         if c["chunk_type"] == "formula":
             out.append(_variant_row(c, ANY_LANG, c["content"]))
             continue
-        parts: list[tuple] = c.get("_parts") or []
         for lang in langs:
             if lang == "en":
                 content = c["content"]
             else:
-                content = _zh_content(parts, zh)
-                if not content:
+                content = c.get("_zh") or ""
+                if not content.strip():
                     continue                  # 还没翻译 → 不出 zh 行
-            # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] in ("text", "figure", "table"):
                 content = _strip_unpaired_bold(content)
@@ -586,241 +365,388 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
 # --------------------------------------------------------------------------
 
 
+USE_BREAKS_SETTING = "kb.chunk_use_breaks"
+
+
+def _setting_flag(key: str, default: bool) -> bool:
+    """读布尔 setting（``1/true/yes/on`` 为真）。读不到就用默认值。"""
+    try:
+        from backend.repositories.mysql.models import Setting
+
+        with session_scope() as sess:
+            row = sess.get(Setting, key)
+        if row is None or row.value is None:
+            return default
+        text = str(row.value).strip().strip('"').lower()
+        return text in ("1", "true", "yes", "on")
+    except Exception:  # noqa: BLE001
+        return default
+
+
+
+
 def build_chunks_for_paper(paper_id: str, *,
                            langs: tuple[str, ...] = LANGS) -> list[dict]:
-    """按 IR + Markdown 生成四类 chunk，并展开成 zh/en 双语行。
+    """按「TOC 层级 + 页级行 + LLM 语义锚点」生成四类 chunk，并展开成 zh/en 双语行。
 
     为什么要双语：库内正文的事实源是**页级产物**（``pages.json`` 有原文 + 译文），
     而中文提问与英文原文之间隔着一次跨语检索 —— 模型的跨语能力能用，但实测（§17.33）
     中文问句对中文段落的相似度明显更"实"；反之英文术语（MSE、inner product）在英文行上
     更准。两行都入库、由重排统一裁决，是召回最稳的做法。
 
-    **不改表结构**：chunk id 加 ``:zh`` / ``:en`` 后缀，``lang`` 只写进 ``metadata_json``
-    （MySQL ``chunk`` 表不加列，省一次 ALTER 迁移）。
+    **不改表结构**：chunk id 加 ``:zh`` / ``:en`` 后缀，``lang`` 只写进 ``metadata_json``。
+
+    切分骨架来自阅读器目录、内容原子是页级行、节内边界来自 LLM 语义锚点（见 `_base_chunks`）；
+    旧路径（解析块 + 按比例取译文）已在"按 markdown 层级切分"那一轮删除（dev-log §17.64）。
     """
-    return _chunk_variants(_collect_chunks(paper_id),
-                           _zh_index(reader_service.page_translations(paper_id)),
-                           langs)
+    return _chunk_variants_rows(_base_chunks(paper_id), langs)
 
 
-def _collect_chunks(paper_id: str) -> list[dict]:
-    """单语（原文）chunk 序列：正文语义 chunk + 公式原子 chunk（+ 图/表 chunk）。
+# ==========================================================================
+# TOC 层级 + 页级行原子 + LLM 语义锚点
+# ==========================================================================
 
-    与旧实现的差别（都是"索引层"改动，不重新解析也能生效）：
-    1. 前沿元数据（作者/单位/邮箱/arXiv 章/会议行/脚注）不进库；
-    2. Markdown 表现格式清理，公式与引用编号保留；
-    3. 图注块若已被 figure/table 吸收，不再进正文 buffer（避免同一段图注索引两遍）；
-    4. 公式**不再切断正文**：以 ``$$…$$`` 原样进 buffer，同时另出一条公式原子 chunk；
-    5. 每个 chunk 带 ``section`` / ``section_path``（从最近的 heading 继承）；
-    6. 表格数字行不再当标题；
-    7. append 前预检硬上限；超长正文块按句子边界二次切分；
-    8. 小于合并门槛的正文 chunk 尝试与相邻正文块合并（不看标题/公式/图/表）。
+
+def _base_chunks(paper_id: str) -> list[dict]:
+    """单语（原文）chunk 序列：正文（行/TOC/锚点）+ 图与表（行）+ 公式（canonical 清单）。
+
+    与改造前的旧路径的根本差别：**切分骨架与内容原子都换了来源**。
+
+    - 骨架 = 阅读器目录（`chunking.section_tree`）：节之间不因为长度合适而合并，
+      节内边界由 LLM 语义锚点给出（`chunking.semantic_units`）；
+    - 原子 = `pages.json` 的行（`chunking.row_units`）：**两侧内容同一批行**，
+      中文是这些行的 `translation`，英文是 `original` —— 不再有"按比例切片互相找回"这一层；
+    - 图 / 表：结构行（caption / table / figure）按"同页 + 同图号"归组，各自一条 chunk，
+      表体（markdown）**进正文**（旧路径只索引图注，实测表体 0 条）；
+    - 公式：仍然来自 canonical 清单（`reader_service.markdown_formulas` → C 口径 → 挂锚点），
+      只是章节与排序改用"它所在的行"。
+
+    装配结果会过一遍校验层（`chunking.validate`）：行覆盖恰好一次、顺序不变、不跨节、
+    ≤ hard、正文里不混结构行。不通过就先退回"不用锚点"再装配一次，仍不通过则原样入库
+    并把错误写进日志（**宁可入库也不静默丢内容**）。
     """
+    from backend.services.knowledge import chunking
+
+    with session_scope() as sess:
+        paper = sess.get(Paper, paper_id)
+        authors = (paper.authors or "") if paper is not None else ""
+
+    # 图/表区域先算：**它决定哪些"图注行"是真图注**（其余以 Figure/Table 开头的行是正文，
+    # 见 `_caption_rows`）。这一判据必须传给分块层，否则那类正文行会被当结构行丢掉。
+    # 读不到区域（缺 IR / 路径异常）不算错：退回"没有图注"，图/表块改由行类型判定。
+    from backend.services.paper import figure_regions
+
+    try:
+        regions = figure_regions.all_regions(paper_id)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取图/表区域失败（%s）：%s", paper_id, exc)
+        regions = {}
+    caption_ids, region_of_caption = _caption_rows(paper_id, regions)
+
+    rows, tree = chunking.load(paper_id, authors=authors,
+                               structural_caption_ids=caption_ids)
+    if not rows:
+        raise ValidationError(f"没有可用行：{paper_id} 是否尚未解析？")
+
+    target, floor, hard = chunk_params()
+    use_breaks = _setting_flag(USE_BREAKS_SETTING, True)
+    chunks, stats = chunking.assemble(rows, tree, target=target, hard=hard,
+                                      floor=floor, use_breaks=use_breaks)
+    report = chunking.validate(chunks, rows, hard=hard)
+    if not report["ok"] and use_breaks:
+        log.warning("语义锚点装配未通过校验（%s），退回「只按目录层级」：%s",
+                    paper_id, report["errors"][:3])
+        use_breaks = False
+        chunks, stats = chunking.assemble(rows, tree, target=target, hard=hard,
+                                          floor=floor, use_breaks=False)
+        report = chunking.validate(chunks, rows, hard=hard)
+    if not report["ok"]:
+        log.error("行级装配仍未通过校验（%s）：%s", paper_id, report["errors"][:5])
+
+    # 解析块只在两处还需要：IR 的公式/图表元数据、以及"块 → 行"映射（给公式条目定行）。
     md_map = reader_service.load_markdown_map(paper_id)
     from backend.parsing.ir.ir_reader import IRReader
 
     ir = IRReader(paper_service.paper_paths(paper_id)["ir"])
     formulas = {f["block_id"]: f for f in ir.formulas()}
-    figures = {f["block_id"]: f for f in ir.figures()}
-    tables = {t["block_id"]: t for t in ir.tables()}
-    caption_of = {str(x.get("caption_block_id"))
-                  for x in list(figures.values()) + list(tables.values())
-                  if x.get("caption_block_id")}
-
     with session_scope() as sess:
         blocks = (sess.query(Block).filter(Block.paper_id == paper_id)
                   .order_by(Block.order_global.asc()).all())
-        rows = [_block_row(b, md_map) for b in blocks]
-        paper = sess.get(Paper, paper_id)
-        authors = (paper.authors or "") if paper is not None else ""
+        parse_rows = [_block_row(b, md_map) for b in blocks]
+    f_entries = formula_source.kb_formula_entries(paper_id, formulas, parse_rows)
+    block_to_row = _block_row_ids(paper_id, parse_rows)
 
-    target, floor, hard = chunk_params()
-    body_start = first_body_index(rows)
-    skip_captions = attached_caption_ids(rows, caption_of)
-    # 公式知识库：**唯一来源** reader_service.markdown_formulas()，经 C 口径过滤后挂锚点
-    # （见 formula_source 的 docstring；这里不再自己识别公式）
-    f_entries = formula_source.kb_formula_entries(paper_id, formulas, rows)
-    f_latex_by_block = {e["formula_block_id"]: e["latex"] for e in f_entries
-                        if e.get("formula_block_id")}
-    # 公式条目也要带**章节**（知识库页要显示、检索判据也看小节名）：
-    # 每块的章节 = 它前面最近的那个 heading 栈（与正文 chunk 同一规则），
-    # 再借"行 → 块"映射把 page_row 锚点的公式落回它所在正文块。
-    sections = _section_timeline(rows)
-    block_to_row = _block_row_ids(paper_id, rows)
-    next_id = {rows[i]["id"]: (rows[i + 1]["id"] if i + 1 < len(rows) else None)
-               for i in range(len(rows))}
-
-    def row_closed(bid: str) -> bool:
-        """这个块是不是它所在**页级行**的最后一个块（一行 = 一个完整段落）。
-
-        映射不到的块（未翻译页、签名太短的公式块）一律算"行到此为止"，
-        于是行为回到"解析块边界即切点"，不会因为拿不到映射而乱合并。
-        """
-        row = block_to_row.get(bid)
-        if not row:
-            return True
-        return block_to_row.get(next_id.get(bid) or "") != row
-
-    chunks: list[dict] = []
-    buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
-    buffer_chars = 0
-    section_stack: list[tuple[int, str]] = []
-
-    def current_section() -> tuple[str, str]:
-        if not section_stack:
-            return "", ""
-        return section_stack[-1][1], " / ".join(t for _, t in section_stack)
-
-    def entry(kind: str, b: dict, text: str) -> dict:
-        sec, path = current_section()
-        return {"kind": kind, "id": b["id"], "page": b["page"], "order": b["order"],
-                "type": b.get("type") or "", "text": text,
-                "section": sec, "section_path": path,
-                "section_kind": b.get("section_kind") or "body"}
-
-    def flush_text() -> None:
-        nonlocal buffer, buffer_chars
-        entries = [e for e in buffer if e.get("text")]
-        buffer, buffer_chars = [], 0
-        if not entries or not any(e["kind"] == "text" for e in entries):
-            # 只有公式的 buffer 不建正文 chunk：公式已有原子 chunk，避免重复行
-            return
-        # 拼装只有一条窄规则：**内联公式**（kind=formula）紧接前一段（它本来是行内数学，
-        # 单独成段会出现"公式另起一行"）。其余一律空行分段 —— 不猜"这句话说完了没有"，
-        # 否则标题/算法框会被粘进正文（踩过）。
-        buf = ""
-        for e in entries:
-            piece = e["text"]
-            if not buf:
-                buf = piece
-            elif e["kind"] == "formula":
-                buf += piece
-            else:
-                buf += "\n\n" + piece
-        text = buf
-        chunks.append(_make_chunk(
-            paper_id, "text", text, entries[0], entries[-1],
-            section=entries[0]["section"] or "",
-            section_path=entries[0]["section_path"] or "",
-            parts=[(e["page"], e["text"], e["kind"]) for e in entries],
-            heading_only=all(e["type"] == "heading" for e in entries),
-            metadata={"block_ids": [e["id"] for e in entries],
-                      "pages": sorted({e["page"] for e in entries}),
-                      "section_kind": entries[0]["section_kind"],
-                      "formula_ids": [e["id"] for e in entries
-                                      if e["kind"] == "formula"]},
-        ))
-
-    def push_section(text: str, level: int) -> None:
-        lv = level if level > 0 else 2
-        while section_stack and section_stack[-1][0] >= lv:
-            section_stack.pop()
-        section_stack.append((lv, (text or "")[:128]))
-
-    for idx, b in enumerate(rows):
-        bid = b["id"]
-        raw = b["text"] or ""
-        text = strip_presentation(raw)
-        if b["type"] == "ref":
-            continue
-        if is_front_matter(raw, page_no=b["page"], before_body=idx < body_start,
-                           authors=authors):
-            log.debug("跳过前沿元数据块：%s（%r）", bid, raw[:40])
-            continue
-        if bid in skip_captions:
-            continue
-
-        if b["type"] == "heading" and not is_table_number_heading(text):
-            flush_text()
-            push_section(text, heading_level(raw))
-            if text:
-                buffer.append(entry("text", b, text))
-                buffer_chars += len(text) + 2
-            continue
-
-        if bid in formulas:
-            # 内联策略：**对上 canonical 条目**的用条目里的完整 LaTeX；
-            # 没对上的，只在它本身"像一条完整公式"时才内联 —— 解析侧会把一条公式拆成
-            # 碎片块（`\sqrt{2 /\pi }`、`, \pm`、`\frac{\sqrt{}}` …），碎片一律不进正文
-            # （否则就是用户看到的半截公式残片）；但**完整公式不能丢**
-            # （踩过：一刀切"只内联对上的"，把"该向量满足以下失真界："后面的公式删掉了）。
-            latex = f_latex_by_block.get(bid)
-            if not latex:
-                parsed = formula_source.parsed_latex(formulas[bid])
-                latex = parsed if _looks_complete_formula(parsed) else ""
-            if not latex or formula_source.is_noise_latex(latex):
-                continue
-            # 内联进正文 → 行内定界符，且 **`$` 后不能有空格**（渲染端不认 `$ x$`，会显示成纯文本）；
-            # `$$` 则会让句子被拦腰截断（另起一块展示公式）。公式**条目**仍用 `$$…$$`。
-            inline = f"${_strip_tag_inline(latex)}$"
-            # 公式块不拆：超上限也只 flush，绝不切公式内部
-            if buffer and buffer_chars + len(inline) + 2 > hard:
-                flush_text()
-            buffer.append(entry("formula", b, inline))
-            buffer_chars += len(inline) + 2
-            continue
-
-        if bid in figures or bid in tables:
-            flush_text()
-            source, kind, label = ((figures, "figure", "插图") if bid in figures
-                                   else (tables, "table", "表格"))
-            item = source[bid]
-            caption = item.get("caption") or ""
-            sec, path = current_section()
-            chunks.append(_make_chunk(
-                paper_id, kind, f"{label} {bid}：{caption}", b, b,
-                section=sec or "", section_path=path or "",
-                # 图注本身是可翻译的正文块 → 拿它的签名去译文索引里取中文图注
-                parts=[(b["page"], caption, "text")] if caption else [],
-                metadata={"caption": caption, "image_path": item.get("image_path"),
-                          "section_kind": b.get("section_kind") or "body"},
-            ))
-            continue
-
-        if not text:
-            continue
-        for piece in split_long_text(text, hard):
-            if buffer and buffer_chars + len(piece) + 2 > hard:
-                flush_text()
-            buffer.append(entry("text", b, piece))
-            buffer_chars += len(piece) + 2
-            # 到点即 flush，但**切点要对齐页级行边界**：解析块常在一句话中间断开
-            # （`…Therefore, with c's denoting the centroids in ascending order, we can`），
-            # 而页级行是完整段落。硬上限仍兜底（见上面的预检）。
-            if buffer_chars >= target and row_closed(bid):
-                flush_text()
-    flush_text()
-
-    # 公式知识库条目：**全部**来自 canonical 清单（reader_service.markdown_formulas
-    # → C 口径过滤 → 挂锚点），不再在索引层识别公式（用户口径 §1/§8）。
-    chunks.extend(_canonical_formula_chunks(paper_id, rows, f_entries,
-                                            sections=sections,
-                                            row_to_block={r: b for b, r in block_to_row.items()}))
-    chunks.sort(key=lambda c: (c["order_global"],
-                               0 if c["chunk_type"] == "text" else 1))
-    merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
-    return _link_formulas(merged)
+    out: list[dict] = []
+    for chunk in chunks:
+        out.append(_row_text_chunk(paper_id, chunk["rows"], chunk.get("node")))
+    out.extend(_row_structure_chunks(paper_id, rows, ir, regions, caption_ids,
+                                     region_of_caption))
+    out.extend(_row_formula_chunks(paper_id, rows, f_entries, block_to_row))
+    _attach_formula_ids(out, rows, f_entries, block_to_row)
+    out.sort(key=lambda c: (c["order_global"],
+                            0 if c["chunk_type"] == "text" else 1))
+    log.info("行级分块（%s）：行 %d / 正文块 %d / 总计 %d；装配 %s；校验 %s",
+             paper_id, len(rows), len(chunks), len(out), stats,
+             "通过" if report["ok"] else f"未通过 {report['errors'][:2]}")
+    return _link_formulas(out)
 
 
-def _section_timeline(rows: list[dict]) -> dict[str, tuple[str, str]]:
-    """``{块 id: (小节, 小节路径)}`` —— 与 ``_collect_chunks`` 里 heading 栈完全同一规则。
+def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None) -> dict:
+    """一段连续行 → 一条正文 chunk（中英两侧**同一批行**）。"""
+    first, last = items[0], items[-1]
+    content = "\n\n".join(r["original"] for r in items)
+    zh = "\n\n".join(r["translation"].strip() for r in items
+                     if (r["translation"] or "").strip())
+    section = (node or {}).get("title") or first.get("section_title") or ""
+    section_path = (node or {}).get("path") or first.get("section_path") or ""
+    meta = {
+        "row_ids": [r["id"] for r in items],
+        "pages": sorted({r["page"] for r in items}),
+        "section_kind": first.get("section_kind") or "body",
+        "section_number": (node or {}).get("number") or "",
+        # 语义锚点落在这条 chunk 里的行（用于量"锚点真的改变了哪些边界"）
+        "anchor_rows": [r["id"] for r in items if r.get("semantic_break")],
+        "row_span": [first["id"], last["id"]],
+    }
+    chunk = _make_chunk(
+        paper_id, "text", content,
+        {"id": first["id"], "page": first["page"], "order": first["index"]},
+        {"id": last["id"], "page": last["page"], "order": last["index"]},
+        section=section, section_path=section_path, metadata=meta,
+        heading_only=all(r["type"] == "heading" for r in items),
+    )
+    chunk["_zh"] = zh or None
+    return chunk
 
-    单独算一遍是为了让**公式条目**也能带上章节：公式 chunk 在正文循环之外生成，
-    拿不到当时的 ``section_stack``。
+
+def _row_structure_chunks(paper_id: str, rows: list[dict], ir,
+                          regions: dict, caption_ids: set[str],
+                          region_of_caption: dict[str, dict]) -> list[dict]:
+    """图 / 表行 → figure / table chunk（图注 + **表体**，与 IR 的裁图对齐）。
+
+    与旧路径的差别：
+    1. 表体（markdown 表格行）**进 chunk 正文** —— 旧路径只索引图注（实测英文侧表体 0 条），
+       表格数值类问题因此检不到；
+    2. 两侧都有（旧路径 zh 侧有表体、en 侧没有，两边不对称）；
+    3. 图注与表体的**配对按"同页 + 同图号"**，与图注在表体上方还是下方无关
+       （实测 turbo 的图注在表体下方、attention 在上方，两种顺序都要能配）。
     """
-    stack: list[tuple[int, str]] = []
-    out: dict[str, tuple[str, str]] = {}
-    for b in rows:
-        raw = b.get("text") or ""
-        text = strip_presentation(raw)
-        if b.get("type") == "heading" and not is_table_number_heading(text):
-            lv = heading_level(raw)
-            while stack and stack[-1][0] >= lv:
-                stack.pop()
-            stack.append((lv, (text or "")[:128]))
-        out[b["id"]] = (stack[-1][1] if stack else "",
-                        " / ".join(t for _, t in stack))
+    image_of = {str(f.get("caption_block_id")): f.get("image_path") for f in ir.figures()}
+    image_of.update({str(t.get("caption_block_id")): t.get("image_path")
+                     for t in ir.tables()})
+
+    out: list[dict] = []
+    for group in _structure_groups(rows, caption_ids):
+        region = _match_region(group, regions, region_of_caption)
+        kinds = {r["type"] for r in group}
+        chunk_type = (region or {}).get("kind") or ("table" if "table" in kinds else "figure")
+        caption_row = next((r for r in group if r["type"] == "caption"), None)
+        body_row = next((r for r in group if r["type"] in ("table", "figure")), None)
+        caption = ((caption_row or {}).get("original") or "").strip() \
+            or str((region or {}).get("caption") or "").strip()
+        match = _FIG_NUMBER_RE.search(caption)
+        number = match.group(1) if match else str((region or {}).get("number") or "")
+        label = "表格" if chunk_type == "table" else "插图"
+        tag = number or (caption_row or group[0])["id"]
+        content = f"{label} {tag}：{caption}".strip()
+        if body_row is not None:
+            body = (body_row.get("original") or "").strip()
+            if body and body != caption:
+                content = f"{content}\n\n{body}"
+        zh_parts = [r["translation"].strip() for r in group
+                    if (r["translation"] or "").strip()]
+        first, last = group[0], group[-1]
+        meta = {
+            "caption": caption, "number": number,
+            "row_ids": [r["id"] for r in group],
+            "pages": sorted({r["page"] for r in group}),
+            "section_kind": first.get("section_kind") or "body",
+            "image_path": image_of.get(str((region or {}).get("caption_block_id"))),
+            "table_body_rows": [r["id"] for r in group if r["type"] == "table"],
+        }
+        chunk = _make_chunk(
+            paper_id, chunk_type, content,
+            {"id": first["id"], "page": first["page"], "order": first["index"]},
+            {"id": last["id"], "page": last["page"], "order": last["index"]},
+            section=first.get("section_title") or "",
+            section_path=first.get("section_path") or "", metadata=meta,
+        )
+        chunk["_zh"] = "\n\n".join(zh_parts) or None
+        out.append(chunk)
     return out
+
+
+def _caption_rows(paper_id: str, regions: dict) -> tuple[set[str], dict[str, dict]]:
+    """IR/figure_regions 里真实存在的图 / 表 → （图注行 id 集合, 行 id → 区域）。
+
+    为什么必须过这一层：页级行里"以 Figure/Table 开头"的行不都是图注 ——
+    attention 的 `Table 2 summarizes our results…` 是一段正文。只有 IR 里真有这一项
+    （图号 + 页号能对上）才算图注，否则它会从正文里被删掉。
+    """
+    ids: set[str] = set()
+    by_row: dict[str, dict] = {}
+    for page, items in (regions or {}).items():
+        for region in items:
+            row_id = reader_service.row_id_of_caption(paper_id, int(page),
+                                                      str(region.get("number") or ""))
+            if not row_id:
+                continue
+            ids.add(str(row_id))
+            by_row.setdefault(str(row_id), region)
+    return ids, by_row
+
+
+def _match_region(group: list[dict], regions: dict, region_of_caption: dict[str, dict],
+                  ) -> dict | None:
+    """一组结构行 → 它对应的图/表区域（先用图注行 id 认，再用页 + 图号 / 页 + 类别认）。"""
+    for row in group:
+        region = region_of_caption.get(str(row["id"]))
+        if region:
+            return region
+    page = group[0]["page"]
+    items = [r for r in (regions or {}).get(page, []) if isinstance(r, dict)]
+    match = _FIG_NUMBER_RE.search(
+        " ".join((r.get("original") or "") for r in group))
+    if match:
+        number = match.group(1)
+        for region in items:
+            if str(region.get("number")) == number:
+                return region
+    want = "table" if any(r["type"] == "table" for r in group) else "figure"
+    same_kind = [r for r in items if r.get("kind") == want]
+    return same_kind[0] if len(same_kind) == 1 else None
+
+
+def _structure_groups(rows: list[dict], caption_ids: set[str]) -> list[list[dict]]:
+    """把"结构行"（图注 / 表体 / 图）按页归组：一张图或一张表 = 一组。
+
+    配对规则（实测两种排版都有：图注在表体上方或下方）：
+
+    - 连续的结构行才可能同组（中间夹了正文就断开）；
+    - 遇到新图注且**当前组已经有表体**、图号又不同 → 另起一组
+      （attention p9：表 3 表体 → "Table 4" 图注 → 表 4 表体，必须切成两组）；
+    - 当前组还没有图注 → 认领这个图注（turbo p9：表体在前、图注在后）。
+
+    **只认 IR 里真的有这一项的图注行**（`caption_ids`）：attention 的
+    `Table 2 summarizes our results…` 是一段正文，只是以 "Table 2" 开头，
+    把它当图注会从正文里删掉一段真内容（`attached_caption_ids` 就是为这个加的）。
+    """
+    groups: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_page = None
+    cur_number = ""
+    has_body = False
+
+    def flush() -> None:
+        nonlocal cur, cur_page, cur_number, has_body
+        if cur:
+            groups.append(cur)
+        cur, cur_page, cur_number, has_body = [], None, "", False
+
+    for row in rows:
+        if row.get("skip_reason") or row["type"] not in chunking_struct_types():
+            flush()
+            continue
+        if row["type"] == "caption" and row["id"] not in caption_ids:
+            flush()          # 看着像图注其实是正文 → 让它回正文块
+            continue
+        number = ""
+        if row["type"] == "caption":
+            match = _FIG_NUMBER_RE.search(row.get("original") or "")
+            number = match.group(1) if match else ""
+        if cur and row["page"] != cur_page:
+            flush()
+        if cur and number and cur_number and number != cur_number and has_body:
+            flush()
+        if not cur:
+            cur_page = row["page"]
+            cur_number = number
+        cur.append(row)
+        if number:
+            cur_number = number
+        if row["type"] in ("table", "figure"):
+            has_body = True
+    flush()
+    return groups
+
+
+def chunking_struct_types() -> tuple[str, ...]:
+    """结构行类型（放函数里是为了避免 `chunking` 模块的循环 import）。"""
+    from backend.services.knowledge.chunking import STRUCT_TYPES
+
+    return STRUCT_TYPES
+
+
+def _row_formula_chunks(paper_id: str, rows: list[dict], entries: list[dict],
+                        block_to_row: dict[str, str]) -> list[dict]:
+    """canonical 公式条目 → 公式原子 chunk（章节与排序改成"它所在的行"）。"""
+    row_of = {r["id"]: r for r in rows}
+    out: list[dict] = []
+    for e in entries:
+        latex = (e.get("latex") or "").strip()
+        if not latex or formula_source.is_noise_latex(latex):
+            continue
+        unique_key = e.get("formula_block_id") or e.get("id")
+        cid = f"{paper_id}:formula:{unique_key}"
+        label = e.get("row_id") or e.get("formula_block_id") or e.get("id")
+        content = f"公式 {label}：$${latex}$$"
+        anchor_row = row_of.get(str(e.get("row_id") or "")) or row_of.get(
+            str(block_to_row.get(str(e.get("formula_block_id") or "")) or ""))
+        meta = {
+            "latex": latex, "display": bool(e.get("display")),
+            "row_id": e.get("row_id"), "page": e.get("page"),
+            "context": e.get("context"), "context_zh": e.get("context_zh"),
+            "formula_number": e.get("formula_number"),
+            "latex_source": "page_vision",
+            "anchor_type": e.get("anchor_type"),
+            "anchor_precision": e.get("anchor_precision"),
+            "source_item_ids": e.get("source_item_ids"),
+            "duplicate_rows": e.get("duplicate_rows"),
+            "section_kind": (anchor_row or {}).get("section_kind") or "body",
+            "row_ids": [anchor_row["id"]] if anchor_row else [],
+        }
+        if e.get("formula_block_id"):
+            meta.update({"formula_block_id": e["formula_block_id"],
+                         "parsed_latex": e.get("parsed_latex"),
+                         "grade": e.get("grade"), "crop": e.get("crop"),
+                         "align_score": e.get("align_score")})
+        first = {"id": e.get("formula_block_id") or f"row-{e.get('row_id') or 'x'}",
+                 "page": int((anchor_row or {}).get("page") or e.get("page") or 1),
+                 "order": int((anchor_row or {}).get("index") or 0)}
+        out.append(_make_chunk(
+            paper_id, "formula", content, first, first,
+            section=(anchor_row or {}).get("section_title") or "",
+            section_path=(anchor_row or {}).get("section_path") or "",
+            metadata=meta, chunk_id=cid))
+    if out:
+        log.info("canonical 公式条目 %d 条（%s）：%s", len(out), paper_id,
+                 [c["id"].rsplit(":", 1)[-1] for c in out][:6])
+    return out
+
+
+def _attach_formula_ids(chunks: list[dict], rows: list[dict], entries: list[dict],
+                        block_to_row: dict[str, str]) -> None:
+    """把"这条公式落在哪条正文块里"写成双向关系（正文块的 ``formula_ids`` + 公式块的指回）。"""
+    row_index = {r["id"]: r["index"] for r in rows}
+    text_chunks = [c for c in chunks if c["chunk_type"] == "text"]
+    for e in entries:
+        anchor = e.get("formula_block_id") or e.get("id")
+        row_id = str(e.get("row_id") or block_to_row.get(str(e.get("formula_block_id") or "")) or "")
+        idx = row_index.get(row_id)
+        if idx is None:
+            continue
+        for chunk in text_chunks:
+            span = (chunk.get("metadata") or {}).get("row_ids") or []
+            if not span:
+                continue
+            first, last = row_index.get(span[0]), row_index.get(span[-1])
+            if first is not None and last is not None and first <= idx <= last:
+                chunk["metadata"].setdefault("formula_ids", []).append(anchor)
+                break
+
+
+
+
 
 
 def _block_row_ids(paper_id: str, rows: list[dict]) -> dict[str, str]:
@@ -841,77 +767,8 @@ def _block_row_ids(paper_id: str, rows: list[dict]) -> dict[str, str]:
         return {}
 
 
-def _row_to_block_map(paper_id: str, rows: list[dict]) -> dict[str, str]:
-    """``{行 id: 块 id}``（``anchor_map`` 反向映射）。
-
-    page_row 锚点的公式只知道它在哪一**行**，要靠这个映射找到对应正文块，
-    才能拿到章节。映射拿不到就返回空字典（公式条目退化成无章节，不影响入库）。
-    """
-    return {row_id: block_id
-            for block_id, row_id in _block_row_ids(paper_id, rows).items()}
 
 
-def _canonical_formula_chunks(paper_id: str, rows: list[dict],
-                              entries: list[dict], *,
-                              sections: dict[str, tuple[str, str]] | None = None,
-                              row_to_block: dict[str, str] | None = None) -> list[dict]:
-    """把 canonical 公式条目落成 chunk。
-
-    - id：有解析块对应时用 ``{paper}:formula:{formula_block_id}``（与历史一致），
-      否则 ``{paper}:formula:{row_id}``；两者都唯一且可回溯；
-    - ``block_id``：``formula_block`` 锚点用解析块 id，``page_row`` 锚点用 **row_id**
-      （阅读器原生支持 `row_id → block_rows → 页级兜底`，比"最近块"更准）；
-    - metadata 见用户口径 §7（``latex`` / ``display`` / ``row_id`` / ``context`` /
-      ``context_zh`` / ``page`` / 解析侧字段 / 锚点 / ``latex_source``），
-      **不再有** ``synthetic`` / ``needs_review`` / ``latex_candidates``。
-    """
-    order_of = {b["id"]: int(b["order"]) for b in rows}
-    out: list[dict] = []
-    for e in entries:
-        latex = (e.get("latex") or "").strip()
-        if not latex or formula_source.is_noise_latex(latex):
-            continue
-        block_id = e.get("block_id")
-        # chunk id 必须唯一：一行里可能有多条公式（`$Q_{\text{mse}}:…$ 与 $D:…$` 同行），
-        # 所以 page_row 锚点的条目用 **canonical 条目 id**（`f004-0028`）而不是 row_id；
-        # 有解析块的用块 id（一个解析块最多对一条公式）。
-        unique_key = e.get("formula_block_id") or e.get("id")
-        cid = f"{paper_id}:formula:{unique_key}"
-        # 展示前缀用"人看得懂"的定位（row_id / 解析块 id）
-        label = e.get("row_id") or e.get("formula_block_id") or e.get("id")
-        # 正文里的 LaTeX **必须带定界符**：左侧结果列表走的是通用 markdown 渲染，
-        # 不带 `$…$` 的裸 LaTeX 会被当纯文本原样显示（用户看到的"左侧不渲染"就是这个）。
-        # 右侧详情用的是 `metadata.latex` + KaTeX，所以一直是对的。
-        content = f"公式 {label}：$${latex}$$"
-        meta = {
-            "latex": latex, "display": bool(e.get("display")),
-            "row_id": e.get("row_id"), "page": e.get("page"),
-            "context": e.get("context"), "context_zh": e.get("context_zh"),
-            "formula_number": e.get("formula_number"),
-            "latex_source": "page_vision",
-            "anchor_type": e.get("anchor_type"),
-            "anchor_precision": e.get("anchor_precision"),
-            "source_item_ids": e.get("source_item_ids"),
-            "duplicate_rows": e.get("duplicate_rows"),
-        }
-        if e.get("formula_block_id"):
-            meta.update({"formula_block_id": e["formula_block_id"],
-                         "parsed_latex": e.get("parsed_latex"),
-                         "grade": e.get("grade"), "crop": e.get("crop"),
-                         "align_score": e.get("align_score")})
-        first = {"id": block_id or f"row-p{e.get('page') or 0:02d}",
-                 "page": int(e.get("page") or 1),
-                 "order": order_of.get(block_id or "", 0)}
-        # 章节：优先用锚点块的；page_row 锚点先落回正文块再取（见 _row_to_block_map）
-        anchor_block = e.get("formula_block_id") or (row_to_block or {}).get(e.get("row_id") or "")
-        sec, path = (sections or {}).get(anchor_block or "", ("", ""))
-        out.append(_make_chunk(
-            paper_id, "formula", content, first, first,
-            section=sec, section_path=path, metadata=meta, chunk_id=cid))
-    if out:
-        log.info("canonical 公式条目 %d 条（%s）：%s", len(out), paper_id,
-                 [c["id"].rsplit(":", 1)[-1] for c in out][:6])
-    return out
 
 
 def _link_formulas(chunks: list[dict]) -> list[dict]:
@@ -935,75 +792,10 @@ def _link_formulas(chunks: list[dict]) -> list[dict]:
     return chunks
 
 
-def _mergeable(a: dict, b: dict, hard: int) -> bool:
-    """两条正文 chunk 能否合并：同小节、都不是纯标题、合起来不超硬上限。"""
-    if a.get("chunk_type") != "text" or b.get("chunk_type") != "text":
-        return False
-    if a.get("_heading_only") or b.get("_heading_only"):
-        return False
-    if (a.get("_section_path") or "") != (b.get("_section_path") or ""):
-        return False
-    return len(a["content"]) + len(b["content"]) + 2 <= hard
 
 
-def _merge_chunks(a: dict, b: dict) -> dict:
-    """把两条正文 chunk 合成一条（保持块的原始次序与译文对齐 parts）。"""
-    first, last = a["block_id"], b["end_block_id"]
-    cid = (f"{a['paper_id']}:text:{first}" if first == last
-           else f"{a['paper_id']}:text:{first}-{last}")
-    content = a["content"].rstrip() + "\n\n" + b["content"].lstrip()
-    meta = {**(a.get("metadata") or {})}
-    meta["block_ids"] = list(a["metadata"].get("block_ids") or []) + \
-        list(b["metadata"].get("block_ids") or [])
-    meta["pages"] = sorted(set(a["metadata"].get("pages") or []) |
-                           set(b["metadata"].get("pages") or []))
-    meta["formula_ids"] = list(a["metadata"].get("formula_ids") or []) + \
-        list(b["metadata"].get("formula_ids") or [])
-    return {
-        **a, "id": cid, "content": content,
-        "end_block_id": b["end_block_id"],
-        "order_global": min(a["order_global"], b["order_global"]),
-        "content_hash": sha256_text(content),
-        "content_preview": _safe_preview(content),
-        "token_count": _approx_tokens(content),
-        "metadata": meta,
-        "_parts": list(a.get("_parts") or []) + list(b.get("_parts") or []),
-    }
 
 
-def _merge_small_chunks(chunks: list[dict], *, min_chars: int, hard: int) -> list[dict]:
-    """把不足 ``min_chars`` 的正文 chunk 并进相邻正文块（优先往后并）。
-
-    为什么优先往后：小块多是"小节的第一段/标题后紧跟的一句"，往后并保持阅读顺序；
-    往后不行（后一条是公式/图/表或跨小节）才试往前。
-    合并不了就原样保留 —— 这是**合并门槛**，不是丢弃门槛（用户口径：尝试合并）。
-    """
-    out: list[dict] = []
-    pending: dict | None = None
-    for c in chunks:
-        if pending is not None:
-            if _mergeable(pending, c, hard):
-                out.append(_merge_chunks(pending, c))
-                pending = None
-                continue
-            if out and _mergeable(out[-1], pending, hard):
-                out[-1] = _merge_chunks(out[-1], pending)
-            else:
-                out.append(pending)
-            pending = None
-        if (c.get("chunk_type") == "text" and not c.get("_heading_only")
-                and len(c["content"]) < min_chars):
-            pending = c
-        else:
-            out.append(c)
-    if pending is not None:
-        if out and _mergeable(out[-1], pending, hard):
-            out[-1] = _merge_chunks(out[-1], pending)
-        else:
-            out.append(pending)
-    out.sort(key=lambda c: (c["order_global"],
-                            0 if c["chunk_type"] == "text" else 1))
-    return out
 
 
 def _block_row(b: Block, md_map: dict | None = None) -> dict:

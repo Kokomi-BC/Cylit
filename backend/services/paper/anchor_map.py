@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 
-#: 归一化：只留字母数字与汉字（与 ``knowledge_service._block_sig`` 同一口径）
+#: 归一化：只留字母数字与汉字（与 ``page_translate.anchor_key`` 同一口径）
 _SIG_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
 
 #: 主路径用的"块文本头"长度（归一化后的字符数）

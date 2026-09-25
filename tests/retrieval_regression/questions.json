@@ -1,7 +1,7 @@
 {
   "paper_id": "turboquant-online-vector-iclr-26",
   "top_k": 6,
-  "note": "固定检索回归集（用户指定）：chunk 分布大变（391→266 行）之后，要能回答『是不是检得更准』。每题记 rank / section / formula atomic / semantic / 公式上下文 / appendix。",
+  "note": "固定检索回归集。10 问（q01~q10，历史基线，全部 turboquant）+ 20 问（q11~q30，为「TOC + 语义锚点 + 行原子」改造新加：表格数值、新暴露的小节 2.4/3.4/6.2、算法/附录、中英各半）。每题可用 paper_id 覆盖所属论文；expect_any_section 用**目录里的干净小节名**，expect_any_content 的全部键都已核实存在于页级行原文（真值），但其中一部分在旧索引里查不到 —— 那正是要量的差距。",
   "questions": [
     {
       "id": "q01",
@@ -92,6 +92,198 @@
       "want_formula": true,
       "want_appendix": false,
       "note": "具体公式：应当同时命中 formula atomic 与包含它的语义 chunk"
+    },
+
+    {
+      "id": "q11",
+      "q": "LongBench 表里各方法在 KV 缓存压缩后的 Average 平均分是多少？和 Full Cache 差多少？",
+      "expect_any_section": ["2.2", "NEEDLE", "2.3", "LONGBENCH"],
+      "expect_any_content": ["Average", "Full Cache", "Llama-3.1"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "表格数值题。真值在 p009-00 的 markdown 表体里；旧索引英文侧只有表注，中文侧才有表体"
+    },
+    {
+      "id": "q12",
+      "q": "算法 1 的 QUANT_mse 过程里，随机投影矩阵 S 是怎么生成的？",
+      "expect_any_section": ["1.1", "MSE OPTIMAL", "Algorithm"],
+      "expect_any_content": ["random projection", "Procedure", "QUANT"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "算法框内容，行是「4: Procedure QUANT(x)…」这类行"
+    },
+    {
+      "id": "q13",
+      "q": "近邻搜索实验用什么指标衡量、和哪些方法比？",
+      "expect_any_section": ["2.4", "NEAR NEIGHBOUR"],
+      "expect_any_content": ["recall@k", "RabitQ", "乘积量化"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "2.4 节是解析侧漏掉的真标题 —— 旧索引里没有 2.4 这个 section"
+    },
+    {
+      "id": "q14",
+      "q": "What is the second stage of the TurboQuant two-stage inner-product quantizer?",
+      "expect_any_section": ["0.3", "OVERVIEW", "B.2", "QJL", "1.2"],
+      "expect_any_content": ["QJL", "residual", "unbiased"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：两阶段第二步"
+    },
+    {
+      "id": "q15",
+      "q": "附录 E 里 TurboQuant 在 GPU 上是怎么高效实现的？",
+      "expect_any_section": ["E", "IMPLEMENTATION"],
+      "expect_any_content": ["fused GPU kernel", "FLUTE", "dequantization"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "附录 E 的工程实现；旧索引里 FLUTE / fused kernel 都查不到"
+    },
+    {
+      "id": "q16",
+      "q": "附录 B.1 关于 Shannon 下界的结论是什么？",
+      "expect_any_section": ["B.1", "SHANNON", "MATHEMATICAL PRELIMINARIES"],
+      "expect_any_content": ["Shannon", "distortion", "lower bound"],
+      "want_formula": true,
+      "want_appendix": true,
+      "note": "附录 B.1 的失真下界"
+    },
+    {
+      "id": "q17",
+      "q": "What do the lower bounds in Appendix C.3 establish?",
+      "expect_any_section": ["C.3", "LOWER BOUND", "PROOFS"],
+      "expect_any_content": ["Theorem", "lower bound", "distortion"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "英文问句：附录 C.3 的下界"
+    },
+    {
+      "id": "q18",
+      "q": "在 0.25 的内存压缩比下，TurboQuant 与 PyramidKV / SnapKV 这类省内存方法的对比结论是什么？",
+      "expect_any_section": ["2.2", "NEEDLE"],
+      "expect_any_content": ["PyramidKV", "SnapKV", "0.25"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "2.2 节与 SOTA 省内存方法的对比"
+    },
+    {
+      "id": "q19",
+      "q": "为什么 MSE 最优量化器给出的内积估计是有偏的？",
+      "expect_any_section": ["0.3", "OVERVIEW", "1.2", "INNER-PRODUCT"],
+      "expect_any_content": ["有偏", "bias", "unbiased"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "偏置的来源（0.3 / 1.2）"
+    },
+    {
+      "id": "q20",
+      "q": "What does Figure 4 in Section 2.4 report?",
+      "expect_any_section": ["2.4", "NEAR NEIGHBOUR"],
+      "expect_any_content": ["Recall comparison", "embedding dimension"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：2.4 的图 4 图注"
+    },
+
+    {
+      "id": "q21",
+      "paper_id": "attention-is-all-you-need",
+      "q": "位置编码为什么选正弦函数，而不是学习到的位置嵌入？",
+      "expect_any_section": ["3.5", "Positional Encoding"],
+      "expect_any_content": ["正弦", "sin", "positional embeddings"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "3.5 节：选用正弦版本的理由"
+    },
+    {
+      "id": "q22",
+      "paper_id": "attention-is-all-you-need",
+      "q": "How are the embedding weights scaled, and what is shared between the embedding layers?",
+      "expect_any_section": ["3.4", "Embeddings and Softmax"],
+      "expect_any_content": ["learned embeddings", "softmax", "embedding layers"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：3.4 节是解析侧漏掉的真标题，旧索引里整节被并进 3.3"
+    },
+    {
+      "id": "q23",
+      "paper_id": "attention-is-all-you-need",
+      "q": "表 3 里改变注意力头数与键/值维度，对 BLEU 的影响是什么？",
+      "expect_any_section": ["6.2", "Model Variations"],
+      "expect_any_content": ["Table 3", "PPL (dev)", "BLEU"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "6.2 节同样是解析侧漏掉的真标题；表 3 表体是新方案才进库的（旧索引英文侧没有）"
+    },
+    {
+      "id": "q24",
+      "paper_id": "attention-is-all-you-need",
+      "q": "自注意力相比循环层，每层复杂度和最大路径长度是多少？",
+      "expect_any_section": ["4", "Why Self-Attention", "3.5"],
+      "expect_any_content": ["Complexity per Layer", "Maximum Path Length", "O(n^2"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "表 1 的数值行（表格数值题）"
+    },
+    {
+      "id": "q25",
+      "paper_id": "attention-is-all-you-need",
+      "q": "What BLEU scores and training cost does the Transformer achieve on newstest2014?",
+      "expect_any_section": ["6.1", "Machine Translation", "5.4"],
+      "expect_any_content": ["newstest2014", "BLEU", "FLOPs"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：表 2 的 BLEU / 训练成本（表格数值题）"
+    },
+    {
+      "id": "q26",
+      "paper_id": "attention-is-all-you-need",
+      "q": "What learning-rate schedule and optimizer are used?",
+      "expect_any_section": ["5.3", "Optimizer"],
+      "expect_any_content": ["lrate", "warmup", "Adam"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "英文问句：5.3 的学习率公式（公式题）"
+    },
+    {
+      "id": "q27",
+      "paper_id": "attention-is-all-you-need",
+      "q": "What regularization techniques are applied during training?",
+      "expect_any_section": ["5.4", "Regularization"],
+      "expect_any_content": ["dropout", "label smoothing"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：5.4 正则化"
+    },
+    {
+      "id": "q28",
+      "paper_id": "attention-is-all-you-need",
+      "q": "为什么自注意力比循环网络更容易并行？",
+      "expect_any_section": ["4", "Why Self-Attention"],
+      "expect_any_content": ["sequential operations", "path length", "recurrent"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "4 节的三条比较理由"
+    },
+    {
+      "id": "q29",
+      "paper_id": "attention-is-all-you-need",
+      "q": "Why does multi-head attention use several heads instead of one?",
+      "expect_any_section": ["3.2.2", "Multi-Head Attention"],
+      "expect_any_content": ["representation subspaces", "heads", "linear projections"],
+      "want_formula": false,
+      "want_appendix": false,
+      "note": "英文问句：多头注意力的动机"
+    },
+    {
+      "id": "q30",
+      "paper_id": "attention-is-all-you-need",
+      "q": "How is scaled dot-product attention computed, and why is the scaling needed?",
+      "expect_any_section": ["3.2.1", "Scaled Dot-Product"],
+      "expect_any_content": ["softmax", "sqrt", "dot products"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "英文问句：3.2.1 的定义与缩放理由"
     }
   ]
 }
