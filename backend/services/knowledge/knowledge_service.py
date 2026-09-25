@@ -146,6 +146,65 @@ def _inline_embed_math(text: str) -> str:
         out.append(line)
     return "\n".join(out)
 
+_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+# 高置信 LaTeX 命令（判断"这一段确实是公式"；宁可少补也不要误伤正文）
+_STRONG_TEX_RE = re.compile(
+    r"\\(?:frac|dfrac|sqrt|sum|prod|int|mathbb|mathcal|boldsymbol|tilde|langle|rangle|"
+    r"cdot|geq|leq|approx|min|max|left|right|tag|bar|hat|gamma|Gamma|ell|sigma|"
+    r"mu|theta|alpha|beta|lambda|nabla|partial|infty|sim|to|in|exp|log|arg)")
+_TEX_TOKEN_RE = re.compile(r"[^\s，。；：、！？（）【】《》]+")
+
+
+def _wrap_bare_latex(text: str) -> str:
+    r"""给**裸写的 LaTeX**补定界符：按"未包裹的片段"补，**不**因为"这行已有 `$`"整行放弃。
+
+    为什么索引层也要做：知识库页的渲染链没有阅读器那套 `wrapBareMath()`，而解析文本块会把
+    展示公式**原样**带进正文（`\mathcal{C}(f_X, b) := \min…`）—— 用户看到的就是
+    "公式变成纯文本"。前端那条规则是"这行已经有 `$` 就不动"，可这一行前面恰好有 `$c_i$`，
+    于是整段裸 LaTeX 被漏掉。
+
+    守则（与前端一致，宁可少补）：
+    ① 整行无 `$`、无中文、含高置信命令（≥2 个或带 `^{`/`_{`）→ 整行包 `$$…$$`；
+    ② 其余按 `$…$` 配对切开，只在**公式之外**的片段里，把"含 `^{`/`_{`、无中文、不过长"的
+       连续片段包成 `$…$`（已包好的数学不动）。
+    """
+    if not text or ("\\" not in text and "^{" not in text and "_{" not in text):
+        return text
+    out: list[str] = []
+    for line in text.split("\n"):
+        t = line.strip()
+        if "$" not in line and t and not _CJK_RE.search(t):
+            strong = len(_STRONG_TEX_RE.findall(t))
+            if _STRONG_TEX_RE.search(t) and (strong >= 2 or re.search(r"[_^]\{", t)):
+                out.append(f"$${t}$$")
+                continue
+        pieces: list[tuple[str, str]] = []
+        cursor = 0
+        i = 0
+        while True:
+            i = line.find("$", i)
+            if i < 0:
+                pieces.append(("plain", line[cursor:]))
+                break
+            j = line.find("$", i + 1)
+            if j < 0:
+                pieces.append(("plain", line[cursor:]))
+                break
+            pieces.append(("plain", line[cursor:i]))
+            pieces.append(("math", line[i:j + 1]))
+            cursor, i = j + 1, j + 1
+
+        def _wrap(m: "re.Match[str]") -> str:
+            tok = m.group(0)
+            if not re.search(r"[_^]\{", tok) or _CJK_RE.search(tok) or len(tok) > 60:
+                return tok
+            return f"${tok}$"
+
+        out.append("".join(seg if kind == "math" else _TEX_TOKEN_RE.sub(_wrap, seg)
+                           for kind, seg in pieces))
+    return "\n".join(out)
+
+
 def _strip_unpaired_bold(text: str) -> str:
     r"""去掉**行首落单的加粗标记**（`**图 5：…` 这种没有收尾的 `**`）。
 
@@ -393,6 +452,7 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
                 content = _strip_unpaired_bold(content)
             if c["chunk_type"] == "text":
                 content = _inline_embed_math(content)
+                content = _wrap_bare_latex(content)
             if c["chunk_type"] == "text" and len(content) < floor:
                 continue
             out.append(_variant_row(c, lang, content))
@@ -813,6 +873,8 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if chunk_type == "text":
         # 句子中间的 `$$…$$` 会被渲染成另起一块 → 降级成行内 `$…$`（行首展示公式不动）
         content = _inline_embed_math(content)
+        # 解析文本块把展示公式原样带进正文 → 补定界符（否则整段渲染成纯文本）
+        content = _wrap_bare_latex(content)
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1381,6 +1443,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
