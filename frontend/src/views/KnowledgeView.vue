@@ -582,6 +582,18 @@ function langLabel(item: SimilarItem): string {
 }
 
 /**
+ * 左栏要不要给这条出缩略图。
+ *
+ * **只给插图**。另外两类看似"也有裁图"，实测都不该摆：
+ * - **表格**：条目带的裁图是**图注文字条**（实测 attention/ turboquant 两张都是 3316×126、
+ *   26:1 的一条文字），缩到 76×56 只剩几个字母，看着像坏图 —— 等"表格裁图改成截表体"再说；
+ * - **公式**：正文已经渲染成可选中、可复制的 KaTeX 文字，再摆一张裁图是重复同一件事。
+ */
+function hasThumb(item: SimilarItem): boolean {
+  return item?.chunk_type === 'figure' && !!item?.image_url;
+}
+
+/**
  * 摘要渲染的最小字段集：检索条目（`SimilarItem`）与浏览条目（`KnowledgeChunkRow`）
  * 只共有这三个字段，所以这里用结构类型而不是某一边的具体类型 —— 两个列表共用一套渲染。
  */
@@ -636,11 +648,21 @@ function summaryHtml(item: SummaryLike | null | undefined): string {
   return searchMarksHtml(summaryBody(item), query.value, item.paper_id);
 }
 
-/** 右栏完整内容 → HTML（Markdown + KaTeX；相对资源路径改写成后端静态地址）。 */
+/**
+ * 右栏正文 → HTML（Markdown + KaTeX；相对资源路径改写成后端静态地址）。
+ *
+ * **这里不做任何"公式修补"**。曾经有一层 `sanitizeChunkMarkdown`（删 `$$…$$` 里的杂散 `$`、
+ * 给裸公式行补定界符）和一层 `repairLatex`（给公式补全 `\right`/`{`），都是上一轮的
+ * **展示层兜底**；源头（索引层）修好之后按用户要求全撤了 —— 实测线上 289 行
+ * （187 正文 + 102 公式）**不过任何清洗**直接渲染，KaTeX 报错 **0 处**。
+ * 留着它们不只是多余：多一层改写就多一个"左右两栏渲染不一致"的变量
+ * （用户截图那张表就是这么被怀疑上的），排查时纯属干扰。渲染只走 `mdToHtml` 一条路。
+ */
 const detailHtml = computed(() => {
   const content = detailData.value?.content;
   if (!content) return '';
-  return mdToHtml(content, detailData.value?.paper_id || detailItem.value?.paper_id);
+  const paperId = detailData.value?.paper_id || detailItem.value?.paper_id;
+  return mdToHtml(content, paperId);
 });
 
 /* ------------------------- 公式：渲染 + 复制 LaTeX ------------------------- */
@@ -652,7 +674,12 @@ const detailHtml = computed(() => {
  */
 const FORMULA_PREFIX = /^\s*公式\s+\S+\s*[：:]\s*/;
 
-/** 公式 chunk 的 LaTeX 源（去掉 "公式 <块 id>：" 前缀 + 剥掉 `$$…$$` 定界符）。 */
+/**
+ * 公式 chunk 的 LaTeX 源 = 正文去掉 `公式 <块 id>：` 前缀、剥掉 `$$…$$` 定界符。
+ *
+ * 这里曾经还要"补全被切断的 LaTeX 结构"（`\right` 后缺定界符 / `{` 未闭合）—— 同样是展示层
+ * 兜底，源头修好后实测 102 条公式行直接渲染报错 0 处，随 `sanitizeChunkMarkdown` 一起撤了。
+ */
 function latexSource(text?: string | null): string {
   let body = String(text ?? '').replace(FORMULA_PREFIX, '').trim();
   const wrapped = /^\$\$([\s\S]*)\$\$$/.exec(body);
@@ -990,23 +1017,28 @@ onUnmounted(() => {
                       @keydown.enter.prevent="selectChunk(c)"
                       @keydown.space.prevent="selectChunk(c)"
                     >
-                      <div class="chunk-meta">
-                        <span class="chunk-page">p.{{ c.page }}</span>
-                        <span v-if="c.section" class="chunk-sec" :title="c.section">{{ c.section }}</span>
-                        <span class="chunk-type faint">{{ typeMeta(c.chunk_type).label }}·{{ langLabel(c) }}</span>
-                        <span class="spacer"></span>
-                        <!-- 摘要里也能直接拿走 LaTeX（公式条目才有） -->
-                        <span
-                          v-if="latexSource(c.snippet)"
-                          class="chunk-copy"
-                          role="button"
-                          tabindex="0"
-                          title="复制这条的 LaTeX"
-                          @click.stop="copyToClipboard(latexSource(c.snippet), ' LaTeX')"
-                          @keydown.enter.stop.prevent="copyToClipboard(latexSource(c.snippet), ' LaTeX')"
-                        ><AppIcon name="copy" :size="12" /></span>
+                      <!-- 插图 / 表格：先给一张缩略图（正文只有一句图注，看图更快） -->
+                      <img v-if="hasThumb(c)" class="chunk-thumb" :src="c.image_url || ''"
+                           loading="lazy" :alt="`${typeMeta(c.chunk_type).label}裁图`">
+                      <div class="chunk-main">
+                        <div class="chunk-meta">
+                          <span class="chunk-page">p.{{ c.page }}</span>
+                          <span v-if="c.section" class="chunk-sec" :title="c.section">{{ c.section }}</span>
+                          <span class="chunk-type faint">{{ typeMeta(c.chunk_type).label }}·{{ langLabel(c) }}</span>
+                          <span class="spacer"></span>
+                          <!-- 摘要里也能直接拿走 LaTeX（公式条目才有） -->
+                          <span
+                            v-if="latexSource(c.snippet)"
+                            class="chunk-copy"
+                            role="button"
+                            tabindex="0"
+                            title="复制这条的 LaTeX"
+                            @click.stop="copyToClipboard(latexSource(c.snippet), ' LaTeX')"
+                            @keydown.enter.stop.prevent="copyToClipboard(latexSource(c.snippet), ' LaTeX')"
+                          ><AppIcon name="copy" :size="12" /></span>
+                        </div>
+                        <div class="chunk-sum md" v-html="summaryHtml(c)"></div>
                       </div>
-                      <div class="chunk-sum md" v-html="summaryHtml(c)"></div>
                     </div>
                   </li>
                 </ul>
@@ -1481,7 +1513,8 @@ onUnmounted(() => {
 
 .chunk-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .chunk-item {
-  display: block; width: 100%; text-align: left; cursor: pointer;
+  display: flex; align-items: flex-start; gap: 8px;
+  width: 100%; text-align: left; cursor: pointer;
   padding: 7px 8px; border-radius: var(--r-xs);
   border-left: 2px solid transparent;
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
@@ -1492,6 +1525,16 @@ onUnmounted(() => {
   background: var(--accent-soft);
   border-left-color: var(--accent);
 }
+/* 摘要要能自己收窄（`min-width:0` + `overflow-wrap`），否则长公式会把整行撑破 */
+.chunk-main { flex: 1; min-width: 0; }
+
+/* 插图 / 表格的缩略图：固定小尺寸、裁切铺满，别让不同长宽比的裁图把行高撑得参差 */
+.chunk-thumb {
+  flex: none; width: 76px; height: 56px; object-fit: cover;
+  border: 1px solid var(--divider); border-radius: var(--r-xs);
+  background: var(--bg-soft);
+}
+
 .chunk-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .chunk-page {
   font-size: 11px; font-weight: 600; color: var(--accent-text);

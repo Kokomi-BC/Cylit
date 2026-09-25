@@ -468,6 +468,25 @@ table.data.fixed { table-layout: fixed; }
 .md table td, .md table th { border: 1px solid var(--border); padding: 4px 8px; }
 .md .katex-display { margin: .4em 0; overflow-x: auto; overflow-y: hidden; }
 
+/* ---------------- KaTeX 渲染失败时的兜底（安全网） ----------------
+ * `throwOnError: false` 会渲染出一个 `.katex-error` 节点（文字就是那条原始 LaTeX），并把
+ * 错误信息塞进 `title`。这个节点**又长又会把版面撑开**，而且 title 里带引号
+ * （`Expected group as argument to '\right'`）——畸形输入下它会把属性撕开，正文里直接露出
+ * 一大段原始 LaTeX + `style="color:#d8453f"`（知识库 p.3 那条实测就是这样）。
+ *
+ * 所以：隐藏报错节点自身的 LaTeX 文字，用 `::before` 换成一句人话（"这里原本是个公式"）。
+ * 内联 `style="color:…"` 只影响颜色，留着无妨 —— 它正好是"这条公式有问题"的视觉信号。 */
+.md .katex-error {
+  color: transparent;          /* 藏掉原始 LaTeX（视觉上不可见，划选仍拿得到内容） */
+  overflow: hidden;
+  max-width: 100%;
+  vertical-align: baseline;
+}
+.md .katex-error::before {
+  content: "公式无法渲染（源 LaTeX 不完整）";
+  color: var(--danger); font-size: .92em; font-style: normal;
+}
+
 /* ---------------- 滚动条（细、圆、跟随主题） ---------------- */
 * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
 *::-webkit-scrollbar { width: 10px; height: 10px; }
