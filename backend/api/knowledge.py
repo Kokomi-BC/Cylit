@@ -80,6 +80,10 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
 
     `image_url` 是插图/表格/公式的裁图（浏览器可直接取，用于知识库页的缩略图 / 图库）；
     正文条目为 `None`。
+
+    **默认不列语义单元**（`chunk_type="unit"`）：这是"逐块读这篇论文"的浏览视图，
+    单元是检索用的更细粒度（同一批行的另一层划分），默认混进来只会让列表翻倍。
+    要看单元就显式传 `chunk_type=unit`。
     """
     from backend.core.utils import json_loads
     from backend.repositories.mysql.models import Chunk
@@ -89,6 +93,8 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
         q = sess.query(Chunk).filter(Chunk.paper_id == paper_id)
         if chunk_type:
             q = q.filter(Chunk.chunk_type == chunk_type)
+        else:
+            q = q.filter(Chunk.chunk_type != "unit")
         rows = q.order_by(Chunk.order_global.asc()).limit(limit if not lang else 5000).all()
         items = []
         for c in rows:

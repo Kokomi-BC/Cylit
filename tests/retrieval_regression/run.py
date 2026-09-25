@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,7 @@ def run_question(spec: dict, *, paper_id: str, top_k: int) -> dict:
             "text_chunk_id": meta.get("text_chunk_id"),
             "matched": _hit_matches(item, spec),
             "content_matched": _content_matches(item, spec),
+            "chars": len(str(item.get("content") or "")),
             "preview": (str(item.get("content") or "").strip()
                         .replace("\n", " ")[:160]),
         })
@@ -121,14 +123,33 @@ def run_question(spec: dict, *, paper_id: str, top_k: int) -> dict:
         "matched": first is not None,
         "content_matched": first_content is not None,
         "formula_atomic": any(h["chunk_type"] == "formula" for h in hits),
-        "semantic": any(h["chunk_type"] == "text" for h in hits),
-        "formula_context": any(h["chunk_type"] == "text" and h["formula_ids"] for h in hits),
+        # "语义块" = 承载正文的块：单元（检索单位）或正文 chunk（上下文单位）
+        "semantic": any(h["chunk_type"] in ("text", "unit") for h in hits),
+        "formula_context": any(h["chunk_type"] in ("text", "unit") and h["formula_ids"]
+                               for h in hits),
+        "first_hit_type": (next((h["chunk_type"] for h in hits if h["matched"]), None)),
+        "matched_chars": next((h["chars"] for h in hits if h["matched"]), None),
+        "context_chars": _context_chars(items),
         "appendix": any(h["section_kind"] == "appendix" for h in hits),
         "formula_first_match_rank": formula_rank,
         "formula_top": formula_top,
         "hits": hits,
         "retrieval": result.get("retrieval") or {},
     }
+
+
+def _context_chars(items: list[dict]) -> int | None:
+    """把这次检索的条目喂给 RAG 的 ContextBuilder，量**上下文字符数**（small-to-big 的成本）。
+
+    单元检索时上下文会扩到 ±1 单元（`kb.unit_expand`），所以这里的数字就是"模型真正读到的量"；
+    取不到（模型/依赖不可用）返回 None，不影响其它指标。
+    """
+    try:
+        from backend.services.knowledge import rag_service
+
+        return int(rag_service.build_context(items)["chars"])
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def evaluate(spec: dict | None = None, *, top_k: int | None = None,
@@ -144,6 +165,12 @@ def evaluate(spec: dict | None = None, *, top_k: int | None = None,
     mrr = sum(1.0 / r["first_match_rank"] for r in rows if r["first_match_rank"]) / n
     want_f = [r for r in rows if r["want_formula"]]
     want_a = [r for r in rows if r["want_appendix"]]
+    matched_chars = [r["matched_chars"] for r in rows if r.get("matched_chars")]
+    context_chars = [r["context_chars"] for r in rows if r.get("context_chars")]
+    type_mix: dict[str, int] = {}
+    for r in rows:
+        key = r.get("first_hit_type") or "—"
+        type_mix[key] = type_mix.get(key, 0) + 1
     return {
         "paper_id": pid, "top_k": k, "questions": len(rows),
         "hit_at_k": sum(1 for r in rows if r["matched"]) / n,
@@ -159,6 +186,14 @@ def evaluate(spec: dict | None = None, *, top_k: int | None = None,
         "appendix_coverage": (sum(1 for r in want_a if r["appendix"]) / len(want_a)
                               if want_a else None),
         "formula_context_coverage": sum(1 for r in rows if r["formula_context"]) / n,
+        # 细粒度证据：命中块的长度中位（越小 = 检到的越"就是那一段"）
+        "matched_chars_median": (int(statistics.median(matched_chars))
+                                 if matched_chars else None),
+        # small-to-big 的成本：喂给模型的上下文字符数中位
+        "context_chars_median": (int(statistics.median(context_chars))
+                                 if context_chars else None),
+        # 首次命中的类型分布（unit / text / formula / figure / table）
+        "first_hit_types": type_mix,
         "rows": rows,
     }
 
@@ -178,7 +213,13 @@ def to_markdown(report: dict, *, env_note: str = "") -> str:
            f"（正文 {report['content_mrr']}） · "
            f"公式专项命中 {_pct(report['formula_hit_rate'])} · "
            f"附录覆盖 {_pct(report['appendix_coverage'])} · "
-           f"语义块含公式 {_pct(report['formula_context_coverage'])}",
+           f"语义块含公式 {_pct(report['formula_context_coverage'])}"
+           + (f" · 命中块长度中位 {report['matched_chars_median']}"
+              if report.get("matched_chars_median") else "")
+           + (f" · 上下文字符中位 {report['context_chars_median']}"
+              if report.get("context_chars_median") else "")
+           + (f" · 命中类型 {report['first_hit_types']}"
+              if report.get("first_hit_types") else ""),
            "",
            "| # | 论文 | 问题 | 首次命中 rank | 正文命中 rank | 公式专项 rank | 公式上下文 | appendix | 命中小节 |",
            "|---|---|---|---|---|---|---|---|---|"]

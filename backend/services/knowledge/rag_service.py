@@ -106,7 +106,13 @@ def _pair_texts(item: dict) -> tuple[str, str]:
 
 def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
                   max_chars: int = CONTEXT_MAX_CHARS) -> dict:
-    """编号来源 + 拼成给模型的上下文。返回 ``{sources, text, truncated}``。"""
+    """编号来源 + 拼成给模型的上下文。返回 ``{sources, text, truncated}``。
+
+    **Small-to-Big（⑧）**：命中的如果是 `chunk_type="unit"`（细粒度检索单位），
+    先把上下文扩到"它 ±1 个单元"（`kb.unit_expand`，见 `_expand_units`）——
+    单元是检索单位、chunk 是上下文单位，模型需要的是后者那一档的完整语境。
+    """
+    items = _expand_units(items, max_chars=max_chars)
     sources: list[dict] = []
     blocks: list[str] = []
     used = 0
@@ -151,9 +157,130 @@ def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
             "snippet": truncate(own or zh or en, 200),
             "text": "\n".join([t for t in (zh, en) if t]),
             "score": (item.get("scores") or {}).get("rerank"),
+            # 扩展信息：命中的是哪条单元、扩展到了哪几条（回归时量 small-to-big 的成本）
+            "expand_mode": (item.get("metadata") or {}).get("_expand_mode"),
+            "expanded_units": (item.get("metadata") or {}).get("_expanded_units"),
         })
     return {"sources": sources, "text": "\n\n".join(blocks),
             "truncated": truncated, "chars": used}
+
+
+def _unit_expand_mode() -> int:
+    """``kb.unit_expand``：0 = 只用命中单元 / 1 = ±1 单元（默认）/ 2 = 整条父 chunk。"""
+    try:
+        value = int(retrieval._setting("unit_expand", 1) or 0)
+    except (TypeError, ValueError):
+        value = 1
+    return max(0, min(2, value))
+
+
+def _expand_units(items: list[dict], *, max_chars: int) -> list[dict]:
+    """把命中的**单元**扩成上下文块（small-to-big）。
+
+    规则（见 docs/语义单元索引-设计.md §6）：
+
+    - 只扩 `chunk_type="unit"`；公式 / 图 / 表原子块原样保留（它们已经是最小完整单位）；
+    - `mode=1`：命中单元 + 前后各一个**同父**邻居；`mode=2`：整条父 chunk；
+    - **按父 chunk 去重**：命中落在同一父里的合并成一条（取并集、按行序排），
+      否则同一段内容会在 [S1]、[S3] 里各出现一次，白烧上下文预算；
+    - **预算**：扩展后的块超过 `max_chars` 就退到"只用命中单元"——"命中内容一定进上下文"
+      优先于"给它补邻居"。命中本身超过预算的，保持原样（由调用方按 max_chars 截断来源数）。
+    """
+    if not items:
+        return items
+    mode = _unit_expand_mode()
+    if mode == 0 or not any((i.get("chunk_type") == "unit") for i in items):
+        return items
+
+    wanted: dict[str, set[str]] = {}          # 代表条目 id → 需要取的单元行 id
+    groups: dict[str, dict] = {}              # 父 chunk（缺省时用条目自身）→ 合并后的条目
+    order: list[str] = []
+    for item in items:
+        if item.get("chunk_type") != "unit":
+            key = f"self:{item.get('chunk_id')}"
+            groups[key] = item
+            order.append(key)
+            continue
+        meta = item.get("metadata") or {}
+        unit_id = str(item.get("chunk_id") or "")
+        parent = str(meta.get("parent_chunk_id") or "")
+        key = f"parent:{parent or unit_id}"
+        ids = {unit_id}
+        if mode == 1:
+            for field in ("prev_unit_id", "next_unit_id"):
+                if meta.get(field):
+                    ids.add(str(meta[field]))
+        elif mode == 2 and parent:
+            ids = set()                        # 整条父 chunk：交给 get_rows 取父行
+        if key not in groups:
+            groups[key] = item
+            order.append(key)
+        wanted.setdefault(key, set())
+        if mode == 2 and parent:
+            wanted[key].add(parent)
+        else:
+            wanted[key] |= ids
+
+    out: list[dict] = []
+    for key in order:
+        item = dict(groups[key])
+        ids = wanted.get(key) or set()
+        meta = dict(item.get("metadata") or {})
+        meta["_expand_mode"] = mode
+        if not ids:
+            out.append({**item, "metadata": meta})
+            continue
+        # 邻居要取**与命中同一个语种**的行（zh 命中就把 `:zh` 行一起取；缺译文才回退原文行）
+        lang = item.get("lang") or "en"
+        suffix = ":zh" if lang == "zh" else ""
+        fetch: dict[str, str] = {f"{i}{suffix}": i for i in ids}
+        try:
+            rows = {str(r.get("chunk_id")): r for r in vector_store.get_rows(list(fetch))}
+        except Exception:  # noqa: BLE001 —— 取不到就退回"只用命中单元"
+            rows = {}
+        if suffix:
+            missing = [base for full, base in fetch.items() if full not in rows]
+            if missing:
+                try:
+                    for row in vector_store.get_rows(missing):
+                        rows.setdefault(str(row.get("chunk_id")), row)
+                except Exception:  # noqa: BLE001
+                    pass
+        by_base = {base: rows[full] for full, base in fetch.items() if full in rows}
+        # 按"行序"拼（单元 id 形如 `p005-02-p005-03`，用起点行号排序即可）
+        picked = [by_base[i] for i in sorted(ids, key=_unit_sort_key) if i in by_base]
+        text = "\n\n".join(str(r.get("content") or "").strip() for r in picked
+                           if str(r.get("content") or "").strip())
+        if not text:
+            out.append({**item, "metadata": meta})
+            continue
+        own = str(item.get("content") or "").strip()
+        if len(text) > max_chars and own:
+            meta["_expand_mode"] = f"{mode}-budget-skip"
+            out.append({**item, "metadata": meta})
+            continue
+        # 记**基准单元 id**（`u0` 而不是 `u0:zh`）：语义是"用了哪几条单元"；
+        # 实际取的行 id 由 lang 决定（见上面的 suffix），调试时看 content 即可
+        meta["_expanded_units"] = sorted(ids, key=_unit_sort_key)
+        out.append({**item, "content": text, "metadata": meta})
+    return out
+
+
+def _unit_sort_key(chunk_id: str):
+    """单元/块 id 的行序键：``p005-02-p005-03`` → ``(5, 2, 5, 3)``（跨页也单调）。
+
+    真实 id 一定含 `pNNN-NN`；合成/测试用的 id（`u12`）退化成"取其中的数字"，
+    仍然保持单调，不会因为排序不稳把邻居拼反。
+    """
+    import re
+
+    parts = re.findall(r"p(\d+)-(\d+)", chunk_id or "")
+    if parts:
+        flat: list[int] = []
+        for page, index in parts:
+            flat.extend((int(page), int(index)))
+        return tuple(flat)
+    return tuple(int(n) for n in re.findall(r"\d+", chunk_id or "")) or (0,)
 
 
 def build_prompt(question: str, context: dict, *, allow_general: bool = False) -> str:

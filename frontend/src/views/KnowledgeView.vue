@@ -46,6 +46,12 @@ const CHUNK_TYPES = [
   { key: 'figure', label: '插图', icon: 'image' },
   { key: 'table', label: '表格', icon: 'table' },
 ];
+/**
+ * 类型标签补充：**语义单元**是检索单位（同一批行的更细划分，见 docs/语义单元索引-设计.md）。
+ * 它不进 `CHUNK_TYPES`（那是"浏览"的类型筛选：按单元翻没有意义），
+ * 但检索结果里必须显示成中文，否则会直接露出 `unit` 这个内部键名。
+ */
+const TYPE_LABELS: Record<string, string> = { unit: '语义单元' };
 const LANG_OPTIONS = [
   { key: 'zh', label: '中文' },
   { key: 'en', label: '原文' },
@@ -129,6 +135,7 @@ const statusTitle = computed(() => {
   const vector = (o.vector_store || {}) as Record<string, any>;
   return `论文 ${o.papers_in_kb}/${o.papers_total} 篇已纳入 · 正文 ${byType.text || 0} / 公式 ${byType.formula || 0}`
     + ` / 插图 ${byType.figure || 0} / 表格 ${byType.table || 0}`
+    + (byType.unit ? ` / 语义单元 ${byType.unit}` : '')
     + (vector.available ? '' : ` · 向量库不可用：${vector.error || '未返回原因'}`);
 });
 /** 库里一条 chunk 都没有：搜索与浏览都给"去建索引"的明确去处。 */
@@ -564,7 +571,9 @@ function closeDetail(): void {
 /* ------------------------------ 小工具 ------------------------------ */
 
 function typeMeta(key?: string | null) {
-  return CHUNK_TYPES.find((t) => t.key === key) || { key: key || '', label: key || '—', icon: 'document' };
+  const known = CHUNK_TYPES.find((t) => t.key === key);
+  if (known) return known;
+  return { key: key || '', label: TYPE_LABELS[key || ''] || key || '—', icon: 'document' };
 }
 
 function langShort(lang?: string | null): string {

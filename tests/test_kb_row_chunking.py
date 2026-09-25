@@ -156,15 +156,21 @@ def test_own_chunk_plus_children(paper):
     assert first["node"]["key"] == "1"
 
 
-def test_long_leaf_is_split_at_anchors_then_rows(paper):
+def test_long_leaf_is_split_at_unit_boundaries(paper):
+    """超 hard 的块按**单元**边界切（单元是分块层的原子，见 docs/语义单元索引-设计.md §1）。
+
+    900 字那两行各自超过默认 `unit_max_chars=700`，所以各成一条单元；hard=1000 时
+    "标题行 + 第一条 900"（915）还塞得下 → 贪心合并后封口，第二条另起一块。
+    **单元不可拆**是刻意的：宁可块长偏离 target，也不要让检索单位被切成两半。
+    """
     rows, tree = paper
     chunks, stats = _assemble(rows, tree)
     gamma = [c for c in chunks if c["rows"][0]["section_key"] == "1.3"]
-    # 900 + 900 > hard=2000？不，1800 < 2000 → 整块；把 hard 调小才触发切分
-    assert len(gamma) == 1
+    assert len(gamma) == 1                      # 1800 < hard=2000 → 整块
     chunks, stats = _assemble(rows, tree, hard=1000, target=600)
     gamma = [c for c in chunks if c["rows"][0]["section_key"] == "1.3"]
-    assert [[r["id"] for r in c["rows"]] for c in gamma] == [["p002-07"], ["p002-08"], ["p002-09"]]
+    assert [[r["id"] for r in c["rows"]] for c in gamma] == \
+        [["p002-07", "p002-08"], ["p002-09"]]
     assert stats["unit_split"] >= 1
 
 
@@ -487,14 +493,34 @@ def test_build_chunks_end_to_end(e2e) -> None:
     assert abstract["metadata"]["section_path"] == "# Abstract"
     assert abstract["section"] == "# Abstract"
 
-    # 2) 公式：正文里有定界符，另有原子 chunk 且**双向关联**
+    # 2) 公式：正文里有定界符，另有原子 chunk 且**双向关联**；关联挂在**单元**上
+    #    （单元是检索单位，比正文 chunk 细 —— 见 docs/语义单元索引-设计.md §5）
     method = next(c for c in texts if "1 Method" in c["content"])
     assert "$$D_{\\text{mse}}" in method["content"]
-    assert method["metadata"]["formula_ids"] == ["f001"]
+    units = by_type["unit"]
+    assert units, "要建出语义单元"
+    holder = next(u for u in units if "f001" in (u["metadata"].get("formula_ids") or []))
+    assert holder["metadata"]["formula_ids"] == ["f001"]
+    assert holder["metadata"]["parent_chunk_id"] == method["id"], "单元的父块就是它所在正文块"
     formula = by_type["formula"][0]
     assert formula["id"] == "demo:formula:f001"
-    assert formula["metadata"]["text_chunk_id"] == method["id"]
+    assert formula["metadata"]["text_chunk_id"] == holder["id"], "公式指回**单元**（更精确）"
     assert formula["metadata"]["section_path"] == "# 1 Method"
+
+    # 2b) 单元层：覆盖同一批正文行（不漏不重），每条都有父块与 ±1 邻居指针（首尾为空）
+    chunk_rows = [rid for c in texts for rid in c["metadata"]["row_ids"]]
+    unit_rows = [rid for u in units for rid in u["metadata"]["row_ids"]]
+    assert sorted(unit_rows) == sorted(chunk_rows), "单元与正文块必须覆盖同一批行"
+    assert len(unit_rows) == len(set(unit_rows)), "单元之间不重叠"
+    by_parent: dict[str, list[dict]] = {}
+    for unit in units:
+        by_parent.setdefault(unit["metadata"]["parent_chunk_id"], []).append(unit)
+    for group in by_parent.values():
+        assert group[0]["metadata"]["prev_unit_id"] is None
+        assert group[-1]["metadata"]["next_unit_id"] is None
+        for left, right in zip(group, group[1:]):
+            assert left["metadata"]["next_unit_id"] == right["id"]
+            assert right["metadata"]["prev_unit_id"] == left["id"]
 
     # 3) 表：图注 + 表体在同一条 table chunk 里，且两侧都有
     table = by_type["table"][0]

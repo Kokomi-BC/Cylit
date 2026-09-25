@@ -3875,3 +3875,98 @@ attention 更是整节成块（12~14 / 27 个节点走整棵分支）。
 建索引（`old_chunk_module(rev)` → `old._collect_chunks`），arm1 的数字与产物也已快照在
 `data/logs/snapshot/`（`*-chunks-arm1.json` / `retrieval-arm1-30q.*`）。所以"回退能力"没有丢，
 只是不再由产品代码里的一份死代码承担。
+
+### 17.65 第四十四轮 —— Fine-grained Semantic Unit：单元当检索单位、chunk 当上下文单位
+
+用户给的九步计划里 ①②（删掉那条过期 Highlight、两个 commit 收干净）已完成，③（target 网格）
+按用户要求**跳过**，这一轮做 ④⑤⑥⑦⑧⑨。
+
+#### ④⑤ 设计（`docs/语义单元索引-设计.md`）
+
+```
+LLM 只回答"哪里是语义边界"     ← 分组（grouping），不生成任何文字
+代码从页级行里取原文拼出 unit   ← 取原文（grounding），与 chunk 同一批行
+unit  = 检索单元（细，中位 ≈500 字）
+chunk = 上下文单位（≈1400 字，**由整数个 unit 组成**）
+```
+
+硬约束：**chunk = 连续的整数个 unit**。理由是可判定性 —— 若 chunk 边界能落在 unit 内部，
+一条单元就会有两个父块，small-to-big 往上取谁没有确定答案。代价是块长不再贴着 target。
+
+单元边界 = LLM 锚点 ∪ TOC 节点边界 ∪ **长度兜底 700 字**（代码侧；没锚点的长节不能整节变成一个单元，
+到上限就在行边界切，行=段落 ⇒ 永远不会切进公式/表格/句子中间）。
+
+#### ⑥ 索引：`chunk_type="unit"`
+
+| | 行数 | 正文 | **单元** | 公式 | 图 | 表 | 版本 |
+|---|---|---|---|---|---|---|---|
+| turboquant | 425 | 88 | **236** | 89 | 10 | 2 | v57 |
+| attention | 192 | 46 | **116** | 10 | 12 | 8 | v52 |
+
+合计 267 → **617 行**（多花约 350 次 embedding）。单元元数据带 `parent_chunk_id` /
+`prev_unit_id` / `next_unit_id` / `row_ids` / `anchor_used` / `unit_source`
+（`llm_break` 还是 `deterministic`）。turbo 118 条单元里 **64 条**是 LLM 锚点切的、49 条是长度兜底；
+attention 58 条里 37 条锚点、16 条兜底。双语行照旧（zh/en；全部单元都有译文）。
+
+#### ⑦ Top-K 以单元为主候选
+
+`retrieval.search` 默认候选集 = `unit, formula, figure, table`（`kb.retrieval_types` 可覆盖），
+**正文 chunk 不进候选** —— 它和它的单元是同一批行的两种粒度，都进候选就是"同一段内容两条命中"。
+两条兜底：
+
+1. **索引探针**（`lancedb_store.has_type`）：索引里没有 unit 行（老索引 / `kb.unit_index=0`）→
+   本次不限类型，行为与改造前一致（实测这条在 arm3b 对照实验里真的生效了）；
+2. **空结果兜底**：过滤后一条都没有 → 放开类型重搜一次，并在 `retrieval.notes` 里说明。
+
+浏览接口 `/knowledge/chunks` 默认 `chunk_type != 'unit'`（逐块读论文的视图不该被检索粒度污染），
+要看单元就显式传 `chunk_type=unit`；`overview` 会单列单元计数，前端状态行显示"语义单元 N"。
+
+#### ⑧ ±1 Small-to-Big（`rag_service._expand_units`）
+
+`kb.unit_expand`：`0` 只用命中单元 / **`1` ±1 单元（默认）** / `2` 整条父 chunk。规则：
+
+- 只扩 `unit`（公式/图/表原子块已经是最小完整单位，原样保留）；
+- **只在同父 chunk 内扩**，不跨父不跨节；
+- **按父去重**：同一父块里的多条命中合并成一个来源（取并集、按行序拼），否则会白烧上下文预算；
+- **预算优先保命中**：扩展后超 `max_chars` 就退回"只用命中单元"（`_expand_mode` 记成 `1-budget-skip`）；
+- 邻居行按**命中语种**取（zh 命中取 `:zh` 行，缺译文才回退原文行 —— 这条是单测抓出来的 bug：
+  最初版本把英文邻居拼进了中文上下文）。
+
+#### ⑨ 回归与人工案例
+
+| 指标 | arm3b 只索引正文 chunk | arm4 单元检索 + ±1 |
+|---|---|---|
+| hit@6 / 正文命中 | 100% / 97% | 100% / 97% |
+| MRR / 正文 MRR | **0.9778** / **0.9011** | 0.9667 / 0.8889 |
+| **命中块长度中位** | 778 字 | **300 字**（−61%） |
+| **上下文字符中位**（6 条来源） | 6057 | **5166**（−15%） |
+| 首次命中类型 | text 27 / table 2 / figure 1 | **unit 25** / table 3 / formula 1 / figure 1 |
+| 语义块含公式 | 90% | 80%（口径：关联现在挂在单元上；q24 的表格式答案不含公式） |
+| 逐题 | — | 更好 3（q19 3→2、q24 2→1、q29 5→3）、更差 2（q08 1→2、q15 1→3）、丢失 0 |
+
+**读法**：细粒度目标达成（778 → 300 字），上下文反而更省（±1 单元比整块小），hit@6 不变；
+代价是正文 MRR −0.012。**这是粒度换精度，不是"检得更准"** —— 单元让"命中的就是那一段"成立
+（人工案例：q22 顶部块从 520/677 字混合块变成 **230 字 §3.4 单元**且正文就是 `sqrt(d_model)` 那句；
+q26 → 306 字 §5.3 单元 + 公式原子块；q19 → 303 字 §B.2 单元就是"并不必然给出无偏的内积估计…"那句），
+但重排在更细的候选上偶尔挑错（q08/q15 各掉 1~2 名）。
+
+题库口径也一并升级（`tests/retrieval_regression/run.py`）：新增
+**命中块长度中位**、**上下文字符中位**（真跑 `build_context`）、**首次命中类型分布**，
+并把"语义块"从只看 `text` 改成 `text|unit` —— 否则单元检索下"公式上下文"恒为 0（伪指标）。
+
+#### 新增/改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/services/knowledge/chunking.py` | `semantic_units(max_chars)` 长度兜底；`assemble` 改成"以单元为原子"；`pack_units`；`unit_records`（父子/邻居）；`build` 一次产出 chunks+units+report；`validate` 加四条单元不变量 |
+| `backend/services/knowledge/knowledge_service.py` | `_row_unit_chunks`（`chunk_type="unit"` 入库行）；`_attach_formula_ids` / `_link_formulas` 改成"单元优先"；`kb.unit_index` 开关 |
+| `backend/repositories/vector/lancedb_store.py` | `has_type()`：索引里有没有这一类 chunk（老索引兜底判据） |
+| `backend/services/knowledge/retrieval.py` | 默认候选集 + 两条兜底；`retrieval.chunk_types` / `type_fallback` 进元数据 |
+| `backend/services/knowledge/rag_service.py` | `_expand_units`（±1 / 父块 / 预算 / 按父去重 / 按语种取邻居）；来源带 `expand_mode`、`expanded_units` |
+| `backend/api/knowledge.py` | 浏览默认不列单元 |
+| `frontend/src/views/KnowledgeView.vue` | 类型标签补"语义单元"（不进浏览筛选）；状态行显示单元数 |
+| `tests/test_semantic_units.py` | **新增 13 个**：单元划分 / 兜底上限 / 父子唯一 / ±1 邻居 / 四条不变量 / "不生成文字" |
+| `tests/test_kb_unit_retrieval.py` | **新增 12 个**：默认候选集 / 老索引兜底 / 空结果兜底 / 显式类型 / ±1 扩展 / 按父去重 / 预算 / 原子块不动 / 来源上报 |
+| `scripts/kb_arm_compare.py` 等 | 沿用；本轮的 arm3b / arm4 报告与对比表在 `data/logs/snapshot/` |
+
+测试：`pytest tests` **408 通过 / 1 跳过**（比上一轮 +25，正好是新增两个测试文件）。

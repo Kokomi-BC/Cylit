@@ -89,6 +89,21 @@ class LanceDBStore:
     def has_lang(self) -> bool:
         return "lang" in self.columns()
 
+    def has_type(self, chunk_type: str) -> bool:
+        """索引里有没有这一类 chunk（用来判断"单元层建过没有"）。
+
+        为什么要这个探针：默认检索候选集排除了正文 chunk（避免同一段内容两条命中），
+        但**老索引里没有 unit 行** —— 那时若还按新候选集过滤，就会把正文也一起排除，
+        检索直接变差。有了探针就能对老索引退回"不限类型"，行为与改造前一致。
+        """
+        table = self._table()
+        if table is None:
+            return False
+        try:
+            return table.count_rows(f"chunk_type = '{_escape(chunk_type)}'") > 0
+        except Exception:  # noqa: BLE001 —— 探测失败按"没有"处理（调用方会退回全类型）
+            return False
+
     def _select(self, wanted: list[str]) -> list[str]:
         """只 select 表里真有的列。
 

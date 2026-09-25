@@ -358,25 +358,50 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            vector_k: int | None = None, lexical_k: int | None = None,
            fused_k: int | None = None) -> dict:
     """完整检索链路。``scope``：``all`` 全库 / ``cross`` 跨文献（排除来源论文）/
-    ``paper`` 只在本篇内找。"""
+    ``paper`` 只在本篇内找。
+
+    **默认候选集**（``chunk_types=None`` 时）：``unit, formula, figure, table``
+    —— 单元是检索单位（fine-grained），公式/图/表本来就是不可切的原子块；
+    正文 chunk **不进候选**：它和它的单元是同一批行的两种粒度，都进候选就会出现
+    "同一段内容两条命中"，Top-K 被自己挤掉（它是上下文单位，由 RAG 侧按需取，见 `rag_service`）。
+    过滤后一条都没有（老索引、或没建单元）→ **自动用全部类型重搜一次**，行为回到改造前。
+    """
     query = (query or "").strip()
     if not query:
         return {"items": [], "retrieval": {"error": "空查询"}}
     paper_ids = [paper_id] if (scope == "paper" and paper_id) else None
     exclude_paper = paper_id if scope == "cross" else None
+    explicit_types = chunk_types is not None
+    types = chunk_types if explicit_types else default_search_types()
+    notes: list[str] = []
+    if not explicit_types and types and not _has_chunk_type("unit"):
+        # 老索引（还没建单元层）→ 不限制类型：否则正文也被排除，检索会比改造前更差
+        notes.append("索引里还没有 unit 行（未重建）→ 本次不限候选类型")
+        types = None
 
-    common_kwargs = dict(chunk_types=chunk_types, langs=langs,
-                         paper_ids=paper_ids, exclude_paper=exclude_paper,
+    common_kwargs = dict(langs=langs, paper_ids=paper_ids, exclude_paper=exclude_paper,
                          exclude_chunks=exclude_chunks)
     vec_hits = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
-                             **common_kwargs)
+                             chunk_types=types, **common_kwargs)
     lex_hits = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
-                              **common_kwargs)
+                              chunk_types=types, **common_kwargs)
     fused = rrf_fuse({"vector": vec_hits, "lexical": lex_hits},
                      top_k=fused_k or rag_k("fused"))
     items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
                                      mode=mode)
-    notes: list[str] = []
+    fell_back = False
+    if not items and not explicit_types and types:
+        # 兜底：候选集过滤后空手而归 → 放开类型限制重搜一次（保证"没建单元也检得到"）
+        fell_back = True
+        vec_hits = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
+                                 **common_kwargs)
+        lex_hits = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
+                                  **common_kwargs)
+        fused = rrf_fuse({"vector": vec_hits, "lexical": lex_hits},
+                         top_k=fused_k or rag_k("fused"))
+        items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
+                                         mode=mode)
+        notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")
     if langs and not vector_store.has_lang():
         notes.append("索引还没有 lang 列（旧索引）：本次语言过滤未生效，重建索引后可用")
     if rerank_info.get("degraded") and rerank_info.get("reason"):
@@ -385,6 +410,8 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         "items": items,
         "retrieval": {
             "query": query, "mode": mode, "scope": scope,
+            "chunk_types": list(types) if types else None,
+            "type_fallback": fell_back,
             "vector_hits": len(vec_hits), "lexical_hits": len(lex_hits),
             "fused": len(fused), "returned": len(items),
             "rrf_k": RRF_K,
@@ -393,6 +420,29 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
             "notes": notes,
         },
     }
+
+
+def _has_chunk_type(chunk_type: str) -> bool:
+    """索引里有没有这一类 chunk（探针失败时**当作有**，避免误退回全类型而改变行为）。"""
+    try:
+        return bool(vector_store.has_type(chunk_type))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+#: 默认检索候选集：单元（细粒度检索单位）+ 三个不可切的原子类型（公式/图/表）
+DEFAULT_SEARCH_TYPES = ("unit", "formula", "figure", "table")
+
+
+def default_search_types() -> list[str]:
+    """``kb.retrieval_types``（逗号分隔）覆盖默认候选集；空串 = 不限类型（改造前行为）。"""
+    raw = _setting("retrieval_types", "")
+    if isinstance(raw, (list, tuple)):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    text = str(raw or "").strip()
+    if text:
+        return [t.strip() for t in text.split(",") if t.strip()]
+    return list(DEFAULT_SEARCH_TYPES)
 
 
 def _model_name(model_type: str) -> str | None:

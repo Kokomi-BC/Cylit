@@ -37,6 +37,9 @@ log = get_logger(__name__)
 
 #: 结构行类型（由图/表 chunk 承载，不进正文块）
 STRUCT_TYPES = ("caption", "table", "figure")
+#: 语义单元的**长度兜底**（字符）：某节里模型没给锚点时，一段长正文不能整节变成一个单元。
+#: 700 ≈ 2~3 个段落 —— 与实测的"单元中位 2 行"同量级（见 docs/语义单元索引-设计.md §2）。
+UNIT_MAX_CHARS = 700
 #: 参考文献小节名（整节不入库 —— 与改造前一致：解析侧 `type == "ref"` 的块被跳过）
 _REF_SECTION = re.compile(r"^\s*(references?|bibliography|参考文献)\s*$", re.I)
 #: 图注编号：`Table 3: …` / `Figure 2: …` / `表 1：…`
@@ -298,22 +301,27 @@ def _is_appendix(node: dict | None) -> bool:
 # --------------------------------------------------------------------------
 
 
-def semantic_units(rows: list[dict], *, use_breaks: bool = True) -> list[dict]:
-    """正文行 → 语义单元（连续行的一段），边界 = TOC 节点边界 ∪ LLM 锚点。
+def semantic_units(rows: list[dict], *, use_breaks: bool = True,
+                   max_chars: int = 0) -> list[dict]:
+    """正文行 → 语义单元（连续行的一段），边界 = TOC 节点边界 ∪ LLM 锚点 ∪（可选）长度上限。
 
     结构行（图/表）不参与：它们由各自的 chunk 承载，且**天然是单元的边界**
     （所以"表注与表体之间"永远不会被锚点切开）。
 
-    ``use_breaks=False`` 就是 arm 2（只有 TOC，没有 LLM 锚点），用来量锚点到底带来多少收益。
+    - ``use_breaks=False`` 就是 arm 2（只有 TOC，没有 LLM 锚点），用来量锚点到底带来多少收益；
+    - ``max_chars>0`` 是**代码侧的兜底**：某节里模型没给锚点时，一段长正文不能整节变成一个单元。
+      到上限就在**行边界**切（行 = 段落，所以永远不会切进公式 / 表格 / 一句话中间）；
+      只由一行组成的段不切（单行不可拆）。
     """
     units: list[dict] = []
     cur: list[dict] = []
+    size = 0
 
     def flush() -> None:
-        nonlocal cur
+        nonlocal cur, size
         if cur:
             units.append({"rows": cur})
-            cur = []
+        cur, size = [], 0
 
     for row in rows:
         if row.get("skip_reason") or _is_structural(row):
@@ -322,7 +330,10 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True) -> list[dict]:
         if cur and (row["section_key"] != cur[-1]["section_key"]
                     or (use_breaks and row.get("semantic_break"))):
             flush()
+        elif (cur and max_chars and size + len(row["original"]) > max_chars):
+            flush()                     # 长度兜底：在行边界切
         cur.append(row)
+        size += len(row["original"])
     flush()
     return units
 
@@ -333,19 +344,23 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True) -> list[dict]:
 
 
 def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
-             use_breaks: bool = True) -> tuple[list[dict], dict]:
+             use_breaks: bool = True,
+             unit_max_chars: int = UNIT_MAX_CHARS) -> tuple[list[dict], dict]:
     """行 + TOC + 语义单元 → 正文 chunk 列表（外加一份装配统计）。
 
-    规则（自上而下，与设计文档一致）：
+    **chunk 由整数个 unit 组成**（unit 是分块层的原子，见 docs/语义单元索引-设计.md §1）：
+    这样 `row ⊆ unit ⊆ chunk` 三层关系都是确定的，每个 unit 恰好有一个父 chunk，
+    small-to-big 往上取上下文才有唯一答案。
+
+    规则（自上而下）：
 
     1. 一个 TOC 节点的**整棵子树**能装进 ``target`` → 整棵成一块（主题完整，如 `2.2 Needle`、
        `D Additional Experiment`）；否则递归到子节点；
     2. 节点自己的行（标题 + 引言）单独成一块；短于 ``floor`` 且有子节点时**并进首个子块**
        （祖先→后代，不是兄弟跨越 —— 唯一允许的"跨界"）；
-    3. 同一节点内：先按语义单元切，再**贪心累加**到 ``target`` 之上即封口，
-       但 ``当前 + 下一个 > hard`` 必须停；
-    4. 单个单元自身 > ``hard``（只可能是多行合并出来的）→ 退回**行边界**继续切
-       （单行最长 1487 字 < hard=2240，所以永远不会切进公式 / 表格 / 句子中间）。
+    3. 同一节点内按单元**贪心累加**到 ``target`` 之上即封口，``当前 + 下一个 > hard`` 必须停；
+    4. 单元自身 > ``hard``（只可能是"单行就超长"）→ 退回**行边界**兜底（实测单行最长 1487 <
+       hard=2240，正常语料不会发生）。
     """
     text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
     # 行归属必须在装配前定好（`load()` 已经做过一次）；这里再调一次是幂等的，
@@ -359,8 +374,14 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
                  "children": [], "parent": None, "path": "",
                  "row_index": text_rows[0]["index"]}]
     all_nodes = _walk(tree)
+    unit_partition = semantic_units(text_rows, use_breaks=use_breaks,
+                                    max_chars=unit_max_chars)
+    unit_of_row = {r["index"]: u for u in unit_partition for r in u["rows"]}
     stats = {"nodes": 0, "whole_subtree": 0, "own_chunk": 0, "intro_merged": 0,
-             "unit_split": 0, "row_fallback": 0, "chunks": 0}
+             "unit_split": 0, "row_fallback": 0, "chunks": 0, "units": len(unit_partition),
+             # cap 额外切出来的单元数 = 有 cap 与无 cap 的单元数之差（确定性，不必埋计数器）
+             "unit_capped": (len(unit_partition)
+                             - len(semantic_units(text_rows, use_breaks=use_breaks)))}
     chunks: list[dict] = []
 
     def chars(items: list[dict]) -> int:
@@ -371,6 +392,15 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
             return
         stats["chunks"] += 1
         chunks.append({"rows": items, "node": node})
+
+    def units_of(items: list[dict]) -> list[dict]:
+        """这段行覆盖了哪些单元（按行序去重；调用方保证传入的是整单元边界）。"""
+        seen: list[dict] = []
+        for row in items:
+            unit = unit_of_row.get(row["index"])
+            if unit is not None and (not seen or seen[-1] is not unit):
+                seen.append(unit)
+        return seen
 
     def pack_node(node: dict) -> None:
         stats["nodes"] += 1
@@ -409,22 +439,73 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     for node in tree:
         pack_node(node)
 
-    # 节点内按语义单元 / 行边界二次切分（超过 hard 的才切）
+    # 超过 hard 的块按**单元边界**二次切分（单元自身超 hard 才退回行边界）
     out: list[dict] = []
     for chunk in chunks:
-        items = chunk["rows"]
-        if chars(items) <= hard:
+        if chars(chunk["rows"]) <= hard:
             out.append(chunk)
             continue
         stats["unit_split"] += 1
-        pieces, used_rows = _split_rows(items, target=target, hard=hard, use_breaks=use_breaks)
+        pieces, used_rows = pack_units(units_of(chunk["rows"]), target=target, hard=hard)
         if used_rows:
             stats["row_fallback"] += 1
         for piece in pieces:
-            out.append({"rows": piece, "node": chunk["node"]})
+            out.append({"rows": [r for u in piece for r in u["rows"]],
+                        "units": piece, "node": chunk["node"]})
     out.sort(key=lambda c: c["rows"][0]["index"])
+    for chunk in out:
+        # 块的稳定键 = 起止行 id（块是行的划分，所以唯一）。索引层据此把它换成真正的 chunk id，
+        # 单元再通过这个键挂到父块上（`unit_records` → `build` → 索引层重写一次）。
+        chunk["key"] = f"{chunk['rows'][0]['id']}-{chunk['rows'][-1]['id']}"
     stats["chunks"] = len(out)
     return out, stats
+
+
+def pack_units(units: list[dict], *, target: int, hard: int
+               ) -> tuple[list[list[dict]], bool]:
+    """单元序列 → 块的划分（贪心）：累加到 ``target`` 之上即封口，``+下一个 > hard`` 必停。
+
+    返回 ``(块的列表, 是否用到行边界兜底)``。单元自身 > ``hard`` 时按**行边界**兜底
+    —— 单行不可拆，所以这条路径只在"某一行本身就超 hard"时才会走到。
+    """
+    out: list[list[dict]] = []
+    buf: list[dict] = []
+    size = 0
+    used_rows = False
+
+    def flush() -> None:
+        nonlocal buf, size
+        if buf:
+            out.append(buf)
+        buf, size = [], 0
+
+    for unit in units:
+        unit_size = sum(len(r["original"]) for r in unit["rows"])
+        if unit_size > hard:
+            used_rows = True
+            flush()
+            row_buf: list[dict] = []
+            row_size = 0
+            for row in unit["rows"]:
+                if row_buf and row_size + len(row["original"]) > hard:
+                    out.append([{"rows": row_buf}])
+                    row_buf, row_size = [], 0
+                row_buf.append(row)
+                row_size += len(row["original"])
+                if row_size >= target:
+                    out.append([{"rows": row_buf}])
+                    row_buf, row_size = [], 0
+            if row_buf:
+                out.append([{"rows": row_buf}])
+            continue
+        if buf and size + unit_size > hard:
+            flush()
+        buf.append(unit)
+        size += unit_size
+        if size >= target:
+            flush()
+    flush()
+    return out, used_rows
 
 
 def _own_rows(node: dict, rows: list[dict], text_rows: list[dict],
@@ -466,49 +547,9 @@ def _is_descendant(node: dict, ancestor: dict) -> bool:
 
 def _split_rows(items: list[dict], *, target: int, hard: int,
                 use_breaks: bool) -> tuple[list[list[dict]], bool]:
-    """把超 ``hard`` 的行段切成若干块：语义单元优先，单元自身还超就退回行边界。
-
-    返回 ``(块列表, 是否用到行边界兜底)``。单行最长 1487 字（实测）< hard，所以
-    "单元自身超上限"只可能是多行合并出来的 —— 退回行边界即可，**永远不必按句子切**。
-    """
+    """【旧接口，保留给测试】把超 ``hard`` 的行段切成若干块（内部就是 `pack_units`）。"""
     units = semantic_units(items, use_breaks=use_breaks)
-    out: list[list[dict]] = []
-    buf: list[dict] = []
-    size = 0
-    used_rows = False
-
-    def flush() -> None:
-        nonlocal buf, size
-        if buf:
-            out.append(buf)
-        buf, size = [], 0
-
-    def add(rows: list[dict]) -> None:
-        nonlocal size
-        buf.extend(rows)
-        size += sum(len(r["original"]) for r in rows)
-
-    for unit in units:
-        unit_rows = unit["rows"]
-        unit_size = sum(len(r["original"]) for r in unit_rows)
-        if unit_size > hard:                      # 单元自身超上限 → 按行边界切
-            used_rows = True
-            flush()
-            for row in unit_rows:
-                if buf and size + len(row["original"]) > hard:
-                    flush()
-                add([row])
-                if size >= target:
-                    flush()
-            flush()
-            continue
-        if buf and size + unit_size > hard:
-            flush()
-        add(unit_rows)
-        if size >= target:
-            flush()
-    flush()
-    return out, used_rows
+    return pack_units(units, target=target, hard=hard)
 
 
 # --------------------------------------------------------------------------
@@ -516,15 +557,91 @@ def _split_rows(items: list[dict], *, target: int, hard: int,
 # --------------------------------------------------------------------------
 
 
-def validate(chunks: list[dict], rows: list[dict], *, hard: int) -> dict:
+def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = True,
+                 unit_max_chars: int = UNIT_MAX_CHARS) -> list[dict]:
+    """行 + chunk 划分 → **单元记录**（索引层直接用它建 `chunk_type="unit"` 的行）。
+
+    这里**不生成任何文字**：`en` / `zh` 都是把行的 `original` / `translation` 按序拼起来
+    （用户口径：LLM 负责语义分组，代码负责取原文）。
+
+    每条记录带 `parent_chunk_id`（它属于哪条正文 chunk）与 `prev` / `next`（±1 邻居，
+    都在同一父 chunk 内）—— small-to-big 直接用这两个指针，不必在检索时现算。
+    """
+    text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
+    partition = semantic_units(text_rows, use_breaks=use_breaks, max_chars=unit_max_chars)
+    owner: dict[int, dict] = {}
+    for chunk in chunks:
+        for row in chunk["rows"]:
+            owner[row["index"]] = chunk
+    out: list[dict] = []
+    for i, unit in enumerate(partition):
+        items = unit["rows"]
+        first, last = items[0], items[-1]
+        parent = owner.get(first["index"])
+        out.append({
+            "unit_id": f"{first['id']}-{last['id']}",
+            "row_ids": [r["id"] for r in items],
+            "first_row": first, "last_row": last,
+            "en": "\n\n".join(r["original"] for r in items),
+            "zh": "\n\n".join(r["translation"].strip() for r in items
+                              if (r["translation"] or "").strip()),
+            "section_path": first.get("section_path") or "",
+            "section_title": first.get("section_title") or "",
+            "section_kind": first.get("section_kind") or "body",
+            "pages": sorted({r["page"] for r in items}),
+            "chars": sum(len(r["original"]) for r in items),
+            "anchor_used": bool(first.get("semantic_break")),
+            "parent_chunk_id": (parent or {}).get("key"),
+            "parent_key": (parent or {}).get("key"),
+            "prev": None, "next": None,
+            "_index": i,
+        })
+    # 邻居：同一父 chunk 内左右相邻
+    by_parent: dict[str, list[dict]] = {}
+    for record in out:
+        by_parent.setdefault(str(record["parent_chunk_id"]), []).append(record)
+    for group in by_parent.values():
+        for left, right in zip(group, group[1:]):
+            left["next"] = right["unit_id"]
+            right["prev"] = left["unit_id"]
+    return out
+
+
+def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
+          use_breaks: bool = True,
+          unit_max_chars: int = UNIT_MAX_CHARS) -> dict:
+    """一次产出三层：``{chunks, units, stats, report}``（索引层的唯一入口）。
+
+    - `chunks`：正文块（每个带 `unit_ids`）—— 上下文单位；
+    - `units`：语义单元（带 `parent_chunk_id` / `prev` / `next`）—— 检索单位；
+    - `report`：`validate` 的结果（行覆盖 / 顺序 / 不跨节 / 长度 / 结构 + 单元不变量）。
+    """
+    chunks, stats = assemble(rows, tree, target=target, hard=hard, floor=floor,
+                             use_breaks=use_breaks, unit_max_chars=unit_max_chars)
+    units = unit_records(rows, chunks, use_breaks=use_breaks,
+                         unit_max_chars=unit_max_chars)
+    by_parent: dict[str, list[str]] = {}
+    for unit in units:
+        by_parent.setdefault(str(unit["parent_chunk_id"]), []).append(unit["unit_id"])
+    for chunk in chunks:
+        chunk["unit_ids"] = by_parent.get(str(chunk.get("key")), [])
+    report = validate(chunks, rows, hard=hard, units=units)
+    return {"chunks": chunks, "units": units, "stats": stats, "report": report}
+
+
+def validate(chunks: list[dict], rows: list[dict], *, hard: int,
+             units: list[dict] | None = None,
+             unit_max_chars: int = UNIT_MAX_CHARS) -> dict:
     """校验装配结果；任何一条不满足都记下来（调用方据此回退到确定性行边界切分）。
 
-    校验项（对应设计文档 §14）：
+    校验项：
     - **覆盖**：该进正文的行恰好出现一次；
     - **顺序**：chunk 内的行下标递增，chunk 之间不交叉、不重排；
     - **不跨节**：一个 chunk 的行不落在两个不可比的 TOC 节点里（祖先/后代关系不算跨界）；
     - **长度**：英文侧 ≤ hard（一行不可拆，所以单行超限时只告警不失败）；
-    - **结构完整**：正文块里不出现表格行 / 图注行 / 参考文献行（这些由图/表 chunk 承载）。
+    - **结构完整**：正文块里不出现表格行 / 图注行 / 参考文献行（这些由图/表 chunk 承载）；
+    - **单元不变量**（传了 `units` 才查）：单元按行序恰好一次覆盖同一批行、每个单元恰属于
+      一个 chunk、邻居指针同父相邻、单元 ≤ `unit_max_chars`（单行单元除外）。
     """
     errors: list[dict] = []
     expected = [r for r in rows
@@ -558,9 +675,50 @@ def validate(chunks: list[dict], rows: list[dict], *, hard: int) -> dict:
         missing = sorted(set(r["index"] for r in expected) - set(seen))
         dup = sorted(i for i in set(seen) if seen.count(i) > 1)
         errors.append({"kind": "coverage", "missing": missing[:8], "duplicate": dup[:8]})
+    if units is not None:
+        errors.extend(_validate_units(units, chunks, unit_max_chars=unit_max_chars))
     return {"ok": not errors, "errors": errors,
             "chunks": len(chunks), "rows": len(expected),
+            "units": len(units) if units is not None else None,
             "covered": len(seen)}
+
+
+def _validate_units(units: list[dict], chunks: list[dict], *,
+                    unit_max_chars: int) -> list[dict]:
+    """单元不变量（见 `validate` 的说明）。"""
+    errors: list[dict] = []
+    chunk_of_unit: dict[str, dict] = {}
+    for chunk in chunks:
+        for unit_id in chunk.get("unit_ids") or []:
+            chunk_of_unit[unit_id] = chunk
+    seen: list[str] = []
+    prev_last = -1
+    for unit in units:
+        rows_span = unit.get("row_ids") or []
+        if not rows_span:
+            errors.append({"kind": "empty_unit", "unit": unit.get("unit_id")})
+            continue
+        parent = chunk_of_unit.get(str(unit["unit_id"]))
+        if parent is None:
+            errors.append({"kind": "unit_without_parent", "unit": unit["unit_id"]})
+            continue
+        index_of = {r["id"]: r["index"] for r in parent["rows"]}
+        if not all(rid in index_of for rid in rows_span):
+            errors.append({"kind": "unit_split_across_chunks", "unit": unit["unit_id"],
+                           "parent": parent.get("id")})
+        first = index_of.get(rows_span[0], -1)
+        last = index_of.get(rows_span[-1], -1)
+        if first <= prev_last:
+            errors.append({"kind": "unit_order", "unit": unit["unit_id"]})
+        prev_last = last if last >= 0 else prev_last
+        if unit.get("chars", 0) > unit_max_chars and len(rows_span) > 1:
+            errors.append({"kind": "unit_over_max", "unit": unit["unit_id"],
+                           "chars": unit.get("chars")})
+        seen.append(str(unit["unit_id"]))
+    if len(seen) != len(set(seen)):
+        dup = sorted({u for u in seen if seen.count(u) > 1})
+        errors.append({"kind": "unit_duplicate", "units": dup[:8]})
+    return errors
 
 
 def _paths_comparable(paths: set[str]) -> bool:

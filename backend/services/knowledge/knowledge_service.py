@@ -349,11 +349,13 @@ def _chunk_variants_rows(base: list[dict], langs: tuple[str, ...]) -> list[dict]
                 if not content.strip():
                     continue                  # 还没翻译 → 不出 zh 行
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
-            if c["chunk_type"] in ("text", "figure", "table"):
+            if c["chunk_type"] in ("text", "unit", "figure", "table"):
                 content = _strip_unpaired_bold(content)
-            if c["chunk_type"] == "text":
+            if c["chunk_type"] in ("text", "unit"):
                 content = _inline_embed_math(content)
                 content = _wrap_bare_latex(content)
+            # 单元不吃"残渣门槛"：短单元（单行小段）在细粒度检索里是有用的，
+            # 门槛只用来兜正文块的残渣（见 `_chunk_variants_rows` 的 docstring）
             if c["chunk_type"] == "text" and len(content) < floor:
                 continue
             out.append(_variant_row(c, lang, content))
@@ -366,6 +368,8 @@ def _chunk_variants_rows(base: list[dict], langs: tuple[str, ...]) -> list[dict]
 
 
 USE_BREAKS_SETTING = "kb.chunk_use_breaks"
+#: 是否把语义单元也建进索引（1/0，默认 1）—— 单元是**检索单位**，chunk 是上下文单位
+UNIT_INDEX_SETTING = "kb.unit_index"
 
 
 def _setting_flag(key: str, default: bool) -> bool:
@@ -422,8 +426,11 @@ def _base_chunks(paper_id: str) -> list[dict]:
       只是章节与排序改用"它所在的行"。
 
     装配结果会过一遍校验层（`chunking.validate`）：行覆盖恰好一次、顺序不变、不跨节、
-    ≤ hard、正文里不混结构行。不通过就先退回"不用锚点"再装配一次，仍不通过则原样入库
-    并把错误写进日志（**宁可入库也不静默丢内容**）。
+    ≤ hard、正文里不混结构行、单元与块的父子关系确定。不通过就先退回"不用锚点"再装配一次，
+    仍不通过则原样入库并把错误写进日志（**宁可入库也不静默丢内容**）。
+
+    产出三层（见 `docs/语义单元索引-设计.md`）：`row ⊆ unit ⊆ chunk`。
+    `unit`（细，中位 ≈500 字）是**检索单位**，`text` chunk（≈1400 字）是**上下文单位**。
     """
     from backend.services.knowledge import chunking
 
@@ -450,16 +457,16 @@ def _base_chunks(paper_id: str) -> list[dict]:
 
     target, floor, hard = chunk_params()
     use_breaks = _setting_flag(USE_BREAKS_SETTING, True)
-    chunks, stats = chunking.assemble(rows, tree, target=target, hard=hard,
-                                      floor=floor, use_breaks=use_breaks)
-    report = chunking.validate(chunks, rows, hard=hard)
-    if not report["ok"] and use_breaks:
+    built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
+                           use_breaks=use_breaks)
+    if not built["report"]["ok"] and use_breaks:
         log.warning("语义锚点装配未通过校验（%s），退回「只按目录层级」：%s",
-                    paper_id, report["errors"][:3])
+                    paper_id, built["report"]["errors"][:3])
         use_breaks = False
-        chunks, stats = chunking.assemble(rows, tree, target=target, hard=hard,
-                                          floor=floor, use_breaks=False)
-        report = chunking.validate(chunks, rows, hard=hard)
+        built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
+                               use_breaks=False)
+    chunks, units, stats = built["chunks"], built["units"], built["stats"]
+    report = built["report"]
     if not report["ok"]:
         log.error("行级装配仍未通过校验（%s）：%s", paper_id, report["errors"][:5])
 
@@ -477,18 +484,62 @@ def _base_chunks(paper_id: str) -> list[dict]:
     block_to_row = _block_row_ids(paper_id, parse_rows)
 
     out: list[dict] = []
+    key_to_id: dict[str, str] = {}
     for chunk in chunks:
-        out.append(_row_text_chunk(paper_id, chunk["rows"], chunk.get("node")))
+        made = _row_text_chunk(paper_id, chunk["rows"], chunk.get("node"))
+        key_to_id[str(chunk.get("key"))] = made["id"]
+        out.append(made)
+    if _setting_flag(UNIT_INDEX_SETTING, True):
+        out.extend(_row_unit_chunks(paper_id, units, key_to_id, use_breaks=use_breaks))
     out.extend(_row_structure_chunks(paper_id, rows, ir, regions, caption_ids,
                                      region_of_caption))
     out.extend(_row_formula_chunks(paper_id, rows, f_entries, block_to_row))
     _attach_formula_ids(out, rows, f_entries, block_to_row)
     out.sort(key=lambda c: (c["order_global"],
-                            0 if c["chunk_type"] == "text" else 1))
-    log.info("行级分块（%s）：行 %d / 正文块 %d / 总计 %d；装配 %s；校验 %s",
-             paper_id, len(rows), len(chunks), len(out), stats,
+                            0 if c["chunk_type"] in ("text", "unit") else 1))
+    log.info("行级分块（%s）：行 %d / 正文块 %d / 单元 %d / 总计 %d；装配 %s；校验 %s",
+             paper_id, len(rows), len(chunks), len(units), len(out), stats,
              "通过" if report["ok"] else f"未通过 {report['errors'][:2]}")
     return _link_formulas(out)
+
+
+def _row_unit_chunks(paper_id: str, units: list[dict], key_to_id: dict[str, str], *,
+                     use_breaks: bool) -> list[dict]:
+    """语义单元 → ``chunk_type="unit"`` 的入库行（**检索单位**）。
+
+    正文由单元的 `en` / `zh` 直接给出 —— 那本来就是"按行原文拼起来的"，本函数不生成任何文字。
+    元数据里带 `parent_chunk_id`（small-to-big 往上取上下文）与 `prev/next_unit_id`（±1 邻居），
+    检索侧与上下文扩展都直接用这两个指针，不必在查询时重算分块。
+    """
+    out: list[dict] = []
+    for unit in units:
+        first, last = unit["first_row"], unit["last_row"]
+        meta = {
+            "row_ids": list(unit["row_ids"]),
+            "pages": list(unit["pages"]),
+            "section_kind": unit["section_kind"],
+            "parent_chunk_id": key_to_id.get(str(unit.get("parent_chunk_id"))),
+            "prev_unit_id": (f"{paper_id}:unit:{unit['prev']}" if unit.get("prev") else None),
+            "next_unit_id": (f"{paper_id}:unit:{unit['next']}" if unit.get("next") else None),
+            "unit_chars": unit["chars"],
+            "unit_ids": [f"{paper_id}:unit:{unit['unit_id']}"],
+            # 这条单元的左边界是 LLM 锚点、还是"长度兜底/小节边界"切出来的（回归时能分开量）
+            "anchor_used": bool(unit.get("anchor_used")),
+            "unit_source": "llm_break" if (use_breaks and unit.get("anchor_used"))
+                           else "deterministic",
+        }
+        chunk = _make_chunk(
+            paper_id, "unit", unit["en"],
+            {"id": first["id"], "page": first["page"], "order": first["index"]},
+            {"id": last["id"], "page": last["page"], "order": last["index"]},
+            section=unit.get("section_title") or "",
+            section_path=unit.get("section_path") or "",
+            metadata=meta,
+            chunk_id=f"{paper_id}:unit:{unit['unit_id']}",
+        )
+        chunk["_zh"] = unit["zh"] or None
+        out.append(chunk)
+    return out
 
 
 def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None) -> dict:
@@ -726,16 +777,24 @@ def _row_formula_chunks(paper_id: str, rows: list[dict], entries: list[dict],
 
 def _attach_formula_ids(chunks: list[dict], rows: list[dict], entries: list[dict],
                         block_to_row: dict[str, str]) -> None:
-    """把"这条公式落在哪条正文块里"写成双向关系（正文块的 ``formula_ids`` + 公式块的指回）。"""
+    """把"这条公式落在哪条内容行里"写成双向关系（内容块的 ``formula_ids`` + 公式块的指回）。
+
+    内容块 = 正文 chunk **和语义单元**：检索单位现在是单元（见 `docs/语义单元索引-设计.md`），
+    所以"哪条公式在这段里"必须挂到单元上，否则"公式上下文"这类判据在单元检索下恒为 0。
+    `_link_formulas` 会给公式块补 `text_chunk_id` —— 它取**第一条**含该公式的块；
+    单元比 chunk 细，所以优先让它指到单元（更精确的定位）。
+    """
     row_index = {r["id"]: r["index"] for r in rows}
-    text_chunks = [c for c in chunks if c["chunk_type"] == "text"]
+    holders = [c for c in chunks if c["chunk_type"] in ("unit", "text")]
+    # 单元优先（更细的定位），其次正文块
+    holders.sort(key=lambda c: 0 if c["chunk_type"] == "unit" else 1)
     for e in entries:
         anchor = e.get("formula_block_id") or e.get("id")
         row_id = str(e.get("row_id") or block_to_row.get(str(e.get("formula_block_id") or "")) or "")
         idx = row_index.get(row_id)
         if idx is None:
             continue
-        for chunk in text_chunks:
+        for chunk in holders:
             span = (chunk.get("metadata") or {}).get("row_ids") or []
             if not span:
                 continue
@@ -772,15 +831,17 @@ def _block_row_ids(paper_id: str, rows: list[dict]) -> dict[str, str]:
 
 
 def _link_formulas(chunks: list[dict]) -> list[dict]:
-    """给公式原子 chunk 补 ``text_chunk_id``：它被内联在哪条语义 chunk 里。
+    """给公式原子 chunk 补 ``text_chunk_id``：它被内联在哪条内容块里。
 
-    关系是双向的：语义 chunk 的 ``metadata.formula_ids`` 列出它包含的公式块，
-    公式 chunk 反过来指回语义 chunk（合并/切分之后再算，所以不会指错）。
+    关系是双向的：内容块的 ``metadata.formula_ids`` 列出它包含的公式块，
+    公式 chunk 反过来指回内容块（合并/切分之后再算，所以不会指错）。
+
+    内容块 = **语义单元**（优先，检索单位，定位更精）→ 正文 chunk（上下文单位）。
     """
     owner: dict[str, str] = {}
-    for c in chunks:
-        if c["chunk_type"] != "text":
-            continue
+    holders = [c for c in chunks if c["chunk_type"] in ("unit", "text")]
+    holders.sort(key=lambda c: 0 if c["chunk_type"] == "unit" else 1)
+    for c in holders:
         for fid in (c.get("metadata") or {}).get("formula_ids") or []:
             owner.setdefault(fid, c["id"])
     for c in chunks:
