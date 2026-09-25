@@ -74,6 +74,31 @@ def _ink_pixel_bbox(pix, threshold: int) -> tuple[int, int, int, int] | None:
     return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
 
 
+def ink_fraction(doc: "fitz.Document", page_no: int, rect: Rect, *, dpi: int = 110,
+                 threshold: int = 250) -> float:
+    """``rect`` 内非白像素占比（0~1）；渲染失败返回 ``-1.0``。
+
+    用途：:meth:`ink_bbox` 在**整幅全白**时会原样返回入参，所以"磨迹收紧成功"不等于
+    "这里有内容"。扫描件靠视觉模型给粗框，就必须能识别出"模型把框画在空白处"这种提案。
+    """
+    page = doc[page_no - 1]
+    clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1) & page.rect
+    if clip.is_empty or clip.width < 2 or clip.height < 2:
+        return -1.0
+    try:
+        import numpy as np
+
+        zoom = dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip,
+                              colorspace=fitz.csGRAY, alpha=False)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8)
+        arr = arr.reshape(pix.height, pix.stride)[:, :pix.width]
+        return float((arr < threshold).mean())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("墨迹占比量测失败（p%d）：%s", page_no, exc)
+        return -1.0
+
+
 def _content_span(pix, threshold: int) -> tuple[int, int]:
     """渲染结果的行方向内容范围，用来去掉图注图上下多余的整行白边。"""
     box = _ink_pixel_bbox(pix, threshold)

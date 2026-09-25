@@ -28,7 +28,7 @@ from backend.core.logging import get_logger
 from backend.core.utils import Timer, json_dumps, new_id, normalize_text, write_json
 from backend.parsing.extract.image_layer import extract_images
 from backend.parsing.extract.render import (
-    render_crop_png, render_page_png, render_pages,
+    ink_bbox, ink_fraction, render_crop_png, render_page_png, render_pages,
 )
 from backend.parsing.extract.text_layer import extract_page_blocks, page_has_text_layer
 from backend.parsing.extract.vector_layer import extract_drawings
@@ -50,12 +50,15 @@ from backend.parsing.models import (
     TableBlock,
 )
 from backend.parsing.ocr.vision_reader import (
-    blocks_from_page_markdown, looks_scanned, title_from_markdown,
+    PageRead, blocks_from_page_markdown, looks_scanned, title_from_markdown,
 )
 from backend.parsing.qa.consistency import run_consistency_checks
 from backend.parsing.qa.figure_audit import audit_figure_crop
 from backend.parsing.qa.report import build_quality_report
-from backend.parsing.structure.figure_cut import detect_figures, detect_tables
+from backend.parsing.structure.figure_cut import (
+    caption_number, detect_figures, detect_tables,
+)
+from backend.parsing.structure.ink_layout import PageInk, locate_figure
 from backend.parsing.structure.formula_block import detect_formula_candidates
 from backend.parsing.structure.paragraph import (
     LineProfile, build_blocks_from_groups, build_line_profile,
@@ -70,8 +73,123 @@ log = get_logger(__name__)
 
 # 公式修复钩子签名：evidence dict → {repaired_latex, reason, evidence_used, uncertainties}
 RepairFn = Callable[[dict], dict]
-# 扫描件读页钩子签名：(页号, 页图 PNG 字节) → 该页 Markdown 原文
-VisionReadFn = Callable[[int, bytes], str]
+# 扫描件读页钩子签名：(页号, 页图 PNG 字节) → 该页 Markdown（或带版面块的 PageRead）
+VisionReadFn = Callable[[int, bytes], "str | PageRead"]
+
+# --------------------------------------------------------------------------
+# 扫描页插图：模型提案 → 像素定边界 的判据
+#
+# 这些阈值只服务于"要不要把这张裁图放进 Markdown"这一个决定：
+# 模型框偏差几个百分点没关系（后面会贴到墨迹上），但**框得离谱就一张都不出**。
+# --------------------------------------------------------------------------
+SCAN_MIN_AREA_RATIO = 0.01      # 小于 1% 页面的框不是插图（印章/logo/水印）
+SCAN_MAX_AREA_RATIO = 0.95      # 大于 95% 的框是"整页"，说明模型没定位到图体
+SCAN_MIN_HEIGHT = 24.0          # pt：低于此高度的"图"没有意义（多半是裁到一行字）
+SCAN_MIN_WIDTH = 24.0
+SCAN_MIN_PROPOSAL_IOU = 0.20    # 墨迹细化后与模型提案的 IoU 下限（差太远 = 提案不可信）
+SCAN_MIN_INK = 0.01             # 框内非白像素占比下限（低于它 = 框落在空白处）
+SCAN_INK_PAD = 1.5              # 墨迹外扩的呼吸位（pt）
+
+
+class _ScanCand:
+    """给 :func:`_make_orphan_block` 用的最小候选对象（它只读 page_no / rect）。"""
+
+    __slots__ = ("page_no", "rect", "lines", "raw_text")
+
+    def __init__(self, page_no: int, rect: Rect) -> None:
+        self.page_no = page_no
+        self.rect = rect
+        self.lines: list = []
+        self.raw_text = ""
+
+
+def _point_box(box, page_rect: Rect) -> Rect | None:
+    """归一化框（0~1）→ 页面 pt 矩形；越界裁剪、上下/左右写反自动纠正，过小返回 ``None``。"""
+    if not box:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    x0, x1 = sorted((x0, x1))
+    y0, y1 = sorted((y0, y1))
+    out = Rect(page_rect.x0 + x0 * page_rect.width,
+               page_rect.y0 + y0 * page_rect.height,
+               page_rect.x0 + x1 * page_rect.width,
+               page_rect.y0 + y1 * page_rect.height)
+    out = Rect(max(out.x0, page_rect.x0), max(out.y0, page_rect.y0),
+               min(out.x1, page_rect.x1), min(out.y1, page_rect.y1))
+    if out.width <= 1 or out.height <= 1:
+        return None
+    return out
+
+
+def _box_iou(a: Rect, b: Rect) -> float:
+    ix = min(a.x1, b.x1) - max(a.x0, b.x0)
+    iy = min(a.y1, b.y1) - max(a.y0, b.y0)
+    if ix <= 0 or iy <= 0:
+        return 0.0
+    inter = ix * iy
+    union = a.area + b.area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _scan_crop_dpi(crop_dpi: int, src_dpi: float) -> int:
+    """扫描件裁图 dpi 上限：源只有 200dpi 时按 600dpi 渲染只是 3 倍上采样。
+
+    源 dpi 未知（没有位图层信息）时退回调用方给的 ``crop_dpi``。
+    """
+    if src_dpi and src_dpi > 0:
+        return int(max(72.0, min(float(crop_dpi), src_dpi * 1.2)))
+    return crop_dpi
+
+
+def _find_caption_block_by_number(blocks: list[Block], page_no: int,
+                                  number: str) -> Block | None:
+    """按**图号**找该页的图注块。
+
+    扫描页不能用 bbox 重叠找宿主（块的 rect 是等分虚拟横带，必然"重叠"），
+    只能用图号——这也正是阅读器挂图用的口径（图号 ↔ 图注行）。
+    """
+    if not number:
+        return None
+    for b in blocks:
+        if b.page_no != page_no or b.type != "caption":
+            continue
+        if caption_number(b.text_clean or b.text or "") == number:
+            return b
+    return None
+
+
+def _scan_caption_text(blocks: list[Block], page_no: int, number: str) -> str:
+    """该图号的**完整图注文本**：同一图号的所有图注块按序接起来（空白压成单空格）。
+
+    为什么要接：视觉模型把一条长图注写成两个段落（或我们的切块器在空行处切断了）时，
+    只取第一块会让阅读器/侧栏/Markdown 的图注显示半句。按图号取还能避免把
+    相邻那张图的图注吃进来（p8 的 Figure 2 与 Figure 3 就紧挨着）。
+
+    **必须压掉换行**：这段文字会进 ``![alt](url)`` 的 alt 位置，带换行会把 Markdown
+    图片行截断成两行 —— 图就显示不出来了。
+    """
+    if not number:
+        return ""
+    parts = [(b.order_global, (b.text_clean or b.text or "").strip())
+             for b in blocks
+             if b.page_no == page_no and b.type == "caption"
+             and caption_number(b.text_clean or b.text or "") == number]
+    joined = " ".join(text for _o, text in sorted(parts) if text)
+    return re.sub(r"\s+", " ", joined).strip()
+
+
+def _usable_caption_box(box: Rect, page_rect: Rect) -> bool:
+    """模型给的"整段图注"框可不可信。
+
+    图注一定在正文栏内、且是一小段文字：宽度不能太窄，高度不能超过小半页
+    （超了说明模型把下面的正文一起框进来了，拿它当边界会把图切没）。
+    """
+    if box.width < 0.2 * page_rect.width:
+        return False
+    return box.height <= 0.25 * page_rect.height
 
 
 class PaperBuilder:
@@ -124,13 +242,15 @@ class PaperBuilder:
 
     # ------------------------------------------------------------------
     def _read_scanned_pages(self, doc, page_numbers, rendered: dict,
-                            result: ParseResult) -> dict[int, str]:
-        """没有文本层的页 → 视觉模型整页识别，返回 ``{页号: Markdown}``。
+                            result: ParseResult) -> dict[int, PageRead]:
+        """没有文本层的页 → 视觉模型整页识别，返回 ``{页号: PageRead}``。
 
         设计要点：
         - **只识别不翻译**：这一步产出"原文事实源"，翻译走后面的既有链路；
         - 读页用**更高 dpi**（默认 200）另渲一张图：150dpi 的阅读器页图
           对小字号上下标偏糊，OCR 会丢符号（1 次额外渲染，成本可忽略）；
+        - 同一份模型输出里**顺带取插图粗定位**（``PageRead.figures``）：影印页上除它
+          没有任何可用的版面坐标，插图裁剪只能靠这份"图号 → 大致位置"起步；
         - 没有注入 ``vision_fn`` 时只告警不报错：离线环境（mock）也要能跑完，
           页面其余部分照常解析。
         """
@@ -143,34 +263,40 @@ class PaperBuilder:
                     f"但未配置视觉模型，这些页的正文将为空：{scanned[:5]}")
             return {}
 
-        out: dict[int, str] = {}
+        out: dict[int, PageRead] = {}
         for i, pno in enumerate(page_numbers, 1):
             if not looks_scanned(doc[pno - 1]):
                 continue
             self._emit("vision_read", i, len(page_numbers))
             try:
                 image = render_page_png(doc, pno, dpi=self.vision_dpi)
-                markdown = self.vision_fn(pno, image)
+                raw = self.vision_fn(pno, image)
             except Exception as exc:  # noqa: BLE001
                 result.warnings.append(f"p{pno}: 扫描页识别失败（{str(exc)[:120]}）")
                 log.warning("第 %d 页扫描识别失败：%s", pno, exc)
                 continue
-            if not (markdown or "").strip():
+            read = raw if isinstance(raw, PageRead) else PageRead.parse(raw or "")
+            if not read.markdown.strip():
                 result.warnings.append(f"p{pno}: 扫描页识别结果为空")
                 continue
-            out[pno] = markdown
+            if read.layout_mark and not read.figures:
+                # 提示词漂移或本页确实没图：记一条，便于从报告里发现"模型不再给框"
+                log.info("p%d: 版面块没有解析出可用插图框", pno)
+            out[pno] = read
             _ = rendered
         if out:
-            log.info("扫描件兜底：%d 页由视觉模型读出（%s）",
-                     len(out), sorted(out))
+            log.info("扫描件兜底：%d 页由视觉模型读出（%s），其中 %d 页带插图粗定位",
+                     len(out), sorted(out),
+                     sum(1 for r in out.values() if r.figures))
             result.stats["scanned_pages"] = sorted(out)
+            result.stats["scan_figure_boxes"] = sum(len(r.figures) for r in out.values())
             # 第 1 页是扫描页时，文本层是空的（元数据只能拿文件名当标题），
             # 用模型读出来的内容覆盖：标题取第一个大标题，摘要/会议/年份同样从这段文字里抽。
             if 1 in out:
-                vision_title = title_from_markdown(out[1]).strip()
+                vision_title = title_from_markdown(out[1].markdown).strip()
                 if vision_title:
                     result.title = vision_title
-                vmeta = meta_from_text(out[1], title=vision_title)
+                vmeta = meta_from_text(out[1].markdown, title=vision_title)
                 if not result.abstract and vmeta.abstract:
                     result.abstract = vmeta.abstract
                 if not result.stats.get("venue") and vmeta.venue:
@@ -312,8 +438,8 @@ class PaperBuilder:
                 # 影印 PDF 没有文本层，抽不出 span，公式矢量层也不存在 ——
                 # 内容只存在于像素里，正文只能由模型读出来（规划 §13.4）。
                 with Timer() as stat:
-                    vision_md = self._read_scanned_pages(doc, page_numbers, rendered,
-                                                         result)
+                    vision_reads = self._read_scanned_pages(doc, page_numbers, rendered,
+                                                            result)
                 stage_ms["vision"] = stat.ms
 
                 # ------------- 3. 结构层 -------------
@@ -337,9 +463,9 @@ class PaperBuilder:
                     prev_prof: LineProfile | None = None
                     for pno in page_numbers:
                         # ---- 扫描页：块直接来自视觉模型的整页 Markdown ----
-                        if pno in vision_md:
+                        if pno in vision_reads:
                             blocks = blocks_from_page_markdown(
-                                vision_md[pno], page_no=pno,
+                                vision_reads[pno].markdown, page_no=pno,
                                 paper_id=self.paper_id,
                                 page_width=page_rects[pno].width,
                                 page_height=page_rects[pno].height,
@@ -417,14 +543,15 @@ class PaperBuilder:
                 with Timer() as stat:
                     result.formulas = self._process_formulas(
                         doc, raw_by_page, drawings_by_page, page_rects, result,
-                        skip_pages=set(vision_md))
+                        skip_pages=set(vision_reads))
                 stage_ms["formula"] = stat.ms
 
                 # ------------- 5. 插图 / 表格 -------------
                 with Timer() as stat:
                     figures, tables = self._process_figures_tables(
                         doc, raw_by_page, images_by_page, drawings_by_page,
-                        page_rects, result, skip_pages=set(vision_md))
+                        page_rects, result, skip_pages=set(vision_reads),
+                        page_reads=vision_reads)
                     result.figures, result.tables = figures, tables
                 stage_ms["figure"] = stat.ms
 
@@ -680,17 +807,30 @@ class PaperBuilder:
     def _process_figures_tables(
         self, doc, raw_by_page, images_by_page, drawings_by_page, page_rects,
         result: ParseResult, skip_pages: set[int] | None = None,
+        page_reads: dict[int, PageRead] | None = None,
     ) -> tuple[list[FigureBlock], list[TableBlock]]:
-        """插图/表格检测。``skip_pages``（扫描页）整体跳过：
+        """插图/表格检测，两条路：
 
-        扫描页的"整页图片"就是这一页本身，跑候选检测会把每一页都判成一张插图，
-        再给每页裁一张等于整页的图。那些页面的图注文字已由视觉模型写在正文里。
+        - **文本层页**：几何法（图注定位 + 位图/矢量并集，见 ``figure_cut``）；
+        - **扫描页**（``page_reads`` 里有）：视觉模型给的插图粗框 + 像素墨迹定边界
+          （见 :meth:`_scan_figures`）。几何法在这些页上必须**完全不跑** ——
+          整页位图会被判成一张巨型插图，而板块坐标又是等分虚拟横带。
+
+        扫描页的表格仍不产出（``skip_pages`` 分支）：没有矢量网格，硬造出来的
+        "表格"就是图注那一行。
         """
         figures: list[FigureBlock] = []
         tables: list[TableBlock] = []
         skip = skip_pages or set()
+        reads = page_reads or {}
 
         for pno, raws in raw_by_page.items():
+            read = reads.get(pno)
+            if read is not None:                    # ---- 扫描页：模型粗框 + 墨迹 ----
+                figures.extend(self._scan_figures(
+                    doc, pno, read, page_rects[pno],
+                    images_by_page.get(pno, []), result))
+                continue
             if pno in skip:
                 continue
             cands = detect_figures(raws, images_by_page, drawings_by_page, page_rects)
@@ -762,6 +902,142 @@ class PaperBuilder:
                     host.meta["image_rel"] = f"../figures/{tp.name}"
                 tables.append(tb)
         return figures, tables
+
+    # ------------------------------------------------------------------
+    def _scan_figures(self, doc, pno: int, read: PageRead, page_rect: Rect,
+                      page_images, result: ParseResult) -> list[FigureBlock]:
+        """扫描页的插图裁剪：**模型只给"图号 → 大致在哪"，边界由页图墨迹决定**。
+
+        为什么不能直接用模型坐标出图：视觉模型的 grounding 精度只到"几个百分点"，
+        直接裁出来会带进正文、切掉图体。为什么不能走几何法：扫描页没有文本层坐标
+        （块的 rect 是等分虚拟横带）、没有矢量层、页图是一整张位图。
+
+        所以这里的分工是：
+        1. 模型框 → 页面坐标（归一化 → pt），仅作**提案**（认领哪一块墨迹是这张图）；
+        2. **像素版面**（``ink_layout``）定出这张图的真实窗口：墨迹带分组 + 排除文字组；
+        3. 图注行（模型给的整段图注框落在哪条**短行带**上）从上沿切掉；
+        4. 校验（尺寸、墨迹覆盖率）不过就**不出图** —— 宁可少一张图，也不往
+           Markdown 里插一张裁错的图。
+        """
+        out: list[FigureBlock] = []
+        page_area = max(1.0, page_rect.width * page_rect.height)
+        src_dpi = max((i.effective_dpi for i in page_images if i.effective_dpi),
+                      default=0.0)
+        probe: PageInk | None = None            # 同页多张图共用一份墨迹投影
+        for item in read.figures:
+            number = str(item.get("number") or "").strip()
+            tag = f"图{number}" if number else "插图"
+            box = _point_box(item.get("bbox"), page_rect)
+            if box is None:
+                result.warnings.append(f"p{pno}: {tag}的模型框不可用，这张图跳过")
+                continue
+            ratio = box.area / page_area
+            if not (SCAN_MIN_AREA_RATIO <= ratio <= SCAN_MAX_AREA_RATIO):
+                result.warnings.append(
+                    f"p{pno}: {tag}的模型框面积占比 {ratio:.0%} 不合理，这张图跳过")
+                continue
+
+            proposal = box
+            # 裁剪窗口由**页图像素**决定：模型框只用来"认领"哪一块墨迹区域是这张图。
+            # 实测模型框会同时出现"多圈进上一段正文"和"只盖住一半图"两种偏差，
+            # 直接当窗口用会裁出"半张图 + 一截正文"。
+            cap_box_raw = _point_box(item.get("caption_bbox"), page_rect)
+            if cap_box_raw is not None and not _usable_caption_box(cap_box_raw, page_rect):
+                cap_box_raw = None
+            if probe is None:
+                probe = PageInk(doc, pno, page_rect)
+            try:
+                refined = locate_figure(doc, pno, page_rect, proposal, cap_box_raw,
+                                        ink=probe, pad=SCAN_INK_PAD)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("p%d %s 像素版面分析失败：%s", pno, tag, exc)
+                refined = None
+            if refined is None:
+                result.warnings.append(
+                    f"p{pno}: {tag}在页图上找不到对应的墨迹区域（模型框不可用），这张图跳过")
+                continue
+            if refined.height < SCAN_MIN_HEIGHT or refined.width < SCAN_MIN_WIDTH:
+                result.warnings.append(f"p{pno}: {tag}的墨迹区域过小，这张图跳过")
+                continue
+            if _box_iou(refined, proposal) < SCAN_MIN_PROPOSAL_IOU:
+                log.info("p%d %s：像素窗口 %s 与模型框 %s 相差较大（IoU %.2f），以像素为准",
+                         pno, tag, [round(v, 1) for v in refined.to_list()],
+                         [round(v, 1) for v in proposal.to_list()],
+                         _box_iou(refined, proposal))
+            # 「有墨迹窗口」不等于「这里有内容」：整幅全白时墨迹量测会原样返回入参，
+            # 所以必须单独量一次覆盖率，否则模型把框画在空白处也会被当成一张图。
+            frac = ink_fraction(doc, pno, refined)
+            if 0.0 <= frac < SCAN_MIN_INK:
+                result.warnings.append(
+                    f"p{pno}: {tag}的框内几乎没有内容（墨迹 {frac:.1%}），这张图跳过")
+                continue
+
+            caption_block = _find_caption_block_by_number(result.blocks, pno, number)
+            # 完整图注文本：优先用**转录出来的图注块**（那是事实源），按图号把该图的
+            # 图注块全部接起来（模型把一条长图注拆成两段时也只显示半句）；转录里没有
+            # 才退回模型在版面块里给的 caption。
+            caption_text = _scan_caption_text(result.blocks, pno, number)
+            if not caption_text:
+                caption_text = str(item.get("caption") or "").strip()
+            if not caption_text:
+                caption_text = f"Figure {number}" if number else ""
+            cap_box = cap_box_raw
+
+            # 插图**独立成块**（外键 + Markdown 里能出图）：文字留空，图注仍归图注块，
+            # 否则 full.md 里同一句图注会出现两次。
+            #
+            # 块的 rect 取**图注块所在的虚拟横带**（再往前挪 0.5pt）：扫描页的阅读顺序
+            # 全靠这条横带排（``_renumber_reading_order`` 按 (页, y0, x0) 排），若用像素
+            # 算出来的真实 y，插图会被排到正文中间、离自己的图注很远（实测：图落在第二段
+            # 与第三段之间，图注在最后）。真实边界存在 ``FigureBlock.rect`` 里，
+            # 而区域/裁图只读 figure 行，不读块的 rect。
+            band = caption_block.rect if caption_block is not None else refined
+            block_rect = Rect(band.x0, band.y0 - 0.5, band.x1, band.y1)
+            host = _make_orphan_block(
+                result, _ScanCand(pno, block_rect), "figure", "")
+            fname = f"{host.id}.png"
+            fpath = self.figures_dir / fname
+            fb = FigureBlock(
+                block_id=host.id, paper_id=self.paper_id, page_number=pno,
+                rect=refined, image_path=str(fpath), caption=caption_text,
+                caption_block_id=caption_block.id if caption_block else None,
+                subfigure_count=1, effective_dpi=src_dpi,
+            )
+            try:
+                data = render_crop_png(doc, pno, refined,
+                                       dpi=_scan_crop_dpi(self.crop_dpi, src_dpi),
+                                       padding=SCAN_INK_PAD, ink_trim=True)
+                fpath.write_bytes(data)
+                audit = audit_figure_crop(fpath, rect=refined, effective_dpi=src_dpi,
+                                          subfigure_count=1, caption=caption_text)
+                fb.audit = {**audit.to_dict(), "source": "scan",
+                            "proposal": [round(v, 1) for v in proposal.to_list()],
+                            "caption_box": ([round(v, 1) for v in cap_box.to_list()]
+                                            if cap_box is not None else None),
+                            "src_dpi": round(src_dpi, 1)}
+                fb.edge_ink = audit.edge_ink
+                fb.aspect_ratio = audit.aspect_ratio
+                fb.status = audit.status
+            except Exception as exc:  # noqa: BLE001
+                log.warning("扫描页插图裁剪失败 %s：%s", host.id, exc)
+                fb.status = "error"
+                fb.audit = {"source": "scan", "issues": [f"裁剪失败：{exc}"]}
+                result.warnings.append(f"p{pno}: {tag}裁剪失败：{exc}")
+                continue
+
+            host.meta["image_rel"] = f"../figures/{fname}"
+            host.meta["figure_id"] = host.id
+            if caption_block is not None:
+                caption_block.meta["figure_id"] = host.id
+                if cap_box is not None:
+                    # 图注的**真实位置**：紧缩/卡片要用它（块自身的 rect 是虚拟横带）
+                    caption_block.meta["page_bbox"] = [round(v, 2) for v in cap_box.to_list()]
+            out.append(fb)
+            log.info("扫描页插图：p%d %s bbox=%s（模型提案 %s）dpi=%d",
+                     pno, tag or host.id, [round(v, 1) for v in refined.to_list()],
+                     [round(v, 1) for v in proposal.to_list()],
+                     _scan_crop_dpi(self.crop_dpi, src_dpi))
+        return out
 
     # ------------------------------------------------------------------
     def _write_markdown(self, result: ParseResult, writer: IRWriter | None) -> dict:

@@ -41,6 +41,7 @@ from pathlib import Path
 
 from backend.core.errors import NotFoundError
 from backend.core.logging import get_logger
+from backend.core.utils import json_loads
 from backend.parsing.models import Rect
 
 log = get_logger(__name__)
@@ -72,6 +73,37 @@ def _num(value) -> float:
 def _bbox(row: dict) -> list[float]:
     return [_num(row.get("x0")), _num(row.get("y0")),
             _num(row.get("x1")), _num(row.get("y1"))]
+
+
+def _meta(row: dict) -> dict:
+    return json_loads(row.get("meta_json"), {}) or {}
+
+
+def _page_bbox(row: dict) -> list[float] | None:
+    """块在**页面上的真实位置**（只有影印页才有）。
+
+    扫描页的块坐标是"等分整页的虚拟横带"（只为稳定阅读顺序），拿来当版面用会把
+    区域算到十万八千里外。解析阶段量准了图注位置时写在 ``meta["page_bbox"]``。
+    """
+    box = _meta(row).get("page_bbox")
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            return [float(v) for v in box]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_scan_region(row: dict) -> bool:
+    """是不是扫描件那条路产出的插图（``audit_json["source"] == "scan"``）。
+
+    这类区域的边界已经由页图像素定死了，**不能再**走 :func:`_tighten` /
+    :func:`_snap_edges` / :func:`_parts_of` —— 那三段的前提是"文本层块的 rect 就是
+    版面位置、且图内文字不进文本层"，扫描件上两条都不成立（实测会把相邻图吃掉、
+    把本图收成 25pt 细条）。
+    """
+    audit = json_loads(row.get("audit_json"), {}) or {}
+    return str(audit.get("source") or "") == "scan"
 
 
 def _number_of(text: str) -> str:
@@ -113,12 +145,19 @@ def _text_rects(blocks_by_page: dict[int, list[dict]], page_no: int) -> list[Rec
     for b in blocks_by_page.get(int(page_no), []):
         if (_num(b.get("char_count")) or 0) <= 0 and not str(b.get("text") or "").strip():
             continue
-        out.append(Rect(_num(b.get("x0")), _num(b.get("y0")),
-                        _num(b.get("x1")), _num(b.get("y1"))))
+        out.append(_rect_of(b))
     return out
 
 
 def _rect_of(row: dict) -> Rect:
+    """块的矩形：**优先用真实页面位置**（``meta["page_bbox"]``）。
+
+    扫描页的 ``x0/y0/x1/y1`` 是等分整页的虚拟横带，只用来稳定阅读顺序，
+    当版面坐标用会把边界算错（实测：图注被推到下一页的 y 上）。
+    """
+    real = _page_bbox(row)
+    if real:
+        return Rect(*real)
     return Rect(_num(row.get("x0")), _num(row.get("y0")),
                 _num(row.get("x1")), _num(row.get("y1")))
 
@@ -350,12 +389,13 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
 
     def entry(page_no: int, kind: str, rect: list[float], raw: list[float],
               caption: str, number: str, caption_block_id: str | None,
-              part: dict | None = None) -> dict:
+              part: dict | None = None, source: str = "") -> dict:
         tight = [round(v, 2) for v in _normalise(rect, page_rect(page_no))]
         row = {
             "page": page_no, "kind": kind,
             "number": number, "caption": caption, "caption_block_id": caption_block_id,
             "bbox": tight, "raw_bbox": [round(v, 2) for v in raw],
+            "source": source or "text",
             "hash": hashlib.sha256(
                 repr([round(v, 1) for v in tight]).encode()).hexdigest()[:8],
         }
@@ -388,20 +428,28 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                                 .strip().startswith(head)), None)
             raw = _bbox(row)
             below = row["_kind"] == "figure"
-            seps = list(structs)
-            if below and prev_bottom is not None:
-                seps = seps + [{"y0": prev_bottom, "y1": prev_bottom}]
-            tight = _tighten(raw, caption, sorted(seps, key=lambda b: _num(b.get("y0"))),
-                             rect.y1, below=below)
-            tight = _snap_edges(tight, texts, rect)
             cap_text = str(row.get("caption") or (caption or {}).get("text_clean") or "").strip()
             number = _number_of(cap_text)
             cap_id = row.get("caption_block_id") or (caption or {}).get("id") or None
-            inner = [b for b in structs
-                     if (b.get("type") or "") == "caption" and b.get("id") != cap_id
-                     and _num(b.get("y0")) > tight[1] + MIN_HEIGHT
-                     and _num(b.get("y1")) < tight[3] - MIN_HEIGHT]
-            pieces = _parts_of(tight, inner, rect)
+            scan = _is_scan_region(row)
+            if scan:
+                # 扫描件：边界已由页图墨迹定死，这里只做"落在页面内"的归一化。
+                # 收紧/贴边/切分三段都依赖"块 rect 就是版面位置"这个前提，扫描页不成立。
+                tight = [round(v, 2) for v in _normalise(raw, rect)]
+                pieces: list[tuple[list[float], dict | None]] = [(tight, None)]
+            else:
+                seps = list(structs)
+                if below and prev_bottom is not None:
+                    seps = seps + [{"y0": prev_bottom, "y1": prev_bottom}]
+                tight = _tighten(raw, caption,
+                                 sorted(seps, key=lambda b: _num(b.get("y0"))),
+                                 rect.y1, below=below)
+                tight = _snap_edges(tight, texts, rect)
+                inner = [b for b in structs
+                         if (b.get("type") or "") == "caption" and b.get("id") != cap_id
+                         and _num(b.get("y0")) > tight[1] + MIN_HEIGHT
+                         and _num(b.get("y1")) < tight[3] - MIN_HEIGHT]
+                pieces = _parts_of(tight, inner, rect)
             for i, (piece, part) in enumerate(pieces):
                 # 同一张图被切成两段时给个看得懂的标签（前端在侧栏里显示）
                 label = "" if len(pieces) == 1 else ("上段" if i == 0 else "下段")
@@ -410,15 +458,19 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                     cap_text, number if i == 0 else "", cap_id,
                     ({"part": i, "parts": len(pieces), "part_label": label}
                      if label else None),
+                    source="scan" if scan else "",
                 ))
-            if below:
+            if below and not scan:
                 prev_bottom = max(_num(regions[-1]["bbox"][3]) - 3.0, 0.0)
         out[page_no] = regions
 
     # ---- 跨页续图：图体画到页脚、下一页页首接着它 → 下一页补一条"续图"条目 ----
+    # 扫描件不参与：判据依赖文本层的真实坐标与矢量图形，影印件上两者都没有。
     for page_no in sorted(out):
         for reg in list(out[page_no]):
             if reg.get("kind") != "figure" or reg.get("part", 0) != 0:
+                continue
+            if reg.get("source") == "scan":
                 continue
             if not _looks_like_continuation(reg, page_rect(page_no).height):
                 continue
@@ -537,10 +589,23 @@ def _resolve_part(paper_id: str, page_no: int, index: int, part: int | None) -> 
 
 
 def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
-    """该插图对应的图注矩形（可能跨多块，比如通栏长图注被拆成两段）。"""
+    """该插图对应的图注矩形（可能跨多块，比如通栏长图注被拆成两段）。
+
+    用于"图 + 图注"卡片（放大/导出）。**扫描件不拼图注**，原因有二（都是实测的）：
+
+    1. 扫描件的图注位置只能靠视觉模型给的粗框（差十几个点、宽度也偏窄），按它裁出来的
+       图注条会**把两侧的字母切掉**；
+    2. 图注常常紧贴图体（p8 只隔 1.6pt），图体窗口本身就可能已经含了图注第一行 ——
+       再把整段图注拼到下面，同一句话就会出现两次，"像拼接的一样"。
+
+    图注在阅读器里有自己的一行、在导出 Markdown 里紧跟图片下方、放大弹窗的标题也是它，
+    所以这里不拼不会丢信息。文本层论文的图注框是排版软件给的精确坐标，照旧拼。
+    """
     from backend.parsing.ir.ir_reader import IRReader
     from backend.services.paper import paper_service
 
+    if str(region.get("source") or "") == "scan":
+        return []
     ir = IRReader(paper_service.paper_paths(paper_id)["ir"])
     if not ir.exists:
         return []

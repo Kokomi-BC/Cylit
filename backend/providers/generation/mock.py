@@ -374,11 +374,17 @@ $$ D_{{mse}} := \\mathbb{{E}}\\|x - Q(x)\\|_2^2. $$
 For any $b \\geq 1$ the distortion is bounded by {bound}.
 
 **Figure 1**: MSE distortion of TurboQuant compared with PQ and QJL.
+
+<!-- layout {{"figures":[{{"number":"1","bbox":[0.18,0.20,0.82,0.55],"caption_bbox":[0.18,0.565,0.72,0.585]}}]}} -->
 """
 
 
 def _mock_scanned_page(n_images: int) -> str:
-    """扫描件页的假识别结果（占位，用于离线验证扫描件链路）。"""
+    """扫描件页的假识别结果（占位，用于离线验证"扫描件 → 插图裁剪"整条链路）。
+
+    形状与真实视觉模型一致：正文 Markdown + **末尾一行版面块**（插图粗定位）。
+    带版面块才能离线跑到 ``pipeline._scan_figures``，否则扫描页永远是 0 张图。
+    """
     return _MOCK_SCANNED_PAGE.format(title="[MOCK 扫描件] Scanned Paper",
                                      bound="2.7207")
 

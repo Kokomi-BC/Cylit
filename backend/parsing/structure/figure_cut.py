@@ -15,6 +15,9 @@ from backend.parsing.models import RawBlock, Rect, rects_span
 _CAPTION = re.compile(r"^\s*(?:Figure|Fig\.?)\s*(\d+[a-z]?)", re.IGNORECASE)
 _TABLE_CAPTION = re.compile(r"^\s*(?:Table)\s*(\d+[a-z]?)", re.IGNORECASE)
 _CAPTION_ANY = re.compile(r"^\s*(?:Figure|Fig\.?|Table)\s*\d+", re.IGNORECASE)
+# 取编号专用（见 caption_number）：容忍 Markdown 标记与中英文写法
+_CAPTION_NUM = re.compile(r"^\s*[*#>\s]*(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})",
+                          re.IGNORECASE)
 
 
 @dataclass
@@ -74,6 +77,7 @@ def _body_rect_above_caption(
         return r.y1 <= cap_rect.y0 + 3 and r.y0 >= top_limit
 
     imgs = [i for i in page_images if above(i.rect)
+            and _usable_image(i, page_rect)
             and _h_overlap(i.rect, cap_rect) > 0.10]
     drs = [d for d in page_drawings if above(d.rect)
            and _h_overlap(d.rect, cap_rect) > 0.10
@@ -113,6 +117,23 @@ def _h_overlap(a: Rect, b: Rect) -> float:
     if ix <= 0:
         return 0.0
     return ix / max(1.0, min(a.width, b.width))
+
+
+def _usable_image(img: ImageInfo, page_rect: Rect,
+                  max_area_ratio: float = 0.8) -> bool:
+    """这张位图能不能当"图体"候选。
+
+    排除两类在**扫描件/影印件**上必然出现、但几何法会误当成图体的位图：
+
+    - **满页位图**：扫描件每页就是一张铺满整页的图，任何图注都能"落在它上方"，
+      直接参与并集会裁出整页；
+    - **过小位图**：水印、印章、出版社 logo（``ImageInfo.is_small`` 已经算过）。
+
+    文本层论文不受影响（插图位图本来就远小于整页）。
+    """
+    if img.is_small:
+        return False
+    return img.rect.area <= max_area_ratio * max(1.0, page_rect.area)
 
 
 def estimate_subfigures(drawings: list[Drawing], images: list[ImageInfo]) -> int:
@@ -177,6 +198,7 @@ def _body_rect_below_caption(
 
     imgs = [i for i in page_images
             if i.rect.y0 >= cap_bottom - 3 and i.rect.y0 < limit
+            and _usable_image(i, page_rect)
             and _h_overlap(i.rect, caption.rect) > 0.10]
     drs = [d for d in page_drawings
            if d.rect.y0 >= cap_bottom - 3 and d.rect.y0 < limit
@@ -241,3 +263,14 @@ def _cluster_positions(values: list[float], tol: float = 3.0) -> list[float]:
 
 def is_caption_text(text: str) -> bool:
     return bool(_CAPTION_ANY.match(text.strip()))
+
+
+def caption_number(text: str) -> str:
+    """从图注/表注文本里取编号（``"Figure 3: ..."`` → ``"3"``；取不到返回空串）。
+
+    扫描页按**图号**把插图挂回图注块（不能用 bbox：那些块的 rect 是等分虚拟横带），
+    所以这个口径必须与阅读器一致（前端也是按图号把图挂到图注行上）。
+    容忍 Markdown 标记（``**Figure 3**``）与中英文两种写法（``图 5``/``表 2``）。
+    """
+    m = _CAPTION_NUM.match(text or "")
+    return m.group(1) if m else ""

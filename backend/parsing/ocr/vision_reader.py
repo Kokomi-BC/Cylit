@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import base64
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.core.errors import ProviderError
 from backend.core.logging import get_logger
+from backend.core.utils import json_loads
 from backend.parsing.models import Block, Rect
 
 log = get_logger(__name__)
@@ -80,7 +82,21 @@ PAGE_READ_SYSTEM = """你是论文 OCR/版面还原专家。把论文页面图�
 5. 表格用 Markdown 表格；参考文献条目一行一条，以 `- ` 开头。
 6. 页眉页脚、页码、水印**不要转录**（本系统会单独处理）。
 7. 只输出 Markdown 正文，不要输出解释、不要加代码块围栏、不要写"以下是转录"之类的话。
-8. 如果这一页的大部分内容看不清，只输出一行 `<!-- unreadable -->`。"""
+8. 如果这一页的大部分内容看不清，只输出一行 `<!-- unreadable -->`。
+9. **正文转录完成后**，最后另起一行输出一行版面块（HTML 注释形式，供程序裁图用）：
+
+   <!-- layout {"figures":[{"number":"1","bbox":[..],"caption_bbox":[..],"caption":"…"}]} -->
+
+   - 坐标是**页面归一化坐标**（0~1，左上角为原点；x 向右、y 向下），保留 3 位小数即可；
+   - `bbox` 框住**图体本身**（不含图注）；
+   - `caption_bbox` 框住该图的**整段图注**（`Figure N` 开头的那段完整说明，**可能有好几行，
+     必须从图注第一行的顶部一直框到最后一行，中间不要留空**）—— 程序要拿它的上边缘
+     来切图、拿整块来合成"图 + 图注"，框缺了行就会把图注切进图里或让图注显示不全；
+   - `caption` 写该图注的**完整原文**（与正文里那条 `**Figure N**: …` 完全一致，一行写完、
+     用空格连接换行，不要截断、不要翻译）；
+   - 坐标只求**粗定位**（大致框住就行，差几个百分点没关系），但 `caption_bbox` 的**行数要齐**；
+   - 本页有几张图就写几条，顺序按图号；本页没有插图就写 `<!-- layout {"figures":[]} -->`；
+   - 这一行必须出现在**最后**，且只写这一行（不要解释、不要代码块围栏）。"""
 
 PAGE_READ_TEMPLATE = """请转录第 {page} 页 / 共 {page_total} 页的内容。
 
@@ -350,3 +366,96 @@ def _strip_fence(text: str) -> str:
 def image_to_b64(path: str | Path) -> str:
     """页面图 → base64（给需要自己组请求的调用方）。"""
     return base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+
+# --------------------------------------------------------------------------
+# 版面块（插图粗定位）：转录正文之外，模型额外给一份"图号 → 页面归一化框"
+#
+# 为什么需要它：影印页上**没有任何可用的版面坐标** —— 块的 rect 是等分整页的虚拟
+# 横带、矢量层为空、页图是一整张位图。于是"图注上方的图体在哪"这个问题在扫描件上
+# 无解，只能问已经读过这张页图的视觉模型。它给的坐标**只当提案**（粗定位 + 图号关联），
+# 真实裁剪边界一律由像素墨迹决定（见 pipeline._scan_figures）。
+# --------------------------------------------------------------------------
+
+_LAYOUT_RE = re.compile(r"<!--\s*layout\s*(\{.*?\})\s*-->", re.DOTALL | re.IGNORECASE)
+LAYOUT_MARK = "<!-- layout"
+
+
+def _norm_box(value) -> tuple[float, float, float, float] | None:
+    """归一化框 → ``(x0, y0, x1, y1)``；形状不对返回 ``None``。
+
+    容忍模型常见的三种偏差：坐标写成百分比（0~100）、上下/左右写反、略微越界。
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        nums = [float(v) for v in value]
+    except (TypeError, ValueError):
+        return None
+    if max(nums) > 1.5:                     # 明显是 0~100 的百分比
+        nums = [v / 100.0 for v in nums]
+    x0, y0, x1, y1 = nums
+    x0, x1 = sorted((max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))))
+    y0, y1 = sorted((max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))))
+    if x1 - x0 <= 0.0 or y1 - y0 <= 0.0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def parse_layout_block(markdown: str) -> tuple[str, list[dict]]:
+    """取出并剥离版面块，返回 ``(干净 Markdown, [{"number","bbox","caption_bbox","caption"}])``。
+
+    版面块是"给程序看的补充信息"，**绝不能**混进正文事实源：这里把它整行删掉，
+    否则它会变成一块正文、被翻译、被阅读器显示。解析失败就当作没有（不报错）。
+    """
+    text = markdown or ""
+    matches = list(_LAYOUT_RE.finditer(text))
+    if not matches:
+        return text, []
+    clean = _LAYOUT_RE.sub("", text)
+    figures: list[dict] = []
+    for m in matches:
+        try:
+            data = json_loads(m.group(1), {})
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(data, dict):
+            continue
+        for item in data.get("figures") or []:
+            if not isinstance(item, dict):
+                continue
+            bbox = _norm_box(item.get("bbox"))
+            if bbox is None:
+                continue
+            caption = item.get("caption")
+            figures.append({
+                "number": str(item.get("number") or "").strip(),
+                "bbox": bbox,
+                "caption_bbox": _norm_box(item.get("caption_bbox")),
+                "caption": _norm_caption(caption),
+            })
+    return clean.strip(), figures
+
+
+def _norm_caption(value) -> str:
+    """模型给的图注文本：统一空白、去掉可能的 Markdown 加粗标记。"""
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value.replace("**", "")).strip()
+
+
+@dataclass
+class PageRead:
+    """一次"读页"的完整结果：正文 Markdown + 插图粗定位。"""
+
+    markdown: str = ""
+    figures: list[dict] = field(default_factory=list)
+    # 模型是否写了版面块标记（不管解析成功与否）——用于诊断提示词漂移
+    layout_mark: bool = False
+
+    @classmethod
+    def parse(cls, raw: str) -> "PageRead":
+        text = raw or ""
+        clean, figures = parse_layout_block(text)
+        return cls(markdown=clean, figures=figures,
+                   layout_mark=LAYOUT_MARK in text.lower() or "<!--layout" in text.lower())
