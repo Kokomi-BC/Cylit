@@ -79,9 +79,24 @@ html.pm-col-sel .rows-wrap :is(.pg-head, .rows-foot, .row-figure) *::selection,
 html.pm-col-sel[data-pm-col="zh"] .rows-wrap .pg-rows.two-col .row-pair > .cell-en::selection,
 html.pm-col-sel[data-pm-col="zh"] .rows-wrap .pg-rows.two-col .row-pair > .cell-en *::selection,
 html.pm-col-sel[data-pm-col="en"] .rows-wrap .pg-rows.two-col .row-pair > .cell-zh::selection,
-html.pm-col-sel[data-pm-col="en"] .rows-wrap .pg-rows.two-col .row-pair > .cell-zh *::selection {
+html.pm-col-sel[data-pm-col="en"] .rows-wrap .pg-rows.two-col .row-pair > .cell-zh *::selection,
+/* ⚠️ **原 PDF 栏也算一列**：在"对照 + 左栏原 PDF"里 DOM 是 `PDF(1) rows(1) PDF(2) rows(2) …`，
+ * 沿译文列**跨页**往下拖时，选区一定从下一页的 PDF 页中间穿过 —— 锚点与焦点都还在译文列，
+ * 中间那页 PDF 的文字层却被涂上底色（用户报的"跨页选中 markdown 译文会选中 pdf"）。
+ * 一个 Range 是连续的、Chromium 也不支持多段选区，所以改不了"选中范围"，只能不把它**画**出来：
+ * 在正文列里拖 → PDF 栏的底色透明；在 PDF 栏里拖 → 正文两列的底色透明。 */
+html.pm-col-sel:not([data-pm-col="pdf"]) .reader-content [data-pdf-page]::selection,
+html.pm-col-sel:not([data-pm-col="pdf"]) .reader-content [data-pdf-page] *::selection,
+html.pm-col-sel[data-pm-col="pdf"] .rows-wrap .pg-rows .row-pair > .cell::selection,
+html.pm-col-sel[data-pm-col="pdf"] .rows-wrap .pg-rows .row-pair > .cell *::selection,
+html.pm-col-sel[data-pm-col="pdf"] .rows-wrap .pg-pair .col-rows::selection,
+html.pm-col-sel[data-pm-col="pdf"] .rows-wrap .pg-pair .col-rows *::selection {
   background: transparent;
 }
+/* 在正文列里拖时，**原 PDF 栏整列不参与选区** —— 与 `html.pm-pdf-drag` 同一手法、方向相反。
+ * 只"不涂底色"还不够：Ctrl+C 走的是浏览器原生选区（我们的"只取本列"过滤管不到），
+ * 而 `user-select: none` 的内容会被 Chrome 直接排除在选区之外（含剪贴板），两头都干净。 */
+html.pm-col-sel:not([data-pm-col="pdf"]) .reader-content [data-pdf-page] { user-select: none; }
 a:hover { text-decoration: underline; }
 h1, h2, h3, h4 {
   margin: 0 0 .4em; line-height: 1.3; font-weight: 600; font-family: var(--display);

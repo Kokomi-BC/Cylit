@@ -1462,9 +1462,9 @@ function clampSelection(point?: { x: number; y: number }) {
 /** 键盘/程序改选区（没有指针位置）也夹一下：拿不到投影就退回 `lastGood`；顺带同步"选区在哪一列" */
 const onSelectionChange = () => { clampSelection(); syncSelectionColumn(); };
 
-/** 这一列要不要"隐藏对面列的选区底色"（只有正文的两列需要；PDF 栏与 Markdown 视图不靠这套） */
-function colSide(col: string): 'en' | 'zh' | '' {
-  return col === 'rows:en' ? 'en' : col === 'rows:zh' ? 'zh' : '';
+/** 这一列要不要"隐藏对面列的选区底色"（正文两列 + 原 PDF 栏都算一列） */
+function colSide(col: string): 'en' | 'zh' | 'pdf' | '' {
+  return col === 'rows:en' ? 'en' : col === 'rows:zh' ? 'zh' : col === 'pdf' ? 'pdf' : '';
 }
 
 /**
@@ -1491,8 +1491,13 @@ function rowsSide(node: Node | null): 'en' | 'zh' | '' {
  * ⚠️ 标记必须**跟着选区走**，不能只在拖拽期间挂：松手之后选区还在（比如译文列跨了 5 行），
  * 一摘标记浏览器立刻把整段连续选区（含中间那些原文单元格）重新涂上底色 —— 用户看到的就是
  * "拖拽时不会到左侧，但一松手就回到左侧"（复报过）。
+ *
+ * ⚠️ **原 PDF 栏也是一"列"**：在"对照 + 左栏原 PDF"里，DOM 顺序是
+ * `PDF(1) rows(1) PDF(2) rows(2) …`，沿译文列**跨页**往下拖时，选区必然从**下一页的 PDF 页**
+ * 中间穿过 —— 锚点/焦点都还在译文列，中间的 PDF 文字层却被涂上底色（用户报的"跨页选中译文
+ * 会选中 pdf"）。所以这里把 `pdf` 也当成一列记下来，由 CSS 把非本列的底色涂成透明。
  */
-function setColSide(side: 'en' | 'zh' | '') {
+function setColSide(side: 'en' | 'zh' | 'pdf' | '') {
   const root = document.documentElement;
   if (side) {
     root.dataset.pmCol = side;
