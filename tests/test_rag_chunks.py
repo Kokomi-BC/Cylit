@@ -49,8 +49,8 @@ def test_lookup_zh_exact_then_page_local() -> None:
         _page(1, [("mean squared error of the quantizer", "量化器的均方误差")]),
         _page(2, [("mean squared error of the quantizer", "另一页的同名句子")]),
     ])
-    assert _lookup_zh(idx, 1, "mean squared error of the quantizer") == "量化器的均方误差"
-    assert _lookup_zh(idx, 2, "mean squared error of the quantizer") == "另一页的同名句子"
+    assert _lookup_zh(idx, 1, "mean squared error of the quantizer")[0] == "量化器的均方误差"
+    assert _lookup_zh(idx, 2, "mean squared error of the quantizer")[0] == "另一页的同名句子"
     assert _lookup_zh(idx, 3, "mean squared error of the quantizer") is None
 
 
@@ -62,7 +62,7 @@ def test_lookup_zh_matches_across_different_segmentation() -> None:
                                (row, "因此，我们的目标是设计这样的量化器。")])])
 
     part = "quantizer’s output. Thus, we aim to design quantizers that for any desired bit-width b"
-    hit = _lookup_zh(idx, 3, part)
+    hit = _lookup_zh(idx, 3, part)[0]
     assert hit and "因此" in hit                      # 配到的是这一行，不是"无关的一段"
     assert "无关" not in hit
 
@@ -79,7 +79,7 @@ def test_lookup_zh_slices_when_row_is_much_coarser() -> None:
     row = "第一句讲背景信息。" * 8 + "第二句才是这个块的内容。"
     idx = _zh_index([_page(5, [(row.strip(), "甲" * 60 + "。乙" * 60 + "。丙" * 60 + "。")])])
 
-    hit = _lookup_zh(idx, 5, row.strip()[:40])        # 块只覆盖行的开头
+    hit = _lookup_zh(idx, 5, row.strip()[:40])[0]     # 块只覆盖行的开头
     assert hit and len(hit) < 180                     # 明显短于整行译文（180 字）
 
 
@@ -179,3 +179,5 @@ def test_variants_keep_short_zh_heading() -> None:
     rows = _chunk_variants([_text_chunk([a])], zh, ("zh", "en"))
     assert [r["lang"] for r in rows] == ["zh", "en"]
     assert len(rows[0]["content"]) >= MIN_ZH_CHARS
+
+

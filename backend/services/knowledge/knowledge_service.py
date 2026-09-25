@@ -129,87 +129,10 @@ def _zh_index(pages: list[dict]) -> dict[int, list[tuple[str, str]]]:
             src = _block_sig(row.get("original"))
             dst = str(row.get("translation") or "").strip()
             if src and dst:
-                # 译文的公式常被截断（`\fr`、`\right` 不配对）→ 用原文行的公式修；
-                # 一个坏 span 会让后面所有 `$` 错配，整段 markdown 就不渲染了
-                rows.append((src, _repair_zh_math(dst, row.get("original"))))
+                rows.append((src, dst))
         if rows:
             out[pno] = rows
     return out
-
-
-# 合法的一两个字母的 LaTeX 命令（判"命令是否被截断"时不能只看长度）
-_SHORT_COMMANDS_OK = {
-    "pm", "mp", "in", "to", "pi", "ge", "le", "ne", "ll", "gg", "sim", "cap", "cup",
-    "ln", "lg", "lb", "Re", "Im", "Pr", "mod", "bmod", "mid", "ast", "star", "circ",
-    "deg", "det", "dim", "exp", "gcd", "hom", "ker", "max", "min", "sec", "tan", "cot",
-}
-
-
-def _latex_span_ok(body: str) -> bool:
-    r"""行内公式 span 是否**结构上可用**（不需要跑 KaTeX，快且够用）。
-
-    拦的是译文里见过的坏法：`\fr`（命令被截断）、`\right` 没配对的 `\left`、
-    `\tilde{\boldsymbol{x}}\}`（多一个转义右括号）、括号不配对、`\begin` 没 `\end`。
-    为什么必须拦：一个坏 span 会让**后面所有 `$` 错配**（渲染端是按 `$` 配对的），
-    整段 markdown 就"部分不渲染"了 —— 用户报的就是这个级联。
-    """
-    s = (body or "").strip()
-    if not s:
-        return False
-    if s.count("{") != s.count("}"):
-        return False
-    if s.count("\\left") != s.count("\\right"):
-        return False
-    if s.count("\\{") != s.count("\\}"):
-        return False
-    if s.count("\\begin{") != s.count("\\end{"):
-        return False
-    # 结尾是**不认识的短命令** → 多半被截断（`\fr`）。但 `\pm`/`\in`/`\to` 这类合法短命令、
-    # 以及 `\,`/`\;` 这种零字母间距命令要放过 —— 一刀切按长度判会把 `..., \pm` 判成坏 span。
-    tail = re.search(r"\\([a-zA-Z]*)$", s)
-    if tail and 0 < len(tail.group(1)) <= 2 and tail.group(1) not in _SHORT_COMMANDS_OK:
-        return False
-    return True
-
-
-def _repair_zh_math(translation: str, original: str | None) -> str:
-    r"""用**原始行**的公式修译文里的坏 span（译文坏就换成原文那份；换不了就脱掉 `$`）。
-
-    为什么值得修：译文是模型生成的，公式常被截断/改写（`\fr`、`\right`、多余 `\}`）；
-    而原文行来自页级视觉转写 —— 公式是**对的**。两者行内 span 顺序一致，按下标替换即可。
-    换不了（原文也没有 / 也坏）时**脱掉 `$` 定界符**：宁可显示成纯文本，
-    也不能让一个坏 span 把后面所有公式的配对带坏。
-    """
-    from backend.services.paper.reader_service import _extract_math
-
-    text = (translation or "").strip()
-    if not text:
-        return text
-    try:
-        spans = _extract_math(text)
-        src_spans = _extract_math(original or "")
-    except Exception:  # noqa: BLE001 —— 修不好就原样返回，不影响入库
-        return text
-    if not spans:
-        return text
-    out: list[str] = []
-    cursor = 0
-    for i, (start, end, body, display) in enumerate(spans):
-        out.append(text[cursor:start])
-        fixed = body
-        if not _latex_span_ok(body) and i < len(src_spans):
-            cand = src_spans[i][2]
-            if _latex_span_ok(cand) and bool(src_spans[i][3]) == bool(display):
-                fixed = cand
-                log.debug("译文公式用原文替换：%r → %r", body[:40], cand[:40])
-        if _latex_span_ok(fixed):
-            out.append(("$$" if display else "$") + fixed + ("$$" if display else "$"))
-        else:
-            out.append(fixed)            # 脱掉 `$`：不让它带坏后面的配对
-            log.debug("译文公式无效且无法替换，脱掉 $：%r", body[:40])
-        cursor = end
-    out.append(text[cursor:])
-    return "".join(out)
 
 
 def _overlap(a: str, b: str) -> int:
@@ -273,47 +196,54 @@ def _slice_zh(text: str, lo: float, hi: float) -> str:
     return piece or text.strip()
 
 
-def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str) -> str | None:
+def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str,
+               start: int = 0) -> tuple[str, int] | None:
     """取某段原文的中文：先精确签名，再在**本页内**做字符级对齐取重叠最多的行。
 
-    为什么是"本页内 + 取最优行"：跨页对齐毫无必要（同一页的行序天然单调），
-    而重叠最多的一行就是这段原文所在的行 —— 即使两侧切分不同也不会配到别的小节去。
-    门槛（重叠 ≥ 12 字符且 ≥ 较短一侧的一半）保证**宁可漏配也不错配**；
-    命中后若"行比这段大得多"（行粗、块细），按比例切片而不是整行端走。
+    ``start`` = "本页已用到第几行"，且**一行只用一次**（单调消费）。为什么必须这样：
+    原先每个块各自找最优行，多个块会命中同一行 —— 同一段中文被拼进 chunk 两次，
+    用户看到的"整段重复"就是这么来的（在源头修，而不是事后去擦）。
+    返回 ``(译文, 行号)``；``None`` = 没配上（未翻译或切分相差太大）。
     """
     rows = zh.get(page)
     sig = _block_sig(text)
     if not rows or not sig:
         return None
-    for row_sig, dst in rows:
+    for idx in range(start, len(rows)):
+        row_sig, dst = rows[idx]
         if row_sig == sig:
-            return dst
+            return dst, idx
     if len(sig) < _MIN_ALIGN_CHARS:
         return None
-    best: tuple[int, str, str, int, int] | None = None
-    for row_sig, dst in rows:
+    best: tuple[int, str, str, int, int, int] | None = None
+    for idx in range(start, len(rows)):
+        row_sig, dst = rows[idx]
         hit, j1, j2 = _overlap_span(sig, row_sig)
         if best is None or hit > best[0]:
-            best = (hit, dst, row_sig, j1, j2)
+            best = (hit, dst, row_sig, j1, j2, idx)
     if best is None:
         return None
-    hit, dst, row_sig, j1, j2 = best
+    hit, dst, row_sig, j1, j2, idx = best
     if hit < _MIN_ALIGN_CHARS or hit * 2 < min(len(sig), len(row_sig)):
         return None
     if len(row_sig) <= len(sig) * 1.2 or j1 < 0:   # 行不比这段大多少 → 整行端走
-        return dst
-    return _slice_zh(dst, j1 / len(row_sig), j2 / len(row_sig))
+        return dst, idx
+    return _slice_zh(dst, j1 / len(row_sig), j2 / len(row_sig)), idx
 
 
 def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str | None:
     """按块拼中文正文；**公式片段原样插入**（LaTeX 无语言之分，两侧同串）。
 
     ``parts`` 的元素是 ``(页号, 文本, kind)``（``kind`` 缺省视为 ``text``，兼容旧数据）。
+    译文行**单调消费**（一行最多用一次）—— "整段重复"在这里被源头解决，
+    所以不需要事后做段级/句级去重。
     """
     if not parts:
         return None
     pieces: list[str] = []
     text_parts = 0
+    cursor: dict[int, int] = {}
+    used: set[tuple[int, int]] = set()
     for item in parts:
         page, text = item[0], item[1]
         kind = item[2] if len(item) > 2 else "text"
@@ -321,20 +251,26 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
             pieces.append(text)          # 公式：不查译文，直接原样保留
             continue
         text_parts += 1
-        got = _lookup_zh(zh, page, text)
-        if got:
-            pieces.append(got)
-    # 相邻块共用一个译文行（切分不同时的正常现象）→ 去重，别把同一段中文塞两次
-    deduped: list[str] = []
-    for piece in pieces:
-        if not deduped or deduped[-1] != piece:
-            deduped.append(piece)
-    if not deduped:
+        got = _lookup_zh(zh, page, text, cursor.get(page, 0))
+        if not got:
+            continue
+        dst, idx = got
+        if (page, idx) in used:
+            # 同一行被多个块命中（两侧切分不同）：只在**新片段不与已出内容重叠**时追加，
+            # 否则就是同一段中文塞两遍。用极便宜的"包含"判定即可 —— 实测重复都是
+            # 整句级别的整体重复，包含关系必然成立；不同部分的切片则各自保留。
+            if any(dst and (dst in p or p in dst) for p in pieces if p):
+                log.debug("译文行 p%d-%02d 的片段与已出内容重叠，跳过", page, idx)
+                continue
+        used.add((page, idx))
+        cursor[page] = idx
+        pieces.append(dst)
+    if not pieces:
         return None
-    if text_parts and len(deduped) < len(parts):
+    if text_parts and len(pieces) < len(parts):
         log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
-                  len(deduped), len(parts))
-    return "\n\n".join(deduped)
+                  len(pieces), len(parts))
+    return "\n\n".join(pieces)
 
 
 def _variant_row(c: dict, lang: str, content: str) -> dict:
@@ -378,12 +314,6 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
                 content = _zh_content(parts, zh)
                 if not content:
                     continue                  # 还没翻译 → 不出 zh 行
-            if c["chunk_type"] == "text":
-                # 内容卫生在这里再兜一道：zh 文本是**在这里**按 parts 拼的（绕过了建 chunk 那步），
-                # 而且 `_merge_small_chunks` 合并之后 `$` 奇偶可能又变坏（实测 16 条 zh chunk 仍为奇数）。
-                content = _balance_dollars_per_line(
-                    _balance_asterisks(_balance_dollars(
-                        _dedupe_sentences(_drop_prefix_paragraphs(_dedupe_paragraphs(content))))))
             # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] == "text" and len(content) < floor:
@@ -787,124 +717,6 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
             "section_kind": meta.get("section_kind") or "body"}
 
 
-def _balance_dollars(text: str) -> str:
-    r"""把**落单的 `$`** 去掉：`$` 个数为奇数时渲染端配不上对，后半段全变纯文本。
-
-    实测：`turboquant...p21-b14-p22-b03:zh` 那条正文 chunk 里有 99 个 `$`，
-    知识库页从"反量化原语"那句往后全不渲染 —— 用户报的"公式显示破碎"就是这个。
-    只修奇偶（去掉最后一个落单的 `$`），不动配好对的数学。
-    """
-    if (text or "").count("$") % 2 == 0:
-        return text
-    idx = text.rfind("$")
-    log.debug("去掉落单的 $（第 %d 字符处）", idx)
-    return text[:idx] + text[idx + 1:]
-
-
-def _balance_asterisks(text: str) -> str:
-    r"""`*` 个数为奇数时去掉最后一个：落单的 `*` 会让 markdown 变斜体、吞掉后面半段。
-
-    只修奇偶，**不动 `**加粗**`**（成对出现，个数是偶数）—— 踩过：先前直接剥掉行首 `*`，
-    把 `**MSE 优化的 TURBOQUANT。**` 的前一半剥了，反而留下落单的 `**`。
-    """
-    if (text or "").count("*") % 2 == 0:
-        return text
-    idx = text.rfind("*")
-    return text[:idx] + text[idx + 1:]
-
-
-def _balance_dollars_per_line(text: str) -> str:
-    r"""**逐行**校正 `$`：单行内联公式没闭合时，补一个 `$`（合法）或去掉落单的 `$`。
-
-    为什么整块判奇偶不够：`turboquant...p21-b14-p22-b03:zh` 整块是 98 个 `$`（偶数），
-    但**第一行**的 `$` 没闭合 —— 渲染端按"行内配对"处理，那一行整段变纯文本
-    （用户截图里第一段是裸 LaTeX、第二段同内容却渲染正常，就是这个）。
-    """
-    out: list[str] = []
-    for line in (text or "").split("\n"):
-        if line.count("$") % 2 == 0:
-            out.append(line)
-            continue
-        first = line.find("$")
-        if first < 0:
-            out.append(line)
-            continue
-        body = line[first + 1:]
-        if _latex_span_ok(body.rstrip("$")):
-            # 落单的是**开**引号：补一个 `$` 把它闭合，公式就能渲染了
-            out.append(line + "$")
-            continue
-        # 落单的是**闭**引号（或内容本身不合法）：去掉它，避免影响这一行之外的配对
-        if line.rstrip().endswith("$"):
-            out.append(line.rstrip()[:-1])
-        else:
-            out.append(line[:first] + line[first + 1:])
-    return "\n".join(out)
-
-
-def _dedupe_sentences(text: str) -> str:
-    r"""去掉**句级**重复（保留首次）：行级去重挡不住"同一段话落在不同行里"的重复。
-
-    实测那条 zh chunk：`由算法 1 与算法 2 中的反量化原语，我们有…`、
-    `第二个内积 ⟨Πq, Q_mse(x_i)⟩ 同样可以高效计算。`、
-    `对第 k 个分量，其 LUT L^{(k)} 存储取值…` 各自出现 2 次，
-    但每次所在的"行"不同（前后还粘着别的内容）—— 所以要在句子粒度上去重。
-    """
-    parts = re.split(r"(?<=[。！？；\n])", text or "")
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in parts:
-        key = part.strip()
-        if len(key) > 20:
-            if key in seen:
-                continue
-            seen.add(key)
-        out.append(part)
-    return "".join(out)
-
-
-def _drop_prefix_paragraphs(text: str) -> str:
-    r"""去掉"**是另一段前缀**"的残缺段落（保留完整的那段）。
-
-    实测那条 zh chunk：第一段是"由算法 1 与算法 2 中的反量化原语，我们有 `$…$`"（公式被截断、
-    没有后半句），第二段是同一句的**完整版**（带"其中 $c_j$ 是使式 (3) 中目标函数最小的质心…"）。
-    两段既不相同、也不是同一句 —— 只有"前缀包含"关系，句子级去重抓不到，用户看到就是"重复"。
-    """
-    lines = (text or "").split("\n")
-    keys = [ln.strip() for ln in lines]
-    drop: set[int] = set()
-    for i, a in enumerate(keys):
-        if len(a) < 40:
-            continue
-        for j, b in enumerate(keys):
-            if i != j and len(b) >= 40 and a != b and b.startswith(a):
-                drop.add(i)               # a 是 b 的前缀 → 丢掉残缺的 a
-                break
-    return "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
-
-
-def _dedupe_paragraphs(text: str) -> str:
-    r"""去掉 chunk 内**完全重复的段落**（保留首次出现）。
-
-    来源：解析块 → 页级译文行是"多对一"（`anchor_map` 的回退匹配会让两个块落到同一行），
-    于是同一个译文段落被拼进 chunk 两次（实测 `反量化原语` 那句重复 2 次、`第二个内积` 2 次）。
-    用户看到的就是"正文片段整段重复"。
-    """
-    parts = re.split(r"(\n+)", text or "")
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in parts:
-        key = part.strip()
-        if "\n" in part or not key:
-            out.append(part)
-            continue
-        if key in seen and len(key) > 20:
-            continue
-        seen.add(key)
-        out.append(part)
-    return "".join(out)
-
-
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
                 last: dict, *, section: str = "", section_path: str = "",
                 metadata: dict | None = None, parts: list[tuple] | None = None,
@@ -913,12 +725,6 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if not chunk_id and chunk_type == "text" and first["id"] != last["id"]:
         cid = f"{paper_id}:text:{first['id']}-{last['id']}"
     meta = dict(metadata or {})
-    if chunk_type == "text":
-        # 正文 chunk 的两道内容卫生（用户报的"整段重复 / 公式显示破碎"就是这两条）：
-        # ① 段级去重；② `$` 奇偶校正（落单 `$` 会让渲染端后半段全变纯文本）
-        content = _balance_dollars_per_line(
-                    _balance_asterisks(_balance_dollars(
-                        _dedupe_sentences(_drop_prefix_paragraphs(_dedupe_paragraphs(content))))))
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1487,6 +1293,8 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
+
 
 
 

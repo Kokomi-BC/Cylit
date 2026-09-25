@@ -3408,3 +3408,36 @@ MySQL 294 == LanceDB 294、`orphans=0 missing=0`；**KaTeX 102/102 通过**；
 `_repair_zh_math`（译文坏公式→原文替换/脱 `$`）→ `_dedupe_paragraphs` →
 `_drop_prefix_paragraphs` → `_dedupe_sentences` → `_balance_dollars` →
 `_balance_dollars_per_line` → `_balance_asterisks`。
+
+### 17.57 第四十一轮（回退）—— 用户问对了：「为什么要设置规则，不能从源头解决吗」
+
+**结论：那一串规则是我自己制造的病。** 逐条查证后：
+
+| 事实（实测） | 数据 |
+|---|---|
+| 源头译文公式的有效性 | turboquant 译文 **415 个 span**，只有 9 个"校验不过"，而这 9 个全是**我的校验器误判**：`\leftarrow` 里含子串 `\left`，被我判成"`\left` 没配对"。真实无效 ≈ **0**；attention 131/131 全过 |
+| 源头 `$` 奇偶 | 译文行里 `$` 为奇数 **0 行**（我加的两道 `$` 校正完全没必要） |
+| 重复段落的真源头 | `_lookup_zh` **每个块各自找最优行** → 多个块命中同一行，同一段中文被拼两次（旧代码甚至注释说"相邻块共用一个译文行是正常现象"，然后只做了相邻去重） |
+
+所以处理办法不是继续加规则，而是：
+
+1. **删掉整条规则链**（共 8 个函数）：`_latex_span_ok`（含误判）、`_repair_zh_math`、
+   `_cut_bare_latex`、`_balance_dollars`、`_balance_dollars_per_line`、`_balance_asterisks`、
+   `_dedupe_sentences`、`_drop_prefix_paragraphs`、`_dedupe_paragraphs` ——
+   以及它们在 `_zh_index` / `_make_chunk` / `_chunk_variants` 里的调用点。
+2. **在真正的源头修**：`_lookup_zh` 改成**单调消费**（`start` 游标 + 已用行记录），
+   同一行不再被两个块各切一份；若后续片段与已出内容存在包含关系 → 判为重复、跳过
+   （不同部分的切片各自保留，所以"一行含多块"的场景不丢内容）。
+
+效果：那条 p21 chunk **2574 → 1744 字**、`反量化原语` 2 → 1 次；p5 chunk 也干净。
+**这一版没有做任何内容改写**（不再去重、不再校正 `$`、不再砍裸 LaTeX）—— 数据是源头的样子。
+
+复核（重建 v24 / v19）：全库 **294** 行（公式 89 + 13）；MySQL == LanceDB、orphans/missing 0；
+检索 hit@6 **100%** / MRR **0.95** / 公式专项 **100%** / 附录 **100%**；
+离线 **340 通过**（`tests/test_rag_chunks.py` 里 `_lookup_zh` 的契约同步改成返回 `(译文, 行号)`）、
+e2e 34 通过 + 1 跳过。
+
+**教训（写下来免得再犯）**：先量"源头的真实错误率"，再决定要不要加清洗规则；
+这次源头的真实错误率 ≈ 0，我却加了三层规则、其中一层（`\left` 误判）还把好数据改坏，
+于是又加规则去修被自己改坏的数据 —— 典型的越修越乱。
+源头上仍存在的小瑕疵（attention 3 行译文 `*` 个数为奇数）记录在案，暂不处理。
