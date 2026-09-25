@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 from backend.parsing.formula.noise import is_noise_formula
-from backend.services.knowledge.knowledge_service import _formula_chunk_text
 
 # --------------------------------------------------------------------------
 # 判据本身
@@ -44,31 +43,33 @@ def test_greek_and_digits_survive() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_formula_chunk_skips_footnote_marks() -> None:
-    """页脚 `∗†` 那条：`latex_final="* †"`、候选 `["* †"]`、原文 `∗†` → 不建 chunk。"""
-    assert _formula_chunk_text({
-        "block_id": "attentionisa-p01-b06", "raw_text": "∗†",
-        "latex_candidate": ["* †"], "latex_final": "* †",
-        "latex_repaired": None, "grade": "A",
-    }) is None
+def test_formula_noise_filter_still_used_by_kb() -> None:
+    """页脚 `∗†` 那条：`latex_final="* †"` → 知识库侧要挡住（`formula_source.is_noise_latex`）。
+
+    历史：以前这里测的是 `knowledge_service._formula_chunk_text`；公式条目改成
+    **canonical 清单**（`markdown_formulas`）之后，正文拼装那一步不再存在，
+    噪声判定统一走 `formula_source.is_noise_latex`（canonical 清单本身也挡一道）。
+    """
+    from backend.services.knowledge.formula_source import is_noise_latex
+
+    assert is_noise_latex("* †") is True
+    assert is_noise_latex("∗†") is True
+    assert is_noise_latex(r"\text{MSE} = \frac{1}{n}\sum_i (x_i - \hat{x}_i)^2") is False
 
 
-def test_formula_chunk_keeps_real_formula() -> None:
-    text = _formula_chunk_text({
-        "block_id": "p04-b21", "raw_text": "MSE = 1/n ∑ (x - x̂)²",
-        "latex_candidate": [r"\text{MSE} = \frac{1}{n}\sum_i (x_i - \hat{x}_i)^2"],
-        "latex_final": r"\text{MSE} = \frac{1}{n}\sum_i (x_i - \hat{x}_i)^2",
-        "grade": "A",
-    })
-    assert text and text.startswith("公式 p04-b21：")
+def test_formula_noise_never_becomes_kb_entry(monkeypatch) -> None:
+    """就算 canonical 清单里混进噪声条目，也不会形成知识库公式条目。"""
+    from backend.services.knowledge import formula_source as fs
 
-
-def test_formula_chunk_falls_back_to_raw_text_when_latex_missing() -> None:
-    """LaTeX 为空时用原文兜底；只有原文也是纯符号才丢。"""
-    assert _formula_chunk_text({"block_id": "p01-b01", "raw_text": "x = 1",
-                                "latex_candidate": [], "latex_final": None}) == "公式 p01-b01：x = 1"
-    assert _formula_chunk_text({"block_id": "p01-b02", "raw_text": "†",
-                                "latex_candidate": [], "latex_final": None}) is None
+    _fake = lambda pid: {"items": [  # noqa: E731
+        {"id": "f001-0001", "page": 1, "row_id": "p001-01", "latex": "* †",
+         "display": True, "context": "", "context_zh": ""},
+        {"id": "f001-0002", "page": 1, "row_id": "p001-02",
+         "latex": r"a = b + c", "display": True, "context": "", "context_zh": ""},
+    ], "count": 2, "source": "markdown", "display_count": 2}
+    monkeypatch.setattr(fs, "canonical_items", lambda pid: _fake(pid)["items"])
+    entries = fs.kb_formula_entries("demo", {}, [])
+    assert [e["latex"] for e in entries] == [r"a = b + c"]
 
 
 # --------------------------------------------------------------------------
@@ -113,3 +114,4 @@ def test_markdown_formulas_skip_footnote_noise(monkeypatch) -> None:
     latexes = [i["latex"] for i in data["items"]]
     assert latexes == ["E = mc^2"]                      # 脚注那条不在
     assert all("* †" not in x for x in latexes)
+

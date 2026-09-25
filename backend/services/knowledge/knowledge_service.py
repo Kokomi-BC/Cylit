@@ -331,26 +331,6 @@ def build_chunks_for_paper(paper_id: str, *,
                            langs)
 
 
-def _formula_chunk_text(f: dict, *, latex: str | None = None) -> str | None:
-    """公式 chunk 的正文；**不是数学的返回 `None`**（那条 chunk 就不该存在）。
-
-    为什么单独判一道：解析阶段把页脚的 `∗†` 认成了公式（小而符号密度高），
-    于是知识库里出现 `公式 attentionisa-p01-b06：* †` 这种条目（还带一张裁图）——
-    用户报过。解析侧已经修了，这里再兜一层：**旧产物（IR）不用重新解析也能干净**，
-    重建索引时这类条目会自然消失（`_collect_chunks` 返回 None 就跳过）。
-
-    ``latex`` 由调用方给出（**换源后是页级视觉转写的完整版**，见 `formula_source`）：
-    解析版碎片化严重（p20 一条公式被拆成 5 块），只取 `latex_final` 会只剩一小段。
-    """
-    body = (latex or formula_source.parsed_latex(f)).strip()
-    cands = f.get("latex_candidate") or []
-    if not body:
-        body = (cands[0] if cands else "") or (f.get("raw_text") or "")
-    if is_noise_formula(body) and is_noise_formula(f.get("raw_text")):
-        return None
-    return f"公式 {f.get('block_id')}：{body}"
-
-
 def _collect_chunks(paper_id: str) -> list[dict]:
     """单语（原文）chunk 序列：正文语义 chunk + 公式原子 chunk（+ 图/表 chunk）。
 
@@ -385,8 +365,11 @@ def _collect_chunks(paper_id: str) -> list[dict]:
     target, floor, hard = chunk_params()
     body_start = first_body_index(rows)
     skip_captions = attached_caption_ids(rows, caption_of)
-    # 公式 LaTeX 的来源选择（解析产物残缺 → 换成页级视觉转写的完整版）
-    f_source = formula_source.assign_formulas(rows, formulas, paper_id)
+    # 公式知识库：**唯一来源** reader_service.markdown_formulas()，经 C 口径过滤后挂锚点
+    # （见 formula_source 的 docstring；这里不再自己识别公式）
+    f_entries = formula_source.kb_formula_entries(paper_id, formulas, rows)
+    f_latex_by_block = {e["formula_block_id"]: e["latex"] for e in f_entries
+                        if e.get("formula_block_id")}
 
     chunks: list[dict] = []
     buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
@@ -454,55 +437,18 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             continue
 
         if bid in formulas:
-            f = formulas[bid]
-            src = f_source.get(bid) or {}
-            # 完整公式只出一条原子 chunk：同一条页级公式被解析切成 N 个碎片时，
-            # 只在**第一个碎片**处出 chunk，其余碎片并进它的 `block_ids`（否则同一段公式
-            # 会在库里出现 N 条内容完全一样的行 —— 就是之前 formula zh/en 重复那个毛病）。
-            if src.get("group_first") is False:
+            # 公式块**不再单独出条目**（条目统一由 canonical 清单生成，见函数末尾）。
+            # 但它的内容**必须留在正文里**：能对上知识库条目的用 canonical 完整 LaTeX，
+            # 对不上的（解析碎片/图内小式子）保留解析版 —— 用户口径"正文内容不能删除"。
+            latex = f_latex_by_block.get(bid) or formula_source.parsed_latex(formulas[bid])
+            if formula_source.is_noise_latex(latex):
                 continue
-            latex = src.get("latex") or ""
-            atomic = _formula_chunk_text(f, latex=latex)
-            if atomic is None:                    # 纯脚注符号，不是公式 → 整条跳过
-                log.info("跳过非数学公式 chunk：%s（%r）", bid, f.get("raw_text"))
-                continue
-            inline = f"$$ {latex} $$" if latex else \
-                strip_presentation(((md_map or {}).get(bid) or {}).get("text") or "")
-            if not inline:
-                inline = atomic
-            # 公式块**不拆**：超上限也只 flush，绝不切公式内部
+            inline = f"$$ {latex} $$"
+            # 公式块不拆：超上限也只 flush，绝不切公式内部
             if buffer and buffer_chars + len(inline) + 2 > hard:
                 flush_text()
-            sec, path = current_section()
             buffer.append(entry("formula", b, inline))
             buffer_chars += len(inline) + 2
-            parsed = formula_source.parsed_latex(f)
-            # 短碎片（`\times 10`、`b\cdot d`、`j=1`…）且没配上页级完整公式：
-            # 多半是图内坐标标签或行内小片段，**不单独出"公式"条目**（用户搜"量化公式"
-            # 搜出一堆 `\times 10` 就是这种）。上面已经把它内联进正文语义 chunk 了，
-            # 所以正文内容一点不丢 —— 只是不再在"公式"分类里占一条。
-            if src.get("source") != "page_vision" and formula_source.is_fragment(latex):
-                log.debug("短碎片不单独出公式条目：%s（%r）", bid, latex)
-                continue
-            meta = {"latex": latex or parsed, "grade": f.get("grade"),
-                    "raw_text": f.get("raw_text"), "crop": f.get("image_path"),
-                    "section_kind": b.get("section_kind") or "body",
-                    "latex_source": src.get("source") or "parsed",
-                    "latex_parsed": parsed,
-                    "latex_candidates": list(f.get("latex_candidate") or []),
-                    "needs_review": bool(src.get("needs_review")),
-                    # 锚点：解析块本身锚点精确（用户口径第 2 条）
-                    "anchor_type": "formula_block", "anchor_precision": "exact",
-                    # 编号单独进 metadata（用户口径第 4 条）
-                    "formula_number": src.get("formula_number")}
-            if src.get("source") == "page_vision":
-                meta["align_score"] = src.get("score")
-            if src.get("block_ids"):
-                meta["block_ids"] = src["block_ids"]
-            chunks.append(_make_chunk(
-                paper_id, "formula", atomic, b, b, section=sec or "",
-                section_path=path or "", metadata=meta,
-            ))
             continue
 
         if bid in figures or bid in tables:
@@ -533,53 +479,66 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 flush_text()
     flush_text()
 
-    # 解析器漏掉的**编号展示公式**：页级 md 里有、解析侧没有对应块 → 补一条合成条目
-    # （用户口径第 1/3/4 条：synthetic=true / formula_source=page_md / 同页最近块作锚点）。
-    chunks.extend(_synthetic_formula_chunks(paper_id, rows, formulas, f_source))
+    # 公式知识库条目：**全部**来自 canonical 清单（reader_service.markdown_formulas
+    # → C 口径过滤 → 挂锚点），不再在索引层识别公式（用户口径 §1/§8）。
+    chunks.extend(_canonical_formula_chunks(paper_id, rows, f_entries))
     chunks.sort(key=lambda c: (c["order_global"],
                                0 if c["chunk_type"] == "text" else 1))
     merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
     return _link_formulas(merged)
 
 
-def _synthetic_formula_chunks(paper_id: str, rows: list[dict], formulas: dict[str, dict],
-                              assignments: dict[str, dict]) -> list[dict]:
-    """给"页级有、解析侧漏掉"的编号展示公式建公式条目。
+def _canonical_formula_chunks(paper_id: str, rows: list[dict],
+                              entries: list[dict]) -> list[dict]:
+    """把 canonical 公式条目落成 chunk。
 
-    它们**没有解析块 id**，所以：
-    - chunk id 用合成前缀 ``{paper}:formula:syn-p{页:02d}-v{序号:02d}``（唯一、可追溯）；
-    - ``block_id`` 存**同页最近解析块**的 id —— 知识库页的「查看原文位置」靠它跳转，
-      精度由 ``anchor_precision = approximate`` 如实标注（找不到块就退 ``page`` / ``page``）。
+    - id：有解析块对应时用 ``{paper}:formula:{formula_block_id}``（与历史一致），
+      否则 ``{paper}:formula:{row_id}``；两者都唯一且可回溯；
+    - ``block_id``：``formula_block`` 锚点用解析块 id，``page_row`` 锚点用 **row_id**
+      （阅读器原生支持 `row_id → block_rows → 页级兜底`，比"最近块"更准）；
+    - metadata 见用户口径 §7（``latex`` / ``display`` / ``row_id`` / ``context`` /
+      ``context_zh`` / ``page`` / 解析侧字段 / 锚点 / ``latex_source``），
+      **不再有** ``synthetic`` / ``needs_review`` / ``latex_candidates``。
     """
-    try:
-        items = formula_source.synthetic_formulas(rows, formulas, paper_id, assignments)
-    except Exception as exc:  # noqa: BLE001 —— 补漏失败不该让整篇建索引挂掉
-        log.warning("补漏公式失败（%s）：%s", paper_id, exc)
-        return []
+    order_of = {b["id"]: int(b["order"]) for b in rows}
     out: list[dict] = []
-    for it in items:
-        anchor_id = it.get("block_id") or ""
-        first = {"id": anchor_id or f"syn-p{it['page']:02d}", "page": it["page"],
-                 "order": it.get("order") or 0}
-        cid = f"{paper_id}:formula:syn-p{it['page']:02d}-v{it['vision_index']:02d}"
-        content = f"公式 {cid.rsplit(':', 1)[-1]}：{it['latex']}"
+    for e in entries:
+        latex = (e.get("latex") or "").strip()
+        if not latex or formula_source.is_noise_latex(latex):
+            continue
+        block_id = e.get("block_id")
+        # chunk id 必须唯一：一行里可能有多条公式（`$Q_{\text{mse}}:…$ 与 $D:…$` 同行），
+        # 所以 page_row 锚点的条目用 **canonical 条目 id**（`f004-0028`）而不是 row_id；
+        # 有解析块的用块 id（一个解析块最多对一条公式）。
+        unique_key = e.get("formula_block_id") or e.get("id")
+        cid = f"{paper_id}:formula:{unique_key}"
+        # 展示用前缀仍取"人看得懂"的定位（row_id / 解析块 id）
+        label = e.get("row_id") or e.get("formula_block_id") or e.get("id")
+        content = f"公式 {label}：{latex}"
+        meta = {
+            "latex": latex, "display": bool(e.get("display")),
+            "row_id": e.get("row_id"), "page": e.get("page"),
+            "context": e.get("context"), "context_zh": e.get("context_zh"),
+            "formula_number": e.get("formula_number"),
+            "latex_source": "page_vision",
+            "anchor_type": e.get("anchor_type"),
+            "anchor_precision": e.get("anchor_precision"),
+            "source_item_ids": e.get("source_item_ids"),
+        }
+        if e.get("formula_block_id"):
+            meta.update({"formula_block_id": e["formula_block_id"],
+                         "parsed_latex": e.get("parsed_latex"),
+                         "grade": e.get("grade"), "crop": e.get("crop"),
+                         "align_score": e.get("align_score")})
+        first = {"id": block_id or f"row-p{e.get('page') or 0:02d}",
+                 "page": int(e.get("page") or 1),
+                 "order": order_of.get(block_id or "", 0)}
         out.append(_make_chunk(
             paper_id, "formula", content, first, first,
-            section="", section_path="",
-            metadata={
-                "latex": it["latex"], "latex_parsed": None,
-                "latex_source": "page_vision", "formula_source": "page_md",
-                "synthetic": True, "formula_number": it.get("formula_number"),
-                "page": it["page"], "block_id": anchor_id or None,
-                "anchor_type": it["anchor_type"],
-                "anchor_precision": it["anchor_precision"],
-                "needs_review": False,
-                **({"also_on_pages": it["also_on_pages"]} if it.get("also_on_pages") else {}),
-            },
-            chunk_id=cid))
+            section="", section_path="", metadata=meta, chunk_id=cid))
     if out:
-        log.info("补漏公式 %d 条（%s）：%s", len(out), paper_id,
-                 [c["id"].rsplit(":", 1)[-1] for c in out])
+        log.info("canonical 公式条目 %d 条（%s）：%s", len(out), paper_id,
+                 [c["id"].rsplit(":", 1)[-1] for c in out][:6])
     return out
 
 
@@ -1135,14 +1094,20 @@ def chunk_detail(chunk_id: str) -> dict:
         "preview": truncate(content, 200),
         "tokens": extra.get("tokens"), "index_version": extra.get("index_version"),
         "image_url": chunk_image_url(paper_id, chunk_type, page_no, meta),
-        # 公式条目：把"这条 LaTeX 从哪来、可不可信"一并下发 ——
-        # 知识库页据此决定要不要渲染 KaTeX / 挂「待修复」徽标 / 展示解析版对照。
+        # 公式条目的完整契约（用户口径 §7）：来源 = 页级 canonical 清单，
+        # 锚点精度与解析侧对应信息一并下发（知识库页据此渲染 KaTeX / 显示锚点精度）。
         "latex": meta.get("latex") or None,
-        "latex_parsed": meta.get("latex_parsed") or None,
         "latex_source": meta.get("latex_source") or None,
-        "raw_text": meta.get("raw_text") or None,
+        "display": bool(meta.get("display")) if meta.get("display") is not None else None,
+        "row_id": meta.get("row_id") or None,
+        "context": meta.get("context") or None,
+        "context_zh": meta.get("context_zh") or None,
+        "formula_number": meta.get("formula_number") or None,
+        "anchor_type": meta.get("anchor_type") or None,
+        "anchor_precision": meta.get("anchor_precision") or None,
+        "formula_block_id": meta.get("formula_block_id") or None,
+        "parsed_latex": meta.get("parsed_latex") or None,
         "grade": meta.get("grade") or None,
-        "needs_review": bool(meta.get("needs_review")),
     }
 
 

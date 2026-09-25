@@ -3239,3 +3239,69 @@ Attention Eq.1（`Attention(Q,K,V)=softmax(QKᵀ/√d_k)V`）、Eq.2（FFN）、
 `attentionisa-p06-b04`，均为 `latex_source=parsed`，未强配）。
 测试：`tests/test_kb_formula_source.py` 增到 27 项（续行合并/编号提取/命令名不误判散文/
 补漏准入/同页锚点/page 兜底/同 LaTeX 去重）；离线 346 通过、e2e 34 通过 + 1 跳过。
+
+### 17.53 第四十一轮（收尾）—— 公式库统一到阅读器清单（唯一来源 + C 口径 + page_row 锚点）
+
+用户看到阅读器公式面板（p4 Attention / p5 MultiHead·FFN / p6 两条 PE…）**完全对得上**，问
+"论文页能完全匹配上公式啊" —— 一查根因：**两边根本不是同一个抽取器**。
+
+| | 来源 | 抽取方式 |
+|---|---|---|
+| 阅读器公式面板 | `reader_service.markdown_formulas()` | 按页级产物的**每一行**逐字符配对扫描（先占 `$$…$$` 再配 `$…$`，跳过已占区间）+ `is_noise_formula` |
+| 知识库（改前） | 我写的 `formula_source` | 正则扫 `original_md` + 一堆阈值 |
+
+两个抽取器 → 两张清单。这就是"论文页对得上、知识库对不上"的全部原因，也是前面几轮
+一直在打补丁（p16 `\Gamma(d/2)`、Attention Eq.1、PE 公式）的根源。
+
+#### 改成（用户口径 §1～§9）
+
+1. **唯一来源**：`markdown_formulas()` 负责"发现公式"，知识库侧**只做过滤与挂载**，
+   删掉了第二套 `original_md` 抽取（`vision_math_blocks` / `vision_groups` /
+   `vision_display_map` / `synthetic_formulas` / `_absorb_or_drop` / `is_display_formula` …）；
+2. **C 口径**（对 canonical 清单的 FILTER）：行间公式 ∪ 编号公式 ∪ 有独立语义的定义/关系式
+   （关系符 + ≥2 命令 + 规范串 ≥12）→ TurboQuant **92** / Attention **13**；
+   挡掉 `$d$`、`$b$`、`$Q(\cdot)$`、伪代码赋值行；
+3. **锚点**：解析块可靠对应 → `formula_block` / `exact`（带 `grade`/`crop`/`parsed_latex`/
+   `formula_block_id`/`text_chunk_id`）；否则 **`page_row` / `row`**（`block_id` 直接给 `row_id`，
+   阅读器原生 `row_id → block_rows → 页级兜底`）；连 row 都没有才 `page` / `page`；
+4. **停止使用** `needs_review` / `latex_candidates` / `nearest_parsed_block(approximate)`：
+   三条老"待修复"（`\Gamma(d/2)`、`Qd×d…`、`O(k·n·d)…`）不再单独成条，**内容仍在正文里**
+   （公式块照旧内联进语义 chunk）；
+5. **数据契约**：`latex` / `display` / `row_id` / `context` / `context_zh` / `page` / `formula_number`
+   + 解析侧字段 + `anchor_type`/`anchor_precision` + `latex_source="page_vision"`；
+   因为是 canonical 正常公式，**不再标 `synthetic`**；也不再有 `needs_review`；
+6. **不变式**：知识库公式 ⊆ 阅读器清单 —— 每条都带 `source_item_ids`，可按
+   `paper_id + page + row_id` 回溯（验证脚本逐条查过，回溯失败 0）。
+
+#### 一处数字修正（重要）
+
+我上一轮报的 C=95 是**测法有 bug**：老测法里 `\\to` 没加词边界，被 `^\top` 命中，
+于是混进了 3 条伪代码赋值行（`\tilde{x} \leftarrow \Pi^\top \cdot \tilde{x}` 等）——
+那正是用户明确要求"不进公式库"的东西。正确数字是 **TurboQuant 92（canonical 349）/ Attention 13（canonical 90）**，
+测试里已把这个数字钉住并注明原因。
+
+#### 结果（重建 v13 / v8）
+
+| | turboquant | attention |
+|---|---|---|
+| canonical 清单 | **349**（行间 26） | **90**（行间 7） |
+| C 过滤 | **92** | **13** |
+| 公式条目 | 28 → **92**（`formula_block` 19 / `page_row` 73） | 8 → **13**（1 / 12） |
+| 入库行 | 140 → **189** | 89 → **108** |
+
+全库 297 行；MySQL 297 == LanceDB 297、`orphans=0 missing=0`；
+**KaTeX `throwOnError:true` 105/105 通过**；带编号 7 条（TQ 1/2/3/4、AT 1/2/3）；
+遗留字段检查全 0（`synthetic=0 needs_review=0 nearest_parsed_block=0`）。
+检索回归（全量重建前的那次）：hit@6 **100%**、MRR **0.95**、附录 **100%**、正文命中 100%；
+**公式专项 83%** —— q08 在"只搜公式"的 top-3 里没命中期望词：公式库 23 → 105 条（5 倍）
+之后 top-3 竞争变了，且期望词是中文（"量化误差"），纯 LaTeX 条目里没有中文 token，
+这条依赖向量语义命中。**待 embedding 服务恢复后复跑**（复跑时会看到具体名次，
+再决定是否把公式专项窗口从 3 放宽到 5）。复跑期间 embedding 接口持续
+`SSL: UNEXPECTED_EOF`，e2e 已加"模型不可用则 skip"保护（不再误报成检索退化）。
+
+测试：`test_kb_formula_source.py` 按新架构重写（C 口径逐条判据 / 同行续行合并 /
+来源唯一 + 回溯不变式 / 锚点三态 / 真实语料 349→92、90→13）；`test_kb_chunking.py`
+夹具改为注入 canonical 清单（并新增"条目数不许超过 canonical"的断言）；
+`test_formula_noise.py` 改用 `formula_source.is_noise_latex`。
+离线 340 通过；e2e 30 通过 + 5 跳过（4 条因模型服务不可用）。
+前端未改动（用户 UI 修改仍未提交）。

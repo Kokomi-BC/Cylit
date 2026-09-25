@@ -92,6 +92,18 @@ class Env:
                              "caption_block_id": caption_block, "image_path": f"/tmp/{fid}.png"})
         return fid
 
+    def canonical(self) -> list[dict]:
+        """canonical 公式清单（= 阅读器公式面板那份）：每个公式块一条，行间公式。"""
+        out = []
+        for i, f in enumerate(self.formulas):
+            bid = f["block_id"]
+            page = next((b.page_no for b in self.blocks if b.id == bid), 1)
+            out.append({"id": f"f{page:03d}-{i:04d}", "page": page,
+                        "row_id": f"p{page:03d}-{i + 1:02d}",
+                        "latex": (f.get("latex_final") or f.get("raw_text") or "").strip(),
+                        "display": True, "context": "", "context_zh": ""})
+        return out
+
 
 @pytest.fixture()
 def env(monkeypatch):
@@ -104,6 +116,10 @@ def env(monkeypatch):
                         lambda pid: {"ir": "/tmp/none.sqlite"})
     monkeypatch.setattr(ks.reader_service, "load_markdown_map", lambda pid: e.md)
     monkeypatch.setattr(ks.reader_service, "page_translations", lambda pid: e.pages)
+    # 公式条目现在**只**来自 canonical 清单（reader_service.markdown_formulas）：
+    # 夹具里把"每个公式块"当成一条 canonical 条目，等价于阅读器面板那一份。
+    monkeypatch.setattr(ks.formula_source, "canonical_items",
+                        lambda pid: e.canonical())
     import backend.parsing.ir.ir_reader as ir_reader
 
     monkeypatch.setattr(ir_reader, "IRReader",
@@ -169,8 +185,8 @@ def test_noise_formula_neither_chunked_nor_inlined(env) -> None:
     assert all("* †" not in c["content"] for c in chunks)
 
 
-def test_formula_only_buffer_makes_no_text_chunk(env, monkeypatch) -> None:
-    """整段只有公式时不再造一条和原子 chunk 重复的正文行。"""
+def test_formula_entries_never_exceed_canonical_list(env, monkeypatch) -> None:
+    """公式条目**不许自己多造**：条目数 == canonical 清单里通过 C 的条数，且都有锚点。"""
     monkeypatch.setattr(ks, "chunk_params", lambda: (200, 200, 640))
     env.add("b1", 1, "heading", "## 3 Proofs", 1)
     env.add("b2", 1, "para", "We now prove the bound for the residual vector. " * 7, 2)
@@ -179,8 +195,14 @@ def test_formula_only_buffer_makes_no_text_chunk(env, monkeypatch) -> None:
     env.add("b4", 1, "formula", ALIGNED, 4)
     env.formula("b4", 1, ALIGNED.replace("$$", ""), raw=ALIGNED, order=4)
     chunks = ks._collect_chunks(PAPER)
-    assert [c["chunk_type"] for c in chunks] == ["text", "formula", "formula"]
-    assert "aligned" not in texts(chunks)[0]["content"]
+    expected = [i for i in env.canonical() if ks.formula_source.is_kb_formula(i)]
+    formulas = [c for c in chunks if c["chunk_type"] == "formula"]
+    assert len(formulas) == len(expected), [c["id"] for c in formulas]
+    for c in formulas:
+        m = c["metadata"] or {}
+        assert m.get("anchor_type") in ("formula_block", "page_row", "page")
+        assert m.get("latex_source") == "page_vision"
+    assert any(c["chunk_type"] == "text" for c in chunks), "正文不能被公式顶掉"
 
 
 # --------------------------------------------------------------------------
