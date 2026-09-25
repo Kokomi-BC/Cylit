@@ -184,6 +184,24 @@ function shownChunks(group: PaperResult): SimilarItem[] {
   return group.chunks.slice(0, PAPER_PREVIEW_CHUNKS);
 }
 
+const leftPane = ref<HTMLElement | null>(null);
+
+/**
+ * 左栏内容没撑满一屏时**默认展开全部片段**。
+ *
+ * 用户口径："左侧内容如果没有撑满页面则默认展开" —— 折叠只是为了不把一屏塞满，
+ * 既然还空着，就没有理由让人再点一次"查看全部 N 个片段"。
+ * 判定用真实布局（渲染后测量 scrollHeight / clientHeight），不做数量上的猜测。
+ */
+function autoExpandIfFits(): void {
+  const el = leftPane.value;
+  if (!el) return;
+  const collapsed = paperResults.value
+    .filter((g) => g.total_chunks > PAPER_PREVIEW_CHUNKS && !expanded.value.includes(g.paper_id));
+  if (!collapsed.length) return;
+  if (el.scrollHeight > el.clientHeight + 4) return;   // 已经撑满 → 保持折叠
+  expanded.value = [...expanded.value, ...collapsed.map((g) => g.paper_id)];
+}
 function toggleExpand(pid: string): void {
   const set = new Set(expanded.value);
   if (set.has(pid)) set.delete(pid); else set.add(pid);
@@ -342,6 +360,8 @@ async function runSearch(): Promise<void> {
     if (scopeUsed !== 'all') payload.paper_id = paperId.value;
     const data = (await api.post<SimilarResult>('/rag/similar', payload)) || {};
     result.value = data;
+  await nextTick();
+  autoExpandIfFits();
     // 成功搜索才写记录（失败/被拒不入历史，免得记录里全是没结果的词）
     addSearch({
       q: text, mode: 'search', scope: scopeUsed,
@@ -786,12 +806,22 @@ async function refreshOverview(): Promise<void> {
   });
 }
 
+/** Esc 收起详情（去掉"关闭详情"按钮后的替代：键盘就能退回列表，不打断检索结果）。 */
+function onKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== 'Escape' || !selected.value) return;
+  const el = ev.target as HTMLElement | null;
+  const tag = (el?.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || el?.isContentEditable) return;   // 正在输入 → 不抢 Esc
+  closeSelection();
+}
+
 onMounted(async () => {
   refreshHistory();
   unsubscribeHistory = subscribeHistory(refreshHistory);
   mq = window.matchMedia(NARROW_QUERY);
   narrow.value = mq.matches;
   mq.addEventListener('change', onMq);
+  window.addEventListener('keydown', onKeydown);
   await refreshOverview();
   // 上次是浏览模式、筛选还在、但条目已经被清掉（例如中途重建过索引）→ 补一次；
   // 有数据就直接渲染 store 里的（切走再切回来不重复请求）
@@ -803,6 +833,7 @@ onUnmounted(() => {
   unsubscribeHistory = null;
   mq?.removeEventListener('change', onMq);
   mq = null;
+  window.removeEventListener('keydown', onKeydown);
 });
 </script>
 
@@ -921,7 +952,7 @@ onUnmounted(() => {
       <!-- 两栏：左 = 搜索结果的论文聚合；右 = 选中内容的详情（各自独立滚动） -->
       <div class="kb-cols" :class="{ narrow }">
         <!-- ------------------------------ 左栏：搜索结果 ------------------------------ -->
-        <section class="kb-pane kb-left" aria-label="搜索结果">
+        <section ref="leftPane" class="kb-pane kb-left" aria-label="搜索结果">
           <div class="kb-left-inner">
             <!-- 加载中（且没有旧结果）：骨架，不白屏 -->
             <template v-if="busy && !result">
@@ -1034,12 +1065,6 @@ onUnmounted(() => {
           </div>
 
           <template v-else>
-            <div class="kb-detail-head">
-              <button type="button" class="btn sm ghost" @click="closeSelection">
-                <AppIcon name="close" :size="13" />关闭详情
-              </button>
-            </div>
-
             <div class="kb-detail-body" :key="contentAnim">
               <h2 class="kb-detail-title">{{ sourceInfo.title }}</h2>
               <div class="kb-detail-meta">
@@ -1413,9 +1438,10 @@ onUnmounted(() => {
 .kb-cols {
   display: grid; gap: 14px;
   grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
-  /* 视口高 - 顶栏 - 本页头部与计数行占掉的高度，再留一点呼吸 */
-  height: calc(100vh - var(--header-h) - 176px);
-  min-height: 380px;
+  align-items: stretch;
+  /* 两栏铺满整页：至少占满"视口 - 顶栏 - 本页头部与计数行"，内容更长时随内容一起长高
+     （不再内部裁切 → 左右两块圆角矩形永远等高、且到底） */
+  min-height: calc(100vh - var(--header-h) - 176px);
 }
 .kb-cols.narrow {
   grid-template-columns: minmax(0, 1fr);
@@ -1718,3 +1744,4 @@ onUnmounted(() => {
   .kb-detail-head { position: static; }
 }
 </style>
+

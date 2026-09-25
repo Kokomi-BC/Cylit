@@ -127,6 +127,21 @@ def _safe_preview(content: str, limit: int = 200) -> str:
     return text
 
 
+def _strip_unpaired_bold(text: str) -> str:
+    r"""去掉**行首落单的加粗标记**（`**图 5：…` 这种没有收尾的 `**`）。
+
+    来源：译文把 `**Figure 5:**` 的收尾 `**` 丢了，于是 `**` 原样显示在正文里
+    （用户报的"细微 markdown 问题"）。只处理"行首是 `**` 且整行 `**` 出现奇数次"的情形，
+    成对的加粗原样保留 —— 不做别的 markdown 改写。
+    """
+    out: list[str] = []
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("**") and line.count("**") % 2:
+            i = line.index("**")
+            line = line[:i] + line[i + 2:]
+        out.append(line)
+    return "\n".join(out)
+
 def _zh_index(pages: list[dict]) -> dict[int, list[tuple[str, str]]]:
     """``{页号: [(行签名, 译文), …]}``：页级翻译产物的译文索引（保持行序）。
 
@@ -355,6 +370,8 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
                     continue                  # 还没翻译 → 不出 zh 行
             # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
+            if c["chunk_type"] in ("text", "figure", "table"):
+                content = _strip_unpaired_bold(content)
             if c["chunk_type"] == "text" and len(content) < floor:
                 continue
             out.append(_variant_row(c, lang, content))
@@ -767,6 +784,9 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if not chunk_id and chunk_type == "text" and first["id"] != last["id"]:
         cid = f"{paper_id}:text:{first['id']}-{last['id']}"
     meta = dict(metadata or {})
+    if chunk_type in ("text", "figure", "table"):
+        # 行首落单的 `**`（`**图 5：…`）会在渲染时原样显示 → 在这里去掉（成对加粗不动）
+        content = _strip_unpaired_bold(content)
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1335,6 +1355,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
