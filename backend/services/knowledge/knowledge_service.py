@@ -471,11 +471,10 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
             out = p
         elif p[0] in _CLOSERS or all(ch in _CLOSERS for ch in p):
             out += p
-        elif out and out[-1] not in _SENT_END and out[-1] not in ".!?;":
-            # 上一段**没以句末标点结束** → 同一句被切片切开了，直接接上（别凭空断行）；
-            # 边界若是"公式/Latin 紧邻中文"，补一个空格（原文 `\right\}$ 与` 本来就有空格）
-            sep = " " if (out[-1] == "$" or out[-1].isascii()) and not out[-1].isspace() else ""
-            out += sep + p
+        elif out.endswith("$") and p[0] in "与和及或":
+            # 唯一一条"跨片段接续"规则，且极窄：上一段**以公式结尾**、下一段以「与/和/及/或」
+            # 起头 → 同一句被切片切开（标题/算法框不会以 `$` 结尾，所以不会误粘）
+            out += " " + p
         else:
             out += "\n\n" + p
     return out or None
@@ -626,15 +625,15 @@ def _collect_chunks(paper_id: str) -> list[dict]:
         if not entries or not any(e["kind"] == "text" for e in entries):
             # 只有公式的 buffer 不建正文 chunk：公式已有原子 chunk，避免重复行
             return
-        # 拼装：**内联公式**（kind=formula）紧接前一段，不加段落分隔 —— 它本来就是行内数学，
-        # 用 `\n\n` 会让"…最优质心分别为"后面多出一个换行（用户报的"多换了一行"）；
-        # 正文块之间仍用空行分段落。
+        # 拼装只有一条窄规则：**内联公式**（kind=formula）紧接前一段（它本来是行内数学，
+        # 单独成段会出现"公式另起一行"）。其余一律空行分段 —— 不猜"这句话说完了没有"，
+        # 否则标题/算法框会被粘进正文（踩过）。
         buf = ""
         for e in entries:
             piece = e["text"]
             if not buf:
                 buf = piece
-            elif e["kind"] == "formula" or buf.rstrip().endswith(("：", ":", "，", ",", "与", "和", "为")):
+            elif e["kind"] == "formula":
                 buf += piece
             else:
                 buf += "\n\n" + piece
