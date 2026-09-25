@@ -143,13 +143,19 @@ def test_variants_skip_zh_when_untranslated() -> None:
     assert [r["lang"] for r in rows] == ["en"]                # 不拿原文冒充译文
 
 
-def test_variants_keep_formula_in_both_langs() -> None:
+def test_variants_emit_single_any_row_for_formula() -> None:
+    """公式原子行**只出 1 行**（`lang=any`）：LaTeX 无语言之分，zh/en 各存一份是纯冗余。
+
+    语言过滤那边（`retrieval._filter_rows` / LanceDB prefilter）把 `any` 当作
+    "两种语言都通过"，所以中文、英文检索都召得回 —— 见 `test_lang_filter_keeps_any`。
+    """
     a = _block("p02-b07", 2, 7, "$$ D_{mse} = E[||x - Q^{-1}(Q(x))||^2] $$")
     chunk = _make_chunk(PAPER, "formula", "公式 p02-b07：D_{mse}", a, a,
                         metadata={"latex": "D_{mse}"})
     rows = _chunk_variants([chunk], {}, ("zh", "en"))
-    assert [r["lang"] for r in rows] == ["zh", "en"]
-    assert rows[0]["content"] == rows[1]["content"]           # LaTeX 无语言之分
+    assert [r["lang"] for r in rows] == ["any"]
+    assert "pair_id" not in rows[0]["metadata"]        # 没有"对侧语种"可配
+    assert rows[0]["id"].endswith(":any")
 
 
 def test_variants_use_translated_caption_for_figure() -> None:

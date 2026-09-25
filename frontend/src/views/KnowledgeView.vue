@@ -289,12 +289,16 @@ function typeMeta(key?: string | null) {
 }
 
 function langShort(lang?: string | null): string {
-  return (lang || 'en') === 'zh' ? '中' : '原';
+  const key = lang || 'en';
+  // `any` = 语言无关（公式原子行）：两种语言检索都能召回，徽标显示「通用」
+  if (key === 'any') return '通用';
+  return key === 'zh' ? '中' : '原';
 }
 
-/** 双语句：`中` / `原` / `中+原`（两路都召回同一条时标注）。 */
+/** 双语句：`中` / `原` / `通用` / `中+原`（两路都召回同一条时标注）。 */
 function langLabel(item: SimilarItem): string {
   const langs = item?.langs?.length ? item.langs : [item?.lang || 'en'];
+  if (langs.includes('any')) return '通用';
   return langs.map((l) => (l === 'zh' ? '中' : '原')).join('+');
 }
 

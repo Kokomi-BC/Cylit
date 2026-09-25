@@ -89,6 +89,23 @@ def test_build_context_numbers_sources_and_keeps_both_languages(twin) -> None:
     assert ctx["truncated"] == 0 and ctx["chars"] > 0
 
 
+def test_build_context_renders_any_formula_without_language_pairs(twin) -> None:
+    """`lang=any`（公式原子行）语言无关：不贴"原文/译文"标签，中英文上下文都能直接用。
+
+    为什么不走 `twin` 的取对侧逻辑：公式没有"对侧语种"，LaTeX 本身就是内容。
+    """
+    rows = [{"chunk_id": "p1:formula:b7:any", "lang": "any",
+             "content": "公式 b7：D_{mse} = E[||x - Q^{-1}(Q(x))||^2]",
+             "paper_id": "p1", "chunk_type": "formula", "page_no": 2,
+             "block_id": "b7", "section": "2 方法", "metadata": {}}]
+    ctx = build_context(rows)
+    assert ctx["text"].count("内容：") == 1
+    assert "原文：" not in ctx["text"] and "译文：" not in ctx["text"]
+    assert "D_{mse}" in ctx["text"]
+    assert ctx["sources"][0]["lang"] == "any"
+    assert "D_{mse}" in ctx["sources"][0]["snippet"]
+
+
 def test_build_context_respects_source_cap_and_budget(monkeypatch) -> None:
     no_twin = lambda ids: []                                    # noqa: E731
     monkeypatch.setattr(rag_service.vector_store, "get_rows", no_twin)

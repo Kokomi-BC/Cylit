@@ -4,9 +4,21 @@
 检索（向量/词法/混合/重排/RAG 问答）在阶段 14–17 的后续轮次实现；
 本模块负责 chunk 与索引链路，保证「删除论文 → 清索引」与「重建索引」可用。
 
-**双语 chunk（本轮新增）**：同一个 chunk 出 ``zh`` / ``en`` 两行（chunk id 加 ``:zh`` /
-``:en`` 后缀，``lang`` 进 ``metadata_json``）—— **不改表结构**（不动 MySQL 列，
-避免 ALTER 迁移）。理由见 ``build_chunks_for_paper`` 的 docstring。
+**双语 chunk**：同一个 chunk 出 ``zh`` / ``en`` 两行（chunk id 加 ``:zh`` / ``:en`` 后缀，
+``lang`` 进 ``metadata_json``）—— **不改表结构**（不动 MySQL 列，避免 ALTER 迁移）。
+理由见 ``build_chunks_for_paper`` 的 docstring。
+
+**公式的两类索引单元（本轮）**：
+- *语义 chunk*（``text``）：正文里**内联保留完整公式**（``$$…$$`` 原样、绝不拆开），
+  「公式前的定义/说明 + 公式 + 公式后的 where/解释」落在同一条；
+- *公式原子 chunk*（``formula``）：一条公式一条，用于公式专项检索与公式裁图。
+两类互为补充、不做去重，靠 ``formula_ids`` / ``text_chunk_id`` 双向指认。
+公式正文与语言无关，只出 **1 行**（``lang = any``）—— 旧实现 zh/en 各存一份，
+实测 76 组正文完全相同的行（占全库 19%）纯属浪费。
+
+**索引层预处理**（作者/单位/邮箱/arXiv/会议行/脚注过滤、Markdown 表现格式清理、
+图注去重、表格数字行不当标题）在 ``backend/services/knowledge/preprocess.py``：
+只服务知识库，**不动解析产物、不动阅读器视图**，改完只需重建索引（不重新解析）。
 """
 
 from __future__ import annotations
@@ -21,6 +33,12 @@ from backend.core.utils import json_dumps, new_id, now, sha256_text, truncate
 from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import Block, Chunk, Paper
 from backend.repositories.mysql.session import session_scope
+from backend.services.knowledge.preprocess import (attached_caption_ids,
+                                                   first_body_index,
+                                                   heading_level, is_front_matter,
+                                                   is_table_number_heading,
+                                                   split_long_text,
+                                                   strip_presentation)
 from backend.services.model.model_manager import model_manager
 from backend.services.paper import paper_service, reader_service
 
@@ -28,11 +46,19 @@ log = get_logger(__name__)
 
 # 四类 chunk（规划 §10 ⑫ chunk_type）
 CHUNK_TYPES = ("text", "formula", "figure", "table")
-# 目标 chunk 字符数（段合并上限）
-TARGET_CHUNK_CHARS = 900
-MIN_CHUNK_CHARS = 40
+# 正文语义 chunk 的目标长度（到点即 flush）
+TARGET_CHUNK_CHARS = 1400
+# 小正文 chunk 的**合并门槛**（不是丢弃门槛：能和相邻正文块合并就合并，
+# 合并不了就照样入库 —— 用户口径"尝试与相邻语义块合并"）
+MIN_CHUNK_CHARS = 200
+# 单个 chunk 的硬上限：append 之前预检 buffer + block，任何正文 chunk 都不得超过
+HARD_CHUNK_CHARS = 2240
+# 真正的"残渣"丢弃门槛（英文侧）：低于这个长度的正文块才丢
+RESIDUE_CHARS = 40
 # 双语：同一 chunk 的两种语言入库行（顺序即入库顺序，zh 在前便于人肉核对）
 LANGS = ("zh", "en")
+# 语言无关（公式）：只出 1 行、zh/en 检索都要能召回
+ANY_LANG = "any"
 # 中文侧的最小长度门槛按**字**算：中文 1 字的信息量约等于英文 2~3 字符，沿用 40 字符
 # 会把大量正常的中文块误杀（实测把 "## B.2 QJL：1 比特内积量化" 这类小节标题全丢了）。
 # 门槛只用来兜"取到的是残渣"，不承担质量判断 —— 对不上译文的行压根不会出（见 _lookup_zh）。
@@ -43,6 +69,32 @@ _WS_RE = re.compile(r"\s+")
 _COMPACT_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
 # 页内对齐的最小可信重叠（签名字符数）
 _MIN_ALIGN_CHARS = 12
+
+
+def _setting_int(key: str, default: int) -> int:
+    """读 setting 表里的整数参数（读不到/坏值一律回退默认）。
+
+    为什么要落成 setting：粒度是**要按真实检索效果反复调**的参数，改一次不该动代码；
+    但改完必须**重建索引**才生效（chunk 是建出来的，不是查出来的）。
+    """
+    try:
+        from backend.repositories.mysql.models import Setting
+
+        with session_scope() as sess:
+            row = sess.get(Setting, key)
+        if row is None or row.value is None:
+            return default
+        return int(float(str(row.value).strip().strip('"')))
+    except Exception:  # noqa: BLE001 —— 参数读不到不影响建索引
+        return default
+
+
+def chunk_params() -> tuple[int, int, int]:
+    """``(target, min, hard)``；setting 键：``kb.chunk_target_chars`` 等。"""
+    target = max(200, _setting_int("kb.chunk_target_chars", TARGET_CHUNK_CHARS))
+    floor = max(RESIDUE_CHARS, _setting_int("kb.chunk_min_chars", MIN_CHUNK_CHARS))
+    hard = max(target, _setting_int("kb.chunk_hard_chars", HARD_CHUNK_CHARS))
+    return target, floor, hard
 
 
 def _block_sig(text: str) -> str:
@@ -175,52 +227,84 @@ def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str) -> st
     return _slice_zh(dst, j1 / len(row_sig), j2 / len(row_sig))
 
 
+def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str | None:
+    """按块拼中文正文；**公式片段原样插入**（LaTeX 无语言之分，两侧同串）。
+
+    ``parts`` 的元素是 ``(页号, 文本, kind)``（``kind`` 缺省视为 ``text``，兼容旧数据）。
+    """
+    if not parts:
+        return None
+    pieces: list[str] = []
+    text_parts = 0
+    for item in parts:
+        page, text = item[0], item[1]
+        kind = item[2] if len(item) > 2 else "text"
+        if kind == "formula":
+            pieces.append(text)          # 公式：不查译文，直接原样保留
+            continue
+        text_parts += 1
+        got = _lookup_zh(zh, page, text)
+        if got:
+            pieces.append(got)
+    # 相邻块共用一个译文行（切分不同时的正常现象）→ 去重，别把同一段中文塞两次
+    deduped: list[str] = []
+    for piece in pieces:
+        if not deduped or deduped[-1] != piece:
+            deduped.append(piece)
+    if not deduped:
+        return None
+    if text_parts and len(deduped) < len(parts):
+        log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
+                  len(deduped), len(parts))
+    return "\n\n".join(deduped)
+
+
+def _variant_row(c: dict, lang: str, content: str) -> dict:
+    """一条入库行（``:zh`` / ``:en`` / ``:any``）。"""
+    meta = {**(c.get("metadata") or {}), "lang": lang}
+    if lang != ANY_LANG:
+        meta["pair_id"] = c["id"]
+    return {
+        **{k: v for k, v in c.items() if not k.startswith("_")},
+        "id": f"{c['id']}:{lang}",
+        "lang": lang,
+        "content": content,
+        "content_hash": sha256_text(content),
+        "content_preview": truncate(content, 200),
+        "token_count": _approx_tokens(content),
+        "metadata": meta,
+    }
+
+
 def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
                     langs: tuple[str, ...]) -> list[dict]:
-    """把「单语 chunk」展开成 zh/en 两行。
+    """把「单语 chunk」展开成语言行。
 
-    译文缺失的处理：正文块 / 图注块**翻译没做就不出 zh 行**（不拿原文冒充译文，
-    否则索引里会出现"中文行其实是英文"的脏数据）；公式块的语言无关（只有 LaTeX），
-    两侧同文本、照出。
+    - **公式原子 chunk 只出 1 行**（``lang = any``）：正文是 LaTeX，与语言无关。
+      旧实现 zh/en 各出一行、正文完全相同（实测 76 组冗余行）—— 语言过滤那边
+      （``retrieval._filter_rows`` / ``/knowledge/chunks``）把 ``any`` 视为"两种语言都通过"，
+      所以中文、英文检索都召得回，中/英文 RAG 上下文也都能直接用这段公式。
+    - 正文 / 图注块：译文缺失就**不出 zh 行**（不拿原文冒充译文，否则索引里会出现
+      "中文行其实是英文"的脏数据）。
     """
     out: list[dict] = []
     for c in base:
-        parts: list[tuple[int, str]] = c.get("_parts") or []
+        if c["chunk_type"] == "formula":
+            out.append(_variant_row(c, ANY_LANG, c["content"]))
+            continue
+        parts: list[tuple] = c.get("_parts") or []
         for lang in langs:
             if lang == "en":
                 content = c["content"]
-            elif c["chunk_type"] == "formula":
-                content = c["content"]            # LaTeX 无语言之分
             else:
-                pieces = [_lookup_zh(zh, p, t) for p, t in parts]
-                pieces = [p for p in pieces if p]
-                # 相邻块共用一个译文行（切分不同时的正常现象）→ 去重，别把同一段中文塞两次
-                deduped: list[str] = []
-                for piece in pieces:
-                    if not deduped or deduped[-1] != piece:
-                        deduped.append(piece)
-                pieces = deduped
-                if not pieces or not parts:
-                    continue                      # 还没翻译 → 不出 zh 行
-                if len(pieces) < len(parts):
-                    log.debug("chunk %s 的 zh 侧只对上 %d/%d 块（其余未翻译或切分不同）",
-                              c["id"], len(pieces), len(parts))
-                content = "\n\n".join(pieces)
-            # 长度门槛只对原文侧用；中文侧按字数另算（MIN_ZH_CHARS）
-            floor = MIN_CHUNK_CHARS if lang == "en" else MIN_ZH_CHARS
+                content = _zh_content(parts, zh)
+                if not content:
+                    continue                  # 还没翻译 → 不出 zh 行
+            # 残渣门槛只对正文用；中文侧按字数另算
+            floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] == "text" and len(content) < floor:
                 continue
-            out.append({
-                **{k: v for k, v in c.items() if not k.startswith("_")},
-                "id": f"{c['id']}:{lang}",
-                "lang": lang,
-                "content": content,
-                "content_hash": sha256_text(content),
-                "content_preview": truncate(content, 200),
-                "token_count": _approx_tokens(content),
-                "metadata": {**(c.get("metadata") or {}), "lang": lang,
-                             "pair_id": c["id"]},
-            })
+            out.append(_variant_row(c, lang, content))
     return out
 
 
@@ -263,7 +347,18 @@ def _formula_chunk_text(f: dict) -> str | None:
 
 
 def _collect_chunks(paper_id: str) -> list[dict]:
-    """单语（原文）chunk：与旧实现一致，只是额外留下 ``_parts`` 供译文对齐。"""
+    """单语（原文）chunk 序列：正文语义 chunk + 公式原子 chunk（+ 图/表 chunk）。
+
+    与旧实现的差别（都是"索引层"改动，不重新解析也能生效）：
+    1. 前沿元数据（作者/单位/邮箱/arXiv 章/会议行/脚注）不进库；
+    2. Markdown 表现格式清理，公式与引用编号保留；
+    3. 图注块若已被 figure/table 吸收，不再进正文 buffer（避免同一段图注索引两遍）；
+    4. 公式**不再切断正文**：以 ``$$…$$`` 原样进 buffer，同时另出一条公式原子 chunk；
+    5. 每个 chunk 带 ``section`` / ``section_path``（从最近的 heading 继承）；
+    6. 表格数字行不再当标题；
+    7. append 前预检硬上限；超长正文块按句子边界二次切分；
+    8. 小于合并门槛的正文 chunk 尝试与相邻正文块合并（不看标题/公式/图/表）。
+    """
     md_map = reader_service.load_markdown_map(paper_id)
     from backend.parsing.ir.ir_reader import IRReader
 
@@ -271,89 +366,233 @@ def _collect_chunks(paper_id: str) -> list[dict]:
     formulas = {f["block_id"]: f for f in ir.formulas()}
     figures = {f["block_id"]: f for f in ir.figures()}
     tables = {t["block_id"]: t for t in ir.tables()}
+    caption_of = {str(x.get("caption_block_id"))
+                  for x in list(figures.values()) + list(tables.values())
+                  if x.get("caption_block_id")}
 
     with session_scope() as sess:
         blocks = (sess.query(Block).filter(Block.paper_id == paper_id)
                   .order_by(Block.order_global.asc()).all())
         rows = [_block_row(b, md_map) for b in blocks]
+        paper = sess.get(Paper, paper_id)
+        authors = (paper.authors or "") if paper is not None else ""
+
+    target, floor, hard = chunk_params()
+    body_start = first_body_index(rows)
+    skip_captions = attached_caption_ids(rows, caption_of)
 
     chunks: list[dict] = []
-    buffer: list[dict] = []
+    buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
     buffer_chars = 0
+    section_stack: list[tuple[int, str]] = []
+
+    def current_section() -> tuple[str, str]:
+        if not section_stack:
+            return "", ""
+        return section_stack[-1][1], " / ".join(t for _, t in section_stack)
+
+    def entry(kind: str, b: dict, text: str) -> dict:
+        sec, path = current_section()
+        return {"kind": kind, "id": b["id"], "page": b["page"], "order": b["order"],
+                "type": b.get("type") or "", "text": text,
+                "section": sec, "section_path": path}
 
     def flush_text() -> None:
         nonlocal buffer, buffer_chars
-        if not buffer:
+        entries = [e for e in buffer if e.get("text")]
+        buffer, buffer_chars = [], 0
+        if not entries or not any(e["kind"] == "text" for e in entries):
+            # 只有公式的 buffer 不建正文 chunk：公式已有原子 chunk，避免重复行
             return
-        text = "\n\n".join(b["text"] for b in buffer if b["text"])
-        if len(text) >= MIN_CHUNK_CHARS:
-            chunks.append(_make_chunk(
-                paper_id, "text", text, buffer[0], buffer[-1],
-                section=buffer[0].get("section") or "",
-                parts=[(b["page"], b["text"]) for b in buffer if b["text"]],
-                metadata={"block_ids": [b["id"] for b in buffer],
-                          "pages": sorted({b["page"] for b in buffer})},
-            ))
-        buffer = []
-        buffer_chars = 0
+        text = "\n\n".join(e["text"] for e in entries)
+        chunks.append(_make_chunk(
+            paper_id, "text", text, entries[0], entries[-1],
+            section=entries[0]["section"] or "",
+            section_path=entries[0]["section_path"] or "",
+            parts=[(e["page"], e["text"], e["kind"]) for e in entries],
+            heading_only=all(e["type"] == "heading" for e in entries),
+            metadata={"block_ids": [e["id"] for e in entries],
+                      "pages": sorted({e["page"] for e in entries}),
+                      "formula_ids": [e["id"] for e in entries
+                                      if e["kind"] == "formula"]},
+        ))
 
-    for b in rows:
+    def push_section(text: str, level: int) -> None:
+        lv = level if level > 0 else 2
+        while section_stack and section_stack[-1][0] >= lv:
+            section_stack.pop()
+        section_stack.append((lv, (text or "")[:128]))
+
+    for idx, b in enumerate(rows):
         bid = b["id"]
-        if b["type"] == "heading":
+        raw = b["text"] or ""
+        text = strip_presentation(raw)
+        if b["type"] == "ref":
+            continue
+        if is_front_matter(raw, page_no=b["page"], before_body=idx < body_start,
+                           authors=authors):
+            log.debug("跳过前沿元数据块：%s（%r）", bid, raw[:40])
+            continue
+        if bid in skip_captions:
+            continue
+
+        if b["type"] == "heading" and not is_table_number_heading(text):
             flush_text()
-            buffer = [b]
-            buffer_chars = len(b["text"])
+            push_section(text, heading_level(raw))
+            if text:
+                buffer.append(entry("text", b, text))
+                buffer_chars += len(text) + 2
             continue
-        if b["type"] in ("ref",):
-            continue
+
         if bid in formulas:
             f = formulas[bid]
-            text = _formula_chunk_text(f)
-            if text is None:                      # 纯脚注符号，不是公式 → 不建这条 chunk
+            atomic = _formula_chunk_text(f)
+            if atomic is None:                    # 纯脚注符号，不是公式 → 整条跳过
                 log.info("跳过非数学公式 chunk：%s（%r）", bid, f.get("raw_text"))
                 continue
-            flush_text()
+            inline = strip_presentation(((md_map or {}).get(bid) or {}).get("text") or "")
+            if not inline:
+                latex = f.get("latex_final") or f.get("latex_repaired") or ""
+                inline = f"$${latex}$$" if latex else atomic
+            # 公式块**不拆**：超上限也只 flush，绝不切公式内部
+            if buffer and buffer_chars + len(inline) + 2 > hard:
+                flush_text()
+            sec, path = current_section()
+            buffer.append(entry("formula", b, inline))
+            buffer_chars += len(inline) + 2
             latex = f.get("latex_final") or f.get("latex_repaired") or ""
             chunks.append(_make_chunk(
-                paper_id, "formula", text, b, b, section=b.get("section") or "",
+                paper_id, "formula", atomic, b, b, section=sec or "",
+                section_path=path or "",
                 metadata={"latex": latex, "grade": f.get("grade"),
                           "raw_text": f.get("raw_text"),
                           "crop": f.get("image_path")},
             ))
             continue
-        if bid in figures:
+
+        if bid in figures or bid in tables:
             flush_text()
-            f = figures[bid]
-            caption = f.get("caption") or ""
-            text = f"插图 {bid}：{caption}"
+            source, kind, label = ((figures, "figure", "插图") if bid in figures
+                                   else (tables, "table", "表格"))
+            item = source[bid]
+            caption = item.get("caption") or ""
+            sec, path = current_section()
             chunks.append(_make_chunk(
-                paper_id, "figure", text, b, b, section=b.get("section") or "",
+                paper_id, kind, f"{label} {bid}：{caption}", b, b,
+                section=sec or "", section_path=path or "",
                 # 图注本身是可翻译的正文块 → 拿它的签名去译文索引里取中文图注
-                parts=[(b["page"], caption)] if caption else [],
-                metadata={"caption": caption, "image_path": f.get("image_path")},
-            ))
-            continue
-        if bid in tables:
-            flush_text()
-            t = tables[bid]
-            caption = t.get("caption") or ""
-            text = f"表格 {bid}：{caption}"
-            chunks.append(_make_chunk(
-                paper_id, "table", text, b, b, section=b.get("section") or "",
-                parts=[(b["page"], caption)] if caption else [],
-                metadata={"caption": caption, "image_path": t.get("image_path")},
+                parts=[(b["page"], caption, "text")] if caption else [],
+                metadata={"caption": caption, "image_path": item.get("image_path")},
             ))
             continue
 
-        text = b["text"] or ""
         if not text:
             continue
-        buffer.append(b)
-        buffer_chars += len(text)
-        if buffer_chars >= TARGET_CHUNK_CHARS:
-            flush_text()
+        for piece in split_long_text(text, hard):
+            if buffer and buffer_chars + len(piece) + 2 > hard:
+                flush_text()
+            buffer.append(entry("text", b, piece))
+            buffer_chars += len(piece) + 2
+            if buffer_chars >= target:
+                flush_text()
     flush_text()
+
+    chunks.sort(key=lambda c: (c["order_global"],
+                               0 if c["chunk_type"] == "text" else 1))
+    merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
+    return _link_formulas(merged)
+
+
+def _link_formulas(chunks: list[dict]) -> list[dict]:
+    """给公式原子 chunk 补 ``text_chunk_id``：它被内联在哪条语义 chunk 里。
+
+    关系是双向的：语义 chunk 的 ``metadata.formula_ids`` 列出它包含的公式块，
+    公式 chunk 反过来指回语义 chunk（合并/切分之后再算，所以不会指错）。
+    """
+    owner: dict[str, str] = {}
+    for c in chunks:
+        if c["chunk_type"] != "text":
+            continue
+        for fid in (c.get("metadata") or {}).get("formula_ids") or []:
+            owner.setdefault(fid, c["id"])
+    for c in chunks:
+        if c["chunk_type"] != "formula":
+            continue
+        target = owner.get(c["block_id"])
+        if target:
+            c.setdefault("metadata", {})["text_chunk_id"] = target
     return chunks
+
+
+def _mergeable(a: dict, b: dict, hard: int) -> bool:
+    """两条正文 chunk 能否合并：同小节、都不是纯标题、合起来不超硬上限。"""
+    if a.get("chunk_type") != "text" or b.get("chunk_type") != "text":
+        return False
+    if a.get("_heading_only") or b.get("_heading_only"):
+        return False
+    if (a.get("_section_path") or "") != (b.get("_section_path") or ""):
+        return False
+    return len(a["content"]) + len(b["content"]) + 2 <= hard
+
+
+def _merge_chunks(a: dict, b: dict) -> dict:
+    """把两条正文 chunk 合成一条（保持块的原始次序与译文对齐 parts）。"""
+    first, last = a["block_id"], b["end_block_id"]
+    cid = (f"{a['paper_id']}:text:{first}" if first == last
+           else f"{a['paper_id']}:text:{first}-{last}")
+    content = a["content"].rstrip() + "\n\n" + b["content"].lstrip()
+    meta = {**(a.get("metadata") or {})}
+    meta["block_ids"] = list(a["metadata"].get("block_ids") or []) + \
+        list(b["metadata"].get("block_ids") or [])
+    meta["pages"] = sorted(set(a["metadata"].get("pages") or []) |
+                           set(b["metadata"].get("pages") or []))
+    meta["formula_ids"] = list(a["metadata"].get("formula_ids") or []) + \
+        list(b["metadata"].get("formula_ids") or [])
+    return {
+        **a, "id": cid, "content": content,
+        "end_block_id": b["end_block_id"],
+        "order_global": min(a["order_global"], b["order_global"]),
+        "content_hash": sha256_text(content),
+        "content_preview": truncate(content, 200),
+        "token_count": _approx_tokens(content),
+        "metadata": meta,
+        "_parts": list(a.get("_parts") or []) + list(b.get("_parts") or []),
+    }
+
+
+def _merge_small_chunks(chunks: list[dict], *, min_chars: int, hard: int) -> list[dict]:
+    """把不足 ``min_chars`` 的正文 chunk 并进相邻正文块（优先往后并）。
+
+    为什么优先往后：小块多是"小节的第一段/标题后紧跟的一句"，往后并保持阅读顺序；
+    往后不行（后一条是公式/图/表或跨小节）才试往前。
+    合并不了就原样保留 —— 这是**合并门槛**，不是丢弃门槛（用户口径：尝试合并）。
+    """
+    out: list[dict] = []
+    pending: dict | None = None
+    for c in chunks:
+        if pending is not None:
+            if _mergeable(pending, c, hard):
+                out.append(_merge_chunks(pending, c))
+                pending = None
+                continue
+            if out and _mergeable(out[-1], pending, hard):
+                out[-1] = _merge_chunks(out[-1], pending)
+            else:
+                out.append(pending)
+            pending = None
+        if (c.get("chunk_type") == "text" and not c.get("_heading_only")
+                and len(c["content"]) < min_chars):
+            pending = c
+        else:
+            out.append(c)
+    if pending is not None:
+        if out and _mergeable(out[-1], pending, hard):
+            out[-1] = _merge_chunks(out[-1], pending)
+        else:
+            out.append(pending)
+    out.sort(key=lambda c: (c["order_global"],
+                            0 if c["chunk_type"] == "text" else 1))
+    return out
 
 
 def _block_row(b: Block, md_map: dict | None = None) -> dict:
@@ -372,11 +611,17 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
 
 
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
-                last: dict, *, section: str = "", metadata: dict | None = None,
-                parts: list[tuple[int, str]] | None = None) -> dict:
+                last: dict, *, section: str = "", section_path: str = "",
+                metadata: dict | None = None, parts: list[tuple] | None = None,
+                heading_only: bool = False) -> dict:
     cid = f"{paper_id}:{chunk_type}:{first['id']}"
     if chunk_type == "text" and first["id"] != last["id"]:
         cid = f"{paper_id}:text:{first['id']}-{last['id']}"
+    meta = dict(metadata or {})
+    if section_path:
+        meta["section_path"] = section_path
+    if chunk_type == "text" and heading_only:
+        meta["heading_only"] = True
     return {
         "id": cid, "paper_id": paper_id, "chunk_type": chunk_type,
         "page_no": first["page"], "order_global": first["order"],
@@ -385,8 +630,10 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
         "content_hash": sha256_text(content),
         "content_preview": truncate(content, 200),
         "token_count": _approx_tokens(content),
-        "metadata": metadata or {},
+        "metadata": meta,
         "_parts": parts or [],
+        "_heading_only": heading_only,
+        "_section_path": section_path,
     }
 
 
@@ -492,13 +739,16 @@ def overview() -> dict:
         chunk_count = sess.query(func.count(Chunk.id)).scalar() or 0
         by_type = dict(sess.query(Chunk.chunk_type, func.count(Chunk.id))
                        .group_by(Chunk.chunk_type).all())
-        # 双语行数按 id 后缀数（`…:zh` / `…:en`）—— 不用解析 metadata_json，
-        # 免得依赖 JSON 的序列化空格这种细节（规划 §8：一处事实源）
+        # 语言行数按 id 后缀数（`…:zh` / `…:en` / `…:any`）—— 不用解析 metadata_json，
+        # 免得依赖 JSON 的序列化空格这种细节（规划 §8：一处事实源）。
+        # `any` 是语言无关的公式原子行（本轮新增）：不统计它，总数就对不上。
         by_lang = {
             "zh": int(sess.query(func.count(Chunk.id))
                       .filter(Chunk.id.like("%:zh")).scalar() or 0),
             "en": int(sess.query(func.count(Chunk.id))
                       .filter(Chunk.id.like("%:en")).scalar() or 0),
+            "any": int(sess.query(func.count(Chunk.id))
+                       .filter(Chunk.id.like("%:any")).scalar() or 0),
         }
         index_versions = dict(sess.query(Chunk.paper_id, func.max(Chunk.index_version))
                               .group_by(Chunk.paper_id).all())

@@ -166,7 +166,10 @@ def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
             continue
         if chunk_types and r.get("chunk_type") not in chunk_types:
             continue
-        if langs and (r.get("lang") or "en") not in langs:
+        if langs and (r.get("lang") or "en") not in langs and \
+                (r.get("lang") or "en") != "any":
+            # `any` = 语言无关（公式原子行）：中文、英文检索都必须召回它，
+            # 否则用户按语言过滤时公式会凭空消失（旧实现靠 zh/en 各存一份绕过，纯浪费）。
             continue
         if exclude_paper and r.get("paper_id") == exclude_paper:
             continue

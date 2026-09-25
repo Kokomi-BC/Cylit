@@ -93,11 +93,13 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
         items = []
         for c in rows:
             meta = json_loads(c.metadata_json, {}) or {}
-            if lang and (meta.get("lang") or "en") != lang:
+            row_lang = meta.get("lang") or "en"
+            # `any` = 语言无关（公式原子行）：按中文、英文过滤时都要出现
+            if lang and row_lang not in (lang, "any"):
                 continue
             items.append({"id": c.id, "paper_id": c.paper_id, "block_id": c.block_id,
                           "chunk_type": c.chunk_type, "page": c.page_no,
-                          "lang": meta.get("lang") or "en",
+                          "lang": row_lang,
                           "section": c.section, "preview": c.content_preview,
                           "caption": meta.get("caption"),
                           "hash": c.content_hash, "tokens": c.token_count,

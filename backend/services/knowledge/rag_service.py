@@ -78,9 +78,15 @@ _GENERAL_RULE = (
 
 
 def _pair_texts(item: dict) -> tuple[str, str]:
-    """取同一 chunk 的原文与译文（双语语料下两行都在库里）。"""
+    """取同一 chunk 的原文与译文（双语语料下两行都在库里）。
+
+    ``lang == "any"``（公式原子行）是**语言无关**内容：正文是 LaTeX，中英文两侧
+    都能直接用，所以不需要去取对侧语种，也不该被塞进 zh 分支（旧写法会把公式当译文）。
+    """
     text = str(item.get("content") or "").strip()
     lang = item.get("lang") or "en"
+    if lang == "any":
+        return text, ""
     en, zh = (text, "") if lang == "en" else ("", text)
     pair_id = (item.get("metadata") or {}).get("pair_id")
     if pair_id:
@@ -118,10 +124,14 @@ def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
                 f" · 类型 {item.get('chunk_type')}"
                 f"{' · 小节 ' + str(item['section']) if item.get('section') else ''}")
         body = []
-        if zh:
-            body.append(f"译文：{zh}")
-        if en:
-            body.append(f"原文：{en}")
+        if (item.get("lang") or "en") == "any":
+            # 语言无关内容（公式）：不贴"原文/译文"标签，中英文上下文都能直接用
+            body.append(f"内容：{zh or en}")
+        else:
+            if zh:
+                body.append(f"译文：{zh}")
+            if en:
+                body.append(f"原文：{en}")
         block = head + "\n" + "\n".join(body)
         if used + len(block) > max_chars and sources:
             truncated += 1

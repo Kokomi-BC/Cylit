@@ -38,6 +38,21 @@ def test_tokenize_handles_chinese_and_english() -> None:
     assert tokenize("") == []
 
 
+def test_lang_filter_keeps_any_row() -> None:
+    """`lang=any`（公式原子行）在中文、英文过滤下都必须留下 —— 否则勾了语言公式就没了。"""
+    rows = [_row("zh-1", "中文正文"), _row("en-1", "english body", lang="en"),
+            _row("f-1", "公式 f-1：D_{mse}", lang="any", ctype="formula")]
+    assert {r["chunk_id"] for r in retrieval._filter_rows(
+        rows, paper_ids=None, chunk_types=None, langs=["zh"],
+        exclude_paper=None, exclude_chunks=None)} == {"zh-1", "f-1"}
+    assert {r["chunk_id"] for r in retrieval._filter_rows(
+        rows, paper_ids=None, chunk_types=None, langs=["en"],
+        exclude_paper=None, exclude_chunks=None)} == {"en-1", "f-1"}
+    assert len(retrieval._filter_rows(
+        rows, paper_ids=None, chunk_types=None, langs=None,
+        exclude_paper=None, exclude_chunks=None)) == 3
+
+
 # --------------------------------------------------------------------------
 # RRF
 # --------------------------------------------------------------------------

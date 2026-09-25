@@ -122,8 +122,9 @@ const orphanChunks = computed(() => Number(indexStatus.value?.orphan_chunks || 0
 /** 概览里的类型计数压成一行纯文本（四个徽章太吵）。 */
 const chunkTypeText = computed(() => CHUNK_TYPES
   .map((t) => `${t.label} ${chunksByType.value[t.key] || 0}`).join(' · '));
-/** 语种构成同理：一行文本，不留徽章。 */
-const chunkLangText = computed(() => `中文 ${chunksByLang.value.zh || 0} · 原文 ${chunksByLang.value.en || 0}`);
+/** 语种构成同理：一行文本，不留徽章（`通用` = 语言无关的公式原子行）。 */
+const chunkLangText = computed(() => `中文 ${chunksByLang.value.zh || 0} · 原文 ${chunksByLang.value.en || 0}`
+  + ` · 通用 ${chunksByLang.value.any || 0}`);
 
 function titleOf(paperId?: string | null): string {
   if (!paperId) return '（未知论文）';
@@ -474,7 +475,8 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
               <td>
                 <div class="row nowrap" style="gap:4px">
                   <span class="badge accent">{{ chunkTypeLabel(c.chunk_type) }}</span>
-                  <span class="badge" :class="{ accent: c.lang === 'zh' }">{{ c.lang === 'zh' ? '中' : '原' }}</span>
+                  <span class="badge" :class="{ accent: c.lang === 'zh' }">{{
+                    c.lang === 'any' ? '通用' : c.lang === 'zh' ? '中' : '原' }}</span>
                 </div>
               </td>
               <td class="num">{{ c.page }}</td>

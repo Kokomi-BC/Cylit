@@ -220,7 +220,10 @@ class LanceDBStore:
                 filters.append(_where_in("chunk_type", chunk_types))
             if langs:
                 if self.has_lang():
-                    filters.append(_where_in("lang", langs))
+                    # `any` = 语言无关（公式原子行）：按任何一种语言过滤都要带上它，
+                    # 否则用户一勾"中文"公式就从向量召回里消失了（旧实现靠 zh/en 各存一份绕过）
+                    wanted = list(langs) + ([] if "any" in langs else ["any"])
+                    filters.append(_where_in("lang", wanted))
                 else:
                     # 旧索引没有 lang 列：**宁可不筛，也不返回空**（上层会在
                     # retrieval.notes 里说明"语言过滤未生效，请重建索引"）

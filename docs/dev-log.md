@@ -2961,3 +2961,75 @@ review_note = '文本层无歧义，无结构性符号'
 
 
 
+
+### 17.48 第四十一轮 —— 知识库预处理与 Chunk 改造（第 1 批：索引层）
+
+用户口径：**不要**为了知识库干净去改阅读器视图，也不按那份"双 Markdown 分别 chunk"的 md 机械重构。
+本批只动**索引层**（`_collect_chunks` 一线），改完只需重建索引，**不重新解析**（不调视觉模型）。
+
+#### 先量了现状（只读探针，不写任何东西）
+
+| 缺陷 | 实测 |
+|---|---|
+| 前沿元数据入正文 | attention 4 条 chunk 混入 arXiv 章/邮箱/`Equal contribution…`/NIPS 行；turboquant 1 条作者+单位 |
+| Markdown 残留 | `**粗体**` 13 条、图片语法 `](…)` 7 条、行首 `##` 37 条 |
+| 图注索引两遍 | figure/table chunk 里一遍，caption 块又进正文 buffer 一遍（9 + 7 条） |
+| 公式独占 chunk、无上下文 | 公式前 `flush_text()`、公式后重开 buffer →「定义句 / 公式 / where 句」必在三处 |
+| 公式行中英完全重复 | LanceDB 里 **76 组正文完全相同的行**（152 行里 76 行冗余，占全库 19%） |
+| 表格数字行当标题 | turboquant 12/38、attention 23/48 个 heading 是 `1645.2945.16` 这种 |
+| section 几乎全空 | chunk 的 section 为空：turboquant 105/129、attention 41/67 |
+| 正文 chunk 太小 | < 200 字符：turboquant 26/56、attention 12/49（中位 302 字符） |
+
+#### 改法
+
+新增 `backend/services/knowledge/preprocess.py`（**纯函数层，只服务知识库**）：
+`strip_presentation`（数学片段是禁区、`[13](url)` 只去掉 URL 留 `[13]`）、`is_front_matter`
+（强特征不限位置 + 弱特征限"正文起点之前"；**保护条款**：≥200 字符且句末标点的段落永不丢 ——
+attention 的摘要段落没有 `## Abstract` 标题，就在正文起点之前）、`is_table_number_heading`
+（与 parser 侧同口径）、`first_body_index`、`attached_caption_ids`（只认 `type=caption` 的块：
+attention 的 Table 2 把 `caption_block_id` 指到一段**正文**上，按 id 一刀切会删正文）、
+`split_long_text`（句子边界二次切分、不切公式）。
+
+`knowledge_service` 侧：
+- 常量 `TARGET=1400 / MIN=200 / HARD=2240`（可被 `setting` 的 `kb.chunk_*` 覆盖，改完需重建）；
+  `MIN` 是**合并门槛**不再是丢弃门槛，另立 `RESIDUE_CHARS=40` 兜残渣；
+- **公式不再切断正文**：`$$…$$` 原样进 buffer（`_parts` 带 kind，中文侧按同一位置原样插入 LaTeX），
+  同时另出一条公式原子 chunk；`formula_ids` ↔ `text_chunk_id` 双向指认；
+- **公式原子行只出 1 行 `lang=any`**；`retrieval._filter_rows`、LanceDB 的 `lang IN (…)` 预过滤、
+  `/knowledge/chunks` 三处都把 `any` 视为"两种语言都通过"；
+- append 前预检 `buffer + block > HARD`；单块超长按句子边界切；末端把 < 200 的正文 chunk
+  并进相邻**同小节**正文块（标题/公式/图/表不参与）；
+- chunk 带 `section` / `section_path`（从最近的 heading 继承，按 md 的 `#` 数分层）与 `heading_only`。
+
+#### 结果（真库干跑 → 重建）
+
+| 指标 | 改造前 | 改造后 |
+|---|---|---|
+| 入库行（两篇） | 391 | **243** |
+| 其中 formula 行 | 152 | **76**（= 非噪声公式数） |
+| 正文完全相同的行为 | 76 组 | **0** |
+| 正文 chunk | 209 行 | 137 行（中位 302 → 494/800 字符） |
+| section 为空的 chunk | 146/196 | **0** |
+| 含 `**` / `](` 的 chunk | 20 | **0** |
+| 前沿噪声 chunk | 5 | **0** |
+| 逐块覆盖检查 | — | 正文/标题块 356 个，未覆盖 **0**（没丢内容） |
+
+重建：`delete_paper` → `index_paper(rebuild=True)`（两篇，`index_version` 8 / 3），
+MySQL 243 == LanceDB 243、`orphans=0 missing=0`。8711 临时服务复核：
+`chunks_by_lang={zh:85,en:82,any:76}`、`lang=zh & chunk_type=formula` 能列出 `:any` 行、
+`POST /rag/similar`（`langs=["zh"]` + 公式）命中 5 条 `any`、英文提问的 RAG 上下文里
+公式渲染成「内容：…」（语言无关、不贴原文/译文标签）。
+
+测试：新增 `tests/test_kb_preprocess.py`（33）+ `tests/test_kb_chunking.py`（20），
+改 `test_rag_chunks.py`（公式只出 any 一行）、`test_rag_retrieval.py`（语言过滤放行 any）、
+`test_rag_query.py`（any 的上下文渲染）；离线 **306 通过**、e2e **29 通过 + 1 跳过**、
+`vue-tsc` + `vite build` 干净。
+
+#### 已知遗留（第 2 批处理）
+
+- **附录仍被 `ref` 吞掉**（turboquant p16–p22 约 1.57 万字符）：这是 parser 的锅，本批不动索引层补丁，
+  第 2 批修 `_annotate_sections` 后重新解析 turboquant + attention。
+- section 文本里的 `0.1PROBLEM DEFINITION`、`AEXTENDED PRIOR WORK` 是 md 生成阶段把编号与标题粘在一起
+  的结果（阅读器里也是这样显示），本轮只去掉 `#` 标记，**不擅自改文案**。
+- 中文行比英文行多（85 vs 82）：短标题 chunk 的英文侧低于残渣门槛 40 字符被丢、中文侧按 8 字门槛保留
+  （这是刻意为之的旧口径，未改）。
