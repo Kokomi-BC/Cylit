@@ -97,6 +97,14 @@ html.pm-col-sel[data-pm-col="pdf"] .rows-wrap .pg-pair .col-rows *::selection {
  * 只"不涂底色"还不够：Ctrl+C 走的是浏览器原生选区（我们的"只取本列"过滤管不到），
  * 而 `user-select: none` 的内容会被 Chrome 直接排除在选区之外（含剪贴板），两头都干净。 */
 html.pm-col-sel:not([data-pm-col="pdf"]) .reader-content [data-pdf-page] { user-select: none; }
+/* Markdown 视图里同一侧的**下一页**也能接着选了（见 ReaderView 的 nearestSideBlock）：
+ * 选区在 DOM 上是连续的，必然把中间那一页的**对面那一面**圈进去 —— 同样只"不画"出来。 */
+html.pm-col-sel[data-pm-col="zh"] .md-part[data-md-side="en"]::selection,
+html.pm-col-sel[data-pm-col="zh"] .md-part[data-md-side="en"] *::selection,
+html.pm-col-sel[data-pm-col="en"] .md-part[data-md-side="zh"]::selection,
+html.pm-col-sel[data-pm-col="en"] .md-part[data-md-side="zh"] *::selection {
+  background: transparent;
+}
 a:hover { text-decoration: underline; }
 h1, h2, h3, h4 {
   margin: 0 0 .4em; line-height: 1.3; font-weight: 600; font-family: var(--display);

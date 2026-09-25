@@ -400,8 +400,17 @@ f.addEventListener('load', async () => {
   const w = f.contentWindow, d = f.contentDocument;
   const res = {};
   const flush = () => out(res);
-  const ev = (type, rect) => new w.MouseEvent(type, {
-    bubbles: true, cancelable: true, clientX: rect.left + 3, clientY: rect.top + 3 });
+  /* ⚠️ 每次派发合成鼠标事件前**先把焦点抢回 iframe**：
+   * app 在 `window blur` 时会收起划词菜单（真人独立窗口里没问题），而 headless 跑在 iframe 里时
+   * 外层页面会随机把焦点拿走 —— 不抢回来的话，菜单会在"选中之后、读菜单之前"凭空消失，
+   * 表现为随机失败（实测：给 iframe 派发一次 blur，菜单立刻没了；不 blur 就一定在）。
+   * 这属于**测试环境**问题，不是产品行为，所以修在探针里。 */
+  const keepFocus = () => { try { w.focus(); } catch (e) { /* 忽略 */ } };
+  const ev = (type, rect) => {
+    keepFocus();
+    return new w.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: rect.left + 3, clientY: rect.top + 3 });
+  };
   const selectInRow = (side, chars) => {
     const bodies = [...d.querySelectorAll('[data-row-id] .rrow.side-' + side + ' .rr-body')];
     for (const body of bodies) {
@@ -430,7 +439,9 @@ f.addEventListener('load', async () => {
   const clickSwatch = async (cls, rect) => {
     const menu = d.querySelector('.selection-menu');
     const swatch = menu && menu.querySelector('.swatch.' + cls);
-    if (!swatch) return { ok: false, reason: '没有色块' };
+    if (!swatch) return { ok: false, reason: menu
+      ? ('菜单在、但没有 ' + cls + ' 色块（内容：' + (menu.textContent || '').trim().slice(0, 40) + '）')
+      : '菜单没出来' };
     swatch.dispatchEvent(ev('mousedown', rect));
     w.getSelection().collapseToEnd();          // 模拟默认动作：点菜单会清掉页面选区
     // mouseup 必须打在**色块自己**身上（真实鼠标就是这样，事件再冒泡到 document）：
@@ -696,6 +707,11 @@ f.addEventListener('load', async () => {
       msel.removeAllRanges();
       msel.addRange(mrange);
       const mrect = mrange.getBoundingClientRect();
+      /* ⚠️ 先把目标行滚进视口并**等滚动停稳**：app 收到任何 scroll 都会收起划词菜单
+       * （滚动时收起是对的），而"选区在视口外"会让浏览器在 mouseup 时自动滚一下 →
+       * 菜单在渲染前就被收起（实测：菜单采样全 false、同一任务里出现一次 scroll）。 */
+      try { midEn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) { /* 忽略 */ }
+      await sleep(380);
       midEn.dispatchEvent(ev('mouseup', mrect));
       await sleep(420);
       res.intraClick = await clickSwatch('hl-pink', mrect);
@@ -917,6 +933,8 @@ f.addEventListener('load', async () => {
       bubbles: true, cancelable: true, buttons: 1, clientX: to.x, clientY: to.y }));
     res.syncs = [...(res.syncs || []), { anchor: colOf(s.anchorNode), focus: colOf(s.focusNode),
                                          collapsed: s.isCollapsed, len: (s.toString() || '').length }];
+    /* 见 HL_PROBE 里 `keepFocus` 的说明：headless 下 iframe 会随机失焦，app 收到 blur 会收起菜单 */
+    try { w.focus(); } catch (e) { /* 忽略 */ }
     el.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: to.x, clientY: to.y }));
     await sleep(450);
     return true;
@@ -970,6 +988,15 @@ f.addEventListener('load', async () => {
     res.isDisplay = !!katex && (katex.classList.contains('katex-display')
       || !!katex.closest('.katex-display'));
     if (katex) {
+      /* ⚠️ 等滚动**停稳**再拖：app 收到任何 scroll 都会收起划词菜单（滚动时收起是对的），
+       * 而上面为了找公式连滚了好几段 —— 滚动事件是异步的，最后一次可能正好落在拖拽期间，
+       * 菜单就会"选完立刻消失"（表现为随机失败：swatches=0）。 */
+      let _last = -1;
+      for (let i = 0; i < 8 && doc && doc.scrollTop !== _last; i += 1) {
+        _last = doc.scrollTop;
+        await sleep(120);
+      }
+      try { w.focus(); } catch (e) { /* 见 HL_PROBE 的 keepFocus */ }
       const r = katex.getBoundingClientRect();
       await drag({ x: Math.round(r.left + 8), y: Math.round(r.top + r.height / 2) },
                  { x: Math.round(r.right - 8), y: Math.round(r.top + r.height / 2) }, 6);
@@ -1047,6 +1074,7 @@ f.addEventListener('load', async () => {
     sel.removeAllRanges();
     sel.addRange(range);
     const rect = range.getBoundingClientRect();
+    try { w.focus(); } catch (e) { /* 见 HL_PROBE 的 keepFocus：headless 下 iframe 会随机失焦 */ }
     spans[0].dispatchEvent(new w.MouseEvent('mouseup',
       { bubbles: true, cancelable: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
     await sleep(450);
@@ -1721,7 +1749,9 @@ def main() -> int:
                      and bool(data.get("intraEnAlive")),
                      f"译文列里跨 {len((data.get('intra') or {}).get('rows') or [])} 行选择 → "
                      f"对面列造的 fixture={((data.get('intra') or {}).get('otherIds'))}"
-                     f"（点色块={(data.get('intraClick') or {}).get('ok')}），"
+                     f"（点色块={(data.get('intraClick') or {}).get('ok')}，"
+                     f"原因={(data.get('intraClick') or {}).get('reason')}），"
+                     f"has3Rows={data.get('has3Rows')}，"
                      f"菜单有删除={((data.get('intra') or {}).get('hasDelete'))}，"
                      f"删完后对面列那条仍在={data.get('intraEnAlive')}"),
                     ("复制只带本列文字", ((data.get("copy") or {}).get("hasCjk") is False

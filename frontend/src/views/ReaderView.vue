@@ -132,8 +132,10 @@ const selection = reactive({
   mdPage: 0,
   /** Markdown 视图里不给「笔记」：笔记靠 `block_id` 定位回正文，那边的锚点在正文里不存在 */
   allowNote: true,
-  /** 跨行选区按行切开后的各段（每行一条记录，共用同一个分组） */
-  segments: [] as Array<{ rowId: string; start: number; end: number; text: string }>,
+  /** 跨行 / 跨页选区切开后的各段（每段一条记录，共用同一个分组）
+   *  - 正文行：同一侧相邻的多行，`rowId` 是行 id；
+   *  - Markdown 视图：同一侧**跨页**时每页一段，`rowId` 是 `md:p<页号>`。 */
+  segments: [] as MdSegment[],
   /** 选区/点击处盖住的已有高亮 id（菜单据此显示「删除高亮」） */
   hlIds: [] as string[],
 });
@@ -1318,6 +1320,25 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
   return pos ? { node: pos.offsetNode, offset: pos.offset } : null;
 }
 
+/**
+ * Markdown 视图里，**同一侧的每一页是一块**（`[data-md-side]` 在每页各一个）。
+ * 返回离指针最近的那一块 —— 指针在哪一块里就用哪一块，落在两块之间（比如下一页的**原文**上）
+ * 就取更近的那块。这样沿译文列往下拖才能**接着选到下一页的译文**，
+ * 而不是被夹在本页末尾（用户口径：同一侧下一页要能接着选）。
+ */
+function nearestSideBlock(anchor: HTMLElement, col: string, y: number): HTMLElement {
+  const side = col.endsWith('zh') ? 'zh' : 'en';
+  const blocks = Array.from(document.querySelectorAll<HTMLElement>(`[data-md-side="${side}"]`));
+  let best = anchor;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const b of blocks) {
+    const r = b.getBoundingClientRect();
+    const d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    if (d < bestDist) { bestDist = d; best = b; }
+  }
+  return best;
+}
+
 /** 一"列"用于投影的盒子：PDF 栏 / Markdown 的一面 / 正文某侧的单元格 */
 function columnBox(node: Node | null): HTMLElement | null {
   const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
@@ -1372,11 +1393,15 @@ function projectCaret(
     ? (() => { const f = focusBox.getBoundingClientRect();
         return f.left >= a.right - 2 || f.right <= a.left + 2; })()
     : (point.x < a.left + 1 || point.x > a.right - 1);
-  // y 能到哪儿：上下分面（Markdown）本面就是一整段，夹在本面的盒子里；
+  // y 能到哪儿：上下分面（Markdown）时按**同一侧的那一块**夹 —— 指针落在下一页的原文上时，
+  // 取离它最近的同侧块（也就是下一页的译文），于是"同一侧往下接着选"能跨过页边界；
   // 左右分栏时纵向是"整个滚动内容"，夹在行的盒子里会把"拖到工具栏"压成空选区。
   const stacked = anchorBox.matches('[data-md-side]');
-  const content = stacked ? { top: a.top, bottom: a.bottom } : scrollBox(anchorBox);
-  const x = sideBySide ? Math.min(Math.max(point.x, a.left + 1), a.right - 1) : point.x;
+  const box = stacked ? nearestSideBlock(anchorBox, anchorCol, point.y) : anchorBox;
+  const ab = box.getBoundingClientRect();
+  const content = stacked ? { top: ab.top, bottom: ab.bottom } : scrollBox(anchorBox);
+  const x = (sideBySide || stacked)
+    ? Math.min(Math.max(point.x, ab.left + 1), ab.right - 1) : point.x;
   const y = Math.min(Math.max(point.y, content.top + 1), content.bottom - 1);
   const caret = caretAt(x, y);
   if (!caret || columnOf(caret.node) !== anchorCol) return null;   // 投影没落回本列就算了
@@ -1462,9 +1487,12 @@ function clampSelection(point?: { x: number; y: number }) {
 /** 键盘/程序改选区（没有指针位置）也夹一下：拿不到投影就退回 `lastGood`；顺带同步"选区在哪一列" */
 const onSelectionChange = () => { clampSelection(); syncSelectionColumn(); };
 
-/** 这一列要不要"隐藏对面列的选区底色"（正文两列 + 原 PDF 栏都算一列） */
+/** 这一列要不要"隐藏对面列的选区底色"（正文两列 / 原 PDF 栏 / Markdown 视图的两面都算一"列"） */
 function colSide(col: string): 'en' | 'zh' | 'pdf' | '' {
-  return col === 'rows:en' ? 'en' : col === 'rows:zh' ? 'zh' : col === 'pdf' ? 'pdf' : '';
+  if (col === 'pdf') return 'pdf';
+  if (col === 'rows:en' || col === 'md:en') return 'en';
+  if (col === 'rows:zh' || col === 'md:zh') return 'zh';
+  return '';
 }
 
 /**
@@ -1578,17 +1606,18 @@ function onMouseUp(ev?: MouseEvent) {
    * 这里给不了「笔记」：笔记按 `block_id` 定位回正文，而这套锚点在正文里不存在。 */
   const mdBlock = el?.closest?.('[data-md-side]') as HTMLElement | null;
   if (mdBlock) {
-    const page = Number(mdBlock.closest('[data-md-page]')?.getAttribute('data-md-page') ?? 0);
-    // 与 root 求交集：选区万一跨到另一面（原文/译文），至少把锚点这一面里覆盖到的部分标上，
-    // 而不是"菜单都不出来"（公式就在这一面里，落空的话用户看到的就是"公式不能高亮"）。
-    const got = page ? offsetsWithin(mdBlock, sel.getRangeAt(0)) : null;
-    if (!page || !got) { selection.show = false; return; }
+    const side: 'en' | 'zh' = mdBlock.dataset.mdSide === 'zh' ? 'zh' : 'en';
+    /* 同一侧可以**跨页**选（用户口径）：按页切开，每页一段 —— 锚点是 `md:p<页号>`，
+     * 一条记录只能落在一页上，所以跨页时必须各存一段（共用分组，删一条带走整组）。 */
+    const range = sel.getRangeAt(0);
+    const parts = mdSegments(range, side);
+    if (!parts.length) { selection.show = false; return; }
+    const first = parts[0];
     Object.assign(selection, {
-      show: true, ...menuPos(got.rect ?? rect), text: truncate(got.text || text, 600),
-      rowId: mdAnchor(page), side: (mdBlock.dataset.mdSide === 'zh' ? 'zh' : 'en'),
-      start: got.start, end: got.end, anchored: true,
-      scope: 'markdown' as const, mdPage: page, allowNote: false,
-      segments: [], hlIds: highlightIdsInRange(sel.getRangeAt(0)),
+      show: true, ...menuPos(first.rect ?? rect), text: truncate(joinParts(parts) || text, 600),
+      rowId: first.rowId, side, start: first.start, end: first.end,
+      anchored: true, scope: 'markdown' as const, mdPage: Number(first.page ?? 0),
+      allowNote: false, segments: parts, hlIds: highlightIdsInRange(range),
     });
     return;
   }
@@ -1623,6 +1652,27 @@ function onMouseUp(ev?: MouseEvent) {
 /** 按行切开后的文字拼回来（菜单里显示的、以及要解释/复制的就是这一段） */
 function joinParts(parts: Array<{ text: string }>): string {
   return parts.map((p) => p.text).filter(Boolean).join('\n').trim();
+}
+
+/**
+ * Markdown 视图里，同一侧的选区**按页切开**（`rowId` = `md:p<页号>`）。
+ *
+ * 为什么必须切：锚点带着页号（`md:p8`），一条高亮记录只能定位到一页；同一侧跨页选中的那段文字
+ * 若只按锚点那一页存，下一页的部分就丢了（用户口径：按页各存一段，共用分组一起删）。
+ * 与正文跨行那套完全同构（`rowSegments`），所以下游（画高亮 / 删除 / 复制）一行都不用改。
+ */
+function mdSegments(range: Range, side: 'en' | 'zh'): MdSegment[] {
+  const out: MdSegment[] = [];
+  for (const block of Array.from(document.querySelectorAll<HTMLElement>(`[data-md-side="${side}"]`))) {
+    if (!range.intersectsNode(block)) continue;
+    const page = Number(block.closest('[data-md-page]')?.getAttribute('data-md-page') ?? 0);
+    if (!page) continue;
+    const got = offsetsWithin(block, range);        // 与 root 求交集：本页覆盖到的那部分
+    if (!got) continue;
+    out.push({ rowId: mdAnchor(page), start: got.start, end: got.end, text: got.text,
+               rect: got.rect, page });
+  }
+  return out.sort((a, b) => (a.page ?? 0) - (b.page ?? 0));
 }
 
 /**
@@ -1803,21 +1853,36 @@ async function saveExplanationAsAnnotation() {
 /** Markdown 视图里高亮的锚点：`md:p<页号>`（`block_id` 列宽 32，够用；与正文行 id 不会撞） */
 const mdAnchor = (page: number) => `md:p${page}`;
 
+/** 划词切出来的一段（正文按行切、Markdown 按页切），每段存成一条高亮记录、共用一个分组。 */
+interface MdSegment {
+  rowId: string;
+  start: number;
+  end: number;
+  text: string;
+  /** 这一段的盒子（菜单定位用；正文段没有） */
+  rect?: DOMRect;
+  /** Markdown 视图里的页号（跨页时用来排序与断言） */
+  page?: number;
+}
+
 async function addHighlight(color: string) {
   const scope = selection.scope;
-  // 跨行选区：每行一条记录，共用同一个分组 id（删除时整组一起删）
-  const parts = scope === 'row' && selection.segments.length
+  // 多段选区（正文跨行 / Markdown 视图跨页）：每段一条记录，共用同一个分组 id（删除时整组一起删）
+  const parts = selection.segments.length
     ? selection.segments
-    : [{ rowId: selection.rowId, start: selection.start, end: selection.end, text: selection.text }];
+    : [{
+      rowId: scope === 'markdown' ? mdAnchor(selection.mdPage) : selection.rowId,
+      start: selection.start, end: selection.end, text: selection.text,
+    }];
   const group = parts.length > 1 ? `g-${Date.now().toString(36)}-${parts.length}` : null;
   try {
     const created: Highlight[] = [];
     for (const p of parts) {
-      const blockId = scope === 'markdown' ? mdAnchor(selection.mdPage) : p.rowId;
+      const blockId = p.rowId;
       const data = await api.post<Highlight>('/highlights', {
         paper_id: paperId.value,
         block_id: blockId,
-        // 每段存**本段自己的文字**（跨行时各行的文字不一样），校验才过得去
+        // 每段存**本段自己的文字**（跨行/跨页时各段文字不一样），校验才过得去
         selected_text: p.text || selection.text,
         start_offset: p.start,
         end_offset: p.end,
@@ -1833,7 +1898,8 @@ async function addHighlight(color: string) {
       });
     }
     highlights.value.push(...created);
-    toast(parts.length > 1 ? `已高亮（跨 ${parts.length} 行）` : '已高亮', 'ok', 2000);
+    const unit = scope === 'markdown' ? '页' : '行';
+    toast(parts.length > 1 ? `已高亮（跨 ${parts.length} ${unit}）` : '已高亮', 'ok', 2000);
   } catch (err) { reportError(err, '高亮失败'); } finally { hideMenu(); }
 }
 
