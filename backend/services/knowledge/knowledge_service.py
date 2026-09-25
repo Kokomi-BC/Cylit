@@ -348,6 +348,16 @@ def _slice_zh(text: str, lo: float, hi: float) -> str:
     return piece.strip() or text.strip()
 
 
+def _looks_complete_formula(latex: str | None) -> bool:
+    r"""解析侧的公式块看起来是不是**一条完整公式**（而不是被拆出来的碎片）。
+
+    判据用"规范符号串够长"：碎片 `\sqrt{2 /\pi }`（8）、`, \pm`（4）、`\frac{\sqrt{}}`（4）
+    都过不去；而 `\mathbb{E}[\|\boldsymbol{x}-\tilde{\boldsymbol{x}}\|_2^2]\geq\frac{d}{4^b}`
+    这类完整公式能过。用途只有一个：**没对上 canonical 条目的公式块**该不该内联进正文。
+    """
+    return len(formula_source._canon(latex)) >= 12       # noqa: SLF001 —— 同模块内部约定
+
+
 def _uncovered(lo: int, hi: int, covered: list[tuple[int, int]]) -> tuple[int, int] | None:
     """在 ``[lo, hi)`` 里找**第一段还没被用过**的区间；全被覆盖则返回 None。"""
     cur = lo
@@ -653,12 +663,15 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             continue
 
         if bid in formulas:
-            # 只内联**对上了 canonical 条目**的公式块。解析侧会把一条公式拆成好几个碎片块
-            # （实测 `\left\{\pm\frac{\sqrt{2/\pi}}{\sqrt{d}}\right\}` 被拆成
-            # `\sqrt{2 /\pi }`、`, \pm`、`\frac{\sqrt{}}` …），全都内联进正文就会出现
-            # "半截公式残片"（用户截图里 `√(2/π)`、`,±`、`√` 那堆）。正确的整条公式由
-            # canonical 条目承载，没对上的碎片不再进正文。
+            # 内联策略：**对上 canonical 条目**的用条目里的完整 LaTeX；
+            # 没对上的，只在它本身"像一条完整公式"时才内联 —— 解析侧会把一条公式拆成
+            # 碎片块（`\sqrt{2 /\pi }`、`, \pm`、`\frac{\sqrt{}}` …），碎片一律不进正文
+            # （否则就是用户看到的半截公式残片）；但**完整公式不能丢**
+            # （踩过：一刀切"只内联对上的"，把"该向量满足以下失真界："后面的公式删掉了）。
             latex = f_latex_by_block.get(bid)
+            if not latex:
+                parsed = formula_source.parsed_latex(formulas[bid])
+                latex = parsed if _looks_complete_formula(parsed) else ""
             if not latex or formula_source.is_noise_latex(latex):
                 continue
             # 内联进正文 → 行内定界符，且 **`$` 后不能有空格**（渲染端不认 `$ x$`，会显示成纯文本）；
