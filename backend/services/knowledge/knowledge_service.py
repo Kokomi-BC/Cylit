@@ -39,6 +39,7 @@ from backend.services.knowledge.preprocess import (attached_caption_ids,
                                                    is_table_number_heading,
                                                    split_long_text,
                                                    strip_presentation)
+from backend.services.knowledge import formula_source
 from backend.services.model.model_manager import model_manager
 from backend.services.paper import paper_service, reader_service
 
@@ -330,17 +331,21 @@ def build_chunks_for_paper(paper_id: str, *,
                            langs)
 
 
-def _formula_chunk_text(f: dict) -> str | None:
+def _formula_chunk_text(f: dict, *, latex: str | None = None) -> str | None:
     """公式 chunk 的正文；**不是数学的返回 `None`**（那条 chunk 就不该存在）。
 
     为什么单独判一道：解析阶段把页脚的 `∗†` 认成了公式（小而符号密度高），
     于是知识库里出现 `公式 attentionisa-p01-b06：* †` 这种条目（还带一张裁图）——
     用户报过。解析侧已经修了，这里再兜一层：**旧产物（IR）不用重新解析也能干净**，
     重建索引时这类条目会自然消失（`_collect_chunks` 返回 None 就跳过）。
+
+    ``latex`` 由调用方给出（**换源后是页级视觉转写的完整版**，见 `formula_source`）：
+    解析版碎片化严重（p20 一条公式被拆成 5 块），只取 `latex_final` 会只剩一小段。
     """
-    latex = f.get("latex_final") or f.get("latex_repaired") or ""
+    body = (latex or formula_source.parsed_latex(f)).strip()
     cands = f.get("latex_candidate") or []
-    body = latex or (cands[0] if cands else "") or (f.get("raw_text") or "")
+    if not body:
+        body = (cands[0] if cands else "") or (f.get("raw_text") or "")
     if is_noise_formula(body) and is_noise_formula(f.get("raw_text")):
         return None
     return f"公式 {f.get('block_id')}：{body}"
@@ -380,6 +385,8 @@ def _collect_chunks(paper_id: str) -> list[dict]:
     target, floor, hard = chunk_params()
     body_start = first_body_index(rows)
     skip_captions = attached_caption_ids(rows, caption_of)
+    # 公式 LaTeX 的来源选择（解析产物残缺 → 换成页级视觉转写的完整版）
+    f_source = formula_source.assign_formulas(rows, formulas, paper_id)
 
     chunks: list[dict] = []
     buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
@@ -448,28 +455,49 @@ def _collect_chunks(paper_id: str) -> list[dict]:
 
         if bid in formulas:
             f = formulas[bid]
-            atomic = _formula_chunk_text(f)
+            src = f_source.get(bid) or {}
+            # 完整公式只出一条原子 chunk：同一条页级公式被解析切成 N 个碎片时，
+            # 只在**第一个碎片**处出 chunk，其余碎片并进它的 `block_ids`（否则同一段公式
+            # 会在库里出现 N 条内容完全一样的行 —— 就是之前 formula zh/en 重复那个毛病）。
+            if src.get("group_first") is False:
+                continue
+            latex = src.get("latex") or ""
+            atomic = _formula_chunk_text(f, latex=latex)
             if atomic is None:                    # 纯脚注符号，不是公式 → 整条跳过
                 log.info("跳过非数学公式 chunk：%s（%r）", bid, f.get("raw_text"))
                 continue
-            inline = strip_presentation(((md_map or {}).get(bid) or {}).get("text") or "")
+            inline = f"$$ {latex} $$" if latex else \
+                strip_presentation(((md_map or {}).get(bid) or {}).get("text") or "")
             if not inline:
-                latex = f.get("latex_final") or f.get("latex_repaired") or ""
-                inline = f"$${latex}$$" if latex else atomic
+                inline = atomic
             # 公式块**不拆**：超上限也只 flush，绝不切公式内部
             if buffer and buffer_chars + len(inline) + 2 > hard:
                 flush_text()
             sec, path = current_section()
             buffer.append(entry("formula", b, inline))
             buffer_chars += len(inline) + 2
-            latex = f.get("latex_final") or f.get("latex_repaired") or ""
+            parsed = formula_source.parsed_latex(f)
+            # 短碎片（`\times 10`、`b\cdot d`、`j=1`…）且没配上页级完整公式：
+            # 多半是图内坐标标签或行内小片段，**不单独出"公式"条目**（用户搜"量化公式"
+            # 搜出一堆 `\times 10` 就是这种）。上面已经把它内联进正文语义 chunk 了，
+            # 所以正文内容一点不丢 —— 只是不再在"公式"分类里占一条。
+            if src.get("source") != "page_vision" and formula_source.is_fragment(latex):
+                log.debug("短碎片不单独出公式条目：%s（%r）", bid, latex)
+                continue
+            meta = {"latex": latex or parsed, "grade": f.get("grade"),
+                    "raw_text": f.get("raw_text"), "crop": f.get("image_path"),
+                    "section_kind": b.get("section_kind") or "body",
+                    "latex_source": src.get("source") or "parsed",
+                    "latex_parsed": parsed,
+                    "latex_candidates": list(f.get("latex_candidate") or []),
+                    "needs_review": bool(src.get("needs_review"))}
+            if src.get("source") == "page_vision":
+                meta["align_score"] = src.get("score")
+            if src.get("block_ids"):
+                meta["block_ids"] = src["block_ids"]
             chunks.append(_make_chunk(
                 paper_id, "formula", atomic, b, b, section=sec or "",
-                section_path=path or "",
-                metadata={"latex": latex, "grade": f.get("grade"),
-                          "raw_text": f.get("raw_text"),
-                          "crop": f.get("image_path"),
-                          "section_kind": b.get("section_kind") or "body"},
+                section_path=path or "", metadata=meta,
             ))
             continue
 
@@ -1059,6 +1087,14 @@ def chunk_detail(chunk_id: str) -> dict:
         "preview": truncate(content, 200),
         "tokens": extra.get("tokens"), "index_version": extra.get("index_version"),
         "image_url": chunk_image_url(paper_id, chunk_type, page_no, meta),
+        # 公式条目：把"这条 LaTeX 从哪来、可不可信"一并下发 ——
+        # 知识库页据此决定要不要渲染 KaTeX / 挂「待修复」徽标 / 展示解析版对照。
+        "latex": meta.get("latex") or None,
+        "latex_parsed": meta.get("latex_parsed") or None,
+        "latex_source": meta.get("latex_source") or None,
+        "raw_text": meta.get("raw_text") or None,
+        "grade": meta.get("grade") or None,
+        "needs_review": bool(meta.get("needs_review")),
     }
 
 
@@ -1179,3 +1215,5 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
+
