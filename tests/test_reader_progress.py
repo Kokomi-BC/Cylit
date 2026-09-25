@@ -6,8 +6,12 @@
 
 这里测两层：
 1. **纯映射**：``_progress_payload`` 对新字段的默认值与旧值归一化（不需要数据库）；
-2. **落库往返**（需要 MySQL，不可用就跳过）：写进去 → 读回来一致，非法值不覆盖已有状态；
-   跑完把**原来那份进度原样写回**，绝不改用户真实的阅读状态。
+2. **落库往返**（需要 MySQL，不可用就跳过）：写进去 → 读回来一致，非法值不覆盖已有状态。
+
+⚠️ 落库往返**只碰专门的临时论文行**（`__test_reader_progress__`），跑完连论文行一起删。
+以前这个用例是拿 `list_papers()[0]`（真实论文）做往返、再把值写回去 —— 值虽然还原了，但
+`reading_progress.updated_at` 与 `paper.last_read_at` 会被顶到当前时间，等于**跑一次测试就在
+用户数据上留下一次"假修改"**，审计时间戳被污染。测试不该碰生产样本（用户口径）。
 """
 
 from __future__ import annotations
@@ -18,6 +22,9 @@ import pytest
 
 from backend.repositories.mysql.session import healthcheck
 from backend.services.paper import reader_service
+
+# 临时论文 id：与真实论文区分开，测试结束即删
+FAKE_PAPER = "__test_reader_progress__"
 
 
 def _row(**kw):
@@ -64,19 +71,37 @@ def test_payload_page_side_defaults_to_zh():
     assert reader_service._progress_payload(_row(page_side=None))["page_side"] == "zh"  # noqa: SLF001
 
 
-@pytest.mark.e2e
-def test_progress_roundtrip_keeps_open_state():
-    """写进去 → 读回来一致；非法值被忽略。跑完还原用户原来的打开状态。"""
-    if not healthcheck().get("ok"):
-        pytest.skip("MySQL 不可用")
-    from backend.repositories.mysql.session import init_db
-    from backend.services.paper import paper_service
+@pytest.fixture()
+def scratch_paper():
+    """建一行临时论文（有它才能走 `save_progress` 的 `get_paper` 校验），跑完删干净。"""
+    from backend.repositories.mysql.models import Paper, ReadingProgress
+    from backend.repositories.mysql.session import init_db, session_scope
 
     init_db()
-    items = (paper_service.list_papers() or {}).get("items") or []
-    if not items:
-        pytest.skip("库里还没有论文")
-    paper_id = items[0]["id"]
+
+    def wipe() -> None:
+        with session_scope() as sess:
+            sess.query(ReadingProgress).filter(
+                ReadingProgress.paper_id == FAKE_PAPER).delete()
+            row = sess.get(Paper, FAKE_PAPER)
+            if row is not None:
+                sess.delete(row)
+
+    wipe()
+    with session_scope() as sess:
+        sess.add(Paper(id=FAKE_PAPER, title="进度往返测试件（临时）", status="parsed",
+                       in_knowledge_base=False, page_count=1))
+    yield FAKE_PAPER
+    wipe()
+
+
+@pytest.mark.e2e
+def test_progress_roundtrip_keeps_open_state(scratch_paper):
+    """写进去 → 读回来一致；非法值被忽略。**只在临时论文行上做**。"""
+    if not healthcheck().get("ok"):
+        pytest.skip("MySQL 不可用")
+
+    paper_id = scratch_paper
     keys = ("last_block_id", "last_page", "percent", "view_mode",
             "pair_order", "original_mode", "scroll_ratio",
             "aside_open", "text_size", "show_refs", "zoom", "page_side")
@@ -109,3 +134,30 @@ def test_progress_roundtrip_keeps_open_state():
         assert abs(float(same["zoom"]) - 3.0) < 1e-6        # 超范围被夹到上限，而不是照单全收
     finally:
         reader_service.save_progress(paper_id, {k: before.get(k) for k in keys})
+
+
+@pytest.mark.e2e
+def test_progress_roundtrip_leaves_real_papers_untouched(scratch_paper):
+    """回归护栏：跑完往返后，**真实论文**的进度行时间戳不该被动过。
+
+    这条用例的意义就是盯住"测试污染生产样本"这件事 —— 上一版用例把第一篇文章的
+    `updated_at` / `last_read_at` 顶到了当前时间。
+    """
+    if not healthcheck().get("ok"):
+        pytest.skip("MySQL 不可用")
+    from backend.repositories.mysql.models import Paper, ReadingProgress
+    from backend.repositories.mysql.session import session_scope
+
+    reader_service.save_progress(scratch_paper, {"view_mode": "original"})
+    with session_scope() as sess:
+        real = [r.id for r in sess.query(Paper).all() if not r.id.startswith("__test_")]
+        stamps = {pid: sess.get(ReadingProgress, (1, pid)) for pid in real}
+        snap = {pid: (row.updated_at if row else None) for pid, row in stamps.items()}
+        read_at = {pid: sess.get(Paper, pid).last_read_at for pid in real}
+    # 再走一遍临时论文的往返
+    reader_service.save_progress(scratch_paper, {"view_mode": "translation"})
+    with session_scope() as sess:
+        for pid in real:
+            row = sess.get(ReadingProgress, (1, pid))
+            assert (row.updated_at if row else None) == snap[pid], f"{pid} 的进度时间戳被改了"
+            assert sess.get(Paper, pid).last_read_at == read_at[pid], f"{pid} 的 last_read_at 被改了"
