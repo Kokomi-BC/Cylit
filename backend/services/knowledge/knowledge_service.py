@@ -70,6 +70,8 @@ _WS_RE = re.compile(r"\s+")
 _COMPACT_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
 # 页内对齐的最小可信重叠（签名字符数）
 _MIN_ALIGN_CHARS = 12
+# "这条公式译文侧已经有了"的判定长度（规范符号串，压掉排版噪音）
+_MIN_DUP_CANON = 12
 
 
 def _setting_int(key: str, default: int) -> int:
@@ -284,12 +286,17 @@ _SENT_END_ASCII = ".!?;"
 
 
 def _snap_sentence(text: str, pos: int, *, forward: bool) -> int:
-    """把比例切点吸附到最近的句子边界（找不到就原样返回）。"""
+    """把比例切点吸附到最近的句子边界（找不到就原样返回）。
+
+    ⚠️ 循环上界必须是 ``i <= n``：句末标点**正好落在整行末尾**时（``…生成 Π。``），
+    旧写法 ``i < n`` 会在查 ``text[n-1]`` 之前就退出、退回原始比例位置 ——
+    于是切点停在词中间（用户截图里"…对其随机化。我 / 们可以通过…"这种断词）。
+    """
     n = len(text)
     pos = max(0, min(n, pos))
     step = 1 if forward else -1
     i = pos
-    while 0 < i < n:
+    while 0 < i <= n:
         ch = text[i - 1]
         if ch in _SENT_END or (ch in _SENT_END_ASCII and (i >= n or text[i] in " \n")):
             return i
@@ -419,15 +426,26 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
     """
     if not parts:
         return None
-    pieces: list[str] = []
+    # 每条：(片段, 来源行键 或 None, 行内起点, 行内终点, 行全文)
+    pieces: list[tuple[str, tuple[int, int] | None, int, int, str]] = []
     text_parts = 0
     cursor: dict[int, int] = {}
     covered: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    emitted_canon: list[str] = []      # 已拼进正文的片段（规范符号串），用于挡重复公式
     for item in parts:
         page, text = item[0], item[1]
         kind = item[2] if len(item) > 2 else "text"
         if kind == "formula":
-            pieces.append(text)          # 公式：不查译文，直接原样保留
+            # 公式片段原样插入（LaTeX 无语言之分）—— 但**译文里已经有了就不再插**：
+            # 中文侧的事实源是译文行，而译文行本身就把公式带了进来（`为分布为 $f_X…$`）。
+            # 解析侧那条公式块只是同一条公式的（被撞碎的）转写，再插一遍就是用户看到的
+            # "同一条公式连着出现两次"。判据是规范串包含，不做模糊匹配。
+            fc = formula_source._canon_loose(text)      # noqa: SLF001 —— 同模块内部约定
+            if len(fc) >= _MIN_DUP_CANON and any(fc in c for c in emitted_canon):
+                log.debug("公式片段已在译文里出现，跳过：%s", text[:48])
+                continue
+            pieces.append((text, None, 0, len(text), text))
+            emitted_canon.append(fc)
             continue
         text_parts += 1
         got = _lookup_zh(zh, page, text, cursor.get(page, 0))
@@ -449,22 +467,36 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
         g_hi = _snap_math(dst, g_hi, forward=False)
         if g_hi <= g_lo:
             continue
-        piece = dst if (g_lo, g_hi) == (0, len(dst)) else dst[g_lo:g_hi].strip()
+        piece = dst[g_lo:g_hi].strip()
         if not piece:
             continue
         cov.append((g_lo, g_hi))
         cursor[page] = idx
-        pieces.append(piece)
+        pieces.append((piece, (page, idx), g_lo, g_hi, dst))
+        emitted_canon.append(formula_source._canon_loose(piece))   # noqa: SLF001
     if not pieces:
         return None
     if text_parts and len(pieces) < len(parts):
         log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
                   len(pieces), len(parts))
-    # 拼装：**纯标点片段**（区间切分后常出现孤零零的 `。`）或以标点开头的片段
+    # 一、**同一个页级行的连续片段合成一段**：它们本来就是同一段文字（解析块在一句话
+    # 中间断开，而译文行是完整段落）。合并直接取行里的原文区间，行内原有的换行/缩进
+    # 一并保留 —— 算法框那种"一行多步"的结构不会被压成一行。
+    # 只在两段之间**只剩空白**时合并（否则宁可分段，不猜）。
+    grouped: list[list] = []
+    for text, key, g_lo, g_hi, dst in pieces:
+        prev = grouped[-1] if grouped else None
+        if (key is not None and prev and prev[1] == key
+                and not prev[4][prev[3]:g_lo].strip()):
+            prev[0] = prev[4][prev[2]:g_hi]      # 行原文（含行内换行/缩进）
+            prev[3] = g_hi
+            continue
+        grouped.append([text, key, g_lo, g_hi, dst])
+    # 二、拼装：**纯标点片段**（区间切分后常出现孤零零的 `。`）或以标点开头的片段
     # 直接接在上一段后面，不另起一行 —— 否则渲染出来就是一个句号独占一行。
     out = ""
-    for piece in pieces:
-        p = (piece or "").strip()
+    for text, _key, _lo, _hi, _dst in grouped:
+        p = (text or "").strip()
         if not p:
             continue
         if not out:
@@ -599,7 +631,20 @@ def _collect_chunks(paper_id: str) -> list[dict]:
     # 每块的章节 = 它前面最近的那个 heading 栈（与正文 chunk 同一规则），
     # 再借"行 → 块"映射把 page_row 锚点的公式落回它所在正文块。
     sections = _section_timeline(rows)
-    row_to_block = _row_to_block_map(paper_id, rows)
+    block_to_row = _block_row_ids(paper_id, rows)
+    next_id = {rows[i]["id"]: (rows[i + 1]["id"] if i + 1 < len(rows) else None)
+               for i in range(len(rows))}
+
+    def row_closed(bid: str) -> bool:
+        """这个块是不是它所在**页级行**的最后一个块（一行 = 一个完整段落）。
+
+        映射不到的块（未翻译页、签名太短的公式块）一律算"行到此为止"，
+        于是行为回到"解析块边界即切点"，不会因为拿不到映射而乱合并。
+        """
+        row = block_to_row.get(bid)
+        if not row:
+            return True
+        return block_to_row.get(next_id.get(bid) or "") != row
 
     chunks: list[dict] = []
     buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
@@ -724,14 +769,18 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 flush_text()
             buffer.append(entry("text", b, piece))
             buffer_chars += len(piece) + 2
-            if buffer_chars >= target:
+            # 到点即 flush，但**切点要对齐页级行边界**：解析块常在一句话中间断开
+            # （`…Therefore, with c's denoting the centroids in ascending order, we can`），
+            # 而页级行是完整段落。硬上限仍兜底（见上面的预检）。
+            if buffer_chars >= target and row_closed(bid):
                 flush_text()
     flush_text()
 
     # 公式知识库条目：**全部**来自 canonical 清单（reader_service.markdown_formulas
     # → C 口径过滤 → 挂锚点），不再在索引层识别公式（用户口径 §1/§8）。
     chunks.extend(_canonical_formula_chunks(paper_id, rows, f_entries,
-                                            sections=sections, row_to_block=row_to_block))
+                                            sections=sections,
+                                            row_to_block={r: b for b, r in block_to_row.items()}))
     chunks.sort(key=lambda c: (c["order_global"],
                                0 if c["chunk_type"] == "text" else 1))
     merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
@@ -759,23 +808,32 @@ def _section_timeline(rows: list[dict]) -> dict[str, tuple[str, str]]:
     return out
 
 
+def _block_row_ids(paper_id: str, rows: list[dict]) -> dict[str, str]:
+    """``{块 id: 行 id}``（``anchor_map`` 正向映射：块落在页级产物的哪一行）。
+
+    页**没有译文行**（未翻译页）或块签名太短时映射不到 —— 调用方一律按"该块自成一行"
+    处理，行为与没有这次映射时一致。
+    """
+    try:
+        from backend.services.paper import anchor_map, reader_service
+
+        payloads = reader_service.page_translations(paper_id)
+        return anchor_map.build_block_row_map(
+            [{"id": r["id"], "page": r["page"], "text": r.get("text") or ""} for r in rows],
+            anchor_map.rows_by_page(payloads))
+    except Exception as exc:  # noqa: BLE001 —— 映射只用于对齐切点，失败不让建索引挂掉
+        log.debug("块→行映射失败（%s）：%s", paper_id, exc)
+        return {}
+
+
 def _row_to_block_map(paper_id: str, rows: list[dict]) -> dict[str, str]:
     """``{行 id: 块 id}``（``anchor_map`` 反向映射）。
 
     page_row 锚点的公式只知道它在哪一**行**，要靠这个映射找到对应正文块，
     才能拿到章节。映射拿不到就返回空字典（公式条目退化成无章节，不影响入库）。
     """
-    try:
-        from backend.services.paper import anchor_map, reader_service
-
-        payloads = reader_service.page_translations(paper_id)
-        block_to_row = anchor_map.build_block_row_map(
-            [{"id": r["id"], "page": r["page"], "text": r.get("text") or ""} for r in rows],
-            anchor_map.rows_by_page(payloads))
-    except Exception as exc:  # noqa: BLE001 —— 章节是锦上添花，失败不让建索引挂掉
-        log.debug("行→块映射失败（%s）：%s", paper_id, exc)
-        return {}
-    return {row_id: block_id for block_id, row_id in block_to_row.items()}
+    return {row_id: block_id
+            for block_id, row_id in _block_row_ids(paper_id, rows).items()}
 
 
 def _canonical_formula_chunks(paper_id: str, rows: list[dict],
@@ -1014,6 +1072,8 @@ def index_paper(paper_id: str, *, rebuild: bool = False,
         row = sess.get(Paper, paper_id)
         prev = sess.query(Chunk).filter(Chunk.paper_id == paper_id).first()
         index_version = int(prev.index_version or 0) + 1 if prev else 1
+        old_ids = {i for (i,) in sess.query(Chunk.id)
+                   .filter(Chunk.paper_id == paper_id).all()}
         sess.query(Chunk).filter(Chunk.paper_id == paper_id).delete()
         for c in chunks:
             sess.add(Chunk(
@@ -1047,6 +1107,13 @@ def index_paper(paper_id: str, *, rebuild: bool = False,
 
             vector_store.upsert_chunks(chunks, vectors, index_version,
                                        embedding_model_id=model_id)
+            # 旧 id 要显式清掉：chunk id 由**首末块 id** 拼成，切点/合并一变 id 就变，
+            # 只按新 id upsert 会把上一版的向量留在库里（检索召回到"已经不存在的片段"，
+            # 概览里两侧条数也对不上）。向量是派生数据，删干净是安全的。
+            stale = sorted(old_ids - {c["id"] for c in chunks})
+            if stale:
+                vector_store.delete_chunks(stale)
+                log.info("清掉 %d 条上一版残留向量（%s）", len(stale), paper_id)
             embedded = len(vectors)
         except Exception as exc:  # noqa: BLE001
             vector_error = f"{type(exc).__name__}: {str(exc)[:300]}"

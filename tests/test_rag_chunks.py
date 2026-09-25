@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from backend.services.knowledge.knowledge_service import (
     MIN_ZH_CHARS, _block_sig, _chunk_variants, _lookup_zh, _make_chunk, _slice_zh,
-    _zh_index,
+    _snap_sentence, _zh_content, _zh_index,
 )
 
 PAPER = "demo-paper"
@@ -94,6 +94,57 @@ def test_slice_zh_keeps_edges_whole() -> None:
     text = "向量量化这一植根于信源编码的问题。"
     assert _slice_zh(text, 0.0, 1.0) == text
     assert _slice_zh(text, 0.01, 0.99) == text        # 贴边不切，避免从词中间切进去
+
+
+def test_snap_sentence_reaches_sentence_end_at_text_end() -> None:
+    """句末标点**正好落在整行末尾**时必须能吸附过去。
+
+    旧实现的循环上界是 `i < n`，这种情形会一路扫到结尾后**退回原始比例位置** ——
+    切点就停在词中间（真实事故：`…对其随机化。我` ⏎⏎ `们可以通过…`）。
+    """
+    text = "前一句。我们可以生成矩阵。"
+    assert _snap_sentence(text, 5, forward=True) == len(text)
+    assert _snap_sentence(text, 3, forward=True) == 4          # 正常情形不受影响
+
+
+def test_slice_zh_snaps_to_row_end_when_only_sentence_end_is_last_char() -> None:
+    """比例切点落在词中间、而唯一的句末标点在整行末尾 → 应该**吸附到行尾**。
+
+    真实事故：hi 落在「我们|可以通过」之间，`_snap_sentence` 因为上界写成 `i < n`
+    扫不到行尾那个 `。`，于是切出 `…对其随机化。我`，下一块再切出 `们可以通过…`。
+    """
+    text = "我们首先将该向量与随机矩阵相乘来对其随机化。我们可以通过对正态矩阵施加分解生成矩阵。"
+    piece = _slice_zh(text, 0.0, 0.57)
+    assert piece == text.strip()
+    assert piece.endswith("。")
+
+
+def test_zh_content_keeps_formula_that_row_already_has_once() -> None:
+    """译文行里已经有这条公式 → 解析侧那条公式块不再插一遍（同一条公式连着出现两次）。"""
+    en = "for random variables with the distribution f(x) ="
+    latex = r"f_X(x) = \frac{\Gamma(d/2)}{\sqrt{\pi}\,\Gamma((d-1)/2)} \left(1 - x^2\right)^{(d-3)/2}"
+    zh_row = f"为分布为 ${latex}$ 的随机变量设计一个标量量化器。"
+    zh = _zh_index([_page(5, [(en, zh_row)])])
+
+    with_formula = [(5, en, "text"), (5, f"${latex}$", "formula")]
+    assert _zh_content(with_formula, zh).count(latex) == 1
+
+    # 反例：译文里没有这条公式（还没翻译进来）→ 公式块照样要插进去，不能被误挡
+    plain = [(5, en, "text"), (5, f"${latex}$", "formula")]
+    zh_plain = _zh_index([_page(5, [(en, "只译了半句：")])])
+    assert latex in _zh_content(plain, zh_plain)
+
+
+def test_zh_content_joins_consecutive_pieces_of_same_row() -> None:
+    """同一页级行的连续片段合成一段，且**行内原有的换行照原样保留**（算法框那种一行多步）。"""
+    row_en = "Step 1: do a thing  Step 2: do another thing"
+    row_zh = "1: 第一件事  \n2: 第二件事"
+    zh = _zh_index([_page(5, [(row_en, row_zh)])])
+
+    content = _zh_content([(5, "Step 1: do a thing", "text"),
+                           (5, "Step 2: do another thing", "text")], zh)
+    assert content == row_zh
+    assert "\n\n" not in content                      # 没有被拆成两段
 
 
 # --------------------------------------------------------------------------

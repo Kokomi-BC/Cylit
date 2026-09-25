@@ -1,0 +1,1506 @@
+{
+  "paper_id": "turboquant-online-vector-iclr-26",
+  "top_k": 6,
+  "questions": 10,
+  "hit_at_k": 1.0,
+  "content_hit_at_k": 1.0,
+  "mrr": 0.95,
+  "content_mrr": 0.95,
+  "formula_coverage": 0.3333333333333333,
+  "formula_hit_rate": 1.0,
+  "appendix_coverage": 1.0,
+  "formula_context_coverage": 0.9,
+  "rows": [
+    {
+      "id": "q01",
+      "q": "QJL 的基本思想是什么？",
+      "note": "B.2 在附录里 —— 改造前整段不进库",
+      "want_formula": false,
+      "want_appendix": true,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": true,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": null,
+      "formula_top": [],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b01-turboquanton-p17-b08:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p17-b04",
+            "turboquanton-p17-b07"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## B.2 QJL：1 比特内积量化  如前所述，我们设计了两种 VQ 算法：一种针对最小化 MSE 优化，另一种针对最小化内积误差优化。我们表明，MSE 最优量化器未必能给出无偏的内积估计，尤其在较低位宽下会表现出显著偏差。我们用于内积量化的解决方案是一个两阶段算法。首先，我们应用 MSE 最优量化器，其位宽比目标"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p15-b04-turboquanton-p15-b06:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 15,
+          "section": "AEXTENDED PRIOR WORK",
+          "section_path": "AEXTENDED PRIOR WORK",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "**在线 KV 缓存压缩。** 已有若干方法被提出用于压缩 KV 缓存。其中包括架构层面的修改 Shazeer (2019); Ainslie et al. (2023); Dai et al. (2024)，它们重构 transformer 以最小化所存储键值对的数量。此外，剪枝或逐出冗余或不太关键的 token 也"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f017-0190:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p017-02：$$Q_{\\text{qjl}} : \\mathbb{R}^d \\to \\{-1, +1\\}^d$$"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b07:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b01-turboquanton-p17-b08",
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p017-04：$$Q_{\\text{qjl}}^{-1} : \\{-1, +1\\}^d \\to \\mathbb{R}^d$$"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b10:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b09-turboquanton-p17-b23",
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p017-08：$$\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle\\right] = \\langle y, x\\rangle.$$"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f021-0325:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 21,
+          "section": "EIMPLEMENTATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / EIMPLEMENTATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p021-03：$$\\langle \\boldsymbol{q}, Q_{\\text{prod}}^{-1}(\\tilde{\\boldsymbol{x}}_i)\\rangle = \\|\\text{qjl}(\\boldsymbol{r}_i)\\| \\cdot \\langle \\boldsymbol{S}\\bolds"
+        }
+      ],
+      "retrieval": {
+        "query": "QJL 的基本思想是什么？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q02",
+      "q": "QJL 为什么能近似保持内积？",
+      "note": "内积保真的理由：附录 B.2 / C 的证明",
+      "want_formula": true,
+      "want_appendix": true,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": true,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": 1,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b10:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p017-08：$$\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle\\right] = \\la"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f019-0278:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p019-09：$$\\mathbb{E}\\left[\\langle \\boldsymbol{y}, \\tilde{\\boldsymbol{x}}_{\\text{qjl}}\\rangle\\right] = \\langle \\boldsy"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b15:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p017-10：$$\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle = \\frac{1}{d} \\sum_{i \\in [d"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b09-turboquanton-p17-b23:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p17-b10",
+            "turboquanton-p17-b15",
+            "turboquanton-p17-b19"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "**引理 4**（性能保证：QJL）。*设 $Q_{\\text{qjl}}$ 与 $Q_{\\text{qjl}}^{-1}$ 按定义 1 定义。对任意向量  $\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b01-turboquanton-p17-b08:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p17-b04",
+            "turboquanton-p17-b07"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## B.2 QJL：1 比特内积量化  如前所述，我们设计了两种 VQ 算法：一种针对最小化 MSE 优化，另一种针对最小化内积误差优化。我们表明，MSE 最优量化器未必能给出无偏的内积估计，尤其在较低位宽下会表现出显著偏差。我们用于内积量化的解决方案是一个两阶段算法。首先，我们应用 MSE 最优量化器，其位宽比目标"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b10:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b09-turboquanton-p17-b23",
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p017-08：$$\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle\\right] = \\langle y, x\\rangle.$$"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p01-b05-turboquanton-p01-b07:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 1,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# ABSTRACT  向量量化这一植根于 Shannon 信源编码的问题，旨在量化高维欧氏向量，同时最小化其几何结构上的失真。我们提出 TURBOQUANT，以同时应对均方误差（MSE）与内积失真，克服了现有方法无法达到最优失真率的局限。我们的数据无关算法适用于在线应用，在所有位宽与维度上都能达到近最优失真率（仅差一"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p19-b14-turboquanton-p19-b22:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 19,
+          "section": "C.2TURBOQUANT",
+          "section_path": "CPROOFS AND TECHNICAL REMARKS / C.2TURBOQUANT",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p19-b15",
+            "turboquanton-p19-b21"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "在计算失真时，我们对 $\\tilde{\\boldsymbol{x}}_{\\text{mse}}$ 施加同样的条  $E|\\langle y, x\\rangle -\\langle y, ˜x\\rangle | ˜x= E\\langle y, x\\rangle -\\langle y, ˜x x˜\\rangle ˜x$  其"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p21-b03-turboquanton-p21-b13:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 21,
+          "section": "EIMPLEMENTATION",
+          "section_path": "EIMPLEMENTATION",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "$_{\\text{prod}}$ 中保持恒定，而在 TURBOQUANT$_{\\text{mse}}$ 中随平均内积增大而增大。位宽为 $b = 2$。**  这一变换对算法的性能至关重要。在实践中，旋转矩阵以结构化矩阵的形式实现，具体而言即*随机 Hadamard 变换* Ahle et al. (2020)。这包括"
+        }
+      ],
+      "retrieval": {
+        "query": "QJL 为什么能近似保持内积？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q03",
+      "q": "coordinate distribution 的 Lemma 是什么？",
+      "note": "Lemma 1 在 p16 附录 B",
+      "want_formula": false,
+      "want_appendix": true,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": false,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": null,
+      "formula_top": [],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p16-b01-turboquanton-p16-x04:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 16,
+          "section": "BMATHEMATICAL PRELIMINARIES",
+          "section_path": "BMATHEMATICAL PRELIMINARIES",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p16-b06",
+            "turboquanton-p16-x02",
+            "turboquanton-p16-b12",
+            "turboquanton-p16-b13",
+            "turboquanton-p16-x04"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# B 数学预备知识  对随机变量 $x$，我们将其微分熵记为 $h(x)$。对随机变量 $x$ 与 $y$，它们之间的互信息记为 $I(x; y) = h(x) - h(x|y)$。  鉴于 TURBOQUANT 采用随机旋转来缓解最坏情形输入，理解超球面上随机点的统计性质至关重要。下述引理给出我们进行分析与设计所需"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b12-turboquanton-p03-b20:en",
+          "chunk_type": "text",
+          "lang": "en",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p03-b16"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS  MSE Optimized TURBOQUANT.Our first VQ algorithm is designed to minimize MSE distortion defined in Eq. (1). To achie"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b12-turboquanton-p03-b19:en",
+          "chunk_type": "text",
+          "lang": "en",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p03-b16"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS  MSE Optimized TURBOQUANT.Our first VQ algorithm is designed to minimize MSE distortion defined in Eq. (1). To achie"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b17:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。我们首先将该向量与一个随机旋转矩阵 $\\boldsymbol{"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b16:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。  我们首先将该向量与一个随机旋转矩阵 $\\boldsymbo"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p20-b07-turboquanton-p20-b15:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 20,
+          "section": "C.3LOWER BOUNDS",
+          "section_path": "CPROOFS AND TECHNICAL REMARKS / C.3LOWER BOUNDS",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p20-b13"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "*证明。* 由 Yao 的极小极大原理，针对最坏情形输入的最优随机压缩算法的期望 MSE（$D_{\\text{mse}}$）等于最优确定性压缩算法在输入取自最难随机分布时的期望 MSE。按定义，后一情形的 MSE 由单位超球面上均匀分布输入的最佳可达 MSE 给出下界。  位宽为 $b$、作用于来自球面 $\\mathb"
+        }
+      ],
+      "retrieval": {
+        "query": "coordinate distribution 的 Lemma 是什么？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q04",
+      "q": "TurboQuant 的 MSE 优化目标是什么？",
+      "note": "正文 0.1 / 1.1 的失真上界",
+      "want_formula": true,
+      "want_appendix": false,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": false,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": false,
+      "formula_first_match_rank": 1,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f003-0008:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p003-01：$$(\\text{MSE}) \\quad D_{\\text{mse}} := \\mathbb{E}_Q\\left[\\left\\|x - Q^{-1}(Q(x))\\right\\|_2^2\\right] \\tag{1}$$"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f006-0119:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p006-05：$$Q_{\\text{mse}}(\\boldsymbol{x}) = \\text{sign}(\\boldsymbol{\\Pi} \\cdot \\boldsymbol{x})$$"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f006-0130:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p006-06：$$\\boldsymbol{r} := \\boldsymbol{x} - Q_{\\text{mse}}^{-1}\\left(Q_{\\text{mse}}(\\boldsymbol{x})\\right)$$"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b12-turboquanton-p03-b19:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p03-b16"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 0.3 技术与贡献概览  **MSE 优化的 TURBOQUANT。** 我们的第一个 VQ 算法旨在最小化式 (1) 所定义的 MSE 失真。为此，我们对输入向量施加随机旋转，从而无论输入向量本身如何，都在每个坐标上诱导出 Beta 分布。在高维 $d$ 下，由于测度集中与中心极限定理，每个坐标的分布收敛到正态"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b12-turboquanton-p03-b20:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p03-b16"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 0.3 技术与贡献概览  **MSE 优化的 TURBOQUANT。** 我们的第一个 VQ 算法旨在最小化式 (1) 所定义的 MSE 失真。为此，我们对输入向量施加随机旋转，从而无论输入向量本身如何，都在每个坐标上诱导出 Beta 分布。在高维 $d$ 下，由于测度集中与中心极限定理，每个坐标的分布收敛到正态"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p04-b18-turboquanton-p05-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 4,
+          "section": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# 1 TURBOQUANT：高性能量化  我们开发了两种 VQ 算法，各自针对特定目标。第一种算法旨在最小化量化后原始向量与重建向量之间的 MSE。第二种算法针对无偏内积估计进行优化，以应对 MSE 最优量化器固有的偏差。这些算法将在以下小节中详述。  此外，在附录 C.3 中，我们为任意向量量化器所能达到的最佳失真"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b17:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。我们首先将该向量与一个随机旋转矩阵 $\\boldsymbol{"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b16:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。  我们首先将该向量与一个随机旋转矩阵 $\\boldsymbo"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p02-b04-turboquanton-p02-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 2,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "现有 VQ 算法呈现出一种权衡：要么缺乏加速器（向量化）兼容性且计算缓慢，使其不适用于 KV 缓存量化这类实时 AI 应用；要么其失真保证不如我们的方法相对于位宽那样紧致。我们的目标是提出一种能解决这些局限的算法。具体而言，我们设计了 TURBOQUANT：轻量、可在线应用（对 KV 缓存量化这类场景至关重要），并且高"
+        }
+      ],
+      "retrieval": {
+        "query": "TurboQuant 的 MSE 优化目标是什么？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q05",
+      "q": "TurboQuant_prod 和 TurboQuant_mse 有什么区别？",
+      "note": "两阶段的差异：0.3 概览 + 1.x 正文",
+      "want_formula": true,
+      "want_appendix": false,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": false,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": 1,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f006-0135:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p006-09：$$Q_{\\text{prod}}(\\boldsymbol{x}) = \\left[Q_{\\text{mse}}(\\boldsymbol{x}),\\, Q_{\\text{qjl}}\\left(\\boldsymbol{x"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p19-b10:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p019-11：$$\\begin{aligned}\nD_{\\text{prod}} &= \\mathbb{E}_{\\tilde{\\boldsymbol{x}}_{\\text{mse}}}\\left[\\mathbb{E}\\left[\\l"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f021-0325:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p021-03：$$\\langle \\boldsymbol{q}, Q_{\\text{prod}}^{-1}(\\tilde{\\boldsymbol{x}}_i)\\rangle = \\|\\text{qjl}(\\boldsymbol{r}"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p07-b13-turboquanton-p08-b03:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 7,
+          "section": "2.1EMPIRICAL VALIDATION",
+          "section_path": "2EXPERIMENTS / 2.1EMPIRICAL VALIDATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "在本节中，我们使用 DBpedia Entities 数据集上的实验来验证理论结果，该数据集通过 OpenAI3 嵌入被嵌入到 1536 维空间中。我们随机采样 100,000 个点作为训练集，并抽取 1,000 个不同的条目作为查询集。  我们比较两种量化方法：TURBOQUANT$_{\\text{prod}}$，针"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p20-b16-turboquanton-p20-b17:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 20,
+          "section": "DADDITIONAL EXPERIMENT",
+          "section_path": "DADDITIONAL EXPERIMENT",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# D 附加实验  如图 5 所示，当量化到 2 比特时，TURBOQUANT$_{\\text{prod}}$ 方法中的方差无论原始向量的内积如何都保持恒定。然而，同一图也表明 TURBOQUANT$_{\\text{mse}}$ 方法中的偏差依赖于平均内积。随着平均内积增大，偏差也随之增大。"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p04-b18-turboquanton-p05-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 4,
+          "section": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": false,
+          "content_matched": false,
+          "preview": "# 1 TURBOQUANT：高性能量化  我们开发了两种 VQ 算法，各自针对特定目标。第一种算法旨在最小化量化后原始向量与重建向量之间的 MSE。第二种算法针对无偏内积估计进行优化，以应对 MSE 最优量化器固有的偏差。这些算法将在以下小节中详述。  此外，在附录 C.3 中，我们为任意向量量化器所能达到的最佳失真"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p04-b01-turboquanton-p04-b15:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 4,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p04-b04",
+            "turboquanton-p04-b11"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "**内积 TURBOQUANT。** 我们表明，为 MSE 优化的量化器在内积估计上是有偏的，因此需要一种不同的 VQ 方案来获得无偏的内积量化器。我们的解决方案是一个两阶段算法：先应用上述 $Q_{\\text{mse}}$，其位宽比我们的目标预算少一比特，再对残差误差施加 QJL Zandieh et al.  在定"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b20-turboquanton-p04-b14:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p04-b04",
+            "turboquanton-p04-b11"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "可以以浮点精度计算并存储 L2 范数，并对反量化后的点进行重缩放。  **内积 TURBOQUANT。** 我们表明，为 MSE 优化的量化器在内积估计上是有偏的，因此需要一种不同的 VQ 方案来获得无偏的内积量化器。我们的解决方案是一个两阶段算法：先应用上述 $Q_{\\text{mse}}$，其位宽比我们的目标预算少"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:figure:turboquanton-p07-b11:en",
+          "chunk_type": "figure",
+          "lang": "en",
+          "page": 7,
+          "section": "2.1EMPIRICAL VALIDATION",
+          "section_path": "2EXPERIMENTS / 2.1EMPIRICAL VALIDATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "插图 turboquanton-p07-b11：Figure 1: Distribution of Inner Product error for TURBOQUANTand TURBOQUANT."
+        }
+      ],
+      "retrieval": {
+        "query": "TurboQuant_prod 和 TurboQuant_mse 有什么区别？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q06",
+      "q": "random rotation 在算法中起什么作用？",
+      "note": "随机旋转的动机（worst-case 输入）",
+      "want_formula": true,
+      "want_appendix": false,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": false,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": 1,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f019-0278:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p019-09：$$\\mathbb{E}\\left[\\langle \\boldsymbol{y}, \\tilde{\\boldsymbol{x}}_{\\text{qjl}}\\rangle\\right] = \\langle \\boldsy"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f018-0224:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p018-02：$$\\text{idx} \\in [2^b]^d$$"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f018-0255:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p018-11：$$\\text{idx} \\in [2^{b-1}]^d$$"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p02-b04-turboquanton-p02-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 2,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "现有 VQ 算法呈现出一种权衡：要么缺乏加速器（向量化）兼容性且计算缓慢，使其不适用于 KV 缓存量化这类实时 AI 应用；要么其失真保证不如我们的方法相对于位宽那样紧致。我们的目标是提出一种能解决这些局限的算法。具体而言，我们设计了 TURBOQUANT：轻量、可在线应用（对 KV 缓存量化这类场景至关重要），并且高"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p01-b05-turboquanton-p01-b07:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 1,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# ABSTRACT  向量量化这一植根于 Shannon 信源编码的问题，旨在量化高维欧氏向量，同时最小化其几何结构上的失真。我们提出 TURBOQUANT，以同时应对均方误差（MSE）与内积失真，克服了现有方法无法达到最优失真率的局限。我们的数据无关算法适用于在线应用，在所有位宽与维度上都能达到近最优失真率（仅差一"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p20-b18-turboquanton-p21-b01:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 20,
+          "section": "EIMPLEMENTATION",
+          "section_path": "EIMPLEMENTATION",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# E 实现  TURBOQUANT 算法，如算法 1（用于 MSE 最优量化）与算法 2（用于内积量化）所详述，在量化与反量化两个阶段都对输入嵌入向量施加随机旋转矩阵。"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b16:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。  我们首先将该向量与一个随机旋转矩阵 $\\boldsymbo"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p04-b18-turboquanton-p05-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 4,
+          "section": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# 1 TURBOQUANT：高性能量化  我们开发了两种 VQ 算法，各自针对特定目标。第一种算法旨在最小化量化后原始向量与重建向量之间的 MSE。第二种算法针对无偏内积估计进行优化，以应对 MSE 最优量化器固有的偏差。这些算法将在以下小节中详述。  此外，在附录 C.3 中，我们为任意向量量化器所能达到的最佳失真"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p15-b01-turboquanton-p15-b03:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 15,
+          "section": "AEXTENDED PRIOR WORK",
+          "section_path": "AEXTENDED PRIOR WORK",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# A 扩展的先前工作  **VQ 的起源。** 向量量化理论始于 Shannon 关于可达失真–率函数的开创性工作 Shannon (1948); Shannon et al. (1959)。1963 年，Zador Zador (1964) 采用高分辨率方法取得了重要进展，推导出固定速率量化在高码率下的极限操作失真"
+        }
+      ],
+      "retrieval": {
+        "query": "random rotation 在算法中起什么作用？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q07",
+      "q": "differential entropy 在哪里被使用？",
+      "note": "Shannon 下界那段的微分熵",
+      "want_formula": false,
+      "want_appendix": true,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": true,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": null,
+      "formula_top": [],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p16-b01-turboquanton-p16-x04:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 16,
+          "section": "BMATHEMATICAL PRELIMINARIES",
+          "section_path": "BMATHEMATICAL PRELIMINARIES",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p16-b06",
+            "turboquanton-p16-x02",
+            "turboquanton-p16-b12",
+            "turboquanton-p16-b13",
+            "turboquanton-p16-x04"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# B 数学预备知识  对随机变量 $x$，我们将其微分熵记为 $h(x)$。对随机变量 $x$ 与 $y$，它们之间的互信息记为 $I(x; y) = h(x) - h(x|y)$。  鉴于 TURBOQUANT 采用随机旋转来缓解最坏情形输入，理解超球面上随机点的统计性质至关重要。下述引理给出我们进行分析与设计所需"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p16-b14-turboquanton-p16-b23:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 16,
+          "section": "B.1SHANNON LOWER BOUND ON DISTORTION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.1SHANNON LOWER BOUND ON DISTORTION",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p16-b17"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## B.1 失真上的 SHANNON 下界  Shannon 下界（SLB）是一个强有力的工具，它源自 Shannon 的有损信源编码定理 Shannon et al. (1959)，为任何有损压缩方案所能达到的最优失真率给出了普适下界。具体而言，我们使用 SLB 的一个适用于一般 $d$ 维信源的均方误差（MSE）"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f016-0181:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 16,
+          "section": "",
+          "section_path": null,
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "公式 p016-13：$$D(p_X, B) \\geq \\frac{d}{2\\pi e} \\cdot 2^{(2/d)(h(x) - B)}.$$"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p16-b24-turboquanton-p16-b29:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 16,
+          "section": "B.1SHANNON LOWER BOUND ON DISTORTION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.1SHANNON LOWER BOUND ON DISTORTION",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "*证明。* 若记 $A_d$ 为超球面 $\\mathbb{S}^{d-1}$ 的面积，则超球面上均匀分布的熵为 $h(x) = \\log_2 A_d$。将其代入引理 2 的 SLB 得到 $D(B) \\geq \\frac{d}{2\\pi e} \\cdot A_d^{2/d} \\cdot 2^{-2B/d}$。利用 Ga"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p15-b07:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 15,
+          "section": "AEXTENDED PRIOR WORK",
+          "section_path": "AEXTENDED PRIOR WORK",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": false,
+          "content_matched": false,
+          "preview": "**显式常数与渐近最优性。** Gao et al. (2024) 的近期工作提出了一种基于网格的量化方法，它通过把均匀网格投影到单位球面上并将每个数据点指派到其最近的投影点来避免预处理；其分析确立了在给定目标失真下所需位宽的渐近最优性，但仅到隐藏常数为止。我们的贡献在于给出失真率作为位宽函数的显式刻画。这种形式清楚地"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b07-turboquanton-p05-b16:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-x01"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "## 1.1 MSE 最优的 TURBOQUANT  设 $x \\in \\mathbb{S}^{d-1}$ 是维度 $d$ 的单位球面上的一个（最坏情形）向量。我们的目标是把 $x$ 量化为每个坐标 $b$ 比特，同时最小化式 (1) 中定义的重建 MSE。  我们首先将该向量与一个随机旋转矩阵 $\\boldsymbo"
+        }
+      ],
+      "retrieval": {
+        "query": "differential entropy 在哪里被使用？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q08",
+      "q": "TurboQuant 的量化误差如何分析？",
+      "note": "误差分析主线（正文 + 附录 C）",
+      "want_formula": true,
+      "want_appendix": false,
+      "first_match_rank": 2,
+      "content_first_match_rank": 2,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": false,
+      "semantic": true,
+      "formula_context": false,
+      "appendix": true,
+      "formula_first_match_rank": 1,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p20-b13:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p020-09：$$\\begin{aligned} D_{\\text{mse}} = \\sum_{j=1}^{d} \\mathbb{E}\\left[\\left|\\boldsymbol{x}_j - \\left[Q^{-1}(Q(\\bo"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f020-0300:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p020-12：$$\\mathbb{E}\\left[\\left|\\langle \\boldsymbol{e}_j, \\boldsymbol{x}\\rangle - \\langle \\boldsymbol{e}_j, Q^{-1}(Q("
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f004-0040:any",
+          "lang": "any",
+          "matched": false,
+          "preview": "公式 p004-03：$$D_{\\text{mse}}(Q) := \\mathbb{E}\\left[\\left\\|x - Q^{-1}\\left(Q(x)\\right)\\right\\|_2^2\\right] \\geq \\frac{1}{4^"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:figure:turboquanton-p07-b11:en",
+          "chunk_type": "figure",
+          "lang": "en",
+          "page": 7,
+          "section": "2.1EMPIRICAL VALIDATION",
+          "section_path": "2EXPERIMENTS / 2.1EMPIRICAL VALIDATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": false,
+          "content_matched": false,
+          "preview": "插图 turboquanton-p07-b11：Figure 1: Distribution of Inner Product error for TURBOQUANTand TURBOQUANT."
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:figure:turboquanton-p21-b02:en",
+          "chunk_type": "figure",
+          "lang": "en",
+          "page": 21,
+          "section": "EIMPLEMENTATION",
+          "section_path": "EIMPLEMENTATION",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "插图 turboquanton-p21-b02：Figure 5: The variance of Inner-product error remains constant for TURBOQUANT, while in"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p01-b05-turboquanton-p01-b07:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 1,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# ABSTRACT  向量量化这一植根于 Shannon 信源编码的问题，旨在量化高维欧氏向量，同时最小化其几何结构上的失真。我们提出 TURBOQUANT，以同时应对均方误差（MSE）与内积失真，克服了现有方法无法达到最优失真率的局限。我们的数据无关算法适用于在线应用，在所有位宽与维度上都能达到近最优失真率（仅差一"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p20-b16-turboquanton-p20-b17:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 20,
+          "section": "DADDITIONAL EXPERIMENT",
+          "section_path": "DADDITIONAL EXPERIMENT",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": false,
+          "content_matched": false,
+          "preview": "# D 附加实验  如图 5 所示，当量化到 2 比特时，TURBOQUANT$_{\\text{prod}}$ 方法中的方差无论原始向量的内积如何都保持恒定。然而，同一图也表明 TURBOQUANT$_{\\text{mse}}$ 方法中的偏差依赖于平均内积。随着平均内积增大，偏差也随之增大。"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p04-b18-turboquanton-p05-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 4,
+          "section": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": false,
+          "content_matched": false,
+          "preview": "# 1 TURBOQUANT：高性能量化  我们开发了两种 VQ 算法，各自针对特定目标。第一种算法旨在最小化量化后原始向量与重建向量之间的 MSE。第二种算法针对无偏内积估计进行优化，以应对 MSE 最优量化器固有的偏差。这些算法将在以下小节中详述。  此外，在附录 C.3 中，我们为任意向量量化器所能达到的最佳失真"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p02-b04-turboquanton-p02-b05:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 2,
+          "section": "ABSTRACT",
+          "section_path": "ABSTRACT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "现有 VQ 算法呈现出一种权衡：要么缺乏加速器（向量化）兼容性且计算缓慢，使其不适用于 KV 缓存量化这类实时 AI 应用；要么其失真保证不如我们的方法相对于位宽那样紧致。我们的目标是提出一种能解决这些局限的算法。具体而言，我们设计了 TURBOQUANT：轻量、可在线应用（对 KV 缓存量化这类场景至关重要），并且高"
+        }
+      ],
+      "retrieval": {
+        "query": "TurboQuant 的量化误差如何分析？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q09",
+      "q": "附录中的证明主要说明了什么？",
+      "note": "改造前附录整段不在库里，这题应当从『检不到』变成『检得到』",
+      "want_formula": false,
+      "want_appendix": true,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": true,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": null,
+      "formula_top": [],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p06-b30-turboquanton-p07-b06:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 6,
+          "section": "1.2INNER-PRODUCT OPTIMAL TURBOQUANT",
+          "section_path": "6: r ←x −DEQUANT(idx) / 1.2INNER-PRODUCT OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "该过程的伪代码见算法 2。  我们在下述定理中证明 TURBOQUANT$_{\\text{prod}}$ 的主要结果，并在附录 C 中给出证明。  **定理 2**（性能保证：TURBOQUANT$_{\\text{prod}}$）。*对任意位宽 $b \\geq 1$ 与任意向量 $\\boldsymbol{x} \\in "
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f019-0261:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 19,
+          "section": "C.2TURBOQUANT",
+          "section_path": "6: r ←x −DEQUANT(idx) / CPROOFS AND TECHNICAL REMARKS / C.2TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "公式 p019-01：$$\\mathbb{E}_{\\tilde{\\boldsymbol{x}}}\\left[\\langle \\boldsymbol{y}, \\tilde{\\boldsymbol{x}}\\rangle\\right] = \\langle \\boldsymbol{y}, \\boldsymbol{x}\\rang"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f016-0167:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 16,
+          "section": "BMATHEMATICAL PRELIMINARIES",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": false,
+          "preview": "公式 p016-05：$$f_X(\\cdot) \\to \\mathcal{N}(0, 1/d)$$"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p05-b18-turboquanton-p06-b01:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 5,
+          "section": "1.1MSE OPTIMAL TURBOQUANT",
+          "section_path": "1TURBOQUANT: HIGH PERFORMANCE QUANTIZATION / 1.1MSE OPTIMAL TURBOQUANT",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p05-b18"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "$\\mathcal{C}(f_X, b) := \\min_{-1 \\leq c_1 \\leq c_2 \\leq \\ldots \\leq c_{2^b} \\leq 1} \\sum_{i=1}^{2^b} \\int_{\\frac{c_{i-1}+c_i}{2}}^{\\frac{c_i+c_{i+1}}{2}} |x - c"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b24-turboquanton-p17-b26:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 17,
+          "section": "CPROOFS AND TECHNICAL REMARKS",
+          "section_path": "CPROOFS AND TECHNICAL REMARKS",
+          "section_kind": "appendix",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "# C 证明与技术注记  在本节中，我们为论文中每个主要理论结果提供详细证明，包括 TURBOQUANT$_{\\text{mse}}$、TURBOQUANT$_{\\text{prod}}$ 的证明，以及信息论下界。"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p19-b23-turboquanton-p20-b06:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 19,
+          "section": "C.3LOWER BOUNDS",
+          "section_path": "CPROOFS AND TECHNICAL REMARKS / C.3LOWER BOUNDS",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p20-b04",
+            "turboquanton-p20-b05"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## C.3 下界  我们通过对任意压缩算法所能达到的最佳失真给出下界，证明 TURBOQUANT 在任意位宽下都达到最优失真率，仅差一个小常数因子。  我们的下界证明利用 Yao 的极小极大原理。该原理使我们能够把最坏情形确定性输入向量下随机算法的下界，与随机输入向量下确定性算法的下界联系起来。随后，我们利用附录 B"
+        }
+      ],
+      "retrieval": {
+        "query": "附录中的证明主要说明了什么？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    },
+    {
+      "id": "q10",
+      "q": "公式 D := E⟨y, x⟩ − ⟨y, QQ(x)⟩ 的含义是什么？",
+      "note": "具体公式：应当同时命中 formula atomic 与包含它的语义 chunk",
+      "want_formula": true,
+      "want_appendix": false,
+      "first_match_rank": 1,
+      "content_first_match_rank": 1,
+      "matched": true,
+      "content_matched": true,
+      "formula_atomic": true,
+      "semantic": true,
+      "formula_context": true,
+      "appendix": true,
+      "formula_first_match_rank": 2,
+      "formula_top": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p20-b05:any",
+          "lang": "any",
+          "matched": false,
+          "preview": "公式 p020-04：$$D_{\\text{prod}}(Q) = \\mathbb{E}\\left[\\left|\\langle \\boldsymbol{y}, \\boldsymbol{x}\\rangle - \\langle \\boldsym"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f004-0041:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p004-03：$$D_{\\text{prod}}(Q) := \\mathbb{E}\\left[\\left|\\langle y, x\\rangle - \\langle y, Q^{-1}\\left(Q(x)\\right)\\rangle"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b10:any",
+          "lang": "any",
+          "matched": true,
+          "preview": "公式 p017-08：$$\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle\\right] = \\la"
+        }
+      ],
+      "hits": [
+        {
+          "rank": 1,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p03-b20-turboquanton-p04-b14:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 3,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p04-b04",
+            "turboquanton-p04-b11"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "可以以浮点精度计算并存储 L2 范数，并对反量化后的点进行重缩放。  **内积 TURBOQUANT。** 我们表明，为 MSE 优化的量化器在内积估计上是有偏的，因此需要一种不同的 VQ 方案来获得无偏的内积量化器。我们的解决方案是一个两阶段算法：先应用上述 $Q_{\\text{mse}}$，其位宽比我们的目标预算少"
+        },
+        {
+          "rank": 2,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p02-b06-turboquanton-p03-b03:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 2,
+          "section": "0.1PROBLEM DEFINITION",
+          "section_path": "ABSTRACT / 0.1PROBLEM DEFINITION",
+          "section_kind": "body",
+          "formula_ids": [
+            "turboquanton-p03-b02"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "## 0.1 问题定义  形式化地，我们的目标是设计一个量化映射，记作 $Q : \\mathbb{R}^d \\to \\{0, 1\\}^B$，它把 $d$ 维向量变换为 $B$ 比特的二进制串。若对某个 $b \\geq 0$ 取 $B = b \\cdot d$，则称该量化器的位宽为 $b$，表示用于编码 $\\mathbb"
+        },
+        {
+          "rank": 3,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p17-b10:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "6: r ←x −DEQUANT(idx) / BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b09-turboquanton-p17-b23",
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p017-08：$$\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right)\\right\\rangle\\right] = \\langle y, x\\rangle.$$"
+        },
+        {
+          "rank": 4,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:turboquanton-p03-b02:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 3,
+          "section": "0.1PROBLEM DEFINITION",
+          "section_path": "ABSTRACT / 0.1PROBLEM DEFINITION",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p02-b06-turboquanton-p03-b03",
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p003-02：$$(\\text{inner-prod error}) \\quad D_{\\text{prod}} := \\mathbb{E}_Q\\left[\\left|\\langle y, x\\rangle - \\langle y, Q^{-1}(Q(x))\\rangle\\right|^2\\right] \\ta"
+        },
+        {
+          "rank": 5,
+          "chunk_id": "turboquant-online-vector-iclr-26:text:turboquanton-p17-b09-turboquanton-p17-b23:zh",
+          "chunk_type": "text",
+          "lang": "zh",
+          "page": 17,
+          "section": "B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_path": "BMATHEMATICAL PRELIMINARIES / B.2QJL: 1-BIT INNER PRODUCT QUANTIZATION",
+          "section_kind": "appendix",
+          "formula_ids": [
+            "turboquanton-p17-b10",
+            "turboquanton-p17-b15",
+            "turboquanton-p17-b19"
+          ],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "**引理 4**（性能保证：QJL）。*设 $Q_{\\text{qjl}}$ 与 $Q_{\\text{qjl}}^{-1}$ 按定义 1 定义。对任意向量  $\\mathbb{E}\\left[\\left\\langle y, Q_{\\text{qjl}}^{-1}\\left(Q_{\\text{qjl}}(x)\\right"
+        },
+        {
+          "rank": 6,
+          "chunk_id": "turboquant-online-vector-iclr-26:formula:f004-0032:any",
+          "chunk_type": "formula",
+          "lang": "any",
+          "page": 4,
+          "section": "0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_path": "ABSTRACT / 0.3OVERVIEW OF TECHNIQUES AND CONTRIBUTIONS",
+          "section_kind": "body",
+          "formula_ids": [],
+          "text_chunk_id": null,
+          "matched": true,
+          "content_matched": true,
+          "preview": "公式 p004-01：$$\\mathbb{E}\\left[\\langle y, Q^{-1}_{\\text{prod}}\\left(Q_{\\text{prod}}(x)\\right)\\rangle\\right] = \\langle y, x\\rangle$$"
+        }
+      ],
+      "retrieval": {
+        "query": "公式 D := E⟨y, x⟩ − ⟨y, QQ(x)⟩ 的含义是什么？",
+        "mode": "similar",
+        "scope": "paper",
+        "vector_hits": 20,
+        "lexical_hits": 20,
+        "fused": 12,
+        "returned": 6,
+        "rrf_k": 60,
+        "vector_model": "dashscope_multimodal:qwen3-vl-embedding",
+        "rerank": {
+          "candidates": 12,
+          "degraded": false,
+          "reason": "",
+          "model": "qwen3-vl-rerank",
+          "provider": "dashscope",
+          "reranked": 6
+        },
+        "notes": []
+      }
+    }
+  ]
+}
