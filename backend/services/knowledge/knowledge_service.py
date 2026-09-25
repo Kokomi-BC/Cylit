@@ -381,7 +381,9 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
             if c["chunk_type"] == "text":
                 # 内容卫生在这里再兜一道：zh 文本是**在这里**按 parts 拼的（绕过了建 chunk 那步），
                 # 而且 `_merge_small_chunks` 合并之后 `$` 奇偶可能又变坏（实测 16 条 zh chunk 仍为奇数）。
-                content = _balance_asterisks(_balance_dollars(_dedupe_paragraphs(content)))
+                content = _balance_dollars_per_line(
+                    _balance_asterisks(_balance_dollars(
+                        _dedupe_sentences(_drop_prefix_paragraphs(_dedupe_paragraphs(content))))))
             # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] == "text" and len(content) < floor:
@@ -811,6 +813,76 @@ def _balance_asterisks(text: str) -> str:
     return text[:idx] + text[idx + 1:]
 
 
+def _balance_dollars_per_line(text: str) -> str:
+    r"""**逐行**校正 `$`：单行内联公式没闭合时，补一个 `$`（合法）或去掉落单的 `$`。
+
+    为什么整块判奇偶不够：`turboquant...p21-b14-p22-b03:zh` 整块是 98 个 `$`（偶数），
+    但**第一行**的 `$` 没闭合 —— 渲染端按"行内配对"处理，那一行整段变纯文本
+    （用户截图里第一段是裸 LaTeX、第二段同内容却渲染正常，就是这个）。
+    """
+    out: list[str] = []
+    for line in (text or "").split("\n"):
+        if line.count("$") % 2 == 0:
+            out.append(line)
+            continue
+        first = line.find("$")
+        if first < 0:
+            out.append(line)
+            continue
+        body = line[first + 1:]
+        if _latex_span_ok(body.rstrip("$")):
+            # 落单的是**开**引号：补一个 `$` 把它闭合，公式就能渲染了
+            out.append(line + "$")
+            continue
+        # 落单的是**闭**引号（或内容本身不合法）：去掉它，避免影响这一行之外的配对
+        if line.rstrip().endswith("$"):
+            out.append(line.rstrip()[:-1])
+        else:
+            out.append(line[:first] + line[first + 1:])
+    return "\n".join(out)
+
+
+def _dedupe_sentences(text: str) -> str:
+    r"""去掉**句级**重复（保留首次）：行级去重挡不住"同一段话落在不同行里"的重复。
+
+    实测那条 zh chunk：`由算法 1 与算法 2 中的反量化原语，我们有…`、
+    `第二个内积 ⟨Πq, Q_mse(x_i)⟩ 同样可以高效计算。`、
+    `对第 k 个分量，其 LUT L^{(k)} 存储取值…` 各自出现 2 次，
+    但每次所在的"行"不同（前后还粘着别的内容）—— 所以要在句子粒度上去重。
+    """
+    parts = re.split(r"(?<=[。！？；\n])", text or "")
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        key = part.strip()
+        if len(key) > 20:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(part)
+    return "".join(out)
+
+
+def _drop_prefix_paragraphs(text: str) -> str:
+    r"""去掉"**是另一段前缀**"的残缺段落（保留完整的那段）。
+
+    实测那条 zh chunk：第一段是"由算法 1 与算法 2 中的反量化原语，我们有 `$…$`"（公式被截断、
+    没有后半句），第二段是同一句的**完整版**（带"其中 $c_j$ 是使式 (3) 中目标函数最小的质心…"）。
+    两段既不相同、也不是同一句 —— 只有"前缀包含"关系，句子级去重抓不到，用户看到就是"重复"。
+    """
+    lines = (text or "").split("\n")
+    keys = [ln.strip() for ln in lines]
+    drop: set[int] = set()
+    for i, a in enumerate(keys):
+        if len(a) < 40:
+            continue
+        for j, b in enumerate(keys):
+            if i != j and len(b) >= 40 and a != b and b.startswith(a):
+                drop.add(i)               # a 是 b 的前缀 → 丢掉残缺的 a
+                break
+    return "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
+
+
 def _dedupe_paragraphs(text: str) -> str:
     r"""去掉 chunk 内**完全重复的段落**（保留首次出现）。
 
@@ -844,7 +916,9 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if chunk_type == "text":
         # 正文 chunk 的两道内容卫生（用户报的"整段重复 / 公式显示破碎"就是这两条）：
         # ① 段级去重；② `$` 奇偶校正（落单 `$` 会让渲染端后半段全变纯文本）
-        content = _balance_asterisks(_balance_dollars(_dedupe_paragraphs(content)))
+        content = _balance_dollars_per_line(
+                    _balance_asterisks(_balance_dollars(
+                        _dedupe_sentences(_drop_prefix_paragraphs(_dedupe_paragraphs(content))))))
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1413,6 +1487,8 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
+
 
 
 
