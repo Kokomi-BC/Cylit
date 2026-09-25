@@ -222,14 +222,20 @@ function setDragClass(on: boolean): void {
   document.documentElement.classList.toggle('pm-pdf-drag', on);
 }
 
-/** 当前选区是否还盖在某个 PDF 文字层上（非空） */
+/**
+ * 这次划词是不是**在 PDF 里划的**（决定要不要挂 `pm-pdf-drag`）。
+ *
+ * ⚠️ 判据必须是"**锚点**落在 PDF 文字层里"，**不能**用"选区与文字层相交"：
+ * 对照 + 左栏原 PDF 的 DOM 顺序是 `PDF(1) rows(1) PDF(2) rows(2) …` —— 在右侧译文列里
+ * **跨页**往下拖时，那段连续选区必然与**下一页的 PDF 文字层**相交。用相交判定就会把
+ * `pm-pdf-drag` 误挂上，而它的 CSS 会把**整个正文文字列**设成 `user-select: none`，
+ * Chrome 于是把译文文字从选区里剔除：选区长度与复制内容都断在页边界上
+ * （用户报的"对照时右侧译文不能跨页选中"；实测选区长度冻在同一值、`rowsUserSelect=none`）。
+ * 锚点在 PDF 里才是"这次拖拽只算 PDF 文字"的本意。
+ */
 function selectionOnPdf(sel: Selection | null): boolean {
   if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
-  for (let i = 0; i < sel.rangeCount; i++) {
-    const r = sel.getRangeAt(i);
-    for (const tl of textLayers) if (r.intersectsNode(tl)) return true;
-  }
-  return false;
+  return !!layerOf(sel.anchorNode);
 }
 
 /**

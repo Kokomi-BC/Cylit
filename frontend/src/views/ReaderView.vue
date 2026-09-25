@@ -123,7 +123,10 @@ function onToolbarAction(key: string) {
 }
 
 const selection = reactive({
-  show: false, x: 0, y: 0, text: '', rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
+  show: false, x: 0, y: 0,
+  /** 选区文字：**截断版**给「AI 解释」用（请求体别无限大），`fullText` 是完整版、给「复制」用 */
+  text: '', fullText: '',
+  rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
   /** 选区是否有块锚点（原 PDF 划词只有文字）—— 决定能不能写高亮/笔记 */
   anchored: true,
   /** 在哪个视图里划的：正文行 row / Markdown 视图 markdown（决定锚点怎么存） */
@@ -1293,6 +1296,19 @@ function columnOf(node: Node | null): string {
   return 'rows';
 }
 
+/** 两个盒子是不是**左右并排**（对照模式下原文/译文列、以及原 PDF 栏） */
+function sideBySide(a: HTMLElement, b: HTMLElement): boolean {
+  const ar = a.getBoundingClientRect();
+  const br = b.getBoundingClientRect();
+  return br.left >= ar.right - 2 || br.right <= ar.left + 2;
+}
+
+/** 这个节点在阅读器内容容器里（页头/页脚/插图/行间空白都算"内容里的中立区"） */
+function insideContent(node: Node | null): boolean {
+  const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
+  return !!el?.closest?.('.reader-content, .md-doc');
+}
+
 /**
  * 划词**不跨列**：左栏原 PDF / 正文的原文列 / 正文的译文列，三者是并排的独立内容。
  * 从一列往另一列拖时，选区会继续"吞"进对面那列的文字（选中的东西跟看到的不一样）—— 用户报过。
@@ -1339,6 +1355,52 @@ function nearestSideBlock(anchor: HTMLElement, col: string, y: number): HTMLElem
   return best;
 }
 
+/**
+ * 元素里**文字实际占的范围**。
+ *
+ * 为什么不用元素盒子：对照模式里一行的两个单元格会被拉伸到同高（`align-items: stretch`），
+ * 译文比原文短时，单元格盒子会远远高于它的文字 —— 指针走过那段空白时光标一直吸附在
+ * 本行文字末尾，选区看着就"卡住不动"（用户报的"右侧译文不能跨页选中"）。
+ * 按文字范围算距离，指针一过本行文字就会落到**下一行**上，选区随之连续生长。
+ */
+function textSpan(el: HTMLElement): { top: number; bottom: number } {
+  try {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    const b = r.getBoundingClientRect();
+    if (b.height > 0.5) return { top: b.top, bottom: b.bottom };
+  } catch { /* 落到盒子 */ }
+  const b = el.getBoundingClientRect();
+  return { top: b.top, bottom: b.bottom };
+}
+
+/**
+ * 本列里**离指针最近的那一个盒子**（正文某侧的某一行 / 原 PDF 栏的某一页）。
+ *
+ * 为什么不用"滚动容器的可见范围"来夹 y（原来的做法）：把指针拖到内容下沿之外时，
+ * 旧写法会把落点夹在**最后一个可见行**上 —— 于是选区停在视口底部，怎么拖都过不去
+ * （用户报的"对照时右侧译文不能跨页选中"）；而页面本身不滚动（整屏布局、滚动都在栏内），
+ * 浏览器的自动滚动也不会发生。改成"取最近的那一行"之后，指针越过下沿就等于"继续往下选"，
+ * 落点自然落到下一行/下一页（它们就在可视区外一点点），选区因此能一路长下去。
+ */
+function nearestColumnBox(col: string, y: number): HTMLElement | null {
+  const sel = col === 'pdf' ? '[data-pdf-page]'
+    : col === 'rows:zh' ? '.rrow.side-zh .rr-body'
+      : col === 'rows:en' ? '.rrow.side-en .rr-body'
+        : col === 'md:zh' ? '[data-md-side="zh"]'
+          : col === 'md:en' ? '[data-md-side="en"]' : '';
+  if (!sel) return null;
+  let best: HTMLElement | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+    const s = textSpan(el);
+    const d = y < s.top ? s.top - y : y > s.bottom ? y - s.bottom : 0;
+    if (d < bestDist) { bestDist = d; best = el; }
+    if (d === 0) break;                       // 指针正好在某一行文字里：不必再找
+  }
+  return best;
+}
+
 /** 一"列"用于投影的盒子：PDF 栏 / Markdown 的一面 / 正文某侧的单元格 */
 function columnBox(node: Node | null): HTMLElement | null {
   const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
@@ -1353,29 +1415,13 @@ function columnBox(node: Node | null): HTMLElement | null {
 }
 
 /**
- * 内容滚动容器（拖动时"纵向"能到哪儿）：往上找第一个可滚的祖先。
- * 左右分栏投影时 y 要按它夹 —— 按**行**的盒子夹会把"拖到工具栏/侧栏"这种手势压成空选区，
- * 而用户其实是在表达"一直选到这一列的最上面/最下面"。
- */
-function scrollBox(el: HTMLElement | null): { top: number; bottom: number } {
-  let p = el?.parentElement ?? null;
-  while (p) {
-    const cs = getComputedStyle(p);
-    if (/(auto|scroll)/.test(cs.overflowY) && p.clientHeight > 80) {
-      const r = p.getBoundingClientRect();
-      return { top: r.top, bottom: r.bottom };
-    }
-    p = p.parentElement;
-  }
-  return { top: 0, bottom: window.innerHeight };
-}
-
-/**
  * 把指针位置**投影**回锚点那一列，得到一个候选焦点位置。
  *
- * - 左右分栏（正文的原文列/译文列、PDF 栏）：夹 **x**（夹进本列的横向范围），
- *   y 只夹进滚动容器 —— 竖着拖照样能跨行选，拖到工具栏也不会把选区压空；
- * - 上下分面（Markdown 视图的原文面/译文面）：x 不动，y 夹进本面那一段。
+ * - 左右分栏（正文的原文列/译文列、PDF 栏）：夹 **x**（夹进本列的横向范围），y 夹进
+ *   **离指针最近的那一行**（见 `nearestColumnBox`）—— 指针越过内容下沿就等于"继续往下选"，
+ *   落点落到下一行/下一页，而不是停在最后一个可见行（那是"跨页选不动"的根因）；
+ * - 上下分面（Markdown 视图的原文面/译文面）：x 不动，y 夹进**离指针最近的同侧那一面**
+ *   （`nearestSideBlock`，下一页的同一面也算），所以同一侧也能跨页接着选。
  */
 function projectCaret(
   sel: Selection, anchorCol: string, point: { x: number; y: number },
@@ -1393,16 +1439,17 @@ function projectCaret(
     ? (() => { const f = focusBox.getBoundingClientRect();
         return f.left >= a.right - 2 || f.right <= a.left + 2; })()
     : (point.x < a.left + 1 || point.x > a.right - 1);
-  // y 能到哪儿：上下分面（Markdown）时按**同一侧的那一块**夹 —— 指针落在下一页的原文上时，
-  // 取离它最近的同侧块（也就是下一页的译文），于是"同一侧往下接着选"能跨过页边界；
-  // 左右分栏时纵向是"整个滚动内容"，夹在行的盒子里会把"拖到工具栏"压成空选区。
+  // y 能到哪儿：上下分面（Markdown）与左右并排（正文列）统一成"夹到**离指针最近的那个盒子**"——
+  // 指针越过内容下沿时，落点落到下一行/下一页（而不是停在最后一个可见行），跨页才能接着选。
   const stacked = anchorBox.matches('[data-md-side]');
-  const box = stacked ? nearestSideBlock(anchorBox, anchorCol, point.y) : anchorBox;
+  const box = stacked ? nearestSideBlock(anchorBox, anchorCol, point.y)
+    : (nearestColumnBox(anchorCol, point.y) ?? anchorBox);
   const ab = box.getBoundingClientRect();
-  const content = stacked ? { top: ab.top, bottom: ab.bottom } : scrollBox(anchorBox);
+  // y 夹进**文字实际范围**（正文行会被拉伸得比文字高，夹盒子会让指针在空白里"卡住"）
+  const span = stacked ? { top: ab.top, bottom: ab.bottom } : textSpan(box);
   const x = (sideBySide || stacked)
     ? Math.min(Math.max(point.x, ab.left + 1), ab.right - 1) : point.x;
-  const y = Math.min(Math.max(point.y, content.top + 1), content.bottom - 1);
+  const y = Math.min(Math.max(point.y, span.top + 1), span.bottom - 1);
   const caret = caretAt(x, y);
   if (!caret || columnOf(caret.node) !== anchorCol) return null;   // 投影没落回本列就算了
   return caret;
@@ -1452,7 +1499,24 @@ function clampSelection(point?: { x: number; y: number }) {
     };
     return;
   }
-  // 到这里是"跨列"（含"一边在内容里、另一边拖到工具栏/页号上"）：夹回本列
+  /* ⚠️ 分两种版面：
+   * - **左右并排**（正文的原文/译文列、原 PDF 栏）：只夹**横向**跨列。纵向一律放行 —— 这是
+   *   "跨页能接着选"的前提：沿一列往下拖时，落点必然从页头/页脚、插图、以及通栏行里对面那一侧
+   *   经过（对照模式每页一组，第二页的页头就夹在两页正文之间）。以前把这些也算跨列，每经过一次
+   *   就把选区夹回上一个合法位置 —— 表现就是"选到页边界就停住/卡顿"（用户报的"对照模式下
+   *   无法跨页选中"）。这些中立区本来就不参与选区：CSS 已 `user-select:none` + 不涂底色，
+   *   取文字也按侧过滤。
+   * - **上下分面**（Markdown 视图的原文面/译文面）：照旧夹，两面互不串 ——
+   *   它靠 `nearestSideBlock` 把落点吸附到**同一侧的相邻页**上来实现跨页，不靠"不夹"。 */
+  const aBox = columnBox(sel.anchorNode);
+  const fBox = columnBox(sel.focusNode);
+  const mdFaces = (aBox?.matches('[data-md-side]') ?? false)
+    || (fBox?.matches('[data-md-side]') ?? false);
+  if (!mdFaces) {
+    if (fBox && (!aBox || !sideBySide(aBox, fBox))) return;   // 纵向 → 不夹
+    if (!fBox && insideContent(sel.focusNode)) return;        // 内容里的中立区（页头/插图/行间空白）
+  }
+  // 到这里是"跨列/跨面"（含"一边在内容里、另一边拖到工具栏/页号上"）：夹回本列
   clampingSelection = true;
   try {
     const anchor = { node: sel.anchorNode, offset: sel.anchorOffset };
@@ -1595,7 +1659,7 @@ function onMouseUp(ev?: MouseEvent) {
   const pdfEl = el?.closest?.('[data-pdf-page]') as HTMLElement | null;
   if (pdfEl) {
     Object.assign(selection, {
-      show: true, ...menuPos(rect), text: truncate(text, 600),
+      show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
       rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
       scope: 'row' as const, mdPage: 0, allowNote: true, segments: [], hlIds: [],
     });
@@ -1615,6 +1679,7 @@ function onMouseUp(ev?: MouseEvent) {
     const first = parts[0];
     Object.assign(selection, {
       show: true, ...menuPos(first.rect ?? rect), text: truncate(joinParts(parts) || text, 600),
+      fullText: joinParts(parts) || text,
       rowId: first.rowId, side, start: first.start, end: first.end,
       anchored: true, scope: 'markdown' as const, mdPage: Number(first.page ?? 0),
       allowNote: false, segments: parts, hlIds: highlightIdsInRange(range),
@@ -1642,6 +1707,7 @@ function onMouseUp(ev?: MouseEvent) {
      * 穿过（两列在 DOM 里交错），直接用 `sel.toString()` 会把对面列的文字一起带进
      * 「AI 解释 / 复制」里（实测 1130 字的译文选区会读出 3596 字）。 */
     show: true, ...menuPos(firstPart?.rect ?? rect), text: truncate(joinParts(parts) || text, 600),
+    fullText: joinParts(parts) || text,
     rowId: parts[0].rowId, side, start: parts[0].start, end: parts[0].end,
     anchored: true, scope: 'row' as const, mdPage: 0, allowNote: true,
     segments: parts,
@@ -2013,7 +2079,9 @@ async function deleteNote(id: string) {
 }
 
 async function copySelection() {
-  await copyText(selection.text);
+  /* 用**完整**的选区文字（`selection.text` 是给「AI 解释」截到 600 字的版本）——
+   * 否则跨页/跨行选一大段时，菜单「复制」只给出前 600 字（实测 601 字 vs Ctrl+C 2537 字）。 */
+  await copyText(selection.fullText || selection.text);
   hideMenu();
   toast('已复制', 'ok', 1600);
 }
