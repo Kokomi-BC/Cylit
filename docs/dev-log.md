@@ -3193,3 +3193,49 @@ arXiv 章、脚注×3、会议行）—— **全是前沿元数据**，没有正
 2. 字符级 n-gram 打不动 LaTeX（同一公式两种写法的命令名不同就判 0），必须先把命令归一；
 3. "平分就拒绝"过于保守：p20-b04 这种碎片在 text 层面根本分不出 `D_mse`/`D_prod`，
    而阅读顺序是还活着的证据 —— 取最早，实测命中正确那条。
+
+### 17.52 第四十一轮（再续）—— 公式换源的第二处坑：**续行块** + 补漏编号公式
+
+用户看到换源后的公式仍觉得"不完整"，问"公式都是 md 且完整，为什么要视觉修复"。查下来是**我按块对齐**
+的锅：页级视觉转写把**一条多行推导拆成好几个 `$$` 块**（p20 那条是 5 块：
+`D_mse(Q) := … ≥ 1/4^b.` / `D_prod(Q) = …` / `D_mse = Σ…` / `= Σ…` / `≥ 1/4^b.`），
+解析碎片只配到中间一块，用户看到的就是"以 `=` 开头、没有左边"的公式。
+
+#### 改法
+
+1. **续行合并** `group_display_blocks`：以关系符/运算符开头（`=`、`\geq`、`+`…）的块并回上一条，
+   用 `\begin{aligned} … \\ … \end{aligned}` 拼（页级自己已是 `aligned` 的用 `\quad` 平接，
+   两种写法都过了 KaTeX `throwOnError`）。门槛 `MIN_CONTINUATION_CHARS = 6`：
+   比"碎片门槛"松一点（`\geq \frac{1}{4^b}.` 规范串 8 字符要能并进来），
+   又能挡住 `$-\infty$` 这种行内小式子（规范串 4）—— 实测把 `W^O ∈ …` 和 `-\infty` 粘错过一次。
+2. **补漏"解析器漏掉的编号展示公式"**（用户口径第 1/3/4 条）：准入只有两条 ——
+   **有 `\tag{n}` 编号**，或**视觉转写自己写成行间 `$$`**；行内 `$…$` 一条都不补
+   （放开过一次，立刻涌进 40+ 条：算法伪代码行 `\text{idx}\leftarrow…`、
+   尺寸说明 `W_i^Q\in\mathbb{R}^{…}`、数值行 `D_mse\approx 0.36,…` —— 正是用户要求别补的那批）。
+   锚点：**同页最近解析块**（`anchor_type=nearest_parsed_block` / `anchor_precision=approximate`），
+   同页没有块才退 `page`/`page`；**绝不跨页**；metadata 带
+   `synthetic=true` / `formula_source=page_md` / `latex_source=page_vision` / `latex_parsed=null` /
+   `formula_number` / `block_ids`；chunk id 用合成前缀 `{paper}:formula:syn-p{页}-v{序号}`，
+   `block_id` 存锚点块（知识库页「查看原文位置」跳它，精度如实标注）。
+3. **散文判定修 bug**：`\left` / `\right` / `\quad` / `\frac` 这些**命令名**被当成"英文词"，
+   导致带括号的编号公式全被判成散文 —— TurboQuant Eq.1 / Attention Eq.1 因此漏掉。
+   `_prose_words` 先剥命令再数词；行内过滤仍 ≥3 词，展示公式放宽到 ≥5 词
+   （否则 `lrate = … \min(step\_num…, warmup\_steps…)` 里的长标识符会误杀 Attention Eq.3）。
+
+#### 结果（重建：turboquant v12 / attention v7）
+
+| | turboquant | attention |
+|---|---|---|
+| 公式条目 | 20 → **29**（换源 19 + 合成 **9** + 待修复 1） | 3 → **8**（换源 1 + 合成 **5** + 待修复 2） |
+| 带编号 | **1 / 2 / 3 / 4** | **1 / 2 / 3** |
+| 入库行 | 131 → **140** | 84 → **89** |
+
+全库 215 → **229** 行；MySQL 229 == LanceDB 229、`orphans=0 missing=0`。
+**KaTeX `throwOnError: true` 37/37 通过**；检索回归 hit@6 100% / MRR 0.95 / 公式专项 100% /
+附录 100% / 语义块含公式 100%，逐题 0 退化。
+用户点名的四条公式全部在库：TurboQuant Eq.1（`(MSE) D_mse := E[‖x−Q⁻¹(Q(x))‖²] \tag{1}`）、
+Attention Eq.1（`Attention(Q,K,V)=softmax(QKᵀ/√d_k)V`）、Eq.2（FFN）、Eq.3（学习率调度）。
+`needs_review` 恰好只剩用户指定保留的 3 条（`turboquanton-p16-x06` / `attentionisa-p05-b03` /
+`attentionisa-p06-b04`，均为 `latex_source=parsed`，未强配）。
+测试：`tests/test_kb_formula_source.py` 增到 27 项（续行合并/编号提取/命令名不误判散文/
+补漏准入/同页锚点/page 兜底/同 LaTeX 去重）；离线 346 通过、e2e 34 通过 + 1 跳过。

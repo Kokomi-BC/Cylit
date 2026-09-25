@@ -490,7 +490,11 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                     "latex_source": src.get("source") or "parsed",
                     "latex_parsed": parsed,
                     "latex_candidates": list(f.get("latex_candidate") or []),
-                    "needs_review": bool(src.get("needs_review"))}
+                    "needs_review": bool(src.get("needs_review")),
+                    # 锚点：解析块本身锚点精确（用户口径第 2 条）
+                    "anchor_type": "formula_block", "anchor_precision": "exact",
+                    # 编号单独进 metadata（用户口径第 4 条）
+                    "formula_number": src.get("formula_number")}
             if src.get("source") == "page_vision":
                 meta["align_score"] = src.get("score")
             if src.get("block_ids"):
@@ -529,10 +533,54 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 flush_text()
     flush_text()
 
+    # 解析器漏掉的**编号展示公式**：页级 md 里有、解析侧没有对应块 → 补一条合成条目
+    # （用户口径第 1/3/4 条：synthetic=true / formula_source=page_md / 同页最近块作锚点）。
+    chunks.extend(_synthetic_formula_chunks(paper_id, rows, formulas, f_source))
     chunks.sort(key=lambda c: (c["order_global"],
                                0 if c["chunk_type"] == "text" else 1))
     merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
     return _link_formulas(merged)
+
+
+def _synthetic_formula_chunks(paper_id: str, rows: list[dict], formulas: dict[str, dict],
+                              assignments: dict[str, dict]) -> list[dict]:
+    """给"页级有、解析侧漏掉"的编号展示公式建公式条目。
+
+    它们**没有解析块 id**，所以：
+    - chunk id 用合成前缀 ``{paper}:formula:syn-p{页:02d}-v{序号:02d}``（唯一、可追溯）；
+    - ``block_id`` 存**同页最近解析块**的 id —— 知识库页的「查看原文位置」靠它跳转，
+      精度由 ``anchor_precision = approximate`` 如实标注（找不到块就退 ``page`` / ``page``）。
+    """
+    try:
+        items = formula_source.synthetic_formulas(rows, formulas, paper_id, assignments)
+    except Exception as exc:  # noqa: BLE001 —— 补漏失败不该让整篇建索引挂掉
+        log.warning("补漏公式失败（%s）：%s", paper_id, exc)
+        return []
+    out: list[dict] = []
+    for it in items:
+        anchor_id = it.get("block_id") or ""
+        first = {"id": anchor_id or f"syn-p{it['page']:02d}", "page": it["page"],
+                 "order": it.get("order") or 0}
+        cid = f"{paper_id}:formula:syn-p{it['page']:02d}-v{it['vision_index']:02d}"
+        content = f"公式 {cid.rsplit(':', 1)[-1]}：{it['latex']}"
+        out.append(_make_chunk(
+            paper_id, "formula", content, first, first,
+            section="", section_path="",
+            metadata={
+                "latex": it["latex"], "latex_parsed": None,
+                "latex_source": "page_vision", "formula_source": "page_md",
+                "synthetic": True, "formula_number": it.get("formula_number"),
+                "page": it["page"], "block_id": anchor_id or None,
+                "anchor_type": it["anchor_type"],
+                "anchor_precision": it["anchor_precision"],
+                "needs_review": False,
+                **({"also_on_pages": it["also_on_pages"]} if it.get("also_on_pages") else {}),
+            },
+            chunk_id=cid))
+    if out:
+        log.info("补漏公式 %d 条（%s）：%s", len(out), paper_id,
+                 [c["id"].rsplit(":", 1)[-1] for c in out])
+    return out
 
 
 def _link_formulas(chunks: list[dict]) -> list[dict]:
@@ -648,9 +696,9 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
                 last: dict, *, section: str = "", section_path: str = "",
                 metadata: dict | None = None, parts: list[tuple] | None = None,
-                heading_only: bool = False) -> dict:
-    cid = f"{paper_id}:{chunk_type}:{first['id']}"
-    if chunk_type == "text" and first["id"] != last["id"]:
+                heading_only: bool = False, chunk_id: str | None = None) -> dict:
+    cid = chunk_id or f"{paper_id}:{chunk_type}:{first['id']}"
+    if not chunk_id and chunk_type == "text" and first["id"] != last["id"]:
         cid = f"{paper_id}:text:{first['id']}-{last['id']}"
     meta = dict(metadata or {})
     if section_path:

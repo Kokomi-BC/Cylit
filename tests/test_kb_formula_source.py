@@ -120,6 +120,100 @@ def test_align_never_goes_backwards() -> None:
 
 
 # --------------------------------------------------------------------------
+# 续行合并 / 编号 / 补漏候选（用户口径第 1、3、4 条）
+# --------------------------------------------------------------------------
+
+EQ1_BLOCK = r"(\text{MSE}) \quad D_{\text{mse}} := \mathbb{E}_Q\left[\left\|x - Q^{-1}(Q(x))\right\|_2^2\right] \tag{1}"
+
+
+def test_group_display_blocks_merges_continuations() -> None:
+    """一条多行推导被页级 md 拆成几块时，续行（以 `=` / `\\geq` 开头）要并回同一条。"""
+    groups = fs.group_display_blocks([
+        r"D_{\text{mse}} = \sum_{j=1}^d \mathbb{E}[|x_j - \tilde{x}_j|^2]",
+        r"= \sum_{j=1}^d \mathbb{E}[|\langle e_j, x\rangle - \langle e_j, Q^{-1}(Q(x))\rangle|^2]",
+        r"\geq \frac{1}{4^b}.",
+        r"D_{\text{prod}}(Q) = \mathbb{E}[\ldots]",
+    ])
+    assert len(groups) == 2, "前 3 块合成一条，第 4 块另起"
+    assert len(groups[0][1]) == 3 and "1}{4^b}" in groups[0][0]
+    assert groups[0][0].startswith("\\begin{aligned}")
+
+
+def test_group_display_blocks_ignores_short_operator_spans() -> None:
+    """`$-\\infty$` 这种行内小式子以 `-` 开头，但**不是**续行（实测把 `W^O ∈ …` 粘错过）。"""
+    groups = fs.group_display_blocks([r"W^O \in \mathbb{R}^{hd_v \times d_{\text{model}}}", r"-\infty"])
+    assert len(groups) == 2
+
+
+def test_formula_number_is_extracted() -> None:
+    assert fs.formula_number(EQ1_BLOCK) == "1"
+    assert fs.formula_number(r"a = b \tag*{3.2}") == "3.2"
+    assert fs.formula_number(r"a = b") is None
+
+
+def test_display_check_ignores_latex_command_names() -> None:
+    """踩过的坑：`\\left`/`\\right`/`\\quad` 被当成英文词 → 带括号的编号公式全被判成散文。"""
+    assert fs.is_display_formula(EQ1_BLOCK) is True
+    assert fs.is_display_formula(
+        r"lrate = d_{\text{model}}^{-0.5} \cdot \min(step\_num^{-0.5}, warmup\_steps^{-1.5}) \tag{3}"
+    ) is True
+    assert fs.is_display_formula(
+        r"minimize the following expected distortion measures for any worst-case vectors here"
+    ) is False
+
+
+def test_synthetic_candidate_rules() -> None:
+    """只补"有编号"或"行间 `$$`"，行内小式子/伪代码行一律不补。"""
+    assert fs.is_synthetic_candidate(EQ1_BLOCK) is True                  # 有编号
+    assert fs.is_synthetic_candidate(
+        r"Q : \mathbb{R}^d \to \{0, 1\}^{b \cdot d}", display=True) is True        # 行间展示
+    assert fs.is_synthetic_candidate(r"\text{idx} \leftarrow \text{QUANT}(x)") is False
+    assert fs.is_synthetic_candidate(r"W_i^Q \in \mathbb{R}^{d \times d_k}") is False
+    assert fs.is_synthetic_candidate(r"is the sequence length,") is False
+
+
+def test_synthetic_formulas_anchor_same_page(monkeypatch) -> None:
+    """补漏公式挂到**同页最近的解析块**（approximate），编号单独进 metadata。"""
+    monkeypatch.setattr(fs, "page_vision_math", lambda pid: {7: [EQ1_BLOCK]})
+    monkeypatch.setattr(fs, "vision_display_map", lambda pid: {7: {EQ1_BLOCK}})
+    monkeypatch.setattr(fs, "vision_groups", lambda pid: {7: [(EQ1_BLOCK, [0])]})
+    rows = [{"id": "p07-b01", "page": 7, "order": 11},
+            {"id": "p07-b02", "page": 7, "order": 12},
+            {"id": "p08-b01", "page": 8, "order": 20}]
+    out = fs.synthetic_formulas(rows, {}, "demo")
+    assert len(out) == 1
+    item = out[0]
+    assert item["formula_number"] == "1" and item["page"] == 7
+    assert item["anchor_type"] == "nearest_parsed_block"
+    assert item["anchor_precision"] == "approximate"
+    assert item["block_id"].startswith("p07-"), "锚点必须在同一页"
+
+
+def test_synthetic_formulas_fall_back_to_page_anchor(monkeypatch) -> None:
+    """同页连解析块都没有 → `page` / `page` 锚点（绝不跨页找）。"""
+    monkeypatch.setattr(fs, "page_vision_math", lambda pid: {9: [EQ1_BLOCK]})
+    monkeypatch.setattr(fs, "vision_display_map", lambda pid: {9: {EQ1_BLOCK}})
+    monkeypatch.setattr(fs, "vision_groups", lambda pid: {9: [(EQ1_BLOCK, [0])]})
+    out = fs.synthetic_formulas([{"id": "p03-b01", "page": 3, "order": 5}], {}, "demo")
+    assert out[0]["anchor_type"] == "page" and out[0]["anchor_precision"] == "page"
+    assert out[0]["block_id"] is None
+
+
+def test_synthetic_formulas_dedupe_same_latex(monkeypatch) -> None:
+    """跨页重复的同一条公式只留最早一条，其它页记进 ``also_on_pages``。"""
+    monkeypatch.setattr(fs, "page_vision_math", lambda pid: {6: [EQ1_BLOCK], 18: [EQ1_BLOCK]})
+    monkeypatch.setattr(fs, "vision_display_map",
+                        lambda pid: {6: {EQ1_BLOCK}, 18: {EQ1_BLOCK}})
+    monkeypatch.setattr(fs, "vision_groups",
+                        lambda pid: {6: [(EQ1_BLOCK, [0])], 18: [(EQ1_BLOCK, [0])]})
+    rows = [{"id": "p06-b01", "page": 6, "order": 1},
+            {"id": "p18-b01", "page": 18, "order": 2}]
+    out = fs.synthetic_formulas(rows, {}, "demo")
+    assert len(out) == 1 and out[0]["page"] == 6
+    assert out[0]["also_on_pages"] == [18]
+
+
+# --------------------------------------------------------------------------
 # 残缺判定
 # --------------------------------------------------------------------------
 
