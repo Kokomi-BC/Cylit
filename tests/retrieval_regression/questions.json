@@ -1,0 +1,97 @@
+{
+  "paper_id": "turboquant-online-vector-iclr-26",
+  "top_k": 6,
+  "note": "固定检索回归集（用户指定）：chunk 分布大变（391→266 行）之后，要能回答『是不是检得更准』。每题记 rank / section / formula atomic / semantic / 公式上下文 / appendix。",
+  "questions": [
+    {
+      "id": "q01",
+      "q": "QJL 的基本思想是什么？",
+      "expect_any_section": ["B.2", "QJL", "PRIOR WORK"],
+      "expect_any_content": ["QJL", "1-bit", "1 比特", "quantized Johnson"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "B.2 在附录里 —— 改造前整段不进库"
+    },
+    {
+      "id": "q02",
+      "q": "QJL 为什么能近似保持内积？",
+      "expect_any_section": ["B.2", "QJL", "PROOFS", "LOWER BOUND"],
+      "expect_any_content": ["inner product", "内积", "unbiased", "QJL"],
+      "want_formula": true,
+      "want_appendix": true,
+      "note": "内积保真的理由：附录 B.2 / C 的证明"
+    },
+    {
+      "id": "q03",
+      "q": "coordinate distribution 的 Lemma 是什么？",
+      "expect_any_section": ["B", "MATHEMATICAL PRELIMINARIES", "SHANNON"],
+      "expect_any_content": ["Lemma 1", "coordinate distribution", "hypersphere", "坐标"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "Lemma 1 在 p16 附录 B"
+    },
+    {
+      "id": "q04",
+      "q": "TurboQuant 的 MSE 优化目标是什么？",
+      "expect_any_section": ["PROBLEM DEFINITION", "0.1", "1.1"],
+      "expect_any_content": ["MSE", "distortion", "均方", "失真"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "正文 0.1 / 1.1 的失真上界"
+    },
+    {
+      "id": "q05",
+      "q": "TurboQuant_prod 和 TurboQuant_mse 有什么区别？",
+      "expect_any_section": ["OVERVIEW", "0.3", "PROBLEM DEFINITION", "C.1"],
+      "expect_any_content": ["TurboQuant_prod", "prod", "MSE-optimal", "two-stage"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "两阶段的差异：0.3 概览 + 1.x 正文"
+    },
+    {
+      "id": "q06",
+      "q": "random rotation 在算法中起什么作用？",
+      "expect_any_section": ["PROBLEM DEFINITION", "0.1", "B", "PRE"],
+      "expect_any_content": ["random rotation", "rotation", "随机旋转", "\\Pi"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "随机旋转的动机（worst-case 输入）"
+    },
+    {
+      "id": "q07",
+      "q": "differential entropy 在哪里被使用？",
+      "expect_any_section": ["B", "MATHEMATICAL PRELIMINARIES", "SHANNON"],
+      "expect_any_content": ["differential entropy", "entropy", "熵", "Shannon"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "Shannon 下界那段的微分熵"
+    },
+    {
+      "id": "q08",
+      "q": "TurboQuant 的量化误差如何分析？",
+      "expect_any_section": ["PROBLEM DEFINITION", "OVERVIEW", "PROOFS"],
+      "expect_any_content": ["quantization error", "inner-product error", "distortion", "误差"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "误差分析主线（正文 + 附录 C）"
+    },
+    {
+      "id": "q09",
+      "q": "附录中的证明主要说明了什么？",
+      "expect_any_section": ["C", "PROOFS", "LOWER BOUND", "C.1", "C.2", "C.3"],
+      "expect_any_content": ["Proof", "Lemma", "Theorem", "证明"],
+      "want_formula": false,
+      "want_appendix": true,
+      "note": "改造前附录整段不在库里，这题应当从『检不到』变成『检得到』"
+    },
+    {
+      "id": "q10",
+      "q": "公式 D := E⟨y, x⟩ − ⟨y, QQ(x)⟩ 的含义是什么？",
+      "expect_any_section": ["PROBLEM DEFINITION", "0.1"],
+      "expect_any_content": ["inner-prod error", "QQ(x)", "\\langle y", "inner product"],
+      "want_formula": true,
+      "want_appendix": false,
+      "note": "具体公式：应当同时命中 formula atomic 与包含它的语义 chunk"
+    }
+  ]
+}

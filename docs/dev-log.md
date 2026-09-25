@@ -3097,3 +3097,49 @@ arXiv 章、脚注×3、会议行）—— **全是前沿元数据**，没有正
    `/knowledge/index` 任务）→ 状态没被置回 `indexed`。已用 `_set_paper_indexed` 恢复成 `indexed`。
 4. 备份：`data/_backup/preparse-20260925-141157/`（两份 `ir.sqlite` + `md/` + `pages/`，13.4 MB），
    回滚靠它；确认无误后可删。
+
+### 17.50 第四十一轮（再续）—— 固定检索回归：chunk 变少之后，RAG 到底有没有更准
+
+用户口径：**现在值得做的是检索回归，不是第 3 批**（prev/next 扩展、表格结构化）。
+于是建了一套固定题库 + 量化脚本，并把"改造前索引"从备份里重建出来做前后对比。
+
+#### 题库与脚本（都进仓库，成为长期量尺）
+
+- `tests/retrieval_regression/questions.json`：10 问（QJL 思想 / 内积近似 / coordinate Lemma /
+  MSE 目标 / prod vs mse / random rotation / differential entropy / 误差分析 / 附录证明 / 具体公式），
+  每题带期望小节与期望正文特征 + `want_formula` / `want_appendix` 标记。
+- `tests/retrieval_regression/run.py`：走 KB 检索同一条链路（向量 + 词法 → RRF → 重排），
+  每题记 rank / 命中小节 / section_path / 是否命中 appendix / 是否命中带内联公式的语义块；
+  公式题**再跑一遍只看 formula chunk**（公式原子块正文只有 LaTeX，在混合检索里天然拼不过整段正文，
+  那是它的定位决定的，不是缺陷）。
+- `tests/test_retrieval_regression.py`（e2e）钉三条底线：期望小节命中率 ≥ 70%、
+  **附录题必须命中 appendix chunk**、公式题在公式专项检索下必须命中。
+- `tests/retrieval_regression/build_baseline.py`：用**备份的解析产物** + `git show 719a72b:` 取出的
+  改造前 chunking 代码，在隔离环境（`PR_DB_BACKEND=sqlite` + 临时 `PR_DATA_DIR`，拷 secrets 与
+  ModelConfig）重建"改造前索引"：**258 行（text 112 / formula 136 / figure 8 / table 2，zh/en 129/129）**
+  —— 与改造前记录一致，基线可信。
+
+#### 结果（同一套检索实现，只换索引）
+
+| 指标 | 改造前 258 行 | 改造后 266 行 |
+|---|---|---|
+| hit@6（小节名或正文） | 100% | 100% |
+| **正文命中 hit@6** | **90%** | **100%** |
+| MRR（正文口径） | 0.77 | **0.95** |
+| 公式专项命中 | 50% | **100%** |
+| 语义 chunk 内联公式 | 0% | **90%** |
+| 附录 chunk 覆盖 | 0% | **100%** |
+| 逐题 | — | 新增命中 1、更好 1、**更差 0、丢失 0** |
+
+具体：coordinate Lemma 那题 5 → 1，differential entropy 那题 ✗ → 1，
+三个公式题在公式专项检索里 ✗ → 2/2/1。
+
+#### 测量上的坑（值得记）
+
+第一版判据是"小节名 **或** 正文命中"，结果**改造前也是 100%** —— 因为附录的**小节标题**
+（`### B.2QJL: …`）在改造前也在索引里（当年只把 `para` 改写成 `ref`，heading 没动），
+标题命中掩盖了"内容根本不在库里"。补了**只看正文**的判据 + "是否命中 appendix chunk" 之后，
+90% / 0% → 100% / 100% 的差别才显出来。**"能检索到标题"和"能检索到内容"必须分开量。**
+
+报告留档 `docs/retrieval-regression/{before-258rows,after-266rows}.{json,md}` + `compare.md`；
+规划文档补了 §13（实施结果）与 §14（检索回归）。e2e 30 通过（含 4 条回归）+ 1 跳过。
