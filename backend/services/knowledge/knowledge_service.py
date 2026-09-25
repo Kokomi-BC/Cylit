@@ -129,10 +129,87 @@ def _zh_index(pages: list[dict]) -> dict[int, list[tuple[str, str]]]:
             src = _block_sig(row.get("original"))
             dst = str(row.get("translation") or "").strip()
             if src and dst:
-                rows.append((src, dst))
+                # 译文的公式常被截断（`\fr`、`\right` 不配对）→ 用原文行的公式修；
+                # 一个坏 span 会让后面所有 `$` 错配，整段 markdown 就不渲染了
+                rows.append((src, _repair_zh_math(dst, row.get("original"))))
         if rows:
             out[pno] = rows
     return out
+
+
+# 合法的一两个字母的 LaTeX 命令（判"命令是否被截断"时不能只看长度）
+_SHORT_COMMANDS_OK = {
+    "pm", "mp", "in", "to", "pi", "ge", "le", "ne", "ll", "gg", "sim", "cap", "cup",
+    "ln", "lg", "lb", "Re", "Im", "Pr", "mod", "bmod", "mid", "ast", "star", "circ",
+    "deg", "det", "dim", "exp", "gcd", "hom", "ker", "max", "min", "sec", "tan", "cot",
+}
+
+
+def _latex_span_ok(body: str) -> bool:
+    r"""行内公式 span 是否**结构上可用**（不需要跑 KaTeX，快且够用）。
+
+    拦的是译文里见过的坏法：`\fr`（命令被截断）、`\right` 没配对的 `\left`、
+    `\tilde{\boldsymbol{x}}\}`（多一个转义右括号）、括号不配对、`\begin` 没 `\end`。
+    为什么必须拦：一个坏 span 会让**后面所有 `$` 错配**（渲染端是按 `$` 配对的），
+    整段 markdown 就"部分不渲染"了 —— 用户报的就是这个级联。
+    """
+    s = (body or "").strip()
+    if not s:
+        return False
+    if s.count("{") != s.count("}"):
+        return False
+    if s.count("\\left") != s.count("\\right"):
+        return False
+    if s.count("\\{") != s.count("\\}"):
+        return False
+    if s.count("\\begin{") != s.count("\\end{"):
+        return False
+    # 结尾是**不认识的短命令** → 多半被截断（`\fr`）。但 `\pm`/`\in`/`\to` 这类合法短命令、
+    # 以及 `\,`/`\;` 这种零字母间距命令要放过 —— 一刀切按长度判会把 `..., \pm` 判成坏 span。
+    tail = re.search(r"\\([a-zA-Z]*)$", s)
+    if tail and 0 < len(tail.group(1)) <= 2 and tail.group(1) not in _SHORT_COMMANDS_OK:
+        return False
+    return True
+
+
+def _repair_zh_math(translation: str, original: str | None) -> str:
+    r"""用**原始行**的公式修译文里的坏 span（译文坏就换成原文那份；换不了就脱掉 `$`）。
+
+    为什么值得修：译文是模型生成的，公式常被截断/改写（`\fr`、`\right`、多余 `\}`）；
+    而原文行来自页级视觉转写 —— 公式是**对的**。两者行内 span 顺序一致，按下标替换即可。
+    换不了（原文也没有 / 也坏）时**脱掉 `$` 定界符**：宁可显示成纯文本，
+    也不能让一个坏 span 把后面所有公式的配对带坏。
+    """
+    from backend.services.paper.reader_service import _extract_math
+
+    text = (translation or "").strip()
+    if not text:
+        return text
+    try:
+        spans = _extract_math(text)
+        src_spans = _extract_math(original or "")
+    except Exception:  # noqa: BLE001 —— 修不好就原样返回，不影响入库
+        return text
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for i, (start, end, body, display) in enumerate(spans):
+        out.append(text[cursor:start])
+        fixed = body
+        if not _latex_span_ok(body) and i < len(src_spans):
+            cand = src_spans[i][2]
+            if _latex_span_ok(cand) and bool(src_spans[i][3]) == bool(display):
+                fixed = cand
+                log.debug("译文公式用原文替换：%r → %r", body[:40], cand[:40])
+        if _latex_span_ok(fixed):
+            out.append(("$$" if display else "$") + fixed + ("$$" if display else "$"))
+        else:
+            out.append(fixed)            # 脱掉 `$`：不让它带坏后面的配对
+            log.debug("译文公式无效且无法替换，脱掉 $：%r", body[:40])
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def _overlap(a: str, b: str) -> int:
@@ -304,7 +381,7 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
             if c["chunk_type"] == "text":
                 # 内容卫生在这里再兜一道：zh 文本是**在这里**按 parts 拼的（绕过了建 chunk 那步），
                 # 而且 `_merge_small_chunks` 合并之后 `$` 奇偶可能又变坏（实测 16 条 zh chunk 仍为奇数）。
-                content = _balance_dollars(_dedupe_paragraphs(content))
+                content = _balance_asterisks(_balance_dollars(_dedupe_paragraphs(content)))
             # 残渣门槛只对正文用；中文侧按字数另算
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] == "text" and len(content) < floor:
@@ -722,6 +799,18 @@ def _balance_dollars(text: str) -> str:
     return text[:idx] + text[idx + 1:]
 
 
+def _balance_asterisks(text: str) -> str:
+    r"""`*` 个数为奇数时去掉最后一个：落单的 `*` 会让 markdown 变斜体、吞掉后面半段。
+
+    只修奇偶，**不动 `**加粗**`**（成对出现，个数是偶数）—— 踩过：先前直接剥掉行首 `*`，
+    把 `**MSE 优化的 TURBOQUANT。**` 的前一半剥了，反而留下落单的 `**`。
+    """
+    if (text or "").count("*") % 2 == 0:
+        return text
+    idx = text.rfind("*")
+    return text[:idx] + text[idx + 1:]
+
+
 def _dedupe_paragraphs(text: str) -> str:
     r"""去掉 chunk 内**完全重复的段落**（保留首次出现）。
 
@@ -755,7 +844,7 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if chunk_type == "text":
         # 正文 chunk 的两道内容卫生（用户报的"整段重复 / 公式显示破碎"就是这两条）：
         # ① 段级去重；② `$` 奇偶校正（落单 `$` 会让渲染端后半段全变纯文本）
-        content = _balance_dollars(_dedupe_paragraphs(content))
+        content = _balance_asterisks(_balance_dollars(_dedupe_paragraphs(content)))
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1324,6 +1413,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
