@@ -34,6 +34,7 @@ import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
+import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderSearch, { type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
@@ -477,6 +478,18 @@ const activeTask = computed(() => liveTask.value
   ?? null);
 /** 后台正在翻译这篇论文：还没译文的行显示「等待翻译」，而不是「未翻译」 */
 const translating = computed(() => !!activeTask.value);
+/**
+ * 后台正在**解析**这篇论文。
+ *
+ * 阅读器在解析完成前没有任何页数据，过去一律显示"这篇论文还没有解析结果"，
+ * 用户会以为解析没跑起来（实际上任务正在跑，而且后端会顺带接着翻译）。
+ * 这里把进行中的 PARSE 任务挑出来，空状态改成"正在解析 + 阶段 + 进度"。
+ */
+const parseTask = computed(() => tasks.value.find((t) => t.type === 'PARSE'
+  && ['processing', 'pending', 'paused'].includes(t.status)) ?? null);
+/** 任务消息形如"解析中：render 3/22" —— 只留阶段本身，免得与前面的"正在解析"重复一遍 */
+const parseStageLabel = computed(() => String(parseTask.value?.message ?? '')
+  .replace(/^解析中\s*[：:]\s*/, '').trim());
 const isEmpty = computed(() => !loading.value && !fatal.value && !pages.value.length && !allRows.value.length);
 /** 行数据到齐没（深链定位据此决定"再等等"还是"确实找不到"） */
 const rowsReady = computed(() => !loading.value && !fatal.value && allRows.value.length > 0);
@@ -1062,7 +1075,8 @@ async function startTranslate(mode: 'resume' | 'retranslate' = 'resume', pages?:
 
 async function cancelTranslate(task: TaskInfo | null) {
   if (!task) return;
-  if (!window.confirm('确认取消该翻译任务？已完成的页会保留。')) return;
+  const kind = task.type === 'PARSE' ? '解析' : '翻译';
+  if (!window.confirm(`确认取消该${kind}任务？已完成的部分会保留。`)) return;
   try {
     await api.post(`/tasks/${task.id}/cancel`);
     toast('已请求取消（页边界生效）', 'ok');
@@ -1087,21 +1101,36 @@ async function fetchTasks() {
   try {
     const d = await api.get<{ items: TaskInfo[] }>('/tasks', { paper_id: instancePaperId, limit: 20 });
     tasks.value = d.items ?? [];
+    /* 解析刚结束 → 自动刷一次阅读器数据，不用用户手动刷新页面 */
+    const parsingNow = !!parseTask.value;
+    if (wasParsing && !parsingNow && !loading.value) void loadAll();
+    wasParsing = parsingNow;
     const running = tasks.value.find((t) => t.type === 'TRANSLATE_MD'
       && ['processing', 'pending', 'paused'].includes(t.status));
-    if (running) liveTask.value = running;
-    else if (liveTask.value && !['processing', 'pending', 'paused'].includes(liveTask.value.status)) {
+    if (running) {
+      liveTask.value = running;
+    } else if (liveTask.value) {
+      /* 列表里已经没有在跑的翻译任务了 → 清掉实时态。
+       *
+       * ⚠️ 判据只能用"**这份新列表**里还有没有在跑的任务"，**不能**看 `liveTask.value.status`：
+       * 它是任务创建时存下的**旧快照**，任务结束后依旧是 `processing`，于是工具栏的「停止」
+       * 按钮会一直挂着、要刷新页面才消失（用户报的就是这个）。
+       * 顺带把阅读器数据刷一次，译文行与进度统计立刻对齐"已完成"。 */
       liveTask.value = null;
-      const data = await api.get<ReaderPayload>(`/papers/${instancePaperId}/reader`);
-      stats.value = data.stats ?? stats.value;
-      pageTranslations.value = data.page_translations ?? pageTranslations.value;
-      outline.value = data.outline ?? outline.value;
+      if (!loading.value) {
+        const data = await api.get<ReaderPayload>(`/papers/${instancePaperId}/reader`);
+        stats.value = data.stats ?? stats.value;
+        pageTranslations.value = data.page_translations ?? pageTranslations.value;
+        outline.value = data.outline ?? outline.value;
+      }
     }
   } catch { /* 任务列表失败不阻塞阅读 */ }
 }
 
 let mq: MediaQueryList | null = null;
 let taskTimer: ReturnType<typeof setInterval> | null = null;
+/** 上一轮是否在解析（解析结束时自动刷新一次阅读器数据） */
+let wasParsing = false;
 function onMqChange() {
   isNarrow.value = !!mq?.matches;
   nextTick(() => { syncPaneWidth(); watchContentSize(); });
@@ -1139,7 +1168,7 @@ onMounted(async () => {
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
   }
   fetchTasks();
-  taskTimer = setInterval(() => { if (activeTask.value) fetchTasks(); }, 4000);
+  taskTimer = setInterval(() => { if (activeTask.value || parseTask.value) fetchTasks(); }, 4000);
 });
 
 onUnmounted(() => {
@@ -2038,6 +2067,20 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       </div>
     </div>
 
+    <!-- 正在解析：与"正在加载阅读器数据"同一套居中占位（转圈 + 一行字 + 进度条），
+         不再用卡片堆三行文案（用户口径：冗余表述去掉，页面整体居中） -->
+    <div v-else-if="isEmpty && parseTask" class="reader-loading" role="status" aria-live="polite">
+      <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="9" />
+      </svg>
+      <span>
+        正在解析
+        <span v-if="parseTask.message" class="faint">· {{ parseStageLabel }}</span>
+        <span class="mono"> {{ parseTask.progress ?? 0 }}%</span>
+      </span>
+      <div class="reader-loading-bar"><ProgressBar :value="parseTask.progress ?? 0" /></div>
+    </div>
+
     <div v-else-if="isEmpty" class="card">
       <div class="card-body">
         <h3>这篇论文还没有解析结果</h3>
@@ -2244,7 +2287,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :brief-source="brief?.source ?? ''"
           :stats="stats"
           :progress-percent="progressPercent"
-          :active-task="activeTask"
+          :active-task="activeTask ?? parseTask"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
@@ -2400,6 +2443,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
   gap: 10px; height: calc(100vh - var(--header-h));
   color: var(--text-dim); font-size: 13px;
 }
+/* 解析进度条：固定一个不太宽的宽度，居中在转圈下方（拉满整屏会很怪） */
+.reader-loading-bar { width: 220px; max-width: 60vw; }
 
 .reader {
   display: grid;
