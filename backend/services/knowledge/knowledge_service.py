@@ -139,7 +139,11 @@ def _inline_embed_math(text: str) -> str:
         if line.lstrip().startswith("$$"):
             out.append(line)
             continue
-        out.append(line.replace("$$", "$") if "$$" in line else line)
+        if "$$" in line:
+            # 句中展示公式 → 行内公式：**`$` 后面不能有空格**（渲染端不把 `$ x$` 当数学，
+            # 会原样显示成纯文本 —— 踩过），所以顺带把定界符内侧的空白去掉
+            line = re.sub(r"\$\$\s*(.+?)\s*\$\$", lambda m: f"${m.group(1)}$", line)
+        out.append(line)
     return "\n".join(out)
 
 def _strip_unpaired_bold(text: str) -> str:
@@ -534,7 +538,9 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             latex = f_latex_by_block.get(bid) or formula_source.parsed_latex(formulas[bid])
             if formula_source.is_noise_latex(latex):
                 continue
-            inline = f"$ {latex} $"     # 内联进正文 → 行内定界符（`$$` 会让句子被拦腰截断）
+            # 内联进正文 → 行内定界符，且 **`$` 后不能有空格**（渲染端不认 `$ x$`，会显示成纯文本）；
+            # `$$` 则会让句子被拦腰截断（另起一块展示公式）。公式**条目**仍用 `$$…$$`。
+            inline = f"${latex}$"
             # 公式块不拆：超上限也只 flush，绝不切公式内部
             if buffer and buffer_chars + len(inline) + 2 > hard:
                 flush_text()
@@ -1375,6 +1381,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
