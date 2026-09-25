@@ -173,6 +173,26 @@ def _snap_sentence(text: str, pos: int, *, forward: bool) -> int:
     return pos
 
 
+def _snap_math(text: str, pos: int, *, forward: bool) -> int:
+    r"""把切点移出 `$…$` 之外。
+
+    为什么必须：`_slice_zh` 原先只吸附到句号，若比例切点落在公式中间，
+    切出来的片段就带着**没闭合的 `$`** —— 渲染端从那里开始整段变纯文本
+    （用户截图里"第一段是裸 LaTeX、后面同一段却渲染正常"就是这个）。
+    向前切就移到公式**末尾**，向后切就移到公式**开头**。
+    """
+    from backend.services.paper.reader_service import _extract_math
+
+    try:
+        spans = _extract_math(text or "")
+    except Exception:  # noqa: BLE001
+        return pos
+    for start, end, _body, _display in spans:
+        if start < pos < end:
+            return end if forward else start
+    return pos
+
+
 def _slice_zh(text: str, lo: float, hi: float) -> str:
     """按比例切一段译文，切点吸附到句子边界。
 
@@ -188,8 +208,10 @@ def _slice_zh(text: str, lo: float, hi: float) -> str:
     edge = max(3, int(0.05 * n))
     raw_lo, raw_hi = int(round(lo * n)), int(round(hi * n))
     # 贴边的直接用整段边界：否则会从"向|量化"这种词中间切进去（实测发生过）
-    start = 0 if raw_lo <= edge else _snap_sentence(text, raw_lo, forward=False)
-    end = n if raw_hi >= n - edge else _snap_sentence(text, raw_hi, forward=True)
+    start = 0 if raw_lo <= edge else _snap_math(
+        text, _snap_sentence(text, raw_lo, forward=False), forward=False)
+    end = n if raw_hi >= n - edge else _snap_math(
+        text, _snap_sentence(text, raw_hi, forward=True), forward=True)
     if end <= start:
         start, end = raw_lo, raw_hi
     piece = text[start:end].strip()
