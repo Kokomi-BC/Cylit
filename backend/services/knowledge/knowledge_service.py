@@ -127,6 +127,21 @@ def _safe_preview(content: str, limit: int = 200) -> str:
     return text
 
 
+def _inline_embed_math(text: str) -> str:
+    r"""把**夹在句子中间**的 `$$…$$` 降级成行内 `$…$`。
+
+    渲染端遇到 `$$` 会另起一块（display math）：夹在句子里就会出现"句子被拦腰截断、
+    公式在下面摊成一堆分式"的观感（用户截图那处）。**行首的** `$$`（整段展示公式）
+    保持不动 —— 那是正常的展示公式。
+    """
+    out: list[str] = []
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("$$"):
+            out.append(line)
+            continue
+        out.append(line.replace("$$", "$") if "$$" in line else line)
+    return "\n".join(out)
+
 def _strip_unpaired_bold(text: str) -> str:
     r"""去掉**行首落单的加粗标记**（`**图 5：…` 这种没有收尾的 `**`）。
 
@@ -372,6 +387,8 @@ def _chunk_variants(base: list[dict], zh: dict[int, list[tuple[str, str]]],
             floor = RESIDUE_CHARS if lang == "en" else MIN_ZH_CHARS
             if c["chunk_type"] in ("text", "figure", "table"):
                 content = _strip_unpaired_bold(content)
+            if c["chunk_type"] == "text":
+                content = _inline_embed_math(content)
             if c["chunk_type"] == "text" and len(content) < floor:
                 continue
             out.append(_variant_row(c, lang, content))
@@ -517,7 +534,7 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             latex = f_latex_by_block.get(bid) or formula_source.parsed_latex(formulas[bid])
             if formula_source.is_noise_latex(latex):
                 continue
-            inline = f"$$ {latex} $$"
+            inline = f"$ {latex} $"     # 内联进正文 → 行内定界符（`$$` 会让句子被拦腰截断）
             # 公式块不拆：超上限也只 flush，绝不切公式内部
             if buffer and buffer_chars + len(inline) + 2 > hard:
                 flush_text()
@@ -787,6 +804,9 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
     if chunk_type in ("text", "figure", "table"):
         # 行首落单的 `**`（`**图 5：…`）会在渲染时原样显示 → 在这里去掉（成对加粗不动）
         content = _strip_unpaired_bold(content)
+    if chunk_type == "text":
+        # 句子中间的 `$$…$$` 会被渲染成另起一块 → 降级成行内 `$…$`（行首展示公式不动）
+        content = _inline_embed_math(content)
     if section_path:
         meta["section_path"] = section_path
     if chunk_type == "text" and heading_only:
@@ -1355,6 +1375,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
