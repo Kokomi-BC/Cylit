@@ -1396,8 +1396,8 @@ def _context_text(blocks: list[Block], page_no: int, rect: Rect, *, before: bool
     return text[-max_chars:] if before else text[:max_chars]
 
 
-_HEADING_APPENDIX = ("appendix", "附录")
 _HEADING_REFS = ("references", "bibliography", "参考文献")
+# 附录标题的判定搬到了 `paragraph.is_appendix_heading`（带"只在参考文献区之后认单字母大节"的条件）
 
 
 def _renumber_reading_order(blocks: list[Block]) -> None:
@@ -1408,24 +1408,51 @@ def _renumber_reading_order(blocks: list[Block]) -> None:
 
 
 def _annotate_sections(blocks: list[Block]) -> None:
-    """标注 ''in_appendix'' / ''in_ref_section'' / ''section_title''（供分类与一致性检查）。"""
-    in_appendix = False
-    in_refs = False
+    """标注 ``section_kind`` / ``in_appendix`` / ``in_ref_section`` / ``section_title``。
+
+    **这是一台状态机**（``body`` → ``refs`` → ``appendix`` → …），不是"一旦进了参考文献
+    就永远是参考文献"。旧实现在这里留了个坑：``in_refs`` 置位后**永不复位**，于是
+    turboquant 从 p10 的 ``## REFERENCES`` 之后**所有段落**都被改写成 ``ref`` ——
+    连 p16–p22 的附录 A–E（Lemma / 微分熵定义 / QJL 证明 / 实现细节，约 1.57 万字符）
+    一起被知识库跳过（用户报过）。
+
+    现在三条出口：
+    1. 明确 ``Appendix`` / ``Supplementary``，或参考文献区之后的 ``A`` / ``A.1`` 单字母大节
+       → ``appendix``（User 口径：Lemma / Proof / Theorem / Implementation **不单独触发**附录）；
+    2. 参考文献区之后的常规编号大节（``3 Model Architecture``）或任何不像文献条目的标题
+       （attention 的 ``## Attention Visualizations``）→ 回到 ``body``；
+    3. 即使仍在 ``refs``，也只有"像文献条目"的段落才改写成 ``ref``；以 Lemma / For / Given
+       这类开头的正文段落**永不**被改写（``is_prose_like`` 兜底）。
+
+    ``section_title`` 的语义**不变**（仍然只写在 heading 块上，``block.section_id`` 由它派生，
+    阅读器依赖这一点）；``section_kind`` / ``in_appendix`` / ``in_ref_section`` 是给知识库用的
+    结构元数据。
+    """
+    from backend.parsing.structure.paragraph import (is_appendix_heading,
+                                                     is_prose_like,
+                                                     is_section_exit_heading,
+                                                     looks_like_reference_entry)
+
+    state = "body"                      # body | refs | appendix
     current_section = ""
     for b in sorted(blocks, key=lambda x: x.order_global):
         text = normalize_text(b.text_clean or b.text)
         low = text.lower()
         if b.type == "heading":
-            if any(h in low for h in _HEADING_APPENDIX):
-                in_appendix = True
             if any(h in low for h in _HEADING_REFS):
-                in_refs = True
+                state = "refs"
+            elif is_appendix_heading(text, after_refs=(state == "refs")):
+                state = "appendix"
+            elif state == "refs" and (is_section_exit_heading(text)
+                                      or not looks_like_reference_entry(text)):
+                state = "body"
             current_section = text[:120]
             b.meta["section_title"] = current_section
             b.meta["font_size"] = round(float(b.font_size or 0.0), 1)
-        b.meta["in_appendix"] = in_appendix
-        b.meta["in_ref_section"] = in_refs
-        if in_refs and b.type == "para":
+        b.meta["section_kind"] = state
+        b.meta["in_appendix"] = (state == "appendix")
+        b.meta["in_ref_section"] = (state == "refs")
+        if state == "refs" and b.type == "para" and not is_prose_like(text):
             b.type = "ref"
 
 

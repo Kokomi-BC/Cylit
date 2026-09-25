@@ -3033,3 +3033,67 @@ MySQL 243 == LanceDB 243、`orphans=0 missing=0`。8711 临时服务复核：
   的结果（阅读器里也是这样显示），本轮只去掉 `#` 标记，**不擅自改文案**。
 - 中文行比英文行多（85 vs 82）：短标题 chunk 的英文侧低于残渣门槛 40 字符被丢、中文侧按 8 字门槛保留
   （这是刻意为之的旧口径，未改）。
+
+### 17.49 第四十一轮（再续）—— 附录被 `ref` 吞掉：`in_refs` 一旦置位永不复位
+
+第 1 批只动索引层、明确不做启发式恢复，所以附录必须从**源头**修。用户口径也确认了：
+turboquant 与 attention **都重新解析**；只有「明确 Appendix / Supplementary，或 A/B/C… 单字母大节」
+才触发附录，`Lemma` / `Proof` / `Theorem` / `Implementation` **不单独触发**。
+
+#### 根因
+
+`pipeline._annotate_sections` 里 `in_refs` 置位后**永不复位**，而且"在参考文献区就一律改写成 ref"：
+turboquant 的 `## REFERENCES` 在 p10，于是 p16–p22 的附录 A–E（Lemma、微分熵定义、QJL 证明、
+实现细节，**15,169 字符**）全被写成 `ref`，被 `knowledge_service` 整段跳过。
+顺带发现：IR 里已经是 `ref` 的块**没有任何路径能变回 para** —— 所以"索引层恢复"根本做不到，
+只能重解析（这也印证了第 1 批的分工是对的）。
+
+#### 改法
+
+`paragraph.py` 抽出共用谓词：`is_appendix_heading`（明确词 或 **参考文献区之后**的单字母大节；
+要求 `after_refs` 是为了不把 `ABSTRACT` 误读成 "A BSTRACT"）、`is_section_exit_heading`、
+`looks_like_reference_entry`（编号 / 年份 / URL / ≥2 个出处词；**不是只认 `[n]`** ——
+turboquant 217 条 ref 里 0 条带编号）、`is_prose_like`（以 Lemma/For/Given/We… 起头的正文段落）、
+`is_number_only_heading`（表格数字行不是标题，与索引层同口径）。
+
+`_annotate_sections` 重写成状态机 `body → refs → appendix`：
+- 参考文献区之后的**单字母大节**或明确 Appendix/Supplementary → `appendix`；
+- 参考文献区之后的常规编号大节、或任何不像文献条目的标题（attention 的 `## Attention Visualizations`）
+  → 回 `body`；
+- 即使仍在 `refs`，也只有"像文献条目"的段落才改写成 `ref`；`is_prose_like` 兜底（即便附录标题没认出来，
+  Lemma/证明段落也不会被吞）。
+- **`section_title` 语义不变**（仍只写 heading 块，`block.section_id` 由它派生，阅读器依赖）；
+  新增 `section_kind`（body/refs/appendix，给知识库用）；`section_path` 由索引层算，不进 block.meta。
+`classify_text` 与历史遗留的 `build_blocks_for_page` 同步同一口径。
+
+#### 结果（重新解析 + 重建索引）
+
+| | turboquant | attention |
+|---|---|---|
+| `ref` 块 | 217 → **94**（只剩文献） | 50 → **42** |
+| `para` 块 | 138 → **273** | 132 → **163** |
+| `heading` 块 | 38 → **26**（12 个表格数字行不再是标题） | 48 → **25**（-23） |
+| 附录块 | **133 块 / 15,169 字符**（原为 0） | 0（本来就无附录） |
+
+重建后入库行 243 → **266**（turboquant 177 = text 99/formula 68/figure 8/table 2；attention 89）；
+附录 chunk **44 条 / 22,401 字符**，正文里 `Lemma` 命中 17 次、`QJL` 15 次、`differential entropy` 2 次、
+`KV Cache` 2 次 —— 8711 临时服务上中文问「QJL 的证明思路是什么」「坐标分布引理是怎么说的」
+都能命中 p16–p19 的附录小节（B.2 / C.1 / C.2 / B）。MySQL 266 == LanceDB 266、orphans/missing 0。
+逐块核对：turboquant 只有 3 块没进 chunk（作者+单位）、attention 11 块（作者×3、单位×2、邮箱、
+arXiv 章、脚注×3、会议行）—— **全是前沿元数据**，没有正文被丢。
+
+测试：新增 `tests/test_parsing_ref_section.py`（11 项）；离线 **319 通过**、e2e **29 通过 + 1 跳过**。
+
+#### 两点如实交代
+
+1. **重解析会让"块 id 漂移"**：`rebind_block_ids` 要求新旧块 `type` 相同，附录块从 `ref` 变 `para`
+   必然拿新 id（turboquant 162 个新 id、attention 40 个）。用户说没加过批注，实测 30 条批注里
+   17 条锚点本来就是失效的旧 id（`turboquantic-*` / `p02-b02` 这种上一代命名），本次没有变得更糟。
+2. **e2e 套件里的 `test_reader_progress.py` 会写用户阅读状态**：它取 `list_papers()[0]`（即 attention）
+   做一次"存取往返"再还原（值按 `finally` 原样写回）。这次跑 e2e 复核时该行的 `updated_at` /
+   `paper.last_read_at` 被顶到当前时间（`last_page` / `last_block_id` / 视图状态均按原值还原）。
+   建议后续把它改成用临时论文行，别碰真实进度 —— 待用户点头再做。
+3. 重解析由 `_sync_to_mysql` 把论文状态改成 `translated`，重建索引走的是进程内调用（不经
+   `/knowledge/index` 任务）→ 状态没被置回 `indexed`。已用 `_set_paper_indexed` 恢复成 `indexed`。
+4. 备份：`data/_backup/preparse-20260925-141157/`（两份 `ir.sqlite` + `md/` + `pages/`，13.4 MB），
+   回滚靠它；确认无误后可删。

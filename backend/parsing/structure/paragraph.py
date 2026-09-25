@@ -354,6 +354,104 @@ _CAPTION_START = re.compile(
 _REF_LINE = re.compile(r"^\s*\[\d{1,3}\]")
 _TITLELIKE_MAX_CHARS = 110
 
+# --------------------------------------------------------------------------
+# 参考文献区 / 附录 的判定谓词（pipeline 的状态机与这里共用同一口径）
+# --------------------------------------------------------------------------
+# 明确写成 Appendix / Supplementary 的标题（用户口径：只有这两类，或 A/B/C… 这种单字母大节，
+# 才算"进入附录"；Lemma / Proof / Implementation 单独出现**不算**）
+_APPENDIX_EXPLICIT = re.compile(
+    r"(?:\bappendix\b|\bsupplementar(?:y|ies)\b|\bsupplement\b|附录|补充材料)", re.I)
+# 单字母大节编号：`A EXTENDED PRIOR WORK`、`B.1 SHANNON LOWER BOUND`、`C.1TURBOQUANT`
+_APPENDIX_LETTER = re.compile(r"^\s*([A-H])(?:\.\d+)*[\s.．:]*[A-Z\u4e00-\u9fff]")
+# 常规编号大节：`1Introduction`、`3 Model Architecture`、`2.1 EMPIRICAL VALIDATION`
+_SECTION_NUM_HEAD = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2})*[\s.．:]*[A-Z\u4e00-\u9fff]")
+# 文献条目特征：编号、年份、出处/URL
+_BIB_NUMBERED = re.compile(r"^\s*(?:\[\d{1,3}\]|\d{1,3}[.)])\s")
+_BIB_YEAR = re.compile(r"(?:19|20)\d{2}")
+_BIB_URL = re.compile(r"https?://|\bdoi\b|arxiv:\s*\d{4}\.\d{4,5}", re.I)
+_BIB_HINTS = ("arxiv", "proceedings", "conference", "journal", "workshop", "symposium",
+              "vol.", "pp.", "et al", "press", "springer",
+              "acm", "ieee", "corr", "advances in", "transactions on", "university")
+# 行首的 Markdown 标题符：IR 里的 text_clean 没有它，但 md 正文（知识库读的那份）有
+_HEAD_MARK = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]*")
+# 正文（尤其是附录里的 Lemma / Proof）的行首特征：这些块**不能被改写成 ref**
+_PROSE_START = re.compile(
+    r"^\s*(?:lemma|theorem|proof|corollary|proposition|claim|definition|remark|"
+    r"assumption|axiom|observation|for |given |let |we |thus|hence|note that|since |"
+    r"first,|second,|finally,|however|moreover|therefore|in this|as |to |the |this )",
+    re.I)
+
+
+def _plain(text: str) -> str:
+    """规范化 + 去掉行首 Markdown 标题符（IR 里没有、md 正文里有）。"""
+    return _HEAD_MARK.sub("", normalize_text(text))
+
+
+def looks_like_reference_entry(text: str) -> bool:
+    """看起来像**文献条目**（而不是正文段落）。
+
+    为什么需要：turboquant 的参考文献是 author-year 无编号（实测 217 条 ref 里 0 条以 `[n]` 开头），
+    不能只认编号；但反过来也不能"在参考文献区里就当文献"，否则附录 A–E 的 Lemma/证明会被一起丢掉。
+    """
+    t = _plain(text)
+    if not t:
+        return False
+    if _BIB_NUMBERED.match(t):
+        return True
+    low = t.lower()
+    if _BIB_YEAR.search(t) or _BIB_URL.search(t):
+        return True
+    return sum(1 for hint in _BIB_HINTS if hint in low) >= 2
+
+
+def is_prose_like(text: str) -> bool:
+    """像正文段落（尤其是附录里的 Lemma / 证明 / 实现说明）—— 用来**兜住**误判。
+
+    判据刻意保守：以数学结构词或句子开头的常见词起头，并且有足够长度。
+    文献条目几乎不会以 `Lemma` / `For a random variable` 起头，所以不会把文献放进来。
+    """
+    t = _plain(text)
+    return bool(t) and len(t) >= 60 and bool(_PROSE_START.match(t))
+
+
+def is_appendix_heading(text: str, *, after_refs: bool = False) -> bool:
+    """是否"进入附录"的标题。
+
+    用户口径：**只有**明确 Appendix / Supplementary，或 `A` / `A.1` 这种单字母大节才触发；
+    `Lemma` / `Proof` / `Theorem` / `Implementation` 单独出现**不触发**（它们属于所在章节）。
+    单字母形式只在**参考文献之后**才算（否则 `ABSTRACT` 这种全大写词会被误判成 "A BSTRACT"）。
+    """
+    t = _plain(text)
+    if not t:
+        return False
+    if _APPENDIX_EXPLICIT.search(t):
+        return True
+    if not after_refs:
+        return False
+    m = _APPENDIX_LETTER.match(t)
+    if not m:
+        return False
+    rest = t[m.end(1):].lstrip(".．: ")
+    return len(rest) >= 3
+
+
+def is_section_exit_heading(text: str) -> bool:
+    """常规编号大节标题（`3 Model Architecture`）—— 出现在参考文献区之后说明该区已结束。"""
+    return bool(_SECTION_NUM_HEAD.match(_plain(text)))
+
+
+def is_number_only_heading(text: str) -> bool:
+    """表格里的数字行（`1645.2945.16`、`4128128 5.0025.5`）—— 不是标题。
+
+    实测：turboquant 38 个 heading 里 12 个是这种，attention 48 个里 23 个
+    （`## GNMT + RL [38]`）；它们每命中一次就 flush 一次正文 buffer，把正文切碎。
+    判据与索引层 `preprocess.is_table_number_heading` 保持一致。
+    """
+    t = _plain(text)
+    if not t:
+        return True
+    return not re.search(r"[A-Za-z\u4e00-\u9fff]{3,}", t)
+
 
 def classify_text(
     text: str,
@@ -383,11 +481,20 @@ def classify_text(
 
     if _CAPTION_START.match(t) and line_count <= 12:
         return "caption"
-    if in_ref_section or (_REF_LINE.match(t) and line_count <= 8):
+    if in_ref_section:
+        # 参考文献区里也只有**像文献条目**的块才是 ref：附录里的 Lemma / 证明
+        # （`For a random variable x we denote…`）不能因为"在参考文献区之后"就被丢掉。
+        return "ref" if not is_prose_like(t) else "para"
+    if _REF_LINE.match(t) and line_count <= 8:
         return "ref"
 
     # 公式密集合成行不判标题
     if line_math_ratio > 0.25:
+        return "para"
+
+    # 表格里的数字行不是标题（`1645.2945.16` / `4128128 5.0025.5`）：
+    # 判成标题会每来一行就 flush 一次正文 buffer，把正文切碎、还把表格数字混进正文。
+    if is_number_only_heading(t):
         return "para"
 
     short = char_count <= _TITLELIKE_MAX_CHARS and line_count <= 3
@@ -511,7 +618,7 @@ def build_blocks_for_page(
         order += len(new_blocks)
     if in_ref_section:
         for b in blocks:
-            if b.type == "para":
+            if b.type == "para" and not is_prose_like(b.text_clean or b.text):
                 b.type = "ref"
     return blocks, order
 

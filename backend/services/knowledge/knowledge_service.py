@@ -395,7 +395,8 @@ def _collect_chunks(paper_id: str) -> list[dict]:
         sec, path = current_section()
         return {"kind": kind, "id": b["id"], "page": b["page"], "order": b["order"],
                 "type": b.get("type") or "", "text": text,
-                "section": sec, "section_path": path}
+                "section": sec, "section_path": path,
+                "section_kind": b.get("section_kind") or "body"}
 
     def flush_text() -> None:
         nonlocal buffer, buffer_chars
@@ -413,6 +414,7 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             heading_only=all(e["type"] == "heading" for e in entries),
             metadata={"block_ids": [e["id"] for e in entries],
                       "pages": sorted({e["page"] for e in entries}),
+                      "section_kind": entries[0]["section_kind"],
                       "formula_ids": [e["id"] for e in entries
                                       if e["kind"] == "formula"]},
         ))
@@ -466,7 +468,8 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 section_path=path or "",
                 metadata={"latex": latex, "grade": f.get("grade"),
                           "raw_text": f.get("raw_text"),
-                          "crop": f.get("image_path")},
+                          "crop": f.get("image_path"),
+                          "section_kind": b.get("section_kind") or "body"},
             ))
             continue
 
@@ -482,7 +485,8 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 section=sec or "", section_path=path or "",
                 # 图注本身是可翻译的正文块 → 拿它的签名去译文索引里取中文图注
                 parts=[(b["page"], caption, "text")] if caption else [],
-                metadata={"caption": caption, "image_path": item.get("image_path")},
+                metadata={"caption": caption, "image_path": item.get("image_path"),
+                          "section_kind": b.get("section_kind") or "body"},
             ))
             continue
 
@@ -607,7 +611,10 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
     text = ((md_map or {}).get(b.id, {}) or {}).get("text") or b.preview or ""
     return {"id": b.id, "page": b.page_no, "type": b.type, "order": b.order_global,
             "text": text, "hash": b.content_hash,
-            "section": meta.get("section_title") or b.section_id or ""}
+            "section": meta.get("section_title") or b.section_id or "",
+            # `section_kind` 由 parser 的状态机标注（body / refs / appendix）：
+            # 附录内容**要进知识库**，但要能认出来（检索侧将来可降权/过滤）
+            "section_kind": meta.get("section_kind") or "body"}
 
 
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,

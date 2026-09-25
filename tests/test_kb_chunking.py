@@ -337,6 +337,23 @@ def test_section_path_inherits_nearest_heading(env) -> None:
     assert all(c["section"] for c in body), "正文 chunk 的 section 不该为空"
 
 
+def test_section_kind_marks_appendix_but_keeps_content(env) -> None:
+    """附录内容**要进知识库**，但必须能认出来（parser 的状态机标 section_kind）。"""
+    env.add("b1", 1, "heading", "## 2 Method", 1)
+    env.add("b2", 1, "para", "The quantizer maps vectors to bit strings with bounded error.", 2)
+    env.add("b3", 15, "heading", "## AEXTENDED PRIOR WORK", 3)
+    env.add("b4", 15, "para", "For a random variable x we denote its differential entropy as "
+                              "h(x) and use it to bound the distortion.", 4)
+    env.blocks[2].meta_json = '{"section_kind": "appendix"}'      # parser 的标注
+    env.blocks[3].meta_json = '{"section_kind": "appendix"}'
+    chunks = ks._collect_chunks(PAPER)
+    body = texts(chunks)
+    kinds = {c["metadata"]["section_kind"] for c in body}
+    assert kinds == {"body", "appendix"}
+    appendix = [c for c in body if c["metadata"]["section_kind"] == "appendix"]
+    assert "differential entropy" in appendix[0]["content"], "附录内容不能被丢掉"
+
+
 # --------------------------------------------------------------------------
 # 双语行：公式只出 any 一行
 # --------------------------------------------------------------------------
