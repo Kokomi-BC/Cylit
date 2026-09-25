@@ -471,6 +471,11 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
             out = p
         elif p[0] in _CLOSERS or all(ch in _CLOSERS for ch in p):
             out += p
+        elif out and out[-1] not in _SENT_END and out[-1] not in ".!?;":
+            # 上一段**没以句末标点结束** → 同一句被切片切开了，直接接上（别凭空断行）；
+            # 边界若是"公式/Latin 紧邻中文"，补一个空格（原文 `\right\}$ 与` 本来就有空格）
+            sep = " " if (out[-1] == "$" or out[-1].isascii()) and not out[-1].isspace() else ""
+            out += sep + p
         else:
             out += "\n\n" + p
     return out or None
@@ -621,7 +626,19 @@ def _collect_chunks(paper_id: str) -> list[dict]:
         if not entries or not any(e["kind"] == "text" for e in entries):
             # 只有公式的 buffer 不建正文 chunk：公式已有原子 chunk，避免重复行
             return
-        text = "\n\n".join(e["text"] for e in entries)
+        # 拼装：**内联公式**（kind=formula）紧接前一段，不加段落分隔 —— 它本来就是行内数学，
+        # 用 `\n\n` 会让"…最优质心分别为"后面多出一个换行（用户报的"多换了一行"）；
+        # 正文块之间仍用空行分段落。
+        buf = ""
+        for e in entries:
+            piece = e["text"]
+            if not buf:
+                buf = piece
+            elif e["kind"] == "formula" or buf.rstrip().endswith(("：", ":", "，", ",", "与", "和", "为")):
+                buf += piece
+            else:
+                buf += "\n\n" + piece
+        text = buf
         chunks.append(_make_chunk(
             paper_id, "text", text, entries[0], entries[-1],
             section=entries[0]["section"] or "",
