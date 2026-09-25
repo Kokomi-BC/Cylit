@@ -370,6 +370,11 @@ def _collect_chunks(paper_id: str) -> list[dict]:
     f_entries = formula_source.kb_formula_entries(paper_id, formulas, rows)
     f_latex_by_block = {e["formula_block_id"]: e["latex"] for e in f_entries
                         if e.get("formula_block_id")}
+    # 公式条目也要带**章节**（知识库页要显示、检索判据也看小节名）：
+    # 每块的章节 = 它前面最近的那个 heading 栈（与正文 chunk 同一规则），
+    # 再借"行 → 块"映射把 page_row 锚点的公式落回它所在正文块。
+    sections = _section_timeline(rows)
+    row_to_block = _row_to_block_map(paper_id, rows)
 
     chunks: list[dict] = []
     buffer: list[dict] = []          # 语义 chunk 的组成块（正文 + 内联公式）
@@ -481,15 +486,58 @@ def _collect_chunks(paper_id: str) -> list[dict]:
 
     # 公式知识库条目：**全部**来自 canonical 清单（reader_service.markdown_formulas
     # → C 口径过滤 → 挂锚点），不再在索引层识别公式（用户口径 §1/§8）。
-    chunks.extend(_canonical_formula_chunks(paper_id, rows, f_entries))
+    chunks.extend(_canonical_formula_chunks(paper_id, rows, f_entries,
+                                            sections=sections, row_to_block=row_to_block))
     chunks.sort(key=lambda c: (c["order_global"],
                                0 if c["chunk_type"] == "text" else 1))
     merged = _merge_small_chunks(chunks, min_chars=floor, hard=hard)
     return _link_formulas(merged)
 
 
+def _section_timeline(rows: list[dict]) -> dict[str, tuple[str, str]]:
+    """``{块 id: (小节, 小节路径)}`` —— 与 ``_collect_chunks`` 里 heading 栈完全同一规则。
+
+    单独算一遍是为了让**公式条目**也能带上章节：公式 chunk 在正文循环之外生成，
+    拿不到当时的 ``section_stack``。
+    """
+    stack: list[tuple[int, str]] = []
+    out: dict[str, tuple[str, str]] = {}
+    for b in rows:
+        raw = b.get("text") or ""
+        text = strip_presentation(raw)
+        if b.get("type") == "heading" and not is_table_number_heading(text):
+            lv = heading_level(raw)
+            while stack and stack[-1][0] >= lv:
+                stack.pop()
+            stack.append((lv, (text or "")[:128]))
+        out[b["id"]] = (stack[-1][1] if stack else "",
+                        " / ".join(t for _, t in stack))
+    return out
+
+
+def _row_to_block_map(paper_id: str, rows: list[dict]) -> dict[str, str]:
+    """``{行 id: 块 id}``（``anchor_map`` 反向映射）。
+
+    page_row 锚点的公式只知道它在哪一**行**，要靠这个映射找到对应正文块，
+    才能拿到章节。映射拿不到就返回空字典（公式条目退化成无章节，不影响入库）。
+    """
+    try:
+        from backend.services.paper import anchor_map, reader_service
+
+        payloads = reader_service.page_translations(paper_id)
+        block_to_row = anchor_map.build_block_row_map(
+            [{"id": r["id"], "page": r["page"], "text": r.get("text") or ""} for r in rows],
+            anchor_map.rows_by_page(payloads))
+    except Exception as exc:  # noqa: BLE001 —— 章节是锦上添花，失败不让建索引挂掉
+        log.debug("行→块映射失败（%s）：%s", paper_id, exc)
+        return {}
+    return {row_id: block_id for block_id, row_id in block_to_row.items()}
+
+
 def _canonical_formula_chunks(paper_id: str, rows: list[dict],
-                              entries: list[dict]) -> list[dict]:
+                              entries: list[dict], *,
+                              sections: dict[str, tuple[str, str]] | None = None,
+                              row_to_block: dict[str, str] | None = None) -> list[dict]:
     """把 canonical 公式条目落成 chunk。
 
     - id：有解析块对应时用 ``{paper}:formula:{formula_block_id}``（与历史一致），
@@ -533,9 +581,12 @@ def _canonical_formula_chunks(paper_id: str, rows: list[dict],
         first = {"id": block_id or f"row-p{e.get('page') or 0:02d}",
                  "page": int(e.get("page") or 1),
                  "order": order_of.get(block_id or "", 0)}
+        # 章节：优先用锚点块的；page_row 锚点先落回正文块再取（见 _row_to_block_map）
+        anchor_block = e.get("formula_block_id") or (row_to_block or {}).get(e.get("row_id") or "")
+        sec, path = (sections or {}).get(anchor_block or "", ("", ""))
         out.append(_make_chunk(
             paper_id, "formula", content, first, first,
-            section="", section_path="", metadata=meta, chunk_id=cid))
+            section=sec, section_path=path, metadata=meta, chunk_id=cid))
     if out:
         log.info("canonical 公式条目 %d 条（%s）：%s", len(out), paper_id,
                  [c["id"].rsplit(":", 1)[-1] for c in out][:6])

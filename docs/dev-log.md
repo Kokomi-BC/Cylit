@@ -3305,3 +3305,24 @@ Attention Eq.1（`Attention(Q,K,V)=softmax(QKᵀ/√d_k)V`）、Eq.2（FFN）、
 `test_formula_noise.py` 改用 `formula_source.is_noise_latex`。
 离线 340 通过；e2e 30 通过 + 5 跳过（4 条因模型服务不可用）。
 前端未改动（用户 UI 修改仍未提交）。
+
+#### 收尾补记（§9.8 收口）：公式条目丢章节 = 假退化
+
+复跑回归时"公式专项"只有 83%（q08 掉出 top-3），先怀疑是公式库 23 → 105 条的竞争效应。
+embedding 接口恢复后（期间是暂时性 `SSL: UNEXPECTED_EOF`，探针已确认恢复正常、dim=2560）
+查到真因：**我漏了章节字段**。`_canonical_formula_chunks` 里 `section=""`，
+而回归判据 `_hit_matches` 是"小节名**或**正文出现期望子串"，知识库页也要显示章节
+（截图里公式卡片下面就是 `C.3LOWER BOUNDS`）—— 公式条目一律无章节，q08 就只剩内容判据，
+而它的期望词是中文/长短语（`quantization error`、`distortion`），纯 LaTeX 条目里根本没有。
+
+修法：新增 `_section_timeline(rows)`（与正文循环里的 heading 栈**同一规则**）算出每块的章节，
+再加 `_row_to_block_map()`（复用 `anchor_map.build_block_row_map` 做**行→块反查**），
+公式条目按 `formula_block_id`（或 page_row 反查到的块）继承章节。
+顺带修掉 `q08` 那条期望词的坑：库里只有 `(\text{inner-prod error})`（论文原文缩写），
+与 `inner-product error` 并不字面相等 —— 章节回来了，判据自然命中。
+
+**复跑结果（297 行 / 105 条公式）**：hit@6 **100%**、MRR **0.95**、公式专项 **100%**、
+附录 **100%**、正文命中 **100%**；"语义块含公式" 90%（公式行从 37 → 105 条后在 top-6 里
+多占了位子，个别题的 top-6 里不再出现带 `formula_ids` 的正文块；不在用户 §9.8 的四项里，先记录）。
+重建版本：turboquant **v14** / attention **v9**；MySQL 297 == LanceDB 297、orphans/missing 0。
+公式条目带章节：TQ 78/92、AT 8/13（其余在首个 heading 之前或行→块反查未命中）。
