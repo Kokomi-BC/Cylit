@@ -11,10 +11,13 @@
  * - 命中词所在的**原句片段**，并把命中词本身标出来（`<mark>`）。
  * 点一条 = 与目录同一种跳转（`focus`），滚到正文那一行。
  *
- * `snippet` 是**纯文本**，高亮用"切开 + 逐段渲染"实现，不拼 HTML、不用 `v-html`。
+ * 片段按 **Markdown** 渲染（`$公式$`、`**加粗**` 直接显示成排版后的样子），命中词用
+ * `htmlWithMarks` 的占位符机制在解析后插回 `<mark>` —— 与正文高亮同一套做法，
+ * 所以标记不会打断 Markdown 结构。
  */
 import { nextTick, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
+import { htmlWithMarks } from '@/composables/useMarkdown';
 
 /** 搜索范围：全部（原文 + 译文）/ 只看原文 / 只看译文。 */
 export type SearchScope = 'all' | 'en' | 'zh';
@@ -65,6 +68,22 @@ function parts(snippet: string): Array<{ t: string; hit: boolean }> {
   }
   return out.filter((p) => p.t);
 }
+
+/** 命中区间（相对片段自身的字符偏移），交给 `htmlWithMarks` 在 Markdown 解析后插回标记。 */
+function hitRanges(snippet: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let at = 0;
+  for (const p of parts(snippet)) {
+    if (p.hit) ranges.push({ start: at, end: at + p.t.length });
+    at += p.t.length;
+  }
+  return ranges;
+}
+
+/** 片段 → 渲染好的 HTML（Markdown + 命中标记）。 */
+function snippetHtml(snippet: string): string {
+  return htmlWithMarks(snippet, hitRanges(snippet));
+}
 </script>
 
 <template>
@@ -113,12 +132,7 @@ function parts(snippet: string): Array<{ t: string; hit: boolean }> {
         @click="emit('focus', hit.id, hit.page)"
       >
         <span class="tiny faint nowrap">p{{ hit.page }} · {{ hit.side === 'en' ? '原文' : '译文' }}</span>
-        <span class="tiny ss-snippet">
-          <template v-for="(p, i) in parts(hit.snippet)" :key="i">
-            <mark v-if="p.hit">{{ p.t }}</mark>
-            <template v-else>{{ p.t }}</template>
-          </template>
-        </span>
+        <span class="tiny ss-snippet" v-html="snippetHtml(hit.snippet)" />
       </button>
       <div v-if="props.query.trim() && !props.hits.length" class="empty small">没有匹配的段落</div>
     </div>
@@ -147,8 +161,12 @@ function parts(snippet: string): Array<{ t: string; hit: boolean }> {
 }
 .ss-hit:hover { background: var(--bg-hover); }
 .ss-snippet { color: var(--text); line-height: 1.45; overflow-wrap: anywhere; }
-/* 命中词：青绿底 + 原字色（不用 <mark> 的默认黄底，保持全站单一强调色） */
-.ss-snippet mark {
+/* 片段现在是渲染过的 Markdown：把块级元素压成"一行片段"的排版（不引入段间距） */
+.ss-snippet :deep(p) { margin: 0; display: inline; }
+.ss-snippet :deep(.katex-display) { margin: 0; display: inline-block; max-width: 100%; overflow-x: auto; }
+/* 命中词：青绿底 + 原字色（不用 <mark> 的默认黄底，保持全站单一强调色）。
+   注意 `:deep()`：内容是 v-html 注入的，拿不到 scoped 属性，直接写 `.ss-snippet mark` 不生效 */
+.ss-snippet :deep(mark) {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
   color: inherit; border-radius: 3px; padding: 0 1px;
 }

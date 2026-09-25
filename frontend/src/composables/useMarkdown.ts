@@ -204,26 +204,53 @@ export function htmlWithHighlights(text: string, highlights: Highlight[], paperI
     .sort((a, b) => a.start - b.start);
   if (!list.length) return mdToHtml(text, paperId);
 
+  const { html } = renderWithPlaceholders(text, list.map((h) => ({
+    start: h.start, end: h.end, mark: `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}" title="点击删除高亮">`,
+  })), paperId);
+  return html;
+}
+
+/**
+ * 把若干字符区间标成 `<mark>` 再渲染 Markdown（**搜索命中**用）。
+ *
+ * 与 :func:`htmlWithHighlights` 同一套占位符机制，区别只在于 mark 的属性：
+ * 搜索命中不是"用户高亮"，不能带 `hl` 类与"点击删除"的提示（会误导）。
+ * 侧栏的搜索片段因此也能显示 `$公式$`、`**加粗**`，而不是原始 Markdown 记号。
+ */
+export function htmlWithMarks(text: string, ranges: Array<{ start: number; end: number }>,
+                              paperId?: string | null, markClass = 'ss-mark'): string {
+  if (!text) return '';
+  const list = (ranges ?? []).filter((r) => r.start < r.end).sort((a, b) => a.start - b.start);
+  if (!list.length) return mdToHtml(text, paperId);
+  return renderWithPlaceholders(text, list.map((r) => ({
+    start: r.start, end: r.end, mark: `<mark class="${markClass}">`,
+  })), paperId).html;
+}
+
+/** 共用实现：区间 → 占位符 → Markdown → 占位符换回 `<mark>`。 */
+function renderWithPlaceholders(
+  text: string,
+  ranges: Array<{ start: number; end: number; mark: string }>,
+  paperId?: string | null,
+): { html: string; tokens: Array<{ token: string; text: string }> } {
   let out = '';
   let cursor = 0;
-  const tokens: Array<{ token: string; text: string; color: string; id: string }> = [];
-  for (const h of list) {
-    const s = Math.max(0, Math.min(text.length, h.start));
-    const e = Math.max(s, Math.min(text.length, h.end));
-    if (s < cursor) continue;
+  const items: Array<{ token: string; text: string; mark: string }> = [];
+  for (const r of ranges) {
+    const s = Math.max(0, Math.min(text.length, r.start));
+    const e = Math.max(s, Math.min(text.length, r.end));
+    if (s < cursor) continue;                    // 重叠区间只认先到的那个
     out += text.slice(cursor, s);
-    const token = `%%HL${tokens.length}%%`;
-    tokens.push({ token, text: text.slice(s, e), color: h.color || 'yellow', id: h.id });
+    const token = `%%HL${items.length}%%`;
+    items.push({ token, text: text.slice(s, e), mark: r.mark });
     out += token;
     cursor = e;
   }
   out += text.slice(cursor);
 
   let html = mdToHtml(out, paperId);
-  for (const t of tokens) {
-    html = html.split(t.token).join(
-      `<mark class="hl ${t.color}" data-hl="${t.id}" title="点击删除高亮">${escapeHtml(t.text)}</mark>`,
-    );
+  for (const it of items) {
+    html = html.split(it.token).join(`${it.mark}${escapeHtml(it.text)}</mark>`);
   }
-  return html;
+  return { html, tokens: items.map(({ token, text: t }) => ({ token, text: t })) };
 }

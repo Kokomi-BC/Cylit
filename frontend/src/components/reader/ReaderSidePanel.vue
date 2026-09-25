@@ -184,7 +184,8 @@ const merged = computed<MergedItem[]>(() => {
             <AppIcon name="trash" :size="13" />
           </button>
         </div>
-        <div v-if="m.quote" class="small faint">“{{ m.quote }}”</div>
+        <!-- 划词原文 / 笔记引用：也是文档里的原文，同样按 Markdown 渲染（含公式） -->
+        <div v-if="m.quote" class="small faint md quote" v-html="mdToHtml(`“${m.quote}”`)" />
         <div class="small md" v-html="annotationHtml(m.contentMd)" />
       </div>
     </template>
@@ -207,7 +208,9 @@ const merged = computed<MergedItem[]>(() => {
     <template v-if="props.tab === 'figures'">
       <div v-for="fig in props.figures" :key="fig.block_id" class="item fig-card">
         <div class="fig-head">
-          <div v-if="fig.caption" class="fig-caption">{{ fig.caption }}</div>
+          <!-- 图注按 **Markdown** 渲染：图注里大量出现 `$\text{TurboQuant}_{\text{mse}}$` 这类公式，
+               纯文本会把 LaTeX 原样显示出来（用户口径：侧栏要有 Markdown 支持） -->
+          <div v-if="fig.caption" class="fig-caption md" v-html="mdToHtml(fig.caption)" />
           <span v-else class="spacer" />
           <button
             class="btn icon sm fig-locate"
@@ -386,6 +389,11 @@ const merged = computed<MergedItem[]>(() => {
   font-size: 12px; line-height: 1.5; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
+/* 图注/引用是**渲染过的 Markdown**（外层已经定了字号与行高，这里只把块级元素的间距压掉，
+   免得一行短图注被 `<p>` 的默认外边距撑成两行） */
+.fig-caption :deep(p) { margin: 0; }
+.fig-caption :deep(.katex-display) { margin: 0; overflow-x: auto; overflow-y: hidden; }
+.quote :deep(p) { margin: 0; display: inline; }
 .fig-head .spacer { flex: 1; }
 /* 光学对齐：按钮 26px、图注行盒 18px，上移 4px 后两者的**中心线**才对得上（图标不会看起来偏低）。 */
 .fig-locate { flex: none; margin-top: -4px; color: var(--text-dim); }
