@@ -278,6 +278,8 @@ def _overlap_span(a: str, b: str) -> tuple[int, int, int]:
 
 
 _SENT_END = "。！？；\n"
+# 片段以这些字符开头、或本身全是这些字符时，直接接上一段（不另起一行）
+_CLOSERS = "。，、；：！？）】》”’.,;:!?)]}"
 _SENT_END_ASCII = ".!?;"
 
 
@@ -448,7 +450,20 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
     if text_parts and len(pieces) < len(parts):
         log.debug("中文侧只对上 %d/%d 个片段（其余未翻译或切分不同）",
                   len(pieces), len(parts))
-    return "\n\n".join(pieces)
+    # 拼装：**纯标点片段**（区间切分后常出现孤零零的 `。`）或以标点开头的片段
+    # 直接接在上一段后面，不另起一行 —— 否则渲染出来就是一个句号独占一行。
+    out = ""
+    for piece in pieces:
+        p = (piece or "").strip()
+        if not p:
+            continue
+        if not out:
+            out = p
+        elif p[0] in _CLOSERS or all(ch in _CLOSERS for ch in p):
+            out += p
+        else:
+            out += "\n\n" + p
+    return out or None
 
 
 def _variant_row(c: dict, lang: str, content: str) -> dict:
