@@ -142,9 +142,21 @@ def _inline_embed_math(text: str) -> str:
         if "$$" in line:
             # 句中展示公式 → 行内公式：**`$` 后面不能有空格**（渲染端不把 `$ x$` 当数学，
             # 会原样显示成纯文本 —— 踩过），所以顺带把定界符内侧的空白去掉
-            line = re.sub(r"\$\$\s*(.+?)\s*\$\$", lambda m: f"${m.group(1)}$", line)
+            line = re.sub(r"\$\$\s*(.+?)\s*\$\$", lambda m: f"${_strip_tag_inline(m.group(1))}$", line)
         out.append(line)
     return "\n".join(out)
+
+_TAG_RE = re.compile(r"\\tag\*?\{[^}]*\}")
+
+
+def _strip_tag_inline(latex: str) -> str:
+    r"""去掉 `\tag{n}`：**行内模式下 KaTeX 会直接报错**（`\tag works only in display equations`），
+    渲染端于是回退成纯文本 —— 用户看到的"公式变裸 LaTeX"就是它。
+
+    公式**条目**是展示模式（`$$…$$`），`\tag` 保留；只有内联进正文的行内公式要去掉，
+    编号本来也已单独存在 metadata 的 `formula_number` 里。
+    """
+    return _TAG_RE.sub("", latex or "").strip()
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 # 高置信 LaTeX 命令（判断"这一段确实是公式"；宁可少补也不要误伤正文）
@@ -198,7 +210,7 @@ def _wrap_bare_latex(text: str) -> str:
             tok = m.group(0)
             if not re.search(r"[_^]\{", tok) or _CJK_RE.search(tok) or len(tok) > 60:
                 return tok
-            return f"${tok}$"
+            return f"${_strip_tag_inline(tok)}$"
 
         out.append("".join(seg if kind == "math" else _TEX_TOKEN_RE.sub(_wrap, seg)
                            for kind, seg in pieces))
@@ -600,7 +612,7 @@ def _collect_chunks(paper_id: str) -> list[dict]:
                 continue
             # 内联进正文 → 行内定界符，且 **`$` 后不能有空格**（渲染端不认 `$ x$`，会显示成纯文本）；
             # `$$` 则会让句子被拦腰截断（另起一块展示公式）。公式**条目**仍用 `$$…$$`。
-            inline = f"${latex}$"
+            inline = f"${_strip_tag_inline(latex)}$"
             # 公式块不拆：超上限也只 flush，绝不切公式内部
             if buffer and buffer_chars + len(inline) + 2 > hard:
                 flush_text()
@@ -1443,6 +1455,7 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
 
 
 
