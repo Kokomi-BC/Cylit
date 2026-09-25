@@ -331,7 +331,12 @@ def _slice_zh_span(text: str, lo: float, hi: float) -> tuple[str, int, int]:
     end = n if raw_hi >= n - edge else _snap_math(
         text, _snap_sentence(text, raw_hi, forward=True), forward=True)
     if end <= start:
-        start, end = raw_lo, raw_hi
+        # 兜底**不能**用原始偏移：那会把 LaTeX 从中间切断，产出 `$\sqrt{2 /\pi }$` 这类
+        # 半截公式（用户截图里的残片就是这么来的 —— 源头行里根本没有这些字符串）。
+        start = _snap_math(text, raw_lo, forward=False)
+        end = _snap_math(text, raw_hi, forward=True)
+        if end <= start:
+            return text, 0, len(text)      # 实在切不干净 → 整行端走（宁可多要，不可切坏）
     return text[start:end], start, end
 
 
@@ -633,11 +638,13 @@ def _collect_chunks(paper_id: str) -> list[dict]:
             continue
 
         if bid in formulas:
-            # 公式块**不再单独出条目**（条目统一由 canonical 清单生成，见函数末尾）。
-            # 但它的内容**必须留在正文里**：能对上知识库条目的用 canonical 完整 LaTeX，
-            # 对不上的（解析碎片/图内小式子）保留解析版 —— 用户口径"正文内容不能删除"。
-            latex = f_latex_by_block.get(bid) or formula_source.parsed_latex(formulas[bid])
-            if formula_source.is_noise_latex(latex):
+            # 只内联**对上了 canonical 条目**的公式块。解析侧会把一条公式拆成好几个碎片块
+            # （实测 `\left\{\pm\frac{\sqrt{2/\pi}}{\sqrt{d}}\right\}` 被拆成
+            # `\sqrt{2 /\pi }`、`, \pm`、`\frac{\sqrt{}}` …），全都内联进正文就会出现
+            # "半截公式残片"（用户截图里 `√(2/π)`、`,±`、`√` 那堆）。正确的整条公式由
+            # canonical 条目承载，没对上的碎片不再进正文。
+            latex = f_latex_by_block.get(bid)
+            if not latex or formula_source.is_noise_latex(latex):
                 continue
             # 内联进正文 → 行内定界符，且 **`$` 后不能有空格**（渲染端不认 `$ x$`，会显示成纯文本）；
             # `$$` 则会让句子被拦腰截断（另起一块展示公式）。公式**条目**仍用 `$$…$$`。
