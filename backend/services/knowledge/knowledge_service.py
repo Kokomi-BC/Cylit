@@ -315,39 +315,56 @@ def _snap_math(text: str, pos: int, *, forward: bool) -> int:
     return pos
 
 
-def _slice_zh(text: str, lo: float, hi: float) -> str:
-    """按比例切一段译文，切点吸附到句子边界。
+def _slice_zh_span(text: str, lo: float, hi: float) -> tuple[str, int, int]:
+    """``_slice_zh`` 的带偏移版：``(片段, 起始, 结束)``（偏移是**在整行译文里的字符位置**）。
 
-    为什么需要：解析块比页级行**细**（同一段被切成两三个块，页级产物只有一整行），
-    不切的话同一个块会拿到整行译文 —— 实测 turboquant 有 21/56 个中文 chunk 的
-    token 数是英文侧的两倍以上、还有 6 条内容完全重复（同一段中文被塞进多个 chunk）。
-    译文与原位序一致，所以按"该段在行内的字符占比"切，再吸附到最近句号，
-    既不重复也不留空档。
+    为什么要给偏移：同一行译文会被多个解析块命中、各切一段，两段可能**重叠** ——
+    重叠部分就是用户看到的"多出来的残缺公式"。有了偏移，调用方才能记录"这一行已经用掉了哪一段"。
     """
     n = len(text)
     if n <= 1:
-        return text
+        return text, 0, n
     edge = max(3, int(0.05 * n))
     raw_lo, raw_hi = int(round(lo * n)), int(round(hi * n))
-    # 贴边的直接用整段边界：否则会从"向|量化"这种词中间切进去（实测发生过）
     start = 0 if raw_lo <= edge else _snap_math(
         text, _snap_sentence(text, raw_lo, forward=False), forward=False)
     end = n if raw_hi >= n - edge else _snap_math(
         text, _snap_sentence(text, raw_hi, forward=True), forward=True)
     if end <= start:
         start, end = raw_lo, raw_hi
-    piece = text[start:end].strip()
-    return piece or text.strip()
+    return text[start:end], start, end
+
+
+def _slice_zh(text: str, lo: float, hi: float) -> str:
+    """按比例切一段译文，切点吸附到句子/公式边界（对外契约不变，返回文本）。"""
+    piece = _slice_zh_span(text, lo, hi)[0]
+    return piece.strip() or text.strip()
+
+
+def _uncovered(lo: int, hi: int, covered: list[tuple[int, int]]) -> tuple[int, int] | None:
+    """在 ``[lo, hi)`` 里找**第一段还没被用过**的区间；全被覆盖则返回 None。"""
+    cur = lo
+    for a, b in sorted(covered):
+        if b <= cur:
+            continue
+        if a >= hi:
+            break
+        if a > cur:
+            return cur, min(a, hi)
+        cur = max(cur, b)
+        if cur >= hi:
+            return None
+    return (cur, hi) if cur < hi else None
 
 
 def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str,
-               start: int = 0) -> tuple[str, int] | None:
+               start: int = 0) -> tuple[str, int, int, int] | None:
     """取某段原文的中文：先精确签名，再在**本页内**做字符级对齐取重叠最多的行。
 
     ``start`` = "本页已用到第几行"，且**一行只用一次**（单调消费）。为什么必须这样：
     原先每个块各自找最优行，多个块会命中同一行 —— 同一段中文被拼进 chunk 两次，
     用户看到的"整段重复"就是这么来的（在源头修，而不是事后去擦）。
-    返回 ``(译文, 行号)``；``None`` = 没配上（未翻译或切分相差太大）。
+    返回 ``(译文行全文, 行号, 起始, 结束)``（区间是整行译文里的字符位置，供区间消费）；``None`` = 没配上。
     """
     rows = zh.get(page)
     sig = _block_sig(text)
@@ -356,7 +373,7 @@ def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str,
     for idx in range(start, len(rows)):
         row_sig, dst = rows[idx]
         if row_sig == sig:
-            return dst, idx
+            return dst, idx, 0, len(dst)
     if len(sig) < _MIN_ALIGN_CHARS:
         return None
     best: tuple[int, str, str, int, int, int] | None = None
@@ -371,8 +388,9 @@ def _lookup_zh(zh: dict[int, list[tuple[str, str]]], page: int, text: str,
     if hit < _MIN_ALIGN_CHARS or hit * 2 < min(len(sig), len(row_sig)):
         return None
     if len(row_sig) <= len(sig) * 1.2 or j1 < 0:   # 行不比这段大多少 → 整行端走
-        return dst, idx
-    return _slice_zh(dst, j1 / len(row_sig), j2 / len(row_sig)), idx
+        return dst, idx, 0, len(dst)
+    _piece, s, e = _slice_zh_span(dst, j1 / len(row_sig), j2 / len(row_sig))
+    return dst, idx, s, e
 
 
 def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str | None:
@@ -387,7 +405,7 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
     pieces: list[str] = []
     text_parts = 0
     cursor: dict[int, int] = {}
-    used: set[tuple[int, int]] = set()
+    covered: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for item in parts:
         page, text = item[0], item[1]
         kind = item[2] if len(item) > 2 else "text"
@@ -398,17 +416,28 @@ def _zh_content(parts: list[tuple], zh: dict[int, list[tuple[str, str]]]) -> str
         got = _lookup_zh(zh, page, text, cursor.get(page, 0))
         if not got:
             continue
-        dst, idx = got
-        if (page, idx) in used:
-            # 同一行被多个块命中（两侧切分不同）：只在**新片段不与已出内容重叠**时追加，
-            # 否则就是同一段中文塞两遍。用极便宜的"包含"判定即可 —— 实测重复都是
-            # 整句级别的整体重复，包含关系必然成立；不同部分的切片则各自保留。
-            if any(dst and (dst in p or p in dst) for p in pieces if p):
-                log.debug("译文行 p%d-%02d 的片段与已出内容重叠，跳过", page, idx)
-                continue
-        used.add((page, idx))
+        dst, idx, lo, hi = got
+        # 同一行可能被多个块命中（两侧切分不同）→ 用**区间消费**：重叠部分不再拼第二遍。
+        # 之前只做了"整段包含"判定，重叠但互不包含的两段会各自保留 → 用户看到
+        # "多出来的残缺公式"（切片把一条公式切了一半，又重复渲染一次）。
+        cov = covered.setdefault((page, idx), [])
+        gap = _uncovered(lo, hi, cov)
+        if gap is None:
+            log.debug("译文行 p%d-%02d 的区间已被前面的块用掉，跳过", page, idx)
+            continue
+        g_lo, g_hi = gap
+        # 裁出来的余段边界也要**移出公式**：否则会吐半个公式（`$\sqrt{2/\pi}$` 这种残片）。
+        # 落在公式里 → 起点跳到公式之后、终点退到公式之前（宁可少要，也不要残片）。
+        g_lo = _snap_math(dst, g_lo, forward=True)
+        g_hi = _snap_math(dst, g_hi, forward=False)
+        if g_hi <= g_lo:
+            continue
+        piece = dst if (g_lo, g_hi) == (0, len(dst)) else dst[g_lo:g_hi].strip()
+        if not piece:
+            continue
+        cov.append((g_lo, g_hi))
         cursor[page] = idx
-        pieces.append(dst)
+        pieces.append(piece)
     if not pieces:
         return None
     if text_parts and len(pieces) < len(parts):
@@ -1455,6 +1484,8 @@ def _paper_titles(paper_ids: list[str]) -> dict[str, str]:
         rows = (sess.query(Paper.id, Paper.title)
                 .filter(Paper.id.in_(paper_ids)).all())
     return {pid: title or pid for pid, title in rows}
+
+
 
 
 

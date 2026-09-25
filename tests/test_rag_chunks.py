@@ -79,8 +79,9 @@ def test_lookup_zh_slices_when_row_is_much_coarser() -> None:
     row = "第一句讲背景信息。" * 8 + "第二句才是这个块的内容。"
     idx = _zh_index([_page(5, [(row.strip(), "甲" * 60 + "。乙" * 60 + "。丙" * 60 + "。")])])
 
-    hit = _lookup_zh(idx, 5, row.strip()[:40])[0]     # 块只覆盖行的开头
-    assert hit and len(hit) < 180                     # 明显短于整行译文（180 字）
+    row_dst, idx_no, lo, hi = _lookup_zh(idx, 5, row.strip()[:40])   # 块只覆盖行的开头
+    assert idx_no == 0 and hi - lo < 180              # 区间明显短于整行译文（180+ 字）
+    assert len(row_dst) > 180                          # 返回的是整行全文 + 区间（供区间消费）
 
 
 def test_slice_zh_snaps_to_sentence_boundary() -> None:
