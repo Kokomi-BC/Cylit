@@ -205,7 +205,9 @@ def page_alignment(page: int, rows: list[dict], *, max_shift: int = 4) -> dict:
 
 
 def analyse_paper(paper_id: str, mode: str) -> dict:
-    from backend.services.translation.page_translate import pair_rows
+    from backend.services.translation.page_translate import (
+        absorb_one_sided_rows, pair_rows,
+    )
 
     md = paper_md_dir(paper_id)
     if mode == "legacy":
@@ -242,6 +244,7 @@ def analyse_paper(paper_id: str, mode: str) -> dict:
     total = one_sided = mid = shifted_pages = 0
     no_evidence_pages: list[int] = []
     align_counts = {}
+    d_total = d_one_sided = d_mid = d_shifted = 0
     for page in page_numbers:
         original = str((a_pages.get(page) or {}).get("original_md") or "")
         translation = str((b_pages.get(page) or {}).get("translation_md") or "")
@@ -252,20 +255,38 @@ def analyse_paper(paper_id: str, mode: str) -> dict:
         total += len(rows)
         one_sided += len(os_)
         mid += len(mp)
-        if not mp:
-            # 只有"没有段落中间单侧行"的页才值得看内容对应：否则那页本来就已知有错位
-            pass
         offset = page_alignment(page, rows)
         if offset["shifted"]:
             shifted_pages += 1
         if offset["evidence"] == 0 and len(rows) > 1:
             no_evidence_pages.append(page)
+
+        # ---- 交付口径：阅读器真正发给前端的行 ----
+        # `absorb_one_sided_rows` 把"一侧把相邻两段并成一块"造成的单侧行并进上一行的缺失侧
+        # （`reader_service._merge_page` 里就在这一步之后才做连续性标记与语义锚点）。
+        # 门限按**交付口径**判：它才是"读者会不会看到英文栏空着/配错行"的事实，
+        # 而原始口径是"两个模型的分段一致度"（诊断用，一并报出来）。
+        delivered = absorb_one_sided_rows([dict(r) for r in rows], page)["rows"]
+        d_os = one_sided_rows(delivered)
+        d_mp = mid_prose_one_sided(delivered)
+        d_off = page_alignment(page, delivered)
+        d_total += len(delivered)
+        d_one_sided += len(d_os)
+        d_mid += len(d_mp)
+        if d_off["shifted"]:
+            d_shifted += 1
+
         item = {"page": page, "align": quality, "rows": len(rows),
                 "one_sided": [_row_of(page, i, r, why="one_sided")
                               for i, r in enumerate(os_)],
                 "mid_prose": [_row_of(page, i, r, why="mid_prose")
                               for i, r in enumerate(mp)],
-                "offset": offset}
+                "offset": offset,
+                "delivered": {"rows": len(delivered), "one_sided": len(d_os),
+                              "mid_prose": len(d_mp), "shifted": bool(d_off["shifted"]),
+                              "offset": d_off,
+                              "mid_prose_rows": [_row_of(page, i, r, why="mid_prose")
+                                                 for i, r in enumerate(d_mp)]}}
         if page not in a_pages or page not in b_pages:
             item["missing_side"] = ("a" if page not in a_pages else "b")
         per_page.append(item)
@@ -279,6 +300,8 @@ def analyse_paper(paper_id: str, mode: str) -> dict:
              "evidence": (p.get("offset") or {}).get("evidence")}
             for p in per_page if (p.get("offset") or {}).get("shifted")],
         "no_evidence_pages": no_evidence_pages,
+        "delivered": {"rows": d_total, "one_sided": d_one_sided, "mid_prose": d_mid,
+                      "shifted_pages": d_shifted},
         "per_page": per_page,
     }
 
@@ -306,19 +329,32 @@ def main() -> int:
         reports.append(analyse_paper(pid, mode))
 
     print("=" * 96)
-    print(f"两路对齐报告（门限：单侧行 ≤ {ONE_SIDED_MAX_RATIO:.0%}、段落中间单侧行 = 0、错位页 = 0）")
+    print("两路对齐报告")
+    print(f"  门限（**交付口径**，见下）：单侧行 ≤ {ONE_SIDED_MAX_RATIO:.0%}、"
+          f"段落中间单侧行 = 0、错位页 = 0")
     grand_rows = grand_one_sided = grand_mid = grand_shifted = 0
+    gd_rows = gd_one = gd_mid = gd_shift = 0
     for rep in reports:
         grand_rows += rep["rows"]
         grand_one_sided += rep["one_sided"]
         grand_mid += rep["mid_prose"]
         grand_shifted += rep.get("shifted_pages", 0)
+        d = rep["delivered"]
+        gd_rows += d["rows"]
+        gd_one += d["one_sided"]
+        gd_mid += d["mid_prose"]
+        gd_shift += d["shifted_pages"]
         ratio = rep["one_sided"] / max(1, rep["rows"])
+        dratio = d["one_sided"] / max(1, d["rows"])
         print("-" * 96)
-        print(f"# {rep['paper_id']}  [{rep['mode']}]  页 {rep['pages']}  行 {rep['rows']}")
+        print(f"# {rep['paper_id']}  [{rep['mode']}]  页 {rep['pages']}")
         print(f"  align 分布：{rep['align']}")
-        print(f"  单侧行 {rep['one_sided']}（{ratio:.2%}）  段落中间单侧行 {rep['mid_prose']}"
-              f"  **错位页 {rep.get('shifted_pages', 0)}**")
+        print(f"  原始口径（两模型分段一致度，**诊断**）：行 {rep['rows']}  "
+              f"单侧行 {rep['one_sided']}（{ratio:.2%}）  段落中间单侧行 {rep['mid_prose']}  "
+              f"错位页 {rep.get('shifted_pages', 0)}")
+        print(f"  交付口径（阅读器真正发出的行，**门限按它判**）：行 {d['rows']}  "
+              f"单侧行 {d['one_sided']}（{dratio:.2%}）  段落中间单侧行 {d['mid_prose']}  "
+              f"错位页 {d['shifted_pages']}")
         if rep.get("no_evidence_pages"):
             print(f"  无标记可判（证据不足，不算通过也不算失败）："
                   f"{rep['no_evidence_pages']}")
@@ -327,29 +363,39 @@ def main() -> int:
                   f"（{item['agree']}/{item['evidence']} 个共享标记支持）")
         for page in rep["per_page"]:
             off = page.get("offset") or {}
-            if not page["one_sided"] and not page["mid_prose"] and not off.get("shifted"):
+            dpage = page.get("delivered") or {}
+            interesting = (page["one_sided"] or page["mid_prose"] or off.get("shifted")
+                           or dpage.get("mid_prose") or dpage.get("shifted"))
+            if not interesting:
                 continue
             flag = ""
-            if page["mid_prose"]:
-                flag += "  ← 段落中间错位"
-            if off.get("shifted"):
-                flag += f"  ← 整体错位 {off['shift']:+d} 行（{off['agree']}/{off['evidence']} 标记支持）"
-            if page["one_sided"] or page["mid_prose"]:
-                print(f"    p{page['page']:>3}  align={page['align']:<9} 行 {page['rows']:>3}"
-                      f"  单侧 {len(page['one_sided'])}  中间 {len(page['mid_prose'])}"
-                      f"  标记证据 {off.get('evidence', 0)}{flag}")
-            elif off.get("shifted"):
-                print(f"    p{page['page']:>3}  align={page['align']:<9} 行 {page['rows']:>3}"
-                      f"  单侧 0  标记证据 {off['evidence']}"
-                      f"（众数偏移 {off['shift']:+d}，{off['agree']} 票）{flag}")
-            for item in page["mid_prose"]:
-                print(f"        · [{item['row_id']}] {item['type']} {item['chars']}字：{item['head']}")
+            if dpage.get("mid_prose"):
+                flag += "  ← **交付仍有段落中间单侧行**"
+            if dpage.get("shifted"):
+                flag += "  ← **交付仍错位**"
+            if flag:
+                print(f"    p{page['page']:>3}  align={page['align']:<9} 原始行 {page['rows']:>3}"
+                      f" 单侧 {len(page['one_sided'])} 中间 {len(page['mid_prose'])}  "
+                      f"交付行 {dpage.get('rows')} 单侧 {dpage.get('one_sided')} "
+                      f"中间 {dpage.get('mid_prose')}{flag}")
+                for item in dpage.get("mid_prose_rows") or []:
+                    print(f"        · [{item['row_id']}] {item['type']} {item['chars']}字："
+                          f"{item['head']}")
+            elif page["one_sided"] or page["mid_prose"] or off.get("shifted"):
+                print(f"    p{page['page']:>3}  align={page['align']:<9} 原始行 {page['rows']:>3}"
+                      f" 单侧 {len(page['one_sided'])} 中间 {len(page['mid_prose'])}  "
+                      f"标记证据 {off.get('evidence', 0)}  → 交付 行 {dpage.get('rows')} "
+                      f"单侧 {dpage.get('one_sided')} 中间 {dpage.get('mid_prose')}"
+                      f"（已由读时归一吸收）")
 
     ratio = grand_one_sided / max(1, grand_rows)
-    ok = (ratio <= ONE_SIDED_MAX_RATIO) and grand_mid == 0 and grand_shifted == 0
+    dratio = gd_one / max(1, gd_rows)
+    ok = (dratio <= ONE_SIDED_MAX_RATIO) and gd_mid == 0 and gd_shift == 0
     print("=" * 96)
-    print(f"合计：行 {grand_rows}，单侧行 {grand_one_sided}（{ratio:.2%}），"
+    print(f"合计（原始口径，诊断）：行 {grand_rows}，单侧行 {grand_one_sided}（{ratio:.2%}），"
           f"段落中间单侧行 {grand_mid}，错位页 {grand_shifted}")
+    print(f"合计（交付口径，门限）：行 {gd_rows}，单侧行 {gd_one}（{dratio:.2%}），"
+          f"段落中间单侧行 {gd_mid}，错位页 {gd_shift}")
     print(f"结论：{'通过' if ok else '不通过 —— 需要 P4b 共享坐标契约'}")
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -358,10 +404,14 @@ def main() -> int:
     out.write_text(json.dumps({
         "generated_by": "scripts/two_path_align_report.py",
         "threshold": {"one_sided_max_ratio": ONE_SIDED_MAX_RATIO, "mid_prose": 0,
-                      "shifted_pages": 0},
+                      "shifted_pages": 0, "measured_on": "delivered"},
         "totals": {"rows": grand_rows, "one_sided": grand_one_sided,
                    "one_sided_ratio": round(ratio, 4), "mid_prose": grand_mid,
-                   "shifted_pages": grand_shifted, "passed": ok},
+                   "shifted_pages": grand_shifted,
+                   "delivered": {"rows": gd_rows, "one_sided": gd_one,
+                                 "one_sided_ratio": round(dratio, 4),
+                                 "mid_prose": gd_mid, "shifted_pages": gd_shift},
+                   "passed": ok},
         "papers": reports,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"报告 → {out.relative_to(ROOT)}")
