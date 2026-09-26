@@ -1,0 +1,449 @@
+"""第二阶段「论文理解」：两路各做一次全篇理解，结果是**自由 Markdown + 引用校验**。
+
+## 在整条流水线里的位置
+
+``PDF → 解析 → 两路并发（A 转录 / B 翻译）→ 两路各自分块 → 两路各自理解 → 前端统一展示``
+
+理解是**第二阶段**：它读的是**已经落库的 chunk**（不是页图、也不是原始解析文本），
+所以"理解结果引用了哪一段"与知识库检索用的是**同一套 chunk id** —— 这正是用户要的
+"Chunk 是论文理解的引用基准单位"。
+
+## 为什么清单里给"短码"
+
+让模型直接引 `turboquant-online-vector-iclr-26:b:unit:p006-04-p006-06:zh` 这种 id 不现实
+（太长、容易抄错，抄错一个字符就没法校验）。所以每路把材料按论文顺序编号成
+`A001…` / `B001…`，模型只引短码，落库时把短码解析回真正的 chunk id。
+用户举的例子就是 `来源 Chunk: B023`，这里与之一致。
+
+**短码的稳定性**：短码 = 该路材料在**论文顺序**里的序号。重新分块会让序号变化，
+所以短码映射**跟结果一起落库**（`refs_json` 里既存短码也存解析后的 chunk id），
+理解结果的自我一致性不依赖"下次重建还得到同样的编号"。
+
+## 校验（用户口径 ⑦ 与 ⑧）
+
+- 结果**不按 schema 校验**：Markdown 部分原样保留，模型增删合并小节都合法。
+- 只校验**引用**：短码必须在本路清单里；引用到别路的短码、或不存在的短码都记进
+  `invalid_refs`，并在结果上打 `refs_ok=False`。**不丢结果**（理解内容本身仍然有用），
+  但前端会明确标出"引用不可信"。
+- B 路的"相关概念"必须有引用：`concepts` 的小节里若一个短码都没有，记
+  `missing_concept_refs=True`（用户 ⑧ 的硬要求）。
+"""
+
+from __future__ import annotations
+
+import re
+
+from backend.core.logging import get_logger
+from backend.core.utils import json_dumps, json_loads, now_iso
+from backend.repositories.mysql.models import Chunk, Paper, Understanding
+from backend.repositories.mysql.session import session_scope
+from backend.services.knowledge import retrieval
+from backend.services.understanding import prompts
+
+log = get_logger(__name__)
+
+#: 哪一路看哪些路的 chunk：``a`` 看 A 路 + 共用；``b`` 看 B 路 + 共用
+ROAD_OF_PATH = {"a": "a", "b": "b"}
+#: 本路材料清单里的语言：A 路是英文行 + 语言无关行（公式），B 路是中文行 + 语言无关行
+LANGS_OF_PATH = {"a": ("en", "any"), "b": ("zh", "any")}
+#: 清单里要哪些类型：正文 text 不进清单（单元更细、且 unit/formula/figure/table 已经是检索单位）
+TYPES = ("unit", "formula", "figure", "table")
+PATH_TASK_TYPES = {"a": "UNDERSTAND_A", "b": "UNDERSTAND_B"}
+PATH_LABELS = {"a": "技术解剖（英文侧）", "b": "阅读地图与相关概念（中文侧）"}
+MAX_ITEMS = 420
+_REF_RE = re.compile(r"(?:来源\s*Chunk\s*[:：]\s*)?\b([AB]\d{2,4})\b")
+
+
+def normalize_path(value) -> str:
+    """路径归一：只接受 ``a`` / ``b``（大小写与空格容错）。"""
+    if value is None:
+        return "a"
+    text = str(value).strip().lower()
+    if text not in ROAD_OF_PATH:
+        raise ValueError(f"未知的路径：{value!r}（只支持 'a' / 'b'）")
+    return text
+
+
+# --------------------------------------------------------------------------
+# 材料清单（chunk → 短码）
+# --------------------------------------------------------------------------
+
+
+def chunk_inventory(paper_id: str, path: str) -> list[dict]:
+    """本路要看的材料清单（按论文顺序），每项带短码。
+
+    只看**本路 + 共用**的 chunk，且只看本路语言的行 —— A 路读英文材料、B 路读中文材料，
+    与"两路各自分块"是同一条口径（B 路的中文块本来就是按中文语义切的）。
+    """
+    road = ROAD_OF_PATH[path]
+    langs = LANGS_OF_PATH[path]
+    with session_scope() as sess:
+        rows = (sess.query(Chunk)
+                .filter(Chunk.paper_id == paper_id, Chunk.chunk_type.in_(TYPES))
+                .order_by(Chunk.order_global.asc())
+                .limit(MAX_ITEMS * 3).all())
+        items: list[dict] = []
+        for row in rows:
+            meta = json_loads(row.metadata_json, {}) or {}
+            if (meta.get("road") or "shared") not in (road, "shared"):
+                continue
+            lang = meta.get("lang") or "en"
+            if lang not in langs:
+                continue
+            items.append({"chunk_id": row.id, "chunk_type": row.chunk_type,
+                          "page": int(row.page_no or 0),
+                          "section": row.section or "",
+                          "preview": row.content_preview or ""})
+    # 短码按论文顺序编号（A 路 A001… / B 路 B001…）
+    prefix = path.upper()
+    for i, item in enumerate(items, 1):
+        item["code"] = f"{prefix}{i:03d}"
+    if len(items) > MAX_ITEMS:
+        log.warning("%s 路材料清单 %d 条，截到 %d 条（理解只看主干）",
+                    path, len(items), MAX_ITEMS)
+        items = items[:MAX_ITEMS]
+    return items
+
+
+def code_map(inventory: list[dict]) -> dict[str, str]:
+    """短码 → 真正的 chunk id。"""
+    return {item["code"]: item["chunk_id"] for item in inventory}
+
+
+def path_of_code(code: str) -> str:
+    """从短码前缀看出是哪一路（`B023` → ``b``）。"""
+    return "a" if str(code).strip().upper().startswith("A") else "b"
+
+
+# --------------------------------------------------------------------------
+# 解析与校验
+# --------------------------------------------------------------------------
+
+
+def parse_result(text: str) -> dict:
+    """把模型回复拆成 ``{"markdown", "refs"}``。
+
+    **宽容**：模型没给 JSON 收尾时，整段回复就当 Markdown，`refs` 从正文里的
+    `来源 Chunk: XXXX` 兜底提取 —— 理解内容不该因为格式差一点就丢掉（用户口径 ⑦）。
+    """
+    raw = (text or "").strip()
+    markdown, refs = raw, []
+    got_json = False
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    candidates = []
+    if fence:
+        candidates.append(fence.group(1))
+    start, end = raw.rfind("{"), raw.rfind("}")
+    if 0 <= start < end:
+        candidates.append(raw[start:end + 1])
+    for cand in candidates:
+        data = json_loads(cand, None)
+        if isinstance(data, dict) and ("refs" in data or "markdown" in data):
+            got_json = True
+            md = data.get("markdown")
+            if isinstance(md, str) and md.strip():
+                markdown = md.strip()
+            else:
+                markdown = _strip_json_tail(raw)
+            got = data.get("refs")
+            if isinstance(got, list):
+                refs = [str(r).strip() for r in got if str(r).strip()]
+            break
+    if not refs:
+        refs = _scan_refs(raw)
+    return {"markdown": markdown, "refs": refs, "had_json": got_json}
+
+
+def _strip_json_tail(raw: str) -> str:
+    """去掉收尾的 ``json`` 代码块，只留自由 Markdown。
+
+    ⚠️ 必须找**开**围栏（``rfind("```json")``），不能 `rfind("```")` —— 后者拿到的是
+    **闭**围栏，切出来的 Markdown 会把整个 JSON 块带上（实测就是这样漏进来的）。
+    """
+    for needle in ("```json", "```JSON", "```"):
+        cut = raw.rfind(needle)
+        if cut > 0:
+            return raw[:cut].strip()
+    return raw.strip()
+
+
+def _scan_refs(text: str) -> list[str]:
+    """从正文里扫 `来源 Chunk: B023` / 裸 `B023`，按出现顺序去重。"""
+    out: list[str] = []
+    for m in _REF_RE.finditer(text or ""):
+        code = m.group(1).upper()
+        if code not in out:
+            out.append(code)
+    return out
+
+
+def validate_refs(refs: list[str], valid: dict[str, str], *, path: str) -> dict:
+    """校验引用：短码必须在本路清单里，且不许跨路。
+
+    返回 ``{"resolved": {code: chunk_id}, "invalid": [...], "cross_road": [...],
+    "ok": bool}``。**不抛错**：调用方把结果落库并打标记，理解内容不丢。
+    """
+    resolved: dict[str, str] = {}
+    invalid: list[str] = []
+    cross: list[str] = []
+    for code in refs:
+        if code in valid:
+            resolved[code] = valid[code]
+            continue
+        if code.startswith("A" if path == "b" else "B"):
+            cross.append(code)
+        else:
+            invalid.append(code)
+    return {"resolved": resolved, "invalid": invalid, "cross_road": cross,
+            "ok": not invalid and not cross}
+
+
+def concept_sections_missing_refs(markdown: str) -> bool:
+    """B 路硬要求（用户 ⑧）："相关概念"那一节里必须有本路短码引用。
+
+    判定很宽松：只要正文里出现过 `相关概念`/`核心概念` 之后到结尾的范围内存在短码，
+    就算满足。找不到该小节时按"缺"处理 —— 那是 B 路提示词里点名必须有的一节。
+    """
+    text = markdown or ""
+    i = max(text.find("相关概念"), text.find("核心概念"))
+    if i < 0:
+        return True
+    return not _scan_refs(text[i:])
+
+
+# --------------------------------------------------------------------------
+# 生成
+# --------------------------------------------------------------------------
+
+
+def _provider(path: str):
+    from backend.services.translation.translation_service import (
+        _current_model_id, _path_provider,
+    )
+
+    return _path_provider(path), _current_model_id(path)
+
+
+#: 理解是长输出（一份 3~5 千字的自由 Markdown），初始预算给足；不够再按同一套放大
+MAX_TOKENS = 12000
+
+
+def _generate(provider, prompt: str, *, system: str, path: str,
+              min_tokens: int = MAX_TOKENS):
+    """调模型产出理解，带"思考模式吃光预算"的**升档重试**。
+
+    复用页级流水线那一套判据（`translation_service._escalate_max_tokens`）：
+    实测 A 路（技术解剖）第一次就以 `finish=length`、reasoning 8000 tokens 而**正文为空**
+    失败 —— B 路同时成功了（35s / 71 条引用），所以这不是"理解不可行"，是预算问题。
+    """
+    from backend.services.translation.translation_service import _escalate_max_tokens
+
+    budget = max(MAX_TOKENS, int(min_tokens))
+    for _ in range(3):
+        try:
+            return provider.generate(prompt, system=system, temperature=0.3,
+                                     max_tokens=budget)
+        except Exception as exc:  # noqa: BLE001
+            escalated = _escalate_max_tokens(exc, budget)
+            if escalated is None:
+                raise
+            log.warning("%s 路理解正文为空（思考占满预算），max_tokens %d → %d 重试",
+                        path, budget, escalated)
+            budget = escalated
+    raise RuntimeError(f"{path} 路理解重试 3 次仍失败（max_tokens={budget}）")
+
+
+def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dict:
+    """跑一次全篇理解（两路各一次调用），落库并返回结果。
+
+    幂等：已存在且 `force=False` 时直接返回库里那份（与翻译的 resume 口径一致）——
+    理解是一次性全篇调用，没有"续跑页"的概念。
+    """
+    path = normalize_path(path)
+    with session_scope() as sess:
+        row = sess.get(Understanding, f"{paper_id}:{path}")
+        if row is not None and not force:
+            return to_dict(row)
+        paper = sess.get(Paper, paper_id)
+        title = (paper.title if paper is not None else "") or paper_id
+
+    inventory = chunk_inventory(paper_id, path)
+    if not inventory:
+        raise ValueError(f"{paper_id} 还没有可理解的 chunk（先建索引）")
+    brief = _brief(paper_id)
+    prompt = prompts.render_understanding_prompt(path=path, title=title,
+                                                 inventory=inventory, brief=brief)
+    provider, model_id = _provider(path)
+    system = prompts.system_for(path)
+    res = _generate(provider, prompt, system=system, path=path)
+    parsed = parse_result(res.text or "")
+    truncated = not parsed["had_json"]
+    if truncated:
+        # 没有收尾 JSON 多半是**被输出长度截断**（实测 B 路第一次只写了 4 节就停，
+        # 用户口径 ⑧ 要求的"相关概念"整节没写出来 —— 而那正是 B 路最重要的产出）。
+        # 放大预算重来一次；这次重试是**有界的**（只一次），不会无限烧调用。
+        log.warning("%s 路理解没给出收尾 JSON（疑似被截断），max_tokens ×2 重试", path)
+        res = _generate(provider, prompt, system=system, path=path,
+                        min_tokens=MAX_TOKENS * 2)
+        parsed = parse_result(res.text or "")
+    valid = code_map(inventory)
+    check = validate_refs(parsed["refs"], valid, path=path)
+    missing = concept_sections_missing_refs(parsed["markdown"]) if path == "b" else False
+    payload = {
+        "paper_id": paper_id, "path": path,
+        "markdown": parsed["markdown"],
+        "refs_json": json_dumps({"codes": parsed["refs"], **check}),
+        "model": getattr(res, "model", "") or provider.model_name or model_id or "",
+        "prompt_tokens": int(getattr(res, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(res, "completion_tokens", 0) or 0),
+        "inventory": json_dumps([
+            {"code": it["code"], "chunk_id": it["chunk_id"],
+             "chunk_type": it["chunk_type"], "page": it["page"]}
+            for it in inventory]),
+        "refs_ok": check["ok"], "missing_concept_refs": missing,
+        "updated_at": now_iso(),
+    }
+    _save(paper_id, path, payload)
+    log.info("理解完成（%s，%s 路）：Markdown %d 字，引用 %d 条（有效 %d / 无效 %d / 跨路 %d）",
+             paper_id, path, len(payload["markdown"]), len(parsed["refs"]),
+             len(check["resolved"]), len(check["invalid"]), len(check["cross_road"]))
+    return get_understanding(paper_id, path)
+
+
+def _brief(paper_id: str) -> str:
+    """文档简报（领域 + 术语表）：复用翻译阶段的简报，理解阶段同样受益。
+
+    取不到就返回空串 —— 简报只是锦上添花，不该让理解失败。
+    """
+    try:
+        from backend.services.translation.brief import generate_brief
+
+        brief = generate_brief(paper_id)
+        if brief is None or not getattr(brief, "enabled", False):
+            return ""
+        terms = "、".join(str(t.get("zh") or t.get("term") or "")
+                        for t in (brief.glossary or [])[:20])
+        return f"{brief.domain}｜术语：{terms}"
+    except Exception as exc:  # noqa: BLE001
+        log.debug("取文档简报失败（忽略）：%s", exc)
+        return ""
+
+
+def _save(paper_id: str, path: str, payload: dict) -> None:
+    with session_scope() as sess:
+        row = sess.get(Understanding, f"{paper_id}:{path}")
+        created = row.created_at if row is not None else payload["updated_at"]
+        if row is None:
+            row = Understanding(id=f"{paper_id}:{path}", created_at=created)
+            sess.add(row)
+        for key in ("paper_id", "path", "markdown", "refs_json", "model",
+                    "prompt_tokens", "completion_tokens", "inventory", "refs_ok",
+                    "missing_concept_refs", "updated_at"):
+            setattr(row, key, payload[key])
+
+
+def to_dict(row: Understanding) -> dict:
+    refs = json_loads(row.refs_json, {}) or {}
+    inventory = json_loads(row.inventory, []) or []
+    by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
+    resolved = refs.get("resolved") or {}
+    return {
+        "paper_id": row.paper_id, "path": row.path,
+        "label": PATH_LABELS.get(row.path, row.path),
+        "markdown": row.markdown or "",
+        "refs": refs.get("codes") or [],
+        "refs_resolved": [
+            {"code": code, "chunk_id": chunk_id,
+             "chunk_type": (by_code.get(code) or {}).get("chunk_type"),
+             "page": (by_code.get(code) or {}).get("page")}
+            for code, chunk_id in resolved.items()],
+        "invalid_refs": refs.get("invalid") or [],
+        "cross_road_refs": refs.get("cross_road") or [],
+        "refs_ok": bool(row.refs_ok),
+        "missing_concept_refs": bool(row.missing_concept_refs),
+        "model": row.model, "updated_at": row.updated_at,
+        "prompt_tokens": int(row.prompt_tokens or 0),
+        "completion_tokens": int(row.completion_tokens or 0),
+        "inventory_size": len(inventory),
+        "inventory": inventory,
+    }
+
+
+def get_understanding(paper_id: str, path: str | None = None) -> dict:
+    """取某一路的理解结果；``path=None`` 取两路（前端一次要两条）。"""
+    with session_scope() as sess:
+        if path is not None:
+            row = sess.get(Understanding, f"{paper_id}:{normalize_path(path)}")
+            return to_dict(row) if row is not None else {}
+        rows = (sess.query(Understanding)
+                .filter(Understanding.paper_id == paper_id).all())
+    by_path = {r.path: to_dict(r) for r in rows}
+    return {"paper_id": paper_id, "a": by_path.get("a") or {},
+            "b": by_path.get("b") or {}, "done": sorted(by_path)}
+
+
+def understanding_status(paper_id: str) -> dict:
+    """两路各自的状态（前端按钮与进度用）。"""
+    with session_scope() as sess:
+        rows = (sess.query(Understanding)
+                .filter(Understanding.paper_id == paper_id).all())
+    have = {r.path: r for r in rows}
+    return {
+        "paper_id": paper_id,
+        "a": {"done": "a" in have, "updated_at": have["a"].updated_at if "a" in have else None},
+        "b": {"done": "b" in have, "updated_at": have["b"].updated_at if "b" in have else None},
+        "chunk_ready": bool(chunk_inventory(paper_id, "a")),
+    }
+
+
+# --------------------------------------------------------------------------
+# 任务入口（与页级翻译同构：一个任务一路，幂等/取消/面板都分得清）
+# --------------------------------------------------------------------------
+
+
+def run_understand_task(ctx, path: str) -> dict:
+    paper_id = ctx.paper_id
+    if not paper_id:
+        raise ValueError("UNDERSTAND 任务缺少 paper_id")
+    path = normalize_path(path)
+    ctx.progress(0, 1, force=True,
+                 message=f"待理解（{PATH_LABELS[path]}）")
+    result = build_understanding(paper_id, path, force=True)
+    ok_refs = result.get("refs_ok")
+    ctx.progress(1, 1, force=True,
+                 message=(f"{PATH_LABELS[path]}完成：{len(result['markdown'])} 字，"
+                          f"引用 {len(result['refs'])} 条"
+                          f"{'' if ok_refs else '（**有无效引用**）'}"))
+    return {"message": f"{PATH_LABELS[path]}完成",
+            "_done_items": 1, "_total_items": 1,
+            "refs_ok": ok_refs, "refs": len(result.get("refs") or []),
+            "invalid_refs": result.get("invalid_refs") or []}
+
+
+def start_understanding(paper_id: str, *, paths: list[str] | None = None,
+                        force: bool = False) -> dict:
+    """为两路各建一个理解任务（真并发，与 `start_translation` 同一套路）。"""
+    from backend.services.paper import paper_service
+    from backend.services.task.task_service import task_service
+
+    paper_service.get_paper(paper_id)
+    want = [normalize_path(p) for p in (paths or ["a", "b"])]
+    inventory = {p: len(chunk_inventory(paper_id, p)) for p in want}
+    out = []
+    for path in want:
+        if inventory[path] == 0:
+            log.warning("%s 路没有可理解的 chunk，跳过", path)
+            continue
+        task, created = task_service.get_or_create(
+            PATH_TASK_TYPES[path], "knowledge", paper_id,
+            {"path": path, "force": bool(force)},
+            total_items=1)
+        out.append({"path": path, "task_id": task["id"], "created": created,
+                    "reused": not created, "inventory": inventory[path]})
+    return {"paper_id": paper_id, "tasks": out,
+            "task_ids": [t["task_id"] for t in out]}
+
+
+def _retrieval_note() -> str:
+    """留一个显式引用，避免"理解阶段"与"知识库检索"被误当成同一套规则。"""
+    return retrieval.SETTING_PREFIX

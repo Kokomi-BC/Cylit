@@ -287,6 +287,23 @@ def handle_reconcile(ctx: TaskContext) -> dict:
 
 
 # --------------------------------------------------------------------------
+# 第二阶段：论文理解（两路各做不同的事，见 `services/understanding/`）
+# --------------------------------------------------------------------------
+
+
+def handle_understand_a(ctx: TaskContext) -> dict:
+    from backend.services.understanding import understanding_service as us
+
+    return us.run_understand_task(ctx, "a")
+
+
+def handle_understand_b(ctx: TaskContext) -> dict:
+    from backend.services.understanding import understanding_service as us
+
+    return us.run_understand_task(ctx, "b")
+
+
+# --------------------------------------------------------------------------
 # 未实现的任务类型（下一轮）：给出明确原因，不留静默失败
 # --------------------------------------------------------------------------
 
@@ -307,6 +324,9 @@ def register_all() -> None:
     # 两路并发：各一个任务类型，幂等/取消/续跑/任务面板都分得清是哪一路
     task_runner.register("TRANSCRIBE_EN", handle_transcribe_en)
     task_runner.register("TRANSLATE_ZH", handle_translate_zh)
+    # 第二阶段：理解（同样两路各一个任务）
+    task_runner.register("UNDERSTAND_A", handle_understand_a)
+    task_runner.register("UNDERSTAND_B", handle_understand_b)
     task_runner.register("EMBED", handle_embed)
     task_runner.register("INDEX", handle_index)
     task_runner.register("RECONCILE", handle_reconcile)

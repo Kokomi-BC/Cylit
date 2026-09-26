@@ -30,6 +30,8 @@ TASK_STATUSES = (
 TASK_TYPES = (
     "IMPORT", "PARSE", "TRANSLATE_MD", "TRANSCRIBE_EN", "TRANSLATE_ZH",
     "TRANSLATE_PDF", "EMBED", "INDEX", "ANALYZE", "AI_READING", "RECONCILE",
+    # 第二阶段「论文理解」：两路各一个任务（A 技术解剖 / B 阅读地图与相关概念）
+    "UNDERSTAND_A", "UNDERSTAND_B",
 )
 # 队列（三条产线，规划 §3）
 TASK_QUEUES = ("md", "pdf", "knowledge", "system")
@@ -351,3 +353,34 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+# ---------------------------------------------------------------- ⑭ 论文理解（第二阶段）
+class Understanding(Base, TimestampMixin):
+    """第二阶段「论文理解」的结果：一篇论文 × 一路 = 一条。
+
+    为什么**不做成页级**：理解是"读完全篇再讲一遍"，页级切开就没有全局视角了
+    （方法链条、相关概念、推荐阅读顺序都是跨页的）。所以一篇论文两路各一次调用。
+
+    为什么结果是 ``Text`` 里的**自由 Markdown**：用户口径 ⑦ —— 理解结果不是固定 schema，
+    模型可以增删合并小节，所以不能按字段拆表；结构化只留在 ``refs_json``
+    （引用校验与"跳转到原文"要用）与 ``inventory``（短码 → chunk id 的映射）。
+    """
+
+    __tablename__ = "understanding"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)   # ``{paper_id}:{path}``
+    paper_id: Mapped[str] = mapped_column(String(64), index=True)
+    path: Mapped[str] = mapped_column(String(4), default="a")        # a / b
+    markdown: Mapped[str | None] = mapped_column(Text)
+    #: ``{"codes":[...], "resolved":{code: chunk_id}, "invalid":[...], "cross_road":[...]}``
+    refs_json: Mapped[str | None] = mapped_column(Text)
+    #: ``[{"code","chunk_id","chunk_type","page"}]``：短码映射**与结果一起存**，
+    #: 这样重新分块导致短码变化时，已生成的理解仍然是自洽的
+    inventory: Mapped[str | None] = mapped_column(Text)
+    refs_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: B 路硬要求：相关概念必须引用本路 chunk（用户 ⑧）
+    missing_concept_refs: Mapped[bool] = mapped_column(Boolean, default=False)
+    model: Mapped[str | None] = mapped_column(String(64))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)

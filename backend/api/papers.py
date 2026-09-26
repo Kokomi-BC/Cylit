@@ -211,6 +211,51 @@ async def trigger_translate(paper_id: str, request: Request,
                     request=request)
 
 
+@router.post("/papers/{paper_id}/understand")
+async def trigger_understand(paper_id: str, request: Request,
+                             payload: dict = Body(default={})):
+    """触发**第二阶段「论文理解」**（默认两路并发：A 技术解剖 + B 阅读地图与相关概念）。
+
+    - ``paths=["a","b"]``（默认）：两路各一次全篇理解调用，**同时跑**；
+      ``["b"]`` = 只做中文侧的阅读地图/相关概念；
+    - ``force=true``：已有结果也重跑（默认幂等，直接返回库里那份）。
+
+    前置条件：这篇论文**已经建过索引**（理解读的是 chunk，不是页图）。
+    理解与知识库问答是两套规则：理解**允许**用通用知识且不必区分来源；
+    问答严格"只依据来源"。
+    """
+    from backend.services.understanding import understanding_service as us
+
+    paths = payload.get("paths") or ["a", "b"]
+    result = us.start_understanding(paper_id, paths=list(paths),
+                                    force=bool(payload.get("force")))
+    if not result["tasks"]:
+        raise ValidationError("这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解")
+    roads = "、".join(us.PATH_LABELS.get(t["path"], t["path"]) for t in result["tasks"])
+    return envelope(result, message=f"已创建理解任务（{roads}）", request=request)
+
+
+@router.get("/papers/{paper_id}/understanding")
+async def get_understanding(paper_id: str, request: Request,
+                            path: str | None = Query(None, pattern="^(a|b)$")):
+    """取理解结果（默认两路一起返回，前端一次拿两条）。
+
+    每条结果里有：自由 Markdown、引用短码、**解析后的 chunk id**（前端据此"跳转到原文"）、
+    无效/跨路引用（``refs_ok=false`` 时前端要标"引用不可信"）。
+    """
+    from backend.services.understanding import understanding_service as us
+
+    return envelope(us.get_understanding(paper_id, path), request=request)
+
+
+@router.get("/papers/{paper_id}/understanding/status")
+async def understanding_status(paper_id: str, request: Request):
+    """两路理解各自的状态（按钮与"能不能理解"的判断）。"""
+    from backend.services.understanding import understanding_service as us
+
+    return envelope(us.understanding_status(paper_id), request=request)
+
+
 @router.post("/papers/{paper_id}/metadata/auto")
 async def auto_metadata(paper_id: str, request: Request,
                         payload: dict = Body(default={})):
