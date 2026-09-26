@@ -166,8 +166,13 @@ watch([outline, () => props.section], () => { void nextTick(syncActive); });
   text-transform: uppercase; margin: 0 0 6px 6px;
 }
 
-/* 右栏正文：阅读器的正文列口径 —— 行宽 880、列内居中、页边距（10px 16px 72px 同 `.rows-wrap`） */
-.body-col { max-width: 880px; margin: 0 auto; padding: 10px 16px 72px; min-width: 0; }
+/* 右栏正文：阅读器的正文列口径 —— 行宽 880、列内居中、页边距（10px 16px 72px 同 `.rows-wrap`）。
+   ⚠️ `width: 100%` 不能省：只给 `max-width` + `margin: 0 auto` 时，**auto 外边距会让 grid 的
+   stretch 失效**，这一列会退化成"按内容撑到 max-width"（fit-content 到 880px）—— 窄屏下它比
+   栅格列还宽，直接顶出整页横向滚动条（实测 900×900 下 documentElement.scrollWidth = 920）。
+   给上 `width: 100%`：宽屏时宽 = 100% 被 max-width 夹到 880 并由 auto 外边距居中；
+   窄屏时就是列宽，不再溢出。 */
+.body-col { width: 100%; max-width: 880px; margin: 0 auto; padding: 10px 16px 72px; min-width: 0; }
 /* 点目录滚过去时给顶栏让位（否则标题会被 sticky 顶栏吃掉） */
 .body-col :deep(h1), .body-col :deep(h2), .body-col :deep(h3),
 .body-col :deep(h4), .body-col :deep(h5), .body-col :deep(h6) {

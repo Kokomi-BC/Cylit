@@ -14,7 +14,16 @@
 export interface InsightHeading {
   /** 稳定 anchor id（前端生成，不依赖 Markdown 渲染器） */
   id: string;
-  /** 目录里显示的文字（已去掉 markdown 标记） */
+  /**
+   * 目录里显示的**原始 markdown 文本**（标题行去掉 `#` 之后的原文）。
+   *
+   * ⚠️ 为什么留原文而不是剥干净的纯文本：标题里本来就有 `$Q_{\text{mse}}$`、`**重点**`
+   * 这类行内标记，目录要**按 Markdown 渲染**（公式出 KaTeX、粗体加粗）—— 与阅读器自己的目录
+   * （`ReaderToc` 用 `inlineHtml` 渲染每一行）同一口径。剥成纯文本就会把 LaTeX 源码直接摆在
+   * 目录里（用户报的就是这个："标签页的目录还不支持 Markdown"）。
+   */
+  md: string;
+  /** 同一份标题的**纯文本**（tooltip / 可访问名；公式压成最接近屏上效果的文字） */
   text: string;
   /** 标题层级：1~6（`#` 的个数）；「相关概念」这类人工条目固定给 1 */
   level: number;
@@ -23,7 +32,12 @@ export interface InsightHeading {
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
 const FENCE_RE = /^\s*(```|~~~)/;
 
-/** 去掉标题里的行内标记：目录里要的是"人话"，不是 `**方法**` 这种源码。 */
+/**
+ * 标题 → 纯文本（**只给 tooltip / aria 用**；目录里显示的是渲染后的 `md`）。
+ *
+ * 公式要压成人看得懂的样子：`$Q_{\text{mse}}$` 在屏幕上就是 "Qmse"，
+ * tooltip 里留 `Q_{\text{mse}}` 这种 LaTeX 源码反而像个报错。
+ */
 function plainHeading(raw: string): string {
   return raw
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')     // 图片 → alt
@@ -31,6 +45,10 @@ function plainHeading(raw: string): string {
     .replace(/`([^`]*)`/g, '$1')                  // 行内代码
     .replace(/(\*\*|__)(.*?)\1/g, '$2')           // 粗体
     .replace(/(\*|_)(.*?)\1/g, '$2')              // 斜体
+    .replace(/\$([^$]*)\$/g, (_m, tex: string) => tex
+      .replace(/\\text\{([^}]*)\}/g, '$1')        // \text{mse} → mse
+      .replace(/\\[a-zA-Z]+/g, '')                // 其余 LaTeX 命令去掉
+      .replace(/[_^{}\\$]/g, ''))                 // 上下标/花括号等符号去掉
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -48,7 +66,10 @@ export function buildInsightOutline(
   opts: { prefix: string; concepts?: boolean } = { prefix: 'ins' },
 ): InsightHeading[] {
   const out: InsightHeading[] = [];
-  if (opts.concepts) out.push({ id: `${opts.prefix}-concepts`, text: '相关概念', level: 1 });
+  if (opts.concepts) {
+    // 人工条目：md 与 text 都是纯中文，`inlineHtml` 渲染出来还是一行字
+    out.push({ id: `${opts.prefix}-concepts`, md: '相关概念', text: '相关概念', level: 1 });
+  }
   let headingIndex = 0;
   let inFence = false;
   for (const line of String(markdown ?? '').split(/\r?\n/)) {
@@ -58,7 +79,12 @@ export function buildInsightOutline(
     if (!m) continue;
     const text = plainHeading(m[2]);
     if (!text) continue;
-    out.push({ id: `${opts.prefix}-h-${headingIndex}`, text, level: m[1].length });
+    out.push({
+      id: `${opts.prefix}-h-${headingIndex}`,
+      md: m[2].trim(),                     // 原文：交给目录按 Markdown 渲染
+      text,                                // 纯文本：tooltip / aria
+      level: m[1].length,
+    });
     headingIndex += 1;
   }
   return out;
