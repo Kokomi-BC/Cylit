@@ -2,10 +2,12 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **解读**（目录由 ReaderToc 负责）。
- * 公式**只读**：来自 Markdown 提取（ReaderFormulaList），不做复核、不分级、不比对裁图。
- * 「解读」在左栏（用户口径第二轮返工把右侧悬浮面板撤销了）：它和「怎么读这篇论文」
- * 是同一份解读，共用一个页签即可 —— 一份解读里本来就同时含精读与阅读地图。
+ * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **论文解读** / **阅读地图**
+ * （目录由 ReaderToc 负责）。公式**只读**：来自 Markdown 提取，不做复核、不分级、不比对裁图。
+ *
+ * 解读**拆成两个页签**（用户口径第三轮）：`a.markdown` = 论文解读、`b.markdown` + 概念卡 =
+ * 阅读地图。两份内容用一个共享组件（`InsightPanel` → `InsightDoc`），只有 `section` 不同；
+ * 整页版（`/understand`、`/readmap`）也复用同一套渲染与数据源。
  */
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
@@ -16,8 +18,8 @@ import type {
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
+import InsightPanel from '@/components/insight/InsightPanel.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
-import ReaderInsight from './ReaderInsight.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
 export interface BriefDraft {
@@ -28,8 +30,8 @@ export interface BriefDraft {
   glossaryText: string;
 }
 
-/** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签） */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
+/** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签）。 */
+export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight' | 'readmap';
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
@@ -44,7 +46,7 @@ const props = withDefaults(defineProps<{
   briefSource?: string;
   /** 「任务」页签：这篇论文的**全部**任务（各类型都算），页签里按类型汇总成清单 */
   tasks: TaskInfo[];
-  /** 「解读」页签：按论文取理解结果（阅读器面板 / 理解页共用同一套三块结构） */
+  /** 「论文解读」/「阅读地图」页签：按论文取理解结果（整页版共用同一份缓存） */
   paperId: string;
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
@@ -63,19 +65,9 @@ const emit = defineEmits<{
   (e: 'cancel-task', task: TaskInfo): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
+  /** 解读/阅读地图页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
+  (e: 'open-insight-page', section: 'read' | 'map'): void;
 }>();
-
-/**
- * 「在新标签页打开解读」= 整页版理解页（`/understand/:paperId`）。
- *
- * 为什么要在左栏给这个入口：左栏再宽也就几百像素，长解读读起来憋屈；
- * 想通读的人应该有一键到整页的路。用 `open` 而不是路由跳转 —— 阅读位置不能丢。
- * URL 里的 `/app/` 是**部署前缀**（后端把 `frontend/dist` 挂在 `/app/`），
- * 与窗口标题栏里那条链接同一口径。
- */
-function openInsightPage() {
-  window.open(`/app/understand/${props.paperId}`, '_blank', 'noopener');
-}
 
 function locate(id?: string | null, page?: number | null) {
   if (!id && !page) return;
@@ -200,28 +192,16 @@ const merged = computed<MergedItem[]>(() => {
 
 <template>
   <div class="panel-body">
-    <!-- 解读：一份解读里同时含「论文精读」与「怎么读这篇论文」（还有相关概念），
-         所以一个页签就够（用户口径：解读与阅读地图共用一个页签）——不再有 A/B 切换。
-         右上角那枚**只有图标**的按钮 = 到整页版（长解读可以开新标签页通读）。 -->
-    <template v-if="props.tab === 'insight'">
-      <div class="row tiny ins-open-bar">
-        <span class="spacer" />
-        <button
-          class="btn icon sm ghost"
-          data-insight-open
-          title="在新标签页打开解读"
-          aria-label="在新标签页打开解读"
-          @click="openInsightPage"
-        >
-          <AppIcon name="external" :size="13" />
-        </button>
-      </div>
-      <ReaderInsight
-        :paper-id="props.paperId"
-        :task-running="props.insightRunning"
-        @queued="emit('insight-queued')"
-      />
-    </template>
+    <!-- 论文解读（A 路）/ 阅读地图（B 路 + 相关概念）：两个页签共用 InsightPanel，
+         只有 `section` 不同。顶部只有「标题 + 一枚只有图标的按钮」（打开整页 = 应用内新标签页）。 -->
+    <InsightPanel
+      v-if="props.tab === 'insight' || props.tab === 'readmap'"
+      :paper-id="props.paperId"
+      :section="props.tab === 'readmap' ? 'map' : 'read'"
+      :running="props.insightRunning"
+      @started="emit('insight-queued')"
+      @open-page="emit('open-insight-page', props.tab === 'readmap' ? 'map' : 'read')"
+    />
 
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
     <template v-if="props.tab === 'annotations'">
@@ -497,7 +477,4 @@ const merged = computed<MergedItem[]>(() => {
   margin-top: 4px; color: var(--danger); line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-/* 解读页签顶栏：只有一枚图标按钮（用户口径：旁边**不许**写说明文字），贴右对齐。
-   负的上边距把 `panel-body` 的 8px 内边距吃掉一点，别让整页多出一条空行的观感。 */
-.ins-open-bar { margin: -2px 0 4px; }
 </style>

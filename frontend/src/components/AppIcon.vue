@@ -31,6 +31,9 @@ const ICONS: Record<string, string> = {
   list: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   panel: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M12 4.5v15"/>',
   layers: '<path d="M12 3.5 21 8l-9 4.5L3 8z"/><path d="M4.6 12.4 12 16l7.4-3.6M4.6 16.4 12 20l7.4-3.6"/>',
+  /* 折叠地图：「阅读地图」页签 / 标签用（`layers` 已经给「术语」了，两个页签图标别撞）。
+     三块纸面 + 两道折痕，是最容易一眼认出来的"地图"。 */
+  map: '<path d="M9 4 3 6.4v13.2L9 17.2l6 2.4 6-2.4V4l-6 2.4z"/><path d="M9 4v13.2M15 6.4v13.2"/>',
 
   // ---- 方向 / 折叠 ----
   back: '<path d="M19 12H5"/><path d="M11 6 5 12l6 6"/>',

@@ -27,8 +27,9 @@ import { markRanges, rangeOffsets } from '@/utils/domMarks';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
+import { READER_TEXT_SIZES, type ReaderTextSize } from '@/utils/readerFont';
 import { reportError, toast, withLoading } from '@/stores/app';
-import { routeKey, setTabTitle } from '@/stores/tabs';
+import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
   copyText, debounce, downloadText, flattenOutline, outlineParentIds, pct, truncate,
 } from '@/utils/format';
@@ -201,18 +202,19 @@ async function ensureAsideVisible() {
 }
 
 /**
- * 打开解读页签（工具栏按钮与 `?side=insight` 深链都走它）：展开左栏 → 选中页签。
+ * 打开「论文解读」页签（**只给「⋯」里的「重新生成解读」用**）：发起任务之后把左栏那个页签打开，
+ * 否则界面上看不到任何变化，像"点了没反应"。
  *
- * 「变宽」没有写在这里，而是挂在 `watch(sideTab)` 上：点页签、深链、以后可能加的快捷键
+ * 工具栏原来那枚「解读」按钮**已按用户口径删除**（解读在左栏就是一个页签，工具栏不该有重复入口）；
+ * `?side=insight` / `?side=readmap` 深链仍然只会"选中页签"，靠 `watch(sideTab)` 变宽。
+ *
+ * 「变宽」也没有写在这里，而是挂在 `watch(sideTab)` 上：点页签、深链、以后可能加的快捷键
  * 都是"进了解读页签"，写一处必然漏一处。
  */
 async function openInsightTab() {
   await ensureAsideVisible();
   sideTab.value = 'insight';
 }
-
-/** 工具栏「解读」按钮当前是不是"正在看解读"（按钮的点亮态与它一致） */
-const insightOpenActive = computed(() => asideVisible.value && sideTab.value === 'insight');
 
 /**
  * 进「解读」页签时把侧栏放宽到 520（用户口径）。
@@ -233,12 +235,18 @@ async function widenForInsight() {
    点页签、深链、以后可能加的快捷键都是"进了解读"，写一处必然漏一处。 */
 
 /**
- * 工具栏「解读」按钮：展开左栏并选中解读页签（**不再**控制右侧悬浮面板 —— 那一版已按用户口径撤销）。
- * 已经在看解读时再点一次就收起左栏：这个按钮现在管的就是左栏，与左边那个侧栏开关同一个手感。
+ * 左栏「论文解读」/「阅读地图」页签右上角那枚图标按钮：在**应用内**新开一个标签页
+ * （TabBar 里多一个标签），不是浏览器标签页 —— 用户的"新标签页"指的是这个。
+ *
+ * ⚠️ 必须在**点击回调里**调 `openTab`：它会改响应式标签状态，渲染期调就是"渲染→改状态→再渲染"
+ * 的死循环（`stores/tabs.ts` 里也写了这条）。
  */
-async function toggleInsightPane() {
-  if (insightOpenActive.value) { await toggleAside(); return; }
-  await openInsightTab();
+function openInsightPage(section: 'read' | 'map') {
+  const target = openTab({
+    name: section === 'map' ? 'readmap' : 'understand',
+    params: { paperId: instancePaperId },
+  });
+  void router.push(target as never);
 }
 
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
@@ -312,15 +320,18 @@ const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
 
-/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 / **解读**。
- *  解读与「怎么读这篇论文」是同一份内容（一份解读里本来就同时含精读与阅读地图），
- *  所以**共用一个页签**（用户口径）；进这个页签会自动把侧栏放宽（见 `widenForInsight`）。 */
+/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 /
+ *  **论文解读** / **阅读地图**。解读拆成两个页签（用户口径第三轮）：A 路 markdown = 论文解读，
+ *  B 路 markdown + 相关概念 = 阅读地图；两者读同一个接口，但走 `useUnderstanding` 的整包缓存，
+ *  来回切不会重复请求。进这两个页签都会自动把侧栏放宽（见 `widenForInsight`）。 */
 type SideTabKey = 'toc' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
-const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight'];
-/* 进「解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
-   放在这里而不是点击处理器里：点页签 / `?side=insight` 深链 / 工具栏按钮都算"进了解读"。 */
-watch(sideTab, (k) => { if (k === 'insight') void widenForInsight(); });
+const SIDE_TAB_KEYS = [
+  'toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight', 'readmap',
+];
+/* 进「论文解读」/「阅读地图」页签就把左栏放宽（`widenForInsight` 只增不减）。
+   放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
+watch(sideTab, (k) => { if (k === 'insight' || k === 'readmap') void widenForInsight(); });
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
  * 只数 IR 术语表是不对的：简报里那 20 条统一译法才是真正注入每次翻译 prompt 的那一份，
@@ -360,8 +371,12 @@ const SIDE_TABS = computed<Array<{
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
   {
-    k: 'insight', icon: 'sparkle', label: '解读',
-    title: '解读（论文精读 + 相关概念 + 怎么读这篇论文，一份内容）',
+    k: 'insight', icon: 'sparkle', label: '论文解读',
+    title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
+  },
+  {
+    k: 'readmap', icon: 'map', label: '阅读地图',
+    title: '阅读地图（相关概念 + 怎么读这篇论文）',
   },
   { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
 ]);
@@ -569,9 +584,10 @@ function downloadMarkdown() {
 /** 对照 + 原 PDF 时，右侧文字列放哪一侧（默认译文；可切原文） */
 const pageSide = ref<'en' | 'zh'>('zh');
 
-/* 正文字号：小 / 中 / 大（**默认小**），选中后记在本地（纯展示偏好，不进服务端进度）。 */
-const TEXT_SIZES = { sm: 13, md: 15, lg: 17 } as const;
-type TextSizeKey = keyof typeof TEXT_SIZES;
+/* 正文字号：小 / 中 / 大（**默认小**），选中后记在本地（纯展示偏好，不进服务端进度）。
+ * 档位表来自 `utils/readerFont`：两个解读整页也要用同一份（否则"阅读器显示大、整页显示中"）。 */
+const TEXT_SIZES = READER_TEXT_SIZES;
+type TextSizeKey = ReaderTextSize;
 const TEXT_SIZE_KEY = 'pm-reader-text-size';
 const TEXT_SIZE_OPTIONS: Array<{ k: TextSizeKey; label: string }> = [
   { k: 'sm', label: '小' }, { k: 'md', label: '中' }, { k: 'lg', label: '大' },
@@ -2622,19 +2638,9 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
         <span class="spacer" />
 
-        <!-- 解读：展开左栏并选中「解读」页签（解读在左栏，不再有右侧悬浮面板）。
-             已经在看解读时再点一次就收起左栏 —— 它现在管的就是左栏，与左边那个侧栏开关同一个手感。
-             `data-insight-toggle` 供自检脚本点它。 -->
-        <button
-          class="btn insight-toggle"
-          data-insight-toggle
-          :class="{ 'is-open': insightOpenActive }"
-          :aria-pressed="insightOpenActive"
-          :title="insightOpenActive ? '收起解读（左栏）' : '打开解读（左栏）'"
-          @click="toggleInsightPane"
-        >
-          <AppIcon name="sparkle" :size="14" />解读
-        </button>
+        <!-- 工具栏**不再有「解读」按钮**（用户口径）：解读在左栏就是一个页签（现在还是两个：
+             「论文解读」「阅读地图」），工具栏再放一个重复入口只会让人以为它管的是另一件事。
+             左栏自己的开合仍由最左边那枚侧栏开关负责。 -->
 
         <!-- 翻译完成时：实时状态与进度就没意义了（整篇本来就不在跑）。
              完成态只留一个绿色对勾（用户口径：不要一直占着"全部 N 页已翻译"这行字），
@@ -2680,8 +2686,10 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
       </div>
 
-      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/解读（可整体折叠，可拖宽） ============ -->
-      <aside :class="['reader-aside', { resizing: asideResizing }]">
+      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读/阅读地图（可整体折叠，可拖宽） ============
+           `--reader-font-size` 也设在这一栏上：左栏里的「论文解读 / 阅读地图」用的是阅读器的正文字号
+           （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
+      <aside :class="['reader-aside', { resizing: asideResizing }]" :style="{ '--reader-font-size': `${readerFont}px` }">
         <div class="side-tabs-wrap">
           <button
             v-if="tabsScroll.left"
@@ -2762,6 +2770,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @delete-note="deleteNote"
           @cancel-task="cancelTranslate"
           @insight-queued="fetchTasks"
+          @open-insight-page="openInsightPage"
         />
         <!-- 拖拽改宽度：贴在侧栏右边缘（见 onResizeDown 的说明），双击复位 -->
         <div
@@ -2941,14 +2950,6 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 /* 翻译完成徽章：只留一个对勾（口径：不要一行"全部 N 页已翻译"占着工具栏）。
    `.badge` 默认是"图文胶囊"，这里把左右内边距换成固定 22px 见方 + 内容居中。 */
 .done-badge { padding: 0; width: 22px; justify-content: center; }
-
-/* 「解读」开关：`base.css` 的 `.btn` 没有 active 态，而它又不像「继续翻译」那样是 primary，
-   所以只在**正在看解读**（左栏开着 + 选中解读页签）时点亮一下，其余时候与其它次按钮同观感。 */
-.insight-toggle.is-open {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
-}
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

@@ -21,7 +21,7 @@ const router = useRouter();
 /** 四个面（改造后的主结构）—— 顺序就是流水线顺序：读 → 懂 → 查 → 练 */
 const FACES = [
   { name: 'library', label: '阅读', icon: 'library', hint: '论文库与阅读器：导入 / 解析 / 两路翻译 / 中英对照精读' },
-  { name: 'understand', label: '理解', icon: 'layers', hint: '第二阶段：阅读地图 + 技术解剖，结果引用到 chunk' },
+  { name: 'understand', label: '论文解读', icon: 'sparkle', hint: '第二阶段：论文精读（背景 / 动机 / 贡献 / 方法 / 实验 / 结论）' },
   { name: 'knowledge', label: '知识库', icon: 'knowledge', hint: '跨论文检索与问答（含插图/公式/表格），带证据' },
   { name: 'study', label: '学习', icon: 'task', hint: '把理解结果变成可复习的概念（占位，写明计划）' },
 ];
