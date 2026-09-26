@@ -3970,3 +3970,149 @@ q26 → 306 字 §5.3 单元 + 公式原子块；q19 → 303 字 §B.2 单元就
 | `scripts/kb_arm_compare.py` 等 | 沿用；本轮的 arm3b / arm4 报告与对比表在 `data/logs/snapshot/` |
 
 测试：`pytest tests` **408 通过 / 1 跳过**（比上一轮 +25，正好是新增两个测试文件）。
+
+---
+
+### 17.66 第四十五轮（P0）—— 设置键解析：文档写着 `kb.*`，代码读的是裸键（两个开关**从未生效**）
+
+论文理解系统改造的第 0 步：先把"底层开关到底能不能调"这件事修对，否则后面每加一个参数都会
+踩同一个坑。起因是排查"`kb.retrieval_types` 有没有生效"。
+
+#### 事实：两个已文档化的开关是死的
+
+| 键（文档 / 测试 / dev-log 里的写法） | 代码实际读的键 | 后果 |
+|---|---|---|
+| `kb.retrieval_types` | `retrieval_types`（`retrieval.default_search_types`） | 候选集永远走默认四个 |
+| `kb.unit_expand` | `unit_expand`（`rag_service._unit_expand_mode`） | ±1 档位永远是默认 1 |
+
+两处都**没有任何报错** —— 它只是悄悄用了默认值。这正是最难查的一类缺陷：文档说可以调，
+行为看起来也"正常"（因为默认值恰好就是设计值）。
+
+#### 一条规则，两个层次一起修
+
+**解析**：`retrieval.setting` / `setting_int` / `setting_flag` 成为全库唯一入口 ——
+先试 `kb.<key>`、再回退裸 `<key>`、都没有才用默认值；值 `None` 也算"读到了"
+（否则回退链会在第一层停住，裸键永远读不到）。**不改成"只认 `kb.` 一种写法"**：
+老库里可能有裸键的行，只认一种写法会让老行静默失效 —— 那正是要修的病本身。
+
+**读取点**：`default_search_types` / `unit_expand_mode` 改用文档里的键名。只修解析规则不够
+—— 当初的 bug 就在"读取点写错了键名"，所以测试必须打到读取点
+（`test_default_search_types_reads_documented_key` / `test_unit_expand_reads_documented_key`）。
+
+**去重**：删掉兼容用的 `retrieval._setting` 别名与 `knowledge_service` 里重复实现的
+`_setting_int` / `_setting_flag`（两处实现 = 两条规则）。布尔解析同时认 `true/false`
+（`PUT /settings` 写 JSON，读出来是 bool）与 `1/0`、`"true"`（脚本/手改写的是文本）。
+
+#### `/settings`：白名单里 13 个键有 9 个显示 `None`
+
+`EDITABLE` 不含任何 `kb.*` 键 → **分块 / 检索参数只能靠脚本直接写库**
+（`scripts/kb_arm_compare.py` 就是这么写的），界面上根本不存在。现在补进 7 个键，并且
+`_effective()` 不再对"没有 `Settings` 字段"的键返回 `None`，改成**向读取点要当前生效值**
+（包括 `rag_top_k_*`）—— 不在这里再抄一份默认值：抄一份就会漂，刚因为"两处不一致"吃过亏。
+
+写入侧堵了一个同源的坑：`PUT /settings` 会**删掉同名 `kb.<key>` 行**。否则库里已有的
+`kb.unit_expand=2`（脚本按文档写法写的）会把界面刚写的裸键 `unit_expand=0` 盖住 ——
+"值回显了、行为没变"，同一个 bug 的另一种表现。
+
+顺带：`CHUNK_TYPES` 补上 `unit` —— 它真实在用（`chunk_type="unit"` 进索引）、且是检索默认
+候选，却不在规范枚举里。
+
+#### 实测
+
+**30 题固定回归与改造前逐项相同**（解析规则改了，行为刻意不动）：
+
+| 指标 | 改造前 | 本轮 |
+|---|---|---|
+| hit@6 / 正文命中 | 100% / 97% | 100% / 97% |
+| MRR / 正文 MRR | 0.9667 / 0.8889 | 0.9667 / 0.8889 |
+| 命中块长度中位 / 上下文中位 | 300 / 5166 | 300 / 5166 |
+| 首次命中类型 | unit 25 / formula 1 / table 3 / figure 1 | 同 |
+
+**开关真的活了**（实机）：写入 `kb.retrieval_types=unit,text` 后 `POST /rag/similar` 返回的
+`retrieval.chunk_types` 变成 `['unit','text']`（改造前无论怎么写都恒为默认四个）；
+`kb.unit_expand=2` 读出为 2；`PUT {"unit_expand": 0}` 生效、并清掉 `kb.unit_expand` 那一行。
+
+新增：
+- `scripts/two_path_align_report.py` —— 两路拆分的**对齐门限报告**（两条判据：单侧行 ≤2%、
+  且不存在"落在连续正文段中间的单侧行"）。本次先出基线：turbo 22 页 / attention 15 页，
+  `align` **exact 22/22 + 15/15**、单侧行 **0**、合计 431 行。
+- `tests/test_kb_settings_keys.py` —— 25 个离线用例（优先级 / 两种写入路径的布尔 / `None`
+  语义 / 三个读取点真的走文档键名 / 白名单与枚举）。
+
+测试：`pytest tests` **433 通过 / 1 跳过**（+25）；`frontend_check` **87/87** 未变。
+
+---
+
+### 17.67 第四十六轮（P1）—— 两路产物落盘 + 读时合并（**不改提示词、不改调用方式**）
+
+目标：把"同一次调用产出两侧"的结构换成"A 路英文转录 / B 路中文翻译"两个产物。这一步
+**不动任何提示词**，先把读模型备好 —— 于是验收标准是干净的"存量论文逐行一致"，
+而不是"看起来差不多"。
+
+#### 硬约束：一路一个文件
+
+`PageStore.flush()` 是**整文件原子重写**（`:1192`，经 `write_text_atomic` → `os.replace`）。
+两个并发写者共用一个 `pages.json` 必然互相覆盖（后写者把人家的页抹掉）。所以：
+
+```
+md/path_a.json   ← A 路：英文转录（original_md + breaks）
+md/path_b.json   ← B 路：中文翻译（translation_md + carry_md + breaks）
+md/pages.json    ← 旧格式（同一次调用产出两侧）：拆开后**只读不写**，存量论文零迁移
+```
+
+`PATH_VERSION = 1` 与 `PAGES_VERSION = 3` 分开：结构不同，不该共用一个版本号。
+`paper_paths()` 新增 `path_a` / `path_b` / `page_products` 三个键。
+
+#### `reader_service.page_products()`：唯一读入口，四种形态
+
+| 形态 | 含义 |
+|---|---|
+| `paths` | 两路产物都在（拆开之后的正常形态） |
+| `mixed` | 只跑完一路（过渡态）→ 缺的那一侧**从旧产物补**，页面仍完整可读 |
+| `legacy` | 只有旧产物（存量论文） |
+| `none` | 什么产物都没有（未翻译，前端退回解析块） |
+
+合并靠 `pair_rows` —— 它只按**结构**（类型 / 层级 / 编号 / 公式 LaTeX）对齐、**不比较中英正文**，
+这正是当年修掉"整体错位一行"的那次修复。旧形态（`legacy`/`mixed`）保留原有的**行 id 保护判据**：
+重算行数与存下来的不一致、且存的 `align` 不是 `structure` 时用存下来的行（行 id 是位置编号，
+块数一变已有高亮就会指到别的文字上）；`paths` 形态没有"存下来的行"可比，直接用现算结果 ——
+那时本来就已经重跑过，锚点漂移是设计内的。
+
+#### 两路锚点合成**一次**校验
+
+`apply_semantic_breaks` 本来就是逐条独立判定的：英文锚点匹配原文侧、中文锚点匹配译文侧
+（`_locate_anchor` 先原文后译文）。所以两路的锚点列表**直接相加**交给它一次即可，并集天然成立，
+不需要"按路存标记"。同一行被两侧锚点同时命中时只记一条边界、另一条进 `duplicate`（有单测钉住）。
+旧格式的锚点全是英文的（同一次调用只给原文锚点）→ 归 A 路、B 路为空 → 中文单元暂退化为
+TOC + 长度兜底（重跑后才会细分）。
+
+#### 进度口径改成 B 路
+
+`Paper.translate_done/total`、阅读器 `stats.pages_done`、`pages[].translated` 的口径统一为
+**B 路（中文译文）已产出的页数**：两路拆开后这就是"翻译进度"，A 路另有自己的进度（P3 接入
+`transcribe_done`）。旧格式下两种口径等价 —— 旧产物里"有行"必然意味着"有译文"
+（`call_page` 缺任一侧会直接报错重试），所以 `22/22`、`15/15` 一个数都没变。
+
+#### 顺手修掉 O(图数 × 全书)
+
+`figures_payload` 每张图调一次 `row_id_of_caption`，而后者每次都要把整篇的两路产物重装一遍。
+现在页→行装一次传下去；`build_reader` 也把已装好的产物传给 `_pages_payload` / `_stats`，
+不再各自去读一遍文件。
+
+#### 验收（全部是"与改造前比"）
+
+| 检查 | 结果 |
+|---|---|
+| 合并读模型 vs 改造前的读时重算（两篇、逐页逐行逐字段） | **逐项一致**：turbo 22 页 265 行、attention 15 页 166 行；语义锚点行 70 / 47；单侧行 0 |
+| 实机 `GET /reader` | turbo `pages_done=22/22 rows=265 align={exact:22}`；attention `15/15 rows=166 exact:15`；`source=['legacy']`；`breaks_a` 79 / 55、`breaks_b` 0 |
+| 数据安全 | `annotation` 30 行不变（25 deleted / 5 active，且 5 条属于已不在库里的论文）；`highlight` 0、`note` 0 |
+| `pytest tests` | **444 通过 / 1 跳过**（+11，新增 `tests/test_two_path_products.py`） |
+| `frontend_check.py` | **87/87 通过、0 失败**（阅读器验收 ⑦「公式能整体高亮」仍过，`useMarkdown.ts` 未动） |
+
+新增 `tests/test_two_path_products.py`（11 个离线用例）：旧格式逐行等价 / 行 id 保护 /
+`structure` 页必须重算 / 两路合并与单侧行计数 / 过渡态补另一侧 / 只有一侧也出行 /
+两路锚点各落自己那一侧且同行不重复 / 不同行求并集 / 进度只数 B 路。
+
+写这批用例时踩到两条**已有校验规则**（值得记下来，正是它们保证切点不落在句子中间）：
+锚点不能落在**标题的下一行**（`after_heading`），且规范化后不足 12 个字符的中文锚点
+**只允许落标题行**（`short_not_heading`）。头两版夹具就是因此被拒的 —— 规则在用，测试要顺着它写。

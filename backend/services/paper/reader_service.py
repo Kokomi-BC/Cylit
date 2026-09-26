@@ -25,7 +25,8 @@ from backend.repositories.mysql.models import (
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import anchor_map, paper_service
 from backend.services.translation.page_translate import (
-    PAGES_FILENAME, PageStore,
+    PATH_VERSION, PageStore, apply_semantic_breaks, mark_rows_continuity,
+    page_continuity, pair_rows,
 )
 
 log = get_logger(__name__)
@@ -98,64 +99,131 @@ def invalidate_cache(paper_id: str) -> None:
 
 
 def load_page_store(paper_id: str, force: bool = False) -> PageStore:
-    """页级翻译产物（``md/pages.json``）；缺失时是空 store（不抛错）。"""
-    path: Path = paper_service.paper_paths(paper_id)["md"] / PAGES_FILENAME
+    """旧格式的**合并**页产物（``md/pages.json``）；缺失时是空 store（不抛错）。
+
+    只用于兼容读取与"这篇论文到底有没有旧产物"的判断。新的读取方一律走 `page_products`
+    —— 它会同时看 A / B 两路产物并给出统一的逐页读模型。
+    """
+    path: Path = paper_service.paper_paths(paper_id)["page_products"]
     return PageStore(paper_id, path)
 
 
-def page_translations(paper_id: str) -> list[dict]:
-    """阅读器用：逐页的原文/译文 Markdown + 对齐后的行。
+def load_path_stores(paper_id: str) -> tuple[PageStore, PageStore]:
+    """``(A 路 store, B 路 store)``：A = 英文转录，B = 中文翻译。
 
-    这里会**顺带做跨页衔接处理**（读时计算，不写盘）：
-    - 给页尾/页首的打 `continues` / `continued_from_prev` 标记；
-    - 清掉续句开头的「……」/「（承接上页）」与页尾悬空的连字符这类边界噪声。
-    放在读时而不是写时，好处是**老产物不用重翻**也能拿到同样的阅读体验；
-    标记由解析器的原文确定性推出（与并发顺序无关），行先复制一份再改，
-    避免污染 `PageStore` 的内存缓存。
+    **两路各一个文件**是硬约束，不是风格选择：`PageStore.flush()` 是整文件原子重写，
+    两个并发写者共用一个文件必然互相覆盖（后写者把人家的页抹掉）。
     """
-    from backend.services.translation.page_translate import (
-        apply_semantic_breaks, mark_rows_continuity, page_continuity, pair_rows,
-    )
+    paths = paper_service.paper_paths(paper_id)
+    return (PageStore(paper_id, paths["path_a"], version=PATH_VERSION),
+            PageStore(paper_id, paths["path_b"], version=PATH_VERSION))
 
-    store = load_page_store(paper_id)
+
+def page_products(paper_id: str) -> tuple[list[dict], str]:
+    """逐页的**合并读模型**（阅读器 / 分块 / 双语导出共用的唯一入口）。
+
+    返回 ``(页列表, 形态)``；形态取值：
+
+    - ``paths``：两路产物都在（拆开之后的正常形态）；
+    - ``mixed``：只跑完一路（过渡态）—— 缺的那一侧从旧合并产物补，页面仍然完整可读；
+    - ``legacy``：只有旧合并产物（存量论文**零迁移**可读）；
+    - ``none``：什么产物都没有（未翻译，前端退回解析块）。
+
+    合并靠 `pair_rows`：它只按**结构**（类型 / 层级 / 编号 / 公式 LaTeX）对齐，**不比较
+    中英正文** —— 这正是当年修掉"整体错位一行"的那次修复，也是两路拆开后唯一可用的对齐方式。
+
+    ⚠️ 旧形态（legacy / mixed）保留原有的**行 id 保护判据**：重算出的行数与存下来的不一致、
+    且存下来的 ``align`` 不是 ``structure`` 时，仍然用存下来的行。行 id 是位置编号
+    （``p{页}-{序号}``），块数一变，已有的高亮 / 笔记就会指到别的文字上（用户报过）。
+
+    读时重算还有两个理由（改造前就有，这次一并保留）：① 老产物里行尾的 Markdown 硬换行
+    标记被剥过，重算能把 `split_blocks` 后来的修复带到老产物上；② `breaks` 存在文件里而
+    行是现算的，标记必须跟着行一起重算。
+    """
+    a_store, b_store = load_path_stores(paper_id)
+    a_pages, b_pages = a_store.all_pages(), b_store.all_pages()
+    has_a, has_b = bool(a_pages), bool(b_pages)
+    legacy_pages = load_page_store(paper_id).all_pages()
+    if not (has_a or has_b or legacy_pages):
+        return [], "none"
+    shape = "paths" if (has_a and has_b) else ("mixed" if (has_a or has_b) else "legacy")
+
+    # 旧产物补齐缺失的一侧：legacy = 两侧都补；mixed = 只补没跑的那一路。
+    # 用 `setdefault`：**任何情况下都不覆盖两路自己的产物**。
+    for page, payload in legacy_pages.items():
+        a_pages.setdefault(page, {
+            "original_md": payload.get("original_md") or "",
+            # 旧格式的锚点全是**英文**的（同一次调用产出，只给原文锚点）→ 归 A 路；
+            # B 路锚点因此为空 → 中文单元退化为 TOC + 长度兜底（重跑后才会细分）。
+            "breaks": list(payload.get("breaks") or []),
+            "model": payload.get("model") or "",
+            "updated_at": payload.get("updated_at"),
+        })
+        b_pages.setdefault(page, {
+            "translation_md": payload.get("translation_md") or "",
+            "carry_md": payload.get("carry_md") or "",
+            "breaks": [],
+            "model": payload.get("model") or "",
+            "updated_at": payload.get("updated_at"),
+        })
+
     out: list[dict] = []
-    for page, payload in sorted(store.all_pages().items()):
-        rows = [dict(row) for row in (payload.get("rows") or [])]
-        # 行**读时重算**，两种情况：
-        #   · `align == structure` 的页（两侧块数不一致 → 结构兜底）：老产物的配对是按"正文文本签名"
-        #     做的，中英文本永不相同 → 会整体错位一行，表现为"每一行配的是邻行的译文"+最后一行空成
-        #     「未翻译」（用户报过）。现在 `pair_rows` 只按类型/公式/编号配对，重跑一次就能修好，**不用重译**。
-        #   · 其余页也重算一次，是为了把 `split_blocks` 后来修的东西带到**老产物**上：存下来的行是
-        #     翻译时切的，行尾那两个空格（Markdown 硬换行标记）早被剥掉了，于是算法块、作者单位
-        #     这类"一块里每行各自成行"的内容在「对照 / 原文 / 译文」里糊成一整段 ——
-        #     而 Markdown 视图看的是原文 md，行还在（用户报的正是"Markdown 视图正常，行视图不正常"）。
-        # 只在**块数一致**时替换：行 id 是位置编号（`p{page}-{i:02}`），块数一变 id 就挪位，
-        # 已有的高亮 / 笔记会指到别的文字上 —— 宁可那一页保持旧样，也不动 id。
-        re_rows, _quality = pair_rows(payload.get("original_md") or "",
-                                      payload.get("translation_md") or "", page)
-        if re_rows and (str(payload.get("align") or "") == "structure"
-                        or len(re_rows) == len(rows)):
-            rows = re_rows
+    for page in sorted(set(a_pages) | set(b_pages)):
+        a = a_pages.get(page) or {}
+        b = b_pages.get(page) or {}
+        original_md = str(a.get("original_md") or "")
+        translation_md = str(b.get("translation_md") or "")
+        if not original_md and not translation_md:
+            continue                       # 两侧都空的页不产生一页（与旧 done 判据一致）
+        fresh_rows, quality = pair_rows(original_md, translation_md, page)
+        stored = legacy_pages.get(page) or {}
+        rows = [dict(r) for r in fresh_rows]
+        if shape != "paths" and stored.get("rows"):
+            keep_stored = not (
+                fresh_rows
+                and (str(stored.get("align") or "") == "structure"
+                     or len(fresh_rows) == len(stored.get("rows") or [])))
+            if keep_stored:
+                rows = [dict(r) for r in stored["rows"]]
         if rows:
             flags = page_continuity(paper_id, page)
             mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
-        # 语义边界锚点（LLM 在页级转录时给出的 `breaks`）：同样**读时重算** ——
-        # 行是上面重算出来的，标记必须跟着一起重算。旧产物没有 `breaks` 字段 →
-        # `apply_semantic_breaks` 拿到空列表，行为与改造前完全一致（不重译也不受影响）。
-        break_stats = apply_semantic_breaks(rows, payload.get("breaks") or [])
+        # 两路锚点合成**一次**校验：`apply_semantic_breaks` 逐条独立判定，英文锚点落在原文侧、
+        # 中文锚点落在译文侧（`_locate_anchor` 先原文后译文），并集天然成立 —— 不需要"按路存标记"。
+        breaks_a = [str(x) for x in (a.get("breaks") or [])]
+        breaks_b = [str(x) for x in (b.get("breaks") or [])]
+        break_stats = apply_semantic_breaks(rows, breaks_a + breaks_b)
+        page_total = (int(a.get("page_total") or 0) or int(b.get("page_total") or 0)
+                      or int(stored.get("page_total") or 0))
         out.append({
             "page": page,
-            "page_total": int(payload.get("page_total") or 0),
-            "original_md": payload.get("original_md") or "",
-            "translation_md": payload.get("translation_md") or "",
+            "page_total": page_total,
+            "original_md": original_md,
+            "translation_md": translation_md,
             "rows": rows,
-            "breaks": payload.get("breaks") or [],
+            "breaks": breaks_a + breaks_b,
+            # 按路分开的原始锚点：分块层要用**自己那一路**的锚点（A 划英文、B 划中文）
+            "breaks_a": breaks_a,
+            "breaks_b": breaks_b,
             "break_stats": break_stats,
-            "align": payload.get("align"),
-            "model": payload.get("model"),
-            "updated_at": payload.get("updated_at"),
+            # 旧形态沿用存下来的质量标记（与改造前逐字一致）；两路形态用现算的合并质量
+            "align": str(stored.get("align") or "") or quality,
+            "model": (a.get("model") or b.get("model") or stored.get("model") or ""),
+            "updated_at": (a.get("updated_at") or b.get("updated_at")
+                           or stored.get("updated_at")),
+            # ---- 两路专属诊断（前端不用；对齐门限报告与回归用）----
+            "source": shape,
+            "sides": {"a": bool(original_md.strip()), "b": bool(translation_md.strip())},
+            "one_sided": sum(1 for r in rows
+                             if bool((r.get("original") or "").strip())
+                             != bool((r.get("translation") or "").strip())),
         })
-    return out
+    return out, shape
+
+
+def page_translations(paper_id: str) -> list[dict]:
+    """`page_products` 的页列表（兼容旧签名：只关心逐页读模型的调用方用它）。"""
+    return page_products(paper_id)[0]
 
 
 # --------------------------------------------------------------------------
@@ -179,10 +247,12 @@ def bilingual_markdown(paper_id: str, *, write: bool = True,
     from backend.core.utils import write_text_atomic
     from backend.services.paper import figure_regions
 
-    store = load_page_store(paper_id)
     page_items: list[dict] = []
     combined: list[str] = []
-    for page, payload in sorted(store.all_pages().items()):
+    # 走**合并读模型**（而不是直接读旧格式文件）：两路拆分后 pages.json 不再写入，
+    # 直接读它会让导出变成空文件。
+    for payload in page_translations(paper_id):
+        page = int(payload["page"])
         refs_web = figure_regions.markdown_refs(paper_id, page, prefix=api_prefix)
         refs_disk = figure_regions.markdown_refs(paper_id, page, prefix="../figures")
         original = figure_regions.inject_images(payload.get("original_md") or "", refs_web)
@@ -226,6 +296,9 @@ def build_reader(paper_id: str, *, user_id: int = 1,
     # 页级产物**只装一次**：行 id→页、正文行、锚点映射都要它，而它内部会重跑
     # `pair_rows`（不便宜），装载三次纯属浪费。
     page_payloads = page_translations(paper_id)
+    # 逐页索引：`_pages_payload`（版面 + 翻译状态）与 `_stats`（进度口径）都复用同一批产物，
+    # 不再各自去读一次文件。
+    pages_by_no = {int(p["page"]): p for p in page_payloads}
     # 锚点 → 页码：批注/笔记/高亮存的是行 id（当前产物）或历史的 block id，
     # 前端"定位"要能在行 id 失效时退化为按页跳转。
     row_pages: dict[str, int] = {}
@@ -296,7 +369,7 @@ def build_reader(paper_id: str, *, user_id: int = 1,
         payload = {
             "paper": paper,
             "blocks": out_blocks,
-            "pages": _pages_payload(paper_id, store=load_page_store(paper_id)),
+            "pages": _pages_payload(paper_id, pages=page_payloads),
             "page_translations": page_payloads,
             # 块 id → 正文行 id：检索/RAG 给的是**块 id**（`attentionisa-p01-b06`），
             # 已翻译页的正文行 id 却是页级产物的位置编号（`p001-06`）—— 两套命名空间。
@@ -327,7 +400,7 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                        "done_items": t.done_items, "total_items": t.total_items}
                       for t in tasks],
             "outline": build_outline(paper_id),
-            "stats": _stats(paper_id, blocks),
+            "stats": _stats(paper_id, blocks, page_payloads),
             "since": since,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "paper_dir": str(paper_dir),
@@ -448,20 +521,25 @@ def _parse_formulas(paper_id: str) -> list[Formula]:
                 .order_by(Formula.page_number.asc()).all())
 
 
-def _pages_payload(paper_id: str, store: PageStore | None = None) -> list[dict]:
-    """每页的版面信息 + 翻译状态 + 该页插图（**按图注锚定的裁图**，图注驱动）。"""
+def _pages_payload(paper_id: str, pages: list[dict] | None = None) -> list[dict]:
+    """每页的版面信息 + 翻译状态 + 该页插图（**按图注锚定的裁图**，图注驱动）。
+
+    ``pages`` 传**合并后的页产物**（`page_products` 的结果）就复用调用方已经装好的那一份；
+    不传就自己取一次。以前这里接的是旧格式 store —— 两路拆分后那样会永远看不到"已翻译"。
+    """
     from backend.parsing.ir.ir_reader import IRReader
     from backend.services.paper import figure_regions
 
     ir = IRReader(paper_service.paper_paths(paper_id)["ir"])
     if not ir.exists:
         return []
-    store = store if store is not None else load_page_store(paper_id)
+    by_page = ({int(p["page"]): p for p in (pages if pages is not None
+                                            else page_translations(paper_id))})
     out: list[dict] = []
     for p in ir.pages():
         page_no = int(p["page_no"])
-        payload = store.page(page_no)
-        rows = (payload or {}).get("rows") or []
+        payload = by_page.get(page_no) or {}
+        rows = payload.get("rows") or []
         media = [m for m in figure_regions.media_of_page(paper_id, page_no)
                  if m["kind"] == "figure"]
         out.append({
@@ -469,9 +547,12 @@ def _pages_payload(paper_id: str, store: PageStore | None = None) -> list[dict]:
             "columns": p["columns"], "gutter_x": p["gutter_x"],
             "blocks": p["block_count"],
             "has_text_layer": bool(p["has_text_layer"]),
-            "translated": bool(rows),
+            # `translated` 的口径是 **B 路（中文译文）已产出**：A 路只有英文转录的页
+            # 仍然算"未翻译"（前端据此显示"等待翻译"）。
+            "translated": bool(str(payload.get("translation_md") or "").strip()),
             "row_count": len(rows),
-            "align": (payload or {}).get("align"),
+            "align": payload.get("align"),
+            "source": payload.get("source"),
             "media": media,
         })
     return out
@@ -708,24 +789,37 @@ def _formula_card(f: Formula) -> dict:
     }
 
 
-def _stats(paper_id: str, blocks: list[Block]) -> dict:
-    """阅读器统计：**以页为进度口径**（页级翻译后的唯一粒度）。"""
+def _stats(paper_id: str, blocks: list[Block],
+           pages: list[dict] | None = None) -> dict:
+    """阅读器统计：**以页为进度口径**（页级翻译后的唯一粒度）。
+
+    ``pages_done`` 的口径是 **B 路（中文译文）已产出的页数** —— 两路拆开之后"翻译进度"
+    就是中文那一侧的完成度；旧格式（同一次调用产出两侧）两种口径等价（旧产物里"有行"
+    必然意味着"有译文"，缺任一侧的调用会直接报错重试）。
+    """
     by_type: dict[str, int] = {}
     for b in blocks:
         by_type[b.type] = by_type.get(b.type, 0) + 1
-    store = load_page_store(paper_id)
-    stats = store.stats()
-    total_pages = stats["page_total"] or len({b.page_no for b in blocks}) or 0
-    done_pages = stats["pages_done"]
+    products = pages if pages is not None else page_translations(paper_id)
+    done_pages = sum(1 for p in products if str(p.get("translation_md") or "").strip())
+    rows = sum(len(p.get("rows") or []) for p in products)
+    align: dict[str, int] = {}
+    for p in products:
+        key = str(p.get("align") or "?")
+        align[key] = align.get(key, 0) + 1
+    total_pages = (max((int(p.get("page_total") or 0) for p in products), default=0)
+                   or len({b.page_no for b in blocks}) or 0)
+    models = {str(p.get("model")) for p in products if p.get("model")}
     return {
         "blocks": len(blocks), "by_type": by_type,
         "pages": total_pages, "pages_done": done_pages,
-        "rows": stats["rows"],
+        "rows": rows,
         "translated": done_pages,
         "translate_total": total_pages,
         "translate_percent": round(done_pages / total_pages * 100, 1) if total_pages else 0.0,
-        "align": stats["align"],
-        "model": stats["model"],
+        "align": align,
+        "model": sorted(models)[0] if len(models) == 1 else (", ".join(sorted(models))
+                                                             if models else ""),
         "deleted_at": None,
     }
 
@@ -770,16 +864,20 @@ def translations_since(paper_id: str, since_page: int = 0,
     return {"items": items, "count": len(items), "since_page": since_page}
 
 
-def row_id_of_caption(paper_id: str, page_no: int, number: str) -> str | None:
+def row_id_of_caption(paper_id: str, page_no: int, number: str,
+                      rows: list[dict] | None = None) -> str | None:
     """这一页里"图号 = number"的图注行 id（侧栏/目录定位用）。
 
     行 id 是页内序号（``p008-03``），只有翻译产物知道；侧栏的插图条目必须带上它，
     否则"定位"按钮会拿着一个不存在的 id 找不到锚点。
+
+    ``rows`` 可传入调用方已经装好的行（`figures_payload` 逐图调用时用 —— 否则每张图都会
+    把整篇的两路产物重装一遍，那是 O(图数 × 全书) 的浪费）。
     """
     if not number:
         return None
-    payload = load_page_store(paper_id).page(int(page_no))
-    rows = (payload or {}).get("rows") or []
+    if rows is None:
+        rows = _rows_of_page(paper_id, page_no)
     for row in rows:
         if row.get("type") == "caption" and str(row.get("number") or "") == str(number):
             return row.get("id")
@@ -789,6 +887,13 @@ def row_id_of_caption(paper_id: str, page_no: int, number: str) -> str | None:
         if pattern.match((row.get("original") or "").strip()):
             return row.get("id")
     return None
+
+
+def _rows_of_page(paper_id: str, page_no: int) -> list[dict]:
+    for payload in page_translations(paper_id):
+        if int(payload["page"]) == int(page_no):
+            return payload.get("rows") or []
+    return []
 
 
 def figures_payload(paper_id: str) -> dict:
@@ -803,12 +908,17 @@ def figures_payload(paper_id: str) -> dict:
     """
     from backend.services.paper import figure_regions
 
+    # 页 → 行 装一次：`row_id_of_caption` 会被每张图调用一次，不预装就是
+    # "每张图把整篇的两路产物重装一遍"（O(图数 × 全书)，纯浪费）。
+    rows_by_page = {int(p["page"]): (p.get("rows") or [])
+                    for p in page_translations(paper_id)}
     items = []
     for page_no, regions in sorted(figure_regions.all_regions(paper_id).items()):
         for i, r in enumerate(regions):
             if r["kind"] != "figure":
                 continue
-            row_id = row_id_of_caption(paper_id, page_no, r["number"])
+            row_id = row_id_of_caption(paper_id, page_no, r["number"],
+                                       rows=rows_by_page.get(int(page_no)) or [])
             base = f"/api/v1/papers/{paper_id}/figures/region/{page_no}/{i}"
             items.append({
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",

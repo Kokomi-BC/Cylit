@@ -46,7 +46,17 @@ log = get_logger(__name__)
 
 # 产物与版本
 PAGES_FILENAME = "pages.json"
+#: 旧格式（**同一次调用**产出原文 + 译文 + 行）的产物版本。拆开两路后它只读不写 ——
+#: 存量论文靠它零迁移继续可读（`reader_service.page_products` 会从它合成 A/B 视图）。
 PAGES_VERSION = 3
+#: 两路各自的产物：A 路只有原文转录，B 路只有中文译文。**必须分文件**：
+#: `PageStore.flush()` 是整文件原子重写，两个并发写者共用一个文件会互相覆盖。
+PATH_A_FILENAME = "path_a.json"
+PATH_B_FILENAME = "path_b.json"
+#: 单路产物的版本（与 `PAGES_VERSION` 分开：结构不同，不该共用一个版本号）
+PATH_VERSION = 1
+#: 两条路的名字（顺序即展示顺序：先英文、后中文）
+PATHS = ("a", "b")
 
 # --------------------------------------------------------------------------
 # Prompt
@@ -1158,11 +1168,18 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
 
 
 class PageStore:
-    """``md/pages.json`` 的读写（逐页原子落盘 → 中断可续跑）。"""
+    """页级产物文件的读写（逐页原子落盘 → 中断可续跑）。
 
-    def __init__(self, paper_id: str, path: Path | None = None) -> None:
+    一个实例对应**一个文件**：旧格式的合并产物（`md/pages.json`）或某一路的产物
+    （`md/path_a.json` / `md/path_b.json`，见 `paper_service.paper_paths`）。
+    `version` 由调用方给：两路产物与旧合并产物的结构不同，版本号不该混用。
+    """
+
+    def __init__(self, paper_id: str, path: Path | None = None, *,
+                 version: int = PAGES_VERSION) -> None:
         self.paper_id = paper_id
         self.path = path
+        self.version = int(version)
         self._lock = threading.RLock()
         self._data: dict | None = None
 
@@ -1176,7 +1193,7 @@ class PageStore:
                 pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
                 self._data = {
                     "paper_id": data.get("paper_id") or self.paper_id,
-                    "version": int(data.get("version") or PAGES_VERSION),
+                    "version": int(data.get("version") or self.version),
                     "page_total": int(data.get("page_total") or 0),
                     "model": data.get("model") or "",
                     "updated_at": data.get("updated_at"),
@@ -1184,7 +1201,7 @@ class PageStore:
                               if isinstance(v, dict)},
                 }
             else:
-                self._data = {"paper_id": self.paper_id, "version": PAGES_VERSION,
+                self._data = {"paper_id": self.paper_id, "version": self.version,
                               "page_total": 0, "model": "", "updated_at": None,
                               "pages": {}}
             return self._data
@@ -1192,7 +1209,7 @@ class PageStore:
     def flush(self) -> None:
         with self._lock:
             data = self._load()
-            data["version"] = PAGES_VERSION
+            data["version"] = self.version
             data["updated_at"] = now_iso()
             if self.path is not None:
                 write_json(self.path, {

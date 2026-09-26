@@ -250,18 +250,24 @@ def refresh_progress_counters(paper_id: str) -> dict:
 def translation_stats(paper_id: str) -> dict:
     """翻译进度：``{total, done, stale}`` —— **以页为单位**（页级翻译是唯一粒度）。
 
-    页号清单以渲染出来的页图为准；``done`` = ``md/pages.json`` 里已有对齐行的页数。
+    页号清单以渲染出来的页图为准；``done`` 的口径是 **B 路（中文翻译）已产出的页数**：
+    两路拆开之后，"翻译进度"就是中文那一侧的完成度（A 路英文转录的进度另有
+    `Paper.transcribe_done`）。旧格式（`pages.json`，同一次调用产出两侧）两种口径等价 ——
+    因为旧产物里"有行"必然意味着"有译文"（`call_page` 缺任一侧面都会报错重试）。
     """
-    from backend.services.translation.page_translate import (
-        PAGES_FILENAME, PageStore, list_pages,
-    )
+    from backend.services.translation.page_translate import PageStore, list_pages
 
+    paths = paper_paths(paper_id)
     total = len(list_pages(paper_id))
-    path = paper_paths(paper_id)["md"] / PAGES_FILENAME
-    store = PageStore(paper_id, path)
+    store = PageStore(paper_id, paths["path_b"])
     done = len(store.done_pages())
-    if not total:
-        total = int(store.stats().get("page_total") or 0)
+    if not done:
+        # 没有 B 路产物 → 退回旧格式（存量论文 / 只跑过融合调用的论文）
+        legacy = PageStore(paper_id, paths["page_products"])
+        done = len(legacy.done_pages())
+        total = total or int(legacy.stats().get("page_total") or 0)
+    else:
+        total = total or int(store.stats().get("page_total") or 0)
     return {"total": int(total), "done": int(done), "stale": 0}
 
 
@@ -279,6 +285,15 @@ def paper_paths(paper_id: str) -> dict:
         "crops": d / "formula_crops", "md": d / "md", "reports": d / "reports",
         "markdown": d / "md" / "full.md",
         "blocks_index": d / "md" / "blocks.json",
+        # ---- 页级翻译产物（两路拆分后）----
+        # A 路 = 英文转录、B 路 = 中文翻译，各自**一个文件**。
+        # 为什么必须分开：`PageStore.flush()` 是整文件原子重写，两个并发写者共用一个文件
+        # 会互相覆盖（后写者把人家的页抹掉）。见 docs/论文理解系统-设计.md §2.1。
+        "path_a": d / "md" / "path_a.json",
+        "path_b": d / "md" / "path_b.json",
+        # 旧格式的**合并**产物（同一次调用产出两侧）：拆开后只读，不再写入。
+        # 存量论文靠它零迁移继续可读（`reader_service.page_products` 会合成 A/B 视图）。
+        "page_products": d / "md" / "pages.json",
     }
 
 
@@ -536,7 +551,8 @@ def _align_with_disk(row: Paper, data: dict) -> dict:
     try:
         paths = paper_paths(row.id)
         parsed = paths["ir"].is_file() and paths["pages"].is_dir()
-        translated = (paths["md"] / "pages.json").is_file()
+        # 磁盘真相：有 B 路产物（中文翻译）就是"译过了"；只跑融合调用的老论文看旧格式文件
+        translated = paths["path_b"].is_file() or paths["page_products"].is_file()
     except Exception:  # noqa: BLE001 —— 路径算不出来就按库里的值返回，不因统计口径把接口打挂
         return data
     if not parsed:
