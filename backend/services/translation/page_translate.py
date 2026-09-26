@@ -36,7 +36,7 @@ from pathlib import Path
 from backend.core.errors import ProviderError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import (
-    json_loads, now_iso, read_json, sha256_text, write_json,
+    json_loads, now_iso, read_json, write_json,
 )
 from backend.parsing.md.generator import (
     heading_level_or_none, normalize_heading_text, section_depth,
@@ -616,10 +616,6 @@ def history_context(store: "PageStore", paper_id: str, page_no: int, *,
             "**不要**重复输出）】\n" + body)
 
 
-def prefix_hash(prefix: str) -> str:
-    return sha256_text(prefix or "")[:16]
-
-
 # --------------------------------------------------------------------------
 # 跨页衔接（页尾断词 / 断句 / 下页续句）
 # --------------------------------------------------------------------------
@@ -673,26 +669,6 @@ def _is_prose(line: str) -> bool:
     if not text or _NOISE_LINE.match(text) or _STRUCT_LINE.match(text):
         return False
     return sum(1 for ch in text if ch.isalpha()) >= 8
-
-
-def _leading_lines(paper_id: str, page: int, *, lines: int = 6,
-                   max_chars: int = 1600) -> list[str]:
-    """该页开头的有效行（跳过图区噪声），按阅读顺序，最多 ``lines`` 行。"""
-    try:
-        body, _section = page_source_text(paper_id, page)
-    except Exception:  # noqa: BLE001  最后一页 / 索引缺失都不值得中断翻译
-        return []
-    picked: list[str] = []
-    size = 0
-    for line in (body or "").split("\n"):
-        text = line.strip()
-        if not text or _NOISE_LINE.match(text):
-            continue
-        picked.append(text)
-        size += len(text)
-        if len(picked) >= lines or size >= max_chars:
-            break
-    return picked
 
 
 def _starts_lower(line: str) -> bool:
@@ -1887,18 +1863,3 @@ def load_page_image(paper_id: str, page: int) -> bytes | None:
         log.warning("读取页图失败 p%d：%s", page, exc)
         return None
 
-
-def page_rows(paper_id: str, store: PageStore | None = None) -> list[dict]:
-    """阅读器用：按页序拼出全部行（含页信息）。"""
-    store = store or PageStore(paper_id, _default_store_path(paper_id))
-    out: list[dict] = []
-    for page, payload in sorted(store.all_pages().items()):
-        for row in payload.get("rows") or []:
-            out.append({**row, "page": page})
-    return out
-
-
-def _default_store_path(paper_id: str) -> Path:
-    from backend.services.paper import paper_service
-
-    return paper_service.paper_paths(paper_id)["md"] / PAGES_FILENAME

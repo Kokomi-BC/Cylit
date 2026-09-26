@@ -37,7 +37,6 @@ from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, now_iso
 from backend.repositories.mysql.models import Chunk, Paper, Understanding
 from backend.repositories.mysql.session import session_scope
-from backend.services.knowledge import retrieval
 from backend.services.understanding import prompts
 
 log = get_logger(__name__)
@@ -565,8 +564,3 @@ def start_understanding(paper_id: str, *, paths: list[str] | None = None,
                     "reused": not created, "inventory": inventory[path]})
     return {"paper_id": paper_id, "tasks": out,
             "task_ids": [t["task_id"] for t in out]}
-
-
-def _retrieval_note() -> str:
-    """留一个显式引用，避免"理解阶段"与"知识库检索"被误当成同一套规则。"""
-    return retrieval.SETTING_PREFIX

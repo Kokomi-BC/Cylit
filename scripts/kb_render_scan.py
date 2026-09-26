@@ -27,7 +27,6 @@ NODE = "node"
 def export_rows(tag: str) -> Path:
     from backend.repositories.vector.lancedb_store import vector_store
 
-    rows = vector_store.get_rows(None) if False else None
     # LanceDB 没有"取全部"的便捷接口，这里按论文逐条扫（行数很少）
     from backend.repositories.mysql.models import Chunk
     from backend.repositories.mysql.session import session_scope

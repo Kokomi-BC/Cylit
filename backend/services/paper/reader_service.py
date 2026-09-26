@@ -20,7 +20,7 @@ from backend.core.logging import get_logger
 from backend.core.utils import json_loads
 from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import (
-    Annotation, Block, Formula, Highlight, Note, Paper, ReadingProgress, Task,
+    Annotation, Block, Formula, Highlight, Note, ReadingProgress, Task,
 )
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import anchor_map, paper_service
@@ -351,9 +351,6 @@ def build_reader(paper_id: str, *, user_id: int = 1,
     # 页级产物**只装一次**：行 id→页、正文行、锚点映射都要它，而它内部会重跑
     # `pair_rows`（不便宜），装载三次纯属浪费。
     page_payloads = page_translations(paper_id)
-    # 逐页索引：`_pages_payload`（版面 + 翻译状态）与 `_stats`（进度口径）都复用同一批产物，
-    # 不再各自去读一次文件。
-    pages_by_no = {int(p["page"]): p for p in page_payloads}
     # 锚点 → 页码：批注/笔记/高亮存的是行 id（当前产物）或历史的 block id，
     # 前端"定位"要能在行 id 失效时退化为按页跳转。
     row_pages: dict[str, int] = {}

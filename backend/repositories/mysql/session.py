@@ -220,11 +220,3 @@ def healthcheck() -> dict:
         return {"ok": True, "backend": s.db_backend, "database": s.db_name}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "backend": s.db_backend, "error": str(exc)[:300]}
-
-
-def dispose_engine() -> None:
-    global _engine, _session_factory
-    if _engine is not None:
-        _engine.dispose()
-    _engine = None
-    _session_factory = None

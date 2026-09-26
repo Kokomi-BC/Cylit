@@ -30,15 +30,8 @@ from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, new_id, now, sha256_text, truncate
-from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import Block, Chunk, Paper
 from backend.repositories.mysql.session import session_scope
-from backend.services.knowledge.preprocess import (attached_caption_ids,
-                                                   first_body_index,
-                                                   heading_level, is_front_matter,
-                                                   is_table_number_heading,
-                                                   split_long_text,
-                                                   strip_presentation)
 from backend.services.knowledge import formula_source
 from backend.services.model.model_manager import model_manager
 from backend.services.paper import paper_service, reader_service
@@ -1132,15 +1125,6 @@ def _count_by_lang(chunks: list[dict]) -> dict:
     for c in chunks:
         lang = c.get("lang") or "en"
         out[lang] = out.get(lang, 0) + 1
-    return out
-
-
-def _count_by_road(chunks: list[dict]) -> dict:
-    """按路统计（``a`` = 英文转录 / ``b`` = 中文翻译 / ``shared`` = 两路共用）。"""
-    out: dict[str, int] = {}
-    for c in chunks:
-        road = (c.get("metadata") or {}).get("road") or "shared"
-        out[road] = out.get(road, 0) + 1
     return out
 
 

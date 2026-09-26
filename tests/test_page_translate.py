@@ -13,7 +13,7 @@ from backend.services.translation.brief import DocumentBrief
 from backend.services.translation.page_translate import (
     PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
     build_stable_prefix, call_page, effective_max_tokens, history_context,
-    mark_rows_continuity, next_max_tokens, pair_rows, parse_pair, prefix_hash,
+    mark_rows_continuity, next_max_tokens, pair_rows, parse_pair,
     render_page_prompt, split_blocks, _row_key,
 )
 
@@ -62,7 +62,6 @@ def test_stable_prefix_is_byte_identical_for_same_inputs():
     a = build_stable_prefix(brief, "- quantization → 量化")
     b = build_stable_prefix(brief, "- quantization → 量化")
     assert a == b and "向量量化" in a and "量化" in a
-    assert prefix_hash(a) == prefix_hash(b)
 
 
 def test_render_page_prompt_carries_body_and_json_contract():

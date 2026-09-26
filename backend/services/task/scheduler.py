@@ -24,7 +24,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Iterable, TypeVar
 
-from backend.core.errors import ProviderError, RateLimitError
+from backend.core.errors import ProviderError
 from backend.core.logging import get_logger
 from backend.core.utils import now_iso
 
@@ -394,13 +394,3 @@ class AdaptiveScheduler:
     def cache_hits(self) -> int:
         return self._cache_hits
 
-
-def timeline_by_concurrency(stats: ScheduleStats) -> list[dict]:
-    """把尝试记录整理成"并发时间线"（阶段 08 验收：记录并发时间线）。"""
-    out = []
-    for a in stats.attempts:
-        out.append({"at": a.at, "key": a.key, "attempt": a.attempt,
-                    "concurrency": a.concurrency, "ok": a.ok,
-                    "latency_ms": a.latency_ms,
-                    "error": a.error})
-    return out

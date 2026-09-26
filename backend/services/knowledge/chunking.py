@@ -42,11 +42,6 @@ STRUCT_TYPES = ("caption", "table", "figure")
 UNIT_MAX_CHARS = 700
 #: 参考文献小节名（整节不入库 —— 与改造前一致：解析侧 `type == "ref"` 的块被跳过）
 _REF_SECTION = re.compile(r"^\s*(references?|bibliography|参考文献)\s*$", re.I)
-#: 图注编号：`Table 3: …` / `Figure 2: …` / `表 1：…`
-_CAPTION_NUMBER = re.compile(
-    r"^\s*\**\s*(?:Table|Figure|Fig\.?|Algorithm|Listing|表|图|算法)\s*\.?\s*(\d{1,3})", re.I)
-#: 小节标题里的编号前缀（TOC 节点的 key 用它，而不是标题文本 —— 同一节可能被改写过）
-_SECTION_NUMBER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,3}|[A-Z](?:\.\d{1,2}){1,3})\b")
 
 
 # --------------------------------------------------------------------------
@@ -76,7 +71,6 @@ def section_tree(paper_id: str, rows: list[dict] | None = None) -> list[dict]:
     except Exception as exc:  # noqa: BLE001 —— 目录读不到不该让建索引挂掉（退化成无层级）
         log.debug("读取目录失败（%s）：%s", paper_id, exc)
         outline = {}
-    items = outline.get("items") or []
     by_key: dict[str, dict] = {}
 
     def make(node: dict) -> dict:
@@ -613,13 +607,6 @@ def _is_descendant(node: dict, ancestor: dict) -> bool:
             return True
         cur = cur.get("parent")
     return False
-
-
-def _split_rows(items: list[dict], *, target: int, hard: int,
-                use_breaks: bool) -> tuple[list[list[dict]], bool]:
-    """【旧接口，保留给测试】把超 ``hard`` 的行段切成若干块（内部就是 `pack_units`）。"""
-    units = semantic_units(items, use_breaks=use_breaks)
-    return pack_units(units, target=target, hard=hard)
 
 
 # --------------------------------------------------------------------------

@@ -23,7 +23,6 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 
 from backend.core.config import get_settings
 from backend.core.errors import ValidationError
@@ -43,7 +42,7 @@ from backend.services.translation.page_translate import (
     build_page_payload, build_path_payload, build_stable_prefix, call_page,
     drop_declared_fragment, effective_max_tokens, history_context, list_pages,
     load_page_image, next_max_tokens, page_continuity, page_lookahead,
-    page_source_blocks, page_source_text, prefix_hash, render_page_prompt, split_blocks,
+    page_source_blocks, page_source_text, render_page_prompt, split_blocks,
 )
 
 log = get_logger(__name__)
@@ -230,7 +229,6 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     skeleton = build_outline_skeleton(paper_id, store)
     glossary = "" if path == "a" else glossary_text(load_glossary(paper_id))
     prefix = build_stable_prefix(brief, glossary, skeleton=skeleton)
-    prefix_sha = prefix_hash(prefix)
     use_context = params.get("context", True) is not False
     context_chars = int(params.get("context_chars") or CONTEXT_MAX_CHARS)
     if skeleton:
@@ -495,11 +493,6 @@ def _path_provider(path: str | None = None):
         return model_manager.get_generation(model_id)
 
 
-def _translation_provider():
-    """融合模式的 provider（CLI / 脚本沿用）。"""
-    return _path_provider(None)
-
-
 def _current_model_id(path: str | None = None) -> str | None:
     model_id = _model_id_for(path)
     for mtype in ("vision", "generation"):
@@ -634,11 +627,6 @@ def _active_path_task(paper_id: str, path: str | None) -> dict | None:
     return task_service.find_active(PATH_TASK_TYPES[path], paper_id, "md")
 
 
-def _active_translate_task(paper_id: str) -> dict | None:
-    """融合模式的活动任务（CLI / 旧调用点沿用）。"""
-    return _active_path_task(paper_id, None)
-
-
 def _create_page_task(paper_id: str, path: str | None, params: dict,
                       total_items: int) -> dict:
     from backend.services.task.task_service import task_service
@@ -647,11 +635,6 @@ def _create_page_task(paper_id: str, path: str | None, params: dict,
         PATH_TASK_TYPES[path], "md", paper_id, params=params, total_items=total_items,
         message=f"排队中（{PATH_LABELS[path]}）",
     )
-
-
-def _create_translate_task(paper_id: str, params: dict, total_items: int) -> dict:
-    """融合模式建任务（CLI / 旧调用点沿用）。"""
-    return _create_page_task(paper_id, None, params, total_items)
 
 
 def translation_cache_info(paper_id: str, path: str | None = None) -> dict:

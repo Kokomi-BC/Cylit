@@ -16,6 +16,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from backend.core.utils import now
 
+# ⚠️ 下面这些状态/类型元组是**声明式契约**（给人和文档看的"合法取值全集"），
+# 代码路径（`task_runner.register("IMPORT", …)` 等）用裸字符串、不读它们 ——
+# P9 的死代码审计把它们标成"零引用"，这里是**有意保留**的决定：删掉就没人能一眼看出合法取值。
 # 论文状态机（规划 §10 ①）
 PAPER_STATUSES = (
     "imported", "parsed", "translating", "translated", "indexed", "frozen", "failed",

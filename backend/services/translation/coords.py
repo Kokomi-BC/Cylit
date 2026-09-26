@@ -51,8 +51,7 @@ from __future__ import annotations
 
 import re
 
-#: 印在正文行首的块号（页内短号，省 token）
-CODE_RE = re.compile(r"^\[(b\d{2,3})\]", re.MULTILINE)
+#: `src` 项里出现的块号（`"b03"` / `"b03|b04"`）
 _SRC_ITEM_RE = re.compile(r"b\d{2,3}", re.IGNORECASE)
 
 #: 追加在 `【本页输出】` 尾部的契约（**只在页面级尾部**，不动 system prompt / 稳定前缀）
@@ -217,7 +216,17 @@ def pair_rows_by_src(md_a: str, src_a: list[str], md_b: str, src_b: list[str],
                               for i in sorted(cur_b) if blocks_b[i]["text"].strip())
         btype = (blocks_a[sorted(cur_a)[0]]["type"] if cur_a
                  else blocks_b[sorted(cur_b)[0]]["type"])
-        rows.append({"original": text_en, "translation": text_zh, "type": btype})
+        # ⚠️ **标题行的 `level` / `number` 必须跟着一起搬过来**。
+        # 它们不是给读者看的装饰：`build_outline` 只收 `level` 在 1..4 的标题行，
+        # 缺这个字段的标题会被**静默丢掉** —— 走坐标合并的页（实测 turbo 9/22 页）
+        # 于是从目录里整段消失（`# B MATHEMATICAL PRELIMINARIES`、`## B.1 SHANNON…`、
+        # `## C.1/C.2` 全都没了），下游按"标题行在它之前、层级最深"归节的分块层
+        # 也就把 p16 整页算进了 `REFERENCES`（q16 公式专项因此检不到）。
+        # 取值口径与 `pair_rows` 逐字一致：**优先 A 侧**（原始 Markdown 的 `#` 深度）。
+        head = (blocks_a[sorted(cur_a)[0]] if cur_a else blocks_b[sorted(cur_b)[0]])
+        rows.append({"original": text_en, "translation": text_zh, "type": btype,
+                     "level": int(head.get("level") or 0),
+                     "number": head.get("number") or ""})
 
     for code in lattice:
         a, b = owner_a.get(code), owner_b.get(code)

@@ -145,6 +145,24 @@ def test_side_missing_a_block_never_starts_a_new_row() -> None:
     assert "第一段" in rows[0]["translation"]
 
 
+def test_heading_level_and_number_survive_coordinate_merge() -> None:
+    """标题行的 `level` / `number` 必须跟坐标合并一起过来（**实测回归**）。
+
+    `build_outline` 只收 `level` 在 1..4 的标题行 —— 走坐标合并的页缺这两个字段时，
+    这些标题会**从目录里静默消失**（实测 turbo 9/22 页受影响：`# B MATHEMATICAL
+    PRELIMINARIES`、`## B.1 SHANNON LOWER BOUND…`、`## C.1` / `## C.2` 全丢），
+    分块层"标题行在它之前、层级最深"的归节也跟着把整个 p16 算进 `REFERENCES`
+    （q16 的公式专项检索因此检不到）。取值口径与 `pair_rows` 一致：优先 A 侧。
+    """
+    md_a = "## B.1 SHANNON LOWER BOUND\n\nBody."
+    md_b = "## B.1 香农下界\n\n正文。"
+    rows, quality = coords.pair_rows_by_src(md_a, ["b01", "b02"], md_b, ["b01", "b02"], 16)
+    assert quality == "coords"
+    assert rows[0]["type"] == "heading"
+    assert rows[0]["level"] == 2 and rows[0]["number"] == "B.1"
+    assert rows[1]["level"] == 0 and rows[1]["number"] == ""
+
+
 def test_head_divergence_is_resolved_by_coordinates() -> None:
     """页首分歧：同层级标题 + 作者行，靠块号配对而不是靠猜测。"""
     md_a = "# TITLE\n\nAuthors\n\n# ABSTRACT\n\nBody."

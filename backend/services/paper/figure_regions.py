@@ -192,26 +192,9 @@ def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
     return edge
 
 
-def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float) -> float:
-    """把一条垂直边界推到相邻文字的边上（与 :func:`_snap_y` 同构）。"""
-    for t in blocks:
-        if left:
-            if edge >= t.x1 + TOL or edge <= t.x1 - TEXT_PAD:
-                continue
-            new = t.x1 + TEXT_PAD
-            if new <= lo + TOL or new - edge > SNAP_MAX or (hi - new) < MIN_VISIBLE:
-                continue
-            edge = new
-        else:
-            if edge <= t.x0 - TOL or edge >= t.x0 + TEXT_PAD:
-                continue
-            new = t.x0 - TEXT_PAD
-            if new >= hi - TOL or edge - new > SNAP_MAX or (new - lo) < MIN_VISIBLE:
-                continue
-            edge = new
-    return edge
-
-
+# ⚠️ `_snap_x` 定义在 `_snap_edges` **之后**不是笔误：模块级重定义以后一份为准，
+# 原先这里还留着一份判据不同的旧实现（`edge >= t.x1 + TOL`），**永远跑不到**。
+# P9 已删旧的那一份，只留下面这一份生效的。
 def _snap_edges(rect: list[float], texts: list[Rect], page_rect: Rect) -> list[float]:
     """把区域的四条边**贴到相邻文字的边上**：既不从文字中间穿过，也不留一条会被切掉的白缝。
 
@@ -403,7 +386,7 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
             row.update(part)
         return row
 
-    for page_no, page in pages.items():
+    for page_no in pages:
         blocks = blocks_by_page.get(page_no, [])
         if not blocks:
             continue

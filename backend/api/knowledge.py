@@ -1,7 +1,9 @@
-"""知识库 API（规划 §20.5）。
+"""知识库 API（规划 §20.5 + §20.4）。
 
-本轮范围：概览 / 纳入移出 / 触发 EMBED+INDEX / 索引状态。
-检索与 RAG 问答（§20.4）在阶段 14–17 实现，接口给出明确未实现提示。
+范围：概览 / 纳入移出 / 触发 EMBED+INDEX / 索引状态 / chunk 浏览 / 相似检索 / RAG 问答。
+检索与问答（§20.4）**已实现**：`/rag/similar`（向量 + 词法 → RRF → 重排）与
+`/rag/query`（+ `/rag/query/stream`）；两路分块后 `chunks` 额外带 `road` 维度（见
+`docs/论文理解系统-设计.md` §3）。
 """
 
 from __future__ import annotations
@@ -143,7 +145,7 @@ async def chunk_detail(request: Request, chunk_id: str = Query(...)):
     return envelope(knowledge_service.chunk_detail(chunk_id), request=request)
 
 
-# ---------------- §20.4 相似检索（RAG 问答见下一轮的 /rag/query） ----------------
+# ---------------- §20.4 相似检索与 RAG 问答 ----------------
 
 
 @router.post("/rag/similar")
