@@ -35,7 +35,7 @@ import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
-import ReaderSearch, { type SearchScope } from '@/components/reader/ReaderSearch.vue';
+import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
@@ -90,6 +90,13 @@ const showRefs = ref(false);
 const zoom = ref(1);
 const searchQuery = ref('');
 const searchScope = ref<SearchScope>('all');
+/**
+ * 搜索方式：关键词（原有词法搜索）/ 语义（`POST /rag/similar`，只查本文）。
+ *
+ * 状态放在视图而不是 `ReaderSearch` 内部：下面的边打边搜、深链 `?q=`、页签角标都要知道
+ * 现在是哪种模式 —— 语义模式下不该再去跑词法搜索（否则角标会显示一份界面里看不到的命中数）。
+ */
+const searchMode = ref<SearchMode>('lexical');
 const searchHits = ref<Array<{ id: string; page: number; side: string; snippet: string }>>([]);
 const mobilePane = ref<'' | 'side'>('');
 /** 宽屏下侧栏是否展开（窄屏走 mobilePane 抽屉，见 asideVisible）。 */
@@ -99,6 +106,28 @@ const asideOpen = ref(localStorage.getItem(asideKey) !== '0');
 const asideVisible = computed(() => (isNarrow.value ? mobilePane.value === 'side' : asideOpen.value));
 const isNarrow = ref(false);
 const paneWidth = ref(1200);
+
+/**
+ * 侧栏宽度：可拖拽，**按论文**记在 `localStorage`（键里带 paperId）。
+ *
+ * 为什么按论文：各篇的侧栏内容差别很大（这篇图多、那篇概念多），一个全局宽度总有一篇不合适；
+ * 而"这篇论文上次是怎么看的"是本阅读器已有的口径（`reading-progress` 里存了侧栏开合 / 字号 /
+ * 缩放）。宽度**不进服务端那份**：它是纯视图状态，进度表里没有这一列，为它改后端 schema
+ * 不划算（用户口径也允许 `localStorage`）。范围 220~360px：再窄术语表的英文列就没法读了，
+ * 再宽正文（对照时本来就只有半屏）会被挤没。
+ */
+const ASIDE_W_MIN = 220;
+const ASIDE_W_MAX = 360;
+const ASIDE_W_DEFAULT = 300;
+const asideWidthKey = `pm.reader.aside-w.${instancePaperId}`;
+const clampAsideWidth = (w: number) => Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX, Math.round(w)));
+const asideWidth = ref(ASIDE_W_DEFAULT);
+try {
+  const savedW = Number(localStorage.getItem(asideWidthKey));
+  if (Number.isFinite(savedW) && savedW > 0) asideWidth.value = clampAsideWidth(savedW);
+} catch { /* 隐私模式下忽略 */ }
+/** 给 `<style>` 里的 `v-bind()` 用：宽度是响应式的，拖到哪侧栏就是多宽 */
+const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
 interface ToolbarAction {
@@ -171,7 +200,7 @@ const briefDraft = reactive<BriefDraft>({
 /** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 */
 type SideTabKey = 'toc' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
-const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks'];
+const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight'];
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
  * 只数 IR 术语表是不对的：简报里那 20 条统一译法才是真正注入每次翻译 prompt 的那一份，
@@ -195,8 +224,9 @@ const SIDE_TABS = computed<Array<{
   { k: 'toc', icon: 'list', label: '目录', title: '目录（中英双语）' },
   {
     k: 'search', icon: 'search', label: '搜索',
-    title: '全文搜索（原文 + 译文）',
-    count: searchHits.value.length || undefined,
+    title: searchMode.value === 'semantic' ? '语义搜索（只查本文）' : '全文搜索（原文 + 译文）',
+    // 角标只报**当前模式**的命中数：语义模式的命中在 ReaderSearch 里，词法那份数此时是旧账
+    count: searchMode.value === 'lexical' ? (searchHits.value.length || undefined) : undefined,
   },
   {
     k: 'annotations', icon: 'quote', label: '批注·笔记',
@@ -209,6 +239,10 @@ const SIDE_TABS = computed<Array<{
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
+  {
+    k: 'insight', icon: 'sparkle', label: '解读',
+    title: '论文解读（B 阅读地图 / A 技术解剖 + 跟随当前页的相关概念）',
+  },
   { k: 'tasks', icon: 'task', label: '任务', title: '任务与进度' },
 ]);
 
@@ -708,6 +742,59 @@ function syncPaneWidth() {
   if (el?.clientWidth) paneWidth.value = el.clientWidth;
 }
 
+/* ------------------------------ 侧栏拖拽改宽度 ------------------------------ */
+/** 拖拽中：关掉宽度过渡（`.reader-aside` 上有 0.24s 的 transition，不关就是"拖起来黏手"） */
+const asideResizing = ref(false);
+let resizeStartX = 0;
+let resizeStartW = 0;
+
+/**
+ * 用 **pointer 事件 + `setPointerCapture`**：鼠标拖出侧栏（甚至拖出窗口）再回来时事件不会丢，
+ * 不捕获的话手指/鼠标一离开那条 9px 的把手就断，宽度会停在半路。
+ */
+function onResizeDown(ev: PointerEvent) {
+  if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死（min(360px, 88vw)），不给拖
+  asideResizing.value = true;
+  resizeStartX = ev.clientX;
+  resizeStartW = asideWidth.value;
+  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
+  ev.preventDefault();                      // 别把拖拽变成"选侧栏里的文字"
+}
+
+function onResizeMove(ev: PointerEvent) {
+  if (!asideResizing.value) return;
+  asideWidth.value = clampAsideWidth(resizeStartW + (ev.clientX - resizeStartX));
+}
+
+/** 拖完才落盘（每像素写一次 localStorage 没意义），并重算正文宽度 */
+async function onResizeUp(ev: PointerEvent) {
+  if (!asideResizing.value) return;
+  asideResizing.value = false;
+  (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
+  try { localStorage.setItem(asideWidthKey, String(asideWidth.value)); } catch { /* 忽略 */ }
+  await afterAsideResize();
+}
+
+/** 双击把手回默认宽度（拖歪了有个一键回退） */
+async function resetAsideWidth() {
+  if (isNarrow.value) return;
+  asideWidth.value = ASIDE_W_DEFAULT;
+  try { localStorage.setItem(asideWidthKey, String(asideWidth.value)); } catch { /* 忽略 */ }
+  await afterAsideResize();
+}
+
+/**
+ * 列宽变了之后的收尾：正文栏宽度重算 + **行偏移缓存作废**。
+ * 后者不能漏：行高整篇都随列宽变，缓存过期后按旧高度二分，"当前行"会错到别的页上
+ * （与 `watch([groups, viewMode, ...])` 里那次失效同一个原因）。
+ */
+async function afterAsideResize() {
+  offsetsHeight = -1;
+  await nextTick();
+  syncPaneWidth();
+  watchContentSize();
+}
+
 /* ------------------------------ 定位 ------------------------------ */
 /** 「就是这一块」的短暂提醒：跳过去之后让整行亮一下再淡出（CSS 动画，见 ReaderPageRows）。 */
 const flashRowId = ref('');
@@ -773,6 +860,33 @@ async function focusPage(page: number) {
     const el = scroller.value;
     el?.querySelector<HTMLElement>(`[data-page="${page}"]`)?.scrollIntoView({ behavior: 'smooth' });
   }
+}
+
+/**
+ * 跳到某一页并**把页码写进 URL**（`?page=N`）：语义搜索命中与「来源 Chunk」胶囊都走这里。
+ *
+ * 为什么不能只调 `focusPage`：
+ * - 深链定位（`applyDeepLink`）本来就监听 `?page=`，写进 URL 才与其它"跳到某页"的入口同一条路 ——
+ *   切标签回来、分享链接都能落回同一页（标签条记的是每个标签的完整路由）；
+ * - 只滚一下的话，刷新 / 切标签就回到旧位置，看起来像"跳转没生效"。
+ *
+ * ⚠️ 必须先摘掉 `?row=` / `?block=`：`applyDeepLink` 里**锚点优先于页码**（锚点能精确落行），
+ * 留着旧锚点的话点胶囊会被它拽回原来那一行，表现就是"点了没反应"。
+ */
+async function gotoPage(page: number) {
+  // 页码一律按数字走：命中里偶尔给成字符串（"7"）时，`focusPage` 的 `r.page === page` 会不成立
+  const target = Number(page) || 0;
+  if (!target) return;
+  const hadAnchor = route.query.row !== undefined || route.query.block !== undefined;
+  const samePage = String(route.query.page ?? '') === String(target);
+  const q = { ...route.query } as Record<string, string | string[] | undefined>;
+  delete q.row;
+  delete q.block;
+  q.page = String(target);
+  await router.replace({ path: route.path, query: q });
+  // 路由串没变化时 `applyDeepLink` 不会被触发（那个 watch 只看 query 的快照），自己滚一次；
+  // 真变了就交给它 —— 它带"闪一下"的提示，这里再滚一次反而会跟它抢落点。
+  if (samePage && !hadAnchor) await focusPage(target);
 }
 
 async function stepRow(delta: number) {
@@ -1235,12 +1349,20 @@ function runSearch(opts: { silent?: boolean } = {}) {
 function clearSearch() { searchQuery.value = ''; searchHits.value = []; }
 
 /**
+ * 只有词法模式才自动重跑词法搜索。
+ *
+ * 语义模式下这次重跑纯属白干：结果列表在 ReaderSearch 里，页签角标也只看当前模式
+ * ——跑出来的命中数只会出现在"看不到的地方"，还会跟语义那次 POST 抢网络。
+ */
+const lexicalActive = computed(() => searchMode.value === 'lexical');
+
+/**
  * 正文行是**异步**来的（阅读器 payload + SSE 逐页回填），而"搜不到东西"最容易发生在
  * "打开阅读器就马上搜"：那一刻 allRows 还是空的，于是什么都不命中，界面还显示"没有匹配"。
  * 所以数据一变就按当前查询词**静默重跑**。
  */
 watch(() => allRows.value.length, () => {
-  if (searchQuery.value.trim()) runSearch({ silent: true });
+  if (lexicalActive.value && searchQuery.value.trim()) runSearch({ silent: true });
 });
 
 /**
@@ -1253,11 +1375,16 @@ watch(() => allRows.value.length, () => {
 const runSearchDebounced = debounce(() => runSearch({ silent: true }), 220);
 watch(searchQuery, (v) => {
   if (!v.trim()) { searchHits.value = []; return; }
+  if (!lexicalActive.value) return;
   runSearchDebounced();
 });
 /** 改搜索范围（全部/原文/译文）也要立刻重跑，不然结果和分段控件对不上。 */
 watch(searchScope, () => {
-  if (searchQuery.value.trim()) runSearch({ silent: true });
+  if (lexicalActive.value && searchQuery.value.trim()) runSearch({ silent: true });
+});
+/** 从语义切回关键词：按当前查询词补跑一次，免得看到的是切走之前那份旧结果 */
+watch(searchMode, (m) => {
+  if (m === 'lexical' && searchQuery.value.trim()) runSearch({ silent: true });
 });
 
 /** 搜索框在侧栏里：`/` 快捷键要先把侧栏（窄屏是抽屉）打开、切到「搜索」页签，再聚焦。 */
@@ -2358,8 +2485,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
       </div>
 
-      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务（可整体折叠） ============ -->
-      <aside class="reader-aside">
+      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/解读（可整体折叠，可拖宽） ============ -->
+      <aside :class="['reader-aside', { resizing: asideResizing }]">
         <div class="side-tabs-wrap">
           <button
             v-if="tabsScroll.left"
@@ -2408,10 +2535,13 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           ref="searchPane"
           v-model:query="searchQuery"
           v-model:scope="searchScope"
+          v-model:mode="searchMode"
+          :paper-id="paperId"
           :hits="searchHits"
           @search="runSearch"
           @clear="clearSearch"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+          @goto-page="gotoPage"
         />
         <ReaderSidePanel
           v-else
@@ -2427,6 +2557,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :stats="stats"
           :progress-percent="progressPercent"
           :active-task="activeTask ?? parseTask"
+          :paper-id="paperId"
+          :page="currentPage"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
@@ -2436,6 +2568,18 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
           @cancel-task="cancelTranslate"
+          @focus-page="gotoPage"
+        />
+        <!-- 拖拽改宽度：贴在侧栏右边缘（见 onResizeDown 的说明），双击复位 -->
+        <div
+          class="aside-resizer"
+          :class="{ active: asideResizing }"
+          title="拖动调整侧栏宽度（双击复位）"
+          @pointerdown="onResizeDown"
+          @pointermove="onResizeMove"
+          @pointerup="onResizeUp"
+          @pointercancel="onResizeUp"
+          @dblclick="resetAsideWidth"
         />
       </aside>
 
@@ -2642,17 +2786,39 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 /* 各栏都要 min-width/min-height: 0，否则 grid 子项不收缩、内容会顶破布局 */
 .reader-aside, .reader-content { min-width: 0; min-height: 0; }
 .reader-aside {
+  /* 拖拽把手要相对侧栏定位（见 .aside-resizer） */
+  position: relative;
   border-right: 1px solid var(--border); background: var(--bg-elev);
   overflow: hidden; display: flex; flex-direction: column;
-  width: 300px;                        /* 展开宽度（收起时过渡到 0） */
+  width: v-bind(asideWidthPx);          /* 展开宽度（可拖拽，按论文记；收起时过渡到 0） */
   transition: width .24s cubic-bezier(.4, 0, .2, 1), opacity .18s ease,
               border-right-width .24s ease, border-right-color .24s ease;
 }
+/* 拖拽期间关掉宽度过渡：0.24s 的补间会让把手"黏"在指针后面（松手才追上） */
+.reader-aside.resizing { transition: none; }
+/* 拖拽把手：贴在侧栏**右边缘内侧**（`.reader-aside` 是 overflow:hidden，凸出去就被裁了）。
+   平时完全透明（不打扰阅读），hover / 拖拽中才亮一条主题色竖线。
+   ⚠️ 选择器必须写到 `.reader-aside > .aside-resizer` 这个权重：上面 `@media (min-width:1101px)`
+   里的 `.reader-aside > * { min-width: … }` 会给**所有**子元素兜一个 300px 起的最小宽度，
+   权重相同、它又写在后面 —— 不压住的话这条 9px 的把手会被撑成 300px，把侧栏半个面板盖住并吃掉点击。 */
+.reader-aside > .aside-resizer {
+  position: absolute; top: 0; right: 0; width: 9px; min-width: 0; height: 100%;
+  /* z-index 压到页签条之下（见 .side-tabs-wrap）：把手只负责"内容区那一竖条"，
+     页签条右端的滚动箭头不能被它抢走点击 */
+  z-index: 1; cursor: col-resize; touch-action: none; background: transparent;
+}
+.reader-aside > .aside-resizer::after {
+  content: ''; position: absolute; top: 0; right: 0; width: 2px; height: 100%;
+  background: transparent; transition: background .15s ease;
+}
+.reader-aside > .aside-resizer:hover::after,
+.reader-aside > .aside-resizer.active::after { background: var(--accent); }
 @media (min-width: 1101px) {
   /* 收起/展开期间侧栏**只被裁掉、不跟着变窄**：内容保持展开宽度。
      不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，
-     又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。 */
-  .reader-aside > * { min-width: 300px; }
+     又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。
+     宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
+  .reader-aside > * { min-width: v-bind(asideWidthPx); }
   /* 收起：宽度收到 0 + 内容轻微左移淡出；右侧 1px 分隔线宽度与颜色一起收掉（否则会留一条竖线） */
   .reader.no-aside .reader-aside {
     width: 0; border-right-width: 0; opacity: 0; transform: translateX(-10px);
@@ -2663,7 +2829,9 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
  * 滚动条隐藏（保持干净），鼠标滚轮 / 触控板 / Shift+滚轮都能滚，见 `onSideTabsWheel`；
  * 切页签时把当前那个滚进可视区（`scrollIntoView`），左右两端还有圆形箭头按钮（见下）。
  * 排得比早先紧凑一些（64px → 56px、字号 10.5 → 10px），少一点"藏起来的页签"。 */
-.side-tabs-wrap { position: relative; flex: none; }
+/* `z-index: 3` 只是为了让页签条压在拖拽把手之上：把手是一条贯穿整栏高度的 9px 热区，
+ * 不压住的话页签条最右端那一点点会变成"拖宽度"而不是"点页签"（见 .aside-resizer 的说明）。 */
+.side-tabs-wrap { position: relative; flex: none; z-index: 3; }
 /* 两枚"翻页"圆按钮：**浮在滚动条两端**、不占布局（有内容才出现，所以不会让页签跳动） */
 .side-scroll-btn {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
@@ -2703,7 +2871,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
 @media (max-width: 1100px) {
   .reader, .reader.no-aside { grid-template-columns: minmax(0, 1fr); }
-  /* 窄屏侧栏是**抽屉**：一直在 DOM 里，靠 transform 滑入滑出（display 切换没法做动画） */
+  /* 窄屏侧栏是**抽屉**：一直在 DOM 里，靠 transform 滑入滑出（display 切换没法做动画）。
+     宽度由这里定死（不跟拖拽值走），所以窄屏不会因为用户拖过的宽度而横向溢出。 */
   .reader-aside {
     position: fixed; top: var(--header-h); bottom: 0; z-index: 60;
     left: 0; width: min(360px, 88vw); box-shadow: var(--shadow-2);
@@ -2711,6 +2880,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
     transition: transform .24s cubic-bezier(.4, 0, .2, 1), visibility .24s;
   }
   .reader.mobile-aside .reader-aside { transform: none; visibility: visible; }
+  /* 抽屉宽度是定死的，拖拽没有意义（拖了也不会生效），干脆不显示把手 */
+  .reader-aside > .aside-resizer { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

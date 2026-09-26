@@ -2,7 +2,7 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务（目录由 ReaderToc 负责）。
+ * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **解读**（目录由 ReaderToc 负责）。
  * 公式**只读**：来自 Markdown 提取（ReaderFormulaList），不做复核、不分级、不比对裁图。
  */
 import { computed, ref, watch } from 'vue';
@@ -14,6 +14,7 @@ import type {
 import AppIcon from '@/components/AppIcon.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
+import ReaderInsight from './ReaderInsight.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
 export interface BriefDraft {
@@ -25,7 +26,7 @@ export interface BriefDraft {
 }
 
 /** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签） */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks';
+export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
@@ -41,6 +42,10 @@ const props = withDefaults(defineProps<{
   stats: ReaderStats;
   progressPercent: number;
   activeTask: TaskInfo | null;
+  /** 「解读」页签：按论文取理解结果（A/B 两路 + 相关概念） */
+  paperId: string;
+  /** 「解读」页签的「相关概念」跟着**当前阅读页**走（由 ReaderView 按滚动位置算出） */
+  page: number;
 }>(), { formulasLoading: false, briefSource: '' });
 
 const emit = defineEmits<{
@@ -54,6 +59,8 @@ const emit = defineEmits<{
   (e: 'delete-annotation', id: string): void;
   (e: 'delete-note', id: string): void;
   (e: 'cancel-task', task: TaskInfo): void;
+  /** 解读页签里点「来源 Chunk」胶囊：跳到那一页（由 ReaderView 写进 `?page=`） */
+  (e: 'focus-page', page: number): void;
 }>();
 
 function locate(id?: string | null, page?: number | null) {
@@ -164,6 +171,16 @@ const merged = computed<MergedItem[]>(() => {
 
 <template>
   <div class="panel-body">
+    <!-- 解读（第二阶段「论文理解」）：A 技术解剖 / B 阅读地图 + 跟随当前页的相关概念。
+         放在这里而不是另开一页：读某一段时顺带看概念解释是同一个动作流（详见 ReaderInsight 顶部） -->
+    <template v-if="props.tab === 'insight'">
+      <ReaderInsight
+        :paper-id="props.paperId"
+        :page="props.page"
+        @focus-page="(p: number) => emit('focus-page', p)"
+      />
+    </template>
+
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
     <template v-if="props.tab === 'annotations'">
       <div v-if="!merged.length" class="empty small">还没有批注或笔记（在正文里划词即可新建）</div>

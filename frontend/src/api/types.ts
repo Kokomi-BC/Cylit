@@ -567,6 +567,95 @@ export interface BriefPayload {
   [key: string]: any;
 }
 
+/* ------------------- 第二阶段「论文理解」（阅读器「解读」页签用） ------------------- */
+
+/**
+ * 一条 chunk 引用（后端把短码解析成真实 chunk 之后的那一份）。
+ *
+ * `unit`（语义单元）也会出现在这里：理解读的就是 chunk，引用基准单位与知识库同一套
+ * （用户口径：`来源 Chunk: B003` 这种小胶囊点一下要能跳回原文那一页）。
+ */
+export interface UnderstandingRefItem {
+  code: string;
+  chunk_id: string;
+  chunk_type?: string | null;
+  page?: number | null;
+}
+
+/**
+ * 「相关概念」一条（阶段二新增字段，挂在 B 路结果上）。
+ *
+ * `body_md` 是**自由 Markdown** 的概念解释（不假设小节结构，模型怎么写就怎么渲染）；
+ * `refs` 可能为空（模型没给引用时不许报错，只是不显示胶囊）。
+ */
+export interface UnderstandingConcept {
+  name: string;
+  name_en?: string | null;
+  body_md?: string;
+  refs?: UnderstandingRefItem[];
+}
+
+/** 单路理解结果（`GET /papers/{id}/understanding?path=a|b`，与 `understanding_service.to_dict` 对齐）。 */
+export interface UnderstandingPayload {
+  paper_id?: string;
+  path?: 'a' | 'b';
+  label?: string;
+  markdown?: string;
+  refs?: string[];
+  refs_resolved?: UnderstandingRefItem[];
+  /** 重新翻译/重建索引后 chunk id 失效的引用：仍带页码，照样能跳（后端保留，不清空解读） */
+  stale_refs?: UnderstandingRefItem[];
+  invalid_refs?: string[];
+  cross_road_refs?: string[];
+  refs_ok?: boolean;
+  missing_concept_refs?: boolean;
+  model?: string;
+  updated_at?: string;
+  inventory_size?: number;
+  /** B 路的「相关概念」；模型没按小节写时是空数组（前端退回整篇 markdown 展示） */
+  concepts?: UnderstandingConcept[];
+}
+
+/** `GET /papers/{id}/related?page=N`：当前页相关的概念（与 `UnderstandingConcept` 同构）。 */
+export interface UnderstandingRelated {
+  page: number;
+  concepts: UnderstandingConcept[];
+}
+
+/**
+ * `POST /rag/similar`（scope=paper）的一条命中。
+ *
+ * 阶段二契约给的是 `chunk_id / chunk_type / page / lang / preview（或 content）/ metadata`；
+ * 这里额外兼容既有 `/rag/similar` 的字段名（`snippet` / `caption` / `scores`）——
+ * 同一个接口被知识库页与阅读器共用，两边字段名不完全一样时前端不该二选一崩掉。
+ */
+export interface SemanticHit {
+  chunk_id: string;
+  paper_id?: string;
+  block_id?: string | null;
+  chunk_type?: string;
+  page?: number | null;
+  lang?: string;
+  preview?: string;
+  content?: string;
+  caption?: string | null;
+  snippet?: string;
+  section?: string | null;
+  image_url?: string | null;
+  scores?: Record<string, number | null>;
+  metadata?: Record<string, any> | null;
+}
+
+/** `POST /rag/similar` 的返回（`retrieval` = 检索漏斗，前端只在提示里用一两个数字）。 */
+export interface SemanticResult {
+  implemented?: boolean;
+  message?: string;
+  query?: string;
+  scope?: string;
+  items?: SemanticHit[];
+  retrieval?: Record<string, any>;
+}
+
 export interface SettingsPayload {
   values: Record<string, any>;
   stored: Record<string, any>;
