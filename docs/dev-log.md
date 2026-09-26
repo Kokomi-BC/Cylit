@@ -4787,6 +4787,55 @@ turboquant 的「向量量化与位宽」「随机旋转与 Beta 分布」「香
 数据、译文、批注、高亮均未受影响。
 
 
+### 17.85 第七轮 · 解读与阅读地图分家 + 应用内标签页 + 阅读器排版 + 删掉工具栏重复入口
+
+用户对着截图提了 4 条（并在我做完后又补了一句"右上角的解读按钮还没有移除"）。这轮的关键是**三个概念纠偏**：
+
+1. **"新标签页"是应用内标签页，不是浏览器标签页**。仓库里本来就有多标签外壳（`stores/tabs.ts` 的
+   `openTab` + `components/TabBar.vue`），上一版却写了 `window.open(...'_blank')` —— 用错了。
+   ⚠️ 顺带踩到一个硬约束：**`routeKey` 只由 `name + params` 组成，`query` 不参与**，
+   所以"同一个路由 + `?sec=map`"**不会**开出第二个应用内标签，必须是**两个路由名**：
+   `understand`（`/understand/:paperId` = 论文解读）与**新增** `readmap`（`/readmap/:paperId` = 阅读地图）。
+   `TAB_META` 也补了这两条（原来 `understand` 不在表里，标签标题是"未命名"）。
+2. **两者要分开**。上一版把它们揉成一篇（论文精读 + 相关概念 + 怎么读这篇论文），用户要的是
+   左栏**两个页签**：「论文解读」= A 路的 `a.markdown`；「阅读地图」= B 路的 `b.markdown` **+** `b.concepts`
+   （概念卡在最前，与 B 路自身顺序一致）。
+3. **顶部只留标题 + 打开按钮，且不再有重新生成**。截图里那一行
+   `解读结果 · 9 小时前 · deepseek-flash · ↻` 整行删掉，只留「论文解读」/「阅读地图」标题 +
+   一枚**只有图标**（`external`）的按钮；两个整页视图的顶栏也只有论文标题。
+   「重新生成解读」入口只剩论文库「⋯」与阅读器「⋯」（用户点重跑的地方）。
+
+另外两条：
+
+4. **两个整页视图复用阅读器的正文排版**：新增共享渲染器 `components/insight/InsightDoc.vue`
+   （行高/段距/标题 em 档位/表格数字右对齐+横向滚动容器/公式，全部对齐 `ReaderRow` 的 `.rr-body`），
+   字号吃 `--reader-font-size`，档位表抽到 `utils/readerFont.ts`（阅读器工具栏与两个整页**共用一份**，
+   不再各写一份）。`/understand` 与 `/readmap` **共用一个视图组件**（`props.section` 决定画哪份）。
+5. **删掉工具栏那枚「解读」按钮**（用户第二次提醒）。解读已经是左栏页签，工具栏再放一个就是重复入口；
+   连带只为它存在的 `insightOpenActive` / `toggleInsightPane` / `.insight-toggle.is-open` 一并删除
+   （`openInsightTab()` 保留 —— 它现在是"发起重新生成后把左栏页签打开"用的；最左边的**侧栏开关**保留）。
+
+**改动面**：新增 `components/insight/InsightDoc.vue`、`components/insight/InsightPanel.vue`、
+`composables/useUnderstanding.ts`（按 paperId 缓存整包 + in-flight 去重 + 只在有理解任务时轮询）、
+`utils/readerFont.ts`；**删除** `components/reader/ReaderInsight.vue`（403 行，被上面三个替代，全仓零残留）；
+改 `ReaderSidePanel` / `ReaderView` / `UnderstandView`（374 → ~95 行）/ `router` / `stores/tabs` /
+`HomeView` / `AppIcon`（新加 `map` 图标：`map`/`compass` 原本都不在图标表里，而两个页签图标不能撞）。
+
+**验收**（我自己跑的，三条串行）：
+
+| 项 | 结果 |
+|---|---|
+| `npm run typecheck` | 0 错 |
+| `npm run build` | 成功（`ReaderView-DkVJBH2B.js 578.66 kB`） |
+| `frontend_check.py --block-markers` | **88 项 / 通过 87 / 失败 1**（唯一红仍是「公式能整体高亮」）→ **零新增失败** |
+| 无头 DOM 断言 | 页签 = `[…论文解读, 阅读地图, 任务]`；页签顶部 `textContent` 只有标题 + 图标按钮（`外部/无可见文字`）；`解读结果`/`deepseek`/`刷新解读结果` 字样**全部不存在**；图标按钮点击后 `localStorage['pm.shell.tabs']` 多出一条 `readmap:…` 且 `activeKey` 指向它、**`window.open` 调用数 = 0**；工具栏 `[data-insight-toggle]` **不存在**、按钮文本里没有"解读"（`[data-aside-toggle]` 仍在）；整页 `--reader-font-size: 13px`、KaTeX 正常、`scrollWidth ≤ 视口`；两个整页 `body` 里 `/重新生成/` = false |
+
+**留的口子（都告知用户了）**：阅读地图整页的概念卡默认收起 + 带过滤框；整页顶栏没有刷新按钮
+（数据有 30s TTL + 任务在跑时自动轮询）；首页只留了「论文解读」入口卡，阅读地图从阅读器页签按钮或
+直接 `/app/readmap/<id>` 进；仍然没有人工目测（全部 headless 几何/DOM 断言）。
+
+
+
 
 
 

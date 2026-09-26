@@ -111,21 +111,26 @@ section / heading_level / translation / translation_status / translation_revisio
 | `view` | `original`\|`translation`\|`bilingual` | 覆盖服务端记录的视图模式 |
 | `order` | `en_left`\|`zh_left` | 覆盖左右顺序（旧值 `en_top`/`zh_top` 仍接受） |
 | `left` | `page`\|`text` | 左栏显示原 PDF / 原文文本（非扫描页的 PDF 栏是**真 PDF**：pdf.js 矢量页 + 可复制文字层；扫描页仍是位图页图） |
-| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`tasks`\|`insight` | 打开左栏（唯一侧栏）的某个页签；`insight` = 「解读」（一份解读：论文精读 + 相关概念 + 怎么读这篇论文），会顺带展开左栏。旧值 `notes` 仍接受但归一成 `annotations`（批注与笔记已合并为一个页签） |
+| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`tasks`\|`insight`\|`readmap` | 打开左栏（唯一侧栏）的某个页签（会顺带展开左栏）：`insight` = 「论文解读」（A 路论文精读）、`readmap` = 「阅读地图」（B 路 + 相关概念卡片）。旧值 `notes` 仍接受但归一成 `annotations`（批注与笔记已合并为一个页签） |
 | `q` / `scope` | 关键词 / `all`\|`en`\|`zh` | 打开时直接跑一遍左栏搜索（`scope` 指定检索范围） |
 | `pside` | `en`\|`zh` | 对照模式里先看哪一侧 |
 | `size` | `sm`\|`md`\|`lg` | 正文字号 |
 | `md` / `mdpage` | `1` / 页号 | 直接打开 Markdown 视图并定位到第 N 页 |
 | `nosse` | `1` | 强制走 SSE 降级路径（3s 轮询） |
 
-阅读器布局：**两列**（左栏 + 正文），目录/搜索/批注/笔记/公式/插图/术语/任务/**解读**合并进同一栏，
-顶部一排带计数的图标页签切换；窄屏（<1100px）用工具栏按钮弹出同一栏。
+阅读器布局：**两列**（左栏 + 正文），目录/搜索/批注/笔记/公式/插图/术语/**论文解读**/**阅读地图**/任务
+合并进同一栏，顶部一排带计数的图标页签切换；窄屏（<1100px）用工具栏按钮弹出同一栏。
+**工具栏没有「解读」按钮**（解读已经是左栏页签，重复入口已删）。
 左栏宽度**可拖拽**，按论文存 `localStorage: pm.reader.aside-w.<paperId>`；上下限**按模式给**：
 对照模式（`view_mode=bilingual`）220~360px，非对照 220~640px（且不超过视口 60%）；
-**点「解读」页签自动变宽到 520px**（按当前上限夹取，只增不减）。
-「解读」页签右上角有一枚**只有图标**的按钮，在新标签页打开整页版 `/app/understand/<paperId>`。
+**进「论文解读」/「阅读地图」页签自动变宽到 520px**（按当前上限夹取，只增不减）。
+两个页签顶部各有**一枚只有图标的按钮**（`external`，无可见文字），点击在**应用内标签页**
+（顶栏 `TabBar`，`stores/tabs.ts` 的 `openTab`）打开对应的整页视图 ——
+`/understand/:paperId`（论文解读，A 路）与 `/readmap/:paperId`（阅读地图 + 相关概念，B 路）；
+两个视图共用一个组件，正文排版与阅读器同一套（`--reader-font-size` / 表格 / 公式）。
 **文本对照模式下**（对照 + 两端都是文本、没有原 PDF）**表格行左右并排**（两端各占一列、各自横向滚动），
 不再上下堆叠；插图仍是通栏。
+
 
 
 
