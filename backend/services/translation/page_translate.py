@@ -429,7 +429,7 @@ PAGE_USER_TEMPLATE_A = """{prefix}{previous}
 </页面文本>{edges}
 
 【本页输出】按系统提示输出 JSON：original_md 为本页原文的忠实转录（一切以页图显示的内容为准，
-表格逐格照抄、图注编号与页图一致），breaks 为本页的语义边界锚点（没有就写空数组）。"""
+表格逐格照抄、图注编号与页图一致），breaks 为本页的语义边界锚点（没有就写空数组）。{src_tail}"""
 
 PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 
@@ -440,7 +440,7 @@ PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 </页面文本>{lookahead}{edges}
 
 【本页输出】按系统提示输出 JSON：translation_md 为本页中文译文，carry_md 为本页末尾那句
-从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。"""
+从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。{src_tail}"""
 
 # 思考模式（DeepSeek 默认开启）会把 max_tokens 吃光导致正文为空，按阶梯升档。
 MAX_TOKENS_LADDER = (8192, 16384, 32768, 65536)
@@ -864,11 +864,14 @@ def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
 def render_page_prompt(*, page: int, page_total: int, body: str,
                        prefix: str = "", section: str = "", previous: str = "",
                        lookahead: str = "", edges: dict | None = None,
-                       path: str | None = None) -> str:
+                       path: str | None = None, src_tail: str = "") -> str:
     """渲染一页的 user prompt。
 
     `path`：``None`` = 融合模式（`PAGE_USER_TEMPLATE`）；``"a"`` = 英文转录（**不给**下一页开头）；
     ``"b"`` = 中文翻译（给）。
+
+    ``src_tail``（P4b 共享坐标契约）：**只追加在页面级尾部**（`【本页输出】` 之后），
+    稳定前缀（system + 简报 + 骨架 + 前文）逐字节不变，所以前缀缓存照旧命中。
     """
     if path is None:
         template = PAGE_USER_TEMPLATE
@@ -886,6 +889,7 @@ def render_page_prompt(*, page: int, page_total: int, body: str,
         section_line=section_line, body=body or "（解析器没有抽到文本，请完全依据页图）",
         lookahead=f"\n\n{lookahead}" if lookahead else "",
         edges=render_edge_facts(edges or {}),
+        src_tail=src_tail,
     )
 
 
@@ -925,6 +929,8 @@ class PageCallResult:
     carry_md: str = ""
     #: 语义边界锚点 `[{"start", "type"}]` —— 只服务检索分块，见 SYSTEM_PROMPT / TRANSCRIBE_SYSTEM / TRANSLATE_SYSTEM【breaks】
     breaks: list[dict] = field(default_factory=list)
+    #: P4b 共享坐标契约：与输出块**一一对应**的解析器块号覆盖（见 `coords`）
+    src: list[str] = field(default_factory=list)
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -974,6 +980,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         original_md=original.strip(), translation_md=translation.strip(),
         carry_md=parse_carry(res.text or ""),
         breaks=parse_breaks(res.text or ""),
+        src=_coords().parse_src(res.text or ""),
         model=getattr(res, "model", "") or provider.model_name,
         prompt_tokens=int(getattr(res, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(res, "completion_tokens", 0) or 0),
@@ -983,6 +990,27 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         cache_hit_tokens=int(usage_raw.get("prompt_cache_hit_tokens") or 0),
         cache_miss_tokens=int(usage_raw.get("prompt_cache_miss_tokens") or 0),
     )
+
+
+def _coords():
+    """延迟导入 `coords`（它反向引用本模块的 `split_blocks`，模块级导入会成环）。"""
+    from backend.services.translation import coords
+
+    return coords
+
+
+def page_source_blocks(paper_id: str, page: int) -> list[dict]:
+    """该页的**解析器块**（P4b 共享坐标）：两路拿到同一份，且与两路产物无关。
+
+    空文本块不返回（它们不参与坐标）。顺序按解析器的 `order`。
+    """
+    from backend.services.paper import reader_service
+
+    index = reader_service.load_block_index(paper_id)
+    rows = [b for b in (index.get("blocks") or [])
+            if int(b.get("page") or 0) == int(page) and (b.get("text") or "").strip()]
+    rows.sort(key=lambda b: b.get("order") or 0)
+    return rows
 
 
 def parse_pair(text: str) -> tuple[str, str]:
@@ -1265,10 +1293,7 @@ def _sequence_pairs(left: list[dict], right: list[dict]
 _MATH_SPAN = re.compile(r"\$([^$]+)\$", re.DOTALL)
 #: 引用年份 `Shannon (1948)` / `Achiam et al. (2023)`：两侧都必须原样保留英文作者与年份
 _CITE_YEAR = re.compile(r"\((\d{4}[a-z]?)\)")
-#: 全大写缩略语（`TURBOQUANT` / `MSE` / `QJL` / `LLM` / `BLEU` …）：**两侧都原样保留**，
-#: 是跨语言最密的对位证据。标题与摘要这类"层级编号都为空、类型键完全一样"的块全靠它区分
-#: （实测 turbo p1：A 的 `# TURBOQUANT…` 与 `# ABSTRACT` 键都是 `("h",1,"")`，
-#: 匹配器于是把英文标题配到了中文摘要上）。
+#: 全大写缩略语：两侧都原样保留，是跨语言最密的对位证据（用来区分层级编号相同的同级标题）。
 _CAPS_WORD = re.compile(r"\b[A-Z][A-Z0-9\-]{3,}\b")
 
 

@@ -24,6 +24,7 @@ from backend.repositories.mysql.models import (
 )
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import anchor_map, paper_service
+from backend.services.translation.coords import pair_rows_by_src as coords_pair
 from backend.services.translation.page_translate import (
     PATH_VERSION, PageStore, absorb_one_sided_rows, apply_semantic_breaks,
     mark_rows_continuity, normalize_breaks, page_continuity, pair_rows,
@@ -212,6 +213,15 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
     if not original_md and not translation_md:
         return None                        # 两侧都空的页不产生一页（与旧 done 判据一致）
     fresh_rows, quality = pair_rows(original_md, translation_md, page)
+    # P4b 共享坐标：两侧都带合法的 src（页级契约）时，**按解析器块号配对**——
+    # 这是唯一能表示"一侧并成一块、另一侧拆成两块"的做法（合成一行，不错位、不留空栏）。
+    # 任一侧缺 src → 退回 `pair_rows`（结构 + 跨语言标记差分），行为与改造前一致。
+    src_a = a.get("src") if isinstance(a, dict) else None
+    src_b = b.get("src") if isinstance(b, dict) else None
+    if src_a and src_b:
+        coord_rows, coord_quality = coords_pair(original_md, src_a, translation_md, src_b, page)
+        if coord_rows:
+            fresh_rows, quality = coord_rows, coord_quality
     rows = [dict(r) for r in fresh_rows]
     used_stored = False
     if shape != "paths" and stored.get("rows"):

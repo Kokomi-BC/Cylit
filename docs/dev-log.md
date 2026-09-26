@@ -4441,3 +4441,33 @@ A 24 / 64、B 19 / 30（都通过）。**两路边界确实不同**，这正是�
 `understanding` 表（`init_db` 后 13 张表）、任务类型 `UNDERSTAND_A` / `UNDERSTAND_B`、
 API `POST /papers/{id}/understand` + `GET /papers/{id}/understanding[/status]`；
 `tests/test_understanding.py` 17 条 + `tests/test_understanding_retry.py` 3 条。
+
+
+### 17.74 第四轮 · P4b：共享坐标契约（解析器块号做共同行格）
+
+**为什么做**：P4 测出来两类修不掉的毛病都指向同一个根因 —— 两侧各自分段、**没有共同坐标**：
+① 整页错位（turbo p1：A 把摘要相邻两句并成一块、B 拆成两块，"多出来的那段该插在哪"不可判定，
+匹配器插在页尾 → 后面每行错位）；② 页首分歧（两个同层级标题键完全一样，英文标题配到了中文摘要上，
+`_row_key` 加全大写缩略语也修不掉）。提示词层面试过两轮，都没消掉。
+
+**契约**：解析器块索引（`reader_service.load_block_index`）每页给一组稳定 id
+（`turboquanton-p01-b01`…），**两路拿到同一份且与两路产物无关** → 天然的共享格。模型除
+`original_md`/`translation_md`/`breaks` 外再给 `src`：**与输出块一一对应、按顺序**，
+写它覆盖的块号（多个用 `|`，如 `["b01", "b02|b03"]`）。
+
+**缓存安全**（用户明确要求）：前文来自 store 里**已落盘的模型输出**，不是 prompt 正文，
+所以坐标清单与契约只追加在**页面级尾部**（`【本页输出】` 之后）：下一页的公共前缀
+（system + 简报 + 骨架 + previous）逐字节不变 → 前缀缓存照旧命中，**system prompt 一个字没改**。
+
+**合并**：在两个划分的交上走块号，维护当前行的 (A 块集合, B 块集合)：
+只有一侧有主 → 并入当前行；主块已在当前行里 → 并入当前行（**这就是 1:N 合并**）；否则开新行。
+行内容 = 该侧各块 markdown 依次拼接（不重复）。于是"A 并成一块 / B 拆两块"变成**一行**，
+既不错位也不留空栏。校验不过（项数≠块数 / 块号不在本页 / 漏覆盖 / 乱序）→ **整页退回 `pair_rows`**。
+
+**改动**：新增 `backend/services/translation/coords.py`（坐标清单 / `SRC_TAIL` 契约 / 解析 /
+校验 / `pair_rows_by_src`）；`page_translate` 加 `PageCallResult.src`、`page_source_blocks`、
+`render_page_prompt(src_tail=)`；`translation_service` 每页生成坐标尾部并在拿到本侧 Markdown 后
+校验 `src`（不合法就整页不带坐标）；`reader_service._merge_page` 两侧都有合法 `src` 时走坐标合并。
+`tests/test_two_path_coords.py` 15 条（含"合并必须变成一行"与"一侧漏块绝不新开行"两个核心用例）。
+
+**待验证**：需要两路全量重跑才能测到真实效果（离线单测只证明语义正确）。

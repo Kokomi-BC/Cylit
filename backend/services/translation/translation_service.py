@@ -43,7 +43,7 @@ from backend.services.translation.page_translate import (
     build_page_payload, build_path_payload, build_stable_prefix, call_page,
     drop_declared_fragment, effective_max_tokens, history_context, list_pages,
     load_page_image, next_max_tokens, page_continuity, page_lookahead,
-    page_source_text, prefix_hash, render_page_prompt,
+    page_source_blocks, page_source_text, prefix_hash, render_page_prompt, split_blocks,
 )
 
 log = get_logger(__name__)
@@ -304,6 +304,12 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     def process(page_no: int) -> None:
         nonlocal max_tokens_current
         source, section = page_source_text(paper_id, page_no)
+        # P4b 共享坐标：本页解析器块清单 + 输出契约，**只进页面级尾部**（不动稳定前缀 → 缓存照旧）
+        from backend.services.translation import coords as _coords
+
+        blocks = page_source_blocks(paper_id, page_no)
+        codes = _coords.codes_of(blocks)
+        coord_tail = (_coords.lattice_text(blocks) + _coords.SRC_TAIL) if codes else ""
         # 完整前文（第 1..N-1 页）——追加式渲染，与上一页 prompt 共享最长前缀 → 命中前缀缓存。
         # 两路各自的 store 里只有自己那一侧的内容（A 件只有 original_md / B 件只有
         # translation_md），所以这里天然就是"本路的前文"。
@@ -333,7 +339,7 @@ def run_path_task(ctx, path: str | None = None) -> dict:
         prompt = render_page_prompt(page=page_no, page_total=page_total,
                                     body=body, prefix=prefix, section=section,
                                     previous=history, lookahead=lookahead, edges=edges,
-                                    path=path)
+                                    path=path, src_tail=coord_tail)
         image = load_page_image(paper_id, page_no)
         try:
             result = call_page(provider, prompt, image,
@@ -366,6 +372,18 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             payload = build_path_payload(path=path, page=page_no, page_total=page_total,
                                          result=result, source_chars=len(source))
         payload["prev_context_chars"] = len(history)
+        # P4b：把 src 校验成"每块覆盖的块号"，不合法就**整页不带坐标**（读时退回结构配对）。
+        # 校验放在这里而不是 `coords` 里，是因为"输出块数"要等拿到这一侧的 Markdown 才知道。
+        if codes:
+            side_md = payload.get("original_md") if path == "a" else payload.get("translation_md")
+            if path is not None:
+                blocks_out = split_blocks(side_md or "")
+                covered, why = _coords.validate_src(result.src, codes, len(blocks_out))
+                if covered:
+                    payload["src"] = covered
+                    counters["coords"] = counters.get("coords", 0) + 1
+                else:
+                    log.warning("第 %d 页坐标契约不可用（%s）：%s", page_no, path, why)
         payload["lookahead_chars"] = len(lookahead)
         payload["cache_hit_tokens"] = result.cache_hit_tokens
         payload["cache_miss_tokens"] = result.cache_miss_tokens
