@@ -43,7 +43,18 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # --------------------------------------------------------------------------
 
 
-def _setting(key: str, default: Any) -> Any:
+#: 设置键的统一前缀。文档与界面一律用 `kb.` 写法（`kb.retrieval_types`、`kb.unit_expand`），
+#: 但早期代码读的是**裸键**（`retrieval_types`）—— 于是"文档里承诺可以调的开关其实一直没生效"，
+#: 实测这两条都从未被读过（dev-log §17.66）。现在全库只有一条规则：
+#: `setting(key)` 先找 `kb.<key>`、再回退裸键 `<key>`，两个都没有才用默认值。
+SETTING_PREFIX = "kb."
+
+#: "这条设置不存在"的哨兵 —— 必须与"存在但值是 None"区分开，否则回退链会在第一层就停住。
+_MISSING: Any = object()
+
+
+def _setting_raw(key: str) -> Any:
+    """读一条 setting 的原始值；键不存在或读失败都返回 `_MISSING`。"""
     try:
         from backend.core.utils import json_loads
         from backend.repositories.mysql.models import Setting
@@ -52,15 +63,53 @@ def _setting(key: str, default: Any) -> Any:
         with session_scope() as sess:
             row = sess.get(Setting, key)
             if row is None:
-                return default
+                return _MISSING
             return json_loads(row.value, row.value)
     except Exception:  # noqa: BLE001 —— 设置读不到不影响检索
+        return _MISSING
+
+
+def setting(key: str, default: Any) -> Any:
+    """读设置。``key`` 一律用**裸名**传（`unit_expand`），前缀由这里补。
+
+    为什么不"只认 `kb.` 一种写法"：老库里可能有裸键的行（早期脚本写进去的），
+    只认一种写法会让老行**静默失效** —— 而"静默失效"正是这次要修掉的那个毛病。
+    """
+    for name in (f"{SETTING_PREFIX}{key}", key):
+        value = _setting_raw(name)
+        if value is not _MISSING:
+            return value
+    return default
+
+
+def setting_int(key: str, default: int) -> int:
+    """读整数设置；坏值（非数字 / 空）回退默认。"""
+    try:
+        return int(float(str(setting(key, default)).strip().strip('"')))
+    except (TypeError, ValueError):
         return default
 
 
+def setting_flag(key: str, default: bool) -> bool:
+    """读布尔设置：``1/true/yes/on`` 为真、``0/false/no/off`` 为假，其余回退默认。
+
+    `true`/`false` 两种情况都要认，因为写入路径不同：`PUT /settings` 写的是 JSON
+    （读出来是真正的 bool），而脚本/手改写的是文本（读出来是字符串）。
+    """
+    raw = setting(key, default)
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().strip('"').lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
 def rag_k(name: str) -> int:
-    return int(_setting(f"rag_top_k_{name}" if name != "rerank" else "rag_top_n_rerank",
-                        DEFAULT_K[name]) or DEFAULT_K[name])
+    return int(setting(f"rag_top_k_{name}" if name != "rerank" else "rag_top_n_rerank",
+                       DEFAULT_K[name]) or DEFAULT_K[name])
 
 
 # --------------------------------------------------------------------------
@@ -435,8 +484,12 @@ DEFAULT_SEARCH_TYPES = ("unit", "formula", "figure", "table")
 
 
 def default_search_types() -> list[str]:
-    """``kb.retrieval_types``（逗号分隔）覆盖默认候选集；空串 = 不限类型（改造前行为）。"""
-    raw = _setting("retrieval_types", "")
+    """``kb.retrieval_types``（逗号分隔）覆盖默认候选集；空串 = 不限类型（改造前行为）。
+
+    键名解析见 `setting`（`kb.` 前缀优先、裸键兼容）—— 这一条以前读的是裸键
+    `retrieval_types`，于是 `kb.retrieval_types` 从来没生效过（dev-log §17.66）。
+    """
+    raw = setting("retrieval_types", "")
     if isinstance(raw, (list, tuple)):
         return [str(t).strip() for t in raw if str(t).strip()]
     text = str(raw or "").strip()

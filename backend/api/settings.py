@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Body, Request
 
 from backend.api.response import envelope
@@ -15,8 +17,15 @@ from backend.repositories.mysql.session import session_scope
 
 router = APIRouter(tags=["settings"])
 
-# 允许通过 /settings 覆盖的白名单（避免任意键写入）
-EDITABLE = {
+# 允许通过 /settings 覆盖的白名单（避免任意键写入）：键 → 类型。
+#
+# 键名一律用**裸名**（`unit_expand` 而不是 `kb.unit_expand`）：服务层用
+# `retrieval.setting` 解析，它会先试 `kb.<key>`、再回退裸键 —— 全库只有那一条规则。
+# 写入时同样把两处都写（见 `_write_values`），这样脚本按文档写 `kb.*` 也能读到。
+#
+# `kb.*` 这一组以前**不在白名单里**：于是"分块 / 检索参数"只能靠脚本直接写库
+# （`scripts/kb_arm_compare.py`），界面上根本调不了（dev-log §17.66）。
+EDITABLE: dict[str, type] = {
     "task_worker_count": int,
     "render_dpi": int,
     "crop_dpi": int,
@@ -26,7 +35,48 @@ EDITABLE = {
     "rag_top_k_lexical": int,
     "rag_top_k_fused": int,
     "rag_top_n_rerank": int,
+    # ---- 知识库：分块与检索（改完必须**重建索引**才生效：chunk 是建出来的）----
+    "chunk_target_chars": int,
+    "chunk_min_chars": int,
+    "chunk_hard_chars": int,
+    "chunk_use_breaks": bool,
+    "unit_index": bool,
+    "unit_expand": int,
+    "retrieval_types": str,
 }
+
+
+def _live_default(key: str) -> Any:
+    """没有 ``Settings`` 字段的键（分块/检索参数只活在 setting 表里）：问**读取点**要当前生效值。
+
+    为什么不在这儿再抄一份默认值：抄一份就有两处默认值，改了一处另一处静默漂掉 ——
+    这个项目刚因为"两处键名不一致"吃过一次亏（dev-log §17.66）。
+    """
+    try:
+        from backend.services.knowledge import knowledge_service as ks
+        from backend.services.knowledge import rag_service, retrieval
+
+        if key in ("chunk_target_chars", "chunk_min_chars", "chunk_hard_chars"):
+            target, floor, hard = ks.chunk_params()
+            return {"chunk_target_chars": target, "chunk_min_chars": floor,
+                    "chunk_hard_chars": hard}[key]
+        if key == "chunk_use_breaks":
+            return ks.using_breaks()
+        if key == "unit_index":
+            return ks.unit_index_enabled()
+        if key == "unit_expand":
+            return rag_service.unit_expand_mode()
+        if key == "retrieval_types":
+            return ",".join(retrieval.default_search_types())
+        # 检索规模：这几个键既没有 `Settings` 字段、也没有服务层常量，默认值就在
+        # `retrieval.DEFAULT_K` 里 —— 照样问读取点要，不在这里抄。
+        if key == "rag_top_n_rerank":
+            return retrieval.rag_k("rerank")
+        if key.startswith("rag_top_k_"):
+            return retrieval.rag_k(key[len("rag_top_k_"):])
+    except Exception:  # noqa: BLE001 —— 只服务展示，读不到不影响设置接口
+        pass
+    return None
 
 
 def _effective() -> dict:
@@ -34,8 +84,12 @@ def _effective() -> dict:
     stored = _stored()
     out = {}
     for key in EDITABLE:
-        value = stored.get(key, getattr(s, key, None))
-        out[key] = value
+        if key in stored:
+            out[key] = stored[key]
+        elif hasattr(s, key):
+            out[key] = getattr(s, key)
+        else:
+            out[key] = _live_default(key)
     out.update({
         "data_dir": str(s.data_dir),
         "db_backend": s.db_backend,
@@ -60,7 +114,14 @@ async def get_settings_api(request: Request):
 
 @router.put("/settings")
 async def put_settings(request: Request, payload: dict = Body(...)):
-    """更新设置：白名单校验后写 setting 表（重启后仍生效）。"""
+    """更新设置：白名单校验后写 setting 表（重启后仍生效）。
+
+    ⚠️ 写入时顺手**删掉同名 `kb.<key>` 那一行**。原因：服务层解析是"`kb.` 前缀优先、
+    裸键回退"，如果库里已经有一行 `kb.unit_expand`（脚本按文档写法写进去的），
+    界面这次写裸键 `unit_expand` 就会被前缀优先的那一行**盖住** —— 表现为"在界面上改了，
+    值也回显了，但行为没变"。这是最难查的一类静默失效，所以在写入侧直接消灭歧义：
+    每个设置**只有一行权威值**；谁想用 `kb.*` 写法就自己写那一行（它仍然优先）。
+    """
     applied: dict = {}
     rejected: dict = {}
     with session_scope() as sess:
@@ -83,6 +144,9 @@ async def put_settings(request: Request, payload: dict = Body(...)):
                 row = Setting(key=key)
                 sess.add(row)
             row.value = json_dumps(value)
+            stale = sess.get(Setting, f"kb.{key}")
+            if stale is not None:
+                sess.delete(stale)
             applied[key] = value
     return envelope({"applied": applied, "rejected": rejected,
                      "values": _effective()}, request=request)

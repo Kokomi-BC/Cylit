@@ -41,7 +41,7 @@ def test_default_candidates_exclude_parent_text_chunks(monkeypatch):
     monkeypatch.setattr(retrieval, "lexical_search", lambda q, **kw: [])
     monkeypatch.setattr(retrieval, "rerank_hits",
                         lambda q, cands, **kw: (list(cands), {"degraded": False}))
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: default)
+    _no_settings(monkeypatch)
     monkeypatch.setattr(retrieval, "_has_chunk_type", lambda t: True)   # 已建单元层
 
     result = retrieval.search("问题", top_k=5)
@@ -64,7 +64,7 @@ def test_default_candidates_fall_back_when_empty(monkeypatch):
     monkeypatch.setattr(retrieval, "lexical_search", lambda q, **kw: [])
     monkeypatch.setattr(retrieval, "rerank_hits",
                         lambda q, cands, **kw: (list(cands), {"degraded": False}))
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: default)
+    _no_settings(monkeypatch)
     monkeypatch.setattr(retrieval, "_has_chunk_type", lambda t: True)
 
     result = retrieval.search("问题", top_k=5)
@@ -86,7 +86,7 @@ def test_old_index_without_units_keeps_all_types(monkeypatch):
     monkeypatch.setattr(retrieval, "lexical_search", lambda q, **kw: [])
     monkeypatch.setattr(retrieval, "rerank_hits",
                         lambda q, cands, **kw: (list(cands), {"degraded": False}))
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: default)
+    _no_settings(monkeypatch)
     monkeypatch.setattr(retrieval, "_has_chunk_type", lambda t: False)
 
     result = retrieval.search("问题", top_k=5)
@@ -106,7 +106,7 @@ def test_explicit_chunk_types_are_respected(monkeypatch):
     monkeypatch.setattr(retrieval, "lexical_search", lambda q, **kw: [])
     monkeypatch.setattr(retrieval, "rerank_hits",
                         lambda q, cands, **kw: (list(cands), {"degraded": False}))
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: default)
+    _no_settings(monkeypatch)
     monkeypatch.setattr(retrieval, "_has_chunk_type", lambda t: True)
 
     result = retrieval.search("问题", chunk_types=["formula"], top_k=3)
@@ -115,8 +115,14 @@ def test_explicit_chunk_types_are_respected(monkeypatch):
 
 
 def test_retrieval_types_setting_overrides_default(monkeypatch):
-    monkeypatch.setattr(retrieval, "_setting",
-                        lambda key, default: "unit,text" if key == "retrieval_types" else default)
+    """`kb.retrieval_types` 覆盖默认候选集。
+
+    这条以前读的是**裸键** `retrieval_types`，而文档写的是 `kb.retrieval_types` ——
+    于是"文档承诺可调的开关"从来没生效过。现在两种写法都认，`kb.` 优先。
+    """
+    monkeypatch.setattr(retrieval, "_setting_raw",
+                        lambda key: "unit,text" if key == "kb.retrieval_types"
+                        else retrieval._MISSING)
     assert retrieval.default_search_types() == ["unit", "text"]
 
 
@@ -141,10 +147,28 @@ def _install_store(monkeypatch, rows: dict[str, str]):
     monkeypatch.setattr(rag_service.vector_store, "get_rows", get_rows)
 
 
+def _no_settings(monkeypatch) -> None:
+    """setting 表里什么行都没有 → 一律走默认值。
+
+    走**真实解析入口** `retrieval._setting_raw`（唯一的数据库入口），而不是去 patch
+    某个具体读取点：patch 读取点会掩盖"读取点写错了键名"这类 bug（就是本次修掉的那个）。
+    """
+    monkeypatch.setattr(retrieval, "_setting_raw",
+                        lambda key: retrieval._MISSING)
+
+
+def _set_unit_expand(monkeypatch, value: int) -> None:
+    """把 `kb.unit_expand` 钉成给定值（用文档里的写法，顺带验证前缀解析）。"""
+    monkeypatch.setattr(
+        retrieval, "_setting_raw",
+        lambda key: value if key == f"{retrieval.SETTING_PREFIX}unit_expand"
+        else retrieval._MISSING)
+
+
 def test_expand_includes_prev_and_next_unit(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1", "u0": "PREV", "u2": "NEXT",
                                  "u1:zh": "", "u0:zh": "", "u2:zh": ""})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 1)
+    _set_unit_expand(monkeypatch, 1)
     items = [_unit("u1", parent="p:text:a", prev="u0", next_="u2", content="UNIT1")]
     out = rag_service._expand_units(items, max_chars=1000)
     assert len(out) == 1
@@ -156,7 +180,7 @@ def test_expand_includes_prev_and_next_unit(monkeypatch):
 def test_expand_dedupes_hits_sharing_the_same_parent(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1", "u2": "UNIT2",
                                  "u1:zh": "", "u2:zh": ""})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 1)
+    _set_unit_expand(monkeypatch, 1)
     items = [_unit("u1", parent="same", prev=None, next_="u2", content="UNIT1"),
              _unit("u2", parent="same", prev="u1", next_=None, content="UNIT2")]
     out = rag_service._expand_units(items, max_chars=1000)
@@ -167,7 +191,7 @@ def test_expand_dedupes_hits_sharing_the_same_parent(monkeypatch):
 
 def test_expand_mode_zero_is_noop(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1"})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 0)
+    _set_unit_expand(monkeypatch, 0)
     items = [_unit("u1", parent="p", prev="u0", next_="u2", content="UNIT1")]
     out = rag_service._expand_units(items, max_chars=1000)
     assert out[0]["content"] == "UNIT1"
@@ -176,7 +200,7 @@ def test_expand_mode_zero_is_noop(monkeypatch):
 
 def test_expand_mode_two_uses_parent_chunk(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1", "p:text:a": "PARENT-CHUNK"})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 2)
+    _set_unit_expand(monkeypatch, 2)
     items = [_unit("u1", parent="p:text:a", prev=None, next_=None, content="UNIT1")]
     out = rag_service._expand_units(items, max_chars=1000)
     assert out[0]["content"] == "PARENT-CHUNK"
@@ -186,7 +210,7 @@ def test_expand_mode_two_uses_parent_chunk(monkeypatch):
 def test_expand_respects_budget(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1", "u0": "P" * 400, "u2": "N" * 400,
                                  "u0:zh": "", "u1:zh": "", "u2:zh": ""})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 1)
+    _set_unit_expand(monkeypatch, 1)
     items = [_unit("u1", parent="p", prev="u0", next_="u2", content="UNIT1")]
     out = rag_service._expand_units(items, max_chars=200)
     assert out[0]["content"] == "UNIT1", "超预算 → 退回只用命中单元"
@@ -195,7 +219,7 @@ def test_expand_respects_budget(monkeypatch):
 
 def test_expand_leaves_atomic_chunks_untouched(monkeypatch):
     _install_store(monkeypatch, {})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 1)
+    _set_unit_expand(monkeypatch, 1)
     items = [{"chunk_id": "p:formula:f001:any", "chunk_type": "formula",
               "content": "$$a=b$$", "lang": "any", "metadata": {}}]
     out = rag_service._expand_units(items, max_chars=1000)
@@ -205,7 +229,7 @@ def test_expand_leaves_atomic_chunks_untouched(monkeypatch):
 def test_build_context_expands_and_reports(monkeypatch):
     _install_store(monkeypatch, {"u1": "UNIT1", "u0": "PREV", "u2": "NEXT",
                                  "u1:zh": "单元一", "u0:zh": "上一段", "u2:zh": "下一段"})
-    monkeypatch.setattr(retrieval, "_setting", lambda key, default: 1)
+    _set_unit_expand(monkeypatch, 1)
     items = [_unit("u1", parent="p:text:a", prev="u0", next_="u2", content="UNIT1",
                    lang="zh")]
     context = rag_service.build_context(items, max_chars=5000)

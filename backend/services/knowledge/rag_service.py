@@ -165,10 +165,14 @@ def build_context(items: list[dict], *, max_sources: int = MAX_SOURCES,
             "truncated": truncated, "chars": used}
 
 
-def _unit_expand_mode() -> int:
-    """``kb.unit_expand``：0 = 只用命中单元 / 1 = ±1 单元（默认）/ 2 = 整条父 chunk。"""
+def unit_expand_mode() -> int:
+    """``kb.unit_expand``：0 = 只用命中单元 / 1 = ±1 单元（默认）/ 2 = 整条父 chunk。
+
+    键名解析走 `retrieval.setting`（`kb.` 前缀优先、裸键兼容）—— 以前这里读的是裸键
+    `unit_expand`，于是文档里写的 `kb.unit_expand` 从来没生效过（dev-log §17.66）。
+    """
     try:
-        value = int(retrieval._setting("unit_expand", 1) or 0)
+        value = int(retrieval.setting("unit_expand", 1) or 0)
     except (TypeError, ValueError):
         value = 1
     return max(0, min(2, value))
@@ -188,7 +192,7 @@ def _expand_units(items: list[dict], *, max_chars: int) -> list[dict]:
     """
     if not items:
         return items
-    mode = _unit_expand_mode()
+    mode = unit_expand_mode()
     if mode == 0 or not any((i.get("chunk_type") == "unit") for i in items):
         return items
 
@@ -440,7 +444,7 @@ def retrieve(payload: dict) -> dict:
                               top_k=int(top_k) if top_k else None)
     items = _decorate_items(result["items"])
     context = build_context(items)
-    allow_general = bool(retrieval._setting("allow_general_knowledge", False))
+    allow_general = bool(retrieval.setting("allow_general_knowledge", False))
     return {"question": question, "scope": scope, "paper_id": paper_id,
             "items": items, "context": context, "allow_general": allow_general,
             "retrieval": result["retrieval"]}

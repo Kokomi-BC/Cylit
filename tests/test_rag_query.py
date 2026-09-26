@@ -334,7 +334,9 @@ def test_retrieve_maps_scope_and_validates(monkeypatch) -> None:
 
     monkeypatch.setattr(rag_service.retrieval, "search", fake_search)
     monkeypatch.setattr(rag_service, "_decorate_items", lambda items: items)
-    monkeypatch.setattr(rag_service.retrieval, "_setting", lambda k, d: False)
+    # 设置读取走真实解析入口（`setting` → `_setting_raw`），把唯一的数据入口替成空表
+    monkeypatch.setattr(rag_service.retrieval, "_setting_raw",
+                        lambda key: rag_service.retrieval._MISSING)
 
     prep = rag_service.retrieve({"question": "q", "scope": "current_paper", "paper_id": "p9"})
     assert seen["scope"] == "paper" and seen["paper_id"] == "p9" and seen["mode"] == "qa"

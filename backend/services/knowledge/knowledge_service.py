@@ -45,8 +45,10 @@ from backend.services.paper import paper_service, reader_service
 
 log = get_logger(__name__)
 
-# 四类 chunk（规划 §10 ⑫ chunk_type）
-CHUNK_TYPES = ("text", "formula", "figure", "table")
+# chunk_type 的完整取值（规划 §10 ⑫）。
+# 注意 `unit`：它是"检索单位"那一档（`kb.unit_index`），不是"内容种类"那一档 ——
+# 早期这里漏了它，于是这个真实在用、且是检索默认候选的类型不在规范枚举里（dev-log §17.66）。
+CHUNK_TYPES = ("text", "unit", "formula", "figure", "table")
 # 正文语义 chunk 的目标长度（到点即 flush）
 TARGET_CHUNK_CHARS = 1400
 # 小正文 chunk 的**合并门槛**（不是丢弃门槛：能和相邻正文块合并就合并，
@@ -69,26 +71,36 @@ MIN_ZH_CHARS = 8
 def _setting_int(key: str, default: int) -> int:
     """读 setting 表里的整数参数（读不到/坏值一律回退默认）。
 
+    键名用**裸名**（`chunk_target_chars`），`kb.` 前缀由 `retrieval.setting` 统一补 ——
+    全库只有那一条解析规则（`kb.` 优先 + 裸键兼容），这里不再各写一套。
+
     为什么要落成 setting：粒度是**要按真实检索效果反复调**的参数，改一次不该动代码；
     但改完必须**重建索引**才生效（chunk 是建出来的，不是查出来的）。
     """
-    try:
-        from backend.repositories.mysql.models import Setting
+    from backend.services.knowledge import retrieval
 
-        with session_scope() as sess:
-            row = sess.get(Setting, key)
-        if row is None or row.value is None:
-            return default
-        return int(float(str(row.value).strip().strip('"')))
-    except Exception:  # noqa: BLE001 —— 参数读不到不影响建索引
-        return default
+    return retrieval.setting_int(key, default)
+
+
+def using_breaks() -> bool:
+    """本次建索引是否使用 LLM 语义锚点（`kb.chunk_use_breaks`，默认开）。"""
+    from backend.services.knowledge import retrieval
+
+    return retrieval.setting_flag(USE_BREAKS_SETTING, True)
+
+
+def unit_index_enabled() -> bool:
+    """是否把语义单元也建进索引（`kb.unit_index`，默认开）。"""
+    from backend.services.knowledge import retrieval
+
+    return retrieval.setting_flag(UNIT_INDEX_SETTING, True)
 
 
 def chunk_params() -> tuple[int, int, int]:
     """``(target, min, hard)``；setting 键：``kb.chunk_target_chars`` 等。"""
-    target = max(200, _setting_int("kb.chunk_target_chars", TARGET_CHUNK_CHARS))
-    floor = max(RESIDUE_CHARS, _setting_int("kb.chunk_min_chars", MIN_CHUNK_CHARS))
-    hard = max(target, _setting_int("kb.chunk_hard_chars", HARD_CHUNK_CHARS))
+    target = max(200, _setting_int("chunk_target_chars", TARGET_CHUNK_CHARS))
+    floor = max(RESIDUE_CHARS, _setting_int("chunk_min_chars", MIN_CHUNK_CHARS))
+    hard = max(target, _setting_int("chunk_hard_chars", HARD_CHUNK_CHARS))
     return target, floor, hard
 
 
@@ -367,26 +379,11 @@ def _chunk_variants_rows(base: list[dict], langs: tuple[str, ...]) -> list[dict]
 # --------------------------------------------------------------------------
 
 
-USE_BREAKS_SETTING = "kb.chunk_use_breaks"
+#: 是否使用 LLM 语义锚点（1/0，默认 1）。键名是**裸名**：`retrieval.setting` 会先试
+#: `kb.chunk_use_breaks`（文档里的写法），再回退裸键。老库两种写法都能读。
+USE_BREAKS_SETTING = "chunk_use_breaks"
 #: 是否把语义单元也建进索引（1/0，默认 1）—— 单元是**检索单位**，chunk 是上下文单位
-UNIT_INDEX_SETTING = "kb.unit_index"
-
-
-def _setting_flag(key: str, default: bool) -> bool:
-    """读布尔 setting（``1/true/yes/on`` 为真）。读不到就用默认值。"""
-    try:
-        from backend.repositories.mysql.models import Setting
-
-        with session_scope() as sess:
-            row = sess.get(Setting, key)
-        if row is None or row.value is None:
-            return default
-        text = str(row.value).strip().strip('"').lower()
-        return text in ("1", "true", "yes", "on")
-    except Exception:  # noqa: BLE001
-        return default
-
-
+UNIT_INDEX_SETTING = "unit_index"
 
 
 def build_chunks_for_paper(paper_id: str, *,
@@ -456,7 +453,7 @@ def _base_chunks(paper_id: str) -> list[dict]:
         raise ValidationError(f"没有可用行：{paper_id} 是否尚未解析？")
 
     target, floor, hard = chunk_params()
-    use_breaks = _setting_flag(USE_BREAKS_SETTING, True)
+    use_breaks = using_breaks()
     built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
                            use_breaks=use_breaks)
     if not built["report"]["ok"] and use_breaks:
@@ -489,7 +486,7 @@ def _base_chunks(paper_id: str) -> list[dict]:
         made = _row_text_chunk(paper_id, chunk["rows"], chunk.get("node"))
         key_to_id[str(chunk.get("key"))] = made["id"]
         out.append(made)
-    if _setting_flag(UNIT_INDEX_SETTING, True):
+    if unit_index_enabled():
         out.extend(_row_unit_chunks(paper_id, units, key_to_id, use_breaks=use_breaks))
     out.extend(_row_structure_chunks(paper_id, rows, ir, regions, caption_ids,
                                      region_of_caption))

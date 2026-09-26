@@ -275,8 +275,8 @@ def test_no_outline_degrades_to_flat_packing(paper):
 def test_chunk_params_reads_settings_and_clamps(monkeypatch) -> None:
     from backend.services.knowledge import knowledge_service as ks
 
-    values = {"kb.chunk_target_chars": 1600, "kb.chunk_min_chars": 10,
-              "kb.chunk_hard_chars": 100}
+    # 键名是**裸名**（`retrieval.setting` 负责补 `kb.` 前缀），见 tests/test_kb_settings_keys.py
+    values = {"chunk_target_chars": 1600, "chunk_min_chars": 10, "chunk_hard_chars": 100}
     monkeypatch.setattr(ks, "_setting_int", lambda key, default: values.get(key, default))
     target, floor, hard = ks.chunk_params()
     assert target == 1600
