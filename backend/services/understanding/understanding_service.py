@@ -374,6 +374,95 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
     return live, stale
 
 
+_CONCEPT_HEAD_RE = re.compile(r"^#{2,4}\s+(.*)$", re.MULTILINE)
+_CONCEPT_SECTION_RE = re.compile(r"相关概念|核心概念")
+
+
+def parse_concepts(markdown: str, by_code: dict) -> list[dict]:
+    """从 B 路（自由 Markdown）里解析出**结构化概念**，供阅读器左栏与"跟随阅读位置"用。
+
+    为什么在**读时**算、而不是生成时落库：理解结果是自由 Markdown（用户口径⑦，模型可增删合并小节），
+    所以"概念"这一层是**投影**而不是事实源 —— 读时投影的额外好处是**不用改表、不用重新生成**，
+    已经存好的解读立刻就能出概念列表（前端不必等一轮重跑）。
+
+    解析规则（宽松，认不出来就退化成空列表，由前端退回"整段 Markdown"）：
+    - 先定位「相关概念 / 核心概念」那一节，只在这一节里找概念小节；
+    - 概念小节 = `##`~`####` 标题（标题里可含中英文名，用括号形式时一并拆出来）；
+    - 小节正文里出现的 `B023` 短码归到该概念，并通过 `by_code`（短码 → chunk/页码）解析成引用。
+    """
+    text = markdown or ""
+    section = _CONCEPT_SECTION_RE.search(text)
+    if not section:
+        return []
+    # 概念区**到下一个同级或更高级标题为止**：否则"相关概念"之后的 `## 推荐阅读顺序`
+    # 也会被当成一个概念（实测就是这么漏进来的）。
+    line_start = text.rfind("\n", 0, section.start()) + 1
+    head_line = text[line_start:text.find("\n", section.start())]
+    base_level = len(head_line) - len(head_line.lstrip("#"))
+    body = text[text.find("\n", section.start()) + 1:]
+    heads: list[re.Match] = []
+    for m in _CONCEPT_HEAD_RE.finditer(body):
+        level = len(m.group(0)) - len(m.group(0).lstrip("#"))
+        if level <= base_level:
+            break                       # 回到同级 → 概念区结束
+        heads.append(m)
+    if not heads:
+        return []
+    out: list[dict] = []
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        title = head.group(1).strip()
+        chunk = body[head.end():end].strip()
+        if not title or not chunk:
+            continue
+        cn, en = _split_concept_name(title)
+        refs: list[dict] = []
+        for m in _REF_RE.finditer(chunk):
+            code = m.group(1).upper()
+            meta = by_code.get(code)
+            if not meta:
+                continue
+            item = {"code": code, "chunk_id": meta.get("chunk_id"),
+                    "page": meta.get("page"), "chunk_type": meta.get("chunk_type")}
+            if item not in refs:
+                refs.append(item)
+        out.append({"name": cn, "name_en": en, "body_md": chunk, "refs": refs})
+    return out
+
+
+def _split_concept_name(title: str) -> tuple[str, str]:
+    """概念标题 → （中文名, 英文名）。两种常见写法都认：
+
+    ``向量量化（Vector Quantization, VQ）与位宽（bit-width）`` → 前半中文、括号里的英文；
+    ``Vector Quantization（向量量化）`` → 反过来。
+    """
+    text = title.strip()
+    m = re.match(r"^(.*?)[（(]([^）)]*)[）)](.*)$", text)
+    if not m:
+        return text, "" if re.search(r"[\u4e00-\u9fff]", text) else ""
+    head, inner, rest = m.group(1).strip(" ：:，,、-—"), m.group(2).strip(), m.group(3).strip()
+    if re.search(r"[\u4e00-\u9fff]", head):
+        return (head + (" " + rest if rest else "")).strip(), inner
+    if re.search(r"[\u4e00-\u9fff]", inner):
+        return inner, head
+    return text, ""
+
+
+def related_concepts(paper_id: str, page: int, *, tolerance: int = 1) -> dict:
+    """与某一页相关的概念（阅读器"跟随阅读位置"用）。
+
+    命中判据：概念的引用里有 chunk 落在 [page-tolerance, page+tolerance] 内 ——
+    引用的单元常常跨页，完全等值会漏掉大量"其实就在这一页"的概念。
+    """
+    data = get_understanding(paper_id, "b")
+    concepts = (data or {}).get("concepts") or []
+    lo, hi = int(page) - tolerance, int(page) + tolerance
+    hit = [c for c in concepts
+           if any(lo <= int(r.get("page") or 0) <= hi for r in (c.get("refs") or []))]
+    return {"paper_id": paper_id, "page": int(page), "concepts": hit,
+            "total_concepts": len(concepts)}
+
+
 def to_dict(row: Understanding) -> dict:
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
@@ -398,6 +487,8 @@ def to_dict(row: Understanding) -> dict:
         "completion_tokens": int(row.completion_tokens or 0),
         "inventory_size": len(inventory),
         "inventory": inventory,
+        # 概念是**读时投影**（见 `parse_concepts`）：已存好的解读立刻可用，不用改表/重生成
+        "concepts": parse_concepts(row.markdown or "", by_code),
     }
 
 

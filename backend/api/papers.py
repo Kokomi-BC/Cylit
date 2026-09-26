@@ -248,6 +248,23 @@ async def get_understanding(paper_id: str, request: Request,
     return envelope(us.get_understanding(paper_id, path), request=request)
 
 
+@router.get("/papers/{paper_id}/related")
+async def related_concepts(paper_id: str, request: Request,
+                           page: int = Query(..., ge=1),
+                           tolerance: int = Query(1, ge=0, le=3)):
+    """与某一页相关的概念（阅读器左栏「跟随阅读位置」用）。
+
+    读的是 B 路理解结果里「相关概念」那一节（读时投影，见
+    `understanding_service.parse_concepts`）。命中判据是"概念的引用里有 chunk 落在
+    本页 ±`tolerance`"——引用的单元常常跨页，完全等值会漏。
+    没有解读结果时返回空列表（前端静默退回"全篇概念列表"，不报错）。
+    """
+    from backend.services.understanding import understanding_service as us
+
+    return envelope(us.related_concepts(paper_id, page, tolerance=tolerance),
+                    request=request)
+
+
 @router.get("/papers/{paper_id}/understanding/status")
 async def understanding_status(paper_id: str, request: Request):
     """两路理解各自的状态（按钮与"能不能理解"的判断）。"""
