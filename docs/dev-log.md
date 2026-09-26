@@ -4878,6 +4878,39 @@ turboquant 的「向量量化与位宽」「随机旋转与 Beta 分布」「香
 所以"滚到正确位置"用立即滚动验，真实浏览器里是平滑动画。
 
 
+### 17.87 目录条目要按 Markdown 渲染（顺带修掉一个窄屏横向溢出的真 bug）
+
+**症状**：目录条目原来是**纯文本插值**，而 A 路标题里本来就有行内公式 ——
+`### 4.1 分支一：$Q_{\text{mse}}$（Algorithm 1）` 在目录里原样摆出 LaTeX 源码；粗体、行内代码同理。
+
+**改法**（与阅读器自己的目录 `ReaderToc` 走**同一套**链路）：
+- `utils/insightOutline.ts`：条目新增 `md`（标题**原文**，交给渲染）与 `text`（**纯文本**，只做
+  tooltip/aria；公式压成 `Qmse` 这种"屏上看得懂"的样子，tooltip 不会露 LaTeX 源码）；
+- `components/insight/InsightToc.vue`：改走 `useMarkdown` 的 `inlineHtml()`，KaTeX 字号按
+  `ReaderToc` 的同名规则压回 `1em`（否则 1.21em 的公式在 12px 目录行里比中文大一圈），
+  万一标题里出现行间公式则强制 inline（不让它把目录行撑成三行）；
+- 两处目录（整页左栏 + 阅读器左栏紧凑版）**共用一个组件**，所以一起生效。
+
+**顺带修掉一个上一轮引入的真 bug**：窄屏验证时发现 `documentElement.scrollWidth = 920 > 900`（A 路
+`/understand`）。根因不是目录：`.body-col` 只写 `max-width: 880px; margin: 0 auto` ——
+**auto 外边距会让 grid 的 `stretch` 失效**，这一列退化成"按内容撑到 880px"，窄屏下比栅格列（810px）
+还宽，直接顶出整页横向滚动条。上一轮窄屏只测了 B 路（内容窄，恰好 890 ≤ 900）所以没暴露。
+修法：`.body-col { width: 100%; max-width: 880px; … }` —— 宽屏时 100% 被 max-width 夹到 880
+并由 auto 外边距居中，窄屏时就是列宽。修复后 **A/B 两路 × 目录开/关四种组合都是 890 ≤ 900**。
+
+**验收**（我自己跑的）：`npm run typecheck` 0 错、`npm run build` 成功
+（`ReaderView-DxyN60Kx.js 579.52 kB`）、`frontend_check.py --block-markers` **88 项 / 87 通过 / 1 失败**
+（唯一红仍是「公式能整体高亮」）→ 零新增失败。
+实现者的无头探针（**这部分我没自己复现，如实记录**）：合成标题验证 `**粗体**` → `<strong>`、
+`$Q_{\text{mse}}$` → KaTeX（可见文字 `Qmse`）、`` `O(d log d)` `` → `<code>`，全目录无残留
+`$`/`\text`/`**`；真实数据 `/understand/turboquant` 目录 17 条 == 标题 17 个、`katexRows: 2`、
+`rawLatex: false`；1600×1000 正文列 880 居中（余量 78/78）、900×900 两路目录开/关均 `890 ≤ 900`。
+
+**已知同类问题（未做，留给用户决定）**：**概念卡标题**仍是纯文本渲染 `c.name` / `c.name_en` ——
+当前数据里概念名没有 `$…$`，但模型哪天在概念名里写公式就会重演同样的毛病，改法同 `inlineHtml` 加一行。
+
+
+
 
 
 
