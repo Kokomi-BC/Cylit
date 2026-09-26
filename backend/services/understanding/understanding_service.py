@@ -342,21 +342,53 @@ def _save(paper_id: str, path: str, payload: dict) -> None:
             setattr(row, key, payload[key])
 
 
+def _live_chunk_ids(ids: list[str]) -> set[str]:
+    """这些 chunk id 现在还存在于库里吗（重新翻译 + 重建索引后 id 会变）。"""
+    if not ids:
+        return set()
+    from backend.repositories.mysql.models import Chunk
+
+    with session_scope() as sess:
+        rows = sess.query(Chunk.id).filter(Chunk.id.in_(ids)).all()
+    return {r[0] for r in rows}
+
+
+def split_live_refs(resolved: dict[str, str], by_code: dict, *,
+                    exists=_live_chunk_ids) -> tuple[list[dict], list[dict]]:
+    """引用分两类：**还能跳到原文**的 与 **已过期**的（chunk 已不存在）。
+
+    为什么保留过期的、而不是丢掉：解读内容本身仍然有效（概念解释、阅读顺序、方法链条），
+    只是"指向的那一段"在重新翻译/重建索引后换了 id。丢掉它等于**重翻译一次就把解读打回原形** ——
+    用户明确要求"重新翻译不影响已有的解读"。过期引用仍**保留页码**（页码来自生成时的 inventory），
+    前端据此照样能跳到那一页，只是标一句"引用已过期（论文已重新翻译）"。
+    """
+    live: list[dict] = []
+    stale: list[dict] = []
+    ids = [cid for cid in resolved.values() if cid]
+    alive = exists(ids) if exists is not None else set()
+    for code, chunk_id in resolved.items():
+        meta = by_code.get(code) or {}
+        item = {"code": code, "chunk_id": chunk_id,
+                "chunk_type": meta.get("chunk_type"), "page": meta.get("page")}
+        (live if chunk_id in alive else stale).append(item)
+    return live, stale
+
+
 def to_dict(row: Understanding) -> dict:
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
     resolved = refs.get("resolved") or {}
+    live_refs, stale_refs = split_live_refs(resolved, by_code)
     return {
         "paper_id": row.paper_id, "path": row.path,
         "label": PATH_LABELS.get(row.path, row.path),
         "markdown": row.markdown or "",
         "refs": refs.get("codes") or [],
-        "refs_resolved": [
-            {"code": code, "chunk_id": chunk_id,
-             "chunk_type": (by_code.get(code) or {}).get("chunk_type"),
-             "page": (by_code.get(code) or {}).get("page")}
-            for code, chunk_id in resolved.items()],
+        "refs_resolved": live_refs,
+        # 重新翻译 + 重建索引后旧 chunk id 会失效：**保留**这些引用（页码还在，照样能跳），
+        # 只是另列一份让前端标"引用已过期"，绝不因为重翻译就把解读清空（用户口径）。
+        "stale_refs": stale_refs,
         "invalid_refs": refs.get("invalid") or [],
         "cross_road_refs": refs.get("cross_road") or [],
         "refs_ok": bool(row.refs_ok),

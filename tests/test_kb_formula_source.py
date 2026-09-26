@@ -178,9 +178,10 @@ def test_real_corpus_counts_and_subset_invariant() -> None:
     # 页级公式清单跟着变：turbo 349→322 / 92→90，attention 90→89 / 13→12。
     # ⚠️ 再一次重转录（两路拆分那轮：A 路只转录、B 路只翻译，公式从 **A 路**的原文里抽）之后又变了一次：
     # turbo 322→**329** / 90（不变），attention 89→**88** / 12→**11**。
+    # ⚠️ P4b（共享坐标契约）重跑 + 重建索引之后 attention 再变一次：88→**86**（C 过滤仍是 11）。
     # 数字变了不代表公式变多/变少 —— 是"模型这次把哪些行写成独立公式块"变了（`$$…$$` 的条数）。
     expect = {"turboquant-online-vector-iclr-26": (329, 90),
-              "attention-is-all-you-need": (88, 11)}
+              "attention-is-all-you-need": (86, 11)}
     for pid, (canon_n, c_n) in expect.items():
         try:
             paper_service.get_paper(pid)

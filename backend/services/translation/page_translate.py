@@ -105,6 +105,10 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
 3. 公式的 LaTeX 逐字符原样保留，不改任何符号。
 4. 图注/表注保留编号（例：**图 1：…**）；**表格里的数字、单位、方法名、数据集名原样保留**，
    只翻译行名/列名这类自然语言表头。
+   **图/表内部画出来的文字不是正文**：图里的示例句、坐标轴刻度、图例、子图标签、
+   `<EOS>` / `<pad>` 这类训练标记，全都属于**图像内容**，一个字都不要写进译文。
+   文字只来自**图注本身**。（实测图 3/图 4 的注意力可视化：图内那句示例英文被读成正文，
+   连 `<EOS> <pad> <pad> …` 都带了出来；A 路提示词本来就有"只写图注"，所以 A 侧是干净的。）
 5. 参考文献条目**不翻译**：与 original_md 的对应块保持相同文本。
 6. 术语按给定术语表统一；学术书面语；不增删任何内容。
 7. **所有数学都必须写进公式定界符**：行内 `$…$`、独立公式 `$$…$$`（单独成段，编号用 `\\tag{n}`）。
@@ -967,6 +971,12 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         raise ProviderError(f"页级翻译调用失败：{str(exc)[:200]}") from exc
 
     original, translation = parse_pair(res.text or "")
+    # 图内文字兜底：提示词管新产物，"把图里画出来的字当正文"这种已产出的行在这里丢掉（见函数注释）
+    original, noise_a = strip_figure_noise(original)
+    translation, noise_b = strip_figure_noise(translation)
+    if noise_a or noise_b:
+        log.info("丢掉图内文字 %d 行（%s 侧 %d / %s 侧 %d）：图里画出来的句子/标记不进正文",
+                 noise_a + noise_b, "A", noise_a, "B", noise_b)
     if path == "a":
         if not original.strip():
             raise ProviderError("模型未返回 original_md（A 路：页面转录）", retryable=True)
@@ -1606,6 +1616,36 @@ def build_path_payload(*, path: str, page: int, page_total: int,
         # `carry_md` 是翻译侧独有的：本页从【下一页开头】借走的那段原文，下一页用它去重
         payload["carry_md"] = result.carry_md
     return payload
+
+
+#: 图内文字的特征标记：这些 token 只会出现在"图里画的示例句 / 训练标记"里，论文正文不会出现
+_FIGURE_NOISE_RE = re.compile(r"</?(?:eos|pad|unk|bos)>|</?s>", re.IGNORECASE)
+
+
+def strip_figure_noise(md: str) -> tuple[str, int]:
+    """丢掉"把图里画出来的文字当正文"的行；返回 ``(清洗后的 markdown, 丢掉的行数)``。
+
+    实测（attention 附录 图 3 / 图 4 注意力可视化）：**B 路**把图内那句示例英文
+    `It is in this spirit that … more difficult . <EOS> <pad> <pad> …` 当正文译了出来，
+    中文栏于是多出一行英文 + `<EOS> <pad>`；A 路因为提示词里有"只写图注本身"所以是干净的。
+
+    判定刻意**窄**：只有行里出现 `<EOS>` / `<pad>` / `<unk>` / `<s>` / `</s>` 这类训练标记才丢
+    —— 论文正文不可能出现它们，所以不会误伤正常句子（含公式、引用、单位标记的行都不受影响）。
+    提示词侧已同步补了"图/表内部文字不是正文"这条规则（双保险：提示词管新产物，这里管已产出的）。
+    """
+    if not md or "<" not in md:
+        return md, 0
+    kept: list[str] = []
+    dropped = 0
+    for line in md.split("\n"):
+        if _FIGURE_NOISE_RE.search(line):
+            dropped += 1
+            continue
+        kept.append(line)
+    if not dropped:
+        return md, 0
+    # 丢行后可能出现连续 3+ 空行：Markdown 靠空行分段，多余空行会被渲染成空段
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip(), dropped
 
 
 def absorb_one_sided_rows(rows: list[dict], page: int) -> dict:
