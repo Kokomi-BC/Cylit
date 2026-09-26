@@ -4505,3 +4505,199 @@ API `POST /papers/{id}/understand` + `GET /papers/{id}/understanding[/status]`�
 且确认过**没有**连带作废产物的逻辑（`prefix_sha` 是个没人读的死变量，记给 P9 删）。
 
 **待办**：用新 schema 全量重跑两篇 → 重测对齐门 → 重建索引 + 回归 → **重新生成理解**（chunk id 会变）。
+
+
+### 17.76 第四轮 · P4b 收尾：两路全量重跑 + 对齐门（**交付口径通过**）
+
+把 §17.75 的新 schema（`src` 进 system prompt 字段清单）真正跑一遍全量：
+`scripts/two_path_run.py --force --timeout 2400`，快照 `data/logs/snapshot/two-path-run-p4b-final.json`。
+
+| 论文 | 页数 | A 路（英文转录） | B 路（中文翻译） | 失败 |
+|---|---|---|---|---|
+| turboquant | 22 | 22/22，432s | 22/22，392s | 0 |
+| attention | 15 | 15/15，248s | 15/15，390s | 0 |
+
+两路耗时同量级、同段完成 —— **并发是真的**（不是"跑完 A 再跑 B 却说并发"）。
+
+**对齐门**（`scripts/two_path_align_report.py`，`data/logs/snapshot/two-path-align-p4b-final.json`）：
+
+| 口径 | 行 | 单侧行 | 中间单侧 | 错位页 |
+|---|---|---|---|---|
+| 原始（模型分段一致程度，仅诊断） | 438 | 24（5.48%） | 2 | 1 |
+| **交付（阅读器实际发出的行，吸收单侧行之后）** | **416** | **2（0.48%）** | **0** | **0** |
+
+门限判在**交付口径**上（阈值 单侧 ≤2% / 中间单侧 0 / 错位 0）→ **通过**。
+逐篇交付：turbo 256 行 **0 单侧**；attention 160 行 2 单侧（0 错位）。原始口径的那 24 条单侧行
+是**模型分段差异**，读时归一（`absorb_one_sided_rows`，单侧行并进上一行的缺失侧）之后读者看不到 ——
+这也是"门限要管的是读者看到的东西"的落地。
+
+当前产物实测（`reader_service.page_products`）：412 行 / 1 单侧；`align` 分布
+turbo `coords 9 / exact 4 / structure 9`、attention `coords 11 / exact 1 / structure 3`
+—— **54% 的页走的是坐标合并**（0 错位路径），其余走结构配对兜底。
+（门限脚本用自己实现的吸收逻辑重算（416 行），与线上产物（412 行）差 4 行；口径同一、实现两份，
+统一到 `reader_service` 列为下一步。）
+
+
+### 17.77 第四轮 · P6b：双路索引重建 + 30 问回归（**通过**）
+
+重跑后行 id 全变，索引必须整篇重建（否则 chunk 指向旧行）：
+
+| 论文 | chunk 行 | 版本 | 构成 |
+|---|---|---|---|
+| turboquant | 314 | v60 | text 58 / unit 155 / formula 89 / figure 10 / table 2 |
+| attention | 137 | v55 | — |
+| 全库 | **451** | — | text 84 / **unit 237** / formula 100 / figure 20 / table 10；按路 **a 211 / b 110 / shared 130** |
+
+30 题固定回归（`data/logs/snapshot/p6b-regression.json`）：
+
+| 指标 | 值 |
+|---|---|
+| hit@6 / 正文命中 | **100%** / 96.7% |
+| MRR / 正文 MRR | **0.9611** / 0.9111 |
+| 公式专项命中 / 附录覆盖 | 90.9% / **100%** |
+| 命中块长度中位 / 上下文字符中位 | 544 / 6103 |
+| 首次命中类型 | unit 26 / table 3 / figure 1 |
+
+**残留红（已在 §17.81 修掉）**：`tests/test_retrieval_regression.py::test_formula_questions_hit_formula_atomic` ——
+q16「附录 B.1 关于 Shannon 下界的结论是什么？」的**公式专项**检索把 p16 公式块标成
+`section=REFERENCES`（混合检索该题 `first_match_rank=1`、`content_matched=true`、`formula_atomic=true`，是好的）。
+当时判断是"章节归属问题、不是检索质量问题"——**判断是对的，但根因在下一个入口**：
+不是分块逻辑，而是**坐标合并把标题行的 `level`/`number` 丢了**（见 §17.81）。**不放宽阈值**这条继续成立。
+
+顺带修掉的两个真问题（都在 `719f772`）：① 图内文字被当成正文（B 路提示词补"图/表内部画出来的文字不是正文"
++ 确定性兜底 `strip_figure_noise`，两侧同用）；② 重翻译会清空已有解读 —— 改成保留 + `stale_refs` 标记。
+
+
+### 17.78 第四轮 · P7b：概念读时投影 + `/related`（`df043bc`）
+
+B 路理解结果是**自由 Markdown**（用户口径⑦，模型可增删合并小节），所以"概念"这一层做成**读时投影**：
+`parse_concepts(markdown, by_code)` 定位「相关概念 / 核心概念」那一节 → **到下一个同级或更高级标题为止**
+→ `##`~`####` 子标题即概念，标题里的中英文名拆开，正文里的 `Bxxx` 短码归到该概念并解析回 chunk id。
+
+- 为什么不在生成时落库：读时投影**不改表、不必重新生成**，已存好的解读立刻出概念列表；
+- 边界那条规则是实测修出来的：第一版把后面的 `## 推荐阅读顺序` 也当成了一个概念（12 个），
+  按"同级标题即结束"之后是 **8 个**（真实数据）；
+- `GET /papers/{id}/related?page=N&tolerance=1`：概念的引用里有 chunk 落在本页 ±1 即命中
+  （引用的单元常常跨页，完全等值会漏掉大量"其实就在这一页"的概念）。`related?page=3` 实测命中 5 个概念。
+
+`tests/test_understanding_concepts.py` 6 条（含"不要把同级标题当概念"与"中英文名拆分"）。
+
+
+### 17.79 第四轮 · P8：前端四个面（理解页 / 「解读」页签 / 侧栏拖拽 / 限本文语义搜索）（`f4b17de`）
+
+用户确认的四条设计：**① 复用现有侧栏加「解读」页签、侧栏可拖拽；② 默认阅读地图（B 路）；③ 跟随阅读位置；
+④ 搜索页接语义搜索（只查本文）**。
+
+| 面 | 落点 |
+|---|---|
+| 首页四面 | 阅读 / 理解 / 知识库 / 学习（`/reader/:id`、`/understand/:id`、`/knowledge`、`/study`） |
+| 理解页 | `UnderstandView.vue`：两路并排/切换、默认 B、未解读时「开始解读」→ 起任务 → 轮询 |
+| 阅读器「解读」 | `ReaderInsight.vue` + `ReaderSidePanel.vue` 新页签；来源胶囊 `来源 Chunk: B003` → 点开跳 `?page=N` |
+| 跟随阅读位置 | 页码变化去抖 400ms 调 `/related?page=N`；当前页概念置顶 + 「当前页」徽章并默认展开；接口失败静默退回全篇 |
+| 侧栏拖拽 | 220~360px，双击复位，按论文存 `localStorage: pm.reader.aside-w.<paperId>`；窄屏抽屉不受影响 |
+| 语义搜索 | `ReaderSearch.vue` 关键词/语义分段；语义走 `POST /rag/similar {scope:'paper'}`（只查本文） |
+
+两个真实的坑（都在代码注释里留了原因）：`gotoPage(page)` 必须**先摘掉 `?row/?block`**
+（锚点优先于页码，不摘会"点了没反应"）；`/related` 失败要静默退回，不能让左栏跟着报错。
+
+**验收**：`npm run typecheck` 0 错、`npm run build` 成功；
+`scripts/frontend_check.py --block-markers` → **88 项 / 通过 87**。
+关键变化：之前那 3 条译文列划词失败**现在通过**（证明它们不是"单侧行被吸收"造成的，早就用
+`PR_NO_ABSORB=1` 复现过），换了一条不同的红 —— `公式能整体高亮`（整块包住时 `katex=False`）。
+净效果 85 → 87，但**不能**说成全绿：这条先定性（稳定失败 → 修；抖动 → 校准），下一轮处理。
+前端只改 `frontend/`，`useMarkdown.ts` 逐字节未动、`backend/tests/scripts` 零改动（已核）。
+
+
+### 17.80 第四轮 · P9：设计文档 + API.md 校准 + 死代码清理
+
+P9 是收口轮：**写完文档 + 把文档里"与代码相反"的说法全部改对**（文档漂移本身就是缺陷）。
+
+**新增 `docs/论文理解系统-设计.md`**：系统图（用户口径⑫）、两路并发、两路各自分块与 chunk 记号（②③）、
+共享坐标契约 P4b、第二阶段理解（④⑤⑥⑦⑧）、概念读时投影、前端四个面（⑨⑩⑪）、缓存与失效、不变量与验收，
+最后一张 **①–⑬ 需求对照表**（每条给落点 + 证据）。`docs/进度.md` 顶部加了指向它的横幅并标注旧内容已过期。
+
+**`docs/API.md` 校准**（逐条对代码核过）：
+
+| 原说法 | 事实 |
+|---|---|
+| `/rag/query · /rag/similar` "**未实现**，返回 `implemented: false`" | 两者**都已实现**且返回 `implemented: true`；补真实 schema（`/rag/query` 的 `scope` 真值只有 `current_paper`/`paper`/`cross`，**`knowledge_base` 会落到全库**；`/rag/similar` 有未文档化的 `roads`） |
+| `POST /papers/{id}/parse` 有 `vision_dpi` 参数 | 该端点**没有**这个形参（dpi 由 worker 读设置）；补真实存在的 `then_translate` / `llm_repair` |
+| 暂停"**页边界**生效" | 实为**块/段落边界** |
+| `/translations?since_page=`"按页返回 6 个字段" | 外层是 `{items, count, since_page}`；另补未文档化的 `?page=` |
+| `grade` "已失效（被忽略）" | `Query(pattern="^[ABC]$")`：传其它值直接 **422**，只有 A/B/C 被忽略 |
+| 前端自检"40 项" | **88 项**（87 通过 / 1 失败）—— 三份文档里 40/41/87 互相矛盾，一并校准 |
+| 左栏"300px"、`side` 只有 7 个值 | 可拖拽 220~360（按论文存 localStorage）；页签 8 个（含 `search`/`insight`，旧值 `notes` 归一成 `annotations`） |
+| `image_url` = 插图裁图 | 实为**「图+图注」合成卡片**（`?card=1`），另有 `card_url/part/parts/part_label/status/audit` |
+| 任务统计只有 `granularity` | 补 `path`（a/b/fused）与 `usage` 的 `cache_hit/miss_tokens` |
+
+**新增章节**：§4「论文理解（第二阶段）」——`POST /papers/{id}/understand`、
+`GET /papers/{id}/understanding[/status]`、`GET /papers/{id}/related`，以及**短码约定**
+（`A001`/`B001`、只许本路、跨路 → `cross_road_refs`、失效 → `stale_refs` 保页码）；
+§3 补齐两路 `paths` 与产物文件、`fused` **不能与 a/b 同传**；§9 拆成"知识库"与"检索问答"两节。
+
+**死代码**：`prefix_sha = prefix_hash(prefix)` 这个没人读的局部变量（§17.75 记下的）已删，
+`prefix_hash` 的 import 一并从 `translation_service.py` 摘掉；`api/knowledge.py` 的模块 docstring 还在说
+"检索与 RAG 问答在阶段 14–17 实现，接口给出明确未实现提示"——改成事实。
+
+**验证**：`pytest tests` → **555 通过 / 1 失败**（唯一失败就是 §17.77 那条公式专项，未回归其他；
+该红在 §17.81 修掉）；
+`frontend_check.py` → 88 项 / 87 通过（同上）。
+
+
+### 17.81 第四轮 · P9b：坐标合并丢标题层级（**读者可见的回归**）+ 全绿收口
+
+**怎么发现的**：P9 写设计文档时要给"需求② 两路 `unit` 数不同"找证据，顺手把 `reader_service.page_products`
+的每页 `align` 与"标题行有没有 `level`"列在一起 —— 一眼看出**凡是 `align=coords` 的页，标题行全部缺
+`level` / `number`**（turbo 9/22 页中招，p7/p15/p16/p18 都有）。
+
+**根因**：`coords.pair_rows_by_src` 造行时只带 `original / translation / type`，
+而结构配对的 `pair_rows` 还会带 `level` / `number`（`split_blocks` 从 `#` 深度与编号抽出来的）。
+两个下游同时中招：
+
+| 下游 | 症状（实测） |
+|---|---|
+| `reader_service.build_outline` | 只收 `level` 在 1..4 的标题行 → `# B MATHEMATICAL PRELIMINARIES`、`## B.1 SHANNON LOWER BOUND…`、`## C.1`、`## C.2` 等**从目录里静默消失**（turbo 目录 21 → **24** 条；用户看到的左侧目录不完整） |
+| `chunking.section_tree` → 归节 | 按"标题行在它之前、层级最深"归节 → **p16 整页被算进 `REFERENCES`**，公式块的 `section` 跟着错 |
+
+症状最终表现为 §17.77 那条红：q16 在公式专项里 `matched=false`。**这不是检索退化，是章节归属错。**
+
+**修法**：`pair_rows_by_src` 里按 `pair_rows` 的同一口径（**优先 A 侧**）把 `level` / `number` 搬到行上；
+`tests/test_two_path_coords.py` 加一条回归断言（`## B.1 …` → `level=2`、`number="B.1"`）。
+**不用重跑模型**（这两个字段是读时从已落盘的 Markdown 算的），但要**重建索引**（chunk 的 `section` 建索引时定）。
+
+**重跑与实测**：
+
+| 步骤 | 结果 |
+|---|---|
+| `build_outline`（读时，无需重跑） | 标题缺 level 的页：turbo 4 页 / attention 1 页 → **0**；目录 21 → **24** 条 |
+| 对齐门（`--tag p9`） | 与 §17.76 **逐项相同**（交付 416 行 / 单侧 2 / 0.48% / 中间 0 / 错位 0）→ 通过（层级不影响合并） |
+| 重建索引 | turbo 314 → **352**（v61）、attention 137 → **160**（v56）；全库 512 行（text 111 / unit 271 / formula 100 / figure 20 / table 10；按路 a 241 / b 141 / shared 130） |
+| 30 题回归（`p6c-regression.json`） | hit@6 **100%**、正文命中 96.7%、MRR **0.9833**（↑0.0222）、正文 MRR **0.9167**（↑0.0056）、**公式专项 100%**（↑9.1pt）、附录 100%；`formula_context_coverage` 0.8667 → 0.80（分块边界变了，仍远高于 0.5 门槛） |
+| `pytest tests` | **全绿**（唯一那条红消失，未新增失败） |
+| `frontend_check.py` | 88 项 / **87 通过**（唯一红换成"公式能整体高亮"，稳定复现，属前端高亮链路） |
+
+**顺带验证了"重新翻译不影响解读"**：重建索引后 turbo A 路 132 条引用 → 101 可跳 + 31 `stale_refs`、
+B 路 80 → 54 + 26，`invalid_refs=0`、`refs_ok=true`，B 路 8 个概念与 `/related?page=3`（5 个）**一字未变**。
+
+**P9 死代码清理**（先做了一轮独立审计，逐条给证据：全仓同名 token 计数 + 引号串检查排除
+`getattr`/registry/`__all__` 动态引用 + AST 判未使用 import/局部死变量）：
+
+| 类别 | 删掉的 |
+|---|---|
+| 遮蔽的重复定义（**永远跑不到**的前一份） | `figure_regions._snap_x` 旧版、`page_translate._leading_lines` 旧版 |
+| 零引用函数/类 | `prefix_hash`、`page_rows`、`_default_store_path`、`_translation_provider`、`_active_translate_task`、`_create_translate_task`、`_split_rows`、`_retrieval_note`、`_count_by_road`、`dispose_engine`、`timeline_by_concurrency`、`TaskErrorBase`、`_CAPTION_NUMBER`、`_SECTION_NUMBER`、`coords.CODE_RE` |
+| 局部死变量 | `chunking.section_tree` 的 `items`、`figure_regions._compute_all` 的 `page`、`reader_service.build_reader` 的 `pages_by_no`、`kb_render_scan` 的 `rows`（含 `if False` 死分支） |
+| 未使用 import（本轮碰到的文件） | `page_translate.sha256_text`、`translation_service.Path`、`understanding_service.retrieval`、`knowledge_service` 的 8 个 preprocess/噪声 import、`reader_service.Paper`、`scheduler.RateLimitError` |
+| 文档漂移（代码注释） | `api/knowledge.py` 模块 docstring 还写"检索与 RAG 问答未实现"；`_split_rows` / `_translation_provider` / `_active_translate_task` / `_create_translate_task` / `_retrieval_note` 的 docstring 自称"保留给测试/CLI"但零引用 —— 随函数一起删 |
+
+**有意保留**（审计标零引用但删了会更差）：`models.py` 的 `PAPER_STATUSES` / `TASK_STATUSES` /
+`TASK_TYPES` / `TASK_QUEUES` / `BLOCK_TYPES` 是**声明式契约**（合法取值全集，代码用裸字符串），
+已加注释说明是刻意保留；`PAGE_SCHEMA*` 是测试用的契约声明（作者 389 行注释已写明）。
+**剩余清单**（解析层旧助手：`horizontal_bars` / `to_latex_inline` / `read_page_from_file` /
+`BLOCK_MARKER` 等 20 余个符号，以及 12 个文件里的未使用 import）属零风险清理债务，记在设计文档 §10。
+
+**踩到的坑（记一笔）**：审计说 `frontend_check.py` 的 `failures` 是"赋值后从不读"，我照删 ——
+结果它是 `failures += 0 if ok else 1` 的**自增**（读+写），删掉后脚本直接 `UnboundLocalError`。
+**审计结论也必须自己抽验**：这一条是我抽验出来的，其余删除项都由 `pytest` 全绿 + 应用启动冒烟兜住。
+
+
