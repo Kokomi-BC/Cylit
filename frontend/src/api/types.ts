@@ -616,12 +616,6 @@ export interface UnderstandingPayload {
   concepts?: UnderstandingConcept[];
 }
 
-/** `GET /papers/{id}/related?page=N`：当前页相关的概念（与 `UnderstandingConcept` 同构）。 */
-export interface UnderstandingRelated {
-  page: number;
-  concepts: UnderstandingConcept[];
-}
-
 /**
  * `POST /rag/similar`（scope=paper）的一条命中。
  *

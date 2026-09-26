@@ -2,19 +2,20 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **解读**（目录由 ReaderToc 负责）。
+ * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务（目录由 ReaderToc 负责）。
  * 公式**只读**：来自 Markdown 提取（ReaderFormulaList），不做复核、不分级、不比对裁图。
+ * 「解读」**不在这里**：它已改成右侧悬浮面板（不挤压正文），
+ * 见 ReaderView 的 `.insight-panel` 与 ReaderInsight.vue。
  */
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
+import { groupPaperTasks } from '@/utils/tasks';
 import type {
-  Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, ReaderStats, TaskInfo, ZoomTarget,
+  Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
-import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
-import ReaderInsight from './ReaderInsight.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
 export interface BriefDraft {
@@ -26,7 +27,7 @@ export interface BriefDraft {
 }
 
 /** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签） */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
+export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks';
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
@@ -39,13 +40,8 @@ const props = withDefaults(defineProps<{
   briefDraft: BriefDraft;
   /** 简报来源（model / manual / cached），只用于视图上的一枚小徽章 */
   briefSource?: string;
-  stats: ReaderStats;
-  progressPercent: number;
-  activeTask: TaskInfo | null;
-  /** 「解读」页签：按论文取理解结果（A/B 两路 + 相关概念） */
-  paperId: string;
-  /** 「解读」页签的「相关概念」跟着**当前阅读页**走（由 ReaderView 按滚动位置算出） */
-  page: number;
+  /** 「任务」页签：这篇论文的**全部**任务（各类型都算），页签里按类型汇总成清单 */
+  tasks: TaskInfo[];
 }>(), { formulasLoading: false, briefSource: '' });
 
 const emit = defineEmits<{
@@ -59,13 +55,26 @@ const emit = defineEmits<{
   (e: 'delete-annotation', id: string): void;
   (e: 'delete-note', id: string): void;
   (e: 'cancel-task', task: TaskInfo): void;
-  /** 解读页签里点「来源 Chunk」胶囊：跳到那一页（由 ReaderView 写进 `?page=`） */
-  (e: 'focus-page', page: number): void;
 }>();
 
 function locate(id?: string | null, page?: number | null) {
   if (!id && !page) return;
   emit('focus', id ?? '', page ?? undefined);
+}
+
+/**
+ * 「任务」页签的清单：**一类任务一行**（翻译 / 转录 / 解读 / 索引 / 解析），
+ * 用户要看的是"这条流水线现在什么状态"，而不是几十条历史任务（见 `groupPaperTasks`）。
+ */
+const taskRows = computed(() => groupPaperTasks(props.tasks));
+
+/** 状态徽章的配色（与流水线的"好不好"对应：完成=绿、在跑=主题色、失败=红）。 */
+function statusClass(status: string): string {
+  if (status === 'completed') return 'ok';
+  if (status === 'processing' || status === 'pending') return 'accent';
+  if (status === 'paused') return 'warn';
+  if (status === 'failed') return 'danger';
+  return 'dim';
 }
 
 const annotationHtml = (text: string) => mdToHtml(text);
@@ -171,16 +180,6 @@ const merged = computed<MergedItem[]>(() => {
 
 <template>
   <div class="panel-body">
-    <!-- 解读（第二阶段「论文理解」）：A 技术解剖 / B 阅读地图 + 跟随当前页的相关概念。
-         放在这里而不是另开一页：读某一段时顺带看概念解释是同一个动作流（详见 ReaderInsight 顶部） -->
-    <template v-if="props.tab === 'insight'">
-      <ReaderInsight
-        :paper-id="props.paperId"
-        :page="props.page"
-        @focus-page="(p: number) => emit('focus-page', p)"
-      />
-    </template>
-
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
     <template v-if="props.tab === 'annotations'">
       <div v-if="!merged.length" class="empty small">还没有批注或笔记（在正文里划词即可新建）</div>
@@ -343,38 +342,34 @@ const merged = computed<MergedItem[]>(() => {
       <div v-if="!termRows.length" class="empty small">没有术语</div>
     </template>
 
-    <!-- 任务 + 进度 -->
+    <!-- 任务：**按类型一行**的清单（翻译 / 转录 / 解读 / 索引 / 解析）。
+         口径（用户原话）：只要"这条流水线跑没跑完"，不要进度条 —— 完成就写「已完成」；
+         一个类型跑过多次也只占一行（历史任务全列出来是一面墙，见 utils/tasks.ts）。
+         在跑的行给一个「取消」：这是页签里原来的能力，不能因为改版就丢掉。 -->
     <template v-if="props.tab === 'tasks'">
-      <div class="item">
-        <div class="row tiny">
-          <span class="muted">翻译进度</span>
-          <span class="spacer" />
-          <span class="mono">{{ props.stats.pages_done ?? 0 }} / {{ props.stats.pages ?? 0 }} 页</span>
-        </div>
-        <ProgressBar :value="props.progressPercent" />
-        <div class="row tiny faint" style="margin-top:6px">
-          <span>成对行 {{ props.stats.rows ?? 0 }}</span>
-          <span class="spacer" />
-          <span v-if="props.stats.model" class="truncate mono" :title="props.stats.model">
-            {{ props.stats.model }}
-          </span>
-        </div>
+      <div v-if="!taskRows.length" class="empty small">
+        这篇论文还没有任务（解析 / 翻译 / 转录 / 解读 / 索引）。
       </div>
-      <div v-if="props.activeTask" class="item">
+      <div v-for="r in taskRows" :key="r.key" class="item task-row">
         <div class="row tiny">
-          <span class="badge" :class="props.activeTask.status === 'processing' ? 'accent' : ''">
-            {{ props.activeTask.status }}
-          </span>
-          <span class="faint">{{ props.activeTask.done_items }}/{{ props.activeTask.total_items }}</span>
+          <span class="task-name">{{ r.label }}</span>
+          <span class="badge" :class="statusClass(r.status)">{{ r.statusLabel }}</span>
           <span class="spacer" />
-          <button class="btn sm danger" @click="emit('cancel-task', props.activeTask)">
-            <AppIcon name="stop" :size="13" />取消
+          <span v-if="r.progressLabel" class="mono faint">{{ r.progressLabel }}</span>
+          <button
+            v-if="r.running && r.task"
+            class="btn icon sm"
+            title="取消这个任务"
+            @click="emit('cancel-task', r.task)"
+          >
+            <AppIcon name="stop" :size="13" />
           </button>
         </div>
-        <div class="tiny faint">{{ props.activeTask.message }}</div>
-        <ProgressBar :value="props.activeTask.progress" />
+        <!-- 失败才显示 message：成功那条是"用时 432s"这类流水账，失败原因才是用户要看的 -->
+        <div v-if="r.status === 'failed' && r.message" class="tiny task-msg" :title="r.message">
+          {{ r.message }}
+        </div>
       </div>
-      <div v-else class="empty small">当前没有进行中的任务</div>
     </template>
   </div>
 </template>
@@ -438,4 +433,12 @@ const merged = computed<MergedItem[]>(() => {
 .term-row { display: flex; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--divider); font-size: 12.5px; }
 .term-row .en { flex: 1; font-family: var(--mono); font-size: 12px; }
 .term-row .zh { flex: 1; }
+/* 任务清单：一类一行。类型名固定宽度，几行的状态徽章才能对齐成一条竖线；
+   失败原因单独一行、最多两行（长错误信息不该把清单撑成一屏）。 */
+.task-row { padding: 7px 10px; margin-bottom: 6px; }
+.task-name { font-size: 12.5px; font-weight: 600; min-width: 3.5em; }
+.task-msg {
+  margin-top: 4px; color: var(--danger); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 </style>

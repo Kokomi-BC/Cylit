@@ -19,6 +19,7 @@ import {
 } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
 import { fmtRelative, paperStatus } from '@/utils/format';
+import { confirmRegenerateInsight } from '@/utils/understanding';
 
 const router = useRouter();
 
@@ -33,7 +34,7 @@ const keyword = ref('');
 const statusFilter = ref('');
 const sort = ref('last_read_at');
 const order = ref('desc');
-/** 正在进行的行内操作键：`import` / `parse:<id>` / `tr:<id>` / `idx:<id>` / `del:<id>`。 */
+/** 正在进行的行内操作键：`import` / `insight:<id>` / `tr:<id>` / `idx:<id>` / `del:<id>`。 */
 const busyKey = ref('');
 /** 列表加载失败原因（非空时界面显式给出错误卡片 + 重试）。 */
 const loadError = ref('');
@@ -215,16 +216,30 @@ async function submitImport() {
 
 /* ------------------------------ 行内操作 ------------------------------ */
 
-async function runParse(paper: Paper, force = false, thenTranslate = false) {
-  busyKey.value = `parse:${paper.id}`;
+/**
+ * 「重新生成解读」：让后端把两路理解重跑一遍（`paths: ['a','b'] + force`）。
+ *
+ * 已经有解读时先 HTML 原生 confirm 二次确认（与「重新翻译」同一风格）。这份口径**不写在这里**：
+ * 论文库 / 阅读器 / 理解页三处都有这个动作，文案与"要不要问"的判据统一放在
+ * `utils/understanding.ts`，三处必须一模一样。
+ */
+async function askRegenerateInsight(paper: Paper) {
+  if (!(await confirmRegenerateInsight(paper.id, paper.title))) return;
+  await runInsight(paper);
+}
+
+async function runInsight(paper: Paper) {
+  busyKey.value = `insight:${paper.id}`;
   try {
-    const task = await api.post<any>(`/papers/${paper.id}/parse`, {},
-      { force, vision: true, then_translate: thenTranslate });
-    const msg = metaMessage(task);
-    toast(msg || `已创建解析任务：${paper.title}`, 'ok', 3600);
+    const res = await api.post<any>(`/papers/${paper.id}/understand`, { paths: ['a', 'b'], force: true });
+    toast(metaMessage(res) || '解读任务已排队（两路并发）', 'ok', 4200);
     await refresh();
-    startPolling();
-  } catch (err) { reportError(err, '触发解析失败'); } finally { busyKey.value = ''; }
+  } catch (err) {
+    /* 后端 400 会给一句**可执行的人话**（"这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解"），
+     * 原样 toast：加前缀、或按普通失败静默掉，都会让这条指引失效（用户口径：不要静默失败）。 */
+    toast((err as Error)?.message ?? String(err), 'error', 6000);
+    console.warn('重新生成解读失败', err);
+  } finally { busyKey.value = ''; }
 }
 
 /** 后端 `envelope(message=…)` 的文案（client 挂在 `__meta` 上）——直接用它，前后端话术就不再各写一套 */
@@ -287,20 +302,19 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 次要操作（重新翻译 / 重新解析 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
+/** 次要操作（重新翻译 / 重新生成解读 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
  * 卡片上只留「阅读（主）+ 翻译（次）」两个按钮 —— 翻译与解析**不再并列暴露**（选项 B）：
  * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。
  *
- * ⚠️ 已译完的论文：**「重新翻译」也收进这里**（用户口径：放到二级界面）—— 译完的卡片上
- * 只留「阅读」一个一级动作，重译属于"偶尔才做一次、而且会覆盖已有译文"的操作。
- * 点击时会弹 **HTML 原生 confirm** 二次确认（见 `askRetranslate`）。 */
+ * ⚠️ 「重新解析」已按用户口径下线（解析由翻译入口自动串起来，单独重解析只会让产物半新半旧）；
+ * 原位置换成「重新生成解读」（与阅读器工具栏「⋯」里那一项同名，同一个后端动作）。 */
 function rowMenu(p: Paper): RowAction[] {
   const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
   return [
     ...(stage(p) === 'translated'
       ? [{ key: 'retranslate', label: '重新翻译', icon: 'refresh' } as RowAction]
       : []),
-    { key: 'parse', label: '重新解析', icon: 'document', disabled: busy('parse') },
+    { key: 'insight', label: '重新生成解读', icon: 'sparkle', disabled: busy('insight') },
     { key: 'index', label: '建立索引（纳入知识库）', icon: 'layers', disabled: busy('idx') },
     {
       key: 'remove-kb',
@@ -329,7 +343,7 @@ function askRetranslate(p: Paper) {
 
 function onRowAction(p: Paper, key: string) {
   if (key === 'retranslate') { askRetranslate(p); return; }
-  if (key === 'parse') { runParse(p, true); return; }   // 强制重来；不附带翻译（用户得自己点翻译）
+  if (key === 'insight') { void askRegenerateInsight(p); return; }
   if (key === 'index') { runIndex(p); return; }
   if (key === 'remove-kb') { removeFromKb(p); return; }
   if (key === 'edit') { openEdit(p); return; }

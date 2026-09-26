@@ -25,6 +25,8 @@ import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets } from '@/utils/domMarks';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
+import { taskTypeLabel } from '@/utils/tasks';
+import { confirmRegenerateInsight } from '@/utils/understanding';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { routeKey, setTabTitle } from '@/stores/tabs';
 import {
@@ -35,6 +37,7 @@ import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
+import ReaderInsight from '@/components/reader/ReaderInsight.vue';
 import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
@@ -129,6 +132,95 @@ try {
 /** 给 `<style>` 里的 `v-bind()` 用：宽度是响应式的，拖到哪侧栏就是多宽 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
+/* ------------------------------ 解读悬浮面板（R1） ------------------------------ */
+/**
+ * 「解读」从左侧页签搬到**右侧悬浮面板**：浮在正文之上（`position: fixed`）、**不占布局**，
+ * 所以正文宽度与左右对照的版面一点都不变 —— 这正是"悬浮"的意义。
+ *
+ * 为什么必须搬：以前它是左栏的一个页签，左栏最窄 220px，解读里的「论文精读 / 技术解剖」
+ * 这种小标题被挤成竖排（用户截图里就是竖着的一个字一行的）。
+ *
+ * 显隐与宽度都**按论文**记在 `localStorage`（与左侧栏的 `pm.reader.aside-w.` 同一习惯）：
+ * 它们是纯视图状态，服务端进度表里没有这两列，为它们改后端 schema 不划算。
+ * 默认**关闭**：解读是"需要时瞟一眼"的东西，一进来就占掉右侧半屏会挡住正文。
+ */
+const INSIGHT_W_MIN = 320;
+const INSIGHT_W_MAX = 720;
+const INSIGHT_W_DEFAULT = 420;
+const insightOpenKey = `pm.reader.insight-open.${instancePaperId}`;
+const insightWidthKey = `pm.reader.insight-w.${instancePaperId}`;
+const clampInsightWidth = (w: number) => Math.max(INSIGHT_W_MIN, Math.min(INSIGHT_W_MAX, Math.round(w)));
+const insightWidth = ref(INSIGHT_W_DEFAULT);
+const insightOpen = ref(false);
+try {
+  insightOpen.value = localStorage.getItem(insightOpenKey) === '1';
+  const savedIW = Number(localStorage.getItem(insightWidthKey));
+  if (Number.isFinite(savedIW) && savedIW > 0) insightWidth.value = clampInsightWidth(savedIW);
+} catch { /* 隐私模式下忽略 */ }
+
+/**
+ * 面板顶边 = **工具栏的下边**（量出来的，不是写死的）。
+ *
+ * 工具栏是 `flex-wrap` 的，窄一点的窗口上会折成两行、高度不再固定；
+ * 写死 `top: 97px` 那种算法在折行后会把工具栏压在面板底下（用户口径：不要盖住工具栏）。
+ * 用 ResizeObserver 盯工具栏，它自己变高变矮都能跟上。
+ */
+const toolbarEl = ref<HTMLElement | null>(null);
+const insightTop = ref(0);
+/** 量不到（还没渲染 / 老浏览器）时给个兜底：顶栏高度 + 一行工具栏的估高 */
+const insightTopPx = computed(() => (
+  insightTop.value > 0 ? `${insightTop.value}px` : 'calc(var(--header-h) + 46px)'
+));
+function syncInsightTop() {
+  const el = toolbarEl.value;
+  if (!el) return;
+  insightTop.value = Math.round(el.getBoundingClientRect().bottom);
+}
+let toolbarRo: ResizeObserver | null = null;
+
+function setInsightOpen(v: boolean) {
+  insightOpen.value = v;
+  try { localStorage.setItem(insightOpenKey, v ? '1' : '0'); } catch { /* 忽略 */ }
+  if (v) {
+    // 面板刚出现时才量得到工具栏（v-if 之前 toolbarEl 是 null / 旧值）
+    void nextTick(() => {
+      syncInsightTop();
+      if (toolbarEl.value && typeof ResizeObserver !== 'undefined' && !toolbarRo) {
+        toolbarRo = new ResizeObserver(() => syncInsightTop());
+        toolbarRo.observe(toolbarEl.value);
+      }
+    });
+  }
+}
+
+/* 宽度拖拽：把手在面板**左边缘**，往左拖 = 变宽（与左栏把手同一套 pointer capture 写法，
+   理由见 `onResizeDown`）。拖完才落盘，每像素写一次 localStorage 没意义。 */
+const insightResizing = ref(false);
+let insightStartX = 0;
+let insightStartW = 0;
+function onInsightResizeDown(ev: PointerEvent) {
+  insightResizing.value = true;
+  insightStartX = ev.clientX;
+  insightStartW = insightWidth.value;
+  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
+  ev.preventDefault();                     // 别把拖拽变成"选面板里的文字"
+}
+function onInsightResizeMove(ev: PointerEvent) {
+  if (!insightResizing.value) return;
+  insightWidth.value = clampInsightWidth(insightStartW + (insightStartX - ev.clientX));
+}
+function onInsightResizeUp(ev: PointerEvent) {
+  if (!insightResizing.value) return;
+  insightResizing.value = false;
+  (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
+  try { localStorage.setItem(insightWidthKey, String(insightWidth.value)); } catch { /* 忽略 */ }
+}
+/** 双击把手回默认宽度 420（拖歪了有个一键回退） */
+function resetInsightWidth() {
+  insightWidth.value = INSIGHT_W_DEFAULT;
+  try { localStorage.setItem(insightWidthKey, String(INSIGHT_W_DEFAULT)); } catch { /* 忽略 */ }
+}
+
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
 interface ToolbarAction {
   key: string;
@@ -141,12 +233,15 @@ interface ToolbarAction {
 /** 阅读器工具条：低频动作收进「⋯」，避免一排同权重按钮把主操作淹没。 */
 const toolbarMenu: ToolbarAction[] = [
   { key: 'retranslate', label: '重新翻译', icon: 'refresh' },
+  // 与论文库卡片「⋯」里那一项**同名**（R4）：同一个后端动作，两处叫法必须一致
+  { key: 'insight', label: '重新生成解读', icon: 'sparkle' },
   { key: 'pdf', label: '打开原 PDF', icon: 'external' },
   { key: 'markdown', label: 'Markdown 视图', icon: 'document' },
 ];
 
 function onToolbarAction(key: string) {
   if (key === 'retranslate') { startTranslate('retranslate'); return; }
+  if (key === 'insight') { void regenerateInsight(); return; }
   if (key === 'pdf') { openPdf(); return; }
   if (key === 'markdown') openMarkdownView();
 }
@@ -197,10 +292,12 @@ const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
 
-/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 */
+/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务。
+ *  「解读」**不在这一列**：它是右侧悬浮面板（见 `insightOpen`），左侧栏每个页签都只占几百像素，
+ *  放进去会把解读里的标题挤成竖排。 */
 type SideTabKey = 'toc' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
-const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight'];
+const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks'];
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
  * 只数 IR 术语表是不对的：简报里那 20 条统一译法才是真正注入每次翻译 prompt 的那一份，
@@ -239,11 +336,7 @@ const SIDE_TABS = computed<Array<{
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
-  {
-    k: 'insight', icon: 'sparkle', label: '解读',
-    title: '论文解读（B 阅读地图 / A 技术解剖 + 跟随当前页的相关概念）',
-  },
-  { k: 'tasks', icon: 'task', label: '任务', title: '任务与进度' },
+  { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
 ]);
 
 /* 侧栏页签**一行到底、不换行**（用户口径）：放不下就左右滚，见 `.side-tabs` 的样式。
@@ -526,6 +619,23 @@ const translating = computed(() => !!activeTask.value);
  */
 const parseTask = computed(() => tasks.value.find((t) => t.type === 'PARSE'
   && ['processing', 'pending', 'paused'].includes(t.status)) ?? null);
+/**
+ * 这篇论文有**解读任务**在跑（A/B 两路之一）。
+ *
+ * 解读是后台全篇调用（实测 1~2 分钟），面板据此决定要不要每 5s 轮询：
+ * 没有任务还一直打接口纯属白耗（用户口径：只在有理解任务在跑时轮询）。
+ */
+const understandingRunning = computed(() => tasks.value.some((t) => (
+  t.type === 'UNDERSTAND_A' || t.type === 'UNDERSTAND_B'
+) && ['processing', 'pending', 'paused'].includes(t.status)));
+/**
+ * 有任何任务在跑（不限类型）：任务页签的 4s 轮询跟着它走。
+ *
+ * 以前这里只认翻译/解析，于是索引、转录、解读这些任务在跑的整个过程中，
+ * 任务页签停在"没有任务"的旧状态上（用户报的就是这个）。
+ */
+const hasRunningTask = computed(() => tasks.value.some((t) =>
+  ['processing', 'pending', 'paused'].includes(t.status)));
 /** 任务消息形如"解析中：render 3/22" —— 只留阶段本身，免得与前面的"正在解析"重复一遍 */
 const parseStageLabel = computed(() => String(parseTask.value?.message ?? '')
   .replace(/^解析中\s*[：:]\s*/, '').trim());
@@ -595,6 +705,10 @@ async function loadAll() {
     if (SIDE_TAB_KEYS.includes(String(q.side))) {
       // 兼容旧的 ?side=notes：批注与笔记已合并为一个页签
       sideTab.value = (String(q.side) === 'notes' ? 'annotations' : String(q.side)) as SideTabKey;
+    } else if (String(q.side) === 'insight') {
+      /* 兼容旧的 `?side=insight` 深链（老书签 / 别处链接）：解读已从左侧页签搬到右侧悬浮面板，
+       * 等价动作就是"把面板打开" —— 不能 404，也不能毫无反应（用户口径）。 */
+      setInsightOpen(true);
     }
 
     await nextTick();
@@ -1194,13 +1308,38 @@ async function startTranslate(mode: 'resume' | 'retranslate' = 'resume', pages?:
 
 async function cancelTranslate(task: TaskInfo | null) {
   if (!task) return;
-  const kind = task.type === 'PARSE' ? '解析' : '翻译';
+  // 类型名走 `utils/tasks` 那一份口径：任务页签里叫"转录"，这里就不能叫"翻译"
+  const kind = taskTypeLabel(task.type);
   if (!window.confirm(`确认取消该${kind}任务？已完成的部分会保留。`)) return;
   try {
     await api.post(`/tasks/${task.id}/cancel`);
     toast('已请求取消（页边界生效）', 'ok');
     void fetchTasks();
   } catch (err) { reportError(err, '取消失败'); }
+}
+
+/**
+ * 「重新生成解读」（工具栏「⋯」与论文库卡片「⋯」里的同一项）：`paths: ['a','b'] + force`。
+ *
+ * 已经有解读时先 **HTML 原生 confirm** 二次确认（与论文库同一口径，见 `utils/understanding.ts`）：
+ * 重跑是两路各一次全篇模型调用，而它就藏在一个「⋯」菜单里 —— 误点一下就是白花钱白等。
+ *
+ * 失败**原样**展示后端 `error.message`：最常见的 400 就是那句人话
+ * "这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解" ——
+ * 包一层"重新生成解读失败："会把这条可执行的指引淹掉。
+ */
+async function regenerateInsight() {
+  if (!(await confirmRegenerateInsight(paperId.value, reader.value?.paper?.title))) return;
+  try {
+    const res = await api.post<{ __meta?: { message?: string } }>(
+      `/papers/${paperId.value}/understand`, { paths: ['a', 'b'], force: true });
+    toast(String(res?.__meta?.message ?? '') || '解读任务已排队（两路并发），完成后会自动刷新', 'ok', 4200);
+    setInsightOpen(true);        // 起了任务却看不到任何东西，看起来就像"点了没反应"
+    void fetchTasks();           // 让面板立刻知道"有任务在跑"，从而开始轮询
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 6000);
+    console.warn('重新生成解读失败', err);
+  }
 }
 
 async function triggerParse() {
@@ -1275,6 +1414,12 @@ onMounted(async () => {
   await nextTick();
   syncPaneWidth();
   watchContentSize();
+  // 解读面板的顶边跟着工具栏走（工具栏折行时高度会变，见 `insightTop`）
+  syncInsightTop();
+  if (toolbarEl.value && typeof ResizeObserver !== 'undefined' && !toolbarRo) {
+    toolbarRo = new ResizeObserver(() => syncInsightTop());
+    toolbarRo.observe(toolbarEl.value);
+  }
   // **深链优先**：带锚点时不先恢复"上次读到哪" —— 两者都是"滚到某一行"，
   // 而 `focusRow` 内部 `await nextTick()` 才滚动（异步），先发起的那次可能后落地，
   // 于是刚跳过去的深链结果被恢复位置那一次滚动盖掉。真实现象：点「跳回原文」
@@ -1287,7 +1432,7 @@ onMounted(async () => {
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
   }
   fetchTasks();
-  taskTimer = setInterval(() => { if (activeTask.value || parseTask.value) fetchTasks(); }, 4000);
+  taskTimer = setInterval(() => { if (hasRunningTask.value) fetchTasks(); }, 4000);
 });
 
 onUnmounted(() => {
@@ -1303,6 +1448,8 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocPointerDown, true);
   setColSide('');               // 离开阅读器时别把 `<html>` 上的标记留在页面上
   contentRo?.disconnect();
+  toolbarRo?.disconnect();
+  toolbarRo = null;
   scroller.value?.removeEventListener('scrollend', onScrollEnd);
   if (taskTimer) clearInterval(taskTimer);
   if (flashTimer) clearTimeout(flashTimer);
@@ -2367,7 +2514,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '']"
     >
       <!-- ============ 工具栏 ============ -->
-      <div class="reader-toolbar">
+      <div ref="toolbarEl" class="reader-toolbar">
         <!-- 最左：侧栏开合（论文标题在顶栏的标签上，这里不再重复显示）；`data-aside-toggle` 供自检脚本使用 -->
         <button
           class="btn icon"
@@ -2440,6 +2587,20 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         </div>
 
         <span class="spacer" />
+
+        <!-- 解读：右侧**悬浮**面板的开关（默认关闭，按论文记在 localStorage）。
+             为什么放在工具栏而不是左栏页签里：它现在不属于左栏 —— 浮在正文之上、不挤压版面。
+             `data-insight-toggle` 供自检脚本点它。 -->
+        <button
+          class="btn insight-toggle"
+          data-insight-toggle
+          :class="{ 'is-open': insightOpen }"
+          :aria-pressed="insightOpen"
+          :title="insightOpen ? '关闭解读面板' : '打开解读面板（论文精读 / 相关概念 / 怎么读这篇论文）'"
+          @click="setInsightOpen(!insightOpen)"
+        >
+          <AppIcon name="sparkle" :size="14" />解读
+        </button>
 
         <!-- 翻译完成时：实时状态与进度就没意义了（整篇本来就不在跑）。
              完成态只留一个绿色对勾（用户口径：不要一直占着"全部 N 页已翻译"这行字），
@@ -2554,11 +2715,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :glossary="glossary"
           :brief-draft="briefDraft"
           :brief-source="brief?.source ?? ''"
-          :stats="stats"
-          :progress-percent="progressPercent"
-          :active-task="activeTask ?? parseTask"
-          :paper-id="paperId"
-          :page="currentPage"
+          :tasks="tasks"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
@@ -2568,7 +2725,6 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
           @cancel-task="cancelTranslate"
-          @focus-page="gotoPage"
         />
         <!-- 拖拽改宽度：贴在侧栏右边缘（见 onResizeDown 的说明），双击复位 -->
         <div
@@ -2605,6 +2761,44 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @translate-page="(p: number) => startTranslate('resume', [p])"
         />
       </section>
+
+      <!-- ============ 右：解读悬浮面板 ============
+           `position: fixed` + 不参与网格流 → **正文宽度与左右对照的版面一点都不变**（"悬浮"的意义）。
+           顶部量的是工具栏下边（`insightTop`），底部到视口底，所以整页依旧不出现滚动条；
+           内容自己滚（`.insight-body`）。 -->
+      <div
+        v-if="insightOpen"
+        class="insight-panel"
+        :class="{ resizing: insightResizing }"
+        :style="{ top: insightTopPx, width: insightWidth + 'px' }"
+      >
+        <!-- 左边缘的拖拽把手：双击复位（与左栏把手同一套交互） -->
+        <div
+          class="insight-resizer"
+          :class="{ active: insightResizing }"
+          title="拖动调整解读面板宽度（双击复位）"
+          @pointerdown="onInsightResizeDown"
+          @pointermove="onInsightResizeMove"
+          @pointerup="onInsightResizeUp"
+          @pointercancel="onInsightResizeUp"
+          @dblclick="resetInsightWidth"
+        />
+        <div class="insight-head">
+          <AppIcon name="sparkle" :size="14" />
+          <span>解读</span>
+          <span class="spacer" />
+          <button class="btn icon sm ghost" title="关闭解读面板" @click="setInsightOpen(false)">
+            <AppIcon name="close" :size="14" />
+          </button>
+        </div>
+        <div class="insight-body">
+          <ReaderInsight
+            :paper-id="paperId"
+            :task-running="understandingRunning"
+            @queued="fetchTasks"
+          />
+        </div>
+      </div>
     </div>
 
     <SelectionMenu
@@ -2749,6 +2943,50 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
    `.badge` 默认是"图文胶囊"，这里把左右内边距换成固定 22px 见方 + 内容居中。 */
 .done-badge { padding: 0; width: 22px; justify-content: center; }
 
+/* 「解读」开关：`base.css` 的 `.btn` 没有 active 态，而它又不像「继续翻译」那样是 primary，
+   所以只在**开着**的时候点亮一下（主题色描边 + 淡底），关着时与其它次按钮同观感。 */
+.insight-toggle.is-open {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+}
+
+/* ============ 解读悬浮面板 ============
+   贴右侧、顶部在工具栏下方（`top` 由 JS 量出来）、到底部为止。
+   ⚠️ 三件事都不能改：
+   - 它是 `position: fixed`，**不占布局**：正文宽度与左右对照版面必须原样（这是"悬浮"的全部意义）；
+   - `bottom: 0` + 内部滚动：整页不许出现滚动条（`scripts/frontend_check.py` ③ 有永久回归项）；
+   - `z-index: 45`：要盖住正文，又要低于 Menu 浮层（300）与 Modal，窄屏抽屉（60）压在它上面也没问题。 */
+.insight-panel {
+  position: fixed; right: 0; bottom: 0; z-index: 45;
+  max-width: 92vw;                 /* 窄屏上曾拖到 720px 的话不会把视口撑爆 */
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  transition: width .18s ease;     /* 只给"拖完松手/复位"用；拖拽期间由 .resizing 关掉 */
+}
+.insight-panel.resizing { transition: none; }
+/* 拖拽把手：贴在面板**左边缘内侧**的 9px 热区（面板是 overflow 默认可见，不担心被裁）。
+   平时全透明（不打扰阅读），hover / 拖拽中才亮一条主题色竖线。 */
+.insight-resizer {
+  position: absolute; left: 0; top: 0; width: 9px; height: 100%;
+  z-index: 2; cursor: col-resize; touch-action: none;
+}
+.insight-resizer::after {
+  content: ''; position: absolute; left: 0; top: 0; width: 2px; height: 100%;
+  background: transparent; transition: background .15s ease;
+}
+.insight-resizer:hover::after, .insight-resizer.active::after { background: var(--accent); }
+.insight-head {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--divider);
+  font-size: 12.5px; font-weight: 600;
+}
+.insight-head .icon { color: var(--accent); }
+/* 面板唯一滚动的地方：内容长了在这里滚，整页不滚 */
+.insight-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 12px 24px; }
+
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 /* 顶部留一点空白（与论文正文顶部留白同一种观感）：内容不再顶着上一行的分隔/工具栏。
@@ -2889,7 +3127,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 }
 
 @media print {
-  .reader-toolbar, .reader-aside { display: none !important; }
+  .reader-toolbar, .reader-aside, .insight-panel { display: none !important; }
   .reader, .reader-content { display: block; height: auto; overflow: visible; }
 }
 </style>
