@@ -4757,5 +4757,36 @@ turboquant 的「向量量化与位宽」「随机旋转与 Beta 分布」「香
 （页签已删），面板内部不做深链定位、不记忆滚动位置 —— 宁可语义明确，也不假装还原。
 
 
+### 17.84 第六轮 · 解读回到左栏 + 侧栏宽度按模式 + 文本对照的表格并排 + 任务进度条
+
+上一版把解读做成**右侧悬浮面板**，用户看过之后又改了 4 条口径（这次是终版）：
+
+| # | 用户口径 | 落地 |
+|---|---|---|
+| 1 | 任务页签"能加进度条的地方加进度条" | 一类任务一行：`翻译/转录/解读/索引/解析` + 状态徽章；**有进度可算就画进度条**（`total>1`，或有 0~100 的 `progress`）。**已完成的行只显示"已完成"徽章 + 满格条、不显示 `done/total`** —— 后端确实有 `done=1/total=3` 却 `completed` 的任务，摆数字会让人以为出错 |
+| 2 | 解读与阅读地图放回**左侧栏共用一个页签**，加"在新标签页打开"按钮（不要文字说明） | **撤销悬浮面板**（`.insight-panel` / `insight-w` / `insight-open` / 拖拽把手 / ResizeObserver 全部删除，零残留）；`insight` 页签内容 = 一份解读的三块；右上角一枚**只有图标**（`external`）的按钮 → `window.open('/app/understand/<id>', '_blank', 'noopener')`，页面无可见文字（`title`/`aria-label` 只给无障碍）；工具栏「解读」按钮改为"展开左栏 + 选中该页签"，已在看时再点收起；`?side=insight` 恢复成通用 side 分支（并展开左栏） |
+| 3 | 非对照模式侧栏能拉更大、对照模式缩小；点解读自动变宽 | 下限 220；**对照（bilingual）上限 360 / 非对照上限 640 且 ≤ 视口 60%**；切模式、窗口 resize、双击复位、拖拽实时**共用 `clampAsideWidth`**；**点解读自动变宽到 520（按上限夹取、只增不减）** —— 实测：纯译文 300→拖到 640→点解读仍 640；切对照被夹到 360；对照下点解读也是 360 |
+| 4 | 对照模式且两端都没有原 PDF 时，两端的 Markdown 图表**分开显示**而不是上下显示 | 定位：`textCompare = bilingual && originalMode==='text'` 正是这个条件，而 `isWide(r) = type==='table'` 的行被 `.pg-rows.two-col .row-pair.wide { display: block }` 改成块级 → 原文表在上、译文表在下。**删掉那条 display:block**，堆叠样式限定到 `:not(.two-col)`，两列模式下恢复竖直分隔线 + **每列自己横向滚动**（`.pg-rows.two-col .row-pair.wide > .cell{overflow-x:auto}` 兜底，真正滚动的是 ReaderRow 既有的 `.t-table .rr-body`）。插图（`.row-figure`）仍通栏，未动 |
+
+**验收**（我自己跑的，前端三条串行；数字与实现者一致）：
+
+| 项 | 结果 |
+|---|---|
+| `npm run typecheck` | 0 错 |
+| `npm run build` | 成功（`ReaderView-C7QJl1gp.js 584.79 kB`） |
+| `frontend_check.py --block-markers` | **88 项 / 通过 87 / 失败 1**（唯一红仍是「公式能整体高亮」）→ **零新增失败** |
+| 无头 Edge 几何断言 | 文本对照下表格行两个 `.cell` 的 `top` **完全相等**（13904/13904）、`left` 115/807、`grid-template-columns: 668px 668px`、第二列有竖直分隔线、两侧各自横向滚（668/810）、`docScroll == viewport`（整页无滚动）；`.row-figure` 仍 `grid-column: 1/-1` |
+| 任务页签 | 真实数据：`翻译已完成(100%)/转录已完成(100%)/解读已完成(无条)/索引已完成(100%)`，**四条都没有数字**；造任务验证未完成态仍有数字（`进行中 9/22` 40% 条、`已失败 62/100` 62% 条） |
+| 解读页签 | `?side=insight` → 活动页签=解读、三块标题齐全、`.insight-panel` 不存在、新标签页按钮 `textContent === ""`（无可见文字）且点出 `{url:'/app/understand/<id>', target:'_blank', feat:'noopener'}` |
+
+**踩坑（记给以后）**：实现者第一次跑自检得到 **84/4**，红的 3 项都在 ⑩"界面状态按论文还原"。
+根因**不是代码**：他一边跑自检、一边起 headless 探针，而阅读器挂载/卸载时会把这篇论文的
+**视图偏好 PUT 回 `reading_progress`**，正好覆盖掉 ⑩ 先写入的 fixture。**单独重跑就是 88/87/1**。
+结论：`frontend_check` 与任何会打开阅读器的探针**不能并发**（它依赖服务端那份"按论文存的界面状态"）。
+顺带说明：探针动过的那份视图偏好已由自检恢复到跑之前（`original_mode=page / pair_order=en_left`），
+数据、译文、批注、高亮均未受影响。
+
+
+
 
 
