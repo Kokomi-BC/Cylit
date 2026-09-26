@@ -111,16 +111,19 @@ section / heading_level / translation / translation_status / translation_revisio
 | `view` | `original`\|`translation`\|`bilingual` | 覆盖服务端记录的视图模式 |
 | `order` | `en_left`\|`zh_left` | 覆盖左右顺序（旧值 `en_top`/`zh_top` 仍接受） |
 | `left` | `page`\|`text` | 左栏显示原 PDF / 原文文本（非扫描页的 PDF 栏是**真 PDF**：pdf.js 矢量页 + 可复制文字层；扫描页仍是位图页图） |
-| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`insight`\|`tasks` | 打开左栏（唯一侧栏）的某个页签（`insight` = 「解读」，见 §4）。旧值 `notes` 仍接受，但会归一成 `annotations`（批注与笔记已合并为一个页签） |
+| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`tasks` | 打开左栏（唯一侧栏）的某个页签。旧值 `notes` 仍接受，但会归一成 `annotations`（批注与笔记已合并为一个页签）；旧值 **`insight`** 也仍接受，含义变成**打开右侧「解读」悬浮面板**（解读已不在左栏，见 §4） |
 | `q` / `scope` | 关键词 / `all`\|`en`\|`zh` | 打开时直接跑一遍左栏搜索（`scope` 指定检索范围） |
 | `pside` | `en`\|`zh` | 对照模式里先看哪一侧 |
 | `size` | `sm`\|`md`\|`lg` | 正文字号 |
 | `md` / `mdpage` | `1` / 页号 | 直接打开 Markdown 视图并定位到第 N 页 |
 | `nosse` | `1` | 强制走 SSE 降级路径（3s 轮询） |
 
-阅读器布局：**两列**（左栏 + 正文），目录/搜索/批注/笔记/公式/插图/术语/任务/解读合并进同一栏，
+阅读器布局：**两列**（左栏 + 正文），目录/搜索/批注/笔记/公式/插图/术语/任务合并进同一栏，
 顶部一排带计数的图标页签切换；窄屏（<1100px）用工具栏按钮弹出同一栏。
 左栏宽度**可拖拽**（220~360px，双击复位），按论文存 `localStorage: pm.reader.aside-w.<paperId>`。
+**「解读」不在这条左栏里**：它是**右侧悬浮面板**（工具栏「解读」按钮开关、浮在正文之上、
+**不挤压正文**、宽度可拖拽 320~720px、双击复位；按论文存 `pm.reader.insight-w.<paperId>` 与
+`pm.reader.insight-open.<paperId>`），面板内部自己滚动，**整页不出现滚动条**。
 
 
 ## 3. 翻译 / 转录（§20.3）—— 两路并发，复核模式已移除
@@ -182,7 +185,7 @@ reasoning_tokens, cache_hit_tokens, cache_miss_tokens)` / `elapsed_s` / `schedul
 | POST | `/papers/{id}/understand` | 触发理解：`{"paths":["a","b"],"force":false}`。**两路各一个任务、真并发**；幂等（同类进行中任务复用）。`force=false`（默认）时已有结果直接返回库里那份。前置条件：**已建索引** —— 没有可理解的 chunk 时 400 |
 | GET | `/papers/{id}/understanding` | 取结果：`?path=a\|b` 取一路；不传则两路一起返回 `{paper_id, a, b, done}` |
 | GET | `/papers/{id}/understanding/status` | `{a:{done,updated_at}, b:{...}, chunk_ready}`（前端按钮与"能不能理解"的判断） |
-| GET | `/papers/{id}/related?page=N&tolerance=1` | 与某页相关的概念（阅读器左栏「解读」**跟随阅读位置**用）。命中判据：概念的引用里有 chunk 落在本页 ±`tolerance`。没有解读结果时返回空列表，不报错（前端静默退回全篇概念） |
+| GET | `/papers/{id}/related?page=N&tolerance=1` | 与某页相关的概念。**这个接口是给知识库用的**（"读到这一页时相关的知识"），**阅读器不再调用它**。命中判据：概念的引用里有 chunk 落在本页 ±`tolerance`。没有解读结果时返回空列表，不报错 |
 
 **单路结果字段**：`paper_id / path / label / markdown / refs / refs_resolved / stale_refs /
 invalid_refs / cross_road_refs / refs_ok / missing_concept_refs / model / updated_at /
@@ -198,7 +201,7 @@ prompt_tokens / completion_tokens / inventory_size / inventory / concepts`。
 
 | | A 路（`path=a`，英文侧） | B 路（`path=b`，中文侧） |
 |---|---|---|
-| 任务 | **技术解剖**：问题与假设 / 方法链条 / 公式与符号的作用 / 正确性与证明骨架 / 实验 / 复现要点 / 局限与可疑之处 | **阅读地图**：一句话概括 / **相关概念** / 推荐阅读顺序 / 读前须知 / 难点 / 与其他工作的关系 |
+| 任务 | **论文精读**：基本信息 / 背景与问题 / 动机与 gap / **贡献与创新点** / 方法 / 实验 / 结论、局限与启发 | **阅读地图**：一句话概括 / **相关概念（补充的相关知识，放最前）** / 推荐阅读顺序 / 读前须知 / 难点 / 与其他工作的关系 |
 | 材料 | 本路 + 共用 chunk 的 `en` / `any` 行（`unit`/`formula`/`figure`/`table`） | 本路 + 共用 chunk 的 `zh` / `any` 行 |
 
 **引用写法**：`（来源 Chunk: B023）`，只许引**本路**短码。理解阶段**允许**动用通用知识、不强制区分
@@ -318,7 +321,7 @@ curl.exe -N "$Base/papers/my-paper/translations/stream"
 (Invoke-RestMethod "$Base/papers/my-paper/translations?since_page=3").data.items.Count
 
 # ---- 第二阶段「论文理解」（前置：已建索引）----
-# 两路各一个任务：A 技术解剖 / B 阅读地图与相关概念
+# 两路各一个任务：A 论文精读（含创新点） / B 阅读地图与相关概念
 $u = (Invoke-RestMethod -Method Post "$Base/papers/my-paper/understand" `
       -ContentType "application/json" -Body '{"paths":["a","b"]}').data
 $u.task_ids
