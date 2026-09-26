@@ -3,7 +3,7 @@
 用户口径逐条钉住：
 
 - ⑤ 理解提示词**不是**翻译提示词（必须在翻译之后作为第二阶段注入）；
-- ⑥ 两路任务**不同**（A 技术解剖 / B 阅读地图 + 相关概念）；
+- ⑥ 两路任务**不同**（A 论文精读 + 创新点 / B 阅读地图 + 相关概念）；
 - ⑦ 结果是**自由 Markdown**（模型增删合并小节合法，不按 schema 校验）；
 - ⑧ **相关概念由中文路（B）产出**并引用自己的短码；
 - ④ chunk 是引用基准单位（`来源 Chunk: B023` → 落库解析回真正的 chunk id）。
@@ -24,13 +24,14 @@ from backend.services.understanding import prompts, understanding_service as us
 def test_two_paths_do_different_things() -> None:
     a, b = prompts.UNDERSTAND_A_SYSTEM, prompts.UNDERSTAND_B_SYSTEM
     assert a != b
-    assert "技术解剖" in a
+    assert "论文精读" in a
     assert "阅读地图" in b
     # 相关概念是**中文路专属**（用户 ⑧）
     assert "相关概念" in b
     assert "相关概念" not in a
-    # A 侧要的是可复现性判断，B 侧要的是带人读
-    for word in ("假设", "方法链条", "复现要点", "局限"):
+    # A 路 = 精读框架，且**论文创新点放在这一路**（它要覆盖的方面比 B 少，放得下；
+    # 用户看过真实结果后把原"技术解剖"判定为与阅读地图重复，见 prompts.py 顶部）
+    for word in ("基本信息", "背景与问题", "动机与 gap", "贡献与创新点", "局限与启发"):
         assert word in a
     for word in ("推荐阅读顺序", "难点", "读之前需要知道的"):
         assert word in b
