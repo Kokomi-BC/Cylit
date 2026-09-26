@@ -160,12 +160,15 @@ async def reconcile(paper_id: str, request: Request):
 @router.post("/papers/{paper_id}/translate")
 async def trigger_translate(paper_id: str, request: Request,
                             payload: dict = Body(default={})):
-    """触发产线 A 翻译（**逐页**：每页一次调用，同时产出原文与译文）。
+    """触发页级任务（默认**两路并发**：A 路英文转录 + B 路中文翻译）。
 
-    - ``mode=resume``（默认）：只翻还没有产物的页（断点续跑）；
+    - ``paths=["a","b"]``（默认）：两路各一个任务，**同时跑**；
+      ``["b"]`` = 只补中文翻译；``["a"]`` = 只补英文转录；
+      ``["fused"]`` = 融合模式（同一次调用产出两侧，**对照臂 / 回滚**用）；
+    - ``mode=resume``（默认）：只做还没有产物的页（断点续跑）；
     - ``mode=retranslate``：忽略已有产物全部重来；
-    - ``brief=false`` 关闭文档简报（少一次调用，但术语一致性下降）；
-    - ``pages=[3,4]`` 只翻指定页（重跑个别页用）。
+    - ``brief=false`` 关闭文档简报（少一次调用，但 B 路术语一致性下降；A 路本来就不用）；
+    - ``pages=[3,4]`` 只做指定页（重跑个别页用）。
     """
     mode = payload.get("mode") or "resume"
     if mode not in ("resume", "retranslate", "retry_failed"):
@@ -173,6 +176,7 @@ async def trigger_translate(paper_id: str, request: Request,
     if mode == "retry_failed":
         mode = "resume"
     pages = payload.get("pages") or None
+    paths = payload.get("paths") or ["a", "b"]
 
     # 还没解析（没有页图）→ 解析是翻译的前置步骤，这里替用户串起来。
     # 只有**用户点了「翻译」**才会走到这里（导入时的自动解析不会串，见 §"解析完不自动翻译"），
@@ -193,12 +197,18 @@ async def trigger_translate(paper_id: str, request: Request,
             msg = "这篇论文还没解析：已创建解析任务，完成后自动开始翻译"
         return envelope(running, message=msg, request=request)
 
-    task = translation_service.start_translation(
-        paper_id, mode=mode, force=bool(payload.get("force")),
+    result = translation_service.start_translation(
+        paper_id, paths=list(paths), mode=mode, force=bool(payload.get("force")),
         brief=payload.get("brief", True),
         pages=[int(p) for p in pages] if pages else None,
     )
-    return envelope(task, message="已创建逐页翻译任务（产线 A）", request=request)
+    roads = "、".join({"a": "英文转录", "b": "中文翻译",
+                       "fused": "融合（对照）"}.get(p, p)
+                      for p in result["paths"])
+    return envelope(result,
+                    message=(f"已沿用已有任务（{roads}）" if result["reused"]
+                             else f"已创建页级任务（{roads}）"),
+                    request=request)
 
 
 @router.post("/papers/{paper_id}/metadata/auto")

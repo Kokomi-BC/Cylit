@@ -147,9 +147,45 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
     if not (has_a or has_b or legacy_pages):
         return [], "none"
     shape = "paths" if (has_a and has_b) else ("mixed" if (has_a or has_b) else "legacy")
+    _backfill_from_legacy(a_pages, b_pages, legacy_pages)
+    out: list[dict] = []
+    for page in sorted(set(a_pages) | set(b_pages)):
+        merged = _merge_page(paper_id, page, a_pages.get(page) or {},
+                             b_pages.get(page) or {},
+                             legacy_pages.get(page) or {}, shape)
+        if merged is not None:
+            out.append(merged)
+    return out, shape
 
-    # 旧产物补齐缺失的一侧：legacy = 两侧都补；mixed = 只补没跑的那一路。
-    # 用 `setdefault`：**任何情况下都不覆盖两路自己的产物**。
+
+def merged_page(paper_id: str, page: int) -> dict | None:
+    """**单页**的合并读模型（与 `page_products` 的同一页逐字段一致）。
+
+    为什么要单独给一页：两路并发时 `page_translated` / `page_transcribed` 是**逐页**上线的，
+    SSE 的 payload 必须带上那一页已经合并好的 `rows` —— 单路产物里没有行，直接把
+    `payload["rows"]`（空）发给前端会把那一页的行**清空**。这里复用同一套合并逻辑，
+    保证"实时收到的行"和"刷新后拿到的行"完全一致。
+    """
+    a_store, b_store = load_path_stores(paper_id)
+    a_pages, b_pages = a_store.all_pages(), b_store.all_pages()
+    has_a, has_b = bool(a_pages), bool(b_pages)
+    legacy_pages = load_page_store(paper_id).all_pages()
+    if not (has_a or has_b or legacy_pages):
+        return None
+    shape = "paths" if (has_a and has_b) else ("mixed" if (has_a or has_b) else "legacy")
+    _backfill_from_legacy(a_pages, b_pages, legacy_pages)
+    page = int(page)
+    if page not in a_pages and page not in b_pages:
+        return None
+    return _merge_page(paper_id, page, a_pages.get(page) or {},
+                       b_pages.get(page) or {}, legacy_pages.get(page) or {}, shape)
+
+
+def _backfill_from_legacy(a_pages: dict, b_pages: dict, legacy_pages: dict) -> None:
+    """旧产物补齐缺失的一侧：legacy = 两侧都补；mixed = 只补没跑的那一路。
+
+    用 `setdefault`：**任何情况下都不覆盖两路自己的产物**。
+    """
     for page, payload in legacy_pages.items():
         a_pages.setdefault(page, {
             "original_md": payload.get("original_md") or "",
@@ -167,59 +203,57 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
             "updated_at": payload.get("updated_at"),
         })
 
-    out: list[dict] = []
-    for page in sorted(set(a_pages) | set(b_pages)):
-        a = a_pages.get(page) or {}
-        b = b_pages.get(page) or {}
-        original_md = str(a.get("original_md") or "")
-        translation_md = str(b.get("translation_md") or "")
-        if not original_md and not translation_md:
-            continue                       # 两侧都空的页不产生一页（与旧 done 判据一致）
-        fresh_rows, quality = pair_rows(original_md, translation_md, page)
-        stored = legacy_pages.get(page) or {}
-        rows = [dict(r) for r in fresh_rows]
-        if shape != "paths" and stored.get("rows"):
-            keep_stored = not (
-                fresh_rows
-                and (str(stored.get("align") or "") == "structure"
-                     or len(fresh_rows) == len(stored.get("rows") or [])))
-            if keep_stored:
-                rows = [dict(r) for r in stored["rows"]]
-        if rows:
-            flags = page_continuity(paper_id, page)
-            mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
-        # 两路锚点合成**一次**校验：`apply_semantic_breaks` 逐条独立判定，英文锚点落在原文侧、
-        # 中文锚点落在译文侧（`_locate_anchor` 先原文后译文），并集天然成立 —— 不需要"按路存标记"。
-        # `normalize_breaks` 负责把 v1 的纯字符串数组（存量产物）与 v2 的对象数组统一成同一种形状。
-        breaks_a = normalize_breaks(a.get("breaks"))
-        breaks_b = normalize_breaks(b.get("breaks"))
-        break_stats = apply_semantic_breaks(rows, breaks_a + breaks_b)
-        page_total = (int(a.get("page_total") or 0) or int(b.get("page_total") or 0)
-                      or int(stored.get("page_total") or 0))
-        out.append({
-            "page": page,
-            "page_total": page_total,
-            "original_md": original_md,
-            "translation_md": translation_md,
-            "rows": rows,
-            "breaks": breaks_a + breaks_b,
-            # 按路分开的原始锚点：分块层要用**自己那一路**的锚点（A 划英文、B 划中文）
-            "breaks_a": breaks_a,
-            "breaks_b": breaks_b,
-            "break_stats": break_stats,
-            # 旧形态沿用存下来的质量标记（与改造前逐字一致）；两路形态用现算的合并质量
-            "align": str(stored.get("align") or "") or quality,
-            "model": (a.get("model") or b.get("model") or stored.get("model") or ""),
-            "updated_at": (a.get("updated_at") or b.get("updated_at")
-                           or stored.get("updated_at")),
-            # ---- 两路专属诊断（前端不用；对齐门限报告与回归用）----
-            "source": shape,
-            "sides": {"a": bool(original_md.strip()), "b": bool(translation_md.strip())},
-            "one_sided": sum(1 for r in rows
-                             if bool((r.get("original") or "").strip())
-                             != bool((r.get("translation") or "").strip())),
-        })
-    return out, shape
+
+def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
+                shape: str) -> dict | None:
+    """把**一页**的两侧产物合并成读模型；两侧都空时返回 None（不产生一页）。"""
+    original_md = str(a.get("original_md") or "")
+    translation_md = str(b.get("translation_md") or "")
+    if not original_md and not translation_md:
+        return None                        # 两侧都空的页不产生一页（与旧 done 判据一致）
+    fresh_rows, quality = pair_rows(original_md, translation_md, page)
+    rows = [dict(r) for r in fresh_rows]
+    if shape != "paths" and stored.get("rows"):
+        keep_stored = not (
+            fresh_rows
+            and (str(stored.get("align") or "") == "structure"
+                 or len(fresh_rows) == len(stored.get("rows") or [])))
+        if keep_stored:
+            rows = [dict(r) for r in stored["rows"]]
+    if rows:
+        flags = page_continuity(paper_id, page)
+        mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
+    # 两路锚点合成**一次**校验：`apply_semantic_breaks` 逐条独立判定，英文锚点落在原文侧、
+    # 中文锚点落在译文侧（`_locate_anchor` 先原文后译文），并集天然成立 —— 不需要"按路存标记"。
+    # `normalize_breaks` 负责把 v1 的纯字符串数组（存量产物）与 v2 的对象数组统一成同一种形状。
+    breaks_a = normalize_breaks(a.get("breaks"))
+    breaks_b = normalize_breaks(b.get("breaks"))
+    break_stats = apply_semantic_breaks(rows, breaks_a + breaks_b)
+    page_total = (int(a.get("page_total") or 0) or int(b.get("page_total") or 0)
+                  or int(stored.get("page_total") or 0))
+    return {
+        "page": page,
+        "page_total": page_total,
+        "original_md": original_md,
+        "translation_md": translation_md,
+        "rows": rows,
+        "breaks": breaks_a + breaks_b,
+        # 按路分开的原始锚点：分块层要用**自己那一路**的锚点（A 划英文、B 划中文）
+        "breaks_a": breaks_a,
+        "breaks_b": breaks_b,
+        "break_stats": break_stats,
+        # 旧形态沿用存下来的质量标记（与改造前逐字一致）；两路形态用现算的合并质量
+        "align": str(stored.get("align") or "") or quality,
+        "model": (a.get("model") or b.get("model") or stored.get("model") or ""),
+        "updated_at": (a.get("updated_at") or b.get("updated_at")
+                       or stored.get("updated_at")),
+        # ---- 两路专属诊断（前端不用；对齐门限报告与回归用）----
+        "source": shape,
+        "sides": {"a": bool(original_md.strip()), "b": bool(translation_md.strip())},
+        "one_sided": sum(1 for r in rows
+                         if bool((r.get("original") or "").strip())
+                         != bool((r.get("translation") or "").strip())),
+    }
 
 
 def page_translations(paper_id: str) -> list[dict]:

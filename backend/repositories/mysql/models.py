@@ -25,9 +25,11 @@ TASK_STATUSES = (
     "pending", "processing", "paused", "completed", "failed", "cancelled",
 )
 # 任务类型
+# `TRANSCRIBE_EN` = A 路英文转录、`TRANSLATE_ZH` = B 路中文翻译（两路各一个任务类型，
+# 幂等与任务面板才分得清是哪一路在跑）；`TRANSLATE_MD` 是融合模式（对照臂 / 回滚）。
 TASK_TYPES = (
-    "IMPORT", "PARSE", "TRANSLATE_MD", "TRANSLATE_PDF", "EMBED", "INDEX",
-    "ANALYZE", "AI_READING", "RECONCILE",
+    "IMPORT", "PARSE", "TRANSLATE_MD", "TRANSCRIBE_EN", "TRANSLATE_ZH",
+    "TRANSLATE_PDF", "EMBED", "INDEX", "ANALYZE", "AI_READING", "RECONCILE",
 )
 # 队列（三条产线，规划 §3）
 TASK_QUEUES = ("md", "pdf", "knowledge", "system")
@@ -59,6 +61,10 @@ class Paper(Base, TimestampMixin):
 
     translate_done: Mapped[int] = mapped_column(Integer, default=0)
     translate_total: Mapped[int] = mapped_column(Integer, default=0)
+    # A 路（英文转录）的进度。与 translate_* 分开：两路并发，进度条要能各自显示，
+    # 而 `translate_done` 的口径已经是"中文译文已产出的页数"（见 paper_service.translation_stats）。
+    transcribe_done: Mapped[int] = mapped_column(Integer, default=0)
+    transcribe_total: Mapped[int] = mapped_column(Integer, default=0)
     analyze_done: Mapped[int] = mapped_column(Integer, default=0)
     analyze_total: Mapped[int] = mapped_column(Integer, default=0)
     pdf_translate_done: Mapped[int] = mapped_column(Integer, default=0)

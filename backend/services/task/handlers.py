@@ -108,17 +108,18 @@ def handle_parse(ctx: TaskContext) -> dict:
 
 
 def _chain_translate(paper_id: str) -> None:
-    """解析完成后自动接着开一个逐页翻译任务。
+    """解析完成后自动接着开**两路**页级任务。
 
     走 `translation_service.start_translation` 而不是裸 `task_service.create`：
-    它带"已有活动任务就复用"的幂等判断（否则会重复建两个翻译任务）。
+    它带"每一路已有活动任务就复用"的幂等判断（否则会重复建两条同路的任务）。
     """
     from backend.services.translation import translation_service
 
     try:
         task = translation_service.start_translation(paper_id, mode="resume")
-        log.info("解析完成 → 自动开始逐页翻译：%s（任务 %s%s）", paper_id,
-                 task.get("id"), "，复用已有任务" if task.get("reused") else "")
+        log.info("解析完成 → 自动开始两路页级任务：%s（任务 %s%s）", paper_id,
+                 "、".join(task.get("task_ids") or []),
+                 "，复用已有任务" if task.get("reused") else "")
     except Exception as exc:  # noqa: BLE001
         log.warning("解析完成后的自动翻译没能启动：%s", exc)
 
@@ -218,12 +219,23 @@ def _set_status(paper_id: str, status: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# TRANSLATE_MD：产线 A（实现在 translation_service）
+# TRANSLATE_MD / TRANSCRIBE_EN / TRANSLATE_ZH：页级任务（实现在 translation_service）
 # --------------------------------------------------------------------------
 
 
 def handle_translate_md(ctx: TaskContext) -> dict:
+    """融合模式（同一次调用产出原文 + 译文）：对照臂 / 回滚用。"""
     return translation_service.run_translate_task(ctx)
+
+
+def handle_transcribe_en(ctx: TaskContext) -> dict:
+    """A 路：英文转录（只产出 `original_md`）。"""
+    return translation_service.run_path_task(ctx, "a")
+
+
+def handle_translate_zh(ctx: TaskContext) -> dict:
+    """B 路：中文翻译（只产出 `translation_md` + `carry_md`）。"""
+    return translation_service.run_path_task(ctx, "b")
 
 
 # --------------------------------------------------------------------------
@@ -292,6 +304,9 @@ def register_all() -> None:
     task_runner.register("IMPORT", handle_import)
     task_runner.register("PARSE", handle_parse)
     task_runner.register("TRANSLATE_MD", handle_translate_md)
+    # 两路并发：各一个任务类型，幂等/取消/续跑/任务面板都分得清是哪一路
+    task_runner.register("TRANSCRIBE_EN", handle_transcribe_en)
+    task_runner.register("TRANSLATE_ZH", handle_translate_zh)
     task_runner.register("EMBED", handle_embed)
     task_runner.register("INDEX", handle_index)
     task_runner.register("RECONCILE", handle_reconcile)

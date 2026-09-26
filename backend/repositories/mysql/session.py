@@ -42,6 +42,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("reading_progress", "zoom", "`zoom` FLOAT NULL"),
     # 对照 + 原 PDF 时右侧文字列放哪一侧（zh 译文 / en 原文）
     ("reading_progress", "page_side", "`page_side` VARCHAR(4) NOT NULL DEFAULT 'zh'"),
+    # A 路（英文转录）的进度：与 translate_done/translate_total 分开记，两路并发时各自显示。
+    # 默认值必须给：老库里的既有行要落到 0，而不是 NULL（读出来就是 None，前端显示成空白）。
+    ("paper", "transcribe_done", "`transcribe_done` INT NOT NULL DEFAULT 0"),
+    ("paper", "transcribe_total", "`transcribe_total` INT NOT NULL DEFAULT 0"),
 )
 
 

@@ -218,27 +218,44 @@ def set_translate_progress(paper_id: str, *, done: int, total: int) -> None:
     为什么必须实时写：论文库卡片上的进度条读的就是 `translate_done/translate_total`。
     以前只在任务**结束时**才回写，于是翻译跑到一半卡片还停在旧数字（用户报"已完成一半但未显示进度"）。
     """
+    _set_page_progress(paper_id, done=done, total=total,
+                       road="translate")
+
+
+def set_transcribe_progress(paper_id: str, *, done: int, total: int) -> None:
+    """A 路（英文转录）**进行中**的轻量写回；字段独立于 translate_*。"""
+    _set_page_progress(paper_id, done=done, total=total, road="transcribe")
+
+
+def _set_page_progress(paper_id: str, *, done: int, total: int, road: str) -> None:
+    done_col = f"{road}_done"
+    total_col = f"{road}_total"
     with session_scope() as sess:
         row = sess.get(Paper, paper_id)
         if row is None or row.deleted_at is not None:
             return
-        row.translate_done = max(0, int(done))
+        setattr(row, done_col, max(0, int(done)))
         if total:
-            row.translate_total = int(total)
-        if row.status != "failed" and row.translate_done < (row.translate_total or 0):
+            setattr(row, total_col, int(total))
+        if (road == "translate" and row.status != "failed"
+                and row.translate_done < (row.translate_total or 0)):
             row.status = "translating"
         sess.flush()
 
 
 def refresh_progress_counters(paper_id: str) -> dict:
-    """按 MySQL 与 Markdown 的真实状态回写论文进度字段（服务端权威）。"""
+    """按磁盘的真实状态回写论文进度字段（服务端权威）：两路各写自己的那对计数器。"""
     stats = translation_stats(paper_id)
+    tr = transcription_stats(paper_id)
     with session_scope() as sess:
         row = sess.get(Paper, paper_id)
         if row is None:
             raise NotFoundError(f"论文不存在：{paper_id}")
         row.translate_total = stats["total"]
         row.translate_done = stats["done"]
+        row.transcribe_total = tr["total"]
+        row.transcribe_done = tr["done"]
+        # 状态机只按"论文能不能读"来定：中文译文齐了才算 `translated`（A 路单独完成不算）
         if stats["total"] and stats["done"] >= stats["total"]:
             row.status = "translated"
         elif stats["done"] > 0:
@@ -255,15 +272,28 @@ def translation_stats(paper_id: str) -> dict:
     `Paper.transcribe_done`）。旧格式（`pages.json`，同一次调用产出两侧）两种口径等价 ——
     因为旧产物里"有行"必然意味着"有译文"（`call_page` 缺任一侧面都会报错重试）。
     """
+    return _page_progress(paper_id, "path_b", "page_products")
+
+
+def transcription_stats(paper_id: str) -> dict:
+    """A 路（英文转录）进度：优先 `md/path_a.json`，没有就退回旧合并产物。
+
+    与 `translation_stats` 分开是刻意的：两路各自落盘、各自续跑，进度也各算各的
+    （否则"只跑完 A 路"会显示成"翻译完成"）。存量论文的英文内容在 `pages.json` 里，
+    所以退回旧产物后是 `22/22` —— 那才是事实（阅读器现在读到的英文就是它）。
+    """
+    return _page_progress(paper_id, "path_a", "page_products")
+
+
+def _page_progress(paper_id: str, primary: str, fallback: str | None) -> dict:
     from backend.services.translation.page_translate import PageStore, list_pages
 
     paths = paper_paths(paper_id)
     total = len(list_pages(paper_id))
-    store = PageStore(paper_id, paths["path_b"])
+    store = PageStore(paper_id, paths[primary])         # 只读，version 无关紧要
     done = len(store.done_pages())
-    if not done:
-        # 没有 B 路产物 → 退回旧格式（存量论文 / 只跑过融合调用的论文）
-        legacy = PageStore(paper_id, paths["page_products"])
+    if fallback and not done:
+        legacy = PageStore(paper_id, paths[fallback])
         done = len(legacy.done_pages())
         total = total or int(legacy.stats().get("page_total") or 0)
     else:
@@ -488,6 +518,9 @@ def _to_dict(row: Paper) -> dict:
         "venue": row.venue, "year": row.year, "page_count": row.page_count,
         "status": row.status, "tags": [t for t in (row.tags or "").split(",") if t],
         "translate_done": row.translate_done, "translate_total": row.translate_total,
+        # A 路（英文转录）的进度：与 translate_* 并列，两路并发时前端能各自显示
+        "transcribe_done": row.transcribe_done,
+        "transcribe_total": row.transcribe_total,
         "analyze_done": row.analyze_done, "analyze_total": row.analyze_total,
         "pdf_translate_done": row.pdf_translate_done,
         "pdf_translate_total": row.pdf_translate_total,

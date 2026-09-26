@@ -4197,3 +4197,94 @@ P1 把**读**模型备好了，这一步备**写**的契约。关键难点只有
 `frontend/src/composables/useMarkdown.ts:45` 的注释指向 `page_translate.SYSTEM_PROMPT`。
 P3 会删掉融合提示词，那句引用就会悬空 —— 但该文件按验收要求（阅读器 ⑦「公式能整体高亮」）
 **保持逐字节不变**，所以留到 P9 一并处理，不在这两轮里动它。
+
+---
+
+### 17.69 第四十八轮（P3）—— 两路真并发：两个任务、两个产物、各写自己那一侧
+
+P1 备好了读模型、P2 备好了写契约，这一步把**两条流水线真的跑起来**。
+
+#### 一个函数、两个分支（不复制一份代码）
+
+`run_translate_task(ctx)` → `run_path_task(ctx, path=None)`：`path=None` 融合、`"a"` 英文转录、
+`"b"` 中文翻译。两路的差别**只有 8 处**，全部在同一个函数里显式分叉：
+
+| | 融合 `None` | A 路 `"a"` | B 路 `"b"` |
+|---|---|---|---|
+| 产物文件 | `md/pages.json` | `md/path_a.json` | `md/path_b.json` |
+| system prompt | `SYSTEM_PROMPT` | `TRANSCRIBE_SYSTEM` | `TRANSLATE_SYSTEM` |
+| 稳定前缀 | 简报+术语表+骨架 | **只有骨架** | 简报+术语表+骨架 |
+| 【下一页开头】 | 给 | **不给** | 给 |
+| `carry_md` 去重 | 用 | **不用** | 用 |
+| 行产物 | 存 `rows` | 不存行 | 不存行 |
+| SSE 事件 | `page_translated` | `page_transcribed` | `page_translated`（带 `path`） |
+| 进度字段 | `translate_done` | `transcribe_done` | `translate_done` |
+
+融合模式**保留**：它既是回滚臂，也是"同一次调用 vs 两路并发"这条对照实验的另一半
+（存量两篇论文的 `pages.json` 就是它产出的，INDEX 里的 v57/v52 就是它的索引）。
+`run_translate_task` 变成一行转发，CLI / 自检脚本 / 三个 `scripts/*.py` 照旧可用。
+
+**两路并发的确切含义**：并发是**路与路之间**，路内页序仍然串行 —— 串行才能保证第 N 页拿到
+第 1..N-1 页的完整前文，从而命中前缀缓存（`core/config.py` 的顺序设置就是这么定的）。
+两路各自维护自己的前文与缓存前缀，所以并发不影响任何一路的命中率。
+`task_worker_count` 2 → **3**（两路各占一个，第三个留给解析/索引/对账）。
+
+#### 实机验证（非演示论文 `scan-test-figures`，不污染两篇回归论文）
+
+```
+t=0.0s  TRANSCRIBE_EN pending 0/1 ｜ TRANSLATE_ZH pending 0/1
+t=3.0s  TRANSCRIBE_EN processing 0/1 ｜ TRANSLATE_ZH processing 0/1   ← 同刻开始
+t=12.1s TRANSCRIBE_EN completed 1/1   ｜ TRANSLATE_ZH processing 0/1
+t=24.2s TRANSCRIBE_EN completed 1/1   ｜ TRANSLATE_ZH completed 1/1
+```
+
+- 两路**确实同时处于 processing**（3.0s ~ 12.1s 全程重叠）；
+- A 路 9.1s、B 路 26.8s —— 单页成本与 P2 彩排（16.9s / 25.9s）同量级；
+- `GET /reader`：该页 `source=paths`、`align=**exact**`、12 行、`breaks_a 5 / breaks_b 4`、
+  `one_sided 2` —— **两路独立产出，块结构仍然对上了**（P4 要量的东西，先看到一个好信号）。
+
+#### SSE 的 `rows` 必须是**已合并**的那一页
+
+改这一处是因为发现了一个真会咬人的问题：单路产物里**没有行**（A 件只有 `original_md`），
+如果照旧把 `payload["rows"]`（空）发出去，前端 `applyPage` 会把那一页的行**清空**。
+现在 `emit` 对两路调 `reader_service.merged_page(paper_id, page)`（单页合并，很便宜），
+发出去的就是"下次刷新会拿到的同一份行"。实机验证：
+
+```
+event=page_translated {'page': 2, 'path': 'b', 'rows': 5, 'align': 'exact', 'done': 1, 'total': 3}
+```
+
+顺带把 `page_products` 里的单页合并逻辑抽成 `_merge_page`，`page_products` 与 `merged_page`
+**共用同一个实现** —— 否则"实时收到的行"和"刷新后的行"迟早会不一致（有单测钉住两者逐字段相等）。
+
+> P8 待办：前端目前只订阅 `page_translated`，`page_transcribed` 会被忽略。既然 payload 里
+> 已经是合并好的行，P8 只需把事件名加进订阅列表，A 路的进度也就可见了。
+
+#### 顺手修的两个真问题
+
+1. **任务面板分母被写回全篇**：`_target_count` 明明按"指定页数"算了初始 `total_items`，
+   但 `ctx.progress(done, page_total)` 里 `total_items = max(...)` 又把它盖回全篇 ——
+   于是"重跑第 1、2 页"的任务显示成 `x/22`。现在任务面板用 **scoped 口径**
+   （`scope_total` / `scoped_done()`），论文卡片仍用**全篇口径**（两者本来就是不同的数，
+   混用必然有一个在说谎）。实测 1 页任务显示 `1/1`。
+2. **`PageStore.stats()["pages_done"]` 认不出 A 路产物**（判据里没有 `original_md`）：
+   A 件会被算成"0 页完成"，从而**反复重跑**。`stats()` 改成直接复用 `done_pages()`，
+   一条判据两处用 —— 有单测钉住 A 件 `done_pages() == [2]`、`stats()["pages_done"] == 1`。
+
+#### 迁移与兼容
+
+`Paper` 新增 `transcribe_done/transcribe_total`，走现成的 `_ADDED_COLUMNS` + `ensure_columns`
+（MySQL 的 `create_all` 不会给既有表补列），实测 `INT NOT NULL DEFAULT 0`、幂等。
+`_to_dict` 暴露这两个字段。存量论文的 A 路口径会退回 `pages.json`（那里有英文原文），
+所以刷新后两篇演示论文如实显示 `transcribe=22/22`、`translate=22/22`、`status=translated`。
+
+#### 验收
+
+| 检查 | 结果 |
+|---|---|
+| 真并发 | 两路同刻 `processing`，全程重叠（见上表） |
+| 按路幂等 / 融合互斥 / 僵尸任务 | 有离线单测（`tests/test_two_path_tasks.py` 21 个） |
+| 单路产物只写自己那一侧 | 有离线单测：A 件无 `translation_md`/`carry_md`、B 件无 `original_md`、两者都无 `rows`/`align` |
+| 单页合并一致 | `merged_page` == `page_products` 的同一页（逐字段） |
+| `pytest tests` | 463 → **485 通过 / 1 跳过**（+22） |
+| `frontend_check.py` | **87/87、0 失败** |

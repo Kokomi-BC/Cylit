@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from backend.core.errors import ProviderError
+from backend.core.errors import ProviderError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import (
     json_loads, now_iso, read_json, sha256_text, write_json,
@@ -1492,6 +1492,45 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
     }
 
 
+def build_path_payload(*, path: str, page: int, page_total: int,
+                       result: PageCallResult, source_chars: int = 0,
+                       cached: bool = False) -> dict:
+    """**一路**的页产物：A 只存 `original_md`，B 只存 `translation_md` + `carry_md`。
+
+    为什么**不存 `rows`**：单路只有一侧内容，存下来的"行"必然全是单侧行；两路各存一份
+    还会互相矛盾（谁说了算？）。行由 `reader_service.page_products` 在**读时**把两路合并出来
+    —— 那里同时看得到两侧，`pair_rows` 才谈得上对齐。
+
+    也不存 `align`：那是"两侧配得准不准"的度量，单路没有意义。读时算出来的合并质量
+    才是前端要的那个数。
+    """
+    if path not in PATHS:
+        raise ValidationError(f"未知的路：{path!r}（只能是 'a' / 'b'）")
+    payload = {
+        "page": page,
+        "page_total": page_total,
+        "path": path,
+        # 锚点**原样留档**（v2 对象数组）：行是读时重算的，锚点要能重新落回新行上
+        "breaks": list(result.breaks),
+        "model": result.model,
+        "prompt_tokens": result.prompt_tokens,
+        "completion_tokens": result.completion_tokens,
+        "reasoning_tokens": result.reasoning_tokens,
+        "latency_ms": round(result.latency_ms, 1),
+        "max_tokens": result.max_tokens,
+        "source_chars": source_chars,
+        "cached": cached,
+        "updated_at": now_iso(),
+    }
+    if path == "a":
+        payload["original_md"] = result.original_md
+    else:
+        payload["translation_md"] = result.translation_md
+        # `carry_md` 是翻译侧独有的：本页从【下一页开头】借走的那段原文，下一页用它去重
+        payload["carry_md"] = result.carry_md
+    return payload
+
+
 class PageStore:
     """页级产物文件的读写（逐页原子落盘 → 中断可续跑）。
 
@@ -1568,8 +1607,14 @@ class PageStore:
         return dict(self._load()["pages"])
 
     def done_pages(self) -> list[int]:
+        """已有产物的页。
+
+        判据要同时认两侧：融合模式看 `rows` / `translation_md`，**A 路产物只有 `original_md`**
+        （两路拆开后每路只存自己那一侧），漏掉它会让"已转录的页"永远算没做完、反复重跑。
+        """
         return sorted(p for p, v in self._load()["pages"].items()
-                      if (v.get("rows") or v.get("translation_md")))
+                      if (v.get("rows") or v.get("translation_md")
+                          or v.get("original_md")))
 
     def set_page_total(self, total: int) -> None:
         with self._lock:
@@ -1584,8 +1629,9 @@ class PageStore:
         rows = sum(len(v.get("rows") or []) for v in pages.values())
         return {
             "page_total": int(data.get("page_total") or 0),
-            "pages_done": len([p for p, v in pages.items()
-                               if (v.get("rows") or v.get("translation_md"))]),
+            # 与 `done_pages()` 共用同一条判据（含 `original_md`：A 路产物只有原文，
+            # 漏掉它会让"已转录的页"既算不出完成、又反复重跑）
+            "pages_done": len(self.done_pages()),
             "pages_failed": len([p for p, v in pages.items() if v.get("error")]),
             "rows": rows,
             "model": data.get("model") or "",

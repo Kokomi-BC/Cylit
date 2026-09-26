@@ -80,7 +80,9 @@ class Settings(BaseSettings):
     translate_max_context_chars: int = 1200
 
     # ---------- 任务系统 ----------
-    task_worker_count: int = 2
+    # 3 = 两路页级任务（TRANSCRIBE_EN / TRANSLATE_ZH）各占一个 worker，第三个留给
+    # 解析 / 索引 / 对账 —— 设成 2 的话两路一开，索引任务就得排在后面等。
+    task_worker_count: int = 3
     task_poll_interval: float = 0.8
     task_lease_seconds: int = 120
     task_max_retries: int = 2

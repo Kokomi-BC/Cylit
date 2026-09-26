@@ -211,6 +211,27 @@ def test_no_products_at_all(paths) -> None:
     assert reader_service.page_products(PAPER) == ([], "none")
 
 
+def test_merged_page_matches_page_products(paths) -> None:
+    """`merged_page`（逐页 SSE 用）必须与 `page_products` 的同一页**逐字段一致**。
+
+    SSE 的 `rows` 就是它 —— 不一致的话，"实时长出来的页"和"刷新后看到的页"会不一样。
+    """
+    write(paths["path_a"], {1: {
+        "page": 1, "page_total": 2,
+        "original_md": "# 1 Method\n\nWe define the estimator.\n\nThe bound holds.",
+        "breaks": [{"start": "The bound holds.", "type": "method"}], "model": "a",
+    }}, version=PATH_VERSION)
+    write(paths["path_b"], {1: {
+        "page": 1, "page_total": 2,
+        "translation_md": "# 1 方法\n\n我们定义这个估计量。\n\n这个界成立。",
+        "carry_md": "", "breaks": [], "model": "b",
+    }}, version=PATH_VERSION)
+
+    products, _ = reader_service.page_products(PAPER)
+    assert reader_service.merged_page(PAPER, 1) == products[0]
+    assert reader_service.merged_page(PAPER, 9) is None, "不存在的页要返回 None（别造空页）"
+
+
 # --------------------------------------------------------------------------
 # 两路锚点
 # --------------------------------------------------------------------------
