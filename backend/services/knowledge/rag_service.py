@@ -228,31 +228,34 @@ def _expand_units(items: list[dict], *, max_chars: int) -> list[dict]:
     out: list[dict] = []
     for key in order:
         item = dict(groups[key])
-        ids = wanted.get(key) or set()
+        raw_ids = wanted.get(key) or set()
         meta = dict(item.get("metadata") or {})
         meta["_expand_mode"] = mode
-        if not ids:
+        if not raw_ids:
             out.append({**item, "metadata": meta})
             continue
-        # 邻居要取**与命中同一个语种**的行（zh 命中就把 `:zh` 行一起取；缺译文才回退原文行）
+        # 邻居要取**与命中同一个语种**的行（zh 命中就把 `:zh` 行一起取；缺译文才回退另一语言）。
+        # ⚠️ id 必须**先剥掉语言后缀再重新拼**：元数据里的 `prev/next_unit_id` / `parent_chunk_id`
+        # 是**不带**后缀的，而命中的 `chunk_id` 是**带**后缀的 —— 混在一起会拼出 `…:zh:zh`。
+        # 旧实现在这里只对 zh 命中做了 `missing` 兜底，于是 **en 命中的 ±1 邻居一直取不到**
+        # （题库几乎都是中文提问，所以从没暴露；两路拆分后 A 路的命中全是 en，必须修）。
         lang = item.get("lang") or "en"
-        suffix = ":zh" if lang == "zh" else ""
-        fetch: dict[str, str] = {f"{i}{suffix}": i for i in ids}
+        suffix = ":zh" if lang == "zh" else ":en"
+        other = ":en" if suffix == ":zh" else ":zh"
+        bases = {_without_lang(str(i)) for i in raw_ids}
         try:
-            rows = {str(r.get("chunk_id")): r for r in vector_store.get_rows(list(fetch))}
+            fetched = {_without_lang(str(r.get("chunk_id"))): r
+                       for r in vector_store.get_rows([f"{b}{suffix}" for b in bases])}
         except Exception:  # noqa: BLE001 —— 取不到就退回"只用命中单元"
-            rows = {}
-        if suffix:
-            missing = [base for full, base in fetch.items() if full not in rows]
-            if missing:
-                try:
-                    for row in vector_store.get_rows(missing):
-                        rows.setdefault(str(row.get("chunk_id")), row)
-                except Exception:  # noqa: BLE001
-                    pass
-        by_base = {base: rows[full] for full, base in fetch.items() if full in rows}
+            fetched = {}
+        for base in bases - set(fetched):
+            try:
+                for row in vector_store.get_rows([f"{base}{other}"]):
+                    fetched.setdefault(_without_lang(str(row.get("chunk_id"))), row)
+            except Exception:  # noqa: BLE001
+                pass
         # 按"行序"拼（单元 id 形如 `p005-02-p005-03`，用起点行号排序即可）
-        picked = [by_base[i] for i in sorted(ids, key=_unit_sort_key) if i in by_base]
+        picked = [fetched[b] for b in sorted(bases, key=_unit_sort_key) if b in fetched]
         text = "\n\n".join(str(r.get("content") or "").strip() for r in picked
                            if str(r.get("content") or "").strip())
         if not text:
@@ -265,9 +268,25 @@ def _expand_units(items: list[dict], *, max_chars: int) -> list[dict]:
             continue
         # 记**基准单元 id**（`u0` 而不是 `u0:zh`）：语义是"用了哪几条单元"；
         # 实际取的行 id 由 lang 决定（见上面的 suffix），调试时看 content 即可
-        meta["_expanded_units"] = sorted(ids, key=_unit_sort_key)
+        meta["_expanded_units"] = sorted(bases, key=_unit_sort_key)
         out.append({**item, "content": text, "metadata": meta})
     return out
+
+
+#: 入库行 id 末尾的语言后缀（`_variant_row` 加的）
+_LANG_SUFFIXES = (":zh", ":en", ":any")
+
+
+def _without_lang(chunk_id: str) -> str:
+    """剥掉语言后缀：``paper:B:unit:p003-04:zh`` → ``paper:B:unit:p003-04``。
+
+    单元的 `prev/next/parent` 指针存的是**不带后缀**的基准 id，而命中的 `chunk_id`
+    带后缀 —— 两者必须能互相换算，否则拼出来的行 id 是 `…:zh:zh`，取不到任何东西。
+    """
+    for suffix in _LANG_SUFFIXES:
+        if chunk_id.endswith(suffix):
+            return chunk_id[: -len(suffix)]
+    return chunk_id
 
 
 def _unit_sort_key(chunk_id: str):

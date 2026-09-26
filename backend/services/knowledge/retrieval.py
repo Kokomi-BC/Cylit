@@ -181,6 +181,7 @@ def vector_search(query: str, *, top_k: int | None = None, mode: str = "similar"
                   paper_ids: list[str] | None = None,
                   chunk_types: list[str] | None = None,
                   langs: list[str] | None = None,
+                  roads: list[str] | None = None,
                   exclude_paper: str | None = None,
                   exclude_chunks: list[str] | None = None) -> list[dict]:
     top_k = top_k or rag_k("vector")
@@ -188,7 +189,7 @@ def vector_search(query: str, *, top_k: int | None = None, mode: str = "similar"
     if not vec:
         return []
     hits = vector_store.search(vec, top_k=top_k, paper_ids=paper_ids,
-                               chunk_types=chunk_types, langs=langs,
+                               chunk_types=chunk_types, langs=langs, roads=roads,
                                exclude_paper=exclude_paper)
     for h in hits:
         # LanceDB 的 cosine 距离 → 相似度（越大越像）
@@ -207,6 +208,7 @@ def vector_search(query: str, *, top_k: int | None = None, mode: str = "similar"
 
 def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
                  chunk_types: list[str] | None, langs: list[str] | None,
+                 roads: list[str] | None = None,
                  exclude_paper: str | None, exclude_chunks: list[str] | None) -> list[dict]:
     skip = set(exclude_chunks or [])
     out = []
@@ -214,6 +216,10 @@ def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
         if paper_ids and r.get("paper_id") not in paper_ids:
             continue
         if chunk_types and r.get("chunk_type") not in chunk_types:
+            continue
+        if roads and (r.get("road") or "") not in roads and (r.get("road") or "") != "":
+            # 共用块（road=""：图/表/公式）在任何一路的检索里都要出现 —— 它们本来就不属于
+            # 某一路，被过滤掉等于"按路检索就检不到公式"。
             continue
         if langs and (r.get("lang") or "en") not in langs and \
                 (r.get("lang") or "en") != "any":
@@ -232,6 +238,7 @@ def lexical_search(query: str, *, top_k: int | None = None,
                    paper_ids: list[str] | None = None,
                    chunk_types: list[str] | None = None,
                    langs: list[str] | None = None,
+                   roads: list[str] | None = None,
                    exclude_paper: str | None = None,
                    exclude_chunks: list[str] | None = None,
                    k1: float = 1.5, b: float = 0.75) -> list[dict]:
@@ -241,7 +248,7 @@ def lexical_search(query: str, *, top_k: int | None = None,
     if not q_tokens:
         return []
     rows = _filter_rows(vector_store.all_rows(), paper_ids=paper_ids,
-                        chunk_types=chunk_types, langs=langs,
+                        chunk_types=chunk_types, langs=langs, roads=roads,
                         exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
     if not rows:
         return []
@@ -403,6 +410,7 @@ def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
 def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            scope: str = "all", paper_id: str | None = None,
            chunk_types: list[str] | None = None, langs: list[str] | None = None,
+           roads: list[str] | None = None,
            exclude_chunks: list[str] | None = None,
            vector_k: int | None = None, lexical_k: int | None = None,
            fused_k: int | None = None) -> dict:
@@ -414,6 +422,10 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
     正文 chunk **不进候选**：它和它的单元是同一批行的两种粒度，都进候选就会出现
     "同一段内容两条命中"，Top-K 被自己挤掉（它是上下文单位，由 RAG 侧按需取，见 `rag_service`）。
     过滤后一条都没有（老索引、或没建单元）→ **自动用全部类型重搜一次**，行为回到改造前。
+
+    **`roads`**：``None``（默认）不按路过滤 —— 两路的单元各说各的语言，让**重排**去裁决
+    与"中英各出一行"的既有做法一致，也是召回最稳的口径。传 ``["b"]`` 之类才会只在一路里找。
+    共用块（图/表/公式，``road=""``）在任何过滤下都会带回来。
     """
     query = (query or "").strip()
     if not query:
@@ -428,8 +440,8 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         notes.append("索引里还没有 unit 行（未重建）→ 本次不限候选类型")
         types = None
 
-    common_kwargs = dict(langs=langs, paper_ids=paper_ids, exclude_paper=exclude_paper,
-                         exclude_chunks=exclude_chunks)
+    common_kwargs = dict(langs=langs, roads=roads, paper_ids=paper_ids,
+                         exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
     vec_hits = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
                              chunk_types=types, **common_kwargs)
     lex_hits = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
@@ -453,6 +465,8 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")
     if langs and not vector_store.has_lang():
         notes.append("索引还没有 lang 列（旧索引）：本次语言过滤未生效，重建索引后可用")
+    if roads and not vector_store.has_road():
+        notes.append("索引还没有 road 列（旧索引）：本次路过滤未生效，重建索引后可用")
     if rerank_info.get("degraded") and rerank_info.get("reason"):
         notes.append(str(rerank_info["reason"]))
     return {
@@ -460,6 +474,7 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         "retrieval": {
             "query": query, "mode": mode, "scope": scope,
             "chunk_types": list(types) if types else None,
+            "roads": list(roads) if roads else None,
             "type_fallback": fell_back,
             "vector_hits": len(vec_hits), "lexical_hits": len(lex_hits),
             "fused": len(fused), "returned": len(items),

@@ -100,11 +100,22 @@ class TaskContext:
     def _flush(self, *, done: int | None = None, total: int | None = None,
                message: str | None = None, cursor: bool = False,
                force: bool = False, **extra) -> None:
-        """写库限流（避免每块都 UPDATE）；关键节点用 ``force=True``。"""
+        """写库限流（避免每块都 UPDATE）；关键节点用 ``force=True``。
+
+        ⚠️ 只有**真正带进度信息**的写入才刷新限流时间戳。以前一律刷新，于是
+        "先 `set_cursor` 再 `progress`"这个最常见的顺序里，`set_cursor` 刚把时间戳写成
+        `now`，紧跟的 `progress` 就落在 0.5s 窗口内被**丢掉** —— 实测整篇翻译跑完，
+        任务面板一直显示初始的 `0/22`，直到最后 `force=True` 才跳到 22/22
+        （用户报过同类的"卡片还是旧数字"，那次修的是论文卡片，任务面板没修）。
+        """
         t = time.time()
-        if not force and t - self._last_progress_write < 0.5 and not cursor:
+        carries_progress = (done is not None or total is not None
+                            or message is not None)
+        if (not force and not cursor and carries_progress
+                and t - self._last_progress_write < 0.5):
             return
-        self._last_progress_write = t
+        if carries_progress or force:
+            self._last_progress_write = t
         task_service.update_progress(self.task_id, done=done, total=total,
                                      message=message, cursor=self._cursor,
                                      **extra)

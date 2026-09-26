@@ -19,7 +19,7 @@ log = get_logger(__name__)
 TABLE_NAME = "paper_chunks"
 # 词法检索 / 按 id 取行需要的列（按 schema 取交集，见 LanceDBStore._select）
 _ROW_FIELDS = ["chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
-               "section", "lang", "content", "metadata_json"]
+               "section", "lang", "road", "content", "metadata_json"]
 
 
 def _row_out(r: dict) -> dict:
@@ -27,6 +27,7 @@ def _row_out(r: dict) -> dict:
                ("chunk_id", "paper_id", "chunk_type", "page_no", "block_id",
                 "section", "content")},
             "lang": r.get("lang") or "en",
+            "road": r.get("road") or "",
             "metadata": json_loads(r.get("metadata_json"), {}) or {}}
 
 
@@ -89,6 +90,14 @@ class LanceDBStore:
     def has_lang(self) -> bool:
         return "lang" in self.columns()
 
+    def has_road(self) -> bool:
+        """索引里有没有 `road` 列（两路拆分之后才加的）。
+
+        与 `has_lang` / `has_type` 同一套路：老索引没有这一列时**不做路过滤**，
+        而不是把结果筛成空（上层会在 `retrieval.notes` 里说明要重建索引）。
+        """
+        return "road" in self.columns()
+
     def has_type(self, chunk_type: str) -> bool:
         """索引里有没有这一类 chunk（用来判断"单元层建过没有"）。
 
@@ -134,6 +143,9 @@ class LanceDBStore:
                 "block_id": c.get("block_id") or "",
                 "section": c.get("section") or "",
                 "lang": c.get("lang") or "en",
+                # 哪一路产的（a = 英文转录 / b = 中文翻译 / "" = 两路共用）。
+                # 必须是**列**（不能只放 metadata）：LanceDB 的过滤只能作用在列上。
+                "road": (c.get("metadata") or {}).get("road") or "",
                 "content": c["content"], "content_hash": c["content_hash"],
                 "index_version": int(index_version),
                 "embedding_model_id": embedding_model_id or "",
@@ -219,7 +231,7 @@ class LanceDBStore:
     # ------------------------------------------------------------------
     def search(self, vector: list[float], *, paper_ids: list[str] | None = None,
                chunk_types: list[str] | None = None, langs: list[str] | None = None,
-               top_k: int = 20,
+               roads: list[str] | None = None, top_k: int = 20,
                exclude_paper: str | None = None,
                exclude_chunk: str | None = None) -> list[dict]:
         """向量检索（规划 §19.1 VectorRetriever 的底层）。"""
@@ -247,6 +259,15 @@ class LanceDBStore:
                 filters.append(f"paper_id != '{_escape(exclude_paper)}'")
             if exclude_chunk:
                 filters.append(f"chunk_id != '{_escape(exclude_chunk)}'")
+            if roads:
+                if self.has_road():
+                    # 共用块（`road=""`：图/表/公式）在任何一路的检索里都要出现 ——
+                    # 它们本来就不属于某一路，被过滤掉等于"按路检索就检不到公式"。
+                    wanted = list(roads) + ([] if "" in roads else [""])
+                    filters.append(_where_in("road", wanted))
+                else:
+                    # 旧索引没有 road 列：宁可不筛，也不返回空（与 lang 的处理一致）
+                    log.warning("索引里没有 road 列（旧索引）：本次忽略路过滤 %s", roads)
             if filters:
                 q = q.where(" AND ".join(filters), prefilter=True)
             rows = q.to_list()
@@ -260,6 +281,7 @@ class LanceDBStore:
                 "chunk_type": r.get("chunk_type"), "page_no": r.get("page_no"),
                 "block_id": r.get("block_id"), "section": r.get("section"),
                 "lang": r.get("lang") or "en",
+                "road": r.get("road") or "",
                 "content": r.get("content"),
                 "score": r.get("_distance"),
                 "metadata": json_loads(r.get("metadata_json"), {}) or {},

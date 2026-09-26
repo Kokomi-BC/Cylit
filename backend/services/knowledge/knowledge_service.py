@@ -45,6 +45,11 @@ from backend.services.paper import paper_service, reader_service
 
 log = get_logger(__name__)
 
+#: 两条路（顺序 = 入库顺序：先英文、后中文）。
+#: A 路 = 英文转录的正文与边界；B 路 = 中文译文的正文与边界。**两路的划分允许不同** ——
+#: 用户口径：两个模型对语义边界的理解可能不同，不要强制它们一致。
+ROADS = ("a", "b")
+
 # chunk_type 的完整取值（规划 §10 ⑫）。
 # 注意 `unit`：它是"检索单位"那一档（`kb.unit_index`），不是"内容种类"那一档 ——
 # 早期这里漏了它，于是这个真实在用、且是检索默认候选的类型不在规范枚举里（dev-log §17.66）。
@@ -395,12 +400,52 @@ def build_chunks_for_paper(paper_id: str, *,
     中文问句对中文段落的相似度明显更"实"；反之英文术语（MSE、inner product）在英文行上
     更准。两行都入库、由重排统一裁决，是召回最稳的做法。
 
-    **不改表结构**：chunk id 加 ``:zh`` / ``:en`` 后缀，``lang`` 只写进 ``metadata_json``。
+    **两路各一套**：A 路（英文转录）在英文侧切分、B 路（中文翻译）在中文侧切分，
+    两边的**边界允许不同**（见 `_base_chunks` / `ROADS`）。所以这里的"双语"有两种来源：
+    正文/单元来自各自那一路（一条 chunk 只有一个语言面），图/表/公式是两路共用（天然双语）。
 
-    切分骨架来自阅读器目录、内容原子是页级行、节内边界来自 LLM 语义锚点（见 `_base_chunks`）；
-    旧路径（解析块 + 按比例取译文）已在"按 markdown 层级切分"那一轮删除（dev-log §17.64）。
+    **不改表结构**：路号进 id（``{paper}:{A|B}:…``）与 ``metadata_json``，
+    语言后缀 ``:zh`` / ``:en`` 照旧，``lang`` 仍只写进 ``metadata_json``。
+    向量库额外加一列 ``road``（检索侧要按路过滤，元数据列在 LanceDB 里过滤不了）。
     """
-    return _chunk_variants_rows(_base_chunks(paper_id), langs)
+    base, _road_summary = _base_chunks(paper_id)
+    by_road: dict[str | None, list[dict]] = {None: []}
+    for road in ROADS:
+        by_road[road] = []
+    for chunk in base:
+        by_road[(chunk.get("metadata") or {}).get("road")].append(chunk)
+    out: list[dict] = []
+    for road in ROADS:
+        # 一路只出自己那一种语言行（A → `:en`、B → `:zh`）；正文本来就在 `content` 里
+        out.extend(_path_variants_rows(by_road[road], road))
+    # 共用块（图/表/公式）照旧展开成 zh/en（公式内部只会得到 `any` 一行）
+    out.extend(_chunk_variants_rows(by_road[None], langs))
+    # 最后一道防线：任何来源的空正文都不许进库（向量接口会 400，见 `_path_variants_rows`）
+    return [c for c in out if (c.get("content") or "").strip()]
+
+
+def _path_variants_rows(base: list[dict], road: str) -> list[dict]:
+    """一条路自己的语言行：A 路只出 ``:en``、B 路只出 ``:zh``。
+
+    与 `_chunk_variants_rows` 的区别：那个是"一条 chunk 同时有两个语言面"时代的产物
+    （英文本体 + ``_zh`` 译文），而**按路分块**之后每条 chunk 只有一个语言面 ——
+    中文那条的正文本来就在 ``content`` 里，不需要再去 ``_zh`` 取一次。
+
+    ⚠️ **空正文的块不出行**。展示层清洗（去落单加粗等）有可能把一小块洗成空串 ——
+    实测 A 路 p001 的第一个块就是空的（模型发了一个只有空白的块）：
+    这种行入库后**没有任何检索价值**，而且会让向量接口直接 400
+    （`text input should not be empty`），整篇的向量入库全失败（MySQL 元数据已经写进去了，
+    于是出现"元数据有 359 条、向量 0 条"的半截状态）。宁可不出这一行。
+    """
+    lang = "en" if road == "a" else "zh"
+    out: list[dict] = []
+    for c in base:
+        content = c["content"] or ""
+        if not content.strip():
+            log.warning("跳过空正文的块（%s 路）：%s", road, c.get("id"))
+            continue
+        out.append(_variant_row(c, lang, content))
+    return out
 
 
 # ==========================================================================
@@ -408,26 +453,25 @@ def build_chunks_for_paper(paper_id: str, *,
 # ==========================================================================
 
 
-def _base_chunks(paper_id: str) -> list[dict]:
-    """单语（原文）chunk 序列：正文（行/TOC/锚点）+ 图与表（行）+ 公式（canonical 清单）。
+def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
+    """**两路**的正文块 + 单元 + 两路共用的图/表/公式块；另返回 `road_summary`（日志/回归用）。
 
     与改造前的旧路径的根本差别：**切分骨架与内容原子都换了来源**。
 
     - 骨架 = 阅读器目录（`chunking.section_tree`）：节之间不因为长度合适而合并，
       节内边界由 LLM 语义锚点给出（`chunking.semantic_units`）；
-    - 原子 = `pages.json` 的行（`chunking.row_units`）：**两侧内容同一批行**，
-      中文是这些行的 `translation`，英文是 `original` —— 不再有"按比例切片互相找回"这一层；
+    - 原子 = 页级行（`chunking.row_units`）：A 路取 `original`、B 路取 `translation`；
+    - **两路各装配一次**（`chunking.build(..., road="a"/"b")`）：各用各的锚点、各按自己那一侧
+      的字数卡长度 —— 于是两路的单元/块划分可以不同（用户口径：不要强制一致）。
+      每一路内部仍然满足 `row ⊆ unit ⊆ chunk`、`chunk = 整数个 unit`；
     - 图 / 表：结构行（caption / table / figure）按"同页 + 同图号"归组，各自一条 chunk，
-      表体（markdown）**进正文**（旧路径只索引图注，实测表体 0 条）；
-    - 公式：仍然来自 canonical 清单（`reader_service.markdown_formulas` → C 口径 → 挂锚点），
-      只是章节与排序改用"它所在的行"。
+      表体（markdown）**进正文**；**两路共用**一份（内容本就与语言无关或天然双语）；
+    - 公式：来自 canonical 清单（`reader_service.markdown_formulas` → C 口径 → 挂锚点），
+      同样两路共用。
 
     装配结果会过一遍校验层（`chunking.validate`）：行覆盖恰好一次、顺序不变、不跨节、
-    ≤ hard、正文里不混结构行、单元与块的父子关系确定。不通过就先退回"不用锚点"再装配一次，
-    仍不通过则原样入库并把错误写进日志（**宁可入库也不静默丢内容**）。
-
-    产出三层（见 `docs/语义单元索引-设计.md`）：`row ⊆ unit ⊆ chunk`。
-    `unit`（细，中位 ≈500 字）是**检索单位**，`text` chunk（≈1400 字）是**上下文单位**。
+    ≤ hard、正文里不混结构行、单元与块的父子关系确定。**每一路各自**：不通过就先退回
+    "不用锚点"再装配一次，仍不通过则原样入库并把错误写进日志（**宁可入库也不静默丢内容**）。
     """
     from backend.services.knowledge import chunking
 
@@ -454,18 +498,23 @@ def _base_chunks(paper_id: str) -> list[dict]:
 
     target, floor, hard = chunk_params()
     use_breaks = using_breaks()
-    built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
-                           use_breaks=use_breaks)
-    if not built["report"]["ok"] and use_breaks:
-        log.warning("语义锚点装配未通过校验（%s），退回「只按目录层级」：%s",
-                    paper_id, built["report"]["errors"][:3])
-        use_breaks = False
+
+    def build_road(road: str | None) -> tuple[list[dict], list[dict], dict, dict]:
+        """按路装配一次（含"校验不过就退回不用锚点"的既有策略）。"""
+        breaks_on = use_breaks
         built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
-                               use_breaks=False)
-    chunks, units, stats = built["chunks"], built["units"], built["stats"]
-    report = built["report"]
-    if not report["ok"]:
-        log.error("行级装配仍未通过校验（%s）：%s", paper_id, report["errors"][:5])
+                               use_breaks=breaks_on, road=road)
+        if not built["report"]["ok"] and breaks_on:
+            log.warning("语义锚点装配未通过校验（%s，路 %s），退回「只按目录层级」：%s",
+                        paper_id, road or "共用", built["report"]["errors"][:3])
+            breaks_on = False
+            built = chunking.build(rows, tree, target=target, hard=hard, floor=floor,
+                                   use_breaks=False, road=road)
+        if not built["report"]["ok"]:
+            log.error("行级装配仍未通过校验（%s，路 %s）：%s",
+                      paper_id, road or "共用", built["report"]["errors"][:5])
+        return (built["chunks"], built["units"], built["stats"],
+                {**built["report"], "use_breaks": breaks_on})
 
     # 解析块只在两处还需要：IR 的公式/图表元数据、以及"块 → 行"映射（给公式条目定行）。
     md_map = reader_service.load_markdown_map(paper_id)
@@ -480,71 +529,105 @@ def _base_chunks(paper_id: str) -> list[dict]:
     f_entries = formula_source.kb_formula_entries(paper_id, formulas, parse_rows)
     block_to_row = _block_row_ids(paper_id, parse_rows)
 
+    # ------------------------------------------------------------------
+    # 两路各装配一套正文块 + 语义单元（**划分允许不同**），图/表/公式两路共用一套
+    # ------------------------------------------------------------------
     out: list[dict] = []
-    key_to_id: dict[str, str] = {}
-    for chunk in chunks:
-        made = _row_text_chunk(paper_id, chunk["rows"], chunk.get("node"))
-        key_to_id[str(chunk.get("key"))] = made["id"]
-        out.append(made)
-    if unit_index_enabled():
-        out.extend(_row_unit_chunks(paper_id, units, key_to_id, use_breaks=use_breaks))
-    out.extend(_row_structure_chunks(paper_id, rows, ir, regions, caption_ids,
-                                     region_of_caption))
-    out.extend(_row_formula_chunks(paper_id, rows, f_entries, block_to_row))
+    road_summary: dict[str, dict] = {}
+    for road in ROADS:
+        chunks, units, stats, report = build_road(road)
+        key_to_id: dict[str, str] = {}
+        for chunk in chunks:
+            made = _row_text_chunk(paper_id, chunk["rows"], chunk.get("node"), road=road)
+            key_to_id[str(chunk.get("key"))] = made["id"]
+            out.append(made)
+        if unit_index_enabled():
+            out.extend(_row_unit_chunks(paper_id, units, key_to_id,
+                                        use_breaks=report["use_breaks"], road=road))
+        road_summary[road] = {"chunks": len(chunks), "units": len(units),
+                              "stats": stats, "ok": report["ok"],
+                              "use_breaks": report["use_breaks"],
+                              "errors": report["errors"][:3]}
+        log.info("行级分块（%s，%s 路）：行 %d / 正文块 %d / 单元 %d；装配 %s；校验 %s",
+                 paper_id, road, len(rows), len(chunks), len(units), stats,
+                 "通过" if report["ok"] else f"未通过 {report['errors'][:2]}")
+
+    # 图 / 表 / 公式：**两路共用**（内容本来就与语言无关或天然双语，切了也没有意义）
+    shared = _row_structure_chunks(paper_id, rows, ir, regions, caption_ids,
+                                   region_of_caption)
+    shared.extend(_row_formula_chunks(paper_id, rows, f_entries, block_to_row))
+    out.extend(shared)
     _attach_formula_ids(out, rows, f_entries, block_to_row)
     out.sort(key=lambda c: (c["order_global"],
+                            (c.get("metadata") or {}).get("road") or "",
                             0 if c["chunk_type"] in ("text", "unit") else 1))
-    log.info("行级分块（%s）：行 %d / 正文块 %d / 单元 %d / 总计 %d；装配 %s；校验 %s",
-             paper_id, len(rows), len(chunks), len(units), len(out), stats,
-             "通过" if report["ok"] else f"未通过 {report['errors'][:2]}")
-    return _link_formulas(out)
+    log.info("分块完成（%s）：行 %d / 总计 %d 条（A %d + B %d + 共用 %d）",
+             paper_id, len(rows), len(out),
+             road_summary["a"]["chunks"] + road_summary["a"]["units"],
+             road_summary["b"]["chunks"] + road_summary["b"]["units"], len(shared))
+    return _link_formulas(out), road_summary
 
 
 def _row_unit_chunks(paper_id: str, units: list[dict], key_to_id: dict[str, str], *,
-                     use_breaks: bool) -> list[dict]:
+                     use_breaks: bool, road: str | None = None) -> list[dict]:
     """语义单元 → ``chunk_type="unit"`` 的入库行（**检索单位**）。
 
     正文由单元的 `en` / `zh` 直接给出 —— 那本来就是"按行原文拼起来的"，本函数不生成任何文字。
     元数据里带 `parent_chunk_id`（small-to-big 往上取上下文）与 `prev/next_unit_id`（±1 邻居），
     检索侧与上下文扩展都直接用这两个指针，不必在查询时重算分块。
+
+    `road` 给定时：正文只取**本路**那一面（A→`en` / B→`zh`）、所有单元 id 都带路号，
+    且 `key_to_id` 必须是**同一路**的正文块表（两路的 chunk key 是同一批行 id，混用会指错父块）。
     """
+    prefix = f"{paper_id}:{road}:" if road else f"{paper_id}:"
     out: list[dict] = []
     for unit in units:
         first, last = unit["first_row"], unit["last_row"]
+        content = (unit["zh"] if road == "b" else unit["en"]) if road else unit["en"]
         meta = {
             "row_ids": list(unit["row_ids"]),
             "pages": list(unit["pages"]),
             "section_kind": unit["section_kind"],
             "parent_chunk_id": key_to_id.get(str(unit.get("parent_chunk_id"))),
-            "prev_unit_id": (f"{paper_id}:unit:{unit['prev']}" if unit.get("prev") else None),
-            "next_unit_id": (f"{paper_id}:unit:{unit['next']}" if unit.get("next") else None),
+            "prev_unit_id": (f"{prefix}unit:{unit['prev']}" if unit.get("prev") else None),
+            "next_unit_id": (f"{prefix}unit:{unit['next']}" if unit.get("next") else None),
             "unit_chars": unit["chars"],
-            "unit_ids": [f"{paper_id}:unit:{unit['unit_id']}"],
+            "unit_ids": [f"{prefix}unit:{unit['unit_id']}"],
             # 这条单元的左边界是 LLM 锚点、还是"长度兜底/小节边界"切出来的（回归时能分开量）
             "anchor_used": bool(unit.get("anchor_used")),
             "unit_source": "llm_break" if (use_breaks and unit.get("anchor_used"))
                            else "deterministic",
         }
         chunk = _make_chunk(
-            paper_id, "unit", unit["en"],
+            paper_id, "unit", content,
             {"id": first["id"], "page": first["page"], "order": first["index"]},
             {"id": last["id"], "page": last["page"], "order": last["index"]},
             section=unit.get("section_title") or "",
             section_path=unit.get("section_path") or "",
             metadata=meta,
-            chunk_id=f"{paper_id}:unit:{unit['unit_id']}",
+            chunk_id=f"{prefix}unit:{unit['unit_id']}",
+            road=road,
         )
-        chunk["_zh"] = unit["zh"] or None
+        if road is None:
+            chunk["_zh"] = unit["zh"] or None
         out.append(chunk)
     return out
 
 
-def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None) -> dict:
-    """一段连续行 → 一条正文 chunk（中英两侧**同一批行**）。"""
+def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None,
+                    road: str | None = None) -> dict:
+    """一段连续行 → 一条正文 chunk。
+
+    `road` 给定时正文取**那一路**的文本（A 英文 / B 中文），另一侧不产出 ——
+    按路分块之后每条 chunk 只有一个语言面。`road=None` 是旧口径：英文本体 + `_zh` 译文
+    （图/表这类共用的块仍走这条路）。
+    """
     first, last = items[0], items[-1]
-    content = "\n\n".join(r["original"] for r in items)
-    zh = "\n\n".join(r["translation"].strip() for r in items
-                     if (r["translation"] or "").strip())
+    content = "\n\n".join(_road_row_text(r, road) for r in items)
+    zh = None
+    if road is None:
+        zh = "\n\n".join(r["translation"].strip() for r in items
+                         if (r["translation"] or "").strip()) or None
     section = (node or {}).get("title") or first.get("section_title") or ""
     section_path = (node or {}).get("path") or first.get("section_path") or ""
     meta = {
@@ -552,8 +635,9 @@ def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None) -> dict
         "pages": sorted({r["page"] for r in items}),
         "section_kind": first.get("section_kind") or "body",
         "section_number": (node or {}).get("number") or "",
-        # 语义锚点落在这条 chunk 里的行（用于量"锚点真的改变了哪些边界"）
-        "anchor_rows": [r["id"] for r in items if r.get("semantic_break")],
+        # 语义锚点落在这条 chunk 里的行（用于量"锚点真的改变了哪些边界"）——
+        # **按路判断**：A 路的边界与 B 路不同，混在一起就量不出"这一路的锚点起了什么作用"。
+        "anchor_rows": [r["id"] for r in items if _is_road_break(r, road)],
         "row_span": [first["id"], last["id"]],
     }
     chunk = _make_chunk(
@@ -562,9 +646,27 @@ def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None) -> dict
         {"id": last["id"], "page": last["page"], "order": last["index"]},
         section=section, section_path=section_path, metadata=meta,
         heading_only=all(r["type"] == "heading" for r in items),
+        road=road,
     )
-    chunk["_zh"] = zh or None
+    if zh:
+        chunk["_zh"] = zh
     return chunk
+
+
+def _is_road_break(row: dict, road: str | None) -> bool:
+    """这一行是不是**本路**标的语义边界（`row["semantic_break_side"]`，见 page_translate）。"""
+    if not row.get("semantic_break"):
+        return False
+    if road is None:
+        return True
+    return row.get("semantic_break_side") == ("original" if road == "a" else "translation")
+
+
+def _road_row_text(row: dict, road: str | None) -> str:
+    """按路取行的正文（A/并集 → 原文；B → 译文，缺译文退回原文）。"""
+    if road == "b":
+        return str(row.get("translation") or row.get("original") or "")
+    return str(row.get("original") or "")
 
 
 def _row_structure_chunks(paper_id: str, rows: list[dict], ir,
@@ -778,13 +880,14 @@ def _attach_formula_ids(chunks: list[dict], rows: list[dict], entries: list[dict
 
     内容块 = 正文 chunk **和语义单元**：检索单位现在是单元（见 `docs/语义单元索引-设计.md`），
     所以"哪条公式在这段里"必须挂到单元上，否则"公式上下文"这类判据在单元检索下恒为 0。
-    `_link_formulas` 会给公式块补 `text_chunk_id` —— 它取**第一条**含该公式的块；
-    单元比 chunk 细，所以优先让它指到单元（更精确的定位）。
+
+    按路分块之后同一批行有 **A、B 两套**内容块，两者都含这条公式 —— 所以这里**都挂**
+    （去掉早期的 `break`：那时一条行只有一套块，第一条命中就是唯一答案）。挂两边之后
+    无论是按 A 还是按 B 检索，"公式上下文"这条判据都成立。公式块指回**哪一条**由
+    `_link_formulas` 按固定优先级挑（B 路单元优先）。
     """
     row_index = {r["id"]: r["index"] for r in rows}
     holders = [c for c in chunks if c["chunk_type"] in ("unit", "text")]
-    # 单元优先（更细的定位），其次正文块
-    holders.sort(key=lambda c: 0 if c["chunk_type"] == "unit" else 1)
     for e in entries:
         anchor = e.get("formula_block_id") or e.get("id")
         row_id = str(e.get("row_id") or block_to_row.get(str(e.get("formula_block_id") or "")) or "")
@@ -798,7 +901,6 @@ def _attach_formula_ids(chunks: list[dict], rows: list[dict], entries: list[dict
             first, last = row_index.get(span[0]), row_index.get(span[-1])
             if first is not None and last is not None and first <= idx <= last:
                 chunk["metadata"].setdefault("formula_ids", []).append(anchor)
-                break
 
 
 
@@ -834,10 +936,22 @@ def _link_formulas(chunks: list[dict]) -> list[dict]:
     公式 chunk 反过来指回内容块（合并/切分之后再算，所以不会指错）。
 
     内容块 = **语义单元**（优先，检索单位，定位更精）→ 正文 chunk（上下文单位）。
+
+    按路分块之后同一批行有 A、B 两套内容块，公式块只能指回**一条** ——
+    固定优先级：**B 路单元 → A 路单元 → B 路正文 → A 路正文**。
+    选 B 路（中文）是因为"公式配上下文"主要服务中文阅读与后续的论文理解（用户口径里
+    Related Concepts / 公式解释都由中文那条路承担）；A 路那一套仍在 `formula_ids` 里可查。
+    排序里带 `id` 兜底，保证**同一个索引版本里结果确定**（不依赖字典顺序/排序稳定性）。
     """
+    def rank(c: dict) -> tuple:
+        road = (c.get("metadata") or {}).get("road") or ""
+        road_rank = 0 if road == "b" else (1 if road == "a" else 2)
+        type_rank = 0 if c["chunk_type"] == "unit" else 1
+        return (road_rank, type_rank, c["id"])
+
     owner: dict[str, str] = {}
     holders = [c for c in chunks if c["chunk_type"] in ("unit", "text")]
-    holders.sort(key=lambda c: 0 if c["chunk_type"] == "unit" else 1)
+    holders.sort(key=rank)
     for c in holders:
         for fid in (c.get("metadata") or {}).get("formula_ids") or []:
             owner.setdefault(fid, c["id"])
@@ -877,11 +991,21 @@ def _block_row(b: Block, md_map: dict | None = None) -> dict:
 def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
                 last: dict, *, section: str = "", section_path: str = "",
                 metadata: dict | None = None, parts: list[tuple] | None = None,
-                heading_only: bool = False, chunk_id: str | None = None) -> dict:
-    cid = chunk_id or f"{paper_id}:{chunk_type}:{first['id']}"
+                heading_only: bool = False, chunk_id: str | None = None,
+                road: str | None = None) -> dict:
+    """建一条 chunk 记录。
+
+    `road` = ``"a"``/``"b"`` 时它是**那一路自己的**正文块，id 里带路号
+    （``{paper}:A:text:…``）：两路的划分本来就可能不同，id 撞在一起会出现
+    "同一条 id 指两份内容"。`road=None` = 图/表/公式这类**两路共用**的原子块。
+    """
+    cid = chunk_id or f"{paper_id}:{road + ':' if road else ''}{chunk_type}:{first['id']}"
     if not chunk_id and chunk_type == "text" and first["id"] != last["id"]:
-        cid = f"{paper_id}:text:{first['id']}-{last['id']}"
+        cid = f"{paper_id}:{road + ':' if road else ''}text:{first['id']}-{last['id']}"
     meta = dict(metadata or {})
+    if road:
+        # 路号进元数据：检索侧要能按路过滤/上报（向量库另有 `road` 列）
+        meta.setdefault("road", road)
     if chunk_type in ("text", "figure", "table"):
         # 行首落单的 `**`（`**图 5：…`）会在渲染时原样显示 → 在这里去掉（成对加粗不动）
         content = _strip_unpaired_bold(content)
@@ -1011,6 +1135,15 @@ def _count_by_lang(chunks: list[dict]) -> dict:
     return out
 
 
+def _count_by_road(chunks: list[dict]) -> dict:
+    """按路统计（``a`` = 英文转录 / ``b`` = 中文翻译 / ``shared`` = 两路共用）。"""
+    out: dict[str, int] = {}
+    for c in chunks:
+        road = (c.get("metadata") or {}).get("road") or "shared"
+        out[road] = out.get(road, 0) + 1
+    return out
+
+
 def overview() -> dict:
     """知识库概览（规划 §20.5）。"""
     from sqlalchemy import func
@@ -1031,6 +1164,15 @@ def overview() -> dict:
             "any": int(sess.query(func.count(Chunk.id))
                        .filter(Chunk.id.like("%:any")).scalar() or 0),
         }
+        # 路号同样按 id 数（`{paper}:{A|B}:…`）：共用块（图/表/公式）的 id 里没有路号段，
+        # 差值就是"shared"。不用解析 metadata_json，与语种统计同一口径。
+        by_road = {
+            "a": int(sess.query(func.count(Chunk.id))
+                     .filter(Chunk.id.like("%:A:%")).scalar() or 0),
+            "b": int(sess.query(func.count(Chunk.id))
+                     .filter(Chunk.id.like("%:B:%")).scalar() or 0),
+        }
+        by_road["shared"] = int(chunk_count) - by_road["a"] - by_road["b"]
         index_versions = dict(sess.query(Chunk.paper_id, func.max(Chunk.index_version))
                               .group_by(Chunk.paper_id).all())
         model_ids = [m for (m,) in sess.query(Chunk.embedding_model_id).distinct().all()]
@@ -1047,6 +1189,7 @@ def overview() -> dict:
         "chunks": int(chunk_count),
         "chunks_by_type": by_type,
         "chunks_by_lang": by_lang,
+        "chunks_by_road": by_road,
         "embedding_models": _model_labels([m for m in model_ids if m]),
         "index_versions": index_versions,
         "vector_store": vector,
@@ -1393,10 +1536,12 @@ def similar(payload: dict) -> dict:
 
     chunk_types = payload.get("chunk_types") or None
     langs = payload.get("langs") or None
+    roads = payload.get("roads") or None
     top_k = payload.get("top_k")
     result = retrieval.search(
         query, mode="similar", scope=scope, paper_id=paper_id,
-        chunk_types=chunk_types, langs=langs, exclude_chunks=exclude_chunks,
+        chunk_types=chunk_types, langs=langs, roads=roads,
+        exclude_chunks=exclude_chunks,
         top_k=int(top_k) if top_k else None,
     )
     items = [public_item(i) for i in _decorate_items(result["items"])]

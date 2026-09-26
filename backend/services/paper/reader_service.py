@@ -25,8 +25,8 @@ from backend.repositories.mysql.models import (
 from backend.repositories.mysql.session import session_scope
 from backend.services.paper import anchor_map, paper_service
 from backend.services.translation.page_translate import (
-    PATH_VERSION, PageStore, apply_semantic_breaks, mark_rows_continuity,
-    normalize_breaks, page_continuity, pair_rows,
+    PATH_VERSION, PageStore, absorb_one_sided_rows, apply_semantic_breaks,
+    mark_rows_continuity, normalize_breaks, page_continuity, pair_rows,
 )
 
 log = get_logger(__name__)
@@ -213,6 +213,7 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
         return None                        # 两侧都空的页不产生一页（与旧 done 判据一致）
     fresh_rows, quality = pair_rows(original_md, translation_md, page)
     rows = [dict(r) for r in fresh_rows]
+    used_stored = False
     if shape != "paths" and stored.get("rows"):
         keep_stored = not (
             fresh_rows
@@ -220,6 +221,12 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
                  or len(fresh_rows) == len(stored.get("rows") or [])))
         if keep_stored:
             rows = [dict(r) for r in stored["rows"]]
+            used_stored = True
+    # 单侧行并进上一行的缺失侧：把"一侧把相邻两段并成了一块"这种分歧归一，
+    # 否则阅读器会出现"这一行英文栏是空的"（实测两篇各 1~2 行，且**两轮prompt都没消掉**）。
+    # 放在 `mark_rows_continuity` / `apply_semantic_breaks` **之前**：两者都按最终行重算。
+    absorbed = absorb_one_sided_rows(rows, page)
+    rows = absorbed["rows"]
     if rows:
         flags = page_continuity(paper_id, page)
         mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
@@ -242,8 +249,11 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
         "breaks_a": breaks_a,
         "breaks_b": breaks_b,
         "break_stats": break_stats,
-        # 旧形态沿用存下来的质量标记（与改造前逐字一致）；两路形态用现算的合并质量
-        "align": str(stored.get("align") or "") or quality,
+        # 旧形态沿用存下来的质量标记（与改造前逐字一致）；两路形态用现算的合并质量。
+        # ⚠️ 必须看 `used_stored`，不能只看 `stored` 有没有值：两路形态下**旧 `pages.json`
+        # 通常还在**（没删），于是 `stored.get("align")` 会把上一版的 "exact" 顶上来 ——
+        # 表现为"合并质量明明 structure、接口却报 exact"（实测 p1 就是这样）。
+        "align": (str(stored.get("align") or "") if used_stored else "") or quality,
         "model": (a.get("model") or b.get("model") or stored.get("model") or ""),
         "updated_at": (a.get("updated_at") or b.get("updated_at")
                        or stored.get("updated_at")),

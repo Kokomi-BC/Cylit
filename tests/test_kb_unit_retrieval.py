@@ -141,9 +141,27 @@ def _unit(chunk_id: str, *, parent: str, prev: str | None, next_: str | None,
 
 
 def _install_store(monkeypatch, rows: dict[str, str]):
+    """假向量库：`rows` 的键可以只写**基准** id（`u1`），解析时"带后缀优先、退回基准"。
+
+    真实索引里每条行 id 都带语言后缀（`_variant_row` 加的 `:zh` / `:en`），所以夹具必须能
+    复现"请求 `u1:en` 却拿不到行"这类缺陷（en 命中的 ±1 就是这么坏的）；宽松只是为了
+    别让每个用例都把同一个 key 写两遍。返回行的 `chunk_id` 是**被请求的那个 id**，
+    这样调用方的"剥后缀 → 基准 id"换算路径能被真实走到。
+    """
+    def strip(cid: str) -> str:
+        for suffix in (":zh", ":en", ":any"):
+            if cid.endswith(suffix):
+                return cid[: -len(suffix)]
+        return cid
+
     def get_rows(ids):
-        return [{"chunk_id": i, "content": rows[i], "chunk_type": "unit",
-                 "metadata": {}, "lang": "en"} for i in ids if i in rows]
+        out = []
+        for i in ids:
+            key = i if i in rows else strip(i)
+            if key in rows:
+                out.append({"chunk_id": i, "content": rows[key], "chunk_type": "unit",
+                            "metadata": {}, "lang": "en"})
+        return out
     monkeypatch.setattr(rag_service.vector_store, "get_rows", get_rows)
 
 
@@ -173,6 +191,33 @@ def test_expand_includes_prev_and_next_unit(monkeypatch):
     out = rag_service._expand_units(items, max_chars=1000)
     assert len(out) == 1
     assert out[0]["content"] == "PREV\n\nUNIT1\n\nNEXT"
+
+
+def test_expand_requests_the_hits_own_language_suffix(monkeypatch):
+    """命中行的 id 带语言后缀，而 `prev/next_unit_id` **不带** —— 请求时必须自己补对。
+
+    这条钉住一个真缺陷：旧实现里 en 命中拼出来的是**裸 id**（`u0`），真实索引里根本没有
+    这种行 → 邻居一条都取不到，±1 静默退化成"只用命中单元"。中文命中因为多了一层
+    `missing` 兜底而侥幸能用，所以题库全是中文提问时一直没暴露。
+    """
+    asked: list[list[str]] = []
+    monkeypatch.setattr(rag_service.vector_store, "get_rows",
+                        lambda ids: (asked.append(list(ids)), [])[1])
+    _set_unit_expand(monkeypatch, 1)
+    items = [_unit("p:unit:u1:en", parent="p:text:a", prev="p:unit:u0",
+                   next_="p:unit:u2", content="UNIT1")]
+    rag_service._expand_units(items, max_chars=1000)
+    flat = {i for batch in asked for i in batch}
+    assert "p:unit:u0:en" in flat and "p:unit:u2:en" in flat, flat
+    assert "p:unit:u0" not in flat, "不许再请求裸 id（真实索引里不存在这种行）"
+
+
+def test_expand_reports_the_units_it_used(monkeypatch):
+    """`_expanded_units` 记的是**基准** id（`u0` 而不是 `u0:en`）。"""
+    _install_store(monkeypatch, {"u1": "UNIT1", "u0": "PREV", "u2": "NEXT"})
+    _set_unit_expand(monkeypatch, 1)
+    items = [_unit("u1", parent="p:text:a", prev="u0", next_="u2", content="UNIT1")]
+    out = rag_service._expand_units(items, max_chars=1000)
     assert out[0]["metadata"]["_expand_mode"] == 1
     assert out[0]["metadata"]["_expanded_units"] == ["u0", "u1", "u2"]
 

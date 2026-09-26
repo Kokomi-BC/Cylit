@@ -79,6 +79,18 @@ def test_both_paths_share_the_same_segmentation_rules() -> None:
         assert marker in _SHARED_SEGMENTATION_RULES
 
 
+def test_segmentation_says_the_page_image_is_the_only_evidence() -> None:
+    """两路拆开后最容易踩的坑：解析器文本里的空行被当成分段依据 → 两侧各拆各的。
+
+    实测 turbo p1：A 把摘要里相邻两句并成一块、B 按解析器空行拆成两块，于是从第 4 行起
+    英中整体错位一行。规则里必须明确"依据只有页图 + 段首缩进"，并写明代价。
+    """
+    for prompt in BOTH:
+        assert "解析器文本里的空行**不算分段证据**" in prompt
+        assert "段首缩进" in prompt
+        assert "整页错位一行" in prompt
+
+
 def test_both_paths_share_page_image_and_heading_rules() -> None:
     for prompt in BOTH:
         assert "页图是唯一事实来源" in prompt

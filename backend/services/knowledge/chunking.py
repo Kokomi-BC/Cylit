@@ -185,7 +185,11 @@ def row_units(paper_id: str, *, authors: str = "",
         "number": str(r.get("number") or ""),
         "original": str(r.get("original") or ""),
         "translation": str(r.get("translation") or ""),
+        # 语义边界：`semantic_break` 是"有边界"，`semantic_break_side` 是"**哪一路**标的"
+        # （原文侧匹配= 英文锚点=A 路；译文侧= 中文锚点=B 路）。按路分块靠后者区分。
         "semantic_break": bool(r.get("semantic_break")),
+        "semantic_break_side": str(r.get("semantic_break_side") or ""),
+        "semantic_type": str(r.get("semantic_type") or ""),
     } for i, r in enumerate(raw_rows)]
 
     body_start = first_body_index([{"type": r["type"], "text": r["original"]} for r in rows])
@@ -301,8 +305,39 @@ def _is_appendix(node: dict | None) -> bool:
 # --------------------------------------------------------------------------
 
 
+#: 路号 → 该路的锚点落在**哪一侧**（`row["semantic_break_side"]`，见 `page_translate`）。
+#: A 路（英文转录）的锚点是英文片段、匹配原文侧；B 路（中文翻译）的锚点是中文片段、匹配译文侧。
+SIDE_OF_ROAD = {"a": "original", "b": "translation"}
+
+
+def road_text(row: dict, road: str | None) -> str:
+    """按路取这一行的正文：``"b"`` → 译文（缺译文时退回原文），其余（含并集口径）→ 原文。
+
+    长度兜底、`chars()` 统计都要按**同一侧**算：中英字符数差异很大，
+    拿英文长度去卡中文单元会把中文切得过碎（反之亦然）。
+    """
+    if road == "b":
+        return str(row.get("translation") or row.get("original") or "")
+    return str(row.get("original") or "")
+
+
+def is_break(row: dict, road: str | None = None) -> bool:
+    """这一行是不是**该路**的语义边界。
+
+    `road=None` → 两路锚点的**并集**（旧行为：一条 chunk 同时服务中英两侧时的口径）；
+    `"a"`/`"b"` → 只有那一路标的边界算数。两路的边界不同是**允许并且预期**的
+    （用户口径：两个模型对语义边界的理解可能不同，不要强制它们一致），所以
+    按路分块时各用各的边界，`chunk = 整数个 unit` 的约束在**每一路内部**成立。
+    """
+    if not row.get("semantic_break"):
+        return False
+    if road is None:
+        return True
+    return row.get("semantic_break_side") == SIDE_OF_ROAD[road]
+
+
 def semantic_units(rows: list[dict], *, use_breaks: bool = True,
-                   max_chars: int = 0) -> list[dict]:
+                   max_chars: int = 0, road: str | None = None) -> list[dict]:
     """正文行 → 语义单元（连续行的一段），边界 = TOC 节点边界 ∪ LLM 锚点 ∪（可选）长度上限。
 
     结构行（图/表）不参与：它们由各自的 chunk 承载，且**天然是单元的边界**
@@ -311,7 +346,11 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True,
     - ``use_breaks=False`` 就是 arm 2（只有 TOC，没有 LLM 锚点），用来量锚点到底带来多少收益；
     - ``max_chars>0`` 是**代码侧的兜底**：某节里模型没给锚点时，一段长正文不能整节变成一个单元。
       到上限就在**行边界**切（行 = 段落，所以永远不会切进公式 / 表格 / 一句话中间）；
-      只由一行组成的段不切（单行不可拆）。
+      只由一行组成的段不切（单行不可拆）；
+    - ``road`` = ``"a"``/``"b"`` 时只用那一路的锚点（见 `is_break`），``None`` = 并集。
+
+    长度兜底用**哪一侧**的字数：给了 `road` 就用那一侧（中文与英文的字符数差异很大，
+    拿英文长度去卡中文单元会切得过碎）。`road=None`（并集口径）沿用英文字数，与改造前一致。
     """
     units: list[dict] = []
     cur: list[dict] = []
@@ -328,12 +367,13 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True,
             flush()
             continue
         if cur and (row["section_key"] != cur[-1]["section_key"]
-                    or (use_breaks and row.get("semantic_break"))):
+                    or (use_breaks and is_break(row, road))):
             flush()
-        elif (cur and max_chars and size + len(row["original"]) > max_chars):
+        elif (cur and max_chars
+              and size + len(road_text(row, road)) > max_chars):
             flush()                     # 长度兜底：在行边界切
         cur.append(row)
-        size += len(row["original"])
+        size += len(road_text(row, road))
     flush()
     return units
 
@@ -345,7 +385,8 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True,
 
 def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
              use_breaks: bool = True,
-             unit_max_chars: int = UNIT_MAX_CHARS) -> tuple[list[dict], dict]:
+             unit_max_chars: int = UNIT_MAX_CHARS,
+             road: str | None = None) -> tuple[list[dict], dict]:
     """行 + TOC + 语义单元 → 正文 chunk 列表（外加一份装配统计）。
 
     **chunk 由整数个 unit 组成**（unit 是分块层的原子，见 docs/语义单元索引-设计.md §1）：
@@ -375,17 +416,19 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
                  "row_index": text_rows[0]["index"]}]
     all_nodes = _walk(tree)
     unit_partition = semantic_units(text_rows, use_breaks=use_breaks,
-                                    max_chars=unit_max_chars)
+                                    max_chars=unit_max_chars, road=road)
     unit_of_row = {r["index"]: u for u in unit_partition for r in u["rows"]}
     stats = {"nodes": 0, "whole_subtree": 0, "own_chunk": 0, "intro_merged": 0,
              "unit_split": 0, "row_fallback": 0, "chunks": 0, "units": len(unit_partition),
              # cap 额外切出来的单元数 = 有 cap 与无 cap 的单元数之差（确定性，不必埋计数器）
              "unit_capped": (len(unit_partition)
-                             - len(semantic_units(text_rows, use_breaks=use_breaks)))}
+                             - len(semantic_units(text_rows, use_breaks=use_breaks,
+                                                  road=road)))}
     chunks: list[dict] = []
 
     def chars(items: list[dict]) -> int:
-        return sum(len(r["original"]) for r in items)
+        # 长度判据按**本路**的文本算（B 路看译文字数）
+        return sum(len(road_text(r, road)) for r in items)
 
     def emit(items: list[dict], node: dict | None) -> None:
         if not items:
@@ -426,15 +469,38 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
         mark = len(chunks)
         for child in node["children"]:
             pack_node(child)
-        # 引言并进"本节点子树里第一个 chunk"：拼在它的行前面（祖先→后代，不是兄弟跨越）
+        # 引言并进"本节点子树里第一个 chunk"：拼在它的行前面（祖先→后代，不是兄弟跨越）。
+        # ⚠️ 合并后**不得超过 hard**：这一步是唯一允许的"跨界"，早先没检查长度，实测
+        # 中文侧出现过 2241 字（比 hard 多 1 个字）的块 —— 校验层于是报 `over_hard`，
+        # 而调用方对"校验不过"的反应是"整篇退回不用锚点"，代价与收益完全不成比例。
+        # 找不到合得下的兄弟块时就把引言单独成块（它本来就是一个独立的小节引言）。
         if intro_merged and own:
             tail = own[-1]["index"]
+            own_size = chars(own)
+            # 目标 = **行序上紧接着引言的那个块**（首行下标最小、且全部行 > tail），
+            # 不是"列表里的第一个块" —— `chunks` 此刻还是**发块顺序**，而发块顺序由 TOC
+            # 节点顺序决定，可能和行序不一致。实测 turbo p017（B 路）：先发出的块从 229 开始，
+            # 紧接着引言的块 207..228 排在它后面；挑错目标会合出**中间有洞**的块
+            # （205,206,229..241），校验层报 `order_between_chunks`+`coverage`，
+            # 调用方于是整篇退回"只按目录层级"（实测就发生了这一次）。
+            best: tuple[int, dict] | None = None
             for chunk in chunks[mark:]:
-                if all(r["index"] > tail for r in chunk["rows"]):
-                    chunk["rows"] = own + chunk["rows"]
-                    break
+                if not chunk["rows"]:
+                    continue
+                first = chunk["rows"][0]["index"]
+                if first <= tail:
+                    continue
+                if own_size + chars(chunk["rows"]) > hard:
+                    continue
+                if best is None or first < best[0]:
+                    best = (first, chunk)
+            if best is not None:
+                best[1]["rows"] = own + best[1]["rows"]
             else:
-                emit(own, node)
+                # 合不进任何子块 → 引言单独成块。这时**追加**即可：`assemble` 最后会按
+                # 首行下标整体排序，位置自然正确（以前插在 `mark` 处，在 TOC 顺序 ≠ 行序时是错的）。
+                stats["chunks"] += 1
+                chunks.append({"rows": own, "node": node})
 
     for node in tree:
         pack_node(node)
@@ -446,7 +512,8 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
             out.append(chunk)
             continue
         stats["unit_split"] += 1
-        pieces, used_rows = pack_units(units_of(chunk["rows"]), target=target, hard=hard)
+        pieces, used_rows = pack_units(units_of(chunk["rows"]), target=target, hard=hard,
+                                      road=road)
         if used_rows:
             stats["row_fallback"] += 1
         for piece in pieces:
@@ -461,12 +528,15 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     return out, stats
 
 
-def pack_units(units: list[dict], *, target: int, hard: int
+def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = None
                ) -> tuple[list[list[dict]], bool]:
     """单元序列 → 块的划分（贪心）：累加到 ``target`` 之上即封口，``+下一个 > hard`` 必停。
 
     返回 ``(块的列表, 是否用到行边界兜底)``。单元自身 > ``hard`` 时按**行边界**兜底
     —— 单行不可拆，所以这条路径只在"某一行本身就超 hard"时才会走到。
+
+    字数一律按**本路**的文本算（`road_text`）：中英字符数差异很大，混用会让其中一路的
+    chunk 长度系统性偏大或偏小。
     """
     out: list[list[dict]] = []
     buf: list[dict] = []
@@ -480,18 +550,18 @@ def pack_units(units: list[dict], *, target: int, hard: int
         buf, size = [], 0
 
     for unit in units:
-        unit_size = sum(len(r["original"]) for r in unit["rows"])
+        unit_size = sum(len(road_text(r, road)) for r in unit["rows"])
         if unit_size > hard:
             used_rows = True
             flush()
             row_buf: list[dict] = []
             row_size = 0
             for row in unit["rows"]:
-                if row_buf and row_size + len(row["original"]) > hard:
+                if row_buf and row_size + len(road_text(row, road)) > hard:
                     out.append([{"rows": row_buf}])
                     row_buf, row_size = [], 0
                 row_buf.append(row)
-                row_size += len(row["original"])
+                row_size += len(road_text(row, road))
                 if row_size >= target:
                     out.append([{"rows": row_buf}])
                     row_buf, row_size = [], 0
@@ -558,7 +628,8 @@ def _split_rows(items: list[dict], *, target: int, hard: int,
 
 
 def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = True,
-                 unit_max_chars: int = UNIT_MAX_CHARS) -> list[dict]:
+                 unit_max_chars: int = UNIT_MAX_CHARS,
+                 road: str | None = None) -> list[dict]:
     """行 + chunk 划分 → **单元记录**（索引层直接用它建 `chunk_type="unit"` 的行）。
 
     这里**不生成任何文字**：`en` / `zh` 都是把行的 `original` / `translation` 按序拼起来
@@ -566,9 +637,14 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
 
     每条记录带 `parent_chunk_id`（它属于哪条正文 chunk）与 `prev` / `next`（±1 邻居，
     都在同一父 chunk 内）—— small-to-big 直接用这两个指针，不必在检索时现算。
+
+    `road` 给定时，`en`/`zh` **只填本路那一侧**（另一侧留空）：按路分块之后每条单元只有
+    一个语言面，索引层据此只出一行（A 路 `:en`、B 路 `:zh`）。`road=None`（并集口径）
+    两侧都填，与改造前一致。
     """
     text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
-    partition = semantic_units(text_rows, use_breaks=use_breaks, max_chars=unit_max_chars)
+    partition = semantic_units(text_rows, use_breaks=use_breaks, max_chars=unit_max_chars,
+                               road=road)
     owner: dict[int, dict] = {}
     for chunk in chunks:
         for row in chunk["rows"]:
@@ -578,19 +654,23 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
         items = unit["rows"]
         first, last = items[0], items[-1]
         parent = owner.get(first["index"])
+        en = ("" if road == "b"
+              else "\n\n".join(r["original"] for r in items))
+        zh = ("" if road == "a"
+              else "\n\n".join(r["translation"].strip() for r in items
+                               if (r["translation"] or "").strip()))
         out.append({
             "unit_id": f"{first['id']}-{last['id']}",
             "row_ids": [r["id"] for r in items],
             "first_row": first, "last_row": last,
-            "en": "\n\n".join(r["original"] for r in items),
-            "zh": "\n\n".join(r["translation"].strip() for r in items
-                              if (r["translation"] or "").strip()),
+            "en": en, "zh": zh,
             "section_path": first.get("section_path") or "",
             "section_title": first.get("section_title") or "",
             "section_kind": first.get("section_kind") or "body",
             "pages": sorted({r["page"] for r in items}),
-            "chars": sum(len(r["original"]) for r in items),
-            "anchor_used": bool(first.get("semantic_break")),
+            "chars": sum(len(road_text(r, road)) for r in items),
+            # 这条单元的左边界是**本路**标的锚点吗（A/B 的边界不同，所以必须按路判断）
+            "anchor_used": bool(is_break(first, road)),
             "parent_chunk_id": (parent or {}).get("key"),
             "parent_key": (parent or {}).get("key"),
             "prev": None, "next": None,
@@ -609,36 +689,43 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
 
 def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
           use_breaks: bool = True,
-          unit_max_chars: int = UNIT_MAX_CHARS) -> dict:
+          unit_max_chars: int = UNIT_MAX_CHARS,
+          road: str | None = None) -> dict:
     """一次产出三层：``{chunks, units, stats, report}``（索引层的唯一入口）。
 
     - `chunks`：正文块（每个带 `unit_ids`）—— 上下文单位；
     - `units`：语义单元（带 `parent_chunk_id` / `prev` / `next`）—— 检索单位；
     - `report`：`validate` 的结果（行覆盖 / 顺序 / 不跨节 / 长度 / 结构 + 单元不变量）。
+
+    ``road`` = ``"a"``/``"b"`` 时只用那一路的锚点、并按那一路的文本算长度
+    （**两路的划分允许不同**：这是用户口径"两个模型对语义边界的理解可能不同"的落地点）。
+    ``road=None`` 是并集口径，行为与改造前逐字一致。
     """
     chunks, stats = assemble(rows, tree, target=target, hard=hard, floor=floor,
-                             use_breaks=use_breaks, unit_max_chars=unit_max_chars)
+                             use_breaks=use_breaks, unit_max_chars=unit_max_chars,
+                             road=road)
     units = unit_records(rows, chunks, use_breaks=use_breaks,
-                         unit_max_chars=unit_max_chars)
+                         unit_max_chars=unit_max_chars, road=road)
     by_parent: dict[str, list[str]] = {}
     for unit in units:
         by_parent.setdefault(str(unit["parent_chunk_id"]), []).append(unit["unit_id"])
     for chunk in chunks:
         chunk["unit_ids"] = by_parent.get(str(chunk.get("key")), [])
-    report = validate(chunks, rows, hard=hard, units=units)
+    report = validate(chunks, rows, hard=hard, units=units, road=road)
     return {"chunks": chunks, "units": units, "stats": stats, "report": report}
 
 
 def validate(chunks: list[dict], rows: list[dict], *, hard: int,
              units: list[dict] | None = None,
-             unit_max_chars: int = UNIT_MAX_CHARS) -> dict:
+             unit_max_chars: int = UNIT_MAX_CHARS,
+             road: str | None = None) -> dict:
     """校验装配结果；任何一条不满足都记下来（调用方据此回退到确定性行边界切分）。
 
     校验项：
     - **覆盖**：该进正文的行恰好出现一次；
     - **顺序**：chunk 内的行下标递增，chunk 之间不交叉、不重排；
     - **不跨节**：一个 chunk 的行不落在两个不可比的 TOC 节点里（祖先/后代关系不算跨界）；
-    - **长度**：英文侧 ≤ hard（一行不可拆，所以单行超限时只告警不失败）；
+    - **长度**：本路文本 ≤ hard（一行不可拆，所以单行超限时只告警不失败）；
     - **结构完整**：正文块里不出现表格行 / 图注行 / 参考文献行（这些由图/表 chunk 承载）；
     - **单元不变量**（传了 `units` 才查）：单元按行序恰好一次覆盖同一批行、每个单元恰属于
       一个 chunk、邻居指针同父相邻、单元 ≤ `unit_max_chars`（单行单元除外）。
@@ -657,7 +744,7 @@ def validate(chunks: list[dict], rows: list[dict], *, hard: int,
             errors.append({"kind": "order_between_chunks", "chunk_first": items[0]["id"]})
         prev_index = indices[-1] if indices else prev_index
         seen.extend(indices)
-        content = "\n\n".join(r["original"] for r in items)
+        content = "\n\n".join(road_text(r, road) for r in items)
         if len(content) > hard and len(items) > 1:
             errors.append({"kind": "over_hard", "chunk_first": items[0]["id"],
                            "chars": len(content)})

@@ -478,51 +478,75 @@ def e2e(monkeypatch):
 
 def test_build_chunks_end_to_end(e2e) -> None:
     ks = e2e
-    base = ks._base_chunks("demo")
+    base, road_summary = ks._base_chunks("demo")
     by_type: dict[str, list[dict]] = {}
     for chunk in base:
         by_type.setdefault(chunk["chunk_type"], []).append(chunk)
 
-    # 1) 前沿元数据不进库；正文两侧同行
-    texts = by_type["text"]
-    assert texts, "至少要有正文块"
+    def road_of(c: dict) -> str | None:
+        return (c.get("metadata") or {}).get("road")
+
+    texts_a = [c for c in by_type["text"] if road_of(c) == "a"]
+    texts_b = [c for c in by_type["text"] if road_of(c) == "b"]
+    shared = [c for c in base if road_of(c) is None]
+
+    # 0) 两路各装配一套（划分允许不同），图/表/公式两路共用
+    assert road_summary["a"]["ok"] and road_summary["b"]["ok"], road_summary
+    assert texts_a and texts_b, "两路都要有正文块"
+    assert all(road_of(c) is None for c in by_type["table"] + by_type["formula"])
+    # id 里带路号：两路的划分本来就可能不同，id 撞在一起会出现"同一条 id 指两份内容"
+    assert all(f":a:text:" in c["id"] for c in texts_a)
+    assert all(f":b:text:" in c["id"] for c in texts_b)
+
+    # 1) 前沿元数据不进库；两路各自那一侧的内容对得上
     assert all("jane@example.edu" not in c["content"] for c in base)
-    abstract = next(c for c in texts if "Abstract" in c["content"])
-    assert "We study online vector quantization" in abstract["content"]
-    assert abstract["_zh"] and "我们研究流式数据的在线向量量化" in abstract["_zh"]
-    assert abstract["metadata"]["section_path"] == "# Abstract"
-    assert abstract["section"] == "# Abstract"
+    abstract_a = next(c for c in texts_a if "Abstract" in c["content"])
+    # B 路由章节路径定位（中文译文里标题文本不一定是 "Abstract" 那几个字母）
+    abstract_b = next(c for c in texts_b if c["metadata"]["section_path"] == "# Abstract")
+    assert "We study online vector quantization" in abstract_a["content"]
+    assert "我们研究流式数据的在线向量量化" in abstract_b["content"]
+    assert not abstract_a.get("_zh") and not abstract_b.get("_zh"), "按路分块后只有一个语言面"
+    assert abstract_a["metadata"]["section_path"] == "# Abstract"
+    assert abstract_a["section"] == "# Abstract"
 
     # 2) 公式：正文里有定界符，另有原子 chunk 且**双向关联**；关联挂在**单元**上
     #    （单元是检索单位，比正文 chunk 细 —— 见 docs/语义单元索引-设计.md §5）
-    method = next(c for c in texts if "1 Method" in c["content"])
-    assert "$$D_{\\text{mse}}" in method["content"]
-    units = by_type["unit"]
-    assert units, "要建出语义单元"
-    holder = next(u for u in units if "f001" in (u["metadata"].get("formula_ids") or []))
-    assert holder["metadata"]["formula_ids"] == ["f001"]
-    assert holder["metadata"]["parent_chunk_id"] == method["id"], "单元的父块就是它所在正文块"
+    method_a = next(c for c in texts_a if "1 Method" in c["content"])
+    assert "$$D_{\\text{mse}}" in method_a["content"]
+    units_a = [u for u in by_type["unit"] if road_of(u) == "a"]
+    units_b = [u for u in by_type["unit"] if road_of(u) == "b"]
+    assert units_a and units_b, "两路都要建出语义单元"
+    holder_a = next(u for u in units_a if "f001" in (u["metadata"].get("formula_ids") or []))
+    # 公式挂在**两路**的单元上（去掉早期的 break）：按 A 或按 B 检索，"公式上下文"都成立
+    assert any("f001" in (u["metadata"].get("formula_ids") or []) for u in units_b)
+    assert holder_a["metadata"]["parent_chunk_id"] == method_a["id"], "单元的父块是**同一路**的正文块"
     formula = by_type["formula"][0]
     assert formula["id"] == "demo:formula:f001"
-    assert formula["metadata"]["text_chunk_id"] == holder["id"], "公式指回**单元**（更精确）"
+    # 公式只指回一条 → 固定优先级 B 路单元优先（服务中文阅读与后续的论文理解）
+    holder_b = next(u for u in units_b if "f001" in (u["metadata"].get("formula_ids") or []))
+    assert formula["metadata"]["text_chunk_id"] == holder_b["id"]
     assert formula["metadata"]["section_path"] == "# 1 Method"
 
-    # 2b) 单元层：覆盖同一批正文行（不漏不重），每条都有父块与 ±1 邻居指针（首尾为空）
-    chunk_rows = [rid for c in texts for rid in c["metadata"]["row_ids"]]
-    unit_rows = [rid for u in units for rid in u["metadata"]["row_ids"]]
-    assert sorted(unit_rows) == sorted(chunk_rows), "单元与正文块必须覆盖同一批行"
-    assert len(unit_rows) == len(set(unit_rows)), "单元之间不重叠"
-    by_parent: dict[str, list[dict]] = {}
-    for unit in units:
-        by_parent.setdefault(unit["metadata"]["parent_chunk_id"], []).append(unit)
-    for group in by_parent.values():
-        assert group[0]["metadata"]["prev_unit_id"] is None
-        assert group[-1]["metadata"]["next_unit_id"] is None
-        for left, right in zip(group, group[1:]):
-            assert left["metadata"]["next_unit_id"] == right["id"]
-            assert right["metadata"]["prev_unit_id"] == left["id"]
+    # 2b) 单元层（**按路各自**）：覆盖本路同一批正文行（不漏不重），父块与 ±1 邻居指针齐全
+    for road_texts, road_units in ((texts_a, units_a), (texts_b, units_b)):
+        chunk_rows = [rid for c in road_texts for rid in c["metadata"]["row_ids"]]
+        unit_rows = [rid for u in road_units for rid in u["metadata"]["row_ids"]]
+        assert sorted(unit_rows) == sorted(chunk_rows), f"路 {road_texts[0]['id']} 单元与正文块行集不齐"
+        assert len(unit_rows) == len(set(unit_rows)), "单元之间不重叠"
+        by_parent: dict[str, list[dict]] = {}
+        for unit in road_units:
+            by_parent.setdefault(unit["metadata"]["parent_chunk_id"], []).append(unit)
+        for group in by_parent.values():
+            assert group[0]["metadata"]["prev_unit_id"] is None
+            assert group[-1]["metadata"]["next_unit_id"] is None
+            for left, right in zip(group, group[1:]):
+                assert left["metadata"]["next_unit_id"] == right["id"]
+                assert right["metadata"]["prev_unit_id"] == left["id"]
+        # 邻居不许跨路（两路的 unit id 前缀不同，这里顺带钉住）
+        assert all(road_units[0]["id"].split(":")[1] in (u["metadata"]["next_unit_id"] or u["id"])
+                   for u in road_units)
 
-    # 3) 表：图注 + 表体在同一条 table chunk 里，且两侧都有
+    # 3) 表：图注 + 表体在同一条 table chunk 里，且两侧都有（共用块，仍是双语）
     table = by_type["table"][0]
     assert "Table 1: Demo results." in table["content"]
     assert "| Full Cache | 45.0 |" in table["content"]
@@ -530,6 +554,7 @@ def test_build_chunks_end_to_end(e2e) -> None:
     assert table["metadata"]["row_ids"] == ["p002-00", "p002-01"]
     assert table["metadata"]["section_kind"] == "body"
 
-    # 4) 没有任何正文块超过 hard
+    # 4) 没有任何正文块超过 hard（每一路按**自己那一侧**的字数判定，见 chunking.validate）
     assert all(len(c["content"]) <= 2240 for c in base)
+    assert shared, "图/表/公式也要在基块里"
 

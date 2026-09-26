@@ -232,7 +232,11 @@ _SHARED_SEGMENTATION_RULES = """【分段规则（两路**完全一致**：这�
 4. **表格**整张表成一块；**图注 / 表注**各自单独成块（形如 **Figure 1: …** / **Table 2: …**）。
 5. **参考文献条目**逐条成块（保留 `[12]` 这类编号）。
 6. **算法伪代码**整块成一块（行尾保留两个空格做 Markdown 硬换行）。
-7. 不要把一段拆成两块、也不要把相邻两段合成一块；**不要按字数机械切分**。"""
+7. 不要把一段拆成两块、也不要把相邻两段合成一块；**不要按字数机械切分**。
+8. **分段的依据只有页图**：解析器文本里的空行**不算分段证据** —— 它可能有假空行，也可能把一整段
+   拆成好几行。页图上连续的一整段就**必须是一块**；两句之间即使换了行，只要页图上是同一段就不会拆开。
+   判断"这是不是新的一段"看**段首缩进 / 段间空隙**这类排版证据。
+   ⚠️ 代价很大：两侧各拆各的，第 i 行就会配上**邻行**的内容（整页错位一行，读者一眼就看出对不上）。"""
 
 _SHARED_HEADING_RULES = """【标题层级：必须与【全文标题骨架】一致】
 - 骨架里写 `# 1 TURBOQUANT…`，这一页再遇到它就必须用 `#`。
@@ -1258,6 +1262,40 @@ def _sequence_pairs(left: list[dict], right: list[dict]
     return out
 
 
+_MATH_SPAN = re.compile(r"\$([^$]+)\$", re.DOTALL)
+#: 引用年份 `Shannon (1948)` / `Achiam et al. (2023)`：两侧都必须原样保留英文作者与年份
+_CITE_YEAR = re.compile(r"\((\d{4}[a-z]?)\)")
+#: 全大写缩略语（`TURBOQUANT` / `MSE` / `QJL` / `LLM` / `BLEU` …）：**两侧都原样保留**，
+#: 是跨语言最密的对位证据。标题与摘要这类"层级编号都为空、类型键完全一样"的块全靠它区分
+#: （实测 turbo p1：A 的 `# TURBOQUANT…` 与 `# ABSTRACT` 键都是 `("h",1,"")`，
+#: 匹配器于是把英文标题配到了中文摘要上）。
+_CAPS_WORD = re.compile(r"\b[A-Z][A-Z0-9\-]{3,}\b")
+
+
+def anchor_markers(text: str) -> tuple[str, ...]:
+    """这一块里的**跨语言稳定标记**：公式片段 + 引用年份 + 全大写缩略语。
+
+    为什么需要它：`pair_rows` 在两侧块数不等时靠 `_row_key` 做结构对齐，而"段落/标题"这两类
+    如果只用类型（+层级编号）当键，`SequenceMatcher` 就**看不出多出来的那一段该插在哪**，
+    也分不清两个同级标题谁是谁 —— 实测 turbo p1 因此把英文标题配到中文摘要上、并从第 4 行起
+    整体错位一行（读者看到的每行都配着邻行译文）。
+
+    公式、引用年份与全大写缩略语在两侧必须逐字保留（提示词硬要求），所以它们是可靠的对位证据。
+    没有标记的块仍然退回纯类型键 —— 那类块本来就无从区分。
+    """
+    text = text or ""
+    marks: list[str] = []
+    for m in _MATH_SPAN.finditer(text):
+        body = re.sub(r"\s+", "", m.group(1))
+        if body:
+            marks.append(f"m:{body[:48]}")
+    for m in _CITE_YEAR.finditer(text):
+        marks.append(f"y:{m.group(1)}")
+    for m in _CAPS_WORD.finditer(text):
+        marks.append(f"c:{m.group(0)}")
+    return tuple(marks)
+
+
 def _row_key(block: dict) -> tuple:
     """配对用的块签名 —— **别用正文文本**。
 
@@ -1273,6 +1311,10 @@ def _row_key(block: dict) -> tuple:
     `SequenceMatcher` 于是"删掉"先出现的算法块、让后一段正文去配算法译文 ——
     对照时算法左右不挨着，单栏（译文）里还留下一个空行。给它一个独立的键即可；
     这类块两侧的行数与序号天然一一对应，是最可靠的锚点。
+
+    第二个例外是**跨语言稳定标记**（`anchor_markers`：公式片段 + 引用年份）。纯类型键下
+    "多出来的那一段该插在哪"是**不可判定**的，匹配器于是插在页尾 → 整页错位一行（实测 p1）。
+    带上标记之后插入能被定位到正确位置。没有标记的块仍然只按类型配（无从区分，只能如此）。
     """
     btype = block.get("type") or "para"
     text = (block.get("text") or "").strip()
@@ -1282,6 +1324,9 @@ def _row_key(block: dict) -> tuple:
         return ("f", _norm(text)[:60])
     if btype == "para" and _is_step_block(text):
         return (btype, "steps")
+    marks = anchor_markers(text)
+    if marks:
+        return (btype, marks)
     return (btype,)
 
 
@@ -1365,6 +1410,7 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
     for row in rows:
         row.pop("semantic_break", None)
         row.pop("semantic_type", None)
+        row.pop("semantic_break_side", None)
     if not rows or not entries:
         return stats
 
@@ -1394,9 +1440,12 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         if idx in wanted:
             stats["duplicate"] += 1
             continue
-        wanted[idx] = entry
+        wanted[idx] = {**entry, "side": side}
     for idx, entry in sorted(wanted.items()):
         rows[idx]["semantic_break"] = True
+        # **哪一路标的**：分块层按路取边界的关键（A 路的锚点是英文、B 路的是中文，
+        # 于是两路各得到一套自己的单元划分 —— 这正是"两路 Chunk 允许不同"的实现方式）。
+        rows[idx]["semantic_break_side"] = entry["side"]
         if entry["type"]:
             rows[idx]["semantic_type"] = entry["type"]
     stats["accepted"] = len(wanted)
@@ -1529,6 +1578,50 @@ def build_path_payload(*, path: str, page: int, page_total: int,
         # `carry_md` 是翻译侧独有的：本页从【下一页开头】借走的那段原文，下一页用它去重
         payload["carry_md"] = result.carry_md
     return payload
+
+
+def absorb_one_sided_rows(rows: list[dict], page: int) -> dict:
+    """把"只有一侧有内容"的行并进**上一行**的缺失侧（读时归一，不动产物）。
+
+    为什么需要它：两路各自按页图分段，块数经常差 1~2 段（实测 22 页里 4~6 页），
+    `pair_rows` 于是留下几行"只有中文/只有英文"。**这些差异绝大多数不是"一侧真的少了内容"，
+    而是"一侧把相邻两段并成了一块"** —— 实测 turbo p1：A 把摘要里相邻两句并成一块、B 拆成两块。
+    并进上一行的对应侧之后，两侧重新覆盖同一段文字，阅读器不会再出现"英文栏是空的"。
+
+    为什么并进**上一行**而不是下一行：`pair_rows` 的插入点就在那一段分歧处，而"被并进的那一块"
+    在另一侧是**和上一块连在一起的**（差分对齐给出的最短解释）。
+
+    页首的单侧行没有上一行可并 → 原样保留（那确实是两侧各自多出的开头）。
+    吸收的行连同它的行号一起消失，所以**行 id 会重排**（`p{页}-{序号}` 本来就是位置编号）；
+    本函数在 `apply_semantic_breaks` **之前**调用，语义边界按合并后的行重新落一遍。
+
+    ⚠️ **整页缺一侧时不吸收**（过渡态：只跑完 A 路那一侧还没有产物）。否则每一行都"缺同一侧"，
+    会被连锁并进第一行，整页的行结构直接塌掉（有单测钉住这一条）。
+
+    返回 ``{"rows": [...], "absorbed": n}``。
+    """
+    page_has_en = any((r.get("original") or "").strip() for r in rows)
+    page_has_zh = any((r.get("translation") or "").strip() for r in rows)
+    out: list[dict] = []
+    absorbed = 0
+    for row in rows:
+        has_en = bool((row.get("original") or "").strip())
+        has_zh = bool((row.get("translation") or "").strip())
+        missing_side_present = (page_has_zh if not has_zh else page_has_en)
+        if out and has_en != has_zh and missing_side_present:
+            prev = out[-1]
+            if has_en:
+                prev["original"] = f"{prev.get('original') or ''}\n\n{row['original']}".strip()
+            else:
+                prev["translation"] = (f"{prev.get('translation') or ''}\n\n"
+                                       f"{row['translation']}").strip()
+            absorbed += 1
+            continue
+        out.append(dict(row))
+    for i, row in enumerate(out):                 # 行 id/序号按新位置重排（位置编号）
+        row["id"] = f"p{int(page):03d}-{i:02d}"
+        row["index"] = i
+    return {"rows": out, "absorbed": absorbed}
 
 
 class PageStore:

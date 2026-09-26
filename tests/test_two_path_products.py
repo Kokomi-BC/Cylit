@@ -144,7 +144,12 @@ def test_legacy_structure_pages_take_recomputed_rows(paths) -> None:
 
 
 def test_two_path_files_merge_into_rows(paths) -> None:
-    """两侧块数不同 → 结构对齐成行，**单侧行如实计数**（不强求一致）。"""
+    """两侧块数不同 → 结构对齐成行，再由 `absorb_one_sided_rows` 把**单侧行并进上一行**。
+
+    为什么要吸收：两路各自分段，块数差 1~2 段时 `pair_rows` 会留下"只有一侧有内容"的行。
+    实测这些差异绝大多数是"一侧把相邻两段并成了一块"，并进上一行的缺失侧之后两侧重新覆盖同一段
+    文字（否则阅读器会出现"这一行英文栏是空的"）。
+    """
     write(paths["path_a"], {1: {
         "page": 1, "page_total": 1,
         "original_md": "# 1 Method\n\nWe define the estimator.\n\nThe bound holds.",
@@ -160,12 +165,13 @@ def test_two_path_files_merge_into_rows(paths) -> None:
     assert shape == "paths"
     page = products[0]
     assert page["source"] == "paths"
-    # A 侧 3 块 / B 侧 2 块 → 配成 3 行，最后一行只有原文
-    assert len(page["rows"]) == 3
+    # A 侧 3 块 / B 侧 2 块 → 配成 3 行，最后一行的原文并进上一行 → 2 行、**没有空栏**
+    assert len(page["rows"]) == 2
+    assert page["one_sided"] == 0
     assert page["align"] == "structure"
-    assert page["one_sided"] == 1
-    assert page["rows"][-1]["original"] == "The bound holds."
-    assert page["rows"][-1]["translation"] == ""
+    joined = page["rows"][-1]["original"]
+    assert "We define the estimator." in joined and "The bound holds." in joined
+    assert page["rows"][-1]["translation"] == "我们定义这个估计量。"
     assert page["sides"] == {"a": True, "b": True}
 
 
@@ -191,7 +197,11 @@ def test_missing_side_is_filled_from_legacy(paths) -> None:
 
 
 def test_page_with_only_one_side_still_produces_rows(paths) -> None:
-    """没有任何旧产物、只跑完 A 路：仍然要出行（只是译文全空），不能整页消失。"""
+    """没有任何旧产物、只跑完 A 路：仍然要出行（只是译文全空），不能整页消失。
+
+    只有一侧有内容时**不做吸收**（吸收的目标是"并进上一行的缺失侧"，而这里每行都缺同一侧）；
+    页首的单侧行同理保留。
+    """
     write(paths["path_a"], {1: {
         "page": 1, "page_total": 1,
         "original_md": "# 1 Method\n\nWe define the estimator.",

@@ -279,6 +279,26 @@ def test_pair_rows_keeps_step_blocks_together():
     assert lone and not lone[0]["translation"]        # 多出来的正文单独成行，不抢算法译文
 
 
+def test_marker_key_localizes_a_mid_page_insertion():
+    """块数不等时，**跨语言稳定标记**（公式片段 / 引用年份）让"插入"被定位到正确位置。
+
+    纯类型键下"多出来的那一段该插在哪"**不可判定**，`SequenceMatcher` 会把它插在**页尾** ——
+    于是后面的每一行都错位一行（实测 turbo p1 就是摘要里相邻两句：A 并成一块、B 拆成两块，
+    结果从第 4 行起英中整体错位）。两块都带引用年份时，插入应当落在中间。
+    """
+    en = ("# 1 Method\n\nAlpha statement (1948).\n\n"
+          "Beta statement (2023).\n\nGamma statement (2024).")
+    zh = ("# 1 方法\n\n甲句 (1948)。\n\n多出来的一段 (1999)。\n\n"
+          "乙句 (2023)。\n\n丙句 (2024)。")
+    rows, quality = pair_rows(en, zh, page=1)
+    assert quality == "structure"
+    assert len(rows) == 5
+    # 插入落在中间（一行只有译文），后面的行照样配得上 —— 而不是把错位甩到页尾
+    assert rows[2]["original"] == "" and rows[2]["translation"].startswith("多出来")
+    assert rows[3]["original"].startswith("Beta") and rows[3]["translation"].startswith("乙句")
+    assert rows[4]["original"].startswith("Gamma") and rows[4]["translation"].startswith("丙句")
+
+
 def test_pair_rows_structure_fallback_keeps_every_block():
     # 译文漏掉了一段：块数不等，必须走结构对齐且**不丢任何块**
     broken = PAGE_MD_ZH.replace(
