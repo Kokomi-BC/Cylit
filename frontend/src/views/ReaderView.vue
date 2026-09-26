@@ -37,7 +37,6 @@ import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
-import ReaderInsight from '@/components/reader/ReaderInsight.vue';
 import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
@@ -116,109 +115,130 @@ const paneWidth = ref(1200);
  * 为什么按论文：各篇的侧栏内容差别很大（这篇图多、那篇概念多），一个全局宽度总有一篇不合适；
  * 而"这篇论文上次是怎么看的"是本阅读器已有的口径（`reading-progress` 里存了侧栏开合 / 字号 /
  * 缩放）。宽度**不进服务端那份**：它是纯视图状态，进度表里没有这一列，为它改后端 schema
- * 不划算（用户口径也允许 `localStorage`）。范围 220~360px：再窄术语表的英文列就没法读了，
- * 再宽正文（对照时本来就只有半屏）会被挤没。
+ * 不划算（用户口径也允许 `localStorage`）。
+ *
+ * 上限**按视图模式**给（用户口径第二轮返工）：对照模式下正文本来就只有半屏，
+ * 侧栏超过 360px 会把译文挤没；纯原文 / 纯译文是单栏、空白多，可以放宽到 640px
+ * （再和视口挂钩，不超过 60%）—— 解读、术语表这类内容在窄栏里会被挤成竖排。
  */
 const ASIDE_W_MIN = 220;
-const ASIDE_W_MAX = 360;
+/** 对照模式（原文 + 译文并排）的上限：维持原来的 360px */
+const ASIDE_W_MAX_COMPARE = 360;
+/** 非对照模式的上限：640px，再与视口挂钩（不超过 60%） */
+const ASIDE_W_MAX_WIDE = 640;
 const ASIDE_W_DEFAULT = 300;
+/** 点「解读」页签时的目标宽度：解读里全是小标题与概念卡，窄栏会被挤成竖排 */
+const ASIDE_W_INSIGHT = 520;
 const asideWidthKey = `pm.reader.aside-w.${instancePaperId}`;
-const clampAsideWidth = (w: number) => Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX, Math.round(w)));
+/** 视口宽度（响应式）：非对照模式的上限要跟窗口挂钩 */
+const winWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
+
+/**
+ * 当前模式下的上限。对照 = 360；非对照 = min(640, 视口 60%)，但**不低于下限** ——
+ * 窄窗口下 `innerWidth * 0.6` 可能小于 220，不夹一下就会算出"上限比下限还小"。
+ */
+const asideMaxWidth = computed(() => (viewMode.value === 'bilingual'
+  ? ASIDE_W_MAX_COMPARE
+  : Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX_WIDE, Math.round(winWidth.value * 0.6)))));
+
+/**
+ * 夹取宽度。**拖拽、切模式、点解读页签都走它** —— 上限只在初始化时算一次的话，
+ * 用户先拖到 600 再把视图切回对照，侧栏会一直停在 600（对照的文字列被挤没）。
+ */
+const clampAsideWidth = (w: number) => Math.max(ASIDE_W_MIN, Math.min(asideMaxWidth.value, Math.round(w)));
+
+/**
+ * 初始化时**只夹硬边界**（220~640），不按模式夹：这一刻 `viewMode` 还是默认的 bilingual，
+ * 而这篇论文真正的视图模式要等 `loadAll()` 才灌进来 —— 按模式夹会把"在纯译文下拖到 600"
+ * 的记录一开始就削成 360，用户下次打开永远是 360（踩过）。模式夹取交给下面的 watch。
+ */
 const asideWidth = ref(ASIDE_W_DEFAULT);
 try {
   const savedW = Number(localStorage.getItem(asideWidthKey));
-  if (Number.isFinite(savedW) && savedW > 0) asideWidth.value = clampAsideWidth(savedW);
+  if (Number.isFinite(savedW) && savedW > 0) {
+    asideWidth.value = Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX_WIDE, Math.round(savedW)));
+  }
 } catch { /* 隐私模式下忽略 */ }
 /** 给 `<style>` 里的 `v-bind()` 用：宽度是响应式的，拖到哪侧栏就是多宽 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
-/* ------------------------------ 解读悬浮面板（R1） ------------------------------ */
-/**
- * 「解读」从左侧页签搬到**右侧悬浮面板**：浮在正文之上（`position: fixed`）、**不占布局**，
- * 所以正文宽度与左右对照的版面一点都不变 —— 这正是"悬浮"的意义。
- *
- * 为什么必须搬：以前它是左栏的一个页签，左栏最窄 220px，解读里的「论文精读 / 技术解剖」
- * 这种小标题被挤成竖排（用户截图里就是竖着的一个字一行的）。
- *
- * 显隐与宽度都**按论文**记在 `localStorage`（与左侧栏的 `pm.reader.aside-w.` 同一习惯）：
- * 它们是纯视图状态，服务端进度表里没有这两列，为它们改后端 schema 不划算。
- * 默认**关闭**：解读是"需要时瞟一眼"的东西，一进来就占掉右侧半屏会挡住正文。
- */
-const INSIGHT_W_MIN = 320;
-const INSIGHT_W_MAX = 720;
-const INSIGHT_W_DEFAULT = 420;
-const insightOpenKey = `pm.reader.insight-open.${instancePaperId}`;
-const insightWidthKey = `pm.reader.insight-w.${instancePaperId}`;
-const clampInsightWidth = (w: number) => Math.max(INSIGHT_W_MIN, Math.min(INSIGHT_W_MAX, Math.round(w)));
-const insightWidth = ref(INSIGHT_W_DEFAULT);
-const insightOpen = ref(false);
-try {
-  insightOpen.value = localStorage.getItem(insightOpenKey) === '1';
-  const savedIW = Number(localStorage.getItem(insightWidthKey));
-  if (Number.isFinite(savedIW) && savedIW > 0) insightWidth.value = clampInsightWidth(savedIW);
-} catch { /* 隐私模式下忽略 */ }
-
-/**
- * 面板顶边 = **工具栏的下边**（量出来的，不是写死的）。
- *
- * 工具栏是 `flex-wrap` 的，窄一点的窗口上会折成两行、高度不再固定；
- * 写死 `top: 97px` 那种算法在折行后会把工具栏压在面板底下（用户口径：不要盖住工具栏）。
- * 用 ResizeObserver 盯工具栏，它自己变高变矮都能跟上。
- */
-const toolbarEl = ref<HTMLElement | null>(null);
-const insightTop = ref(0);
-/** 量不到（还没渲染 / 老浏览器）时给个兜底：顶栏高度 + 一行工具栏的估高 */
-const insightTopPx = computed(() => (
-  insightTop.value > 0 ? `${insightTop.value}px` : 'calc(var(--header-h) + 46px)'
-));
-function syncInsightTop() {
-  const el = toolbarEl.value;
-  if (!el) return;
-  insightTop.value = Math.round(el.getBoundingClientRect().bottom);
+/** 落盘（每像素写一次没意义；拖完 / 夹取之后才写） */
+function persistAsideWidth() {
+  try { localStorage.setItem(asideWidthKey, String(asideWidth.value)); } catch { /* 忽略 */ }
 }
-let toolbarRo: ResizeObserver | null = null;
 
-function setInsightOpen(v: boolean) {
-  insightOpen.value = v;
-  try { localStorage.setItem(insightOpenKey, v ? '1' : '0'); } catch { /* 忽略 */ }
-  if (v) {
-    // 面板刚出现时才量得到工具栏（v-if 之前 toolbarEl 是 null / 旧值）
-    void nextTick(() => {
-      syncInsightTop();
-      if (toolbarEl.value && typeof ResizeObserver !== 'undefined' && !toolbarRo) {
-        toolbarRo = new ResizeObserver(() => syncInsightTop());
-        toolbarRo.observe(toolbarEl.value);
-      }
-    });
+/**
+ * 当前宽度超出新模式上限 → 夹到上限并落盘（用户口径：切换模式时夹取）。
+ * 宽窄一变就要重算正文栏宽、并**作废行偏移缓存**（行高随列宽变），所以走 `afterAsideResize`。
+ */
+async function applyAsideMax() {
+  const capped = clampAsideWidth(asideWidth.value);
+  if (capped === asideWidth.value) return;
+  asideWidth.value = capped;
+  persistAsideWidth();
+  await afterAsideResize();
+}
+// 切视图模式 / 窗口尺寸变化（非对照的上限与视口挂钩）都要重夹一次
+watch([viewMode, asideMaxWidth], () => { void applyAsideMax(); });
+
+/* ------------------------------ 解读页签 / 左栏宽度联动 ------------------------------ */
+
+/**
+ * 确保左栏可见（**不切换**）：宽屏取消"收起"，窄屏开抽屉。
+ *
+ * 「解读回到左栏」之后光选中页签是不够的：用户把左栏收起过（或窄屏抽屉关着）时页签根本看不见，
+ * 表现就是"点了没反应" —— 与 `?side=insight` 深链同一个理由。
+ */
+async function ensureAsideVisible() {
+  if (asideVisible.value) return;
+  if (isNarrow.value) mobilePane.value = 'side';
+  else {
+    asideOpen.value = true;
+    try { localStorage.setItem(asideKey, '1'); } catch { /* 忽略 */ }
   }
+  await nextTick();
+  syncPaneWidth();
 }
 
-/* 宽度拖拽：把手在面板**左边缘**，往左拖 = 变宽（与左栏把手同一套 pointer capture 写法，
-   理由见 `onResizeDown`）。拖完才落盘，每像素写一次 localStorage 没意义。 */
-const insightResizing = ref(false);
-let insightStartX = 0;
-let insightStartW = 0;
-function onInsightResizeDown(ev: PointerEvent) {
-  insightResizing.value = true;
-  insightStartX = ev.clientX;
-  insightStartW = insightWidth.value;
-  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
-  ev.preventDefault();                     // 别把拖拽变成"选面板里的文字"
+/**
+ * 打开解读页签（工具栏按钮与 `?side=insight` 深链都走它）：展开左栏 → 选中页签。
+ *
+ * 「变宽」没有写在这里，而是挂在 `watch(sideTab)` 上：点页签、深链、以后可能加的快捷键
+ * 都是"进了解读页签"，写一处必然漏一处。
+ */
+async function openInsightTab() {
+  await ensureAsideVisible();
+  sideTab.value = 'insight';
 }
-function onInsightResizeMove(ev: PointerEvent) {
-  if (!insightResizing.value) return;
-  insightWidth.value = clampInsightWidth(insightStartW + (insightStartX - ev.clientX));
+
+/** 工具栏「解读」按钮当前是不是"正在看解读"（按钮的点亮态与它一致） */
+const insightOpenActive = computed(() => asideVisible.value && sideTab.value === 'insight');
+
+/**
+ * 进「解读」页签时把侧栏放宽到 520（用户口径）。
+ *
+ * **只增不减**：用户手动拖到 700 之后再点解读，不该被缩回 520 —— "我拉宽过"是明确意图。
+ * 目标同样走 `clampAsideWidth`：纯译文（上限 640）能到 520，对照模式会被夹到 360
+ * （那时正文本来只剩半屏，不能再让侧栏吃掉）。
+ */
+async function widenForInsight() {
+  if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死，变宽没有意义
+  const want = clampAsideWidth(ASIDE_W_INSIGHT);
+  if (want <= asideWidth.value) return;
+  asideWidth.value = want;
+  persistAsideWidth();
+  await afterAsideResize();
 }
-function onInsightResizeUp(ev: PointerEvent) {
-  if (!insightResizing.value) return;
-  insightResizing.value = false;
-  (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
-  try { localStorage.setItem(insightWidthKey, String(insightWidth.value)); } catch { /* 忽略 */ }
-}
-/** 双击把手回默认宽度 420（拖歪了有个一键回退） */
-function resetInsightWidth() {
-  insightWidth.value = INSIGHT_W_DEFAULT;
-  try { localStorage.setItem(insightWidthKey, String(INSIGHT_W_DEFAULT)); } catch { /* 忽略 */ }
+/* 「进解读页签 → 变宽」的钩子挂在 `sideTab` 的 watch 上（见下面页签定义处）：
+   点页签、深链、以后可能加的快捷键都是"进了解读"，写一处必然漏一处。 */
+
+/**
+ * 工具栏「解读」按钮：展开左栏并选中解读页签（**不再**控制右侧悬浮面板 —— 那一版已按用户口径撤销）。
+ * 已经在看解读时再点一次就收起左栏：这个按钮现在管的就是左栏，与左边那个侧栏开关同一个手感。
+ */
+async function toggleInsightPane() {
+  if (insightOpenActive.value) { await toggleAside(); return; }
+  await openInsightTab();
 }
 
 /** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
@@ -292,12 +312,15 @@ const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
 
-/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务。
- *  「解读」**不在这一列**：它是右侧悬浮面板（见 `insightOpen`），左侧栏每个页签都只占几百像素，
- *  放进去会把解读里的标题挤成竖排。 */
+/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 / **解读**。
+ *  解读与「怎么读这篇论文」是同一份内容（一份解读里本来就同时含精读与阅读地图），
+ *  所以**共用一个页签**（用户口径）；进这个页签会自动把侧栏放宽（见 `widenForInsight`）。 */
 type SideTabKey = 'toc' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
-const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks'];
+const SIDE_TAB_KEYS = ['toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight'];
+/* 进「解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
+   放在这里而不是点击处理器里：点页签 / `?side=insight` 深链 / 工具栏按钮都算"进了解读"。 */
+watch(sideTab, (k) => { if (k === 'insight') void widenForInsight(); });
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
  * 只数 IR 术语表是不对的：简报里那 20 条统一译法才是真正注入每次翻译 prompt 的那一份，
@@ -336,6 +359,10 @@ const SIDE_TABS = computed<Array<{
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
+  {
+    k: 'insight', icon: 'sparkle', label: '解读',
+    title: '解读（论文精读 + 相关概念 + 怎么读这篇论文，一份内容）',
+  },
   { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
 ]);
 
@@ -702,13 +729,13 @@ async function loadAll() {
     // 深链搜索：?q=xxx 直接跑一遍（自检脚本与"分享一条检索"都用得上）；?scope=all|en|zh 指定范围
     if (q.scope === 'all' || q.scope === 'en' || q.scope === 'zh') searchScope.value = q.scope;
     if (q.q) { searchQuery.value = String(q.q); runSearch(); }
-    if (SIDE_TAB_KEYS.includes(String(q.side))) {
+    const sideParam = String(q.side ?? '');
+    if (SIDE_TAB_KEYS.includes(sideParam)) {
       // 兼容旧的 ?side=notes：批注与笔记已合并为一个页签
-      sideTab.value = (String(q.side) === 'notes' ? 'annotations' : String(q.side)) as SideTabKey;
-    } else if (String(q.side) === 'insight') {
-      /* 兼容旧的 `?side=insight` 深链（老书签 / 别处链接）：解读已从左侧页签搬到右侧悬浮面板，
-       * 等价动作就是"把面板打开" —— 不能 404，也不能毫无反应（用户口径）。 */
-      setInsightOpen(true);
+      sideTab.value = (sideParam === 'notes' ? 'annotations' : sideParam) as SideTabKey;
+      /* `?side=insight` 还要**把左栏打开**：解读回到左栏之后，"选中页签"本身看不见就等于
+       * 没反应（用户把左栏收起过 / 窄屏是抽屉）。宽度由 `watch(sideTab)` 统一负责。 */
+      if (sideParam === 'insight') await ensureAsideVisible();
     }
 
     await nextTick();
@@ -856,6 +883,15 @@ function syncPaneWidth() {
   if (el?.clientWidth) paneWidth.value = el.clientWidth;
 }
 
+/**
+ * 窗口尺寸变化：**非对照模式的上限与视口挂钩**（宽了能更宽、窄了要收回来），
+ * 顺带重算正文栏宽 —— 两件事都得做，所以合成一个监听（原来只挂了 `syncPaneWidth`）。
+ */
+function onWindowResize() {
+  winWidth.value = window.innerWidth;
+  syncPaneWidth();
+}
+
 /* ------------------------------ 侧栏拖拽改宽度 ------------------------------ */
 /** 拖拽中：关掉宽度过渡（`.reader-aside` 上有 0.24s 的 transition，不关就是"拖起来黏手"） */
 const asideResizing = ref(false);
@@ -875,6 +911,8 @@ function onResizeDown(ev: PointerEvent) {
   ev.preventDefault();                      // 别把拖拽变成"选侧栏里的文字"
 }
 
+/** 拖拽实时夹取走 `clampAsideWidth`：**当前模式的上限**在这里也要生效（用户口径），
+ *  只在初始化时算一次的话，对照模式下能把侧栏拖到 640、把译文挤没。 */
 function onResizeMove(ev: PointerEvent) {
   if (!asideResizing.value) return;
   asideWidth.value = clampAsideWidth(resizeStartW + (ev.clientX - resizeStartX));
@@ -885,15 +923,16 @@ async function onResizeUp(ev: PointerEvent) {
   if (!asideResizing.value) return;
   asideResizing.value = false;
   (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
-  try { localStorage.setItem(asideWidthKey, String(asideWidth.value)); } catch { /* 忽略 */ }
+  persistAsideWidth();
   await afterAsideResize();
 }
 
-/** 双击把手回默认宽度（拖歪了有个一键回退） */
+/** 双击把手回默认宽度（拖歪了有个一键回退）。默认宽度同样按当前模式的上限夹一下，
+ *  免得在对照模式（上限 360）下把把手复位成比上限还宽的值。 */
 async function resetAsideWidth() {
   if (isNarrow.value) return;
-  asideWidth.value = ASIDE_W_DEFAULT;
-  try { localStorage.setItem(asideWidthKey, String(asideWidth.value)); } catch { /* 忽略 */ }
+  asideWidth.value = clampAsideWidth(ASIDE_W_DEFAULT);
+  persistAsideWidth();
   await afterAsideResize();
 }
 
@@ -1334,8 +1373,9 @@ async function regenerateInsight() {
     const res = await api.post<{ __meta?: { message?: string } }>(
       `/papers/${paperId.value}/understand`, { paths: ['a', 'b'], force: true });
     toast(String(res?.__meta?.message ?? '') || '解读任务已排队（两路并发），完成后会自动刷新', 'ok', 4200);
-    setInsightOpen(true);        // 起了任务却看不到任何东西，看起来就像"点了没反应"
-    void fetchTasks();           // 让面板立刻知道"有任务在跑"，从而开始轮询
+    // 起了任务却看不到任何东西，看起来就像"点了没反应"：顺手把左栏的解读页签打开
+    await openInsightTab();
+    void fetchTasks();           // 让解读内容立刻知道"有任务在跑"，从而开始轮询
   } catch (err) {
     toast((err as Error)?.message ?? String(err), 'error', 6000);
     console.warn('重新生成解读失败', err);
@@ -1398,7 +1438,7 @@ onMounted(async () => {
   mq = window.matchMedia('(max-width: 1100px)');
   isNarrow.value = mq.matches;
   mq.addEventListener('change', onMqChange);
-  window.addEventListener('resize', syncPaneWidth);
+  window.addEventListener('resize', onWindowResize);
   document.addEventListener('mousedown', onDragStart);
   document.addEventListener('copy', onCopy);
   document.addEventListener('mouseup', onMouseUp);
@@ -1414,12 +1454,8 @@ onMounted(async () => {
   await nextTick();
   syncPaneWidth();
   watchContentSize();
-  // 解读面板的顶边跟着工具栏走（工具栏折行时高度会变，见 `insightTop`）
-  syncInsightTop();
-  if (toolbarEl.value && typeof ResizeObserver !== 'undefined' && !toolbarRo) {
-    toolbarRo = new ResizeObserver(() => syncInsightTop());
-    toolbarRo.observe(toolbarEl.value);
-  }
+  // 视图模式（可能是服务端进度里的纯译文 / 深链 ?view=）到位后按模式重夹一次侧栏宽度
+  await applyAsideMax();
   // **深链优先**：带锚点时不先恢复"上次读到哪" —— 两者都是"滚到某一行"，
   // 而 `focusRow` 内部 `await nextTick()` 才滚动（异步），先发起的那次可能后落地，
   // 于是刚跳过去的深链结果被恢复位置那一次滚动盖掉。真实现象：点「跳回原文」
@@ -1437,7 +1473,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   mq?.removeEventListener('change', onMqChange);
-  window.removeEventListener('resize', syncPaneWidth);
+  window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mousedown', onDragStart);
   document.removeEventListener('copy', onCopy);
   document.removeEventListener('mouseup', onMouseUp);
@@ -1448,8 +1484,6 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocPointerDown, true);
   setColSide('');               // 离开阅读器时别把 `<html>` 上的标记留在页面上
   contentRo?.disconnect();
-  toolbarRo?.disconnect();
-  toolbarRo = null;
   scroller.value?.removeEventListener('scrollend', onScrollEnd);
   if (taskTimer) clearInterval(taskTimer);
   if (flashTimer) clearTimeout(flashTimer);
@@ -2514,7 +2548,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '']"
     >
       <!-- ============ 工具栏 ============ -->
-      <div ref="toolbarEl" class="reader-toolbar">
+      <div class="reader-toolbar">
         <!-- 最左：侧栏开合（论文标题在顶栏的标签上，这里不再重复显示）；`data-aside-toggle` 供自检脚本使用 -->
         <button
           class="btn icon"
@@ -2588,16 +2622,16 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 
         <span class="spacer" />
 
-        <!-- 解读：右侧**悬浮**面板的开关（默认关闭，按论文记在 localStorage）。
-             为什么放在工具栏而不是左栏页签里：它现在不属于左栏 —— 浮在正文之上、不挤压版面。
+        <!-- 解读：展开左栏并选中「解读」页签（解读在左栏，不再有右侧悬浮面板）。
+             已经在看解读时再点一次就收起左栏 —— 它现在管的就是左栏，与左边那个侧栏开关同一个手感。
              `data-insight-toggle` 供自检脚本点它。 -->
         <button
           class="btn insight-toggle"
           data-insight-toggle
-          :class="{ 'is-open': insightOpen }"
-          :aria-pressed="insightOpen"
-          :title="insightOpen ? '关闭解读面板' : '打开解读面板（论文精读 / 相关概念 / 怎么读这篇论文）'"
-          @click="setInsightOpen(!insightOpen)"
+          :class="{ 'is-open': insightOpenActive }"
+          :aria-pressed="insightOpenActive"
+          :title="insightOpenActive ? '收起解读（左栏）' : '打开解读（左栏）'"
+          @click="toggleInsightPane"
         >
           <AppIcon name="sparkle" :size="14" />解读
         </button>
@@ -2716,6 +2750,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :brief-draft="briefDraft"
           :brief-source="brief?.source ?? ''"
           :tasks="tasks"
+          :paper-id="paperId"
+          :insight-running="understandingRunning"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
@@ -2725,6 +2761,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
           @cancel-task="cancelTranslate"
+          @insight-queued="fetchTasks"
         />
         <!-- 拖拽改宽度：贴在侧栏右边缘（见 onResizeDown 的说明），双击复位 -->
         <div
@@ -2761,44 +2798,6 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @translate-page="(p: number) => startTranslate('resume', [p])"
         />
       </section>
-
-      <!-- ============ 右：解读悬浮面板 ============
-           `position: fixed` + 不参与网格流 → **正文宽度与左右对照的版面一点都不变**（"悬浮"的意义）。
-           顶部量的是工具栏下边（`insightTop`），底部到视口底，所以整页依旧不出现滚动条；
-           内容自己滚（`.insight-body`）。 -->
-      <div
-        v-if="insightOpen"
-        class="insight-panel"
-        :class="{ resizing: insightResizing }"
-        :style="{ top: insightTopPx, width: insightWidth + 'px' }"
-      >
-        <!-- 左边缘的拖拽把手：双击复位（与左栏把手同一套交互） -->
-        <div
-          class="insight-resizer"
-          :class="{ active: insightResizing }"
-          title="拖动调整解读面板宽度（双击复位）"
-          @pointerdown="onInsightResizeDown"
-          @pointermove="onInsightResizeMove"
-          @pointerup="onInsightResizeUp"
-          @pointercancel="onInsightResizeUp"
-          @dblclick="resetInsightWidth"
-        />
-        <div class="insight-head">
-          <AppIcon name="sparkle" :size="14" />
-          <span>解读</span>
-          <span class="spacer" />
-          <button class="btn icon sm ghost" title="关闭解读面板" @click="setInsightOpen(false)">
-            <AppIcon name="close" :size="14" />
-          </button>
-        </div>
-        <div class="insight-body">
-          <ReaderInsight
-            :paper-id="paperId"
-            :task-running="understandingRunning"
-            @queued="fetchTasks"
-          />
-        </div>
-      </div>
     </div>
 
     <SelectionMenu
@@ -2944,48 +2943,12 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .done-badge { padding: 0; width: 22px; justify-content: center; }
 
 /* 「解读」开关：`base.css` 的 `.btn` 没有 active 态，而它又不像「继续翻译」那样是 primary，
-   所以只在**开着**的时候点亮一下（主题色描边 + 淡底），关着时与其它次按钮同观感。 */
+   所以只在**正在看解读**（左栏开着 + 选中解读页签）时点亮一下，其余时候与其它次按钮同观感。 */
 .insight-toggle.is-open {
   color: var(--accent-text);
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
 }
-
-/* ============ 解读悬浮面板 ============
-   贴右侧、顶部在工具栏下方（`top` 由 JS 量出来）、到底部为止。
-   ⚠️ 三件事都不能改：
-   - 它是 `position: fixed`，**不占布局**：正文宽度与左右对照版面必须原样（这是"悬浮"的全部意义）；
-   - `bottom: 0` + 内部滚动：整页不许出现滚动条（`scripts/frontend_check.py` ③ 有永久回归项）；
-   - `z-index: 45`：要盖住正文，又要低于 Menu 浮层（300）与 Modal，窄屏抽屉（60）压在它上面也没问题。 */
-.insight-panel {
-  position: fixed; right: 0; bottom: 0; z-index: 45;
-  max-width: 92vw;                 /* 窄屏上曾拖到 720px 的话不会把视口撑爆 */
-  display: flex; flex-direction: column; min-height: 0;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border); border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-2);
-  transition: width .18s ease;     /* 只给"拖完松手/复位"用；拖拽期间由 .resizing 关掉 */
-}
-.insight-panel.resizing { transition: none; }
-/* 拖拽把手：贴在面板**左边缘内侧**的 9px 热区（面板是 overflow 默认可见，不担心被裁）。
-   平时全透明（不打扰阅读），hover / 拖拽中才亮一条主题色竖线。 */
-.insight-resizer {
-  position: absolute; left: 0; top: 0; width: 9px; height: 100%;
-  z-index: 2; cursor: col-resize; touch-action: none;
-}
-.insight-resizer::after {
-  content: ''; position: absolute; left: 0; top: 0; width: 2px; height: 100%;
-  background: transparent; transition: background .15s ease;
-}
-.insight-resizer:hover::after, .insight-resizer.active::after { background: var(--accent); }
-.insight-head {
-  display: flex; align-items: center; gap: 6px; flex: none;
-  padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--divider);
-  font-size: 12.5px; font-weight: 600;
-}
-.insight-head .icon { color: var(--accent); }
-/* 面板唯一滚动的地方：内容长了在这里滚，整页不滚 */
-.insight-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 12px 24px; }
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -3127,7 +3090,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 }
 
 @media print {
-  .reader-toolbar, .reader-aside, .insight-panel { display: none !important; }
+  .reader-toolbar, .reader-aside { display: none !important; }
   .reader, .reader-content { display: block; height: auto; overflow: visible; }
 }
 </style>

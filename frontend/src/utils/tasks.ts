@@ -9,6 +9,7 @@
  * ⚠️ `UNDERSTAND_A` / `UNDERSTAND_B` 同理：前端没有"两路"这个概念（用户口径），统一叫"解读"。
  */
 import type { TaskInfo } from '@/api/types';
+import { pct } from '@/utils/format';
 
 /** 任务类型 → 中文名（后端新增类型时回落到原始 type，不显示空白）。 */
 export const TASK_TYPE_LABELS: Record<string, string> = {
@@ -64,15 +65,34 @@ export interface TaskTypeRow {
   running: boolean;
   /** 这一类里代表行的那条任务（取消按钮取它） */
   task: TaskInfo | null;
-  /** `done/total`；`total <= 1` 时为空串（"1/1" 是噪声） */
+  /**
+   * `done/total` 数字；空串 = **不显示数字**（三种情况）。
+   *
+   * 用户口径（第三轮返工）：**已完成的行不显示数字**，只留"已完成"徽章 + 满格条。
+   * 理由是它自相矛盾：后端偶尔给的是"这一批里的完成量"（实测 TRANSCRIBE_EN 有
+   * `done=1/total=3` 却已 completed 的记录），`转录 已完成 1/3 + 满格条` 看起来就像出错了 ——
+   * 这种"任务提前收尾"的事实用数字表达反而是错的，徽章 + 满格条已经说清楚了。
+   * 另外两种：`total <= 1`（"1/1" 是噪声）、非完成态又没有总数（本来就没数字可给）。
+   */
   progressLabel: string;
+  /**
+   * 进度条的百分比；`null` = **这一类没进度可算，不画条**（只留状态徽章）。
+   *
+   * 用户口径（第二轮返工）：能显示进度的地方要把进度条加上。判据分三种：
+   * - `total > 1`（翻译 22 页 / 索引 203 块 / 解析 900 块…）：有进度条。
+   *   已完成的**一律按 100%** 画 —— 后端偶尔给的是"这一批里的完成量"（实测 TRANSCRIBE_EN
+   *   有 `done=1/total=3` 却已 completed 的记录），按数字画会留一截看起来像没跑完；
+   * - `total <= 0` 但有 0~100 的 `progress`（有些任务只报百分比、不给计数）：也画；
+   * - 其余（**解读** `total=1`、排队中的 0%）：不画 —— 一条永远停在 0 或满格的条只是噪声。
+   */
+  progressValue: number | null;
   /** 代表行的 message；**失败时才在界面上显示**（成功时那是"用时 432s"这类流水账） */
   message: string;
 }
 
 /**
  * 每篇论文按**类型**汇总成一行：
- * `翻译：已完成 · 22/22` / `转录：已完成` / `解读：进行中`（用户口径）。
+ * `翻译：进行中 · 9/22` / `转录：已完成`（满格条，不报数字）/ `解读：排队中`（用户口径）。
  *
  * 为什么不把十几条历史任务全列出来：同一类型往往是几十次重跑，全列是一面墙，
  * 而读者关心的只是"这条流水线现在什么状态"。代表行取**在跑的那条**（没有才取最新一条，
@@ -94,16 +114,28 @@ export function groupPaperTasks(tasks: TaskInfo[]): TaskTypeRow[] {
   return labels.map((label) => {
     const list = groups.get(label) ?? [];
     const task = list.find(isTaskRunning) ?? list[0] ?? null;
+    const status = String(task?.status ?? '');
     const total = Number(task?.total_items ?? 0);
     const done = Number(task?.done_items ?? 0);
+    const raw = Number(task?.progress);
+    const hasPct = Number.isFinite(raw) && raw >= 0 && raw <= 100;
+    /* 有总数就是"可计量的任务"；没有总数但报了百分比（且真的动过）也算。
+       解读那种 `total=1` 两边都不满足 → 不画条（用户口径）。 */
+    const drawable = total > 1 || (total <= 0 && hasPct && raw > 0);
+    const progressValue = drawable
+      ? (status === 'completed' ? 100 : (hasPct ? Math.round(raw) : pct(done, total)))
+      : null;
     return {
       key: label,
       label,
-      status: String(task?.status ?? ''),
-      statusLabel: task ? taskStatusLabel(String(task.status)) : '',
+      status,
+      statusLabel: task ? taskStatusLabel(status) : '',
       running: isTaskRunning(task),
       task,
-      progressLabel: total > 1 ? `${done}/${total}` : '',
+      /* 已完成不报数字（见 `progressLabel` 的说明）：徽章 + 满格条已经说清楚，
+         数字反而会与"已完成"打架。其余状态有总数就报，方便看还剩多少。 */
+      progressLabel: (total > 1 && status !== 'completed') ? `${done}/${total}` : '',
+      progressValue,
       message: String(task?.message ?? ''),
     };
   });

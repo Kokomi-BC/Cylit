@@ -2,8 +2,10 @@
 /**
  * 解读面板正文：把第二阶段「论文理解」的两份产物拼成**一篇**给读者看。
  *
- * 它是**右侧悬浮面板**的内容区（显隐 / 宽度 / 拖拽都在 ReaderView，见那边的 `.insight-panel`）。
- * 悬浮的意义是"不挤压正文"：对照模式本来就只有半屏，解读再占掉一列就直接没法读了。
+ * 它挂在**左栏「解读」页签**里（`ReaderSidePanel` 渲染）：一份解读里同时含「论文精读」与
+ * 「怎么读这篇论文」，所以"解读"与"阅读地图"共用一个页签就够了（用户口径第二轮返工把
+ * 右侧悬浮面板撤销了）。进这个页签时 ReaderView 会自动把左栏放宽 —— 栏太窄时这些内容
+ * （小标题、概念卡、表格）会被挤成竖排；想通读长解读可以点页签右上角那枚图标按钮 → 整页版。
  *
  * 三条口径（都是用户原话）：
  * - **前端没有"两路"这个概念**：A/B 是后端的实现切分（A 英文侧技术解剖、B 中文侧阅读地图），
@@ -351,7 +353,9 @@ onUnmounted(() => { stopPoll(); });
   padding: 8px 10px; margin-bottom: 8px;
 }
 .item.err { border-left-color: var(--danger); }
-.ins-head { gap: 6px; margin: 0 0 8px; }
+/* 页签现在可能只有 220px 宽（左栏下限）：头部与各块的小标题行都允许折行，
+   否则「解读结果 + 时间 + 模型 + 刷新」会横着顶破栏宽（进页签虽会自动变宽，但不能依赖它）。 */
+.ins-head { gap: 6px; margin: 0 0 8px; flex-wrap: wrap; }
 .ins-filter {
   min-width: 0; width: 120px; height: 22px; padding: 0 6px; font-size: 11.5px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -366,7 +370,7 @@ onUnmounted(() => { stopPoll(); });
    第一块之前不画线（上面是面板自己的头部）。 */
 .ins-sec + .ins-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider); }
 .ins-sec-title {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 12.5px; font-weight: 600; color: var(--text); margin: 0 0 6px;
 }
 

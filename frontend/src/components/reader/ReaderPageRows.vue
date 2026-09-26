@@ -83,8 +83,13 @@ const rowClass = (id: string) => ({ current: id === props.currentRowId, flash: i
  * 走了结构兜底对齐"，人工复核内容并没有问题，白示一个告警只会让人以为译错了。
  * `align` 字段仍在产物与接口里（供自检脚本审计），前端不再展示。 */
 /**
- * 宽对象（表格）：半栏放不下（9 列表格会把 "45.29" 折成两行），
- * 因此**跨两列通栏**、两侧上下排（EN 表在上、ZH 表在下），与论文里通栏表格一致。
+ * 宽对象（表格）：**文本对照时两端各占一列、左右并排**（用户口径第二轮返工）。
+ *
+ * 返工记录：以前这里把 `.wide` 行从两列网格改成 `display: block`（通栏、EN 表在上 ZH 表在下），
+ * 理由是"半栏放不下 9 列表格"；但用户要的是**左右对照**——上下堆叠时对照关系就断了。
+ * 现在改成：继续用两列网格（`.pg-rows.two-col .row-pair.two-col` 那套），
+ * 表格会变窄 → **每个单元格自己横向滚动**（见下面 `.cell` 的 `overflow-x`），
+ * 既不撑破布局、也不会让整页出现横向滚动条。
  */
 const isWide = (r: PageRow) => r.type === 'table';
 
@@ -362,12 +367,16 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   border-left: 1px solid var(--divider); padding-left: 20px;
 }
 .cell { min-width: 0; }
-/* 通栏行（表格）：两侧改为上下排，各自占满正文宽度。
-   上下之间**不画虚线**：每块一条横线太碎，看起来像被切成一条条卡片；靠间距分层就够了。 */
-.pg-rows.two-col .row-pair.wide { display: block; }
-.row-pair.wide > .cell + .cell {
+/* 通栏行（表格）**只在"不是文本对照"时才上下堆叠**（那时本来就只有一侧）。
+   文本对照下让 `.wide` 行继续走上面的两列网格：两端各自占一列、左右并排 —— 对照关系不能断。 */
+.pg-rows:not(.two-col) .row-pair.wide > .cell + .cell {
   border-left: 0; padding-left: 0; margin-top: 10px; padding-top: 0;
 }
+/* 表格进了半栏必然比列宽，让**单元格自己横向滚**：撑不破布局、也不会给整页拉出横向滚动条
+   （`scripts/frontend_check.py` ③ 的"整页不滚动"是永久回归项）。
+   ⚠️ **不要**再给里面的 `table` 加 `max-width: 100%`：表格在 auto 布局下会因此把盒子压回列宽、
+   而内容继续往外冒（表格边框半路就断），滚动量也变得算不准；让表格自己超宽、由单元格滚才完整。 */
+.pg-rows.two-col .row-pair.wide > .cell { overflow-x: auto; }
 .pg-rows:not(.two-col) { max-width: 880px; margin: 0 auto; }
 
 /* 插图：按论文的排法——图在上、图注在下；对照时跨两列，页图模式则占满译文列。

@@ -2,10 +2,10 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务（目录由 ReaderToc 负责）。
+ * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **解读**（目录由 ReaderToc 负责）。
  * 公式**只读**：来自 Markdown 提取（ReaderFormulaList），不做复核、不分级、不比对裁图。
- * 「解读」**不在这里**：它已改成右侧悬浮面板（不挤压正文），
- * 见 ReaderView 的 `.insight-panel` 与 ReaderInsight.vue。
+ * 「解读」在左栏（用户口径第二轮返工把右侧悬浮面板撤销了）：它和「怎么读这篇论文」
+ * 是同一份解读，共用一个页签即可 —— 一份解读里本来就同时含精读与阅读地图。
  */
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
@@ -15,7 +15,9 @@ import type {
   Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
+import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
+import ReaderInsight from './ReaderInsight.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
 export interface BriefDraft {
@@ -27,7 +29,7 @@ export interface BriefDraft {
 }
 
 /** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签） */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks';
+export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
@@ -42,6 +44,10 @@ const props = withDefaults(defineProps<{
   briefSource?: string;
   /** 「任务」页签：这篇论文的**全部**任务（各类型都算），页签里按类型汇总成清单 */
   tasks: TaskInfo[];
+  /** 「解读」页签：按论文取理解结果（阅读器面板 / 理解页共用同一套三块结构） */
+  paperId: string;
+  /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
+  insightRunning: boolean;
 }>(), { formulasLoading: false, briefSource: '' });
 
 const emit = defineEmits<{
@@ -55,7 +61,21 @@ const emit = defineEmits<{
   (e: 'delete-annotation', id: string): void;
   (e: 'delete-note', id: string): void;
   (e: 'cancel-task', task: TaskInfo): void;
+  /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
+  (e: 'insight-queued'): void;
 }>();
+
+/**
+ * 「在新标签页打开解读」= 整页版理解页（`/understand/:paperId`）。
+ *
+ * 为什么要在左栏给这个入口：左栏再宽也就几百像素，长解读读起来憋屈；
+ * 想通读的人应该有一键到整页的路。用 `open` 而不是路由跳转 —— 阅读位置不能丢。
+ * URL 里的 `/app/` 是**部署前缀**（后端把 `frontend/dist` 挂在 `/app/`），
+ * 与窗口标题栏里那条链接同一口径。
+ */
+function openInsightPage() {
+  window.open(`/app/understand/${props.paperId}`, '_blank', 'noopener');
+}
 
 function locate(id?: string | null, page?: number | null) {
   if (!id && !page) return;
@@ -180,6 +200,29 @@ const merged = computed<MergedItem[]>(() => {
 
 <template>
   <div class="panel-body">
+    <!-- 解读：一份解读里同时含「论文精读」与「怎么读这篇论文」（还有相关概念），
+         所以一个页签就够（用户口径：解读与阅读地图共用一个页签）——不再有 A/B 切换。
+         右上角那枚**只有图标**的按钮 = 到整页版（长解读可以开新标签页通读）。 -->
+    <template v-if="props.tab === 'insight'">
+      <div class="row tiny ins-open-bar">
+        <span class="spacer" />
+        <button
+          class="btn icon sm ghost"
+          data-insight-open
+          title="在新标签页打开解读"
+          aria-label="在新标签页打开解读"
+          @click="openInsightPage"
+        >
+          <AppIcon name="external" :size="13" />
+        </button>
+      </div>
+      <ReaderInsight
+        :paper-id="props.paperId"
+        :task-running="props.insightRunning"
+        @queued="emit('insight-queued')"
+      />
+    </template>
+
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
     <template v-if="props.tab === 'annotations'">
       <div v-if="!merged.length" class="empty small">还没有批注或笔记（在正文里划词即可新建）</div>
@@ -343,7 +386,12 @@ const merged = computed<MergedItem[]>(() => {
     </template>
 
     <!-- 任务：**按类型一行**的清单（翻译 / 转录 / 解读 / 索引 / 解析）。
-         口径（用户原话）：只要"这条流水线跑没跑完"，不要进度条 —— 完成就写「已完成」；
+         口径（用户第二轮返工）：状态徽章之外，**能算进度的地方把进度条加上** ——
+         有总数的（翻译 22 页 / 索引 203 块 / 解析 900 块）画条，未完成时还给 `done/total`；
+         没有总数的（解读 `total=1`）只留徽章，一条永远满格或永远 0 的条只是噪声。
+         第三轮返工：**已完成的行不报数字**（只留"已完成"徽章 + 满格条）—— 后端偶尔给的是
+         "这一批的完成量"（实测有 `done=1/total=3` 却已 completed 的记录），
+         `转录 已完成 1/3 + 满格条` 看起来就像出错了（口径集中在 utils/tasks.ts）。
          一个类型跑过多次也只占一行（历史任务全列出来是一面墙，见 utils/tasks.ts）。
          在跑的行给一个「取消」：这是页签里原来的能力，不能因为改版就丢掉。 -->
     <template v-if="props.tab === 'tasks'">
@@ -365,6 +413,12 @@ const merged = computed<MergedItem[]>(() => {
             <AppIcon name="stop" :size="13" />
           </button>
         </div>
+        <!-- `progressValue === null` 就是"这一类没进度可算"：整条不渲染，别留一个空槽 -->
+        <ProgressBar
+          v-if="r.progressValue !== null"
+          class="task-bar"
+          :value="r.progressValue"
+        />
         <!-- 失败才显示 message：成功那条是"用时 432s"这类流水账，失败原因才是用户要看的 -->
         <div v-if="r.status === 'failed' && r.message" class="tiny task-msg" :title="r.message">
           {{ r.message }}
@@ -437,8 +491,13 @@ const merged = computed<MergedItem[]>(() => {
    失败原因单独一行、最多两行（长错误信息不该把清单撑成一屏）。 */
 .task-row { padding: 7px 10px; margin-bottom: 6px; }
 .task-name { font-size: 12.5px; font-weight: 600; min-width: 3.5em; }
+/* 进度条：夹在信息行与失败原因之间留一点缝（`.bar` 本身只有 5px 高，不像卡片那样占地方） */
+.task-bar { margin-top: 6px; }
 .task-msg {
   margin-top: 4px; color: var(--danger); line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
+/* 解读页签顶栏：只有一枚图标按钮（用户口径：旁边**不许**写说明文字），贴右对齐。
+   负的上边距把 `panel-body` 的 8px 内边距吃掉一点，别让整页多出一条空行的观感。 */
+.ins-open-bar { margin: -2px 0 4px; }
 </style>
