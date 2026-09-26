@@ -6,12 +6,18 @@
  * 引用核对提示、**也没有刷新/重新生成**（重跑入口只在论文库的「⋯」菜单里，面板里不再有）。
  * 那枚按钮是"到整页去读"：整页在本应用里**新开一个标签页**（TabBar），不是浏览器标签页 ——
  * 所以点击只 `emit('open-page')`，由 ReaderView 统一 `router.push(openTab(...))`
- * （`openTab` 会改响应式标签状态，必须在点击回调里调，渲染期调会死循环）。
+ * （`openTab` 会改响应式状态，必须在点击回调里调，渲染期调会死循环）。
+ *
+ * 标题下面是一份**紧凑目录**（用户口径：左栏这两个页签"没有目录"）：同一份大纲数据，
+ * 一行一条、缩进更小、点击**在左栏内**滚动（`scrollIntoView` 会落到最近的滚动祖先
+ * `.panel-body` 上），默认展开、可折叠。这里**不**复刻整页那套两栏结构 —— 左栏本身就是一栏。
  */
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import InsightDoc from '@/components/insight/InsightDoc.vue';
+import InsightToc from '@/components/insight/InsightToc.vue';
 import { useUnderstanding } from '@/composables/useUnderstanding';
+import { buildInsightOutline } from '@/utils/insightOutline';
 
 const props = defineProps<{
   paperId: string;
@@ -38,6 +44,21 @@ const markdown = computed(() => String(
   (props.section === 'map' ? pathB.value?.markdown : pathA.value?.markdown) ?? '',
 ));
 
+/** anchor 前缀：与整页（`ins-*`）不同，即使两个视图同时在 DOM 里也不会撞 id */
+const prefix = computed(() => `pane-${props.section}`);
+const showConcepts = computed(() => props.section === 'map' && concepts.value.length > 0);
+const outline = computed(() => buildInsightOutline(markdown.value, {
+  prefix: prefix.value, concepts: showConcepts.value,
+}));
+const showToc = computed(() => hasAny.value && outline.value.length > 0);
+/** 默认**展开**（用户口径）：目录在这里就是"读之前先扫一眼要读什么" */
+const tocOpen = ref(true);
+
+/** 点目录：滚到对应小节。左栏的滚动容器是 `.panel-body`，`scrollIntoView` 会自己找到它。 */
+function select(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 async function onStart() {
   if (await start()) emit('started');
 }
@@ -59,6 +80,20 @@ async function onStart() {
         <AppIcon name="external" :size="13" />
       </button>
     </div>
+
+    <!-- 紧凑目录：默认展开、可折叠；一行一条，自己在小框里滚（不把正文顶走） -->
+    <div v-if="showToc" class="toc-compact">
+      <button class="toc-bar" type="button" :aria-expanded="tocOpen" @click="tocOpen = !tocOpen">
+        <AppIcon name="list" :size="12" />
+        <span>目录</span>
+        <span class="spacer" />
+        <AppIcon :name="tocOpen ? 'chevron-up' : 'chevron-down'" :size="12" />
+      </button>
+      <div v-if="tocOpen" class="toc-body">
+        <InsightToc compact :items="outline" @select="select" />
+      </div>
+    </div>
+
     <InsightDoc
       :section="section"
       :markdown="markdown"
@@ -69,6 +104,7 @@ async function onStart() {
       :running="running || started"
       :error="entry.error"
       :timed-out="timedOut"
+      :anchor-prefix="prefix"
       @start="onStart"
     />
   </div>
@@ -81,4 +117,18 @@ async function onStart() {
   margin: 0 0 8px;
 }
 .pane-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+
+/* 紧凑目录：标题行整行可点（展开/收起），条目区自己滚（最多 ~34vh，别把正文挤到看不见） */
+.toc-compact { flex: none; margin: 0 0 10px; }
+.toc-bar {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-layer); color: var(--text-dim);
+  font: inherit; font-size: 11.5px; padding: 4px 7px; cursor: pointer; text-align: left;
+}
+.toc-bar:hover { background: var(--bg-hover); color: var(--text); }
+.toc-body {
+  margin-top: 3px; padding: 3px 4px; max-height: 34vh; overflow-y: auto;
+  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+}
 </style>

@@ -2,17 +2,14 @@
 /**
  * 「论文解读」/「阅读地图」的**整页版**（`/understand/:paperId` 与 `/readmap/:paperId` 共用本组件）。
  *
- * 为什么两个路由共用一个组件：两份内容是同一个接口的 `a` / `b`，布局、空状态、轮询、
- * 排版完全一样，只有"画哪一份"不同。两个**路由名**是必须的（应用内标签键只看 name + params，
- * 同路由加 query 开不出第二个标签）。
+ * 两个路由共用一个组件：两份内容是同一个接口的 `a` / `b`，只有"画哪一份"不同。
+ * 两个**路由名**是必须的（应用内标签键只看 name + params，同路由加 query 开不出第二个标签）。
  *
  * 三条用户口径：
  * - 顶栏**只留标题**（没有刷新、没有「重新生成解读」；重跑入口只在论文库的「⋯」菜单里）；
- * - 正文用**阅读器的排版**（同一个 `InsightDoc`，字号取服务端进度里的 `text_size`）——
- *   用户要的是"像在读论文"，不是又一套卡片；
- * - 空状态保留「开始解读」（它不是"重新生成"）。
- *
- * 数据：与阅读器左栏两个页签**共用** `useUnderstanding` 的整包缓存（切来切去不会重复打接口）。
+ * - 版面是**阅读器同构的两栏**：左栏本文目录、右栏正文（行宽 880 / 列内居中 / 有页边距）——
+ *   这一套在 `InsightPage` 里，两个路由共用；
+ * - 正文字号跟阅读器（服务端进度里的 `text_size`）——"像在读论文"的另一个条件。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -21,8 +18,7 @@ import { loadPapers, state } from '@/stores/app';
 import { routeKey, setTabTitle } from '@/stores/tabs';
 import { truncate } from '@/utils/format';
 import { readerFontPx } from '@/utils/readerFont';
-import { useUnderstanding } from '@/composables/useUnderstanding';
-import InsightDoc from '@/components/insight/InsightDoc.vue';
+import InsightPage from '@/components/insight/InsightPage.vue';
 
 const props = withDefaults(defineProps<{
   /** `read` = 论文解读（A 路 markdown）；`map` = 阅读地图（B 路 markdown + 相关概念） */
@@ -33,13 +29,7 @@ const route = useRoute();
 const paperId = computed(() => String(route.params.paperId ?? ''));
 const paper = computed(() => (state.papers ?? []).find((p) => p.id === paperId.value));
 
-const { entry, pathA, pathB, concepts, hasAny, starting, timedOut, running, started, start }
-  = useUnderstanding(paperId);
-
 const sectionLabel = computed(() => (props.section === 'map' ? '阅读地图' : '论文解读'));
-const markdown = computed(() => String(
-  (props.section === 'map' ? pathB.value?.markdown : pathA.value?.markdown) ?? '',
-));
 
 /**
  * 正文字号跟阅读器：**服务端进度里的 `text_size`** 是权威那份（"这篇论文上次看的时候多大"），
@@ -74,23 +64,16 @@ watch(paperId, () => { void loadFont(); });
       <h1>{{ paper?.title || paperId }}</h1>
     </header>
 
-    <InsightDoc
-      :section="props.section"
-      :markdown="markdown"
-      :concepts="concepts"
-      :empty="!hasAny"
-      :loading="entry.loading"
-      :starting="starting"
-      :running="running || started"
-      :error="entry.error"
-      :timed-out="timedOut"
-      narrow
-      @start="start"
-    />
+    <!-- 两栏壳：左栏本文目录 + 右栏正文（两个整页共用，版面不会各自漂移） -->
+    <InsightPage :paper-id="paperId" :section="props.section" />
   </div>
 </template>
 
 <style scoped>
-.doc-page { padding: 18px 20px 64px; }
-.head h1 { font-size: 19px; line-height: 1.35; margin: 0 auto 14px; max-width: 880px; }
+.doc-page { padding: 18px 20px 0; }
+.head { max-width: 1400px; margin: 0 auto; }
+.head h1 { font-size: 19px; line-height: 1.35; margin: 0 0 4px; }
+@media (max-width: 1099px) {
+  .doc-page { padding: 14px 14px 0; }
+}
 </style>

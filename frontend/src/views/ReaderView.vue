@@ -320,14 +320,15 @@ const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
 
-/** 侧栏（左栏，与目录合并）：目录 + 搜索 + 批注·笔记 / 公式 / 插图 / 术语 / 任务 /
- *  **论文解读** / **阅读地图**。解读拆成两个页签（用户口径第三轮）：A 路 markdown = 论文解读，
- *  B 路 markdown + 相关概念 = 阅读地图；两者读同一个接口，但走 `useUnderstanding` 的整包缓存，
- *  来回切不会重复请求。进这两个页签都会自动把侧栏放宽（见 `widenForInsight`）。 */
+/** 侧栏（左栏，与目录合并）：**目录 / 论文解读 / 阅读地图**开头，再是搜索与其它页签 / 任务。
+ *  解读拆成两个页签（用户口径第三轮）：A 路 markdown = 论文解读，B 路 markdown + 相关概念 = 阅读地图；
+ *  两者读同一个接口，但走 `useUnderstanding` 的整包缓存，来回切不会重复请求。
+ *  进这两个页签都会自动把侧栏放宽（见 `widenForInsight`）。
+ *  ⚠️ 顺序是用户口径：**论文解读、阅读地图紧跟「目录」右边**（页签条可横向滚，放前面才不会被挤出可视区）。 */
 type SideTabKey = 'toc' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
 const SIDE_TAB_KEYS = [
-  'toc', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks', 'insight', 'readmap',
+  'toc', 'insight', 'readmap', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
 /* 进「论文解读」/「阅读地图」页签就把左栏放宽（`widenForInsight` 只增不减）。
    放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
@@ -354,6 +355,14 @@ const SIDE_TABS = computed<Array<{
 }>>(() => [
   { k: 'toc', icon: 'list', label: '目录', title: '目录（中英双语）' },
   {
+    k: 'insight', icon: 'sparkle', label: '论文解读',
+    title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
+  },
+  {
+    k: 'readmap', icon: 'map', label: '阅读地图',
+    title: '阅读地图（相关概念 + 怎么读这篇论文）',
+  },
+  {
     k: 'search', icon: 'search', label: '搜索',
     title: searchMode.value === 'semantic' ? '语义搜索（只查本文）' : '全文搜索（原文 + 译文）',
     // 角标只报**当前模式**的命中数：语义模式的命中在 ReaderSearch 里，词法那份数此时是旧账
@@ -370,14 +379,6 @@ const SIDE_TABS = computed<Array<{
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
-  {
-    k: 'insight', icon: 'sparkle', label: '论文解读',
-    title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
-  },
-  {
-    k: 'readmap', icon: 'map', label: '阅读地图',
-    title: '阅读地图（相关概念 + 怎么读这篇论文）',
-  },
   { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
 ]);
 

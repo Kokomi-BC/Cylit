@@ -15,9 +15,10 @@
  * 数字右对齐 + 不折行的表格、公式横向可滚。字号取 `--reader-font-size`（宿主设好）。
  * ⚠️ 那些数值是**抄** ReaderRow 的：改一处要同时看另一处（跨组件拿不到它的 scoped 样式）。
  */
-import { computed, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import AppIcon from '@/components/AppIcon.vue';
+import { buildInsightOutline } from '@/utils/insightOutline';
 import type { UnderstandingConcept } from '@/api/types';
 
 const props = withDefaults(defineProps<{
@@ -35,14 +36,30 @@ const props = withDefaults(defineProps<{
   error?: string;
   /** 轮询到上限：提示用户稍后再看 */
   timedOut?: boolean;
-  /** 整页阅读：正文列按阅读器的行宽收窄（左栏不需要，列宽本身就是约束） */
+  /**
+   * 整页阅读：正文列按阅读器的行宽收窄（没有侧栏的宿主用）。
+   * 新版的整页是自己给右栏定宽（`InsightPage` 的列宽 + 页边距），所以那里不再传它；
+   * 这个 prop 留给"把正文直接放进一个很宽的容器"的场景。
+   */
   narrow?: boolean;
+  /**
+   * 标题 anchor 前缀：宿主拿**同一个前缀**调 `buildInsightOutline()` 生成目录，
+   * 这里按序把 id 贴到渲染出来的 `h1..h6` 上。两边的 id 必须同源，
+   * 否则点目录会滚到别处（所以前缀是必填语义，默认值只作兜底）。
+   */
+  anchorPrefix?: string;
 }>(), {
   markdown: '', concepts: () => [], empty: false, loading: false, starting: false, running: false,
-  error: '', timedOut: false, narrow: false,
+  error: '', timedOut: false, narrow: false, anchorPrefix: 'ins',
 });
 
-const emit = defineEmits<{ (e: 'start'): void }>();
+const emit = defineEmits<{
+  (e: 'start'): void;
+  /** 标题 anchor 已贴好（宿主据此算一次"当前小节"，否则首屏一个高亮都没有） */
+  (e: 'anchors-ready'): void;
+}>();
+
+const root = ref<HTMLElement | null>(null);
 
 /**
  * markdown → HTML。表格外面**包一层横向滚动容器**：阅读器里表格是靠 ReaderRow 的
@@ -57,6 +74,32 @@ function render(md?: string | null): string {
 }
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));
+
+/** 「相关概念」那一块的 anchor（目录里对应的人工条目） */
+const conceptsId = computed(() => `${props.anchorPrefix}-concepts`);
+
+/**
+ * 给渲染出来的标题**按序贴 id**（id 由 `buildInsightOutline` 生成）。
+ *
+ * 为什么在 DOM 上贴而不是改 `useMarkdown` 的渲染产物：`mdToHtml` 那条链路是多年的不变量
+ * （阅读器正文、Markdown 视图、图注、概念解释都吃它），为一个 anchor 去动它有连带风险；
+ * 而这里 DOM 顺序与大纲顺序天然一致（同一份 markdown、同一个纯函数），贴一遍就够了。
+ */
+function assignAnchors() {
+  const box = root.value;
+  if (!box) return;
+  const heads = props.markdown
+    ? buildInsightOutline(props.markdown, { prefix: props.anchorPrefix })
+    : [];
+  Array.from(box.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).forEach((el, i) => {
+    const id = heads[i]?.id;
+    if (id) el.id = id;
+  });
+  // 贴完就通知宿主：目录那边要立刻按"阅读线"点亮一条，否则首屏一个高亮都没有（要等用户滚一下）
+  emit('anchors-ready');
+}
+watch(html, () => { void nextTick(assignAnchors); });
+onMounted(() => { void nextTick(assignAnchors); });
 
 /* ------------------------------ 相关概念 ------------------------------ */
 const filter = ref('');
@@ -90,7 +133,7 @@ const missingHint = computed(() => (props.section === 'map'
 </script>
 
 <template>
-  <div class="doc" :class="{ narrow }">
+  <div ref="root" class="doc" :class="{ narrow }">
     <div v-if="error" class="item err">
       <div class="tiny">{{ error }}</div>
       <!-- 只在"确实卡在前置条件"时补这句：网络抖动也挂一句"先建索引"会把人引到错的方向 -->
@@ -122,8 +165,9 @@ const missingHint = computed(() => (props.section === 'map'
     <template v-else>
       <div v-if="!html && !(section === 'map' && concepts.length)" class="hint">{{ missingHint }}</div>
 
-      <!-- 阅读地图：相关概念在**最前面**（与 B 路 markdown 自身的顺序一致） -->
-      <section v-if="section === 'map' && concepts.length" class="concepts">
+      <!-- 阅读地图：相关概念在**最前面**（与 B 路 markdown 自身的顺序一致）。
+           `id` 就是目录里那条「相关概念」的落点（前缀由宿主给，与正文标题同源）。 -->
+      <section v-if="section === 'map' && concepts.length" :id="conceptsId" class="concepts">
         <div class="concepts-head">
           <span class="muted">相关概念</span>
           <span class="badge dim">{{ conceptRows.length }}<template v-if="filter">/{{ concepts.length }}</template></span>
