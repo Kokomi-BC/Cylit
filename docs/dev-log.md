@@ -4116,3 +4116,84 @@ TOC + 长度兜底（重跑后才会细分）。
 写这批用例时踩到两条**已有校验规则**（值得记下来，正是它们保证切点不落在句子中间）：
 锚点不能落在**标题的下一行**（`after_heading`），且规范化后不足 12 个字符的中文锚点
 **只允许落标题行**（`short_not_heading`）。头两版夹具就是因此被拒的 —— 规则在用，测试要顺着它写。
+
+---
+
+### 17.68 第四十七轮（P2）—— 两路提示词（A 只转录 / B 只翻译）+ `breaks` v2（带类型）
+
+P1 把**读**模型备好了，这一步备**写**的契约。关键难点只有一个：融合模式里"两侧块结构对得上"
+是**同一次推理的副产物**，拆开之后没有了，必须换成一条显式保证。
+
+#### 替代保证：一条**逐字共用**的分段规则
+
+`_SHARED_SEGMENTATION_RULES` 写进两份 system prompt（同一份常量，`assert ... in prompt` 钉住）：
+"一个自然段 = 一块 / 标题单独成块 / 独立公式单独成块 / 表格整张成一块 / 图注表注各自成块 /
+参考文献逐条成块 / 算法块整块 / **不要按字数机械切分**"。
+
+两路还共享另外两块：`_SHARED_PAGE_IMAGE_RULES`（页图是唯一事实来源）、
+`_SHARED_HEADING_RULES`（层级与编号跟全文骨架一致）。**事实来源两路完全相同**，所以谁都不需要
+等另一路 —— 这才可能真正并发。
+
+为什么把"分段规则一致"当正确性问题（而不是代码风格）：它一漂，`pair_rows` 的 `structure` 比例就升，
+阅读器开始出现单侧行。测试里专门有一节断言两份 prompt 的分段规则**逐字相同**，并列出关键字
+（防止有人把整段换成一句"请合理分段"）。
+
+#### 每路只对自己那一侧负责
+
+| | A 路（`TRANSCRIBE_SYSTEM`） | B 路（`TRANSLATE_SYSTEM`） |
+|---|---|---|
+| 产出 | `original_md` + `breaks` | `translation_md` + `carry_md` + `breaks` |
+| 必须有 | 英文原文 | 中文译文 |
+| 明确禁止 | 不翻译（"中文译文由另一条独立流水线负责"） | 不转录（"英文原文由另一条独立流水线负责"） |
+| 下一页开头 | **不给**（转录只写本页看到的内容；给了反而容易把半句补完） | 给（补完页尾那句 + `carry_md`） |
+| 页尾半句 | "照原样停在断处" | "尽量收成完整句" |
+
+`PAGE_SCHEMA_A` / `PAGE_SCHEMA_B` 各自 `required` 自己那一侧；`call_page(path=...)` 也只按那一侧
+判空（A 缺 `original_md`、B 缺 `translation_md` 才报重试）。
+
+#### `breaks` v2：`[{"start", "type"}]`
+
+- **v1 兼容是硬要求**：`md/pages.json` 里躺着的存量产物就是纯字符串数组，而锚点是**原样留档**的
+  （换模型重译时要拿它重新落回行）。`normalize_breaks` 一条路归一，读写两侧共用。
+- `type` 白名单归一（`background/definition/method/algorithm/formula/experiment/result/analysis/section/other`）；
+  **未知类型归一成 `other`，绝不因为分类不认识就丢锚点** —— 锚点的价值远大于它的分类。
+- **只有 `start`、没有 `end`**（对计划里 `ends` 字段的简化，理由写在代码注释里）：一个单元在哪里
+  结束是**代码算得出来的**（下一个边界的前一行，跨页也成立，因为 `semantic_units` 走的是全篇行序），
+  让模型再自报一个结束位置只会多一个可能错、还要额外校验的字段。用户口径里的"起止位置"
+  由 `start` + 下一个边界共同确定，比模型自报稳。
+
+#### 校验层：中文锚点要用**中文**文本判
+
+`_break_reject_reason(rows, idx, side)`：`side` 是 `_locate_anchor` 返回的匹配侧，
+"前一行收句了吗 / 是不是以「：」引出下一块"这类判据改用**锚点自己那一种语言**的文本。
+
+- 不修的话：中文块以「：」结尾、英文那侧正好以 `.` 收句 → 这条中文锚点被**误放行**（实测构造出来了）；
+- 融合模式**逐字未变**：它的锚点全是英文、全落原文侧，`side="original"` 与旧行为完全一致；
+- `rejected` 条目新增 `side` 字段：`by_side` 只统计"被接受的"，光看它分不清"落在译文侧但位置不合法"
+  和"压根没匹配上"（写测试时正是被这一点绊了一下）。
+
+#### 实机彩排（各 1 次调用，turboquant p5；全量 74 次调用之前先探一次）
+
+| | A 路 | B 路 |
+|---|---|---|
+| 产出 | `original_md` 4508 字，`translation_md` **0** 字 | `translation_md` 2607 字，`original_md` **0** 字 |
+| 锚点 | 6 条（5 接受 / 1 拒 `after_formula`） | 4 条（**4/4 全接受**） |
+| 锚点落点 | `by_side: original 5` | `by_side: translation 4` —— 中文锚点确实走译文侧匹配 |
+| 类型 | section / analysis×2 / definition / method | section / method / definition / other |
+| 块数 | 10 块 | 11 块 |
+
+最后一行是重点：**同一页 A 10 块、B 11 块** —— 这正是 P4 要量的那种 `structure` 情形，
+在真实数据上确实存在（而且两边的标题块 `## 1.1 …` 层级与编号一致，`_row_key` 能精确配上）。
+
+`scripts/kb_break_rehearsal.py` 扩成支持 `a|b|fused` 三种模式（P4 全量重跑前先探一页）。
+
+#### 验收
+
+`pytest tests` **444 → 463 通过 / 1 跳过**（+19：`tests/test_two_path_prompts.py` 17 个 +
+`test_semantic_breaks.py` 的 v2 与按侧判定 4 个，其中 2 个 v1 兼容用例替换了原来 2 个）。
+
+#### 已知遗留
+
+`frontend/src/composables/useMarkdown.ts:45` 的注释指向 `page_translate.SYSTEM_PROMPT`。
+P3 会删掉融合提示词，那句引用就会悬空 —— 但该文件按验收要求（阅读器 ⑦「公式能整体高亮」）
+**保持逐字节不变**，所以留到 P9 一并处理，不在这两轮里动它。

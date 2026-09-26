@@ -26,7 +26,7 @@ from backend.repositories.mysql.session import session_scope
 from backend.services.paper import anchor_map, paper_service
 from backend.services.translation.page_translate import (
     PATH_VERSION, PageStore, apply_semantic_breaks, mark_rows_continuity,
-    page_continuity, pair_rows,
+    normalize_breaks, page_continuity, pair_rows,
 )
 
 log = get_logger(__name__)
@@ -190,8 +190,9 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
             mark_rows_continuity(rows, head=flags["head"], tail=flags["tail"])
         # 两路锚点合成**一次**校验：`apply_semantic_breaks` 逐条独立判定，英文锚点落在原文侧、
         # 中文锚点落在译文侧（`_locate_anchor` 先原文后译文），并集天然成立 —— 不需要"按路存标记"。
-        breaks_a = [str(x) for x in (a.get("breaks") or [])]
-        breaks_b = [str(x) for x in (b.get("breaks") or [])]
+        # `normalize_breaks` 负责把 v1 的纯字符串数组（存量产物）与 v2 的对象数组统一成同一种形状。
+        breaks_a = normalize_breaks(a.get("breaks"))
+        breaks_b = normalize_breaks(b.get("breaks"))
         break_stats = apply_semantic_breaks(rows, breaks_a + breaks_b)
         page_total = (int(a.get("page_total") or 0) or int(b.get("page_total") or 0)
                       or int(stored.get("page_total") or 0))

@@ -142,9 +142,11 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
 【breaks：语义边界锚点（给**检索分块**用，跟渲染无关）】
 - 用途：标出「一个完整语义单元说完了、下一个语义单元开始」的位置。知识库按这些边界切分，
   所以**你标在哪里，就决定了检索怎么切** —— 不要按字数机械切，只按语义判断。
-- 写法：每条锚点 = **新语义单元开头那一块的起始原文片段**，从该段/该标题的**第一个字符**开始
-  **逐字照抄** 12~40 个字符（公式符号原样抄，不要译成中文、不要补省略号），
-  要求它能在这页的 original_md 里**唯一定位**。
+- 写法：每条锚点是一个对象：`start` = **新语义单元开头那一块的起始原文片段**，从该段/该标题的
+  **第一个字符**开始**逐字照抄** 12~40 个字符（公式符号原样抄，不要译成中文、不要补省略号），
+  要求它能在这页的 original_md 里**唯一定位**；`type` = 这条边界属于哪一类
+  （`background`/`definition`/`method`/`algorithm`/`formula`/`experiment`/`result`/`analysis`/`section`/`other`，
+  拿不准就写 `other` —— 类型只是留给「论文理解」的标签，**不参与切分判定**）。
 - **该标**（典型边界）：定义 → 新定义；背景 → 方法；方法 → 实验；问题 → 解决方案；
   一段推导 → 下一段推导；算法描述 → 实验结果；一个独立论点 → 下一个独立论点；
   新小节的**标题行本身**（表示这个小节从这里开始）。
@@ -160,7 +162,7 @@ SYSTEM_PROMPT = """你是学术论文的「页面转录 + 翻译」专家。每�
   translation_md 的块与 original_md 一一对应，不需要另给中文锚点。
 
 【output_md：只输出一个 JSON 对象】不要解释、不要代码块：
-{"original_md": "……", "translation_md": "……", "carry_md": "……", "breaks": ["……", "……"]}
+{"original_md": "……", "translation_md": "……", "carry_md": "……", "breaks": [{"start": "……", "type": "……"}]}
 
 【carry_md：你到底从【下一页开头】借了哪段原文】
 - 本页末尾那句靠【下一页开头】补完时，把**你实际用到的那段原文**逐字符照抄进来（原文，不是译文）。
@@ -187,11 +189,254 @@ PAGE_SCHEMA = {
         "translation_md": {"type": "string"},
         "carry_md": {"type": "string"},
         # 语义边界锚点：检索分块用（见 SYSTEM_PROMPT 的【breaks】一节）。
-        # 只给**原文**锚点 —— translation_md 与 original_md 块一一对应，不需要中文锚点。
-        "breaks": {"type": "array", "items": {"type": "string"}},
+        # v2：每条是对象 `{"start", "type"}`（v1 的纯字符串数组仍然读得懂，见 `normalize_breaks`）。
+        "breaks": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"start": {"type": "string"}, "type": {"type": "string"}},
+            "required": ["start"],
+        }},
     },
     "required": ["original_md", "translation_md"],
 }
+
+
+# ==========================================================================
+# 两路提示词（A 只转录英文原文 / B 只出中文译文）
+# ==========================================================================
+#
+# 为什么要拆：融合模式下"两侧块结构一致"是同一次推理的副产物；两路并发之后不再是了，
+# 于是改用一条**共同的分段规则**来保证（`_SEGMENTATION_RULES`），残差交给 `pair_rows`
+# 的结构对齐。好处是每一路都只对自己那一侧负责：A 不产出译文、B 不产出原文。
+#
+# 两路的**事实来源完全一样**（页图 + 解析器文本 + 全文标题骨架），所以：
+# · 谁都不需要等另一路 —— 这才可能真正并发；
+# · 提示前缀各自稳定（两套 system prompt → 各自的前缀缓存）。
+
+#: `breaks` 里 `type` 的合法取值（模型自报、代码归一）。
+#: **未知类型一律归一成 `other`，不因为"分类不认识"丢掉锚点** —— 锚点本身的价值远大于分类。
+BREAK_TYPES = (
+    "background", "definition", "method", "algorithm", "formula",
+    "experiment", "result", "analysis", "section", "other",
+)
+
+_SHARED_PAGE_IMAGE_RULES = """【最高原则：一切以页图上**显示出来的内容**为准】
+- 页图是唯一事实来源。解析器文本只作参考：它可能有断行、连字、错字、缺字、乱码、公式损坏、顺序错乱、表格串行。
+- **两者冲突时，一律以页图上看到的内容为准**，包括文字、数字、单位、符号、编号、大小写与上下标。
+- 解析器文本里没有、但页图上有的内容要补上；页图上没有、只在解析器文本里出现的，删掉。
+- 看不清的字符写 [?]，禁止猜测、禁止用常识补全。"""
+
+_SHARED_SEGMENTATION_RULES = """【分段规则（两路**完全一致**：这是"两侧块结构对得上"的唯一保证）】
+1. 页图上**一个自然段 = 一块**，块与块之间空一行。
+2. **标题**单独成块（一行一块）。
+3. **独立公式**单独成块（`$$…$$`）；**行内公式**写 `$…$`，不要单独成块。
+4. **表格**整张表成一块；**图注 / 表注**各自单独成块（形如 **Figure 1: …** / **Table 2: …**）。
+5. **参考文献条目**逐条成块（保留 `[12]` 这类编号）。
+6. **算法伪代码**整块成一块（行尾保留两个空格做 Markdown 硬换行）。
+7. 不要把一段拆成两块、也不要把相邻两段合成一块；**不要按字数机械切分**。"""
+
+_SHARED_HEADING_RULES = """【标题层级：必须与【全文标题骨架】一致】
+- 骨架里写 `# 1 TURBOQUANT…`，这一页再遇到它就必须用 `#`。
+- 骨架里没有的标题按编号深度推断：`1` / `A` / `ABSTRACT` / `REFERENCES` 这类章节级用 `#`，
+  `1.1` / `B.2` 用 `##`，`1.1.1` 用 `###`。**同一层级在全文必须一致**，
+  不要因为这一页看起来像子节就多加一个 `#`；编号（1、1.1、A.2）原样保留。"""
+
+#: `breaks` 一节的公共模板（`__MD__` / `__TYPES__` / `__SAMPLE__` 由 `_breaks_rules` 替换）。
+#:
+#: 为什么只有 `start` 没有 `end`：单元在哪里结束是**代码算得出来的**（下一个边界的前一行），
+#: 让模型自己再报一个结束位置只会多一个可能错、还要额外校验的字段。用户口径里的"起止位置"
+#: 由 `start` + 下一个边界共同确定，比模型自报更稳。
+_BREAKS_RULES_TEMPLATE = """【breaks：语义边界锚点（给**检索分块**用，跟渲染无关）】
+- 用途：标出「一个完整语义单元说完了、下一个语义单元开始」的位置。知识库按这些边界切分，
+  所以**你标在哪里，就决定了检索怎么切** —— 不要按字数机械切，只按语义判断。
+- 写法：每条锚点是一个对象，两个字段：
+  · `start` = **新语义单元开头那一块的起始片段**，从该段/该标题的**第一个字符**开始
+    **逐字照抄** 12~40 个字符（公式符号原样抄，不要改写、不要补省略号），
+    要求它能在 __MD__ 里**唯一定位**（同一个片段在本页出现两次就会被判无效）；
+  · `type` = 这条边界属于哪一类，取值之一：__TYPES__（拿不准就写 `other`）。
+    `type` 只是留给后续「论文理解」的标签，**不参与切分判定** —— 不确定也要给出 `start`。
+- **该标**（典型边界）：定义 → 新定义；背景 → 方法；方法 → 实验；问题 → 解决方案；
+  一段推导 → 下一段推导；算法描述 → 实验结果；一个独立论点 → 下一个独立论点；
+  新小节的**标题行本身**（表示这个小节从这里开始）。
+- **不要标**（标了那条锚点会被丢掉，其余锚点照用）：
+  · 本页**第一块**（页首没有"上一个语义单元"；跨页那句归上一页管）；
+  · 一句话中间、一个连续论证的中间；
+  · 公式与紧随其后的解释之间（公式要和它的解释在一起）；
+  · 表格标题与表体之间、图注与图的说明之间；
+  · 公式内部、表格内部、代码块内部、图内文字内部；
+  · 标题行的**下一行**（标题必须和它下面第一段在一起）。
+- **语义完整性优先于长度**：不要为了凑长度硬标。一页一般 2~6 条；确实没有自然边界就写 `[]`。
+- 例子：__SAMPLE__"""
+
+
+def _breaks_rules(side_md: str, sample: str) -> str:
+    return (_BREAKS_RULES_TEMPLATE
+            .replace("__MD__", side_md)
+            .replace("__TYPES__", " / ".join(f"`{t}`" for t in BREAK_TYPES))
+            .replace("__SAMPLE__", sample))
+
+
+TRANSCRIBE_SYSTEM = """你是学术论文的「**页面转录**」专家。每次给你一页论文的**页图**与**解析器抽出的页内文本**，
+你要输出这一页的原文 Markdown（`original_md`）与给检索分块用的语义边界锚点（`breaks`）。
+你**不翻译** —— 中文译文由另一条独立流水线负责，你只对原文负责。
+
+""" + _SHARED_PAGE_IMAGE_RULES + """
+
+""" + _SHARED_SEGMENTATION_RULES + """
+
+""" + _SHARED_HEADING_RULES + """
+
+【original_md：原文转录】
+1. 页图是什么语言就原样转录什么语言：**不要翻译、不要添词、不要改写成更通顺的英文**。
+2. **每一行都必须逐字来自给你的文本**（【本页】/【页边界参考】/页图上的图注本身）；
+   给你的文本里没有的句子、标签、数字组合，哪怕在页图上看得一清二楚，也不要新增成行。
+3. 行内公式写 $...$，独立公式写 $$...$$ 并单独成段，编号用 `\\tag{n}`。
+   **页图上的任何数学符号都要包进定界符**（连方法名下标也算：`$\\text{TurboQuant}_{\\text{mse}}$`），
+   不许裸写 `\\text{…}` / `^{…}` / `_{…}`（前端会原样显示成 `Q_mse^{-1}` 这种文字，用户报过）。
+4. **插图**：**只写图注本身**，单独成段：**Figure 1: ...** / **Table 2: ...**，编号必须与页图上实际编号一致
+   （页图上是 Figure 2 就写 Figure 2）。
+   **图里面的一切文字都不要抄、也不要另起一行转述**：子图标签 (a)/(b)、坐标轴名、刻度、图例、
+   图内注释、示例句子、示例表格内容、伪代码清单，全部属于图，不属于正文
+   （界面会按插图区域单独裁图呈现，读者看图就能看到）。
+   ⚠️ 最容易被误写的两种：
+   ① 图内**成段文字**（实测 Attention Is All You Need 附录的注意力可视化图，图内示例句被抄成了一行带
+   `<EOS>`/`<pad>` 的英文）；
+   ② **图例/子图说明行**（实测 TurboQuant 图 3 的图例被抄成
+   `SnapKV (Score: 0.858); PyramidKV (Score: 0.895); …`、图 5 的 `(a) …; (b) … vertical axis: …` 一行）。
+   两者一律不要出现在 original_md 里。
+5. **表格**：用 Markdown 表格输出（`| 列 | 列 |` + `|---|---|`），**逐格照页图抄写数字与文字**：
+   行名、列名、单位、每格数值都要与页图一致；页图上的粗体/分组行用 `**...**` 表示。
+   页图上表格过大、无法在一屏内看清的，抄下能看清的行列，其余不要臆造。
+6. 参考文献条目逐条保留（保留 [12] 这类编号），不要翻译、不要合并。
+7. 丢弃页眉、页脚、页码、脚注横线、出版社水印。
+8. **只转录本页页图里能看到的内容**：页尾被版面切断的那半句**照原样停在断处**，
+   不要用下一页的内容把它补完（补句是译文那一侧的事）。
+
+""" + _breaks_rules("original_md", '`{"start": "# 3 METHOD", "type": "section"}`') + """
+
+【output：只输出一个 JSON 对象】不要解释、不要代码块：
+{"original_md": "……", "breaks": [{"start": "……", "type": "……"}]}"""
+
+
+TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。每次给你一页论文的**页图**与**解析器抽出的页内文本**，
+你要输出这一页的中文译文 Markdown（`translation_md`）、跨页承接片段（`carry_md`），
+以及给检索分块用的语义边界锚点（`breaks`）。
+你**不转录原文** —— 英文原文由另一条独立流水线负责，你只对译文负责。
+
+""" + _SHARED_PAGE_IMAGE_RULES + """
+
+""" + _SHARED_SEGMENTATION_RULES + """
+
+""" + _SHARED_HEADING_RULES + """
+
+【translation_md：中文译文】
+1. 标题的层级与编号必须与原文一致（例：`## 3.2.1 子中心弧面损失`）。
+2. 公式的 LaTeX **逐字符原样保留**，不改任何符号；**所有数学都必须写进公式定界符**：
+   行内 `$…$`、独立公式 `$$…$$`（单独成段，编号用 `\\tag{n}`）。
+   禁止裸写 LaTeX —— `Q_mse^{-1}`、`S^{d-1}`、`\\text{…}`、`\\mathbb{E}`、`R^{d×d}` 这类**必须包在 `$…$` 里**；
+   方法名带下标写成 `$\\text{TurboQuant}_{\\text{mse}}$`。公式块里不要塞中文（中文说明放在公式外的段落）。
+3. 图注/表注保留编号（例：**图 1：…**）；**表格里的数字、单位、方法名、数据集名原样保留**，
+   只翻译行名/列名这类自然语言表头。
+4. 参考文献条目**不翻译**：逐条原样保留（与原文一致）。
+5. 术语按给定术语表统一；学术书面语；**不增删任何内容**（不加解释、不写"注："、不省略句子）。
+6. 丢弃页眉、页脚、页码、脚注横线、出版社水印。
+7. **标记不许跨页悬空**：本页打开的 `*`（斜体/加粗）或 `$$` 要在本页闭合。
+
+【前文衔接】prompt 里可能给出**已经处理过的前文结尾**：只用它保持术语、句式、段落衔接一致
+（尤其是段落跨页的情况），**不要把它重复输出到本次结果里**。
+
+【跨页衔接：页面只是**排版单位**，不是语义单位】
+1. **以自然流畅为先**：译文要读起来像一篇完整的中文论文。一句话该在哪里断句就在哪里断，
+   **不要为了迁就页面边界去拆句、补句或改写句子结构**。
+2. **页尾那句尽量在本页收成完整句**：原文在页边界被切断时，若【下一页开头】里能看到这句话的剩余部分，
+   就用它**把这一整句译完**（一直译到真正的句末：句号/问号/分号等），不要留半句、不要写「……」占位。
+   这一句的译文**只在本页出现一次**（下一页不会再译它）。例：
+   - 本页末尾原文：`…This latency is primarily attributed to communication bot-`
+   - 【下一页开头】：`tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`
+   - `carry_md`：`tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`
+   - 本页末句译文：`…这种延迟主要归因于通信瓶颈，它出现在加速器上的 HBM 与 SRAM 之间，或跨分布式集群。`
+   （被版面折断的 `bot-` 要补成完整词「瓶颈」，不许写成「通信瓶-」或半截词。）
+   ⚠ `carry_md` **只放原文**（照抄【下一页开头】里用到的那段，一个字符都不要改、不要翻译、不要加标点），
+   它是给**下一页**用的 —— 下一页会把这段原文从自己的正文里删掉，所以**少抄会漏译、多抄会造成重复**。
+3. **页首那半句已由上一页译完，本页跳过它**：原文被页边界切断时，本页开头往往是上一页那句的后半截
+   （形如 `tlenecks between HBM and SRAM on accelerators, or across distributed clusters.`）。
+   **跳过这半句**，从**下一个句子**开始译。同一个词/同一句话**绝不能两页各写一遍**（用户报过「瓶颈」出现两次）。
+   判断依据就是原文本身；看不到【前文衔接】时也照此处理。
+4. **页内需要时可以用「——」把补充成分接上**；不要用「也就是说」这类重新起句的引导词。
+5. **译文里不要输出任何页边界痕迹**：页码、「承上页」「续下页」、分隔线、页注释一律不要。
+
+""" + _breaks_rules("translation_md", '`{"start": "我们定义这个估计量", "type": "definition"}`') + """
+
+【output：只输出一个 JSON 对象】不要解释、不要代码块：
+{"translation_md": "……", "carry_md": "……", "breaks": [{"start": "……", "type": "……"}]}
+
+【carry_md：你到底从【下一页开头】借了哪段原文】
+- 本页末尾那句靠【下一页开头】补完时，把**你实际用到的那段原文**逐字符照抄进来（原文，不是译文）。
+- 没借用（本页句子本来就完整、或下一页开头接不上）就写空字符串 `""`。
+- 这段会被**下一页**用来从它的正文里删掉重复部分 —— 照抄准确两边就刚好衔接，抄错就是漏译或重复。"""
+
+
+#: 按路的输出契约（声明用：`call_page` 只把 system prompt 发给 provider，schema 供测试与文档）
+PAGE_SCHEMA_A = {
+    "type": "object",
+    "properties": {
+        "original_md": {"type": "string"},
+        "breaks": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"start": {"type": "string"}, "type": {"type": "string"}},
+            "required": ["start"],
+        }},
+    },
+    "required": ["original_md"],
+}
+
+PAGE_SCHEMA_B = {
+    "type": "object",
+    "properties": {
+        "translation_md": {"type": "string"},
+        "carry_md": {"type": "string"},
+        "breaks": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"start": {"type": "string"}, "type": {"type": "string"}},
+            "required": ["start"],
+        }},
+    },
+    "required": ["translation_md"],
+}
+
+
+def path_system_prompt(path: str) -> str:
+    """按路取 system prompt：``"a"`` = 英文转录、``"b"`` = 中文翻译。"""
+    if path == "a":
+        return TRANSCRIBE_SYSTEM
+    if path == "b":
+        return TRANSLATE_SYSTEM
+    raise ValueError(f"未知的路径：{path!r}（只能是 'a' / 'b'）")
+
+
+#: 两路的 user prompt 模板。与融合模式的 `PAGE_USER_TEMPLATE` 只差两处：
+#: A 路**不给【下一页开头】**（转录只写本页看到的内容；给了反而容易把那半句补完），
+#: 结尾的"本页输出"按各自的 JSON 字段写。
+PAGE_USER_TEMPLATE_A = """{prefix}{previous}
+
+【本页】第 {page} 页 / 共 {page_total} 页{section_line}
+【解析器抽出的本页文本（**仅供参考**；与页图冲突时以页图为准）】
+<页面文本>
+{body}
+</页面文本>{edges}
+
+【本页输出】按系统提示输出 JSON：original_md 为本页原文的忠实转录（一切以页图显示的内容为准，
+表格逐格照抄、图注编号与页图一致），breaks 为本页的语义边界锚点（没有就写空数组）。"""
+
+PAGE_USER_TEMPLATE_B = """{prefix}{previous}
+
+【本页】第 {page} 页 / 共 {page_total} 页{section_line}
+【解析器抽出的本页文本（**仅供参考**；与页图冲突时以页图为准）】
+<页面文本>
+{body}
+</页面文本>{lookahead}{edges}
+
+【本页输出】按系统提示输出 JSON：translation_md 为本页中文译文，carry_md 为本页末尾那句
+从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。"""
 
 # 思考模式（DeepSeek 默认开启）会把 max_tokens 吃光导致正文为空，按阶梯升档。
 MAX_TOKENS_LADDER = (8192, 16384, 32768, 65536)
@@ -614,9 +859,24 @@ def mark_rows_continuity(rows: list[dict], *, head: bool, tail: bool) -> None:
 
 def render_page_prompt(*, page: int, page_total: int, body: str,
                        prefix: str = "", section: str = "", previous: str = "",
-                       lookahead: str = "", edges: dict | None = None) -> str:
+                       lookahead: str = "", edges: dict | None = None,
+                       path: str | None = None) -> str:
+    """渲染一页的 user prompt。
+
+    `path`：``None`` = 融合模式（`PAGE_USER_TEMPLATE`）；``"a"`` = 英文转录（**不给**下一页开头）；
+    ``"b"`` = 中文翻译（给）。
+    """
+    if path is None:
+        template = PAGE_USER_TEMPLATE
+    elif path == "a":
+        template = PAGE_USER_TEMPLATE_A
+        lookahead = ""      # A 路转录只写本页看到的内容，不需要下一页上下文
+    elif path == "b":
+        template = PAGE_USER_TEMPLATE_B
+    else:
+        raise ValueError(f"未知的路径：{path!r}（只能是 'a' / 'b'）")
     section_line = f"；章节：{section}" if section else ""
-    return PAGE_USER_TEMPLATE.format(
+    return template.format(
         prefix=prefix, previous=f"\n\n{previous}" if previous else "",
         page=page, page_total=page_total,
         section_line=section_line, body=body or "（解析器没有抽到文本，请完全依据页图）",
@@ -659,8 +919,8 @@ class PageCallResult:
     original_md: str
     translation_md: str
     carry_md: str = ""
-    #: 语义边界锚点（新语义单元开头那块的起始原文片段）—— 只服务检索分块，见 SYSTEM_PROMPT【breaks】
-    breaks: list[str] = field(default_factory=list)
+    #: 语义边界锚点 `[{"start", "type"}]` —— 只服务检索分块，见 SYSTEM_PROMPT / TRANSCRIBE_SYSTEM / TRANSLATE_SYSTEM【breaks】
+    breaks: list[dict] = field(default_factory=list)
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -673,14 +933,20 @@ class PageCallResult:
 
 
 def call_page(provider, prompt: str, image: bytes | None, *,
-              max_tokens: int) -> PageCallResult:
-    """一次页级调用（带页图）。图片不可用时退化为纯文本调用。"""
+              max_tokens: int, path: str | None = None) -> PageCallResult:
+    """一次页级调用（带页图）。图片不可用时退化为纯文本调用。
+
+    `path`：``None`` = 融合模式（同一次回复产出 original_md + translation_md）；
+    ``"a"`` / ``"b"`` = 两路模式，只要求**那一路**的输出（另一侧留空）。
+    system prompt 按路取 —— 两路各有自己的提示前缀，前缀缓存也各算各的。
+    """
+    system = SYSTEM_PROMPT if path is None else path_system_prompt(path)
     try:
         if image and getattr(provider, "supports_vision", False):
-            res = provider.generate_vision(prompt, [image], system=SYSTEM_PROMPT,
+            res = provider.generate_vision(prompt, [image], system=system,
                                            max_tokens=max_tokens)
         else:
-            res = provider.generate(prompt, system=SYSTEM_PROMPT,
+            res = provider.generate(prompt, system=system,
                                     temperature=0.2, max_tokens=max_tokens)
     except ProviderError:
         raise
@@ -688,7 +954,13 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         raise ProviderError(f"页级翻译调用失败：{str(exc)[:200]}") from exc
 
     original, translation = parse_pair(res.text or "")
-    if not original.strip() or not translation.strip():
+    if path == "a":
+        if not original.strip():
+            raise ProviderError("模型未返回 original_md（A 路：页面转录）", retryable=True)
+    elif path == "b":
+        if not translation.strip():
+            raise ProviderError("模型未返回 translation_md（B 路：中文翻译）", retryable=True)
+    elif not original.strip() or not translation.strip():
         raise ProviderError(
             "模型未返回完整的 original_md / translation_md（页级调用）",
             retryable=True,
@@ -736,8 +1008,43 @@ def parse_carry(text: str) -> str:
     return ""
 
 
-def parse_breaks(text: str) -> list[str]:
-    """从模型回复里取 ``breaks``（语义边界锚点）。容错：缺字段、类型不对、夹空串都不报错。
+def normalize_break_type(value) -> str:
+    """把模型自报的 `type` 归一成 `BREAK_TYPES` 里的一个。
+
+    未知类型 → ``"other"``；空值 → ``""``（表示"模型没给类型"）。
+    **绝不因为分类不认识就把这条锚点丢掉**：锚点本身的价值远大于它的分类。
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return text if text in BREAK_TYPES else "other"
+
+
+def normalize_breaks(raw) -> list[dict]:
+    """把 `breaks` 归一成 ``[{"start": str, "type": str}]``。
+
+    **必须兼容 v1**（纯字符串数组）：`md/pages.json` 里躺着的存量产物就是那个形状，
+    而 `breaks` 是**原样留档**的（换模型重译时要拿它重新落回行，不用回头看模型的原始回复）。
+    v1 条目等价于 ``{"start": s, "type": ""}``。
+    """
+    if raw is None:
+        return []
+    items = [raw] if isinstance(raw, (str, dict)) else list(raw)
+    out: list[dict] = []
+    for item in items:
+        if isinstance(item, dict):
+            start = str(item.get("start") or "").strip()
+            btype = normalize_break_type(item.get("type"))
+        else:
+            start = str(item or "").strip()
+            btype = ""
+        if start:
+            out.append({"start": start, "type": btype})
+    return out
+
+
+def parse_breaks(text: str) -> list[dict]:
+    """从模型回复里取 ``breaks``（语义边界锚点）并归一。容错：缺字段、类型不对、夹空串都不报错。
 
     为什么容错到底：锚点是**加分项** —— 它缺失或写坏只应该让这一页退回"按块机械切分"，
     绝不能让整页翻译作废（重跑一页视觉模型很贵，而且页级任务是逐页落盘的）。
@@ -745,17 +1052,7 @@ def parse_breaks(text: str) -> list[str]:
     data = _loads_lenient((text or "").strip())
     if not isinstance(data, dict):
         return []
-    value = data.get("breaks")
-    if isinstance(value, str):                  # 模型偶尔给单个字符串而不是数组
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    for item in value:
-        anchor = str(item or "").strip()
-        if anchor:
-            out.append(anchor)
-    return out
+    return normalize_breaks(data.get("breaks"))
 
 
 def _loads_lenient(raw: str) -> dict | None:
@@ -1034,8 +1331,10 @@ def anchor_key(text: str) -> str:
     return _ANCHOR_STRIP.sub("", (text or "").lower())
 
 
-def apply_semantic_breaks(rows: list[dict], breaks: list[str] | None) -> dict:
+def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
     """把 LLM 的语义边界锚点落成**行边界标记**（``row["semantic_break"] = True``）。
+
+    v2 还会把类型标签落到 ``row["semantic_type"]``（可选；只给「论文理解」用，不参与切分）。
 
     这是 marker 的**校验层**：锚点不可信，必须逐条验证。任何一条不合法只丢它自己，
     这一页剩下的锚点照用；全部不合法就等于"按块机械切分"（旧行为）。
@@ -1052,29 +1351,42 @@ def apply_semantic_breaks(rows: list[dict], breaks: list[str] | None) -> dict:
        不以冒号结尾（`… as follows:` 这种是在引出下一块）；
     4. 不在结构块内部切（表格 / 表注 / 图注相邻处不许切）；
     5. 两侧都是正文时，前一行要**真的收句了**（句末标点），否则就是切在一句话中间。
+
+    `breaks` 可以是 v2 的对象数组，也可以是 v1 的纯字符串数组（存量产物）。
+    两路拆分后这个方法**同时**吃两路的锚点：英文锚点落原文侧、中文锚点落译文侧
+    （`_locate_anchor` 先原文后译文），并集天然成立，不需要"按路存标记"。
     """
-    stats: dict = {"anchors": len(breaks or []), "accepted": 0, "duplicate": 0,
+    entries = normalize_breaks(breaks)
+    stats: dict = {"anchors": len(entries), "accepted": 0, "duplicate": 0,
                    "rejected": [], "by_side": {"original": 0, "translation": 0},
-                   "short_heading": 0, "flagged_rows": 0}
+                   "short_heading": 0, "flagged_rows": 0,
+                   # v2：类型标签（只做标签，不参与切分判定）
+                   "typed": 0, "by_type": {}}
     for row in rows:
         row.pop("semantic_break", None)
-    if not rows or not breaks:
+        row.pop("semantic_type", None)
+    if not rows or not entries:
         return stats
 
-    wanted: set[int] = set()
-    for anchor in breaks:
+    wanted: dict[int, dict] = {}
+    for entry in entries:
+        anchor = entry["start"]
         key = anchor_key(anchor)
         if len(key) < MIN_BREAK_ANCHOR_HEADING_KEY:
-            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": "too_short"})
+            stats["rejected"].append({"anchor": anchor[:40], "reason": "too_short",
+                                      "side": ""})
             continue
         heading_only = len(key) < MIN_BREAK_ANCHOR_KEY
         side, idx, why = _locate_anchor(rows, key, heading_only=heading_only)
         if side is None:
-            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": why})
+            stats["rejected"].append({"anchor": anchor[:40], "reason": why, "side": ""})
             continue
-        reason = _break_reject_reason(rows, idx)
+        reason = _break_reject_reason(rows, idx, side)
         if reason:
-            stats["rejected"].append({"anchor": str(anchor)[:40], "reason": reason})
+            # 记下**匹配到哪一侧**：`by_side` 只统计"被接受的"，光看它分不清
+            # "落在译文侧但位置不合法"和"压根没匹配上"。
+            stats["rejected"].append({"anchor": anchor[:40], "reason": reason,
+                                      "side": side})
             continue
         stats["by_side"][side] += 1
         if heading_only:
@@ -1082,11 +1394,17 @@ def apply_semantic_breaks(rows: list[dict], breaks: list[str] | None) -> dict:
         if idx in wanted:
             stats["duplicate"] += 1
             continue
-        wanted.add(idx)
-    for idx in sorted(wanted):
+        wanted[idx] = entry
+    for idx, entry in sorted(wanted.items()):
         rows[idx]["semantic_break"] = True
+        if entry["type"]:
+            rows[idx]["semantic_type"] = entry["type"]
     stats["accepted"] = len(wanted)
     stats["flagged_rows"] = len(wanted)
+    stats["typed"] = sum(1 for e in wanted.values() if e["type"])
+    for entry in wanted.values():
+        if entry["type"]:
+            stats["by_type"][entry["type"]] = stats["by_type"].get(entry["type"], 0) + 1
     return stats
 
 
@@ -1108,8 +1426,14 @@ def _locate_anchor(rows: list[dict], key: str, *, heading_only: bool = False
     return None, -1, ("short_not_heading" if heading_only else "unmatched")
 
 
-def _break_reject_reason(rows: list[dict], idx: int) -> str:
-    """这个边界位置上允不允许切（返回空串 = 允许）。判据见 `apply_semantic_breaks` 的 2~5 条。"""
+def _break_reject_reason(rows: list[dict], idx: int, side: str = "original") -> str:
+    """这个边界位置上允不允许切（返回空串 = 允许）。判据见 `apply_semantic_breaks` 的 2~5 条。
+
+    `side` = 锚点匹配到哪一侧（`_locate_anchor` 的返回值）：**"前一行收句了吗"要用锚点自己
+    那一种语言的文本去判**。两路拆分后这一点变成硬要求 —— A 路的英文锚点用英文侧判、
+    B 路的中文锚点用中文侧判；拿英文的标点去判中文块，会出现"中文块以「：」结尾却被放行"
+    这种漏判。融合模式（锚点全是英文、落在原文侧）行为与改造前**逐字相同**。
+    """
     if idx <= 0:
         return "page_start"
     prev, cur = rows[idx - 1], rows[idx]
@@ -1121,7 +1445,8 @@ def _break_reject_reason(rows: list[dict], idx: int) -> str:
         return "after_formula"
     if ptype in _STRUCT_TYPES and ctype in _STRUCT_TYPES:
         return "inside_structure"
-    prev_text = (prev.get("original") or "").strip()
+    field = "translation" if side == "translation" else "original"
+    prev_text = (prev.get(field) or "").strip()
     if prev_text.endswith((":", "：")):
         return "dangling_colon"
     if ptype == "para" and ctype == "para":

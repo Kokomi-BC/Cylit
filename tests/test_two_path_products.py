@@ -89,8 +89,9 @@ def test_legacy_only_paper_reads_as_legacy(paths) -> None:
     page = products[0]
     assert [r["id"] for r in page["rows"]] == ["p001-00", "p001-01", "p001-02"]
     assert page["align"] == "exact"
-    # 旧格式的锚点全是英文的（同一次调用产出、只给原文锚点）→ 归 A 路，B 路为空
-    assert page["breaks_a"] == ["The bound holds."]
+    # 旧格式的锚点全是英文的（同一次调用产出、只给原文锚点）→ 归 A 路，B 路为空。
+    # 注意：这里是 v1 纯字符串数组（存量产物的真实形状）→ 读出来被归一成 `{"start", "type": ""}`。
+    assert page["breaks_a"] == [{"start": "The bound holds.", "type": ""}]
     assert page["breaks_b"] == []
     assert page["breaks"] == page["breaks_a"]
     assert page["break_stats"]["accepted"] == 1
@@ -262,6 +263,33 @@ def test_anchors_on_different_rows_are_unioned(paths) -> None:
     assert [r["index"] for r in page["rows"] if r.get("semantic_break")] == [2, 3]
     assert page["break_stats"]["by_side"] == {"original": 1, "translation": 1}
     assert page["break_stats"]["accepted"] == 2
+
+
+def test_v2_anchor_types_reach_rows_from_both_paths(paths) -> None:
+    """v2 锚点（对象 + `type`）：两路的类型标签都落到各自那一侧的行上。"""
+    write(paths["path_a"], {1: {
+        "page": 1, "page_total": 1,
+        "original_md": "# 1 Method\n\nAlpha sentence.\n\nBeta sentence.",
+        "breaks": [{"start": "Beta sentence.", "type": "method"}], "model": "a",
+    }}, version=PATH_VERSION)
+    write(paths["path_b"], {1: {
+        "page": 1, "page_total": 1,
+        "translation_md": "# 1 方法\n\n甲句。\n\n乙句，它足够长以便通过锚点长度下限。",
+        "carry_md": "",
+        "breaks": [{"start": "乙句，它足够长以便通过锚点长度下限", "type": "definition"}],
+        "model": "b",
+    }}, version=PATH_VERSION)
+
+    products, _ = reader_service.page_products(PAPER)
+    page = products[0]
+    # 两条锚点都指向 idx 2（一条落原文侧、一条落译文侧）→ 先到的那条胜出，另一条记 duplicate
+    assert page["breaks_a"] == [{"start": "Beta sentence.", "type": "method"}]
+    assert page["breaks_b"] == [{"start": "乙句，它足够长以便通过锚点长度下限",
+                                 "type": "definition"}]
+    assert page["rows"][2]["semantic_type"] == "method"
+    assert page["break_stats"]["by_type"] == {"method": 1}
+    assert page["break_stats"]["typed"] == 1
+    assert page["break_stats"]["duplicate"] == 1
 
 
 # --------------------------------------------------------------------------

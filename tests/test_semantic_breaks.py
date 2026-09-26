@@ -99,17 +99,32 @@ def test_breaks_contract_in_prompt_and_schema():
         assert banned in SYSTEM_PROMPT
     props = PAGE_SCHEMA["properties"]
     assert props["breaks"]["type"] == "array"
-    assert props["breaks"]["items"]["type"] == "string"
+    # v2：每一条是 `{"start", "type"}` 对象（类型只是标签，不参与切分判定）
+    assert props["breaks"]["items"]["type"] == "object"
+    assert set(props["breaks"]["items"]["required"]) == {"start"}
     # breaks 不是必填：缺失只应退化成"机械切分"，不该让整页翻译作废
     assert "breaks" not in PAGE_SCHEMA["required"]
 
 
 def test_parse_breaks_is_lenient():
+    """v2 对象数组 + v1 纯字符串数组都要读得懂（老产物在磁盘上就是 v1）。"""
+    assert parse_breaks('{"breaks": [{"start": "A sentence starts here", "type": "method"}]}') == \
+        [{"start": "A sentence starts here", "type": "method"}]
+    # v1 兼容：纯字符串数组 → type 为空
     assert parse_breaks('{"breaks": ["A sentence starts here", "Another one"]}') == \
-        ["A sentence starts here", "Another one"]
-    assert parse_breaks('{"breaks": "single anchor string"}') == ["single anchor string"]
-    assert parse_breaks('{"breaks": ["  ", "ok anchor here", null]}') == ["ok anchor here"]
-    assert parse_breaks('{"original_md": "x"}') == []          # 缺字段
+        [{"start": "A sentence starts here", "type": ""},
+         {"start": "Another one", "type": ""}]
+    assert parse_breaks('{"breaks": "single anchor string"}') == \
+        [{"start": "single anchor string", "type": ""}]
+    assert parse_breaks('{"breaks": ["  ", "ok anchor here", null]}') == \
+        [{"start": "ok anchor here", "type": ""}]
+    # 未知类型归一成 other（**不丢锚点**）、大小写与空格归一
+    assert parse_breaks('{"breaks": [{"start": "x", "type": " Method "}]}') == \
+        [{"start": "x", "type": "method"}]
+    assert parse_breaks('{"breaks": [{"start": "x", "type": "???"}]}') == \
+        [{"start": "x", "type": "other"}]
+    assert parse_breaks('{"breaks": [{"type": "method"}]}') == []   # 没有 start 就没有锚点
+    assert parse_breaks('{"original_md": "x"}') == []               # 缺字段
     assert parse_breaks("不是 JSON") == []
     assert parse_breaks('{"breaks": {"a": 1}}') == []
 
@@ -222,16 +237,59 @@ def test_anchor_key_is_markdown_insensitive():
         anchor_key("### 3.2.1 Scaled dot product attention")
 
 
+def test_translation_side_anchor_is_judged_by_translation_text():
+    """中文锚点的"前一行收句了吗"必须用**中文**那一侧判。
+
+    两路拆分后这点变硬：拿英文标点去判中文块，会出现"中文块以「：」结尾却被放行"的漏判
+    （英文那侧正好以 `.` 收句）。这里造出两侧收句状态**不一致**的一行来钉住它。
+    """
+    rows = _rows(("heading", "# 1 Method", "# 1 方法"),
+                 ("para", "Alpha sentence.", "甲句："),
+                 ("para", "Beta sentence.", "乙句，它足够长以便通过下限。"))
+    stats = apply_semantic_breaks(
+        rows, [{"start": "乙句，它足够长以便通过下限", "type": "method"}])
+    assert stats["accepted"] == 0
+    # 关键：如果拿**英文**侧去判，前一行是 `Alpha sentence.`（以 `.` 收句）→ 会被放行
+    assert stats["rejected"] == [{"anchor": "乙句，它足够长以便通过下限",
+                                  "reason": "dangling_colon", "side": "translation"}]
+    assert "semantic_break" not in rows[2]
+
+
+def test_original_side_anchor_ignores_translation_text():
+    """反过来也一样：英文锚点只看英文侧（融合模式的老行为，一个字符都没变）。"""
+    rows = _rows(("heading", "# 1 Method", "# 1 方法"),
+                 ("para", "Alpha sentence", "甲句。"),      # 英文没收句、中文收了
+                 ("para", "Beta sentence.", "乙句。"))
+    stats = apply_semantic_breaks(rows, ["Beta sentence."])
+    assert stats["accepted"] == 0
+    # 关键：如果拿**中文**侧去判，前一行是 `甲句。`（收句了）→ 会被放行
+    assert stats["rejected"] == [{"anchor": "Beta sentence.", "reason": "mid_sentence",
+                                  "side": "original"}]
+    assert "semantic_break" not in rows[2]
+
+
 # --------------------------------------------------------------------------
 # 3. 落盘与向后兼容
 # --------------------------------------------------------------------------
 
 
 def test_payload_stores_raw_breaks_and_flags_rows():
-    payload = _payload(["The results show that recall is preserved."])
-    assert payload["breaks"] == ["The results show that recall is preserved."]
+    v2 = [{"start": "The results show that recall is preserved.", "type": "result"}]
+    payload = _payload(v2)
+    # **原样留档**：换模型重译时要拿它重新落回行，所以存的就是归一后的 v2 形状
+    assert payload["breaks"] == v2
     assert payload["break_stats"]["accepted"] == 1
+    assert payload["break_stats"]["by_type"] == {"result": 1}
     assert payload["rows"][10]["semantic_break"] is True
+    assert payload["rows"][10]["semantic_type"] == "result"
+
+
+def test_v1_string_breaks_still_work_and_get_no_type():
+    """存量产物里的 `breaks` 是纯字符串数组 —— 必须照旧落成边界，只是没有类型标签。"""
+    payload = _payload(["The results show that recall is preserved."])
+    assert payload["rows"][10]["semantic_break"] is True
+    assert "semantic_type" not in payload["rows"][10]
+    assert payload["break_stats"]["typed"] == 0
 
 
 def test_old_payload_without_breaks_is_untouched():
