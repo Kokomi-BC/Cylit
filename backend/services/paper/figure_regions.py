@@ -741,7 +741,10 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
                         text or "", re.IGNORECASE)
         return bool(head) and head.group(1) == number
 
-    out: list[Rect] = []
+    #: 同一个图注被拆成多块时，块与块之间的最大间隔（pt）—— 超过它就不是"这一串图注"了
+    CAPTION_CHAIN_GAP = 18.0
+
+    cand: list[tuple[str, Rect]] = []
     for b in ir.blocks():
         if int(b["page_no"]) != int(page_no) or (b.get("type") or "") != "caption":
             continue
@@ -749,8 +752,53 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
             continue
         rect = _rect_of(b)
         if rect.width > 2 and rect.height > 2:
-            out.append(rect)
-    return sorted(out, key=lambda r: (r.y0, r.x0))
+            cand.append((str(b.get("id") or ""), rect))
+    if not cand:
+        return []
+    cand.sort(key=lambda it: (it[1].y0, it[1].x0))
+    # ⚠️ 只取**挨着的那一串**图注块。解析器会把正文里的引用句也判成 caption
+    # （实测 DTDBD p11 的 `Figure 3. From Case 1, it can be seen that when traditional`，
+    # 离真图注 145pt），一起拼到卡片下面就是用户看到的"底部图注对不上 / 像拼接"。
+    want_id = str(region.get("caption_block_id") or "")
+    start = next((i for i, (bid, _) in enumerate(cand) if bid == want_id), None)
+    if start is None:                      # 没有明确的图注块 → 取离图体最近的那块当起点
+        b0, b1 = _num(region["bbox"][1]), _num(region["bbox"][3])
+        start = min(range(len(cand)),
+                    key=lambda i: min(abs(cand[i][1].y0 - b1), abs(b0 - cand[i][1].y1)))
+    chain = [cand[start][1]]
+    for step in (1, -1):                   # 向下、向上各延伸，遇到明显空档就停
+        i = start + step
+        while 0 <= i < len(cand):
+            prev = chain[-1] if step > 0 else chain[0]
+            rect = cand[i][1]
+            gap = (rect.y0 - prev.y1) if step > 0 else (prev.y0 - rect.y1)
+            if gap > CAPTION_CHAIN_GAP:
+                break
+            chain.append(rect) if step > 0 else chain.insert(0, rect)
+            i += step
+    # 再往下续接**紧挨着**的普通块：图注往往是"多行的一大段"，而解析器只把第一行判成 caption
+    # （实测 DTDBD p11 第二行 `the probabilistic prediction results …` 是 para）—— 只取 caption
+    # 块会把图注截掉一半。间隔 ≤ CAPTION_CHAIN_GAP、同列、且不是另一张图/表的题注才续。
+    cap_head = re.compile(r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|Table|图|表)\s*\d", re.IGNORECASE)
+    blocks_sorted = sorted(
+        [b for b in ir.blocks() if int(b["page_no"]) == int(page_no)],
+        key=lambda b: (_num(b.get("y0")), _num(b.get("x0"))))
+    last = max(chain, key=lambda r: r.y0)
+    for b in blocks_sorted:
+        rect = _rect_of(b)
+        if rect.y0 <= last.y1 + 0.5:
+            continue
+        if (b.get("type") or "") in ("figure", "formula"):
+            break
+        if not (rect.x1 > last.x0 + 1.0 and rect.x0 < last.x1 - 1.0):
+            break                          # 换栏/换列 → 图注到此为止
+        if rect.y0 - last.y1 > CAPTION_CHAIN_GAP:
+            break
+        if cap_head.match(str(b.get("text_clean") or b.get("text") or "")):
+            break                          # 另一张图/表的题注
+        chain.append(rect)
+        last = rect
+    return sorted(chain, key=lambda r: (r.y0, r.x0))
 
 
 def ensure_region_crop(paper_id: str, page_no: int, index: int,
