@@ -5421,6 +5421,54 @@ Sequential Operations / Maximum Path Length` 与 4 行 `O(n²·d)`、`O(n·log n
 但它会改动所有块文本（含图注识别），所以单独立项。
 
 
+### 17.98 第九轮 · 侧栏拖拽后"碰不到页面滚动条"（指针被把手捕获住了）
+
+用户报：拖动侧栏调宽之后，鼠标够不到页面滚动条、没法用滚动条翻页。
+
+**根因**：把手用 `setPointerCapture` 捕获指针（这是对的，不捕获的话拖出那条 9px 把手就断），
+但**收尾只靠把手上的 `pointerup`**：一旦这个事件没送到（在**窗口外**松手、浏览器吞事件、
+拖拽中切走标签页），`asideResizing` 就永远停在 true —— 指针被那条 9px 把手**持续捕获**，
+之后所有点击都被当成"继续拖宽度"，页面上任何东西（含最右侧滚动条）都点不到。
+
+**修法**（`ReaderView.vue`，三层兜底 + 幂等收尾）：
+1. 窗口级 `pointerup` / `pointercancel` / `blur`（capture 阶段）监听 → 无论在哪儿松手都收尾；
+2. 把手补 `@lostpointercapture`；
+3. `onResizeMove` 里发现 `ev.buttons === 0`（按键其实已经松开）→ 就地收尾；
+4. `onUnmounted` 也调一次（拖拽中切路由时释放捕获）。
+
+`onResizeUp` 做成**幂等**（模板事件与窗口兜底会重复触发）：只在真的处于拖拽中才落盘/重算宽度。
+`npm run typecheck` 0 错、`npm run build` 成功、`frontend_check` **88/87/1**。
+
+⚠️ 说明：这条**没法在现有自检里自动化**（`frontend_check` 走 `--dump-dom`，不能注入 JS 去模拟
+"拖到窗口外松手"），所以是代码层修复 + 人工回归。真出问题时的手工验证：拖一下侧栏 →
+在**窗口外**松开鼠标 → 回到页面，滚动条应当照常可点。
+
+
+### 17.99 第九轮 · 不再设人为输出上限（思考模式不再"吃光预算就白烧一轮"）
+
+用户口径：**"思考模式吃光 token，我觉得不应该有 token 生成限制"**。
+
+以前：页级 `MAX_TOKENS_LADDER = (8192, 16384, 32768, 65536)`、理解 `MAX_TOKENS = 12000`，
+基线给小了 → 思考模式（DeepSeek 默认开启，推理也计入 `completion_tokens`）写完推理就没正文
+→ `finish=length` + 空正文 → 升档重试**白烧一轮调用**（3360 实测第 1 页连着重试 3 次）。
+
+改法：
+- `page_translate.MAX_OUTPUT_TOKENS = 65536`（实测厂商接受该值），`MAX_TOKENS_LADDER` 收敛成
+  `(65536,)`，`effective_max_tokens()` 把模型配置里的小值（8192/16384）一律**抬到上限**；
+  实测请求参数：`{'max_tokens': 65536, 'top_p': 0.95}` + `extra_body={'thinking': {'type': 'enabled'}}`；
+- 理解的 `MAX_TOKENS` 12000 → **65536**；"没给出收尾 JSON"那次重试保持有界，但不再 `×2`（已经到顶）；
+- 模型配置（`vision-d978f800` 8192、`generation-e6715c60` 16384）也统一抬到 65536，
+  免得其它调用（简报 / RAG 回答）继续吃小预算；
+- `_escalate_max_tokens` 现在恒返回 `None`（阶梯到顶）→ **"正文为空"交给调度器重试该条**
+  （同预算再要一次），而不是原地放大一个到顶的预算。文档在函数里写清了这条语义。
+
+单测跟着改（这是行为变更，不是测试松动）：
+`test_max_tokens_ladder` 断言"小值一律抬到 65536、没有更高一档"；
+`test_understanding_retry.py` 改成三条 —— 每次调用都带 65536、正文为空只调一次就抛给调度器、
+网络 500 同样只调一次。`pytest tests` 全绿。
+
+
+
 
 
 

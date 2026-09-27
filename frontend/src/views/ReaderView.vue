@@ -441,7 +441,13 @@ onMounted(async () => {
     tabsRO.observe(el);
   }
 });
-onUnmounted(() => { tabsRO?.disconnect(); tabsRO = null; });
+onUnmounted(() => {
+  tabsRO?.disconnect();
+  tabsRO = null;
+  // 拖拽中切走路由：收尾（释放指针捕获 + 摘掉窗口级兜底监听），
+  // 否则指针会一直被已经卸载的把手捕获着（症状与用户报的"碰不到滚动条"一致）。
+  void onResizeUp();
+});
 watch(SIDE_TABS, () => { void nextTick(syncTabsScroll); });
 
 /* Markdown 视图：直接看**带插图**的双语 Markdown（模型产物 + 后端插入的图片行）。
@@ -918,17 +924,32 @@ function onWindowResize() {
 const asideResizing = ref(false);
 let resizeStartX = 0;
 let resizeStartW = 0;
+/** 拖拽中的把手元素与 pointerId（收尾时要按它们释放捕获；见 `onResizeUp`） */
+let resizeEl: HTMLElement | null = null;
+let resizePointerId = -1;
 
 /**
  * 用 **pointer 事件 + `setPointerCapture`**：鼠标拖出侧栏（甚至拖出窗口）再回来时事件不会丢，
  * 不捕获的话手指/鼠标一离开那条 9px 的把手就断，宽度会停在半路。
+ *
+ * ⚠️ 捕获的另一面（用户 2026-09-27 报的"拖完侧栏后鼠标碰不到页面滚动条、没法用滚动条翻页"）：
+ * 一旦 `pointerup` 没送到（在**窗口外**松手、浏览器吞掉事件、拖拽中切走标签页），
+ * `asideResizing` 就永远停在 true —— 指针被那条 9px 把手**持续捕获**，
+ * 之后所有点击都当成"继续拖宽度"，页面上任何东西（含最右侧的滚动条）都点不到。
+ * 所以下面加了三层兜底：窗口级 pointerup/pointercancel/blur、`lostpointercapture`、
+ * 以及"移动时发现没有按键按下就地收尾"。
  */
 function onResizeDown(ev: PointerEvent) {
   if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死（min(360px, 88vw)），不给拖
   asideResizing.value = true;
   resizeStartX = ev.clientX;
   resizeStartW = asideWidth.value;
-  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
+  resizeEl = ev.currentTarget as HTMLElement;
+  resizePointerId = ev.pointerId;
+  resizeEl.setPointerCapture?.(ev.pointerId);
+  window.addEventListener('pointerup', onResizeUpAnywhere, true);
+  window.addEventListener('pointercancel', onResizeUpAnywhere, true);
+  window.addEventListener('blur', onResizeUpAnywhere, true);
   ev.preventDefault();                      // 别把拖拽变成"选侧栏里的文字"
 }
 
@@ -936,14 +957,33 @@ function onResizeDown(ev: PointerEvent) {
  *  只在初始化时算一次的话，对照模式下能把侧栏拖到 640、把译文挤没。 */
 function onResizeMove(ev: PointerEvent) {
   if (!asideResizing.value) return;
+  if (ev.buttons === 0) {                   // 兜底：`pointerup` 丢了，但按键其实已经松开
+    void onResizeUp();
+    return;
+  }
   asideWidth.value = clampAsideWidth(resizeStartW + (ev.clientX - resizeStartX));
 }
 
-/** 拖完才落盘（每像素写一次 localStorage 没意义），并重算正文宽度 */
-async function onResizeUp(ev: PointerEvent) {
+function onResizeUpAnywhere() {
+  void onResizeUp();
+}
+
+/** 拖完才落盘（每像素写一次 localStorage 没意义），并重算正文宽度。
+ *  这里**必须幂等**：模板的 pointerup/pointercancel/lostpointercapture 与窗口级兜底
+ *  可能重复调用它。 */
+async function onResizeUp() {
+  window.removeEventListener('pointerup', onResizeUpAnywhere, true);
+  window.removeEventListener('pointercancel', onResizeUpAnywhere, true);
+  window.removeEventListener('blur', onResizeUpAnywhere, true);
+  const el = resizeEl;
+  const pid = resizePointerId;
+  resizeEl = null;
+  resizePointerId = -1;
+  if (el && pid >= 0 && el.hasPointerCapture?.(pid)) {
+    try { el.releasePointerCapture(pid); } catch { /* 早已释放 */ }
+  }
   if (!asideResizing.value) return;
   asideResizing.value = false;
-  (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
   persistAsideWidth();
   await afterAsideResize();
 }
@@ -2814,6 +2854,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @pointermove="onResizeMove"
           @pointerup="onResizeUp"
           @pointercancel="onResizeUp"
+          @lostpointercapture="onResizeUp"
           @dblclick="resetAsideWidth"
         />
       </aside>

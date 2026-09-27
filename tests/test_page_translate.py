@@ -372,11 +372,13 @@ def test_call_page_with_mock_vision_returns_pair():
 
 
 def test_max_tokens_ladder():
-    assert effective_max_tokens(None) == 8192
-    assert effective_max_tokens(2048) == 8192        # 安全下限
-    assert effective_max_tokens(16384) == 16384
-    assert next_max_tokens(8192) == 16384
+    # 2026-09-27 用户口径："不应该有 token 生成限制" → **基线就是厂商上限**（65536）；
+    # 模型配置里那些小值（8192/16384）会被抬上来；阶梯只剩一级 → 没有"再升一档"可升。
+    assert effective_max_tokens(None) == 65536
+    assert effective_max_tokens(2048) == 65536
+    assert effective_max_tokens(16384) == 65536
     assert next_max_tokens(65536) is None
+    assert next_max_tokens(8192) == 65536            # 老阶梯值只会被抬到上限
 
 
 # --------------------------------------------------------------------------

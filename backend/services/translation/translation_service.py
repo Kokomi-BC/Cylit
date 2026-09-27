@@ -456,7 +456,13 @@ def run_translate_task(ctx) -> dict:
 
 
 def _escalate_max_tokens(exc: Exception, current: int) -> int | None:
-    """只在"思考模式把预算吃光导致正文为空"这类错误上升档 max_tokens。"""
+    """"思考模式把预算吃光导致正文为空"这类错误 → 升档 `max_tokens`。
+
+    ⚠️ 2026-09-27 起**基线就是厂商上限**（65536，用户口径"不应该有 token 生成限制"），
+    阶梯只剩一级 → 这里恒返回 `None`：轮到调度器**重试该页**（同预算再要一次），
+    而不是原地放大一个已经到顶的预算。函数保留是因为"基线还能再抬"的将来（换更大的模型）
+    仍然走这条路径。
+    """
     msg = str(exc)
     if "正文为空" not in msg and "思维链" not in msg and "未返回完整" not in msg:
         return None

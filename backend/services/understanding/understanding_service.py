@@ -264,8 +264,9 @@ def _provider(path: str):
     return _path_provider(path), _current_model_id(path)
 
 
-#: 理解是长输出（一份 3~5 千字的自由 Markdown），初始预算给足；不够再按同一套放大
-MAX_TOKENS = 12000
+#: 理解的输出预算：**与页级一样直接给到厂商上限**（用户口径 2026-09-27："不应该有 token
+#: 生成限制"）。以前这里写 12000，于是"思考占满预算 → 正文为空"会白烧一轮（A 路实测中过招）。
+MAX_TOKENS = 65536
 
 
 def _page_context_head(path: str, paper_id: str) -> str:
@@ -311,11 +312,13 @@ def _page_context_head(path: str, paper_id: str) -> str:
 
 def _generate(provider, prompt: str, *, system: str, path: str,
               min_tokens: int = MAX_TOKENS):
-    """调模型产出理解，带"思考模式吃光预算"的**升档重试**。
+    """调模型产出理解。
 
-    复用页级流水线那一套判据（`translation_service._escalate_max_tokens`）：
-    实测 A 路（技术解剖）第一次就以 `finish=length`、reasoning 8000 tokens 而**正文为空**
-    失败 —— B 路同时成功了（35s / 71 条引用），所以这不是"理解不可行"，是预算问题。
+    预算**基线就是厂商上限**（65536，用户口径"不应该有 token 生成限制"），所以
+    "思考模式吃光预算 → 正文为空"这类错误**不在本函数里原地放大重试**了：
+    `_escalate_max_tokens` 返回 None（阶梯已到顶）→ 异常直接抛给调度器，
+    由调度器重试该条（同预算再要一次，见 `task.scheduler` 的"第 N 次失败，X 秒后重试"）。
+    真正的网络/500 错误同样只调用一次，不白烧。
     """
     from backend.services.translation.translation_service import _escalate_max_tokens
 
@@ -374,12 +377,13 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     parsed = parse_result(res.text or "")
     truncated = not parsed["had_json"]
     if truncated:
-        # 没有收尾 JSON 多半是**被输出长度截断**（实测 B 路第一次只写了 4 节就停，
-        # 用户口径 ⑧ 要求的"相关概念"整节没写出来 —— 而那正是 B 路最重要的产出）。
-        # 放大预算重来一次；这次重试是**有界的**（只一次），不会无限烧调用。
-        log.warning("%s 路理解没给出收尾 JSON（疑似被截断），max_tokens ×2 重试", path)
+        # 没有收尾 JSON：可能是被输出长度截断（实测 B 路第一次只写了 4 节就停，
+        # 用户口径 ⑧ 要求的"相关概念"整节没写出来 —— 而那正是 B 路最重要的产出），
+        # 也可能只是模型收尾格式飘了。重试**一次**（有界）：预算已经是厂商上限，
+        # 所以这次重试是"同预算再要一次"，不再放大了。
+        log.warning("%s 路理解没给出收尾 JSON（疑似被截断），同预算重试一次", path)
         res = _generate(provider, prompt, system=system, path=path,
-                        min_tokens=MAX_TOKENS * 2)
+                        min_tokens=MAX_TOKENS)
         parsed = parse_result(res.text or "")
     valid = code_map(inventory)
     check = validate_refs(parsed["refs"], valid, path=path)

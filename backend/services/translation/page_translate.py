@@ -449,9 +449,20 @@ PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 【本页输出】按系统提示输出 JSON：translation_md 为本页中文译文，carry_md 为本页末尾那句
 从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。{src_tail}"""
 
-# 思考模式（DeepSeek 默认开启）会把 max_tokens 吃光导致正文为空，按阶梯升档。
-MAX_TOKENS_LADDER = (8192, 16384, 32768, 65536)
-SAFE_MAX_TOKENS = MAX_TOKENS_LADDER[0]
+# 输出预算（`max_tokens`）。
+#
+# **基线直接给到厂商接受的最大值**（用户口径 2026-09-27："思考模式吃光 token，
+# 我觉得不应该有 token 生成限制"）：思考模式下**推理也计入 `completion_tokens`**，
+# 预算给小了就会出现"推理写完了、正文还没来得及写"→ `finish=length` + 空正文
+# → 一整轮调用白烧（3360 实测：第 1 页连着重试 3 次、第 2/5 页各 2 次）。
+#
+# 实测 `deepseek-v4-flash-vision-exp` 接受 `max_tokens=65536`（模型配置里那个 8192
+# 只是早期保守值，`effective_max_tokens()` 会把它抬到这里的基线）。
+MAX_OUTPUT_TOKENS = 65536
+#: 升档阶梯：只有一级 —— 基线已经是上限，没有"再大一点"可升。
+#: 真遇到空正文时不再原地放大预算，而是由调度器重试该页（`_escalate_max_tokens` 返回 None）。
+MAX_TOKENS_LADDER = (MAX_OUTPUT_TOKENS,)
+SAFE_MAX_TOKENS = MAX_OUTPUT_TOKENS
 
 # 单页原文文本送入 prompt 的上限（页图才是事实来源，文本只是辅助）
 MAX_PAGE_TEXT_CHARS = 16000
@@ -472,6 +483,7 @@ CONTEXT_MAX_CHARS = 2_000_000
 
 
 def effective_max_tokens(configured: int | None) -> int:
+    """本页调用的输出预算：**不低于** `MAX_OUTPUT_TOKENS`（不设人为上限，用户口径）。"""
     if configured and configured > 0:
         return max(int(configured), SAFE_MAX_TOKENS)
     return SAFE_MAX_TOKENS
