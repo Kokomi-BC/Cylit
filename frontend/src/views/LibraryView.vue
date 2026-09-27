@@ -169,8 +169,23 @@ const importForm = reactive<ImportForm>({
 const dragOver = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 
+/**
+ * 清空导入表单。
+ *
+ * ⚠️ **必须在"选新文件"和"导入成功"两处都调用**：表单里的 title/authors/… 会残留上一篇的内容，
+ * 而 `submitImport` 会把非空字段原样发给后端、后端又当成"用户填的" → 连续导入第二篇时
+ * 新论文被命名成**上一篇**的名字（用户 2026-09-27 报的"命名成其他文章了"）。
+ */
+function resetImportForm() {
+  for (const k of UPLOAD_FIELDS) importForm[k] = '';
+  importForm.file = null;
+  importForm.auto_parse = true;
+  if (fileInput.value) fileInput.value.value = '';   // 同一个文件连选两次也要能触发 change
+}
+
 function pickFile(file?: File | null) {
   if (!file) return;
+  resetImportForm();                                 // 换文件 = 重新填表，先清掉上一篇的残留
   importForm.file = file;
   if (!importForm.title) importForm.title = file.name.replace(/\.pdf$/i, '');
 }
@@ -204,7 +219,10 @@ async function submitImport() {
     const data = await api.upload<ImportResult>('/papers', form);
     toast(data.reused ? `同一 PDF 已存在，已复用 ${data.id}` : `已导入：${data.id}`, 'ok');
     importOpen.value = false;
-    importForm.file = null;
+    /* ⚠️ **整份表单都要清**：只清 `file` 的话，标题/作者/年份这些框里还留着上一篇的内容，
+     * 连续导入第二篇时它们会被当成"用户填的"发到后端 → 新论文被命名成**上一篇**的名字
+     * （用户 2026-09-27 报的"连续导入两篇时命名成其他文章"）。 */
+    resetImportForm();
     await refresh();
     if (data.reused) openPaper(data.id);
   } catch (err) {

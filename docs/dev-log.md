@@ -5871,3 +5871,21 @@ beyond-speedup 的作者行 `Zeyu Xing1, Xing Li2, …` 里数字是"贴在名�
 实测：图 1 的区域 `(84.1, 82.6, 515.1, 329.6)` → `(84.1, 82.6, 515.1, 318.5)`；
 其余图不受影响（boomerang 图 9 仍 237.1 = 图注顶 238.2 - 1.2）。`pytest` 572 passed；
 `figure_caption_audit` 9 篇 0 不通过。
+
+### 17.112 第十轮 · 连续导入两篇时，第二篇被命名成上一篇（导入表单残留）
+
+用户："连续导入两篇时，前端的标题输入框残留文字导致命名错误（命名成其他文章了）"。
+
+根因在前端：`LibraryView.submitImport()` 成功后**只清了 `file`**，`title/authors/venue/year/tags`
+全都留着上一篇的值；`pickFile()` 又只在 title 为空时才用文件名预填 → 第二篇的 title 仍是第一篇的
+标题，而它会被当成"用户填的"发给后端（后端 `title or meta.title` 优先用传进来的），于是新论文
+顶着上一篇的名字入库。
+
+改法：新增 `resetImportForm()`（清 UPLOAD_FIELDS 全部字段 + file + auto_parse + 清空 `<input file>`
+的 value），在**两处**调用：
+1. `pickFile()` 里、预填之前 —— 换文件就等于重新填表；
+2. `submitImport()` 成功后 —— 表单不把上一篇的内容带进下一篇。
+（`<input type=file>` 的 value 也清掉，否则同一个文件连选两次不会触发 change。）
+
+验证：`npm run typecheck` 0 错、`npm run build` 成功、`frontend_check.py --block-markers` 86/87
+（唯一红项仍是「公式能整体高亮」，与本期无关）。
