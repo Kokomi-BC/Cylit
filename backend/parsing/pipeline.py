@@ -824,6 +824,10 @@ class PaperBuilder:
         skip = skip_pages or set()
         reads = page_reads or {}
 
+        #: 已经被插图占用的宿主块：`figure` 表主键是 `block_id`，两条候选抢到同一个块时
+        #: 后写的会**静默覆盖**前一条（`INSERT OR REPLACE`）—— 实测 9984-boomerang p33
+        #: 一页三张图（图 28/29/30）三条候选都判给了同一个宿主，落库只剩两条、图 29 整张丢失。
+        used_hosts: set[str] = set()
         for pno, raws in raw_by_page.items():
             read = reads.get(pno)
             if read is not None:                    # ---- 扫描页：模型粗框 + 墨迹 ----
@@ -833,12 +837,23 @@ class PaperBuilder:
                 continue
             if pno in skip:
                 continue
-            cands = detect_figures(raws, images_by_page, drawings_by_page, page_rects)
+            cands = detect_figures(raws, images_by_page, drawings_by_page, page_rects,
+                                   pages={pno})
             for cand in cands:
                 host = _find_host_block(result.blocks, pno, cand.rect)
-                caption_block = _find_caption_block(result.blocks, pno, cand.caption)
+                if cand.reason == "no_caption":
+                    # 无图注的兜底插图：它的宿主多半是**正文段落**（图附近唯一的文本块），
+                    # 认下来会把这段正文改成 figure 类型 → 正文里少一段话。一律另开孤儿块。
+                    host = None
+                if host is not None and host.id in used_hosts:
+                    host = None                     # 这个块已经属于另一张图 → 另开孤儿块
+                # ⚠️ 无图注的插图（兜底产出的）不能去 `_find_caption_block`：空串对
+                # `startswith("")` 恒真，会随便挂到本页第一个图注块上（等于偷别人的图注）
+                caption_block = (_find_caption_block(result.blocks, pno, cand.caption)
+                                 if cand.caption else None)
                 if host is None:
                     host = _make_orphan_block(result, cand, "figure", cand.caption)
+                used_hosts.add(host.id)
                 block_id = host.id
                 fname = f"{block_id}.png"
                 fpath = self.figures_dir / fname

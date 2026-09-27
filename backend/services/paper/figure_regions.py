@@ -61,7 +61,8 @@ CROP_DPI = 600
 #: （实测事故：修好"卡片图注多了一句正文"之后，用户重解析仍看到旧图，就是哈希没变）。
 #: 2 = 表格区域取表体 + 同图号去重 + 卡片图注只取挨着的那一串（2026-09-27）。
 #: 3 = 图注续行加"句末即停 / 不得越出本栏宽"（DAMMFND 图 1 吞了整段摘要）。
-REGION_CACHE_VERSION = 3
+#: 4 = 图体按图注分段（一页多图互不吞并，见 `parsing.structure.figure_cut` 文件头）。
+REGION_CACHE_VERSION = 4
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
