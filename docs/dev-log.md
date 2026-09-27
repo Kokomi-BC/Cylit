@@ -5706,3 +5706,28 @@ turboquant / attention / 3360 / 12382 / dammfnd 五篇 + boomerang，逐篇跑�
 
 **遗留**：读**正文行**里那条图注仍拼着右栏文献（`…-p08-b04` 的块文本）。解析层的行切分已经修好，
 但阅读顺序阶段（`order_page_lines`）会把同一基线的两栏 span 重新聚回一行 —— 下一轮再治。
+
+### 17.106 第十轮 · 参考文献的下划线也算"墨迹" → 图 4 顶上多裁了 5 条文献
+
+用户截图（DeepSeek-V3.2 附录页图 4）：卡片顶部是 5 条参考文献 + `Appendices` 标题，图本身在下面。
+
+**根因**：参考文献里的 **URL 带下划线**，下划线也是矢量墨迹 → 进了图体并集 → 图的顶边被拉到
+第一条下划线的位置（那一段的 y 范围 = 参考文献区）。
+
+**改法**：`figure_cut._is_text_decoration` —— 细横线（`is_thin_bar(3.0)`）+ 紧贴某个文字行**下沿**
+（间隔 -2~5pt）+ 与它有横向重叠 → 判为"文字下划线"，**不进图体候选**（不碰任何真实图形：
+图里的线不会贴着正文行的下沿走）。实测该页图 4 的候选从"整片参考文献"收到
+`(70.6, 272.2, 521.6, 561.1)` = 两张 MLA 示意图 + 子图注。
+
+**同轮发现的两个更要紧的问题（还没修）**
+
+1. **重解析 `12382-beyond-speedup-utilizing-2` 直接失败**：
+   `IntegrityError: Duplicate entry '12382beyonds-p01-b01' for key 'block.PRIMARY'` ——
+   这篇和另一篇（`12382-beyond-speedup-utilizing`）的**块 ID 前缀完全相同**（`id_prefix` 截断后
+   撞车），两篇的 block.id 全局唯一性被破坏 → 后导入的那篇写库时冲突、IR 只写了一半。
+   → 要修 `id_prefix`（前缀必须唯一，不能只靠截断）。
+2. **导入时"自动填名称"被绕过**：`extract_paper_meta` 对这篇 PDF 明明抽得出
+   `"DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention"`，
+   但库里叫 `12382-beyond-speedup-utilizing-2` —— 因为 `/papers` 上传接口把表单里的 `title`
+   传了进来（前端预填的是文件名），而 `import_pdf` 是 `title or meta.title` → 文件名胜出。
+   → 要修：`title` 等于"文件名 stem"时视为**没填**，用抽取到的标题。

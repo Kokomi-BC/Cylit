@@ -309,7 +309,6 @@ def _body_rect_above_caption(
     # 由 ``floor``（上一张图注的底边）负责不把上面那张图吞进来。
     drs = [d for d in page_drawings if above(d.rect)
            and _h_overlap(d.rect, cap_rect) > 0.10]
-
     if not imgs and not drs:
         return None, [], [], "no_body_found"
 
@@ -354,6 +353,28 @@ def _usable_image(img: ImageInfo, page_rect: Rect,
     return img.rect.area <= max_area_ratio * max(1.0, page_rect.area)
 
 
+def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
+    """这条细横线是不是**文字的下划线**（而不是图里的线）。
+
+    实测 DeepSeek-V3.2 附录页（`12382-beyond-speedup-utilizing-2` p6）：参考文献里的 URL 带下划线，
+    下划线也是"墨迹" → 被算进图 4 的图体并集 → 裁出来顶上是 5 条参考文献 + `Appendices` 标题
+    （用户截图）。判据：细横线 + 紧贴在某个文字行的**下沿**（间隔 -2~5pt）+ 与它有横向重叠。
+    只用于**排除图体候选**，不动任何真实图形（图里的线不会贴着文字下沿走）。
+    """
+    if not d.is_thin_bar(3.0) or d.length < 20:
+        return False
+    for ab in page_blocks:
+        for ln in ab.lines:
+            if not ln.spans:
+                continue
+            r = ln.rect
+            if _h_overlap(r, d.rect) < 0.5:
+                continue
+            if -2.0 <= d.rect.y0 - r.y1 <= 5.0:
+                return True
+    return False
+
+
 def estimate_subfigures(drawings: list[Drawing], images: list[ImageInfo]) -> int:
     """子图数估计：内部独立矩形框与（较大）位图的数量。"""
     boxes = 0
@@ -382,6 +403,13 @@ def detect_figures(
     """
     out: list[FigureCandidate] = []
     all_caps = find_caption_blocks(blocks)
+    # 文字下划线（参考文献里的 URL 都带）不算图体墨迹：实测 DeepSeek-V3.2 附录页的图 4
+    # 因此把顶上 5 条参考文献 + `Appendices` 标题一起裁了进来（用户截图）。
+    deco: dict[int, list[Drawing]] = {}
+    for pno, drs in drawings_by_page.items():
+        here = [b for b in blocks if b.page_no == pno]
+        deco[pno] = [d for d in drs if not _is_text_decoration(d, here)]
+    drawings_by_page = deco
     # 图注锚点：块里**本栏的那些行**（见 `_caption_anchor`：转换器产出的 PDF 会把左右两栏的行
     # 塞进同一个文本块，整块 bbox 横跨整页）。锚点同时用于"分段界标"和"图体并集"。
     anchors: dict[int, tuple[Rect, str]] = {}
