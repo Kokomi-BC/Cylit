@@ -48,9 +48,16 @@ const props = withDefaults(defineProps<{
    * 否则点目录会滚到别处（所以前缀是必填语义，默认值只作兜底）。
    */
   anchorPrefix?: string;
+  /**
+   * 论文 id：与 `mdToHtml` 的第二个参数同义 —— 后端产物里的图片是相对路径
+   * （`../figures/x.png`），不给 paperId 就不会改写成 `/papers/<id>/figures/...`，
+   * 浏览器按当前地址解析成 `/app/figures/...` → 404。解读正文是模型写的，通常没有图，
+   * 但产物里一旦出现就整块裂图，所以照传。
+   */
+  paperId?: string;
 }>(), {
   markdown: '', concepts: () => [], empty: false, loading: false, starting: false, running: false,
-  error: '', timedOut: false, narrow: false, anchorPrefix: 'ins',
+  error: '', timedOut: false, narrow: false, anchorPrefix: 'ins', paperId: '',
 });
 
 const emit = defineEmits<{
@@ -67,7 +74,7 @@ const root = ref<HTMLElement | null>(null);
  * （`frontend_check` 的"整页不滚动"是永久回归项）。只替换 table 标签本身，不动其余产物。
  */
 function render(md?: string | null): string {
-  const html = mdToHtml(md ?? '');
+  const html = mdToHtml(md ?? '', props.paperId);
   if (!html.includes('<table')) return html;
   return html.replace(/<table/g, '<div class="tbl-scroll"><table')
     .replace(/<\/table>/g, '</table></div>');

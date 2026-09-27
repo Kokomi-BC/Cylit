@@ -522,8 +522,12 @@ async function scrollMdToPage(page: number) {
  * （原文 / 译文**分开存**，见 `utils/domMarks.ts` 与 Highlight.side）。
  */
 const mdFullHtml = computed(() => mdView.pages.map((p) => {
+  // ⚠️ **必须把 paperId 传给 `mdToHtml`**：后端下发的页级 Markdown 里图片是相对路径
+  // （`../figures/x.png`），不传就改不成 `/papers/<id>/figures/...`，浏览器按
+  // `/app/reader/<id>` 解析成 `/app/figures/...` → 全部 404（实测事故：haloscope 那篇
+  // 解析完 md 视图 4 张图全 404，正确 URL 是 `/papers/<id>/figures/<name>.png`，实测 200）。
   const part = (side: 'en' | 'zh', md?: string | null) =>
-    `<div class="md-part" data-md-side="${side}">${mdToHtml(md ?? '')}</div>`;
+    `<div class="md-part" data-md-side="${side}">${mdToHtml(md ?? '', paperId.value)}</div>`;
   const body = mdView.mode === 'original' ? part('en', p.original_md)
     : mdView.mode === 'translation' ? part('zh', p.translation_md)
     // 上下对照 = 同一页的原文 + 译文，各自都带图；两份之间只用空白隔开，不画分割线

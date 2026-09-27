@@ -138,6 +138,7 @@ watch([outline, () => props.section], () => { void nextTick(syncActive); });
           :error="entry.error"
           :timed-out="timedOut"
           :anchor-prefix="prefix"
+          :paper-id="paperId"
           @start="start"
           @anchors-ready="syncActive"
         />

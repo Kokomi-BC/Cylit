@@ -105,6 +105,7 @@ async function onStart() {
       :error="entry.error"
       :timed-out="timedOut"
       :anchor-prefix="prefix"
+      :paper-id="props.paperId"
       @start="onStart"
     />
   </div>

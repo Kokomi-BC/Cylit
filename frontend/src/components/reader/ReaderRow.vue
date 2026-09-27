@@ -14,6 +14,12 @@ const props = defineProps<{
   row: PageRow;
   side: 'en' | 'zh';
   highlights: Highlight[];
+  /**
+   * 论文 id：**必须传**，否则行里的相对图片路径（`../figures/x.png`）不会被改写成
+   * 后端静态 URL，浏览器会按当前地址解析成 `/app/figures/...` → 404。
+   * （实测事故：`haloscope` 那篇的公式/图注行带图，md 视图整篇 404。）
+   */
+  paperId?: string;
   /** 搜索词：命中处全部加 `mark.srch`（浏览器 Ctrl+F 那种全量高亮） */
   searchTerm?: string;
   /** 纯译文模式下：该行还没有译文 */
@@ -26,7 +32,7 @@ const props = defineProps<{
 
 const text = computed(() => (props.side === 'zh' ? props.row.translation : props.row.original));
 /** 只渲染 Markdown；**高亮在 DOM 上画**（公式按整体标，见 `utils/domMarks.ts`） */
-const html = computed(() => mdToHtml(text.value ?? ''));
+const html = computed(() => mdToHtml(text.value ?? '', props.paperId));
 /** 本侧要画的高亮（偏移量相对**渲染后的文字**，公式算 1 个字符） */
 const myMarks = computed(() => (props.highlights ?? [])
   .filter((h) => h.block_id === props.row.id

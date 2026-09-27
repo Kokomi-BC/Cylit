@@ -228,6 +228,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             <ReaderRow
               :row="r"
               :side="pageRowSide"
+              :paper-id="props.paperId"
               :highlights="props.highlights"
               :search-term="props.searchTerm"
               :missing="pageRowSide === 'zh' && !r.translation && !g.translated"
@@ -267,6 +268,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             <ReaderRow
               :row="r"
               :side="s"
+              :paper-id="props.paperId"
               :highlights="props.highlights"
               :search-term="props.searchTerm"
               :missing="s === 'zh' && !r.translation && !g.translated"
