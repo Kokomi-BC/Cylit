@@ -131,8 +131,13 @@ export async function copyText(text: string): Promise<void> {
   try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
 }
 
+/** 把一份内容存成文件（浏览器下载）。Blob 已经在手上时用 `saveBlob`。 */
 export function downloadText(filename: string, text: string, type = 'text/markdown;charset=utf-8'): void {
-  const blob = new Blob([text], { type });
+  saveBlob(filename, new Blob([text], { type }));
+}
+
+/** 存二进制/任意 Blob（打包 zip、服务端导出的 Markdown 等）。 */
+export function saveBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

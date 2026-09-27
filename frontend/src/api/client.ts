@@ -124,3 +124,33 @@ export const api = {
 export function sseUrl(path: string, query?: Query): string {
   return `${API_BASE}/${path.replace(/^\/+/, '')}${buildQuery(query)}`;
 }
+
+/**
+ * 下载接口产物（Markdown / zip 这类非 JSON 响应）→ Blob。
+ *
+ * 不走 `request()`：那条路会把响应当 JSON 解析（`res.text()` + `JSON.parse`），二进制包会坏掉。
+ * 失败照样抛 `ApiError`，调用方能把错误提示出来（比直接开新标签页"悄悄失败"强）。
+ */
+export async function downloadBlob(path: string, query?: Query): Promise<Blob> {
+  const url = `${API_BASE}/${path.replace(/^\/+/, '')}${buildQuery(query)}`;
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err: any) {
+    throw new ApiError(`无法连接后端（${API_BASE}）：${err?.message ?? err}`, { code: 'NETWORK_ERROR' });
+  }
+  if (!res.ok) {
+    // 出错时后端仍然回 JSON 信封，尽量把 message 取出来
+    const text = await res.text().catch(() => '');
+    let payload: any = null;
+    try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
+    const err = payload?.error ?? {};
+    throw new ApiError(err.message ?? `HTTP ${res.status}`, {
+      code: err.code ?? `HTTP_${res.status}`,
+      status: res.status,
+      detail: err.detail ?? payload ?? text,
+      traceId: payload?.trace_id ?? res.headers.get('x-trace-id') ?? '',
+    });
+  }
+  return res.blob();
+}

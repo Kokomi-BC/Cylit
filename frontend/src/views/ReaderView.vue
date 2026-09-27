@@ -13,7 +13,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { api, assetUrl, sseUrl } from '@/api/client';
+import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import type {
   Annotation, Block, BriefPayload, FigureItem, GlossaryTerm, Highlight,
   MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
@@ -33,7 +33,7 @@ import { READER_TEXT_SIZES, type ReaderTextSize } from '@/utils/readerFont';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  copyText, debounce, downloadText, flattenOutline, outlineParentIds, pct, truncate,
+  copyText, debounce, flattenOutline, outlineParentIds, pct, saveBlob, truncate,
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
@@ -268,6 +268,8 @@ const toolbarMenu: ToolbarAction[] = [
   { key: 'insight', label: '重新生成解读', icon: 'sparkle' },
   { key: 'pdf', label: '打开原 PDF', icon: 'external' },
   { key: 'markdown', label: 'Markdown 视图', icon: 'document' },
+  // 打包下载（原 PDF + 三个版本的 Markdown + 被引用的插图）：一次拿走，离线可看
+  { key: 'download-zip', label: '下载打包（PDF + Markdown + 图片）', icon: 'download' },
 ];
 
 function onToolbarAction(key: string) {
@@ -275,6 +277,7 @@ function onToolbarAction(key: string) {
   if (key === 'insight') { void regenerateInsight(); return; }
   if (key === 'pdf') { openPdf(); return; }
   if (key === 'markdown') openMarkdownView();
+  if (key === 'download-zip') downloadBundle();
 }
 
 const selection = reactive({
@@ -573,26 +576,51 @@ function closeMarkdownView() {
   mdView.full = false;
 }
 
-/** 按**当前视图模式**拼整篇 Markdown（`?md=1` 深链与下载共用同一份口径）。 */
-function markdownFor(mode: MarkdownViewMode): string {
-  const parts = mdView.pages.map((p) => {
-    const head = `<!-- page ${p.page} -->\n\n## 第 ${p.page} 页`;
-    if (mode === 'original') return `${head}\n\n${p.original_md}`;
-    if (mode === 'translation') return `${head}\n\n${p.translation_md}`;
-    return `${head}\n\n### 原文\n\n${p.original_md}\n\n### 译文\n\n${p.translation_md}`;
-  });
-  return `${parts.join('\n\n---\n\n').trim()}\n`;
-}
-
-/**
- * 下载整篇 Markdown：**版本跟着左上角的分段控件走**（中英对照 / 纯原文 / 纯译文，用户口径）。
- * 图片是相对接口路径，补成当前服务地址后离线阅读器也能取到图。
+/** 按**当前视图模式**下载整篇 Markdown。
+ *
+ * ⚠️ 内容由**后端**拼（`/markdown/export`，与打包 zip 共用同一份"三个版本"的实现）：
+ * 前端不再自己拼字符串，免得"下载的那份"和"打包的那份"两套口径各写一遍。
+ * 后端那份**不含页标识**（用户口径 2026-09-28：不要 `<!-- page N -->` 与 `## 第 N 页`），
+ * 图片补成绝对地址；页与页之间留一条 `---`。
  */
 function downloadMarkdown() {
-  const text = markdownFor(mdView.mode);
-  if (!text.trim()) return;
-  const withOrigin = text.split('](/api/v1/').join(`](${window.location.origin}/api/v1/`);
-  downloadText(`${paperId.value}-${mdModeMeta.value.suffix}.md`, withOrigin);
+  void downloadFromApi(`/papers/${paperId.value}/markdown/export`,
+                       `${paperId.value}-${mdModeMeta.value.suffix}.md`,
+                       { mode: mdView.mode }, '下载 Markdown');
+}
+
+/** 打包下载：原 PDF + **三个版本**的 Markdown + 被 Markdown 引用的插图（zip，解压即离线可看）。 */
+function downloadBundle() {
+  // 还没跑过页级翻译时包里只有 PDF（后端不会塞空 md）—— 先说一句，别让人以为下载坏了
+  if (!stats.value.pages_done) {
+    toast('这篇还没有页级译文产物，包里至少会有原 PDF（先「继续翻译」再打包更完整）',
+          'warn', 4200);
+  }
+  void downloadFromApi(`/papers/${paperId.value}/export/zip`, `${paperId.value}.zip`,
+                       undefined, '打包下载');
+}
+
+/** 正在下载的键（打包首次要按需裁 600dpi 插图，可能几十秒）：同一时刻只允许一个。 */
+const busyDownload = ref('');
+
+/**
+ * 从后端取一个文件并落盘。
+ *
+ * 走 `downloadBlob`（fetch → Blob）而不是直接开新标签页：论文还没解析完 / 没有 source.pdf
+ * 这类错误能提示出来，而不是让浏览器弹个"下载失败"什么都看不到。
+ */
+async function downloadFromApi(path: string, filename: string,
+                               query: Record<string, unknown> | undefined, what: string) {
+  if (busyDownload.value) return;
+  busyDownload.value = what;
+  try {
+    saveBlob(filename, await downloadBlob(path, query));
+    toast(`已下载 ${filename}`, 'ok');
+  } catch (err) {
+    reportError(err, `${what}失败`);
+  } finally {
+    busyDownload.value = '';
+  }
 }
 
 /** 对照 + 原 PDF 时，右侧文字列放哪一侧（默认译文；可切原文） */
@@ -3020,8 +3048,13 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       />
       <template #footer>
         <button class="btn" @click="closeMarkdownView">关闭</button>
-        <!-- 下载版本 = 左上角选中的那个（中英对照 / 纯原文 / 纯译文）：下载什么就是你在看什么 -->
-        <button class="btn primary" :disabled="!mdView.pages.length" @click="downloadMarkdown">
+        <!-- 下载版本 = 左上角选中的那个（中英对照 / 纯原文 / 纯译文）：下载什么就是你在看什么。
+             内容由后端拼（与「下载打包」共用一份实现），**不含页标识**（没有 `第 N 页`）。 -->
+        <button
+          class="btn primary"
+          :disabled="!mdView.pages.length || !!busyDownload"
+          @click="downloadMarkdown"
+        >
           <AppIcon name="download" :size="14" />下载{{ mdModeMeta.label }} Markdown
         </button>
       </template>

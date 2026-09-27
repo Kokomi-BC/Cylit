@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
+# 单个后台任务（响应发完后删掉临时 zip）：这一个类 fastapi 没有转出，从 starlette 拿
+from starlette.background import BackgroundTask
 
 from backend.api.response import envelope
+from backend.core.config import get_settings
 from backend.core.events import (
     EVENT_PAGE_TRANSCRIBED, EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus,
 )
@@ -58,6 +61,40 @@ async def paper_translated_markdown(paper_id: str, request: Request,
     """
     data = reader_service.bilingual_markdown(paper_id, write=write)
     return envelope(data, request=request)
+
+
+@router.get("/papers/{paper_id}/markdown/export")
+async def paper_markdown_export(
+    paper_id: str, request: Request,
+    mode: str = Query("bilingual", pattern="^(original|translation|bilingual)$"),
+):
+    """下载**某一版**整篇 Markdown（原文 / 译文 / 中英对照）。
+
+    - **不带页标识**（用户口径 2026-09-28）：没有 ``<!-- page N -->``、也没有 ``## 第 N 页``；
+    - 图片补成**绝对**地址（按本次请求的 host 拼），下载下来点开就能看图；
+    - 内容与 Markdown 视图里看到的一致（同一个 ``bilingual_markdown`` 口径）。
+
+    走服务端而不是前端拼字符串：下载与打包（zip）共用同一份"三个版本"的实现，不会各写一套。
+    """
+    s = get_settings()
+    base = str(request.base_url).rstrip("/")
+    text = reader_service.export_markdown(paper_id, mode, img_prefix=s.api_prefix,
+                                          absolute_base=base)
+    return Response(
+        content=text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{paper_id}-{mode}.md"'})
+
+
+@router.get("/papers/{paper_id}/export/zip")
+async def paper_export_zip(paper_id: str):
+    """打包下载：原 PDF + 三个版本的 Markdown + 被 Markdown 引用的插图（zip）。
+
+    包内图片是**相对路径**，解压后离线可看；临时 zip 在响应发完后就删掉。
+    """
+    path = reader_service.export_bundle(paper_id)
+    return FileResponse(str(path), media_type="application/zip",
+                        filename=f"{paper_id}.zip",
+                        background=BackgroundTask(path.unlink, missing_ok=True))
 
 
 @router.get("/papers/{paper_id}/blocks/{block_id}")

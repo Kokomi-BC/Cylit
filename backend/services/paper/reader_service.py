@@ -336,6 +336,153 @@ def bilingual_markdown(paper_id: str, *, write: bool = True,
 
 
 # --------------------------------------------------------------------------
+# 下载 / 打包导出（三个版本的 Markdown、原 PDF、被引用的插图）
+# --------------------------------------------------------------------------
+
+#: 下载与打包用的三个 Markdown 版本（与 Markdown 视图左上角那三个分段一一对应）
+MD_EXPORT_MODES: tuple[str, ...] = ("original", "translation", "bilingual")
+
+#: Markdown 里指向打包内插图的引用（`![图注](figures/xxx.png)`）
+_FIG_REF = re.compile(r"!\[[^\]]*\]\((figures/[^)\s]+)\)")
+
+
+def assemble_versions(pages: list[dict]) -> dict[str, str]:
+    """把**逐页产物**拼成三个版本的整篇 Markdown（纯函数，便于单测）。
+
+    ⚠️ **不带页标识**（用户口径 2026-09-28）：下载/打包出去的 Markdown 里不要
+    ``<!-- page N -->`` 与 ``## 第 N 页`` —— 那是给人"在页面里定位"用的，落到文件里只是噪声。
+    页与页之间仍留一条 ``---``，读的时候还看得出分页。阅读器里那一版照旧按页分段显示
+    （页号由前端画，不在这份文本里）。
+
+    ``pages``：``bilingual_markdown()`` 的 ``pages``（图片行已经注入）。
+    """
+    def join(parts: list[str]) -> str:
+        kept = [p.strip() for p in parts if (p or "").strip()]
+        return ("\n\n---\n\n".join(kept).strip() + "\n") if kept else ""
+
+    # 两侧都空的页整页丢掉（否则"空页"在中英对照里会留下一个只有 `### 原文/### 译文` 的空壳）
+    usable = [p for p in pages
+              if str(p.get("original_md") or "").strip()
+              or str(p.get("translation_md") or "").strip()]
+
+    return {
+        "original": join([str(p.get("original_md") or "") for p in usable]),
+        "translation": join([str(p.get("translation_md") or "") for p in usable]),
+        "bilingual": join([
+            f"### 原文\n\n{p.get('original_md') or ''}\n\n### 译文\n\n{p.get('translation_md') or ''}"
+            for p in usable]),
+    }
+
+
+def markdown_versions(paper_id: str, *, img_prefix: str) -> dict[str, str]:
+    """三个版本的整篇 Markdown；``img_prefix`` 决定图片引用怎么写：
+
+    - 单文件下载 → 拼**绝对**地址（`http://host/api/v1/...`），点开就能看图；
+    - zip 打包 → ``figures``（相对 zip 内的目录），解压后**离线**也能看图。
+    """
+    bundle = bilingual_markdown(paper_id, write=False, api_prefix=img_prefix)
+    return assemble_versions(bundle.get("pages") or [])
+
+
+def export_markdown(paper_id: str, mode: str, *, img_prefix: str = "/api/v1",
+                    absolute_base: str = "") -> str:
+    """某一个版本的整篇 Markdown（下载用）。``mode`` 由接口层校验。
+
+    ⚠️ ``img_prefix`` 必须是**根相对**的接口前缀（``/api/v1``），不能直接把
+    ``http://host/api/v1`` 传进来：``figure_regions.markdown_refs`` 是按"前缀是不是以 / 开头"
+    决定拼"接口 URL"还是"落盘相对路径"的，传绝对地址会掉进**相对路径**那一支，拼出
+    ``http://host/api/v1/region-p0003-….png`` 这种不存在的地址（实测踩过）。
+
+    要绝对地址就传 ``absolute_base``（如 ``http://127.0.0.1:8710``）：下载下来的 .md
+    在本地编辑器里打开时，根相对路径会被解析成 ``file:///api/v1/...`` → 图全 404。
+    """
+    versions = markdown_versions(paper_id, img_prefix=img_prefix)
+    text = versions.get(mode) or versions["bilingual"]
+    if absolute_base:
+        text = text.replace(f"]({img_prefix}/", f"]({absolute_base}{img_prefix}/")
+    return text
+
+
+def export_bundle(paper_id: str) -> Path:
+    """把「原 PDF + 三个版本的 Markdown + 被 Markdown 引用的插图」打成 zip，返回临时文件路径。
+
+    包内结构（**解压即用**，Markdown 里的图片是相对路径，不依赖本服务在跑）::
+
+        <paper_id>/source.pdf
+        <paper_id>/original.md      仅原文（英文转录）
+        <paper_id>/translation.md   仅译文（中文）
+        <paper_id>/bilingual.md     中英对照
+        <paper_id>/figures/*.png    上面三份 Markdown 引用到的插图（600dpi 按需裁图）
+        <paper_id>/README.txt       这份清单
+
+    调用方（接口层）负责在响应发完后删掉这个临时文件。
+    """
+    import os
+    import tempfile
+    import zipfile
+
+    pdf = paper_service.resolve_pdf(paper_id)          # 没有 PDF 直接报错（不该静默给个空包）
+    paper = paper_service.get_paper(paper_id)
+    versions = markdown_versions(paper_id, img_prefix="figures")
+    figures_dir: Path = paper_service.paper_paths(paper_id)["figures"]
+    # 只打**被引用到的**图：`markdown_refs` 已保证它们落盘（`inject_images` 用的就是这些引用）
+    refs = sorted({m for text in versions.values() for m in _FIG_REF.findall(text)})
+
+    fd, tmp = tempfile.mkstemp(prefix=f"{paper_id}-export-", suffix=".zip")
+    os.close(fd)
+    target = Path(tmp)
+    missing: list[str] = []
+    # 有产物的版本才写文件：一篇还没翻译的论文（A/B 路都没跑）会出现空 md，
+    # 与其往包里塞三个空文件，不如不写、让 README 说清楚（前端也会先提示一句）。
+    modes = [m for m in MD_EXPORT_MODES if versions[m].strip()]
+    try:
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(pdf, f"{paper_id}/source.pdf")
+            for mode in modes:
+                zf.writestr(f"{paper_id}/{mode}.md", versions[mode])
+            for rel in refs:                            # rel 形如 figures/<文件名>.png
+                src = figures_dir / Path(rel).name
+                if src.is_file():
+                    zf.write(src, f"{paper_id}/{rel}")
+                else:
+                    missing.append(rel)
+            zf.writestr(f"{paper_id}/README.txt",
+                        _bundle_readme(paper, modes, missing, bool(refs)))
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    log.info("打包导出完成：%s（%d 张插图，%d bytes）",
+             paper_id, len(refs) - len(missing), target.stat().st_size)
+    return target
+
+
+def _bundle_readme(paper: dict, modes: list[str], missing: list[str],
+                   has_figures: bool) -> str:
+    """zip 里的清单（纯说明文件，不是论文内容）。"""
+    title = str(paper.get("title") or "").strip() or str(paper.get("id") or "")
+    labels = {
+        "original": "original.md     仅原文（英文转录）",
+        "translation": "translation.md  仅译文（中文）",
+        "bilingual": "bilingual.md    中英对照（逐页：原文在上、译文在下）",
+    }
+    lines = [title, f"paper_id: {paper.get('id') or ''}", "",
+             "source.pdf      原 PDF"]
+    lines += [labels[m] for m in modes]
+    if missing_modes := [m for m in MD_EXPORT_MODES if m not in modes]:
+        lines += ["",
+                  "⚠️ 这篇论文还没有页级产物（A 路英文转录 / B 路中文翻译），"
+                  "这些版本没生成：",
+                  *[f"  - {m}.md" for m in missing_modes],
+                  "（先在阅读器里跑「继续翻译」，再重新打包）"]
+    lines += ["figures/        上面这些 Markdown 引用到的插图（600dpi 裁图）"] if has_figures else []
+    lines += ["", "图片引用是相对路径，整个目录一起移动/解压即可离线查看。"]
+    if missing:
+        lines += ["", f"⚠️ 有 {len(missing)} 张插图没能在磁盘上找到，已跳过：",
+                  *[f"  - {m}" for m in missing[:20]]]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
 # reader.json 装配
 # --------------------------------------------------------------------------
 

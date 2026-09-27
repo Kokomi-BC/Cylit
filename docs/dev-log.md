@@ -5970,3 +5970,63 @@ beyond-speedup 的作者行 `Zeyu Xing1, Xing Li2, …` 里数字是"贴在名�
 下次打开时插图变成**纯图**（图注仍在正文里有自己的一行、放大弹窗标题里也仍是图注，不丢信息）。
 要给某篇加回"图里带图注"，重新解析时把开关打开即可（之后 `create_parse_task` 会**沿用上次的值**，
 手动「重新解析」不会把它关掉）。
+
+### 17.115 第十一轮 · 下载：Markdown 去掉页标识；右上角「更多」新增打包下载（PDF + 三个版本 Markdown + 插图 zip）
+
+用户口径（2026-09-28）：
+1. 「markdown 视图下载 markdown」要**去掉页标识**（`<!-- page N -->`）与 `## 第 N 页`；
+2. 阅读器右上角「更多」加一个下载按钮：打包 **原 PDF + 所有版本的 Markdown + 被 Markdown 引用的图片**。
+
+**① 下载的 Markdown 不再带页标识**
+
+`markdownFor()`（前端拼字符串）删掉，改由**后端**出这一份：
+`GET /api/v1/papers/{id}/markdown/export?mode=original|translation|bilingual`（`api/reader.py`）→
+`reader_service.export_markdown()`。下载与打包**共用** `assemble_versions()`（三个版本的唯一实现），
+所以"去掉页标识"这件事只在一处写：
+
+- 页与页之间仍留一条 `---`（读的时候还看得出分页），但没有 `<!-- page N -->`、没有 `## 第 N 页`；
+- 图片补成**绝对地址**（按本次请求的 host 拼），下载到本地点开就能看图；
+- 阅读器里那一版照旧按页分段显示（页号是前端画的，不在这份文本里）。
+
+⚠️ 踩的坑：`figure_regions.markdown_refs` 是按"前缀**是不是以 / 开头**"决定拼"接口 URL"还是
+"落盘相对路径"的。我第一版直接把 `http://host/api/v1` 整串当前缀传进去，掉进了相对路径那一支，
+拼出 `http://host/api/v1/region-p0003-….png` 这种不存在的地址（实机对账抓到）。现在固定传**根相对**
+前缀 `"/api/v1"`，再用 `absolute_base` 参数把 `](/api/v1/` 整体替换成绝对地址。
+
+**② 「更多」→ 下载打包（zip）**
+
+`GET /api/v1/papers/{id}/export/zip` → `reader_service.export_bundle()`，包内结构：
+
+```
+<paper_id>/source.pdf        原 PDF
+<paper_id>/original.md       仅原文（英文转录）
+<paper_id>/translation.md    仅译文（中文）
+<paper_id>/bilingual.md      中英对照（逐页：原文在上、译文在下）
+<paper_id>/figures/*.png     上面三份 Markdown **引用到的**插图（600dpi 按需裁图）
+<paper_id>/README.txt        清单（含"哪些版本没生成、为什么"）
+```
+
+- 图片引用写成 `figures/<文件名>`（**相对**路径）→ 解压后离线可看，不依赖本服务在跑；
+- 只打**被引用到的**图（引用表就是 `markdown_refs` 的产物，两边天然一致）；
+- 临时 zip 落在系统 temp，响应发完由 `BackgroundTask` 删掉（不占磁盘、不进备份）；
+- **没跑过页级产物的论文不塞空 md**：只给 PDF + README，README 说明缺哪些版本；
+  前端在 `stats.pages_done == 0` 时先弹一句提示（"包里至少会有原 PDF"），别让人以为下载坏了。
+
+前端：`api/client.ts` 加 `downloadBlob()`（避开 `request()` 的 JSON 解析，二进制不会被弄坏）、
+`utils/format.ts` 抽出 `saveBlob()`（`downloadText` 复用它）；阅读器工具栏菜单加一项
+`下载打包（PDF + Markdown + 图片）`，下载中用一个 `busyDownload` 串行化（打包首次要按需裁图，
+可能几十秒），失败走 `reportError` 提示。
+
+⚠️ 踩的坑：`from fastapi import BackgroundTask` 在这版 FastAPI 里不存在（只有 `BackgroundTasks`，
+单个任务的类在 `starlette.background`）—— `tests/test_imports.py` 立刻抓到，已改从 starlette 导入。
+
+**验证**
+
+- `pytest` **586 项 0 失败**（+6：`tests/test_markdown_export.py` 的五个 + 绝对地址改写那个；
+  开工前 580）；
+- 新增验收脚本 `scripts/export_check.py`（走 HTTP，不依赖浏览器）：查"三个版本无页标识 / 单文件图片是
+  绝对地址 / zip 含 PDF+三版本+插图 / zip 图片是相对路径且解压后引用都落到真实文件"。
+  实测三篇 0 不通过：`attention`（4.4 MB，5 图，三版本齐全）、
+  `turboquant`（1.9 MB，5 图）、`9984-boomerang`（未翻译：只有 PDF + README，不塞空 md）；
+- `npm run typecheck` 0 错、`npm run build` 成功；`frontend_check --block-markers` **86/87**
+  （唯一红项仍是「公式能整体高亮」）。
