@@ -108,30 +108,84 @@ def cluster_spans_into_lines(spans: list[Span], page_no: int) -> list[TextLine]:
     flush()
 
     # 行内按水平间隙再切分（同一基线上的左右两栏内容不能算一行）
+    # ⚠️ 除了"间隙 > 阈值"，再按**页面栏间空白带**（gutter）精确切一刀：
+    # 实测 3360-mmdfnd 的栏间距只有 23pt，而阈值 `SPAN_GAP_FACTOR=3.5`（字号 9.1 → 32pt）
+    # 大于它 → 左右两栏被聚成同一行（该篇 84 个跨栏宽行）。而把阈值降到 2.0 虽然也能切开，
+    # 却会在 attention / turboquant 上多切 6~9% 的行（表格单元格、同行标签被切碎）——
+    # 所以只认"整页都空着的那条竖带"（按 **span** 算覆盖：合并过的行会盖住栏间距，span 不会），
+    # 切在带上、别处不动。
+    gutter = _detect_gutter_band(spans)
     out: list[TextLine] = []
     for ln in lines:
-        out.extend(_split_line_by_gaps(ln))
+        out.extend(_split_line_by_gaps(ln, gutter=gutter))
     return out
 
 
-def _split_line_by_gaps(line: TextLine) -> list[TextLine]:
+def _detect_gutter_band(spans: list[Span], *,
+                        min_width: float = 12.0,
+                        margin_ratio: float = 0.10,
+                        cover_ratio: float = 0.02) -> tuple[float, float] | None:
+    """在页面上找**栏间空白带**（几乎没有 span 覆盖的那条竖带）。
+
+    为什么不能用 `detect_layout` 的结果，也不能用"合并后的行"：两者都在**已经合并过的行**上
+    找栏间距，而合并出来的行正好横跨栏间距（3360 p7 有 46/68 行跨栏）→ 空白带永远"被覆盖"。
+    span 是原子宽度，左右两栏的 span 各自止于/起于栏边，谁都不盖住那条带 → 判定稳定。
+    """
+    if len(spans) < 20:
+        return None
+    x0 = min(s.x0 for s in spans)
+    x1 = max(s.x1 for s in spans)
+    width = x1 - x0
+    if width < 200.0:
+        return None
+    n = int(width)
+    counts = [0] * n
+    for s in spans:
+        a = max(0, int(s.x0 - x0))
+        b = min(n, int(s.x1 - x0))
+        for i in range(a, b):
+            counts[i] += 1
+    limit = max(2.0, cover_ratio * len(spans))
+    lo, hi = int(margin_ratio * n), int((1.0 - margin_ratio) * n)
+    best: tuple[int, int, int] | None = None      # (start, end, width)
+    i = lo
+    while i < hi:
+        if counts[i] > limit:
+            i += 1
+            continue
+        j = i
+        while j < hi and counts[j] <= limit:
+            j += 1
+        if j - i >= min_width:
+            left = max(counts[lo:i] or [0])
+            right = max(counts[j:hi] or [0])
+            # 两侧都要有"实质成栏"的内容，避免把页边空白/图表空洞当成栏间
+            if left >= 0.10 * len(spans) and right >= 0.10 * len(spans):
+                if best is None or (j - i) > best[2]:
+                    best = (i, j, j - i)
+        i = j
+    if best is None:
+        return None
+    return (x0 + best[0], x0 + best[1])
+
+
+def _split_line_by_gaps(line: TextLine,
+                        gutter: tuple[float, float] | None = None) -> list[TextLine]:
     """同一基线上的 span 按水平间隙切分：左右两栏的内容不能算一行。
 
-    ⚠️ 第二个判据是 **"这一段 span 以图注开头"**（2026-09-27 加的，实测事故）：
-    只按间隙切是不够的 —— 栏间距 23pt 而 `SPAN_GAP_FACTOR=3.5`（约 32pt），
-    于是**左栏正文与右栏图注被聚成了同一行**：
-    `and fusion is performed by concatenating features from different` +
-    `Figure 4: T-SNE visualizations display the prediction results`
-    （line.rect 跨满 x 54→558）。图注从此不再是"独立的一行"，块级/段级那两条
-    "图注自成一块"的规则都碰不到它，`Figure 4` 整张图静默消失
-    （`scripts/figure_caption_audit.py` 现在会把这种缺图对账出来）。
+    两个判据：
+    1. **栏间空白带**（`gutter`）：前一段止于带左侧、后一段起于带右侧 → 切（跨栏的分栏依据）；
+    2. **跨度 > `SPAN_GAP_FACTOR` × 字号**，或**这一段 span 以图注开头** ——
+       2026-09-27 加的后半条是实测事故：左栏正文与右栏图注被聚成同一行，
+       `Figure 4` 整张图因此静默消失（`scripts/figure_caption_audit.py` 现在会把它对账出来）。
     """
     spans = sorted(line.spans, key=lambda s: s.x0)
     size = max((s.size for s in spans), default=10.0)
     gap_limit = SPAN_GAP_FACTOR * max(size, 1.0)
     groups: list[list[Span]] = [[spans[0]]]
     for prev, cur in zip(spans, spans[1:]):
-        if cur.x0 - prev.x1 > gap_limit or _is_caption_line(cur.text):
+        crosses_gutter = bool(gutter) and prev.x1 <= gutter[0] + 1.0 and cur.x0 >= gutter[1] - 1.0
+        if cur.x0 - prev.x1 > gap_limit or _is_caption_line(cur.text) or crosses_gutter:
             groups.append([cur])
         else:
             groups[-1].append(cur)
@@ -176,8 +230,11 @@ def group_lines_into_blocks(lines: list[TextLine], page_no: int,
         size = max(prev.size, cur.size, 1.0)
         gap = cur.rect.y0 - prev.rect.y1
         lead = cur.rect.y0 - prev.rect.y0
-        same_column = not (cur.rect.x1 < prev.rect.x0 - size * 6
-                           or cur.rect.x0 > prev.rect.x1 + size * 6)
+        # 同一栏 = 横向**真的重叠**。以前这里是 `±6×字号` 的宽松判据（约 ±55pt），双栏页上
+        # 左栏的表格行与右栏正文正好落在这个容差里 → 被并进同一个块，块文本变成
+        # `'DatasetMethodAccuracy 5.4Visualization'` 这种左右两栏粘一起的句子
+        # （实测 3360 p8）。同一段的相邻行必然横向重叠，所以收紧不会切碎正常段落。
+        same_column = cur.rect.x1 > prev.rect.x0 + 1.0 and cur.rect.x0 < prev.rect.x1 - 1.0
         caption_break = _is_caption_line(prev.text) or _is_caption_line(cur.text)
         if same_column and not caption_break \
                 and -size * 1.2 <= gap <= BLOCK_GAP_FACTOR * size \
