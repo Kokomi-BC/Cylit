@@ -70,7 +70,7 @@ CROP_DPI = 600
 #:     图注条右边会挂着另一栏的参考文献）。
 #: 9 = 图注条按**图注锚点 ∪ 图体**的横向带裁回本栏（8 只按"同栏"判会失效：合并块的 rect
 #:     本身就是整页宽，只能裁不能丢）。
-REGION_CACHE_VERSION = 9
+REGION_CACHE_VERSION = 10
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -552,6 +552,14 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                                  rect.y1, below=below)
                 tight = _snap_edges(tight, texts, rect,
                                     avoid=[_rect_of(caption)] if caption else None)
+                # ⚠️ 图注**绝不能**落在图体里：贴边/吸单行标签有时会把下边界推到图注第一行中
+                # （实测 deepseek-v3-2 图 1：区域 y1=329.6 而图注从 319.7 开始 → 卡片底部挂着
+                #  半个图注行，下面又拼一条完整图注，"图注看起来重复/被切"）。
+                if below and caption is not None:
+                    cy0 = _num(caption.get("y0"))
+                    if cy0 and tight[3] > cy0:
+                        tight = [tight[0], tight[1], tight[2],
+                                 max(cy0 - TEXT_PAD, tight[1] + MIN_HEIGHT)]
                 inner = [b for b in structs
                          if (b.get("type") or "") == "caption" and b.get("id") != cap_id
                          and _num(b.get("y0")) > tight[1] + MIN_HEIGHT
