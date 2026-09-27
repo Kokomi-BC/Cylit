@@ -16,16 +16,21 @@ import pytest
 from backend.parsing.extract.vector_layer import Drawing
 from backend.parsing.models import RawBlock, Rect, Span, TextLine
 from backend.parsing.structure.figure_cut import (
-    _looks_like_caption_line, _segment_floor, detect_figures,
+    _caption_anchor, _looks_like_caption_line, _segment_floor, detect_figures,
 )
 
 PAGE = Rect(0, 0, 612, 792)
 
 
-def _caption(text: str, page_no: int, y: float, x0: float = 108.0, x1: float = 504.0) -> RawBlock:
+def _line(text: str, page_no: int, y: float, x0: float, x1: float,
+          line_no: int = 0) -> TextLine:
     sp = Span(text=text, x0=x0, y0=y, x1=x1, y1=y + 10.0, font="Times", size=9.0)
+    return TextLine(spans=[sp], page_no=page_no, block_no=0, line_no=line_no)
+
+
+def _caption(text: str, page_no: int, y: float, x0: float = 108.0, x1: float = 504.0) -> RawBlock:
     return RawBlock(page_no=page_no, block_no=0,
-                    lines=[TextLine(spans=[sp], page_no=page_no)])
+                    lines=[_line(text, page_no, y, x0, x1)])
 
 
 def _ink(page_no: int, y0: float, y1: float, x0: float = 207.0, x1: float = 405.0) -> Drawing:
@@ -62,17 +67,23 @@ def test_stacked_figures_are_segmented_by_caption():
 
 def test_captionless_band_is_still_cut():
     """整页没有图注时也要把墨迹带裁出来（用户："实在没有图注也行"），只是不挂图注。"""
-    drs = [_ink(1, 100.0 + i * 12.0, 108.0 + i * 12.0) for i in range(6)]   # 高 60pt+ 的墨迹带
+    drs = [_ink(1, 100.0 + i * 3.0, 108.0 + i * 3.0) for i in range(24)]   # 高 60pt+ 的墨迹带
     cands = detect_figures([], {}, {1: drs}, {1: PAGE})
     assert len(cands) == 1
     assert cands[0].caption == "" and cands[0].reason == "no_caption"
     assert cands[0].rect.y0 == pytest.approx(97.0, abs=0.5)
 
 
+def test_captionless_fallback_ignores_a_lone_formula():
+    """独立公式只有几条大括号路径 —— 不能被当成"无图注的图"（LMF：4 张图截成 6 张）。"""
+    drs = [_ink(1, 576.7 + i * 12.0, 590.0 + i * 12.0) for i in range(6)]  # 实测那页公式是 6 条
+    assert detect_figures([], {}, {1: drs}, {1: PAGE}) == []
+
+
 def test_captionless_band_is_not_double_produced():
     """有图注的墨迹带不再走兜底（同一块墨迹不重复产出）。"""
     blocks = [_caption("Figure 4: T-SNE visualizations", 1, 250.0)]
-    drs = [_ink(1, 100.0 + i * 12.0, 108.0 + i * 12.0) for i in range(6)]
+    drs = [_ink(1, 100.0 + i * 3.0, 108.0 + i * 3.0) for i in range(24)]
     cands = detect_figures(blocks, {}, {1: drs}, {1: PAGE})
     assert len(cands) == 1
     assert cands[0].caption.startswith("Figure 4") and cands[0].reason == "caption_anchor"
@@ -92,14 +103,89 @@ def test_segment_floor_is_per_column():
         _caption("Figure 2: left", 1, 700.0, x0=50.0, x1=290.0),
         _caption("Figure 3: right", 1, 500.0, x0=320.0, x1=560.0),
     ]
-    floor = _segment_floor(caps[1], caps, PAGE)
+    marks = [(c.page_no, _caption_anchor(c)[0]) for c in caps]
+    floor = _segment_floor(marks[1][1], 1, marks, PAGE)
     assert floor == pytest.approx(412.0)      # 只被同栏的 Figure 1 挡住（400+10+2）
-    assert _segment_floor(caps[2], caps, PAGE) == pytest.approx(PAGE.y0 + 0.02 * PAGE.height)
+    assert _segment_floor(marks[2][1], 1, marks, PAGE) == pytest.approx(
+        PAGE.y0 + 0.02 * PAGE.height)
 
 
 def test_segment_floor_defaults_to_page_top():
     cap = _caption("Figure 7: only one on page", 3, 300.0)
-    assert _segment_floor(cap, [cap], PAGE) == pytest.approx(PAGE.y0 + 0.02 * PAGE.height)
+    rect = _caption_anchor(cap)[0]
+    assert _segment_floor(rect, 3, [(3, rect)], PAGE) == pytest.approx(
+        PAGE.y0 + 0.02 * PAGE.height)
+
+
+def test_caption_anchor_uses_caption_column_only():
+    """**一个文本块装了两栏的行**时（转换器产出的 PDF），锚点只取图注那一栏。
+
+    实测 efficient-low-rank-multimodal-fusion p8：图注块 bbox x 72~527（横跨整页），
+    里面是「左栏的图注行」+「右栏的参考文献行」。拿整块当锚点 → 右栏墨迹也算进图体，
+    裁出来是"图 + 右栏一整片正文"（用户截图）；整块文本当图注 → 图注尾巴拼一条文献。
+    """
+    ab = RawBlock(page_no=8, block_no=0, lines=[
+        _line("Figure 4: The Impact of different rank settings on", 8, 719.9, 72.0, 290.3, 0),
+        _line("Kazemzadeh, Emily Mower, Samuel Kim, Jeanette Chang", 8, 719.9, 307.3, 527.2, 1),
+    ])
+    rect, text = _caption_anchor(ab)
+    assert (rect.x0, rect.x1) == (72.0, 290.3)          # 只留左栏那一行
+    assert text == "Figure 4: The Impact of different rank settings on"
+    assert "Kazemzadeh" not in text
+
+
+def _span_block(page_no: int, *spans: Span) -> RawBlock:
+    return RawBlock(page_no=page_no, block_no=0,
+                    lines=[TextLine(spans=list(spans), page_no=page_no)])
+
+
+def test_caption_anchor_splits_a_line_that_contains_two_columns():
+    """PyMuPDF 会把**两栏同一基线**的文字并成一条 line（LMF p8 的图注行就是这样）。"""
+    ab = _span_block(
+        8,
+        Span(text="Figure 4: The Impact of different rank settings on",
+             x0=72.0, y0=719.9, x1=290.3, y1=730.9, font="Times", size=9.0),
+        Span(text="Kazemzadeh, Emily Mower, Samuel Kim",
+             x0=307.3, y0=719.9, x1=527.2, y1=730.9, font="Times", size=9.0),
+    )
+    rect, text = _caption_anchor(ab, page_rect=Rect(0, 0, 595.276, 841.89))
+    assert (rect.x0, rect.x1) == (72.0, 290.3)
+    assert text == "Figure 4: The Impact of different rank settings on"
+
+
+def test_caption_anchor_keeps_a_tab_gap_inside_the_caption():
+    """`Figure 1:    Overview …` 这种 tab 式宽空格**不能**当成栏缝（否则图注被截断）。"""
+    ab = _span_block(
+        1,
+        Span(text="Figure 1:", x0=72.0, y0=100.0, x1=110.0, y1=111.0,
+             font="Times", size=9.0),
+        Span(text="Overview of our method", x0=130.0, y0=100.0, x1=300.0, y1=111.0,
+             font="Times", size=9.0),
+    )
+    rect, text = _caption_anchor(ab, page_rect=Rect(0, 0, 595.276, 841.89))
+    assert text == "Figure 1:Overview of our method"
+    assert rect.x1 == 300.0
+
+
+def test_merged_block_caption_does_not_pull_in_other_column_ink():
+    ab = RawBlock(page_no=8, block_no=0, lines=[
+        _line("Figure 4: The Impact of different rank settings on", 8, 719.9, 72.0, 290.3, 0),
+        _line("Kazemzadeh, Emily Mower, Samuel Kim, Jeanette Chang", 8, 719.9, 307.3, 527.2, 1),
+    ])
+    table_cap = _caption("Table 3: Comparison of the training and testing", 8, 252.0,
+                         x0=71.7, x1=290.3)
+    drs = [
+        _ink(8, 215.5, 245.9, x0=72.0, x1=289.4),        # 左栏表格线（在 Table 3 表注之上）
+        _ink(8, 321.2, 371.7, x0=307.3, x1=527.4),       # 右栏墨迹（标题下划线之类）
+        _ink(8, 566.5, 708.8, x0=72.0, x1=301.2),        # 图 4 本体（左栏）
+    ]
+    cands = detect_figures([ab, table_cap], {8: []}, {8: drs}, {8: PAGE})
+    assert len(cands) == 1
+    r = cands[0].rect
+    assert (r.x0, r.x1) == (69.0, 304.2)                 # 只有左栏（72-3 ~ 301.2+3）
+    assert (r.y0, r.y1) == (pytest.approx(563.5), pytest.approx(711.8))
+    assert cands[0].caption.startswith("Figure 4: The Impact")
+    assert "Kazemzadeh" not in cands[0].caption
 
 
 def test_looks_like_caption_line_filters_body_sentences():

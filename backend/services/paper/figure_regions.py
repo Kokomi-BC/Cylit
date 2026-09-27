@@ -63,7 +63,14 @@ CROP_DPI = 600
 #: 3 = 图注续行加"句末即停 / 不得越出本栏宽"（DAMMFND 图 1 吞了整段摘要）。
 #: 4 = 图体按图注分段（一页多图互不吞并，见 `parsing.structure.figure_cut` 文件头）。
 #: 5 = 图体上边界不再被**墨迹带内**的"标题"（其实是图内标注）顶下来（9984-boomerang 图 9 只剩半截）。
-REGION_CACHE_VERSION = 5
+#: 6 = 图注锚点只取"本栏那些行/半边（span 段）"（两栏的行被并成同一个文本块甚至同一条 line 时，
+#:     整块 bbox 会横跨整页 → 图体裁出"图 + 另一栏整片正文"）；跨页同图号去重。
+#: 7 = 多段图**每段都带图号**（第 1 段曾是无图号区域，去重看不见它 → LMF 假图的第二段活了下来）。
+#: 8 = 卡片图注条只取"与图注第一段同栏"的矩形（两栏同基线的文字被并成一个块时，
+#:     图注条右边会挂着另一栏的参考文献）。
+#: 9 = 图注条按**图注锚点 ∪ 图体**的横向带裁回本栏（8 只按"同栏"判会失效：合并块的 rect
+#:     本身就是整页宽，只能裁不能丢）。
+REGION_CACHE_VERSION = 9
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -555,7 +562,10 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 label = "" if len(pieces) == 1 else ("上段" if i == 0 else "下段")
                 regions.append(entry(
                     page_no, row["_kind"], piece, raw,
-                    cap_text, number if i == 0 else "", cap_id,
+                    # ⚠️ 图号**每一段都要带**：以前只给第 0 段，于是 `_parts_of` 切出来的
+                    # 第 1 段成了"无图号区域"——页内/跨页的去重都看不见它（实测 LMF p4 那条假图
+                    # 第二段就是这么活下来的，用户数出来"4 张图截成 6 张"）。
+                    cap_text, number, cap_id,
                     ({"part": i, "parts": len(pieces), "part_label": label}
                      if label else None),
                     source="scan" if scan else "",
@@ -635,6 +645,50 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                      "图" if kind == "figure" else "表", number, len(items))
         keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
         out[page_no] = keep
+
+    # ---- 同一图号出现在**不同页**时：正文里的引用句那条要丢掉（2026-09-27）----
+    # 实测 efficient-low-rank-multimodal-fusion（用户："只有 4 张图，却截取了 6 张"）：
+    #   p4 有一条正文引用句 `Figure 3. …`（那个块里根本没有图）被判成图注 → 多出一条区域；
+    #   p5 才是真正的 Figure 3。页内去重管不到（两条不在同一页），于是库里有 6 条图。
+    # 判据与页内同源（图注块到图体 raw bbox 的距离），但**只在差距悬殊时才丢**
+    # （> 4 倍且 > 24pt）：正文引用那条往往连图注块都没有（1e9），真图注是个位数 pt。
+    # 附录里重新编号的 `Figure 1`（两条都有真图注、都贴着图体）不会被误伤。
+    #
+    # ⚠️ 一条区域可能被 `_parts_of` 切成好几段（part 0/1）：这些段共享同一个 `raw_bbox`，
+    # 于是**同进同出**（实测 LMF p4 的假图被切成两段，漏掉其中一段就会又数出 6 张图）。
+    cross: dict[str, list[dict]] = {}
+    for regs in out.values():
+        for reg in regs:
+            if reg.get("kind") != "figure" or not reg.get("number"):
+                continue
+            if reg.get("continues_from"):      # 跨页续图：与上一页本来就是同一张图，不能互删
+                continue
+            cross.setdefault(str(reg["number"]), []).append(reg)
+    drop_ids: set[int] = set()
+    for number, items in cross.items():
+        if len({int(r["page"]) for r in items}) < 2:
+            continue
+        gaps: list[tuple[dict, float]] = []
+        for reg in items:
+            box = reg.get("raw_bbox") or reg["bbox"]
+            by_id = {b["id"]: b for b in blocks_by_page.get(int(reg["page"]), [])}
+            cap = by_id.get(reg.get("caption_block_id") or "") or {}
+            if not cap:
+                gaps.append((reg, 1e9))
+            else:
+                gaps.append((reg, min(abs(_num(cap.get("y0")) - _num(box[3])),
+                                      abs(_num(box[1]) - _num(cap.get("y1"))))))
+        best = min(g for _r, g in gaps)
+        if best > 24.0:
+            continue                     # 没有一条紧贴图体 → 不敢乱丢（宁可多留）
+        for reg, gap in gaps:
+            if gap > best * 4 and gap > 24.0:
+                drop_ids.add(id(reg))
+                log.info("图号 %s 在 p%s 多出一条不贴图体的区域（图注距图体 %.0fpt），删掉",
+                         number, reg.get("page"), gap)
+    if drop_ids:
+        for page_no in list(out):
+            out[page_no] = [r for r in out[page_no] if id(r) not in drop_ids]
 
     return out
 
@@ -852,7 +906,20 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
         last = rect
         if _ends_sentence(text):
             break                          # 这句收尾了 → 图注到此为止
-    return sorted(chain, key=lambda r: (r.y0, r.x0))
+    # ⚠️ 把图注条裁回**本栏**：有的 PDF（转换器产出）会把左右两栏同一基线的文字并成一个块
+    # （实测 LMF p8 的图注块 x 72~527：左边是图注、右边是参考文献）。裁切用的带子 = 图注锚点
+    # （解析层写在 block.meta["caption_anchor"]）∪ 图体自身横向范围 —— 两者都够不着的地方
+    # 一定是另一栏的内容。普通论文里这个带子就是整栏，等于不裁（图注比图宽也不会被切）。
+    x0b, x1b = _num(region["bbox"][0]), _num(region["bbox"][2])
+    cap_row = next((b for b in ir.blocks()
+                    if str(b.get("id") or "") == str(region.get("caption_block_id") or "")), None)
+    if cap_row:
+        a = _meta(cap_row).get("caption_anchor")
+        if isinstance(a, (list, tuple)) and len(a) == 4:
+            x0b, x1b = min(x0b, _num(a[0])), max(x1b, _num(a[2]))
+    clipped = [Rect(max(r.x0, x0b), r.y0, min(r.x1, x1b), r.y1)
+               for r in chain if min(r.x1, x1b) - max(r.x0, x0b) > 1.0]
+    return sorted(clipped or chain, key=lambda r: (r.y0, r.x0))
 
 
 def ensure_region_crop(paper_id: str, page_no: int, index: int,

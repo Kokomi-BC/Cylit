@@ -63,7 +63,12 @@ def _is_real_caption(line: str) -> bool:
     m = _REAL_CAPTION.match(line.strip())
     if not m:
         return False
-    return m.group(2).strip()[:1] in (":", "：", ".", "．", "—", "–", "-", "|")
+    rest = m.group(2).strip()
+    if rest[:1] not in (":", "：", ".", "．", "—", "–", "-", "|"):
+        return False
+    # 编号后面还得有**真内容**：实测 LMF p4 那句正文引用 `Figure 3.`（整行就这 9 个字符）
+    # 会被当成图注，于是页内对账误报"p4 的图 3 没产出"
+    return len(rest.strip(":：.．—–-| \t")) >= 2
 
 
 def pdf_captions(pdf: Path) -> dict[str, list[tuple[int, str]]]:
@@ -111,8 +116,11 @@ def audit(paper_id: str) -> tuple[list[str], dict]:
     captions = pdf_captions(pdf)
     missing = sorted((n for n in captions if n not in produced), key=int)
     # 顶部被收窄：收紧后的上边界比解析层的图体 raw bbox 低出一大截
+    # ⚠️ 只查**单段**区域：多段图（`_parts_of` 切成上段/下段）的每一段都拿同一个 raw bbox 比，
+    # 下段的上边界天然比 raw 顶边低一大截（实测 12382 p7 图 3 的下段差 237pt → 假报警）。
+    single = [r for r in figs if int(r.get("parts") or 1) == 1]
     trimmed = []
-    for r in figs:
+    for r in single:
         raw = r.get("raw_bbox") or r["bbox"]
         drop = float(raw[1]) - float(r["bbox"][1])
         if drop > TOP_TRIM_MAX:
@@ -122,7 +130,7 @@ def audit(paper_id: str) -> tuple[list[str], dict]:
     # 反向：区域上边界比图体**高出**一大截 → 多半把上一张图/正文吞进来了（"多截了"）
     spilled = [(r["number"] or "?", int(r["page"]),
                 round(float(r["bbox"][1]) - float((r.get("raw_bbox") or r["bbox"])[1]), 1))
-               for r in figs
+               for r in single
                if float(r["bbox"][1]) - float((r.get("raw_bbox") or r["bbox"])[1]) > TOP_TRIM_MAX]
     # 页内对账：某页有真图注、但该页产出的插图里没有这个图号 → 这张图多半被同页另一张吞掉了
     by_page: dict[int, set[str]] = {}

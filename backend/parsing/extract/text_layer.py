@@ -129,9 +129,11 @@ def cluster_spans_into_lines(spans: list[Span], page_no: int) -> list[TextLine]:
     # 所以只认"整页都空着的那条竖带"（按 **span** 算覆盖：合并过的行会盖住栏间距，span 不会），
     # 切在带上、别处不动。
     gutter = _detect_gutter_band(spans)
+    # 页面的"中线"：两栏排版的分界就在这一带（用 span 的横向范围近似，不必再传页面宽度）
+    mid_x = (min(s.x0 for s in spans) + max(s.x1 for s in spans)) / 2 if spans else None
     out: list[TextLine] = []
     for ln in lines:
-        out.extend(_split_line_by_gaps(ln, gutter=gutter))
+        out.extend(_split_line_by_gaps(ln, gutter=gutter, mid_x=mid_x))
     return out
 
 
@@ -183,23 +185,38 @@ def _detect_gutter_band(spans: list[Span], *,
     return (x0 + best[0], x0 + best[1])
 
 
+#: "两栏被并成一行"的断点判据（见 `_split_line_by_gaps`）：间隙要够大，且断在页面中线附近。
+#: 词间距只有 3~5pt；栏间空隙 12~20pt。`COLUMN_SPLIT_TOL` 用来排除"表格单元格之间的宽间隙"：
+#: 那些单元格的左边往往离中线还远（实测 LMF p8 表格行：左侧单元格止于 258.9，中线 299.7）。
+COLUMN_SPLIT_GAP = 12.0
+COLUMN_SPLIT_TOL = 12.0
+
+
 def _split_line_by_gaps(line: TextLine,
-                        gutter: tuple[float, float] | None = None) -> list[TextLine]:
+                        gutter: tuple[float, float] | None = None,
+                        mid_x: float | None = None) -> list[TextLine]:
     """同一基线上的 span 按水平间隙切分：左右两栏的内容不能算一行。
 
-    两个判据：
+    三个判据：
     1. **栏间空白带**（`gutter`）：前一段止于带左侧、后一段起于带右侧 → 切（跨栏的分栏依据）；
     2. **跨度 > `SPAN_GAP_FACTOR` × 字号**，或**这一段 span 以图注开头** ——
        2026-09-27 加的后半条是实测事故：左栏正文与右栏图注被聚成同一行，
        `Figure 4` 整张图因此静默消失（`scripts/figure_caption_audit.py` 现在会把它对账出来）。
+    3. **断在页面中线附近的宽间隙**（`mid_x`）：整页有横跨两栏的表格时，1 号判据会失效
+       （表格单元格盖住了那条空白带，实测 LMF p8 的 gutter 检测返回 None），于是
+       `Figure 4: …on` 与右栏的参考文献被并成一行 —— 图注、阅读器正文、以及"图 + 图注"卡片
+       的图注条全都跟着变脏（用户截图：卡片底部挂着右栏的文献）。
     """
     spans = sorted(line.spans, key=lambda s: s.x0)
     size = max((s.size for s in spans), default=10.0)
     gap_limit = SPAN_GAP_FACTOR * max(size, 1.0)
     groups: list[list[Span]] = [[spans[0]]]
     for prev, cur in zip(spans, spans[1:]):
+        gap = cur.x0 - prev.x1
         crosses_gutter = bool(gutter) and prev.x1 <= gutter[0] + 1.0 and cur.x0 >= gutter[1] - 1.0
-        if cur.x0 - prev.x1 > gap_limit or _is_caption_line(cur.text) or crosses_gutter:
+        crosses_mid = (mid_x is not None and gap > COLUMN_SPLIT_GAP
+                       and prev.x1 >= mid_x - COLUMN_SPLIT_TOL and cur.x0 >= mid_x - 2.0)
+        if gap > gap_limit or _is_caption_line(cur.text) or crosses_gutter or crosses_mid:
             groups.append([cur])
         else:
             groups[-1].append(cur)

@@ -884,6 +884,10 @@ class PaperBuilder:
 
                 if caption_block is not None:
                     caption_block.meta["figure_id"] = block_id
+                    if cand.caption_anchor:
+                        # 图注**本栏锚点**：转换器产出的 PDF 会把左右两栏同一基线的文字并成
+                        # 一个块（实测 LMF p8 的图注块 x 72~527），卡片图注条据此裁回本栏。
+                        caption_block.meta["caption_anchor"] = list(cand.caption_anchor)
                 if host is not None:
                     host.type = "figure"
                     host.meta["figure_id"] = block_id

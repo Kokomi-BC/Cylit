@@ -45,6 +45,9 @@ class FigureCandidate:
     subfigure_count: int = 0
     confidence: float = 0.0
     reason: str = ""
+    #: 图注**本栏锚点**（见 `_caption_anchor`）：下游（"图 + 图注"卡片的图注条）用它把
+    #: "横跨整页的图注块"裁回本栏，免得把另一栏的正文/参考文献拼进图注。
+    caption_anchor: list[float] | None = None
 
 
 @dataclass
@@ -78,6 +81,65 @@ def _same_column(a: Rect, b: Rect, *, min_overlap: float = 0.35) -> bool:
     return _h_overlap(a, b) >= min_overlap
 
 
+#: 一行里"栏间空隙"的下限（pt）：词间距只有 3~5pt，双栏页的栏间空隙 12~20pt。
+COLUMN_GAP_SPLIT = 10.0
+
+
+def _line_column_run(line, page_rect: Rect | None) -> tuple[Rect, str]:
+    """一行里**靠左的那一段连续 span**（在栏间空隙处断开）。
+
+    ⚠️ PyMuPDF 会把**左右两栏同一基线**的文字并成一条 ``line``：实测 LMF p8 的图注行
+    ``text`` 就是 ``"Figure 4: The Impact … on" + "Kazemzadeh, Emily Mo…"``（左栏图注 + 右栏文献），
+    而这一行的 rect 横跨整页。只能再按 span 之间的空隙切开。
+
+    判据刻意收窄：断点必须出现在**页面中线右侧**（第二栏的起点），免得把"编号与图注之间
+    那个 tab 式宽空格"（`Figure 1:    Overview …` 这种排法很常见）当成栏缝、把图注截断。
+    """
+    spans = [s for s in line.spans if s.text]
+    if not spans:
+        return line.rect, line.text
+    mid = (page_rect.x0 + page_rect.width / 2) if page_rect is not None else None
+    run = [spans[0]]
+    for prev, cur in zip(spans, spans[1:]):
+        if cur.x0 - prev.x1 > COLUMN_GAP_SPLIT and mid is not None and cur.x0 > mid:
+            break
+        run.append(cur)
+    return rects_span([s.rect for s in run]), "".join(s.text for s in run)
+
+
+def _caption_anchor(ab: RawBlock, page_rect: Rect | None = None) -> tuple[Rect, str]:
+    """图注的**锚点矩形**与**锚点文本**：只取块里属于图注那一栏的行/半边。
+
+    ⚠️ 实测 `efficient-low-rank-multimodal-fusion`（A4 双栏；转换器把左右两栏的行塞进了
+    **同一个** PyMuPDF 文本块、甚至是**同一条 line**）：图注块 `…-p08-b30` 的 bbox 是 x 72~527
+    —— 横跨整页，里面装的是「左栏的图注行」+「右栏的参考文献行」：
+
+        Figure 4: The Impact of different rank settings on   |  Kazemzadeh, Emily Mower, …
+
+    拿**整块**当锚点，右栏那些墨迹（标题下划线等）与锚点的横向重叠就是 1.0 → 全被算进图体，
+    裁出来是"图 + 右栏一整片正文"（用户 2026-09-27 的截图）；整块文本当图注，
+    图注尾巴上还会拼一条参考文献。所以以**第一条像图注的行**所在栏为准，只保留这一栏的内容。
+    ``page_rect``：只有**比一栏宽**（> 半页）的行才做栏间切分。
+    """
+    lines = [ln for ln in ab.lines if ln.spans and ln.text.strip()]
+    if not lines:
+        return ab.rect, ab.text.strip()
+    pieces: list[tuple[Rect, str]] = []
+    for ln in lines:
+        if page_rect is not None and ln.rect.width > 0.5 * page_rect.width:
+            pieces.append(_line_column_run(ln, page_rect))
+        else:
+            pieces.append((ln.rect, ln.text))
+    heads = [p for p in pieces
+             if _CAPTION.match(p[1].strip()) or _TABLE_CAPTION.match(p[1].strip())]
+    col = (heads[0] if heads else pieces[0])[0]
+    keep = [p for p in pieces if _same_column(p[0], col, min_overlap=0.5)]
+    if not keep:
+        return ab.rect, ab.text.strip()
+    return (rects_span([p[0] for p in keep]),
+            "\n".join(p[1] for p in keep).strip())
+
+
 #: 图注形态（"Figure 29: …"）：编号后紧跟标点，或整行本来就短。
 #: 正文里的引用句（"Figure 2 shows that boomerang distillation creates models whose size…"）
 #: 编号后没有标点、而且长 —— 不拿它当分段的界标，免得把上一张图的图体切掉一块。
@@ -103,18 +165,20 @@ def _looks_like_caption_line(text: str) -> bool:
     return len(t) <= 60
 
 
-def _segment_floor(caption: RawBlock, captions: list[RawBlock], page_rect: Rect) -> float:
+def _segment_floor(cap_rect: Rect, page_no: int, captions: list[tuple[int, Rect]],
+                   page_rect: Rect) -> float:
     """本图注所在竖段的**下边界**：同栏上一张图注的底边（没有就用页首）。
 
     这是"按图注切段"的界标（见模块 docstring）：只吃这一段里的墨迹，
-    上下堆叠的多张图才不会互相吞并。
+    上下堆叠的多张图才不会互相吞并。``captions`` = ``[(页, 图注锚点矩形)]``。
     """
-    cap = caption.rect
+    cap = cap_rect
     floor = page_rect.y0 + 0.02 * page_rect.height
-    for other in captions:
-        if other is caption or other.page_no != caption.page_no:
+    for other_page, r in captions:
+        if other_page != page_no:
             continue
-        r = other.rect
+        if r == cap:                               # 自己
+            continue
         if r.y1 > cap.y0 - 2:                      # 只看**上方**的图注/题注
             continue
         if not _same_column(r, cap):               # 不同栏不算（双栏页里两栏各排各的）
@@ -136,7 +200,10 @@ def _segment_floor(caption: RawBlock, captions: list[RawBlock], page_rect: Rect)
 NO_CAPTION_GAP = 24.0          # 带内元素允许的最大空档（pt）：图内子图/图例间隔就是这个量级
 NO_CAPTION_MIN_HEIGHT = 60.0   # 带的最小高度（pt）：再矮的多半是页眉细线、公式下划线
 NO_CAPTION_MIN_WIDTH = 0.25    # 带的最小宽度（页宽占比）
-NO_CAPTION_MIN_ELEMENTS = 5    # 带内最少元素数：真插图有几十上百条路径
+#: 带内最少元素数。实测（efficient-low-rank-multimodal-fusion）：真插图 34~147 条路径，
+#: 而**独立公式**（带大括号的 `w_m = [w, …]`）只有 6 条 —— 阈值放在 5 会把公式裁成一张
+#: "无图注的图"（用户：那篇只有 4 张图，却截出 6 张）。位图不数元素（下面 big_img 直接放行）。
+NO_CAPTION_MIN_ELEMENTS = 20
 NO_CAPTION_MIN_SHAPE = 900.0   # 带内至少要有这么大面积的图形（一块子图/一张位图）
 NO_CAPTION_MAX_PER_PAGE = 3    # 一页最多认几张（保险丝）
 
@@ -202,7 +269,7 @@ def _captionless_bands(
 
 
 def _body_rect_above_caption(
-    caption: RawBlock,
+    cap_rect: Rect,
     page_images: list[ImageInfo],
     page_drawings: list[Drawing],
     page_rect: Rect,
@@ -211,10 +278,11 @@ def _body_rect_above_caption(
 ) -> tuple[Rect | None, list[ImageInfo], list[Drawing], str]:
     """在图注上方寻找图体区域（**按墨迹外接框**，且只取本图注那一段）。
 
+    ``cap_rect`` 是图注的**锚点矩形**（只含图注那一栏，见 :func:`_caption_anchor`），
+    不是一个可能横跨整页的文本块。
     ``floor`` = 本段的下边界（同栏上一张图注的底边，见 :func:`_segment_floor`）：
     只收 ``y1 > floor`` 的元素，并把并集裁到 ``floor`` 之上。默认（None）用页首。
     """
-    cap_rect = caption.rect
     top_limit = page_rect.y0 + 0.02 * page_rect.height
     if floor is not None:
         top_limit = max(top_limit, floor)
@@ -314,28 +382,36 @@ def detect_figures(
     """
     out: list[FigureCandidate] = []
     all_caps = find_caption_blocks(blocks)
+    # 图注锚点：块里**本栏的那些行**（见 `_caption_anchor`：转换器产出的 PDF 会把左右两栏的行
+    # 塞进同一个文本块，整块 bbox 横跨整页）。锚点同时用于"分段界标"和"图体并集"。
+    anchors: dict[int, tuple[Rect, str]] = {}
+    for ab, _kind, _label in all_caps:
+        pr = page_rects.get(ab.page_no) or Rect(0, 0, 612, 792)
+        # 超过半页宽的行才可能是"两栏被并成一条 line"（见 `_caption_anchor`）
+        anchors[id(ab)] = _caption_anchor(ab, page_rect=pr)
     # 分段的界标 = **所有**图注/题注（真图注形态的那些）：图与表都是"结构对象"，
     # 一张图的下边界不该越过上一张图注/题注的底边。
-    floors: dict[int, list[RawBlock]] = {}
-    for ab, _kind, _label in all_caps:
-        if _looks_like_caption_line(ab.text):
-            floors.setdefault(ab.page_no, []).append(ab)
+    floors: list[tuple[int, Rect]] = [
+        (ab.page_no, anchors[id(ab)][0]) for ab, _kind, _label in all_caps
+        if _looks_like_caption_line(anchors[id(ab)][1])
+    ]
 
     for ab, kind, _label in all_caps:
         if kind != "figure":
             continue
         page_no = ab.page_no
         page_rect = page_rects.get(page_no) or Rect(0, 0, 612, 792)
-        floor = _segment_floor(ab, floors.get(page_no, []), page_rect)
+        cap_rect, cap_text = anchors[id(ab)]
+        floor = _segment_floor(cap_rect, page_no, floors, page_rect)
         body, imgs, drs, reason = _body_rect_above_caption(
-            ab, images_by_page.get(page_no, []), drawings_by_page.get(page_no, []),
+            cap_rect, images_by_page.get(page_no, []), drawings_by_page.get(page_no, []),
             page_rect, floor=floor,
         )
         if body is None:
             # 图注下方找图体（部分排版图注在图上方）
             body, imgs, drs, reason = _body_rect_below_caption(
-                ab, images_by_page.get(page_no, []), drawings_by_page.get(page_no, []),
-                page_rect, blocks
+                cap_rect, page_no, images_by_page.get(page_no, []),
+                drawings_by_page.get(page_no, []), page_rect, blocks,
             )
         if body is None:
             continue
@@ -344,8 +420,10 @@ def detect_figures(
         conf = 0.85 if imgs else 0.6
         out.append(FigureCandidate(
             page_no=page_no, rect=rect, caption_block_id=None,
-            caption=ab.text.strip(), image_infos=imgs, drawings=drs,
+            caption=cap_text, image_infos=imgs, drawings=drs,
             subfigure_count=estimate_subfigures(drs, imgs), confidence=conf, reason=reason,
+            caption_anchor=[round(v, 2) for v in (cap_rect.x0, cap_rect.y0,
+                                                  cap_rect.x1, cap_rect.y1)],
         ))
 
     # ---- 兜底：整页**一条图注都没有**时，把墨迹带也裁出来（无图注；用户 2026-09-27）----
@@ -377,15 +455,16 @@ def detect_figures(
 
 
 def _body_rect_below_caption(
-    caption: RawBlock, page_images: list[ImageInfo], page_drawings: list[Drawing],
-    page_rect: Rect, all_blocks: list[RawBlock], max_height_ratio: float = 0.6,
+    cap_rect: Rect, page_no: int, page_images: list[ImageInfo],
+    page_drawings: list[Drawing], page_rect: Rect, all_blocks: list[RawBlock],
+    max_height_ratio: float = 0.6,
 ) -> tuple[Rect | None, list[ImageInfo], list[Drawing], str]:
-    cap_bottom = caption.rect.y1 + 2
+    cap_bottom = cap_rect.y1 + 2
     # 下一个文本块的顶部作为下边界（⚠️ 必须**同页**：`all_blocks` 传进来的可能是全篇的块，
     # 不筛页的话会被别的页面上靠上的块拖小窗口，图体凭空短一截）
     next_top = page_rect.y1
     for other in all_blocks:
-        if other is caption or other.page_no != caption.page_no:
+        if other.page_no != page_no:
             continue
         if other.rect.y0 > cap_bottom and other.rect.y0 < next_top:
             next_top = other.rect.y0
@@ -394,10 +473,10 @@ def _body_rect_below_caption(
     imgs = [i for i in page_images
             if i.rect.y0 >= cap_bottom - 3 and i.rect.y0 < limit
             and _usable_image(i, page_rect)
-            and _h_overlap(i.rect, caption.rect) > 0.10]
+            and _h_overlap(i.rect, cap_rect) > 0.10]
     drs = [d for d in page_drawings
            if d.rect.y0 >= cap_bottom - 3 and d.rect.y0 < limit
-           and _h_overlap(d.rect, caption.rect) > 0.10
+           and _h_overlap(d.rect, cap_rect) > 0.10
            and d.rect.area > 25 and not d.is_thin_bar(3.0)]
     if not imgs and not drs:
         return None, [], [], "no_body_below"
@@ -419,7 +498,9 @@ def detect_tables(
     for ab, kind, _label in find_caption_blocks(blocks):
         if kind != "table":
             continue
-        if not _looks_like_table_caption(ab.text):
+        # 表注同样用"本栏锚点"（块/行可能横跨两栏，见 `_caption_anchor`）
+        cap_rect, cap_text = _caption_anchor(ab, page_rect=(page_rects.get(ab.page_no) or Rect(0, 0, 612, 792)))
+        if not _looks_like_table_caption(cap_text):
             # 正文里"Table 2 summarizes our results and …"这种**句子**不该被当成表注
             # （实测 attention p8 就多出一个假的"表 2"，知识库里跟着多一条空表）
             continue
@@ -430,8 +511,8 @@ def detect_tables(
         v_bars = [d for d in drs if d.is_vertical and d.length > 20]
 
         # 表体：图注附近 0.6 页高内的线框集合
-        window = Rect(page_rect.x0, max(page_rect.y0, ab.rect.y0 - 0.6 * page_rect.height),
-                      page_rect.x1, min(page_rect.y1, ab.rect.y1 + 0.25 * page_rect.height))
+        window = Rect(page_rect.x0, max(page_rect.y0, cap_rect.y0 - 0.6 * page_rect.height),
+                      page_rect.x1, min(page_rect.y1, cap_rect.y1 + 0.25 * page_rect.height))
         local_h = [d for d in h_bars if window.intersects(d.rect)]
         local_v = [d for d in v_bars if window.intersects(d.rect)]
         has_borders = len(local_h) >= 3 and len(local_v) >= 2
@@ -442,9 +523,9 @@ def detect_tables(
             # ⚠️ 表体 = 表注 + **表格本体**（线框并集，没有线框就吃表注下方连续的同栏文本行）。
             # 以前这里直接写 `ab.rect.expand(4)`（= 表注那一行），于是所有表格区域都只有 ~18pt：
             # 知识库里的表格缩略图只有一行表注、放大也看不到数值（2026-09-27 用户报的）。
-            rect=_table_body_rect(ab, blocks, local_h + local_v, page_rect).expand(4),
+            rect=_table_body_rect(cap_rect, blocks, local_h + local_v, page_rect).expand(4),
             caption_block_id=None,
-            caption=ab.text.strip(),
+            caption=cap_text,
             row_count=max(0, len(rows) - 1), col_count=max(0, len(cols) - 1),
             has_borders=has_borders,
             grid=[round(v, 1) for v in rows + cols],
@@ -469,15 +550,15 @@ def _looks_like_table_caption(text: str) -> bool:
     return len(t) <= 60          # 短行且不写标点的排版也认；长句一律不认
 
 
-def _table_body_rect(caption: RawBlock, blocks: list[RawBlock],
+def _table_body_rect(cap: Rect, blocks: list[RawBlock],
                      bars: list[Drawing], page_rect: Rect) -> Rect:
-    """表格本体：优先**线框并集**，没有线框就吃表注下方**连续的同栏文本块**。
+    """表格本体（``cap`` = 表注**本栏**的锚点矩形）：优先**线框并集**，
+    没有线框就吃表注下方**连续的同栏文本块**。
 
     两种排版都要管：attention 的 booktabs 表只有几条横线（`has_borders=False`），
     而 3360 的表有线框。都没有时退回"表注下方到第一个明显空档"的文本行 ——
     那正是表格的数值行，比"只剩表注"强得多。
     """
-    cap = caption.rect
     body: Rect | None = None
     for above in (False, True):        # 先看表注**下方**（多数排版），再看上方
         picked = [d.rect for d in bars
