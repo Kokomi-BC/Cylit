@@ -1392,12 +1392,16 @@ def _figure_region_url(paper_id: str, chunk_type: str, page_no: int,
     for i, region in enumerate(regions):
         if region.get("kind") != kind:
             continue
+        # `v=<区域哈希>`：裁图接口允许浏览器缓存 7 天，URL 不加版本号的话，
+        # 区域算法一变，知识库缩略图会一直显示旧图（实测事故，见 figure_regions.media_of_page）。
+        ver = str(region.get("hash") or "")
+        suffix = f"?v={ver}" if ver else ""
         if number and str(region.get("number") or "") == number:
             return (f"{get_settings().api_prefix}/papers/{paper_id}"
-                    f"/figures/region/{int(page_no)}/{i}")
+                    f"/figures/region/{int(page_no)}/{i}{suffix}")
         if not number and head and (region.get("caption") or "").strip()[:40] == head:
             return (f"{get_settings().api_prefix}/papers/{paper_id}"
-                    f"/figures/region/{int(page_no)}/{i}")
+                    f"/figures/region/{int(page_no)}/{i}{suffix}")
     return None
 
 

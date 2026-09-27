@@ -972,6 +972,9 @@ def figures_payload(paper_id: str) -> dict:
             row_id = row_id_of_caption(paper_id, page_no, r["number"],
                                        rows=rows_by_page.get(int(page_no)) or [])
             base = f"/api/v1/papers/{paper_id}/figures/region/{page_no}/{i}"
+            # `v=<区域哈希>`：裁图接口允许浏览器缓存 7 天，而 URL 只看"页+序号" ——
+            # 区域一变不加哈希就会一直显示旧图（实测事故，见 figure_regions.media_of_page）。
+            ver = str(r.get("hash") or "")
             items.append({
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",
                 "row_id": row_id,
@@ -980,8 +983,8 @@ def figures_payload(paper_id: str) -> dict:
                 "part": int(r.get("part", 0)), "parts": int(r.get("parts", 1)),
                 "part_label": r.get("part_label") or "",
                 "status": "ok", "audit": {},
-                "image_url": f"{base}?card=1",
-                "card_url": f"{base}?card=1",
+                "image_url": f"{base}?card=1" + (f"&v={ver}" if ver else ""),
+                "card_url": f"{base}?card=1" + (f"&v={ver}" if ver else ""),
             })
     return {"items": items, "count": len(items)}
 

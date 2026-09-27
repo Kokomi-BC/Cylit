@@ -5126,6 +5126,40 @@ IR figures:  p2/p4/p5 三条（编号在 IR 里是 None，`figure_regions` 从�
 上一轮的少裁修复都还在）。`pytest tests` **全绿**；`frontend_check` **88/87/1**。
 
 
+### 17.92 第九轮 · 修好了却还看到旧图 —— **裁图接口被浏览器缓存了 7 天**
+
+用户回："重启过服务器，也重新导入一遍"，附的还是那张顶部被裁的图。一查，**后端是好的、用户看的是缓存**：
+
+```
+GET /api/v1/papers/<id>/figures/region/5/0?card=1
+  → 200, Cache-Control: public, max-age=604800        ← 7 天
+  → ETag/Last-Modified 也只在过期后才会被重新校验
+```
+
+而**URL 只由"页号 + 序号"决定**（`/figures/region/5/0?card=1`）：区域算法一变，
+URL 一模一样 → 浏览器直接把 7 天前那张旧图拿出来用。于是出现"我明明重启了、也重新导入了，
+图还是被裁的"这种最容易被误判成"代码没生效"的现象。
+（做这轮验证时我自己也被它骗过一次：从接口抓下来的卡片图仍是旧的，直到用 `force=True`
+重新计算区域、并**重启服务**后才看到新图。）
+
+**修法**：所有指向裁图接口的 URL 都带上 **区域哈希**做版本号（缓存文件名本来就带哈希，两处口径一致）：
+
+| 位置 | 结果 |
+|---|---|
+| `figure_regions.media_of_page` | `url=/…/region/5/0?v=cf8d8ac7`、`card_url=/…/region/5/0?card=1&v=cf8d8ac7` |
+| `reader_service` 的 `/figures` 列表 | `image_url=…?card=1&v=cf8d8ac7` |
+| `knowledge_service._figure_region_url`（知识库缩略图） | 同上去掉版本号就会一直显示旧表/旧图 |
+| `figure_regions.markdown_refs`（应用内 Markdown 视图的图片） | 同样带 `?v=` |
+
+于是"区域边界一变 → 哈希变 → URL 变 → 浏览器必然重新取"，不再依赖用户手动强刷。
+`pytest tests` 全绿；实测接口返回：p5 图 3 `bbox=[51.49, 81.6, 295.7, 253.65]`、
+`card_url=…/region/5/0?card=1&v=cf8d8ac7`。
+
+**给用户的动作**：只需要**强刷一次**（Ctrl+F5）——旧 URL 的缓存条目还在浏览器里，
+但从此以后区域一变 URL 就变，不会再出现这种"看着像没修"的情况。
+
+
+
 
 
 

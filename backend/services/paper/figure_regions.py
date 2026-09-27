@@ -762,13 +762,20 @@ def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> 
         part = int(r.get("part", 0))
         base = (f"/api/v1/papers/{paper_id}/figures/region/{int(page_no)}/{i}"
                 + (f"/{part}" if part else ""))
+        # ⚠️ `v=<区域哈希>` 不能省：裁图接口的响应头是 `Cache-Control: public, max-age=604800`，
+        # 而 URL 只由"页 + 序号"决定 —— 区域算法/边界一变，**浏览器还会拿缓存里那张旧图**
+        # 摆 7 天（实测事故：修好"图 3 顶部被裁"之后用户重启服务、重新导入都还是旧图，
+        # 后端抓下来明明是新的）。带上哈希，URL 随区域变，缓存自然失效；
+        # 缓存文件本身的名字里也带哈希，两处口径一致。
+        ver = str(r.get("hash") or "")
+        q = f"v={ver}" if ver else ""
         out.append({
             "kind": r["kind"], "number": r["number"], "caption": r["caption"],
             "bbox": r["bbox"],
             "part": part, "parts": int(r.get("parts", 1)),
             "part_label": r.get("part_label") or "",
-            "url": base,
-            "card_url": f"{base}?card=1",          # 图 + 图注合成（放大看大图/导出用）
+            "url": f"{base}?{q}" if q else base,
+            "card_url": f"{base}?card=1&{q}" if q else f"{base}?card=1",
             "status": "ok",
         })
     return out
@@ -801,7 +808,11 @@ def markdown_refs(paper_id: str, page_no: int, *, prefix: str) -> dict[str, str]
             log.warning("裁图渲染失败，Markdown 里跳过该图：p%d #%d %s", page_no, i, exc)
             continue
         if prefix.startswith("/"):
-            base = f"{prefix.rstrip('/')}/papers/{paper_id}/figures/region/{int(page_no)}/{i}"
+            # 同样要带 `v=<哈希>`：这条 URL 会被写进应用内的 Markdown 视图
+            # （`/markdown/translated?write=false` 那份），浏览器同样会缓存 7 天。
+            ver = str(r.get("hash") or "")
+            base = (f"{prefix.rstrip('/')}/papers/{paper_id}/figures/region/{int(page_no)}/{i}"
+                    + (f"?v={ver}" if ver else ""))
         else:
             base = f"{prefix.rstrip('/')}/{path.name}"
         refs[r["number"]] = f"![{r['caption'][:80] or f'Figure {r[number]}'}]({base})"
