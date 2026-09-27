@@ -35,7 +35,6 @@ const props = defineProps<{
   searchTerm: string;
   /** 需要"闪一下"提醒的行 id（点搜索命中 / 目录跳转后短暂提示"就是这一块"） */
   flashRowId: string;
-  showRefs: boolean;
   /** 后台正在翻译这篇论文：未译的行显示「等待翻译」而不是「未翻译」 */
   translating: boolean;
   /** 正文字号（px）；标题/图注用 em 跟随缩放 */
@@ -46,7 +45,6 @@ const emit = defineEmits<{
   (e: 'focus', rowId: string): void;
   (e: 'translate-page', page: number): void;
   (e: 'zoom', target: ZoomTarget): void;
-  (e: 'update:showRefs', value: boolean): void;
 }>();
 
 /** 原文在左？ */
@@ -212,6 +210,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             v-for="r in g.rows"
             :key="r.id"
             :data-row-id="r.id"
+            :data-row-type="r.type"
             class="row-pair"
             :class="rowClass(r.id)"
           >
@@ -245,6 +244,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
           v-for="r in g.rows"
           :key="r.id"
           :data-row-id="r.id"
+          :data-row-type="r.type"
           class="row-pair"
           :class="{ 'two-col': textCompare, wide: isWide(r), ...rowClass(r.id) }"
         >
@@ -291,17 +291,6 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
         <div v-if="!g.rows.length" class="empty small">这一页还没有内容</div>
       </div>
     </section>
-
-    <div class="rows-foot">
-      <label class="row tiny faint" style="gap:5px">
-        <input
-          type="checkbox"
-          :checked="props.showRefs"
-          @change="emit('update:showRefs', ($event.target as HTMLInputElement).checked)"
-        >
-        显示参考文献
-      </label>
-    </div>
   </div>
 </template>
 
@@ -427,7 +416,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
 .media-box.zoomable { cursor: zoom-in; }
 .media-box.zoomable:hover { border-color: var(--accent); }
 
-.rows-foot { display: flex; justify-content: center; padding: 14px 0 4px; }
+/* 原来这里是「显示参考文献」开关（`.rows-foot`）：已按用户要求移除，参考文献恒显示。 */
 
 @media (max-width: 1100px) {
   .rows-wrap { padding: 8px 10px 64px; }

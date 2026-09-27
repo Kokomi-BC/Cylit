@@ -91,7 +91,8 @@ const originalMode = ref<OriginalMode>('text');
 const pairOrder = ref<PairOrder>('en_left');
 const currentRowId = ref('');
 const collapsed = ref<string[]>([]);
-const showRefs = ref(false);
+// 「显示参考文献」开关已按用户要求移除：参考文献**恒显示**，不再是一条界面状态。
+// （服务端 `reading_progress.show_refs` 字段仍照旧写 `true`，只是前端不再读它。）
 const zoom = ref(1);
 const searchQuery = ref('');
 const searchScope = ref<SearchScope>('all');
@@ -620,7 +621,7 @@ const scroller = ref<HTMLElement | null>(null);
 
 /* ------------------------------ 派生数据 ------------------------------ */
 const groups = computed(() => buildPageGroups(
-  pages.value, pageTranslations.value, blocks.value, showRefs.value,
+  pages.value, pageTranslations.value, blocks.value,
 ));
 const allRows = computed(() => flattenRows(groups.value));
 const rowById = computed(() => {
@@ -756,11 +757,10 @@ async function loadAll() {
     pairOrder.value = (p?.pair_order as PairOrder) ?? 'en_left';
     // 原文栏呈现也按论文存（`text` / `page`）：上次看的是原 PDF，切标签或重开时还是原 PDF
     originalMode.value = (p?.original_mode as OriginalMode) ?? 'text';
-    // 界面状态（侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放）：**服务端那份优先**（按论文记的），
-    // 没记过才用本地偏好（`localStorage`）或默认值。
+    // 界面状态（侧栏开合 / 字号 / 原 PDF 缩放）：**服务端那份优先**（按论文记的），
+    // 没记过才用本地偏好（`localStorage`）或默认值。（参考文献恒显示后不再是界面状态。）
     if (typeof p?.aside_open === 'boolean') asideOpen.value = p.aside_open;
     if (p?.text_size && p.text_size in TEXT_SIZES) textSize.value = p.text_size as TextSizeKey;
-    if (typeof p?.show_refs === 'boolean') showRefs.value = p.show_refs;
     if (typeof p?.zoom === 'number') zoom.value = Math.min(3, Math.max(0.4, p.zoom));
     // 对照 + 原 PDF 时文字列放哪一侧（`zh` 译文 / `en` 原文）
     pageSide.value = p?.page_side === 'en' ? 'en' : 'zh';
@@ -1159,7 +1159,8 @@ async function saveProgressNow() {
       // 界面状态也一起带着：它们和视图模式同属"这篇论文上次是怎么看的"
       aside_open: asideOpen.value,
       text_size: textSize.value,
-      show_refs: showRefs.value,
+      // 参考文献恒显示（开关已移除）：字段保留写 `true`，旧数据/对账脚本仍能读到一致的值
+      show_refs: true,
       zoom: Number(zoom.value.toFixed(2)),
       page_side: pageSide.value,
     });
@@ -1168,14 +1169,14 @@ async function saveProgressNow() {
 const saveProgressDebounced = debounce(saveProgressNow, 900);
 
 /**
- * 界面状态（侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放）一变就**立刻**存一次：
+ * 界面状态（侧栏开合 / 字号 / 原 PDF 缩放）一变就**立刻**存一次：
  * 它们和视图模式一样是"这篇论文上次是怎么看的"，切标签或重开时要还原（用户口径）。
  *
  * `loading` 期间不回存：那一刻正把服务端那份灌进来，回存等于自己写自己。
  * （灌值发生在 `loadAll()` 里，而它的 `await nextTick()` 正好让这个 watcher 在
  *  `loading` 还是 true 的时候跑完。）
  */
-watch([asideOpen, textSize, showRefs, zoom], () => {
+watch([asideOpen, textSize, zoom], () => {
   if (loading.value || fatal.value) return;
   void saveProgressNow();
 });
@@ -2897,7 +2898,6 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============ -->
       <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick">
         <ReaderPageRows
-          v-model:show-refs="showRefs"
           :groups="groups"
           :mode="viewMode"
           :original-mode="originalMode"

@@ -5648,3 +5648,29 @@ turboquant / attention / 3360 / 12382 / dammfnd 五篇 + boomerang，逐篇跑�
 肉眼看 p23 图 9（两个子图 + 两个图例都完整）与 turboquant p8 图 3；
 `pytest tests` 566 passed, 1 skipped；`frontend_check.py --block-markers` 86/87
 （唯一红项仍是「公式能整体高亮」，与本期无关）。
+
+### 17.104 第十轮 · 移除「显示参考文献」开关（参考文献恒显示）
+
+用户口径："移除显示参考文献按钮。所有均显示参考文献。"
+
+**改动**（前端与知识库口径无关：`chunking.py` 里"REFERENCES 整节不进 RAG chunk"那条**没动**）
+
+- `composables/usePageRows.ts`：`buildPageGroups` 不再吃 `showRefs`，删掉 `rows.filter(r => r.type !== 'ref')`。
+- `components/reader/ReaderPageRows.vue`：删掉底部那个 `.rows-foot`（就只装了这一个开关）与 `showRefs` prop /
+  `update:showRefs` 事件；顺手给行元素加了 `data-row-type`（自检脚本要按行类型断言，见下）。
+- `views/ReaderView.vue`：删掉 `showRefs` 状态、从服务端回读、以及响应式回存里的那一项。
+  服务端 `reading_progress.show_refs` 字段**保留**（写 `true`，不动作旧数据，也不动数据库列）。
+
+**自检脚本跟着改**（`scripts/frontend_check.py`）
+
+- 原来那条断言"界面上那个 checkbox 是勾选状态"，现在改成
+  **"开关不存在 + 参考文献小节之后确实还有行"**：找不到 `.rows-foot input[type=checkbox]`（`refsToggle=False`），
+  且参考文献小节标题（REFERENCES / References / 参考文献，双语时两串拼在一起、长度 <40）之后还有 **166 行**。
+- 记两个踩坑（都是"按类型/编号数参考文献"数出 0 的假报警）：
+  1. **turboquant 的参考文献行类型是 `para` 而不是 `ref`**（它的文献区是 author-year，没有 `[n]` 编号），
+     按 `[data-row-type="ref"]` 数得到 0；
+  2. 按文本里的 `[n]` 数同样得到 0 —— 所以只能按"小节标题之后的行数"数。
+
+**验证**：`frontend_check.py --block-markers` 回到 **86/87**（唯一红项仍是「公式能整体高亮」，
+与本期无关）；`npm run typecheck` 0 错；`npm run build` 成功（`ReaderView` 产物哈希已变）；
+`pytest tests` 566 passed, 1 skipped。

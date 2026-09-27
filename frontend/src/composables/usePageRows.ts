@@ -66,12 +66,11 @@ function rowFromBlock(block: Block, index: number): PageRow {
   };
 }
 
-/** 合成逐页行模型；`showRefs=false` 时过滤参考文献行。 */
+/** 合成逐页行模型。参考文献**恒显示**（用户 2026-09-27：移除"显示参考文献"开关）。 */
 export function buildPageGroups(
   pages: PageInfo[],
   translations: PageTranslation[],
   blocks: Block[],
-  showRefs: boolean,
 ): PageGroup[] {
   const trByPage = new Map<number, PageTranslation>();
   for (const t of translations ?? []) trByPage.set(t.page, t);
@@ -90,13 +89,12 @@ export function buildPageGroups(
   const groups: PageGroup[] = [];
   for (const page of [...numbers].sort((a, b) => a - b)) {
     const tr = trByPage.get(page) ?? null;
-    let rows: PageRow[] = tr?.rows?.length
+    const rows: PageRow[] = tr?.rows?.length
       ? tr.rows.map((r, i) => ({ ...r, page, index: r.index ?? i }))
       : (blocksByPage.get(page) ?? [])
         .slice()
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
         .map((b, i) => rowFromBlock(b, i));
-    if (!showRefs) rows = rows.filter((r) => r.type !== 'ref');
     groups.push({
       page,
       info: infoByPage.get(page) ?? null,

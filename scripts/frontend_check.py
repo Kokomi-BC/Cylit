@@ -1164,7 +1164,8 @@ f.addEventListener('load', async () => {
   };
   try {
     await sleep(__WAIT__);
-    /* 打开时的界面状态（服务端按论文记的那份）：侧栏开合 / 字号 / 显示参考文献 / 原 PDF 缩放 */
+    /* 打开时的界面状态：侧栏开合 / 字号 / 原 PDF 缩放；
+     * 「显示参考文献」开关已按用户要求移除 → 这里改成断言"开关不存在 + 参考文献行确实渲染了" */
     const uiState = () => {
       const reader = d.querySelector('.reader');
       const sizeBtn = [...d.querySelectorAll('.reader-toolbar .seg button')]
@@ -1173,10 +1174,22 @@ f.addEventListener('load', async () => {
       const zoomLabel = [...d.querySelectorAll('.reader-toolbar .tiny.faint.nowrap')]
         .map((s) => s.textContent.trim())[0] || '';
       const cb = d.querySelector('.rows-foot input[type="checkbox"]');
+      /* 参考文献行：**不能按行类型数** —— 有的论文（turboquant）参考文献行的类型是 `para`
+       * 而不是 `ref`。改成"找到参考文献小节标题后，它后面还有多少行"：
+       * 小节标题本身很短（REFERENCES / References / 参考文献，双语时两串拼在一起），正文里
+       * 偶尔提到 references 的段落都长得多。 */
+      const rows = [...d.querySelectorAll('[data-row-id]')];
+      let refHead = -1;
+      rows.forEach((el, i) => {
+        const t = (el.textContent || '').trim();
+        if (t.length > 0 && t.length < 40 && /(references|bibliography|参考文献)/i.test(t)) refHead = i;
+      });
+      const refRows = refHead < 0 ? 0 : rows.length - refHead - 1;
       return {
         asideHidden: !!reader && reader.classList.contains('no-aside'),
         font: sizeBtn ? sizeBtn.textContent.trim() : null,
-        showRefs: cb ? cb.checked : null,
+        refsToggle: !!cb,
+        refRows,
         zoomLabel,
       };
     };
@@ -1936,7 +1949,7 @@ def main() -> int:
         probe_file = dist / "_view_probe.html"
         try:
             # ① 服务端那一份：写进去 → 不带任何 query 打开 → 界面必须就是那个状态
-            #    （含界面状态：侧栏收起 / 字号=大 / 显示参考文献 / 原 PDF 缩放 150%）
+            #    （含界面状态：侧栏收起 / 字号=大 / 原 PDF 缩放 150%；参考文献恒显示，开关已移除）
             got = put_progress_local({"view_mode": "bilingual", "pair_order": "zh_left",
                                       "original_mode": "page", "aside_open": False,
                                       "text_size": "lg", "show_refs": True, "zoom": 1.5})
@@ -1976,11 +1989,13 @@ def main() -> int:
             else:
                 ui = (data.get("before") or {}).get("ui") or {}
                 checks.append((
-                    "界面状态按论文还原（侧栏/字号/参考文献/缩放）",
+                    "界面状态按论文还原（侧栏/字号/缩放）+ 参考文献恒显示",
                     ui.get("asideHidden") is True and ui.get("font") == "大"
-                    and ui.get("showRefs") is True and ui.get("zoomLabel") == "150%",
+                    and ui.get("refsToggle") is False and (ui.get("refRows") or 0) > 0
+                    and ui.get("zoomLabel") == "150%",
                     f"打开时：侧栏收起={ui.get('asideHidden')} 字号={ui.get('font')} "
-                    f"参考文献={ui.get('showRefs')} 缩放={ui.get('zoomLabel')}"))
+                    f"参考文献开关={ui.get('refsToggle')} 参考文献行={ui.get('refRows')} "
+                    f"缩放={ui.get('zoomLabel')}"))
                 q = str((data.get("after") or {}).get("search") or "")
                 checks.append((
                     "开关写进 URL（切标签还原用）",
