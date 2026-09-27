@@ -60,7 +60,8 @@ CROP_DPI = 600
 #: 改了裁图/图注/拼接逻辑就 +1 —— 否则磁盘上的旧卡片与浏览器里 7 天缓存都会继续被用
 #: （实测事故：修好"卡片图注多了一句正文"之后，用户重解析仍看到旧图，就是哈希没变）。
 #: 2 = 表格区域取表体 + 同图号去重 + 卡片图注只取挨着的那一串（2026-09-27）。
-REGION_CACHE_VERSION = 2
+#: 3 = 图注续行加"句末即停 / 不得越出本栏宽"（DAMMFND 图 1 吞了整段摘要）。
+REGION_CACHE_VERSION = 3
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -755,15 +756,21 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
     #: 同一个图注被拆成多块时，块与块之间的最大间隔（pt）—— 超过它就不是"这一串图注"了
     CAPTION_CHAIN_GAP = 18.0
 
-    cand: list[tuple[str, Rect]] = []
+    def _ends_sentence(text: str) -> bool:
+        """这句话已经收尾了吗（图注的续行不会以句末标点结尾）。"""
+        s = (text or "").strip()
+        return bool(s) and s[-1] in ".。！？!?…"
+
+    cand: list[tuple[str, Rect, str]] = []
     for b in ir.blocks():
         if int(b["page_no"]) != int(page_no) or (b.get("type") or "") != "caption":
             continue
-        if not matches(str(b.get("text_clean") or b.get("text") or "")):
+        text = str(b.get("text_clean") or b.get("text") or "")
+        if not matches(text):
             continue
         rect = _rect_of(b)
         if rect.width > 2 and rect.height > 2:
-            cand.append((str(b.get("id") or ""), rect))
+            cand.append((str(b.get("id") or ""), rect, text))
     if not cand:
         return []
     cand.sort(key=lambda it: (it[1].y0, it[1].x0))
@@ -771,29 +778,46 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
     # （实测 DTDBD p11 的 `Figure 3. From Case 1, it can be seen that when traditional`，
     # 离真图注 145pt），一起拼到卡片下面就是用户看到的"底部图注对不上 / 像拼接"。
     want_id = str(region.get("caption_block_id") or "")
-    start = next((i for i, (bid, _) in enumerate(cand) if bid == want_id), None)
+    start = next((i for i, (bid, _r, _t) in enumerate(cand) if bid == want_id), None)
     if start is None:                      # 没有明确的图注块 → 取离图体最近的那块当起点
         b0, b1 = _num(region["bbox"][1]), _num(region["bbox"][3])
         start = min(range(len(cand)),
                     key=lambda i: min(abs(cand[i][1].y0 - b1), abs(b0 - cand[i][1].y1)))
     chain = [cand[start][1]]
-    for step in (1, -1):                   # 向下、向上各延伸，遇到明显空档就停
-        i = start + step
-        while 0 <= i < len(cand):
-            prev = chain[-1] if step > 0 else chain[0]
-            rect = cand[i][1]
-            gap = (rect.y0 - prev.y1) if step > 0 else (prev.y0 - rect.y1)
-            if gap > CAPTION_CHAIN_GAP:
-                break
-            chain.append(rect) if step > 0 else chain.insert(0, rect)
-            i += step
+    chain_text = [cand[start][2]]
+    if not _ends_sentence(chain_text[0]):  # 图注已经收尾就不用再续了（见下面 _ends_sentence 的说明）
+        for step in (1, -1):               # 向下、向上各延伸，遇到明显空档/句末就停
+            i = start + step
+            while 0 <= i < len(cand):
+                prev = chain[-1] if step > 0 else chain[0]
+                rect = cand[i][1]
+                gap = (rect.y0 - prev.y1) if step > 0 else (prev.y0 - rect.y1)
+                if gap > CAPTION_CHAIN_GAP:
+                    break
+                txt = cand[i][2]
+                if step > 0:
+                    chain.append(rect)
+                    chain_text.append(txt)
+                else:
+                    chain.insert(0, rect)
+                    chain_text.insert(0, txt)
+                if _ends_sentence(txt):
+                    break
+                i += step
     # 再往下续接**紧挨着**的普通块：图注往往是"多行的一大段"，而解析器只把第一行判成 caption
     # （实测 DTDBD p11 第二行 `the probabilistic prediction results …` 是 para）—— 只取 caption
     # 块会把图注截掉一半。间隔 ≤ CAPTION_CHAIN_GAP、同列、且不是另一张图/表的题注才续。
+    #
+    # ⚠️ **句末即停**：图注的续行不会以句末标点结尾。不加这条判据会一路吞下去 ——
+    # 实测 DAMMFND p1：图 1 的图注（以 `…within this dataset.` 结尾）后面紧跟着整段摘要，
+    # 于是一张 t-SNE 图下面挂了 10 块正文（用户看到的"拼接图片"）。
     cap_head = re.compile(r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|Table|图|表)\s*\d", re.IGNORECASE)
     blocks_sorted = sorted(
         [b for b in ir.blocks() if int(b["page_no"]) == int(page_no)],
         key=lambda b: (_num(b.get("y0")), _num(b.get("x0"))))
+    if _ends_sentence(chain_text[-1]):
+        return sorted(chain, key=lambda r: (r.y0, r.x0))
+    col = cand[start][1]                   # 图注自己那一栏：续行**必须落在这一栏内**
     last = max(chain, key=lambda r: r.y0)
     for b in blocks_sorted:
         rect = _rect_of(b)
@@ -801,14 +825,23 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
             continue
         if (b.get("type") or "") in ("figure", "formula"):
             break
-        if not (rect.x1 > last.x0 + 1.0 and rect.x0 < last.x1 - 1.0):
-            break                          # 换栏/换列 → 图注到此为止
+        # ⚠️ 判据是"**和本栏一样宽**"，不是"有重叠"：实测 DAMMFND p1 的正文被解析器并成了
+        # **通栏块**（x 64~558，宽 494pt），而图注那一栏只有 238pt —— 只判重叠会顺着通栏块
+        # 一路吞下整段摘要（图 1 的图注挂了 10 块正文 → 用户看到的"拼接图片"）。
+        # 图注的续行必然不比本栏宽多少；比本栏宽 20pt 以上就不是它。
+        if rect.width > col.width + 20.0:
+            break
+        if rect.x0 < col.x0 - 6.0 or rect.x1 > col.x1 + 6.0:
+            break                          # 越出本栏（换栏）→ 图注到此为止
         if rect.y0 - last.y1 > CAPTION_CHAIN_GAP:
             break
-        if cap_head.match(str(b.get("text_clean") or b.get("text") or "")):
+        text = str(b.get("text_clean") or b.get("text") or "")
+        if cap_head.match(text):
             break                          # 另一张图/表的题注
         chain.append(rect)
         last = rect
+        if _ends_sentence(text):
+            break                          # 这句收尾了 → 图注到此为止
     return sorted(chain, key=lambda r: (r.y0, r.x0))
 
 
