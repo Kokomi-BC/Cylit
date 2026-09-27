@@ -283,7 +283,7 @@ SSE 断线时前端按 `GET /api/v1/papers/{id}/translations?since_page=N` 轮�
 | POST | `/knowledge/remove` | **从知识库移除**：`{paper_id}`（缺则 400）；清向量 + 清 chunk 元数据 + 取消"已纳入"（论文与译文不动），返回 `removed_chunks` |
 | POST | `/knowledge/index` | 触发 EMBED+INDEX（`{"paper_id":..., "rebuild":bool}`）。**平时不用手点**：翻译任务跑完会自动开（见 `/papers/{id}/translate`）；这条留给「设置 → 索引管理」排障重建。`section` 列已加宽到 255 并按列宽截断（曾经有 134 字的脏标题把整个任务打成 MySQL 1406） |
 | POST | `/knowledge/reconcile` | 对账：MySQL chunk ↔ 向量库；`{paper_id?, fix:false}`，`fix=true` 顺手清孤儿 |
-| GET | `/knowledge/index/status?paper_id=` | MySQL chunk 与 LanceDB 条数对比 |
+| GET | `/knowledge/index/status?paper_id=` | MySQL chunk 与 LanceDB 条数对比；**另带维度体检** `model_dim` / `store_dim` / `dim_match`（换嵌入模型后旧库不会自动变维数，界面靠这个一眼看出"要重建索引"） |
 | GET | `/knowledge/chunks` | chunk **元数据**（不返回全文）：`paper_id`（必填）、`chunk_type`、`lang`、**`road`**（`a`/`b`/`shared`，正则校验）、`limit`（默认 50，≤500）。默认**不列** `unit`（那是检索粒度，浏览视图会翻倍）；`image_url` 是插图/表格/公式的裁图 |
 | GET | `/knowledge/chunk?chunk_id=` | **单个 chunk 的完整正文**（知识库页「展开全文」；只读那一条向量行，不触发任务）。公式条目另带 `latex` / `display` / `row_id` / `context` / `anchor_precision` 等契约字段 |
 

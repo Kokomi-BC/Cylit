@@ -1334,8 +1334,30 @@ def index_status(paper_id: str | None = None) -> dict:
         vector = {"available": False, "error": str(exc)[:200]}
     orphans = len(db_ids - store_ids) if not paper_id else None
     missing = len(store_ids - db_ids) if not paper_id else None
+    # 维度体检：**模型声明的维数**（配置 `parameters.dim`）与**向量库实际的维数**（表 schema）
+    # 必须一致。换嵌入模型（比如 2560 → 1024）时，旧库不会自动变 —— 有了这两个数与
+    # `dim_match`，界面上就能一眼看出"库还是旧维度、要重建索引"，而不是等检索报错。
+    # 实测（2026-09-27）：两边都是 2560、条数 706↔706。
+    model_dim: int | None = None
+    store_dim: int | None = None
+    try:
+        from backend.services.model.model_manager import model_manager
+
+        model_dim = int((model_manager.get_config(None, "embedding").get("parameters") or {})
+                        .get("dim") or 0) or None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("取嵌入模型维数失败（忽略）：%s", exc)
+    try:
+        from backend.repositories.vector import lancedb_store as _ls
+
+        table = _ls.vector_store._table()
+        store_dim = _ls._vector_dim(table) if table is not None else None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("取向量库维数失败（忽略）：%s", exc)
+    dim_match = None if (model_dim is None or store_dim is None) else (model_dim == store_dim)
     return {"paper_id": paper_id, "chunks": total, "chunks_with_hash": with_hash,
             "index_versions": dict(versions), "vector": vector,
+            "model_dim": model_dim, "store_dim": store_dim, "dim_match": dim_match,
             # 只看**全库**对账（单篇视图下这两个数没意义，交给 /knowledge/reconcile）
             "orphan_chunks": orphans, "missing_vectors": missing,
             "consistent": None if paper_id else (not orphans and not missing)}
