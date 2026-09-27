@@ -84,18 +84,33 @@ def test_number_of_reads_figure_and_table_numbers():
 
 
 def test_snap_edges_pushes_top_below_intruding_title():
-    """边界切进图题里 → 推到图题下方（图题不再被切成半行）。"""
+    """边界切进**图注/题注块**里 → 推到它下方（题注是论文文字，不该被裁进图里）。
+
+    ⚠️ 必须把该块放进 `avoid`：`_snap_edges` 对"图注块"与"图内标注块"是**两种处置**
+    （2026-09-27 实测分出来的）：图注块推开，图内小标注（子图标题/刻度）反而要**收进来**，
+    否则就会出现用户报的"少裁"（turboquant p8 图 2 的三个子图标题被切掉 7.8pt，
+    该 x 切片 99.6% 的墨迹没进裁图）。见 `test_snap_edges_includes_in_figure_label_when_cut`。
+    """
     title = Rect(147.78, 71.2, 450.2, 81.16)
-    out = _snap_edges([171.96, 81.0, 470.01, 273.19], [title], PAGE)
+    out = _snap_edges([171.96, 81.0, 470.01, 273.19], [title], PAGE, avoid=[title])
     assert out[1] == pytest.approx(81.16 + 1.2)
     assert (out[0], out[2], out[3]) == (171.96, 470.01, 273.19)
 
 
+def test_snap_edges_includes_in_figure_label_when_cut():
+    """**图内**的单行标注被边界切到时，边界要往外让开、把整行收进来（少裁修复）。"""
+    label = Rect(147.78, 71.2, 450.2, 81.16)          # 图内子图标题行（不在 avoid 里）
+    out = _snap_edges([171.96, 79.69, 470.01, 273.19], [label], PAGE)
+    assert out[1] == pytest.approx(71.2 - 1.2)        # 上边界往上让开，整行进图
+    assert out[0] == pytest.approx(147.78 - 1.2)      # 左边界也被这行字穿过 → 同样让开
+    assert (out[2], out[3]) == (470.01, 273.19)
+
+
 def test_snap_edges_keeps_top_when_gap_is_safe():
-    """边界在图题下方 1.5pt 以上（安全距离之外）时不动它 —— 免得把图体上沿裁掉。"""
+    """边界在**图注块**下方、且已经贴到安全距离之外时不动它 —— 免得把图体上沿裁掉。"""
     title = Rect(147.78, 71.2, 450.2, 81.16)          # 文字块底边 81.16
     rect = [171.96, 79.69, 470.01, 273.19]            # 79.69 已经比 81.16+TEXT_PAD 低
-    assert _snap_edges(rect, [title], PAGE) == rect
+    assert _snap_edges(rect, [title], PAGE, avoid=[title]) == rect
 
 
 def test_snap_edges_pushes_bottom_above_caption():

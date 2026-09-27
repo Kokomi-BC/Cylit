@@ -149,6 +149,11 @@ def _text_rects(blocks_by_page: dict[int, list[dict]], page_no: int) -> list[Rec
     return out
 
 
+def _rect_key(r: Rect) -> tuple:
+    """Rect → 可比较的键（`Rect` 之间要按**值**比对：图注块与文字层里的同一个块是两份对象）。"""
+    return (round(r.x0, 1), round(r.y0, 1), round(r.x1, 1), round(r.y1, 1))
+
+
 def _rect_of(row: dict) -> Rect:
     """块的矩形：**优先用真实页面位置**（``meta["page_bbox"]``）。
 
@@ -162,40 +167,80 @@ def _rect_of(row: dict) -> Rect:
                 _num(row.get("x1")), _num(row.get("y1")))
 
 
+#: "边界从字里穿过"时允许被**吸进裁图**的文字块高度上限（pt）：
+#: 只有单行的图内小标注 / 坐标轴刻度 / 子图标题行才这么矮，正文段落是多行的、比它高，
+#: 不能被当成"图的一部分"。（宁可少裁一点点，也不要重新引入"多裁"——用户两个方向都报过。）
+#: ⚠️ 判据只能用**高度**（行数），不能用宽度：实测 attention p4 图 2 的子图标题行是
+#: `Scaled Dot-Product Attention Multi-Head Attention`（宽 302pt、高 10pt），
+#: turboquant p21 图 5 的刻度/子图标题行更宽（370pt）—— 按宽度卡（比如 ≤200pt）
+#: 会把这两个真实的少裁案例漏掉。
+LABEL_MAX_HEIGHT = 22.0
+
+
 def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
-            lo: float, hi: float) -> float:
+            lo: float, hi: float, avoid: set | None = None) -> float:
     """把一条水平边界推到相邻文字的边上（不动就返回原值）。
 
-    判据只有一条：**边界离某个文字块太近**
-    （离文字块还不到 ``TOL`` 就当作已经贴住；到文字块上/下沿不足 ``TEXT_PAD``
-    则说明出图余量会切到字形）。此时统一把边界推到文字的边上 —— 问题一次消掉。
+    三种情形要分开处理，**只判"离得近不近"是不够的**（实测事故，2026-09-27）：
 
-    实测两个正例：attention p4 的图题（文字块底边 81.2，区域顶边 79.7 → 推到 82.4）、
-    TurboQuant p8 图 2 的图注（文字块顶边 231.0，区域底边 229.8 → 推到 229.8 之上）。
-    再远一点就不该动边界：否则远处的正文也会被算进来（实测 p3 的图体 bbox 会被平白推掉一大截）。
+    - **是图注/题注块**（``avoid`` 里的那个 Rect）：它是**论文的文字**，不该被裁进图里 ——
+      一律按老规矩"推开"（上边界 → ``t.y1 + TEXT_PAD``，下边界 → ``t.y0 - TEXT_PAD``），
+      哪怕边界正从它里面穿过。
+    - **边界从字里穿过**（``t.y0 < edge < t.y1``，且不是图注）：这个字被切掉一截 →
+      把边界**往外让开**，让整个字进到区域里（上边界 → ``t.y0 - TEXT_PAD``；下边界 →
+      ``t.y1 + TEXT_PAD``）。分两级放宽：**单行块**（高度 ≤ :data:`LABEL_MAX_HEIGHT`，
+      即图内小标注/刻度/子图标题）一律收；**多行块**只在"切得不深"（移动量 ≤ ``SNAP_MAX``）
+      时收 —— 正文段落通常是多行且要移动一大截，于是被挡在门外。
+    - **边界紧贴字块外沿**（不到 ``TEXT_PAD``）：把边界**再推开一点**，别把字收进图里。
+
+    为什么必须补上第二种：旧实现只判 "edge 是否落在 ``t.y1 ± TEXT_PAD``" 这个窄带，
+    **边界从字里穿过时反而落进"离得远、不用管"那一支被跳过**。实测 turboquant p8 图 2 的
+    ``(a) Inner Product Error`` / ``(b) MSE`` / ``(c) Speedup`` 三个子图标题，区域顶边 95.80
+    与字块底边 97.02 只差 **0.02pt**，于是被判成"已经贴住了"，结果标题被切掉 7.8pt
+    （600dpi 逐行墨迹剖面：该 x 切片 **99.6% 的墨迹没进裁图**）。
     """
     for t in blocks:
+        # ⚠️ 判"边界从字里穿过"**不能**在近侧再留 TOL 死带：实测 turboquant p21 图 5 的
+        # `(a) TURBOQUANTprod` 块 bbox 下沿 97.00、区域顶边 96.22（只差 0.78pt < TOL=1.0），
+        # 旧写法把它判成"没穿过"，于是 `prod` 的下半截被切掉（`near` 那支反过来把顶边
+        # **往下推**到 98.18，越推越糟）。近侧只留远侧的 TOL 防抖。
+        is_caption = bool(avoid) and _rect_key(t) in avoid
+        inside = (not is_caption) and t.y0 + TOL < edge < t.y1
+        short = (t.y1 - t.y0) <= LABEL_MAX_HEIGHT      # 单行 = 标签；多行 = 段落
         if top:
-            if edge >= t.y1 + TOL or edge <= t.y1 - TEXT_PAD:
+            # 单行标签一律收进来；**多行块只在"切得不深"时收**（移动量 ≤ SNAP_MAX）
+            if inside and (short or (edge - (t.y0 - TEXT_PAD)) <= SNAP_MAX):
+                new = t.y0 - TEXT_PAD          # 把被切的那行字整个收进来
+                if (hi - new) < MIN_HEIGHT:
+                    continue
+            elif edge > t.y1 - TEXT_PAD and edge < t.y1 + TOL:
+                new = t.y1 + TEXT_PAD          # 贴得太近（或就是图注）→ 推开，别把字收进图里
+                if abs(new - edge) > SNAP_MAX or (hi - new) < MIN_HEIGHT:
+                    continue
+            else:
                 continue
-            new = t.y1 + TEXT_PAD
-            if new <= lo + TOL or new - edge > SNAP_MAX or (hi - new) < MIN_HEIGHT:
-                continue
-            edge = new
         else:
-            if edge <= t.y0 - TOL or edge >= t.y0 + TEXT_PAD:
+            # 下边界对称：近侧（贴着字块上沿那一带）同样不留死带
+            inside_b = (not is_caption) and t.y0 < edge < t.y1 - TOL
+            if inside_b and (short or ((t.y1 + TEXT_PAD) - edge) <= SNAP_MAX):
+                new = t.y1 + TEXT_PAD
+                if (new - lo) < MIN_HEIGHT:
+                    continue
+            elif edge > t.y0 - TOL and edge < t.y0 + TEXT_PAD:
+                new = t.y0 - TEXT_PAD
+                if abs(new - edge) > SNAP_MAX or (new - lo) < MIN_HEIGHT:
+                    continue
+            else:
                 continue
-            new = t.y0 - TEXT_PAD
-            if new >= hi - TOL or edge - new > SNAP_MAX or (new - lo) < MIN_HEIGHT:
-                continue
-            edge = new
+        edge = new
     return edge
 
 
 # ⚠️ `_snap_x` 定义在 `_snap_edges` **之后**不是笔误：模块级重定义以后一份为准，
 # 原先这里还留着一份判据不同的旧实现（`edge >= t.x1 + TOL`），**永远跑不到**。
 # P9 已删旧的那一份，只留下面这一份生效的。
-def _snap_edges(rect: list[float], texts: list[Rect], page_rect: Rect) -> list[float]:
+def _snap_edges(rect: list[float], texts: list[Rect], page_rect: Rect,
+                avoid: list[Rect] | None = None) -> list[float]:
     """把区域的四条边**贴到相邻文字的边上**：既不从文字中间穿过，也不留一条会被切掉的白缝。
 
     为什么必须有这一步：排版软件给文字块的 bbox 比字形墨迹宽出 1~2pt，解析阶段的插图
@@ -207,14 +252,15 @@ def _snap_edges(rect: list[float], texts: list[Rect], page_rect: Rect) -> list[f
     """
     x0, y0, x1, y1 = rect
     order = sorted(texts, key=lambda t: t.y0)
+    avoid_keys = {_rect_key(a) for a in (avoid or [])}
     for _ in range(4):
         before = (x0, y0, x1, y1)
         col = [t for t in order if t.x1 > x0 + TOL and t.x0 < x1 - TOL]
-        y0 = _snap_y(y0, col, top=True, lo=y0, hi=y1)
-        y1 = _snap_y(y1, col, top=False, lo=y0, hi=y1)
+        y0 = _snap_y(y0, col, top=True, lo=y0, hi=y1, avoid=avoid_keys)
+        y1 = _snap_y(y1, col, top=False, lo=y0, hi=y1, avoid=avoid_keys)
         row = [t for t in order if t.y1 > y0 + TOL and t.y0 < y1 - TOL]
-        x0 = _snap_x(x0, row, left=True, lo=x0, hi=x1)
-        x1 = _snap_x(x1, row, left=False, lo=x0, hi=x1)
+        x0 = _snap_x(x0, row, left=True, lo=x0, hi=x1, avoid=avoid_keys)
+        x1 = _snap_x(x1, row, left=False, lo=x0, hi=x1, avoid=avoid_keys)
         if (x0, y0, x1, y1) == before:
             break
     if (y1 - y0) < MIN_HEIGHT or (x1 - x0) < MIN_VISIBLE:
@@ -223,23 +269,44 @@ def _snap_edges(rect: list[float], texts: list[Rect], page_rect: Rect) -> list[f
             min(x1, page_rect.x1), min(y1, page_rect.y1)]
 
 
-def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float) -> float:
-    """把一条垂直边界贴到相邻文字的边上（与 :func:`_snap_y` 同构）。"""
+def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float,
+            avoid: set | None = None) -> float:
+    """把一条垂直边界贴到相邻文字的边上（与 :func:`_snap_y` 同构）。
+
+    "边界从字里穿过"与"边界紧贴字块外沿"同样要分开（理由见 `_snap_y`）：
+    前者把边界往外让开、让整个字进到区域里，后者把边界再推开一点、别把字收进来；
+    图注块（``avoid``）一律按后者处理。
+    旧实现在"穿过"这一支上会把边界**继续往里推**（left 推到 ``t.x1 + TEXT_PAD``），
+    实测 attention p4 图 2 的副标题 ``Scaled`` 因此被切掉左端 24.2pt。
+    """
     for t in blocks:
+        is_caption = bool(avoid) and _rect_key(t) in avoid
+        inside_l = (not is_caption) and t.x0 + TOL < edge < t.x1
+        inside_r = (not is_caption) and t.x0 < edge < t.x1 - TOL
+        short = (t.y1 - t.y0) <= LABEL_MAX_HEIGHT      # 同上：按**高度**判单行
         if left:
-            if edge < t.x0 - TEXT_PAD or edge > t.x1 + TEXT_PAD:
+            if inside_l and (short or (edge - (t.x0 - TEXT_PAD)) <= SNAP_MAX):
+                new = t.x0 - TEXT_PAD          # 把被切的那个字整个收进来
+                if (hi - new) < MIN_VISIBLE:
+                    continue
+            elif edge >= t.x0 - TEXT_PAD and edge <= t.x1 + TEXT_PAD:
+                new = t.x1 + TEXT_PAD          # 推开，别把字收进图里
+                if abs(new - edge) > SNAP_MAX or (hi - new) < MIN_VISIBLE:
+                    continue
+            else:
                 continue
-            new = t.x1 + TEXT_PAD
-            if new <= lo + TOL or new - edge > SNAP_MAX or (hi - new) < MIN_VISIBLE:
-                continue
-            edge = new
         else:
-            if edge < t.x0 - TEXT_PAD or edge > t.x1 + TEXT_PAD:
+            if inside_r and (short or ((t.x1 + TEXT_PAD) - edge) <= SNAP_MAX):
+                new = t.x1 + TEXT_PAD
+                if (new - lo) < MIN_VISIBLE:
+                    continue
+            elif edge >= t.x0 - TEXT_PAD and edge <= t.x1 + TEXT_PAD:
+                new = t.x0 - TEXT_PAD
+                if abs(new - edge) > SNAP_MAX or (new - lo) < MIN_VISIBLE:
+                    continue
+            else:
                 continue
-            new = t.x0 - TEXT_PAD
-            if new >= hi - TOL or edge - new > SNAP_MAX or (new - lo) < MIN_VISIBLE:
-                continue
-            edge = new
+        edge = new
     return edge
 
 
@@ -427,7 +494,8 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 tight = _tighten(raw, caption,
                                  sorted(seps, key=lambda b: _num(b.get("y0"))),
                                  rect.y1, below=below)
-                tight = _snap_edges(tight, texts, rect)
+                tight = _snap_edges(tight, texts, rect,
+                                    avoid=[_rect_of(caption)] if caption else None)
                 inner = [b for b in structs
                          if (b.get("type") or "") == "caption" and b.get("id") != cap_id
                          and _num(b.get("y0")) > tight[1] + MIN_HEIGHT
