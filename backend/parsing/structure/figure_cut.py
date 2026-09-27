@@ -68,9 +68,9 @@ def _body_rect_above_caption(
     page_images: list[ImageInfo],
     page_drawings: list[Drawing],
     page_rect: Rect,
-    max_height_ratio: float = 0.72,
+    max_height_ratio: float = 0.95,
 ) -> tuple[Rect | None, list[ImageInfo], list[Drawing], str]:
-    """在图注上方寻找图体区域。"""
+    """在图注上方寻找图体区域（**按墨迹外接框**）。"""
     cap_rect = caption.rect
     top_limit = page_rect.y0 + 0.02 * page_rect.height
     bottom = cap_rect.y0 - 2
@@ -83,10 +83,14 @@ def _body_rect_above_caption(
     imgs = [i for i in page_images if above(i.rect)
             and _usable_image(i, page_rect)
             and _h_overlap(i.rect, cap_rect) > 0.10]
+    # ⚠️ 矢量元素**不再按"面积 > 25 / 不是细线"过滤**（2026-09-27，用户报的"裁少了"）：
+    # matplotlib 画的多子图网格，最上面那条往往是坐标轴细线或极小的刻度（面积 < 25）——
+    # 被过滤掉之后，图体上沿就掉到下一个"大元素"上，于是**裁图只剩下半截**
+    # （实测 9984-boomerang 的高图：裁出来只有图例那一小条）。改成"按墨迹外接框取并集"，
+    # 由下面的**连续性链**（与已聚拢的元素相差 ≤6% 页高才继续）负责不越过空档、
+    # 不把上下两张图或页眉的东西吞进来。
     drs = [d for d in page_drawings if above(d.rect)
-           and _h_overlap(d.rect, cap_rect) > 0.10
-           and d.rect.area > 25
-           and not d.is_thin_bar(3.0)]
+           and _h_overlap(d.rect, cap_rect) > 0.10]
 
     if not imgs and not drs:
         return None, [], [], "no_body_found"
@@ -106,7 +110,7 @@ def _body_rect_above_caption(
                 union = union.union(r)
                 changed = True
 
-    # 高度限制：图体不应超过页面的 max_height_ratio
+    # 高度上限只作"别把整页吞进来"的护栏（0.95 页高）：图注+图体正常都在一页内
     if union.height > max_height_ratio * page_rect.height:
         union = Rect(union.x0, max(max_top, union.y1 - max_height_ratio * page_rect.height),
                      union.x1, union.y1)
@@ -176,13 +180,11 @@ def detect_figures(
             )
         if body is None:
             continue
-        # 图注必须**贴着**图体（见 `CAPTION_MAX_GAP`）：正文引用句不算图注。
-        # ⚠️ 曾经在这里加过"堆叠图兜底"（没有图体时取"上一个结构块到此图注"那一段）——
-        # **已撤掉**：高图（子图网格 300pt + 图例）的图体本就很大，那个兜底会把图体换成
-        # 图例那一段，于是裁图只剩下面一小条（用户报的"漏了上面的图片 / 裁少了"）。
-        gap = (body.y0 - ab.rect.y1) if body.y0 >= ab.rect.y1 else (ab.rect.y0 - body.y1)
-        if gap > CAPTION_MAX_GAP:
-            continue
+        # ⚠️ 这里**不再**用 `CAPTION_MAX_GAP` 挡"图注离图体太远"：
+        # 当初加它是为了压掉 DTDBD 那条"正文引用句当图注"的假图（离图体 162pt），
+        # 但那条**已经在区域层用"同一图号只留离图体最近的一条"解决了**（figure_regions）。
+        # 留在解析层只会误杀真图：实测 9984-boomerang p33 的图 29，它自己的图体没被收进
+        # 候选（并集停在图 28 底部），间隔 187pt → 整张图被丢（用户报的"一页多图会漏掉"）。
         rect = body.expand(padding)
         conf = 0.85 if imgs else 0.6
         out.append(FigureCandidate(
