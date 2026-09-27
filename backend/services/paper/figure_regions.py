@@ -56,6 +56,11 @@ SNAP_MAX = 16.0      # 一次最多把边界挪多少 pt（文字带高度量级
 MIN_HEIGHT = 24.0    # 区域至少要有这么高，否则放弃贴边
 EDGE_MARGIN = 0.02   # 图体贴到页脚/页首这个比例以内 → 认为它跨到了下一页
 CROP_DPI = 600
+#: 裁图**算法版本**，进区域哈希（见 `entry()` 里的 hash）。
+#: 改了裁图/图注/拼接逻辑就 +1 —— 否则磁盘上的旧卡片与浏览器里 7 天缓存都会继续被用
+#: （实测事故：修好"卡片图注多了一句正文"之后，用户重解析仍看到旧图，就是哈希没变）。
+#: 2 = 表格区域取表体 + 同图号去重 + 卡片图注只取挨着的那一串（2026-09-27）。
+REGION_CACHE_VERSION = 2
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -473,8 +478,14 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
             "number": number, "caption": caption, "caption_block_id": caption_block_id,
             "bbox": tight, "raw_bbox": [round(v, 2) for v in raw],
             "source": source or "text",
+            # ⚠️ 哈希 = **算法版本 + bbox**。只算 bbox 会踩两个坑（2026-09-27 实测）：
+            # ① 磁盘上的旧卡片文件名字不变 → `ensure_region_crop` 直接复用旧图；
+            # ② 前端 URL 的 `?v=<hash>` 不变 → 浏览器按 `Cache-Control: max-age=604800`
+            #    把 7 天前的旧卡片拿出来（用户"重解析了还是老图"就是这么来的）。
+            # 改了裁图/图注算法就把 `REGION_CACHE_VERSION` +1。
             "hash": hashlib.sha256(
-                repr([round(v, 1) for v in tight]).encode()).hexdigest()[:8],
+                f"{REGION_CACHE_VERSION}|"
+                f"{[round(v, 1) for v in tight]}".encode()).hexdigest()[:8],
         }
         if part:
             row.update(part)
