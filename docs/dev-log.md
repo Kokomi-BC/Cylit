@@ -5509,6 +5509,35 @@ Sequential Operations / Maximum Path Length` 与 4 行 `O(n²·d)`、`O(n·log n
 **不是少了检查项**（换一篇论文跑同样是 87 项，说明项数固定）。
 
 
+### 17.101 第九轮 · 同一张图多出一份"裁到正文"的区域 + 图注像被拼接（只有 DTDBD 那一张）
+
+用户报（DTDBD 那篇，未翻译、看的是解析原文）：图 3 **多截了一张**，而且**图注像被拼接**。
+
+**根因**：解析器把**正文里的引用句**也判成了 caption。p11 上同一图号 `3` 有两条 caption 块：
+
+| 块 | 类型 | y | 文本 |
+|---|---|---|---|
+| `dualteacherd-p11-b07` | caption | 215.6 | `Fig. 3: Case studies of three news pieces. …`（**真图注**，紧贴图体下沿 **6.9pt**） |
+| `dualteacherd-p11-b13` | caption | 371.1 | `Figure 3. From Case 1, it can be seen that when traditional`（**正文句子**，离图体 **162pt**） |
+
+两条都引用同一张图（图体 y 49~208），于是 `detect_figures` 产出两条记录（subfigure 10 / 7）：
+真的那条对；另一条因为离图体远，最后裁到的其实是**它上方那一段正文**，
+并把那句正文当图注挂上去 —— 用户看到的"多一张图 + 图注拼接"就是这个。
+
+**修法（两层）**：
+1. **区域层**（`figure_regions._compute_all` 收尾，**不用重解析**就生效）：同一 `(kind, number)`
+   只留一条，判据是**图注块到图体 raw bbox 的距离**，留最近的那条（多段图 `parts>1` 跳过）。
+   ⚠️ 第一版用"收紧后的 bbox"算距离 —— 假那条的 bbox 恰好是它自己那句"图注"**上方**的正文
+   （到那句话只有 1.2pt），反而赢了比较；换成解析器给的 **raw 图体**才对（6.9pt vs 162pt）。
+2. **解析层**（`figure_cut.CAPTION_MAX_GAP = 120pt`）：图注与图体间隔超过 120pt 就不认这条图注
+   —— 未来解析不会再产生假图注。
+
+**实测**：DTDBD 图 3 现在只有一条（高 165pt，caption = `Fig. 3: Case studies of three news pieces. …`），
+该篇插图 4 → **3 张**；其余三篇一张不多一张不少（3360: 4、attention: 5、turboquant: 5）。
+`figure_caption_audit.py` 现在报 **DTDBD 图注 3 / 产出 3**，五篇**缺图 0**；`pytest tests` 全绿。
+
+
+
 
 
 

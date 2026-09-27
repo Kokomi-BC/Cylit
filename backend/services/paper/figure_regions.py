@@ -569,6 +569,51 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 nxt, "figure", body, body, reg.get("caption") or "", "",
                 None, {"part": 1, "parts": 2, "part_label": "跨页续图",
                        "continues_from": page_no}))
+
+    # ---- 同一图号只留一条区域（用户 2026-09-27 报的"多截了一张图、图注像被拼接"）----
+    #
+    # 解析器会把**正文里的引用句**也判成 caption —— 实测 DTDBD p11：
+    #   真图注 `dualteacherd-p11-b07`（type=caption，y 215.6，紧贴图体下沿 6.9pt）
+    #   假图注 `dualteacherd-p11-b13`（type=caption，y 371.1："Figure 3. From Case 1, it can be
+    #   seen that when traditional" —— 正文句子，上文里本来写的是"…as shown in Figure 3."）
+    # 两条都指向同一张图（图体 y 49~208），于是同一图号出现两条区域：真那条对，
+    # 另一条会裁到**正文**、并把那句正文当图注挂上去（看着就是图注被拼接）。
+    #
+    # 判据：**图注块到图体的距离** —— 真图注必然贴着图体（个位数 pt），正文引用离得远（这里 162pt）。
+    for page_no, regs in list(out.items()):
+        by_id = {b["id"]: b for b in blocks_by_page.get(page_no, [])}
+        groups: dict[tuple[str, str], list[dict]] = {}
+        keep: list[dict] = []
+        for reg in regs:
+            # 多段图（part）本来就共享图号，跳过
+            if not reg.get("number") or int(reg.get("parts") or 1) > 1:
+                keep.append(reg)
+                continue
+            groups.setdefault((reg["kind"], str(reg["number"])), []).append(reg)
+        for (kind, number), items in groups.items():
+            if len(items) == 1:
+                keep.extend(items)
+                continue
+
+            def _cap_gap(reg: dict, _by_id=by_id) -> float:
+                cap = _by_id.get(reg.get("caption_block_id") or "") or {}
+                if not cap:
+                    return 1e9
+                y0, y1 = _num(cap.get("y0")), _num(cap.get("y1"))
+                # ⚠️ 必须用**解析器给的图体 raw bbox**，不能用收紧后的 `bbox`：
+                # 假那条的 bbox 恰好是它自己那句"图注"**上方**的正文（到那句话只有 1.2pt），
+                # 用它反而会赢下比较。raw 是图体（49~208），真图注离它 6.9pt、假的离它 162pt。
+                box = reg.get("raw_bbox") or reg["bbox"]
+                b0, b1 = _num(box[1]), _num(box[3])
+                return min(abs(y0 - b1), abs(b0 - y1))
+
+            items = sorted(items, key=lambda r: (_cap_gap(r), _num(r["bbox"][1])))
+            keep.append(items[0])
+            log.info("同一%s号 %s 有 %d 条区域，只留离图体最近的那条（其余当成正文）",
+                     "图" if kind == "figure" else "表", number, len(items))
+        keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
+        out[page_no] = keep
+
     return out
 
 

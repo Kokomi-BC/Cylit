@@ -18,6 +18,10 @@ _CAPTION_ANY = re.compile(r"^\s*(?:Figure|Fig\.?|Table)\s*\d+", re.IGNORECASE)
 # 取编号专用（见 caption_number）：容忍 Markdown 标记与中英文写法
 _CAPTION_NUM = re.compile(r"^\s*[*#>\s]*(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})",
                           re.IGNORECASE)
+#: 图注与图体的**最大间隔**（pt）。正文里的引用句（"…as shown in Figure 3. From Case 1, …"）
+#: 也会以 `Figure N` 开头，于是上方很远的旧图会被当成它的"图体" —— 同一图号就多出一条
+#: 裁到正文的区域、还把那句正文当图注（实测 DTDBD p11：假图注离图体 162pt，真图注 6.9pt）。
+CAPTION_MAX_GAP = 120.0
 
 
 @dataclass
@@ -171,6 +175,10 @@ def detect_figures(
                 page_rect, blocks
             )
         if body is None:
+            continue
+        # 图注必须**贴着**图体（见 `CAPTION_MAX_GAP`）：正文引用句不算图注
+        gap = (body.y0 - ab.rect.y1) if body.y0 >= ab.rect.y1 else (ab.rect.y0 - body.y1)
+        if gap > CAPTION_MAX_GAP:
             continue
         rect = body.expand(padding)
         conf = 0.85 if imgs else 0.6
