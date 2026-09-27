@@ -264,21 +264,13 @@ async function runTranslate(paper: Paper, mode: TranslateMode = 'resume') {
   } catch (err) { reportError(err, '触发翻译失败'); } finally { busyKey.value = ''; }
 }
 
-async function runIndex(paper: Paper, rebuild = false) {
-  busyKey.value = `idx:${paper.id}`;
-  try {
-    await api.post('/knowledge/index', { paper_id: paper.id, rebuild });
-    toast('已创建索引任务', 'ok');
-    await refresh();
-  } catch (err) { reportError(err, '触发索引失败'); } finally { busyKey.value = ''; }
-}
-
 /** 从知识库移除：清向量 + 清 chunk 元数据（论文、译文、笔记、高亮都不动）。
- *  「纳入」那个开关已经取消 —— **建立索引即纳入**（用户口径：合并冗余说法与按钮）。 */
+ *  「纳入」那个开关已经取消 —— **建立索引即纳入**（用户口径：合并冗余说法与按钮）；
+ *  「建立索引」按钮本身也下线了：翻译跑完自动建索引，所以这里告诉用户怎么加回来。 */
 async function removeFromKb(paper: Paper) {
   if (!confirm(`从知识库移除《${paper.title}》？\n\n`
     + '会清掉它的 chunk 元数据与向量（论文、译文、笔记、高亮不受影响）。'
-    + '需要时可以重新「建立索引」加回来。')) return;
+    + '重新翻译一次（或去「设置 → 索引管理」）即可加回来。')) return;
   busyKey.value = `remove:${paper.id}`;
   try {
     const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
@@ -302,12 +294,17 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 次要操作（重新翻译 / 重新生成解读 / 建索引 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
+/** 次要操作（重新翻译 / 重新生成解读 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
  * 卡片上只留「阅读（主）+ 翻译（次）」两个按钮 —— 翻译与解析**不再并列暴露**（选项 B）：
  * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。
  *
  * ⚠️ 「重新解析」已按用户口径下线（解析由翻译入口自动串起来，单独重解析只会让产物半新半旧）；
- * 原位置换成「重新生成解读」（与阅读器工具栏「⋯」里那一项同名，同一个后端动作）。 */
+ * 原位置换成「重新生成解读」（与阅读器工具栏「⋯」里那一项同名，同一个后端动作）。
+ *
+ * ⚠️ 「建立索引（纳入知识库）」也已按用户口径**下线**（2026-09-27）：翻译任务完成后由后端
+ * 自动开 INDEX 任务，索引完成后再自动生成两路解读（见 `handlers._chain_index` /
+ * `_chain_understand`）。要手动重建仍可在「设置 → 索引管理」里做（那是排障入口）。
+ */
 function rowMenu(p: Paper): RowAction[] {
   const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
   return [
@@ -315,7 +312,6 @@ function rowMenu(p: Paper): RowAction[] {
       ? [{ key: 'retranslate', label: '重新翻译', icon: 'refresh' } as RowAction]
       : []),
     { key: 'insight', label: '重新生成解读', icon: 'sparkle', disabled: busy('insight') },
-    { key: 'index', label: '建立索引（纳入知识库）', icon: 'layers', disabled: busy('idx') },
     {
       key: 'remove-kb',
       label: '从知识库移除',
@@ -344,7 +340,6 @@ function askRetranslate(p: Paper) {
 function onRowAction(p: Paper, key: string) {
   if (key === 'retranslate') { askRetranslate(p); return; }
   if (key === 'insight') { void askRegenerateInsight(p); return; }
-  if (key === 'index') { runIndex(p); return; }
   if (key === 'remove-kb') { removeFromKb(p); return; }
   if (key === 'edit') { openEdit(p); return; }
   if (key === 'delete') { askRemove(p, false); return; }

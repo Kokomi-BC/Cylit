@@ -137,6 +137,10 @@ _MIN_COLUMN_WIDTHS: tuple[tuple[str, str, int], ...] = (
     # chunk.id = "{paper_id}:{chunk_type}:{首块 id}[-{末块 id}]"，长论文 id 下约 105 字符
     ("chunk", "id", 128),
     ("block", "chunk_id", 128),  # 指向 Chunk.id，同步预留
+    # chunk.section = 章节标题。实测 3360-mmdfnd 有一处把整段 `CCS CONCEPTS • **Information
+    # systems** → …` 当成标题（134 字符），撞上老的 varchar(128) → MySQL 1406
+    # "Data too long for column 'section'"，**整个 INDEX 任务失败**（2026-09-27 用户报的）。
+    ("chunk", "section", 255),
 )
 
 

@@ -157,7 +157,7 @@ section / heading_level / translation / translation_status / translation_revisio
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它） |
+| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它）。**两路都翻完后自动串联**：自动开 INDEX（`params.then_understand=true`）→ 索引完成后再自动开两路解读（`docs/dev-log.md` §17.94）—— 前端不再有「建立索引」按钮 |
 | GET | `/papers/{id}/translation/stats` | `{total, done, stale}` —— **只报 B 路（中文翻译）**完成度；A 路的进度在 `Paper.transcribe_done`。`stale` 目前恒为 `0` |
 | GET/POST | `/papers/{id}/brief` | 文档简报（全文脉络 + 统一术语）；POST 可重新生成或写入人工修订（`{"apply":{"glossary":{...}}}`） |
 | GET/DELETE | `/papers/{id}/translation/cache` | 页级产物状态（已翻译页数 / 行数 / token 用量 / 对齐质量分布）/ 清空（等于全篇重译） |
@@ -281,7 +281,7 @@ SSE 断线时前端按 `GET /api/v1/papers/{id}/translations?since_page=N` 轮�
 | GET | `/knowledge/overview` | 论文数 / chunk 数 / 索引版本 / 向量库状态；另有 `chunks_by_type`、`chunks_by_lang`、**`chunks_by_road`**（`a` 英文转录 / `b` 中文翻译 / `shared` 图表公式） |
 | POST | `/knowledge/papers` | 兼容保留：只翻"已纳入"标记（不动索引）。界面不用它 —— 口径是**建索引即纳入** |
 | POST | `/knowledge/remove` | **从知识库移除**：`{paper_id}`（缺则 400）；清向量 + 清 chunk 元数据 + 取消"已纳入"（论文与译文不动），返回 `removed_chunks` |
-| POST | `/knowledge/index` | 触发 EMBED+INDEX（`{"paper_id":..., "rebuild":bool}`） |
+| POST | `/knowledge/index` | 触发 EMBED+INDEX（`{"paper_id":..., "rebuild":bool}`）。**平时不用手点**：翻译任务跑完会自动开（见 `/papers/{id}/translate`）；这条留给「设置 → 索引管理」排障重建。`section` 列已加宽到 255 并按列宽截断（曾经有 134 字的脏标题把整个任务打成 MySQL 1406） |
 | POST | `/knowledge/reconcile` | 对账：MySQL chunk ↔ 向量库；`{paper_id?, fix:false}`，`fix=true` 顺手清孤儿 |
 | GET | `/knowledge/index/status?paper_id=` | MySQL chunk 与 LanceDB 条数对比 |
 | GET | `/knowledge/chunks` | chunk **元数据**（不返回全文）：`paper_id`（必填）、`chunk_type`、`lang`、**`road`**（`a`/`b`/`shared`，正则校验）、`limit`（默认 50，≤500）。默认**不列** `unit`（那是检索粒度，浏览视图会翻倍）；`image_url` 是插图/表格/公式的裁图 |

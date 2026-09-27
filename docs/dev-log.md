@@ -5188,6 +5188,77 @@ URL 一模一样 → 浏览器直接把 7 天前那张旧图拿出来用。于�
 > 所以那次测试无结论；换成 A 路单页（19.5s 完成）才拿到干净证据。
 
 
+### 17.94 第九轮 · 三件事：自动纳入知识库 / 任务时间差 8 小时 / 建索引 1406
+
+用户一次给了三条（① 去掉论文库的「建立索引」按钮、改成翻译完自动纳入知识库并自动接着生成解读；
+② 任务中心里任务时间不对；③ 最新那个任务里建索引报错）。
+
+#### ③ 建索引报错：`section` 是 134 字符，撞上 `varchar(128)`
+
+```
+INDEX t-cca2eac3d5834661 failed
+DataError: (pymysql.err.DataError) (1406, "Data too long for column 'section' at row 6")
+```
+
+把该论文的 chunk 列表在本地算一遍就看到了真凶：某条 chunk 的 `section` 长 **134 字符** ——
+解析阶段把整段 `CCS CONCEPTS  • **Information systems** → **Social networks**; …` 当成章节标题：
+
+| 字段 | 最长 | 列宽 |
+|---|---|---|
+| `section` | **134** | **128** ← 超了 |
+| `content_preview` | 200 | 200（刚好卡住，`_safe_preview` 已经在截） |
+
+修法两层：
+- **加宽列**（`models.Chunk.section` → `String(255)`，并进 `session._MIN_COLUMN_WIDTHS`，
+  启动时幂等 ALTER）。实测启动日志：`已加宽历史窄列：chunk.section: varchar(128) -> varchar(255)`；
+- **写入兜底截断**（`knowledge_service.SECTION_MAX_CHARS`，在唯一的 chunk 工厂 `_make_chunk` 里截）：
+  一条脏标题不该毁掉整次索引，全文仍在 `metadata.section_path` 里。
+
+**验证**：重跑同一篇的 INDEX → `已索引 194 个 chunk，向量 194 条`（修前是整个任务 failed）。
+
+#### ② 任务时间：库里是 UTC naive，出参没带时区 → 前端按本地解析
+
+任务时间显示 4:54，而本地是 12:54 —— 差 8 小时（东八区）。根因在序列化：
+`now()` = `datetime.now(utc).replace(tzinfo=None)`（**UTC naive**），各处又直接
+`.isoformat(timespec="seconds")`，得到 `"2026-09-27T04:54:31"`（**没有时区**）→
+前端 `new Date(...)` 按本地时区解读，`fmtRelative` 还会说"8 小时前"。
+
+修法：新增 `core.utils.iso_utc()`（naive 值按 UTC 补标记，输出 `…Z`），把所有**面向 API 出参**的
+datetime 序列化点换过去：`task_service.to_dict`（任务中心）、`paper_service._to_dict`、
+`reader_service`（笔记/批注/阅读进度）、`annotation_service`、`knowledge_service` 的 `at`。
+**刻意不动** `now_iso()` 与 `_json_default`：落盘 JSON（页产物、审计、缓存）里有
+`datetime.fromisoformat(...) - now()` 相减的代码，给它们加 `Z` 会抛
+"can't subtract offset-naive and offset-aware datetimes"（helper 的 docstring 里写明了这条边界）。
+
+**验证**：`GET /tasks` 原始 JSON 现在是 `"created_at":"2026-09-27T04:54:31Z"`（论文同样带 Z），
+前端 `fmtDate/fmtRelative` 无需改动即按本地显示。
+
+#### ① 自动纳入知识库 + 自动生成解读（去掉论文库那个按钮）
+
+- **前端**：`LibraryView.rowMenu` 里删掉「建立索引（纳入知识库）」那一项（连带删掉只给它用的
+  `runIndex()`，并改掉"从知识库移除"确认框里的旧指引）。手动重建仍可在「设置 → 索引管理」做。
+- **后端串联**（`handlers.py`，与既有的"解析完自动翻译"同一套路）：
+  - `_pages_fully_translated()`：两路（`transcription_stats` / `translation_stats`，各自会在
+    本路产物缺页时退回旧合并产物）都 `done >= total`；
+  - `handle_transcribe_en` / `handle_translate_zh` / `handle_translate_md` **三条路都在收尾时**调
+    `_chain_index()` —— 因为 A 路也可能是最后跑完的那一路；半成品（没翻完）不建索引，避免污染检索；
+  - `_chain_index()` → `get_or_create("INDEX", …, params={"then_understand": True})`（幂等，
+    已有活动索引任务就复用）；`handle_index` 收尾时看到 `then_understand` 就 `_chain_understand()`
+    → `us.start_understanding(paper_id, paths=["a","b"])`。
+
+**端到端验证**（3360，两路都已 9/9，所以翻译任务 0 页待处理 → 立即完成 → 正好验证串联）：
+
+```
+13:03:11  翻译完成 → 自动建索引（任务 t-b810ab245f1a6ee5）      ← A/B 两条任务都触发，第二次起"复用进行中的任务"
+13:03:25  INDEX completed: 已索引 194 个 chunk，向量 194 条      ← ③ 的修复同时得到验证
+13:03:25  索引完成 → 自动生成解读（任务 t-cfcdbe519d317ec7、t-5bbd10b358bb3f4e）
+13:05     UNDERSTAND_A completed（8474 字，82 refs 全 live）/ UNDERSTAND_B completed（5524 字，52 refs，8 个概念）
+```
+
+`pytest tests` 全绿；`npm run typecheck` 0 错、`npm run build` 成功；`frontend_check` **88/87/1**。
+
+
+
 
 
 

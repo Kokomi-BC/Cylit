@@ -225,17 +225,82 @@ def _set_status(paper_id: str, status: str) -> None:
 
 def handle_translate_md(ctx: TaskContext) -> dict:
     """融合模式（同一次调用产出原文 + 译文）：对照臂 / 回滚用。"""
-    return translation_service.run_translate_task(ctx)
+    result = translation_service.run_translate_task(ctx)
+    _chain_index(ctx.paper_id)
+    return result
 
 
 def handle_transcribe_en(ctx: TaskContext) -> dict:
     """A 路：英文转录（只产出 `original_md`）。"""
-    return translation_service.run_path_task(ctx, "a")
+    result = translation_service.run_path_task(ctx, "a")
+    # A 路也可能是**最后**跑完的那一路（两路并发），所以两边都要试一次
+    _chain_index(ctx.paper_id)
+    return result
 
 
 def handle_translate_zh(ctx: TaskContext) -> dict:
     """B 路：中文翻译（只产出 `translation_md` + `carry_md`）。"""
-    return translation_service.run_path_task(ctx, "b")
+    result = translation_service.run_path_task(ctx, "b")
+    _chain_index(ctx.paper_id)
+    return result
+
+
+def _pages_fully_translated(paper_id: str) -> bool:
+    """两路（英文转录 + 中文翻译）都翻完了吗。
+
+    `transcription_stats` / `translation_stats` 各自在"本路产物缺页"时退回旧合并产物
+    （`pages.json`），所以融合模式的老论文也能判成完成。页数为 0（还没解析）时返回 False。
+    """
+    a = paper_service.transcription_stats(paper_id)
+    b = paper_service.translation_stats(paper_id)
+    total = max(int(a.get("total") or 0), int(b.get("total") or 0))
+    if total <= 0:
+        return False
+    return int(a.get("done") or 0) >= total and int(b.get("done") or 0) >= total
+
+
+def _chain_index(paper_id: str | None) -> None:
+    """**翻译任务完成后自动纳入知识库**（用户口径，2026-09-27）。
+
+    以前这一步是论文库卡片上的「建立索引」按钮（手动）。现在：
+    两路都翻完 → 自动开 INDEX 任务 → INDEX 完成后自动接着生成两路解读
+    （`_chain_understand`，即用户说的"自动继续生成后面的解读"）。
+
+    幂等：`task_service.get_or_create` 对有活动 INDEX 任务的论文直接复用；
+    没翻完（或只有部分页重译完）时不动 —— 半成品进知识库只会污染检索。
+    """
+    if not paper_id:
+        return
+    try:
+        if not _pages_fully_translated(paper_id):
+            return
+        from backend.services.task.task_service import task_service
+
+        task, created = task_service.get_or_create(
+            "INDEX", "knowledge", paper_id,
+            params={"rebuild": True, "then_understand": True,
+                    "auto": "translation_done"},
+            total_items=0,
+            message="翻译完成，自动纳入知识库（chunk + 向量）",
+        )
+        log.info("翻译完成 → 自动建索引：%s（任务 %s%s）", paper_id, task.get("id"),
+                 "" if created else "，复用进行中的任务")
+    except Exception as exc:  # noqa: BLE001 —— 自动串联失败不能影响翻译任务本身的结论
+        log.warning("翻译完成后的自动建索引没能启动：%s", exc)
+
+
+def _chain_understand(paper_id: str | None) -> None:
+    """索引完成后自动生成两路解读（论文精读 + 阅读地图/相关概念）。"""
+    if not paper_id:
+        return
+    try:
+        from backend.services.understanding import understanding_service as us
+
+        res = us.start_understanding(paper_id, paths=["a", "b"])
+        log.info("索引完成 → 自动生成解读：%s（任务 %s）", paper_id,
+                 "、".join(res.get("task_ids") or []))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("索引完成后的自动解读没能启动：%s", exc)
 
 
 # --------------------------------------------------------------------------
@@ -255,6 +320,10 @@ def handle_index(ctx: TaskContext) -> dict:
         paper_id, rebuild=bool(ctx.params.get("rebuild")), progress=progress)
     _set_paper_indexed(paper_id)
     ctx.progress(data["chunks"], data["chunks"], force=True, message="索引完成")
+    # 索引完成 → 自动接着生成解读（只有自动串联的那条链会带这个参数；
+    # 设置页里手动建索引仍留给用户自己按「生成解读」）
+    if ctx.params.get("then_understand"):
+        _chain_understand(paper_id)
     return {"message": (f"已索引 {data['chunks']} 个 chunk"
                         + (f"，向量 {data['embedded']} 条"
                            if data["embedded"] else "（向量入库失败，见 vector_error）")),

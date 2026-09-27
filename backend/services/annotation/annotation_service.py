@@ -11,7 +11,7 @@ from backend.core.errors import NotFoundError, ValidationError
 from backend.core.events import EVENT_ANNOTATION, bus
 from backend.core.logging import get_logger
 from backend.core.utils import (
-    json_dumps, json_loads, new_id, now, sha256_text, short_hash, truncate,
+    iso_utc, json_dumps, json_loads, new_id, now, sha256_text, short_hash, truncate,
 )
 from backend.repositories.mysql.models import (
     HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Block, Highlight, Note, Paper,
@@ -112,8 +112,8 @@ def _highlight_dict(row: Highlight) -> dict:
             "end": row.end_offset, "color": row.color,
             "side": row.side or "en", "scope": row.scope or "row",
             "group_id": row.group_id,
-            "created_at": row.created_at.isoformat(timespec="seconds")
-            if row.created_at else None}
+            "created_at": iso_utc(row.created_at)}
+
 
 
 # --------------------------------------------------------------------------
@@ -182,10 +182,10 @@ def _note_dict(row: Note) -> dict:
             "highlight_id": row.highlight_id, "selected_text": row.selected_text,
             "content_md": row.content_md,
             "tags": [t for t in (row.tags or "").split(",") if t],
-            "created_at": row.created_at.isoformat(timespec="seconds")
-            if row.created_at else None,
-            "updated_at": row.updated_at.isoformat(timespec="seconds")
-            if row.updated_at else None}
+            "created_at": iso_utc(row.created_at),
+
+            "updated_at": iso_utc(row.updated_at)}
+
 
 
 # --------------------------------------------------------------------------
@@ -256,8 +256,8 @@ def _annotation_dict(row: Annotation) -> dict:
             "sources": json_loads(row.sources_json, []) or [],
             "model_id": row.model_id, "confidence": row.confidence,
             "status": row.status,
-            "created_at": row.created_at.isoformat(timespec="seconds")
-            if row.created_at else None}
+            "created_at": iso_utc(row.created_at)}
+
 
 
 # --------------------------------------------------------------------------

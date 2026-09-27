@@ -13,7 +13,7 @@ from backend.core.config import get_settings
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import (
-    json_dumps, json_loads, new_id, now, safe_filename, sha256_file, slugify,
+    iso_utc, json_dumps, json_loads, new_id, now, safe_filename, sha256_file, slugify,
     ts_compact,
 )
 from backend.repositories.mysql.models import Block, Paper, Task, Translation
@@ -466,7 +466,7 @@ def reconcile(paper_id: str | None = None, *, include_deleted: bool = True) -> d
             "paper_id": pid, "pdf": pdf_exists, "ir": ir_exists, "markdown": md_exists,
             "mysql_blocks": blocks, "mysql_chunks": chunks,
             "mysql_translations": translations, "vector_chunks": vector_count,
-            "deleted_at": row.deleted_at.isoformat() if row and row.deleted_at else None,
+            "deleted_at": iso_utc(row.deleted_at) if row else None,
         }
         issues = []
         if row is not None and row.deleted_at is None:
@@ -528,12 +528,10 @@ def _to_dict(row: Paper) -> dict:
         "source_hash": row.source_hash,
         "abstract": row.abstract,
         "parse_summary": json_loads(row.parse_summary_json, {}) or {},
-        "last_read_at": row.last_read_at.isoformat(timespec="seconds")
-        if row.last_read_at else None,
-        "created_at": row.created_at.isoformat(timespec="seconds")
-        if row.created_at else None,
-        "deleted_at": row.deleted_at.isoformat(timespec="seconds")
-        if row.deleted_at else None,
+        # 时间一律走 `iso_utc`：库里是 UTC naive，直接 isoformat 前端会按本地时区解析（差 8 小时）
+        "last_read_at": iso_utc(row.last_read_at),
+        "created_at": iso_utc(row.created_at),
+        "deleted_at": iso_utc(row.deleted_at),
     }
     return _align_with_disk(row, data)
 

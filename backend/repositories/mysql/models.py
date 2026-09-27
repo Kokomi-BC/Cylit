@@ -337,7 +337,10 @@ class Chunk(Base):
     chunk_type: Mapped[str] = mapped_column(String(16), default="text")
     page_no: Mapped[int] = mapped_column(Integer, default=1)
     order_global: Mapped[int] = mapped_column(Integer, default=0)
-    section: Mapped[str | None] = mapped_column(String(128))
+    # 章节标题。**给到 255**：实测有论文把整段 `CCS CONCEPTS • **Information systems** → …`
+    # 当成标题（134 字符），老库 varchar(128) 会直接 1406 让整个 INDEX 任务失败；
+    # 老库启动时由 session.repair_column_widths 自动加宽（幂等）。
+    section: Mapped[str | None] = mapped_column(String(255))
     content_preview: Mapped[str | None] = mapped_column(String(200))
     content_hash: Mapped[str | None] = mapped_column(String(64))
     token_count: Mapped[int] = mapped_column(Integer, default=0)

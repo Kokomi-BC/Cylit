@@ -23,7 +23,7 @@ from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, TaskError
 from backend.core.events import EVENT_TASK_PROGRESS, bus
 from backend.core.logging import get_logger
-from backend.core.utils import json_dumps, json_loads, new_id, now
+from backend.core.utils import iso_utc, json_dumps, json_loads, new_id, now
 from backend.repositories.mysql.models import Task
 from backend.repositories.mysql.session import new_session
 
@@ -422,12 +422,11 @@ class TaskService:
             "pause_requested": bool(row.pause_requested),
             "message": row.message, "error": row.error,
             "stats": json_loads(row.stats_json, {}) or {},
-            "created_at": row.created_at.isoformat(timespec="seconds")
-            if row.created_at else None,
-            "updated_at": row.updated_at.isoformat(timespec="seconds")
-            if row.updated_at else None,
-            "finished_at": row.finished_at.isoformat(timespec="seconds")
-            if row.finished_at else None,
+            # 带 UTC 标记（`iso_utc`）：库里是 UTC naive，直接 isoformat 会让前端按本地时区解析，
+            # 任务中心的时间就差了 8 小时（用户报的"任务时间错误"）。
+            "created_at": iso_utc(row.created_at),
+            "updated_at": iso_utc(row.updated_at),
+            "finished_at": iso_utc(row.finished_at),
         }
         if with_log:
             d["log_tail"] = (row.log_tail or "").split("\n")[-40:]

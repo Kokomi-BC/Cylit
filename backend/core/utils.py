@@ -26,6 +26,26 @@ def now_iso() -> str:
     return now().isoformat(timespec="seconds")
 
 
+def iso_utc(value: datetime | None) -> str | None:
+    """把库里的 datetime 序列化成**带 UTC 标记**的 ISO 字符串（给前端用）。
+
+    ⚠️ 为什么必须带 `Z`（2026-09-27 用户报"任务中心里任务时间不对"）：
+    库里的 `datetime` 列全是 **UTC naive**（`now()` 就是 `datetime.now(utc)` 去掉 tzinfo），
+    以前直接 `.isoformat()` 得到 `"2026-09-27T04:54:31"` —— 前端 `new Date(...)` 按**本地时区**
+    解析（东八区），于是本地时间 12:54 的任务显示成 4:54，`fmtRelative` 还会说"8 小时前"。
+    带上 `Z` 之后 `new Date()` 会正确地当 UTC 解析、再转成本地时间显示。
+
+    ⚠️ **只用于 API 出参**。落盘的 JSON（page 产物、审计、缓存）里仍然是 naive 字符串：
+    那些地方有 `datetime.fromisoformat(...)` 与 `now()`（naive）相减的代码，加了 `Z` 会抛
+    "can't subtract offset-naive and offset-aware datetimes"。
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def ts_compact() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 

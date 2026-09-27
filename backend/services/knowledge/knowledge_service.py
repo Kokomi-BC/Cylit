@@ -29,7 +29,9 @@ from pathlib import Path
 from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
-from backend.core.utils import json_dumps, new_id, now, sha256_text, truncate
+from backend.core.utils import (
+    iso_utc, json_dumps, new_id, now, sha256_text, truncate,
+)
 from backend.repositories.mysql.models import Block, Chunk, Paper
 from backend.repositories.mysql.session import session_scope
 from backend.services.knowledge import formula_source
@@ -64,6 +66,12 @@ ANY_LANG = "any"
 # 会把大量正常的中文块误杀（实测把 "## B.2 QJL：1 比特内积量化" 这类小节标题全丢了）。
 # 门槛只用来兜"取到的是残渣"：译文缺失的行压根不会出 zh 行（见 `_chunk_variants_rows`）。
 MIN_ZH_CHARS = 8
+#: `chunk.section` 的列宽（与 `repositories/mysql/models.Chunk.section` 一致）。
+#: 兜底截断：实测 3360-mmdfnd 有一处把整段 `CCS CONCEPTS • **Information systems** → …`
+#: 当成章节标题（134 字符），撞上老库 varchar(128) → MySQL 1406 让**整个 INDEX 任务失败**
+#: （2026-09-27 用户报的"建立索引错误"）。一条脏标题不该毁掉整次索引；全文另存
+#: `metadata.section_path`，截断只影响那一列用于显示的字段。
+SECTION_MAX_CHARS = 255
 
 
 def _setting_int(key: str, default: int) -> int:
@@ -1015,7 +1023,8 @@ def _make_chunk(paper_id: str, chunk_type: str, content: str, first: dict,
         "id": cid, "paper_id": paper_id, "chunk_type": chunk_type,
         "page_no": first["page"], "order_global": first["order"],
         "block_id": first["id"], "end_block_id": last["id"],
-        "section": section, "content": content,
+        "section": (section or "")[:SECTION_MAX_CHARS],
+        "content": content,
         "content_hash": sha256_text(content),
         "content_preview": _safe_preview(content),
         "token_count": _approx_tokens(content),
@@ -1109,7 +1118,7 @@ def index_paper(paper_id: str, *, rebuild: bool = False,
         "by_lang": _count_by_lang(chunks),
         "vector_error": vector_error,
         "rebuilt": rebuild,
-        "at": now().isoformat(timespec="seconds"),
+        "at": iso_utc(now()),
     }
 
 
@@ -1257,7 +1266,7 @@ def remove_from_kb(paper_id: str) -> dict:
     return {"paper_id": paper_id, "removed_chunks": int(chunks),
             "removed_vectors": int(vectors), "in_knowledge_base": False,
             "vector_error": vector_error,
-            "at": now().isoformat(timespec="seconds")}
+            "at": iso_utc(now())}
 
 
 def reconcile(*, paper_id: str | None = None, fix: bool = False) -> dict:
@@ -1298,7 +1307,7 @@ def reconcile(*, paper_id: str | None = None, fix: bool = False) -> dict:
         "consistent": not orphans and not missing,
         "fixed": bool(fix), "removed_metadata": removed_meta,
         "removed_vectors": int(removed_vectors),
-        "at": now().isoformat(timespec="seconds"),
+        "at": iso_utc(now()),
     }
 
 

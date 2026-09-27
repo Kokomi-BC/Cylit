@@ -17,7 +17,7 @@ from pathlib import Path
 
 from backend.core.errors import NotFoundError
 from backend.core.logging import get_logger
-from backend.core.utils import json_loads
+from backend.core.utils import iso_utc, json_loads
 from backend.parsing.formula.noise import is_noise_formula
 from backend.repositories.mysql.models import (
     Annotation, Block, Formula, Highlight, Note, ReadingProgress, Task,
@@ -432,8 +432,8 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                              "content_md": a.content_md, "source": a.source,
                              "confidence": a.confidence,
                              "page": _anchor_page(a.block_id, row_pages, block_pages),
-                             "created_at": a.created_at.isoformat(timespec="seconds")
-                             if a.created_at else None} for a in annotations],
+                             "created_at": iso_utc(a.created_at)}
+ for a in annotations],
             "highlights": [{"id": h.id, "block_id": h.block_id,
                             "start": h.start_offset, "end": h.end_offset,
                             "color": h.color, "text": h.selected_text,
@@ -444,8 +444,8 @@ def build_reader(paper_id: str, *, user_id: int = 1,
             "notes": [{"id": n.id, "block_id": n.block_id, "content_md": n.content_md,
                        "selected_text": n.selected_text,
                        "page": _anchor_page(n.block_id, row_pages, block_pages),
-                       "updated_at": n.updated_at.isoformat(timespec="seconds")
-                       if n.updated_at else None} for n in notes],
+                       "updated_at": iso_utc(n.updated_at)}
+ for n in notes],
             "tasks": [{"id": t.id, "type": t.type, "queue": t.queue,
                        "status": t.status, "progress": float(t.progress or 0),
                        "message": t.message,
@@ -811,8 +811,8 @@ def _progress_payload(row: ReadingProgress | None) -> dict:
         "aside_open": row.aside_open, "text_size": row.text_size,
         "show_refs": row.show_refs,
         "zoom": float(row.zoom) if row.zoom is not None else None,
-        "updated_at": row.updated_at.isoformat(timespec="seconds")
-        if row.updated_at else None,
+        "updated_at": iso_utc(row.updated_at),
+
     }
 
 
