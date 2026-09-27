@@ -107,29 +107,58 @@ def system_for(path: str) -> str:
 
 #: 材料清单里每条的最大预览字数（控制 prompt 体积；引用靠短码，不靠原文）
 PREVIEW_CHARS = 220
+#: 表格/公式条目给**全文**（上限）：它们的价值全在数值与公式本身，预览只剩表头没有数值，
+#: 模型会据此说"材料中表格数值被截断，无法核验提升是否显著"（2026-09-27 用户报的）。
+RICH_CHARS = 2200
 
 
 def render_understanding_prompt(*, path: str, title: str, inventory: list[dict],
-                                brief: str = "") -> str:
+                                brief: str = "", head: str = "",
+                                task_block: str = "") -> str:
     """渲染一次理解调用的 user prompt。
 
-    `inventory` 每项：``{"code","chunk_type","page","section","preview"}``（见
-    `understanding_service.chunk_inventory`）。**只给短码与预览**：理解阶段要的是
-    "看懂了再讲"，把全文塞进去只会让它抄原文。
+    `inventory` 每项：``{"code","chunk_type","page","section","preview"[,"content"]}``
+    （见 `understanding_service.chunk_inventory`；表格/公式带全文 `content`）。
+
+    `head`：**页级转录/翻译那一段 prompt 前缀的逐字节复制**（稳定前缀 + 第 1..T 页全文，
+    见 `understanding_service._page_context_head`）。放在最前面，解读调用才能命中该路的前缀缓存、
+    并且模型手里就是整篇全文（用户口径："分别完全命中这两路模型的缓存，确保完整的记忆"）。
+
+    `task_block`：解读的任务说明。**放在 head 之后**（不能塞进 system —— 那样 system 就与页级
+    不同了，整段前缀缓存全作废），并明确"任务已经切换，忽略 system 里的页面 JSON 契约"。
     """
     label = "英文材料清单（A 路：原文转录）" if path == "a" else "中文材料清单（B 路：中文译文）"
-    lines = [f"【论文】{title}", f"【{label}】共 {len(inventory)} 条，按论文顺序：", ""]
+    out: list[str] = []
+    if head:
+        out += [head, "",
+                "==== 以上是这篇论文**全部页面**的完整前文（与页级转录/翻译同源，已被前缀缓存） ====",
+                "【任务已切换】不要再输出 original_md / translation_md / breaks 那套页面 JSON —— "
+                "下面改为**基于你上面已经通读过的整篇论文**做解读。",
+                ""]
+        if task_block:
+            out += ["【解读任务说明】", task_block.strip(), ""]
+    out += [f"【论文】{title}", f"【{label}】共 {len(inventory)} 条，按论文顺序：",
+            "（本节是**检索分块清单**，供你写引用短码用：正文条目给开头若干字作预览，"
+            "表格与公式条目给全文数值/公式。预览被截断只是省篇幅，**不代表论文里没有这些内容** "
+            "—— 不要据此说「材料缺失 / 表格数值被截断 / 无法核验」。）",
+            ""]
     for item in inventory:
-        head = f"[{item['code']}] {item['chunk_type']}"
+        line = f"[{item['code']}] {item['chunk_type']}"
         if item.get("page"):
-            head += f" p{item['page']}"
+            line += f" p{item['page']}"
         if item.get("section"):
-            head += f" · {item['section']}"
-        lines.append(head)
+            line += f" · {item['section']}"
+        out.append(line)
+        full = (item.get("content") or "").strip()
         preview = (item.get("preview") or "").strip().replace("\n", " ")
-        if preview:
-            lines.append(f"    {preview[:PREVIEW_CHARS]}")
+        if full:                      # 表格/公式：给全文（数值网格不切）
+            body = full.replace("\n", " ")
+            cut = len(body) > RICH_CHARS
+            out.append(f"    {body[:RICH_CHARS]}{' …（表格/公式正文截断）' if cut else ''}")
+        elif preview:
+            cut = len(preview) > PREVIEW_CHARS
+            out.append(f"    {preview[:PREVIEW_CHARS]}{' …' if cut else ''}")
     if brief:
-        lines += ["", "【文档简报（术语与主题，供参考）】", brief]
-    lines += ["", "请按 system 里的要求输出：先自由 Markdown，最后用一个 ```json 代码块给出 refs。"]
-    return "\n".join(lines)
+        out += ["", "【文档简报（术语与主题，供参考）】", brief]
+    out += ["", "请按上面的【解读任务说明】输出：先自由 Markdown，最后用一个 ```json 代码块给出 refs。"]
+    return "\n".join(out)

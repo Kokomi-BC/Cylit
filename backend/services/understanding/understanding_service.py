@@ -43,6 +43,7 @@ from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, now_iso
 from backend.repositories.mysql.models import Chunk, Paper, Understanding
 from backend.repositories.mysql.session import session_scope
+from backend.services.translation.brief import generate_brief
 from backend.services.understanding import prompts
 
 log = get_logger(__name__)
@@ -109,7 +110,39 @@ def chunk_inventory(paper_id: str, path: str) -> list[dict]:
         log.warning("%s 路材料清单 %d 条，截到 %d 条（理解只看主干）",
                     path, len(items), MAX_ITEMS)
         items = items[:MAX_ITEMS]
+    _attach_full_content(items)
     return items
+
+
+#: 这几类 chunk 的**数值/公式证据**必须给全文：预览 200 字会把表格切成"表题 + 表头"，
+#: 于是模型会（正确地）抱怨"材料中表格数值被截断，无法核验提升是否显著"——用户 2026-09-27
+#: 报的就是这个：翻译产物里表格是完整的（模型看的是整页图像），而解读阶段看到的是被截断的预览。
+#: 这两类总量很小（一篇通常几张表 + 若干公式），给全文对 prompt 体积影响可控。
+FULL_CONTENT_TYPES = ("table", "formula")
+
+
+def _attach_full_content(items: list[dict]) -> None:
+    """给表格/公式条目补上**全文**（`content_preview` 只存了 200 字）。
+
+    全文在向量库里（chunk 正文就存在那儿），按 id 取，取不到就退回预览（不影响理解任务本身）。
+    """
+    wanted = [i["chunk_id"] for i in items if i.get("chunk_type") in FULL_CONTENT_TYPES]
+    if not wanted:
+        return
+    try:
+        from backend.repositories.vector.lancedb_store import vector_store
+
+        by_id = {r["chunk_id"]: r.get("content") or "" for r in vector_store.get_rows(wanted)}
+    except Exception as exc:  # noqa: BLE001 —— 取不到全文只是材料差一点，不该让理解任务失败
+        log.warning("取表格/公式全文失败（理解将只用预览）：%s", exc)
+        return
+    filled = 0
+    for item in items:
+        text = by_id.get(item["chunk_id"])
+        if text:
+            item["content"] = text
+            filled += 1
+    log.info("材料清单补全文：%d/%d 条（表格/公式）", filled, len(wanted))
 
 
 def code_map(inventory: list[dict]) -> dict[str, str]:
@@ -235,6 +268,47 @@ def _provider(path: str):
 MAX_TOKENS = 12000
 
 
+def _page_context_head(path: str, paper_id: str) -> str:
+    """**页级调用的「稳定前缀 + 完整前文」原样搬过来**（逐字节相同）。
+
+    为什么这么做（用户 2026-09-27 口径："解读模型和论文阅读模型要分别完全命中这两路模型的缓存，
+    确保它们有完整的记忆"）：
+
+    页级转录/翻译是串行的，第 N 页的 user prompt 结构固定为
+    ``[稳定前缀（简报+术语表+标题骨架）] + [第 1..N-1 页全文] + [本页]``，
+    而且**追加式**渲染、表头不带页码 —— 这正是"前缀缓存"能一路命中的原因
+    （`page_translate.history_context` 的 docstring 写得很清楚，实测稳定态命中 80%+）。
+
+    解读阶段以前是**另起一套 prompt**（另一套 system + chunk 清单），与页级调用零公共前缀
+    → 每次全额计费，而且模型只看到每条 chunk 的 200 字预览（"表格数值被截断"就是这么来的）。
+    现在改成：解读的 user prompt **以页级那段前缀开头**（`稳定前缀 + 第 1..T 页全文`，
+    `history_context(..., page_no=T+1)` 与页级第 T 页对第 1..T-1 页的渲染**逐字节相同**），
+    于是最长公共前缀 = system + 稳定前缀 + 前 1..T-1 页全文 → 那一大段全部吃缓存，
+    同时模型手里就是**整篇全文**（`CONTEXT_MAX_CHARS` = 200 万字符，等于不截断）。
+    """
+    try:
+        from backend.services.paper import paper_service
+        from backend.services.translation.page_translate import (
+            CONTEXT_MAX_CHARS, PageStore, build_outline_skeleton,
+            build_stable_prefix, history_context, list_pages,
+        )
+        from backend.services.translation.translation_service import (
+            glossary_text, load_glossary,
+        )
+
+        paths = paper_service.paper_paths(paper_id)
+        store = PageStore(paper_id, paths["path_a" if path == "a" else "path_b"])
+        total = len(list_pages(paper_id))
+        skeleton = build_outline_skeleton(paper_id, store)
+        glossary = "" if path == "a" else glossary_text(load_glossary(paper_id))
+        prefix = build_stable_prefix(generate_brief(paper_id), glossary, skeleton=skeleton)
+        history = history_context(store, paper_id, total + 1, max_chars=CONTEXT_MAX_CHARS)
+        return f"{prefix}{chr(10) + chr(10) + history if history else ''}"
+    except Exception as exc:  # noqa: BLE001 —— 对齐失败只是不享缓存，不能让理解失败
+        log.warning("%s 路页级上下文对齐失败（本次不享前缀缓存）：%s", path, exc)
+        return ""
+
+
 def _generate(provider, prompt: str, *, system: str, path: str,
               min_tokens: int = MAX_TOKENS):
     """调模型产出理解，带"思考模式吃光预算"的**升档重试**。
@@ -278,11 +352,25 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     if not inventory:
         raise ValueError(f"{paper_id} 还没有可理解的 chunk（先建索引）")
     brief = _brief(paper_id)
-    prompt = prompts.render_understanding_prompt(path=path, title=title,
-                                                 inventory=inventory, brief=brief)
+    # system 用**页级那一套**（逐字节相同）→ 解读调用能吃该路的前缀缓存；
+    # 解读的任务说明与材料跟在「稳定前缀 + 完整前文」之后（都在 user 里）。
+    from backend.services.translation.page_translate import path_system_prompt
+
+    head = _page_context_head(path, paper_id)
+    prompt = prompts.render_understanding_prompt(
+        path=path, title=title, inventory=inventory, brief=brief,
+        head=head, task_block=prompts.system_for(path))
     provider, model_id = _provider(path)
-    system = prompts.system_for(path)
+    system = path_system_prompt(path)
     res = _generate(provider, prompt, system=system, path=path)
+    # 缓存命中要能看见（用户口径："确保它们有完整的记忆"——命中率就是这条链路的体检指标）。
+    # ⚠️ 缓存数字在 `raw["usage"]` 里：`provider.generate` 返回的是裸 `GenerationResult`，
+    # 没有 page_translate.PageCallResult 那两个字段（第一版日志因此打出误导性的 0/0）。
+    usage_raw = (getattr(res, "raw", None) or {}).get("usage") or {}
+    log.info("%s 路理解：prompt %d token（缓存命中 %d / 未命中 %d；页级上下文 %d 字）",
+             path, int(getattr(res, "prompt_tokens", 0) or 0),
+             int(usage_raw.get("prompt_cache_hit_tokens") or 0),
+             int(usage_raw.get("prompt_cache_miss_tokens") or 0), len(head))
     parsed = parse_result(res.text or "")
     truncated = not parsed["had_json"]
     if truncated:
@@ -317,14 +405,39 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     return get_understanding(paper_id, path)
 
 
+def _stable_prefix(path: str, paper_id: str) -> str:
+    """**与页级转录/翻译逐字节相同的稳定前缀**，放在理解 prompt 最前面以命中前缀缓存。
+
+    页级流水线的稳定前缀 = 简报 + 术语表 + **全文标题骨架**（`page_translate.build_stable_prefix`），
+    它是整篇字节级不变的，页与页之间靠它命中 provider 的前缀缓存（实测稳定态命中 80%+）。
+    理解阶段以前**没有**复用这段：它的 system prompt 是另一套（1320 字 vs 页级 3426/4220 字），
+    材料也是另一套（chunk 清单），于是那次调用**零缓存命中、全额计费**（用户 2026-09-27 问的）。
+
+    ⚠️ 只对齐**能对齐的部分**：页级调用带的是**页图**（视觉 token），理解只有文本，
+    所以能共享的只有 system + 简报/术语表/骨架这一段；材料本身不可能共享。
+    """
+    try:
+        from backend.services.translation.page_translate import (
+            build_outline_skeleton, build_stable_prefix,
+        )
+        from backend.services.translation.translation_service import (
+            glossary_text, load_glossary,
+        )
+
+        skeleton = build_outline_skeleton(paper_id)
+        glossary = "" if path == "a" else glossary_text(load_glossary(paper_id))
+        return build_stable_prefix(generate_brief(paper_id), glossary, skeleton=skeleton)
+    except Exception as exc:  # noqa: BLE001 —— 对齐失败只是少一段缓存，不能让理解失败
+        log.warning("%s 路稳定前缀对齐失败（本次不享前缀缓存）：%s", path, exc)
+        return ""
+
+
 def _brief(paper_id: str) -> str:
     """文档简报（领域 + 术语表）：复用翻译阶段的简报，理解阶段同样受益。
 
     取不到就返回空串 —— 简报只是锦上添花，不该让理解失败。
     """
     try:
-        from backend.services.translation.brief import generate_brief
-
         brief = generate_brief(paper_id)
         if brief is None or not getattr(brief, "enabled", False):
             return ""
