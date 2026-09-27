@@ -1303,6 +1303,19 @@ const refreshOutline = debounce(async () => {
   } catch { /* 目录刷新失败不影响阅读 */ }
 }, 800);
 
+/**
+ * 一页的**内容指纹**：行 id + 两侧字数。
+ *
+ * 轮询兜底原来用"行数变了才算变"，而两路模式下这会漏：一页先被 A 路（英文转录）写出来、
+ * B 路（中文翻译）稍后补上时，**合并后的行数往往一模一样**（只是 zh 从空变成有），
+ * 于是永远不会被应用 —— 用户看到的就是"要刷新页面才能看到实时翻译"（2026-09-27 报的）。
+ */
+function pageFingerprint(t?: { rows?: PageRow[] } | null): string {
+  return (t?.rows ?? [])
+    .map((r) => `${r.id}:${(r.original ?? '').length}:${(r.translation ?? '').length}`)
+    .join('|');
+}
+
 async function pollTranslations() {
   type PagePatch = { page: number; rows?: PageRow[]; align?: string | null; model?: string | null };
   // 用 `instancePaperId`：轮询可能在路由切走之后才回来，用路由值会把**另一篇**的页行
@@ -1310,18 +1323,33 @@ async function pollTranslations() {
   const d = await api.get<{ items: PagePatch[] }>(`/papers/${instancePaperId}/translations`);
   for (const item of d.items ?? []) {
     const known = pageTranslations.value.find((t) => t.page === item.page);
-    if (known && known.rows.length === (item.rows ?? []).length) continue;
+    if (known && pageFingerprint(known) === pageFingerprint(item)) continue;
     applyPage(item);
   }
 }
 
+/** 事件里的行可能为空（旧产物 / 极端情况）：**不要**用它把已有行清空，回源取那一页。 */
+async function syncPageFromApi(page: number) {
+  try {
+    const d = await api.get<{ items: Array<{ page: number; rows?: PageRow[] }> }>(
+      `/papers/${instancePaperId}/translations`, { page });
+    const item = (d.items ?? []).find((i) => i.page === page);
+    if (item) applyPage(item);
+  } catch { /* 取不到就保留现状，等下一次刷新 */ }
+}
+
 useEventStream({
   url: sseUrl(`/papers/${instancePaperId}/translations/stream`),
-  events: ['page_translated', 'paper_status'],
+  // ⚠️ `page_transcribed` 是 **A 路（英文转录）** 的事件，必须一起订阅：
+  // 只订 `page_translated` 时，A 路跑完的事件前端收不到，英文内容要刷新才出现
+  // （用户 2026-09-27 报的"每页要刷新才能看到实时翻译和转录结果"）。
+  events: ['page_translated', 'page_transcribed', 'paper_status'],
   onEvent: (name, frame) => {
     const payload = frame?.payload ?? {};
-    if (name === 'page_translated') applyPage(payload);
-    else if (name === 'paper_status') {
+    if (name === 'page_translated' || name === 'page_transcribed') {
+      if ((payload.rows ?? []).length) applyPage(payload);
+      else void syncPageFromApi(Number(payload.page));
+    } else if (name === 'paper_status') {
       stats.value = { ...stats.value, pages_done: payload.translate_done ?? stats.value.pages_done };
       void fetchTasks();
     }

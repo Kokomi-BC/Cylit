@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.api.response import envelope
 from backend.core.events import (
-    EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus,
+    EVENT_PAGE_TRANSCRIBED, EVENT_PAGE_TRANSLATED, EVENT_PAPER_STATUS, bus,
 )
 from backend.services.paper import reader_service
 
@@ -112,17 +112,24 @@ async def put_progress(paper_id: str, request: Request, payload: dict = Body(...
 async def translation_stream(paper_id: str, request: Request,
                              since_seq: int = Query(0),
                              heartbeat: float = Query(15.0)):
-    """产线 A 逐页译文流（前端 LiveUpdater 订阅，规划 §22 关键点 2）。
+    """逐页产物流（前端 LiveUpdater 订阅，规划 §22 关键点 2）。
 
-    只发 `page_translated`（逐页译文）与 `paper_status`（整篇状态）。
-    旧版逐块事件 `block_translated` 已删除：页级翻译上线后它没有任何发布方，
-    前端也没在用（保留只是让白名单多一个永远收不到的字符串）。
+    发 **三个**事件：
+    - `page_transcribed` —— A 路（英文转录）完成一页；
+    - `page_translated` —— B 路（中文翻译）或融合模式完成一页；
+    - `paper_status` —— 整篇状态。
+    两路的 `rows` 都是**读时合并好的**那一页（见 `translation_service.emit`），
+    所以前端拿到就能直接替换。
+    ⚠️ `page_transcribed` 以前不在白名单里（只有 `page_translated`），于是 **A 路的事件
+    在服务端就被丢掉了** —— 前端即使订阅也收不到，表现为"英文转录结果要刷新页面才出现"
+    （2026-09-27 用户实测报的）。旧版逐块事件 `block_translated` 仍然不发（没有发布方）。
     """
 
     async def filtered():
         async for frame in bus.stream("papers", since_seq=since_seq,
                                       heartbeat=heartbeat,
-                                      wanted={EVENT_PAGE_TRANSLATED,
+                                      wanted={EVENT_PAGE_TRANSCRIBED,
+                                              EVENT_PAGE_TRANSLATED,
                                               EVENT_PAPER_STATUS}):
             if paper_id in frame:
                 yield frame
