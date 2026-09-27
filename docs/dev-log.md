@@ -5889,3 +5889,26 @@ beyond-speedup 的作者行 `Zeyu Xing1, Xing Li2, …` 里数字是"贴在名�
 
 验证：`npm run typecheck` 0 错、`npm run build` 成功、`frontend_check.py --block-markers` 86/87
 （唯一红项仍是「公式能整体高亮」，与本期无关）。
+
+### 17.113 待实现（口径已定稿）· 导入时两个开关：图片是否包含图注 / 深度图片搜索
+
+用户口径（2026-09-27）：**导入论文就是重解析的过程，两个开关在当前解析时生效；均默认关。**
+
+| 开关 | 界面文案 | 默认 | 生效时机 | 语义 |
+|---|---|---|---|---|
+| 1 | 「图片是否包含图注」 | **关** | 解析时（连同裁剪一起定下来） | 开 = 裁出的插图带图注（`figure_card_png`，现状那套卡片）；关 = 只出国体本身 |
+| 2 | 「是否启用图片兜底拆解」 | **关** | 解析时 | 界面叫**深度图片搜索**；开 = 整页没有图注时也按"墨迹带"兜底裁图（`figure_cut._captionless_bands`）；关 = 只出图注锚定的图 |
+
+**实现清单（下次开工直接照这个做）**
+
+1. `frontend/src/views/LibraryView.vue`：上传弹窗加两个开关（`figure_caption` / `deep_figure_search`，均默认 false），
+   随 `FormData` 发出；两个字段也加进 `resetImportForm()`（否则又是 17.112 那个残留 bug）。
+2. `backend/api/papers.py` 的 `POST /papers`：接两个 `Form(...)` 布尔 → 传给 `paper_service.import_pdf`。
+3. `paper_service.import_pdf(...)`：两个值一起写进 **PARSE 任务 params**（导入即重解析，所以只存任务参数就够；
+   `reuse_existing` 复用那篇时也要按新值重发解析任务）。
+4. `parsing/pipeline.py`：从任务 params 读 `deep_figure_search`（默认 false）→ `detect_figures(..., allow_captionless=…)`；
+   `figure_cut.detect_figures` 加参数，关掉时整段跳过 `_captionless_bands`。
+5. `figure_caption` 传给裁剪：关 = 不调 `caption_rects` / 不拼图注（正文与"点开看大图"仍必须用**同一张**，
+   这条以前专门统一过，别拆开）；开 = 现状。
+6. 验证：`pytest` 加"关掉兜底后不产出无图注区域"的单测；拿一篇有无图注页的论文开/关各解析一次对比产出数；
+   `frontend_check --block-markers` 基线 86/87；`npm run typecheck/build`。
