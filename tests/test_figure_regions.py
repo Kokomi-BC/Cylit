@@ -19,16 +19,28 @@ from backend.parsing.models import Rect
 PAGE = Rect(0, 0, 612, 792)
 
 
-def test_tighten_figure_excludes_heading_above():
-    """图注在下：上边界 = 图注上方最近的标题底边（再让开 SEP_PAD），下边界 = 图注顶边。"""
-    bbox = [112.84, 95.80, 499.15, 535.01]          # 解析阶段给的重叠 bbox
-    caption = {"y0": 541.6, "y1": 584.9}            # Figure 3 的图注
-    structs = [{"y0": 231.0, "y1": 241.0},          # Figure 2 的图注
-               {"y0": 294.7, "y1": 304.6}]          # 2.2 NEEDLE-IN-A-HAYSTACK 标题
-    x0, y0, x1, y1 = _tighten(bbox, caption, structs, 842.0, below=True)
-    assert y0 == pytest.approx(304.6 + SEP_PAD)
-    assert y1 == pytest.approx(541.6)               # 收到图注顶边（图注在图下方）
-    assert (x0, x1) == (112.84, 499.15)
+def test_tighten_figure_ignores_heading_inside_the_ink_band():
+    """图注在下：解析层给的 raw bbox 已经是"墨迹带"，带内的标题/图注**不算分隔**。
+
+    实测 9984-boomerang p23 图 9：墨迹带 78.9~231.3 里的 `19 (Every 2nd layer)`（y 172~180）
+    其实是图内标注，旧口径拿它当上边界 → 图体被收到 185.9，裁出来只剩坐标轴标签 + 图例。
+    """
+    bbox = [112.84, 78.90, 499.15, 231.30]          # 解析层按图注分段给出的墨迹带
+    caption = {"y0": 238.2, "y1": 292.1}            # Figure 9 的图注
+    structs = [{"y0": 172.1, "y1": 179.9}]          # 图内那行标注（被判成 heading）
+    _x0, y0, _x1, y1 = _tighten(bbox, caption, structs, 792.0, below=True)
+    assert y0 == pytest.approx(78.90)               # 不再被图内标注顶下来
+    assert y1 == pytest.approx(238.2)
+
+
+def test_tighten_figure_never_raises_the_top_by_a_heading_above_the_band():
+    """图的上边界**只认解析层给的墨迹带**：带外的标题不再参与（原来会把顶边往下压）。"""
+    bbox = [112.84, 320.00, 499.15, 535.01]
+    caption = {"y0": 541.6, "y1": 584.9}
+    structs = [{"y0": 294.7, "y1": 304.6}]          # `2.2 NEEDLE-IN-A-HAYSTACK`（在带之上）
+    _x0, y0, _x1, y1 = _tighten(bbox, caption, structs, 842.0, below=True)
+    assert y0 == pytest.approx(320.00)              # 上边界保持图体自己的上沿
+    assert y1 == pytest.approx(541.6)               # 下边界仍然收到图注顶边
 
 
 def test_tighten_figure_without_separator_keeps_bbox_top():

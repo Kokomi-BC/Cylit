@@ -62,7 +62,8 @@ CROP_DPI = 600
 #: 2 = 表格区域取表体 + 同图号去重 + 卡片图注只取挨着的那一串（2026-09-27）。
 #: 3 = 图注续行加"句末即停 / 不得越出本栏宽"（DAMMFND 图 1 吞了整段摘要）。
 #: 4 = 图体按图注分段（一页多图互不吞并，见 `parsing.structure.figure_cut` 文件头）。
-REGION_CACHE_VERSION = 4
+#: 5 = 图体上边界不再被**墨迹带内**的"标题"（其实是图内标注）顶下来（9984-boomerang 图 9 只剩半截）。
+REGION_CACHE_VERSION = 5
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -120,7 +121,11 @@ def _number_of(text: str) -> str:
 
 def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
              page_bottom: float, *, below: bool) -> list[float]:
-    """把插图 bbox 收到"图注 + 结构分隔"之间。
+    """把插图 bbox 收到"图注"边上（图）或"题注 + 结构分隔"之间（表）。
+
+    - **图**（``below=True``）：只收下边界（= 图注顶边）。上边界交给解析层的墨迹带
+      （见下面那段注释：带内的"标题"多半是图内标注，拿它当上边界会切掉图的上半截）。
+    - **表**（``below=False``）：上边界 = 题注底边，下边界 = 下方最近的标题/图注顶边。
 
     ⚠️ 分隔块必须**与本图横向重叠**（`_h_overlap`）。实测事故（3360-mmdfnd p5 图 3）：
     那幅图的 raw bbox 只覆盖左半页（x 51.5–295.7，右半页的矢量图没被图体检测吃到），
@@ -133,14 +138,18 @@ def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
         return bbox
     cy0, cy1 = _num(caption.get("y0")), _num(caption.get("y1"))
 
-    if below:      # 图注在图下方：下边界 = 图注顶边；上边界排除夹在中间的标题/图注
+    if below:      # 图注在图下方：下边界 = 图注顶边
+        # ⚠️ **不再**用"图注上方最近的标题/图注"当上边界（2026-09-27 删掉）。
+        # 解析层的 raw bbox 现在是**墨迹带**（同栏上一张图注的底边 → 本图注顶边），
+        # 上一张图根本进不来；而带内的标题/图注十有八九是**图内标注** ——
+        # 实测 9984-boomerang p23 图 9 的 `19 (Every 2nd layer)`（x 437~500, y 172~180）被判成
+        # heading，旧口径拿它当上边界 → 图体从 78.9 收到 185.9，裁出来只剩坐标轴标签 + 图例。
+        # 真正需要"排除夹在中间的标题"的排版（turboquant p8 的 Figure 3 框住了 Figure 2）
+        # 已经在解析层由分段解决；这里保留的只有下边界（= 图注顶边）。
         boundary = cy0 if cy0 - y0 >= MIN_HEIGHT else y1
-        seps = [_num(s.get("y1")) + SEP_PAD for s in structs
-                if _num(s.get("y1")) <= cy0 - TOL and _h_overlap(s, x0, x1)]
-        top = max([y0] + seps[-1:])
-        if boundary - top < MIN_HEIGHT:
+        if boundary - y0 < MIN_HEIGHT:
             return bbox
-        return [x0, top, x1, boundary]
+        return [x0, y0, x1, boundary]
 
     # 题注在表上方：上边界 = 题注底边；下边界 = 下方最近的标题/图注顶边
     boundary = cy1 if y1 - cy1 >= MIN_HEIGHT else y0

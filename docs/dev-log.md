@@ -5612,3 +5612,39 @@ Sequential Operations / Maximum Path Length` 与 4 行 `O(n²·d)`、`O(n·log n
 - p23 的**图 9** 仍被切掉上半截（裁出来只有坐标轴标签 + 图例，raw bbox 78.9~231.3 是对的，
   被区域层 `_tighten` 收到 185.9~237.1）：图内那行标注 `19 (Every 2nd layer)` 被判成 `heading`，
   `_tighten` 拿它当"图注上方最近的标题"当上边界。要修得让区域层知道"这条墨迹带内没有分隔标题"。
+
+### 17.103 第十轮 · 图 9 只剩半截（图内标注被当成"图注上方的标题"）+ 全库重解析 + 对账脚本升级到四维
+
+**症状**（接着 17.102）：9984-boomerang p23 的图 9 裁出来只有坐标轴标签 + 图例，
+上面两个子图整块没了（raw bbox 78.9~231.3 是对的，被区域层收到 185.9~237.1）。
+
+**原因**：`figure_regions._tighten` 在图注在下时的口径是"上边界 = 图注上方最近的标题/图注的底边"，
+而图 9 图内那行图例标注 `19 (Every 2nd layer)`（x 437~500, y 172~180）被判成了 `heading` ——
+拿它当上边界，图体就被切掉上半截。
+
+**改法**：图的上边界**只认解析层给的墨迹带**（`_tighten` 的 `below=True` 分支删掉分隔逻辑，
+只留"下边界 = 图注顶边"）。当年要靠它挡的排版（turboquant p8 的 Figure 3 框住 Figure 2）
+现在已经在解析层由"按图注分段"解决了 —— 专门回看了 p8 图 3 的裁图：干净、没有 Figure 2、
+没有夹在中间的 `2.2 NEEDLE-IN-A-HAYSTACK`。`REGION_CACHE_VERSION` 4 → 5。
+
+**全库重解析**（分段/页眉带/兜底这些改动都在解析层，得重新出一遍 IR）：
+turboquant / attention / 3360 / 12382 / dammfnd 五篇 + boomerang，逐篇跑完；
+翻译产物（`md/pages.json`、`md/path_a.json`、`md/path_b.json` 的大小 + mtime）**0 处变化**。
+
+**对账脚本升级**（`scripts/figure_caption_audit.py`，从"只看缺图"扩到四维）：
+
+| 维度 | 抓什么 |
+|---|---|
+| 缺图（按图号） | PDF 有图注、全篇产出里没有这个图号（原来就有） |
+| 顶部被收窄 | 区域上边界比解析层图体 raw bbox 低 > 24pt（"上半截没了"，本期新加） |
+| 顶部多出 | 区域上边界比图体高 > 24pt（"把上一张图/正文吞进来了"） |
+| 页内图号对不上 | 某页有真图注、但该页没产出这个图号（整篇按图号对账查不出的"吞并"） |
+
+页内对账的口径刻意比解析层严（**只认带标点的图注**）：放宽到"短行也算"时，
+`Figure 18 shows that …` / `Figure 22 shows that …` / `Figure 28 shows that` 这些正文引用句
+会被算成图注，凭空报"这页的图没产出"（实测 p26/p27/p32 全被误报）。
+
+**验证**：`figure_caption_audit.py` 6 篇全 `[ OK ]`（boomerang 38/38、四维 0 报警）；
+肉眼看 p23 图 9（两个子图 + 两个图例都完整）与 turboquant p8 图 3；
+`pytest tests` 566 passed, 1 skipped；`frontend_check.py --block-markers` 86/87
+（唯一红项仍是「公式能整体高亮」，与本期无关）。
