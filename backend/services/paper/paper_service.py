@@ -65,11 +65,19 @@ def import_pdf(temp_path: str | Path, original_name: str,
                 create_parse_task(existing["id"], force=True)
             return {**existing, "reused": True}
 
-    pid = paper_id or slugify(title or Path(original_name).stem, fallback="paper")
+    # ⚠️ 上传接口会带一个 `title` 表单字段，而前端**预填的就是文件名** ——
+    # 直接 `title or meta.title` 会让文件名压过解析层抽出来的真标题
+    # （实测：DeepSeek-V3.2 的附录 PDF 抽得出 "DeepSeek-V3.2-Exp: …"，库里却叫
+    # `12382-beyond-speedup-utilizing-2`）。所以"传进来的 title == 文件名"视为**没填**。
+    given_title = (title or "").strip()
+    if given_title and given_title == Path(original_name).stem.strip():
+        given_title = ""
+
+    pid = paper_id or slugify(given_title or Path(original_name).stem, fallback="paper")
     pid = _unique_paper_id(pid)
 
     page_count = 0
-    detected_title = title or ""
+    detected_title = given_title
     detected_authors = authors or ""
     detected_venue = venue or ""
     detected_year = year

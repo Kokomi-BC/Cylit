@@ -229,8 +229,10 @@ class PaperBuilder:
         self.md_dir = self.dir / "md"
         self.reports_dir = self.dir / "reports"
         self.ir_path = self.dir / "ir.sqlite"
-        # 块 ID 带论文前缀，保证跨论文在共享业务库（MySQL block 主键）中唯一
-        self.id_prefix = id_prefix(paper_id)
+        # 块 ID 带论文前缀，保证跨论文在共享业务库（MySQL block 主键）中唯一。
+        # ⚠️ 前缀截断到 12 字符会撞车（实测 `12382-beyond-speedup-utilizing` 与 `…-2`）：
+        # 这里把**其他论文已用的前缀**传进去，撞了就自动加长（存量前缀不受影响）。
+        self.id_prefix = id_prefix(paper_id, taken=_other_paper_prefixes(paper_id))
 
     # ------------------------------------------------------------------
     def _emit(self, stage: str, done: int, total: int) -> None:
@@ -1373,6 +1375,25 @@ def _classify_groups(groups: list[tuple[list, int]], prof: LineProfile) -> list[
             line_math_ratio=dens,
         ))
     return kinds
+
+
+def _other_paper_prefixes(paper_id: str) -> set[str]:
+    """其他论文已用的块 ID 前缀（用来给本论文挑一个不撞车的前缀，见 `rebind.id_prefix`）。
+
+    查库失败（离线单测、SQLite 后端）时返回空集合 —— 退化成老行为（截断 12 字符），
+    不让"挑前缀"这件事把解析拖挂。
+    """
+    try:
+        from backend.repositories.mysql.models import Paper
+        from backend.repositories.mysql.session import session_scope
+        from backend.parsing.ir.rebind import id_prefix
+
+        with session_scope() as sess:
+            ids = [str(pid) for (pid,) in sess.query(Paper.id).all()]
+        return {id_prefix(pid) for pid in ids if pid != paper_id}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("读取其他论文前缀失败（不影响解析，退化为 12 字符前缀）：%s", exc)
+        return set()
 
 
 def _make_orphan_block(result: ParseResult, cand, block_type: str = "formula",

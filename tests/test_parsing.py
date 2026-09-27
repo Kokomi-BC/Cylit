@@ -279,6 +279,23 @@ def test_block_id_prefix_differs_per_paper():
     assert make_block_id("e2echeck", 3, 7) == "e2echeck-p03-b07"
 
 
+def test_block_id_prefix_extends_when_truncated_prefix_collides():
+    """截断到 12 字符会撞车（实测 `12382-beyond-speedup-utilizing` 与 `…-2`）→ 自动加长。
+
+    `block.id` 是共享业务库的全局主键，撞车会让后导入的那篇解析直接失败
+    （`Duplicate entry '12382beyonds-p01-b01'`，IR 只写一半）。
+    """
+    from backend.parsing.ir.rebind import id_prefix
+
+    taken = {"12382beyonds"}
+    got = id_prefix("12382-beyond-speedup-utilizing-2", taken=taken)
+    assert got != "12382beyonds" and got not in taken
+    assert got.startswith("12382beyondspeed")           # 加长到 16 字符就够
+    # 不冲突时**保持原样**：存量论文的前缀、块 ID、批注/高亮都不被打乱
+    assert id_prefix("turboquant-online-vector-iclr-26", taken=taken) == "turboquanton"
+    assert id_prefix("turboquant-online-vector-iclr-26") == "turboquanton"
+
+
 def test_rebind_keeps_ids_for_unchanged_blocks():
     old = [
         BlockFingerprint(id="p01-b01", page_no=1, x0=10, y0=10, x1=200, y1=30,

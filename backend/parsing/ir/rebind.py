@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -166,14 +167,35 @@ def _rename(block: Block, new_id: str, report: MatchReport) -> None:
     report.reused_ids[new_id] = new_id
 
 
-def id_prefix(paper_id: str) -> str:
+def id_prefix(paper_id: str, taken: set[str] | None = None) -> str:
     """块 ID 的论文前缀（保证跨论文在共享业务库中唯一）。
 
     ``paper_id`` 已是 slug（小写字母/数字/连字符），这里去掉连字符并截断到 12 字符，
     得到 ``turboquantic`` 之类的短前缀 → 块 ID 形如 ``turboquantic-p07-b12``。
+
+    ⚠️ **截断会撞车**：实测 `12382-beyond-speedup-utilizing` 与 `12382-beyond-speedup-utilizing-2`
+    截断后都是 ``12382beyonds`` —— `block.id` 是共享业务库的全局主键，于是后导入的那篇
+    写库时报 `Duplicate entry '12382beyonds-p01-b01'`、IR 只写了一半（用户 2026-09-27 遇到）。
+    ``taken`` 传"**其他**论文已用的前缀"时，本函数会逐步加长到不冲突为止（必要时再补一个
+    由论文 id 定出来的 4 位哈希）。**只对冲突的那篇加长** —— 存量论文前缀不变，
+    已写入的块 ID / 批注 / 高亮都不会被打乱。
     """
     compact = "".join(ch for ch in (paper_id or "p") if ch.isalnum()).lower()
-    return (compact[:12] or "p")
+    if not compact:
+        return "p"
+    if not taken:
+        return compact[:12]
+    for n in (12, 16, 20, 24, 32, len(compact)):
+        cand = compact[:n]
+        if cand not in taken:
+            return cand
+    digest = hashlib.sha1(compact.encode("utf-8")).hexdigest()[:4]
+    cand = f"{compact[:12]}x{digest}"
+    n = 0
+    while cand in taken:                       # 极端情况：再按序加长，保证一定能拿到
+        n += 1
+        cand = f"{compact[:12]}x{digest}{n}"
+    return cand
 
 
 def make_block_id(prefix: str, page_no: int, index: int) -> str:

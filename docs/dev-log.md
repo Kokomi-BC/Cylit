@@ -5731,3 +5731,32 @@ turboquant / attention / 3360 / 12382 / dammfnd 五篇 + boomerang，逐篇跑�
    但库里叫 `12382-beyond-speedup-utilizing-2` —— 因为 `/papers` 上传接口把表单里的 `title`
    传了进来（前端预填的是文件名），而 `import_pdf` 是 `title or meta.title` → 文件名胜出。
    → 要修：`title` 等于"文件名 stem"时视为**没填**，用抽取到的标题。
+
+### 17.107 第十轮 · 块 ID 前缀撞车（重解析失败）+ 导入标题被文件名压掉
+
+**① 前缀撞车**（17.106 里记的那个 `Duplicate entry '12382beyonds-p01-b01'`）
+
+`id_prefix` 把论文 id 去掉连字符后截断到 12 字符 → `12382-beyond-speedup-utilizing` 与
+`…-utilizing-2` 都是 `12382beyonds`；而 `block.id` 是共享业务库的**全局主键**，
+两篇的块 ID 完全重叠 → 后解析的那篇写库时冲突、IR 只写了一半。
+
+改动：`id_prefix(paper_id, taken=None)` —— `taken` 传"**其他**论文已用的前缀"时，本论文的前缀
+**逐步加长**（12→16→20→24→32→全串，兜底再补 4 位哈希），拿到不冲突的为止。
+管道里新增 `_other_paper_prefixes(paper_id)` 查一次库并传进去（查库失败就退化成老行为，
+不让"挑前缀"把解析拖挂）。**只对撞车的那篇加长**：存量论文前缀、块 ID、批注/高亮全都不动。
+
+**② 导入标题被文件名压掉**
+
+`import_pdf` 原来是 `pid = slugify(title or 文件名)`、`detected_title = title or meta.title or 文件名`，
+而上传接口的 `title` 表单字段**前端预填的就是文件名** → 解析层抽到的真标题永远用不上
+（实测：DeepSeek 那篇抽得出 `"DeepSeek-V3.2-Exp: …"`，库里却叫 `12382-beyond-speedup-utilizing-2`）。
+
+改动：`title` 与"文件名 stem"相同 → 视为**没填**，交给 `extract_paper_meta`。
+实测（同一份 PDF、把文件名当 title 传进去）：
+
+    id    = tmp-titlecheck（正式导入会是标题的 slug）
+    title = DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention
+
+**验证**：`pytest` 572 passed（新增前缀加长的单测）；`figure_caption_audit.py` 9 篇 0 不通过；
+重解析 `12382-beyond-speedup-utilizing` 正常完成（298 块 / 插图 5 / 表格 11，不再报主键冲突）；
+当前库 9 篇的块 ID 前缀互不相同。
