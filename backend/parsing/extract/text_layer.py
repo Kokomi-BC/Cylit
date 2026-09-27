@@ -85,7 +85,21 @@ def cluster_spans_into_lines(spans: list[Span], page_no: int) -> list[TextLine]:
         nonlocal current, current_base
         if current:
             current.sort(key=lambda s: s.x0)
-            lines.append(TextLine(spans=current, page_no=page_no))
+            # ⚠️ **近似重复的 span 只留一份**：matplotlib 画的图为了"加粗"会把同一段文字
+            # 画两遍（位置差 <2pt，实测 9984-boomerang p5 有 19 对）—— 两份都留下，
+            # 行文本就成了 `LayerLayer droppingdropping strategyInterpolation…`
+            # （用户报的"图例文字重复/拼接"）。同文本 + 位置差 ≤2pt 视为同一份。
+            kept: list[Span] = []
+            for sp in current:
+                text = sp.text.strip()
+                if text and any(
+                        text == k.text.strip()
+                        and abs(sp.x0 - k.x0) <= 2.0
+                        and abs(sp.origin_y - k.origin_y) <= 2.0
+                        for k in kept):
+                    continue
+                kept.append(sp)
+            lines.append(TextLine(spans=kept, page_no=page_no))
             current = []
         current_base = None
 

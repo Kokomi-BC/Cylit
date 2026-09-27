@@ -176,7 +176,10 @@ def detect_figures(
             )
         if body is None:
             continue
-        # 图注必须**贴着**图体（见 `CAPTION_MAX_GAP`）：正文引用句不算图注
+        # 图注必须**贴着**图体（见 `CAPTION_MAX_GAP`）：正文引用句不算图注。
+        # ⚠️ 曾经在这里加过"堆叠图兜底"（没有图体时取"上一个结构块到此图注"那一段）——
+        # **已撤掉**：高图（子图网格 300pt + 图例）的图体本就很大，那个兜底会把图体换成
+        # 图例那一段，于是裁图只剩下面一小条（用户报的"漏了上面的图片 / 裁少了"）。
         gap = (body.y0 - ab.rect.y1) if body.y0 >= ab.rect.y1 else (ab.rect.y0 - body.y1)
         if gap > CAPTION_MAX_GAP:
             continue
@@ -188,6 +191,34 @@ def detect_figures(
             subfigure_count=estimate_subfigures(drs, imgs), confidence=conf, reason=reason,
         ))
     return out
+
+
+def _band_above_caption(caption: RawBlock, all_blocks: list[RawBlock],
+                        page_rect: Rect, *, min_height: float = 40.0) -> Rect | None:
+    """本图注**正上方那一段同栏区域**（从上一个结构块到此图注）。
+
+    只给"上下堆叠多张图"兜底用（见 `detect_figures` 里的调用）。要求：
+    - 图注形态明确（编号后紧跟 `:`/`：`/`—` —— 正文里的 "Figure 20 shows that…" 不算）；
+    - 同栏（与图注横向重叠）；
+    - 高度 ≥ `min_height`（否则那一段里不可能有图）。
+    """
+    text = (caption.text or "").strip()
+    if not re.match(r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|图)\s*\d{1,3}\s*[:：.—]", text, re.I):
+        return None
+    top = page_rect.y0 + 8.0
+    for b in all_blocks:
+        if b is caption or b.page_no != caption.page_no:
+            continue
+        if (b.kind or "") not in ("caption", "heading", "figure"):
+            continue
+        if b.rect.y1 > caption.rect.y0 - 2:            # 只看**上方**的
+            continue
+        if b.rect.x1 <= caption.rect.x0 + 2 or b.rect.x0 >= caption.rect.x1 - 2:
+            continue                                    # 不同栏
+        top = max(top, b.rect.y1 + 2)
+    if caption.rect.y0 - top < min_height:
+        return None
+    return Rect(caption.rect.x0, top, caption.rect.x1, caption.rect.y0)
 
 
 def _body_rect_below_caption(
