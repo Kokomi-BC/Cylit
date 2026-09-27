@@ -4910,6 +4910,84 @@ turboquant 的「向量量化与位宽」「随机旋转与 Beta 分布」「香
 当前数据里概念名没有 `$…$`，但模型哪天在概念名里写公式就会重演同样的毛病，改法同 `inlineHtml` 加一行。
 
 
+### 17.88 第九轮 · 图片 404（真实接口 bug）+ 插图"少裁"修复（切口穿字 16 → 0）
+
+用户给了两条线索：**"解析后要刷新页面才能看到图片"**（附后端日志里 4 个
+`GET /app/figures/haloscopehar-p0*.png → 404`，而 `region/2/0?card=1 → 200`），
+以及 **"有没有办法缓解图片少裁剪（大概两篇论文会少裁一张图）"**。
+
+#### A. 404 的根因：未翻译页的行来自**解析块**，行文本里的相对图片路径没被改写
+
+链路（每步都有代码证据）：
+1. 没翻译的页在阅读器里退回**解析块**当行：`usePageRows.buildPageGroups` → `rowFromBlock`
+   把 `block.text` 直接当 `original`（`composables/usePageRows.ts:31-47`）；
+2. 解析产物里插图路径是**相对**的：`md/full.md` / `blocks.json` 里是
+   `![…](../figures/haloscopehar-p02-b01.png)`（实测）；
+3. 行渲染走 `ReaderRow` 的 `mdToHtml(text)` —— **没传 paperId**，`rewriteAssetPaths` 原样返回
+   （`composables/useMarkdown.ts:91-97`：`if (!paperId) return html`），浏览器按
+   `/app/reader/<id>` 解析成 **`/app/figures/…` → 404**；
+4. 翻译完成后行来自页级产物、插图走 `media`（绝对 URL）→ 正常，所以用户的感觉是
+   "要刷新（其实是等翻译完）才看得到图"。
+
+**修法**：把 `paperId` 补到所有渲染论文产物的 `mdToHtml` 调用点 —— `ReaderRow`（新增 prop，
+`ReaderPageRows` 两处传参）、阅读器 **Markdown 视图**（`mdFullHtml`，同样来自产物）、
+`InsightDoc`（宿主 `InsightPanel` / `InsightPage` 透传）。
+正确 URL 实测可用：`HEAD /papers/<id>/figures/haloscopehar-p02-b01.png` → **200**。
+
+#### B. 自检从 88/87/1 掉到 71/63 —— 样本选错了，不是代码回归
+
+新导入的 `haloscope`（**25 页、还没翻译**）按"页数最多"成了默认样本，于是 md 视图
+`data-md-page="3"`、简报 `brief-k`、划词高亮、原 PDF 文字层这些探针全红。
+修法：样本排序键从"只看页数"改成 **(是否已翻完/已入库, 已翻页数, 页数)**；复跑即回 **88/87/1**。
+
+> 那篇 haloscope 在 11:14 被**人**从界面上"彻底删除"了（日志
+> `fs: 移入 trash …；彻底删除：trash + MySQL 行`），IR/页图/裁图随之消失 ——
+> 诊断子代理一度以为是自己误删，实际是用户操作，与代码无关。
+
+#### C. 少裁的根因与修复（`figure_regions._snap_y` / `_snap_x`）
+
+**根因**：旧实现只判"边界是否落在 `t.y1 ± TEXT_PAD` 这个窄带"，**边界从字里穿过时反而落进
+"离得远、不用管"那一支被跳过**。实测 turboquant p8 图 2 的三个子图标题
+（`(a) Inner Product Error` / `(b) MSE` / `(c) Speedup`）区域顶边 95.80 与字块底边 97.02
+只差 **0.02pt**，于是被判"已经贴住"，标题被切掉 7.8pt（600dpi 逐行墨迹剖面：该 x 切片
+**99.6% 的墨迹没进裁图**）；同族还有 attention p4 图 2（副标题 `Scaled` 左端被切 24.2pt）。
+
+**修法**（三处，都在同两个函数里）：
+1. "边界从字里穿过"单独一支：边界**往外让开**，让整个字进到区域里（上边界 → `t.y0 - TEXT_PAD`，
+   下边界 → `t.y1 + TEXT_PAD`，左右同理）；分两级：**单行块**（高度 ≤ `LABEL_MAX_HEIGHT`=22pt）
+   一律收，**多行块**只在"切得不深"（移动量 ≤ `SNAP_MAX`）时收 —— 正文段落通常多行且移动一大截，
+   被挡在门外。⚠️ 判据只能用**高度**：用宽度会把 attention p4 那个 302pt 宽的子图标题行漏掉。
+2. 近侧那 1pt 死带去掉（`inside = t.y0 + TOL < edge < t.y1`）：p21 图 5 的 `(a) TURBOQUANTprod`
+   块 bbox 下沿 97.00、区域顶边 96.22（差 0.78pt < TOL=1.0）就死在这个死带上。
+3. **图注块单独处置**（`_snap_edges(..., avoid=[caption_rect])`）：图注是**论文文字**，不该被裁进图里，
+   一律走"推开"；只有**图内**标注才走"收进来"。（这一条是两条既有单测逼出来的 —— 它们钉的正是
+   "题注要推开"。）
+
+**实测（我自己的离线度量脚本，两篇 10 张图）**：
+
+| 论文 | 切口穿过字形盒的词（前 → 后） | 正文段落被吸进来（前 → 后） | 图高变化 |
+|---|---|---|---|
+| turboquant | **11 → 0** | 0 → **0** | 107.3→120.8、134.0→143.0、229.8→236.8 |
+| attention | **5 → 0** | 0 → **0** | 193.5→203.2 |
+
+（"切口穿字"= 文字层某词的**字形盒跨越区域某条边**，该词必被切；"正文误入"= `type=para`
+且 >80 字、被区域包住一半以上的块 —— 两篇都是 0，说明没往"多裁"方向反弹。）
+`pytest tests` 全绿；`frontend_check` 复跑 **88/87/1**；服务器重启后实测
+`/papers/{id}/figures`：p8 图 2 `y0 95.80 → 86.77`（三个子图标题收进来了）。
+
+**同轮发现、但没做的三件事**（都留了证据，等用户拍板）：
+- **表格区域恒为 17.9~18.0pt**（turboquant 1 张 + attention 5 张，**全部**）：`detect_tables` 算出了
+  `grid/行列数` 却把 `rect` 定成"表注块 expand(4)"（`parsing/structure/figure_cut.py:241-247`；
+  IR 里 `status=image_only`、`col_count=0`、`y0/y1` 就是表注那 18pt）。后果：**知识库里表格条目的
+  缩略图只有一行表注**。修它要动解析器 + **重解析**（IR 里没有表体信息，`figure_regions` 补不回来）。
+- **`prune_crops` 每次都删掉 `part≥1` 的裁图缓存**：`ensure_region_crop` 只把第一段的 bbox hash
+  写进 `region[index]['hash']`，而多段图各段用同一个 hash 算文件名 → 后段文件永远不在 keep 集合里，
+  每次 `all_regions` 都被删、下次又要 600dpi 重渲染。属"性能 + 磁盘抖动"级问题。
+- 解析阶段 `figure_cut.py:82-85` 的 `d.rect.area > 25` 会**丢掉图内小箭头/短刻度**（haloscope p8
+  图 4 下边 6.2pt 的小标注就这么丢的），以及 `:106-108` 的 0.72 页高截断 —— **要重解析才生效**。
+
+
+
 
 
 

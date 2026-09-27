@@ -1312,7 +1312,19 @@ def main() -> int:
             parsed = [p for p in items
                       if p.get("status") in ("parsed", "translating", "translated", "indexed")]
             pool = parsed or items
-            pool.sort(key=lambda p: (p.get("page_count") or 0), reverse=True)
+            # ⚠️ 默认样本**必须"有内容可看"，不能只看页数**。实测（2026-09-27）：导入了一篇
+            # 25 页、**还没翻译**的论文之后，它按"页数最多"成为默认样本，于是读者相关的探针
+            # （md 视图 `data-md-page="3"`、简报 `brief-k`、划词高亮、原 PDF 文字层）全红，
+            # 自检从 88/87/1 掉到 **71/63** —— 看着像代码回归，其实是样本选错了。
+            # 排序键：先"已翻完/已入库"，再"已翻页数"，最后才页数。
+            def _rank(p: dict) -> tuple:
+                pages = int(p.get("page_count") or 0)
+                done = int(p.get("translate_done") or 0)
+                complete = bool(done and pages and done >= pages) or \
+                    p.get("status") in ("translated", "indexed")
+                return (1 if complete else 0, done, pages)
+
+            pool.sort(key=_rank, reverse=True)
             paper_hint = pool[0]["id"] if pool else ""
         except Exception:  # noqa: BLE001
             paper_hint = ""
