@@ -224,6 +224,10 @@ def detect_tables(
     for ab, kind, _label in find_caption_blocks(blocks):
         if kind != "table":
             continue
+        if not _looks_like_table_caption(ab.text):
+            # 正文里"Table 2 summarizes our results and …"这种**句子**不该被当成表注
+            # （实测 attention p8 就多出一个假的"表 2"，知识库里跟着多一条空表）
+            continue
         page_no = ab.page_no
         page_rect = page_rects.get(page_no) or Rect(0, 0, 612, 792)
         drs = drawings_by_page.get(page_no, [])
@@ -239,13 +243,73 @@ def detect_tables(
         rows = _cluster_positions([d.y for d in local_h])
         cols = _cluster_positions([d.rect.center_x for d in local_v])
         out.append(TableCandidate(
-            page_no=page_no, rect=ab.rect.expand(4), caption_block_id=None,
+            page_no=page_no,
+            # ⚠️ 表体 = 表注 + **表格本体**（线框并集，没有线框就吃表注下方连续的同栏文本行）。
+            # 以前这里直接写 `ab.rect.expand(4)`（= 表注那一行），于是所有表格区域都只有 ~18pt：
+            # 知识库里的表格缩略图只有一行表注、放大也看不到数值（2026-09-27 用户报的）。
+            rect=_table_body_rect(ab, blocks, local_h + local_v, page_rect).expand(4),
+            caption_block_id=None,
             caption=ab.text.strip(),
             row_count=max(0, len(rows) - 1), col_count=max(0, len(cols) - 1),
             has_borders=has_borders,
             grid=[round(v, 1) for v in rows + cols],
         ))
     return out
+
+
+#: 表注必须"像表注"：`Table 1: …` / `表 1：…` 这类**带标点**的，
+#: 或足够短的行；否则正文里的句子（"Table 2 summarizes our results and …"，实测 200+ 字）
+#: 会被当成表注，凭空多出一条"表"。
+_TABLE_CAPTION_DELIM = re.compile(r"^\s*[:：.．—–\-|]")
+_TABLE_CAPTION_SANE = re.compile(r"^\s*(?:Table|表)\s*\d{1,3}", re.IGNORECASE)
+
+
+def _looks_like_table_caption(text: str) -> bool:
+    t = (text or "").strip()
+    if not _TABLE_CAPTION_SANE.match(t):
+        return False
+    rest = _TABLE_CAPTION_SANE.sub("", t, count=1)
+    if _TABLE_CAPTION_DELIM.match(rest):
+        return True
+    return len(t) <= 60          # 短行且不写标点的排版也认；长句一律不认
+
+
+def _table_body_rect(caption: RawBlock, blocks: list[RawBlock],
+                     bars: list[Drawing], page_rect: Rect) -> Rect:
+    """表格本体：优先**线框并集**，没有线框就吃表注下方**连续的同栏文本块**。
+
+    两种排版都要管：attention 的 booktabs 表只有几条横线（`has_borders=False`），
+    而 3360 的表有线框。都没有时退回"表注下方到第一个明显空档"的文本行 ——
+    那正是表格的数值行，比"只剩表注"强得多。
+    """
+    cap = caption.rect
+    body: Rect | None = None
+    for above in (False, True):        # 先看表注**下方**（多数排版），再看上方
+        picked = [d.rect for d in bars
+                  if (d.rect.y0 >= cap.y1 - 2 if not above else d.rect.y1 <= cap.y0 + 2)]
+        if not picked:
+            continue
+        x0 = min(r.x0 for r in picked)
+        x1 = max(r.x1 for r in picked)
+        y0 = min(r.y0 for r in picked)
+        y1 = max(r.y1 for r in picked)
+        body = cap.union(Rect(x0, y0, x1, y1))
+        break
+    if body is None:
+        # 无框表：表注下方、与表注横向重叠、且**垂直连续**的块（间隔 > 28pt 视为表格结束）
+        limit = min(page_rect.y1, cap.y1 + max(120.0, 0.45 * page_rect.height))
+        rows = sorted([b.rect for b in blocks
+                       if b.rect.y0 >= cap.y1 - 2 and b.rect.y0 <= limit
+                       and b.rect.x1 > cap.x0 + 1 and b.rect.x0 < cap.x1 - 1],
+                      key=lambda r: r.y0)
+        body = cap
+        bottom = cap.y1
+        for r in rows:
+            if r.y0 - bottom > 28.0:
+                break
+            body = body.union(r)
+            bottom = max(bottom, r.y1)
+    return body
 
 
 def _cluster_positions(values: list[float], tol: float = 3.0) -> list[float]:
