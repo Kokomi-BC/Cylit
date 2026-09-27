@@ -451,15 +451,16 @@ PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 
 # 输出预算（`max_tokens`）。
 #
-# **基线直接给到厂商接受的最大值**（用户口径 2026-09-27："思考模式吃光 token，
+# **基线直接给到厂商文档写明的最大值**（用户口径 2026-09-27："思考模式吃光 token，
 # 我觉得不应该有 token 生成限制"）：思考模式下**推理也计入 `completion_tokens`**，
 # 预算给小了就会出现"推理写完了、正文还没来得及写"→ `finish=length` + 空正文
 # → 一整轮调用白烧（3360 实测：第 1 页连着重试 3 次、第 2/5 页各 2 次）。
 #
-# 实测 `deepseek-v4-flash-vision-exp` 接受 `max_tokens=65536`（模型配置里那个 8192
-# 只是早期保守值，`effective_max_tokens()` 会把它抬到这里的基线）。
-MAX_OUTPUT_TOKENS = 65536
-#: 升档阶梯：只有一级 —— 基线已经是上限，没有"再大一点"可升。
+# 384K 是官方模型细节页写的"输出长度 最大 384K"（上下文 1M），实测
+# `deepseek-v4-flash-vision-exp` 接受 `max_tokens=393216`（=384×1024，返回 `finish=stop`），
+# 所以这就是**模型自己的上限**，不是我们拍的数。
+MAX_OUTPUT_TOKENS = 393216
+#: 升档阶梯：只有一级 —— 基线已经是模型上限，没有"再大一点"可升。
 #: 真遇到空正文时不再原地放大预算，而是由调度器重试该页（`_escalate_max_tokens` 返回 None）。
 MAX_TOKENS_LADDER = (MAX_OUTPUT_TOKENS,)
 SAFE_MAX_TOKENS = MAX_OUTPUT_TOKENS

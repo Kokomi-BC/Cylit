@@ -5447,25 +5447,29 @@ Sequential Operations / Maximum Path Length` 与 4 行 `O(n²·d)`、`O(n·log n
 ### 17.99 第九轮 · 不再设人为输出上限（思考模式不再"吃光预算就白烧一轮"）
 
 用户口径：**"思考模式吃光 token，我觉得不应该有 token 生成限制"**。
+（第一版我把"基线"拍成 65536 —— 用户随即贴出官方模型细节页：**上下文 1M、输出长度最大 384K**，
+"怎么感觉还不是模型的上限"。已改成 384K。）
 
 以前：页级 `MAX_TOKENS_LADDER = (8192, 16384, 32768, 65536)`、理解 `MAX_TOKENS = 12000`，
 基线给小了 → 思考模式（DeepSeek 默认开启，推理也计入 `completion_tokens`）写完推理就没正文
 → `finish=length` + 空正文 → 升档重试**白烧一轮调用**（3360 实测第 1 页连着重试 3 次）。
 
-改法：
-- `page_translate.MAX_OUTPUT_TOKENS = 65536`（实测厂商接受该值），`MAX_TOKENS_LADDER` 收敛成
-  `(65536,)`，`effective_max_tokens()` 把模型配置里的小值（8192/16384）一律**抬到上限**；
-  实测请求参数：`{'max_tokens': 65536, 'top_p': 0.95}` + `extra_body={'thinking': {'type': 'enabled'}}`；
-- 理解的 `MAX_TOKENS` 12000 → **65536**；"没给出收尾 JSON"那次重试保持有界，但不再 `×2`（已经到顶）；
-- 模型配置（`vision-d978f800` 8192、`generation-e6715c60` 16384）也统一抬到 65536，
+改法（基线 = **模型自己的上限**，不是我们拍的数）：
+- `page_translate.MAX_OUTPUT_TOKENS = 393216`（= 384×1024，官方"输出长度 最大 384K"；
+  实测 `deepseek-v4-flash-vision-exp` **接受该值**并正常返回 `finish=stop`），
+  `MAX_TOKENS_LADDER` 收敛成一级，`effective_max_tokens()` 把模型配置里的小值一律**抬到上限**；
+  实测请求参数：`{'max_tokens': 393216}` + `extra_body={'thinking': {'type': 'enabled'}}`；
+- 理解的 `MAX_TOKENS` **不写字面量**，直接 `from ...page_translate import MAX_OUTPUT_TOKENS`
+  （两处各写一个数迟早会漂）；"没收尾 JSON"那次重试保持有界，但不再 `×2`（已经到顶）；
+- 模型配置（`vision-d978f800` 8192、`generation-e6715c60` 16384）也统一抬到 393216，
   免得其它调用（简报 / RAG 回答）继续吃小预算；
 - `_escalate_max_tokens` 现在恒返回 `None`（阶梯到顶）→ **"正文为空"交给调度器重试该条**
   （同预算再要一次），而不是原地放大一个到顶的预算。文档在函数里写清了这条语义。
 
-单测跟着改（这是行为变更，不是测试松动）：
-`test_max_tokens_ladder` 断言"小值一律抬到 65536、没有更高一档"；
-`test_understanding_retry.py` 改成三条 —— 每次调用都带 65536、正文为空只调一次就抛给调度器、
-网络 500 同样只调一次。`pytest tests` 全绿。
+单测跟着改（这是行为变更，不是测试松动）：`test_max_tokens_ladder` 断言
+"393216 是基线、小值一律抬上来、没有更高一档"；`test_understanding_retry.py` 三条 ——
+每次调用都带上限、正文为空只调一次就抛给调度器、网络 500 同样只调一次。`pytest tests` 全绿。
+
 
 
 

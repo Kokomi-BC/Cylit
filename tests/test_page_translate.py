@@ -11,7 +11,7 @@ import json
 from backend.providers.generation.mock import MockGeneration
 from backend.services.translation.brief import DocumentBrief
 from backend.services.translation.page_translate import (
-    PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
+    MAX_OUTPUT_TOKENS, PAGES_FILENAME, PageCallResult, PageStore, build_page_payload,
     build_stable_prefix, call_page, effective_max_tokens, history_context,
     mark_rows_continuity, next_max_tokens, pair_rows, parse_pair,
     render_page_prompt, split_blocks, _row_key,
@@ -372,13 +372,15 @@ def test_call_page_with_mock_vision_returns_pair():
 
 
 def test_max_tokens_ladder():
-    # 2026-09-27 用户口径："不应该有 token 生成限制" → **基线就是厂商上限**（65536）；
-    # 模型配置里那些小值（8192/16384）会被抬上来；阶梯只剩一级 → 没有"再升一档"可升。
-    assert effective_max_tokens(None) == 65536
-    assert effective_max_tokens(2048) == 65536
-    assert effective_max_tokens(16384) == 65536
-    assert next_max_tokens(65536) is None
-    assert next_max_tokens(8192) == 65536            # 老阶梯值只会被抬到上限
+    # 2026-09-27 用户口径："不应该有 token 生成限制" → **基线就是模型自己的上限**：
+    # 官方模型细节页写"输出长度 最大 384K"（上下文 1M），实测接受 max_tokens=393216。
+    # 模型配置里那些小值（8192/16384）一律被抬上来；阶梯只剩一级 → 没有"再升一档"可升。
+    assert MAX_OUTPUT_TOKENS == 393216
+    assert effective_max_tokens(None) == MAX_OUTPUT_TOKENS
+    assert effective_max_tokens(2048) == MAX_OUTPUT_TOKENS
+    assert effective_max_tokens(16384) == MAX_OUTPUT_TOKENS
+    assert next_max_tokens(MAX_OUTPUT_TOKENS) is None
+    assert next_max_tokens(8192) == MAX_OUTPUT_TOKENS    # 老阶梯值只会被抬到上限
 
 
 # --------------------------------------------------------------------------

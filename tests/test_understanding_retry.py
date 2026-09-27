@@ -44,10 +44,12 @@ class _Provider:
 
 
 def test_budget_is_vendor_max() -> None:
-    """每次调用都带厂商上限，不再出现"8192 起步、逐级放大"。"""
+    """每次调用都带模型自己的上限（官方"输出长度 最大 384K"），不再出现"8192 起步、逐级放大"。"""
+    from backend.services.translation.page_translate import MAX_OUTPUT_TOKENS
+
     provider = _Provider(fail_times=0)
     us._generate(provider, "p", system="s", path="a")
-    assert provider.calls == [65536]
+    assert provider.calls == [MAX_OUTPUT_TOKENS] == [393216]
 
 
 def test_empty_body_is_left_to_the_scheduler() -> None:

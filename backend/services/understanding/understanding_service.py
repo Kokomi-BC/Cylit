@@ -44,6 +44,9 @@ from backend.core.utils import json_dumps, json_loads, now_iso
 from backend.repositories.mysql.models import Chunk, Paper, Understanding
 from backend.repositories.mysql.session import session_scope
 from backend.services.translation.brief import generate_brief
+#: 输出预算与页级**同一个常量**（`page_translate.MAX_OUTPUT_TOKENS` = 模型自己的上限 384K）：
+#: 两处各写一个字面量迟早会漂，所以直接从那里拿（`page_translate` 顶层不 import 本模块，不成环）。
+from backend.services.translation.page_translate import MAX_OUTPUT_TOKENS
 from backend.services.understanding import prompts
 
 log = get_logger(__name__)
@@ -264,9 +267,9 @@ def _provider(path: str):
     return _path_provider(path), _current_model_id(path)
 
 
-#: 理解的输出预算：**与页级一样直接给到厂商上限**（用户口径 2026-09-27："不应该有 token
-#: 生成限制"）。以前这里写 12000，于是"思考占满预算 → 正文为空"会白烧一轮（A 路实测中过招）。
-MAX_TOKENS = 65536
+#: 理解的输出预算：**与页级共用同一个常量**（模型自己的上限 384K，用户口径
+#: "不应该有 token 生成限制"）。以前这里写 12000，于是"思考占满预算 → 正文为空"会白烧一轮。
+MAX_TOKENS = MAX_OUTPUT_TOKENS
 
 
 def _page_context_head(path: str, paper_id: str) -> str:
