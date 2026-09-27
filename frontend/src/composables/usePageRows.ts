@@ -28,9 +28,28 @@ function stripHashes(text: string): string {
   return text.replace(/^[\s#]+/, '').trim();
 }
 
+/**
+ * 解析阶段的行文本里**去掉插图 Markdown**（`![图注](../figures/<block>.png)`）。
+ *
+ * 为什么必须去掉（用户口径 + 实测）：解析产物把插图写成了 Markdown 图片语法，而插图在阅读器里
+ * 是**另外渲染**的（`ReaderPageRows` 的 `.row-figure`：按图注行挂 `/figures/region/…?card=1`
+ * 的「图+图注」卡片）。两处都画的结果就是**同一张图出现两次、且裁剪方式不同**：
+ * - Markdown 那张 = 解析阶段的裸裁图（`figures/<block>.png`，紧跟文字、尺寸随栏宽）；
+ * - `.row-figure` 那张 = 按图注锚定重裁的卡片。
+ * 用户报的"第一个图片在页面顶部、大小不对、此处不该显示"就是前者（它挂在段落块里，
+ * 而那个段落块常常在该页顶部）。
+ *
+ * ⚠️ 只在**阅读器的行模型**里剥：`full.md` / Markdown 视图 / 导出仍按原样带图
+ * （那是"整篇 Markdown"的语义，图片本来就该在那儿）。
+ */
+function stripImageMarkdown(text: string): string {
+  if (!text.includes('![')) return text;
+  return text.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function rowFromBlock(block: Block, index: number): PageRow {
   const type = KNOWN_TYPES.has(block.type) ? block.type : 'para';
-  const text = block.text ?? '';
+  const text = stripImageMarkdown(block.text ?? '');
   const number = type === 'heading'
     ? (HEADING_NUMBER.exec(stripHashes(text))?.[1] ?? '')
     : '';

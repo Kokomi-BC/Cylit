@@ -113,7 +113,14 @@ def _number_of(text: str) -> str:
 
 def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
              page_bottom: float, *, below: bool) -> list[float]:
-    """把插图 bbox 收到"图注 + 结构分隔"之间。"""
+    """把插图 bbox 收到"图注 + 结构分隔"之间。
+
+    ⚠️ 分隔块必须**与本图横向重叠**（`_h_overlap`）。实测事故（3360-mmdfnd p5 图 3）：
+    那幅图的 raw bbox 只覆盖左半页（x 51.5–295.7，右半页的矢量图没被图体检测吃到），
+    而**右半页**有个 `heading`（x 318–558，y 85.4–109.3）被当成了"图中间的标题"——
+    顶边于是收到 115.27，把图顶部那一排位图（y 84–98.6，就是"Output A/B"那一行）整条切掉。
+    用户看到的就是"图片顶部被裁剪"。
+    """
     x0, y0, x1, y1 = bbox
     if caption is None:
         return bbox
@@ -122,7 +129,7 @@ def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
     if below:      # 图注在图下方：下边界 = 图注顶边；上边界排除夹在中间的标题/图注
         boundary = cy0 if cy0 - y0 >= MIN_HEIGHT else y1
         seps = [_num(s.get("y1")) + SEP_PAD for s in structs
-                if _num(s.get("y1")) <= cy0 - TOL]
+                if _num(s.get("y1")) <= cy0 - TOL and _h_overlap(s, x0, x1)]
         top = max([y0] + seps[-1:])
         if boundary - top < MIN_HEIGHT:
             return bbox
@@ -132,11 +139,23 @@ def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
     boundary = cy1 if y1 - cy1 >= MIN_HEIGHT else y0
     top = max(y0, boundary)
     seps = [_num(s.get("y0")) - SEP_PAD for s in structs
-            if _num(s.get("y0")) >= cy1 + TOL]
+            if _num(s.get("y0")) >= cy1 + TOL and _h_overlap(s, x0, x1)]
     bottom = min([y1] + seps[:1])
     if bottom - top < MIN_HEIGHT:
         return bbox
     return [x0, top, x1, bottom]
+
+
+def _h_overlap(row: dict, x0: float, x1: float, *, tol: float = 1.0) -> bool:
+    """这个块的横向范围与 (x0, x1) 有实质重叠吗（跨栏内容不算本图的上下文）。
+
+    ⚠️ **没有横向信息时按"重叠"处理**（老产物 / 单测夹具里只有 y）：宁可回到旧行为
+    （可能会收一点），也不要因为缺字段就把分隔块全部忽略。
+    """
+    bx0, bx1 = _num(row.get("x0")), _num(row.get("x1"))
+    if bx1 <= 0.0 and bx0 <= 0.0:
+        return True
+    return bx1 > x0 + tol and bx0 < x1 - tol
 
 
 def _text_rects(blocks_by_page: dict[int, list[dict]], page_no: int) -> list[Rect]:
@@ -175,6 +194,12 @@ def _rect_of(row: dict) -> Rect:
 #: turboquant p21 图 5 的刻度/子图标题行更宽（370pt）—— 按宽度卡（比如 ≤200pt）
 #: 会把这两个真实的少裁案例漏掉。
 LABEL_MAX_HEIGHT = 22.0
+#: "往外让开"的**幅度上限**（当前区域长度的比例）：只有"切得不深"才收。
+#: 实测事故（3360-mmdfnd p5 图 3）：左栏图 x 51.5–295.7，而一个**跨栏合并的宽行**
+#: （x 108.5–558.2，高 12.9pt —— 看上去和"单行标签"一模一样）把区域一路撑到 559.4，
+#: 把右栏正文也裁了进来。它的外扩量是区域宽度的 108%，而真标签的案例都在 9% 以内
+#: （attention p4 左 8.5%、turboquant p21 上 8.7%、p8 图 2 上 6.7%），所以按比例卡是安全的。
+GROW_MAX_RATIO = 0.4
 
 
 def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
@@ -207,11 +232,12 @@ def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
         is_caption = bool(avoid) and _rect_key(t) in avoid
         inside = (not is_caption) and t.y0 + TOL < edge < t.y1
         short = (t.y1 - t.y0) <= LABEL_MAX_HEIGHT      # 单行 = 标签；多行 = 段落
+        grow_cap = max(SNAP_MAX, GROW_MAX_RATIO * max(hi - lo, 1.0))
         if top:
             # 单行标签一律收进来；**多行块只在"切得不深"时收**（移动量 ≤ SNAP_MAX）
             if inside and (short or (edge - (t.y0 - TEXT_PAD)) <= SNAP_MAX):
                 new = t.y0 - TEXT_PAD          # 把被切的那行字整个收进来
-                if (hi - new) < MIN_HEIGHT:
+                if (edge - new) > grow_cap or (hi - new) < MIN_HEIGHT:
                     continue
             elif edge > t.y1 - TEXT_PAD and edge < t.y1 + TOL:
                 new = t.y1 + TEXT_PAD          # 贴得太近（或就是图注）→ 推开，别把字收进图里
@@ -224,7 +250,7 @@ def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
             inside_b = (not is_caption) and t.y0 < edge < t.y1 - TOL
             if inside_b and (short or ((t.y1 + TEXT_PAD) - edge) <= SNAP_MAX):
                 new = t.y1 + TEXT_PAD
-                if (new - lo) < MIN_HEIGHT:
+                if (new - edge) > grow_cap or (new - lo) < MIN_HEIGHT:
                     continue
             elif edge > t.y0 - TOL and edge < t.y0 + TEXT_PAD:
                 new = t.y0 - TEXT_PAD
@@ -284,10 +310,11 @@ def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float
         inside_l = (not is_caption) and t.x0 + TOL < edge < t.x1
         inside_r = (not is_caption) and t.x0 < edge < t.x1 - TOL
         short = (t.y1 - t.y0) <= LABEL_MAX_HEIGHT      # 同上：按**高度**判单行
+        grow_cap = max(SNAP_MAX, GROW_MAX_RATIO * max(hi - lo, 1.0))
         if left:
             if inside_l and (short or (edge - (t.x0 - TEXT_PAD)) <= SNAP_MAX):
                 new = t.x0 - TEXT_PAD          # 把被切的那个字整个收进来
-                if (hi - new) < MIN_VISIBLE:
+                if (edge - new) > grow_cap or (hi - new) < MIN_VISIBLE:
                     continue
             elif edge >= t.x0 - TEXT_PAD and edge <= t.x1 + TEXT_PAD:
                 new = t.x1 + TEXT_PAD          # 推开，别把字收进图里
@@ -298,7 +325,7 @@ def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float
         else:
             if inside_r and (short or ((t.x1 + TEXT_PAD) - edge) <= SNAP_MAX):
                 new = t.x1 + TEXT_PAD
-                if (new - lo) < MIN_VISIBLE:
+                if (new - edge) > grow_cap or (new - lo) < MIN_VISIBLE:
                     continue
             elif edge >= t.x0 - TEXT_PAD and edge <= t.x1 + TEXT_PAD:
                 new = t.x0 - TEXT_PAD
