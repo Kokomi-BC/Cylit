@@ -353,6 +353,50 @@ def _usable_image(img: ImageInfo, page_rect: Rect,
     return img.rect.area <= max_area_ratio * max(1.0, page_rect.area)
 
 
+def _looks_like_heading(text: str) -> bool:
+    """像不像"小节标题"（用来给图体定上界，见 :func:`_trim_top_at_heading`）。
+
+    保守：短行、没有句末标点，且形如 `Appendices` / `A. MHA and MQA Modes of MLA` /
+    `3.1 Something` / 全大写标题。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80 or t.endswith((".", "。", "?", "！", "!", ":", "：")):
+        return False
+    if re.match(r"^(?:\d+(?:\.\d+)*|[A-Z])\s*[.)]?\s+\S", t):      # 3.1 xxx / A. xxx
+        return True
+    letters = [c for c in t if c.isalpha()]
+    if len(letters) >= 4 and sum(1 for c in letters if c.isupper()) / len(letters) > 0.8:
+        return True                                                # APPENDICES
+    return bool(re.match(r"^(?:appendix|appendices|references|bibliography|abstract)\b",
+                         t, re.IGNORECASE))
+
+
+def _trim_top_at_heading(body: Rect, cap_rect: Rect, blocks: list[RawBlock],
+                         drawings: list[Drawing], images: list[ImageInfo]) -> Rect:
+    """把图体顶边收到**它上面的最后一个小节标题**之下 —— 但只在"标题之上没有真墨迹"时。
+
+    实测 DeepSeek-V3.2 p6 的图 4：参考文献（y 88~302）里 URL 的下划线是墨迹 → 图体顶边被拉到
+    272.2，卡片顶上挂着半页参考文献 + `Appendices` / `A. MHA and MQA Modes of MLA` 两个标题。
+    这里如果标题与图体顶边之间**只剩文字装饰**（下划线之类）就收，把顶边放到标题下方。
+
+    ⚠️ 反过来必须保住 boomerang p23 图 9 那种情况：图内标注 `19 (Every 2nd layer)` 也是"短行没有
+    句末标点"，但它**上方是图自己的图形**（非装饰墨迹）→ 不收，否则图又被切半截。
+    """
+    heads = [(b.rect, b.text) for b in blocks
+             if _looks_like_heading(b.text) and b.rect.y1 <= cap_rect.y0 - 2]
+    if not heads:
+        return body
+    heads.sort(key=lambda item: item[0].y1)
+    sep_rect, _text = heads[-1]                     # 离图注最近的那个标题
+    if sep_rect.y1 <= body.y0 + 2 or sep_rect.y0 >= cap_rect.y0:
+        return body                                # 标题不在"图体顶边 ~ 图注"之间
+    real_ink = [r for r in [d.rect for d in drawings] + [i.rect for i in images]
+                if r.y1 > body.y0 + 1 and r.y0 < sep_rect.y1 - 1]
+    if real_ink:
+        return body                                # 标题上面还有真图形 → 那是图内标注，不能收
+    return Rect(body.x0, sep_rect.y1 + 3.0, body.x1, body.y1)
+
+
 def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
     """这条细横线是不是**文字的下划线**（而不是图里的线）。
 
@@ -361,7 +405,10 @@ def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
     （用户截图）。判据：细横线 + 紧贴在某个文字行的**下沿**（间隔 -2~5pt）+ 与它有横向重叠。
     只用于**排除图体候选**，不动任何真实图形（图里的线不会贴着文字下沿走）。
     """
-    if not d.is_thin_bar(3.0) or d.length < 20:
+    # ⚠️ 下划线常常被画成**很多小段**（逐词一条，词间只剩 2~3pt 的短段）：
+    # 原来 `length < 20` 会把那些短段漏掉 → 它们被当成"真墨迹"，
+    # `_trim_top_at_heading` 于是不敢把顶边收到标题之下（实测 deepseek p6 图 4）。
+    if not d.is_thin_bar(3.0) or d.length < 2.0:
         return False
     for ab in page_blocks:
         for ln in ab.lines:
@@ -450,6 +497,9 @@ def detect_figures(
             )
         if body is None:
             continue
+        # 图体顶边若被"参考文献的下划线"之类拉到标题之上，就收到标题下面（见 `_trim_top_at_heading`）
+        body = _trim_top_at_heading(body, cap_rect, blocks, drawings_by_page.get(page_no, []),
+                                    images_by_page.get(page_no, []))
         # ⚠️ 这里**不再**用旧的 `CAPTION_MAX_GAP` 挡"图注离图体太远"（已删，理由见文件头）。
         rect = body.expand(padding)
         conf = 0.85 if imgs else 0.6
@@ -624,7 +674,23 @@ def _table_body_rect(cap: Rect, blocks: list[RawBlock],
         picked = above_bars
     elif below_bars:
         picked = below_bars
+    #: 只保留与表注**连续**的线框（逐条向上/向下接，单步间隔 ≤ 30pt）：
+    #: 否则"表注上方所有线框的并集"会把页面顶部那条页眉分隔线也吃进来
+    #: （实测 beyond-speedup p7 的 Table 2 顶边因此是 35.1，而表格本体从 94 起）。
+    def _chain(rects: list[Rect], *, upward: bool) -> list[Rect]:
+        cursor = cap.y0 if upward else cap.y1
+        ordered = sorted(rects, key=lambda r: r.y1, reverse=upward)
+        out: list[Rect] = []
+        for r in ordered:
+            gap = (cursor - r.y1) if upward else (r.y0 - cursor)
+            if gap < -2 or gap > 30.0:
+                break
+            out.append(r)
+            cursor = min(cursor, r.y0) if upward else max(cursor, r.y1)
+        return out
+
     if picked:
+        picked = _chain(picked, upward=picked is above_bars) or picked
         x0 = min(r.x0 for r in picked)
         x1 = max(r.x1 for r in picked)
         y0 = min(r.y0 for r in picked)

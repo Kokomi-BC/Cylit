@@ -302,7 +302,16 @@ def _name_line(text: str) -> str:
     if _NOISE_LINE.search(line) or _AFFIL_WORDS.search(line):
         return ""
     if any(ch.isdigit() for ch in line) and not re.search(r"[∗†‡*]", line):
-        return ""                                  # 纯数字行/年份/页码；带角标的名字除外
+        # ⚠️ 角标经常被排成"普通数字贴在名字后面"：实测 beyond-speedup 的作者行是
+        # `Zeyu Xing1, Xing Li2, Hui-Ling Zhen2, Mingxuan Yuan2, Sinno Jialin Pan1` ——
+        # 旧口径一见数字就整行丢掉（该篇 authors 因此一直是空）。
+        # 只放行"数字**全部**紧跟字母 + 这一行像多人名单（有逗号或 and）"，并把角标数字去掉。
+        digit_runs = re.findall(r"\d+", line)
+        attached = re.findall(r"[A-Za-z]\d+", line)
+        looks_like_roster = "," in line or re.search(r"\band\b", line, re.I)
+        if not (digit_runs and len(attached) == len(digit_runs) and looks_like_roster):
+            return ""                              # 纯数字行/年份/页码
+        line = normalize_space(re.sub(r"(?<=[A-Za-z])\d+", "", line))
     bare = re.sub(r"[∗†‡*§¶]+", "", line).strip(" ,;")
     if len(bare) < 4 or len(bare) > 55:
         return ""
