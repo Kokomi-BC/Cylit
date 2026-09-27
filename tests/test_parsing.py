@@ -312,3 +312,49 @@ def test_rebind_keeps_ids_for_unchanged_blocks():
     report = rebind_block_ids(new, old)
     assert report.matched == 1
     assert new[0].id == "p01-b01"
+
+
+def test_rebind_does_not_reuse_ids_from_another_prefix():
+    """前缀撞车加长后，旧 IR 里那些**老前缀**的 ID 不能再沿用。
+
+    实测事故（2026-09-28）：`12382-beyond-speedup-utilizing` 与 `…-3` 的 12 字符前缀
+    都是 `12382beyonds`，`id_prefix` 给 `-3` 加长到 16 字符，但重解析时 rebind 又从旧 IR
+    沿用了 12 字符的 ID → MySQL 里撞上另一篇的主键：`Duplicate entry '12382beyonds-p01-b01'`。
+    """
+    from backend.parsing.ir.rebind import id_prefix
+
+    old = [
+        BlockFingerprint(id="12382beyonds-p01-b01", page_no=1, x0=10, y0=10, x1=200, y1=30,
+                         type="para", text_fp="randomrotationconvertstheworst",
+                         content_hash=sha256_text("Random rotation converts the worst.")),
+    ]
+    new = [
+        Block(id="", paper_id="12382-beyond-speedup-utilizing-3", page_no=1,
+              order_in_page=1, order_global=1, type="para",
+              rect=Rect(10.5, 10.2, 200.4, 30.1),
+              text="Random rotation converts the worst.",
+              text_clean="Random rotation converts the worst."),
+    ]
+    new[0].finalize()
+    prefix = id_prefix("12382-beyond-speedup-utilizing-3",
+                       taken={id_prefix("12382-beyond-speedup-utilizing")})
+    assert prefix == "12382beyondspeed"                       # 加长避让
+    report = rebind_block_ids(new, old, prefix=prefix)
+    assert report.matched == 0                                # 老前缀的旧 ID 一个都不沿用
+    assert new[0].id.startswith("12382beyondspeed-p")         # 新块用**本次**前缀编号
+    assert not new[0].id.startswith("12382beyonds-p")
+
+
+def test_orphan_block_id_uses_the_paper_prefix():
+    """孤儿块（``-pXX-xNN``）也必须用本篇**实际**前缀，不能现算 12 字符的那个。
+
+    同一个撞车场景的第三处：`_next_block_id` 原来 `id_prefix(paper_id)` 现算，
+    于是"加长避让"在这一路上被丢掉，产出别人占用的 ID。
+    """
+    from backend.parsing.pipeline import _next_block_id
+
+    result = ParseResult(paper_id="12382-beyond-speedup-utilizing-3")
+    result.id_prefix = "12382beyondspeed"
+    assert _next_block_id(result, 3) == "12382beyondspeed-p03-x01"
+    result.id_prefix = ""                                     # 没写前缀时退回老行为
+    assert _next_block_id(result, 3) == "12382beyonds-p03-x01"

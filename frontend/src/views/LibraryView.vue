@@ -152,6 +152,10 @@ interface ImportForm {
   tags: string;
   paper_id: string;
   auto_parse: boolean;
+  /** 裁出的插图是否带图注（默认关：只出国体本身）。解析时生效。 */
+  figure_caption: boolean;
+  /** 深度图片搜索：整页没有图注时也按墨迹带兜底裁图（默认关）。解析时生效。 */
+  deep_figure_search: boolean;
 }
 
 /** multipart 里直接透传给后端的元数据字段。 */
@@ -164,7 +168,8 @@ interface ImportResult {
 
 const importOpen = ref(false);
 const importForm = reactive<ImportForm>({
-  file: null, title: '', authors: '', venue: '', year: '', tags: '', paper_id: '', auto_parse: true,
+  file: null, title: '', authors: '', venue: '', year: '', tags: '', paper_id: '',
+  auto_parse: true, figure_caption: false, deep_figure_search: false,
 });
 const dragOver = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -175,11 +180,15 @@ const fileInput = ref<HTMLInputElement | null>(null);
  * ⚠️ **必须在"选新文件"和"导入成功"两处都调用**：表单里的 title/authors/… 会残留上一篇的内容，
  * 而 `submitImport` 会把非空字段原样发给后端、后端又当成"用户填的" → 连续导入第二篇时
  * 新论文被命名成**上一篇**的名字（用户 2026-09-27 报的"命名成其他文章了"）。
+ *
+ * 两个插图开关也一起复位（默认关）：它们和标题一样是"上一篇的选择"，不清就会带到下一篇。
  */
 function resetImportForm() {
   for (const k of UPLOAD_FIELDS) importForm[k] = '';
   importForm.file = null;
   importForm.auto_parse = true;
+  importForm.figure_caption = false;
+  importForm.deep_figure_search = false;
   if (fileInput.value) fileInput.value.value = '';   // 同一个文件连选两次也要能触发 change
 }
 
@@ -214,6 +223,10 @@ async function submitImport() {
     if (v !== '') form.append(k, String(v));
   }
   form.append('auto_parse', importForm.auto_parse ? 'true' : 'false');
+  /* 两个插图开关：**导入即重解析**，所以它们只影响本次解析（均默认关）。
+   * 语义见 `PaperBuilder`：图片含图注 = 图体+图注拼成一张；深度图片搜索 = 无图注页兜底裁图。 */
+  form.append('figure_caption', importForm.figure_caption ? 'true' : 'false');
+  form.append('deep_figure_search', importForm.deep_figure_search ? 'true' : 'false');
   busyKey.value = 'import';
   try {
     const data = await api.upload<ImportResult>('/papers', form);
@@ -764,6 +777,16 @@ async function submitEdit() {
       <label class="row small" style="margin-top: 10px">
         <input type="checkbox" v-model="importForm.auto_parse" /> 导入后立即解析
       </label>
+      <!-- 两个插图开关：**导入时选、解析时生效**（导入本身就是重解析）。
+           默认都关 = 只出图注锚定的图、且裁图不含图注（图注在阅读器里有自己的一行，不丢信息）。 -->
+      <label class="row small opt-row">
+        <input type="checkbox" v-model="importForm.figure_caption" /> 图片是否包含图注
+        <span class="opt-note">开 = 图体与图注拼成一张（现状那套卡片）；关（默认）= 只裁图体本身</span>
+      </label>
+      <label class="row small opt-row">
+        <input type="checkbox" v-model="importForm.deep_figure_search" /> 深度图片搜索
+        <span class="opt-note">开 = 整页没有图注时也按墨迹带兜底裁图；关（默认）= 只出图注锚定的图</span>
+      </label>
       <template #footer>
         <button class="btn" @click="importOpen = false">取消</button>
         <button class="btn primary" :disabled="busyKey === 'import'" @click="submitImport">
@@ -875,4 +898,7 @@ async function submitEdit() {
 
 .es-icon.bad { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .load-error { color: var(--danger); }
+/* 导入弹窗里的两个插图开关：一行一个，说明文字跟在后面（换行时缩进对齐） */
+.opt-row { margin-top: 8px; align-items: baseline; }
+.opt-note { margin-left: 6px; font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
 </style>

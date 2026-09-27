@@ -1425,7 +1425,8 @@ def _figure_region_url(paper_id: str, chunk_type: str, page_no: int,
             continue
         # `v=<区域哈希>`：裁图接口允许浏览器缓存 7 天，URL 不加版本号的话，
         # 区域算法一变，知识库缩略图会一直显示旧图（实测事故，见 figure_regions.media_of_page）。
-        ver = str(region.get("hash") or "")
+        # 版本串里还编进**图注开关**（`region_version`）：开关不影响 bbox，光靠哈希挡不住旧图。
+        ver = figure_regions.region_version(region, paper_id)
         suffix = f"?v={ver}" if ver else ""
         if number and str(region.get("number") or "") == number:
             return (f"{get_settings().api_prefix}/papers/{paper_id}"

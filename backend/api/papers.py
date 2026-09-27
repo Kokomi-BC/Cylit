@@ -29,8 +29,14 @@ async def upload_paper(
     tags: str | None = Form(None),
     paper_id: str | None = Form(None),
     auto_parse: bool = Form(True),
+    figure_caption: bool = Form(False),
+    deep_figure_search: bool = Form(False),
 ):
-    """上传 PDF → 落盘 + 建 paper + 建 PARSE 任务（规划 §21.1）。"""
+    """上传 PDF → 落盘 + 建 paper + 建 PARSE 任务（规划 §21.1）。
+
+    ``figure_caption`` / ``deep_figure_search``：导入弹窗的两个插图开关（均默认关，
+    **导入即重解析**，所以只在本次解析生效）。语义见 ``PaperBuilder``。
+    """
     data = await file.read()
     if not data:
         raise ValidationError("上传文件为空")
@@ -39,6 +45,7 @@ async def upload_paper(
         tmp, file.filename or "upload.pdf", title=title, authors=authors,
         venue=venue, year=year, tags=tags, paper_id=paper_id,
         auto_parse=auto_parse,
+        figure_caption=figure_caption, deep_figure_search=deep_figure_search,
     )
     try:
         tmp.unlink(missing_ok=True)
@@ -92,11 +99,22 @@ async def trigger_parse(paper_id: str, request: Request,
                         then_translate: bool = Query(False,
                                                      description="解析完成后自动接着开始逐页翻译"),
                         vision_model: str | None = Query(None,
-                                                         description="指定视觉模型 id")):
-    task = paper_service.create_parse_task(paper_id, force=force, params={
+                                                         description="指定视觉模型 id"),
+                        figure_caption: bool | None = Query(
+                            None, description="插图带图注（不传 = 沿用上次解析的值）"),
+                        deep_figure_search: bool | None = Query(
+                            None, description="深度图片搜索：无图注页兜底裁图（不传 = 沿用）")):
+    params: dict = {
         "llm_repair": llm_repair, "vision": vision, "vision_model": vision_model,
         "then_translate": then_translate,
-    })
+    }
+    # 两个插图开关只在**显式传了**的时候覆盖（不传则由 `create_parse_task` 沿用
+    # 这篇论文上一次解析固化的值 —— 用户点「重新解析」不该把开关悄悄关掉）
+    if figure_caption is not None:
+        params["figure_caption"] = figure_caption
+    if deep_figure_search is not None:
+        params["deep_figure_search"] = deep_figure_search
+    task = paper_service.create_parse_task(paper_id, force=force, params=params)
     return envelope(task, message="已创建解析任务", request=request)
 
 

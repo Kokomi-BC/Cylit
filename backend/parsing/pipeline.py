@@ -208,6 +208,8 @@ class PaperBuilder:
         use_llm_repair: bool = False,
         vision_fn: VisionReadFn | None = None,
         vision_dpi: int = 200,
+        figure_caption: bool = False,
+        deep_figure_search: bool = False,
         progress: Callable[[str, int, int], None] | None = None,
     ) -> None:
         self.pdf_path = Path(pdf_path)
@@ -221,6 +223,16 @@ class PaperBuilder:
         # 扫描件兜底：没有文本层时用视觉模型读页（由服务层注入，parsing 不依赖 services）
         self.vision_fn = vision_fn
         self.vision_dpi = vision_dpi
+        # ---- 两个插图开关（导入弹窗里选，**解析时**生效；均默认关）----
+        # `figure_caption`：裁出的插图是否**带图注**。开 = 现成的「图 + 图注」卡片
+        #   （`figure_card_png`，正文与"点开看大图"共用同一张）；关 = 只出国体本身。
+        #   这个开关落在服务层（`figure_regions.ensure_region_crop` 按 IR 里固化的值决定），
+        #   这里只负责把它**写进解析产物**（IR `paper.stats_json` + parse_report）。
+        # `deep_figure_search`（界面文案「深度图片搜索」）：整页一条图注都没有时是否按
+        #   "墨迹带"兜底裁图（`detect_figures(allow_captionless=…)`）。兜底产出按定义没有
+        #   图注，而"图注一般都有"，所以默认关 = 只出图注锚定的图。
+        self.figure_caption = bool(figure_caption)
+        self.deep_figure_search = bool(deep_figure_search)
         self.progress = progress
 
         self.pages_dir = self.dir / "pages"
@@ -392,6 +404,7 @@ class PaperBuilder:
                 if self.max_pages:
                     page_numbers = page_numbers[: self.max_pages]
                 result = ParseResult(paper_id=self.paper_id, page_count=len(page_numbers))
+                result.id_prefix = self.id_prefix   # 孤儿块编号必须沿用同一个前缀
                 # 元数据（标题/作者/会议/年份/摘要）一次读全：论文库那几个字段长期是空的，
                 # 用户只能手打（见 `backend/parsing/metadata.py` 顶部说明）。
                 paper_meta = extract_paper_meta(doc, self.pdf_path)
@@ -400,6 +413,13 @@ class PaperBuilder:
                 result.stats["venue"] = paper_meta.venue
                 result.stats["year"] = paper_meta.year
                 result.stats["meta_sources"] = paper_meta.sources
+                # 两个插图开关固化进解析产物：服务层（`figure_regions`）按需裁图时读它 ——
+                # 裁图是**按需渲染**的，没有这份记录就无法知道该不该拼图注。同时它也是
+                # "这篇论文是按什么口径解析的"的留痕（parse_report.json 里同样能看到）。
+                result.stats["parse_options"] = {
+                    "figure_caption": self.figure_caption,
+                    "deep_figure_search": self.deep_figure_search,
+                }
 
                 # ------------- 1. 页面渲染 -------------
                 with Timer() as stat:
@@ -532,7 +552,11 @@ class PaperBuilder:
                     old_fps = writer.read_existing_fingerprints()
                     assign_ids_in_order(all_blocks, prefix=self.id_prefix)
                     if old_fps:
-                        report = rebind_block_ids(all_blocks, old_fps)
+                        # 传本论文**本次的前缀**：只沿用同前缀的旧 ID，新块也用这个前缀
+                        # （前缀撞车加长后旧 IR 里还是老前缀，沿用会写回别人占用的主键，
+                        #  实测 `12382-beyond-speedup-utilizing-3` 重解析 IntegrityError）
+                        report = rebind_block_ids(all_blocks, old_fps,
+                                                  prefix=self.id_prefix)
                         result.stats["rebind"] = report.to_dict()
                     else:
                         result.stats["rebind"] = {"matched": 0,
@@ -840,7 +864,8 @@ class PaperBuilder:
             if pno in skip:
                 continue
             cands = detect_figures(raws, images_by_page, drawings_by_page, page_rects,
-                                   pages={pno})
+                                   pages={pno},
+                                   allow_captionless=self.deep_figure_search)
             for cand in cands:
                 host = _find_host_block(result.blocks, pno, cand.rect)
                 if cand.reason == "no_caption":
@@ -1107,7 +1132,9 @@ def _next_block_id(result: ParseResult, page_no: int) -> str:
     注意：**不能重新调用 assign_ids_in_order**，否则会覆盖重绑定得到的稳定 ID。
     """
     existing = {b.id for b in result.blocks}
-    prefix = id_prefix(result.paper_id)
+    # 前缀取**本篇实际用的那个**（`build()` 里写进 result；撞车时会比 12 字符长）。
+    # 现算 `id_prefix(paper_id)` 等于把"避让别的论文"丢掉 → 孤儿块 ID 撞别人主键。
+    prefix = result.id_prefix or id_prefix(result.paper_id)
     n = 1
     while f"{prefix}-p{page_no:02d}-x{n:02d}" in existing:
         n += 1

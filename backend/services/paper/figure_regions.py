@@ -70,12 +70,79 @@ CROP_DPI = 600
 #:     图注条右边会挂着另一栏的参考文献）。
 #: 9 = 图注条按**图注锚点 ∪ 图体**的横向带裁回本栏（8 只按"同栏"判会失效：合并块的 rect
 #:     本身就是整页宽，只能裁不能丢）。
-REGION_CACHE_VERSION = 10
+#: 10 = 图体下边界硬闸：图注永远不进图体（DeepSeek 图 1 卡片底部挂着半个图注行）。
+#: 11 = 新增「图片是否包含图注」开关（导入时选、解析时固化）：关掉时 `card=1` 也不再拼图注。
+#:      必须 +1 —— 不然浏览器里 `?v=<hash>` 那张"带图注的卡片"还会被用 7 天。
+REGION_CACHE_VERSION = 11
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
 # {paper_id: (ir_mtime, {page: [regions]})}
 _cache: dict[str, tuple[float, dict[int, list[dict]]]] = {}
+# {paper_id: (ir_mtime, options)} —— 解析时固化的插图开关（见 `parse_options`）
+_opts_cache: dict[str, tuple[float, dict]] = {}
+
+#: 两个插图开关的默认值（导入弹窗默认也是这两个）：都不开。
+DEFAULT_PARSE_OPTIONS: dict[str, bool] = {
+    "figure_caption": False,        # 裁出的插图是否带图注
+    "deep_figure_search": False,    # 无图注页是否兜底裁图（界面文案「深度图片搜索」）
+}
+
+
+def parse_options(paper_id: str) -> dict:
+    """该论文**解析时固化**的插图开关（IR ``paper.stats_json`` → ``parse_options``）。
+
+    为什么从 IR 读：裁图是**按需渲染**的（600dpi，请求来了才裁），"要不要拼图注"这个
+    决定必须随解析产物一起留下来，否则服务层无从知道用户当初选了什么。IR 本来就是
+    "这篇论文是怎么解析出来的"的留痕，放这里既不用新开文件、也不用改库表；按 IR mtime
+    缓存，一次解析只解析一遍那段 JSON。
+
+    读不到（从未解析过 / 旧 IR 没这个字段 / 文件损坏）一律**全关**：默认口径就是关。
+    """
+    from backend.services.paper import paper_service
+
+    ir_path: Path = paper_service.paper_paths(paper_id)["ir"]
+    try:
+        mtime = ir_path.stat().st_mtime
+    except OSError:
+        return dict(DEFAULT_PARSE_OPTIONS)
+    with _lock:
+        cached = _opts_cache.get(paper_id)
+        if cached and abs(cached[0] - mtime) < 1e-6:
+            return cached[1]
+    opts = dict(DEFAULT_PARSE_OPTIONS)
+    try:
+        from backend.parsing.ir.ir_reader import IRReader
+
+        reader = IRReader(ir_path)
+        stats = json_loads(reader.paper().get("stats_json")) or {}
+        raw = stats.get("parse_options") if isinstance(stats, dict) else None
+        if isinstance(raw, dict):
+            for k in DEFAULT_PARSE_OPTIONS:
+                if k in raw:
+                    opts[k] = bool(raw[k])
+    except Exception as exc:  # noqa: BLE001 —— 读不到就按默认关，绝不拦住出图
+        log.warning("读取论文 %s 的解析开关失败（按默认关处理）：%s", paper_id, exc)
+    with _lock:
+        _opts_cache[paper_id] = (mtime, opts)
+    return opts
+
+
+def caption_in_crop(paper_id: str) -> bool:
+    """裁出的插图是否拼图注（「图片是否包含图注」开关，解析时固化）。"""
+    return bool(parse_options(paper_id).get("figure_caption"))
+
+
+def region_version(region: dict, paper_id: str) -> str:
+    """URL 上的版本串：区域哈希 + 图注开关（**不是**给缓存文件名用的）。
+
+    ⚠️ 光有区域哈希不够：图注开关**不改 bbox**，所以开关一变哈希不变，而响应头是
+    `Cache-Control: max-age=604800` —— 浏览器会把"带图注的旧卡片"再摆 7 天
+    （用户"重解析了还是老图"的老事故就是这么来的）。把开关也编进版本串。
+    """
+    h = str(region.get("hash") or "")
+    return f"{h}c{1 if caption_in_crop(paper_id) else 0}" if h else ""
+
 
 
 def _num(value) -> float:
@@ -737,7 +804,10 @@ def prune_crops(paper_id: str, regions: dict[int, list[dict]] | None = None) -> 
     data = regions if regions is not None else all_regions(paper_id)
     keep = {f"region-p{int(page):04d}-{i:02d}-p{int(r.get('part', 0))}-{r['hash']}.png"
             for page, rows in data.items() for i, r in enumerate(rows)}
-    keep |= {name[:-4] + "-card.png" for name in keep}     # 图表卡片缓存一起保留
+    if caption_in_crop(paper_id):
+        keep |= {name[:-4] + "-card.png" for name in keep}     # 图表卡片缓存一起保留
+    # 关掉「图片是否包含图注」的论文不再用卡片：这类缓存一并清掉，别让磁盘上留着
+    # 一张"和当前口径不一致"的图（下次开回来会按需重裁）。
     removed = 0
     for path in figures_dir.glob("region-p*.png"):
         if path.name in keep:
@@ -761,8 +831,10 @@ def invalidate_cache(paper_id: str | None = None) -> None:
     with _lock:
         if paper_id is None:
             _cache.clear()
+            _opts_cache.clear()
         else:
             _cache.pop(paper_id, None)
+            _opts_cache.pop(paper_id, None)
 
 
 def region_crop_path(paper_id: str, page_no: int, index: int, part: int = 0,
@@ -940,17 +1012,22 @@ def ensure_region_crop(paper_id: str, page_no: int, index: int,
 
     ``card=True`` 出的是**图表卡片**（图 + 图注合成一张，见 ``figure_card_png``），
     用于放大看大图与导出；正文里的插图仍是纯图（图注在正文里有自己的一行）。
+
+    ⚠️ 导入时把「图片是否包含图注」关掉（**默认**）的论文，``card=True`` 会退化成**纯图**：
+    关掉的含义就是"裁出的插图不含图注"，而正文与"点开看大图"必须是**同一张**
+    （这条以前专门统一过，见 ``media_of_page`` / `ReaderPageRows` 的返工记录）。
     """
     from backend.core.utils import write_bytes_atomic
     from backend.parsing.extract.render import figure_card_png, render_crop_png
     from backend.services.paper import paper_service
 
     region, part_no = _resolve_part(paper_id, page_no, index, part)
-    target = region_crop_path(paper_id, page_no, index, part_no, card=card)
+    want_card = card and caption_in_crop(paper_id)
+    target = region_crop_path(paper_id, page_no, index, part_no, card=want_card)
     if target.is_file() and target.stat().st_size > 0:
         return target
     x0, y0, x1, y1 = region["bbox"]
-    caps = caption_rects(paper_id, page_no, region) if card else []
+    caps = caption_rects(paper_id, page_no, region) if want_card else []
     pdf = paper_service.resolve_pdf(paper_id)
     with _lock:
         if target.is_file() and target.stat().st_size > 0:
@@ -958,7 +1035,7 @@ def ensure_region_crop(paper_id: str, page_no: int, index: int,
         import pymupdf as fitz
 
         with fitz.open(str(pdf)) as doc:
-            if card:
+            if want_card:
                 data = figure_card_png(doc, int(page_no), Rect(x0, y0, x1, y1), caps,
                                        dpi=CROP_DPI)
             else:
@@ -966,7 +1043,7 @@ def ensure_region_crop(paper_id: str, page_no: int, index: int,
                                        dpi=CROP_DPI, padding=INK_PAD, ink_trim=True)
         write_bytes_atomic(target, data)
     log.info("插图裁图已生成：p%d #%d part%d%s（%s %s）%d bytes",
-             page_no, index, part_no, "·卡片" if card else "",
+             page_no, index, part_no, "·卡片" if want_card else "",
              region["kind"], region["number"], target.stat().st_size)
     return target
 
@@ -989,7 +1066,8 @@ def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> 
         # 摆 7 天（实测事故：修好"图 3 顶部被裁"之后用户重启服务、重新导入都还是旧图，
         # 后端抓下来明明是新的）。带上哈希，URL 随区域变，缓存自然失效；
         # 缓存文件本身的名字里也带哈希，两处口径一致。
-        ver = str(r.get("hash") or "")
+        # 版本串里还有**图注开关**（`_ver`）：开关不改 bbox，光靠哈希挡不住旧卡片。
+        ver = region_version(r, paper_id)
         q = f"v={ver}" if ver else ""
         out.append({
             "kind": r["kind"], "number": r["number"], "caption": r["caption"],
@@ -1032,7 +1110,7 @@ def markdown_refs(paper_id: str, page_no: int, *, prefix: str) -> dict[str, str]
         if prefix.startswith("/"):
             # 同样要带 `v=<哈希>`：这条 URL 会被写进应用内的 Markdown 视图
             # （`/markdown/translated?write=false` 那份），浏览器同样会缓存 7 天。
-            ver = str(r.get("hash") or "")
+            ver = region_version(r, paper_id)
             base = (f"{prefix.rstrip('/')}/papers/{paper_id}/figures/region/{int(page_no)}/{i}"
                     + (f"?v={ver}" if ver else ""))
         else:

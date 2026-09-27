@@ -567,6 +567,10 @@ class ParseResult:
     stats: dict[str, Any] = field(default_factory=dict)
     duration_ms: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    #: 本篇块 ID 的**实际前缀**（`rebind.id_prefix`，可能因为与别的论文撞车而加长）。
+    #: 孤儿块（`_next_block_id`）必须用它 —— 现算 `id_prefix(paper_id)` 会把加长丢掉，
+    #: 生成出"另一篇论文已占用"的 ID（实测 `-3` 重解析 IntegrityError）。
+    id_prefix: str = ""
 
     def counts(self) -> dict[str, int]:
         by_type: dict[str, int] = {}

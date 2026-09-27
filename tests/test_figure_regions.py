@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from backend.services.paper import figure_regions as fr
 from backend.services.paper.figure_regions import (
     SEP_PAD, _number_of, _parts_of, _snap_edges, _tighten, inject_images,
 )
@@ -232,3 +235,94 @@ def test_inject_images_respects_existing_image_syntax():
 def test_inject_images_noop_without_refs():
     assert inject_images("text", {}) == "text"
     assert inject_images("", {"1": "![Figure 1](a.png)"}) == ""
+
+
+# --------------------------------------------------------------------------
+# 两个导入开关：图片是否包含图注 / 深度图片搜索（解析时固化，服务层读它出图）
+# --------------------------------------------------------------------------
+
+
+def _write_ir(path: Path, stats: dict | None) -> None:
+    """造一个最小 IR：只需要 `paper` 表 + `stats_json`（`IRReader.paper()` 就查它）。"""
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        # 同一个测试里可能改写两次（开/关各一次），所以建表/写行都要幂等
+        conn.execute("CREATE TABLE IF NOT EXISTS paper "
+                     "(paper_id TEXT PRIMARY KEY, stats_json TEXT)")
+        conn.execute("DELETE FROM paper")
+        conn.execute("INSERT INTO paper VALUES ('p1', ?)",
+                     (json.dumps(stats) if stats is not None else None,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _fake_paths(monkeypatch, tmp_path: Path, stats: dict | None) -> Path:
+    from backend.services.paper import paper_service
+
+    ir = tmp_path / "ir.sqlite"
+    _write_ir(ir, stats)
+    monkeypatch.setattr(paper_service, "paper_paths", lambda pid: {"ir": ir})
+    fr.invalidate_cache()
+    return ir
+
+
+def test_parse_options_default_to_off(monkeypatch, tmp_path):
+    """读不到（从未解析过 / 旧 IR 没这个字段）一律全关 —— 默认口径就是关。"""
+    from backend.services.paper import paper_service
+
+    monkeypatch.setattr(paper_service, "paper_paths",
+                        lambda pid: {"ir": tmp_path / "missing.sqlite"})
+    fr.invalidate_cache()
+    assert fr.parse_options("p1") == {"figure_caption": False, "deep_figure_search": False}
+    assert fr.caption_in_crop("p1") is False
+    _fake_paths(monkeypatch, tmp_path, {"venue": "NeurIPS"})       # IR 在、但没有这个字段
+    assert fr.caption_in_crop("p1") is False
+
+
+def test_parse_options_read_the_frozen_values(monkeypatch, tmp_path):
+    """导入时选的开关随解析产物固化（IR `paper.stats_json` → `parse_options`），服务层照它出图。"""
+    _fake_paths(monkeypatch, tmp_path,
+                {"parse_options": {"figure_caption": True, "deep_figure_search": True}})
+    assert fr.parse_options("p1") == {"figure_caption": True, "deep_figure_search": True}
+    assert fr.caption_in_crop("p1") is True
+    # 非布尔值按布尔语义收（任务参数从 HTTP 表单来，可能是 "true"/1）
+    _fake_paths(monkeypatch, tmp_path, {"parse_options": {"figure_caption": 1}})
+    assert fr.caption_in_crop("p1") is True
+
+
+def test_region_version_carries_the_caption_switch(monkeypatch, tmp_path):
+    """URL 版本串必须带图注开关：开关不改 bbox，光靠区域哈希挡不住浏览器里 7 天的旧卡片。"""
+    region = {"hash": "ab12cd34"}
+    _fake_paths(monkeypatch, tmp_path, {"parse_options": {"figure_caption": False}})
+    off = fr.region_version(region, "p1")
+    _fake_paths(monkeypatch, tmp_path, {"parse_options": {"figure_caption": True}})
+    on = fr.region_version(region, "p1")
+    assert off == "ab12cd34c0" and on == "ab12cd34c1" and off != on
+
+
+def test_card_crop_falls_back_to_the_plain_crop(monkeypatch, tmp_path):
+    """「图片是否包含图注」关掉时 `card=1` 也走纯图 —— 正文与"点开看大图"必须是同一张。"""
+    region = {"bbox": [10.0, 10.0, 100.0, 100.0], "hash": "ab12cd34",
+              "kind": "figure", "number": "1", "part": 0}
+    monkeypatch.setattr(fr, "_resolve_part", lambda *a, **k: (region, 0))
+    asked: list[bool] = []
+
+    def fake_path(pid, page, index, part=0, *, card=False):
+        asked.append(card)
+        p = tmp_path / f"region-card{int(card)}.png"
+        p.write_bytes(b"png")                       # 已存在 → 提前返回，不需要真 PDF
+        return p
+
+    monkeypatch.setattr(fr, "region_crop_path", fake_path)
+    monkeypatch.setattr(fr, "caption_in_crop", lambda pid: False)
+    out = fr.ensure_region_crop("p1", 8, 0, card=True)
+    assert asked == [False] and out.name == "region-card0.png"
+
+    asked.clear()
+    monkeypatch.setattr(fr, "caption_in_crop", lambda pid: True)
+    out = fr.ensure_region_crop("p1", 8, 0, card=True)
+    assert asked == [True] and out.name == "region-card1.png"

@@ -441,12 +441,17 @@ def detect_figures(
     page_rects: dict[int, Rect],
     padding: float = 3.0,
     pages: set[int] | None = None,
+    allow_captionless: bool = True,
 ) -> list[FigureCandidate]:
     """插图检测。
 
     ``pages``：**本次调用负责的页**。管道按页调用（``pages={pno}``）时必须传 ——
     两个 page 映射是全篇的，不传就会把其他页的墨迹也兜底产出（见下面兜底那段注释）。
     默认 ``None`` = 认为调用方一次负责整篇。
+
+    ``allow_captionless``：是否启用**无图注兜底**（整页一条图注都没有时按墨迹带裁图）。
+    默认 ``True`` 保持库层老行为；管道按导入开关显式传入（见 ``PaperBuilder``），
+    关掉时那些页不出任何插图（用户口径：导入弹窗的「深度图片搜索」默认关）。
     """
     out: list[FigureCandidate] = []
     all_caps = find_caption_blocks(blocks)
@@ -516,6 +521,11 @@ def detect_figures(
     # 只对"没有任何图注/表注的页"生效（用户："图片一般都有图注"）：有图注的页有锚点，
     # 交给上面的分段逻辑；放宽到"有图注的页也兜底"会立刻产出几百张假图
     #（实测第一版：39 页 800+ 张，公式页的分数线全被当成插图）。
+    #
+    # ⚠️ 这一段是**可关**的（`allow_captionless=False`，来源 = 导入弹窗的「深度图片搜索」）：
+    # 它的产出按定义**没有图注**，而"图注一般都有"—— 用户要能选择"只要图注锚定的图"。
+    if not allow_captionless:
+        return out
     pages_with_caps = {ab.page_no for ab, _k, _l in all_caps if _looks_like_caption_line(ab.text)}
     # ⚠️ `pages` = **本次调用负责的页**，必须由调用方说清楚（管道按页调用：`pages={pno}`）。
     # `images_by_page`/`drawings_by_page` 传的是**全篇**映射，不收窄的话每次调用都会把

@@ -80,6 +80,22 @@ def test_captionless_fallback_ignores_a_lone_formula():
     assert detect_figures([], {}, {1: drs}, {1: PAGE}) == []
 
 
+def test_captionless_fallback_is_off_when_asked():
+    """导入开关「深度图片搜索」关掉（默认）时，整页无图注**不产出任何插图**。
+
+    同一页同一份墨迹，`allow_captionless=False` 必须一张都不给 —— 这正是用户口径
+    "关 = 只出图注锚定的图"。
+    """
+    drs = [_ink(1, 100.0 + i * 3.0, 108.0 + i * 3.0) for i in range(24)]
+    assert detect_figures([], {}, {1: drs}, {1: PAGE}) != []          # 开（库层默认）
+    assert detect_figures([], {}, {1: drs}, {1: PAGE},
+                          allow_captionless=False) == []             # 关
+    # 有图注的页不受这个开关影响：图注锚定的图照旧出
+    blocks = [_caption("Figure 4: T-SNE visualizations", 1, 250.0)]
+    cands = detect_figures(blocks, {}, {1: drs}, {1: PAGE}, allow_captionless=False)
+    assert len(cands) == 1 and cands[0].reason == "caption_anchor"
+
+
 def test_captionless_band_is_not_double_produced():
     """有图注的墨迹带不再走兜底（同一块墨迹不重复产出）。"""
     blocks = [_caption("Figure 4: T-SNE visualizations", 1, 250.0)]

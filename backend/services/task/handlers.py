@@ -80,6 +80,9 @@ def handle_parse(ctx: TaskContext) -> dict:
         vision_fn=parse_hooks.build_vision_fn(ctx.params),
         vision_dpi=int(ctx.params.get("vision_dpi")
                        or get_settings().parse_vision_dpi),
+        # 导入弹窗的两个插图开关（均默认关，解析时生效；见 PaperBuilder）
+        figure_caption=bool(ctx.params.get("figure_caption")),
+        deep_figure_search=bool(ctx.params.get("deep_figure_search")),
     )
     result = builder.build()
     if result.stats.get("scanned_pages"):

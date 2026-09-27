@@ -88,16 +88,39 @@ def rebind_block_ids(
     new_blocks: list[Block],
     old_fingerprints: list[BlockFingerprint],
     similarity_threshold: float = 0.72,
+    prefix: str | None = None,
 ) -> MatchReport:
     """把新块与旧 IR 匹配，匹配成功的沿用旧 ID（就地修改 ``new_blocks``）。
 
     匹配优先级：
     1. content_hash 完全相同 → 直接复用（最快最稳）
     2. 同页 + bbox 近似 + 文本指纹相似度 ≥ 阈值
+
+    ``prefix``：本论文**本次要用的块 ID 前缀**（管道传 ``self.id_prefix``）。
+    给了它就有两条约束（都是 2026-09-28 实测事故逼出来的）：
+
+    1. **只沿用同前缀的旧 ID**。前缀撞车时 ``id_prefix`` 会把前缀加长，而旧 IR 里还是
+       加长前的 ID（``12382beyonds-…``）—— 沿用它们等于把**另一篇论文已占用的主键**
+       重新写回 MySQL（实测 ``12382-beyond-speedup-utilizing-3`` 重解析直接
+       ``IntegrityError: Duplicate entry '12382beyonds-p01-b01'``）。
+       前缀没变时过滤是空操作，正常论文的 ID 稳定性不受影响。
+    2. **给新块编号也用同一个前缀**。原来这里是 ``id_prefix(paper_id)`` 现算（不带
+       ``taken``），等于把上面好不容易避开的撞车前缀又拿了回来。
     """
     report = MatchReport()
+    if prefix:
+        old_fingerprints = [fp for fp in old_fingerprints
+                            if str(fp.id).startswith(f"{prefix}-p")]
     if not old_fingerprints:
         report.new_ids = len(new_blocks)
+        if prefix:
+            # 没有可沿用的旧 ID 时也要保证块**有** ID：管道是先 `assign_ids_in_order` 再
+            # rebind 的（那时这里是空操作），但"只给了前缀、块还没编号"的调用方也要能用。
+            done = {str(b.id) for b in new_blocks
+                    if str(b.id or "").startswith(f"{prefix}-")}
+            todo = [b for b in new_blocks if str(b.id) not in done]
+            if todo:
+                assign_ids_in_order(todo, reserve=done, prefix=prefix)
         return report
 
     # 先把所有新块改成临时 ID，避免"新块 A 占用了旧块 B 的 ID"导致主键冲突
@@ -143,9 +166,11 @@ def rebind_block_ids(
 
     remaining = [b for b in new_blocks if b.id.startswith("__new")]
     if remaining:
-        # 新增块：分配该页下一个可用的顺序 ID（跳过已沿用的旧 ID）
-        prefix = id_prefix(_infer_paper_id(new_blocks))
-        assign_ids_in_order(remaining, reserve=used, prefix=prefix)
+        # 新增块：分配该页下一个可用的顺序 ID（跳过已沿用的旧 ID）。
+        # ⚠️ 前缀必须**沿用调用方给的那个**：现算 `id_prefix(paper_id)` 不带 `taken`，
+        # 会把"为了避让别的论文而加长"这件事丢掉（见上面 ``prefix`` 的第 2 条）。
+        assign_ids_in_order(remaining, reserve=used,
+                            prefix=prefix or id_prefix(_infer_paper_id(new_blocks)))
     report.new_ids = len(remaining)
     return report
 

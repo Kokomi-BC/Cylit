@@ -957,6 +957,8 @@ def figures_payload(paper_id: str) -> dict:
     ``image_url`` 与 ``card_url`` 都是**「图 + 图注」卡片**（图 + 图注合成一张）：侧栏是把图当
     "一张能看懂的图"来展示的，卡片自带图注更实用；正文里也用同一张（用户口径：
     **点开看大图和论文里的范围必须一致**，纯图那张"贴着边、少了图注"，是裁得不好的那张）。
+    ⚠️ 导入时把「图片是否包含图注」关掉（**默认**）的论文，``card=1`` 由后端退化成纯图
+    （见 ``figure_regions.ensure_region_crop``）：两个 URL 仍指向**同一张**，这条口径不破。
     """
     from backend.services.paper import figure_regions
 
@@ -974,7 +976,9 @@ def figures_payload(paper_id: str) -> dict:
             base = f"/api/v1/papers/{paper_id}/figures/region/{page_no}/{i}"
             # `v=<区域哈希>`：裁图接口允许浏览器缓存 7 天，而 URL 只看"页+序号" ——
             # 区域一变不加哈希就会一直显示旧图（实测事故，见 figure_regions.media_of_page）。
-            ver = str(r.get("hash") or "")
+            # 版本串里还编进**图注开关**（`_ver`）：关掉「图片是否包含图注」时 `card=1`
+            # 返回的是纯图，URL 必须跟着变，否则浏览器还是拿那张带图注的旧卡片。
+            ver = figure_regions.region_version(r, paper_id)
             items.append({
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",
                 "row_id": row_id,

@@ -5912,3 +5912,61 @@ beyond-speedup 的作者行 `Zeyu Xing1, Xing Li2, …` 里数字是"贴在名�
    这条以前专门统一过，别拆开）；开 = 现状。
 6. 验证：`pytest` 加"关掉兜底后不产出无图注区域"的单测；拿一篇有无图注页的论文开/关各解析一次对比产出数；
    `frontend_check --block-markers` 基线 86/87；`npm run typecheck/build`。
+
+### 17.114 第十一轮 · 导入时两个开关已落地（图片是否包含图注 / 深度图片搜索），顺带修掉"重解析撞主键"
+
+用户 2026-09-27 定稿、今天"开工"：17.113 那六条清单**全部做完**，另加一处实测撞上的老 bug。
+
+**① 两个开关（均默认关、导入时选、解析时生效）**
+
+| 开关 | 界面文案 | 默认 | 语义 |
+|---|---|---|---|
+| `figure_caption` | 图片是否包含图注 | 关 | 关 = 只出国体本身；开 = 图体与图注拼成一张（原来的「图表卡片」） |
+| `deep_figure_search` | 深度图片搜索 | 关 | 关 = 只出图注锚定的图；开 = 整页没有图注时也按墨迹带兜底裁图 |
+
+链路：`LibraryView` 上传弹窗两个 checkbox → `resetImportForm()` 一并复位（**必须**，见 17.112）→
+`POST /papers` 两个 `Form` 布尔 → `import_pdf` 写进 PARSE 任务 params（`reuse_existing` 复用那篇时
+也按**新选的值**重发）→ `handlers` 传给 `PaperBuilder` → ①`detect_figures(allow_captionless=…)`；
+②两个值一起写进 `result.stats["parse_options"]` → 随 IR `paper.stats_json` 落盘。
+
+**为什么开关要进 IR**：裁图是**按需渲染**的（600dpi，请求来了才裁），"要不要拼图注"必须随解析产物
+固化下来，服务层才能照它出图。`figure_regions.parse_options()` 按 IR mtime 缓存读这段 JSON，
+读不到（从未解析/旧 IR）一律**全关**；`ensure_region_crop(card=True)` 在关掉时**退化成纯图**
+（正文与"点开看大图"仍是同一张 —— 这条口径不破）；`prune_crops` 在关掉时不再保留 `-card.png`。
+
+**② URL 版本串要带上开关**（`region_version` = 区域哈希 + `c0/c1`）：开关不改 bbox，光靠哈希挡不住
+浏览器里 `Cache-Control: max-age=604800` 那张"带图注的旧卡片"。`REGION_CACHE_VERSION` 10 → 11。
+所有出图 URL（阅读器正文/侧栏、知识库缩略图、Markdown 视图）统一走它。
+
+**③ 顺带修掉：重解析时把别的论文占用的 block_id 写回库里（实测崩溃）**
+
+在 `12382-beyond-speedup-utilizing-3` 上验证开关时，重解析直接
+`IntegrityError: Duplicate entry '12382beyonds-p01-b01'`。根因是**三处**都各自"现算"12 字符前缀，
+把 `id_prefix(taken=…)` 好不容易做出的"撞车就加长"丢掉了：
+1. `rebind_block_ids` 给新块编号时 `id_prefix(paper_id)` 现算 → 改为一律用调用方给的 `prefix`；
+2. `rebind_block_ids` 会**沿用旧 IR 的 ID**（那些还是加长前的老前缀）→ 现在只沿用
+   `startswith(prefix + "-p")` 的旧 ID（前缀没变时是空操作，正常论文的 ID 稳定性不受影响）；
+3. `_next_block_id`（孤儿块 `-pXX-xNN`）也是现算 → 改为读 `result.id_prefix`（`build()` 里写进去）。
+实测：该篇重新解析后 740 个块 ID **全部**是 16 字符前缀 `12382beyondspeed`，跨论文重复 ID = 0。
+
+**实测（服务重启后走 HTTP，不是单元测试）**
+
+- `12382-beyond-speedup-utilizing-3`（9 张图注 + 1 张无图注兜底图）：
+  默认关 → 重解析成功、`插图 9`（`IR no_caption=0`）；`?deep_figure_search=true` → `插图 10`；两次对账都 0 不通过。
+- `attention-is-all-you-need`（5 图、**有译文**）：
+  开关关 → `card=1` 与纯图**同一张**（426636 B = 426636 B）；`?figure_caption=true` 重解析 →
+  card 459523 B（多了图注条）而纯图不变；再关回去 → 又相等；media 里的版本串 `v=d4d9a125c0`。
+  两次重解析后 `pages.json` / `path_a.json` / `path_b.json` 的**大小与 mtime 一字未动**（09-26 的原值）。
+- `figure_caption_audit.py`：9 篇 0 不通过（turboquant 5/5、attention 5/5、3360 4/4、boomerang 38/38、
+  12382 5/5、12382-3 9 图注/10 图、dammfnd 3/3、deepseek 4/4；wait-check 无 PDF 跳过）。
+- `pytest` 580 项（579 passed + 1 skipped；开工前 573 项，本期 +7），0 失败；`npm run typecheck` 0 错、
+  `npm run build` 成功；`frontend_check --block-markers` **86/87**（唯一红项仍是「公式能整体高亮」，与本期无关）。
+- 新增单测：`test_captionless_fallback_is_off_when_asked`、`test_parse_options_default_to_off`、
+  `test_parse_options_read_the_frozen_values`、`test_region_version_carries_the_caption_switch`、
+  `test_card_crop_falls_back_to_the_plain_crop`、`test_rebind_does_not_reuse_ids_from_another_prefix`、
+  `test_orphan_block_id_uses_the_paper_prefix`（7 个）。
+
+**⚠️ 对存量论文的影响（口径说明）**：老 IR 里没有 `parse_options` → 按默认**关**处理，所以已导入的论文
+下次打开时插图变成**纯图**（图注仍在正文里有自己的一行、放大弹窗标题里也仍是图注，不丢信息）。
+要给某篇加回"图里带图注"，重新解析时把开关打开即可（之后 `create_parse_task` 会**沿用上次的值**，
+手动「重新解析」不会把它关掉）。
