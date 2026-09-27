@@ -423,6 +423,13 @@ def detect_figures(
         (ab.page_no, anchors[id(ab)][0]) for ab, _kind, _label in all_caps
         if _looks_like_caption_line(anchors[id(ab)][1])
     ]
+    # ⚠️ 界标还要包含**表格本体**：实测 12382 p7 的 Table 2，表注在表格**下方**、而且只有右半栏，
+    # 光靠"上一张图注"挡不住 → 图 3 的图体把整张表格吞进来，下游还把图 3 的一块当成了表格
+    #（用户："figure3 变成表格了"）。
+    try:
+        floors += [(t.page_no, t.rect) for t in detect_tables(blocks, drawings_by_page, page_rects)]
+    except Exception as exc:  # noqa: BLE001 —— 界标拿不到不该影响插图检测
+        log.warning("表格界标计算失败（只用图注当界标）：%s", exc)
 
     for ab, kind, _label in all_caps:
         if kind != "figure":
@@ -588,18 +595,42 @@ def _table_body_rect(cap: Rect, blocks: list[RawBlock],
     那正是表格的数值行，比"只剩表注"强得多。
     """
     body: Rect | None = None
-    for above in (False, True):        # 先看表注**下方**（多数排版），再看上方
-        picked = [d.rect for d in bars
-                  if (d.rect.y0 >= cap.y1 - 2 if not above else d.rect.y1 <= cap.y0 + 2)]
-        if not picked:
-            continue
+    # ⚠️ 不能"先看表注下方、有就收"：实测 12382 p7 的 Table 2，**表注在表格下方**，
+    # 而表注下面正好还有图（Vanilla CoE）的线框 → 表格本体被算到下面的图上
+    #（IR 里 Table 2 = y 268~453，真正的表格在 94~259），连带把图 3 切成了"上段=表格"。
+    # 判据：**哪一侧有更多"像表格行的文字块"（含数字）就取哪一侧** —— 表格行几乎必带数值，
+    # 而正文段落/图的说明不带（实测：上侧 4 块带数字，下侧 2 块）。
+    def _digit_blocks(below: bool) -> int:
+        n = 0
+        for b in blocks:
+            r = b.rect
+            if not _h_overlap(r, cap) > 0.10:
+                continue
+            gap = (r.y0 - cap.y1) if below else (cap.y0 - r.y1)
+            if gap < -2 or gap > 200:
+                continue
+            if len(r and str(b.text or "")) and any(ch.isdigit() for ch in str(b.text or "")):
+                n += 1
+        return n
+
+    above_bars = [d.rect for d in bars if d.rect.y1 <= cap.y0 + 2]
+    below_bars = [d.rect for d in bars if d.rect.y0 >= cap.y1 - 2]
+    prefer_above = False
+    if above_bars and below_bars:
+        prefer_above = (_digit_blocks(True) == 0 and _digit_blocks(False) > 0) or \
+            _digit_blocks(False) > _digit_blocks(True)
+    picked: list[Rect] = []
+    if above_bars and (prefer_above or not below_bars):
+        picked = above_bars
+    elif below_bars:
+        picked = below_bars
+    if picked:
         x0 = min(r.x0 for r in picked)
         x1 = max(r.x1 for r in picked)
         y0 = min(r.y0 for r in picked)
         y1 = max(r.y1 for r in picked)
         body = cap.union(Rect(x0, y0, x1, y1))
-        break
-    if body is None:
+    else:
         # 无框表：表注下方、与表注横向重叠、且**垂直连续**的块（间隔 > 28pt 视为表格结束）
         limit = min(page_rect.y1, cap.y1 + max(120.0, 0.45 * page_rect.height))
         rows = sorted([b.rect for b in blocks

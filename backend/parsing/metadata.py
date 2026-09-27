@@ -236,7 +236,28 @@ def _title_from_first_page(doc, max_lines: int = 3) -> str:
     max_size = max(c[0] for c in cands)
     top = [c for c in cands if c[0] >= max_size - 0.6]
     top.sort(key=lambda c: c[1])
-    return " ".join(c[2] for c in top[:max_lines])[:300]
+    return _join_title_lines([c[2] for c in top[:max_lines]])
+
+
+#: 标题里跨行断词的连字符（`SAM-` + `PLING` → `SAMPLING`）
+_LINEBREAK_HYPHEN = re.compile(r"([A-Za-z])-\s+(?=[A-Za-z])")
+
+
+def _join_title_lines(parts: list[str]) -> str:
+    """把标题的几行拼起来：**跨行的断词连字符要接回去**。
+
+    实测 `12382-beyond-speedup-utilizing`（ICLR 2026）的标题在 PDF 里是两行：
+
+        BEYOND SPEEDUP - UTILIZING KV CACHE FOR SAM-
+        PLING AND REASONING
+
+    直接 `" ".join` 得到 `…FOR SAM- PLING AND REASONING`（用户："好像还是不对"）；
+    真实断词应该是 `SAMPLING`。只接"连字符+空白+字母"这一种，`NEAR-OPTIMAL` 这种
+    写在**同一行**里的连字符不受影响。
+    """
+    joined = " ".join(parts)
+    spaced = normalize_space(joined)
+    return _LINEBREAK_HYPHEN.sub(r"\1", spaced)[:300]
 
 
 def _authors_from_first_page(doc) -> str:

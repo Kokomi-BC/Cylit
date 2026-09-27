@@ -5760,3 +5760,38 @@ turboquant / attention / 3360 / 12382 / dammfnd 五篇 + boomerang，逐篇跑�
 **验证**：`pytest` 572 passed（新增前缀加长的单测）；`figure_caption_audit.py` 9 篇 0 不通过；
 重解析 `12382-beyond-speedup-utilizing` 正常完成（298 块 / 插图 5 / 表格 11，不再报主键冲突）；
 当前库 9 篇的块 ID 前缀互不相同。
+
+### 17.108 第十轮 · "figure3 变成表格了" + 标题里的跨行断词（SAM- PLING）
+
+**① figure3 变成表格了**（beyond-speedup p7）
+
+那页的排版是：Table 2 的**表格在上（y 94~259）、表注在下（y 272~315）**，再下面才是图 3。
+但两处口径都假定"表注在表格**上方**"：
+- `_table_body_rect` 先试"表注下方"、有就收 → Table 2 的本体被算到**图 3 的线框**上（IR 里
+  Table 2 = y 268~453，正好是图 3 的上半截）；
+- `detect_figures` 的分段界标只用图注 → 图 3 的图体把上面整张表吞进来，区域层再按
+  "图注夹在中间"切成两段 → **图 3 的"上段"就是那张表**。
+
+改法：
+1. `_table_body_rect`：表注上下两侧都算，按"**哪一侧有更多带数字的文字块**"取（表格行几乎必带
+   数值，正文段落/图注不带）。实测该页上侧 4 块、下侧 2 块 → 取上侧；
+2. `detect_figures` 的界标加上**表格本体**（`detect_tables` 的结果）→ 图 3 的图体不再越过表格底边。
+
+结果：p7 = `Table 2`(104.0, 35.1, 508.0, 286.2) + `Figure 3`(376.5, 372.1, 504.5, 632.0)，
+两块不再重叠、图 3 恢复成一张图（右栏那张 Vanilla CoE 曲线）。
+
+**② 标题跨行断词**（用户："重新导入了 beyond-speedup，好像还是不对"）
+
+PDF 里标题是两行：
+
+    BEYOND SPEEDUP - UTILIZING KV CACHE FOR SAM-
+    PLING AND REASONING
+
+旧实现直接 `" ".join` → `…FOR SAM- PLING AND REASONING`。新增 `_join_title_lines`：
+把"连字符 + 空白 + 字母"接回去（`SAM- PLING` → `SAMPLING`），同行内的真连字符
+（`NEAR-OPTIMAL`）不受影响。抽取结果现在是
+`BEYOND SPEEDUP - UTILIZING KV CACHE FOR SAMPLING AND REASONING`，并已回填到库里那篇。
+
+**遗留**：该篇 `authors` 仍为空（`_authors_from_first_page` 没认出
+`Zeyu Xing1, Xing Li2, …` 这一行，多半是被上标数字影响）；Table 2 的区域顶边略保守（35.1，
+表格本体其实从 94 起）。两处都记在这条下面，下轮处理。
