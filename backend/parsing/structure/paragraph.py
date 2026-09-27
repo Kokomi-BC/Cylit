@@ -32,6 +32,15 @@ FOOTER_BAND_RATIO = 0.055
 REPEAT_MIN_PAGES = 3
 # 正文行最小字符数（低于此值且独立成行 → 可能是页码/公式编号/图内文字）
 MIN_BODY_LINE_CHARS = 3
+#: 图注/表注的行首形态（与 `structure/figure_cut.py` 的 `_CAPTION`/`_TABLE_CAPTION` 同源）。
+#: 这类行**必须自成一段** —— 否则会被拼进正文句子中间，而插图/表格检测的前提是
+#: "图注自成一个块且以 `Figure N` 开头"，于是**整张图静默消失**。
+#: 实测事故（2026-09-27，3360-mmdfnd p8）：文字层的 `Figure 4: T-SNE visualizations …`
+#: 被夹在 `…features from different` 与 `views. (2) w/o ITA: …` 之间，
+#: 产出的块是 `…from different Figure 4: T-SNE … results views. (2) w/o ITA…`（820 字），
+#: 结果全篇 4 个图注只产出 3 张图（`scripts/figure_caption_audit.py` 现在能把这类对账出来）。
+CAPTION_HEAD_RE = re.compile(
+    r"^\s*[*#>\s]*(?:Figure|Fig\.?|Table|图|表)\s*\.?\s*\d{1,3}\b", re.IGNORECASE)
 
 
 @dataclass
@@ -267,6 +276,7 @@ def group_lines_into_paragraphs(
     """把**已按阅读顺序排好的**正文行序列组装成段落。
 
     断裂条件（任一成立即新建段）：
+    - **当前行是图注/表注行首**（``CAPTION_HEAD_RE``；必须自成一段，见那个常量的说明）；
     - 行距 > ``LINE_GAP_RATIO`` × 字号；
     - 字体 / 字号变化；
     - 前一行以句末标点结尾 **且** 当前行有首行缩进；
@@ -284,7 +294,9 @@ def group_lines_into_paragraphs(
         prev_text = prev.text.strip()
         new_para = False
 
-        if gap < -size * 0.5 and lead < 0:
+        if CAPTION_HEAD_RE.match(cur.text):
+            new_para = True                       # 图注/表注：必须自成一段（否则整张图消失）
+        elif gap < -size * 0.5 and lead < 0:
             new_para = True                       # 行倒序：换块/换栏
         elif prev.rect.x0 - cur.rect.x0 > 0.06 * max(1.0, prof.body_width):
             new_para = True                       # 起点明显左退：新块

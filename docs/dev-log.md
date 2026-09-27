@@ -5042,6 +5042,53 @@ IR figures:  p2/p4/p5 三条（编号在 IR 里是 None，`figure_regions` 从�
 两条都等用户点头再动。
 
 
+### 17.90 第九轮 · 方案 A 实测：缺图根治在**行内切分**那一层（用户选 A）
+
+用户选 A 之后按"行聚类加硬规则 + 修双栏串行"动手，实测下来真正卡住的**不是**段落分组、也不是块分组 ——
+前两处**早就各有一条"图注自成一块"的规则**（`paragraph.CAPTION_HEAD_RE` 是我这轮补的；
+`text_layer.group_lines_into_blocks` 里本来就有 `caption_break`），它们都碰不到问题，
+因为图注**根本不是独立的一行**：
+
+```
+聚类后的"行"（修复前）：
+  rect=(54, 521.5, 558, 530.5)  spans=2
+  'and fusion is performed by concatenating features from different' +
+  'Figure 4: T-SNE visualizations display the prediction results'
+```
+
+左栏正文与右栏图注被聚成同一行（`x 54 → 558` 跨满页宽）。**双栏没切开**的根因是两件事叠加：
+
+1. `detect_layout` 判 p6/p7/p8 全为 `columns=1, gutter=None` —— 因为它是在**已经合并过的行**上找栏间距，
+   而被合并的行正好把栏间距覆盖掉了（先有鸡还是先有蛋）；
+2. `_split_line_by_gaps` 用的 `SPAN_GAP_FACTOR=3.5`（字号 9.1pt → 约 32pt）**大于真实栏间距 23pt**，
+   于是"按间隙切"这一步也不会把它们分开。
+
+**修法（两处，都很小）**：
+- `text_layer._split_line_by_gaps`：除"间隙 > 阈值"外，再加一条 —— **某段 span 以图注开头就切**；
+  并把这轮新加的 `paragraph.CAPTION_HEAD_RE`（段级）与既有的块级 `caption_break` 串成一条链：
+  **行 → 块 → 段** 三层都保证"图注自成一块"。顺手把 `text_layer` 里那个 `import re as _re`
+  的局部 import 提回文件顶部（原来写在函数下面）。
+- 没有动 `SPAN_GAP_FACTOR`（见下面的"没做"）：那会广泛改变所有论文的分行结果，属于另一件事。
+
+**实测（3360-mmdfnd，9 页、文字层 PDF、重解析不花模型钱）**：
+
+| | 解析结果 | `figure_caption_audit.py` | Figure 4 区域 |
+|---|---|---|---|
+| 修复前 | 437 块，插图 **3** | **缺 1 张**（Figure 4） | 无 |
+| 修复后 | 440 块，插图 **4** | **缺 0 张**（6 篇全过） | p8 `[314.9, 248.8, 561.2, 520.3]`（高 271.6pt，右栏那六张 T-SNE 子图 + 图注） |
+
+顺带改善：其它图的区域也**变对了列** —— 图 1 现在是 `[51.4, 81.4, 296.4, 202.5]`（只占左栏 51→296），
+修复前那种"跨满页宽"的框没了（被合并的行让图体并集吃到了两栏）。
+
+`pytest tests` 全绿；`frontend_check` 复跑 **88/87/1**（基线不变）。
+
+**没做（留给下一轮）**：`SPAN_GAP_FACTOR=3.5` 对"左栏末行 + 右栏首行"这类**正文**仍然会合
+（实测 p8 的 `views. (2) w/o ITA: …graphicalof MMDFND…` 那行 20 个 span 还是跨满页宽）。
+它是"双栏正文串行"的更根本一层 —— 改它要重新验证所有论文的分行与分块，且要重解析全部论文，
+所以单独立项；本轮只保证**图注/表注**不再被跨栏合并（缺图问题就此闭环）。
+
+
+
 
 
 

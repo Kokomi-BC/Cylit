@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pymupdf as fitz
@@ -114,12 +115,23 @@ def cluster_spans_into_lines(spans: list[Span], page_no: int) -> list[TextLine]:
 
 
 def _split_line_by_gaps(line: TextLine) -> list[TextLine]:
+    """同一基线上的 span 按水平间隙切分：左右两栏的内容不能算一行。
+
+    ⚠️ 第二个判据是 **"这一段 span 以图注开头"**（2026-09-27 加的，实测事故）：
+    只按间隙切是不够的 —— 栏间距 23pt 而 `SPAN_GAP_FACTOR=3.5`（约 32pt），
+    于是**左栏正文与右栏图注被聚成了同一行**：
+    `and fusion is performed by concatenating features from different` +
+    `Figure 4: T-SNE visualizations display the prediction results`
+    （line.rect 跨满 x 54→558）。图注从此不再是"独立的一行"，块级/段级那两条
+    "图注自成一块"的规则都碰不到它，`Figure 4` 整张图静默消失
+    （`scripts/figure_caption_audit.py` 现在会把这种缺图对账出来）。
+    """
     spans = sorted(line.spans, key=lambda s: s.x0)
     size = max((s.size for s in spans), default=10.0)
     gap_limit = SPAN_GAP_FACTOR * max(size, 1.0)
     groups: list[list[Span]] = [[spans[0]]]
     for prev, cur in zip(spans, spans[1:]):
-        if cur.x0 - prev.x1 > gap_limit:
+        if cur.x0 - prev.x1 > gap_limit or _is_caption_line(cur.text):
             groups.append([cur])
         else:
             groups[-1].append(cur)
@@ -130,11 +142,9 @@ def _split_line_by_gaps(line: TextLine) -> list[TextLine]:
 
 
 # 图注 / 表注开头（这类行必须独立成块，否则图体定位会失败）
-import re as _re
-
-_CAPTION_START = _re.compile(
+_CAPTION_START = re.compile(
     r"^\s*(?:Figure|Fig\.?|Table|Algorithm|Listing|Equation|Eq\.?)\s*\d+",
-    _re.IGNORECASE,
+    re.IGNORECASE,
 )
 
 
