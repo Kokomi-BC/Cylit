@@ -5471,6 +5471,45 @@ Sequential Operations / Maximum Path Length` 与 4 行 `O(n²·d)`、`O(n·log n
 每次调用都带上限、正文为空只调一次就抛给调度器、网络 500 同样只调一次。`pytest tests` 全绿。
 
 
+### 17.100 第九轮 · 解析中进阅读页，等进度条跑完还要刷新才出图 / 侧栏才出内容
+
+用户报：**没有翻译、只有解析**时进入阅读页，等页面进度条跑完，**裁剪后的图片**和**侧栏内容**
+都还要刷新页面才出现。
+
+两处原因（都在前端 `ReaderView.vue`）：
+
+1. **解析完成的钩子只刷了正文**。原来写的是 `void loadAll()`：正文的行/统计/目录会更新，
+   但侧栏的**插图**（`/figures`）、**术语**（`/glossary`）、**简报**（`/brief`）、
+   **公式**（`/formulas`）是 `loadSide()` / `loadFormulas()` 另外三个接口单独取的 ——
+   解析完成后没人再打过，于是一直停在旧数据（=空）；解读（`useUnderstanding` 整包缓存，TTL 30s）同理。
+   现在统一走 `reloadAfterParse()`：`loadAll()` + `loadSide()` + `refreshOutline()` +
+   `loadUnderstanding(paperId, {force:true, silent:true})`。
+2. **"上一轮在解析"的检测会漏一种时序**：`wasParsing` 只在 `fetchTasks()` 里维护，
+   而 `fetchTasks()` 是挂载后（`loadAll()` 之后）才第一次跑的。用户**打开阅读页时解析刚好已经跑完**
+   的话，第一次轮询看到的就是"没有解析任务"，`wasParsing` 从没变过 true → 那次"完成"没人管，
+   页面停在空数据上，只能刷新。
+   修法：`loadAll()` 里用**刚拿到的**任务状态同步一次 `wasParsing`；
+   再加一条兜底 —— 没有任何任务在跑、可阅读器还是空的（`pages` 与 `allRows` 都为空）时，
+   补一次全量重载（只补一次，`reloadedForEmpty` 防抖）。
+
+后端侧同步量过时序（排除"后端没给 media"）：解析前 / 解析中 / 解析完成瞬间
+`/reader` 的 `pages[].media` 一直是 5，`/figures` 一直是 5 —— 所以是前端刷新范围的问题，
+不是后端缓存。
+
+`npm run typecheck` 0 错、`npm run build` 成功、`frontend_check` **86/87** 通过
+（唯一失败仍是 `公式能整体高亮`；总数由 88 变 87 的原因见下）。
+
+⚠️ 自动化边界：这条与 §17.98 一样**没法在现有自检里复现** —— 需要"浏览器开着阅读页 + 后端正在解析"
+的真实时序，`frontend_check` 走的是 `--dump-dom` 单次抓取。人工回归：导入一篇新论文 →
+在解析中打开阅读页 → 等进度条跑完，**不刷新**，图和侧栏应当自己出来。
+
+📌 关于自检总数 88 → 87：`bundle` 那一组统计的是**首页 HTML 里引用的打包产物**
+（`src|href="/app/assets/…"`，Vite 给懒加载 chunk 加的 `modulepreload` 也算），
+本次重建后 index.html 引用的是 3 个（css + index.js + vue.js）—— 少的那一项是构建产物数量变了，
+**不是少了检查项**（换一篇论文跑同样是 87 项，说明项数固定）。
+
+
+
 
 
 

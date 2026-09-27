@@ -21,6 +21,8 @@ import type {
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
 import { useEventStream, type StreamStatus } from '@/composables/useEventStream';
+// 解析完成后要**强制**重取解读（`useUnderstanding` 是按论文缓存的整包，TTL 30s）
+import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets } from '@/utils/domMarks';
@@ -706,6 +708,27 @@ const pageWidth = computed(() => {
 });
 
 /* ------------------------------ 加载 ------------------------------ */
+/** 上一轮是否在解析（解析结束时自动刷新阅读器数据） */
+let wasParsing = false;
+/** 兜底只补一次"看起来还是空的"重载，避免接口抖动时反复打 */
+let reloadedForEmpty = false;
+
+/**
+ * 解析完成 → **阅读器 + 侧栏**一起刷新。
+ *
+ * 用户报（2026-09-27）：在解析中进阅读页、等页面进度条跑完，**裁剪后的图片**与**侧栏内容**
+ * 都还要刷新页面才出现。以前这里只调 `loadAll()`：正文的行/统计/目录会更新，但侧栏的
+ * 插图（`/figures`）、术语（`/glossary`）、简报（`/brief`）、公式（`/formulas`）是
+ * `loadSide()` / `loadFormulas()` **分别取的另外几个接口** —— 没人再打过，就一直停在旧数据；
+ * 解读（`useUnderstanding` 整包缓存）同理。
+ */
+async function reloadAfterParse() {
+  await loadAll();
+  await loadSide();
+  refreshOutline();
+  void loadUnderstanding(instancePaperId, { force: true, silent: true });
+}
+
 async function loadAll() {
   loading.value = true;
   fatal.value = null;
@@ -719,6 +742,11 @@ async function loadAll() {
     highlights.value = data.highlights ?? [];
     notes.value = data.notes ?? [];
     tasks.value = (data.tasks ?? []) as unknown as TaskInfo[];
+    /* 用**刚拿到的**任务状态同步一次"上一轮是否在解析"（见 `fetchTasks` 里的解析完成检测）。
+     * 不这么做会漏一种时序：用户打开阅读页时解析**刚好已经跑完** —— 第一次 `fetchTasks()`
+     * 看到的就是"没有解析任务"，`wasParsing` 从没变过 true，于是那次"完成"没人管，
+     * 页面停在"正在解析"前的空数据上，只能靠刷新。 */
+    wasParsing = !!parseTask.value;
     stats.value = data.stats ?? stats.value;
     outline.value = data.outline ?? { items: [], tree: [], count: 0 };
     // 顶栏标签的标题换成论文名（路由只能给"论文"这个占位标题）
@@ -1488,9 +1516,17 @@ async function fetchTasks() {
   try {
     const d = await api.get<{ items: TaskInfo[] }>('/tasks', { paper_id: instancePaperId, limit: 20 });
     tasks.value = d.items ?? [];
-    /* 解析刚结束 → 自动刷一次阅读器数据，不用用户手动刷新页面 */
+    /* 解析刚结束 → 阅读器**与侧栏**一起刷（不用用户手动刷新页面） */
     const parsingNow = !!parseTask.value;
-    if (wasParsing && !parsingNow && !loading.value) void loadAll();
+    if (wasParsing && !parsingNow && !loading.value) {
+      void reloadAfterParse();
+    } else if (!parsingNow && !hasRunningTask.value && !loading.value
+      && !pages.value.length && !allRows.value.length && !reloadedForEmpty) {
+      /* 兜底：没有任何任务在跑、可阅读器还是空的 —— 多半是"打开时解析刚结束、产物还没落盘"。
+       * 补一次全量重载（只补一次）。 */
+      reloadedForEmpty = true;
+      void reloadAfterParse();
+    }
     wasParsing = parsingNow;
     const running = tasks.value.find((t) => t.type === 'TRANSLATE_MD'
       && ['processing', 'pending', 'paused'].includes(t.status));
@@ -1516,8 +1552,7 @@ async function fetchTasks() {
 
 let mq: MediaQueryList | null = null;
 let taskTimer: ReturnType<typeof setInterval> | null = null;
-/** 上一轮是否在解析（解析结束时自动刷新一次阅读器数据） */
-let wasParsing = false;
+
 function onMqChange() {
   isNarrow.value = !!mq?.matches;
   nextTick(() => { syncPaneWidth(); watchContentSize(); });
