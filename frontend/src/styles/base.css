@@ -55,8 +55,16 @@ mark.hl.pink { background: rgba(255, 150, 190, .38); }
 mark.hl.purple { background: rgba(140, 140, 140, .32); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，
  * 否则底色只画在一条行高上 —— 三行公式看起来"只有中间一行被标黄"（用户报过）。
- * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。 */
-mark.hl.block { display: block; }
+ * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。
+ *
+ * ⚠️ 但**不能就一个 `display:block` 了事**：块级盒子宽度默认铺满整行，于是"标记一张行间公式"
+ * 会变成**整行都涂上颜色**（用户 2026-09-28 报的："如果标记行间公式，那一行都会被高亮"）。
+ * `width: fit-content` + `margin-inline: auto` = 盒子只包住公式自己（高度仍是整块，
+ * 多行公式一起覆盖），左右自动居中 —— 与公式原本在行里的位置一致。 */
+mark.hl.block {
+  display: block; width: fit-content; max-width: 100%;
+  margin-left: auto; margin-right: auto;
+}
 
 /* 在左栏 PDF 上拖拽划词时（`PdfPage.vue` 给 `<html>` 加的临时类）：右侧译文、页头这些
  * **非 PDF 内容不参与本次选区** —— Chrome 会把 `user-select:none` 的内容从选区里跳过，

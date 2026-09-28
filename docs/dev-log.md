@@ -6030,3 +6030,43 @@ beyond-speedup 的作者行 `Zeyu Xing1, Xing Li2, …` 里数字是"贴在名�
   `turboquant`（1.9 MB，5 图）、`9984-boomerang`（未翻译：只有 PDF + README，不塞空 md）；
 - `npm run typecheck` 0 错、`npm run build` 成功；`frontend_check --block-markers` **86/87**
   （唯一红项仍是「公式能整体高亮」）。
+
+### 17.116 第十一轮 · 行间公式的高亮不再铺满整行（自检首次 87/87 全绿）
+
+用户："修一下公式的整体高亮。（虽然我感觉差不多这样也行，但是如果标记行间公式，那一行都会被高亮。）"
+
+**① 产品：色块只包公式，不铺满整行**
+
+`base.css` 里 `mark.hl.block { display: block }` 是 17.9x 为"多行 `aligned` 公式只黄中间一行"加的
+（块级盒子高度才够）。但块级盒子宽度默认铺满整行 —— 于是"标记一张行间公式"变成**整行涂色**。
+改成只包住公式自己：
+
+```css
+mark.hl.block {
+  display: block; width: fit-content; max-width: 100%;
+  margin-left: auto; margin-right: auto;
+}
+```
+
+高度仍是整块（多行公式一起覆盖），宽度 = 公式自己的宽度，左右自动居中（与公式原本在行里的位置一致）。
+`max-width: 100%` 兜住"公式比容器还宽"的情况：那时退化成原来的满宽 + `.katex-display` 横向滚动。
+**行内公式**（`$…$`）本来就不加这个类，色块依旧只包字形，不受影响。
+
+实测（自检探针量出来的）：`mark 宽 542px / 公式宽 540px`（差 2px = `mark.hl` 的 1px 内边距 ×2），
+`mark 高 47px / 公式块高 47px`，色块中心与公式中心都在行中心（±2px）。
+
+**② 自检：「公式能整体高亮」长期红的真因是探针选错了侧，不是产品 bug**
+
+`frontend_check.py` 的 ⑦ 用 `fRow.querySelector('.rr-body')` 选"含公式的那一段"——
+**返回的是 DOM 里第一个 `.rr-body`**。一行有两个（原文 / 译文），左右顺序由 `pair_order` 决定，
+而公式常常只在**一侧**（实测 turboquant `p001-03`：原文里是 `≈2.7`，译文那侧没有公式）：
+选到没有公式的译文段 → 标出来的是纯文字 → `mark.hl > .katex` 必然为假、
+`marks` 只有 1 段（失败信息里那串 `katex=False…1 段` 就是这么来的）。
+
+改成 `katexEl.closest('.rr-body')`（③ 与 ③b 两处同一坑），并把"选中了哪一行 / 哪一侧 /
+该侧有没有公式 / 标记子节点"写进失败信息 —— 下次一眼能看出是探针挑错还是产品坏了。
+③b 同时新增两条断言：`hugs`（mark 宽 ≤ 公式宽 + 12px，**不该铺满整行**）与 `centered`（公式仍在行中心）。
+
+**验证**：`frontend_check --block-markers` **87/87 全绿**（这是这个项目第一次全绿；此前长期 86/87，
+唯一的红项就是本条，而它其实一半是探针的错）；`pytest` 586 项 0 失败；`npm run typecheck` 0 错、
+`npm run build` 成功。

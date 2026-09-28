@@ -547,12 +547,26 @@ f.addEventListener('load', async () => {
       .find((r) => r.querySelector('.rr-body .katex'));
     res.hasFormulaRow = !!fRow;
     if (fRow) {
-      const body = fRow.querySelector('.rr-body');
+      // ⚠️ 要选**含公式的那一侧**，不能拿 `fRow.querySelector('.rr-body')`（DOM 里第一个）。
+      // 一行有两个 `.rr-body`（原文 / 译文），左右顺序由 `pair_order` 决定，而公式常常只在
+      // 一侧（实测 turboquant p001-03：原文里是 `≈2.7`，译文那侧没有公式）—— 选错侧就标了个
+      // 没有公式的段落，断言"整块包住 katex"必然为假（本项长期红就是这个原因，不是产品 bug）。
+      const katexEl = fRow.querySelector('.rr-body .katex');
+      const body = katexEl.closest('.rr-body');
       res.formulaClick = await selectElement(body, 'hl-yellow');
       res.formula = {
         wrapped: !!fRow.querySelector('mark.hl > .katex, mark.hl > .katex-display'),
         katexIntact: !!fRow.querySelector('.katex'),
         marks: fRow.querySelectorAll('mark.hl').length,
+        // 失败时要一眼看出"选中的是哪一行、哪一侧、那一侧到底有没有公式"
+        rowId: fRow.getAttribute('data-row-id'),
+        bodySide: (body.closest('.rrow') || {}).className || '',
+        bodyHasKatex: !!body.querySelector('.katex'),
+        katexInRow: fRow.querySelectorAll('.katex').length,
+        markChildren: [...fRow.querySelectorAll('mark.hl')]
+          .map((m) => (m.firstElementChild
+            ? m.firstElementChild.tagName.toLowerCase() + '.' + m.firstElementChild.className
+            : 'text')),
       };
       res.formulaIds = [...fRow.querySelectorAll('mark.hl[data-hl]')]
         .map((m) => m.getAttribute('data-hl'));
@@ -572,11 +586,30 @@ f.addEventListener('load', async () => {
       res.dispClick = await selectElement(dispEl, 'hl-green');
       const mk = [...dRow.querySelectorAll('mark.hl')].find((m) => m.classList.contains('block'));
       const dh = dispEl.getBoundingClientRect().height;
+      // 色块**只该包住公式**，不该铺满整行（用户 2026-09-28："标记行间公式，那一行都会被高亮"）。
+      // 公式自己的宽度看内层 `.katex`（贴合字形的行内盒）；`.katex-display` 是块级、宽度铺满整行，
+      // 拿它量不出"整行"与"公式"的区别。容差 12px：mark 自带 1px 内边距 + 四舍五入。
+      const kx = dispEl.querySelector('.katex');
+      const kw = kx ? kx.getBoundingClientRect().width : 0;
+      const mw = mk ? mk.getBoundingClientRect().width : 0;
+      // ⚠️ 取**含公式的那一侧**（与 ③ 同一个坑）：`dRow.querySelector('.rr-body')` 是 DOM 里第一个，
+      // 而左右顺序由 pair_order 决定 —— 拿错侧量中心必然对不上。
+      const bodyEl = dispEl.closest('.rr-body');
+      const bodyBox = bodyEl.getBoundingClientRect();
+      const mkBox = mk ? mk.getBoundingClientRect() : null;
+      const kBox = kx ? kx.getBoundingClientRect() : null;
       res.disp = {
         hasBlockClass: !!mk,
         markH: mk ? Math.round(mk.getBoundingClientRect().height) : 0,
         dispH: Math.round(dh),
         covers: !!mk && mk.getBoundingClientRect().height >= dh * 0.8,
+        markW: Math.round(mw),
+        katexW: Math.round(kw),
+        hugs: !!mk && kw > 0 && mw <= kw + 12,
+        // 色块变成 fit-content 之后，居中靠 `margin-inline:auto` —— 顺带量一下公式还在不在行中间
+        centered: !!mkBox && !!kBox
+          && Math.abs((mkBox.left + mkBox.right) / 2 - (bodyBox.left + bodyBox.right) / 2) <= 2
+          && Math.abs((kBox.left + kBox.right) / 2 - (bodyBox.left + bodyBox.right) / 2) <= 2,
         wrapped: !!dRow.querySelector('mark.hl > .katex-display'),
         katexIntact: !!dRow.querySelector('.katex'),
         ids: [...dRow.querySelectorAll('mark.hl[data-hl]')]
@@ -1749,9 +1782,14 @@ def main() -> int:
                      and (formula.get("marks") or 0) >= 1
                      and bool((data.get("formulaClick") or {}).get("ok")),
                      f"整块包住 katex={formula.get('wrapped')}，公式结构完好={formula.get('katexIntact')}，"
-                     f"{formula.get('marks')} 段"),
-                    ("多行公式底色覆盖整块", bool(disp.get("covers")) and bool(disp.get("hasBlockClass")),
+                     f"{formula.get('marks')} 段（行 {formula.get('rowId')} / 选中 {formula.get('bodySide')}"
+                     f"，该侧有公式={formula.get('bodyHasKatex')}，整行 {formula.get('katexInRow')} 个公式，"
+                     f"标记子节点={formula.get('markChildren')}）"),
+                    ("多行公式底色覆盖整块", bool(disp.get("covers")) and bool(disp.get("hasBlockClass"))
+                     and bool(disp.get("hugs")) and bool(disp.get("centered")),
                      f"mark 高 {disp.get('markH')}px / 公式块高 {disp.get('dispH')}px，"
+                     f"mark 宽 {disp.get('markW')}px / 公式宽 {disp.get('katexW')}px"
+                     f"（只包公式={disp.get('hugs')}、仍居中={disp.get('centered')}，不该铺满整行），"
                      f"block 类={disp.get('hasBlockClass')}（点色块={bool((data.get('dispClick') or {}).get('ok'))}）"),
                     ("跨行选择分成同组多条", cross.get("rowsWithMarks") == 2
                      and len(cross.get("rowIds") or []) == 2,
