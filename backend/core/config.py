@@ -17,7 +17,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# backend/core/config.py -> backend/core -> backend -> paper-reader
+# backend/core/config.py -> backend/core -> backend -> Cylit（仓库根，2026-09-28 由 paper-reader 改名）
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 
@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     )
 
     # ---------- 基础 ----------
-    app_name: str = "PaperMind"
+    # 应用名（`/health` 等对外露面用它）。2026-09-28 用户把项目改名为 **Cylit**：
+    # 只改**对外可见的品牌字**，数据库名 / sqlite 文件名 / localStorage 的 `papermind.*` 键
+    # 一律不动 —— 那些是数据标识，改了会丢数据（详见 dev-log 17.120）。
+    app_name: str = "Cylit"
     app_version: str = "0.1.0"
     debug: bool = True
     host: str = "127.0.0.1"

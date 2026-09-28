@@ -68,7 +68,7 @@ async function openUnderstand(id: string) {
 <template>
   <div class="home">
     <div class="home-hero">
-      <h1>PaperMind</h1>
+      <h1>Cylit</h1>
       <p class="muted">论文导入 → 解析 → 两路并发翻译 → <strong>阅读</strong> ·
         <strong>理解</strong> · <strong>知识库</strong> · <strong>学习</strong>。<br>
         下面每个入口都会在<strong>新的标签页</strong>里打开，可以随时切回来。</p>

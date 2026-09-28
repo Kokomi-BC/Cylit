@@ -350,6 +350,13 @@ f.addEventListener('load', async () => {
     const fig = d.querySelector('.row-figure');
     res.hasFigure = !!fig;
     res.inlineTitle = (fig?.getAttribute('title') || '').slice(0, 40);
+    // ⓪ 卡片尺寸（用户口径 2026-09-28："阅读器正文里的插图卡片缩小"）：
+    //    与 Markdown 视图 / 知识库的插图同一口径（560×420，含 6px 白边）。
+    //    收小的前提是"点开能看原始尺寸"—— 所以下面还要量弹窗里那张图的**原始像素宽**。
+    const cardImg = fig && fig.querySelector('img');
+    const cr = cardImg ? cardImg.getBoundingClientRect() : null;
+    res.card = cr ? { w: Math.round(cr.width), h: Math.round(cr.height),
+                      over: cr.width > 568 || cr.height > 428 } : null;
     fig.click();
     await sleep(600);
     const modal = [...d.querySelectorAll('.modal')].find((x) => x.querySelector('.modal-title'));
@@ -360,6 +367,7 @@ f.addEventListener('load', async () => {
     res.caption = (titleEl.textContent || '').trim();
     res.tooltip = titleEl.getAttribute('title') || '';
     res.hasImage = !!modal.querySelector('img');
+    res.modalNat = modal.querySelector('img') ? modal.querySelector('img').naturalWidth : 0;
     // ② 超长图注（用户截图那种一句话几十上百字）：一行截断，且不把关闭按钮顶出弹窗
     const long = 'Figure 9: ' + 'long caption text '.repeat(24);
     titleEl.textContent = long;
@@ -1934,7 +1942,14 @@ def main() -> int:
                 print("[FAIL] 插图放大            没有可点开的插图 / 未取到测量结果")
             else:
                 caption = str(data.get("caption") or "").strip()
+                card = data.get("card") or {}
                 checks = [
+                    ("插图卡片不超 560×420",
+                     bool(card) and (card.get("w") or 0) > 40 and not card.get("over"),
+                     f"卡片 {card.get('w')}×{card.get('h')}px（超框={card.get('over')}）"),
+                    ("点开仍是原始尺寸",
+                     (data.get("modalNat") or 0) >= max(2 * (card.get("w") or 1), 800),
+                     f"弹窗里的图原始宽 {data.get('modalNat')}px（卡片才 {card.get('w')}px）"),
                     ("标题=图注", bool(caption) and caption != "插图" and len(caption) >= 8,
                      f"{len(caption)} 字：{caption[:34]}"),
                     ("有图片", bool(data.get("hasImage")), "弹窗里有 <img>"),

@@ -1,4 +1,4 @@
-# API 说明（PaperMind 后端）
+# API 说明（Cylit 后端）
 
 - 基址：`http://127.0.0.1:8710/api/v1`。**无前缀副本只挂了 `papers` 与 `reader` 两个 router**
   （`/papers/{id}/file`、`/papers/{id}/pages/{n}` 这类资源链接要能直接打开）；`knowledge` / `models` /

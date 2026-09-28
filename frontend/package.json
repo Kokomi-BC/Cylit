@@ -1,9 +1,9 @@
 {
-  "name": "papermind-frontend",
+  "name": "cylit-frontend",
   "private": true,
   "version": "0.2.0",
   "type": "module",
-  "description": "PaperMind 前端：Vite + Vue 3 + TypeScript（SFC），构建产物由后端同进程托管在 /app/",
+  "description": "Cylit 前端：Vite + Vue 3 + TypeScript（SFC），构建产物由后端同进程托管在 /app/",
   "scripts": {
     "dev": "vite",
     "prebuild": "node scripts/clean-dist.mjs",

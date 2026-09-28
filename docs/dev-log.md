@@ -6271,3 +6271,52 @@ CSS 全部写在 `base.css` 的 `.md table`：`border: 0` + 表头顶线/下线 
 
 > 教训记一笔：这类"批量重解析"是把潜伏 bug 逼出来的好手段 —— 8 篇里只有这一对同前缀论文会踩，
 > 平时单篇重解析永远不会遇到。
+
+### 17.120 第十一轮 · 阅读器插图卡片缩小；项目改名为 **Cylit**（文件夹 + 左上角品牌词）
+
+用户口径两条："阅读器正文里的插图卡片缩小"；"将项目的文件夹重命名为 Cylit，左上角的图标改为文字（Cylit）"。
+
+#### 一、插图卡片 780×840 → 560×420
+
+`ReaderPageRows.vue` 的 `.row-figure img` 原来是 `min(100%, 780px)` × `min(74vh, 840px)`。
+插图行是**通栏**的（`.row-pair.two-col > .row-figure { grid-column: 1 / -1 }`），
+所以哪怕在左右对照里它也能铺到 780 宽 —— 一张图占掉大半屏，上下翻页变成翻图册。
+
+现在与 Markdown 视图 / 知识库里的插图**同一口径**：`min(100%, 560px)` × `min(48vh, 420px)`
+（含 6px 白边，等比缩放、不裁不变形）。敢收小的前提仍是"点开能看原始尺寸"（`zoomTarget` 弹窗），
+所以自检 ⑥ 里加了**两条**判据，把这两半**绑在一起**测：
+
+- `插图卡片不超 560×420`（量 `.row-figure img` 的 rect，含白边 ≤ 568×428）；
+- `点开仍是原始尺寸`（弹窗里那张图的 `naturalWidth` ≥ 卡片宽的 2 倍）——
+  只测"卡片变小"是不够的：真把图裁小/降采样了，卡片照样合格。
+
+#### 二、项目改名 Cylit
+
+**文件夹**：`paper-reader/` → `Cylit/`（仓库根；`.git` 跟着一起走，历史不变）。
+服务是**先停、再改目录名、再在新路径下重启**的（Windows 上目录被进程当 CWD 时改不了名）。
+`/health` 现在回 `app=Cylit`、`data_dir=…\Cylit\data` —— `data/` 随目录一起搬，论文与产物零迁移。
+
+**左上角品牌词**：`TabBar.vue` 里原来是一个 24×24 的实心青绿方块 + `library` 图标，
+现在就是**净文字 `Cylit`**（强调色、14.5px、600 字重、不可选中）。刻意不加底色方块 ——
+顶栏本来就是一条细标签条，一块实心方块会跟"首页"那枚常驻胶囊抢注意力。
+
+**同一轮一起改的"对外品牌字"**（都是用户能看见的地方，留着会自相矛盾）：
+`index.html` 的 `<title>` / `og:title` / 首屏启动页标题、`router` 的 `document.title` 后缀、
+首页 hero 的 `<h1>`、`config.app_name`（`/health` 用）、`pr.py` 的 CLI 描述、npm 包名
+`papermind-frontend` → `cylit-frontend`（含 lock）、以及各文档标题与目录树里的根名。
+
+**刻意不动**（改了就丢数据或纯属内部标识，不是品牌）：
+- MySQL 库名 `papermind`、sqlite 文件名 `papermind.sqlite3`（改 = 换库）；
+- `localStorage` 的 `papermind.kb.*` 键（改 = 用户的检索历史/条数设置清零）；
+- Python 异常基类 `PaperMindError`（内部标识，动它只是噪声）；
+- 浏览器标签图标（那是个图形 mark，用户只要求把**左上角**的图标换掉）、
+  以及 dev-log / `进度.md` 里的**历史条目**（那时候确实叫 PaperMind）。
+
+> 如果你要的是**整站**都改叫 Cylit（含库名、localStorage、favicon 换成字母 C），说一声 ——
+> 库名与 localStorage 那两项要先做迁移脚本，不能直接改。
+
+#### 三、验证
+
+- `pytest` **588 项 0 失败**、`npm run typecheck` 0 错、`npm run build` 成功（都在新目录 `Cylit/` 下跑）。
+- `frontend_check --block-markers` **96/96 全绿**（94 → 96：插图卡片两条）。
+- 改名后 API 正常：8 篇论文照旧列出，`/app/` 的 `<title>` 是 `Cylit · 智能论文阅读`。

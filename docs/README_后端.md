@@ -1,4 +1,4 @@
-# PaperMind · 智能论文阅读与知识管理系统（后端）
+# Cylit · 智能论文阅读与知识管理系统（后端）
 
 > 依据《智能论文阅读与知识管理系统 —— 总体规划 v3.0（合并版）》实现。
 > **本地优先**、**解析与质保为核心**、**逐页翻译（一页一次调用）**、**任务可控可恢复**。
@@ -64,7 +64,7 @@ python scripts/e2e_check.py
 ## 3. 目录结构
 
 ```
-paper-reader/
+Cylit/
 ├─ backend/
 │  ├─ api/            薄路由（统一响应 {data,error,trace_id}）
 │  ├─ services/       ★ 唯一允许访问 repositories/providers/向量库的层

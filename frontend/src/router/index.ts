@@ -51,6 +51,6 @@ export const router = createRouter({
 router.afterEach((to) => {
   // 标签条跟着路由走：当前位置一定有对应标签，且它是激活的那个
   activateRoute(to);
-  const title = (to.meta?.title as string) ?? 'PaperMind';
-  document.title = `${title} · PaperMind`;
+  const title = (to.meta?.title as string) ?? 'Cylit';
+  document.title = `${title} · Cylit`;
 });

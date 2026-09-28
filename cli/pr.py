@@ -468,7 +468,7 @@ def _safe(fn, arg):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pr.py", description="PaperMind CLI")
+    p = argparse.ArgumentParser(prog="pr.py", description="Cylit CLI")
     p.add_argument("--log-level", default="INFO")
     sub = p.add_subparsers(dest="command", required=True)
 

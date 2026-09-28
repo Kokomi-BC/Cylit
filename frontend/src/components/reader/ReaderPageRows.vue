@@ -387,10 +387,14 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
       6px 白边，两边看起来就是同一个范围；`border-radius` 照旧负责圆角裁剪。
    2. `max-height`：又高又窄的整页插图（比如 attention 的 Figure 1，1834×2699）按列宽铺满会
       高到要滚好几屏。**同时给 max-width 和 max-height**：浏览器会保持宽高比缩到都满足为止，
-      既不裁也不变形，只是整张图完整地变小（不再"显示过大"）。 */
+      既不裁也不变形，只是整张图完整地变小（不再"显示过大"）。
+   3. 尺寸（2026-09-28 用户口径"阅读器正文里的插图卡片缩小"）：780×840 → **560×420**，
+      与 Markdown 视图 / 知识库里的插图**同一口径**（`.md img`）—— 插图在哪儿看都一样大，
+      想看细节就点开（弹窗按原始尺寸，见 `zoomTarget`）。整幅图行是通栏的，
+      不设上限时一张图会把整屏占满、上下翻页变成翻图册。 */
 .row-figure img {
-  display: block; max-width: min(100%, 780px); height: auto;
-  max-height: min(74vh, 840px);
+  display: block; max-width: min(100%, 560px); height: auto;
+  max-height: min(48vh, 420px);
   padding: 6px; box-sizing: border-box;
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }

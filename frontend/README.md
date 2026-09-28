@@ -1,4 +1,4 @@
-# PaperMind 前端（Vite + Vue 3 + TypeScript）
+# Cylit 前端（Vite + Vue 3 + TypeScript）
 
 > 规划依据：`ParperMind/智能论文阅读与知识管理系统_总体规划_v3_合并版.md` §22（前端七个页面）、§3.1 A2（三视图）
 > 后端契约：`docs/API.md` ｜ 进度：`docs/进度.md` ｜ 踩坑：`docs/dev-log.md`
