@@ -216,3 +216,85 @@ def test_looks_like_caption_line_filters_body_sentences():
     # 放宽是安全的 —— 界标只界定**墨迹**（矢量/位图）的上界，正文文字根本不参与并集，
     # 而漏掉一条真界标的代价是把上一张图吞进这一张（用户报的"一页多图会漏掉"）。
     assert _looks_like_caption_line("Table 2 summarizes our results and shows the trend")
+
+
+# ---------------------------------------------------------------------------
+# 正文行内公式的分数线 / 根号横杠 ≠ 图体墨迹（turboquant p7 图 1，2026-09-28）
+#
+# 实测事故：那一页图 1（上下两组直方图，全矢量绘制）上方 140pt 处是正文两条 bullet 的公式，
+# 公式里的分式线（y 123.4 / 132.2 / 164.3，宽 4~39pt）也是矢量"墨迹" → 被算进"图体并集"，
+# 裁图于是从正文第一条 bullet 一路裁到图（用户截图："figure 1 把上面的正文也裁进来了"）。
+# 更隐蔽的一半：`_trim_top_at_heading` 的闸门是"标题之上还有没有真墨迹"—— 就是这几条分数线
+# 让闸门一直关着。把它们认成**文字**之后，顶边自动收到 `2.1 EMPIRICAL VALIDATION` 之下。
+# ---------------------------------------------------------------------------
+
+def _math_bar(page_no: int, y: float, x0: float, x1: float) -> Drawing:
+    """一条"细横杠"：分数线 / 根号横杠 / 下划线都长这样（stroke=True + 水平 + 零厚度）。"""
+    return Drawing(kind="line", rect=Rect(x0, y, x1, y), p0=(x0, y), p1=(x1, y),
+                   stroke=True, width=0.8)
+
+
+def test_formula_bar_inside_a_text_line_is_not_figure_ink():
+    """图体顶边不能被**正文公式的分数线**拽上去（turboquant p7 图 1：多裁了正文三条 bullet）。"""
+    page = 1
+    blocks = [
+        # 正文：一条宽公式行，里面那根分数线就是"被误当墨迹"的东西
+        RawBlock(page_no=page, block_no=0, lines=[
+            _line("D_prod ≤ 3π²∥y∥²/d · 1/4^b", page, 120.0, 108.0, 504.0)]),
+        # 图体上方的两个小节标题
+        RawBlock(page_no=page, block_no=1, lines=[
+            _line("2    EXPERIMENTS", page, 188.0, 108.0, 300.0)]),
+        RawBlock(page_no=page, block_no=2, lines=[
+            _line("2.1   EMPIRICAL VALIDATION", page, 263.0, 108.0, 340.0)]),
+        _caption("Figure 1: Distribution of Inner Product error", page, 531.2,
+                 x0=121.1, x1=475.1),
+    ]
+    drs = [
+        _math_bar(page, 123.4, 188.5, 192.4),           # 正文公式的分数线（宽 4pt，在公式行里）
+        _ink(page, 305.2, 524.1, x0=108.0, x1=504.0),   # 图体（两组直方图）
+    ]
+    cands = detect_figures(blocks, {}, {page: drs}, {page: PAGE})
+    assert len(cands) == 1
+    r = cands[0].rect
+    # 顶边 = 图体墨迹上沿（305.2 - 3 余量），正文 bullet / 两个标题都在裁图外
+    assert r.y0 == pytest.approx(302.2, abs=0.6)
+    assert r.y1 == pytest.approx(527.1, abs=0.5)
+    # 反向：这条分数线确实被判成"文字装饰"，而不是图体墨迹
+    from backend.parsing.structure.figure_cut import _is_text_decoration
+    assert _is_text_decoration(drs[0], blocks)
+    assert not _is_text_decoration(drs[1], blocks)
+
+
+def test_subfigure_label_just_above_the_ink_is_kept():
+    """紧贴图体上沿的**子图标题**（文字）要留在裁图里（turboquant p7 图 1 的 `(a) TURBOQUANT_prod`）。
+
+    只按墨迹裁会把子图标题切掉（"裁图不能缺内容"）；但再往上一行（正文段落）就必须停住 ——
+    实测正文与图之间有 21.4pt 的空白，而子图标题只差 1.9pt。
+    """
+    page = 1
+    blocks = [
+        RawBlock(page_no=page, block_no=0, lines=[
+            _line("2.1   EMPIRICAL VALIDATION", page, 263.0, 108.0, 340.0)]),
+        RawBlock(page_no=page, block_no=1, lines=[
+            _line("(a) TURBOQUANT_prod", page, 294.3, 264.5, 332.4)]),
+        _caption("Figure 1: Distribution of Inner Product error", page, 531.2,
+                 x0=121.1, x1=475.1),
+    ]
+    drs = [_ink(page, 305.2, 524.1, x0=108.0, x1=504.0)]
+    cands = detect_figures(blocks, {}, {page: drs}, {page: PAGE})
+    assert len(cands) == 1
+    r = cands[0].rect
+    assert r.y0 <= 294.3 - 3.0 + 0.5                 # 子图标题整行落在裁图内
+    assert r.y0 > 272.9                              # 但正文/小节标题没有被吞进来
+
+
+def test_axis_line_wider_than_the_tick_label_is_not_a_formula_bar():
+    """图里的**坐标轴横线**（比刻度文字行宽得多）不能被当成行内公式线 —— 否则图会被切。"""
+    from backend.parsing.structure.figure_cut import _is_text_decoration
+    page = 1
+    axis = _math_bar(page, 499.1, 108.0, 205.1)                 # 轴：73pt
+    tick = RawBlock(page_no=page, block_no=0, lines=[
+        _line("0.0", page, 500.1, 118.0, 126.1)])               # 刻度文字行：8pt
+    assert not _is_text_decoration(axis, [tick])
+    # 同一位置、比刻度行窄的短线（真要出现在这里也只能是文字里的分数线）才认
+    assert _is_text_decoration(_math_bar(page, 500.1, 118.5, 124.0), [tick])

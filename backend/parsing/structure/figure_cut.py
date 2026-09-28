@@ -394,16 +394,56 @@ def _trim_top_at_heading(body: Rect, cap_rect: Rect, blocks: list[RawBlock],
                 if r.y1 > body.y0 + 1 and r.y0 < sep_rect.y1 - 1]
     if real_ink:
         return body                                # 标题上面还有真图形 → 那是图内标注，不能收
-    return Rect(body.x0, sep_rect.y1 + 3.0, body.x1, body.y1)
+    # 这里的余量 5.0 比 `detect_figures` 末尾那个 `expand(padding=3.0)` 多 2pt：
+    # 否则裁图顶边正好压在标题的**基线**上，600dpi 出图会带上标题的一丝笔画（实测 turboquant p7 图 1）。
+    return Rect(body.x0, sep_rect.y1 + 5.0, body.x1, body.y1)
+
+
+def _absorb_labels_above(body: Rect, blocks: list[RawBlock], gap: float = 10.0) -> Rect:
+    """把**紧贴图体上沿**的文字行收进图体：子图标题 / 图例标题这类"图内文字"。
+
+    实测 turboquant p7 图 1：`(a) TURBOQUANT_prod` / `(b) TURBOQUANT_mse` 是**文字行**（不是墨迹），
+    图体的矢量墨迹从直方图边框才开始 —— 只按墨迹裁，这两个子图标题就被切掉了
+    （用户口径："裁图不能缺内容"）。判据：与图体横向重叠、上沿紧贴（间隔 ≤ `gap`）的文字行，
+    逐行往上吃；吃到正文段落就停 —— 正文与图之间必有一段更大的空白（这一页实测 21.4pt）。
+
+    ⚠️ 只**向上扩**，从不切：所以它不可能像 `_trim_top_at_heading` 那样把图切半截。
+    """
+    lines = [ln.rect for ab in blocks for ln in ab.lines if ln.spans]
+    lines.sort(key=lambda r: -r.y1)
+    top = body.y0
+    for _ in range(60):                              # 护栏：最多往上吃 60 行
+        nxt = None
+        for r in lines:
+            if not (top - gap <= r.y1 <= top + 1.0) or r.y0 >= top:
+                continue                             # 只吃"紧贴当前上沿"的那些行
+            if _h_overlap(r, body) < 0.10:
+                continue                             # 横向不相干（另一栏 / 页眉）
+            if nxt is None or r.y0 < nxt.y0:
+                nxt = r
+        if nxt is None:
+            break
+        top = nxt.y0
+    return Rect(body.x0, top, body.x1, body.y1)
 
 
 def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
-    """这条细横线是不是**文字的下划线**（而不是图里的线）。
+    """这条细横线是不是**文字的一部分**（下划线 / 行内公式的分数线、根号横杠），而不是图里的线。
 
-    实测 DeepSeek-V3.2 附录页（`12382-beyond-speedup-utilizing-2` p6）：参考文献里的 URL 带下划线，
-    下划线也是"墨迹" → 被算进图 4 的图体并集 → 裁出来顶上是 5 条参考文献 + `Appendices` 标题
-    （用户截图）。判据：细横线 + 紧贴在某个文字行的**下沿**（间隔 -2~5pt）+ 与它有横向重叠。
-    只用于**排除图体候选**，不动任何真实图形（图里的线不会贴着文字下沿走）。
+    已经踩过的两个来源：
+    1. **下划线**（DeepSeek-V3.2 附录页 p6）：参考文献里的 URL 带下划线，下划线也是"墨迹" →
+       被算进图 4 的图体并集 → 裁出来顶上是 5 条参考文献 + `Appendices` 标题（用户截图）。
+       判据：细横线 + 紧贴在某个文字行的**下沿**（间隔 -2~5pt）+ 与它有横向重叠。
+    2. **行内公式的分数线 / 根号横杠**（turboquant p7 图 1，2026-09-28）：正文公式里那几条
+       分数线（y 123.4 / 132.2 / 164.3）比图体高 140pt，却被算进"图体墨迹并集"
+       → 裁图从正文第一条 bullet 一路裁到图（用户截图："figure 1 把上面的正文也裁进来了"）；
+       更要命的是 `_trim_top_at_heading` 因此认为"标题上方还有真墨迹"（就是这几条线），
+       不敢把顶边收到标题之下 —— 本来只要这几条线被认成文字，顶边就自动收对了。
+       判据：细横线**横向落在某个文字行内、且比那一行窄**（分数线一定比它所在的行窄；
+       图里的坐标轴横线比刻度文字行**宽得多**，不会被误判）+ 纵向也落在行内。
+
+    只用于**排除图体候选**，不动任何真实图形。实测反例（boomerang p23 图 9 的图内标注
+    `19 (Every 2nd layer)`）：那是**文字**行本身，不是"文字行里的细横线"，不受影响。
     """
     # ⚠️ 下划线常常被画成**很多小段**（逐词一条，词间只剩 2~3pt 的短段）：
     # 原来 `length < 20` 会把那些短段漏掉 → 它们被当成"真墨迹"，
@@ -418,7 +458,11 @@ def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
             if _h_overlap(r, d.rect) < 0.5:
                 continue
             if -2.0 <= d.rect.y0 - r.y1 <= 5.0:
-                return True
+                return True                                     # ① 贴着文字行下沿 → 下划线
+            if (r.y0 - 0.5 <= d.rect.y0 and d.rect.y1 <= r.y1 + 0.5        # ② 落在这一行里面
+                    and r.x0 - 0.5 <= d.rect.x0 and d.rect.x1 <= r.x1 + 0.5
+                    and d.rect.width <= max(2.0, r.width * 0.8)):
+                return True                                     # 行内公式的分数线 / 根号横杠
     return False
 
 
@@ -503,6 +547,8 @@ def detect_figures(
         if body is None:
             continue
         # 图体顶边若被"参考文献的下划线"之类拉到标题之上，就收到标题下面（见 `_trim_top_at_heading`）
+        # 之前先把紧贴图体上沿的子图标题 / 图例标题（文字）收进来，免得收紧顶边时把它们切掉。
+        body = _absorb_labels_above(body, blocks)
         body = _trim_top_at_heading(body, cap_rect, blocks, drawings_by_page.get(page_no, []),
                                     images_by_page.get(page_no, []))
         # ⚠️ 这里**不再**用旧的 `CAPTION_MAX_GAP` 挡"图注离图体太远"（已删，理由见文件头）。

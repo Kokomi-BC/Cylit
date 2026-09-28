@@ -358,3 +358,37 @@ def test_orphan_block_id_uses_the_paper_prefix():
     assert _next_block_id(result, 3) == "12382beyondspeed-p03-x01"
     result.id_prefix = ""                                     # 没写前缀时退回老行为
     assert _next_block_id(result, 3) == "12382beyonds-p03-x01"
+
+
+def test_taken_prefixes_use_the_prefix_actually_in_use():
+    """挑前缀时，别的论文要按**库里实际在用的前缀**算，不能现算 12 字符那个。
+
+    同一个撞车场景的**第四处**（2026-09-28 重解析实测）：
+    `12382-beyond-speedup-utilizing`（实际前缀 12 字符 `12382beyonds`）与
+    `…-3`（当年避让后实际用 16 字符 `12382beyondspeed`）——
+    `_other_paper_prefixes` 原来对两篇都现算 `12382beyonds`，于是前一篇重新解析时
+    以为 `12382beyondspeed` 没人用、自己也算出它 → `Duplicate entry
+    '12382beyondspeed-p01-b01'`，任务失败在第 27% 处。
+    """
+    from backend.parsing.ir.rebind import id_prefix
+    from backend.parsing.pipeline import _taken_prefixes
+
+    pair = ["12382-beyond-speedup-utilizing", "12382-beyond-speedup-utilizing-3"]
+    # ① 两篇都解析过：各按自己实际在用的前缀占位
+    taken_a = _taken_prefixes(pair, {"12382-beyond-speedup-utilizing-3": "12382beyondspeed"},
+                              "12382-beyond-speedup-utilizing")
+    assert taken_a == {"12382beyondspeed"}
+    assert "12382beyonds" not in taken_a                      # 现算的那个是**错的**
+    # 前一篇于是守住自己的 12 字符前缀 → 存量块 ID / 高亮 / 批注都不用改号
+    assert id_prefix("12382-beyond-speedup-utilizing", taken=taken_a) == "12382beyonds"
+
+    taken_b = _taken_prefixes(pair, {"12382-beyond-speedup-utilizing": "12382beyonds"},
+                              "12382-beyond-speedup-utilizing-3")
+    assert taken_b == {"12382beyonds"}
+    # 后一篇的加长结果仍然是它自己在用的那个前缀（同样不改号）
+    assert id_prefix("12382-beyond-speedup-utilizing-3", taken=taken_b) == "12382beyondspeed"
+
+    # ② 从没解析过（没有块）的论文按现算前缀预留：先解析的那篇占住名字
+    assert _taken_prefixes(["new-paper"], {}, "other") == {id_prefix("new-paper")}
+    # ③ 自己不算在 taken 里（自己的旧前缀可以继续用）
+    assert _taken_prefixes(["me"], {"me": "meprefix"}, "me") == set()

@@ -1404,6 +1404,28 @@ def _classify_groups(groups: list[tuple[list, int]], prof: LineProfile) -> list[
     return kinds
 
 
+def _taken_prefixes(paper_ids: list[str], used: dict[str, str], paper_id: str) -> set[str]:
+    """**其他**论文占用的块 ID 前缀。
+
+    ⚠️ 有块的论文要按"库里**实际在用**的前缀"，不能现算 `id_prefix(pid)`：
+    `12382-beyond-speedup-utilizing` 与 `…-3` 的 12 字符前缀都是 `12382beyonds`，
+    而后者当年避让后**实际用的是** 16 字符的 `12382beyondspeed`。现算的话前一篇会以为
+    `12382beyondspeed` 没人用 → 自己也算出 `12382beyondspeed` → 写库撞主键
+    （实测 2026-09-28：重解析报 `Duplicate entry '12382beyondspeed-p01-b01'`）。
+    反过来，前一篇实际用的 `12382beyonds` 因此被正确避开，两篇各自守住自己的前缀，
+    **存量块 ID（以及挂在它上面的高亮/批注）都不用改号**。
+
+    还没有块的论文按现算前缀预留：它先解析时也要占住自己的名字。
+    """
+    out: set[str] = set()
+    for pid in paper_ids:
+        pid = str(pid)
+        if pid == paper_id:
+            continue
+        out.add(used.get(pid) or id_prefix(pid))
+    return out
+
+
 def _other_paper_prefixes(paper_id: str) -> set[str]:
     """其他论文已用的块 ID 前缀（用来给本论文挑一个不撞车的前缀，见 `rebind.id_prefix`）。
 
@@ -1411,13 +1433,18 @@ def _other_paper_prefixes(paper_id: str) -> set[str]:
     不让"挑前缀"这件事把解析拖挂。
     """
     try:
-        from backend.repositories.mysql.models import Paper
+        from backend.repositories.mysql.models import Block, Paper
         from backend.repositories.mysql.session import session_scope
         from backend.parsing.ir.rebind import id_prefix
 
         with session_scope() as sess:
             ids = [str(pid) for (pid,) in sess.query(Paper.id).all()]
-        return {id_prefix(pid) for pid in ids if pid != paper_id}
+            used: dict[str, str] = {}
+            for pid, block_id in sess.query(Block.paper_id, Block.id).all():
+                # 块 ID 形如 `<前缀>-p07-b12`，前缀本身只含字母数字（见 `rebind.id_prefix`）
+                prefix = str(block_id).split("-p", 1)[0]
+                used.setdefault(str(pid), prefix)
+        return _taken_prefixes(ids, used, paper_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("读取其他论文前缀失败（不影响解析，退化为 12 字符前缀）：%s", exc)
         return set()

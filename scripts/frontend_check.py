@@ -2341,8 +2341,9 @@ def main() -> int:
                 checks = [
                     ("表格没有竖线", data.get("vertical") == 0,
                      f"表头/正文单元格左右边框最大 {data.get('vertical')}px"),
-                    ("表格只有三条横线", (data.get("topRule") or 0) > 0 and (data.get("midRule") or 0) > 0
-                     and (data.get("bottomRule") or 0) > 0 and (data.get("rowLines") or 0) == 0,
+                    ("表格只有三条横线（且不细）", (data.get("topRule") or 0) >= 2
+                     and (data.get("midRule") or 0) >= 1 and (data.get("bottomRule") or 0) >= 2
+                     and (data.get("rowLines") or 0) == 0,
                      f"顶线 {data.get('topRule')}px / 表头下线 {data.get('midRule')}px / "
                      f"底线 {data.get('bottomRule')}px，逐行横线 {data.get('rowLines')} 条"
                      f"（颜色 {data.get('ruleColor')}）"),
