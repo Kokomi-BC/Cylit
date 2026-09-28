@@ -46,25 +46,40 @@ a { color: var(--accent-text); text-decoration: none; }
 
 /* 划词高亮的配色（**全站唯一来源**，与选择菜单的色块、笔记页的色点一一对应）。
  * 以前这套颜色只写在「笔记」页自己的 scoped 样式里，正文里的 `mark.hl` 没有任何样式 ——
- * 于是不管用户选绿/蓝/粉，渲染出来都是浏览器默认的黄色（选了等于没选）。 */
+ * 于是不管用户选绿/蓝/粉，渲染出来都是浏览器默认的黄色（选了等于没选）。
+ * `--hl-bg` 是**同一份颜色**的变量形式：行间公式的底色要画在公式本体上（见最下面那段），
+ * 两处必须是同一个色值，所以颜色只在 `.yellow/.green/…` 这几条里写一次。 */
 mark.hl { border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; }
-mark.hl.yellow { background: rgba(255, 214, 64, .45); }
-mark.hl.green { background: rgba(90, 220, 150, .38); }
-mark.hl.blue { background: rgba(110, 180, 255, .38); }
-mark.hl.pink { background: rgba(255, 150, 190, .38); }
-mark.hl.purple { background: rgba(140, 140, 140, .32); }
+mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); background: var(--hl-bg); }
+mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
+mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }
+mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); background: var(--hl-bg); }
+mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，
  * 否则底色只画在一条行高上 —— 三行公式看起来"只有中间一行被标黄"（用户报过）。
  * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。
  *
- * ⚠️ 但**不能就一个 `display:block` 了事**：块级盒子宽度默认铺满整行，于是"标记一张行间公式"
- * 会变成**整行都涂上颜色**（用户 2026-09-28 报的："如果标记行间公式，那一行都会被高亮"）。
- * `width: fit-content` + `margin-inline: auto` = 盒子只包住公式自己（高度仍是整块，
- * 多行公式一起覆盖），左右自动居中 —— 与公式原本在行里的位置一致。 */
-mark.hl.block {
-  display: block; width: fit-content; max-width: 100%;
-  margin-left: auto; margin-right: auto;
+ * ⚠️ 但这个 `mark` 只是**外壳，本身不画底色**，两层原因（都是用户实测报回来的）：
+ * 1. 外壳宽度默认铺满整行 —— 若把底色画在外壳上，"标记一张行间公式"就变成**整行涂色**
+ *    （2026-09-28："如果标记行间公式，那一行都会被高亮"）；
+ * 2. 外壳**必须保持整行宽**，不能收窄：KaTeX 的公式编号 `(1)`/`(2)` 是
+ *    `.katex-html > .tag`，绝对定位于 `right: 0`；外壳一收窄，编号就被拽到公式右端、
+ *    压在公式上（同一天用户截图的"（1）（2）会与公式重叠"就是这么来的）。
+ *
+ * 所以底色画在 `.katex-html` 上，并把它收成**贴着公式的 inline-block**（`domMarks.ts` 的
+ * `bandFormula` 负责；它的宽 = 各"不可断行单元"之和、高 = 行盒 = 公式外接框）。
+ * 带编号 `(1)`/`(2)` 的公式，`bandFormula` 会把 `.tag` 挪到 `.katex` 下 —— `.katex` 是整行宽
+ * 的块级盒子，`right: 0` 仍是整行最右（与论文一致），也就不会被收窄的色带压住。 */
+mark.hl.block { display: block; background: none; padding: 0; }
+/* ⚠️ 色带**不加左右内边距**：`display:inline-block` 的宽度 = 内容 + padding，给 1px 就可能让
+ * "正好占满整栏"的公式溢出 2px —— `.katex-display` 上有 `overflow-x:auto`，于是多出一条
+ * 横向滚动条（实测：色带 37px vs 公式块 47px，那 10px 就是滚动条）。色块贴住公式本身即可。 */
+mark.hl.block .katex > .katex-html {
+  display: inline-block; background: var(--hl-bg);
+  border-radius: var(--r-xs);
 }
+mark.hl.block .katex > .tag { position: absolute; right: 0; }
+mark.hl.block .katex-display.leqno .katex > .tag { left: 0; right: auto; }
 
 /* 在左栏 PDF 上拖拽划词时（`PdfPage.vue` 给 `<html>` 加的临时类）：右侧译文、页头这些
  * **非 PDF 内容不参与本次选区** —— Chrome 会把 `user-select:none` 的内容从选区里跳过，

@@ -573,43 +573,128 @@ f.addEventListener('load', async () => {
     }
     flush();
 
-    // ③b 多行**显示公式**：底色必须覆盖整块。
-    //     回归点：`mark` 以前套在内层行内 `.katex` 上，而 `.katex-display` 是块级 ——
+    // ③b 多行**显示公式**：底色必须覆盖整块，但**不能铺满整行**、也不能压住公式编号 (1)(2)。
+    //     回归点一：`mark` 以前套在内层行内 `.katex` 上，而 `.katex-display` 是块级 ——
     //     浏览器只把底色画在内层那一条行高上，三行公式看起来"只有中间一行被标黄"（用户报过）。
-    const dispEl = [...d.querySelectorAll('[data-row-id] .rr-body .katex-display')]
-      .find((k) => k.getBoundingClientRect().height > 40);
+    //     回归点二：底色画在**外壳** `mark.hl.block` 上时，外壳宽度默认铺满整行 →
+    //     标一张行间公式变成整行涂色；而把外壳收窄成 fit-content 又会把 KaTeX 的编号
+    //     `.tag`（绝对定位在 `.katex-html` 的 right:0）拽到公式上 → 编号与公式重叠。
+    //     所以这里**优先挑带编号的显示公式**，把"编号不被压住"也一起断言。
+    const inkOf = (k) => {
+      const bs = [...k.querySelectorAll('.katex-html > .base')].map((b) => b.getBoundingClientRect());
+      if (!bs.length) return null;
+      return { w: Math.max(...bs.map((b) => b.right)) - Math.min(...bs.map((b) => b.left)),
+               h: Math.max(...bs.map((b) => b.bottom)) - Math.min(...bs.map((b) => b.top)),
+               left: Math.min(...bs.map((b) => b.left)),
+               right: Math.max(...bs.map((b) => b.right)) };
+    };
+    const DISP = [...d.querySelectorAll('[data-row-id] .rr-body .katex-display')]
+      .filter((k) => k.getBoundingClientRect().height > 40);
+    const tagged = DISP.filter((k) => k.querySelector('.tag'));
+    // 优先挑"高亮前编号就与公式分开"的那种（`tag.left >= 墨迹右沿 + 2`）：这样"编号不被压住"这条
+    // 断言才是真的在测东西。公式本来就跟整栏一样宽时，KaTeX 自己就把编号压在公式上
+    // （那是排版本身的问题，不是高亮造成的），退而求其次按"至少窄 40px"挑，再不行随便给一个。
+    const tagGap = (k) => {
+      const ink = inkOf(k);
+      const tag = k.querySelector('.tag')?.getBoundingClientRect() ?? null;
+      return ink && tag ? tag.left - ink.right : -1;
+    };
+    const dispEl = tagged.find((k) => tagGap(k) >= 2)
+      // ② 没带编号但明显比整栏窄的（≥60px）：注入一个 KaTeX 同款编号来测（见 `tagInjected`）——
+      //    实测真实页面里"高亮前编号就与公式分开"的很少，不注入这条回归就永远测不到
+      || DISP.find((k) => {
+        const ink = inkOf(k);
+        return !k.querySelector('.tag') && ink
+          && ink.w <= k.getBoundingClientRect().width - 60;
+      })
+      || tagged.find((k) => {
+        const ink = inkOf(k);
+        return ink && ink.w <= k.getBoundingClientRect().width - 40;
+      }) || tagged[0] || DISP[0];
     res.hasDisp = !!dispEl;
     if (dispEl) {
       const dRow = dispEl.closest('[data-row-id]');
       const before = new Set([...d.querySelectorAll('mark.hl[data-hl]')]
         .map((m) => m.getAttribute('data-hl')));
-      res.dispClick = await selectElement(dispEl, 'hl-green');
+      /* ⚠️ 带编号的行间公式在真实 DOM 里很少（实测两篇都没有"高亮前编号就与公式分开"的那种），
+       * 而"编号被色带压住"正是用户 2026-09-28 截图报的那个 bug —— 不能只靠运气测到。
+       * 这里**注入一个 KaTeX 同款编号**（同样的 `.katex-html > .tag` 结构与 CSS 选择器），
+       * 把这条回归固定住；页面本身是自检的临时 iframe，注入不会留到产品里。 */
+      const htmlEl = dispEl.querySelector('.katex-html');
+      const ink0 = inkOf(dispEl);
+      let tagInjected = false;
+      if (!dispEl.querySelector('.tag') && htmlEl && ink0
+          && dispEl.getBoundingClientRect().width - ink0.w >= 60) {
+        const tag = d.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = '(9)';
+        htmlEl.appendChild(tag);
+        tagInjected = true;
+      }
+      res.tagInjected = tagInjected;
+      // 高亮**之前**编号是否本来就与公式分开（分开 → 高亮之后也必须分开）
+      const tagBefore = dispEl.querySelector('.tag')?.getBoundingClientRect() ?? null;
+      const inkBefore = inkOf(dispEl);      res.dispClick = await selectElement(dispEl, 'hl-green');
       const mk = [...dRow.querySelectorAll('mark.hl')].find((m) => m.classList.contains('block'));
-      const dh = dispEl.getBoundingClientRect().height;
-      // 色块**只该包住公式**，不该铺满整行（用户 2026-09-28："标记行间公式，那一行都会被高亮"）。
-      // 公式自己的宽度看内层 `.katex`（贴合字形的行内盒）；`.katex-display` 是块级、宽度铺满整行，
-      // 拿它量不出"整行"与"公式"的区别。容差 12px：mark 自带 1px 内边距 + 四舍五入。
-      const kx = dispEl.querySelector('.katex');
-      const kw = kx ? kx.getBoundingClientRect().width : 0;
-      const mw = mk ? mk.getBoundingClientRect().width : 0;
-      // ⚠️ 取**含公式的那一侧**（与 ③ 同一个坑）：`dRow.querySelector('.rr-body')` 是 DOM 里第一个，
-      // 而左右顺序由 pair_order 决定 —— 拿错侧量中心必然对不上。
-      const bodyEl = dispEl.closest('.rr-body');
-      const bodyBox = bodyEl.getBoundingClientRect();
-      const mkBox = mk ? mk.getBoundingClientRect() : null;
-      const kBox = kx ? kx.getBoundingClientRect() : null;
+      const box = (el) => (el ? el.getBoundingClientRect() : null);
+      // ⚠️ 量的是**真正被涂色的元素**（`.base` / `.tag`），不是外壳 mark：外壳是透明的整行盒子，
+      // 拿它量高度会"看起来覆盖整块"，量宽度又永远等于整行 —— 两个 bug 都测不出来。
+      const painted = mk ? [...mk.querySelectorAll('*')].find((el) => {
+        const bg = w.getComputedStyle(el).backgroundColor || '';
+        return bg && bg !== 'transparent' && !/^rgba?\(0,\s*0,\s*0,\s*0\)$/.test(bg);
+      }) : null;
+      const bandBox = box(painted);
+      const dispBox = box(dispEl);
+      const bodyBox = box(dispEl.closest('.rr-body'));
+      const tagBox = box(dispEl.querySelector('.tag'));
+      const kBox = box(dispEl.querySelector('.katex'));
+      const htmlBox = box(dispEl.querySelector('.katex-html'));
+      const bases = [...dispEl.querySelectorAll('.katex-html > .base')];
+      const boxes = bases.map((b) => b.getBoundingClientRect());
+      // 公式自己的外接框 = 各"不可断行单元"的并集（不能只看最高的那个：多行公式要按并集算）
+      const inkH = boxes.length
+        ? Math.max(...boxes.map((b) => b.bottom)) - Math.min(...boxes.map((b) => b.top)) : 0;
+      const inkW = boxes.length
+        ? Math.max(...boxes.map((b) => b.right)) - Math.min(...boxes.map((b) => b.left)) : 0;
+      const cx = (b) => (b.left + b.right) / 2;
       res.disp = {
         hasBlockClass: !!mk,
-        markH: mk ? Math.round(mk.getBoundingClientRect().height) : 0,
-        dispH: Math.round(dh),
-        covers: !!mk && mk.getBoundingClientRect().height >= dh * 0.8,
-        markW: Math.round(mw),
-        katexW: Math.round(kw),
-        hugs: !!mk && kw > 0 && mw <= kw + 12,
-        // 色块变成 fit-content 之后，居中靠 `margin-inline:auto` —— 顺带量一下公式还在不在行中间
-        centered: !!mkBox && !!kBox
-          && Math.abs((mkBox.left + mkBox.right) / 2 - (bodyBox.left + bodyBox.right) / 2) <= 2
-          && Math.abs((kBox.left + kBox.right) / 2 - (bodyBox.left + bodyBox.right) / 2) <= 2,
+        hasTag: !!tagBox,
+        rowId: dRow.getAttribute('data-row-id'),
+        // 诊断用：一眼看出"公式块高 47 但色带只有 37"这类差在哪
+        boxes: {
+          disp: dispBox && [Math.round(dispBox.x), Math.round(dispBox.y),
+                            Math.round(dispBox.width), Math.round(dispBox.height)],
+          html: htmlBox && Math.round(htmlBox.width),
+          katex: kBox && Math.round(kBox.width),
+          body: bodyBox && Math.round(bodyBox.width),
+          bases: boxes.map((b) => Math.round(b.height)),
+          ink: [Math.round(inkW), Math.round(inkH)],
+          band: bandBox && [Math.round(bandBox.x), Math.round(bandBox.y),
+                            Math.round(bandBox.width), Math.round(bandBox.height)],
+        },
+        // 底色画在公式自己的盒子里（`.katex` 之内），不是外壳 / 整行的 `.katex-display`
+        bandInsideFormula: !!painted && painted !== mk
+          && !!mk.querySelector('.katex')?.contains(painted),
+        // 色带大小必须**贴着公式外接框**（多截一点就是"铺满整行"，少截就是"只黄一行"）
+        bandMatchesInk: !!bandBox && inkW > 0 && inkH > 0
+          && Math.abs(bandBox.width - inkW) <= 6 && Math.abs(bandBox.height - inkH) <= 6,
+        markH: bandBox ? Math.round(bandBox.height) : 0,
+        dispH: dispBox ? Math.round(dispBox.height) : 0,
+        baseMaxH: Math.round(inkH),
+        // 覆盖判据按**公式墨迹的并集高度**（旧 bug 是"只黄中间一行"，那时色带只有一条行高）；
+        // `.katex-display` 的高度可能含一条横向滚动条（差 ~10px），拿它当基准会误判。
+        covers: !!bandBox && inkH > 0 && bandBox.height >= inkH * 0.95,
+        bandW: bandBox ? Math.round(bandBox.width) : 0,
+        lineW: kBox ? Math.round(kBox.width) : 0,
+        centered: !!bandBox && !!bodyBox && Math.abs(cx(bandBox) - cx(bodyBox)) <= 2,
+        // 编号 (1)：高亮之前它就不压在公式上时，高亮之后也必须不压（色带只该包住公式本体）；
+        // 而且仍在整行最右边（论文里的位置）。公式比整栏还宽那种（KaTeX 自己就压着）不苛责。
+        preTagClear: !!(tagBefore && inkBefore && tagBefore.left >= inkBefore.right - 1),
+        tagClear: !!(tagBox && bandBox && tagBox.left >= bandBox.right - 1),
+        tagOverlap: !!tagBox && !!bandBox
+          && tagBox.left < bandBox.right - 1 && tagBox.right > bandBox.left + 1,
+        tagAtRight: !!tagBox && !!bodyBox && Math.abs(tagBox.right - bodyBox.right) <= 4,
         wrapped: !!dRow.querySelector('mark.hl > .katex-display'),
         katexIntact: !!dRow.querySelector('.katex'),
         ids: [...dRow.querySelectorAll('mark.hl[data-hl]')]
@@ -1786,10 +1871,19 @@ def main() -> int:
                      f"，该侧有公式={formula.get('bodyHasKatex')}，整行 {formula.get('katexInRow')} 个公式，"
                      f"标记子节点={formula.get('markChildren')}）"),
                     ("多行公式底色覆盖整块", bool(disp.get("covers")) and bool(disp.get("hasBlockClass"))
-                     and bool(disp.get("hugs")) and bool(disp.get("centered")),
-                     f"mark 高 {disp.get('markH')}px / 公式块高 {disp.get('dispH')}px，"
-                     f"mark 宽 {disp.get('markW')}px / 公式宽 {disp.get('katexW')}px"
-                     f"（只包公式={disp.get('hugs')}、仍居中={disp.get('centered')}，不该铺满整行），"
+                     and bool(disp.get("bandInsideFormula")) and bool(disp.get("bandMatchesInk"))
+                     and bool(disp.get("centered"))
+                     and (not disp.get("hasTag") or not disp.get("preTagClear")
+                          or (bool(disp.get("tagClear")) and bool(disp.get("tagAtRight")))),
+                     f"色块高 {disp.get('markH')}px / 公式墨迹高 {disp.get('baseMaxH')}px"
+                     f"（公式块 {disp.get('dispH')}px），"
+                     f"色块宽 {disp.get('bandW')}px / 公式宽 {disp.get('lineW')}px"
+                     f"（只涂公式本体={disp.get('bandInsideFormula')}、贴住公式={disp.get('bandMatchesInk')}、"
+                     f"仍居中={disp.get('centered')}），"
+                     f"有无编号={disp.get('hasTag')}（注入={data.get('tagInjected')}、"
+                     f"高亮前不压={disp.get('preTagClear')}、"
+                     f"高亮后不压={disp.get('tagClear')}、编号仍在最右={disp.get('tagAtRight')}），"
+                     f"几何={disp.get('boxes')}（行 {disp.get('rowId')}），"
                      f"block 类={disp.get('hasBlockClass')}（点色块={bool((data.get('dispClick') or {}).get('ok'))}）"),
                     ("跨行选择分成同组多条", cross.get("rowsWithMarks") == 2
                      and len(cross.get("rowIds") or []) == 2,

@@ -184,6 +184,7 @@ export interface DomMark {
 
 export function clearUserMarks(root: HTMLElement | null): void {
   unwrap(root, 'mark.hl');
+  unbandFormula(root);
 }
 
 function makeMark(color: string, id: string): HTMLElement {
@@ -192,6 +193,44 @@ function makeMark(color: string, id: string): HTMLElement {
   mark.setAttribute('data-hl', id);
   mark.title = '选中这一段，可从菜单删除高亮';
   return mark;
+}
+
+/** 被 `bandFormula` 挪过位置的编号角标（拆标记时要挪回去） */
+const MOVED_TAG = 'data-hl-moved';
+
+/**
+ * 把**显示公式**的 `.katex-html` 变成"贴着公式的色带"（`display: inline-block`，见 `base.css`）。
+ *
+ * 为什么不把底色画在 `mark` 上：`mark` 是**整行宽**的块级盒子（编号 `.tag` 的绝对定位依赖这个
+ * 宽度），底色画上去就是"整行涂色"（用户 2026-09-28："标记行间公式，那一行都会被高亮"）。
+ * 为什么也不用 KaTeX 的 `.base`：一张公式会被拆成**多个** `.base`（"不可断行单元"，实测 4 个、
+ * 高度 26/67px 参差），逐个涂色是锯齿状的，而且它们的行盒还比 `.katex-html` 的块级行盒矮
+ * （实测 37px vs 47px）—— 都不等于公式真正的外接框。
+ *
+ * `.katex-html` 自己就是那个外接框（宽 = 各单元之和，高 = 行盒），但它里面挂着编号 `.tag`
+ * （`position: absolute; right: 0`）—— 盒子一收窄，编号就被拽到公式右端、压在公式上。
+ * 所以**带编号时把 `.tag` 挪到 `.katex` 下**：`.katex` 是整行宽的块级盒子，
+ * `right: 0` 仍然是"整行最右"，与论文里的位置一致，也不会被色带压住。
+ */
+function bandFormula(displayEl: HTMLElement): void {
+  const html = displayEl.querySelector<HTMLElement>('.katex-html');
+  if (!html) return;
+  const katex = html.parentElement;
+  const tag = html.querySelector<HTMLElement>(':scope > .tag');
+  if (!katex || !tag || tag.hasAttribute(MOVED_TAG)) return;
+  tag.setAttribute(MOVED_TAG, '1');
+  katex.appendChild(tag);
+}
+
+/** 把挪过的编号角标放回 `.katex-html`（高亮删掉后不该留下痕迹、更不该改论文的结构） */
+function unbandFormula(root: HTMLElement | null): void {
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>(`.katex > .tag[${MOVED_TAG}]`).forEach((tag) => {
+    const html = tag.parentElement?.querySelector<HTMLElement>(':scope > .katex-html');
+    if (!html) return;
+    tag.removeAttribute(MOVED_TAG);
+    html.appendChild(tag);
+  });
 }
 
 /** 把 [start, end) 画上：文本段逐段包，公式段整体搬进 `<mark>` 里。 */
@@ -205,8 +244,13 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
       const el = seg.el;
       if (!el?.parentNode) continue;
       const mark = makeMark(color, id);
-      // 块级公式（`.katex-display`）：`mark` 自己也得是块级，否则底色只有一条行高（见 `formulaOf`）
-      if (el.classList?.contains('katex-display')) mark.classList.add('block');
+      // 块级公式（`.katex-display`）：`mark` 自己得是块级，否则底色只有一条行高（见 `formulaOf`）；
+      // 但底色**不画在这个块级外壳上**（那是整行宽），而是画在 `bandFormula` 收出来的
+      // `.katex-html` 上（它的大小 = 公式外接框）。
+      if (el.classList?.contains('katex-display')) {
+        mark.classList.add('block');
+        bandFormula(el);
+      }
       el.parentNode.replaceChild(mark, el);
       mark.appendChild(el);
       wrapped = true;
