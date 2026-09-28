@@ -96,6 +96,85 @@ export function rewriteAssetPaths(html: string, paperId?: string | null): string
   );
 }
 
+/* ---------------- 表格：论文式「三线表」（booktabs） ----------------
+ *
+ * 为什么要在 HTML 上打类，而不是只用 CSS：CSS 看不见单元格里的**内容**。
+ *   ① 论文表格里数字列右对齐、文字列左对齐（表头压在数字列正中）—— 哪一列是数字列只能按列统计；
+ *   ② 论文用 `\cmidrule` 把不同数据集分成几块，HTML 表格没有这个概念 ——
+ *      第一列（分组列，如"数据集"）出现空单元格时，就知道它分了组，于是在每块的**第一行**补一条细线。
+ * 外加把每张表包进 `.tbl-wrap`（横向滚动容器）：宽表**不许把整页顶宽**
+ * （`frontend_check` 的"整页不滚动"是永久回归项）。
+ *
+ * 只做这三件事，样式全部在 `base.css` 的 `.md table` —— 阅读器行、Markdown 视图、知识库、
+ * AI 解读共用一套观感（以前三处各写一套，长得都不一样）。
+ */
+/** 纯数字单元格：`0.578` / `1,234` / `87%`（负号连字符、真减号都认） */
+const NUMERIC_CELL = /^[+\-−]?\d[\d.,]*(?:\s*[%‰])?$/;
+const ENTITIES: Record<string, string> = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' ',
+};
+
+/** 单元格 HTML → 纯文本（判数字只看文字：标签、KaTeX、高亮占位符都要剥掉） */
+function cellText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/%%(?:HL|BLKMATH)\d+%%/g, '')
+    .replace(/&[a-zA-Z#0-9]+;/g, (m) => ENTITIES[m.toLowerCase()] ?? m)
+    .trim();
+}
+
+/** 给开标签补一个类名（`<td align="right">` → `<td align="right" class="num">`） */
+function withClass(cell: string, cls: string): string {
+  const m = /^<(t[hd])([^>]*)>/.exec(cell);
+  if (!m) return cell;
+  const rest = cell.slice(m[0].length);
+  const attrs = m[2];
+  if (/\bclass\s*=\s*"/.test(attrs)) {
+    return `<${m[1]}${attrs.replace(/\bclass\s*=\s*"([^"]*)"/, (_a, c: string) => `class="${c} ${cls}"`)}>${rest}`;
+  }
+  return `<${m[1]}${attrs} class="${cls}">${rest}`;
+}
+
+/** 把 `<table>` 加工成「论文表格」：数字列 `.num`、分组行 `.grp`，并包上滚动容器。 */
+export function decorateTables(html: string): string {
+  if (!html || !html.includes('<table')) return html;
+  return html.replace(/<table[\s\S]*?<\/table>/g, (block) => {
+    const wrap = (s: string) => `<div class="tbl-wrap">${s}</div>`;
+    const rows = block.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
+    if (rows.length < 2) return wrap(block);
+    const cols = rows.map((r) => r.match(/<t[hd][\s\S]*?<\/t[hd]>/g) ?? []);
+    const width = Math.max(...cols.map((c) => c.length), 0);
+    if (!width) return wrap(block);
+
+    // ① 数字列：正文里 ≥75% 的单元格是数字（且至少 2 个）才算，免得把"2024 / 2025"当数字列
+    const numeric: boolean[] = [];
+    for (let c = 0; c < width; c += 1) {
+      const vals = cols.slice(1).map((cells) => cellText(cells[c] ?? '')).filter(Boolean);
+      const hits = vals.filter((v) => NUMERIC_CELL.test(v)).length;
+      numeric.push(vals.length >= 2 && hits / vals.length >= 0.75);
+    }
+    // ② 分组列：第一列出现空单元格 → 这是"数据集列"，块与块之间要一条细线
+    const firsts = cols.slice(1).map((cells) => cellText(cells[0] ?? ''));
+    const grouping = firsts.some((v) => !v);
+
+    let i = -1;
+    const out = block.replace(/<tr[\s\S]*?<\/tr>/g, (row) => {
+      i += 1;
+      let c = -1;
+      let rowHtml = row.replace(/<t[hd][\s\S]*?<\/t[hd]>/g, (cell) => {
+        c += 1;
+        return numeric[c] ? withClass(cell, 'num') : cell;
+      });
+      const k = i - 1;                       // `i` 0 是表头行；k 是正文行下标
+      if (grouping && k > 0 && firsts[k] && !firsts[k - 1]) {
+        rowHtml = rowHtml.replace(/^<tr/, '<tr class="grp"');
+      }
+      return rowHtml;
+    });
+    return wrap(out);
+  });
+}
+
 /**
  * 行间公式（`$$…$$`）自己接管，**不交给 marked-katex-extension**。
  *
@@ -162,6 +241,7 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
   }
   html = renderBlockMath(html, math);
   html = rewriteAssetPaths(html, paperId);
+  html = decorateTables(html);
   if (cache.size >= CACHE_LIMIT) cache.clear();
   cache.set(key, html);
   return html;

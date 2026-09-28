@@ -1637,7 +1637,8 @@ onUnmounted(() => {
   font-size: 13.5px; line-height: 1.72; color: var(--text);
   overflow-wrap: anywhere;
 }
-.kb-content :deep(img) { max-width: 100%; height: auto; }
+/* 插图尺寸（560×420 以内、点开看大图）由 base.css 的 `.md img` 统一管 —— 这里不能再写一条
+ * `max-width: 100%`：`:deep()` 编译出的选择器比 `.md img` 更具体，会把"别铺满整栏"顶掉。 */
 .kb-content :deep(.katex-display) { margin: .5em 0; overflow-x: auto; overflow-y: hidden; }
 .kb-content-loading { padding: 4px 0; }
 

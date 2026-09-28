@@ -1146,6 +1146,123 @@ f.addEventListener('load', async () => {
           && blockMark.getBoundingClientRect().height >= disp.getBoundingClientRect().height * 0.8,
       };
     }
+
+    // ③ 插图尺寸：用户口径"图片在 markdown 中不要那么大"。
+    //    CSS 把宽高都收在 560 × 420 以内（base.css 的 `.md img`），并且**点一下能开大图**（原始尺寸）——
+    //    收小是敢收的前提：没有放大入口，收小就等于看不清细节。
+    const imgs = [...d.querySelectorAll('.md-doc img')]
+      .filter((i) => i.getBoundingClientRect().width > 4);
+    const boxes = imgs.map((i) => i.getBoundingClientRect());
+    res.images = {
+      count: imgs.length,
+      maxW: boxes.length ? Math.round(Math.max(...boxes.map((b) => b.width))) : 0,
+      maxH: boxes.length ? Math.round(Math.max(...boxes.map((b) => b.height))) : 0,
+      over: boxes.filter((b) => b.width > 568 || b.height > 428).length,
+      docW: Math.round((doc ? doc.getBoundingClientRect().width : 0)),
+      alt: imgs.length ? (imgs[0].getAttribute('alt') || '').slice(0, 40) : '',
+    };
+    if (imgs.length) {
+      imgs[0].scrollIntoView({ block: 'center' });
+      await sleep(250);
+      imgs[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+      await sleep(400);
+      const modal = [...d.querySelectorAll('.modal')].find((x) => x.querySelector('.modal-title'));
+      const mi = modal && modal.querySelector('img');
+      res.imageZoom = {
+        open: !!modal,
+        hasImg: !!mi,
+        title: modal ? (modal.querySelector('.modal-title').textContent || '').trim().slice(0, 40) : '',
+        src: mi ? (mi.getAttribute('src') || '').split('/').pop() : '',
+        natW: mi ? mi.naturalWidth : 0,
+      };
+    }
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+# 表格渲染探针（用户口径：markdown 表格要"更像论文"）。
+#
+# 论文表格 = booktabs 的**三线表**（`\toprule` / `\midrule` / `\bottomrule`）：
+# 没有竖线、没有逐行横线，数字列右对齐（表头压在正中），数据集分组之间一条细线（`\cmidrule`）。
+#
+# 回归点：读者行里的表格以前是「每行一条 border-bottom + 所有单元格右对齐」——一眼是网页表格；
+#         而 base.css 里那套又是 `border: 1px solid` 的方格表（还有竖线）。三处（阅读器 / Markdown
+#         视图 / AI 解读）各写一套，长得都不一样，现在统一到 base.css 的 `.md table`。
+# 判据全部量**计算样式**（不是类名）：换实现只要还是三线表就仍然通过。
+# `.tbl-wrap` 是宽表的横向滚动容器 —— 缺了它宽表会把**整页**顶宽（另有一条永久回归项）。
+TABLE_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>markdown table probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:600px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+/* 与前端 `decorateTables` 同一判据：整列 ≥75% 的单元格是纯数字才算数字列 */
+const NUM = /^[+\\-−]?\\d[\\d.,]*(?:\\s*[%‰])?$/;
+f.addEventListener('load', async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    await sleep(__WAIT__);
+    const cs = (el, prop) => w.getComputedStyle(el)[prop];
+    const px = (el, prop) => parseFloat(cs(el, prop)) || 0;
+    const txt = (el) => ((el && el.textContent) || '').trim();
+    /* 挑一张"真表格"：列多、行多（Table 1 那种）；找不到就退而求其次 */
+    const cands = [...d.querySelectorAll('.t-table table, .md table')].map((t) => ({
+      t, cols: t.querySelectorAll('thead th').length, rows: t.querySelectorAll('tbody tr').length,
+    })).filter((c) => c.cols >= 3 && c.rows >= 2)
+      .sort((a, b) => (b.cols * b.rows) - (a.cols * a.rows));
+    res.candidates = cands.length;
+    if (!cands.length) { out(res); return; }
+    const t = cands[0].t;
+    const ths = [...t.querySelectorAll('thead th')];
+    const trs = [...t.querySelectorAll('tbody tr')];
+    const tds = (r) => [...r.querySelectorAll('td')];
+    /* ① 竖线：表头 + 全部正文单元格的左右边框都是 0 */
+    res.vertical = Math.max(0, ...[...ths, ...trs.flatMap(tds)].map(
+      (el) => px(el, 'borderLeftWidth') + px(el, 'borderRightWidth')));
+    /* ② 三条横线：表头顶线 / 表头下线 / 表体底线；中间的逐行横线必须没有 */
+    res.topRule = px(ths[0], 'borderTopWidth');
+    res.midRule = px(ths[0], 'borderBottomWidth');
+    res.bottomRule = px(tds(trs[trs.length - 1])[0], 'borderBottomWidth');
+    res.rowLines = trs.slice(0, -1).filter((r) => px(tds(r)[0], 'borderBottomWidth') > 0).length;
+    res.ruleColor = cs(ths[0], 'borderTopColor');
+    /* ③ 对齐：数字列右对齐 + 表头压正中；文字列左对齐；数字用等宽数字（等宽才好按位读） */
+    const width = ths.length;
+    const numeric = [];
+    for (let c = 0; c < width; c += 1) {
+      const vals = trs.map((r) => txt(tds(r)[c])).filter(Boolean);
+      numeric.push(vals.length >= 2 && vals.filter((v) => NUM.test(v)).length / vals.length >= 0.75);
+    }
+    const numC = numeric.indexOf(true), txtC = numeric.indexOf(false);
+    res.numCols = numeric.filter(Boolean).length;
+    res.textCols = numeric.filter((v) => !v).length;
+    res.numAlign = numC >= 0 ? cs(tds(trs[0])[numC] || ths[numC], 'textAlign') : '';
+    res.numHeadAlign = numC >= 0 ? cs(ths[numC], 'textAlign') : '';
+    res.txtAlign = txtC >= 0 ? cs(tds(trs[0])[txtC] || ths[txtC], 'textAlign') : '';
+    res.tnum = numC >= 0 ? cs(tds(trs[0])[numC], 'fontVariantNumeric') : '';
+    /* ④ 分组细线：第一列有空单元格 → 那是"数据集列"，非首行里该有一条 border-top */
+    const firsts = trs.map((r) => txt(tds(r)[0]));
+    res.grouping = firsts.some((v) => !v);
+    res.groupLines = trs.slice(1).filter((r) => px(tds(r)[0], 'borderTopWidth') > 0).length;
+    /* ⑤ 宽表不能顶宽整页 */
+    res.wrap = !!t.closest('.tbl-wrap');
+    res.pageScrollX = Math.round(d.documentElement.scrollWidth - w.innerWidth);
+    res.wrapScroll = t.closest('.tbl-wrap')
+      ? cs(t.closest('.tbl-wrap'), 'overflowX') : (t.closest('.rr-body') ? 'rr-body' : '');
+    res.cols = width;
+    res.rows = trs.length;
+    res.tableW = Math.round(t.getBoundingClientRect().width);
+    res.fontSize = cs(t, 'fontSize');
+    res.rowH = Math.round(trs[0].getBoundingClientRect().height);
+    res.headH = Math.round(ths[0].getBoundingClientRect().height);
+    res.sample = ths.map((h) => txt(h)).join(' | ');
     out(res);
   } catch (err) { res.error = String(err); out(res); }
 });
@@ -1399,6 +1516,42 @@ def find_scanned_paper(base: str, items: list[dict], exclude: str = "") -> str:
         if any(p.get("has_text_layer") is False for p in pages):
             return pid
     return ""
+
+
+def find_table_paper(base: str, items: list[dict], limit: int = 8) -> str:
+    r"""找一篇**真的会渲染出 Markdown 表格**的论文（⑪ 表格渲染用例用）。
+
+    注意"有 `type == 'table'` 的行"还不够：未翻译页退回解析块时，表格行里只有那行**题注**，
+    没有表格本体（表格本体在页级翻译的行里）。所以要确认某个 `table` 行里确实带 `|---|` 的
+    Markdown 表格。逐篇拉一次 `/reader`，只看前几篇；找不到返回空串（用例 SKIP 而不是硬失败）。
+
+    **优先挑有"分组列"的表格**（第一列有空单元格，如 MMDFND 的 Table 1：`Weibo` / `Weibo-21`
+    两段之间 `\cmidrule`）：不然"分组之间画细线"那条判据永远空转（没有分组列时它必然通过）。
+    挑不到分组表格时退回第一篇带表格的论文。
+    """
+    fallback = ""
+    for item in items[:limit]:
+        pid = item.get("id") or ""
+        if not pid:
+            continue
+        try:
+            _st, body = fetch(f"{base}/api/v1/papers/{pid}/reader", timeout=40)
+            data = json.loads(body.decode("utf-8"))["data"]
+        except Exception:  # noqa: BLE001
+            continue
+        for tr in data.get("page_translations") or []:
+            for row in tr.get("rows") or []:
+                if row.get("type") != "table":
+                    continue
+                md = row.get("translation") or row.get("original") or ""
+                if "\n|" not in md or "---" not in md:
+                    continue
+                if not fallback:
+                    fallback = pid
+                # 分组列的样子：某一行以 `| | `（第一格空）开头
+                if any(ln.strip().startswith(("| |", "||")) for ln in md.splitlines()):
+                    return pid
+    return fallback
 
 
 def render(browser: str, url: str, budget_ms: int = 20000, size: str = DESKTOP) -> str:
@@ -1986,6 +2139,8 @@ def main() -> int:
                 cross = data.get("cross") or {}
                 formula = data.get("formula") or {}
                 syncs = data.get("syncs") or []
+                imgs = data.get("images") or {}
+                iz = data.get("imageZoom") or {}
                 checks = [
                     ("两面选区互不串", bool(cross.get("anchor")) and cross.get("anchor") == cross.get("focus"),
                      f"原文面→译文面拖选后停在 {cross}"),
@@ -1999,6 +2154,14 @@ def main() -> int:
                     ("多行公式底色覆盖整块", bool(formula.get("covers")) and bool(formula.get("hasBlockClass")),
                      f"mark 高 {formula.get('markH')}px / 公式块高 {formula.get('dispH')}px，"
                      f"block 类={formula.get('hasBlockClass')}（显示公式={data.get('isDisplay')}）"),
+                    ("插图不铺满整栏（≤560×420）",
+                     (imgs.get("count") or 0) >= 1 and (imgs.get("over") or 0) == 0,
+                     f"{imgs.get('count')} 张图：最大 {imgs.get('maxW')}×{imgs.get('maxH')}px"
+                     f"（整栏 {imgs.get('docW')}px），超出上限 {imgs.get('over')} 张；"
+                     f"第一张 alt={imgs.get('alt')!r}"),
+                    ("点插图能开大图", bool(iz.get("open")) and bool(iz.get("hasImg")),
+                     f"弹窗={iz.get('open')}，标题={iz.get('title')!r}，大图={iz.get('src')}"
+                     f"（原始宽 {iz.get('natW')}px）"),
                 ]
                 for label, ok, detail in checks:
                     failures += 0 if ok else 1
@@ -2146,6 +2309,68 @@ def main() -> int:
             probe_file.unlink(missing_ok=True)
     else:
         print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑪ 表格渲染：论文式「三线表」 ----------------
+    print()
+    print("=" * 78)
+    print("⑪ 表格渲染（论文式三线表：无竖线 / 三条横线 / 数字右对齐 / 分组细线）")
+    print("=" * 78)
+    table_paper = find_table_paper(base, items) if items else ""
+    print(f"用于表格用例的论文：{table_paper or '（库里没有带 Markdown 表格的论文）'}")
+    if browser and table_paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_table_probe.html"
+        try:
+            probe_file.write_text(
+                TABLE_PROBE.replace('__URL__', f"{base}/app/reader/{table_paper}?view=bilingual&left=text&nosse=1")
+                .replace('__WAIT__', '9000'), encoding="utf-8")
+            dom = render(browser, f"{base}/app/_table_probe.html", 32000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            if not data or not data.get("cols"):
+                failures += 1
+                results.append({"kind": "table", "path": "Markdown 表格渲染", "ok": False,
+                                "detail": f"没找到可测的表格（{data}）"})
+                print(f"[FAIL] 表格渲染         没找到可测的表格（{data}）")
+            else:
+                checks = [
+                    ("表格没有竖线", data.get("vertical") == 0,
+                     f"表头/正文单元格左右边框最大 {data.get('vertical')}px"),
+                    ("表格只有三条横线", (data.get("topRule") or 0) > 0 and (data.get("midRule") or 0) > 0
+                     and (data.get("bottomRule") or 0) > 0 and (data.get("rowLines") or 0) == 0,
+                     f"顶线 {data.get('topRule')}px / 表头下线 {data.get('midRule')}px / "
+                     f"底线 {data.get('bottomRule')}px，逐行横线 {data.get('rowLines')} 条"
+                     f"（颜色 {data.get('ruleColor')}）"),
+                    ("数字列右对齐、表头压正中", (data.get("numCols") or 0) >= 1
+                     and data.get("numAlign") == "right" and data.get("numHeadAlign") == "center"
+                     and "tabular-nums" in str(data.get("tnum") or "")
+                     and data.get("txtAlign") == "left",
+                     f"{data.get('numCols')} 个数字列（正文 {data.get('numAlign')} / 表头 "
+                     f"{data.get('numHeadAlign')}，等宽数字={data.get('tnum')}）；"
+                     f"{data.get('textCols')} 个文字列（正文 {data.get('txtAlign')}）"),
+                    ("数据集分组之间画细线", (not data.get("grouping")) or (data.get("groupLines") or 0) >= 1,
+                     f"首列有空单元格（分组列）={data.get('grouping')}，非首行里的细线 "
+                     f"{data.get('groupLines')} 条"),
+                    ("宽表不顶宽整页", bool(data.get("wrap")) and (data.get("pageScrollX") or 0) <= 1,
+                     f"横向滚动容器={data.get('wrap')}（{data.get('wrapScroll')}），"
+                     f"页面横向溢出 {data.get('pageScrollX')}px，表宽 {data.get('tableW')}px，"
+                     f"{data.get('cols')} 列 × {data.get('rows')} 行，行高 {data.get('rowH')}px / "
+                     f"表头高 {data.get('headH')}px / 字号 {data.get('fontSize')}"),
+                ]
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "table", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+                print(f"         表头：{data.get('sample')}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与带 Markdown 表格的论文")
 
     # 全部跑完：把这篇论文的打开状态还原成**跑之前**的样子
     # （路由用例 / ⑤ 标签用例 / ⑩ 都会用不同视图打开它，阅读器会把状态存回去）

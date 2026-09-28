@@ -69,15 +69,14 @@ const emit = defineEmits<{
 const root = ref<HTMLElement | null>(null);
 
 /**
- * markdown → HTML。表格外面**包一层横向滚动容器**：阅读器里表格是靠 ReaderRow 的
- * `.rr-body{overflow-x:auto}` 滚的，这里没有那一层，不包的话宽表格会把整页撑出横向滚动条
- * （`frontend_check` 的"整页不滚动"是永久回归项）。只替换 table 标签本身，不动其余产物。
+ * markdown → HTML。
+ *
+ * 表格外面那层横向滚动容器与「三线表」样式**不再由这里负责**：`mdToHtml` 现在统一把
+ * `<table>` 包进 `.tbl-wrap`（见 `useMarkdown.decorateTables`），样式在 base.css 的 `.md table`。
+ * 以前这里自己 `replace` 一遍，于是 AI 解读、阅读器、Markdown 视图三处表格长得都不一样。
  */
 function render(md?: string | null): string {
-  const html = mdToHtml(md ?? '', props.paperId);
-  if (!html.includes('<table')) return html;
-  return html.replace(/<table/g, '<div class="tbl-scroll"><table')
-    .replace(/<\/table>/g, '</table></div>');
+  return mdToHtml(md ?? '', props.paperId);
 }
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));
@@ -244,14 +243,7 @@ const missingHint = computed(() => (props.section === 'map'
 .body :deep(ul), .body :deep(ol) { margin: .3em 0; padding-left: 1.35em; }
 .body :deep(.katex-display) { margin: .5em 0; overflow-x: auto; overflow-y: hidden; }
 .body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
-/* 表格：与阅读器同一套读法（数字不折行、右对齐），外面那层是横向滚动容器 */
-.body :deep(.tbl-scroll) { overflow-x: auto; }
-.body :deep(table) { border-collapse: collapse; font-size: .92em; font-variant-numeric: tabular-nums; }
-.body :deep(th), .body :deep(td) {
-  white-space: nowrap; padding: 3px 7px; text-align: right; border-bottom: 1px solid var(--divider);
-}
-.body :deep(th) { font-weight: 600; color: var(--text-dim); }
-.body :deep(th:first-child), .body :deep(td:first-child) { text-align: left; }
+/* 表格：与阅读器 / Markdown 视图**共用** base.css 的那套三线表（见 `.md table`），不在这里另写一套 */
 
 /* 相关概念：小标题行 + 卡片（卡片观感与左栏其它页签一致） */
 .concepts { margin-bottom: 14px; }

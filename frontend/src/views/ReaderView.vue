@@ -2483,8 +2483,23 @@ function onContentClick(ev: MouseEvent) {
   });
 }
 
-/** Markdown 视图里的高亮同样走菜单删除（弹窗传送到 body，正文上的处理器管不到） */
+/** Markdown 视图里的高亮同样走菜单删除（弹窗传送到 body，正文上的处理器管不到）。
+ *  插图点击则开大图：正文插图被 CSS 收小了（用户口径"不要那么大"），没有放大入口就看不清细节；
+ *  复用正文插图那套弹窗，图注取 `alt`（Markdown 图片语法 `![图注](…)` 里存的就是图注），
+ *  页码取所在页（`md-page` 上带着 `data-md-page`）。 */
 function onMdClick(ev: MouseEvent) {
+  const target = ev.target as HTMLElement | null;
+  const img = target?.closest?.('img');
+  if (img && img.closest('.md-doc')) {
+    ev.preventDefault();
+    hideMenu();
+    zoomImage.value = {
+      url: img.getAttribute('src') ?? '',
+      caption: img.getAttribute('alt') ?? '',
+      page: Number(img.closest('.md-page')?.getAttribute('data-md-page') || 0) || null,
+    };
+    return;
+  }
   onContentClick(ev);
 }
 
@@ -3113,17 +3128,11 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 /* 一页里的原文 / 译文两面：只在上下对照时同时出现，中间留白隔开（不画分割线）。
    两面的划词高亮配色由 base.css 的 `mark.hl.<color>` 统一提供。 */
 .md-part + .md-part { margin-top: 22px; }
-/* ⚠️ 与正文插图同一套口径（用户口径）：
-   `padding` 补一圈白边 —— 后端的裁图是按墨迹裁到边的，贴着边看就像"上下被裁掉了"；
-   `max-height` 限制又高又窄的整页插图铺满整幅宽度（"部分情况下图片显示过大"）。
-   max-width 与 max-height 同时给：浏览器保持宽高比缩到都满足为止，**不裁也不变形**，
-   只是整张图完整地变小；`border-radius` 照旧负责圆角裁剪。 */
-.md-doc :deep(img) {
-  display: block; max-width: 100%; height: auto; margin: 10px auto;
-  max-height: min(62vh, 780px);
-  padding: 6px; box-sizing: border-box;
-  background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
-}
+/* 正文插图的尺寸/白边/圆角**统一由 base.css 的 `.md img` 管**（Markdown 视图、知识库、AI 解读同一套：
+ * 560 × 420 以内，点开看大图）。这里不再另写一套 —— 以前这里 `max-height: min(62vh, 780px)`，
+ * 宽图照样横跨整幅正文，用户口径是"图片在 markdown 中不要那么大"。
+ * 只补一个"可点"的光标：Markdown 视图里点插图会开大图（见 `onMdClick`），别处（知识库）没有这个交互。 */
+.md-doc :deep(img) { cursor: zoom-in; }
 /* `---` 不再画线，只当一段空白（用户口径：移除分割线）；正文里模型自己写的 `---` 同理。 */
 .md-doc :deep(hr) { border: 0; height: 18px; margin: 0; background: none; }
 .md-doc :deep(h2) { font-size: 16px; }

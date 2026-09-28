@@ -109,20 +109,13 @@ const emptyLabel = computed(() => {
 .t-formula .rr-body { text-align: center; }
 .t-caption .rr-body { font-size: .92em; color: var(--text-dim); }
 .t-ref .rr-body { font-size: .88em; color: var(--text-dim); }
-/* 表格：数字不折行、右对齐（论文表格的读法）；放不下时横向滚动而不是压折 */
+/* 表格：三线表样式（顶线/表头线/底线、数字列右对齐、分组细线）**统一在 base.css 的 `.md table`**，
+ * 这里只补两件阅读器特有的事：
+ *   ① 整张表放不下时在本格里横向滚动（不许顶宽整页）；
+ *   ② 单元格不折行 —— 论文表格的数字折成两行就没法读了。
+ * 以前这里自己写了一套"每行一条横线 + 所有单元格右对齐"，看起来是网页表格而不是论文表格。 */
 .t-table .rr-body { overflow-x: auto; }
-.t-table .rr-body :deep(table) {
-  border-collapse: collapse; width: 100%; font-size: .92em;
-  font-variant-numeric: tabular-nums;
-}
-.t-table .rr-body :deep(th), .t-table .rr-body :deep(td) {
-  white-space: nowrap; padding: 3px 7px; text-align: right; border: 0;
-  border-bottom: 1px solid var(--divider);
-}
-.t-table .rr-body :deep(th) { font-weight: 600; color: var(--text-dim); }
-.t-table .rr-body :deep(th:first-child), .t-table .rr-body :deep(td:first-child) {
-  text-align: left;
-}
+.t-table .rr-body :deep(table) { white-space: nowrap; }
 .rr-empty { font-size: 1em; color: var(--text-faint); }
 /* `---` 在正文里也不画横线（用户口径：移除分割线），只当一段空白 —— 与 Markdown 视图同一口径 */
 .rr-body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
