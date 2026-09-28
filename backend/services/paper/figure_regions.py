@@ -76,7 +76,9 @@ CROP_DPI = 600
 #: 12 = 解析层的图体 bbox 变了（正文行内公式的分数线不再算图体墨迹 → turboquant 图 1
 #:      不再把上面三条 bullet 一起裁进来；同时紧贴图体上沿的子图标题被收进图体）。
 #:      必须 +1 的原因同上：bbox 虽然进了哈希，但**卡片**那几条（`card=1`）的 URL 也带版本串。
-REGION_CACHE_VERSION = 12
+#: 13 = 解析层的图体 bbox 又变了（跨栏居中题注也算分段界标 → KAT 图 3 不再吞掉图 2；
+#:      压在题注上的整幅位图不再被漏掉 → 2409 的图 8 能出来了）。
+REGION_CACHE_VERSION = 13
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
 _lock = threading.Lock()
@@ -293,6 +295,21 @@ LABEL_MAX_HEIGHT = 22.0
 #: 把右栏正文也裁了进来。它的外扩量是区域宽度的 108%，而真标签的案例都在 9% 以内
 #: （attention p4 左 8.5%、turboquant p21 上 8.7%、p8 图 2 上 6.7%），所以按比例卡是安全的。
 GROW_MAX_RATIO = 0.4
+#: "把被切的那块整个收进来"的**第二个闸门**（只用于 `_snap_x` 的横向贴边）：
+#: 露在区域外的部分不得超过块自身的 25%。
+#:
+#: 为什么只卡横向：横向贴边是**沿着文字行方向**挪，一次能挪走一整行的宽度 ——
+#: 相邻那一栏的正文行因此在"逐块累积"里被吞进来（见下面的实测事故）；而纵向贴边
+#: 只会挪一个行高，而且"边界从一行字里穿过 → 把这行字整个收进来"正是它的既有设计
+#: （turboquant p8 图 2 的子图标题被切掉 7.8pt 就是靠它修的：那行字有 85% 在区域上方，
+#: 若按"露在外面 ≤25%"卡就会被挡回去 —— 所以纵向不能加这条）。
+#:
+#: ⚠️ 实测事故（2026-09-28 KAT p3 图 3）：右栏正文被并成两块（x 306.6~452.9 与 452.9~557.6），
+#: 边界先被前一块收到 454、再被后一块收到 558.8 —— **每步都在 `GROW_MAX_RATIO` 以内**，
+#: 于是"逐块累积"绕过了上限：区域右边界从 286.7 一路飞到整页宽，裁图里混进一栏正文
+#: （用户："图 3 裁错了"）。历史那几例真标签（attention p4 左 8.5%、turboquant p21 8.7%、
+#: p8 图 2 6.7%）露在外面的都不到块宽的 10%，这条对它们是恒真的。
+SNAP_INSIDE_MAX = 0.25
 
 
 def _snap_y(edge: float, blocks: list[Rect], *, top: bool,
@@ -405,7 +422,8 @@ def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float
         short = (t.y1 - t.y0) <= LABEL_MAX_HEIGHT      # 同上：按**高度**判单行
         grow_cap = max(SNAP_MAX, GROW_MAX_RATIO * max(hi - lo, 1.0))
         if left:
-            if inside_l and (short or (edge - (t.x0 - TEXT_PAD)) <= SNAP_MAX):
+            if (inside_l and (short or (edge - (t.x0 - TEXT_PAD)) <= SNAP_MAX)
+                    and (edge - t.x0) <= SNAP_INSIDE_MAX * max(t.width, 1.0)):
                 new = t.x0 - TEXT_PAD          # 把被切的那个字整个收进来
                 if (edge - new) > grow_cap or (hi - new) < MIN_VISIBLE:
                     continue
@@ -416,7 +434,8 @@ def _snap_x(edge: float, blocks: list[Rect], *, left: bool, lo: float, hi: float
             else:
                 continue
         else:
-            if inside_r and (short or ((t.x1 + TEXT_PAD) - edge) <= SNAP_MAX):
+            if (inside_r and (short or ((t.x1 + TEXT_PAD) - edge) <= SNAP_MAX)
+                    and (t.x1 - edge) <= SNAP_INSIDE_MAX * max(t.width, 1.0)):
                 new = t.x1 + TEXT_PAD
                 if (new - edge) > grow_cap or (new - lo) < MIN_VISIBLE:
                     continue

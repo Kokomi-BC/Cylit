@@ -357,6 +357,12 @@ f.addEventListener('load', async () => {
     const cr = cardImg ? cardImg.getBoundingClientRect() : null;
     res.card = cr ? { w: Math.round(cr.width), h: Math.round(cr.height),
                       over: cr.width > 568 || cr.height > 428 } : null;
+    // ⓪b 整幅大图（占页面 ≥25%）：允许放大到 880×800 —— 用户口径"占比很大则允许显示更大"。
+    //     这一条在**含大图的论文**上量（见 `find_big_figure_paper` / ⑥b）。
+    const largeImg = d.querySelector('.row-figure.large img');
+    const lr = largeImg ? largeImg.getBoundingClientRect() : null;
+    res.large = lr ? { w: Math.round(lr.width), h: Math.round(lr.height) } : null;
+    res.largeCards = d.querySelectorAll('.row-figure.large').length;
     fig.click();
     await sleep(600);
     const modal = [...d.querySelectorAll('.modal')].find((x) => x.querySelector('.modal-title'));
@@ -1526,6 +1532,38 @@ def find_scanned_paper(base: str, items: list[dict], exclude: str = "") -> str:
     return ""
 
 
+def find_big_figure_paper(base: str, items: list[dict], limit: int = 8,
+                          min_share: float = 0.25) -> str:
+    """找一篇含"整幅大图"的论文（区域面积占页面 ≥ `min_share`）—— 给「大图允许放大」用例用。
+
+    判据与前端 `ReaderPageRows.isLargeFigure` 完全同源：`media[].bbox` 的面积 ÷ 页面尺寸。
+    逐篇拉一次 `/reader`，只看前几篇；找不到返回空串（用例 SKIP）。
+    """
+    for item in items[:limit]:
+        pid = item.get("id") or ""
+        if not pid:
+            continue
+        try:
+            _st, body = fetch(f"{base}/api/v1/papers/{pid}/reader", timeout=40)
+            data = json.loads(body.decode("utf-8"))["data"]
+        except Exception:  # noqa: BLE001
+            continue
+        share = 0.0
+        for page in data.get("pages") or []:
+            w = float(page.get("width") or 0)
+            h = float(page.get("height") or 0)
+            if w <= 0 or h <= 0:
+                continue
+            for m in page.get("media") or []:
+                b = m.get("bbox") or []
+                if len(b) < 4:
+                    continue
+                share = max(share, ((b[2] - b[0]) * (b[3] - b[1])) / (w * h))
+        if share >= min_share:
+            return pid
+    return ""
+
+
 def find_table_paper(base: str, items: list[dict], limit: int = 8) -> str:
     r"""找一篇**真的会渲染出 Markdown 表格**的论文（⑪ 表格渲染用例用）。
 
@@ -1966,6 +2004,37 @@ def main() -> int:
             probe_file.unlink(missing_ok=True)
     else:
         print("[SKIP] 需要浏览器与论文数据")
+
+    # ---------------- ⑥b 整幅大图允许放大（用户口径：占页面很大就显示更大） ----------------
+    big_paper = find_big_figure_paper(base, items) if items else ""
+    print(f"\n用于「大图放得更大」用例的论文：{big_paper or '（库里没有整幅大图）'}")
+    if browser and big_paper:
+        dist = ROOT / "frontend" / "dist"
+        probe_file = dist / "_zoom_big_probe.html"
+        try:
+            probe_file.write_text(
+                ZOOM_PROBE.replace('__URL__', f"{base}/app/reader/{big_paper}?view=bilingual&left=text&nosse=1")
+                .replace('__WAIT__', '7000'), encoding="utf-8")
+            dom = render(browser, f"{base}/app/_zoom_big_probe.html", 25000, "1700,1100")
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            data = None
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            big = (data or {}).get("large") or {}
+            ok = bool(big) and (big.get("w") or 0) > 568 and (big.get("w") or 0) <= 888 \
+                and (big.get("h") or 0) <= 808
+            failures += 0 if ok else 1
+            detail = (f"整幅图卡片 {big.get('w')}×{big.get('h')}px（上限 880×800；"
+                      f"整页 {data.get('largeCards') if data else '?'} 张标记为大图）")
+            results.append({"kind": "zoom", "path": "整幅大图允许放大", "ok": ok, "detail": detail})
+            print(f"[{'PASS' if ok else 'FAIL'}] {'整幅大图允许放大':<16} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
+    else:
+        print("[SKIP] 需要浏览器与含整幅大图的论文")
 
     # ---------------- ⑦ 划词高亮：原文 / 译文分开存 ----------------
     print()

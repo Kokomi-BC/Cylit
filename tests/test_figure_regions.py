@@ -326,3 +326,32 @@ def test_card_crop_falls_back_to_the_plain_crop(monkeypatch, tmp_path):
     monkeypatch.setattr(fr, "caption_in_crop", lambda pid: True)
     out = fr.ensure_region_crop("p1", 8, 0, card=True)
     assert asked == [True] and out.name == "region-card1.png"
+
+
+def test_snap_edges_does_not_walk_into_the_next_column():
+    """贴边不能**逐块累积**地走进相邻那一栏（KAT p3 图 3：右边界 286.7 → 558.8）。
+
+    实测事故（2026-09-28）：区域是左栏的句子树 [39.7, 325.5, 286.7, 406.5]，右栏正文被解析器
+    并成了两块（x 306.6~452.9 与 452.9~557.6）。`_snap_x` 的"把被切的块整个收进来"先是避开
+    了 `GROW_MAX_RATIO`（每步外扩 ≤ 区域宽的 40%），但**两块各自都在上限内** → 边界先被收到
+    454、再被收到 558.8，横跨整页；裁图于是混进一栏正文（用户："图 3 裁错了"）。
+    新增的 `SNAP_INSIDE_MAX`（露在外面的部分 ≤ 块自身的 25%）把这一支挡住。
+    """
+    tight = [39.68, 325.54, 286.68, 406.54]
+    texts = [
+        Rect(306.6, 328.0, 557.7, 336.1),     # 右栏正文（整栏宽）
+        Rect(306.6, 348.9, 452.9, 357.0),     # 右栏正文，被并成两块的第一块
+        Rect(452.9, 348.9, 557.6, 357.0),     # 第二块（紧接着第一块）
+        Rect(239.8, 392.9, 341.0, 403.0),     # 跨栏合并的标题行（"…4. Model"）
+    ]
+    out = _snap_edges(tight, texts, PAGE)
+    assert out[2] <= 300.0                    # 没有走进右栏
+    assert out[0] == pytest.approx(39.68, abs=0.5)
+    assert out[1] == pytest.approx(325.54, abs=0.5)
+    assert out[3] == pytest.approx(406.54, abs=0.5)
+
+    # 反向：**只露一点点**的真标签照旧被收进来（attention p4 的 `Scaled …` 那种情形）
+    tile = [100.0, 300.0, 286.0, 400.0]
+    label = Rect(200.0, 330.0, 292.0, 340.0)   # 92pt 宽，只有 6pt 露在区域外
+    out2 = _snap_edges(tile, [label], PAGE)
+    assert out2[2] >= 293.0                    # 被收进来了（292 + TEXT_PAD）

@@ -114,6 +114,9 @@ export interface PageInfo {
     parts?: number;
     /** 段标签：上段 / 下段 / 跨页续图 */
     part_label?: string;
+    /** 区域 bbox（PDF pt，[x0,y0,x1,y1]）：用来判断"这张图在一页里占多大"——
+     *  占比大的图允许显示得更大（见 `ReaderPageRows.isLargeFigure`）。 */
+    bbox?: number[];
   }>;
 }
 

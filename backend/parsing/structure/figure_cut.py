@@ -50,6 +50,11 @@ class FigureCandidate:
     caption_anchor: list[float] | None = None
 
 
+#: 图体的最小高度（pt，与 `figure_regions.MIN_HEIGHT` 同一口径）：比这还矮的墨迹多半是
+#: 页眉细线 / 公式下划线，不足以当"压在图注上的图体"（见 `_body_rect_above_caption.straddles`）。
+MIN_BODY_HEIGHT = 24.0
+
+
 @dataclass
 class TableCandidate:
     page_no: int
@@ -165,12 +170,24 @@ def _looks_like_caption_line(text: str) -> bool:
     return len(t) <= 60
 
 
+def _spans_columns(r: Rect, page_rect: Rect) -> bool:
+    """这个块是不是**跨过页面中线**（双栏页里的居中题注 / 通栏题注）。"""
+    mid = page_rect.x0 + page_rect.width / 2
+    return r.x0 < mid - 2.0 and r.x1 > mid + 2.0
+
+
 def _segment_floor(cap_rect: Rect, page_no: int, captions: list[tuple[int, Rect]],
                    page_rect: Rect) -> float:
     """本图注所在竖段的**下边界**：同栏上一张图注的底边（没有就用页首）。
 
     这是"按图注切段"的界标（见模块 docstring）：只吃这一段里的墨迹，
     上下堆叠的多张图才不会互相吞并。``captions`` = ``[(页, 图注锚点矩形)]``。
+
+    ⚠️ **跨栏居中的题注对每一栏都是界标**（2026-09-28 实测 KAT p3）：
+    那一页上下堆着 Fig. 2（整幅模型框架）与 Fig. 3（句子树）：Fig. 2 的题注排在页面正中
+    （x 237~358，跨过中线 297.6），Fig. 3 的题注在左栏（x 106~220）—— 只按"同栏"判就会
+    把 Fig. 2 的题注漏掉，于是 Fig. 3 从**页首**开始取墨迹，把上面整幅 Fig. 2 一起吞进来
+    （再被 `_parts_of` 切成"上段/下段"两张卡片，用户看到的就是"图 3 裁错了"）。
     """
     cap = cap_rect
     floor = page_rect.y0 + 0.02 * page_rect.height
@@ -181,8 +198,8 @@ def _segment_floor(cap_rect: Rect, page_no: int, captions: list[tuple[int, Rect]
             continue
         if r.y1 > cap.y0 - 2:                      # 只看**上方**的图注/题注
             continue
-        if not _same_column(r, cap):               # 不同栏不算（双栏页里两栏各排各的）
-            continue
+        if not _spans_columns(r, page_rect) and not _same_column(r, cap):
+            continue                               # 不同栏不算（双栏页里两栏各排各的）
         floor = max(floor, r.y1 + 2)
     return floor
 
@@ -299,7 +316,21 @@ def _body_rect_above_caption(
         return (r.y1 <= cap_rect.y0 + 3 and r.y1 > top_limit
                 and r.y1 > header_bottom and r.y0 >= page_rect.y0)
 
-    imgs = [i for i in page_images if above(i.rect)
+    def straddles(r: Rect) -> bool:
+        """墨迹**压在图注上**（题注是画进位图里的 / 文字层盖在位图上）。
+
+        实测 2409-06226v1 p25 的 Figure 8：整幅图就是**一张位图**（y 128.1~669.5），
+        而题注文字层在 y 650.2~662.1 —— 落在位图**内部**（题注是烧进图里的）。
+        原来的 `above()` 要求"墨迹底边在图注上方"，于是这张位图一条都不算 → **图 8 整张消失**
+        （用户："漏了 figure8"）。
+        判据：从图注上方明显处延伸下来（`r.y0 ≤ 图注顶 - MIN_BODY_HEIGHT`）、**底边盖过题注整行**
+        （`r.y1 ≥ 题注底`：题注是"在图里"，不是"图压着题注的上沿"）。
+        这种墨迹只取到**题注顶边为止**（`bottom`）—— 图注本身不该再进图体。
+        """
+        return (r.y0 <= cap_rect.y0 - MIN_BODY_HEIGHT and r.y0 >= page_rect.y0
+                and r.y1 >= cap_rect.y1 - 1.0 and r.y1 > header_bottom)
+
+    imgs = [i for i in page_images if (above(i.rect) or straddles(i.rect))
             and _usable_image(i, page_rect)
             and _h_overlap(i.rect, cap_rect) > 0.10]
     # ⚠️ 矢量元素**不再按"面积 > 25 / 不是细线"过滤**（2026-09-27，用户报的"裁少了"）：
@@ -307,15 +338,19 @@ def _body_rect_above_caption(
     # 被过滤掉之后，图体上沿就掉到下一个"大元素"上，于是**裁图只剩下半截**
     # （实测 9984-boomerang 的高图：裁出来只有图例那一小条）。改成"按墨迹外接框取并集"，
     # 由 ``floor``（上一张图注的底边）负责不把上面那张图吞进来。
-    drs = [d for d in page_drawings if above(d.rect)
+    drs = [d for d in page_drawings if (above(d.rect) or straddles(d.rect))
            and _h_overlap(d.rect, cap_rect) > 0.10]
     if not imgs and not drs:
         return None, [], [], "no_body_found"
 
+    has_straddle = any(straddles(i.rect) for i in imgs) or any(straddles(d.rect) for d in drs)
     union = rects_span([i.rect for i in imgs] + [d.rect for d in drs])
     # 跨段元素只取伸进本段的那部分（段界就是上一张图注的底边）
     if union.y0 < top_limit:
         union = Rect(union.x0, top_limit, union.x1, union.y1)
+    # 压在图注上的墨迹（题注烧在位图里）：裁到题注顶边，别把题注再裁进图体
+    if has_straddle and union.y1 > bottom:
+        union = Rect(union.x0, union.y0, union.x1, bottom)
     # 段内元素已经全部算进并集，原先那段"连续块扩展"是在已选集合里再取并集 —— 恒等于上面这行，
     # 一并删掉（它从来没能挡住任何东西，只是让人以为有"连续性"这道闸门）。
 

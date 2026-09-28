@@ -147,6 +147,29 @@ const mediaTail = (page: number): Media[] => mediaPlan.value.tail.get(page) ?? [
  */
 const zoomUrl = (m: Media) => assetUrl(m.card_url || m.url);
 const figureSrc = (m: Media) => assetUrl(m.card_url || m.url);
+
+/**
+ * 「大图」口径（用户 2026-09-28）：**图片在一页里占比很大时，允许它显示得更大**。
+ *
+ * 为什么按"页面占比"而不是按"图有多宽"：插图行是**通栏**的，560px 对一张整幅模型图太挤
+ * （里面的坐标轴标签根本看不清），而对一张小图 560 已经够。占比拿区域 bbox 与页面尺寸算 ——
+ * `media[].bbox` 本来就在 payload 里（后端一直带着），只是以前没进 TS 类型。
+ *
+ * 阈值 0.25 来自实测分布（库里 123 个区域）：30~40% 那一档是"整幅图"
+ * （attention Fig. 4/5、boomerang 图 31~34、dammfnd Fig. 2、24 09 的 Fig. 3/7…），
+ * 而 11~21% 那一档是常规半幅图（turboquant Fig. 1 = 19.8%、KAT Fig. 5 = 20.9%）——
+ * 0.25 正好落在两档之间的空档里。
+ */
+const LARGE_FIGURE_SHARE = 0.25;
+
+function isLargeFigure(m: Media, info: PageInfo | null): boolean {
+  const b = m.bbox;
+  const w = Number(info?.width) || 0;
+  const h = Number(info?.height) || 0;
+  if (!b || b.length < 4 || w <= 0 || h <= 0) return false;
+  return ((b[2] - b[0]) * (b[3] - b[1])) / (w * h) >= LARGE_FIGURE_SHARE;
+}
+
 /** 放大目标：URL + **图注**（弹窗标题显示图注，见 `ZoomTarget`）；页码取所在页组 */
 const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   url: zoomUrl(m), caption: m.caption ?? '', page, number: m.number ?? null,
@@ -253,6 +276,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             v-for="(m, i) in mediaFor(r.id)"
             :key="`m-${i}`"
             class="row-figure"
+            :class="{ large: isLargeFigure(m, g.info) }"
             :title="`${m.caption || '插图'}（点击看大图）`"
             @click="emit('zoom', zoomTarget(m, g.page))"
           >
@@ -282,6 +306,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
           v-for="(m, i) in mediaTail(g.page)"
           :key="`tail-${i}`"
           class="row-figure tail"
+          :class="{ large: isLargeFigure(m, g.info) }"
           :title="`${m.caption || '插图'}（点击看大图）`"
           @click="emit('zoom', zoomTarget(m, g.page))"
         >
@@ -398,6 +423,9 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   padding: 6px; box-sizing: border-box;
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+/* 整幅图（占页面 ≥25%，见 `isLargeFigure`）：允许放大，否则图里的坐标轴/图例根本读不出来。
+   上限回到"半屏级"（880 × 76vh）而不是无上限 —— 再大就又变成"翻图册"了。 */
+.row-figure.large img { max-width: min(100%, 880px); max-height: min(76vh, 800px); }
 .row-figure:hover img { border-color: var(--accent); }
 .row-figure.tail { margin: 10px auto 8px; }
 

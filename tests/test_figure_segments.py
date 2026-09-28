@@ -298,3 +298,69 @@ def test_axis_line_wider_than_the_tick_label_is_not_a_formula_bar():
     assert not _is_text_decoration(axis, [tick])
     # 同一位置、比刻度行窄的短线（真要出现在这里也只能是文字里的分数线）才认
     assert _is_text_decoration(_math_bar(page, 500.1, 118.5, 124.0), [tick])
+
+
+# ---------------------------------------------------------------------------
+# KAT p3（2026-09-28）：**跨栏居中的题注**也要当界标，否则下一张图会把上一张整幅吞进来
+# ---------------------------------------------------------------------------
+
+def test_centered_caption_segments_both_columns():
+    """居中/通栏的题注对**每一栏**都是分段界标（KAT p3 的 Fig. 2 题注排在页面正中）。
+
+    实测事故：Fig. 2（整幅模型框架，上半页）与 Fig. 3（句子树，下半页左栏）上下堆叠，
+    Fig. 2 的题注 x 237~358 跨过中线 297.6、Fig. 3 的题注在左栏 x 106~220。
+    只按"同栏"判 → Fig. 2 的题注不算界标 → Fig. 3 的墨迹带从**页首**开始，
+    把整幅 Fig. 2 吞进来（再被切成"上段/下段"，用户看到的就是"图 3 裁错了"）。
+    """
+    page = Rect(0, 0, 595.276, 793.701)
+    mid = 595.276 / 2
+    blocks = [
+        # Fig. 2 的题注：排在页面正中（跨过中线），它就是 Fig. 3 的界标
+        RawBlock(page_no=1, block_no=0, lines=[
+            _line("Fig. 2. The proposed model framework.", 1, 300.7, 237.0, 358.2)]),
+        # Fig. 3 的题注：左栏
+        RawBlock(page_no=1, block_no=1, lines=[
+            _line("Fig. 3. Structure of the sentence tree.", 1, 413.5, 106.0, 220.3)]),
+    ]
+    drs = [
+        _ink(1, 67.7, 290.7, x0=128.3, x1=469.3),      # Fig. 2 的墨迹（上半页居中那块）
+        _ink(1, 328.5, 403.5, x0=42.7, x1=283.7),      # Fig. 3 的墨迹（下半页**只在左栏**）
+    ]
+    cands = detect_figures(blocks, {}, {1: drs}, {1: page})
+    assert len(cands) == 2
+    f2, f3 = sorted(cands, key=lambda c: c.rect.y0)
+    assert f2.caption.startswith("Fig. 2") and f3.caption.startswith("Fig. 3")
+    # Fig. 3 的顶边落在 Fig. 2 题注（底边 307.2）之下 —— 不再从页首开始
+    assert f3.rect.y0 == pytest.approx(325.5, abs=1.0)
+    # 图 3 也不可能越过中线把右栏包进来
+    assert f3.rect.x1 < mid
+    assert f3.rect.y1 == pytest.approx(406.5, abs=1.0)
+
+
+def test_raster_straddling_its_caption_is_not_lost():
+    """整幅图是**一张位图**、题注烧在位图里面（文字层盖在图上）时，图不能被漏掉。
+
+    实测 2409-06226v1 p25 的 Figure 8：位图 y 128.1~669.5，题注文字层 y 650.2~662.1
+    （**落在位图内部**）。原来的 `above()` 要求"墨迹底边在题注上方"→ 这张位图一条都不算
+    → **图 8 整张消失**（用户："漏了 figure8"）。修好之后还要把题注那一小条**切掉**，
+    免得图里带一遍题注、下面又显示一遍。
+    """
+    from backend.parsing.extract.image_layer import ImageInfo
+
+    page = Rect(0, 0, 612.0, 792.0)
+    cap = RawBlock(page_no=1, block_no=0, lines=[
+        _line("Figure 8: Comparison between reference clusters and CyLit clusters",
+              1, 650.2, 132.0, 480.0)])
+    raster = ImageInfo(page_no=1, xref=7, rect=Rect(72.0, 128.1, 540.0, 669.5),
+                       width_px=1162, height_px=1344)
+    cands = detect_figures([cap], {1: [raster]}, {}, {1: page})
+    assert len(cands) == 1
+    r = cands[0].rect
+    assert r.y0 == pytest.approx(125.1, abs=0.5)       # 从位图顶边开始（含 3pt padding）
+    assert r.y1 == pytest.approx(651.2, abs=0.5)       # 底边收到**题注顶边**之下，不把题注裁进来
+    assert cands[0].caption.startswith("Figure 8")
+
+    # 反向：**满页位图**（扫描件那种）照旧被 `_usable_image` 挡住，不能被这条判据放进来
+    full = ImageInfo(page_no=1, xref=8, rect=Rect(0.0, 0.0, 612.0, 792.0),
+                     width_px=1200, height_px=1600)
+    assert detect_figures([cap], {1: [full]}, {}, {1: page}) == []
