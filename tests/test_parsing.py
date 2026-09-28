@@ -392,3 +392,32 @@ def test_taken_prefixes_use_the_prefix_actually_in_use():
     assert _taken_prefixes(["new-paper"], {}, "other") == {id_prefix("new-paper")}
     # ③ 自己不算在 taken 里（自己的旧前缀可以继续用）
     assert _taken_prefixes(["me"], {"me": "meprefix"}, "me") == set()
+
+
+def test_find_caption_block_accepts_an_untyped_caption_but_not_the_body_itself():
+    """图注块的分型不一定对：按文本兜底时要**排除与图体同一格**的那一块。
+
+    实测事故（2026-09-28 KAT p8 图 6）：题注没被分型成 caption → 解析层给这张图补了一个
+    **孤儿块**（rect = 图体本身、文本 = 题注）→ 下游区域层拿它的 y0 当"题注顶边"，
+    把 102pt 高的图砍成 24pt 一条。
+    """
+    from backend.parsing.pipeline import _covers_band, _find_caption_block
+
+    text = "Fig. 6. Knowledge attention visualization. The bluer the color, the more important."
+    body = Rect(60.1, 639.2, 534.2, 741.7)                 # 图体
+    orphan = Block(id="o1", paper_id="p", page_no=8, order_in_page=0, order_global=1,
+                   type="figure", col=0, rect=body, text=text, text_clean=text)
+    real = Block(id="c1", paper_id="p", page_no=8, order_in_page=0, order_global=2,
+                 type="para", col=0, rect=Rect(164.0, 748.6, 431.2, 755.1),
+                 text=text, text_clean=text)
+    # 孤儿块盖住图体 → 不算图注；真题注块（在图体下方）= 兜底认得出来
+    assert _covers_band(orphan.rect, body) and not _covers_band(real.rect, body)
+    assert _find_caption_block([orphan], 8, text, body) is None
+    assert _find_caption_block([orphan, real], 8, text, body) is real
+    # 分型正确的 caption 仍然优先（行为与以前一致）
+    typed = Block(id="c2", paper_id="p", page_no=8, order_in_page=0, order_global=3,
+                  type="caption", col=0, rect=Rect(164.0, 746.0, 431.2, 753.0),
+                  text=text, text_clean=text)
+    assert _find_caption_block([orphan, real, typed], 8, text, body) is typed
+    # 空图注文本直接放弃（`startswith("")` 恒真会偷别人的图注）
+    assert _find_caption_block([orphan, real], 8, "", body) is None

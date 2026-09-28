@@ -6387,3 +6387,40 @@ p25 全页只有 2 个文本块 + 1 张位图：位图 y 128.1~669.5，题注文
   （图 8 回来了）、KAT 7 / 7。
 - `frontend_check --block-markers` **97/97 全绿**（96 → 97：新增 ⑥b 整幅大图允许放大）。
 - 全部 9 篇重新解析（区域层两处改动就生效，但解析层那两处需要重解析）；译文产物未被动过。
+
+### 17.122 第十一轮 · KAT 图 6 被裁成 24pt 一条横带（题注块分型失败 → 孤儿块被当成题注）
+
+用户截图：图 6 的放大弹窗里只有 `Text: HongMaoYaoJiu is suspected to be poison. …` 那一行
+（连 `Attention:` 条和 `(a)/(b)` 都没有）。
+
+#### 一、根因：**"孤儿块"的 rect 就是图体本身**，却被下游当成题注块
+
+p8 图 6 是**整幅位图**（图上没有文字块）→ `_find_host_block` 找不到宿主 → 解析层给这张图补一个
+**孤儿块** `knowledgeaug-p08-x01`：`rect = 图体`（y 639.2~741.7）、文本 = 题注
+（这样未翻译时阅读器里还有一行图注可看）。
+
+而真正的题注行在 y 748.6~755.1（`find_caption_blocks` 认得出它）。
+问题出在**分型**：那条题注块没被分成 `caption`（成了普通块），于是
+
+1. `_find_caption_block` 只认 `type == "caption"` → 返回 None → 候选的 `caption_block_id` 为空；
+2. 下游 `figure_regions` 用"文本前缀匹配"兜底，**匹配到了孤儿块**（文本一样）；
+3. 于是拿孤儿块的 `y0`（= 图体顶边 639.2）当"题注顶边"，执行"图注不进图体"的收边：
+   `tight[3] = max(639.2 - 1.2, 639.2 + MIN_HEIGHT(24)) = 663.2` —— 102pt 高的图被砍成 24pt 一条。
+
+#### 二、两处都修（一处治数据、一处兜底）
+
+- **解析层** `_find_caption_block(..., rect=图体)`：不再只认 `type == "caption"`——
+  分型没认出来时按文本兜底，但**排除"盖住图体那一格"的块**（`_covers_band`），也就是排除孤儿块
+  自己。分型正确时行为与以前完全一致（优先返回 `type == "caption"` 的那条）。
+- **区域层** 把收边抽成 `_clamp_bottom_above_caption()`：只有"题注确实在**图体下方**"
+  （`cy0 > 图体顶边 + MIN_HEIGHT`）时才拿它当下边界。没有这一步，别的论文再出现同类孤儿块时
+  还会被砍成一条。
+
+#### 三、验证
+
+- 修复后 p8 图 6 区域 = **[60.1, 639.2, 534.2, 741.6]**（102pt 高），裁图里 `Text` /
+  `Entities` / `Attention` 三行、(a)(b) 两个面板齐全。
+- `pytest` 全绿（新增 2 条：`test_clamp_bottom_only_trusts_a_caption_below_the_body`、
+  `test_find_caption_block_accepts_an_untyped_caption_but_not_the_body_itself`，
+  后者含"空图注文本直接放弃"与"分型正确的 caption 优先"两条反向断言）。
+- `figure_caption_audit.py` **10 篇 0 失败**；`frontend_check --block-markers` **97/97 全绿**。

@@ -458,6 +458,25 @@ def _normalise(rect: list[float], page_rect: Rect) -> list[float]:
             min(x1, page_rect.x1), min(y1, page_rect.y1)]
 
 
+def _clamp_bottom_above_caption(tight: list[float], cy0: float) -> list[float]:
+    """把图体下边界收到**题注顶边**之上（题注永远不进图体）。
+
+    ⚠️ `cy0` 必须是**图体下方**那条题注的顶边。图体是位图、题注没被分型成 caption 时，
+    解析层会给这张图补一个**孤儿块**（rect = 图体本身、文本 = 题注）—— 拿它的 y0 当题注顶边，
+    就会把区域砍成 `tight[1] + MIN_HEIGHT` 那么薄的一条（实测 KAT p8 图 6：102pt 高的图
+    被砍成 24pt，用户截图里只剩 `Text: …` 那一行）。
+    所以只认"确实在下方"（`cy0 > 图体顶边 + MIN_HEIGHT`）的题注；否则原样返回。
+
+    顺带解释"为什么要收"：贴边 / 吸单行标签有时会把下边界推到图注第一行中间
+    （实测 deepseek-v3-2 图 1：区域 y1=329.6 而图注从 319.7 开始 → 卡片底部挂着半个图注行、
+    下面又拼一条完整图注，"图注看起来重复/被切"）。
+    """
+    if not cy0 or cy0 <= _num(tight[1]) + MIN_HEIGHT or tight[3] <= cy0:
+        return tight
+    return [tight[0], tight[1], tight[2],
+            max(cy0 - TEXT_PAD, tight[1] + MIN_HEIGHT)]
+
+
 def _parts_of(rect: list[float], inner: list[dict], page_rect: Rect
               ) -> list[tuple[list[float], dict | None]]:
     """把区域切成若干份：内部夹着别的图注、或图体跨到页脚时，一份裁不干净。
@@ -641,14 +660,11 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                                  rect.y1, below=below)
                 tight = _snap_edges(tight, texts, rect,
                                     avoid=[_rect_of(caption)] if caption else None)
-                # ⚠️ 图注**绝不能**落在图体里：贴边/吸单行标签有时会把下边界推到图注第一行中
-                # （实测 deepseek-v3-2 图 1：区域 y1=329.6 而图注从 319.7 开始 → 卡片底部挂着
-                #  半个图注行，下面又拼一条完整图注，"图注看起来重复/被切"）。
+                # 图注**绝不能**落在图体里（贴边/吸单行标签有时会把下边界推到图注第一行中间）。
+                # ⚠️ 认题注前要先判"它确实在图体下方"，否则解析层的**孤儿块**（rect = 图体本身、
+                # 文本 = 题注）会把图砍成 24pt 一条 —— 见 `_clamp_bottom_above_caption`。
                 if below and caption is not None:
-                    cy0 = _num(caption.get("y0"))
-                    if cy0 and tight[3] > cy0:
-                        tight = [tight[0], tight[1], tight[2],
-                                 max(cy0 - TEXT_PAD, tight[1] + MIN_HEIGHT)]
+                    tight = _clamp_bottom_above_caption(tight, _num(caption.get("y0")))
                 inner = [b for b in structs
                          if (b.get("type") or "") == "caption" and b.get("id") != cap_id
                          and _num(b.get("y0")) > tight[1] + MIN_HEIGHT

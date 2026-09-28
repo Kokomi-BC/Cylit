@@ -13,7 +13,8 @@ import pytest
 
 from backend.services.paper import figure_regions as fr
 from backend.services.paper.figure_regions import (
-    SEP_PAD, _number_of, _parts_of, _snap_edges, _tighten, inject_images,
+    SEP_PAD, _clamp_bottom_above_caption, _number_of, _parts_of, _snap_edges, _tighten,
+    inject_images,
 )
 from backend.parsing.extract.render import ink_bbox
 from backend.parsing.models import Rect
@@ -355,3 +356,25 @@ def test_snap_edges_does_not_walk_into_the_next_column():
     label = Rect(200.0, 330.0, 292.0, 340.0)   # 92pt 宽，只有 6pt 露在区域外
     out2 = _snap_edges(tile, [label], PAGE)
     assert out2[2] >= 293.0                    # 被收进来了（292 + TEXT_PAD）
+
+
+def test_clamp_bottom_only_trusts_a_caption_below_the_body():
+    """"题注不进图体"这道收边**只认图体下方的题注**。
+
+    实测事故（2026-09-28 KAT p8 图 6 "Knowledge attention visualization"）：整幅图是一张
+    位图，题注没被分型成 caption → 解析层给这张图补了一个**孤儿块**（rect = 图体本身、
+    文本 = 题注）。区域层拿它的 y0 当"题注顶边" → 下边界被收到 `y0 + MIN_HEIGHT`，
+    102pt 高的图变成 24pt 一条横带（用户截图：只剩 `Text: HongMaoYaoJiu …` 那一行）。
+    """
+    body = [60.1, 639.2, 534.2, 741.7]          # 图体（KAT p8 图 6 的实际墨迹带）
+    # ① 孤儿块：cy0 == 图体顶边 → 不是题注，原样返回（**这就是那个把图砍成 24pt 的分支**）
+    assert _clamp_bottom_above_caption(body, 639.2) == body
+    # ② 图体下边界已经压在题注上方（741.7 < 748.6）→ 不需要收，原样返回
+    assert _clamp_bottom_above_caption(body, 748.6) == body
+    # ③ 真题注在图体下方、而图体下边界**越进题注里** → 收到题注顶边之上
+    overrun = [60.1, 639.2, 534.2, 760.0]
+    out = _clamp_bottom_above_caption(overrun, 748.6)
+    assert out[3] == pytest.approx(748.6 - 1.2)
+    assert out[:3] == overrun[:3]
+    # ④ 题注紧贴图体顶边（不足 MIN_HEIGHT）时同样不动它（防抖）
+    assert _clamp_bottom_above_caption(overrun, 650.0) == overrun

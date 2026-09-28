@@ -876,7 +876,7 @@ class PaperBuilder:
                     host = None                     # 这个块已经属于另一张图 → 另开孤儿块
                 # ⚠️ 无图注的插图（兜底产出的）不能去 `_find_caption_block`：空串对
                 # `startswith("")` 恒真，会随便挂到本页第一个图注块上（等于偷别人的图注）
-                caption_block = (_find_caption_block(result.blocks, pno, cand.caption)
+                caption_block = (_find_caption_block(result.blocks, pno, cand.caption, cand.rect)
                                  if cand.caption else None)
                 if host is None:
                     host = _make_orphan_block(result, cand, "figure", cand.caption)
@@ -923,7 +923,7 @@ class PaperBuilder:
 
             for tcand in detect_tables(raws, drawings_by_page, page_rects):
                 host = _find_host_block(result.blocks, pno, tcand.rect)
-                caption_block = _find_caption_block(result.blocks, pno, tcand.caption)
+                caption_block = _find_caption_block(result.blocks, pno, tcand.caption, tcand.rect)
                 if host is None:
                     host = _make_orphan_block(result, tcand, "table", tcand.caption)
                 block_id = host.id
@@ -1117,13 +1117,39 @@ def _find_host_block(blocks: list[Block], page_no: int, rect: Rect) -> Block | N
     return best[1] if best else None
 
 
-def _find_caption_block(blocks: list[Block], page_no: int, caption: str) -> Block | None:
+def _covers_band(block: Rect, band: Rect | None) -> bool:
+    """块是不是"与图体同一格"（纵向盖住图体）—— 这种块不是真图注，是图体自己的孤儿块。"""
+    if band is None:
+        return False
+    return block.y0 <= band.y0 + 2.0 and block.y1 >= band.y1 - 2.0
+
+
+def _find_caption_block(blocks: list[Block], page_no: int, caption: str,
+                        rect: Rect | None = None) -> Block | None:
+    """按图注文本找**图注块**。``rect`` = 图体矩形（可选），用来排除"与图体同一格"的伪候选。
+
+    ⚠️ 不能只认 `type == "caption"`（实测 KAT p8 图 6 "Knowledge attention visualization"）：
+    解析层没把那条题注分型成 caption，于是这里返回 None → 上游给这张图补一个**孤儿块**
+    （rect = 图体本身、文本 = 题注）→ 下游 `figure_regions` 把孤儿块的 y0 当"题注顶边"，
+    把 102pt 高的图砍成 `MIN_HEIGHT`=24pt 的一条横带（用户截图：图 6 只剩 `Text: …` 那一行）。
+
+    兜底的候选必须**排除与图体重叠**的那一块 —— 否则会认回孤儿块自己（它的 rect 就是图体）。
+    优先仍然用 `type == "caption"` 的那条：分型正确时行为与以前完全一致。
+    """
     key = normalize_text(caption)[:40]
+    if not key:
+        return None
+    fallback: Block | None = None
     for b in blocks:
-        if b.page_no == page_no and b.type == "caption" \
-                and normalize_text(b.text_clean or b.text).startswith(key[:20]):
+        if b.page_no != page_no:
+            continue
+        if not normalize_text(b.text_clean or b.text).startswith(key[:20]):
+            continue
+        if b.type == "caption":
             return b
-    return None
+        if fallback is None and not _covers_band(b.rect, rect):
+            fallback = b
+    return fallback
 
 
 def _next_block_id(result: ParseResult, page_no: int) -> str:
