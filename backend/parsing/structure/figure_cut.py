@@ -353,6 +353,18 @@ def _body_rect_above_caption(
         union = Rect(union.x0, union.y0, union.x1, bottom)
     # 段内元素已经全部算进并集，原先那段"连续块扩展"是在已选集合里再取并集 —— 恒等于上面这行，
     # 一并删掉（它从来没能挡住任何东西，只是让人以为有"连续性"这道闸门）。
+    # ⚠️ 但**并排面板**要单独补一次：并集只看"与图注横向重叠"的墨迹，而一张多面板的图
+    # 完全可能有一栏落在图注的横向范围之外（实测 turboquant p7 图 1 的 `Bitwidth = 4` 那一栏：
+    # 图注 `Figure 1: …` 只到 x 376，第 4 栏在 423~492 → 整栏被漏掉，
+    # 用户口径是"裁图不能缺内容"）。白底框以前恰好把这一栏盖住，现在白底只当画框（不贡献矩形，
+    # 见 `Drawing.is_invisible_fill`），所以要靠"与并集水平相邻"把同排面板补回来。
+    union = _grow_adjacent_panels(
+        union, [i.rect for i in page_images if _usable_image(i, page_rect)]
+        + [d.rect for d in page_drawings], above=above)
+    imgs = [i for i in page_images if (above(i.rect) or straddles(i.rect))
+            and _usable_image(i, page_rect) and union.intersects(i.rect)]
+    drs = [d for d in page_drawings if (above(d.rect) or straddles(d.rect))
+           and union.intersects(d.rect)]
 
     # 高度上限只作"别把整页吞进来"的护栏（0.95 页高）：图注+图体正常都在一页内
     if union.height > max_height_ratio * page_rect.height:
@@ -362,6 +374,33 @@ def _body_rect_above_caption(
     used_imgs = [i for i in imgs if union.intersects(i.rect)]
     used_drs = [d for d in drs if union.intersects(d.rect)]
     return union, used_imgs, used_drs, "caption_anchor"
+
+
+#: 并排子图面板之间允许的最大水平缝（pt）：比它更远就当成"另一栏/另一张图"，不并进来。
+#: 实测 turboquant p7 图 1 的面板缝是 27.8pt，而 sniffer p8 图 7 与图 9 之间是 54pt
+#: （两张不同的图，绝不能并）—— 30pt 落在两者之间。
+PANEL_GAP_PT = 30.0
+
+
+def _grow_adjacent_panels(union: Rect, rects: list[Rect], *, above,
+                          rounds: int = 6) -> Rect:
+    """把与并集**水平相邻、同一排**的墨迹补进图体（并排面板整块落在图注横向范围之外时）。"""
+    for _ in range(rounds):
+        grew = False
+        for r in rects:
+            if union.intersects(r) or not above(r):
+                continue
+            overlap_y = min(union.y1, r.y1) - max(union.y0, r.y0)
+            if overlap_y < 0.4 * min(union.height, max(r.height, 1.0)):
+                continue                      # 不是同一排（上下堆叠的另一张图）
+            gap = max(r.x0 - union.x1, union.x0 - r.x1)
+            if gap > PANEL_GAP_PT:
+                continue
+            union = union.union(r)
+            grew = True
+        if not grew:
+            break
+    return union
 
 
 def _h_overlap(a: Rect, b: Rect) -> float:
@@ -444,22 +483,107 @@ def _absorb_labels_above(body: Rect, blocks: list[RawBlock], gap: float = 10.0) 
 
     ⚠️ 只**向上扩**，从不切：所以它不可能像 `_trim_top_at_heading` 那样把图切半截。
     """
-    lines = [ln.rect for ab in blocks for ln in ab.lines if ln.spans]
-    lines.sort(key=lambda r: -r.y1)
+    lines = [(ln.rect, ln.text) for ab in blocks for ln in ab.lines if ln.spans]
+    lines.sort(key=lambda t: -t[0].y1)
     top = body.y0
     for _ in range(60):                              # 护栏：最多往上吃 60 行
         nxt = None
-        for r in lines:
-            if not (top - gap <= r.y1 <= top + 1.0) or r.y0 >= top:
-                continue                             # 只吃"紧贴当前上沿"的那些行
+        for r, text in lines:
+            if r.y0 >= top:
+                continue
+            hugging = top - gap <= r.y1 <= top + 1.0
+            # ⚠️ 图体上沿**从这一行里穿过**（实测 9984-boomerang p6 图 4：子图标题
+            # `Classification Accuracy (↑)` 的 bbox 是 y 82.7~94.5，而图的墨迹上沿在 90.8
+            # —— 标题有一半压在图的顶边上）。以前那块白底把标题一起包住了，白底不再算墨迹之后
+            # 就得靠这条判据把整行收进来，否则标题被切掉上半截（用户口径："裁图不能缺内容"）。
+            # 只认**单行**（≤ `LABEL_MAX_HEIGHT`）：正文段落是块级多行，会在下面那句
+            # "与图体横向重叠"上被挡住（与图体横向重叠的文字只有图内标注/刻度/标题）。
+            cut = (not hugging and r.y0 < top < r.y1 and r.center_y < top
+                   and (r.y1 - r.y0) <= LABEL_MAX_HEIGHT)
+            # 子图标题与面板上沿的缝可能比 `gap` 大一点点（实测 turboquant p21 图 5 的
+            # `(a) TURBOQUANT prod` 是 10.4pt，只差 0.4pt 就被切掉）。放宽到
+            # `LABEL_ABSORB_GAP_PT` 但**只认短行**：同一位置上更像是页眉/正文的长行
+            # （实测 KAT p5 顶上 13.7pt 处是页眉 `C. Song, N. Ning, Y. Zhang et al.`）不能收。
+            labelish = (LABEL_MAX_HEIGHT >= r.y1 - r.y0
+                        and len((text or "").strip()) <= LABEL_MAX_CHARS
+                        and top - LABEL_ABSORB_GAP_PT <= r.y1 <= top + 1.0)
+            if not (hugging or cut or labelish):
+                continue
             if _h_overlap(r, body) < 0.10:
                 continue                             # 横向不相干（另一栏 / 页眉）
-            if nxt is None or r.y0 < nxt.y0:
-                nxt = r
+            if nxt is None or r.y0 < nxt[0].y0:
+                nxt = (r, text)
         if nxt is None:
             break
-        top = nxt.y0
+        top = nxt[0].y0
     return Rect(body.x0, top, body.x1, body.y1)
+
+
+#: 紧贴图体**左右两侧**的文字行（坐标轴标题 / 刻度 / 图例）允许的最大缝（pt）。
+#: 实测 turboquant p7 图 1 的 y 轴 `Accuracy` 与 `0.8` 刻度贴在墨迹左边 0~1pt；
+#: 而双栏页里另一栏的正文离图体至少有栏缝（20pt+）远，所以 6pt 足够安全。
+SIDE_LABEL_GAP_PT = 6.0
+#: 单行标注（子图标题 / 刻度 / 坐标轴标题）的高度上限（pt）。
+#: 与 `figure_regions.LABEL_MAX_HEIGHT` 同口径：多行块 = 正文，不能当标注收进图体。
+LABEL_MAX_HEIGHT = 22.0
+#: "短标注"在更宽的缝内也允许被收进图体（见 `_absorb_labels_above`）：
+#: 真标注都很短（`(a) TURBOQUANT prod` 20 字符），而页眉/正文行都长。
+LABEL_ABSORB_GAP_PT = 14.0
+LABEL_MAX_CHARS = 20
+#: 边界从一行文字里穿过时，允许"露在区域外的部分"占该行的最大比例。
+#: 与 `figure_regions.SNAP_INSIDE_MAX` 同源（那里是 25%），这里再收紧一档：
+#: 实测要救的都是"宽带一行只被切掉一个零头"（sniffer p1 图 1 的邮箱行只露出 7%），
+#: 而露得多的（另一栏的正文、被切掉一大半的标签）宁可少裁一点也不能拖进来。
+SIDE_CUT_MAX = 0.15
+#: 侧向判"紧贴"时允许的**重叠**（pt）：文字行的 bbox 比字形宽 1~2pt，
+#: 而窄标签（刻度 `0.5`、轴端 `128K` 只有 10~13pt 宽）常常与图体墨迹重叠 3~5pt ——
+#: 实测 9984-boomerang p28 图 22 与 deepseek p5 图 3 因此各被切掉一列刻度。
+SIDE_OVERLAP_TOL = 5.0
+
+
+def _absorb_labels_beside(body: Rect, blocks: list[RawBlock],
+                          gap: float = SIDE_LABEL_GAP_PT) -> Rect:
+    """把**紧贴图体左右两侧**的文字行收进图体：坐标轴标题 / 刻度数字 / 图例。
+
+    为什么必须有这一步（2026-09-28，白底框不再算墨迹之后暴露）：
+    排版工具给每张图垫的那块**白底**（见 :meth:`Drawing.is_invisible_fill`）曾经把图的
+    bbox 撑大 10pt 左右，顺手把这些文字包了进来。白底不再算墨迹之后，配图（matplotlib
+    风格）的边界只剩矢量/位图 —— 而 y 轴标题与刻度是**文字**，于是被切在裁图外
+    （实测 9984-boomerang 的 2×5 子图页、turboquant p7 图 1：左边界从 105 收到 116，
+    被切掉的正是 `Accuracy` / `0.9` 那一列）。
+
+    判据刻意收得很紧：文字行必须**纵向落在图体内**，且
+    ① 横向紧贴（缝 ≤ ``gap``）或
+    ② 边界从这一行里穿过、且露在外面的部分不超过该行长度的 ``SIDE_CUT_MAX``
+    （实测 sniffer p1 图 1 的邮箱行 `…@nus.edu.sg`：区域左边界从 81.2 收到 86.3，
+    正好切掉左边两个字母）。只往外吃，从不切。
+    """
+    lines = [ln.rect for ab in blocks for ln in ab.lines if ln.spans and ln.text.strip()]
+    for _ in range(40):                                  # 护栏：最多往外吃 40 轮
+        grew = False
+        for r in lines:
+            if r.y0 < body.y0 - 1.0 or r.y1 > body.y1 + 1.0:
+                continue                                 # 不在图体这一纵带里（本栏正文/图注）
+            left_gap = body.x0 - r.x1
+            right_gap = r.x0 - body.x1
+            # ⚠️ 容差要允许**轻微重叠**（-1.5pt）：排版软件给文字行的 bbox 比字形宽一点，
+            # 实测 9984-boomerang p25 的刻度 `0.45`（x 116.7~128.7）与图体左边界 128.4
+            # 只差 −0.3pt —— 按"缝 ≥ 0"判会两者都不满足，整列刻度与 y 轴标题就被切在裁图外。
+            hugging_left = -SIDE_OVERLAP_TOL <= left_gap <= gap
+            hugging_right = -SIDE_OVERLAP_TOL <= right_gap <= gap
+            cut_left = (r.x0 < body.x0 <= r.x1
+                        and (body.x0 - r.x0) <= SIDE_CUT_MAX * max(r.width, 1.0))
+            cut_right = (r.x0 <= body.x1 < r.x1
+                         and (r.x1 - body.x1) <= SIDE_CUT_MAX * max(r.width, 1.0))
+            if hugging_left or cut_left:
+                body = Rect(r.x0, body.y0, body.x1, body.y1)
+                grew = True
+            elif hugging_right or cut_right:
+                body = Rect(body.x0, body.y0, r.x1, body.y1)
+                grew = True
+        if not grew:
+            break
+    return body
 
 
 def _is_text_decoration(d: Drawing, page_blocks: list[RawBlock]) -> bool:
@@ -536,10 +660,14 @@ def detect_figures(
     all_caps = find_caption_blocks(blocks)
     # 文字下划线（参考文献里的 URL 都带）不算图体墨迹：实测 DeepSeek-V3.2 附录页的图 4
     # 因此把顶上 5 条参考文献 + `Appendices` 标题一起裁了进来（用户截图）。
+    # ⚠️ 还有一类"看不见的墨迹"：**纯白填充、无描边的背景板**（sniffer p4/p8 每张图下面都垫了
+    # 一块，比图大得多、横跨整页）—— 它一进并集，图 3 就被撑到右栏、图 7/8/9 全部变成通栏
+    # （用户截图：一张卡片里左右两栏各一张图拼在一起）。见 `Drawing.is_invisible_fill`。
     deco: dict[int, list[Drawing]] = {}
     for pno, drs in drawings_by_page.items():
         here = [b for b in blocks if b.page_no == pno]
-        deco[pno] = [d for d in drs if not _is_text_decoration(d, here)]
+        deco[pno] = [d for d in drs
+                     if not _is_text_decoration(d, here) and not d.is_invisible_fill()]
     drawings_by_page = deco
     # 图注锚点：块里**本栏的那些行**（见 `_caption_anchor`：转换器产出的 PDF 会把左右两栏的行
     # 塞进同一个文本块，整块 bbox 横跨整页）。锚点同时用于"分段界标"和"图体并集"。
@@ -584,6 +712,9 @@ def detect_figures(
         # 图体顶边若被"参考文献的下划线"之类拉到标题之上，就收到标题下面（见 `_trim_top_at_heading`）
         # 之前先把紧贴图体上沿的子图标题 / 图例标题（文字）收进来，免得收紧顶边时把它们切掉。
         body = _absorb_labels_above(body, blocks)
+        # 左右两侧紧贴的**坐标轴标题/刻度/图例**同样是图的一部分（白底框不再算墨迹之后
+        # 裸露出来的少截，见 `_absorb_labels_beside`）。
+        body = _absorb_labels_beside(body, blocks)
         body = _trim_top_at_heading(body, cap_rect, blocks, drawings_by_page.get(page_no, []),
                                     images_by_page.get(page_no, []))
         # ⚠️ 这里**不再**用旧的 `CAPTION_MAX_GAP` 挡"图注离图体太远"（已删，理由见文件头）。

@@ -82,18 +82,57 @@ def _merge_intervals(intervals: list[tuple[float, float]], gap: float = 2.0
     return [(a, b) for a, b in out]
 
 
+#: "左右两栏被并成**同一条 line**"时，中间那道缝的最小宽度（pt）。
+#: 与 `extract.text_layer.COLUMN_SPLIT_GAP` 同源：词间空格只有 3~5pt，栏缝是 12~27pt。
+MERGE_GAP_PT = 12.0
+
+
+def _line_segments(lines: list[TextLine], mid_x: float) -> list[tuple[float, float]]:
+    """把每条行转成 **1~2 段 x 区间**：跨过中线的内部大缝要挖掉。
+
+    ⚠️ 实测事故（sniffer p8，2026-09-28 用户截图）：那一页有一条 line 是**左右两栏被并在一起**
+    的（`News400 and TamperedNews [32]. In these datasets, img` + `trieval methods. …`，
+    缝 27pt、正好跨过文本区中线 297.6）。它的 `rect` 横跨整页 → 把整页唯一的栏缝
+    （295.8~306.0）盖住 → `counts[i] == 0` 永不成立 → **整页被判成单栏**，
+    接着段落把两栏逐行交叉并块、图注块横跨整页、图 7/8/9 的墨迹并集变成通栏
+    （用户看到的就是"一张卡片里并排两张图、图里夹着另一栏的正文"）。
+
+    这样的行**本来就不属于同一栏**，让它去给"栏缝在哪"投票只会指错方向：
+    这里只把它的两段分别计入覆盖，**不改行本身**（行的切分在 `text_layer` 里做，
+    动它会牵到公式/表格的成块）。
+    """
+    out: list[tuple[float, float]] = []
+    for ln in lines:
+        r = ln.rect
+        if r.width <= 0:
+            continue
+        spans = sorted(ln.spans, key=lambda s: s.x0)
+        best: tuple[float, float, float] | None = None      # (缝宽, 缝左, 缝右)
+        for prev, cur in zip(spans, spans[1:]):
+            gap = cur.x0 - prev.x1
+            if gap >= MERGE_GAP_PT and prev.x1 <= mid_x <= cur.x0:
+                if best is None or gap > best[0]:
+                    best = (gap, prev.x1, cur.x0)
+        if best is None:
+            out.append((r.x0, r.x1))
+        else:
+            out.append((r.x0, best[1]))
+            out.append((best[2], r.x1))
+    return out
+
+
 def _line_span_coverage(lines: list[TextLine], page_width: float, bands: int = 40
                         ) -> list[float]:
     """x 方向的"行覆盖计数"直方图（用于找 gutter）。"""
     if page_width <= 0:
         return []
+    mid_x = (min(ln.rect.x0 for ln in lines) + max(ln.rect.x1 for ln in lines)) / 2 if lines else 0.0
     counts = [0] * bands
-    for ln in lines:
-        r = ln.rect
-        if r.width <= 0:
+    for a, b in _line_segments(lines, mid_x):
+        if b <= a:
             continue
-        i0 = max(0, int(r.x0 / page_width * bands))
-        i1 = min(bands - 1, int(r.x1 / page_width * bands))
+        i0 = max(0, int(a / page_width * bands))
+        i1 = min(bands - 1, int(b / page_width * bands))
         for i in range(i0, i1 + 1):
             counts[i] += 1
     return counts

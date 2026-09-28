@@ -26,6 +26,7 @@ class Drawing:
     width: float = 1.0
     stroke: bool = False
     fill: bool = False
+    fill_rgb: tuple[float, float, float] | None = None
     fill_opacity: float = 1.0
     stroke_opacity: float = 1.0
     items_count: int = 0
@@ -64,12 +65,34 @@ class Drawing:
             and self.rect.height <= max_thickness * 2
         )
 
+    def is_invisible_fill(self, min_channel: float = 0.97) -> bool:
+        """是不是"**纯白填充、没有描边**"的背景板（不是墨迹）。
+
+        实测（2026-09-28，sniffer p4/p8）：排版工具给每张插图垫了一块**白色矩形**
+        （``type=f``、``fill=(1,1,1)``、无 ``color`` —— 白底白纸，肉眼完全看不见）：
+
+            p4  [28.2, 62.8, 563.3, 317.5]（图 2 那整幅） / [17.9, 354.9, 428.3, 550.4]（图 3）
+            p8  [1.9, 37.4, 483.8, 266.8]（盖住图 7 + 图 9 + 图 8 的上半）
+
+        它比图大得多、又横跨整页，被算进"图体墨迹并集"后：图 3 的 bbox 从本栏
+        （x ≤ 286）涨到 x 431、图 7/8/9 的 bbox 全都变成通栏（x −1.1 ~ 547.6）
+        —— 用户截图里"一张卡片里左右两栏两张图拼在一起、图里夹着正文"。
+        判据只认"填充色接近纯白 + 无描边 + 不透明"：彩色背景块、带边框的白块（描边单独一条路径）
+        都不受影响，照样当墨迹。
+        """
+        if not self.fill or self.stroke or self.fill_rgb is None:
+            return False
+        if self.fill_opacity < 0.9:
+            return False
+        return all(c >= min_channel for c in self.fill_rgb)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind, "bbox": self.rect.to_list(),
             "p0": [round(self.p0[0], 2), round(self.p0[1], 2)],
             "p1": [round(self.p1[0], 2), round(self.p1[1], 2)],
             "width": round(self.width, 3), "stroke": self.stroke, "fill": self.fill,
+            "fill_rgb": list(self.fill_rgb) if self.fill_rgb else None,
         }
 
 
@@ -98,6 +121,10 @@ def _drawing_from_path(path: dict) -> Drawing | None:
     width = float(path.get("width", 0.0) or (path.get("w", 0.0) or 0.0))
     stroke = bool(path.get("color") is not None or path.get("stroke_opacity", 1) not in (None, 0))
     fill = bool(path.get("fill") is not None)
+    raw_fill = path.get("fill")
+    # 填充色要留着：纯白填充 + 无描边 = 背景板，不是墨迹（见 `Drawing.is_invisible_fill`）
+    fill_rgb = (tuple(float(c) for c in raw_fill[:3]) if isinstance(raw_fill, (tuple, list))
+                and len(raw_fill) >= 3 else None)
 
     items = list(_iter_items(path))
     kind = "other"
@@ -129,7 +156,7 @@ def _drawing_from_path(path: dict) -> Drawing | None:
 
     return Drawing(
         kind=kind, rect=rect, p0=p0, p1=p1, width=width,
-        stroke=stroke, fill=fill,
+        stroke=stroke, fill=fill, fill_rgb=fill_rgb,
         fill_opacity=float(path.get("fill_opacity", 1.0) or 1.0),
         stroke_opacity=float(path.get("stroke_opacity", 1.0) or 1.0),
         items_count=len(items),

@@ -364,3 +364,124 @@ def test_raster_straddling_its_caption_is_not_lost():
     full = ImageInfo(page_no=1, xref=8, rect=Rect(0.0, 0.0, 612.0, 792.0),
                      width_px=1200, height_px=1600)
     assert detect_figures([cap], {1: [full]}, {}, {1: page}) == []
+
+
+# ---------------------------------------------------------------------------
+# sniffer p4/p8（2026-09-28）：**纯白填充的背景板**不是墨迹
+# ---------------------------------------------------------------------------
+
+def _white_box(page_no: int, r: Rect) -> Drawing:
+    """排版工具垫在图下的那块白底（`type=f`、`fill=(1,1,1)`、无描边）。"""
+    return Drawing(kind="rect", rect=r, p0=(r.x0, r.y0), p1=(r.x1, r.y1),
+                   stroke=False, fill=True, fill_rgb=(1.0, 1.0, 1.0))
+
+
+def test_white_background_box_is_not_figure_ink():
+    """通栏白底不能把图撑成通栏（sniffer p4 图 3 / p8 图 7、8、9 的真机故障）。
+
+    实测 p8：白底 [1.9, 37.4, 483.8, 266.8] 盖住图 7 + 图 9 + 图 8 的上半，于是三张图的
+    并集都变成"左右两栏拼在一起"（用户截图：一张卡片里两张图并排、图里夹着正文）。
+    """
+    page = Rect(0.0, 0.0, 612.0, 792.0)
+    blocks = [_caption("Figure 1: chart", 1, 300.0, x0=50.0, x1=290.0)]
+    box = _white_box(1, Rect(1.9, 37.4, 545.0, 295.0))          # 通栏白底
+    chart = _ink(1, 100.0, 250.0, x0=60.0, x1=280.0)            # 图自己的墨迹（本栏内）
+    cands = detect_figures(blocks, {}, {1: [box, chart]}, {1: page})
+    assert len(cands) == 1
+    assert cands[0].rect.x0 == pytest.approx(57.0, abs=0.5)     # 只剩图体（-3pt 余量）
+    assert cands[0].rect.x1 == pytest.approx(283.0, abs=0.5)
+    assert cands[0].rect.y0 == pytest.approx(97.0, abs=0.5)
+    assert cands[0].rect.y1 == pytest.approx(253.0, abs=0.5)
+
+
+def test_colored_or_stroked_box_is_still_ink():
+    """彩色填充、或**有描边**的框照样是墨迹 —— 白底这条判据不能误杀真图形。"""
+    page = Rect(0.0, 0.0, 612.0, 792.0)
+    cap = [_caption("Figure 1: chart", 1, 300.0, x0=50.0, x1=290.0)]
+    colored = Drawing(kind="rect", rect=Rect(40.0, 90.0, 300.0, 260.0),
+                      p0=(40.0, 90.0), p1=(300.0, 260.0),
+                      stroke=False, fill=True, fill_rgb=(0.2, 0.4, 0.9))
+    stroked = Drawing(kind="rect", rect=Rect(40.0, 90.0, 300.0, 260.0),
+                      p0=(40.0, 90.0), p1=(300.0, 260.0),
+                      stroke=True, fill=True, fill_rgb=(1.0, 1.0, 1.0))
+    for box in (colored, stroked):
+        cands = detect_figures(cap, {}, {1: [box]}, {1: page})
+        assert len(cands) == 1 and cands[0].rect.x1 == pytest.approx(303.0, abs=0.5)
+
+
+def test_a_lone_white_box_is_not_a_figure():
+    """只有白底、没有任何真墨迹的页不能产出插图（白底本身看不见）。"""
+    page = Rect(0.0, 0.0, 612.0, 792.0)
+    cap = [_caption("Figure 1: chart", 1, 300.0, x0=50.0, x1=290.0)]
+    box = _white_box(1, Rect(1.9, 37.4, 545.0, 295.0))
+    assert detect_figures(cap, {}, {1: [box]}, {1: page}) == []
+
+
+# ---------------------------------------------------------------------------
+# 白底不再算墨迹之后必须补回来的两类内容（2026-09-28）
+# ---------------------------------------------------------------------------
+
+def test_side_labels_hugging_the_body_are_absorbed():
+    """紧贴图体左右的**坐标轴标题/刻度**要收进图体（白底曾顺手把它们包进来）。
+
+    实测 9984-boomerang p25 图 13：刻度 `0.45`（x 116.7~128.7）与图体左边界 128.4
+    只差 −0.3pt、y 轴标题 `Accuracy`（x 108.6~115.9）紧挨着刻度 —— 两条都得收进来。
+    """
+    from backend.parsing.structure.figure_cut import _absorb_labels_beside
+
+    blocks = [
+        RawBlock(page_no=1, block_no=0, lines=[_line("0.45", 1, 132.0, 116.7, 128.7)]),
+        RawBlock(page_no=1, block_no=1, lines=[_line("Accuracy", 1, 151.0, 108.6, 115.9)]),
+        # 另一栏的正文（离得远，绝不能收）
+        RawBlock(page_no=1, block_no=2, lines=[_line("body text", 1, 150.0, 320.0, 560.0)]),
+    ]
+    body = Rect(128.4, 121.0, 502.9, 243.8)
+    out = _absorb_labels_beside(body, blocks)
+    assert out.x0 == pytest.approx(108.6, abs=0.1)
+    assert out.x1 == pytest.approx(502.9, abs=0.1)
+
+
+def test_side_labels_far_away_are_not_absorbed():
+    """离得远的文字（另一栏正文 / 相邻表格）不能被吃进图体。"""
+    from backend.parsing.structure.figure_cut import _absorb_labels_beside
+
+    blocks = [RawBlock(page_no=1, block_no=0,
+                       lines=[_line("another column", 1, 150.0, 330.0, 560.0)])]
+    body = Rect(128.4, 121.0, 300.0, 243.8)
+    assert _absorb_labels_beside(body, blocks) == body
+
+
+def test_label_straddling_the_body_top_is_absorbed():
+    """子图标题压在图的**顶边**上时要把整行收进来（boomerang p6 图 4 的少截）。
+
+    实测那页的 `Classification Accuracy (↑)` bbox 是 y 82.7~94.5，而图的墨迹上沿在 90.8。
+    """
+    from backend.parsing.structure.figure_cut import _absorb_labels_above
+
+    blocks = [RawBlock(page_no=1, block_no=0,
+                       lines=[_line("Classification Accuracy (↑)", 1, 82.7, 166.4, 238.5)])]
+    # `_line` 的行高固定 10pt，这里手工把标题行做成 11.8pt 的实测高度
+    blocks[0].lines[0].spans[0].y1 = 94.5
+    body = Rect(147.0, 90.8, 482.0, 205.9)
+    assert _absorb_labels_above(body, blocks).y0 == pytest.approx(82.7, abs=0.1)
+
+
+def test_panels_are_grown_but_the_next_figure_is_not():
+    """并排面板（缝 ≤ 30pt）要补进图体；**另一张图**（缝 54pt）不能补。
+
+    实测 turboquant p7 图 1 的 `Bitwidth = 4` 那一栏离前三个面板 27.8pt（要补）；
+    sniffer p8 图 7 与图 9 之间是 54pt（两张不同的图，绝不能并）。
+    """
+    from backend.parsing.structure.figure_cut import _grow_adjacent_panels
+
+    def above(_r):
+        return True
+
+    union = Rect(100.0, 100.0, 200.0, 200.0)
+    near = Rect(227.8, 100.0, 300.0, 200.0)      # 缝 27.8pt
+    far = Rect(254.0, 100.0, 320.0, 200.0)       # 缝 54pt
+    assert _grow_adjacent_panels(union, [near], above=above).x1 == pytest.approx(300.0)
+    assert _grow_adjacent_panels(union, [far], above=above).x1 == pytest.approx(200.0)
+    # 上下堆叠的另一张图（y 不重叠）也不补
+    stacked = Rect(100.0, 300.0, 200.0, 400.0)
+    assert _grow_adjacent_panels(union, [stacked], above=above) == union
