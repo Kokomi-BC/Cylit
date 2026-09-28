@@ -17,8 +17,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import (
-    annotations_router, knowledge_router, models_router, papers_router,
-    reader_router, settings_router, tasks_router,
+    annotations_router, knowledge_router, mineru_router, models_router,
+    papers_router, reader_router, settings_router, tasks_router,
 )
 from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, PaperMindError
@@ -126,6 +126,9 @@ def create_app() -> FastAPI:
     app.include_router(annotations_router, prefix=s.api_prefix)
     app.include_router(knowledge_router, prefix=s.api_prefix)
     app.include_router(settings_router, prefix=s.api_prefix)
+    # 在线解析（MinerU）的配置/校验：只挂带前缀的那一份 —— 它没有"直接打开的资源链接"，
+    # 不像 /papers 那样需要无前缀别名
+    app.include_router(mineru_router, prefix=s.api_prefix)
 
     # 兼容：同时挂一份到 /papers 等无前缀路径（便于直接打开资源链接）
     app.include_router(reader_router)

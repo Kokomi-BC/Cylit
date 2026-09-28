@@ -75,6 +75,9 @@ const stats = ref<ReaderStats>({
 });
 const formulas = ref<MarkdownFormula[]>([]);
 const formulasLoading = ref(false);
+/** 这批公式的来源：`markdown`（译文）/ `parse`（解析产物，还没翻译）/ `mixed`（半翻译，按页兜底）。
+ *  只用来把页签标题写准 —— 用户要能一眼看出"这些公式是从译文来的还是从解析产物来的"。 */
+const formulasSource = ref<'markdown' | 'parse' | 'mixed' | string>('markdown');
 const figures = ref<FigureItem[]>([]);
 const brief = ref<BriefPayload | null>(null);
 const glossary = ref<GlossaryTerm[]>([]);
@@ -381,7 +384,14 @@ const SIDE_TABS = computed<Array<{
   },
   {
     k: 'formulas', icon: 'formula', label: '公式',
-    title: '公式（从 Markdown 提取，只读）', count: formulas.value.length,
+    // 标题反映**这批公式是从哪来的**（用户口径：优先且只显示翻译的公式，未翻译用原文兜底）：
+    // 全译完 → 只取自译文；还没翻译 → 取解析产物；半翻译 → 已译页取译文、未译页取原文。
+    title: formulasSource.value === 'parse'
+      ? '公式（来自解析产物：这一篇还没翻译，先按原文显示）'
+      : formulasSource.value === 'mixed'
+        ? '公式（已翻译的页取译文，未翻译的页按原文兜底）'
+        : '公式（从译文提取，只读）',
+    count: formulas.value.length,
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
@@ -936,15 +946,18 @@ async function loadSide() {
   void loadFormulas();
 }
 
-/** 公式：从页级产物的 Markdown 里提取（只读，不做复核） */
+/** 公式：**译文优先、未翻译的页用原文兜底**（口径见后端 `reader_service.markdown_formulas`） */
 async function loadFormulas() {
   formulasLoading.value = true;
   try {
-    const d = await api.get<{ items: MarkdownFormula[] }>(`/papers/${paperId.value}/formulas`);
+    const d = await api.get<{ items: MarkdownFormula[]; source?: string }>(
+      `/papers/${paperId.value}/formulas`);
     formulas.value = d.items ?? [];
+    formulasSource.value = String(d.source ?? 'markdown');
   } catch (err) {
     console.warn('公式提取失败', err);
     formulas.value = [];
+    formulasSource.value = 'markdown';
   } finally {
     formulasLoading.value = false;
   }

@@ -160,20 +160,28 @@ export interface TranslatedMarkdownPage {
   model: string | null;
 }
 
-/** 公式条目：**从页级产物的 Markdown 里直接提取**（只读，不复核、不分级）。 */
+/**
+ * 公式条目：**译文优先，未翻译的页用原文（解析产物）兜底** —— 与正文里那一页显示的同源。
+ */
 export interface MarkdownFormula {
   id: string;
   page: number;
-  /** 公式所在行的行 id（定位用） */
+  /** 公式所在行的行 id（定位用）。解析产物兜底时就是**解析块的 id**（正文那一行的锚点） */
   row_id: string | null;
   latex: string;
   /** true = 行间公式（`$$…$$`），false = 行内（`$…$`） */
   display: boolean;
-  /** 原文上下文片段 */
+  /** 原文上下文片段（译文来源的条目才有） */
   context: string;
   /** 译文上下文片段 */
   context_zh: string;
   model?: string | null;
+  /** `markdown` = 从译文抽的；`parse` = 这一页还没翻译，用解析产物兜底 */
+  source?: 'markdown' | 'parse' | string;
+  /** 解析产物来源才有：公式分级（A/B/C） */
+  grade?: string | null;
+  /** 解析产物来源才有：高倍裁图地址（C 级公式只有它可用） */
+  crop_url?: string | null;
 }
 
 export type MarkdownViewMode = 'bilingual' | 'original' | 'translation';
@@ -657,6 +665,58 @@ export interface SettingsPayload {
   values: Record<string, any>;
   stored: Record<string, any>;
   editable: string[];
+}
+
+/* ------------------------------- 解析引擎 -------------------------------
+ * `local` = 本地 PyMuPDF 版面解析（离线）；`mineru` = MinerU 云端解析（要 token + 联网）。
+ * 导入弹窗的「解析引擎」二选一与设置页的「默认解析引擎」共用这一个联合类型，
+ * 两处取值必须一致，所以类型只在这里写一次。 */
+export type ParseEngine = 'local' | 'mineru';
+
+/** MinerU 模型版本：`pipeline` 版面+公式更稳；`vlm` 大模型，复杂版面更强。 */
+export type MineruModelVersion = 'pipeline' | 'vlm';
+
+/** `GET /mineru/config`（`PUT` 返回同一形状）。**任何字段都可能缺省**，前端按"没有就退回默认值"读。 */
+export interface MineruConfig {
+  has_token: boolean;
+  /** 掩码后的 token（`ab12…cd34`）；没有 token 时为 null —— 后端**从不回显明文**。 */
+  token_masked: string | null;
+  /** token 来源：file（密钥文件）/ env（环境变量）等 */
+  token_source?: string | null;
+  engine_default: ParseEngine;
+  model_version: MineruModelVersion;
+  language: string;
+  /** 模型选项（带中文标签）——导入弹窗的「模型」下拉用它 */
+  model_version_options?: Array<{ value: MineruModelVersion; label: string }>;
+  /** OCR 语言选项（`value` + 中文名）——导入弹窗的「OCR 语言」下拉用它 */
+  languages?: Array<{ value: string; label: string }>;
+  base_url?: string;
+  /** 密钥文件路径（设置页要显示它，用户才知道 token 存在哪） */
+  token_file?: string | null;
+  /** token 已配且可用（= `has_token` 且联网可用） */
+  online_ready?: boolean;
+}
+
+/** `PUT /mineru/config` 的请求体：**只传要改的字段**（省略 = 不动）。 */
+export interface MineruConfigPatch {
+  token?: string;
+  engine_default?: ParseEngine;
+  model_version?: MineruModelVersion;
+  language?: string;
+  clear_token?: boolean;
+}
+
+/** `POST /mineru/verify`：**HTTP 恒为 200**，成败看 `ok` / `state`（失败也要能读到 message）。 */
+export interface MineruVerifyResult {
+  ok: boolean;
+  /** invalid=token 无效 / expired=已过期 / network=连不上 / missing=没配 token */
+  state: 'valid' | 'invalid' | 'expired' | 'network' | 'missing' | string;
+  http_status?: number | null;
+  code?: number | null;
+  /** 一句可执行的中文提示（例如「Token 已过期（A0211）：请到 mineru.net 重新申请一个」） */
+  message?: string;
+  latency_ms?: number | null;
+  token_masked?: string | null;
 }
 
 export interface HealthPayload {

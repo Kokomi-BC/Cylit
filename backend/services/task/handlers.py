@@ -47,8 +47,31 @@ def handle_import(ctx: TaskContext) -> dict:
 PARSE_STAGES = ("render", "extract_text", "extract_vector", "extract_image",
                 "vision_read", "structure", "formula", "figure", "persist")
 
+#: 在线解析（MinerU）的阶段：前四步是"和云端打交道"，后四步与本地解析同构
+#: （归一化成同一份 IR + Markdown，所以阅读器/翻译/知识库都不用改）。
+MINERU_STAGES = ("mineru_apply", "mineru_upload", "mineru_poll", "mineru_download",
+                 "render", "structure", "rebind", "persist")
+MINERU_STAGE_LABELS = {
+    "mineru_apply": "申请上传链接", "mineru_upload": "上传 PDF",
+    "mineru_poll": "等待 MinerU 解析", "mineru_download": "下载结果",
+    "render": "渲染页面", "structure": "整理结构",
+    "rebind": "对齐块 ID", "persist": "写入产物",
+}
+
 
 def handle_parse(ctx: TaskContext) -> dict:
+    """解析（按 ``params["engine"]`` 分派：本地 PyMuPDF 自研版面 / MinerU 在线解析）。
+
+    **两条引擎产出的产物是同构的**（同一套 IR + Markdown），所以分派只发生在入口，
+    下游一律不区分引擎 —— 这也是"选引擎"这件事只出现在导入/重解析两处的原因。
+    """
+    engine = str(ctx.params.get("engine") or "local").strip().lower()
+    if engine == "mineru":
+        return _handle_parse_online(ctx)
+    return _handle_parse_local(ctx)
+
+
+def _handle_parse_local(ctx: TaskContext) -> dict:
     """调用 parsing 层构建 IR + Markdown，再把结果回写 MySQL（规划 §6.2 硬约束）。"""
     from backend.parsing.pipeline import PaperBuilder
 
@@ -106,7 +129,73 @@ def handle_parse(ctx: TaskContext) -> dict:
         "grades": result.grade_distribution(),
         "duration_ms": result.duration_ms,
         "stats": {k: v for k, v in result.stats.items()
-                  if k in ("stage_ms", "markdown", "rebind")},
+                  if k in ("stage_ms", "markdown", "rebind", "engine")},
+    }
+
+
+def _handle_parse_online(ctx: TaskContext) -> dict:
+    """MinerU 在线解析：上传 → 等结果 → 归一化 → 落 IR/Markdown。
+
+    与本地解析共用后半段（`_sync_to_mysql` / `reader_service.invalidate_cache` /
+    `_chain_translate`），差别只在"结构从哪来"。
+
+    ⚠️ 取消语义：取消只让**我们**不再等结果，MinerU 服务端的任务不会因此撤销
+    （官方没有撤销接口），所以文案要说清楚，别让用户以为"点了取消就不占额度了"。
+    """
+    from backend.parsing.online.mineru_client import MineruCancelled
+    from backend.services.paper import mineru_service
+
+    paper_id = ctx.paper_id
+    if not paper_id:
+        raise ValueError("PARSE 任务缺少 paper_id")
+    _set_status(paper_id, "imported")
+
+    stage_index = {name: i for i, name in enumerate(MINERU_STAGES)}
+    control = {"value": None}
+
+    def on_progress(stage: str, done: int, total: int) -> None:
+        if control["value"]:
+            return
+        idx = stage_index.get(stage, 0)
+        overall_total = len(MINERU_STAGES) * 100
+        overall_done = idx * 100 + int(done / max(1, total) * 100)
+        label = MINERU_STAGE_LABELS.get(stage, stage)
+        ctx.progress(overall_done, overall_total,
+                     message=f"在线解析中：{label} {done}/{total}")
+        ctrl = ctx.check_control()
+        if ctrl:
+            control["value"] = ctrl
+
+    try:
+        result, _bundle = mineru_service.parse_online(
+            paper_id, params=ctx.params, progress=on_progress,
+            should_stop=ctx.should_stop)
+    except MineruCancelled as exc:
+        # 取消不是失败：任务框架已经把它标成 cancelled，这里只给一句说明
+        log.info("在线解析被取消：%s", exc.message)
+        return {"message": exc.message, "cancelled": True, "engine": "mineru"}
+
+    _sync_to_mysql(paper_id, result)
+    reader_service.invalidate_cache(paper_id)
+    ctx.progress(len(MINERU_STAGES) * 100, len(MINERU_STAGES) * 100,
+                 message="在线解析完成", force=True)
+    if ctx.params.get("then_translate"):
+        _chain_translate(paper_id)
+    summary = result.counts()
+    mineru_stats = result.stats.get("mineru") or {}
+    return {
+        "message": (f"在线解析完成（MinerU {mineru_stats.get('model_version') or ''}）："
+                    f"{summary['blocks']} 块（公式 {summary['formulas']}，"
+                    f"插图 {summary['figures']}，表格 {summary['tables']}）"),
+        "counts": summary,
+        "grades": result.grade_distribution(),
+        "duration_ms": result.duration_ms,
+        "engine": "mineru",
+        "mineru": {k: v for k, v in mineru_stats.items()
+                   if k in ("model_version", "batch_id", "bbox_space",
+                            "figures_written")},
+        "stats": {k: v for k, v in result.stats.items()
+                  if k in ("stage_ms", "markdown", "rebind", "engine")},
     }
 
 

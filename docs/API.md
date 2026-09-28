@@ -35,12 +35,12 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers` | 上传 PDF（multipart：`file`,`title`,`authors`,`venue`,`year`,`tags`,`paper_id`,`auto_parse`）。同一文件（sha256）已导入时**复用现有论文**并返回 `reused: true` |
+| POST | `/papers` | 上传 PDF（multipart：`file`,`title`,`authors`,`venue`,`year`,`tags`,`paper_id`,`auto_parse`,`figure_caption`,`deep_figure_search`,`parse_engine`,`mineru_*`）。同一文件（sha256）已导入时**复用现有论文**并返回 `reused: true`。`parse_engine` = `local`（PyMuPDF 自研版面，默认）/ `mineru`（在线解析，需 token），不传则用设置里的默认引擎 |
 | GET | `/papers` | 列表：`q/status/tag/sort/order/page/page_size`、`include_deleted`（默认 `false`） |
 | GET | `/papers/{id}` | 详情（状态、解析摘要、翻译计数）。**复核模式已移除**：不再返回 `review_open`（"待复核 N"计数） |
 | PUT | `/papers/{id}` | 更新元数据（title/authors/venue/year/tags/status/in_knowledge_base/abstract） |
 | DELETE | `/papers/{id}?hard=false` | 删除：**先删索引 → 取消任务 → 清 chunk → 文件移入 trash** |
-| POST | `/papers/{id}/parse` | 触发解析（幂等）。query 参数：`force`、`llm_repair`（LLM 公式修复，需真实模型）、`vision`（扫描页交视觉模型，默认 true）、`vision_model`（指定视觉模型 id）、`then_translate`（解析完成后自动接着开翻译任务）。**没有** `vision_dpi` 参数（dpi 取设置 `render_dpi` / 视觉默认 200，由 worker 读） |
+| POST | `/papers/{id}/parse` | 触发解析（幂等）。query 参数：`force`、`llm_repair`（LLM 公式修复，需真实模型）、`vision`（扫描页交视觉模型，默认 true）、`vision_model`（指定视觉模型 id）、`then_translate`（解析完成后自动接着开翻译任务）、`figure_caption` / `deep_figure_search`（两个插图开关，不传 = 沿用上次解析固化的值）、`engine`（`local` / `mineru` / `auto`，不传 = 沿用该论文上次用的引擎）、`mineru_*`（在线参数，见 1.1）。**没有** `vision_dpi` 参数（dpi 取设置 `render_dpi` / 视觉默认 200，由 worker 读） |
 | GET | `/papers/{id}/file` | PDF 流（阅读器左栏「原 PDF」由 pdf.js 渲染；`Content-Disposition: inline`，新标签页可直开） |
 | GET | `/papers/{id}/pages/{n}` | 页面图（150dpi PNG） |
 | GET | `/papers/{id}/markdown` | Markdown 单一事实源全文 |
@@ -54,6 +54,68 @@
 - 解析结果 `stats.scanned_pages` 列出被判定为扫描的页；这些页 `page.has_text_layer = false`；
 - 扫描页的块坐标是整页等分的虚拟横带（没有矢量层），因此**不做**公式卡与插图裁剪，
   公式以 `$$…$$` 留在正文里。
+
+**公式列表**（`GET /papers/{id}/formulas`）：**译文优先、未翻译的页用原文兜底**，与正文显示同源。
+
+- 有页级产物（翻译/转录）的页：**只**从那份 Markdown 里抽（不掺解析产物，避免同一条公式出现两次）；
+- 没有页级产物的页：正文显示的就是解析块，所以那几页的公式来自解析产物，条目带 `source: "parse"`
+  （前端显示一枚「解析」徽章），`row_id` 就是解析块 id（"定位"照旧可用）；
+- 顶层 `source` = `markdown`（全篇都有译文）/ `parse`（整篇还没翻译）/ `mixed`（半翻译，按页兜底），
+  另带 `fallback_pages` 列出走了兜底的页；`?source=parse` 可强制只看解析产物（排障用）。
+- 没有可用 LaTeX 的公式（C 级只有裁图）不进列表 —— 与"只列能渲染的公式"同口径。
+
+**插图列表**（`GET /papers/{id}/figures`）：按**图**给（不是按 MinerU 的 item），与正文区域同口径。
+
+- MinerU 会把**多面板图**拆成多个 `chart`/`image` item（实测 DeepSeek-V3.2 p5：Figure 2 与 Figure 3
+  各两个面板 = 4 个 item），构建器按**版面**把"顶底对齐 + 间隙很小"的横向并排面板合并成一张图
+  （bbox 取并集，图从 PDF 整块裁），并把该页的图级图注按阅读顺序重配到各组
+  （MinerU 实测会把图注挂到**下一行**的图上）。竖排相邻的**不合并**（那更可能是上下两张图）。
+  于是"插图"数量与论文里的图数一致（用户报的"标注 6 张图，实际 4 张"即此）。
+
+### 1.1 在线解析（MinerU）
+
+解析有**两条引擎**：`local`（PyMuPDF 自研版面，离线）与 `mineru`（MinerU 精准解析 API v4，
+联网）。两条引擎产出**同一份 IR + Markdown**，所以阅读器、逐页翻译、知识库索引、论文理解
+都不需要区分引擎；"选引擎"只出现在导入弹窗与「重新解析」两处。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/mineru/config` | 当前配置：`engine_default` / `model_version`（`pipeline` / `vlm`）/ `language`（OCR 语言，默认 `en`）/ `base_url` / `has_token` / `token_masked` / `token_source`（`file` / `env`）/ `token_file` / `online_ready` / `last_verify`。**只回 token 掩码，不回 token 本体** |
+| PUT | `/mineru/config` | 保存（字段都可选）：`token`（写入 `data/secrets/mineru.key`）、`clear_token`、`engine_default`、`model_version`、`language`。非法取值 → 400（`ValidationError`，message 里点明允许的取值） |
+| POST | `/mineru/verify` | 校验 token 是否可用。**HTTP 一律 200**，结论在 `data.ok` / `data.state`（`valid` / `invalid` / `expired` / `network` / `missing` / `error`）+ `data.message`（一句可执行的中文）+ `latency_ms` / `code` / `server_msg`。实现是拿随机 task_id 查一次任务：**不创建解析任务、不消耗配额** |
+
+**token 与配额**：token 在 <https://mineru.net/apiManage/token> 自行创建，官方**没有续期接口**，
+过期（网关返回 `A0211`）只能重新生成再贴一次。免费额度按天给"最高优先级页数"，超出只是降优先级。
+
+### 1.2 在线解析的可选参数（`mineru_*`）
+
+参数**按论文**给（导入弹窗里的「在线解析参数」区，选在线解析时才出现），
+优先级：**请求里传的 > 设置页默认值（模型/语言）> 官方默认值**。
+
+| 参数 | 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `mineru_model_version` | `pipeline` / `vlm` | 设置页（默认 `pipeline`） | 解析模型。`pipeline` 版面+公式更稳；`vlm` 是视觉大模型，复杂版面更强 |
+| `mineru_language` | 官方语言码：`en`/`ch`/`japanese`/`korean`/`chinese_cht`/`latin`/… | 设置页（默认 `en`） | 只影响 OCR；有文本层的 PDF 基本用不到 |
+| `mineru_is_ocr` | `true` / `false` | `false` | 强制 OCR：扫描件、字体乱码时开（更慢） |
+| `mineru_enable_formula` | `true` / `false` | `true` | 关掉公式识别（公式退化成图片） |
+| `mineru_enable_table` | `true` / `false` | `true` | 关掉表格识别（表格只能当图片看） |
+| `mineru_page_ranges` | `1-10` / `2,4-6` / `2--2`（`-2` = 倒数第二页） | 空 = 全部页 | 只解析指定页 |
+
+**页码范围的两个语义**（都踩过/验过才写在这里）：
+
+1. **`page_idx` 是切片内序号，不是原文档页号**。真机实测（6 页 PDF）：
+   请求 `3-4` → 返回 `page_idx ∈ {0,1}`；请求 `2,4-6` → 返回 `{0,1,2,3}`。
+   构建器按"选中页列表"映射回真实页号，并把映射记进
+   `stats.mineru_page_map = {page_ranges, selected_pages}`（映射错了不会报错，只能靠它核对）。
+2. **它不是"分段累加"**：同一份 PDF 再次导入会**复用同一篇论文**并重解析，上一次那一段的
+   结果会被覆盖。要多次分段得先把 PDF 拆成多个文件（sha 不同）再分别导入。
+
+**任务参数**：`POST /papers` / `POST /papers/{id}/parse` 选 `mineru` 后，PARSE 任务阶段为
+`mineru_apply → mineru_upload → mineru_poll → mineru_download → render → structure → rebind → persist`；
+结果包解到 `data/papers/<id>/mineru/`（`*_content_list.json` / `full.md` / `images/` 原样留档，
+便于人工核对）。解析统计里带 `stats.mineru`：`model_version` / `batch_id` / `bbox_space`
+（坐标口径自检）/ `params`（本次生效的全部参数）/ `items`（各类型计数）/ `zip_sha256`。
+取消任务只让我们不再等待，**服务端任务不会因此撤销**（官方没有撤销接口）。
 
 ## 2. 阅读器数据（§20.2）
 

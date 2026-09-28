@@ -9,15 +9,18 @@
  *    这些原本长在「知识库」页上，用户口径是"那页全是设置"，于是整体搬到这里；
  *    它们都是**即时操作**，没有"保存"这一步。
  * 3. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
- * 4. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
+ * 4. **在线解析（MinerU）** —— 第三方联网解析服务的 token 与默认参数：
+ *    token **只写不回显**（后端只给掩码），配置后可就地「验证」（真的打一次 MinerU 接口）。
+ * 5. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
- * `GET /settings/health`。设置写入 setting 表，重启后仍生效。
+ * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
+ * 设置写入 setting 表，重启后仍生效。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { HealthPayload } from '@/api/types';
+import type { HealthPayload, MineruConfig, MineruVerifyResult, ParseEngine } from '@/api/types';
 import {
   loadHealth, loadSettings, reportError, state, toast, withLoading,
 } from '@/stores/app';
@@ -116,6 +119,7 @@ const READONLY_KEYS: ReadonlyDef[] = [
 const SECTIONS = [
   { id: 'general', label: '常规参数', icon: 'settings' },
   { id: 'kb', label: '索引管理', icon: 'knowledge' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt' },
   { id: 'history', label: '搜索记录', icon: 'search' },
   { id: 'about', label: '系统信息', icon: 'server' },
 ];
@@ -399,9 +403,155 @@ function valueOf(key: string): string {
   return v === null || v === undefined || v === '' ? '—' : String(v);
 }
 
+/* ============================ 在线解析（MinerU） ============================
+ * MinerU 是**联网的第三方解析服务**：导入时把 PDF 交给它，公式/表格比本地解析更强。
+ * 它要一个 token（官方每 90 天过期），所以这一区的东西分两类：
+ * - **凭证**：token 输入框 + 保存 / 验证 / 清除（token 只写不回显：后端只给掩码）；
+ * - **默认参数**：模型版本、语言、默认解析引擎（导入弹窗的初值）。
+ *
+ * 与上面「常规参数」的区别：这些**不进 `PUT /settings`**，而是各自的 `/mineru/config`。
+ * 原因是 token 属于敏感值，不该混在通用设置白名单里（也方便后端单独做权限与掩码）。
+ * ========================================================================== */
+
+interface MineruForm {
+  /** 新 token：**空 = 本次不改**（后端拿不到 token 就不动已存的那个） */
+  token: string;
+  engine_default: ParseEngine;
+  model_version: 'pipeline' | 'vlm';
+  language: string;
+}
+
+const MINERU_MODELS: ReadonlyArray<{ value: 'pipeline' | 'vlm'; label: string }> = [
+  { value: 'pipeline', label: 'pipeline（默认；版面 + 公式更稳）' },
+  { value: 'vlm', label: 'vlm（VLM 大模型；复杂版面更强）' },
+];
+
+const MINERU_LANGS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'en', label: 'en（英文论文，默认）' },
+  { value: 'ch', label: 'ch（中文文献）' },
+];
+
+const mineruForm = reactive<MineruForm>({
+  token: '', engine_default: 'local', model_version: 'pipeline', language: 'en',
+});
+/** 服务端**当前生效**的那一份：用来算"改了没有"，以及撤销 / 保存成功后回填。 */
+const mineruBase = reactive<MineruConfig>({
+  has_token: false, token_masked: null, engine_default: 'local',
+  model_version: 'pipeline', language: 'en',
+});
+const mineruBusy = ref('');
+const mineruError = ref('');
+const mineruVerify = ref<MineruVerifyResult | null>(null);
+
+const mineruTokenText = computed(
+  () => mineruBase.token_masked || (mineruBase.has_token ? '已保存（掩码不可用）' : ''),
+);
+/** 只在这些东西真的变了（或填了新 token）时才允许保存，避免无意义请求。 */
+const mineruChanged = computed(() => !!mineruForm.token
+  || mineruForm.engine_default !== mineruBase.engine_default
+  || mineruForm.model_version !== mineruBase.model_version
+  || mineruForm.language !== mineruBase.language);
+
+/** 把后端返回的配置同时灌进"表单值"与"服务端权威值"（保存成功后也走它）。 */
+function fillMineru(cfg: MineruConfig) {
+  mineruBase.has_token = cfg?.has_token === true;
+  mineruBase.token_masked = cfg?.token_masked ?? null;
+  mineruBase.token_source = cfg?.token_source ?? null;
+  mineruBase.engine_default = cfg?.engine_default === 'mineru' ? 'mineru' : 'local';
+  mineruBase.model_version = cfg?.model_version === 'vlm' ? 'vlm' : 'pipeline';
+  mineruBase.language = cfg?.language ? String(cfg.language) : 'en';
+  mineruBase.base_url = cfg?.base_url ?? '';
+  mineruBase.token_file = cfg?.token_file ?? null;
+  mineruBase.online_ready = cfg?.online_ready === true;
+  mineruForm.token = '';
+  mineruForm.engine_default = mineruBase.engine_default;
+  mineruForm.model_version = mineruBase.model_version;
+  mineruForm.language = mineruBase.language;
+}
+
+async function loadMineru() {
+  mineruError.value = '';
+  try {
+    fillMineru(await api.get<MineruConfig>('/mineru/config'));
+  } catch (err) {
+    // 后端还没上 `/mineru/*` 时这里必然失败：给一句明确的话，而不是让区块空白
+    mineruError.value = `MinerU 配置读取失败：${(err as Error)?.message ?? String(err)}`;
+  }
+}
+
+/** 后端 `envelope(message=…)` 的文案（client 挂在 `__meta` 上，与论文库同一写法）。 */
+function metaMessage(res: any): string {
+  return String(res?.__meta?.message ?? '');
+}
+
+/** 保存 token 与默认参数。**只提交变更项**（后端按字段可选处理）。 */
+async function saveMineru() {
+  if (!mineruChanged.value) { toast('没有需要保存的改动', 'warn'); return; }
+  const patch: Record<string, unknown> = {};
+  if (mineruForm.token) patch.token = mineruForm.token;
+  if (mineruForm.engine_default !== mineruBase.engine_default) {
+    patch.engine_default = mineruForm.engine_default;
+  }
+  if (mineruForm.model_version !== mineruBase.model_version) {
+    patch.model_version = mineruForm.model_version;
+  }
+  if (mineruForm.language !== mineruBase.language) patch.language = mineruForm.language;
+  mineruBusy.value = 'save';
+  try {
+    const res = await api.put<MineruConfig>('/mineru/config', patch);
+    fillMineru(res);
+    mineruVerify.value = null;         // 换了 token / 参数：上次的验证结论已经不作数了
+    toast(metaMessage(res) || 'MinerU 配置已保存', 'ok', 3600);
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 6000);
+  } finally {
+    mineruBusy.value = '';
+  }
+}
+
+/**
+ * 验证 token：后端会真的打一次 MinerU 接口。
+ *
+ * ⚠️ **失败时 HTTP 仍然是 200**（`ok:false` + `state`），所以这里按 `ok`/`state` 判成败，
+ * 绝不按 HTTP 状态码；`message` 是后端给的一句可执行中文提示，原样展示（加前缀会毁掉指引）。
+ */
+async function verifyMineru() {
+  mineruBusy.value = 'verify';
+  mineruVerify.value = null;
+  try {
+    const res = await api.post<MineruVerifyResult>('/mineru/verify', {});
+    mineruVerify.value = res;
+    toast(res?.message || (res?.ok ? 'Token 有效' : 'Token 验证未通过'),
+      res?.ok ? 'ok' : 'error', res?.ok ? 3600 : 7000);
+    await loadMineru();                // 验证顺手刷新掩码与 online_ready
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 6000);
+    mineruVerify.value = { ok: false, state: 'network', message: (err as Error)?.message };
+  } finally {
+    mineruBusy.value = '';
+  }
+}
+
+/** 清除 token：不可逆（要重新申请/粘贴），用原生 confirm 二次确认。 */
+async function clearMineruToken() {
+  if (!window.confirm('清除已保存的 MinerU token？\n\n清除后「在线解析」不可用，需要重新填入并验证。')) return;
+  mineruBusy.value = 'clear';
+  try {
+    const res = await api.put<MineruConfig>('/mineru/config', { clear_token: true });
+    fillMineru(res);
+    mineruVerify.value = null;
+    toast(metaMessage(res) || '已清除 MinerU token', 'ok', 3200);
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 6000);
+  } finally {
+    mineruBusy.value = '';
+  }
+}
+
 onMounted(async () => {
   await load();
   await loadHealthCard();
+  await loadMineru();
   // 深链（/app/settings#kb）：内容按锚点滚过去；首屏不做平滑滚动，避免刚进来就"滑一段"。
   // 数据还在路上，所以同时 markPending —— 面板 settled 时会再对一次。
   const id = String(route.hash || '').replace('#', '');
@@ -513,7 +663,121 @@ onUnmounted(() => {
         <KbIndexPanel />
       </section>
 
-      <!-- ③ 搜索记录（本机 localStorage） -->
+      <!-- ③ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
+      <section id="mineru" class="sec">
+        <div class="sec-head">
+          <h2 class="sec-title">在线解析</h2>
+          <span class="badge accent" v-if="mineruBase.online_ready">已就绪</span>
+          <span class="badge warn" v-else-if="mineruBase.has_token">已存 token（未验证）</span>
+          <span class="badge" v-else>未配置 token</span>
+          <span class="spacer"></span>
+          <button class="btn sm" :disabled="!!mineruBusy || !mineruChanged" @click="saveMineru">
+            <AppIcon name="check" :size="15" />{{ mineruBusy === 'save' ? '保存中…' : '保存' }}
+          </button>
+          <button
+            class="btn sm"
+            :disabled="!!mineruBusy || !mineruBase.has_token"
+            :title="mineruBase.has_token ? '真的打一次 MinerU 接口，确认 token 还能用' : '还没有 token 可验证'"
+            @click="verifyMineru"
+          >
+            <AppIcon name="bolt" :size="15" />{{ mineruBusy === 'verify' ? '验证中…' : '验证' }}
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-head">凭证</div>
+          <div class="card-body">
+            <label class="field">
+              <span class="field-top">
+                API token
+                <span class="spacer"></span>
+                <span class="tiny faint" v-if="mineruTokenText">已保存 {{ mineruTokenText }}</span>
+              </span>
+              <input
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                v-model="mineruForm.token"
+                :placeholder="mineruBase.has_token
+                  ? `已保存 ${mineruTokenText}（留空 = 不修改）`
+                  : '粘贴 mineru.net 申请到的 token'"
+              />
+            </label>
+            <div class="row row-gap">
+              <button
+                class="btn sm danger"
+                :disabled="!!mineruBusy || !mineruBase.has_token"
+                @click="clearMineruToken"
+              >
+                <AppIcon name="trash" :size="14" />{{ mineruBusy === 'clear' ? '清除中…' : '清除 token' }}
+              </button>
+              <span class="spacer"></span>
+              <span class="tiny faint">token 每 90 天过期，过期后需到 mineru.net 重新申请</span>
+            </div>
+            <!-- 验证结论：有效 / 无效 / 过期 / 连不上，各自给不同的语义色与可执行提示 -->
+            <div class="row row-gap" v-if="mineruVerify">
+              <span class="badge" :class="mineruVerify.ok ? 'ok' : 'danger'">
+                <AppIcon :name="mineruVerify.ok ? 'check_circle' : 'error'" :size="13" />
+                {{ mineruVerify.ok ? 'Token 有效' : 'Token 不可用' }}
+              </span>
+              <span class="tiny faint" v-if="mineruVerify.latency_ms !== null
+                && mineruVerify.latency_ms !== undefined">
+                延迟 {{ mineruVerify.latency_ms }} ms
+              </span>
+              <span class="tiny faint" v-if="mineruVerify.http_status">
+                HTTP {{ mineruVerify.http_status }}<template v-if="mineruVerify.code !== null
+                  && mineruVerify.code !== undefined"> / code {{ mineruVerify.code }}</template>
+              </span>
+            </div>
+            <p
+              class="tiny verify-msg"
+              :class="mineruVerify?.ok ? 'ok' : 'bad'"
+              v-if="mineruVerify?.message"
+            >{{ mineruVerify.message }}</p>
+            <p class="tiny faint">
+              token 文件：<span class="mono">{{ mineruBase.token_file || '（后端未返回）' }}</span>
+            </p>
+            <p class="tiny faint" v-if="mineruBase.base_url">
+              服务地址：<span class="mono">{{ mineruBase.base_url }}</span>
+            </p>
+            <p class="load-error tiny" v-if="mineruError">{{ mineruError }}</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">默认参数</div>
+          <div class="card-body">
+            <div class="grid cols-2">
+              <label class="field">
+                模型版本
+                <select v-model="mineruForm.model_version">
+                  <option v-for="m in MINERU_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
+                </select>
+              </label>
+              <label class="field">
+                语言（影响 OCR）
+                <select v-model="mineruForm.language">
+                  <option v-for="l in MINERU_LANGS" :key="l.value" :value="l.value">{{ l.label }}</option>
+                </select>
+              </label>
+            </div>
+            <label class="field field-block">
+              默认解析引擎（导入弹窗的初始值）
+              <select v-model="mineruForm.engine_default">
+                <option value="local">本地解析（离线、快）</option>
+                <option value="mineru">在线解析（MinerU 云端）</option>
+              </select>
+            </label>
+            <p class="tiny faint hint">
+              这里只是<b>导入弹窗的初值</b>：真要让某一篇走联网解析，还得在导入时把「解析引擎」
+              选成在线解析（弹窗里可以逐篇改）。模型版本选 pipeline 时版面与公式更稳；
+              选 vlm 时复杂版面更好，但更慢。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ④ 搜索记录（本机 localStorage） -->
       <section id="history" class="sec">
         <div class="sec-head">
           <h2 class="sec-title">搜索记录</h2>
@@ -521,7 +785,7 @@ onUnmounted(() => {
         <SearchHistoryPanel />
       </section>
 
-      <!-- ④ 系统信息（只读） -->
+      <!-- ⑤ 系统信息（只读） -->
       <section id="about" class="sec">
         <div class="sec-head">
           <h2 class="sec-title">系统信息</h2>
@@ -632,4 +896,14 @@ onUnmounted(() => {
 
 /* 只读值 / 健康信息的长路径：占一半宽度并省略 */
 .ro-value { max-width: 56%; }
+
+/* 在线解析（MinerU）：卡片内的行间距与验证结论的语义色 */
+.row-gap { margin-top: 10px; }
+/* token 输入框不跟着 `.field > input` 的 340px 上限走：token 很长，宽一点更好核对 */
+.field input[type="password"] { max-width: 100%; width: 100%; font-family: var(--mono); }
+.field-block { margin-top: 12px; }
+/* 验证结论：成功走 --ok、失败走 --danger（与徽章同一套语义色，不用新色） */
+.verify-msg { margin: 8px 0 0; line-height: 1.6; }
+.verify-msg.ok { color: var(--ok); }
+.verify-msg.bad { color: var(--danger); }
 </style>

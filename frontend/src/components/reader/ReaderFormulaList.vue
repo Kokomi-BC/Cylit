@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /**
- * 公式列表（右栏/左栏共用的"公式"页签）：**直接从 Markdown 里提取**，只读。
+ * 公式列表（右栏/左栏共用的"公式"页签）：**译文优先，未翻译的页用原文兜底**，只读。
  *
- * 为什么这样：阅读器显示的公式就是模型看页图给出的 LaTeX，来源是页级产物的 Markdown；
- * 所以列表也从这份 Markdown 里抽（`GET /papers/{id}/formulas`，`source=markdown`），
- * 与页面上的公式一字不差。**不做复核、不分级、不比对裁图** —— 看到不对就复制 LaTeX 自己改。
+ * 为什么这样：阅读器显示的公式就是模型看页图给出的 LaTeX，来源是**页级产物**的 Markdown；
+ * 所以列表优先也从那份 Markdown 里抽（`GET /papers/{id}/formulas`），与页面上的公式一字不差。
+ * **没有页级产物的页**（还没翻译/转录）正文显示的是解析块，那几页就按原文兜底 ——
+ * 否则一篇还没翻译的论文会显示"这一篇还没有可提取的公式"，而正文里明明有公式。
+ * 兜底条目带一枚「解析」徽章：让用户一眼看出它不是从译文来的（口径：优先且只显示翻译的公式）。
+ * **不做复核、不比对裁图** —— 看到不对就复制 LaTeX 自己改。
  */
 import { computed, ref } from 'vue';
 import type { MarkdownFormula } from '@/api/types';
@@ -90,6 +93,12 @@ const rows = computed(() => filtered.value.map((f) => {
       <div class="row tiny">
         <span class="faint fpage">p{{ f.page }}</span>
         <span v-if="f.label" class="badge dim" :title="`论文里这条公式的名字：${f.label}`">{{ f.label }}</span>
+        <!-- 解析产物兜底的条目（这一页还没翻译）：标一下来源，别让人以为它来自译文 -->
+        <span
+          v-if="f.source === 'parse'"
+          class="badge dim"
+          :title="`这一页还没翻译，公式来自解析产物${f.grade ? `（${f.grade} 级）` : ''}`"
+        >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
         <span class="spacer" />
         <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
           <AppIcon name="copy" :size="13" />

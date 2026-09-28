@@ -28,10 +28,31 @@ python cli/pr.py translate my-paper                   # 逐页翻译（未配模
 python scripts/e2e_check.py                           # 35 项后端验收自检
 python scripts/frontend_check.py --block-markers      # 40 项前端验收自检（真实浏览器渲染）
 python -m pytest tests -q                             # 单元 + 集成测试
+python -m pytest tests -q --run-online                # 在线解析（MinerU）测试：默认不跑
 ```
 
 浏览器打开 **http://127.0.0.1:8710/app/** 使用三视图阅读器；
 前端开发模式（HMR）：`cd frontend; npm run dev` → http://127.0.0.1:5173/app/ 。
+
+## 两条解析引擎
+
+导入弹窗里选引擎，两条路产出**同一份 IR + Markdown**，所以阅读器 / 逐页翻译 / 知识库 /
+论文理解都不区分引擎：
+
+| 引擎 | 说明 |
+|---|---|
+| **本地解析（默认）** | PyMuPDF 文本层 + 矢量层 + 位图层，自研「基线聚行 → 行距切段」与公式三重校验。**离线、不花钱** |
+| **在线解析（MinerU）** | [MinerU 精准解析 API v4](https://mineru.net/apiManage/docs)：上传 PDF → 轮询 → 下载结果包 → 归一化成同一份 IR。公式/表格更强，但**需 token 且联网** |
+
+在线解析的参数**按论文**选（导入弹窗里的「在线解析参数」，选在线解析时才出现）：
+模型（`pipeline` / `vlm`）、OCR 语言、强制 OCR、识别公式 / 表格、页码范围
+（`1-10` / `2,4-6` / `2--2`）。模型与语言的**默认值**在设置页里配
+（`GET/PUT /mineru/config`，见 [docs/API.md](docs/API.md) §1.1–1.2）。
+
+在线解析的 token 在 **设置 → 在线解析（MinerU）** 里填写并「验证」（也可放
+`data/secrets/mineru.key` 或环境变量 `PR_MINERU_TOKEN`）。token 在
+<https://mineru.net/apiManage/token> 自行申请，官方**没有续期接口**（过期只能重新生成）。
+接口细节与踩坑记录见 [docs/MinerU-API-技术报告.md](docs/MinerU-API-技术报告.md)。
 
 ## 一轮实测（TurboQuant, ICLR 2026, 22 页）
 
@@ -62,6 +83,10 @@ python -m pytest tests -q                             # 单元 + 集成测试
    ——PDF 抽取出的 B 级公式本身可能是坏的（括号未闭合、命令拼错），锁死等于忠实保留错误。
 6. **扫描件（影印 PDF）走同一条链路**：文本层为空时页内文本只是空参考，模型完全依据页图转录
    + 翻译；读页只转录不翻译，看不清写 `[?]` 不许猜。
+7. **两条解析引擎共用一套产物**：在线解析（MinerU）不是"另一个阅读器"，它把
+   `content_list.json` 归一化成同一份 `ParseResult`（block/formula/figure/table + Markdown），
+   并把 MinerU 的 bbox 当"精确来源"直接采用（不再收紧/贴边 —— 那三道闸门是为本地粗糙
+   bbox 写的）。于是换引擎只影响导入/重解析，下游一行都不用改。
 
 ## 未实现（下一轮）
 

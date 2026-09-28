@@ -34,7 +34,9 @@ def import_pdf(temp_path: str | Path, original_name: str,
                tags: str | None = None, paper_id: str | None = None,
                auto_parse: bool = True, reuse_existing: bool = True,
                figure_caption: bool = False,
-               deep_figure_search: bool = False) -> dict:
+               deep_figure_search: bool = False,
+               parse_engine: str | None = None,
+               parse_params: dict | None = None) -> dict:
     """上传 → 校验 → 落盘 source.pdf + source_hash → 建 paper 行 → 建 IMPORT/PARSE 任务。
 
     ``reuse_existing=True`` 时，若同一 PDF（sha256 相同）已导入过且未删除，
@@ -44,9 +46,21 @@ def import_pdf(temp_path: str | Path, original_name: str,
     ``figure_caption`` / ``deep_figure_search``：导入弹窗的两个插图开关（均默认关），
     **导入即重解析**，所以它们只落进 PARSE 任务参数、在本次解析时生效（复用那篇论文时
     也按**新选的**值重发解析）。语义见 ``PaperBuilder``。
+
+    ``parse_engine``：解析引擎（``local`` / ``mineru``）。``None`` = 用设置里的默认引擎
+    （用户在导入弹窗里一定会显式选一个，``None`` 只留给 CLI / 脚本）。
+
+    ``parse_params``：引擎自己的可选参数（目前只有在线解析的 ``mineru_*``：
+    模型版本 / OCR 语言 / 强制 OCR / 公式 / 表格 / 页码范围），原样进 PARSE 任务参数。
     """
+    from backend.services.paper import mineru_service
+
     opts = {"figure_caption": bool(figure_caption),
-            "deep_figure_search": bool(deep_figure_search)}
+            "deep_figure_search": bool(deep_figure_search),
+            "engine": (mineru_service.effective()["engine_default"]
+                       if parse_engine is None else _check_engine(parse_engine))}
+    if parse_params:
+        opts.update(parse_params)
     s = get_settings()
     src = Path(temp_path)
     if not src.is_file():
@@ -159,40 +173,67 @@ def create_parse_task(paper_id: str, *, force: bool = False,
     """创建 PARSE 任务（幂等：已有进行中的 PARSE 则复用）。
 
     ``params`` 透传给任务体，支持：
+    ``engine``（``local`` / ``mineru``，见 ``PaperBuilder`` / ``MineruBuilder``）、
     ``llm_repair``（公式 LLM 修复）、``vision`` / ``vision_model`` / ``vision_dpi``
     （扫描件读页）、``figure_caption`` / ``deep_figure_search``
-    （两个插图开关，见 ``PaperBuilder``）。
+    （两个插图开关）。
 
-    两个插图开关**没传就沿用该论文上一次解析用的值**：用户从论文库点「重新解析」时
-    不会把他上次特意打开的开关悄悄关掉（导入时则由弹窗显式给出，走的是"传了就用传的"）。
+    这几个"解析口径"开关**没传就沿用该论文上一次解析用的值**：用户从论文库点「重新解析」时
+    不会把他上次特意选的引擎或开关悄悄换掉（导入时则由弹窗显式给出，走的是"传了就用传的"）。
     """
     get_paper(paper_id)  # 存在性校验
     active = task_service.find_active("PARSE", paper_id, "system")
     if active and not force:
         return active
     payload = {"force": force, **(params or {}),
-               **_fill_figure_options(paper_id, params or {})}
+               **_fill_parse_options(paper_id, params or {})}
+    # 引擎在**这里**归一：`_fill_parse_options` 只补"没给"的键，给了的值必须自己校验，
+    # 否则一个拼错的 engine（比如脚本里写的 "cloud"）会被静默当成本地解析 ——
+    # 用户看到的是"跑了、但结果不像 MinerU"。（`auto` = 用设置里的默认引擎。）
+    if "engine" in payload:
+        payload["engine"] = _check_engine(str(payload["engine"] or "auto"))
     return task_service.create("PARSE", "system", paper_id, params=payload,
                                total_items=9, message="排队中")
 
 
-def _fill_figure_options(paper_id: str, params: dict) -> dict:
-    """给 PARSE 参数补齐两个插图开关（只补**没给**的那个）。
+def _check_engine(value: str) -> str:
+    """引擎取值校验：``local`` / ``mineru``，``auto`` = 用设置里的默认引擎。
+
+    写库前拦住拼错的值（``ValidationError`` → HTTP 400，用户立刻知道参数不对）。
+    """
+    from backend.services.paper import mineru_service
+
+    if str(value or "").strip().lower() in ("", "auto"):
+        return mineru_service.effective()["engine_default"]
+    return mineru_service.norm_engine(value)
+
+
+def _fill_parse_options(paper_id: str, params: dict) -> dict:
+    """给 PARSE 参数补齐"解析口径"开关（只补**没给**的那些）。
 
     取值优先级：调用方给的 > 该论文上一次解析固化的值（`figure_regions.parse_options`
-    从 IR 里读）> 默认关。读不到（从未解析过 / IR 缺失）时按默认关处理。
+    从 IR 里读）> 默认值（两个插图开关默认关、引擎取设置里的默认引擎）。
+    读不到（从未解析过 / IR 缺失）时按默认值处理。
     """
-    missing = [k for k in ("figure_caption", "deep_figure_search") if k not in params]
+    from backend.services.paper import figure_regions, mineru_service
+
+    defaults = dict(figure_regions.DEFAULT_PARSE_OPTIONS)
+    defaults["engine"] = mineru_service.effective()["engine_default"]
+    missing = [k for k in defaults if k not in params]
     if not missing:
         return {}
     try:
-        from backend.services.paper import figure_regions
-
         last = figure_regions.parse_options(paper_id)
     except Exception as exc:  # noqa: BLE001 —— 读不到就用默认值，不该拦住解析
-        log.warning("读取论文 %s 的插图开关失败（按默认关处理）：%s", paper_id, exc)
+        log.warning("读取论文 %s 的解析开关失败（按默认值处理）：%s", paper_id, exc)
         last = {}
-    return {k: bool(last.get(k, False)) for k in missing}
+    out: dict = {}
+    for k in missing:
+        if k == "engine":
+            out[k] = mineru_service.norm_engine(last.get(k) or defaults[k])
+        else:
+            out[k] = bool(last.get(k, defaults[k]))
+    return out
 
 
 # --------------------------------------------------------------------------

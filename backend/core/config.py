@@ -69,6 +69,23 @@ class Settings(BaseSettings):
     parse_vision_enabled: bool = True   # 关闭则扫描页不调用视觉模型（正文为空）
     parse_vision_dpi: int = 200         # 读页专用 dpi（高于阅读器页图，保住上下标）
 
+    # ---------- 在线解析（MinerU 精准解析 API v4）----------
+    # token **不放这里**：它是长期凭据，走 `data/secrets/mineru.key`（见 `read_secret`）。
+    # 官方文档没写有效期，社区口径是 90 天且**没有续期接口** → 过期只能重新生成，
+    # 所以这里只提供"读 + 校验"（`api/mineru.py` 的 verify）。
+    mineru_base_url: str = "https://mineru.net/api/v4"
+    mineru_engine_default: str = "local"     # local | mineru（导入弹窗的初始值）
+    mineru_model_version: str = "pipeline"   # pipeline | vlm（vlm 复杂版面更强）
+    #: OCR 语言。官方默认是 `ch`，但本系统面向英文论文，默认 `en` 才不至于把英文
+    #: 认成中文（`language` 只影响 OCR；有文本层的 PDF 基本用不到）。
+    mineru_language: str = "en"
+    mineru_poll_interval: float = 2.0        # 轮询起步间隔（指数退避到 30s）
+    mineru_poll_deadline: float = 1800.0     # 单个任务总等待上限（秒）
+    mineru_upload_timeout: float = 900.0
+    mineru_download_timeout: float = 600.0
+    #: 超过这个页数就记一条告警（官方两处文档对上限说法不一致：600 页 / 200 页）
+    mineru_page_warn: int = 200
+
     # ---------- 翻译 ----------
     # 逐页翻译**固定串行**（并发窗口恒为 1），**不再提供并发设置**：
     # 并发会让第 N 页在"第 N-1 页还没落盘"时拿不到前文（实测 prev_context_chars=0），
@@ -178,6 +195,21 @@ class Settings(BaseSettings):
                 return candidate.read_text(encoding="utf-8").strip()
         env_val = os.environ.get(f"PR_SECRET_{name.upper()}")
         return env_val.strip() if env_val else None
+
+    # ---------- MinerU token ----------
+    @property
+    def mineru_token_file(self) -> Path:
+        return self.secrets_dir / "mineru.key"
+
+    @property
+    def mineru_token(self) -> str | None:
+        """MinerU token：密钥文件优先，其次 `PR_MINERU_TOKEN` 环境变量。
+
+        为什么额外认一个环境变量：CI / 临时验证时不该把长期凭据落到工作区文件里
+        （`read_secret` 那条 `PR_SECRET_MINERU.KEY` 的推导名带点号，不适合手写）。
+        """
+        return (self.read_secret("mineru.key")
+                or (os.environ.get("PR_MINERU_TOKEN") or "").strip() or None)
 
 
 @lru_cache(maxsize=1)

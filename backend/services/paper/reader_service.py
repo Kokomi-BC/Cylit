@@ -664,14 +664,26 @@ def _extract_math(text: str) -> list[tuple[int, int, str, bool]]:
 
 
 def markdown_formulas(paper_id: str) -> dict:
-    """把页级产物 Markdown 里的公式逐条抽出来（行间 + 行内），只读、不复核。
+    """公式列表：**译文优先，未翻译的页用原文（解析产物）兜底**。
 
-    为什么不再用解析阶段的公式卡：阅读器展示的公式本来就来自模型（看页图生成的 LaTeX），
-    解析器的公式抽取只是解析质检的副产物。公式列表直接从**你读到的 Markdown** 里抽，
-    因此与页面上的公式一字不差；单字符变量（``$b$``）这类噪声不进列表。
+    "优先且只取翻译"这一半：有页级产物（翻译/转录）的页**只**从它抽，不掺解析那一套 ——
+    否则同一条公式会以两种 LaTeX 出现两次（模型给的 vs 解析器抽的，后者还常常更差）。
+
+    "未翻译用原文兜底"这一半：没有页级产物的页，正文显示的就是**解析块**（公式以 `$$…$$`
+    渲染），所以那几页的公式必须来自解析产物。以前整篇只从 Markdown 抽 → 一篇**还没翻译**
+    的论文永远显示"这一篇还没有可提取的公式"，可正文里明明有（用户报的第一条就是这个）。
+    兜底是**按页**的，不是整篇开关：半翻译的论文里，已译页走译文、未译页走原文，
+    与用户在正文里看到的那一页完全一致。
+
+    单字符变量（``$b$``）这类噪声照旧不进列表。
     """
-    items: list[dict] = []
-    for payload in page_translations(paper_id):
+    from backend.services.paper import paper_service
+
+    products = page_translations(paper_id)
+    covered = {int(p["page"]) for p in products}
+    collected: list[tuple[int, int, dict]] = []      # (页, 收集序, item)
+    seq = 0
+    for payload in products:
         page = int(payload["page"])
         for row in payload.get("rows") or []:
             text = row.get("original") or ""
@@ -683,16 +695,61 @@ def markdown_formulas(paper_id: str) -> dict:
                 # 页脚脚注符号被模型写成了 `$$ * † $$` —— 没有任何数学内容，不进公式列表
                 if is_noise_formula(latex):
                     continue
-                items.append({
-                    "id": f"f{page:03d}-{len(items):04d}",
+                collected.append((page, seq, {
+                    "id": f"f{page:03d}-{len(collected):04d}",
                     "page": page, "row_id": row.get("id"),
                     "latex": latex, "display": display,
                     "context": _snippet(text, latex),
                     "context_zh": _snippet(row.get("translation") or "", latex),
                     "model": payload.get("model"),
-                })
-    return {"items": items, "count": len(items), "source": "markdown",
-            "display_count": sum(1 for i in items if i["display"])}
+                    "source": "markdown",
+                }))
+                seq += 1
+
+    # 未翻译的页：原文兜底（正文在那几页显示的也是解析块）
+    fallback_pages: set[int] = set()
+    for f in _parse_formulas(paper_id):
+        page = int(f.page_number or 0)
+        if page <= 0 or page in covered:
+            continue
+        item = _parse_formula_item(f)
+        if item is None:
+            continue
+        fallback_pages.add(page)
+        collected.append((page, seq, item))
+        seq += 1
+
+    collected.sort(key=lambda t: (t[0], t[1]))
+    items = [it for _p, _s, it in collected]
+    if not items:
+        source = "markdown" if covered else "parse"
+    elif fallback_pages:
+        source = "parse" if not covered else "mixed"
+    else:
+        source = "markdown"
+    return {"items": items, "count": len(items), "source": source,
+            "display_count": sum(1 for i in items if i["display"]),
+            "fallback_pages": sorted(fallback_pages)}
+
+
+def _parse_formula_item(f: Formula) -> dict | None:
+    """一条解析阶段的公式 → **与 markdown 源同形状**的列表项（没有可用 LaTeX 就返回 None）。"""
+    latex = (f.latex_final or f.latex_repaired
+             or next(iter(json_loads(f.latex_candidate, []) or []), "") or "").strip()
+    if not latex or is_noise_formula(latex):
+        return None
+    crop_name = Path(f.image_path).name if f.image_path else None
+    return {
+        "id": f.id, "page": int(f.page_number or 0), "latex": latex,
+        "display": not bool(f.is_inline),
+        # 解析块的 id 就是正文里那一行的锚点：前端"定位"直接可用
+        "row_id": f.id,
+        "context": "", "context_zh": "",
+        "grade": f.grade,
+        "crop_url": (f"/papers/{f.paper_id}/formula_crops/{crop_name}"
+                     if crop_name else None),
+        "source": "parse",
+    }
 
 
 def _snippet(text: str, needle: str, width: int = 70) -> str:
@@ -706,12 +763,21 @@ def _snippet(text: str, needle: str, width: int = 70) -> str:
 
 
 def formulas_payload(paper_id: str, source: str = "markdown") -> dict:
-    """公式列表：默认来自 Markdown（页级产物）；``source=parse`` 才回解析阶段的公式卡。"""
+    """公式列表：**译文优先，未翻译的页用原文兜底**（口径见 ``markdown_formulas``）。
+
+    ``source=parse`` 才强制只回解析阶段的公式卡（排障用：想看"解析器当时抽成什么样"）。
+    """
     if source == "parse":
-        rows = _parse_formulas(paper_id)
-        return {"items": [_formula_card(f) for f in rows],
-                "count": len(rows), "source": "parse"}
+        return parse_formulas_payload(paper_id)
     return markdown_formulas(paper_id)
+
+
+def parse_formulas_payload(paper_id: str) -> dict:
+    """只回解析阶段的公式（``?source=parse``；形状与 ``markdown_formulas`` 一致）。"""
+    items = [it for f in _parse_formulas(paper_id)
+             if (it := _parse_formula_item(f)) is not None]
+    return {"items": items, "count": len(items), "source": "parse",
+            "display_count": sum(1 for i in items if i["display"])}
 
 
 def _parse_formulas(paper_id: str) -> list[Formula]:

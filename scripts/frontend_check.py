@@ -19,10 +19,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,7 +111,7 @@ ASSETS = [
     ("/api/v1/tasks", 200, "任务列表"),
     ("/api/v1/tasks/stats", 200, "任务统计"),
     ("/api/v1/papers/{paper}/outline", 200, "目录（中英双语）"),
-    ("/api/v1/papers/{paper}/formulas", 200, "公式（从 Markdown 提取）"),
+    ("/api/v1/papers/{paper}/formulas", 200, "公式（译文优先，未翻译页用原文兜底）"),
     ("/api/v1/papers/{paper}/figures", 200, "插图（图注锚定裁图）"),
     ("/api/v1/papers/{paper}/markdown/translated?write=false", 200, "双语 Markdown（带插图）"),
 ]
@@ -1474,8 +1476,448 @@ f.addEventListener('load', async () => {
 """
 
 
+# 导入弹窗探针（本轮新增：三个「切换开关」+ 解析引擎二选一）。
+#
+# 回归点：
+# 1. 三个复选框换成了 `<Switch>`，但它**里面必须是真实 `<input type="checkbox" role="switch">`**
+#    （键盘 Space / 点文字即切换 / AT 语义都靠它）—— 只靠一个 div + click 的自绘开关会在
+#    "看起来一样"的同时把这三样全丢掉，所以这里逐项断言标签、角色与"点了真的变"。
+# 2. 解析引擎必须是**互斥二选一**，选了 MinerU 后「深度图片搜索」要置灰，
+#    并且没配 token 时要出现"去哪里配"的可执行提示（而不是等导入失败才说）。
+IMPORT_DIALOG_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>import dialog probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+/* `__URL__` 是前端入口（同源才能读 iframe 的 DOM）；真正的目标页由 query 传进来 */
+const target = new URLSearchParams(location.search).get('page') || '/library';
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  let w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    /* 第一跳：先让入口页把外壳（顶栏 / 标签条 / localStorage）建起来 */
+    await sleep(900);
+    w.location.replace(new URL('__URL__').origin + '/app' + target + '?nosse=1');
+    await sleep(__WAIT__);
+    w = f.contentWindow; d = f.contentDocument;
+
+    const openBtn = [...d.querySelectorAll('.page-actions button')]
+      .find((b) => (b.textContent || '').includes('导入 PDF'));
+    res.opened = !!openBtn;
+    if (openBtn) openBtn.click();
+    // 弹窗打开时会去拉 /mineru/config：留一点时间让请求落地，否则量到的可能是"还没拿到"的那一帧
+    await sleep(1200);
+
+    const modals = [...d.querySelectorAll('.modal')];
+    const modal = modals[modals.length - 1];
+    res.modal = !!modal;
+    if (!modal) { out(res); return; }
+
+    /* 先显式切回「本地解析」再量下面那三个开关。
+     * 用户口径（2026-09-28）：这三个开关**只在本地解析时显示**，而弹窗的初始引擎来自
+     * 设置页的默认值 —— 不先归一，本机把默认引擎设成 MinerU 时这组断言就会整片红
+     * （那时开关按设计就不在）。归一之后，这组断言就与"本机默认引擎是什么"无关了。 */
+    const localBtn = [...modal.querySelectorAll('.engine-opt')]
+      .find((b) => (b.textContent || '').includes('本地解析'));
+    if (localBtn && !localBtn.classList.contains('active')) {
+      localBtn.click();
+      await sleep(300);
+    }
+    res.localSelected = localBtn ? localBtn.classList.contains('active') : null;
+    /* 切回本地解析之后，"在线解析参数"区必须**不在**（它只属于在线那条路） */
+    res.onlineGroupWhenLocal = !!modal.querySelector('.online-params');
+
+    const rows = [...modal.querySelectorAll('.switch-row')];
+    res.rowCount = rows.length;
+    /* 按**文案**认行（不按下标）：行序变了不该让断言跟着一起错位 */
+    const rowOf = (txt) => rows.find((r) => (r.textContent || '').includes(txt)) || null;
+
+    /* ⚠️ 为什么量之前要"摘下来再放回去"：
+     * headless 跑在 `--virtual-time-budget` 下时，**已经在上一帧画过的节点不会因为 JS 改状态
+     * 而重算样式** —— 实测：把 checkbox 的 `checked` 设成 true（`:checked` 也确实命中）、
+     * 甚至给它写 `style="background:… !important"`，`getComputedStyle` 都还回旧值；
+     * 同一棵子树"摘下来再插回去"立刻就是新值（`rgb(15,123,138)`）。
+     * 这是**测试环境**的重算问题，不是产品行为（真人浏览器里点击后样式立刻就变），
+     * 所以修在探针里：量开关外观前先把这一行重新挂载一次。 */
+    const remount = (el) => {
+      const parent = el.parentElement, next = el.nextElementSibling;
+      el.remove();
+      parent.insertBefore(el, next);
+    };
+
+    const snap = (row, { fresh = false } = {}) => {
+      if (!row) return null;
+      const cb = row.querySelector('input');
+      const track = row.querySelector('.switch-track');
+      const knob = row.querySelector('.switch-knob');
+      if (!cb || !track || !knob) return { broken: true };
+      if (fresh) remount(row);
+      const cs = w.getComputedStyle(track);
+      const ks = w.getComputedStyle(knob);
+      const csCb = w.getComputedStyle(cb);
+      return {
+        // 真实 checkbox + 开关语义 + sr-only（视觉藏起、仍可聚焦、仍被读屏读到）
+        type: cb.getAttribute('type'),
+        role: cb.getAttribute('role'),
+        srOnly: cb.classList.contains('sr-only'),
+        visuallyHidden: csCb.position === 'absolute' && parseFloat(csCb.width) <= 2
+          && parseFloat(csCb.height) <= 2,
+        /* 记下真实的盒子。全局 `input[type=checkbox]`（15×15）与 `.sr-only`（1×1）同权重、
+         * 后者会被顶掉 —— `Switch.vue` 里用 `.switch-row > input.sr-only` 明确压住，
+         * 所以这里量到的应当是 `absolute/1px/1px`；一旦有人删了那条规则，数字会变成 15px。 */
+        cbBox: `${csCb.position}/${csCb.width}/${csCb.height}/${csCb.clip}`,
+        disabled: cb.disabled,
+        checked: cb.checked,
+        // 轨道 36×20、滑块 16、圆角 pill
+        trackW: Math.round(parseFloat(cs.width)),
+        trackH: Math.round(parseFloat(cs.height)),
+        knobW: Math.round(parseFloat(ks.width)),
+        radius: cs.borderRadius,
+        // 轨道当前底色（开 = `--accent`、关 = `--bg-sunken`）
+        bg: cs.backgroundColor,
+        // 滑块位置：关 = 贴左（2px）、开 = 右移 16px（视觉上真的动了，而不只是轨道换色）
+        knobX: Math.round(knob.getBoundingClientRect().left - track.getBoundingClientRect().left),
+        // 滑块自己的过渡必须是 140ms（轨道换色走全站 `--dur`，两者分开量）
+        knobTransition: ks.transitionDuration,
+        trackTransition: cs.transitionDuration,
+        text: (row.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60),
+      };
+    };
+
+    const rowAuto = rowOf('导入后立即解析');
+    const rowCap = rowOf('图片是否包含图注');
+    const rowDeep = rowOf('深度图片搜索');
+    res.before = { auto: snap(rowAuto), cap: snap(rowCap), deep: snap(rowDeep) };
+    // 说明文案必须还在（语义别在换组件时被顺手删掉）
+    res.notes = {
+      cap: !!rowCap && rowCap.textContent.includes('只裁图体本身'),
+      deep: !!rowDeep && rowDeep.textContent.includes('只出图注锚定的图'),
+    };
+    // 默认态的外观：自动解析默认开（突出强调色是否真的生效）、插图开关默认关
+    res.skin = {
+      autoOn: snap(rowAuto, { fresh: true }),
+      capOff: snap(rowCap, { fresh: true }),
+    };
+
+    /* 点整行（label）→ 原生行为应当勾上；再点一次应当还原。
+     * 两次点击都要量：只测"能开"会漏掉"emit 丢了值 → 父组件拿到 undefined → 永远关着"这类 bug
+     * （本轮真踩过：DOM 的 checked 翻了、`--accent` 没上来，看着像开关点不动）。 */
+    if (rowCap) {
+      const was = !!rowCap.querySelector('input').checked;
+      rowCap.click();
+      await sleep(450);
+      const on = snap(rowCap, { fresh: true });
+      rowCap.click();
+      await sleep(450);
+      const off = snap(rowCap, { fresh: true });
+      res.toggle = { was, on: on.checked, off: off.checked,
+                     onBg: on.bg, offBg: off.bg,
+                     onKnob: on.knobX, offKnob: off.knobX };
+    }
+
+    /* `--accent` 的解析值：不写死色值 —— 令牌改色时这条断言不该跟着变红。
+     * （临时造一个元素把这支令牌用起来，让浏览器自己解析。） */
+    const probeEl = d.createElement('span');
+    probeEl.style.backgroundColor = 'var(--accent)';
+    (modal || d.body).appendChild(probeEl);
+    res.accent = w.getComputedStyle(probeEl).backgroundColor;
+    probeEl.remove();
+
+    /* 键盘 Space：这就是"为什么里面要放真实 checkbox"的兑现点。
+     * ⚠️ 合成键盘事件本身不会让浏览器替我们翻转 checked（那是真人按键才有的默认动作），
+     * 所以这里只能断言"这个隐藏 checkbox **拿得到焦点**（Tab 能到、读屏能读到）"——
+     * 它一旦换成 div + click（`tabindex` 忘写、或 pointer-events:none 把焦点也弄丢），
+     * 这一条就会红。 */
+    const focusProbe = (row) => {
+      if (!row) return null;
+      const cb = row.querySelector('input');
+      try { cb.focus(); } catch (e) { return 'focus 抛错：' + e.message; }
+      return { focused: d.activeElement === cb, role: cb.getAttribute('role'),
+               tabIndex: cb.tabIndex };
+    };
+    res.keyboard = { auto: focusProbe(rowAuto), deep: focusProbe(rowDeep) };
+
+    /* 解析引擎：互斥二选一（role=radio + aria-checked），两个按钮里必须各有本地/在线的说明 */
+    const engineRow = modal.querySelector('.engine-row');
+    const opts = engineRow ? [...engineRow.querySelectorAll('.engine-opt')] : [];
+    res.engine = {
+      count: opts.length,
+      role: engineRow ? engineRow.getAttribute('role') : '',
+      labels: opts.map((b) => (b.querySelector('.engine-name') || {}).textContent || ''),
+      roles: opts.map((b) => b.getAttribute('role')),
+      checked: opts.map((b) => b.getAttribute('aria-checked')),
+      notes: opts.map((b) => ((b.querySelector('.engine-note') || {}).textContent || '').trim()),
+      active: opts.map((b) => b.classList.contains('active')),
+    };
+
+    const mineruBtn = opts.find((b) => (b.textContent || '').includes('MinerU'));
+    res.engine.clicked = !!mineruBtn;
+    if (mineruBtn) {
+      mineruBtn.click();
+      await sleep(400);
+      const opts2 = [...modal.querySelectorAll('.engine-opt')];
+      res.engine.after = {
+        active: opts2.map((b) => b.classList.contains('active')),
+        checked: opts2.map((b) => b.getAttribute('aria-checked')),
+      };
+      /* 用户口径（2026-09-28）：下面三个开关**只在本地解析时显示**。
+       * ⚠️ 必须**重新查一次 DOM**：顶上那个 `rows` 是切换前抓的数组，
+       * 里面还留着已被卸载的节点 —— 拿它去找"深度图片搜索"会找到一个游离元素，
+       * 量出 `disabled=false`，于是"已隐藏"被误判成"还在"。
+       * ⚠️ 还要**排除在线参数区里的开关**（强制 OCR / 公式 / 表格 也是 `.switch-row`）：
+       * 不排除就会数出 3 个，把"本地那三个已经消失"误判成"还在"。 */
+      const rowsAfter = [...modal.querySelectorAll('.switch-row')]
+        .filter((r) => !r.closest('.online-params'));
+      res.engine.switchRowsAfter = rowsAfter.length;
+      const deep2 = rowsAfter.find((r) => (r.textContent || '').includes('深度图片搜索')) || null;
+      res.engine.deepDisabled = deep2 ? snap(deep2).disabled : null;
+      res.engine.deepChecked = deep2 ? snap(deep2).checked : null;
+      res.engine.deepNote = deep2 ? (deep2.textContent || '') : '';
+      const warn = modal.querySelector('.engine-warn');
+      res.engine.warn = warn ? (warn.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+
+      /* 在线解析参数区（模型 / OCR 语言 / 强制 OCR / 公式 / 表格 / 页码范围）：
+       * 只应在"在线解析"选中时出现，且每个旋钮都要真的可用（有选项、有默认值、有示例提示）。 */
+      const op = modal.querySelector('.online-params');
+      res.engine.onlineGroup = !!op;
+      if (op) {
+        const modelSel = op.querySelector('[data-mineru-model]');
+        const langSel = op.querySelector('[data-mineru-language]');
+        const ranges = op.querySelector('[data-mineru-ranges]');
+        const opRows = [...op.querySelectorAll('.switch-row')];
+        res.engine.opModelOptions = modelSel
+          ? [...modelSel.querySelectorAll('option')].map((o) => o.value) : [];
+        res.engine.opModelValue = modelSel ? modelSel.value : '';
+        res.engine.opLangOptions = langSel
+          ? [...langSel.querySelectorAll('option')].map((o) => o.value) : [];
+        res.engine.opRangesPlaceholder = ranges ? (ranges.placeholder || '') : '';
+        res.engine.opSwitchTexts = opRows.map((r) => {
+          const t = r.querySelector('.opt-text');
+          return t ? (t.textContent || '').trim() : '';
+        });
+        res.engine.opSwitchChecked = opRows.map((r) => {
+          const i = r.querySelector('input');
+          return i ? !!i.checked : null;
+        });
+      }
+    }
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+# 设置页「在线解析（MinerU）」分区探针（本轮新增）。
+#
+# 断言的是**这一区真的能用**（而不只是存在一段文案）：token 输入框是 password、
+# 验证按钮在请求期间变「验证中…」且禁用、验证结论落到行内状态（有效/延迟/服务端消息）、
+# 以及模型版本 / 语言 / 默认解析引擎三个下拉齐全。
+MINERU_SECTION_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>mineru section probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+/* 同 `IMPORT_DIALOG_PROBE`：`__URL__` 是入口页，真正的目标页由 `?page=` 传入 */
+const target = new URLSearchParams(location.search).get('page') || '/settings';
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  let w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    await sleep(900);
+    w.location.replace(new URL('__URL__').origin + '/app' + target);
+    await sleep(__WAIT__);
+    w = f.contentWindow; d = f.contentDocument;
+
+    const sec = d.getElementById('mineru');
+    res.section = !!sec;
+    if (!sec) { out(res); return; }
+    res.title = (sec.querySelector('.sec-title') || {}).textContent || '';
+    res.inNav = [...d.querySelectorAll('.sec-nav button')]
+      .some((b) => (b.textContent || '').includes('在线解析'));
+
+    const pwd = sec.querySelector('input[type="password"]');
+    res.password = !!pwd;
+    res.passwordPlaceholder = pwd ? pwd.getAttribute('placeholder') : '';
+    res.passwordValue = pwd ? pwd.value : null;
+
+    const btns = [...sec.querySelectorAll('button')];
+    const byText = (t) => btns.find((b) => (b.textContent || '').includes(t)) || null;
+    const verify = byText('验证');
+    const save = byText('保存');
+    const clear = byText('清除');
+    res.buttons = btns.map((b) => (b.textContent || '').trim());
+    res.hasSave = !!save;
+    res.hasClear = !!clear;
+    res.verifyLabel = verify ? (verify.textContent || '').trim() : '';
+    res.verifyDisabled = verify ? verify.disabled : null;
+
+    // 三个下拉：模型版本 / 语言 / 默认解析引擎（选项文案里带 pipeline 与 vlm）
+    res.selects = [...sec.querySelectorAll('select')].map((s) => ({
+      value: s.value,
+      options: [...s.options].map((o) => o.value + '=' + o.textContent.trim()),
+    }));
+    res.modelOptions = res.selects.some((s) => s.options.some((o) => o.startsWith('pipeline='))
+      && s.options.some((o) => o.startsWith('vlm=')));
+    res.langOptions = res.selects.some((s) => s.options.some((o) => o.startsWith('en='))
+      && s.options.some((o) => o.startsWith('ch=')));
+    res.engineOptions = res.selects.some((s) => s.options.some((o) => o.startsWith('local='))
+      && s.options.some((o) => o.startsWith('mineru=')));
+    res.hasTokenFile = (sec.textContent || '').includes('token 文件');
+    res.has90Days = (sec.textContent || '').includes('90 天');
+    res.hasToken = !verify || res.verifyDisabled !== true;
+
+    /* ① 「验证」的忙碌态：请求期间必须是「验证中…」且禁用（否则用户会连点）。
+     *    没配 token 时按钮本来就该是禁用的（没有可验证的东西），这是**正确行为**，
+     *    所以只在有 token 时才点它 —— 否则这条会变成"因为后端没上线所以红"。 */
+    res.verifyClickable = !!verify && !verify.disabled;
+    if (res.verifyClickable) {
+      /* 同「保存」：用 MutationObserver 抓整个验证过程里出现过的文案与禁用态，
+       * 只在某一帧读一次会漏掉"请求很快就回来了"的情况。 */
+      const seen = [];
+      const obs = new w.MutationObserver(() => {
+        const t = (verify.textContent || '').trim();
+        if (!seen.length || seen[seen.length - 1].label !== t) {
+          seen.push({ label: t, disabled: verify.disabled });
+        }
+      });
+      obs.observe(verify, { subtree: true, childList: true, characterData: true,
+                            attributes: true, attributeFilter: ['disabled'] });
+      verify.click();
+      await sleep(80);
+      res.verifyingLabel = (verify.textContent || '').trim();
+      res.verifyingDisabled = verify.disabled;
+      await sleep(6000);
+      obs.disconnect();
+      res.verifyStates = seen;
+      const msg = sec.querySelector('.verify-msg');
+      res.verifyMsg = msg ? (msg.textContent || '').trim() : '';
+      res.verifyMsgOk = msg ? msg.classList.contains('ok') : null;
+      res.verifyBadges = [...sec.querySelectorAll('.badge')]
+        .map((b) => (b.textContent || '').trim())
+        .filter((t) => t.includes('Token'));
+    }
+
+    /* ② 「保存」的忙碌态：没有 token 也能验 —— 把模型版本改一下让"有改动"成立，再点保存。
+     *    请求期间按钮文案必须变「保存中…」且禁用（这条不依赖后端是否已上线）。 */
+    if (save) {
+      const sel = [...sec.querySelectorAll('select')]
+        .find((s) => [...s.options].some((o) => o.value === 'vlm'));
+      if (sel) {
+        sel.value = sel.value === 'vlm' ? 'pipeline' : 'vlm';
+        sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await sleep(400);
+      }
+      res.saveEnabledAfterEdit = !save.disabled;
+      if (res.saveEnabledAfterEdit) {
+        /* ⚠️ 不能用"点完睡 120ms 再读"来抓忙碌态：后端已经把请求拒掉（404）时，
+         * 这一帧早就过去了 —— 实测读到的还是「保存」。所以用 MutationObserver 抓**整个过程中
+         * 出现过什么**（文案 + disabled），只要曾经出现过「保存中… + 禁用」就算过。 */
+        const seen = [];
+        const obs = new w.MutationObserver(() => {
+          const t = (save.textContent || '').trim();
+          if (!seen.length || seen[seen.length - 1].label !== t) {
+            seen.push({ label: t, disabled: save.disabled });
+          }
+        });
+        obs.observe(save, { subtree: true, childList: true, characterData: true,
+                            attributes: true, attributeFilter: ['disabled'] });
+        save.click();
+        await sleep(80);
+        res.savingLabel = (save.textContent || '').trim();
+        res.savingDisabled = save.disabled;
+        res.verifyingDisabledDuringSave = verify ? verify.disabled : null;
+        await sleep(5000);
+        obs.disconnect();
+        res.saveStates = seen;
+        res.afterSaveLabel = (save.textContent || '').trim();
+        const msg = sec.querySelector('.verify-msg');
+        res.verifyMsg = res.verifyMsg || (msg ? (msg.textContent || '').trim() : '');
+        res.verifyBadges = res.verifyBadges || [...sec.querySelectorAll('.badge')]
+          .map((b) => (b.textContent || '').trim())
+          .filter((t) => t.includes('Token'));
+      }
+    }
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
+#: ⑮ 公式面板探针：真开一次阅读器的「公式」页签，回报面板里到底有没有条目。
+#:
+#: 量这四件事：`.fitem` 条目数、空态文案（"这一篇还没有可提取的公式"）、「解析」徽章数、
+#: 页签角标与「全部 N」的计数 —— 用户报的"联网解析没有显示公式"就是前两项。
+FORMULA_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>formula probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:460px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  const res = {};
+  try {
+    /* 阅读器是 SPA 里的一个路由，**直接整页打开就行**（不必像别的探针那样先建外壳再跳） */
+    await sleep(__WAIT__);
+    const d = f.contentDocument;
+    /* 侧栏可能还没切到「公式」：按标题找页签点一下（`side=formulas` 一般已经切好） */
+    const tabs = [...d.querySelectorAll('.side-tab')];
+    const tab = tabs.find((b) => (b.textContent || '').includes('公式'));
+    res.tabFound = !!tab;
+    if (tab && !tab.classList.contains('active')) { tab.click(); await sleep(1200); }
+    /* 页签角标：`.side-count`（`v-if="t.count"`，0 时整个 span 不渲染 → null） */
+    const badgeEl = tab ? tab.querySelector('.side-count') : null;
+    res.tabBadge = badgeEl ? Number((badgeEl.textContent || '').trim()) : null;
+    const items = [...d.querySelectorAll('.fitem')];
+    res.items = items.length;
+    res.badges = items.slice(0, 6).map((it) => {
+      const b = it.querySelector('.badge');
+      return b ? (b.textContent || '').trim() : '';
+    }).filter(Boolean);
+    res.parseBadges = items.filter((it) => {
+      const bs = [...it.querySelectorAll('.badge')];
+      return bs.some((b) => (b.textContent || '').trim().startsWith('解析'));
+    }).length;
+    const empty = [...d.querySelectorAll('.empty')]
+      .map((e) => (e.textContent || '').trim())
+      .find((t) => t.includes('公式'));
+    res.emptyText = empty || '';
+    const allBtn = [...d.querySelectorAll('.seg button')]
+      .find((b) => (b.textContent || '').includes('全部'));
+    const am = allBtn ? (allBtn.textContent || '').match(/(\\d+)/) : null;
+    res.allCount = am ? Number(am[1]) : null;
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
 def put_progress(base: str, paper: str, payload: dict) -> dict:
-    """写回阅读进度（自检用它做"测试前置状态"与"跑完还原"）。"""
     req = urllib.request.Request(
         f"{base}/api/v1/papers/{paper}/progress", method="PUT",
         data=json.dumps(payload).encode("utf-8"),
@@ -1513,6 +1955,86 @@ def fetch(url: str, timeout: int = 25) -> tuple[int, bytes]:
         return -1, b""
 
 
+def _formulas_api(base: str, paper: str) -> dict:
+    """`GET /papers/{id}/formulas` 的 data（⑮ 用；读不到就回空字典）。"""
+    code, body = fetch(f"{base}/api/v1/papers/{paper}/formulas", timeout=25)
+    if code != 200:
+        return {}
+    try:
+        return json.loads(body.decode("utf-8")).get("data") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def find_formula_fallback_paper(base: str, items: list[dict], limit: int = 12) -> str:
+    """找一篇**公式来自原文兜底**的论文（`source=parse` / `mixed` 且有条目）。
+
+    ⑮ 要验的正是"还没翻译的论文公式面板不再为空"这件事 —— 挑一篇已译完的论文是验不到的。
+    找不到就返回空串（用例 SKIP，而不是硬失败）。
+    """
+    for item in items[:limit]:
+        pid = item.get("id") or ""
+        if not pid:
+            continue
+        api = _formulas_api(base, pid)
+        if api.get("source") in ("parse", "mixed") and (api.get("count") or 0) > 0:
+            return pid
+    return ""
+
+
+def _mineru_has_token(base: str) -> bool:
+    """`/mineru/config` 里有没有 token —— 导入弹窗的"去配置"提示该不该出现，由它决定。
+
+    **必须问后端、不能假设**：这条断言在"已配 token"的机器上本该反向成立
+    （提示必须消失），写死成"提示必须出现"会让配好 token 的环境永远红。
+    读不到（接口没上线 / 网络问题）时返回 False —— 那时"提示应当出现"才是对的期望。
+    """
+    status, body = fetch(f"{base}/api/v1/mineru/config", timeout=15)
+    if status != 200:
+        return False
+    try:
+        return bool((json.loads(body.decode("utf-8")) or {}).get("data", {}).get("has_token"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+#: 自检会通过 UI 改动的三个设置项（token 不在其中：自检**从不**写 token）
+_MINERU_SETTING_KEYS = ("engine_default", "model_version", "language")
+
+
+def _mineru_config_snapshot(base: str) -> dict:
+    """记下 `/mineru/config` 里那三个设置项的原值（读不到就返回空 → 不还原）。"""
+    status, body = fetch(f"{base}/api/v1/mineru/config", timeout=15)
+    if status != 200:
+        return {}
+    try:
+        data = (json.loads(body.decode("utf-8")) or {}).get("data") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return {k: data[k] for k in _MINERU_SETTING_KEYS if data.get(k)}
+
+
+def _mineru_config_restore(base: str, snapshot: dict) -> str:
+    """把自检改掉的设置 PUT 回原值；返回一句人话（没得还原时返回空串）。
+
+    为什么必须还原：⑬ 要用**真实点击**「保存」来验忙碌态，那就真的会写库。
+    自检把"用户的默认引擎/模型版本"改掉、用户下次导入才发现，是比自检失败更糟的事。
+    """
+    if not snapshot:
+        return ""
+    req = urllib.request.Request(
+        f"{base}/api/v1/mineru/config", method="PUT",
+        data=json.dumps(snapshot).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            if resp.status != 200:
+                return f"（还原失败：HTTP {resp.status}，当前值可能仍是自检改过的）"
+    except Exception as exc:  # noqa: BLE001
+        return f"（还原失败：{exc}，当前值可能仍是自检改过的）"
+    return "、".join(f"{k}={v}" for k, v in snapshot.items())
+
+
 def find_scanned_paper(base: str, items: list[dict], exclude: str = "") -> str:
     """找一个**含无文字层页**的论文（扫描件），用来断言「原 PDF 栏回退位图」。
 
@@ -1533,11 +2055,17 @@ def find_scanned_paper(base: str, items: list[dict], exclude: str = "") -> str:
 
 
 def find_big_figure_paper(base: str, items: list[dict], limit: int = 8,
-                          min_share: float = 0.25) -> str:
+                          min_share: float = 0.25,
+                          min_aspect: float = 1.2) -> str:
     """找一篇含"整幅大图"的论文（区域面积占页面 ≥ `min_share`）—— 给「大图允许放大」用例用。
 
     判据与前端 `ReaderPageRows.isLargeFigure` 完全同源：`media[].bbox` 的面积 ÷ 页面尺寸。
     逐篇拉一次 `/reader`，只看前几篇；找不到返回空串（用例 SKIP）。
+
+    ⚠️ 除面积外还要求**横向**够宽（`min_aspect` = 宽/高）。这条用例断言的是"卡片宽度能超过
+    568px"，而**竖长图**（实测新导入的一篇：385×760）受**高度**上限约束，宽度天然上不去 ——
+    拿它测"能显示更大"必然红，那是假红：产品行为是对的（宽度受限而已）。
+    挑横向大图才对应口径里"整幅图占比很大 → 允许显示更大"的那个场景。
     """
     for item in items[:limit]:
         pid = item.get("id") or ""
@@ -1548,7 +2076,7 @@ def find_big_figure_paper(base: str, items: list[dict], limit: int = 8,
             data = json.loads(body.decode("utf-8"))["data"]
         except Exception:  # noqa: BLE001
             continue
-        share = 0.0
+        best: tuple[float, float] = (0.0, 0.0)      # (面积占比, 宽高比)
         for page in data.get("pages") or []:
             w = float(page.get("width") or 0)
             h = float(page.get("height") or 0)
@@ -1558,8 +2086,12 @@ def find_big_figure_paper(base: str, items: list[dict], limit: int = 8,
                 b = m.get("bbox") or []
                 if len(b) < 4:
                     continue
-                share = max(share, ((b[2] - b[0]) * (b[3] - b[1])) / (w * h))
-        if share >= min_share:
+                rw, rh = (b[2] - b[0]), (b[3] - b[1])
+                share = (rw * rh) / (w * h)
+                aspect = (rw / rh) if rh > 0 else 0.0
+                if share > best[0]:
+                    best = (share, aspect)
+        if best[0] >= min_share and best[1] >= min_aspect:
             return pid
     return ""
 
@@ -1600,6 +2132,68 @@ def find_table_paper(base: str, items: list[dict], limit: int = 8) -> str:
     return fallback
 
 
+def element_by_text(html: str, tag: str, *texts: str) -> dict | None:
+    r"""在 dump 出来的 DOM 里，按"标签 + 文本子串"找**最后一个**匹配元素，返回它的类名与属性。
+
+    给"点了才出现"的界面用（弹窗、面板）：同一段文案可能先出现在别处，真正要断言的那个在后面。
+
+    ⚠️ 用正则扒 HTML 是权宜之计：`dump-dom` 出来的属性里可能有 `>`，而这里只用于**取类名/属性**，
+    拿不到就退化为 None（调用方按"没找到"报失败），不会靠它做布局断言 —— 需要量尺寸的一律走
+    `dom_probe()` 的真实浏览器探针。
+    """
+    for needle in texts:
+        pat = re.compile(
+            rf"<{tag}\b([^>]*)>((?:(?!</{tag}>).)*?){re.escape(needle)}(?:(?!</{tag}>).)*?</{tag}>",
+            re.S)
+        hits = list(pat.finditer(html))
+        if not hits:
+            continue
+        attrs, inner = hits[-1].group(1), hits[-1].group(2)
+        cls = re.search(r'class="([^"]*)"', attrs)
+        return {"cls": cls.group(1) if cls else "", "attrs": attrs, "inner": inner}
+    return None
+
+
+def count_element(html: str, tag: str) -> int:
+    """数某个标签出现几次（自闭合写法不单列 —— dump-dom 出来的表单控件都是成对标签）。"""
+    return len(re.findall(rf"<{tag}\b", html))
+
+
+def dom_probe(browser: str, base: str, probe: str, page: str = "/", wait_ms: int = 7000,
+              budget_ms: int = 30000, size: str = "1700,1100") -> dict | None:
+    r"""跑一个「真实浏览器探针」并取回它写进 `<pre id="out">` 的 JSON。
+
+    探针是临时写到 `dist/` 下的一份小页面（同源 → 能开 iframe、能读 iframe 的 DOM 与
+    `getComputedStyle`）。这比在 Python 侧扒 dump 出来的 HTML 强在**它真的会点**：
+    开关是不是真切换、按钮是不是真的置灰、警告是不是真的出现，只有点过才知道。
+
+    文件名取自探针自己的 `<title>`（每个探针都有），省得再单传一个名字。
+
+    `page` 是探针最后要停在的前端路径（`/library`、`/settings`…）。它走 query 传给探针，
+    由探针自己 `w.location.replace(...)` 跳过去 —— iframe 的 `src` 必须是**同源的入口页**
+    （`{base}/app/`），否则跨出去连 iframe 的 DOM 都读不到。
+    """
+    app_root = base if base.endswith("/app") else base + "/app/"
+    m = re.search(r"<title>(.*?)</title>", probe)
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", (m.group(1) if m else "probe").strip()) or "probe"
+    probe_file = ROOT / "frontend" / "dist" / f"_{name}.html"
+    try:
+        probe_file.write_text(
+            probe.replace("__URL__", app_root).replace("__WAIT__", str(wait_ms)),
+            encoding="utf-8")
+        url = f"{base}/app/{probe_file.name}?page={quote(page, safe='/?&=')}"
+        dom = render(browser, url, budget_ms, size)
+        out = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+        if not out or out.group(1).strip() == "waiting":
+            return None
+        try:
+            return json.loads(out.group(1))
+        except json.JSONDecodeError:
+            return None
+    finally:
+        probe_file.unlink(missing_ok=True)
+
+
 def render(browser: str, url: str, budget_ms: int = 20000, size: str = DESKTOP) -> str:
     with tempfile.TemporaryDirectory(prefix="pm-render-") as profile:
         cmd = [
@@ -1618,10 +2212,21 @@ def render(browser: str, url: str, budget_ms: int = 20000, size: str = DESKTOP) 
 
 
 def main() -> int:
+    # 控制台按 UTF-8 输出。**不是美化**：Windows 默认代码页是 GBK，而自检的章节标题里有
+    # `⑪`（U+246A，GBK 收的圈码只到 `⑩`）——`print` 会直接抛 UnicodeEncodeError，
+    # 把自检打断在第十一节，后半段（含本轮新增的⑫⑬⑭）根本不跑（本轮实测）。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 —— 老 Python / 已被重定向的流：保持原样
+            pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8710")
     ap.add_argument("--paper", default="", help="阅读器用论文 id（默认自动取内容最全的一篇）")
-    ap.add_argument("--block-markers", action="store_true", help="额外断言公式已渲染成 KaTeX")
+    ap.add_argument("--block-markers", action="store_true",
+                    help="额外断言：公式已渲染成 KaTeX；导入弹窗的三个切换开关与解析引擎"
+                         "二选一；设置页「在线解析（MinerU）」分区与 /mineru/* 契约")
     ap.add_argument("--browser", default=None)
     ap.add_argument("--budget", type=int, default=20000)
     args = ap.parse_args()
@@ -2456,6 +3061,401 @@ def main() -> int:
             probe_file.unlink(missing_ok=True)
     else:
         print("[SKIP] 需要浏览器与带 Markdown 表格的论文")
+
+    # ---------------- ⑫ 导入弹窗：三个切换开关 + 解析引擎二选一 ----------------
+    # ⚠️ ⑫⑬⑭ 是本轮（MinerU / Switch）新增的检查，**一律受 `--block-markers` 开关约束**：
+    # 不带这个参数时自检的输出与项数必须与改动前**逐项一致**（本轮只允许"新增检查项"，
+    # 不允许改已有 97 项的语义），所以这里是一个整块的门。
+    if args.block_markers:
+        print()
+        print("=" * 78)
+        print("⑫ 导入弹窗（三个切换开关 + 解析引擎二选一）")
+        print("=" * 78)
+        if browser:
+            data = dom_probe(browser, base, IMPORT_DIALOG_PROBE, page="/library", wait_ms=6000)
+            if not data or not data.get("modal"):
+                failures += 1
+                results.append({"kind": "import-dialog", "path": "导入弹窗", "ok": False,
+                                "detail": f"没打开导入弹窗 / 未取到测量结果（{data}）"})
+                print(f"[FAIL] 导入弹窗          没打开导入弹窗 / 未取到测量结果（{data}）")
+            else:
+                before = data.get("before") or {}
+                auto, cap, deep = before.get("auto"), before.get("cap"), before.get("deep")
+                skin = data.get("skin") or {}
+                autoOn, capOff = skin.get("autoOn") or {}, skin.get("capOff") or {}
+                notes = data.get("notes") or {}
+                keyboard = data.get("keyboard") or {}
+                toggle = data.get("toggle") or {}
+                engine = data.get("engine") or {}
+                after = engine.get("after") or {}
+                checks: list[tuple[str, bool, str]] = [
+                    # ① 三个开关都在，而且**里面是真实 checkbox + role=switch + sr-only**
+                    #    （自绘 div 开关会看起来一样但丢掉键盘 / 点文字 / AT 语义，所以逐项断言）
+                    ("三个开关都在，且是真实 checkbox",
+                     data.get("rowCount") == 3
+                     and all(b is not None for b in (auto, cap, deep))
+                     and all(b.get("type") == "checkbox" and b.get("role") == "switch"
+                             and b.get("srOnly") and b.get("visuallyHidden")
+                             for b in (auto, cap, deep)),
+                     f"{data.get('rowCount')} 行；"
+                     + "；".join(f"{n}: type={b.get('type')}/role={b.get('role')}/"
+                                 f"sr-only={b.get('srOnly')}/盒子={b.get('cbBox')}"
+                                 for n, b in (("立即解析", auto), ("含图注", cap), ("深度", deep)))),
+                    # ② 视觉规格：轨道 36×20、滑块 16、圆角 pill、滑块自己 140ms
+                    ("轨道 36×20 / 滑块 16 / 140ms",
+                     all(b.get("trackW") == 36 and b.get("trackH") == 20 and b.get("knobW") == 16
+                         for b in (auto, cap, deep))
+                     and all(str(b.get("knobTransition") or "").startswith("0.14s")
+                             for b in (auto, cap, deep))
+                     and "999px" in str((auto or {}).get("radius") or ""),
+                     f"{[(b.get('trackW'), b.get('trackH'), b.get('knobW')) for b in (auto, cap, deep)]}，"
+                     f"圆角 {(auto or {}).get('radius')}，滑块过渡 {(auto or {}).get('knobTransition')}，"
+                     f"轨道过渡 {(auto or {}).get('trackTransition')}"),
+                    # ③ 默认态就必须看得出"开/关"：自动解析默认开（= --accent + 滑块右移），
+                    #    插图开关默认关（= 浅底 + 滑块贴左）。这条对"只渲染了轨道没有状态"也敏感。
+                    ("默认开关态看得出开/关",
+                     bool(capOff.get("checked")) is False and bool(autoOn.get("checked")) is True
+                     and autoOn.get("bg") == data.get("accent")
+                     and autoOn.get("bg") != capOff.get("bg")
+                     and (autoOn.get("knobX") or 0) - (capOff.get("knobX") or 0) == 16,
+                     f"--accent={data.get('accent')}；开的轨道 {autoOn.get('bg')}"
+                     f"（滑块 x={autoOn.get('knobX')}）/ 关的轨道 {capOff.get('bg')}"
+                     f"（滑块 x={capOff.get('knobX')}）"),
+                    # ④ 点整行（label）真的切换，且**两次点击回到原状**（不是粘住 / 只能开不能关）
+                    ("点文字即切换（开→关可逆）",
+                     toggle.get("on") is not toggle.get("was")
+                     and toggle.get("off") == toggle.get("was")
+                     and (toggle.get("onKnob") or 0) > (toggle.get("offKnob") or 0),
+                     f"初始 checked={toggle.get('was')} → 点一下={toggle.get('on')}"
+                     f"（滑块 x={toggle.get('onKnob')}）→ 再点={toggle.get('off')}"
+                     f"（滑块 x={toggle.get('offKnob')}）"),
+                    # ⑤ 点击后的开态真的是强调色、滑块右移 16px
+                    ("开态换成强调色、滑块右移",
+                     bool(toggle.get("onBg")) and toggle.get("onBg") == data.get("accent")
+                     and toggle.get("onBg") != toggle.get("offBg")
+                     and (toggle.get("onKnob") or 0) - (toggle.get("offKnob") or 0) == 16,
+                     f"轨道 {toggle.get('offBg')} → {toggle.get('onBg')}"
+                     f"（--accent={data.get('accent')}）；"
+                     f"滑块 x {toggle.get('offKnob')} → {toggle.get('onKnob')}"),
+                    # ⑥ 键盘可达：隐藏的 checkbox 必须真的能拿到焦点（否则"用原生控件换取键盘操作"
+                    #    这件事就没兑现 —— div 自绘开关最常丢的就是这一条）
+                    ("隐藏 checkbox 可聚焦（键盘可达）",
+                     all(f and f.get("focused") is True and f.get("role") == "switch"
+                         and (f.get("tabIndex") or 0) >= 0
+                         for f in (keyboard.get("auto"), keyboard.get("deep"))),
+                     f"立即解析={keyboard.get('auto')}，深度搜索={keyboard.get('deep')}"),
+                    # ⑦ 两句语义说明一字不改（换组件时别顺手把口径删了）
+                    ("两句说明文案保留",
+                     bool(notes.get("cap")) and bool(notes.get("deep")),
+                     f"含图注说明={notes.get('cap')}，深度说明={notes.get('deep')}"),
+                    # ⑦ 解析引擎是**互斥二选一**（role=radio + aria-checked 跟着走）
+                    ("解析引擎是互斥二选一",
+                     engine.get("count") == 2 and engine.get("role") == "radiogroup"
+                     and all(r == "radio" for r in (engine.get("roles") or []))
+                     and sorted(engine.get("checked") or []) == ["false", "true"]
+                     and len([a for a in (after.get("active") or []) if a]) == 1
+                     and sorted(after.get("checked") or []) == ["false", "true"],
+                     f"{engine.get('count')} 个选项 {engine.get('labels')}；点 MinerU 后"
+                     f" active={after.get('active')} aria-checked={after.get('checked')}"),
+                    # ⑧ 两个选项各带一行"代价说清楚"的小字（在线必须写明要 token + 联网）
+                    ("两个选项各有一行说明",
+                     all(len(str(n or "")) >= 12 for n in (engine.get("notes") or []))
+                     and any("token" in str(n) and "联网" in str(n) for n in (engine.get("notes") or []))
+                     and any("离线" in str(n) for n in (engine.get("notes") or [])),
+                     f"{engine.get('notes')}"),
+                    # ⑨ 选 MinerU → 下面三个开关**整块消失**（用户口径：只在本地解析时显示）。
+                    #    不是置灰：置灰仍然是一句"你可以改"的邀请，而这三个开关在在线解析里
+                    #    根本没有对应物（版面/插图/图注全由 MinerU 决定）。
+                    ("选 MinerU 后三个开关不再显示",
+                     engine.get("clicked") is True and engine.get("switchRowsAfter") == 0
+                     and engine.get("deepDisabled") is None
+                     and engine.get("deepChecked") is None,
+                     f"剩余 .switch-row={engine.get('switchRowsAfter')}，"
+                     f"深度搜索行={engine.get('deepDisabled')}"),
+                    # ⑩ **在线解析参数**只在选在线解析时出现（切回本地时必须已经不在了）
+                    ("在线参数区只在选 MinerU 时出现",
+                     engine.get("onlineGroup") is True
+                     and data.get("onlineGroupWhenLocal") is False,
+                     f"选 MinerU 后={engine.get('onlineGroup')}，"
+                     f"切回本地时={data.get('onlineGroupWhenLocal')}"),
+                    # ⑪ 模型可选（pipeline / vlm），且当前值就在选项里 —— 用户要求"支持模型选择"
+                    ("模型可选（pipeline / vlm）",
+                     sorted(engine.get("opModelOptions") or []) == ["pipeline", "vlm"]
+                     and engine.get("opModelValue") in ("pipeline", "vlm"),
+                     f"选项={engine.get('opModelOptions')}，当前={engine.get('opModelValue')}"),
+                    # ⑫ OCR 语言也有下拉（扫描件才用得上，但必须能选）
+                    ("OCR 语言可选",
+                     len(engine.get("opLangOptions") or []) >= 2
+                     and "en" in (engine.get("opLangOptions") or []),
+                     f"选项={engine.get('opLangOptions')}"),
+                    # ⑬ 三个能力开关齐全，且默认值与官方口径一致（OCR 关、公式/表格开）
+                    ("强制 OCR / 识别公式 / 识别表格 三个开关",
+                     engine.get("opSwitchTexts") == ["强制 OCR", "识别公式", "识别表格"]
+                     and engine.get("opSwitchChecked") == [False, True, True],
+                     f"开关={engine.get('opSwitchTexts')}，默认={engine.get('opSwitchChecked')}"),
+                    # ⑭ 页码范围输入框带**可照抄**的示例（写错格式只有服务端才知道怎么改）
+                    ("页码范围有输入框与示例",
+                     "1-10" in str(engine.get("opRangesPlaceholder") or "")
+                     and "留空" in str(engine.get("opRangesPlaceholder") or ""),
+                     f"placeholder={engine.get('opRangesPlaceholder')!r}"),
+                ]
+                # ⑨ token 提示**跟着配置状态走**（不是"永远应该出现"）：
+                #    没配 token 时必须给出"去哪配、要做什么"这句可执行的话；
+                #    已配好 token 时那句提示必须消失（否则用户会以为没生效，反复去填）。
+                warn = str(engine.get("warn") or "")
+                has_token = _mineru_has_token(base)
+                if has_token:
+                    checks.append((
+                        "已配 token 时不再提示去配置",
+                        not warn,
+                        f"提示={warn[:90] or '(没有)'}（/mineru/config 里 has_token=true）",
+                    ))
+                else:
+                    checks.append((
+                        "没配 token 时提示去哪配",
+                        bool(warn) and "设置" in warn and "MinerU" in warn and "token" in warn,
+                        f"提示={warn[:90] or '(没有)'}",
+                    ))
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "import-dialog", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        else:
+            print("[SKIP] 需要浏览器")
+
+        # ---------------- ⑬ 设置页「在线解析（MinerU）」分区 ----------------
+        print()
+        print("=" * 78)
+        print("⑬ 设置页「在线解析（MinerU）」分区（token 只写不回显 / 验证 / 默认参数）")
+        print("=" * 78)
+        # 这一节要用 UI 真点一次「保存」（验忙碌态），也就**真的会改掉本机的设置**。
+        # 自检不该改变机器状态：先记下原值，跑完再 PUT 回去（只回写这三个设置项，不碰 token）。
+        _cfg_before = _mineru_config_snapshot(base)
+        if browser:
+            data = dom_probe(browser, base, MINERU_SECTION_PROBE, page="/settings", wait_ms=6000)
+            if not data or not data.get("section"):
+                failures += 1
+                results.append({"kind": "mineru", "path": "MinerU 分区", "ok": False,
+                                "detail": f"设置页没有 #mineru 分区 / 未取到测量结果（{data}）"})
+                print(f"[FAIL] MinerU 分区      设置页没有 #mineru 分区 / 未取到测量结果（{data}）")
+            else:
+                checks = [
+                    ("分区与导航项都在",
+                     "在线解析" in str(data.get("title")) and data.get("inNav") is True,
+                     f"标题={data.get('title')}，药丸导航里有={data.get('inNav')}"),
+                    # token 必须**只写不回显**：value 空、placeholder 给掩码 + "留空 = 不修改"
+                    ("token 是 password 且不回显",
+                     data.get("password") is True and not data.get("passwordValue"),
+                     f"placeholder={data.get('passwordPlaceholder')!r}，"
+                     f"当前值={data.get('passwordValue')!r}"),
+                    ("保存 / 验证 / 清除 三个按钮",
+                     data.get("hasSave") and data.get("hasClear")
+                     and "验证" in str(data.get("verifyLabel")),
+                     f"按钮={data.get('buttons')}"),
+                    ("模型版本 / 语言 / 默认引擎三个下拉",
+                     data.get("modelOptions") and data.get("langOptions") and data.get("engineOptions"),
+                     f"{[s.get('value') for s in (data.get('selects') or [])]}；"
+                     f"模型={data.get('modelOptions')} 语言={data.get('langOptions')} "
+                     f"引擎={data.get('engineOptions')}"),
+                    ("写明 token 文件路径与 90 天过期",
+                     data.get("hasTokenFile") and data.get("has90Days"),
+                     f"token 文件行={data.get('hasTokenFile')}，90 天提示={data.get('has90Days')}"),
+                ]
+                # 点「验证」：请求期间必须是「验证中…」+ 禁用（否则用户会连点）。
+                # 没配 token 时按钮本就该禁用（没有可验证的东西），所以那种情况断言的是"禁用"，
+                # 而不是"点得动" —— 否则这条会变成"因为后端没上线所以红"。
+                if data.get("verifyClickable"):
+                    states = data.get("verifyStates") or []
+                    checks.append((
+                        "验证中按钮变文案并禁用",
+                        any("验证中" in str(s.get("label")) and s.get("disabled") is True
+                            for s in states) or (
+                            "验证中" in str(data.get("verifyingLabel"))
+                            and data.get("verifyingDisabled") is True),
+                        f"过程中的按钮状态={states}；点击后立刻读到 "
+                        f"{data.get('verifyingLabel')!r}/disabled={data.get('verifyingDisabled')}",
+                    ))
+                    # 验证结论：成功走 --ok、失败走 --danger，且能看到服务端原话与延迟
+                    msg = str(data.get("verifyMsg") or "")
+                    checks.append((
+                        "验证结论落到行内状态",
+                        bool(msg) or bool(data.get("verifyBadges")),
+                        f"消息={msg[:90] or '(空)'}；徽章={data.get('verifyBadges')}",
+                    ))
+                else:
+                    checks.append((
+                        "没 token 时「验证」禁用",
+                        data.get("verifyDisabled") is True,
+                        f"disabled={data.get('verifyDisabled')}，标签={data.get('verifyLabel')!r}",
+                    ))
+                # 点「保存」：请求期间文案变「保存中…」且禁用。
+                # 这条**不依赖 token** —— 改一下模型版本就能把保存按钮点亮，用它验忙碌态。
+                if data.get("saveEnabledAfterEdit") is True:
+                    states = data.get("saveStates") or []
+                    busy = [s for s in states
+                            if "保存中" in str(s.get("label")) and s.get("disabled") is True]
+                    checks.append((
+                        "保存中按钮变文案并禁用",
+                        bool(busy)
+                        or ("保存中" in str(data.get("savingLabel"))
+                            and data.get("savingDisabled") is True),
+                        f"过程中的按钮状态={states}；保存完成后按钮={data.get('afterSaveLabel')!r}；"
+                        f"同一时刻「验证」disabled={data.get('verifyingDisabledDuringSave')}",
+                    ))
+                else:
+                    checks.append((
+                        "保存中按钮变文案并禁用",
+                        False,
+                        f"改模型版本后「保存」仍是禁用的（`mineruChanged` 没被点亮，"
+                        f"或 /mineru/config 读失败？）：{data.get('buttons')}",
+                    ))
+                for label, ok, detail in checks:
+                    failures += 0 if ok else 1
+                    results.append({"kind": "mineru", "path": label, "ok": ok, "detail": detail})
+                    print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+        else:
+            print("[SKIP] 需要浏览器")
+        # 还原这一节通过 UI 改掉的设置（见上面的 `_cfg_before`）
+        restored = _mineru_config_restore(base, _cfg_before)
+        if restored:
+            print(f"[INFO] 已把自检改动的设置还原：{restored}")
+
+        # ---------------- ⑭ /mineru/* 接口契约（前端按这个形状解析） ----------------
+        print()
+        print("=" * 78)
+        print("⑭ /mineru/* 接口契约（config 的字段形状 / verify 恒 200 + ok·state）")
+        print("=" * 78)
+        cfg_ok, cfg_detail = False, ""
+        try:
+            _st, body = fetch(f"{base}/api/v1/mineru/config", timeout=20)
+            if _st != 200:
+                cfg_detail = f"GET /mineru/config → HTTP {_st}（后端尚未上线？）"
+            else:
+                cfg = json.loads(body.decode("utf-8")).get("data") or {}
+                need = ["has_token", "token_masked", "engine_default", "model_version", "language"]
+                missing = [k for k in need if k not in cfg]
+                cfg_ok = not missing and cfg.get("engine_default") in ("local", "mineru") \
+                    and cfg.get("model_version") in ("pipeline", "vlm")
+                cfg_detail = (f"缺字段 {missing}" if missing else
+                              f"has_token={cfg.get('has_token')} masked={cfg.get('token_masked')} "
+                              f"engine={cfg.get('engine_default')} model={cfg.get('model_version')} "
+                              f"lang={cfg.get('language')} file={cfg.get('token_file')}")
+        except Exception as exc:  # noqa: BLE001
+            cfg_detail = f"GET /mineru/config 失败：{exc}"
+        failures += 0 if cfg_ok else 1
+        results.append({"kind": "mineru-api", "path": "GET /mineru/config", "ok": cfg_ok,
+                        "detail": cfg_detail})
+        print(f"[{'PASS' if cfg_ok else 'FAIL'}] {'GET config':<16} {cfg_detail}")
+
+        # PUT：只提交**与当前值相同**的 engine_default（幂等 no-op，不会改坏用户的配置）
+        put_ok, put_detail = False, ""
+        try:
+            _st, body = fetch(f"{base}/api/v1/mineru/config", timeout=20)
+            cur = (json.loads(body.decode("utf-8")).get("data") or {}).get("engine_default")
+            req = urllib.request.Request(
+                f"{base}/api/v1/mineru/config", method="PUT",
+                data=json.dumps({"engine_default": cur or "local"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            data = payload.get("data") or {}
+            put_ok = resp.status == 200 and "engine_default" in data
+            put_detail = (f"HTTP {resp.status}，回包字段 {sorted(data)[:6]}，"
+                          f"message={payload.get('message')!r}")
+        except Exception as exc:  # noqa: BLE001
+            put_detail = f"PUT /mineru/config 失败：{exc}"
+        failures += 0 if put_ok else 1
+        results.append({"kind": "mineru-api", "path": "PUT /mineru/config", "ok": put_ok,
+                        "detail": put_detail})
+        print(f"[{'PASS' if put_ok else 'FAIL'}] {'PUT config':<16} {put_detail}")
+
+        # verify：**HTTP 恒 200**，成败看 ok/state（前端就是按这个写的）
+        ver_ok, ver_detail = False, ""
+        try:
+            req = urllib.request.Request(
+                f"{base}/api/v1/mineru/verify", method="POST", data=b"{}",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=40) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            data = payload.get("data") or {}
+            states = ("valid", "invalid", "expired", "network", "missing")
+            ver_ok = (resp.status == 200 and isinstance(data.get("ok"), bool)
+                      and data.get("state") in states)
+            ver_detail = (f"HTTP {resp.status}，ok={data.get('ok')} state={data.get('state')} "
+                          f"latency={data.get('latency_ms')} "
+                          f"message={str(data.get('message'))[:70]!r}")
+        except Exception as exc:  # noqa: BLE001
+            ver_detail = f"POST /mineru/verify 失败：{exc}"
+        failures += 0 if ver_ok else 1
+        results.append({"kind": "mineru-api", "path": "POST /mineru/verify", "ok": ver_ok,
+                        "detail": ver_detail})
+        print(f"[{'PASS' if ver_ok else 'FAIL'}] {'POST verify':<16} {ver_detail}")
+
+        # ---------------- ⑮ 公式面板：译文优先 / 未翻译的页用原文兜底 ----------------
+        # 用户报过（2026-09-28）："联网解析没有显示公式（但其实有公式的）" —— 真因是公式列表
+        # 原来只从**页级产物（译文）**抽，一篇还没翻译的论文于是永远空着，而正文里明明有公式。
+        # 这一节拿一篇"公式来自解析产物"的论文（`source=parse` 或 `mixed`）真开一次阅读器。
+        print()
+        print("=" * 78)
+        print("⑮ 公式面板（译文优先；未翻译的页用原文兜底）")
+        print("=" * 78)
+        if args.block_markers:
+            fb_paper = find_formula_fallback_paper(base, items) if items else ""
+            print(f"用于公式兜底用例的论文：{fb_paper or '（库里没有未翻译但有公式的论文）'}")
+            if browser and fb_paper:
+                probe_file = ROOT / "frontend" / "dist" / "_formula_probe.html"
+                try:
+                    probe_file.write_text(
+                        FORMULA_PROBE.replace(
+                            "__URL__",
+                            f"{base}/app/reader/{fb_paper}?side=formulas&nosse=1")
+                        .replace("__WAIT__", "7000"), encoding="utf-8")
+                    dom = render(browser, f"{base}/app/_formula_probe.html", 25000, "1500,1000")
+                    m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+                    data = None
+                    if m and m.group(1).strip() != "waiting":
+                        try:
+                            data = json.loads(m.group(1))
+                        except json.JSONDecodeError:
+                            data = None
+                    api = _formulas_api(base, fb_paper)
+                    checks = [
+                        # ① 接口侧确实走的是兜底（否则这一节什么都没证明）
+                        ("论文的公式来自原文兜底",
+                         api.get("source") in ("parse", "mixed") and (api.get("count") or 0) > 0,
+                         f"source={api.get('source')} count={api.get('count')} "
+                         f"兜底页={api.get('fallback_pages')}"),
+                        # ② 面板里有条目，且不再显示"没有可提取的公式"
+                        ("面板渲染出公式条目",
+                         (data or {}).get("items", 0) > 0
+                         and not (data or {}).get("emptyText"),
+                         f"条目数={(data or {}).get('items')} 空态文案="
+                         f"{(data or {}).get('emptyText')!r}"),
+                        # ③ 兜底条目带「解析」徽章（让用户看出它不来自译文）
+                        ("兜底条目标了「解析」", (data or {}).get("parseBadges", 0) > 0,
+                         f"「解析」徽章={(data or {}).get('parseBadges')}，"
+                         f"徽章文案={(data or {}).get('badges')}"),
+                        # ④ 页签角标 = 条目数（不能出现"角标 0 但有条目"这种自相矛盾）
+                        ("公式页签角标 = 条目数",
+                         (data or {}).get("tabBadge") is not None
+                         and (data or {}).get("tabBadge") == (data or {}).get("items"),
+                         f"角标={(data or {}).get('tabBadge')} 条目={(data or {}).get('items')}"),
+                        # ⑤ 行间/行内/全部的计数与实际条目一致
+                        ("筛选条计数自洽",
+                         (data or {}).get("allCount") == (data or {}).get("items"),
+                         f"全部={(data or {}).get('allCount')} 条目={(data or {}).get('items')}"),
+                    ]
+                    for label, ok, detail in checks:
+                        failures += 0 if ok else 1
+                        results.append({"kind": "formula-panel", "path": label, "ok": ok,
+                                        "detail": detail})
+                        print(f"[{'PASS' if ok else 'FAIL'}] {label:<16} {detail}")
+                finally:
+                    probe_file.unlink(missing_ok=True)
+            else:
+                print("[SKIP] 需要浏览器与「未翻译但有公式」的论文")
+        else:
+            print("[SKIP] 加 --block-markers 才跑这一节")
 
     # 全部跑完：把这篇论文的打开状态还原成**跑之前**的样子
     # （路由用例 / ⑤ 标签用例 / ⑩ 都会用不同视图打开它，阅读器会把状态存回去）

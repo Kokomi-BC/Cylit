@@ -13,6 +13,26 @@ from backend.services.translation import translation_service
 router = APIRouter(tags=["papers"])
 
 
+def _mineru_params(*, model_version=None, language=None, is_ocr=None,
+                   enable_formula=None, enable_table=None, page_ranges=None) -> dict:
+    """在线解析的可选参数 → PARSE 任务参数（`mineru_*`）。
+
+    只把**显式传了的**放进结果：`None` 表示"这次不动这一项"，由服务层按
+    "设置默认值 > 官方默认值"补齐。校验（取值闭集合、页码范围格式、布尔字面量）
+    统一放在 `mineru_service`，这里不重复一遍规则 —— 两处各写一套一定会漂。
+    """
+    from backend.services.paper import mineru_service
+
+    return mineru_service.normalize_params({
+        "mineru_model_version": model_version,
+        "mineru_language": language,
+        "mineru_is_ocr": is_ocr,
+        "mineru_enable_formula": enable_formula,
+        "mineru_enable_table": enable_table,
+        "mineru_page_ranges": page_ranges,
+    })
+
+
 # --------------------------------------------------------------------------
 # §20.1 论文与解析
 # --------------------------------------------------------------------------
@@ -31,11 +51,23 @@ async def upload_paper(
     auto_parse: bool = Form(True),
     figure_caption: bool = Form(False),
     deep_figure_search: bool = Form(False),
+    parse_engine: str | None = Form(None),
+    mineru_model_version: str | None = Form(None),
+    mineru_language: str | None = Form(None),
+    mineru_is_ocr: str | None = Form(None),
+    mineru_enable_formula: str | None = Form(None),
+    mineru_enable_table: str | None = Form(None),
+    mineru_page_ranges: str | None = Form(None),
 ):
     """上传 PDF → 落盘 + 建 paper + 建 PARSE 任务（规划 §21.1）。
 
     ``figure_caption`` / ``deep_figure_search``：导入弹窗的两个插图开关（均默认关，
     **导入即重解析**，所以只在本次解析生效）。语义见 ``PaperBuilder``。
+
+    ``parse_engine``：解析引擎（``local`` / ``mineru``，不传 = 用设置里的默认引擎）。
+    ``mineru_*``：在线解析的可选参数（模型版本 / OCR 语言 / 强制 OCR / 公式 / 表格 /
+    页码范围），**不传的项由设置默认值与官方默认值补齐**，见
+    ``mineru_service.effective_params``。
     """
     data = await file.read()
     if not data:
@@ -46,6 +78,11 @@ async def upload_paper(
         venue=venue, year=year, tags=tags, paper_id=paper_id,
         auto_parse=auto_parse,
         figure_caption=figure_caption, deep_figure_search=deep_figure_search,
+        parse_engine=parse_engine,
+        parse_params=_mineru_params(
+            model_version=mineru_model_version, language=mineru_language,
+            is_ocr=mineru_is_ocr, enable_formula=mineru_enable_formula,
+            enable_table=mineru_enable_table, page_ranges=mineru_page_ranges),
     )
     try:
         tmp.unlink(missing_ok=True)
@@ -103,17 +140,39 @@ async def trigger_parse(paper_id: str, request: Request,
                         figure_caption: bool | None = Query(
                             None, description="插图带图注（不传 = 沿用上次解析的值）"),
                         deep_figure_search: bool | None = Query(
-                            None, description="深度图片搜索：无图注页兜底裁图（不传 = 沿用）")):
+                            None, description="深度图片搜索：无图注页兜底裁图（不传 = 沿用）"),
+                        engine: str | None = Query(
+                            None, description="解析引擎：local（默认）/ mineru（在线，需 token）",
+                            pattern="^(local|mineru|auto)$"),
+                        mineru_model_version: str | None = Query(
+                            None, description="MinerU 模型：pipeline（默认）/ vlm"),
+                        mineru_language: str | None = Query(
+                            None, description="MinerU OCR 语言（默认取设置，en）"),
+                        mineru_is_ocr: bool | None = Query(
+                            None, description="强制 OCR（扫描件/字体异常时开）"),
+                        mineru_enable_formula: bool | None = Query(
+                            None, description="识别公式（默认开）"),
+                        mineru_enable_table: bool | None = Query(
+                            None, description="识别表格（默认开）"),
+                        mineru_page_ranges: str | None = Query(
+                            None, description='页码范围，如 "1-10" / "2,4-6" / "2--2"（留空 = 全部）')):
     params: dict = {
         "llm_repair": llm_repair, "vision": vision, "vision_model": vision_model,
         "then_translate": then_translate,
     }
-    # 两个插图开关只在**显式传了**的时候覆盖（不传则由 `create_parse_task` 沿用
+    # 三个"解析口径"开关只在**显式传了**的时候覆盖（不传则由 `create_parse_task` 沿用
     # 这篇论文上一次解析固化的值 —— 用户点「重新解析」不该把开关悄悄关掉）
     if figure_caption is not None:
         params["figure_caption"] = figure_caption
     if deep_figure_search is not None:
         params["deep_figure_search"] = deep_figure_search
+    if engine is not None:
+        params["engine"] = engine
+    # 在线解析的可选参数：同样"传了才覆盖"（不传 = 用设置默认值/官方默认值）
+    params.update(_mineru_params(
+        model_version=mineru_model_version, language=mineru_language,
+        is_ocr=mineru_is_ocr, enable_formula=mineru_enable_formula,
+        enable_table=mineru_enable_table, page_ranges=mineru_page_ranges))
     task = paper_service.create_parse_task(paper_id, force=force, params=params)
     return envelope(task, message="已创建解析任务", request=request)
 

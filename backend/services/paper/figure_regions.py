@@ -38,6 +38,7 @@ import hashlib
 import re
 import threading
 from pathlib import Path
+from typing import Any
 
 from backend.core.errors import NotFoundError
 from backend.core.logging import get_logger
@@ -78,6 +79,11 @@ CROP_DPI = 600
 #:      必须 +1 的原因同上：bbox 虽然进了哈希，但**卡片**那几条（`card=1`）的 URL 也带版本串。
 #: 13 = 解析层的图体 bbox 又变了（跨栏居中题注也算分段界标 → KAT 图 3 不再吞掉图 2；
 #:      压在题注上的整幅位图不再被漏掉 → 2409 的图 8 能出来了）。
+#: 14 = 区域边界新增"精确来源"这一档（在线解析 MinerU 给的版面 bbox 直接用，不再收紧/贴边）。
+#:      ⚠️ **故意不 +1 到 14**：这一档只对 `audit_json["source"] == "online"` 的图生效，
+#:      存量论文（本地解析：source 为空；扫描件：`scan`）的区域与哈希一字不变 ——
+#:      bump 只会让全库插图在下次访问时重裁一遍 600dpi，纯属浪费。
+
 REGION_CACHE_VERSION = 13
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 
@@ -87,10 +93,22 @@ _cache: dict[str, tuple[float, dict[int, list[dict]]]] = {}
 # {paper_id: (ir_mtime, options)} —— 解析时固化的插图开关（见 `parse_options`）
 _opts_cache: dict[str, tuple[float, dict]] = {}
 
-#: 两个插图开关的默认值（导入弹窗默认也是这两个）：都不开。
-DEFAULT_PARSE_OPTIONS: dict[str, bool] = {
+#: 解析时固化的解析开关（见 `parse_options`）。
+#:
+#: - ``figure_caption`` / ``deep_figure_search``：两个插图开关（bool）；
+#: - ``engine``：**这篇论文是用哪条引擎解析的**（``local`` / ``mineru``）。它不是裁图
+#:   参数，但必须和它们放在一起：用户点「重新解析」时不传引擎就该沿用上次那条
+#:   （本地解析出来的好结果，不该因为面板换了默认值就被在线解析覆盖一遍）。
+DEFAULT_PARSE_OPTIONS: dict[str, Any] = {
     "figure_caption": False,        # 裁出的插图是否带图注
     "deep_figure_search": False,    # 无图注页是否兜底裁图（界面文案「深度图片搜索」）
+    "engine": "local",              # 解析引擎：local（PyMuPDF 自研版面）/ mineru（在线）
+}
+#: 每条开关的取值类型（读 IR 时按它归一，避免"字符串 'false' 被当 True"）
+_OPTION_CASTERS = {
+    "figure_caption": bool,
+    "deep_figure_search": bool,
+    "engine": str,
 }
 
 
@@ -102,7 +120,8 @@ def parse_options(paper_id: str) -> dict:
     "这篇论文是怎么解析出来的"的留痕，放这里既不用新开文件、也不用改库表；按 IR mtime
     缓存，一次解析只解析一遍那段 JSON。
 
-    读不到（从未解析过 / 旧 IR 没这个字段 / 文件损坏）一律**全关**：默认口径就是关。
+    读不到（从未解析过 / 旧 IR 没这个字段 / 文件损坏）一律按默认值：两个插图开关**全关**，
+     引擎按 `local` —— 旧论文都是本地解析出来的，这个回退正是它们的真实身份。
     """
     from backend.services.paper import paper_service
 
@@ -123,14 +142,39 @@ def parse_options(paper_id: str) -> dict:
         stats = json_loads(reader.paper().get("stats_json")) or {}
         raw = stats.get("parse_options") if isinstance(stats, dict) else None
         if isinstance(raw, dict):
-            for k in DEFAULT_PARSE_OPTIONS:
-                if k in raw:
-                    opts[k] = bool(raw[k])
-    except Exception as exc:  # noqa: BLE001 —— 读不到就按默认关，绝不拦住出图
-        log.warning("读取论文 %s 的解析开关失败（按默认关处理）：%s", paper_id, exc)
+            from backend.services.paper import mineru_service
+
+            # ⚠️ 不能对每个键一律 `bool(...)`：`engine` 是字符串，`bool("mineru")` 恒真、
+            # `bool("")` 恒假 —— 取值会被压平，前端再也读不到"这篇是在线解析的"，
+            # "重新解析"也会因此切回本地引擎。所以按 `_OPTION_CASTERS` 分型读。
+            for k, caster in _OPTION_CASTERS.items():
+                if k not in raw:
+                    continue
+                value = raw[k]
+                # 空值 = 这个键没写（老 IR / 手写 JSON 里可能是 null 或 ""）：保留默认，
+                # 不能让 `str(None)` 变成引擎名 "None"
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                if caster is bool:
+                    opts[k] = _as_bool(value)
+                else:
+                    text = str(value).strip().lower()
+                    # 引擎名是**闭集合**：不认识的取值一律回退默认，避免把脏数据当成
+                    # 一个"以后也许会支持"的引擎名传下去（分派端会静默按本地解析跑）
+                    opts[k] = text if text in mineru_service.ENGINES \
+                        else DEFAULT_PARSE_OPTIONS[k]
+    except Exception as exc:  # noqa: BLE001 —— 读不到就按默认值，绝不拦住出图
+        log.warning("读取论文 %s 的解析开关失败（按默认值处理）：%s", paper_id, exc)
     with _lock:
         _opts_cache[paper_id] = (mtime, opts)
     return opts
+
+
+def _as_bool(value: Any) -> bool:
+    """字符串形式的布尔也要认（脚本/手写 JSON 里常见 ``"false"``）。"""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def caption_in_crop(paper_id: str) -> bool:
@@ -184,13 +228,28 @@ def _page_bbox(row: dict) -> list[float] | None:
 def _is_scan_region(row: dict) -> bool:
     """是不是扫描件那条路产出的插图（``audit_json["source"] == "scan"``）。
 
-    这类区域的边界已经由页图像素定死了，**不能再**走 :func:`_tighten` /
-    :func:`_snap_edges` / :func:`_parts_of` —— 那三段的前提是"文本层块的 rect 就是
-    版面位置、且图内文字不进文本层"，扫描件上两条都不成立（实测会把相邻图吃掉、
-    把本图收成 25pt 细条）。
+    历史口径，保留名字给既有调用点/单测用；新代码请用 :func:`_has_precise_bbox`。
     """
+    return _region_source(row) == "scan"
+
+
+#: 边界**已经准了**的来源：不该再被收紧/贴边/切分。
+#:
+#: - ``scan``：影印页的边界由页图像素墨迹定死（下面的三条收紧依赖"块 rect 就是版面位置、
+#:   图内文字不进文本层"，扫描件上两条都不成立）；
+#: - ``online``：MinerU 给的 bbox 来自版面模型，是"图体本身"的框 —— 我们的文本块也是
+#:   它给的（没有本地那种"块边界比墨迹宽"的问题），再去贴边只会把准的框挪歪。
+PRECISE_BBOX_SOURCES = ("scan", "online")
+
+
+def _region_source(row: dict) -> str:
     audit = json_loads(row.get("audit_json"), {}) or {}
-    return str(audit.get("source") or "") == "scan"
+    return str(audit.get("source") or "")
+
+
+def _has_precise_bbox(row: dict) -> bool:
+    """该插图的 bbox 是否可直接采信（见 :data:`PRECISE_BBOX_SOURCES`）。"""
+    return _region_source(row) in PRECISE_BBOX_SOURCES
 
 
 def _number_of(text: str) -> str:
@@ -645,10 +704,11 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
             cap_text = str(row.get("caption") or (caption or {}).get("text_clean") or "").strip()
             number = _number_of(cap_text)
             cap_id = row.get("caption_block_id") or (caption or {}).get("id") or None
-            scan = _is_scan_region(row)
+            scan = _has_precise_bbox(row)
             if scan:
-                # 扫描件：边界已由页图墨迹定死，这里只做"落在页面内"的归一化。
-                # 收紧/贴边/切分三段都依赖"块 rect 就是版面位置"这个前提，扫描页不成立。
+                # 精确来源（扫描件 / 在线解析）：边界已由像素墨迹或版面模型定死，
+                # 这里只做"落在页面内"的归一化。收紧/贴边/切分三段都依赖"块 rect 就是
+                # 版面位置"这个前提，它们不成立（实测会把相邻图吃掉、把本图收成细条）。
                 tight = [round(v, 2) for v in _normalise(raw, rect)]
                 pieces: list[tuple[list[float], dict | None]] = [(tight, None)]
             else:
@@ -681,19 +741,24 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                     cap_text, number, cap_id,
                     ({"part": i, "parts": len(pieces), "part_label": label}
                      if label else None),
-                    source="scan" if scan else "",
+                    # ⚠️ 这里要写**真实来源**（`scan` / `online`）：它决定后面"跨页续图"
+                    # 那一步跳不跳（见下面 `reg.get("source") in PRECISE_BBOX_SOURCES`）。
+                    # 曾经一律写 "scan"，于是"在线解析的图"会被当成扫描件而语义错位。
+                    source=_region_source(row),
                 ))
             if below and not scan:
                 prev_bottom = max(_num(regions[-1]["bbox"][3]) - 3.0, 0.0)
         out[page_no] = regions
 
     # ---- 跨页续图：图体画到页脚、下一页页首接着它 → 下一页补一条"续图"条目 ----
-    # 扫描件不参与：判据依赖文本层的真实坐标与矢量图形，影印件上两者都没有。
+    # 精确来源（扫描件 / 在线解析）不参与：判据依赖**本地解析**那套文本层真实坐标与
+    # 矢量图形，影印件上两者都没有；MinerU 的结果里"跨页图"本来就以两个 item 给出，
+    # 它自己已经处理过这种情形。
     for page_no in sorted(out):
         for reg in list(out[page_no]):
             if reg.get("kind") != "figure" or reg.get("part", 0) != 0:
                 continue
-            if reg.get("source") == "scan":
+            if reg.get("source") in PRECISE_BBOX_SOURCES:
                 continue
             if not _looks_like_continuation(reg, page_rect(page_no).height):
                 continue

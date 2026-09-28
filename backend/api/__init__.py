@@ -2,6 +2,7 @@
 
 from backend.api.annotations import router as annotations_router
 from backend.api.knowledge import router as knowledge_router
+from backend.api.mineru import router as mineru_router
 from backend.api.models import router as models_router
 from backend.api.papers import router as papers_router
 from backend.api.reader import router as reader_router
@@ -10,5 +11,5 @@ from backend.api.tasks import router as tasks_router
 
 __all__ = [
     "papers_router", "reader_router", "tasks_router", "models_router",
-    "annotations_router", "knowledge_router", "settings_router",
+    "annotations_router", "knowledge_router", "settings_router", "mineru_router",
 ]

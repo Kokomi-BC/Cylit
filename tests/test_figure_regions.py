@@ -272,13 +272,19 @@ def _fake_paths(monkeypatch, tmp_path: Path, stats: dict | None) -> Path:
 
 
 def test_parse_options_default_to_off(monkeypatch, tmp_path):
-    """读不到（从未解析过 / 旧 IR 没这个字段）一律全关 —— 默认口径就是关。"""
+    """读不到（从未解析过 / 旧 IR 没这个字段）一律按默认值：两个插图开关关、引擎 local。
+
+    引擎默认 `local` 是**旧论文的真实身份**：它们都是本地解析出来的，回退到 local
+    才不会让"重新解析"莫名其妙把他们切到在线引擎。
+    """
     from backend.services.paper import paper_service
 
     monkeypatch.setattr(paper_service, "paper_paths",
                         lambda pid: {"ir": tmp_path / "missing.sqlite"})
     fr.invalidate_cache()
-    assert fr.parse_options("p1") == {"figure_caption": False, "deep_figure_search": False}
+    assert fr.parse_options("p1") == {"figure_caption": False,
+                                      "deep_figure_search": False,
+                                      "engine": "local"}
     assert fr.caption_in_crop("p1") is False
     _fake_paths(monkeypatch, tmp_path, {"venue": "NeurIPS"})       # IR 在、但没有这个字段
     assert fr.caption_in_crop("p1") is False
@@ -288,11 +294,29 @@ def test_parse_options_read_the_frozen_values(monkeypatch, tmp_path):
     """导入时选的开关随解析产物固化（IR `paper.stats_json` → `parse_options`），服务层照它出图。"""
     _fake_paths(monkeypatch, tmp_path,
                 {"parse_options": {"figure_caption": True, "deep_figure_search": True}})
-    assert fr.parse_options("p1") == {"figure_caption": True, "deep_figure_search": True}
+    assert fr.parse_options("p1") == {"figure_caption": True, "deep_figure_search": True,
+                                      "engine": "local"}
     assert fr.caption_in_crop("p1") is True
     # 非布尔值按布尔语义收（任务参数从 HTTP 表单来，可能是 "true"/1）
     _fake_paths(monkeypatch, tmp_path, {"parse_options": {"figure_caption": 1}})
     assert fr.caption_in_crop("p1") is True
+
+
+def test_parse_options_keep_the_engine_as_a_string(monkeypatch, tmp_path):
+    """引擎是字符串，不能被当布尔收掉。
+
+    为什么单独立一条：`parse_options` 原来对每个键一律 `bool(raw[k])`，加上引擎之后
+    `bool("mineru")` 会变成 True、`bool("")` 变成 False —— 取值全被压平，前端就再也
+    读不到"这篇是在线解析的"，重解析也会因此切回本地引擎。
+    """
+    _fake_paths(monkeypatch, tmp_path,
+                {"parse_options": {"engine": "mineru", "figure_caption": False}})
+    assert fr.parse_options("p1")["engine"] == "mineru"
+    _fake_paths(monkeypatch, tmp_path, {"parse_options": {"engine": "local"}})
+    assert fr.parse_options("p1")["engine"] == "local"
+    # 坏值（老 IR / 手写 JSON）回退到默认，而不是把 "false" 当引擎名
+    _fake_paths(monkeypatch, tmp_path, {"parse_options": {"engine": None}})
+    assert fr.parse_options("p1")["engine"] == "local"
 
 
 def test_region_version_carries_the_caption_switch(monkeypatch, tmp_path):

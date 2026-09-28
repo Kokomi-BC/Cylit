@@ -5,14 +5,15 @@
  * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`，进度条走 `ProgressBar`。
  * 删除语义：软删除会先清理索引与知识库记录，PDF 文件移入 data/trash（不物理删除）。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { Paper } from '@/api/types';
+import type { MineruConfig, MineruModelVersion, Paper, ParseEngine } from '@/api/types';
 import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
+import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import {
   loadPapers, reportError, state, toast, withLoading,
@@ -156,6 +157,18 @@ interface ImportForm {
   figure_caption: boolean;
   /** 深度图片搜索：整页没有图注时也按墨迹带兜底裁图（默认关）。解析时生效。 */
   deep_figure_search: boolean;
+  /** 解析引擎：本地（离线、快）还是 MinerU（联网、公式/表格更强）。默认值来自设置页。 */
+  parse_engine: ParseEngine;
+  /* ---- 在线解析（MinerU）的可选参数：**按这篇论文**生效 ----
+   * 这些旋钮天然是"每篇不同"的：扫描件才要开强制 OCR、没有公式的论文可以关掉公式识别省时间、
+   * 超长文档得用页码范围分段。所以它们放在导入弹窗里，而不是只做一份全局设置。
+   * 模型与语言的初始值取设置页的默认值（用户可以只对这一篇改）。 */
+  mineru_model_version: MineruModelVersion;
+  mineru_language: string;
+  mineru_is_ocr: boolean;
+  mineru_enable_formula: boolean;
+  mineru_enable_table: boolean;
+  mineru_page_ranges: string;
 }
 
 /** multipart 里直接透传给后端的元数据字段。 */
@@ -166,13 +179,94 @@ interface ImportResult {
   reused?: boolean;
 }
 
+/** 解析引擎二选一的文案。**说明写清代价**（在线要 token、要联网），别只写"更强/更好"。 */
+const ENGINE_OPTIONS: ReadonlyArray<{ value: ParseEngine; label: string; note: string }> = [
+  {
+    value: 'local',
+    label: '本地解析',
+    note: '离线、快，用 PyMuPDF 自研版面分析；公式与复杂表格偏弱',
+  },
+  {
+    value: 'mineru',
+    label: '在线解析（MinerU）',
+    note: 'MinerU 云端服务，公式 / 表格更强；需要 token 且必须联网',
+  },
+];
+
 const importOpen = ref(false);
+/** MinerU 官方默认值：公式/表格识别默认开、强制 OCR 默认关（与后端 `effective_params` 一致）。 */
+const MINERU_DEFAULTS = {
+  model_version: 'pipeline' as MineruModelVersion,
+  language: 'en',
+  is_ocr: false,
+  enable_formula: true,
+  enable_table: true,
+  page_ranges: '',
+};
 const importForm = reactive<ImportForm>({
   file: null, title: '', authors: '', venue: '', year: '', tags: '', paper_id: '',
-  auto_parse: true, figure_caption: false, deep_figure_search: false,
+  auto_parse: true, figure_caption: false, deep_figure_search: false, parse_engine: 'local',
+  mineru_model_version: MINERU_DEFAULTS.model_version,
+  mineru_language: MINERU_DEFAULTS.language,
+  mineru_is_ocr: MINERU_DEFAULTS.is_ocr,
+  mineru_enable_formula: MINERU_DEFAULTS.enable_formula,
+  mineru_enable_table: MINERU_DEFAULTS.enable_table,
+  mineru_page_ranges: MINERU_DEFAULTS.page_ranges,
 });
 const dragOver = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+
+/* ------------------------- MinerU 配置（导入弹窗用） -------------------------
+ * 弹窗里只需要四件事：**默认引擎**（复位用）、**有没有 token**（没配就提示去哪里配）、
+ * **掩码后的 token**（提示里给用户一点"配的是哪一个"的确认感）、
+ * **模型与语言的默认值/选项**（在线参数区的下拉初值来自设置页）。
+ * token 的填写与验证都在设置页，这里**只读**。
+ * 失败一律静默降级（`has_token=false`、选项用内置默认）：`/mineru/*` 还没上线时，
+ * 导入弹窗必须照常能用本地解析，不能因为一个可选的联网能力把整个导入流程报错拦住。 */
+const mineruDefaultEngine = ref<ParseEngine>('local');
+/** 设置页里的默认模型 / OCR 语言（导入弹窗里"在线解析参数"的初值）。 */
+const mineruDefaultModel = ref<MineruModelVersion>(MINERU_DEFAULTS.model_version);
+const mineruDefaultLanguage = ref<string>(MINERU_DEFAULTS.language);
+const mineruHasToken = ref(false);
+const mineruTokenMasked = ref('');
+const mineruModelOptions = ref<Array<{ value: MineruModelVersion; label: string }>>([
+  { value: 'pipeline', label: 'pipeline（版面 + 公式更稳，默认）' },
+  { value: 'vlm', label: 'vlm（视觉大模型，复杂版面更强）' },
+]);
+const mineruLanguageOptions = ref<Array<{ value: string; label: string }>>([
+  { value: 'en', label: '英语' },
+  { value: 'ch', label: '中文' },
+]);
+
+/** 选了 MinerU 但没配 token：引擎选择下方给一句**可执行**的提示（去哪里配、要做什么）。 */
+const mineruNeedsToken = computed(
+  () => importForm.parse_engine === 'mineru' && !mineruHasToken.value,
+);
+
+async function loadMineruConfig() {
+  try {
+    const cfg = await api.get<MineruConfig>('/mineru/config');
+    mineruHasToken.value = cfg?.has_token === true;
+    mineruTokenMasked.value = String(cfg?.token_masked ?? '');
+    mineruDefaultEngine.value = cfg?.engine_default === 'mineru' ? 'mineru' : 'local';
+    if (cfg?.model_version_options?.length) mineruModelOptions.value = cfg.model_version_options;
+    if (cfg?.languages?.length) mineruLanguageOptions.value = cfg.languages;
+    if (cfg?.model_version) mineruDefaultModel.value = cfg.model_version;
+    if (cfg?.language) mineruDefaultLanguage.value = String(cfg.language);
+  } catch {
+    // 静默降级：接口缺失/后端未上线时，导入照样按内置默认走（本地解析 + pipeline/en）
+  }
+}
+
+/* 下面那三个开关**只对本地解析有意义**（用户口径 2026-09-28：选了在线解析就不显示它们）：
+ * 版面、插图、图注全由 MinerU 决定。既然不显示，值也必须一起归零/归正 ——
+ * 隐藏的表单字段照样会被提交（`submitImport` 不看可见性），留着旧值就是一次静默的参数漂移。 */
+watch(() => importForm.parse_engine, (engine) => {
+  if (engine !== 'mineru') return;
+  importForm.auto_parse = true;          // 在线解析没有"只导入不解析"：选它就是来解析的
+  importForm.figure_caption = false;
+  importForm.deep_figure_search = false;
+});
 
 /**
  * 清空导入表单。
@@ -182,6 +276,9 @@ const fileInput = ref<HTMLInputElement | null>(null);
  * 新论文被命名成**上一篇**的名字（用户 2026-09-27 报的"命名成其他文章了"）。
  *
  * 两个插图开关也一起复位（默认关）：它们和标题一样是"上一篇的选择"，不清就会带到下一篇。
+ * 解析引擎**不复位成硬编码的 local**，而是复位成设置页里的默认引擎（`mineruDefaultEngine`）——
+ * 用户把默认引擎设成 MinerU，就是要每篇都走 MinerU，每次打开弹窗都退回本地会很反直觉。
+ * 在线解析的可选参数同理：模型/语言取设置页默认值，OCR/公式/表格/页码范围取官方默认值。
  */
 function resetImportForm() {
   for (const k of UPLOAD_FIELDS) importForm[k] = '';
@@ -189,6 +286,13 @@ function resetImportForm() {
   importForm.auto_parse = true;
   importForm.figure_caption = false;
   importForm.deep_figure_search = false;
+  importForm.parse_engine = mineruDefaultEngine.value;
+  importForm.mineru_model_version = mineruDefaultModel.value;
+  importForm.mineru_language = mineruDefaultLanguage.value;
+  importForm.mineru_is_ocr = MINERU_DEFAULTS.is_ocr;
+  importForm.mineru_enable_formula = MINERU_DEFAULTS.enable_formula;
+  importForm.mineru_enable_table = MINERU_DEFAULTS.enable_table;
+  importForm.mineru_page_ranges = MINERU_DEFAULTS.page_ranges;
   if (fileInput.value) fileInput.value.value = '';   // 同一个文件连选两次也要能触发 change
 }
 
@@ -201,6 +305,23 @@ function pickFile(file?: File | null) {
 
 function chooseFile() {
   fileInput.value?.click();
+}
+
+/**
+ * 打开导入弹窗。
+ *
+ * **每次打开都重新拉一次 `/mineru/config`**（而不是只在页面挂载时拉一次）：用户很可能
+ * 去设置页填好 token、验证通过，再回来导入 —— 挂载时那次请求的结果那时还是"没配 token"，
+ * 会一直挂着"还没配置 MinerU token"的错误提示。这一个请求很轻，放在打开动作里最稳。
+ *
+ * ⚠️ **不等这个请求**：弹窗必须立刻出现（后端异常时也不能卡住导入）。配置回来之后再
+ * 按它复位一次表单（引擎/模型/语言的初值都来自设置页）；一次本机请求只差几十毫秒，
+ * 那时用户连文件都还没选完，第二次复位碰不到任何已输入内容。
+ */
+function openImport() {
+  resetImportForm();
+  importOpen.value = true;
+  void loadMineruConfig().then(resetImportForm);
 }
 
 function onFileChange(ev: Event) {
@@ -216,6 +337,14 @@ function onDrop(ev: DragEvent) {
 
 async function submitImport() {
   if (!importForm.file) { toast('请选择 PDF 文件', 'warn'); return; }
+  /* 页码范围先在本机做一次**便宜的**格式检查（只允许数字/逗号/连字符）：
+   * 用户敲错一个字母就没必要走一趟上传（上传的是整个 PDF）。
+   * 真正的判据仍在后端（`mineru_service.norm_page_ranges`），这里只是提前拦明显的手误。 */
+  const ranges = importForm.mineru_page_ranges.trim();
+  if (importForm.parse_engine === 'mineru' && ranges && !/^[0-9,\-\s]+$/.test(ranges)) {
+    toast('页码范围只能填数字、逗号和连字符，例如 1-10 或 2,4-6', 'warn', 4200);
+    return;
+  }
   const form = new FormData();
   form.append('file', importForm.file);
   for (const k of UPLOAD_FIELDS) {
@@ -227,6 +356,19 @@ async function submitImport() {
    * 语义见 `PaperBuilder`：图片含图注 = 图体+图注拼成一张；深度图片搜索 = 无图注页兜底裁图。 */
   form.append('figure_caption', importForm.figure_caption ? 'true' : 'false');
   form.append('deep_figure_search', importForm.deep_figure_search ? 'true' : 'false');
+  /* 解析引擎在**导入时**传给后端（它决定本次解析走哪条路）。默认值来自设置页，
+   * 但用户可以在弹窗里对**这一篇**临时改掉。 */
+  form.append('parse_engine', importForm.parse_engine);
+  /* 在线解析的可选参数：**只在选在线解析时才发**。
+   * 本地解析那条路不认这些键；一个手滑留下的页码范围字符串不该让本地导入报 400。 */
+  if (importForm.parse_engine === 'mineru') {
+    form.append('mineru_model_version', importForm.mineru_model_version);
+    form.append('mineru_language', importForm.mineru_language);
+    form.append('mineru_is_ocr', importForm.mineru_is_ocr ? 'true' : 'false');
+    form.append('mineru_enable_formula', importForm.mineru_enable_formula ? 'true' : 'false');
+    form.append('mineru_enable_table', importForm.mineru_enable_table ? 'true' : 'false');
+    if (ranges) form.append('mineru_page_ranges', ranges);
+  }
   busyKey.value = 'import';
   try {
     const data = await api.upload<ImportResult>('/papers', form);
@@ -584,7 +726,7 @@ async function submitEdit() {
         <button class="btn icon" title="刷新列表" :disabled="loading" @click="refresh">
           <AppIcon name="refresh" :size="15" />
         </button>
-        <button class="btn primary" @click="importOpen = true">
+        <button class="btn primary" @click="openImport">
           <AppIcon name="upload" :size="15" />导入 PDF
         </button>
       </div>
@@ -643,7 +785,7 @@ async function submitEdit() {
         @dragover.prevent="dragOver = true"
         @dragleave="dragOver = false"
         @drop.prevent="onDrop"
-        @click="importOpen = true"
+        @click="openImport"
       >
         <AppIcon name="upload" :size="18" />
         <span>拖拽 PDF 到此处，或点击选择文件</span>
@@ -774,19 +916,102 @@ async function submitEdit() {
         <label class="field">标签（逗号分隔）<input v-model="importForm.tags" /></label>
         <label class="field">paper_id（留空自动生成）<input v-model="importForm.paper_id" /></label>
       </div>
-      <label class="row small" style="margin-top: 10px">
-        <input type="checkbox" v-model="importForm.auto_parse" /> 导入后立即解析
-      </label>
-      <!-- 两个插图开关：**导入时选、解析时生效**（导入本身就是重解析）。
-           默认都关 = 只出图注锚定的图、且裁图不含图注（图注在阅读器里有自己的一行，不丢信息）。 -->
-      <label class="row small opt-row">
-        <input type="checkbox" v-model="importForm.figure_caption" /> 图片是否包含图注
-        <span class="opt-note">开 = 图体与图注拼成一张（现状那套卡片）；关（默认）= 只裁图体本身</span>
-      </label>
-      <label class="row small opt-row">
-        <input type="checkbox" v-model="importForm.deep_figure_search" /> 深度图片搜索
-        <span class="opt-note">开 = 整页没有图注时也按墨迹带兜底裁图；关（默认）= 只出图注锚定的图</span>
-      </label>
+      <!-- 解析引擎：二选一（互斥）。放最前面，因为它决定的是"这次导入交给谁解析"，
+           是比"解析后要不要裁图"更上层的选择。 -->
+      <div class="engine">
+        <div class="engine-label">解析引擎</div>
+        <div class="engine-row" role="radiogroup" aria-label="解析引擎">
+          <button
+            v-for="opt in ENGINE_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="engine-opt"
+            :class="{ active: importForm.parse_engine === opt.value }"
+            role="radio"
+            :aria-checked="importForm.parse_engine === opt.value"
+            @click="importForm.parse_engine = opt.value"
+          >
+            <span class="engine-name">{{ opt.label }}</span>
+            <span class="engine-note">{{ opt.note }}</span>
+          </button>
+        </div>
+        <!-- 没配 token 就选在线解析：直接给出"去哪配、要做什么"，而不是等到导入失败才说 -->
+        <p class="tiny engine-warn" v-if="mineruNeedsToken">
+          <AppIcon name="warning" :size="13" />
+          还没配置 MinerU token：请到「设置 → 在线解析（MinerU）」填入并验证
+          <template v-if="mineruTokenMasked">（当前已存：{{ mineruTokenMasked }}）</template>
+        </p>
+      </div>
+
+      <!-- 在线解析的可选参数：只在选在线解析时出现（本地解析没有这些旋钮）。
+           它们天然是"每篇不同"的：扫描件才要开强制 OCR、没有公式的论文可以关掉公式识别省时间、
+           超长文档用页码范围分段。模型与语言的初值来自设置页，这里可以只对**这一篇**改。 -->
+      <div class="online-params" v-if="importForm.parse_engine === 'mineru'">
+        <div class="op-head">在线解析参数<span class="op-hint">（只对这篇论文生效）</span></div>
+        <div class="op-grid">
+          <label class="field">模型
+            <select v-model="importForm.mineru_model_version" data-mineru-model>
+              <option v-for="m in mineruModelOptions" :key="m.value" :value="m.value">
+                {{ m.label }}
+              </option>
+            </select>
+          </label>
+          <label class="field">OCR 语言
+            <select v-model="importForm.mineru_language" data-mineru-language>
+              <option v-for="l in mineruLanguageOptions" :key="l.value" :value="l.value">
+                {{ l.label }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <Switch v-model="importForm.mineru_is_ocr">
+          <span class="opt">
+            <span class="opt-text">强制 OCR</span>
+            <span class="opt-note">扫描件 / 字体乱码时打开；有文本层的 PDF 一般不需要（更慢）</span>
+          </span>
+        </Switch>
+        <Switch v-model="importForm.mineru_enable_formula">
+          <span class="opt">
+            <span class="opt-text">识别公式</span>
+            <span class="opt-note">关掉可少一次模型调用；公式会退化成图片，论文一般都要开</span>
+          </span>
+        </Switch>
+        <Switch v-model="importForm.mineru_enable_table">
+          <span class="opt">
+            <span class="opt-text">识别表格</span>
+            <span class="opt-note">关掉可快一些；有表格的论文要开，否则表格只能当图片看</span>
+          </span>
+        </Switch>
+        <label class="field">页码范围
+          <input
+            v-model="importForm.mineru_page_ranges"
+            data-mineru-ranges
+            placeholder="留空 = 全部页；例：1-10、2,4-6、2--2（-2 = 倒数第二页）"
+          />
+        </label>
+      </div>
+
+      <!-- 下面三个开关**只在本地解析时出现**（用户口径 2026-09-28）：在线解析的版面、插图、
+           图注全由 MinerU 决定，这三个开关在那里没有对应物，摆着只是噪声。 -->
+      <template v-if="importForm.parse_engine === 'local'">
+        <Switch v-model="importForm.auto_parse">
+          <span class="opt"><span class="opt-text">导入后立即解析</span></span>
+        </Switch>
+        <!-- 两个插图开关：**导入时选、解析时生效**（导入本身就是重解析）。
+             默认都关 = 只出图注锚定的图、且裁图不含图注（图注在阅读器里有自己的一行，不丢信息）。 -->
+        <Switch v-model="importForm.figure_caption">
+          <span class="opt">
+            <span class="opt-text">图片是否包含图注</span>
+            <span class="opt-note">开 = 图体与图注拼成一张（现状那套卡片）；关（默认）= 只裁图体本身</span>
+          </span>
+        </Switch>
+        <Switch v-model="importForm.deep_figure_search">
+          <span class="opt">
+            <span class="opt-text">深度图片搜索</span>
+            <span class="opt-note">开 = 整页没有图注时也按墨迹带兜底裁图；关（默认）= 只出图注锚定的图</span>
+          </span>
+        </Switch>
+      </template>
       <template #footer>
         <button class="btn" @click="importOpen = false">取消</button>
         <button class="btn primary" :disabled="busyKey === 'import'" @click="submitImport">
@@ -898,7 +1123,65 @@ async function submitEdit() {
 
 .es-icon.bad { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .load-error { color: var(--danger); }
-/* 导入弹窗里的两个插图开关：一行一个，说明文字跟在后面（换行时缩进对齐） */
-.opt-row { margin-top: 8px; align-items: baseline; }
-.opt-note { margin-left: 6px; font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+
+/* ---------------- 导入弹窗：解析引擎 + 三个开关 ----------------
+ * 引擎用"块状二选一"（`.seg` 是紧凑胶囊，塞不下一行说明），所以按 `.btn` 的观感自绘：
+ * 同样的描边 / 圆角 / 高度语言，选中态用 `--accent-soft` + `--accent-text`（与设置页分区药丸一致）。 */
+.engine { margin-top: 12px; }
+.engine-label { font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+.engine-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.engine-opt {
+  flex: 1 1 200px; min-width: 0; text-align: left;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 9px 12px; cursor: pointer;
+  font-family: inherit; color: var(--text);
+  background: var(--bg-elev); border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+.engine-opt:hover { background: var(--bg-hover); border-color: color-mix(in srgb, var(--accent) 34%, var(--border-strong)); }
+.engine-opt:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.engine-opt.active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.engine-name { font-size: 13px; font-weight: 600; }
+.engine-opt.active .engine-name { color: var(--accent-text); }
+.engine-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.engine-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 8px 0 0; color: var(--danger);
+}
+.engine-warn .icon { margin-top: 2px; }
+
+/* 三个开关的文案：**标签一行、说明另起一行**。
+ * 旧版把说明接在标签后面用行内流排，长说明会折到轨道下面、缩进也对不齐（用户看到的
+ * "（在线解析由 MinerU 决定…）"掉到第三行）。两行都从文字列开始，读起来是一条一条的。 */
+.opt { display: flex; flex-direction: column; gap: 2px; }
+.opt-text { font-size: 12.5px; color: var(--text); }
+.opt-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+
+/* 引擎块与第一个开关之间补出行距：`.switch-row + .switch-row` 只覆盖连续两个开关，
+ * 而"引擎 → 第一个开关"这一对在 DOM 上是跨元素的（`<div class="engine">` 之后）。 */
+.engine + .switch-row { margin-top: 12px; }
+
+/* ---------------- 导入弹窗：在线解析参数 ----------------
+ * 用一条**左边框 + 浅底**把它和"通用元数据/引擎"分开：里面每一项都是 MinerU 专属的旋钮，
+ * 与上面的插图开关不是一回事（那些只对本地解析生效）。 */
+.online-params {
+  margin-top: 12px; padding: 10px 12px 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+}
+.op-head { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.op-hint { font-weight: 400; color: var(--text-faint); }
+.op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.op-grid .field { margin-top: 0; }
+/* 参数区里的开关行比外面那些挨得紧一点（区块本身已经把范围框出来了） */
+.online-params .switch-row + .switch-row { margin-top: 8px; }
+.online-params .switch-row:first-of-type { margin-top: 10px; }
+.online-params .field { margin-top: 10px; }
 </style>
