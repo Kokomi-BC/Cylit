@@ -37,8 +37,8 @@ withDefaults(defineProps<{
   min-width: 292px; max-width: min(560px, calc(100vw - 32px));
   display: grid; gap: 12px; padding: 14px;
   pointer-events: auto;
-  /* 与胶囊 / 两枚圆形开关同一套：渐变本体 + 柔光投影 + 顶部细高光，**不画描边**
-     （描边在深色下会变成发光环）。面板里全是文字，本体比工具条那两块再实一档。 */
+  /* 与胶囊 / 两枚圆形开关同一套：渐变本体 + 柔光投影，**不画描边、不留内阴影**
+     （描边与那道顶部高光在深色下都会变成发光边）。面板里全是文字，本体比工具条那两块再实一档。 */
   border: 0;
   border-radius: 18px;
   background: linear-gradient(180deg,
@@ -46,7 +46,7 @@ withDefaults(defineProps<{
     color-mix(in srgb, var(--bg-elev) var(--glass-panel-bottom, 74%), transparent));
   backdrop-filter: blur(52px) saturate(2.6);
   -webkit-backdrop-filter: blur(52px) saturate(2.6);
-  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge, rgba(255, 255, 255, .5));
+  box-shadow: var(--shadow-flyout);
   animation: cap-panel-in .18s cubic-bezier(.32, .72, 0, 1) both;
 }
 /* 面板落在胶囊正下方：`--panel-shift` 由 ReaderView 按侧栏让位量给（与胶囊同一节奏） */

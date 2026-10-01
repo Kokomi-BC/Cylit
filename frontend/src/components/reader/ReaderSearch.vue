@@ -21,7 +21,7 @@
  * `scope:"paper"` 由后端保证**只查本文**，前端不再做任何额外过滤（多滤一层就可能把后端
  * 已经扩好的 Small-to-Big 命中滤掉）。
  */
-import { nextTick, reactive, ref } from 'vue';
+import { computed, nextTick, reactive, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import { api } from '@/api/client';
 import { htmlWithMarks, mdToHtml } from '@/composables/useMarkdown';
@@ -215,6 +215,26 @@ function setMode(m: SearchMode) {
   semantic.error = '';
 }
 
+/* 顶部那两枚小胶囊：标签与提示都从上面两张表里取（表里"说明"改成挂在 title 上，
+ * 面板上只留最短的两个字）—— 这是"按钮和说明文字都太多"那条口径的落点。 */
+const modeLabel = computed(() => MODE_OPTIONS.find((m) => m.k === props.mode)?.label ?? '关键词');
+const scopeLabel = computed(() => SCOPE_OPTIONS.find((o) => o.k === props.scope)?.label ?? '全部');
+const modeTitle = computed(() => {
+  const cur = MODE_OPTIONS.find((m) => m.k === props.mode);
+  const other = MODE_OPTIONS.find((m) => m.k !== props.mode);
+  return `当前：${cur?.label}（${cur?.title}）· 点一下切到「${other?.label}」`;
+});
+const scopeTitle = computed(() => {
+  const i = SCOPE_OPTIONS.findIndex((o) => o.k === props.scope);
+  const next = SCOPE_OPTIONS[(i + 1) % SCOPE_OPTIONS.length];
+  return `搜索范围：${scopeLabel.value} · 点一下换成「${next.label}」`;
+});
+function toggleMode() { setMode(props.mode === 'semantic' ? 'lexical' : 'semantic'); }
+function nextScope() {
+  const i = SCOPE_OPTIONS.findIndex((o) => o.k === props.scope);
+  emit('update:scope', SCOPE_OPTIONS[(i + 1) % SCOPE_OPTIONS.length].k);
+}
+
 /** 回车：词法交给视图（`emit('search')` 那条路径带提示），语义在这里直接发 */
 function onEnter() {
   if (props.mode === 'semantic') { void runSemantic(); return; }
@@ -258,38 +278,26 @@ function onClear() {
         </button>
       </label>
 
-      <!-- 模式分段：词法（原有）/ 语义（新增）。沿用全站 `.seg` 胶囊语言，两段等分。 -->
-      <div class="seg ss-mode" title="搜索方式">
+      <!-- 一行两枚小胶囊（用户口径：别堆按钮、别写说明文字）：
+           左 = 搜索方式，点一下在「关键词 / 语义」之间切换（亮起 = 语义，另一种检索范式）；
+           右 = 范围，点一下在「全部 → 原文 → 译文」之间轮换（只对关键词有意义，语义模式下收起）。
+           当前值写在脸上、"点一下会变成什么"写在 title 里，所以不需要任何额外文案。 -->
+      <div class="ss-chips">
         <button
-          v-for="m in MODE_OPTIONS"
-          :key="m.k"
-          :class="{ active: props.mode === m.k }"
-          :title="m.title"
-          @click="setMode(m.k)"
-        >{{ m.label }}</button>
-      </div>
-
-      <!-- 词法：范围（全部/原文/译文）；语义：**没有范围可选** —— scope=paper 由后端保证只查本文，
-           前端再按 lang 过滤只会滤掉后端扩好的命中（口径：前端不要额外过滤） -->
-      <div v-if="props.mode === 'lexical'" class="seg ss-scope" title="搜索范围">
-        <button
-          v-for="opt in SCOPE_OPTIONS"
-          :key="opt.k"
-          :class="{ active: props.scope === opt.k }"
-          :title="opt.title"
-          @click="emit('update:scope', opt.k)"
-        >{{ opt.label }}</button>
-      </div>
-      <div v-else class="row tiny ss-sem-bar">
-        <span class="faint">语义检索只查本文</span>
-        <span class="spacer" />
-        <button
-          class="btn sm"
-          :disabled="!props.query.trim() || semantic.loading"
-          title="在本文里按意思检索"
-          @click="runSemantic"
+          class="ss-chip"
+          :class="{ on: props.mode === 'semantic' }"
+          :title="modeTitle"
+          @click="toggleMode"
         >
-          <AppIcon name="sparkle" :size="12" />{{ semantic.loading ? '检索中…' : '检索' }}
+          <AppIcon :name="props.mode === 'semantic' ? 'sparkle' : 'list'" :size="12" />{{ modeLabel }}
+        </button>
+        <button
+          v-if="props.mode === 'lexical'"
+          class="ss-chip"
+          :title="scopeTitle"
+          @click="nextScope"
+        >
+          <AppIcon name="filter" :size="12" />{{ scopeLabel }}
         </button>
       </div>
     </div>
@@ -307,12 +315,12 @@ function onClear() {
           <span class="tiny faint nowrap">p{{ hit.page }} · {{ hit.side === 'en' ? '原文' : '译文' }}</span>
           <span class="tiny ss-snippet" v-html="snippetHtml(hit.snippet)" />
         </button>
-        <div v-if="props.query.trim() && !props.hits.length" class="empty small">没有匹配的段落</div>
+        <div v-if="props.query.trim() && !props.hits.length" class="empty small">没有匹配</div>
       </template>
 
       <!-- 语义命中：类型 + 页码 + 摘要片段；点一条跳到那一页 -->
       <template v-else>
-        <div v-if="semantic.loading" class="empty small">正在本文里做语义检索…</div>
+        <div v-if="semantic.loading" class="empty small">检索中…</div>
         <template v-else-if="semantic.error">
           <div class="ss-err">
             <div class="tiny">语义检索失败：{{ semantic.error }}</div>
@@ -333,12 +341,8 @@ function onClear() {
             </span>
             <span class="tiny ss-snippet" v-html="previewHtml(hit)" />
           </button>
-          <div v-if="semantic.ran && !semantic.items.length" class="empty small">
-            没有语义相近的段落 —— 换个说法，或把想找的东西描述得更具体一点。
-          </div>
-          <div v-else-if="!semantic.ran" class="empty small">
-            用一句话描述你要找的内容，回车即可（只在本篇论文里找）。
-          </div>
+          <div v-if="semantic.ran && !semantic.items.length" class="empty small">没有相近的段落</div>
+          <div v-else-if="!semantic.ran" class="empty small">回车在本文里做语义检索</div>
         </template>
       </template>
     </div>
@@ -347,18 +351,25 @@ function onClear() {
 
 <style scoped>
 .side-search { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-/* 只有"输入框 + 模式/范围 + 结果"三层：命中条数已经由页签上的角标表示，不再单独写一行状态文案
-   （用户口径：冗余文字太多）。空结果只留下面那一行提示。 */
+/* 只有"输入框 + 两枚小胶囊 + 结果"三层：命中条数由页签角标表示，状态文案一律不写长句
+   （用户口径：按钮和说明文字都太多）。空结果只在列表里留一行短提示。 */
 .ss-head { flex: none; padding: 8px 8px 4px; display: flex; flex-direction: column; gap: 6px; }
 /* 输入框占满侧栏宽度（base.css 的 .search-field input 是给工具栏定的 180px） */
 .ss-field { width: 100%; }
 .ss-field input { width: 100%; min-width: 0; }
-/* 范围/模式分段：拉满宽度 + 等分 + **文字居中**。
-   ⚠️ 必须显式写 `justify-content: center`：base.css 的 `.seg button` 是 `inline-flex` 但没有
-   `justify-content`，宽度一被 `flex: 1` 拉开，文字就贴在格子左边（用户报过"文字没居中"）。 */
-.ss-scope, .ss-mode { display: flex; width: 100%; }
-.ss-scope button, .ss-mode button { flex: 1; padding: 0 6px; justify-content: center; }
-.ss-sem-bar { gap: 6px; }
+/* 一行两枚小胶囊：24px 高、**跟着文字走**（不再是拉满整行的分段控件）。
+   当前值写在脸上，点一下换成什么写在 title 里 —— 所以不需要额外说明文字。 */
+.ss-chips { display: flex; align-items: center; gap: 6px; }
+.ss-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 9px; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-dim); font-size: 11.5px; line-height: 1; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.ss-chip:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+/* 「语义」是另一种检索范式：亮一块强调色底，提醒"现在不是按字面搜" */
+.ss-chip.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .ss-hits { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 4px 28px; }
 /* 一条命中 = 一个整块可点的"行"（与目录项同一种交互：点了跳正文） */
 .ss-hit {

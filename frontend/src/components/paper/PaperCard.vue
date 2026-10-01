@@ -224,31 +224,28 @@ function onCard() {
   height: 20px; padding: 0 8px; border-radius: 999px;
   font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap;
   /* 徽章压在论文首页图上：用极强玻璃（20px 模糊）把封面那点字迹糊开，自身读数才清楚。
-     不画描边（深色下会成发光环），层次靠渐变本体 + 主题化的顶部细高光。 */
+     不画描边、不留内阴影（深色下都会成发光边），层次靠渐变本体 + 柔光投影。 */
   --glass-top: 86%;
   --glass-bottom: 76%;
-  --glass-edge: rgba(255, 255, 255, .5);
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--bg-elev) var(--glass-top), transparent),
     color-mix(in srgb, var(--bg-elev) var(--glass-bottom), transparent));
   color: var(--text-dim);
   border: 0;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .12), inset 0 1px 0 var(--glass-edge);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
   backdrop-filter: blur(20px) saturate(2.2);
   -webkit-backdrop-filter: blur(20px) saturate(2.2);
 }
-/* 深色皮肤下：徽章加实一档 + 高光收弱（`:global()` 写整条选择器，见 ReaderView 的注释） */
+/* 深色皮肤下：徽章加实一档（`:global()` 写整条选择器，见 ReaderView 的注释） */
 :global(html.theme-dark .pc-badge) {
   --glass-top: 94%;
   --glass-bottom: 88%;
-  --glass-edge: rgba(255, 255, 255, .18);
 }
 @media (prefers-color-scheme: dark) {
   :global(html[data-theme="auto"] .pc-badge),
   :global(html:not([data-theme]) .pc-badge) {
     --glass-top: 94%;
     --glass-bottom: 88%;
-    --glass-edge: rgba(255, 255, 255, .18);
   }
 }
 /* 语义色只用于状态：完成走实心强调（图1 里「已翻译」就是这一枚），

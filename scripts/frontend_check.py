@@ -79,8 +79,8 @@ ROUTES: list[dict] = [
     # 清空按钮）；工具栏不再有搜索框（负向断言）。命中条数由页签角标表示，面板里不再写状态文案。
     # `class="srch"` = 正文里**所有**命中都打了高亮标记（不只是当前那一条）。
     {"name": "reader-搜索", "path": "/reader/{paper}?view=bilingual&q=attention",
-     "markers": ["side-search", "ss-hit", "ss-snippet", "清空搜索", "class=\"srch\""],
-     "absent": ["search-compact"]},
+     "markers": ["side-search", "ss-chip", "ss-hit", "ss-snippet", "清空搜索", "class=\"srch\""],
+     "absent": ["search-compact", "ss-mode", "ss-scope", "ss-sem-bar"]},
     # Markdown 视图（`?md=1` 深链直接打开）：工具行 + 正文 +「下载<当前版本>」+ 右上角「全屏」。
     # `data-md-page="3"` = **整篇一次性渲染**（不再翻页，所以"上一页/下一页"必须不存在）。
     {"name": "reader-Markdown视图", "path": "/reader/{paper}?md=1",
@@ -1460,6 +1460,61 @@ f.addEventListener('load', async () => {
       /* 侧栏开关：用户口径是"始终只有一枚"（圆形的那个）—— 历史上做成过"侧栏里一枚 +
        * 顶栏一枚"的互斥渲染，切换时会看到两枚交接。这里数一下 DOM 里到底有几枚。 */
       const toggles = d.querySelectorAll('[data-aside-toggle]').length;
+      /* 标签页胶囊（顶栏）：用户口径 = **不再裁字**、与下方那枚页签胶囊同一种圆形。
+       * 「裁字」不能看 scrollHeight（它只报行盒高）：要看**文字本身的自然高度** ——
+       * Range.getBoundingClientRect() 量的是字体 ascent + descent（与 line-height 无关），
+       * 一旦它高过元素的内容盒，.truncate 的 overflow: hidden 就把上下缘切掉了。 */
+      const tabTitles = [...d.querySelectorAll('a.tab .tab-title')];
+      let tabClip = 0, tabRatio = 0;
+      tabTitles.forEach((el) => {
+        const rg = d.createRange();
+        rg.selectNodeContents(el);
+        const natural = rg.getBoundingClientRect().height || 0;
+        const box = el.clientHeight || 0;
+        if (box && natural > box + 1) tabClip += 1;
+        if (box) tabRatio = Math.max(tabRatio, natural / box);
+      });
+      const tabOne = d.querySelector('a.tab');
+      const tabRect = tabOne ? tabOne.getBoundingClientRect() : null;
+      const tabBar = {
+        n: tabTitles.length,
+        clip: tabClip,
+        ratio: Math.round(tabRatio * 100) / 100,
+        h: tabRect ? Math.round(tabRect.height) : 0,
+        radius: tabOne ? parseFloat(getComputedStyle(tabOne).borderTopLeftRadius) || 0 : 0,
+      };
+      /* 侧栏头部那枚页签胶囊：用户口径 = **与左侧圆钮同高同线**（都是 38px）、
+       * **汉字只在当前页显示**（其余页签只留图标；当前页是图标在上、文字在下并加粗）。
+       * 采回两者的 top/height 比对，量当前页那枚是不是竖排两行，并数一共露出几枚文字。 */
+      const stBox = d.querySelector('.side-tabs');
+      const stSolo = d.querySelector('.cap-solo.left');
+      const stRect = stBox ? stBox.getBoundingClientRect() : null;
+      const soloRect = stSolo ? stSolo.getBoundingClientRect() : null;
+      const stItem = d.querySelector('.side-tab.active') || d.querySelector('.side-tab');
+      const stIcon = stItem ? stItem.querySelector('svg') : null;
+      const stLabel = stItem ? stItem.querySelector('.side-label') : null;
+      const stIconRect = stIcon ? stIcon.getBoundingClientRect() : null;
+      const stLabelRect = stLabel ? stLabel.getBoundingClientRect() : null;
+      const sideTabs = {
+        top: stRect ? Math.round(stRect.top) : -1,
+        h: stRect ? Math.round(stRect.height) : -1,
+        soloTop: soloRect ? Math.round(soloRect.top) : -1,
+        soloH: soloRect ? Math.round(soloRect.height) : -1,
+        stacked: !!(stIconRect && stLabelRect && stIconRect.bottom <= stLabelRect.top + 0.5),
+        labels: [...d.querySelectorAll('.side-tab .side-label')]
+          .filter((e) => e.offsetParent !== null).length,
+        border: stBox ? getComputedStyle(stBox).borderTopStyle : '',
+        flat: stBox
+          ? !/gradient/.test(getComputedStyle(stBox).backgroundImage)
+            && getComputedStyle(stBox).backdropFilter === 'none'
+          : false,
+        inset: stBox ? /inset/.test(getComputedStyle(stBox).boxShadow) : false,
+      };
+      /* 毛玻璃上的**内阴影**（inset 0 1px 0 那道顶部高光）按用户口径去掉了：
+       * 浅色下几乎看不见，深色下反而像一圈发光边。这里数一下还有几块玻璃带 inset。 */
+      const insets = ['.cap-solo.left', '.reader-capsule', '.cap-panel', '.side-tabs']
+        .map((s) => d.querySelector(s)).filter(Boolean)
+        .filter((e) => /inset/.test(getComputedStyle(e).boxShadow)).length;
       const cb = d.querySelector('.rows-foot input[type="checkbox"]');
       /* 参考文献行：**不能按行类型数** —— 有的论文（turboquant）参考文献行的类型是 `para`
        * 而不是 `ref`。改成"找到参考文献小节标题后，它后面还有多少行"：
@@ -1482,6 +1537,9 @@ f.addEventListener('load', async () => {
         glassKeys: [...new Set(glass)],
         panels,
         toggles,
+        tabBar,
+        sideTabs,
+        insets,
       };
     };
     res.before = { search: w.location.search, view: active('.seg'), ui: uiState() };
@@ -3032,6 +3090,33 @@ def main() -> int:
                     int(ui.get("toggles") or 0) == 1,
                     f"[data-aside-toggle] 在 DOM 里 {ui.get('toggles')} 枚"
                     f"（侧栏开着时它在侧栏头部最左，收起时在正文左边缘 —— 同一枚，不交接）"))
+                tb = ui.get("tabBar") or {}
+                st = ui.get("sideTabs") or {}
+                checks.append((
+                    "标签页胶囊不裁文字 + 与下方胶囊同一种圆形",
+                    int(tb.get("clip") or 0) == 0
+                    and float(tb.get("ratio") or 9) <= 1.1
+                    and int(tb.get("h") or 0) >= 30
+                    and float(tb.get("radius") or 0) >= int(tb.get("h") or 0) / 2,
+                    f"标签页 {tb.get('n')} 枚：高 {tb.get('h')}px、圆角 {tb.get('radius')}px、"
+                    f"裁字 {tb.get('clip')} 枚（字高/盒高 = {tb.get('ratio')}）"))
+                checks.append((
+                    "侧栏页签胶囊与左侧圆钮同高同线 + 只在当前页显示文字",
+                    st.get("h") == 38 and st.get("soloH") == 38
+                    and st.get("top") == st.get("soloTop")
+                    and st.get("stacked") is True
+                    and int(st.get("labels") or 0) == 1
+                    and st.get("border") == "none"
+                    and st.get("flat") is True,
+                    f"页签胶囊 top/高 = {st.get('top')}/{st.get('h')}、"
+                    f"圆钮 top/高 = {st.get('soloTop')}/{st.get('soloH')}、"
+                    f"当前页两行 = {st.get('stacked')}、露出文字 {st.get('labels')} 枚、"
+                    f"描边 = {st.get('border')}、不铺毛玻璃 = {st.get('flat')}"))
+                checks.append((
+                    "毛玻璃不带内阴影（inset 高光）",
+                    int(ui.get("insets") if ui.get("insets") is not None else -1) == 0,
+                    f"四块玻璃（顶栏三块 + 侧栏页签胶囊）里带 inset 的有 "
+                    f"{ui.get('insets')} 块；页签胶囊自身 inset = {st.get('inset')}"))
                 checks.append((
                     "开关写进 URL（切标签还原用）",
                     "view=" in q and "left=page" in q and "order=zh_left" in q,

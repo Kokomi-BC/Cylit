@@ -1426,16 +1426,15 @@ async function submitEdit() {
   display: inline-flex; align-items: center; gap: 8px;
   max-width: calc(100vw - 32px);
   padding: 8px; border-radius: 999px;
-  /* 极强玻璃（与阅读器顶栏同一档）：渐变本体 + 柔光投影 + 顶部细高光，**不画描边**
-     （描边在深色下会变成一圈发光环）。本体透明度按主题分档。 */
+  /* 极强玻璃（与阅读器顶栏同一档）：渐变本体 + 柔光投影，**不画描边、不留内阴影**
+     （描边与顶部高光在深色下都会变成发光边）。本体透明度按主题分档。 */
   --glass-bar-top: 82%;
   --glass-bar-bottom: 70%;
-  --glass-edge: rgba(255, 255, 255, .5);
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-top), transparent),
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom), transparent));
   border: 0;
-  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge);
+  box-shadow: var(--shadow-flyout);
   backdrop-filter: blur(44px) saturate(2.4);
   -webkit-backdrop-filter: blur(44px) saturate(2.4);
   transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur);
@@ -1445,14 +1444,12 @@ async function submitEdit() {
 :global(html.theme-dark .lib-dock) {
   --glass-bar-top: 92%;
   --glass-bar-bottom: 84%;
-  --glass-edge: rgba(255, 255, 255, .18);
 }
 @media (prefers-color-scheme: dark) {
   :global(html[data-theme="auto"] .lib-dock),
   :global(html:not([data-theme]) .lib-dock) {
     --glass-bar-top: 92%;
     --glass-bar-bottom: 84%;
-    --glass-edge: rgba(255, 255, 255, .18);
   }
 }
 /* 批量模式：搜索岛**隐藏但不卸载**（输入框的焦点与内容都留着，退出批量立刻能用） */

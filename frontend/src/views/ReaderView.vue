@@ -3064,7 +3064,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
                 :title="t.title"
                 @click="sideTab = t.k"
               >
-                <AppIcon :name="t.icon" :size="15" />
+                <AppIcon :name="t.icon" :size="14" />
                 <span class="side-label">{{ t.label }}</span>
                 <span v-if="t.count" class="side-count">{{ t.count }}</span>
               </button>
@@ -3299,63 +3299,63 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .reader-loading-bar { width: 220px; max-width: 60vw; }
 
 .reader {
-  /* 侧栏改为**绝对定位**（见 .reader-aside）：网格只剩正文一列，"侧栏开合"因此不再牵动
+  /* 侧栏改为**绝对定位**（见 .reader-aside）：网格只剩正文一列，「侧栏开合」因此不再牵动
      网格轨道。每次开合只改一个 CSS 变量，正文的重排只发生在**动画第一帧**，
      之后是纯 transform 的平移（合成层、不重排）。以前过渡 grid 宽度/侧栏宽度会逐帧重排
-     整篇正文（KaTeX、表格、行对齐全在重算），那正是"卡一下、跳一下"的来源。 */
+     整篇正文（KaTeX、表格、行对齐全在重算），那正是「卡一下、跳一下」的来源。 */
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: calc(100vh - var(--header-h));
   overflow: hidden;
-}
 
-/* ---------------- 悬浮胶囊工具栏（Apple 风） ----------------
- * 一条水平线上三块玻璃（左开关 / 中主胶囊 / 右更多），共用同一个高度变量 `--cap-h`
- * → 永远同高、同基线（用户报过"开关和胶囊不一样大、也不在一条线上"）。
- * 整层是 `height: 0` 的占位层 + `pointer-events: none`：正文从它**下面**滚过去，
- * 毛玻璃才有东西可模糊；交互只落在三块玻璃与弹出面板上。 */
-.reader-toolbar {
+  /* ---------------- 胶囊直径 + 玻璃材质（声明在**根**上，顶栏与侧栏共用一套） ----------------
+   * 同一行的四样东西共用高度变量 --cap-h → 永远同高同线：顶栏那三块玻璃
+   * （左开关 / 主胶囊 / 右更多）+ 侧栏头部那枚页签胶囊。
+   * ⚠️ 变量必须落在 .reader 上，不能只写在 .reader-toolbar 里：侧栏是它的**兄弟**节点，
+   * 自定义属性不跨兄弟继承 —— 写窄了侧栏那枚胶囊就拿不到 --cap-h，高度直接失效。 */
   --cap-h: 38px;
   /* 玻璃本体的不透明度：**浅色下可以很透**（背后是白纸，48px 模糊会化成一团柔光），
-     深色下要加实一档 —— 否则深色工具条压在仍是白纸的正文上会变成"灰玻璃"，控件读不清。
-     两档都远透于"实心工具栏"，所以极强玻璃的观感不变，只是深色下不再牺牲可读性。 */
+     深色下要加实一档 —— 否则深色工具条压在仍是白纸的正文上会变成「灰玻璃」，控件读不清。
+     两档都远透于「实心工具栏」，所以极强玻璃的观感不变，只是深色下不再牺牲可读性。 */
   --glass-bar-top: 80%;
   --glass-bar-bottom: 68%;
   --glass-panel-top: 86%;
   --glass-panel-bottom: 74%;
-  /* 顶部那一道细高光（玻璃的"棱"）：**不分主题都用白色会翻车** ——
-     深色下 0.5 的白边亮得像发光环（用户口径："暗色显示太奇怪"）。
-     浅色 .5 / 深色 .18，配合去掉描边，层次靠"渐变本体 + 柔光投影"来给。 */
-  --glass-edge: rgba(255, 255, 255, .5);
+}
+
+/* ---------------- 悬浮胶囊工具栏（Apple 风） ----------------
+ * 一条水平线上三块玻璃（左开关 / 中主胶囊 / 右更多），共用 .reader 上的 --cap-h
+ * → 永远同高、同基线（用户报过「开关和胶囊不一样大、也不在一条线上」）。
+ * 整层是 height: 0 的占位层 + pointer-events: none：正文从它**下面**滚过去，
+ * 毛玻璃才有东西可模糊；交互只落在三块玻璃与弹出面板上。 */
+.reader-toolbar {
   position: absolute; top: 0; left: 0; right: 0; height: 0; z-index: 40;
   display: flex; justify-content: center;
-  /* ⚠️ 必须 flex-start：这一层高 0，默认的 `stretch` 会把胶囊也拉成 0 高，
-     而胶囊自带 `overflow: hidden` → 里面的文字被裁掉一半（只露出字头）。 */
+  /* ⚠️ 必须 flex-start：这一层高 0，默认的 stretch 会把胶囊也拉成 0 高，
+     而胶囊自带 overflow: hidden → 里面的文字被裁掉一半（只露出字头）。 */
   align-items: flex-start;
   pointer-events: none;
 }
-/* 深色皮肤（含"跟随系统"落到深色的那一档）：玻璃加实一档。
- * ⚠️ `:global()` 必须**把整条选择器包进去**：写成 `:global(html.theme-dark) .reader-toolbar`
- * 时 Vue 的 scoped 编译器会把后半段 `.reader-toolbar` 吞掉，只剩 `html.theme-dark { … }` ——
- * 那样变量落在根元素上，而 `.reader-toolbar` 自己又声明了同名变量（层叠上"自己 > 继承"），
+/* 深色皮肤（含「跟随系统」落到深色的那一档）：玻璃加实一档。
+ * ⚠️ :global() 必须**把整条选择器包进去**：写成 :global(html.theme-dark) .reader
+ * 时 Vue 的 scoped 编译器会把后半段 .reader 吞掉，只剩 html.theme-dark { … } ——
+ * 那样变量落在根元素上，而 .reader 自己又声明了同名变量（层叠上「自己 > 继承」），
  * 深色档等于没写（实测计算值仍是 80%）。 */
-:global(html.theme-dark .reader-toolbar) {
+:global(html.theme-dark .reader) {
   --glass-bar-top: 90%;
   --glass-bar-bottom: 82%;
   --glass-panel-top: 93%;
   --glass-panel-bottom: 86%;
-  --glass-edge: rgba(255, 255, 255, .18);
 }
 @media (prefers-color-scheme: dark) {
-  :global(html[data-theme="auto"] .reader-toolbar),
-  :global(html:not([data-theme]) .reader-toolbar) {
+  :global(html[data-theme="auto"] .reader),
+  :global(html:not([data-theme]) .reader) {
     --glass-bar-top: 90%;
     --glass-bar-bottom: 82%;
     --glass-panel-top: 93%;
     --glass-panel-bottom: 86%;
-    --glass-edge: rgba(255, 255, 255, .18);
   }
 }
 
@@ -3370,7 +3370,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
   pointer-events: auto;
   display: flex; align-items: center; justify-content: center;
   border-radius: 999px;
-  /* 玻璃 = **渐变本体 + 柔光投影 + 一档顶部细高光**，不画描边、不加反光层：
+  /* 玻璃 = **渐变本体 + 柔光投影**，不画描边、不留内阴影（那道顶部高光在深色下会变成发光边）：
      描边在浅色下几乎看不见、在深色下却成了一圈发光环（用户口径："暗色显示太奇怪"），
      索性去掉 —— 悬浮感交给阴影，表面感交给上亮下暗的本体。 */
   border: 0;
@@ -3379,7 +3379,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
   backdrop-filter: blur(48px) saturate(2.6);
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
-  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge, rgba(255, 255, 255, .5));
+  box-shadow: var(--shadow-flyout);
   transition: transform .26s cubic-bezier(.32, .72, 0, 1);
 }
 .cap-solo.left { left: 12px; }
@@ -3403,14 +3403,14 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
   /* 两侧各给一枚独立胶囊留位：三块玻璃不许叠在一起 */
   max-width: calc(100% - 148px);
   border-radius: 999px;
-  /* 同 .cap-solo：渐变本体 + 柔光投影 + 主题化的顶部细高光，不画描边 */
+  /* 同 .cap-solo：渐变本体 + 柔光投影，不画描边、不留内阴影 */
   border: 0;
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
   backdrop-filter: blur(48px) saturate(2.6);
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
-  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge, rgba(255, 255, 255, .5));
+  box-shadow: var(--shadow-flyout);
   /* 居中在**正文列**上：侧栏开合时整体滑半个栏宽（时长/缓动与侧栏、正文完全一致） */
   transition: transform .26s cubic-bezier(.32, .72, 0, 1);
   /* 窄屏宁可让胶囊横向滑动，也不把按钮压成"两字一行" */
@@ -3533,49 +3533,69 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
  * 排得比早先紧凑一些（64px → 56px、字号 10.5 → 10px），少一点"藏起来的页签"。 */
 /* `z-index: 3` 只是为了让页签条压在拖拽把手之上：把手是一条贯穿整栏高度的 9px 热区，
  * 不压住的话页签条最右端那一点点会变成"拖宽度"而不是"点页签"（见 .aside-resizer 的说明）。 */
-/* 侧栏头部那条**页签胶囊**（用户口径：页面切换也做成胶囊样式）。
- * 容器自己是一枚胶囊（圆角 + 浅底 + 描边），里面每一项也是一枚 pill（选中 = 抬起一层白底），
- * 与顶栏那套分段控件同一门语言。一行放不下就横向滚（滚轮 / 两端圆箭头，见 onSideTabsWheel）。 */
+/* 侧栏头部那条**页签胶囊**（用户口径：与顶栏那几块玻璃同一门语言 —— 悬浮、不画描边）。
+ * 容器是一枚玻璃胶囊，**高度 = --cap-h（38px）：与左侧那枚圆形开关同高同线**；
+ * 里面每一项默认**只留图标**，只有当前页那枚显示文字（图标在上、文字在下，加粗）。
+ * 一行放不下就横向滚（滚轮 / 两端圆箭头，见 onSideTabsWheel），
+ * 文字从两枚圆按钮**下面**穿过去 —— 按钮是半透明玻璃，滚过去时底下的字仍然看得见。 */
 .side-tabs-wrap { position: relative; flex: 1 1 auto; min-width: 0; z-index: 3; }
 .side-tabs {
-  display: flex; align-items: center; gap: 2px;
-  padding: 3px; min-height: 34px;
-  /* 不画描边（深色下那圈浅色环很抢眼）；容器与顶栏那几块玻璃同一门语言 */
+  display: flex; align-items: center; gap: 2px;   /* 图标之间更紧凑（用户口径） */
+  height: var(--cap-h); padding: 3px;
+  /* 这一枚**不铺毛玻璃**（用户口径）：它正躺在自己的 --bg-elev 面板上，背后没有可模糊的东西，
+     渐变 + 模糊只换来一圈说不清的灰边，反而"看着怪"；照旧平涂一层极淡的底。 */
   border: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 5%, transparent);
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none;
-  /* 两端各留一枚圆按钮的位置：`scrollIntoView` 落位时不会把当前页签藏在按钮底下 */
-  scroll-padding: 0 26px;
+  /* 两端各留一枚圆按钮的位置：scrollIntoView 落位时不会把当前页签藏在按钮底下 */
+  scroll-padding: 0 30px;
 }
 .side-tabs::-webkit-scrollbar { display: none; }
 .side-tab {
   position: relative; border: 0; background: transparent; color: var(--text-dim);
-  cursor: pointer; padding: 0 11px; height: 26px; border-radius: 999px;
-  display: inline-flex; align-items: center; gap: 5px;
-  flex: none; white-space: nowrap;
+  cursor: pointer; padding: 0 8px; height: 32px; border-radius: 999px;
+  /* **两行**：图标在上、文字在下（用户口径），横向空位因此全让给文字 */
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; flex: none; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .side-tab:hover { background: var(--bg-hover); color: var(--text); }
-.side-tab.active { background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1); }
-.side-label { font-size: 11.5px; line-height: 1; }
-.side-tab.active .side-label { font-weight: 600; }
+/* 汉字**只在当前页显示**（用户口径：其余页签移除汉字、只留图标，整条胶囊因此紧凑一截）；
+   当前页那枚**横向放宽 + 文字缩小一号** —— 图标在上、文字在下时，窄胶囊会把内容挤成一小团，
+   加宽并收小字号才像个"选中态"。 */
+.side-tab.active {
+  padding: 0 14px;
+  background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1);
+}
+.side-label { display: none; font-size: 10.5px; line-height: 1; }
+.side-tab.active .side-label { display: block; font-weight: 600; }
+/* 角标挪到**右上角**（绝对定位）：页签是「图标 +（只在当前页才有的）文字」，
+   横向没有空位可以内联挂一个数字了。 */
 .side-count {
-  margin-left: 1px; font-size: 9.5px; line-height: 1;
+  position: absolute; top: 0; right: 3px;
+  font-size: 9px; line-height: 1;
   color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
-/* 两枚"翻页"圆按钮：**浮在滚动条两端**、不占布局（有内容才出现，所以不会让页签跳动） */
+/* 两枚「翻页」圆按钮：**浮在胶囊两端**、不占布局（有内容才出现，所以不会让页签跳动）。
+   与其余玻璃件同一配方、不画描边 —— 半透明 + 模糊，页签滚到它底下时文字照样透出来
+   （用户口径：「文字可以在按钮下面显示」）。 */
 .side-scroll-btn {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
-  width: 20px; height: 20px; padding: 0; border-radius: 50%;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--bg-elev); border: 1px solid var(--border-strong);
-  color: var(--text-dim); box-shadow: var(--shadow-1); cursor: pointer;
+  color: var(--text-dim); cursor: pointer;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--text) 10%, transparent),
+    color-mix(in srgb, var(--text) 6%, transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout);
 }
-.side-scroll-btn:hover { color: var(--accent-text); border-color: var(--accent); }
-.side-scroll-btn.left { left: 3px; }
-.side-scroll-btn.right { right: 3px; }
+.side-scroll-btn:hover { color: var(--accent-text); }
+.side-scroll-btn.left { left: 4px; }
+.side-scroll-btn.right { right: 4px; }
 /* 正文区是**唯一**的滚动容器。
  * - `padding-top` 只留 8px：胶囊是悬浮的，正文**从它下面开始**（用户口径：不要顶部那一大截空白）。
  *   页码标注在内容列左端、胶囊居中，两者不重叠，所以第一页的页码照样看得见；
