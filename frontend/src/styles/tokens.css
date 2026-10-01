@@ -8,6 +8,7 @@
  */
 
 :root {
+  color-scheme: light;
   /* ---- 层 ---- */
   --bg: #f2f4f5;
   --bg-elev: #ffffff;
@@ -108,8 +109,13 @@
   --header-h: 52px;
 }
 
+/* 深色只属于"跟随系统"那一档：`html[data-theme]` 一旦被设成具体皮肤（见 themes/*.css），
+ * 就不该再被系统的深色偏好改色 —— 否则在深色 Windows 上选「经典」会选不动。
+ * 两处选择器都写上：挂载前还没写 data-theme（`bootTheme` 尚未跑），那时也该跟系统。 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]),
+  :root[data-theme="auto"] {
+    color-scheme: dark;
     --bg: #1a1e20;
     --bg-elev: #242a2c;
     --bg-sunken: #16191b;

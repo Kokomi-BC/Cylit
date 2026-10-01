@@ -1,0 +1,48 @@
+/* 皮肤 seacliff：雾青（参照 retain-pdf 的「雾青」）。
+ *
+ * 冷灰蓝底 + 青灰强调：与 Cylit 默认的青绿同色相、低饱和一档，
+ * 是"想更安静一点但还想要一点颜色"的那档。
+ */
+
+[data-theme="seacliff"] {
+  color-scheme: light;
+
+  --bg: #eef1f4;
+  --bg-elev: #f8f9fb;
+  --bg-sunken: #e9edf1;
+  --bg-layer: #f4f6f9;
+  --bg-hover: rgba(26, 29, 33, .05);
+  --bg-pressed: rgba(26, 29, 33, .09);
+  --bg-subtle: rgba(26, 29, 33, .028);
+  --smoke: rgba(20, 24, 28, .38);
+
+  --border: rgba(26, 29, 33, .11);
+  --border-strong: rgba(26, 29, 33, .19);
+  --divider: rgba(26, 29, 33, .085);
+
+  --text: #1a1d21;
+  --text-dim: #636b73;
+  --text-faint: #949ba2;
+  --text-on-accent: #f8f9fb;
+
+  --accent: #2d5f6e;
+  --accent-hover: #224b57;
+  --accent-soft: #e6eef1;
+  --accent-text: #26505d;
+
+  --ok: #2d7a4f;
+  --ok-soft: #e6f2ea;
+  --warn: #8a6524;
+  --warn-soft: #f6efdf;
+  --danger: #c23b32;
+  --danger-soft: #faeae8;
+
+  --shadow-1: 0 1px 2px rgba(16, 26, 36, .05), 0 6px 16px -10px rgba(16, 26, 36, .14);
+  --shadow-2: 0 2px 6px rgba(16, 26, 36, .07), 0 16px 32px -16px rgba(16, 26, 36, .20);
+  --shadow-flyout: 0 12px 20px -8px rgba(16, 26, 36, .14), 0 32px 56px -24px rgba(16, 26, 36, .26);
+  --shadow-press: inset 0 1px 2px rgba(16, 26, 36, .10);
+
+  --bg-texture:
+    radial-gradient(1200px 600px at 12% -8%, rgba(45, 95, 110, .055), transparent 70%),
+    radial-gradient(900px 500px at 100% 0%, rgba(26, 29, 33, .028), transparent 65%);
+}

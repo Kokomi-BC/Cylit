@@ -2,19 +2,23 @@
 /**
  * 论文库：导入 → 解析 → 翻译 → 三视图阅读。
  *
- * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`，进度条走 `ProgressBar`。
+ * 版式（移植自参照项目 retain-pdf 的书库页）：**顶部工具栏**（批量 / 筛选 / 排序 / 视图切换）
+ * + **封面卡片网格**（列表视图可切成一行一条）+ **底部悬浮条**（导入 / 搜索 / 刷新 / 设置）。
+ * 卡片本体在 `components/paper/PaperCard.vue`，点卡片打开的详情在 `PaperDetailModal.vue`。
+ *
+ * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`。
  * 删除语义：软删除会先清理索引与知识库记录，PDF 文件移入 data/trash（不物理删除）。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
-import { api } from '@/api/client';
+import { api, assetUrl } from '@/api/client';
 import type { MineruConfig, MineruModelVersion, Paper, ParseEngine } from '@/api/types';
 import Modal from '@/components/Modal.vue';
-import Menu from '@/components/Menu.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
-import ProgressBar from '@/components/ProgressBar.vue';
 import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
+import PaperCard from '@/components/paper/PaperCard.vue';
+import PaperDetailModal from '@/components/paper/PaperDetailModal.vue';
 import {
   loadPapers, reportError, state, toast, withLoading,
 } from '@/stores/app';
@@ -28,6 +32,9 @@ const router = useRouter();
 function openPaper(id: string) {
   void router.push(openTab({ name: 'reader', params: { paperId: id } }) as never);
 }
+
+/** 详情弹窗当前看的那篇（空串 = 关着）。点卡片本体进这里，点「阅读」直接进阅读器。 */
+const detailId = ref('');
 
 /* ------------------------------ 筛选与列表 ------------------------------ */
 
@@ -62,13 +69,127 @@ const sortKey = computed({
 const filtered = computed<Paper[]>(() => state.papers);
 const loading = computed(() => !!state.loading.papers);
 
+/* ------------------------------ 视图形态 ------------------------------
+ * 封面网格 = 参照项目图1 的书库版式（一眼看到论文长什么样）；列表 = 一行一条（扫标题快）。
+ * 形态记在本机：同一个人不该每次进来都重选一遍。
+ */
+
+const VIEW_KEY = 'pm.library.view';
+const viewMode = ref<'grid' | 'list'>(localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid');
+
+function setView(v: 'grid' | 'list') {
+  viewMode.value = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch { /* 隐私模式：不留也无妨 */ }
+}
+
+/* ------------------------------ 筛选 ------------------------------
+ * 状态走**后端筛**（`refresh()` 带上 status 参数），标签走**前端筛** ——
+ * 论文标签是自由文本（导入时手填），没有后端字典，也没必要为它做索引查询。
+ */
+
+const filterOpen = ref(false);
+const filterBox = ref<HTMLElement | null>(null);
+const tagFilter = ref('');
+const filterCount = computed(() => (statusFilter.value ? 1 : 0) + (tagFilter.value ? 1 : 0));
+
+/** 标签候选：从**当前列表**现收（库里没标签就不显示这一组）。 */
+const tagOptions = computed(() => {
+  const set = new Set<string>();
+  for (const p of filtered.value) for (const t of p.tags || []) set.add(t);
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
+});
+
+/** 界面真正渲染的那一份（后端结果 → 标签筛选）。 */
+const visible = computed<Paper[]>(() => (
+  tagFilter.value
+    ? filtered.value.filter((p) => (p.tags || []).includes(tagFilter.value))
+    : filtered.value
+));
+
+function setStatus(s: string) {
+  statusFilter.value = s;
+  void refresh();
+}
+
+function toggleTag(t: string) {
+  tagFilter.value = tagFilter.value === t ? '' : t;
+}
+
+function clearFilters() {
+  statusFilter.value = '';
+  tagFilter.value = '';
+  void refresh();
+}
+
+/** 浮层：点外面 / 按 Esc 收起（与 Menu 的关闭口径一致）。 */
+function onDocPointer(ev: PointerEvent) {
+  if (!filterOpen.value) return;
+  if (filterBox.value?.contains(ev.target as Node)) return;
+  filterOpen.value = false;
+}
+
+function onDocKey(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') filterOpen.value = false;
+}
+
+/* ------------------------------ 批量选择 ------------------------------ */
+
+const batchMode = ref(false);
+const selectedIds = ref<string[]>([]);
+const batchBusy = ref(false);
+const selectedCount = computed(() => selectedIds.value.length);
+const allSelected = computed(() => (
+  visible.value.length > 0 && visible.value.every((p) => selectedIds.value.includes(p.id))
+));
+
+function toggleBatch() {
+  batchMode.value = !batchMode.value;
+  if (!batchMode.value) selectedIds.value = [];     // 退出即清空：不留下"看不见的选中"
+}
+
+function toggleSelect(id: string) {
+  selectedIds.value = selectedIds.value.includes(id)
+    ? selectedIds.value.filter((x) => x !== id)
+    : [...selectedIds.value, id];
+}
+
+function selectAll() {
+  selectedIds.value = allSelected.value ? [] : visible.value.map((p) => p.id);
+}
+
+/* ------------------------------ 卡片展示 ------------------------------ */
+
+/** 封面 = 第一页整页渲染（后端按需生成并缓存；没解析过的 PDF 也能出图）。 */
+function coverUrl(p: Paper): string {
+  return assetUrl(`/api/v1/papers/${p.id}/pages/1`);
+}
+
+/** 卡片那行元信息：`12 页 · ICLR · 2026 · 读于 2 天前`（图1 里「10 页 · 2026/10/01」的位置）。 */
+function cardMeta(p: Paper): string {
+  const parts: string[] = [`${p.page_count || '?'} 页`];
+  if (p.venue) parts.push(p.venue);
+  if (p.year) parts.push(String(p.year));
+  parts.push(p.last_read_at ? `读于 ${fmtRelative(p.last_read_at)}` : '未读过');
+  return parts.join(' · ');
+}
+
+/** 卡片收尾行：译完给一行"已完成"，压根没动过给"尚未开始"；正在跑的不给（进度条在说这件事）。 */
+function cardFoot(p: Paper): string {
+  if (activeTaskOf(p)) return '';
+  if (showDoneLine(p)) return `逐页翻译已完成（${p.translate_total} 页）`;
+  if (!p.translate_total && !p.pdf_translate_total) return '尚未开始翻译';
+  return '';
+}
+
 /** 逐页翻译是否已全部完成（完成时用一行文案代替整条进度条）。 */
 function isTranslated(p: Paper): boolean {
   return !!p.translate_total && (p.translate_done || 0) >= p.translate_total;
 }
-const showLoading = computed(() => loading.value && filtered.value.length === 0 && !loadError.value);
+const showLoading = computed(() => loading.value && visible.value.length === 0 && !loadError.value);
 const showLoadError = computed(() => !!loadError.value && filtered.value.length === 0);
-const showEmpty = computed(() => !loading.value && filtered.value.length === 0 && !loadError.value);
+const showEmpty = computed(() => !loading.value && visible.value.length === 0 && !loadError.value);
+/** 有论文、只是被筛掉了：这种"空"要说明是筛选造成的，别显示成"还没有论文"。 */
+const filteredOut = computed(() => !loading.value && visible.value.length === 0 && filtered.value.length > 0);
 
 /** 拉取论文列表：加载中 / 请求失败 / 空列表三种状态都在模板里显式呈现。 */
 async function refresh() {
@@ -89,8 +210,14 @@ async function refresh() {
 onMounted(async () => {
   await refresh();
   void pollTick();      // 进页面时若已有解析/翻译任务在跑，直接跟上状态
+  document.addEventListener('pointerdown', onDocPointer, true);
+  document.addEventListener('keydown', onDocKey);
 });
-onBeforeUnmount(stopPolling);
+onBeforeUnmount(() => {
+  stopPolling();
+  document.removeEventListener('pointerdown', onDocPointer, true);
+  document.removeEventListener('keydown', onDocKey);
+});
 
 /* --------------------------- 后台任务状态轮询 ---------------------------
  * 列表里的徽章/进度/按钮文案全取自后端论文行，所以只要**有解析或翻译任务在跑**就自动刷新，
@@ -632,6 +759,56 @@ async function doRemove() {
   } catch (err) { reportError(err, '删除失败'); } finally { busyKey.value = ''; confirmBox.paper = null; }
 }
 
+/* ------------------------------ 批量操作 ------------------------------
+ * 后端只有单篇接口（`DELETE /papers/{id}`、`POST /papers/{id}/translate`），
+ * 所以批量 = 前端**逐篇顺序发**，并逐篇吞掉失败 —— 一篇失败不该把剩下九篇也停掉。
+ * 动作本身要先过确认弹窗（图1 的批量条也有这一步，不是即点即执行）。
+ */
+
+const batchBox = reactive<{ open: boolean; kind: 'delete' | 'translate' }>({ open: false, kind: 'delete' });
+
+function askBatch(kind: 'delete' | 'translate') {
+  if (!selectedCount.value || batchBusy.value) return;
+  batchBox.kind = kind;
+  batchBox.open = true;
+}
+
+async function confirmBatch() {
+  const kind = batchBox.kind;
+  batchBox.open = false;
+  if (kind === 'delete') { await runBatchDelete(); return; }
+  await runBatchTranslate();
+}
+
+async function runBatchDelete() {
+  const ids = [...selectedIds.value];
+  if (!ids.length) return;
+  batchBusy.value = true;
+  let ok = 0;
+  const failed: string[] = [];
+  for (const id of ids) {
+    try { await api.del(`/papers/${id}`, { hard: false }); ok += 1; } catch { failed.push(id); }
+  }
+  batchBusy.value = false;
+  selectedIds.value = [];
+  if (failed.length) {
+    toast(`已删除 ${ok} 篇，${failed.length} 篇失败：${failed.join('、')}`, 'warn', 5600);
+  } else {
+    toast(`已删除 ${ok} 篇（移入 data/trash，可从回收站恢复）`, 'ok', 3200);
+  }
+  await refresh();
+}
+
+async function runBatchTranslate() {
+  const targets = visible.value.filter((p) => selectedIds.value.includes(p.id) && stage(p) !== 'translated');
+  selectedIds.value = [];
+  if (!targets.length) { toast('选中的论文都已翻完，没有需要重建的任务', 'warn', 2800); return; }
+  batchMode.value = false;
+  batchBusy.value = true;
+  for (const p of targets) await runTranslate(p, 'resume');
+  batchBusy.value = false;
+}
+
 /* ------------------------------ 编辑元数据 ------------------------------ */
 
 interface EditForm {
@@ -715,50 +892,99 @@ async function submitEdit() {
 </script>
 
 <template>
-  <div>
-    <div class="page-head">
-      <div>
+  <div class="library-view">
+    <!-- 顶部工具栏（图1 版式）：左标题 + 计数，右 批量 / 筛选 / 排序 / 视图切换。
+         搜索与导入搬到底部悬浮条（图1 的搜索岛）—— 这里只留"看"与"筛"。 -->
+    <header class="lib-toolbar">
+      <div class="lib-heading">
         <h1>论文库</h1>
-        <div class="sub">共 {{ state.papersTotal }} 篇论文</div>
+        <span class="lib-count tnum">共 {{ state.papersTotal }} 篇</span>
       </div>
-      <div class="grow"></div>
-      <div class="page-actions">
-        <button class="btn icon" title="刷新列表" :disabled="loading" @click="refresh">
-          <AppIcon name="refresh" :size="15" />
-        </button>
-        <button class="btn primary" @click="openImport">
-          <AppIcon name="upload" :size="15" />导入 PDF
-        </button>
-      </div>
-    </div>
 
-    <!-- 筛选条：一个搜索 + 两个下拉，其余交给列表本身 -->
-    <div class="toolbar">
-      <label class="search-field">
-        <AppIcon name="search" :size="15" />
-        <input v-model="keyword" placeholder="搜索标题 / 作者" @keyup.enter="refresh" />
-      </label>
-      <select v-model="statusFilter" title="按状态筛选" @change="refresh">
-        <option value="">全部状态</option>
-        <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ paperStatus(s).label }}</option>
-      </select>
-      <select v-model="sortKey" title="排序方式" @change="refresh">
-        <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-      </select>
-    </div>
+      <div class="lib-tools">
+        <button
+          type="button"
+          class="lib-tool"
+          :class="{ on: batchMode }"
+          :aria-pressed="batchMode"
+          @click="toggleBatch"
+        >
+          <AppIcon name="checkbox" :size="14" />批量
+        </button>
 
-    <!-- 加载中：与真实卡片同高的骨架，不用一行灰字 -->
-    <div class="paper-cards" v-if="showLoading" aria-busy="true">
-      <span class="sr-only">正在加载论文列表…</span>
-      <div class="card paper-card" v-for="i in 3" :key="i" aria-hidden="true">
-        <div class="sk sk-title" style="width: 74%"></div>
-        <div class="sk sk-line" style="width: 42%"></div>
-        <div class="sk sk-line" style="width: 58%"></div>
-        <div class="sk sk-bar" style="width: 100%"></div>
-        <div class="pc-actions">
-          <div class="sk" style="width: 76px; height: 26px; border-radius: var(--radius-ctl)"></div>
-          <div class="sk" style="width: 62px; height: 26px; border-radius: var(--radius-ctl)"></div>
+        <div ref="filterBox" class="lib-filter">
+          <button
+            type="button"
+            class="lib-tool"
+            :class="{ on: filterCount > 0 }"
+            aria-haspopup="dialog"
+            :aria-expanded="filterOpen"
+            @click="filterOpen = !filterOpen"
+          >
+            <AppIcon name="filter" :size="14" />筛选
+            <span v-if="filterCount" class="lib-tool-num tnum">{{ filterCount }}</span>
+          </button>
+
+          <div v-if="filterOpen" class="lib-pop" role="dialog" aria-label="筛选">
+            <div class="lib-pop-label">处理状态</div>
+            <div class="lib-pills">
+              <button type="button" class="lib-pill" :class="{ on: statusFilter === '' }" @click="setStatus('')">全部</button>
+              <button
+                v-for="s in STATUS_OPTIONS"
+                :key="s"
+                type="button"
+                class="lib-pill"
+                :class="{ on: statusFilter === s }"
+                @click="setStatus(s)"
+              >{{ paperStatus(s).label }}</button>
+            </div>
+
+            <template v-if="tagOptions.length">
+              <div class="lib-pop-label">标签</div>
+              <div class="lib-pills">
+                <button type="button" class="lib-pill" :class="{ on: tagFilter === '' }" @click="tagFilter = ''">全部</button>
+                <button
+                  v-for="t in tagOptions"
+                  :key="t"
+                  type="button"
+                  class="lib-pill"
+                  :class="{ on: tagFilter === t }"
+                  @click="toggleTag(t)"
+                >{{ t }}</button>
+              </div>
+            </template>
+
+            <button v-if="filterCount" type="button" class="lib-clear" @click="clearFilters">清空筛选</button>
+          </div>
         </div>
+
+        <label class="lib-sort">
+          <span class="sr-only">排序</span>
+          <select v-model="sortKey" title="排序方式" @change="refresh">
+            <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+        </label>
+
+        <span class="lib-divider" />
+
+        <div class="lib-view" role="group" aria-label="视图切换">
+          <button type="button" :class="{ on: viewMode === 'grid' }" title="封面视图" @click="setView('grid')">
+            <AppIcon name="grid" :size="14" />
+          </button>
+          <button type="button" :class="{ on: viewMode === 'list' }" title="列表视图" @click="setView('list')">
+            <AppIcon name="list" :size="14" />
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 加载中：与真实卡片同形的骨架（封面框 + 两行字），不用一行灰字 -->
+    <div class="lib-grid" v-if="showLoading" aria-busy="true">
+      <span class="sr-only">正在加载论文列表…</span>
+      <div class="sk-card" v-for="i in 8" :key="i" aria-hidden="true">
+        <div class="sk" style="width: 100%; aspect-ratio: 3 / 4; border-radius: 16px"></div>
+        <div class="sk sk-line" style="width: 86%; margin-top: 10px"></div>
+        <div class="sk sk-line" style="width: 54%; margin-top: 6px"></div>
       </div>
     </div>
 
@@ -792,84 +1018,122 @@ async function submitEdit() {
       </div>
     </div>
 
-    <!-- 有旧数据但本次刷新失败 -->
-    <p class="tiny load-error" v-else-if="loadError">
-      刷新失败：{{ loadError }}（下方为上次成功加载的数据）
-    </p>
-
-    <div class="paper-cards" v-if="!showLoading && filtered.length">
-      <article class="card hoverable paper-card" v-for="p in filtered" :key="p.id">
-        <header class="pc-head">
-          <button class="pc-title" :title="`在新标签页打开：${p.title}`" @click="openPaper(p.id)">
-            {{ p.title }}
-          </button>
-          <span class="badge" :class="cardStatus(p).cls">{{ cardStatus(p).label }}</span>
-        </header>
-
-        <div class="pc-meta">
-          <span v-if="p.authors" class="truncate">{{ p.authors }}</span>
-          <span>{{ p.page_count || '?' }} 页</span>
-          <span v-if="p.venue">{{ p.venue }}</span>
-          <span v-if="p.year">{{ p.year }}</span>
-          <span v-if="p.last_read_at">读于 {{ fmtRelative(p.last_read_at) }}</span>
-        </div>
-
-        <div class="pc-tags" v-if="(p.tags || []).length">
-          <span class="badge" v-for="t in p.tags" :key="t">{{ t }}</span>
-        </div>
-
-        <!-- 进度：只在"正在翻译"时出现；100% 用一行文案收尾，不再铺一条满格色带。
-             数据优先取正在跑的翻译任务（逐页实时），没任务才用论文行。 -->
-        <div class="pc-progress"
-             v-if="progressOf(p)"
-             :title="activeTaskOf(p)?.message || ''">
-          <div class="pc-progress-top">
-            <span class="faint">逐页翻译</span>
-            <span class="tnum">{{ progressOf(p)!.done }} / {{ progressOf(p)!.total }}</span>
-          </div>
-          <ProgressBar :done="progressOf(p)!.done" :total="progressOf(p)!.total" />
-        </div>
-        <div class="pc-progress" v-if="p.pdf_translate_total && (p.pdf_translate_done || 0) < p.pdf_translate_total">
-          <div class="pc-progress-top">
-            <span class="faint">版面 PDF 翻译</span>
-            <span class="tnum">{{ p.pdf_translate_done || 0 }} / {{ p.pdf_translate_total }}</span>
-          </div>
-          <ProgressBar :done="p.pdf_translate_done || 0" :total="p.pdf_translate_total" />
-        </div>
-        <div class="pc-done tiny" v-if="showDoneLine(p)">
-          <AppIcon name="check_circle" :size="14" />逐页翻译已完成（{{ p.translate_total }} 页）
-        </div>
-        <div class="tiny faint"
-             v-if="!p.translate_total && !p.pdf_translate_total && !activeTaskOf(p)">尚未开始翻译</div>
-
-        <footer class="pc-actions">
-          <!-- 知识库归属：只在"已入库"时现身，避免每张卡片都挂一个同义徒章 -->
-          <span class="badge accent" v-if="p.in_knowledge_base">
-            <AppIcon name="knowledge" :size="13" />已在知识库
-          </span>
-          <span class="spacer"></span>
-          <button class="btn primary sm" title="在新标签页打开阅读器" @click="openPaper(p.id)">
-            <AppIcon name="document" :size="14" />阅读
-          </button>
-          <!-- 译完的论文不再把「重新翻译」摆在一级（用户口径）：它进了「⋯」菜单，
-               卡片上只留「阅读」一个动作。翻译中/未解析的论文照旧给「翻译 / 继续翻译 / 暂停翻译」。 -->
-          <button
-            v-if="stage(p) !== 'translated'"
-            class="btn sm"
-            :disabled="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
-            :title="activeTaskOf(p)
-              ? (activeTaskOf(p)!.status === 'paused' ? '继续这个翻译任务' : '暂停：当前这一页译完就停')
-              : (stage(p) === 'unparsed' ? '还没解析：点一下会先解析，解析完自动接着翻译' : '')"
-            @click="runPipeline(p)"
-          >{{ pipelineLabel(p) }}</button>
-          <Menu
-            :items="rowMenu(p)"
-            :label="`更多操作：${p.title}`"
-            @select="onRowAction(p, $event)"
-          />
-        </footer>
-      </article>
+    <!-- 有论文、只是被筛掉了：这种空要归因到筛选，别显示成"还没有论文" -->
+    <div class="card empty-state" v-else-if="filteredOut">
+      <span class="es-icon"><AppIcon name="filter" :size="20" /></span>
+      <span class="es-title">没有符合条件的论文</span>
+      <span class="es-hint">当前的状态 / 标签筛选下没有结果。</span>
+      <div class="es-actions">
+        <button class="btn sm" @click="clearFilters">
+          <AppIcon name="close" :size="14" />清空筛选
+        </button>
+      </div>
     </div>
+
+    <template v-else>
+      <!-- 有旧数据但本次刷新失败 -->
+      <p class="tiny load-error" v-if="loadError">
+        刷新失败：{{ loadError }}（下方为上次成功加载的数据）
+      </p>
+
+      <!-- 封面网格（图1 版式）/ 列表：同一份数据两种排布，卡片本体见 PaperCard.vue -->
+      <div :class="viewMode === 'grid' ? 'lib-grid' : 'lib-list'">
+        <PaperCard
+          v-for="p in visible"
+          :key="p.id"
+          :variant="viewMode"
+          :title="p.title"
+          :cover-url="coverUrl(p)"
+          :badge="cardStatus(p)"
+          :meta="cardMeta(p)"
+          :progress="progressOf(p)"
+          :foot-note="cardFoot(p)"
+          :running="!!activeTaskOf(p)"
+          :action-label="pipelineLabel(p)"
+          :show-action="stage(p) !== 'translated'"
+          :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
+          :menu="rowMenu(p)"
+          :batch="batchMode"
+          :selected="selectedIds.includes(p.id)"
+          @open="detailId = p.id"
+          @read="openPaper(p.id)"
+          @action="runPipeline(p)"
+          @pick="onRowAction(p, $event)"
+          @toggle="toggleSelect(p.id)"
+        />
+      </div>
+    </template>
+
+    <!-- 论文详情（图2）：点卡片打开；详情里改过东西（阅读状态 / 删除）就刷新列表 -->
+    <PaperDetailModal
+      v-if="detailId"
+      :key="detailId"
+      :paper-id="detailId"
+      @close="detailId = ''"
+      @changed="refresh"
+    />
+    <!-- ---------------- 底部悬浮条（图1 的搜索岛） ----------------
+         导入（+）/ 搜索 / 刷新 / 设置；`fixed` 定位在视口底部居中，与内容滚动无关。
+         批量模式时它让位给下面那条批量工具条（两边同一套定位与观感）。 -->
+    <div class="lib-dock" :class="{ away: batchMode }">
+      <button type="button" class="lib-dock-btn primary" title="导入 PDF" @click="openImport">
+        <AppIcon name="add" :size="18" />
+      </button>
+      <label class="lib-dock-search">
+        <AppIcon name="search" :size="15" />
+        <input
+          v-model="keyword"
+          type="search"
+          placeholder="搜索标题、作者、会议或年份"
+          @keyup.enter="refresh"
+        />
+      </label>
+      <button type="button" class="lib-dock-btn" title="刷新列表" :disabled="loading" @click="refresh">
+        <AppIcon name="refresh" :size="17" />
+      </button>
+      <button type="button" class="lib-dock-btn" title="设置" @click="router.push('/settings')">
+        <AppIcon name="settings" :size="17" />
+      </button>
+    </div>
+
+    <!-- 批量工具条：替代搜索岛（不是叠在它上面），动作都要先过确认 -->
+    <div v-if="batchMode" class="lib-dock is-batch" role="toolbar" aria-label="批量操作">
+      <button type="button" class="lib-dock-cancel" @click="toggleBatch">取消</button>
+      <span class="lib-dock-count tnum">已选 {{ selectedCount }} / {{ visible.length }}</span>
+      <button type="button" class="lib-dock-select" :disabled="!visible.length" @click="selectAll">
+        {{ allSelected ? '取消全选' : '全选' }}
+      </button>
+      <span class="spacer" />
+      <button
+        type="button"
+        class="lib-dock-action"
+        :disabled="!selectedCount || batchBusy"
+        @click="askBatch('translate')"
+      >
+        <AppIcon name="translate" :size="14" />翻译
+      </button>
+      <button
+        type="button"
+        class="lib-dock-action danger"
+        :disabled="!selectedCount || batchBusy"
+        @click="askBatch('delete')"
+      >
+        <AppIcon name="trash" :size="14" />删除
+      </button>
+    </div>
+
+    <!-- 批量操作的确认（与单篇删除同一套弹窗，口径一致） -->
+    <ConfirmModal
+      :open="batchBox.open"
+      :title="batchBox.kind === 'delete' ? '批量删除论文' : '批量翻译'"
+      :body="batchBox.kind === 'delete'
+        ? `会把选中的 ${selectedCount} 篇移入 data/trash（可从回收站恢复），并清理索引与知识库记录。`
+        : `会为选中的 ${selectedCount} 篇各起一个翻译任务；已在跑或已译完的会跳过。`"
+      :confirm-label="batchBox.kind === 'delete' ? '删除' : '开始翻译'"
+      :danger="batchBox.kind === 'delete'"
+      @confirm="confirmBatch"
+      @cancel="batchBox.open = false"
+    />
 
     <!-- 删除确认（站内弹窗，不用原生 confirm） -->
     <ConfirmModal
@@ -1051,61 +1315,218 @@ async function submitEdit() {
 </template>
 
 <style scoped>
-/* 论文卡网格：列宽下限跟着正文行宽走，宽屏下自然排 2–4 列 */
-.paper-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 16px;
-  align-items: stretch;
+/* ---------------- 顶部工具栏（图1 版式） ----------------
+ * 左：标题 + 计数胶囊；右：批量 / 筛选 / 排序 / 视图切换。
+ * 工具条那条下划线只到 `--divider` 的强度 —— 它是"分组线"，不是卡片描边。 */
+.lib-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.lib-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lib-heading h1 {
+  margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-count {
+  flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 999px; background: var(--bg-subtle); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-dim);
+}
+.lib-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 工具条控件统一 30px 高：同一排里按钮 / 下拉 / 分段不许参差 */
+.lib-tool {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: var(--radius-ctl);
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.lib-tool:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.lib-tool:active { transform: scale(.97); }
+.lib-tool.on {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--accent-text);
+}
+.lib-tool-num { font-size: 11px; color: var(--accent-text); }
+
+.lib-filter { position: relative; }
+
+/* 筛选浮层：与 Menu 浮层同一套语言（同一个"浮起来的东西"该长什么样） */
+.lib-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 60; width: 268px;
+  padding: 14px; display: grid; gap: 8px;
+  background: var(--bg-elev); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-flyout);
+}
+.lib-pop-label { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-dim); }
+.lib-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.lib-pill {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 11px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev);
+  color: var(--text-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.lib-pill:hover { color: var(--text); border-color: var(--border-strong); }
+.lib-pill.on { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); font-weight: 600; }
+.lib-clear {
+  justify-self: start; padding: 2px 0; font-family: inherit; font-size: 12px;
+  color: var(--text-dim); cursor: pointer;
+}
+.lib-clear:hover { color: var(--text); text-decoration: underline; }
+
+.lib-sort {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 8px;
+  border-radius: var(--radius-ctl);
+  transition: background var(--dur) var(--ease);
+}
+.lib-sort:hover { background: var(--bg-hover); }
+.lib-sort select {
+  height: 100%; max-width: 148px; padding: 0 4px;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  font-size: 12px; color: var(--text); cursor: pointer;
+}
+.lib-sort select:hover, .lib-sort select:focus { background: transparent; box-shadow: none; border: 0; }
+
+.lib-divider { width: 1px; height: 20px; background: var(--divider); }
+
+.lib-view {
+  display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 2px;
+  border-radius: var(--radius-ctl); background: var(--bg-sunken); border: 1px solid var(--border);
+}
+.lib-view button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 24px; border-radius: var(--radius-ctl);
+  color: var(--text-faint); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.lib-view button:hover { color: var(--text); }
+.lib-view button.on { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
+
+/* ---------------- 内容区：封面网格 / 列表 ----------------
+ * 列宽下限 168px：宽屏一行 4–6 张封面（图1 就是这一档密度），窄屏自然降到 2 列。
+ * 底部留 96px：悬浮条是 fixed 的，不占文档流，不留白最后一行会被压在它下面。 */
+.lib-grid {
+  display: grid; gap: 22px 18px; align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  padding-bottom: 96px;
+}
+.sk-card { min-width: 0; }
+
+.lib-list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 96px; }
+
+/* ---------------- 底部悬浮条 ---------------- */
+.lib-dock {
+  position: fixed; left: 50%; bottom: 16px; z-index: 40;
+  transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 8px; border-radius: 999px;
+  /* 极强玻璃（与阅读器顶栏同一档）：渐变本体 + 柔光投影 + 顶部细高光，**不画描边**
+     （描边在深色下会变成一圈发光环）。本体透明度按主题分档。 */
+  --glass-bar-top: 82%;
+  --glass-bar-bottom: 70%;
+  --glass-edge: rgba(255, 255, 255, .5);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom), transparent));
+  border: 0;
+  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge);
+  backdrop-filter: blur(44px) saturate(2.4);
+  -webkit-backdrop-filter: blur(44px) saturate(2.4);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur);
+}
+/* 深色皮肤下：玻璃加实一档（与阅读器同一套口径）。
+   ⚠️ `:global()` 里要写**整条选择器**，否则 Vue 的 scoped 编译器会吞掉后半段（见 ReaderView 的注释）。 */
+:global(html.theme-dark .lib-dock) {
+  --glass-bar-top: 92%;
+  --glass-bar-bottom: 84%;
+  --glass-edge: rgba(255, 255, 255, .18);
+}
+@media (prefers-color-scheme: dark) {
+  :global(html[data-theme="auto"] .lib-dock),
+  :global(html:not([data-theme]) .lib-dock) {
+    --glass-bar-top: 92%;
+    --glass-bar-bottom: 84%;
+    --glass-edge: rgba(255, 255, 255, .18);
+  }
+}
+/* 批量模式：搜索岛**隐藏但不卸载**（输入框的焦点与内容都留着，退出批量立刻能用） */
+.lib-dock.away {
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
 }
 
-.paper-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px;
+.lib-dock-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+.lib-dock-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+}
+.lib-dock-btn:active:not(:disabled) { transform: scale(.94); }
+.lib-dock-btn:disabled { opacity: .5; cursor: default; }
+.lib-dock-btn.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
+.lib-dock-btn.primary:hover { background: var(--accent-hover); }
+
+.lib-dock-search {
+  display: inline-flex; align-items: center; gap: 8px;
+  width: min(420px, calc(100vw - 210px));
+  height: 38px; padding: 0 14px; border-radius: 999px;
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.lib-dock-search:focus-within { border-color: var(--accent); box-shadow: var(--ring); background: var(--bg-elev); }
+.lib-dock-search input {
+  width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0;
+  background: transparent; box-shadow: none; font-size: 13px;
+}
+.lib-dock-search input:hover, .lib-dock-search input:focus {
+  background: transparent; box-shadow: none; border: 0;
 }
 
-/* 网格内相邻卡片不再叠加基础层的 .card + .card 外边距 */
-.paper-card + .paper-card { margin-top: 0; }
-
-.pc-head { display: flex; align-items: flex-start; gap: 10px; }
-/* 标题现在是 <button>（点一下在新标签页打开阅读器）：外观按**文字**来，
-   只保留"可点 + 键盘可达"。base.css 已把 UA 的按钮盒子重置掉，这里只补字色与光标。 */
-.pc-title {
-  flex: 1; min-width: 0;
-  color: var(--text); font-weight: 600; font-size: 14.5px; line-height: 1.35;
-  letter-spacing: -.011em; text-wrap: balance; cursor: pointer;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+/* 批量条：同一位置与几何，但更宽（要放得下动作）；`spacer` 把动作推到右端 */
+.lib-dock.is-batch { width: min(640px, calc(100vw - 32px)); padding: 8px 8px 8px 14px; }
+.lib-dock-cancel {
+  flex: none; padding: 5px 9px; border-radius: var(--radius-ctl);
+  color: var(--text-dim); font-family: inherit; font-size: 12px; cursor: pointer;
 }
-.pc-title:hover { color: var(--accent-text); text-decoration: none; }
-.pc-head .badge { flex: none; margin-top: 1px; }
-
-.pc-meta {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
-  font-size: 12px; color: var(--text-dim);
+.lib-dock-cancel:hover { background: var(--bg-hover); color: var(--text); }
+.lib-dock-count { flex: none; font-size: 12px; color: var(--text-dim); }
+.lib-dock-select {
+  flex: none; height: 28px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  font-family: inherit; font-size: 12px; cursor: pointer;
 }
-.pc-meta > span + span::before { content: "·"; margin-right: 10px; color: var(--text-faint); }
-.pc-meta > span:first-child { max-width: 100%; }
-
-.pc-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-
-.pc-progress { display: flex; flex-direction: column; gap: 5px; }
-.pc-progress-top {
-  display: flex; align-items: center; font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
+.lib-dock-select:hover:not(:disabled) { background: var(--bg-hover); }
+.lib-dock-select:disabled { opacity: .5; cursor: default; }
+.lib-dock-action {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 13px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
+  font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.pc-progress-top > span:last-child { margin-left: auto; color: var(--text-dim); }
-/* 完成态：一行小字 + 对勾，比一整条满格色带安静得多 */
-.pc-done {
-  display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim);
+.lib-dock-action:hover:not(:disabled) { background: var(--bg-hover); }
+.lib-dock-action:disabled { opacity: .5; cursor: default; }
+.lib-dock-action.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border-strong));
 }
-.pc-done .icon { color: var(--ok); }
+.lib-dock-action.danger:hover:not(:disabled) { background: var(--danger-soft); }
 
-/* 操作区永远贴在卡片底部，同一行卡片的主操作排成一条线 */
-.pc-actions {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-top: auto; padding-top: 4px;
+/* 窄屏：搜索岛收窄，批量条换行（宁可两行，也不把按钮挤成图标） */
+@media (max-width: 720px) {
+  .lib-dock-search { width: calc(100vw - 172px); }
+  .lib-dock.is-batch { flex-wrap: wrap; border-radius: var(--radius); width: calc(100vw - 24px); justify-content: center; }
 }
 
 .confirm-text { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); line-height: 1.6; }

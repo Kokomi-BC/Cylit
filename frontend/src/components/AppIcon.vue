@@ -28,6 +28,16 @@ const ICONS: Record<string, string> = {
   model: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
   task: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.2V12l3.4 2"/>',
   settings: '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="17" r="2"/>',
+  // 视图切换用：grid = 四宫格（封面视图），list 见下（一行一条）
+  grid: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
+  // 批量选择：方框 + 勾（与 check_circle 区分开：它是"完成"，这是"选择"）
+  checkbox: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M8 12.4l2.8 2.8L16.4 9"/>',
+  // 侧栏开关（Apple 的 sidebar.left 那一枚）：圆角矩形 + 一条竖分隔线；
+  // 展开态把左栏填实，收起态只留两道轮廓 —— 状态一眼可辨，不用靠颜色。
+  sidebar: '<rect x="3" y="4.5" width="18" height="15" rx="3.5"/><path d="M9.5 4.5v15"/><path d="M6.1 7.1h1.5v9.8H6.1z" fill="currentColor" stroke="none"/>',
+  'sidebar-off': '<rect x="3" y="4.5" width="18" height="15" rx="3.5"/><path d="M9.5 4.5v15"/>',
+  // 版面选项（滑块）：三行轨道 + 圆钮，Apple 的 "view options" 惯用图形
+  sliders: '<path d="M4 7.5h16M4 16.5h16"/><circle cx="9" cy="7.5" r="2.1"/><circle cx="15" cy="16.5" r="2.1"/>',
   list: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   panel: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M12 4.5v15"/>',
   layers: '<path d="M12 3.5 21 8l-9 4.5L3 8z"/><path d="M4.6 12.4 12 16l7.4-3.6M4.6 16.4 12 20l7.4-3.6"/>',

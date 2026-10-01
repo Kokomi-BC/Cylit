@@ -1,0 +1,53 @@
+/* 皮肤 classic：黑白灰克制（参照 retain-pdf 的「经典」）。
+ *
+ * 强调色就是墨色（#1d1d1f）—— 这一套的"主按钮"是黑底白字，没有彩色强调，
+ * 与 Cylit 默认的青绿形成对照，也给不想看彩色的人一个出口。
+ *
+ * ⚠️ 这里**刻意不写 `:root`**：`:root` 是"跟随系统"那一档的底子（tokens.css），
+ * 皮肤只认自己的 `[data-theme]`，否则一进来就把默认配色改掉。
+ */
+
+[data-theme="classic"] {
+  color-scheme: light;
+
+  --bg: #f5f5f7;
+  --bg-elev: #ffffff;
+  --bg-sunken: #f0f0f3;
+  --bg-layer: #fbfbfd;
+  --bg-hover: rgba(29, 29, 31, .05);
+  --bg-pressed: rgba(29, 29, 31, .09);
+  --bg-subtle: rgba(29, 29, 31, .03);
+  --smoke: rgba(29, 29, 31, .38);
+
+  --border: rgba(29, 29, 31, .10);
+  --border-strong: rgba(29, 29, 31, .18);
+  --divider: rgba(29, 29, 31, .08);
+
+  --text: #1d1d1f;
+  --text-dim: #6e6e73;
+  --text-faint: #a1a1a6;
+  --text-on-accent: #ffffff;
+
+  --accent: #1d1d1f;
+  --accent-hover: #000000;
+  --accent-soft: #ececef;
+  --accent-text: #1d1d1f;
+
+  --ok: #1f8b3d;
+  --ok-soft: #e8f8ed;
+  /* 参照端用 #ff9f0a 当警告色，那是"深底上的亮橙"；白纸底上它对比度只有 2:1 出头，
+     压在正文里读不出来，所以浅色皮肤统一压深一档（色相不动）。 */
+  --warn: #b26a00;
+  --warn-soft: #fff3e2;
+  --danger: #e0332a;
+  --danger-soft: #ffeceb;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, .05), 0 6px 16px -10px rgba(15, 23, 42, .14);
+  --shadow-2: 0 2px 6px rgba(15, 23, 42, .07), 0 16px 32px -16px rgba(15, 23, 42, .20);
+  --shadow-flyout: 0 12px 20px -8px rgba(15, 23, 42, .14), 0 32px 56px -24px rgba(15, 23, 42, .26);
+  --shadow-press: inset 0 1px 2px rgba(15, 23, 42, .10);
+
+  --bg-texture:
+    radial-gradient(1200px 600px at 12% -8%, rgba(29, 29, 31, .045), transparent 70%),
+    radial-gradient(900px 500px at 100% 0%, rgba(29, 29, 31, .03), transparent 65%);
+}

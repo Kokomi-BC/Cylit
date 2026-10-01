@@ -1,0 +1,12 @@
+/* 皮肤入口：tokens.css 只 @import 本文件，后期加皮肤在此加一行。
+ *
+ * 皮肤只覆盖**色值**令牌（见各文件），圆角 / 间距 / 动效 / 字体令牌不随皮肤变 ——
+ * 形状是全站语言，换个颜色不该把按钮从 pill 变成方角。
+ * 真值：`html[data-theme="<id>"]`，注册表见 `src/theme/registry.ts`。
+ */
+
+@import "./classic.css";
+@import "./jiangnan.css";
+@import "./mojia.css";
+@import "./seacliff.css";
+@import "./night.css";

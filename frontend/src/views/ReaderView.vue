@@ -30,6 +30,7 @@ import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
 import { READER_TEXT_SIZES, type ReaderTextSize } from '@/utils/readerFont';
+import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
@@ -39,6 +40,8 @@ import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
+import AsideToggle from '@/components/reader/AsideToggle.vue';
+import CapPanel from '@/components/reader/CapPanel.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
@@ -97,6 +100,38 @@ const collapsed = ref<string[]>([]);
 // 「显示参考文献」开关已按用户要求移除：参考文献**恒显示**，不再是一条界面状态。
 // （服务端 `reading_progress.show_refs` 字段仍照旧写 `true`，只是前端不再读它。）
 const zoom = ref(1);
+
+/* ------------------------------ 缩放 ------------------------------
+ * `zoom` 是**唯一真值**：页图宽度 = 栏宽 × zoom（见 `pageWidth`），工具栏那个百分比直接读它。
+ * 三条入口（± 按钮 / Ctrl+滚轮 / 触控板捏合）全部汇到 `setZoom`，所以"我怎么缩放"与
+ * "数字显示多少"不会脱节 —— 这是用户报的"放大程度与数值对不上"的根治办法。
+ */
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 3;
+
+function setZoom(next: number) {
+  const v = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next)) * 100) / 100;
+  if (v !== zoom.value) zoom.value = v;
+}
+
+/** ± 一档：0.1（细步进。以前 0.15 一档，点两下就跳 30%，看不出连续性） */
+function zoomBy(dir: number) {
+  setZoom(zoom.value + dir * 0.1);
+}
+
+/**
+ * Ctrl/⌘ + 滚轮缩放（触控板捏合在 Chrome 里就是带 `ctrlKey` 的 wheel 事件）。
+ *
+ * ⚠️ 必须 `preventDefault`：不拦的话会连带触发**浏览器自己的页面缩放** —— 那才是
+ * "我明明缩放了、百分比却不动"的根源：浏览器缩放放大的是整个界面（连百分比标签一起放大），
+ * 而它并不表示页图的显示比例。拦下来之后，同一个手势改的是 `zoom`，页图与数字一起动。
+ */
+function onContentWheel(ev: WheelEvent) {
+  if (!ev.ctrlKey && !ev.metaKey) return;
+  ev.preventDefault();
+  // deltaY 在触控板上是连续小值、在鼠标滚轮上是一格 ±100：用比例步进让两者手感接近
+  setZoom(zoom.value - ev.deltaY * 0.002);
+}
 const searchQuery = ref('');
 const searchScope = ref<SearchScope>('all');
 /**
@@ -168,6 +203,35 @@ try {
 } catch { /* 隐私模式下忽略 */ }
 /** 给 `<style>` 里的 `v-bind()` 用：宽度是响应式的，拖到哪侧栏就是多宽 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
+
+/**
+ * 侧栏占位宽度（0 = 收起）：正文那一列靠它让位。
+ *
+ * 侧栏本身是**绝对定位**的（见样式），所以正文列永远是整宽；"让位"由内层
+ * `.reader-slide` 的 `width: calc(100% - 这个值)` + `translateX(这个值)` 完成 ——
+ * 于是开合时**只有这一个值在变**，正文的一次重排发生在**动画开始那一帧**，
+ * 之后是纯 transform 的平移（合成层，不重排）。窄屏侧栏是抽屉，不占位。
+ */
+const asideGapPx = computed(() => (asideVisible.value && !isNarrow.value ? `${asideWidth.value}px` : '0px'));
+
+/** 胶囊工具栏要居中在**正文列**上：侧栏展开时整体右移半个栏宽（transition 与侧栏同步）。 */
+const capsuleShift = computed(() => (
+  asideVisible.value && !isNarrow.value ? Math.round(asideWidth.value / 2) : 0
+));
+
+/** 同一份位移给弹出面板用（CSS 变量形式，见 `.cap-panel` 的 `--panel-shift`）。 */
+const capsuleShiftCss = computed(() => `${capsuleShift.value}px`);
+
+/**
+ * 顶栏弹出面板：**同一时刻只开一个**（互斥）。
+ * `view` = 版面选项（原文栏呈现 / 文字列侧 / 左右顺序）；`display` = 显示（字号 + 页图缩放）。
+ * 面板本体始终挂载（`v-show`），原因见 `CapPanel.vue` 的头注释（自检脚本按文字点里面的按钮）。
+ */
+const capPanel = ref<'' | 'view' | 'display'>('');
+
+function toggleCapPanel(which: 'view' | 'display') {
+  capPanel.value = capPanel.value === which ? '' : which;
+}
 
 /** 落盘（每像素写一次没意义；拖完 / 夹取之后才写） */
 function persistAsideWidth() {
@@ -745,6 +809,45 @@ const pageWidth = computed(() => {
   const wanted = Math.round(Math.max(220, col) * zoom.value);
   return Math.max(200, Math.min(wanted, Math.max(220, col * 2)));
 });
+
+/* ------------------------- 本机阅读统计（打开次数 / 时长） -------------------------
+ * 后端 `reading_progress` 里没有这两个数（见 `utils/readerStats.ts` 的说明），所以记在本机：
+ * 进阅读器算一次"打开"；时长**只在页面可见时**累加，每 30 秒落一次盘，
+ * 切走标签页 / 离开阅读器时再补最后那一段 —— 否则"切到别的页面挂着"会被算成一直在读。
+ */
+let readActiveSince = 0;
+let readFlushTimer: number | null = null;
+
+function flushReadSeconds() {
+  if (!readActiveSince) return;
+  const sec = Math.round((Date.now() - readActiveSince) / 1000);
+  readActiveSince = Date.now();
+  if (sec > 0) addReaderSeconds(instancePaperId, sec);
+}
+
+function armReadClock() {
+  readActiveSince = document.visibilityState === 'visible' ? Date.now() : 0;
+}
+
+function onReadVisibility() {
+  if (document.visibilityState === 'visible') { armReadClock(); return; }
+  flushReadSeconds();
+  readActiveSince = 0;
+}
+
+/** 进阅读器时调用：这次算一次"打开"，并开始计时 */
+function startReadStats() {
+  noteReaderOpen(instancePaperId);
+  armReadClock();
+  if (readFlushTimer) window.clearInterval(readFlushTimer);
+  readFlushTimer = window.setInterval(flushReadSeconds, 30000);
+}
+
+function stopReadStats() {
+  flushReadSeconds();
+  readActiveSince = 0;
+  if (readFlushTimer) { window.clearInterval(readFlushTimer); readFlushTimer = null; }
+}
 
 /* ------------------------------ 加载 ------------------------------ */
 /** 上一轮是否在解析（解析结束时自动刷新阅读器数据） */
@@ -1614,12 +1717,17 @@ onMounted(async () => {
   window.addEventListener('scroll', onAnyScroll, { capture: true, passive: true });
   window.addEventListener('blur', hideMenu);
   document.addEventListener('pointerdown', onDocPointerDown, true);
+  // 本机阅读统计：这次算一次"打开"，并在页面可见期间累加时长
+  startReadStats();
+  document.addEventListener('visibilitychange', onReadVisibility);
 
   await loadAll();
   await loadSide();
   await nextTick();
   syncPaneWidth();
   watchContentSize();
+  // Ctrl/⌘ + 滚轮缩放：**必须非 passive** 才拦得住浏览器自己的页面缩放（见 onContentWheel）
+  scroller.value?.addEventListener('wheel', onContentWheel, { passive: false });
   // 视图模式（可能是服务端进度里的纯译文 / 深链 ?view=）到位后按模式重夹一次侧栏宽度
   await applyAsideMax();
   // **深链优先**：带锚点时不先恢复"上次读到哪" —— 两者都是"滚到某一行"，
@@ -1639,6 +1747,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   mq?.removeEventListener('change', onMqChange);
+  document.removeEventListener('visibilitychange', onReadVisibility);
+  stopReadStats();
+  if (anchorPinTimer) { window.clearTimeout(anchorPinTimer); anchorPinTimer = null; }
+  scroller.value?.removeEventListener('wheel', onContentWheel);
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mousedown', onDragStart);
   document.removeEventListener('copy', onCopy);
@@ -2320,6 +2432,8 @@ function onAnyScroll() { hideMenu(); }
 function onDocPointerDown(ev: PointerEvent) {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('[data-selection-menu]')) return;
+  // 顶栏弹出面板：点面板外面就收起来（面板内的点击不动它 —— 改一个分段值不该把面板关掉）
+  if (capPanel.value && !target?.closest?.('.reader-toolbar')) capPanel.value = '';
   hideMenu();
 }
 
@@ -2664,6 +2778,9 @@ const togglePane = (name: 'side') => { mobilePane.value = mobilePane.value === n
 
 /** 侧栏开合：窄屏=抽屉，宽屏=收起列（选择记住到 localStorage） */
 async function toggleAside() {
+  // 先钉住当前阅读行：宽度一变，正文整体重排（页图还会在 ~450ms 后补一次重绘），
+  // 于是"动画结束、位置看着定了"之后还会再跳一下（用户报的"额外刷新一次"）。
+  pinReadingAnchor();
   if (isNarrow.value) {
     togglePane('side');
   } else {
@@ -2672,6 +2789,49 @@ async function toggleAside() {
   }
   await nextTick();
   syncPaneWidth();
+}
+
+/**
+ * 把"当前正在读的那一行"钉在视口里，横跨随后的重排窗口。
+ *
+ * 为什么需要：侧栏开合会改正文宽度 → 页图/文本全部重排，页图还会在防抖 450ms 后按新宽度
+ * **补一次重绘**（清晰度），这会再改一次文档高度。滚动位置 `scrollTop` 全程不变，
+ * 但内容在它下面变了，视觉上就是"位置确定后又跳了一下"。
+ *
+ * 做法：记下最靠近阅读线的那一行此刻的视口位置，随后 ~1.2s 内每 60ms 检查一次，
+ * 偏移了就补回 `scrollTop`（纯增量，不动平滑滚动）。**用户一动就停手**：
+ * 一旦 `scrollTop` 不等于我们自己设过的值，说明是人在滚，立刻放弃。
+ */
+let anchorPinTimer: number | null = null;
+
+function pinReadingAnchor(durationMs = 1200) {
+  const el = scroller.value;
+  if (!el) return;
+  const rows = Array.from(el.querySelectorAll<HTMLElement>('[data-row-id]'));
+  if (!rows.length) return;
+
+  const line = el.getBoundingClientRect().top + readingLine();
+  const anchor = rows.find((r) => r.getBoundingClientRect().bottom >= line) ?? rows[0];
+  const rowId = anchor.dataset.rowId ?? '';
+  const wantTop = anchor.getBoundingClientRect().top;
+  const startedAt = performance.now();
+  let expectedTop = el.scrollTop;
+
+  if (anchorPinTimer) window.clearTimeout(anchorPinTimer);
+  const tick = () => {
+    anchorPinTimer = null;
+    if (Math.abs(el.scrollTop - expectedTop) > 2) return;      // 人在滚：让位
+    const cur = rowId ? el.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(rowId)}"]`) : null;
+    if (cur) {
+      const delta = cur.getBoundingClientRect().top - wantTop;
+      if (Math.abs(delta) > 1) {
+        el.scrollTop += delta;
+        expectedTop = el.scrollTop;
+      }
+    }
+    if (performance.now() - startedAt < durationMs) anchorPinTimer = window.setTimeout(tick, 60);
+  };
+  anchorPinTimer = window.setTimeout(tick, 60);
 }
 const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 </script>
@@ -2726,166 +2886,198 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       v-else
       :class="['reader',
                asideVisible ? '' : 'no-aside',
-               isNarrow && mobilePane === 'side' ? 'mobile-aside' : '']"
+               isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
+               { resizing: asideResizing }]"
     >
       <!-- ============ 工具栏 ============ -->
-      <div class="reader-toolbar">
-        <!-- 最左：侧栏开合（论文标题在顶栏的标签上，这里不再重复显示）；`data-aside-toggle` 供自检脚本使用 -->
-        <button
-          class="btn icon"
-          data-aside-toggle
-          :title="asideVisible ? '收起侧栏（[）' : '展开侧栏（[）'"
-          :aria-pressed="asideVisible"
-          @click="toggleAside"
-        >
-          <AppIcon name="panel" :size="15" />
-        </button>
-
-        <div class="seg">
-          <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
-          <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
-          <button :class="{ active: viewMode === 'bilingual' }" @click="setViewMode('bilingual')">对照</button>
+      <!-- ============ 悬浮胶囊工具栏（Apple 风） ============
+           同一条水平线上三块玻璃，共用 `--cap-h` → 永远同高同线：
+             · **左** = 侧栏开关（**圆形**，位置固定 12px：侧栏开着时它落在侧栏头部那一行的最左，
+               收起时正好落在正文左边缘 —— 两种情况都"在正确的地方"，所以**永远只有这一枚**，
+               不再有"侧栏里一枚、顶栏一枚"的交接闪烁）
+             · **中** = 主胶囊：视图切换 + 版面选项 + 显示（字号 / 页图缩放）
+             · **右** = 更多（与左侧开关同尺寸、同基线）
+           自检脚本依赖的钩子：`[data-aside-toggle]`、`.reader-toolbar .seg button`、
+           缩放标签的 `.tiny.faint.nowrap`、以及按标题找的「缩小 / 放大」。 -->
+      <div class="reader-toolbar" :style="{ '--panel-shift': capsuleShiftCss }">
+        <div class="cap-solo left">
+          <AsideToggle :open="asideVisible" @toggle="toggleAside" />
         </div>
 
-        <div v-if="originalVisible" class="seg" title="原文栏呈现">
-          <button :class="{ active: originalMode === 'text' }" @click="setOriginalMode('text')">
-            <AppIcon name="document" :size="14" />原文文本
-          </button>
-          <button :class="{ active: originalMode === 'page' }" @click="setOriginalMode('page')">
-            <AppIcon name="image" :size="14" />原 PDF
-          </button>
+        <div class="reader-capsule" :style="{ transform: `translateX(${capsuleShift}px)` }">
+          <div class="cap-group">
+            <div class="seg">
+              <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
+              <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
+              <button :class="{ active: viewMode === 'bilingual' }" @click="setViewMode('bilingual')">对照</button>
+            </div>
+          </div>
+
+          <div class="cap-group">
+            <button
+              class="btn icon"
+              data-cap-panel="view"
+              title="版面选项（原文栏呈现 / 文字列侧 / 左右顺序）"
+              aria-haspopup="true"
+              :aria-expanded="capPanel === 'view'"
+              @click="toggleCapPanel('view')"
+            >
+              <AppIcon name="sliders" :size="15" />
+            </button>
+            <button
+              class="btn cap-aa"
+              data-cap-panel="display"
+              title="显示：正文字号与页图缩放（Ctrl + 滚轮 / 触控板捏合也能缩放）"
+              aria-haspopup="true"
+              :aria-expanded="capPanel === 'display'"
+              @click="toggleCapPanel('display')"
+            >
+              Aa<span v-if="originalIsPage" class="tiny faint nowrap">{{ Math.round(zoom * 100) }}%</span>
+            </button>
+          </div>
+
+          <!-- 翻译状态与主操作：翻译完成时**整组消失**（用户口径：不要那个常驻的绿色对勾） -->
+          <div class="cap-group" v-if="!translateDone">
+            <!-- SSE 连得好不好是**实现细节**，连上时不刷存在感；降级轮询 / 连接中才提醒 -->
+            <span
+              v-if="sseStatus !== 'open'"
+              class="badge warn nowrap"
+              :title="sseStatus === 'polling' ? 'SSE 不可用，已降级轮询（4s 一次）' : 'SSE 连接中'"
+            >{{ sseStatus === 'polling' ? '轮询' : '连接中' }}</span>
+            <span class="badge accent nowrap">{{ stats.pages_done ?? 0 }}/{{ stats.pages ?? 0 }} 页</span>
+            <span v-if="activeTask" class="badge nowrap" :title="`任务 ${activeTask.id}：${activeTask.status}`">
+              翻译中
+            </span>
+            <button
+              class="btn primary"
+              :disabled="!!activeTask || busyTranslating"
+              :title="activeTask ? '已有翻译任务在跑（可先「停止」或等它结束）' : '从断点继续翻译剩余的页'"
+              @click="startTranslate('resume')"
+            >
+              <AppIcon name="play" :size="15" />{{ activeTask || busyTranslating ? '翻译中…' : '继续翻译' }}
+            </button>
+            <button v-if="activeTask" class="btn danger" @click="cancelTranslate(activeTask)">
+              <AppIcon name="stop" :size="15" />停止
+            </button>
+          </div>
         </div>
 
-        <!-- 对照 + 原 PDF 时，右侧文字列放译文还是原文（用户口径："对照 pdf 时有原文、译文模式"）。
-             `pageLeft` 才出现：只有那时另一列才是页图，"文字列放哪一侧"才成为一个选择。 -->
-        <div v-if="pageLeft" class="seg" title="页图旁的文字列">
-          <button :class="{ active: pageSide === 'zh' }" @click="setPageSide('zh')">译文</button>
-          <button :class="{ active: pageSide === 'en' }" @click="setPageSide('en')">原文</button>
+        <!-- 右：更多（低频动作：重译 / 打开 PDF / Markdown 视图） -->
+        <div class="cap-solo right">
+          <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
         </div>
 
-        <!-- 左右顺序：只放**位置图标**（原文块在左 / 原文块在右），靠 tooltip 说明；
-             文字标签会把工具栏挤爆，而且这两个按钮本来就是在讲"版面位置"。 -->
-        <div v-if="viewMode === 'bilingual'" class="seg" title="左右顺序">
-          <button
-            :class="{ active: leftIsOriginal }"
-            title="原文在左（译文在右）"
-            @click="setPairOrder('en_left')"
-          >
-            <AppIcon name="layout-original-left" :size="15" />
-          </button>
-          <button
-            :class="{ active: !leftIsOriginal }"
-            title="译文在左（原文在右）"
-            @click="setPairOrder('zh_left')"
-          >
-            <AppIcon name="layout-original-right" :size="15" />
-          </button>
-        </div>
+        <!-- 弹出面板（互斥，落在主胶囊正下方）。里面每个控件都是**常挂载**的：
+             `frontend_check.py` 按文字/标题点「原文文本 / 原 PDF / 小」，v-if 会让它点不到。 -->
+        <CapPanel :open="capPanel === 'view'" label="版面选项" data-cap-panel-body="view">
+          <div v-if="originalVisible" class="cap-row">
+            <span class="cap-row-label">原文栏呈现</span>
+            <div class="seg" title="原文栏呈现">
+              <button :class="{ active: originalMode === 'text' }" @click="setOriginalMode('text')">
+                <AppIcon name="document" :size="14" />原文文本
+              </button>
+              <button :class="{ active: originalMode === 'page' }" @click="setOriginalMode('page')">
+                <AppIcon name="image" :size="14" />原 PDF
+              </button>
+            </div>
+          </div>
 
-        <div v-if="originalIsPage" class="row">
-          <button class="btn icon" title="缩小" @click="zoom = Math.max(0.4, zoom - 0.15)">
-            <AppIcon name="zoom-out" :size="15" />
-          </button>
-          <span class="tiny faint nowrap">{{ Math.round(zoom * 100) }}%</span>
-          <button class="btn icon" title="放大" @click="zoom = Math.min(3, zoom + 0.15)">
-            <AppIcon name="zoom-in" :size="15" />
-          </button>
-        </div>
+          <div v-if="pageLeft" class="cap-row">
+            <span class="cap-row-label">文字列侧</span>
+            <div class="seg" title="页图旁的文字列">
+              <button :class="{ active: pageSide === 'zh' }" @click="setPageSide('zh')">译文</button>
+              <button :class="{ active: pageSide === 'en' }" @click="setPageSide('en')">原文</button>
+            </div>
+          </div>
 
-        <div class="seg" title="正文字号">
-          <button
-            v-for="opt in TEXT_SIZE_OPTIONS"
-            :key="opt.k"
-            :class="{ active: textSize === opt.k }"
-            @click="setTextSize(opt.k)"
-          >{{ opt.label }}</button>
-        </div>
+          <div v-if="viewMode === 'bilingual'" class="cap-row">
+            <span class="cap-row-label">左右顺序</span>
+            <div class="seg" title="左右顺序">
+              <button
+                :class="{ active: leftIsOriginal }"
+                title="原文在左（译文在右）"
+                @click="setPairOrder('en_left')"
+              >
+                <AppIcon name="layout-original-left" :size="15" />
+              </button>
+              <button
+                :class="{ active: !leftIsOriginal }"
+                title="译文在左（原文在右）"
+                @click="setPairOrder('zh_left')"
+              >
+                <AppIcon name="layout-original-right" :size="15" />
+              </button>
+            </div>
+          </div>
+        </CapPanel>
 
-        <span class="spacer" />
+        <CapPanel :open="capPanel === 'display'" label="显示" data-cap-panel-body="display">
+          <div class="cap-row">
+            <span class="cap-row-label">正文字号</span>
+            <div class="seg" title="正文字号">
+              <button
+                v-for="opt in TEXT_SIZE_OPTIONS"
+                :key="opt.k"
+                :class="{ active: textSize === opt.k }"
+                @click="setTextSize(opt.k)"
+              >{{ opt.label }}</button>
+            </div>
+          </div>
 
-        <!-- 工具栏**不再有「解读」按钮**（用户口径）：解读在左栏就是一个页签（现在还是两个：
-             「论文解读」「阅读地图」），工具栏再放一个重复入口只会让人以为它管的是另一件事。
-             左栏自己的开合仍由最左边那枚侧栏开关负责。 -->
-
-        <!-- 翻译完成时：实时状态与进度就没意义了（整篇本来就不在跑）。
-             完成态只留一个绿色对勾（用户口径：不要一直占着"全部 N 页已翻译"这行字），
-             完整文案放进 tooltip。 -->
-        <template v-if="translateDone">
-          <span class="badge ok nowrap done-badge" :title="`全部 ${stats.pages} 页已翻译`">
-            <AppIcon name="check_circle" :size="13" />
-          </span>
-        </template>
-        <template v-else>
-          <!-- SSE 连得好不好是**实现细节**，连上时不再刷存在感；
-               只有降级轮询 / 连接中才值得提醒一下。 -->
-          <span
-            v-if="sseStatus !== 'open'"
-            class="badge warn nowrap"
-            :title="sseStatus === 'polling' ? 'SSE 不可用，已降级轮询（4s 一次）' : 'SSE 连接中'"
-          >{{ sseStatus === 'polling' ? '轮询' : '连接中' }}</span>
-          <span class="badge accent nowrap">{{ stats.pages_done ?? 0 }}/{{ stats.pages ?? 0 }} 页</span>
-          <span v-if="activeTask" class="badge nowrap" :title="`任务 ${activeTask.id}：${activeTask.status}`">
-            翻译中
-          </span>
-        </template>
-
-        <!-- 文档简报不需要开关：有就用、没有就自动生成（在左栏「术语」页签里可编辑）。
-             brief=false 的参数仍保留在 API 上供脚本使用。 -->
-        <button
-          v-if="!translateDone"
-          class="btn primary"
-          :disabled="!!activeTask || busyTranslating"
-          :title="activeTask ? '已有翻译任务在跑（可先「停止」或等它结束）' : '从断点继续翻译剩余的页'"
-          @click="startTranslate('resume')"
-        >
-          <AppIcon name="play" :size="15" />{{ activeTask || busyTranslating ? '翻译中…' : '继续翻译' }}
-        </button>
-        <button v-if="activeTask" class="btn danger" @click="cancelTranslate(activeTask)">
-          <AppIcon name="stop" :size="15" />停止
-        </button>
-
-        <!-- 搜索框**不在这里**：它属于"对整篇文档的操作"，已移到侧栏的「搜索」页签
-             （`ReaderSearch`）。工具栏只留视图切换 / 字号 / 翻译 / 更多操作。 -->
-
-        <!-- 低频动作（重译 / 打开 PDF / Markdown 视图）收进「⋯」，工具栏只留主次两个动作 -->
-        <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
-      </div>
-
-      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读/阅读地图（可整体折叠，可拖宽） ============
+          <!-- 页图缩放：只在"原文栏 = 原 PDF"时有意义（文字模式没有页图可缩） -->
+          <div v-if="originalIsPage" class="cap-row">
+            <span class="cap-row-label">页图缩放</span>
+            <div class="cap-zoom">
+              <button class="btn icon" title="缩小" @click="zoomBy(-1)">
+                <AppIcon name="zoom-out" :size="15" />
+              </button>
+              <span class="cap-zoom-value tnum">{{ Math.round(zoom * 100) }}%</span>
+              <button class="btn icon" title="放大" @click="zoomBy(1)">
+                <AppIcon name="zoom-in" :size="15" />
+              </button>
+            </div>
+          </div>
+        </CapPanel>
+      </div>      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读/阅读地图（可整体折叠，可拖宽） ============
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读 / 阅读地图」用的是阅读器的正文字号
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
       <aside :class="['reader-aside', { resizing: asideResizing }]" :style="{ '--reader-font-size': `${readerFont}px` }">
-        <div class="side-tabs-wrap">
-          <button
-            v-if="tabsScroll.left"
-            class="side-scroll-btn left"
-            title="向左滚动页签"
-            @click="scrollTabs(-1)"
-          >
-            <AppIcon name="chevron-left" :size="13" />
-          </button>
-          <div ref="sideTabsEl" class="side-tabs" @scroll="syncTabsScroll" @wheel="onSideTabsWheel">
+        <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），
+             侧栏开着时它正好落在这一行的最左 —— 所以这里是"胶囊正左侧就是关闭按钮"。
+             `padding-left: 62px` 给它让位（12 + 38 + 12）。 -->
+        <div class="aside-head">
+            <div class="side-tabs-wrap">
             <button
-              v-for="t in SIDE_TABS"
-              :key="t.k"
-              class="side-tab"
-              :class="{ active: sideTab === t.k }"
-              :title="t.title"
-              @click="sideTab = t.k"
+              v-if="tabsScroll.left"
+              class="side-scroll-btn left"
+              title="向左滚动页签"
+              @click="scrollTabs(-1)"
             >
-              <AppIcon :name="t.icon" :size="15" />
-              <span class="side-label">{{ t.label }}</span>
-              <span v-if="t.count" class="side-count">{{ t.count }}</span>
+              <AppIcon name="chevron-left" :size="13" />
+            </button>
+            <div ref="sideTabsEl" class="side-tabs" @scroll="syncTabsScroll" @wheel="onSideTabsWheel">
+              <button
+                v-for="t in SIDE_TABS"
+                :key="t.k"
+                class="side-tab"
+                :class="{ active: sideTab === t.k }"
+                :title="t.title"
+                @click="sideTab = t.k"
+              >
+                <AppIcon :name="t.icon" :size="15" />
+                <span class="side-label">{{ t.label }}</span>
+                <span v-if="t.count" class="side-count">{{ t.count }}</span>
+              </button>
+            </div>
+            <button
+              v-if="tabsScroll.right"
+              class="side-scroll-btn right"
+              title="向右滚动页签"
+              @click="scrollTabs(1)"
+            >
+              <AppIcon name="chevron-right" :size="13" />
             </button>
           </div>
-          <button
-            v-if="tabsScroll.right"
-            class="side-scroll-btn right"
-            title="向右滚动页签"
-            @click="scrollTabs(1)"
-          >
-            <AppIcon name="chevron-right" :size="13" />
-          </button>
         </div>
         <ReaderToc
           v-if="sideTab === 'toc'"
@@ -2951,8 +3143,11 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
         />
       </aside>
 
-      <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============ -->
+      <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============
+           `.reader-slide` 是"让位 + 平移"的那一层：侧栏开合时它整体滑过去，
+           内部的正文一次都不重排（见 asideGapPx 的说明）。 -->
       <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick">
+        <div class="reader-slide">
         <ReaderPageRows
           :groups="groups"
           :mode="viewMode"
@@ -2961,6 +3156,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           :pair-order="pairOrder"
           :paper-id="paperId"
           :page-width="pageWidth"
+          :page-zoom="zoom"
           :current-row-id="currentRowId"
           :highlights="highlights"
           :search-term="searchQuery.trim()"
@@ -2971,6 +3167,7 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @zoom="zoomImage = $event"
           @translate-page="(p: number) => startTranslate('resume', [p])"
         />
+        </div>
       </section>
     </div>
 
@@ -3102,24 +3299,162 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .reader-loading-bar { width: 220px; max-width: 60vw; }
 
 .reader {
+  /* 侧栏改为**绝对定位**（见 .reader-aside）：网格只剩正文一列，"侧栏开合"因此不再牵动
+     网格轨道。每次开合只改一个 CSS 变量，正文的重排只发生在**动画第一帧**，
+     之后是纯 transform 的平移（合成层、不重排）。以前过渡 grid 宽度/侧栏宽度会逐帧重排
+     整篇正文（KaTeX、表格、行对齐全在重算），那正是"卡一下、跳一下"的来源。 */
+  position: relative;
   display: grid;
-  /* **左右栏已合并**：只有"侧栏 + 正文"两列，正文因此更宽（对照时两侧都更好读）。
-     第一列用 auto：宽度由侧栏自己的 width 决定 —— width 过渡是全浏览器都支持的，
-     （直接过渡 grid-template-columns 在含 minmax(0,1fr) 时 Chrome 会"启动但不插值"，实测卡死） */
-  grid-template-columns: auto minmax(0, 1fr);
-  /* 关键：两行必须显式声明。否则内容行会被内容撑高，侧栏自身不滚、整页跟着滚。 */
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: calc(100vh - var(--header-h));
   overflow: hidden;
 }
 
+/* ---------------- 悬浮胶囊工具栏（Apple 风） ----------------
+ * 一条水平线上三块玻璃（左开关 / 中主胶囊 / 右更多），共用同一个高度变量 `--cap-h`
+ * → 永远同高、同基线（用户报过"开关和胶囊不一样大、也不在一条线上"）。
+ * 整层是 `height: 0` 的占位层 + `pointer-events: none`：正文从它**下面**滚过去，
+ * 毛玻璃才有东西可模糊；交互只落在三块玻璃与弹出面板上。 */
 .reader-toolbar {
-  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev);
+  --cap-h: 38px;
+  /* 玻璃本体的不透明度：**浅色下可以很透**（背后是白纸，48px 模糊会化成一团柔光），
+     深色下要加实一档 —— 否则深色工具条压在仍是白纸的正文上会变成"灰玻璃"，控件读不清。
+     两档都远透于"实心工具栏"，所以极强玻璃的观感不变，只是深色下不再牺牲可读性。 */
+  --glass-bar-top: 80%;
+  --glass-bar-bottom: 68%;
+  --glass-panel-top: 86%;
+  --glass-panel-bottom: 74%;
+  /* 顶部那一道细高光（玻璃的"棱"）：**不分主题都用白色会翻车** ——
+     深色下 0.5 的白边亮得像发光环（用户口径："暗色显示太奇怪"）。
+     浅色 .5 / 深色 .18，配合去掉描边，层次靠"渐变本体 + 柔光投影"来给。 */
+  --glass-edge: rgba(255, 255, 255, .5);
+  position: absolute; top: 0; left: 0; right: 0; height: 0; z-index: 40;
+  display: flex; justify-content: center;
+  /* ⚠️ 必须 flex-start：这一层高 0，默认的 `stretch` 会把胶囊也拉成 0 高，
+     而胶囊自带 `overflow: hidden` → 里面的文字被裁掉一半（只露出字头）。 */
+  align-items: flex-start;
+  pointer-events: none;
 }
-/* 翻译完成徽章：只留一个对勾（口径：不要一行"全部 N 页已翻译"占着工具栏）。
-   `.badge` 默认是"图文胶囊"，这里把左右内边距换成固定 22px 见方 + 内容居中。 */
-.done-badge { padding: 0; width: 22px; justify-content: center; }
+/* 深色皮肤（含"跟随系统"落到深色的那一档）：玻璃加实一档。
+ * ⚠️ `:global()` 必须**把整条选择器包进去**：写成 `:global(html.theme-dark) .reader-toolbar`
+ * 时 Vue 的 scoped 编译器会把后半段 `.reader-toolbar` 吞掉，只剩 `html.theme-dark { … }` ——
+ * 那样变量落在根元素上，而 `.reader-toolbar` 自己又声明了同名变量（层叠上"自己 > 继承"），
+ * 深色档等于没写（实测计算值仍是 80%）。 */
+:global(html.theme-dark .reader-toolbar) {
+  --glass-bar-top: 90%;
+  --glass-bar-bottom: 82%;
+  --glass-panel-top: 93%;
+  --glass-panel-bottom: 86%;
+  --glass-edge: rgba(255, 255, 255, .18);
+}
+@media (prefers-color-scheme: dark) {
+  :global(html[data-theme="auto"] .reader-toolbar),
+  :global(html:not([data-theme]) .reader-toolbar) {
+    --glass-bar-top: 90%;
+    --glass-bar-bottom: 82%;
+    --glass-panel-top: 93%;
+    --glass-panel-bottom: 86%;
+    --glass-edge: rgba(255, 255, 255, .18);
+  }
+}
+
+/* 顶部横带那层"渐变毛玻璃"按用户口径**已移除**（不好看）：现在正文滚到顶栏下面就是直接
+   被胶囊盖住，不再额外加一层渐隐模糊。留个注释免得后人又把它加回来。 */
+
+/* 左右两枚独立胶囊（侧栏开关 / 更多）：与主胶囊同高同线，玻璃同一套材质。
+ * 侧栏开关是**正圆**（用户口径），位置固定 12px —— 侧栏开着时它落在侧栏头部那行最左
+ * （就是"页签胶囊正左侧的关闭按钮"），收起时正好落在正文左边缘。一枚到底，不交接。 */
+.cap-solo {
+  position: absolute; top: 10px; height: var(--cap-h); width: var(--cap-h);
+  pointer-events: auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  /* 玻璃 = **渐变本体 + 柔光投影 + 一档顶部细高光**，不画描边、不加反光层：
+     描边在浅色下几乎看不见、在深色下却成了一圈发光环（用户口径："暗色显示太奇怪"），
+     索性去掉 —— 悬浮感交给阴影，表面感交给上亮下暗的本体。 */
+  border: 0;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge, rgba(255, 255, 255, .5));
+  transition: transform .26s cubic-bezier(.32, .72, 0, 1);
+}
+.cap-solo.left { left: 12px; }
+/* 右：与左侧那枚**同为正圆**（用户口径：更多也要圆形） */
+.cap-solo.right { right: 12px; }
+/* 右胶囊里的「⋯」：Menu 自带 32px 的圆触发钮（base.css 的 `.btn` 有底色）——
+ * ⚠️ 它是**子组件内部**的元素，父组件的 scoped 选择器够不到，必须 `:deep()`。
+ * 不穿透的话就会看到"胶囊里还套着一个小圆钮"（用户报的"底部多了一个胶囊样式"）。 */
+.reader-toolbar .cap-solo.right :deep(.menu-root) { width: 100%; height: 100%; }
+.reader-toolbar .cap-solo.right :deep(.menu-trigger) {
+  width: 100%; height: 100%;
+  border-color: transparent; background: transparent; box-shadow: none;
+}
+.reader-toolbar .cap-solo.right :deep(.menu-trigger:hover) { background: var(--bg-hover); }
+
+.reader-capsule {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 10px; padding: 0 6px;
+  height: var(--cap-h);
+  /* 两侧各给一枚独立胶囊留位：三块玻璃不许叠在一起 */
+  max-width: calc(100% - 148px);
+  border-radius: 999px;
+  /* 同 .cap-solo：渐变本体 + 柔光投影 + 主题化的顶部细高光，不画描边 */
+  border: 0;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout), inset 0 1px 0 var(--glass-edge, rgba(255, 255, 255, .5));
+  /* 居中在**正文列**上：侧栏开合时整体滑半个栏宽（时长/缓动与侧栏、正文完全一致） */
+  transition: transform .26s cubic-bezier(.32, .72, 0, 1);
+  /* 窄屏宁可让胶囊横向滑动，也不把按钮压成"两字一行" */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.reader-capsule::-webkit-scrollbar { display: none; }
+.cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
+/* 分组靠**线**，不靠给每个按钮画边框：胶囊里一排描边按钮会像一张表单 */
+.cap-group + .cap-group { margin-left: 1px; padding-left: 7px; border-left: 1px solid var(--divider); }
+/* 胶囊里的控件一律"无边框、hover 才浮一层浅底"（权重写到三档，压过 base.css 的 .btn/.seg） */
+.reader-capsule .cap-group .btn { border-color: transparent; background: transparent; }
+.reader-capsule .cap-group .btn:hover:not(:disabled) { background: var(--bg-hover); border-color: transparent; }
+.reader-capsule .cap-group .btn.primary { background: var(--accent); color: var(--text-on-accent); }
+.reader-capsule .cap-group .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.reader-capsule .cap-group .btn.danger { color: var(--danger); border-color: transparent; }
+.reader-capsule .cap-group .btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.reader-capsule .cap-group .seg {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.reader-capsule .cap-group .seg button.active { background: var(--bg-elev); box-shadow: var(--shadow-1); }
+/* 胶囊里紧凑一档：32px 的控件缩到 28px，整条胶囊能短 ~10%，仍然是可点尺寸 */
+.reader-capsule .cap-group .btn.icon { width: 28px; height: 28px; }
+.reader-capsule .cap-group .seg { height: 28px; }
+.reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: 12px; }
+.reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: 12px; }
+.reader-capsule .cap-group .badge { height: 20px; }
+/* 「Aa」：字号 + 页图缩放合成一个入口（用户口径：缩放和字号合并），
+   按钮上顺手带出当前缩放值 —— 也是自检脚本读的那个 `.tiny.faint.nowrap`。 */
+.reader-capsule .cap-group .cap-aa { gap: 5px; padding: 0 9px; font-size: 13px; font-weight: 600; }
+.reader-capsule .cap-group .cap-aa .tiny { font-size: 10.5px; font-weight: 500; }
+
+/* 弹出面板里的一行：左标签 + 右分段/步进 */
+.cap-row { display: flex; align-items: center; gap: 12px; }
+.cap-row-label { flex: none; width: 68px; font-size: 12px; color: var(--text-dim); }
+.cap-zoom { display: flex; align-items: center; gap: 6px; }
+.cap-zoom-value { min-width: 46px; text-align: center; font-size: 13px; }
+
+/* 侧栏头部：**只有一条页签胶囊**，左端留出那枚圆形开关的位置（12 + 38 + 12 = 62）。
+   高度 58 是为了让胶囊中线（29px）与顶栏那三块玻璃的中线对齐 —— 四样东西在一条线上。 */
+.aside-head {
+  flex: none; display: flex; align-items: center;
+  height: 58px; padding: 0 12px 0 62px;
+}
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -3152,16 +3487,17 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 /* 各栏都要 min-width/min-height: 0，否则 grid 子项不收缩、内容会顶破布局 */
 .reader-aside, .reader-content { min-width: 0; min-height: 0; }
 .reader-aside {
-  /* 拖拽把手要相对侧栏定位（见 .aside-resizer） */
-  position: relative;
+  /* 拖拽把手要相对侧栏定位（见 .aside-resizer）；**绝对定位**使它脱离网格：
+     开合只改 transform（合成层），正文那一列不会被逐帧重排。 */
+  position: absolute; top: 0; bottom: 0; left: 0; z-index: 30;
   border-right: 1px solid var(--border); background: var(--bg-elev);
   overflow: hidden; display: flex; flex-direction: column;
-  width: v-bind(asideWidthPx);          /* 展开宽度（可拖拽，按论文记；收起时过渡到 0） */
-  transition: width .24s cubic-bezier(.4, 0, .2, 1), opacity .18s ease,
-              border-right-width .24s ease, border-right-color .24s ease;
+  width: v-bind(asideWidthPx);          /* 展开宽度（可拖拽，按论文记） */
+  transition: transform .26s cubic-bezier(.32, .72, 0, 1), opacity .18s ease;
 }
-/* 拖拽期间关掉宽度过渡：0.24s 的补间会让把手"黏"在指针后面（松手才追上） */
-.reader-aside.resizing { transition: none; }
+/* 拖拽期间关掉过渡：0.26s 的补间会让把手"黏"在指针后面（松手才追上） */
+.reader-aside.resizing, .reader.resizing .reader-slide,
+.reader.resizing .reader-capsule, .reader.resizing .cap-solo { transition: none; }
 /* 拖拽把手：贴在侧栏**右边缘内侧**（`.reader-aside` 是 overflow:hidden，凸出去就被裁了）。
    平时完全透明（不打扰阅读），hover / 拖拽中才亮一条主题色竖线。
    ⚠️ 选择器必须写到 `.reader-aside > .aside-resizer` 这个权重：上面 `@media (min-width:1101px)`
@@ -3180,16 +3516,16 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .reader-aside > .aside-resizer:hover::after,
 .reader-aside > .aside-resizer.active::after { background: var(--accent); }
 @media (min-width: 1101px) {
-  /* 收起/展开期间侧栏**只被裁掉、不跟着变窄**：内容保持展开宽度。
+  /* 展开/收起期间侧栏**只被平移、不跟着变窄**：内容保持展开宽度。
      不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，
      又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。
      宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
   .reader-aside > * { min-width: v-bind(asideWidthPx); }
-  /* 收起：宽度收到 0 + 内容轻微左移淡出；右侧 1px 分隔线宽度与颜色一起收掉（否则会留一条竖线） */
-  .reader.no-aside .reader-aside {
-    width: 0; border-right-width: 0; opacity: 0; transform: translateX(-10px);
-    border-right-color: transparent; pointer-events: none;
-  }
+}
+/* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
+   也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
+.reader.no-aside .reader-aside {
+  transform: translateX(-100%); opacity: 0; pointer-events: none;
 }
 /* 侧栏页签：**图标 + 文字**，**一行到底、不换行**；一行放不下就左右滚动（用户口径）。
  * 滚动条隐藏（保持干净），鼠标滚轮 / 触控板 / Shift+滚轮都能滚，见 `onSideTabsWheel`；
@@ -3197,7 +3533,38 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
  * 排得比早先紧凑一些（64px → 56px、字号 10.5 → 10px），少一点"藏起来的页签"。 */
 /* `z-index: 3` 只是为了让页签条压在拖拽把手之上：把手是一条贯穿整栏高度的 9px 热区，
  * 不压住的话页签条最右端那一点点会变成"拖宽度"而不是"点页签"（见 .aside-resizer 的说明）。 */
-.side-tabs-wrap { position: relative; flex: none; z-index: 3; }
+/* 侧栏头部那条**页签胶囊**（用户口径：页面切换也做成胶囊样式）。
+ * 容器自己是一枚胶囊（圆角 + 浅底 + 描边），里面每一项也是一枚 pill（选中 = 抬起一层白底），
+ * 与顶栏那套分段控件同一门语言。一行放不下就横向滚（滚轮 / 两端圆箭头，见 onSideTabsWheel）。 */
+.side-tabs-wrap { position: relative; flex: 1 1 auto; min-width: 0; z-index: 3; }
+.side-tabs {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px; min-height: 34px;
+  /* 不画描边（深色下那圈浅色环很抢眼）；容器与顶栏那几块玻璃同一门语言 */
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  /* 两端各留一枚圆按钮的位置：`scrollIntoView` 落位时不会把当前页签藏在按钮底下 */
+  scroll-padding: 0 26px;
+}
+.side-tabs::-webkit-scrollbar { display: none; }
+.side-tab {
+  position: relative; border: 0; background: transparent; color: var(--text-dim);
+  cursor: pointer; padding: 0 11px; height: 26px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 5px;
+  flex: none; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.side-tab:hover { background: var(--bg-hover); color: var(--text); }
+.side-tab.active { background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1); }
+.side-label { font-size: 11.5px; line-height: 1; }
+.side-tab.active .side-label { font-weight: 600; }
+.side-count {
+  margin-left: 1px; font-size: 9.5px; line-height: 1;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
 /* 两枚"翻页"圆按钮：**浮在滚动条两端**、不占布局（有内容才出现，所以不会让页签跳动） */
 .side-scroll-btn {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
@@ -3209,31 +3576,24 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 .side-scroll-btn:hover { color: var(--accent-text); border-color: var(--accent); }
 .side-scroll-btn.left { left: 3px; }
 .side-scroll-btn.right { right: 3px; }
-.side-tabs {
-  display: flex; align-items: stretch; gap: 2px; padding: 4px 5px;
-  border-bottom: 1px solid var(--divider); flex: none;
-  overflow-x: auto; overflow-y: hidden;
-  scrollbar-width: none;
-  /* 两端各留一枚圆按钮的位置：`scrollIntoView` 落位时不会把当前页签藏在按钮底下 */
-  scroll-padding: 0 24px;
+/* 正文区是**唯一**的滚动容器。
+ * - `padding-top` 只留 8px：胶囊是悬浮的，正文**从它下面开始**（用户口径：不要顶部那一大截空白）。
+ *   页码标注在内容列左端、胶囊居中，两者不重叠，所以第一页的页码照样看得见；
+ * - `overflow-x: hidden`：横向滚动交给"页图那一列"（放大后列内横滚），
+ *   这样侧栏开合时 `.reader-slide` 的位移不会在容器上闪出一条横向滚动条。 */
+.reader-content {
+  overflow-y: auto; overflow-x: hidden;
+  background: var(--bg); scrollbar-width: thin; scrollbar-gutter: stable;
+  padding-top: 8px;
 }
-.side-tabs::-webkit-scrollbar { display: none; }
-.side-tab {
-  position: relative; border: 0; background: transparent; color: var(--text-dim);
-  cursor: pointer; padding: 3px 4px 2px; border-radius: var(--radius-sm);
-  display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
-  flex: none; min-width: 56px;
+/* 让位 + 平移的那一层。
+ * 宽度 = `calc(100% - 让位量)`：侧栏开合时它**一次性**变成新宽度（正文重排一次），
+ * 而 transform 是过渡的 —— 于是整块正文平滑地滑过去，滑的过程中不重排。 */
+.reader-slide {
+  width: calc(100% - v-bind(asideGapPx));
+  transform: translateX(v-bind(asideGapPx));
+  transition: transform .26s cubic-bezier(.32, .72, 0, 1);
 }
-.side-tab:hover { background: var(--bg-hover); color: var(--text); }
-.side-tab.active { background: var(--accent-soft); color: var(--accent-text); }
-.side-label { font-size: 10px; line-height: 1.1; white-space: nowrap; }
-.side-tab.active .side-label { font-weight: 600; }
-.side-count {
-  position: absolute; top: 1px; right: 2px; font-size: 9.5px; line-height: 1;
-  color: var(--text-faint); font-variant-numeric: tabular-nums;
-}
-/* 正文区自身是**唯一**的滚动容器 */
-.reader-content { overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-gutter: stable; }
 
 @media (max-width: 1100px) {
   .reader, .reader.no-aside { grid-template-columns: minmax(0, 1fr); }
@@ -3257,6 +3617,8 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 @media print {
   .reader-toolbar, .reader-aside { display: none !important; }
   .reader, .reader-content { display: block; height: auto; overflow: visible; }
+  /* 打印时收回悬浮层的让位与平移，正文按纸张宽度排 */
+  .reader-slide { width: auto; transform: none; }
 }
 </style>
 

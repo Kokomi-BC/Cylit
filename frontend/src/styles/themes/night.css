@@ -1,0 +1,52 @@
+/* 皮肤 night：黛瓦夜色（参照 retain-pdf 的「黛瓦夜色」）。
+ *
+ * 深底阅读：强调色是**偏灰的青绿**（#5aa88e），没有 Cylit 默认深色那支 #4fc8d8 亮，
+ * 夜里大面积发光更少。`--text-on-accent` 因此是深色（浅字压在浅绿上读不出来）。
+ *
+ * 注意 `color-scheme: dark`：它决定滚动条、下拉箭头、日期选择器这些**原生控件**的明暗，
+ * 少了这一行，深色皮肤里表单控件还是白底（一眼看穿）。
+ */
+
+[data-theme="night"] {
+  color-scheme: dark;
+
+  --bg: #141618;
+  --bg-elev: #1e2226;
+  --bg-sunken: #101214;
+  --bg-layer: #1a1e21;
+  --bg-hover: rgba(255, 255, 255, .06);
+  --bg-pressed: rgba(255, 255, 255, .04);
+  --bg-subtle: rgba(255, 255, 255, .035);
+  --smoke: rgba(0, 0, 0, .55);
+
+  --border: rgba(255, 255, 255, .11);
+  --border-strong: rgba(255, 255, 255, .20);
+  --divider: rgba(255, 255, 255, .09);
+
+  --text: #e8e6e3;
+  --text-dim: #9a9590;
+  --text-faint: #75726e;
+  --text-on-accent: #0e1a16;
+
+  --accent: #5aa88e;
+  --accent-hover: #74bfa5;
+  --accent-soft: #1c322b;
+  --accent-text: #7cc4ab;
+
+  --ok: #6bc48a;
+  --ok-soft: #16301f;
+  --warn: #d4a24a;
+  --warn-soft: #322610;
+  --danger: #e07068;
+  --danger-soft: #351c1a;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .32), 0 8px 20px -12px rgba(0, 0, 0, .52);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, .40), 0 18px 36px -18px rgba(0, 0, 0, .62);
+  --shadow-flyout: 0 14px 24px -8px rgba(0, 0, 0, .52), 0 34px 60px -26px rgba(0, 0, 0, .72);
+  --shadow-press: inset 0 1px 2px rgba(0, 0, 0, .42);
+
+  /* 深底纹理更弱：只留一点顶部环境光，否则大面积脏灰 */
+  --bg-texture:
+    radial-gradient(1100px 560px at 10% -10%, rgba(90, 168, 142, .07), transparent 72%),
+    radial-gradient(900px 480px at 100% 0%, rgba(255, 255, 255, .03), transparent 65%);
+}

@@ -280,14 +280,27 @@ f.addEventListener('load', async () => {
     if (el) el.click();
     return !!el;
   };
+  /* 顶栏把「原文栏呈现 / 文字列侧 / 左右顺序 / 字号 / 缩放」收进了弹出面板
+   * （`.cap-panel`，用 `v-show` 常挂载）：真人要先点开面板才够得着里面的按钮，
+   * 这里照做 —— 面板关着时元素虽然能被 `click()` 点到，但那不是用户路径。 */
+  const openPanelFor = (b) => {
+    if (!b || !b.closest) return;
+    const panel = b.closest('.cap-panel');
+    if (!panel || getComputedStyle(panel).display !== 'none') return;
+    const which = panel.getAttribute('data-cap-panel-body');
+    const trigger = d.querySelector(`.reader-toolbar [data-cap-panel="${which}"]`);
+    if (trigger) trigger.click();
+  };
   const clickText = (txt) => {
     const b = [...d.querySelectorAll('.reader-toolbar button')]
       .find((x) => x.textContent.trim() === txt);
+    openPanelFor(b);
     if (b) b.click();
     return !!b;
   };
   const clickTitle = (t) => {
     const b = [...d.querySelectorAll('.reader-toolbar button')].find((x) => x.title === t);
+    openPanelFor(b);
     if (b) b.click();
     return !!b;
   };
@@ -1402,14 +1415,26 @@ f.addEventListener('load', async () => {
   const active = (sel) => [...d.querySelectorAll(sel + ' button')]
     .filter((b) => b.classList.contains('active'))
     .map((b) => (b.textContent.trim() || b.title));
+  /* 顶栏把「原文栏呈现 / 文字列侧 / 左右顺序 / 字号 / 缩放」收进了弹出面板（`.cap-panel`）：
+   * 先点开面板再点里面的按钮 —— 与真人一致（面板是 `v-show` 常挂载，元素一直在 DOM 里）。 */
+  const openPanelFor = (b) => {
+    if (!b || !b.closest) return;
+    const panel = b.closest('.cap-panel');
+    if (!panel || getComputedStyle(panel).display !== 'none') return;
+    const which = panel.getAttribute('data-cap-panel-body');
+    const trigger = d.querySelector(`.reader-toolbar [data-cap-panel="${which}"]`);
+    if (trigger) trigger.click();
+  };
   const clickText = (txt) => {
     const b = [...d.querySelectorAll('.reader-toolbar button')]
       .find((x) => x.textContent.trim() === txt);
+    openPanelFor(b);
     if (b) { b.click(); return true; }
     return false;
   };
   const clickTitle = (t) => {
     const b = [...d.querySelectorAll('.reader-toolbar button')].find((x) => x.title === t);
+    openPanelFor(b);
     if (b) { b.click(); return true; }
     return false;
   };
@@ -1424,6 +1449,17 @@ f.addEventListener('load', async () => {
           && ['小', '中', '大'].includes(b.textContent.trim()));
       const zoomLabel = [...d.querySelectorAll('.reader-toolbar .tiny.faint.nowrap')]
         .map((s) => s.textContent.trim())[0] || '';
+      /* 顶栏三块玻璃（左=侧栏开关 / 中=主胶囊 / 右=更多）：**同高同线**是用户口径里的硬要求
+       * —— 以前开关是 34px 的圆、胶囊 38px，还不在一行上。这里把 top/height 采回来比对。 */
+      const glass = ['.cap-solo.left', '.reader-capsule', '.cap-solo.right']
+        .map((s) => d.querySelector(s))
+        .filter(Boolean)
+        .map((e) => { const r = e.getBoundingClientRect();
+                      return `${Math.round(r.top)}/${Math.round(r.height)}`; });
+      const panels = d.querySelectorAll('.cap-panel').length;
+      /* 侧栏开关：用户口径是"始终只有一枚"（圆形的那个）—— 历史上做成过"侧栏里一枚 +
+       * 顶栏一枚"的互斥渲染，切换时会看到两枚交接。这里数一下 DOM 里到底有几枚。 */
+      const toggles = d.querySelectorAll('[data-aside-toggle]').length;
       const cb = d.querySelector('.rows-foot input[type="checkbox"]');
       /* 参考文献行：**不能按行类型数** —— 有的论文（turboquant）参考文献行的类型是 `para`
        * 而不是 `ref`。改成"找到参考文献小节标题后，它后面还有多少行"：
@@ -1442,6 +1478,10 @@ f.addEventListener('load', async () => {
         refsToggle: !!cb,
         refRows,
         zoomLabel,
+        glass,
+        glassKeys: [...new Set(glass)],
+        panels,
+        toggles,
       };
     };
     res.before = { search: w.location.search, view: active('.seg'), ui: uiState() };
@@ -2981,6 +3021,17 @@ def main() -> int:
                     f"参考文献开关={ui.get('refsToggle')} 参考文献行={ui.get('refRows')} "
                     f"缩放={ui.get('zoomLabel')}"))
                 q = str((data.get("after") or {}).get("search") or "")
+                checks.append((
+                    "顶栏三块玻璃同高同线 + 弹出面板在场",
+                    len(ui.get("glass") or []) >= 2 and len(ui.get("glassKeys") or []) == 1
+                    and int(ui.get("panels") or 0) >= 2,
+                    f"顶/高={ui.get('glass')}（左开关 / 主胶囊 / 右更多，收起侧栏时三块都在）"
+                    f"· 弹出面板 {ui.get('panels')} 个"))
+                checks.append((
+                    "侧栏开关始终只有一枚",
+                    int(ui.get("toggles") or 0) == 1,
+                    f"[data-aside-toggle] 在 DOM 里 {ui.get('toggles')} 枚"
+                    f"（侧栏开着时它在侧栏头部最左，收起时在正文左边缘 —— 同一枚，不交接）"))
                 checks.append((
                     "开关写进 URL（切标签还原用）",
                     "view=" in q and "left=page" in q and "order=zh_left" in q,

@@ -2,22 +2,27 @@
 /**
  * 设置：**分区**的参数编辑 + 只读系统信息与健康检查。
  *
- * 分区（顶部悬浮药丸导航可跳，支持 `/app/settings#kb` 这类深链）：
+ * 版式（移植自参照项目 retain-pdf 的设置弹窗）：**左导航 + 右内容窗格**，一次只渲染一区；
+ * 左侧导航吸顶，深链（`/app/settings#kb`）只负责切到对应窗格。
+ *
+ * 分区：
  * 1. **常规参数** —— 任务线程数 / 渲染 / RAG 参数 / 其他；**只有这一区有"保存设置"**
  *    （数据面 `PUT /settings`，仅提交变更项）。
- * 2. **知识库与索引** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据。
+ * 2. **显示主题** —— 皮肤注册表驱动的换肤（`src/theme/registry.ts` + `styles/themes/*.css`），
+ *    选择写 localStorage，立即生效。
+ * 3. **索引管理** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据。
  *    这些原本长在「知识库」页上，用户口径是"那页全是设置"，于是整体搬到这里；
  *    它们都是**即时操作**，没有"保存"这一步。
- * 3. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
  * 4. **在线解析（MinerU）** —— 第三方联网解析服务的 token 与默认参数：
  *    token **只写不回显**（后端只给掩码），配置后可就地「验证」（真的打一次 MinerU 接口）。
- * 5. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
+ * 5. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
+ * 6. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
  * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
  * 设置写入 setting 表，重启后仍生效。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { HealthPayload, MineruConfig, MineruVerifyResult, ParseEngine } from '@/api/types';
@@ -27,6 +32,7 @@ import {
 import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
+import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
 
 /* ---------------------------- 表单结构定义 ---------------------------- */
 
@@ -112,144 +118,39 @@ const READONLY_KEYS: ReadonlyDef[] = [
   { key: 'secrets_dir', label: '密钥目录' },
   { key: 'user_id', label: '用户 ID' },
 ];
-
 /* ---------------------------- 分区导航 ---------------------------- */
 
-/** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落到"知识库与索引"）。 */
+/** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落在「索引管理」）。
+ *
+ * 版式是**左导航 + 右内容窗格**（移植自参照项目 retain-pdf 的设置弹窗）：一次只渲染一区，
+ * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
+ * `desc` 是窗格抬头的说明（下放到 SECTIONS 里，避免每个 section 各写一遍标题）。 */
 const SECTIONS = [
-  { id: 'general', label: '常规参数', icon: 'settings' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt' },
-  { id: 'history', label: '搜索记录', icon: 'search' },
-  { id: 'about', label: '系统信息', icon: 'server' },
-];
+  { id: 'general', label: '常规参数', icon: 'settings', desc: '后台任务线程数、页面与公式渲染 dpi、RAG 检索条数。改完要按「保存设置」才落库。' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', desc: '界面皮肤：色块就是效果预览，点一下立即换肤，选择记在本机（localStorage）。' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge', desc: '知识库概览、论文索引与 chunk 对账。都是即时操作，没有"保存"这一步。' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt', desc: 'MinerU 云端解析的 token 与默认参数。token 只写不回显（后端只给掩码）。' },
+  { id: 'history', label: '搜索记录', icon: 'search', desc: '知识库检索的历史记录，存在本机（localStorage），不上传后端。' },
+  { id: 'about', label: '系统信息', icon: 'server', desc: '只读配置与后端健康检查（数据库 / 向量库 / 任务池）。' },
+] as const;
 
 const route = useRoute();
 const router = useRouter();
 const active = ref<string>(SECTIONS[0].id);
 
-/* ------------------------- 锚点对齐（异步内容会顶偏落点） ------------------------- */
+/** 当前分区的标题与说明：窗格抬头用它，section 里不再重复写标题。 */
+const activeSection = computed(() => SECTIONS.find((s) => s.id === active.value) ?? SECTIONS[0]);
 
-/**
- * **为什么要一套对齐逻辑**：本页内容（统计数字、论文索引表、chunk 表）都是异步长出来的。
- * 只在跳转那一刻滚一次，滚动会发生在数据到达**之前** —— 上面那一节随后变高，把目标分区往下顶。
- * 实测（把网络拖慢到 400ms/请求、从其它页面深链到 `#history`）：
- * 滚完是可见的，等 50 行 chunk 表到达后文档高度从 2384 → 4893，
- * `#history` 被顶到视口下方 **3087px** —— 用户"跳到了搜索记录"，屏幕上却是别的分区。
- *
- * 这和阅读器"深链与恢复位置抢滚动"是同一类坑：**滚动必须发生在布局稳定之后**。
- * 做法：跳转后开一个**有界**的对齐循环（250ms 一次，最长 6 秒），
- * 位置偏了就补一次；用户任何真实手势（滚轮 / 触摸 / 按键 / 按下鼠标）立刻停手，绝不跟人抢。
- */
-const ALIGN_INTERVAL = 250;    // 轮询间隔
-const ALIGN_HOLD_MS = 6000;    // 最长对齐窗口：之后页面爱怎么长都不再动用户的滚动
-const ALIGN_TOLERANCE = 6;     // 偏差容忍（px）
-const pendingAlign = ref('');
-let alignTimer: number | null = null;
-let alignDeadline = 0;
-
-/** 分区落点偏移：**取自样式**（`.sec` 的 `scroll-margin-top`），改导航高度不用回来改 JS。 */
-function sectionOffset(el: HTMLElement): number {
-  const raw = getComputedStyle(el).scrollMarginTop;
-  const n = Number.parseFloat(raw);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/** 对齐到某分区的目标滚动位置（页面到底时**夹到最大可滚位置** —— 最后两节本来就够不到顶部）。 */
-function alignTarget(el: HTMLElement): number {
-  const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-  const raw = el.getBoundingClientRect().top + window.scrollY - sectionOffset(el);
-  return Math.min(Math.max(0, raw), max);
-}
-
-function scrollToSection(id: string) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  // 瞬时跳转：平滑滚动会和"内容长出来后纠偏"互相打架（纠偏会打断动画），
-  // 而页内锚点跳转本来就是瞬时的（浏览器原生 `#anchor` 也是）。
-  window.scrollTo({ top: alignTarget(el), behavior: 'auto' });
-}
-
-function stopAlign() {
-  if (alignTimer) { window.clearTimeout(alignTimer); alignTimer = null; }
-  pendingAlign.value = '';
-}
-
-function alignTick() {
-  alignTimer = null;
-  const id = pendingAlign.value;
-  if (!id || Date.now() > alignDeadline) { stopAlign(); return; }
-  const el = document.getElementById(id);
-  if (el) {
-    const want = alignTarget(el);
-    if (Math.abs(window.scrollY - want) > ALIGN_TOLERANCE) {
-      window.scrollTo({ top: want, behavior: 'auto' });
-    }
-  }
-  alignTimer = window.setTimeout(alignTick, ALIGN_INTERVAL);
-}
-
-/** 跳转后登记目标：接下来一段时间内持续纠偏，直到用户自己动手。 */
-function markPending(id: string) {
-  pendingAlign.value = id;
-  alignDeadline = Date.now() + ALIGN_HOLD_MS;
-  if (alignTimer) window.clearTimeout(alignTimer);
-  alignTimer = window.setTimeout(alignTick, ALIGN_INTERVAL);
-}
-
-/** 用户的手势：停掉对齐，并从这一刻起让高亮跟滚动位置走。 */
-function onUserGesture() {
-  userScrolled = true;
-  stopAlign();
-}
-
-/** 点分区：改地址栏的 hash（用 replace，不堆历史）并滚过去。 */
+/** 点分区：换窗格 + 把 hash 写进地址栏（用 replace，不堆历史，也不触发任何滚动）。 */
 function go(id: string) {
   active.value = id;
-  userScrolled = false;          // 这次跳转由我们接管高亮，别让滚动过程改写它
   if (route.hash !== `#${id}`) void router.replace({ hash: `#${id}` });
-  scrollToSection(id);
-  markPending(id);
 }
 
-/**
- * 高亮当前分区。
- *
- * **只在"用户自己滚"的时候重算**：点药丸 / 深链是**有明确意图**的跳转，滚动过程中
- * 经过谁就点亮谁的话，落点还没到、高亮已经跳到别人身上了；更糟的是最后两节
- * （搜索记录 / 系统信息）本来就不可能滚到顶部（后面没有内容了，最多滚到页面底部）——
- * 那种情况下按位置重算会把"我点的搜索记录"直接改成"系统信息"。
- */
-let scrollRaf = 0;
-let userScrolled = false;     // 用户自己滚动过才允许位置判定改写高亮
-
-function onScroll() {
-  if (!userScrolled) return;
-  if (scrollRaf) return;
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = 0;
-    const line = window.scrollY + 126;   // 顶栏 + 悬浮导航 + 一点余量
-    let current = SECTIONS[0].id;
-    for (const s of SECTIONS) {
-      const el = document.getElementById(s.id);
-      if (el && el.getBoundingClientRect().top + window.scrollY <= line) current = s.id;
-    }
-    // 滚到底时最后一节可能永远够不到那条线（页面已经不能再滚），直接认它
-    const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
-    if (atBottom) current = SECTIONS[SECTIONS.length - 1].id;
-    active.value = current;
-  });
-}
-
+/** 深链与浏览器前进/后退：只切区（滚动交给浏览器自己的恢复策略）。 */
 watch(() => route.hash, (hash) => {
   const id = String(hash || '').replace('#', '');
-  if (!SECTIONS.some((s) => s.id === id)) return;
-  active.value = id;
-  userScrolled = false;
-  void nextTick(() => {
-    scrollToSection(id);
-    markPending(id);
-  });
+  if (SECTIONS.some((s) => s.id === id)) active.value = id;
 });
 
 /* ---------------------------- 表单状态 ---------------------------- */
@@ -552,55 +453,37 @@ onMounted(async () => {
   await load();
   await loadHealthCard();
   await loadMineru();
-  // 深链（/app/settings#kb）：内容按锚点滚过去；首屏不做平滑滚动，避免刚进来就"滑一段"。
-  // 数据还在路上，所以同时 markPending —— 面板 settled 时会再对一次。
+  // 深链（/app/settings#kb）：只切到对应窗格 —— 一次只渲染一区，没有"滚到第几屏"要纠偏。
   const id = String(route.hash || '').replace('#', '');
-  if (id && SECTIONS.some((s) => s.id === id)) {
-    active.value = id;
-    userScrolled = false;
-    await nextTick();
-    scrollToSection(id);
-    markPending(id);
-  }
-  window.addEventListener('scroll', onScroll, { passive: true });
-  // 用户一动，就停掉自动对齐（不跟人抢滚动条），高亮也从那一刻起跟位置走
-  window.addEventListener('wheel', onUserGesture, { passive: true });
-  window.addEventListener('touchstart', onUserGesture, { passive: true });
-  window.addEventListener('pointerdown', onUserGesture, { passive: true });
-  window.addEventListener('keydown', onUserGesture);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('scroll', onScroll);
-  window.removeEventListener('wheel', onUserGesture);
-  window.removeEventListener('touchstart', onUserGesture);
-  window.removeEventListener('pointerdown', onUserGesture);
-  window.removeEventListener('keydown', onUserGesture);
-  if (scrollRaf) cancelAnimationFrame(scrollRaf);
-  stopAlign();
+  if (id && SECTIONS.some((s) => s.id === id)) active.value = id;
 });
 </script>
 
 <template>
-  <div>
-    <div class="page-head">
-      <div>
-        <h1>设置</h1>
-        <div class="sub">参数、索引管理与搜索记录。</div>
-      </div>
-    </div>
+  <!-- 版式：左导航 + 右内容窗格（与参照项目 retain-pdf 的设置弹窗同构）。
+       一次只渲染一区：切区不滚动、不堆叠，深链只负责选窗格。 -->
+  <div class="settings-layout">
+    <aside class="settings-rail">
+      <h1 class="settings-rail-title">设置</h1>
+      <nav class="settings-nav" aria-label="设置分类">
+        <button
+          v-for="s in SECTIONS"
+          :key="s.id"
+          type="button"
+          class="settings-nav-item"
+          :class="{ active: active === s.id }"
+          @click="go(s.id)"
+        >
+          <AppIcon :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
+        </button>
+      </nav>
+    </aside>
 
-    <nav class="sec-nav" aria-label="设置分区">
-      <button
-        v-for="s in SECTIONS"
-        :key="s.id"
-        type="button"
-        :class="{ active: active === s.id }"
-        @click="go(s.id)"
-      >
-        <AppIcon :name="s.icon" :size="14" />{{ s.label }}
-      </button>
-    </nav>
+    <div class="settings-pane">
+      <header class="pane-head">
+        <h2>{{ activeSection.label }}</h2>
+        <p>{{ activeSection.desc }}</p>
+      </header>
 
     <!-- 首次加载 -->
     <div class="empty card" v-if="loading">正在加载设置…</div>
@@ -615,9 +498,8 @@ onUnmounted(() => {
 
     <template v-else>
       <!-- ① 常规参数：唯一需要"保存"的一区 -->
-      <section id="general" class="sec">
-        <div class="sec-head">
-          <h2 class="sec-title">常规参数</h2>
+      <section id="general" class="sec" v-if="active === 'general'">
+        <div class="sec-actions">
           <span class="badge warn" v-if="changed.length">有 {{ changed.length }} 项未保存</span>
           <span class="spacer"></span>
           <button class="btn sm" :disabled="busy || !changed.length" @click="reset">
@@ -655,18 +537,19 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- ② 索引管理（管理/诊断，即时生效，没有"保存"） -->
-      <section id="kb" class="sec">
-        <div class="sec-head">
-          <h2 class="sec-title">索引管理</h2>
-        </div>
+      <!-- ③ 索引管理（管理/诊断，即时生效，没有"保存"） -->
+      <section id="kb" class="sec" v-if="active === 'kb'">
         <KbIndexPanel />
       </section>
 
+      <!-- ② 显示主题：注册表驱动的皮肤网格，点一下立即换肤 -->
+      <section id="appearance" class="sec" v-if="active === 'appearance'">
+        <ThemeAppearancePanel />
+      </section>
+
       <!-- ③ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
-      <section id="mineru" class="sec">
-        <div class="sec-head">
-          <h2 class="sec-title">在线解析</h2>
+      <section id="mineru" class="sec" v-if="active === 'mineru'">
+        <div class="sec-actions">
           <span class="badge accent" v-if="mineruBase.online_ready">已就绪</span>
           <span class="badge warn" v-else-if="mineruBase.has_token">已存 token（未验证）</span>
           <span class="badge" v-else>未配置 token</span>
@@ -777,19 +660,13 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- ④ 搜索记录（本机 localStorage） -->
-      <section id="history" class="sec">
-        <div class="sec-head">
-          <h2 class="sec-title">搜索记录</h2>
-        </div>
+      <!-- ⑤ 搜索记录（本机 localStorage） -->
+      <section id="history" class="sec" v-if="active === 'history'">
         <SearchHistoryPanel />
       </section>
 
-      <!-- ⑤ 系统信息（只读） -->
-      <section id="about" class="sec">
-        <div class="sec-head">
-          <h2 class="sec-title">系统信息</h2>
-        </div>
+      <!-- ⑥ 系统信息（只读） -->
+      <section id="about" class="sec" v-if="active === 'about'">
         <div class="grid cols-2">
           <div class="card">
             <div class="card-head">只读信息（不可编辑）</div>
@@ -849,7 +726,8 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
-    </template>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -860,31 +738,56 @@ onUnmounted(() => {
 .health-row { margin-top: 8px; }
 
 /**
- * 分区药丸导航：**吸顶悬浮**（页面很长，滚到下面也要能跳回去）。
- * `top` 让开顶栏高度；底色必须不透明，否则正文会从底下透出来。
+ * 版式：左导航 + 右内容窗格（参照 retain-pdf 的设置弹窗）。
+ *
+ * 导航 208px 固定宽、**吸顶**：设置页很长，滚到索引表下面还要能换区；
+ * 底 色必须不透明（`--bg-elev`），否则正文会从卡片下面透出来。
  */
-.sec-nav {
-  position: sticky; top: calc(var(--header-h) + 8px); z-index: 20;
-  display: inline-flex; align-items: center; gap: 2px; padding: 4px;
-  margin-bottom: 4px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-  border-radius: var(--radius-ctl); box-shadow: var(--shadow-1);
+.settings-layout {
+  display: grid; gap: 20px; align-items: start;
+  grid-template-columns: 208px minmax(0, 1fr);
 }
-.sec-nav button {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: calc(var(--control-h-sm) + 2px); padding: 0 12px;
-  border: 0; border-radius: var(--radius-ctl); background: transparent;
-  color: var(--text-dim); font-family: inherit; font-size: 12.5px; font-weight: 500;
-  cursor: pointer; white-space: nowrap;
+.settings-rail {
+  position: sticky; top: calc(var(--header-h) + 12px);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 12px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-1);
+}
+.settings-rail-title { margin: 0; padding: 0 8px; font-size: 15px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; }
+.settings-nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  height: 34px; padding: 0 10px; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-dim);
+  font-family: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.sec-nav button:hover { background: var(--bg-hover); color: var(--text); }
-.sec-nav button.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 分区：标题行 + 内容；锚点落点用 scroll-margin 兜底（浏览器原生滚动也不会被顶栏盖住） */
-.sec { margin-top: 22px; scroll-margin-top: calc(var(--header-h) + 62px); }
-.sec-head { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; flex-wrap: wrap; }
-.sec-title { font-size: 15px; margin: 0; }
+.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.pane-head { display: grid; gap: 4px; }
+.pane-head h2 { margin: 0; font-size: 17px; }
+.pane-head p { margin: 0; max-width: 76ch; font-size: 12.5px; line-height: 1.6; color: var(--text-dim); }
+
+/* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽） */
+@media (max-width: 860px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-rail {
+    position: static; flex-direction: row; align-items: center;
+    gap: 10px; padding: 10px 12px; overflow-x: auto;
+  }
+  .settings-rail-title { flex: none; }
+  .settings-nav { flex-direction: row; gap: 4px; }
+  .settings-nav-item { width: auto; white-space: nowrap; }
+}
+
+/* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，
+   这里不叠 gap —— 两处都管会出现 22px 的"缝"，看着像两组内容。 */
+.sec { scroll-margin-top: calc(var(--header-h) + 62px); }
+.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 
 /* 表单项：标签与"后端的键名"同一行，键名右对齐靠灰，不再占一整行高度 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }

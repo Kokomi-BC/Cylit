@@ -39,6 +39,14 @@ const props = defineProps<{
   translating: boolean;
   /** 正文字号（px）；标题/图注用 em 跟随缩放 */
   fontSize: number;
+  /**
+   * 页图缩放倍率（阅读器工具栏那个百分比）。
+   *
+   * 为什么要传它：`.media-box` 平时带 `max-width: 100%`（不许把正文顶宽），
+   * 但用户主动放大时要让页图**真的变大** —— 那就得放开这个夹子、改由所在列横向滚动。
+   * 不传的话 `pageWidth` 再大也会被 100% 夹回栏宽，症状就是"百分比在涨、页图不变"。
+   */
+  pageZoom?: number;
 }>();
 
 const emit = defineEmits<{
@@ -177,7 +185,11 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
 </script>
 
 <template>
-  <div class="rows-wrap" :style="{ '--reader-font-size': `${props.fontSize}px` }">
+  <div
+    class="rows-wrap"
+    :class="{ zoomed: (props.pageZoom ?? 1) > 1.02 }"
+    :style="{ '--reader-font-size': `${props.fontSize}px` }"
+  >
     <div v-if="!props.groups.length" class="empty">没有可显示的内容（先解析或翻译这篇论文）</div>
 
     <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg">
@@ -343,6 +355,13 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
  * 只给内容列（不包含页图那一列）：`.pg-rows` 是文本对照，`.col-rows` 是"原 PDF 在左"时的右侧。
  * `:where()` 保持 0 特异性，别干扰下面 `.pg-rows.two-col` 那些布局规则。 */
 :where(.pg-rows, .col-rows) { padding-top: 18px; }
+/* **第一页**上方不再留"页与页之间"那种间距（用户口径：第一页顶部留白要缩小）：
+   上面那 18px 是为了让右栏文字和左栏页图的内边距对齐，但第一篇的第一页本来就顶着顶栏，
+   再叠一层就成了一截空带。页头（页码）与页图也各收一档。 */
+.rows-wrap > .pg:first-child .pg-head { padding-top: 0; }
+.rows-wrap > .pg:first-child :where(.pg-rows, .col-rows) { padding-top: 6px; }
+.rows-wrap > .pg:first-child .pg-image-only { padding-top: 0; }
+.rows-wrap > .pg:first-child .pg-pair .col-rows { padding-top: 6px; }
 
 /* 行容器 = 纯排版块，**不带任何装饰**：
    - 不画 border-top 分隔线（之前每块一条横线，密而卙）
@@ -443,6 +462,11 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
 
 .pg-image-only { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0 4px; }
 .media-box { max-width: 100%; margin: 0 auto; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+/* 放大（>100%）时放开栏宽夹子：页图按 `pageWidth` 真的变宽，超出的部分由**所在列**横向滚动。
+ * 只放开夹子不加 scroll 容器的话，超宽页图会盖到旁边那一列的文字上（grid 项不会把兄弟推开）。 */
+.rows-wrap.zoomed .media-box { max-width: none; }
+.rows-wrap.zoomed .pg-image-only { overflow-x: auto; }
+.rows-wrap.zoomed .pg-pair .col-image { overflow-x: auto; }
 .media-box img { display: block; width: 100%; height: auto; }
 /* 点一下开大图（不然半栏的 A4 页上正文只有几像素高，根本看不清） */
 .media-box.zoomable { cursor: zoom-in; }

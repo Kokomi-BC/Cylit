@@ -10,6 +10,9 @@
  */
 
 @import './tokens.css';
+/* 皮肤必须**排在 tokens.css 之后**：两边选择器特异性相同（`:root` 与 `[data-theme=x]` 都是
+ * (0,1,0)），谁在后面谁生效 —— 放到 tokens 前面会被默认配色盖掉。 */
+@import './themes/index.css';
 
 * { box-sizing: border-box; }
 

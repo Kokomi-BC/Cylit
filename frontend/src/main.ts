@@ -5,6 +5,7 @@ import App from '@/App.vue';
 import { router } from '@/router';
 import { reportError } from '@/stores/app';
 import { restoreTabs } from '@/stores/tabs';
+import { bootTheme } from '@/theme/theme';
 import '@/styles/base.css';
 import 'katex/dist/katex.min.css';
 
@@ -19,6 +20,7 @@ window.addEventListener('error', (ev) => {
 });
 
 restoreTabs();          // 多标签页：先把上次开着的标签恢复出来，再挂载
+bootTheme();            // 换肤要在挂载前落值，否则会先闪一下默认配色
 const app = createApp(App);
 app.config.errorHandler = (err) => { reportError(err, '界面异常'); };
 app.use(router);
