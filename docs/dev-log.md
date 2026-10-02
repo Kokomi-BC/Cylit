@@ -7580,3 +7580,47 @@ markdown；**压缩做成"点圆环 = 多一轮会话"**。
   引用 `row_id=p009-04`、label `第 9 页 · 段落`。
 - 免费断言：`frontend_check` 新增"胶囊带上文本位置"（实测 `第 1 页`）；
   `agent_check` 25/25、`frontend_check` 23/23（均零模型调用）、`pytest tests` 通过、`npm run build` 干净。
+
+## 30. 第三十轮：点「对话」页签历史要等一下才出来 —— 两处真实的卡顿
+
+用户报："点击对话这个侧栏按钮时，所有对话历史延迟才显示出来。" 量了三处，**两个真原因**。
+
+### 一、列表被一个 2 秒的状态请求挡住了（前端串行等待）
+
+`ReaderChat.onMounted` 原来是：
+
+```js
+await Promise.all([loadStatus(), loadPaper()]);   // /agent/status 里带一次健康检查
+await loadConversations();                        // ← 列表排在它后面
+```
+
+实测 `/agent/status`：agent 在跑时 35ms，**没在跑时 2050ms**（健康检查等满 2s 超时）。
+也就是说"问答服务刚好没起来"的时候，点一次对话页签就要等两秒才看见历史 —— 而三件事
+（状态、论文标题、会话列表）**互不依赖**。改成各走各的：列表立刻请求，状态与标题并行补。
+
+### 二、页签切走会**卸载**面板，切回来整块重挂
+
+侧栏是一条 `v-if / v-else-if` 链（目录 / 对话 / 搜索 / 侧栏面板），切走就卸载，
+于是**每次点回「对话」都要重新请求一次会话列表**。用 `<KeepAlive>` 把对话面板包住：
+切回来是原样还在（连正在流式的回答都不断），再在 `onActivated` 里后台悄悄刷新一次列表
+（有数据时不显示"读取会话…"，不闪）。
+
+### 三、健康检查本身太贵：2s 超时 + 每次都真敲
+
+`bridge.agent_up()` 是给 UI 的**状态提示**，却挂在每开一次面板都会打的 `/agent/status` 上，
+而且 `timeout=2.0` 且每次都去敲。改成 **0.8s 超时 + 5 秒结果缓存**（`force=True` 可绕过）。
+实测 agent 停掉时：`2050ms → 1008ms`（首次）→ `26/14ms`（缓存内）。
+
+### 四、踩到的坑：按 cmdline 找进程会漏
+
+`Get-CimInstance ... Where CommandLine -like '*cli/pr.py*'` 匹配不到**反斜杠**写法的
+命令行（用户自己起的那个是 `cli\pr.py serve`）。这一轮就因此"重启了服务却还在跑旧代码"
+（改了 bridge、量出来仍是 2 秒，白疑惑一次）。正确做法：**按端口找 pid**
+（`Get-NetTCPConnection -LocalPort 8710,8711 -State Listen`）再 kill，两个端口都要覆盖。
+
+### 五、验证
+
+- `frontend_check` 新增免费断言：**切走页签时面板确实卸载（`!document.querySelector('.chat')`），
+  回来时输入框草稿还在** —— 这是 `KeepAlive` 的可观测证据（实测 `keepalive-check`）→ **24/24**；
+- `agent_check` 25/25、`pytest tests` 通过、`npm run build` 干净；
+- 手测：agent 在跑 `35ms`、停掉 `1008ms → 14ms`（缓存）。

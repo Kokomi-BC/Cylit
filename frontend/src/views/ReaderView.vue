@@ -3255,15 +3255,21 @@ function renderMarkdown(text?: string | null) {
           @collapse-all="collapseAll"
           @expand-all="expandAll"
         />
-        <ReaderChat
-          v-else-if="sideTab === 'chat'"
-          :paper-id="paperId"
-          :selection="chatSelection"
-          @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
-          @clear-selection="chatSelection = null"
-        />
+        <!-- 对话面板用 `KeepAlive` 包住：页签在这条 `v-if` 链上，切走就**卸载** ——
+             回来时整块重挂，会话列表要重新请求一次，视觉上就是"点「对话」要等一下才出历史"
+             （用户报的延迟）。缓存住实例之后，切回来是**原样还在**（连正在流式的回答都不断），
+             再在后台悄悄刷一次列表（见 `ReaderChat.onActivated`）。 -->
+        <KeepAlive>
+          <ReaderChat
+            v-if="sideTab === 'chat'"
+            :paper-id="paperId"
+            :selection="chatSelection"
+            @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+            @clear-selection="chatSelection = null"
+          />
+        </KeepAlive>
         <ReaderSearch
-          v-else-if="sideTab === 'search'"
+          v-if="sideTab === 'search'"
           ref="searchPane"
           v-model:query="searchQuery"
           v-model:scope="searchScope"
@@ -3276,7 +3282,7 @@ function renderMarkdown(text?: string | null) {
           @goto-page="gotoPage"
         />
         <ReaderSidePanel
-          v-else
+          v-if="sideTab !== 'toc' && sideTab !== 'chat' && sideTab !== 'search'"
           :tab="sideTab"
           :annotations="annotations"
           :notes="notes"

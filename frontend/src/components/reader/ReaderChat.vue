@@ -15,7 +15,7 @@
  * 3. **分叉不改树**：重新生成 / 编辑提问只是在同一个父节点下挂兄弟，切分支就是挪 `head`
  *    （后端 `set_head`），一个字节都不删。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
@@ -762,9 +762,20 @@ function gotoCitation(citation: AgentCitation) {
   emit('focus', citation.row_id || citation.block_id || '', citation.page ?? undefined);
 }
 
-onMounted(async () => {
-  await Promise.all([loadStatus(), loadPaper()]);
-  await loadConversations();
+onMounted(() => {
+  /* ⚠️ 会话列表**不能**排在状态请求后面（用户报的"点对话页签，历史要等一下才出来"）。
+     以前是 `await Promise.all([loadStatus(), loadPaper()])` 之后再 `await loadConversations()`，
+     而 `/agent/status` 里带一次"问答服务在不在"的健康检查 —— 服务没起来时要等它超时
+     （实测 2s 左右），于是历史被硬生生拖了两秒。三件事互不依赖，各走各的。 */
+  void loadConversations();
+  void Promise.all([loadStatus(), loadPaper()]);
+});
+
+/* 从别的页签切回来：实例被 `KeepAlive` 缓存着，列表**已经在屏幕上**，
+   这里只是后台悄悄刷一次（有数据时不显示"读取会话…"，不会闪）。 */
+onActivated(() => {
+  void loadConversations();
+  void loadStatus();
 });
 
 onUnmounted(() => controller?.abort());
@@ -775,8 +786,9 @@ watch(() => props.paperId, async () => {
   messages.value = [];
   currentId.value = null;
   pending.value = [];
-  await loadPaper();
-  await loadConversations();
+  selCtx.value = null;
+  void Promise.all([loadPaper(), loadConversations()]);
+  void loadStatus();
 });
 
 // 划词带进来的选区：直接进二级页（列表页没有输入框，留在那儿用户会以为没反应），

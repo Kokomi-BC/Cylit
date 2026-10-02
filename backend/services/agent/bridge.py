@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -23,6 +24,14 @@ log = get_logger(__name__)
 #: 连不上 agent 时的护栏文案（前端直接显示）
 AGENT_DOWN = ("问答服务没有在运行。请先启动它：`pr.py agent`"
               "（或在设置页确认问答功能已开启）。")
+
+#: "问答服务在不在"的健康检查超时（秒）。这只是给 UI 的一个提示，不是可用性探针：
+#: agent 没起来时连接要等满超时，而 `/agent/status` 会被前端每次开面板都打到 ——
+#: 2 秒的超时等于"点一下卡两秒"（实测）。0.8 秒足够本机判定。
+HEALTH_TIMEOUT = 0.8
+#: 健康检查结果的缓存时长（秒）：连点页签不该每次都去敲 agent。提示晚纠正一次无所谓。
+HEALTH_TTL = 5.0
+_health_cache: tuple[float, bool] | None = None
 
 
 def _frame(event_type: str, **payload: Any) -> bytes:
@@ -128,10 +137,22 @@ async def agent_post(path: str, payload: dict, *, timeout: float = 300.0) -> dic
     return resp.json() or {}
 
 
-async def agent_up() -> bool:
+async def agent_up(*, force: bool = False) -> bool:
+    """agent 在不在（**短超时 + 5 秒缓存**，见文件头的两个常量）。
+
+    为什么不是每次都真敲一下：这个函数只服务于"状态提示"，而它挂在 `/agent/status` 上，
+    前端每开一次对话面板都会打到；agent 没起时一次连接要等满超时（实测 2s），
+    连点几个页签就是几秒卡顿。提示晚 5 秒纠正一次，代价远小于每次都卡一下。
+    """
+    global _health_cache
+    now = time.monotonic()
+    if not force and _health_cache and now - _health_cache[0] < HEALTH_TTL:
+        return _health_cache[1]
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(HEALTH_TIMEOUT)) as client:
             resp = await client.get(f"{_base_url()}/health")
-            return resp.status_code < 400
+            up = resp.status_code < 400
     except Exception:  # noqa: BLE001
-        return False
+        up = False
+    _health_cache = (now, up)
+    return up

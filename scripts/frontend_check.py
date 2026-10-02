@@ -243,6 +243,34 @@ async function run() {
     /* 发送键：空输入必须 disabled */
     const send = root.querySelector('.composer-bar .send');
     res.sendDisabledWhenEmpty = send ? send.disabled : null;
+
+    /* 切走页签再回来：输入框里的草稿必须**原样还在** —— 这是 `KeepAlive` 的可观测证据。
+       没有它，对话面板每次切回来都是重新挂载，会话列表要重新请求一次
+       （用户报的"点对话页签，历史要等一下才出来"）。 */
+    if (ta) {
+      const setDraft = (el, v) => {
+        const setter = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(el, v);
+        el.dispatchEvent(new w.Event('input', { bubbles: true }));
+      };
+      setDraft(ta, 'keepalive-check');
+      await sleep(150);
+      const tabOf = (name) => [...d.querySelectorAll('.side-tab')]
+        .find((b) => (b.textContent || '').includes(name));
+      const tocTab = tabOf('目录');
+      const chatTab = tabOf('对话');
+      if (tocTab && chatTab) {
+        tocTab.click();
+        await sleep(250);
+        res.chatUnmounted = !d.querySelector('.chat');
+        chatTab.click();
+        await sleep(350);
+        const ta2 = d.querySelector('.chat textarea.composer-input');
+        res.draftKept = ta2 ? ta2.value : null;
+        res.rowsOnReturn = d.querySelectorAll('.chat .row').length;
+        if (ta2) { setDraft(ta2, ''); await sleep(150); }
+      }
+    }
     out(res);
 
     /* ── 回到列表 → 打开一个**已有会话**看消息操作条与引用锚（不发消息） ── */
@@ -634,6 +662,13 @@ def main() -> int:
                and (chat.get("inputMaxH") or "none") != "none",
                f"{chat.get('inputH1')}px → {chat.get('inputH6')}px（上限 {chat.get('inputMaxH')}）")
         record("chat", "空输入时发送键 disabled", chat.get("sendDisabledWhenEmpty") is True)
+        if chat.get("draftKept") is None:
+            skip("切走页签再回来不重挂（列表不用重新请求）", "没找到页签或输入框")
+        else:
+            record("chat", "切走页签再回来不重挂（草稿还在 → 列表不用重新请求）",
+                   chat.get("chatUnmounted") is True and chat.get("draftKept") == "keepalive-check",
+                   f"切走时面板卸载={chat.get('chatUnmounted')} "
+                   f"回来草稿={chat.get('draftKept')!r} 列表 {chat.get('rowsOnReturn')} 行")
         if chat.get("openedConversation") is not True:
             skip("消息操作条 / 引用锚", "这篇论文没有历史会话可打开（--model 那轮会造一个）")
         else:
