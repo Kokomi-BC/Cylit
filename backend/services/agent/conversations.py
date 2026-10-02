@@ -33,6 +33,7 @@ def _row_to_message(row) -> dict:
         "content": row.content or "",
         "citations": json_loads(row.citations_json, []) or [],
         "tool_trace": json_loads(row.tool_trace_json, []) or [],
+        "attachments": json_loads(getattr(row, "attachments_json", None), []) or [],
         "finish_reason": row.finish_reason,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -80,19 +81,36 @@ def ensure_conversation(conversation_id: str | None, paper_id: str,
     return cid
 
 
-def list_conversations(paper_id: str | None = None, *, limit: int = 50) -> list[dict]:
-    from sqlalchemy import func
+def list_conversations(paper_id: str | None = None, *, limit: int = 50,
+                       query: str = "", kind: str = "all") -> list[dict]:
+    """会话列表（侧栏一级页）。
+
+    ``query`` 同时搜**标题与消息正文**：用户记不住标题，记得住"我当时问的是
+    query plan 那段"，只搜标题等于搜不到。
+    ``kind`` 按**有没有划词消息**自动分类（``selection`` / ``normal``）—— 划词解释
+    与普通提问的入口、上下文、用途都不一样，混在一列里翻起来很累。
+    """
+    from sqlalchemy import func, or_
 
     from backend.repositories.mysql.models import Conversation, ConversationMessage
     from backend.repositories.mysql.session import session_scope
 
+    q_text = (query or "").strip()
     with session_scope() as sess:
         q = sess.query(Conversation)
         if paper_id:
             q = q.filter(Conversation.paper_id == paper_id)
+        if q_text:
+            like = f"%{q_text}%"
+            hit = (sess.query(ConversationMessage.conversation_id)
+                   .filter(ConversationMessage.content.like(like))
+                   .subquery())
+            q = q.filter(or_(Conversation.title.like(like),
+                             Conversation.id.in_(hit)))
         rows = q.order_by(Conversation.updated_at.desc()).limit(limit).all()
         ids = [r.id for r in rows]
         counts: dict[str, int] = {}
+        selections: set[str] = set()
         if ids:
             # 一次分组查询拿全部计数（会话列表是每次开面板都要拉的，别在这里 N+1）
             for cid, n in (sess.query(ConversationMessage.conversation_id,
@@ -100,7 +118,62 @@ def list_conversations(paper_id: str | None = None, *, limit: int = 50) -> list[
                            .filter(ConversationMessage.conversation_id.in_(ids))
                            .group_by(ConversationMessage.conversation_id).all()):
                 counts[str(cid)] = int(n)
-        return [{**_row_to_conversation(r), "messages": counts.get(r.id, 0)} for r in rows]
+            # 划词判定：用户消息里带 `> 引用` 开头的那一段（`api/agent.py` 就是这么写的）
+            for (cid,) in (sess.query(ConversationMessage.conversation_id)
+                           .filter(ConversationMessage.conversation_id.in_(ids),
+                                   ConversationMessage.role == "user",
+                                   ConversationMessage.content.like("> %"))
+                           .distinct().all()):
+                selections.add(str(cid))
+        items = []
+        for r in rows:
+            data = {**_row_to_conversation(r), "messages": counts.get(r.id, 0),
+                    "has_selection": r.id in selections,
+                    "kind": "selection" if r.id in selections else "normal"}
+            if kind in ("selection", "normal") and data["kind"] != kind:
+                continue
+            items.append(data)
+        return items
+
+
+def delete_conversations(ids: list[str]) -> dict:
+    """批量删（侧栏一级页的"批量管理"）。不存在的 id 直接跳过，不报错。"""
+    from backend.repositories.mysql.models import Conversation, ConversationMessage
+    from backend.repositories.mysql.session import session_scope
+
+    wanted = [str(i) for i in (ids or []) if i]
+    if not wanted:
+        return {"deleted": [], "messages": 0}
+    with session_scope() as sess:
+        found = [r.id for r in sess.query(Conversation.id)
+                 .filter(Conversation.id.in_(wanted)).all()]
+        if not found:
+            return {"deleted": [], "messages": 0}
+        deleted = (sess.query(ConversationMessage)
+                   .filter(ConversationMessage.conversation_id.in_(found))
+                   .delete(synchronize_session=False))
+        (sess.query(Conversation).filter(Conversation.id.in_(found))
+         .delete(synchronize_session=False))
+    return {"deleted": found, "messages": int(deleted or 0)}
+
+
+def set_head(conversation_id: str, message_id: str) -> dict:
+    """把可见分支切到某条消息上（**分叉导航**：◀ 1/2 ▶）。
+
+    只改 `head_id`，一个字节都不删：另一条分支仍在树里，随时能切回去。
+    """
+    from backend.repositories.mysql.models import Conversation
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        conv = sess.get(Conversation, conversation_id)
+        if conv is None:
+            raise NotFoundError(f"会话不存在：{conversation_id}")
+        rows = _all_messages(sess, conversation_id)
+        if message_id not in {r.id for r in rows}:
+            raise NotFoundError(f"这条消息不在会话里：{message_id}")
+        conv.head_id = message_id
+    return {"conversation_id": conversation_id, "head_id": message_id}
 
 
 def get_conversation(conversation_id: str) -> dict:
@@ -156,6 +229,19 @@ def _all_messages(sess, conversation_id: str) -> list:
             .order_by(ConversationMessage.seq.asc()).all())
 
 
+def _siblings_map(rows: list) -> dict[str, list[str]]:
+    """``parent_id → [子消息 id…]``（按 seq 排；根节点的父记成 ``""``）。
+
+    分叉导航（◀ 2/3 ▶）就是拿它算的：同一父节点下的兄弟 = 同一处的不同版本
+    （重新生成 / 改过问法），前端只显示"当前是第几个"。
+    """
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(r.parent_id or "", []).append(r)
+    return {parent: [r.id for r in sorted(items, key=lambda x: x.seq)]
+            for parent, items in groups.items()}
+
+
 def visible_messages(conversation_id: str) -> list[dict]:
     """当前可见分支（`head_id` 沿 `parent_id` 回溯再反转）。"""
     from backend.repositories.mysql.models import Conversation
@@ -167,6 +253,7 @@ def visible_messages(conversation_id: str) -> list[dict]:
             raise NotFoundError(f"会话不存在：{conversation_id}")
         rows = _all_messages(sess, conversation_id)
         by_id = {r.id: r for r in rows}
+        siblings = _siblings_map(rows)
         chain: list = []
         cursor = row.head_id
         guard = 0
@@ -177,7 +264,56 @@ def visible_messages(conversation_id: str) -> list[dict]:
             guard += 1
         if not chain:
             # 老数据 / head_id 丢了：退化为按 seq 串联（可见顺序就是写入顺序）
-            return [_row_to_message(r) for r in sorted(rows, key=lambda x: x.seq)]
+            chain = sorted(rows, key=lambda x: x.seq)
+        else:
+            chain.reverse()
+        out: list[dict] = []
+        for node in chain:
+            item = _row_to_message(node)
+            group = siblings.get(node.parent_id or "") or [node.id]
+            item["siblings"] = group
+            item["sibling_index"] = group.index(node.id) + 1 if node.id in group else 1
+            out.append(item)
+        return out
+
+
+def message_of(conversation_id: str, message_id: str) -> dict:
+    """取一条消息（含 ``attachments``）—— 重新生成 / 编辑提问要按 id 找它。"""
+    from backend.repositories.mysql.models import ConversationMessage
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        row = sess.get(ConversationMessage, message_id)
+        if row is None or row.conversation_id != conversation_id:
+            raise NotFoundError(f"消息不存在：{message_id}")
+        return _row_to_message(row)
+
+
+def branch_history(conversation_id: str, upto_id: str | None) -> list[dict]:
+    """``upto_id`` **之前**那条链上的消息（不含它自己）。
+
+    重放某一轮要看的是"当时模型看到了什么"，而不是"现在 head 在哪" ——
+    重新生成第 3 轮时，第 4 轮之后的对话不能进去（否则模型会以为自己已经答过了）。
+    """
+    if not upto_id:
+        return []
+    from backend.repositories.mysql.models import ConversationMessage
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        rows = _all_messages(sess, conversation_id)
+        by_id = {r.id: r for r in rows}
+        target = by_id.get(upto_id)
+        if target is None:
+            return []
+        chain: list = []
+        cursor = target.parent_id
+        guard = 0
+        while cursor and cursor in by_id and guard < 1000:
+            node = by_id[cursor]
+            chain.append(node)
+            cursor = node.parent_id
+            guard += 1
         chain.reverse()
         return [_row_to_message(r) for r in chain]
 
@@ -191,14 +327,21 @@ def history_for_agent(conversation_id: str, *, limit: int = HISTORY_TURNS) -> li
 
     摘要本身**永远保留**（它可能是那批老内容的唯一记忆），轮数只裁摘要之后的对话。
     """
-    chain = visible_messages(conversation_id)
+    return history_from_chain(visible_messages(conversation_id), limit=limit)
+
+
+def history_from_chain(chain: list[dict], *, limit: int = HISTORY_TURNS) -> list[dict]:
+    """把一条可见链裁成给模型的历史（压缩边界同样落在最近一条 `summary` 上）。
+
+    分叉（重新生成 / 编辑提问）走的就是这条：链换成"目标节点之前的那条"，
+    压缩边界与轮数裁剪的口径一个字都不改。
+    """
     start = _summary_index(chain)
     active = chain[start:] if start >= 0 else chain
     head = [active[0]] if active and active[0]["role"] == "summary" else []
     turns = [m for m in active
              if m["role"] in ("user", "assistant") and (m.get("content") or "").strip()]
-    out = [{ "role": m["role"], "content": m["content"]} for m in head + turns[-limit * 2:]]
-    return out
+    return [{"role": m["role"], "content": m["content"]} for m in head + turns[-limit * 2:]]
 
 
 # --------------------------------------------------------------------------
@@ -281,10 +424,19 @@ def transcript_for_compress(conversation_id: str) -> tuple[str, int]:
 
 
 def append_message(conversation_id: str, *, role: str, content: str,
-                   parent_id: str | None = None, citations: list | None = None,
+                   parent_id: str | None = None, root: bool = False,
+                   citations: list | None = None,
                    tool_trace: list | None = None,
+                   attachments: list | None = None,
                    finish_reason: str | None = None) -> dict:
-    """追加一条消息并把 `head_id` 移到它上面（父节点默认取当前 head）。"""
+    """追加一条消息并把 `head_id` 移到它上面（父节点默认取当前 head）。
+
+    ``parent_id`` 显式给定时就是**分叉**：新消息与原来的那条成为兄弟，
+    两条都留在树里，`head_id` 决定现在看哪一条（见 `set_head`）。
+    ``root=True`` 表示"挂在根上"（没有父）—— 与"没指定父（跟着 head）"是两件事：
+    编辑**第一句**提问时，新提问必须成为根上的兄弟，而不是接到当前末尾去
+    （踩过：不给这个开关，`parent_id=None` 会被当成"用 head"，编辑第一句就等于追加一轮）。
+    """
     from backend.repositories.mysql.models import Conversation, ConversationMessage
     from backend.repositories.mysql.session import session_scope
 
@@ -293,7 +445,12 @@ def append_message(conversation_id: str, *, role: str, content: str,
         if conv is None:
             raise NotFoundError(f"会话不存在：{conversation_id}")
         rows = _all_messages(sess, conversation_id)
-        parent = parent_id if parent_id is not None else conv.head_id
+        if root:
+            parent = None
+        elif parent_id is not None:
+            parent = parent_id
+        else:
+            parent = conv.head_id
         if parent and parent not in {r.id for r in rows}:
             parent = conv.head_id        # 前端给了个不存在的父节点 → 挂到当前 head
         message_id = str(uuid.uuid4())
@@ -303,6 +460,7 @@ def append_message(conversation_id: str, *, role: str, content: str,
             role=role, content=content,
             citations_json=json_dumps(citations or []),
             tool_trace_json=json_dumps(tool_trace or []),
+            attachments_json=json_dumps(attachments or []),
             finish_reason=finish_reason,
         ))
         conv.head_id = message_id
@@ -310,4 +468,6 @@ def append_message(conversation_id: str, *, role: str, content: str,
         if not conv.title and role == "user":
             conv.title = content.strip()[:TITLE_CHARS]
         return {"message_id": message_id, "conversation_id": conversation_id,
-                "parent_id": parent, "seq": len(rows) + 1, "persisted": True}
+                "parent_id": parent, "seq": len(rows) + 1, "persisted": True,
+                "attachments": attachments or []}
+

@@ -163,6 +163,18 @@ class Settings(BaseSettings):
     #: 一次 `page_image_get` 允许的最大页数与最长边（视觉输入的字节闸）
     agent_image_max_pages: int = 3
     agent_image_max_dpi: int = 400
+    #: 用户在对话里上传/粘贴的图片（附件）。**张数不设上限**（用户明确要求"不限制"），
+    #: 只有两个工程闸：单张字节数，以及单个文件允许的 MIME。
+    agent_attachment_max_bytes: int = 12 * 1024 * 1024
+    agent_attachment_mimes: tuple[str, ...] = (
+        "image/png", "image/jpeg", "image/webp", "image/gif",
+    )
+    #: 一轮里**真正送进模型**的图片张数上限。第 N 张之后仍然存着（历史里看得见、
+    #: 下一轮还能用），只是这一轮不进 prompt —— 否则 50 张图的请求会被厂商直接拒掉。
+    agent_attachment_inline_limit: int = 12
+    #: **超预算自动压缩**的触发线（占 `agent_context_budget` 的百分比）。
+    #: 到线之后下一轮提问会先自动压一次（多一轮 summary），用户不用自己盯圆环。
+    agent_auto_compress_percent: float = 85.0
 
     # ------------------------------------------------------------------
     @field_validator("data_dir", mode="after")
@@ -200,6 +212,11 @@ class Settings(BaseSettings):
         return self.data_dir / "fonts"
 
     @property
+    def attachments_dir(self) -> Path:
+        """对话里的图片附件（见 `services/agent/attachments.py`）。"""
+        return self.data_dir / "attachments"
+
+    @property
     def database_url(self) -> str:
         if self.db_backend == "sqlite":
             return f"sqlite:///{(self.data_dir / 'papermind.sqlite3').as_posix()}"
@@ -229,7 +246,7 @@ class Settings(BaseSettings):
         for p in (
             self.data_dir, self.papers_dir, self.exports_dir, self.index_dir,
             self.uploads_dir, self.trash_dir, self.logs_dir, self.fonts_dir,
-            self.secrets_dir,
+            self.attachments_dir, self.secrets_dir,
         ):
             p.mkdir(parents=True, exist_ok=True)
 

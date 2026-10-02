@@ -31,6 +31,7 @@ import {
 } from '@/stores/app';
 import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
+import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
 
@@ -129,6 +130,7 @@ const SECTIONS = [
   { id: 'general', label: '常规参数', icon: 'settings', desc: '后台任务线程数、页面与公式渲染 dpi、RAG 检索条数。改完要按「保存设置」才落库。' },
   { id: 'appearance', label: '显示主题', icon: 'sparkle', desc: '界面皮肤：色块就是效果预览，点一下立即换肤，选择记在本机（localStorage）。' },
   { id: 'kb', label: '索引管理', icon: 'knowledge', desc: '知识库概览、论文索引与 chunk 对账。都是即时操作，没有"保存"这一步。' },
+  { id: 'agent', label: '论文问答', icon: 'chat', desc: '问答（agent）用的模型、服务状态与运行限额。模型本身的编辑在「模型」页。' },
   { id: 'mineru', label: '在线解析', icon: 'bolt', desc: 'MinerU 云端解析的 token 与默认参数。token 只写不回显（后端只给掩码）。' },
   { id: 'history', label: '搜索记录', icon: 'search', desc: '知识库检索的历史记录，存在本机（localStorage），不上传后端。' },
   { id: 'about', label: '系统信息', icon: 'server', desc: '只读配置与后端健康检查（数据库 / 向量库 / 任务池）。' },
@@ -540,6 +542,11 @@ onMounted(async () => {
       <!-- ③ 索引管理（管理/诊断，即时生效，没有"保存"） -->
       <section id="kb" class="sec" v-if="active === 'kb'">
         <KbIndexPanel />
+      </section>
+
+      <!-- ④ 论文问答：问答模型卡片（只读展示 + 指路到模型页） -->
+      <section id="agent" class="sec" v-if="active === 'agent'">
+        <AgentModelPanel />
       </section>
 
       <!-- ② 显示主题：注册表驱动的皮肤网格，点一下立即换肤 -->

@@ -30,6 +30,9 @@ class Deps:
     evidence_note: str = ""
     #: 划词解释：用户选中的原文 + 它对应的 ref（ref 用来让模型自己展开上下文）
     selection: str = ""
+    #: 本轮用户上传的图片张数 / 其中真正随消息发出去的那几张（见 `prompts.IMAGE_NOTE`）
+    attachments: int = 0
+    attachments_shown: int = 0
     selection_ref: int | None = None
     selection_page: int | None = None
     #: 用户对选区的提问（划词追问）；为空时是"解释这段内容"

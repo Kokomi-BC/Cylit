@@ -105,10 +105,13 @@ def create_app() -> FastAPI:
         question = str(payload.get("question") or "").strip()
         paper_id = str(payload.get("paper_id") or "").strip()
         selection = payload.get("selection") or None
-        # 划词提问时 `question` 可以为空（默认"解释这段内容"，见 `runtime._user_prompt`）
-        if not paper_id or not (question or (selection and selection.get("text"))):
-            raise HTTPException(status_code=422,
-                                detail="paper_id 必填，且 question 与 selection 至少要有一个")
+        attachments = [a for a in (payload.get("attachments") or []) if a]
+        # 划词提问时 `question` 可以为空（默认"解释这段内容"）；只发图片也允许
+        if not paper_id or not (question or (selection and selection.get("text"))
+                                or attachments):
+            raise HTTPException(
+                status_code=422,
+                detail="paper_id 必填，且 question / selection / attachments 至少要有一个")
         req = AskRequest(
             paper_id=paper_id, question=question,
             conversation_id=str(payload.get("conversation_id") or ""),
@@ -116,6 +119,7 @@ def create_app() -> FastAPI:
             history=list(payload.get("history") or []),
             model_id=payload.get("model_id"),
             selection=selection,
+            attachments=list(attachments),
         )
 
         async def _sse():

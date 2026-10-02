@@ -2062,12 +2062,22 @@ f.addEventListener('load', async () => {
 """
 
 
-# 侧栏「对话」面板探针（`--chat`）：
-# 1. 页签顺序（「对话」必须紧跟「目录」）；
-# 2. 打字 → 发送键可用 → 点发送 → 等流结束 → 回答与引用都渲染出来。
+# 探针里那张图的 base64（16x16 PNG，红底 + 蓝方块）。
+# ⚠️ 真图，不是手搓的魔数：坏 PNG 能过后端的魔数嗅探，却会被模型端按
+# "unsupported image" 拒掉 —— 那样探针量到的只是自己的 bug（踩过一次）。
+PROBE_PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAALElEQVR4nGO8IyfHQApgIkk1"
+                 "Az00sCBzLOT2YVV04pETHZ3ENBI1MA6DtAQA8VYFUbO5ASoAAAAASUVORK5CYII=")
+
+
+# 侧栏「对话」面板探针（`--chat`）：**两级**面板的端到端走查。
+# 1. 页签顺序（「对话」必须紧跟「目录」）+ 一级页（搜索 / 分类 / 管理 / 会话行）；
+# 2. 新建 → 二级页：输入框文案、空态文案（随机一条「与大肥鱼一起讨论…」）、加号是主题色；
+# 3. 返回一级 → 从列表点进一个会话（真实历史）；
+# 4. 上传一张图（走 file input 的 change，和用户选文件是同一条路）→ 缩略图出现；
+# 5. 打字 → 发送键可用 → 点发送 → 等流结束 → 回答与引用都渲染出来。
 #
-# ⚠️ 用**单次长等待**而不是轮询：轮询的 `setTimeout` 在虚拟时间下会被"饿死"，
-# 探针可能在回答回来之前就跑到末尾量了一手空数据。
+# ⚠️ 用**1 秒轮询**而不是一次长 sleep：轮询的每个 tick 都是一次"虚拟时间检查点"，
+# 有请求在飞时会停住等它；而单次 `sleep(45000)` 会被直接跳过（实测量到的还是空回答）。
 # ⚠️ iframe 的 src 直接就是阅读器（同 `ZOOM_PROBE` 那批）：先进入口页再跳会让虚拟时间卡住。
 CHAT_PROBE = """<!doctype html>
 <meta charset="utf-8"><title>chat probe</title>
@@ -2079,6 +2089,24 @@ pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;backgroun
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const f = document.getElementById('f');
 const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+/* 16x16 的真 PNG（红底 + 蓝方块）：**必须是真图** —— 只靠魔数糊一个坏 PNG 过得了后端，
+   但会被模型端按 "unsupported image" 拒掉，那样量到的是探针自己的 bug。 */
+const PNG_B64 = '__PNG_B64__';
+function tinyPng(w) {
+  const bin = w.atob(PNG_B64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) buf[i] = bin.charCodeAt(i);
+  return new w.File([buf], 'probe.png', { type: 'image/png' });
+}
+/* 主题色对比：`--accent` 是十六进制，`getComputedStyle` 给的是 rgb()，比之前先统一 */
+function rgbOf(w, value) {
+  const probe = w.document.createElement('span');
+  probe.style.color = String(value).trim();
+  w.document.body.appendChild(probe);
+  const out = w.getComputedStyle(probe).color;
+  probe.remove();
+  return out;
+}
 let started = false;
 f.addEventListener('load', async () => {
   if (started) return;
@@ -2093,33 +2121,95 @@ f.addEventListener('load', async () => {
     res.hasChat = !!chat;
     if (!chat) { out(res); return; }
     res.chatWidth = Math.round(chat.getBoundingClientRect().width);
-    res.hasInput = !!chat.querySelector('textarea.input');
+
+    /* ── 一级页：搜索 / 分类 / 管理 / 会话行 ── */
+    res.hasListHead = !!chat.querySelector('.list-head .search-input');
+    res.segs = [...chat.querySelectorAll('.seg .seg-btn')].map((b) => (b.textContent || '').trim());
+    res.hasManage = [...chat.querySelectorAll('.chip-btn')].some((b) => (b.textContent || '').includes('管理'));
+    res.rows = chat.querySelectorAll('.row').length;
+    const newBtn = chat.querySelector('.list-head .plus');
+    res.hasNewBtn = !!newBtn;
+    res.newBtnBg = newBtn ? getComputedStyle(newBtn).backgroundColor : '';
+    /* 批量管理：勾两个看是否出现批量条（选完再退出） */
+    const manage = [...chat.querySelectorAll('.chip-btn')].find((b) => (b.textContent || '').includes('管理'));
+    if (manage && res.rows > 0) {
+      manage.click();
+      await sleep(300);
+      const ticks = chat.querySelectorAll('.row .tick');
+      res.tickCount = ticks.length;
+      if (ticks.length) { ticks[0].click(); await sleep(200); }
+      res.batchBar = !!chat.querySelector('.batch-bar');
+      res.batchCount = (chat.querySelector('.batch-bar .tiny') || {}).textContent || '';
+      manage.click();
+      await sleep(200);
+      res.batchOff = !chat.querySelector('.batch-bar');
+    }
+    out(res);
+
+    /* ── 新建 → 二级页 ── */
+    newBtn.click();
+    await sleep(500);
+    res.threadHead = !!chat.querySelector('.thread-head');
+    const ta = chat.querySelector('textarea.input');
+    res.placeholder = ta ? ta.getAttribute('placeholder') : '';
+    res.headline = (chat.querySelector('.hello-line') || {}).textContent || '';
+    res.headlineStartsWithPersona = res.headline.trim().indexOf('与大肥鱼一起讨论') === 0;
+    const plus = chat.querySelector('.composer-bar .plus');
+    res.plusBg = plus ? getComputedStyle(plus).backgroundColor : '';
+    res.accentBg = rgbOf(w, getComputedStyle(d.documentElement).getPropertyValue('--accent'));
+    res.plusIsAccent = !!plus && res.plusBg === res.accentBg && res.plusBg !== 'rgba(0, 0, 0, 0)';
+    /* 列表页那个加号在上面就量过了（这一层没有 .list-head 了，别在这里再查一次） */
+    res.listPlusBg = res.newBtnBg;
+    res.listPlusIsAccent = !!res.newBtnBg && res.newBtnBg === res.accentBg;
+    res.hasFileInput = !!chat.querySelector('input[type=file][multiple]');
     res.hasRing = !!chat.querySelector('.ring');
     res.model = (chat.querySelector('.model') || {}).textContent || '';
-    const before = chat.querySelectorAll('.msg').length;
-    res.beforeMsgs = before;
-    const ta = chat.querySelector('textarea.input');
+    out(res);
+
+    /* ── 上传一张图（与用户选文件同一条路） ── */
+    const fileInput = chat.querySelector('input[type=file]');
+    const dt = new w.DataTransfer();
+    dt.items.add(tinyPng(w));
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new w.Event('change', { bubbles: true }));
+    for (let i = 0; i < 20; i += 1) {
+      await sleep(1000);
+      if (chat.querySelector('.atts.pending .att')) break;
+    }
+    res.pendingAtts = chat.querySelectorAll('.atts.pending .att').length;
+    res.attImgLoaded = !!chat.querySelector('.atts.pending .att img');
+    out(res);
+
+    /* ── 打字 → 发送 → 等流结束 ── */
     const setter = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(ta, '这篇论文的标题是什么？一句话回答。');
+    setter.call(ta, '这张图里有什么颜色？一句话回答。');
     ta.dispatchEvent(new w.Event('input', { bubbles: true }));
     await sleep(400);
     res.sendDisabled = chat.querySelector('.send').disabled;
     out(res);
     chat.querySelector('.send').click();
-    /* 轮询等**流结束**：每个 1s 的 tick 都是一次"虚拟时间检查点"，有请求在飞时会停住等它；
-       换成一次 `sleep(45000)` 反而会被直接跳过（实测：量到的还是空回答）。 */
     for (let i = 0; i < 70; i += 1) {
       await sleep(1000);
       if (chat.querySelector('.err') && chat.querySelector('.err').textContent.trim()) break;
-      if (!chat.querySelector('.msg.live') && chat.querySelectorAll('.msg').length > before) break;
+      if (!chat.querySelector('.msg.live') && chat.querySelectorAll('.msg').length > 0) break;
     }
     await sleep(1200);
     res.chatMsgs = chat.querySelectorAll('.msg').length;
     const answers = [...chat.querySelectorAll('.msg.assistant .md.body')];
     res.chatAnswer = answers.length ? answers[answers.length - 1].textContent.trim().slice(0, 120) : '';
+    res.userAtts = chat.querySelectorAll('.msg.user .atts .att').length;
     res.chatCites = [...chat.querySelectorAll('.cite')].map((c) => (c.textContent || '').trim()).slice(0, 6);
     res.chatErr = (chat.querySelector('.err') || {}).textContent || '';
     res.chatStreamingLeft = !!chat.querySelector('.msg.live');
+    res.hasBranchTool = !!chat.querySelector('.msg-tools .ico');
+    out(res);
+
+    /* ── 返回一级：历史里应该多出一条 ── */
+    const back = chat.querySelector('.thread-head .ico');
+    back.click();
+    await sleep(800);
+    res.backToList = !!chat.querySelector('.list-head');
+    res.rowsAfter = chat.querySelectorAll('.row').length;
     out(res);
   } catch (err) { res.error = String(err); out(res); }
 });
@@ -3742,7 +3832,7 @@ def main() -> int:
 
     print()
     print("=" * 78)
-    print("⑰ 侧栏「对话」面板（发一条消息 → 流式回答 → 引用；需 agent 服务在跑）")
+    print("⑰ 侧栏「对话」面板：两级 + 图片上传 + 一条消息（需 agent 服务在跑）")
     print("=" * 78)
     if not args.chat:
         print("[SKIP] 加 --chat 才跑这一节（要 `pr.py agent` 在跑，且会真调一次模型）")
@@ -3750,11 +3840,11 @@ def main() -> int:
         print("[SKIP] 需要浏览器")
     else:
         probe = CHAT_PROBE.replace("__URL__", f"{base}/app/reader/{paper}?side=chat&nosse=1")
-        probe = probe.replace("__WAIT__", "9000").replace("__ANSWER__", "45000")
+        probe = probe.replace("__WAIT__", "9000").replace("__PNG_B64__", PROBE_PNG_B64)
         probe_file = ROOT / "frontend" / "dist" / "_chat_probe.html"
         try:
             probe_file.write_text(probe, encoding="utf-8")
-            dom = render(browser, f"{base}/app/_chat_probe.html", args.budget * 6, DESKTOP)
+            dom = render(browser, f"{base}/app/_chat_probe.html", args.budget * 8, DESKTOP)
             data = None
             m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
             if m and m.group(1).strip() != "waiting":
@@ -3765,23 +3855,58 @@ def main() -> int:
             data = data or {}
             tabs = data.get("tabs") or []
             idx = data.get("tabIndex", -1)
+            segs = data.get("segs") or []
             checks = [
                 # 「对话」必须紧跟「目录」（用户口径：侧栏第二个）
                 ("「对话」页签排第二", idx == 1 and "对话" in (tabs[1] if len(tabs) > 1 else ""),
                  f"页签={tabs}"),
-                ("面板就位（输入框 / 圆环 / 模型名）",
-                 all([data.get("hasChat"), data.get("hasInput"), data.get("hasRing"),
-                      bool(data.get("model"))]),
-                 f"宽 {data.get('chatWidth')}px 模型={data.get('model')}"),
+                # ① 一级页：搜索 / 分类 / 批量管理 / 会话行
+                ("一级页就位（搜索框 + 分类 + 管理）",
+                 all([data.get("hasListHead"), segs == ["全部", "划词", "常规"],
+                      data.get("hasManage")]),
+                 f"宽 {data.get('chatWidth')}px 分类={segs}"),
+                ("会话行渲染出来（真实历史）", data.get("rows", 0) > 0, f"{data.get('rows')} 行"),
+                ("批量管理：可选 + 出现批量条 + 能退出",
+                 all([data.get("tickCount", 0) > 0, data.get("batchBar"),
+                      data.get("batchCount"), data.get("batchOff")]),
+                 f"勾选 {data.get('tickCount')} 个，条={data.get('batchCount')!r}"),
+                # ② 二级页：输入框文案 / 空态随机文案 / 加号主题色
+                ("新建 → 二级页（输入框文案 = 请输入问题）",
+                 bool(data.get("threadHead")) and data.get("placeholder") == "请输入问题",
+                 f"placeholder={data.get('placeholder')!r}"),
+                ("空态文案是「与大肥鱼一起讨论…」中随机一条",
+                 bool(data.get("headlineStartsWithPersona")),
+                 f"{data.get('headline')!r}"),
+                ("加号按钮是主题色（列表页与输入区各一个）",
+                 bool(data.get("plusIsAccent")) and bool(data.get("listPlusIsAccent")),
+                 f"输入区={data.get('plusBg')} 列表={data.get('listPlusBg')} "
+                 f"accent={data.get('accentBg')}"),                # ③ 图片上传（不限张数：input 带 multiple）
+                ("图片上传入口（multiple file input）",
+                 bool(data.get("hasFileInput")),
+                 "input[type=file][multiple]"),
+                ("上传后出现缩略图（真的落到了后端）",
+                 data.get("pendingAtts", 0) >= 1 and data.get("attImgLoaded"),
+                 f"{data.get('pendingAtts')} 张"),
+                # ④ 一轮问答
+                ("面板就位（圆环 / 模型名）",
+                 all([data.get("hasRing"), bool(data.get("model"))]),
+                 f"模型={data.get('model')}"),
                 ("发得出去（打字后发送键可用）", data.get("sendDisabled") is False,
                  f"sendDisabled={data.get('sendDisabled')}"),
                 ("回答落地（流结束后不再是流式态）",
-                 bool(data.get("chatAnswer")) and data.get("chatMsgs", 0) > data.get("beforeMsgs", 0)
+                 bool(data.get("chatAnswer")) and data.get("chatMsgs", 0) > 0
                  and not data.get("chatStreamingLeft"),
-                 f"{data.get('beforeMsgs')} → {data.get('chatMsgs')} 条；"
-                 f"回答={str(data.get('chatAnswer'))[:40]!r}"),
+                 f"{data.get('chatMsgs')} 条；回答={str(data.get('chatAnswer'))[:40]!r}"),
+                ("提问里的图片留在气泡上", data.get("userAtts", 0) >= 1,
+                 f"{data.get('userAtts')} 张"),
                 ("引用渲染成可点 chip", bool(data.get("chatCites")), f"{data.get('chatCites')}"),
-                ("没有报错", not data.get("chatErr"), f"err={data.get('chatErr')!r}"),
+                ("助手消息带分叉/复制入口", bool(data.get("hasBranchTool")), ""),
+                # ⑤ 返回一级
+                ("返回一级页（历史里多了一条）",
+                 bool(data.get("backToList")) and data.get("rowsAfter", 0) > 0,
+                 f"{data.get('rows')} → {data.get('rowsAfter')} 行"),
+                ("没有报错", not data.get("chatErr") and not data.get("error"),
+                 f"err={data.get('chatErr')!r} probe={data.get('error')!r}"),
             ]
             for label, ok, detail in checks:
                 failures += 0 if ok else 1

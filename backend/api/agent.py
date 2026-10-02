@@ -10,13 +10,17 @@ agent 服务没有数据库凭据，它要什么都得从这里过。
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from typing import AsyncIterator
+
+from fastapi import (APIRouter, Body, File, Header, HTTPException, Query, Request,
+                     UploadFile)
 from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.api.response import envelope
 from backend.core.config import get_settings
 from backend.core.errors import ProviderError, ValidationError
-from backend.services.agent import bridge, conversations, model_config, project
+from backend.services.agent import (attachments, bridge, conversations, model_config,
+                                    project)
 from backend.services.paper import paper_service
 
 router = APIRouter(tags=["agent"])
@@ -47,6 +51,16 @@ async def agent_status(request: Request):
         "running": await bridge.agent_up() if s.agent_enabled else False,
         "endpoint": f"http://{s.agent_host}:{s.agent_port}",
         "model": model_config.config_for_frontend(),
+        # 设置页「问答」卡片要把这些口径说清楚（都是配置项，不是临时值）
+        "limits": {
+            "max_rounds": s.agent_max_rounds,
+            "search_budget": s.agent_search_budget,
+            "context_budget": s.agent_context_budget,
+            "auto_compress_percent": s.agent_auto_compress_percent,
+            "deadline_seconds": s.agent_deadline_seconds,
+            "attachment_inline_limit": s.agent_attachment_inline_limit,
+            "evidence_floor": s.agent_evidence_floor,
+        },
     }, request=request)
 
 
@@ -59,41 +73,189 @@ async def agent_skills(request: Request):
 async def agent_ask(payload: dict = Body(...)):
     """一轮问答（SSE 直通）。
 
-    请求体：``{paper_id, question?, conversation_id?, selection?: {text, block_id?, page?}}``。
+    请求体：``{paper_id, question?, conversation_id?, selection?: {text, row_id?, page?},
+    attachments?: [id], regenerate_from?, edit_of?}``。
+
     ``selection`` 就是**划词解释 / 划词追问**：给了它，``question`` 可以为空
-    （默认"解释这段内容"）。这里做三件事：校验、把用户消息落库、把请求转给 agent 进程。
-    **不解释 agent 的事件**（§4.2）—— 只转发字节，唯一的例外是连不上时合成一个 `error` 终态。
+    （默认"解释这段内容"）。``attachments`` 是图片附件的 id 列表（见 `/agent/attachments`）。
+
+    两种**分叉**写法：
+
+    - ``regenerate_from`` = 某条助手消息 id：不新写用户消息，复用它的父（用户消息）
+      重新生成一条兄弟回答；
+    - ``edit_of`` = 某条用户消息 id：把新问题挂在它的**父**下面（原来的那条留着）。
+
+    这里做四件事：校验、把用户消息落库、必要时自动压缩、把请求转给 agent 进程。
+    **不解释 agent 的事件**（§4.2）—— 只转发字节，例外只有两处：连不上时合成 `error`、
+    自动压缩时先补一帧 `stage`。
     """
-    question = str(payload.get("question") or "").strip()
     paper_id = str(payload.get("paper_id") or "").strip()
-    selection = payload.get("selection") or None
-    selected_text = str((selection or {}).get("text") or "").strip()
-    if not paper_id or not (question or selected_text):
-        raise ValidationError("paper_id 必填，且 question 与 selection.text 至少要有一个")
+    if not paper_id:
+        raise ValidationError("paper_id 必填")
     paper_service.get_paper(paper_id)          # 论文不存在就别往下走（错误信息更清楚）
 
-    # 用户消息的正文：划词时把选区作为**引用块**写进去（历史/重放时能看清"当时问的是哪句"）
-    content = question or "解释这段内容"
-    if selected_text:
-        quote = selected_text[:400].replace("\n", " ")
-        content = f"> {quote}\n\n{content}"
+    question = str(payload.get("question") or "").strip()
+    selection = payload.get("selection") or None
+    selected_text = str((selection or {}).get("text") or "").strip()
+    attachment_ids = [str(a) for a in (payload.get("attachments") or []) if a]
+    attachment_meta = attachments.describe(attachment_ids)
+    regenerate_from = str(payload.get("regenerate_from") or "").strip()
+    edit_of = str(payload.get("edit_of") or "").strip()
+    if not (question or selected_text or attachment_meta or regenerate_from or edit_of):
+        raise ValidationError("question / selection.text / attachments 至少要有一个")
 
     conversation_id = conversations.ensure_conversation(
-        payload.get("conversation_id"), paper_id, title=question or "划词解释")
-    user_message = conversations.append_message(conversation_id, role="user",
-                                                content=content)
-    # 历史里含刚写进去的这条用户消息，去掉它（agent 自己会把当前问题作为 prompt 传）
-    history = conversations.history_for_agent(conversation_id)[:-1]
+        payload.get("conversation_id"), paper_id,
+        title=(question or ("划词解释" if selected_text else "图片提问")))
+    if not conversation_id:                    # 理论上不会发生，兜住更安全
+        raise ValidationError("conversation_id 缺失")
+
+    if regenerate_from:
+        question, selection, attachment_meta, parent_id, history = _branch_regenerate(
+            conversation_id, regenerate_from)
+    elif edit_of:
+        parent_id, history = _branch_edit(conversation_id, edit_of, question,
+                                         attachment_meta)
+    else:
+        content = question or "解释这段内容"
+        if selected_text:
+            quote = selected_text[:400].replace("\n", " ")
+            content = f"> {quote}\n\n{content}"
+        elif attachment_meta and not question:
+            content = f"（图片 ×{len(attachment_meta)}）"
+        user_message = conversations.append_message(
+            conversation_id, role="user", content=content,
+            attachments=attachment_meta or None)
+        # 历史里含刚写进去的这条用户消息，去掉它（agent 自己会把当前问题作为 prompt 传）
+        history = conversations.history_for_agent(conversation_id)[:-1]
+        parent_id = user_message["message_id"]
+
     body = {
         "paper_id": paper_id, "question": question,
-        "conversation_id": conversation_id,
-        "parent_id": user_message["message_id"],
+        "conversation_id": conversation_id, "parent_id": parent_id,
         "history": history,
         "model_id": payload.get("model_id"),
         "selection": selection if selected_text else None,
+        "attachments": attachment_meta,
     }
-    return StreamingResponse(bridge.stream_ask(body), media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+    return StreamingResponse(_ask_stream(body, conversation_id),
+                             media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+def _branch_regenerate(conversation_id: str, assistant_id: str) -> tuple:
+    """重新生成：拿原提问重跑一轮（``(question, selection, attachments, parent, history)``）。"""
+    prev = conversations.message_of(conversation_id, assistant_id)
+    if prev["role"] != "assistant":
+        raise ValidationError("只能重新生成助手的回答")
+    parent = prev.get("parent_id")
+    if not parent:
+        raise ValidationError("这条回答没有对应的提问，无法重新生成")
+    ask = conversations.message_of(conversation_id, parent)
+    if ask["role"] != "user":
+        raise ValidationError("这条回答的上一环不是提问，无法重新生成")
+    history = conversations.history_from_chain(
+        conversations.branch_history(conversation_id, ask["message_id"]))
+    return (ask["content"], None, ask.get("attachments") or [], ask["message_id"], history)
+
+
+def _branch_edit(conversation_id: str, user_id: str, question: str,
+                 attachment_meta: list) -> tuple:
+    """编辑提问：新问题挂到原提问的**父**下面，与它成为兄弟（``(parent, history)``）。"""
+    if not question:
+        raise ValidationError("编辑提问时不能把问题清空")
+    origin = conversations.message_of(conversation_id, user_id)
+    if origin["role"] != "user":
+        raise ValidationError("只能编辑自己的提问")
+    user_message = conversations.append_message(
+        conversation_id, role="user", content=question,
+        parent_id=origin.get("parent_id"),
+        # 编辑的是**第一句**时原提问没有父 → 新提问要成为根上的兄弟，不能接到末尾去
+        root=origin.get("parent_id") is None,
+        attachments=attachment_meta or None)
+    history = conversations.history_from_chain(
+        conversations.branch_history(conversation_id, user_message["message_id"]))
+    return user_message["message_id"], history
+
+
+async def _ask_stream(body: dict, conversation_id: str) -> AsyncIterator[bytes]:
+    """问答的 SSE：自动压缩提示 → 透传 agent 字节。
+
+    **没有追问建议**：那一轮要用另一套 instructions，与主对话的缓存前缀毫无重叠，
+    等于每轮多打一次冷启动的 API；而"接下来问什么"本来就能靠接着聊解决
+    （阅读器还有目录与引用跳转）。为一个锦上添花的功能付这个代价不值。
+    """
+    try:
+        if await _auto_compress(conversation_id):
+            yield bridge.frame("stage", stage="compressing",
+                               message="上下文接近预算，已自动压成要点，接着聊…")
+        async for chunk in bridge.stream_ask(body):
+            yield chunk
+    except ProviderError as exc:
+        yield bridge.frame("error", code=exc.code or "PROVIDER_ERROR",
+                           message=exc.message, retryable=bool(exc.retryable))
+
+
+async def _auto_compress(conversation_id: str) -> bool:
+    """超预算自动压缩（§10.2 的自动版）。
+
+    为什么放在**提问前**：压缩要花一次模型调用，放在回答之后等于让用户多等一次；
+    而放在提问前只是把这一轮的延迟拉长一点，用户看到的圆环也不会先冲到 100 再归零。
+    """
+    s = get_settings()
+    try:
+        usage = conversations.conversation_usage(conversation_id)
+        threshold = float(s.agent_auto_compress_percent)
+        if threshold <= 0 or not usage.get("percent"):
+            return False
+        if float(usage["percent"]) < threshold or int(usage.get("active") or 0) < 4:
+            return False
+        transcript, count = conversations.transcript_for_compress(conversation_id)
+        if count < 2:
+            return False
+        result = await bridge.agent_post("/v1/compress",
+                                         {"paper_id": None, "transcript": transcript})
+        summary = str(result.get("summary") or "").strip()
+        if not summary:
+            return False
+        conversations.append_message(conversation_id, role="summary", content=summary)
+        return True
+    except Exception as exc:  # noqa: BLE001 —— 压缩失败不能把这一轮问答也拖下来
+        import logging
+        logging.getLogger(__name__).warning("自动压缩失败（继续正常问答）：%s", exc)
+        return False
+
+
+# --------------------------------------------------------------------------
+# 图片附件
+# --------------------------------------------------------------------------
+
+
+@router.post("/agent/attachments")
+async def upload_attachments(request: Request, files: list[UploadFile] = File(...)):
+    """上传图片（**张数不限**，一张一张过闸：类型 + 单张字节数）。
+
+    前端把选中的文件与粘贴进来的图片都塞进同一个 `files` 字段，
+    所以这里不需要区分来源。
+    """
+    if not files:
+        raise ValidationError("没有收到文件")
+    saved = []
+    for item in files:
+        data = await item.read()
+        saved.append(attachments.save(data, filename=item.filename or "",
+                                      mime=item.content_type or ""))
+    return envelope({"items": saved, "count": len(saved)}, request=request)
+
+
+@router.get("/agent/attachments/{attachment_id}")
+async def get_attachment(attachment_id: str):
+    """取图片本身（前端缩略图 / 回看历史里的图）。"""
+    found = attachments.locate(attachment_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="图片附件不存在")
+    path, meta = found
+    return FileResponse(str(path), media_type=str(meta.get("mime") or "image/png"),
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/agent/conversations/{conversation_id}/compress")
@@ -126,9 +288,36 @@ async def compress_conversation(conversation_id: str, request: Request):
 @router.get("/agent/conversations")
 async def list_conversations(request: Request,
                              paper_id: str | None = Query(None),
-                             limit: int = Query(50, ge=1, le=200)):
-    return envelope({"items": conversations.list_conversations(paper_id, limit=limit)},
-                    request=request)
+                             q: str | None = Query(None),
+                             kind: str = Query("all", pattern="^(all|selection|normal)$"),
+                             limit: int = Query(80, ge=1, le=200)):
+    """会话列表（一级页：搜索 + 分类 + 批量管理的取数口）。
+
+    ``q`` 同时匹配标题与消息正文；``kind`` 按"有没有划词消息"自动分类，见
+    `conversations.list_conversations`。
+    """
+    return envelope({"items": conversations.list_conversations(
+        paper_id, limit=limit, query=q or "", kind=kind)}, request=request)
+
+
+@router.post("/agent/conversations/batch-delete")
+async def batch_delete_conversations(request: Request, payload: dict = Body(...)):
+    """批量删会话（**一级页的批量管理**）。"""
+    ids = payload.get("conversation_ids") or payload.get("ids") or []
+    if not isinstance(ids, list):
+        raise ValidationError("conversation_ids 必须是数组")
+    return envelope(conversations.delete_conversations(ids), request=request)
+
+
+@router.post("/agent/conversations/{conversation_id}/branch")
+async def branch_conversation(conversation_id: str, request: Request,
+                              payload: dict = Body(...)):
+    """切换可见分支（分叉导航 ◀ 2/3 ▶）：把 head 挪到某条兄弟消息上。"""
+    message_id = str(payload.get("message_id") or "").strip()
+    if not message_id:
+        raise ValidationError("message_id 必填")
+    conversations.set_head(conversation_id, message_id)
+    return envelope(conversations.get_conversation(conversation_id), request=request)
 
 
 @router.get("/agent/conversations/{conversation_id}")

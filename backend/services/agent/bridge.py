@@ -29,6 +29,15 @@ def _frame(event_type: str, **payload: Any) -> bytes:
     return f"event: {event_type}\ndata: {json_dumps(payload)}\n\n".encode("utf-8")
 
 
+def frame(event_type: str, **payload: Any) -> bytes:
+    """合成一帧 SSE（公开版）。
+
+    **只用于我们自己产生的帧**（自动压缩提示、追问建议）—— agent 的字节仍然原样透传，
+    这一层不去解析它们（§4.2）。
+    """
+    return _frame(event_type, **payload)
+
+
 def _base_url() -> str:
     s = get_settings()
     return f"http://{s.agent_host}:{s.agent_port}"

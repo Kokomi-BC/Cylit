@@ -434,6 +434,10 @@ class ConversationMessage(Base):
     citations_json: Mapped[str | None] = mapped_column(Text)
     #: 每轮的工具轨迹（名/轮次/参数摘要/耗时/状态），审计与自检读它
     tool_trace_json: Mapped[str | None] = mapped_column(Text)
+    #: 用户上传/粘贴的图片（``[{attachment_id, name, mime, bytes}]``）。
+    #: 存**消息上**而不是单独一张表：图片是这一轮的输入，跟着消息一起重放
+    #: （"重新生成"要能拿到当时那几张图，见 `conversations.branch`）。
+    attachments_json: Mapped[str | None] = mapped_column(Text)
     #: stop / rounds_exhausted / cancelled / error（终态口径，见规划 §11）
     finish_reason: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

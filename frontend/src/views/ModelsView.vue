@@ -21,6 +21,7 @@ import AppIcon from '@/components/AppIcon.vue';
 /** 模型类型中文标签（类型是产品概念，不是硬编码的模型名）。 */
 const TYPE_LABEL: Record<string, string> = {
   generation: '文本生成',
+  agent: '论文问答',
   embedding: '向量化',
   reranker: '重排',
   vision: '视觉读页',
@@ -130,7 +131,8 @@ function modelFull(entry: ModelTypeDefault | null): ModelConfig | null {
 }
 
 function typeSummary(t: string): string {
-  if (t === 'generation') return '翻译 / 问答 / 分析';
+  if (t === 'generation') return '翻译 / 分析';
+  if (t === 'agent') return '论文问答（工具调用）';
   if (t === 'embedding') return '索引与检索';
   if (t === 'reranker') return '检索结果重排';
   if (t === 'vision') return '扫描件读页';

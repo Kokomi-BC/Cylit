@@ -743,6 +743,16 @@ export interface AgentCitation {
   label?: string;
 }
 
+/** 对话里上传/粘贴的图片（落盘在 `data/attachments`，消息上只存这份元数据）。 */
+export interface AgentAttachment {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  bytes: number;
+  /** 后端给的相对路径，前端用 `assetUrl()` 拼成可访问 URL */
+  url: string;
+}
+
 export interface AgentMessage {
   message_id: string;
   conversation_id: string;
@@ -753,6 +763,11 @@ export interface AgentMessage {
   content: string;
   citations?: AgentCitation[];
   tool_trace?: Array<Record<string, any>>;
+  /** 图片附件（用户提问那一轮才有） */
+  attachments?: AgentAttachment[];
+  /** 同一父节点下的兄弟消息 id（分叉导航 ◀ n/m ▶ 用） */
+  siblings?: string[];
+  sibling_index?: number;
   finish_reason?: string | null;
   created_at?: string | null;
 }
@@ -776,17 +791,35 @@ export interface AgentConversation {
   head_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
-  messages?: AgentMessage[];
+  /** 会话详情里是消息数组；列表接口里是条数（数字）—— 用 `convCount()` 读 */
+  messages?: AgentMessage[] | number;
   usage?: AgentUsage;
+  /** 会话里出现过划词消息（后端自动判定，列表页据此分类） */
+  has_selection?: boolean;
+  kind?: 'selection' | 'normal';
+}
+
+/** 会话列表里那一条有几个消息（列表接口给数字，详情给数组）。 */
+export function convCount(conv: AgentConversation | null | undefined): number {
+  const value = conv?.messages;
+  if (typeof value === 'number') return value;
+  if (Array.isArray(value)) return value.length;
+  return 0;
 }
 
 export interface AgentModelInfo {
+  config_id?: string;
   provider?: string;
   model_name?: string;
+  base_url?: string;
+  /** 模型参数（thinking / reasoning_effort / max_tokens / top_p…），设置页只挑几个显示 */
+  parameters?: Record<string, any>;
   usable?: boolean;
   is_mock?: boolean;
   has_key?: boolean;
   fallback_to_generation?: boolean;
+  /** 视觉模型（`/agent/status` 顺带回一份，用于说明"图片问答不走它"） */
+  vision?: AgentModelInfo | null;
 }
 
 export interface AgentStatus {
@@ -794,6 +827,16 @@ export interface AgentStatus {
   running: boolean;
   endpoint: string;
   model: AgentModelInfo;
+  /** 运行限额（轮数 / 检索预算 / 上下文预算 / 自动压缩触发线…），设置页用它做说明 */
+  limits?: {
+    max_rounds: number;
+    search_budget: number;
+    context_budget: number;
+    auto_compress_percent: number;
+    deadline_seconds: number;
+    attachment_inline_limit: number;
+    evidence_floor: number;
+  };
 }
 
 /** 划词解释：选区 + 可选追问（`question` 为空时后端默认"解释这段内容"）。

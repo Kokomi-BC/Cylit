@@ -147,6 +147,10 @@ class HostClient:
         return await self.get_bytes(
             f"/papers/{paper_id}/figures/region/{page_no}/{index}", params)
 
+    async def attachment(self, attachment_id: str) -> tuple[bytes, str]:
+        """用户在对话里上传的图片（多模态直接喂给问答模型，见 `runtime._user_prompt`）。"""
+        return await self.get_bytes(f"/agent/attachments/{attachment_id}")
+
     async def persist_message(self, payload: dict) -> dict:
         """把这一轮的助手消息落库（**在发 `done` 之前**，见 §11 硬规则②）。"""
         return dict(await self.post("/agent/internal/messages", payload) or {})

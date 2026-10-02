@@ -74,7 +74,7 @@ def selection_block(deps: Deps) -> str:
 
 
 def build_instructions(deps: Deps) -> str:
-    """本轮的系统指令（稳定前缀 + 档案 + 划词选区 + 引用规则）。"""
+    """本轮的系统指令（稳定前缀 + 档案 + 划词选区 + 图片说明 + 引用规则）。"""
     parts = [BASE]
     if deps.archive_text:
         parts.append(deps.archive_text)
@@ -84,9 +84,32 @@ def build_instructions(deps: Deps) -> str:
     block = selection_block(deps)
     if block:
         parts.append(block)
+    image_note = image_block(deps)
+    if image_note:
+        parts.append(image_note)
     parts.append(CITING)
     parts.append(NO_EVIDENCE)
     return "\n\n".join(parts)
+
+
+def image_block(deps: Deps) -> str:
+    """图片说明（**放在系统指令里而不是用户消息里**）。
+
+    踩过一次：把"这几张图是用户上传的材料，别当成论文正文"写在 user prompt 的括号里，
+    模型会**把这句说明原样抄进回答**（实测回答末尾跟着一段"（本轮随问题上传了 1 张图片…）"）。
+    放进 system 侧就没有这个问题 —— 那里的文字是"规则"，不是"用户说的话"。
+    """
+    if not deps.attachments:
+        return ""
+    lines = [f"【本轮图片】用户随问题上传了 {deps.attachments} 张图片"
+             f"（其中 {deps.attachments_shown} 张就在这条消息里，可以直接看）。",
+             "- 图片是**用户自己给的材料**：可以据此回答，但不要把它当作论文正文去引用"
+             "（引用编号只给论文里真实存在的块）。",
+             "- 图片看不清 / 与论文无关时直接说明，不要硬凑。"]
+    if deps.attachments > deps.attachments_shown:
+        lines.append(f"- 剩下 {deps.attachments - deps.attachments_shown} 张这次没有一起发过来，"
+                     f"需要时请让用户单独再问那一张。")
+    return "\n".join(lines)
 
 
 def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,

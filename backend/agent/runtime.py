@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-from pydantic_ai import Agent, RunContext, UsageLimits
+from pydantic_ai import Agent, BinaryContent, RunContext, UsageLimits
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelRequest, ModelResponse, TextPart, UserPromptPart,
@@ -71,6 +71,10 @@ class AskRequest:
     model_id: str | None = None
     #: 划词解释：``{text, block_id?, page?}``。有它时 `question` 可以为空（默认"解释这段内容"）
     selection: dict | None = None
+    #: 用户上传/粘贴的图片（``[{attachment_id, name, mime, bytes}]``，主后端已落库）。
+    #: **直接多模态喂给问答模型**（实测 deepseek-flash 吃图）：所以这里传的是元数据，
+    #: 真正的字节在 `_user_prompt` 里按 id 取 —— agent 仍然不碰文件系统。
+    attachments: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -264,6 +268,14 @@ class AgentRuntime:
         deadline = t0 + self.cfg.deadline_seconds
         deps = Deps(cfg=self.cfg, host=self.host, paper_id=req.paper_id,
                     registry=RefRegistry(req.paper_id))
+        # 图片张数写进 deps：`prompts.image_block` 会把它渲染成 system 侧的一条规则
+        # （**不能**写在 user prompt 里 —— 模型会把那句说明抄进回答，实测过）
+        if req.attachments:
+            from backend.core.config import get_settings
+
+            inline = max(1, int(get_settings().agent_attachment_inline_limit))
+            deps.attachments = len(req.attachments)
+            deps.attachments_shown = min(len(req.attachments), inline)
         state = RunState()
         try:
             yield {"type": "stage", "stage": "routing", "message": "正在准备论文档案…"}
@@ -289,11 +301,15 @@ class AgentRuntime:
                    "paper_id": req.paper_id, "runtime": "pydantic-ai",
                    "skills": [s["name"] for s in await self.skill_list()],
                    "content_source": ("selection" if deps.selection
-                                      else ("search" if found
-                                            else ("archive" if archive_evidence else "none")))}
+                                      else ("image" if req.attachments
+                                            else ("search" if found
+                                                  else ("archive" if archive_evidence
+                                                        else "none"))))}
 
-            # 划词选区本身就是证据（用户指着这段问的），不能因为检索没命中就挡回去
-            if not found and not archive_evidence and not deps.selection:
+            # 划词选区本身就是证据（用户指着这段问的），图片同理（用户自己给的材料），
+            # 都不能因为检索没命中就挡回去
+            if (not found and not archive_evidence and not deps.selection
+                    and not req.attachments):
                 state.text = GUARDRAIL_NO_EVIDENCE
                 state.incomplete_reason = "no_evidence"
                 async for ev in self._finalize(req, deps, state):
@@ -438,7 +454,7 @@ class AgentRuntime:
         sanitizer = StreamingAnswerSanitizer(deps.registry)
         limits = UsageLimits(request_limit=self.cfg.max_rounds)
         sent_refs: set[int] = set()
-        prompt = self._user_prompt(req)
+        prompt = await self._user_prompt(req)
 
         try:
             async with agent.run_stream_events(
@@ -530,15 +546,38 @@ class AgentRuntime:
                 pass
         return []
 
-    @staticmethod
-    def _user_prompt(req: AskRequest) -> str:
+    async def _user_prompt(self, req: AskRequest):
+        """本轮的 user prompt：纯文本，或``[文本, 图片…]``（多模态）。
+
+        图片走 ``BinaryContent`` —— pydantic-ai 的 OpenAI 适配层会把它编成
+        ``image_url`` 的 data URI，与手写多模态请求等价（实测问答模型读得懂）。
+
+        为什么只送前 ``agent_attachment_inline_limit`` 张：用户要求"张数不限"是指
+        **能传多少**，不是说一次请求塞 50 张图 —— 那会被厂商按体积直接拒掉。
+        多出来的图仍留在历史里（下一轮还能问），只是这一轮不进去，并在 prompt 里说明。
+        """
+        from backend.core.config import get_settings
+
         question = (req.question or "").strip()
-        if question:
-            return question
-        if req.selection:
+        if not question and req.selection:
             # 划词但用户没打字：默认就是"解释这段"。有追问时用追问当 prompt。
-            return "请解释我选中的这段内容。"
-        return ""
+            question = "请解释我选中的这段内容。"
+        if not req.attachments:
+            return question
+
+        limit = max(1, int(get_settings().agent_attachment_inline_limit))
+        shown = req.attachments[:limit]
+        text = question or "请看这些图片。"
+        parts: list = [text]
+        for meta in shown:
+            try:
+                data, mime = await self.host.attachment(str(meta.get("attachment_id") or ""))
+            except HostError as exc:
+                log.warning("取附件失败（这一张跳过）：%s", exc.message)
+                continue
+            if data:
+                parts.append(BinaryContent(data=data, media_type=mime))
+        return parts
 
     # ---------------- 收尾 ----------------
     @staticmethod

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic_ai import Agent
@@ -19,6 +20,18 @@ from backend.agent.runtime import build_model, model_settings_from
 from backend.core.logging import get_logger
 
 log = get_logger(__name__)
+
+#: 摘要里**不允许**出现 `[n]` 引用编号（见 `COMPRESS_INSTRUCTIONS` 第 1 条）。
+#: 为什么在出口兜住而不是只写进提示词：实测模型偶发不遵守（自检里抓到过一次 `[1]`），
+#: 而编号跨轮是**真的会点错地方**（`[1]` 在新的一轮指的是另一篇/另一块）。
+_REF_MARK = re.compile(r"\s*\[\d{1,3}\]")
+
+
+def strip_ref_marks(text: str) -> str:
+    """去掉摘要里的 `[n]` 编号，并把留下的双空格收一收。"""
+    out = _REF_MARK.sub("", text or "")
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"[ \t]+(\n)", r"\1", out).strip()
 
 COMPRESS_INSTRUCTIONS = """你在整理一段论文问答对话，把它压缩成一份**要点笔记**，
 供后续继续对话时当作背景。
@@ -53,7 +66,10 @@ async def compress(cfg, host: HostClient, payload: dict[str, Any]) -> dict:
                   instructions=COMPRESS_INSTRUCTIONS,
                   model_settings=model_settings_from(model_cfg.get("parameters") or {}))
     result = await agent.run(f"以下是问答记录：\n\n{transcript}")
-    summary = (result.output or "").strip()
+    raw = (result.output or "").strip()
+    summary = strip_ref_marks(raw)
+    if summary != raw:
+        log.info("摘要里的 [n] 编号已剥掉（模型偶发不遵守，见 strip_ref_marks）")
     usage: dict = {}
     try:
         snapshot = result.usage()

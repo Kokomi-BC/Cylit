@@ -16,12 +16,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -614,6 +617,229 @@ def check_chat(base: str, paper: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# ⑧ 对话数据面：图片附件 / 多模态 / 列表分类 / 批量管理 / 分叉
+# --------------------------------------------------------------------------
+
+#: 16x16 的真 PNG（红底 + 蓝方块）：图片问答那一节断言"回答里出现红与蓝"用的就是它。
+CHECK_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAALElEQVR4nGO8IyfHQApgIkk1"
+    "Az00sCBzLOT2YVV04pETHZ3ENBI1MA6DtAQA8VYFUbO5ASoAAAAASUVORK5CYII=")
+#: 图片问答那一轮的问题（下面"搜索命中正文"用的是它里面的**独特片段**，
+#: 所以两者必须一起改 —— 之前就出现过改了问题忘了改搜索词，白挂一条 FAIL）。
+IMG_QUESTION = "这张图里有什么颜色？请说出颜色名称。"
+IMG_SEARCH = "请说出颜色名称"
+#: 魔数像 PNG、内容却是断的：用来验证"坏图在上传口就被挡掉"
+BROKEN_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/"
+    "q842iQAAAABJRU5ErkJggg==")
+
+
+def post_files(url: str, files: list[tuple[str, str, bytes, str]],
+               timeout: float = 60.0):
+    """multipart/form-data 上传（`urllib` 没有内置的，手拼一遍就够）。
+
+    ``files`` = ``[(字段名, 文件名, 内容, MIME)]``。
+    """
+    boundary = "----agentcheck" + uuid.uuid4().hex
+    parts: list[bytes] = []
+    for field, name, data, mime in files:
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+            f'filename="{name}"\r\nContent-Type: {mime}\r\n\r\n'.encode("utf-8"))
+        parts.append(data)
+        parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _status_of(url: str) -> int:
+    """只取状态码（4xx 也算"拿到了"）。"""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def check_threads(base: str, paper: str) -> None:
+    """⑧ 图片附件与多模态 / 会话列表搜索与分类 / 批量删 / 分叉。"""
+    print("\n" + "=" * 78)
+    print("⑧ 对话数据面：图片附件 + 多模态 + 列表分类 + 批量管理 + 分叉")
+    print("=" * 78)
+    api = f"{base}/api/v1/agent"
+
+    # ---- A. 附件：上传 / 取回 / 挡坏图 / 挡非图 ----
+    try:
+        up = post_files(f"{api}/attachments", [
+            ("files", "check-red-blue.png", CHECK_PNG, "image/png"),
+            ("files", "check-copy.png", CHECK_PNG, "image/png"),
+        ])["data"]
+    except Exception as exc:  # noqa: BLE001
+        record("attach", "图片可以上传（一次多张）", False, f"{type(exc).__name__}: {exc}")
+        return
+    items = up.get("items") or []
+    record("attach", "图片可以上传（一次多张）", len(items) == 2,
+           f"count={up.get('count')} 名字={[i.get('name') for i in items]}")
+    if not items:
+        return
+    aid = items[0].get("attachment_id")
+    record("attach", "上传回的是可访问地址 + 元数据",
+           bool(items[0].get("url")) and items[0].get("mime") == "image/png"
+           and int(items[0].get("bytes") or 0) > 0,
+           f"url={items[0].get('url')} bytes={items[0].get('bytes')}")
+    try:
+        with urllib.request.urlopen(f"{base}{items[0]['url']}", timeout=30) as resp:
+            raw = resp.read()
+        record("attach", "取回的就是原图（PNG 魔数 + 字节数一致）",
+               raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) == int(items[0]["bytes"]),
+               f"{len(raw)} 字节 / {resp.headers.get('content-type')}")
+    except Exception as exc:  # noqa: BLE001
+        record("attach", "取回的就是原图（PNG 魔数 + 字节数一致）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    for label, payload, want in (
+        ("坏图（魔数像 PNG、内容断了）在上传口就被挡掉",
+         [("files", "broken.png", BROKEN_PNG, "image/png")], "图"),
+        ("非图片被拒（只收 PNG/JPEG/WebP/GIF）",
+         [("files", "note.txt", b"hello", "text/plain")], "格式"),
+    ):
+        try:
+            post_files(f"{api}/attachments", payload)
+            record("attach", label, False, "竟然过了")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "ignore")
+            record("attach", label, exc.code == 400 and want in detail, f"HTTP {exc.code} {detail[:90]}")
+        except Exception as exc:  # noqa: BLE001
+            record("attach", label, False, f"{type(exc).__name__}: {exc}")
+    record("attach", "不存在的附件 → 404", _status_of(f"{api}/attachments/{'0' * 32}") == 404, "")
+    record("attach", "附件 id 不是路径（穿越 id 直接 404）",
+           _status_of(f"{api}/attachments/..%2F..%2Fsecrets%2Fagent.token") == 404, "")
+
+    # ---- B. 多模态：图片直接进问答模型 ----
+    try:
+        run = ask(base, paper, IMG_QUESTION, extra={"attachments": [aid]})
+    except Exception as exc:  # noqa: BLE001
+        record("attach", "图片问答可跑", False, f"{type(exc).__name__}: {exc}")
+        return
+    done = run["done"] or {}
+    answer = done.get("answer") or ""
+    sources = [e["data"].get("content_source") for e in run["events"] if e["type"] == "session"]
+    record("attach", "图片走多模态（content_source=image）", sources == ["image"],
+           f"content_source={sources}")
+    record("attach", "模型真的读到了图（红 + 蓝）",
+           ("红" in answer) and ("蓝" in answer), f"回答={answer[:70]!r}")
+    record("attach", "引导语没被抄进回答（图片说明放在 system 侧）",
+           ("本轮" not in answer) and ("用户自己给的材料" not in answer),
+           f"回答={answer[:70]!r}")
+
+    conv = done.get("conversation_id")
+    if not conv:
+        record("attach", "图片问答落库", False, "done 里没有 conversation_id")
+        return
+    try:
+        data = get_json(f"{api}/conversations/{conv}")["data"]
+        first = (data.get("messages") or [{}])[0]
+        record("attach", "附件元数据留在用户消息上（可重放 / 可重新生成）",
+               len(first.get("attachments") or []) == 1,
+               f"{(first.get('attachments') or [{}])[0].get('name')}")
+    except Exception as exc:  # noqa: BLE001
+        record("attach", "附件元数据留在用户消息上（可重放 / 可重新生成）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    # ---- C. 列表：搜索 + 分类 ----
+    try:
+        all_items = get_json(f"{api}/conversations?limit=100")["data"]["items"]
+        sel_items = get_json(f"{api}/conversations?kind=selection&limit=100")["data"]["items"]
+        nor_items = get_json(f"{api}/conversations?kind=normal&limit=100")["data"]["items"]
+        hit = get_json(f"{api}/conversations?q={urllib.parse.quote(IMG_SEARCH)}")["data"]["items"]
+        record("list", "分类按「有没有划词消息」自动判定",
+               all(bool(c.get("has_selection")) for c in sel_items)
+               and all(not c.get("has_selection") for c in nor_items)
+               and len(sel_items) + len(nor_items) == len(all_items),
+               f"全部 {len(all_items)} = 划词 {len(sel_items)} + 常规 {len(nor_items)}")
+        record("list", "搜索命中消息正文（不只搜标题）",
+               any(c.get("conversation_id") == conv for c in hit),
+               f"搜「{IMG_SEARCH}」→ {len(hit)} 条")
+    except Exception as exc:  # noqa: BLE001
+        record("list", "分类按「有没有划词消息」自动判定", False, f"{type(exc).__name__}: {exc}")
+
+    # ---- D. 分叉：重新生成 / 编辑提问 / 切换分支 ----
+    try:
+        data = get_json(f"{api}/conversations/{conv}")["data"]
+        msgs = data.get("messages") or []
+        ask_msg = next(m for m in msgs if m["role"] == "user")
+        ans_msg = next(m for m in msgs if m["role"] == "assistant")
+    except Exception as exc:  # noqa: BLE001
+        record("branch", "分叉前置（拿到提问与回答）", False, f"{type(exc).__name__}: {exc}")
+        return
+
+    try:
+        ask(base, paper, "", extra={"conversation_id": conv,
+                                    "regenerate_from": ans_msg["message_id"]})
+        after = get_json(f"{api}/conversations/{conv}")["data"]
+        answers = [m for m in (after.get("messages") or []) if m["role"] == "assistant"]
+        record("branch", "重新生成 = 同父下挂兄弟（不删原来那条）",
+               len(answers) == 1 and len(answers[0].get("siblings") or []) == 2
+               and answers[0].get("sibling_index") == 2,
+               f"可见回答 {len(answers)} 条，兄弟 "
+               f"{len((answers[0].get('siblings') if answers else []) or [])} 个，"
+               f"当前第 {(answers[0].get('sibling_index') if answers else '?')} 个")
+        # 会话接口只回**当前分支**，"另一条还在"没法直接读；真正的证据是下面"能切回去"那一条
+        record("branch", "重新生成不改变可见对话的长度（仍是一问一答）",
+               len(after.get("messages") or []) == 2,
+               f"可见 {len(after.get('messages') or [])} 条")
+    except Exception as exc:  # noqa: BLE001
+        record("branch", "重新生成 = 同父下挂兄弟（不删原来那条）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    try:
+        post_json(f"{api}/conversations/{conv}/branch",
+                  {"message_id": ans_msg["message_id"]})
+        back = get_json(f"{api}/conversations/{conv}")["data"]
+        answers = [m for m in (back.get("messages") or []) if m["role"] == "assistant"]
+        record("branch", "切分支 = 只挪 head（切回原来那条）",
+               len(answers) == 1 and answers[0]["message_id"] == ans_msg["message_id"],
+               f"可见回答 {len(answers)} 条（另一条没被删，否则这里会 404）")
+    except Exception as exc:  # noqa: BLE001
+        record("branch", "切分支 = 只挪 head（切回原来那条）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    try:
+        ask(base, paper, "换一个问法：这幅图的主色调是什么？",
+            extra={"conversation_id": conv, "edit_of": ask_msg["message_id"]})
+        after = get_json(f"{api}/conversations/{conv}")["data"]
+        users = [m for m in (after.get("messages") or []) if m["role"] == "user"]
+        record("branch", "编辑提问 = 挂在原提问的父下面（成为兄弟）",
+               len(users) == 1 and len(users[0].get("siblings") or []) == 2
+               and "换一个问法" in (users[0].get("content") or ""),
+               f"可见提问 {len(users)} 条，兄弟 {len((users[0].get('siblings') if users else []) or [])} 个")
+        record("branch", "编辑后的提问不带旧的划词引用",
+               ">" not in (users[0].get("content") or "") if users else False,
+               f"{(users[0].get('content') if users else '')!r}")
+    except Exception as exc:  # noqa: BLE001
+        record("branch", "编辑提问 = 挂在原提问的父下面（成为兄弟）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    # ---- E. 批量管理（顺手把这一节造出来的会话清掉）----
+    try:
+        res = post_json(f"{api}/conversations/batch-delete", {"conversation_ids": [conv]})["data"]
+        gone = _status_of(f"{api}/conversations/{conv}")
+        record("list", "批量删除真的删了（会话与消息一起）",
+               conv in (res.get("deleted") or []) and gone == 404,
+               f"deleted={res.get('deleted')} 消息 {res.get('messages')} 条，再取 → HTTP {gone}")
+    except Exception as exc:  # noqa: BLE001
+        record("list", "批量删除真的删了（会话与消息一起）", False, f"{type(exc).__name__}: {exc}")
+    record("list", "批量删空的 / 不存在的 id 不报错",
+           post_json(f"{api}/conversations/batch-delete",
+                     {"conversation_ids": []})["data"].get("deleted") == [], "")
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent 问答链路自检")
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -640,6 +866,7 @@ def main() -> int:
         check_figure(base, paper, projections)
         check_p1(base, paper)
         check_chat(base, paper)
+        check_threads(base, paper)
 
     print("\n" + "=" * 78)
     total = len(results)

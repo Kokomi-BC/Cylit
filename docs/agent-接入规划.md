@@ -38,7 +38,7 @@ python scripts/agent_check.py        # 自检（--quick 不调模型）
 | DeepSeek function calling | **已实测可用**（`scripts/probe_agent_tools.py` 11/11：非流式、流式事件、思考模式三条路都调得动工具） |
 | 部署形态 | 已定**Windows 原生 + 自写只读 workspace**（§5.3），为将来 Electron 打包留路 |
 | P0 实现 | ✅ 服务骨架 / 6 读工具 / 档案预注入 / 证据闸 / 引用链 / SSE / 单轮落库 |
-| P0 未含 | 多轮压缩与追问建议（P1）、写工具（P2） |
+| P0 未含 | 写工具（P2）、追问建议（**已决定不做**，见 §10.3） |
 
 ---
 
@@ -83,7 +83,7 @@ python scripts/agent_check.py        # 自检（--quick 不调模型）
 ### 2.2 缺口（✅ = P0 已补）
 
 1. ✅ **无多轮会话** → 表已建（`conversation` / `conversation_message`，树形 `parent_id` + `head_id`），
-   单轮已落库；**压缩与追问建议**留 P1。
+   单轮已落库；**多轮压缩、树分叉、图片多模态**都已在 P1 落地（见 §13）。
 2. ✅ **无引用编号与清洗** → `RefRegistry` + `StreamingAnswerSanitizer`（§8）。
 3. ✅ **无证据闸** → 编排层的硬护栏 + 低相关度软信号（§7.6）。
 4. **前端无问答 UI**：`/rag/query`、`/rag/query/stream` 前端零调用方（Agent 的 `/agent/ask` 也一样）→ P1。
@@ -104,7 +104,7 @@ python scripts/agent_check.py        # 自检（--quick 不调模型）
 | M5 | **清洗与流式一致**：内部 id 映射成 `[n]`，**映射不到的不动**；流式路径对累积原文批量清洗、只推安全前缀（guard 48 字符） | §8 |
 | M6 | **引用表只回正文真正引用过的**；区分"忘了标"（fallback）与"编造了"（不 fallback——凭空造依据比没依据更糟） | §8 |
 | M7 | **预算分离**：检索预算与计算预算分开扣；超预算硬收尾要带 `incomplete_reason` | §7.6 |
-| M8 | **落库顺序**：`done` 在落库之后发；**落库之后不再查 deadline**（否则已成功的 turn 被误报超时，用户重试就多一条）；追问建议排在落库后且失败不影响本轮 | §11 |
+| M8 | **落库顺序**：`done` 在落库之后发；**落库之后不再查 deadline**（否则已成功的 turn 被误报超时，用户重试就多一条） | §11 |
 
 ---
 
@@ -152,8 +152,12 @@ Agent 服务对外（主后端调用）：
 | GET | `/readyz` | 自检（含 skills 目录可读、模型配置可取） |
 
 主后端对外（前端调用）：`POST /api/v1/agent/ask`（转发 + SSE 直通）、
-`/api/v1/agent/conversations...`（会话 CRUD，**落主后端 MySQL**）、`GET /api/v1/agent/skills`、
-`GET /api/v1/agent/status`（服务在不在 + 用哪个模型，**不回密钥明文**）。
+`/api/v1/agent/conversations...`（会话 CRUD，**落主后端 MySQL**）、
+`POST /api/v1/agent/conversations/batch-delete`（一级页的批量管理）、
+`POST /api/v1/agent/conversations/{id}/branch`（切可见分支）、
+`POST /api/v1/agent/attachments` + `GET /api/v1/agent/attachments/{id}`（图片，张数不限）、
+`GET /api/v1/agent/skills`、`GET /api/v1/agent/status`（服务在不在 + 用哪个模型 + 运行限额，
+**不回密钥明文**）。
 
 **主后端给 agent 的只读投影**（都只认 `X-Internal-Token`，12 条）：
 
@@ -560,12 +564,18 @@ conversation_message(
   parent_id CHAR(36) NULL, seq INT,
   role ENUM('user','assistant','summary','tool'),
   content MEDIUMTEXT, citations_json JSON, tool_trace_json JSON,
+  attachments_json JSON,                       -- 用户上传/粘贴的图片（P1 追加）
   finish_reason VARCHAR(32), created_at)      -- stop / rounds_exhausted / cancelled / error
 ```
 
 **为什么是树**：`regenerate` 与"编辑提问"都是在同一父节点下挂兄弟节点；线性数组做不到，
 事后加会很痛。可见分支 = 从 `head_id` 沿 `parent_id` 回溯再反转（旧数据无 `parent_id`
 时退化为按 `seq` 串联）。
+
+**附件为什么不进库**：图片是二进制，存 BLOB 会把备份 / 迁移 / 只读投影一起拖下水。
+图落 `data/attachments/<日期>/<id>.<ext>`，消息行上只留一份元数据 JSON（名字 / 类型 / 字节数 / url）。
+元数据另存一份旁挂 `<id>.json` —— 重放历史要显示文件名，而文件名只在**上传那一刻**知道。
+id 只认 32 位十六进制：它是路径的一部分，不做白名单等于把任意路径读了出来。
 
 ### 10.2 记忆策略
 
@@ -577,17 +587,26 @@ conversation_message(
 |---|---|---|
 | 常驻窗口 | 最近 **12 轮**（约 24k tokens 量级） | 1M 上下文下没必要抠；12 轮之后再考虑压缩 |
 | 压缩触发 | **按预算**（历史 + 档案 + 本轮证据 > 200k tokens）而非按轮数 | 轮数不是成本，token 才是；1M 上下文下正常会话根本到不了 |
-| 摘要方式 | **抽取式**（不调模型） | 省一次往返，且不会把事实改写 |
-| 摘要内容 | 用户关注点 + **带 `[n]` 的结论行** + 证据清单 `[ref] p.N block_id snippet` | 保留可回溯性 |
+| 摘要方式 | **调一次模型**（不带工具的裸 agent，`output_type=str`） | 抽取式只能拿到句子，问答里的"结论"往往要跨段归纳；这一次调用的收益比它贵 |
+| 摘要内容 | 用户关注点 + 结论（**带「第 N 页 §X.X」定位、不带 `[n]`**）+ 尚未解决的点 | `[n]` 跨轮无效，写进摘要会让后续引用点错地方（出口还会 `strip_ref_marks` 兜一道） |
+| 自动压缩 | 上下文到 `agent_context_budget` 的 **85%** 时，下一轮提问**先自动压一次** | 不能指望用户盯着圆环；放在提问前而不是回答后，用户不会"先看它冲到 100 再归零" |
 | 单轮工具预算 | 证据 ≤12 条 / ≤24000 字符（`agent_evidence_*`） | 与上下文无关的闸：防止一次 `pages=all` 把整篇灌进来，也压住成本 |
 | 读页粒度 | `page_markdown_get` 支持 `"3-8"` / `"all"`（一次 ≤20 页） | 百万上下文下的直接收益：少几轮 tool call，而不是多塞几页 |
 
-P0 已按此接线（`history` 管道接通、预算项都在 `Settings`），**压缩与追问建议留 P1**。
+### 10.3 追问建议 —— **决定不做**（用户 2026-10-03 口径）
 
-### 10.3 追问建议
+原本 P1 计划里有一条"回答完之后给 3 条接着可以问什么"。实现过一版又**整块删掉**了，
+理由是用户点出来的两条，都成立：
 
-只在**有证据**时生成（有 citations 或成功的 tool_trace）；排在落库**之后**；
-任何异常吞掉返回 `[]`；deadline 剩不足 5s 不跑（M8）。做成设置项，默认开。
+1. **打不进缓存**：建议那一轮用的是**另一套 instructions**（不想让主对话的引用规则污染它），
+   与主对话的缓存前缀毫无重叠 —— 每轮都是一次冷启动，输入还要带上回答正文（≤6000 字）。
+   主对话本身靠自动前缀缓存很省，这笔钱花在最不该花的地方。
+2. **可以被连续对话取代**：深挖的入口本来就存在（接着问、目录、引用跳转）。追问 chip 更像
+   "教用户怎么提问"，属于锦上添花，不值得每轮一次 API。
+
+删掉的范围：`backend/agent/suggest.py`、`/v1/suggest`、主后端回答后的那一段、
+`conversation_message.suggestions_json`（连同已迁移的列一起 DROP）、前端建议 chips。
+**别再往回流**：要重新做的话，先回答"它凭什么比直接接着问更好"。
 
 ---
 
@@ -640,12 +659,12 @@ P0 已按此接线（`history` 管道接通、预算项都在 `Settings`），**
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
-| **P1** | ~~P1 工具面✅~~ + ~~前端入口✅（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ **自动压缩策略**（现在是手动点圆环） | 已达成：`frontend_check.py --chat` 6/6、`agent_check.py` 88/88；**剩下的是树分叉 / 追问建议 / 设置页卡片** | 3~5 天 |
+| **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~会话树分叉（`regenerate` / 编辑提问）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~；追问建议**决定不做**（§10.3） | ✅ `agent_check.py` **110/110**（⑧ 节新增对话数据面 20 项）、`frontend_check.py --chat` **120/120**（⑰ 节 17 项） | 完成 |
 | **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
 
 **P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
 不过 `history` 的管道**已经接通**（主后端把可见分支的历史传给 agent，agent 侧转成
-pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩、追问建议与树分叉。
+pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、树分叉与图片。
 **P0 刻意不含写工具**：它牵扯三条链（权威源 / 索引重建 / 重解析覆盖），
 放进 P0 等于第一版就带一个能改数据、又没被自检覆盖的入口。
 
@@ -681,12 +700,30 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩
 | A7 | SSE 单终态 | 整条流消费完 → 终态事件恰好 1 个 | ✅ |
 | A8 | 落库先于 done | 收到 `persisted=true` 后立刻查会话 → 助手消息已存在且带 `tool_trace` | ✅ |
 | A9 | scope 覆写 | 工具签名里**根本没有** `paper_id`（宿主经 deps 注入），配合固定 `scope="paper"` | ✅ 结构性保证 |
-| A10 | 引用跳转 | 前端探针（复用 `frontend_check.py` 的 `dom_probe`）：点引用 → 定位到页且高亮行存在 | ⏳ 等前端入口 |
+| A10 | 引用跳转 | 前端探针（`frontend_check.py --chat`）：回答下方渲染出可点 `[n] p3` chip | ✅ chip 渲染已断言；"点下去真的滚到那一行"仍靠人工 |
 | A11 | 档案预注入 | 档案含 `domain/outline/key_claims`；无索引但**有档案**的论文不进护栏 | ✅ |
 | A12 | 回答里的图片可用 | 问某页的图 → 正文含受控图片 URL（且**没有**外链图）；fetch → 200 + `image/png` | ✅ 实测取回 426KB PNG |
 | A13 | 搜索决定读哪页 | `tool_trace` 里 `paper_search` 在前、`page_markdown_get` 在后；检索返回含 `page_total` | ✅ |
 | A14 | 写工具默认不可见 | `/v1/skills` 不含 `formula-fix`，`tool_trace` 从未出现 `page_markdown_edit` | ✅ |
 | A15 | 写工具三件套（P2） | 修正一次 → ① markdown 与 block 都是新值；② 检索命中新内容；③ 该块带 `source=manual`；④ 撤销回旧值；⑤ chunk 总数与边界未变 | ⏳ P2 |
+
+**⑧ 对话数据面（P1 追加，2026-10-03）**
+
+| # | 断言 | 做法 | 结果 |
+|---|---|---|---|
+| B1 | 图片可上传（一次多张） | `POST /agent/attachments` 传两张 PNG → `count=2`，回 url + 元数据 | ✅ |
+| B2 | 取回的就是原图 | GET 那个 url → PNG 魔数 + 字节数与上传一致 | ✅ |
+| B3 | 坏图在上传口被挡 | 魔数像 PNG、内容断了的图 → HTTP 400（否则会在模型端变成 `400 unsupported image`） | ✅ 实测就是这条路径 |
+| B4 | 非图片被挡 / 不存在的 id 404 / 穿越 id 404 | 传 txt；`GET .../000…`；`GET .../..%2F..%2Fsecrets%2Fagent.token` | ✅ 全 404 / 400 |
+| B5 | 图片真进了问答模型 | `content_source=image` 且回答里出现图上的两种颜色 | ✅ |
+| B6 | 图片说明没被抄进回答 | 回答里不含「本轮」「用户自己给的材料」（说明放在 system 侧） | ✅ 踩过 |
+| B7 | 附件元数据留在用户消息上 | 重新读会话 → 那条 user 消息带 `attachments`（"重新生成"才能拿到当时的图） | ✅ |
+| B8 | 分类按"有没有划词消息"自动判定 | `kind=selection` 全为真、`kind=normal` 全为假、两者之和 == 全部 | ✅ |
+| B9 | 搜索命中消息正文 | 用只出现在问题里的词搜 → 命中该会话 | ✅ |
+| B10 | 重新生成 = 同父挂兄弟 | 重新生成后可见回答仍是 1 条、`siblings` 2 个、`sibling_index=2`，可见对话长度不变 | ✅ |
+| B11 | 切分支只挪 head | `POST /branch` 切回原来那条 → 可见回答就是它（没被删，否则 404） | ✅ |
+| B12 | 编辑提问挂在原提问的父下面 | 编辑**第一句** → 可见提问 1 条、`siblings` 2 个、内容是新问法、不带旧划词引用 | ✅ 抓到一个真 bug（见 dev-log 21） |
+| B13 | 批量删除真的删了 | 删掉该会话 → `deleted` 含它、再 GET 404；空 id 数组不报错 | ✅ |
 
 **另外加了三条文档里没写、但真出过问题的断言**：
 
@@ -701,16 +738,40 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩
 ## 16. 前端接入（P1 已落地）
 
 **侧栏第二个页签就是「对话」**（紧跟「目录」，用户口径）。点它会把左栏放宽到 420px
-（默认 300 会把消息挤成竖排），面板自上而下三段：会话条 / 消息流 / 输入区。
+（默认 300 会把消息挤成竖排）。面板是**两级**的：
+
+- **一级 = 会话列表**（进面板先看到它）：搜索框（标题 + **消息正文**）、分类胶囊
+  （全部 / 划词 / 常规）、范围切换（本论文 / 全部）、管理模式（多选 + 全选 + 批量删除）、
+  行内重命名与删除；加号是主题色实心圆钮。
+- **二级 = 会话正文**：消息流 / 输入区，头部是「返回 + 标题 + 改名 + 删除 + 新建」。
 
 | 能力 | 做法 |
 |---|---|
-| **多会话** | 会话条左侧是当前会话标题（点开是列表：标题 / 条数 / 时间 / 删除）；「＋」新建。会话按论文归属，进面板先给**最近一次会话**（用户大多想接着上次问） |
+| **分类（划词 / 常规）** | 后端按"会话里有没有 `> 引用` 开头的用户消息"**自动打标**（`has_selection`），不引入用户要维护的标签体系 |
 | **流式** | `api/stream.ts` 的 `postSse()`（fetch + ReadableStream 手解 SSE 帧）。**不用 `EventSource`**：它只能 GET，而问题/选区/会话 id 都在 body 里 |
 | **引用** | 回答下方是可点 chip（`[n] p3`）；点击跳阅读器那一行。**流式期间的 `citation` 事件只作过程展示**，`done` 之后重拉一次会话（编号在 `done` 阶段被压成 1..M，见 §8 第 4 条），不做增量合并 |
-| **圆环 = 压缩** | 圆环显示 `usage.percent`（token 估算 / `agent_context_budget`），点它 = `POST /agent/conversations/{id}/compress` |
-| **划词解释** | 浮动卡片；**由 agent 产出**（`/agent/ask` + `selection`，流式），卡片里是一个小对话线程：可以就这段继续追问（同一 conversation_id），也能「在对话里继续」把选区带进侧栏面板 |
+| **图片** | 输入区左侧加号 / 直接**粘贴** / 拖进面板，三种入口同一个上传口（`POST /agent/attachments`，**张数不限**）。缩略图带删除；发出的那一轮图片留在气泡上，可点开原图 |
+| **分叉** | 用户消息 hover → 复制 / 编辑（编辑 = 新提问挂到原提问的**父**下面）；助手消息 hover → 复制 / 重新生成。有兄弟时消息上方出现 `◀ 2/3 ▶`，点它 `POST /conversations/{id}/branch` 只挪 `head`，一条消息都不删 |
+| **圆环 = 压缩** | 圆环显示 `usage.percent`（token 估算 / `agent_context_budget`），点它 = `POST /agent/conversations/{id}/compress`；到 85% 时后端会**自动**先压一次 |
+| **空态文案** | 从「与大肥鱼一起讨论《论文名》」/「… XX 的实现」/「… XX 为什么有效」/… 里**随机取一条**（XX 由标题与标签现抽关键词），点一下填进输入框，旁边有「换一条」 |
+| **划词解释** | 浮动卡片；**由 agent 产出**（`/agent/ask` + `selection`，流式），卡片里是一个小对话线程：可以就这段继续追问（同一 conversation_id），也能「在对话里继续」把选区带进侧栏面板（面板会**自动切到二级页**——一级页没有输入框，留在那儿用户会以为没反应） |
 | **划词历史** | 「历史解释（N）」= `source=selection` 的批注（「存为批注」存下来的那些），点一条即可回看 |
+
+**输入框文案就是「请输入问题」**，加号按钮用主题色（`--accent`，自检里拿 `--accent`
+的计算值直接比）。文字行一律走 `mdToHtml`，划词消息的 `> 引用` 单独排版成左侧竖条。
+
+**图片是"多模态直喂"**：`runtime._user_prompt()` 把附件取成 `BinaryContent` 拼进
+user prompt（pydantic-ai 的 OpenAI 适配层会编成 `image_url` 的 data URI）。
+实测 `deepseek-flash` 读得懂图。**张数不限**指的是上传不限，单轮进模型的张数有闸
+（`agent_attachment_inline_limit`，默认 12）：超出的图仍留在会话里，下一轮还能用。
+
+**图片说明写在 system 侧，不是 user prompt 里**：踩过一次 —— 把"这几张图是用户给的、
+别当成论文正文"写在 user prompt 的括号里，模型会**把这句说明原样抄进回答**。
+放进 system 侧就没有这个问题（那里的文字是规则，不是"用户说的话"）。
+
+**坏图在上传口就挡掉**：魔数像 PNG、内容却是断的图，能过嗅探、能落盘，然后在**模型端**
+变成 `ModelHTTPError 400 ... unsupported image` —— 用户看到的是"模型报错"，而不是"这张图坏了"。
+所以 `attachments.save()` 除了嗅探还会用 PIL `verify()` 真解一次。
 
 **划词的锚点是 `row_id` 不是 `block_id`**：阅读器划词拿到的是**正文行 id**（`p004-02`），
 而块是解析产物那套命名空间。agent 侧 `runtime._block_of_row()` 按"行 id 里的页号 → 那一页的块列表"
@@ -720,7 +781,7 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩
 与 `annotation_service.explain_selection` 一起移除；`/annotations/save` 保留 —— 它现在是"把 agent
 给出的解释记成批注"的写入端，也就是划词历史的来源。
 
-**压缩 = 多出来的一轮会话**（用户点圆环触发）：
+**压缩 = 多出来的一轮会话**（用户点圆环触发，或超预算自动触发）：
 
 1. 主后端取可见分支的对话（**含上一次的摘要**，压缩是可累加的），调 agent `POST /v1/compress`
    （一个不带工具的裸 agent，`output_type=str`）；
@@ -729,7 +790,15 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩
    `conversation_usage()` 同样只统计摘要之后的部分 → 圆环归零。
 
 摘要提示词要求**保留出处**（写成「第 N 页 §X.X」）但**不许带 `[n]` 编号** —— 编号只对原来那一轮有效，
-写进摘要会让后续引用点到错的地方（自检里有这条断言）。
+写进摘要会让后续引用点到错的地方。提示词说了模型也会偶发不遵守（自检抓到过一次 `[1]`），
+所以出口还有 `compress.strip_ref_marks()` 兜一道。
+
+**设置页「论文问答」卡片**（`components/settings/AgentModelPanel.vue`）：服务状态、
+问答模型（模型名 / provider / 密钥 / 参数摘要 / **是否回落到 generation**）、视觉模型
+（说明"对话图片走问答模型、不走它"）、运行限额（轮数 / 检索预算 / 上下文预算 /
+自动压缩触发线 / 单轮送图上限）。这一区**只读 + 指路** —— 真正的编辑入口在「模型」页
+（密钥、测试连接、预设都在那儿），复制一份表单过来只会让两处状态打架。
+`ModelsView` 的类型表也补了 `agent`（"论文问答"），否则用户没法给问答单独注册模型。
 
 ---
 
