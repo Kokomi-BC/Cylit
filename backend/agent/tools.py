@@ -22,6 +22,9 @@ from pydantic_ai.messages import BinaryContent, ToolReturn
 from backend.agent.citations import Citation
 from backend.agent.deps import Deps
 from backend.agent.host import HostError
+from backend.core.logging import get_logger
+
+log = get_logger(__name__)
 
 #: 一次 `paper_search` 最多返回几条（模型爱传 top_k=10，宿主必须自己封顶）
 SEARCH_MAX = 12
@@ -334,58 +337,77 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
 
 
 async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
-    """列出某一页的插图（图号、图注、可嵌入的受控图片地址）。
+    """列出某一页的**插图与表格**（编号、图注、可嵌入的受控图片地址）。
 
-    什么时候用：要回答"图 3 画了什么 / 这张图说明了什么"之前，先看这一页有哪些图。
+    什么时候用：要回答"图 3 画了什么 / 表 1 的数字是多少"之前，先看这一页有哪些图形区域。
+    **表格也在这里**：解析出的表格正文经常把单元格粘成一串（`1645.2945.16`），
+    拿数字要用 kind="table" 那条的 index 去 figure_image_get 看表图。
 
     参数：
-      page —— 页码。不知道图在哪一页就先 paper_search（图注文字通常搜得到）。
+      page —— 页码。不知道图/表在哪一页就先 paper_search（图注文字通常搜得到）。
     """
     async def _impl() -> dict:
         data = await ctx.deps.host.figures(ctx.deps.paper_id, int(page))
         items = []
         for fig in data.get("items") or []:
             url = fig.get("url") or ""
+            kind = str(fig.get("kind") or "figure")
+            label = ("表 " if kind == "table" else "图 ") + str(fig.get("number") or "?")
             cit = ctx.deps.registry.assign(
-                key=f"figure:{page}:{fig.get('index')}", kind="figure", page=int(page),
+                key=f"figure:{page}:{fig.get('index')}", kind=kind, page=int(page),
                 snippet=_clip(fig.get("caption") or ""),
                 image_urls=[url] if url else [],
-                label=f"第 {page} 页 · 图 {fig.get('number') or '?'}")
+                label=f"第 {page} 页 · {label}")
             items.append({
-                "ref": cit.ref, "index": fig.get("index"),
+                "ref": cit.ref, "index": fig.get("index"), "kind": kind,
                 "number": fig.get("number") or "", "caption": _clip(fig.get("caption") or ""),
                 "image_url": url,
             })
         out = {"page": int(page), "returned": len(items), "items": items}
         if not items:
-            out["hint"] = "这一页没有插图（或图注没被识别）。可以换一页，或直接用 page_image_get 看版面。"
+            out["hint"] = "这一页没有插图或表格（或图注没被识别）。可以换一页，或直接用 page_image_get 看版面。"
         else:
-            out["hint"] = ("要在回答里配图，就把 image_url **逐字**写进 "
-                           "![简短说明](image_url)；不要改写、拼接或换成别的地址。")
+            out["hint"] = ("看内容用 figure_image_get(page, index)；要在回答里配图，就把 image_url "
+                           "**逐字**写进 ![简短说明](image_url)，不要改写、拼接或换成别的地址。")
         return out
 
     return await _guarded(ctx, "figure_list", {"page": page}, _impl())
 
 
 async def figure_image_get(ctx: RunContext[Deps], page: int, index: int):
-    """取一张插图的裁图（按图注锚定重新裁剪，600dpi）交给视觉模型看。
+    """取一页里某个图形区域的裁图（插图或**表格**，按图注锚定 600dpi）交给视觉模型看。
 
-    什么时候用：回答涉及图里的具体细节（曲线趋势、结构图、示意流程）时。
+    什么时候用：回答涉及图里的具体细节（曲线趋势、结构图）或**表格里的数字**时。
+    表格的数字**不要**从 page_markdown_get 的正文里抄 —— 单元格常常粘在一起。
 
     参数：
       page  —— 页码。
-      index —— ``figure_list`` 返回的 index（**不是**图号）。
+      index —— ``figure_list`` 返回的 index（**不是**图号/表号）。
     """
     async def _impl():
         raw, media = await ctx.deps.host.figure_image(ctx.deps.paper_id, int(page),
                                                       int(index))
         if not raw:
-            return {"ok": False, "error": "取不到这张插图。"}
-        cit = ctx.deps.registry.assign(key=f"figure_img:{page}:{index}", kind="figure",
+            return {"ok": False, "error": "取不到这个区域的裁图。"}
+        kind, number = "figure", ""
+        try:                                   # 顺手取编号，让 ref 的标题写成"表 1"而不是"插图 #0"
+            data = await ctx.deps.host.figures(ctx.deps.paper_id, int(page))
+            hit = next((i for i in (data.get("items") or [])
+                        # ⚠️ 别写 `i.get("index") or -1`：序号 0 是 falsy，会被吃成 -1，
+                        # 于是第 0 个区域永远匹配不上（踩过：表 1 的 ref 标题退回"图 #0"）
+                        if i.get("index") is not None
+                        and int(i["index"]) == int(index)), None)
+            if hit:
+                kind = str(hit.get("kind") or "figure")
+                number = str(hit.get("number") or "")
+        except Exception as exc:  # noqa: BLE001 —— 拿不到编号不影响看图
+            log.debug("取区域编号失败（不影响看图）：%s", exc)
+        what = ("表 " if kind == "table" else "图 ") + (number or f"#{index}")
+        cit = ctx.deps.registry.assign(key=f"figure_img:{page}:{index}", kind=kind,
                                        page=int(page),
-                                       snippet=_clip(f"第 {page} 页插图 #{index}"),
-                                       label=f"第 {page} 页 · 插图")
-        note = f"已附上第 {page} 页的插图 #{index}（ref={cit.ref}）。"
+                                       snippet=_clip(f"第 {page} 页 · {what}"),
+                                       label=f"第 {page} 页 · {what}")
+        note = f"已附上第 {page} 页的{what}（ref={cit.ref}）。"
         return ToolReturn(return_value=note, content=[note,
                           BinaryContent(data=raw, media_type=media or "image/png")])
 

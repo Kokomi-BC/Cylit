@@ -161,8 +161,9 @@ onMounted(load);
           <div class="kv"><span class="k">单轮送图上限</span><span class="v mono">{{ limits.attachment_inline_limit }} 张</span></div>
         </div>
         <p class="tiny faint">
-          上下文用到预算的 {{ limits?.auto_compress_percent ?? 85 }}% 时，下一轮提问会先自动把已谈过的内容
+          上下文用到预算的 {{ limits?.auto_compress_percent ?? 90 }}% 时，下一轮提问会先自动把已谈过的内容
           压成一份要点（多出一轮「已压缩」，原文仍可回看），用户不用自己盯圆环。
+          对话本身**不限制轮数**：没到这条线就一直带着完整上下文。
           单轮送图上限只影响"一次送进模型几张"：上传不受限，超出的图仍留在会话里。
         </p>
       </div>

@@ -174,7 +174,8 @@ class Settings(BaseSettings):
     agent_attachment_inline_limit: int = 12
     #: **超预算自动压缩**的触发线（占 `agent_context_budget` 的百分比）。
     #: 到线之后下一轮提问会先自动压一次（多一轮 summary），用户不用自己盯圆环。
-    agent_auto_compress_percent: float = 85.0
+    #: 用户口径（2026-10-03）：**不限制轮数**，只在这条线附近压 —— 所以 85 → 90。
+    agent_auto_compress_percent: float = 90.0
 
     # ------------------------------------------------------------------
     @field_validator("data_dir", mode="after")

@@ -337,23 +337,28 @@ def _paired_zh_previews_one(paper_id: str, items: list[dict]) -> dict[str, str]:
 
 
 def figures(paper_id: str, page: int | None = None) -> dict:
-    """某一页的插图清单（图号 / 图注 / 可嵌入地址 / 区域序号）。
+    """某一页的**图形区域**清单：插图与表格（图号 / 图注 / 可嵌入地址 / 区域序号）。
 
     ``index`` 是 `page_regions` 里的**区域序号**，`figure_image_get` 要的就是它。
-    这里靠"过滤前后顺序一致"把它对齐回 `media_of_page` 的输出 —— 所以 url 仍然只由
-    `media_of_page` 生成，版本串 `v=` 不会被这里绕过。
+    url 仍然只由 `media_of_page` 生成（版本串 `v=` 不会被这里绕过）；
+    这里**不按 kind 过滤**，所以位置序号天然等于区域序号。
+
+    **表格和插图走同一条路**（2026-10-03）：解析出来的表格正文经常把单元格粘成一串
+    （`1645.2945.16` 其实是 `16 | 45.29 | 45.16`），列对齐已经不可恢复 ——
+    而 `page_regions` 里表格本来就登记着区域 bbox，能按需裁一张 600dpi 的表图交给
+    视觉模型。以前只列 `kind == "figure"`，模型于是"知道这篇有表 1、却拿不到表"
+    （实测它退到整页 `page_image_get`，并在回答里抱怨工具够不到表格）。
     """
     from backend.services.paper import figure_regions
 
     paper_service.get_paper(paper_id)
     page_no = int(page or 1)
-    regions = figure_regions.page_regions(paper_id, page_no)
-    indices = [i for i, r in enumerate(regions) if r.get("kind") == "figure"]
-    media = figure_regions.media_of_page(paper_id, page_no, figures_only=True)
+    media = figure_regions.media_of_page(paper_id, page_no, figures_only=False)
     items: list[dict] = []
-    for pos, item in enumerate(media):
+    for index, item in enumerate(media):
         items.append({
-            "index": indices[pos] if pos < len(indices) else None,
+            "index": index,
+            "kind": str(item.get("kind") or "figure"),
             "number": item.get("number") or "",
             "caption": _clip(item.get("caption") or "", 400),
             "url": item.get("url") or "",

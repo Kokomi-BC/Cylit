@@ -205,6 +205,31 @@ def check_projections(base: str, paper: str) -> None:
         except Exception as exc:  # noqa: BLE001
             record("projection", label, False, f"{exc}")
 
+    # 表格必须能被 agent 拿到（2026-10-03）：模型抱怨过"知道这篇有表 1、却够不到表"——
+    # 表格正文里的单元格是粘连的（`1645.2945.16`），唯一的取数路径就是表图。
+    # 数据相关：这篇没有识别到表格就 SKIP（换一篇有表的论文再跑）。
+    label = "表格也在图形区域里（figure_list → 表图 URL 可取回）"
+    try:
+        hit = None
+        for n in range(1, 26):
+            data = get_json(f"{api}/papers/{paper}/figures?page={n}", head)["data"]
+            hit = next((it for it in (data.get("items") or [])
+                        if it.get("kind") == "table"), None)
+            if hit:
+                break
+        if hit is None:
+            skip(label, "这篇论文没有识别到表格")
+        else:
+            with urllib.request.urlopen(f"{base}{hit['url']}", timeout=120) as resp:
+                raw = resp.read()
+            record("projection", label,
+                   hit.get("index") is not None and raw.startswith(b"\x89PNG\r\n\x1a\n")
+                   and len(raw) > 4096,
+                   f"index={hit.get('index')} 表{hit.get('number')} "
+                   f"{len(raw) // 1024} KB PNG")
+    except Exception as exc:  # noqa: BLE001
+        record("projection", label, False, f"{exc}")
+
 
 # --------------------------------------------------------------------------
 # ③ 图片附件（免费：只走 HTTP，不打模型）
@@ -297,6 +322,19 @@ def check_conversations(base: str) -> None:
         record("conv", "搜索（标题 + 正文）能命中且无副作用", hit == [], f"搜不到 → {len(hit)} 条")
     except Exception as exc:  # noqa: BLE001
         record("conv", "搜索（标题 + 正文）能命中且无副作用", False, f"{exc}")
+
+    # 时间戳必须带 UTC 标记（用户 2026-10-03 报"对话显示时间不对"）：库里的 datetime 是
+    # UTC naive，前端 `new Date("...T16:24:16")` 会按**本地时区**解析 → 东八区显示成 8 小时前。
+    label = "会话时间带 UTC 标记（否则前端差一个时区）"
+    try:
+        rows = get_json(f"{api}/conversations?limit=5")["data"]["items"]
+        stamps = [str(c.get("updated_at") or c.get("created_at") or "") for c in rows]
+        if not stamps:
+            skip(label, "没有任何会话可比对")
+        else:
+            record("conv", label, all(s.endswith("Z") for s in stamps), f"例：{stamps[0]}")
+    except Exception as exc:  # noqa: BLE001
+        record("conv", label, False, f"{exc}")
 
     try:
         record("conv", "取不存在的会话 → 404",

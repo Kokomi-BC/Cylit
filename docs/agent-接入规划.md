@@ -345,8 +345,8 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 2 | `page_markdown_get` | 读 | 按 `pages` 取块级正文（`"5"` / `"3-8"` / `"all"`，一次 ≤20 页） | 新投影 `GET /agent/papers/{id}/pages` | P0 ✅ |
 | 3 | `block_get` | 读 | **按 `ref`** 展开单个块的原文 + 译文 + 公式 LaTeX | `GET /papers/{id}/blocks/{bid}`（ref→block_id 由宿主查表） | P0 ✅ |
 | 4 | `page_image_get` | 读 | 整页渲染成图喂视觉模型（`pages` + `dpi`，一次 ≤3 页） | `GET /agent/papers/{id}/pages/{n}/image?dpi=` | P0 ✅ |
-| 5 | `figure_list` | 读 | 该页插图清单（`index`/图号/图注/受控 URL/`ref`） | `figure_regions.media_of_page` | P0 ✅ |
-| 6 | `figure_image_get` | 读 | 单张插图裁图（600dpi 按需渲染） | `figure_regions.ensure_region_crop` | P0 ✅ |
+| 5 | `figure_list` | 读 | 该页**图形区域**清单：插图 + **表格**（`kind`/`index`/编号/图注/受控 URL/`ref`） | `figure_regions.media_of_page`（`figures_only=False`） | P0 ✅ |
+| 6 | `figure_image_get` | 读 | 单个区域的裁图（600dpi 按需渲染）—— **表里的数字只能走这条** | `figure_regions.ensure_region_crop` | P0 ✅ |
 | 7 | `kb_search` | 读 | 跨知识库检索（"我库里哪篇讲过 X"）：每条带 `paper_title` + `is_current_paper` | 新投影 `POST /agent/kb/search`（`scope="all"`） | P1 ✅ |
 | 8 | `formula_get` | 读 | 公式 LaTeX / 所在页 / 行锚点 / 上下文（可按页或关键词筛） | 新投影 `GET /agent/papers/{id}/formulas`（**与阅读器公式页签同一口径**） | P1 ✅ |
 | 9 | `translate_get` | 读 | 按页取中文译文（逐块带 ref） | 复用 `/agent/papers/{id}/pages?lang=zh` | P1 ✅ |
@@ -586,11 +586,11 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 
 | 项 | 值 | 理由 |
 |---|---|---|
-| 常驻窗口 | 最近 **12 轮**（约 24k tokens 量级） | 1M 上下文下没必要抠；12 轮之后再考虑压缩 |
+| 常驻窗口 | **预算内全给**（不按轮数截断） | 1M 上下文下没必要抠；以前固定 12 轮，聊久了模型会"看不见开头那几轮却不知道自己被截断"（用户口径 2026-10-03：不限制轮数） |
 | 压缩触发 | **按预算**（历史 + 档案 + 本轮证据 > 200k tokens）而非按轮数 | 轮数不是成本，token 才是；1M 上下文下正常会话根本到不了 |
 | 摘要方式 | **调一次模型**（不带工具的裸 agent，`output_type=str`） | 抽取式只能拿到句子，问答里的"结论"往往要跨段归纳；这一次调用的收益比它贵 |
 | 摘要内容 | 用户关注点 + 结论（**带「第 N 页 §X.X」定位、不带 `[n]`**）+ 尚未解决的点 | `[n]` 跨轮无效，写进摘要会让后续引用点错地方（出口还会 `strip_ref_marks` 兜一道） |
-| 自动压缩 | 上下文到 `agent_context_budget` 的 **85%** 时，下一轮提问**先自动压一次** | 不能指望用户盯着圆环；放在提问前而不是回答后，用户不会"先看它冲到 100 再归零" |
+| 自动压缩 | 上下文到 `agent_context_budget` 的 **90%** 时，下一轮提问**先自动压一次** | 不能指望用户盯着圆环；放在提问前而不是回答后，用户不会"先看它冲到 100 再归零"。**这是唯一的记忆收缩点**（不再有轮数截断） |
 | 单轮工具预算 | 证据 ≤12 条 / ≤24000 字符（`agent_evidence_*`） | 与上下文无关的闸：防止一次 `pages=all` 把整篇灌进来，也压住成本 |
 | 读页粒度 | `page_markdown_get` 支持 `"3-8"` / `"all"`（一次 ≤20 页） | 百万上下文下的直接收益：少几轮 tool call，而不是多塞几页 |
 

@@ -15,15 +15,14 @@ import uuid
 
 from backend.core.errors import NotFoundError
 from backend.core.logging import get_logger
-from backend.core.utils import json_dumps, json_loads, now
+from backend.core.utils import iso_utc, json_dumps, json_loads, now
 
 log = get_logger(__name__)
 
 #: 首条用户消息截多长当会话标题
 TITLE_CHARS = 40
-#: 发给 agent 的历史轮数上限（一轮 = 一问一答）。百万上下文下没必要抠，
-#: 超过这个量级该由用户点圆环压缩，而不是我们偷偷截断。
-HISTORY_TURNS = 12
+#: 单条消息的框架开销估算（角色标签 + 分隔符），参与历史预算扣减
+HISTORY_MESSAGE_OVERHEAD = 8
 
 
 def _row_to_message(row) -> dict:
@@ -37,7 +36,9 @@ def _row_to_message(row) -> dict:
         "thinking": row.thinking or "",
         "thinking_ms": int(row.thinking_ms or 0),
         "finish_reason": row.finish_reason,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        # 时间一律走 `iso_utc`（库里是 UTC naive）：直接 `.isoformat()` 会让前端按本地时区
+        # 解析，东八区里刚发的消息显示成"8 小时前"（用户 2026-10-03 报的"对话时间有问题"）
+        "created_at": iso_utc(row.created_at),
     }
 
 
@@ -45,8 +46,8 @@ def _row_to_conversation(row, *, messages: list[dict] | None = None) -> dict:
     data = {
         "conversation_id": row.id, "paper_id": row.paper_id, "title": row.title or "",
         "head_id": row.head_id,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": iso_utc(row.created_at),
+        "updated_at": iso_utc(row.updated_at),
     }
     if messages is not None:
         data["messages"] = messages
@@ -320,7 +321,8 @@ def branch_history(conversation_id: str, upto_id: str | None) -> list[dict]:
         return [_row_to_message(r) for r in chain]
 
 
-def history_for_agent(conversation_id: str, *, limit: int = HISTORY_TURNS) -> list[dict]:
+def history_for_agent(conversation_id: str, *,
+                      max_tokens: int | None = None) -> list[dict]:
     """给 agent 的历史（只保留 user/assistant 的正文，不含 tool/summary 之外的杂项）。
 
     **压缩边界**：从 `head` 往回走到最近一条 `summary` 就停 —— 那条摘要就是"之前所有对话"
@@ -329,21 +331,42 @@ def history_for_agent(conversation_id: str, *, limit: int = HISTORY_TURNS) -> li
 
     摘要本身**永远保留**（它可能是那批老内容的唯一记忆），轮数只裁摘要之后的对话。
     """
-    return history_from_chain(visible_messages(conversation_id), limit=limit)
+    return history_from_chain(visible_messages(conversation_id), max_tokens=max_tokens)
 
 
-def history_from_chain(chain: list[dict], *, limit: int = HISTORY_TURNS) -> list[dict]:
+def history_from_chain(chain: list[dict], *,
+                       max_tokens: int | None = None) -> list[dict]:
     """把一条可见链裁成给模型的历史（压缩边界同样落在最近一条 `summary` 上）。
 
     分叉（重新生成 / 编辑提问）走的就是这条：链换成"目标节点之前的那条"，
-    压缩边界与轮数裁剪的口径一个字都不改。
+    压缩边界与预算口径一个字都不改。
+
+    **按预算裁，不按轮数裁**（2026-10-03 改）：以前是固定 12 轮，一篇论文聊到第 13 个
+    问题，模型就再也看不到开头那几轮了 —— 而它自己**看不出来**自己被截断过，于是出现
+    "按最近两轮反推"这种答案（用户拿这个当"模型不认记忆"的证据）。预算由
+    `agent_context_budget` 决定，压缩（90% 触发线）才是唯一的记忆压缩点：压缩之后
+    历史自然变短，没到线就不该偷偷截。``max_tokens`` 只在测试/特殊场景覆盖默认预算。
     """
+    from backend.core.config import get_settings
+
     start = _summary_index(chain)
     active = chain[start:] if start >= 0 else chain
     head = [active[0]] if active and active[0]["role"] == "summary" else []
     turns = [m for m in active
              if m["role"] in ("user", "assistant") and (m.get("content") or "").strip()]
-    return [{"role": m["role"], "content": m["content"]} for m in head + turns[-limit * 2:]]
+    budget = int(max_tokens if max_tokens is not None
+                 else get_settings().agent_context_budget)
+    kept: list[dict] = []
+    used = 0
+    for item in reversed(turns):
+        cost = count_tokens(str(item.get("content") or "")) + HISTORY_MESSAGE_OVERHEAD
+        # 最近一轮**永远保留**：截掉它就等于这一轮没有上下文，比截断更糟
+        if kept and used + cost > budget:
+            break
+        kept.append(item)
+        used += cost
+    kept.reverse()
+    return [{"role": m["role"], "content": m["content"]} for m in head + kept]
 
 
 # --------------------------------------------------------------------------

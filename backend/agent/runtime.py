@@ -516,11 +516,51 @@ class AgentRuntime:
             if state.thinking and not state.thinking_ms:
                 state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
 
+    def _thinking_text(self, text: str | None, state: RunState) -> list[dict]:
+        """思维链增量（思考模式）。"""
+        if not text:
+            return []
+        state.thinking += text
+        return [{"type": "thinking_delta", "text": text,
+                 "ms": int((time.perf_counter() - state.model_t0) * 1000)}]
+
+    def _answer_text(self, text: str | None, state: RunState,
+                     sanitizer: StreamingAnswerSanitizer) -> list[dict]:
+        """正文增量：首次进正文时把思考阶段的跑表停下，其余交给清洗器。"""
+        if not text:
+            return []
+        out: list[dict] = []
+        if not state.answer_started:
+            state.answer_started = True
+            if state.thinking:
+                # 思考阶段到此为止：把**权威耗时**推给前端（让它把跑表停下），
+                # 前端自己那份计时只是"看得见的跑表"，以这条为准
+                state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
+                out.append({"type": "thinking", "status": "done",
+                            "ms": state.thinking_ms})
+        clean = sanitizer.feed(text)
+        if clean:
+            out.append({"type": "answer_delta", "text": clean})
+        return out
+
     def _translate(self, event: Any, deps: Deps, state: RunState,
                    sanitizer: StreamingAnswerSanitizer,
                    sent_refs: set[int]) -> list[dict]:
         """pydantic-ai 事件 → 我们的 SSE 事件（一个事件可能产出 0 条或多条）。"""
         name = type(event).__name__
+        # ⚠️ **新段的第一块内容装在 `PartStartEvent.part` 里**（不是 Delta）：框架建新
+        # `TextPart` 时直接 `TextPart(content=…)` 再 yield PartStartEvent，只认 Delta
+        # 事件就会把这整块吞掉 —— 表现是"工具调用之后那段回答缺开头"
+        # （实测把「表 1 里 TURBOQUANT…」吞成「 1 里 TURBOQUANT…」，另一轮吞掉「44」）。
+        # 思考段同理（`ThinkingPart(content=…)`）。
+        if name == "PartStartEvent":
+            part = getattr(event, "part", None)
+            kind = type(part).__name__
+            if kind == "ThinkingPart":
+                return self._thinking_text(getattr(part, "content", None), state)
+            if kind == "TextPart":
+                return self._answer_text(getattr(part, "content", None), state, sanitizer)
+            return []
         if name == "PartDeltaEvent":
             delta = getattr(event, "delta", None)
             kind = type(delta).__name__
@@ -528,30 +568,11 @@ class AgentRuntime:
             # 思维链当正文推给用户（实测：DeepSeek 思考模式的英文推理整段出现在回答开头）。
             # 所以这里**分两支**：思考走 `thinking_delta`（前端折叠显示），正文走 `answer_delta`。
             if kind == "ThinkingPartDelta":
-                text = getattr(delta, "content_delta", None)
-                if not text:
-                    return []
-                state.thinking += text
-                return [{"type": "thinking_delta", "text": text,
-                         "ms": int((time.perf_counter() - state.model_t0) * 1000)}]
+                return self._thinking_text(getattr(delta, "content_delta", None), state)
             if kind != "TextPartDelta":
                 return []
-            text = getattr(delta, "content_delta", None)
-            if not text:
-                return []
-            out: list[dict] = []
-            if not state.answer_started:
-                state.answer_started = True
-                if state.thinking:
-                    # 思考阶段到此为止：把**权威耗时**推给前端（让它把跑表停下），
-                    # 前端自己那份计时只是"看得见的跑表"，以这条为准
-                    state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
-                    out.append({"type": "thinking", "status": "done",
-                                "ms": state.thinking_ms})
-            clean = sanitizer.feed(text)
-            if clean:
-                out.append({"type": "answer_delta", "text": clean})
-            return out
+            return self._answer_text(getattr(delta, "content_delta", None), state,
+                                     sanitizer)
         if name == "FunctionToolCallEvent":
             part = getattr(event, "part", None)
             deps.note_model_call()

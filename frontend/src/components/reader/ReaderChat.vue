@@ -23,7 +23,7 @@ import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import { openTab } from '@/stores/tabs';
-import { debounce, fmtRelative, truncate } from '@/utils/format';
+import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
 import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentSelection,
@@ -819,7 +819,9 @@ watch(() => props.selection, (sel) => {
             <span class="row-title truncate" v-html="inlineHtml(c.title || '未命名对话')" />
             <span class="row-meta">
               <span v-if="c.kind === 'selection'" class="kd" title="划词对话"><AppIcon name="quote" :size="10" />划词</span>
-              <span class="tiny faint">{{ convCount(c) }} 条 · {{ fmtRelative(c.updated_at) }}</span>
+              <!-- 相对时间 + 精确时间 tooltip：相对时间会让人怀疑"是不是时区错了"，
+                   悬停给出本地绝对时间（与搜索历史面板同一个口径） -->
+              <span class="tiny faint" :title="fmtDate(c.updated_at)">{{ convCount(c) }} 条 · {{ fmtRelative(c.updated_at) }}</span>
             </span>
           </button>
 
@@ -1140,20 +1142,24 @@ watch(() => props.selection, (sel) => {
   font-size: 11px; color: var(--text-faint); letter-spacing: .02em;
 }
 .sum-card .md :deep(p) { margin: 3px 0; }
-.cites { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-.cite {
-  border: 1px solid var(--border); background: var(--bg-layer); color: var(--text-dim);
-  border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
-}
-.cite:hover { color: var(--accent-text); border-color: var(--accent); }
-/* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03） */
+/* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03）。
+   加粗 + 下划线是"这能点"的信号：正文是 400 字重的黑字，一个 700 字重、带下划线的
+   `[15]` 才不会读成"作者写的方括号编号"（论文自己的 `[12]` 与我们的 `[n]` 长得一样，
+   混起来用户会去点正文里的参考文献编号）。 */
 .cite-inline {
   border: 0; background: var(--accent-soft); color: var(--accent-text);
-  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1.5;
   padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  text-underline-offset: 2px; text-decoration-thickness: 1px;
   vertical-align: baseline; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.cite-inline:hover { background: var(--accent); color: var(--text-on-accent); }
+.cite-inline:hover {
+  background: var(--accent); color: var(--text-on-accent);
+  text-decoration-color: currentColor;
+}
+.cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
 .note { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); }
 .note .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);

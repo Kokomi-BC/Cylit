@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 class Citation:
     ref: int
     paper_id: str
-    kind: str                                   # page | block | chunk | figure
+    kind: str                                   # page | block | chunk | figure | table
     page: int | None = None
     section: str | None = None
     block_id: str | None = None
