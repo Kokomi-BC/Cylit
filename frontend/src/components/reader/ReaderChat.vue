@@ -85,7 +85,7 @@ const pending = ref<AgentAttachment[]>([]);
  *  - 右侧 ✕ = 整个移除。
  *  `include=false` 时胶囊照样显示（用户看得见自己选过什么），只是不随这轮发出去。 */
 const selCtx = ref<{ text: string; row_id: string | null; page: number | null;
-                     include: boolean } | null>(null);
+                     where: string; include: boolean } | null>(null);
 const uploading = ref(false);
 const loading = ref(false);
 const compressing = ref(false);
@@ -598,7 +598,11 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   const optimistic: AgentMessage | null = mode === 'send' ? {
     message_id: `local-${Date.now()}`, conversation_id: currentId.value ?? '', seq: 0,
     role: 'user',
-    content: selection ? `> ${selection.text.slice(0, 400)}\n\n${question || '解释这段内容'}` : question,
+    // 与后端 `api/agent.py` 落库时**同一个格式**（`> 〔第 4 页〕引用…`）：
+    // 位置是消息的一部分，刷新前后必须是同一句话。
+    content: selection
+      ? `> ${selection.where ? `〔${selection.where}〕` : ''}${selection.text.slice(0, 400)}\n\n${question || '解释这段内容'}`
+      : question,
     attachments: pending.value,
   } : null;
   if (optimistic) {
@@ -622,6 +626,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
       conversation_id: currentId.value,
       selection: selection ? {
         text: selection.text, row_id: selection.row_id ?? null, page: selection.page ?? null,
+        where: selection.where || null,        // 位置：落库正文与提示词都要用
       } : null,
       attachments,
       regenerate_from: mode === 'regen' ? target?.message_id : null,
@@ -779,7 +784,8 @@ watch(() => props.paperId, async () => {
 // 监听**对象本身**而不是文本：同一段文字连点两次也要能切过去。
 watch(() => props.selection, (sel) => {
   selCtx.value = sel?.text
-    ? { text: sel.text, row_id: sel.row_id ?? null, page: sel.page ?? null, include: true }
+    ? { text: sel.text, row_id: sel.row_id ?? null, page: sel.page ?? null,
+        where: sel.where ?? '', include: true }
     : null;
   if (sel?.text) {
     level.value = 'thread';
@@ -987,6 +993,8 @@ watch(() => props.selection, (sel) => {
                       ? '这段选中内容会随这条问题一起发出去（点一下改成不带）'
                       : '这段选中内容不会发出去（点一下改成带上）'">
               <AppIcon name="quote" :size="11" />
+              <!-- 位置摆前面（"第 4 页 · Markdown"）：光有原文，用户分不清自己选的是哪一段 -->
+              <span v-if="selCtx.where" class="sel-chip-where">{{ selCtx.where }}</span>
               <span class="truncate">{{ selCtx.text }}</span>
               <AppIcon :name="selCtx.include ? 'checkbox' : 'checkbox-off'" :size="12" />
             </button>
@@ -1035,7 +1043,7 @@ watch(() => props.selection, (sel) => {
               <span class="spacer" />
               <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
               <button v-else class="btn primary icon sm send" :disabled="!canSend" title="发送" @click="ask('send')">
-                <AppIcon name="forward" :size="15" />
+                <AppIcon name="arrow-up" :size="15" />
               </button>
             </div>
           </template>
@@ -1281,6 +1289,13 @@ watch(() => props.selection, (sel) => {
 }
 .sel-chip-main:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .sel-chip-main .truncate { flex: 1; min-width: 0; }
+/* 位置那一小段（"第 4 页 · Markdown"）：比正文小一号、后面一条细竖线隔开，
+   不抢原文的位置，但一眼能看出这段是从哪儿来的。 */
+.sel-chip-where {
+  flex: none; font-size: 10.5px; letter-spacing: .01em; opacity: .85;
+  padding-right: 5px; margin-right: 1px;
+  border-right: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+}
 .sel-chip-main svg:last-child { flex: none; opacity: .75; }
 .sel-chip.off { background: var(--bg-sunken); }
 .sel-chip.off .sel-chip-main { color: var(--text-faint); }

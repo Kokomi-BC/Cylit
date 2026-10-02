@@ -54,27 +54,44 @@ NO_EVIDENCE = """回答格式：
 
 
 SELECTION = """【用户选中的内容】（划词提问）
-选中原文：
+选中原文{where_inline}：
 > {text}
 
 {where}关于选区的解释规则：
 - 用户问的是**这段内容**，不要跑去总结全篇。
-- 先用 block_get(ref={ref}) 读它所在的完整段落（必要时再读相邻页）—— 选区常常只是半句话，
-  光看它容易解释错。
+- {read_hint}
 - 若选区里有公式/符号，用 formula_get 或 page_image_get(dpi=300) 核对，不要凭字形猜。
 - 选区若与译文不一致，以原文为准并指出这个不一致。"""
 
 
 def selection_block(deps: Deps) -> str:
+    """划词那一段提示词。
+
+    位置有三种情形（2026-10-03 补全）：有 ref 且知道页号 → 两个都给；只有 ref → 只给 ref；
+    **只有页号**（原 PDF 划词没有块锚点）→ 只说页码并交代"只能依据选区文字"，不要让模型
+    以为它读过那一页。
+    """
     if not deps.selection:
         return ""
     ref = deps.selection_ref
+    page = deps.selection_page
     where = ""
-    if ref:
-        where = (f"（它位于第 {deps.selection_page} 页，已登记为 ref={ref}。）\n"
-                 if deps.selection_page else f"（已登记为 ref={ref}。）\n")
+    if ref and page:
+        where = f"（它位于第 {page} 页，已登记为 ref={ref}。）\n"
+    elif ref:
+        where = f"（已登记为 ref={ref}。）\n"
+    elif page:
+        where = (f"（它位于第 {page} 页；这一处没有段落锚点 —— 只依据选区文字回答，"
+                 f"需要那一页的上下文就用 page_markdown_get 去读。）\n")
+    read_hint = (f"先用 block_get(ref={ref}) 读它所在的完整段落（必要时再读相邻页）—— "
+                 f"选区常常只是半句话，光看它容易解释错。"
+                 if ref else
+                 "选区常常只是半句话：先 page_markdown_get 读它所在的那一页（必要时读相邻页），"
+                 "看清上下文再解释。")
     return SELECTION.format(text=deps.selection.strip()[:2000], ref=ref or "-",
-                            where=where)
+                            where=where,
+                            where_inline=(f"（第 {page} 页）" if page else ""),
+                            read_hint=read_hint)
 
 
 def build_instructions(deps: Deps) -> str:

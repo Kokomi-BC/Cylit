@@ -345,21 +345,29 @@ class AgentRuntime:
                    "message": f"{type(exc).__name__}: {exc}"[:300], "retryable": False}
 
     # ---------------- 划词选区 ----------------
-    async def _block_of_row(self, paper_id: str, row_id: str) -> str:
-        """把**正文行 id**（``p004-02``）解析成**块 id**。
-
-        为什么要这一步：阅读器划词给的是**行 id**（页级产物的位置编号 ``p{页}-{序号}``），
-        而块是解析产物那套命名空间（``attentionisa-p04-b02``），两者毫无对应关系。
-        行 id 里带着页号，所以拿那一页的块列表按 `row_id` 反查即可 ——
-        与前端"引用跳转"用的是同一份映射（`anchor_map` 算出来的那个）。
-        查不到就返回空串（少一层上下文，解释仍然能做，不要因此报错）。
-        """
+    @staticmethod
+    def _page_of_row(row_id: str) -> int:
+        """行 id（``p004-02``）里的页号；不是这个形状就 0。"""
         parts = str(row_id).split("-")
         if len(parts) < 2 or not parts[0].startswith("p"):
-            return ""
+            return 0
         try:
-            page = int(parts[0][1:])
+            return int(parts[0][1:])
         except ValueError:
+            return 0
+
+    async def _block_of_row(self, paper_id: str, row_id: str) -> str:
+        """把**正文行 id**（``p004-02``）解析成**解析块 id**（老路径，只对没转录的页有效）。
+
+        为什么要这一步：阅读器划词给的是**行 id**，而解析块是另一套命名空间
+        （``attentionisa-p04-b02``）。行 id 里带着页号，拿那一页的块列表按 `row_id` 反查即可
+        —— 与前端"引用跳转"用的是同一份映射（`anchor_map` 算出来的那个）。
+
+        ⚠️ **转录过的页查不到**：那一页的投影现在是页级产物的行（`id` 就是行 id、没有
+        `block_id`）。所以调用方要**先试 `_selection_row`**，这条只是兜底。
+        """
+        page = self._page_of_row(row_id)
+        if not page:
             return ""
         try:
             data = await self.host.pages(paper_id, str(page))
@@ -367,16 +375,34 @@ class AgentRuntime:
             return ""
         for page_payload in data.get("pages") or []:
             for block in page_payload.get("blocks") or []:
-                if str(block.get("row_id") or "") == str(row_id):
+                if (str(block.get("row_id") or "") == str(row_id)
+                        and str(block.get("source") or "") != "transcript"):
                     return str(block.get("id") or "")
         return ""
 
+    async def _selection_row(self, paper_id: str, row_id: str,
+                             page: int | None = None) -> dict:
+        """选区落在页级产物（转录/翻译）的某一行上时，取回**这一行的整段**。
+
+        ``page`` 优先用前端给的（PDF 划词没有行锚点），其次从行 id 里解出页号。
+        """
+        page_no = int(page or 0) or self._page_of_row(row_id)
+        if not page_no or not row_id:
+            return {}
+        try:
+            return await self.host.row(paper_id, page_no, str(row_id))
+        except HostError:
+            return {}
+
     async def _prepare_selection(self, req: AskRequest, deps: Deps) -> None:
-        """把选区落在的块登记成 ref，模型据此展开上下文。
+        """把选区落在的段落登记成 ref，模型据此展开上下文。
 
         为什么值得为它多一次 HTTP：选区经常是半句话（"这个 $d_k$ 是干什么的"），
         只把选区文字塞给模型，它看不到所在段落，解释就会飘。登记成 ref 之后
         `block_get` 那套现成的能力直接复用，不用给划词单开一条链路。
+
+        两条路（2026-10-03）：**转录行**（页级产物的行 id，现在读页给的就是它）按行取整段；
+        没转录的页仍是解析块（行 id → block id → 块接口）。
         """
         from backend.agent.tools import _clip, _locate
 
@@ -388,6 +414,24 @@ class AgentRuntime:
         deps.selection_question = str(selection.get("question") or "").strip()
         row_id = str(selection.get("row_id") or "")
         block_id = str(selection.get("block_id") or "")
+        page_hint = int(selection.get("page") or 0)
+        # 位置先记下：原 PDF 划词没有块锚点（拿不到 ref），但**页号本身就是位置线索**，
+        # 提示词里要能说出来（见 `prompts.selection_block`）。
+        deps.selection_page = page_hint or None
+
+        if row_id:
+            row = await self._selection_row(req.paper_id, row_id, page_hint)
+            if row:
+                page = int(row.get("page") or page_hint or 0) or None
+                body = str(row.get("text") or "").strip()
+                citation = deps.registry.assign(
+                    key=f"row:{row_id}", kind="block", page=page, row_id=row_id,
+                    snippet=_clip(body or text),
+                    label=_locate(page, None, row.get("type") or ""), ids=(row_id,))
+                deps.selection_ref = citation.ref
+                deps.selection_page = citation.page
+                return
+
         if not block_id and row_id:
             block_id = await self._block_of_row(req.paper_id, row_id)
         if not block_id:
@@ -397,7 +441,7 @@ class AgentRuntime:
         except HostError as exc:
             log.warning("划词取块失败（解释仍可继续，只是少了上下文）：%s", exc.message)
             return
-        page = int(data.get("page") or selection.get("page") or 0) or None
+        page = int(data.get("page") or page_hint or 0) or None
         citation = deps.registry.assign(
             key=f"block:{block_id}", kind="block", page=page,
             section=data.get("section") or None, block_id=block_id,

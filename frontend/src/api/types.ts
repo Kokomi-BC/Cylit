@@ -856,5 +856,8 @@ export interface AgentSelection {
   row_id?: string | null;
   /** Markdown 视图划词时的页号（那边没有行锚点） */
   page?: number | null;
+  /** 位置的人话（"第 9 页 · Markdown" / "第 4 页 · PDF"）：写进消息正文与输入框胶囊，
+   *  agent 那边也据此在提示词里交代"选区在第几页"（用户口径 2026-10-03）。 */
+  where?: string | null;
   question?: string;
 }

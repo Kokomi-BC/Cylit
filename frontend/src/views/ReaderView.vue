@@ -373,6 +373,10 @@ const selection = reactive({
   scope: 'row' as 'row' | 'markdown',
   /** scope='markdown' 时的页号（锚点是 `md:p<页号>`） */
   mdPage: 0,
+  /** 选区**所在的页**（三种视图都给）：正文行从行 id 里解、Markdown 视图取页号、
+   *  原 PDF 取页元素上的页号。带进对话时要写进消息里（用户口径 2026-10-03：
+   *  "加入对话的内容要包含文本位置"），PDF 划词没有块锚点，页号更是唯一的位置线索。 */
+  page: 0,
   /** Markdown 视图里不给「笔记」：笔记靠 `block_id` 定位回正文，那边的锚点在正文里不存在 */
   allowNote: true,
   /** 跨行 / 跨页选区切开后的各段（每段一条记录，共用同一个分组）
@@ -2293,6 +2297,8 @@ function onMouseUp(ev?: MouseEvent) {
       show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
       rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
       scope: 'row' as const, mdPage: 0, allowNote: true, segments: [], hlIds: [],
+      // 原 PDF 划词没有块锚点，**页号就是唯一的位置** —— 带进对话要写进消息里
+      page: Number(pdfEl.getAttribute('data-pdf-page') ?? 0) || 0,
     });
     return;
   }
@@ -2313,6 +2319,7 @@ function onMouseUp(ev?: MouseEvent) {
       fullText: joinParts(parts) || text,
       rowId: first.rowId, side, start: first.start, end: first.end,
       anchored: true, scope: 'markdown' as const, mdPage: Number(first.page ?? 0),
+      page: Number(first.page ?? 0),
       allowNote: false, segments: parts, hlIds: highlightIdsInRange(range),
     });
     return;
@@ -2341,6 +2348,8 @@ function onMouseUp(ev?: MouseEvent) {
     fullText: joinParts(parts) || text,
     rowId: parts[0].rowId, side, start: parts[0].start, end: parts[0].end,
     anchored: true, scope: 'row' as const, mdPage: 0, allowNote: true,
+    // 正文行的页号就在行 id 里（`p004-02`）—— 与 agent 那边 `_page_of_row` 同一个口径
+    page: pageOfRow(parts[0].rowId),
     segments: parts,
     hlIds: highlightIdsInRange(range, null, `rows:${side}`),
   });
@@ -2558,7 +2567,7 @@ async function explainSelection() {
   explainCard.anchored = selection.anchored;
   explainCard.scope = selection.scope;
   explainCard.selectionText = selection.text;
-  explainCard.page = selection.scope === 'markdown' ? selection.mdPage : 0;
+  explainCard.page = Number(selection.page) || 0;
   explainCard.conversationId = null;
   explainCard.turns = [];
   explainCard.historyOpen = false;
@@ -2593,6 +2602,21 @@ function showHistoryItem(item: { text: string; rowId?: string | null }) {
   explainCard.historyOpen = false;
 }
 
+/** 行 id（`p004-02`）里的页号；不是这个形状就 0（与 agent 的 `_page_of_row` 同一口径）。 */
+function pageOfRow(rowId?: string | null): number {
+  const m = /^p(\d+)-/.exec(String(rowId ?? ''));
+  return m ? Number(m[1]) : 0;
+}
+
+/** 选区位置的人话：带进对话时要写进消息正文，也摆在输入框那枚胶囊上。
+ *  Markdown 视图特别标出来（那里的锚点是 `md:p<页号>`），PDF 划词没有块锚点、
+ *  页号就是唯一的位置线索。 */
+function whereOf(scope: string, page: number, anchored: boolean): string {
+  if (!page) return anchored ? '' : 'PDF 视图';
+  if (!anchored) return `第 ${page} 页 · PDF`;
+  return scope === 'markdown' ? `第 ${page} 页 · Markdown` : `第 ${page} 页`;
+}
+
 /** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。
  *
  *  `fromMenu=true` = 划词菜单里直接点「加入对话」—— 这时 AI 解释浮层还没打开过，
@@ -2602,11 +2626,14 @@ function openSelectionInChat(fromMenu = false) {
   const anchored = fromMenu ? selection.anchored : explainCard.anchored;
   const scope = fromMenu ? selection.scope : explainCard.scope;
   const rowId = anchored ? (fromMenu ? selection.rowId : explainCard.rowId) : '';
-  const page = scope === 'markdown' ? (fromMenu ? selection.mdPage : explainCard.page) : 0;
+  const page = fromMenu
+    ? (Number(selection.page) || pageOfRow(selection.rowId))
+    : (Number(explainCard.page) || pageOfRow(explainCard.rowId));
   chatSelection.value = {
     text: fromMenu ? selection.text : explainCard.selectionText,
     row_id: scope === 'row' ? (rowId || null) : null,
     page: page || null,
+    where: whereOf(scope, page, anchored),
   };
   explainCard.open = false;
   hideMenu();

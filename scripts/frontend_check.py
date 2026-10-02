@@ -417,6 +417,10 @@ async function run() {
       const main = chip.querySelector('.sel-chip-main');
       res.chipTag = main ? main.tagName : '';
       res.chipText = main ? (main.textContent || '').trim().slice(0, 20) : '';
+      /* 位置（"第 4 页" / "第 4 页 · Markdown"）必须摆在胶囊上：光有原文，
+         用户分不清自己选的是哪一段（用户口径 2026-10-03）。 */
+      const where = chip.querySelector('.sel-chip-where');
+      res.chipWhere = where ? (where.textContent || '').trim() : '';
       res.chipOff0 = chip.classList.contains('off');
       const send0 = d.querySelector('.chat .composer-bar .send');
       res.sendDisabledWithChip = send0 ? send0.disabled : null;
@@ -658,6 +662,10 @@ def main() -> int:
                    sel.get("chipShown") is True and sel.get("chipTag") == "BUTTON"
                    and bool(sel.get("chipText")),
                    f"tag={sel.get('chipTag')} 文本={sel.get('chipText')!r}")
+            record("chat", "胶囊带上**文本位置**（第 N 页 / · Markdown）",
+                   str(sel.get("chipWhere") or "").startswith("第 ")
+                   and "页" in str(sel.get("chipWhere") or ""),
+                   f"位置={sel.get('chipWhere')!r}")
             record("chat", "胶囊可切换「这轮带不带」并直接管着发送键",
                    sel.get("chipOff0") is False and sel.get("chipOff1") is True
                    and sel.get("chipOff2") is False

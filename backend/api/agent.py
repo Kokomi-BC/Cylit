@@ -125,7 +125,15 @@ async def agent_ask(payload: dict = Body(...)):
         content = question or "解释这段内容"
         if selected_text:
             quote = selected_text[:400].replace("\n", " ")
-            content = f"> {quote}\n\n{content}"
+            # 位置写进消息正文（用户口径 2026-10-03："加入对话的内容要包含文本位置"）：
+            # 前端给 `where`（"第 9 页 · Markdown" / "第 4 页 · PDF"），没有就退回页号。
+            # 落库的正文与前端乐观回显必须是同一个格式，否则刷新前后两副样子。
+            where = str((selection or {}).get("where") or "").strip()
+            if not where:
+                page_no = int((selection or {}).get("page") or 0)
+                where = f"第 {page_no} 页" if page_no else ""
+            head = f"〔{where}〕" if where else ""
+            content = f"> {head}{quote}\n\n{content}"
         elif attachment_meta and not question:
             content = f"（图片 ×{len(attachment_meta)}）"
         user_message = conversations.append_message(
