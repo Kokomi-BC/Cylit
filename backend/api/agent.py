@@ -81,9 +81,12 @@ async def agent_ask(payload: dict = Body(...)):
 
     两种**分叉**写法：
 
-    - ``regenerate_from`` = 某条助手消息 id：不新写用户消息，复用它的父（用户消息）
-      重新生成一条兄弟回答；
-    - ``edit_of`` = 某条用户消息 id：把新问题挂在它的**父**下面（原来的那条留着）。
+    - ``regenerate_from`` = 某条助手消息 id：重新生成一条回答；
+    - ``edit_of`` = 某条用户消息 id：改掉那条提问。
+
+    两者都默认**就地**（就地重答 / 就地改正文 —— 会作废它们之后的问答，会话仍是线性一条）；
+    带上 ``branch=true`` 才是**开新分支**：新内容与原内容成为兄弟，两条都留在树里
+    （前端那枚 git 分支图标走的就是这条）。
 
     这里做四件事：校验、把用户消息落库、必要时自动压缩、把请求转给 agent 进程。
     **不解释 agent 的事件**（§4.2）—— 只转发字节，例外只有两处：连不上时合成 `error`、
@@ -101,6 +104,8 @@ async def agent_ask(payload: dict = Body(...)):
     attachment_meta = attachments.describe(attachment_ids)
     regenerate_from = str(payload.get("regenerate_from") or "").strip()
     edit_of = str(payload.get("edit_of") or "").strip()
+    # `branch=true` = **开新分支**（兄弟，原来的保留）；默认就地改/就地重答（用户口径 2026-10-03）
+    branch = bool(payload.get("branch"))
     if not (question or selected_text or attachment_meta or regenerate_from or edit_of):
         raise ValidationError("question / selection.text / attachments 至少要有一个")
 
@@ -112,10 +117,10 @@ async def agent_ask(payload: dict = Body(...)):
 
     if regenerate_from:
         question, selection, attachment_meta, parent_id, history = _branch_regenerate(
-            conversation_id, regenerate_from)
+            conversation_id, regenerate_from, branch=branch)
     elif edit_of:
         parent_id, history = _branch_edit(conversation_id, edit_of, question,
-                                         attachment_meta)
+                                         attachment_meta, branch=branch)
     else:
         content = question or "解释这段内容"
         if selected_text:
@@ -142,8 +147,14 @@ async def agent_ask(payload: dict = Body(...)):
                              media_type="text/event-stream", headers=SSE_HEADERS)
 
 
-def _branch_regenerate(conversation_id: str, assistant_id: str) -> tuple:
-    """重新生成：拿原提问重跑一轮（``(question, selection, attachments, parent, history)``）。"""
+def _branch_regenerate(conversation_id: str, assistant_id: str, *,
+                       branch: bool) -> tuple:
+    """重新生成：``(question, selection, attachments, parent, history)``。
+
+    ``branch=False``（默认，用户口径 2026-10-03）= **就地重答**：把这条回答连它后面的
+    问答一起作废、再问一遍 —— 会话仍然是"一问一答"的一条线；
+    ``branch=True`` = 旧行为：同一个提问下再挂一条**兄弟**回答，两条都留着（◀ 1/2 ▶ 切）。
+    """
     prev = conversations.message_of(conversation_id, assistant_id)
     if prev["role"] != "assistant":
         raise ValidationError("只能重新生成助手的回答")
@@ -153,25 +164,42 @@ def _branch_regenerate(conversation_id: str, assistant_id: str) -> tuple:
     ask = conversations.message_of(conversation_id, parent)
     if ask["role"] != "user":
         raise ValidationError("这条回答的上一环不是提问，无法重新生成")
-    history = conversations.history_from_chain(
-        conversations.branch_history(conversation_id, ask["message_id"]))
+    if branch:
+        history = conversations.history_from_chain(
+            conversations.branch_history(conversation_id, ask["message_id"]))
+    else:
+        # 就地：先把这条回答（及其后续）删掉，再把历史收到它的父提问之前
+        conversations.drop_subtree(conversation_id, assistant_id, keep=False)
+        history = conversations.history_from_chain(
+            conversations.branch_history(conversation_id, ask["message_id"]))
     return (ask["content"], None, ask.get("attachments") or [], ask["message_id"], history)
 
 
 def _branch_edit(conversation_id: str, user_id: str, question: str,
-                 attachment_meta: list) -> tuple:
-    """编辑提问：新问题挂到原提问的**父**下面，与它成为兄弟（``(parent, history)``）。"""
+                 attachment_meta: list, *, branch: bool) -> tuple:
+    """编辑提问：``(parent, history)``。
+
+    ``branch=False``（默认）= **就地改**：改写这条提问的正文，把它之后的问答作废，
+    新答案挂回这条提问下面；
+    ``branch=True`` = 旧行为：新提问挂到原提问的**父**下面，与它成为兄弟（原来的保留）。
+    """
     if not question:
         raise ValidationError("编辑提问时不能把问题清空")
     origin = conversations.message_of(conversation_id, user_id)
     if origin["role"] != "user":
         raise ValidationError("只能编辑自己的提问")
-    user_message = conversations.append_message(
-        conversation_id, role="user", content=question,
-        parent_id=origin.get("parent_id"),
-        # 编辑的是**第一句**时原提问没有父 → 新提问要成为根上的兄弟，不能接到末尾去
-        root=origin.get("parent_id") is None,
-        attachments=attachment_meta or None)
+    if branch:
+        user_message = conversations.append_message(
+            conversation_id, role="user", content=question,
+            parent_id=origin.get("parent_id"),
+            # 编辑的是**第一句**时原提问没有父 → 新提问要成为根上的兄弟，不能接到末尾去
+            root=origin.get("parent_id") is None,
+            attachments=attachment_meta or None)
+    else:
+        # 就地：改写正文（附件沿用这条的）+ 丢掉它之后的问答，head 回到它身上
+        conversations.update_message_content(conversation_id, user_id, question)
+        conversations.drop_subtree(conversation_id, user_id, keep=True)
+        user_message = {"message_id": user_id}
     history = conversations.history_from_chain(
         conversations.branch_history(conversation_id, user_message["message_id"]))
     return user_message["message_id"], history

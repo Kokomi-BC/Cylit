@@ -425,6 +425,75 @@ def transcript_for_compress(conversation_id: str) -> tuple[str, int]:
     return "\n\n".join(lines), len(active)
 
 
+def update_message_content(conversation_id: str, message_id: str,
+                           content: str) -> dict:
+    """**就地**改掉某条消息的正文（用户口径 2026-10-03：编辑＝在本对话内改，不再开分支）。
+
+    会话标题跟着走：改的是**根**那条（第一条提问）时，标题本来就是从它来的，
+    不同步就会出现"标题写着旧问法、消息里是新问法"。
+    """
+    from backend.repositories.mysql.models import Conversation, ConversationMessage
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        row = sess.get(ConversationMessage, message_id)
+        if row is None or row.conversation_id != conversation_id:
+            raise NotFoundError(f"消息不存在：{message_id}")
+        row.content = content
+        conv = sess.get(Conversation, conversation_id)
+        if conv is not None:
+            if row.parent_id is None:
+                conv.title = content.strip()[:TITLE_CHARS]
+            conv.updated_at = now()
+    return {"message_id": message_id, "content": content}
+
+
+def drop_subtree(conversation_id: str, message_id: str, *, keep: bool) -> dict:
+    """删掉以某条消息为根的那棵子树（`keep=True` 时保留这条消息本身）。
+
+    为什么要连子树一起删：链是 `head → parent` 回溯出来的，中间断一环后面就全成孤儿。
+    入参语义：
+    - ``keep=True``（**就地编辑**）：留下这条（正文已被改写），把它之后的问答一起作废，
+      `head` 挪到它身上 —— 用户看到的就是"改了这句话，后面的答案重来"；
+    - ``keep=False``（**就地重新生成**）：连它自己一起删（它就是要被替换的那条回答），
+      `head` 挪到它的父上。
+
+    只删**它自己的子树**：兄弟分支（同一个父下的另一条）不受影响。
+    """
+    from backend.repositories.mysql.models import Conversation
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        conv = sess.get(Conversation, conversation_id)
+        if conv is None:
+            raise NotFoundError(f"会话不存在：{conversation_id}")
+        rows = _all_messages(sess, conversation_id)
+        by_id = {r.id: r for r in rows}
+        target = by_id.get(message_id)
+        if target is None:
+            raise NotFoundError(f"消息不存在：{message_id}")
+        children: dict[str, list] = {}
+        for r in rows:
+            children.setdefault(r.parent_id or "", []).append(r)
+        doomed: list = []
+        stack = list(children.get(message_id, []))
+        while stack:
+            node = stack.pop()
+            doomed.append(node)
+            stack.extend(children.get(node.id, []))
+        if not keep:
+            # `keep=False` 是"**连它一起**删"（它就是要被替换的那条回答）——
+            # 漏了这一行就会只删子节点，于是旧回答留着、新回答成了它的兄弟（踩过）
+            doomed.append(target)
+        head = target.parent_id if not keep else target.id
+        for node in doomed:
+            sess.delete(node)
+        conv.head_id = head
+        conv.updated_at = now()
+    return {"deleted": len(doomed), "head_id": head,
+            "kept": target.id if keep else None}
+
+
 def append_message(conversation_id: str, *, role: str, content: str,
                    parent_id: str | None = None, root: bool = False,
                    citations: list | None = None,

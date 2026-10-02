@@ -91,7 +91,7 @@ const thinkingOpen = ref(true);
 /** 展开着的历史思考块（按消息 id 记；默认都折叠） */
 const openThinking = ref<string[]>([]);
 const errorText = ref('');
-const editing = ref<{ id: string; text: string } | null>(null);
+const editing = ref<{ id: string; text: string; branch: boolean } | null>(null);
 const headline = ref('');
 const dragging = ref(false);
 const confirming = ref<{ ids: string[]; body: string; target: string } | null>(null);
@@ -120,6 +120,63 @@ const allPicked = computed(() => conversations.value.length > 0
 
 function render(text?: string | null) {
   return mdToHtml(text ?? '', props.paperId);
+}
+
+function escapeAttr(text: string) {
+  return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * 正文里的 `[n]` → **可直接点击跳转的引用锚**（用户口径 2026-10-03）。
+ *
+ * 为什么不在回答下面再列一排 chunk 号：那是把"引用表"和"正文"拆成两处，
+ * 读的时候要来回对号；点正文里那个 `[n]` 才是一步到位。
+ *
+ * 只在**渲染后的 HTML 上**替换，并且**跳过代码块**（`<code>x[0]</code>` 里的 `[0]` 不是引用）；
+ * 另外只认这一轮**真实存在**的 ref，别把正文里恰好写成 `[1]` 的普通方括号变成按钮。
+ * 锚点信息直接写进 `data-*`：这样点击时不必再去猜"这个编号属于哪条消息"
+ * （每条消息的编号都是各自从 1 开始的，跨消息查表必然串号）。
+ */
+function decorateRefs(html: string, cites?: AgentCitation[]) {
+  if (!cites?.length) return html;
+  const byRef = new Map(cites.map(c => [c.ref, c]));
+  const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;                       // 代码块原样返回
+    return part.replace(/\[(\d{1,3})\]/g, (whole, num) => {
+      const cite = byRef.get(Number(num));
+      if (!cite) return whole;
+      const title = escapeAttr(cite.snippet || cite.label || `引用 ${num}`);
+      return `<button type="button" class="cite-inline" title="${title}"`
+        + ` data-ref="${num}" data-paper="${escapeAttr(cite.paper_id || '')}"`
+        + ` data-row="${escapeAttr(cite.row_id || '')}"`
+        + ` data-block="${escapeAttr(cite.block_id || '')}"`
+        + ` data-page="${cite.page ?? ''}">[${num}]</button>`;
+    });
+  }).join('');
+}
+
+/** 正文渲染：markdown + 把 `[n]` 接成可点锚点。 */
+function renderAnswer(text: string | null | undefined, cites?: AgentCitation[]) {
+  return decorateRefs(mdToHtml(text ?? '', props.paperId), cites);
+}
+
+/** 点正文里的 `[n]`：跳到那条引用（阅读器会滚到对应行）。 */
+function onCitationClick(ev: MouseEvent) {
+  const target = ev.target as HTMLElement | null;
+  const btn = target?.closest?.('.cite-inline') as HTMLElement | null;
+  if (!btn) return;
+  const page = Number(btn.dataset.page || 0);
+  gotoCitation({
+    ref: Number(btn.dataset.ref || 0),
+    paper_id: btn.dataset.paper || props.paperId,
+    kind: 'block',
+    block_id: btn.dataset.block || null,
+    row_id: btn.dataset.row || null,
+    page: page > 0 ? page : null,
+    label: btn.getAttribute('title') || '',
+  } as AgentCitation);
 }
 
 /** 划词那种以 `> 引用` 开头的用户消息：正文只显示引用之后的部分（引用单独排版）。 */
@@ -490,10 +547,11 @@ const toolLabel = (name: string) => TOOL_LABELS[name] ?? `正在调用 ${name}`;
 /**
  * 一轮问答。三种入口共用一条流：
  * - `send`：正常提问（可带选区 / 图片）；
- * - `regen`：重新生成某条回答（**不写**用户消息，重跑原来那个问题）；
- * - `edit`：改掉某条提问（新问题挂在原提问的父下面，与它成为兄弟）。
+ * - `regen`：重新生成某条回答（**默认就地**：替换这条回答；`branch=true` 才挂兄弟）；
+ * - `edit`：改掉某条提问（**默认就地**：改写正文并作废它之后的问答；`branch=true` 走兄弟分支）。
  */
-async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessage) {
+async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessage,
+                   branch = false) {
   if (sending.value) return;
   if (!agentReady.value) { toast('问答服务没有在运行（先 `pr.py agent`）', 'warn'); return; }
 
@@ -542,6 +600,8 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
       attachments,
       regenerate_from: mode === 'regen' ? target?.message_id : null,
       edit_of: mode === 'edit' ? target?.message_id : null,
+      // 默认**就地**改/就地重答；只有那枚 git 分支图标传 true（开兄弟分支，两条都留）
+      branch,
     }, { signal: controller.signal, onEvent });
     const convId = currentId.value;
     if (convId) {
@@ -572,15 +632,24 @@ function stop() {
   toast('已停止', 'warn');
 }
 
-function startEdit(message: AgentMessage) {
+/** 编辑提问：`branch=false` 就地改写；`branch=true` 是"用新问法开新分支"（原条保留）。 */
+function startEdit(message: AgentMessage, branch = false) {
   const { rest } = splitQuote(message.content);
-  editing.value = { id: message.message_id, text: rest };
+  editing.value = { id: message.message_id, text: rest, branch };
   level.value = 'thread';
 }
 
-/** 重新生成：`target` 是那条**回答**（后端会找到它的父提问重跑）。 */
-function regenerate(target: AgentMessage) {
-  void ask('regen', target);
+/** **开新分支**（消息操作条上那枚 git 分支图标）：
+ *  - 提问：打开编辑框、按"新分支"发（新问法与原提问并列，原条保留）；
+ *  - 回答：直接按"新分支"重答一份（与原回答并列，◀ 1/2 ▶ 可切）。 */
+function branchFrom(message: AgentMessage) {
+  if (message.role === 'user') startEdit(message, true);
+  else void ask('regen', message, true);
+}
+
+/** 重新生成：默认**就地重答**（替换这条回答）；`branch=true` 走兄弟分支。 */
+function regenerate(target: AgentMessage, branch = false) {
+  void ask('regen', target, branch);
 }
 
 async function copyMessage(message: AgentMessage) {
@@ -800,20 +869,6 @@ watch(() => props.selection, (sel) => {
           </div>
 
           <template v-else>
-            <div class="msg-tools" :class="{ show: (m.siblings?.length ?? 0) > 1 }">
-              <template v-if="(m.siblings?.length ?? 0) > 1">
-                <button class="ico" title="上一个版本" @click="switchBranch(m, -1)"><AppIcon name="back" :size="11" /></button>
-                <span class="tiny faint mono">{{ m.sibling_index }}/{{ m.siblings?.length }}</span>
-                <button class="ico" title="下一个版本" @click="switchBranch(m, 1)"><AppIcon name="forward" :size="11" /></button>
-              </template>
-              <span class="spacer" />
-              <button v-if="m.role === 'assistant'" class="ico" title="重新生成（新分支）"
-                      :disabled="sending" @click="regenerate(m)"><AppIcon name="refresh" :size="12" /></button>
-              <button v-if="m.role === 'user'" class="ico" title="编辑提问（新分支）"
-                      :disabled="sending" @click="startEdit(m)"><AppIcon name="edit" :size="12" /></button>
-              <button class="ico" title="复制" @click="copyMessage(m)"><AppIcon name="copy" :size="12" /></button>
-            </div>
-
             <div v-if="m.role === 'user' && splitQuote(m.content).quote" class="sel-quote">
               <AppIcon name="quote" :size="11" />
               <span class="truncate">{{ splitQuote(m.content).quote }}</span>
@@ -829,7 +884,8 @@ watch(() => props.selection, (sel) => {
               <pre v-if="isThinkingOpen(m.message_id)" class="think-body">{{ m.thinking }}</pre>
             </div>
 
-            <div class="md body" v-html="render(m.role === 'user' ? splitQuote(m.content).rest : m.content)" />
+            <div class="md body" v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : m.content, m.citations)"
+                 @click="onCitationClick" />
 
             <div v-if="m.attachments?.length" class="atts">
               <a v-for="a in m.attachments" :key="a.attachment_id" class="att"
@@ -838,10 +894,28 @@ watch(() => props.selection, (sel) => {
               </a>
             </div>
 
-            <div v-if="m.citations?.length" class="cites">
-              <button v-for="c in m.citations" :key="c.ref" class="cite" :title="c.snippet || c.label"
-                      @click="gotoCitation(c)">
-                [{{ c.ref }}]<span v-if="c.page" class="faint"> p{{ c.page }}</span>
+            <!-- 引用**不再在下面列一排 chunk 号**（用户口径 2026-10-03）：
+                 正文里的 `[n]` 本身就是锚点，点它跳转。 -->
+
+            <!-- 消息操作条：**在气泡下面**（用户口径 2026-10-03 —— 上面的那排按钮全部移除）。
+                 语义分三档：改写这条（就地）/ 重答这条（就地）/ **开新分支**（那枚 git 分支图标）。 -->
+            <div class="msg-tools" :class="{ show: (m.siblings?.length ?? 0) > 1 }">
+              <template v-if="(m.siblings?.length ?? 0) > 1">
+                <button class="ico" title="上一个版本" @click="switchBranch(m, -1)"><AppIcon name="back" :size="11" /></button>
+                <span class="tiny faint mono">{{ m.sibling_index }}/{{ m.siblings?.length }}</span>
+                <button class="ico" title="下一个版本" @click="switchBranch(m, 1)"><AppIcon name="forward" :size="11" /></button>
+                <span class="tool-sep" />
+              </template>
+              <button class="ico" title="复制" @click="copyMessage(m)"><AppIcon name="copy" :size="12" /></button>
+              <button v-if="m.role === 'user'" class="ico" title="编辑这条提问（就地改，会替换它之后的回答）"
+                      :disabled="sending" @click="startEdit(m, false)"><AppIcon name="edit" :size="12" /></button>
+              <button v-if="m.role === 'assistant'" class="ico" title="重新生成（就地重答，替换这条回答）"
+                      :disabled="sending" @click="regenerate(m, false)"><AppIcon name="refresh" :size="12" /></button>
+              <button class="ico" :title="m.role === 'user'
+                        ? '用新问法开新分支（原来这条保留）'
+                        : '再答一份，开新分支（原来这条保留）'"
+                      :disabled="sending" @click="branchFrom(m)">
+                <AppIcon name="git-branch" :size="12" />
               </button>
             </div>
           </template>
@@ -858,11 +932,11 @@ watch(() => props.selection, (sel) => {
             </button>
             <pre v-if="thinkingOpen" class="think-body">{{ streamThinking }}</pre>
           </div>
-          <div v-if="streamText" class="md body" v-html="render(streamText)" />
+          <div v-if="streamText" class="md body" v-html="renderAnswer(streamText, streamCitations)"
+               @click="onCitationClick" />
           <div v-if="streamNote" class="note"><span class="dot" />{{ streamNote }}</div>
-          <div v-if="streamCitations.length" class="cites">
-            <span v-for="c in streamCitations" :key="c.ref" class="cite" :title="c.snippet">[{{ c.ref }}]</span>
-          </div>
+          <!-- 流式期间**不列 chunk 号**（用户口径 2026-10-03）：边写边多出来的编号只会刷屏，
+               正文里已经随写随点了 -->
         </div>
 
         <div v-if="errorText" class="err small">{{ errorText }}</div>
@@ -887,13 +961,20 @@ watch(() => props.selection, (sel) => {
           </div>
 
           <div v-if="editing" class="edit-box">
-            <div class="edit-head tiny faint"><AppIcon name="edit" :size="11" />编辑这条提问（会生成一个新分支，原来的保留）</div>
+            <div class="edit-head tiny faint">
+              <AppIcon :name="editing.branch ? 'git-branch' : 'edit'" :size="11" />
+              {{ editing.branch
+                ? '用新问法开新分支：新提问与原来这条并列，原来的保留'
+                : '改这条提问：会替换掉它之后的回答（不可恢复）' }}
+            </div>
             <textarea v-model="editing.text" class="composer-input" rows="2" />
             <div class="edit-acts">
               <span class="spacer" />
               <button class="btn sm" @click="editing = null">取消</button>
               <button class="btn sm primary" :disabled="sending || !editing.text.trim()"
-                      @click="ask('edit', messages.find(x => x.message_id === editing?.id))">重新提问</button>
+                      @click="ask('edit', messages.find(x => x.message_id === editing?.id), editing.branch)">
+                {{ editing.branch ? '开新分支' : '保存并重答' }}
+              </button>
             </div>
           </div>
 
@@ -1038,8 +1119,12 @@ watch(() => props.selection, (sel) => {
   padding: 6px 9px; font-size: 12.5px; line-height: 1.65; max-width: 92%;
 }
 .msg.user .sel-quote, .msg.user .atts { align-self: flex-end; }
-.msg-tools { display: flex; align-items: center; gap: 2px; min-height: 18px; opacity: 0; }
+/* 消息操作条：**在气泡下面**（用户口径 2026-10-03），hover 才显形；
+   用户消息靠右对齐，跟气泡同侧。 */
+.msg-tools { display: flex; align-items: center; gap: 2px; min-height: 20px; opacity: 0; margin-top: 2px; }
+.msg.user .msg-tools { justify-content: flex-end; }
 .msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
+.tool-sep { width: 1px; height: 12px; margin: 0 3px; background: var(--divider); }
 .sel-quote {
   display: flex; align-items: center; gap: 4px; max-width: 92%; margin-bottom: 3px;
   padding: 3px 7px; border-left: 2px solid var(--accent);
@@ -1061,6 +1146,14 @@ watch(() => props.selection, (sel) => {
   border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
 }
 .cite:hover { color: var(--accent-text); border-color: var(--accent); }
+/* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03） */
+.cite-inline {
+  border: 0; background: var(--accent-soft); color: var(--accent-text);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
+  vertical-align: baseline; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.cite-inline:hover { background: var(--accent); color: var(--text-on-accent); }
 .note { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); }
 .note .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);

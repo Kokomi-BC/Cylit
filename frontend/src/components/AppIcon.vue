@@ -37,6 +37,8 @@ const ICONS: Record<string, string> = {
   // 未勾选：**同一只方框、去掉勾**（用户口径 2026-10-03：复选框要有两个状态图标，
   // 之前只靠换颜色区分，等于"只有一个状态图标"）。与 `checkbox` 共用外框路径，视觉成对。
   'checkbox-off': '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/>',
+  // 分支（git-branch 造型）：**开新分支**动作的图标 —— 与"改写这条/重答这条"区分开。
+  'git-branch': '<path d="M6 4.5v11"/><circle cx="6" cy="18" r="2.6"/><circle cx="17" cy="6" r="2.6"/><path d="M17 8.6a8.4 8.4 0 0 1-8.4 8.4"/>',
   // 侧栏开关（Apple 的 sidebar.left 那一枚）：圆角矩形 + 一条竖分隔线；
   // 展开态把左栏填实，收起态只留两道轮廓 —— 状态一眼可辨，不用靠颜色。
   sidebar: '<rect x="3" y="4.5" width="18" height="15" rx="3.5"/><path d="M9.5 4.5v15"/><path d="M6.1 7.1h1.5v9.8H6.1z" fill="currentColor" stroke="none"/>',
