@@ -357,6 +357,91 @@ async function run() {
 
 
 # --------------------------------------------------------------------------
+# 探针 ③：划词 → 加入对话 → 输入框里的上下文胶囊（**不发消息**）
+# --------------------------------------------------------------------------
+# 这条链路以前只有肉眼验证：造一个真 Range 选区 → 派发 mouseup（阅读器的 `onMouseUp`
+# 就是这么起的）→ 菜单里点「加入对话」→ 侧栏对话的输入框上沿出现胶囊。
+PROBE_SELCHAT = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  try {
+    await until(d, (x) => x.querySelector('[data-row-id]'));
+    /* 第一行常常是标题/作者（只有一两个短节点）—— 往下找**第一个正文行**：
+       markdown 渲染会把一行切成**一堆短文本节点**（实测最长 39 字），所以要凑够 ≥2 个节点
+       再**跨节点**建 Range。 */
+    let nodes = [];
+    for (const r of [...d.querySelectorAll('[data-row-id]')].slice(0, 12)) {
+      const body = r.querySelector('.rr-body') || r;
+      const walker = d.createTreeWalker(body, w.NodeFilter.SHOW_TEXT);
+      const got = [];
+      while (walker.nextNode()) {
+        const t = walker.currentNode;
+        if ((t.nodeValue || '').trim().length >= 8) got.push(t);
+        if (got.length >= 4) break;
+      }
+      if (got.length > nodes.length) nodes = got;
+      if (nodes.length >= 2) break;
+    }
+    res.picked = nodes.length > 1;
+    if (res.picked) {
+      const r = d.createRange();
+      r.setStart(nodes[0], 0);
+      const last = nodes[nodes.length - 1];
+      r.setEnd(last, Math.min(20, (last.nodeValue || '').length));
+      const sel = w.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      res.selection = sel.toString().trim().slice(0, 20);
+      const rect = r.getBoundingClientRect();
+      d.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true,
+        clientX: Math.round(rect.left + 6), clientY: Math.round(rect.top + 6) }));
+    }
+    await until(d, (x) => x.querySelector('[data-selection-menu]'));
+    const menu = d.querySelector('[data-selection-menu]');
+    res.menuOpen = !!menu;
+    res.menuBtns = menu ? [...menu.querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
+    const add = menu ? [...menu.querySelectorAll('button')]
+      .find((b) => (b.textContent || '').indexOf('加入对话') >= 0) : null;
+    res.hasAdd = !!add;
+    if (add) add.click();
+    await until(d, (x) => x.querySelector('.chat .sel-chip'));
+    const chip = d.querySelector('.chat .sel-chip');
+    res.chipShown = !!chip;
+    if (chip) {
+      const main = chip.querySelector('.sel-chip-main');
+      res.chipTag = main ? main.tagName : '';
+      res.chipText = main ? (main.textContent || '').trim().slice(0, 20) : '';
+      res.chipOff0 = chip.classList.contains('off');
+      const send0 = d.querySelector('.chat .composer-bar .send');
+      res.sendDisabledWithChip = send0 ? send0.disabled : null;
+      main.click();
+      await sleep(200);
+      res.chipOff1 = chip.classList.contains('off');
+      const send1 = d.querySelector('.chat .composer-bar .send');
+      res.sendDisabledWithoutChip = send1 ? send1.disabled : null;
+      main.click();
+      await sleep(200);
+      res.chipOff2 = chip.classList.contains('off');
+      const x = chip.querySelector('button.ico');
+      res.hasRemove = !!x;
+      if (x) x.click();
+      await sleep(250);
+      res.chipGone = !d.querySelector('.chat .sel-chip');
+    }
+    out(res);
+    document.title = 'done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
+}
+</script>"""
+
+
+# --------------------------------------------------------------------------
 # 跑探针
 # --------------------------------------------------------------------------
 
@@ -558,8 +643,32 @@ def main() -> int:
                    f"锚点 {chat.get('inlineCites')} 个（带页 {chat.get('inlineWithPage')} / "
                    f"带行 {chat.get('inlineWithRow')}），底部 chip {chat.get('bottomChips')}")
 
-    # ---- ③ 流式问答（可选） ----
-    print("\n③ 流式问答（会调用模型；跑完自删会话）")
+    # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
+    print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")
+    sel = run_probe(browser, base, "probe_selchat",
+                    PROBE_SELCHAT.replace("__URL__", chat_url).replace("__TITLE__", "selchat"),
+                    args.budget)
+    if sel:
+        if sel.get("menuOpen") is not True:
+            skip("划词 → 加入对话", f"造不出选区或菜单没出来（picked={sel.get('picked')}）")
+        else:
+            record("reader", "划词菜单里有「加入对话」", sel.get("hasAdd") is True,
+                   f"{sel.get('menuBtns')}")
+            record("chat", "选区落成输入框上沿的上下文胶囊（按钮样式 + 显示选中文字）",
+                   sel.get("chipShown") is True and sel.get("chipTag") == "BUTTON"
+                   and bool(sel.get("chipText")),
+                   f"tag={sel.get('chipTag')} 文本={sel.get('chipText')!r}")
+            record("chat", "胶囊可切换「这轮带不带」并直接管着发送键",
+                   sel.get("chipOff0") is False and sel.get("chipOff1") is True
+                   and sel.get("chipOff2") is False
+                   and sel.get("sendDisabledWithChip") is False
+                   and sel.get("sendDisabledWithoutChip") is True,
+                   f"带={sel.get('sendDisabledWithChip')} 不带={sel.get('sendDisabledWithoutChip')}"
+                   "（发送键 disabled 值：False=可发）")
+            record("chat", "✕ 把胶囊整块移除（选区一起清掉）", sel.get("chipGone") is True)
+
+    # ---- ④ 流式问答（可选） ----
+    print("\n④ 流式问答（会调用模型；跑完自删会话）")
     made = 0
     if not args.model:
         skip("流式问答", "默认不跑（加 --model 才调模型）")

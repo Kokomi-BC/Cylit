@@ -77,6 +77,15 @@ const status = ref<AgentStatus | null>(null);
 const paperTitle = ref('');
 const draft = ref('');
 const pending = ref<AgentAttachment[]>([]);
+/** 划词带进来的选区 → 输入框里那枚**上下文胶囊**（用户口径 2026-10-03，仿 VS Code）。
+ *
+ *  以前它只是 `props.selection` 的转发：有就必然发出去，用户唯一的操作是"删掉"。
+ *  现在**本组件自己持有**这份状态，于是发送前可以：
+ *  - 整块点一下 = 这轮**要不要带上**它（`include`）；
+ *  - 右侧 ✕ = 整个移除。
+ *  `include=false` 时胶囊照样显示（用户看得见自己选过什么），只是不随这轮发出去。 */
+const selCtx = ref<{ text: string; row_id: string | null; page: number | null;
+                     include: boolean } | null>(null);
 const uploading = ref(false);
 const loading = ref(false);
 const compressing = ref(false);
@@ -107,8 +116,10 @@ const percent = computed(() => Math.max(0, Math.min(100, usage.value?.percent ??
 const ringDash = computed(() => `${(percent.value / 100) * RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`);
 const modelName = computed(() => status.value?.model?.model_name || '—');
 const agentReady = computed(() => Boolean(status.value?.running) && status.value?.model?.usable !== false);
+/** 这一轮**真的要带出去**的选区（用户在胶囊上关掉之后就是 null）。 */
+const selected = computed(() => (selCtx.value?.include ? selCtx.value : null));
 const canSend = computed(() => !sending.value
-  && (draft.value.trim().length > 0 || pending.value.length > 0 || Boolean(props.selection?.text)));
+  && (draft.value.trim().length > 0 || pending.value.length > 0 || Boolean(selected.value)));
 const canCompress = computed(() => !compressing.value && messages.value.length >= 2);
 const compressTitle = computed(() => (canCompress.value
   ? '压缩这段对话：让模型把已谈过的内容压成要点（会多出一轮「摘要」，原文仍可回看）'
@@ -184,6 +195,17 @@ function splitQuote(content: string): { quote: string; rest: string } {
   const match = /^>\s?(.*)\n+([\s\S]*)$/.exec(content || '');
   if (!match) return { quote: '', rest: content || '' };
   return { quote: match[1].trim(), rest: match[2].trim() };
+}
+
+/** 胶囊整块可点 = 这轮要不要带上选区（仿 VS Code 的上下文胶囊：点它就切换）。 */
+function toggleSelection() {
+  if (selCtx.value) selCtx.value.include = !selCtx.value.include;
+}
+
+/** 移除选区：连父级那份一起清掉（父级只负责"带进来"，去留由这里决定）。 */
+function dropSelection() {
+  selCtx.value = null;
+  emit('clear-selection');
 }
 
 function imageSrc(url?: string) {
@@ -556,7 +578,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   if (!agentReady.value) { toast('问答服务没有在运行（先 `pr.py agent`）', 'warn'); return; }
 
   const question = mode === 'edit' ? (editing.value?.text ?? '').trim() : draft.value.trim();
-  const selection = mode === 'send' && props.selection?.text ? props.selection : null;
+  const selection = mode === 'send' ? selected.value : null;
   const attachments = mode === 'send' ? pending.value.map(a => a.attachment_id) : [];
   if (mode === 'edit' && !question) { toast('问题不能为空', 'warn'); return; }
   if (mode === 'send' && !question && !selection?.text && !attachments.length) return;
@@ -583,8 +605,12 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     messages.value = [...messages.value, optimistic];
     draft.value = '';
   }
-  if (mode === 'send' && selection) emit('clear-selection');
-  if (mode === 'send') pending.value = [];
+  if (mode === 'send') {
+    // 发出去之后胶囊就完成使命了（选区已经进了这条消息的 `> 引用`）
+    selCtx.value = null;
+    emit('clear-selection');
+    pending.value = [];
+  }
   if (mode === 'edit') editing.value = null;
   await scrollToBottom();
 
@@ -748,9 +774,13 @@ watch(() => props.paperId, async () => {
   await loadConversations();
 });
 
-// 划词带进来的选区：直接进二级页（列表页没有输入框，留在那儿用户会以为没反应）。
+// 划词带进来的选区：直接进二级页（列表页没有输入框，留在那儿用户会以为没反应），
+// 并在输入框里挂一枚**上下文胶囊**（是否随这轮发出去由用户点它决定）。
 // 监听**对象本身**而不是文本：同一段文字连点两次也要能切过去。
 watch(() => props.selection, (sel) => {
+  selCtx.value = sel?.text
+    ? { text: sel.text, row_id: sel.row_id ?? null, page: sel.page ?? null, include: true }
+    : null;
   if (sel?.text) {
     level.value = 'thread';
     void nextTick(() => inputEl.value?.focus());
@@ -948,10 +978,21 @@ watch(() => props.selection, (sel) => {
            容器自己承担"一块输入组件"的观感，里面的元素不再各自成块。 -->
       <div class="composer">
         <div class="composer-box" :class="{ busy: uploading }">
-          <div v-if="props.selection?.text" class="sel-chip">
-            <AppIcon name="quote" :size="11" />
-            <span class="truncate">{{ props.selection.text }}</span>
-            <button class="ico" title="取消选区" @click="emit('clear-selection')"><AppIcon name="close" :size="11" /></button>
+          <!-- 划词带进来的选区：贴在输入框上沿的**上下文胶囊**（用户口径 2026-10-03，仿 VS Code）。
+               整块是一枚按钮 → 点它切换"这轮要不要带上"；右侧 ✕ 才是移除。
+               关掉时仍然显示（看得见自己选过什么）但压灰 + 划线，一眼能看出不会发出去。 -->
+          <div v-if="selCtx && !editing" class="sel-chip" :class="{ off: !selCtx.include }">
+            <button class="sel-chip-main" @click="toggleSelection"
+                    :title="selCtx.include
+                      ? '这段选中内容会随这条问题一起发出去（点一下改成不带）'
+                      : '这段选中内容不会发出去（点一下改成带上）'">
+              <AppIcon name="quote" :size="11" />
+              <span class="truncate">{{ selCtx.text }}</span>
+              <AppIcon :name="selCtx.include ? 'checkbox' : 'checkbox-off'" :size="12" />
+            </button>
+            <button class="ico" title="移除选区" @click="dropSelection">
+              <AppIcon name="close" :size="11" />
+            </button>
           </div>
 
           <div v-if="pending.length" class="atts pending">
@@ -1224,12 +1265,26 @@ watch(() => props.selection, (sel) => {
 /* 轻度焦点反馈：焦点在框内任意位置都亮一圈（用户口径："获得焦点时有轻微视觉反馈"） */
 .composer-box:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
 .composer-box.busy { opacity: .75; }
+/* 上下文胶囊（划词选区）：整块可点 → 切换"要不要带上"。
+   用 accent-soft 的**实心胶囊**（不是左边一条竖线）：它是"我能点"的按钮，不是一段引文装饰。
+   `off` 态保留在框里但压成托盘色 + 文字划线 —— 用户看得见自己选过什么，也看得见它不会发出去。 */
 .sel-chip {
-  display: flex; align-items: center; gap: 4px; margin: 0 0 5px; padding: 3px 6px;
-  border-left: 2px solid var(--accent); background: var(--bg-sunken);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 11.5px; color: var(--text-dim);
+  display: flex; align-items: center; gap: 1px; margin: 0 0 5px;
+  background: var(--accent-soft); border-radius: var(--radius-ctl); padding: 1px 2px 1px 1px;
 }
-.sel-chip .truncate { flex: 1; }
+.sel-chip-main {
+  display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+  border: 0; background: none; cursor: pointer; padding: 3px 6px; text-align: left;
+  border-radius: var(--radius-sm); color: var(--accent-text);
+  font: inherit; font-size: 11.5px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sel-chip-main:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.sel-chip-main .truncate { flex: 1; min-width: 0; }
+.sel-chip-main svg:last-child { flex: none; opacity: .75; }
+.sel-chip.off { background: var(--bg-sunken); }
+.sel-chip.off .sel-chip-main { color: var(--text-faint); }
+.sel-chip.off .sel-chip-main .truncate { text-decoration: line-through; }
 /* 输入框本身**没有边框、也没有自己的焦点环**：边界与焦点反馈都由外层容器给。
    ⚠️ 必须显式压掉 `:focus`：base.css 里 `textarea:focus { box-shadow: var(--ring) }` 是元素级
    规则，不写这一条就会在容器里再出现一个圆角光圈 —— 看起来就是"框里套了个框"（用户报的

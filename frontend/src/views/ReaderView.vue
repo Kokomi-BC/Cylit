@@ -2593,14 +2593,23 @@ function showHistoryItem(item: { text: string; rowId?: string | null }) {
   explainCard.historyOpen = false;
 }
 
-/** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。 */
-function openSelectionInChat() {
+/** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。
+ *
+ *  `fromMenu=true` = 划词菜单里直接点「加入对话」—— 这时 AI 解释浮层还没打开过，
+ *  数据得从**当前选区**取（`explainCard` 里是上一次解释的残留，用它必然错位）。
+ *  带进去之后落成输入框里那枚上下文胶囊：发不发由用户点它决定（见 `ReaderChat`）。 */
+function openSelectionInChat(fromMenu = false) {
+  const anchored = fromMenu ? selection.anchored : explainCard.anchored;
+  const scope = fromMenu ? selection.scope : explainCard.scope;
+  const rowId = anchored ? (fromMenu ? selection.rowId : explainCard.rowId) : '';
+  const page = scope === 'markdown' ? (fromMenu ? selection.mdPage : explainCard.page) : 0;
   chatSelection.value = {
-    text: explainCard.selectionText,
-    row_id: explainCard.scope === 'row' ? (explainCard.rowId || null) : null,
-    page: explainCard.page || null,
+    text: fromMenu ? selection.text : explainCard.selectionText,
+    row_id: scope === 'row' ? (rowId || null) : null,
+    page: page || null,
   };
   explainCard.open = false;
+  hideMenu();
   sideTab.value = 'chat';
   // 左栏可能是收起的（例如用户在看 Markdown 视图）——切页签不等于看得见面板
   void ensureAsideVisible();
@@ -3316,6 +3325,7 @@ function renderMarkdown(text?: string | null) {
       :allow-note="selection.allowNote"
       :hl-count="selection.hlIds.length"
       @explain="explainSelection"
+      @chat="openSelectionInChat(true)"
       @note="openNoteModal"
       @copy="copySelection"
       @highlight="addHighlight"
@@ -3358,7 +3368,7 @@ function renderMarkdown(text?: string | null) {
         <button class="btn sm" @click="explainCard.historyOpen = !explainCard.historyOpen">
           <AppIcon name="task" :size="12" />历史解释（{{ explainCard.history.length }}）
         </button>
-        <button class="btn sm" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat">
+        <button class="btn sm" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat(false)">
           <AppIcon name="chat" :size="12" />在对话里继续
         </button>
       </div>

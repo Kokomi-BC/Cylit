@@ -33,6 +33,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'explain'): void;
+  /** 把选区挂到侧栏对话的输入框（不直接发送，见 `ReaderView.openSelectionInChat`） */
+  (e: 'chat'): void;
   (e: 'note'): void;
   (e: 'copy'): void;
   (e: 'highlight', color: string): void;
@@ -79,6 +81,11 @@ const COLOR_TITLE: Record<string, string> = {
     @mousedown.prevent.stop
   >
     <button @click="emit('explain')"><AppIcon name="sparkle" :size="14" />AI 解释</button>
+    <!-- 「加入对话」＝ 仿 VS Code 的 Add to Chat：把这段选区挂到侧栏对话的输入框里
+         （落成那枚上下文胶囊），**不直接发** —— 发不发、配什么问题都由用户接着决定。 -->
+    <button title="把这段选区挂到侧栏对话的输入框（发不发由你决定）" @click="emit('chat')">
+      <AppIcon name="chat" :size="14" />加入对话
+    </button>
     <!-- 原 PDF 栏（pdf.js 文字层）没有块锚点 → 那一栏只留「解释 / 复制」。
          不写任何说明文字（用户口径：完全移除「原 PDF 栏不支持高亮」那行）。 -->
     <button v-if="props.anchored && props.allowNote" @click="emit('note')">
