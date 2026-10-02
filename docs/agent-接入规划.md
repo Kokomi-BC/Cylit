@@ -19,7 +19,7 @@ python scripts/agent_check.py        # 自检（--quick 不调模型）
 |---|---|
 | `backend/agent/` | Agent 服务：`service.py`（HTTP/SSE）、`runtime.py`（编排+引用+清洗）、`tools.py`（6 个只读工具）、`workspace.py`（Windows 只读 backend）、`prompts.py`、`host.py`、`skills/`（4 个） |
 | `backend/services/agent/` | 主后端侧：`project.py`（只读投影）、`conversations.py`（会话落库）、`model_config.py`（模型配置下发）、`bridge.py`（SSE 字节转发） |
-| `backend/api/agent.py` | 13 条路由（对前端 6 条 + 对 agent 7 条，后者只认内部令牌） |
+| `backend/api/agent.py` | 24 条路由（对前端 13 条 + 对 agent 11 条，后者只认内部令牌） |
 | `scripts/` | `agent_check.py`（自检）、`agent_env_check.py`（依赖冒烟）、`probe_agent_tools.py`（function calling 真机探测） |
 
 ---
@@ -565,6 +565,7 @@ conversation_message(
   role ENUM('user','assistant','summary','tool'),
   content MEDIUMTEXT, citations_json JSON, tool_trace_json JSON,
   attachments_json JSON,                       -- 用户上传/粘贴的图片（P1 追加）
+  thinking LONGTEXT, thinking_ms INT,          -- 思维链与思考耗时（只给前端折叠展示）
   finish_reason VARCHAR(32), created_at)      -- stop / rounds_exhausted / cancelled / error
 ```
 
@@ -618,8 +619,10 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 | `session` | `{conversation_id, paper_id, runtime, skills[], content_source}` | 记录会话 id、显示已激活 skill |
 | `tool` | `{round, tool, status, args_digest}` | 过程行（**不发原始 JSON**） |
 | `answer_delta` | `{text}` | 追加正文（**增量，不是累积全文**） |
+| `thinking_delta` | `{text, ms}` | 追加思维链（**另一条通道**，前端折叠展示；`ms` 是服务端跑表，前端照它显示"思考 N 秒"） |
+| `thinking` | `{status: "done", ms}` | 思考阶段结束（第一段正文出现时推一次），`ms` 为**权威耗时** |
 | `citation` | `Citation` | 引用表增量 || `compress` | `{summary_id, turns}` | 提示"历史已压缩" |
-| `done` | `{answer, citations[], tool_trace[], rounds, incomplete_reason, persisted, conversation_id, followups[]}` | 权威结果，覆盖流式内容 |
+| `done` | `{answer, citations[], tool_trace[], rounds, incomplete_reason, thinking, thinking_ms, persisted, conversation_id}` | 权威结果，覆盖流式内容 |
 | `error` | `{code, message, retryable}` | 错误终态 |
 | `cancelled` | `{}` | 取消终态 |
 | `heartbeat` | `{elapsed_ms}` | 忽略（保连接） |
@@ -628,6 +631,21 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 ② `done` 在落库**之后**发，带 `persisted`；③ **落库之后不再检查 deadline**（M8）；
 ④ 心跳 5s、总 deadline 120s（Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 ⑤ `answer_delta` 推的必须是**清洗后**的增量。
+
+**为什么 thinking 必须单独一条通道**：`ThinkingPartDelta` 与 `TextPartDelta` **都有**
+`content_delta` 字段 —— 不判类型就会把思考模式的思维链当正文推给用户（P0 首轮实测：整段英文推理
+出现在回答开头）。所以在 `runtime._translate` 里分两支：思考 → `thinking_delta`，正文 → `answer_delta`。
+思维链**不做引用清洗**（它是草稿，正文才是要交付的东西），前端也**按纯文本渲染**（不走 markdown，
+否则它看起来就跟答案一样了）。
+
+**思考耗时**从**发起模型调用**算到第一段正文出现（`state.model_t0`），**包含工具往返**
+（模型会"想 → 调工具 → 接着想"，用户等的就是这一段）。只统计纯粹"在想"的片段既算不准
+（工具等待与思考在流里没有干净的分界），也会给出一个和体感不符的小数字。没有正文
+（轮数用尽 / 报错）时算到流结束 —— 否则这个数字会永远停在 0，看起来像"没思考"。
+
+**思考随消息落库**（`conversation_message.thinking` / `thinking_ms`）：前端在 `done` 之后会
+重拉一次会话（`done` 是权威结果），不落的话思考块会在回答落地的那一刻凭空消失。它**不进正文、
+不进下一轮历史**（`history_from_chain` 只发 `role` 与 `content`）。
 
 **⚠️ 前端必须知道的一件事**：流式期间推的 `citation.ref` 是 registry 的**原始编号**
 （可能到 60+），而 `done` 里的 `citations` 是压成 `1..M` 之后的那一份，正文里的标记
@@ -659,7 +677,7 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
-| **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~会话树分叉（`regenerate` / 编辑提问）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~；追问建议**决定不做**（§10.3） | ✅ `agent_check.py` **110/110**（⑧ 节新增对话数据面 20 项）、`frontend_check.py --chat` **120/120**（⑰ 节 17 项） | 完成 |
+| **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~会话树分叉（`regenerate` / 编辑提问）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~ + ~~深度思考折叠与思考耗时~~；追问建议**决定不做**（§10.3） | ✅ `agent_check.py` **119/119**（⑧ 对话数据面 20 项 + ⑨ 深度思考 8 项）、`frontend_check.py --chat` **122/122**（⑰ 节 19 项） | 完成 |
 | **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
 
 **P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
@@ -725,6 +743,19 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、
 | B12 | 编辑提问挂在原提问的父下面 | 编辑**第一句** → 可见提问 1 条、`siblings` 2 个、内容是新问法、不带旧划词引用 | ✅ 抓到一个真 bug（见 dev-log 21） |
 | B13 | 批量删除真的删了 | 删掉该会话 → `deleted` 含它、再 GET 404；空 id 数组不报错 | ✅ |
 
+**⑨ 深度思考（2026-10-03）** —— 模型关掉思考模式时整节 `[SKIP]`（那是配置，不是代码路径）：
+
+| # | 断言 | 做法 | 结果 |
+|---|---|---|---|
+| C1 | 思维链走独立通道 | 有 `thinking_delta`、同时也有 `answer_delta`（不是把推理当正文） | ✅ |
+| C2 | 思考结束帧带权威耗时 | 恰好一条 `thinking{status:done}`，其 `ms` == `done.thinking_ms` 且 > 0 | ✅ |
+| C3 | 思维链不进正文 | 思维链前 40 字不出现在回答里 | ✅ 踩过（P0 首轮） |
+| C4 | 流式思考 == `done.thinking` | 增量拼接与 `done` 里那份逐字一致 | ✅ |
+| C5 | 思考随消息落库 | 重读会话：助手消息带 `thinking` + `thinking_ms` | ✅ |
+| C6 | 落库的正文与思考是两份 | 正文里没有思考 | ✅ |
+| C7 | 用户消息不挂思考 | 只有助手消息有 | ✅ |
+| C8 | 思考不进下一轮历史 | 同一会话接着问一轮能正常答出 | ✅ |
+
 **另外加了三条文档里没写、但真出过问题的断言**：
 
 - **流式增量拼接 == `done.answer`**（抹掉 `done` 阶段的两处已知改写后比较）——
@@ -753,6 +784,7 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、
 | **图片** | 输入区左侧加号 / 直接**粘贴** / 拖进面板，三种入口同一个上传口（`POST /agent/attachments`，**张数不限**）。缩略图带删除；发出的那一轮图片留在气泡上，可点开原图 |
 | **分叉** | 用户消息 hover → 复制 / 编辑（编辑 = 新提问挂到原提问的**父**下面）；助手消息 hover → 复制 / 重新生成。有兄弟时消息上方出现 `◀ 2/3 ▶`，点它 `POST /conversations/{id}/branch` 只挪 `head`，一条消息都不删 |
 | **圆环 = 压缩** | 圆环显示 `usage.percent`（token 估算 / `agent_context_budget`），点它 = `POST /agent/conversations/{id}/compress`；到 85% 时后端会**自动**先压一次 |
+| **深度思考** | 回答上方一个折叠块：思考中显示「正在深度思考 · 3.4 秒」（跑表取服务端推的 `ms`），第一段正文出现时**自动收起**并停在权威耗时上；点抬头可再展开。历史里的思考块**默认折叠**，等宽纯文本渲染（它是模型的草稿，不是正文） |
 | **空态文案** | 从「与大肥鱼一起讨论《论文名》」/「… XX 的实现」/「… XX 为什么有效」/… 里**随机取一条**（XX 由标题与标签现抽关键词），点一下填进输入框，旁边有「换一条」 |
 | **划词解释** | 浮动卡片；**由 agent 产出**（`/agent/ask` + `selection`，流式），卡片里是一个小对话线程：可以就这段继续追问（同一 conversation_id），也能「在对话里继续」把选区带进侧栏面板（面板会**自动切到二级页**——一级页没有输入框，留在那儿用户会以为没反应） |
 | **划词历史** | 「历史解释（N）」= `source=selection` 的批注（「存为批注」存下来的那些），点一条即可回看 |

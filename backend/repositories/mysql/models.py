@@ -438,6 +438,10 @@ class ConversationMessage(Base):
     #: 存**消息上**而不是单独一张表：图片是这一轮的输入，跟着消息一起重放
     #: （"重新生成"要能拿到当时那几张图，见 `conversations.branch`）。
     attachments_json: Mapped[str | None] = mapped_column(Text)
+    #: 思考模式的思维链（**只给前端折叠展示**：不进正文、不进下一轮历史、不参与引用清洗）
+    thinking: Mapped[str | None] = mapped_column(Text)
+    #: 思考耗时（毫秒，模型调用 → 第一段正文）；没有思考模式时为空
+    thinking_ms: Mapped[int | None] = mapped_column(Integer)
     #: stop / rounds_exhausted / cancelled / error（终态口径，见规划 §11）
     finish_reason: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

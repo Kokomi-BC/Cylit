@@ -34,6 +34,8 @@ def _row_to_message(row) -> dict:
         "citations": json_loads(row.citations_json, []) or [],
         "tool_trace": json_loads(row.tool_trace_json, []) or [],
         "attachments": json_loads(getattr(row, "attachments_json", None), []) or [],
+        "thinking": row.thinking or "",
+        "thinking_ms": int(row.thinking_ms or 0),
         "finish_reason": row.finish_reason,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -428,6 +430,7 @@ def append_message(conversation_id: str, *, role: str, content: str,
                    citations: list | None = None,
                    tool_trace: list | None = None,
                    attachments: list | None = None,
+                   thinking: str = "", thinking_ms: int = 0,
                    finish_reason: str | None = None) -> dict:
     """追加一条消息并把 `head_id` 移到它上面（父节点默认取当前 head）。
 
@@ -461,6 +464,8 @@ def append_message(conversation_id: str, *, role: str, content: str,
             citations_json=json_dumps(citations or []),
             tool_trace_json=json_dumps(tool_trace or []),
             attachments_json=json_dumps(attachments or []),
+            thinking=thinking or None,
+            thinking_ms=int(thinking_ms or 0) or None,
             finish_reason=finish_reason,
         ))
         conv.head_id = message_id

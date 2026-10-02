@@ -2202,6 +2202,20 @@ f.addEventListener('load', async () => {
     res.chatErr = (chat.querySelector('.err') || {}).textContent || '';
     res.chatStreamingLeft = !!chat.querySelector('.msg.live');
     res.hasBranchTool = !!chat.querySelector('.msg-tools .ico');
+
+    /* ── 深度思考块：抬头带耗时，默认折叠，点开有点开的内容 ── */
+    const think = chat.querySelector('.msg.assistant .think');
+    res.thinkHead = think ? (think.querySelector('.think-head') || {}).textContent || '' : '';
+    res.thinkText = think ? (think.querySelector('.think-body') || {}).textContent || '' : '';
+    res.thinkCollapsed = !!think && !think.querySelector('.think-body');
+    if (think) {
+      think.querySelector('.think-head').click();
+      await sleep(300);
+      res.thinkOpenLen = ((think.querySelector('.think-body') || {}).textContent || '').length;
+      think.querySelector('.think-head').click();
+      await sleep(300);
+      res.thinkClosedAgain = !think.querySelector('.think-body');
+    }
     out(res);
 
     /* ── 返回一级：历史里应该多出一条 ── */
@@ -3832,13 +3846,22 @@ def main() -> int:
 
     print()
     print("=" * 78)
-    print("⑰ 侧栏「对话」面板：两级 + 图片上传 + 一条消息（需 agent 服务在跑）")
+    print("⑰ 侧栏「对话」面板：两级 + 图片上传 + 一条消息 + 深度思考（需 agent 服务在跑）")
     print("=" * 78)
     if not args.chat:
         print("[SKIP] 加 --chat 才跑这一节（要 `pr.py agent` 在跑，且会真调一次模型）")
     elif not browser:
         print("[SKIP] 需要浏览器")
     else:
+        # 思考块是个**配置相关**的功能（模型关掉思考就没有），所以先看配置再决定断不断言
+        thinking_on = False
+        try:
+            code, body = fetch(f"{base}/api/v1/agent/status", timeout=15)
+            if code == 200:
+                model = (json.loads(body.decode("utf-8")).get("data") or {}).get("model") or {}
+                thinking_on = (model.get("parameters") or {}).get("thinking") == "enabled"
+        except Exception:  # noqa: BLE001
+            thinking_on = False
         probe = CHAT_PROBE.replace("__URL__", f"{base}/app/reader/{paper}?side=chat&nosse=1")
         probe = probe.replace("__WAIT__", "9000").replace("__PNG_B64__", PROBE_PNG_B64)
         probe_file = ROOT / "frontend" / "dist" / "_chat_probe.html"
@@ -3880,7 +3903,8 @@ def main() -> int:
                 ("加号按钮是主题色（列表页与输入区各一个）",
                  bool(data.get("plusIsAccent")) and bool(data.get("listPlusIsAccent")),
                  f"输入区={data.get('plusBg')} 列表={data.get('listPlusBg')} "
-                 f"accent={data.get('accentBg')}"),                # ③ 图片上传（不限张数：input 带 multiple）
+                 f"accent={data.get('accentBg')}"),
+                # ③ 图片上传（不限张数：input 带 multiple）
                 ("图片上传入口（multiple file input）",
                  bool(data.get("hasFileInput")),
                  "input[type=file][multiple]"),
@@ -3901,6 +3925,22 @@ def main() -> int:
                  f"{data.get('userAtts')} 张"),
                 ("引用渲染成可点 chip", bool(data.get("chatCites")), f"{data.get('chatCites')}"),
                 ("助手消息带分叉/复制入口", bool(data.get("hasBranchTool")), ""),
+            ]
+            if thinking_on:
+                checks += [
+                    ("深度思考块可展开收起（默认折叠）",
+                     data.get("thinkCollapsed") is True and data.get("thinkClosedAgain") is True
+                     and data.get("thinkOpenLen", 0) > 0,
+                     f"点开 {data.get('thinkOpenLen')} 字，再点又收起="
+                     f"{data.get('thinkClosedAgain')}"),
+                    ("思考抬头带耗时（深度思考 · N 秒）",
+                     "深度思考" in (data.get("thinkHead") or "")
+                     and "秒" in (data.get("thinkHead") or ""),
+                     f"抬头={data.get('thinkHead')!r}"),
+                ]
+            else:
+                print("[SKIP] 深度思考块：当前问答模型没开思考模式（parameters.thinking != enabled）")
+            checks += [
                 # ⑤ 返回一级
                 ("返回一级页（历史里多了一条）",
                  bool(data.get("backToList")) and data.get("rowsAfter", 0) > 0,

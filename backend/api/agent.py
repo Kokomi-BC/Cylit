@@ -461,5 +461,7 @@ async def agent_persist_message(request: Request, payload: dict = Body(...),
         parent_id=payload.get("parent_id"),
         citations=payload.get("citations") or [],
         tool_trace=payload.get("tool_trace") or [],
+        thinking=str(payload.get("thinking") or ""),
+        thinking_ms=int(payload.get("thinking_ms") or 0),
         finish_reason=payload.get("finish_reason"),
     ), request=request)

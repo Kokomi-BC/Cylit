@@ -82,6 +82,12 @@ const sending = ref(false);
 const streamText = ref('');
 const streamNote = ref('');
 const streamCitations = ref<AgentCitation[]>([]);
+/** 思考阶段：正文按 `thinking_delta` 单独收（**不混进回答**），跑表以服务端的 `ms` 为准 */
+const streamThinking = ref('');
+const thinkingMs = ref(0);
+const thinkingOpen = ref(true);
+/** 展开着的历史思考块（按消息 id 记；默认都折叠） */
+const openThinking = ref<string[]>([]);
 const errorText = ref('');
 const editing = ref<{ id: string; text: string } | null>(null);
 const headline = ref('');
@@ -126,6 +132,23 @@ function imageSrc(url?: string) {
 function fmtSize(bytes?: number) {
   const n = Number(bytes || 0);
   return n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/** 思考耗时文案：10 秒以内给一位小数（"3.4 秒"和"3 秒"是两种感受）。 */
+function fmtMs(ms?: number) {
+  const n = Math.max(0, Number(ms || 0));
+  if (!n) return '';
+  return n < 10000 ? `${(n / 1000).toFixed(1)} 秒` : `${Math.round(n / 1000)} 秒`;
+}
+
+function isThinkingOpen(id: string) {
+  return openThinking.value.includes(id);
+}
+
+function toggleThinking(id: string) {
+  openThinking.value = isThinkingOpen(id)
+    ? openThinking.value.filter(x => x !== id)
+    : [...openThinking.value, id];
 }
 
 /* ------------------------------ 空态文案 ------------------------------ */
@@ -414,6 +437,17 @@ function onEvent(name: string, data: any) {
     if (data?.status === 'start') streamNote.value = `${toolLabel(data.tool)}${data.args_digest ? ` · ${data.args_digest}` : ''}`;
     return;
   }
+  if (name === 'thinking_delta') {
+    streamThinking.value += data?.text ?? '';
+    thinkingMs.value = Number(data?.ms || thinkingMs.value);
+    return;
+  }
+  if (name === 'thinking') {
+    // 思考阶段结束（正文开始了）：把跑表停在服务端给的权威值上，并按惯例收起思考
+    thinkingMs.value = Number(data?.ms || thinkingMs.value);
+    thinkingOpen.value = false;
+    return;
+  }
   if (name === 'answer_delta') {
     streamText.value += data?.text ?? '';
     streamNote.value = '';
@@ -427,6 +461,7 @@ function onEvent(name: string, data: any) {
   if (name === 'done') {
     streamText.value = data?.answer ?? streamText.value;
     streamCitations.value = data?.citations ?? streamCitations.value;
+    if (data?.thinking_ms) thinkingMs.value = Number(data.thinking_ms);
     if (data?.incomplete_reason) toast(`回答未完成：${data.incomplete_reason}`, 'warn');
     return;
   }
@@ -469,6 +504,9 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   sending.value = true;
   streamText.value = '';
   streamCitations.value = [];
+  streamThinking.value = '';
+  thinkingMs.value = 0;
+  thinkingOpen.value = true;
   streamNote.value = mode === 'send' ? '正在准备…' : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…');
   const optimistic: AgentMessage | null = mode === 'send' ? {
     message_id: `local-${Date.now()}`, conversation_id: currentId.value ?? '', seq: 0,
@@ -514,6 +552,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     sending.value = false;
     streamText.value = '';
     streamCitations.value = [];
+    streamThinking.value = '';
     streamNote.value = '';
     controller = null;
   }
@@ -747,6 +786,17 @@ watch(() => props.selection, (sel) => {
               <AppIcon name="quote" :size="11" />
               <span class="truncate">{{ splitQuote(m.content).quote }}</span>
             </div>
+
+            <!-- 深度思考：默认折叠，点抬头展开；耗时取服务端记的那一次 -->
+            <div v-if="m.thinking" class="think" :class="{ open: isThinkingOpen(m.message_id) }">
+              <button class="think-head" @click="toggleThinking(m.message_id)">
+                <AppIcon :name="isThinkingOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="11" />
+                <AppIcon name="sparkle" :size="11" />
+                <span>深度思考{{ m.thinking_ms ? ` · ${fmtMs(m.thinking_ms)}` : '' }}</span>
+              </button>
+              <pre v-if="isThinkingOpen(m.message_id)" class="think-body">{{ m.thinking }}</pre>
+            </div>
+
             <div class="md body" v-html="render(m.role === 'user' ? splitQuote(m.content).rest : m.content)" />
 
             <div v-if="m.attachments?.length" class="atts">
@@ -767,6 +817,15 @@ watch(() => props.selection, (sel) => {
 
         <!-- 正在生成 -->
         <div v-if="sending || streamText" class="msg assistant live">
+          <!-- 思考中（正文还没出来时它才是主角）：跑表以服务端推的 ms 为准 -->
+          <div v-if="streamThinking" class="think live" :class="{ open: thinkingOpen }">
+            <button class="think-head" @click="thinkingOpen = !thinkingOpen">
+              <AppIcon :name="thinkingOpen ? 'chevron-down' : 'chevron-right'" :size="11" />
+              <span class="dot" />
+              <span>{{ streamText ? '深度思考' : '正在深度思考' }}{{ thinkingMs ? ` · ${fmtMs(thinkingMs)}` : '' }}</span>
+            </button>
+            <pre v-if="thinkingOpen" class="think-body">{{ streamThinking }}</pre>
+          </div>
           <div v-if="streamText" class="md body" v-html="render(streamText)" />
           <div v-if="streamNote" class="note"><span class="dot" />{{ streamNote }}</div>
           <div v-if="streamCitations.length" class="cites">
@@ -981,6 +1040,28 @@ watch(() => props.selection, (sel) => {
   animation: pulse 1.1s ease-in-out infinite;
 }
 @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
+
+/* 深度思考：折叠块。刻意用等宽 + 纯文本（不走 markdown）——
+   思维链是模型的草稿，不是给用户读的正文，渲染成 markdown 只会让它看起来像答案。 */
+.think { margin: 2px 0 6px; }
+.think-head {
+  display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border);
+  background: var(--bg-sunken); color: var(--text-dim); border-radius: var(--radius-ctl);
+  padding: 3px 9px; font-size: 11.5px; cursor: pointer;
+}
+.think-head:hover { border-color: var(--accent); color: var(--accent-text); }
+.think.open .think-head { border-color: var(--border-strong); color: var(--text); }
+.think .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+.think-body {
+  margin: 6px 0 0; padding: 8px 10px; max-height: 320px; overflow-y: auto;
+  border-left: 2px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-sunken); color: var(--text-dim);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .err { color: var(--danger); line-height: 1.6; }
 .msg .md :deep(p) { margin: 5px 0; }
 .msg .md :deep(ul), .msg .md :deep(ol) { margin: 5px 0; padding-left: 18px; }

@@ -765,6 +765,10 @@ export interface AgentMessage {
   tool_trace?: Array<Record<string, any>>;
   /** 图片附件（用户提问那一轮才有） */
   attachments?: AgentAttachment[];
+  /** 思考模式的思维链（只给折叠展示；不进正文、不进下一轮历史） */
+  thinking?: string;
+  /** 思考耗时（毫秒，模型调用 → 第一段正文） */
+  thinking_ms?: number;
   /** 同一父节点下的兄弟消息 id（分叉导航 ◀ n/m ▶ 用） */
   siblings?: string[];
   sibling_index?: number;

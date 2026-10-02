@@ -46,9 +46,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 默认值必须给：老库里的既有行要落到 0，而不是 NULL（读出来就是 None，前端显示成空白）。
     ("paper", "transcribe_done", "`transcribe_done` INT NOT NULL DEFAULT 0"),
     ("paper", "transcribe_total", "`transcribe_total` INT NOT NULL DEFAULT 0"),
-    # 对话里的图片附件（"那一轮"的附属数据，挂在消息行上）：
-    # 允许 NULL —— 老消息就是没有，读出来空列表即可。
+    # 对话里的图片附件，以及思考模式的思维链 / 思考耗时（都是"那一轮"的附属数据）：
+    # 允许 NULL —— 老消息就是没有，读出来空列表 / 0 即可。
     ("conversation_message", "attachments_json", "`attachments_json` LONGTEXT NULL"),
+    ("conversation_message", "thinking", "`thinking` LONGTEXT NULL"),
+    ("conversation_message", "thinking_ms", "`thinking_ms` INT NULL"),
 )
 
 

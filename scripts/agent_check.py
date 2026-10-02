@@ -840,6 +840,98 @@ def check_threads(base: str, paper: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# ⑨ 深度思考：思维链单独一条通道（折叠展示 + 思考耗时）
+# --------------------------------------------------------------------------
+
+
+def check_thinking(base: str, paper: str) -> None:
+    """⑨ 思考通道：`thinking_delta` 独立于正文、耗时可信、随消息落库。
+
+    ⚠️ 模型关掉思考模式时这几条没有意义（配置项，不是代码路径），所以先看配置再断言。
+    """
+    print("\n" + "=" * 78)
+    print("⑨ 深度思考：思维链不进正文 + 思考耗时 + 随消息落库")
+    print("=" * 78)
+    try:
+        status = get_json(f"{base}/api/v1/agent/status")["data"]
+    except Exception as exc:  # noqa: BLE001
+        record("think", "取模型配置", False, f"{type(exc).__name__}: {exc}")
+        return
+    thinking_on = ((status.get("model") or {}).get("parameters") or {}).get("thinking") == "enabled"
+    if not thinking_on:
+        skip("深度思考通道", "当前问答模型没有开思考模式（parameters.thinking != enabled）")
+        return
+
+    try:
+        run = ask(base, paper, "这篇论文为什么用 scaled dot-product 而不是普通点积？")
+    except Exception as exc:  # noqa: BLE001
+        record("think", "带思考的一轮可跑", False, f"{type(exc).__name__}: {exc}")
+        return
+    chain = "".join(e["data"].get("text") or "" for e in run["events"]
+                    if e["type"] == "thinking_delta")
+    done = run["done"] or {}
+    answer = done.get("answer") or ""
+    kinds = run["kinds"]
+    record("think", "思维链走独立通道（thinking_delta，不混进 answer_delta）",
+           bool(chain) and kinds.get("answer_delta", 0) > 0,
+           f"思考 {len(chain)} 字 / {kinds.get('thinking_delta', 0)} 个增量 / "
+           f"正文 {kinds.get('answer_delta', 0)} 个增量")
+
+    closed = [e["data"] for e in run["events"]
+              if e["type"] == "thinking" and e["data"].get("status") == "done"]
+    record("think", "思考阶段在正文开始时报一次完成（含权威耗时）",
+           len(closed) == 1 and int(closed[0].get("ms") or 0) > 0
+           and int(done.get("thinking_ms") or 0) == int(closed[0].get("ms") or 0),
+           f"帧 ms={closed[0].get('ms') if closed else None} done.thinking_ms={done.get('thinking_ms')}")
+
+    record("think", "思维链没有混进正文（前 40 字不出现在回答里）",
+           bool(answer) and (chain[:40] not in answer if chain else False),
+           f"回答开头={answer[:40]!r}")
+
+    # 增量拼接 == done 里那份（防止"流式看到一半、落库又是一份"）
+    record("think", "流式思考与 done 里的一致",
+           chain == (done.get("thinking") or ""),
+           f"{len(chain)} 字 vs {len(done.get('thinking') or '')} 字")
+
+    conv = done.get("conversation_id")
+    if not conv:
+        record("think", "思考随消息落库", False, "done 里没有 conversation_id")
+        return
+    try:
+        msgs = get_json(f"{base}/api/v1/agent/conversations/{conv}")["data"]["messages"]
+        last = next(m for m in reversed(msgs) if m["role"] == "assistant")
+        record("think", "思考随消息落库（重开会话仍在，不会被回答挤掉）",
+               (last.get("thinking") or "") == chain and int(last.get("thinking_ms") or 0) > 0,
+               f"落库 {len(last.get('thinking') or '')} 字 / {last.get('thinking_ms')}ms")
+        record("think", "落库的正文与思考是两份（正文里没有思考）",
+               (chain[:40] not in (last.get("content") or "")) if chain else False,
+               f"正文={len(last.get('content') or '')} 字")
+        record("think", "用户消息不挂思考",
+               all(not m.get("thinking") for m in msgs if m["role"] == "user"), "")
+    except Exception as exc:  # noqa: BLE001
+        record("think", "思考随消息落库（重开会话仍在，不会被回答挤掉）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    # 接着问一轮：历史里只该有 role/content（思考不进历史），能正常答出来即可
+    try:
+        run2 = ask(base, paper, "那它和 additive attention 的复杂度差多少？",
+                   extra={"conversation_id": conv})
+        done2 = run2["done"] or {}
+        record("think", "带思考的会话能接着问（思考不进历史）",
+               bool(done2.get("answer")) and bool(done2.get("thinking") is not None),
+               f"第二轮回答 {len(done2.get('answer') or '')} 字")
+    except Exception as exc:  # noqa: BLE001
+        record("think", "带思考的会话能接着问（思考不进历史）", False,
+               f"{type(exc).__name__}: {exc}")
+
+    try:
+        post_json(f"{base}/api/v1/agent/conversations/batch-delete",
+                  {"conversation_ids": [conv]})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent 问答链路自检")
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -867,6 +959,7 @@ def main() -> int:
         check_p1(base, paper)
         check_chat(base, paper)
         check_threads(base, paper)
+        check_thinking(base, paper)
 
     print("\n" + "=" * 78)
     total = len(results)

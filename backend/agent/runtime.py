@@ -86,6 +86,19 @@ class RunState:
     incomplete_reason: str | None = None
     usage: dict = field(default_factory=dict)
     error: str | None = None
+    #: 思考模式的思维链（**单独一条通道**，永远不进正文、也不进下一轮历史）。
+    #: 为什么不丢掉：模型想什么对用户是有用的上下文；为什么不能混进正文：
+    #: `ThinkingPartDelta` 与 `TextPartDelta` 都有 `content_delta`，混了就是把推理当答案发出去。
+    thinking: str = ""
+    #: 思考耗时（毫秒）：从**发起模型调用**到第一段正文出现。
+    #: 注意它包含工具往返（模型会"想 → 调工具 → 接着想"），因为用户等的就是这一段；
+    #: 只统计纯粹"在想"的片段既算不准（工具等待与思考在流里没有干净的分界），
+    #: 也会给出一个和体感不符的小数字。没有正文（轮数用尽/报错）时取到流结束为止。
+    thinking_ms: int = 0
+    #: 模型调用开始的时刻（`_translate` 用它算上面那个毫秒数）
+    model_t0: float = 0.0
+    #: 已经开始输出正文（思考阶段结束的判据）
+    answer_started: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -455,6 +468,9 @@ class AgentRuntime:
         limits = UsageLimits(request_limit=self.cfg.max_rounds)
         sent_refs: set[int] = set()
         prompt = await self._user_prompt(req)
+        # 思考耗时的起点：**模型调用**发起那一刻（档案预注入与检索不算思考，
+        # 它们在前端有各自的过程提示，混进来会让"思考 8 秒"变成"检索 6 秒 + 思考 2 秒"）
+        state.model_t0 = time.perf_counter()
 
         try:
             async with agent.run_stream_events(
@@ -496,6 +512,9 @@ class AgentRuntime:
             if tail:
                 yield {"type": "answer_delta", "text": tail}
             state.text = sanitizer.clean
+            # 只想不答（轮数用尽 / 报错）：耗时算到流结束，别留个 0 看起来像没思考
+            if state.thinking and not state.thinking_ms:
+                state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
 
     def _translate(self, event: Any, deps: Deps, state: RunState,
                    sanitizer: StreamingAnswerSanitizer,
@@ -504,15 +523,35 @@ class AgentRuntime:
         name = type(event).__name__
         if name == "PartDeltaEvent":
             delta = getattr(event, "delta", None)
-            # ⚠️ ThinkingPartDelta **也有** `content_delta` 字段：不判类型就会把思考模式下的
+            kind = type(delta).__name__
+            # ⚠️ `ThinkingPartDelta` **也有** `content_delta` 字段：不判类型就会把思考模式下的
             # 思维链当正文推给用户（实测：DeepSeek 思考模式的英文推理整段出现在回答开头）。
-            if type(delta).__name__ != "TextPartDelta":
+            # 所以这里**分两支**：思考走 `thinking_delta`（前端折叠显示），正文走 `answer_delta`。
+            if kind == "ThinkingPartDelta":
+                text = getattr(delta, "content_delta", None)
+                if not text:
+                    return []
+                state.thinking += text
+                return [{"type": "thinking_delta", "text": text,
+                         "ms": int((time.perf_counter() - state.model_t0) * 1000)}]
+            if kind != "TextPartDelta":
                 return []
             text = getattr(delta, "content_delta", None)
             if not text:
                 return []
-            out = sanitizer.feed(text)
-            return [{"type": "answer_delta", "text": out}] if out else []
+            out: list[dict] = []
+            if not state.answer_started:
+                state.answer_started = True
+                if state.thinking:
+                    # 思考阶段到此为止：把**权威耗时**推给前端（让它把跑表停下），
+                    # 前端自己那份计时只是"看得见的跑表"，以这条为准
+                    state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
+                    out.append({"type": "thinking", "status": "done",
+                                "ms": state.thinking_ms})
+            clean = sanitizer.feed(text)
+            if clean:
+                out.append({"type": "answer_delta", "text": clean})
+            return out
         if name == "FunctionToolCallEvent":
             part = getattr(event, "part", None)
             deps.note_model_call()
@@ -659,6 +698,10 @@ class AgentRuntime:
                 "content": text,
                 "citations": payload,
                 "tool_trace": deps.trace,
+                # 思维链**随消息一起落库**：前端在 `done` 之后会重拉一次会话（`done` 是权威结果），
+                # 不落的话思考块会在回答落地的那一刻凭空消失。
+                "thinking": state.thinking,
+                "thinking_ms": state.thinking_ms,
                 "finish_reason": state.incomplete_reason or "stop",
             })
             persisted = bool(res.get("persisted"))
@@ -667,8 +710,8 @@ class AgentRuntime:
         yield {"type": "done", "answer": text, "citations": payload,
                "tool_trace": deps.trace, "rounds": state.rounds,
                "incomplete_reason": state.incomplete_reason,
-               "persisted": persisted, "conversation_id": req.conversation_id,
-               "followups": []}
+               "thinking": state.thinking, "thinking_ms": state.thinking_ms,
+               "persisted": persisted, "conversation_id": req.conversation_id}
 
 
 # --------------------------------------------------------------------------
