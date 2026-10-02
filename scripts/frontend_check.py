@@ -2089,11 +2089,14 @@ pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;backgroun
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const f = document.getElementById('f');
 const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
-/* ⚠️ **真时间**等待。`--headless=new` 下虚拟时间不为 XHR/fetch 停顿：`sleep(9000)` 会瞬间跑完，
-   于是"侧栏首屏那三个请求还没回来"就被量了 —— 量到的是空列表（会话涨到 80 条后必现）。
-   做法：用一个**纯 CPU 忙等**把主线程占住 ms 毫秒（不碰网络，免得把连接池占光），
-   期间响应会排队；忙等结束后第一个 tick 就会把它们处理掉。 */
-function spin(ms) { const t0 = Date.now(); while (Date.now() - t0 < ms) { /* 占住主线程 */ } }
+/* ⚠️ **真时间**等待，而且**用计数不用时钟**。两件事：
+   ① `--headless=new` 下虚拟时间不为 XHR/fetch 停顿：`sleep(9000)` 会瞬间跑完，
+      侧栏首屏那三个请求还没回来就被量了 —— 量到的是空列表（会话涨到 80 条后必现）；
+   ② 这种环境下 `Date.now()` 走的是**虚拟时钟**，忙等期间它可能根本不前进 ——
+      `while (Date.now() - t0 < ms)` 会**死循环**（实测把整轮渲染拖到 205s 超时、
+      一个字段都没输出）。所以烧 CPU 用固定圈数，等就绪用固定轮数。 */
+function spin(n) { let s = 0; for (let i = 0; i < n; i += 1) s += i % 7; return s; }
+const BURN = 6e6;          /* ≈ 10~25ms 真时间一圈 */
 /* 16x16 的真 PNG（红底 + 蓝方块）：**必须是真图** —— 只靠魔数糊一个坏 PNG 过得了后端，
    但会被模型端按 "unsupported image" 拒掉，那样量到的是探针自己的 bug。 */
 const PNG_B64 = '__PNG_B64__';
@@ -2113,20 +2116,29 @@ function rgbOf(w, value) {
   return out;
 }
 let started = false;
-f.addEventListener('load', async () => {
+/* ⚠️ 两处启动：`load` 事件 + 3s 兜底定时器。实测 iframe 里的 SPA 偶尔**不发 load**
+   （`_chat_probe.html` 挂在 `/app/` 下，若某个子资源一直挂着，load 永远不来），
+   那时探针会一直停在 "waiting"、整套断言全 None。
+   标题里的标记用来分辨"脚本压根没跑"和"跑了但没出结果"（排查用，不影响断言）。 */
+document.title = 'probe-boot';
+function kick() {
   if (started) return;
   started = true;
+  void main();
+}
+f.addEventListener('load', kick);
+setTimeout(kick, 3000);
+
+async function main() {
   const w = f.contentWindow, d = f.contentDocument;
   const res = { stage: 'loaded' };
   try {
-    /* 等首屏就绪：**用真时间兜底**（见 `spin` 的注释）—— 每轮先烧 250ms 真时间让挂起的
-       请求落地，再 `await` 一拍把它渲染出来；总上限 20s。 */
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
+    /* 等首屏就绪：固定轮数 + 每轮烧一圈 CPU 真时间（见 `spin` 的注释），最多约 40 轮 */
+    for (let i = 0; i < 40; i += 1) {
       const c = d.querySelector('.chat');
       if (c && c.querySelector('.list-head')
           && (c.querySelectorAll('.row').length || c.querySelector('.hollow'))) break;
-      spin(250);
+      spin(BURN);
       await sleep(50);
     }
     res.tabs = [...d.querySelectorAll('.side-tab')].map((b) => (b.textContent || '').trim());
@@ -2136,13 +2148,15 @@ f.addEventListener('load', async () => {
     if (!chat) { out(res); return; }
     res.chatWidth = Math.round(chat.getBoundingClientRect().width);
 
-    /* ── 一级页：搜索 / 分类 / 范围 / 管理 / 会话行 ── */
+    /* ── 一级页：搜索 / 分类 / 管理 / 会话行 ── */
     res.hasListHead = !!chat.querySelector('.list-head .search-field input');
     const trays = [...chat.querySelectorAll('.filters .seg')];
     res.trayCount = trays.length;
     res.segs = trays[0] ? [...trays[0].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
-    res.scopeSegs = trays[1] ? [...trays[1].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
     res.segActive = (trays[0] && trays[0].querySelector('button.active') || {}).textContent || '';
+    /* 只列当前论文的对话：范围选择器应该**不存在**了（用户口径 2026-10-03） */
+    res.hasScopeTray = [...chat.querySelectorAll('.filters button')]
+      .some((b) => ['本论文', '全库', '全部论文'].includes((b.textContent || '').trim()));
     /* 胶囊的"三层 + 无描边"是**算出来的**（量计算样式），不是靠肉眼看：
        ① 托盘：无边框、底色 = 托盘色；② 选中项：白底 + 有阴影。 */
     const activeBtn = trays[0] ? trays[0].querySelector('button.active') : null;
@@ -2165,16 +2179,33 @@ f.addEventListener('load', async () => {
     res.rows = chat.querySelectorAll('.row').length;
     res.listReady = res.rows > 0 || !!chat.querySelector('.hollow');
     res.hollowText = ((chat.querySelector('.hollow') || {}).textContent || '').trim().slice(0, 60);
+    /* 标题按行内 markdown 渲染：标题里带 `$…$` 时应该出 KaTeX 结构，而不是原样显示反斜杠 */
+    const titles = [...chat.querySelectorAll('.row .row-title')];
+    res.titleSample = titles.length ? (titles[0].textContent || '').trim().slice(0, 40) : '';
+    res.titleHasTag = titles.length ? (titles[0].innerHTML || '').indexOf('<') >= 0 : false;
+    res.titleKatex = titles.filter((t) => t.querySelector('.katex')).length;
+    res.titleWithMath = titles.filter((t) => (t.textContent || '').indexOf('$') >= 0).length;
+    res.hasNewBtn = !!(chat.querySelector('.list-head .new-conv'));
     const newBtn = chat.querySelector('.list-head .new-conv');
-    res.hasNewBtn = !!newBtn;
     res.newBtnBg = newBtn ? getComputedStyle(newBtn).backgroundColor : '';
-    /* 批量管理：勾两个看是否出现批量条（选完再退出） */
+    /* 顶部工具栏**只有「新对话」这一个按钮**（在**列表页**量：切到会话页后这排就不在了） */
+    res.listHeadBtns = [...chat.querySelectorAll('.list-head button')]
+      .map((b) => (b.textContent || '').trim());
+    /* 批量管理：勾两个看是否出现批量条（选完再退出）；顺带验**两个状态图标** */
     if (manage && res.rows > 0) {
       manage.click();
       await sleep(300);
       const ticks = chat.querySelectorAll('.row .tick');
       res.tickCount = ticks.length;
-      if (ticks.length) { ticks[0].click(); await sleep(200); }
+      if (ticks.length) {
+        res.tickOffSvg = (ticks[0].querySelector('svg') || {}).innerHTML || '';
+        res.tickOffColor = getComputedStyle(ticks[0]).color;
+        ticks[0].click();
+        await sleep(200);
+        res.tickOnSvg = (ticks[0].querySelector('svg') || {}).innerHTML || '';
+        res.tickOnColor = getComputedStyle(ticks[0]).color;
+        res.tickStatesDiffer = !!res.tickOffSvg && res.tickOffSvg !== res.tickOnSvg;
+      }
       res.batchBar = !!chat.querySelector('.batch-bar');
       res.batchCount = (chat.querySelector('.batch-bar .tiny') || {}).textContent || '';
       manage.click();
@@ -2190,24 +2221,101 @@ f.addEventListener('load', async () => {
     /* 等 `/agent/status` 回来（模型名不是占位符）——否则发送会被 `agentReady` 挡掉，
        而那种失败**不会**留下 `.err`，看起来就像"点了发送没反应"。 */
     for (let i = 0; i < 12; i += 1) {
-      const m = (chat.querySelector('.composer-bar .model') || {}).textContent || '';
+      const m = (chat.querySelector('.model-btn') || {}).textContent || '';
       if (m.trim() && m.trim() !== '—') break;
-      await sleep(1000);
+      spin(BURN);
+      await sleep(50);
     }
-    const ta = chat.querySelector('textarea.input');
+    const ta = chat.querySelector('textarea.composer-input');
     res.placeholder = ta ? ta.getAttribute('placeholder') : '';
-    res.headline = (chat.querySelector('.hello-line') || {}).textContent || '';
-    res.headlineStartsWithPersona = res.headline.trim().indexOf('与大肥鱼一起讨论') === 0;
+    /* 空态：只有一句语录当背景 —— **不该有任何按钮**（含上传/换一条那两枚） */
+    const hello = chat.querySelector('.hello');
+    res.headline = ((hello || {}).textContent || '').trim();
+    res.headlineStartsWithPersona = res.headline.indexOf('与大肥鱼一起讨论') === 0;
+    res.helloButtons = hello ? hello.querySelectorAll('button').length : -1;
+    /* 输入区是一个**圆角容器**：textarea 在容器里、且自己不带边框/焦点环 */
+    const box = chat.querySelector('.composer-box');
+    res.hasComposerBox = !!box;
+    if (box) {
+      const bs = getComputedStyle(box);
+      res.boxRadius = bs.borderTopLeftRadius;
+      res.boxHasInput = !!box.querySelector('textarea.composer-input');
+      res.boxHasAttach = !!box.querySelector('.attach');
+      res.boxHasSend = !!box.querySelector('.send');
+      /* 模型切换与上下文圆环**在输入框外**（用户口径 2026-10-03） */
+      res.boxHasModel = !!box.querySelector('.model-btn');
+      res.boxHasRing = !!box.querySelector('.ring');
+    }
+    const foot = chat.querySelector('.composer-foot');
+    res.footHasModel = !!(foot && foot.querySelector('.model-btn'));
+    res.footHasRing = !!(foot && foot.querySelector('.ring'));
+    /* 圆环：**小**（≤18px）且**里面没有内容**（数字只在 tooltip 里） */
+    const ring = chat.querySelector('.ring');
+    if (ring) {
+      const rect = ring.getBoundingClientRect();
+      res.ringSize = Math.round(rect.width);
+      res.ringText = (ring.textContent || '').trim();
+      res.ringTitle = ring.getAttribute('title') || '';
+    }
+    if (ta) {
+      const ts = getComputedStyle(ta);
+      res.inputBorder = ts.borderTopWidth + ' ' + ts.borderTopStyle;
+      res.inputRows = ta.getAttribute('rows');
+      res.inputMaxH = ts.maxHeight;
+      res.inputShadow = ts.boxShadow;
+    }
+    /* 焦点反馈：**先移开焦点**再量（进二级页时会自动 focus，直接量前后会一模一样）。
+       ⚠️ 这里不断言"边框变色"：`:focus-within` 在**没有窗口焦点的 iframe 里**Chrome 不匹配
+       （实测：顶层文档能匹配、探针里这个 iframe 不匹配 —— 量到的前后永远一样）。
+       改验**机制**：焦点确实落到输入框 + 样式表里确实有那条 `:focus-within` 规则。
+       视觉上的效果只能人眼验收（无头环境下截不到）。 */
+    if (ta && box) {
+      ta.blur();
+      await sleep(150);
+      ta.focus();
+      await sleep(150);
+      res.focusActive = d.activeElement === ta;
+      let hasRule = false;
+      for (const sheet of d.styleSheets) {
+        let rules = [];
+        try { rules = [...sheet.cssRules]; } catch (e) { continue; }
+        for (const r of rules) {
+          const sel = r.selectorText || '';
+          const css = (r.style && r.style.cssText) || '';
+          if (sel.indexOf('composer-box') >= 0 && sel.indexOf(':focus-within') >= 0
+              && css.indexOf('border-color') >= 0) hasRule = true;
+        }
+      }
+      res.focusRule = hasRule;
+    }
+    /* 自动增高：塞 6 行内容后高度应该变大（且不超过 max-height） */
+    if (ta) {
+      const h0 = ta.getBoundingClientRect().height;
+      const setter0 = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, 'value').set;
+      /* ⚠️ 这里的 `\\n` 必须**双写**：探针是一段 Python 字符串，写成单个 `\n` 会被 Python
+         先解释成真换行，落到 JS 里就是"单引号字符串里带换行" —— 整个 `<script>` 语法错误、
+         一个字符都不执行（现场就是"探针永远停在 waiting"，一整套断言全 None）。 */
+      setter0.call(ta, '第一行\\n第二行\\n第三行\\n第四行\\n第五行\\n第六行');
+      ta.dispatchEvent(new w.Event('input', { bubbles: true }));
+      await sleep(200);
+      res.inputH1 = Math.round(h0);
+      res.inputH6 = Math.round(ta.getBoundingClientRect().height);
+      res.inputGrew = res.inputH6 > res.inputH1;
+      setter0.call(ta, '');
+      ta.dispatchEvent(new w.Event('input', { bubbles: true }));
+      await sleep(150);
+    }
+    /* 会话页顶部：**不该再写一遍「新对话」文字**（标题已经写着会话名了）—— 只留图标钮 */
+    const threadBtns = [...chat.querySelectorAll('.thread-head button')];
+    res.threadHeadBtns = threadBtns.map((b) => (b.textContent || '').trim());
+    res.threadNewConvIconOnly = threadBtns.length === 2 && res.threadHeadBtns[1] === '';
     const plus = chat.querySelector('.composer-bar .attach');
     res.plusBg = plus ? getComputedStyle(plus).backgroundColor : '';
     res.accentBg = rgbOf(w, getComputedStyle(d.documentElement).getPropertyValue('--accent'));
-    res.plusIsAccent = !!plus && res.plusBg === res.accentBg && res.plusBg !== 'rgba(0, 0, 0, 0)';
-    /* 列表页那个加号在上面就量过了（这一层没有 .list-head 了，别在这里再查一次） */
-    res.listPlusBg = res.newBtnBg;
-    res.listPlusIsAccent = !!res.newBtnBg && res.newBtnBg === res.accentBg;
+    res.plusIsQuiet = !!plus && res.plusBg !== res.accentBg;
     res.hasFileInput = !!chat.querySelector('input[type=file][multiple]');
     res.hasRing = !!chat.querySelector('.ring');
-    res.model = (chat.querySelector('.model') || {}).textContent || '';
+    res.model = (chat.querySelector('.model-btn') || {}).textContent || '';
     out(res);
 
     /* ── 上传一张图（与用户选文件同一条路） ── */
@@ -2216,17 +2324,21 @@ f.addEventListener('load', async () => {
     dt.items.add(tinyPng(w));
     fileInput.files = dt.files;
     fileInput.dispatchEvent(new w.Event('change', { bubbles: true }));
-    for (let i = 0; i < 20; i += 1) {
-      await sleep(1000);
+    for (let i = 0; i < 40; i += 1) {
       if (chat.querySelector('.atts.pending .att')) break;
+      spin(BURN);
+      await sleep(50);
     }
     res.pendingAtts = chat.querySelectorAll('.atts.pending .att').length;
     res.attImgLoaded = !!chat.querySelector('.atts.pending .att img');
+    res.stage = 'uploaded';
     out(res);
 
     /* ── 打字 → 发送 → 等流结束 ── */
     const setter = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(ta, '这张图里有什么颜色？一句话回答。');
+    /* 问题里刻意带一段 `$…$`：它会成为会话**标题**（后端取首条提问前 40 字），
+       于是"标题也支持 markdown"这条口径在返回一级页后能被直接量到（见 lastTitleKatex）。 */
+    setter.call(ta, '这张图里有什么颜色？顺便说一下 $\\sqrt{d_k}$ 的作用。');
     ta.dispatchEvent(new w.Event('input', { bubbles: true }));
     await sleep(400);
     /* ⚠️ 认 **.send**：`.btn.primary` 在输入区里有两枚（上传的加号也是主题色实心圆钮），
@@ -2237,10 +2349,13 @@ f.addEventListener('load', async () => {
     out(res);
     if (!sendBtn) { res.error = '找不到发送按钮'; out(res); return; }
     sendBtn.click();
-    for (let i = 0; i < 70; i += 1) {
-      await sleep(1000);
+    /* 等**流结束**：同一套"固定轮数 + 烧 CPU"（见 `spin`）—— 每圈约 10~25ms 真时间，
+       300 圈 ≈ 5~8s 起步，需要更久就继续烧，直到回答落地或轮数用尽。 */
+    for (let i = 0; i < 900; i += 1) {
       if (chat.querySelector('.err') && chat.querySelector('.err').textContent.trim()) break;
       if (!chat.querySelector('.msg.live') && chat.querySelectorAll('.msg').length > 0) break;
+      spin(BURN);
+      await sleep(50);
     }
     await sleep(1200);
     res.chatMsgs = chat.querySelectorAll('.msg').length;
@@ -2251,6 +2366,7 @@ f.addEventListener('load', async () => {
     res.chatErr = (chat.querySelector('.err') || {}).textContent || '';
     res.chatStreamingLeft = !!chat.querySelector('.msg.live');
     res.hasBranchTool = !!chat.querySelector('.msg-tools .ico');
+    res.stage = 'answered';
 
     /* ── 深度思考块：抬头带耗时，默认折叠，点开有点开的内容 ── */
     const think = chat.querySelector('.msg.assistant .think');
@@ -2267,15 +2383,23 @@ f.addEventListener('load', async () => {
     }
     out(res);
 
-    /* ── 返回一级：历史里应该多出一条 ── */
+    /* ── 返回一级：历史里应该多出一条（顺带看它的**标题**怎么渲染） ── */
     const back = chat.querySelector('.thread-head .btn');
     back.click();
     await sleep(800);
     res.backToList = !!chat.querySelector('.list-head');
     res.rowsAfter = chat.querySelectorAll('.row').length;
+    const topTitle = chat.querySelector('.row .row-title');
+    if (topTitle) {
+      res.topTitleHtml = (topTitle.innerHTML || '').slice(0, 120);
+      res.topTitleKatex = topTitle.querySelectorAll('.katex').length;
+      res.topTitleRaw = (topTitle.textContent || '').trim().slice(0, 40);
+    }
+    res.stage = 'back-to-list';
     out(res);
-  } catch (err) { res.error = String(err); out(res); }
-});
+    document.title = 'probe-done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'probe-error'; }
+}
 </script>
 """
 
@@ -3922,8 +4046,20 @@ def main() -> int:
             if m and m.group(1).strip() != "waiting":
                 try:
                     data = json.loads(m.group(1))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    # 显式说出来：以前这里静默变成 {}，整套断言全 None，还看不出是探针的问题
+                    print(f"[WARN] 探针结果不是合法 JSON（{exc}）："
+                          f"{m.group(1)[:200]!r}")
                     data = None
+            else:
+                print(f"[WARN] 探针没有产出结果（dom {len(dom)} 字节，"
+                      f"{'仍停在 waiting' if m else '连 <pre id=out> 都没有'}）")
+                # 落盘现场：探针页 + 渲染出来的 DOM（下次排查不用再复现一遍）
+                dbg = ROOT / "data" / "logs"
+                dbg.mkdir(parents=True, exist_ok=True)
+                (dbg / "_chat_probe_debug.html").write_text(dom, encoding="utf-8")
+                (dbg / "_chat_probe_source.html").write_text(probe, encoding="utf-8")
+                print(f"       （现场已存到 {dbg}：_chat_probe_debug.html / _chat_probe_source.html）")
             data = data or {}
             tabs = data.get("tabs") or []
             idx = data.get("tabIndex", -1)
@@ -3932,16 +4068,15 @@ def main() -> int:
                 # 「对话」必须紧跟「目录」（用户口径：侧栏第二个）
                 ("「对话」页签排第二", idx == 1 and "对话" in (tabs[1] if len(tabs) > 1 else ""),
                  f"页签={tabs}"),
-                # ① 一级页：搜索 / 分类 / 范围 / 管理 / 会话行
-                ("一级页就位（搜索框 + 分类 + 范围 + 管理）",
+                # ① 一级页：搜索 / 分类 / 管理 / 会话行（**没有范围选择器**：只管理当前论文）
+                ("一级页就位（搜索框 + 分类 + 管理，只列当前论文）",
                  all([data.get("hasListHead"), segs == ["全部", "划词", "常规"],
-                      (data.get("scopeSegs") or []) == ["本论文", "全部"],
-                      data.get("hasManage")]),
-                 f"宽 {data.get('chatWidth')}px 分类={segs} 范围={data.get('scopeSegs')}"),
-                # 一级页的每一组都是**托盘里的胶囊**（分类 / 范围 / 管理各一枚托盘），
-                # 不是"有的描边、有的没底片"那种各写各的
-                ("分类 / 范围 / 管理都是胶囊托盘（3 枚）",
-                 data.get("trayCount") == 3, f"{data.get('trayCount')} 枚托盘"),
+                      data.get("hasManage"), data.get("hasScopeTray") is False]),
+                 f"宽 {data.get('chatWidth')}px 分类={segs} 范围选择器="
+                 f"{data.get('hasScopeTray')}"),
+                # 分类 / 管理各一枚托盘（原来自造的 accent 小药丸 + 描边 chip 都换成了全局件）
+                ("分类 / 管理都是胶囊托盘（2 枚）",
+                 data.get("trayCount") == 2, f"{data.get('trayCount')} 枚托盘"),
                 # 分类用的是**全局 .seg**（三层胶囊：托盘 + 抬起的白色 pill，无描边），
                 # 不是就地造的那种 accent 浅底小药丸 —— 这是"胶囊统一"这条口径的机器验收点
                 ("分类是全局分段控件（三层胶囊，选中项是白色 pill）",
@@ -3958,17 +4093,58 @@ def main() -> int:
                  all([data.get("tickCount", 0) > 0, data.get("batchBar"),
                       data.get("batchCount"), data.get("batchOff")]),
                  f"勾选 {data.get('tickCount')} 个，条={data.get('batchCount')!r}"),
+                # 复选框**两个状态各有图标**（用户口径：以前只换颜色，等于只有一个状态图标）
+                ("复选框两个状态图标不同（勾上/未勾）",
+                 data.get("tickStatesDiffer") is True
+                 and data.get("tickOffSvg") != data.get("tickOnSvg"),
+                 f"未勾 {len(data.get('tickOffSvg') or '')} 字节 / 勾上 "
+                 f"{len(data.get('tickOnSvg') or '')} 字节，颜色 {data.get('tickOffColor')} → "
+                 f"{data.get('tickOnColor')}"),
                 # ② 二级页：输入框文案 / 空态随机文案 / 加号主题色
                 ("新建 → 二级页（输入框文案 = 请输入问题）",
                  bool(data.get("threadHead")) and data.get("placeholder") == "请输入问题",
                  f"placeholder={data.get('placeholder')!r}"),
-                ("空态文案是「与大肥鱼一起讨论…」中随机一条",
-                 bool(data.get("headlineStartsWithPersona")),
-                 f"{data.get('headline')!r}"),
-                ("加号按钮是主题色（列表页与输入区各一个）",
-                 bool(data.get("plusIsAccent")) and bool(data.get("listPlusIsAccent")),
-                 f"输入区={data.get('plusBg')} 列表={data.get('listPlusBg')} "
-                 f"accent={data.get('accentBg')}"),
+                # ── 顶部工具栏：**只有「新对话」这一个按钮**（用户口径 2026-10-03）──
+                ("顶部工具栏只有「新对话」一个按钮",
+                 (data.get("listHeadBtns") or []) == ["新对话"],
+                 f"按钮：{data.get('listHeadBtns')}"),
+                ("会话页顶部不重复写「新对话」文字（只留图标钮）",
+                 data.get("threadNewConvIconOnly") is True,
+                 f"会话页按钮：{data.get('threadHeadBtns')}"),
+                # ── 空态：只有一句语录当背景，**没有任何按钮** ──
+                ("空态只有一句语录当背景（0 个按钮）",
+                 data.get("helloButtons") == 0 and bool(data.get("headlineStartsWithPersona")),
+                 f"按钮={data.get('helloButtons')} 语录={(data.get('headline') or '')[:24]!r}"),
+                # ── 输入区：一个圆角容器，里面只有输入框 + 加号 + 发送 ──
+                ("输入区是一个圆角容器（内含输入框/加号/发送）",
+                 all([data.get("hasComposerBox"), data.get("boxHasInput"),
+                      data.get("boxHasAttach"), data.get("boxHasSend")]),
+                 f"圆角={data.get('boxRadius')}"),
+                ("模型切换与上下文圆环在输入框**外**",
+                 data.get("boxHasModel") is False and data.get("boxHasRing") is False
+                 and data.get("footHasModel") is True and data.get("footHasRing") is True,
+                 f"框内模型/圆环={data.get('boxHasModel')}/{data.get('boxHasRing')}，"
+                 f"框外={data.get('footHasModel')}/{data.get('footHasRing')}"),
+                ("上下文圆环：小，且中间不放图标/数字",
+                 (data.get("ringSize") or 99) <= 18 and data.get("ringText") == ""
+                 and bool(data.get("ringTitle")),
+                 f"{data.get('ringSize')}px 内容={data.get('ringText')!r}"),
+                ("输入框自己不带边框、也不留焦点环（边界只归容器）",
+                 (data.get("inputBorder") or "").startswith("0px")
+                 and (data.get("inputShadow") in (None, "none")),
+                 f"border={data.get('inputBorder')!r} shadow={data.get('inputShadow')!r}"),
+                ("焦点反馈机制在位（焦点落在输入框 + 容器 :focus-within 规则存在）",
+                 data.get("focusActive") is True and data.get("focusRule") is True,
+                 f"activeElement={data.get('focusActive')} 规则={data.get('focusRule')}"
+                 "（无头 iframe 里 :focus-within 不会被匹配，视觉靠人眼验收）"),
+                ("多行自动增高（一行 26px 起步，到上限框内滚）",
+                 data.get("inputGrew") is True and data.get("inputRows") == "1"
+                 and float(str(data.get("inputMaxH") or "0px").replace("px", "")) > 0,
+                 f"{data.get('inputH1')}px → {data.get('inputH6')}px，max-height="
+                 f"{data.get('inputMaxH')}"),
+                ("加号低调（不是主题色实心圆钮）",
+                 data.get("plusIsQuiet") is True,
+                 f"加号底色={data.get('plusBg')} vs accent={data.get('accentBg')}"),
                 # ③ 图片上传（不限张数：input 带 multiple）
                 ("图片上传入口（multiple file input）",
                  bool(data.get("hasFileInput")),
@@ -4010,6 +4186,11 @@ def main() -> int:
                 ("返回一级页（历史里多了一条）",
                  bool(data.get("backToList")) and data.get("rowsAfter", 0) > 0,
                  f"{data.get('rows')} → {data.get('rowsAfter')} 行"),
+                # 标题就是用户问的第一句，里面常有 $…$ —— 要按行内 markdown 渲染（不是原样显示）
+                ("会话标题按行内 markdown 渲染（$…$ 出 KaTeX）",
+                 data.get("topTitleKatex", 0) >= 1 and "颜色" in (data.get("topTitleRaw") or ""),
+                 f"最新标题={data.get('topTitleRaw')!r}，KaTeX 节点 "
+                 f"{data.get('topTitleKatex')} 个"),
                 ("没有报错", not data.get("chatErr") and not data.get("error"),
                  f"err={data.get('chatErr')!r} probe={data.get('error')!r}"),
             ]

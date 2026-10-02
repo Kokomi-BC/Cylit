@@ -16,10 +16,13 @@
  *    （后端 `set_head`），一个字节都不删。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
-import { mdToHtml } from '@/composables/useMarkdown';
+import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
+import { askConfirm } from '@/stores/confirm';
+import { openTab } from '@/stores/tabs';
 import { debounce, fmtRelative, truncate } from '@/utils/format';
 import { convCount } from '@/api/types';
 import type {
@@ -41,6 +44,7 @@ const emit = defineEmits<{
 }>();
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 15.5;
+const router = useRouter();
 /** 空态文案池里"与大肥鱼一起讨论…"的固定前缀（大肥鱼 = 这位问答助手的名字） */
 const PERSONA = '与大肥鱼一起讨论';
 
@@ -59,8 +63,6 @@ const level = ref<Level>('list');
 const conversations = ref<AgentConversation[]>([]);
 const convQuery = ref('');
 const convKind = ref<Kind>('all');
-/** `paper` = 只看这篇论文（默认）；`all` = 整个书架 */
-const convScope = ref<'paper' | 'all'>('paper');
 const batch = ref(false);
 const picked = ref<string[]>([]);
 const listLoading = ref(false);
@@ -111,6 +113,8 @@ const canCompress = computed(() => !compressing.value && messages.value.length >
 const compressTitle = computed(() => (canCompress.value
   ? '压缩这段对话：让模型把已谈过的内容压成要点（会多出一轮「摘要」，原文仍可回看）'
   : '至少聊过一轮才能压缩'));
+/** 圆环很小、里面不写字 —— 数值与用途都放 tooltip（用户口径：小圆环，中间不放图标） */
+const ringTitle = computed(() => `${compressTitle.value}（当前上下文已用 ${Math.round(percent.value)}%）`);
 const allPicked = computed(() => conversations.value.length > 0
   && picked.value.length === conversations.value.length);
 
@@ -226,7 +230,9 @@ async function loadConversations() {
   listLoading.value = true;
   try {
     const data = await api.get<{ items: AgentConversation[] }>('/agent/conversations', {
-      paper_id: convScope.value === 'paper' ? props.paperId : undefined,
+      // **只列这篇论文的对话**（用户口径 2026-10-03）：这里是"读这篇论文时的历史"，
+      // 跨论文的检索交给书架与知识库，混在一起反而每一条都要先认"这是哪篇的"。
+      paper_id: props.paperId,
       q: convQuery.value.trim() || undefined,
       kind: convKind.value === 'all' ? undefined : convKind.value,
       limit: LIST_LIMIT,
@@ -276,7 +282,7 @@ function startNew() {
   pending.value = [];
   draft.value = '';
   rollCopy();
-  void nextTick(() => inputEl.value?.focus());
+  void nextTick(() => { resetInputHeight(); inputEl.value?.focus(); });
 }
 
 function backToList() {
@@ -288,15 +294,6 @@ function backToList() {
 
 function setKind(kind: Kind) {
   convKind.value = kind;
-  void loadConversations();
-}
-
-function toggleScope() {
-  setScope(convScope.value === 'paper' ? 'all' : 'paper');
-}
-
-function setScope(scope: 'paper' | 'all') {
-  convScope.value = scope;
   void loadConversations();
 }
 
@@ -565,6 +562,8 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     streamThinking.value = '';
     streamNote.value = '';
     controller = null;
+    // 发完一轮输入框空了 → 高度收回去（不然它会一直停在上一次的多行高度）
+    void nextTick(resetInputHeight);
   }
 }
 
@@ -607,15 +606,41 @@ async function switchBranch(message: AgentMessage, step: number) {
   } catch (err) { reportError(err, '切换分支失败'); }
 }
 
-/** 点空态那条文案 = 填进输入框（用户还能改，不直接发出去）。 */
-function fillDraft(text: string) {
-  draft.value = text;
-  void nextTick(() => inputEl.value?.focus());
+/**
+ * textarea 自动增高：先归零再按 `scrollHeight` 顶上去，到上限就不再长（框内滚）。
+ * **必须要这一步**：`rows=1` 的 textarea 不会自己长高，多行内容会挤在一条里滚。
+ */
+const INPUT_MAX_H = 160;
+
+function autoGrow() {
+  const el = inputEl.value;
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_H)}px`;
 }
 
-/** 点圆环 = 压缩（多一轮会话：模型把已谈过的内容压成要点，存成一条 summary）。 */
+function resetInputHeight() {
+  const el = inputEl.value;
+  if (el) el.style.height = '';
+}
+
+/** 模型名那枚小按钮：跳到设置的「论文问答」卡片（不在这里做模型下拉 —— 会多一套状态）。 */
+function openModelSettings() {
+  void router.push(openTab({ name: 'settings', hash: '#agent' }) as never);
+}
+
+/** 点圆环 = 压缩（多一轮会话：模型把已谈过的内容压成要点，存成一条 summary）。
+ *  **要确认**（用户口径）：压缩会改变模型之后看得到的上下文，属于不可逆的语义操作，
+ *  点一下就跑掉太轻率；确认框走全站那套站内弹窗（`askConfirm`）。 */
 async function compress() {
   if (!canCompress.value || !currentId.value) return;
+  const ok = await askConfirm({
+    title: '压缩这段对话？',
+    body: '把已经谈过的内容压成一份要点摘要（会话里会多出一轮「已压缩」）。'
+      + '原文不会被删、往上翻还在；但之后模型只看得到这份摘要和后面的几轮。',
+    confirmLabel: '压缩',
+  });
+  if (!ok) return;
   compressing.value = true;
   try {
     await api.post(`/agent/conversations/${currentId.value}/compress`);
@@ -670,15 +695,19 @@ watch(() => props.selection, (sel) => {
     <!-- ═══════════════ 一级：会话列表 ═══════════════ -->
     <template v-if="level === 'list'">
       <div class="list-head">
+        <!-- 顶部工具栏**只有这一个动作**（用户口径 2026-10-03）：轻量的小胶囊，
+             不做成主题色大圆钮 —— 那玩意儿在极简的学术界面里太抢眼。 -->
+        <button class="btn sm new-conv" title="新建对话" @click="startNew">
+          <AppIcon name="add" :size="14" />新对话
+        </button>
         <label class="search-field grow">
           <AppIcon name="search" :size="14" />
           <input v-model="convQuery" placeholder="搜索对话（标题或内容）"
                  @input="searchLater" @keydown.esc="convQuery = ''; loadConversations()" />
         </label>
-        <button v-if="convQuery" class="btn icon sm" title="清空" @click="convQuery = ''; loadConversations()">
+        <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
           <AppIcon name="close" :size="12" />
         </button>
-        <button class="btn primary icon new-conv" title="新建对话" @click="startNew"><AppIcon name="add" :size="15" /></button>
       </div>
 
       <div class="filters">
@@ -687,10 +716,6 @@ watch(() => props.selection, (sel) => {
                   @click="setKind(k.key)">{{ k.label }}</button>
         </div>
         <span class="spacer" />
-        <div class="seg" title="只看这篇论文 / 整个书架">
-          <button :class="{ active: convScope === 'paper' }" @click="setScope('paper')">本论文</button>
-          <button :class="{ active: convScope === 'all' }" @click="setScope('all')">全部</button>
-        </div>
         <div class="seg">
           <button :class="{ active: batch }" title="批量管理（多选 + 批量删除）" @click="toggleBatch">
             <AppIcon name="checkbox" :size="13" />管理
@@ -714,18 +739,17 @@ watch(() => props.selection, (sel) => {
           <button v-if="batch" class="tick" :class="{ on: isPicked(c) }"
                   :title="isPicked(c) ? '取消选择' : '选择'"
                   @click="togglePick(c)">
-            <AppIcon name="checkbox" :size="14" />
+            <AppIcon :name="isPicked(c) ? 'checkbox' : 'checkbox-off'" :size="15" />
           </button>
 
           <input v-if="renaming?.id === c.conversation_id" v-model="renaming.text" class="rename-input"
                  @keydown.enter="submitRename" @keydown.esc="renaming = null" @blur="submitRename" />
 
           <button v-else class="row-main" @click="batch ? togglePick(c) : openConversation(c.conversation_id)">
-            <span class="row-title truncate">{{ c.title || '未命名对话' }}</span>
+            <!-- 标题按**行内 markdown** 渲染：标题就是用户问的第一句，里面常有 $…$ 公式 -->
+            <span class="row-title truncate" v-html="inlineHtml(c.title || '未命名对话')" />
             <span class="row-meta">
               <span v-if="c.kind === 'selection'" class="kd" title="划词对话"><AppIcon name="quote" :size="10" />划词</span>
-              <span v-if="convScope === 'all' && c.paper_id && c.paper_id !== props.paperId"
-                    class="faint mono tiny truncate">{{ c.paper_id }}</span>
               <span class="tiny faint">{{ convCount(c) }} 条 · {{ fmtRelative(c.updated_at) }}</span>
             </span>
           </button>
@@ -751,26 +775,21 @@ watch(() => props.selection, (sel) => {
     <template v-else>
       <div class="thread-head">
         <button class="btn ghost icon sm" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
-        <span class="th-title truncate" :title="currentTitle">{{ currentTitle }}</span>
+        <span class="th-title truncate" :title="current?.title || '新对话'" v-html="inlineHtml(currentTitle)" />
         <span class="spacer" />
-        <button v-if="current" class="btn ghost icon sm" title="重命名" @click="startRename(current)"><AppIcon name="edit" :size="13" /></button>
-        <button v-if="current" class="btn ghost icon sm" title="删除这个对话" @click="askDeleteOne(current)"><AppIcon name="trash" :size="13" /></button>
-        <button class="btn ghost icon sm" title="新建对话" @click="startNew"><AppIcon name="add" :size="15" /></button>
+        <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
+        <button class="btn ghost icon sm new-conv" title="新建对话" @click="startNew">
+          <AppIcon name="add" :size="15" />
+        </button>
       </div>
 
       <div ref="msgsEl" class="msgs">
         <div v-if="loading" class="empty small">读取会话…</div>
 
         <div v-else-if="!messages.length && !sending" class="hello">
-          <span class="hollow-ico"><AppIcon name="chat" :size="18" /></span>
-          <button class="hello-line" title="点一下填进输入框" @click="fillDraft(headline)">
-            {{ headline }}
-          </button>
-          <div class="hello-acts">
-            <button class="chip-btn" @click="rollCopy()"><AppIcon name="refresh" :size="11" />换一条</button>
-            <button class="chip-btn" @click="pickFiles()"><AppIcon name="image" :size="11" />上传图片</button>
-          </div>
-          <div class="tiny faint">正文里划词也能问；图片可以直接粘贴进来。</div>
+          <!-- 空态**只有一句语录当背景**（用户口径 2026-10-03：不要上传/换一条这类按钮）。 -->
+          <span class="hello-mark"><AppIcon name="quote" :size="26" /></span>
+          <p class="hello-line">{{ headline }}</p>
         </div>
 
         <div v-for="m in messages" :key="m.message_id" class="msg" :class="m.role">
@@ -849,63 +868,77 @@ watch(() => props.selection, (sel) => {
         <div v-if="errorText" class="err small">{{ errorText }}</div>
       </div>
 
-      <!-- 输入区 -->
+      <!-- 输入区 = **一个圆角容器**：上面是 textarea，下面是操作条（用户口径 2026-10-03）。
+           容器自己承担"一块输入组件"的观感，里面的元素不再各自成块。 -->
       <div class="composer">
-        <div v-if="props.selection?.text" class="sel-chip">
-          <AppIcon name="quote" :size="11" />
-          <span class="truncate">{{ props.selection.text }}</span>
-          <button class="ico" title="取消选区" @click="emit('clear-selection')"><AppIcon name="close" :size="11" /></button>
+        <div class="composer-box" :class="{ busy: uploading }">
+          <div v-if="props.selection?.text" class="sel-chip">
+            <AppIcon name="quote" :size="11" />
+            <span class="truncate">{{ props.selection.text }}</span>
+            <button class="ico" title="取消选区" @click="emit('clear-selection')"><AppIcon name="close" :size="11" /></button>
+          </div>
+
+          <div v-if="pending.length" class="atts pending">
+            <div v-for="(a, i) in pending" :key="a.attachment_id" class="att">
+              <img :src="imageSrc(a.url)" :alt="a.name" />
+              <button class="att-x" title="移除" @click="dropPending(i)"><AppIcon name="close" :size="10" /></button>
+            </div>
+            <span class="tiny faint">{{ pending.length }} 张</span>
+          </div>
+
+          <div v-if="editing" class="edit-box">
+            <div class="edit-head tiny faint"><AppIcon name="edit" :size="11" />编辑这条提问（会生成一个新分支，原来的保留）</div>
+            <textarea v-model="editing.text" class="composer-input" rows="2" />
+            <div class="edit-acts">
+              <span class="spacer" />
+              <button class="btn sm" @click="editing = null">取消</button>
+              <button class="btn sm primary" :disabled="sending || !editing.text.trim()"
+                      @click="ask('edit', messages.find(x => x.message_id === editing?.id))">重新提问</button>
+            </div>
+          </div>
+
+          <template v-else>
+            <!-- 紧凑起步（一行高），多行自动向上长；到上限后在**框内**滚 -->
+            <textarea ref="inputEl" v-model="draft" class="composer-input" rows="1" placeholder="请输入问题"
+                      @input="autoGrow" @paste="onPaste" @keydown.enter.exact.prevent="ask('send')" />
+
+            <div class="composer-bar">
+              <!-- 加号：低调（幽灵态，hover 才浮出来），不做主题色实心圆钮 -->
+              <button class="btn ghost icon sm attach" :class="{ busy: uploading }"
+                      title="上传图片（也可以直接粘贴，张数不限）" @click="pickFiles">
+                <AppIcon name="add" :size="15" />
+              </button>
+              <span class="spacer" />
+              <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
+              <button v-else class="btn primary icon sm send" :disabled="!canSend" title="发送" @click="ask('send')">
+                <AppIcon name="forward" :size="15" />
+              </button>
+            </div>
+          </template>
         </div>
 
-        <div v-if="pending.length" class="atts pending">
-          <div v-for="(a, i) in pending" :key="a.attachment_id" class="att">
-            <img :src="imageSrc(a.url)" :alt="a.name" />
-            <button class="att-x" title="移除" @click="dropPending(i)"><AppIcon name="close" :size="10" /></button>
-          </div>
-          <span class="tiny faint">{{ pending.length }} 张</span>
+        <!-- 模型与上下文圆环在**输入框外**（用户口径 2026-10-03）：一行低调的明细，
+             不跟输入抢位置；圆环很小、里面不放数字，数值写在 tooltip 里。 -->
+        <div v-if="!editing" class="composer-foot">
+          <button class="model-btn truncate" :title="`当前问答模型：${modelName}（点一下去设置里换）`"
+                  @click="openModelSettings">
+            <span class="truncate">{{ modelName }}</span><AppIcon name="chevron-right" :size="11" />
+          </button>
+          <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
+          <span class="spacer" />
+          <button class="ring" :class="{ busy: compressing }" :title="ringTitle"
+                  :disabled="!canCompress" @click="compress">
+            <svg viewBox="0 0 36 36" class="ring-svg">
+              <circle class="ring-track" cx="18" cy="18" r="15.5" />
+              <circle class="ring-bar" cx="18" cy="18" r="15.5" :stroke-dasharray="ringDash" />
+            </svg>
+          </button>
         </div>
-
-        <div v-if="editing" class="edit-box">
-          <div class="edit-head tiny faint"><AppIcon name="edit" :size="11" />编辑这条提问（会生成一个新分支，原来的保留）</div>
-          <textarea v-model="editing.text" class="input" rows="2" />
-          <div class="edit-acts">
-            <span class="spacer" />
-            <button class="btn sm" @click="editing = null">取消</button>
-            <button class="btn sm primary" :disabled="sending || !editing.text.trim()"
-                    @click="ask('edit', messages.find(x => x.message_id === editing?.id))">重新提问</button>
-          </div>
-        </div>
-
-        <template v-else>
-          <textarea ref="inputEl" v-model="draft" class="input" rows="1" placeholder="请输入问题"
-                    @paste="onPaste" @keydown.enter.exact.prevent="ask('send')" />
-          <div class="composer-bar">
-            <button class="btn primary icon attach" :class="{ busy: uploading }"
-                    title="上传图片（也可以直接粘贴，张数不限）" @click="pickFiles">
-              <AppIcon name="add" :size="15" />
-            </button>
-            <input ref="fileInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"
-                   multiple @change="uploadFiles(($event.target as HTMLInputElement).files)" />
-
-            <button class="ring" :class="{ busy: compressing }" :title="compressTitle"
-                    :disabled="!canCompress" @click="compress">
-              <svg viewBox="0 0 36 36" class="ring-svg">
-                <circle class="ring-track" cx="18" cy="18" r="15.5" />
-                <circle class="ring-bar" cx="18" cy="18" r="15.5" :stroke-dasharray="ringDash" />
-              </svg>
-              <span class="ring-num">{{ Math.round(percent) }}</span>
-            </button>
-            <span class="model truncate" :title="`问答模型：${modelName}`">{{ modelName }}</span>
-            <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
-            <span class="spacer" />
-            <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
-            <button v-else class="btn primary icon sm send" :disabled="!canSend" title="发送" @click="ask('send')">
-              <AppIcon name="forward" :size="15" />
-            </button>
-          </div>
-        </template>
       </div>
-    </template>
+
+      <input ref="fileInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+             multiple @change="uploadFiles(($event.target as HTMLInputElement).files)" />
+  </template>
 
     <div v-if="dragging" class="drop-hint"><AppIcon name="image" :size="16" />松手即上传</div>
 
@@ -1055,14 +1088,15 @@ watch(() => props.selection, (sel) => {
 .msg .md :deep(p) { margin: 5px 0; }
 .msg .md :deep(ul), .msg .md :deep(ol) { margin: 5px 0; padding-left: 18px; }
 
-.hello { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 30px 16px; text-align: center; }
+.hello { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 22px; text-align: center; }
+/* 空态**只是一句语录当背景**：没有按钮、没有可点的东西（用户口径 2026-10-03）。
+   引号做成水印，语录淡到像背景板，别让人以为那是可点的建议条。 */
+.hello-mark { color: var(--border-strong); line-height: 1; }
 .hello-line {
-  border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
-  border-radius: var(--radius); padding: 8px 12px; font-size: 13px; font-weight: 500;
-  cursor: pointer; line-height: 1.5; max-width: 100%;
+  margin: 0; max-width: 100%; color: var(--text-faint);
+  font-size: 13px; font-weight: 500; line-height: 1.7;
+  user-select: text;
 }
-.hello-line:hover { border-color: var(--accent); color: var(--accent-text); }
-.hello-acts { display: flex; gap: 6px; }
 
 /* 这一块留给"接着可以问"：试过用模型生成，但那一轮与主对话的缓存前缀毫无重叠，
    等于每轮多打一次冷启动 API，而接着聊本来就能解决 → 整块拿掉了。 */
@@ -1080,39 +1114,61 @@ watch(() => props.selection, (sel) => {
   display: inline-flex; align-items: center; justify-content: center; padding: 0;
 }
 
-/* ── 输入区 ── */
-.composer { border-top: 1px solid var(--divider); padding: 6px 8px 8px; }
+/* ── 输入区：**一个圆角容器**（用户口径 2026-10-03）──
+   上面 textarea、下面操作条；容器自己给出"一块输入组件"的边界，里面的元素不再各自成块。 */
+.composer { border-top: 1px solid var(--divider); padding: 8px; }
+.composer-box {
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  background: var(--bg-elev); padding: 6px 6px 4px;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+/* 轻度焦点反馈：焦点在框内任意位置都亮一圈（用户口径："获得焦点时有轻微视觉反馈"） */
+.composer-box:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+.composer-box.busy { opacity: .75; }
 .sel-chip {
-  display: flex; align-items: center; gap: 4px; margin-bottom: 5px; padding: 3px 6px;
-  border-left: 2px solid var(--accent); background: var(--bg-layer);
+  display: flex; align-items: center; gap: 4px; margin: 0 0 5px; padding: 3px 6px;
+  border-left: 2px solid var(--accent); background: var(--bg-sunken);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 11.5px; color: var(--text-dim);
 }
 .sel-chip .truncate { flex: 1; }
-.input {
-  width: 100%; resize: none; max-height: 96px; overflow-y: auto;
-  border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-elev);
-  color: var(--text); font: inherit; font-size: 13px; line-height: 1.6; padding: 7px 11px;
+/* 输入框本身**没有边框、也没有自己的焦点环**：边界与焦点反馈都由外层容器给。
+   ⚠️ 必须显式压掉 `:focus`：base.css 里 `textarea:focus { box-shadow: var(--ring) }` 是元素级
+   规则，不写这一条就会在容器里再出现一个圆角光圈 —— 看起来就是"框里套了个框"（用户报的
+   "输入框问题"）。 */
+.composer-input,
+.composer-input:focus,
+.composer-input:hover {
+  display: block; width: 100%; resize: none; overflow-y: auto;
+  min-height: 26px; max-height: 160px;
+  border: 0; outline: none; box-shadow: none; background: none;
+  color: var(--text); font-family: inherit; font-size: 13px; line-height: 1.6; padding: 4px 7px;
+  box-sizing: border-box;
 }
-.input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.edit-box { display: flex; flex-direction: column; gap: 5px; }
+.composer-input::placeholder { color: var(--text-faint); }
+.edit-box { display: flex; flex-direction: column; gap: 5px; padding: 2px; }
 .edit-head { display: inline-flex; align-items: center; gap: 4px; }
-.edit-acts { display: flex; gap: 5px; }
-.composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.edit-acts { display: flex; gap: 5px; padding-bottom: 2px; }
+.composer-bar { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+/* 输入框**外面**那一行：模型 + 圆环（用户口径：这两个不放进输入框里） */
+.composer-foot { display: flex; align-items: center; gap: 6px; padding: 6px 4px 0; }
+/* 模型名：**低调**（幽灵小字 + 一枚箭头），点它去设置里换，不在这一层做下拉 */
+.model-btn {
+  display: inline-flex; align-items: center; gap: 1px; max-width: 55%;
+  border: 0; background: none; cursor: pointer; padding: 2px 4px;
+  border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: 11.5px;
+}
+.model-btn:hover { background: var(--bg-hover); color: var(--text-dim); }
+/* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
-  position: relative; width: var(--control-h-sm); height: var(--control-h-sm); flex: none;
+  position: relative; width: 16px; height: 16px; flex: none;
   border: 0; background: none; padding: 0; cursor: pointer; color: var(--accent);
 }
 .ring:disabled { cursor: default; color: var(--text-faint); }
 .ring.busy .ring-bar { animation: spin 1s linear infinite; transform-origin: 18px 18px; }
 @keyframes spin { to { transform: rotate(360deg) } }
-.ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ring-track { fill: none; stroke: var(--divider); stroke-width: 3; }
-.ring-bar { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
-.ring-num {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 8px; font-family: var(--mono); color: var(--text-dim);
-}
-.model { font-size: 11.5px; color: var(--text-faint); max-width: 42%; }
+.ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
+.ring-track { fill: none; stroke: var(--divider); stroke-width: 6; }
+.ring-bar { fill: none; stroke: currentColor; stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
 /* 停止 = 危险色的实心圆钮（发送那枚是 .btn.primary.icon.sm，这里只换色） */
 .btn.stop { background: var(--danger); border-color: transparent; color: #fff; }
 .btn.stop:hover:not(:disabled) { background: var(--danger); filter: brightness(1.06); }

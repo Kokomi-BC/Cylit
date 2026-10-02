@@ -19,6 +19,7 @@ import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import PaperCard from '@/components/paper/PaperCard.vue';
 import PaperDetailModal from '@/components/paper/PaperDetailModal.vue';
+import { askConfirm } from '@/stores/confirm';
 import { debounce } from '@/utils/format';
 import {
   loadPapers, reportError, state, toast, withLoading,
@@ -575,9 +576,12 @@ async function runTranslate(paper: Paper, mode: TranslateMode = 'resume') {
  *  「纳入」那个开关已经取消 —— **建立索引即纳入**（用户口径：合并冗余说法与按钮）；
  *  「建立索引」按钮本身也下线了：翻译跑完自动建索引，所以这里告诉用户怎么加回来。 */
 async function removeFromKb(paper: Paper) {
-  if (!confirm(`从知识库移除《${paper.title}》？\n\n`
-    + '会清掉它的 chunk 元数据与向量（论文、译文、笔记、高亮不受影响）。'
-    + '重新翻译一次（或去「设置 → 索引管理」）即可加回来。')) return;
+  if (!(await askConfirm({
+    title: `从知识库移除《${paper.title}》？`,
+    body: '会清掉它的 chunk 元数据与向量（论文、译文、笔记、高亮不受影响）。'
+      + '重新翻译一次（或去「设置 → 索引管理」）即可加回来。',
+    confirmLabel: '移除',
+  }))) return;
   busyKey.value = `remove:${paper.id}`;
   try {
     const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
@@ -635,11 +639,13 @@ function rowMenu(p: Paper): RowAction[] {
 /** 重新翻译（忽略已有产物、按页重跑）：用**HTML 原生 confirm** 二次确认（用户口径）。
  *  删除那条路仍然走站内弹窗（不可逆、还要显示论文名与影响范围）；重译只是"重跑一遍"，
  *  原生确认足够，也不用为一个确认框维护状态。 */
-function askRetranslate(p: Paper) {
+async function askRetranslate(p: Paper) {
   const pages = p.translate_total || 0;
-  const ok = window.confirm(
-    `重新翻译《${p.title || p.id}》？\n\n`
-    + `会忽略已有的 ${pages} 页译文，从第 1 页重跑（现有对齐结果会被覆盖）。`);
+  const ok = await askConfirm({
+    title: `重新翻译《${p.title || p.id}》？`,
+    body: `会忽略已有的 ${pages} 页译文，从第 1 页重跑（现有对齐结果会被覆盖）。`,
+    confirmLabel: '重新翻译',
+  });
   if (!ok) return;
   void runTranslate(p, 'retranslate');
 }

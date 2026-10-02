@@ -17,6 +17,7 @@ import {
 import {
   TASK_TYPE_LABEL, fmtRelative, pct, taskStatus, truncate,
 } from '@/utils/format';
+import { askConfirm } from '@/stores/confirm';
 import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
@@ -131,7 +132,12 @@ function onRowAction(t: TaskInfo, key: string) {
 
 /** 删除一条任务记录（运行中的要先取消 —— 后端也会拦）。 */
 async function deleteTask(t: TaskInfo): Promise<void> {
-  if (!confirm(`删除任务记录 ${t.id}？\n\n只删这条记录，不影响任何已产出的译文 / 索引。`)) return;
+  if (!(await askConfirm({
+    title: `删除任务记录 ${t.id}？`,
+    body: '只删这条记录，不影响任何已产出的译文 / 索引。',
+    danger: true,
+    confirmLabel: '删除',
+  }))) return;
   busyKey.value = `del:${t.id}`;
   try {
     await api.del(`/tasks/${t.id}`);
@@ -146,7 +152,11 @@ async function deleteTask(t: TaskInfo): Promise<void> {
 
 /** 清空所有已结束的任务记录（进行中的一律不动）。 */
 async function cleanupTasks(): Promise<void> {
-  if (!confirm('清空所有「已完成 / 失败 / 已取消」的任务记录？\n\n进行中的任务不受影响。')) return;
+  if (!(await askConfirm({
+    title: '清空所有「已完成 / 失败 / 已取消」的任务记录？',
+    body: '进行中的任务不受影响。',
+    confirmLabel: '清空',
+  }))) return;
   busyKey.value = 'cleanup';
   try {
     const res = await api.post<{ deleted?: number }>('/tasks/cleanup', {});

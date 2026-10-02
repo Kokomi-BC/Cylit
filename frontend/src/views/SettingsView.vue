@@ -29,6 +29,7 @@ import type { HealthPayload, MineruConfig, MineruVerifyResult, ParseEngine } fro
 import {
   loadHealth, loadSettings, reportError, state, toast, withLoading,
 } from '@/stores/app';
+import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
 import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
@@ -437,7 +438,12 @@ async function verifyMineru() {
 
 /** 清除 token：不可逆（要重新申请/粘贴），用原生 confirm 二次确认。 */
 async function clearMineruToken() {
-  if (!window.confirm('清除已保存的 MinerU token？\n\n清除后「在线解析」不可用，需要重新填入并验证。')) return;
+  if (!(await askConfirm({
+    title: '清除已保存的 MinerU token？',
+    body: '清除后「在线解析」不可用，需要重新填入并验证。',
+    danger: true,
+    confirmLabel: '清除',
+  }))) return;
   mineruBusy.value = 'clear';
   try {
     const res = await api.put<MineruConfig>('/mineru/config', { clear_token: true });

@@ -6,6 +6,7 @@
  */
 import { computed } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
+import ConfirmHost from '@/components/ConfirmHost.vue';
 import TabBar from '@/components/TabBar.vue';
 import ToastHost from '@/components/ToastHost.vue';
 import { routeKey } from '@/stores/tabs';
@@ -34,4 +35,6 @@ const viewKey = computed(() => routeKey(route));
     <RouterView :key="viewKey" />
   </main>
   <ToastHost />
+  <!-- 站内确认框：全局挂一次，任何地方 `await askConfirm({...})`（见 stores/confirm.ts） -->
+  <ConfirmHost />
 </template>

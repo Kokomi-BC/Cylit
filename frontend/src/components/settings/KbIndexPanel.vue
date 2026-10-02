@@ -22,6 +22,7 @@ import {
 } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
 import { copyText, paperStatus, pct } from '@/utils/format';
+import { askConfirm } from '@/stores/confirm';
 import { readerTarget } from '@/utils/navigation';
 import Menu from '@/components/Menu.vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -222,8 +223,12 @@ onMounted(async () => {
 
 /** 从知识库移除：清向量 + 清 chunk 元数据（论文与译文不动）。 */
 async function removeFromKb(paper: KbPaper): Promise<void> {
-  if (!confirm(`从知识库移除《${paper.title}》？\n\n会清掉它的 ${paper.chunks} 条 chunk 与向量`
-    + '（论文、译文、笔记、高亮都不受影响）。需要时可以重新「建立索引」加回来。')) return;
+  if (!(await askConfirm({
+    title: `从知识库移除《${paper.title}》？`,
+    body: `会清掉它的 ${paper.chunks} 条 chunk 与向量（论文、译文、笔记、高亮都不受影响）。`
+      + '需要时可以重新「建立索引」加回来。',
+    confirmLabel: '移除',
+  }))) return;
   busyKey.value = `remove:${paper.id}`;
   try {
     const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });

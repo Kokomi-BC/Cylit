@@ -12,7 +12,9 @@ import {
   DEFAULT_LIMIT, LIMIT_CHOICES, clearHistory, historyLimit, loadHistory,
   removeSearch, setHistoryLimit, subscribeHistory, type SearchEntry,
 } from '@/utils/searchHistory';
-import { paperTitle, toast } from '@/stores/app';import { fmtDate, fmtRelative, truncate } from '@/utils/format';
+import { paperTitle, toast } from '@/stores/app';
+import { askConfirm } from '@/stores/confirm';
+import { fmtDate, fmtRelative, truncate } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 
 const entries = ref<SearchEntry[]>([]);
@@ -52,10 +54,13 @@ function onRemove(e: SearchEntry) {
   toast('已删除这条搜索记录', 'ok', 2000);
 }
 
-function onClear() {
+async function onClear() {
   if (!entries.value.length) return;
-  if (!confirm(`清空全部 ${entries.value.length} 条搜索记录？\n\n只影响本机浏览器里的这份记录，`
-    + '论文、索引、笔记都不受影响。')) return;
+  if (!(await askConfirm({
+    title: `清空全部 ${entries.value.length} 条搜索记录？`,
+    body: '只影响本机浏览器里的这份记录，论文、索引、笔记都不受影响。',
+    confirmLabel: '清空',
+  }))) return;
   clearHistory();
   reload();
   toast('已清空搜索记录', 'ok', 2400);

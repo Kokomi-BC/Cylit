@@ -28,6 +28,7 @@ import { api } from '@/api/client';
 import type {
   KnowledgeChunkDetail, KnowledgeChunkRow, KnowledgeOverview, SimilarItem, SimilarResult,
 } from '@/api/types';
+import { askConfirm } from '@/stores/confirm';
 import { reportError, state, toast, withLoading } from '@/stores/app';
 import { kbState } from '@/stores/knowledge';
 import { openTab } from '@/stores/tabs';
@@ -512,10 +513,13 @@ function dropHistory(entry: SearchEntry): void {
   toast('已删除这条搜索记录', 'ok', 1800);
 }
 
-function clearAllHistory(): void {
+async function clearAllHistory(): Promise<void> {
   if (!history.value.length) return;
-  if (!confirm(`清空全部 ${history.value.length} 条搜索记录？\n\n只影响本机浏览器里的这份记录，`
-    + '论文、索引、笔记都不受影响。')) return;
+  if (!(await askConfirm({
+    title: `清空全部 ${history.value.length} 条搜索记录？`,
+    body: '只影响本机浏览器里的这份记录，论文、索引、笔记都不受影响。',
+    confirmLabel: '清空',
+  }))) return;
   clearHistory();
   refreshHistory();
   histIndex.value = -1;

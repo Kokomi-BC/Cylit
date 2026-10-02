@@ -16,6 +16,7 @@ import {
 import { fmtDate, fmtRelative, roundMs, truncate } from '@/utils/format';
 import Modal from '@/components/Modal.vue';
 import Menu from '@/components/Menu.vue';
+import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 
 /** 模型类型中文标签（类型是产品概念，不是硬编码的模型名）。 */
@@ -286,7 +287,15 @@ async function removeModel(m: ModelConfig) {
       + '它只是离线兜底（没有可用模型时才会用到）；删除后**不会**再自动重建，'
       + '需要时可以在「模型配置」卡头点「恢复内置占位」找回来。'
     : `确认删除模型配置「${m.name || m.id}」？此操作不可撤销。`;
-  if (!window.confirm(tip)) return;
+  if (!(await askConfirm({
+    title: m.builtin ? `删除内置占位模型「${m.name || m.id}」？` : `删除模型配置「${m.name || m.id}」？`,
+    body: m.builtin
+      ? '它只是离线兜底（没有可用模型时才会用到）。删除后不会再自动重建，'
+        + '需要时可以在「模型配置」卡头点「恢复内置占位」找回来。'
+      : '删除后这个配置就没了，不可撤销。',
+    danger: true,
+    confirmLabel: '删除',
+  }))) return;
   busyKey.value = `del:${m.id}`;
   try {
     await api.del(`/models/${m.id}`);

@@ -10,6 +10,7 @@
  * （宁可少弹一次确认，也不要"点了没反应"）。
  */
 import { api } from '@/api/client';
+import { askConfirm } from '@/stores/confirm';
 
 /** 这篇论文有没有生成过解读（`a` / `b` 任一有 markdown 就算）。查询失败按"没有"处理。 */
 export async function hasInsight(paperId: string): Promise<boolean> {
@@ -28,7 +29,9 @@ export async function hasInsight(paperId: string): Promise<boolean> {
  */
 export async function confirmRegenerateInsight(paperId: string, title?: string): Promise<boolean> {
   if (!(await hasInsight(paperId))) return true;
-  return window.confirm(
-    `重新生成《${title || paperId}》的解读？\n\n`
-    + '会忽略已有的解读结果，两路都重跑一遍（解读读的是知识库的 chunk）。');
+  return askConfirm({
+    title: `重新生成《${title || paperId}》的解读？`,
+    body: '会忽略已有的解读结果，两路都重跑一遍（解读读的是知识库的 chunk）。',
+    confirmLabel: '重新生成',
+  });
 }

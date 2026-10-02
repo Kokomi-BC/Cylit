@@ -21,6 +21,7 @@ import type {
   PageTranslation, PairOrder, Paper, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
+import { askConfirm } from '@/stores/confirm';
 import { useEventStream, type StreamStatus } from '@/composables/useEventStream';
 // 解析完成后要**强制**重取解读（`useUnderstanding` 是按论文缓存的整包，TTL 30s）
 import { loadUnderstanding } from '@/composables/useUnderstanding';
@@ -1651,7 +1652,11 @@ async function cancelTranslate(task: TaskInfo | null) {
   if (!task) return;
   // 类型名走 `utils/tasks` 那一份口径：任务页签里叫"转录"，这里就不能叫"翻译"
   const kind = taskTypeLabel(task.type);
-  if (!window.confirm(`确认取消该${kind}任务？已完成的部分会保留。`)) return;
+  if (!(await askConfirm({
+    title: `取消该${kind}任务？`,
+    body: '已完成的部分会保留，之后可以从断点继续。',
+    confirmLabel: '取消任务',
+  }))) return;
   try {
     await api.post(`/tasks/${task.id}/cancel`);
     toast('已请求取消（页边界生效）', 'ok');
@@ -2782,7 +2787,8 @@ async function refreshAnnotations() {
 }
 
 async function deleteAnnotation(id: string) {
-  if (!window.confirm('删除该批注？')) return;
+  if (!(await askConfirm({ title: '删除这条批注？', body: '删掉之后不可恢复。',
+    danger: true, confirmLabel: '删除' }))) return;
   try {
     await api.del(`/annotations/${id}`);
     await refreshAnnotations();
@@ -2791,7 +2797,8 @@ async function deleteAnnotation(id: string) {
 }
 
 async function deleteNote(id: string) {
-  if (!window.confirm('删除该笔记？')) return;
+  if (!(await askConfirm({ title: '删除这条笔记？', body: '删掉之后不可恢复。',
+    danger: true, confirmLabel: '删除' }))) return;
   try {
     await api.del(`/notes/${id}`);
     notes.value = notes.value.filter((n) => n.id !== id);
@@ -3584,13 +3591,20 @@ function renderMarkdown(text?: string | null) {
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
 /* 分组靠**线**，不靠给每个按钮画边框：胶囊里一排描边按钮会像一张表单 */
 .cap-group + .cap-group { margin-left: 1px; padding-left: 7px; border-left: 1px solid var(--divider); }
-/* 胶囊里的控件一律"无边框、hover 才浮一层浅底"（权重写到三档，压过 base.css 的 .btn/.seg） */
-.reader-capsule .cap-group .btn { border-color: transparent; background: transparent; }
+/* 胶囊里的控件一律"无边框、**无阴影**、hover 才浮一层浅底"
+   （权重写到三档，压过 base.css 的 .btn/.seg）。
+   ⚠️ `box-shadow: none` 是必须的：base.css 的 `.btn` 现在用 `--shadow-1` 表达"一枚独立的
+   白色 pill"，而胶囊里的按钮**不是独立的一枚** —— 它们躺在胶囊内部，再套一层投影就成了
+   "胶囊里还嵌着一个个小胶囊"（用户口径 2026-10-03：字号调节与显示这两个按钮不要阴影，
+   保持"在胶囊内部"的感觉）。 */
+.reader-capsule .cap-group .btn { border-color: transparent; background: transparent; box-shadow: none; }
 .reader-capsule .cap-group .btn:hover:not(:disabled) { background: var(--bg-hover); border-color: transparent; }
 .reader-capsule .cap-group .btn.primary { background: var(--accent); color: var(--text-on-accent); }
 .reader-capsule .cap-group .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 .reader-capsule .cap-group .btn.danger { color: var(--danger); border-color: transparent; }
 .reader-capsule .cap-group .btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+/* 弹出面板开着的那枚：给一点"我在这里"的浅底（同样不投影） */
+.reader-capsule .cap-group .btn[aria-expanded="true"] { background: var(--bg-hover); }
 .reader-capsule .cap-group .seg {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);
