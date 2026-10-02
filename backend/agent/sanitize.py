@@ -28,6 +28,21 @@ _LABEL_RE = re.compile(
     r"(`?)(?P<ident>[^\s`）)】,，。;；]+)(\1)"
 )
 
+#: **`[ref=3]` 这类写法要归一成 `[3]`**。提示词里说的是"标 `[ref]`"，模型有时会把
+#: `ref` 当字段名照抄成 `[ref=9]`（实测第一轮就中了）。留着它，前端的 `[n]` → 按钮
+#: 那套就匹配不上，用户看到的是 `[ref=9]` 这种半成品。
+_REF_MARK_BRACKET_RE = re.compile(r"[\[\(]\s*ref\s*[=:：#]?\s*(\d{1,3})\s*[\]\)]",
+                                  re.IGNORECASE)
+_REF_MARK_BARE_RE = re.compile(r"\bref\s*[=:：]\s*(\d{1,3})\b", re.IGNORECASE)
+
+
+def normalize_ref_marks(text: str) -> str:
+    """``[ref=3]`` / ``(ref: 3)`` / ``ref=3`` → ``[3]``。"""
+    if not text:
+        return text
+    out = _REF_MARK_BRACKET_RE.sub(lambda m: f"[{m.group(1)}]", text)
+    return _REF_MARK_BARE_RE.sub(lambda m: f"[{m.group(1)}]", out)
+
 
 def _ident_table(registry: RefRegistry) -> dict[str, int]:
     """登记过的内部 id → ref。长 id 优先替换，避免短 id 是长 id 前缀时替换错位置。"""
@@ -43,9 +58,10 @@ def _ident_table(registry: RefRegistry) -> dict[str, int]:
 
 
 def sanitize_answer_text(text: str, registry: RefRegistry) -> str:
-    """把正文里出现的内部 id（带壳或不带壳）换成 ``[n]``。"""
+    """把正文里出现的内部 id（带壳或不带壳）换成 ``[n]``，并归一 `[ref=3]` 这类写法。"""
     if not text:
         return text
+    text = normalize_ref_marks(text)
     table = _ident_table(registry)
     if not table:
         return text

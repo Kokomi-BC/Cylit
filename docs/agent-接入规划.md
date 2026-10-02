@@ -640,7 +640,7 @@ P0 已按此接线（`history` 管道接通、预算项都在 `Settings`），**
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
-| **P1** | agent 循环（轮次上限已就位，**补压缩**）+ 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ 前端入口 + **P1 工具面 ✅**（`kb_search` `formula_get` `translate_get` `library_list` `notes_search` + 3 个 skill） | 工具面已达成：`/v1/skills` 列出 **7 个**，每个工具都有瘦投影与真实调用记录；**剩下的是压缩/追问/前端** | 3~5 天 |
+| **P1** | ~~P1 工具面✅~~ + ~~前端入口✅（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ **自动压缩策略**（现在是手动点圆环） | 已达成：`frontend_check.py --chat` 6/6、`agent_check.py` 88/88；**剩下的是树分叉 / 追问建议 / 设置页卡片** | 3~5 天 |
 | **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
 
 **P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
@@ -698,7 +698,42 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩
 
 ---
 
-## 16. 关键事实备忘（实现时速查）
+## 16. 前端接入（P1 已落地）
+
+**侧栏第二个页签就是「对话」**（紧跟「目录」，用户口径）。点它会把左栏放宽到 420px
+（默认 300 会把消息挤成竖排），面板自上而下三段：会话条 / 消息流 / 输入区。
+
+| 能力 | 做法 |
+|---|---|
+| **多会话** | 会话条左侧是当前会话标题（点开是列表：标题 / 条数 / 时间 / 删除）；「＋」新建。会话按论文归属，进面板先给**最近一次会话**（用户大多想接着上次问） |
+| **流式** | `api/stream.ts` 的 `postSse()`（fetch + ReadableStream 手解 SSE 帧）。**不用 `EventSource`**：它只能 GET，而问题/选区/会话 id 都在 body 里 |
+| **引用** | 回答下方是可点 chip（`[n] p3`）；点击跳阅读器那一行。**流式期间的 `citation` 事件只作过程展示**，`done` 之后重拉一次会话（编号在 `done` 阶段被压成 1..M，见 §8 第 4 条），不做增量合并 |
+| **圆环 = 压缩** | 圆环显示 `usage.percent`（token 估算 / `agent_context_budget`），点它 = `POST /agent/conversations/{id}/compress` |
+| **划词解释** | 浮动卡片；**由 agent 产出**（`/agent/ask` + `selection`，流式），卡片里是一个小对话线程：可以就这段继续追问（同一 conversation_id），也能「在对话里继续」把选区带进侧栏面板 |
+| **划词历史** | 「历史解释（N）」= `source=selection` 的批注（「存为批注」存下来的那些），点一条即可回看 |
+
+**划词的锚点是 `row_id` 不是 `block_id`**：阅读器划词拿到的是**正文行 id**（`p004-02`），
+而块是解析产物那套命名空间。agent 侧 `runtime._block_of_row()` 按"行 id 里的页号 → 那一页的块列表"
+反查出真正的块（与前端引用跳转用同一份映射），查不到就少一层上下文、**不报错**。
+
+**旧链路已删除**：`/api/v1/annotations/from-selection`（后端自己拼 prompt 调 generation provider）
+与 `annotation_service.explain_selection` 一起移除；`/annotations/save` 保留 —— 它现在是"把 agent
+给出的解释记成批注"的写入端，也就是划词历史的来源。
+
+**压缩 = 多出来的一轮会话**（用户点圆环触发）：
+
+1. 主后端取可见分支的对话（**含上一次的摘要**，压缩是可累加的），调 agent `POST /v1/compress`
+   （一个不带工具的裸 agent，`output_type=str`）；
+2. 摘要存成一条 `role=summary` 的消息 → 会话里看得见"已压缩"那一轮，原文一条没删；
+3. `history_for_agent()` 从**最近一条 summary** 开始算 → 模型不再逐条看到更早的对话；
+   `conversation_usage()` 同样只统计摘要之后的部分 → 圆环归零。
+
+摘要提示词要求**保留出处**（写成「第 N 页 §X.X」）但**不许带 `[n]` 编号** —— 编号只对原来那一轮有效，
+写进摘要会让后续引用点到错的地方（自检里有这条断言）。
+
+---
+
+## 17. 关键事实备忘（实现时速查）
 
 **版本**（已装进 `scenemind`，官方 PyPI 索引）
 

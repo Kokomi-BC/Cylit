@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     agent_evidence_floor: float = 0.65
     #: 单轮预注入的档案 + 大纲字符上限
     agent_archive_chars: int = 6000
+    #: 会话上下文的"预算"（tiktoken 估算的 token 数）。**不是模型的硬上限**（模型是百万上下文），
+    #: 而是"聊到多大就该压一压"的提醒线 —— 前端那个圆环显示的就是它，点击即压缩。
+    agent_context_budget: int = 200000
     #: 一次 `page_image_get` 允许的最大页数与最长边（视觉输入的字节闸）
     agent_image_max_pages: int = 3
     agent_image_max_dpi: int = 400

@@ -91,6 +91,34 @@ async def agent_get(path: str) -> dict:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
+async def agent_post(path: str, payload: dict, *, timeout: float = 300.0) -> dict:
+    """POST 到 agent 的 JSON 接口（非 SSE，如 `/v1/compress`）。
+
+    失败**抛 `ProviderError`**而不是返回 `{"ok": False}`：这类调用在主后端是同步等待的，
+    调用方需要的是一句能直接回给用户的话，错误码走统一信封。
+    """
+    from backend.core.errors import ProviderError
+
+    s = get_settings()
+    token = s.agent_token()
+    if not token:
+        raise ProviderError("内部令牌缺失，请重启主后端以生成它。", retryable=False)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.post(f"{_base_url()}{path}", json=payload,
+                                     headers={"X-Internal-Token": token})
+    except httpx.HTTPError as exc:
+        raise ProviderError(AGENT_DOWN, retryable=True, detail={"cause": str(exc)[:200]}) from exc
+    if resp.status_code >= 400:
+        detail = resp.text[:300]
+        try:
+            detail = str((resp.json() or {}).get("detail") or detail)
+        except Exception:  # noqa: BLE001
+            pass
+        raise ProviderError(f"问答服务报错：{detail}", retryable=True)
+    return resp.json() or {}
+
+
 async def agent_up() -> bool:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as client:

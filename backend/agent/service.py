@@ -83,6 +83,20 @@ def create_app() -> FastAPI:
         log.info("skills 已重载：%s", [s["name"] for s in skills])
         return {"reloaded": True, "skills": skills}
 
+    # ---------------- 压缩 ----------------
+    @app.post("/v1/compress")
+    async def compress_endpoint(payload: dict = Body(...),
+                                x_internal_token: str | None = Header(None)) -> dict:
+        """把一段对话记录压成要点（主后端落成 `summary` 消息；见 `compress.py`）。"""
+        _auth(x_internal_token)
+        from backend.agent.compress import compress
+
+        try:
+            return await compress(cfg, host, payload)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("压缩失败：%s", exc)
+            raise HTTPException(status_code=502, detail=f"压缩失败：{exc}"[:200]) from exc
+
     # ---------------- 问答 ----------------
     @app.post("/v1/ask")
     async def ask(request: Request, payload: dict = Body(...),
@@ -90,14 +104,18 @@ def create_app() -> FastAPI:
         _auth(x_internal_token)
         question = str(payload.get("question") or "").strip()
         paper_id = str(payload.get("paper_id") or "").strip()
-        if not question or not paper_id:
-            raise HTTPException(status_code=422, detail="paper_id 与 question 都是必填")
+        selection = payload.get("selection") or None
+        # 划词提问时 `question` 可以为空（默认"解释这段内容"，见 `runtime._user_prompt`）
+        if not paper_id or not (question or (selection and selection.get("text"))):
+            raise HTTPException(status_code=422,
+                                detail="paper_id 必填，且 question 与 selection 至少要有一个")
         req = AskRequest(
             paper_id=paper_id, question=question,
             conversation_id=str(payload.get("conversation_id") or ""),
             parent_id=payload.get("parent_id"),
             history=list(payload.get("history") or []),
             model_id=payload.get("model_id"),
+            selection=selection,
         )
 
         async def _sse():

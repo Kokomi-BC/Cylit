@@ -265,15 +265,14 @@ def main() -> int:
 
             blk = next((b["id"] for b in reader["blocks"]
                         if b["type"] == "para" and len(b["text"]) > 60), None)
-            exp = post(f"{api}/annotations/from-selection", {
-                "paper_id": args.paper_id, "block_id": blk,
-                "selected_text": (reader["blocks"][1]["text"] or "text")[:60]})["data"]
-            check("POST /annotations/from-selection（划词解释）",
-                  bool(exp.get("explanation")), f"model={exp.get('model_id')}")
+            # 划词解释已改由问答 agent 负责（`/agent/ask` + selection，SSE）——它要跑一个
+            # agent 进程且会真调模型，不适合放在这个"端到端接口冒烟"里；这里只验证
+            # **落库那一半**（agent 产出的解释由前端 POST 过来存成批注）。
             saved = post(f"{api}/annotations/save", {
                 "paper_id": args.paper_id, "block_id": blk,
-                "explanation": exp.get("explanation"), "model_id": exp.get("model_id")})["data"]
-            check("批注落库（含来源）", bool(saved.get("id")), saved.get("source"))
+                "content_md": "（划词解释冒烟）这是一段由 agent 产出的解释文本。"})["data"]
+            check("批注落库（含来源）", bool(saved.get("id")) and saved.get("source") == "selection",
+                  saved.get("source"))
 
             report = get(f"{api}/papers/{args.paper_id}/reconcile")["data"]
             check("三存储对账", "issues" in report,

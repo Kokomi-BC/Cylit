@@ -1,34 +1,27 @@
-"""批注 / 笔记 / 高亮服务（规划 §10 ⑤⑥⑦、§21.10 划词 AI 解释）。
+"""批注 / 笔记 / 高亮服务（规划 §10 ⑤⑥⑦）。
 
 - 高亮锚定 ``block_id + 字符偏移``（规划 §10 ⑤），重译后按 ``anchor_hash`` 重定位；
-- 划词解释：缓存命中则秒回；否则小上下文 + LLM → 浮动卡片 → 可存为批注。
+- **划词解释已改由问答 agent 负责**（`/api/v1/agent/ask` + `selection`），本模块只负责
+  把 agent 给出的解释**存成批注**（`source=selection`）—— 旧的那条"自己拼 prompt 调
+  generation provider"的链路已删除，见 dev-log 第二十轮。
 """
 
 from __future__ import annotations
 
-from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.events import EVENT_ANNOTATION, bus
 from backend.core.logging import get_logger
 from backend.core.utils import (
-    iso_utc, json_dumps, json_loads, new_id, now, sha256_text, short_hash, truncate,
+    iso_utc, json_dumps, json_loads, new_id, sha256_text,
 )
 from backend.repositories.mysql.models import (
-    HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Block, Highlight, Note, Paper,
+    HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Highlight, Note, Paper,
 )
 from backend.repositories.mysql.session import session_scope
-from backend.services.paper import reader_service
-from backend.services.model.model_manager import model_manager
 
 log = get_logger(__name__)
 
 HIGHLIGHT_COLORS = ("yellow", "green", "blue", "pink", "purple")
-
-EXPLAIN_SYSTEM = """你是论文阅读助手。基于给定的段落与上下文，用简体中文解释用户选中的内容：
-- 说明该内容在论文中的作用与含义；
-- 涉及公式时解释符号含义；
-- 只依据给定文本，不要引入外部知识；不确定就说不确定。
-输出 3~6 句，可用 Markdown 列表。"""
 
 
 # --------------------------------------------------------------------------
@@ -261,114 +254,26 @@ def _annotation_dict(row: Annotation) -> dict:
 
 
 # --------------------------------------------------------------------------
-# 划词 AI 解释（规划 §21.10）
+# 划词解释的**落库**（解释本身由问答 agent 产出：`POST /api/v1/agent/ask` + `selection`）
+#
+# 旧实现 `explain_selection` 已删除：它自己拼 prompt（段落原文 + 译文 + 邻段 + 选区）
+# 直接调 generation provider，产出物不带引用、不能跳转，与问答那条链路的口径也不一致。
+# 现在划词走问答 agent —— 它会用 `block_get` 展开选区所在段落、按需读相邻页，答案带 `[n]`
+# 引用可跳转，而且**作为一轮对话留在会话里**（这就是「划词解释历史」的数据来源）。
 # --------------------------------------------------------------------------
 
 
-def explain_selection(payload: dict, user_id: int = 1) -> dict:
-    """选中文本 → 缓存命中秒回；否则小上下文 + LLM。"""
-    paper_id = payload.get("paper_id")
-    block_id = payload.get("block_id")
-    selection = (payload.get("selected_text") or "").strip()
-    if not paper_id or not selection:
-        raise ValidationError("paper_id 与 selected_text 必填")
-
-    cache_key = short_hash(f"{paper_id}|{block_id}|{selection}", 32)
-    cached = _read_cache(cache_key)
-    if cached:
-        return {**cached, "cached": True}
-
-    md_map = reader_service.load_markdown_map(paper_id)
-    context = ""
-    source_text = ""
-    if block_id:
-        source_text = md_map.get(block_id, {}).get("text", "")
-        if not source_text:
-            with session_scope() as sess:
-                b = sess.get(Block, block_id)
-                source_text = (b.preview if b else "") or ""
-        context = _neighbor_context(paper_id, block_id)
-    translation = md_map.get(block_id or "", {}).get("translation", "")
-
-    prompt = f"""【所在段落原文】
-{truncate(source_text or '(未知)', 1500)}
-
-【该段译文】
-{truncate(translation or '(暂无)', 800)}
-
-【相邻段落（上下文）】
-{truncate(context or '(无)', 800)}
-
-【用户选中的内容】
-{selection}
-
-请解释用户选中的内容。"""
-
-    provider = model_manager.get_generation()
-    cfg = model_manager.get_config(None, "generation")
-    try:
-        res = provider.generate(prompt, system=EXPLAIN_SYSTEM, temperature=0.2)
-        answer = res.text
-        tokens = res.total_tokens
-        model_name = res.model
-    except Exception as exc:  # noqa: BLE001
-        log.warning("划词解释失败：%s", exc)
-        answer = f"（解释失败：{type(exc).__name__}：{str(exc)[:200]}）"
-        tokens = 0
-        model_name = cfg.get("model_name") or ""
-
-    result = {
-        "paper_id": paper_id, "block_id": block_id, "selected_text": selection,
-        "explanation": answer, "model_id": cfg.get("id"),
-        "model_name": model_name,
-        "grounded": False,
-        "sources": [{"block_id": block_id, "paper_id": paper_id,
-                     "snippet": truncate(source_text, 200)}] if block_id else [],
-        "prompt_hash": short_hash(prompt + EXPLAIN_SYSTEM, 16),
-    }
-    _write_cache(cache_key, result)
-    _ = tokens
-    return {**result, "cached": False}
-
-
-def _neighbor_context(paper_id: str, block_id: str, window: int = 1) -> str:
-    with session_scope() as sess:
-        blk = sess.get(Block, block_id)
-        if blk is None:
-            return ""
-        rows = (sess.query(Block)
-                .filter(Block.paper_id == paper_id,
-                        Block.order_global >= blk.order_global - window,
-                        Block.order_global <= blk.order_global + window,
-                        Block.id != block_id)
-                .order_by(Block.order_global.asc()).all())
-        md_map = reader_service.load_markdown_map(paper_id)
-        return " ".join(truncate(md_map.get(r.id, {}).get("text", "") or
-                                 (r.preview or ""), 300) for r in rows)
-
-
 def save_explanation_as_annotation(payload: dict, user_id: int = 1) -> dict:
-    """把划词解释存为批注（规划 §21.10 末段）。"""
+    """把 agent 给出的划词解释存成批注（`source=selection`）。
+
+    这里**不调用任何模型**：内容来自问答 agent 那一轮，本函数只负责"把这段话记下来"。
+    所以它同时是前端「划词解释历史」的写入端。
+    """
     data = dict(payload)
     data["type"] = payload.get("type") or "qa"
     data["source"] = "selection"
     data["content_md"] = payload.get("content_md") or payload.get("explanation") or ""
     return create_annotation(data, user_id)
-
-
-# --- 解释缓存（内存级；重启即失效，避免为演示引入额外存储）----------------
-
-_explain_cache: dict[str, dict] = {}
-
-
-def _read_cache(key: str) -> dict | None:
-    return _explain_cache.get(key)
-
-
-def _write_cache(key: str, value: dict) -> None:
-    if len(_explain_cache) > 500:
-        _explain_cache.clear()
-    _explain_cache[key] = value
 
 
 def notes_overview(user_id: int = 1) -> dict:

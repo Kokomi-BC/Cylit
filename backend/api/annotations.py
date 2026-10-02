@@ -77,13 +77,7 @@ async def delete_annotation(annotation_id: str, request: Request):
     return envelope(svc.delete_annotation(annotation_id), request=request)
 
 
-@router.post("/annotations/from-selection")
-async def annotation_from_selection(request: Request, payload: dict = Body(...)):
-    """划词 AI 解释 → 浮动卡片 → 可存为批注（规划 §21.10）。"""
-    return envelope(svc.explain_selection(payload), request=request)
-
-
 @router.post("/annotations/save")
 async def save_annotation(request: Request, payload: dict = Body(...)):
-    """把划词解释存为批注。"""
+    """把划词解释存为批注（**解释本身由问答 agent 产出**，见 `/api/v1/agent/ask`）。"""
     return envelope(svc.save_explanation_as_annotation(payload), request=request)

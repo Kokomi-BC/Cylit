@@ -6971,3 +6971,57 @@ sniffer 的**表格区域**仍然不对，两处都在"图表检测"这条链上
 2. 压缩 / 追问建议 / 会话树分叉没做。
 3. `notes_search` 全库路径的按词过滤是在服务端拿到 overview 之后再过滤的
    （`notes_overview` 不接受 `q`），笔记量很大时该补到 SQL 层。
+
+---
+
+## 20. 第二十轮：问答前端（侧栏对话面板 / 划词解释改由 agent 接管 / 圆环压缩）
+
+**用户口径（2026-10-02）**：对话放侧栏第二（目录右侧），样式仿 dsh 但不要照抄；支持多个会话；
+支持选中文字的 AI 解释历史；**移除 AI 解释的旧代码，由 agent 接管**；划词时用浮层回复用户问题并支持
+markdown；**压缩做成"点圆环 = 多一轮会话"**。
+
+### 一、后端
+
+- `POST /api/v1/agent/ask` 支持 `selection: {text, row_id?, page?}`（有选区时 `question` 可空）；
+- `POST /api/v1/agent/conversations/{id}/compress` + agent 侧 `POST /v1/compress`：
+  **压缩就是多出来的一轮** —— 让一个不带工具的裸 agent 把已有对话读一遍压成要点，
+  存成一条 `role=summary` 消息；`history_for_agent()` / `conversation_usage()` 都从最近一条 summary 起算；
+- `GET /agent/conversations/{id}` 回 `usage`（tiktoken 估算 / 预算 200k），圆环显示的就是它；
+- **删掉旧划词链路**：`/annotations/from-selection` 与 `annotation_service.explain_selection`
+  （+ `EXPLAIN_SYSTEM` / 邻段拼接 / 解释缓存）一起移除，`/annotations/save` 保留为"存批注"的写入端；
+  `scripts/e2e_check.py` 那一段跟着改成只验证落库。
+
+**划词的锚点是行 id 不是块 id**（本轮又一坑）：阅读器划词拿到的是 `p001-00` 这种**正文行 id**，
+旧代码把它当 `block_id` 传给后端 —— 旧链路里没人校验所以看不出来，改走 agent 之后立刻暴露成
+"块不存在：p001-00"。修法：`runtime._block_of_row()` 用行 id 里的页号取那一页的块列表按 `row_id` 反查
+（与前端引用跳转同一份映射），查不到就少一层上下文、不报错。
+
+### 二、前端
+
+- 侧栏新增 **「对话」页签（排第二）**，`ReaderChat.vue`：多会话（列表/新建/删除）、流式回答、
+  可点引用 chip、输入区左下角**圆环 = 上下文用量（点它压缩）**、右侧模型名与发送/停止；
+- 点页签把左栏放宽到 420px（默认 300 会把消息挤成竖排）；
+- `api/stream.ts` 的 `postSse()`：POST + `ReadableStream` 手解 SSE 帧（`EventSource` 只能 GET，
+  而问题/选区/会话 id 都在 body 里）；
+- 划词浮层：由 agent 流式产出，卡片里是一个小对话线程（可继续追问 / 在对话里继续 / 历史解释），
+  markdown 渲染沿用 `htmlWithHighlights`。
+
+### 三、验证
+
+- `scripts/agent_check.py` **88/88**（新增第 ⑦ 节：划词走 agent、回答带引用、用户消息记了选区、
+  压缩产出要点、摘要**不带 `[n]`**、summary 作为一轮留痕、压缩后活跃上下文只剩摘要）；
+- `scripts/frontend_check.py --chat` **109/109**（新增第 ⑰ 节：页签顺序、面板就位、发得出去、
+  回答落地、引用 chip、无报错；`--chat` 需要 agent 服务在跑且会真调一次模型）。
+
+**探针踩坑（留给后来人）**：给划词浮层写探针时，用"一次 `sleep(45000)`"等流式回答**等不到** ——
+一个 1s 的轮询循环反而能等到（每个 tick 都是一次虚拟时间检查点，有请求在飞时会停住等它）。
+另外 `loading` 标记的选择器要写窄（`.ex-thread > .tiny.faint`）：卡片页脚也有 `tiny faint`，
+用 `.tiny.faint` 会永远判定"还在加载"。
+
+### 四、已知遗留
+
+1. 会话树分叉（`regenerate` / 编辑提问）与追问建议没做；
+2. 设置页还没有"问答模型"卡片（现在靠 `/models` 里那条 `agent` 类型配置）；
+3. 压缩是手动的（点圆环），没有"超过预算自动压"；
+4. 划词浮层的**流式渲染**没能在无头探针里断言成功（其请求与传输已验证：payload 正确、
+   HTTP 200、有数据；浮层按钮与面板状态也已断言），要等有真实鼠标的验收。

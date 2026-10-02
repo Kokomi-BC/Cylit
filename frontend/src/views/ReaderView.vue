@@ -14,9 +14,10 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
+import { postSse } from '@/api/stream';
 import type {
-  Annotation, Block, BriefPayload, FigureItem, GlossaryTerm, Highlight,
-  MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
+  AgentCitation, AgentSelection, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
+  Highlight, MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
@@ -34,7 +35,7 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  copyText, debounce, flattenOutline, outlineParentIds, pct, saveBlob, truncate,
+  copyText, debounce, flattenOutline, fmtRelative, outlineParentIds, pct, saveBlob, truncate,
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
@@ -44,6 +45,7 @@ import AsideToggle from '@/components/reader/AsideToggle.vue';
 import CapPanel from '@/components/reader/CapPanel.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
+import ReaderChat from '@/components/reader/ReaderChat.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
@@ -171,6 +173,8 @@ const ASIDE_W_MAX_WIDE = 640;
 const ASIDE_W_DEFAULT = 300;
 /** 点「解读」页签时的目标宽度：解读里全是小标题与概念卡，窄栏会被挤成竖排 */
 const ASIDE_W_INSIGHT = 520;
+/** 点「对话」页签时的目标宽度：默认 300 下消息会被挤成竖排字，引用 chip 也放不下 */
+const ASIDE_W_CHAT = 420;
 const asideWidthKey = `pm.reader.aside-w.${instancePaperId}`;
 /** 视口宽度（响应式）：非对照模式的上限要跟窗口挂钩 */
 const winWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
@@ -294,8 +298,18 @@ async function openInsightTab() {
  * （那时正文本来只剩半屏，不能再让侧栏吃掉）。
  */
 async function widenForInsight() {
+  await widenAside(ASIDE_W_INSIGHT);
+}
+
+/** 「对话」页签：目标 420（比解读窄一点，但比默认 300 宽得能读）。 */
+async function widenForChat() {
+  await widenAside(ASIDE_W_CHAT);
+}
+
+/** 放宽左栏到目标宽度（**只增不减**，理由见 `widenForInsight`）。 */
+async function widenAside(target: number) {
   if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死，变宽没有意义
-  const want = clampAsideWidth(ASIDE_W_INSIGHT);
+  const want = clampAsideWidth(target);
   if (want <= asideWidth.value) return;
   asideWidth.value = want;
   persistAsideWidth();
@@ -367,9 +381,28 @@ const selection = reactive({
   /** 选区/点击处盖住的已有高亮 id（菜单据此显示「删除高亮」） */
   hlIds: [] as string[],
 });
+/**
+ * 划词解释（浮动卡片）。
+ *
+ * **解释由问答 agent 产出**（`/agent/ask` + `selection`，SSE 流式）：
+ * 旧那条"后端自己拼 prompt 调 generation provider"的路已删除 —— 它给的答案不带引用、
+ * 不能跳转，和问答那条链路口径也不一致（见 dev-log 第二十轮）。
+ *
+ * 卡片里是一个**小对话线程**：可以就这段继续追问（同一 conversation_id，所以追问有上下文），
+ * 也能"在对话里继续"把选区带进侧栏面板；历史解释来自 `source=selection` 的批注。
+ */
 const explainCard = reactive({
-  open: false, loading: false, text: '', data: null as any, rowId: '', anchored: true,
+  open: false, loading: false, question: '', rowId: '', anchored: true,
+  /** 选区在哪个视图里划的：`row` 有行锚点，`markdown` 只有页号 */
+  scope: 'row' as 'row' | 'markdown',
+  selectionText: '', page: 0 as number, conversationId: '' as string | null,
+  turns: [] as Array<{ role: 'user' | 'assistant'; text: string; citations: AgentCitation[] }>,
+  history: [] as Array<{ id: string; text: string; at?: string | null; rowId?: string | null }>,
+  historyOpen: false,
 });
+let explainController: AbortController | null = null;
+/** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
+const chatSelection = ref<AgentSelection | null>(null);
 const noteModal = reactive({ open: false, text: '', rowId: '', selected: '' });
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
@@ -398,14 +431,17 @@ const briefDraft = reactive<BriefDraft>({
  *  两者读同一个接口，但走 `useUnderstanding` 的整包缓存，来回切不会重复请求。
  *  进这两个页签都会自动把侧栏放宽（见 `widenForInsight`）。
  *  ⚠️ 顺序是用户口径：**论文解读、阅读地图紧跟「目录」右边**（页签条可横向滚，放前面才不会被挤出可视区）。 */
-type SideTabKey = 'toc' | 'search' | SideTab;
+type SideTabKey = 'toc' | 'chat' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
 const SIDE_TAB_KEYS = [
-  'toc', 'insight', 'readmap', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
+  'toc', 'chat', 'insight', 'readmap', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
 /* 进「论文解读」/「阅读地图」页签就把左栏放宽（`widenForInsight` 只增不减）。
    放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
-watch(sideTab, (k) => { if (k === 'insight' || k === 'readmap') void widenForInsight(); });
+watch(sideTab, (k) => {
+  if (k === 'insight' || k === 'readmap') void widenForInsight();
+  else if (k === 'chat') void widenForChat();
+});
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
  * 只数 IR 术语表是不对的：简报里那 20 条统一译法才是真正注入每次翻译 prompt 的那一份，
@@ -427,6 +463,10 @@ const SIDE_TABS = computed<Array<{
   k: SideTabKey; icon: string; label: string; title: string; count?: number;
 }>>(() => [
   { k: 'toc', icon: 'list', label: '目录', title: '目录（中英双语）' },
+  {
+    k: 'chat', icon: 'chat', label: '对话',
+    title: '论文问答（多轮对话；圆环 = 上下文用量，点它压缩）',
+  },
   {
     k: 'insight', icon: 'sparkle', label: '论文解读',
     title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
@@ -929,9 +969,9 @@ async function loadAll() {
     if (SIDE_TAB_KEYS.includes(sideParam)) {
       // 兼容旧的 ?side=notes：批注与笔记已合并为一个页签
       sideTab.value = (sideParam === 'notes' ? 'annotations' : sideParam) as SideTabKey;
-      /* `?side=insight` 还要**把左栏打开**：解读回到左栏之后，"选中页签"本身看不见就等于
-       * 没反应（用户把左栏收起过 / 窄屏是抽屉）。宽度由 `watch(sideTab)` 统一负责。 */
-      if (sideParam === 'insight') await ensureAsideVisible();
+      /* `?side=insight` / `?side=chat` 还要**把左栏打开**：回到左栏之后，"选中页签"本身
+       * 看不见就等于没反应（用户把左栏收起过 / 窄屏是抽屉）。宽度由 `watch(sideTab)` 统一负责。 */
+      if (sideParam === 'insight' || sideParam === 'chat') await ensureAsideVisible();
     }
 
     await nextTick();
@@ -2462,40 +2502,118 @@ function onCopy(ev: ClipboardEvent) {
   ev.preventDefault();
 }
 
-async function explainSelection() {
-  // 无块锚点（原 PDF 划词）时只传 paper_id + 选中文字：后端 `explain_selection` 对 block_id 是可选的
-  const payload = {
-    paper_id: paperId.value,
-    block_id: selection.anchored ? selection.rowId : null,
-    selected_text: selection.text,
-  };
-  const anchored = selection.anchored;
-  hideMenu();
-  explainCard.open = true;
+/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。 */
+async function askSelection(question: string) {
+  const q = question.trim();
+  if (q) explainCard.turns.push({ role: 'user', text: q, citations: [] });
+  // ⚠️ 必须**通过 reactive 对象的下标**改字段：push 进去的是原始对象，直接改它不会触发更新
+  const idx = explainCard.turns.length;
+  explainCard.turns.push({ role: 'assistant', text: '', citations: [] });
   explainCard.loading = true;
-  explainCard.text = '';
-  explainCard.rowId = anchored ? selection.rowId : '';
-  explainCard.anchored = anchored;
+  explainController?.abort();
+  explainController = new AbortController();
+  const onEvent = (name: string, data: any) => {
+    if (name === 'session' && data?.conversation_id) explainCard.conversationId = data.conversation_id;
+    else if (name === 'answer_delta') explainCard.turns[idx].text += data?.text ?? '';
+    else if (name === 'done') {
+      explainCard.turns[idx].text = data?.answer ?? explainCard.turns[idx].text;
+      explainCard.turns[idx].citations = data?.citations ?? [];
+    } else if (name === 'error') {
+      explainCard.turns[idx].text = explainCard.turns[idx].text || `（${data?.message ?? '失败'}）`;
+    }
+  };
   try {
-    const data = await api.post<any>('/annotations/from-selection', payload);
-    explainCard.data = data;
-    explainCard.text = data.explanation ?? '(无内容)';
-  } catch (err) {
-    reportError(err, '划词解释失败');
-    explainCard.open = false;
+    await postSse('/agent/ask', {
+      paper_id: paperId.value, question: q,
+      conversation_id: explainCard.conversationId,
+      selection: {
+        text: explainCard.selectionText,
+        row_id: explainCard.scope === 'row' ? (explainCard.rowId || null) : null,
+        page: explainCard.page || null,
+      },
+    }, { signal: explainController.signal, onEvent });
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      explainCard.turns[idx].text = explainCard.turns[idx].text || `（提问失败：${err?.message ?? err}）`;
+    }
   } finally {
     explainCard.loading = false;
+    explainController = null;
   }
 }
 
+async function explainSelection() {
+  // 无块锚点（原 PDF 划词）时只传文本：agent 那边拿不到块就少一层上下文，仍能解释
+  const rowId = selection.anchored ? selection.rowId : '';
+  hideMenu();
+  explainCard.open = true;
+  explainCard.loading = true;
+  explainCard.question = '';
+  explainCard.rowId = rowId;
+  explainCard.anchored = selection.anchored;
+  explainCard.scope = selection.scope;
+  explainCard.selectionText = selection.text;
+  explainCard.page = selection.scope === 'markdown' ? selection.mdPage : 0;
+  explainCard.conversationId = null;
+  explainCard.turns = [];
+  explainCard.historyOpen = false;
+  void loadExplainHistory();
+  await askSelection('');
+}
+
+function submitExplainQuestion() {
+  const q = explainCard.question.trim();
+  if (!q || explainCard.loading) return;
+  explainCard.question = '';
+  void askSelection(q);
+}
+
+/** 划词解释历史 = `source=selection` 的批注（`存为批注` 存下来的那些）。 */
+async function loadExplainHistory() {
+  try {
+    const res: any = await api.get('/annotations', { paper_id: paperId.value });
+    const list: Annotation[] = res?.items ?? res ?? [];
+    explainCard.history = list
+      .filter(a => a.source === 'selection')
+      .slice(0, 20)
+      .map(a => ({ id: a.id, text: a.content_md, at: a.created_at, rowId: a.block_id }));
+  } catch {
+    explainCard.history = [];
+  }
+}
+
+function showHistoryItem(item: { text: string; rowId?: string | null }) {
+  explainCard.turns = [{ role: 'assistant', text: item.text, citations: [] }];
+  explainCard.rowId = item.rowId ?? explainCard.rowId;
+  explainCard.historyOpen = false;
+}
+
+/** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。 */
+function openSelectionInChat() {
+  chatSelection.value = {
+    text: explainCard.selectionText,
+    row_id: explainCard.scope === 'row' ? (explainCard.rowId || null) : null,
+    page: explainCard.page || null,
+  };
+  explainCard.open = false;
+  sideTab.value = 'chat';
+  // 左栏可能是收起的（例如用户在看 Markdown 视图）——切页签不等于看得见面板
+  void ensureAsideVisible();
+}
+
+function focusCitation(citation: AgentCitation) {
+  explainCard.open = false;
+  focusRow(citation.row_id || citation.block_id || '', { page: citation.page ?? undefined, flash: true });
+}
+
 async function saveExplanationAsAnnotation() {
+  const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
+  if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
   try {
     await api.post('/annotations/save', {
       paper_id: paperId.value,
-      block_id: explainCard.rowId,
-      content_md: explainCard.text,
-      sources: explainCard.data?.sources ?? [],
-      model_id: explainCard.data?.model_id,
+      block_id: explainCard.rowId || null,
+      content_md: answer,
     });
     toast('已存为批注', 'ok');
     explainCard.open = false;
@@ -2833,7 +2951,11 @@ function pinReadingAnchor(durationMs = 1200) {
   };
   anchorPinTimer = window.setTimeout(tick, 60);
 }
-const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
+/** 划词卡片里的 Markdown 渲染（带本论文的资源路径改写；卡片里没有高亮，故传空数组）。 */
+function renderMarkdown(text?: string | null) {
+  return htmlWithHighlights(text ?? '', [], paperId.value);
+}
+
 </script>
 
 <template>
@@ -3090,6 +3212,13 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
           @collapse-all="collapseAll"
           @expand-all="expandAll"
         />
+        <ReaderChat
+          v-else-if="sideTab === 'chat'"
+          :paper-id="paperId"
+          :selection="chatSelection"
+          @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+          @clear-selection="chatSelection = null"
+        />
         <ReaderSearch
           v-else-if="sideTab === 'search'"
           ref="searchPane"
@@ -3187,24 +3316,59 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
       @close="hideMenu"
     />
 
-    <Modal :open="explainCard.open" title="AI 解释（仅依据论文内容）" @close="explainCard.open = false">
-      <div v-if="explainCard.loading" class="muted">正在请求模型…</div>
-      <div v-else>
-        <div class="md small" v-html="explainHtml" />
-        <div class="tiny faint" style="margin-top:8px">
-          模型：{{ explainCard.data?.model_name ?? '—' }}
-          <span v-if="explainCard.data?.cached"> · 命中缓存</span>
-          <span v-if="!explainCard.anchored"> · 来自原 PDF 划词（无段落上下文与锚点）</span>
+    <Modal :open="explainCard.open" title="AI 解释（只依据论文内容）" @close="explainCard.open = false">
+      <div class="ex-thread">
+        <div v-for="(t, i) in explainCard.turns" :key="i" class="ex-turn" :class="t.role">
+          <div v-if="t.role === 'user'" class="ex-q">{{ t.text }}</div>
+          <template v-else>
+            <div v-if="t.text" class="md small" v-html="renderMarkdown(t.text)" />
+            <div v-if="t.citations.length" class="ex-cites">
+              <button v-for="c in t.citations" :key="c.ref" class="chip" :title="c.snippet || c.label"
+                      @click="focusCitation(c)">
+                [{{ c.ref }}]<span v-if="c.page"> p{{ c.page }}</span>
+              </button>
+            </div>
+          </template>
         </div>
+        <div v-if="explainCard.loading" class="tiny faint">正在读这篇论文…</div>
       </div>
+
+      <div class="ex-ask">
+        <input
+          v-model="explainCard.question"
+          placeholder="就这段继续问（Enter 发送）"
+          @keyup.enter="submitExplainQuestion"
+        >
+        <button class="btn sm primary" :disabled="explainCard.loading || !explainCard.question.trim()"
+                @click="submitExplainQuestion">
+          提问
+        </button>
+      </div>
+
+      <div class="ex-foot tiny faint">
+        <span v-if="!explainCard.anchored">来自原 PDF 划词（无段落锚点）</span>
+        <span class="spacer" />
+        <button class="btn sm" @click="explainCard.historyOpen = !explainCard.historyOpen">
+          <AppIcon name="task" :size="12" />历史解释（{{ explainCard.history.length }}）
+        </button>
+        <button class="btn sm" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat">
+          <AppIcon name="chat" :size="12" />在对话里继续
+        </button>
+      </div>
+
+      <div v-if="explainCard.historyOpen" class="ex-history">
+        <div v-if="!explainCard.history.length" class="tiny faint">
+          还没有存过的解释（点下方「存为批注」就会留在这里）
+        </div>
+        <button v-for="h in explainCard.history" :key="h.id" class="ex-hrow" @click="showHistoryItem(h)">
+          <span class="tiny faint">{{ fmtRelative(h.at) }}</span>
+          <span class="md small ex-hhead" v-html="renderMarkdown(h.text)" />
+        </button>
+      </div>
+
       <template #footer>
         <button class="btn" @click="explainCard.open = false">关闭</button>
-        <button
-          v-if="explainCard.anchored"
-          class="btn primary"
-          :disabled="explainCard.loading"
-          @click="saveExplanationAsAnnotation"
-        >
+        <button class="btn primary" :disabled="explainCard.loading" @click="saveExplanationAsAnnotation">
           存为批注
         </button>
       </template>
@@ -3633,6 +3797,41 @@ const explainHtml = computed(() => htmlWithHighlights(explainCard.text, []));
 @media (prefers-reduced-motion: reduce) {
   .reader, .reader-aside { transition: none; }
 }
+
+/* ---------------- 划词解释卡片（浮动层里的小对话线程） ----------------
+ * 由问答 agent 产出（流式），所以这里既要有"正在读"的状态，也要能承接追问。 */
+.ex-thread { max-height: 46vh; overflow-y: auto; }
+.ex-turn { margin-bottom: 10px; }
+.ex-turn .md :deep(p) { margin: .35em 0; }
+.ex-q {
+  font-size: 12px; color: var(--text-dim); padding: 3px 8px;
+  border-left: 2px solid var(--accent); background: var(--bg-layer);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.ex-cites { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.chip {
+  border: 1px solid var(--border); background: var(--bg-layer); color: var(--text-dim);
+  border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
+}
+.chip:hover { color: var(--accent-text); border-color: var(--accent); }
+.ex-ask { display: flex; gap: 6px; margin-top: 10px; }
+.ex-ask input { flex: 1; min-width: 0; }
+.ex-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.ex-history {
+  margin-top: 8px; max-height: 24vh; overflow-y: auto;
+  border-top: 1px solid var(--divider); padding-top: 6px;
+}
+.ex-hrow {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  border: 0; background: none; color: var(--text); text-align: left; cursor: pointer;
+  padding: 5px 6px; border-radius: var(--radius-sm);
+}
+.ex-hrow:hover { background: var(--bg-hover); }
+.ex-hhead {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; color: var(--text-dim);
+}
+.ex-hhead :deep(p) { margin: 0; display: inline; }
 
 @media print {
   .reader-toolbar, .reader-aside { display: none !important; }

@@ -35,9 +35,10 @@ SCOPE = """材料的来源分三种，**不要混**：
   引用它们时要说明"你在某处记过…"，不要冒充成论文的论断。"""
 
 CITING = """引用规则（**必须遵守**）：
-- 工具结果里的每个条目都带 `ref` 编号。你的回答里凡是依据某条材料的句子，都要在句末标 `[ref]`，
-  例如：随机旋转让内积量化误差在坐标间变得均匀[3]。
-- 只能使用工具**实际返回过**的 ref 编号，不要自己造编号，也不要写 chunk_id / block_id / 页码代替编号。
+- 工具结果里的每个条目都带一个**编号**（结果里的 `ref` 字段）。你的回答里凡是依据某条材料的句子，
+  都要在句末用方括号写上那个编号，例如：随机旋转让内积量化误差在坐标间变得均匀[3]。
+  **方括号里只写数字**，不要写 `ref=3`、`[ref 3]` 这样的形式。
+- 只能使用工具**实际返回过**的编号，不要自己造编号，也不要写 chunk_id / block_id / 页码代替编号。
 - 一个论断由多条材料支撑就并列写，例如 [3][7]。整段都是常识性铺垫时可以不加。
 - 配图：只有 figure_list 返回过 image_url 的图才能配。逐字照抄那个地址写成
   `![简短说明](image_url)`，不要改写、不要拼接、不要用外部图片地址。"""
@@ -48,14 +49,41 @@ NO_EVIDENCE = """回答格式：
 - 如果材料只够回答一部分，就回答那一部分，并明确说哪一部分没有依据。"""
 
 
+SELECTION = """【用户选中的内容】（划词提问）
+选中原文：
+> {text}
+
+{where}关于选区的解释规则：
+- 用户问的是**这段内容**，不要跑去总结全篇。
+- 先用 block_get(ref={ref}) 读它所在的完整段落（必要时再读相邻页）—— 选区常常只是半句话，
+  光看它容易解释错。
+- 若选区里有公式/符号，用 formula_get 或 page_image_get(dpi=300) 核对，不要凭字形猜。
+- 选区若与译文不一致，以原文为准并指出这个不一致。"""
+
+
+def selection_block(deps: Deps) -> str:
+    if not deps.selection:
+        return ""
+    ref = deps.selection_ref
+    where = ""
+    if ref:
+        where = (f"（它位于第 {deps.selection_page} 页，已登记为 ref={ref}。）\n"
+                 if deps.selection_page else f"（已登记为 ref={ref}。）\n")
+    return SELECTION.format(text=deps.selection.strip()[:2000], ref=ref or "-",
+                            where=where)
+
+
 def build_instructions(deps: Deps) -> str:
-    """本轮的系统指令（稳定前缀 + 档案 + 引用规则）。"""
+    """本轮的系统指令（稳定前缀 + 档案 + 划词选区 + 引用规则）。"""
     parts = [BASE]
     if deps.archive_text:
         parts.append(deps.archive_text)
     parts.append(SCOPE)
     if deps.evidence_note:
         parts.append(deps.evidence_note)
+    block = selection_block(deps)
+    if block:
+        parts.append(block)
     parts.append(CITING)
     parts.append(NO_EVIDENCE)
     return "\n\n".join(parts)

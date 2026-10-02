@@ -28,6 +28,12 @@ class Deps:
     #: 本轮检索的低相关度提醒（**软信号**：只告诉模型"这批材料可能不相关"，
     #: 不替它决定"有没有依据" —— 阈值实测会误伤，见 `config.agent_evidence_floor`）
     evidence_note: str = ""
+    #: 划词解释：用户选中的原文 + 它对应的 ref（ref 用来让模型自己展开上下文）
+    selection: str = ""
+    selection_ref: int | None = None
+    selection_page: int | None = None
+    #: 用户对选区的提问（划词追问）；为空时是"解释这段内容"
+    selection_question: str = ""
     #: 工具轨迹（审计 + 自检 A5/A13/A14 读它）
     trace: list[dict] = field(default_factory=list)
     #: 模型轮次（含工具轮）：超上限就停，见 §11 的 `rounds_exhausted`

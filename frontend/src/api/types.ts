@@ -726,3 +726,88 @@ export interface HealthPayload {
   data_dir?: string;
   error?: string;
 }
+
+/* --------------------------- 问答 agent（规划 §4.3） --------------------------- */
+
+/** 引用：`ref` 是展示编号（`done` 阶段被压成 1..M）；跳转用 `paper_id + block_id/row_id`。 */
+export interface AgentCitation {
+  ref: number;
+  paper_id: string;
+  kind: string;
+  page?: number | null;
+  section?: string | null;
+  block_id?: string | null;
+  row_id?: string | null;
+  snippet?: string;
+  image_urls?: string[];
+  label?: string;
+}
+
+export interface AgentMessage {
+  message_id: string;
+  conversation_id: string;
+  parent_id?: string | null;
+  seq: number;
+  /** `summary` = 压缩产生的那条要点（对话留痕，不是模型回答） */
+  role: 'user' | 'assistant' | 'summary' | 'tool' | string;
+  content: string;
+  citations?: AgentCitation[];
+  tool_trace?: Array<Record<string, any>>;
+  finish_reason?: string | null;
+  created_at?: string | null;
+}
+
+/** 会话上下文用量：圆环显示的就是它，点圆环即压缩。 */
+export interface AgentUsage {
+  tokens: number;
+  budget: number;
+  percent: number;
+  messages: number;
+  /** 参与上下文的消息数（压缩后只剩摘要那一条） */
+  active: number;
+  compressed: boolean;
+  compressed_at?: string | null;
+}
+
+export interface AgentConversation {
+  conversation_id: string;
+  paper_id?: string | null;
+  title: string;
+  head_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  messages?: AgentMessage[];
+  usage?: AgentUsage;
+}
+
+export interface AgentModelInfo {
+  provider?: string;
+  model_name?: string;
+  usable?: boolean;
+  is_mock?: boolean;
+  has_key?: boolean;
+  fallback_to_generation?: boolean;
+}
+
+export interface AgentStatus {
+  enabled: boolean;
+  running: boolean;
+  endpoint: string;
+  model: AgentModelInfo;
+}
+
+/** 划词解释：选区 + 可选追问（`question` 为空时后端默认"解释这段内容"）。
+ *
+ * 锚点用 **`row_id`**（正文行 id，形如 `p004-02`）而不是 `block_id`：阅读器划词拿到的就是行 id，
+ * 后端会按"行 id 里的页号 → 那一页的块列表"反查出真正的块（见 `runtime._block_of_row`）。
+ */
+export interface AgentSelection {
+  text: string;
+  /** 已经是块 id 时才传（很少用；正文划词给的是 row_id） */
+  block_id?: string | null;
+  /** 正文行 id（`p004-02`）——阅读器划词的锚点 */
+  row_id?: string | null;
+  /** Markdown 视图划词时的页号（那边没有行锚点） */
+  page?: number | null;
+  question?: string;
+}

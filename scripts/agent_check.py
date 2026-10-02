@@ -40,6 +40,8 @@ REFUSAL_MARKS = ("没有", "未找到", "找不到", "不涉及", "无法回答"
 CHUNK_ID_RE = re.compile(r"\b\w[\w.\-]*:(?:a|b):(?:unit|text|formula|figure|table):")
 #: 口癖：模型把内部字段名写进正文
 ID_ECHO_RE = re.compile(r"\b(?:chunk_id|block_id|page_idx)\b\s*[=:：]")
+#: `[ref=3]` 这类**没被归一**的引用写法（归一后不该再出现）
+REF_ECHO_RE = re.compile(r"\bref\s*[=:：]\s*\d", re.IGNORECASE)
 #: 受控图片地址（只允许本论文自己的 region 图）
 IMAGE_URL_RE = re.compile(r"/api/v1/papers/(?P<paper>[^/)]+)/figures/region/\d+/\d+")
 #: 非受控图片（外链 / data: / blob:）——**一个都不许留**
@@ -77,9 +79,11 @@ def post_json(url: str, payload: dict, headers: dict | None = None,
         return json.loads(resp.read().decode("utf-8"))
 
 
-def ask(base: str, paper: str, question: str, *, timeout: float = 300.0) -> dict:
+def ask(base: str, paper: str, question: str, *, timeout: float = 300.0,
+        extra: dict | None = None) -> dict:
     """POST /agent/ask，消费整条 SSE，返回结构化结果。"""
-    payload = json.dumps({"paper_id": paper, "question": question}).encode("utf-8")
+    payload = json.dumps({"paper_id": paper, "question": question,
+                          **(extra or {})}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/v1/agent/ask", data=payload,
                                  headers={"Content-Type": "application/json"})
     events: list[dict] = []
@@ -315,6 +319,9 @@ def check_answer(base: str, paper: str, question: str) -> dict:
     leak = CHUNK_ID_RE.search(answer) or ID_ECHO_RE.search(answer)
     record("answer", "正文没有内部 id 泄漏", leak is None,
            f"命中={leak.group(0)!r}" if leak else "无 chunk_id / block_id 形态串")
+    ref_echo = REF_ECHO_RE.search(answer)
+    record("answer", "引用写法已归一（没有 ref=3 这类残留）", ref_echo is None,
+           f"命中={ref_echo.group(0)!r}" if ref_echo else "方括号里只有数字")
 
     # 上限跟着 `Settings.agent_max_rounds`（当前 8）；这里只断言"没超"，不做精确相等
     record("answer", "轮数在上限内（0<rounds<=8）",
@@ -532,6 +539,80 @@ def check_p1(base: str, paper: str) -> None:
            f"{len(cross)} 条跨论文引用；不在书架里的={bad}")
 
 
+def check_chat(base: str, paper: str) -> None:
+    """⑦ 划词解释（agent 接管）+ 压缩（多一轮会话）。"""
+    print("\n" + "=" * 78)
+    print("⑦ 划词解释（agent 接管）与压缩（点圆环 = 多一轮会话）")
+    print("=" * 78)
+    try:
+        reader = get_json(f"{base}/api/v1/papers/{paper}/reader")["data"]
+    except Exception as exc:  # noqa: BLE001
+        record("chat", "取正文块", False, f"{type(exc).__name__}: {exc}")
+        return
+    block = next((b for b in (reader.get("blocks") or [])
+                  if b.get("type") == "para" and len(b.get("text") or "") > 80), None)
+    if block is None:
+        skip("划词解释", "这篇论文没有够长的正文块")
+        return
+
+    selection = {"text": (block["text"] or "")[:60], "block_id": block["id"]}
+    try:
+        run = ask(base, paper, "这段在讲什么？", extra={"selection": selection})
+    except Exception as exc:  # noqa: BLE001
+        record("chat", "划词提问可跑", False, f"{type(exc).__name__}: {exc}")
+        return
+    done = run["done"] or {}
+    sources = [e["data"].get("content_source") for e in run["events"]
+               if e["type"] == "session"]
+    record("chat", "划词走 agent（content_source=selection）",
+           sources == ["selection"], f"content_source={sources}")
+    record("chat", "划词有带引用的回答",
+           len(done.get("answer") or "") > 60 and bool(done.get("citations")),
+           f"{len(done.get('answer') or '')} 字 / {len(done.get('citations') or [])} 条引用")
+
+    conv = done.get("conversation_id")
+    if not conv:
+        record("chat", "划词落库", False, "done 里没有 conversation_id")
+        return
+    try:
+        data = get_json(f"{base}/api/v1/agent/conversations/{conv}")["data"]
+        first = (data.get("messages") or [{}])[0]
+        record("chat", "用户消息记了选区原文（历史可回看）",
+               (first.get("content") or "").startswith(">"),
+               f"{(first.get('content') or '')[:36]!r}")
+        before = data.get("usage") or {}
+    except Exception as exc:  # noqa: BLE001
+        record("chat", "划词落库", False, f"{type(exc).__name__}: {exc}")
+        return
+
+    # ---- 压缩：点圆环 = 让模型把已有对话压成要点，存成一条 summary ----
+    try:
+        comp = post_json(f"{base}/api/v1/agent/conversations/{conv}/compress", {},
+                         timeout=600.0)["data"]
+    except Exception as exc:  # noqa: BLE001
+        record("chat", "压缩可跑", False, f"{type(exc).__name__}: {exc}")
+        return
+    summary = comp.get("summary") or ""
+    record("chat", "压缩产出了要点", len(summary) > 80, f"{len(summary)} 字，压缩了 {comp.get('compressed')} 条消息")
+    stray = re.findall(r"\[\d{1,3}\]", summary)
+    record("chat", "摘要不带 [n] 引用编号（编号跨轮无效）", not stray, f"残留={stray[:5]}")
+    record("chat", "摘要带出处定位（第 N 页 / §）",
+           ("页" in summary) or ("§" in summary), f"举例：{summary[:60]!r}")
+
+    try:
+        after = get_json(f"{base}/api/v1/agent/conversations/{conv}")["data"]
+        roles = [m.get("role") for m in (after.get("messages") or [])]
+        usage = after.get("usage") or {}
+        record("chat", "压缩作为一轮留痕（summary 消息）", roles[-1] == "summary", f"角色序={roles}")
+        record("chat", "压缩后活跃上下文只剩摘要",
+               bool(usage.get("compressed")) and usage.get("active") == 1,
+               f"before={before.get('active')} 条/{before.get('tokens')}tok → "
+               f"after={usage.get('active')} 条/{usage.get('tokens')}tok"
+               f"（消息总数 {usage.get('messages')}，都还在）")
+    except Exception as exc:  # noqa: BLE001
+        record("chat", "压缩后读回会话", False, f"{type(exc).__name__}: {exc}")
+
+
 # --------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent 问答链路自检")
@@ -558,6 +639,7 @@ def main() -> int:
         check_answer(base, paper, "这篇论文的核心贡献是什么？请给出依据。")
         check_figure(base, paper, projections)
         check_p1(base, paper)
+        check_chat(base, paper)
 
     print("\n" + "=" * 78)
     total = len(results)

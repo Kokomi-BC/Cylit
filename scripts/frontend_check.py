@@ -2062,6 +2062,71 @@ f.addEventListener('load', async () => {
 """
 
 
+# 侧栏「对话」面板探针（`--chat`）：
+# 1. 页签顺序（「对话」必须紧跟「目录」）；
+# 2. 打字 → 发送键可用 → 点发送 → 等流结束 → 回答与引用都渲染出来。
+#
+# ⚠️ 用**单次长等待**而不是轮询：轮询的 `setTimeout` 在虚拟时间下会被"饿死"，
+# 探针可能在回答回来之前就跑到末尾量了一手空数据。
+# ⚠️ iframe 的 src 直接就是阅读器（同 `ZOOM_PROBE` 那批）：先进入口页再跳会让虚拟时间卡住。
+CHAT_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>chat probe</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  try {
+    await sleep(__WAIT__);
+    res.tabs = [...d.querySelectorAll('.side-tab')].map((b) => (b.textContent || '').trim());
+    res.tabIndex = res.tabs.findIndex((t) => t.indexOf('对话') >= 0);
+    const chat = d.querySelector('.chat');
+    res.hasChat = !!chat;
+    if (!chat) { out(res); return; }
+    res.chatWidth = Math.round(chat.getBoundingClientRect().width);
+    res.hasInput = !!chat.querySelector('textarea.input');
+    res.hasRing = !!chat.querySelector('.ring');
+    res.model = (chat.querySelector('.model') || {}).textContent || '';
+    const before = chat.querySelectorAll('.msg').length;
+    res.beforeMsgs = before;
+    const ta = chat.querySelector('textarea.input');
+    const setter = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, '这篇论文的标题是什么？一句话回答。');
+    ta.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await sleep(400);
+    res.sendDisabled = chat.querySelector('.send').disabled;
+    out(res);
+    chat.querySelector('.send').click();
+    /* 轮询等**流结束**：每个 1s 的 tick 都是一次"虚拟时间检查点"，有请求在飞时会停住等它；
+       换成一次 `sleep(45000)` 反而会被直接跳过（实测：量到的还是空回答）。 */
+    for (let i = 0; i < 70; i += 1) {
+      await sleep(1000);
+      if (chat.querySelector('.err') && chat.querySelector('.err').textContent.trim()) break;
+      if (!chat.querySelector('.msg.live') && chat.querySelectorAll('.msg').length > before) break;
+    }
+    await sleep(1200);
+    res.chatMsgs = chat.querySelectorAll('.msg').length;
+    const answers = [...chat.querySelectorAll('.msg.assistant .md.body')];
+    res.chatAnswer = answers.length ? answers[answers.length - 1].textContent.trim().slice(0, 120) : '';
+    res.chatCites = [...chat.querySelectorAll('.cite')].map((c) => (c.textContent || '').trim()).slice(0, 6);
+    res.chatErr = (chat.querySelector('.err') || {}).textContent || '';
+    res.chatStreamingLeft = !!chat.querySelector('.msg.live');
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
 def put_progress(base: str, paper: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{base}/api/v1/papers/{paper}/progress", method="PUT",
@@ -2374,6 +2439,9 @@ def main() -> int:
                          "二选一；设置页「在线解析（MinerU）」分区与 /mineru/* 契约")
     ap.add_argument("--browser", default=None)
     ap.add_argument("--budget", type=int, default=20000)
+    ap.add_argument("--chat", action="store_true",
+                    help="额外跑「侧栏对话面板」探针：发一条消息并等流式回答（需 agent 服务在跑，"
+                         "会真调一次模型）")
     args = ap.parse_args()
 
     base = args.base.rstrip("/")
@@ -3671,6 +3739,56 @@ def main() -> int:
                   f"{progress_snapshot.get('pair_order')}）")
         except Exception:  # noqa: BLE001
             pass
+
+    print()
+    print("=" * 78)
+    print("⑰ 侧栏「对话」面板（发一条消息 → 流式回答 → 引用；需 agent 服务在跑）")
+    print("=" * 78)
+    if not args.chat:
+        print("[SKIP] 加 --chat 才跑这一节（要 `pr.py agent` 在跑，且会真调一次模型）")
+    elif not browser:
+        print("[SKIP] 需要浏览器")
+    else:
+        probe = CHAT_PROBE.replace("__URL__", f"{base}/app/reader/{paper}?side=chat&nosse=1")
+        probe = probe.replace("__WAIT__", "9000").replace("__ANSWER__", "45000")
+        probe_file = ROOT / "frontend" / "dist" / "_chat_probe.html"
+        try:
+            probe_file.write_text(probe, encoding="utf-8")
+            dom = render(browser, f"{base}/app/_chat_probe.html", args.budget * 6, DESKTOP)
+            data = None
+            m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+            if m and m.group(1).strip() != "waiting":
+                try:
+                    data = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    data = None
+            data = data or {}
+            tabs = data.get("tabs") or []
+            idx = data.get("tabIndex", -1)
+            checks = [
+                # 「对话」必须紧跟「目录」（用户口径：侧栏第二个）
+                ("「对话」页签排第二", idx == 1 and "对话" in (tabs[1] if len(tabs) > 1 else ""),
+                 f"页签={tabs}"),
+                ("面板就位（输入框 / 圆环 / 模型名）",
+                 all([data.get("hasChat"), data.get("hasInput"), data.get("hasRing"),
+                      bool(data.get("model"))]),
+                 f"宽 {data.get('chatWidth')}px 模型={data.get('model')}"),
+                ("发得出去（打字后发送键可用）", data.get("sendDisabled") is False,
+                 f"sendDisabled={data.get('sendDisabled')}"),
+                ("回答落地（流结束后不再是流式态）",
+                 bool(data.get("chatAnswer")) and data.get("chatMsgs", 0) > data.get("beforeMsgs", 0)
+                 and not data.get("chatStreamingLeft"),
+                 f"{data.get('beforeMsgs')} → {data.get('chatMsgs')} 条；"
+                 f"回答={str(data.get('chatAnswer'))[:40]!r}"),
+                ("引用渲染成可点 chip", bool(data.get("chatCites")), f"{data.get('chatCites')}"),
+                ("没有报错", not data.get("chatErr"), f"err={data.get('chatErr')!r}"),
+            ]
+            for label, ok, detail in checks:
+                failures += 0 if ok else 1
+                results.append({"kind": "chat", "path": label, "ok": ok, "detail": detail})
+                print(f"[{'PASS' if ok else 'FAIL'}] {label:<24} {detail}")
+        finally:
+            probe_file.unlink(missing_ok=True)
 
     print()
     print("=" * 78)

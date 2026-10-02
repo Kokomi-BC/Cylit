@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.api.response import envelope
 from backend.core.config import get_settings
-from backend.core.errors import ValidationError
+from backend.core.errors import ProviderError, ValidationError
 from backend.services.agent import bridge, conversations, model_config, project
 from backend.services.paper import paper_service
 
@@ -59,20 +59,29 @@ async def agent_skills(request: Request):
 async def agent_ask(payload: dict = Body(...)):
     """一轮问答（SSE 直通）。
 
-    请求体：``{paper_id, question, conversation_id?, history?}``。
-    这里做三件事：校验、把用户消息落库、把请求转给 agent 进程。
+    请求体：``{paper_id, question?, conversation_id?, selection?: {text, block_id?, page?}}``。
+    ``selection`` 就是**划词解释 / 划词追问**：给了它，``question`` 可以为空
+    （默认"解释这段内容"）。这里做三件事：校验、把用户消息落库、把请求转给 agent 进程。
     **不解释 agent 的事件**（§4.2）—— 只转发字节，唯一的例外是连不上时合成一个 `error` 终态。
     """
     question = str(payload.get("question") or "").strip()
     paper_id = str(payload.get("paper_id") or "").strip()
-    if not paper_id or not question:
-        raise ValidationError("paper_id 与 question 都是必填")
+    selection = payload.get("selection") or None
+    selected_text = str((selection or {}).get("text") or "").strip()
+    if not paper_id or not (question or selected_text):
+        raise ValidationError("paper_id 必填，且 question 与 selection.text 至少要有一个")
     paper_service.get_paper(paper_id)          # 论文不存在就别往下走（错误信息更清楚）
 
+    # 用户消息的正文：划词时把选区作为**引用块**写进去（历史/重放时能看清"当时问的是哪句"）
+    content = question or "解释这段内容"
+    if selected_text:
+        quote = selected_text[:400].replace("\n", " ")
+        content = f"> {quote}\n\n{content}"
+
     conversation_id = conversations.ensure_conversation(
-        payload.get("conversation_id"), paper_id, title=question)
+        payload.get("conversation_id"), paper_id, title=question or "划词解释")
     user_message = conversations.append_message(conversation_id, role="user",
-                                                content=question)
+                                                content=content)
     # 历史里含刚写进去的这条用户消息，去掉它（agent 自己会把当前问题作为 prompt 传）
     history = conversations.history_for_agent(conversation_id)[:-1]
     body = {
@@ -81,9 +90,37 @@ async def agent_ask(payload: dict = Body(...)):
         "parent_id": user_message["message_id"],
         "history": history,
         "model_id": payload.get("model_id"),
+        "selection": selection if selected_text else None,
     }
     return StreamingResponse(bridge.stream_ask(body), media_type="text/event-stream",
                              headers=SSE_HEADERS)
+
+
+@router.post("/agent/conversations/{conversation_id}/compress")
+async def compress_conversation(conversation_id: str, request: Request):
+    """压缩这一段对话（**用户点圆环触发**，见规划 §10.2）。
+
+    做法就是"多一轮会话"：让问答模型把已有对话读一遍、压成要点，存成一条 ``summary``
+    消息。之后发给模型的 `history` 从这条摘要开始算 —— 内容没删（用户还能往回翻），
+    只是模型不再逐条看到它们。
+    """
+    conversation = conversations.get_conversation(conversation_id)   # 不存在会 404
+    transcript, count = conversations.transcript_for_compress(conversation_id)
+    if count < 2:
+        raise ValidationError("至少要有一次完整问答才能压缩")
+    result = await bridge.agent_post("/v1/compress", {
+        "paper_id": conversation.get("paper_id"), "transcript": transcript,
+    })
+    summary = str(result.get("summary") or "").strip()
+    if not summary:
+        raise ProviderError("压缩没有产出内容，请重试")
+    saved = conversations.append_message(conversation_id, role="summary", content=summary)
+    return envelope({
+        "conversation_id": conversation_id, "summary": summary,
+        "compressed": count, "message_id": saved["message_id"],
+        "model": result.get("model"),
+        "usage": conversations.conversation_usage(conversation_id),
+    }, request=request)
 
 
 @router.get("/agent/conversations")

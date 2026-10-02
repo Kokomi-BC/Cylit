@@ -21,6 +21,9 @@ log = get_logger(__name__)
 
 #: 首条用户消息截多长当会话标题
 TITLE_CHARS = 40
+#: 发给 agent 的历史轮数上限（一轮 = 一问一答）。百万上下文下没必要抠，
+#: 超过这个量级该由用户点圆环压缩，而不是我们偷偷截断。
+HISTORY_TURNS = 12
 
 
 def _row_to_message(row) -> dict:
@@ -78,7 +81,9 @@ def ensure_conversation(conversation_id: str | None, paper_id: str,
 
 
 def list_conversations(paper_id: str | None = None, *, limit: int = 50) -> list[dict]:
-    from backend.repositories.mysql.models import Conversation
+    from sqlalchemy import func
+
+    from backend.repositories.mysql.models import Conversation, ConversationMessage
     from backend.repositories.mysql.session import session_scope
 
     with session_scope() as sess:
@@ -86,7 +91,16 @@ def list_conversations(paper_id: str | None = None, *, limit: int = 50) -> list[
         if paper_id:
             q = q.filter(Conversation.paper_id == paper_id)
         rows = q.order_by(Conversation.updated_at.desc()).limit(limit).all()
-        return [_row_to_conversation(r) for r in rows]
+        ids = [r.id for r in rows]
+        counts: dict[str, int] = {}
+        if ids:
+            # 一次分组查询拿全部计数（会话列表是每次开面板都要拉的，别在这里 N+1）
+            for cid, n in (sess.query(ConversationMessage.conversation_id,
+                                      func.count(ConversationMessage.id))
+                           .filter(ConversationMessage.conversation_id.in_(ids))
+                           .group_by(ConversationMessage.conversation_id).all()):
+                counts[str(cid)] = int(n)
+        return [{**_row_to_conversation(r), "messages": counts.get(r.id, 0)} for r in rows]
 
 
 def get_conversation(conversation_id: str) -> dict:
@@ -97,7 +111,9 @@ def get_conversation(conversation_id: str) -> dict:
         row = sess.get(Conversation, conversation_id)
         if row is None:
             raise NotFoundError(f"会话不存在：{conversation_id}")
-        return _row_to_conversation(row, messages=visible_messages(conversation_id))
+        data = _row_to_conversation(row, messages=visible_messages(conversation_id))
+    data["usage"] = conversation_usage(conversation_id)
+    return data
 
 
 def delete_conversation(conversation_id: str) -> dict:
@@ -166,20 +182,102 @@ def visible_messages(conversation_id: str) -> list[dict]:
         return [_row_to_message(r) for r in chain]
 
 
-def history_for_agent(conversation_id: str, *, limit: int = 6) -> list[dict]:
-    """给 agent 的历史（只保留 user/assistant 的正文，不含 tool/summary）。
+def history_for_agent(conversation_id: str, *, limit: int = HISTORY_TURNS) -> list[dict]:
+    """给 agent 的历史（只保留 user/assistant 的正文，不含 tool/summary 之外的杂项）。
 
-    P0 是单轮问答，这份历史通常为空；但要**从第一天就接对**：等 P1 加多轮时，
-    agent 侧不需要任何改动。
+    **压缩边界**：从 `head` 往回走到最近一条 `summary` 就停 —— 那条摘要就是"之前所有对话"
+    的等价物（见 `compress`）。压缩之后模型的记忆就只有"摘要 + 之后的几轮"，这正是用户
+    点圆环时期待的效果。
+
+    摘要本身**永远保留**（它可能是那批老内容的唯一记忆），轮数只裁摘要之后的对话。
     """
-    out: list[dict] = []
-    for item in visible_messages(conversation_id):
+    chain = visible_messages(conversation_id)
+    start = _summary_index(chain)
+    active = chain[start:] if start >= 0 else chain
+    head = [active[0]] if active and active[0]["role"] == "summary" else []
+    turns = [m for m in active
+             if m["role"] in ("user", "assistant") and (m.get("content") or "").strip()]
+    out = [{ "role": m["role"], "content": m["content"]} for m in head + turns[-limit * 2:]]
+    return out
+
+
+# --------------------------------------------------------------------------
+# 用量 / 压缩
+# --------------------------------------------------------------------------
+
+_ENCODER: object = None
+
+
+def count_tokens(text: str) -> int:
+    """tiktoken 估算（拿不到编码器就退化成"字符数 / 2"，中文大致是这个量级）。"""
+    global _ENCODER
+    if _ENCODER is None:
+        try:
+            import tiktoken
+
+            _ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception as exc:  # noqa: BLE001 —— 离线/首次下载失败都走退化路径
+            log.warning("tiktoken 不可用，用量改用字符数估算：%s", exc)
+            _ENCODER = False
+    if _ENCODER:
+        try:
+            return len(_ENCODER.encode(text or ""))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+    return max(1, len(text or "") // 2)
+
+
+def _summary_index(chain: list[dict]) -> int:
+    """最近一条 `summary` 在可见链里的下标（-1 = 没压缩过）。"""
+    for i in range(len(chain) - 1, -1, -1):
+        if chain[i]["role"] == "summary":
+            return i
+    return -1
+
+
+def conversation_usage(conversation_id: str) -> dict:
+    """会话用量：**从最近一次压缩之后**算起（压缩过的部分不再进上下文）。
+
+    前端那个圆环显示的就是它；点圆环 → 压缩 → 圆环归零。
+    """
+    from backend.core.config import get_settings
+
+    chain = visible_messages(conversation_id)
+    start = _summary_index(chain)
+    active = chain[start:] if start >= 0 else chain
+    tokens = count_tokens("\n".join(str(m.get("content") or "") for m in active))
+    budget = int(get_settings().agent_context_budget)
+    return {
+        "tokens": tokens,
+        "budget": budget,
+        "percent": round(min(100.0, tokens * 100.0 / budget), 1) if budget > 0 else 0.0,
+        "messages": len(chain),
+        "active": len(active),
+        "compressed": start >= 0,
+        "compressed_at": chain[start]["created_at"] if start >= 0 else None,
+    }
+
+
+def transcript_for_compress(conversation_id: str) -> tuple[str, int]:
+    """给压缩用的对话记录；返回 ``(文本, 参与压缩的消息数)``。
+
+    **上一次的摘要要一起带上**：压缩是可累加的，不带就得把老内容重新讲一遍，
+    压第二次等于把第一次的记忆丢掉。
+    """
+    chain = visible_messages(conversation_id)
+    start = _summary_index(chain)
+    lines: list[str] = []
+    if start >= 0:
+        lines.append(f"【此前摘要】{chain[start]['content']}")
+    active = chain[start + 1:] if start >= 0 else chain
+    for item in active:
         if item["role"] not in ("user", "assistant"):
             continue
-        if not (item.get("content") or "").strip():
+        content = (item.get("content") or "").strip()
+        if not content:
             continue
-        out.append({"role": item["role"], "content": item["content"]})
-    return out[-limit * 2:]
+        lines.append(f"【{'用户' if item['role'] == 'user' else '助手'}】{content}")
+    return "\n\n".join(lines), len(active)
 
 
 def append_message(conversation_id: str, *, role: str, content: str,

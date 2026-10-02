@@ -63,12 +63,14 @@ MODEL_CONFIG_TTL = 60.0
 @dataclass
 class AskRequest:
     paper_id: str
-    question: str
+    question: str = ""
     conversation_id: str = ""
     parent_id: str | None = None
     #: 可见分支的历史（主后端从 MySQL 取好传进来，agent 不碰数据库）
     history: list[dict] = field(default_factory=list)
     model_id: str | None = None
+    #: 划词解释：``{text, block_id?, page?}``。有它时 `question` 可以为空（默认"解释这段内容"）
+    selection: dict | None = None
 
 
 @dataclass
@@ -275,6 +277,9 @@ class AgentRuntime:
 
             yield {"type": "stage", "stage": "retrieving", "message": "正在这篇论文里检索…"}
             found = await self._presearch(req, deps)
+            # 划词提问：把选区所在的块登记成 ref，模型就能自己展开上下文（见 prompts.SELECTION）
+            if req.selection:
+                await self._prepare_selection(req, deps)
             # 档案算不算"证据"：只有**实质内容**（领域/主要论断）才算。章节大纲不算 ——
             # 光有一串小标题答不了"核心贡献是什么"，拿它当依据等于给模型一个错觉。
             brief = archive.get("brief") or {}
@@ -283,10 +288,12 @@ class AgentRuntime:
             yield {"type": "session", "conversation_id": req.conversation_id,
                    "paper_id": req.paper_id, "runtime": "pydantic-ai",
                    "skills": [s["name"] for s in await self.skill_list()],
-                   "content_source": ("search" if found
-                                      else ("archive" if archive_evidence else "none"))}
+                   "content_source": ("selection" if deps.selection
+                                      else ("search" if found
+                                            else ("archive" if archive_evidence else "none")))}
 
-            if not found and not archive_evidence:
+            # 划词选区本身就是证据（用户指着这段问的），不能因为检索没命中就挡回去
+            if not found and not archive_evidence and not deps.selection:
                 state.text = GUARDRAIL_NO_EVIDENCE
                 state.incomplete_reason = "no_evidence"
                 async for ev in self._finalize(req, deps, state):
@@ -307,6 +314,69 @@ class AgentRuntime:
             log.exception("问答失败：%s", exc)
             yield {"type": "error", "code": "INTERNAL",
                    "message": f"{type(exc).__name__}: {exc}"[:300], "retryable": False}
+
+    # ---------------- 划词选区 ----------------
+    async def _block_of_row(self, paper_id: str, row_id: str) -> str:
+        """把**正文行 id**（``p004-02``）解析成**块 id**。
+
+        为什么要这一步：阅读器划词给的是**行 id**（页级产物的位置编号 ``p{页}-{序号}``），
+        而块是解析产物那套命名空间（``attentionisa-p04-b02``），两者毫无对应关系。
+        行 id 里带着页号，所以拿那一页的块列表按 `row_id` 反查即可 ——
+        与前端"引用跳转"用的是同一份映射（`anchor_map` 算出来的那个）。
+        查不到就返回空串（少一层上下文，解释仍然能做，不要因此报错）。
+        """
+        parts = str(row_id).split("-")
+        if len(parts) < 2 or not parts[0].startswith("p"):
+            return ""
+        try:
+            page = int(parts[0][1:])
+        except ValueError:
+            return ""
+        try:
+            data = await self.host.pages(paper_id, str(page))
+        except HostError:
+            return ""
+        for page_payload in data.get("pages") or []:
+            for block in page_payload.get("blocks") or []:
+                if str(block.get("row_id") or "") == str(row_id):
+                    return str(block.get("id") or "")
+        return ""
+
+    async def _prepare_selection(self, req: AskRequest, deps: Deps) -> None:
+        """把选区落在的块登记成 ref，模型据此展开上下文。
+
+        为什么值得为它多一次 HTTP：选区经常是半句话（"这个 $d_k$ 是干什么的"），
+        只把选区文字塞给模型，它看不到所在段落，解释就会飘。登记成 ref 之后
+        `block_get` 那套现成的能力直接复用，不用给划词单开一条链路。
+        """
+        from backend.agent.tools import _clip, _locate
+
+        selection = req.selection or {}
+        text = str(selection.get("text") or "").strip()
+        if not text:
+            return
+        deps.selection = text
+        deps.selection_question = str(selection.get("question") or "").strip()
+        row_id = str(selection.get("row_id") or "")
+        block_id = str(selection.get("block_id") or "")
+        if not block_id and row_id:
+            block_id = await self._block_of_row(req.paper_id, row_id)
+        if not block_id:
+            return
+        try:
+            data = await self.host.block(req.paper_id, block_id)
+        except HostError as exc:
+            log.warning("划词取块失败（解释仍可继续，只是少了上下文）：%s", exc.message)
+            return
+        page = int(data.get("page") or selection.get("page") or 0) or None
+        citation = deps.registry.assign(
+            key=f"block:{block_id}", kind="block", page=page,
+            section=data.get("section") or None, block_id=block_id,
+            snippet=_clip(str(data.get("text") or text)),
+            label=_locate(page, data.get("section"), data.get("type") or ""),
+            ids=(block_id,), row_id=row_id or None)
+        deps.selection_ref = citation.ref
+        deps.selection_page = citation.page
 
     # ---------------- 证据闸 ----------------
     async def _presearch(self, req: AskRequest, deps: Deps) -> bool:
@@ -462,7 +532,13 @@ class AgentRuntime:
 
     @staticmethod
     def _user_prompt(req: AskRequest) -> str:
-        return req.question.strip()
+        question = (req.question or "").strip()
+        if question:
+            return question
+        if req.selection:
+            # 划词但用户没打字：默认就是"解释这段"。有追问时用追问当 prompt。
+            return "请解释我选中的这段内容。"
+        return ""
 
     # ---------------- 收尾 ----------------
     @staticmethod
