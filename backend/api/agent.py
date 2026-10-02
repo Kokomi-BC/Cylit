@@ -403,6 +403,14 @@ async def agent_pages(paper_id: str, request: Request,
     return envelope(project.pages(paper_id, pages, lang), request=request)
 
 
+@router.get("/agent/papers/{paper_id}/rows/{page}/{row_id}")
+async def agent_page_row(paper_id: str, page: int, row_id: str, request: Request,
+                         x_internal_token: str | None = Header(None)):
+    """页级产物（转录/翻译）里的**一行** —— 工具 `block_get` 展开转录段落的后端。"""
+    _require_internal(x_internal_token)
+    return envelope(project.row(paper_id, page, row_id), request=request)
+
+
 @router.get("/agent/papers/{paper_id}/formulas")
 async def agent_formulas(paper_id: str, request: Request,
                          page: int | None = Query(None),

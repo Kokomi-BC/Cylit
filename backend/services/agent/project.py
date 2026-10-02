@@ -113,9 +113,19 @@ def pages(paper_id: str, spec: str, lang: str = "both") -> dict:
     只回译文时**不省略没有译文的块** —— 缺译文本身就是信息（模型该说"这页还没翻译"，
     而不是以为这页没内容）。
 
-    为什么按块而不是整页文本：引用要能"跳到那一行并高亮"。块是分块与高亮的共同边界，
-    行锚点由 `anchor_map.build_block_row_map` 读时计算（与阅读器的"跳回原文"同一套逻辑），
-    所以这里给出的 `row_id` 与前端点击引用时的行为必然一致。
+    **内容优先取页级产物**（用户口径 2026-10-03）：A 路英文转录 / B 路中文翻译是阅读器与索引
+    共用的同一份读模型，也是**事实源**。解析侧的表格会把单元格粘成一串
+    （`KV SizeSingleQAMultiQA…`、`1645.2945.16`），而转录过的表格是规规矩矩的 Markdown 表格
+    （实测 turboquant p9 表 1：`| Method | KV Size | SingleQA | …`）。
+    **没有页级产物的页才退回解析块**（`md/markdown.md` + `block` 表）—— 未翻译的论文、
+    正在跑转录的页都属于这一类，不能因为"没有转录"就不给内容。
+
+    为什么按块/行而不是整页文本：引用要能"跳到那一行并高亮"。块与行都是分块与高亮的共同
+    边界；解析侧的行锚点由 `anchor_map.build_block_row_map` 读时计算（与阅读器"跳回原文"
+    同一套逻辑），转录侧则**直接用行的 id**（阅读器正文的 `data-row-id` 就是它）。
+
+    ``source`` 字段告诉工具层这条是转录行还是解析块 —— 两者的 ref 语义不同
+    （转录行没有 `block_id`，`block_get` 要走"按行展开"那条路）。
     """
     from backend.repositories.mysql.models import Block
     from backend.repositories.mysql.session import session_scope
@@ -127,61 +137,108 @@ def pages(paper_id: str, spec: str, lang: str = "both") -> dict:
         raise NotFoundError(f"页码无法解析：{spec!r}")
     mode = lang if lang in ("both", "en", "zh") else "both"
 
-    with session_scope() as sess:
-        rows = (sess.query(Block)
-                .filter(Block.paper_id == paper_id, Block.page_no.in_(wanted))
-                .order_by(Block.page_no.asc(), Block.order_global.asc()).all())
-        blocks = [{"id": b.id, "page": int(b.page_no), "type": b.type,
-                   "section": b.section_id, "preview": b.preview} for b in rows]
-
-    md_map = reader_service.load_markdown_map(paper_id)
-    # 行锚点的输入形状是 ``{"id","page","text"}``（见 `anchor_map.build_block_row_map`）——
-    # 文本必须与引用里给模型看到的那一份一致，否则"块 → 行"的匹配会按另一个文本做，
-    # 出现"引用跳到了别的段落"（这里传错过一次：传了 preview，映射整片为空）。
-    anchor_blocks = []
-    texts: dict[str, str] = {}
-    for block in blocks:
-        entry = md_map.get(block["id"]) or {}
-        text = str(entry.get("text") or block.get("preview") or "").strip()
-        texts[block["id"]] = text
-        anchor_blocks.append({"id": block["id"], "page": block["page"], "text": text})
-
-    rows_by_page: dict[int, list[dict]] = {}
-    for page_no in sorted({b["page"] for b in blocks}):
-        payload = reader_service.merged_page(paper_id, page_no) or {}
-        page_rows = payload.get("rows") or []
-        if page_rows:
-            rows_by_page[page_no] = page_rows
-    anchors = anchor_map.build_block_row_map(anchor_blocks, rows_by_page)
-
+    # ---- ① 页级产物（转录 / 翻译）：与阅读器逐字同源 ----
     by_page: dict[int, list[dict]] = {}
-    for block in blocks:
-        entry = md_map.get(block["id"]) or {}
-        raw_text = texts.get(block["id"]) or ""
-        translation = str(entry.get("translation") or "").strip()
-        # 只要译文时，原文仍参与"这个块有没有内容"的判断，但不下发
-        if mode == "en" and not raw_text:
-            continue
-        if mode == "zh" and not (raw_text or translation):
-            continue
-        if not raw_text and not translation:
-            continue
-        row_id = anchors.get(str(block["id"]))
-        out: dict = {"id": block["id"], "type": block["type"],
-                     "section": block["section"]}
-        if mode in ("both", "en"):
-            out["text"] = _neutralize_images(raw_text)
-        if mode in ("both", "zh"):
-            out["translation"] = translation or None
-        if row_id:
-            out["row_id"] = row_id
-        by_page.setdefault(int(block["page"]), []).append(out)
+    for page_no in wanted:
+        payload = reader_service.merged_page(paper_id, page_no) or {}
+        units: list[dict] = []
+        for item in payload.get("rows") or []:
+            original = str(item.get("original") or "").strip()
+            translation = str(item.get("translation") or "").strip()
+            if mode == "en" and not original:
+                continue
+            if not original and not translation:
+                continue
+            row_id = str(item.get("id") or "")
+            unit: dict = {"id": row_id, "type": item.get("type") or "para",
+                          "section": item.get("section"), "row_id": row_id,
+                          "source": "transcript"}
+            if mode in ("both", "en"):
+                unit["text"] = _neutralize_images(original)
+            if mode in ("both", "zh"):
+                unit["translation"] = translation or None
+            units.append(unit)
+        if units:
+            by_page[page_no] = units
+
+    # ---- ② 其余页：解析块（老路径） ----
+    rest = [p for p in wanted if p not in by_page]
+    if rest:
+        with session_scope() as sess:
+            rows = (sess.query(Block)
+                    .filter(Block.paper_id == paper_id, Block.page_no.in_(rest))
+                    .order_by(Block.page_no.asc(), Block.order_global.asc()).all())
+            blocks = [{"id": b.id, "page": int(b.page_no), "type": b.type,
+                       "section": b.section_id, "preview": b.preview} for b in rows]
+
+        md_map = reader_service.load_markdown_map(paper_id)
+        # 行锚点的输入形状是 ``{"id","page","text"}``（见 `anchor_map.build_block_row_map`）——
+        # 文本必须与引用里给模型看到的那一份一致，否则"块 → 行"的匹配会按另一个文本做，
+        # 出现"引用跳到了别的段落"（这里传错过一次：传了 preview，映射整片为空）。
+        anchor_blocks = []
+        texts: dict[str, str] = {}
+        for block in blocks:
+            entry = md_map.get(block["id"]) or {}
+            text = str(entry.get("text") or block.get("preview") or "").strip()
+            texts[block["id"]] = text
+            anchor_blocks.append({"id": block["id"], "page": block["page"], "text": text})
+
+        rows_by_page: dict[int, list[dict]] = {}
+        for page_no in sorted({b["page"] for b in blocks}):
+            payload = reader_service.merged_page(paper_id, page_no) or {}
+            page_rows = payload.get("rows") or []
+            if page_rows:
+                rows_by_page[page_no] = page_rows
+        anchors = anchor_map.build_block_row_map(anchor_blocks, rows_by_page)
+
+        for block in blocks:
+            entry = md_map.get(block["id"]) or {}
+            raw_text = texts.get(block["id"]) or ""
+            translation = str(entry.get("translation") or "").strip()
+            # 只要译文时，原文仍参与"这个块有没有内容"的判断，但不下发
+            if mode == "en" and not raw_text:
+                continue
+            if mode == "zh" and not (raw_text or translation):
+                continue
+            if not raw_text and not translation:
+                continue
+            row_id = anchors.get(str(block["id"]))
+            out: dict = {"id": block["id"], "type": block["type"],
+                         "section": block["section"], "source": "parse"}
+            if row_id:
+                out["row_id"] = row_id
+            if mode in ("both", "en"):
+                out["text"] = _neutralize_images(raw_text)
+            if mode in ("both", "zh"):
+                out["translation"] = translation or None
+            by_page.setdefault(int(block["page"]), []).append(out)
 
     return {
         "paper_id": paper_id, "page_total": total, "lang": mode,
         "requested": wanted,
         "pages": [{"page": p, "blocks": by_page.get(p, [])} for p in wanted],
     }
+
+
+def row(paper_id: str, page: int, row_id: str) -> dict:
+    """页级产物里的**一行**（`block_get` 展开"转录段落"用的）。
+
+    转录行的 id 就是阅读器正文里的 `data-row-id`（``p009-00`` 这种位置编号），
+    所以"按 ref 展开"必须能按这个 id 取回同一行 —— 否则模型看到引用却展不开。
+    行号是位置编号：**重转录后可能变了**，变了就明确报"这一行不在了"，不要瞎猜下一页。
+    """
+    paper_service.get_paper(paper_id)
+    payload = reader_service.merged_page(paper_id, int(page)) or {}
+    for item in payload.get("rows") or []:
+        if str(item.get("id")) == str(row_id):
+            return {
+                "id": str(row_id), "page": int(page),
+                "type": item.get("type") or "para",
+                "text": _neutralize_images(str(item.get("original") or "").strip()),
+                "translation": str(item.get("translation") or "").strip() or None,
+                "source": "transcript",
+            }
+    raise NotFoundError(f"第 {page} 页没有 {row_id} 这一行（可能重转录过、行号变了）")
 
 
 # --------------------------------------------------------------------------

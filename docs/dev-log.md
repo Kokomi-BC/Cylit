@@ -7485,3 +7485,48 @@ markdown；**压缩做成"点圆环 = 多一轮会话"**。
 
 - `scripts/frontend_check.py`：**18/18 → 22/22**（默认，零模型调用；新增 4 条）；
 - `scripts/agent_check.py`：23/23（默认，零模型调用）；`npm run build` 干净。
+
+## 28. 第二十八轮：给模型的内容**优先取页级转录**（没转录的页才退回解析侧）
+
+用户口径："给模型返回优先转录过的内容（如果转录过），没有的话，再走解析侧。"
+
+### 一、为什么这一条直接治好了"表格粘连"
+
+第 26 轮给模型的第 9 页正文是**解析侧**的：`KV SizeSingleQAMultiQA…`、`1645.2945.16`
+（表格单元格粘成一串），所以模型只能退到"看表图"。而**页级产物（A 路英文转录）里，
+同一张表是规规矩矩的 Markdown 表格**：
+
+```
+| Method | KV Size | SingleQA | MultiQA | Summarization | Few shot | Synthetic | Code | Average |
+|---|---|---|---|---|---|---|---|---|
+| **Llama-3.1-8B-Instruct** | | | | | | | | |
+| Full Cache | 16 | 45.29 | 45.16 | 26.55 | 68.38 | 59.54 | 46.86 | 50.06 |
+```
+
+转录本来就是阅读器与索引共用的**事实源**（`reader_service.merged_page` 的 `rows`），
+只有 agent 的读页接口还挂在解析侧 —— 这一轮把它接上。
+
+### 二、改了什么
+
+| 位置 | 变化 |
+|---|---|
+| `project.pages()` | 有页级产物的页 → 直接给 `merged_page().rows`（`source="transcript"`，`id`/`row_id` 都是行 id）；**其余页才**读 `block` 表 + `md/markdown.md`（`source="parse"`，行锚点仍走 `anchor_map`） |
+| `project.row()` | 新投影：按 `(page, row_id)` 取一行 —— 转录行没有 `block_id`，`block_get` 得能"按行展开" |
+| `GET /agent/papers/{id}/rows/{page}/{row_id}` | 上面那个投影的入口（内部 token 同其它 agent 投影） |
+| `tools.page_markdown_get` | 按 `source` 分配 ref 身份：转录行 → `block_id=None` + `row_id=行 id`；解析块 → 老样子 |
+| `tools.block_get` | 老 ref 走块接口；**转录行 ref 走"按行展开"**（行 id 就是阅读器的 `data-row-id`） |
+| 提示词 / 两个 skill | 表格口径反过来写：**先看读页给的 Markdown 表格**（转录），只有没转录的页（单元格粘连）才去 `figure_list` + `figure_image_get` 看表图 |
+
+**行 id 与阅读器同源**是关键：`page_translations[page].rows[].id`（`p009-00`）就是阅读器正文的
+`data-row-id`，所以引用点下去**落到那一行并高亮**（不再是"只跳到那一页"）。
+
+### 三、验证
+
+- 真机（1 次提问，11.4s）：`paper_search ×2 → page_markdown_get("9")` 就答出
+  SingleQA 列 44.88 / 45.01 / 48.38，引用 `kind=block`、`row_id=p009-00`、
+  snippet 是那张 Markdown 表格 —— **不再需要视觉调用**（上一轮得 `figure_image_get` 才拿得到数字）。
+- 免费断言（`agent_check.py`）：① 第 1 页 10 段全部 `source=transcript` + 按行展开可取回正文；
+  ② 转录行 `row_id` 出现在 `/papers/{id}/reader` 的 `page_translations[].rows[].id` 里；
+  ③ 有表的那页正文是 Markdown 表格（`|` 分隔）且表图仍可取回。
+
+`agent_check` **25/25**（默认，零模型调用）、`frontend_check` 22/22（默认）、`pytest tests` 通过。

@@ -165,7 +165,8 @@ Agent 服务对外（主后端调用）：
 GET  /api/v1/agent/ping                          连通性
 GET  /api/v1/agent/model-config                  模型配置（含已解析的密钥）
 GET  /api/v1/agent/papers/{id}/archive           档案 + 大纲 + 规模
-GET  /api/v1/agent/papers/{id}/pages?pages=3-8   块级正文 + 行锚点（`&lang=zh` 只要译文）
+GET  /api/v1/agent/papers/{id}/pages?pages=3-8   块级正文 + 行锚点（优先页级转录/翻译，`&lang=zh` 只要译文）
+GET  /api/v1/agent/papers/{id}/rows/{page}/{row}  页级产物里的一行（`block_get` 展开转录段落）
 POST /api/v1/agent/papers/{id}/search            本论文检索（固定 mode=qa）
 POST /api/v1/agent/kb/search                     跨库检索（带论文标题与归属）
 GET  /api/v1/agent/papers/{id}/formulas?page=    公式清单（同阅读器口径）
@@ -342,8 +343,8 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | # | 工具 | 读写 | 一句话 | 落点 | 阶段 |
 |---|---|---|---|---|---|
 | 1 | `paper_search` | 读 | **在本论文内检索**：返回 `ref` + 页码 + 总页数 + 章节 + 短片段，**不发全文** | `retrieval.search(scope="paper", mode="qa")` | P0 ✅ |
-| 2 | `page_markdown_get` | 读 | 按 `pages` 取块级正文（`"5"` / `"3-8"` / `"all"`，一次 ≤20 页） | 新投影 `GET /agent/papers/{id}/pages` | P0 ✅ |
-| 3 | `block_get` | 读 | **按 `ref`** 展开单个块的原文 + 译文 + 公式 LaTeX | `GET /papers/{id}/blocks/{bid}`（ref→block_id 由宿主查表） | P0 ✅ |
+| 2 | `page_markdown_get` | 读 | 按 `pages` 取块级正文（`"5"` / `"3-8"` / `"all"`，一次 ≤20 页）。**优先页级产物（A 路转录 / B 路翻译）**，没转录的页才退回解析块 | `GET /agent/papers/{id}/pages`（`reader_service.merged_page` + `block` 表兜底） | P0 ✅ |
+| 3 | `block_get` | 读 | **按 `ref`** 展开单个块/段（原文 + 译文 + 公式 LaTeX）。转录行走"按行展开" | `GET /papers/{id}/blocks/{bid}`（解析块）/ `GET /agent/papers/{id}/rows/{page}/{row_id}`（转录行） | P0 ✅ |
 | 4 | `page_image_get` | 读 | 整页渲染成图喂视觉模型（`pages` + `dpi`，一次 ≤3 页） | `GET /agent/papers/{id}/pages/{n}/image?dpi=` | P0 ✅ |
 | 5 | `figure_list` | 读 | 该页**图形区域**清单：插图 + **表格**（`kind`/`index`/编号/图注/受控 URL/`ref`） | `figure_regions.media_of_page`（`figures_only=False`） | P0 ✅ |
 | 6 | `figure_image_get` | 读 | 单个区域的裁图（600dpi 按需渲染）—— **表里的数字只能走这条** | `figure_regions.ensure_region_crop` | P0 ✅ |

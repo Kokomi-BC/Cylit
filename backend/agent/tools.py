@@ -212,6 +212,10 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
     什么时候用：检索定位到页码之后读内容，或用户直接指定"第 5 页"。
     返回里每个块都有自己的 ref，回答时引用那个 ref。
 
+    **内容优先来自页级产物（英文转录 / 中文翻译）**：那是阅读器与索引共用的同一份读模型，
+    表格在转录里是规规矩矩的 Markdown 表格；只有**没转录过**的页才退回解析产物
+    （那里表格的单元格可能是粘连的）。
+
     参数：
       pages —— 单页 ``"5"``、区间 ``"3-8"``、整篇 ``"all"``。整篇很长，
                只有确实需要通读时才用；一次最多 20 页，超了会被截断（返回 truncated=true）。
@@ -238,13 +242,18 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
                     truncated = True
                     break
                 budget -= len(text)
+                unit_id = str(block.get("id") or "")
+                # 页级产物（转录/翻译）的**行**没有 block_id：它的身份是行 id（阅读器正文的
+                # `data-row-id`），`block_get` 走"按行展开"那条路；解析块才有 block_id。
+                is_row = block.get("source") == "transcript"
                 cit = ctx.deps.registry.assign(
-                    key=f"block:{block.get('id')}", kind="block", page=page_no,
+                    key=f"unit:{unit_id}", kind="block", page=page_no,
                     section=block.get("section") or None,
-                    block_id=block.get("id"), row_id=block.get("row_id"),
+                    block_id=None if is_row else unit_id,
+                    row_id=(block.get("row_id") or unit_id) if is_row else block.get("row_id"),
                     snippet=_clip(text), label=_locate(page_no, block.get("section"),
                                                        block.get("type") or ""),
-                    ids=(str(block.get("id") or ""),))
+                    ids=(unit_id,))
                 entry = {"ref": cit.ref, "type": block.get("type"), "text": text}
                 if block.get("translation"):
                     entry["translation"] = str(block["translation"]).strip()
@@ -266,7 +275,7 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
 
 
 async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
-    """按 ref 读**单个块**的完整原文（含译文与公式 LaTeX）。
+    """按 ref 读**单个块/段**的完整原文（含译文与公式 LaTeX）。
 
     什么时候用：读页结果里某段被截断、或某条检索片段看起来关键，想把这一段完整看清。
 
@@ -275,7 +284,20 @@ async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
     """
     async def _impl() -> dict:
         cit = ctx.deps.registry.by_ref(ref)
-        if cit is None or not cit.block_id:
+        if cit is None:
+            return {"ok": False,
+                    "error": f"ref={ref} 不存在。只能用工具**实际返回过**的编号。"}
+        if not cit.block_id:
+            if cit.row_id and cit.page:
+                # 页级产物（转录/翻译）的一行：按行 id 展开（行 id 就是阅读器正文的行号）
+                data = await ctx.deps.host.row(ctx.deps.paper_id, int(cit.page),
+                                               str(cit.row_id))
+                if not data:
+                    return {"ok": False,
+                            "error": f"ref={ref} 展不开（这一行可能随重转录变了号）。"}
+                return {"ref": cit.ref, "page": data.get("page"), "type": data.get("type"),
+                        "text": str(data.get("text") or "").strip(),
+                        "translation": str(data.get("translation") or "").strip() or None}
             return {"ok": False,
                     "error": f"ref={ref} 不是可单独展开的块。请先用 paper_search 或 "
                              f"page_markdown_get 拿到带 ref 的块。"}

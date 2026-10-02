@@ -134,6 +134,14 @@ class HostClient:
     async def block(self, paper_id: str, block_id: str) -> dict:
         return dict(await self.get(f"/papers/{paper_id}/blocks/{block_id}") or {})
 
+    async def row(self, paper_id: str, page: int, row_id: str) -> dict:
+        """页级产物（转录/翻译）里的**一行**（`block_get` 展开转录段落用）。
+
+        行 id 就是阅读器正文的 `data-row-id`（``p009-00`` 这种位置编号）——
+        所以"按 ref 展开"与"引用跳转"落在同一行上。
+        """
+        return dict(await self.get(f"/agent/papers/{paper_id}/rows/{int(page)}/{row_id}") or {})
+
     async def page_image(self, paper_id: str, page_no: int, dpi: int
                          ) -> tuple[bytes, str]:
         """页面图。**dpi 一定要传**：阅读器那张是 150dpi，公式上下标常常看不清；

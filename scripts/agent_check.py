@@ -205,10 +205,43 @@ def check_projections(base: str, paper: str) -> None:
         except Exception as exc:  # noqa: BLE001
             record("projection", label, False, f"{exc}")
 
-    # 表格必须能被 agent 拿到（2026-10-03）：模型抱怨过"知道这篇有表 1、却够不到表"——
-    # 表格正文里的单元格是粘连的（`1645.2945.16`），唯一的取数路径就是表图。
+    # 内容**优先取页级产物（转录/翻译）**（用户口径 2026-10-03）：转录过的表格是规整的
+    # Markdown 表格，没转录的页才退回解析块。数据相关：没页级产物就 SKIP。
+    label = "按页取正文：优先转录（解析侧只兜底）"
+    try:
+        pages = get_json(f"{api}/papers/{paper}/pages?pages=1", head)["data"]
+        units = [b for p in (pages.get("pages") or []) for b in (p.get("blocks") or [])]
+        sources = {u.get("source") for u in units}
+        if "transcript" not in sources:
+            skip(label, "这篇论文还没有页级产物（未转录/未翻译）")
+        else:
+            row = next((u for u in units if u.get("row_id")), None)
+            got = {}
+            if row:
+                got = get_json(f"{api}/papers/{paper}/rows/1/{row['row_id']}",
+                               head)["data"]
+            record("projection", label, sources == {"transcript"} and bool(got.get("text")),
+                   f"第 1 页 {len(units)} 段全部来自转录；按行展开取回 "
+                   f"{len(str(got.get('text') or ''))} 字")
+            # 转录行的 row_id 必须与阅读器的行号**同源**（两边都来自 page_translations 的 rows）——
+            # 引用点下去才跳得准；一旦各算一套，模型给的锚点就会落到别的段落。
+            with urllib.request.urlopen(f"{base}/api/v1/papers/{paper}/reader",
+                                        timeout=60) as resp:
+                reader = json.loads(resp.read().decode("utf-8"))["data"]
+            reader_rows = {int(p.get("page") or 0): [str(r.get("id"))
+                                                     for r in (p.get("rows") or [])]
+                           for p in (reader.get("page_translations") or [])}
+            first = reader_rows.get(1) or []
+            record("projection", "转录行 row_id 与阅读器行号同源（引用才跳得准）",
+                   bool(row) and str(row.get("row_id")) in first,
+                   f"阅读器第 1 页 {len(first)} 行，含 {row.get('row_id') if row else '-'}")
+    except Exception as exc:  # noqa: BLE001
+        record("projection", label, False, f"{exc}")
+
+    # 表格必须能被 agent 拿到（2026-10-03）：模型抱怨过"知道这篇有表 1、却够不到表"。
+    # 现在有两条路：① 转录过的页直接给 Markdown 表格；② 没转录的页走表图。
     # 数据相关：这篇没有识别到表格就 SKIP（换一篇有表的论文再跑）。
-    label = "表格也在图形区域里（figure_list → 表图 URL 可取回）"
+    label = "表格可取：转录给 Markdown 表 / 没转录走表图"
     try:
         hit = None
         for n in range(1, 26):
@@ -216,17 +249,24 @@ def check_projections(base: str, paper: str) -> None:
             hit = next((it for it in (data.get("items") or [])
                         if it.get("kind") == "table"), None)
             if hit:
+                table_page = n
                 break
         if hit is None:
             skip(label, "这篇论文没有识别到表格")
         else:
             with urllib.request.urlopen(f"{base}{hit['url']}", timeout=120) as resp:
                 raw = resp.read()
+            unit = None
+            page_data = get_json(f"{api}/papers/{paper}/pages?pages={table_page}",
+                                 head)["data"]
+            unit = next((b for p in (page_data.get("pages") or [])
+                         for b in (p.get("blocks") or []) if b.get("type") == "table"), None)
+            markdown_table = bool(unit) and "|" in str(unit.get("text") or "")
             record("projection", label,
                    hit.get("index") is not None and raw.startswith(b"\x89PNG\r\n\x1a\n")
-                   and len(raw) > 4096,
-                   f"index={hit.get('index')} 表{hit.get('number')} "
-                   f"{len(raw) // 1024} KB PNG")
+                   and len(raw) > 4096 and markdown_table,
+                   f"p{table_page} 表{hit.get('number')}：图 {len(raw) // 1024} KB PNG、"
+                   f"正文={'Markdown 表格' if markdown_table else '解析块（单元格可能粘连）'}")
     except Exception as exc:  # noqa: BLE001
         record("projection", label, False, f"{exc}")
 
