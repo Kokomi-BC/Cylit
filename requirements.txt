@@ -29,6 +29,17 @@ httpx>=0.27
 tenacity>=9.0
 tiktoken>=0.7           # token 统计（成本记录）
 
+# --- Agent（问答服务，`pr.py agent` 起独立进程 :8711）---
+# ★ 必须装 `-slim`，不要装 `pydantic-ai`：元包的 extras 会拉进
+#   anthropic / google-genai / logfire / mcp / cli / evals 全套（101 个包，实测）。
+#   slim[openai] 只 31 个包，且 DeepSeek 走 OpenAI 兼容协议刚好够用。
+# ★ 两行必须**一起锁死**：harness 0.53.0 的元数据就钉着 pydantic-ai-slim==2.53.0，
+#   单独升一个会出现"能 import 但运行时 API 对不上"。
+# ★ 装法（本机 pip 默认走阿里云镜像，它滞后，装最新版要显式指官方源）：
+#   pip install -i https://pypi.org/simple -r requirements.txt
+pydantic-ai-slim[openai]==2.53.0
+pydantic-ai-harness[skills]==0.53.0
+
 # --- 中文处理 ---
 jieba>=0.42             # 中文分词（术语表/词法检索）
 

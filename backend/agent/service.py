@@ -1,0 +1,140 @@
+"""Agent 服务的 HTTP 面（默认 :8711）。
+
+**只有主后端能调它**：每个请求都要带 `X-Internal-Token`，令牌与主后端共享
+（``data/secrets/agent.token``）。这不是"本地应用不用鉴权"的问题 —— 端口开着就意味着
+同一台机器上的任何进程都能让 agent 去读你的论文，令牌是那条边界唯一的东西。
+
+SSE 的帧格式在 `runtime.format_sse`，本模块只负责"把事件流发出去"，
+业务编排一行都不在这里。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from fastapi import Body, FastAPI, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+
+from backend.agent.config import AgentConfigError, load
+from backend.agent.host import HostClient
+from backend.agent.runtime import AgentRuntime, AskRequest, format_sse
+from backend.core.logging import get_logger, setup_logging
+
+log = get_logger(__name__)
+
+
+def create_app() -> FastAPI:
+    setup_logging()
+    cfg = load()                      # 缺令牌在这里就失败，不带病启动
+    host = HostClient(cfg)
+    runtime = AgentRuntime(cfg, host)
+
+    app = FastAPI(title="Cylit Agent", version="0.1.0", docs_url="/docs",
+                  openapi_url="/openapi.json")
+    app.state.cfg = cfg
+    app.state.host = host
+    app.state.runtime = runtime
+
+    def _auth(token: str | None) -> None:
+        if not token or token != cfg.token:
+            raise HTTPException(status_code=401, detail="内部令牌不正确")
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await host.aclose()
+
+    # ---------------- 运维 ----------------
+    @app.get("/health", include_in_schema=False)
+    async def health() -> dict:
+        return {"ok": True, "app": "cylit-agent"}
+
+    @app.get("/readyz")
+    async def readyz(x_internal_token: str | None = Header(None)) -> dict:
+        """自检：主后端可达 + 模型配置可取 + skills 目录可读。"""
+        _auth(x_internal_token)
+        report: dict[str, Any] = {"ok": True}
+        report["main_backend"] = await host.ready()
+        try:
+            cfg_model = await runtime.model_config(force=True)
+            report["model"] = {"ok": True, "model_name": cfg_model.get("model_name"),
+                               "provider": cfg_model.get("provider"),
+                               "has_key": bool(cfg_model.get("api_key"))}
+        except Exception as exc:  # noqa: BLE001
+            report["model"] = {"ok": False, "error": str(exc)[:200]}
+        skills = await runtime.skill_list()
+        report["skills"] = {"ok": bool(skills), "count": len(skills),
+                            "names": [s["name"] for s in skills]}
+        report["ok"] = bool(report["main_backend"].get("ok")
+                            and report["model"].get("ok") and skills)
+        return report
+
+    # ---------------- skills ----------------
+    @app.get("/v1/skills")
+    async def list_skills(x_internal_token: str | None = Header(None)) -> dict:
+        _auth(x_internal_token)
+        return {"skills": await runtime.skill_list(), "dir": str(cfg.skills_dir)}
+
+    @app.post("/v1/skills/reload")
+    async def reload_skills(x_internal_token: str | None = Header(None)) -> dict:
+        _auth(x_internal_token)
+        runtime.reload_skills()
+        skills = await runtime.skill_list()
+        log.info("skills 已重载：%s", [s["name"] for s in skills])
+        return {"reloaded": True, "skills": skills}
+
+    # ---------------- 问答 ----------------
+    @app.post("/v1/ask")
+    async def ask(request: Request, payload: dict = Body(...),
+                  x_internal_token: str | None = Header(None)):
+        _auth(x_internal_token)
+        question = str(payload.get("question") or "").strip()
+        paper_id = str(payload.get("paper_id") or "").strip()
+        if not question or not paper_id:
+            raise HTTPException(status_code=422, detail="paper_id 与 question 都是必填")
+        req = AskRequest(
+            paper_id=paper_id, question=question,
+            conversation_id=str(payload.get("conversation_id") or ""),
+            parent_id=payload.get("parent_id"),
+            history=list(payload.get("history") or []),
+            model_id=payload.get("model_id"),
+        )
+
+        async def _sse():
+            try:
+                async for event in runtime.ask(req):
+                    yield format_sse(event)
+            except asyncio.CancelledError:
+                # 客户端断开：尽力发一个终态（§11 硬规则①），然后让它取消下去
+                log.info("问答被取消：conversation=%s", req.conversation_id)
+                yield format_sse({"type": "cancelled"})
+                raise
+
+        return StreamingResponse(_sse(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no",
+                                          "Connection": "keep-alive"})
+
+    return app
+
+
+def main() -> int:
+    """``python -m backend.agent`` 的入口，见 `__main__.py`。"""
+    import uvicorn
+
+    try:
+        cfg = load()
+    except AgentConfigError as exc:
+        print(f"启动失败：{exc}")
+        return 2
+    print(f"Agent 服务：http://{cfg.main_base.split('//')[-1]} 是主后端；"
+          f"skills={cfg.skills_dir}")
+    uvicorn.run("backend.agent.service:create_app", host="127.0.0.1",
+                port=_port(), factory=True, log_level="info")
+    return 0
+
+
+def _port() -> int:
+    from backend.core.config import get_settings
+
+    return int(get_settings().agent_port)

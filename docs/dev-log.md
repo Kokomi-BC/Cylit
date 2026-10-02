@@ -6822,3 +6822,102 @@ sniffer 的**表格区域**仍然不对，两处都在"图表检测"这条链上
 修这两处要动 `find_caption_blocks` / `_looks_like_table_caption` / `_table_body_rect`（表格链没有对账脚本，
 影响面比插图大）。**用户口径（2026-09-28）：目前不需要截取 table** —— 记录在案，等真要表格裁图时
 再单独一轮（顺序：先补一个表格对账脚本，再动这三处）。
+
+---
+
+## 18. 第十八轮：接入问答 Agent（P0 落地）
+
+**用户口径**：先提交 git，然后「根据规划先改后端接入 agent」；补充一句关键背景
+**「agent 也是百万上下文」**（所以设计上不再抠上下文预算，但没有因此取消证据闸与返回值瘦身）。
+规划见 `docs/agent-接入规划.md`（本轮把它从 1060 行精简到 645 行，再按实现补到 769 行）。
+
+### 一、选型与依赖
+
+`pydantic-ai-slim[openai]==2.53.0` + `pydantic-ai-harness[skills]==0.53.0`
+（两行已钉进 `requirements.txt`；**不要装 `pydantic-ai` 元包**，extras 会拉进 101 个包）。
+实测新增 8 个包、`openai` 3.17→3.23.0、零降级、`pip check` 干净。
+
+**装法有坑**：本机 pip 默认走阿里云镜像，**它滞后**（harness 只有 0.52.0），
+必须 `--index-url https://pypi.org/simple`，否则会"升级成功但版本没动"。
+
+**R4（DeepSeek function calling 稳定性）已排除**：`scripts/probe_agent_tools.py` 真机 11/11 ——
+非流式会连发 3 次工具调用（`paper_search`×2 + `page_markdown_get`）、
+`run_stream_events` 会同时送 `FunctionToolCallEvent` 与 `PartDeltaEvent`、
+思考模式下厂商参数（`extra_body.thinking` + `openai_reasoning_effort`）透传后仍可调工具。
+
+### 二、架构（两个进程）
+
+```
+浏览器 → 主后端 :8710 /api/v1/agent/ask →（X-Internal-Token + SSE 字节转发）→ Agent 服务 :8711
+                                                                              └→ 工具回调主后端 /api/v1/agent/...
+```
+
+- **Agent 不碰 MySQL / LanceDB / 产物目录**，论文数据只经主后端 HTTP 取；
+  "agent 能看到什么"因此只有一个审批点（`backend/services/agent/project.py` 的只读投影）。
+- **Agent 不持有模型密钥**：`GET /agent/model-config` 下发（回环 + 内部令牌）。
+- **主后端不解释 agent 事件**，只转发字节；唯一例外是连不上时合成一个合法的 `error` 终态。
+- 内部令牌 `data/secrets/agent.token`，主后端启动时**自动生成**（用户不需要手造文件）。
+
+主后端新增 13 条路由（对前端 6 + 对 agent 7）、两张表（`conversation` / `conversation_message`，
+树形 `parent_id` + `head_id`）、模型类型新增 **`agent`**（与 `generation` 分开：
+翻译要关思考省成本，问答要开思考会调工具；未注册时回落 `generation`，存量用户零配置）。
+
+### 三、P0 交付
+
+六个**只读**工具：`paper_search`（`mode="qa"` + `scope="paper"`，返回候选位置不发全文）、
+`page_markdown_get`（`"5"` / `"3-8"` / `"all"`，一次 ≤20 页）、`block_get`（按 `ref`）、
+`page_image_get`（`dpi` 按需渲染，一次 ≤3 页）、`figure_list`、`figure_image_get`。
+四个 skill：`paper-qa` / `paper-overview` / `figure-reading` / `page-visual-check`。
+
+**参数口径的一个改进**：工具只收宿主分配的 `ref`，**不收 `block_id` / `chunk_id`** ——
+模型没有机会抄错 id，"内部 id 泄漏"从"清洗兜底"变成"结构上不可能"。
+
+`paper_service.resolve_page_image` 新增 `dpi` 参数（按需渲染 + 落盘缓存，文件名带 dpi，
+不覆盖阅读器那张 150dpi）；`brief.py` 新增 `key_claims`（进 `BRIEF_SCHEMA`，
+**同一次调用零成本**，实测一次生成 6 条实质论断）。
+
+### 四、实测踩到的四个坑（都写进代码注释了）
+
+1. **`ThinkingPartDelta` 也有 `content_delta`** —— 首轮回答里 DeepSeek 的英文思维链
+   整段被当正文推给用户（`lly I have ref 15 (3.2 attention)…`）。取文本前必须判
+   `type(delta).__name__ == "TextPartDelta"`。
+2. **`load_skill_libraries` 收的是框架的 `Workspace` 包装，不是裸 backend**
+   （内部要调 `workspace.resolve()`）→ 传裸 backend 会 `AttributeError`，
+   被 try/except 吞掉后退化成"自己扫目录"，症状是"看着有 4 个 skill，其实框架那套没跑"。
+   现在 `/v1/skills` 会回 `source: framework|scan`，自检直接断言必须是 `framework`。
+3. **`instructions=` 的可调用对象收到 `RunContext`**，deps 在 `ctx.deps` 上；
+   签名要写 `RunContext[Deps]`，否则运行期 `'RunContext' object has no attribute 'archive_text'`。
+4. **模型会去配外链图**：讲 Transformer 架构图时嵌了 `https://arxiv.org/abs/1706.03762`
+   （论文地址，不是图片）。提示词管不住 → 服务端 `strip_foreign_images()` 删掉一切
+   非本论文受控地址的图片。
+
+另外两处**改设计**的地方：
+
+- **证据闸不能只看重排分**：同一个无关问题，问句写长一点重排最高分就从 0.44 涨到 0.68
+  （真问题 0.86~0.87，最低的真问题也只有 0.70）→ 硬闸会把真问题误杀。
+  现在硬护栏只挡"检索 0 条 **且** 档案没有实质内容（`domain`/`key_claims` 都空；
+  光有章节大纲不算）"，低分只作为**软信号**写进提示词让模型自己判断。
+- **引用编号在 `done` 时压成 1..M**：registry 的号是按工具返回顺序发的，
+  不压的话用户看到的是 `[63][49][33]` 这种带洞的号（表里 4 条、正文写 `[63]`）。
+  代价是流式期间与 `done` 的编号不一致 —— 前端收到 `done` 必须整体替换（已写进规划 §11）。
+
+### 五、验证
+
+- `scripts/agent_env_check.py`：**9/9**（依赖冒烟，不花钱，换机重装必跑）。
+- `scripts/probe_agent_tools.py`：**11/11**（真机 function calling 探测）。
+- `scripts/agent_check.py`：**46/46**（P0 全链路自检）。报告落 `data/logs/agent_check.json`。
+  覆盖：护栏（无索引论文**一次模型调用都没有**）、引用编号连续、`[n]` 全部可解析、
+  无内部 id 泄漏、流式增量拼接 == `done.answer`（抹掉两处已知改写后比较）、
+  无外链图片、单终态、轮数上限、`done` 前已落库、工具序（先检索后读页）、
+  受控图片能取回真图（实测 426KB PNG）。
+
+真机耗时（Attention 那篇，DeepSeek 思考模式）：问"核心贡献"约 11s / 4 轮 / 输入约 20k tokens；
+首字 6~8s（两轮工具调用之后才开始出字）。
+
+### 六、已知遗留（下一轮）
+
+1. **前端入口还没有**：问答没有 UI（A10 引用跳转探针要等它）。
+2. **存量论文的 brief 没有 `key_claims`**：`POST /papers/{id}/brief` 重跑一次即可。
+3. **多轮已能跑但没做压缩/追问/树分叉**（P1）。
+4. 轮数上限的强断言（构造必超限的问题）没进自检。
+5. 公式页 150 vs 400dpi 的识别正确率对比没做（规划 §7.2 ①）。

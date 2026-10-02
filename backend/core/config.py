@@ -116,6 +116,43 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_to_file: bool = True
 
+    # ---------- Agent（论文问答，独立进程 :8711，见 docs/agent-接入规划.md）----------
+    #: 关掉后主后端的 `/agent/ask` 直接返回"未启用"，前端据此隐藏入口
+    agent_enabled: bool = True
+    agent_host: str = "127.0.0.1"
+    agent_port: int = 8711
+    #: 主后端 ↔ agent 服务的内部令牌（**不是**模型密钥）。两侧都读同一个密钥文件；
+    #: 首次启动主后端会自动生成一个，所以用户不需要手填。
+    agent_token_ref: str = "agent.token"
+    #: skill 目录（L1 名字与描述常驻提示词，L2 正文按需加载）
+    agent_skills_dir: Path = PROJECT_ROOT / "backend" / "agent" / "skills"
+    #: 单轮工具调用轮数上限。论文问答的正常形态是"检索 → 读 1~2 页 → 作答"，
+    #: 给到 6 是为了容错（模型偶尔会多查一次），不是鼓励它多绕。
+    agent_max_rounds: int = 6
+    #: 单轮总时限（秒）。Cylit 的检索比 Rust FTS 慢，给得比参考实现宽
+    agent_deadline_seconds: float = 120.0
+    #: SSE 心跳间隔（保连接；前端忽略该事件）
+    agent_heartbeat_seconds: float = 5.0
+    #: 一次检索返回的候选条数上限（进模型前还会再截一次）
+    agent_search_top_k: int = 8
+    #: 注入模型的证据条数 / 字符上限（百万上下文也不是无限免费，仍要设闸）
+    agent_evidence_limit: int = 12
+    agent_evidence_chars: int = 24000
+    #: 证据闸的**相关度下限**（重排模型给的最高分）。
+    #:
+    #: 为什么需要它：向量检索**永远**会返回 top-k，"有没有命中"本身不携带信息，
+    #: 不带阈值时护栏永远不会触发（"论文里没写"这类问题会被硬答）。
+    #: 实测（qwen3-vl-rerank，Attention Is All You Need）：真问题最高分 0.86~0.87，
+    #: 无关问题 0.44~0.59 → 0.65 落在两者之间。
+    #: ⚠️ 只在**真重排模型**上生效：启发式降级那套是词重合度，量纲完全不同，
+    #: 拿它比阈值会把整库问答全部挡掉。
+    agent_evidence_floor: float = 0.65
+    #: 单轮预注入的档案 + 大纲字符上限
+    agent_archive_chars: int = 6000
+    #: 一次 `page_image_get` 允许的最大页数与最长边（视觉输入的字节闸）
+    agent_image_max_pages: int = 3
+    agent_image_max_dpi: int = 400
+
     # ------------------------------------------------------------------
     @field_validator("data_dir", mode="after")
     @classmethod
@@ -200,6 +237,29 @@ class Settings(BaseSettings):
     @property
     def mineru_token_file(self) -> Path:
         return self.secrets_dir / "mineru.key"
+
+    # ---------- Agent 内部令牌 ----------
+    @property
+    def agent_token_file(self) -> Path:
+        return self.secrets_dir / self.agent_token_ref
+
+    def agent_token(self, *, create: bool = False) -> str | None:
+        """主后端 ↔ agent 服务的内部令牌。
+
+        与模型密钥走同一套（``data/secrets/`` 文件优先，其次 ``PR_AGENT_TOKEN`` 环境变量），
+        区别只在于**缺失时可以自动生成**：这是两侧共享的进程间凭据，让用户为了跑起来
+        先手造一个文件没有意义（模型密钥则必须用户自己填，我们造不出来）。
+        """
+        token = (self.read_secret(self.agent_token_ref)
+                 or (os.environ.get("PR_AGENT_TOKEN") or "").strip() or None)
+        if token or not create:
+            return token
+        import secrets as _secrets
+
+        token = _secrets.token_urlsafe(32)
+        self.secrets_dir.mkdir(parents=True, exist_ok=True)
+        self.agent_token_file.write_text(token, encoding="utf-8")
+        return token
 
     @property
     def mineru_token(self) -> str | None:

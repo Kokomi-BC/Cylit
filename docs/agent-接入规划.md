@@ -1,11 +1,26 @@
 # Agent 接入规划（Cylit）
 
-**状态：** 可执行规划（选型已定、关键假设已实测）
+**状态：** **P0 已落地并自检通过（46/46）**；P1/P2 待做
 **范围：** 在 Cylit 现有检索/理解能力之上接入一个带 tool calling 的论文问答 Agent
 **非范围：** 前端视觉改造、翻译流水线、MinerU 解析链路、**脚本执行（未规划）**
 
 配套阅读：`docs/论文理解系统-设计.md`、`docs/语义单元索引-设计.md`、`docs/API.md`；
 参考实现：`../retain-pdf/backend/ai/`。
+
+**P0 落地清单**（跑起来只需要三条命令）：
+
+```
+python cli/pr.py serve      # :8710 主后端（首次启动会生成 data/secrets/agent.token）
+python cli/pr.py agent      # :8711 Agent 服务
+python scripts/agent_check.py        # 自检（--quick 不调模型）
+```
+
+| 位置 | 内容 |
+|---|---|
+| `backend/agent/` | Agent 服务：`service.py`（HTTP/SSE）、`runtime.py`（编排+引用+清洗）、`tools.py`（6 个只读工具）、`workspace.py`（Windows 只读 backend）、`prompts.py`、`host.py`、`skills/`（4 个） |
+| `backend/services/agent/` | 主后端侧：`project.py`（只读投影）、`conversations.py`（会话落库）、`model_config.py`（模型配置下发）、`bridge.py`（SSE 字节转发） |
+| `backend/api/agent.py` | 13 条路由（对前端 6 条 + 对 agent 7 条，后者只认内部令牌） |
+| `scripts/` | `agent_check.py`（自检）、`agent_env_check.py`（依赖冒烟）、`probe_agent_tools.py`（function calling 真机探测） |
 
 ---
 
@@ -18,10 +33,12 @@
 | 项 | 状态 |
 |---|---|
 | 框架选型 | **已定 A**（理由见 §5.1） |
-| 依赖 | **已装进 `scenemind`**：新增 8 个包、`openai` 3.17→3.23.0（patch）、零降级、`pip check` 干净 |
-| Skills | **已实测可用**（Windows 上跑通发现 + 解析 + include 过滤） |
-| 待验 | DeepSeek 的 function calling 与 `OpenAIProvider(base_url=…)` 直连（需真实 key，未做） |
-| 部署形态 | 未定（容器 / WSL2 / Windows 原生），**P0 第一步再定** |
+| 依赖 | **已装进 `scenemind`**：新增 8 个包、`openai` 3.17→3.23.0（patch）、零降级、`pip check` 干净；两行已钉进 `requirements.txt` |
+| Skills | **已实测可用**（Windows 上跑通发现 + 解析 + include 过滤，正文真的进了提示词） |
+| DeepSeek function calling | **已实测可用**（`scripts/probe_agent_tools.py` 11/11：非流式、流式事件、思考模式三条路都调得动工具） |
+| 部署形态 | 已定**Windows 原生 + 自写只读 workspace**（§5.3），为将来 Electron 打包留路 |
+| P0 实现 | ✅ 服务骨架 / 6 读工具 / 档案预注入 / 证据闸 / 引用链 / SSE / 单轮落库 |
+| P0 未含 | 多轮压缩与追问建议（P1）、写工具（P2） |
 
 ---
 
@@ -63,14 +80,16 @@
 | 生成 | `OpenAICompatibleGeneration`：`generate / stream / structured / generate_vision` | 缺 tool calling，由引入 pydantic-ai 解决 |
 | 模型配置 | `model_config` 表 + `data/secrets/` + `model_manager` | 密钥单一真源，agent 复用 |
 
-### 2.2 缺口
+### 2.2 缺口（✅ = P0 已补）
 
-1. **无多轮会话**：没有 conversation/message 表，没有树与 head。
-2. **无引用编号与清洗**：`[n]` 分配、内部 id 剥离、流式一致性都没有。
-3. **无证据闸**：`validate()` 判"答案是否被证据支持"，但没有"没证据不许答"的硬闸。
-4. **前端无问答 UI**：`/rag/query`、`/rag/query/stream` 前端零调用方。
-5. **页面内容只读**：`GET /papers/{id}/markdown` 有，**没有任何写入接口**（写工具要新增）。
-6. **页图 dpi 不够看公式**：`resolve_page_image` 走 150dpi，需要按需高 dpi。
+1. ✅ **无多轮会话** → 表已建（`conversation` / `conversation_message`，树形 `parent_id` + `head_id`），
+   单轮已落库；**压缩与追问建议**留 P1。
+2. ✅ **无引用编号与清洗** → `RefRegistry` + `StreamingAnswerSanitizer`（§8）。
+3. ✅ **无证据闸** → 编排层的硬护栏 + 低相关度软信号（§7.6）。
+4. **前端无问答 UI**：`/rag/query`、`/rag/query/stream` 前端零调用方（Agent 的 `/agent/ask` 也一样）→ P1。
+5. **页面内容只读**：`GET /papers/{id}/markdown` 有，**没有任何写入接口**（写工具要新增）→ P2。
+6. ✅ **页图 dpi 不够看公式** → `resolve_page_image(paper_id, page_no, dpi)` 按需渲染 + 落盘缓存，
+   `GET /papers/{id}/pages/{n}?dpi=300`。
 
 ---
 
@@ -133,10 +152,28 @@ Agent 服务对外（主后端调用）：
 | GET | `/readyz` | 自检（含 skills 目录可读、模型配置可取） |
 
 主后端对外（前端调用）：`POST /api/v1/agent/ask`（转发 + SSE 直通）、
-`/api/v1/agent/conversations...`（会话 CRUD，**落主后端 MySQL**）、`GET /api/v1/agent/skills`。
+`/api/v1/agent/conversations...`（会话 CRUD，**落主后端 MySQL**）、`GET /api/v1/agent/skills`、
+`GET /api/v1/agent/status`（服务在不在 + 用哪个模型，**不回密钥明文**）。
+
+**主后端给 agent 的只读投影**（都只认 `X-Internal-Token`，7 条）：
+
+```
+GET  /api/v1/agent/ping                          连通性
+GET  /api/v1/agent/model-config                  模型配置（含已解析的密钥）
+GET  /api/v1/agent/papers/{id}/archive           档案 + 大纲 + 规模
+GET  /api/v1/agent/papers/{id}/pages?pages=3-8   块级正文 + 行锚点（row_id）
+POST /api/v1/agent/papers/{id}/search            本论文检索（固定 mode=qa）
+GET  /api/v1/agent/papers/{id}/figures?page=3    插图清单（受控 url）
+GET  /api/v1/agent/papers/{id}/pages/{n}/image?dpi=300   页图（按需渲染）
+POST /api/v1/agent/internal/messages             agent 落助手消息（发 done 之前）
+```
+
+**为什么投影单独开一套而不是复用既有接口**：一是它们要"瘦"（剥 bbox、内部 id、检索元数据），
+二是要按页/按范围取（`pages=3-8`），三是**只有它们是 agent 的可见边界** ——
+加一个工具就要在这里加一条受控投影，不存在"agent 顺手读了张表"。
 
 **会话存主后端**的理由：消息要带 `citations` 与 `paper_id`，主后端已经在管这些字段；
-放 agent 侧会出现两处都存、迁移动两边。
+放 agent 侧会出现两处都存、迁移动两边，还要为此给 agent 数据库凭据。
 
 ---
 
@@ -169,11 +206,12 @@ Agent 服务对外（主后端调用）：
 | 项 | 结论 |
 |---|---|
 | Skills 发现与解析 | ✅ Windows 上跑通：坏 skill 告警跳过不影响启动，`include` 过滤生效，中文 description 正常 |
+| Skills 正文真的进提示词 | ✅ `/v1/skills` 的 `source=framework` + `chars` 非零（**踩过**：加载器要收框架的 `Workspace` 包装，传裸 backend 会 `AttributeError` 然后静默退化成"自己扫目录"，看着有 4 个 skill 其实没走框架） |
 | 版本耦合 | ✅ 真的：harness 0.53.0 钉 `pydantic-ai-slim==2.53.0`，必须一起锁 |
-| Windows workspace | ⚠️ 框架自带的不可用，**必须自己补**（§5.3） |
-| skill 级工具白名单 | ⚠️ **框架不提供**（§5.4） |
-| DeepSeek function calling | ⏳ 需真实 key，未做 |
-| `OpenAIProvider(base_url=…)` 直连 | ⏳ 同上；API 形状已确认 |
+| Windows workspace | ✅ 自写只读 backend 已落地（§5.3），`working_dir()` 返回虚拟 POSIX 根 |
+| skill 级工具白名单 | ⚠️ **框架不提供**（§5.4）；P0 用"根本不挂写工具"绕过 |
+| DeepSeek function calling | ✅ 11/11（非流式 / `run_stream_events` / 思考模式三条路都会发 tool call，入参按类型解析） |
+| `OpenAIProvider(base_url=…)` 直连 | ✅ 同上，DeepSeek 走的就是这条 |
 
 ### 5.3 硬约束一：Windows 上没有可用 workspace
 
@@ -295,12 +333,12 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 
 | # | 工具 | 读写 | 一句话 | 落点 | 阶段 |
 |---|---|---|---|---|---|
-| 1 | `paper_search` | 读 | **在本论文内检索**：返回 chunk + 页码 + 总页数 + 短片段，**不发全文** | `retrieval.search(scope="paper", mode="qa")` | P0 |
-| 2 | `page_markdown_get` | 读 | 某一页的 Markdown / 按块取 | `paper_service.get_markdown`、`reader_service.load_markdown_map`（**需加按页参数**） | P0 |
-| 3 | `block_get` | 读 | 单个块的原文 + 译文 + 行锚点 | `GET /papers/{id}/blocks/{block_id}` | P0 |
-| 4 | `page_image_get` | 读 | 整页渲染成图喂视觉模型（**需支持高 dpi**） | `paper_service.resolve_page_image` | P0 |
-| 5 | `figure_list` | 读 | 该页插图清单（编号/段号/图注/URL） | `figure_regions.media_of_page` | P0 |
-| 6 | `figure_image_get` | 读 | 单张插图裁图（600dpi 按需渲染） | `figure_regions.ensure_region_crop` | P0 |
+| 1 | `paper_search` | 读 | **在本论文内检索**：返回 `ref` + 页码 + 总页数 + 章节 + 短片段，**不发全文** | `retrieval.search(scope="paper", mode="qa")` | P0 ✅ |
+| 2 | `page_markdown_get` | 读 | 按 `pages` 取块级正文（`"5"` / `"3-8"` / `"all"`，一次 ≤20 页） | 新投影 `GET /agent/papers/{id}/pages` | P0 ✅ |
+| 3 | `block_get` | 读 | **按 `ref`** 展开单个块的原文 + 译文 + 公式 LaTeX | `GET /papers/{id}/blocks/{bid}`（ref→block_id 由宿主查表） | P0 ✅ |
+| 4 | `page_image_get` | 读 | 整页渲染成图喂视觉模型（`pages` + `dpi`，一次 ≤3 页） | `GET /agent/papers/{id}/pages/{n}/image?dpi=` | P0 ✅ |
+| 5 | `figure_list` | 读 | 该页插图清单（`index`/图号/图注/受控 URL/`ref`） | `figure_regions.media_of_page` | P0 ✅ |
+| 6 | `figure_image_get` | 读 | 单张插图裁图（600dpi 按需渲染） | `figure_regions.ensure_region_crop` | P0 ✅ |
 | 7 | `kb_search` | 读 | 跨知识库检索（"我库里哪篇讲过 X"） | 同上，`scope="all"` | P1 |
 | 8 | `formula_get` | 读 | 公式 LaTeX / 编号 / 出处 | `GET /papers/{id}/formulas`、`GET /knowledge/chunk` | P1 |
 | 9 | `translate_get` | 读 | 译文（页级 / 全文） | `GET /papers/{id}/markdown/translated` | P1 |
@@ -309,7 +347,13 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 12 | `related_concepts` | 读 | 理解产物（概念与关联） | `GET /papers/{id}/related` | P2 |
 | 13 | `page_markdown_edit` | **写** | 按块修正文本（CAS + 审批） | **需新增接口** | P2 |
 
-**只有第 13 个需要写新接口**，其余 12 个挂在现有 API 上（第 2、4 个要加个小参数）。
+**参数口径：模型只认 `ref`，不认内部 id**（P0 的落地取舍）。检索与读页返回的每一项都带
+宿主分配的 `ref`；`block_get` / 将来的写工具都收 `ref`，由宿主查回 `block_id`。
+这样模型**没有机会**抄错 id，也不需要知道 `chunk_id` / `block_id` 长什么样 ——
+M4 的"瘦投影"因此是从"清洗兜底"变成"结构上不可能"。
+
+**只有第 13 个需要写新接口**，其余 12 个挂在现有只读能力上（第 2、4 个要加个小参数，
+已随 P0 落地）。
 
 **`paper_search` vs `kb_search` 是两种问题，不是一个工具加参数**：
 "这篇论文里怎么说的"（P0）vs "我的库里还有谁讲过这个"（P1）。
@@ -367,7 +411,7 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 ### 7.4 写工具（整份规划里唯一的写能力）
 
 ```
-page_markdown_edit(block_id 必填, expected_text 必填(CAS), new_text, reason)
+page_markdown_edit(ref 必填, expected_text 必填(CAS), new_text, reason)
 ```
 
 **先读后写：这是硬约束，不是流程建议。** 块就是分块的边界——chunk 全部由 block 派生
@@ -378,7 +422,8 @@ page_markdown_edit(block_id 必填, expected_text 必填(CAS), new_text, reason)
 
 三条写死：
 
-1. **按 `block_id` 粒度编辑，不接受"整页 markdown 覆盖"**。改多个块就多次调用。
+1. **按 `ref`（= 单个块）粒度编辑，不接受"整页 markdown 覆盖"**。改多个块就多次调用。
+   `ref` 而不是 `block_id`：模型根本看不到 block_id（见 §7.0 的参数口径）。
 2. **先读后写 + CAS**：`expected_text` 与库里不一致就**拒绝并返回当前值**，让模型重读再改。
 3. **只重算受影响的那一个块**，并**断言该论文 chunk 总数与各块边界未变**；
    变了就回滚报错（说明这次编辑跨了块边界）。
@@ -403,17 +448,38 @@ page_markdown_edit(block_id 必填, expected_text 必填(CAS), new_text, reason)
 以 `paper_search` 为例，**不要**发 `retrieval` 元数据（`vector_hits / fused / rrf_k /
 rerank.degraded`）——那是给我们排查用的；也不发 `scores`（模型用不上，要排序说明就写
 "已按相关度排序"）。`page_markdown_get` / `block_get` **不发 bbox**（模型没法用像素坐标
-回答，48 块就白占 2.4K 字符）；bbox 与 `row_id` 只在 `to_citation()` 里给前端跳转用。
+回答，48 块就白占 2.4K 字符）；bbox 与 `row_id` 只在 `to_dict()` 里给前端跳转用。
 
 ### 7.6 证据闸放在编排层
 
 ```
-hits = paper_search(...)          # 宿主发起
-if not hits: return 护栏("没有找到证据，无法可靠回答")
-agent.run(...)                     # 只有有证据才进模型
+hits, archive = 宿主取（预检索 + 档案）        # 宿主发起，不是等模型调工具
+if not hits and not 档案有实质内容:  return 护栏("没有检索到相关内容…")   # 不进模型
+agent.run(...)                                  # 有材料才进模型
 ```
 
-比 retain-pdf 简单：它的闸要处理"模型该不该调工具"，我们的检索是宿主主动的。
+比 retain-pdf 简单：它的闸要判断"模型该不该调工具"，我们的检索是宿主主动的。
+
+**⚠️ 实测纠正：相关度阈值不能当硬闸。** 最初的设想是"重排最高分 < 阈值就拦住"，实测不成立：
+
+| 查询 | 重排最高分（qwen3-vl-rerank） |
+|---|---|
+| 真问题"multi-head attention 是怎么做的" | 0.873 |
+| 真问题"为什么需要位置编码" | 0.863 |
+| 无关问题"量子色动力学中的胶子禁闭…" | 0.588 |
+| **同一个无关问题，问句写长一点**（"这篇论文里…是怎么做的？"） | **0.678** |
+
+问句一长，无关问题的分数就跨过了真问题的下限 —— 硬闸会误杀真问题，而向量检索**永远**
+返回 top-k，"有没有命中"本身也不携带信息。所以现在的口径是：
+
+- **硬护栏**只挡"确实什么都没有"：检索 0 条 **且** 档案没有实质内容
+  （`domain` / `key_claims` 都空；**光有章节大纲不算** —— 一串小标题答不了"核心贡献是什么"）；
+- **软信号**：真重排模型给出的最高分低于 `agent_evidence_floor`（默认 0.65）时，
+  在提示词里加一句"这批材料相关度偏低，没有依据就直说"，**由模型判断**。
+  启发式降级（词重合度量纲不同）不参与比较。
+
+实测这个软信号 + 模型自述的效果是对的：问无关问题时模型自己回"论文里没有…的内容"，
+没有编造（自检 ③ 覆盖）。
 
 ---
 
@@ -421,20 +487,28 @@ agent.run(...)                     # 只有有证据才进模型
 
 1. **分配**（宿主）：工具结果落地后给每个带 `(paper_id, block_id)` 的条目贴 `ref`，
    登记 `Citation(ref, paper_id, block_id, page, section, snippet /* 优先译文 */, image_urls, row_id)`。
-2. **投影**：`to_model_payload()` 剥内部 id 与 bbox；`to_citation()` 保留全部（M4）。
+2. **投影**：`model_view()` 剥内部 id 与 bbox；`to_dict()` 保留全部（M4）。
 3. **清洗**：模型漏出的 `chunk_id` / `block_id=` / `page_idx=` 口癖映射成 `[n]`，
    **映射不到的不动**（否则 `机型 MD-11 与 MD-80` 会被吃成 `机型 与`）；
    流式路径**不另写增量规则**，而是对累积原文跑批量清洗、只推"不会再被改动"的前缀
-   （guard 48 字符，按总长自适应攒批避免 O(n²)）。
-4. **渲染**（前端）：`[n]` 装饰成锚点（负向前瞻 `(?<!!)` 避开 Markdown 图片、跳过代码块）
+   （guard 48 字符，按总长自适应攒批避免 O(n²)；首批只攒 64 字符，否则要等 256 字才吐第一个字）。
+4. **`done` 时两处改写**（流式阶段做不到，前端在收到 `done` 后覆盖正文）：
+   - **编号压成 1..M**：registry 的号是按"工具返回顺序"发的，模型只用了其中一小撮，
+     不压的话用户看到的是 `[63][49][33]` 这种带洞的号 —— 表里 4 条、正文写 `[63]`，没人看得懂。
+     压缩时同步改写正文里的标记（只改**用到的**那些号）。代价见 R6。
+   - **删掉非受控图片**：只允许 `/api/v1/papers/<当前 paper_id>/figures/region/...`。
+     实测模型会"诚实地"去配一张它认识的图（讲 Transformer 架构图时嵌了
+     `https://arxiv.org/abs/1706.03762`），提示词管不住，必须在服务端删。
+5. **渲染**（前端）：`[n]` 装饰成锚点（负向前瞻 `(?<!!)` 避开 Markdown 图片、跳过代码块）
    → 换成按钮（tooltip = snippet + 页码）→ 气泡下方"来源"列表（默认 ≤5 条）
    → 点击按 `paper_id + page + row_id/block_id` 定位并高亮。
 
-**引用表只回正文真正引用过的**，并区分两种情况：一个标记都没写 → fallback 按页去重取 3 条；
+**引用表只回正文真正引用过的**，并区分两种情况：一个标记都没写 → fallback 取这一轮用到的全部证据；
 写了但全是编造的（正文 `[42]` 而 citations 只有 1–4）→ **不 fallback**。
 正文里那个 `[42]` 不动——学术文档的 `[42]` 很可能是原文自己的参考文献编号（M6）。
 
-**我们比 retain-pdf 强的地方**：`anchor_map` 能把 block 映射到原文行，引用可以高亮到**行**。
+**我们比 retain-pdf 强的地方**：`anchor_map` 能把 block 映射到原文行，引用可以高亮到**行**
+（实测 30/31 个块拿到了 `row_id`）。
 
 ---
 
@@ -450,17 +524,19 @@ agent.run(...)                     # 只有有证据才进模型
 | 消费 | 逐页翻译注入每个 page prompt（统一术语）；`understanding_service`；顺手回填元数据 |
 | 接口 | `GET /papers/{id}/brief`、`POST /papers/{id}/brief` 已有 |
 
-**要做的三件小事**：
+**三件小事（已落地）**：
 
-1. **补两个字段**：`outline`（把已有的 `page_translate.build_outline_skeleton()` 并进来）与
-   `key_claims`（核心主张 3~6 条，**加进 `BRIEF_SCHEMA` 即可，同一次调用、零额外成本**）。
-   有了 `key_claims`，"这篇的核心贡献是什么"直接读档案答，**一次检索都不用**。
-2. **给 agent 一个只读入口**（`GET /papers/{id}/archive`）。单篇问答不必落 MySQL 表——
+1. **补字段**：`key_claims`（核心主张 3~6 条）**已加进 `BRIEF_SCHEMA`，同一次调用、零额外成本**
+   （实测 Attention 那篇一次生成 6 条实质论断）。有了它，"这篇的核心贡献是什么"直接读档案答。
+   `outline` **不落进 brief**，而是在 `GET /agent/papers/{id}/archive` 时用
+   `reader_service.build_outline()` 现算并入 —— 它是纯结构计算，存进文件反而会在重跑解析后变旧。
+   ⚠️ 存量论文的 brief 里**没有** `key_claims`：`POST /papers/{id}/brief` 重跑一次就有。
+2. **给 agent 一个只读入口**（`GET /agent/papers/{id}/archive`）。单篇问答不必落 MySQL 表——
    文件已是权威源，加表只会多一份要同步的状态。
 3. ⚠️ **绝对不要改 `prompt_block()`**。其 docstring 明写"**必须字节级稳定**"——靠字节不变
    命中 provider 的 prompt prefix cache（DeepSeek 命中部分约 0.1× 计费），它刻意把 `meta`
-   排除在外就是为此。给 agent 用的档案**另开一个 `archive_block()`**（含 outline / key_claims），
-   别往翻译前缀里塞新字段——那会把省下来的钱又花回去。
+   排除在外就是为此。给 agent 用的档案**另开 `archive_block()`**（`backend/agent/prompts.py`，
+   含 outline / key_claims），别往翻译前缀里塞新字段——那会把省下来的钱又花回去。
 
 **注入位置**：system prompt 之后的"当前论文档案"块（不是 user 消息——那要留给用户的话）。
 
@@ -489,13 +565,20 @@ conversation_message(
 
 ### 10.2 记忆策略
 
+**前提（用户 2026-10-02 口径）：问答模型也是百万上下文。** 所以策略从"尽量少塞历史"
+改成"**按 token 预算塞，够用就不压**"——省的是压缩那一次额外调用与它带来的失真风险，
+而不是上下文（1M 之下几轮问答的历史根本不占地方）。
+
 | 项 | 值 | 理由 |
 |---|---|---|
-| 常驻窗口 | 最近 6 轮 | 论文问答通常在同几节内 |
-| 压缩触发 | > 12 轮 | 低于此值压缩收益小于损失 |
+| 常驻窗口 | 最近 **12 轮**（约 24k tokens 量级） | 1M 上下文下没必要抠；12 轮之后再考虑压缩 |
+| 压缩触发 | **按预算**（历史 + 档案 + 本轮证据 > 200k tokens）而非按轮数 | 轮数不是成本，token 才是；1M 上下文下正常会话根本到不了 |
 | 摘要方式 | **抽取式**（不调模型） | 省一次往返，且不会把事实改写 |
 | 摘要内容 | 用户关注点 + **带 `[n]` 的结论行** + 证据清单 `[ref] p.N block_id snippet` | 保留可回溯性 |
-| history 上限 | 24000 字符 | 与档案（~1.5k token）一起算总预算 |
+| 单轮工具预算 | 证据 ≤12 条 / ≤24000 字符（`agent_evidence_*`） | 与上下文无关的闸：防止一次 `pages=all` 把整篇灌进来，也压住成本 |
+| 读页粒度 | `page_markdown_get` 支持 `"3-8"` / `"all"`（一次 ≤20 页） | 百万上下文下的直接收益：少几轮 tool call，而不是多塞几页 |
+
+P0 已按此接线（`history` 管道接通、预算项都在 `Settings`），**压缩与追问建议留 P1**。
 
 ### 10.3 追问建议
 
@@ -512,8 +595,7 @@ conversation_message(
 | `session` | `{conversation_id, paper_id, runtime, skills[], content_source}` | 记录会话 id、显示已激活 skill |
 | `tool` | `{round, tool, status, args_digest}` | 过程行（**不发原始 JSON**） |
 | `answer_delta` | `{text}` | 追加正文（**增量，不是累积全文**） |
-| `citation` | `Citation` | 引用表增量 |
-| `compress` | `{summary_id, turns}` | 提示"历史已压缩" |
+| `citation` | `Citation` | 引用表增量 || `compress` | `{summary_id, turns}` | 提示"历史已压缩" |
 | `done` | `{answer, citations[], tool_trace[], rounds, incomplete_reason, persisted, conversation_id, followups[]}` | 权威结果，覆盖流式内容 |
 | `error` | `{code, message, retryable}` | 错误终态 |
 | `cancelled` | `{}` | 取消终态 |
@@ -524,6 +606,11 @@ conversation_message(
 ④ 心跳 5s、总 deadline 120s（Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 ⑤ `answer_delta` 推的必须是**清洗后**的增量。
 
+**⚠️ 前端必须知道的一件事**：流式期间推的 `citation.ref` 是 registry 的**原始编号**
+（可能到 60+），而 `done` 里的 `citations` 是压成 `1..M` 之后的那一份，正文里的标记
+也跟着改了（§8 第 4 条）。这两个数字**对不上是正常的** —— 收到 `done` 时必须用它**整体替换**
+流式期间累积的引用表与正文，不能只做增量合并。这也解释了为什么 `done` 是权威结果。
+
 ---
 
 ## 12. 安全边界
@@ -533,7 +620,7 @@ conversation_message(
 | 1 | 用户消息、历史、摘要、论文正文、工具结果**都是不可信数据**，不能提升权限 |
 | 2 | agent 服务不持有 MySQL/向量库凭据；数据只经主后端 HTTP 取 |
 | 3 | agent 服务不持有任何可写文件/命令能力。**本规划不含脚本执行** |
-| 4 | 工具参数里的 `paper_id` 由宿主覆写（M2 的真实漏洞） |
+| 4 | 工具参数里**没有** `paper_id`（M2 的加固版）：论文由宿主经 deps 注入，模型没有机会传错；检索固定 `scope="paper"` |
 | 5 | 图片只允许 `/api/v1/papers/<当前 paper_id>/figures/region/...`，拒绝外链 / `data:` / `blob:` / 其它 paper |
 | 6 | 模型不能决定"已完成"：只能声称工具明确返回成功的动作 |
 | 7 | 所有轮次/超时/证据条数有上限，且可在设置页改 |
@@ -548,12 +635,13 @@ conversation_message(
 
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
-| **P0** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**不含多轮**） | ① 问"核心贡献"→ 带 `[n]` 的回答 → 点引用跳阅读器并高亮；② 问某张图 → 回答嵌入受控图片且前端能显示；③ 问一个 OCR 可疑的公式页 → 模型先 `paper_search` 定位、再 `page_image_get` 复核；④ 检索无命中 → 护栏文案 | 3~5 天 |
-| **P1** | agent 循环（轮次/预算/证据闸）+ skills 目录 + 会话落库（树 + head）+ 追问建议 + 设置页入口 + `kb_search` + `formula_get` `translate_get` `library_list` `notes_search` | 多轮追问能记住上文；`/v1/skills` 能列出；加一个 skill 目录即生效 | 3~5 天 |
+| **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
+| **P1** | agent 循环（轮次/预算上限已就位，补压缩）+ 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ `kb_search` + `formula_get` `translate_get` `library_list` `notes_search` + 前端入口 | 多轮追问能记住上文；`/v1/skills` 能列出；加一个 skill 目录即生效 | 3~5 天 |
 | **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
 
-**P0 刻意不含多轮**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加循环。
-否则多轮一旦引入脏状态，定位"是检索错了还是循环错了"会很贵。
+**P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
+不过 `history` 的管道**已经接通**（主后端把可见分支的历史传给 agent，agent 侧转成
+pydantic-ai 消息），所以"接着问"现在就能用；P1 要补的是压缩、追问建议与树分叉。
 **P0 刻意不含写工具**：它牵扯三条链（权威源 / 索引重建 / 重解析覆盖），
 放进 P0 等于第一版就带一个能改数据、又没被自检覆盖的入口。
 
@@ -566,32 +654,43 @@ conversation_message(
 | R1 | harness 是 0.x 且与 slim 强耦合（0.53.0 钉 2.53.0），**又共用主环境没有 venv 兜底** | `requirements.txt` 里 `==` 钉死这两行 + 一个冒烟测试（换机重装必跑） |
 | R2 | 框架不提供 skill 级工具白名单 | 自己按激活 skill 过滤工具集，或"只读 agent / 可写 agent 两个实例" |
 | R3 | Windows 无可用 workspace | 容器/WSL2，或自写只读 backend（虚拟 POSIX 根，已验证） |
-| R4 | DeepSeek function calling 稳定性（未验） | 退路：模型输出 JSON 动作由宿主执行（伪 tool call），代价是流式体验变差 |
+| R4 | ~~DeepSeek function calling 稳定性~~ **已排除**：11/11 探测通过（非流式/流式/思考模式） | 保留 `scripts/probe_agent_tools.py`，换模型后重跑 |
 | R5 | 成本失控（轮数 × 证据 × 档案 × 视觉输入） | 预算全部进设置页；每轮记 token 用量（已有 `tiktoken`） |
-| R6 | 论文正文的 `[12]` 与我们的引用编号撞车 | 抄 M6：不按形状删；前端只在能匹配到 citation 时才把 `[n]` 变按钮 |
+| R6 | 论文正文的 `[12]` 与我们的引用编号撞车 | 抄 M6：不按形状删；前端只在能匹配到 citation 时才把 `[n]` 变按钮。⚠️ P0 把编号压成 `1..M`（§8 第 4 条）后，**小号撞车概率变高**（论文自己的 `[3]` 更容易撞上我们的第 3 条）——目前只改写"用到的号"，观察后续是否需要在引用表里加视觉区分 |
 | R7 | 主后端多一层转发，排查链路变长 | 两侧日志都带 `conversation_id` + `round` |
 
 ---
 
 ## 15. 自检（`scripts/agent_check.py`，中文 `[PASS]/[FAIL]`，报告落 `data/logs/agent_check.json`）
 
-| # | 断言 | 手段 |
-|---|---|---|
-| A1 | 服务健康 | `GET /readyz` |
-| A2 | 无证据必护栏 | 用论文里不存在的词提问 → 命中护栏文案且 `citations == []` |
-| A3 | 引用编号连续可解析 | `ref` 从 1 递增无洞；正文 `[n]` 都能在 citations 找到 |
-| A4 | 内部 id 不泄漏 | 正文不含 `chunk_id` 形态串与 `block_id=` 口癖 |
-| A5 | 轮数上限生效 | 需要 ≥4 轮的问题 → `rounds <= max` 且 `incomplete_reason == "rounds_exhausted"` |
-| A6 | skill 生效 | 加临时 skill 目录 → `/v1/skills` 出现该名；触发场景 → `tool_trace` 出现对应工具序 |
-| A7 | SSE 单终态 | 整条流消费完 → 终态事件恰好 1 个 |
-| A8 | 落库先于 done | 收到 `persisted=true` 后立刻查会话 → 消息已存在 |
-| A9 | scope 覆写 | 构造模型传错 `paper_id` 的用例 → 实际检索仍是宿主 scope |
-| A10 | 引用跳转 | 前端探针（复用 `frontend_check.py` 的 `dom_probe`）：点引用 → 定位到页且高亮行存在 |
-| A11 | 档案预注入 | 抓第一轮实际 messages → 有档案块且含 `domain/glossary/outline/key_claims`；问"核心贡献"时**不调检索工具**即可答 |
-| A12 | 回答里的图片可用 | 问"图 3 画了什么" → 正文含受控图片 URL；fetch 该 URL → 200 且 `image/png` |
-| A13 | 搜索决定读哪页 | 问需翻页的问题 → `tool_trace` 里 `paper_search` 在前、`page_markdown_get` 在后，且返回含 `page_total` |
-| A14 | 写工具默认不可见 | P0/P1：`/v1/skills` 不含 `formula-fix`，`tool_trace` 从未出现 `page_markdown_edit` |
-| A15 | 写工具三件套（P2） | 修正一次 → ① markdown 与 block 都是新值；② 检索命中新内容；③ 该块带 `source=manual`；④ 撤销回旧值；⑤ chunk 总数与边界未变 |
+**P0 覆盖 46 项断言，全部通过。** 运行前提：两个进程都在（`pr.py serve` + `pr.py agent`），
+`--quick` 跳过要调模型的两节。
+
+| # | 断言 | 手段 | P0 状态 |
+|---|---|---|---|
+| A1 | 服务健康 | `GET /readyz` + `/agent/status` | ✅ 含 skills 走的是**框架加载器**（`source=framework`） |
+| A2 | 无证据必护栏 | 拿一篇**没建索引、也没档案**的论文提问 → 护栏文案、`citations == []`、`rounds == 0` | ✅ 硬护栏；另有一条软断言：有索引的论文问无关问题时模型必须自己说"没有依据" |
+| A3 | 引用编号连续可解析 | `ref` 从 1 递增无洞；正文 `[n]` 都能在 citations 找到 | ✅（`done` 阶段把 registry 号压成 1..M，见 §8 第 4 条） |
+| A4 | 内部 id 不泄漏 | 正文不含 `chunk_id` 形态串与 `block_id=` 口癖 | ✅ |
+| A5 | 轮数上限生效 | `UsageLimits(request_limit=agent_max_rounds)`，超限 → `rounds_exhausted` | ⚠️ P0 只断言"正常问题 ≤6 轮"；构造必超限的问题归 P1 |
+| A6 | skill 生效 | `/v1/skills` 列出 4 个且 `chars > 0`（正文真的读进来了） | ✅ |
+| A7 | SSE 单终态 | 整条流消费完 → 终态事件恰好 1 个 | ✅ |
+| A8 | 落库先于 done | 收到 `persisted=true` 后立刻查会话 → 助手消息已存在且带 `tool_trace` | ✅ |
+| A9 | scope 覆写 | 工具签名里**根本没有** `paper_id`（宿主经 deps 注入），配合固定 `scope="paper"` | ✅ 结构性保证 |
+| A10 | 引用跳转 | 前端探针（复用 `frontend_check.py` 的 `dom_probe`）：点引用 → 定位到页且高亮行存在 | ⏳ 等前端入口 |
+| A11 | 档案预注入 | 档案含 `domain/outline/key_claims`；无索引但**有档案**的论文不进护栏 | ✅ |
+| A12 | 回答里的图片可用 | 问某页的图 → 正文含受控图片 URL（且**没有**外链图）；fetch → 200 + `image/png` | ✅ 实测取回 426KB PNG |
+| A13 | 搜索决定读哪页 | `tool_trace` 里 `paper_search` 在前、`page_markdown_get` 在后；检索返回含 `page_total` | ✅ |
+| A14 | 写工具默认不可见 | `/v1/skills` 不含 `formula-fix`，`tool_trace` 从未出现 `page_markdown_edit` | ✅ |
+| A15 | 写工具三件套（P2） | 修正一次 → ① markdown 与 block 都是新值；② 检索命中新内容；③ 该块带 `source=manual`；④ 撤销回旧值；⑤ chunk 总数与边界未变 | ⏳ P2 |
+
+**另外加了三条文档里没写、但真出过问题的断言**：
+
+- **流式增量拼接 == `done.answer`**（抹掉 `done` 阶段的两处已知改写后比较）——
+  这条抓的是"思维链被当正文推出去"：`ThinkingPartDelta` **也有** `content_delta` 字段，
+  不判类型就会把 DeepSeek 的英文推理整段推给用户（首轮就中了，见 §16）；
+- **正文没有非受控图片**（外链 / `data:` / `blob:`）；
+- **`done` 里带的 `answer` 与库里存的那条一致**（防止"流式看到的"和"落库的"不是一份）。
 
 ---
 
@@ -606,40 +705,72 @@ openai==3.23.0             pydantic==2.13.4             httpx==0.28.1
 
 - 安装：`pip install --index-url https://pypi.org/simple "pydantic-ai-slim[openai]" "pydantic-ai-harness[skills]"`
   （阿里云镜像滞后，必须显式给官方索引）
-- 冒烟脚本：`scripts/_agent_env_check.py` 的同类断言（9 项）应在换机重装后重跑
+- 冒烟脚本：`scripts/agent_env_check.py`（9 项，换机重装必跑，不花钱）
 
-**框架 API**（实测）
+**框架 API**（实测签名）
 
 ```python
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext, UsageLimits
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai_harness import Skills, FileSystem, Shell, SubAgents
+from pydantic_ai_harness import Skills
+from pydantic_ai.messages import BinaryContent, ToolReturn
 
-Agent(model, output_type=…, instructions=…, tools=[…], capabilities=[…])
-Agent.tool(name=…, description=…, requires_approval=True)     # 写工具用
-agent.run / run_sync / run_stream / run_stream_events         # SSE 用 run_stream_events
-OpenAIChatModel("deepseek-chat",
-                provider=OpenAIProvider(base_url=…, api_key=…))
-Skills(directories, *, include=None, exclude=frozenset(), workspace=None)
+Agent(model, deps_type=Deps, instructions=f, tools=[…], capabilities=[Skills(…)])
+agent.run_stream_events(prompt, deps=…, message_history=…, model_settings=…,
+                        usage_limits=UsageLimits(request_limit=6), workspace=…)
+Agent.tool(name=…, requires_approval=True, defer_loading=True)   # 写工具 / 延迟加载用
+OpenAIChatModel("deepseek-flash", provider=OpenAIProvider(base_url=…, api_key=…))
+Skills(directories, *, include=None, exclude=frozenset(), workspace=backend)
+ToolReturn(return_value=text, content=[text, BinaryContent(data=…, media_type=…)])
 ```
 
-**主后端端点**（工具落点）
+**踩过的四个框架坑**（都在代码注释里标了，别改回去）
+
+1. **`ThinkingPartDelta` 也有 `content_delta`** —— 事件里只按"有没有 content_delta"取文本，
+   会把思考模式的思维链当正文推给用户（实测 DeepSeek 的英文推理整段出现在回答开头）。
+   取文本前必须判 `type(delta).__name__ == "TextPartDelta"`。
+2. **`load_skill_libraries` 收的是框架的 `Workspace` 包装，不是裸 backend**
+   （内部要调 `workspace.resolve()`）。传裸 backend 会 `AttributeError` → 静默退化成
+   "自己扫目录"，症状是"看着有 4 个 skill，其实框架那套没跑"。裸 backend 只能给
+   `Skills(workspace=…)`（它内部会 `secondary_workspace()` 包一层）。
+3. **`instructions=` 的可调用对象收到的是 `RunContext`**，deps 在 `ctx.deps` 上。
+   签名要写 `def f(ctx: RunContext[Deps]) -> str`，写错会在运行期报
+   `'RunContext' object has no attribute …`。
+4. **`dependencies.usage()`**：轮数的权威数字是 `AgentRunResult.usage().requests`
+   （`deps.model_calls` 只数了工具轮，会少 1）。
+
+**主后端端点**（既有 + 为 agent 新增的投影）
 
 ```
 POST /api/v1/rag/similar              {query|chunk_id, scope: all|cross|paper, paper_id?, chunk_types?, langs?, top_k?}
 GET  /api/v1/papers/{id}/markdown      全文 Markdown（派生物）
-GET  /api/v1/papers/{id}/blocks/{bid}  块详情
-GET  /api/v1/papers/{id}/pages/{n}     页图 PNG（render_dpi=150）
+GET  /api/v1/papers/{id}/blocks/{bid}  块详情（含 bbox，agent 侧会剥掉）
+GET  /api/v1/papers/{id}/pages/{n}?dpi= 页图 PNG（不传 dpi = 解析期那张，150dpi）
+                                        ★ 新增 dpi 参数：按需渲染并落盘缓存（agent 看公式用 300~400）
 GET  /api/v1/papers/{id}/figures/region/{page}/{index}?card=1   插图裁图 600dpi
-GET  /api/v1/papers/{id}/brief         论文档案（DocumentBrief）
+GET  /api/v1/papers/{id}/brief         论文档案（DocumentBrief，已含 key_claims）
 GET  /api/v1/papers/{id}/outline | /formulas | /related
 GET  /api/v1/papers/{id}/markdown/translated
 GET  /api/v1/papers                    书架
 GET  /api/v1/notes | /highlights | /annotations
 POST /api/v1/knowledge/index           重建索引（写工具后用）
+/api/v1/agent/...                      见 §4.3（对前端 6 条 + 对 agent 7 条）
 ```
 
 **检索要点**：`retrieval.search(query, mode="qa", scope="paper", paper_id=…)`；
 默认候选类型 `unit/formula/figure/table`（正文 chunk 不进候选，避免同内容两条命中）；
 类型过滤后为空会自动放开全类型重搜一次。
+
+**"块 → 正文行"锚点**：`anchor_map.build_block_row_map(blocks, rows_by_page)`，
+入参块必须是 `{"id","page","text"}` —— **`text` 要与给模型看的那一份一致**。
+踩过：传了 `preview` 字段名，映射整片为空，引用退化成"只能跳到页、不能高亮行"。
+行数据用 `reader_service.merged_page(paper_id, page)` 单页取，别为主这调全量 `page_products`。
+
+**中文孪生片段**：chunk id 是 `{paper}:{road}:{type}:{块范围}:{lang}`，中文那一份
+**road 也从 `a` 变 `b`**（`…:a:unit:p005-01-p005-02:en` ↔ `…:b:unit:p005-01-p005-02:zh`），
+所以不能靠替换 `:en`→`:zh` 猜，要按 `(paper_id, block_id, chunk_type)` 回库查，
+并且**查不到就不给**（贴错预览比没有预览更坏）。
+
+**输出预算与耗时实测**（Attention 那篇，DeepSeek 思考模式）：
+问"核心贡献"≈11s / 4 轮 / 输入 20k tokens；首字约 6~8s（两轮工具调用之后才开始出字）。

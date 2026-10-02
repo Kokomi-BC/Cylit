@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import (
-    annotations_router, knowledge_router, mineru_router, models_router,
+    agent_router, annotations_router, knowledge_router, mineru_router, models_router,
     papers_router, reader_router, settings_router, tasks_router,
 )
 from backend.core.config import get_settings
@@ -49,6 +49,13 @@ async def lifespan(app: FastAPI):
 
     from backend.services.task.handlers import register_all
     from backend.services.task.task_service import task_runner
+
+    # 问答 agent 的内部令牌：启动时**生成一次**（缺失时）。
+    # 不生成的话 agent 服务起不来（它启动就要校验令牌），而用户没有任何理由手动造这个文件。
+    if s.agent_enabled:
+        s.agent_token(create=True)
+        log.info("问答 agent：http://%s:%s（%s）", s.agent_host, s.agent_port,
+                 "令牌已就绪" if s.agent_token() else "令牌缺失")
 
     register_all()
     task_runner.start()
@@ -126,6 +133,8 @@ def create_app() -> FastAPI:
     app.include_router(annotations_router, prefix=s.api_prefix)
     app.include_router(knowledge_router, prefix=s.api_prefix)
     app.include_router(settings_router, prefix=s.api_prefix)
+    # 问答 agent：对外 /agent/ask（SSE 转发）、/agent/conversations；对内 /agent/papers/... 只读投影
+    app.include_router(agent_router, prefix=s.api_prefix)
     # 在线解析（MinerU）的配置/校验：只挂带前缀的那一份 —— 它没有"直接打开的资源链接"，
     # 不像 /papers 那样需要无前缀别名
     app.include_router(mineru_router, prefix=s.api_prefix)

@@ -422,11 +422,41 @@ def resolve_pdf(paper_id: str) -> Path:
     return p
 
 
-def resolve_page_image(paper_id: str, page_no: int) -> Path:
-    p = paper_paths(paper_id)["pages"] / f"page-{page_no:04d}.png"
-    if not p.is_file():
-        raise NotFoundError(f"页面图不存在：{paper_id} p{page_no}")
-    return p
+def resolve_page_image(paper_id: str, page_no: int, dpi: int | None = None) -> Path:
+    """页面图。
+
+    ``dpi=None`` → 解析阶段已经渲染好的那一张（阅读器口径，``render_dpi``=150）。
+    给了 dpi 且与它不同 → **按需渲染并落盘缓存**（文件名带 dpi，不覆盖阅读器那张）。
+
+    为什么需要按需渲染：问答 agent 要看公式上下标，150dpi 常常不够；而把 150dpi 的图
+    放大到 400dpi 只是插值，信息量一点没增加 —— 必须重新从 PDF 渲染。
+    """
+    pages = paper_paths(paper_id)["pages"]
+    if dpi is None:
+        p = pages / f"page-{page_no:04d}.png"
+        if not p.is_file():
+            raise NotFoundError(f"页面图不存在：{paper_id} p{page_no}")
+        return p
+
+    use = max(72, min(int(dpi), 600))
+    target = pages / f"page-{page_no:04d}-{use}dpi.png"
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+
+    from backend.core.utils import write_bytes_atomic
+    from backend.parsing.extract.render import render_page_png
+
+    pdf = resolve_pdf(paper_id)
+    import pymupdf as fitz
+
+    pages.mkdir(parents=True, exist_ok=True)
+    with fitz.open(str(pdf)) as doc:
+        if page_no < 1 or page_no > doc.page_count:
+            raise NotFoundError(f"页码超出范围：p{page_no}（共 {doc.page_count} 页）")
+        data = render_page_png(doc, page_no, dpi=use)
+    write_bytes_atomic(target, data)
+    log.info("按需渲染页面图：%s p%d @%ddpi（%d bytes）", paper_id, page_no, use, len(data))
+    return target
 
 
 def save_upload(data: bytes, filename: str) -> Path:

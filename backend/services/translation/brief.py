@@ -43,7 +43,11 @@ BRIEF_SYSTEM = """你是学术论文翻译项目的术语负责人。请阅读�
 5. meta：论文自身的元数据（和术语一次产出，用户不必手打）——
    - venue 会议或期刊名（文中明确出现才填，判断不出留空）、year 发表年份（判断不出填 0）、
      tags 3~6 个中文关键词、abstract_zh 摘要的中文译文（抽样里没有摘要就留空）。
-6. 只输出 JSON，不要输出解释或 Markdown 代码块。"""
+6. key_claims：这篇论文**自己主张的 3~6 条主要结论**，每条一句话（≤60 字）。
+   - 只写论文明确主张的（"用随机旋转把内积量化误差变得各向均匀"），
+     不要写"本文提出了一个新方法"这种空话；
+   - 这是给**问答 agent** 当背景用的（`archive_block()`），不参与翻译。
+7. 只输出 JSON，不要输出解释或 Markdown 代码块。"""
 
 BRIEF_SCHEMA = {
     "type": "object",
@@ -72,6 +76,14 @@ BRIEF_SCHEMA = {
             "description": "翻译注意点",
             "items": {"type": "string"},
         },
+        # 论文自己的主要论断：**同一次调用**产出（零额外成本），问答 agent 拿它当背景。
+        # 刻意不进 `prompt_block()` —— 翻译提示词的前缀必须字节级稳定，加一个字段就等于
+        # 把存量论文的缓存前缀全部作废一次，而它对翻译没有任何用。
+        "key_claims": {
+            "type": "array",
+            "description": "论文自己主张的主要结论（每条一句话）",
+            "items": {"type": "string"},
+        },
         # 论文元数据与术语表**同一次调用**产出（翻译流程里零额外成本）
         "meta": metadata_fill.META_SCHEMA,
     },
@@ -88,6 +100,8 @@ class DocumentBrief:
     keep_as_is: list[str] = field(default_factory=list)
     style: str = ""
     notes: list[str] = field(default_factory=list)
+    #: 论文自己主张的主要结论（问答 agent 用；**不进翻译提示词**，理由见 BRIEF_SCHEMA）
+    key_claims: list[str] = field(default_factory=list)
     # 论文元数据（venue/year/tags/abstract_zh）：与术语同一次调用产出，也一并写回论文行。
     # **刻意不进 `prompt_block()`**：它不是翻译指令，进前缀只会让"人工改元数据"把
     # provider 的 prompt 前缀缓存打掉（简报前缀必须字节级稳定）。
@@ -128,6 +142,7 @@ class DocumentBrief:
             "paper_id": self.paper_id, "title": self.title, "domain": self.domain,
             "glossary": self.glossary, "keep_as_is": self.keep_as_is,
             "style": self.style, "notes": self.notes, "meta": self.meta,
+            "key_claims": self.key_claims,
             "source": self.source,
             "model_id": self.model_id, "version": BRIEF_VERSION,
         }
@@ -143,6 +158,7 @@ class DocumentBrief:
             glossary=dict(d.get("glossary") or {}),
             keep_as_is=list(d.get("keep_as_is") or []),
             style=d.get("style", ""), notes=list(d.get("notes") or []),
+            key_claims=list(d.get("key_claims") or []),
             meta=dict(d.get("meta") or {}),
             source=d.get("source", "cached"), model_id=d.get("model_id"),
         )
@@ -274,6 +290,8 @@ def generate_brief(paper_id: str, *, provider=None, force: bool = False,
         keep_as_is=[str(x) for x in (data.get("keep_as_is") or [])][:20],
         style=str(data.get("style") or "").strip(),
         notes=[str(x) for x in (data.get("notes") or [])][:6],
+        key_claims=[str(x).strip() for x in (data.get("key_claims") or [])
+                    if str(x).strip()][:6],
         meta=dict(data.get("meta") or {}) if isinstance(data.get("meta"), dict) else {},
         source="model" if data else "none",
         model_id=_model_id(),

@@ -23,7 +23,12 @@ from backend.providers.generation.mock import MockEmbedding, MockGeneration
 
 log = get_logger(__name__)
 
-MODEL_TYPES = ("generation", "embedding", "reranker", "vision", "ocr")
+#: ``agent`` 是**问答 agent 自己的模型**（`pr.py agent` 那个独立进程用）。
+#: 单独一个类型而不是复用 ``generation``：翻译要"关思考 + 低温度 + 便宜"，
+#: 问答要"开思考 + 会调工具 + 能读长上下文"，两者挤在一个配置里必然互相将就。
+#: **没有内置占位档**（mock 不会调工具，放上去只会让 agent 静默给出垃圾答案）：
+#: 未注册时 `resolve_agent_config()` 回落到 ``generation`` 默认，存量用户零配置可用。
+MODEL_TYPES = ("generation", "embedding", "reranker", "vision", "ocr", "agent")
 # 本地模型 LRU 上限（省显存，规划 §12.2）
 CACHE_SIZE = 4
 # 需要密钥才能用的真模型之外，这些 provider 是"离线降级档"：同一类型里
@@ -201,6 +206,14 @@ class ModelManager:
         if key is None:
             key = s.read_secret(cfg.get("id") or "")
         return key
+
+    def resolve_secret(self, cfg: dict) -> str | None:
+        """公开的密钥解析入口（agent 服务经 HTTP 拿配置时要用，见 `services/agent/model_config`）。
+
+        ``secret_ref`` 优先，回落配置 id —— 这个顺序是历史约定（老配置只用 id 当文件名），
+        对外暴露时必须与 `_api_key` 完全一致，否则会出现"设置页测通了、agent 却说没密钥"。
+        """
+        return self._api_key(cfg)
 
     def _get(self, cfg: dict):
         key = self._cache_key(cfg)

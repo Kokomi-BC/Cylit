@@ -390,3 +390,50 @@ class Understanding(Base, TimestampMixin):
     model: Mapped[str | None] = mapped_column(String(64))
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------------------- ⑮ 问答会话（Agent）
+class Conversation(Base, TimestampMixin):
+    """一个论文问答会话。
+
+    ``head_id`` 是**可见分支的末端**：消息存成树（``parent_id``），从头沿父指针回溯
+    再反转就是当前可见的对话。为什么不上来就存成线性数组：``regenerate`` 与
+    "编辑我这条提问"本质都是在同一父节点下挂**兄弟**，线性数组表达不了，
+    等需要时再改数据模型会很痛（历史数据没有分叉信息，补不回来）。
+    """
+
+    __tablename__ = "conversation"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    #: 会话所属论文；NULL = 跨文献问答（P1 的 `kb_search` 用得上）
+    paper_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    title: Mapped[str | None] = mapped_column(String(255))
+    #: 当前可见分支的最后一条消息 id（见类文档）
+    head_id: Mapped[str | None] = mapped_column(String(36))
+    user_id: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ConversationMessage(Base):
+    """会话里的一条消息（树节点）。
+
+    ``role`` 多出 ``summary`` 与 ``tool`` 两种：``summary`` 是压缩后的历史摘要
+    （抽取式，不调模型），``tool`` 记工具轨迹 —— 两者都要能**重放**，
+    否则"重新生成"和"接着问"看到的历史会不一样。
+    """
+
+    __tablename__ = "conversation_message"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    #: 同一父节点下的兄弟顺序；线性浏览（无分叉时）也按它排
+    parent_id: Mapped[str | None] = mapped_column(String(36))
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String(16))            # user/assistant/summary/tool
+    content: Mapped[str | None] = mapped_column(Text)
+    #: ``Citation`` 列表（给前端渲染引用表与跳转；内部 id 在这一层是**该留的**）
+    citations_json: Mapped[str | None] = mapped_column(Text)
+    #: 每轮的工具轨迹（名/轮次/参数摘要/耗时/状态），审计与自检读它
+    tool_trace_json: Mapped[str | None] = mapped_column(Text)
+    #: stop / rounds_exhausted / cancelled / error（终态口径，见规划 §11）
+    finish_reason: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

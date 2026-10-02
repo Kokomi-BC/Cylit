@@ -39,6 +39,15 @@ PRESETS: dict[str, dict] = {
             "secret_ref": "deepseek.key",
             "parameters": {"thinking": "enabled", "max_tokens": 8192, "top_p": 0.95},
         },
+        # 问答 agent 的模型：与翻译**刻意分开配**（翻译要关思考省成本，问答要开思考会调工具）。
+        # max_tokens 给足：思考模式下思维链计入 completion_tokens，给小了正文会是空串。
+        "agent": {
+            "model_name": "deepseek-flash",
+            "base_url": "https://api.deepseek.com/v1",
+            "secret_ref": "deepseek.key",
+            "parameters": {"thinking": "enabled", "reasoning_effort": "high",
+                           "max_tokens": 16384, "top_p": 0.95},
+        },
     },
     # ---- 高速档：关闭思考（便宜、快、temperature 可用）----
     "deepseek-fast": {
@@ -139,7 +148,8 @@ PRESETS: dict[str, dict] = {
 def list_presets() -> list[dict]:
     return [{"id": k, "label": v["label"], "provider": v["provider"],
              "generation": v.get("generation"), "embedding": v.get("embedding"),
-             "reranker": v.get("reranker"), "vision": v.get("vision")}
+             "reranker": v.get("reranker"), "vision": v.get("vision"),
+             "agent": v.get("agent")}
             for k, v in PRESETS.items()]
 
 
@@ -150,7 +160,7 @@ def create_preset(name: str, *, base_url: str | None = None,
     if preset is None:
         raise ValidationError(f"未知预设：{name}（可选：{list(PRESETS)}）")
     created = []
-    for mtype in ("generation", "embedding", "reranker", "vision"):
+    for mtype in ("generation", "agent", "embedding", "reranker", "vision"):
         spec = preset.get(mtype)
         if not spec:
             continue

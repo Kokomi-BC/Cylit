@@ -373,6 +373,35 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_agent(args) -> int:
+    """启动问答 Agent 服务（独立进程，默认 :8711）。
+
+    为什么不跟 `serve` 合一：agent 崩溃不该拖垮解析/翻译调度器，改一个 skill 也不该
+    重启正在跑的解析任务与 SSE 连接（规划 §4.1）。两个进程共用同一个 conda 环境。
+    """
+    import uvicorn
+
+    from backend.agent.config import AgentConfigError, load
+    from backend.core.config import get_settings
+
+    s = get_settings()
+    if not s.agent_enabled:
+        print("问答功能已被设置关闭（agent_enabled=false），仍要启动请改设置。")
+    try:
+        cfg = load()
+    except AgentConfigError as exc:
+        print(f"启动失败：{exc}")
+        return 2
+    host = args.host or s.agent_host
+    port = args.port or s.agent_port
+    print(f"Agent 服务：http://{host}:{port}  （主后端 {cfg.main_base}）")
+    print(f"skills 目录：{cfg.skills_dir}")
+    print(f"自检：http://{host}:{port}/readyz")
+    uvicorn.run("backend.agent.service:create_app", host=host, port=port,
+                factory=True, reload=args.reload, log_level="info")
+    return 0
+
+
 def cmd_bench(args) -> int:
     """并发策略对比实验（规划 §26 实验一/二：固定并发 vs 自适应调度器）。
 
@@ -544,6 +573,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=None)
     sp.add_argument("--reload", action="store_true")
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("agent", help="启动问答 Agent 服务（独立进程 :8711）")
+    sp.add_argument("--host", default=None)
+    sp.add_argument("--port", type=int, default=None)
+    sp.add_argument("--reload", action="store_true")
+    sp.set_defaults(func=cmd_agent)
 
     sp = sub.add_parser("bench", help="并发策略对比实验")
     sp.add_argument("pdf", nargs="?", default=None)
