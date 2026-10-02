@@ -166,14 +166,16 @@ function onContextMenu(key: string, ev: MouseEvent) {
   user-select: none;
 }
 /* 标签条 = **一枚自撑的胶囊托盘**（用户口径：只在样式上与下面那枚页签胶囊对齐）。
- * 浅底 + 圆到底 + 里面一枚抬起的 pill，与阅读器侧栏那枚胶囊同一门语言。
+ * 三层、**无描边**：① 托盘（--bg-sunken）② 抬起的那枚白 pill（--bg-elev + --shadow-1）
+ * ③ 文字。与 base.css 的 `.seg`、阅读器侧栏那枚页签胶囊**同一门语言、同一组颜色**
+ * （2026-10-03 统一：以前这里用 color-mix 自调了个灰，跟 `.seg` 的 --bg-sunken 不是同一个色）。
  * 宽度跟着内容走（标签少时不会拉成一根长条），放不下就横向滚；
  * `3px + 32px` 让托盘正好 38px —— 与阅读器里那枚页签胶囊、那枚圆形开关同高。 */
 .tab-strip {
   display: flex; align-items: center; gap: 3px;
   flex: 0 1 auto; width: fit-content; max-width: 100%; min-width: 0;
-  padding: 3px; border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
+  padding: 3px; border: 0; border-radius: 999px;
+  background: var(--bg-sunken);
   overflow-x: auto; scrollbar-width: none;
 }
 .tab-strip::-webkit-scrollbar { display: none; }

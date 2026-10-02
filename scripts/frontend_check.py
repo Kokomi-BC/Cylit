@@ -2089,6 +2089,11 @@ pre{position:fixed;right:0;top:0;width:620px;height:100%;overflow:auto;backgroun
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const f = document.getElementById('f');
 const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+/* ⚠️ **真时间**等待。`--headless=new` 下虚拟时间不为 XHR/fetch 停顿：`sleep(9000)` 会瞬间跑完，
+   于是"侧栏首屏那三个请求还没回来"就被量了 —— 量到的是空列表（会话涨到 80 条后必现）。
+   做法：用一个**纯 CPU 忙等**把主线程占住 ms 毫秒（不碰网络，免得把连接池占光），
+   期间响应会排队；忙等结束后第一个 tick 就会把它们处理掉。 */
+function spin(ms) { const t0 = Date.now(); while (Date.now() - t0 < ms) { /* 占住主线程 */ } }
 /* 16x16 的真 PNG（红底 + 蓝方块）：**必须是真图** —— 只靠魔数糊一个坏 PNG 过得了后端，
    但会被模型端按 "unsupported image" 拒掉，那样量到的是探针自己的 bug。 */
 const PNG_B64 = '__PNG_B64__';
@@ -2114,7 +2119,16 @@ f.addEventListener('load', async () => {
   const w = f.contentWindow, d = f.contentDocument;
   const res = { stage: 'loaded' };
   try {
-    await sleep(__WAIT__);
+    /* 等首屏就绪：**用真时间兜底**（见 `spin` 的注释）—— 每轮先烧 250ms 真时间让挂起的
+       请求落地，再 `await` 一拍把它渲染出来；总上限 20s。 */
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const c = d.querySelector('.chat');
+      if (c && c.querySelector('.list-head')
+          && (c.querySelectorAll('.row').length || c.querySelector('.hollow'))) break;
+      spin(250);
+      await sleep(50);
+    }
     res.tabs = [...d.querySelectorAll('.side-tab')].map((b) => (b.textContent || '').trim());
     res.tabIndex = res.tabs.findIndex((t) => t.indexOf('对话') >= 0);
     const chat = d.querySelector('.chat');
@@ -2122,16 +2136,39 @@ f.addEventListener('load', async () => {
     if (!chat) { out(res); return; }
     res.chatWidth = Math.round(chat.getBoundingClientRect().width);
 
-    /* ── 一级页：搜索 / 分类 / 管理 / 会话行 ── */
-    res.hasListHead = !!chat.querySelector('.list-head .search-input');
-    res.segs = [...chat.querySelectorAll('.seg .seg-btn')].map((b) => (b.textContent || '').trim());
-    res.hasManage = [...chat.querySelectorAll('.chip-btn')].some((b) => (b.textContent || '').includes('管理'));
+    /* ── 一级页：搜索 / 分类 / 范围 / 管理 / 会话行 ── */
+    res.hasListHead = !!chat.querySelector('.list-head .search-field input');
+    const trays = [...chat.querySelectorAll('.filters .seg')];
+    res.trayCount = trays.length;
+    res.segs = trays[0] ? [...trays[0].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
+    res.scopeSegs = trays[1] ? [...trays[1].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
+    res.segActive = (trays[0] && trays[0].querySelector('button.active') || {}).textContent || '';
+    /* 胶囊的"三层 + 无描边"是**算出来的**（量计算样式），不是靠肉眼看：
+       ① 托盘：无边框、底色 = 托盘色；② 选中项：白底 + 有阴影。 */
+    const activeBtn = trays[0] ? trays[0].querySelector('button.active') : null;
+    if (trays[0] && activeBtn) {
+      const ts = getComputedStyle(trays[0]), as = getComputedStyle(activeBtn);
+      res.trayBorder = ts.borderTopWidth + ' ' + ts.borderTopStyle;
+      res.trayBg = ts.backgroundColor;
+      res.trayBorderless = ts.borderTopStyle === 'none' || parseFloat(ts.borderTopWidth) === 0;
+      res.elevRgb = rgbOf(w, getComputedStyle(d.documentElement).getPropertyValue('--bg-elev'));
+      res.sunkenRgb = rgbOf(w, getComputedStyle(d.documentElement).getPropertyValue('--bg-sunken'));
+      res.trayIsSunken = ts.backgroundColor === res.sunkenRgb;
+      res.segActiveBg = as.backgroundColor;
+      res.segBtnWhite = as.backgroundColor === res.elevRgb;
+      res.segBtnShadow = as.boxShadow !== 'none';
+    }
+    /* 「管理」现在也是**托盘里的一枚**（同一门语言），所以到 .filters 的所有 button 里找 */
+    const manage = [...chat.querySelectorAll('.filters button')]
+      .find((b) => (b.textContent || '').includes('管理'));
+    res.hasManage = !!manage;
     res.rows = chat.querySelectorAll('.row').length;
-    const newBtn = chat.querySelector('.list-head .plus');
+    res.listReady = res.rows > 0 || !!chat.querySelector('.hollow');
+    res.hollowText = ((chat.querySelector('.hollow') || {}).textContent || '').trim().slice(0, 60);
+    const newBtn = chat.querySelector('.list-head .new-conv');
     res.hasNewBtn = !!newBtn;
     res.newBtnBg = newBtn ? getComputedStyle(newBtn).backgroundColor : '';
     /* 批量管理：勾两个看是否出现批量条（选完再退出） */
-    const manage = [...chat.querySelectorAll('.chip-btn')].find((b) => (b.textContent || '').includes('管理'));
     if (manage && res.rows > 0) {
       manage.click();
       await sleep(300);
@@ -2150,11 +2187,18 @@ f.addEventListener('load', async () => {
     newBtn.click();
     await sleep(500);
     res.threadHead = !!chat.querySelector('.thread-head');
+    /* 等 `/agent/status` 回来（模型名不是占位符）——否则发送会被 `agentReady` 挡掉，
+       而那种失败**不会**留下 `.err`，看起来就像"点了发送没反应"。 */
+    for (let i = 0; i < 12; i += 1) {
+      const m = (chat.querySelector('.composer-bar .model') || {}).textContent || '';
+      if (m.trim() && m.trim() !== '—') break;
+      await sleep(1000);
+    }
     const ta = chat.querySelector('textarea.input');
     res.placeholder = ta ? ta.getAttribute('placeholder') : '';
     res.headline = (chat.querySelector('.hello-line') || {}).textContent || '';
     res.headlineStartsWithPersona = res.headline.trim().indexOf('与大肥鱼一起讨论') === 0;
-    const plus = chat.querySelector('.composer-bar .plus');
+    const plus = chat.querySelector('.composer-bar .attach');
     res.plusBg = plus ? getComputedStyle(plus).backgroundColor : '';
     res.accentBg = rgbOf(w, getComputedStyle(d.documentElement).getPropertyValue('--accent'));
     res.plusIsAccent = !!plus && res.plusBg === res.accentBg && res.plusBg !== 'rgba(0, 0, 0, 0)';
@@ -2185,9 +2229,14 @@ f.addEventListener('load', async () => {
     setter.call(ta, '这张图里有什么颜色？一句话回答。');
     ta.dispatchEvent(new w.Event('input', { bubbles: true }));
     await sleep(400);
-    res.sendDisabled = chat.querySelector('.send').disabled;
+    /* ⚠️ 认 **.send**：`.btn.primary` 在输入区里有两枚（上传的加号也是主题色实心圆钮），
+       以前写 `.btn.primary` 会选中上传按钮 —— 于是"发送"点了个开文件对话框，什么都不发生。 */
+    const sendBtn = chat.querySelector('.composer-bar .send');
+    res.hasSend = !!sendBtn;
+    res.sendDisabled = sendBtn ? sendBtn.disabled : null;
     out(res);
-    chat.querySelector('.send').click();
+    if (!sendBtn) { res.error = '找不到发送按钮'; out(res); return; }
+    sendBtn.click();
     for (let i = 0; i < 70; i += 1) {
       await sleep(1000);
       if (chat.querySelector('.err') && chat.querySelector('.err').textContent.trim()) break;
@@ -2219,7 +2268,7 @@ f.addEventListener('load', async () => {
     out(res);
 
     /* ── 返回一级：历史里应该多出一条 ── */
-    const back = chat.querySelector('.thread-head .ico');
+    const back = chat.querySelector('.thread-head .btn');
     back.click();
     await sleep(800);
     res.backToList = !!chat.querySelector('.list-head');
@@ -3863,7 +3912,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             thinking_on = False
         probe = CHAT_PROBE.replace("__URL__", f"{base}/app/reader/{paper}?side=chat&nosse=1")
-        probe = probe.replace("__WAIT__", "9000").replace("__PNG_B64__", PROBE_PNG_B64)
+        probe = probe.replace("__PNG_B64__", PROBE_PNG_B64)
         probe_file = ROOT / "frontend" / "dist" / "_chat_probe.html"
         try:
             probe_file.write_text(probe, encoding="utf-8")
@@ -3883,11 +3932,27 @@ def main() -> int:
                 # 「对话」必须紧跟「目录」（用户口径：侧栏第二个）
                 ("「对话」页签排第二", idx == 1 and "对话" in (tabs[1] if len(tabs) > 1 else ""),
                  f"页签={tabs}"),
-                # ① 一级页：搜索 / 分类 / 批量管理 / 会话行
-                ("一级页就位（搜索框 + 分类 + 管理）",
+                # ① 一级页：搜索 / 分类 / 范围 / 管理 / 会话行
+                ("一级页就位（搜索框 + 分类 + 范围 + 管理）",
                  all([data.get("hasListHead"), segs == ["全部", "划词", "常规"],
+                      (data.get("scopeSegs") or []) == ["本论文", "全部"],
                       data.get("hasManage")]),
-                 f"宽 {data.get('chatWidth')}px 分类={segs}"),
+                 f"宽 {data.get('chatWidth')}px 分类={segs} 范围={data.get('scopeSegs')}"),
+                # 一级页的每一组都是**托盘里的胶囊**（分类 / 范围 / 管理各一枚托盘），
+                # 不是"有的描边、有的没底片"那种各写各的
+                ("分类 / 范围 / 管理都是胶囊托盘（3 枚）",
+                 data.get("trayCount") == 3, f"{data.get('trayCount')} 枚托盘"),
+                # 分类用的是**全局 .seg**（三层胶囊：托盘 + 抬起的白色 pill，无描边），
+                # 不是就地造的那种 accent 浅底小药丸 —— 这是"胶囊统一"这条口径的机器验收点
+                ("分类是全局分段控件（三层胶囊，选中项是白色 pill）",
+                 data.get("segActive") == "全部" and data.get("segBtnWhite") is True
+                 and data.get("segBtnShadow") is True,
+                 f"active={data.get('segActive')!r} 选中底色={data.get('segActiveBg')} "
+                 f"(白={data.get('elevRgb')}) 阴影={data.get('segBtnShadow')}"),
+                ("胶囊无描边 + 托盘颜色统一（--bg-sunken）",
+                 data.get("trayBorderless") is True and data.get("trayIsSunken") is True,
+                 f"托盘 border={data.get('trayBorder')!r} bg={data.get('trayBg')} "
+                 f"(sanken={data.get('sunkenRgb')})"),
                 ("会话行渲染出来（真实历史）", data.get("rows", 0) > 0, f"{data.get('rows')} 行"),
                 ("批量管理：可选 + 出现批量条 + 能退出",
                  all([data.get("tickCount", 0) > 0, data.get("batchBar"),

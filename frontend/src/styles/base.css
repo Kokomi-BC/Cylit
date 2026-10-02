@@ -209,7 +209,10 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px; justify-content: center;
   height: var(--control-h); padding: 0 14px; border-radius: var(--radius-ctl);
-  border: 1px solid var(--border-strong);
+  /* 单独一枚按钮 = 胶囊的**第二层**（抬起的白色 pill）。**不描边**（用户口径 2026-10-03）：
+     边界感交给 --shadow-1，描边只留给输入框。透明边框是为了别改动全站的按钮几何尺寸。 */
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-1);
   background: var(--bg-elev); color: var(--text);
   font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
@@ -220,10 +223,9 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 .btn .icon { display: block; }
 .btn:hover:not(:disabled) {
   background: var(--bg-hover); text-decoration: none;
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-strong));
 }
 .btn:active:not(:disabled) { background: var(--bg-pressed); transform: translateY(1px) scale(.985); }
-.btn:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn.primary {
   background: var(--accent); border-color: transparent; color: var(--text-on-accent);
@@ -233,8 +235,22 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   background: var(--accent-hover); border-color: transparent;
   box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--accent) 60%, transparent);
 }
-.btn.ghost { border-color: transparent; background: transparent; color: var(--text-dim); }
+/* 幽灵按钮：**不占视觉重量**（表头里的图标动作），所以连阴影一起去掉 */
+.btn.ghost { border-color: transparent; background: transparent; color: var(--text-dim); box-shadow: none; }
 .btn.ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); border-color: transparent; }
+/* 「这个模式开着」的开关按钮（范围=全库 / 批量管理 / 周期筛选…）。
+ * 与 `.seg button.active`（组内选中）**刻意不同**：那个是"多选一"，选中项是白色 pill；
+ * 这个是"一个开关被打开了"，用主题色浅底 + 主题色文字，一眼能分开（同 `.ss-chip.on` 的语义）。 */
+.btn.on {
+  background: var(--accent-soft); border-color: transparent;
+  color: var(--accent-text); font-weight: 600; box-shadow: none;
+}
+.btn.on:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: transparent;
+}
 .btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border-strong)); }
 .btn.danger:hover:not(:disabled) {
   background: var(--danger-soft);
@@ -310,11 +326,20 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 }
 .search-field input:hover, .search-field input:focus { background: transparent; box-shadow: none; border: 0; }
 
-/* 分段控件 → 圆角 pill 胶囊组（与按钮 / 下拉严格等高 32px） */
+/* 分段控件 → **三层胶囊**（用户口径 2026-10-03："中间那枚胶囊的三层设计，无描边，颜色统一"）。
+ *
+ * 三层 = ① 托盘（浅底 --bg-sunken，**不描边**）→ ② 抬起的白色 pill（选中项：--bg-elev +
+ * --shadow-1）→ ③ 文字/图标。**"有没有被选中"靠白 pill 与阴影表达，不靠描边。**
+ *
+ * 全站只有这一种胶囊语言、两档规格，别再就地造第三种：
+ *   - 内容区（默认）：32px 托盘 / 26px 选项 —— 3px 内边距 + 26px，就是这里；
+ *   - 顶部标签条与阅读器侧栏页签：38px 托盘 / 32px 选项（图标+文字那一档，
+ *     见 `TabBar.vue` 的 `.tab-strip` 与 `ReaderView.vue` 的 `.side-tabs`，同样 3px 内边距、同样无描边）。
+ * 单独的按钮 / 输入框是另一回事：按钮 = 白色 pill + 阴影（`.btn`），输入框才需要描边。 */
 .seg {
-  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  display: inline-flex; align-items: center; gap: 2px; padding: 3px;
   height: var(--control-h); box-sizing: border-box;
-  border: 1px solid var(--border); border-radius: var(--radius-ctl);
+  border: 0; border-radius: var(--radius-ctl);
   background: var(--bg-sunken);
 }
 .seg button {

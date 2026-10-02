@@ -3706,11 +3706,12 @@ function renderMarkdown(text?: string | null) {
 .side-tabs {
   display: flex; align-items: center; gap: 2px;   /* 图标之间更紧凑（用户口径） */
   height: var(--cap-h); padding: 3px;
-  /* 这一枚**不铺毛玻璃**（用户口径）：它正躺在自己的 --bg-elev 面板上，背后没有可模糊的东西，
-     渐变 + 模糊只换来一圈说不清的灰边，反而"看着怪"；照旧平涂一层极淡的底。 */
+  /* 与 base.css 的 `.seg`、顶栏标签条**同一门语言、同一组颜色**：三层、**无描边** ——
+     ① 托盘（--bg-sunken）② 当前那枚抬起的白 pill ③ 文字/图标
+     （2026-10-03 统一：以前这里用 color-mix 自调的灰，与 `.seg` 的 --bg-sunken 不是一个色）。 */
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
+  background: var(--bg-sunken);
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none;
   /* 两端各留一枚圆按钮的位置：scrollIntoView 落位时不会把当前页签藏在按钮底下 */

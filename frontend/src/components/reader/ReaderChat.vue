@@ -217,6 +217,11 @@ async function loadPaper() {
   rollCopy();
 }
 
+/** 一级页一次取多少条：侧栏是"最近聊过的几个"，不是全部存档 ——
+ *  找更早的用搜索（`q` 是**数据库侧**的条件，不受这里限制）。
+ *  80 条时那一屏 DOM 已经明显拖慢首屏，翻起来也没人看得完。 */
+const LIST_LIMIT = 30;
+
 async function loadConversations() {
   listLoading.value = true;
   try {
@@ -224,6 +229,7 @@ async function loadConversations() {
       paper_id: convScope.value === 'paper' ? props.paperId : undefined,
       q: convQuery.value.trim() || undefined,
       kind: convKind.value === 'all' ? undefined : convKind.value,
+      limit: LIST_LIMIT,
     });
     conversations.value = data.items ?? [];
     picked.value = picked.value.filter(id => conversations.value.some(c => c.conversation_id === id));
@@ -286,7 +292,11 @@ function setKind(kind: Kind) {
 }
 
 function toggleScope() {
-  convScope.value = convScope.value === 'paper' ? 'all' : 'paper';
+  setScope(convScope.value === 'paper' ? 'all' : 'paper');
+}
+
+function setScope(scope: 'paper' | 'all') {
+  convScope.value = scope;
   void loadConversations();
 }
 
@@ -660,31 +670,32 @@ watch(() => props.selection, (sel) => {
     <!-- ═══════════════ 一级：会话列表 ═══════════════ -->
     <template v-if="level === 'list'">
       <div class="list-head">
-        <div class="search">
-          <AppIcon name="search" :size="13" />
-          <input v-model="convQuery" class="search-input" placeholder="搜索对话（标题或内容）"
+        <label class="search-field grow">
+          <AppIcon name="search" :size="14" />
+          <input v-model="convQuery" placeholder="搜索对话（标题或内容）"
                  @input="searchLater" @keydown.esc="convQuery = ''; loadConversations()" />
-          <button v-if="convQuery" class="ico" title="清空" @click="convQuery = ''; loadConversations()">
-            <AppIcon name="close" :size="11" />
-          </button>
-        </div>
-        <button class="plus" title="新建对话" @click="startNew"><AppIcon name="add" :size="16" /></button>
+        </label>
+        <button v-if="convQuery" class="btn icon sm" title="清空" @click="convQuery = ''; loadConversations()">
+          <AppIcon name="close" :size="12" />
+        </button>
+        <button class="btn primary icon new-conv" title="新建对话" @click="startNew"><AppIcon name="add" :size="15" /></button>
       </div>
 
       <div class="filters">
         <div class="seg">
-          <button v-for="k in KINDS" :key="k.key" class="seg-btn" :class="{ on: convKind === k.key }"
+          <button v-for="k in KINDS" :key="k.key" :class="{ active: convKind === k.key }"
                   @click="setKind(k.key)">{{ k.label }}</button>
         </div>
         <span class="spacer" />
-        <button class="chip-btn" :class="{ on: convScope === 'all' }"
-                :title="convScope === 'paper' ? '只看这篇论文的对话' : '看整个书架上的对话'"
-                @click="toggleScope">
-          <AppIcon name="library" :size="12" />{{ convScope === 'paper' ? '本论文' : '全部' }}
-        </button>
-        <button class="chip-btn" :class="{ on: batch }" title="批量管理" @click="toggleBatch">
-          <AppIcon name="checkbox" :size="12" />管理
-        </button>
+        <div class="seg" title="只看这篇论文 / 整个书架">
+          <button :class="{ active: convScope === 'paper' }" @click="setScope('paper')">本论文</button>
+          <button :class="{ active: convScope === 'all' }" @click="setScope('all')">全部</button>
+        </div>
+        <div class="seg">
+          <button :class="{ active: batch }" title="批量管理（多选 + 批量删除）" @click="toggleBatch">
+            <AppIcon name="checkbox" :size="13" />管理
+          </button>
+        </div>
       </div>
 
       <div class="list-body">
@@ -727,7 +738,9 @@ watch(() => props.selection, (sel) => {
       </div>
 
       <div v-if="batch" class="batch-bar">
-        <button class="chip-btn" @click="toggleAll">{{ allPicked ? '取消全选' : '全选' }}</button>
+        <div class="seg">
+          <button :class="{ active: allPicked }" @click="toggleAll">{{ allPicked ? '取消全选' : '全选' }}</button>
+        </div>
         <span class="tiny faint">已选 {{ picked.length }}</span>
         <span class="spacer" />
         <button class="btn sm danger" :disabled="!picked.length" @click="askDeletePicked">删除</button>
@@ -737,12 +750,12 @@ watch(() => props.selection, (sel) => {
     <!-- ═══════════════ 二级：会话 ═══════════════ -->
     <template v-else>
       <div class="thread-head">
-        <button class="ico" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
+        <button class="btn ghost icon sm" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
         <span class="th-title truncate" :title="currentTitle">{{ currentTitle }}</span>
         <span class="spacer" />
-        <button v-if="current" class="ico" title="重命名" @click="startRename(current)"><AppIcon name="edit" :size="13" /></button>
-        <button v-if="current" class="ico danger" title="删除这个对话" @click="askDeleteOne(current)"><AppIcon name="trash" :size="13" /></button>
-        <button class="ico" title="新建对话" @click="startNew"><AppIcon name="add" :size="15" /></button>
+        <button v-if="current" class="btn ghost icon sm" title="重命名" @click="startRename(current)"><AppIcon name="edit" :size="13" /></button>
+        <button v-if="current" class="btn ghost icon sm" title="删除这个对话" @click="askDeleteOne(current)"><AppIcon name="trash" :size="13" /></button>
+        <button class="btn ghost icon sm" title="新建对话" @click="startNew"><AppIcon name="add" :size="15" /></button>
       </div>
 
       <div ref="msgsEl" class="msgs">
@@ -789,9 +802,9 @@ watch(() => props.selection, (sel) => {
 
             <!-- 深度思考：默认折叠，点抬头展开；耗时取服务端记的那一次 -->
             <div v-if="m.thinking" class="think" :class="{ open: isThinkingOpen(m.message_id) }">
-              <button class="think-head" @click="toggleThinking(m.message_id)">
-                <AppIcon :name="isThinkingOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="11" />
-                <AppIcon name="sparkle" :size="11" />
+              <button class="btn sm think-head" @click="toggleThinking(m.message_id)">
+                <AppIcon :name="isThinkingOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="12" />
+                <AppIcon name="sparkle" :size="12" />
                 <span>深度思考{{ m.thinking_ms ? ` · ${fmtMs(m.thinking_ms)}` : '' }}</span>
               </button>
               <pre v-if="isThinkingOpen(m.message_id)" class="think-body">{{ m.thinking }}</pre>
@@ -819,8 +832,8 @@ watch(() => props.selection, (sel) => {
         <div v-if="sending || streamText" class="msg assistant live">
           <!-- 思考中（正文还没出来时它才是主角）：跑表以服务端推的 ms 为准 -->
           <div v-if="streamThinking" class="think live" :class="{ open: thinkingOpen }">
-            <button class="think-head" @click="thinkingOpen = !thinkingOpen">
-              <AppIcon :name="thinkingOpen ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <button class="btn sm think-head" @click="thinkingOpen = !thinkingOpen">
+              <AppIcon :name="thinkingOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
               <span class="dot" />
               <span>{{ streamText ? '深度思考' : '正在深度思考' }}{{ thinkingMs ? ` · ${fmtMs(thinkingMs)}` : '' }}</span>
             </button>
@@ -867,8 +880,10 @@ watch(() => props.selection, (sel) => {
           <textarea ref="inputEl" v-model="draft" class="input" rows="1" placeholder="请输入问题"
                     @paste="onPaste" @keydown.enter.exact.prevent="ask('send')" />
           <div class="composer-bar">
-            <button class="plus" :class="{ busy: uploading }" :title="`上传图片（也可以直接粘贴，张数不限）`"
-                    @click="pickFiles"><AppIcon name="add" :size="15" /></button>
+            <button class="btn primary icon attach" :class="{ busy: uploading }"
+                    title="上传图片（也可以直接粘贴，张数不限）" @click="pickFiles">
+              <AppIcon name="add" :size="15" />
+            </button>
             <input ref="fileInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"
                    multiple @change="uploadFiles(($event.target as HTMLInputElement).files)" />
 
@@ -883,8 +898,8 @@ watch(() => props.selection, (sel) => {
             <span class="model truncate" :title="`问答模型：${modelName}`">{{ modelName }}</span>
             <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
             <span class="spacer" />
-            <button v-if="sending" class="send stop" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
-            <button v-else class="send" :disabled="!canSend" title="发送" @click="ask('send')">
+            <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
+            <button v-else class="btn primary icon sm send" :disabled="!canSend" title="发送" @click="ask('send')">
               <AppIcon name="forward" :size="15" />
             </button>
           </div>
@@ -902,12 +917,21 @@ watch(() => props.selection, (sel) => {
 </template>
 
 <style scoped>
+/* ⚠️ 这一块**不自己造胶囊**（2026-10-03 统一，用户口径："有些有描边、有些缺了中间那枚白色圆角
+   底片，以论文译文对照那枚胶囊为准"）：能用的全用全局件 ——
+     .search-field  搜索框（白底 + 描边）
+     .seg / .seg button(.active)  分段控件（浅底描边托盘 + 抬起的白色 pill）
+     .btn / .btn.sm / .btn.icon / .btn.primary / .btn.on  按钮
+   本地只留消息气泡、思考块正文、圆环这些**没有全局对应物**的东西。 */
 .chat { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .spacer { flex: 1; }
+.grow { flex: 1; min-width: 0; }
+/* 行内小图标按钮（消息 hover 出来的复制 / 重新生成 / 编辑、批量勾选）：
+   它们是**贴着内容的小动作**，不是胶囊，所以不进 .btn 那一档，尺寸对齐 24px。 */
 .ico {
   display: inline-flex; align-items: center; justify-content: center; border: 0;
-  background: none; color: var(--text-dim); padding: 3px; border-radius: var(--radius-sm);
-  cursor: pointer; flex: none;
+  background: none; color: var(--text-dim); width: 24px; height: 24px; padding: 0;
+  border-radius: var(--radius-ctl); cursor: pointer; flex: none;
 }
 .ico:hover { background: var(--bg-hover); color: var(--text); }
 .ico.danger:hover { background: var(--danger-soft); color: var(--danger); }
@@ -916,42 +940,12 @@ watch(() => props.selection, (sel) => {
 
 /* ── 一级：列表 ── */
 .list-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; }
-.search {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;
-  border: 1px solid var(--border); border-radius: var(--radius-ctl); background: var(--bg-sunken);
-  padding: 4px 8px; color: var(--text-faint);
-}
-.search:focus-within { border-color: var(--accent); background: var(--bg-elev); }
-.search-input {
-  flex: 1; min-width: 0; border: 0; background: none; color: var(--text);
-  font: inherit; font-size: 12.5px; outline: none; padding: 2px 0;
-}
-.plus {
-  width: 30px; height: 30px; flex: none; border: 0; border-radius: var(--radius-ctl); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--accent); color: var(--text-on-accent);
-}
-.plus:hover { background: var(--accent-hover); }
-.plus.busy { opacity: .6; cursor: default; }
+/* 搜索框用全局 .search-field：这里只把它撑满侧栏（全局是给工具栏定的固定宽度） */
+.list-head .search-field { width: 100%; }
+.list-head .search-field input { width: 100%; min-width: 0; }
 
-.filters { display: flex; align-items: center; gap: 4px; padding: 0 8px 8px; }
-.seg {
-  display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-ctl);
-  background: var(--bg-sunken); border: 1px solid var(--border);
-}
-.seg-btn {
-  border: 0; background: none; color: var(--text-dim); cursor: pointer;
-  font-size: 11.5px; padding: 3px 9px; border-radius: var(--radius-ctl);
-}
-.seg-btn:hover { color: var(--text); }
-.seg-btn.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
-.chip-btn {
-  display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border);
-  background: var(--bg-elev); color: var(--text-dim); border-radius: var(--radius-ctl);
-  padding: 3px 8px; font-size: 11.5px; cursor: pointer;
-}
-.chip-btn:hover { border-color: var(--accent); color: var(--accent-text); }
-.chip-btn.on { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); font-weight: 600; }
+/* 一行放不下就换行（侧栏最窄时只有 300px，硬挤会把最右边那枚挤没） */
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 8px 8px; }
 
 .list-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 8px; }
 .row {
@@ -975,15 +969,15 @@ watch(() => props.selection, (sel) => {
 .row-acts { display: flex; gap: 1px; opacity: 0; }
 .row:hover .row-acts { opacity: 1; }
 .tick {
-  width: 22px; height: 22px; flex: none; border: 0; background: none; cursor: pointer;
+  width: 24px; height: 24px; flex: none; border: 0; background: none; cursor: pointer;
   color: var(--text-faint); display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-ctl);
 }
 .tick.on { color: var(--accent); }
 .rename-input {
-  flex: 1; min-width: 0; border: 1px solid var(--accent); border-radius: var(--radius-sm);
-  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 12.5px;
-  padding: 6px 7px; outline: none;
+  flex: 1; min-width: 0; border: 1px solid var(--accent); border-radius: var(--radius-ctl);
+  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 13px;
+  height: var(--control-h-sm); padding: 0 11px; outline: none;
 }
 .hollow { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 34px 18px; text-align: center; }
 .hollow-ico {
@@ -1000,7 +994,7 @@ watch(() => props.selection, (sel) => {
   display: flex; align-items: center; gap: 3px; padding: 5px 8px;
   border-bottom: 1px solid var(--divider);
 }
-.th-title { font-size: 12.5px; font-weight: 600; color: var(--text); max-width: 55%; }
+.th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
 
 .msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; overflow-wrap: anywhere; }
 .msg { margin-bottom: 12px; }
@@ -1041,16 +1035,11 @@ watch(() => props.selection, (sel) => {
 }
 @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
 
-/* 深度思考：折叠块。刻意用等宽 + 纯文本（不走 markdown）——
-   思维链是模型的草稿，不是给用户读的正文，渲染成 markdown 只会让它看起来像答案。 */
+/* 深度思考：折叠块。抬头直接用全局 `.btn.sm`（26px 白胶囊），这里只加"开着"的状态点；
+   正文刻意用等宽 + 纯文本（不走 markdown）—— 思维链是模型的草稿，不是给用户读的正文，
+   渲染成 markdown 只会让它看起来像答案。 */
 .think { margin: 2px 0 6px; }
-.think-head {
-  display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border);
-  background: var(--bg-sunken); color: var(--text-dim); border-radius: var(--radius-ctl);
-  padding: 3px 9px; font-size: 11.5px; cursor: pointer;
-}
-.think-head:hover { border-color: var(--accent); color: var(--accent-text); }
-.think.open .think-head { border-color: var(--border-strong); color: var(--text); }
+.think.open .think-head { color: var(--accent-text); border-color: var(--accent); }
 .think .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
   animation: pulse 1.1s ease-in-out infinite;
@@ -1068,8 +1057,8 @@ watch(() => props.selection, (sel) => {
 
 .hello { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 30px 16px; text-align: center; }
 .hello-line {
-  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text);
-  border-radius: var(--radius); padding: 8px 12px; font-size: 12.5px; font-weight: 500;
+  border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
+  border-radius: var(--radius); padding: 8px 12px; font-size: 13px; font-weight: 500;
   cursor: pointer; line-height: 1.5; max-width: 100%;
 }
 .hello-line:hover { border-color: var(--accent); color: var(--accent-text); }
@@ -1101,36 +1090,32 @@ watch(() => props.selection, (sel) => {
 .sel-chip .truncate { flex: 1; }
 .input {
   width: 100%; resize: none; max-height: 96px; overflow-y: auto;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-layer);
-  color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.6; padding: 6px 8px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-elev);
+  color: var(--text); font: inherit; font-size: 13px; line-height: 1.6; padding: 7px 11px;
 }
-.input:focus { outline: none; border-color: var(--accent); background: var(--bg-elev); }
+.input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .edit-box { display: flex; flex-direction: column; gap: 5px; }
 .edit-head { display: inline-flex; align-items: center; gap: 4px; }
 .edit-acts { display: flex; gap: 5px; }
 .composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .ring {
-  position: relative; width: 26px; height: 26px; flex: none; border: 0; background: none;
-  padding: 0; cursor: pointer; color: var(--accent);
+  position: relative; width: var(--control-h-sm); height: var(--control-h-sm); flex: none;
+  border: 0; background: none; padding: 0; cursor: pointer; color: var(--accent);
 }
 .ring:disabled { cursor: default; color: var(--text-faint); }
 .ring.busy .ring-bar { animation: spin 1s linear infinite; transform-origin: 18px 18px; }
 @keyframes spin { to { transform: rotate(360deg) } }
-.ring-svg { width: 26px; height: 26px; transform: rotate(-90deg); }
+.ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .ring-track { fill: none; stroke: var(--divider); stroke-width: 3; }
 .ring-bar { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
 .ring-num {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 8px; font-family: var(--mono); color: var(--text-dim);
 }
-.model { font-size: 11px; color: var(--text-faint); max-width: 42%; }
-.send {
-  width: 26px; height: 26px; flex: none; border: 0; border-radius: 50%; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--accent); color: var(--text-on-accent);
-}
-.send:disabled { background: var(--divider); color: var(--text-faint); cursor: default; }
-.send.stop { background: var(--danger); color: #fff; }
+.model { font-size: 11.5px; color: var(--text-faint); max-width: 42%; }
+/* 停止 = 危险色的实心圆钮（发送那枚是 .btn.primary.icon.sm，这里只换色） */
+.btn.stop { background: var(--danger); border-color: transparent; color: #fff; }
+.btn.stop:hover:not(:disabled) { background: var(--danger); filter: brightness(1.06); }
 
 .drop-hint {
   position: absolute; inset: 6px; z-index: 5; display: flex; align-items: center; justify-content: center;

@@ -364,19 +364,23 @@ function onClear() {
 /* 输入框占满侧栏宽度（base.css 的 .search-field input 是给工具栏定的 180px） */
 .ss-field { width: 100%; }
 .ss-field input { width: 100%; min-width: 0; }
-/* 一行两枚小胶囊：24px 高、**跟着文字走**（不再是拉满整行的分段控件）。
-   当前值写在脸上，点一下换成什么写在 title 里 —— 所以不需要额外说明文字。 */
+/* 一行两枚小胶囊：**与全站的胶囊同规格**（26px 高、白色 pill + 阴影、圆到底、不描边），
+   跟侧栏那枚分段控件一眼像一家人（2026-10-03 统一：以前是 24px 无描边的灰底片、
+   底色还是自调的 color-mix）。当前值写在脸上，点一下换成什么写在 title 里。 */
 .ss-chips { display: flex; align-items: center; gap: 6px; }
 .ss-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 24px; padding: 0 9px; border: 0; border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  color: var(--text-dim); font-size: 11.5px; line-height: 1; cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  display: inline-flex; align-items: center; gap: 5px;
+  height: var(--control-h-sm); padding: 0 11px;
+  border: 1px solid transparent; border-radius: var(--radius-ctl);
+  background: var(--bg-elev); box-shadow: var(--shadow-1);
+  color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
 }
-.ss-chip:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-/* 「语义」是另一种检索范式：亮一块强调色底，提醒"现在不是按字面搜" */
-.ss-chip.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.ss-chip:hover { color: var(--text); }
+/* 「语义」是另一种检索范式：亮一块强调色底，提醒"现在不是按字面搜"
+   （与 `.btn.on` 同一种"开关开着"的语义，见 base.css） */
+.ss-chip.on { background: var(--accent-soft); box-shadow: none; color: var(--accent-text); font-weight: 600; }
 .ss-hits { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 4px 28px; }
 /* 一条命中 = 一个整块可点的"行"（与目录项同一种交互：点了跳正文） */
 .ss-hit {

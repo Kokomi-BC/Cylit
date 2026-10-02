@@ -85,7 +85,7 @@ const COLOR_TITLE: Record<string, string> = {
       <AppIcon name="note" :size="14" />笔记
     </button>
     <button @click="emit('copy')"><AppIcon name="copy" :size="14" />复制</button>
-    <span v-if="props.anchored" class="row" style="padding:0 4px;gap:4px">
+    <span v-if="props.anchored" class="row" style="padding:0 6px;gap:6px">
       <span
         v-for="c in props.colors"
         :key="c"
@@ -108,24 +108,36 @@ const COLOR_TITLE: Record<string, string> = {
 </template>
 
 <style scoped>
+/* 划词浮层：一个白色浮层（--bg-elev + --border-strong + --radius，与全站的弹出层同规格），
+   里面每一项都是**胶囊尺寸的小按钮** —— 高度对齐 `.btn.sm`（26px）、圆到底，
+   与旁边那些分段控件同一门语言（用户口径 2026-10-03："以论文译文对照那枚胶囊为准"）。 */
 .selection-menu {
   position: fixed; z-index: 120; background: var(--bg-elev); border: 1px solid var(--border-strong);
-  border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 4px;
+  border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 3px;
   /* 不换行、不收缩：换行会让按钮变成竖排（“AI 解 / 释”） */
-  display: flex; gap: 2px; flex-wrap: nowrap; white-space: nowrap;
+  display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap;
   max-width: calc(100vw - 16px);
 }
 .selection-menu button {
-  border: 0; background: transparent; color: var(--text); padding: 5px 9px;
-  border-radius: var(--radius-sm); cursor: pointer; font-family: inherit; font-size: 12.5px;
-  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: transparent; color: var(--text-dim);
+  height: var(--control-h-sm); padding: 0 11px;
+  border-radius: var(--radius-ctl); cursor: pointer; font-family: inherit; font-size: 12px;
+  display: inline-flex; align-items: center; gap: 5px;
   flex: 0 0 auto; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.selection-menu button:hover { background: var(--bg-hover); }
+.selection-menu button:hover { background: var(--bg-hover); color: var(--text); }
 /* 删除高亮：危险的破坏性动作，用语义色区分（与全站的 danger 一致） */
 .selection-menu button.danger { color: var(--danger); }
-.selection-menu button.danger:hover { background: var(--danger-soft); }
-.swatch { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border-strong); cursor: pointer; flex: 0 0 auto; }
+.selection-menu button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+/* 色块一行：与按钮**同高**（26px），圆点垂直居中 —— 否则整条浮层会一高一低 */
+.selection-menu .row { display: inline-flex; align-items: center; height: var(--control-h-sm); }
+.swatch {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 1px solid var(--border-strong); cursor: pointer; flex: 0 0 auto;
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur) var(--ease);
+}
+.swatch:hover { transform: scale(1.15); border-color: var(--text-dim); }
 .hl-yellow { background: rgba(255, 214, 64, .6); }
 .hl-green { background: rgba(90, 220, 150, .55); }
 .hl-blue { background: rgba(110, 180, 255, .55); }
