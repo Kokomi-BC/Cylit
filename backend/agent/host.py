@@ -89,10 +89,36 @@ class HostClient:
         """论文档案 + 大纲 + 规模信息（第一轮之前预注入，§9）。"""
         return dict(await self.get(f"/agent/papers/{paper_id}/archive") or {})
 
-    async def pages(self, paper_id: str, pages: str) -> dict:
-        """按页取块级正文（``page_markdown_get`` 的后端）。"""
-        return dict(await self.get(f"/agent/papers/{paper_id}/pages",
-                                   {"pages": pages}) or {})
+    async def pages(self, paper_id: str, pages: str, lang: str = "both") -> dict:
+        """按页取块级正文（``page_markdown_get`` / ``translate_get`` 的后端）。"""
+        params = {"pages": pages}
+        if lang != "both":
+            params["lang"] = lang
+        return dict(await self.get(f"/agent/papers/{paper_id}/pages", params) or {})
+
+    async def formulas(self, paper_id: str, *, page: int | None = None,
+                       query: str | None = None) -> dict:
+        params: dict = {}
+        if page:
+            params["page"] = int(page)
+        if query:
+            params["query"] = query
+        return dict(await self.get(f"/agent/papers/{paper_id}/formulas", params or None) or {})
+
+    async def kb_search(self, query: str, *, top_k: int) -> dict:
+        """**跨库**检索（``kb_search`` 的后端）：不限论文，返回里带 paper_id 与标题。"""
+        return dict(await self.post("/agent/kb/search",
+                                    {"query": query, "top_k": top_k}) or {})
+
+    async def library(self, *, q: str | None = None, status: str | None = None) -> dict:
+        params = {k: v for k, v in (("q", q), ("status", status)) if v}
+        return dict(await self.get("/agent/library", params or None) or {})
+
+    async def notes(self, *, query: str | None = None, paper_id: str | None = None,
+                    kind: str = "all") -> dict:
+        params = {k: v for k, v in (("query", query), ("paper_id", paper_id),
+                                    ("kind", kind)) if v}
+        return dict(await self.get("/agent/notes", params or None) or {})
 
     async def search(self, paper_id: str, query: str, *, top_k: int,
                      chunk_types: list[str] | None = None) -> dict:

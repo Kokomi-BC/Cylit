@@ -37,7 +37,7 @@ from backend.agent.host import HostClient, HostError
 from backend.agent.sanitize import (
     StreamingAnswerSanitizer, referenced_citations, strip_foreign_images,
 )
-from backend.agent.tools import P0_TOOLS
+from backend.agent.tools import AGENT_TOOLS
 from backend.agent.workspace import ReadOnlyWorkspace
 from backend.core.logging import get_logger
 
@@ -237,7 +237,7 @@ class AgentRuntime:
             build_model(model_cfg),
             deps_type=Deps,
             instructions=instructions_for,
-            tools=list(P0_TOOLS),
+            tools=list(AGENT_TOOLS),
             capabilities=[self._skills],
         )
 
@@ -346,6 +346,8 @@ class AgentRuntime:
         for raw in items:
             cit = _register_chunk_plain(deps, raw)
             log.debug("预检索命中 ref=%s page=%s", cit.ref, cit.page)
+        # 宿主这次预检索也占一格检索预算（它是真打了一次后端）
+        deps.search_calls += 1
         return True
 
     # ---------------- 模型流 ----------------
@@ -464,6 +466,28 @@ class AgentRuntime:
 
     # ---------------- 收尾 ----------------
     @staticmethod
+    def _fallback_answer(deps: Deps, state: RunState) -> str:
+        """轮数用满 / 模型一个字都没吐时的兜底：把**已经找到的证据**列出来。
+
+        为什么要有它：实测跨库问题会出现"轮数用满、正文为空"，用户拿到的是
+        「模型没有产出任何正文」—— 明明检索到了不少东西，却什么都没看见。
+        兜底回答虽然不如模型写的，但它给出**已经找到什么**，用户可以据此把问题问小一点。
+        没有证据时返回空串（那就该走真正的 error，不要编）。
+        """
+        citations = deps.registry.all()
+        if not citations:
+            return ""
+        reason = {"rounds_exhausted": "轮数用满", "deadline": "超时"}.get(
+            state.incomplete_reason or "", "未能完成")
+        lines = [f"这轮没能在限定预算内整理出完整回答（{reason}，问题可能太大了）。"
+                 f"以下是已经找到的相关位置，可以作为线索："]
+        for c in citations[:6]:
+            where = c.label or (f"第 {c.page} 页" if c.page else "相关片段")
+            lines.append(f"- [{c.ref}] {where}：{(c.snippet or '')[:120]}")
+        lines.append("把问题拆小一点（比如指定某一节、某个概念）再问一次通常能答出来。")
+        return "\n".join(lines)
+
+    @staticmethod
     def _renumber(text: str, citations: list) -> tuple[str, list[dict]]:
         """把引用编号压成 ``1..M``，并同步改写正文里的标记。
 
@@ -495,6 +519,12 @@ class AgentRuntime:
         # ⚠️ 不做 strip：`done.answer` 必须与流式增量的拼接**逐字一致**（自检里就是这么断言的），
         # 少一个首尾空格就会让"思维链有没有漏进正文"这条检查变成噪声。
         text = state.text or ""
+        if not text.strip():
+            text = self._fallback_answer(deps, state)
+            if text:
+                # 兜底正文也要走一遍 answer_delta：否则"流式看到的"和 `done` 的不一致，
+                # 前端靠 `done` 覆盖才能显示它 —— 那中间会有一段什么都不显示的空白。
+                yield {"type": "answer_delta", "text": text}
         if not text.strip():
             yield {"type": "error", "code": "EMPTY_ANSWER",
                    "message": "模型没有产出任何正文，请重试（可换一个更具体的问题）。",

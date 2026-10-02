@@ -92,6 +92,42 @@ async def _guarded(ctx: RunContext[Deps], name: str, digest: dict, coro):
         return {"ok": False, "error": f"工具内部错误：{type(exc).__name__}: {exc}"[:200]}
 
 
+def _query_key(name: str, query: str, k: int) -> str:
+    return f"{name}:{' '.join((query or '').lower().split())}:{k}"
+
+
+def _cached(ctx: RunContext[Deps], name: str, query: str, k: int) -> dict | None:
+    """同一条检索重复调用时直接回上一次的结果（省一次后端往返，也提醒模型别绕）。"""
+    hit = ctx.deps.query_cache.get(_query_key(name, query, k))
+    if hit is None:
+        return None
+    return {**hit, "note": "这条检索与之前那条完全相同，结果没有变化；"
+                          "请基于已有材料作答，或换一个真正不同的检索词。"}
+
+
+def _remember(ctx: RunContext[Deps], name: str, query: str, k: int, payload: dict) -> None:
+    ctx.deps.query_cache[_query_key(name, query, k)] = payload
+
+
+def _stale_hint() -> str:
+    """这一趟检索没有带来新依据 → 明确告诉模型"够了"，别把轮数耗在换词上。"""
+    return ("这次检索没有带来**新的**依据（命中的都是已经拿到的那些片段）。"
+            "请立刻基于已有材料作答；如果确实不够，就如实说材料不足。")
+
+
+#: 检索预算用尽时的拒绝话术（**不打后端**，直接回给模型）
+BUDGET_EXHAUSTED = {
+    "ok": False,
+    "error": "本轮的检索次数已经用尽。请立刻基于**已经拿到的材料**作答；"
+             "材料不足就如实说明不够，不要再换检索词了。",
+}
+
+
+def _spend_search(ctx: RunContext[Deps]) -> bool:
+    """扣一次检索预算（M7：检索预算与轮数预算分开扣）。"""
+    return ctx.deps.spend_search()
+
+
 def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
     """把一条检索命中登记进引用表，返回 citation。"""
     chunk_id = str(item.get("chunk_id") or "")
@@ -124,6 +160,12 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dic
     """
     async def _impl() -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
+        cached = _cached(ctx, "paper_search", query, k)
+        if cached is not None:
+            return cached
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        before = len(ctx.deps.registry)
         data = await ctx.deps.host.search(ctx.deps.paper_id, query, top_k=k)
         raw_items = list(data.get("items") or [])
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
@@ -145,8 +187,11 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dic
         if not items:
             out["hint"] = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
                            "仍无结果就如实说明这篇论文里找不到依据。")
+        elif len(ctx.deps.registry) == before:
+            out["hint"] = _stale_hint()
         else:
             out["hint"] = "这些只是片段。要引用具体内容，请用 page_markdown_get 读对应页。"
+        _remember(ctx, "paper_search", query, k, out)
         return out
 
     return await _guarded(ctx, "paper_search",
@@ -347,6 +392,251 @@ async def figure_image_get(ctx: RunContext[Deps], page: int, index: int):
     return await _guarded(ctx, "figure_image_get", {"page": page, "index": index}, _impl())
 
 
+# --------------------------------------------------------------------------
+# ④ P1：跨库 / 公式 / 译文 / 书架 / 笔记
+# --------------------------------------------------------------------------
+
+
+async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
+    """在整个知识库里检索（**不限当前论文**），返回候选位置与它属于哪篇论文。
+
+    什么时候用：用户问"我库里还有谁讲过这个 / 有没有别的论文提到 X"，
+    或者当前这篇论文里找不到依据、想看看别的论文有没有时。
+
+    **不要**用它回答"这篇论文怎么说的"——那要用 paper_search，只查当前论文。
+    拿到结果后如果要读内容，用 `paper_id` + `page` 判断；当前这一篇可以直接用
+    page_markdown_get，别的论文只能靠返回的片段说明，不要假装读过。
+
+    参数：
+      query  —— 检索词。
+      top_k  —— 最多几条，默认 8，上限 12。
+    """
+    async def _impl() -> dict:
+        k = max(1, min(int(top_k or 8), SEARCH_MAX))
+        cached = _cached(ctx, "kb_search", query, k)
+        if cached is not None:
+            return cached
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        before = len(ctx.deps.registry)
+        data = await ctx.deps.host.kb_search(query, top_k=k)
+        items = []
+        for raw in list(data.get("items") or [])[:ctx.deps.cfg.evidence_limit]:
+            paper_id = str(raw.get("paper_id") or "")
+            title = str(raw.get("paper_title") or "") or paper_id
+            page = int(raw.get("page_no") or 0) or None
+            section = raw.get("section")
+            cit = ctx.deps.registry.assign(
+                key=f"kb:{paper_id}:{raw.get('chunk_id')}", kind="chunk",
+                paper_id=paper_id, page=page, section=section,
+                block_id=raw.get("block_id"),
+                snippet=_clip(raw.get("translation") or raw.get("content") or ""),
+                label=" · ".join(x for x in (title, _locate(page, section)) if x),
+                ids=(str(raw.get("chunk_id") or ""),))
+            items.append({
+                "ref": cit.ref, "paper_id": paper_id, "paper_title": title,
+                "page": page, "section": section, "type": raw.get("chunk_type"),
+                "is_current_paper": paper_id == ctx.deps.paper_id,
+                "snippet": _clip(raw.get("content") or ""),
+            })
+        out = {"query": query, "returned": len(items), "items": items}
+        if not items:
+            out["hint"] = "整个知识库里都没有检索到相关内容。"
+        elif len(ctx.deps.registry) == before:
+            out["hint"] = _stale_hint()
+        elif any(not i["is_current_paper"] for i in items):
+            out["hint"] = ("这些是**别的论文**里的片段，只能作为线索。要下结论就得说清是哪篇论文；"
+                           "只有 is_current_paper=true 的条目能用 page_markdown_get 展开。")
+        else:
+            out["hint"] = "命中都来自当前论文，可以直接 page_markdown_get 展开。"
+        _remember(ctx, "kb_search", query, k, out)
+        return out
+
+    return await _guarded(ctx, "kb_search",
+                          {"query": _clip(query, 60), "top_k": top_k}, _impl())
+
+
+async def formula_get(ctx: RunContext[Deps], page: int | None = None,
+                      query: str | None = None) -> dict:
+    """取本论文的公式（LaTeX + 所在页 + 上下文）。
+
+    什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
+    或者卷面里的公式被 OCR 认错、需要拿到 LaTeX 原文再核对。
+
+    参数：
+      page  —— 只看某一页（不确定页码就先 paper_search）。
+      query —— 关键词过滤。**公式没有可用的编号字段**：论文自己的 `(3)` 编号在返回的
+               `context` 里，所以按编号取只能传 `query="(3)"` 这样筛。
+    两个都不传就返回全文公式（最多 40 条）。
+    """
+    async def _impl() -> dict:
+        data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query)
+        items = []
+        for raw in data.get("items") or []:
+            latex = str(raw.get("latex") or "")
+            page_no = int(raw.get("page") or 0) or None
+            cit = ctx.deps.registry.assign(
+                key=f"formula:{page_no}:{raw.get('row_id')}:{latex[:24]}", kind="formula",
+                page=page_no, row_id=raw.get("row_id"), snippet=_clip(latex, 160),
+                label=_locate(page_no, None, "formula"),
+                ids=(f"f{page_no:03d}",) if page_no else ())
+            items.append({
+                "ref": cit.ref, "page": page_no, "latex": latex,
+                "display": bool(raw.get("display")),
+                "context": raw.get("context") or "",
+                "context_zh": raw.get("context_zh") or "",
+            })
+        out = {"total": data.get("total"), "returned": len(items),
+               "source": data.get("source"), "items": items}
+        if not items:
+            out["hint"] = "这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
+        return out
+
+    return await _guarded(ctx, "formula_get",
+                          {"page": page, "query": _clip(query or "", 40)}, _impl())
+
+
+async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
+    """取某一页（或几页）的**中文译文**（按块）。
+
+    什么时候用：用户问"这段中文怎么说的 / 译文对不对"，或者你要用中文复述原文、
+    想确认某个术语在译文里的统一译法时。判断"译文是否忠实"时也要看它。
+
+    参数：
+      pages —— ``"5"`` / ``"3-8"`` / ``"all"``，一次最多 20 页。
+    """
+    async def _impl() -> dict:
+        wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
+                                      limit=TEXT_PAGES_MAX)
+        if not wanted:
+            return {"ok": False, "error": "页码格式不对。写法示例：\"5\" / \"3-8\" / \"all\"。"}
+        data = await ctx.deps.host.pages(ctx.deps.paper_id, ",".join(map(str, wanted)),
+                                         lang="zh")
+        ctx.deps.page_total = ctx.deps.page_total or int(data.get("page_total") or 0)
+        out_pages: list[dict] = []
+        missing = 0
+        for page in data.get("pages") or []:
+            page_no = int(page.get("page") or 0)
+            blocks = []
+            for block in page.get("blocks") or []:
+                zh = str(block.get("translation") or "").strip()
+                if not zh:
+                    missing += 1
+                    continue
+                cit = ctx.deps.registry.assign(
+                    key=f"block:{block.get('id')}", kind="block", page=page_no,
+                    section=block.get("section") or None, block_id=block.get("id"),
+                    row_id=block.get("row_id"), snippet=_clip(zh),
+                    label=_locate(page_no, block.get("section"), "译文"),
+                    ids=(str(block.get("id") or ""),))
+                blocks.append({"ref": cit.ref, "translation": zh})
+            if blocks:
+                out_pages.append({"page": page_no, "blocks": blocks})
+        if not out_pages:
+            return {"ok": False, "truncated": clipped,
+                    "error": f"第 {pages} 页还没有译文（这篇论文可能没翻译，或该页未翻译）。"}
+        return {"page_total": ctx.deps.page_total or None, "truncated": clipped,
+                "pages": out_pages,
+                "note": f"另有 {missing} 个块没有译文（未翻译），已跳过。" if missing else ""}
+
+    return await _guarded(ctx, "translate_get", {"pages": _clip(pages, 40)}, _impl())
+
+
+async def library_list(ctx: RunContext[Deps], query: str | None = None) -> dict:
+    """列出书架上的论文（按标题 / 作者模糊匹配），返回元数据。
+
+    什么时候用：用户问"我库里有哪些关于 X 的论文 / 有没有讲过 Y 的文章"。
+    这是**找论文**，不是找内容；挑出候选之后用 kb_search 去找具体段落。
+
+    参数：
+      query —— 关键词（标题或作者）。不传就按最近阅读顺序列前 30 篇。
+    """
+    async def _impl() -> dict:
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        data = await ctx.deps.host.library(q=query)
+        items = []
+        for raw in data.get("items") or []:
+            paper_id = str(raw.get("paper_id") or "")
+            meta = "，".join(x for x in (
+                str(raw.get("authors") or ""),
+                f"{raw.get('venue')} {raw.get('year')}".strip(),
+                f"{raw.get('page_count')} 页" if raw.get("page_count") else "",
+            ) if x)
+            cit = ctx.deps.registry.assign(
+                key=f"library:{paper_id}", kind="paper", paper_id=paper_id,
+                snippet=_clip(f"{raw.get('title')}（{meta}）", 200) if meta
+                        else _clip(str(raw.get("title") or "")),
+                label=str(raw.get("title") or paper_id))
+            items.append({
+                "ref": cit.ref, "paper_id": paper_id, "title": raw.get("title") or "",
+                "authors": raw.get("authors") or "", "venue": raw.get("venue") or "",
+                "year": raw.get("year") or 0, "status": raw.get("status") or "",
+                "page_count": raw.get("page_count") or 0,
+                "tags": list(raw.get("tags") or []),
+                "is_current_paper": paper_id == ctx.deps.paper_id,
+            })
+        out = {"total": data.get("total"), "returned": len(items), "items": items}
+        if not items:
+            out["hint"] = "书架上没有匹配的论文。可以换个关键词，或不带关键词看看全部。"
+        return out
+
+    return await _guarded(ctx, "library_list", {"query": _clip(query or "", 40)}, _impl())
+
+
+async def notes_search(ctx: RunContext[Deps], query: str | None = None,
+                       scope: str = "paper", kind: str = "all") -> dict:
+    """检索用户自己的笔记 / 高亮 / 批注（第一人称证据）。
+
+    什么时候用：用户问"我之前记过什么 / 我标注过哪里 / 我的笔记里怎么说的"。
+    **这些是用户写的，不是论文写的** —— 回答时必须说清哪是原文、哪是用户笔记。
+
+    参数：
+      query —— 关键词（模糊匹配选中文本与笔记正文）。
+      scope —— ``paper``（默认，只看当前论文）｜``all``（整个库）。
+      kind  —— ``all``（默认）｜``notes``｜``highlights``｜``annotations``。
+    """
+    async def _impl() -> dict:
+        paper_id = None if scope == "all" else ctx.deps.paper_id
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        data = await ctx.deps.host.notes(query=query, paper_id=paper_id, kind=kind)
+        items = []
+        for raw in data.get("items") or []:
+            pid = str(raw.get("paper_id") or "")
+            label = " · ".join(x for x in (
+                str(raw.get("paper_title") or ""),
+                {"note": "笔记", "highlight": "高亮",
+                 "annotation": "批注"}.get(str(raw.get("kind")), ""),
+            ) if x)
+            cit = ctx.deps.registry.assign(
+                key=f"note:{raw.get('kind')}:{pid}:{raw.get('block_id')}:"
+                    f"{(raw.get('note') or raw.get('selected_text') or '')[:24]}",
+                kind="note", paper_id=pid, block_id=raw.get("block_id"),
+                snippet=_clip(raw.get("note") or raw.get("selected_text") or "", 200),
+                label=label or "笔记")
+            items.append({
+                "ref": cit.ref, "paper_id": pid,
+                "paper_title": raw.get("paper_title") or "",
+                "kind": raw.get("kind"), "selected_text": raw.get("selected_text") or "",
+                "note": raw.get("note") or "", "tags": list(raw.get("tags") or []),
+            })
+        out = {"scope": scope, "kind": kind, "returned": len(items), "items": items}
+        if not items:
+            out["hint"] = "没有找到匹配的笔记 / 高亮 / 批注。"
+        return out
+
+    return await _guarded(ctx, "notes_search",
+                          {"query": _clip(query or "", 40), "scope": scope,
+                           "kind": kind}, _impl())
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
+
+#: P1 补齐的五个读工具
+P1_TOOLS = [kb_search, formula_get, translate_get, library_list, notes_search]
+
+#: 当前挂载的全部工具（P2 的写工具**不在这里**）
+AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS]

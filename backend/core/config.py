@@ -126,15 +126,23 @@ class Settings(BaseSettings):
     agent_token_ref: str = "agent.token"
     #: skill 目录（L1 名字与描述常驻提示词，L2 正文按需加载）
     agent_skills_dir: Path = PROJECT_ROOT / "backend" / "agent" / "skills"
-    #: 单轮工具调用轮数上限。论文问答的正常形态是"检索 → 读 1~2 页 → 作答"，
-    #: 给到 6 是为了容错（模型偶尔会多查一次），不是鼓励它多绕。
-    agent_max_rounds: int = 6
+    #: 单轮工具调用轮数上限。论文问答的正常形态是"检索 → 读 1~2 页 → 作答"（3~4 轮），
+    #: 给 8 是为了容错：跨库问题（"库里还有谁讲过 X"）模型会多查几次，实测能吃到 6 轮 ——
+    #: 卡太紧的后果不是"少答一点"，而是**轮数用满、一个字都没输出**。
+    agent_max_rounds: int = 8
     #: 单轮总时限（秒）。Cylit 的检索比 Rust FTS 慢，给得比参考实现宽
     agent_deadline_seconds: float = 120.0
     #: SSE 心跳间隔（保连接；前端忽略该事件）
     agent_heartbeat_seconds: float = 5.0
     #: 一次检索返回的候选条数上限（进模型前还会再截一次）
     agent_search_top_k: int = 8
+    #: **检索预算**（与轮数预算分开扣，见规划 M7）。
+    #:
+    #: 为什么必须单独设一个：实测"库里还有谁讲过 X"这类问题，模型会换着说法连发 10+ 次
+    #: `kb_search`（每次都确实能捞到几条新片段，所以"没有新依据"的提示也不拦它），
+    #: 最后把轮数用满、正文一个字没写。轮数上限管不住它，因为一次工具调用只占一轮。
+    #: 用尽后检索工具直接回"预算用尽，请基于已有材料作答"。
+    agent_search_budget: int = 5
     #: 注入模型的证据条数 / 字符上限（百万上下文也不是无限免费，仍要设闸）
     agent_evidence_limit: int = 12
     agent_evidence_chars: int = 24000

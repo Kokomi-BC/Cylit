@@ -142,10 +142,51 @@ async def agent_archive(paper_id: str, request: Request,
 @router.get("/agent/papers/{paper_id}/pages")
 async def agent_pages(paper_id: str, request: Request,
                       pages: str = Query(..., description='"3" / "3-8" / "all"'),
+                      lang: str = Query("both", pattern="^(both|en|zh)$"),
                       x_internal_token: str | None = Header(None)):
-    """按页返回块级正文 + 行锚点（工具 `page_markdown_get` 的后端）。"""
+    """按页返回块级正文 + 行锚点（工具 `page_markdown_get` / `translate_get` 的后端）。"""
     _require_internal(x_internal_token)
-    return envelope(project.pages(paper_id, pages), request=request)
+    return envelope(project.pages(paper_id, pages, lang), request=request)
+
+
+@router.get("/agent/papers/{paper_id}/formulas")
+async def agent_formulas(paper_id: str, request: Request,
+                         page: int | None = Query(None),
+                         query: str | None = Query(None),
+                         x_internal_token: str | None = Header(None)):
+    """公式清单（工具 `formula_get` 的后端）。"""
+    _require_internal(x_internal_token)
+    return envelope(project.formulas(paper_id, page=page, query=query), request=request)
+
+
+@router.post("/agent/kb/search")
+async def agent_kb_search(request: Request, payload: dict = Body(default={}),
+                          x_internal_token: str | None = Header(None)):
+    """**跨库**检索（工具 `kb_search` 的后端）；与单篇检索同链路、只差 scope。"""
+    _require_internal(x_internal_token)
+    return envelope(project.kb_search(str(payload.get("query") or ""),
+                                     top_k=int(payload.get("top_k") or 8)),
+                    request=request)
+
+
+@router.get("/agent/library")
+async def agent_library(request: Request, q: str | None = Query(None),
+                        status: str | None = Query(None),
+                        x_internal_token: str | None = Header(None)):
+    """书架检索（工具 `library_list` 的后端）。"""
+    _require_internal(x_internal_token)
+    return envelope(project.library(q=q, status=status), request=request)
+
+
+@router.get("/agent/notes")
+async def agent_notes(request: Request, query: str | None = Query(None),
+                      paper_id: str | None = Query(None),
+                      kind: str = Query("all", pattern="^(all|notes|highlights|annotations)$"),
+                      x_internal_token: str | None = Header(None)):
+    """笔记 / 高亮 / 批注（工具 `notes_search` 的后端）。"""
+    _require_internal(x_internal_token)
+    return envelope(project.notes(query=query, paper_id=paper_id, kind=kind),
+                    request=request)
 
 
 @router.post("/agent/papers/{paper_id}/search")

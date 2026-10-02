@@ -155,16 +155,20 @@ Agent 服务对外（主后端调用）：
 `/api/v1/agent/conversations...`（会话 CRUD，**落主后端 MySQL**）、`GET /api/v1/agent/skills`、
 `GET /api/v1/agent/status`（服务在不在 + 用哪个模型，**不回密钥明文**）。
 
-**主后端给 agent 的只读投影**（都只认 `X-Internal-Token`，7 条）：
+**主后端给 agent 的只读投影**（都只认 `X-Internal-Token`，12 条）：
 
 ```
 GET  /api/v1/agent/ping                          连通性
 GET  /api/v1/agent/model-config                  模型配置（含已解析的密钥）
 GET  /api/v1/agent/papers/{id}/archive           档案 + 大纲 + 规模
-GET  /api/v1/agent/papers/{id}/pages?pages=3-8   块级正文 + 行锚点（row_id）
+GET  /api/v1/agent/papers/{id}/pages?pages=3-8   块级正文 + 行锚点（`&lang=zh` 只要译文）
 POST /api/v1/agent/papers/{id}/search            本论文检索（固定 mode=qa）
+POST /api/v1/agent/kb/search                     跨库检索（带论文标题与归属）
+GET  /api/v1/agent/papers/{id}/formulas?page=    公式清单（同阅读器口径）
 GET  /api/v1/agent/papers/{id}/figures?page=3    插图清单（受控 url）
 GET  /api/v1/agent/papers/{id}/pages/{n}/image?dpi=300   页图（按需渲染）
+GET  /api/v1/agent/library?q=                    书架检索
+GET  /api/v1/agent/notes?query=&kind=            笔记 / 高亮 / 批注
 POST /api/v1/agent/internal/messages             agent 落助手消息（发 done 之前）
 ```
 
@@ -301,9 +305,9 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | `paper-overview` | 回答"讲了什么 / 核心贡献 / 局限"——读预注入的档案 | 通常**不需要工具** | P-a | P0 |
 | `figure-reading` | 图表解读：看图注 + 看图本身，需要时引用图片 | `figure_list` `figure_image_get` | P-a | P0 |
 | `page-visual-check` | 页面级视觉复核：OCR/公式可疑时把整页渲染再看一遍 | `page_image_get`（高 dpi） | P-a | P0 |
-| `formula-explain` | 公式解释 | `formula_get` `block_get` | P-a | P1 |
-| `term-glossary` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 |
-| `translate-check` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 |
+| `formula-explain` | 公式解释 | `formula_get` `block_get` | P-a | P1 ✅ |
+| `term-glossary` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 ✅ |
+| `translate-check` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 ✅ |
 | `formula-fix` ⚠️ | 公式纠错：先读、再提议、等用户确认 | `page_markdown_get` + `page_markdown_edit`（写，需审批） | P-写 | P2 |
 
 **未来展望（最低优先级，本轮不纳入）**：`cross-paper-compare`（跨论文对比，会让 scope
@@ -339,11 +343,11 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 4 | `page_image_get` | 读 | 整页渲染成图喂视觉模型（`pages` + `dpi`，一次 ≤3 页） | `GET /agent/papers/{id}/pages/{n}/image?dpi=` | P0 ✅ |
 | 5 | `figure_list` | 读 | 该页插图清单（`index`/图号/图注/受控 URL/`ref`） | `figure_regions.media_of_page` | P0 ✅ |
 | 6 | `figure_image_get` | 读 | 单张插图裁图（600dpi 按需渲染） | `figure_regions.ensure_region_crop` | P0 ✅ |
-| 7 | `kb_search` | 读 | 跨知识库检索（"我库里哪篇讲过 X"） | 同上，`scope="all"` | P1 |
-| 8 | `formula_get` | 读 | 公式 LaTeX / 编号 / 出处 | `GET /papers/{id}/formulas`、`GET /knowledge/chunk` | P1 |
-| 9 | `translate_get` | 读 | 译文（页级 / 全文） | `GET /papers/{id}/markdown/translated` | P1 |
-| 10 | `library_list` | 读 | 书架检索 | `GET /papers` | P1 |
-| 11 | `notes_search` | 读 | 笔记 / 高亮 / 标注 | `GET /notes`、`/highlights`、`/annotations` | P1 |
+| 7 | `kb_search` | 读 | 跨知识库检索（"我库里哪篇讲过 X"）：每条带 `paper_title` + `is_current_paper` | 新投影 `POST /agent/kb/search`（`scope="all"`） | P1 ✅ |
+| 8 | `formula_get` | 读 | 公式 LaTeX / 所在页 / 行锚点 / 上下文（可按页或关键词筛） | 新投影 `GET /agent/papers/{id}/formulas`（**与阅读器公式页签同一口径**） | P1 ✅ |
+| 9 | `translate_get` | 读 | 按页取中文译文（逐块带 ref） | 复用 `/agent/papers/{id}/pages?lang=zh` | P1 ✅ |
+| 10 | `library_list` | 读 | 书架检索（标题/作者模糊匹配），只回元数据 | 新投影 `GET /agent/library?q=` | P1 ✅ |
+| 11 | `notes_search` | 读 | 笔记 / 高亮 / 批注（可按当前论文或全库） | 新投影 `GET /agent/notes?query=&paper_id=&kind=` | P1 ✅ |
 | 12 | `related_concepts` | 读 | 理解产物（概念与关联） | `GET /papers/{id}/related` | P2 |
 | 13 | `page_markdown_edit` | **写** | 按块修正文本（CAS + 审批） | **需新增接口** | P2 |
 
@@ -352,8 +356,8 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 这样模型**没有机会**抄错 id，也不需要知道 `chunk_id` / `block_id` 长什么样 ——
 M4 的"瘦投影"因此是从"清洗兜底"变成"结构上不可能"。
 
-**只有第 13 个需要写新接口**，其余 12 个挂在现有只读能力上（第 2、4 个要加个小参数，
-已随 P0 落地）。
+**只有第 13 个需要写新接口**，其余 12 个挂在现有只读能力上（第 2、4 个加了小参数，
+第 7~11 个各加了一条瘦投影，都已落地）。
 
 **`paper_search` vs `kb_search` 是两种问题，不是一个工具加参数**：
 "这篇论文里怎么说的"（P0）vs "我的库里还有谁讲过这个"（P1）。
@@ -636,7 +640,7 @@ P0 已按此接线（`history` 管道接通、预算项都在 `Settings`），**
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
-| **P1** | agent 循环（轮次/预算上限已就位，补压缩）+ 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ `kb_search` + `formula_get` `translate_get` `library_list` `notes_search` + 前端入口 | 多轮追问能记住上文；`/v1/skills` 能列出；加一个 skill 目录即生效 | 3~5 天 |
+| **P1** | agent 循环（轮次上限已就位，**补压缩**）+ 会话树分叉（`regenerate`/编辑提问）+ 追问建议 + 设置页入口（含"问答模型"卡）+ 前端入口 + **P1 工具面 ✅**（`kb_search` `formula_get` `translate_get` `library_list` `notes_search` + 3 个 skill） | 工具面已达成：`/v1/skills` 列出 **7 个**，每个工具都有瘦投影与真实调用记录；**剩下的是压缩/追问/前端** | 3~5 天 |
 | **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
 
 **P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
@@ -755,12 +759,42 @@ GET  /api/v1/papers/{id}/markdown/translated
 GET  /api/v1/papers                    书架
 GET  /api/v1/notes | /highlights | /annotations
 POST /api/v1/knowledge/index           重建索引（写工具后用）
-/api/v1/agent/...                      见 §4.3（对前端 6 条 + 对 agent 7 条）
+/api/v1/agent/...                      见 §4.3（对前端 6 条 + 对 agent 12 条）
+```
+
+**P1 新增的四条内部投影**（都只认内部 token）：
+
+```
+POST /api/v1/agent/kb/search          {query, top_k}  跨库检索（带论文标题）
+GET  /api/v1/agent/papers/{id}/formulas?page=&query=  公式清单（同阅读器口径）
+GET  /api/v1/agent/papers/{id}/pages?lang=zh          只要译文
+GET  /api/v1/agent/library?q=&status=                 书架检索
+GET  /api/v1/agent/notes?query=&paper_id=&kind=       笔记/高亮/批注
 ```
 
 **检索要点**：`retrieval.search(query, mode="qa", scope="paper", paper_id=…)`；
 默认候选类型 `unit/formula/figure/table`（正文 chunk 不进候选，避免同内容两条命中）；
 类型过滤后为空会自动放开全类型重搜一次。
+
+**预算三条闸**（P1 补了第二条）：
+
+| 闸 | 值 | 管什么 |
+|---|---|---|
+| 轮数 | `agent_max_rounds=8` | 模型请求次数（`UsageLimits(request_limit=…)`，超限 → `rounds_exhausted`） |
+| **检索次数** | `agent_search_budget=5` | **模拟实测发现必须单独设**：跨库问题模型会换着说法连发 10+ 次 `kb_search`（每次都真能捞到新片段，所以"没有新依据"的提示也不拦它），最后轮数用满、正文一个字没写。用尽后检索工具**不打后端**直接回"请基于已有材料作答" |
+| 证据量 | `agent_evidence_limit=12` / `agent_evidence_chars=24000` | 进模型的材料总量 |
+
+**轮数用满还没出正文时的兜底**（`runtime._fallback_answer`）：把已登记的证据列成
+"以下是已经找到的相关位置"，而不是回「模型没有产出任何正文」—— 明明检索到了不少东西，
+让用户什么都看不见是最差的结果。兜底正文也走一遍 `answer_delta`，免得前端有一段空白。
+
+**跨库引用必须带它自己那篇的 `paper_id`**：`RefRegistry.assign(paper_id=…)` 为此留了口子。
+不这么做的话前端会跳到**当前论文**的同一页（一个完全不相干的段落）。自检里有一条
+"跨库引用的 paper_id 指向正确"专门守它。
+
+**公式没有"编号"字段**：`formulas_payload` 抽出来的是 LaTeX + 上下文，论文自己的 `(3)`
+编号在 `context` 里。所以 `formula_get` 只有 `page` / `query` 两个筛选参数，
+按编号取只能 `query="(3)"` —— 这一点写进了工具描述，别再加一个假的 `number` 参数。
 
 **"块 → 正文行"锚点**：`anchor_map.build_block_row_map(blocks, rows_by_page)`，
 入参块必须是 `{"id","page","text"}` —— **`text` 要与给模型看的那一份一致**。

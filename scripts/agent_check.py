@@ -316,8 +316,9 @@ def check_answer(base: str, paper: str, question: str) -> dict:
     record("answer", "正文没有内部 id 泄漏", leak is None,
            f"命中={leak.group(0)!r}" if leak else "无 chunk_id / block_id 形态串")
 
-    record("answer", "轮数在上限内（0<rounds<=6）",
-           0 < int(done.get("rounds") or 0) <= 6, f"rounds={done.get('rounds')}")
+    # 上限跟着 `Settings.agent_max_rounds`（当前 8）；这里只断言"没超"，不做精确相等
+    record("answer", "轮数在上限内（0<rounds<=8）",
+           0 < int(done.get("rounds") or 0) <= 8, f"rounds={done.get('rounds')}")
 
     trace = done.get("tool_trace") or []
     tools = [t.get("tool") for t in trace if not str(t.get("tool", "")).startswith("__")]
@@ -445,6 +446,93 @@ def _first_figure_page(base: str, paper: str, *, max_pages: int = 12):
 
 
 # --------------------------------------------------------------------------
+# ⑥ P1 工具面
+# --------------------------------------------------------------------------
+
+
+def check_p1(base: str, paper: str) -> None:
+    print("\n" + "=" * 78)
+    print("⑥ P1 工具面：公式 / 跨库检索 / 书架 / 笔记 / 译文")
+    print("=" * 78)
+    api = f"{base}/api/v1/agent"
+    internal = {"X-Internal-Token": token()}
+
+    try:
+        formulas = get_json(f"{api}/papers/{paper}/formulas", headers=internal)["data"]
+        items = formulas.get("items") or []
+        with_anchor = [i for i in items if i.get("row_id")]
+        record("p1", "公式清单可用（LaTeX + 行锚点 + 上下文）",
+               bool(items) and bool(with_anchor) and all(i.get("latex") for i in items),
+               f"{len(items)} 条，{len(with_anchor)} 条带 row_id，source={formulas.get('source')}")
+    except Exception as exc:  # noqa: BLE001
+        record("p1", "公式清单可用", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        kb = post_json(f"{api}/kb/search", {"query": "attention", "top_k": 5},
+                       headers=internal)["data"]
+        items = kb.get("items") or []
+        record("p1", "跨库检索返回论文归属",
+               bool(items) and all(i.get("paper_id") for i in items),
+               f"{len(items)} 条；论文={sorted({i.get('paper_title') or i.get('paper_id') for i in items})[:3]}")
+    except Exception as exc:  # noqa: BLE001
+        record("p1", "跨库检索返回论文归属", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        lib = get_json(f"{api}/library?q=attention", headers=internal)["data"]
+        record("p1", "书架检索可用", bool(lib.get("items")),
+               f"total={lib.get('total')} 前三={[i.get('paper_id') for i in (lib.get('items') or [])[:3]]}")
+    except Exception as exc:  # noqa: BLE001
+        record("p1", "书架检索可用", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        notes = get_json(f"{api}/notes?kind=all", headers=internal)["data"]
+        items = notes.get("items") or []
+        record("p1", "笔记/高亮/批注可读（空库也算通过）", isinstance(items, list),
+               f"{len(items)} 条；类型={sorted({i.get('kind') for i in items})}")
+    except Exception as exc:  # noqa: BLE001
+        record("p1", "笔记/高亮/批注可读", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        zh = get_json(f"{api}/papers/{paper}/pages?pages=2&lang=zh", headers=internal)["data"]
+        blocks = [b for p in zh.get("pages") or [] for b in p.get("blocks") or []]
+        record("p1", "只取译文的投影可用",
+               zh.get("lang") == "zh" and all("text" not in b for b in blocks),
+               f"{len(blocks)} 块；有译文的={sum(1 for b in blocks if b.get('translation'))}")
+    except Exception as exc:  # noqa: BLE001
+        record("p1", "只取译文的投影可用", False, f"{type(exc).__name__}: {exc}")
+
+    # ---- 真机：公式问题该走 formula_get / 读页 ----
+    run = check_answer(base, paper, "这篇论文里 $\\sqrt{d_k}$ 是干什么用的？请给出依据。")
+    if run:
+        tools = [t.get("tool") for t in ((run["done"] or {}).get("tool_trace") or [])]
+        record("p1", "公式问题用到了公式/读页工具",
+               any(t in tools for t in ("formula_get", "page_markdown_get", "block_get")),
+               f"工具序={tools}")
+
+    # ---- 真机：跨库问题 → 引用必须指向**那一篇**论文 ----
+    run2 = check_answer(base, paper, "我的知识库里还有哪些论文也讨论 attention？只列出来就行。")
+    if not run2:
+        return
+    done = run2["done"] or {}
+    tools = [t.get("tool") for t in (done.get("tool_trace") or [])]
+    record("p1", "跨库问题用到了跨库工具",
+           any(t in tools for t in ("kb_search", "library_list")), f"工具序={tools}")
+    cross = [c for c in (done.get("citations") or []) if c.get("paper_id") != paper]
+    if not cross:
+        skip("跨库引用的 paper_id 指向正确", "本轮没有跨论文引用")
+        return
+    try:
+        lib = get_json(f"{api}/library", headers=internal)["data"]
+        known = {i.get("paper_id") for i in (lib.get("items") or [])}
+    except Exception:  # noqa: BLE001
+        known = set()
+    bad = [c.get("paper_id") for c in cross if c.get("paper_id") not in known]
+    record("p1", "跨库引用的 paper_id 指向正确（不是当前论文的页码）",
+           bool(known) and not bad,
+           f"{len(cross)} 条跨论文引用；不在书架里的={bad}")
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent 问答链路自检")
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -465,10 +553,11 @@ def main() -> int:
     projections = check_projections(base, paper)
     check_guardrail(base, paper, args.guardrail_paper)
     if args.quick:
-        skip("真实问答 / 图片链路", "--quick 跳过（要调模型）")
+        skip("真实问答 / 图片链路 / P1 工具面", "--quick 跳过（要调模型）")
     else:
         check_answer(base, paper, "这篇论文的核心贡献是什么？请给出依据。")
         check_figure(base, paper, projections)
+        check_p1(base, paper)
 
     print("\n" + "=" * 78)
     total = len(results)

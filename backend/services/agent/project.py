@@ -106,8 +106,12 @@ def archive(paper_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 
-def pages(paper_id: str, spec: str) -> dict:
-    """按页返回**块级正文**（原文 + 译文 + 块 → 正文行的锚点）。
+def pages(paper_id: str, spec: str, lang: str = "both") -> dict:
+    """按页返回**块级正文**（可选只要原文 / 只要译文）。
+
+    ``lang``：``both``（默认）｜``en``（只回原文）｜``zh``（只回译文，`translate_get` 用它）。
+    只回译文时**不省略没有译文的块** —— 缺译文本身就是信息（模型该说"这页还没翻译"，
+    而不是以为这页没内容）。
 
     为什么按块而不是整页文本：引用要能"跳到那一行并高亮"。块是分块与高亮的共同边界，
     行锚点由 `anchor_map.build_block_row_map` 读时计算（与阅读器的"跳回原文"同一套逻辑），
@@ -121,6 +125,7 @@ def pages(paper_id: str, spec: str) -> dict:
     wanted = parse_pages(spec, total)
     if not wanted:
         raise NotFoundError(f"页码无法解析：{spec!r}")
+    mode = lang if lang in ("both", "en", "zh") else "both"
 
     with session_scope() as sess:
         rows = (sess.query(Block)
@@ -151,23 +156,29 @@ def pages(paper_id: str, spec: str) -> dict:
 
     by_page: dict[int, list[dict]] = {}
     for block in blocks:
-        text = texts.get(block["id"]) or ""
-        if not text:
-            continue
         entry = md_map.get(block["id"]) or {}
-        text = _neutralize_images(text)
-        out = {"id": block["id"], "type": block["type"],
-               "section": block["section"], "text": text}
+        raw_text = texts.get(block["id"]) or ""
         translation = str(entry.get("translation") or "").strip()
-        if translation:
-            out["translation"] = translation
+        # 只要译文时，原文仍参与"这个块有没有内容"的判断，但不下发
+        if mode == "en" and not raw_text:
+            continue
+        if mode == "zh" and not (raw_text or translation):
+            continue
+        if not raw_text and not translation:
+            continue
         row_id = anchors.get(str(block["id"]))
+        out: dict = {"id": block["id"], "type": block["type"],
+                     "section": block["section"]}
+        if mode in ("both", "en"):
+            out["text"] = _neutralize_images(raw_text)
+        if mode in ("both", "zh"):
+            out["translation"] = translation or None
         if row_id:
             out["row_id"] = row_id
         by_page.setdefault(int(block["page"]), []).append(out)
 
     return {
-        "paper_id": paper_id, "page_total": total,
+        "paper_id": paper_id, "page_total": total, "lang": mode,
         "requested": wanted,
         "pages": [{"page": p, "blocks": by_page.get(p, [])} for p in wanted],
     }
@@ -194,7 +205,7 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
                              top_k=max(1, min(int(top_k or 8), 20)),
                              chunk_types=chunk_types)
     items = list(result.get("items") or [])
-    zh_previews = _paired_zh_previews(paper_id, items)
+    zh_previews = _paired_zh_previews(items)
     out: list[dict] = []
     for item in items:
         chunk_id = str(item.get("chunk_id") or "")
@@ -219,7 +230,66 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
                                     .get("degraded", True))}
 
 
-def _paired_zh_previews(paper_id: str, items: list[dict]) -> dict[str, str]:
+def kb_search(query: str, *, top_k: int = 8) -> dict:
+    """**跨库**检索（不限论文）：返回候选位置 + **它属于哪篇论文**。
+
+    与 `search(scope="paper")` 共用同一条链路，只有 scope 不同 —— 但它们是**两个工具**：
+    "这篇论文里怎么说的"与"我库里还有谁讲过这个"是两种问题，合并会让模型在单篇问答里
+    就拿到全库视野，scope 语义跟着糊（规划 §7.0）。
+
+    ⚠️ 跨库命中带的 `paper_id` 不是当前论文，引用必须**带上它自己那篇**的 id
+    （否则前端会跳到当前论文的同一页 —— 一个完全不相干的段落）。
+    """
+    result = retrieval.search(query, mode="qa", scope="all",
+                              top_k=max(1, min(int(top_k or 8), 20)))
+    items = list(result.get("items") or [])
+    titles = _paper_titles({str(i.get("paper_id") or "") for i in items})
+    zh_previews = _paired_zh_previews(items)
+    out: list[dict] = []
+    for item in items:
+        paper_id = str(item.get("paper_id") or "")
+        chunk_id = str(item.get("chunk_id") or "")
+        out.append({
+            "paper_id": paper_id, "paper_title": titles.get(paper_id, ""),
+            "chunk_id": chunk_id, "block_id": item.get("block_id"),
+            "page_no": int(item.get("page_no") or 0) or None,
+            "section": item.get("section"), "chunk_type": item.get("chunk_type"),
+            "lang": item.get("lang"),
+            "content": _clip(_neutralize_images(item.get("content"))),
+            "translation": zh_previews.get(chunk_id),
+        })
+    return {"query": query, "returned": len(out), "items": out,
+            "top_score": max((float(i.get("rerank_score") or 0) for i in items), default=0.0),
+            "rerank_degraded": bool((result.get("retrieval") or {}).get("rerank", {})
+                                    .get("degraded", True))}
+
+
+def _paper_titles(paper_ids: set[str]) -> dict[str, str]:
+    from backend.repositories.mysql.models import Paper
+    from backend.repositories.mysql.session import session_scope
+
+    ids = {p for p in paper_ids if p}
+    if not ids:
+        return {}
+    with session_scope() as sess:
+        return {r.id: (r.title or "") for r in
+                sess.query(Paper).filter(Paper.id.in_(ids)).all()}
+
+
+def _paired_zh_previews(items: list[dict]) -> dict[str, str]:
+    """按论文分组后逐篇查中文孪生预览（跨库检索会一次命中多篇）。"""
+    by_paper: dict[str, list[dict]] = {}
+    for item in items:
+        paper_id = str(item.get("paper_id") or "")
+        if paper_id:
+            by_paper.setdefault(paper_id, []).append(item)
+    out: dict[str, str] = {}
+    for paper_id, group in by_paper.items():
+        out.update(_paired_zh_previews_one(paper_id, group))
+    return out
+
+
+def _paired_zh_previews_one(paper_id: str, items: list[dict]) -> dict[str, str]:
     """给英文命中找它的中文孪生行预览（命中 ``chunk.content_preview``，200 字）。
 
     **不能靠改 id 字符串猜**：chunk id 是 ``{paper_id}:{road}:{type}:{块范围}:{lang}``，
@@ -291,3 +361,159 @@ def figures(paper_id: str, page: int | None = None) -> dict:
             "part": item.get("part"), "parts": item.get("parts"),
         })
     return {"paper_id": paper_id, "page": page_no, "items": items}
+
+
+# --------------------------------------------------------------------------
+# 公式（`formula_get`）
+# --------------------------------------------------------------------------
+
+#: 一次最多回几条公式（Attention 这类论文全篇 10~30 条，够用；超长论文要筛）
+FORMULA_LIMIT = 40
+
+
+def formulas(paper_id: str, *, page: int | None = None, query: str | None = None,
+             limit: int = FORMULA_LIMIT) -> dict:
+    """本论文的公式清单（LaTeX + 所在页 + 行锚点 + 上下文）。
+
+    数据来自 `reader_service.formulas_payload(…, "markdown")` —— 与阅读器"公式"页签
+    **同一个口径**（译文优先、未翻译的页用解析产物兜底）。所以 agent 讲的公式和用户
+    在正文里看到的是同一条，不会出现"AI 引用的公式在页面上找不到"。
+
+    ⚠️ **没有"编号"字段**：抽取结果里只有 LaTeX 与上下文，论文自己的 `(3)` 编号在
+    `context` 里。所以按编号取公式只能靠关键词筛（`query="(3)"`），这一点写进工具描述里，
+    别让模型以为有个 `number` 参数。
+    """
+    from backend.services.paper import reader_service
+
+    paper_service.get_paper(paper_id)
+    data = reader_service.formulas_payload(paper_id, "markdown")
+    items = list(data.get("items") or [])
+    if page:
+        items = [i for i in items if int(i.get("page") or 0) == int(page)]
+    if query:
+        needle = str(query).strip().lower()
+        items = [i for i in items if needle in " ".join(str(i.get(k) or "") for k in
+                                                       ("latex", "context", "context_zh")).lower()]
+    out = [{
+        "page": int(i.get("page") or 0) or None,
+        "row_id": i.get("row_id"),
+        "latex": str(i.get("latex") or ""),
+        "display": bool(i.get("display")),
+        "context": _clip(i.get("context") or "", 240),
+        "context_zh": _clip(i.get("context_zh") or "", 240),
+    } for i in items[:max(1, int(limit or FORMULA_LIMIT))]]
+    return {"paper_id": paper_id, "total": len(items), "returned": len(out),
+            "source": data.get("source"), "items": out}
+
+
+# --------------------------------------------------------------------------
+# 书架（`library_list`）
+# --------------------------------------------------------------------------
+
+#: 一次最多列几篇（模型只要"挑出相关的几篇"，不需要整库）
+LIBRARY_LIMIT = 30
+
+
+def library(*, q: str | None = None, status: str | None = None,
+            limit: int = LIBRARY_LIMIT) -> dict:
+    """书架检索（标题 / 作者的模糊匹配）——"我库里有谁讲过 X"的第一步。
+
+    只回元数据，不回正文：模型据此挑出候选论文，再用 `kb_search` 去找具体段落。
+    """
+    data = paper_service.list_papers(q=q or None, status=status or None,
+                                     page_size=max(1, min(int(limit or LIBRARY_LIMIT), 100)))
+    items = []
+    for row in data.get("items") or []:
+        items.append({
+            "paper_id": row.get("id"), "title": row.get("title") or "",
+            "authors": _clip(row.get("authors") or "", 160),
+            "venue": row.get("venue") or "", "year": row.get("year") or 0,
+            "status": row.get("status") or "",
+            "page_count": int(row.get("page_count") or 0),
+            "tags": list(row.get("tags") or []),
+        })
+    return {"total": int(data.get("total") or 0), "returned": len(items), "items": items}
+
+
+# --------------------------------------------------------------------------
+# 笔记 / 高亮 / 批注（`notes_search`）
+# --------------------------------------------------------------------------
+
+#: 一次最多回几条
+NOTES_LIMIT = 40
+
+
+def notes(*, query: str | None = None, paper_id: str | None = None,
+          kind: str = "all", limit: int = NOTES_LIMIT) -> dict:
+    """笔记 / 高亮 / 批注（可按论文限定）。
+
+    用户自己的笔记是**第一人称证据**："我在这篇里记过什么"只有这里能答。
+    返回里带 `paper_id` 与 `block_id`，所以引用能跳回原文那一行。
+    """
+    from backend.services.annotation import annotation_service as svc
+
+    kinds = ("all", "notes", "highlights", "annotations")
+    want = kind if kind in kinds else "all"
+    out: list[dict] = []
+
+    if paper_id:
+        paper_service.get_paper(paper_id)
+        if want in ("all", "notes"):
+            for n in (svc.list_notes(paper_id, q=query or None).get("items") or []):
+                out.append({"kind": "note", "paper_id": paper_id,
+                            "block_id": n.get("block_id"),
+                            "selected_text": _clip(n.get("selected_text") or "", 200),
+                            "note": _clip(n.get("content_md") or "", 600),
+                            "tags": list(n.get("tags") or [])})
+        if want in ("all", "highlights"):
+            for h in (svc.list_highlights(paper_id).get("items") or []):
+                out.append({"kind": "highlight", "paper_id": paper_id,
+                            "block_id": h.get("block_id"),
+                            "selected_text": _clip(h.get("text") or "", 200),
+                            "note": "", "tags": []})
+        if want in ("all", "annotations"):
+            for a in (svc.list_annotations(paper_id).get("items") or []):
+                out.append({"kind": "annotation", "paper_id": paper_id,
+                            "block_id": a.get("block_id"),
+                            # AI 批注没有"选中文本"字段（只有 `content_md`），别硬凑
+                            "selected_text": "",
+                            "note": _clip(a.get("content_md") or "", 600),
+                            "tags": [a.get("type")] if a.get("type") else []})
+    else:
+        overview = svc.notes_overview()
+        # 论文已被删掉的孤儿批注拿不到标题 → 回落 paper_id（总比空白强，模型至少能说清出处）
+        def _title(row: dict) -> str:
+            return str(row.get("paper_title") or row.get("paper_id") or "")
+
+        if want in ("all", "notes"):
+            for n in (overview.get("notes") or []):
+                out.append({"kind": "note", "paper_id": n.get("paper_id"),
+                            "paper_title": _title(n),
+                            "block_id": n.get("block_id"),
+                            "selected_text": _clip(n.get("selected_text") or "", 200),
+                            "note": _clip(n.get("content_md") or "", 600),
+                            "tags": list(n.get("tags") or [])})
+        if want in ("all", "highlights"):
+            for h in (overview.get("highlights") or []):
+                out.append({"kind": "highlight", "paper_id": h.get("paper_id"),
+                            "paper_title": _title(h),
+                            "block_id": h.get("block_id"),
+                            "selected_text": _clip(h.get("text") or "", 200),
+                            "note": "", "tags": []})
+        if want in ("all", "annotations"):
+            for a in (overview.get("annotations") or []):
+                out.append({"kind": "annotation", "paper_id": a.get("paper_id"),
+                            "paper_title": _title(a),
+                            "block_id": a.get("block_id"),
+                            "selected_text": "",
+                            "note": _clip(a.get("content_md") or "", 600),
+                            "tags": [a.get("type")] if a.get("type") else []})
+
+    if query and not paper_id:
+        # 跨库时在上面那次查询里无法按词过滤（`notes_overview` 不接受 q），在这里补一层
+        needle = str(query).strip().lower()
+        out = [x for x in out
+               if needle in " ".join(str(x.get(k) or "") for k in
+                                     ("selected_text", "note", "paper_title")).lower()]
+    return {"paper_id": paper_id, "kind": want, "returned": len(out[:limit]),
+            "items": out[:limit]}

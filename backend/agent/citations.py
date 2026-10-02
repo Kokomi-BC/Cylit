@@ -71,20 +71,23 @@ class RefRegistry:
                page: int | None = None, section: str | None = None,
                block_id: str | None = None, row_id: str | None = None,
                image_urls: list[str] | None = None, label: str = "",
-               ids: tuple[str, ...] = ()) -> Citation:
+               ids: tuple[str, ...] = (), paper_id: str | None = None) -> Citation:
         """登记一条证据；同一个 ``key`` 重复登记会复用原编号。
 
         复用很重要：模型很爱把同一页读两遍（真机探测里 `paper_search` 连发两次），
         不复用的话引用表会出一堆重复项，编号还跳。
+
+        ``paper_id`` 只在**跨库检索**（`kb_search`）时才显式传：那条命中不属于当前论文，
+        引用必须带上它自己那篇的 id，否则前端会跳到当前论文的同一页 —— 一个不相干的段落。
         """
         existing = self._by_key.get(key)
         if existing is not None:
             return self._by_ref[existing]
         ref = len(self._by_ref) + 1
-        citation = Citation(ref=ref, paper_id=self.paper_id, kind=kind, page=page,
-                            section=section, block_id=block_id, row_id=row_id,
-                            snippet=snippet, image_urls=list(image_urls or []),
-                            label=label)
+        citation = Citation(ref=ref, paper_id=paper_id or self.paper_id, kind=kind,
+                            page=page, section=section, block_id=block_id,
+                            row_id=row_id, snippet=snippet,
+                            image_urls=list(image_urls or []), label=label)
         self._by_ref[ref] = citation
         self._by_key[key] = ref
         for raw in (block_id, *ids):

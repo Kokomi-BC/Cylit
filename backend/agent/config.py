@@ -29,6 +29,7 @@ class AgentConfig:
     deadline_seconds: float
     heartbeat_seconds: float
     search_top_k: int
+    search_budget: int
     evidence_limit: int
     evidence_chars: int
     evidence_floor: float
@@ -68,6 +69,7 @@ def load() -> AgentConfig:
         deadline_seconds=float(s.agent_deadline_seconds),
         heartbeat_seconds=float(s.agent_heartbeat_seconds),
         search_top_k=int(s.agent_search_top_k),
+        search_budget=int(s.agent_search_budget),
         evidence_limit=int(s.agent_evidence_limit),
         evidence_chars=int(s.agent_evidence_chars),
         evidence_floor=float(s.agent_evidence_floor),

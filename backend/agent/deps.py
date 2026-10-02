@@ -34,6 +34,22 @@ class Deps:
     model_calls: int = 0
     #: 这一轮读过的页（自检用：验证"先检索定位、再读页"的顺序）
     pages_read: list[int] = field(default_factory=list)
+    #: 归一化检索词 → 上一次的返回。模型会把同一句话问两遍（实测跨库问题连发 9 次
+    #: `kb_search`，最后把轮数用满），重复的查询不必再打一次后端。
+    query_cache: dict[str, dict] = field(default_factory=dict)
+    #: 已用掉的检索预算（M7：与轮数预算**分开**扣，见 `Settings.agent_search_budget`）
+    search_calls: int = 0
+
+    def spend_search(self) -> bool:
+        """扣一次检索预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
+        if self.search_calls >= self.cfg.search_budget:
+            return False
+        self.search_calls += 1
+        return True
+
+    @property
+    def search_exhausted(self) -> bool:
+        return self.search_calls >= self.cfg.search_budget
 
     # ------------------------------------------------------------------
     def note_tool(self, name: str, args: dict, status: str,
