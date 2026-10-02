@@ -7,7 +7,8 @@
  * 卡片本体在 `components/paper/PaperCard.vue`，点卡片打开的详情在 `PaperDetailModal.vue`。
  *
  * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`。
- * 删除语义：软删除会先清理索引与知识库记录，PDF 文件移入 data/trash（不物理删除）。
+ * 删除语义：软删除会清理索引、知识库记录，以及**这篇论文的用户内容**
+ * （对话历史 / 划词解释 / 高亮 / 笔记），PDF 文件移入 data/trash（不物理删除）。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
@@ -807,7 +808,7 @@ async function runBatchDelete() {
   if (failed.length) {
     toast(`已删除 ${ok} 篇，${failed.length} 篇失败：${failed.join('、')}`, 'warn', 5600);
   } else {
-    toast(`已删除 ${ok} 篇（移入 data/trash，可从回收站恢复）`, 'ok', 3200);
+    toast(`已删除 ${ok} 篇（PDF 移入 data/trash；对话历史与批注已清）`, 'ok', 3200);
   }
   await refresh();
 }
@@ -1140,7 +1141,7 @@ async function submitEdit() {
       :open="batchBox.open"
       :title="batchBox.kind === 'delete' ? '批量删除论文' : '批量翻译'"
       :body="batchBox.kind === 'delete'
-        ? `会把选中的 ${selectedCount} 篇移入 data/trash（可从回收站恢复），并清理索引与知识库记录。`
+        ? `会把选中的 ${selectedCount} 篇移入 data/trash（可从回收站恢复），并清理索引、知识库记录与各自的对话历史。`
         : `会为选中的 ${selectedCount} 篇各起一个翻译任务；已在跑或已译完的会跳过。`"
       :confirm-label="batchBox.kind === 'delete' ? '删除' : '开始翻译'"
       :danger="batchBox.kind === 'delete'"
@@ -1153,8 +1154,8 @@ async function submitEdit() {
       :open="confirmBox.open"
       :title="confirmBox.hard ? '彻底删除论文' : '删除论文'"
       :body="confirmBox.hard
-        ? '这一步不可撤销：数据库记录与论文文件都会被删除。'
-        : '会先清理索引与知识库记录，PDF 文件移入 data/trash（可从回收站恢复）。'"
+        ? '这一步不可撤销：数据库记录、论文文件，以及它的对话历史 / 划词解释 / 高亮 / 笔记都会被删除。'
+        : '会清理索引、知识库记录与这篇论文的对话历史（含划词解释、高亮、笔记）；PDF 文件移入 data/trash（可从回收站恢复，但历史不会回来）。'"
       :target="confirmBox.paper?.title || ''"
       :confirm-label="confirmBox.hard ? '彻底删除' : '删除'"
       danger

@@ -374,7 +374,7 @@ async function doDelete() {
   busy.value = 'delete';
   try {
     await api.del(`/papers/${props.paperId}`, { hard: false });
-    toast('已删除（移入 data/trash，可从回收站恢复）', 'ok', 3200);
+    toast('已删除（PDF 移入 data/trash；对话历史与批注已清）', 'ok', 3200);
     emit('changed');
     emit('close');
   } catch (err) {
@@ -710,7 +710,7 @@ async function doDelete() {
     <ConfirmModal
       :open="confirmDelete"
       title="删除论文"
-      body="会先清理索引与知识库记录，PDF 文件移入 data/trash（可从回收站恢复）。"
+      body="会清理索引、知识库记录，以及**属于这篇论文的对话历史、划词解释、高亮与笔记**；PDF 文件移入 data/trash（可从回收站恢复）。"
       :target="title"
       confirm-label="删除"
       danger

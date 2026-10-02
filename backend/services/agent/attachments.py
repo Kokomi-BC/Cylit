@@ -20,6 +20,9 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.core.config import get_settings
+from backend.core.logging import get_logger
+
+log = get_logger(__name__)
 from backend.core.errors import ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, truncate
@@ -148,3 +151,26 @@ def read_bytes(attachment_id: str) -> tuple[bytes, str]:
         raise ValidationError(f"图片附件不存在：{attachment_id}")
     path, meta = found
     return path.read_bytes(), str(meta.get("mime") or "image/png")
+
+
+def remove(attachment_ids: list[str]) -> int:
+    """删掉这些附件（图 + 边车 ``<id>.json``），返回删掉的文件数。
+
+    只给**整条链路一起清**的场景用（删论文 / 删会话）：附件 id 是按消息引用的，
+    消息删了文件就永远没人认领 —— 留在 ``data/attachments`` 里只会越堆越多。
+    单张删除的口径仍是"只从消息里摘掉引用"，不走这里（用户还能在别处用到那张图）。
+    """
+    removed = 0
+    for aid in {str(a) for a in (attachment_ids or []) if a}:
+        found = locate(aid)
+        if found is None:
+            continue
+        path, _meta = found
+        for target in (path, path.with_suffix(".json")):
+            try:
+                if target.is_file():
+                    target.unlink()
+                    removed += 1
+            except OSError as exc:  # noqa: BLE001 —— 删不掉就留着，不能因此中断删论文
+                log.warning("附件文件删不掉（跳过）：%s（%s）", target, exc)
+    return removed

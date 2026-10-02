@@ -97,6 +97,64 @@ def test_delete_order_and_reconcile(db_ready, temp_pdf):
         paper_service.reconcile(pid, include_deleted=True)
 
 
+def test_delete_paper_purges_history(db_ready, temp_pdf):
+    """删论文必须把**属于它的用户内容**一起清掉（用户 2026-10-03："历史记录能否被正确清除"）。
+
+    回归：会话是按 `paper_id` 挂的，删论文那条链**原来完全不碰它们** ——
+    论文删了、会话还在，UI 看不见、也永远不会被清；而论文 id 是标题派生的 slug，
+    同一篇重新导入会拿到同一个 id，那些旧对话就"复活"到新论文上（引用还指着旧行号）。
+    """
+    import base64
+
+    from backend.repositories.mysql.models import (Annotation, Conversation,
+                                                   ConversationMessage, Highlight, Note,
+                                                   ReadingProgress)
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.agent import attachments as attachment_store
+    from backend.services.agent import conversations
+    from backend.services.paper import paper_service
+
+    row = paper_service.import_pdf(temp_pdf, "sample.pdf", title="清理测试",
+                                   paper_id="it-purge", auto_parse=False)
+    pid = row["id"]
+    # 走真上传口存一张真 PNG：附件文件也必须跟着会话一起删
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAALElEQVR4nGO8IyfHQApgIkk1"
+        "Az00sCBzLOT2YVV04pETHZ3ENBI1MA6DtAQA8VYFUbO5ASoAAAAASUVORK5CYII=")
+    att = attachment_store.save(png, filename="purge-check.png", mime="image/png")
+    cid = conversations.ensure_conversation(None, pid, title="会被清掉的对话")
+    conversations.append_message(cid, role="user", content="> 〔第 1 页〕测试",
+                                 attachments=[att])
+    conversations.append_message(cid, role="assistant", content="测试回答")
+    with session_scope() as sess:
+        sess.add(Highlight(id="it-hl-purge", paper_id=pid, block_id="it-x"))
+        sess.add(Note(id="it-nt-purge", paper_id=pid, content_md="笔记"))
+        sess.add(Annotation(id="it-an-purge", paper_id=pid, content_md="解释",
+                            source="selection"))
+        sess.add(ReadingProgress(user_id=1, paper_id=pid, last_page=3))
+
+    # 先确认这些行**真的建出来了**（否则下面"删干净了"是空断言）
+    with session_scope() as sess:
+        assert sess.query(ConversationMessage).filter(
+            ConversationMessage.conversation_id == cid).count() == 2
+        for model in (Conversation, Highlight, Note, Annotation, ReadingProgress):
+            assert sess.query(model).filter(model.paper_id == pid).count() == 1
+
+    soft = paper_service.delete_paper(pid, hard=False)
+    steps = "；".join(soft["steps"])
+    assert "清用户内容" in steps, steps
+    with session_scope() as sess:
+        for model in (Conversation, ConversationMessage, Highlight, Note, Annotation,
+                      ReadingProgress):
+            left = sess.query(model).filter(model.paper_id == pid).count() \
+                if model is not ConversationMessage else \
+                sess.query(model).filter(model.conversation_id == cid).count()
+            assert left == 0, f"{model.__tablename__} 还有 {left} 行没清"
+    assert attachment_store.locate(att["attachment_id"]) is None, "附件图应一起删掉"
+
+    _safe_delete(pid)                       # 彻底删除（幂等：再清一次也不该报错）
+
+
 def test_block_ids_unique_across_papers(db_ready, temp_pdf):
     """跨论文块 ID 必须互不冲突（回归：曾因 ID 无前缀导致 MySQL 主键冲突）。"""
     from backend.parsing.pipeline import PaperBuilder

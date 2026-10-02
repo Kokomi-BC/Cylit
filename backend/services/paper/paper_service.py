@@ -78,6 +78,13 @@ def import_pdf(temp_path: str | Path, original_name: str,
             pdir = s.paper_dir(existing["id"])
             pdir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, pdir / "source.pdf")
+            # ⚠️ 复用时**显式传进来的 `paper_id` 会被忽略**（同一份 PDF 只有一篇论文）。
+            # 调用方拿到的是别人那篇 —— 踩过一次：脚本里传 `paper_id="zz-purge-demo"`、
+            # 下一步拿返回值去删论文，删掉的是**已存在的那篇**（真的发生在本项目上）。
+            # 这里把不一致喊出来，别让调用方以为新建成功。
+            if paper_id and str(paper_id) != str(existing["id"]):
+                log.warning("同一 PDF 已存在（%s），忽略请求的 paper_id=%s —— 复用既有的那篇",
+                            existing["id"], paper_id)
             log.info("同一 PDF 已导入过，复用论文 %s", existing["id"])
             task_service.create("IMPORT", "system", existing["id"], params={
                 "original_name": original_name, "size": size, "sha256": digest,
@@ -472,8 +479,42 @@ def save_upload(data: bytes, filename: str) -> Path:
 # --------------------------------------------------------------------------
 
 
+#: `_purge_paper_content` 的字段 → 人话（写进删除步骤，用户看得见清了什么）
+_PURGE_LABELS = {
+    "conversations": "对话", "messages": "消息", "attachments": "附件图",
+    "annotations": "划词解释", "highlights": "高亮", "notes": "笔记",
+    "progress": "阅读进度", "understanding": "解读", "formulas": "公式",
+}
+
+
+def _purge_paper_content(paper_id: str) -> dict:
+    """清掉这篇论文的**用户内容**：会话（含附件图）→ 划词解释 / 高亮 / 笔记 /
+    阅读进度 / 解读 / 公式。
+
+    会话那几张表归 agent 侧那个模块管（`conversations.purge_paper`：它的表、它的附件），
+    这里只负责把结果汇总进删除步骤。**任何一段失败都不该让删论文半途而废** ——
+    出错只记日志，磁盘与其它清理照常走。
+    """
+    from backend.repositories.mysql.models import (Annotation, Formula, Highlight, Note,
+                                                   ReadingProgress, Understanding)
+    from backend.services.agent import conversations as agent_conversations
+
+    counts: dict[str, int] = {}
+    try:
+        counts.update(agent_conversations.purge_paper(paper_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("清会话历史失败（继续清理其它内容）：%s", exc)
+    with session_scope() as sess:
+        for key, model in (("annotations", Annotation), ("highlights", Highlight),
+                           ("notes", Note), ("progress", ReadingProgress),
+                           ("understanding", Understanding), ("formulas", Formula)):
+            counts[key] = int(sess.query(model).filter(model.paper_id == paper_id)
+                              .delete(synchronize_session=False) or 0)
+    return counts
+
+
 def delete_paper(paper_id: str, *, hard: bool = False) -> dict:
-    """软删：MySQL 标记 + 立即清索引/任务/chunk + 文件移入 trash。
+    """软删：MySQL 标记 + 立即清索引/任务/chunk/**用户内容** + 文件移入 trash。
 
     ``hard=True`` 时先执行同样的清理，再物理删除 trash 与 MySQL 行；
     对已软删的论文再次调用 ``hard=True`` 也允许（幂等清理）。
@@ -505,6 +546,16 @@ def delete_paper(paper_id: str, *, hard: bool = False) -> dict:
     with session_scope() as sess:
         n = sess.query(Chunk).filter(Chunk.paper_id == paper_id).delete()
         steps.append(f"mysql: 取消 {cancelled} 个任务，删除 {n} 条 chunk 元数据")
+
+    # 3.5) **属于这篇论文的用户内容**（用户 2026-10-03 问的"删论文，历史记录能不能清干净"）：
+    #      会话与消息（agent 侧的表，由那个模块自己清 + 顺带删附件图）、划词解释历史、
+    #      高亮、笔记、阅读进度、理解产物、公式。
+    #      为什么**软删就清**：软删时索引与 chunk 已经清了，`data/trash` 里只有 PDF 与页级
+    #      产物 —— 留着这些行只会变成孤儿；而论文 id 是标题派生的 slug，
+    #      **同一篇重新导入会拿到同一个 id**，旧对话会挂到新论文上"复活"。
+    purged = _purge_paper_content(paper_id)
+    steps.append("mysql: 清用户内容（" + "、".join(
+        f"{_PURGE_LABELS[key]} {value}" for key, value in purged.items() if value) + "）")
 
     # 4) 文件移入 trash（延迟物理删除）
     root = s.paper_dir(paper_id)

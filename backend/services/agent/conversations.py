@@ -160,6 +160,46 @@ def delete_conversations(ids: list[str]) -> dict:
     return {"deleted": found, "messages": int(deleted or 0)}
 
 
+def purge_paper(paper_id: str) -> dict:
+    """删掉**这篇论文的全部会话**（删论文时由 `paper_service.delete_paper` 调用）。
+
+    为什么必须做（用户 2026-10-03 问的"删掉这篇论文，历史记录能不能被正确清除"）：
+    会话是按 `paper_id` 挂在论文上的，论文删掉之后它们**既进不了列表**（前端只列当前论文），
+    **也永远不会被清理**；更糟的是论文 id 是标题派生的 slug ——
+    **同一篇重新导入会拿到同一个 id**，于是那些旧对话会挂到新论文上"复活"，
+    消息里的引用还指着已经变过的行号，点下去跳到别的段落。
+
+    顺带清掉这些会话引用过的附件图片：附件是按消息引用的，消息没了文件就是垃圾
+    （`attachments.remove`）。
+    """
+    from backend.repositories.mysql.models import Conversation, ConversationMessage
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.agent import attachments as attachment_store
+
+    with session_scope() as sess:
+        ids = [r.id for r in sess.query(Conversation.id)
+               .filter(Conversation.paper_id == paper_id).all()]
+        if not ids:
+            return {"conversations": 0, "messages": 0, "attachments": 0}
+        attachment_ids: list[str] = []
+        for (raw,) in (sess.query(ConversationMessage.attachments_json)
+                       .filter(ConversationMessage.conversation_id.in_(ids)).all()):
+            for item in json_loads(raw, []) or []:
+                aid = str((item or {}).get("attachment_id") or "")
+                if aid:
+                    attachment_ids.append(aid)
+        messages = (sess.query(ConversationMessage)
+                    .filter(ConversationMessage.conversation_id.in_(ids))
+                    .delete(synchronize_session=False))
+        (sess.query(Conversation).filter(Conversation.id.in_(ids))
+         .delete(synchronize_session=False))
+    files = attachment_store.remove(attachment_ids)
+    log.info("清空论文 %s 的会话：%d 个会话 / %d 条消息 / %d 个附件文件",
+             paper_id, len(ids), int(messages or 0), files)
+    return {"conversations": len(ids), "messages": int(messages or 0),
+            "attachments": files}
+
+
 def set_head(conversation_id: str, message_id: str) -> dict:
     """把可见分支切到某条消息上（**分叉导航**：◀ 1/2 ▶）。
 

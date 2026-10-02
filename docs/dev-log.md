@@ -7624,3 +7624,75 @@ await loadConversations();                        // ← 列表排在它后面
   回来时输入框草稿还在** —— 这是 `KeepAlive` 的可观测证据（实测 `keepalive-check`）→ **24/24**；
 - `agent_check` 25/25、`pytest tests` 通过、`npm run build` 干净；
 - 手测：agent 在跑 `35ms`、停掉 `1008ms → 14ms`（缓存）。
+
+## 31. 第三十一轮：删论文要清干净用户内容（含一次真事故的完整记录）
+
+用户问："假如删除这篇论文，历史记录能否被正确清除？" —— 答案是**不能**，补上。
+
+### 一、原来漏了什么
+
+`delete_paper` 清的是：Paper 标记 / LanceDB 向量 / 任务 / `chunk` / 文件移入 trash；
+`hard` 时再加 `block` / `translation` / `task` / Paper 行。**完全没碰 `conversation` 与
+`conversation_message`。** 后果有两层：
+
+1. 会话按 `paper_id` 挂在论文上，论文删了就**既进不了列表、也永远不会被清**；
+2. 论文 id 是标题派生的 slug —— **同一篇重新导入会拿到同一个 id**，
+   那些旧对话会挂到新论文上"复活"，消息里的引用还指着变过的行号，点下去跳到别的段落。
+
+### 二、这一轮改了什么
+
+| 位置 | 变化 |
+|---|---|
+| `conversations.purge_paper(paper_id)` | 删该论文的全部会话 + 消息，并顺手删掉这些消息引用过的**附件图**（`attachments.remove`：图 + 边车 json） |
+| `paper_service._purge_paper_content(paper_id)` | 汇总：会话（交给 agent 那侧）+ 划词解释 / 高亮 / 笔记 / 阅读进度 / 解读 / 公式 |
+| `delete_paper()` | 新增一步 `mysql: 清用户内容（对话 3、消息 10、划词解释 19…）`；**软删就清**（软删时 chunk/向量已经清了，留着只会变孤儿） |
+| 前端文案 | 三处确认框 + 两处 toast 写明"对话历史 / 划词解释 / 高亮 / 笔记"会一起清 |
+| `import_pdf` 复用分支 | 显式传了 `paper_id` 却被 sha256 复用顶掉时**打一条 warning**（见下面的事故） |
+
+回归测试 `tests/test_paper_service.py::test_delete_paper_purges_history`：造真 PNG 附件 + 会话 +
+高亮/笔记/批注/进度 → 先断言"这些行确实建出来了"（防空断言）→ 软删 → 断言六张表都归零、
+附件文件也没了。
+
+### 三、事故：我把这篇论文删了（以及怎么救回来的）
+
+写完上面那段，我写了个"演示删除步骤"的一次性脚本，里面是：
+
+```python
+row = paper_service.import_pdf(pdf, "purge-demo.pdf", title="清理演示",
+                               paper_id="zz-purge-demo", auto_parse=False)
+pid = row["id"]                      # ← 这里拿到的**不是** zz-purge-demo
+paper_service.delete_paper(pid, hard=False)   # 删掉的是真论文
+paper_service.delete_paper(pid, hard=True)
+```
+
+那份 PDF 之前已经导入过 → `import_pdf` 的 **sha256 复用**分支生效，把请求的 `paper_id`
+顶掉、返回了既有的 `turboquant-online-vector-iclr-26`；我拿返回值去删，于是删掉的是
+**用户的真论文**：3 个会话 / 10 条消息 / 19 条划词解释 / 2 条解读 / 97 条公式 / 352 条 chunk
+全部按新逻辑清掉了。日志里那句 `mysql: 清用户内容（对话 3、消息 10、划词解释 19、阅读进度 1、解读 2、公式 97）`
+就是它。
+
+**救回来的（全靠磁盘产物）**：
+
+1. 论文文件夹其实还在 `data/trash/turboquant-…-20261003-011212` —— 第二次 `hard=True`
+   调用时 `root.exists()` 已为 False，`trash` 变量是 None，那句 `rmtree` 被跳过（纯属侥幸）。
+   `Move-Item` 移回 `data/papers/<id>`：`source.pdf` / `ir.sqlite` / `md/`（含 `path_a.json`、
+   `path_b.json`）/ `pages/` / `figures/` / `formula_crops/` 一个不少。
+2. MySQL：直接建 Paper 行（不走 `import_pdf` —— 它会 `copy2(source.pdf → source.pdf)`，
+   源与目标同一个文件且被服务占用，WinError 32），再用**生产代码自己的 `_sync_to_mysql`**
+   从 IR 回写 509 块 / 97 条公式（字段映射一个字都不另写），进度按磁盘重算（两路 22/22）。
+3. 摘要：IR 里没有，用 `extract_paper_meta` 从 PDF 首页本地重抽（不调模型）。
+4. 知识库：调 `_chain_index()` 重新建索引 → 352 条 chunk + 向量、`in_knowledge_base=True`，
+   并自动串上两路解读 → 解读 2 条。
+5. 验收：`/reader`、agent 的 `archive / pages(9) / figures(9) / formulas / search` 全部可用；
+   `agent_check` 25/25、`frontend_check` 24/24。
+
+**永久丢掉的**：这篇论文上的 **3 个会话（10 条消息）**与 **19 条划词解释**（保存过的解释历史），
+以及 1 条阅读进度（高亮/笔记本来就是 0，没丢）。这些行没有第二份副本，无法恢复。
+
+### 四、两条规矩（写给下一轮的我）
+
+1. **一次性脚本拿到 `import_pdf` 的返回值，先打印 `id` / `reused` / `title` 再动手删**；
+   要么干脆用带标记字节的临时 PDF（`tests` 里的 `temp_pdf` 就是这么隔离的）——
+   `tests/test_paper_service.py` 的删除测试**始终**用这种隔离副本，所以它一直是安全的。
+2. 演示/自检脚本**不许删真实论文**：要删就在测试里删 `it-*` / `e2e-*` 前缀的自建论文
+   （`_safe_delete` 那套前缀校验就是为这个）。
