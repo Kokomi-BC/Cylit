@@ -21,9 +21,10 @@
  * `scope:"paper"` 由后端保证**只查本文**，前端不再做任何额外过滤（多滤一层就可能把后端
  * 已经扩好的 Small-to-Big 命中滤掉）。
  */
-import { computed, nextTick, reactive, ref } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import { api } from '@/api/client';
+import { debounce } from '@/utils/format';
 import { htmlWithMarks, mdToHtml } from '@/composables/useMarkdown';
 import type { SemanticHit, SemanticResult } from '@/api/types';
 
@@ -174,8 +175,8 @@ function previewHtml(hit: SemanticHit): string {
 /**
  * 跑一次语义检索。
  *
- * 用**回车 / 「检索」按钮**触发而不是边打边搜：这是一次带向量的 POST（还有重排），
- * 边打边发既费钱又会互相抢结果（词法搜索那种 220ms 去抖在这里不合适）。
+ * **打字就搜**（用户口径）：与词法那半边一样由输入驱动，只是去抖给得更长（900ms）——
+ * 这是一次带向量的 POST（还有重排），每个键都发既费钱又会让结果互相抢（见下面的 seq 守卫）。
  */
 async function runSemantic() {
   const text = props.query.trim();
@@ -207,6 +208,12 @@ async function runSemantic() {
     if (mine === seq) semantic.loading = false;
   }
 }
+
+/* **打字就搜**（用户口径）：语义这半边同样由输入驱动（去抖 900ms，理由见 runSemantic 的注释）；
+ * 回车仍然立即发一次（见 onEnter）。切到语义模式时若有词，也立刻补一发。 */
+const runSemanticDebounced = debounce(() => { if (props.query.trim()) void runSemantic(); }, 900);
+watch(() => props.query, () => { if (props.mode === 'semantic') runSemanticDebounced(); });
+watch(() => props.mode, (m) => { if (m === 'semantic' && props.query.trim()) void runSemantic(); });
 
 /** 切模式：清掉两边的输入态影响（结果各自保留，来回切不丢） */
 function setMode(m: SearchMode) {
@@ -262,7 +269,7 @@ function onClear() {
           :value="props.query"
           :placeholder="props.mode === 'semantic' ? '描述你要找的内容' : '搜索'"
           :title="props.mode === 'semantic'
-            ? '用一句话描述你想找的内容，回车在本文内做语义检索'
+            ? '用一句话描述你想找的内容，打字即在本文内做语义检索（回车立即）'
             : '边打边搜原文 + 译文（回车立即搜；Esc 清空）'"
           @input="onInput"
           @keyup.enter="onEnter"
@@ -342,7 +349,7 @@ function onClear() {
             <span class="tiny ss-snippet" v-html="previewHtml(hit)" />
           </button>
           <div v-if="semantic.ran && !semantic.items.length" class="empty small">没有相近的段落</div>
-          <div v-else-if="!semantic.ran" class="empty small">回车在本文里做语义检索</div>
+          <div v-else-if="!semantic.ran" class="empty small">打字即在本文里检索</div>
         </template>
       </template>
     </div>

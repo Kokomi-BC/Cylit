@@ -19,6 +19,7 @@ import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import PaperCard from '@/components/paper/PaperCard.vue';
 import PaperDetailModal from '@/components/paper/PaperDetailModal.vue';
+import { debounce } from '@/utils/format';
 import {
   loadPapers, reportError, state, toast, withLoading,
 } from '@/stores/app';
@@ -206,6 +207,12 @@ async function refresh() {
     reportError(err, '论文列表加载失败');
   }
 }
+
+/* **打字即搜**（用户口径）：关键词一变就重新拉列表（去抖 300ms，别每个键都打一次后端）。
+ * 回车仍然立即搜一次 —— 但先把在途那次取消，否则会连发两个请求。 */
+const refreshDebounced = debounce(() => { void refresh(); }, 300);
+function refreshNow() { refreshDebounced.cancel(); void refresh(); }
+watch(keyword, () => refreshDebounced());
 
 onMounted(async () => {
   await refresh();
@@ -1085,7 +1092,7 @@ async function submitEdit() {
           v-model="keyword"
           type="search"
           placeholder="搜索标题、作者、会议或年份"
-          @keyup.enter="refresh"
+          @keyup.enter="refreshNow"
         />
       </label>
       <button type="button" class="lib-dock-btn" title="刷新列表" :disabled="loading" @click="refresh">

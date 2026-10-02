@@ -2015,6 +2015,53 @@ f.addEventListener('load', async () => {
 """
 
 
+SEARCH_LIVE_PROBE = """<!doctype html>
+<meta charset="utf-8"><title>search live</title>
+<style>body{margin:0}iframe{border:0;display:block}
+pre{position:fixed;right:0;top:0;width:520px;background:#fff;border-left:1px solid #ccc;padding:8px;margin:0;white-space:pre-wrap;font:11px monospace}</style>
+<iframe id="f" width="1500" height="1000" src="__URL__"></iframe>
+<pre id="out">waiting</pre>
+<script>
+/* 论文库搜索岛「**有字符变动就搜**」（用户口径）：只改 input 的值 + 派发 input 事件，
+ * **不按回车**，列表也必须自己收窄；再换一个不匹配的词，列表必须变空。
+ * 用原生 setter 改值而不是 el.value = x —— Vue 的 v-model 监听 input 事件，
+ * 直接赋值不触发它（"探针点了但 Vue 没反应"的经典坑）。 */
+const f = document.getElementById('f');
+const out = (o) => { document.getElementById('out').textContent = JSON.stringify(o, null, 1); };
+let started = false;
+f.addEventListener('load', async () => {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const cards = () => [...d.querySelectorAll('.lib-grid .paper-card, .lib-list .paper-card')];
+  try {
+    await sleep(__WAIT__);
+    const input = d.querySelector('.lib-dock-search input');
+    res.input = !!input;
+    if (!input) { out(res); return; }
+    res.placeholder = input.getAttribute('placeholder') || '';
+    res.before = cards().length;
+    const setter = Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value').set;
+    const type = (v) => {
+      setter.call(input, v);
+      input.dispatchEvent(new w.Event('input', { bubbles: true }));
+    };
+    type('turbo');
+    await sleep(1600);
+    res.after = cards().length;
+    res.titles = cards().map((c) => (c.textContent || '').trim().slice(0, 28));
+    type('zzzz-no-such-paper-here');
+    await sleep(1600);
+    res.none = cards().length;
+    out(res);
+  } catch (err) { res.error = String(err); out(res); }
+});
+</script>
+"""
+
+
 def put_progress(base: str, paper: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{base}/api/v1/papers/{paper}/progress", method="PUT",
@@ -3592,6 +3639,25 @@ def main() -> int:
                 print("[SKIP] 需要浏览器与「未翻译但有公式」的论文")
         else:
             print("[SKIP] 加 --block-markers 才跑这一节")
+
+    print()
+    print("=" * 78)
+    print("⑯ 搜索栏「有字符变动就搜」（论文库搜索岛：打字不按回车，列表自己收窄）")
+    print("=" * 78)
+    if browser:
+        probe = SEARCH_LIVE_PROBE.replace("__URL__", f"{base}/app/library?nosse=1")
+        data = dom_probe(browser, base, probe, "/library", 9000, 34000, DESKTOP) or {}
+        before, after, none = data.get("before"), data.get("after"), data.get("none")
+        ok = (isinstance(before, int) and before >= 2
+              and isinstance(after, int) and 1 <= after < before and none == 0)
+        results.append({"kind": "search-live", "path": "论文库搜索岛打字即搜", "ok": ok,
+                        "detail": f"卡片数：打字前={before} → 打 turbo={after} → "
+                                  f"打不匹配的词={none}；命中标题={data.get('titles')}"})
+        print(f"[{'PASS' if ok else 'FAIL'}] 论文库搜索岛打字即搜  "
+              f"卡片数：打字前={before} → 打 turbo={after} → 打不匹配的词={none}"
+              f"（全程只改输入框的值，没有按回车）")
+    else:
+        print("[SKIP] 需要浏览器")
 
     # 全部跑完：把这篇论文的打开状态还原成**跑之前**的样子
     # （路由用例 / ⑤ 标签用例 / ⑩ 都会用不同视图打开它，阅读器会把状态存回去）

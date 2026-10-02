@@ -7,7 +7,7 @@
  * 编辑：笔记 `PUT /notes/{id}`、批注 `PUT /annotations/{id}`，只提交 `content_md`。
  */
 
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { Annotation, Highlight, Note } from '@/api/types';
@@ -16,7 +16,7 @@ import {
 } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
 import {
-  fmtDate, fmtRelative, truncate,
+  debounce, fmtDate, fmtRelative, truncate,
 } from '@/utils/format';
 import { readerTarget } from '@/utils/navigation';
 import { mdToHtml } from '@/composables/useMarkdown';
@@ -193,6 +193,12 @@ async function doSearch(): Promise<void> {
   tab.value = 'notes';
 }
 
+/* **打字即搜**（用户口径）：关键词一变就重查（去抖 300ms）；回车立即搜一次（先取消在途那次）。
+ * 清空时 doSearch 自己会把结果清掉，所以不需要额外分支。 */
+const searchDebounced = debounce(() => { void doSearch(); }, 300);
+function searchNow() { searchDebounced.cancel(); void doSearch(); }
+watch(keyword, () => searchDebounced());
+
 function clearSearch(): void {
   keyword.value = '';
   searchItems.value = null;
@@ -351,7 +357,7 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
       <div class="page-actions">
         <label class="search-field">
           <AppIcon name="search" :size="15" />
-          <input v-model="keyword" placeholder="搜索笔记，回车确认" @keyup.enter="doSearch" />
+          <input v-model="keyword" placeholder="搜索笔记" @keyup.enter="searchNow" />
         </label>
         <button class="btn icon" v-if="searching" title="清除搜索" @click="clearSearch">
           <AppIcon name="close" :size="15" />
