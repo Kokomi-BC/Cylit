@@ -75,23 +75,36 @@ export function wrapBareMath(src: string): string {
 }
 
 /**
- * 中文里"句末标点 + `**`"的加粗**收不了尾**，字面漏出 `**`（用户 2026-10-03 报的"一句话没渲染"）。
+ * 中文里 `**` 紧贴**标点**时，CommonMark 的 flanking 规则会判定"这对定界符不成立"，
+ * 字面漏出 `**`（用户 2026-10-03 报的两次："一句话总结没渲染"、
+ * `**"压缩再解压之后，向量丢了多大劲"的平均值**`）。
  *
- * 原因不是配置，是 CommonMark 的 flanking 规则：
- *   `**一句话：……再投影回去。**论文的说法是……`
- * 收尾那个 `**` 左边是标点（`。`）、右边紧挨文字（`论`）—— 它既不是 right-flanking
- * （"左边是标点"要求右边也是空白或标点），也不是普通分隔符，于是**整对定界符原样输出**。
- * GitHub / cmark 同样如此（实测 marked 18 一致），只能我们自己接管这一对。
+ * 原因不是配置，是 flanking 规则本身。`**` 要成立，左侧那个必须 left-flanking、右侧那个必须
+ * right-flanking，而两者都要求"紧跟标点"时**外侧得是空白或标点**：
+ *
+ * - 收尾失败：`**一句话：……再投影回去。**论文的说法是……`
+ *   收尾的 `**` 左边是标点（`。`）、右边紧挨文字（`论`）→ 不成立；
+ * - 开场失败：`是**"压缩再解压"的平均值**…`
+ *   开场的 `**` 紧接着引号（标点）、左边又贴着文字（`是`）→ 不成立。
+ *
+ * **中文没有词间空格，所以这两种形状在中文里到处都是**（`是**"…"**`、`用**$d_k$**归一化`、
+ * `见**（图 3）**`……）。GitHub / cmark 同样如此（实测 marked 18 一致），只能我们自己接管
+ * 这一对。
  *
  * 做法：把**这一对**（两个定界符一起）抽成占位符，解析完换成 `<strong>`；只在这种
- * "收尾必然失败"的形状上动手，正常闭合的加粗一个字都不碰（`**重点**内容`、`他说。**重点**` 都照旧）。
+ * "必然失败"的形状上动手，正常闭合的加粗一个字都不碰（`**重点**内容`、`他说。**重点**`、
+ * `2**3**4`、`是 **"重点"** 后面` 都照旧）。
  * 代码围栏与行内代码里的 `**` 不动（那是代码，不是强调）。
  */
 const BOLD_PAIR = /\*\*([^*\n]{1,400}?)\*\*/g;
-/** 中英文标点：收尾 `**` 的左边是它、右边又紧挨文字时，CommonMark 不认这个收尾 */
-const TAIL_PUNCT = /[。，、；：？！…—～）》」』”’"')}\]】,.;:?!]/;
+/**
+ * CommonMark 眼里的"标点"：**ASCII 标点全集**（`!` 到 `~` 里的四段）+ 中文/全角标点。
+ * 两侧规则共用这一份 —— 上一版只列了中文标点，于是 `用**$d_k$**归一化` 这种
+ * "`$` 收尾"的形状漏在外面（`$` 按 CommonMark 的定义**是** ASCII 标点）。
+ */
+const PUNCT = /[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e。，、；：？！…—～·（）〈〉《》「」『』【】〔〕“”‘’]/;
 
-function fixCjkBoldTail(src: string): { text: string; strong: string[] } {
+function fixCjkBoldEdges(src: string): { text: string; strong: string[] } {
   const strong: string[] = [];
   if (!src.includes('**')) return { text: src, strong };
   let inFence = false;
@@ -100,9 +113,15 @@ function fixCjkBoldTail(src: string): { text: string; strong: string[] } {
     if (inFence || !line.includes('**')) return line;
     return line.replace(BOLD_PAIR, (whole, body: string, off: number) => {
       if ((line.slice(0, off).match(/`/g) || []).length % 2 === 1) return whole;   // 落在行内代码里
-      if (!TAIL_PUNCT.test(body.slice(-1))) return whole;
+      const prev = off > 0 ? line[off - 1] : '';
       const after = line[off + whole.length] ?? '';
-      if (after === '' || /\s/.test(after) || TAIL_PUNCT.test(after)) return whole;  // 这种 marked 自己认
+      // 开场失配：紧跟标点、左侧又贴着文字（`是**"…"**`）
+      const headBad = PUNCT.test(body[0])
+        && prev !== '' && !/\s/.test(prev) && !PUNCT.test(prev);
+      // 收尾失配：左侧是标点、右侧又紧挨文字（`**……。**论文`）
+      const tailBad = PUNCT.test(body.slice(-1))
+        && after !== '' && !/\s/.test(after) && !PUNCT.test(after);
+      if (!headBad && !tailBad) return whole;                       // 这种 marked 自己认
       strong.push(body);
       return `%%STRONG${strong.length - 1}%%`;
     });
@@ -275,7 +294,7 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
   const key = paperId ? `${paperId}\u0000${src0}` : src0;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const bold = fixCjkBoldTail(wrapBareMath(src0));
+  const bold = fixCjkBoldEdges(wrapBareMath(src0));
   const { text: src, math } = extractBlockMath(bold.text);
   let html: string;
   try {
@@ -297,7 +316,7 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
 export function inlineHtml(text?: string | null): string {
   const src = String(text ?? '').trim();
   if (!src) return '';
-  const bold = fixCjkBoldTail(src);
+  const bold = fixCjkBoldEdges(src);
   try {
     return renderStrong(marked.parseInline(bold.text) as string, bold.strong);
   } catch {

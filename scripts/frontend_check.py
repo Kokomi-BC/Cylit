@@ -728,6 +728,114 @@ def skip(path: str, detail: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# ⓪ Markdown 加粗：`**` 紧贴中文标点的形状（不用浏览器、不用模型）
+#
+# 这一节存在的原因：CommonMark 的 flanking 规则在中文里会连着翻车两次 ——
+# `**一句话：……。**论文`（收尾左边是标点）与 `是**"…"**`（开场紧跟标点）都会把 `**`
+# 原样漏出来。判据必须打在**真实渲染器**上（marked 18 + KaTeX + 我们自己的两处补丁），
+# 而"渲染出来的字"与页面状态无关，所以直接 bundle `useMarkdown.ts` 用 node 跑，
+# 比开一次无头 Chrome 便宜两个数量级，也不依赖任何数据。
+# --------------------------------------------------------------------------
+
+#: (名字, 源文, 纯文本里应当出现/等于的内容, 是否要求完全相等)
+MD_SHAPES = [
+    ("朴素中文", "这是**重点**内容", "这是重点内容", True),
+    ("开场引号（2026-10-03 报的）",
+     '是**"压缩再解压之后，向量丢了多大劲"的平均值**，就是把原来的 x',
+     '是"压缩再解压之后，向量丢了多大劲"的平均值，就是把原来的 x', True),
+    ("开场直角引号", "是**「压缩再解压」的平均值**，就是这样", "是「压缩再解压」的平均值，就是这样", True),
+    ("开场括号", "见**（图 3）**的说明", "见（图 3）的说明", True),
+    ("开场书名号", "读**《论文》**第三章", "读《论文》第三章", True),
+    ("开场省略号", "它说**……**然后", "它说……然后", True),
+    ("行内公式紧贴", "是**$d_k$**的缩放", "的缩放", False),
+    ("行内公式根号", "用**$\\sqrt{d_k}$**归一化", "归一化", False),
+    ("收尾标点（2026-10-03 上一报）", "**一句话：这是重点。**论文的说法是",
+     "一句话：这是重点。论文的说法是", True),
+    ("行首括号开头", "**（1）**是定义", "（1）是定义", True),
+    ("行首引号开头", '**"重点"**后面', '"重点"后面', True),
+    ("中文逗号收尾", "前**a，**b", "前a，b", True),
+    ("两边都坏", '是**"重点"。**后面', '是"重点"。后面', True),
+    # ---- 下面这些 marked 本来就认：改动后必须与原来**逐字一样**（一字不改才有对照意义）----
+    ("对照：正常空格分隔", '是 **"重点"** 后面', '是 "重点" 后面', True),
+    ("对照：左侧是标点", '（**"重点"**）', '（"重点"）', True),
+    ("对照：数字之间的 **", "2**3**4", "234", True),
+    ("对照：美元在正文里", "**x**$", "x$", True),
+    ("对照：行内代码里的 **", "写法是 `**重点**` 这样", "写法是 **重点** 这样", True),
+]
+
+_MD_DRIVER = """import { readFileSync } from 'node:fs';
+import { mdToHtml, inlineHtml } from './md.mjs';
+const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+console.log(JSON.stringify({
+  md: cases.map((c) => mdToHtml(c)),
+  inline: inlineHtml(cases[1]),
+}));
+"""
+
+
+def _md_plain(html: str) -> str:
+    """HTML → 纯文本（去标签 + 反转义），用来比"渲染出来的字"。"""
+    text = re.sub(r"<[^>]+>", "", html)
+    return (text.replace("&quot;", '"').replace("&#39;", "'").replace("&lt;", "<")
+            .replace("&gt;", ">").replace("&amp;", "&").replace("\u200b", ""))
+
+
+def check_markdown_shapes() -> None:
+    """把形状表喂给真实渲染器（esbuild bundle `useMarkdown.ts` → node）。"""
+    print("\n⓪ Markdown 加粗：`**` 紧贴标点（不用浏览器 / 不打模型）")
+    node = shutil.which("node")
+    frontend = ROOT / "frontend"
+    if not node or not (frontend / "node_modules" / "esbuild").exists():
+        skip("markdown 加粗形状表", "没有 node / esbuild（先在 frontend 里 npm i）")
+        return
+    src = [c[1] for c in MD_SHAPES]
+    with tempfile.TemporaryDirectory(prefix="cyl_md_") as tmp:
+        tmpdir = Path(tmp)
+        bundle, driver, cases = tmpdir / "md.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
+        cases.write_text(json.dumps(src, ensure_ascii=False), encoding="utf-8")
+        driver.write_text(_MD_DRIVER, encoding="utf-8")
+        build = subprocess.run(
+            [node, "-e",
+             "require('esbuild').buildSync({entryPoints:['src/composables/useMarkdown.ts'],"
+             "bundle:true,format:'esm',alias:{'@':'./src'},logLevel:'error',"
+             "outfile:process.argv[1]})", str(bundle)],
+            cwd=frontend, capture_output=True, text=True)
+        if build.returncode != 0 or not bundle.exists():
+            record("markdown", "加粗形状表能跑（bundle 真渲染器）", False,
+                   f"bundle 失败：{build.stderr[-200:]}")
+            return
+        proc = subprocess.run([node, str(driver), str(cases)], cwd=tmpdir,
+                              capture_output=True, text=True, encoding="utf-8")
+        if proc.returncode != 0:
+            record("markdown", "加粗形状表能跑（bundle 真渲染器）", False,
+                   f"node 失败：{(proc.stderr or '')[-200:]}")
+            return
+        data = json.loads(proc.stdout)
+    htmls = data.get("md") or []
+    if len(htmls) != len(MD_SHAPES):
+        record("markdown", "加粗形状表：`**` 紧贴标点全部闭合", False,
+               f"只回 {len(htmls)} / {len(MD_SHAPES)} 条")
+        return
+    failed: list[str] = []
+    for (name, _src, want, exact), html in zip(MD_SHAPES, htmls):
+        # 定界符泄漏：`<code>` 里的 `**` 是应当保留的（那是代码，不是强调）
+        leaked = "**" in re.sub(r"<code[\s\S]*?</code>", "", html)
+        plain = _md_plain(html).strip()          # marked 会在块尾留一个换行
+        ok = (not leaked) and (plain == want if exact else want in plain)
+        if not ok:
+            failed.append(f"{name}（{'漏记号' if leaked else plain[:26]}）")
+    record("markdown", "加粗形状表：`**` 紧贴标点全部闭合",
+           not failed, f"{len(MD_SHAPES)} 种形状全过" if not failed else "；".join(failed[:3]))
+    inline_html = data.get("inline") or ""
+    inline_plain = _md_plain(inline_html).strip()
+    # 行内版比的是**同一张表的第 2 行**（拿表里的期望值，避免两处期望各写一份、日后走散）
+    record("markdown", "加粗：行内版（标题 / 术语）同样闭合",
+           "**" not in re.sub(r"<code[\s\S]*?</code>", "", inline_html)
+           and inline_plain == MD_SHAPES[1][2],
+           inline_plain[:40])
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -747,6 +855,7 @@ def main() -> int:
     print("=" * 78)
     print("Cylit 前端自检" + ("（含流式问答：--model）" if args.model else "（默认零模型调用）"))
     print("=" * 78)
+    check_markdown_shapes()          # 不依赖浏览器与服务，先跑它
     browser = find_browser(args.browser)
     if not browser:
         print("[SKIP] 没找到浏览器（--browser 指定 chrome/edge 路径）")
