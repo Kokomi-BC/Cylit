@@ -23,7 +23,7 @@ function iconOf(kind?: string | null): string {
     <TransitionGroup name="toast">
       <div v-for="t in state.toasts" :key="t.id" :class="['toast', t.kind]" @click="dismissToast(t.id)">
         <div class="toast-tray">
-          <AppIcon :name="iconOf(t.kind)" :size="15" class="toast-ico" />
+          <AppIcon :name="iconOf(t.kind)" :size="14" class="toast-ico" />
           <span class="toast-text">{{ t.message }}</span>
         </div>
       </div>
@@ -47,6 +47,7 @@ function iconOf(kind?: string | null): string {
  *      （描边在深色下会变成一圈发光环，阅读器胶囊上踩过）；
  *   ② 中间那层托盘 —— `--bg-sunken`（全站的**托盘灰**，与 `.seg` 托盘同色），
  *      图标与文字**直接放在它里面**（原来还套了一层白色 pill，已去掉）。
+ *      尺寸比工具条那颗胶囊再收一档（用户口径 2026-10-03："第二层胶囊稍微调小一点"）。
  * 外壳 3px 内边距、半径逐层递减 3px（24 → 21），边界因此是一条均匀的细带。 */
 .toast {
   pointer-events: auto; cursor: pointer;
@@ -61,7 +62,7 @@ function iconOf(kind?: string | null): string {
 }
 .toast-tray {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 6px 12px;
+  padding: 5px 11px;
   border-radius: calc(var(--radius-lg) - 3px);
   background: var(--bg-sunken);
   font-size: 13px; line-height: 1.5;

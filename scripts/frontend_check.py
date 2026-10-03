@@ -953,6 +953,7 @@ def main() -> int:
                    toast.get("glass") is True and toast.get("radius") == "24px"
                    and toast.get("padding") == "3px"
                    and tray.get("bg") == tst.get("trayRef") and tray.get("radius") == "21px"
+                   and tray.get("pad") == "5px 11px"
                    and (tst.get("whitePill") or 0) == 0,
                    f"外壳 r={toast.get('radius')} 玻璃={toast.get('glass')} pad={toast.get('padding')}；"
                    f"托盘 {tray.get('bg')}（--bg-sunken={tst.get('trayRef')}）r={tray.get('radius')} "
