@@ -22,6 +22,7 @@ from backend.core.errors import ProviderError, ValidationError
 from backend.services.agent import (attachments, bridge, conversations, model_config,
                                     project)
 from backend.services.paper import paper_service
+from backend.services.translation import page_edit
 
 router = APIRouter(tags=["agent"])
 
@@ -55,6 +56,7 @@ async def agent_status(request: Request):
         "limits": {
             "max_rounds": s.agent_max_rounds,
             "search_budget": s.agent_search_budget,
+            "edit_budget": s.agent_edit_budget,
             "context_budget": s.agent_context_budget,
             "auto_compress_percent": s.agent_auto_compress_percent,
             "deadline_seconds": s.agent_deadline_seconds,
@@ -417,6 +419,45 @@ async def agent_page_row(paper_id: str, page: int, row_id: str, request: Request
     """页级产物（转录/翻译）里的**一行** —— 工具 `block_get` 展开转录段落的后端。"""
     _require_internal(x_internal_token)
     return envelope(project.row(paper_id, page, row_id), request=request)
+
+
+@router.get("/agent/papers/{paper_id}/pages/{page}/product")
+async def agent_page_product(paper_id: str, page: int, request: Request,
+                             side: str = Query("original"),
+                             x_internal_token: str | None = Header(None)):
+    """页级产物（A 路转录 / B 路译文）的**原文视图** —— 工具 `page_markdown_edit(op="view")`
+    的后端。给的是带行号的产物 Markdown（`find` 必须与它逐字一致）。"""
+    _require_internal(x_internal_token)
+    return envelope(page_edit.view(paper_id, page, side), request=request)
+
+
+@router.post("/agent/papers/{paper_id}/pages/{page}/product")
+async def agent_page_product_edit(paper_id: str, page: int, request: Request,
+                                  payload: dict = Body(default={}),
+                                  x_internal_token: str | None = Header(None)):
+    """改一处产物文本（字面替换、唯一命中）—— 工具 `page_markdown_edit(op="replace")` 的后端。
+
+    **拒绝（找不到 / 命中多处 / 会改变行结构 / 有任务在跑）走 200 + `ok=false`**：
+    对模型来说那是"结果"，不是"服务坏了"，工具层要原样转达它给的下一步提示。
+    """
+    _require_internal(x_internal_token)
+    return envelope(page_edit.replace(
+        paper_id, page, str(payload.get("side") or ""),
+        str(payload.get("find") or ""), str(payload.get("replace") or ""),
+        reason=str(payload.get("reason") or ""), actor=str(payload.get("actor") or "agent"),
+        reindex=bool(payload.get("reindex", True))), request=request)
+
+
+@router.post("/agent/papers/{paper_id}/pages/{page}/product/undo")
+async def agent_page_product_undo(paper_id: str, page: int, request: Request,
+                                  payload: dict = Body(default={}),
+                                  x_internal_token: str | None = Header(None)):
+    """撤回这一页**最后一次**编辑 —— 工具 `page_markdown_edit(op="undo")` 的后端。"""
+    _require_internal(x_internal_token)
+    return envelope(page_edit.undo(
+        paper_id, page, str(payload.get("side") or ""),
+        actor=str(payload.get("actor") or "agent"),
+        reindex=bool(payload.get("reindex", True))), request=request)
 
 
 @router.get("/agent/papers/{paper_id}/formulas")

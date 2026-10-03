@@ -142,6 +142,27 @@ class HostClient:
         """
         return dict(await self.get(f"/agent/papers/{paper_id}/rows/{int(page)}/{row_id}") or {})
 
+    # ---------------- 写：页级产物纠错 ----------------
+    async def page_product(self, paper_id: str, page: int, side: str) -> dict:
+        """页级产物（A 路转录 / B 路译文）的**原文视图**（`page_markdown_edit` 的 view）。"""
+        return dict(await self.get(f"/agent/papers/{paper_id}/pages/{int(page)}/product",
+                                   {"side": side}) or {})
+
+    async def page_edit(self, paper_id: str, page: int, side: str, find: str,
+                        replace: str, *, reason: str = "", reindex: bool = True) -> dict:
+        """改一处产物文本。**拒绝也是正常返回**（``ok=false`` + 下一步提示），不抛 HostError。"""
+        return dict(await self.post(f"/agent/papers/{paper_id}/pages/{int(page)}/product", {
+            "side": side, "find": find, "replace": replace,
+            "reason": reason, "reindex": bool(reindex),
+        }) or {})
+
+    async def page_undo(self, paper_id: str, page: int, side: str, *,
+                        reindex: bool = True) -> dict:
+        """撤回这一页最后一次编辑。"""
+        return dict(await self.post(
+            f"/agent/papers/{paper_id}/pages/{int(page)}/product/undo",
+            {"side": side, "reindex": bool(reindex)}) or {})
+
     async def page_image(self, paper_id: str, page_no: int, dpi: int
                          ) -> tuple[bytes, str]:
         """页面图。**dpi 一定要传**：阅读器那张是 150dpi，公式上下标常常看不清；

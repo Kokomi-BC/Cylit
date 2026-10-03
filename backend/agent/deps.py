@@ -48,6 +48,13 @@ class Deps:
     query_cache: dict[str, dict] = field(default_factory=dict)
     #: 已用掉的检索预算（M7：与轮数预算**分开**扣，见 `Settings.agent_search_budget`）
     search_calls: int = 0
+    #: 已用掉的**改动**次数（`page_markdown_edit`）。写比读更需要闸：写错了要人来收拾，
+    #: 所以它有自己的预算（`Settings.agent_edit_budget`），与检索、轮数三者互不顶替。
+    edit_calls: int = 0
+    #: 本轮改过的产物（`done` 事件带给前端做提示，也是自检的断言口）
+    edits: list[dict] = field(default_factory=list)
+    #: 本轮**读过**其产物原文的 ``(页, 侧)``：`page_markdown_edit` 的"先读后写"判据
+    viewed_sides: set[tuple[int, str]] = field(default_factory=set)
 
     def spend_search(self) -> bool:
         """扣一次检索预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
@@ -55,6 +62,17 @@ class Deps:
             return False
         self.search_calls += 1
         return True
+
+    def spend_edit(self) -> bool:
+        """扣一次改动预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
+        if self.edit_calls >= self.cfg.edit_budget:
+            return False
+        self.edit_calls += 1
+        return True
+
+    @property
+    def edit_exhausted(self) -> bool:
+        return self.edit_calls >= self.cfg.edit_budget
 
     @property
     def search_exhausted(self) -> bool:

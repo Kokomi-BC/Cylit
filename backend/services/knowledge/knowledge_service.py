@@ -1122,6 +1122,98 @@ def index_paper(paper_id: str, *, rebuild: bool = False,
     }
 
 
+def reindex_changed(paper_id: str, *, embed: bool = True) -> dict:
+    """**增量**重建：只重算"内容变了"的那些 chunk（改完页级产物后用，见 `page_edit`）。
+
+    为什么不直接调 `index_paper`：它是**整篇重建 + 整篇重嵌**。实测一篇 22 页 / 352 chunk
+    的论文要 30+ 次嵌入调用（几十秒、几十次计费）—— 而一次纠错通常只影响**十几个** chunk，
+    每改一处就整篇重嵌，改十处就把单轮问答的时限（600s）吃光了。
+
+    做法：chunk 的 id 与 `content_hash` 都是**确定性**的（`_variant_row`：id 由首末块 id 拼成、
+    hash 是正文的 sha256），所以拿"重算出来的 chunk 清单"与库里那批逐个比 hash，就能只挑出
+    真正变了的：删掉变了的旧行与已经消失的 id，插入新行，**只嵌这一批**；没变的行连向量都
+    原样不动（检索侧不按 `index_version` 过滤，所以不需要给它们升版本号）。
+
+    兜底（都会退回整篇 `index_paper`）：这篇还没建过索引（只嵌几个 chunk 会得到半截索引）、
+    或者嵌入模型换过（新旧向量不同源，混在一张表里没法查）。
+    """
+    paper_service.get_paper(paper_id)
+    chunks = build_chunks_for_paper(paper_id)
+    if not chunks:
+        raise ValidationError(f"没有可用 chunk：{paper_id} 是否尚未解析？")
+
+    cfg = model_manager.get_config(None, "embedding")
+    model_id = cfg.get("id")
+    with session_scope() as sess:
+        rows = sess.query(Chunk).filter(Chunk.paper_id == paper_id).all()
+        prev = {r.id: (r.content_hash, int(r.index_version or 0), r.embedding_model_id)
+                for r in rows}
+    if not prev or any(v[2] != model_id for v in prev.values()):
+        return {**index_paper(paper_id, rebuild=True), "mode": "full",
+                "changed": len(chunks), "stale_removed": 0}
+
+    version = max(v[1] for v in prev.values()) or 1
+    changed = [c for c in chunks
+               if prev.get(c["id"], (None,))[0] != c["content_hash"]]
+    stale = sorted(set(prev) - {c["id"] for c in chunks})
+
+    with session_scope() as sess:
+        drop = [c["id"] for c in changed] + stale
+        for i in range(0, len(drop), 500):          # 变了的行先删再插（内容 + 元数据一起更新）
+            sess.query(Chunk).filter(Chunk.id.in_(drop[i:i + 500])) \
+                .delete(synchronize_session=False)
+        for c in changed:
+            sess.add(Chunk(
+                id=c["id"], paper_id=paper_id, block_id=c["block_id"],
+                chunk_type=c["chunk_type"], page_no=c["page_no"],
+                order_global=c["order_global"], section=c["section"],
+                content_preview=c["content_preview"],
+                content_hash=c["content_hash"], token_count=c["token_count"],
+                index_version=version, embedding_model_id=model_id,
+                metadata_json=json_dumps(c["metadata"]),
+            ))
+        paper = sess.get(Paper, paper_id)
+        if paper is not None:
+            paper.in_knowledge_base = True
+
+    embedded = 0
+    vector_error = None
+    if embed and changed:
+        try:
+            provider = model_manager.get_embedding()
+            batch = int((cfg.get("parameters") or {}).get("batch") or 32)
+            vectors: list[list[float]] = []
+            for i in range(0, len(changed), batch):
+                vectors.extend(provider.embed(
+                    [c["content"] for c in changed[i:i + batch]]))
+            if vectors:
+                model_manager.remember_dim(cfg, len(vectors[0]))
+            from backend.repositories.vector.lancedb_store import vector_store
+
+            vector_store.upsert_chunks(changed, vectors, version,
+                                       embedding_model_id=model_id)
+            if stale:
+                vector_store.delete_chunks(stale)
+            embedded = len(vectors)
+        except Exception as exc:  # noqa: BLE001
+            vector_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            log.warning("增量向量入库失败（MySQL chunk 已更新）：%s", exc)
+    elif stale:
+        try:
+            from backend.repositories.vector.lancedb_store import vector_store
+
+            vector_store.delete_chunks(stale)
+        except Exception as exc:  # noqa: BLE001
+            vector_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    return {
+        "mode": "incremental", "paper_id": paper_id, "chunks": len(chunks),
+        "changed": len(changed), "stale_removed": len(stale), "embedded": embedded,
+        "index_version": version, "model_id": model_id,
+        "vector_error": vector_error, "at": iso_utc(now()),
+    }
+
+
 def _count_by_type(chunks: list[dict]) -> dict:
     out: dict[str, int] = {}
     for c in chunks:

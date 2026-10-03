@@ -549,6 +549,13 @@ function onEvent(name: string, data: any) {
     streamCitations.value = data?.citations ?? streamCitations.value;
     if (data?.thinking_ms) thinkingMs.value = Number(data.thinking_ms);
     if (data?.incomplete_reason) toast(`回答未完成：${data.incomplete_reason}`, 'warn');
+    // 这一轮改过产物（`page_markdown_edit`）：正文与索引都已更新，给一句提示 ——
+    // 否则用户只能自己去翻那一页对不对。阅读器那一页由 SSE 自己刷新（见 ReaderView）。
+    const edits = Array.isArray(data?.edits) ? data.edits : [];
+    if (edits.length) {
+      const pages = [...new Set(edits.map((e: { page?: number }) => Number(e.page)))].filter(Boolean);
+      toast(`已修改 ${edits.length} 处产物${pages.length ? `（第 ${pages.join('、')} 页）` : ''}`, 'ok', 3200);
+    }
     return;
   }
   if (name === 'error') {
@@ -563,6 +570,7 @@ const TOOL_LABELS: Record<string, string> = {
   page_image_get: '正在看页面图', figure_list: '正在看插图清单',
   figure_image_get: '正在看插图', formula_get: '正在取公式',
   translate_get: '正在取译文', library_list: '正在翻书架', notes_search: '正在查你的笔记',
+  page_markdown_edit: '正在修订产物',
 };
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? `正在调用 ${name}`;
 

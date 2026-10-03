@@ -576,6 +576,8 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
                 blocks.append({"ref": cit.ref, "translation": zh})
             if blocks:
                 out_pages.append({"page": page_no, "blocks": blocks})
+                # 读过这一页的译文也算"读过这一页"：`page_markdown_edit` 的先读后写判据看它
+                ctx.deps.pages_read.append(page_no)
         if not out_pages:
             return {"ok": False, "truncated": clipped,
                     "error": f"第 {pages} 页还没有译文（这篇论文可能没翻译，或该页未翻译）。"}
@@ -675,6 +677,114 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
                            "kind": kind}, _impl())
 
 
+# --------------------------------------------------------------------------
+# ⑤ 写：页级产物纠错（整份工具面里**唯一**会改用户数据的能力）
+# --------------------------------------------------------------------------
+
+#: 一次 `find` 的长度上限（与主后端 `page_edit.MAX_FIND` 一致；整页覆盖从后门溜不进来）
+EDIT_MAX_FIND = 4000
+#: 侧别叫法（主后端也会归一，这里只是为了"先读后写"这条判据能对上号）
+_SIDE_ALIASES = {
+    "original": "original", "en": "original", "transcript": "original",
+    "transcription": "original", "ocr": "original",
+    "原文": "original", "转录": "original", "英文": "original",
+    "translation": "translation", "zh": "translation", "译文": "translation",
+    "翻译": "translation", "中文": "translation",
+}
+
+
+def _side_key(side: str) -> str:
+    return _SIDE_ALIASES.get(str(side or "").strip().lower(), str(side or "").strip().lower())
+
+
+async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: str,
+                             find: str = "", replace: str = "",
+                             reason: str = "") -> dict:
+    """改**页级产物**（A 路英文转录 / B 路中文译文）里的**一处**文本 —— 修正 OCR 认错、
+    译文译错、术语不统一这类问题。
+
+    **只有用户明确要求修改时才用它**（"这处识别错了，改成…"、"这句翻译不对"、"把 X 统一成 Y"）。
+    你自己觉得译文不顺、或与你的理解不同，不算理由：那要在回答里**说出来**，而不是动手改。
+    改写会立刻影响用户的正文、导出与检索索引，所以它是**先读后写 + 最小改动**：
+
+      op="view"    看这一路这一页的**产物原文**（带行号）—— 改之前必须先看它。
+                    行号只是路标：`find` 里写行内容本身，不要带 `|` 和行号。
+      op="replace" 把 `find`（**逐字**取自 view，且在这一页里**只出现一次**）换成 `replace`。
+                    一次只改一处；`replace` 传空串就是删除。找不到 / 命中多处 / 会让这一页
+                    的段落结构变化（块数或行数变了）都会被拒绝，结果里会写清下一步怎么做。
+      op="undo"    撤回这一页**最后一次**改动（把改动前的整页文本原样写回）。
+                    **不占改动预算**：它只会把东西改回去。
+
+    改之前请先确认"哪个才是对的"：**OCR 认错**要对着 `page_image_get` 的原版面核对；
+    **译文错**要对着原文核对（`page_markdown_get` 一次给两侧）。拿不准就先问用户，
+    不要凭猜测改。改完在回答里逐条报告：第几页、哪一侧、原来是什么、改成了什么。
+
+    参数：
+      page  —— 页码。
+      side  —— `"original"`（A 路英文转录 / OCR 结果）｜`"translation"`（B 路中文译文）。
+      find  —— 要改掉的**原文**（必须与 view 的结果逐字一致，且整页唯一）。
+      replace —— 改成什么（空串 = 删除这一处）。
+      reason —— 一句话说明为什么改（写进改动日志，便于用户回看）。
+    """
+    async def _impl() -> dict:
+        page_no = int(page)
+        key = _side_key(side)
+        what = "view" if op in ("view", "read", "show") else str(op or "").strip().lower()
+
+        if what == "view":
+            data = await ctx.deps.host.page_product(ctx.deps.paper_id, page_no, side)
+            if data.get("ok") is False:
+                return data
+            ctx.deps.viewed_sides.add((page_no, key))
+            if page_no not in ctx.deps.pages_read:
+                ctx.deps.pages_read.append(page_no)
+            return data
+
+        if what in ("replace", "edit", "str_replace", "update"):
+            if ((page_no, key) not in ctx.deps.viewed_sides
+                    and page_no not in ctx.deps.pages_read):
+                return {"ok": False,
+                        "error": f"先读后写：这一轮还没有读第 {page_no} 页。"
+                                 f"先 page_markdown_get(pages=\"{page_no}\") 看清原文/译文"
+                                 f"（改 OCR 就先 page_image_get 核对原版面），"
+                                 f"再用 op=\"view\" 拿到要改的那一段逐字文本。"}
+            if not str(find or "").strip():
+                return {"ok": False, "error": "find 不能为空：它是要改掉的原文，逐字取自 view。"}
+            if len(str(find)) > EDIT_MAX_FIND or len(str(replace or "")) > EDIT_MAX_FIND:
+                return {"ok": False,
+                        "error": f"一次只改**一处**（find / replace 各不超过 {EDIT_MAX_FIND} 字），"
+                                 f"不接受整页覆盖；多处修改请分多次调用。"}
+            if not ctx.deps.spend_edit():
+                return {"ok": False,
+                        "error": f"本轮修改次数已用尽（{ctx.deps.cfg.edit_budget} 处）。"
+                                 f"先把已经改好的告诉用户；确实还要改，就让用户再说一次。"}
+            data = await ctx.deps.host.page_edit(
+                ctx.deps.paper_id, page_no, side, str(find), str(replace or ""),
+                reason=str(reason or ""))
+            if data.get("ok"):
+                ctx.deps.edits.append({
+                    "page": data.get("page", page_no), "side": data.get("side", key),
+                    "line": data.get("line"), "before": data.get("before"),
+                    "after": data.get("after"), "reason": str(reason or "")[:120],
+                })
+            return data
+
+        if what in ("undo", "revert", "rollback"):
+            # 撤回**不扣改动预算**：它只会把东西改回去，扣预算等于"改错了还不让人撤"
+            data = await ctx.deps.host.page_undo(ctx.deps.paper_id, page_no, side)
+            if data.get("ok"):
+                ctx.deps.edits = [e for e in ctx.deps.edits
+                                  if not (e.get("page") == page_no
+                                          and e.get("side") == key)]
+            return data
+
+        return {"ok": False, "error": "op 只能是 view / replace / undo。"}
+
+    return await _guarded(ctx, "page_markdown_edit",
+                          {"op": str(op or ""), "page": page, "side": str(side or ""),
+                           "find": _clip(find or "", 60)}, _impl())
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
@@ -682,5 +792,8 @@ P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
 #: P1 补齐的五个读工具
 P1_TOOLS = [kb_search, formula_get, translate_get, library_list, notes_search]
 
-#: 当前挂载的全部工具（P2 的写工具**不在这里**）
-AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS]
+#: 写工具（唯一一处会改用户数据的能力；预算与"先读后写"都在实现里）
+EDIT_TOOLS = [page_markdown_edit]
+
+#: 当前挂载的全部工具
+AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS]

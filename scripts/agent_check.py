@@ -159,8 +159,15 @@ def check_service(base: str) -> bool:
         record("service", "skills 已加载（框架加载器，不是目录扫描）",
                len(skills) >= 6 and all((s.get("chars") or 0) > 0 for s in skills),
                f"{len(skills)} 个：{[s.get('name') for s in skills][:4]}…")
+        # 写能力的说明书（`text-fix`）必须在，否则模型不知道"改产物"这件事怎么做
+        names = {s.get("name") for s in skills}
+        record("service", "改了产物的 skill 已挂上（text-fix）", "text-fix" in names,
+               f"{sorted(names)}")
     except Exception as exc:  # noqa: BLE001
         record("service", "skills 已加载（框架加载器，不是目录扫描）", False, f"{exc}")
+    record("service", "改动预算已生效（设置页口径）",
+           int((status.get("limits") or {}).get("edit_budget") or 0) > 0,
+           f"edit_budget={((status.get('limits') or {}).get('edit_budget'))}")
     return bool(status.get("running"))
 
 
@@ -272,7 +279,138 @@ def check_projections(base: str, paper: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# ③ 图片附件（免费：只走 HTTP，不打模型）
+# ③ 产物纠错（免费：只走 HTTP；自检刻意 `reindex=false`，不花嵌入的钱）
+# --------------------------------------------------------------------------
+
+
+def _unprefix(lines: str) -> str:
+    """把 `view` 的行号前缀（``   12| ``）剥掉，还原成产物原文。"""
+    out = []
+    for line in (lines or "").split("\n"):
+        head, sep, rest = line.partition("| ")
+        out.append(rest if (sep and head.strip().isdigit()) else line)
+    return "\n".join(out)
+
+
+def check_page_edit(base: str, paper: str) -> None:
+    print("\n③ 产物纠错（写工具：拒绝路径 + 真改真撤；不重建索引）")
+    api, head = f"{base}/api/v1/agent", internal()
+    try:
+        with urllib.request.urlopen(f"{base}/api/v1/papers/{paper}/reader",
+                                    timeout=60) as resp:
+            reader = json.loads(resp.read().decode("utf-8"))["data"]
+    except Exception as exc:  # noqa: BLE001
+        record("edit", "产物纠错：找到可改的一页", False, f"{exc}")
+        return
+    pages = [int(p.get("page") or 0) for p in (reader.get("page_translations") or [])
+             if (p.get("rows") or [])]
+    if not pages:
+        skip("产物纠错", "这篇论文还没有页级产物（未转录 / 未翻译）")
+        return
+
+    side, view, page = "original", None, 0
+    for cand in pages:
+        data = get_json(f"{api}/papers/{paper}/pages/{cand}/product?side={side}",
+                        head)["data"]
+        if data.get("ok") is False:
+            continue
+        # 太长的一页会被截断（`MAX_VIEW`），"整页唯一"就验不准 —— 换一页
+        if 200 <= int(data.get("chars") or 0) <= 20000:
+            view, page = data, cand
+            break
+    if view is None:
+        skip("产物纠错", "没有长度合适的产物页（都为空或过长）")
+        return
+
+    raw = _unprefix(view.get("lines") or "")
+    record("edit", "产物视图：带行号的原文（op=view）",
+           bool(view.get("lines", "").startswith("   1| "))
+           and int(view.get("chars") or 0) == len(raw) and len(raw) > 100,
+           f"p{page} {view.get('chars')} 字 / {view.get('rows')} 行")
+
+    def post(payload: dict) -> dict:
+        return post_json(f"{api}/papers/{paper}/pages/{page}/product",
+                         {"side": side, "reindex": False, **payload}, head)["data"]
+
+    def fresh() -> str:
+        """每一步都重新读一遍（写被拒时状态与预期不同，不能拿上一次的文本当真）。"""
+        data = get_json(f"{api}/papers/{paper}/pages/{page}/product?side={side}",
+                        head)["data"]
+        return _unprefix(data.get("lines") or "")
+
+    # ---- 拒绝①：find 在整页里根本不存在 → 必须回"最像的几行"
+    probe = next((ln.strip()[:8] for ln in raw.split("\n") if len(ln.strip()) >= 12), "")
+    miss = post({"find": probe + "☃", "replace": "x"})
+    record("edit", "拒绝：find 不存在（并给出最像的几行）",
+           miss.get("ok") is False and bool(miss.get("near_miss")),
+           f"near_miss={len(miss.get('near_miss') or [])} 条，"
+           f"最像：{(miss.get('near_miss') or [{}])[0].get('text', '')[:32]}")
+
+    # ---- 拒绝②：命中多处 → 必须拒绝并报次数（要求带上前后文）
+    dup = next((s for ln in raw.split("\n") if len(ln.strip()) >= 20
+                for s in (ln.strip()[:6], ln.strip()[3:9], ln.strip()[5:11])
+                if raw.count(s) > 1), None)
+    if dup is None:
+        skip("拒绝：find 命中多处", "这一页没有合适的重复片段")
+    else:
+        multi = post({"find": dup, "replace": "x"})
+        record("edit", "拒绝：find 命中多处（要求带上前后文）",
+               multi.get("ok") is False and int(multi.get("occurrences") or 0) == raw.count(dup),
+               f"{dup!r} 命中 {multi.get('occurrences')} 次")
+
+    # ---- 真改一处 + 真撤回：唯一命中、不在行尾（免得被 rstrip 吃掉）
+    needle = next((ln.strip()[2:9] for ln in raw.split("\n")
+                   if len(ln.strip()) >= 12 and raw.count(ln.strip()[2:9]) == 1), None)
+    if needle is None:
+        skip("真改一处 + 撤回", "这一页找不到唯一且合适的片段")
+        return
+    edit = post({"find": needle, "replace": needle + " ", "reason": "自检：往返验证",
+                 "actor": "selfcheck"})
+    log_file = ROOT / "data" / "papers" / paper / "md" / "edit_log.jsonl"
+    journal = log_file.is_file() and f'"page": {page}' in log_file.read_text(
+        encoding="utf-8", errors="ignore")
+    want = raw.replace(needle, needle + " ", 1)
+    record("edit", "真改一处（唯一命中 + 改动日志留痕）",
+           edit.get("ok") is True and int(edit.get("line") or 0) >= 1
+           and fresh() == want and journal,
+           f"p{page} 第 {edit.get('line')} 行，{len(raw)} → {len(want)} 字，"
+           f"日志={'有' if journal else '没有'}")
+
+    back = post_json(f"{api}/papers/{paper}/pages/{page}/product/undo",
+                     {"side": side, "reindex": False}, head)["data"]
+    record("edit", "撤回：逐字回到改动前",
+           back.get("ok") is True and fresh() == raw,
+           f"撤回 {back.get('reverted', {}).get('find')!r}，正文与改动前逐字一致")
+
+    # ---- 拒绝③：跨块编辑（把两段并成一段）→ 必须回滚，磁盘逐字节不变
+    span = None
+    for idx in range(3, len(raw) - 9):
+        if raw[idx:idx + 2] == "\n\n":
+            cand = raw[idx - 3:idx + 5]
+            if raw.count(cand) == 1 and cand.strip():
+                span = cand
+                break
+    if span is None:
+        skip("拒绝：跨块编辑会回滚", "这一页没有可用的分界")
+    else:
+        rolled = post({"find": span, "replace": " "})
+        if rolled.get("ok") is True:        # 守卫失效：先自己收拾干净，再报失败
+            post_json(f"{api}/papers/{paper}/pages/{page}/product/undo",
+                      {"side": side, "reindex": False}, head)
+        record("edit", "拒绝：跨块编辑（段落块 / 行变了）→ 已回滚",
+               rolled.get("ok") is False and "结构" in str(rolled.get("error") or "")
+               and fresh() == raw,
+               f"段落块 {rolled.get('blocks_before')} → {rolled.get('blocks_after')}、"
+               f"行 {rolled.get('rows_before')} → {rolled.get('rows_after')}，"
+               f"回滚后正文逐字一致")
+
+    # 自检不留痕：日志被撤回清空后就不该留着这个文件
+    if log_file.is_file() and not log_file.read_text(encoding="utf-8").strip():
+        log_file.unlink()
+
+
+# --------------------------------------------------------------------------
+# ④ 图片附件（免费：只走 HTTP，不打模型）
 # --------------------------------------------------------------------------
 
 
@@ -330,7 +468,7 @@ def cleanup_attachments(ids: list[str]) -> int:
 
 
 # --------------------------------------------------------------------------
-# ④ 会话 CRUD（免费：不新建任何会话）
+# ⑤ 会话 CRUD（免费：不新建任何会话）
 # --------------------------------------------------------------------------
 
 
@@ -389,7 +527,7 @@ def check_conversations(base: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# ⑤ 真问答（只在 --model 下跑；跑完自己清理）
+# ⑥ 真问答（只在 --model 下跑；跑完自己清理）
 # --------------------------------------------------------------------------
 
 
@@ -558,6 +696,7 @@ def main() -> int:
     if not running:
         print("\n问答服务没在跑：跳过需要它的检查（`pr.py agent` 启动后再跑）")
     check_projections(base, args.paper)
+    check_page_edit(base, args.paper)
     created_atts = check_attachments(base)
     check_conversations(base)
 

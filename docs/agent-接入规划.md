@@ -1,6 +1,7 @@
 # Agent 接入规划（Cylit）
 
-**状态：** **P0 已落地并自检通过（46/46）**；P1/P2 待做
+**状态：** **P0 已落地并自检通过（46/46）**；**P1 完成**（压缩 / 图片 / 分支 / 引用锚）；
+**P2-a 写工具（页级产物纠错）已完成**（第四十三轮，见 §7.4）；P2-b（`formula-fix` + 评估回归）待做
 **范围：** 在 Cylit 现有检索/理解能力之上接入一个带 tool calling 的论文问答 Agent
 **非范围：** 前端视觉改造、翻译流水线、MinerU 解析链路、**脚本执行（未规划）**
 
@@ -299,7 +300,7 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | P-a | 只读：检索、读页/块、页图、插图、公式 | 仅 tools | **P0** |
 | P-b | skill 读自己目录下的参考文档 | `FileSystem(root_dir='agent/skills', read_only=True)` | P1 |
 | P-d | 子 agent 委派 | `SubAgents(agents=[…], max_depth=3, inherit_tools=False)` | 未规划（见 §6.4） |
-| **P-写** | 写回论文内容（目前只有"修正某块公式"） | `page_markdown_edit` + `requires_approval=True`，**默认不挂** | P2 |
+| **P-写** | 写回论文内容（页级产物：OCR / 译文纠错） | `page_markdown_edit`（ops：view/replace/undo）+ 改动预算，见 §7.4 | P2-a ✅ |
 | ~~P-c~~ | ~~脚本执行~~ | `Shell` 能力记录在案，**本规划不含** | 未规划 |
 
 ### 6.4 skill 清单
@@ -313,7 +314,8 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | `formula-explain` | 公式解释 | `formula_get` `block_get` | P-a | P1 ✅ |
 | `term-glossary` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 ✅ |
 | `translate-check` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 ✅ |
-| `formula-fix` ⚠️ | 公式纠错：先读、再提议、等用户确认 | `page_markdown_get` + `page_markdown_edit`（写，需审批） | P-写 | P2 |
+| `text-fix` ✅ | 产物纠错（OCR 认错 / 译文译错）：先读、再改一处、改完逐条报告，可撤回 | `page_markdown_edit`（写） | P-写 | P2-a ✅ |
+| `formula-fix` ⚠️ | 公式纠错：先读、再提议、等用户确认 | `page_markdown_get` + `page_markdown_edit`（写） | P-写 | P2-b |
 
 **未来展望（最低优先级，本轮不纳入）**：`cross-paper-compare`（跨论文对比，会让 scope
 强制覆写复杂一档）、`survey-map`（领域地图，是另一种产品形态）、脚本执行 / Shell。
@@ -354,7 +356,7 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 10 | `library_list` | 读 | 书架检索（标题/作者模糊匹配），只回元数据 | 新投影 `GET /agent/library?q=` | P1 ✅ |
 | 11 | `notes_search` | 读 | 笔记 / 高亮 / 批注（可按当前论文或全库） | 新投影 `GET /agent/notes?query=&paper_id=&kind=` | P1 ✅ |
 | 12 | `related_concepts` | 读 | 理解产物（概念与关联） | `GET /papers/{id}/related` | P2 |
-| 13 | `page_markdown_edit` | **写** | 按块修正文本（CAS + 审批） | **需新增接口** | P2 |
+| 13 | `page_markdown_edit` | **写** | 改**页级产物**里的一处文本（ops：`view` / `replace` / `undo`；字面替换、唯一命中、先读后写、结构变了回滚、改完增量重建索引） | `GET/POST /agent/papers/{id}/pages/{n}/product` | P2-a ✅ |
 
 **参数口径：模型只认 `ref`，不认内部 id**（P0 的落地取舍）。检索与读页返回的每一项都带
 宿主分配的 `ref`；`block_get` / 将来的写工具都收 `ref`，由宿主查回 `block_id`。
@@ -419,38 +421,39 @@ M4 的"瘦投影"因此是从"清洗兜底"变成"结构上不可能"。
 
 ### 7.4 写工具（整份规划里唯一的写能力）
 
-```
-page_markdown_edit(ref 必填, expected_text 必填(CAS), new_text, reason)
-```
+**2026-10-03 落地（第四十三轮）**：写能力做成了**页级产物纠错** `page_markdown_edit`
+（ops = `view` / `replace` / `undo`），改的是 A 路英文转录（OCR 结果）与 B 路中文译文；
+接口是主后端的 `GET/POST /agent/papers/{id}/pages/{n}/product`，实现见
+`backend/services/translation/page_edit.py`。
 
-**先读后写：这是硬约束，不是流程建议。** 块就是分块的边界——chunk 全部由 block 派生
-（`chunking.py` 的语义单元、`_row_formula_chunks` 的公式行、`_row_structure_chunks` 的图表），
-`anchor_map.build_block_row_map()` 还把 block 映射回原文行。一旦"改写"变成**页面级自由文本
-重写**，就可能合并/拆开块——block_id ↔ chunk 的对应、行锚点、阅读器高亮会**同时失效，
-而且看不出来**：问答照样能答，只是引用位置开始漂。
+与本节最初设想（写 MySQL 的 **block**、CAS + `requires_approval`）的差别与理由：
 
-三条写死：
+| 最初设想 | 实际落地 | 为什么改 |
+|---|---|---|
+| 按 `block`（解析块）粒度 | 按**页级产物 Markdown** 粒度（字面替换一处） | 页级产物是**事实源**：阅读器正文、双语导出、检索 chunk 都由它派生，而行是**读时**由 `pair_rows` 现算的。改它一处，三条链一起跟上；改 block 反而要再同步产物 |
+| `expected_text` CAS | `find` 必须**整页唯一**（字面替换） | 与 DSH harness 的编辑口径一致：先读（`op="view"` 拿到带行号的产物原文）、再最小改动；零次命中回"最像的几行"，多次命中要求带上前后文 |
+| `requires_approval=True` + 前端确认卡 | **不挂审批**，改成"只有用户明确要求才改 + 改动预算 + 可撤回 + 改动日志" | 框架侧的审批需要前端确认卡（本项目没有这套 UI）；而写入口本身就是用户点出来的那一句话。真正需要的是**可撤销**与**改了什么说得清**，这两条都做到了 |
+| 断言"chunk 总数与各块边界未变" | 断言**这一侧的段落块数与合并行数都不变**，变了**回滚**并报错 | 实测只比行数不够：把 A 侧两段并成一段时，`pair_rows` 的结构对齐会用"单侧行"把行数补齐（7 行还是 7 行），但块已经少了一个、行与块的对应漂了 |
+| 索引重建 | `knowledge_service.reindex_changed()`：**只重嵌内容变了的 chunk** | `index_paper` 是整篇重建 + 整篇重嵌：实测这篇 352 chunk 要 30+ 次嵌入调用（几十秒、几十次计费），改十处就把单轮 600s 时限吃光。chunk id 与 `content_hash` 都是确定性的，逐条比 hash 就能只挑出真变了的 |
+| 人工修改标来源 | 页面 payload 上写 `edited_by` / `edited_at` / `edit_count` / `edit_reason`，另留 `md/edit_log.jsonl`（含改动前整页文本） | 重跑转录/翻译仍会覆盖人工修改（**已知限制**，见下） |
 
-1. **按 `ref`（= 单个块）粒度编辑，不接受"整页 markdown 覆盖"**。改多个块就多次调用。
-   `ref` 而不是 `block_id`：模型根本看不到 block_id（见 §7.0 的参数口径）。
-2. **先读后写 + CAS**：`expected_text` 与库里不一致就**拒绝并返回当前值**，让模型重读再改。
-3. **只重算受影响的那一个块**，并**断言该论文 chunk 总数与各块边界未变**；
-   变了就回滚报错（说明这次编辑跨了块边界）。
+**仍然成立的三条硬规则**：
 
-另外五件事必须一起做对：
+1. **先读后写**：工具层要求这一轮真读过这一页（`pages_read` 或 `viewed_sides`），否则直接拒绝；
+2. **最小改动**：`find` 必须唯一命中且 ≤ 4000 字符（整页覆盖从后门溜不进来）；一次只改一处；
+3. **写完必须重建索引**：正文改了而索引没跟上，下次问答还在引用旧文本 —— 比不改更糟。
+   重建失败不算编辑失败，但结果里必须如实报（`index.ok=false` + 提示重建）。
 
-1. **权威源不是 markdown 文件**：`GET /markdown` 是**派生物**，真正被检索、被阅读器渲染的
-   是 MySQL 里的 block + IR。新接口要**改 block**（markdown 由 block 重新生成），
-   否则问答引用新公式、阅读器显示旧公式。
-2. **必须重建该论文的知识库索引**（`knowledge_service.reconcile(paper_id=…, fix=True)` /
-   `POST /knowledge/index`）。**写完没重建比不改更糟**——下次问答还在引用错公式。
-   返回值里要带"索引是否已重建"。
-3. **人工修改标来源**：`source=manual / edited_at / edited_by`。论文**重跑解析会重建 block**，
-   人工修改会被覆盖——要和术语表一个套路（`source=model|manual`，人工优先）。
-4. **必须审批**：`Agent.tool(requires_approval=True)` + 前端确认卡；模型不能自己决定写。
-5. **必须能撤销**：保留 `old_text`。
+**已知限制（明确写在这里，别当成 bug）**：
 
-**并且 P0/P1 默认不挂**：不装 `formula-fix` 这个 skill，模型根本不知道有这个能力。
+- **增删段落会被拒**：段落块数一变就回滚（行号是位置编号，一变用户已有的高亮 / 笔记与
+  历史引用整体错位）。要增删段落得重转录那一页。
+- **重跑转录 / 翻译会覆盖人工修改**：产物是那次调用的输出，没有"人工优先"的判据
+  （术语表那套 `source=manual` 还没有挪过来）；`edit_log.jsonl` 至少留了证据。
+- **没有产物的页改不了**（未转录/未翻译的论文走解析块）：如实告诉用户，不承诺。
+- **论文上有活着的任务时拒绝写**（转录 / 翻译 / 索引都在写同一个产物文件）。
+
+
 
 ### 7.5 返回值必须瘦
 
@@ -680,7 +683,8 @@ Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
 | **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~就地编辑与开分支（`branch=true`）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~ + ~~深度思考折叠与思考耗时~~ + ~~正文内引用锚~~；追问建议**决定不做**（§10.3） | ✅ 自检重写为「默认不花钱、不留痕」（§15）：`agent_check.py` **21/21**（免费）+ **30/30**（`--model`）、`frontend_check.py` **18/18**（免费）+ **30/30**（`--model`） | 完成 |
-| **P2** | **写工具 `page_markdown_edit` + `formula-fix` skill**（按块 + CAS + 审批 + 索引重建 + 人工优先 + 可撤销）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 5~8 天 |
+| **P2-a ✅ 已完成**（第四十三轮） | **页级产物纠错 `page_markdown_edit`**（ops：`view` / `replace` / `undo`）+ `text-fix` skill：字面替换、唯一命中、先读后写、段落结构不变量（变了回滚）、**增量**索引重建、改动日志与撤回、改动预算 12 处/轮 | ✅ 自检免费 `agent_check.py` **33/33**（含：找不到 → 给最像的几行；命中多处 → 报次数；真改一处 → 日志留痕；撤回 → 逐字还原；跨块编辑 → 回滚且正文逐字不变）；真机验证一次增量重建：改一处 → chunk `changed=2 / embedded=2`、条数不变、撤回后哈希与正文都还原 | 完成 |
+| **P2-b（剩余）** | `formula-fix` skill（公式纠错流程）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 3~5 天 |
 
 **P0 刻意不含多轮压缩**：先把"证据 → 引用 → 跳转"打通并被自检覆盖，再加压缩。
 不过 `history` 的管道**已经接通**（主后端把可见分支的历史传给 agent，agent 侧转成
@@ -711,7 +715,7 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、
 
 | 脚本 | 行数（重写前 → 后） | 默认跑什么 | 加 `--model` 跑什么 |
 |---|---|---|---|
-| `scripts/agent_check.py` | 978 → 446 | 服务 / 技能 / 模型配置 · 六个只读投影 · 图片附件与守卫 · 会话列表分类搜索与批量删除 —— **不打模型** | 真问答一轮（可选 `--image` 验多模态、`--deep` 再跑压缩/就地改/开分支） |
+| `scripts/agent_check.py` | 978 → 736 | 服务 / 技能 / 模型配置 · 六个只读投影 · **产物纠错写工具**（视图 / 拒绝路径 / 真改真撤 / 跨块回滚）· 图片附件与守卫 · 会话列表分类搜索与批量删除 —— **不打模型**、**不重建索引**（`reindex=false`，不花嵌入的钱） | 真问答一轮（可选 `--image` 验多模态、`--deep` 再跑压缩/就地改/开分支） |
 | `scripts/frontend_check.py` | 4316 → 541 | 阅读器（正文 / 公式 / 胶囊）· 对话面板（一级页 / 二级页 / 输入区 / 确认框）—— **一条消息都不发** | 一条流式问答（回答 / 引用锚 / 思考块 / 删除确认框） |
 
 两条纪律写在两个脚本的文件头里，别退化：

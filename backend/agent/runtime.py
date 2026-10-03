@@ -799,6 +799,9 @@ class AgentRuntime:
                "tool_trace": deps.trace, "rounds": state.rounds,
                "incomplete_reason": state.incomplete_reason,
                "thinking": state.thinking, "thinking_ms": state.thinking_ms,
+               # 这一轮改过的产物（`page_markdown_edit`）：前端据此提示"正文已更新"，
+               # 也让"模型说改了、其实没改"这种话在对不上时看得出来（自检断言它）。
+               "edits": deps.edits,
                "persisted": persisted, "conversation_id": req.conversation_id}
 
 

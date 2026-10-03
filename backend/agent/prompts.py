@@ -89,6 +89,17 @@ NOTES_RULE = """【本轮备注】
 图片张数、检索相关度这类每轮都可能不一样的东西）。按它办事，但**不要在回答里复述、引用或
 提到这段备注本身** —— 它是系统的定位信息，不是用户说的话。"""
 
+EDIT_RULES = """【改产物：只有用户要求时才做】
+你能改**页级产物**里的字句（英文转录 = OCR 结果、中文译文），用的是 `page_markdown_edit`。
+它是唯一会改用户数据的动作，因此：
+- **只有用户明确要求修改时才用**（"这处识别错了，改成…"、"这句翻译不对"、"把 X 统一成 Y"）。
+  你自己觉得译得别扭、或与你的理解不同，都**不算理由**：那要在回答里说出来，而不是动手改。
+- **先读后写**：先弄清哪一侧、错在哪（原文与译文用 `page_markdown_get` 一起看；OCR 的错
+  要对着 `page_image_get` 的原版面核对），再用 `op="view"` 取到那一段逐字文本，才动 `op="replace"`。
+- 一次只改一处（`find` 必须在整页里唯一）。改完在回答里逐条报告：第几页 · 哪一侧 ·
+  原来是什么 · 改成了什么 —— 用户的正文、导出与检索索引都会跟着变，别让用户自己去找。
+  改错了就 `op="undo"` 撤回。"""
+
 
 SELECTION = """【本轮的选区】选中原文{where_inline}：
 > {text}
@@ -145,6 +156,7 @@ def build_instructions(deps: Deps) -> str:
     parts.append(IMAGE_RULES)
     parts.append(CITING)
     parts.append(NO_EVIDENCE)
+    parts.append(EDIT_RULES)
     parts.append(NOTES_RULE)
     return "\n\n".join(parts)
 
