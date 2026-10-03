@@ -74,6 +74,50 @@ export function wrapBareMath(src: string): string {
   }).join('\n');
 }
 
+/**
+ * 中文里"句末标点 + `**`"的加粗**收不了尾**，字面漏出 `**`（用户 2026-10-03 报的"一句话没渲染"）。
+ *
+ * 原因不是配置，是 CommonMark 的 flanking 规则：
+ *   `**一句话：……再投影回去。**论文的说法是……`
+ * 收尾那个 `**` 左边是标点（`。`）、右边紧挨文字（`论`）—— 它既不是 right-flanking
+ * （"左边是标点"要求右边也是空白或标点），也不是普通分隔符，于是**整对定界符原样输出**。
+ * GitHub / cmark 同样如此（实测 marked 18 一致），只能我们自己接管这一对。
+ *
+ * 做法：把**这一对**（两个定界符一起）抽成占位符，解析完换成 `<strong>`；只在这种
+ * "收尾必然失败"的形状上动手，正常闭合的加粗一个字都不碰（`**重点**内容`、`他说。**重点**` 都照旧）。
+ * 代码围栏与行内代码里的 `**` 不动（那是代码，不是强调）。
+ */
+const BOLD_PAIR = /\*\*([^*\n]{1,400}?)\*\*/g;
+/** 中英文标点：收尾 `**` 的左边是它、右边又紧挨文字时，CommonMark 不认这个收尾 */
+const TAIL_PUNCT = /[。，、；：？！…—～）》」』”’"')}\]】,.;:?!]/;
+
+function fixCjkBoldTail(src: string): { text: string; strong: string[] } {
+  const strong: string[] = [];
+  if (!src.includes('**')) return { text: src, strong };
+  let inFence = false;
+  const text = src.split('\n').map((line) => {
+    if (line.trimStart().startsWith('```')) { inFence = !inFence; return line; }
+    if (inFence || !line.includes('**')) return line;
+    return line.replace(BOLD_PAIR, (whole, body: string, off: number) => {
+      if ((line.slice(0, off).match(/`/g) || []).length % 2 === 1) return whole;   // 落在行内代码里
+      if (!TAIL_PUNCT.test(body.slice(-1))) return whole;
+      const after = line[off + whole.length] ?? '';
+      if (after === '' || /\s/.test(after) || TAIL_PUNCT.test(after)) return whole;  // 这种 marked 自己认
+      strong.push(body);
+      return `%%STRONG${strong.length - 1}%%`;
+    });
+  }).join('\n');
+  return { text, strong };
+}
+
+function renderStrong(html: string, strong: string[]): string {
+  if (!strong.length) return html;
+  return html.replace(/%%STRONG(\d+)%%/g, (_all, idx: string) => {
+    const body = strong[Number(idx)];
+    return body === undefined ? '' : `<strong>${marked.parseInline(body)}</strong>`;
+  });
+}
+
 export function escapeHtml(text: unknown): string {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -231,7 +275,8 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
   const key = paperId ? `${paperId}\u0000${src0}` : src0;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const { text: src, math } = extractBlockMath(wrapBareMath(src0));
+  const bold = fixCjkBoldTail(wrapBareMath(src0));
+  const { text: src, math } = extractBlockMath(bold.text);
   let html: string;
   try {
     html = marked.parse(src) as string;
@@ -240,6 +285,7 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
     html = `<p>${escapeHtml(src0)}</p>`;
   }
   html = renderBlockMath(html, math);
+  html = renderStrong(html, bold.strong);
   html = rewriteAssetPaths(html, paperId);
   html = decorateTables(html);
   if (cache.size >= CACHE_LIMIT) cache.clear();
@@ -251,8 +297,9 @@ export function mdToHtml(text?: string | null, paperId?: string | null): string 
 export function inlineHtml(text?: string | null): string {
   const src = String(text ?? '').trim();
   if (!src) return '';
+  const bold = fixCjkBoldTail(src);
   try {
-    return marked.parseInline(src) as string;
+    return renderStrong(marked.parseInline(bold.text) as string, bold.strong);
   } catch {
     return escapeHtml(src);
   }

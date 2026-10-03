@@ -291,6 +291,18 @@ async function run() {
       res.inlineWithPage = inlines.filter((b) => (b.dataset.page || '') !== '').length;
       res.inlineWithRow = inlines.filter((b) => (b.dataset.row || '') !== '').length;
       res.bottomChips = root.querySelectorAll('.cites .cite').length;
+      /* 锚点**长什么样**也要量：它们是 `v-html` 塞进来的，scoped 样式会整片失效，
+         只看元素个数会漏（用户 2026-10-03 报的"标号没辨识度"就是这么漏掉的）。 */
+      if (inlines.length) {
+        const cs = w.getComputedStyle(inlines[0]);
+        res.citeStyle = { bg: cs.backgroundColor, color: cs.color, deco: cs.textDecorationLine,
+                          fw: cs.fontWeight, cur: cs.cursor };
+      }
+      /* 中文句末标点紧接 `**` 时 CommonMark 收不了尾（会字面漏出 `**`）——
+         只数这个形状，`a**b` 这种正常文字不算。 */
+      res.badBold = [...root.querySelectorAll('.md.body')]
+        .map((el) => ((el.textContent || '').match(/[。，、；：？！…—）》」』”’,.;:?!][*][*]/g) || []).length)
+        .reduce((a, b) => a + b, 0);
     }
     out(res);
     document.title = 'done';
@@ -681,6 +693,13 @@ def main() -> int:
                    and (chat.get("inlineWithPage") or 0) > 0 and (chat.get("inlineWithRow") or 0) > 0,
                    f"锚点 {chat.get('inlineCites')} 个（带页 {chat.get('inlineWithPage')} / "
                    f"带行 {chat.get('inlineWithRow')}），底部 chip {chat.get('bottomChips')}")
+            styleOf = chat.get("citeStyle") or {}
+            record("chat", "引用锚看得出能点（淡底 + 下划线 + 700 字重 + 手型）",
+                   styleOf.get("deco") == "underline" and styleOf.get("fw") in ("700", "bold")
+                   and styleOf.get("cur") == "pointer" and "rgba(0, 0, 0, 0)" != styleOf.get("bg"),
+                   f"{styleOf}")
+            record("chat", "`**加粗**` 不漏记号（中文句末标点紧接收尾定界符）",
+                   (chat.get("badBold") or 0) == 0, f"漏记号 {chat.get('badBold')} 处")
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

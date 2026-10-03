@@ -1204,23 +1204,26 @@ watch(() => props.selection, (sel) => {
 }
 .sum-card .md :deep(p) { margin: 3px 0; }
 /* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03）。
-   加粗 + 下划线是"这能点"的信号：正文是 400 字重的黑字，一个 700 字重、带下划线的
-   `[15]` 才不会读成"作者写的方括号编号"（论文自己的 `[12]` 与我们的 `[n]` 长得一样，
-   混起来用户会去点正文里的参考文献编号）。 */
-.cite-inline {
+   ⚠️ 这些按钮是 `decorateRefs` 用 `v-html` 塞进去的，**不带 scope 属性** —— 选择器必须走
+   `:deep()`。写成 `.cite-inline {…}` 会被编译成 `.cite-inline[data-v-xxx]`，一条都不匹配，
+   锚点就长得和正文一模一样（用户 2026-10-03 报："标号没有辨识度"，此前 `frontend_check`
+   只数了元素个数、没量样式，所以没拦住）。
+   观感：accent 淡底胶囊 + 700 字重 + 实心下划线 —— 一眼看出"这个方括号能点"，
+   论文自己的 `[12]`（纯文字）与我们的 `[n]` 才不会混。 */
+.md.body :deep(.cite-inline) {
   border: 0; background: var(--accent-soft); color: var(--accent-text);
   font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1.5;
   padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--accent) 72%, transparent);
   text-underline-offset: 2px; text-decoration-thickness: 1px;
   vertical-align: baseline; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.cite-inline:hover {
+.md.body :deep(.cite-inline:hover) {
   background: var(--accent); color: var(--text-on-accent);
   text-decoration-color: currentColor;
 }
-.cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
+.md.body :deep(.cite-inline:focus-visible) { outline: none; box-shadow: var(--ring); }
 .note { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); }
 .note .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
