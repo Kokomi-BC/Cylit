@@ -1160,11 +1160,15 @@ watch(() => props.selection, (sel) => {
                   <div v-if="s.kind === 'text' && showInTrace(m, s)" class="md run-text"
                        v-html="renderAnswer(s.text || '', m.citations)" @click="onCitationClick" />
                   <template v-else-if="s.kind === 'text'" /><!-- 最后一段正文＝回答本体，渲染在轨迹外 -->
-                  <!-- 思考段：默认只露几行，点一下展开（长思考不占满整屏） -->
+                  <!-- 思考段：默认只露 4 行，点一下展开（长思考不占满整屏） -->
                   <div v-else-if="s.kind === 'thinking'" class="run-step think"
                        :class="{ open: isStepOpen(m.message_id, i) }"
+                       :title="isStepOpen(m.message_id, i) ? '收起这段思考' : '展开这段思考'"
                        @click="toggleStep(m.message_id, i)">
-                    <AppIcon name="sparkle" :size="11" />
+                    <AppIcon class="step-caret"
+                             :name="isStepOpen(m.message_id, i) ? 'chevron-down' : 'chevron-right'"
+                             :size="11" />
+                    <AppIcon class="step-ico" name="sparkle" :size="11" />
                     <span class="step-tag">思考</span>
                     <span class="step-text">{{ s.text }}</span>
                   </div>
@@ -1484,18 +1488,23 @@ watch(() => props.selection, (sel) => {
   border-left: 2px solid var(--border);
 }
 .run-step {
-  display: flex; align-items: baseline; gap: 5px;
+  /* `flex-start`：图标/标签钉在**第一行**上（用 baseline/center 时，多行思考的图标会飘到
+     整段中间，看着不像"图标与文字并排"，用户 2026-10-03 报过） */
+  display: flex; align-items: flex-start; gap: 5px;
   font-size: 11.5px; line-height: 1.65; color: var(--text-faint);
 }
-.run-step :deep(svg), .run-step svg { flex: none; align-self: center; }
+.run-step :deep(svg), .run-step svg { flex: none; margin-top: 2px; }
 .run-step .step-tag { color: var(--text-dim); flex: none; }
 .run-step .step-arg { color: var(--text-faint); overflow-wrap: anywhere; }
 .run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: 10.5px; }
 .run-step.tool.running .step-tag { color: var(--accent-text); }
 /* 阶段提示（准备档案 / 检索 / 组织回答）：比步骤再淡一档，它只是过程的背景 */
 .run-step.stage .step-text { color: var(--text-faint); font-style: italic; }
-/* 思考段：默认只露 4 行（一轮思考可能上万字），点一下展开全文 */
+/* 思考段：默认只露 4 行（一轮思考可能上万字），点一下展开全文。
+   最前面那枚箭头就是"能展开"的提示（与轨迹抬头同一套箭头语汇）。 */
 .run-step.think { cursor: pointer; }
+.run-step.think:hover .step-tag { color: var(--accent-text); }
+.run-step.think .step-caret { color: var(--text-faint); }
 .run-step.think .step-text {
   font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;

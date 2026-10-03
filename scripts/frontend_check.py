@@ -822,9 +822,23 @@ async function run() {
       if (think) {
         res.clamp = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
         res.thinkText = (think.querySelector('.step-text').textContent || '').length;
+        /* ⚠️ `AppIcon` 的根就是 `<svg class="icon">`：传进去的 class 会**并到这一个元素上**，
+            所以选 `svg.step-caret`，不要写 `.step-caret svg`（那是"再往里找一层"，找不到）。 */
+        const caret = think.querySelector('svg.step-caret');
+        const ico = think.querySelector('svg.step-ico');
+        const text = think.querySelector('.step-text');
+        res.caretBefore = caret ? (caret.innerHTML || '').slice(0, 40) : '';
+        /* 图标与文字**并排**：图标在第一行（顶对齐），不是飘在整段中间 */
+        if (ico && text) {
+          const a = ico.getBoundingClientRect(), b = text.getBoundingClientRect();
+          res.icoBesideText = Math.abs(a.top - b.top) < 6 && a.bottom <= b.bottom + 2
+            && a.right <= b.left + 2;
+        }
         think.click();
         await sleep(200);
         res.thinkOpen = think.classList.contains('open');
+        res.caretAfter = caret ? (caret.innerHTML || '').slice(0, 40) : '';
+        res.caretAtHead = !!caret && think.firstElementChild === caret;
       }
       /* 再收起一次：步骤藏起来，回答（在轨迹外）必须还在 */
       first().querySelector('.run-head').click();
@@ -937,9 +951,15 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
                any("翻书架" in t and "attention" in t for t in (res.get("toolLines") or []))
                and any("读正文" in t for t in (res.get("toolLines") or [])),
                " / ".join((res.get("toolLines") or [])[:3]))
-        record("run", "思考段：默认收成 4 行、点一下展开",
-               str(res.get("clamp")) == "4" and res.get("thinkOpen") is True,
-               f"line-clamp={res.get('clamp')}，{res.get('thinkText')} 字")
+        record("run", "思考段：默认收成 4 行、点一下展开（箭头跟着翻）",
+               str(res.get("clamp")) == "4" and res.get("thinkOpen") is True
+               and bool(res.get("caretBefore")) and res.get("caretBefore") != res.get("caretAfter")
+               and res.get("caretAtHead") is True,
+               f"line-clamp={res.get('clamp')}，{res.get('thinkText')} 字，"
+               f"箭头 {'变了' if res.get('caretBefore') != res.get('caretAfter') else '没变'}"
+               f"@{'行首' if res.get('caretAtHead') else '不在行首'}")
+        record("run", "思考图标与文字**并排**（图标在第一行，不飘在整段中间）",
+               res.get("icoBesideText") is True, f"并排={res.get('icoBesideText')}")
         record("run", "收起过程轨迹：步骤藏起来、**回答仍在**",
                res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0
                and res.get("outsideBody") == 1,

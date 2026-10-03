@@ -8333,3 +8333,22 @@ CommonMark 的 flanking 规则要求：左边的 `**` 必须 left-flanking、右
 `frontend_check` **52/52**（第 ④ 组 9 → 11 条，新增"默认收起"与"进来停在底部"：
 距底 ≤4px）；`typecheck` / `build` 干净；`agent_check` / `pytest` 未受本轮影响（后端只动过
 第 46 轮那三处）。
+
+## 48. 第四十八轮：思考段加展开/收起箭头，图标与文字并排
+
+用户口径："思考的部分增加展开和收起箭头，思考图标与文字并排，改完提交 git。"
+
+- **行首加箭头**：`chevron-right` / `chevron-down`（与轨迹抬头同一套箭头语汇），
+  点整行切换；顺手加 `title="展开/收起这段思考"` 与 hover 变色（`.step-tag` 转 accent）
+  —— 之前思考段虽然可点，但**看不出来能点**。
+- **图标与文字并排**：`.run-step` 从 `align-items: baseline` 改成 `flex-start`、图标
+  `margin-top: 2px`。之前图标写着 `align-self: center`，在多行（4 行 clamp）思考里会**飘到
+  整段中间**，看着不像"图标在文字旁边"（用户口径就是这一条）。
+- 自检补两条断言（第 ④ 组 11 → 12 条）：
+  ① 箭头在**行首**、点一下 `.open` 变化且**箭头的 path 真的翻了**（比 `innerHTML`，与复选框
+  那条同一手法）；② 图标与文本框**相对位置**：`|top 差| < 6px`、图标底不超过文本底、
+  图标右边不越过文本左边 —— 这三条一起才叫"并排且钉在第一行"。
+  踩了一个小坑：`AppIcon` 的根就是 `<svg class="icon">`，传进去的 class **并到这一个元素上**，
+  所以选择器要写 `svg.step-caret`，写成 `.step-caret svg` 什么都找不到（断言先红了才发现）。
+
+验证：`frontend_check` **53/53**；`typecheck` / `build` 干净；用户肉眼确认"没有问题"。
