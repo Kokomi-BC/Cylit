@@ -102,7 +102,7 @@ const liveId = ref('');
 /** 整轮耗时（跑表，每 200ms 一跳）；`done` 之后用服务端的权威值覆盖 */
 const elapsedMs = ref(0);
 let tickTimer: number | null = null;
-/** 收起过程轨迹的消息 id（默认展开：正文段就在轨迹里，收起会连回答一起藏掉） */
+/** 收起过程轨迹的消息 id（**默认收起**：从历史进来先看对话，想看过程再点开）。 */
 const openRuns = ref<string[]>([]);
 /** 展开长思考的键（`${message_id}:${步骤序号}`）；默认只露 4 行 */
 const openSteps = ref<string[]>([]);
@@ -352,12 +352,17 @@ function runTitle(m: AgentMessage) {
 }
 
 function isRunOpen(id: string) {
-  // 默认展开：正文段在轨迹里，收起会把回答一起藏掉
-  return !openRuns.value.includes(id);
+  // **默认收起**（从历史进来先看对话）；正在跑的那一轮在 `ask()` 里进这个集合，
+  // 于是它默认展开、也**照样能点收起**（不再有"跑的时候点不动"的例外）。
+  return openRuns.value.includes(id);
 }
 
 function toggleRun(id: string) {
-  openRuns.value = isRunOpen(id) ? [...openRuns.value, id] : openRuns.value.filter(x => x !== id);
+  // ⚠️ 与 `isRunOpen` 同一套语义（**记"展开"而不是"收起"**）：默认收起后，
+  // 这里写反过一次 —— 点抬头看见的是一动不动。
+  openRuns.value = isRunOpen(id)
+    ? openRuns.value.filter(x => x !== id)
+    : [...openRuns.value, id];
 }
 
 function stepKey(id: string, i: number) {
@@ -442,7 +447,15 @@ function rollCopy() {
 async function scrollToBottom() {
   await nextTick();
   const el = msgsEl.value;
-  if (el) el.scrollTop = el.scrollHeight;
+  if (!el) return;
+  /* 连滚几帧：正文里的 KaTeX、图片、折叠块都会在随后几帧继续把高度撑开，
+     只滚一次会停在半路（用户报的"进来不是停在底部"）。 */
+  for (let i = 0; i < 3; i += 1) {
+    el.scrollTop = el.scrollHeight;
+    await new Promise((done) => requestAnimationFrame(() => done(null)));
+  }
+  // 附件缩略图这类"加载完才知道高度"的，再补一次
+  window.setTimeout(() => { el.scrollTop = el.scrollHeight; }, 160);
 }
 
 async function loadStatus() {
@@ -504,17 +517,22 @@ async function loadConversation(id: string) {
     usage.value = data.usage ?? null;
     editing.value = null;
     if (!conversations.value.some(c => c.conversation_id === id)) await loadConversations();
-    await scrollToBottom();
   } catch (err) {
     reportError(err, '读取会话失败');
   } finally {
     loading.value = false;
   }
+  /* ⚠️ 滚动必须在 `loading=false` **之后**：加载中列表里只有"读取会话…"那一行，
+     这时 `scrollHeight` 约等于 0，滚了也白滚（进来停在顶部就是这么来的）。 */
+  await scrollToBottom();
 }
 
 async function openConversation(id: string) {
   level.value = 'thread';
-  if (id === currentId.value && messages.value.length) return;
+  if (id === currentId.value && messages.value.length) {
+    await scrollToBottom();      // 同一个会话再点一次：也回到最新那一轮
+    return;
+  }
   await loadConversation(id);
 }
 
@@ -792,6 +810,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   // 用户 2026-10-03 报过"思考的抬头跑到我问的问题上面去了"）。
   liveId.value = `local-assistant-${Date.now()}`;
   ensureLive();
+  openRuns.value = [...openRuns.value, liveId.value];   // 跑着的那一轮默认展开（可点收起）
   appendLiveStep('stage', mode === 'send' ? '正在准备…'
     : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   if (mode === 'send') {
@@ -837,6 +856,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     // 占位消息撤掉：成功后 `loadConversation` 已经把它换成了落库那条；
     // 失败/中止时它没有对应的库记录，留着会与刷新后的结果不一致。
     messages.value = messages.value.filter(m => m.message_id !== liveId.value);
+    openRuns.value = openRuns.value.filter(x => x !== liveId.value);
     liveId.value = '';
     controller = null;
     // 发完一轮输入框空了 → 高度收回去（不然它会一直停在上一次的多行高度）

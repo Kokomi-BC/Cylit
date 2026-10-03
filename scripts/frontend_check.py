@@ -782,13 +782,31 @@ async function run() {
     res.rowTitle = row ? (row.textContent || '').trim().slice(0, 24) : '';
     if (row) row.click();
     for (let i = 0; i < 120 && !root().querySelector('.msg.assistant .run'); i += 1) { spin(BURN); await sleep(50); }
+    /* 进来就该停在底部（用户口径：从历史记录进入对话默认显示对话底部）——
+       必须在**点任何东西之前**量：展开/折叠会改高度。 */
+    await sleep(400);
+    const scroller = root().querySelector('.msgs');
+    if (scroller) {
+      res.scrollTop = Math.round(scroller.scrollTop);
+      res.scrollHeight = Math.round(scroller.scrollHeight);
+      res.bottomGap = Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight);
+      res.atBottom = res.bottomGap <= 4;
+    }
+    const first = () => root().querySelectorAll('.msg.assistant')[0];
     const msgs = [...root().querySelectorAll('.msg.assistant')];
     const msg = msgs[0];        // 第一条 = 夹杂的那条；第二条用来验安全网
     const run = msg ? msg.querySelector('.run') : null;
     res.opened = !!run;
     if (run) {
       res.head = (run.querySelector('.run-head') || {}).textContent || '';
-      const body = run.querySelector('.run-body');
+      /* 历史消息**默认收起**过程轨迹（从列表进来先看对话）—— 正文在轨迹外，收起不藏正文 */
+      res.defaultCollapsed = !run.querySelector('.run-body');
+      res.headOnlyText = (msg.querySelector(':scope > .md.body') || {}).textContent || '';
+      run.querySelector('.run-head').click();       // 展开，接着量步骤
+      await sleep(250);
+      /* ⚠️ 每次都**重新查**：展开会重排，抓着旧节点读容易读到已经不在文档里的那棵树 */
+      const body = first().querySelector('.run-body');
+      res.expanded = !!body;
       const kids = body ? [...body.children] : [];
       res.kinds = kids.map((el) => (el.classList.contains('run-text') ? 'text'
         : el.classList.contains('think') ? 'thinking'
@@ -797,10 +815,10 @@ async function run() {
       res.traceTexts = kids.filter((el) => el.classList.contains('run-text'))
         .map((el) => (el.textContent || '').trim());
       res.strong = kids.filter((el) => el.querySelector('strong')).length;
-      res.anchors = run.querySelectorAll('.run-text .cite-inline').length;
+      res.anchors = body ? body.querySelectorAll('.run-text .cite-inline').length : 0;
       res.toolLines = kids.filter((el) => el.classList.contains('tool'))
         .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim());
-      const think = run.querySelector('.run-step.think');
+      const think = body ? body.querySelector('.run-step.think') : null;
       if (think) {
         res.clamp = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
         res.thinkText = (think.querySelector('.step-text').textContent || '').length;
@@ -808,11 +826,11 @@ async function run() {
         await sleep(200);
         res.thinkOpen = think.classList.contains('open');
       }
-      /* 折叠：抬头点一下只收**步骤**；回答在轨迹**外面**，任何情况下都不该被藏 */
-      run.querySelector('.run-head').click();
-      await sleep(200);
-      res.collapsedSteps = run.querySelectorAll('.run-body > *').length;
-      res.collapsedTexts = run.querySelectorAll('.run-text').length;
+      /* 再收起一次：步骤藏起来，回答（在轨迹外）必须还在 */
+      first().querySelector('.run-head').click();
+      await sleep(250);
+      res.collapsedSteps = first().querySelectorAll('.run-body > *').length;
+      res.collapsedTexts = first().querySelectorAll('.run-text').length;
     }
     /* 回答渲染在轨迹外：`.msg.assistant` 的直接子 `.md.body`（不是 `.run-text`） */
     const answer = msg ? msg.querySelector(':scope > .md.body') : null;
@@ -889,6 +907,13 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
             return
         record("run", "打开临时会话（第一条就是它）", res.get("opened") is True,
                f"{res.get('rowTitle')!r} err={res.get('error')!r}")
+        record("run", "从历史进来：过程轨迹**默认收起**、回答照旧显示",
+               res.get("defaultCollapsed") is True and res.get("expanded") is True
+               and "最终回答" in (res.get("headOnlyText") or ""),
+               f"默认收起={res.get('defaultCollapsed')}，收起时回答={(res.get('headOnlyText') or '')[:16]!r}")
+        record("run", "进来就停在对话底部（列表→会话）",
+               res.get("atBottom") is True,
+               f"距底 {res.get('bottomGap')}px（可滚 {res.get('scrollHeight')}）")
         want = ["stage", "thinking", "tool", "thinking", "tool", "text", "tool"]
         record("run", "思考 / 正文 / 工具**按发生顺序夹杂**",
                (res.get("kinds") or []) == want, "→".join(res.get("kinds") or []))
