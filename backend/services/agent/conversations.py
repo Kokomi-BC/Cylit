@@ -374,6 +374,49 @@ def history_for_agent(conversation_id: str, *,
     return history_from_chain(visible_messages(conversation_id), max_tokens=max_tokens)
 
 
+#: 助手历史里"材料索引"最多列几条（挡住极端长的引用表）
+PROVENANCE_LIMIT = 20
+#: 材料索引里每条摘要截多长
+PROVENANCE_CHARS = 50
+
+
+def _provenance(m: dict) -> str:
+    """一条**助手历史**接一个"那一轮用到了什么材料"的尾巴（没有材料就返回空串）。
+
+    为什么必须拼回去：正文里的 `[n]` 是**那一轮自己的编号**（`_renumber` 把 registry 的号压成
+    1..M），而库里另存着 `citations` 与 `tool_trace`。以前发给模型的历史只有 `role` + `content`，
+    于是模型看到自己上一轮写着 `[1]…[17]`，却**查不到任何出处、也看不到工具调用记录** ——
+    它的结论只能是"这些编号是我编的"，接着就不认上面的对话（用户 2026-10-03 贴的那段思维链
+    正是这个推理）。
+
+    **缓存安全**：这段文本只由库里的行拼出来（同一行永远拼出同样的字节），且拼在每条消息
+    自己后面 —— 历史前缀逐字节不变，provider 的前缀缓存照旧命中。
+    """
+    cites = list(m.get("citations") or [])
+    trace = [t for t in (m.get("tool_trace") or [])
+             if not str(t.get("tool") or "").startswith("__")]
+    if not cites and not trace:
+        return ""
+    lines: list[str] = []
+    if trace:
+        counts: dict[str, int] = {}
+        for t in trace:
+            name = str(t.get("tool") or "?")
+            counts[name] = counts.get(name, 0) + 1
+        lines.append("〔上一轮调用过的工具〕"
+                     + "、".join(f"{k}×{v}" if v > 1 else k for k, v in counts.items()))
+    if cites:
+        lines.append("〔上一轮回答里的编号指向这些材料 —— 编号只属于那一轮，"
+                     "本轮要引用哪条材料就自己调工具拿本轮的编号〕")
+        for c in cites[:PROVENANCE_LIMIT]:
+            where = c.get("label") or (f"第 {c.get('page')} 页" if c.get("page") else "相关片段")
+            snippet = " ".join(str(c.get("snippet") or "").split())[:PROVENANCE_CHARS]
+            lines.append(f"- [{c.get('ref')}] {where}：{snippet}")
+        if len(cites) > PROVENANCE_LIMIT:
+            lines.append(f"- …（还有 {len(cites) - PROVENANCE_LIMIT} 条）")
+    return "\n".join(lines)
+
+
 def history_from_chain(chain: list[dict], *,
                        max_tokens: int | None = None) -> list[dict]:
     """把一条可见链裁成给模型的历史（压缩边界同样落在最近一条 `summary` 上）。
@@ -396,17 +439,23 @@ def history_from_chain(chain: list[dict], *,
              if m["role"] in ("user", "assistant") and (m.get("content") or "").strip()]
     budget = int(max_tokens if max_tokens is not None
                  else get_settings().agent_context_budget)
-    kept: list[dict] = []
+    kept: list[tuple[dict, str]] = []
     used = 0
     for item in reversed(turns):
-        cost = count_tokens(str(item.get("content") or "")) + HISTORY_MESSAGE_OVERHEAD
+        extra = _provenance(item) if item["role"] == "assistant" else ""
+        cost = (count_tokens(str(item.get("content") or "")) + count_tokens(extra)
+                + HISTORY_MESSAGE_OVERHEAD)
         # 最近一轮**永远保留**：截掉它就等于这一轮没有上下文，比截断更糟
         if kept and used + cost > budget:
             break
-        kept.append(item)
+        kept.append((item, extra))
         used += cost
     kept.reverse()
-    return [{"role": m["role"], "content": m["content"]} for m in head + kept]
+    out = [{"role": m["role"], "content": m["content"]} for m in head]
+    for m, extra in kept:
+        content = str(m.get("content") or "")
+        out.append({"role": m["role"], "content": f"{content}\n\n{extra}" if extra else content})
+    return out
 
 
 # --------------------------------------------------------------------------

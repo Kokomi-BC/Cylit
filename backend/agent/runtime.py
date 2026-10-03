@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator
 from pydantic_ai import Agent, BinaryContent, RunContext, UsageLimits
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
-    ModelRequest, ModelResponse, TextPart, UserPromptPart,
+    ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -55,6 +55,9 @@ EVIDENCE_NOTE = (
     "它们很可能答不了这个问题 —— 请先判断材料里到底有没有依据：有就只依据它回答，"
     "没有就直说这篇论文里没有相关内容，不要用这些不相关片段凑答案。"
 )
+
+#: 压缩摘要在历史里挂的抬头（见 `_history`）
+SUMMARY_LABEL = "【之前对话的压缩摘要（更早的内容都在这里）】\n"
 
 #: 模型配置缓存时长（密钥轮换后最多这么久生效，省掉每轮一次 HTTP）
 MODEL_CONFIG_TTL = 60.0
@@ -268,9 +271,16 @@ class AgentRuntime:
             content = str(item.get("content") or "").strip()
             if not content:
                 continue
-            if item.get("role") == "user":
+            role = item.get("role")
+            if role == "summary":
+                # 压缩摘要（`api/agent.py` 的 compress → `role="summary"`）是"压缩点之前所有对话"
+                # 的等价物。这里以前只有 user/assistant 两支，摘要被静默丢掉 —— 用户一点压缩，
+                # 模型就再也看不到摘要，记忆直接断在压缩点（"不认上面的对话"最硬的一条）。
+                # 用 SystemPromptPart 而不是 UserPromptPart：摘要是模型写的要点，不是用户说的话。
+                msgs.append(ModelRequest(parts=[SystemPromptPart(SUMMARY_LABEL + content)]))
+            elif role == "user":
                 msgs.append(ModelRequest(parts=[UserPromptPart(content)]))
-            elif item.get("role") == "assistant":
+            elif role == "assistant":
                 msgs.append(ModelResponse(parts=[TextPart(content)]))
         return msgs
 
@@ -643,6 +653,10 @@ class AgentRuntime:
                     "requests": state.rounds,
                     "input_tokens": int(getattr(snapshot, "input_tokens", 0) or 0),
                     "output_tokens": int(getattr(snapshot, "output_tokens", 0) or 0),
+                    # provider 的前缀缓存命中量（DeepSeek 命中部分约 0.1× 计费）。
+                    # 问答这条链以前没有这个数，"缓存到底有没有命中"只能靠猜 —— 现在它跟着
+                    # `__usage__` 一起进 `tool_trace`，可以在会话消息里直接对账。
+                    "cache_read_tokens": int(getattr(snapshot, "cache_read_tokens", 0) or 0),
                 }
                 deps.trace.append({"tool": "__usage__", "args": state.usage,
                                    "status": "ok", "ms": 0, "detail": ""})

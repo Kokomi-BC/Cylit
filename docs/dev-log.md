@@ -7741,3 +7741,73 @@ paper_service.delete_paper(pid, hard=True)
 - 计算样式：`bg rgb(230,243,245)`（accent-soft）/ `underline` / `700` / `pointer` / `11px`；
 - 同一条回答里的 `**` 残留 **2 → 0**，`<strong>` **38 → 39**（多出来的就是那对）；
 - 局部截图（不截全屏）：`[14][15][16][17]` 是淡底胶囊 + 下划线；`一句话：……` 那行已经是加粗。
+
+## 33. 第三十三轮：审计 agent 的上下文 —— 三条"库里有、模型看不到"，以及缓存口径
+
+用户贴了模型的一段思维链（"上一轮我的回答引用了 [1]-[17]，但那是我编造的？实际上上一轮我没有
+工具调用记录…"）并问：**agent 的上下文是不是被改动了**（比如塞进不在这轮对话里的标号），
+所以它不认上面的对话、也命中不了缓存。
+
+审计办法（全部只读、零模型调用）：从 MySQL 把那条会话 dump 出来，再把 `history_for_agent()[:-1]`
+**实际发出去的 payload** 打出来，最后用假 chain 走一遍 `_history`。
+
+### 一、压缩摘要从来没进过模型（潜伏的硬伤）
+
+`history_from_chain` 产出 `role="summary"` 的那一条，而 `runtime._history` 只有 `user` / `assistant`
+两支 —— **摘要被静默丢掉**。实测：3 条 chain（summary/user/assistant）→ 模型只收到 2 条消息。
+库里 summary 现在是 0 条，所以是潜伏的：用户**第一次点压缩**，记忆就断在压缩点。
+已修：摘要走 `SystemPromptPart` + 抬头 `【之前对话的压缩摘要（更早的内容都在这里）】`
+（摘要是模型写的要点，不是用户说的话，所以不塞成 UserPromptPart）。
+
+### 二、助手历史**没有出处** —— 这才是"它说自己编的"的直接原因
+
+发出去的历史只有 `role` + `content`；正文里的 `[n]` 是**那一轮** `_renumber` 把 registry 的号压成
+的 1..M，而 `citations` / `tool_trace` 只躺在库里。于是模型看到自己上一轮写着 `[1]…[17]`：
+查不到任何出处、也看不到工具调用记录 → "这些编号是我编的？"，接着就不认上面的对话。
+
+审计出的实测数据（attention 那条会话）：
+
+| 消息 | 库里 citations | 库里 tool_trace | 正文里的 `[n]` |
+|---|---|---|---|
+| seq=2 助手 | 17 条 | 8 项（paper_search / figure_list / page_markdown_get×3 …） | 1..17 |
+| seq=4 助手 | 17 条 | 10 项（page_markdown_get / formula_get / figure_list×2 …） | 1..17 |
+
+而 seq=2 的 `[1]` 是"第 3 页 · 图注 Figure 1"，seq=4 的 `[1]` 是"第 4 页 · 段落" —— **同一个号指不同材料**。
+
+已修：`conversations._provenance()` 在每条助手历史后面拼一段确定性尾巴：
+
+```
+〔上一轮调用过的工具〕paper_search、figure_list、page_markdown_get×3、figure_image_get
+〔上一轮回答里的编号指向这些材料 —— 编号只属于那一轮，本轮要引用哪条材料就自己调工具拿本轮的编号〕
+- [1] 第 3 页 · caption：**Figure 1: The Transformer - model architecture.*
+- [2] 第 2 页 · 段落：The Transformer follows this overall architecture
+```
+
+三条口径：① 只由库里的行拼出来（同一行永远同样字节）→ **不打破前缀缓存**；
+② 预算里把这 1255 字的成本算进去（`count_tokens(extra)`）；③ `__presearch__` / `__usage__`
+这类内部轨迹不进历史，条目上限 20 条 + 摘要 50 字。
+另外 `CITING` 补了一句"编号每轮各自从 1 开始，本轮要引用必须自己调工具"。
+
+### 三、缓存：历史现在稳定了，但 system 里还塞着逐轮变化的东西
+
+- 历史侧：内容和尾巴都逐字节稳定 ✓（`test_provenance_is_deterministic_and_bounded` 断言两次
+  组装字节相同）。
+- **system 侧**：`prompts.build_instructions()` 把 `evidence_note`（含本轮重排分）、
+  `selection_block`（选区原文 + ref + 页号）、`image_block`（本轮图片张数）都拼进了系统指令。
+  系统指令在请求最前面 —— 按**前缀**命中的口径，这几块任何一轮有变化，**整段（system + 全部历史）
+  都按未命中算**；下一轮这些块又消失、前缀再变一次，于是连续两轮都 miss。
+  模块开头那句"稳定内容在前 → 本轮动态内容在后"对前缀缓存**不成立**：缓存是从第 0 个 token
+  起比前缀的，动态内容只要在 system 里，放多后都一样打掉整段。
+- 这一条**故意没动**：真正安全的位置是**最后的用户消息**，但代码里记着一次实测代价
+  （图片说明写进 user prompt 会被模型抄进回答，见 `prompts.image_block` 的注释）——
+  这是产品取舍，交给用户定。
+- 顺手补上度量：`state.usage` 记 `cache_read_tokens`（pydantic-ai 的 `RunUsage` 有），
+  跟 `__usage__` 一起进 `tool_trace` —— 问答这条链以前**根本没有这个数**，
+  "缓存到底有没有命中"只能猜（翻译那条链一直有 `cache_hit_tokens`）。
+
+### 四、验证
+
+- 新增 `tests/test_agent_history.py`（3 条：摘要进模型 / 助手历史带材料索引 / 确定性 + 有上限），
+  **纯函数、不连库、零模型调用**；改之前的那版代码会在第 1 条上红（实测 3 条 chain → 2 条消息）。
+- `pytest tests` 全绿；`agent_check` **25/25**（免费）；两个服务按端口重启（8710 / 8711）。
+- 真实数据复核：那条会话发给模型的历史里，助手那条从 2060 字变成 3317 字，尾巴就是上表那段索引。
