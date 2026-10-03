@@ -442,6 +442,10 @@ class ConversationMessage(Base):
     thinking: Mapped[str | None] = mapped_column(Text)
     #: 思考耗时（毫秒，模型调用 → 第一段正文）；没有思考模式时为空
     thinking_ms: Mapped[int | None] = mapped_column(Integer)
+    #: 这一轮的**过程轨迹**（`{"steps": [...], "elapsed_ms": N, "rounds": N}`，见 `agent/trace.py`）：
+    #: 多轮思考与工具调用**按发生顺序**排成一条流水，重开会话时照着它重画。
+    #: 与 `tool_trace_json`（工具审计表）分开：那个只记工具，这份记"用户看得见的过程"。
+    run_json: Mapped[str | None] = mapped_column(Text)
     #: stop / rounds_exhausted / cancelled / error（终态口径，见规划 §11）
     finish_reason: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

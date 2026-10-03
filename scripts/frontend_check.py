@@ -25,6 +25,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -396,11 +397,14 @@ async function run() {
     res.sendEnabled = send ? !send.disabled : null;
     if (!send || send.disabled) { res.error = '发送键不可用'; out(res); return; }
     send.click();
-    /* 等流结束：固定轮数 + 每轮烧一圈真 CPU（见文件头的三条铁律） */
+    /* 等流结束：固定轮数 + 每轮烧一圈真 CPU（见文件头的三条铁律）。
+       结束判据换成**过程轨迹抬头**：落库那条会写"已完成，用时 …"，而流式那条带 `data-live`。 */
     for (let i = 0; i < 900; i += 1) {
       const err = root().querySelector('.err');
       if (err && (err.textContent || '').trim()) break;
-      if (!root().querySelector('.msg.live') && root().querySelectorAll('.msg').length > 1) break;
+      const done = [...root().querySelectorAll('.msg.assistant .run-head')]
+        .some((h) => (h.textContent || '').includes('已完成'));
+      if (done && !root().querySelector('.msg[data-live]')) break;
       spin(BURN);
       await sleep(50);
     }
@@ -412,13 +416,18 @@ async function run() {
     res.bottomChips = root().querySelectorAll('.cites .cite').length;
     res.toolTitles = [...root().querySelectorAll('.msg.assistant .msg-tools .ico')]
       .map((b) => b.getAttribute('title') || '');
-    const think = root().querySelector('.msg.assistant .think');
-    if (think) {
-      res.thinkHead = (think.querySelector('.think-head') || {}).textContent || '';
-      res.thinkCollapsed = !think.querySelector('.think-body');
-      think.querySelector('.think-head').click();
-      await sleep(250);
-      res.thinkOpenLen = ((think.querySelector('.think-body') || {}).textContent || '').length;
+    /* 过程轨迹（多轮思考 + 工具）：抬头文案 + 步骤行 + 思考段可展开 */
+    const run = root().querySelector('.msg.assistant .run');
+    if (run) {
+      res.runHead = (run.querySelector('.run-head') || {}).textContent || '';
+      res.runSteps = run.querySelectorAll('.run-body > *').length;
+      const think = run.querySelector('.run-step.think');
+      if (think) {
+        res.thinkClamped = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
+        think.click();
+        await sleep(250);
+        res.thinkOpen = think.classList.contains('open');
+      }
     }
     res.chatErr = (root().querySelector('.err') || {}).textContent || '';
 
@@ -728,6 +737,167 @@ def skip(path: str, detail: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# 探针 ④：过程轨迹（思考 / 正文 / 工具**夹杂**）—— 造一条临时会话，验完删掉
+#
+# 这一节为什么要造数据：夹杂渲染只有"一轮里既有思考、又有正文、又有工具"时才看得出来，
+# 而那种形状只有真跑一轮模型才有 —— 自检默认不调模型，所以自己往库里写一条
+# （形状与 `backend/agent/trace.py` 完全一致），在浏览器里读它渲染成什么样。
+# --------------------------------------------------------------------------
+
+#: 造出来的轨迹：stage → 思考 → 工具 → 思考 → 工具 → 正文 → 工具 → 正文
+RUN_STEPS = [
+    {"kind": "stage", "round": 0, "text": "正在准备论文档案…"},
+    {"kind": "thinking", "round": 1, "text": "用户问的是核心贡献。"},
+    {"kind": "tool", "round": 1, "tool": "paper_search", "digest": "query=multi-head",
+     "status": "done", "ms": 312},
+    {"kind": "thinking", "round": 2, "text": "再看一眼书架。"},
+    {"kind": "tool", "round": 2, "tool": "library_list", "digest": "query=attention",
+     "status": "done", "ms": 180},
+    {"kind": "text", "round": 3, "text": "第一段回答里带一个引用锚[1]，还有**加粗**。"},
+    {"kind": "tool", "round": 3, "tool": "page_markdown_get", "digest": "pages=3",
+     "status": "done", "ms": 1200},
+    {"kind": "text", "round": 4, "text": "第二段回答。"},
+]
+RUN_ANSWER = "第一段回答里带一个引用锚[1]，还有**加粗**。第二段回答。"
+
+PROBE_RUN = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = {};
+  try {
+    /* 等列表起来（与 ② 同一套判据），再动手 */
+    await until(d, (x) => x.querySelector('.chat .list-head'), 20);
+    const root = () => d.querySelector('.chat');
+    if (!root()) { out({ error: 'no .chat' }); document.title = 'error'; return; }
+    /* 打开**第一行**会话（列表按更新时间倒序 → 自检刚造的那条就在最前面） */
+    for (let i = 0; i < 120 && !root().querySelector('.row .row-main'); i += 1) { spin(BURN); await sleep(50); }
+    const row = root().querySelector('.row .row-main');
+    res.rowTitle = row ? (row.textContent || '').trim().slice(0, 24) : '';
+    if (row) row.click();
+    for (let i = 0; i < 120 && !root().querySelector('.msg.assistant .run'); i += 1) { spin(BURN); await sleep(50); }
+    const msgs = [...root().querySelectorAll('.msg.assistant')];
+    const msg = msgs[msgs.length - 1];
+    const run = msg ? msg.querySelector('.run') : null;
+    res.opened = !!run;
+    if (run) {
+      res.head = (run.querySelector('.run-head') || {}).textContent || '';
+      const body = run.querySelector('.run-body');
+      const kids = body ? [...body.children] : [];
+      res.kinds = kids.map((el) => (el.classList.contains('run-text') ? 'text'
+        : el.classList.contains('think') ? 'thinking'
+        : el.classList.contains('stage') ? 'stage' : 'tool'));
+      res.texts = kids.filter((el) => el.classList.contains('run-text')).length;
+      res.strong = kids.filter((el) => el.querySelector('strong')).length;
+      res.anchors = run.querySelectorAll('.run-text .cite-inline').length;
+      res.toolLines = kids.filter((el) => el.classList.contains('tool'))
+        .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim());
+      const think = run.querySelector('.run-step.think');
+      if (think) {
+        res.clamp = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
+        res.thinkText = (think.querySelector('.step-text').textContent || '').length;
+        think.click();
+        await sleep(200);
+        res.thinkOpen = think.classList.contains('open');
+      }
+      /* 折叠：抬头那一行点一下应当把**步骤**收起来（正文段仍在，回答不能被藏掉） */
+      run.querySelector('.run-head').click();
+      await sleep(200);
+      res.collapsedSteps = run.querySelectorAll('.run-body > *').length;
+      res.collapsedTexts = run.querySelectorAll('.run-text').length;
+    }
+    /* 正文不能出现两遍：轨迹外不该再有正文块 */
+    res.outsideBody = msg ? msg.querySelectorAll(':scope > .md.body').length : -1;
+    out(res);
+    document.title = 'done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
+}
+</script>"""
+
+
+def _internal_headers() -> dict:
+    """内部令牌头（`data/secrets/agent.token`，与 agent 服务同一份）。"""
+    path = ROOT / "data" / "secrets" / "agent.token"
+    if not path.is_file():
+        return {}
+    return {"X-Internal-Token": path.read_text(encoding="utf-8").strip(),
+            "Content-Type": "application/json"}
+
+
+def _post_json(url: str, payload: dict, headers: dict) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                 headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:
+    print("\n④ 过程轨迹：思考 / 正文 / 工具夹杂（造一条临时会话，验完删掉）")
+    head = _internal_headers()
+    api = f"{base}/api/v1/agent"
+    if not head:
+        skip("过程轨迹渲染", "没有 data/secrets/agent.token（先启动一次主后端）")
+        return
+    cid = str(uuid.uuid4())          # ⚠️ 只能是 uuid：`conversation.id` 是 VARCHAR(36)
+    try:
+        _post_json(f"{api}/internal/messages", {
+            "conversation_id": cid, "role": "user", "paper_id": paper,
+            "title": "自检：过程轨迹（会被删掉）", "content": "自检用：不要回答。",
+        }, head)
+        _post_json(f"{api}/internal/messages", {
+            "conversation_id": cid, "role": "assistant", "content": RUN_ANSWER,
+            "citations": [{"ref": 1, "kind": "chunk", "page": 3, "label": "第 3 页 · 正文",
+                           "snippet": "……", "ids": []}],
+            "run": {"steps": RUN_STEPS, "elapsed_ms": 1179000, "rounds": 4},
+            "thinking": "用户问的是核心贡献。再看一眼书架。",
+        }, head)
+        url = f"{base}/app/reader/{paper}?side=chat&nosse=1"
+        res = run_probe(browser, base, "probe_run",
+                        PROBE_RUN.replace("__URL__", url).replace("__TITLE__", "run"),
+                        budget_ms)
+        if not res:
+            record("run", "过程轨迹能渲染出来", False, "探针没产出结果")
+            return
+        record("run", "打开临时会话（第一条就是它）", res.get("opened") is True,
+               f"{res.get('rowTitle')!r} err={res.get('error')!r}")
+        want = ["stage", "thinking", "tool", "thinking", "tool", "text", "tool", "text"]
+        record("run", "思考 / 正文 / 工具**按发生顺序夹杂**",
+               (res.get("kinds") or []) == want, "→".join(res.get("kinds") or []))
+        record("run", "抬头：已完成 + 用时 + 干了什么的摘要",
+               "已完成" in (res.get("head") or "") and "19分" in (res.get("head") or "")
+               and "已检索" in (res.get("head") or "")
+               and "翻过书架" in (res.get("head") or "")
+               and " 等" in (res.get("head") or ""),
+               (res.get("head") or "").strip()[:56])
+        record("run", "正文段：两段都按 Markdown 渲染（加粗 + 引用锚）",
+               res.get("texts") == 2 and (res.get("strong") or 0) >= 1
+               and (res.get("anchors") or 0) >= 1,
+               f"{res.get('texts')} 段，加粗 {res.get('strong')} 段，锚点 {res.get('anchors')} 个")
+        record("run", "工具段：短语 + 参数摘要（翻书架 · attention）",
+               any("翻书架" in t and "attention" in t for t in (res.get("toolLines") or []))
+               and any("读正文" in t for t in (res.get("toolLines") or [])),
+               " / ".join((res.get("toolLines") or [])[:3]))
+        record("run", "思考段：默认收成 4 行、点一下展开",
+               str(res.get("clamp")) == "4" and res.get("thinkOpen") is True,
+               f"line-clamp={res.get('clamp')}，{res.get('thinkText')} 字")
+        record("run", "收起过程轨迹：步骤藏起来、**正文仍在**（回答不能被藏掉）",
+               res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0
+               and res.get("outsideBody") in (0, 1),
+               f"收起后步骤 {res.get('collapsedSteps')} 行，轨迹外正文 {res.get('outsideBody')} 块")
+    except Exception as exc:  # noqa: BLE001
+        record("run", "过程轨迹能渲染出来", False, f"{exc}")
+    finally:
+        try:
+            _post_json(f"{api}/conversations/batch-delete", {"conversation_ids": [cid]}, head)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# --------------------------------------------------------------------------
 # ⓪ Markdown 加粗：`**` 紧贴中文标点的形状（不用浏览器、不用模型）
 #
 # 这一节存在的原因：CommonMark 的 flanking 规则在中文里会连着翻车两次 ——
@@ -998,6 +1168,9 @@ def main() -> int:
                    and f2.get("fresh") is True and bool(f1.get("row")),
                    f"{f1} → {f2}")
 
+    # ---- ④ 过程轨迹：造一条临时会话，验完删掉（免费：不调模型） ----
+    check_run_trace(browser, base, args.paper, args.budget)
+
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")
     sel = run_probe(browser, base, "probe_selchat",
@@ -1093,14 +1266,20 @@ def main() -> int:
                    (stream.get("inlineCites") or 0) > 0 and (stream.get("bottomChips") or 0) == 0,
                    f"锚点 {stream.get('inlineCites')} 个")
             record("model", "消息操作条在气泡下面", bool(stream.get("toolTitles")))
-            if stream.get("thinkHead"):
-                record("model", "深度思考块：默认折叠、可展开、抬头带耗时",
-                       stream.get("thinkCollapsed") is True
-                       and (stream.get("thinkOpenLen") or 0) > 0
-                       and "秒" in (stream.get("thinkHead") or ""),
-                       f"{(stream.get('thinkHead') or '')!r} → {stream.get('thinkOpenLen')} 字")
+            if stream.get("runHead"):
+                record("model", "过程轨迹：抬头写「已完成，用时 …」+ 有步骤行",
+                       "已完成" in (stream.get("runHead") or "")
+                       and (stream.get("runSteps") or 0) > 0,
+                       f"{(stream.get('runHead') or '').strip()[:40]!r}，"
+                       f"{stream.get('runSteps')} 步")
             else:
-                skip("深度思考块", "当前模型没开思考模式（parameters.thinking != enabled）")
+                skip("过程轨迹", "这一轮没有轨迹（模型没调工具也没有思考模式）")
+            if stream.get("thinkClamped"):
+                record("model", "思考段：默认收成几行、点一下展开",
+                       str(stream.get("thinkClamped")) == "4" and stream.get("thinkOpen") is True,
+                       f"line-clamp={stream.get('thinkClamped')} → open={stream.get('thinkOpen')}")
+            else:
+                skip("思考段折叠", "这一轮没有思考段（模型没开思考模式）")
             if stream.get("sawRowToDelete"):
                 record("model", "删除确认框（站内弹窗、无分隔线），取消不删",
                        stream.get("modalOpen") is True

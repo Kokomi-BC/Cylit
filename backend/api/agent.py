@@ -534,11 +534,18 @@ async def agent_page_image(paper_id: str, page_no: int,
 @router.post("/agent/internal/messages")
 async def agent_persist_message(request: Request, payload: dict = Body(...),
                                 x_internal_token: str | None = Header(None)):
-    """agent 落一条助手消息（**在发 `done` 之前**，§11 硬规则②）。"""
+    """agent 落一条助手消息（**在发 `done` 之前**，§11 硬规则②）。
+
+    `conversation_id` 指向的会话不存在时**顺手建一个**：正常问答那条路前端已经建过会话，
+    这里是为了让"造一条带轨迹的消息"（自检）不必先跑一轮模型。
+    """
     _require_internal(x_internal_token)
     conversation_id = str(payload.get("conversation_id") or "")
     if not conversation_id:
         raise ValidationError("conversation_id 必填")
+    conversations.create_conversation(conversation_id,
+                                      str(payload.get("paper_id") or ""),
+                                      title=str(payload.get("title") or ""))
     return envelope(conversations.append_message(
         conversation_id,
         role=str(payload.get("role") or "assistant"),
@@ -548,5 +555,6 @@ async def agent_persist_message(request: Request, payload: dict = Body(...),
         tool_trace=payload.get("tool_trace") or [],
         thinking=str(payload.get("thinking") or ""),
         thinking_ms=int(payload.get("thinking_ms") or 0),
+        run=payload.get("run") or None,
         finish_reason=payload.get("finish_reason"),
     ), request=request)

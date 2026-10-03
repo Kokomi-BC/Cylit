@@ -35,6 +35,8 @@ def _row_to_message(row) -> dict:
         "attachments": json_loads(getattr(row, "attachments_json", None), []) or [],
         "thinking": row.thinking or "",
         "thinking_ms": int(row.thinking_ms or 0),
+        # 过程轨迹（多轮思考 + 工具调用）：老消息没有这一列 → 空对象，前端回退到旧画法
+        "run": json_loads(getattr(row, "run_json", None), {}) or {},
         "finish_reason": row.finish_reason,
         # 时间一律走 `iso_utc`（库里是 UTC naive）：直接 `.isoformat()` 会让前端按本地时区
         # 解析，东八区里刚发的消息显示成"8 小时前"（用户 2026-10-03 报的"对话时间有问题"）
@@ -59,6 +61,30 @@ def _row_to_conversation(row, *, messages: list[dict] | None = None) -> dict:
 # --------------------------------------------------------------------------
 
 
+def create_conversation(conversation_id: str, paper_id: str = "",
+                        *, title: str = "") -> str:
+    """**按给定 id** 建会话（已存在就把它缺的字段补上，绝不换 id）。
+
+    ⚠️ 与 `ensure_conversation` 的区别只有一条，但很关键：那个在"id 查不到"时会**换一个新
+    uuid**（前端手里的会话没了时的兜底），所以调用方拿不到它想要的 id。内部落库接口要的是
+    "就用这个 id"（自检造临时会话），所以这里是另一个函数。
+    """
+    from backend.repositories.mysql.models import Conversation
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        row = sess.get(Conversation, conversation_id)
+        if row is None:
+            sess.add(Conversation(id=conversation_id, paper_id=paper_id or None,
+                                  title=(title or "")[:255], head_id=None))
+        else:
+            if paper_id and not row.paper_id:
+                row.paper_id = paper_id
+            if title and not row.title:
+                row.title = title[:255]
+    return conversation_id
+
+
 def ensure_conversation(conversation_id: str | None, paper_id: str,
                         *, title: str = "") -> str:
     """取会话；不存在就建。返回 conversation_id。"""
@@ -77,11 +103,8 @@ def ensure_conversation(conversation_id: str | None, paper_id: str,
         # 前端手里的会话不见了（换库 / 清库）→ 建一个新的，比 500 好
         conversation_id = None
 
-    cid = conversation_id or str(uuid.uuid4())
-    with session_scope() as sess:
-        sess.add(Conversation(id=cid, paper_id=paper_id or None,
-                              title=(title or "")[:255], head_id=None))
-    return cid
+    return create_conversation(conversation_id or str(uuid.uuid4()), paper_id,
+                               title=title)
 
 
 def list_conversations(paper_id: str | None = None, *, limit: int = 50,
@@ -612,6 +635,7 @@ def append_message(conversation_id: str, *, role: str, content: str,
                    tool_trace: list | None = None,
                    attachments: list | None = None,
                    thinking: str = "", thinking_ms: int = 0,
+                   run: dict | None = None,
                    finish_reason: str | None = None) -> dict:
     """追加一条消息并把 `head_id` 移到它上面（父节点默认取当前 head）。
 
@@ -647,6 +671,7 @@ def append_message(conversation_id: str, *, role: str, content: str,
             attachments_json=json_dumps(attachments or []),
             thinking=thinking or None,
             thinking_ms=int(thinking_ms or 0) or None,
+            run_json=json_dumps(run) if run else None,
             finish_reason=finish_reason,
         ))
         conv.head_id = message_id

@@ -525,6 +525,66 @@ def check_conversations(base: str) -> None:
     except Exception as exc:  # noqa: BLE001
         record("conv", "批量删除：空数组 / 不存在的 id 都不报错、也不误删", False, f"{exc}")
 
+    check_run_trace(base)
+
+
+#: 造一条"思考 / 正文 / 工具夹杂"的轨迹用的假数据（形状与 `agent/trace.py` 一致）
+RUN_STEPS = [
+    {"kind": "stage", "round": 0, "text": "正在准备论文档案…"},
+    {"kind": "thinking", "round": 1, "text": "用户问的是核心贡献。"},
+    {"kind": "tool", "round": 1, "tool": "paper_search", "digest": "query=multi-head",
+     "status": "done", "ms": 312},
+    {"kind": "thinking", "round": 2, "text": "再看一眼书架。"},
+    {"kind": "tool", "round": 2, "tool": "library_list", "digest": "query=attention",
+     "status": "done", "ms": 180},
+    {"kind": "text", "round": 3, "text": "第一段回答[1]。"},
+    {"kind": "tool", "round": 3, "tool": "page_markdown_get", "digest": "pages=3",
+     "status": "done", "ms": 1200},
+    {"kind": "text", "round": 4, "text": "第二段回答。"},
+]
+
+
+def check_run_trace(base: str) -> None:
+    """过程轨迹（多轮思考 + 工具调用）**落库往返**：造一条临时会话，验完删掉。
+
+    为什么值一条检查：轨迹是"用户看得见的过程"，它一旦在落库/读取这条路上串了序，
+    界面上就是"思考跑到工具后面"这种说不清的错——而这种错**只有读回来才知道**。
+    """
+    print("\n④b 过程轨迹落库往返（造一条临时会话，验完删掉）")
+    label = "过程轨迹：顺序 / 形状 / 耗时都能原样读回"
+    api, head = f"{base}/api/v1/agent", internal()
+    cid = str(uuid.uuid4())          # ⚠️ 只能是 uuid：`conversation.id` 是 VARCHAR(36)
+    try:
+        post_json(f"{api}/internal/messages", {
+            "conversation_id": cid, "role": "user", "paper_id": "selfcheck",
+            "title": "自检：过程轨迹（会被删掉）", "content": "自检用，不需要回答。",
+        }, head)
+        post_json(f"{api}/internal/messages", {
+            "conversation_id": cid, "role": "assistant", "content": "第一段回答[1]。第二段回答。",
+            "citations": [{"ref": 1, "kind": "chunk", "page": 3, "label": "第 3 页",
+                           "snippet": "……", "ids": []}],
+            "run": {"steps": RUN_STEPS, "elapsed_ms": 1179000, "rounds": 4},
+            "thinking": "用户问的是核心贡献。再看一眼书架。",
+        }, head)
+        conv = get_json(f"{api}/conversations/{cid}")["data"]
+        run = next((m.get("run") or {} for m in conv["messages"]
+                    if m.get("role") == "assistant"), {})
+        got = [s.get("kind") for s in (run.get("steps") or [])]
+        want = [s["kind"] for s in RUN_STEPS]
+        tools = [s.get("tool") for s in (run.get("steps") or []) if s.get("kind") == "tool"]
+        record("conv", label,
+               got == want and run.get("elapsed_ms") == 1179000 and run.get("rounds") == 4
+               and tools == ["paper_search", "library_list", "page_markdown_get"]
+               and all(s.get("ms") for s in (run.get("steps") or []) if s.get("kind") == "tool"),
+               f"{len(got)} 步，顺序 {','.join(got[:4])}…，用时 {run.get('elapsed_ms')}ms")
+    except Exception as exc:  # noqa: BLE001
+        record("conv", label, False, f"{exc}")
+    finally:
+        try:
+            post_json(f"{api}/conversations/batch-delete", {"conversation_ids": [cid]})
+        except Exception:  # noqa: BLE001
+            pass
+
 
 # --------------------------------------------------------------------------
 # ⑥ 真问答（只在 --model 下跑；跑完自己清理）

@@ -38,6 +38,7 @@ from backend.agent.sanitize import (
     StreamingAnswerSanitizer, referenced_citations, strip_foreign_images,
 )
 from backend.agent.tools import AGENT_TOOLS
+from backend.agent.trace import StepLog
 from backend.agent.workspace import ReadOnlyWorkspace
 from backend.core.logging import get_logger
 
@@ -102,6 +103,11 @@ class RunState:
     model_t0: float = 0.0
     #: 已经开始输出正文（思考阶段结束的判据）
     answer_started: bool = False
+    #: 这一轮的**过程轨迹**（多轮思考 + 工具调用，按发生顺序；见 `agent/trace.py`）。
+    #: 它是"这一轮到底干了什么"的唯一形状：SSE 的 `done` 整份下发，同时落库。
+    log: StepLog = field(default_factory=StepLog)
+    #: 整轮耗时（毫秒，从进 `ask()` 到出 `done`）：前端抬头那句"已完成，用时 …"
+    elapsed_ms: int = 0
 
 
 # --------------------------------------------------------------------------
@@ -304,6 +310,7 @@ class AgentRuntime:
         state = RunState()
         try:
             yield {"type": "stage", "stage": "routing", "message": "正在准备论文档案…"}
+            state.log.stage("正在准备论文档案…")
             archive = await self.host.archive(req.paper_id)
             deps.title = str(archive.get("title") or "")
             deps.page_total = int(archive.get("page_total") or 0)
@@ -313,7 +320,8 @@ class AgentRuntime:
                 page_total=deps.page_total)
 
             yield {"type": "stage", "stage": "retrieving", "message": "正在这篇论文里检索…"}
-            found = await self._presearch(req, deps)
+            state.log.stage("正在这篇论文里检索…")
+            found = await self._presearch(req, deps, state)
             # 划词提问：把选区所在的块登记成 ref，模型就能自己展开上下文（见 prompts.SELECTION）
             if req.selection:
                 await self._prepare_selection(req, deps)
@@ -337,13 +345,16 @@ class AgentRuntime:
                     and not req.attachments):
                 state.text = GUARDRAIL_NO_EVIDENCE
                 state.incomplete_reason = "no_evidence"
+                state.elapsed_ms = int((time.perf_counter() - t0) * 1000)
                 async for ev in self._finalize(req, deps, state):
                     yield ev
                 return
 
             yield {"type": "stage", "stage": "reading", "message": "正在阅读并组织回答…"}
+            state.log.stage("正在阅读并组织回答…")
             async for ev in self._stream_model(req, deps, state, deadline, t0):
                 yield ev
+            state.elapsed_ms = int((time.perf_counter() - t0) * 1000)
             async for ev in self._finalize(req, deps, state):
                 yield ev
         except HostError as exc:
@@ -464,7 +475,7 @@ class AgentRuntime:
         deps.selection_page = citation.page
 
     # ---------------- 证据闸 ----------------
-    async def _presearch(self, req: AskRequest, deps: Deps) -> bool:
+    async def _presearch(self, req: AskRequest, deps: Deps, state: RunState) -> bool:
         """宿主主动检索一次，把命中登记进引用表（这是"证据"的定义之一）。
 
         为什么要宿主来跑而不是等模型调 `paper_search`：证据闸要能在**进模型之前**判断
@@ -488,6 +499,12 @@ class AgentRuntime:
             "args": {"returned": len(items), "top_score": round(top_score, 4),
                      "rerank_degraded": degraded, "floor": self.cfg.evidence_floor},
         })
+        # 过程轨迹里也留一条：用户看到的"它一上来就检索了"就是这一步（工具步骤 + 命中条数）
+        step = state.log.tool_start("__presearch__", round=0,
+                                    digest=f"命中 {len(items)} 条")
+        step["status"] = "done"
+        step.pop("_t0", None)
+        step["ms"] = 0
         if not items:
             return False
         if not degraded and top_score < self.cfg.evidence_floor:
@@ -572,15 +589,17 @@ class AgentRuntime:
             if state.thinking and not state.thinking_ms:
                 state.thinking_ms = int((time.perf_counter() - state.model_t0) * 1000)
 
-    def _thinking_text(self, text: str | None, state: RunState) -> list[dict]:
+    def _thinking_text(self, text: str | None, state: RunState, deps: Deps) -> list[dict]:
         """思维链增量（思考模式）。"""
         if not text:
             return []
         state.thinking += text
+        # 过程轨迹：同一轮的思考**并成一条**（一轮几百个增量块，一块一条会刷屏）
+        state.log.thinking(text, round=deps.model_calls + 1)
         return [{"type": "thinking_delta", "text": text,
                  "ms": int((time.perf_counter() - state.model_t0) * 1000)}]
 
-    def _answer_text(self, text: str | None, state: RunState,
+    def _answer_text(self, text: str | None, state: RunState, deps: Deps,
                      sanitizer: StreamingAnswerSanitizer) -> list[dict]:
         """正文增量：首次进正文时把思考阶段的跑表停下，其余交给清洗器。"""
         if not text:
@@ -596,6 +615,8 @@ class AgentRuntime:
                             "ms": state.thinking_ms})
         clean = sanitizer.feed(text)
         if clean:
+            # 过程轨迹：正文也按轮切开（思考 → 说一句 → 调工具 → 接着说，是交织的）
+            state.log.text(clean, round=deps.model_calls + 1)
             out.append({"type": "answer_delta", "text": clean})
         return out
 
@@ -613,9 +634,9 @@ class AgentRuntime:
             part = getattr(event, "part", None)
             kind = type(part).__name__
             if kind == "ThinkingPart":
-                return self._thinking_text(getattr(part, "content", None), state)
+                return self._thinking_text(getattr(part, "content", None), state, deps)
             if kind == "TextPart":
-                return self._answer_text(getattr(part, "content", None), state, sanitizer)
+                return self._answer_text(getattr(part, "content", None), state, deps, sanitizer)
             return []
         if name == "PartDeltaEvent":
             delta = getattr(event, "delta", None)
@@ -624,21 +645,24 @@ class AgentRuntime:
             # 思维链当正文推给用户（实测：DeepSeek 思考模式的英文推理整段出现在回答开头）。
             # 所以这里**分两支**：思考走 `thinking_delta`（前端折叠显示），正文走 `answer_delta`。
             if kind == "ThinkingPartDelta":
-                return self._thinking_text(getattr(delta, "content_delta", None), state)
+                return self._thinking_text(getattr(delta, "content_delta", None), state, deps)
             if kind != "TextPartDelta":
                 return []
-            return self._answer_text(getattr(delta, "content_delta", None), state,
-                                     sanitizer)
+            return self._answer_text(getattr(delta, "content_delta", None), state, deps, sanitizer)
         if name == "FunctionToolCallEvent":
             part = getattr(event, "part", None)
             deps.note_model_call()
+            tool = getattr(part, "tool_name", "?")
+            digest = _digest(getattr(part, "args", None))
+            state.log.tool_start(tool, round=deps.model_calls, digest=digest)
             return [{"type": "tool", "round": deps.model_calls,
-                     "tool": getattr(part, "tool_name", "?"), "status": "start",
-                     "args_digest": _digest(getattr(part, "args", None))}]
+                     "tool": tool, "status": "start", "args_digest": digest}]
         if name == "FunctionToolResultEvent":
+            tool = getattr(getattr(event, "part", None), "tool_name", "?")
+            step = state.log.tool_done(tool, round=deps.model_calls)
             out: list[dict] = [{"type": "tool", "round": deps.model_calls,
-                                "tool": getattr(getattr(event, "part", None), "tool_name", "?"),
-                                "status": "done", "args_digest": ""}]
+                                "tool": tool, "status": "done", "args_digest": "",
+                                "ms": step.get("ms")}]
             for cit in deps.registry.all():
                 if cit.ref not in sent_refs:
                     sent_refs.add(cit.ref)
@@ -767,6 +791,7 @@ class AgentRuntime:
                 # 兜底正文也要走一遍 answer_delta：否则"流式看到的"和 `done` 的不一致，
                 # 前端靠 `done` 覆盖才能显示它 —— 那中间会有一段什么都不显示的空白。
                 yield {"type": "answer_delta", "text": text}
+                state.log.text(text, round=deps.model_calls + 1)   # 轨迹里也要有它
         if not text.strip():
             yield {"type": "error", "code": "EMPTY_ANSWER",
                    "message": "模型没有产出任何正文，请重试（可换一个更具体的问题）。",
@@ -776,6 +801,15 @@ class AgentRuntime:
         # 图片先过闸：只留本论文自己的受控裁图地址（§12 规则 5）
         text = strip_foreign_images(text, deps.paper_id)
         text, payload = self._renumber(text, citations)
+        # 正文步骤里的 `[n]` 要用**同一套映射**改写一遍：映射只由 citations 决定（不看正文），
+        # 所以逐段跑一遍得到的号与整篇跑一遍完全一致；不跑的话轨迹里的引用点下去会跳错。
+        for step in state.log.steps:
+            if step.get("kind") == "text" and step.get("text"):
+                step["text"], _ = self._renumber(step["text"], citations)
+        # 过程轨迹收尾：整轮耗时与轮数（前端抬头那句"已完成，用时 …"与自检都读它）
+        state.log.elapsed_ms = int(state.elapsed_ms or 0)
+        state.log.rounds = int(state.rounds or deps.model_calls or 0)
+        run = state.log.payload()
         # 落库在 done **之前**（§11 硬规则②）；落库之后不再检查 deadline（硬规则③）
         persisted = False
         try:
@@ -786,6 +820,8 @@ class AgentRuntime:
                 "content": text,
                 "citations": payload,
                 "tool_trace": deps.trace,
+                # 多轮思考 + 工具调用的**有序轨迹**：重开会话时前端照着它重画
+                "run": run,
                 # 思维链**随消息一起落库**：前端在 `done` 之后会重拉一次会话（`done` 是权威结果），
                 # 不落的话思考块会在回答落地的那一刻凭空消失。
                 "thinking": state.thinking,
@@ -802,6 +838,8 @@ class AgentRuntime:
                # 这一轮改过的产物（`page_markdown_edit`）：前端据此提示"正文已更新"，
                # 也让"模型说改了、其实没改"这种话在对不上时看得出来（自检断言它）。
                "edits": deps.edits,
+               # 过程轨迹（多轮思考 + 工具调用）：前端收到后用它覆盖自己拼的那份
+               "run": run,
                "persisted": persisted, "conversation_id": req.conversation_id}
 
 

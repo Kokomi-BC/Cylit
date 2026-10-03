@@ -570,6 +570,7 @@ conversation_message(
   content MEDIUMTEXT, citations_json JSON, tool_trace_json JSON,
   attachments_json JSON,                       -- 用户上传/粘贴的图片（P1 追加）
   thinking LONGTEXT, thinking_ms INT,          -- 思维链与思考耗时（只给前端折叠展示）
+  run_json JSON,                               -- 过程轨迹：{steps, elapsed_ms, rounds}（§11.1）
   finish_reason VARCHAR(32), created_at)      -- stop / rounds_exhausted / cancelled / error
 ```
 
@@ -626,7 +627,7 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 | `thinking_delta` | `{text, ms}` | 追加思维链（**另一条通道**，前端折叠展示；`ms` 是服务端跑表，前端照它显示"思考 N 秒"） |
 | `thinking` | `{status: "done", ms}` | 思考阶段结束（第一段正文出现时推一次），`ms` 为**权威耗时** |
 | `citation` | `Citation` | 引用表增量 || `compress` | `{summary_id, turns}` | 提示"历史已压缩" |
-| `done` | `{answer, citations[], tool_trace[], rounds, incomplete_reason, thinking, thinking_ms, persisted, conversation_id}` | 权威结果，覆盖流式内容 |
+| `done` | `{answer, citations[], tool_trace[], run, edits[], rounds, incomplete_reason, thinking, thinking_ms, persisted, conversation_id}` | 权威结果，覆盖流式内容 |
 | `error` | `{code, message, retryable}` | 错误终态 |
 | `cancelled` | `{}` | 取消终态 |
 | `heartbeat` | `{elapsed_ms}` | 忽略（保连接） |
@@ -657,6 +658,45 @@ Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 也跟着改了（§8 第 4 条）。这两个数字**对不上是正常的** —— 收到 `done` 时必须用它**整体替换**
 流式期间累积的引用表与正文，不能只做增量合并。这也解释了为什么 `done` 是权威结果。
 
+### 11.1 过程轨迹（`run`）：思考 / 正文 / 工具**按发生顺序**混排
+
+用户口径（2026-10-03）："想要前端支持类似 dsh 的多轮思考显示，工具调用（使用已有的语句，
+如翻书架等描述），后端支持这样存储"，以及"允许思考和正文夹杂显示（正常 agent 就是这样的）"。
+
+于是有了**一条流水**（`backend/agent/trace.py`，形状只此一处）：
+
+```json
+{"steps": [{"kind": "stage",    "round": 0, "text": "正在准备论文档案…"},
+           {"kind": "thinking", "round": 1, "text": "用户问的是……"},
+           {"kind": "tool",     "round": 1, "tool": "paper_search",
+            "digest": "query=随机旋转", "status": "done", "ms": 312},
+           {"kind": "text",     "round": 2, "text": "我先说一句……"},
+           {"kind": "tool",     "round": 2, "tool": "library_list", "digest": "query=",
+            "status": "done", "ms": 180},
+           {"kind": "text",     "round": 3, "text": "结论是……"}],
+ "elapsed_ms": 1179000, "rounds": 12}
+```
+
+**一份形状，三方共用**：运行时按事件往里写 → `done` 整份下发 → `conversation_message.run_json`
+原样落库（重开会话时前端照着它重画）。流式期间前端**自己拼**一份同形状的（`answer_delta`
+进 `text` 段、`thinking_delta` 进 `thinking` 段、`tool` 建/补一条），收到 `done` 用权威值覆盖 ——
+所以"流式看到的"与"落库后看到的"是同一套渲染模板，不存在第二份流式专用样式。
+
+四条口径：
+
+1. **思考与正文按轮合并**：模型一轮里会吐几百个增量块，一块一条等于刷屏；
+   同轮的相邻同类增量并成一条，换轮或中间插了工具就另起一条 —— **这就是"夹杂"的来源**。
+2. **工具步骤先出现、后补状态**：`FunctionToolCallEvent` 建 `running`（此刻还不知道要跑多久），
+   `FunctionToolResultEvent` 找到它补 `done` + 毫秒。
+3. **只存 `tool` 名与参数摘要，不存文案**：中文短语（"翻书架"）与图标在前端
+   （`ReaderChat.vue` 的 `TOOL_STEPS`/`TOOL_ICONS`）—— 存文案等于把"以后想改叫法"变成数据迁移。
+4. **`content` 仍是全部正文的拼接**：`text` 段只是把它按轮切开。历史、复制、检索、标题都还用
+   `content`；轨迹里的 `text` 段供**渲染**（`[n]` 用同一套映射改写，见 `_finalize`）。
+
+**折叠语义**：抬头是"正在思考… / 已完成，用时 19分39秒 + 已检索 · 已读正文 等"；
+收起只藏**步骤行**，`text` 段永远渲染 —— 回答不能被折叠藏掉。
+`tool_trace` 保持原样（工具审计表，provenance 附录读它），与 `run` 分工不同。
+
 ---
 
 ## 12. 安全边界
@@ -682,7 +722,7 @@ Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 | 阶段 | 内容 | 出口标准 | 估时 |
 |---|---|---|---|
 | **P0 ✅ 已完成** | 服务骨架；**只读工具 6 个**（`paper_search` `page_markdown_get` `block_get` `page_image_get` `figure_list` `figure_image_get`）；**档案预注入**（`archive_block()` 含 `key_claims`/`outline`）；skills：`paper-qa` `paper-overview` `figure-reading` `page-visual-check`；SSE + 引用链（**含单轮落库**，不含多轮压缩） | ✅ 全部达成，`scripts/agent_check.py` **46/46**：① 问"核心贡献"→ 带 `[n]` 的回答 → 引用带 `block_id`+`row_id` 可跳行；② 问某张图 → 回答嵌受控图片且 URL 可取回真图（426KB PNG）；③ 问公式页 → 先 `paper_search` 定位再读页；④ 无索引论文 → 护栏且**一次模型调用都没有** | 3~5 天 |
-| **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~就地编辑与开分支（`branch=true`）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~ + ~~深度思考折叠与思考耗时~~ + ~~正文内引用锚~~；追问建议**决定不做**（§10.3） | ✅ 自检重写为「默认不花钱、不留痕」（§15）：`agent_check.py` **21/21**（免费）+ **30/30**（`--model`）、`frontend_check.py` **18/18**（免费）+ **30/30**（`--model`） | 完成 |
+| **P1 ✅ 已完成** | ~~P1 工具面~~ + ~~前端入口（侧栏「对话」面板 / 划词解释 / 圆环压缩）~~ + ~~两级会话面板（搜索 / 分类 / 批量管理）~~ + ~~图片上传·粘贴（多模态直喂）~~ + ~~就地编辑与开分支（`branch=true`）~~ + ~~设置页「论文问答」卡片~~ + ~~超预算自动压缩~~ + ~~深度思考折叠与思考耗时~~ + ~~正文内引用锚~~ + ~~过程轨迹：多轮思考 / 正文 / 工具按顺序夹杂（§11.1）~~；追问建议**决定不做**（§10.3） | ✅ 自检重写为「默认不花钱、不留痕」（§15）：`agent_check.py` **21/21**（免费）+ **30/30**（`--model`）、`frontend_check.py` **18/18**（免费）+ **30/30**（`--model`） | 完成 |
 | **P2-a ✅ 已完成**（第四十三轮） | **页级产物纠错 `page_markdown_edit`**（ops：`view` / `replace` / `undo`）+ `text-fix` skill：字面替换、唯一命中、先读后写、段落结构不变量（变了回滚）、**增量**索引重建、改动日志与撤回、改动预算 12 处/轮 | ✅ 自检免费 `agent_check.py` **33/33**（含：找不到 → 给最像的几行；命中多处 → 报次数；真改一处 → 日志留痕；撤回 → 逐字还原；跨块编辑 → 回滚且正文逐字不变）；真机验证一次增量重建：改一处 → chunk `changed=2 / embedded=2`、条数不变、撤回后哈希与正文都还原 | 完成 |
 | **P2-b（剩余）** | `formula-fix` skill（公式纠错流程）+ 评估回归 | 修正一处公式后：阅读器/Markdown 显示新值、**chunk 总数与各块边界未变**、旧 chunk 被替换、重跑解析不丢人工修改；回归集（`tests/retrieval_regression/questions.json`）通过率不低于单轮 RAG | 3~5 天 |
 
@@ -705,6 +745,7 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、
 | R5 | 成本失控（轮数 × 证据 × 档案 × 视觉输入） | 预算全部进设置页；每轮记 token 用量（已有 `tiktoken`） |
 | R6 | 论文正文的 `[12]` 与我们的引用编号撞车 | 抄 M6：不按形状删；前端只在能匹配到 citation 时才把 `[n]` 变按钮。⚠️ P0 把编号压成 `1..M`（§8 第 4 条）后，**小号撞车概率变高**（论文自己的 `[3]` 更容易撞上我们的第 3 条）——目前只改写"用到的号"，观察后续是否需要在引用表里加视觉区分 |
 | R7 | 主后端多一层转发，排查链路变长 | 两侧日志都带 `conversation_id` + `round` |
+| R8 | 过程轨迹越攒越长（60 轮 × 每轮思考 + 正文） | 同轮合并（一轮一条）+ 单条 6000 字上限 + 一条流水最多 80 步且**先丢非工具步骤**（`agent/trace.py`）；它只给前端看，**不进历史**（`history_from_chain` 不发 `run`） |
 
 ---
 
@@ -715,8 +756,8 @@ pydantic-ai 消息），所以"接着问"现在就能用；P1 补上了压缩、
 
 | 脚本 | 行数（重写前 → 后） | 默认跑什么 | 加 `--model` 跑什么 |
 |---|---|---|---|
-| `scripts/agent_check.py` | 978 → 736 | 服务 / 技能 / 模型配置 · 六个只读投影 · **产物纠错写工具**（视图 / 拒绝路径 / 真改真撤 / 跨块回滚）· 图片附件与守卫 · 会话列表分类搜索与批量删除 —— **不打模型**、**不重建索引**（`reindex=false`，不花嵌入的钱） | 真问答一轮（可选 `--image` 验多模态、`--deep` 再跑压缩/就地改/开分支） |
-| `scripts/frontend_check.py` | 4316 → 541 | 阅读器（正文 / 公式 / 胶囊）· 对话面板（一级页 / 二级页 / 输入区 / 确认框）—— **一条消息都不发** | 一条流式问答（回答 / 引用锚 / 思考块 / 删除确认框） |
+| `scripts/agent_check.py` | 978 → 830 | 服务 / 技能 / 模型配置 · 六个只读投影 · **产物纠错写工具**（视图 / 拒绝路径 / 真改真撤 / 跨块回滚）· **过程轨迹落库往返**（造一条临时会话，验完删掉）· 图片附件与守卫 · 会话列表分类搜索与批量删除 —— **不打模型**、**不重建索引**（`reindex=false`，不花嵌入的钱） | 真问答一轮（可选 `--image` 验多模态、`--deep` 再跑压缩/就地改/开分支） |
+| `scripts/frontend_check.py` | 4316 → 1325 | **Markdown 加粗形状表**（esbuild bundle + node，18 种中文形状，不用浏览器）· 阅读器（正文 / 公式 / 胶囊）· 对话面板（一级页 / 二级页 / 输入区 / 确认框）· **过程轨迹夹杂**（造一条临时会话，验完删掉）—— **一条消息都不发** | 一条流式问答（回答 / 引用锚 / 过程轨迹 / 删除确认框） |
 
 两条纪律写在两个脚本的文件头里，别退化：
 

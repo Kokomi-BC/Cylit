@@ -27,7 +27,7 @@ import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
 import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentSelection,
-  AgentStatus, AgentUsage,
+  AgentStatus, AgentStep, AgentUsage,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
@@ -90,16 +90,22 @@ const uploading = ref(false);
 const loading = ref(false);
 const compressing = ref(false);
 const sending = ref(false);
-const streamText = ref('');
-const streamNote = ref('');
-const streamCitations = ref<AgentCitation[]>([]);
-/** 思考阶段：正文按 `thinking_delta` 单独收（**不混进回答**），跑表以服务端的 `ms` 为准 */
-const streamThinking = ref('');
-const thinkingMs = ref(0);
-const thinkingOpen = ref(true);
-/** 展开着的历史思考块（按消息 id 记；默认都折叠） */
-const openThinking = ref<string[]>([]);
 const errorText = ref('');
+/**
+ * **正在生成的那条助手消息**（本地占位，`message_id` 以 `local-assistant-` 开头）。
+ *
+ * 它就是一个普通消息，只是 `run.steps` 由 SSE 事件现拼 —— 好处是
+ * "思考 / 正文 / 工具**按发生顺序混排**"只有**一套**渲染模板：
+ * 流式期间拼出来的是它，落库后从 `run` 读出来的也是它（形状由后端 `agent/trace.py` 定）。
+ */
+const liveId = ref('');
+/** 整轮耗时（跑表，每 200ms 一跳）；`done` 之后用服务端的权威值覆盖 */
+const elapsedMs = ref(0);
+let tickTimer: number | null = null;
+/** 收起过程轨迹的消息 id（默认展开：正文段就在轨迹里，收起会连回答一起藏掉） */
+const openRuns = ref<string[]>([]);
+/** 展开长思考的键（`${message_id}:${步骤序号}`）；默认只露 4 行 */
+const openSteps = ref<string[]>([]);
 const editing = ref<{ id: string; text: string; branch: boolean } | null>(null);
 const headline = ref('');
 const dragging = ref(false);
@@ -224,14 +230,152 @@ function fmtMs(ms?: number) {
   return n < 10000 ? `${(n / 1000).toFixed(1)} 秒` : `${Math.round(n / 1000)} 秒`;
 }
 
-function isThinkingOpen(id: string) {
-  return openThinking.value.includes(id);
+/** 整轮耗时：超过一分钟换成分秒（"19分39秒"是 DSH 那种抬头文案的口径） */
+function fmtElapsed(ms?: number) {
+  const n = Math.max(0, Math.round(Number(ms || 0)));
+  if (!n) return '';
+  const m = Math.floor(n / 60000);
+  if (!m) return fmtMs(n);
+  return `${m}分${Math.round((n % 60000) / 1000)}秒`;
 }
 
-function toggleThinking(id: string) {
-  openThinking.value = isThinkingOpen(id)
-    ? openThinking.value.filter(x => x !== id)
-    : [...openThinking.value, id];
+/* ------------------------------ 过程轨迹 ------------------------------ */
+
+/**
+ * 工具 → **名词短语**（步骤行用）。与 `TOOL_LABELS`（进行时，给"正在…"抬头用）
+ * 刻意分开：步骤行写的是"它干了什么"（翻书架），抬头写的是"它现在在干什么"。
+ */
+const TOOL_STEPS: Record<string, string> = {
+  paper_search: '检索论文', kb_search: '检索知识库',
+  page_markdown_get: '读正文', block_get: '读段落',
+  page_image_get: '看页面图', figure_list: '看插图清单', figure_image_get: '看插图',
+  formula_get: '取公式', translate_get: '取译文',
+  library_list: '翻书架', notes_search: '查笔记',
+  page_markdown_edit: '修订产物',
+  __presearch__: '预读材料',
+};
+
+/** 工具 → 图标（用站点已有的那套；没有对应项的退回 `bolt`）。 */
+const TOOL_ICONS: Record<string, string> = {
+  paper_search: 'search', kb_search: 'knowledge',
+  page_markdown_get: 'document', block_get: 'document',
+  page_image_get: 'image', figure_list: 'list', figure_image_get: 'image',
+  formula_get: 'formula', translate_get: 'translate',
+  library_list: 'library', notes_search: 'note',
+  page_markdown_edit: 'edit',
+  __presearch__: 'search',
+};
+
+/** 抬头右侧那句话的**分类**：与 DSH 的"已读取文件，已搜索代码"同一种写法。 */
+const TOOL_SUMMARY: Array<[string[], string]> = [
+  [['paper_search', 'kb_search', '__presearch__'], '已检索'],
+  [['page_markdown_get', 'block_get'], '已读正文'],
+  [['page_image_get', 'figure_image_get', 'figure_list'], '看过插图'],
+  [['formula_get'], '看过公式'],
+  [['translate_get'], '看过译文'],
+  [['library_list'], '翻过书架'],
+  [['notes_search'], '查过笔记'],
+  [['page_markdown_edit'], '改过产物'],
+];
+
+function stepLabel(tool?: string) {
+  return TOOL_STEPS[tool ?? ''] ?? '调用工具';
+}
+
+function toolIcon(tool?: string) {
+  return TOOL_ICONS[tool ?? ''] ?? 'bolt';
+}
+
+/** 旧消息的兜底：没有 `run` 时用 `thinking` + `tool_trace` 拼一份同形状的轨迹。 */
+function stepsOf(m: AgentMessage): AgentStep[] {
+  const steps = m.run?.steps;
+  if (steps?.length) return steps;
+  if (m.role !== 'assistant') return [];
+  const out: AgentStep[] = [];
+  if (m.thinking) out.push({ kind: 'thinking', text: m.thinking });
+  for (const t of m.tool_trace ?? []) {
+    const tool = String(t?.tool || '');
+    if (!tool || tool === '__usage__') continue;      // 用量那条不是"步骤"
+    out.push({ kind: 'tool', tool, status: 'done',
+               digest: typeof t?.args === 'object' ? '' : String(t?.args ?? ''),
+               ms: Number(t?.ms || 0) || null });
+  }
+  return out;
+}
+
+/** 轨迹里有没有**正文段**：有就由轨迹负责渲染回答，不再单独渲染 `content`（否则重复两遍）。 */
+function hasAnswerSteps(m: AgentMessage) {
+  return stepsOf(m).some(s => s.kind === 'text');
+}
+
+/** 抬头右侧：它这一轮都干了什么（按出现的类别去重）。 */
+function runSummary(steps: AgentStep[]) {
+  const tools = new Set(steps.filter(s => s.kind === 'tool').map(s => s.tool ?? ''));
+  const bits = TOOL_SUMMARY.filter(([names]) => names.some(n => tools.has(n)))
+    .map(([, text]) => text);
+  return bits.length ? `${bits.join(' · ')}${bits.length > 1 ? ' 等' : ''}` : '';
+}
+
+/** 抬头左侧：跑着的时候说"现在在干什么"，跑完说"用时多少"。 */
+function runTitle(m: AgentMessage) {
+  if (m.message_id === liveId.value) {
+    const steps = stepsOf(m);
+    const running = [...steps].reverse().find(s => s.kind === 'tool' && s.status === 'running');
+    const tail = running ? `${toolLabel(running.tool ?? '')}…` : '正在思考…';
+    return `${tail}${elapsedMs.value ? ` · ${fmtElapsed(elapsedMs.value)}` : ''}`;
+  }
+  const ms = m.run?.elapsed_ms || m.thinking_ms || 0;
+  return ms ? `已完成，用时 ${fmtElapsed(ms)}` : '完成';
+}
+
+function isRunOpen(id: string) {
+  // 默认展开：正文段在轨迹里，收起会把回答一起藏掉
+  return !openRuns.value.includes(id);
+}
+
+function toggleRun(id: string) {
+  openRuns.value = isRunOpen(id) ? [...openRuns.value, id] : openRuns.value.filter(x => x !== id);
+}
+
+function stepKey(id: string, i: number) {
+  return `${id}:${i}`;
+}
+
+function isStepOpen(id: string, i: number) {
+  return openSteps.value.includes(stepKey(id, i));
+}
+
+function toggleStep(id: string, i: number) {
+  const key = stepKey(id, i);
+  openSteps.value = isStepOpen(id, i) ? openSteps.value.filter(x => x !== key)
+    : [...openSteps.value, key];
+}
+
+/** 步骤行右侧的参数摘要：`query=随机旋转` → `随机旋转`（键名对用户没意义）。 */
+function fmtDigest(digest?: string) {
+  const text = String(digest || '').trim();
+  if (!text) return '';
+  return text.split('、').map(part => part.replace(/^[a-z_]{2,12}=/, '')).join(' · ').slice(0, 60);
+}
+
+function ensureLive(): AgentMessage {
+  const found = messages.value.find(m => m.message_id === liveId.value);
+  if (found) return found;
+  const msg: AgentMessage = {
+    message_id: liveId.value, conversation_id: currentId.value ?? '', seq: 0,
+    role: 'assistant', content: '', citations: [], run: { steps: [] },
+  };
+  messages.value = [...messages.value, msg];
+  return msg;
+}
+
+/** 往当前这一段追加（同类相邻的合并；换类另起一段——这就是"夹杂"的来源）。 */
+function appendLiveStep(kind: AgentStep['kind'], text: string) {
+  if (!text) return;
+  const steps = ensureLive().run!.steps!;
+  const last = steps[steps.length - 1];
+  if (last && last.kind === kind) last.text = (last.text ?? '') + text;
+  else steps.push({ kind, text, round: 0 });
 }
 
 /* ------------------------------ 空态文案 ------------------------------ */
@@ -518,36 +662,44 @@ function onEvent(name: string, data: any) {
     if (data?.conversation_id) currentId.value = data.conversation_id;
     return;
   }
-  if (name === 'stage') { streamNote.value = data?.message || ''; return; }
+  if (name === 'stage') { appendLiveStep('stage', data?.message || ''); return; }
   if (name === 'tool') {
-    if (data?.status === 'start') streamNote.value = `${toolLabel(data.tool)}${data.args_digest ? ` · ${data.args_digest}` : ''}`;
+    const steps = ensureLive().run!.steps!;
+    if (data?.status === 'start') {
+      steps.push({ kind: 'tool', round: Number(data?.round || 0), tool: data?.tool ?? '',
+                   digest: String(data?.args_digest || ''), status: 'running' });
+    } else {
+      const open = [...steps].reverse()
+        .find(s => s.kind === 'tool' && s.tool === data?.tool && s.status === 'running');
+      if (open) { open.status = 'done'; open.ms = Number(data?.ms || 0) || null; }
+    }
     return;
   }
-  if (name === 'thinking_delta') {
-    streamThinking.value += data?.text ?? '';
-    thinkingMs.value = Number(data?.ms || thinkingMs.value);
-    return;
-  }
-  if (name === 'thinking') {
-    // 思考阶段结束（正文开始了）：把跑表停在服务端给的权威值上，并按惯例收起思考
-    thinkingMs.value = Number(data?.ms || thinkingMs.value);
-    thinkingOpen.value = false;
-    return;
-  }
+  if (name === 'thinking_delta') { appendLiveStep('thinking', data?.text ?? ''); return; }
+  if (name === 'thinking') return;   // 思考段的边界由步骤自己的"换类另起一段"表达
   if (name === 'answer_delta') {
-    streamText.value += data?.text ?? '';
-    streamNote.value = '';
+    const text = data?.text ?? '';
+    const msg = ensureLive();
+    msg.content += text;
+    appendLiveStep('text', text);
     void scrollToBottom();
     return;
   }
   if (name === 'citation' && data?.ref) {
-    if (!streamCitations.value.some(c => c.ref === data.ref)) streamCitations.value.push(data as AgentCitation);
+    const msg = ensureLive();
+    if (!(msg.citations ?? []).some(c => c.ref === data.ref)) {
+      msg.citations = [...(msg.citations ?? []), data as AgentCitation];
+    }
     return;
   }
   if (name === 'done') {
-    streamText.value = data?.answer ?? streamText.value;
-    streamCitations.value = data?.citations ?? streamCitations.value;
-    if (data?.thinking_ms) thinkingMs.value = Number(data.thinking_ms);
+    const msg = ensureLive();
+    // `done` 是权威结果：正文、引用、**整条过程轨迹**都换成服务端那一份
+    msg.content = data?.answer ?? msg.content;
+    msg.citations = data?.citations ?? msg.citations;
+    if (data?.run?.steps?.length) msg.run = data.run;
+    if (data?.run?.elapsed_ms) elapsedMs.value = Number(data.run.elapsed_ms);
+    else if (data?.thinking_ms) elapsedMs.value = Number(data.thinking_ms);
     if (data?.incomplete_reason) toast(`回答未完成：${data.incomplete_reason}`, 'warn');
     // 这一轮改过产物（`page_markdown_edit`）：正文与索引都已更新，给一句提示 ——
     // 否则用户只能自己去翻那一页对不对。阅读器那一页由 SSE 自己刷新（见 ReaderView）。
@@ -597,12 +749,13 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
 
   errorText.value = '';
   sending.value = true;
-  streamText.value = '';
-  streamCitations.value = [];
-  streamThinking.value = '';
-  thinkingMs.value = 0;
-  thinkingOpen.value = true;
-  streamNote.value = mode === 'send' ? '正在准备…' : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…');
+  elapsedMs.value = 0;
+  startTimer();
+  // 这一轮助手消息的本地占位：先塞一条"正在准备…"的阶段步骤，抬头与跑表立刻就有东西可显示
+  liveId.value = `local-assistant-${Date.now()}`;
+  ensureLive();
+  appendLiveStep('stage', mode === 'send' ? '正在准备…'
+    : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   const optimistic: AgentMessage | null = mode === 'send' ? {
     message_id: `local-${Date.now()}`, conversation_id: currentId.value ?? '', seq: 0,
     role: 'user',
@@ -656,14 +809,28 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (optimistic) messages.value = messages.value.filter(m => m.message_id !== optimistic.message_id);
   } finally {
     sending.value = false;
-    streamText.value = '';
-    streamCitations.value = [];
-    streamThinking.value = '';
-    streamNote.value = '';
+    stopTimer();
+    // 占位消息撤掉：成功后 `loadConversation` 已经把它换成了落库那条；
+    // 失败/中止时它没有对应的库记录，留着会与刷新后的结果不一致。
+    messages.value = messages.value.filter(m => m.message_id !== liveId.value);
+    liveId.value = '';
     controller = null;
     // 发完一轮输入框空了 → 高度收回去（不然它会一直停在上一次的多行高度）
     void nextTick(resetInputHeight);
   }
+}
+
+/** 跑表：每 200ms 一跳（读数只到秒，再密只是白烧 CPU）。 */
+function startTimer() {
+  stopTimer();
+  const t0 = performance.now();
+  tickTimer = window.setInterval(() => {
+    elapsedMs.value = Math.round(performance.now() - t0);
+  }, 200);
+}
+
+function stopTimer() {
+  if (tickTimer !== null) { window.clearInterval(tickTimer); tickTimer = null; }
 }
 
 function stop() {
@@ -919,7 +1086,8 @@ watch(() => props.selection, (sel) => {
           <p class="hello-line">{{ headline }}</p>
         </div>
 
-        <div v-for="m in messages" :key="m.message_id" class="msg" :class="m.role">
+        <div v-for="m in messages" :key="m.message_id" class="msg" :class="m.role"
+             :data-live="m.message_id === liveId ? '1' : null">
           <!-- 压缩留痕：对话里多出来的一轮 -->
           <div v-if="m.role === 'summary'" class="sum-card">
             <div class="sum-head"><AppIcon name="layers" :size="12" />已压缩 · 前面的内容在这里</div>
@@ -932,17 +1100,46 @@ watch(() => props.selection, (sel) => {
               <span class="truncate">{{ splitQuote(m.content).quote }}</span>
             </div>
 
-            <!-- 深度思考：默认折叠，点抬头展开；耗时取服务端记的那一次 -->
-            <div v-if="m.thinking" class="think" :class="{ open: isThinkingOpen(m.message_id) }">
-              <button class="btn sm think-head" @click="toggleThinking(m.message_id)">
-                <AppIcon :name="isThinkingOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="12" />
-                <AppIcon name="sparkle" :size="12" />
-                <span>深度思考{{ m.thinking_ms ? ` · ${fmtMs(m.thinking_ms)}` : '' }}</span>
+            <!-- 过程轨迹：**思考 / 正文 / 工具按发生顺序混排**（正常 agent 就长这样）。
+                 正文段直接就是回答本体（`run.steps` 里有 text 段时不再另渲染 `content`，
+                 否则同一段话会出现两遍）；没有 `run` 的老消息由 `stepsOf` 兜底拼一份。 -->
+            <div v-if="stepsOf(m).length" class="run" :class="{ live: m.message_id === liveId }">
+              <button class="run-head" @click="toggleRun(m.message_id)">
+                <AppIcon :name="isRunOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="12" />
+                <span v-if="m.message_id === liveId" class="dot" />
+                <span class="run-title">{{ runTitle(m) }}</span>
+                <span class="run-sum truncate">{{ runSummary(stepsOf(m)) }}</span>
               </button>
-              <pre v-if="isThinkingOpen(m.message_id)" class="think-body">{{ m.thinking }}</pre>
+              <div v-if="isRunOpen(m.message_id)" class="run-body">
+                <template v-for="(s, i) in stepsOf(m)" :key="`${m.message_id}-${i}`">
+                  <!-- 正文段：就是回答的一段，按 Markdown 渲染（引用锚照样可点） -->
+                  <div v-if="s.kind === 'text'" class="md body run-text"
+                       v-html="renderAnswer(s.text || '', m.citations)" @click="onCitationClick" />
+                  <!-- 思考段：默认只露几行，点一下展开（长思考不占满整屏） -->
+                  <div v-else-if="s.kind === 'thinking'" class="run-step think"
+                       :class="{ open: isStepOpen(m.message_id, i) }"
+                       @click="toggleStep(m.message_id, i)">
+                    <AppIcon name="sparkle" :size="11" />
+                    <span class="step-tag">思考</span>
+                    <span class="step-text">{{ s.text }}</span>
+                  </div>
+                  <!-- 宿主自己的动作（准备档案 / 检索 / 开始组织回答）：一行淡字，不是工具调用 -->
+                  <div v-else-if="s.kind === 'stage'" class="run-step stage">
+                    <span class="step-text">{{ s.text }}</span>
+                  </div>
+                  <!-- 工具段：短语 + 参数摘要（短语来自 TOOL_STEPS，与"正在…"那套同源） -->
+                  <div v-else class="run-step tool" :class="{ running: s.status === 'running' }">
+                    <AppIcon :name="toolIcon(s.tool)" :size="11" />
+                    <span class="step-tag">{{ stepLabel(s.tool) }}</span>
+                    <span v-if="fmtDigest(s.digest)" class="step-arg">· {{ fmtDigest(s.digest) }}</span>
+                    <span v-if="s.ms" class="step-ms">{{ fmtMs(s.ms) }}</span>
+                  </div>
+                </template>
+              </div>
             </div>
 
-            <div class="md body" v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : m.content, m.citations)"
+            <div v-if="!hasAnswerSteps(m)" class="md body"
+                 v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : m.content, m.citations)"
                  @click="onCitationClick" />
 
             <div v-if="m.attachments?.length" class="atts">
@@ -979,23 +1176,9 @@ watch(() => props.selection, (sel) => {
           </template>
         </div>
 
-        <!-- 正在生成 -->
-        <div v-if="sending || streamText" class="msg assistant live">
-          <!-- 思考中（正文还没出来时它才是主角）：跑表以服务端推的 ms 为准 -->
-          <div v-if="streamThinking" class="think live" :class="{ open: thinkingOpen }">
-            <button class="btn sm think-head" @click="thinkingOpen = !thinkingOpen">
-              <AppIcon :name="thinkingOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
-              <span class="dot" />
-              <span>{{ streamText ? '深度思考' : '正在深度思考' }}{{ thinkingMs ? ` · ${fmtMs(thinkingMs)}` : '' }}</span>
-            </button>
-            <pre v-if="thinkingOpen" class="think-body">{{ streamThinking }}</pre>
-          </div>
-          <div v-if="streamText" class="md body" v-html="renderAnswer(streamText, streamCitations)"
-               @click="onCitationClick" />
-          <div v-if="streamNote" class="note"><span class="dot" />{{ streamNote }}</div>
-          <!-- 流式期间**不列 chunk 号**（用户口径 2026-10-03）：边写边多出来的编号只会刷屏，
-               正文里已经随写随点了 -->
-        </div>
+        <!-- 正在生成那一轮就是上面 v-for 里的**本地占位消息**（`liveId`）：
+             思考/正文/工具夹杂的渲染因此与落库后完全同一套模板，不再有第二套"流式专用"样式。
+             流式期间**不列 chunk 号**（用户口径 2026-10-03）：边写边多出来的编号只会刷屏。 -->
 
         <div v-if="errorText" class="err small">{{ errorText }}</div>
       </div>
@@ -1232,29 +1415,49 @@ watch(() => props.selection, (sel) => {
   text-decoration-color: currentColor;
 }
 .md.body :deep(.cite-inline:focus-visible) { outline: none; box-shadow: var(--ring); }
-.note { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); }
-.note .dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-  animation: pulse 1.1s ease-in-out infinite;
-}
 @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
 
-/* 深度思考：折叠块。抬头直接用全局 `.btn.sm`（26px 白胶囊），这里只加"开着"的状态点；
-   正文刻意用等宽 + 纯文本（不走 markdown）—— 思维链是模型的草稿，不是给用户读的正文，
-   渲染成 markdown 只会让它看起来像答案。 */
-.think { margin: 2px 0 6px; }
-.think.open .think-head { color: var(--accent-text); border-color: var(--accent); }
-.think .dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+/* 过程轨迹：抬头一行（用时 + 干了什么），正文里**思考 / 正文 / 工具按发生顺序混排**。
+   抬头不是胶囊按钮而是一行文字 —— 它每轮都在，做成白胶囊会把整屏切成一条条横带。
+   正文段（`.run-text`）与轨迹外的正文同款排版；思考段用等宽灰字（草稿不是答案）。 */
+.run { margin: 2px 0 6px; }
+.run-head {
+  display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
+  padding: 2px 0; border: 0; background: none; cursor: pointer;
+  color: var(--text-dim); font-size: 11.5px;
+}
+.run-head:hover { color: var(--text); }
+.run-title { font-weight: 600; white-space: nowrap; }
+.run-sum { color: var(--text-faint); margin-left: 2px; min-width: 0; }
+.run .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none;
   animation: pulse 1.1s ease-in-out infinite;
 }
-.think-body {
-  margin: 6px 0 0; padding: 8px 10px; max-height: 320px; overflow-y: auto;
-  border-left: 2px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: var(--bg-sunken); color: var(--text-dim);
-  font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
-  white-space: pre-wrap; overflow-wrap: anywhere;
+.run-body {
+  display: flex; flex-direction: column; gap: 3px;
+  margin: 4px 0 0 5px; padding-left: 9px;
+  border-left: 2px solid var(--border);
 }
+.run-step {
+  display: flex; align-items: baseline; gap: 5px;
+  font-size: 11.5px; line-height: 1.65; color: var(--text-faint);
+}
+.run-step :deep(svg), .run-step svg { flex: none; align-self: center; }
+.run-step .step-tag { color: var(--text-dim); flex: none; }
+.run-step .step-arg { color: var(--text-faint); overflow-wrap: anywhere; }
+.run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: 10.5px; }
+.run-step.tool.running .step-tag { color: var(--accent-text); }
+/* 阶段提示（准备档案 / 检索 / 组织回答）：比步骤再淡一档，它只是过程的背景 */
+.run-step.stage .step-text { color: var(--text-faint); font-style: italic; }
+/* 思考段：默认只露 4 行（一轮思考可能上万字），点一下展开全文 */
+.run-step.think { cursor: pointer; }
+.run-step.think .step-text {
+  font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.run-step.think.open .step-text { display: block; -webkit-line-clamp: unset; }
+.run-text { margin: 2px 0; }
+.run-text :deep(p) { margin: 5px 0; }
 .err { color: var(--danger); line-height: 1.6; }
 .msg .md :deep(p) { margin: 5px 0; }
 .msg .md :deep(ul), .msg .md :deep(ol) { margin: 5px 0; padding-left: 18px; }

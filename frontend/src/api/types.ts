@@ -753,6 +753,34 @@ export interface AgentAttachment {
   url: string;
 }
 
+/**
+ * 过程轨迹里的一步（多轮思考 / 工具调用 / 宿主阶段）。
+ *
+ * 形状由后端 `agent/trace.py` 定义，前端只负责翻译成中文短语与图标 ——
+ * 存的是 `tool` 名而不是文案，所以以后改叫法不用动数据。
+ */
+export interface AgentStep {
+  kind: 'stage' | 'thinking' | 'tool' | string;
+  /** 第几轮模型调用（宿主动作用 0） */
+  round?: number;
+  /** `stage` / `thinking` 的文本（思考可能被后端截断，`truncated` 标记） */
+  text?: string;
+  truncated?: boolean;
+  /** `tool` 的工具名（`__presearch__` = 宿主的预检索） */
+  tool?: string;
+  /** 工具入参摘要（"query=随机旋转 量化"） */
+  digest?: string;
+  status?: 'running' | 'done' | string;
+  ms?: number | null;
+}
+
+/** 一轮问答的过程轨迹：有序的 `steps` + 整轮耗时 + 轮数。 */
+export interface AgentRun {
+  steps?: AgentStep[];
+  elapsed_ms?: number;
+  rounds?: number;
+}
+
 export interface AgentMessage {
   message_id: string;
   conversation_id: string;
@@ -769,6 +797,8 @@ export interface AgentMessage {
   thinking?: string;
   /** 思考耗时（毫秒，模型调用 → 第一段正文） */
   thinking_ms?: number;
+  /** 过程轨迹（多轮思考 + 工具调用）；老消息没有 → 前端从 `thinking`/`tool_trace` 拼一份 */
+  run?: AgentRun;
   /** 同一父节点下的兄弟消息 id（分叉导航 ◀ n/m ▶ 用） */
   siblings?: string[];
   sibling_index?: number;

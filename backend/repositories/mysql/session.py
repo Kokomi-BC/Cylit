@@ -51,6 +51,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversation_message", "attachments_json", "`attachments_json` LONGTEXT NULL"),
     ("conversation_message", "thinking", "`thinking` LONGTEXT NULL"),
     ("conversation_message", "thinking_ms", "`thinking_ms` INT NULL"),
+    # 多轮思考 + 工具调用的有序轨迹（`{steps, elapsed_ms, rounds}`）：
+    # 与 `tool_trace_json` 分开 —— 那个是工具审计表，这份是"用户看得见的过程"，
+    # 重开会话时前端照着它重画（老消息没有这一列，读出来空对象 → 前端回退到旧画法）。
+    ("conversation_message", "run_json", "`run_json` LONGTEXT NULL"),
 )
 
 
