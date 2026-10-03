@@ -7848,3 +7848,53 @@ CSSAnimation 实例**（`sameAsPrev: true`）—— 摘类和挂类这两次写 
   （新动画实例）；等闪完 `idle` 时类已被摘掉；再点仍是新实例。
 - `frontend_check` 新增断言"连点同一个引用标号：每次都重播高亮（动画名 -a/-b 交替）"，
   共 **31/31** 通过；`npm run typecheck` / `npm run build` 干净。
+
+## 35. 第三十五轮：system 里不再混"每轮会变的"东西 + 工具轮数上限 8 → 60
+
+用户两条口径："① 修 system 侧影响上下文的问题 ② 模型的工具调用轮数调大（50 轮以上）"，
+并补了一句"如果没有工具调用轮数限制则不加"。**有**上限，所以调。
+
+### 一、轮数：8 → 60，deadline 跟着 120 → 600
+
+`Settings.agent_max_rounds = 8` → `AgentConfig.max_rounds` → `UsageLimits(request_limit=…)`
+（`runtime.py:522`）+ `Deps.rounds_exhausted`（`deps.py:78`，工具自己也看这个值）——
+即"确实存在"工具调用轮数上限，于是按口径放到 60。
+
+配套把 `agent_deadline_seconds` 120 → 600：每轮都要打一次模型，卡在 120s 会让轮数上限形同虚设
+（真正生效的变成"超时"）。链路两侧都没有读超时 —— `bridge._timeout()` 的流式那路是
+`read=None`（注释里写着"agent 可能想很久才吐第一个字"），前端只挂 `AbortSignal`、没有 fetch 超时。
+`/agent/status` 现在报 `limits: {max_rounds: 60, deadline_seconds: 600, …}`。
+
+注意**检索预算是单独一格**（`agent_search_budget = 5`，M7 的设计：防模型换着说法连发 `kb_search`
+把轮数吃光）—— 这一轮没动它，只放宽了总轮数。
+
+### 二、system 侧：规则常驻，值下沉到最后一条用户消息
+
+`build_instructions()` 原来把三样**每轮会变**的东西拼进了 system：
+`evidence_note`（含**本轮**重排分）、`selection_block`（选区原文 + ref + 页号）、
+`image_block`（本轮图片张数）。前缀缓存**从第 0 个 token 起比前缀**，所以"动态内容排在 system
+后半段"这个理由不成立：system 变一个字节，`system + 全部历史` 整段不算命中；下一轮那个块又消失、
+前缀变成第三种 → 连续两轮都 miss。
+
+| 位置 | 内容 |
+|---|---|
+| system（`build_instructions`，同一篇论文**逐字节稳定**） | BASE + 档案 + SCOPE + **SELECTION_RULES** + **IMAGE_RULES** + CITING + NO_EVIDENCE + **NOTES_RULE** |
+| 最后一条用户消息（`prompts.turn_notes()` → `runtime._user_prompt(req, deps)`） | `【本轮备注】` + 选区原文/编号/页号 + 图片张数 + 低相关度提示 |
+| `NOTES_RULE`（常驻 system） | 说明"备注是系统给的定位信息，**别在回答里复述**" —— 防的是当年"图片说明被抄进回答"那次实测代价 |
+
+`SELECTION` 模板顺势瘦身：只留数据（原文 / 位置 / 先读哪里），规则搬进常驻的 `SELECTION_RULES`，
+不再两处重复。`prompts` 模块开头的组织原则也改写了（原文那句"稳定内容在前"会让人以为
+"排在后面就安全"，正是上一轮踩的坑）。
+
+### 三、验证（免费，零模型调用）
+
+- 新增 `tests/test_agent_prompts.py`（4 条）：
+  1. 同一篇论文下，"有选区 + 图片 + 低相关度提示"与"三样都没有"两轮的 `build_instructions()`
+     **逐字节相同**（改之前这条必红）；
+  2. `turn_notes()` 一个值都不少（选区原文 / `ref=7` / 第 4 页 / 3 张图片 / 分数 0.42），
+     没有备注时返回空串；
+  3. 三条常驻规则确实在 system 里（选区别跑题 / 图片别当论文正文 / 别复述备注）；
+  4. `_user_prompt()`：没有备注时**原样**返回用户问题；有备注时备注在问题之前。
+- `pytest tests` 全绿；`agent_check` **25/25**（免费）；8710 / 8711 按端口重启。
+- **故意没做**：真问答那一轮（`agent_check --model`，1~2 次模型调用）—— 位置与轮数在纯函数层面
+  已经锁住，但"模型换了位置还照不照做"只有真跑一次才知道，等用户点头。

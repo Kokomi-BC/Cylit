@@ -291,8 +291,10 @@ class AgentRuntime:
         deadline = t0 + self.cfg.deadline_seconds
         deps = Deps(cfg=self.cfg, host=self.host, paper_id=req.paper_id,
                     registry=RefRegistry(req.paper_id))
-        # 图片张数写进 deps：`prompts.image_block` 会把它渲染成 system 侧的一条规则
-        # （**不能**写在 user prompt 里 —— 模型会把那句说明抄进回答，实测过）
+        # 图片张数写进 deps：`prompts.image_block` 把它渲染进**本轮备注**（拼在用户消息里）。
+        # 为什么不能只写进 system：这一轮的张数每轮都可能变，混进 system 会把
+        # "system + 全部历史"整段前缀缓存打掉（见 `prompts.build_instructions`）；
+        # 而"图片是用户材料、别当论文正文"那类**规则**仍常驻 system 的 IMAGE_RULES。
         if req.attachments:
             from backend.core.config import get_settings
 
@@ -521,7 +523,7 @@ class AgentRuntime:
         sanitizer = StreamingAnswerSanitizer(deps.registry)
         limits = UsageLimits(request_limit=self.cfg.max_rounds)
         sent_refs: set[int] = set()
-        prompt = await self._user_prompt(req)
+        prompt = await self._user_prompt(req, deps)
         # 思考耗时的起点：**模型调用**发起那一刻（档案预注入与检索不算思考，
         # 它们在前端有各自的过程提示，混进来会让"思考 8 秒"变成"检索 6 秒 + 思考 2 秒"）
         state.model_t0 = time.perf_counter()
@@ -664,15 +666,19 @@ class AgentRuntime:
                 pass
         return []
 
-    async def _user_prompt(self, req: AskRequest):
+    async def _user_prompt(self, req: AskRequest, deps: Deps):
         """本轮的 user prompt：纯文本，或``[文本, 图片…]``（多模态）。
+
+        **"本轮备注"拼在这里**（选区编号/原文、图片张数、检索相关度）：它们每轮都可能不一样，
+        放进 system 会把"system + 全部历史"这段前缀整段打掉（见 `prompts.build_instructions`），
+        拼在最后一条用户消息里则前面那一大段照旧命中。
 
         图片走 ``BinaryContent`` —— pydantic-ai 的 OpenAI 适配层会把它编成
         ``image_url`` 的 data URI，与手写多模态请求等价（实测问答模型读得懂）。
 
         为什么只送前 ``agent_attachment_inline_limit`` 张：用户要求"张数不限"是指
         **能传多少**，不是说一次请求塞 50 张图 —— 那会被厂商按体积直接拒掉。
-        多出来的图仍留在历史里（下一轮还能问），只是这一轮不进去，并在 prompt 里说明。
+        多出来的图仍留在历史里（下一轮还能问），只是这一轮不进去，并在备注里说明。
         """
         from backend.core.config import get_settings
 
@@ -680,6 +686,9 @@ class AgentRuntime:
         if not question and req.selection:
             # 划词但用户没打字：默认就是"解释这段"。有追问时用追问当 prompt。
             question = "请解释我选中的这段内容。"
+        notes = prompts.turn_notes(deps)
+        if notes:
+            question = f"{notes}\n\n【用户这一轮的问题】\n{question}"
         if not req.attachments:
             return question
 
