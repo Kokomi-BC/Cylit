@@ -630,7 +630,8 @@ id 只认 32 位十六进制：它是路径的一部分，不做白名单等于�
 
 **硬规则**：① 每次流必须且只能以 `done` / `error` / `cancelled` 之一结束；
 ② `done` 在落库**之后**发，带 `persisted`；③ **落库之后不再检查 deadline**（M8）；
-④ 心跳 5s、总 deadline 120s（Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
+④ 心跳 5s、总 deadline 600s（与 60 轮配套：每轮一次模型调用，卡在 120s 会让轮数上限形同虚设；
+Cylit 检索比 Rust FTS 慢，给宽点；做成设置项）；
 ⑤ `answer_delta` 推的必须是**清洗后**的增量。
 
 **为什么 thinking 必须单独一条通道**：`ThinkingPartDelta` 与 `TextPartDelta` **都有**
@@ -914,7 +915,7 @@ GET  /api/v1/agent/notes?query=&paper_id=&kind=       笔记/高亮/批注
 
 | 闸 | 值 | 管什么 |
 |---|---|---|
-| 轮数 | `agent_max_rounds=8` | 模型请求次数（`UsageLimits(request_limit=…)`，超限 → `rounds_exhausted`） |
+| 轮数 | `agent_max_rounds=60` | 模型请求次数（`UsageLimits(request_limit=…)`，超限 → `rounds_exhausted`）。原先 8 轮：实测"检索 → 读 1~2 页 → 作答"只要 3~4 轮，8 是容错值；但"整篇对着讲 / 逐个公式核对 / 库里横向比"这类要读十几处的问法会被卡成"轮数用满、正文为空"（用户口径 2026-10-03：调到 50 以上）。配套 `agent_deadline_seconds=600`，否则真正生效的又变成超时 |
 | **检索次数** | `agent_search_budget=5` | **模拟实测发现必须单独设**：跨库问题模型会换着说法连发 10+ 次 `kb_search`（每次都真能捞到新片段，所以"没有新依据"的提示也不拦它），最后轮数用满、正文一个字没写。用尽后检索工具**不打后端**直接回"请基于已有材料作答" |
 | 证据量 | `agent_evidence_limit=12` / `agent_evidence_chars=24000` | 进模型的材料总量 |
 
