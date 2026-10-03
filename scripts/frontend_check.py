@@ -641,12 +641,9 @@ async function run() {
     res.tray = tray ? { bg: getComputedStyle(tray).backgroundColor,
                         radius: getComputedStyle(tray).borderTopLeftRadius,
                         pad: getComputedStyle(tray).padding } : null;
-    res.pill = pill ? { bg: getComputedStyle(pill).backgroundColor,
-                        radius: getComputedStyle(pill).borderTopLeftRadius,
-                        shadow: getComputedStyle(pill).boxShadow !== 'none' } : null;
-    /* 三层各是什么色，拿探针现场量的 token 参照值比（跨主题都对） */
+    /* **两层**：外壳里直接是灰托盘，不该再有白色 pill（用户口径 2026-10-03） */
+    res.whitePill = d.querySelectorAll('.toast .toast-pill, .toast [class*="pill"]').length;
     res.trayRef = rgbOf(w, 'var(--bg-sunken)');
-    res.pillRef = rgbOf(w, 'var(--bg-elev)');
     const ico = d.querySelector('.toast .toast-ico');
     res.iconColor = ico ? getComputedStyle(ico).color : null;
     res.text = toast ? (toast.textContent || '').trim().slice(0, 16) : null;
@@ -952,17 +949,14 @@ def main() -> int:
                    f"{host.get('pos')} top={host.get('top')} 中心 x={toast.get('centerX')}"
                    f"/{toast.get('vw')} 胶囊 top={toast.get('top')}")
             tray = tst.get("tray") or {}
-            record("toast", "三层胶囊 + 毛玻璃（玻璃外壳 → 灰色托盘 → 白色 pill）",
+            record("toast", "两层胶囊 + 毛玻璃（玻璃外壳 → 灰色托盘装图标文字）",
                    toast.get("glass") is True and toast.get("radius") == "24px"
                    and toast.get("padding") == "3px"
                    and tray.get("bg") == tst.get("trayRef") and tray.get("radius") == "21px"
-                   and tray.get("pad") == "3px"
-                   and pill.get("bg") == tst.get("pillRef") and pill.get("radius") == "18px"
-                   and pill.get("shadow") is True,
-                   f"外壳 r={toast.get('radius')} 玻璃={toast.get('glass')}；"
+                   and (tst.get("whitePill") or 0) == 0,
+                   f"外壳 r={toast.get('radius')} 玻璃={toast.get('glass')} pad={toast.get('padding')}；"
                    f"托盘 {tray.get('bg')}（--bg-sunken={tst.get('trayRef')}）r={tray.get('radius')} "
-                   f"pad={tray.get('pad')}；pill {pill.get('bg')}（--bg-elev={tst.get('pillRef')}）"
-                   f"r={pill.get('radius')} 阴影={pill.get('shadow')}")
+                   f"pad={tray.get('pad')}；白色 pill {tst.get('whitePill')} 层")
             record("toast", "左侧颜色竖线已移除（级别只由图标颜色表达）",
                    toast.get("borderLeft") == "0px" and bool(tst.get("iconColor")),
                    f"左边框 {toast.get('borderLeft')}，图标 {tst.get('iconColor')}（{tst.get('text')}）")
