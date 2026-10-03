@@ -136,6 +136,29 @@ async function run() {
       toggle.click();
       await sleep(300);
     }
+    /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
+    const sideBtn = [...d.querySelectorAll('.side-tab')]
+      .find((b) => (b.textContent || '').indexOf('对话') >= 0);
+    if (sideBtn) {
+      sideBtn.click();
+      await sleep(600);
+      res.sideUrl = d.location.search;
+      const homeTab = [...d.querySelectorAll('.tab')]
+        .find((a) => (a.getAttribute('href') || '').indexOf('/home') >= 0);
+      const selfTab = [...d.querySelectorAll('.tab')]
+        .find((a) => (a.getAttribute('href') || '').indexOf('/reader/') >= 0);
+      if (homeTab && selfTab) {
+        homeTab.click();
+        await sleep(700);
+        spin(BURN);
+        selfTab.click();
+        await sleep(1100);
+        spin(BURN);
+        await sleep(300);
+        const active = d.querySelector('.side-tab.active');
+        res.sideBack = active ? (active.textContent || '').trim() : null;
+      }
+    }
     out(res);
     document.title = 'done';
   } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
@@ -703,6 +726,10 @@ def main() -> int:
                                   for k in keys)
                and data.get("asidePressed0") != data.get("asidePressed1"),
                f"{data.get('asidePressed0')} → {data.get('asidePressed1')}，键 {keys}")
+        record("reader", "侧栏页签记进 URL（切标签回来还是那一栏）",
+               "side=chat" in str(data.get("sideUrl") or "")
+               and str(data.get("sideBack") or "").startswith("对话"),
+               f"{data.get('sideUrl')} → {data.get('sideBack')}")
 
     # ---- ② 对话面板（不发消息） ----
     print("\n② 对话面板：一级页 / 二级页 / 确认框（不发消息）")

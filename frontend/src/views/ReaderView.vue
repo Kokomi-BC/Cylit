@@ -1420,6 +1420,17 @@ function syncViewQuery() {
   });
 }
 
+/* 侧栏页签也写进 URL query：标签条记住的是"每个标签上次的路由位置（含 query）"，
+   不写进去的话切到别的标签再切回来就退回默认页签（用户口径 2026-10-03："侧栏点了哪个页面没记住"）。
+   为什么挂在 watch 上而不是点击处理器里：页签还会被别处改（搜索命中、划词进对话、工具栏「看解读」、
+   `?side=` 深链），watch 一处覆盖全部；顺带地址栏也能如实反映当前在看哪一栏。
+   与 `syncViewQuery` 同一套口径：`replace`、不堆历史、值没变就不写。 */
+watch(sideTab, (k) => {
+  if (loading.value || fatal.value) return;
+  if (String(route.query.side ?? '') === k) return;
+  void router.replace({ path: route.path, query: { ...route.query, side: k } });
+});
+
 /* ------------------------------ 视图切换 ------------------------------ */
 async function setViewMode(mode: ViewMode) {
   if (viewMode.value === mode) return;

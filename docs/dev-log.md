@@ -7940,3 +7940,35 @@ CSSAnimation 实例**（`sameAsPrev: true`）—— 摘类和挂类这两次写 
     两篇各存各的键。
 - `frontend_check` 新增第 ④ 组探针（标签页状态，2 条）与阅读器里一条"按论文记侧栏"的断言：
   **34/34**；`npm run typecheck` / `npm run build` 干净。
+
+## 37. 第三十七轮：侧栏"点了哪一栏"也记进 URL（切标签回来还是那一栏）
+
+用户补的一条："侧栏点击了哪个页面没有记住。"
+
+### 一、根因：页签只**读**不**写**
+
+`sideTab` 的来路只有两条：`?side=` 深链（`loadAll` 里读一次）和用户点击
+（模板里就是 `@click="sideTab = t.k"`）。**从来没有写回地址栏**，也没进阅读进度
+（服务端 `reading_progress` 没有这一列）。而外壳是 `<RouterView :key="routeKey">` ——
+切走再切回来等于重挂，内存状态清零，于是退回默认页签「目录」。
+
+上一轮那句话已经把口径写清楚了（`syncViewQuery` 的注释）："标签条记住的是**每个标签
+上次的路由位置（含 query）**，点标签切回来时由 `tabLocation` 原样跳回去" ——
+`view/left/order/pside` 都写了，只有 `side` 漏了。
+
+### 二、修法：watch 一处覆盖全部入口
+
+在 `syncViewQuery` 旁边加一个 `watch(sideTab, …)`：值变了就把 `side` 写进 query（`replace`、
+不堆历史、值没变不写）。为什么挂在 watch 而不是点击处理器：页签还会被别处改 ——
+搜索命中（`sideTab='search'`）、划词进对话（`'chat'`）、工具栏「看解读」（`'insight'`）、
+`?side=` 深链，watch 一处全覆盖；顺带地址栏也如实反映当前在看哪一栏。
+
+没进阅读进度：query 已经覆盖"切标签"和"刷新"两种情形（刷新时地址栏还带着 `?side=`），
+而"关掉标签再重开"按既有口径就是**从头看**（`openTab` 会清 query），不必再多一列。
+
+### 三、验证（免费，零模型调用）
+
+- 真浏览器实测：默认「目录」→ 点「对话」→ 地址栏变成 `?nosse=1&side=chat` → 切「首页」
+  → 切回论文标签：选中的还是「对话」，`side=chat` 还在，侧栏也跟着展开。
+- `frontend_check` 新增断言"侧栏页签记进 URL（切标签回来还是那一栏）"：**35/35**；
+  `npm run typecheck` / `npm run build` 干净。
