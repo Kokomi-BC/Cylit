@@ -33,8 +33,14 @@ const props = defineProps<{
   highlights: Highlight[];
   /** 搜索词：命中处全部高亮（见 `utils/searchMarks.ts`） */
   searchTerm: string;
-  /** 需要"闪一下"提醒的行 id（点搜索命中 / 目录跳转后短暂提示"就是这一块"） */
+  /** 需要"闪一下"提醒的行 id（点搜索命中 / 引用标号 / 目录跳转后短暂提示"就是这一块"） */
   flashRowId: string;
+  /**
+   * 闪烁计数（每次都变）。只用来在 `flash-a` / `flash-b` 之间换动画名 ——
+   * 不换名字的话，连点同一行时"摘类再挂回"会被样式引擎合并成没变，同一个
+   * CSSAnimation（已 `forwards` 停在 opacity:0）继续跑，用户什么都看不到。见 ReaderView.flashRow。
+   */
+  flashNonce: number;
   /** 后台正在翻译这篇论文：未译的行显示「等待翻译」而不是「未翻译」 */
   translating: boolean;
   /** 正文字号（px）；标题/图注用 em 跟随缩放 */
@@ -84,7 +90,12 @@ const pageImage = (page: number) => assetUrl(`/api/v1/papers/${props.paperId}/pa
  * 解析前的论文拿不到页信息（`info` 为 null）→ 继续用页图。
  */
 const useRealPdf = (g: PageGroup) => g.info?.has_text_layer === true;
-const rowClass = (id: string) => ({ current: id === props.currentRowId, flash: id === props.flashRowId });
+/** 每次闪的动画名在两个等价类之间交替（原因见 props.flashNonce） */
+const flashKind = computed(() => (props.flashNonce % 2 ? 'flash-a' : 'flash-b'));
+const rowClass = (id: string) => ({
+  current: id === props.currentRowId,
+  [flashKind.value]: id === props.flashRowId,
+});
 /* 页头原来的「结构对齐」徽章**已按用户要求删除**：它只是在说"模型给的块数与解析器不一致、
  * 走了结构兜底对齐"，人工复核内容并没有问题，白示一个告警只会让人以为译错了。
  * `align` 字段仍在产物与接口里（供自检脚本审计），前端不再展示。 */
@@ -373,25 +384,39 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
    "当前行"仍由 ReaderView 的滚动跟踪维护（目录高亮 / j·k 跳转 / 进度保存），只是不画出来。 */
 .row-pair { position: relative; padding: 0 4px; }
 
-/* 「就是这一块」：点搜索命中 / 目录跳过来之后，整行短暂亮一下再淡出。
+/* 「就是这一块」：点搜索命中 / 目录 / 引用标号跳过来之后，整行短暂亮一下再淡出。
  * 用 ::before 覆盖层而不是给行本身上底色 —— 行是纯排版块，改它的 background 会连图片、
  * 表格一起变色；覆盖层只负责"闪"，且 `pointer-events:none` 不挡点击。
  * 底色默认就是**可见**的（不是靠动画从 0 淡入）：万一动画没跑（无头浏览器冻结 CSS 动画、
- * 或者被系统设置关掉），这层照样亮着，1.6s 后由 JS 摘掉类 → 效果依旧成立。 */
-.row-pair.flash::before {
+ * 或者被系统设置关掉），这层照样亮着，1.6s 后由 JS 摘掉类 → 效果依旧成立。
+ *
+ * ⚠️ 为什么是两个等价类 + 两个 keyframes（`-a` / `-b` 交替，见 props.flashNonce）：
+ * 连点**同一个**标号时，`flash` 类被"摘掉又挂回"的两次写 DOM 在同一个任务里，样式引擎
+ * 合并成"没变" → 同一个 CSSAnimation 实例接着跑（实测 `getAnimations()` 前后是同一个对象），
+ * 而它已经 `forwards` 停在 opacity:0，用户看到的就是"再点没反应，先点别的再点回来才行"。
+ * 换动画名 = 计算样式真的变了，浏览器只能重播一遍。 */
+.row-pair.flash-a::before,
+.row-pair.flash-b::before {
   content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
   border-radius: 8px; opacity: .95;
   background: color-mix(in srgb, var(--accent) 20%, transparent);
-  animation: row-flash 1.5s ease-out forwards;
 }
-@keyframes row-flash {
+.row-pair.flash-a::before { animation: row-flash-a 1.5s ease-out forwards; }
+.row-pair.flash-b::before { animation: row-flash-b 1.5s ease-out forwards; }
+@keyframes row-flash-a {
+  0% { opacity: .95; }
+  60% { opacity: .6; }
+  100% { opacity: 0; }
+}
+@keyframes row-flash-b {
   0% { opacity: .95; }
   60% { opacity: .6; }
   100% { opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* 尊重系统设置：不做淡出动画，亮着等 JS 摘类即可 */
-  .row-pair.flash::before { animation: none; opacity: .5; }
+  .row-pair.flash-a::before,
+  .row-pair.flash-b::before { animation: none; opacity: .5; }
 }
 
 /* 文本对照：一行两列；两侧只有字体不同，字号/行距完全一致 */

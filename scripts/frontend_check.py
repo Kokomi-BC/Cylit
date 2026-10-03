@@ -303,6 +303,31 @@ async function run() {
       res.badBold = [...root.querySelectorAll('.md.body')]
         .map((el) => ((el.textContent || '').match(/[。，、；：？！…—）》」』”’,.;:?!][*][*]/g) || []).length)
         .reduce((a, b) => a + b, 0);
+      /* 连点**同一个**引用标号两次：第二次也必须重播高亮。
+         只靠"摘类再挂回"会被样式引擎合并成"没变" → 同一个 CSSAnimation 实例接着跑
+         （已经 forwards 停在 opacity:0），用户看到的就是"再点没反应"。
+         所以量两件事：闪的类名在 -a/-b 之间交替，且动画实例**换了对象**。 */
+      if (inlines.length) {
+        const kindOf = (el) => [...el.classList].find((c) => c.indexOf('flash-') === 0) || '';
+        let prev = null;
+        const snap = () => {
+          const el = d.querySelector('.row-pair.flash-a, .row-pair.flash-b');
+          if (!el) return { kind: '', fresh: null, row: '' };
+          const as = el.getAnimations ? el.getAnimations({ subtree: true }) : [];
+          const a = as.filter((x) => x.effect && x.effect.pseudoElement)[0] || null;
+          const o = { kind: kindOf(el), fresh: a ? (a !== prev) : null,
+                      row: el.getAttribute('data-row-id') || '' };
+          prev = a;
+          return o;
+        };
+        inlines[0].click();
+        await sleep(250);
+        const f1 = snap();
+        inlines[0].click();
+        await sleep(250);
+        const f2 = snap();
+        res.flash = { f1, f2 };
+      }
     }
     out(res);
     document.title = 'done';
@@ -700,6 +725,15 @@ def main() -> int:
                    f"{styleOf}")
             record("chat", "`**加粗**` 不漏记号（中文句末标点紧接收尾定界符）",
                    (chat.get("badBold") or 0) == 0, f"漏记号 {chat.get('badBold')} 处")
+            fl = chat.get("flash") or {}
+            f1 = fl.get("f1") or {}
+            f2 = fl.get("f2") or {}
+            record("chat", "连点同一个引用标号：每次都重播高亮（动画名 -a/-b 交替）",
+                   f1.get("kind") in ("flash-a", "flash-b")
+                   and f2.get("kind") in ("flash-a", "flash-b")
+                   and f1.get("kind") != f2.get("kind")
+                   and f2.get("fresh") is True and bool(f1.get("row")),
+                   f"{f1} → {f2}")
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

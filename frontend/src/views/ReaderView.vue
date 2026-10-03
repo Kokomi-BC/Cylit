@@ -1229,14 +1229,22 @@ async function afterAsideResize() {
 /* ------------------------------ 定位 ------------------------------ */
 /** 「就是这一块」的短暂提醒：跳过去之后让整行亮一下再淡出（CSS 动画，见 ReaderPageRows）。 */
 const flashRowId = ref('');
+/**
+ * 第几次闪。**每次都 +1**，`ReaderPageRows` 用它把动画名在 `flash-a` / `flash-b` 之间换。
+ *
+ * 为什么必须换名字（2026-10-03 实测）：连点**同一个**引用标号时，下面这段"摘掉类再挂回"
+ * 的两次写 DOM 落在同一个任务里（`await nextTick()` 只等补丁、不等一帧），样式引擎把它合并成
+ * "没变" —— `getAnimations()` 前后拿到的是**同一个** CSSAnimation 实例，它已经
+ * `forwards` 停在 opacity:0，于是用户什么都看不见（"再点同一个标号不亮了，先点别的再点回来才行"）。
+ * 换动画名会让计算样式真的不同，浏览器只能重播一遍。
+ */
+const flashNonce = ref(0);
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function flashRow(id: string) {
+function flashRow(id: string) {
   if (!id) return;
   if (flashTimer) clearTimeout(flashTimer);
-  // 先摘掉类再挂上：同一行连点两次也能重新播一遍动画（直接赋同一个值不会触发重绘）
-  flashRowId.value = '';
-  await nextTick();
+  flashNonce.value += 1;
   flashRowId.value = id;
   flashTimer = setTimeout(() => { flashRowId.value = ''; flashTimer = null; }, 1600);
 }
@@ -3339,6 +3347,7 @@ function renderMarkdown(text?: string | null) {
           :highlights="highlights"
           :search-term="searchQuery.trim()"
           :flash-row-id="flashRowId"
+          :flash-nonce="flashNonce"
           :translating="translating"
           :font-size="readerFont"
           @focus="focusRow"
