@@ -74,6 +74,18 @@ def test_long_thinking_is_capped_not_dropped() -> None:
     assert len(step["text"]) <= STEP_CHARS + 1 and step.get("truncated") is True
 
 
+def test_text_is_never_truncated() -> None:
+    """正文段是**回答本体**：截了就是回答缺一截（用户报过"最终正文被截断"）；思考段才截。"""
+    log = StepLog()
+    body = "字" * (STEP_CHARS * 2)
+    log.text(body, round=1)
+    step = log.payload()["steps"][0]
+    assert step["text"] == body and "truncated" not in step
+    # 同一轮的后续增量继续并进同一条（不会被上限切断）
+    log.text("尾巴。", round=1)
+    assert log.payload()["steps"][0]["text"] == body + "尾巴。"
+
+
 def test_step_cap_keeps_tool_skeleton() -> None:
     """步骤太多时先丢早期**非工具**步骤：工具调用是"它干了什么"的骨架。"""
     log = StepLog()

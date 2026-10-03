@@ -584,6 +584,10 @@ class AgentRuntime:
             tail = sanitizer.flush()
             if tail:
                 yield {"type": "answer_delta", "text": tail}
+                # ⚠️ 清洗器**留着一段尾巴**（怕半个引用标记被推出去），收尾时它才吐出来。
+                # 这段也必须进轨迹：前端是按轨迹的正文段渲染回答的，漏了它回答就少了最后一段
+                # （用户 2026-10-03 报的"正文被截断"就是这个）。
+                state.log.text(tail, round=deps.model_calls + 1)
             state.text = sanitizer.clean
             # 只想不答（轮数用尽 / 报错）：耗时算到流结束，别留个 0 看起来像没思考
             if state.thinking and not state.thinking_ms:

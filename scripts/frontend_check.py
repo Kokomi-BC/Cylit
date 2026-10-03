@@ -744,7 +744,7 @@ def skip(path: str, detail: str) -> None:
 # （形状与 `backend/agent/trace.py` 完全一致），在浏览器里读它渲染成什么样。
 # --------------------------------------------------------------------------
 
-#: 造出来的轨迹：stage → 思考 → 工具 → 思考 → 工具 → 正文 → 工具 → 正文
+#: 造出来的轨迹：stage → 思考 → 工具 → 思考 → 工具 → 正文(半句) → 工具 → 正文(回答)
 RUN_STEPS = [
     {"kind": "stage", "round": 0, "text": "正在准备论文档案…"},
     {"kind": "thinking", "round": 1, "text": "用户问的是核心贡献。"},
@@ -753,12 +753,14 @@ RUN_STEPS = [
     {"kind": "thinking", "round": 2, "text": "再看一眼书架。"},
     {"kind": "tool", "round": 2, "tool": "library_list", "digest": "query=attention",
      "status": "done", "ms": 180},
-    {"kind": "text", "round": 3, "text": "第一段回答里带一个引用锚[1]，还有**加粗**。"},
+    {"kind": "text", "round": 3, "text": "我先说一句。"},
     {"kind": "tool", "round": 3, "tool": "page_markdown_get", "digest": "pages=3",
      "status": "done", "ms": 1200},
-    {"kind": "text", "round": 4, "text": "第二段回答。"},
+    {"kind": "text", "round": 4, "text": "最终回答里带引用锚[1]，还有**加粗**。"},
 ]
-RUN_ANSWER = "第一段回答里带一个引用锚[1]，还有**加粗**。第二段回答。"
+RUN_ANSWER = "我先说一句。最终回答里带引用锚[1]，还有**加粗**。"
+#: 第二条：`content` 是完整回答，但轨迹里的正文段只有半截 —— 用来看"安全网"兜不兜得住
+SAFE_ANSWER = "完整回答：第一段。第二段（这一段在轨迹里是没有的）。"
 
 PROBE_RUN = PROBE_HEAD + """
 let started = false;
@@ -781,7 +783,7 @@ async function run() {
     if (row) row.click();
     for (let i = 0; i < 120 && !root().querySelector('.msg.assistant .run'); i += 1) { spin(BURN); await sleep(50); }
     const msgs = [...root().querySelectorAll('.msg.assistant')];
-    const msg = msgs[msgs.length - 1];
+    const msg = msgs[0];        // 第一条 = 夹杂的那条；第二条用来验安全网
     const run = msg ? msg.querySelector('.run') : null;
     res.opened = !!run;
     if (run) {
@@ -792,6 +794,8 @@ async function run() {
         : el.classList.contains('think') ? 'thinking'
         : el.classList.contains('stage') ? 'stage' : 'tool'));
       res.texts = kids.filter((el) => el.classList.contains('run-text')).length;
+      res.traceTexts = kids.filter((el) => el.classList.contains('run-text'))
+        .map((el) => (el.textContent || '').trim());
       res.strong = kids.filter((el) => el.querySelector('strong')).length;
       res.anchors = run.querySelectorAll('.run-text .cite-inline').length;
       res.toolLines = kids.filter((el) => el.classList.contains('tool'))
@@ -804,14 +808,27 @@ async function run() {
         await sleep(200);
         res.thinkOpen = think.classList.contains('open');
       }
-      /* 折叠：抬头那一行点一下应当把**步骤**收起来（正文段仍在，回答不能被藏掉） */
+      /* 折叠：抬头点一下只收**步骤**；回答在轨迹**外面**，任何情况下都不该被藏 */
       run.querySelector('.run-head').click();
       await sleep(200);
       res.collapsedSteps = run.querySelectorAll('.run-body > *').length;
       res.collapsedTexts = run.querySelectorAll('.run-text').length;
     }
-    /* 正文不能出现两遍：轨迹外不该再有正文块 */
+    /* 回答渲染在轨迹外：`.msg.assistant` 的直接子 `.md.body`（不是 `.run-text`） */
+    const answer = msg ? msg.querySelector(':scope > .md.body') : null;
     res.outsideBody = msg ? msg.querySelectorAll(':scope > .md.body').length : -1;
+    res.answerText = answer ? (answer.textContent || '').trim() : '';
+    res.answerStrong = answer ? answer.querySelectorAll('strong').length : 0;
+    res.answerAnchors = answer ? answer.querySelectorAll('.cite-inline').length : 0;
+    /* 第二条助手消息：轨迹里的正文段**拼不出** content（模拟"轨迹被截断/清洗器留尾"）→
+       安全网必须直接渲染 content（宁可少一层夹杂，也不能少一段回答）。 */
+    const safe = msgs.length > 1 ? msgs[1] : null;
+    if (safe) {
+      const safeAnswer = safe.querySelector(':scope > .md.body');
+      res.safeAnswer = safeAnswer ? (safeAnswer.textContent || '').trim() : '';
+      res.safeTraceTexts = safe.querySelectorAll('.run-text').length;
+      res.safeHasRun = !!safe.querySelector('.run');
+    }
     out(res);
     document.title = 'done';
   } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
@@ -855,6 +872,14 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
             "run": {"steps": RUN_STEPS, "elapsed_ms": 1179000, "rounds": 4},
             "thinking": "用户问的是核心贡献。再看一眼书架。",
         }, head)
+        # 第二条：轨迹里的正文段拼不出 content（模拟"轨迹被截断"）—— 安全网必须兜住
+        _post_json(f"{api}/internal/messages", {
+            "conversation_id": cid, "role": "assistant", "content": SAFE_ANSWER,
+            "run": {"steps": [{"kind": "tool", "round": 1, "tool": "paper_search",
+                               "digest": "query=x", "status": "done", "ms": 10},
+                              {"kind": "text", "round": 2, "text": "只有半截"}],
+                    "elapsed_ms": 2000, "rounds": 2},
+        }, head)
         url = f"{base}/app/reader/{paper}?side=chat&nosse=1"
         res = run_probe(browser, base, "probe_run",
                         PROBE_RUN.replace("__URL__", url).replace("__TITLE__", "run"),
@@ -864,7 +889,7 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
             return
         record("run", "打开临时会话（第一条就是它）", res.get("opened") is True,
                f"{res.get('rowTitle')!r} err={res.get('error')!r}")
-        want = ["stage", "thinking", "tool", "thinking", "tool", "text", "tool", "text"]
+        want = ["stage", "thinking", "tool", "thinking", "tool", "text", "tool"]
         record("run", "思考 / 正文 / 工具**按发生顺序夹杂**",
                (res.get("kinds") or []) == want, "→".join(res.get("kinds") or []))
         record("run", "抬头：已完成 + 用时 + 干了什么的摘要",
@@ -873,10 +898,16 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
                and "翻过书架" in (res.get("head") or "")
                and " 等" in (res.get("head") or ""),
                (res.get("head") or "").strip()[:56])
-        record("run", "正文段：两段都按 Markdown 渲染（加粗 + 引用锚）",
-               res.get("texts") == 2 and (res.get("strong") or 0) >= 1
-               and (res.get("anchors") or 0) >= 1,
-               f"{res.get('texts')} 段，加粗 {res.get('strong')} 段，锚点 {res.get('anchors')} 个")
+        record("run", "回答渲染在**轨迹外面**（不被思考圈住、也不是轨迹里的一段）",
+               res.get("outsideBody") == 1 and "最终回答" in (res.get("answerText") or "")
+               and "我先说一句" not in (res.get("answerText") or ""),
+               f"轨迹外正文 {res.get('outsideBody')} 块：{(res.get('answerText') or '')[:24]!r}")
+        record("run", "回答按 Markdown 渲染（加粗 + 引用锚可点）",
+               (res.get("answerStrong") or 0) >= 1 and (res.get("answerAnchors") or 0) >= 1,
+               f"加粗 {res.get('answerStrong')} 处，锚点 {res.get('answerAnchors')} 个")
+        record("run", "过程里那半句留在轨迹里（夹杂的另一半）",
+               res.get("traceTexts") == ["我先说一句。"],
+               f"轨迹内正文段 {res.get('traceTexts')}")
         record("run", "工具段：短语 + 参数摘要（翻书架 · attention）",
                any("翻书架" in t and "attention" in t for t in (res.get("toolLines") or []))
                and any("读正文" in t for t in (res.get("toolLines") or [])),
@@ -884,10 +915,14 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
         record("run", "思考段：默认收成 4 行、点一下展开",
                str(res.get("clamp")) == "4" and res.get("thinkOpen") is True,
                f"line-clamp={res.get('clamp')}，{res.get('thinkText')} 字")
-        record("run", "收起过程轨迹：步骤藏起来、**正文仍在**（回答不能被藏掉）",
+        record("run", "收起过程轨迹：步骤藏起来、**回答仍在**",
                res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0
-               and res.get("outsideBody") in (0, 1),
-               f"收起后步骤 {res.get('collapsedSteps')} 行，轨迹外正文 {res.get('outsideBody')} 块")
+               and res.get("outsideBody") == 1,
+               f"收起后步骤 {res.get('collapsedSteps')} 行，轨迹外回答 {res.get('outsideBody')} 块")
+        record("run", "轨迹拼不出正文时直接渲染 content（回答不会被截断）",
+               res.get("safeHasRun") is True and res.get("safeTraceTexts") == 0
+               and SAFE_ANSWER in (res.get("safeAnswer") or ""),
+               f"轨迹内正文 {res.get('safeTraceTexts')} 段，回答 {(res.get('safeAnswer') or '')[:22]!r}")
     except Exception as exc:  # noqa: BLE001
         record("run", "过程轨迹能渲染出来", False, f"{exc}")
     finally:

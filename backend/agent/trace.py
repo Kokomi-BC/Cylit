@@ -103,20 +103,18 @@ class StepLog:
         思考、正文、工具是**交织**的。只存一条最终回答就丢掉了这个结构
         （用户 2026-10-03 的口径："允许思考和正文夹杂显示"）。
         `content` 仍然是全部正文的拼接（历史/复制/检索都用它），这里只是把它按轮切开。
+
+        ⚠️ **正文段不截断**（思考段才截）：正文段是要渲染的**回答本身**，截了就是回答缺了一截
+        （用户报过"最终正文被截断"）。它本来就与 `content` 同量级，重复存这一份是设计代价。
         """
         if not text:
             return None
         last = self.steps[-1] if self.steps else None
         if (last is not None and last.get("kind") == "text"
-                and last.get("round") == round and len(last.get("text") or "") < STEP_CHARS):
+                and last.get("round") == round):
             last["text"] = (last.get("text") or "") + text
-            if len(last["text"]) > STEP_CHARS:
-                last["text"] = last["text"][:STEP_CHARS] + "…"
-                last["truncated"] = True
             return last
-        truncated = len(text) > STEP_CHARS
-        return self._push({"kind": "text", "round": round,
-                           "text": text[:STEP_CHARS], **({"truncated": True} if truncated else {})})
+        return self._push({"kind": "text", "round": round, "text": text})
 
     def _push(self, step: dict) -> dict:
         self.steps.append(step)

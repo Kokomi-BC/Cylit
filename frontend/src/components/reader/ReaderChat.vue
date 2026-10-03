@@ -303,9 +303,32 @@ function stepsOf(m: AgentMessage): AgentStep[] {
   return out;
 }
 
-/** 轨迹里有没有**正文段**：有就由轨迹负责渲染回答，不再单独渲染 `content`（否则重复两遍）。 */
-function hasAnswerSteps(m: AgentMessage) {
-  return stepsOf(m).some(s => s.kind === 'text');
+/** 轨迹里的正文段（只算 assistant：用户消息没有轨迹）。 */
+function textStepsOf(m: AgentMessage) {
+  return m.role === 'assistant' ? stepsOf(m).filter(s => s.kind === 'text') : [];
+}
+
+/**
+ * 最终回答**渲染在轨迹外面**（用户口径 2026-10-03："正文不要窝在思考的范围里、还断了一截"）。
+
+ * 轨迹里最后一段正文就是回答；先前的正文段是过程里的话（调工具前说的半句），留在轨迹里。
+ * 只有当各段拼起来**逐字等于** `content` 时才信轨迹 —— 否则直接用 `content`
+ * （宁可少一层夹杂，也不能少一段回答：清洗器留尾、正文被截断那类问题的表现就是"回答少了"）。
+ */
+function finalAnswer(m: AgentMessage): string {
+  if (m.role !== 'assistant') return m.content;
+  const texts = textStepsOf(m);
+  if (!texts.length) return m.content;
+  const joined = texts.map(s => s.text ?? '').join('');
+  return joined === (m.content ?? '') ? (texts[texts.length - 1].text ?? '') : m.content;
+}
+
+/** 轨迹里要显示的正文段 = 除最后一段（那段是回答本体，已经在外面了）。 */
+function showInTrace(m: AgentMessage, step: AgentStep) {
+  const texts = textStepsOf(m);
+  if (texts.length < 2) return false;
+  if (texts.map(s => s.text ?? '').join('') !== (m.content ?? '')) return false;
+  return step !== texts[texts.length - 1];
 }
 
 /** 抬头右侧：它这一轮都干了什么（按出现的类别去重）。 */
@@ -751,11 +774,6 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   sending.value = true;
   elapsedMs.value = 0;
   startTimer();
-  // 这一轮助手消息的本地占位：先塞一条"正在准备…"的阶段步骤，抬头与跑表立刻就有东西可显示
-  liveId.value = `local-assistant-${Date.now()}`;
-  ensureLive();
-  appendLiveStep('stage', mode === 'send' ? '正在准备…'
-    : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   const optimistic: AgentMessage | null = mode === 'send' ? {
     message_id: `local-${Date.now()}`, conversation_id: currentId.value ?? '', seq: 0,
     role: 'user',
@@ -770,6 +788,12 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     messages.value = [...messages.value, optimistic];
     draft.value = '';
   }
+  // 这一轮助手消息的本地占位：**必须排在提问之后**（先建它会挂在用户气泡上面 ——
+  // 用户 2026-10-03 报过"思考的抬头跑到我问的问题上面去了"）。
+  liveId.value = `local-assistant-${Date.now()}`;
+  ensureLive();
+  appendLiveStep('stage', mode === 'send' ? '正在准备…'
+    : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   if (mode === 'send') {
     // 发出去之后胶囊就完成使命了（选区已经进了这条消息的 `> 引用`）
     selCtx.value = null;
@@ -1112,9 +1136,10 @@ watch(() => props.selection, (sel) => {
               </button>
               <div v-if="isRunOpen(m.message_id)" class="run-body">
                 <template v-for="(s, i) in stepsOf(m)" :key="`${m.message_id}-${i}`">
-                  <!-- 正文段：就是回答的一段，按 Markdown 渲染（引用锚照样可点） -->
-                  <div v-if="s.kind === 'text'" class="md body run-text"
+                  <!-- 过程里说的半句（调工具之前那句）：留在轨迹里，最终回答在外面 -->
+                  <div v-if="s.kind === 'text' && showInTrace(m, s)" class="md run-text"
                        v-html="renderAnswer(s.text || '', m.citations)" @click="onCitationClick" />
+                  <template v-else-if="s.kind === 'text'" /><!-- 最后一段正文＝回答本体，渲染在轨迹外 -->
                   <!-- 思考段：默认只露几行，点一下展开（长思考不占满整屏） -->
                   <div v-else-if="s.kind === 'thinking'" class="run-step think"
                        :class="{ open: isStepOpen(m.message_id, i) }"
@@ -1138,8 +1163,8 @@ watch(() => props.selection, (sel) => {
               </div>
             </div>
 
-            <div v-if="!hasAnswerSteps(m)" class="md body"
-                 v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : m.content, m.citations)"
+            <div class="md body"
+                 v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
                  @click="onCitationClick" />
 
             <div v-if="m.attachments?.length" class="atts">
