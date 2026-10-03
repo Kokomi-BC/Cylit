@@ -7972,3 +7972,35 @@ CSSAnimation 实例**（`sameAsPrev: true`）—— 摘类和挂类这两次写 
   → 切回论文标签：选中的还是「对话」，`side=chat` 还在，侧栏也跟着展开。
 - `frontend_check` 新增断言"侧栏页签记进 URL（切标签回来还是那一栏）"：**35/35**；
   `npm run typecheck` / `npm run build` 干净。
+
+## 38. 第三十八轮：toast 挪到页面顶部居中 + 三层胶囊毛玻璃，去掉左侧色条
+
+用户口径：右下角的提示改到**页面居中顶部**，符合页面风格（圆角三层结构毛玻璃），并**移除左侧那条颜色竖线**。
+
+### 一、改了什么
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| 位置 | `right/bottom: 16px` | `top: calc(var(--header-h) + 12px)` + `left: 50%` + `translateX(-50%)`，`flex-direction: column; align-items: center`（多条堆叠也居中）—— 落在**标签条下方**，不压住应用的标签页 |
+| 点击 | 整块可点 | 宿主机 `pointer-events: none`（横跨顶部那一条不该挡点击），胶囊本体 `auto` |
+| 结构 | 单层 + 描边 + 左侧色条 | **三层**：① 毛玻璃托盘 → ② 白色 pill → ③ 图标/文字 |
+| 级别 | 左侧色条 + 图标 | **只有图标颜色**（色条整条删掉） |
+
+三层用的是全站那一套（与 `.seg`、阅读器工具条胶囊同一门语言）：托盘 = 渐变本体
+（`color-mix(bg-elev 86% → 74%)`）+ `backdrop-filter: blur(44px) saturate(2.4)` + `--shadow-flyout`，
+**不描边**（深色下描边会变成一圈发光环 —— 阅读器胶囊上踩过，注释里记着）；pill = `--bg-elev` +
+`--shadow-1`（就是 `.seg` 选中项那一层），半径 21px = 托盘 24px 减 3px 内边距。
+托盘用玻璃而不是 `--bg-sunken`：toast 悬浮在正文之上，浅灰底会把底下的字透出一条灰带。
+进出动画也从"下往上"改成"从上方落下"（`translateY(-8px)`）。
+
+### 二、验证（免费，零模型调用）
+
+- 真浏览器计算样式：host `position:fixed / top:64px / pointer-events:none`；胶囊中心 **x=750**（视口 1500，正中）；
+  托盘 `border-left: 0px`、radius 24px、`background-image` 是渐变、`backdrop-filter: blur(44px) saturate(2.4)`；
+  pill `rgb(255,255,255)`、radius 21px、带阴影；图标 `rgb(10,90,102)`。
+- 观感另用一份**静态复现页**确认（把构建产物里的 toast 规则连 `data-v-xxx` scope 一起搬过来，
+  免得 scoped 样式不生效）：两条提示居中在顶部，三层边界清楚、左侧没有竖线。
+- `frontend_check` 新增第 ⑤ 组探针（3 条断言：顶部居中 / 三层+毛玻璃 / 无左侧竖线）。
+  触发方式特意挑**纯本地**动作（改一项参数 → 点「撤销改动」弹 info），不打后端也不改配置：**38/38**。
+  （踩坑记录：一开始想点「保存设置」，那个按钮没有改动时是 `disabled`，点了什么都不会发生。）
+- `npm run typecheck` / `npm run build` 干净。

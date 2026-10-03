@@ -593,6 +593,64 @@ async function run() {
 
 
 # --------------------------------------------------------------------------
+# 探针 ⑤：提示条 toast（页面顶部居中 / 三层胶囊 / 毛玻璃 / **没有左侧色条**）
+# --------------------------------------------------------------------------
+PROBE_TOAST = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  const setInput = (el, v) => {
+    const setter = Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, v);
+    el.dispatchEvent(new w.Event('input', { bubbles: true }));
+  };
+  try {
+    await until(d, (x) => x.querySelector('.settings-rail input'), 30);
+    /* 改一项再点「撤销改动」：纯本地动作，弹一条 info toast，不打后端也不改配置 */
+    const input = d.querySelector('#general input, .sec input');
+    res.hasInput = !!input;
+    if (input) setInput(input, String((Number(input.value) || 0) + 1));
+    await sleep(200);
+    const reset = [...d.querySelectorAll('button')]
+      .find((b) => (b.textContent || '').indexOf('撤销改动') >= 0);
+    res.resetEnabled = !!reset && !reset.disabled;
+    if (reset && !reset.disabled) reset.click();
+    await until(d, (x) => x.querySelector('.toast'), 20);
+    const host = d.querySelector('.toast-host');
+    const toast = d.querySelector('.toast');
+    const pill = d.querySelector('.toast .toast-pill');
+    res.toastCount = d.querySelectorAll('.toast').length;
+    res.host = host ? { pos: getComputedStyle(host).position, top: getComputedStyle(host).top,
+                        pe: getComputedStyle(host).pointerEvents } : null;
+    res.toast = toast ? {
+      borderLeft: getComputedStyle(toast).borderLeftWidth,
+      radius: getComputedStyle(toast).borderTopLeftRadius,
+      glass: getComputedStyle(toast).backgroundImage.indexOf('gradient') >= 0
+             && getComputedStyle(toast).backdropFilter.indexOf('blur') >= 0,
+      padding: getComputedStyle(toast).padding,
+      centerX: (() => { const r = toast.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })(),
+      top: (() => Math.round(toast.getBoundingClientRect().top))(),
+      vw: w.innerWidth,
+    } : null;
+    res.pill = pill ? { bg: getComputedStyle(pill).backgroundColor,
+                        radius: getComputedStyle(pill).borderTopLeftRadius,
+                        shadow: getComputedStyle(pill).boxShadow !== 'none' } : null;
+    const ico = d.querySelector('.toast .toast-ico');
+    res.iconColor = ico ? getComputedStyle(ico).color : null;
+    res.text = toast ? (toast.textContent || '').trim().slice(0, 16) : null;
+    out(res);
+    document.title = 'done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
+}
+</script>"""
+
+
+# --------------------------------------------------------------------------
 # 跑探针
 # --------------------------------------------------------------------------
 
@@ -870,8 +928,37 @@ def main() -> int:
                and abs((tabs.get("backY") or 0) - (tabs.get("scrolled") or 0)) <= 60,
                f"离开 {tabs.get('scrolled')}px（可滚 {tabs.get('maxY')}）→ 回来 {tabs.get('backY')}px")
 
-    # ---- ⑤ 流式问答（可选） ----
-    print("\n⑤ 流式问答（会调用模型；跑完自删会话）")
+    # ---- ⑤ 提示条 toast（免费） ----
+    print("\n⑤ 提示条：页面顶部居中 / 三层胶囊 / 毛玻璃 / 无左侧色条")
+    tst = run_probe(browser, base, "probe_toast",
+                    PROBE_TOAST.replace("__URL__", f"{base}/app/settings").replace("__TITLE__", "toast"),
+                    args.budget)
+    if tst:
+        if tst.get("toastCount"):
+            host = tst.get("host") or {}
+            toast = tst.get("toast") or {}
+            pill = tst.get("pill") or {}
+            record("toast", "提示条在**页面顶部居中**（固定定位 + 水平居中 + 不挡点击）",
+                   host.get("pos") == "fixed" and host.get("pe") == "none"
+                   and abs((toast.get("centerX") or 0) - (toast.get("vw") or 0) / 2) <= 2
+                   and 40 <= (toast.get("top") or 0) <= 96,
+                   f"{host.get('pos')} top={host.get('top')} 中心 x={toast.get('centerX')}"
+                   f"/{toast.get('vw')} 胶囊 top={toast.get('top')}")
+            record("toast", "三层胶囊 + 毛玻璃（托盘渐变/模糊 → 白色 pill → 图标文字）",
+                   toast.get("glass") is True and toast.get("radius") == "24px"
+                   and toast.get("padding") == "3px"
+                   and pill.get("bg") == "rgb(255, 255, 255)"
+                   and pill.get("radius") == "21px" and pill.get("shadow") is True,
+                   f"托盘 radius={toast.get('radius')} pad={toast.get('padding')} 玻璃={toast.get('glass')}；"
+                   f"pill {pill.get('bg')} r={pill.get('radius')} 阴影={pill.get('shadow')}")
+            record("toast", "左侧颜色竖线已移除（级别只由图标颜色表达）",
+                   toast.get("borderLeft") == "0px" and bool(tst.get("iconColor")),
+                   f"左边框 {toast.get('borderLeft')}，图标 {tst.get('iconColor')}（{tst.get('text')}）")
+        else:
+            skip("提示条样式", f"没弹出 toast（resetEnabled={tst.get('resetEnabled')}）")
+
+    # ---- ⑥ 流式问答（可选） ----
+    print("\n⑥ 流式问答（会调用模型；跑完自删会话）")
     made = 0
     if not args.model:
         skip("流式问答", "默认不跑（加 --model 才调模型）")
