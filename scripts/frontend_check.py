@@ -640,6 +640,8 @@ async function run() {
     res.pill = pill ? { bg: getComputedStyle(pill).backgroundColor,
                         radius: getComputedStyle(pill).borderTopLeftRadius,
                         shadow: getComputedStyle(pill).boxShadow !== 'none' } : null;
+    /* 中间那层要的是**主题灰**：拿探针现场量一个 --bg-sunken 的参照值来比（跨主题都对） */
+    res.pillTray = rgbOf(w, 'var(--bg-sunken)');
     const ico = d.querySelector('.toast .toast-ico');
     res.iconColor = ico ? getComputedStyle(ico).color : null;
     res.text = toast ? (toast.textContent || '').trim().slice(0, 16) : null;
@@ -944,13 +946,15 @@ def main() -> int:
                    and 40 <= (toast.get("top") or 0) <= 96,
                    f"{host.get('pos')} top={host.get('top')} 中心 x={toast.get('centerX')}"
                    f"/{toast.get('vw')} 胶囊 top={toast.get('top')}")
-            record("toast", "三层胶囊 + 毛玻璃（托盘渐变/模糊 → 白色 pill → 图标文字）",
+            record("toast", "三层胶囊 + 毛玻璃（托盘渐变/模糊 → 主题灰 pill → 图标文字）",
                    toast.get("glass") is True and toast.get("radius") == "24px"
                    and toast.get("padding") == "3px"
-                   and pill.get("bg") == "rgb(255, 255, 255)"
+                   and pill.get("bg") == tst.get("pillTray")
+                   and pill.get("bg") != "rgb(255, 255, 255)"
                    and pill.get("radius") == "21px" and pill.get("shadow") is True,
                    f"托盘 radius={toast.get('radius')} pad={toast.get('padding')} 玻璃={toast.get('glass')}；"
-                   f"pill {pill.get('bg')} r={pill.get('radius')} 阴影={pill.get('shadow')}")
+                   f"pill {pill.get('bg')}（--bg-sunken={tst.get('pillTray')}）"
+                   f" r={pill.get('radius')} 阴影={pill.get('shadow')}")
             record("toast", "左侧颜色竖线已移除（级别只由图标颜色表达）",
                    toast.get("borderLeft") == "0px" and bool(tst.get("iconColor")),
                    f"左边框 {toast.get('borderLeft')}，图标 {tst.get('iconColor')}（{tst.get('text')}）")

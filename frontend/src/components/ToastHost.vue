@@ -44,7 +44,7 @@ function iconOf(kind?: string | null): string {
 }
 /* 三层结构（与 `.seg` / 工具条胶囊同一门语言）：
  *   ① 毛玻璃托盘 —— 渐变本体 + `backdrop-filter` + 柔光投影，**不画描边**（描边在深色下会变成发光环）；
- *   ② 抬起的白色 pill（`--bg-elev` + `--shadow-1`，就是 `.seg` 选中项那一层）；
+ *   ② 中间那层胶囊 = **主题灰**（`--bg-sunken`，与 `.seg` 的托盘同色；用户口径 2026-10-03）；
  *   ③ 图标 / 文字。
  * 托盘用玻璃而不是 `--bg-sunken`：toast 悬浮在正文之上，浅底会把底下的字透出一条灰带。 */
 .toast {
@@ -62,7 +62,7 @@ function iconOf(kind?: string | null): string {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 7px 13px;
   border-radius: calc(var(--radius-lg) - 3px);      /* 套在托盘里，半径按内边距递减 */
-  background: var(--bg-elev); box-shadow: var(--shadow-1);
+  background: var(--bg-sunken); box-shadow: var(--shadow-1);
   font-size: 13px; line-height: 1.5;
 }
 .toast-ico { flex: none; margin-top: 1px; color: var(--accent-text); }
