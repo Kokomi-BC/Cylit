@@ -124,6 +124,18 @@ async function run() {
       const t = d.querySelector('.chat textarea.composer-input');
       return t ? getComputedStyle(t).boxShadow : null;
     })();
+    /* 侧栏开合要**按论文**记（键里带 paperId）：切到另一篇论文的标签页时各还各的。
+       以前是一个全局键，A 篇收起之后 B 篇也是收起的（用户 2026-10-03）。 */
+    const toggle = d.querySelector('[data-aside-toggle]');
+    if (toggle) {
+      res.asidePressed0 = toggle.getAttribute('aria-pressed');
+      toggle.click();
+      await sleep(400);
+      res.asidePressed1 = toggle.getAttribute('aria-pressed');
+      res.asideKeys = Object.keys(w.localStorage).filter((k) => k.indexOf('pm.reader.aside') === 0);
+      toggle.click();
+      await sleep(300);
+    }
     out(res);
     document.title = 'done';
   } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
@@ -511,6 +523,53 @@ async function run() {
 
 
 # --------------------------------------------------------------------------
+# 探针 ④：标签页状态（切走再回来，分区与阅读位置都还在；**不碰模型**）
+# --------------------------------------------------------------------------
+PROBE_TABS = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  const tabBy = (frag) => [...d.querySelectorAll('.tab')].find((a) => (a.getAttribute('href') || '').indexOf(frag) >= 0);
+  const activeSec = () => {
+    const b = d.querySelector('.settings-nav-item.active');
+    return b ? (b.textContent || '').trim() : null;
+  };
+  const click = async (el, ms) => { el.click(); await sleep(ms || 600); spin(BURN); await sleep(250); };
+  try {
+    await until(d, (x) => x.querySelector('.settings-rail'), 30);
+    res.sec0 = activeSec();
+    /* 切到**最长**的那一区（索引管理）：短区根本滚不动，量出来的 0 会骗人 */
+    const kb = [...d.querySelectorAll('.settings-nav-item')]
+      .find((b) => (b.textContent || '').indexOf('索引') >= 0);
+    await click(kb, 1800);
+    res.secKb = activeSec();
+    res.hashKb = d.location.hash;
+    res.maxY = d.documentElement.scrollHeight - w.innerHeight;
+    w.scrollTo(0, Math.min(1200, res.maxY));
+    await sleep(400);
+    res.scrolled = Math.round(w.scrollY);
+    await click(tabBy('/home'), 700);
+    await until(d, (x) => x.querySelector('.nav-card'), 20);
+    res.homeY = Math.round(w.scrollY);
+    await click(tabBy('/settings'), 1200);
+    await until(d, (x) => x.querySelector('.settings-rail'), 25);
+    await sleep(700);
+    res.backHash = d.location.hash;
+    res.backSec = activeSec();
+    res.backY = Math.round(w.scrollY);
+    out(res);
+    document.title = 'done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
+}
+</script>"""
+
+
+# --------------------------------------------------------------------------
 # 跑探针
 # --------------------------------------------------------------------------
 
@@ -638,6 +697,12 @@ def main() -> int:
         record("reader", "工具条胶囊内的按钮不投影（在托盘内部）",
                data.get("capsuleBtnCount", 0) > 0 and data.get("capsuleBtnShadow") == 0,
                f"{data.get('capsuleBtnCount')} 枚，带阴影 {data.get('capsuleBtnShadow')} 枚")
+        keys = data.get("asideKeys") or []
+        record("reader", "侧栏开合按论文记（键里带 paperId，切标签各还各的）",
+               bool(keys) and all(k.startswith("pm.reader.aside.") and len(k) > len("pm.reader.aside.")
+                                  for k in keys)
+               and data.get("asidePressed0") != data.get("asidePressed1"),
+               f"{data.get('asidePressed0')} → {data.get('asidePressed1')}，键 {keys}")
 
     # ---- ② 对话面板（不发消息） ----
     print("\n② 对话面板：一级页 / 二级页 / 确认框（不发消息）")
@@ -763,8 +828,23 @@ def main() -> int:
                    "（发送键 disabled 值：False=可发）")
             record("chat", "✕ 把胶囊整块移除（选区一起清掉）", sel.get("chipGone") is True)
 
-    # ---- ④ 流式问答（可选） ----
-    print("\n④ 流式问答（会调用模型；跑完自删会话）")
+    # ---- ④ 标签页状态：切走再回来（免费） ----
+    print("\n④ 标签页状态：切走再回来，分区与阅读位置还在")
+    tabs = run_probe(browser, base, "probe_tabs",
+                     PROBE_TABS.replace("__URL__", f"{base}/app/settings").replace("__TITLE__", "tabs"),
+                     max(args.budget, 60000))
+    if tabs:
+        record("tabs", "设置页的分区记进标签（切回来还是 #kb 那一区）",
+               tabs.get("hashKb") == "#kb" and tabs.get("backHash") == "#kb"
+               and bool(tabs.get("secKb")) and tabs.get("backSec") == tabs.get("secKb"),
+               f"{tabs.get('hashKb')} / {tabs.get('secKb')} → {tabs.get('backHash')} / {tabs.get('backSec')}")
+        record("tabs", "切标签回来阅读位置还在（窗口滚动回到离开时）",
+               (tabs.get("scrolled") or 0) > 200
+               and abs((tabs.get("backY") or 0) - (tabs.get("scrolled") or 0)) <= 60,
+               f"离开 {tabs.get('scrolled')}px（可滚 {tabs.get('maxY')}）→ 回来 {tabs.get('backY')}px")
+
+    # ---- ⑤ 流式问答（可选） ----
+    print("\n⑤ 流式问答（会调用模型；跑完自删会话）")
     made = 0
     if not args.model:
         skip("流式问答", "默认不跑（加 --model 才调模型）")

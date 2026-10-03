@@ -6,7 +6,8 @@
  */
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
-import { activateRoute } from '@/stores/tabs';
+import { rememberScroll, savedScroll } from '@/stores/scrollMemory';
+import { activateRoute, routeKey, tabHash } from '@/stores/tabs';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/home' },
@@ -35,17 +36,50 @@ const routes: RouteRecordRaw[] = [
   { path: '/:pathMatch(.*)*', redirect: '/home' },
 ];
 
+/**
+ * 等内容长到够高再滚。
+ *
+ * 视图是异步填数据的（设置页要等 `/settings`、论文库要等论文列表）：滚早了目标位置还不存在，
+ * 浏览器会把 scrollTop 夹到当前高度，回来看到的就是"滚到一半"。这里最多等 ~600ms，
+ * 高度够了就立刻滚；一直不够（数据没来）也照样返回，不至于把导航卡住。
+ */
+async function restoreScroll(top: number): Promise<{ top: number; behavior: 'auto' }> {
+  for (let i = 0; i < 24; i += 1) {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    if (max >= top - 2) break;
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+  }
+  return { top, behavior: 'auto' };
+}
+
 export const router = createRouter({
   history: createWebHistory('/app/'),
   routes,
   scrollBehavior(to, from, saved) {
     // 阅读器自己管理滚动位置（服务端权威进度），不参与全局滚动恢复
     if (to.name === 'reader') return false;
-    // 带锚点的路由（如 `/app/settings#kb`）：交给页面自己滚到分区。
-    // 这里若返回 `{top: 0}`，就会和页面的锚点滚动**抢**，落点取决于谁后执行 —— 随机。
-    if (to.hash) return false;
-    return saved ?? { top: 0 };
+    // 浏览器前进/后退：浏览器给的位置最准
+    if (saved) return saved;
+    const key = routeKey(to);
+    const top = savedScroll(key);
+    if (to.hash) {
+      // 带锚点的路由有两种来路：
+      //   ① **深链**（`/app/settings#kb`，或在别处 `openTab({hash})`）：hash 是"要去哪一区"，
+      //      交给页面自己滚 —— 这里返回 `{top:0}` 会跟它抢，落点变成随机的；
+      //   ② **标签切回来**：这个 hash 是标签自己记下的（见 `activateRoute`），此时该回到上次的位置。
+      // 判据：标签记的 hash 与 `to.hash` 一致 = ②（深链那次标签还没登记/记的是别的区）。
+      if (tabHash(key) !== to.hash) return false;
+      return top ? restoreScroll(top) : false;
+    }
+    // 切标签回来：回到**这个标签**上次看到的地方（没记过 = 顶部）
+    return top ? restoreScroll(top) : { top: 0 };
   },
+});
+
+router.beforeEach((to, from) => {
+  // 记下**当前页面**滚到哪：此刻 DOM 还是旧页面，等 `afterEach` 就晚了（v-if 已经把旧视图拆了）。
+  // 阅读器里窗口不滚动（它有自己的滚动容器），这里记到的 0 会被 `rememberScroll` 直接忽略。
+  rememberScroll(routeKey(from), window.scrollY);
 });
 
 router.afterEach((to) => {

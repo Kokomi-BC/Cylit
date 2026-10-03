@@ -10,6 +10,7 @@
  */
 
 import { computed, reactive } from 'vue';
+import { forgetScroll } from '@/stores/scrollMemory';
 import type { RouteLocationNormalizedLoaded, RouteLocationRaw } from 'vue-router';
 
 export interface AppTab {
@@ -17,6 +18,8 @@ export interface AppTab {
   name: string;
   params: Record<string, string>;
   query: Record<string, string>;
+  /** 记住的锚点（设置页的 #kb 这种「看到哪一区」）。与 query 同一个口径：点标签切回来要还原 */
+  hash: string;
   title: string;
   icon: string;
 }
@@ -85,6 +88,7 @@ export function restoreTabs(): void {
           key: String(t.key), name: String(t.name),
           params: (t.params ?? {}) as Record<string, string>,
           query: (t.query ?? {}) as Record<string, string>,
+          hash: String(t.hash || ''),
           title: String(t.title || TAB_META[String(t.name)]?.title || '未命名'),
           icon: String(t.icon || TAB_META[String(t.name)]?.icon || 'document'),
         }))
@@ -97,11 +101,11 @@ export function restoreTabs(): void {
   }
   // 首次使用（没有历史标签）：给一个首页
   if (!tabsState.tabs.length) {
-    tabsState.tabs = [{ key: HOME_KEY, name: 'home', params: {}, query: {}, ...TAB_META.home }];
+    tabsState.tabs = [{ key: HOME_KEY, name: 'home', params: {}, query: {}, hash: '', ...TAB_META.home }];
   }
   // 首页永远在（用户上一条口径：首页不可关闭），且固定在最左边
   const home = tabsState.tabs.find((t) => t.key === HOME_KEY)
-    ?? { key: HOME_KEY, name: 'home', params: {}, query: {}, ...TAB_META.home };
+    ?? { key: HOME_KEY, name: 'home', params: {}, query: {}, hash: '', ...TAB_META.home };
   tabsState.tabs = [home, ...tabsState.tabs.filter((t) => t.key !== HOME_KEY)];
 }
 
@@ -115,6 +119,7 @@ export function restoreTabs(): void {
  */
 export function openTab(target: RouteLocationRaw & { name?: string; params?: Record<string, string> }): RouteLocationRaw {
   const name = String(target.name ?? '');
+  const hash = String((target as { hash?: string }).hash ?? '');
   const params: Record<string, string> = {};
   for (const [k, v] of Object.entries(target.params ?? {})) params[k] = str(v);
   const meta = TAB_META[name] ?? { title: '未命名', icon: 'document' };
@@ -125,9 +130,13 @@ export function openTab(target: RouteLocationRaw & { name?: string; params?: Rec
     // 于是一旦有人在渲染期调 openTab（曾被当成 `:to="fn()"` 用），就是
     // "渲染 → 改状态 → 再渲染"的死循环。这里顺手把这颗雷拆掉。
     if (Object.keys(exists.query).length) exists.query = {};
+    // hash 同理：显式传了就以它为准（知识库点「索引管理」），没传就清掉
+    if (exists.hash !== hash) exists.hash = hash;
+    // "从头看"也包括滚动位置：显式重新打开一个标签，不该回到上次滚到的地方
+    forgetScroll(key);
   } else {
     tabsState.tabs.push({
-      key, name, params, query: {}, title: meta.title, icon: meta.icon,
+      key, name, params, query: {}, hash, title: meta.title, icon: meta.icon,
     });
     if (tabsState.tabs.length > MAX_TABS) {
       // 挤掉最老的**非当前、非首页**标签（当前这篇与首页永远保留）
@@ -147,6 +156,7 @@ export function closeTab(key: string): AppTab | null {
   const idx = tabsState.tabs.findIndex((t) => t.key === key);
   if (idx < 0) return null;
   const [removed] = tabsState.tabs.splice(idx, 1);
+  forgetScroll(key);
   if (tabsState.activeKey === key) {
     const next = tabsState.tabs[Math.min(idx, tabsState.tabs.length - 1)];
     tabsState.activeKey = next?.key ?? '';
@@ -157,6 +167,7 @@ export function closeTab(key: string): AppTab | null {
 
 /** 关掉「除当前与首页之外」的全部标签。 */
 export function closeOtherTabs(key: string): void {
+  for (const t of tabsState.tabs) if (t.key !== key) forgetScroll(t.key);
   tabsState.tabs = tabsState.tabs.filter((t) => t.key === key || isHome(t.key));
   tabsState.activeKey = key;
   persist();
@@ -183,20 +194,29 @@ export function activateRoute(route: RouteLocationNormalizedLoaded): void {
   const tab = tabsState.tabs.find((t) => t.key === key);
   if (tab) {
     tab.query = query;
+    // 记住锚点：设置页切到「索引管理」之后切走再切回来，还停在那一个分区
+    tab.hash = String(route.hash || '');
     tabsState.activeKey = key;
   } else {
     const name = String(route.name ?? '');
     const meta = TAB_META[name] ?? { title: '未命名', icon: 'document' };
     const params: Record<string, string> = {};
     for (const [k, v] of Object.entries(route.params ?? {})) params[k] = str(v);
-    tabsState.tabs.push({ key, name, params, query, title: meta.title, icon: meta.icon });
+    tabsState.tabs.push({
+      key, name, params, query, hash: String(route.hash || ''), title: meta.title, icon: meta.icon,
+    });
     tabsState.activeKey = key;
   }
   persist();
 }
 
-/** 标签的目标位置（点标签 / 拖拽后跳转用）：带上这个标签上次的 query。 */
+/** 标签的目标位置（点标签 / 拖拽后跳转用）：带上这个标签上次的 query 与锚点。 */
 export function tabLocation(tab: AppTab): RouteLocationRaw {
   const query = tab.query && Object.keys(tab.query).length ? { ...tab.query } : undefined;
-  return { name: tab.name, params: tab.params, query };
+  return { name: tab.name, params: tab.params, query, hash: tab.hash || undefined };
+}
+
+/** 某个标签记住的锚点（'' = 没记过）。滚动恢复用它区分「标签切回来」与「深链打开」。 */
+export function tabHash(key: string): string {
+  return tabsState.tabs.find((t) => t.key === key)?.hash ?? '';
 }

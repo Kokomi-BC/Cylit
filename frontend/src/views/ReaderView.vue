@@ -146,9 +146,25 @@ const searchScope = ref<SearchScope>('all');
 const searchMode = ref<SearchMode>('lexical');
 const searchHits = ref<Array<{ id: string; page: number; side: string; snippet: string }>>([]);
 const mobilePane = ref<'' | 'side'>('');
-/** 宽屏下侧栏是否展开（窄屏走 mobilePane 抽屉，见 asideVisible）。 */
-const asideKey = 'pm.reader.aside';
-const asideOpen = ref(localStorage.getItem(asideKey) !== '0');
+/**
+ * 宽屏下侧栏是否展开（窄屏走 mobilePane 抽屉，见 asideVisible）。
+ *
+ * 记忆**按论文**（= 按标签页，键里带 paperId）：切到另一篇论文的标签页时各自还各自的开合状态。
+ * 以前是一个全局键 `pm.reader.aside` —— A 篇收起侧栏之后切到 B 篇也是收起的
+ * （用户 2026-10-03："标签页切换时要记录侧栏打开的状态"）。
+ * 服务端的 `reading_progress.aside_open` 仍是权威值（跨设备/刷新后用），本地这份只是**同步**的
+ * 副本：不等那条进度请求回来，开合就已经是对的，不会"先错一下再跳回来"。
+ */
+const asideKey = `pm.reader.aside.${instancePaperId}`;
+function initialAsideOpen(): boolean {
+  const own = localStorage.getItem(asideKey);
+  if (own !== null) return own !== '0';
+  // 老版本只有一个全局键：第一次按论文记的时候先沿用它，免得所有人被"打开"一次
+  const migrated = localStorage.getItem('pm.reader.aside') !== '0';
+  try { localStorage.setItem(asideKey, migrated ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+  return migrated;
+}
+const asideOpen = ref(initialAsideOpen());
 /** 侧栏当前是否可见：窄屏 = 抽屉打开；宽屏 = 用户没收起。 */
 const asideVisible = computed(() => (isNarrow.value ? mobilePane.value === 'side' : asideOpen.value));
 const isNarrow = ref(false);
