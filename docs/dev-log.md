@@ -9778,5 +9778,51 @@ turboquant 现在是 **71/76** 有中文标题（上一轮 62 → 本轮按节�
 - `agent_check` 49/49（`/papers/{id}/archive` 这条**只读投影**仍然照旧验）；
 - 过程轨迹的两处合成样本（`frontend_check` / `agent_check` 里的 stage 夹具）同步改成
   "正在这篇论文里检索…"，免得日志里留着一个已经不存在的阶段。
+
+## 73. 第七十三轮：agent 建笔记的两处真错（高亮看不见 + 侧栏两条）
+
+用户报告（2026-10-07，附截图）：**"模型调用了笔记工具，未产生高亮笔记，并且产生了两条莫名的笔记"**。
+
+先把事实从库里捞出来（不猜）：那次会话（`79e3cc9a…` 的最后一轮）的工具轨迹是
+`page_markdown_get(9)` → `highlight_manage(op=create, anchor="md:p9", text="Product Quantization (PQ) …")`
+→ `note_manage(op=create, highlight_id="h-c6f4…", content="## 乘积量化（PQ）在本文中的位置…")`。
+库里也确实是 **1 条高亮 + 1 条笔记、`highlight_id` 挂得对**。所以两件事都不是"模型没调对工具"：
+
+### 一、高亮标在 `md:p9` 那一面 → 用户在对照视图里**看不见**它
+
+三套锚点对应三套渲染：正文行（`p009-08`，对照 / 译文视图画它）、`md:pN`（只在整篇 Markdown
+视图里画）、`pdf:pN`（前端 pdf.js 的文字层）。agent 读页用的是 `page_markdown_get`，
+拿到的锚点就是 `md:pN` —— 于是它在**用户正在读的那一面**什么都没画出来（用户口径"未产生高亮"）。
+
+修法（`services/agent/annotations.py`）：
+- 新增 `locate_in_rows()`：拿这段文字去**这一页的行**里找（`render_like_dom` + `find_span`，
+  与建高亮同一套定位逻辑）；
+- `create()` 里遇到 `md:pN` 锚点先试这一步，**能在行里找到就落到行上**（锚点换成行 id、
+  `scope` 自然变成 `row`），找不到才留在 Markdown 面；
+- `highlight_manage` 的说明也写清了默认面，以及"`md:pN` 的高亮只在 Markdown 视图里出现"。
+  实测那次的原话（PQ 那一段）解析到 `p009-08` ✓ —— 现在会画在对照 / 译文里。
+
+### 二、侧栏把一条内容渲染成两条：阅读器 payload 的 notes 少了 `highlight_id`
+
+`utils/notesFeed` 的归并键是 `n.highlight_id === h.id`。`/notes` 那份走
+`annotation_service._note_dict`（有 `highlight_id` + `scope`），而**阅读器 payload**
+（`reader_service.build_reader`）自己又写了一遍 notes 字典，**漏了 `highlight_id` 与 `scope`**
+→ 归并挂不上：那处高亮显示成「待写」、笔记另起一条 = 用户看到的"两条莫名的笔记"。
+
+修法：
+- `annotation_service.note_scope(block_id)` 抽出"挂在哪一面"的**唯一口径**，`_note_dict` 用它；
+- 阅读器 payload 的 notes 补上 `highlight_id` 与 `scope`（并用上面那个函数），
+  就地写明"不许再漏"的原因；
+- 回归断言：`frontend_check` 新增"一处高亮 + 它的笔记 = **一条**（不是「待写 + 笔记」两条）"
+  —— 按那段文字数两类行，`笔记行 == 1 且 待写行 == 0`（老代码下这条会红）。
+
+### 三、验证
+
+- 新测试 `tests/test_agent_notes.py`：`md:pN` 能落到行上 / 行里没有就返回 None /
+  `anchor_kind` 与 `anchor_page_no` 的取值 / 阅读器 payload 的 notes 必须带
+  `highlight_id` 与 `scope`（读源码断言）/ `scope` 口径只有 `note_scope` 一处；
+- 用真实数据复跑同一处（`locate_in_rows(turboquant, 9, "Product Quantization (PQ) …")`
+  → `p009-08`），并用同一条笔记复跑侧栏探针：**从 2 行变成 1 行**（`笔记 + Markdown 视图`）；
+- `pytest` 全绿、`frontend_check` **130/130**、`agent_check` 49/49。
 > 自检也跟着补了一条**几何断言**（标号 vs 它后面第一个文字节点：顶边差 ≤ 4px、标号右边 ≤ 文字左边），
 > 中英对照那条与"只有原文"那条**都要过** —— 这条正是截图里那个毛病，光看结构断言抓不到。

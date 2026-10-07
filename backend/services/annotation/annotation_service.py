@@ -214,15 +214,29 @@ def delete_note(note_id: str) -> dict:
     return {"deleted": note_id}
 
 
+def note_scope(block_id: str | None) -> str:
+    """锚点 → 挂在哪一面：``"pdf"`` / ``"markdown"`` / 其余 = 正文行（``"row"``）。
+
+    **只此一处**：`/notes`、`/highlights` 与**阅读器的 payload** 都用它。以前阅读器那份
+    payload 自己又写了一遍（而且漏了 `highlight_id`），侧栏的归并规则（`utils/notesFeed`）
+    因此配不上"高亮 ↔ 笔记"，同一条内容被渲染成两条（一条「待写」+ 一条「笔记」）——
+    用户报的"产生了两条莫名的笔记"就是这个。
+    """
+    text = str(block_id or "")
+    if text.startswith("pdf:"):
+        return "pdf"
+    if text.startswith("md:"):
+        return "markdown"
+    return "row"
+
+
 def _note_dict(row: Note) -> dict:
     return {"id": row.id, "paper_id": row.paper_id, "block_id": row.block_id,
             "highlight_id": row.highlight_id, "selected_text": row.selected_text,
             "content_md": row.content_md,
             # 页码与"面"都给出来：侧栏列表要显示"这条笔记挂在哪、点它能跳到哪"
-            # （`scope` 从锚点前缀推：`pdf:` / `md:` / 其余 = 正文行）
             "page": anchor_page(row.block_id),
-            "scope": ("pdf" if str(row.block_id or "").startswith("pdf:")
-                      else "markdown" if str(row.block_id or "").startswith("md:") else "row"),
+            "scope": note_scope(row.block_id),
             "tags": [t for t in (row.tags or "").split(",") if t],
             "created_at": iso_utc(row.created_at),
 

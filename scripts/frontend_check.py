@@ -1300,6 +1300,14 @@ async function run() {
     res.rowText = row ? (row.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80) : '';
     res.rowQuoteOk = !!row && (row.textContent || '')
       .indexOf(String(res.savedText || '').slice(0, 12)) >= 0;
+    /* 「一处高亮 + 它的笔记」必须只算**一条**：阅读器 payload 的 notes 少带 `highlight_id` 时，
+       侧栏归并挂不上，同一段文字会被渲染两遍 —— 一条「待写」高亮 + 一条「笔记」
+       （用户报过"产生了两条莫名的笔记"）。这里按这段文字数两类行。 */
+    const sameText = String(res.savedText || '').slice(0, 10);
+    const feedRows = [...D().querySelectorAll('[data-item-kind]')]
+      .filter((el) => (el.textContent || '').indexOf(sameText) >= 0);
+    res.feedNoteRows = feedRows.filter((el) => el.getAttribute('data-item-kind') === 'note').length;
+    res.feedBareRows = feedRows.filter((el) => el.getAttribute('data-item-kind') === 'highlight').length;
     const sc = D().querySelector('.reader-content');
     if (sc) sc.scrollTop = sc.scrollHeight;
     await sleep(400); spin(BURN); await sleep(200);
@@ -1683,6 +1691,9 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and res.get("notePage") == 1
            and str(res.get("noteQuote") or "").strip() == str(res.get("savedText") or "").strip(),
            f"scope={res.get('noteScope')} p{res.get('notePage')} 引用={str(res.get('noteQuote'))[:14]!r}")
+    record("pdfhl", "一处高亮 + 它的笔记 = **一条**（不是「待写 + 笔记」两条）",
+           res.get("feedNoteRows") == 1 and res.get("feedBareRows") == 0,
+           f"笔记行 {res.get('feedNoteRows')} 条、同文本的待写行 {res.get('feedBareRows')} 条")
     record("pdfhl", "侧栏列表显示：高亮原文 + 挂在哪一面 + 页码",
            res.get("rowFound") is True and res.get("rowQuoteOk") is True
            and "原 PDF" in str(res.get("rowText") or "")

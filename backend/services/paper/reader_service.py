@@ -590,6 +590,9 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                 row_pages[row["id"]] = int(page_payload["page"])
     block_pages = {b["id"]: int(b.get("page") or 1)
                    for b in (index.get("blocks") or [])}
+    # 「这条笔记挂在哪一面」的口径**只有一处**（`annotation_service.note_scope`）：
+    # 阅读器 payload 与 `/notes`、`/highlights` 必须给同一个值，前端才配得上高亮 ↔ 笔记。
+    from backend.services.annotation.annotation_service import note_scope as _note_scope
 
     with session_scope() as sess:
         blocks = (sess.query(Block)
@@ -671,11 +674,18 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                             "group_id": h.group_id,
                             "page": _anchor_page(h.block_id, row_pages, block_pages)}
                            for h in highlights],
-            "notes": [{"id": n.id, "block_id": n.block_id, "content_md": n.content_md,
+            "notes": [{"id": n.id, "block_id": n.block_id,
+                       # ⚠️ **`highlight_id` 不能漏**：侧栏「笔记」页签靠它把笔记挂到那处高亮上
+                       # （`utils/notesFeed` 按 `n.highlight_id === h.id` 归并）。漏了它，同一条内容
+                       # 会被渲染成两条 —— 一条「待写」高亮 + 一条「笔记」
+                       # （用户报过"产生了两条莫名的笔记"）。`scope` 同理：面/页码是那一行要显示的。
+                       "highlight_id": n.highlight_id,
+                       "content_md": n.content_md,
                        "selected_text": n.selected_text,
+                       "scope": _note_scope(n.block_id),
                        "page": _anchor_page(n.block_id, row_pages, block_pages),
                        "updated_at": iso_utc(n.updated_at)}
- for n in notes],
+                      for n in notes],
             "tasks": [{"id": t.id, "type": t.type, "queue": t.queue,
                        "status": t.status, "progress": float(t.progress or 0),
                        "message": t.message,

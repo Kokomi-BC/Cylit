@@ -139,6 +139,42 @@ def anchor_kind(anchor: str) -> str:
     return "row"
 
 
+def anchor_page_no(anchor: str) -> int:
+    """``md:p9`` / ``pdf:p3`` → 页号；**行锚点解不出来**（回 0，调用方只在 Markdown 分支用它）。"""
+    text = str(anchor or "").strip()
+    if not (text.startswith("md:p") or text.startswith("pdf:p")):
+        return 0
+    digits = "".join(ch for ch in text.split(":", 1)[1] if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
+                   occurrence: int = 1) -> tuple[str, tuple[int, int], str] | None:
+    """在这一页的**正文行**里找这段文字 → ``(行 id, (start, end), 渲染后的行文本)``。
+
+    为什么 Markdown 锚点要往这里退一步（用户口径 2026-10-07）：高亮画在**哪一面**决定了
+    用户能不能看见它 —— 阅读器默认是"对照 / 译文"（正文行那一面），而 `md:pN` 的高亮只在
+    Markdown 视图里出现。agent 从 `page_markdown_get` 拿到的锚点恰好是 `md:pN`，
+    于是"帮我给这一段加笔记"标出来的高亮在用户眼前**根本不存在**（用户报"未产生高亮"）。
+    能在行里找到就落在行上（默认那一面），找不到才留在 Markdown 面。
+    """
+    if not page:
+        return None
+    for payload in _page_payloads(paper_id):
+        if int(payload.get("page") or 0) != int(page):
+            continue
+        for row in payload.get("rows") or []:
+            raw = str(row.get("translation") if side == "zh" else row.get("original") or "")
+            if not raw.strip():
+                continue
+            rendered = render_like_dom(raw)
+            span = find_span(rendered, text, occurrence=occurrence)
+            if span is not None:
+                return str(row.get("id") or ""), span, rendered
+        return None                      # 这一页的行里没有（别去别的页找：锚点本来就指定了页）
+    return None
+
+
 def _page_payloads(paper_id: str) -> list[dict]:
     from backend.services.paper import reader_service
 
@@ -189,6 +225,15 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："
                                       "请让用户在 PDF 页上自己划词高亮（或者改标正文行 / Markdown 视图）。"}
+    if kind == "markdown":
+        # Markdown 锚点的文字能在**正文行**里找到 → 落在行上（用户默认读的就是那一面，
+        # 高亮才看得见；见 `locate_in_rows`）。找不到才留在 Markdown 面。
+        hit = locate_in_rows(paper_id, anchor_page_no(anchor), text,
+                             side=side, occurrence=occurrence)
+        if hit:
+            log.info("高亮锚点从 Markdown 挪到正文行（用户读的是对照 / 译文）：%s → %s",
+                     anchor, hit[0])
+            anchor, kind = hit[0], "row"
     raw = anchor_text(paper_id, anchor, side=side)
     if raw is None:
         return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}

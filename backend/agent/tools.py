@@ -899,6 +899,11 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     三面各有各的位置模型（正文行 / Markdown 视图 / 原 PDF 页图）—— 你只需要给
     `anchor`（哪一面）+ `text`（要标的**原文**），偏移量由宿主算，不要自己编数字。
 
+    ⚠️ **默认标在"正文行"那一面**（锚点形如 `p009-08`，用 `block_get(ref)` 拿）：用户读的
+    对照 / 译文视图画的就是它。`md:pN` 那种锚点的高亮**只在 Markdown 视图里出现**，
+    用户在你面前看不到（实测被报过"高亮没出现"）；给 `md:pN` 时宿主会**尽量把它挪到这一页
+    对应的正文行**上，挪不动才留在 Markdown 面。原 PDF 那面服务端算不出偏移量（文字层在前端）。
+
       op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
                    `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
                    `重点`，公式整体算 1 个字符，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
