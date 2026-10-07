@@ -512,6 +512,29 @@ def _clean_raw(text: str) -> str:
     return " ".join(out.split())
 
 
+#: 条目里的 GitHub 仓库地址（`https://github.com/owner/repo`，也吃裸写的 `github.com/owner/repo`）
+_GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+", re.I)
+
+
+def ref_code_url(raw: str) -> str | None:
+    """从一条参考文献里抠出 **GitHub 仓库地址**（没有就 ``None``）。
+
+    用户口径（2026-10-07）：参考文献里**既有论文链接又有 GitHub 链接**时，侧栏并排给两枚图标 ——
+    论文图标跳论文页、GitHub 图标跳仓库。这里只负责"代码那一个"；论文那个由前端
+    `utils/references.ts` 的三级回退（url → doi → 原文里的 arXiv/链接 → 学术搜索）负责。
+
+    只认 `github.com/<owner>/<repo>` 这一段：尾部的标点、`/tree/main` 这类子路径后面的内容
+    一律截掉（链接后面常跟着句号，`tidy` 那套在前端，这里做同样的收尾）。
+    """
+    m = _GITHUB_RE.search(str(raw or ""))
+    if not m:
+        return None
+    url = m.group(0).rstrip(".,;:)）]」』").rstrip("/")
+    if not url.lower().startswith("http"):
+        url = f"https://{url}"
+    return url or None
+
+
 #: "参考文献那一节"的标题（`REFERENCES` / `Bibliography` / `参考文献`）。
 #: 允许带编号与 Markdown 标题记号：**目录里**那一项是 `REFERENCES`，而**行里**是 `# References`。
 _REF_HEAD_TITLE_RE = re.compile(
@@ -730,6 +753,7 @@ def save_references(paper_id: str, items: list[str] | list[tuple[str, str | None
     `items` 现在收 **`(原文, 译文, 页码)`**（2026-10-07）：落库时顺手把中文标题、英文标题、作者段
     一起拆出来存好（`split_ref_text`），侧栏才能中英对照显示、并把作者那一段收起来；
     页码给侧栏那张卡片的「定位」按钮用（跳回正文里这一条所在的那一页）。
+    另外顺手抠出**GitHub 仓库地址**（`ref_code_url`）—— 侧栏据此多给一枚代码图标。
     也兼容老写法（纯字符串 / `(原文, 译文)` 两元组）—— 缺的那几项留空。
     """
     import uuid
@@ -756,6 +780,7 @@ def save_references(paper_id: str, items: list[str] | list[tuple[str, str | None
                                     title=_cap(split["title"], 512),
                                     title_en=_cap(split["title_en"], 512),
                                     authors=_cap(split["authors"], 512),
+                                    code_url=_cap(ref_code_url(raw), 512),
                                     page_no=page))
     return len(pairs)
 

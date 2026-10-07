@@ -298,6 +298,20 @@ def test_reference_pairs_claims_translations_across_parser_artifacts(monkeypatch
     assert got[1][1] is None and got[1][2] is None, "行里没有的条目原样保留、没有译文"
 
 
+def test_ref_code_url_picks_the_github_repo() -> None:
+    """既有论文链接又有 GitHub 链接的条目：抠出仓库地址（尾部的标点/子路径要收干净）。"""
+    from backend.services.paper.metadata_fill import ref_code_url
+
+    assert ref_code_url("Yao Fu, et al. Data engineering. arXiv:2402.10171, 2024. "
+                        "URL https://github.com/yaofu/data-eng.") == "https://github.com/yaofu/data-eng"
+    assert ref_code_url("Pgvector search., 2025. https://github.com/pgvector/pgvector/.") \
+        == "https://github.com/pgvector/pgvector"
+    assert ref_code_url("代码：github.com/x/y/tree/main，2024.") == "https://github.com/x/y"
+    assert ref_code_url("http://www.github.com/a/b") == "http://www.github.com/a/b"
+    assert ref_code_url("J. L. Ba, et al. Layer normalization. arXiv:1607.06450, 2016.") is None
+    assert ref_code_url("") is None
+
+
 def test_reference_rule_hides_the_author_block() -> None:
     """用户口径（2026-10-07）：`作者名… .` 之后是题名的 → 只显示文献名称；形状对不上就整条原文。"""
     from backend.services.paper.metadata_fill import split_ref_by_rule

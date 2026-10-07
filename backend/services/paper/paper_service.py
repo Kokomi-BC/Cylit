@@ -350,6 +350,7 @@ def references(paper_id: str) -> list[dict]:
     （`metadata_fill.split_ref_text`）：中文标题、英文标题、作者段 —— 侧栏据此中英对照显示、
     并把作者那一段收起来（`raw` 永远是完整原文）。没翻译的论文这三个都是 NULL。
     `page_no` 是这一条所在的页码，侧栏卡片的「定位」按钮用它跳回正文。
+    `code_url` 是这一条里的 GitHub 仓库地址（有就并排多给一枚代码图标）。
     """
     from backend.repositories.mysql.models import PaperReference
 
@@ -361,7 +362,7 @@ def references(paper_id: str) -> list[dict]:
                  "title": r.title, "title_en": r.title_en, "authors": r.authors,
                  "page_no": int(r.page_no) if r.page_no else None,
                  "venue": r.venue, "year": r.year, "doi": r.doi, "url": r.url,
-                 "source": r.source}
+                 "code_url": r.code_url, "source": r.source}
                 for r in rows]
 
 

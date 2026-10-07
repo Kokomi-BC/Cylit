@@ -1987,8 +1987,20 @@ _TEMP_REF_RULE = {
 }
 
 
+#: 临时样本：**既有论文链接又有 GitHub 链接**（用户口径 2026-10-07：并排两枚图标，分别跳论文页与仓库）
+_TEMP_REF_CODE = {
+    "order_no": 9997,
+    "raw": "Yao Fu, Rameswar Panda, Xinyao Niu. Data engineering for scaling language models. "
+           "arXiv preprint arXiv:2402.10171, 2024. URL https://github.com/yaofu/data-engineering.",
+    "title": None,
+    "title_en": "Data engineering for scaling language models",
+    "authors": "Yao Fu, Rameswar Panda, Xinyao Niu.",
+    "code_url": "https://github.com/yaofu/data-engineering",
+}
+
+
 def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
-    """插/删那两条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
+    """插/删那三条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
     import uuid
 
     import sys
@@ -1998,15 +2010,17 @@ def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
 
     with session_scope() as sess:
         sess.query(PaperReference).filter(PaperReference.paper_id == paper,
-                                          PaperReference.order_no.in_((9998, 9999))).delete()
+                                          PaperReference.order_no.in_((9997, 9998, 9999))).delete()
         if remove_only:
             return None
         rows = [(_TEMP_REF, uuid.uuid4().hex[:32]),
-                (_TEMP_REF_RULE, uuid.uuid4().hex[:32])]
+                (_TEMP_REF_RULE, uuid.uuid4().hex[:32]),
+                (_TEMP_REF_CODE, uuid.uuid4().hex[:32])]
         for item, rid in rows:
             sess.add(PaperReference(id=rid, paper_id=paper, order_no=item["order_no"],
                                     source="selfcheck", raw=item["raw"], title=item["title"],
                                     title_en=item["title_en"], authors=item["authors"],
+                                    code_url=item.get("code_url"),
                                     page_no=item.get("page_no")))
         return rows[0][1]
 
@@ -2081,6 +2095,21 @@ async function run() {
     res.ruleNoSecondLine = !!rrow && !rrow.querySelector('.ref-en');
     /* 卡片上**不该**再有「定位」按钮（用户口径 2026-10-07 第三轮：定位到不了精确那一行，撤掉） */
     res.noLocate = !D().querySelector('[data-ref-locate]');
+    /* 两种链接都有的条目：论文图标 + GitHub 图标并排，分别跳不同页面 */
+    const crow = D().querySelector('[data-ref-no="9997"]');
+    const cpaper = crow ? crow.querySelector('[data-ref-paper]') : null;
+    const ccode = crow ? crow.querySelector('[data-ref-code]') : null;
+    res.codeHasBoth = !!cpaper && !!ccode;
+    res.codeAbsentElsewhere = !D().querySelector('[data-ref-no="9998"] [data-ref-code]');
+    const opened3 = [];
+    const realOpen3 = w.open;
+    w.open = (u) => { opened3.push(String(u)); return null; };
+    if (ccode) { ccode.click(); await sleep(300); }
+    if (cpaper) { cpaper.click(); await sleep(300); }
+    w.open = realOpen3;
+    res.codeOpened = opened3;
+    res.codeGithub = String(opened3[0] || '').startsWith('https://github.com/yaofu/data-engineering');
+    res.codePaper = String(opened3[1] || '').startsWith('https://arxiv.org/abs/2402.10171');
   } catch (err) {
     res.error = String((err && err.message) || err);
   }
@@ -2132,6 +2161,12 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
            f"tooltip有原文={res.get('ruleTooltipRaw')}｜{str(res.get('ruleText'))[:44]}")
     record("refs-pane", "卡片没有「定位」按钮（撤掉：定位到不了精确那一行）",
            res.get("noLocate") is True, f"页面里还有定位按钮={not res.get('noLocate')}")
+    record("refs-pane", "两种链接都有 → 论文图标 + GitHub 图标并排，**分别跳不同页面**",
+           res.get("codeHasBoth") is True and res.get("codeGithub") is True
+           and res.get("codePaper") is True and res.get("codeAbsentElsewhere") is True,
+           f"两枚图标={res.get('codeHasBoth')} GitHub={res.get('codeGithub')} "
+           f"论文={res.get('codePaper')} 只有论文那条没有代码图标={res.get('codeAbsentElsewhere')}"
+           f"｜{res.get('codeOpened')}")
 
 
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:

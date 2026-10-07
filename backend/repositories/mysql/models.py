@@ -148,6 +148,10 @@ class PaperReference(Base):
     venue: Mapped[str | None] = mapped_column(String(256))
     year: Mapped[int | None] = mapped_column(Integer)
     doi: Mapped[str | None] = mapped_column(String(128))
+    #: 这一条里的 **GitHub 仓库地址**（用户口径 2026-10-07：既有论文链接又有代码链接的，
+    #: 侧栏并排给两枚图标 —— 论文图标跳论文页、GitHub 图标跳仓库，互不干扰）。
+    #: 从原文里抠出来（`metadata_fill.ref_code_url`），没有就是 NULL（那一枚图标不显示）。
+    code_url: Mapped[str | None] = mapped_column(String(512))
     url: Mapped[str | None] = mapped_column(String(256))
     #: 这一条是哪来的：现在只有 `pdf`（离线抽取）
     source: Mapped[str] = mapped_column(String(16), default="pdf")

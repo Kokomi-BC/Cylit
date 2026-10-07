@@ -9669,5 +9669,40 @@ turboquant **71/76**（剩下 5 条是 Elasticsearch / Qdrant / pgvector / Pinec
 > 工具注意：**`frontend_check` 与 `agent_check` 不能并行跑** —— 两者都会往同一篇论文上写临时
 > 高亮/批注，`agent_check` 的收尾清理会把 `frontend_check` 笔记探针正在用的行删掉，
 > 表现是笔记那一组 12 项莫名失败（踩了两次）。串行跑就全绿。
+
+## 70. 第七十轮：参考文献的「论文图标 + GitHub 图标」（两种链接各跳各的）
+
+用户口径（2026-10-07 第五轮）：① turboquant 那篇**几乎每一条**参考文献都有中文翻译（所以侧栏就该显示出来）；
+② 想兼容"既有论文链接又有 GitHub 链接"的条目：给**论文图标**与 **GitHub 图标**，分别跳不同的页面。
+
+### 一、先把"中文标题"这条钉死
+
+turboquant 现在是 **71/76** 有中文标题（上一轮 62 → 本轮按节取行后 71）。剩下 5 条是
+`Elasticsearch` / `Qdrant` / `pgvector` / `Pinecone` / `Anthropic` 这种**软件与网址**条目 ——
+正文里模型本来就没译（没有《》），侧栏按规则显示整条原文，这是对的，不是漏。
+
+### 二、两种链接：后端抠 GitHub、前端分两个地址
+
+- 后端：新列 `paper_reference.code_url`（进 `_ADDED_COLUMNS`），抽取时 `metadata_fill.ref_code_url`
+  从原文里抠 `github.com/<owner>/<repo>`（尾部的标点与 `/tree/main` 之类子路径截掉，裸写的
+  `github.com/x/y` 补上 `https://`）；`/papers/{id}/references` 多回一个 `code_url`。
+  实测 turboquant 76 条里 **3 条**带仓库地址（[3] pgvector、[25] Long-Context-Data-Engineering、
+  [38] NeedleInAHaystack），其中 [25] 正是"论文 + 代码"都有的那种。
+- 前端 `utils/references.ts` 拆成两个函数：
+  - `paperUrl(ref)`：**跳过 GitHub** 的论文地址（`url` 字段 → doi → 原文里的 arXiv → 原文里
+    **非 GitHub** 的链接 → 原文里的 DOI → 学术搜索兜底）；
+  - `codeUrl(ref)`：结构化 `code_url` 优先，老数据没有那一列时再从原文里现抠一次。
+  原先的 `referenceUrl` 保留（老用例与"整张卡片"的兜底链），卡片点击走 `paperUrl`。
+- 侧栏卡片：**只有两种链接都有的条目**才多出一条右下角图标行 —— 论文图标（`document`）跳论文页、
+  GitHub 图标（`AppIcon` 新增的 `github` 标记，填充路径）跳仓库，`@click.stop` 不触发卡片自己的跳转。
+  卡片本身从 `<button>` 换成 `<div role="button" tabindex="0">`（按钮不能套按钮，回车键补齐键盘可达）。
+
+### 三、验证
+
+- 新测试 `test_ref_code_url_picks_the_github_repo`（尾部标点 / 子路径 / 裸写域名 / 没有仓库地址）；
+- `frontend_check` 128 项：新增一条"两种链接都有 → 两枚图标并排，**分别跳不同页面**"
+  （临时样本点了两枚图标，断言开出来的是 `github.com/yaofu/data-engineering` 与
+  `arxiv.org/abs/2402.10171` 两个不同地址；只有论文链接的条目**不该**出现代码图标）；
+- `pytest` 全绿、`typecheck` / `build` 干净、`agent_check` 49/49。
 > 自检也跟着补了一条**几何断言**（标号 vs 它后面第一个文字节点：顶边差 ≤ 4px、标号右边 ≤ 文字左边），
 > 中英对照那条与"只有原文"那条**都要过** —— 这条正是截图里那个毛病，光看结构断言抓不到。

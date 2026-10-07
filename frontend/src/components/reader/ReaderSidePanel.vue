@@ -13,7 +13,7 @@ import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
-import { referenceUrl } from '@/utils/references';
+import { codeUrl, paperUrl } from '@/utils/references';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
@@ -240,7 +240,13 @@ const shownRefs = computed<PaperReference[]>(() => {
 
 /** 点一条文献 → 去它的**发表网站**（DOI/arXiv/原文里的链接，兜底是学术搜索，见 utils/references）。 */
 function openRef(ref: PaperReference) {
-  window.open(referenceUrl(ref), '_blank', 'noopener');
+  // 论文那枚图标与整张卡片都走 `paperUrl`：**跳过 GitHub**（代码图标才是仓库）
+  window.open(paperUrl(ref), '_blank', 'noopener');
+}
+
+/** 打开一个已经确定好的地址（GitHub 图标用它，避免再走一遍"论文地址"的回退链）。 */
+function openUrl(url: string) {
+  if (url) window.open(url, '_blank', 'noopener');
 }
 
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
@@ -380,13 +386,18 @@ function removeRow(r: FeedRow) {
           ? '正文提到的这几条在参考文献里没有对应编号（解析出的编号可能对不上）'
           : '这篇论文没有参考文献（解析时没抽到 References 一节）' }}
       </div>
-      <button
+      <!-- ⚠️ 是 `<div>` 而不是 `<button>`：卡片**里面**还要放"论文 / GitHub"两枚图标按钮，
+           按钮套按钮是非法 HTML（浏览器会把内层按钮提出去）。`role=button` + 回车补齐键盘可达。 -->
+      <div
         v-for="r in shownRefs"
         :key="r.id"
         class="item ref-item"
+        role="button"
+        tabindex="0"
         :data-ref-no="r.order_no"
         :title="r.raw"
         @click="openRef(r)"
+        @keydown.enter.prevent="openRef(r)"
       >
         <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
              腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
@@ -400,7 +411,19 @@ function removeRow(r: FeedRow) {
         <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
              整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
         <span v-if="r.title" class="ref-en ref-clamp">{{ r.title_en || r.raw }}</span>
-      </button>
+        <!-- **既有论文链接又有 GitHub 链接**的条目（用户口径 2026-10-07）：并排两枚图标，
+             论文图标跳论文页（arXiv/DOI，**跳过 GitHub**）、GitHub 图标跳仓库 —— 互不干扰。 -->
+        <div v-if="codeUrl(r)" class="ref-foot">
+          <button class="btn icon sm" title="打开论文页面" data-ref-paper
+                  @click.stop="openRef(r)">
+            <AppIcon name="document" :size="12" />
+          </button>
+          <button class="btn icon sm" title="打开代码仓库（GitHub）" data-ref-code
+                  @click.stop="openUrl(codeUrl(r))">
+            <AppIcon name="github" :size="12" />
+          </button>
+        </div>
+      </div>
     </template>
 
     <!-- 公式（从 Markdown 提取，只读） -->
@@ -634,6 +657,8 @@ function removeRow(r: FeedRow) {
   border-left-color: var(--border-strong);
 }
 .ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
+/* 「论文 / GitHub」两枚图标：右对齐贴在卡片右下（只在**两种链接都有**的条目上出现） */
+.ref-foot { display: flex; justify-content: flex-end; gap: 2px; margin-top: 3px; }
 .ref-head { display: block; }
 .ref-no { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
 .ref-zh { font-weight: 600; }

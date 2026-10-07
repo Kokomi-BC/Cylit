@@ -56,3 +56,62 @@ export function referenceUrl(ref: PaperReference): string {
     .filter(Boolean).join(' ') || stripRefNumber(raw);
   return `https://scholar.google.com/scholar?q=${encodeURIComponent(q.slice(0, 300))}`;
 }
+
+/** 原始条目里的**所有**完整链接（`URL_IN_TEXT` 是非全局的，这里单独开一个用 `matchAll`） */
+const URL_IN_TEXT_G = /(https?:\/\/[^\s"'<>)\]]+)/gi;
+/** GitHub 仓库地址（`github.com/owner/repo`，带不带协议都认） */
+const GITHUB_IN_TEXT = /(?:https?:\/\/)?(?:www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i;
+
+function isGithub(url: string): boolean {
+  return /github\.com\//i.test(url);
+}
+
+function normalizeGithub(url: string): string {
+  const hit = tidy(url);
+  const withScheme = /^https?:\/\//i.test(hit) ? hit : `https://${hit}`;
+  // 只留 `github.com/owner/repo` 这一段（后面的 `/tree/main`、`?tab=readme` 都截掉）
+  const m = /^https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i.exec(withScheme);
+  return m ? m[0] : withScheme;
+}
+
+/**
+ * 这条文献里的 **GitHub 仓库地址**（没有就空串）—— 侧栏那枚代码图标用它。
+ *
+ * 结构化字段 `code_url` 优先（后端 `metadata_fill.ref_code_url` 抠好落库），
+ * 老数据没有那一列时再从原文里现抠一次。
+ */
+export function codeUrl(ref: PaperReference): string {
+  const direct = String(ref.code_url ?? '').trim();
+  if (direct) return normalizeGithub(direct);
+  const m = GITHUB_IN_TEXT.exec(String(ref.raw ?? ''));
+  return m ? normalizeGithub(m[0]) : '';
+}
+
+/**
+ * **论文页面**的地址 —— 与 `referenceUrl` 的区别只有一处：**跳过 GitHub**。
+ *
+ * 为什么要分开（用户口径 2026-10-07）：参考文献里同时有论文链接和代码链接时，侧栏并排给两枚图标，
+ * 论文图标必须跳论文页（arXiv/DOI），不能因为原文里 GitHub 链接排在前面就跳到仓库去。
+ * 全都抠不出来时才退回 `referenceUrl` 的学术搜索兜底。
+ */
+export function paperUrl(ref: PaperReference): string {
+  const direct = tidy(String(ref.url ?? ''));
+  if (/^https?:\/\//i.test(direct) && !isGithub(direct)) return direct;
+
+  const doiField = String(ref.doi ?? '').trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+  if (doiField) return `https://doi.org/${tidy(doiField)}`;
+
+  const raw = String(ref.raw ?? '');
+  const arxiv = ARXIV_IN_TEXT.exec(raw);
+  if (arxiv) return `https://arxiv.org/abs/${arxiv[1]}`;
+
+  for (const hit of raw.matchAll(URL_IN_TEXT_G)) {
+    const url = tidy(hit[1]);
+    if (!isGithub(url)) return url;
+  }
+
+  const doi = DOI_IN_TEXT.exec(raw);
+  if (doi) return `https://doi.org/${tidy(doi[1])}`;
+
+  return referenceUrl(ref);
+}

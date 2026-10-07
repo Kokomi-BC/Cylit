@@ -75,6 +75,9 @@ export interface PaperReference {
   year?: number | null;
   doi?: string | null;
   url?: string | null;
+  /** 这一条里的 **GitHub 仓库地址**（没有就是 null）：侧栏并排显示"论文图标 + GitHub 图标"，
+   *  分别跳论文页与仓库（用户口径 2026-10-07） */
+  code_url?: string | null;
   source?: string;
 }
 
