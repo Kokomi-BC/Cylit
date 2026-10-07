@@ -255,9 +255,20 @@ async function run() {
     res.refsIcon = iconOf(refsTab);
     res.notesIcon = iconOf(tabEls.find((b) => labelOf(b) === '笔记'));
     res.tabLabels = tabEls.map(labelOf);
-    const chips = [...d.querySelectorAll('.cite-ref')];
+    const chips = [...d.querySelectorAll('.cite-inline[data-refs]')];
     res.citeChips = chips.length;
     res.citeSample = chips.length ? (chips[0].textContent || '').trim() : null;
+    /* 标号的**样式**（用户口径 2026-10-07：跟对话页那个跳转标号一样）：
+       只数元素个数是不够的 —— 2026-10-03 那次"标号没有辨识度"就是这么漏过去的。
+       这里的几个值要和 ④ 那条对话探针里量的**同一组**（断言在 Python 侧共用一份）。 */
+    res.citeStyle = chips.length ? (() => {
+      const cs = w.getComputedStyle(chips[0]);
+      return {
+        decoration: cs.textDecorationLine || cs.textDecoration,
+        bg: cs.backgroundColor, radius: cs.borderRadius,
+        size: cs.fontSize, weight: cs.fontWeight,
+      };
+    })() : null;
     if (chips.length) {
       const refApi = await (await fetch('/api/v1/papers/__PAPER__/references')).json();
       res.apiRefs = (refApi.data || {}).count;
@@ -519,7 +530,15 @@ async function run() {
          只靠"摘类再挂回"会被样式引擎合并成"没变" → 同一个 CSSAnimation 实例接着跑
          （已经 forwards 停在 opacity:0），用户看到的就是"再点没反应"。
          所以量两件事：闪的类名在 -a/-b 之间交替，且动画实例**换了对象**。 */
-      if (inlines.length) {
+      /* 能用来验"连点重播高亮"的锚：它的 `data-row` 必须**在这篇论文里真的存在**。
+         列表里第一条会话是**用户自己的**：里面的引用可能指向别篇、或行号在重译后已经变了 ——
+         那种情况下点它没有可闪的行，不是功能坏了，是这条断言无从判定（交给 Python 侧 SKIP）。 */
+      const usable = inlines.filter((b) => {
+        const rid = b.dataset.row || '';
+        return !!rid && !!d.querySelector('[data-row-id="' + rid + '"]');
+      });
+      res.usableCites = usable.length;
+      if (usable.length) {
         const kindOf = (el) => [...el.classList].find((c) => c.indexOf('flash-') === 0) || '';
         let prev = null;
         const snap = () => {
@@ -532,10 +551,10 @@ async function run() {
           prev = a;
           return o;
         };
-        inlines[0].click();
+        usable[0].click();
         await sleep(250);
         const f1 = snap();
-        inlines[0].click();
+        usable[0].click();
         await sleep(250);
         const f2 = snap();
         res.flash = { f1, f2 };
@@ -912,6 +931,20 @@ def skip(path: str, detail: str) -> None:
     print(f"[SKIP] {path:<44} {detail}")
 
 
+def _cite_style_ok(style: dict | None) -> bool:
+    """引用标号的观感（用户口径 2026-10-07：正文里那枚要跟**对话页的跳转标号**一样）。
+
+    只数元素个数是不够的：2026-10-03 那次"标号没有辨识度"就是只数了个数、没量样式。
+    这一组判据在**两处共用**（① 正文标号 / ④ 对话页标号）—— 两边都过，才算"同一套样式"。
+    """
+    if not style:
+        return False
+    return ("underline" in str(style.get("decoration") or "")
+            and str(style.get("bg") or "") not in ("", "transparent", "rgba(0, 0, 0, 0)")
+            and str(style.get("radius") or "") not in ("", "0px")
+            and style.get("size") == "11px" and style.get("weight") == "700")
+
+
 # --------------------------------------------------------------------------
 # 探针 ⑥：PDF 页图上的高亮（《修改计划》第三步）—— 造一条真高亮，验完删掉
 #
@@ -1045,14 +1078,28 @@ async function run() {
     res.marked = marks().length;
     res.markedText = marks().map((m) => m.textContent || '').join('');
     /* 重新定位：整页刷新之后，高亮要按同一套偏移量落回**同一段文字**上。
-       ⚠️ 刷新之后**要再滚回页首**：阅读器会恢复"上次读到哪"，落点深了第 1 页的文字层
-       根本没铺出来（`mark` 自然一个都没有）—— 实测在整轮自检里偶发就是这么挂的。 */
+       ⚠️ 刷新后必须先把阅读位置钉在**页 1**，否则这条断言无从谈起：阅读器会恢复
+       "上次读到哪"（服务端进度，可能是用户自己读到很深的地方）→ 页 1 不在渲染范围里 →
+       文字层一个 span 都没有（实测 `afterSpans=0`，整轮里偶发，单跑必过）。
+       两手一起用：URL 带 `?page=1` 让应用自己跳回页 1，再一边轮询一边把 `scrollTop` 按回 0。 */
+    try {
+      const u = new URL(f.contentWindow.location.href);
+      u.searchParams.set('page', '1');
+      f.contentWindow.history.replaceState(null, '', u.toString());
+    } catch (e) { res.pageUrlErr = String(e); }
     f.contentWindow.location.reload();
     await sleep(1500);
-    const scAfter = sc0();
-    if (scAfter) { scAfter.scrollTop = 0; }
-    await sleep(400); spin(BURN); await sleep(200);
-    await until(D(), (x) => x.querySelector('[data-pdf-page="1"] .pdf-text-layer mark.hl'), 60);
+    let afterSpans = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const sc = sc0();
+      if (sc) sc.scrollTop = 0;
+      await sleep(250); spin(BURN);
+      const l = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
+      afterSpans = l ? l.querySelectorAll('span').length : 0;
+      if (afterSpans >= 2) break;
+    }
+    res.afterSpans = afterSpans;
+    await until(D(), (x) => x.querySelector('[data-pdf-page="1"] .pdf-text-layer mark.hl'), 40);
     const afterMarks = [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.afterReload = afterMarks.length;
     res.afterText = afterMarks.map((m) => m.textContent || '').join('');
@@ -1616,6 +1663,16 @@ async function run() {
         .map((el) => (el.textContent || '').trim());
       res.strong = kids.filter((el) => el.querySelector('strong')).length;
       res.anchors = body ? body.querySelectorAll('.run-text .cite-inline').length : 0;
+      /* 对话页跳转标号的**样式**（与 ① 那条正文标号探针量同一组值 → 两处必须是同一套） */
+      const chip0 = root().querySelector('.md.body .cite-inline');
+      res.citeStyle = chip0 ? (() => {
+        const cs = w.getComputedStyle(chip0);
+        return {
+          decoration: cs.textDecorationLine || cs.textDecoration,
+          bg: cs.backgroundColor, radius: cs.borderRadius,
+          size: cs.fontSize, weight: cs.fontWeight,
+        };
+      })() : null;
       res.toolLines = kids.filter((el) => el.classList.contains('tool'))
         .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim());
       const think = body ? body.querySelector('.run-step.think') : null;
@@ -1744,6 +1801,8 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
         record("run", "回答按 Markdown 渲染（加粗 + 引用锚可点）",
                (res.get("answerStrong") or 0) >= 1 and (res.get("answerAnchors") or 0) >= 1,
                f"加粗 {res.get('answerStrong')} 处，锚点 {res.get('answerAnchors')} 个")
+        record("run", "对话页的跳转标号样式（与正文里的引用标号**同一组断言**）",
+               _cite_style_ok(res.get("citeStyle")), f"{res.get('citeStyle')}")
         record("run", "过程里那半句留在轨迹里（夹杂的另一半）",
                res.get("traceTexts") == ["我先说一句。"],
                f"轨迹内正文段 {res.get('traceTexts')}")
@@ -1824,7 +1883,7 @@ console.log(JSON.stringify({
 }));
 """
 
-#: 引用标号可点（2026-10-07 第三条）：`[2, 4, 10]` → `<button class="cite-ref" data-refs="…">`。
+#: 引用标号可点（2026-10-07 第三条）：`[2, 4, 10]` → `<button class="cite-inline" data-refs="…">`。
 #: 元组：(名字, 源文, HTML 里必须含的片段, HTML 里**不许**含的片段, 纯文本期望（None = 不比）)
 #: ⚠️ 纯文本那一列是这条链路的命根子：按钮里写的仍是 `[2, 4, 10]`，
 #: "渲染出来的字"一个不多一个不少 —— 高亮的偏移量坐标系（`utils/domMarks`）就建在这上面。
@@ -1833,11 +1892,11 @@ MD_CITES = [
     ("用户那条（多标号）", "见 [2, 4, 10, 12, 20, 25, 33] 的方法",
      'data-refs="2,4,10,12,20,25,33"', None, "见 [2, 4, 10, 12, 20, 25, 33] 的方法"),
     ("挤在一起写", "见 [2,4,10] 的方法", 'data-refs="2,4,10"', None, None),
-    ("行内代码里不动", "写法是 `[1]` 这样", None, "cite-ref", "写法是 [1] 这样"),
-    ("代码围栏里不动", "```\n[1]\n```", None, "cite-ref", None),
-    ("公式里的区间不动", "在区间 $[0, 1]$ 上", None, "cite-ref", None),
+    ("行内代码里不动", "写法是 `[1]` 这样", None, "cite-inline", "写法是 [1] 这样"),
+    ("代码围栏里不动", "```\n[1]\n```", None, "cite-inline", None),
+    ("公式里的区间不动", "在区间 $[0, 1]$ 上", None, "cite-inline", None),
     ("真的链接不被抢", "见 [2](https://example.com) 一节",
-     'href="https://example.com"', "cite-ref", None),
+     'href="https://example.com"', "cite-inline", None),
 ]
 
 #: 软换行归一（2026-10-07）：PDF / 模型产物里的**硬折行**要按排版规则接回去 ——
@@ -1954,7 +2013,7 @@ def check_markdown_shapes() -> None:
             failed.append(f"{name}（不该动的地方动了）")
         elif plain_want is not None and plain != plain_want:
             failed.append(f"{name}（字变了：{plain[:24]}）")
-        elif must and "cite-ref" in html and re.findall(r"\d+", _src) != re.findall(r"\d+", plain):
+        elif must and "cite-inline" in html and re.findall(r"\d+", _src) != re.findall(r"\d+", plain):
             # 编号必须**原样**出现（`[2,4,10]` 这种挤着写的会被规范化成 `[2, 4, 10]`，
             # 但数字一个都不能变、不能少）—— 偏移量坐标系就建在"渲染出来的字"上
             failed.append(f"{name}（编号变了：{plain[:24]}）")
@@ -2004,10 +2063,18 @@ async function run() {
     ann = (await post(api + '/annotations', {
       paper_id: '__PAPER__', block_id: 'p001-00', type: 'manual', content_md: ANN,
     })).data;
-    /* 页面是先加载完的，造完数据点一下「刷新」 */
-    const refreshBtn = [...D().querySelectorAll('button')]
+    /* 页面是先加载完的，造完数据点一下「刷新」。
+       ⚠️ 要**重试**：页面的取数走 `withLoading('notes-overview')`，若那次请求还在飞，
+       点刷新会被吞掉 —— 于是列表里只有"造笔记那一刻"的数据（实测整轮里偶发：批注不在列表里）。 */
+    const refreshBtn = () => [...D().querySelectorAll('button')]
       .find((b) => (b.getAttribute('title') || '') === '刷新');
-    if (refreshBtn) refreshBtn.click();
+    for (let i = 0; i < 4; i += 1) {
+      const btn = refreshBtn();
+      if (btn) btn.click();
+      await sleep(700); spin(BURN); await sleep(200);
+      const txt = D().body ? (D().body.textContent || '') : '';
+      if (txt.indexOf(BODY_HEAD) >= 0 && txt.indexOf(ANN) >= 0) break;
+    }
     await until(D(), (x) => x.querySelector('[data-item-kind]'), 60);
     const rows = () => [...D().querySelectorAll('[data-item-kind]')];
     const rowWith = (text) => rows().find((r) => (r.textContent || '').indexOf(text) >= 0) || null;
@@ -2092,6 +2159,9 @@ def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> Non
     if res.get("error"):
         record("notes-page", "笔记整页能打开（探针拿到结果）", False, str(res.get("error"))[:90])
         return
+    # 探针原始字段全量落盘（与 ⑥ 同一条约定：报告里只有断言结论，追问题要看中间量）
+    (ROOT / "data" / "logs" / "_notes_raw.json").write_text(
+        json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     record("notes-page", "三页签（笔记 / 高亮 / 批注）已并成**一个列表**",
            res.get("oldTabs") == [] and res.get("hasFeedBar") is True,
            f"残留页签 {res.get('oldTabs')}，工具条={res.get('hasFeedBar')}，共 {res.get('rowCount')} 条")
@@ -2265,6 +2335,9 @@ def main() -> int:
             record("reader", "两枚页签图标：文献=quote（双引号）、笔记=note（文稿）",
                    data.get("refsIcon") == "quote" and data.get("notesIcon") == "note",
                    f"文献={data.get('refsIcon')!r} 笔记={data.get('notesIcon')!r}")
+            record("reader", "正文里的引用标号样式 = **对话页那枚**（淡底胶囊 + 下划线 + mono 11px/700）",
+                   _cite_style_ok(data.get("citeStyle")),
+                   f"{data.get('citeStyle')}")
             clicked = data.get("clickedRefs") or []
             record("reader", "点标号**自动打开侧栏**并**只显示被提到的那几条**",
                    bool(clicked) and sorted(data.get("filteredNos") or []) == sorted(clicked)
@@ -2432,12 +2505,20 @@ def main() -> int:
             fl = chat.get("flash") or {}
             f1 = fl.get("f1") or {}
             f2 = fl.get("f2") or {}
-            record("chat", "连点同一个引用标号：每次都重播高亮（动画名 -a/-b 交替）",
-                   f1.get("kind") in ("flash-a", "flash-b")
-                   and f2.get("kind") in ("flash-a", "flash-b")
-                   and f1.get("kind") != f2.get("kind")
-                   and f2.get("fresh") is True and bool(f1.get("row")),
-                   f"{f1} → {f2}")
+            if not fl:
+                # 这条断言点在**用户自己**最近那条会话的引用锚上：锚的 `data-row` 未必还存在于
+                # 这篇论文（可能引的是别篇，或行号在重译后变了）。一个可定位的锚都没有时，
+                # 这不是"功能坏了"，是**无从判定** —— 报 SKIP 并写清原因。
+                skip("聊天：连点同一个引用标号：每次都重播高亮",
+                     f"这条会话没有可定位的引用锚（锚 {chat.get('inlineCites')} 个，"
+                     f"其中行号还在的 {chat.get('usableCites')} 个）")
+            else:
+                record("chat", "连点同一个引用标号：每次都重播高亮（动画名 -a/-b 交替）",
+                       f1.get("kind") in ("flash-a", "flash-b")
+                       and f2.get("kind") in ("flash-a", "flash-b")
+                       and f1.get("kind") != f2.get("kind")
+                       and f2.get("fresh") is True and bool(f1.get("row")),
+                       f"{f1} → {f2}")
 
     # ---- ④ 过程轨迹：造一条临时会话，验完删掉（免费：不调模型） ----
     check_run_trace(browser, base, args.paper, args.budget)

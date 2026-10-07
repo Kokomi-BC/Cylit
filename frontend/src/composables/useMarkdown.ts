@@ -57,7 +57,9 @@ marked.use({
     renderer(token: any) {
       const nums = String(token.refs).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
       const label = nums.join(', ');
-      return `<button type="button" class="cite-ref" data-refs="${nums.join(',')}"`
+      /* 样式用**对话页那个跳转标号**的同一枚类（`.cite-inline`，定义在 `styles/base.css`）：
+         用户口径 2026-10-07 —— 正文里的引用标号要跟对话页长得一样。 */
+      return `<button type="button" class="cite-inline" data-refs="${nums.join(',')}"`
         + ` title="这篇论文引用的第 ${label} 条（点开右侧「文献」）">[${label}]</button>`;
     },
   }],

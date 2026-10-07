@@ -1448,26 +1448,8 @@ watch(() => props.selection, (sel) => {
 }
 .sum-card .md :deep(p) { margin: 3px 0; }
 /* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03）。
-   ⚠️ 这些按钮是 `decorateRefs` 用 `v-html` 塞进去的，**不带 scope 属性** —— 选择器必须走
-   `:deep()`。写成 `.cite-inline {…}` 会被编译成 `.cite-inline[data-v-xxx]`，一条都不匹配，
-   锚点就长得和正文一模一样（用户 2026-10-03 报："标号没有辨识度"，此前 `frontend_check`
-   只数了元素个数、没量样式，所以没拦住）。
-   观感：accent 淡底胶囊 + 700 字重 + 实心下划线 —— 一眼看出"这个方括号能点"，
-   论文自己的 `[12]`（纯文字）与我们的 `[n]` 才不会混。 */
-.md.body :deep(.cite-inline) {
-  border: 0; background: var(--accent-soft); color: var(--accent-text);
-  font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1.5;
-  padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--accent) 72%, transparent);
-  text-underline-offset: 2px; text-decoration-thickness: 1px;
-  vertical-align: baseline; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.md.body :deep(.cite-inline:hover) {
-  background: var(--accent); color: var(--text-on-accent);
-  text-decoration-color: currentColor;
-}
-.md.body :deep(.cite-inline:focus-visible) { outline: none; box-shadow: var(--ring); }
+   样式已**搬到 `styles/base.css` 的 `.cite-inline`**（用户口径 2026-10-07：正文里的引用标号
+   要跟这里长得一样 → 两处共用一份，别再在这里维护第二份）。 */
 @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
 
 /* 过程轨迹：抬头一行（用时 + 干了什么），正文里**思考 / 正文 / 工具按发生顺序混排**。

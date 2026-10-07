@@ -64,15 +64,29 @@ mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
 mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }
 mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); background: var(--hl-bg); }
 mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
-/* 正文里的**引用标号**（`[2, 4, 10]`，`useMarkdown` 的 `cite` 行内扩展渲染的按钮）：
- * 看着像链接（用 `--accent-text`），但不加下划线 —— 论文正文里这种方括号很多，
- * 每条都带下划线会把版面撕碎；hover 时给一层浅底，表明"这个能点"。 */
-.cite-ref {
-  font: inherit; color: var(--accent-text); background: transparent;
-  border: 0; padding: 0 1px; margin: 0; border-radius: var(--r-xs); cursor: pointer;
-  transition: background var(--dur) var(--ease);
+/* 正文里的**引用标号**（`[2, 4, 10]`，`useMarkdown` 的 `cite` 行内扩展渲染的按钮）。
+ *
+ * 用户口径 2026-10-07：**长得要跟对话页那个跳转标号一样**（那是"这个方括号能点"的既有语言），
+ * 所以这一条从 `ReaderChat.vue` 的 scoped 样式**搬到这里来当全站唯一一份** ——
+ * 聊天回答里的 `[n]`（`decorateRefs` 用 `v-html` 塞进去的）与正文里的引用标号现在共用它。
+ * 搬家的原因：`v-html` 内容**不带 scope 属性**，scoped 选择器得写 `:deep()`；放进 base.css
+ * 之后两处都不用再管作用域，也就不会再出现"只数了元素个数、没量样式"那种漏网（2026-10-03 报过）。
+ *
+ * 观感：accent 淡底胶囊 + mono 小字 + 实心下划线 —— 与论文自己的 `[12]`（纯文字）分得开。 */
+.cite-inline {
+  border: 0; background: var(--accent-soft); color: var(--accent-text);
+  font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1.5;
+  padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 72%, transparent);
+  text-underline-offset: 2px; text-decoration-thickness: 1px;
+  vertical-align: baseline; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.cite-ref:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.cite-inline:hover {
+  background: var(--accent); color: var(--text-on-accent);
+  text-decoration-color: currentColor;
+}
+.cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，
  * 否则底色只画在一条行高上 —— 三行公式看起来"只有中间一行被标黄"（用户报过）。
  * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。

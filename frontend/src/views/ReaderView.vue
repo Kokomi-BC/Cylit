@@ -3041,8 +3041,10 @@ async function savePaneNote(p: NoteDraftPayload) {
  * 以前是"点一下弹原生确认框直接删"，用户口径改成菜单删除。
  */
 function onContentClick(ev: MouseEvent) {
-  /* 引用标号（`[2, 4, 10]`）优先：它是正文里最容易被点的小东西，别跟高亮那套混在一起 */
-  const cite = (ev.target as HTMLElement).closest?.('.cite-ref') as HTMLElement | null;
+  /* 引用标号（`[2, 4, 10]`）优先：它是正文里最容易被点的小东西，别跟高亮那套混在一起。
+     ⚠️ 认 `[data-refs]`：对话页的跳转标号用的是同一枚 `.cite-inline` 类（但带 `data-ref`），
+     它们有自己的处理器，不能被这里抢走。 */
+  const cite = (ev.target as HTMLElement).closest?.('.cite-inline[data-refs]') as HTMLElement | null;
   if (cite?.dataset.refs) {
     ev.preventDefault();
     void openReferences(citeRefs(cite));
