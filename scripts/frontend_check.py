@@ -1984,6 +1984,27 @@ async function run() {
       const a = no.getBoundingClientRect(), b = zh.getBoundingClientRect();
       res.numInline = Math.abs(a.top - b.top) <= 4 && a.right <= b.left + 2;
     }
+    /* 没翻译过的那种条目（只有原文）也要标号内联：**标号后面同一行还有正文**
+       （第一版是块级钳制把标号挤成独立一行，截图里一眼就看出来了：`[1]` 孤零零一行）。 */
+    const plain = [...D().querySelectorAll('.ref-item')]
+      .find((el) => el.getAttribute('data-ref-no') !== '9999');
+    const pno = plain ? plain.querySelector('.ref-no') : null;
+    const phead = plain ? plain.querySelector('.ref-head') : null;
+    if (pno && phead) {
+      /* 要量的是**标号后面**那段文字（不是标号自己的文本节点）：取 head 里第一段
+         非 `.ref-no` 的内容，再看它的第一个文本节点 */
+      const after = [...phead.children].find((el) => !el.classList.contains('ref-no'));
+      const tn = after ? D().createTreeWalker(after, w.NodeFilter.SHOW_TEXT).nextNode() : null;
+      if (tn) {
+        const rng = D().createRange();
+        rng.setStart(tn, 0);
+        rng.setEnd(tn, Math.min(6, (tn.nodeValue || '').length));
+        const nr = pno.getBoundingClientRect(), tr = rng.getBoundingClientRect();
+        res.plainInline = Math.abs(nr.top - tr.top) <= 4 && nr.right <= tr.left + 2;
+        res.plainDebug = { noTop: Math.round(nr.top), textTop: Math.round(tr.top),
+                           noRight: Math.round(nr.right), textLeft: Math.round(tr.left) };
+      }
+    }
     /* 整张卡片仍能跳发表网站（把 window.open 拦下来看 URL） */
     const opened = [];
     const realOpen = w.open;
@@ -2029,8 +2050,9 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
            f"卡片里有作者={not res.get('authorHidden')} tooltip 有原文={res.get('tooltipHasRaw')}")
     record("refs-pane", "标号**内联**在标题前（不再整列显示）+ 右上角跳转图标已移除",
            res.get("hasInlineNo") is True and res.get("numInline") is True
-           and res.get("noGoIcon") is True,
-           f"内联={res.get('numInline')} 无跳转图标={res.get('noGoIcon')}")
+           and res.get("plainInline") is True and res.get("noGoIcon") is True,
+           f"中英对照那条内联={res.get('numInline')} 只有原文那条也内联={res.get('plainInline')} "
+           f"无跳转图标={res.get('noGoIcon')}｜debug={res.get('plainDebug')}")
     record("refs-pane", "整张卡片仍能跳发表网站（原文里的 arXiv 号）",
            str(res.get("tempUrl") or "").startswith("https://arxiv.org/abs/2303.08774"),
            f"{res.get('tempUrl')}")

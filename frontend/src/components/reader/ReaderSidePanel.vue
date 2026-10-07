@@ -390,13 +390,16 @@ function removeRow(r: FeedRow) {
       >
         <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
              腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
-        <span class="ref-head">
+        <span class="ref-head" :class="{ 'ref-clamp': !r.title }">
           <span class="ref-no">[{{ r.order_no }}]</span>
           <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
+          <!-- 没翻译过（没有中文标题）：标号与原文**同一段**一起钳制 ——
+               钳制必须是**块级**的，所以标号得在它里面；把标号单独放外面会被挤成一行 -->
+          <span v-else>{{ r.raw }}</span>
         </span>
         <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
              整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
-        <span class="ref-en clamp2">{{ r.title ? (r.title_en || r.raw) : r.raw }}</span>
+        <span v-if="r.title" class="ref-en ref-clamp">{{ r.title_en || r.raw }}</span>
       </button>
     </template>
 
@@ -635,8 +638,11 @@ function removeRow(r: FeedRow) {
 .ref-no { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
 .ref-zh { font-weight: 600; }
 .ref-en { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
-/* 两行封顶：原文常常很长（一整条参考文献），全文看 hover 的 tooltip */
-.clamp2 {
+/* 两行封顶（原文常常很长，整条看 hover 的 tooltip）。
+   ⚠️ 必须是**块级**钳制，而且标号要**在它里面**：块级会独占一行，把标号放在它外面
+   就会被挤到上面单独成行（第一版就是这样，截图里 `[1]` 孤零零一行）；
+   反过来用行内级（`-webkit-inline-box`）又会被长文本挤到下一行 —— 两头都不行。 */
+.ref-clamp {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; line-clamp: 2;
 }
