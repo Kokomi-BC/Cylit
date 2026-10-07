@@ -146,20 +146,21 @@ def test_offline_extras_reads_doi_and_code_url_only_from_the_first_pages() -> No
     """DOI / 开源地址只在**前两页**里找：翻遍全文会捞到参考文献里别人的。"""
     from backend.services.paper import metadata_fill
 
-    rows = [(1, "para", "Published at https://doi.org/10.48550/arXiv.2605.12345 ."),
-            (1, "para", "代码在 https://github.com/google-research/turboquant。"),
-            (7, "para", "https://github.com/someone-else/other")]
+    rows = [(1, "para", "Published at https://doi.org/10.48550/arXiv.2605.12345 .", ""),
+            (1, "para", "代码在 https://github.com/google-research/turboquant。", ""),
+            (7, "para", "https://github.com/someone-else/other", "")]
     got = metadata_fill.offline_extras(rows)
     assert got["doi"] == "10.48550/arxiv.2605.12345"
     assert got["code_url"] == "https://github.com/google-research/turboquant"
-    assert metadata_fill.offline_extras([(9, "para", "https://github.com/x/y")]) == {}
+    assert metadata_fill.offline_extras([(9, "para", "https://github.com/x/y", "")]) == {}
 
 
 def test_scan_rows_reads_the_right_row_keys(monkeypatch) -> None:
-    """`scan_rows` 必须按行的真实键（`original` / `translation`）取文本。
+    """`scan_rows` 必须按行的真实键（`original` / `translation`）取文本，且**两侧都带回来**。
 
     这条测的就是一个真实 bug：第一版写成 `row["text"]`，函数永远返回空列表 ——
     阅读时间永远填不上、DOI/开源地址永远抽不到（参考文献靠 Markdown 兜底所以看着还正常）。
+    2026-10-07 起返回 4 元组（原文 + 译文）：参考文献要拿译文里的《中文标题》跟原文对齐着切。
     """
     from backend.services.paper import metadata_fill, reader_service
 
@@ -172,18 +173,46 @@ def test_scan_rows_reads_the_right_row_keys(monkeypatch) -> None:
         ],
     }])
     rows = metadata_fill.scan_rows("p1")
-    assert rows == [(1, "heading", "# 标题"), (1, "para", "正文 A"), (1, "para", "只有译文的一行")]
+    assert rows == [
+        (1, "heading", "# 标题", "# 标题"),
+        (1, "para", "正文 A", "正文 A 的中文"),
+        (1, "para", "", "只有译文的一行"),
+    ]
     # 连起来才够"至少 500 字"，所以这里顺便钉住阅读时间确实按这些行算
-    assert metadata_fill.estimate_read_time([(1, "para", "字" * 600)]) == 1
+    assert metadata_fill.estimate_read_time([(1, "para", "字" * 600, "")]) == 1
 
 
 def test_estimate_read_time_ignores_references_and_needs_real_text() -> None:
     """阅读时间按**正文**字数估；参考文献/图注不算，没有页产物时干脆不给。"""
     from backend.services.paper import metadata_fill
 
-    assert metadata_fill.estimate_read_time([(1, "para", "太短")]) is None
-    rows = [(1, "para", "字" * 9000), (2, "ref", "字" * 90000)]
+    assert metadata_fill.estimate_read_time([(1, "para", "太短", "")]) is None
+    rows = [(1, "para", "字" * 9000, ""), (2, "ref", "字" * 90000, "")]
     assert metadata_fill.estimate_read_time(rows) == 10
+
+
+def test_split_ref_text_reads_the_chinese_title_and_hides_authors() -> None:
+    """一条参考文献的「原文 + 译文」→ 中文标题 / 英文标题 / 作者段（用户口径 2026-10-07）。
+
+    约定（提示词里写死的）：译文**只把标题换成《中文标题》**，作者与会议/年份/链接逐字照抄原文。
+    于是两边是同一副骨架：`《…》` 之前是作者段、之后是会议/年份/链接，中间剩下的就是英文标题。
+    """
+    from backend.services.paper import metadata_fill
+
+    raw = ("Josh Achiam, Steven Adler, Sandhini Agarwal. GPT-4 technical report. "
+           "arXiv preprint arXiv:2303.08774, 2023.")
+    translated = ("Josh Achiam, Steven Adler, Sandhini Agarwal. 《GPT-4 技术报告》. "
+                  "arXiv preprint arXiv:2303.08774, 2023.")
+    got = metadata_fill.split_ref_text(raw, translated)
+    assert got["title"] == "GPT-4 技术报告"
+    assert got["authors"] == "Josh Achiam, Steven Adler, Sandhini Agarwal."
+    assert got["title_en"] == "GPT-4 technical report"      # 结尾那个句号/分隔符会剥掉
+    # 中文标题永远认得出来；模型没照抄（作者段对不上原文）时不敢乱切，英文标题留空
+    loose = metadata_fill.split_ref_text(raw, "某作者. 《GPT-4 技术报告》. 某会议, 2023.")
+    assert loose["title"] == "GPT-4 技术报告" and loose["title_en"] is None
+    # 压根没翻译（没有《》）→ 三个字段都空，前端显示整条原文
+    assert metadata_fill.split_ref_text(raw, raw) == {"title": None, "title_en": None, "authors": None}
+    assert metadata_fill.split_ref_text(raw, None)["title"] is None
 
 
 def test_references_from_markdown_splits_numbered_entries(monkeypatch, tmp_path: Path) -> None:

@@ -1914,6 +1914,128 @@ def check_highlight_update_api(base: str, paper: str) -> None:
            not any(h.get("id") == hid for h in left), f"残留 {sum(1 for h in left if h.get('id') == hid)} 条")
 
 
+# --------------------------------------------------------------------------
+# 探针 ⑧：参考文献侧栏的中英对照排版（`?side=references`）
+#
+# 为什么要造数据：中英对照靠的是**译文**（新提示词把标题译成《中文标题》），而库里现有的译文
+# 都是旧提示词产出的（只有原文），所以这里直接插一条"已经译好"的参考文献当样本 ——
+# 验完立刻删掉（只活这一个探针的几秒），用户的数据一行都不碰。
+# --------------------------------------------------------------------------
+#: 临时样本：一条"原文 + 中文标题 + 英文标题 + 作者段"齐全的参考文献
+_TEMP_REF = {
+    "order_no": 9999,
+    "raw": "Josh Achiam, Steven Adler, Sandhini Agarwal. GPT-4 technical report. "
+           "arXiv preprint arXiv:2303.08774, 2023.",
+    "title": "GPT-4 技术报告",
+    "title_en": "GPT-4 technical report",
+    "authors": "Josh Achiam, Steven Adler, Sandhini Agarwal.",
+}
+
+
+def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
+    """插/删那条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
+    import uuid
+
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from backend.repositories.mysql.models import PaperReference
+    from backend.repositories.mysql.session import session_scope
+
+    with session_scope() as sess:
+        sess.query(PaperReference).filter(PaperReference.paper_id == paper,
+                                          PaperReference.order_no == 9999).delete()
+        if remove_only:
+            return None
+        rid = uuid.uuid4().hex[:32]
+        sess.add(PaperReference(id=rid, paper_id=paper, order_no=9999, source="selfcheck",
+                                raw=_TEMP_REF["raw"], title=_TEMP_REF["title"],
+                                title_en=_TEMP_REF["title_en"], authors=_TEMP_REF["authors"]))
+        return rid
+
+
+PROBE_REFS = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 2500);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow;
+  const D = () => f.contentDocument;
+  const res = { stage: 'loaded' };
+  try {
+    await until(D(), (x) => x.querySelector('[data-ref-no]'), 60);
+    const row = D().querySelector('[data-ref-no="9999"]');
+    res.tempRow = !!row;
+    res.tempText = row ? (row.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+    res.hasZh = res.tempText.indexOf('GPT-4 技术报告') >= 0;
+    res.hasEn = res.tempText.indexOf('GPT-4 technical report') >= 0;
+    /* 作者默认收起（只在 tooltip 里）：卡片正文里不该出现作者名 */
+    res.authorHidden = res.tempText.indexOf('Sandhini') < 0;
+    res.tooltip = row ? (row.getAttribute('title') || '') : '';
+    res.tooltipHasRaw = res.tooltip.indexOf('Sandhini') >= 0;
+    /* 右上角那枚跳转图标已移除（整张卡片就是那个跳转） */
+    res.noGoIcon = !D().querySelector('.ref-item svg[data-icon="external"]');
+    /* 标号**内联**在中文标题前面：同一行（顶边对齐）且在它左边 */
+    const no = row ? row.querySelector('.ref-no') : null;
+    const zh = row ? row.querySelector('.ref-zh') : null;
+    res.hasInlineNo = !!(no && zh);
+    if (no && zh) {
+      const a = no.getBoundingClientRect(), b = zh.getBoundingClientRect();
+      res.numInline = Math.abs(a.top - b.top) <= 4 && a.right <= b.left + 2;
+    }
+    /* 整张卡片仍能跳发表网站（把 window.open 拦下来看 URL） */
+    const opened = [];
+    const realOpen = w.open;
+    w.open = (u) => { opened.push(String(u)); return null; };
+    if (row) { row.click(); await sleep(250); }
+    w.open = realOpen;
+    res.tempUrl = opened[0] || null;
+  } catch (err) {
+    res.error = String((err && err.message) || err);
+  }
+  out(res);
+  document.title = 'done';
+}
+</script>"""
+
+
+def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -> None:
+    """参考文献侧栏：中英对照 + 作者收起 + 标号内联 + 无跳转图标（临时样本，验完删）。"""
+    print("\n⑧ 参考文献侧栏（中英对照 / 作者收起 / 标号内联 / 无跳转图标；临时样本验完删）")
+    try:
+        _temp_ref_sql(paper)
+    except Exception as exc:  # noqa: BLE001 —— 连不上库就跳过，别把整轮自检带挂
+        skip("参考文献侧栏中英对照", f"造样本失败：{str(exc)[:60]}")
+        return
+    try:
+        url = f"{base}/app/reader/{paper}?side=references&nosse=1"
+        html = (PROBE_REFS.replace("__URL__", url).replace("__TITLE__", "refs"))
+        res = run_probe(browser, base, "probe_refs", html, max(budget_ms, 60_000))
+    finally:
+        try:
+            _temp_ref_sql(paper, remove_only=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if not res or res.get("error"):
+        record("refs-pane", "参考文献侧栏能打开（探针拿到结果）", False,
+               str((res or {}).get("error") or "探针没产出结果")[:90])
+        return
+    record("refs-pane", "中英对照：中文标题在上、英文标题在下",
+           res.get("tempRow") is True and res.get("hasZh") is True and res.get("hasEn") is True,
+           f"中文={res.get('hasZh')} 英文={res.get('hasEn')}｜{str(res.get('tempText'))[:44]}")
+    record("refs-pane", "作者部分默认收起（只在 tooltip 里给整条原文）",
+           res.get("authorHidden") is True and res.get("tooltipHasRaw") is True,
+           f"卡片里有作者={not res.get('authorHidden')} tooltip 有原文={res.get('tooltipHasRaw')}")
+    record("refs-pane", "标号**内联**在标题前（不再整列显示）+ 右上角跳转图标已移除",
+           res.get("hasInlineNo") is True and res.get("numInline") is True
+           and res.get("noGoIcon") is True,
+           f"内联={res.get('numInline')} 无跳转图标={res.get('noGoIcon')}")
+    record("refs-pane", "整张卡片仍能跳发表网站（原文里的 arXiv 号）",
+           str(res.get("tempUrl") or "").startswith("https://arxiv.org/abs/2303.08774"),
+           f"{res.get('tempUrl')}")
+
+
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:
     print("\n④ 过程轨迹：思考 / 正文 / 工具夹杂（造一条临时会话，验完删掉）")
     head = _internal_headers()
@@ -2728,6 +2850,7 @@ def main() -> int:
     # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
     check_pdf_highlight(browser, base, args.paper, args.budget, model=args.model)
     check_notes_page(browser, base, args.paper, args.budget)
+    check_references_pane(browser, base, args.paper, args.budget)
     check_highlight_update_api(base, args.paper)   # 纯 HTTP：浮层色块要用的改色接口
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----

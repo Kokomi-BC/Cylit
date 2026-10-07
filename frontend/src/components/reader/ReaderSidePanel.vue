@@ -13,7 +13,7 @@ import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
-import { referenceMeta, referenceTitle, referenceUrl } from '@/utils/references';
+import { referenceUrl } from '@/utils/references';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
@@ -385,15 +385,18 @@ function removeRow(r: FeedRow) {
         :key="r.id"
         class="item ref-item"
         :data-ref-no="r.order_no"
-        :title="referenceTitle(r)"
+        :title="r.raw"
         @click="openRef(r)"
       >
-        <span class="badge accent ref-no">[{{ r.order_no }}]</span>
-        <span class="ref-body">
-          <span class="ref-title">{{ referenceTitle(r) }}</span>
-          <span v-if="referenceMeta(r)" class="tiny faint">{{ referenceMeta(r) }}</span>
+        <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
+             腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
+        <span class="ref-head">
+          <span class="ref-no">[{{ r.order_no }}]</span>
+          <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
         </span>
-        <AppIcon name="external" :size="12" class="ref-go" />
+        <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
+             整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
+        <span class="ref-en clamp2">{{ r.title ? (r.title_en || r.raw) : r.raw }}</span>
       </button>
     </template>
 
@@ -616,26 +619,27 @@ function removeRow(r: FeedRow) {
   line-height: 1.6; resize: vertical;
 }
 .item.note-row .note-edit:focus { outline: none; border-color: var(--accent); }
-/* 引用文献：一条一行（编号 + 标题 + 年份/会议 + 外链图标），整条都是按钮 */
+/* 引用文献：一条两行 —— 第一行「标号 + 中文标题」（标号内联，不占一整列），
+   第二行英文（只放标题：作者段在 tooltip 里）。整张卡片都是跳转按钮。 */
 .ref-bar {
   display: flex; align-items: center; gap: 6px;
   margin: 0 0 6px; padding: 2px 0;
 }
 .ref-item {
-  display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left;
+  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
   font-family: inherit; font-size: 12px; color: var(--text); cursor: pointer;
   border-left-color: var(--border-strong);
 }
 .ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
-.ref-no { flex: none; font-family: var(--mono); }
-.ref-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-/* 原文常常很长（一整条参考文献）：按三行截断，全文看 hover 的 tooltip */
-.ref-title {
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  overflow: hidden; line-clamp: 3; line-height: 1.5;
+.ref-head { display: block; }
+.ref-no { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
+.ref-zh { font-weight: 600; }
+.ref-en { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
+/* 两行封顶：原文常常很长（一整条参考文献），全文看 hover 的 tooltip */
+.clamp2 {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-clamp: 2;
 }
-.ref-go { flex: none; color: var(--text-faint); margin-top: 1px; }
-.ref-item:hover .ref-go { color: var(--accent-text); }
 /* 「从高亮打开对应笔记」时的落点提示：闪一下边框与底色，用户才知道跳到了哪一条 */
 .item.flash {
   animation: note-flash 1.2s var(--ease);

@@ -63,7 +63,10 @@ export interface PaperReference {
   order_no: number;
   /** 原始条目（结构化字段可能解析错，所以原文永远保留） */
   raw: string;
+  /** 中文标题（译文里 `《…》` 那一段；没翻译过就是 null） */
   title?: string | null;
+  /** 英文标题（原文里切掉作者段与会议/年份/链接之后剩下的那一段） */
+  title_en?: string | null;
   authors?: string | null;
   venue?: string | null;
   year?: number | null;

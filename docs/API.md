@@ -45,7 +45,7 @@
 | GET | `/papers/{id}/pages/{n}` | 页面图（150dpi PNG） |
 | GET | `/papers/{id}/markdown` | Markdown 单一事实源全文 |
 | GET | `/papers/{id}/reconcile` | 三存储对账（只报告不自动删） |
-| GET | `/papers/{id}/references` | **参考文献列表**（`items[]` + `count`，按论文里的顺序）。阅读器「文献」侧栏用它：正文里的引用标号 `[2, 4, 10]` 点开就只显示被提到的那几条 —— 读者只是点了个标号，不必顺带把 `GET /papers/{id}` 那份**整份元数据**拉过来。**抽取口径**（`metadata_fill.references`）：先读页产物里 `ref` 类型的行；没有就退回 Markdown 的 References 节 —— 那里**不要求条目带编号**：有 `<!-- blk:… type:ref … bbox:… -->` 结构标记时按"顶格 = 新条目、缩进 = 续行"切，没有标记时按空行分段；条目全都无编号（ICLR 那种 `Elastic search., 2025. https://…`）也照样全列出来 |
+| GET | `/papers/{id}/references` | **参考文献列表**（`items[]` + `count`，按论文里的顺序）。阅读器「文献」侧栏用它：正文里的引用标号 `[2, 4, 10]` 点开就只显示被提到的那几条 —— 读者只是点了个标号，不必顺带把 `GET /papers/{id}` 那份**整份元数据**拉过来。**中英对照**（2026-10-07）：每条带 `title`（中文标题）/ `title_en`（英文标题）/ `authors`（作者段）—— 提示词要求译文**只把标题换成《中文标题》**、其余逐字照抄原文，抽取时按这副骨架对齐着切（`metadata_fill.split_ref_text`）；没翻译过的论文这三个都是 `null`，前端显示整条 `raw`。**抽取口径**（`metadata_fill.references`）：先读页产物里 `ref` 类型的行；没有就退回 Markdown 的 References 节 —— 那里**不要求条目带编号**：有 `<!-- blk:… type:ref … bbox:… -->` 结构标记时按"顶格 = 新条目、缩进 = 续行"切，没有标记时按空行分段；条目全都无编号（ICLR 那种 `Elastic search., 2025. https://…`）也照样全列出来 |
 | POST | `/papers/{id}/metadata/auto` | 自动补全元数据（**离线那一段**）：`{"model":false,"overwrite":false}`。默认只读 PDF 首页 + 页产物（不花钱）：标题 / 作者 / 会议 / 年份 / **原文摘要** / **DOI** / **开源地址** / **参考文献** / **推荐阅读时间**；`model=true` 时仍缺的字段再交给模型（读抽样内容）；`overwrite=true` 连已有值一起覆盖（默认**只填空字段**） |
 | POST | `/papers/{id}/metadata/agent` | **「模型补全」按钮**：交给 agent **读全文**填写（中英关键词 / 中文摘要 / 领域 / 一句话概括 / 创新点 / 前置知识 / 难度 / 类型…）。**异步**：排一个 `META_FILL` 任务（队列 `knowledge`）后立刻返回任务行，前端刷新卡片即可（用户口径：完整 agent 功能，不显示细节）。任务内部顺序 = 离线 → agent → 跑不动则回落一次单次模型调用；只在"还缺元数据"时由 `翻译完成 → INDEX → META_FILL` 自动链排队 |
 

@@ -46,6 +46,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 默认值必须给：老库里的既有行要落到 0，而不是 NULL（读出来就是 None，前端显示成空白）。
     ("paper", "transcribe_done", "`transcribe_done` INT NOT NULL DEFAULT 0"),
     ("paper", "transcribe_total", "`transcribe_total` INT NOT NULL DEFAULT 0"),
+    # 参考文献的中英对照（2026-10-07）：`title` 存中文标题、`title_en` 存英文标题、
+    # `authors` 存作者段（侧栏默认收起它）。三者都由翻译产物对齐着拆出来，
+    # 允许 NULL —— 没翻译的论文就只有 `raw`，前端显示整条原文。
+    ("paper_reference", "title_en", "`title_en` VARCHAR(512) NULL"),
     # 元数据扩展（2026-10-07）：中英文摘要/关键词、领域、创新点、前置知识、难度、
     # 推荐阅读时间、一句话概括、类型、DOI/开源地址、来源标记。
     # 一律允许 NULL —— NULL 表示"还不知道"（与 "" 表示"读过、确实没有"是两回事）。

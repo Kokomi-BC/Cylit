@@ -344,7 +344,12 @@ def update_paper(paper_id: str, payload: dict, *, source: str | None = "manual")
 
 
 def references(paper_id: str) -> list[dict]:
-    """这篇论文的参考文献（按论文里的顺序）。"""
+    """这篇论文的参考文献（按论文里的顺序）。
+
+    `title` / `title_en` / `authors` 是**离线抽取时从翻译产物里对齐着拆出来的**
+    （`metadata_fill.split_ref_text`）：中文标题、英文标题、作者段 —— 侧栏据此中英对照显示、
+    并把作者那一段收起来（`raw` 永远是完整原文）。没翻译的论文这三个都是 NULL。
+    """
     from backend.repositories.mysql.models import PaperReference
 
     with session_scope() as sess:
@@ -352,8 +357,9 @@ def references(paper_id: str) -> list[dict]:
                 .filter(PaperReference.paper_id == paper_id)
                 .order_by(PaperReference.order_no.asc()).all())
         return [{"id": r.id, "order_no": int(r.order_no or 0), "raw": r.raw or "",
-                 "title": r.title, "authors": r.authors, "venue": r.venue,
-                 "year": r.year, "doi": r.doi, "url": r.url, "source": r.source}
+                 "title": r.title, "title_en": r.title_en, "authors": r.authors,
+                 "venue": r.venue, "year": r.year, "doi": r.doi, "url": r.url,
+                 "source": r.source}
                 for r in rows]
 
 

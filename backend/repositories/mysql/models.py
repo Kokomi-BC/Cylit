@@ -121,6 +121,11 @@ class PaperReference(Base):
     要看得到、数得清、还要能被后续检索（"哪篇论文引了 X"），所以按行存。
     离线从解析出的 `ref` 块抽（`backend/parsing` 已经把参考文献切成了 `ref` 类型的块），
     `title/authors/venue/year` 这些结构化字段留给模型或后续解析补。
+
+    2026-10-07 起 `title` / `authors` / `title_en` 由**翻译产物**对齐着填
+    （`metadata_fill.split_ref_text`）：译文里只有标题被换成了《中文标题》，于是
+    `title` = 中文标题、`title_en` = 原文里的英文标题、`authors` = 作者那一段 ——
+    侧栏据此中英对照显示，并把作者那一段收起来（`raw` 永远是完整原文，不会丢东西）。
     """
 
     __tablename__ = "paper_reference"
@@ -130,7 +135,11 @@ class PaperReference(Base):
     order_no: Mapped[int] = mapped_column(Integer, default=0)
     #: 原始条目（去掉换行与连字问题之后的一整条），永远保留 —— 结构化字段可能解析错
     raw: Mapped[str | None] = mapped_column(Text)
+    #: 中文标题（译文里《…》那一段）
     title: Mapped[str | None] = mapped_column(String(512))
+    #: 英文标题（原文里切掉作者段与会议/年份/链接之后剩下的那一段）
+    title_en: Mapped[str | None] = mapped_column(String(512))
+    #: 作者段（与原文逐字相同的那一段；侧栏默认**不显示**，只在 tooltip 里给）
     authors: Mapped[str | None] = mapped_column(String(512))
     venue: Mapped[str | None] = mapped_column(String(256))
     year: Mapped[int | None] = mapped_column(Integer)

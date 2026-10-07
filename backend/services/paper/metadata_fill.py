@@ -182,15 +182,18 @@ _CODE_RE = re.compile(
 READ_CHARS_PER_MIN = 900
 
 
-def scan_rows(paper_id: str) -> list[tuple[int, str, str]]:
-    """页产物的行 → ``[(页号, 类型, 文本)]``。
+def scan_rows(paper_id: str) -> list[tuple[int, str, str, str]]:
+    """页产物的行 → ``[(页号, 类型, 原文, 译文)]``。
 
-    只装一次：下面三个离线抽取（DOI / 阅读时间 / 参考文献）都要用它，各装一遍就是
+    只装一次：下面几个离线抽取（DOI / 阅读时间 / 参考文献）都要用它，各装一遍就是
     "同一篇论文的页产物被读三遍"（`page_translations` 每次都要读两路 JSON）。
+
+    **两边都带回来**（2026-10-07）：参考文献要拿译文里的《中文标题》跟原文对齐着切
+    （见 `split_ref_text`），只留"原文 or 译文"这一侧就做不到了。
     """
     from backend.services.paper import reader_service
 
-    out: list[tuple[int, str, str]] = []
+    out: list[tuple[int, str, str, str]] = []
     try:
         pages = reader_service.page_translations(paper_id)
     except Exception as exc:  # noqa: BLE001 —— 没有页产物只是"离线抽不到"，不能让补全失败
@@ -202,19 +205,25 @@ def scan_rows(paper_id: str) -> list[tuple[int, str, str]]:
             # ⚠️ 行的键是 `original` / `translation`（见 `reader_service._merge_page`），
             # **不是** `text`：第一版按 `text` 取，于是这个函数永远空手而归 ——
             # 阅读时间永远填不上、DOI/开源地址永远抽不到（参考文献还有值，是靠 Markdown 兜底）。
-            text = str(row.get("original") or row.get("translation") or "")
-            if text.strip():
-                out.append((page, str(row.get("type") or ""), text))
+            original = str(row.get("original") or "")
+            translation = str(row.get("translation") or "")
+            if original.strip() or translation.strip():
+                out.append((page, str(row.get("type") or ""), original, translation))
     return out
 
 
-def offline_extras(rows: list[tuple[int, str, str]]) -> dict:
+def _row_text(original: str, translation: str) -> str:
+    """这一行"给人看的文本"：有原文用原文，没有才用译文（单语论文/只译了半边）。"""
+    return original or translation
+
+
+def offline_extras(rows: list[tuple[int, str, str, str]]) -> dict:
     """首页里的 DOI / 开源地址（纯正则，不花一分钱）。
 
     只读**前两页**的正文：这些标识符要么在首页页脚、要么在摘要附近；翻遍全文
     只会捞到参考文献里别人的 DOI 与别人的仓库。
     """
-    text = "\n".join(t for page, _kind, t in rows if page <= 2)
+    text = "\n".join(_row_text(o, t) for page, _kind, o, t in rows if page <= 2)
     out: dict = {}
     if (m := _DOI_RE.search(text)):
         out["doi"] = m.group(0).rstrip(".,;").lower()[:128]
@@ -223,29 +232,86 @@ def offline_extras(rows: list[tuple[int, str, str]]) -> dict:
     return out
 
 
-def estimate_read_time(rows: list[tuple[int, str, str]]) -> int | None:
+def estimate_read_time(rows: list[tuple[int, str, str, str]]) -> int | None:
     """推荐阅读时间（分钟）：按正文行字数估。
 
     只算正文（`para` / `heading`）：公式、图注、参考文献不参与"读一遍"。
     没有页产物（还没翻译）时返回 None —— 别给个"1 分钟"骗人。
     """
-    chars = sum(len(t) for _page, kind, t in rows if kind in ("para", "heading"))
+    chars = sum(len(_row_text(o, t)) for _page, kind, o, t in rows if kind in ("para", "heading"))
     if chars < 500:
         return None
     return max(1, min(600, round(chars / READ_CHARS_PER_MIN)))
 
 
-def references(paper_id: str, rows: list[tuple[int, str, str]] | None = None) -> list[str]:
-    """参考文献条目（离线）。
+#: 译文里"中文标题"的约定（提示词里写死）：**只把标题译成中文并用《》括起来**
+_ZH_TITLE_RE = re.compile(r"《([^》]{1,300})》")
+#: 两段拼接处可能多出来的分隔符（`.`、`,`、`·`、空格…）：比对前后各自剥掉
+_REF_SEP = " \t.,;:·、，。"
+
+
+def split_ref_text(raw: str, translated: str | None) -> dict:
+    """一条参考文献的「原文 + 译文」→ ``{title, title_en, authors}``。
+
+    为什么切得动：提示词要求译文**只把标题换成《中文标题》**，作者与会议/年份/链接逐字照抄原文。
+    于是译文与原文是**同一副文字骨架**，可以这样切：
+
+    - `《…》` **之前**那段 = 作者段（与原文逐字相同）→ 从原文头部切掉；
+    - `《…》` **之后**那段 = 会议/年份/DOI/链接 → 从原文尾部切掉；
+    - 剩下的中间那段就是**英文标题**（连它自己的句号一起留着）。
+
+    任一段对不上（模型没照抄 / 论文本来就没译）就只回中文标题，英文标题留空 ——
+    前端这时显示整条原文（宁可不省，也不能把作者当标题显示）。
+    """
+    raw = str(raw or "").strip()
+    out = {"title": None, "title_en": None, "authors": None}
+    text = str(translated or "")
+    m = _ZH_TITLE_RE.search(text)
+    if not m:
+        return out
+    out["title"] = m.group(1).strip() or None
+    # 作者段只剥**空白**（不剥标点）：它要能原样对上原文的前缀，也方便日后显示
+    head = text[:m.start()].rstrip()
+    tail = text[m.end():].lstrip(_REF_SEP)
+    if head and raw.startswith(head):
+        out["authors"] = head
+        body = raw[len(head):].lstrip(_REF_SEP)
+        if tail and body.endswith(tail):
+            body = body[: len(body) - len(tail)].rstrip(_REF_SEP)
+        out["title_en"] = body.strip() or None
+    return out
+
+
+def reference_pairs(paper_id: str,
+                    rows: list[tuple[int, str, str, str]] | None = None
+                    ) -> list[tuple[str, str | None]]:
+    """参考文献条目（离线）→ ``[(原文, 译文 or None)]``。
 
     来源是**页产物里 `ref` 类型的行** —— 解析阶段已经把参考文献切成了独立的块，
-    阅读器"显示参考文献"开关用的就是它，所以这里读到的与用户看到的是同一份。
-    页产物还没有时退回解析出的 Markdown（找 References / 参考文献 那一节）。
+    阅读器用的就是它。页产物还没有时退回解析出的 Markdown（找 References / 参考文献 那一节），
+    那时只有原文（Markdown 里没有逐块译文）。
+
+    为什么要连译文一起回（2026-10-07）：译文里带着《中文标题》，与原文对齐着切就能同时得到
+    「中文标题 / 英文标题 / 作者段」（见 `split_ref_text`）—— 侧栏要中英对照着显示。
     """
-    items = [" ".join(t.split()) for _p, kind, t in (rows if rows is not None else scan_rows(paper_id))
-             if kind == "ref"]
-    items = [t for t in items if t]
-    return items or _references_from_markdown(paper_id)
+    out: list[tuple[str, str | None]] = []
+    for _page, kind, original, translation in (rows if rows is not None else scan_rows(paper_id)):
+        if kind != "ref":
+            continue
+        raw = " ".join(str(original or "").split())
+        if not raw:
+            raw = " ".join(str(translation or "").split())      # 只译了半边：拿译文当原文
+        zh = " ".join(str(translation or "").split()) or None
+        if raw:
+            out.append((raw, zh))
+    if out:
+        return out
+    return [(t, None) for t in _references_from_markdown(paper_id)]
+
+
+def references(paper_id: str, rows: list[tuple[int, str, str, str]] | None = None) -> list[str]:
+    """只要原文那一侧（老的调用方/测试用它；要中英成对就用 `reference_pairs`）。"""
+    return [raw for raw, _zh in reference_pairs(paper_id, rows)]
 
 
 #: Markdown 里的参考文献小节标题
@@ -368,24 +434,45 @@ def _references_from_markdown(paper_id: str) -> list[str]:
     return _parse_ref_section(text)
 
 
-def save_references(paper_id: str, items: list[str]) -> int:
+def _cap(text: str | None, limit: int) -> str | None:
+    """截到列宽上限；空串一律回 `None`（NULL 才表示"没有"，与"读过、确实是空"分开）。"""
+    return text[:limit] if text else None
+
+
+def save_references(paper_id: str, items: list[str] | list[tuple[str, str | None]]) -> int:
     """把参考文献写进 `paper_reference`（**整篇替换**：重抽就该覆盖旧的）。
 
     为什么整篇替换而不是增量：抽取是纯函数（同一份页产物 → 同一份条目），
     增量比对只会带来"删掉的那几条还留在库里"的脏数据。
+
+    `items` 现在收 **`(原文, 译文)` 成对**（2026-10-07）：落库时顺手把中文标题、英文标题、作者段
+    一起拆出来存好（`split_ref_text`），侧栏才能中英对照显示、并把作者那一段收起来。
+    也兼容老写法（一串纯字符串）—— 那时只有原文，中文标题留空。
     """
     import uuid
 
     from backend.repositories.mysql.models import PaperReference
     from backend.repositories.mysql.session import session_scope
 
-    items = [str(t) for t in (items or []) if str(t).strip()][:500]
+    pairs: list[tuple[str, str | None]] = []
+    for it in (items or []):
+        if isinstance(it, (tuple, list)):
+            raw, zh = (list(it) + [None])[:2]
+        else:
+            raw, zh = it, None
+        if str(raw or "").strip():
+            pairs.append((str(raw), str(zh) if zh else None))
+    pairs = pairs[:500]
     with session_scope() as sess:
         sess.query(PaperReference).filter(PaperReference.paper_id == paper_id).delete()
-        for i, raw in enumerate(items, 1):
+        for i, (raw, zh) in enumerate(pairs, 1):
+            split = split_ref_text(raw, zh)
             sess.add(PaperReference(id=uuid.uuid4().hex[:32], paper_id=paper_id,
-                                    order_no=i, raw=raw[:4000], source="pdf"))
-    return len(items)
+                                    order_no=i, raw=raw[:4000], source="pdf",
+                                    title=_cap(split["title"], 512),
+                                    title_en=_cap(split["title_en"], 512),
+                                    authors=_cap(split["authors"], 512)))
+    return len(pairs)
 
 
 def offline(paper_id: str, *, overwrite: bool = False) -> dict:
@@ -422,7 +509,7 @@ def offline(paper_id: str, *, overwrite: bool = False) -> dict:
         fills["read_time_min"] = minutes
 
     applied = apply_fills(paper_id, fills, overwrite=overwrite, source="pdf")
-    refs = references(paper_id, rows)
+    refs = reference_pairs(paper_id, rows)
     ref_count = save_references(paper_id, refs) if refs else 0
     return {"fills": fills, "applied": applied, "references": ref_count,
             "errors": errors, "sources": sources}

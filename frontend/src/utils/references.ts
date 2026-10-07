@@ -52,21 +52,7 @@ export function referenceUrl(ref: PaperReference): string {
   const doi = DOI_IN_TEXT.exec(raw);
   if (doi) return `https://doi.org/${tidy(doi[1])}`;
 
-  const q = [stripRefNumber(String(ref.title ?? '')), ref.authors, ref.year]
+  const q = [stripRefNumber(String(ref.title_en ?? ref.title ?? '')), ref.authors, ref.year]
     .filter(Boolean).join(' ') || stripRefNumber(raw);
   return `https://scholar.google.com/scholar?q=${encodeURIComponent(q.slice(0, 300))}`;
-}
-
-/** 展示标题：结构化 `title` 优先，没有就用原文（页面上按行截断）。 */
-export function referenceTitle(ref: PaperReference): string {
-  const title = String(ref.title ?? '').trim();
-  if (title) return title;
-  return String(ref.raw ?? '').replace(/\s+/g, ' ').trim();
-}
-
-/** 年份/会议（结构化字段那一行的小字）：两个都没有就返回空串。 */
-export function referenceMeta(ref: PaperReference): string {
-  const year = ref.year ? String(ref.year) : '';
-  const venue = String(ref.venue ?? '').trim();
-  return [venue, year].filter(Boolean).join(' · ');
 }
