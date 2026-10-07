@@ -242,7 +242,8 @@ section / heading_level / translation / translation_status / translation_revisio
 | `context` | `true` | **任务级参数**（`/translate` 不透传）：是否把**完整前文**（第 1..N-1 页）放进本页 prompt（连贯记忆 + 前缀缓存） |
 | `context_chars` | `2000000` | **任务级参数**（同上）：前文长度上限（**仅护栏**：目标模型窗口 1M token，正常论文不截断）。注意别和设置里的 `translate_max_context_chars`（1200，另一回事）混淆 |
 | `pages` | 无 | 只翻指定页（如 `[3,4]`），重跑个别页用 |
-| `blocks_from_a` | `false` | **块模式**（A 定块、B 照译，只对 B 路生效）：B 的正文换成 A 路**本页已转录好的块清单**，逐块译、逐块回；B 不再分块、不申报 `src`/`breaks`、不做跨页 carry。前置：A 路这些页**已转录**（缺页则该页失败，不静默降级）。对齐由"生成时约定"保证 —— 读时按序号 1:1 配对（`align: "blocks"`），块数不等才退回 `pair_rows`。见 `docs/dev-log.md` §67 |
+| `blocks_from_a` | `false` | **块模式**（A 定块、B 照译，只对 B 路生效）：B 的正文换成 A 路**本页已转录好的块清单**，逐块译、逐块回；B 不再分块、不申报 `src`/`breaks`。**A 必须领先**：B 的第 N 页会**等** A 的第 N 页（块清单）与第 N+1 页（`a_page_lookahead`，只用来把页尾半句收完整 → `carry_md`，下一页再从自己的第 1 块里剪掉），A 路任务不在就立刻放弃等待。对齐由"生成时约定"保证 —— 读时按序号 1:1 配对（`align: "blocks"`），块数不等才退回 `pair_rows`。见 `docs/dev-log.md` §67 |
+| `block_wait_seconds` | `600` | **任务级参数**（`/translate` 不透传）：块模式下等 A 路产物的上限（秒）。等到了就正常译；超时后"块清单"那一页失败、"下一页开头"只是拿不到（页尾照原样停在断处） |
 
 **粒度**：只有 `page`（一页一次调用）。调用输入 = 该页**页图（PNG，150dpi）** + 解析器抽出的
 页内文本 + 稳定前缀（简报 + 术语表 + **全文标题骨架**）+ **完整前文历史**；A 路输出 `original_md`

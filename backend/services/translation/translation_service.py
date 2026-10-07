@@ -38,12 +38,12 @@ from backend.services.task.scheduler import (
 )
 from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
-    CONTEXT_MAX_CHARS, PATH_VERSION, PageStore, build_outline_skeleton,
-    build_page_payload, build_path_payload, build_stable_prefix, call_page,
-    drop_declared_fragment, effective_max_tokens, format_block_list,
-    history_context, list_pages, load_page_image, next_max_tokens,
-    page_continuity, page_lookahead, page_source_blocks, page_source_text,
-    render_block_prompt, render_page_prompt, split_blocks,
+    BLOCK_HEAD_NOTE, CONTEXT_MAX_CHARS, PATH_VERSION, PageStore, a_page_lookahead,
+    build_outline_skeleton, build_page_payload, build_path_payload,
+    build_stable_prefix, call_page, drop_declared_fragment, effective_max_tokens,
+    format_block_list, history_context, list_pages, load_page_image,
+    next_max_tokens, page_continuity, page_lookahead, page_source_blocks,
+    page_source_text, render_block_prompt, render_page_prompt, split_blocks,
 )
 
 log = get_logger(__name__)
@@ -116,6 +116,47 @@ def page_store(paper_id: str, path: str | None = None) -> PageStore:
     raise ValidationError(f"未知的路：{path!r}")
 
 
+#: 块模式下 B 路等 A 路产物的默认上限（秒）。等的正常是"下一页"：A 路实测 18~27s/页，
+#: 给到 10 分钟是为了容忍 A 路的页排在别的任务后面（`task_worker_count = 3`）。
+#: 任务参数 `block_wait_seconds` 可覆盖。
+BLOCK_WAIT_SECONDS = 600.0
+
+
+def await_a_page(a_store: PageStore, paper_id: str, page: int, *,
+                 timeout: float = BLOCK_WAIT_SECONDS, required: bool) -> dict | None:
+    """等 A 路把第 `page` 页写到盘上（块模式：B 的输入来自 A，**A 必须领先**）。
+
+    - `required=True`：拿不到就抛 —— 那是本页的**块清单**，没有它这一页无从下手；
+    - `required=False`：拿不到就返回 None —— 那是"下一页开头"，只用来把页尾那句收完整，
+      收不了也不该让整页失败（页尾照原样停在断处）。
+
+    **A 路任务已经不在了**（没排上 / 已结束 / 已取消）就立刻放弃等待 —— 再等只是让任务空转
+    （"用户只跑了 B 路"时这是唯一正确的反应）。
+    """
+    deadline = time.time() + max(0.0, float(timeout))
+    started = time.time()
+    waited = False
+    while True:
+        # ⚠️ 必须 reload：写盘的是 A 路**自己的** `PageStore` 实例（另一个任务），
+        # 本实例的 `_data` 是构造时读进来的，不丢缓存就永远看不到对路刚落盘的页。
+        a_store.reload()
+        payload = a_store.page(page)
+        if payload and str(payload.get("original_md") or "").strip():
+            if waited:
+                log.info("块模式：A 路第 %d 页已就绪（等了 %.1fs）", page, time.time() - started)
+            return payload
+        if time.time() >= deadline or _active_path_task(paper_id, "a") is None:
+            break
+        if not waited:
+            waited = True
+            log.info("块模式：等 A 路第 %d 页（最多 %.0fs）", page, timeout)
+        time.sleep(2.0)
+    if required:
+        raise ValidationError(
+            f"块模式需要 A 路第 {page} 页的转录产物（等待 {timeout:.0f}s 仍没有）")
+    return None
+
+
 # --------------------------------------------------------------------------
 # 任务体
 # --------------------------------------------------------------------------
@@ -157,6 +198,8 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     # 逐块译、逐块回，对齐从"事后猜"变成"生成时约定"（见 `BLOCK_TRANSLATE_SYSTEM`）。
     # 需要 A 路**本页已转录**（`original_md` 在盘上）：A 没跑完时这一页会直接失败，不会静默降级。
     block_mode = path == "b" and bool(params.get("blocks_from_a"))
+    # 块模式等 A 路产物的上限（秒）：任务参数可覆盖，默认见 `BLOCK_WAIT_SECONDS`。
+    wait_s = float(params.get("block_wait_seconds") or BLOCK_WAIT_SECONDS)
 
     paper_pages = list_pages(paper_id)
     if not paper_pages:
@@ -331,18 +374,37 @@ def run_path_task(ctx, path: str | None = None) -> dict:
         body = source
         a_blocks: list[dict] = []
         if block_mode:
-            # **块模式**：正文 = A 路本页的块清单（不是解析器文本）—— 输入只有一条路径，
-            # B 只做"逐块译"；分块、页边界补句、坐标申报都不再进 B 的 prompt。
-            # 也**不给** lookahead / edges：补句与 carry 在这一模式下不存在（契约是定长数组）。
-            a_md = str((a_store.page(page_no) or {}).get("original_md") or "") if a_store else ""
-            a_blocks = split_blocks(a_md)
+            # **块模式**：B 的输入全部来自 A 路 —— 先等它把本页写到盘上，再等**下一页开头**。
+            # "等"不是浪费：A 路本来就是这两路里的长杆（实测 18~27s/页 vs 块模式 B 7s/页），
+            # 让 A 领先一页，B 既拿到稳定的块清单，又能用**同一份转录**的下一页把页尾半句收完整。
+            a_payload = await_a_page(a_store, paper_id, page_no, timeout=wait_s, required=True)
+            a_blocks = split_blocks(str(a_payload.get("original_md") or ""))
             if not a_blocks:
-                raise ValidationError(
-                    f"块模式需要 A 路先转录完第 {page_no} 页（A 产物里没有 original_md）")
+                raise ValidationError(f"A 路第 {page_no} 页的转录产物是空的（块模式无法翻译）")
+            # 页首去重：上一页（B 自己的产物）申报了它借走的原文 → 从**第 1 块**里剪掉。
+            # 块数不变（剪的是块内文本），所以序号配对不受影响；原文栏仍显示 A 的完整块。
+            head_note = ""
+            prev_payload = store.page(page_no - 1) if page_no > 1 else None
+            carried = str((prev_payload or {}).get("carry_md") or "").strip()
+            if carried:
+                first = str(a_blocks[0].get("text") or "")
+                trimmed = drop_declared_fragment(first, carried)
+                if trimmed != first:
+                    a_blocks[0] = {**a_blocks[0], "text": trimmed}
+                    head_note = BLOCK_HEAD_NOTE
+                    log.info("第 %d 页：第 1 块剪掉上一页已译完的开头 %d 字符",
+                             page_no, len(first) - len(trimmed))
+            # 页尾收句的上下文：A 路**下一页**的开头（最后一页没有）。
+            lookahead = ""
+            if page_no < page_total:
+                nxt = await_a_page(a_store, paper_id, page_no + 1,
+                                   timeout=wait_s, required=False)
+                if nxt:
+                    lookahead = a_page_lookahead(str(nxt.get("original_md") or ""))
             prompt = render_block_prompt(
                 page=page_no, page_total=page_total, blocks=format_block_list(a_blocks),
                 block_count=len(a_blocks), prefix=prefix, section=section,
-                previous=history)
+                previous=history, lookahead=lookahead, head_note=head_note)
         else:
             lookahead = (page_lookahead(paper_id, page_no)
                          if (use_context and path != "a") else "")

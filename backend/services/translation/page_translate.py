@@ -400,7 +400,11 @@ TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。每次
 #: 为什么值得单开一份 prompt：两路各自分块时 `pair_rows` 只能**事后**对齐 —— 实测 46 页里
 #: 只有 43% 走到"按块号配对"、30% 掉到 `difflib` 兜底。块模式把"对得上"从**算法推论**变成
 #: **生成时约定**（B 收到的就是 A 的块清单，逐块译、逐块回），对齐档位不再随模型漂移。
-#: 代价（实测要看）：B 不再独立读图核对 → 转录漏掉的内容它不会补回；也不再能把页尾半句补完整句。
+#:
+#: 页边界怎么办：A 路**比 B 提前转录**（B 等 A 的下一页），于是 B 手里有**同一份转录**的下一页开头，
+#: 页尾半句能收成完整句（`carry_md`），下一页再把这段从自己的第 1 块里剪掉 ——
+#: 收句只是**最后一块内部的长短变化**，块数与块序仍然不动（数组长度永远是 N）。
+#: 代价（实测要看）：B 不再独立读图核对 → 转录漏掉的内容它不会补回。
 BLOCK_TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。每次给你**一页论文的页图**，
 以及这一页的**英文原文块清单**（由另一条独立的「页面转录」流水线产出：**块已经切好、编号固定**）。
 你要**逐块**产出中文译文 —— **分块不是你的职责**：块数、块序、块类型都由清单决定，
@@ -437,13 +441,25 @@ BLOCK_TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。
 5. 术语按给定术语表统一；学术书面语；**不增删任何内容**（不加解释、不写"注："、不省略句子）。
 6. **标记不许跨块悬空**：某一块打开的 `*`（斜体/加粗）或 `$$` 要在这一块内闭合。
 
-【页边界不是你的职责】
-本页开头/末尾被版面切断的半句**按清单原样译**（照原样停在断处）：**不要**去猜下一页、
-**不要**把半句补成完整句、**不要**写「……」占位、**不要**写"承上页 / 续下页"、不要输出页码。
-块由转录那一侧决定，你只译它给的块（这一模式下没有 carry、没有【下一页开头】）。
+【页尾：这次能拿到 A 路**下一页的开头**】
+A 路会**比你先转录下一页**，所以 prompt 里可能给出【A 路下一页开头】—— 那是**跟你手上同一份转录**
+的下一段原文。它只用来做一件事：**把本页末尾被版面切断的那句收成完整句**。
+- 你最后一块停在半句上、而【A 路下一页开头】明显就是这句的剩余部分 → **用它把这一整句译完**
+  （一直译到真正的句末：句号/问号/分号；被折断的词补成完整词，不许写「通信瓶-」这种半截词）；
+  同时把**你实际用到的那段原文**逐字符照抄进 `carry_md`（**原文**，不是译文，一个字符都不要改）。
+- 用不上（最后一块本来就收句了 / 下一页开头是图注表格或不相关内容 / 接不上）→
+  最后一块**照原样停在断处**：不要写「……」占位，也不要自己编后半句；`carry_md` 写 `""`。
+- ⚠️ `carry_md` **抄多会造成下一页重复、抄少会漏译**：只抄你**真的译进去**的那一段。
+- ⚠️ 收句是**最后一块内部**的长短变化，不是新增一块：`blocks` 数组的长度**仍然必须正好 N**。
+
+【页首：上一页可能已经译掉了本页开头】
+若 prompt 里有【本页开头去重】的说明，说明第 1 块开头那截原文**已由上一页译完**：
+**跳过它**，从下一句开始译；第 1 块剩下的部分照常译。整块都已被上一页译完时，
+第 1 项输出**空字符串** `""`（数组长度仍然是 N）。
+一句话绝不两页各写一遍；也不要写"承上页 / 续下页"这类痕迹，不要输出页码。
 
 【output：只输出一个 JSON 对象】不要解释、不要代码块：
-{"blocks": ["第 1 块的中文译文", "第 2 块的中文译文", "……"]}"""
+{"blocks": ["第 1 块的中文译文", "第 2 块的中文译文", "……"], "carry_md": "……"}"""
 
 
 #: 按路的输出契约（声明用：`call_page` 只把 system prompt 发给 provider，schema 供测试与文档）
@@ -476,9 +492,13 @@ PAGE_SCHEMA_B = {
 
 #: **块模式**（A 定块、B 照译）的输出契约：**定长字符串数组**，第 i 项 = A 路第 i 块的中文译文。
 #: 与 `PAGE_SCHEMA_B` 的区别就是"没有 translation_md 这个字段"—— 块本身就是对齐单位。
+#: `carry_md` 仍然在：页尾收句借用的那段**原文**（收句只让最后一块变长，数组长度不变）。
 PAGE_SCHEMA_B_BLOCKS = {
     "type": "object",
-    "properties": {"blocks": {"type": "array", "items": {"type": "string"}}},
+    "properties": {
+        "blocks": {"type": "array", "items": {"type": "string"}},
+        "carry_md": {"type": "string"},
+    },
     "required": ["blocks"],
 }
 
@@ -517,17 +537,20 @@ PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 【本页输出】按系统提示输出 JSON：translation_md 为本页中文译文，carry_md 为本页末尾那句
 从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。{src_tail}"""
 
-#: **块模式**的 user prompt 模板：正文换成 **A 路转录的块清单**，输出契约换成定长数组，
-#: 不给【下一页开头】/【页边界参考】（补句与 carry 在这一模式下不存在，见 `BLOCK_TRANSLATE_SYSTEM`）。
+#: **块模式**的 user prompt 模板：正文换成 **A 路转录的块清单**，输出契约换成定长数组。
+#: 页尾收句用的【A 路下一页开头】与页首去重说明都是**页面级**内容（尾部的任何东西都不在
+#: 下一页 prompt 的公共前缀里 → 前缀缓存照旧命中）。**不给**解析器派的【页边界参考】：
+#: 跨页判断改为只看 A 路自己前后两页的转录（单一来源，见 `a_page_lookahead`）。
 PAGE_USER_TEMPLATE_B_BLOCKS = """{prefix}{previous}
 
 【本页】第 {page} 页 / 共 {page_total} 页{section_line}
 【A 路（转录）定好的本页块清单：共 {block_count} 块 —— **块数 / 块序 / 块类型就是契约**】
-{blocks}
+{blocks}{head_note}{lookahead}
 
 【本页输出】按系统提示输出 JSON：`blocks` 为**长度正好 {block_count}** 的字符串数组，
-第 i 项是第 i 块的中文译文（块数、顺序、块类型必须与清单一致；
-不要输出 translation_md / carry_md / breaks / src）。"""
+第 i 项是第 i 块的中文译文（块数、顺序、块类型必须与清单一致）；
+`carry_md` 为你从【A 路下一页开头】借用来收完整句的那段**原文**（没借就写空串 `""`）。
+不要输出 translation_md / breaks / src。"""
 
 # 输出预算（`max_tokens`）。
 #
@@ -971,14 +994,17 @@ def render_page_prompt(*, page: int, page_total: int, body: str,
 
 def render_block_prompt(*, page: int, page_total: int, blocks: str, block_count: int,
                         prefix: str = "", section: str = "",
-                        previous: str = "") -> str:
+                        previous: str = "", lookahead: str = "",
+                        head_note: str = "") -> str:
     """**块模式**（A 定块、B 照译）的 user prompt。
 
-    与 `render_page_prompt(path="b")` 的三处差别：① 正文换成 **A 路转录的块清单**（不是解析器文本）；
-    ② 不给【下一页开头】/【页边界参考】（补句与 carry 在这一模式下不存在）；
-    ③ 输出契约是定长数组 `blocks`。
+    与 `render_page_prompt(path="b")` 的两处差别：① 正文换成 **A 路转录的块清单**（不是解析器文本）；
+    ② 输出契约是定长数组 `blocks`（+ `carry_md`）。
 
-    清单放在**页面级尾部**：稳定前缀（system + 简报 + 术语表 + 骨架 + 本路前文）逐字节不变，
+    `lookahead` = **A 路下一页开头**（`a_page_lookahead`），只用来收页尾那句；
+    `head_note` = "本页开头已由上一页译完"的说明（上一页申报了 `carry_md` 时才有）。
+
+    清单在**页面级尾部**：稳定前缀（system + 简报 + 术语表 + 骨架 + 本路前文）逐字节不变，
     所以前缀缓存照旧命中 —— 与 `src_tail` 同一个道理。
     """
     return PAGE_USER_TEMPLATE_B_BLOCKS.format(
@@ -986,7 +1012,42 @@ def render_block_prompt(*, page: int, page_total: int, blocks: str, block_count:
         page=page, page_total=page_total,
         section_line=f"；章节：{section}" if section else "",
         blocks=blocks or "（转录没有给出任何块：本页无法翻译）",
+        head_note=f"\n\n{head_note}" if head_note else "",
+        lookahead=f"\n\n{lookahead}" if lookahead else "",
         block_count=block_count)
+
+
+#: 页首去重说明（上一页申报了 `carry_md`）：第 1 块开头那截已经译过了。
+BLOCK_HEAD_NOTE = ("【本页开头去重】第 1 块开头这截原文**已由上一页译完**（上一页页尾那句接的就是它）："
+                   "**跳过它**，从下一句开始译，第 1 块剩下的部分照常译；"
+                   "整块都已被上一页译完时，第 1 项输出空字符串 `\"\"`（数组长度仍然是 N）。")
+
+
+def a_page_lookahead(md: str, *, lines: int = 14, max_chars: int = 2200) -> str:
+    """**A 路下一页开头**：块模式下 B 的跨页上下文（`page_lookahead` 的 A 路版本）。
+
+    为什么要换成 A 路的转录（而不是解析器文本）：B 手里正在译的就是 A 的转录，
+    用**同一份文本**去收末句，词形 / 断词 / 大小写与它手上的完全一致；解析器文本可能把
+    同一个词抽成另一种写法（`bot-` / `bot ¬` / 断行），补出来的词就不是读者看到的那句话。
+
+    只取开头的非空行（跳过图区噪声行），并裁到 `max_chars`；给不出内容就返回空串
+    （调用方当"没有下一页上下文"处理，页尾照原样停在断处）。
+    """
+    picked: list[str] = []
+    used = 0
+    for raw in str(md or "").split("\n"):
+        line = raw.rstrip()
+        if not line.strip() or _NOISE_LINE.match(line.strip()):
+            continue
+        picked.append(line)
+        used += len(line) + 1
+        if len(picked) >= lines or used >= max_chars:
+            break
+    if not picked:
+        return ""
+    return ("【A 路下一页开头（**仅上下文**：只用来把本页末尾那句收完整，"
+            "**不要把这里的内容单独输出**）】\n<下一页转录原文>\n"
+            + "\n".join(picked) + "\n</下一页转录原文>")
 
 
 #: 页边界参考块的开头（供测试/排查引用）
@@ -1155,7 +1216,8 @@ def parse_pair(text: str) -> tuple[str, str]:
 
 def parse_carry(text: str) -> str:
     """从模型回复里取 ``carry_md``（本页从【下一页开头】借用的那段**原文**）。容错，缺就空串。"""
-    data = _loads_lenient((text or "").strip())
+    data = _loads_lenient((text or "").strip(),
+                          keys=("carry_md", "blocks", "original_md", "translation_md"))
     if isinstance(data, dict):
         value = data.get("carry_md")
         return str(value).strip() if isinstance(value, str) else ""
@@ -1235,7 +1297,13 @@ def parse_blocks(text: str) -> list[str]:
     return []
 
 
-def _loads_lenient(raw: str) -> dict | None:
+def _loads_lenient(raw: str, *, keys: tuple[str, ...] = ("original_md",
+                                                         "translation_md")) -> dict | None:
+    """宽容地把回复解析成 dict，并且**只认带这些键的**那些候选。
+
+    `keys` 可调：块模式的回复里没有 `original_md` / `translation_md`，只有 `blocks` / `carry_md`
+    —— 不带这个参数就会把一份好好的块模式回复判成"没解析出来"（carry 静默丢失）。
+    """
     candidates = [raw]
     fence = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
     if fence:
@@ -1248,7 +1316,7 @@ def _loads_lenient(raw: str) -> dict | None:
             data = json.loads(cand)
         except (ValueError, TypeError):
             continue
-        if isinstance(data, dict) and ("original_md" in data or "translation_md" in data):
+        if isinstance(data, dict) and any(k in data for k in keys):
             return data
     return json_loads(raw, None) if raw.startswith("{") else None
 
@@ -1380,12 +1448,17 @@ def format_block_list(blocks: list[dict]) -> str:
 
     编号用 enumerate 的序号（1..N），与 `pair_rows_by_blocks` 的配对口径一致：
     第 i 块 ↔ `blocks[i-1]`。
+
+    ⚠️ 空块**不能跳过**：块号就是位置，跳过会让后面的编号错位。唯一的空块来源是
+    "整块已被上一页译完"（页首去重剪完为空），所以照常列出来、并写明这一项该输出空串。
     """
     out: list[str] = []
     total = len(blocks)
     for i, block in enumerate(blocks, 1):
         text = str(block.get("text") or "").strip()
         if not text:
+            out.append(f"【块 {i}/{total}】（type={block.get('type') or 'para'}）\n"
+                       f"（本块在本页没有内容：第 {i} 项输出空字符串 `\"\"`）")
             continue
         out.append(f"【块 {i}/{total}】（type={block.get('type') or 'para'}）\n{text}")
     return "\n\n".join(out)
@@ -1924,6 +1997,15 @@ class PageStore:
                               "page_total": 0, "model": "", "updated_at": None,
                               "pages": {}}
             return self._data
+
+    def reload(self) -> None:
+        """丢掉内存缓存，下次访问重新读文件。
+
+        块模式下 B 路要**等 A 路把下一页写到盘上**：A 路是另一个任务、另一个 `PageStore`
+        实例，而本实例的 `_data` 是构造时读进来的 —— 不 reload 就永远看不到对路刚落盘的页。
+        """
+        with self._lock:
+            self._data = None
 
     def flush(self) -> None:
         with self._lock:

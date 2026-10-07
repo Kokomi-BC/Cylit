@@ -12,10 +12,14 @@ B 收到的就是 A 的块清单，逐块译、逐块回 —— 于是"对得上
 """
 from __future__ import annotations
 
+import pytest
+
+from backend.core.errors import ValidationError
 from backend.services.translation.page_translate import (
-    BLOCK_TRANSLATE_SYSTEM, PAGE_SCHEMA_B_BLOCKS, PAGE_USER_TEMPLATE_B_BLOCKS,
-    PageCallResult, TRANSLATE_SYSTEM, _SHARED_SEGMENTATION_RULES,
-    build_path_payload, format_block_list, parse_blocks, pair_rows_by_blocks,
+    BLOCK_HEAD_NOTE, BLOCK_TRANSLATE_SYSTEM, PAGE_SCHEMA_B_BLOCKS,
+    PAGE_USER_TEMPLATE_B_BLOCKS, PageCallResult, TRANSLATE_SYSTEM,
+    _SHARED_SEGMENTATION_RULES, a_page_lookahead, build_path_payload,
+    format_block_list, parse_blocks, pair_rows_by_blocks, parse_carry,
     render_block_prompt, split_blocks,
 )
 
@@ -37,7 +41,7 @@ TurboQuant quantizes the residual.
 def test_block_prompt_hands_segmentation_to_path_a() -> None:
     assert _SHARED_SEGMENTATION_RULES not in BLOCK_TRANSLATE_SYSTEM, "分段规则归 A 路了"
     assert "分块不是你的职责" in BLOCK_TRANSLATE_SYSTEM
-    for gone in ("【breaks：", "src", "carry_md"):
+    for gone in ("【breaks：", "src"):
         assert gone not in BLOCK_TRANSLATE_SYSTEM, f"{gone} 不该再出现在 B 的契约里"
     # 与普通 B 路 prompt 的差别是**结构性的**，不是措辞
     assert _SHARED_SEGMENTATION_RULES in TRANSLATE_SYSTEM
@@ -49,27 +53,61 @@ def test_block_prompt_keeps_what_b_still_owes() -> None:
                    "不许合并、不许拆分", "只把论文标题译成中文、用《》括起来",
                    "所有数学都必须写进公式定界符"):
         assert marker in BLOCK_TRANSLATE_SYSTEM, marker
-    # 页边界补句**明确交出去**（不许自己猜下一页）
-    assert "不要**去猜下一页" in BLOCK_TRANSLATE_SYSTEM
+
+
+def test_block_prompt_collects_the_page_tail_from_path_a() -> None:
+    """页尾收句：A 路**提前转录**，把下一页开头给 B，让 B 把半句收成完整句（`carry_md`）。"""
+    for marker in ("【页尾：这次能拿到 A 路**下一页的开头**】",
+                   "把本页末尾被版面切断的那句收成完整句",
+                   "把**你实际用到的那段原文**逐字符照抄进 `carry_md`",
+                   "抄多会造成下一页重复、抄少会漏译",
+                   # 收句**不能**改变块数：它只是最后一块内部的长短变化
+                   "数组的长度**仍然必须正好 N**",
+                   # 页首去重与"一句话只出现一次"
+                   "【页首：上一页可能已经译掉了本页开头】", "空字符串"):
+        assert marker in BLOCK_TRANSLATE_SYSTEM, marker
 
 
 def test_block_schema_is_a_string_array() -> None:
     assert PAGE_SCHEMA_B_BLOCKS["required"] == ["blocks"]
     assert PAGE_SCHEMA_B_BLOCKS["properties"]["blocks"]["items"]["type"] == "string"
+    assert "carry_md" in PAGE_SCHEMA_B_BLOCKS["properties"]
     assert "translation_md" not in PAGE_SCHEMA_B_BLOCKS["properties"]
 
 
 def test_render_block_prompt_carries_the_contract() -> None:
     text = render_block_prompt(page=3, page_total=22, blocks="【块 1/2】（type=para）\nHi.",
                                block_count=2, prefix="PREFIX\n", section="3 METHOD",
-                               previous="前文结尾")
+                               previous="前文结尾",
+                               lookahead="【A 路下一页开头（**仅上下文**）】\n<下一页转录原文>\nTail.",
+                               head_note=BLOCK_HEAD_NOTE)
     assert "PREFIX" in text and "前文结尾" in text
     assert "第 3 页 / 共 22 页；章节：3 METHOD" in text
     assert "共 2 块" in text and "长度正好 2" in text
     assert "【块 1/2】（type=para）" in text
-    # 补句与坐标的输入**不再出现**（这是块模式的"减"）
-    for gone in ("【下一页开头】", "【页边界参考", "{src_tail}"):
+    # 页尾上下文与页首去重都在（块模式靠 A 路的前后两页，不靠解析器派的【页边界参考】）
+    assert "A 路下一页开头" in text and "Tail." in text
+    assert "【本页开头去重】" in text
+    assert "carry_md" in text
+    for gone in ("【页边界参考", "{src_tail}"):
         assert gone not in text, gone
+
+
+def test_format_block_list_keeps_numbering_with_an_empty_block() -> None:
+    """块号就是位置：空块（整块已被上一页译完）也必须占号，否则后面全部错位。"""
+    blocks = [{"type": "para", "text": ""}, {"type": "para", "text": "第二块"}]
+    text = format_block_list(blocks)
+    assert "【块 1/2】" in text and "【块 2/2】" in text
+    assert "第 1 项输出空字符串" in text
+    assert "第二块" in text
+
+
+def test_a_page_lookahead_reads_path_a_markdown() -> None:
+    md = "communication bot-\n\ntlenecks between HBM and SRAM.\n\n![x](y.png)\n\n( a ) noise line"
+    text = a_page_lookahead(md, lines=2)
+    assert "communication bot-" in text and "tlenecks between HBM and SRAM." in text
+    assert "<下一页转录原文>" in text
+    assert a_page_lookahead("   \n\n") == ""
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +131,15 @@ def test_parse_blocks_accepts_the_usual_shapes() -> None:
     assert parse_blocks('好的：{"blocks": ["一"]} 以上') == ["一"]
     assert parse_blocks('{"translation_md": "旧契约"}') == []
     assert parse_blocks("") == []
+
+
+def test_parse_carry_works_on_a_block_mode_reply() -> None:
+    """块模式的回复里**没有** `translation_md`：`carry_md` 必须照样取得到（否则页首会重复）。"""
+    assert parse_carry('{"blocks": ["一"], "carry_md": "tlenecks …"}') == "tlenecks …"
+    assert parse_carry('```json\n{"blocks": ["一"], "carry_md": "tail."}\n```') == "tail."
+    assert parse_carry('{"blocks": ["一"]}') == ""
+    # 普通契约仍然照旧
+    assert parse_carry('{"translation_md": "一", "carry_md": "x"}') == "x"
 
 
 # --------------------------------------------------------------------------
@@ -149,3 +196,59 @@ def test_merge_page_prefers_block_pairing() -> None:
     assert merged["align"] == "blocks"
     assert [r["translation"] for r in merged["rows"]] == ["中文标题", "中文段落", "中文表格"]
     assert merged["one_sided"] == 0
+
+
+def test_render_block_prompt_has_both_context_slots() -> None:
+    assert "{lookahead}" in PAGE_USER_TEMPLATE_B_BLOCKS
+    assert "{head_note}" in PAGE_USER_TEMPLATE_B_BLOCKS
+
+
+# --------------------------------------------------------------------------
+# 5. 等 A 路（B 的输入来自 A：**A 必须领先**）
+# --------------------------------------------------------------------------
+
+
+class _FakeStore:
+    """只实现 `reload()` / `page()` 的最小替身：模拟"对路刚写到盘上"。"""
+
+    def __init__(self, pages: list[dict | None]) -> None:
+        self._pages = pages
+        self._i = 0
+        self.reloads = 0
+
+    def reload(self) -> None:
+        self.reloads += 1
+
+    def page(self, page: int) -> dict | None:
+        item = self._pages[min(self._i, len(self._pages) - 1)]
+        self._i += 1
+        return item
+
+
+def test_await_a_page_returns_when_the_page_is_there() -> None:
+    from backend.services.translation import translation_service as ts
+
+    store = _FakeStore([{"original_md": "# 3 METHOD"}])
+    got = ts.await_a_page(store, "selfcheck", 3, timeout=0.1, required=True)
+    assert got == {"original_md": "# 3 METHOD"}
+
+
+def test_await_a_page_picks_up_a_page_written_after_the_first_look(monkeypatch) -> None:
+    """第一眼不在、reload 之后出现 → 必须能拿到（这就是"A 路刚落盘"的那一瞬）。"""
+    from backend.services.translation import translation_service as ts
+
+    monkeypatch.setattr(ts, "_active_path_task", lambda paper_id, path: {"id": "fake-a"})
+    store = _FakeStore([None, {"original_md": "body"}])
+    got = ts.await_a_page(store, "selfcheck", 3, timeout=5, required=True)
+    assert got == {"original_md": "body"} and store.reloads >= 2
+
+
+def test_await_a_page_gives_up_when_path_a_is_not_running(monkeypatch) -> None:
+    """A 路没在跑（没排上 / 已结束）→ 立刻放弃：`required` 抛，`optional` 返回 None。"""
+    from backend.services.translation import translation_service as ts
+
+    monkeypatch.setattr(ts, "_active_path_task", lambda paper_id, path: None)
+    store = _FakeStore([None])
+    assert ts.await_a_page(store, "selfcheck", 4, timeout=30, required=False) is None
+    with pytest.raises(ValidationError):
+        ts.await_a_page(store, "selfcheck", 4, timeout=30, required=True)
