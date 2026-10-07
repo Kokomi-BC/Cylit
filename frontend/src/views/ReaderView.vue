@@ -3711,7 +3711,9 @@ function renderMarkdown(text?: string | null) {
                右边是目录的折叠/展开。以前切换胶囊单独占一行、目录自己还有一行「目录 N」，
                两行文字压在一起很挤（用户口径：去掉多余的文字、把胶囊挪进这一行）。 -->
           <div class="toc-bar">
-            <div class="toc-mode" role="tablist" aria-label="目录 / 页面视图">
+            <!-- 顺序（用户口径 2026-10-07）：胶囊在最左，**全部收起 / 全部展开在胶囊右侧**；
+                 胶囊本身用全局 `.seg`（与对话页、公式页同一枚托盘、同一档高度）。 -->
+            <div class="seg sq" role="tablist" aria-label="目录 / 页面视图">
               <button
                 type="button" role="tab" data-toc-mode="outline"
                 :aria-selected="tocMode === 'outline'"
@@ -3731,15 +3733,15 @@ function renderMarkdown(text?: string | null) {
                 <AppIcon name="grid" :size="14" />
               </button>
             </div>
-            <span class="spacer"></span>
             <template v-if="tocMode === 'outline'">
-              <button class="btn icon sm" title="全部折叠" @click="collapseAll">
+              <button class="btn icon sm" title="全部收起" data-toc-unfold="less" @click="collapseAll">
                 <AppIcon name="unfold-less" :size="14" />
               </button>
-              <button class="btn icon sm" title="全部展开" @click="expandAll">
+              <button class="btn icon sm" title="全部展开" data-toc-unfold="more" @click="expandAll">
                 <AppIcon name="unfold-more" :size="14" />
               </button>
             </template>
+            <span class="spacer"></span>
           </div>
 
           <ReaderToc
@@ -4360,29 +4362,18 @@ function renderMarkdown(text?: string | null) {
   flex: 1; min-height: 0;
   overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
 }
+/* 目录页顶部那一行：**与对话页的工具栏同一套位置**（用户口径 2026-10-07 —— 以对话页为主：
+   `.list-head` 是 `padding: 8px 8px 6px; gap: 6px`）。以前这里是 `padding: 2px 2px 6px; gap: 4px`，
+   胶囊贴着栏边、离页签条也太近，跟对话页一比就"不是一个位置"。
+   胶囊本身不再自己造（旧的 `.toc-mode` 已删）：直接用全局 `.seg` + `.seg.sq`（图标版）。 */
 .toc-bar {
   position: sticky; top: 0; z-index: 2;
-  display: flex; align-items: center; gap: 4px; flex: none;
-  margin: 0 0 6px; padding: 2px 2px 6px;
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 8px 8px 6px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--divider);
 }
-.toc-mode {
-  display: inline-flex; gap: 2px; flex: none;
-  padding: 2px;
-  border: 0; border-radius: 999px; background: var(--bg-sunken);
-}
-.toc-mode > button {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 22px; padding: 0; border: 0; border-radius: 999px;
-  background: transparent; color: var(--text-dim);
-  font: inherit; cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.toc-mode > button:hover { color: var(--text); }
-.toc-mode > button.active {
-  background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1);
-}
+.toc-bar .seg { flex: none; }
 .side-tabs {
   display: flex; align-items: center; gap: 2px;   /* 图标之间更紧凑（用户口径） */
   height: var(--cap-h); padding: 3px;

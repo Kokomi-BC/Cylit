@@ -204,6 +204,59 @@ def test_references_from_markdown_splits_numbered_entries(monkeypatch, tmp_path:
     assert items[1].startswith("[2] Vaswani")
 
 
+def test_parse_ref_section_handles_unnumbered_entries_with_block_markers() -> None:
+    """用户 2026-10-07 报的"这篇论文没有参考文献"（侧栏显示 0 条）：条目**没有编号**。
+
+    实测那篇（ICLR-26）的产物长这样：`## REFERENCES` 下面每个块都是
+    `<!-- blk:… type:ref … bbox:108.0,… -->` + `<a id=…></a>` + 一行条目，
+    续行缩进（x0 108 → 118/258）。旧实现只认 `[12]` / `12.` 开头 → **一条都切不出来**。
+    """
+    from backend.services.paper import metadata_fill
+
+    md = (
+        "## REFERENCES\n\n"
+        "<!-- blk:p1 type:heading page:1 bbox:108.0,10.0,200.0,20.0 -->\n"
+        "<a id=\"blk-p1\"></a>\n"
+        "REFERENCES\n\n"
+        "<!-- blk:p2 type:ref page:1 bbox:258.4,30.0,500.0,40.0 -->\n"
+        "<a id=\"blk-p2\"></a>\n"
+        "https://www.elastic.co/enterprise-search/\n\n"
+        "<!-- blk:p3 type:ref page:1 bbox:108.0,30.0,350.0,60.0 -->\n"
+        "<a id=\"blk-p3\"></a>\n"
+        "Elastic search., 2025. https://www.elastic.co/enterprise-search/\n\n"
+        "<!-- blk:p4 type:ref page:1 bbox:118.0,60.0,350.0,70.0 -->\n"
+        "<a id=\"blk-p4\"></a>\n"
+        "SIAM, 2020.\n\n"
+        "<!-- blk:p5 type:ref page:1 bbox:108.0,80.0,350.0,110.0 -->\n"
+        "<a id=\"blk-p5\"></a>\n"
+        "Josh Achiam, Steven Adler. GPT-4 technical report. 2023.\n\n"
+        "## Appendix\n\n"
+        "<!-- blk:p6 type:ref page:1 bbox:108.0,120.0,350.0,140.0 -->\n"
+        "这不在参考文献小节里\n"
+    )
+    items = metadata_fill._parse_ref_section(md)
+    # 顶格（x0=108）才开新条：右栏那半截 URL 归到第一条、缩进的 SIAM 归到它上一条
+    assert len(items) == 2, items
+    assert items[0].startswith("https://www.elastic.co") and "Elastic search" in items[0]
+    assert items[0].endswith("SIAM, 2020.")
+    assert items[1].startswith("Josh Achiam")
+    assert all("这不在参考文献小节里" not in t for t in items)   # 下一个标题就停
+
+
+def test_parse_ref_section_unnumbered_without_block_markers() -> None:
+    """更老的产物没有结构标记：退回"空行分段"，一段一条（同样不要求编号）。"""
+    from backend.services.paper import metadata_fill
+
+    md = ("## References\n\n"
+          "Elastic search. 2025. https://www.elastic.co/\n\n"
+          "GPT-4 technical report. 2023.\n")
+    assert metadata_fill._parse_ref_section(md) == [
+        "Elastic search. 2025. https://www.elastic.co/",
+        "GPT-4 technical report. 2023.",
+    ]
+    assert metadata_fill._parse_ref_section("## Introduction\n\n没有参考文献节。\n") == []
+
+
 def test_apply_fills_only_fills_empty(monkeypatch) -> None:
     """写回只填空字段：用户手改过的元数据不能被自动值盖掉。"""
     from backend.services.paper import metadata_fill, paper_service

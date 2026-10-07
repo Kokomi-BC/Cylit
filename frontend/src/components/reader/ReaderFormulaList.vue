@@ -120,9 +120,11 @@ const rows = computed(() => filtered.value.map((f) => {
 <style scoped>
 .fl { display: flex; flex-direction: column; gap: 6px; }
 /* top: -8px 吸收滚动容器的 padding-top：否则 sticky 栏头上会留 8px 缝，
-   下面的公式正好从缝里露出半行（用户截图报过）。负数 offset 是 sticky 允许的。 */
+   下面的公式正好从缝里露出半行（用户截图报过）。负数 offset 是 sticky 允许的。
+   上下内边距（用户口径 2026-10-07）：与对话页工具栏**同一套位置** —— 胶囊距面板顶 8px
+   （由 `.panel-body` 的 padding-top 给），下面留 6px 与列表分开（对话页也是 6px）。 */
 .fl-bar {
-  position: sticky; top: -8px; z-index: 2; padding: 8px 0 4px;
+  position: sticky; top: -8px; z-index: 2; padding: 0 0 6px;
   background: var(--bg-elev);
 }
 .fitem {

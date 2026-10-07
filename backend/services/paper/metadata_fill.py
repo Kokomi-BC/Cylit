@@ -253,6 +253,107 @@ _REF_HEAD_RE = re.compile(r"^\s{0,3}#{1,6}\s*(?:\d+\.?\s*)?"
                           r"(references|bibliography|参考文献)\s*$", re.I)
 #: 条目开头：`[12]` / `(12)` / `12.` （参考文献几乎都这么编号）
 _REF_ITEM_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s+")
+#: 解析器写在每个块前面的结构标记（**结构，不是条目内容**）
+_MD_BLOCK_RE = re.compile(
+    r"^\s*<!--\s*blk:\S+\s+type:(?P<type>\w+)\s+page:(?P<page>\d+)\s+"
+    r"bbox:(?P<x0>[\d.]+),(?P<y0>[\d.]+),(?P<x1>[\d.]+),(?P<y1>[\d.]+)\s*-->\s*$")
+#: 同上：块锚点
+_MD_ANCHOR_RE = re.compile(r"^\s*<a id=\"[^\"]*\"></a>\s*$")
+#: "顶格"的容差（pt）：同一栏里只有顶到左边距的那一行才是新条目的开头，续行会缩进
+_REF_INDENT_TOL = 3.0
+
+
+def _parse_ref_section(text: str) -> list[str]:
+    """References 节（Markdown 全文）→ 条目列表。**纯函数**，便于单测。
+
+    实测要容忍的两件事（TurboQuant / ICLR-26 那篇，用户 2026-10-07 报"0 条"）：
+    ① 条目**没有编号**（`Elastic search., 2025. https://…`），不是 `[12] Title…` 那种；
+    ② 每个块之间夹着解析器写的结构标记：`<!-- blk:… type:ref … bbox:… -->` 与 `<a id=…></a>`。
+
+    切条目的两套办法：
+    - **有结构标记**（且里面有 `type:ref` 块）→ 按 bbox 的**左边界**切：顶格 = 新条目，
+      缩进 = 上一条的续行（这条论文里顶格 x0=108、续行 x0=118/258，一眼分得开）；
+    - 没有标记（别的产物 / 更老的 md）→ 退回"空行分段"，段内有编号就按编号开新条。
+    """
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if _REF_HEAD_RE.match(ln)), None)
+    if start is None:
+        return []
+
+    body: list[str] = []                       # 这一节的正文行（去掉了结构标记）
+    marks: list[tuple[int, str, float]] = []   # (在 body 里的下标, 块类型, 左边界 x0)
+    for ln in lines[start + 1:]:
+        if ln.startswith("#"):                 # 下一个标题 → 本节结束
+            break
+        m = _MD_BLOCK_RE.match(ln)
+        if m:
+            marks.append((len(body), m.group("type"), float(m.group("x0"))))
+            continue
+        if _MD_ANCHOR_RE.match(ln):
+            continue
+        body.append(ln)
+
+    refs = _split_refs_by_bbox(body, marks)
+    if refs:
+        return refs
+    return _split_refs_by_paragraph(body)
+
+
+def _split_refs_by_bbox(body: list[str], marks: list[tuple[int, str, float]]) -> list[str]:
+    """按"块结构 + 左边界"切条目：只有顶格那一行才开新条目，缩进的是它的续行。"""
+    ref_marks = [(i, x0) for i, kind, x0 in marks if kind == "ref"]
+    if not ref_marks:
+        return []
+    base = min(x0 for _i, x0 in ref_marks)          # 本节最左边（= 条目的开头那一栏）
+    bounds = [i for i, _kind, _x0 in marks] + [len(body)]
+    out: list[str] = []
+    pending: list[str] = []                         # 还没归到任何条目的"缩进的续行"
+    for idx, x0 in ref_marks:
+        end = next((b for b in bounds if b > idx), len(body))
+        text = " ".join(" ".join(body[idx:end]).split())
+        if not text:
+            continue
+        if x0 <= base + _REF_INDENT_TOL:
+            # 顶格 = 新条目；它前面那些缩进的块（右栏被切出来的半截 URL 之类）归到它身上
+            if pending:
+                text = f"{' '.join(pending)} {text}"
+                pending = []
+            out.append(text)
+        elif out:
+            out[-1] = f"{out[-1]} {text}"
+        else:
+            pending.append(text)
+    if not out:                                     # 整节都是缩进的（没有顶格行）：只能各自成条
+        return [t for t in pending if len(t) > 8]
+    return [t for t in out if len(t) > 8]
+
+
+def _split_refs_by_paragraph(body: list[str]) -> list[str]:
+    """没有块结构时的兜底：**有编号就按编号切**（编号可能不带空行紧跟下一条），
+    一条编号都没有才退回"空行分段、一段一条"。"""
+    if any(_REF_ITEM_RE.match(ln) for ln in body):
+        out: list[str] = []
+        for ln in body:
+            text = " ".join(ln.split())
+            if not text:
+                continue
+            if _REF_ITEM_RE.match(text) or not out:
+                out.append(text)
+            else:
+                out[-1] = f"{out[-1]} {text}"       # 续行
+        return [t for t in out if len(t) > 8]
+
+    paras: list[str] = []
+    buf: list[str] = []
+    for ln in body:
+        if ln.strip():
+            buf.append(ln)
+        elif buf:
+            paras.append(" ".join(" ".join(buf).split()))
+            buf.clear()
+    if buf:
+        paras.append(" ".join(" ".join(buf).split()))
+    return [p for p in paras if len(p) > 8]
 
 
 def _references_from_markdown(paper_id: str) -> list[str]:
@@ -261,33 +362,10 @@ def _references_from_markdown(paper_id: str) -> list[str]:
     if md_path is None or not md_path.is_file():
         return []
     try:
-        lines = md_path.read_text(encoding="utf-8").splitlines()
+        text = md_path.read_text(encoding="utf-8")
     except OSError:
         return []
-    start = next((i for i, ln in enumerate(lines) if _REF_HEAD_RE.match(ln)), None)
-    if start is None:
-        return []
-    out: list[str] = []
-    buf: list[str] = []
-
-    def flush() -> None:
-        if buf:
-            out.append(" ".join(" ".join(buf).split()))
-            buf.clear()
-
-    for ln in lines[start + 1:]:
-        if ln.startswith("#"):           # 下一个标题 → 参考文献节结束
-            break
-        if _REF_ITEM_RE.match(ln):
-            flush()
-            buf.append(ln)
-        elif ln.strip():
-            if buf:
-                buf.append(ln)           # 条目续行
-        else:
-            flush()
-    flush()
-    return [t for t in out if len(t) > 8]
+    return _parse_ref_section(text)
 
 
 def save_references(paper_id: str, items: list[str]) -> int:

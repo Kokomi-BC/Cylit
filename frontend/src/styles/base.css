@@ -384,6 +384,11 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
   background: var(--bg-elev); color: var(--accent-text); font-weight: 600;
   box-shadow: var(--shadow-1);
 }
+/* **图标版**的胶囊（目录页那两枚「目录 / 页面视图」）：同一枚托盘、同一档高度，
+   只是按钮里只有图标 —— 左右内边距收窄一档，否则图标会被 12px 的左右内边距撑成胖胶囊
+   （用户口径 2026-10-07：目录 / 对话 / 公式三处的胶囊要统一，以对话页那枚为准）。 */
+.seg.sq button { padding: 0 9px; }
+.seg.sq button.active { color: var(--text); }
 
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--divider); overflow-x: auto; }
 .tabs button {

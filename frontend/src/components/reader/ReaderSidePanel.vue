@@ -578,7 +578,7 @@ function removeRow(r: FeedRow) {
 
 <style scoped>
 .panel-body {
-  overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 8px 10px 24px;
+  overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 8px 8px 24px;
   overflow-wrap: anywhere; word-break: break-word;
 }
 .item {
@@ -590,11 +590,12 @@ function removeRow(r: FeedRow) {
 .item.auto, .item.selection { border-left-color: var(--ok); }
 .item.note { border-left-color: var(--warn); }
 /* 笔记页签：顶部一条**细工具条**（条数 + 缩略开关），滚动时钉在顶上。
+   负 margin 正好吸收 `.panel-body` 的 padding（左右 8px），工具条才能通到边。
    左边框用高亮笔的颜色语义 —— 还没写正文的（`highlight`）压暗一档，一眼分得出"哪些还没写"。 */
 .notes-bar {
   position: sticky; top: -8px; z-index: 2;
   display: flex; align-items: center; gap: 6px;
-  margin: -8px -10px 8px; padding: 4px 10px;
+  margin: -8px -8px 8px; padding: 4px 8px;
   background: var(--bg-elev); border-bottom: 1px solid var(--divider);
 }
 .item.note-row { border-left-color: var(--accent); }

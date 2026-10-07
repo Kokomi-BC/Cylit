@@ -324,6 +324,61 @@ async function run() {
     res.chatPane = await paneProbe('对话', '.chat');
     res.searchPane = await paneProbe('搜索', '.side-search');
     res.notesPane = await paneProbe('笔记', '.panel-body');
+    /* 胶囊（分段控件）的**样式与位置**：用户口径 2026-10-07 —— 目录 / 对话 / 公式三处统一，
+       以对话页那枚为准。这里把三处都量下来（同一组值给 Python 侧比对），
+       公式那处量完切回目录，别留在别的页签上影响下面的断言。 */
+    const segStyle = (el, pane) => {
+      if (!el || !pane) return null;
+      const cs = w.getComputedStyle(el);
+      const er = el.getBoundingClientRect();
+      const pr = pane.getBoundingClientRect();
+      return {
+        h: cs.height, radius: cs.borderTopLeftRadius, bg: cs.backgroundColor,
+        padTop: cs.paddingTop, btnH: el.querySelector('button')
+          ? w.getComputedStyle(el.querySelector('button')).height : '',
+        left: Math.round(er.left - pr.left), top: Math.round(er.top - pr.top),
+      };
+    };
+    /* 工具条那一行的**内容左上角**（= 行盒左上角 + 它自己的 padding）：三处应当都是 8px/8px */
+    const barOrigin = (row, pane) => {
+      if (!row || !pane) return null;
+      const cs = w.getComputedStyle(row);
+      const rr = row.getBoundingClientRect();
+      const pr = pane.getBoundingClientRect();
+      return {
+        left: Math.round(rr.left - pr.left + parseFloat(cs.paddingLeft || '0')),
+        top: Math.round(rr.top - pr.top + parseFloat(cs.paddingTop || '0')),
+      };
+    };
+    const paneOf = (sel) => d.querySelector(sel);
+    const tabByLabel = (name) => [...d.querySelectorAll('.side-tab')]
+      .find((b) => ((b.querySelector('.side-label') || {}).textContent || '').trim() === name) || null;
+    /* 先切回「目录」：上面几条刚把页签停在「笔记」上，而 `.toc-pane` 只在目录页里 */
+    const tocTab0 = tabByLabel('目录');
+    if (tocTab0) { tocTab0.click(); await until(d, (x) => x.querySelector('.toc-pane .seg'), 20); await sleep(250); }
+    res.tocSeg = segStyle(paneOf('.toc-pane .seg'), paneOf('.toc-pane'));
+    res.tocBarPad = w.getComputedStyle(paneOf('.toc-bar') || d.body).padding;
+    res.tocOrigin = barOrigin(paneOf('.toc-bar'), paneOf('.toc-pane'));
+    /* 目录页：**全部收起 / 全部展开在胶囊右侧**（几何上比一比，不听类名） */
+    const unfoldBtns = [...d.querySelectorAll('[data-toc-unfold]')];
+    const tocSeg = paneOf('.toc-pane .seg');
+    res.tocUnfoldCount = unfoldBtns.length;
+    res.tocUnfoldRightOfSeg = !!tocSeg && unfoldBtns.length === 2
+      && Math.min(...unfoldBtns.map((b) => b.getBoundingClientRect().left))
+         >= tocSeg.getBoundingClientRect().right - 1
+      && Math.round(Math.min(...unfoldBtns.map((b) => b.getBoundingClientRect().left))
+                    - tocSeg.getBoundingClientRect().right) <= 12;
+    const formulaTab = tabByLabel('公式');
+    if (formulaTab) {
+      formulaTab.click();
+      await until(d, (x) => x.querySelector('.fl-bar .seg'), 20);
+      await sleep(300); spin(BURN); await sleep(150);
+      res.formulaSeg = segStyle(paneOf('.fl-bar .seg'), paneOf('.panel-body'));
+      res.formulaOrigin = barOrigin(paneOf('.fl-bar'), paneOf('.panel-body'));
+      /* 切回目录（后面的目录断言都在这一页上） */
+      const tocTab = tabByLabel('目录');
+      if (tocTab) { tocTab.click(); await sleep(300); spin(BURN); await sleep(150); }
+    }
     /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
     const sideBtn = [...d.querySelectorAll('.side-tab')]
       .find((b) => (b.textContent || '').indexOf('对话') >= 0);
@@ -377,6 +432,27 @@ async function run() {
     const trays = [...root.querySelectorAll('.filters .seg')];
     res.trayCount = trays.length;
     res.segBtns = trays[0] ? [...trays[0].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
+    /* 工具栏与胶囊的**位置 + 样式**（用户口径 2026-10-07：目录 / 对话 / 公式三处统一，
+       **以这一页为准**）。① 那条探针量了目录与公式两处，Python 侧比对三处是否一模一样。 */
+    const chatHead = root.querySelector('.list-head');
+    const chatSeg = trays[0] || null;
+    if (chatHead && chatSeg) {
+      const hr = chatHead.getBoundingClientRect();
+      const cr = root.getBoundingClientRect();
+      const cs = w.getComputedStyle(chatSeg);
+      const bs = chatSeg.querySelector('button') ? w.getComputedStyle(chatSeg.querySelector('button')) : null;
+      res.headPad = w.getComputedStyle(chatHead).padding;
+      res.segStyle = {
+        h: cs.height, radius: cs.borderTopLeftRadius, bg: cs.backgroundColor,
+        padTop: cs.paddingTop, btnH: bs ? bs.height : '',
+        left: Math.round(chatSeg.getBoundingClientRect().left - cr.left),
+        top: Math.round(chatSeg.getBoundingClientRect().top - cr.top),
+      };
+      res.headOrigin = {
+        left: Math.round(hr.left - cr.left + parseFloat(w.getComputedStyle(chatHead).paddingLeft || '0')),
+        top: Math.round(hr.top - cr.top + parseFloat(w.getComputedStyle(chatHead).paddingTop || '0')),
+      };
+    }
     res.rows = root.querySelectorAll('.row').length;
     res.listReady = res.rows > 0 || !!root.querySelector('.hollow');
     const titles = [...root.querySelectorAll('.row .row-title')];
@@ -2364,6 +2440,10 @@ def main() -> int:
                f"对话 越出 {chat_pane.get('over')}px（高 {chat_pane.get('h')}/{chat_pane.get('asideH')}）· "
                f"搜索 越出 {search_pane.get('over')}px（高 {search_pane.get('h')}/{search_pane.get('asideH')}）· "
                f"笔记（对照）越出 {notes_pane.get('over')}px")
+        record("reader", "目录页：**全部收起 / 全部展开在胶囊右侧**（紧挨着，几何上确实在右边）",
+               data.get("tocUnfoldCount") == 2 and data.get("tocUnfoldRightOfSeg") is True,
+               f"{data.get('tocUnfoldCount')} 枚展开/收起按钮，在胶囊右侧="
+               f"{data.get('tocUnfoldRightOfSeg')}")
         record("reader", "侧栏页签记进 URL（切标签回来还是那一栏）",
                "side=chat" in str(data.get("sideUrl") or "")
                and str(data.get("sideBack") or "").startswith("对话"),
@@ -2427,6 +2507,25 @@ def main() -> int:
         record("chat", "分类 / 管理共 2 枚胶囊托盘（无范围选择器）",
                chat.get("trayCount") == 2 and (chat.get("segBtns") or []) == ["全部", "划词", "常规"],
                f"{chat.get('trayCount')} 枚 / {chat.get('segBtns')}")
+        # 胶囊本身的**样式**三处一字不差；`left` 不参与这条比较 —— 目录那枚左边还有
+        # 「全部折叠 / 全部展开」两枚按钮（用户明确要求放左侧），它本来就不该在 8px 处；
+        # "位置统一"由下一条（工具条那一行的内容原点）来钉。
+        def _seg_core(s: dict) -> dict:
+            s = s or {}
+            return {k: s.get(k) for k in ("h", "radius", "bg", "padTop", "btnH")}
+
+        chat_seg = chat.get("segStyle") or {}
+        toc_seg = data.get("tocSeg") or {}
+        formula_seg = data.get("formulaSeg") or {}
+        record("chat", "胶囊样式：目录 / 对话 / 公式**三处完全一致**（以对话页为准）",
+               bool(chat_seg) and _seg_core(chat_seg) == _seg_core(toc_seg) == _seg_core(formula_seg),
+               f"对话 {_seg_core(chat_seg)}｜目录 {_seg_core(toc_seg)}｜公式 {_seg_core(formula_seg)}"
+               f"（离面板左边：对话 {chat_seg.get('left')} / 公式 {formula_seg.get('left')}，"
+               f"目录 {toc_seg.get('left')} = 8 + 两枚展开按钮）")
+        origins = [chat.get("headOrigin"), data.get("tocOrigin"), data.get("formulaOrigin")]
+        record("chat", "工具条那一行的内容原点三处一致（都在离面板左上角 8px / 8px 处）",
+               all(o == origins[0] for o in origins) and origins[0] == {"left": 8, "top": 8},
+               f"对话 {origins[0]}｜目录 {origins[1]}｜公式 {origins[2]}")
         record("chat", "会话列表已加载（行或空态）", chat.get("listReady") is True,
                f"{chat.get('rows')} 行")
         if (chat.get("titleWithMath") or 0) > 0:
