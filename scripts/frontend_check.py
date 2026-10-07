@@ -1872,6 +1872,48 @@ def _post_json(url: str, payload: dict, headers: dict) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _req_json(url: str, payload: dict | None = None, method: str | None = None) -> dict:
+    """小工具：发一个 JSON 请求并取回 JSON（不传 payload 默认 GET）。"""
+    method = method or ("POST" if payload is not None else "GET")
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def check_highlight_update_api(base: str, paper: str) -> None:
+    """新增的 `PUT /highlights/{id}`：AI 解释浮层的色块用它给「已经标过的这段」改颜色。
+
+    为什么单独测这一条：色块那条链路（点色 → 标高亮 + 存笔记）要真调一次模型才看得见，
+    而它用到的新接口是这一轮唯一的后端改动 —— 先在这里把接口本身钉住（建→改色→删，不留痕）。
+    """
+    print("\n⓪ 高亮改色接口（浮层色块的「已有高亮就改颜色」那一路）")
+    api = f"{base}/api/v1"
+    created = _req_json(f"{api}/highlights", {
+        "paper_id": paper, "block_id": "p001-00", "selected_text": "自检：改色用",
+        "start_offset": 0, "end_offset": 3, "color": "yellow", "side": "en", "scope": "row",
+    }).get("data") or {}
+    hid = created.get("id")
+    if not hid:
+        record("refs", "PUT /highlights/{id} 能改颜色（浮层色块的那一路）", False, "建高亮失败")
+        return
+    try:
+        updated = _req_json(f"{api}/highlights/{hid}", {"color": "blue"}, method="PUT").get("data") or {}
+        same = _req_json(f"{api}/highlights?paper_id={paper}").get("data", {}).get("items") or []
+        got = next((h for h in same if h.get("id") == hid), {})
+        record("refs", "PUT /highlights/{id} 能改颜色（浮层色块的那一路）",
+               updated.get("color") == "blue" and got.get("color") == "blue"
+               and got.get("text") == "自检：改色用",
+               f"返回={updated.get('color')!r} 库里={got.get('color')!r} 原文={got.get('text')!r}")
+    finally:
+        req = urllib.request.Request(f"{api}/highlights/{hid}", method="DELETE")
+        urllib.request.urlopen(req, timeout=30).read()
+    left = _req_json(f"{api}/highlights?paper_id={paper}").get("data", {}).get("items") or []
+    record("refs", "改色这条自检不留痕",
+           not any(h.get("id") == hid for h in left), f"残留 {sum(1 for h in left if h.get('id') == hid)} 条")
+
+
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:
     print("\n④ 过程轨迹：思考 / 正文 / 工具夹杂（造一条临时会话，验完删掉）")
     head = _internal_headers()
@@ -2686,6 +2728,7 @@ def main() -> int:
     # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
     check_pdf_highlight(browser, base, args.paper, args.budget, model=args.model)
     check_notes_page(browser, base, args.paper, args.budget)
+    check_highlight_update_api(base, args.paper)   # 纯 HTTP：浮层色块要用的改色接口
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")
