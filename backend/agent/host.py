@@ -71,6 +71,14 @@ class HostClient:
         resp = await self._ensure().post(path, json=payload or {})
         return self._unwrap(resp)
 
+    async def put(self, path: str, payload: dict | None = None) -> object:
+        resp = await self._ensure().put(path, json=payload or {})
+        return self._unwrap(resp)
+
+    async def delete(self, path: str) -> object:
+        resp = await self._ensure().delete(path)
+        return self._unwrap(resp)
+
     async def get_bytes(self, path: str, params: dict | None = None
                         ) -> tuple[bytes, str]:
         """取二进制（页图 / 插图裁图）。**不拆封**：这些接口直接返回图片流。"""
@@ -142,8 +150,39 @@ class HostClient:
         """
         return dict(await self.get(f"/agent/papers/{paper_id}/rows/{int(page)}/{row_id}") or {})
 
-    # ---------------- 写：论文元数据 ----------------
-    async def meta_write(self, paper_id: str, payload: dict) -> dict:
+    # ---------------- 高亮 / 笔记（《修改计划》第六步） ----------------
+    async def highlights(self, paper_id: str, *, highlight_id: str = "", note_id: str = "",
+                         query: str = "") -> dict:
+        """高亮列表；给了 `highlight_id` / `note_id` 就是**定位信息**（挂在哪一面、第几页）。"""
+        params = {k: v for k, v in (("highlight_id", highlight_id), ("note_id", note_id),
+                                    ("query", query)) if v}
+        return dict(await self.get(f"/agent/papers/{paper_id}/highlights", params or None) or {})
+
+    async def highlight_create(self, paper_id: str, payload: dict) -> dict:
+        """按**文字**建高亮。拒绝也是正常返回（``ok=false`` + 最近的原文）。"""
+        return dict(await self.post(f"/agent/papers/{paper_id}/highlights", payload or {}) or {})
+
+    async def highlight_update(self, highlight_id: str, payload: dict) -> dict:
+        return dict(await self.put(f"/agent/highlights/{highlight_id}", payload) or {})
+
+    async def highlight_delete(self, highlight_id: str) -> dict:
+        """删高亮（连带它挂着的笔记）。"""
+        return dict(await self.delete(f"/agent/highlights/{highlight_id}") or {})
+
+    async def notes(self, paper_id: str, *, note_id: str = "", query: str = "") -> dict:
+        params = {k: v for k, v in (("note_id", note_id), ("query", query)) if v}
+        return dict(await self.get(f"/agent/papers/{paper_id}/notes", params or None) or {})
+
+    async def note_create(self, paper_id: str, payload: dict) -> dict:
+        return dict(await self.post(f"/agent/papers/{paper_id}/notes", payload or {}) or {})
+
+    async def note_update(self, note_id: str, payload: dict) -> dict:
+        return dict(await self.put(f"/agent/notes/{note_id}", payload) or {})
+
+    async def note_delete(self, note_id: str) -> dict:
+        return dict(await self.delete(f"/agent/notes/{note_id}") or {})
+
+    # ---------------- 写：论文元数据 ----------------    async def meta_write(self, paper_id: str, payload: dict) -> dict:
         """写论文元数据（`paper_meta_write` 工具的后端）。
 
         与页产物纠错同一口径：**拒绝也是正常返回**（``ok=false`` + 原因），不抛 HostError ——

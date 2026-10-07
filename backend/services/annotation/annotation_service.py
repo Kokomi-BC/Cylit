@@ -68,6 +68,26 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
         return _highlight_dict(row)
 
 
+def update_highlight(highlight_id: str, payload: dict) -> dict:
+    """改一条高亮：现在只开放**颜色**（`color`）与 `selected_text`（引用文字）。
+
+    为什么不动偏移量：偏移量是"渲染文字里的位置"，改了它就必须同时重画文字 ——
+    那等于把这条高亮挪到别处，用户看不出来（agent 的"改高亮"需求是改颜色/改错标的文字，
+    要换位置就删了重建，语义更清楚）。
+    """
+    with session_scope() as sess:
+        row = sess.get(Highlight, highlight_id)
+        if row is None:
+            raise NotFoundError(f"高亮不存在：{highlight_id}")
+        color = payload.get("color")
+        if color is not None:
+            row.color = str(color) if str(color) in HIGHLIGHT_COLORS else row.color
+        if payload.get("selected_text") is not None:
+            row.selected_text = str(payload["selected_text"])
+        sess.flush()
+        return _highlight_dict(row)
+
+
 def list_highlights(paper_id: str, user_id: int = 1) -> dict:
     with session_scope() as sess:
         rows = (sess.query(Highlight)

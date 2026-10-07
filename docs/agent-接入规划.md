@@ -29,7 +29,7 @@ python scripts/agent_check.py        # 自检：默认不调用模型；--model 
 
 **做一个独立的 agent 服务（独立进程 + 端口，与主仓共用 `scenemind` 环境），内核用
 `pydantic-ai-slim[openai]==2.53.0` + `pydantic-ai-harness[skills]==0.53.0`，
-把 Cylit 的能力包成 12 个工具（11 读 + 1 写；原清单里的 `related_concepts` 已于 2026-10-07 删除），新功能以 `skills/<name>/SKILL.md` 的形式加。**
+把 Cylit 的能力包成 14 个工具（11 读 + 3 写；原清单里的 `related_concepts` 已于 2026-10-07 删除，高亮/笔记那两个见 §7.0 的 #13/#14），新功能以 `skills/<name>/SKILL.md` 的形式加。**
 
 | 项 | 状态 |
 |---|---|
@@ -124,7 +124,7 @@ Cylit 主后端  FastAPI :8710        ← 既有进程，不新增依赖
 Agent 服务  FastAPI :8711           ← 新进程；与主仓共用 conda 环境 scenemind
   ├─ pydantic-ai-slim[openai] + pydantic-ai-harness[skills]
   ├─ skills/ 目录（SKILL.md 按需加载）
-  └─ tools/ 12 个工具 → 回调主后端 /api/v1/*
+  └─ tools/ 14 个工具 → 回调主后端 /api/v1/*
 ```
 
 **为什么独立进程**：① 崩溃隔离——agent 跑飞不该拖垮解析/翻译调度器；
@@ -260,7 +260,7 @@ POSIX 语义下 `join("/workspace", "/workspace/x") == "/workspace/x"`（幂等�
 Cylit/
   agent/
     app.py                  # FastAPI 入口 + SSE
-    tools/                  # 12 个工具（薄封装，回调主后端）
+    tools/                  # 14 个工具（薄封装，回调主后端）
     runtime/                # 模型装配、预算、清洗
     skills/                 # ★ 加功能只动这里
       paper-qa/SKILL.md
@@ -340,7 +340,7 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 **原则**：工具是宿主能力的白名单；每个工具一个 pydantic 入参模型 + 一个**瘦投影**返回；
 `paper_id` 由宿主覆写（M2）；工具名用动宾结构，描述里写"什么时候用"。
 
-### 7.0 工具总览（12 个；原 #12 `related_concepts` 已于 2026-10-07 删除）
+### 7.0 工具总览（14 个；原 #12 `related_concepts` 已于 2026-10-07 删除）
 
 | # | 工具 | 读写 | 一句话 | 落点 | 阶段 |
 |---|---|---|---|---|---|
@@ -356,6 +356,16 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 10 | `library_list` | 读 | 书架检索（标题/作者模糊匹配），只回元数据 | 新投影 `GET /agent/library?q=` | P1 ✅ |
 | 11 | `notes_search` | 读 | 笔记 / 高亮 / 批注（可按当前论文或全库） | 新投影 `GET /agent/notes?query=&paper_id=&kind=` | P1 ✅ |
 | 12 | `page_markdown_edit` | **写** | 改**页级产物**里的一处文本（ops：`view` / `replace` / `undo`；字面替换、唯一命中、先读后写、结构变了回滚、改完增量重建索引） | `GET/POST /agent/papers/{id}/pages/{n}/product` | P2-a ✅ |
+| 13 | `highlight_manage` | 读 + **写** | 高亮增删改查 + 定位（ops：`create` / `list` / `locate` / `update` / `delete`）。**按文字建**：模型给"哪一面（anchor）+ 要标的文字"，偏移量由宿主算 | `GET/POST /agent/papers/{id}/highlights` · `PUT/DELETE /agent/highlights/{id}` | P2-b ✅ |
+| 14 | `note_manage` | 读 + **写** | 笔记增删改查 + 反查它挂的高亮（ops：`create` / `list` / `locate` / `update` / `delete`）。**`create` 必须给 `highlight_id`**（不做孤儿笔记） | `GET/POST /agent/papers/{id}/notes` · `PUT/DELETE /agent/notes/{id}` | P2-b ✅ |
+
+**#13/#14 的坐标系**（《修改计划》第六步）：`Highlight` 存的是"某一面**渲染文字**里的偏移量"，
+而模型只会说"把这段文字标出来"。所以宿主这一侧做一次 **文字 → 偏移量** 的换算
+（`services/agent/annotations.py` 的 `render_like_dom`：Markdown 记号不算字、公式整体算 1 个
+`U+FFFC`、段内软换行按中/英分别接回 —— 与前端 `utils/domMarks.renderedText` 同一套口径），
+并把**坐标系里那一段文字**存进 `selected_text`。前端画标记时若发现偏移量对不上，会按文字重新找位置
+（`markRanges` 的兜底）——两边因此不会错位。原 PDF 那一面**只能查不能建**（文字层在阅读器的
+pdf.js 里，服务端看不到），工具会明确让用户自己在 PDF 上划词。
 
 **参数口径：模型只认 `ref`，不认内部 id**（P0 的落地取舍）。检索与读页返回的每一项都带
 宿主分配的 `ref`；`block_get` / 将来的写工具都收 `ref`，由宿主查回 `block_id`。

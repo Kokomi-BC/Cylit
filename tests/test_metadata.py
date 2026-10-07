@@ -155,6 +155,28 @@ def test_offline_extras_reads_doi_and_code_url_only_from_the_first_pages() -> No
     assert metadata_fill.offline_extras([(9, "para", "https://github.com/x/y")]) == {}
 
 
+def test_scan_rows_reads_the_right_row_keys(monkeypatch) -> None:
+    """`scan_rows` 必须按行的真实键（`original` / `translation`）取文本。
+
+    这条测的就是一个真实 bug：第一版写成 `row["text"]`，函数永远返回空列表 ——
+    阅读时间永远填不上、DOI/开源地址永远抽不到（参考文献靠 Markdown 兜底所以看着还正常）。
+    """
+    from backend.services.paper import metadata_fill, reader_service
+
+    monkeypatch.setattr(reader_service, "page_translations", lambda pid: [{
+        "page": 1,
+        "rows": [
+            {"id": "p001-00", "type": "heading", "original": "# 标题", "translation": "# 标题"},
+            {"id": "p001-01", "type": "para", "original": "正文 A", "translation": "正文 A 的中文"},
+            {"id": "p001-02", "type": "para", "translation": "只有译文的一行"},
+        ],
+    }])
+    rows = metadata_fill.scan_rows("p1")
+    assert rows == [(1, "heading", "# 标题"), (1, "para", "正文 A"), (1, "para", "只有译文的一行")]
+    # 连起来才够"至少 500 字"，所以这里顺便钉住阅读时间确实按这些行算
+    assert metadata_fill.estimate_read_time([(1, "para", "字" * 600)]) == 1
+
+
 def test_estimate_read_time_ignores_references_and_needs_real_text() -> None:
     """阅读时间按**正文**字数估；参考文献/图注不算，没有页产物时干脆不给。"""
     from backend.services.paper import metadata_fill

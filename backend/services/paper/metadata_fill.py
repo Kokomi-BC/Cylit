@@ -199,7 +199,10 @@ def scan_rows(paper_id: str) -> list[tuple[int, str, str]]:
     for payload in pages:
         page = int(payload.get("page") or 0)
         for row in payload.get("rows") or []:
-            text = str(row.get("text") or "")
+            # ⚠️ 行的键是 `original` / `translation`（见 `reader_service._merge_page`），
+            # **不是** `text`：第一版按 `text` 取，于是这个函数永远空手而归 ——
+            # 阅读时间永远填不上、DOI/开源地址永远抽不到（参考文献还有值，是靠 Markdown 兜底）。
+            text = str(row.get("original") or row.get("translation") or "")
             if text.strip():
                 out.append((page, str(row.get("type") or ""), text))
     return out

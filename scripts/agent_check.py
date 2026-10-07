@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -70,6 +71,20 @@ def post_json(url: str, payload: dict, headers: dict | None = None, timeout: flo
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body,
                                  headers={"Content-Type": "application/json", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def put_json(url: str, payload: dict, headers: dict | None = None, timeout: float = 30.0):
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="PUT",
+                                 headers={"Content-Type": "application/json", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def delete_json(url: str, headers: dict | None = None, timeout: float = 30.0):
+    req = urllib.request.Request(url, method="DELETE", headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -163,6 +178,9 @@ def check_service(base: str) -> bool:
         # 写能力的说明书（`text-fix`）必须在，否则模型不知道"改产物"这件事怎么做
         names = {s.get("name") for s in skills}
         record("service", "改了产物的 skill 已挂上（text-fix）", "text-fix" in names,
+               f"{sorted(names)}")
+        # 高亮/笔记那套动作的说明书（第六步）同样必须在
+        record("service", "高亮 / 笔记的 skill 已挂上（highlight-note）", "highlight-note" in names,
                f"{sorted(names)}")
     except Exception as exc:  # noqa: BLE001
         record("service", "skills 已加载（框架加载器，不是目录扫描）", False, f"{exc}")
@@ -556,6 +574,97 @@ def check_metadata(base: str, paper: str, agent_base: str) -> None:
                ok, f"error={str(gone.get('error'))[:60]}")
 
 
+def check_annotations(base: str, paper: str) -> None:
+    """⑦ 高亮 / 笔记（《修改计划》第六步）：建 → 查 → 定位 → 改 → 加笔记 → 删（连带笔记）。
+
+    全程免费（只走 HTTP，不打模型）。**自己造的自己删**：结束前把这次建的高亮删掉 ——
+    后端删高亮时会连带删它挂的笔记，所以一次调用就把痕迹清干净。
+    """
+    print("\n⑦ 高亮 / 笔记（agent 手脚：按文字建高亮 + 笔记必须挂高亮）")
+    api = f"{base}/api/v1/agent"
+    head = internal()
+
+    # 找一行真文字来做锚点：页投影里每条都带 `row_id` 与文本（与阅读器正文行 id 同一套）。
+    # ⚠️ 挑**不带 Markdown 记号**的行来当探针：要标的文字必须与"渲染后的文字"逐字一致，
+    #    而 `# 标题` 里的 `#` 在渲染后是不存在的（模型照抄原文时也会踩这个坑，工具会回最像的原文）。
+    pages = get_json(f"{api}/papers/{paper}/pages?pages=1&lang=both", head)["data"]
+
+    def _plain(text: str) -> bool:
+        return not re.search(r"[*_`#|>\[\]]", text)
+
+    row = next((b for p in (pages.get("pages") or [])
+                for b in (p.get("blocks") or [])
+                if b.get("row_id")
+                and len(str(b.get("text") or b.get("translation") or "").strip()) > 40
+                and _plain(str(b.get("text") or b.get("translation") or ""))), None)
+    if row is None:
+        skip("高亮：按文字建一条", "这一页没有够长的纯文本行可以当锚点")
+        return
+    anchor = str(row.get("row_id"))
+    full = str(row.get("text") or row.get("translation") or "").strip()
+    probe = " ".join(full.split())[:24].strip()          # 取一小段当"要标的文字"
+
+    made = post_json(f"{api}/papers/{paper}/highlights",
+                     {"anchor": anchor, "text": probe, "color": "green"}, head)["data"]
+    hl = made.get("highlight") or {}
+    record("annotations", "按文字建高亮：偏移量由宿主算（模型不编数字）",
+           made.get("ok") is True and hl.get("id") and hl.get("scope") == "row"
+           and probe in str(hl.get("text") or ""),
+           f"{anchor} → {str(hl.get('text'))[:20]!r} [{hl.get('start')}:{hl.get('end')}] p{hl.get('page')}")
+    if not hl.get("id"):
+        return
+
+    bad = post_json(f"{api}/papers/{paper}/highlights",
+                    {"anchor": anchor, "text": probe + "☃"}, head)["data"]
+    record("annotations", "找不到那段文字时**回最像的原文**（不是硬猜）",
+           bad.get("ok") is False and bool(bad.get("near_miss")),
+           f"near_miss={len(bad.get('near_miss') or [])} 条")
+
+    listed = get_json(f"{api}/papers/{paper}/highlights", head)["data"].get("items") or []
+    loc = get_json(f"{api}/papers/{paper}/highlights?highlight_id={hl['id']}", head)["data"]
+    record("annotations", "列表与定位：带页码 + 挂在哪一面 + 原文",
+           any(h.get("id") == hl["id"] for h in listed)
+           and loc.get("kind") == "highlight" and loc.get("page") == hl.get("page")
+           and "正文行" in str(loc.get("hint") or ""),
+           f"{len(listed)} 条；定位：p{loc.get('page')} · {str(loc.get('hint'))[:24]}")
+
+    upd = put_json(f"{api}/highlights/{hl['id']}", {"color": "pink"}, head)["data"]
+    record("annotations", "改高亮（颜色）→ 库里真的变了",
+           upd.get("color") == "pink", f"color={upd.get('color')}")
+
+    note = post_json(f"{api}/papers/{paper}/notes",
+                     {"highlight_id": hl["id"], "content": "自检写的笔记"}, head)["data"]
+    n = note.get("note") or {}
+    note_loc = get_json(f"{api}/papers/{paper}/notes?note_id={n.get('id')}", head)["data"]
+    record("annotations", "笔记必须挂在高亮上（锚点/原文从高亮继承）",
+           note.get("ok") is True and n.get("highlight_id") == hl["id"]
+           and n.get("block_id") == anchor,
+           f"{n.get('id')} → 高亮 {hl['id']}，引用 {str(n.get('selected_text'))[:16]!r}")
+    record("annotations", "从笔记反查它对应的高亮（定位到原文）",
+           (note_loc.get("highlight") or {}).get("id") == hl["id"]
+           and note_loc.get("kind") == "note" and note_loc.get("page") == hl.get("page"),
+           f"kind={note_loc.get('kind')} p{note_loc.get('page')} "
+           f"· {str(note_loc.get('hint'))[:26]}")
+
+    try:
+        post_json(f"{api}/papers/{paper}/notes", {"content": "没有高亮的笔记"}, head)
+        orphan_ok, orphan_detail = False, "居然成功了（不该）"
+    except urllib.error.HTTPError as exc:
+        orphan_ok, orphan_detail = exc.code == 400, f"HTTP {exc.code}"
+    record("annotations", "拒绝孤儿笔记（不给 highlight_id 就报错）", orphan_ok, orphan_detail)
+
+    gone = delete_json(f"{api}/highlights/{hl['id']}", head)["data"]
+    after = get_json(f"{api}/papers/{paper}/highlights", head)["data"].get("items") or []
+    left_notes = get_json(f"{api}/papers/{paper}/notes", head)["data"].get("items") or []
+    record("annotations", "删高亮连带删它挂的笔记，且不留痕",
+           hl["id"] in (gone.get("deleted_ids") or [])
+           and (gone.get("deleted_notes") or []) == [n.get("id")]
+           and all(h.get("id") != hl["id"] for h in after)
+           and all(x.get("id") != n.get("id") for x in left_notes),
+           f"删高亮 {len(gone.get('deleted_ids') or [])} 条 + 笔记 "
+           f"{len(gone.get('deleted_notes') or [])} 条；列表剩 {len(after)} / {len(left_notes)}")
+
+
 def check_conversations(base: str) -> None:
     print("\n④ 会话接口（列表 / 分类 / 搜索 / 批量删除；不建新会话）")
     api = f"{base}/api/v1/agent"
@@ -844,6 +953,7 @@ def main() -> int:
     check_projections(base, args.paper)
     check_page_edit(base, args.paper)
     check_metadata(base, args.paper, args.agent_base)
+    check_annotations(base, args.paper)
     created_atts = check_attachments(base)
     check_conversations(base)
 

@@ -860,6 +860,146 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
                           _impl())
 
 
+async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", text: str = "",
+                           color: str = "yellow", side: str = "en", occurrence: int = 1,
+                           highlight_id: str = "", query: str = "", reason: str = "") -> dict:
+    """给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
+
+    高亮是"用户在某一面上标出来的一段文字"，也是**笔记的锚点**（`Highlight └── Note`）。
+    三面各有各的位置模型（正文行 / Markdown 视图 / 原 PDF 页图）—— 你只需要给
+    `anchor`（哪一面）+ `text`（要标的**原文**），偏移量由宿主算，不要自己编数字。
+
+      op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
+                   `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
+                   `重点`，公式整体算 1 个字符，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
+                   `occurrence`：同一段文字出现多次时标第几次（默认第 1 次）。
+                   **找不到会回"最像的原文"**，照着改一版再试，不要瞎猜。
+      op="list"    query（可选）→ 列这篇的高亮（带页码与"在哪一面"）。
+      op="locate"  highlight_id → 这条高亮挂在哪一面、第几页、原文是什么（还能顺带看它有没有笔记）。
+      op="update"  highlight_id + color（改颜色）或 text（改引用文字）。**改不了位置**：
+                   要换个地方标就删了重建。
+      op="delete"  highlight_id + reason → 删一条高亮（跨行/跨页的整组一起删，
+                   **它挂着的笔记也会一起删**）。删之前先 `op="locate"` 确认是那一条；
+                   用户没明确说"删掉这处高亮"就不要删。
+
+    与"解释这段内容"的分工：解释是**读**（不需要动数据）；只有用户说"把这段标出来 / 加个高亮"
+    才用本工具写。写完在回答里说清标在哪一页、哪一段文字。
+    """
+    async def _impl() -> dict:
+        what = str(op or "").strip().lower()
+        writes = {"create", "add", "new", "update", "delete", "remove"}
+        if what in writes and not ctx.deps.spend_edit():
+            return {"ok": False, "error": "改动预算用尽了（本轮已经改过太多次）。"
+                                         "剩下的请在回答里说明，让用户自己点一下。"}
+        if what in ("create", "add", "new"):
+            data = await ctx.deps.host.highlight_create(ctx.deps.paper_id, {
+                "anchor": str(anchor or ""), "text": str(text or ""),
+                "color": str(color or "yellow"), "side": _side_key(side) if side else "en",
+                "occurrence": int(occurrence or 1)})
+            if data.get("ok"):
+                hl = data.get("highlight") or {}
+                return {"ok": True, "highlight_id": hl.get("id"), "page": data.get("page"),
+                        "scope": data.get("scope"), "text": hl.get("text"),
+                        "color": hl.get("color"),
+                        "note": "已建立高亮。要给它写笔记就用 note_manage op=create。"}
+            return data
+        if what in ("list", "search"):
+            return await ctx.deps.host.highlights(ctx.deps.paper_id, query=str(query or ""))
+        if what in ("locate", "info", "show"):
+            if not highlight_id:
+                return {"ok": False, "error": "locate 要给 highlight_id（先用 op=list 拿）。"}
+            return await ctx.deps.host.highlights(ctx.deps.paper_id,
+                                                  highlight_id=str(highlight_id))
+        if what in ("update", "color", "set"):
+            if not highlight_id:
+                return {"ok": False, "error": "update 要给 highlight_id。"}
+            payload: dict = {}
+            if str(color or "").strip():
+                payload["color"] = str(color).strip()
+            if str(text or "").strip():
+                payload["selected_text"] = str(text).strip()
+            if not payload:
+                return {"ok": False, "error": "update 至少要给 color 或 text。"}
+            got = await ctx.deps.host.highlight_update(str(highlight_id), payload)
+            return {"ok": True, "highlight": got}
+        if what in ("delete", "remove", "rm"):
+            if not highlight_id:
+                return {"ok": False, "error": "delete 要给 highlight_id。"}
+            if not str(reason or "").strip():
+                return {"ok": False, "error": "delete 要写一句 reason（为什么删这一条）。"}
+            gone = await ctx.deps.host.highlight_delete(str(highlight_id))
+            return {"ok": True, "deleted": gone.get("deleted_ids") or [gone.get("deleted")],
+                    "deleted_notes": gone.get("deleted_notes") or [],
+                    "note": "高亮（以及挂在它上面的笔记）已删除。"}
+        return {"ok": False, "error": "op 只能是 create / list / locate / update / delete。"}
+
+    return await _guarded(ctx, "highlight_manage", {
+        "op": str(op or ""), "anchor": _clip(anchor or "", 40),
+        "text": _clip(text or "", 40), "highlight_id": highlight_id,
+    }, _impl())
+
+
+async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", note_id: str = "",
+                      content: str = "", query: str = "", reason: str = "") -> dict:
+    """给**高亮**写笔记 / 查笔记 / 改笔记 / 删笔记 / 看这条笔记对应的高亮。
+
+    关系是固定的：`Highlight └── Note` —— **笔记必须挂在一条高亮上**（高亮是它的位置锚点），
+    所以 `op="create"` 一定要 `highlight_id`；没有高亮就先用 `highlight_manage op=create`
+    把那段文字标出来，别建"孤儿笔记"（用户口径）。
+
+      op="create"  highlight_id + content（Markdown）→ 加笔记。
+      op="list"    query（可选）→ 列这篇的笔记（每条带**它挂靠的高亮原文**与页码）。
+      op="locate"  note_id → 这条笔记挂在哪一面的哪一处（"定位到某条笔记对应的原文"）。
+      op="update"  note_id + content → 改正文。
+      op="delete"  note_id + reason → 删笔记（**高亮不动**：笔记只是附注）。
+
+    正文用 Markdown 写（支持 `$公式$`）。写完在回答里说清"挂在哪一处高亮上"。
+    """
+    async def _impl() -> dict:
+        what = str(op or "").strip().lower()
+        if what in {"create", "add", "new", "update", "delete", "remove"} \
+                and not ctx.deps.spend_edit():
+            return {"ok": False, "error": "改动预算用尽了（本轮已经改过太多次）。"
+                                         "剩下的请在回答里说明，让用户自己点一下。"}
+        if what in ("create", "add", "new"):
+            if not highlight_id:
+                return {"ok": False, "error": "create 要给 highlight_id：笔记必须挂在一处高亮上"
+                                              "（先用 highlight_manage op=create 标出来）。"}
+            if not str(content or "").strip():
+                return {"ok": False, "error": "create 要给 content（笔记正文）。"}
+            data = await ctx.deps.host.note_create(ctx.deps.paper_id, {
+                "highlight_id": str(highlight_id), "content": str(content)})
+            note = data.get("note") or {}
+            return {"ok": True, "note_id": note.get("id"), "page": note.get("page"),
+                    "scope": note.get("scope"), "quote": note.get("selected_text")}
+        if what in ("list", "search"):
+            return await ctx.deps.host.notes(ctx.deps.paper_id, query=str(query or ""))
+        if what in ("locate", "info", "show"):
+            if not note_id:
+                return {"ok": False, "error": "locate 要给 note_id（先用 op=list 拿）。"}
+            return await ctx.deps.host.notes(ctx.deps.paper_id, note_id=str(note_id))
+        if what in ("update", "edit"):
+            if not note_id:
+                return {"ok": False, "error": "update 要给 note_id。"}
+            if not str(content or "").strip():
+                return {"ok": False, "error": "update 要给 content。"}
+            got = await ctx.deps.host.note_update(str(note_id), {"content_md": str(content)})
+            return {"ok": True, "note": got}
+        if what in ("delete", "remove", "rm"):
+            if not note_id:
+                return {"ok": False, "error": "delete 要给 note_id。"}
+            if not str(reason or "").strip():
+                return {"ok": False, "error": "delete 要写一句 reason（为什么删这一条）。"}
+            return {"ok": True, "deleted": await ctx.deps.host.note_delete(str(note_id)),
+                    "note": "笔记已删除（它挂的高亮还在）。"}
+        return {"ok": False, "error": "op 只能是 create / list / locate / update / delete。"}
+
+    return await _guarded(ctx, "note_manage", {
+        "op": str(op or ""), "highlight_id": highlight_id, "note_id": note_id,
+        "content": _clip(content or "", 40),
+    }, _impl())
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
@@ -870,8 +1010,11 @@ P1_TOOLS = [kb_search, formula_get, translate_get, library_list, notes_search]
 #: 写工具（唯一一处会改用户数据的能力；预算与"先读后写"都在实现里）
 EDIT_TOOLS = [page_markdown_edit]
 
+#: 高亮 / 笔记（《修改计划》第六步）：两个 op 式工具，读写都在里面
+ANNOTATION_TOOLS = [highlight_manage, note_manage]
+
 #: 当前挂载的全部工具
-AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS]
+AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS]
 
 #: **元数据填写**那一次会话用的工具：只读的读全文能力 + 一个写口。
 #: 为什么单独一份、不并进 `AGENT_TOOLS`：问答会话里模型顺手改元数据的场景并不存在，

@@ -351,12 +351,24 @@ PDF 面只有 `side=en`（文字层就是原文）。**存下来的 `selected_te
 （不是浏览器 `selection.toString()`：文字层的 span 是绝对定位的，浏览器会在 span 之间插换行/空格，
 而偏移量那套坐标系是把文本节点直接拼起来的）—— 否则画高亮时的"先对一次文本"会判成错位，整条画不出来。
 
-**笔记挂在高亮上**（《修改计划》第四步）：`Note.highlight_id` 指向那条 `Highlight`，
-`block_id` / `selected_text` 与它一致 —— PDF / Markdown → **Highlight** → **Note**。
+**笔记挂在高亮上**（《修改计划》第四步）：`Note.highlight_id` 指向那条 `Highlight`，`block_id` / `selected_text` 与它一致 —— PDF / Markdown → **Highlight** → **Note**。
 前端在划词菜单里点「笔记」时：选区盖住某条高亮就复用它，没有就先补一条高亮再挂上去，
 所以库里不会出现"没有高亮的孤儿笔记"。`GET /notes` 每条都带 `highlight_id`、
 `page`（从锚点前缀解析：`p004-02` / `md:p8` / `pdf:p3` 都能解）与 `scope`，
 侧栏据此显示"高亮原文 + 挂在哪一面 + 页码"，点「定位」直接跳回那一页/那一行。
+
+**给 Agent 的那一套（内部 token，`/agent/...`）**：《修改计划》第六步。数据模型与上面**同一套**
+（都走 `annotation_service`），差别只在"入口"和"模型友好"上：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/agent/papers/{id}/highlights` | 列表（带 `page` / `scope`）；给 `highlight_id` 或 `note_id` 时回**定位信息**（挂在哪一面、第几页、原文、以及它有没有笔记） |
+| POST | `/agent/papers/{id}/highlights` | **按文字建高亮**：`{anchor, text, color?, side?, occurrence?}`。服务端把文字换算成偏移量（`services/agent/annotations.render_like_dom`：Markdown 记号不算字、公式算 1 个字符）；找不到就回 `near_miss`（最像的原文）。`anchor` 为 `pdf:p<n>` 时**拒绝**（文字层在前端 pdf.js 里） |
+| PUT / DELETE | `/agent/highlights/{id}` | 改颜色 / 引用文字；删除**连带删掉挂在这条高亮上的笔记**（锚点没了笔记就是死数据） |
+| GET | `/agent/papers/{id}/notes` | 笔记列表（每条带 `highlight_text`：它挂靠的高亮原文）；给 `note_id` 回"从笔记反查高亮"的定位信息 |
+| POST | `/agent/papers/{id}/notes` | 加笔记，**`highlight_id` 必填**（不做孤儿笔记），锚点与引用文字从高亮继承 |
+| PUT / DELETE | `/agent/notes/{id}` | 改正文 / 删笔记（**高亮不动**） |
+
 
 ## 9. 知识库与检索问答（§20.5 / §20.4）
 

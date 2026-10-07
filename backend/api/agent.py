@@ -435,6 +435,127 @@ async def agent_meta_write(paper_id: str, request: Request,
                     message=note, request=request)
 
 
+@router.get("/agent/papers/{paper_id}/highlights")
+async def agent_highlights(paper_id: str, request: Request,
+                           highlight_id: str | None = Query(None),
+                           note_id: str | None = Query(None),
+                           query: str | None = Query(None),
+                           x_internal_token: str | None = Header(None)):
+    """高亮列表 / 单条定位（agent 的 `highlight_manage` 读口）。
+
+    `highlight_id` 或 `note_id` 给了就回**定位信息**（挂在哪一面、第几页、原文是什么样）；
+    都不给就列这篇的全部高亮（带 `page` / `scope`）。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.agent import annotations as ann
+
+    if highlight_id or note_id:
+        return envelope(ann.locate(paper_id, highlight_id=highlight_id or "",
+                                   note_id=note_id or ""), request=request)
+    return envelope(ann.list_items(paper_id, kind="highlight", query=query), request=request)
+
+
+@router.post("/agent/papers/{paper_id}/highlights")
+async def agent_highlight_create(paper_id: str, request: Request,
+                                 payload: dict = Body(default={}),
+                                 x_internal_token: str | None = Header(None)):
+    """按**文字**建一条高亮（agent 的 `highlight_manage` op=create）。
+
+    模型给"哪一面（anchor）+ 要标的文字"，服务端算偏移量（`services/agent/annotations.py`
+    里那套"Markdown → 渲染文字"的近似）。**拒绝也是正常返回**（`ok=false` + 最近的原文），
+    与产物纠错工具同一口径：让模型照着改，而不是让整轮崩掉。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.agent import annotations as ann
+
+    data = ann.create(paper_id, anchor=str(payload.get("anchor") or ""),
+                      text=str(payload.get("text") or ""),
+                      color=str(payload.get("color") or "yellow"),
+                      side=str(payload.get("side") or "en"),
+                      occurrence=int(payload.get("occurrence") or 1))
+    return envelope(data, message=("已建立高亮" if data.get("ok") else str(data.get("error"))[:120]),
+                    request=request)
+
+
+@router.put("/agent/highlights/{highlight_id}")
+async def agent_highlight_update(highlight_id: str, request: Request,
+                                 payload: dict = Body(default={}),
+                                 x_internal_token: str | None = Header(None)):
+    """改一条高亮的颜色 / 引用文字（agent 的 `highlight_manage` op=update）。"""
+    _require_internal(x_internal_token)
+    from backend.services.annotation import annotation_service as svc
+
+    return envelope(svc.update_highlight(highlight_id, payload or {}), request=request)
+
+
+@router.delete("/agent/highlights/{highlight_id}")
+async def agent_highlight_delete(highlight_id: str, request: Request,
+                                 x_internal_token: str | None = Header(None)):
+    """删一条高亮（跨行/跨页的整组一起删）；**它挂着的笔记也一并删掉**。
+
+    为什么连带删笔记：用户口径是 `Highlight └── Note`，高亮是笔记的位置锚点 ——
+    锚点没了，笔记就成了一条"点定位跳不过去"的死数据。删除是高危动作，工具那一层会先问。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.annotation import annotation_service as svc
+
+    gone = svc.delete_highlight(highlight_id)
+    notes = [n for n in svc.list_notes(None)["items"]
+             if str(n.get("highlight_id") or "") in set(gone.get("deleted_ids") or
+                                                        [gone.get("deleted")])]
+    for note in notes:
+        svc.delete_note(note["id"])
+    return envelope({**gone, "deleted_notes": [n["id"] for n in notes]}, request=request)
+
+
+@router.get("/agent/papers/{paper_id}/notes")
+async def agent_notes(paper_id: str, request: Request,
+                      note_id: str | None = Query(None),
+                      query: str | None = Query(None),
+                      x_internal_token: str | None = Header(None)):
+    """笔记列表 / 单条定位（每条带上它挂靠的高亮原文）。"""
+    _require_internal(x_internal_token)
+    from backend.services.agent import annotations as ann
+
+    if note_id:
+        return envelope(ann.locate(paper_id, note_id=note_id), request=request)
+    return envelope(ann.list_items(paper_id, kind="note", query=query), request=request)
+
+
+@router.post("/agent/papers/{paper_id}/notes")
+async def agent_note_create(paper_id: str, request: Request,
+                            payload: dict = Body(default={}),
+                            x_internal_token: str | None = Header(None)):
+    """给一条**已存在的高亮**加笔记（`highlight_id` 必填 —— 不做孤儿笔记）。"""
+    _require_internal(x_internal_token)
+    from backend.services.agent import annotations as ann
+
+    note = ann.create_note(paper_id, highlight_id=str(payload.get("highlight_id") or ""),
+                           content=str(payload.get("content") or ""))
+    return envelope({"ok": True, "note": note}, message="已加笔记", request=request)
+
+
+@router.put("/agent/notes/{note_id}")
+async def agent_note_update(note_id: str, request: Request,
+                            payload: dict = Body(default={}),
+                            x_internal_token: str | None = Header(None)):
+    """改笔记正文（`content_md`）。"""
+    _require_internal(x_internal_token)
+    from backend.services.annotation import annotation_service as svc
+
+    return envelope(svc.update_note(note_id, payload or {}), request=request)
+
+
+@router.delete("/agent/notes/{note_id}")
+async def agent_note_delete(note_id: str, request: Request,
+                            x_internal_token: str | None = Header(None)):
+    """删一条笔记（**不动**它挂的高亮：笔记是附注，锚点还在）。"""
+    _require_internal(x_internal_token)
+    from backend.services.annotation import annotation_service as svc
+
+    return envelope(svc.delete_note(note_id), request=request)
+
+
 @router.get("/agent/papers/{paper_id}/pages")
 async def agent_pages(paper_id: str, request: Request,
                       pages: str = Query(..., description='"3" / "3-8" / "all"'),
