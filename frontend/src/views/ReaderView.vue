@@ -50,6 +50,7 @@ import ReaderChat from '@/components/reader/ReaderChat.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
 import ReaderPages from '@/components/reader/ReaderPages.vue';
+import FloatingCard from '@/components/reader/FloatingCard.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
@@ -383,6 +384,13 @@ const selection = reactive({
   show: false, x: 0, y: 0,
   /** 选区文字：**截断版**给「AI 解释」用（请求体别无限大），`fullText` 是完整版、给「复制」用 */
   text: '', fullText: '',
+  /**
+   * **坐标系统里的那一段文字**（`renderedText` 的切片）：正文行/Markdown 视图与 `text` 一样，
+   * 原 PDF 不一样 —— 文字层的 span 是绝对定位的，浏览器会在 span 之间插换行/空格，
+   * 而偏移量那套坐标系是把文本节点直接拼起来的。凡是"要和偏移量一起存"（高亮 / 笔记引用）
+   * 都必须用它，否则画高亮时的文本校验会判成错位。
+   */
+  anchorText: '',
   rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
   /** 选区是否有块锚点（原 PDF 划词只有文字）—— 决定能不能写高亮/笔记 */
   anchored: true,
@@ -429,11 +437,7 @@ const explainCard = reactive({
 let explainController: AbortController | null = null;
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
 const chatSelection = ref<AgentSelection | null>(null);
-/** 新建笔记的小弹窗（第五步会换成轻量浮层）。`highlightId`：这条笔记挂靠的高亮。 */
-const noteModal = reactive({
-  open: false, text: '', rowId: '', selected: '',
-  highlightId: '' as string, anchorText: '' as string,
-});
+/** 笔记浮层的状态见下面 `notePop`（第五步：轻量浮层取代居中弹窗）。 */
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 
@@ -2350,6 +2354,7 @@ function onMouseUp(ev?: MouseEvent) {
     const anchorText = offs && layer ? renderedText(layer).slice(offs.start, offs.end) : '';
     Object.assign(selection, {
       show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
+      anchorText,
       rowId: offs ? pdfAnchor(page) : '', side: 'en' as const,
       start: offs?.start ?? 0, end: offs?.end ?? 0,
       anchored: !!offs, scope: 'pdf' as const, mdPage: 0,
@@ -2376,6 +2381,7 @@ function onMouseUp(ev?: MouseEvent) {
     Object.assign(selection, {
       show: true, ...menuPos(first.rect ?? rect), text: truncate(joinParts(parts) || text, 600),
       fullText: joinParts(parts) || text,
+      anchorText: joinParts(parts) || text,      // 同上：分段文字就是渲染文字
       rowId: first.rowId, side, start: first.start, end: first.end,
       anchored: true, scope: 'markdown' as const, mdPage: Number(first.page ?? 0),
       page: Number(first.page ?? 0),
@@ -2405,6 +2411,8 @@ function onMouseUp(ev?: MouseEvent) {
      * 「AI 解释 / 复制」里（实测 1130 字的译文选区会读出 3596 字）。 */
     show: true, ...menuPos(firstPart?.rect ?? rect), text: truncate(joinParts(parts) || text, 600),
     fullText: joinParts(parts) || text,
+    // 正文行的分段文字本来就是"渲染文字"的切片 → 坐标文字与显示文字同一份
+    anchorText: joinParts(parts) || text,
     rowId: parts[0].rowId, side, start: parts[0].start, end: parts[0].end,
     anchored: true, scope: 'row' as const, mdPage: 0, allowNote: true,
     // 正文行的页号就在行 id 里（`p004-02`）—— 与 agent 那边 `_page_of_row` 同一个口径
@@ -2858,21 +2866,96 @@ function onMdClick(ev: MouseEvent) {
   onContentClick(ev);
 }
 
-function openNoteModal() {
-  noteModal.open = true;
-  noteModal.text = '';
-  noteModal.rowId = selection.rowId;
-  noteModal.selected = selection.text;
-  /* 《修改计划》第四步：笔记挂在**高亮**上（PDF/Markdown → Highlight → Note）。
-   * 选区盖住已有高亮就复用第一条；一条都没有时，`saveNote` 会先补一条高亮再挂上去 ——
-   * 所以库里不会出现"没有高亮的孤儿笔记"。 */
-  noteModal.highlightId = selection.hlIds[0] ?? '';
-  /* 引用文字一律用**高亮上那一份**（它就是坐标系统里的那一段）：
-   * PDF 文字层的 `sel.toString()` 会在 span 之间插换行/空格，直接存会和偏移量对不上 ——
-   * 与第三步那个坑同一个原因（见 `pdfAnchor` 那段注释）。 */
-  const hl = highlights.value.find((h) => h.id === noteModal.highlightId);
-  noteModal.anchorText = hl?.text ?? (selection.anchored ? selection.text : '');
-  hideMenu();
+/**
+ * 笔记浮层（《修改计划》第五步）：锚在高亮附近的小卡片，取代原来那块**居中大弹窗**。
+ *
+ * 三种打开方式：
+ * - **悬停高亮**：只看**已有**笔记（`mode='view'`），鼠标移开自动消失（除非已锚定）；
+ * - **划词菜单点「笔记」**：新建（`mode='edit'`），保存时先确保挂到一条高亮上；
+ * - **划词菜单点「打开笔记」**：打开已有那条（`mode='view'`，可切到编辑）。
+ */
+const notePop = reactive({
+  open: false,
+  /** 锚定：鼠标移开也不关（点浮层那枚图钉切换）。**默认不锚定**（用户口径） */
+  anchored: false,
+  mode: 'view' as 'view' | 'edit',
+  noteId: '',
+  highlightId: '',
+  rowId: '',
+  /** 高亮原文（浮层"引用"那一行） */
+  quote: '',
+  content: '',
+  draft: '',
+  anchor: null as { x: number; y: number; w?: number; h?: number } | null,
+  busy: false,
+});
+
+function rectAnchor(rect: DOMRect | null | undefined, fallback?: { x: number; y: number }) {
+  if (rect) return { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
+  return { x: fallback?.x ?? 40, y: fallback?.y ?? 120, w: 0, h: 0 };
+}
+
+/** 打开浮层（查看已有笔记 / 编辑某条 / 新建）。 */
+function openNotePopover(opts: {
+  note?: Note | null; highlight?: Highlight | null; mode?: 'view' | 'edit';
+  rect?: DOMRect | null; anchored?: boolean; fallbackXY?: { x: number; y: number };
+}) {
+  const note = opts.note ?? null;
+  const hl = opts.highlight ?? null;
+  notePop.open = true;
+  notePop.anchored = opts.anchored ?? false;
+  notePop.mode = opts.mode ?? (note ? 'view' : 'edit');
+  notePop.noteId = note?.id ?? '';
+  notePop.highlightId = note?.highlight_id ?? hl?.id ?? selection.hlIds[0] ?? '';
+  notePop.rowId = note?.block_id ?? hl?.block_id ?? selection.rowId ?? '';
+  notePop.quote = note?.selected_text ?? hl?.text
+    ?? (selection.anchored ? (selection.anchorText || selection.text) : '');
+  notePop.content = note?.content_md ?? '';
+  notePop.draft = note?.content_md ?? '';
+  notePop.anchor = rectAnchor(opts.rect, opts.fallbackXY);
+  notePop.busy = false;
+}
+
+function closeNotePopover() {
+  window.clearTimeout(noteHideTimer);
+  notePop.open = false;
+  notePop.anchored = false;
+  notePop.mode = 'view';
+}
+
+/* 悬停显示已存在的笔记；移开延时关闭（延时是为了让鼠标能从高亮挪到浮层上） */
+let noteHideTimer: number | undefined;
+function cancelNoteHide() { window.clearTimeout(noteHideTimer); }
+function scheduleNoteHide() {
+  if (!notePop.open || notePop.anchored || notePop.mode === 'edit') return;
+  window.clearTimeout(noteHideTimer);
+  noteHideTimer = window.setTimeout(() => {
+    /* 鼠标还在浮层上（从高亮挪进来）就别关：直接问 DOM 的 `:hover`，
+     * 比"进/出浮层各挂一个事件"稳 —— 后者在浮层刚好渲染在光标底下时会误判。 */
+    const box = document.querySelector('[data-float-card]');
+    if (box && box.matches(':hover')) return;
+    notePop.open = false;
+  }, 240);
+}
+
+function markOf(ev: Event): HTMLElement | null {
+  const t = ev.target as HTMLElement | null;
+  return (t?.closest?.('mark.hl[data-hl]') as HTMLElement | null) ?? null;
+}
+
+/** 悬停到一处高亮：**只看已有笔记**（新建走划词菜单，免得鼠标扫过就弹编辑框）。 */
+function onContentHover(ev: MouseEvent) {
+  const mark = markOf(ev);
+  if (!mark) return;
+  const hl = highlights.value.find((h) => h.id === (mark.getAttribute('data-hl') || ''));
+  const note = hl ? notes.value.find((n) => n.highlight_id === hl.id) : null;
+  if (!hl || !note) return;
+  if (notePop.open && notePop.noteId === note.id) { cancelNoteHide(); return; }
+  openNotePopover({ note, highlight: hl, mode: 'view', rect: mark.getBoundingClientRect() });
+}
+
+function onContentHoverOut(ev: MouseEvent) {
+  if (markOf(ev)) scheduleNoteHide();
 }
 
 /** 选区/点击处那条高亮对应的笔记（有的话菜单显示「打开笔记」）。 */
@@ -2882,56 +2965,59 @@ const selectionNote = computed<Note | null>(() => {
   return notes.value.find((n) => n.highlight_id && ids.includes(n.highlight_id)) ?? null;
 });
 
-/** 侧栏「批注·笔记」里那条笔记的位置（`openNoteForHighlight` 滚动过去用）。 */
-async function revealNote(noteId: string) {
-  await ensureAsideVisible();
-  sideTab.value = 'annotations';
-  await nextTick();
-  const el = document.querySelector<HTMLElement>(`[data-note-id="${noteId}"]`);
-  el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  el?.classList.add('flash');
-  window.setTimeout(() => el?.classList.remove('flash'), 1200);
-}
-
 /**
- * 划词菜单里的「笔记 / 打开笔记」（《修改计划》第四步的闭环）：
- * 已经有笔记 → 跳到侧栏那一条（"从高亮位置直接打开对应笔记"）；没有 → 打开编辑器新建。
+ * 划词菜单里的「笔记 / 打开笔记」：
+ * 已有笔记 → 打开**浮层**看它（点菜单是明确动作，所以直接锚定）；
+ * 没有 → 打开浮层新建（保存时先确保挂到一条高亮上）。
  */
 async function onNoteAction() {
   const existing = selectionNote.value;
+  // 浮层锚在**划词菜单**出现的位置（选区矩形就在那儿），菜单本身马上要收起
+  const fallbackXY = { x: selection.x, y: selection.y };
   hideMenu();
   if (existing) {
-    await revealNote(existing.id);
+    const hl = highlights.value.find((h) => h.id === existing.highlight_id) ?? null;
+    openNotePopover({ note: existing, highlight: hl, mode: 'view', anchored: true, fallbackXY });
     return;
   }
-  openNoteModal();
+  openNotePopover({ mode: 'edit', anchored: true, fallbackXY });
 }
 
-async function saveNote() {
+/** 浮层里「保存」：已有笔记走 PUT，新建走 POST（并先确保有高亮挂靠）。 */
+async function saveNotePopover() {
+  if (notePop.busy) return;
+  notePop.busy = true;
   try {
-    /* 先保证有高亮：笔记必须挂在一条高亮上（用户口径："笔记必须与对应的 Highlight 建立关联"）。
-     * 选区已经盖住高亮就复用它，否则按默认色补一条 —— 与新笔记同一次动作完成。 */
-    let highlightId = noteModal.highlightId;
-    let anchorText = noteModal.anchorText;
-    if (!highlightId) {
-      const created = await addHighlight('yellow');
-      highlightId = created[0]?.id ?? '';
-      anchorText = created[0]?.text ?? anchorText;      // 同上：用高亮那份文字
+    if (notePop.noteId) {
+      const updated = await api.put<Note>(`/notes/${notePop.noteId}`, { content_md: notePop.draft });
+      notePop.content = updated?.content_md ?? notePop.draft;
+      toast('笔记已保存', 'ok', 1600);
+    } else {
+      let highlightId = notePop.highlightId;
+      let anchorText = notePop.quote;
+      if (!highlightId) {
+        const created = await addHighlight('yellow');
+        highlightId = created[0]?.id ?? '';
+        anchorText = created[0]?.text ?? anchorText;
+      }
+      if (!highlightId) throw new Error('没有可挂靠的高亮（选区可能已经失效）');
+      const created = await api.post<Note>('/notes', {
+        paper_id: paperId.value,
+        block_id: notePop.rowId,
+        highlight_id: highlightId,
+        selected_text: anchorText,
+        start_offset: selection.start,
+        end_offset: selection.end,
+        content_md: notePop.draft,
+      });
+      notePop.noteId = created?.id ?? '';
+      notePop.highlightId = highlightId;
+      notePop.content = notePop.draft;
+      toast('笔记已保存', 'ok', 1600);
     }
-    if (!highlightId) throw new Error('没有可挂靠的高亮（选区可能已经失效）');
-    await api.post('/notes', {
-      paper_id: paperId.value,
-      block_id: noteModal.rowId,
-      highlight_id: highlightId,
-      selected_text: anchorText || noteModal.selected,
-      start_offset: selection.start,
-      end_offset: selection.end,
-      content_md: noteModal.text,
-    });
-    toast('笔记已保存', 'ok');
-    noteModal.open = false;
+    notePop.mode = 'view';
     await refreshAnnotations();
-  } catch (err) { reportError(err, '保存笔记失败'); }
+  } catch (err) { reportError(err, '保存笔记失败'); } finally { notePop.busy = false; }
 }
 
 async function refreshAnnotations() {
@@ -3477,7 +3563,8 @@ function renderMarkdown(text?: string | null) {
       <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============
            `.reader-slide` 是"让位 + 平移"的那一层：侧栏开合时它整体滑过去，
            内部的正文一次都不重排（见 asideGapPx 的说明）。 -->
-      <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick">
+      <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick"
+               @mouseover="onContentHover" @mouseout="onContentHoverOut">
         <div class="reader-slide">
         <ReaderPageRows
           :groups="groups"
@@ -3579,19 +3666,46 @@ function renderMarkdown(text?: string | null) {
       </template>
     </Modal>
 
-    <Modal :open="noteModal.open" title="新建笔记" @close="noteModal.open = false">
-      <div v-if="noteModal.selected" class="tiny faint">选中：{{ truncate(noteModal.selected, 180) }}</div>
+    <!-- 笔记浮层（第五步）：锚在高亮/选区旁边的小卡片，默认"移开就消失"。
+         悬停浮层本身要取消关闭（鼠标从高亮挪进来的时候不能把它关掉）。 -->
+    <FloatingCard
+      :open="notePop.open"
+      :anchor="notePop.anchor"
+      :anchored="notePop.anchored"
+      :title="notePop.mode === 'edit' ? '笔记（编辑）' : '笔记'"
+      :width="360"
+      data-note-popover
+      @close="closeNotePopover"
+      @toggle-anchor="notePop.anchored = !notePop.anchored"
+    >
+      <div v-if="notePop.quote" class="np-quote small faint" v-html="mdToHtml(`“${notePop.quote}”`)" />
       <textarea
-        v-model="noteModal.text"
+        v-if="notePop.mode === 'edit'"
+        v-model="notePop.draft"
+        class="np-edit"
         rows="6"
-        style="width:100%;margin-top:8px"
+        data-note-edit
         placeholder="用 Markdown 写笔记；支持 $公式$"
       />
+      <div v-else class="np-view md small" data-note-view v-html="mdToHtml(notePop.content)" />
       <template #footer>
-        <button class="btn" @click="noteModal.open = false">取消</button>
-        <button class="btn primary" @click="saveNote">保存</button>
+        <template v-if="notePop.mode === 'edit'">
+          <button class="btn sm primary" :disabled="notePop.busy" data-note-save @click="saveNotePopover">
+            {{ notePop.busy ? '保存中…' : '保存' }}
+          </button>
+          <button class="btn sm" @click="notePop.mode = 'view'; notePop.draft = notePop.content">
+            取消
+          </button>
+        </template>
+        <template v-else>
+          <button class="btn sm" data-note-edit-btn @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
+            <AppIcon name="edit" :size="12" />编辑
+          </button>
+          <span class="spacer"></span>
+          <span class="tiny faint">{{ notePop.anchored ? '已锚定' : '移开自动关闭' }}</span>
+        </template>
       </template>
-    </Modal>
+    </FloatingCard>
 
     <Modal :open="!!zoomImage" :title="zoomTitle" wide @close="zoomImage = null">
       <img v-if="zoomImage" :src="zoomImage.url" :alt="zoomTitle" style="max-width:100%;background:#fff">

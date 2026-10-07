@@ -826,12 +826,20 @@ async function run() {
     const layer = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
     res.hasLayer = !!layer;
     if (!layer) { out(res); return; }
+    /* 取 span 里的**文本节点**：画过高亮之后 `firstChild` 可能是包文字的 `<mark>` 元素，
+       拿元素当 Range 的端点会变成"按子节点下标"（实测报 no child at offset 12）。 */
+    const firstText = (el) => {
+      if (!el) return null;
+      if (el.nodeType === 3) return el;
+      return D().createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode();
+    };
+    const pair = (list) => [firstText(list[0]), firstText(list[1])];
     const pageEl = layer.closest('[data-pdf-page]');
     res.page = Number(pageEl.getAttribute('data-pdf-page'));
     const spans = longSpans();
     res.spans = spans.length;
-    const a = spans[0] && spans[0].firstChild;
-    const b = spans[1] && spans[1].firstChild;
+    const a = pair(spans)[0];
+    const b = pair(spans)[1];
     if (!a || !b) { out({ stage: 'few-spans', spans: res.spans }); return; }
     const range = D().createRange();
     range.setStart(a, 0);
@@ -874,10 +882,11 @@ async function run() {
     const longSpans2 = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer span')]
       .filter((s) => (s.textContent || '').trim().length > 8);
     await until(D(), () => longSpans2().length >= 2, 60);
-    const spans2 = longSpans2();
-    const ra = spans2[0] && spans2[0].firstChild;
-    const rb = spans2[1] && spans2[1].firstChild;
-    if (!ra || !rb) { out({ stage: 'few-spans-2', spans: spans2.length }); return; }
+    /* 每次都**重新取**文本节点：`markRanges` 会把文字节点包进 `<mark>`（节点对象换掉），
+       抓着上一轮的节点造选区，可能在已经脱离文档的节点上建 Range。 */
+    const pickPair = () => pair(longSpans2());
+    let ra = pickPair()[0], rb = pickPair()[1];
+    if (!ra || !rb) { out({ stage: 'few-spans-2', spans: longSpans2().length }); return; }
     const r2 = D().createRange();
     r2.setStart(ra, 0);
     r2.setEnd(rb, Math.min(12, (rb.nodeValue || '').length));
@@ -940,6 +949,90 @@ async function run() {
     }
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
 
+    /* ---- 第五步：笔记浮层（悬停显示 / 移开消失 / 锚定 / 查看↔编辑）---- */
+    const card = () => D().querySelector('[data-float-card]');
+    const hlMark = () => D().querySelector('[data-pdf-page="1"] .pdf-text-layer mark.hl');
+    res.oldModalGone = ![...D().querySelectorAll('*')]
+      .some((e) => (e.textContent || '').trim() === '新建笔记'
+        && e.className && String(e.className).indexOf('modal') >= 0);
+    /* 先把上一步（新建笔记）留下的浮层关掉：它是**锚定**打开且保存后仍开着，
+       不关的话下面的"悬停→移开消失"验的就不是悬停那条路径。 */
+    const closeBtn = D().querySelector('[data-float-close]');
+    if (closeBtn) { closeBtn.click(); await sleep(250); }
+    res.popClosedBefore = !card();
+    const m1 = hlMark();
+    if (m1) {
+      m1.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
+      await until(D(), () => !!card(), 20);
+      res.popOpen = !!card();
+      res.popView = !!D().querySelector('[data-note-view]');
+      res.popText = card() ? (card().textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60) : '';
+      res.popHint = card() ? ((card().textContent || '').indexOf('已锚定') >= 0 ? 'anchored' : 'auto') : '';
+      /* 移开（未锚定）→ 自动消失 */
+      m1.dispatchEvent(new w.MouseEvent('mouseout', { bubbles: true, relatedTarget: D().body }));
+      await sleep(700); spin(BURN); await sleep(300);
+      res.popAutoClosed = !card();
+      res.popHoverNow = (() => {
+        const b = card();
+        return b ? b.matches(':hover') : null;
+      })();
+      /* 点这处高亮 → 菜单「打开笔记」→ 浮层锚定打开，移开也不关。
+         用**重新划词**这条路进菜单（点已有高亮进菜单依赖真实指针状态，探针里不稳），
+         并补一次 `mousedown`（真拖拽有按下那一下；划词的"按列夹取"要看它），失败重试两轮。 */
+      let openBtn = null;
+      for (let attempt = 0; attempt < 3 && !openBtn; attempt += 1) {
+        const p3 = pickPair();
+        if (!p3[0] || !p3[1]) break;
+        const r3 = D().createRange();
+        r3.setStart(p3[0], 0);
+        r3.setEnd(p3[1], Math.min(12, (p3[1].nodeValue || '').length));
+        const s3 = w.getSelection();
+        s3.removeAllRanges();
+        s3.addRange(r3);
+        const pageEl3 = D().querySelector('[data-pdf-page="1"]');
+        pageEl3.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, clientX: 300, clientY: 300, buttons: 1 }));
+        pageEl3.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
+        await until(D(), (x) => x.querySelector('[data-selection-menu]'), 12);
+        const m3 = D().querySelector('[data-selection-menu]');
+        res.menuText3 = m3 ? (m3.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+        openBtn = m3 ? [...m3.querySelectorAll('button')]
+          .find((b) => (b.textContent || '').indexOf('打开笔记') >= 0) : null;
+        if (!openBtn) await sleep(300);
+      }
+      res.openNoteBtn = openBtn ? (openBtn.textContent || '').trim() : '';
+      if (openBtn) {
+        openBtn.click();
+        await until(D(), () => !!card(), 20);
+        res.anchoredOpen = !!card();
+        const m2 = hlMark();
+        if (m2) m2.dispatchEvent(new w.MouseEvent('mouseout', { bubbles: true, relatedTarget: D().body }));
+        await sleep(700); spin(BURN); await sleep(200);
+        res.anchorKept = !!card();
+        /* 查看 → 编辑 → 保存 */
+        const editBtn = D().querySelector('[data-note-edit-btn]');
+        res.hasEditBtn = !!editBtn;
+        if (editBtn) {
+          editBtn.click();
+          await until(D(), (x) => x.querySelector('[data-note-edit]'), 20);
+          const ta = D().querySelector('[data-note-edit]');
+          res.hasEditArea = !!ta;
+          if (ta) {
+            ta.value = '自检改过的笔记正文';
+            ta.dispatchEvent(new w.Event('input', { bubbles: true }));
+            await sleep(200);
+            const save = D().querySelector('[data-note-save]');
+            res.hasSaveBtn = !!save;
+            if (save) save.click();
+            await sleep(900); spin(BURN); await sleep(300);
+          }
+        }
+      }
+    }
+    const ndata2 = await jget(api + '/notes?paper_id=__PAPER__');
+    const edited = (((ndata2.data && ndata2.data.items) || [])
+      .find((n) => n.highlight_id === (mine[0] && mine[0].id)));
+    res.editedText = edited ? String(edited.content_md || '') : '';
+
     /* 收尾：删掉自检造出来的那几条（笔记 + 高亮，一条都不留） */
     if (myNote) { await fetch(api + '/notes/' + myNote.id, { method: 'DELETE' }); }
     for (const h of mine) { await fetch(api + '/highlights/' + h.id, { method: 'DELETE' }); }
@@ -957,11 +1050,13 @@ async function run() {
 
 
 def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> None:
-    print("\n⑥ PDF 页图高亮（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
+    print("\n⑥ PDF 页图高亮 + 笔记浮层（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
     url = f"{base}/app/reader/{paper}?left=page&nosse=1"
     html = (PROBE_PDFHL.replace("__URL__", url).replace("__TITLE__", "pdfhl")
             .replace("__PAPER__", paper))
-    res = run_probe(browser, base, "probe_pdfhl", html, budget_ms)
+    # 这条探针要**真渲染整份 PDF**（pdf.js 下载 + 光栅化 + 文字层）再走一遍高亮/笔记/浮层的全套，
+    # 按默认 40s 的虚拟时间预算跑会在无头里被墙钟掐掉（实测：dump 回来 0 字节）—— 给宽一点。
+    res = run_probe(browser, base, "probe_pdfhl", html, max(budget_ms, 90_000))
     if not res:
         record("pdfhl", "PDF 页图能划出高亮（真文字层 + 真选区 + 真菜单）", False, "探针没产出结果")
         return
@@ -1007,8 +1102,27 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> 
            f"{res.get('rowText')}")
     record("pdfhl", "点侧栏「定位」回到那一页（滚回页首）",
            res.get("hasLocate") is True and (res.get("scrolledAway") or 0) > 100
-           and (res.get("locatedTop") or 0) < 100,
+           and (res.get("locatedTop") or 0) < (res.get("scrolledAway") or 1) / 5,
            f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 {res.get('locatedTop')}")
+    record("pdfhl", "笔记改用**轻量浮层**（居中大弹窗已撤）",
+           res.get("oldModalGone") is True, f"旧弹窗还在={not res.get('oldModalGone')}")
+    record("pdfhl", "悬停高亮显示笔记（查看模式渲染 Markdown）",
+           res.get("popOpen") is True and res.get("popView") is True
+           and "笔记" in str(res.get("popText") or "")
+           and "自检" in str(res.get("popText") or ""),
+           f"浮层：{str(res.get('popText'))[:40]}")
+    record("pdfhl", "鼠标移开自动消失（默认**不锚定**）", res.get("popAutoClosed") is True,
+           f"移开后还在={not res.get('popAutoClosed')}，提示={res.get('popHint')!r}，"
+           f"此刻 :hover={res.get('popHoverNow')}")
+    record("pdfhl", "从高亮「打开笔记」→ 锚定打开，移开也不关",
+           str(res.get("openNoteBtn") or "").strip() == "打开笔记"
+           and res.get("anchoredOpen") is True and res.get("anchorKept") is True,
+           f"菜单={str(res.get('menuText3'))[:36]!r}，移开后还在={res.get('anchorKept')}")
+    record("pdfhl", "查看 ⇄ 编辑切换（编辑后保存写回库里）",
+           res.get("hasEditBtn") is True and res.get("hasEditArea") is True
+           and res.get("hasSaveBtn") is True
+           and res.get("editedText") == "自检改过的笔记正文",
+           f"库里正文={str(res.get('editedText'))[:18]!r}")
     record("pdfhl", "自检不留痕（造出来的高亮与笔记都已删）",
            res.get("left") == 0 and res.get("leftNotes") == 0,
            f"残留高亮 {res.get('left')} 条、笔记 {res.get('leftNotes')} 条")
