@@ -332,7 +332,8 @@ SSE 断线时前端按 `GET /api/v1/papers/{id}/translations?since_page=N` 轮�
 
 ## 8. 高亮 / 笔记 / 批注（§20.6）
 
-`POST/GET/DELETE /highlights` · `POST/GET/PUT/DELETE /notes` · `GET /notes/overview` ·
+`POST/GET/PUT/DELETE /highlights`（PUT 只改**颜色**与 `selected_text`，改位置要删了重建） ·
+`POST/GET/PUT/DELETE /notes` · `GET /notes/overview` ·
 `GET/POST/PUT/DELETE /annotations` ·
 `POST /annotations/from-selection`（划词 AI 解释 → `{explanation, sources, model_id, grounded}`）·
 `POST /annotations/save`（存为批注，`type=qa, source=selection`）
@@ -357,6 +358,10 @@ PDF 面只有 `side=en`（文字层就是原文）。**存下来的 `selected_te
 菜单里才会出现「添加笔记」这一项**（用户口径：只有插入了高亮，才能在高亮的基础上加笔记），
 所以库里不会出现"没有高亮的孤儿笔记"，也不会出现"点了笔记却不知道挂在哪"。标完高亮那一下，
 前端会直接把笔记浮层弹出来（`已高亮 · 写条笔记？`），省掉"再划一次词、再进一次菜单"。
+
+**AI 解释浮层底部的色块**（用户口径 2026-10-07）：点一个颜色 = **标出这段 + 把本轮解释正文存成它的笔记**，
+一个动作完成原来「存为笔记」「存为批注」两枚按钮的事（批注那套已随合并下线）。
+这段要是已经标过，点颜色走 `PUT /highlights/{id}` **改颜色**，不再叠一条；笔记已存在则 `PUT /notes/{id}` 更新。
 
 阅读器侧栏（2026-10-07 用户口径）只有一个 **「笔记」** 页签 —— **批注 / 高亮 / 笔记合并成一种东西**：
 一条 = 一处高亮（哪一段文字）+ 它的正文。所以"还没写正文的高亮"也在列表里（标着「待写」），

@@ -108,7 +108,7 @@ const COLOR_TITLE: Record<string, string> = {
       <span
         v-for="c in props.colors"
         :key="c"
-        :class="['swatch', `hl-${c}`]"
+        :class="['hl-swatch', c]"
         :title="COLOR_TITLE[c] ?? c"
         @click="emit('highlight', c)"
       />
@@ -149,17 +149,7 @@ const COLOR_TITLE: Record<string, string> = {
 /* 删除高亮：危险的破坏性动作，用语义色区分（与全站的 danger 一致） */
 .selection-menu button.danger { color: var(--danger); }
 .selection-menu button.danger:hover { background: var(--danger-soft); color: var(--danger); }
-/* 色块一行：与按钮**同高**（26px），圆点垂直居中 —— 否则整条浮层会一高一低 */
+/* 色块一行：与按钮**同高**（26px），圆点垂直居中 —— 否则整条浮层会一高一低。
+   色块本身（`.hl-swatch` 与那组颜色）在 `base.css`：AI 解释浮层的"标出这段"用的是同一份。 */
 .selection-menu .row { display: inline-flex; align-items: center; height: var(--control-h-sm); }
-.swatch {
-  width: 16px; height: 16px; border-radius: 50%;
-  border: 1px solid var(--border-strong); cursor: pointer; flex: 0 0 auto;
-  transition: transform var(--dur-fast) var(--ease), border-color var(--dur) var(--ease);
-}
-.swatch:hover { transform: scale(1.15); border-color: var(--text-dim); }
-.hl-yellow { background: rgba(255, 214, 64, .6); }
-.hl-green { background: rgba(90, 220, 150, .55); }
-.hl-blue { background: rgba(110, 180, 255, .55); }
-.hl-pink { background: rgba(255, 150, 190, .55); }
-.hl-purple { background: rgba(140, 140, 140, .45); }
 </style>

@@ -21,6 +21,16 @@ async def list_highlights(request: Request, paper_id: str = Query(...)):
     return envelope(svc.list_highlights(paper_id), request=request)
 
 
+@router.put("/highlights/{highlight_id}")
+async def update_highlight(highlight_id: str, request: Request, payload: dict = Body(...)):
+    """改一条高亮：只开放**颜色**与 `selected_text`（位置要换就删了重建，见服务里的说明）。
+
+    前端用途（用户口径 2026-10-07）：AI 解释浮层底部点色块 = "标出这段 + 存成它的笔记" ——
+    这段要是已经标过，再点一个颜色就是**改颜色**，不该偷偷再叠一条高亮上去。
+    """
+    return envelope(svc.update_highlight(highlight_id, payload), request=request)
+
+
 @router.delete("/highlights/{highlight_id}")
 async def delete_highlight(highlight_id: str, request: Request):
     return envelope(svc.delete_highlight(highlight_id), request=request)

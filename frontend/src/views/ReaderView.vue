@@ -456,8 +456,6 @@ const explainCard = reactive({
     role: 'user' | 'assistant'; text: string; citations: AgentCitation[];
     steps?: AgentStep[];
   }>,
-  history: [] as Array<{ id: string; text: string; at?: string | null; rowId?: string | null }>,
-  historyOpen: false,
 });
 let explainController: AbortController | null = null;
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
@@ -2668,7 +2666,16 @@ async function askSelection(question: string) {
         if (step) { step.status = 'done'; step.ms = Number(data?.ms ?? 0); }
       }
     }
-    else if (name === 'answer_delta') explainCard.turns[idx].text += data?.text ?? '';
+    else if (name === 'answer_delta') {
+      const chunk = String(data?.text ?? '');
+      explainCard.turns[idx].text += chunk;
+      /* 轨迹里也留一段（与后端 `run.steps` 同形）：中间那些"我先读一下…"的正文段归轨迹，
+         浮层只显示**最后一次工具之后**的那段正文（见 `answerBody`）。不在这里落步的话，
+         流式期间就没有轨迹可依，只能显示拼接体 —— 那正是用户报的那个现象。 */
+      const last = live[live.length - 1];
+      if (last && last.kind === 'text') last.text = `${last.text ?? ''}${chunk}`;
+      else live.push({ kind: 'text', round: Number(data?.round ?? 0), text: chunk });
+    }
     else if (name === 'done') {
       explainCard.turns[idx].text = data?.answer ?? explainCard.turns[idx].text;
       explainCard.turns[idx].citations = data?.citations ?? [];
@@ -2714,17 +2721,15 @@ async function explainSelection() {
   explainCard.page = Number(selection.page) || 0;
   explainCard.conversationId = null;
   explainCard.turns = [];
-  explainCard.historyOpen = false;
   explainCard.processOpen = false;                    // 过程默认折叠（用户口径）
   explainCard.pinned = true;                          // 每次打开都从"锚定"开始（默认态）
-  /* 选区快照 + 浮层锚点：读完回答再点「存为笔记」时，页面上的选区可能早被改了 */
+  /* 选区快照 + 浮层锚点：读完回答再点颜色存笔记时，页面上的选区可能早被改了 */
   explainCard.highlightId = selection.hlIds[0] ?? '';
   explainCard.start = selection.start;
   explainCard.end = selection.end;
   explainCard.side = selection.side;
   explainCard.quote = selection.anchorText || selection.text;
   explainCard.anchor = { x: selection.x, y: selection.y, w: 0, h: 0 };
-  void loadExplainHistory();
   await askSelection('');
 }
 
@@ -2736,24 +2741,47 @@ function submitExplainQuestion() {
 }
 
 /** 划词解释历史 = `source=selection` 的批注（`存为批注` 存下来的那些）。 */
-async function loadExplainHistory() {
-  try {
-    const res: any = await api.get('/annotations', { paper_id: paperId.value });
-    const list: Annotation[] = res?.items ?? res ?? [];
-    explainCard.history = list
-      .filter(a => a.source === 'selection')
-      .slice(0, 20)
-      .map(a => ({ id: a.id, text: a.content_md, at: a.created_at, rowId: a.block_id }));
-  } catch {
-    explainCard.history = [];
-  }
+/**
+ * 一轮助手回复里**真正要给用户看的正文**（用户口径 2026-10-07 第 2 条）。
+ *
+ * 为什么不能直接用 `t.text`：后端 `done.answer` 是**所有正文段的拼接**
+ * （`state.text = sanitizer.clean`）—— 多轮 agent 中间那些"我先读一下这一段…/让我看看附近的上下文"
+ * 也在里面，于是浮层第一轮正文就成了"过程碎句 + 最终回答"焊在一起（用户截图报的正是这个）。
+ * 那些碎句在 `run.steps` 里本来就有自己的一段（`kind: 'text'`），该显示在**过程轨迹**里。
+ *
+ * 取法：**最后一次工具调用之后**的正文段拼起来（没有工具调用/后面没正文时退回 `t.text`）。
+ * 用"最后一次工具之后"而不是"最后一段"，是因为最终回答也可能被模型拆成两三个 `TextPart`。
+ */
+function answerBody(t: { text?: string; steps?: AgentStep[] }): string {
+  const steps = t.steps ?? [];
+  let lastTool = -1;
+  steps.forEach((s, i) => { if (s.kind === 'tool') lastTool = i; });
+  if (lastTool < 0) return String(t.text ?? '');
+  const tail = steps.slice(lastTool + 1)
+    .filter((s) => s.kind === 'text' && String(s.text ?? '').trim())
+    .map((s) => String(s.text));
+  return tail.length ? tail.join('') : String(t.text ?? '');
 }
 
-function showHistoryItem(item: { text: string; rowId?: string | null }) {
-  explainCard.turns = [{ role: 'assistant', text: item.text, citations: [] }];
-  explainCard.rowId = item.rowId ?? explainCard.rowId;
-  explainCard.historyOpen = false;
-}
+/** 最后那一轮助手回复（浮层的"当前这轮"）。 */
+const explainTurn = computed(() => (
+  [...explainCard.turns].reverse().find((t) => t.role === 'assistant') ?? null
+));
+/** 这一轮的过程轨迹有没有东西可看（决定"正在读…"那行还要不要） */
+const explainSteps = computed(() => (explainTurn.value?.steps ?? []).length > 0);
+/**
+ * **正在出过程、还没有最终正文**（用户口径第 3 条）：这时把底部的输入框与按钮全藏起来 ——
+ * 满屏都是思考/工具在跑，底下却摆着一排"存为…"和提问框，既没法用也干扰读。
+ */
+const explainBusy = computed(() => (
+  explainCard.loading
+  && !answerBody(explainTurn.value ?? {}).trim()
+));
+
+/** 这处解释对应的高亮（选择了颜色要标一下当前是哪枚） */
+const explainColor = computed(() => (
+  highlights.value.find((h) => h.id === explainCard.highlightId)?.color ?? ''
+));
 
 /** 行 id（`p004-02`）里的页号；不是这个形状就 0（与 agent 的 `_page_of_row` 同一口径）。 */
 function pageOfRow(rowId?: string | null): number {
@@ -2844,46 +2872,64 @@ function stepSummary(steps: AgentStep[]): string {
   return `深度思考与工具调用（${parts.join(' · ') || '过程'}）`;
 }
 
-async function saveExplanationAsAnnotation() {
-  const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
-  if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
-  try {
-    await api.post('/annotations/save', {
-      paper_id: paperId.value,
-      block_id: explainCard.rowId || null,
-      content_md: answer,
-    });
-    toast('已存为批注', 'ok');
-    explainCard.open = false;
-    await refreshAnnotations();
-  } catch (err) { reportError(err, '存为批注失败'); }
-}
-
 /**
- * 「存为笔记」（《修改计划》第五步）：把 AI 解释的**正文**挂到这段文字对应的**高亮**上。
+ * 浮层底部那排色块（用户口径 2026-10-07 第 1 条）：**点颜色 = 标出这段 + 把解释正文存成它的笔记**。
  *
- * 用户口径是"高亮 → AI 解释 → 用户选择 → 保存为笔记"，**不默认自动保存** —— 所以它是个按钮，
- * 而且与笔记浮层同一条路：选区已经有高亮就复用它，没有就先补一条（笔记必须挂在高亮上）。
- * 快照在**打开浮层那一刻**就存下了（`explainCard.highlightId/start/end/quote`）：读完回答再点保存时，
- * 页面上的选区可能早就被用户改了。
+ * 为什么把原来那两枚「存为笔记 / 存为批注」换掉：
+ * - 「存为批注」那套（`/annotations/save`）已经过时 —— 批注/高亮/笔记三样在界面上早就合并成「笔记」；
+ * - 「存为笔记」还要求"先去正文里标高亮再回来点它"，一次动作被拆成两步；
+ * - 合成一步之后，"想留这段"与"想标黄色"本来就是同一个意图：挑个颜色就完了。
+ *
+ * 快照仍是**打开浮层那一刻**存下的（`explainCard.highlightId/start/end/quote/scope`）：
+ * 读完回答再点颜色时，页面上的选区可能早被改了。已有高亮就**改它的颜色**（`PUT /highlights/{id}`），
+ * 没有才按当前的锚点新建一条（笔记永远挂在高亮上，口径不变）。
  */
-async function saveExplanationAsNote() {
-  const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
-  if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
-  /* 同样只往**已有高亮**上挂（用户口径：只有插入了高亮，才能在高亮的基础上加笔记）——
-     打开解释浮层那一刻若这段文字没被标过，这里就直说，而不是悄悄替用户标一条。 */
-  if (!explainCard.highlightId) {
-    toast('先给这段文字加个高亮，再存为笔记', 'warn', 2600);
+async function saveExplanationWithColor(color: string) {
+  const answer = answerBody(explainTurn.value ?? {}).trim();
+  if (!answer) { toast('还没有可保存的解释', 'warn'); return; }
+  const scope = explainCard.scope;
+  /* 锚点：正文行用行 id；Markdown / 原 PDF 两面的锚点是 `md:p<页>` / `pdf:p<页>` */
+  const blockId = scope === 'markdown' ? mdAnchor(explainCard.page)
+    : scope === 'pdf' ? pdfAnchor(explainCard.page)
+      : explainCard.rowId;
+  const anchored = scope === 'markdown' || scope === 'pdf'
+    ? (explainCard.page > 0 && explainCard.end > explainCard.start)
+    : !!explainCard.rowId;
+  if (!explainCard.highlightId && !anchored) {
+    toast('这段文字定位不到（标不了高亮）', 'warn', 2600);
     return;
   }
   try {
-    await api.post('/notes', {
-      paper_id: paperId.value, block_id: explainCard.rowId, highlight_id: explainCard.highlightId,
-      selected_text: explainCard.quote || explainCard.selectionText,
-      start_offset: explainCard.start, end_offset: explainCard.end,
-      content_md: answer,
-    });
-    toast('已存为这处高亮的笔记', 'ok', 2600);
+    let highlightId = explainCard.highlightId;
+    if (highlightId) {
+      await api.put(`/highlights/${highlightId}`, { color });
+    } else {
+      const created = await api.post<Highlight>('/highlights', {
+        paper_id: paperId.value, block_id: blockId,
+        selected_text: explainCard.quote || explainCard.selectionText,
+        start_offset: explainCard.start, end_offset: explainCard.end,
+        color, side: explainCard.side, scope,
+      });
+      highlightId = created?.id ?? '';
+      explainCard.highlightId = highlightId;
+      highlights.value.push({
+        ...created, block_id: blockId, start: created.start, end: created.end,
+        side: explainCard.side, scope,
+      } as Highlight);
+    }
+    if (!highlightId) { toast('高亮没建成，笔记也就没存', 'warn', 2600); return; }
+    /* 同一处高亮已经有笔记就更新它（用户可以再解释一次、再点一次颜色） */
+    const existing = notes.value.find((n) => n.highlight_id === highlightId) ?? null;
+    if (existing) await api.put(`/notes/${existing.id}`, { content_md: answer });
+    else {
+      await api.post('/notes', {
+        paper_id: paperId.value, block_id: blockId, highlight_id: highlightId,
+        selected_text: explainCard.quote || explainCard.selectionText,
+        start_offset: explainCard.start, end_offset: explainCard.end,
+        content_md: answer,
+      });
+    }
+    toast(existing ? '已更新这处高亮的笔记' : '已标色并存为这处高亮的笔记', 'ok', 2400);
     await refreshAnnotations();
   } catch (err) { reportError(err, '存为笔记失败'); }
 }
@@ -3919,7 +3965,7 @@ function renderMarkdown(text?: string | null) {
                 </div>
               </div>
             </div>
-            <div v-if="t.text" class="md small" data-ex-answer v-html="renderMarkdown(t.text)" />
+            <div v-if="answerBody(t)" class="md small" data-ex-answer v-html="renderMarkdown(answerBody(t))" />
             <div v-if="t.citations.length" class="ex-cites">
               <button v-for="c in t.citations" :key="c.ref" class="chip" :title="c.snippet || c.label"
                       @click="focusCitation(c)">
@@ -3928,10 +3974,12 @@ function renderMarkdown(text?: string | null) {
             </div>
           </template>
         </div>
-        <div v-if="explainCard.loading" class="tiny faint">正在读这篇论文…</div>
+        <!-- 还在出过程、正文没到：只留这一行（有轨迹可看时连它都不必） -->
+        <div v-if="explainBusy && !explainSteps" class="tiny faint">正在读这篇论文…</div>
       </div>
 
-      <div class="ex-ask">
+      <!-- 底部输入框：**出过程期间不显示**（用户口径第 3 条：还没有本轮正文时藏起来） -->
+      <div v-if="!explainBusy" class="ex-ask">
         <input
           v-model="explainCard.question"
           placeholder="就这段继续问（Enter 发送）"
@@ -3943,32 +3991,26 @@ function renderMarkdown(text?: string | null) {
         </button>
       </div>
 
-      <div v-if="explainCard.historyOpen" class="ex-history">
-        <div v-if="!explainCard.history.length" class="tiny faint">
-          还没有存过的解释（点下方「存为批注」就会留在这里）
-        </div>
-        <button v-for="h in explainCard.history" :key="h.id" class="ex-hrow" @click="showHistoryItem(h)">
-          <span class="tiny faint">{{ fmtRelative(h.at) }}</span>
-          <span class="md small ex-hhead" v-html="renderMarkdown(h.text)" />
-        </button>
-      </div>
-
       <template #footer>
-        <button class="btn sm primary" :disabled="explainCard.loading" data-ex-save-note
-                title="把这段解释的正文存成这处高亮的笔记"
-                @click="saveExplanationAsNote">
-          <AppIcon name="note" :size="12" />存为笔记
-        </button>
-        <button class="btn sm" :disabled="explainCard.loading" @click="saveExplanationAsAnnotation">
-          存为批注
-        </button>
-        <span class="spacer"></span>
-        <button class="btn sm ghost" @click="explainCard.historyOpen = !explainCard.historyOpen">
-          <AppIcon name="task" :size="12" />历史（{{ explainCard.history.length }}）
-        </button>
-        <button class="btn sm ghost" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat(false)">
-          <AppIcon name="chat" :size="12" />在对话里继续
-        </button>
+        <template v-if="!explainBusy">
+          <span class="tiny faint ex-save-hint">标出这段并存为笔记</span>
+          <span class="ex-swatches">
+            <span
+              v-for="c in HIGHLIGHT_COLORS"
+              :key="c"
+              class="hl-swatch"
+              :class="[c, { on: explainColor === c }]"
+              :title="`标成${c === 'yellow' ? '黄' : c === 'green' ? '绿' : c === 'blue' ? '蓝' : '粉'}色，并把这段解释存成它的笔记`"
+              :data-ex-color="c"
+              @click="saveExplanationWithColor(c)"
+            />
+          </span>
+          <span class="spacer"></span>
+          <button class="btn sm ghost" title="把这个选区带进侧栏对话里继续聊" data-ex-to-chat
+                  @click="openSelectionInChat(false)">
+            <AppIcon name="chat" :size="12" />在对话里继续
+          </button>
+        </template>
       </template>
     </FloatingCard>
 
@@ -4517,21 +4559,9 @@ function renderMarkdown(text?: string | null) {
 .ex-ask { display: flex; gap: 6px; margin-top: 10px; }
 .ex-ask input { flex: 1; min-width: 0; }
 .ex-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-.ex-history {
-  margin-top: 8px; max-height: 24vh; overflow-y: auto;
-  border-top: 1px solid var(--divider); padding-top: 6px;
-}
-.ex-hrow {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
-  border: 0; background: none; color: var(--text); text-align: left; cursor: pointer;
-  padding: 5px 6px; border-radius: var(--radius-sm);
-}
-.ex-hrow:hover { background: var(--bg-hover); }
-.ex-hhead {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; color: var(--text-dim);
-}
-.ex-hhead :deep(p) { margin: 0; display: inline; }
+/* 底部那排"标出这段并存为笔记"的色块（浮层里的横向一排：标签 + 4 枚色点） */
+.ex-save-hint { flex: none; }
+.ex-swatches { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 
 @media print {
   .reader-toolbar, .reader-aside { display: none !important; }

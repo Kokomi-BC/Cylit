@@ -1444,10 +1444,20 @@ async function run() {
         res.aiBtn = !!aiBtn;
         if (aiBtn) {
           aiBtn.click();
+          /* 出过程期间：底部输入框与按钮**不该在**（用户口径第 3 条）——
+             趁它还在跑先量一眼，再等正文出来。 */
+          await sleep(600); spin(BURN);
+          res.aiBusyHidden = !D().querySelector('.ex-ask')
+            && !D().querySelector('[data-ex-color]');
           await until(D(), (x) => x.querySelector('[data-ex-answer]'), 400);
           const cardEl = D().querySelector('[data-explain-card]');
           res.aiCard = !!cardEl;
           res.aiAnswerLen = (D().querySelector('[data-ex-answer]')?.textContent || '').trim().length;
+          /* 正文里**不该带过程碎句**（用户口径第 2 条）：后端 `done.answer` 是所有正文段的拼接，
+             浮层只显示"最后一次工具调用之后"的那段。过程碎句会出现在轨迹里。 */
+          const bodyText = (D().querySelector('[data-ex-answer]')?.textContent || '');
+          res.aiBodyHead = bodyText.replace(/\\s+/g, ' ').trim().slice(0, 40);
+          res.aiBodyLean = !/I'?ll read the selected block|Let me check|让我看看|我先读/i.test(bodyText);
           res.aiCentered = cardEl ? (() => {
             const r = cardEl.getBoundingClientRect();
             return Math.abs((r.left + r.width / 2) - w.innerWidth / 2) < 40
@@ -1458,17 +1468,29 @@ async function run() {
           res.aiProcSummary = head ? (head.textContent || '').replace(/\\s+/g, ' ').trim() : '';
           if (head) { head.click(); await sleep(400); spin(BURN); }
           res.aiProcSteps = D().querySelectorAll('.ex-proc-body .ex-step').length;
-          const saveNote = D().querySelector('[data-ex-save-note]');
-          res.hasSaveNoteBtn = !!saveNote;
-          if (saveNote) { saveNote.click(); await sleep(1500); spin(BURN); await sleep(400); }
+          /* 底部的色块（用户口径第 1 条）：点一个颜色 = 标出这段 + 把解释存成它的笔记 */
+          res.aiNoOldButtons = !D().querySelector('[data-ex-save-note]')
+            && !D().querySelector('.ex-history')
+            && ![...D().querySelectorAll('[data-explain-card] button')]
+              .some((b) => (b.textContent || '').indexOf('存为批注') >= 0
+                || (b.textContent || '').indexOf('历史') >= 0);
+          const swatches = [...D().querySelectorAll('[data-ex-color]')];
+          res.aiSwatches = swatches.length;
+          const blue = D().querySelector('[data-ex-color="blue"]');
+          if (blue) { blue.click(); await sleep(1800); spin(BURN); await sleep(500); }
         }
       }
+      const hdata = await jget(api + '/highlights?paper_id=__PAPER__');
+      const hls = (hdata.data && hdata.data.items) || [];
+      const aiHl = hls.filter((h) => h.scope === 'pdf').pop() || null;
+      res.aiHlColor = aiHl ? String(aiHl.color || '') : '';
       const ndata3 = await jget(api + '/notes?paper_id=__PAPER__');
       const notesNow = (ndata3.data && ndata3.data.items) || [];
       const aiNote = notesNow.filter((n) => n.scope === 'pdf').pop() || null;
       res.aiNoteSaved = aiNote ? 1 : 0;
       res.aiNoteText = aiNote ? String(aiNote.content_md || '') : '';
       res.aiNoteHl = aiNote ? !!aiNote.highlight_id : false;
+      res.aiNoteOnSame = !!(aiNote && aiHl && aiNote.highlight_id === aiHl.id);
     }
 
     /* 收尾：删掉自检造出来的那几条（笔记 + 高亮，一条都不留） */
@@ -1511,6 +1533,29 @@ def check_explain_shell() -> None:
     record("explain", "锚定后点「来源 chunk」跳转**不关**浮层（没锚定的才顺手关）",
            jumped and guarded and "pinned: true" in src,
            f"跳转={jumped} 有锚定判断={guarded} 默认锚定={'pinned: true' in src}")
+
+    # 用户口径 2026-10-07：底部那两枚旧按钮（「存为笔记」「存为批注」）与「历史」全部撤掉，
+    # 换成**色块**：点一个颜色 = 标出这段 + 把这一轮解释存成它的笔记（一步到位）。
+    old_gone = all(k not in src for k in (
+        'data-ex-save-note', 'saveExplanationAsAnnotation', 'saveExplanationAsNote',
+        'ex-history', 'historyOpen', 'loadExplainHistory'))
+    swatch_row = ('data-ex-color' in src and 'saveExplanationWithColor' in src
+                  and '`/highlights/${highlightId}`' in src and "'/notes'" in src)
+    record("explain", "底部改成色块：点颜色 = 标出这段 + 存成它的笔记（两枚旧按钮与「历史」已撤）",
+           old_gone and swatch_row,
+           f"旧入口已撤={old_gone} 色块+落库={swatch_row}")
+
+    # 用户口径第 3 条：还在出过程、本轮正文没到时，底部输入框与按钮**都藏起来**。
+    busy_hidden = ('const explainBusy = computed' in src
+                   and src.count('v-if="!explainBusy"') >= 2)
+    record("explain", "出过程期间藏起底部输入框与按钮", busy_hidden,
+           f"两处 v-if 都在={src.count('v-if=\"!explainBusy\"')} 处")
+
+    # 用户口径第 2 条：正文只取"最后一次工具调用之后"那段 —— 中间那些
+    # "我先读一下…/让我看看上下文" 归过程轨迹，不再拼进正文。
+    lean_body = 'function answerBody' in src and 'lastTool' in src and 'answerBody(t)' in src
+    record("explain", "正文只取最后一次工具之后那一段（过程碎句归轨迹，不拼进正文）",
+           lean_body, f"answerBody 实现={lean_body}")
 
     # 同一份浮层壳（笔记 / AI 解释共用）：**按住标题栏可以拖**
     fc = (ROOT / "frontend" / "src" / "components" / "reader" / "FloatingCard.vue"
@@ -1649,14 +1694,24 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
         record("explain", "AI 解释是**浮层**（不是居中大弹窗），且不遮整页",
                res.get("aiCard") is True and res.get("aiCentered") is False,
                f"浮层={res.get('aiCard')} 居中={res.get('aiCentered')}，回答 {res.get('aiAnswerLen')} 字")
+        record("explain", "出过程期间藏起底部输入框与按钮（没有本轮正文时不给操作）",
+               res.get("aiBusyHidden") is True, f"藏起了={res.get('aiBusyHidden')}")
+        record("explain", "浮层正文**不带过程碎句**（只显示最后一次工具之后的那段）",
+               res.get("aiBodyLean") is True,
+               f"开头={str(res.get('aiBodyHead'))[:34]!r}")
         record("explain", "过程默认**折叠**（只展示最终回答），点开才铺开",
                res.get("aiProcCollapsed") is True and (res.get("aiProcSteps") or 0) >= 1,
                f"折叠时步骤={0 if res.get('aiProcCollapsed') else '?'}，"
                f"展开后 {res.get('aiProcSteps')} 步，摘要={str(res.get('aiProcSummary'))[:28]!r}")
-        record("explain", "「存为笔记」把解释正文挂到该处高亮上（不自动保存）",
-               res.get("hasSaveNoteBtn") is True and res.get("aiNoteSaved") == 1
-               and res.get("aiNoteHl") is True and len(str(res.get("aiNoteText") or "")) > 20,
-               f"笔记={str(res.get('aiNoteText'))[:24]!r} 挂高亮={res.get('aiNoteHl')}")
+        record("explain", "底部那两枚旧按钮与「历史」都已撤（色块取代它们）",
+               res.get("aiNoOldButtons") is True and (res.get("aiSwatches") or 0) == 4,
+               f"旧按钮/历史还在={not res.get('aiNoOldButtons')}，色块 {res.get('aiSwatches')} 枚")
+        record("explain", "点色块 = **标出这段 + 把解释存成它的笔记**（同一处高亮）",
+               res.get("aiHlColor") == "blue" and res.get("aiNoteSaved") == 1
+               and res.get("aiNoteHl") is True and res.get("aiNoteOnSame") is True
+               and len(str(res.get("aiNoteText") or "")) > 20,
+               f"高亮颜色={res.get('aiHlColor')!r}，笔记={str(res.get('aiNoteText'))[:20]!r} "
+               f"挂同一处={res.get('aiNoteOnSame')}")
 
 
 # --------------------------------------------------------------------------
@@ -2265,23 +2320,25 @@ def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> Non
 # --------------------------------------------------------------------------
 # 参考文献的"发表网站"地址（`utils/references.ts`）：三级回退，同样用 node 打真代码
 # --------------------------------------------------------------------------
-#: (名字, 一条文献（`PaperReference` 的字段）, 期望地址开头的片段)
+#: (名字, 一条文献（`PaperReference` 的字段）, 期望地址里必须含的片段, 不许含的片段)
 REF_CASES = [
     ("有 url 字段就用它", {"raw": "whatever", "url": "https://example.org/paper.pdf"},
-     "https://example.org/paper.pdf"),
-    ("有 doi 字段 → doi.org", {"raw": "whatever", "doi": "10.1000/xyz"}, "https://doi.org/10.1000/xyz"),
+     "https://example.org/paper.pdf", None),
+    ("有 doi 字段 → doi.org", {"raw": "whatever", "doi": "10.1000/xyz"}, "https://doi.org/10.1000/xyz",
+     None),
     ("doi 字段写成 doi.org 链接也认", {"raw": "", "doi": "https://doi.org/10.1/a"},
-     "https://doi.org/10.1/a"),
+     "https://doi.org/10.1/a", None),
     ("原文里的 arXiv 号（库里最常见的那种）",
      {"raw": "[1] J. L. Ba, J. R. Kiros, and G. E. Hinton. Layer normalization. "
              "arXiv preprint arXiv:1607.06450, 2016."},
-     "https://arxiv.org/abs/1607.06450"),
+     "https://arxiv.org/abs/1607.06450", None),
     ("原文里的完整链接", {"raw": "代码见 https://github.com/x/y ，年份 2019"},
-     "https://github.com/x/y"),
+     "https://github.com/x/y", None),
     ("原文里裸写的 DOI（结尾标点要去掉）",
-     {"raw": "Journal of X, doi:10.1234/abcd.5678, 2019"}, "https://doi.org/10.1234/abcd.5678"),
-    ("什么都没有 → 学术搜索兜底",
-     {"raw": "Some random reference without any identifier"}, "scholar.google.com"),
+     {"raw": "Journal of X, doi:10.1234/abcd.5678, 2019"}, "https://doi.org/10.1234/abcd.5678", None),
+    ("什么都没有 → 学术搜索兜底（**编号不进 query**）",
+     {"raw": "[12] Some random reference without any identifier, 2019"},
+     "scholar.google.com", "[12]"),
 ]
 
 _REF_DRIVER = """import { readFileSync } from 'node:fs';
@@ -2322,8 +2379,12 @@ def check_reference_urls() -> None:
                    f"node 失败：{(proc.stderr or '')[-200:]}")
             return
         urls = json.loads(proc.stdout)
-    failed = [f"{name}（{url[:40]}）"
-              for (name, _ref, want), url in zip(REF_CASES, urls) if want not in str(url)]
+    failed = []
+    for (name, _ref, want, must_not), url in zip(REF_CASES, urls):
+        text = str(url)
+        if want not in text or (must_not and (must_not in text
+                                              or must_not.replace("[", "%5B").replace("]", "%5D") in text)):
+            failed.append(f"{name}（{text[:40]}）")
     record("refs", "参考文献地址三级回退（url / doi / 原文里的 arXiv·链接·DOI / 学术搜索）",
            len(urls) == len(REF_CASES) and not failed,
            f"{len(REF_CASES)} 条全过" if not failed else "；".join(failed[:3]))

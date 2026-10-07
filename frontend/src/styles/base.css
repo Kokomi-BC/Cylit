@@ -87,6 +87,23 @@ mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
   text-decoration-color: currentColor;
 }
 .cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
+/* **高亮色块**（划词菜单、AI 解释浮层的"标出这段并存为笔记"共用一份）。
+ * 颜色与正文里的 `mark.hl.*` 是同一组色值，只是不透明度略高（小圆点上要看得清）。
+ * 以前这套只写在 `SelectionMenu` 的 scoped 样式里 —— 第二处要用时又得抄一遍，
+ * 那就成了"两个地方各自维护一组颜色"（2026-10-03 的胶囊就是这么走散的）。 */
+.hl-swatch {
+  width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto;
+  border: 1px solid var(--border-strong); cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur) var(--ease);
+}
+.hl-swatch:hover { transform: scale(1.15); border-color: var(--text-dim); }
+.hl-swatch.yellow { background: rgba(255, 214, 64, .6); }
+.hl-swatch.green { background: rgba(90, 220, 150, .55); }
+.hl-swatch.blue { background: rgba(110, 180, 255, .55); }
+.hl-swatch.pink { background: rgba(255, 150, 190, .55); }
+.hl-swatch.purple { background: rgba(140, 140, 140, .45); }
+/* 已经是这个颜色的那枚（AI 解释浮层里标出当前高亮的颜色） */
+.hl-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，
  * 否则底色只画在一条行高上 —— 三行公式看起来"只有中间一行被标黄"（用户报过）。
  * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。

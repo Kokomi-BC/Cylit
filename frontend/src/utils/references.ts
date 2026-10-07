@@ -20,6 +20,14 @@ function tidy(url: string): string {
   return url.trim().replace(/[.,;:)\]]+$/, '');
 }
 
+/** 条目开头的编号（`[12]` / `(12)` / `12.`）—— **搜索时要去掉**：它只会把结果带偏 */
+const REF_NO_RE = /^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*/;
+
+/** 给搜索用的文本：剥掉编号（用户口径 2026-10-07：跳学术搜索时别把标号带进去） */
+export function stripRefNumber(text: string): string {
+  return String(text ?? '').replace(REF_NO_RE, '').trim();
+}
+
 /**
  * 这条文献的"发表网站"：
  * `url` → `doi` → 原文里的 arXiv → 原文里的 URL → 原文里的 DOI → 学术搜索。
@@ -44,7 +52,8 @@ export function referenceUrl(ref: PaperReference): string {
   const doi = DOI_IN_TEXT.exec(raw);
   if (doi) return `https://doi.org/${tidy(doi[1])}`;
 
-  const q = [ref.title, ref.authors, ref.year].filter(Boolean).join(' ') || raw;
+  const q = [stripRefNumber(String(ref.title ?? '')), ref.authors, ref.year]
+    .filter(Boolean).join(' ') || stripRefNumber(raw);
   return `https://scholar.google.com/scholar?q=${encodeURIComponent(q.slice(0, 300))}`;
 }
 
