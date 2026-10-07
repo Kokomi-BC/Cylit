@@ -93,11 +93,20 @@ def archive(paper_id: str) -> dict:
         "paper_id": paper_id,
         "title": paper.get("title") or "",
         "page_count": int(paper.get("page_count") or 0),
+        # `page_total` 与 `page_count` 是同一个数：档案块的渲染读的是前者（历史命名），
+        # 只给 `page_count` 时提示词里的"篇幅"永远是空的。
+        "page_total": int(paper.get("page_count") or 0),
         "status": paper.get("status"),
         "brief": brief.to_dict() if brief is not None else {},
         "brief_source": (brief.source if brief is not None else "none"),
         "outline": list(outline.get("items") or []),
         "has_markdown": bool(paper_service.get_markdown(paper_id)),
+        # 现有元数据：元数据填写那次会话要它（"哪些字段已经有值了，别重复提交"）。
+        # 对问答是纯背景，`archive_block` 不渲染它。
+        "meta": {k: paper.get(k) for k in (
+            "title", "authors", "venue", "year", "tags", "abstract", "abstract_zh",
+            "keywords_en", "domain", "one_liner", "contributions", "prereq",
+            "difficulty", "read_time_min", "paper_type", "doi", "code_url")},
     }
 
 

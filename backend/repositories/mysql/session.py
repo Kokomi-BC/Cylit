@@ -46,6 +46,22 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 默认值必须给：老库里的既有行要落到 0，而不是 NULL（读出来就是 None，前端显示成空白）。
     ("paper", "transcribe_done", "`transcribe_done` INT NOT NULL DEFAULT 0"),
     ("paper", "transcribe_total", "`transcribe_total` INT NOT NULL DEFAULT 0"),
+    # 元数据扩展（2026-10-07）：中英文摘要/关键词、领域、创新点、前置知识、难度、
+    # 推荐阅读时间、一句话概括、类型、DOI/开源地址、来源标记。
+    # 一律允许 NULL —— NULL 表示"还不知道"（与 "" 表示"读过、确实没有"是两回事）。
+    ("paper", "abstract_zh", "`abstract_zh` LONGTEXT NULL"),
+    ("paper", "keywords_en", "`keywords_en` VARCHAR(512) NULL"),
+    ("paper", "domain", "`domain` VARCHAR(128) NULL"),
+    ("paper", "one_liner", "`one_liner` VARCHAR(512) NULL"),
+    ("paper", "contributions_json", "`contributions_json` LONGTEXT NULL"),
+    ("paper", "prereq_json", "`prereq_json` LONGTEXT NULL"),
+    ("paper", "difficulty", "`difficulty` VARCHAR(16) NULL"),
+    ("paper", "read_time_min", "`read_time_min` INT NULL"),
+    ("paper", "paper_type", "`paper_type` VARCHAR(32) NULL"),
+    ("paper", "doi", "`doi` VARCHAR(128) NULL"),
+    ("paper", "code_url", "`code_url` VARCHAR(256) NULL"),
+    ("paper", "meta_sources_json", "`meta_sources_json` LONGTEXT NULL"),
+    ("paper", "meta_filled_at", "`meta_filled_at` DATETIME NULL"),
     # 对话里的图片附件，以及思考模式的思维链 / 思考耗时（都是"那一轮"的附属数据）：
     # 允许 NULL —— 老消息就是没有，读出来空列表 / 0 即可。
     ("conversation_message", "attachments_json", "`attachments_json` LONGTEXT NULL"),

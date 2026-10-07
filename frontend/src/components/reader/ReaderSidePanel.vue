@@ -2,12 +2,12 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **论文解读** / **阅读地图**
+ * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **论文解读**
  * （目录由 ReaderToc 负责）。公式**只读**：来自 Markdown 提取，不做复核、不分级、不比对裁图。
  *
- * 解读**拆成两个页签**（用户口径第三轮）：`a.markdown` = 论文解读、`b.markdown` + 概念卡 =
- * 阅读地图。两份内容用一个共享组件（`InsightPanel` → `InsightDoc`），只有 `section` 不同；
- * 整页版（`/understand`、`/readmap`）也复用同一套渲染与数据源。
+ * 解读是一个页签：「论文解读」（`a.markdown`）。内容由 `InsightPanel` → `InsightDoc` 渲染；
+ * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
+ * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
@@ -31,7 +31,7 @@ export interface BriefDraft {
 }
 
 /** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签）。 */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight' | 'readmap';
+export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
@@ -46,7 +46,7 @@ const props = withDefaults(defineProps<{
   briefSource?: string;
   /** 「任务」页签：这篇论文的**全部**任务（各类型都算），页签里按类型汇总成清单 */
   tasks: TaskInfo[];
-  /** 「论文解读」/「阅读地图」页签：按论文取理解结果（整页版共用同一份缓存） */
+  /** 「论文解读」页签：按论文取解读结果（整页版共用同一份缓存） */
   paperId: string;
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
@@ -65,8 +65,8 @@ const emit = defineEmits<{
   (e: 'cancel-task', task: TaskInfo): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
-  /** 解读/阅读地图页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
-  (e: 'open-insight-page', section: 'read' | 'map'): void;
+  /** 解读页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
+  (e: 'open-insight-page'): void;
 }>();
 
 function locate(id?: string | null, page?: number | null) {
@@ -192,15 +192,13 @@ const merged = computed<MergedItem[]>(() => {
 
 <template>
   <div class="panel-body">
-    <!-- 论文解读（A 路）/ 阅读地图（B 路 + 相关概念）：两个页签共用 InsightPanel，
-         只有 `section` 不同。顶部只有「标题 + 一枚只有图标的按钮」（打开整页 = 应用内新标签页）。 -->
+    <!-- 论文解读：顶部只有「标题 + 一枚只有图标的按钮」（打开整页 = 应用内新标签页）。 -->
     <InsightPanel
-      v-if="props.tab === 'insight' || props.tab === 'readmap'"
+      v-if="props.tab === 'insight'"
       :paper-id="props.paperId"
-      :section="props.tab === 'readmap' ? 'map' : 'read'"
       :running="props.insightRunning"
       @started="emit('insight-queued')"
-      @open-page="emit('open-insight-page', props.tab === 'readmap' ? 'map' : 'read')"
+      @open-page="emit('open-insight-page')"
     />
 
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->

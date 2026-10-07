@@ -32,10 +32,8 @@ const TAB_META: Record<string, { title: string; icon: string }> = {
   home: { title: '首页', icon: 'home' },
   library: { title: '论文库', icon: 'library' },
   reader: { title: '论文', icon: 'document' },
-  // 解读的两个整页视图：**必须是两个路由名**，否则 routeKey（只由 name + params 组成）
-  // 会把它们当成同一个标签，`?sec=map` 这种 query 是开不出第二个标签的。
+  // 解读整页（`/understand/:paperId`）。原 `/readmap`（阅读地图）已删除。
   understand: { title: '论文解读', icon: 'sparkle' },
-  readmap: { title: '阅读地图', icon: 'map' },
   knowledge: { title: '知识库', icon: 'knowledge' },
   notes: { title: '笔记', icon: 'note' },
   models: { title: '模型', icon: 'model' },

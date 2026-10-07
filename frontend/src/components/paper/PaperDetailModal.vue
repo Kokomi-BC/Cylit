@@ -26,9 +26,10 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
 
 const router = useRouter();
 
-type TabKey = 'overview' | 'progress' | 'files';
+type TabKey = 'overview' | 'refs' | 'progress' | 'files';
 const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: string }> = [
   { key: 'overview', label: '概览', icon: 'document' },
+  { key: 'refs', label: '参考文献', icon: 'list' },
   { key: 'progress', label: '进度', icon: 'task' },
   { key: 'files', label: '文件', icon: 'layers' },
 ];
@@ -133,6 +134,45 @@ const kbText = computed(() => (paper.value?.in_knowledge_base ? '已入库' : '�
 const abstractText = computed(() => (paper.value?.abstract || '').trim());
 const tags = computed(() => (paper.value?.tags || []).filter((t) => String(t).trim()));
 
+/* ------------------------------ 元数据扩展（2026-10-07） ------------------------------ */
+
+/** 中文摘要（模型的译文）。 */
+const abstractZh = computed(() => (paper.value?.abstract_zh || '').trim());
+const contributions = computed(() => (paper.value?.contributions || []).filter((t) => String(t).trim()));
+const prereq = computed(() => (paper.value?.prereq || []).filter((t) => String(t).trim()));
+const keywordsEn = computed(() => (paper.value?.keywords_en || []).filter((t) => String(t).trim()));
+const references = computed(() => paper.value?.references || []);
+
+/** 「论文信息」卡上的键值行：**没值的项不画**（空行比没有更烦人）。 */
+const metaFacts = computed<{ k: string; v: string }[]>(() => {
+  const p = paper.value;
+  if (!p) return [];
+  const out: { k: string; v: string }[] = [];
+  if (p.domain) out.push({ k: '领域', v: p.domain });
+  if (p.difficulty) out.push({ k: '难度', v: p.difficulty });
+  if (p.paper_type) out.push({ k: '类型', v: p.paper_type });
+  if (p.read_time_min) out.push({ k: '阅读时间', v: `约 ${p.read_time_min} 分钟` });
+  if (references.value.length) out.push({ k: '参考文献', v: `${references.value.length} 条` });
+  return out;
+});
+
+/** 每一项的来源（`pdf` / `model` / `agent` / `manual`）——鼠标停在字段上才看得到。 */
+function sourceOf(key: string): string {
+  const s = paper.value?.meta_sources?.[key] || '';
+  return {
+    pdf: '从论文里读出来的', model: '模型读抽样内容填的',
+    agent: 'agent 读全文填的', manual: '手动填的',
+  }[s] || '';
+}
+
+/** 还有哪些项是空的 —— 决定"要不要显示补全按钮"。 */
+const metaMissing = computed(() => {
+  const p = paper.value;
+  if (!p) return false;
+  return !abstractText.value || !tags.value.length || !abstractZh.value
+    || !p.domain || !contributions.value.length || !p.difficulty || !p.read_time_min;
+});
+
 /** 左栏身份区那一行补充信息：页数 + 会议/年份（原来在"9 页文档"横幅里，横幅去掉了）。 */
 const metaLine = computed(() => {
   const parts: string[] = [];
@@ -143,15 +183,25 @@ const metaLine = computed(() => {
 });
 
 /**
- * 摘要 / 标签还是空的时候，用后端那条**元数据补全**接口现填一次
- * （`POST /papers/{id}/metadata/auto`：先离线读 PDF 首页，读不出来再问模型；只填空字段）。
+ * 两个补全入口（用户口径 2026-10-07）：
+ * - `model=false`：**离线**读 PDF 首页与页产物（会议/年份/原文摘要/DOI/参考文献/阅读时间），
+ *   不花钱、同步返回，所以直接刷界面；
+ * - `model=true`：交给 **agent 读全文**填写（"完整 agent 功能，不用显示细节"）——
+ *   它是个后台任务（1~3 分钟），这里只负责排队 + 说一声，跑完刷新卡片即可看到。
  */
 const metaBusy = ref('');
 async function fillMeta(model: boolean) {
   if (metaBusy.value) return;
-  metaBusy.value = model ? 'model' : 'pdf';
+  metaBusy.value = model ? 'agent' : 'pdf';
   try {
-    const res = await api.post<{ paper?: Paper }>(`/papers/${props.paperId}/metadata/auto`, { model });
+    if (model) {
+      await api.post(`/papers/${props.paperId}/metadata/agent`);
+      toast('已在后台开始补全论文信息（agent 会先读这篇论文，约 1~3 分钟）', 'ok', 6200);
+      emit('changed');
+      return;
+    }
+    const res = await api.post<{ paper?: Paper }>(`/papers/${props.paperId}/metadata/auto`,
+                                                 { model: false });
     if (res?.paper) paper.value = res.paper;
     emit('changed');
   } catch (err) {
@@ -487,12 +537,12 @@ async function doDelete() {
                       <span><AppIcon name="note" :size="20" /></span>
                       <h3>摘要</h3>
                     </div>
-                    <div class="pd-abstract-actions" v-if="!abstractText || !tags.length">
+                    <div class="pd-abstract-actions" v-if="metaMissing">
                       <button
                         type="button"
                         class="pd-ghost-btn"
                         :disabled="!!metaBusy"
-                        title="从 PDF 首页离线读取会议、年份、摘要（不花钱）"
+                        title="离线读 PDF 首页与页产物：会议、年份、原文摘要、DOI、参考文献、阅读时间（不花钱）"
                         @click="fillMeta(false)"
                       >
                         <AppIcon name="sparkle" :size="13" />{{ metaBusy === 'pdf' ? '识别中…' : '从论文识别' }}
@@ -501,10 +551,10 @@ async function doDelete() {
                         type="button"
                         class="pd-ghost-btn"
                         :disabled="!!metaBusy"
-                        title="PDF 里读不出来的字段交给模型判断"
+                        title="交给 agent 读全文填写：中英文关键词、中文摘要、领域、一句话概括、创新点、前置知识、难度"
                         @click="fillMeta(true)"
                       >
-                        <AppIcon name="model" :size="13" />{{ metaBusy === 'model' ? '补全中…' : '模型补全' }}
+                        <AppIcon name="model" :size="13" />{{ metaBusy === 'agent' ? '已排队…' : '模型补全' }}
                       </button>
                     </div>
                   </div>
@@ -518,6 +568,72 @@ async function doDelete() {
                     <span class="pd-tag" v-for="t in tags" :key="t">{{ t }}</span>
                   </div>
                   <p v-else class="pd-abstract-empty">还没有标签。</p>
+                </div>
+
+                <!-- 论文信息：元数据扩展（一句话概括 / 领域·难度·类型·阅读时间 / 中文摘要 /
+                     中英关键词 / 创新点 / 前置知识 / DOI·代码）。**没值的项不画**。 -->
+                <div class="pd-card pd-meta">
+                  <div class="pd-card-head">
+                    <div class="pd-card-title">
+                      <span><AppIcon name="info" :size="20" /></span>
+                      <h3>论文信息</h3>
+                    </div>
+                    <span class="pd-hint" v-if="paper?.meta_filled_at">
+                      最近补全 {{ fmtRelative(paper.meta_filled_at) }}
+                    </span>
+                  </div>
+
+                  <p v-if="paper?.one_liner" class="pd-oneliner">{{ paper.one_liner }}</p>
+
+                  <div class="pd-facts" v-if="metaFacts.length">
+                    <span v-for="f in metaFacts" :key="f.k" class="pd-fact">
+                      <i>{{ f.k }}</i>{{ f.v }}
+                    </span>
+                  </div>
+
+                  <div class="pd-block" v-if="contributions.length">
+                    <h4>核心创新点<em v-if="sourceOf('contributions')">· {{ sourceOf('contributions') }}</em></h4>
+                    <ul class="pd-list">
+                      <li v-for="(c, i) in contributions" :key="i">{{ c }}</li>
+                    </ul>
+                  </div>
+
+                  <div class="pd-block" v-if="abstractZh">
+                    <h4>中文摘要<em v-if="sourceOf('abstract_zh')">· {{ sourceOf('abstract_zh') }}</em></h4>
+                    <p class="pd-abstract-text">{{ abstractZh }}</p>
+                  </div>
+
+                  <div class="pd-block" v-if="keywordsEn.length">
+                    <h4>英文关键词</h4>
+                    <div class="pd-tags">
+                      <span class="pd-tag" v-for="k in keywordsEn" :key="k">{{ k }}</span>
+                    </div>
+                  </div>
+
+                  <div class="pd-block" v-if="prereq.length">
+                    <h4>前置知识</h4>
+                    <div class="pd-tags">
+                      <span class="pd-tag" v-for="(p, i) in prereq" :key="i">{{ p }}</span>
+                    </div>
+                  </div>
+
+                  <div class="pd-links" v-if="paper?.doi || paper?.code_url">
+                    <a v-if="paper?.doi" class="pd-ghost-btn"
+                       :href="`https://doi.org/${paper.doi}`" target="_blank" rel="noopener">
+                      <AppIcon name="link" :size="13" />DOI
+                    </a>
+                    <a v-if="paper?.code_url" class="pd-ghost-btn"
+                       :href="paper.code_url" target="_blank" rel="noopener">
+                      <AppIcon name="code" :size="13" />代码 / 项目
+                    </a>
+                  </div>
+
+                  <p v-if="!paper?.one_liner && !metaFacts.length && !contributions.length
+                           && !abstractZh && !keywordsEn.length && !prereq.length"
+                     class="pd-abstract-empty">
+                    还没有生成这些信息。点右上角「模型补全」让 agent 读一遍这篇论文
+                    （过程在后台，跑完回来看）。
+                  </p>
                 </div>
 
                 <div class="pd-stats">
@@ -629,6 +745,24 @@ async function doDelete() {
                     <li v-if="!activity.length" class="pd-act-empty">任务开始后，进度记录会显示在这里。</li>
                   </ol>
                 </div>
+              </div>
+
+              <!-- 参考文献：离线从页产物的 `ref` 行（或 Markdown 的 References 节）抽出来，
+                   原文条目原样保留 —— 结构化字段是后补的，可能不全。 -->
+              <div v-show="tab === 'refs'" class="pd-refs">
+                <p class="pd-hint" v-if="references.length">
+                  共 {{ references.length }} 条。条目原文按论文里的顺序排列。
+                </p>
+                <ol class="pd-list pd-ref-list" v-if="references.length">
+                  <li v-for="r in references" :key="r.id">
+                    <span class="pd-ref-no">{{ r.order_no }}</span>
+                    <span class="pd-ref-text">{{ r.raw }}</span>
+                  </li>
+                </ol>
+                <p v-else class="pd-abstract-empty">
+                  还没有参考文献。到「概览」点右上角「从论文识别」离线抽一次
+                  （读的是解析出来的参考文献块，不花钱）。
+                </p>
               </div>
 
               <!-- 进度 -->
@@ -893,6 +1027,42 @@ async function doDelete() {
   border-radius: 999px; background: var(--bg-elev); border: 1px solid var(--border);
   font-size: 11.5px; color: var(--text-dim);
 }
+
+/* ---------------- 概览：论文信息（元数据扩展，2026-10-07） ----------------
+ * 与摘要卡同一套观感：一句话概括放大一档，其余走"小标签 + 小标题"。
+ * 字段来源（pdf / model / agent / manual）写在 `h4` 里的 `<em>` 上，弱化到几乎只是备注。 */
+.pd-meta { gap: 10px; }
+.pd-oneliner {
+  margin: 0; max-width: var(--measure);
+  font-size: 13.5px; line-height: 1.6; font-weight: 560; color: var(--text);
+}
+.pd-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pd-fact {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+  border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  font-size: 11.5px; color: var(--text);
+}
+.pd-fact > i { font-style: normal; color: var(--text-dim); }
+.pd-block { display: grid; gap: 5px; }
+.pd-block > h4 {
+  margin: 0; display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 620; color: var(--text-dim);
+}
+.pd-block > h4 > em { font-style: normal; font-weight: 400; color: var(--text-faint); }
+.pd-list { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.pd-list > li { font-size: 12.5px; line-height: 1.65; color: var(--text); }
+.pd-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.pd-links > a { text-decoration: none; }
+
+/* 参考文献：一条一段（原文可能很长，按 --measure 收行宽），序号在左。 */
+.pd-ref-list { padding-left: 0; list-style: none; max-width: calc(var(--measure) + 40px); }
+.pd-ref-list > li { display: flex; gap: 8px; align-items: flex-start; }
+.pd-ref-no {
+  flex: none; min-width: 22px; text-align: right; padding-top: 1px;
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+}
+.pd-ref-text { font-size: 12.5px; line-height: 1.65; color: var(--text); overflow-wrap: anywhere; }
 
 /* ---------------- 概览：信息卡（大小 / 入库 / 知识库 / 篇幅） ---------------- */
 .pd-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

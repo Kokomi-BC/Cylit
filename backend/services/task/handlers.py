@@ -382,13 +382,13 @@ def _chain_index(paper_id: str | None) -> None:
 
 
 def _chain_understand(paper_id: str | None) -> None:
-    """索引完成后自动生成两路解读（论文精读 + 阅读地图/相关概念）。"""
+    """索引完成后自动生成解读（论文精读）。"""
     if not paper_id:
         return
     try:
         from backend.services.understanding import understanding_service as us
 
-        res = us.start_understanding(paper_id, paths=["a", "b"])
+        res = us.start_understanding(paper_id, paths=["a"])
         log.info("索引完成 → 自动生成解读：%s（任务 %s）", paper_id,
                  "、".join(res.get("task_ids") or []))
     except Exception as exc:  # noqa: BLE001
@@ -398,6 +398,57 @@ def _chain_understand(paper_id: str | None) -> None:
 # --------------------------------------------------------------------------
 # EMBED / INDEX：产线 C（规划 §21.6）
 # --------------------------------------------------------------------------
+
+
+def _chain_meta_fill(paper_id: str | None) -> None:
+    """自动链的最后一环：**元数据填写**（离线 → agent 读全文 → 回落单次模型调用）。
+
+    只在"这篇论文还缺元数据"时才排队：元数据齐了再跑一次 agent 是白花钱
+    （用户口径是"翻译完成后执行元数据填写"，不是"每次索引都重填一遍"）。
+    """
+    if not paper_id:
+        return
+    try:
+        from backend.services.paper import metadata_fill
+        from backend.services.task.task_service import task_service
+
+        paper = paper_service.get_paper(paper_id)
+        if not metadata_fill.missing_fields(paper):
+            log.info("元数据已经齐全，跳过自动填写：%s", paper_id)
+            return
+        task, created = task_service.get_or_create(
+            "META_FILL", "knowledge", paper_id, {"via": "pipeline"}, total_items=1)
+        log.info("索引完成 → 自动填写元数据：%s（任务 %s%s）", paper_id, task.get("id"),
+                 "" if created else "，复用进行中的任务")
+    except Exception as exc:  # noqa: BLE001 —— 自动串联失败不能影响索引任务本身的结论
+        log.warning("自动填写元数据没能启动：%s", exc)
+
+
+def handle_meta_fill(ctx: TaskContext) -> dict:
+    """META_FILL：把这篇论文的元数据补全（离线 → agent 读全文 → 回落单次模型调用）。
+
+    用户口径：前端那个「模型补全」按钮**由 agent 执行数据填写**，而过程不展示 ——
+    所以这里只回报"写了哪几项、还缺哪几项"，前端刷新卡片即可。
+    """
+    from backend.services.paper import metadata_fill
+
+    paper_id = ctx.paper_id
+    if not paper_id:
+        raise ValueError("META_FILL 任务缺少 paper_id")
+    ctx.progress(0, 1, force=True, message="正在读这篇论文并整理元数据…")
+    report = metadata_fill.fill_all(paper_id)
+    applied = report.get("applied") or {}
+    missing = report.get("missing") or []
+    method = {"agent": "agent 读全文", "model": "模型抽样", "offline": "离线"}.get(
+        report.get("method") or "", "离线")
+    msg = (f"元数据补全完成（{method}）：写入 {len(applied)} 项"
+           f"{'（' + '、'.join(applied) + '）' if applied else ''}"
+           + (f"；仍缺 {'、'.join(missing)}" if missing else ""))
+    ctx.progress(1, 1, force=True, message=msg)
+    return {"message": msg, "_done_items": 1, "_total_items": 1,
+            "method": report.get("method"), "applied": applied, "missing": missing,
+            "references": report.get("references") or 0,
+            "agent": report.get("agent") or {}}
 
 
 def handle_index(ctx: TaskContext) -> dict:
@@ -413,9 +464,10 @@ def handle_index(ctx: TaskContext) -> dict:
     _set_paper_indexed(paper_id)
     ctx.progress(data["chunks"], data["chunks"], force=True, message="索引完成")
     # 索引完成 → 自动接着生成解读（只有自动串联的那条链会带这个参数；
-    # 设置页里手动建索引仍留给用户自己按「生成解读」）
+    # 设置页里手动建索引仍留给用户自己按「生成解读」），再填写元数据
     if ctx.params.get("then_understand"):
         _chain_understand(paper_id)
+        _chain_meta_fill(paper_id)
     return {"message": (f"已索引 {data['chunks']} 个 chunk"
                         + (f"，向量 {data['embedded']} 条"
                            if data["embedded"] else "（向量入库失败，见 vector_error）")),
@@ -458,12 +510,6 @@ def handle_understand_a(ctx: TaskContext) -> dict:
     return us.run_understand_task(ctx, "a")
 
 
-def handle_understand_b(ctx: TaskContext) -> dict:
-    from backend.services.understanding import understanding_service as us
-
-    return us.run_understand_task(ctx, "b")
-
-
 # --------------------------------------------------------------------------
 # 未实现的任务类型（下一轮）：给出明确原因，不留静默失败
 # --------------------------------------------------------------------------
@@ -485,9 +531,10 @@ def register_all() -> None:
     # 两路并发：各一个任务类型，幂等/取消/续跑/任务面板都分得清是哪一路
     task_runner.register("TRANSCRIBE_EN", handle_transcribe_en)
     task_runner.register("TRANSLATE_ZH", handle_translate_zh)
-    # 第二阶段：理解（同样两路各一个任务）
+    # 第二阶段：理解（「阅读地图」已删除，只剩论文精读）
     task_runner.register("UNDERSTAND_A", handle_understand_a)
-    task_runner.register("UNDERSTAND_B", handle_understand_b)
+    # 元数据填写（「模型补全论文信息」按钮 / 索引完成后的自动链）
+    task_runner.register("META_FILL", handle_meta_fill)
     task_runner.register("EMBED", handle_embed)
     task_runner.register("INDEX", handle_index)
     task_runner.register("RECONCILE", handle_reconcile)

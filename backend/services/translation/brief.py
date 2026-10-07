@@ -300,10 +300,12 @@ def generate_brief(paper_id: str, *, provider=None, force: bool = False,
     if brief.enabled:
         save_brief(brief)
     if apply_meta and brief.meta:
-        # 元数据与术语同一次产出 → 顺手写回论文行（只填空字段，不动用户手改的值）
+        # 元数据与术语同一次产出 → 顺手写回论文行（只填空字段，不动用户手改的值）。
+        # 用户口径「翻译完成后执行元数据填写」的第一段就是这里：零额外调用。
         try:
             applied = metadata_fill.apply_fills(paper_id,
-                                               metadata_fill.normalize_meta(brief.meta))
+                                               metadata_fill.normalize_meta(brief.meta),
+                                               source="model")
             if applied:
                 log.info("简报同时补全元数据 %s：%s", paper_id, list(applied))
         except Exception as exc:  # noqa: BLE001

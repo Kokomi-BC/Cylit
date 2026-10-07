@@ -34,7 +34,7 @@ TASK_TYPES = (
     "IMPORT", "PARSE", "TRANSLATE_MD", "TRANSCRIBE_EN", "TRANSLATE_ZH",
     "TRANSLATE_PDF", "EMBED", "INDEX", "ANALYZE", "AI_READING", "RECONCILE",
     # 第二阶段「论文理解」：两路各一个任务（A 技术解剖 / B 阅读地图与相关概念）
-    "UNDERSTAND_A", "UNDERSTAND_B",
+    "UNDERSTAND_A", "META_FILL",
 )
 # 队列（三条产线，规划 §3）
 TASK_QUEUES = ("md", "pdf", "knowledge", "system")
@@ -84,10 +84,63 @@ class Paper(Base, TimestampMixin):
     abstract: Mapped[str | None] = mapped_column(String(2000))
     parse_summary_json: Mapped[str | None] = mapped_column(Text)
 
+    # ---- 元数据扩展（2026-10-07）----
+    # 用户口径：元数据要「中英文摘要、中英文关键词、参考文献、所属领域、核心创新点、
+    # 前置知识与难度、推荐阅读时间、一句话概括」，另外"可以加上其他有用的数据"。
+    # 分工：**离线**能读出来的（原文摘要/作者/会议/年份/参考文献/阅读时间）不花钱先填；
+    # 其余的由模型（或 agent）读全文后填。字段一律允许为空 = "还不知道"，不写默认值。
+    abstract_zh: Mapped[str | None] = mapped_column(Text)              # 中文摘要（译文，不是概括）
+    keywords_en: Mapped[str | None] = mapped_column(String(512))       # 英文关键词，逗号分隔
+    # `tags` 就是**中文关键词**（老字段名保留：论文库按 tag 过滤、前端都在用）
+    domain: Mapped[str | None] = mapped_column(String(128))            # 所属领域 / 研究方向
+    one_liner: Mapped[str | None] = mapped_column(String(512))         # 一句话概括
+    contributions_json: Mapped[str | None] = mapped_column(Text)       # 核心创新点 JSON 数组
+    prereq_json: Mapped[str | None] = mapped_column(Text)              # 前置知识 JSON 数组
+    difficulty: Mapped[str | None] = mapped_column(String(16))         # 入门 / 进阶 / 专家
+    read_time_min: Mapped[int | None] = mapped_column(Integer)         # 推荐阅读时间（分钟）
+    paper_type: Mapped[str | None] = mapped_column(String(32))         # 方法 / 综述 / 数据集 / 系统 / 理论
+    doi: Mapped[str | None] = mapped_column(String(128))
+    code_url: Mapped[str | None] = mapped_column(String(256))          # 开源 / 项目地址
+    # 每个字段的来源：`{"abstract": "pdf", "tags": "agent", ...}`。
+    # 为什么要它：以前**没有来源标记**，所以"补全"只能一律"只填空字段" —— 分不清
+    # "空是因为论文里没有"还是"用户故意清空了"，也就没法让模型重填某一项。
+    meta_sources_json: Mapped[str | None] = mapped_column(Text)
+    meta_filled_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     __table_args__ = (
         Index("ix_paper_status", "status"),
         Index("ix_paper_last_read_at", "last_read_at"),
     )
+
+
+# --------------------------------------------------- ①.1 参考文献（元数据的一部分）
+class PaperReference(Base):
+    """参考文献一条。
+
+    为什么单独一张表而不是塞进 `paper.abstract` 那种字符串列：一篇论文几十上百条，
+    要看得到、数得清、还要能被后续检索（"哪篇论文引了 X"），所以按行存。
+    离线从解析出的 `ref` 块抽（`backend/parsing` 已经把参考文献切成了 `ref` 类型的块），
+    `title/authors/venue/year` 这些结构化字段留给模型或后续解析补。
+    """
+
+    __tablename__ = "paper_reference"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(64), index=True)
+    order_no: Mapped[int] = mapped_column(Integer, default=0)
+    #: 原始条目（去掉换行与连字问题之后的一整条），永远保留 —— 结构化字段可能解析错
+    raw: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(512))
+    authors: Mapped[str | None] = mapped_column(String(512))
+    venue: Mapped[str | None] = mapped_column(String(256))
+    year: Mapped[int | None] = mapped_column(Integer)
+    doi: Mapped[str | None] = mapped_column(String(128))
+    url: Mapped[str | None] = mapped_column(String(256))
+    #: 这一条是哪来的：现在只有 `pdf`（离线抽取）
+    source: Mapped[str] = mapped_column(String(16), default="pdf")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    __table_args__ = (Index("ix_paper_reference_order", "paper_id", "order_no"),)
 
 
 # ---------------------------------------------------------------- ② 块索引
@@ -377,7 +430,7 @@ class Understanding(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)   # ``{paper_id}:{path}``
     paper_id: Mapped[str] = mapped_column(String(64), index=True)
-    path: Mapped[str] = mapped_column(String(4), default="a")        # a / b
+    path: Mapped[str] = mapped_column(String(4), default="a")        # a（老库里可能还有 b）
     markdown: Mapped[str | None] = mapped_column(Text)
     #: ``{"codes":[...], "resolved":{code: chunk_id}, "invalid":[...], "cross_road":[...]}``
     refs_json: Mapped[str | None] = mapped_column(Text)
@@ -385,8 +438,6 @@ class Understanding(Base, TimestampMixin):
     #: 这样重新分块导致短码变化时，已生成的理解仍然是自洽的
     inventory: Mapped[str | None] = mapped_column(Text)
     refs_ok: Mapped[bool] = mapped_column(Boolean, default=False)
-    #: B 路硬要求：相关概念必须引用本路 chunk（用户 ⑧）
-    missing_concept_refs: Mapped[bool] = mapped_column(Boolean, default=False)
     model: Mapped[str | None] = mapped_column(String(64))
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)

@@ -297,7 +297,7 @@ async function ensureAsideVisible() {
  * 否则界面上看不到任何变化，像"点了没反应"。
  *
  * 工具栏原来那枚「解读」按钮**已按用户口径删除**（解读在左栏就是一个页签，工具栏不该有重复入口）；
- * `?side=insight` / `?side=readmap` 深链仍然只会"选中页签"，靠 `watch(sideTab)` 变宽。
+ * `?side=insight` 深链仍然只会"选中页签"，靠 `watch(sideTab)` 变宽。
  *
  * 「变宽」也没有写在这里，而是挂在 `watch(sideTab)` 上：点页签、深链、以后可能加的快捷键
  * 都是"进了解读页签"，写一处必然漏一处。
@@ -336,15 +336,15 @@ async function widenAside(target: number) {
    点页签、深链、以后可能加的快捷键都是"进了解读"，写一处必然漏一处。 */
 
 /**
- * 左栏「论文解读」/「阅读地图」页签右上角那枚图标按钮：在**应用内**新开一个标签页
+ * 左栏「论文解读」页签右上角那枚图标按钮：在**应用内**新开一个标签页
  * （TabBar 里多一个标签），不是浏览器标签页 —— 用户的"新标签页"指的是这个。
  *
  * ⚠️ 必须在**点击回调里**调 `openTab`：它会改响应式标签状态，渲染期调就是"渲染→改状态→再渲染"
  * 的死循环（`stores/tabs.ts` 里也写了这条）。
  */
-function openInsightPage(section: 'read' | 'map') {
+function openInsightPage() {
   const target = openTab({
-    name: section === 'map' ? 'readmap' : 'understand',
+    name: 'understand',
     params: { paperId: instancePaperId },
   });
   void router.push(target as never);
@@ -447,20 +447,20 @@ const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
 
-/** 侧栏（左栏，与目录合并）：**目录 / 论文解读 / 阅读地图**开头，再是搜索与其它页签 / 任务。
- *  解读拆成两个页签（用户口径第三轮）：A 路 markdown = 论文解读，B 路 markdown + 相关概念 = 阅读地图；
- *  两者读同一个接口，但走 `useUnderstanding` 的整包缓存，来回切不会重复请求。
- *  进这两个页签都会自动把侧栏放宽（见 `widenForInsight`）。
- *  ⚠️ 顺序是用户口径：**论文解读、阅读地图紧跟「目录」右边**（页签条可横向滚，放前面才不会被挤出可视区）。 */
+/** 侧栏（左栏，与目录合并）：**目录 / 论文解读**开头，再是搜索与其它页签 / 任务。
+ *  解读读 `/understanding`，走 `useUnderstanding` 的整包缓存（与整页版共享）。
+ *  进这个页签会自动把侧栏放宽（见 `widenForInsight`）。
+ *  ⚠️ 顺序是用户口径：**论文解读紧跟「目录」右边**（页签条可横向滚，放前面才不会被挤出可视区）。
+ *  ⚠️ 原「阅读地图」页签已随该功能一起删除（2026-10-02）。 */
 type SideTabKey = 'toc' | 'chat' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
 const SIDE_TAB_KEYS = [
-  'toc', 'chat', 'insight', 'readmap', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
+  'toc', 'chat', 'insight', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
-/* 进「论文解读」/「阅读地图」页签就把左栏放宽（`widenForInsight` 只增不减）。
+/* 进「论文解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
    放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
 watch(sideTab, (k) => {
-  if (k === 'insight' || k === 'readmap') void widenForInsight();
+  if (k === 'insight') void widenForInsight();
   else if (k === 'chat') void widenForChat();
 });
 /**
@@ -491,10 +491,6 @@ const SIDE_TABS = computed<Array<{
   {
     k: 'insight', icon: 'sparkle', label: '论文解读',
     title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
-  },
-  {
-    k: 'readmap', icon: 'map', label: '阅读地图',
-    title: '阅读地图（相关概念 + 怎么读这篇论文）',
   },
   {
     k: 'search', icon: 'search', label: '搜索',
@@ -846,7 +842,7 @@ const parseTask = computed(() => tasks.value.find((t) => t.type === 'PARSE'
  * 没有任务还一直打接口纯属白耗（用户口径：只在有理解任务在跑时轮询）。
  */
 const understandingRunning = computed(() => tasks.value.some((t) => (
-  t.type === 'UNDERSTAND_A' || t.type === 'UNDERSTAND_B'
+  t.type === 'UNDERSTAND_A'
 ) && ['processing', 'pending', 'paused'].includes(t.status)));
 /**
  * 有任何任务在跑（不限类型）：任务页签的 4s 轮询跟着它走。
@@ -1704,10 +1700,10 @@ async function cancelTranslate(task: TaskInfo | null) {
 }
 
 /**
- * 「重新生成解读」（工具栏「⋯」与论文库卡片「⋯」里的同一项）：`paths: ['a','b'] + force`。
+ * 「重新生成解读」（工具栏「⋯」与论文库卡片「⋯」里的同一项）：`force: true`，全篇精读重跑一次。
  *
  * 已经有解读时先 **HTML 原生 confirm** 二次确认（与论文库同一口径，见 `utils/understanding.ts`）：
- * 重跑是两路各一次全篇模型调用，而它就藏在一个「⋯」菜单里 —— 误点一下就是白花钱白等。
+ * 重跑是一次全篇模型调用，而它就藏在一个「⋯」菜单里 —— 误点一下就是白花钱白等。
  *
  * 失败**原样**展示后端 `error.message`：最常见的 400 就是那句人话
  * "这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解" ——
@@ -1717,8 +1713,8 @@ async function regenerateInsight() {
   if (!(await confirmRegenerateInsight(paperId.value, reader.value?.paper?.title))) return;
   try {
     const res = await api.post<{ __meta?: { message?: string } }>(
-      `/papers/${paperId.value}/understand`, { paths: ['a', 'b'], force: true });
-    toast(String(res?.__meta?.message ?? '') || '解读任务已排队（两路并发），完成后会自动刷新', 'ok', 4200);
+      `/papers/${paperId.value}/understand`, { force: true });
+    toast(String(res?.__meta?.message ?? '') || '解读任务已排队，完成后会自动刷新', 'ok', 4200);
     // 起了任务却看不到任何东西，看起来就像"点了没反应"：顺手把左栏的解读页签打开
     await openInsightTab();
     void fetchTasks();           // 让解读内容立刻知道"有任务在跑"，从而开始轮询
@@ -3238,8 +3234,8 @@ function renderMarkdown(text?: string | null) {
             </div>
           </div>
         </CapPanel>
-      </div>      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读/阅读地图（可整体折叠，可拖宽） ============
-           `--reader-font-size` 也设在这一栏上：左栏里的「论文解读 / 阅读地图」用的是阅读器的正文字号
+      </div>      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
+           `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
       <aside :class="['reader-aside', { resizing: asideResizing }]" :style="{ '--reader-font-size': `${readerFont}px` }">
         <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），

@@ -97,6 +97,26 @@ def create_app() -> FastAPI:
             log.warning("压缩失败：%s", exc)
             raise HTTPException(status_code=502, detail=f"压缩失败：{exc}"[:200]) from exc
 
+    # ---------------- 元数据填写 ----------------
+    @app.post("/v1/meta-fill")
+    async def meta_fill(payload: dict = Body(...),
+                        x_internal_token: str | None = Header(None)) -> dict:
+        """主后端的「模型补全论文信息」按钮：让 agent **读全文**把元数据填准。
+
+        不流式、不落消息（用户口径：完整 agent 功能，不用显示细节）—— 跑完只回报
+        "填了哪些字段"。agent 内部通过宿主接口把值写回论文行，所以这里不改数据库。
+        """
+        _auth(x_internal_token)
+        paper_id = str(payload.get("paper_id") or "").strip()
+        if not paper_id:
+            raise HTTPException(status_code=422, detail="paper_id 必填")
+        try:
+            return await runtime.meta_fill(paper_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("元数据填写失败：%s", exc)
+            raise HTTPException(status_code=502,
+                                detail=f"元数据填写失败：{exc}"[:200]) from exc
+
     # ---------------- 问答 ----------------
     @app.post("/v1/ask")
     async def ask(request: Request, payload: dict = Body(...),

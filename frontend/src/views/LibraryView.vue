@@ -13,7 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
-import type { MineruConfig, MineruModelVersion, Paper, ParseEngine } from '@/api/types';
+import type { MineruConfig, MineruModelVersion, Paper, ParseEngine, TaskInfo } from '@/api/types';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 import Switch from '@/components/Switch.vue';
@@ -526,7 +526,7 @@ async function submitImport() {
 /* ------------------------------ 行内操作 ------------------------------ */
 
 /**
- * 「重新生成解读」：让后端把两路理解重跑一遍（`paths: ['a','b'] + force`）。
+ * 「重新生成解读」：让后端把论文精读重跑一遍（`force: true`）。
  *
  * 已经有解读时先 HTML 原生 confirm 二次确认（与「重新翻译」同一风格）。这份口径**不写在这里**：
  * 论文库 / 阅读器 / 理解页三处都有这个动作，文案与"要不要问"的判据统一放在
@@ -540,8 +540,8 @@ async function askRegenerateInsight(paper: Paper) {
 async function runInsight(paper: Paper) {
   busyKey.value = `insight:${paper.id}`;
   try {
-    const res = await api.post<any>(`/papers/${paper.id}/understand`, { paths: ['a', 'b'], force: true });
-    toast(metaMessage(res) || '解读任务已排队（两路并发）', 'ok', 4200);
+    const res = await api.post<any>(`/papers/${paper.id}/understand`, { force: true });
+    toast(metaMessage(res) || '解读任务已排队', 'ok', 4200);
     await refresh();
   } catch (err) {
     /* 后端 400 会给一句**可执行的人话**（"这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解"），
@@ -832,13 +832,32 @@ interface EditForm {
   year: string;
   tags: string;
   abstract: string;
+  // 元数据扩展（2026-10-07）：中英文摘要/关键词、领域、一句话概括、创新点、
+  // 前置知识、难度、阅读时间、类型、DOI/开源地址。列表字段在表单里按**一行一条**编辑。
+  abstract_zh: string;
+  keywords_en: string;
+  domain: string;
+  one_liner: string;
+  contributions: string;
+  prereq: string;
+  difficulty: string;
+  read_time_min: string;
+  paper_type: string;
+  doi: string;
+  code_url: string;
 }
 
 const editOpen = ref(false);
 const editTarget = ref<Paper | null>(null);
 const editForm = reactive<EditForm>({
   title: '', authors: '', venue: '', year: '', tags: '', abstract: '',
+  abstract_zh: '', keywords_en: '', domain: '', one_liner: '', contributions: '',
+  prereq: '', difficulty: '', read_time_min: '', paper_type: '', doi: '', code_url: '',
 });
+
+/** 列表字段在表单里是"一行一条"，落库前转成数组。 */
+const lines = (text: string) => String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
+const csv = (text: string) => String(text || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 function openEdit(paper: Paper) {
   editTarget.value = paper;
@@ -849,26 +868,36 @@ function openEdit(paper: Paper) {
     year: paper.year === null || paper.year === undefined ? '' : String(paper.year),
     tags: (paper.tags || []).join(','),
     abstract: paper.abstract || '',
+    abstract_zh: paper.abstract_zh || '',
+    keywords_en: (paper.keywords_en || []).join(', '),
+    domain: paper.domain || '',
+    one_liner: paper.one_liner || '',
+    contributions: (paper.contributions || []).join('\n'),
+    prereq: (paper.prereq || []).join('\n'),
+    difficulty: paper.difficulty || '',
+    read_time_min: paper.read_time_min ? String(paper.read_time_min) : '',
+    paper_type: paper.paper_type || '',
+    doi: paper.doi || '',
+    code_url: paper.code_url || '',
   });
   editOpen.value = true;
 }
 
-/* ------------------------------ 自动补全元数据 ------------------------------ */
-/** `''` 空闲 / `'pdf'` 正在离线读 PDF / `'model'` 正在问模型 */
-const metaBusy = ref<'' | 'pdf' | 'model'>('');
+/* ------------------------------ 元数据补全 ------------------------------ */
+/** `''` 空闲 / `'pdf'` 正在离线识别 / `'agent'` 刚把 agent 任务排上队 */
+const metaBusy = ref<'' | 'pdf' | 'agent'>('');
 
 /**
- * 一键补全：先离线读 PDF（会议、年份、摘要、标题都能从首页读出来），
- * 还有缺的再交给模型（与术语同一次产出，见后端 `metadata_fill`）。
- * 后端**只填空字段**，所以这个按钮不会覆盖已经填好的值。
+ * 「从论文识别」：**离线**同步（会议 / 年份 / 原文摘要 / DOI / 参考文献 / 阅读时间），
+ * 不花钱、立刻返回，所以直接把结果灌回表单。
+ * 后端**只填空字段**，不会覆盖已经填好的值。
  */
-async function autoMeta(model: boolean) {
+async function autoMeta() {
   const p = editTarget.value;
   if (!p || metaBusy.value) return;
-  metaBusy.value = model ? 'model' : 'pdf';
+  metaBusy.value = 'pdf';
   try {
-    const res = await api.post<{ paper: Paper; applied: Record<string, unknown> }>(
-      `/papers/${p.id}/metadata/auto`, { model });
+    const res = await api.post<{ paper: Paper }>(`/papers/${p.id}/metadata/auto`, { model: false });
     const np = res?.paper;
     if (np) {
       Object.assign(editForm, {
@@ -878,11 +907,52 @@ async function autoMeta(model: boolean) {
         year: np.year === null || np.year === undefined ? editForm.year : String(np.year),
         tags: (np.tags || []).join(','),
         abstract: np.abstract || editForm.abstract,
+        doi: np.doi || editForm.doi,
+        code_url: np.code_url || editForm.code_url,
+        read_time_min: np.read_time_min ? String(np.read_time_min) : editForm.read_time_min,
       });
     }
     toast(metaMessage(res) || '已自动补全', 'ok');
     await refresh();
   } catch (err) { reportError(err, '自动补全失败'); } finally { metaBusy.value = ''; }
+}
+
+/**
+ * 「模型补全」：交给 **agent 读全文**填写（用户口径 2026-10-07：完整 agent 功能，不用显示细节）。
+ * 它是个后台任务（实测 1~3 分钟），所以这里只负责排队 + 说一声，跑完自动刷新卡片。
+ */
+async function agentMeta() {
+  const p = editTarget.value;
+  if (!p || metaBusy.value) return;
+  metaBusy.value = 'agent';
+  try {
+    const res = await api.post<{ id?: string }>(`/papers/${p.id}/metadata/agent`);
+    toast(metaMessage(res) || '已在后台开始补全论文信息（agent 会先读这篇论文）', 'ok', 6200);
+    editOpen.value = false;
+    await refresh();
+    if (res?.id) void watchMetaTask(p.id, String(res.id));
+  } catch (err) { reportError(err, '发起补全失败'); } finally { metaBusy.value = ''; }
+}
+
+/**
+ * 等后台的补全任务跑完再刷新一次卡片。
+ *
+ * 为什么不干脆不管：agent 一次 1~3 分钟，用户点完就看着那张还是空的卡片，
+ * 只会以为"点了没反应"。这里**不展示过程**（用户口径），只在结束时刷一下 + 说一句。
+ */
+async function watchMetaTask(paperId: string, taskId: string) {
+  for (let i = 0; i < 72; i += 1) {
+    await new Promise((resolve) => { setTimeout(resolve, 5000); });
+    try {
+      const d = await api.get<{ items: TaskInfo[] }>('/tasks', { paper_id: paperId, limit: 20 });
+      const t = (d.items || []).find((x) => x.id === taskId);
+      if (t && ['pending', 'processing', 'paused'].includes(String(t.status))) continue;
+      await refresh();
+      toast(String(t?.message || '论文信息已补全'), 'ok', 5600);
+      return;
+    } catch { /* 拉不到就下一轮再试 */ }
+  }
+  await refresh();
 }
 
 async function submitEdit() {
@@ -893,8 +963,19 @@ async function submitEdit() {
     authors: editForm.authors,
     venue: editForm.venue,
     abstract: editForm.abstract,
-    tags: editForm.tags,
+    tags: csv(editForm.tags),
     year: editForm.year === '' ? null : Number(editForm.year),
+    abstract_zh: editForm.abstract_zh,
+    keywords_en: csv(editForm.keywords_en),
+    domain: editForm.domain,
+    one_liner: editForm.one_liner,
+    contributions: lines(editForm.contributions),
+    prereq: lines(editForm.prereq),
+    difficulty: editForm.difficulty,
+    read_time_min: editForm.read_time_min === '' ? null : Number(editForm.read_time_min),
+    paper_type: editForm.paper_type,
+    doi: editForm.doi,
+    code_url: editForm.code_url,
   };
   try {
     await api.put(`/papers/${p.id}`, payload);
@@ -1299,26 +1380,55 @@ async function submitEdit() {
     </Modal>
 
     <!-- 编辑元数据 -->
-    <Modal :open="editOpen" title="编辑元数据" @close="editOpen = false">
+    <Modal :open="editOpen" title="编辑元数据" wide @close="editOpen = false">
       <div class="grid cols-2">
         <label class="field">标题<input v-model="editForm.title" /></label>
         <label class="field">作者<input v-model="editForm.authors" /></label>
         <label class="field">会议 / 期刊<input v-model="editForm.venue" /></label>
         <label class="field">年份<input v-model="editForm.year" /></label>
-        <label class="field">标签（逗号分隔）<input v-model="editForm.tags" /></label>
+        <label class="field">中文关键词（逗号分隔）<input v-model="editForm.tags" /></label>
+        <label class="field">英文关键词（逗号分隔）<input v-model="editForm.keywords_en" /></label>
+        <label class="field">所属领域 / 研究方向<input v-model="editForm.domain" /></label>
+        <label class="field">一句话概括<input v-model="editForm.one_liner" /></label>
+        <label class="field">难度
+          <select v-model="editForm.difficulty">
+            <option value="">（未填）</option>
+            <option value="入门">入门</option>
+            <option value="进阶">进阶</option>
+            <option value="专家">专家</option>
+          </select>
+        </label>
+        <label class="field">论文类型
+          <select v-model="editForm.paper_type">
+            <option value="">（未填）</option>
+            <option v-for="t in ['方法', '综述', '数据集', '系统', '理论', '其他']" :key="t" :value="t">{{ t }}</option>
+          </select>
+        </label>
+        <label class="field">推荐阅读时间（分钟）<input v-model="editForm.read_time_min" /></label>
+        <label class="field">DOI<input v-model="editForm.doi" /></label>
+        <label class="field">开源 / 项目地址<input v-model="editForm.code_url" /></label>
       </div>
       <label class="field" style="margin-top: 10px">
-        摘要<textarea v-model="editForm.abstract" rows="4"></textarea>
+        原文摘要<textarea v-model="editForm.abstract" rows="3"></textarea>
       </label>
+      <label class="field" style="margin-top: 10px">
+        中文摘要<textarea v-model="editForm.abstract_zh" rows="4"></textarea>
+      </label>
+      <div class="grid cols-2" style="margin-top: 10px">
+        <label class="field">核心创新点（一行一条）<textarea v-model="editForm.contributions" rows="4"></textarea></label>
+        <label class="field">前置知识（一行一条）<textarea v-model="editForm.prereq" rows="4"></textarea></label>
+      </div>
       <div class="tiny faint" style="margin-top: 6px">
-        会议 / 期刊、年份、摘要、标签都可以自动补全：先读 PDF（离线、不花钱），读不出来再交给模型。
+        这些字段都有两个自动来源：<b>从论文识别</b>离线读 PDF 与页产物（会议 / 年份 / 原文摘要 /
+        DOI / 参考文献 / 阅读时间，不花钱）；<b>模型补全</b>交给 agent 读全文
+        （中英文关键词 / 中文摘要 / 领域 / 概括 / 创新点 / 前置知识 / 难度），过程在后台、跑完自动刷新。
       </div>
       <template #footer>
-        <button class="btn sm" :disabled="!!metaBusy" title="从 PDF 首页读出会议、年份、摘要（离线）" @click="autoMeta(false)">
+        <button class="btn sm" :disabled="!!metaBusy" title="离线读 PDF 首页与页产物（不花钱）：会议、年份、原文摘要、DOI、参考文献、阅读时间" @click="autoMeta">
           <AppIcon name="sparkle" :size="13" />{{ metaBusy === 'pdf' ? '识别中…' : '从论文识别' }}
         </button>
-        <button class="btn sm" :disabled="!!metaBusy" title="PDF 里读不出来的字段交给模型判断" @click="autoMeta(true)">
-          <AppIcon name="model" :size="13" />{{ metaBusy === 'model' ? '补全中…' : '模型补全' }}
+        <button class="btn sm" :disabled="!!metaBusy" title="交给 agent 读全文填写：关键词、中文摘要、领域、概括、创新点、前置知识、难度" @click="agentMeta">
+          <AppIcon name="model" :size="13" />{{ metaBusy === 'agent' ? '已排队…' : '模型补全' }}
         </button>
         <span class="grow"></span>
         <button class="btn" @click="editOpen = false">取消</button>

@@ -37,7 +37,7 @@ from backend.agent.host import HostClient, HostError
 from backend.agent.sanitize import (
     StreamingAnswerSanitizer, referenced_citations, strip_foreign_images,
 )
-from backend.agent.tools import AGENT_TOOLS
+from backend.agent.tools import AGENT_TOOLS, META_TOOLS
 from backend.agent.trace import StepLog
 from backend.agent.workspace import ReadOnlyWorkspace
 from backend.core.logging import get_logger
@@ -289,6 +289,67 @@ class AgentRuntime:
             elif role == "assistant":
                 msgs.append(ModelResponse(parts=[TextPart(content)]))
         return msgs
+
+    # ---------------- 元数据填写（`/v1/meta-fill`） ----------------
+    async def meta_fill(self, paper_id: str) -> dict:
+        """用一次**完整 agent 会话**把这篇论文的元数据填好（读全文 + 工具 + 多轮）。
+
+        与问答共用工具、模型配置、skills 与宿主接口，但**没有对话、没有 SSE、不落消息**：
+        用户口径是"按钮由 agent 执行数据填写，不显示细节"。所以这里同步跑到结束，
+        只回报"填了哪些字段"。
+
+        **写口只有一个**（`paper_meta_write`，且一次会话只准写一次），并且由主后端那一侧
+        决定"空着的才填"—— agent 拿不到也改不了这件事。
+        """
+        model_cfg = await self.model_config()
+        if not model_cfg.get("usable"):
+            return {"ok": False, "applied": {}, "error": "问答模型没有配好（agent 需要一个支持工具调用的模型）"}
+
+        deps = Deps(cfg=self.cfg, host=self.host, paper_id=paper_id,
+                    registry=RefRegistry(paper_id))
+        error = ""
+        try:
+            archive = await self.host.archive(paper_id)
+            deps.title = str(archive.get("title") or "")
+            deps.page_total = int(archive.get("page_total") or 0)
+            agent = Agent(
+                build_model(model_cfg),
+                deps_type=Deps,
+                instructions=prompts.META_FILL_INSTRUCTIONS,
+                tools=list(META_TOOLS),
+                capabilities=[self._skills],
+            )
+            prompt = prompts.meta_fill_prompt(
+                title=deps.title, page_total=deps.page_total,
+                archive=prompts.archive_block(self.cfg.archive_chars,
+                                              archive.get("brief") or {},
+                                              archive.get("outline") or [],
+                                              title=deps.title, page_total=deps.page_total),
+                existing=archive.get("meta") or {})
+            settings = model_settings_from(model_cfg.get("parameters") or {})
+            # 轮数上限比问答小得多：这是"读几页 + 提交一次"的活，不需要几十轮。
+            limits = UsageLimits(request_limit=max(6, min(self.cfg.max_rounds, 24)))
+            await agent.run(prompt, deps=deps, model_settings=settings,
+                            usage_limits=limits)
+        except UsageLimitExceeded:
+            error = "轮数用尽（还没提交元数据）"
+        except HostError as exc:
+            # 论文不存在 / 主后端出错：**返回 ok=false 而不是抛** —— 调用方据此回落到
+            # 单次模型调用（`metadata_fill.fill_all`），按钮不会因此变成一个 5xx。
+            error = exc.message
+        except Exception as exc:  # noqa: BLE001
+            log.warning("元数据 agent 失败 %s：%s", paper_id, exc)
+            error = f"{type(exc).__name__}: {exc}"[:200]
+        applied = dict(deps.meta_applied)
+        if not deps.meta_submitted:
+            error = error or "agent 没有提交元数据（材料读不出来或模型没调用写工具）"
+        log.info("元数据 agent %s：%s（%d 轮，工具 %s）", paper_id,
+                 "、".join(applied) or "无需改（字段都有值了）" if deps.meta_submitted
+                 else "未提交", deps.model_calls,
+                 "、".join(t["tool"] for t in deps.trace) or "无")
+        return {"ok": bool(deps.meta_submitted), "applied": applied,
+                "rounds": deps.model_calls,
+                "tools": [t["tool"] for t in deps.trace], "error": error}
 
     # ---------------- 主流程 ----------------
     async def ask(self, req: AskRequest) -> AsyncIterator[dict]:

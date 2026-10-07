@@ -56,20 +56,14 @@ function plainHeading(raw: string): string {
 /**
  * 解析 `## / ### …` 标题。
  *
- * `concepts: true` 时在最前面插一条「相关概念」（`${prefix}-concepts`）——「阅读地图」页
- * 第一块就是相关概念卡片，它没有 markdown 标题，但目录里必须有它，否则读者从目录点不到那块。
- * ⚠️ 标题的序号**只数标题**（不含这条人工条目）：这样带不带 concepts，标题 id 都一样 ——
- * 否则正文那边（只管标题）和目录那边（多一条）会错位一格，点目录全滚错位置。
+ * ⚠️ 序号按**标题**顺序生成（`${prefix}-h-0,1,2…`）：正文那边贴 id 时按同样的顺序数标题，
+ * 两边同源才不会错位一格、点目录全滚错位置。
  */
 export function buildInsightOutline(
   markdown: string | null | undefined,
-  opts: { prefix: string; concepts?: boolean } = { prefix: 'ins' },
+  opts: { prefix: string } = { prefix: 'ins' },
 ): InsightHeading[] {
   const out: InsightHeading[] = [];
-  if (opts.concepts) {
-    // 人工条目：md 与 text 都是纯中文，`inlineHtml` 渲染出来还是一行字
-    out.push({ id: `${opts.prefix}-concepts`, md: '相关概念', text: '相关概念', level: 1 });
-  }
   let headingIndex = 0;
   let inFence = false;
   for (const line of String(markdown ?? '').split(/\r?\n/)) {

@@ -142,6 +142,15 @@ class HostClient:
         """
         return dict(await self.get(f"/agent/papers/{paper_id}/rows/{int(page)}/{row_id}") or {})
 
+    # ---------------- 写：论文元数据 ----------------
+    async def meta_write(self, paper_id: str, payload: dict) -> dict:
+        """写论文元数据（`paper_meta_write` 工具的后端）。
+
+        与页产物纠错同一口径：**拒绝也是正常返回**（``ok=false`` + 原因），不抛 HostError ——
+        "值不合法"要让模型看到并改，而不是让整轮崩掉。
+        """
+        return dict(await self.post(f"/agent/papers/{paper_id}/metadata", payload or {}) or {})
+
     # ---------------- 写：页级产物纠错 ----------------
     async def page_product(self, paper_id: str, page: int, side: str) -> dict:
         """页级产物（A 路转录 / B 路译文）的**原文视图**（`page_markdown_edit` 的 view）。"""

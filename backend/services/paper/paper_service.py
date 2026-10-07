@@ -279,18 +279,82 @@ def list_papers(*, q: str | None = None, status: str | None = None,
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-def update_paper(paper_id: str, payload: dict) -> dict:
+#: 论文可以做结构化编辑的字段。
+#: `contributions` / `prereq` 是**列表**（库里存 JSON），`tags` / `keywords_en` 也接受列表
+#: （库里是逗号分隔的字符串）—— 统一在这里归一，免得每个调用方各转一遍。
+_LIST_FIELDS = {"contributions": "contributions_json", "prereq": "prereq_json"}
+_CSV_FIELDS = {"tags", "keywords_en"}
+#: 元数据字段（写 `meta_sources_json` 时用；不含 status / in_knowledge_base 这类状态）
+META_FIELDS = (
+    "title", "authors", "venue", "year", "tags", "abstract", "abstract_zh",
+    "keywords_en", "domain", "one_liner", "contributions", "prereq", "difficulty",
+    "read_time_min", "paper_type", "doi", "code_url",
+)
+
+
+def _csv(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        items = [str(x).strip() for x in value if str(x).strip()]
+        return ",".join(dict.fromkeys(items))[:512] or None
+    return str(value).strip()[:512] or None
+
+
+def update_paper(paper_id: str, payload: dict, *, source: str | None = "manual") -> dict:
+    """改论文行。
+
+    ``source``：**这次的改动算谁做的**（`manual` 用户 / `pdf` / `model` / `agent`），
+    写进 `meta_sources_json`。为什么要它：元数据以前没有来源标记，"补全"只能一律
+    "只填空字段" —— 分不清"空是因为论文里没有"还是"用户故意清空"，也就没法重填某一项。
+    传 ``source=None`` 表示不记来源（内部状态字段用它）。
+    """
     allowed = {"title", "authors", "venue", "year", "tags", "status",
-               "in_knowledge_base", "abstract"}
+               "in_knowledge_base", "abstract",
+               "abstract_zh", "keywords_en", "domain", "one_liner",
+               "contributions", "prereq", "difficulty", "read_time_min",
+               "paper_type", "doi", "code_url"}
     with session_scope() as sess:
         row = sess.get(Paper, paper_id)
         if row is None or row.deleted_at is not None:
             raise NotFoundError(f"论文不存在：{paper_id}")
+        touched: list[str] = []
         for k, v in payload.items():
-            if k in allowed and v is not None:
+            if k not in allowed or v is None:
+                continue
+            key = _LIST_FIELDS.get(k)
+            if key:
+                items = [str(x).strip() for x in (v if isinstance(v, (list, tuple)) else [v])
+                         if str(x).strip()]
+                setattr(row, key, json_dumps(items) if items else None)
+            elif k in _CSV_FIELDS:
+                setattr(row, k, _csv(v))
+            else:
                 setattr(row, k, v)
+            touched.append(k)
+        if source and touched:
+            sources = json_loads(row.meta_sources_json, {}) or {}
+            for k in touched:
+                if k in META_FIELDS:
+                    sources[k] = source
+            row.meta_sources_json = json_dumps(sources)
+            row.meta_filled_at = now()
         sess.flush()
         return _to_dict(row)
+
+
+def references(paper_id: str) -> list[dict]:
+    """这篇论文的参考文献（按论文里的顺序）。"""
+    from backend.repositories.mysql.models import PaperReference
+
+    with session_scope() as sess:
+        rows = (sess.query(PaperReference)
+                .filter(PaperReference.paper_id == paper_id)
+                .order_by(PaperReference.order_no.asc()).all())
+        return [{"id": r.id, "order_no": int(r.order_no or 0), "raw": r.raw or "",
+                 "title": r.title, "authors": r.authors, "venue": r.venue,
+                 "year": r.year, "doi": r.doi, "url": r.url, "source": r.source}
+                for r in rows]
 
 
 def touch_read(paper_id: str) -> None:
@@ -689,6 +753,21 @@ def _to_dict(row: Paper) -> dict:
         "in_knowledge_base": bool(row.in_knowledge_base),
         "source_hash": row.source_hash,
         "abstract": row.abstract,
+        # ---- 元数据扩展（2026-10-07）：列表字段一律给数组，空值给 None 让前端区分
+        #      "还没有"（None/[]）与"读过、确实没有"（""）。----
+        "abstract_zh": row.abstract_zh,
+        "keywords_en": [t for t in (row.keywords_en or "").split(",") if t],
+        "domain": row.domain,
+        "one_liner": row.one_liner,
+        "contributions": json_loads(row.contributions_json, []) or [],
+        "prereq": json_loads(row.prereq_json, []) or [],
+        "difficulty": row.difficulty,
+        "read_time_min": row.read_time_min,
+        "paper_type": row.paper_type,
+        "doi": row.doi,
+        "code_url": row.code_url,
+        "meta_sources": json_loads(row.meta_sources_json, {}) or {},
+        "meta_filled_at": iso_utc(row.meta_filled_at),
         "parse_summary": json_loads(row.parse_summary_json, {}) or {},
         # 时间一律走 `iso_utc`：库里是 UTC naive，直接 isoformat 前端会按本地时区解析（差 8 小时）
         "last_read_at": iso_utc(row.last_read_at),

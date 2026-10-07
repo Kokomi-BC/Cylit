@@ -111,7 +111,11 @@ async def list_papers(
 
 @router.get("/papers/{paper_id}")
 async def paper_detail(paper_id: str, request: Request):
-    return envelope(paper_service.get_paper(paper_id), request=request)
+    """论文详情：元数据 + **参考文献**（列表页不带它 —— 一篇论文几十上百条，太重）。"""
+    data = paper_service.get_paper(paper_id)
+    refs = paper_service.references(paper_id)
+    return envelope({**data, "references": refs, "reference_count": len(refs)},
+                    request=request)
 
 
 @router.put("/papers/{paper_id}")
@@ -291,10 +295,9 @@ async def trigger_translate(paper_id: str, request: Request,
 @router.post("/papers/{paper_id}/understand")
 async def trigger_understand(paper_id: str, request: Request,
                              payload: dict = Body(default={})):
-    """触发**第二阶段「论文理解」**（默认两路并发：A 技术解剖 + B 阅读地图与相关概念）。
+    """触发**第二阶段「论文理解」**（论文精读）。
 
-    - ``paths=["a","b"]``（默认）：两路各一次全篇理解调用，**同时跑**；
-      ``["b"]`` = 只做中文侧的阅读地图/相关概念；
+    - ``paths=["a"]``（默认，也是唯一取值）：全篇精读一次；「阅读地图」已删除；
     - ``force=true``：已有结果也重跑（默认幂等，直接返回库里那份）。
 
     前置条件：这篇论文**已经建过索引**（理解读的是 chunk，不是页图）。
@@ -303,7 +306,7 @@ async def trigger_understand(paper_id: str, request: Request,
     """
     from backend.services.understanding import understanding_service as us
 
-    paths = payload.get("paths") or ["a", "b"]
+    paths = payload.get("paths") or ["a"]
     result = us.start_understanding(paper_id, paths=list(paths),
                                     force=bool(payload.get("force")))
     if not result["tasks"]:
@@ -314,37 +317,20 @@ async def trigger_understand(paper_id: str, request: Request,
 
 @router.get("/papers/{paper_id}/understanding")
 async def get_understanding(paper_id: str, request: Request,
-                            path: str | None = Query(None, pattern="^(a|b)$")):
-    """取理解结果（默认两路一起返回，前端一次拿两条）。
+                            path: str | None = Query(None, pattern="^a$")):
+    """取解读结果（默认打包返回，前端一次取全）。
 
-    每条结果里有：自由 Markdown、引用短码、**解析后的 chunk id**（前端据此"跳转到原文"）、
-    无效/跨路引用（``refs_ok=false`` 时前端要标"引用不可信"）。
+    结果里有：自由 Markdown、引用短码、**解析后的 chunk id**（前端据此"跳转到原文"）、
+    无效引用（``refs_ok=false`` 时前端要标"引用不可信"）。
     """
     from backend.services.understanding import understanding_service as us
 
     return envelope(us.get_understanding(paper_id, path), request=request)
 
 
-@router.get("/papers/{paper_id}/related")
-async def related_concepts(paper_id: str, request: Request,
-                           page: int = Query(..., ge=1),
-                           tolerance: int = Query(1, ge=0, le=3)):
-    """与某一页相关的概念（阅读器左栏「跟随阅读位置」用）。
-
-    读的是 B 路理解结果里「相关概念」那一节（读时投影，见
-    `understanding_service.parse_concepts`）。命中判据是"概念的引用里有 chunk 落在
-    本页 ±`tolerance`"——引用的单元常常跨页，完全等值会漏。
-    没有解读结果时返回空列表（前端静默退回"全篇概念列表"，不报错）。
-    """
-    from backend.services.understanding import understanding_service as us
-
-    return envelope(us.related_concepts(paper_id, page, tolerance=tolerance),
-                    request=request)
-
-
 @router.get("/papers/{paper_id}/understanding/status")
 async def understanding_status(paper_id: str, request: Request):
-    """两路理解各自的状态（按钮与"能不能理解"的判断）。"""
+    """解读的状态（按钮与"能不能理解"的判断）。"""
     from backend.services.understanding import understanding_service as us
 
     return envelope(us.understanding_status(paper_id), request=request)
@@ -353,12 +339,13 @@ async def understanding_status(paper_id: str, request: Request):
 @router.post("/papers/{paper_id}/metadata/auto")
 async def auto_metadata(paper_id: str, request: Request,
                         payload: dict = Body(default={})):
-    """自动补全论文元数据（会议 / 年份 / 标签 / 摘要）。
+    """自动补全论文元数据（**离线**那一段：读 PDF 首页 + 页产物）。
 
-    - 默认**只读 PDF**（离线、不花钱）：标题/作者/会议/年份/摘要都能从首页读出来；
+    - 默认**只读 PDF / 页产物**（离线、不花钱）：标题 / 作者 / 会议 / 年份 / 原文摘要 /
+      DOI / 开源地址 / **参考文献** / **推荐阅读时间** 都能直接读出来；
     - ``model=true``：仍缺的字段再交给模型（读抽样内容，判断不出就留空）；
-    - ``overwrite=true``：连已有值一起覆盖（默认只填空字段 —— 元数据没有来源标记，
-      覆盖掉用户手改过的值是不可逆的）。
+    - ``overwrite=true``：连已有值一起覆盖（默认只填空字段 —— 每个字段的来源记在
+      `meta_sources_json` 里，但覆盖掉用户手改过的值仍然不可逆）。
     """
     from backend.services.paper import metadata_fill
 
@@ -369,19 +356,49 @@ async def auto_metadata(paper_id: str, request: Request,
     )
     applied = report.get("applied") or {}
     errors = report.get("errors") or []
+    refs = int(report.get("references") or 0)
     if applied:
         msg = "已补全：" + "、".join(_META_LABELS.get(k, k) for k in applied)
     elif errors:
         # 别把"读取失败"说成"没有可补全的"：扫描件/加密 PDF 走的就是这里
         msg = "自动补全没成功：" + str(errors[0])[:120]
+    elif refs:
+        msg = f"已抽出 {refs} 条参考文献"
     else:
         msg = "没有可自动补全的字段（论文里读不出来，可试试点「模型补全」）"
     return envelope(report, message=msg, request=request)
 
 
+@router.post("/papers/{paper_id}/metadata/agent")
+async def agent_metadata(paper_id: str, request: Request, payload: dict = Body(default={})):
+    """「模型补全论文信息」：交给 **agent 读全文**填写元数据（后台任务）。
+
+    为什么是任务而不是同步接口：agent 要翻页、检索、再判断，实测 1~3 分钟 ——
+    同步等会把请求挂在那儿，用户也看不到进度。任务面板里能看到它，卡片刷新即可
+    （用户口径：**完整 agent 功能，不用显示细节**）。
+
+    任务内部顺序是：离线（不花钱）→ agent（读全文）→ 失败再回落一次单次模型调用。
+    """
+    from backend.services.task.task_service import task_service
+
+    paper_service.get_paper(paper_id)
+    task, created = task_service.get_or_create(
+        "META_FILL", "knowledge", paper_id, {"via": "ui"}, total_items=1)
+    return envelope({**task, "created": created},
+                    message=("已在后台开始补全论文信息（agent 会先读这篇论文）"
+                             if created else "已经有一个补全任务在跑了"),
+                    request=request)
+
+
 # 元数据字段的中文名（只用于回执文案）
-_META_LABELS = {"title": "标题", "authors": "作者", "venue": "会议 / 期刊",
-                "year": "年份", "tags": "标签", "abstract": "摘要"}
+_META_LABELS = {
+    "title": "标题", "authors": "作者", "venue": "会议 / 期刊", "year": "年份",
+    "tags": "中文关键词", "keywords_en": "英文关键词", "abstract": "原文摘要",
+    "abstract_zh": "中文摘要", "domain": "所属领域", "one_liner": "一句话概括",
+    "contributions": "核心创新点", "prereq": "前置知识", "difficulty": "难度",
+    "read_time_min": "推荐阅读时间", "paper_type": "论文类型",
+    "doi": "DOI", "code_url": "开源地址",
+}
 
 
 @router.get("/papers/{paper_id}/brief")

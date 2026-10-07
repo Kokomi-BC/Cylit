@@ -26,6 +26,50 @@ export interface Paper {
   last_read_at: string | null;
   created_at: string | null;
   deleted_at: string | null;
+
+  /* ---- 元数据扩展（2026-10-04）：中英文摘要/关键词、领域、创新点、前置知识、
+     难度、推荐阅读时间、一句话概括、类型、DOI/开源地址、字段来源 ---- */
+  abstract_zh?: string | null;
+  /** 英文关键词（中文关键词就是 `tags`） */
+  keywords_en?: string[];
+  /** 所属领域 / 研究方向 */
+  domain?: string | null;
+  /** 一句话概括 */
+  one_liner?: string | null;
+  /** 核心创新点（2~5 条） */
+  contributions?: string[];
+  /** 前置知识 */
+  prereq?: string[];
+  /** 入门 / 进阶 / 专家 */
+  difficulty?: string | null;
+  /** 推荐阅读时间（分钟） */
+  read_time_min?: number | null;
+  /** 方法 / 综述 / 数据集 / 系统 / 理论 / 其他 */
+  paper_type?: string | null;
+  doi?: string | null;
+  /** 开源 / 项目地址 */
+  code_url?: string | null;
+  /** 字段 → 来源（`pdf` / `model` / `agent` / `manual`） */
+  meta_sources?: Record<string, string>;
+  meta_filled_at?: string | null;
+  /** 参考文献（只有详情接口 `GET /papers/{id}` 带；列表接口不带） */
+  references?: PaperReference[];
+  reference_count?: number;
+}
+
+/** 参考文献一条（离线从页产物的 `ref` 行 / Markdown 的 References 节抽出来）。 */
+export interface PaperReference {
+  id: string;
+  order_no: number;
+  /** 原始条目（结构化字段可能解析错，所以原文永远保留） */
+  raw: string;
+  title?: string | null;
+  authors?: string | null;
+  venue?: string | null;
+  year?: number | null;
+  doi?: string | null;
+  url?: string | null;
+  source?: string;
 }
 
 export interface FormulaValidation {
@@ -593,23 +637,10 @@ export interface UnderstandingRefItem {
   page?: number | null;
 }
 
-/**
- * 「相关概念」一条（阶段二新增字段，挂在 B 路结果上）。
- *
- * `body_md` 是**自由 Markdown** 的概念解释（不假设小节结构，模型怎么写就怎么渲染）；
- * `refs` 可能为空（模型没给引用时不许报错，只是不显示胶囊）。
- */
-export interface UnderstandingConcept {
-  name: string;
-  name_en?: string | null;
-  body_md?: string;
-  refs?: UnderstandingRefItem[];
-}
-
-/** 单路理解结果（`GET /papers/{id}/understanding?path=a|b`，与 `understanding_service.to_dict` 对齐）。 */
+/** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */
 export interface UnderstandingPayload {
   paper_id?: string;
-  path?: 'a' | 'b';
+  path?: 'a';
   label?: string;
   markdown?: string;
   refs?: string[];
@@ -619,12 +650,9 @@ export interface UnderstandingPayload {
   invalid_refs?: string[];
   cross_road_refs?: string[];
   refs_ok?: boolean;
-  missing_concept_refs?: boolean;
   model?: string;
   updated_at?: string;
   inventory_size?: number;
-  /** B 路的「相关概念」；模型没按小节写时是空数组（前端退回整篇 markdown 展示） */
-  concepts?: UnderstandingConcept[];
 }
 
 /**

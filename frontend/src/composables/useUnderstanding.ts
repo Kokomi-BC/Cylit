@@ -1,32 +1,32 @@
 /**
- * 「论文解读 / 阅读地图」的**数据源与轮询** —— 阅读器左栏两个页签 + 两个整页路由共用。
+ * 「论文解读」的**数据源与轮询** —— 阅读器左栏页签 + 整页路由共用。
  *
- * 为什么必须共用：同一份解读有**四个出口**（左栏「论文解读」「阅读地图」、
- * 整页 `/understand/:paperId`「/readmap/:paperId」）。四处各写一遍 fetch + 轮询，会出现
- * "切个页签又把同一个接口打一遍"，而且各自对"缺哪一路"的判据会慢慢漂移。
- * 这里按 `paperId` 缓存**整包**（`{a, b, done}`），并且同一个接口的并发请求只发一次（in-flight 去重）。
+ * 为什么必须共用：同一份解读有两个出口（左栏「论文解读」页签、整页 `/understand/:paperId`）。
+ * 两处各写一遍 fetch + 轮询，会出现"切个页签又把同一个接口打一遍"，
+ * 而且各自对"缺内容"的判据会慢慢漂移。这里按 `paperId` 缓存整包，并发请求只发一次（in-flight 去重）。
  *
- * 缓存 TTL：30s。同一篇论文在两个页签之间来回切是**零请求**；隔久了再打开会重新取一次，
+ * 缓存 TTL：30s。同一篇论文在两个出口之间来回切是**零请求**；隔久了再打开会重新取一次，
  * 免得"论文库里重跑过解读、这边还显示旧内容"。轮询那一轮走 `force`，绕过 TTL。
  *
- * 轮询口径（沿用前几轮）：**只在有理解任务在跑时**轮询，5s 一轮、48 轮上限。
+ * 轮询口径（沿用前几轮）：**只在有解读任务在跑时**轮询，5s 一轮、48 轮上限。
  * 任务的判据由调用方给（阅读器按自己的任务列表算，整页这边自己拉 `/tasks`）。
+ *
+ * ⚠️ 2026-10-02：原「阅读地图」（B 路 + 相关概念）整体删除，这里只剩论文精读这一路。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch, type Ref } from 'vue';
 import { api } from '@/api/client';
 import { isTaskRunning } from '@/utils/tasks';
-import type { TaskInfo, UnderstandingConcept, UnderstandingPayload } from '@/api/types';
+import type { TaskInfo, UnderstandingPayload } from '@/api/types';
 
-/** `GET /papers/{id}/understanding` 的整包形状（`a` = 论文解读，`b` = 阅读地图 + 相关概念）。 */
+/** `GET /papers/{id}/understanding` 的整包形状（`a` = 论文精读）。 */
 export interface UnderstandingBundle {
   paper_id?: string;
   a?: UnderstandingPayload | null;
-  b?: UnderstandingPayload | null;
-  /** 已经生成过的那几路（`['a','b']`） */
+  /** 已经生成过的那几路（现在只有 `['a']`） */
   done?: string[];
 }
 
-/** 缓存里的一篇论文（`reactive`：四个出口共享同一份，谁刷新了别处立刻跟着变）。 */
+/** 缓存里的一篇论文（`reactive`：两个出口共享同一份，谁刷新了别处立刻跟着变）。 */
 export interface UnderstandingEntry {
   bundle: UnderstandingBundle;
   loading: boolean;
@@ -49,7 +49,7 @@ function entryFor(paperId: string): UnderstandingEntry {
   let e = cache.get(paperId);
   if (!e) {
     e = reactive<UnderstandingEntry>({
-      bundle: { a: null, b: null }, loading: false, loaded: false, at: 0, error: '',
+      bundle: { a: null }, loading: false, loaded: false, at: 0, error: '',
     });
     cache.set(paperId, e);
   }
@@ -59,12 +59,6 @@ function entryFor(paperId: string): UnderstandingEntry {
 /** 取这篇论文的解读缓存（没有就建一个空壳；**不发请求**）。 */
 export function understandingEntry(paperId: string): UnderstandingEntry {
   return entryFor(paperId);
-}
-
-/** 相关概念（只有 B 路有这个字段；空数组 = 模型这次没按小节写）。 */
-export function conceptsOf(entry: UnderstandingEntry): UnderstandingConcept[] {
-  const raw = entry.bundle.b?.concepts;
-  return (Array.isArray(raw) ? raw : []).filter((c) => Boolean(c && (c.name || c.body_md)));
 }
 
 /**
@@ -82,7 +76,7 @@ export async function loadUnderstanding(
   const task = (async () => {
     try {
       const d = await api.get<UnderstandingBundle>(`/papers/${paperId}/understanding`);
-      entry.bundle = { a: d?.a ?? null, b: d?.b ?? null, done: d?.done ?? [] };
+      entry.bundle = { a: d?.a ?? null, done: d?.done ?? [] };
       entry.error = '';
       entry.loaded = true;
       entry.at = Date.now();
@@ -113,24 +107,19 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
   const started = ref(false);
   const timedOut = ref(false);
 
-  const pathA = computed(() => entry.value.bundle.a ?? null);
-  const pathB = computed(() => entry.value.bundle.b ?? null);
-  const concepts = computed<UnderstandingConcept[]>(() => conceptsOf(entry.value));
-  /** 整篇有没有解读（两个页签共用它判断"空状态"） */
-  const hasAny = computed(() => Boolean(
-    pathA.value?.markdown || pathB.value?.markdown || concepts.value.length,
-  ));
-  /** 两路都到齐：轮询的终点（只有一路的论文不该被无限轮询） */
-  const doneBoth = computed(() => Boolean(pathA.value?.markdown && pathB.value?.markdown));
+  const payload = computed(() => entry.value.bundle.a ?? null);
+  const markdown = computed(() => String(payload.value?.markdown ?? ''));
+  /** 已经拿到解读正文（轮询的终点；空状态与"还没好"由它区分） */
+  const hasContent = computed(() => Boolean(markdown.value.trim()));
 
   /** 自己拉任务列表（只有整页需要；阅读器那边由宿主给 `running`，不重复请求） */
   async function syncRunning() {
     if (opts.running) return;
     try {
       const d = await api.get<{ items: TaskInfo[] }>('/tasks', { paper_id: paperId.value, limit: 20 });
-      ownRunning.value = (d.items ?? []).some((t) => (
-        t.type === 'UNDERSTAND_A' || t.type === 'UNDERSTAND_B'
-      ) && isTaskRunning(t));
+      ownRunning.value = (d.items ?? []).some(
+        (t) => t.type === 'UNDERSTAND_A' && isTaskRunning(t),
+      );
     } catch {
       ownRunning.value = false;
     }
@@ -143,7 +132,7 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
     if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; }
   }
   function shouldPoll(): boolean {
-    return !doneBoth.value && !timedOut.value && (running.value || started.value);
+    return !hasContent.value && !timedOut.value && (running.value || started.value);
   }
   function schedule() {
     if (timer !== undefined || !shouldPoll()) return;
@@ -154,7 +143,7 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
         loadUnderstanding(paperId.value, { silent: true, force: true }),
         syncRunning(),
       ]);
-      if (doneBoth.value) { started.value = false; rounds = 0; return; }
+      if (hasContent.value) { started.value = false; rounds = 0; return; }
       if (rounds >= POLL_MAX) { timedOut.value = true; return; }
       schedule();
     }, POLL_MS);
@@ -170,12 +159,12 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
       schedule();
       return;
     }
-    if (hasAny.value) { started.value = false; stopPoll(); return; }
+    if (hasContent.value) { started.value = false; stopPoll(); return; }
     schedule();
   });
 
   /**
-   * 「开始解读」：`POST /papers/{id}/understand`（**不带 force**，后端幂等，已有结果的那一路不重跑）。
+   * 「开始解读」：`POST /papers/{id}/understand`（**不带 force**，后端幂等，已有结果就不重跑）。
    * 返回是否发起成功；失败把后端 `error.message` 原样放进 `entry.error`。
    */
   async function start(): Promise<boolean> {
@@ -183,7 +172,7 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
     entry.value.error = '';
     timedOut.value = false;
     try {
-      await api.post(`/papers/${paperId.value}/understand`, { paths: ['a', 'b'] });
+      await api.post(`/papers/${paperId.value}/understand`, {});
       started.value = true;
       rounds = 0;
       await loadUnderstanding(paperId.value, { silent: true, force: true });
@@ -214,7 +203,7 @@ export function useUnderstanding(paperId: Ref<string>, opts: { running?: Ref<boo
   });
 
   return {
-    entry, pathA, pathB, concepts, hasAny, doneBoth,
+    entry, payload, markdown, hasContent,
     starting, started, timedOut, running, start, stopPoll,
   };
 }

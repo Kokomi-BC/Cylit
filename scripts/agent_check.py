@@ -31,6 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE = "http://127.0.0.1:8710"
+DEFAULT_AGENT_BASE = "http://127.0.0.1:8711"
 DEFAULT_PAPER = "attention-is-all-you-need"
 
 #: 16x16 真 PNG（红底 + 蓝方块）：必须真图 —— 坏图会被模型端拒掉，量到的就只是探针的 bug
@@ -383,15 +384,28 @@ def check_page_edit(base: str, paper: str) -> None:
            f"撤回 {back.get('reverted', {}).get('find')!r}，正文与改动前逐字一致")
 
     # ---- 拒绝③：跨块编辑（把两段并成一段）→ 必须回滚，磁盘逐字节不变
+    #
+    # ⚠️ 候选必须**真的会改变块数**：先用 `split_blocks`（守卫用的同一个函数）现场验一遍
+    # 再发请求。以前只挑"第一个空行"，而 split_blocks 认分界的规则比"有 \n\n"更细
+    # （换行、公式围栏、续行都算）—— 挑到它不认的那一处，守卫**本来就不该**触发，
+    # 自检却报"失败"（实测在 attention p1 / mmdfnd p1 上都撞到过）。
+    # 本脚本平时只走 HTTP（不 import 后端）；这一处必须用**守卫自己的那个函数**
+    # 来判断"这个空行算不算分界"，所以临时把仓库根加进 sys.path 再 import。
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from backend.services.translation.page_translate import split_blocks
+
     span = None
+    base_blocks = len(split_blocks(raw))
     for idx in range(3, len(raw) - 9):
         if raw[idx:idx + 2] == "\n\n":
             cand = raw[idx - 3:idx + 5]
-            if raw.count(cand) == 1 and cand.strip():
+            if (raw.count(cand) == 1 and cand.strip()
+                    and len(split_blocks(raw.replace(cand, " ", 1))) != base_blocks):
                 span = cand
                 break
     if span is None:
-        skip("拒绝：跨块编辑会回滚", "这一页没有可用的分界")
+        skip("拒绝：跨块编辑会回滚", "这一页没有能真正改变块数的分界")
     else:
         rolled = post({"find": span, "replace": " "})
         if rolled.get("ok") is True:        # 守卫失效：先自己收拾干净，再报失败
@@ -470,6 +484,76 @@ def cleanup_attachments(ids: list[str]) -> int:
 # --------------------------------------------------------------------------
 # ⑤ 会话 CRUD（免费：不新建任何会话）
 # --------------------------------------------------------------------------
+
+
+def check_metadata(base: str, paper: str, agent_base: str) -> None:
+    """⑤ 论文元数据（2026-10-07）：新字段 / 参考文献 / 两个写口。
+
+    全程**免费**：只读接口 + 离线抽取（不调模型）+ "只填空字段"那几个守卫。
+    ⚠️ 「模型补全」按钮那一头（`POST /papers/{id}/metadata/agent` → agent 读全文）**故意不在这里跑**：
+    它会真的排一个任务、真的调模型。这里只验"agent 服务那条路通不通"的免费部分。
+    """
+    print("\n⑤ 论文元数据（中英文摘要/关键词、参考文献、字段来源）")
+    head = internal()
+    api = f"{base}/api/v1/agent"
+
+    detail = get_json(f"{base}/api/v1/papers/{paper}", head)["data"]
+    want = ("abstract_zh", "keywords_en", "domain", "one_liner", "contributions",
+            "prereq", "difficulty", "read_time_min", "paper_type", "doi", "code_url",
+            "meta_sources", "references", "reference_count")
+    lack = [k for k in want if k not in detail]
+    record("meta", "详情带上了全部元数据字段", not lack,
+           f"缺 {lack}" if lack else f"参考文献 {detail.get('reference_count')} 条")
+
+    refs = detail.get("references") or []
+    record("meta", "参考文献条数与列表一致（详情接口才算它）",
+           int(detail.get("reference_count") or 0) == len(refs),
+           f"count={detail.get('reference_count')} / len={len(refs)}")
+
+    # 离线补全：不花钱、幂等（只填空字段）。跑完把论文原名与参考文献条数对回来。
+    off = post_json(f"{base}/api/v1/papers/{paper}/metadata/auto",
+                    {"model": False}, head)["data"]
+    after = get_json(f"{base}/api/v1/papers/{paper}", head)["data"]
+    record("meta", "离线补全：不调模型也能跑（幂等、只填空字段）",
+           isinstance(off.get("applied"), dict)
+           and after.get("title") == detail.get("title")
+           and len(after.get("references") or []) == len(refs),
+           f"applied={len(off.get('applied') or {})} 项，参考文献仍 {len(refs)} 条")
+
+    # 写口①：模型给的脏值必须被丢掉（不然"太短的摘要"会写进库里）
+    bad = post_json(f"{api}/papers/{paper}/metadata", {"abstract_zh": "太短"}, head)["data"]
+    record("meta", "agent 写口：脏值被拒（ok=false + 原因）",
+           bad.get("ok") is False and bool(bad.get("error")),
+           f"error={str(bad.get('error'))[:40]}")
+
+    # 写口②：已有值的字段一律 **不覆盖**（这是"按钮不会毁掉手改值"的落点）
+    filled = next((k for k in ("domain", "abstract_zh", "venue", "one_liner")
+                   if detail.get(k)), None)
+    if not filled:
+        skip("agent 写口：已有值不覆盖", "这篇论文这些字段都还空着（跳过）")
+    else:
+        same = post_json(f"{api}/papers/{paper}/metadata",
+                         {filled: detail[filled]}, head)["data"]
+        again = get_json(f"{base}/api/v1/papers/{paper}", head)["data"]
+        record("meta", "agent 写口：已有值不覆盖（applied 为空）",
+               same.get("ok") is True and not (same.get("applied") or {})
+               and filled in (same.get("skipped") or {})
+               and again.get(filled) == detail.get(filled),
+               f"{filled} 已在库 → applied=0、skipped=1，值未变")
+
+    # agent 服务那条路：给一个不存在的论文，必须**正常返回 ok=false**（而不是 5xx）——
+    # 调用方（fill_all）靠这个回落，5xx 会让「模型补全」整个失败。
+    if status_of(f"{agent_base.rstrip('/')}/health") != 200:
+        skip("agent 元数据入口：论文不存在 → ok=false", "agent 服务没在跑")
+    else:
+        try:
+            gone = post_json(f"{agent_base.rstrip('/')}/v1/meta-fill",
+                             {"paper_id": "no-such-paper-for-selfcheck"}, head)
+            ok = gone.get("ok") is False and bool(gone.get("error"))
+        except urllib.error.HTTPError as exc:
+            ok, gone = False, {"error": f"HTTP {exc.code}"}
+        record("meta", "agent 元数据入口：论文不存在 → ok=false（不 5xx）",
+               ok, f"error={str(gone.get('error'))[:60]}")
 
 
 def check_conversations(base: str) -> None:
@@ -735,6 +819,8 @@ def main() -> int:
             pass
     ap = argparse.ArgumentParser(description="Agent 问答链路自检（默认不调用模型）")
     ap.add_argument("--base", default=DEFAULT_BASE)
+    ap.add_argument("--agent-base", default=DEFAULT_AGENT_BASE,
+                    help="agent 服务地址（元数据入口那几条免费检查用）")
     ap.add_argument("--paper", default=DEFAULT_PAPER)
     ap.add_argument("--model", action="store_true",
                     help="跑真问答链路（**会调用模型**；跑完自动删掉造出来的会话）")
@@ -757,6 +843,7 @@ def main() -> int:
         print("\n问答服务没在跑：跳过需要它的检查（`pr.py agent` 启动后再跑）")
     check_projections(base, args.paper)
     check_page_edit(base, args.paper)
+    check_metadata(base, args.paper, args.agent_base)
     created_atts = check_attachments(base)
     check_conversations(base)
 

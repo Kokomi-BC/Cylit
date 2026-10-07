@@ -8352,3 +8352,117 @@ CommonMark 的 flanking 规则要求：左边的 `**` 必须 left-flanking、右
   所以选择器要写 `svg.step-caret`，写成 `.step-caret svg` 什么都找不到（断言先红了才发现）。
 
 验证：`frontend_check` **53/53**；`typecheck` / `build` 干净；用户肉眼确认"没有问题"。
+
+## 49. 第四十九轮：论文元数据扩展 + 删除「阅读地图」（《修改计划》第一步）
+
+用户给了一份**六步改造计划**（`修改计划.md`：① 元数据 → ② Markdown 排版 + 页面视图 →
+③ 双页面高亮 → ④ 高亮↔笔记 → ⑤ 笔记/AI 浮层 → ⑥ Highlight/Note Skill），要求分步执行，
+并追加：元数据要**中英文摘要、中英文关键词、参考文献、所属领域、核心创新点、前置知识与难度、
+推荐阅读时间、一句话概括**（"有些内容可以不调用模型自动添加"，"可以加上其他有用的数据"），
+前端要跟着改，**翻译完成后自动执行元数据填写**，前端那个「由模型补全」按钮**由 agent 执行**。
+四个细节问过用户并已钉死（答案）：
+
+| 问 | 答 |
+|---|---|
+| 计划里"翻译模型论文地图"指哪个？ | **「阅读地图」（`/readmap`，B 路理解 + 相关概念）** |
+| 新字段存哪？ | `paper` 表加列 + **参考文献独立表** |
+| 按钮形态？ | "前端概览的由模型补全按钮，**完整 agent 功能，不用显示细节**" |
+| 字段清单？ | 上表全选（中英摘要 / 中英关键词 / 参考文献 / 领域 / 创新点 / 前置知识与难度 / 阅读时间 / 一句话概括） |
+
+本轮 = 计划第一步（元数据）+ 顺带那一步里的"删掉阅读地图"。
+
+### 一、删掉「阅读地图」（前端 + 后端无用逻辑一起清）
+
+用户原话是"移除当前'翻译模型论文地图'及其相关前端内容，包括对应的页面入口、组件和无用逻辑"，
+并"原翻译模型相关能力后续调整为论文元数据生成与填写功能"。仓库里没有叫"论文地图"的东西，
+追问后确认就是**阅读地图**（B 路理解）—— 于是**整条删掉，不只是藏起来**：
+
+- 前端：`/readmap` 路由 + 标签元信息 + 阅读器左栏「阅读地图」页签（9 → 8 个页签）、
+  `InsightPanel` / `InsightPage` / `InsightDoc` 的 `section` 参数与整套「相关概念」概念卡、
+  `insightOutline` 的 `concepts` 选项、`UNDERSTAND_B` 任务标签。整页只剩 `/understand/:paperId`。
+- 后端：`UNDERSTAND_B_SYSTEM`、任务类型与处理器、`parse_concepts` / `_split_concept_name` /
+  `related_concepts` / `concept_sections_missing_refs` / `path_of_code` / `_stable_prefix`（最后一个
+  本来就是死代码）、`GET /papers/{id}/related`、`understanding.missing_concept_refs` 列；
+  `normalize_path` 只认 `a`，短码正则只认 `A\d{2,4}`，`paths` 默认与唯一取值 `["a"]`。
+- **保留**：`understanding` 表与老数据（老库里 `path='b'` 的行还在，只是不再被读写；
+  `done` 会过滤掉它）。编码原则还是那条：**删逻辑可以，删用户数据不行**。
+- 测试：`tests/test_understanding_concepts.py` 整份删除（测的就是被删的东西），
+  `tests/test_understanding.py` 按单路重写（顺带把"B 路硬要求"那几条换成"提示词里不许再出现
+  阅读地图/相关概念"）；文档（API / 设计 / agent-接入规划）同步，翻译的两路 A/B **一个字没动**。
+
+### 二、元数据：三条来源 + 落库
+
+`paper` 表新增 13 列（`abstract_zh` / `keywords_en` / `domain` / `one_liner` / `contributions_json` /
+`prereq_json` / `difficulty` / `read_time_min` / `paper_type` / `doi` / `code_url` /
+**`meta_sources_json`** / `meta_filled_at`），新增 `paper_reference` 表（一条参考文献一行，
+`raw` 原文永远保留）。`_ADDED_COLUMNS` 自动补列，`create_all` 自动建表 —— 起一次服务就位。
+
+`services/paper/metadata_fill.py` 现在有三条来源，**默认只填空字段**：
+
+| 来源 | 覆盖 | 花钱 |
+|---|---|---|
+| `pdf`（`offline()`） | 标题 / 作者 / 会议 / 年份 / 原文摘要 / **DOI** / **开源地址** / **参考文献** / **推荐阅读时间** | 否 |
+| `model`（`from_model()`） | 会议 / 年份 / 中英关键词 / 中文摘要 / 领域 / 一句话概括 / 创新点 / 前置知识 / 难度 / 类型 / 阅读时间 / DOI / 开源地址 | 一次调用 |
+| `agent`（`agent_fill()`） | 同上，但**带工具读全文**（翻页 + 检索） | 一个 agent 会话 |
+
+- **参考文献**读的是**页产物里 `ref` 类型的行**（解析阶段已经切好的那一份，用户"显示参考文献"
+  看到的就是它），没有页产物时退回 Markdown 的 References 小节按编号切。
+- **阅读时间**按正文（`para`/`heading`）字数估：900 字符/分钟，<500 字符不给（别给个"1 分钟"骗人）。
+- **DOI / 开源地址**只在前两页里找（翻遍全文会捞到参考文献里别人的）。
+- **`meta_sources_json`**：每个字段记来源（`pdf`/`model`/`agent`/`manual`）。以前没有来源标记，
+  所以"补全"只能一律"只填空字段"，分不清"空是因为论文里没有"还是"用户故意清空"——
+  现在前端能把"这一项是哪来的"直接显示出来。
+
+### 三、「模型补全」按钮改由 agent 执行（过程不展示）
+
+用户口径是"完整 agent 功能，不用显示细节"，所以**没有**给元数据另起一套 agent：
+复用 agent 服务那套（`Deps` + 工具 + 宿主接口 + skills），只换 system 与工具集：
+
+- `META_TOOLS = [paper_search, page_markdown_get, block_get, paper_meta_write]` —— 读全文的能力
+  照旧，写口只有一个，且**一次会话只准写一次**（元数据是整篇的结论，边读边改必然自相矛盾）。
+- `AgentRuntime.meta_fill()`：不流式、不落消息、不建会话；`UsageLimits` 24 轮封顶；
+  跑完只回报"填了哪些字段"。
+- 落库走主后端内部接口 `POST /agent/papers/{id}/metadata`（`normalize_meta` 先过一遍脏值，
+  再 `apply_fills(source="agent")`）——agent 拿不到也改不了"只填空字段"这条策略。
+- 前端按钮 → `POST /papers/{id}/metadata/agent` → **排一个 `META_FILL` 任务**（队列 `knowledge`），
+  跑完刷新卡片；`handle_meta_fill` 的顺序是 **离线 → agent → 跑不动就回落单次模型调用**，
+  所以 agent 服务没起来时按钮照样有结果。
+- **翻译完成后的自动链**：`翻译完成 → INDEX(rebuild, then_understand) → UNDERSTAND_A + META_FILL`。
+  只在"这篇论文还缺元数据"时才排队（元数据齐了再跑一次 agent 是白花钱）。
+- `metadata/agent` 内部那条路给不存在的论文返回 **`ok=false`**（不是 5xx）：调用方靠它回落。
+
+前端：论文详情弹窗新增「论文信息」卡（一句话概括 / 领域·难度·类型·阅读时间 / 中文摘要 /
+英文关键词 / 前置知识 / 核心创新点 / DOI·代码链接）与「参考文献」页签；编辑元数据弹窗补齐全部
+新字段（列表字段一行一条）；两个补全按钮改成「从论文识别」（离线、同步）与「模型补全」
+（agent、后台，"已排队…"+ 一个每到 5s 打一次 `/tasks` 的小轮询，跑完自动刷新 + 一句提示）。
+
+### 四、自检：先抓到一个**自检自己的 bug**
+
+跑 `agent_check` 时"拒绝：跨块编辑 → 已回滚"这条红了，而 `page_edit` 我一行没动。查下去：
+
+- 它会挑"页面里第一个 `\n\n`"当作跨块编辑的候选，但**守卫用的 `split_blocks` 认分界的规则比
+  "有 `\n\n`"更细**（续行、公式围栏都算）。挑到它不认的那一处，守卫**本来就不该**触发 ——
+  产品行为是对的，是**检查的前提写错了**（在 attention p1 / mmdfnd p1 上实测复现）。
+- 修法：候选必须先用 `split_blocks`（**守卫自己那个函数**）现场验一遍"块数真的会变"再发请求；
+  一个都不行就 `[SKIP]`（而不是 FAIL）。脚本平时只走 HTTP，这一处临时把仓库根加进 `sys.path`
+  再 import —— 为了"检查与守卫用同一个判据"，这个 import 值得。
+
+新增第 ⑤ 组 6 条（全免费、零模型调用）：详情带齐全部元数据字段、参考文献条数与列表一致、
+离线补全幂等且只填空字段、agent 写口**拒绝脏值**（太短的摘要）、agent 写口**已有值不覆盖**、
+agent 元数据入口对不存在的论文返回 `ok=false`（不 5xx）。
+
+### 五、验证（免费，零模型调用）
+
+`agent_check` **34 → 40 项，40/40 通过**；`frontend_check` **53/53**；`pytest` 全绿；
+`typecheck` / `build` 干净；数据库实测：`paper` 13 个新列齐全、`paper_reference` 11 列已建，
+attention 抽出 **40 条**参考文献。阅读器侧栏 9 → 8 个页签由既有探针覆盖（切走再回来位置还在、
+过程轨迹仍对）。
+
+### 六、留的口子（都告知用户了）
+
+1. **agent 那条路的真机调用这一轮没跑**（既定口径：默认检查不调模型）。链路是通的
+   ——"论文不存在 → ok=false"已经把路由、`Deps`、`host.archive` 走了一遍，但"读全文 → 写回"
+   要一次真实模型调用才算验过。用户要的话，加 `--model` 或直接点一次按钮即可。
+2. 论文库**卡片**上还没显示新字段（领域 / 难度 / 阅读时间只在详情弹窗与编辑表单里）。
+3. 参考文献只存了 `raw` 原文，结构化字段（title / venue / year）留给模型或后续解析补。
+4. 本轮只做了计划第一步；第二步（Markdown 排版 + 侧栏「页面视图」）接着做。

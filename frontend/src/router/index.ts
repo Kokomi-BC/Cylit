@@ -14,18 +14,12 @@ const routes: RouteRecordRaw[] = [
   { path: '/home', name: 'home', component: () => import('@/views/HomeView.vue'), meta: { title: '首页' } },
   { path: '/library', name: 'library', component: () => import('@/views/LibraryView.vue'), meta: { title: '论文库' } },
   { path: '/reader/:paperId', name: 'reader', component: () => import('@/views/ReaderView.vue'), meta: { title: '阅读器' } },
-  // 解读的两个整页视图**共用一个组件**（`section` 决定画哪一份）：`/understand` = 论文解读（A 路），
-  // `/readmap` = 阅读地图 + 相关概念（B 路）。两个**路由名**是必须的：标签键只看 name + params，
-  // 用同一个路由加 query 是开不出第二个应用内标签的。
+  // 「论文解读」整页（A 路论文精读）。原先的 `/readmap`（阅读地图 + 相关概念）
+  // 已随该功能一起删除，只剩这一路。
   {
     path: '/understand/:paperId', name: 'understand',
     component: () => import('@/views/UnderstandView.vue'),
-    props: { section: 'read' }, meta: { title: '论文解读' },
-  },
-  {
-    path: '/readmap/:paperId', name: 'readmap',
-    component: () => import('@/views/UnderstandView.vue'),
-    props: { section: 'map' }, meta: { title: '阅读地图' },
+    meta: { title: '论文解读' },
   },
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { title: '知识库' } },
   { path: '/study', name: 'study', component: () => import('@/views/StudyView.vue'), meta: { title: '学习' } },

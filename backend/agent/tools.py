@@ -785,6 +785,81 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                            "find": _clip(find or "", 60)}, _impl())
 
 
+async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0,
+                           tags: list[str] | None = None,
+                           keywords_en: list[str] | None = None,
+                           abstract_zh: str = "", domain: str = "",
+                           one_liner: str = "", contributions: list[str] | None = None,
+                           prereq: list[str] | None = None, difficulty: str = "",
+                           paper_type: str = "", read_time_min: int = 0,
+                           doi: str = "", code_url: str = "") -> dict:
+    """把这篇论文的**元数据**写回论文库（一次会话只写一次，读完再写）。
+
+    什么时候用：表单里让你"补全这篇论文的信息"时。它要的是**整篇的结论**，所以顺序是
+    「先读 → 再判断 → 最后一次性提交」：`page_markdown_get` 读首页/摘要/结论页，
+    `paper_search` 找创新点与实验结论的原文，拿不准的字段**留空**（留空 = 这项不动）。
+
+    **不要编造**：只有材料里明确写了才填。摘要要**译文**、不要用一句话总结冒充；
+    会议名只有文中出现才算数。
+
+    参数（全部可选，留空的不写）：
+      venue          会议或期刊名（含年份，如 ICLR 2026）。
+      year           发表年份（整数）。
+      tags           3~6 个**中文**关键词。
+      keywords_en    3~6 个**英文**关键词（论文自己列了 Keywords 就用它）。
+      abstract_zh    摘要的中文译文（≤400 字）。
+      domain         所属领域 / 研究方向（≤20 字）。
+      one_liner      一句话概括（≤60 字）。
+      contributions  2~5 条核心创新点，每条 ≤60 字，说清相对已有工作新在哪。
+      prereq         2~4 条前置知识。
+      difficulty     入门 / 进阶 / 专家。
+      paper_type     方法 / 综述 / 数据集 / 系统 / 理论 / 其他。
+      read_time_min  推荐阅读时间（分钟）。
+      doi / code_url DOI 与开源地址（没有就留空）。
+    """
+    async def _impl() -> dict:
+        if ctx.deps.meta_submitted:
+            return {"ok": False,
+                    "error": "元数据已经提交过一次了。要改哪一项就把它带上一起重发一次；"
+                             "不要分多次提交（那会让后面的判断和前面写下的互相矛盾）。"}
+        payload: dict = {}
+        if str(venue or "").strip():
+            payload["venue"] = str(venue).strip()
+        if int(year or 0):
+            payload["year"] = int(year)
+        for key, value, limit in (("tags", tags, 8), ("keywords_en", keywords_en, 8),
+                                  ("contributions", contributions, 6),
+                                  ("prereq", prereq, 6)):
+            items = [str(x).strip() for x in (value or []) if str(x).strip()][:limit]
+            if items:
+                payload[key] = items
+        for key, value in (("abstract_zh", abstract_zh), ("domain", domain),
+                           ("one_liner", one_liner), ("difficulty", difficulty),
+                           ("paper_type", paper_type), ("doi", doi), ("code_url", code_url)):
+            if str(value or "").strip():
+                payload[key] = str(value).strip()
+        if int(read_time_min or 0):
+            payload["read_time_min"] = int(read_time_min)
+        if not payload:
+            return {"ok": False, "error": "没有给出任何字段。至少填你知道的那几项。"}
+        data = await ctx.deps.host.meta_write(ctx.deps.paper_id, payload)
+        if data.get("ok"):
+            ctx.deps.meta_submitted = True
+            ctx.deps.meta_applied.update(data.get("applied") or {})
+        return data
+
+    return await _guarded(ctx, "paper_meta_write",
+                          {"fields": sorted(k for k, v in {
+                              "venue": venue, "year": year, "tags": tags,
+                              "keywords_en": keywords_en, "abstract_zh": abstract_zh,
+                              "domain": domain, "one_liner": one_liner,
+                              "contributions": contributions, "prereq": prereq,
+                              "difficulty": difficulty, "paper_type": paper_type,
+                              "read_time_min": read_time_min, "doi": doi,
+                              "code_url": code_url}.items() if v)},
+                          _impl())
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
@@ -797,3 +872,8 @@ EDIT_TOOLS = [page_markdown_edit]
 
 #: 当前挂载的全部工具
 AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS]
+
+#: **元数据填写**那一次会话用的工具：只读的读全文能力 + 一个写口。
+#: 为什么单独一份、不并进 `AGENT_TOOLS`：问答会话里模型顺手改元数据的场景并不存在，
+#: 而"少一个写口"就是少一类越权。
+META_TOOLS = [paper_search, page_markdown_get, block_get, paper_meta_write]

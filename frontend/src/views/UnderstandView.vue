@@ -1,15 +1,14 @@
 <script setup lang="ts">
 /**
- * 「论文解读」/「阅读地图」的**整页版**（`/understand/:paperId` 与 `/readmap/:paperId` 共用本组件）。
- *
- * 两个路由共用一个组件：两份内容是同一个接口的 `a` / `b`，只有"画哪一份"不同。
- * 两个**路由名**是必须的（应用内标签键只看 name + params，同路由加 query 开不出第二个标签）。
+ * 「论文解读」的**整页版**（`/understand/:paperId`）。
  *
  * 三条用户口径：
  * - 顶栏**只留标题**（没有刷新、没有「重新生成解读」；重跑入口只在论文库的「⋯」菜单里）；
  * - 版面是**阅读器同构的两栏**：左栏本文目录、右栏正文（行宽 880 / 列内居中 / 有页边距）——
- *   这一套在 `InsightPage` 里，两个路由共用；
+ *   这一套在 `InsightPage` 里；
  * - 正文字号跟阅读器（服务端进度里的 `text_size`）——"像在读论文"的另一个条件。
+ *
+ * ⚠️ 2026-10-02：原「阅读地图」整页（`/readmap/:paperId`，与本页共用一个组件）随该功能一起删除。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -20,16 +19,9 @@ import { truncate } from '@/utils/format';
 import { readerFontPx } from '@/utils/readerFont';
 import InsightPage from '@/components/insight/InsightPage.vue';
 
-const props = withDefaults(defineProps<{
-  /** `read` = 论文解读（A 路 markdown）；`map` = 阅读地图（B 路 markdown + 相关概念） */
-  section?: 'read' | 'map';
-}>(), { section: 'read' });
-
 const route = useRoute();
 const paperId = computed(() => String(route.params.paperId ?? ''));
 const paper = computed(() => (state.papers ?? []).find((p) => p.id === paperId.value));
-
-const sectionLabel = computed(() => (props.section === 'map' ? '阅读地图' : '论文解读'));
 
 /**
  * 正文字号跟阅读器：**服务端进度里的 `text_size`** 是权威那份（"这篇论文上次看的时候多大"），
@@ -44,10 +36,10 @@ async function loadFont() {
   } catch { /* 取不到就用本地那份 */ }
 }
 
-/* 标签标题：`论文简称 · 论文解读` / `… · 阅读地图`（标签条上两个整页一眼分得清） */
-watch([paper, sectionLabel], () => {
+/* 标签标题：`论文简称 · 论文解读` */
+watch(paper, () => {
   const short = truncate(paper.value?.title || paperId.value, 18);
-  setTabTitle(routeKey(route), `${short} · ${sectionLabel.value}`);
+  setTabTitle(routeKey(route), `${short} · 论文解读`);
 }, { immediate: true });
 
 onMounted(async () => {
@@ -64,8 +56,8 @@ watch(paperId, () => { void loadFont(); });
       <h1>{{ paper?.title || paperId }}</h1>
     </header>
 
-    <!-- 两栏壳：左栏本文目录 + 右栏正文（两个整页共用，版面不会各自漂移） -->
-    <InsightPage :paper-id="paperId" :section="props.section" />
+    <!-- 两栏壳：左栏本文目录 + 右栏正文 -->
+    <InsightPage :paper-id="paperId" />
   </div>
 </template>
 

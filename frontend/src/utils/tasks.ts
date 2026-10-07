@@ -6,7 +6,8 @@
  *
  * ⚠️ `TRANSLATE_MD` 与 `TRANSLATE_ZH` 在界面上**是同一件事**（逐页翻译的两条路：英文转录 + 中文翻译），
  * 所以都映射成"翻译"——列两种叫法只会让人以为跑了两套翻译。
- * ⚠️ `UNDERSTAND_A` / `UNDERSTAND_B` 同理：前端没有"两路"这个概念（用户口径），统一叫"解读"。
+ * ⚠️ `UNDERSTAND_A` 在界面上就叫"解读"（前端没有"路"这个概念；`UNDERSTAND_B`
+ * ——原「阅读地图」——已随该功能一起删除）。
  */
 import type { TaskInfo } from '@/api/types';
 import { pct } from '@/utils/format';
@@ -18,7 +19,6 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   TRANSLATE_MD: '翻译',
   TRANSLATE_ZH: '翻译',
   UNDERSTAND_A: '解读',
-  UNDERSTAND_B: '解读',
   INDEX: '索引',
 };
 

@@ -29,7 +29,7 @@ python scripts/agent_check.py        # 自检：默认不调用模型；--model 
 
 **做一个独立的 agent 服务（独立进程 + 端口，与主仓共用 `scenemind` 环境），内核用
 `pydantic-ai-slim[openai]==2.53.0` + `pydantic-ai-harness[skills]==0.53.0`，
-把 Cylit 的能力包成 13 个工具（12 读 + 1 写），新功能以 `skills/<name>/SKILL.md` 的形式加。**
+把 Cylit 的能力包成 12 个工具（11 读 + 1 写；原清单里的 `related_concepts` 已于 2026-10-07 删除），新功能以 `skills/<name>/SKILL.md` 的形式加。**
 
 | 项 | 状态 |
 |---|---|
@@ -124,7 +124,7 @@ Cylit 主后端  FastAPI :8710        ← 既有进程，不新增依赖
 Agent 服务  FastAPI :8711           ← 新进程；与主仓共用 conda 环境 scenemind
   ├─ pydantic-ai-slim[openai] + pydantic-ai-harness[skills]
   ├─ skills/ 目录（SKILL.md 按需加载）
-  └─ tools/ 13 个工具 → 回调主后端 /api/v1/*
+  └─ tools/ 12 个工具 → 回调主后端 /api/v1/*
 ```
 
 **为什么独立进程**：① 崩溃隔离——agent 跑飞不该拖垮解析/翻译调度器；
@@ -260,7 +260,7 @@ POSIX 语义下 `join("/workspace", "/workspace/x") == "/workspace/x"`（幂等�
 Cylit/
   agent/
     app.py                  # FastAPI 入口 + SSE
-    tools/                  # 13 个工具（薄封装，回调主后端）
+    tools/                  # 12 个工具（薄封装，回调主后端）
     runtime/                # 模型装配、预算、清洗
     skills/                 # ★ 加功能只动这里
       paper-qa/SKILL.md
@@ -340,7 +340,7 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 **原则**：工具是宿主能力的白名单；每个工具一个 pydantic 入参模型 + 一个**瘦投影**返回；
 `paper_id` 由宿主覆写（M2）；工具名用动宾结构，描述里写"什么时候用"。
 
-### 7.0 工具总览（13 个）
+### 7.0 工具总览（12 个；原 #12 `related_concepts` 已于 2026-10-07 删除）
 
 | # | 工具 | 读写 | 一句话 | 落点 | 阶段 |
 |---|---|---|---|---|---|
@@ -355,16 +355,21 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | 9 | `translate_get` | 读 | 按页取中文译文（逐块带 ref） | 复用 `/agent/papers/{id}/pages?lang=zh` | P1 ✅ |
 | 10 | `library_list` | 读 | 书架检索（标题/作者模糊匹配），只回元数据 | 新投影 `GET /agent/library?q=` | P1 ✅ |
 | 11 | `notes_search` | 读 | 笔记 / 高亮 / 批注（可按当前论文或全库） | 新投影 `GET /agent/notes?query=&paper_id=&kind=` | P1 ✅ |
-| 12 | `related_concepts` | 读 | 理解产物（概念与关联） | `GET /papers/{id}/related` | P2 |
-| 13 | `page_markdown_edit` | **写** | 改**页级产物**里的一处文本（ops：`view` / `replace` / `undo`；字面替换、唯一命中、先读后写、结构变了回滚、改完增量重建索引） | `GET/POST /agent/papers/{id}/pages/{n}/product` | P2-a ✅ |
+| 12 | `page_markdown_edit` | **写** | 改**页级产物**里的一处文本（ops：`view` / `replace` / `undo`；字面替换、唯一命中、先读后写、结构变了回滚、改完增量重建索引） | `GET/POST /agent/papers/{id}/pages/{n}/product` | P2-a ✅ |
 
 **参数口径：模型只认 `ref`，不认内部 id**（P0 的落地取舍）。检索与读页返回的每一项都带
 宿主分配的 `ref`；`block_get` / 将来的写工具都收 `ref`，由宿主查回 `block_id`。
 这样模型**没有机会**抄错 id，也不需要知道 `chunk_id` / `block_id` 长什么样 ——
 M4 的"瘦投影"因此是从"清洗兜底"变成"结构上不可能"。
 
-**只有第 13 个需要写新接口**，其余 12 个挂在现有只读能力上（第 2、4 个加了小参数，
+**只有第 12 个需要写新接口**，其余 11 个挂在现有只读能力上（第 2、4 个加了小参数，
 第 7~11 个各加了一条瘦投影，都已落地）。
+
+**元数据填写那次会话（2026-10-07）用的工具是另一份**：`META_TOOLS =
+[paper_search, page_markdown_get, block_get, paper_meta_write]`。读的能力照旧，写口只有一个
+（`paper_meta_write`，一次会话只准写一次），落库走 `POST /agent/papers/{id}/metadata`
+（值先过 `metadata_fill.normalize_meta` 的脏值校验，再按"**只填空字段**"写回）。
+它**不进 `AGENT_TOOLS`**：问答会话里"顺手改元数据"的场景并不存在，而少一个写口就是少一类越权。
 
 **`paper_search` vs `kb_search` 是两种问题，不是一个工具加参数**：
 "这篇论文里怎么说的"（P0）vs "我的库里还有谁讲过这个"（P1）。
@@ -960,12 +965,18 @@ GET  /api/v1/papers/{id}/pages/{n}?dpi= 页图 PNG（不传 dpi = 解析期那�
                                         ★ 新增 dpi 参数：按需渲染并落盘缓存（agent 看公式用 300~400）
 GET  /api/v1/papers/{id}/figures/region/{page}/{index}?card=1   插图裁图 600dpi
 GET  /api/v1/papers/{id}/brief         论文档案（DocumentBrief，已含 key_claims）
-GET  /api/v1/papers/{id}/outline | /formulas | /related
+GET  /api/v1/papers/{id}/outline | /formulas      （原 `| /related` 已于 2026-10-07 删除）
+POST /api/v1/agent/papers/{id}/metadata           论文元数据写口（agent 的 `paper_meta_write`
+                                                  唯一后端；`/agent/papers/{id}/archive` 顺带
+                                                  多回一个 `meta` 块 = 现有元数据）
+POST http://127.0.0.1:8711/v1/meta-fill           agent 服务的「模型补全」入口：同步跑完一次
+                                                  元数据会话，不流式、不落消息
+（对 agent 的内部投影：原 12 条 → 13 条）
 GET  /api/v1/papers/{id}/markdown/translated
 GET  /api/v1/papers                    书架
 GET  /api/v1/notes | /highlights | /annotations
 POST /api/v1/knowledge/index           重建索引（写工具后用）
-/api/v1/agent/...                      见 §4.3（对前端 6 条 + 对 agent 12 条）
+/api/v1/agent/...                      见 §4.3（对前端 6 条 + 对 agent 13 条）
 ```
 
 **P1 新增的四条内部投影**（都只认内部 token）：

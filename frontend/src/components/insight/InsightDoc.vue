@@ -1,15 +1,10 @@
 <script setup lang="ts">
 /**
- * 解读正文的**共享渲染器**：阅读器左栏两个页签（「论文解读」「阅读地图」）与两个整页
- * （`/understand/:paperId`、`/readmap/:paperId`）都用它。
+ * 解读正文的**共享渲染器**：阅读器左栏页签（「论文解读」）与整页（`/understand/:paperId`）都用它。
  *
- * 为什么要共享：同一份 markdown 有四个出口。四处各写一遍渲染，排版一定会各自漂移
- * （行宽、段间距、标题档位、表格样式、公式溢出…）。这里只负责"把 markdown 与概念卡按
+ * 为什么要共享：同一份 markdown 有两个出口。两处各写一遍渲染，排版一定会各自漂移
+ * （行宽、段间距、标题档位、表格样式、公式溢出…）。这里只负责"把 markdown 按
  * **阅读器的正文排版**画出来"，数据从 `useUnderstanding` 来、标题由各自的宿主渲染。
- *
- * - `section='read'`：只画 `a.markdown`（论文精读）；
- * - `section='map'`：**先画概念卡，再画 `b.markdown`**（阅读地图）—— 与 B 路自己的顺序一致
- *   （B 的 markdown 里还自带一节「相关概念」，照常渲染、不做删节：它是模型写的一篇连贯文章）。
  *
  * 排版口径（对齐阅读器 `ReaderRow` 的 `.rr-body`）：行高 1.78、段间距 .55em、标题 em 档位、
  * 数字右对齐 + 不折行的表格、公式横向可滚。字号取 `--reader-font-size`（宿主设好）。
@@ -17,15 +12,11 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
-import AppIcon from '@/components/AppIcon.vue';
 import { buildInsightOutline } from '@/utils/insightOutline';
-import type { UnderstandingConcept } from '@/api/types';
 
 const props = withDefaults(defineProps<{
-  section: 'read' | 'map';
   markdown?: string | null;
-  concepts?: UnderstandingConcept[];
-  /** 整篇都没有解读（与"这一路缺内容"不同）：显示空状态 + 「开始解读」 */
+  /** 整篇都没有解读（与"还没生成"不同）：显示空状态 + 「开始解读」 */
   empty?: boolean;
   /** 首次加载中（还没有任何内容可显示） */
   loading?: boolean;
@@ -38,7 +29,7 @@ const props = withDefaults(defineProps<{
   timedOut?: boolean;
   /**
    * 整页阅读：正文列按阅读器的行宽收窄（没有侧栏的宿主用）。
-   * 新版的整页是自己给右栏定宽（`InsightPage` 的列宽 + 页边距），所以那里不再传它；
+   * 整页是自己给右栏定宽（`InsightPage` 的列宽 + 页边距），所以那里不再传它；
    * 这个 prop 留给"把正文直接放进一个很宽的容器"的场景。
    */
   narrow?: boolean;
@@ -56,7 +47,7 @@ const props = withDefaults(defineProps<{
    */
   paperId?: string;
 }>(), {
-  markdown: '', concepts: () => [], empty: false, loading: false, starting: false, running: false,
+  markdown: '', empty: false, loading: false, starting: false, running: false,
   error: '', timedOut: false, narrow: false, anchorPrefix: 'ins', paperId: '',
 });
 
@@ -73,7 +64,6 @@ const root = ref<HTMLElement | null>(null);
  *
  * 表格外面那层横向滚动容器与「三线表」样式**不再由这里负责**：`mdToHtml` 现在统一把
  * `<table>` 包进 `.tbl-wrap`（见 `useMarkdown.decorateTables`），样式在 base.css 的 `.md table`。
- * 以前这里自己 `replace` 一遍，于是 AI 解读、阅读器、Markdown 视图三处表格长得都不一样。
  */
 function render(md?: string | null): string {
   return mdToHtml(md ?? '', props.paperId);
@@ -81,14 +71,11 @@ function render(md?: string | null): string {
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));
 
-/** 「相关概念」那一块的 anchor（目录里对应的人工条目） */
-const conceptsId = computed(() => `${props.anchorPrefix}-concepts`);
-
 /**
  * 给渲染出来的标题**按序贴 id**（id 由 `buildInsightOutline` 生成）。
  *
  * 为什么在 DOM 上贴而不是改 `useMarkdown` 的渲染产物：`mdToHtml` 那条链路是多年的不变量
- * （阅读器正文、Markdown 视图、图注、概念解释都吃它），为一个 anchor 去动它有连带风险；
+ * （阅读器正文、Markdown 视图、图注都吃它），为一个 anchor 去动它有连带风险；
  * 而这里 DOM 顺序与大纲顺序天然一致（同一份 markdown、同一个纯函数），贴一遍就够了。
  */
 function assignAnchors() {
@@ -106,36 +93,6 @@ function assignAnchors() {
 }
 watch(html, () => { void nextTick(assignAnchors); });
 onMounted(() => { void nextTick(assignAnchors); });
-
-/* ------------------------------ 相关概念 ------------------------------ */
-const filter = ref('');
-
-function matchFilter(c: UnderstandingConcept): boolean {
-  const q = filter.value.trim().toLowerCase();
-  if (!q) return true;
-  return [c.name, c.name_en, c.body_md].some((s) => String(s ?? '').toLowerCase().includes(q));
-}
-const conceptRows = computed(() => (props.concepts ?? [])
-  .filter(matchFilter)
-  .map((c) => ({ key: String(c.name || c.name_en || ''), c }))
-  .filter((r) => r.key));
-
-/** 概念卡默认**收起**：一屏摊开十几段解释就是一堵墙，先让名字扫一遍 */
-const expanded = ref<Record<string, boolean>>({});
-const isOpen = (key: string) => Boolean(expanded.value[key]);
-function toggle(key: string) { expanded.value = { ...expanded.value, [key]: !expanded.value[key] }; }
-
-/** 引用短码的 tooltip：短码之外把 chunk id / 类型 / 页码摊开（核对来源时要用） */
-function refTitle(c: UnderstandingConcept, code: string): string {
-  const r = (c.refs ?? []).find((x) => x.code === code);
-  if (!r) return code;
-  return [r.code, r.chunk_id, r.chunk_type, r.page ? `p${r.page}` : ''].filter(Boolean).join(' · ');
-}
-
-/** 这一路没内容时的淡色说明（不报错、不留白） */
-const missingHint = computed(() => (props.section === 'map'
-  ? '还没有生成「阅读地图」，先看「论文解读」也一样。'
-  : '还没有生成「论文解读」（模型这次可能只给出了阅读地图）。'));
 </script>
 
 <template>
@@ -148,7 +105,7 @@ const missingHint = computed(() => (props.section === 'map'
       </div>
     </div>
     <div v-else-if="timedOut" class="hint">
-      已等待 4 分钟仍没拿到完整结果，任务可能还在跑 —— 稍后再看。
+      已等待 4 分钟仍没拿到结果，任务可能还在跑 —— 稍后再看。
     </div>
 
     <!-- 还没有解读：空状态也要能往下走（口径：这里保留「开始解读」，它不是"重新生成"） -->
@@ -164,52 +121,12 @@ const missingHint = computed(() => (props.section === 'map'
       <!-- 发起后要一次全篇调用（实测 1~2 分钟）：说清楚"已经开始了、会自动刷"，
            否则界面还是那四个字，看起来像没点动。这不是动作按钮，只是一行提示。 -->
       <div v-if="running || starting" class="tiny faint note">
-        解读任务在跑（两路并发，实测 1~2 分钟），完成后会自动刷新。
+        解读任务在跑（实测 1~2 分钟），完成后会自动刷新。
       </div>
     </div>
 
     <template v-else>
-      <div v-if="!html && !(section === 'map' && concepts.length)" class="hint">{{ missingHint }}</div>
-
-      <!-- 阅读地图：相关概念在**最前面**（与 B 路 markdown 自身的顺序一致）。
-           `id` 就是目录里那条「相关概念」的落点（前缀由宿主给，与正文标题同源）。 -->
-      <section v-if="section === 'map' && concepts.length" :id="conceptsId" class="concepts">
-        <div class="concepts-head">
-          <span class="muted">相关概念</span>
-          <span class="badge dim">{{ conceptRows.length }}<template v-if="filter">/{{ concepts.length }}</template></span>
-          <span class="spacer" />
-          <input
-            v-model="filter"
-            class="concept-filter"
-            placeholder="过滤概念"
-            title="按中英文名或解释内容过滤"
-          >
-        </div>
-        <div v-for="r in conceptRows" :key="r.key" class="item concept">
-          <button class="concept-head" @click="toggle(r.key)">
-            <span class="concept-name truncate" :title="r.c.name">{{ r.c.name }}</span>
-            <span v-if="r.c.name_en" class="faint truncate concept-en" :title="r.c.name_en">
-              {{ r.c.name_en }}
-            </span>
-            <span class="spacer" />
-            <AppIcon :name="isOpen(r.key) ? 'chevron-up' : 'chevron-down'" :size="13" />
-          </button>
-          <div v-if="isOpen(r.key)" class="concept-body">
-            <div v-if="r.c.body_md" class="body md" v-html="render(r.c.body_md)" />
-            <!-- 来源短码：**纯文本**（可选中、可复制），不是点一下跳页的胶囊 -->
-            <div v-if="r.c.refs?.length" class="refs">
-              <span
-                v-for="ref in r.c.refs"
-                :key="ref.code + ref.chunk_id"
-                class="ref-text"
-                :title="refTitle(r.c, ref.code)"
-              >来源 Chunk: {{ ref.code }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="!conceptRows.length" class="empty small">没有匹配「{{ filter }}」的概念</div>
-      </section>
-
+      <div v-if="!html" class="hint">还没有生成「论文解读」。</div>
       <div v-if="html" class="body md" v-html="html" />
     </template>
   </div>
@@ -244,26 +161,4 @@ const missingHint = computed(() => (props.section === 'map'
 .body :deep(.katex-display) { margin: .5em 0; overflow-x: auto; overflow-y: hidden; }
 .body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
 /* 表格：与阅读器 / Markdown 视图**共用** base.css 的那套三线表（见 `.md table`），不在这里另写一套 */
-
-/* 相关概念：小标题行 + 卡片（卡片观感与左栏其它页签一致） */
-.concepts { margin-bottom: 14px; }
-.concepts-head { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
-.concept-filter {
-  min-width: 0; width: 130px; height: 22px; padding: 0 6px; font-size: .78em;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg); color: var(--text);
-}
-.concept { padding: 6px 8px; margin-bottom: 6px; }
-.concept-head {
-  display: flex; align-items: center; gap: 6px; width: 100%;
-  border: 0; background: transparent; color: var(--text); font: inherit;
-  padding: 0; cursor: pointer; text-align: left;
-}
-.concept-name { font-size: .88em; font-weight: 600; }
-.concept-en { font-size: .78em; max-width: 45%; }
-.concept-body { margin-top: 6px; }
-.refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-/* 来源短码：只是**文字**（等宽、淡色，可选中复制）—— 任何"像按钮"的视觉都在暗示它能点，
-   而它已经不能跳页了（用户口径：引用保留纯文本）。 */
-.ref-text { font-size: .75em; font-family: var(--mono); color: var(--text-dim); user-select: text; cursor: text; }
 </style>

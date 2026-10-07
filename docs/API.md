@@ -37,15 +37,16 @@
 |---|---|---|
 | POST | `/papers` | 上传 PDF（multipart：`file`,`title`,`authors`,`venue`,`year`,`tags`,`paper_id`,`auto_parse`,`figure_caption`,`deep_figure_search`,`parse_engine`,`mineru_*`）。同一文件（sha256）已导入时**复用现有论文**并返回 `reused: true`。`parse_engine` = `local`（PyMuPDF 自研版面，默认）/ `mineru`（在线解析，需 token），不传则用设置里的默认引擎 |
 | GET | `/papers` | 列表：`q/status/tag/sort/order/page/page_size`、`include_deleted`（默认 `false`） |
-| GET | `/papers/{id}` | 详情（状态、解析摘要、翻译计数）。**复核模式已移除**：不再返回 `review_open`（"待复核 N"计数） |
-| PUT | `/papers/{id}` | 更新元数据（title/authors/venue/year/tags/status/in_knowledge_base/abstract） |
+| GET | `/papers/{id}` | 详情（状态、解析摘要、翻译计数、**全部元数据字段** + **`references[]` / `reference_count`**）。参考文献只有详情接口带（一篇几十上百条，列表接口太重）。**复核模式已移除**：不再返回 `review_open`（"待复核 N"计数） |
+| PUT | `/papers/{id}` | 更新元数据（title/authors/venue/year/tags/status/in_knowledge_base/abstract/**abstract_zh/keywords_en/domain/one_liner/contributions/prereq/difficulty/read_time_min/paper_type/doi/code_url**）。`tags`/`keywords_en` 收数组或逗号串，`contributions`/`prereq` 收数组（库里存 JSON）；写进去的字段会把来源记成 `manual`（`meta_sources_json`） |
 | DELETE | `/papers/{id}?hard=false` | 删除：**先删索引 → 取消任务 → 清 chunk → 文件移入 trash** |
 | POST | `/papers/{id}/parse` | 触发解析（幂等）。query 参数：`force`、`llm_repair`（LLM 公式修复，需真实模型）、`vision`（扫描页交视觉模型，默认 true）、`vision_model`（指定视觉模型 id）、`then_translate`（解析完成后自动接着开翻译任务）、`figure_caption` / `deep_figure_search`（两个插图开关，不传 = 沿用上次解析固化的值）、`engine`（`local` / `mineru` / `auto`，不传 = 沿用该论文上次用的引擎）、`mineru_*`（在线参数，见 1.1）。**没有** `vision_dpi` 参数（dpi 取设置 `render_dpi` / 视觉默认 200，由 worker 读） |
 | GET | `/papers/{id}/file` | PDF 流（阅读器左栏「原 PDF」由 pdf.js 渲染；`Content-Disposition: inline`，新标签页可直开） |
 | GET | `/papers/{id}/pages/{n}` | 页面图（150dpi PNG） |
 | GET | `/papers/{id}/markdown` | Markdown 单一事实源全文 |
 | GET | `/papers/{id}/reconcile` | 三存储对账（只报告不自动删） |
-| POST | `/papers/{id}/metadata/auto` | 自动补全元数据：`{"model":false,"overwrite":false}`。默认**只读 PDF**（离线、不花钱）：标题/作者/会议/年份/摘要都能从首页读出来；`model=true` 时仍缺的字段再交给模型；`overwrite=true` 连已有值一起覆盖（默认只填空字段） |
+| POST | `/papers/{id}/metadata/auto` | 自动补全元数据（**离线那一段**）：`{"model":false,"overwrite":false}`。默认只读 PDF 首页 + 页产物（不花钱）：标题 / 作者 / 会议 / 年份 / **原文摘要** / **DOI** / **开源地址** / **参考文献** / **推荐阅读时间**；`model=true` 时仍缺的字段再交给模型（读抽样内容）；`overwrite=true` 连已有值一起覆盖（默认**只填空字段**） |
+| POST | `/papers/{id}/metadata/agent` | **「模型补全」按钮**：交给 agent **读全文**填写（中英关键词 / 中文摘要 / 领域 / 一句话概括 / 创新点 / 前置知识 / 难度 / 类型…）。**异步**：排一个 `META_FILL` 任务（队列 `knowledge`）后立刻返回任务行，前端刷新卡片即可（用户口径：完整 agent 功能，不显示细节）。任务内部顺序 = 离线 → agent → 跑不动则回落一次单次模型调用；只在"还缺元数据"时由 `翻译完成 → INDEX → META_FILL` 自动链排队 |
 
 **扫描件（影印 PDF）**：解析时自动判定，无需额外参数。某页文本层字符 < 40 且含整页图像
 → 该页交给视觉模型整页识别成 Markdown 原文，再走既有翻译链路。相关字段：
@@ -173,7 +174,7 @@ section / heading_level / translation / translation_status / translation_revisio
 | `view` | `original`\|`translation`\|`bilingual` | 覆盖服务端记录的视图模式 |
 | `order` | `en_left`\|`zh_left` | 覆盖左右顺序（旧值 `en_top`/`zh_top` 仍接受） |
 | `left` | `page`\|`text` | 左栏显示原 PDF / 原文文本（非扫描页的 PDF 栏是**真 PDF**：pdf.js 矢量页 + 可复制文字层；扫描页仍是位图页图） |
-| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`tasks`\|`insight`\|`readmap` | 打开左栏（唯一侧栏）的某个页签（会顺带展开左栏）：`insight` = 「论文解读」（A 路论文精读）、`readmap` = 「阅读地图」（B 路 + 相关概念卡片）。旧值 `notes` 仍接受但归一成 `annotations`（批注与笔记已合并为一个页签） |
+| `side` | `toc`\|`search`\|`annotations`\|`formulas`\|`figures`\|`terms`\|`tasks`\|`insight` | 打开左栏（唯一侧栏）的某个页签（会顺带展开左栏）：`insight` = 「论文解读」（A 路论文精读）。旧值 `notes` 仍接受但归一成 `annotations`（批注与笔记已合并为一个页签）；旧值 `readmap`（阅读地图）已于 2026-10-07 删除 |
 | `q` / `scope` | 关键词 / `all`\|`en`\|`zh` | 打开时直接跑一遍左栏搜索（`scope` 指定检索范围） |
 | `pside` | `en`\|`zh` | 对照模式里先看哪一侧 |
 | `size` | `sm`\|`md`\|`lg` | 正文字号 |
@@ -181,18 +182,18 @@ section / heading_level / translation / translation_status / translation_revisio
 | `nosse` | `1` | 强制走 SSE 降级路径（3s 轮询） |
 
 阅读器布局：**两列**（左栏 + 正文）。左栏页签顺序：
-`目录 | 论文解读 | 阅读地图 | 搜索 | 批注·笔记 | 公式 | 插图 | 术语 | 任务`
-（解读与阅读地图**紧跟目录**，它们是最常和目录一起用的入口）；
+`目录 | 论文解读 | 搜索 | 批注·笔记 | 公式 | 插图 | 术语 | 任务`
+（「论文解读」**紧跟目录**，它是最常和目录一起用的入口；2026-10-07：原「阅读地图」页签已删除）；
 顶部一排带计数的图标页签切换，窄屏（<1100px）用工具栏按钮弹出同一栏。
-**工具栏没有「解读」按钮**（解读已经是左栏页签）。左栏两个页签顶部各有**紧凑目录**
+**工具栏没有「解读」按钮**（解读已经是左栏页签）。左栏「论文解读」页签顶部有**紧凑目录**
 （点击只在左栏内滚动）。
 左栏宽度**可拖拽**，按论文存 `localStorage: pm.reader.aside-w.<paperId>`；上下限**按模式给**：
 对照模式（`view_mode=bilingual`）220~360px，非对照 220~640px（且不超过视口 60%）；
-**进「论文解读」/「阅读地图」页签自动变宽到 520px**（按当前上限夹取，只增不减）。
-两个页签顶部各有**一枚只有图标的按钮**（`external`，无可见文字），点击在**应用内标签页**
-（顶栏 `TabBar`，`stores/tabs.ts` 的 `openTab`）打开对应的整页视图 ——
-`/understand/:paperId`（论文解读，A 路）与 `/readmap/:paperId`（阅读地图 + 相关概念，B 路）。
-两个整页是**阅读器同构的两栏**：左栏是本文目录（从 markdown 标题生成、点击跳节、
+**进「论文解读」页签自动变宽到 520px**（按当前上限夹取，只增不减）。
+「论文解读」页签顶部有**一枚只有图标的按钮**（`external`，无可见文字），点击在**应用内标签页**
+（顶栏 `TabBar`，`stores/tabs.ts` 的 `openTab`）打开整页视图 ——
+`/understand/:paperId`（论文解读，A 路）；原 `/readmap/:paperId`（阅读地图 + 相关概念）已于 2026-10-07 删除。
+这个整页是**阅读器同构的两栏**：左栏是本文目录（从 markdown 标题生成、点击跳节、
 滚动联动高亮、sticky 自滚；窄屏收成折叠块 + 「目录」开关），右栏是正文列
 （`max-width:880px`、**居中、有页边距**，与阅读器正文列同口径）；顶栏只有论文标题。
 **文本对照模式下**（对照 + 两端都是文本、没有原 PDF）**表格行左右并排**（两端各占一列、各自横向滚动），
@@ -219,7 +220,7 @@ section / heading_level / translation / translation_status / translation_revisio
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它）。**两路都翻完后自动串联**：自动开 INDEX（`params.then_understand=true`）→ 索引完成后再自动开两路解读（`docs/dev-log.md` §17.94）—— 前端不再有「建立索引」按钮 |
+| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它）。**两路都翻完后自动串联**：自动开 INDEX（`params.then_understand=true`）→ 索引完成后再自动开论文精读（`docs/dev-log.md` §17.94；2026-10-07 起理解只有这一路）—— 前端不再有「建立索引」按钮 |
 | GET | `/papers/{id}/translation/stats` | `{total, done, stale}` —— **只报 B 路（中文翻译）**完成度；A 路的进度在 `Paper.transcribe_done`。`stale` 目前恒为 `0` |
 | GET/POST | `/papers/{id}/brief` | 文档简报（全文脉络 + 统一术语）；POST 可重新生成或写入人工修订（`{"apply":{"glossary":{...}}}`） |
 | GET/DELETE | `/papers/{id}/translation/cache` | 页级产物状态（已翻译页数 / 行数 / token 用量 / 对齐质量分布）/ 清空（等于全篇重译） |
@@ -251,36 +252,33 @@ section / heading_level / translation / translation_status / translation_revisio
 reasoning_tokens, cache_hit_tokens, cache_miss_tokens)` / `elapsed_s` / `scheduler.*` / `concurrency_timeline`，
 可直接用作第 5 章实验数据。
 
-## 4. 论文理解（第二阶段：两路各做一次）
+## 4. 论文理解（第二阶段：论文精读一路）
 
 理解**不是**翻译的一部分：它读的是**已落库的 chunk**（不是页图），提示词与翻译提示词完全分开，
-两路做**不同**的任务，结果是自由 Markdown。设计见 `docs/论文理解系统-设计.md` §4。
+做的是**论文精读**这一件事，结果是自由 Markdown。设计见 `docs/论文理解系统-设计.md` §4。
+（2026-10-07：原 B 路「阅读地图 + 相关概念」已删除，理解只剩 A 路。）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers/{id}/understand` | 触发理解：`{"paths":["a","b"],"force":false}`。**两路各一个任务、真并发**；幂等（同类进行中任务复用）。`force=false`（默认）时已有结果直接返回库里那份。前置条件：**已建索引** —— 没有可理解的 chunk 时 400 |
-| GET | `/papers/{id}/understanding` | 取结果：`?path=a\|b` 取一路；不传则两路一起返回 `{paper_id, a, b, done}` |
-| GET | `/papers/{id}/understanding/status` | `{a:{done,updated_at}, b:{...}, chunk_ready}`（前端按钮与"能不能理解"的判断） |
-| GET | `/papers/{id}/related?page=N&tolerance=1` | 与某页相关的概念。**这个接口是给知识库用的**（"读到这一页时相关的知识"），**阅读器不再调用它**。命中判据：概念的引用里有 chunk 落在本页 ±`tolerance`。没有解读结果时返回空列表，不报错 |
+| POST | `/papers/{id}/understand` | 触发理解：`{"force":false}`（`paths` 只接受 `["a"]`）。**一个任务**；幂等（同类进行中任务复用）。`force=false`（默认）时已有结果直接返回库里那份。前置条件：**已建索引** —— 没有可理解的 chunk 时 400 |
+| GET | `/papers/{id}/understanding` | 取结果：`?path=a` 取该路；不传 path 时返回 `{paper_id, a, done}`（`done` 也过滤掉老库里的 `b`） |
+| GET | `/papers/{id}/understanding/status` | `{a:{done,updated_at}, chunk_ready}`（前端按钮与"能不能理解"的判断） |
 
 **单路结果字段**：`paper_id / path / label / markdown / refs / refs_resolved / stale_refs /
-invalid_refs / cross_road_refs / refs_ok / missing_concept_refs / model / updated_at /
-prompt_tokens / completion_tokens / inventory_size / inventory / concepts`。
+invalid_refs / cross_road_refs / refs_ok / model / updated_at /
+prompt_tokens / completion_tokens / inventory_size / inventory`。
 
 - `markdown`：**自由 Markdown**（不按固定 schema 校验，模型可增删合并小节）；
-- `refs`：模型引用过的**短码**（A 路 `A001…`、B 路 `B001…`）；`refs_resolved` 每项是 `{code, chunk_id, chunk_type, page}`；
+- `refs`：模型引用过的**短码**（`A001…`）；`refs_resolved` 每项是 `{code, chunk_id, chunk_type, page}`；
 - `stale_refs`：短码解析出的 chunk id **已不存在**（重新翻译 / 重建索引之后）—— 引用**保留**、页码还在、照样能跳，
   前端标一句"引用已过期"。这是"**重新翻译不影响已有解读**"的落点；
-- `invalid_refs` / `cross_road_refs`：不存在的短码 / 跨路引用；非空时 `refs_ok=false`（前端标"引用不可信"，**结果不丢**）；
-- `concepts`：**读时投影**（B 路「相关概念」那一节 → `[{name, name_en, body_md, refs[]}]`），不改表、不必重新生成；
-- `missing_concept_refs`：B 路"相关概念"里一条本路短码都没有（硬要求，实测 `false`）。
+- `invalid_refs` / `cross_road_refs`：不存在的短码 / 跨路引用；非空时 `refs_ok=false`（前端标"引用不可信"，**结果不丢**）。
+  `cross_road` 现在的含义是"模型偶发照抄的老 B 短码"。
 
-| | A 路（`path=a`，英文侧） | B 路（`path=b`，中文侧） |
-|---|---|---|
-| 任务 | **论文精读**：基本信息 / 背景与问题 / 动机与 gap / **贡献与创新点** / 方法 / 实验 / 结论、局限与启发 | **阅读地图**：一句话概括 / **相关概念（补充的相关知识，放最前）** / 推荐阅读顺序 / 读前须知 / 难点 / 与其他工作的关系 |
-| 材料 | 本路 + 共用 chunk 的 `en` / `any` 行（`unit`/`formula`/`figure`/`table`） | 本路 + 共用 chunk 的 `zh` / `any` 行 |
+**只有论文精读这一路**（`path=a`）：基本信息 / 背景与问题 / 动机与 gap / **贡献与创新点** / 方法 / 实验 /
+结论、局限与启发；材料取本路 + 共用 chunk 的 `en` / `any` 行（`unit`/`formula`/`figure`/`table`）。
 
-**引用写法**：`（来源 Chunk: B023）`，只许引**本路**短码。理解阶段**允许**动用通用知识、不强制区分
+**引用写法**：`（来源 Chunk: A023）`，只许引**清单里出现过的短码**。理解阶段**允许**动用通用知识、不强制区分
 "论文说的"与"通用知识"；知识库问答 `/rag/query` 相反，仍严格"只依据来源"。
 
 ## 5. 任务中心（§20.7）
@@ -397,17 +395,14 @@ curl.exe -N "$Base/papers/my-paper/translations/stream"
 (Invoke-RestMethod "$Base/papers/my-paper/translations?since_page=3").data.items.Count
 
 # ---- 第二阶段「论文理解」（前置：已建索引）----
-# 两路各一个任务：A 论文精读（含创新点） / B 阅读地图与相关概念
+# 一个任务：论文精读（含创新点）；2026-10-07 起只有这一路
 $u = (Invoke-RestMethod -Method Post "$Base/papers/my-paper/understand" `
-      -ContentType "application/json" -Body '{"paths":["a","b"]}').data
+      -ContentType "application/json" -Body '{"force":false}').data
 $u.task_ids
 
-# 取结果（两路一起）；单路用 ?path=b
+# 取结果（不传 path 时返回 {paper_id, a, done}；单路用 ?path=a）
 $r = (Invoke-RestMethod "$Base/papers/my-paper/understanding").data
-$r.b.markdown.Length; $r.b.refs_ok; $r.b.concepts.Count
-
-# 与第 3 页相关的概念（阅读器左栏「解读」跟随阅读位置用）
-(Invoke-RestMethod "$Base/papers/my-paper/related?page=3&tolerance=1").data.concepts.name
+$r.a.markdown.Length; $r.a.refs_ok
 
 # 公式列表（默认 source=markdown：从页级产物 Markdown 提取，只读）
 (Invoke-RestMethod "$Base/papers/my-paper/formulas").data.display_count

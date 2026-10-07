@@ -55,6 +55,12 @@ class Deps:
     edits: list[dict] = field(default_factory=list)
     #: 本轮**读过**其产物原文的 ``(页, 侧)``：`page_markdown_edit` 的"先读后写"判据
     viewed_sides: set[tuple[int, str]] = field(default_factory=set)
+    #: 元数据填写（`paper_meta_write`）真正写进去的字段。一次会话只允许写一次：
+    #: 元数据是"整篇的结论"，边读边改只会让前面写的几条与后面的判断互相矛盾。
+    meta_applied: dict = field(default_factory=dict)
+    #: 元数据**提交过**没有（与 `meta_applied` 不同：提交成功但所有字段都已经有值时，
+    #: `applied` 是空的 —— 那也是一次成功的会话，不该报"没有提交"）。
+    meta_submitted: bool = False
 
     def spend_search(self) -> bool:
         """扣一次检索预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""

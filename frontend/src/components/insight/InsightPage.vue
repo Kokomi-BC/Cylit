@@ -1,19 +1,21 @@
 <script setup lang="ts">
 /**
- * 解读整页的**两栏壳**（`/understand/:paperId` 与 `/readmap/:paperId` 共用）。
+ * 解读整页的**两栏壳**（`/understand/:paperId`）。
  *
- * 左栏 = 本文目录（从当前这份 markdown 的标题生成，阅读地图那份还在最前面加一条「相关概念」），
- * 右栏 = 正文。用户口径是"像读论文"：右栏按阅读器的正文列口径（行宽 880px、列内居中、有页边距），
- * 左栏 sticky 且**自己滚**（不跟着正文跑）。
+ * 左栏 = 本文目录（从当前这份 markdown 的标题生成），右栏 = 正文。用户口径是"像读论文"：
+ * 右栏按阅读器的正文列口径（行宽 880px、列内居中、有页边距），左栏 sticky 且**自己滚**
+ * （不跟着正文跑）。
  *
- * 为什么抽成组件：两个整页只差"画哪一份内容"，版面（目录列 / 正文列 / 窄屏折叠 / 滚动联动）
- * 必须完全一样；四处各写一遍必然漂移。
+ * 为什么抽成组件：整页与左栏页签只差"外壳"，版面（目录列 / 正文列 / 窄屏折叠 / 滚动联动）
+ * 必须完全一样；各写一遍必然漂移。
  *
  * 窄屏（<1100px）：左栏收成可折叠的一块 + 一枚「目录」开关（与阅读器窄屏"抽屉 + 开关"同一口径，
  * 只是这里做成**文档流里的折叠块**，不做浮层 —— 整页是正常滚动的文档，浮层抽屉反而会挡住正文）。
  *
  * 滚动联动：窗口滚动时取"最后一个越过阅读线"的锚点（阅读器判定当前章节也是这个口径），
  * 100ms 节流。点目录用 `scrollIntoView`，落点由 CSS 的 `scroll-margin-top` 让开顶栏。
+ *
+ * ⚠️ 2026-10-02：原「阅读地图」整页（`/readmap/:paperId`）随该功能一起删除，本组件不再有 `section`。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -22,27 +24,17 @@ import InsightToc from './InsightToc.vue';
 import { useUnderstanding } from '@/composables/useUnderstanding';
 import { buildInsightOutline } from '@/utils/insightOutline';
 
-const props = defineProps<{
-  paperId: string;
-  section: 'read' | 'map';
-}>();
+const props = defineProps<{ paperId: string }>();
 
-const { entry, pathA, pathB, concepts, hasAny, starting, timedOut, running, started, start }
+const { entry, markdown, hasContent, starting, timedOut, running, started, start }
   = useUnderstanding(computed(() => props.paperId));
 
 /** anchor 前缀：整页一套、左栏页签一套；同一时刻只会挂一个，但前缀不同更保险 */
-const prefix = computed(() => `ins-${props.section}`);
+const prefix = 'ins';
 
-const markdown = computed(() => String(
-  (props.section === 'map' ? pathB.value?.markdown : pathA.value?.markdown) ?? '',
-));
-/** 阅读地图第一块是相关概念卡片 → 目录里也要有它 */
-const showConcepts = computed(() => props.section === 'map' && concepts.value.length > 0);
-const outline = computed(() => buildInsightOutline(markdown.value, {
-  prefix: prefix.value, concepts: showConcepts.value,
-}));
+const outline = computed(() => buildInsightOutline(markdown.value, { prefix }));
 /** 有内容、且这份 markdown 真的有小节时才画目录（空状态 / 没标题时不留一列空栏） */
-const showToc = computed(() => hasAny.value && outline.value.length > 0);
+const showToc = computed(() => hasContent.value && outline.value.length > 0);
 
 /* ------------------------------ 目录：滚动联动 + 点击跳转 ------------------------------ */
 const bodyCol = ref<HTMLElement | null>(null);
@@ -50,19 +42,12 @@ const activeId = ref('');
 /** 窄屏目录开关（宽屏左栏常驻，用不到） */
 const tocOpen = ref(false);
 
-/** 目录条目对应的 DOM 锚点，按大纲顺序：先「相关概念」（若有），再是正文标题 */
+/** 目录条目对应的 DOM 锚点，按大纲顺序（id 由 InsightDoc 按同一份大纲贴好） */
 function anchorEls(): HTMLElement[] {
   const box = bodyCol.value;
   if (!box) return [];
-  const out: HTMLElement[] = [];
-  if (showConcepts.value) {
-    const el = box.querySelector<HTMLElement>(`#${prefix.value}-concepts`);
-    if (el) out.push(el);
-  }
-  for (const el of Array.from(box.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))) {
-    if (el.id) out.push(el);            // id 由 InsightDoc 按同一份大纲贴好
-  }
-  return out;
+  return Array.from(box.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+    .filter((el) => Boolean(el.id));
 }
 
 function syncActive() {
@@ -102,8 +87,8 @@ onUnmounted(() => {
   window.removeEventListener('scroll', onScroll);
   window.removeEventListener('resize', onScroll);
 });
-// 内容到位（首屏 / 轮询刷新 / 切 section）后重算一次锚点与高亮
-watch([outline, () => props.section], () => { void nextTick(syncActive); });
+// 内容到位（首屏 / 轮询刷新）后重算一次锚点与高亮
+watch(outline, () => { void nextTick(syncActive); });
 </script>
 
 <template>
@@ -128,10 +113,8 @@ watch([outline, () => props.section], () => { void nextTick(syncActive); });
 
       <div ref="bodyCol" class="body-col">
         <InsightDoc
-          :section="section"
           :markdown="markdown"
-          :concepts="concepts"
-          :empty="!hasAny"
+          :empty="!hasContent"
           :loading="entry.loading"
           :starting="starting"
           :running="running || started"

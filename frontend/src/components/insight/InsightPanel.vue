@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 阅读器左栏的「论文解读」/「阅读地图」内容 —— 两个页签共用本组件，只有 `section` 不同。
+ * 阅读器左栏的「论文解读」内容。
  *
  * 顶部**只有**「标题 + 一枚只有图标的按钮」（用户口径）：没有时间、没有模型名、没有
  * 引用核对提示、**也没有刷新/重新生成**（重跑入口只在论文库的「⋯」菜单里，面板里不再有）。
@@ -8,9 +8,11 @@
  * 所以点击只 `emit('open-page')`，由 ReaderView 统一 `router.push(openTab(...))`
  * （`openTab` 会改响应式状态，必须在点击回调里调，渲染期调会死循环）。
  *
- * 标题下面是一份**紧凑目录**（用户口径：左栏这两个页签"没有目录"）：同一份大纲数据，
+ * 标题下面是一份**紧凑目录**（用户口径：左栏这个页签"没有目录"）：同一份大纲数据，
  * 一行一条、缩进更小、点击**在左栏内**滚动（`scrollIntoView` 会落到最近的滚动祖先
  * `.panel-body` 上），默认展开、可折叠。这里**不**复刻整页那套两栏结构 —— 左栏本身就是一栏。
+ *
+ * ⚠️ 2026-10-02：原「阅读地图」页签随该功能一起删除，本组件不再有 `section`。
  */
 import { computed, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -21,8 +23,7 @@ import { buildInsightOutline } from '@/utils/insightOutline';
 
 const props = defineProps<{
   paperId: string;
-  section: 'read' | 'map';
-  /** 这篇论文有理解任务在跑（ReaderView 按任务列表算）：解读据此决定要不要轮询 */
+  /** 这篇论文有解读任务在跑（ReaderView 按任务列表算）：解读据此决定要不要轮询 */
   running: boolean;
 }>();
 
@@ -34,23 +35,17 @@ const emit = defineEmits<{
 }>();
 
 /* 阅读器这边任务列表已经在轮询，把 `running` 传进组合式即可（它不会再自己拉 /tasks） */
-const { entry, pathA, pathB, concepts, hasAny, starting, timedOut, running, started, start } = useUnderstanding(
+const { entry, markdown, hasContent, starting, timedOut, running, started, start } = useUnderstanding(
   computed(() => props.paperId),
   { running: computed(() => props.running) },
 );
 
-const title = computed(() => (props.section === 'map' ? '阅读地图' : '论文解读'));
-const markdown = computed(() => String(
-  (props.section === 'map' ? pathB.value?.markdown : pathA.value?.markdown) ?? '',
-));
+const title = '论文解读';
 
-/** anchor 前缀：与整页（`ins-*`）不同，即使两个视图同时在 DOM 里也不会撞 id */
-const prefix = computed(() => `pane-${props.section}`);
-const showConcepts = computed(() => props.section === 'map' && concepts.value.length > 0);
-const outline = computed(() => buildInsightOutline(markdown.value, {
-  prefix: prefix.value, concepts: showConcepts.value,
-}));
-const showToc = computed(() => hasAny.value && outline.value.length > 0);
+/** anchor 前缀：与整页（`ins`）不同，即使两个视图同时在 DOM 里也不会撞 id */
+const prefix = 'pane-insight';
+const outline = computed(() => buildInsightOutline(markdown.value, { prefix }));
+const showToc = computed(() => hasContent.value && outline.value.length > 0);
 /** 默认**展开**（用户口径）：目录在这里就是"读之前先扫一眼要读什么" */
 const tocOpen = ref(true);
 
@@ -95,10 +90,8 @@ async function onStart() {
     </div>
 
     <InsightDoc
-      :section="section"
       :markdown="markdown"
-      :concepts="concepts"
-      :empty="!hasAny"
+      :empty="!hasContent"
       :loading="entry.loading"
       :starting="starting"
       :running="running || started"

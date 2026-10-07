@@ -403,6 +403,38 @@ async def agent_archive(paper_id: str, request: Request,
     return envelope(project.archive(paper_id), request=request)
 
 
+@router.post("/agent/papers/{paper_id}/metadata")
+async def agent_meta_write(paper_id: str, request: Request,
+                           payload: dict = Body(default={}),
+                           x_internal_token: str | None = Header(None)):
+    """写论文元数据（agent 的 `paper_meta_write` 工具的后端）。
+
+    与页产物纠错同一口径：**拒绝也是正常返回**（``ok=false`` + 原因），不抛 400 ——
+    "这一项不合格"要让模型看到并改，而不是让整次会话崩掉。
+
+    值先过一遍 `metadata_fill.normalize_meta`（模型给的脏值一律丢掉：太短的摘要、
+    不在闭集里的难度、不像 URL 的地址），再 `apply_fills` 写回 —— **只填空字段**，
+    已有值的一律记进 `skipped`。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.paper import metadata_fill
+
+    clean = metadata_fill.normalize_meta(payload or {})
+    if not clean:
+        return envelope({"ok": False, "applied": {}, "skipped": {},
+                         "error": "没有一项是有效值：字段名要按工具说明写，"
+                                  "值不能为空（摘要太短、难度不在闭集里也会被丢掉）。"},
+                        request=request)
+    paper_service.get_paper(paper_id)            # 不存在就 404（envelope 会带上）
+    applied = metadata_fill.apply_fills(paper_id, clean, overwrite=False, source="agent")
+    skipped = {k: v for k, v in clean.items() if k not in applied}
+    note = (f"已写入 {len(applied)} 项" if applied else "这些字段都已经有值了，没有改动")
+    if skipped:
+        note += f"；{len(skipped)} 项已有值未动（{'、'.join(skipped)}）"
+    return envelope({"ok": True, "applied": applied, "skipped": skipped, "note": note},
+                    message=note, request=request)
+
+
 @router.get("/agent/papers/{paper_id}/pages")
 async def agent_pages(paper_id: str, request: Request,
                       pages: str = Query(..., description='"3" / "3-8" / "all"'),

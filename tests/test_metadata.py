@@ -105,8 +105,81 @@ def test_normalize_meta_drops_junk() -> None:
     ok = normalize_meta({"venue": "ICLR 2026", "year": 2026, "tags": ["量化", "量化", "检索"],
                          "abstract_zh": "这是一段足够长的中文摘要。" * 8})
     assert ok["venue"] == "ICLR 2026" and ok["year"] == 2026
-    assert ok["tags"] == "量化,检索"                       # 去重
-    assert ok["abstract"].startswith("这是一段足够长的中文摘要。")
+    assert ok["tags"] == ["量化", "检索"]                     # 去重（列表形态由 update_paper 落成 CSV）
+    assert ok["abstract_zh"].startswith("这是一段足够长的中文摘要。")
+
+
+def test_normalize_meta_keeps_the_new_fields() -> None:
+    """2026-10-04 新增的字段：中英文关键词 / 领域 / 概括 / 创新点 / 前置知识 /
+    难度 / 类型 / 阅读时间 / DOI / 开源地址。"""
+    from backend.services.paper.metadata_fill import normalize_meta
+
+    ok = normalize_meta({
+        "keywords_en": ["vector quantization", "retrieval"],
+        "domain": "向量检索与量化", "one_liner": "用两阶段量化器消除内积偏差。",
+        "contributions": ["两阶段量化器", "近最优失真率"],
+        "prereq": ["乘积量化", "内积估计"],
+        "difficulty": "进阶", "paper_type": "方法", "read_time_min": 42,
+        "doi": "https://doi.org/10.48550/arXiv.2605.12345",
+        "code_url": "https://github.com/google-research/turboquant",
+    })
+    assert ok["keywords_en"] == ["vector quantization", "retrieval"]
+    assert ok["domain"] == "向量检索与量化"
+    assert ok["contributions"] == ["两阶段量化器", "近最优失真率"]
+    assert ok["difficulty"] == "进阶" and ok["paper_type"] == "方法"
+    assert ok["read_time_min"] == 42
+    assert ok["doi"] == "10.48550/arXiv.2605.12345"          # 去掉 doi.org 前缀
+    assert ok["code_url"] == "https://github.com/google-research/turboquant"
+
+
+def test_normalize_meta_rejects_values_outside_the_closed_sets() -> None:
+    """难度 / 类型是**闭集**（自由文本会让界面没法按它筛选），非法值一律丢掉。"""
+    from backend.services.paper.metadata_fill import normalize_meta
+
+    assert normalize_meta({"difficulty": "简单", "paper_type": "论文",
+                           "read_time_min": 9999, "code_url": "ftp://x/y"}) == {}
+    assert normalize_meta({"difficulty": "入门", "paper_type": "综述",
+                           "read_time_min": 0}) == {"difficulty": "入门", "paper_type": "综述"}
+
+
+def test_offline_extras_reads_doi_and_code_url_only_from_the_first_pages() -> None:
+    """DOI / 开源地址只在**前两页**里找：翻遍全文会捞到参考文献里别人的。"""
+    from backend.services.paper import metadata_fill
+
+    rows = [(1, "para", "Published at https://doi.org/10.48550/arXiv.2605.12345 ."),
+            (1, "para", "代码在 https://github.com/google-research/turboquant。"),
+            (7, "para", "https://github.com/someone-else/other")]
+    got = metadata_fill.offline_extras(rows)
+    assert got["doi"] == "10.48550/arxiv.2605.12345"
+    assert got["code_url"] == "https://github.com/google-research/turboquant"
+    assert metadata_fill.offline_extras([(9, "para", "https://github.com/x/y")]) == {}
+
+
+def test_estimate_read_time_ignores_references_and_needs_real_text() -> None:
+    """阅读时间按**正文**字数估；参考文献/图注不算，没有页产物时干脆不给。"""
+    from backend.services.paper import metadata_fill
+
+    assert metadata_fill.estimate_read_time([(1, "para", "太短")]) is None
+    rows = [(1, "para", "字" * 9000), (2, "ref", "字" * 90000)]
+    assert metadata_fill.estimate_read_time(rows) == 10
+
+
+def test_references_from_markdown_splits_numbered_entries(monkeypatch, tmp_path: Path) -> None:
+    """没有页产物（还没翻译）时退回 Markdown：按编号切条目、遇到下一个标题就停。"""
+    from backend.services.paper import metadata_fill, paper_service
+
+    md = tmp_path / "paper.md"
+    md.write_text(
+        "# 5 Conclusion\n\nDone.\n\n## References\n\n"
+        "[1] Zandieh A. TurboQuant: online vector quantization. ICLR, 2026.\n"
+        "    With near-optimal distortion rates.\n"
+        "[2] Vaswani A. Attention is all you need. NeurIPS, 2017.\n\n"
+        "## Appendix\n\n[9] 这不在参考文献小节里\n", encoding="utf-8")
+    monkeypatch.setattr(paper_service, "paper_paths", lambda pid: {"markdown": md})
+    items = metadata_fill._references_from_markdown("p1")
+    assert len(items) == 2
+    assert items[0].startswith("[1] Zandieh") and "near-optimal" in items[0]
+    assert items[1].startswith("[2] Vaswani")
 
 
 def test_apply_fills_only_fills_empty(monkeypatch) -> None:
@@ -114,23 +187,34 @@ def test_apply_fills_only_fills_empty(monkeypatch) -> None:
     from backend.services.paper import metadata_fill, paper_service
 
     row = {"authors": "我手填的作者", "venue": "", "year": None, "tags": [],
-           "abstract": "已有的摘要"}
+           "abstract": "已有的摘要", "contributions": []}
     patch: dict = {}
+    sources: list[str] = []
     monkeypatch.setattr(paper_service, "get_paper",
                         lambda pid, include_deleted=False: dict(row))
-    monkeypatch.setattr(paper_service, "update_paper",
-                        lambda pid, payload: patch.update(payload) or {})
+
+    def _update(pid, payload, source="manual"):
+        patch.update(payload)
+        sources.append(source)
+        return {}
+
+    monkeypatch.setattr(paper_service, "update_paper", _update)
 
     applied = metadata_fill.apply_fills(
         "p1", {"authors": "抽出来的作者", "venue": "ICLR 2026", "year": 2026,
-               "tags": "量化,检索", "abstract": "新摘要"})
-    assert applied == {"venue": "ICLR 2026", "year": 2026, "tags": "量化,检索"}
+               "tags": "量化,检索", "abstract": "新摘要",
+               "contributions": ["两阶段量化器"]}, source="pdf")
+    assert applied == {"venue": "ICLR 2026", "year": 2026, "tags": "量化,检索",
+                       "contributions": ["两阶段量化器"]}
     assert "authors" not in applied and "abstract" not in applied
     assert patch == applied
+    # 来源要一路带到论文行（meta_sources_json 靠它）：默认 manual、这里显式给了 pdf
+    assert sources == ["pdf"]
 
     patch.clear()
     forced = metadata_fill.apply_fills("p1", {"authors": "抽出来的作者"}, overwrite=True)
     assert forced == {"authors": "抽出来的作者"} and patch["authors"] == "抽出来的作者"
+    assert sources[-1] == "model"
 
 
 def test_structured_tolerates_python_style_dict(monkeypatch) -> None:
@@ -162,7 +246,7 @@ def test_brief_writes_back_meta_in_same_call(monkeypatch, tmp_path: Path) -> Non
                                                            "tags": [], "abstract": ""})
     patch: dict = {}
     monkeypatch.setattr(paper_service, "update_paper",
-                        lambda pid, payload: patch.update(payload) or {})
+                        lambda pid, payload, source="manual": patch.update(payload) or {})
     monkeypatch.setattr(brief_mod, "sample_paper_text", lambda pid, limit=6000: "标题：T")
     monkeypatch.setattr(brief_mod, "_model_id", lambda: "mock")
     monkeypatch.setattr(translation_service, "load_glossary",
@@ -178,7 +262,7 @@ def test_brief_writes_back_meta_in_same_call(monkeypatch, tmp_path: Path) -> Non
     brief = brief_mod.generate_brief("p1", provider=_Provider(), force=True)
     assert brief.meta["venue"] == "ICLR 2026"
     assert patch["venue"] == "ICLR 2026" and patch["year"] == 2026
-    assert patch["tags"] == "量化"
+    assert patch["tags"] == ["量化"]            # 列表归一在写库那一层（`update_paper`）做
     assert "ICLR 2026" in brief_mod.load_brief("p1").meta["venue"]   # 落盘可复查
 
     # 简报前缀必须**字节级稳定**：元数据不参与 prompt（否则人工改元数据会打掉前缀缓存）

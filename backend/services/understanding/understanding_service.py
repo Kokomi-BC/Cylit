@@ -8,11 +8,12 @@
 所以"理解结果引用了哪一段"与知识库检索用的是**同一套 chunk id** —— 这正是用户要的
 "Chunk 是论文理解的引用基准单位"。
 
-**两路各做什么**（用户 2026-09-26 看过真实结果后调整过）：
-A 路（英文转录侧）= **论文精读**（基本信息 / 背景与问题 / 动机与 gap / **贡献与创新点** /
-方法 / 实验 / 结论、局限与启发）；B 路（中文翻译侧）= **阅读地图 + 相关概念**。
-原先 A 路的"技术解剖"被判定与阅读地图重复、已替换（见 `prompts.py` 顶部说明）。
-**前端把两路拼成一篇展示，不暴露"两路"这个概念。**
+**做什么**（用户 2026-10-02 口径）：原 B 路「阅读地图 + 相关概念」**整体删除**
+（前端入口、页签、整页、后端提示词与任务一起清掉），只保留
+**A 路（英文转录侧）= 论文精读**（基本信息 / 背景与问题 / 动机与 gap / **贡献与创新点** /
+方法 / 实验 / 结论、局限与启发）。阅读地图那条模型能力转去做**论文元数据生成与填写**
+（`services/paper/metadata_fill.py`）。A 路原先的"技术解剖"早先已被判定与阅读地图重复、
+换成现在这套精读框架（见 `prompts.py` 顶部说明）。
 
 ## 为什么清单里给"短码"
 
@@ -31,8 +32,6 @@ A 路（英文转录侧）= **论文精读**（基本信息 / 背景与问题 / 
 - 只校验**引用**：短码必须在本路清单里；引用到别路的短码、或不存在的短码都记进
   `invalid_refs`，并在结果上打 `refs_ok=False`。**不丢结果**（理解内容本身仍然有用），
   但前端会明确标出"引用不可信"。
-- B 路的"相关概念"必须有引用：`concepts` 的小节里若一个短码都没有，记
-  `missing_concept_refs=True`（用户 ⑧ 的硬要求）。
 """
 
 from __future__ import annotations
@@ -51,27 +50,27 @@ from backend.services.understanding import prompts
 
 log = get_logger(__name__)
 
-#: 哪一路看哪些路的 chunk：``a`` 看 A 路 + 共用；``b`` 看 B 路 + 共用
-ROAD_OF_PATH = {"a": "a", "b": "b"}
-#: 本路材料清单里的语言：A 路是英文行 + 语言无关行（公式），B 路是中文行 + 语言无关行
-LANGS_OF_PATH = {"a": ("en", "any"), "b": ("zh", "any")}
+#: 哪一路看哪些路的 chunk：``a`` 看 A 路 + 共用
+ROAD_OF_PATH = {"a": "a"}
+#: 本路材料清单里的语言：A 路是英文行 + 语言无关行（公式）
+LANGS_OF_PATH = {"a": ("en", "any")}
 #: 清单里要哪些类型：正文 text 不进清单（单元更细、且 unit/formula/figure/table 已经是检索单位）
 TYPES = ("unit", "formula", "figure", "table")
-PATH_TASK_TYPES = {"a": "UNDERSTAND_A", "b": "UNDERSTAND_B"}
-#: 任务面板/日志里用的中文名。**前端不再展示这两路标签**（用户口径：前端只呈现一份解读），
-#: 它们只出现在任务列表与后端日志里，所以写清"这一路负责什么"而不是"A 路 / B 路"。
-PATH_LABELS = {"a": "论文精读（结构与创新点）", "b": "阅读地图与相关概念"}
+PATH_TASK_TYPES = {"a": "UNDERSTAND_A"}
+#: 任务面板/日志里用的中文名。写清"这一路负责什么"而不是"A 路"
+#: （前端只呈现一份解读，不暴露"路"这个概念）。
+PATH_LABELS = {"a": "论文精读（结构与创新点）"}
 MAX_ITEMS = 420
-_REF_RE = re.compile(r"(?:来源\s*Chunk\s*[:：]\s*)?\b([AB]\d{2,4})\b")
+_REF_RE = re.compile(r"(?:来源\s*Chunk\s*[:：]\s*)?\b(A\d{2,4})\b")
 
 
 def normalize_path(value) -> str:
-    """路径归一：只接受 ``a`` / ``b``（大小写与空格容错）。"""
+    """路径归一：只接受 ``a``（``b`` 已随「阅读地图」一起删除）。"""
     if value is None:
         return "a"
     text = str(value).strip().lower()
     if text not in ROAD_OF_PATH:
-        raise ValueError(f"未知的路径：{value!r}（只支持 'a' / 'b'）")
+        raise ValueError(f"未知的路径：{value!r}（只支持 'a'）")
     return text
 
 
@@ -153,11 +152,6 @@ def code_map(inventory: list[dict]) -> dict[str, str]:
     return {item["code"]: item["chunk_id"] for item in inventory}
 
 
-def path_of_code(code: str) -> str:
-    """从短码前缀看出是哪一路（`B023` → ``b``）。"""
-    return "a" if str(code).strip().upper().startswith("A") else "b"
-
-
 # --------------------------------------------------------------------------
 # 解析与校验
 # --------------------------------------------------------------------------
@@ -211,7 +205,7 @@ def _strip_json_tail(raw: str) -> str:
 
 
 def _scan_refs(text: str) -> list[str]:
-    """从正文里扫 `来源 Chunk: B023` / 裸 `B023`，按出现顺序去重。"""
+    """从正文里扫 `来源 Chunk: A023` / 裸 `A023`，按出现顺序去重。"""
     out: list[str] = []
     for m in _REF_RE.finditer(text or ""):
         code = m.group(1).upper()
@@ -220,11 +214,15 @@ def _scan_refs(text: str) -> list[str]:
     return out
 
 
-def validate_refs(refs: list[str], valid: dict[str, str], *, path: str) -> dict:
-    """校验引用：短码必须在本路清单里，且不许跨路。
+def validate_refs(refs: list[str], valid: dict[str, str], *, path: str = "a") -> dict:
+    """校验引用：短码必须在本路清单里。
 
     返回 ``{"resolved": {code: chunk_id}, "invalid": [...], "cross_road": [...],
     "ok": bool}``。**不抛错**：调用方把结果落库并打标记，理解内容不丢。
+
+    ``cross_road`` 在只有 A 路之后仍保留：老库里存着 B 路生成的解读，模型偶尔会写
+    `来源 Chunk: B023`（那是它上一轮的格式），这类短码既不在清单里、也算不上"无效"，
+    单独归一类，读的时候才说得清是哪种错。
     """
     resolved: dict[str, str] = {}
     invalid: list[str] = []
@@ -233,25 +231,12 @@ def validate_refs(refs: list[str], valid: dict[str, str], *, path: str) -> dict:
         if code in valid:
             resolved[code] = valid[code]
             continue
-        if code.startswith("A" if path == "b" else "B"):
+        if code.startswith("B"):
             cross.append(code)
         else:
             invalid.append(code)
     return {"resolved": resolved, "invalid": invalid, "cross_road": cross,
             "ok": not invalid and not cross}
-
-
-def concept_sections_missing_refs(markdown: str) -> bool:
-    """B 路硬要求（用户 ⑧）："相关概念"那一节里必须有本路短码引用。
-
-    判定很宽松：只要正文里出现过 `相关概念`/`核心概念` 之后到结尾的范围内存在短码，
-    就算满足。找不到该小节时按"缺"处理 —— 那是 B 路提示词里点名必须有的一节。
-    """
-    text = markdown or ""
-    i = max(text.find("相关概念"), text.find("核心概念"))
-    if i < 0:
-        return True
-    return not _scan_refs(text[i:])
 
 
 # --------------------------------------------------------------------------
@@ -296,15 +281,14 @@ def _page_context_head(path: str, paper_id: str) -> str:
             CONTEXT_MAX_CHARS, PageStore, build_outline_skeleton,
             build_stable_prefix, history_context, list_pages,
         )
-        from backend.services.translation.translation_service import (
-            glossary_text, load_glossary,
-        )
 
         paths = paper_service.paper_paths(paper_id)
-        store = PageStore(paper_id, paths["path_a" if path == "a" else "path_b"])
+        store = PageStore(paper_id, paths["path_a"])
         total = len(list_pages(paper_id))
         skeleton = build_outline_skeleton(paper_id, store)
-        glossary = "" if path == "a" else glossary_text(load_glossary(paper_id))
+        # 术语表是翻译侧（B 路）的东西，A 路不注入 —— 页级转录的稳定前缀里也没有它，
+        # 注入了反而对不上前缀、白丢缓存。
+        glossary = ""
         prefix = build_stable_prefix(generate_brief(paper_id), glossary, skeleton=skeleton)
         history = history_context(store, paper_id, total + 1, max_chars=CONTEXT_MAX_CHARS)
         return f"{prefix}{chr(10) + chr(10) + history if history else ''}"
@@ -380,8 +364,7 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     parsed = parse_result(res.text or "")
     truncated = not parsed["had_json"]
     if truncated:
-        # 没有收尾 JSON：可能是被输出长度截断（实测 B 路第一次只写了 4 节就停，
-        # 用户口径 ⑧ 要求的"相关概念"整节没写出来 —— 而那正是 B 路最重要的产出），
+        # 没有收尾 JSON：可能是被输出长度截断（实测第一次只写了 4 节就停），
         # 也可能只是模型收尾格式飘了。重试**一次**（有界）：预算已经是厂商上限，
         # 所以这次重试是"同预算再要一次"，不再放大了。
         log.warning("%s 路理解没给出收尾 JSON（疑似被截断），同预算重试一次", path)
@@ -390,7 +373,6 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
         parsed = parse_result(res.text or "")
     valid = code_map(inventory)
     check = validate_refs(parsed["refs"], valid, path=path)
-    missing = concept_sections_missing_refs(parsed["markdown"]) if path == "b" else False
     payload = {
         "paper_id": paper_id, "path": path,
         "markdown": parsed["markdown"],
@@ -402,7 +384,7 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
             {"code": it["code"], "chunk_id": it["chunk_id"],
              "chunk_type": it["chunk_type"], "page": it["page"]}
             for it in inventory]),
-        "refs_ok": check["ok"], "missing_concept_refs": missing,
+        "refs_ok": check["ok"],
         "updated_at": now_iso(),
     }
     _save(paper_id, path, payload)
@@ -410,33 +392,6 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
              paper_id, path, len(payload["markdown"]), len(parsed["refs"]),
              len(check["resolved"]), len(check["invalid"]), len(check["cross_road"]))
     return get_understanding(paper_id, path)
-
-
-def _stable_prefix(path: str, paper_id: str) -> str:
-    """**与页级转录/翻译逐字节相同的稳定前缀**，放在理解 prompt 最前面以命中前缀缓存。
-
-    页级流水线的稳定前缀 = 简报 + 术语表 + **全文标题骨架**（`page_translate.build_stable_prefix`），
-    它是整篇字节级不变的，页与页之间靠它命中 provider 的前缀缓存（实测稳定态命中 80%+）。
-    理解阶段以前**没有**复用这段：它的 system prompt 是另一套（1320 字 vs 页级 3426/4220 字），
-    材料也是另一套（chunk 清单），于是那次调用**零缓存命中、全额计费**（用户 2026-09-27 问的）。
-
-    ⚠️ 只对齐**能对齐的部分**：页级调用带的是**页图**（视觉 token），理解只有文本，
-    所以能共享的只有 system + 简报/术语表/骨架这一段；材料本身不可能共享。
-    """
-    try:
-        from backend.services.translation.page_translate import (
-            build_outline_skeleton, build_stable_prefix,
-        )
-        from backend.services.translation.translation_service import (
-            glossary_text, load_glossary,
-        )
-
-        skeleton = build_outline_skeleton(paper_id)
-        glossary = "" if path == "a" else glossary_text(load_glossary(paper_id))
-        return build_stable_prefix(generate_brief(paper_id), glossary, skeleton=skeleton)
-    except Exception as exc:  # noqa: BLE001 —— 对齐失败只是少一段缓存，不能让理解失败
-        log.warning("%s 路稳定前缀对齐失败（本次不享前缀缓存）：%s", path, exc)
-        return ""
 
 
 def _brief(paper_id: str) -> str:
@@ -465,7 +420,7 @@ def _save(paper_id: str, path: str, payload: dict) -> None:
             sess.add(row)
         for key in ("paper_id", "path", "markdown", "refs_json", "model",
                     "prompt_tokens", "completion_tokens", "inventory", "refs_ok",
-                    "missing_concept_refs", "updated_at"):
+                    "updated_at"):
             setattr(row, key, payload[key])
 
 
@@ -501,95 +456,6 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
     return live, stale
 
 
-_CONCEPT_HEAD_RE = re.compile(r"^#{2,4}\s+(.*)$", re.MULTILINE)
-_CONCEPT_SECTION_RE = re.compile(r"相关概念|核心概念")
-
-
-def parse_concepts(markdown: str, by_code: dict) -> list[dict]:
-    """从 B 路（自由 Markdown）里解析出**结构化概念**，供阅读器左栏与"跟随阅读位置"用。
-
-    为什么在**读时**算、而不是生成时落库：理解结果是自由 Markdown（用户口径⑦，模型可增删合并小节），
-    所以"概念"这一层是**投影**而不是事实源 —— 读时投影的额外好处是**不用改表、不用重新生成**，
-    已经存好的解读立刻就能出概念列表（前端不必等一轮重跑）。
-
-    解析规则（宽松，认不出来就退化成空列表，由前端退回"整段 Markdown"）：
-    - 先定位「相关概念 / 核心概念」那一节，只在这一节里找概念小节；
-    - 概念小节 = `##`~`####` 标题（标题里可含中英文名，用括号形式时一并拆出来）；
-    - 小节正文里出现的 `B023` 短码归到该概念，并通过 `by_code`（短码 → chunk/页码）解析成引用。
-    """
-    text = markdown or ""
-    section = _CONCEPT_SECTION_RE.search(text)
-    if not section:
-        return []
-    # 概念区**到下一个同级或更高级标题为止**：否则"相关概念"之后的 `## 推荐阅读顺序`
-    # 也会被当成一个概念（实测就是这么漏进来的）。
-    line_start = text.rfind("\n", 0, section.start()) + 1
-    head_line = text[line_start:text.find("\n", section.start())]
-    base_level = len(head_line) - len(head_line.lstrip("#"))
-    body = text[text.find("\n", section.start()) + 1:]
-    heads: list[re.Match] = []
-    for m in _CONCEPT_HEAD_RE.finditer(body):
-        level = len(m.group(0)) - len(m.group(0).lstrip("#"))
-        if level <= base_level:
-            break                       # 回到同级 → 概念区结束
-        heads.append(m)
-    if not heads:
-        return []
-    out: list[dict] = []
-    for i, head in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
-        title = head.group(1).strip()
-        chunk = body[head.end():end].strip()
-        if not title or not chunk:
-            continue
-        cn, en = _split_concept_name(title)
-        refs: list[dict] = []
-        for m in _REF_RE.finditer(chunk):
-            code = m.group(1).upper()
-            meta = by_code.get(code)
-            if not meta:
-                continue
-            item = {"code": code, "chunk_id": meta.get("chunk_id"),
-                    "page": meta.get("page"), "chunk_type": meta.get("chunk_type")}
-            if item not in refs:
-                refs.append(item)
-        out.append({"name": cn, "name_en": en, "body_md": chunk, "refs": refs})
-    return out
-
-
-def _split_concept_name(title: str) -> tuple[str, str]:
-    """概念标题 → （中文名, 英文名）。两种常见写法都认：
-
-    ``向量量化（Vector Quantization, VQ）与位宽（bit-width）`` → 前半中文、括号里的英文；
-    ``Vector Quantization（向量量化）`` → 反过来。
-    """
-    text = title.strip()
-    m = re.match(r"^(.*?)[（(]([^）)]*)[）)](.*)$", text)
-    if not m:
-        return text, "" if re.search(r"[\u4e00-\u9fff]", text) else ""
-    head, inner, rest = m.group(1).strip(" ：:，,、-—"), m.group(2).strip(), m.group(3).strip()
-    if re.search(r"[\u4e00-\u9fff]", head):
-        return (head + (" " + rest if rest else "")).strip(), inner
-    if re.search(r"[\u4e00-\u9fff]", inner):
-        return inner, head
-    return text, ""
-
-
-def related_concepts(paper_id: str, page: int, *, tolerance: int = 1) -> dict:
-    """与某一页相关的概念（阅读器"跟随阅读位置"用）。
-
-    命中判据：概念的引用里有 chunk 落在 [page-tolerance, page+tolerance] 内 ——
-    引用的单元常常跨页，完全等值会漏掉大量"其实就在这一页"的概念。
-    """
-    data = get_understanding(paper_id, "b")
-    concepts = (data or {}).get("concepts") or []
-    lo, hi = int(page) - tolerance, int(page) + tolerance
-    hit = [c for c in concepts
-           if any(lo <= int(r.get("page") or 0) <= hi for r in (c.get("refs") or []))]
-    return {"paper_id": paper_id, "page": int(page), "concepts": hit,
-            "total_concepts": len(concepts)}
-
-
 def to_dict(row: Understanding) -> dict:
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
@@ -608,19 +474,16 @@ def to_dict(row: Understanding) -> dict:
         "invalid_refs": refs.get("invalid") or [],
         "cross_road_refs": refs.get("cross_road") or [],
         "refs_ok": bool(row.refs_ok),
-        "missing_concept_refs": bool(row.missing_concept_refs),
         "model": row.model, "updated_at": row.updated_at,
         "prompt_tokens": int(row.prompt_tokens or 0),
         "completion_tokens": int(row.completion_tokens or 0),
         "inventory_size": len(inventory),
         "inventory": inventory,
-        # 概念是**读时投影**（见 `parse_concepts`）：已存好的解读立刻可用，不用改表/重生成
-        "concepts": parse_concepts(row.markdown or "", by_code),
     }
 
 
 def get_understanding(paper_id: str, path: str | None = None) -> dict:
-    """取某一路的理解结果；``path=None`` 取两路（前端一次要两条）。"""
+    """取解读结果；``path=None`` 给打包形状（`a` + `done`），前端一次取全。"""
     with session_scope() as sess:
         if path is not None:
             row = sess.get(Understanding, f"{paper_id}:{normalize_path(path)}")
@@ -629,11 +492,13 @@ def get_understanding(paper_id: str, path: str | None = None) -> dict:
                 .filter(Understanding.paper_id == paper_id).all())
     by_path = {r.path: to_dict(r) for r in rows}
     return {"paper_id": paper_id, "a": by_path.get("a") or {},
-            "b": by_path.get("b") or {}, "done": sorted(by_path)}
+            # 老库里可能还留着 `b` 行（阅读地图已删）：只报还在用的这一路，
+            # 免得前端拿 `done` 去判断"两路都到齐了"。
+            "done": [p for p in sorted(by_path) if p in PATH_LABELS]}
 
 
 def understanding_status(paper_id: str) -> dict:
-    """两路各自的状态（前端按钮与进度用）。"""
+    """解读的状态（前端按钮与进度用）。"""
     with session_scope() as sess:
         rows = (sess.query(Understanding)
                 .filter(Understanding.paper_id == paper_id).all())
@@ -641,13 +506,12 @@ def understanding_status(paper_id: str) -> dict:
     return {
         "paper_id": paper_id,
         "a": {"done": "a" in have, "updated_at": have["a"].updated_at if "a" in have else None},
-        "b": {"done": "b" in have, "updated_at": have["b"].updated_at if "b" in have else None},
         "chunk_ready": bool(chunk_inventory(paper_id, "a")),
     }
 
 
 # --------------------------------------------------------------------------
-# 任务入口（与页级翻译同构：一个任务一路，幂等/取消/面板都分得清）
+# 任务入口（与页级翻译同构：一个任务，幂等/取消/面板都分得清）
 # --------------------------------------------------------------------------
 
 
@@ -672,12 +536,12 @@ def run_understand_task(ctx, path: str) -> dict:
 
 def start_understanding(paper_id: str, *, paths: list[str] | None = None,
                         force: bool = False) -> dict:
-    """为两路各建一个理解任务（真并发，与 `start_translation` 同一套路）。"""
+    """为解读建任务（与 `start_translation` 同一套路：幂等 get_or_create）。"""
     from backend.services.paper import paper_service
     from backend.services.task.task_service import task_service
 
     paper_service.get_paper(paper_id)
-    want = [normalize_path(p) for p in (paths or ["a", "b"])]
+    want = [normalize_path(p) for p in (paths or ["a"])]
     inventory = {p: len(chunk_inventory(paper_id, p)) for p in want}
     out = []
     for path in want:
