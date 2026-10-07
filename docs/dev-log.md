@@ -9824,5 +9824,34 @@ turboquant 现在是 **71/76** 有中文标题（上一轮 62 → 本轮按节�
 - 用真实数据复跑同一处（`locate_in_rows(turboquant, 9, "Product Quantization (PQ) …")`
   → `p009-08`），并用同一条笔记复跑侧栏探针：**从 2 行变成 1 行**（`笔记 + Markdown 视图`）；
 - `pytest` 全绿、`frontend_check` **130/130**、`agent_check` 49/49。
+
+### 四、补：面（`side`）也一样会让高亮"看不见"
+
+把那条高亮按行锚点重标之后，用户在**自己的版式**里仍然看不到它 —— 探针查到根因：
+`left=page&pside=zh` 这种读法（左栏原 PDF、右栏中文）**只渲染中文那一列**，
+这一行在 DOM 里只有一个 `rrow side-zh` 单元格。原 PDF 那面如此，`en` 面的高亮同理：
+**高亮只画在它自己那一面**，面不对＝锚点、文字全对也看不见。
+
+- `annotations.create()` 的 `side` 默认从 `"en"` 改成 `"auto"`（空串）：没指定就按**引用的文字**
+  判断（`side_of_text`：含中日韩字 → `zh`），工具那一层也改成把空串透给宿主；
+- `highlight_manage` 的说明写清"`side` 要跟 `text` 同语言、更要跟用户正在读的那一面一致"，
+  要标用户眼前的中文段就用 `translate_get` 拿中文原文；
+- 实测把那条高亮重标成 `side=zh`（同一行 `p009-08` 的中文原文 0..185）后，
+  用户在**自己的版式**里能看到 2 个 `<mark>`（"乘积量化（PQ）" + " Douze et al. (2024) 使用 k-means 构建…"）；
+- 新测试 `test_create_resolves_the_face_from_the_quoted_language`：引中文 → 存成 `zh`、
+  引英文 → `en`、显式给了面就听调用方的。
+
+### 五、顺带修掉一个"删高亮不删笔记"的缺口
+
+重标时按老路子删旧高亮，发现**旧笔记留下来了**（库里立刻多出一条没有高亮的孤儿笔记）——
+正是用户说的"莫名其妙的笔记"的来源之一。
+
+- 级联挪到 **service 层** `annotation_service.delete_highlight`（走它的调用方不止一个：
+  前端删除、agent 工具、自检清理），返回 `deleted_notes: [id]`；
+- `api/agent.py` 的 DELETE 路由以前**自己**查一遍笔记再删（返回同一个字段），现在只透传结果
+  —— 两边都做会互相抢：service 先删掉，路由再查就是空的（`agent_check` 当场报"笔记 0 条"）；
+- 新测试 `test_deleting_a_highlight_takes_its_notes_away`（建高亮 → 挂笔记 → 删高亮 →
+  笔记必须没了 + `deleted_notes` 回的是 id 列表 + 幂等）；
+- 实测：删旧高亮时 `deleted_notes=[n-…]`，库里干净收尾。
 > 自检也跟着补了一条**几何断言**（标号 vs 它后面第一个文字节点：顶边差 ≤ 4px、标号右边 ≤ 文字左边），
 > 中英对照那条与"只有原文"那条**都要过** —— 这条正是截图里那个毛病，光看结构断言抓不到。

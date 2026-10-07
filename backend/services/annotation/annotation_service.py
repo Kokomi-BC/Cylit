@@ -101,6 +101,12 @@ def delete_highlight(highlight_id: str) -> dict:
 
     返回被删掉的 id 列表：前端据此把本地那几条一起摘掉，不用重新拉一遍列表。
 
+    **级联删笔记**（`Highlight └── Note`，见 `docs/开发日志` §73）：笔记的位置就是它挂的高亮，
+    高亮没了笔记就成了"没有原文可看的一条"。级联在**这一层**做（返回里给出 `deleted_notes` 的 id），
+    因为走 `delete_highlight` 的调用方不止一个（前端删除、agent 工具、自检清理）；
+    以前不级联 —— 前端 `deleteHighlightIds` 按"后端会级联"写的（本地过滤掉 `highlight_id` 已删的
+    笔记），于是库里留下的孤儿笔记谁也看不见，隔一阵冒出来就是用户说的"莫名其妙的笔记"。
+
     **幂等**：id 不存在时返回空列表，而不是 404。因为"整组删"这件事天然会带来重复请求 ——
     前端点一次删除可能对同组的几条各发一次（多标签页同开一篇也会撞车），
     重复删同一条不该算失败；以前会往日志里丢 404，看着像删除坏了（用户报过）。
@@ -108,7 +114,8 @@ def delete_highlight(highlight_id: str) -> dict:
     with session_scope() as sess:
         row = sess.get(Highlight, highlight_id)
         if row is None:
-            return {"deleted": highlight_id, "deleted_ids": [], "count": 0, "missing": True}
+            return {"deleted": highlight_id, "deleted_ids": [], "count": 0,
+                    "deleted_notes": [], "missing": True}
         rows = [row]
         if row.group_id:
             rows = (sess.query(Highlight)
@@ -116,9 +123,21 @@ def delete_highlight(highlight_id: str) -> dict:
                             Highlight.paper_id == row.paper_id,
                             Highlight.user_id == row.user_id).all())
         ids = [r.id for r in rows]
+        # 先查出"挂在这些高亮上的笔记"，删完把 id 一起回给调用方（前端据此把本地那几条摘掉）
+        note_ids: list[str] = []
+        if ids:
+            note_ids = [str(x[0]) for x in
+                        sess.query(Note.id)
+                        .filter(Note.highlight_id.in_(ids),
+                                Note.paper_id == row.paper_id,
+                                Note.user_id == row.user_id).all()]
+            if note_ids:
+                (sess.query(Note).filter(Note.id.in_(note_ids))
+                 .delete(synchronize_session=False))
         for r in rows:
             sess.delete(r)
-    return {"deleted": highlight_id, "deleted_ids": ids, "count": len(ids)}
+    return {"deleted": highlight_id, "deleted_ids": ids, "count": len(ids),
+            "deleted_notes": note_ids}
 
 
 def anchor_page(block_id: str | None) -> int | None:

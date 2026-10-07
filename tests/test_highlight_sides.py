@@ -36,10 +36,40 @@ def clean_rows(db_ready):
     def wipe() -> None:
         for row in svc.list_highlights(FAKE_PAPER)["items"]:
             svc.delete_highlight(row["id"])
+        # 笔记也扫一遍：删高亮会级联（见下面的用例），但早先留下的孤儿笔记要能清掉
+        for note in svc.list_notes(FAKE_PAPER)["items"]:
+            svc.delete_note(note["id"])
 
     wipe()
     yield
     wipe()
+
+
+def test_deleting_a_highlight_takes_its_notes_away() -> None:
+    """**笔记挂在高亮上**：删高亮要把挂在它上面的笔记一起删。
+
+    不级联的话留下的是"没有原文可看的一条笔记"，而前端 `deleteHighlightIds` 是按
+    "后端会级联"写的（本地把 `highlight_id` 已删的笔记过滤掉）—— 两边不一致的结果就是
+    库里攒出一批谁也看不见的孤儿笔记，隔一阵冒出来就是用户说的"莫名其妙的笔记"。
+    """
+    from backend.services.annotation import annotation_service as svc
+
+    hl = svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p003-02",
+                               "selected_text": "先有高亮", "start_offset": 0, "end_offset": 5})
+    note = svc.create_note({"paper_id": FAKE_PAPER, "block_id": "p003-02",
+                            "highlight_id": hl["id"], "selected_text": "先有高亮",
+                            "content_md": "这条笔记挂在那处高亮上"})
+    assert [n["id"] for n in svc.list_notes(FAKE_PAPER)["items"]] == [note["id"]]
+    # 没挂笔记的那条：删掉时 deleted_notes 是空的，不该报错
+    other = svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p003-03",
+                                  "selected_text": "另一处", "start_offset": 0, "end_offset": 3})
+    assert svc.delete_highlight(other["id"])["deleted_notes"] == []
+    out = svc.delete_highlight(hl["id"])
+    assert out["count"] == 1 and out["deleted_notes"] == [note["id"]]
+    assert svc.list_notes(FAKE_PAPER)["items"] == [], "高亮删了，挂在它上面的笔记也要走"
+    # 幂等：再删一次不报错、也不再报有笔记
+    again = svc.delete_highlight(hl["id"])
+    assert again["missing"] is True and again["deleted_notes"] == []
 
 
 def test_side_and_scope_round_trip() -> None:

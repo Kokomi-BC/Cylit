@@ -495,17 +495,12 @@ async def agent_highlight_delete(highlight_id: str, request: Request,
 
     为什么连带删笔记：用户口径是 `Highlight └── Note`，高亮是笔记的位置锚点 ——
     锚点没了，笔记就成了一条"点定位跳不过去"的死数据。删除是高危动作，工具那一层会先问。
+    级联在 `svc.delete_highlight` 里做（所有调用方都要这个行为），这里只把结果透出去。
     """
     _require_internal(x_internal_token)
     from backend.services.annotation import annotation_service as svc
 
-    gone = svc.delete_highlight(highlight_id)
-    notes = [n for n in svc.list_notes(None)["items"]
-             if str(n.get("highlight_id") or "") in set(gone.get("deleted_ids") or
-                                                        [gone.get("deleted")])]
-    for note in notes:
-        svc.delete_note(note["id"])
-    return envelope({**gone, "deleted_notes": [n["id"] for n in notes]}, request=request)
+    return envelope(svc.delete_highlight(highlight_id), request=request)
 
 
 @router.get("/agent/papers/{paper_id}/notes")

@@ -148,6 +148,20 @@ def anchor_page_no(anchor: str) -> int:
     return int(digits) if digits else 0
 
 
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+
+
+def side_of_text(text: str) -> str:
+    """引用的文字是中文还是英文 → ``"zh"`` / ``"en"``。
+
+    为什么要按文字定这一面（用户口径 2026-10-07）：高亮**只画在它那一面**上 ——
+    界面按"译文"读时（`pside=zh`，读者常这么看）只渲染中文那一列，标在原文那一面的高亮
+    **根本画不出来**（用户报过"未产生高亮"：锚点、文字都对，就是看不见）。
+    所以 `create()` 在调用方没指定面时按文字判断：引中文 → 译文面。
+    """
+    return "zh" if _CJK_RE.search(str(text or "")) else "en"
+
+
 def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
                    occurrence: int = 1) -> tuple[str, tuple[int, int], str] | None:
     """在这一页的**正文行**里找这段文字 → ``(行 id, (start, end), 渲染后的行文本)``。
@@ -212,7 +226,7 @@ def anchor_text(paper_id: str, anchor: str, *, side: str = "en") -> str | None:
 
 
 def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
-           side: str = "en", occurrence: int = 1) -> dict:
+           side: str = "", occurrence: int = 1) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
 
     借用 `annotation_service.create_highlight` 落库（同一套表与校验），这里只负责
@@ -221,6 +235,10 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     anchor = str(anchor or "").strip()
     if not anchor:
         raise ValidationError("anchor 必填（正文行 id / `md:p<页号>` / `pdf:p<页号>`）")
+    # 面没指定（或给了个不认识的值）→ 按**引用的文字**判：引中文就落在译文面
+    # （界面按译文读时，原文那一面的高亮根本画不出来，见 `side_of_text`）。
+    if side not in ("en", "zh"):
+        side = side_of_text(text)
     kind = anchor_kind(anchor)
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："

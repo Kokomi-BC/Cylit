@@ -100,6 +100,39 @@ def test_create_reports_a_missing_anchor(monkeypatch) -> None:
     assert got["ok"] is False and "找不到这个锚点" in got["error"]
 
 
+def test_create_resolves_the_face_from_the_quoted_language(monkeypatch) -> None:
+    """面没指定时按**引用的文字**判：引中文 → 译文面（用户报过"未产生高亮"）。
+
+    高亮只画在它那一面：界面按译文读（`pside=zh`，读者最常这么看）时只渲染中文那一列，
+    标在原文面的高亮**根本画不出来** —— 锚点对、文字对，用户就是看不见。
+    """
+    captured: dict = {}
+
+    def fake_create(payload, user_id=1):
+        captured.update(payload)
+        return {"id": "h1", "block_id": payload["block_id"], "text": payload["selected_text"],
+                "start": payload["start_offset"], "end": payload["end_offset"],
+                "color": payload["color"], "side": payload["side"], "scope": payload["scope"],
+                "page": 9}
+
+    monkeypatch.setattr(ann.svc, "create_highlight", fake_create)
+    monkeypatch.setattr(ann, "anchor_text", lambda pid, anchor, side="en": "乘积量化用 k-means")
+    got = ann.create("p1", anchor="p009-08", text="乘积量化", side="")
+    assert got["ok"] is True and captured["side"] == "zh"
+    assert (captured["start_offset"], captured["end_offset"]) == (0, 4)
+
+    captured.clear()
+    monkeypatch.setattr(ann, "anchor_text", lambda pid, anchor, side="en": "Product Quantization")
+    ann.create("p1", anchor="p009-08", text="Product Quantization", side="")
+    assert captured["side"] == "en"
+
+    # 显式给了面就听调用方的（不再替它猜）
+    captured.clear()
+    monkeypatch.setattr(ann, "anchor_text", lambda pid, anchor, side="en": "乘积量化用 k-means")
+    ann.create("p1", anchor="p009-08", text="乘积量化", side="en")
+    assert captured["side"] == "en"
+
+
 # --------------------------------------------------------------------------
 # 3. 笔记必须挂在高亮上（用户口径：不做孤儿笔记）
 # --------------------------------------------------------------------------

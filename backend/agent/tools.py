@@ -909,6 +909,10 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    `重点`，公式整体算 1 个字符，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
                    `occurrence`：同一段文字出现多次时标第几次（默认第 1 次）。
                    **找不到会回"最像的原文"**，照着改一版再试，不要瞎猜。
+                   ⚠️ **`side` 要跟 `text` 是同一种语言，更要跟用户正在读的那一面一致**：高亮只画在
+                   它那一面 —— 界面按"译文"读（`pside=zh`，读者最常这么看）时只渲染中文那一列，
+                   标在原文面的高亮**根本画不出来**（用户报过"未产生高亮"）。所以要标用户眼前那段
+                   中文，就用 `translate_get` 拿中文原文再标（`side` 不填时宿主按文字自动判断面）。
       op="list"    query（可选）→ 列这篇的高亮（带页码与"在哪一面"）。
       op="locate"  highlight_id → 这条高亮挂在哪一面、第几页、原文是什么（还能顺带看它有没有笔记）。
       op="update"  highlight_id + color（改颜色）或 text（改引用文字）。**改不了位置**：
@@ -929,7 +933,10 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
         if what in ("create", "add", "new"):
             data = await ctx.deps.host.highlight_create(ctx.deps.paper_id, {
                 "anchor": str(anchor or ""), "text": str(text or ""),
-                "color": str(color or "yellow"), "side": _side_key(side) if side else "en",
+                "color": str(color or "yellow"),
+                # `side` 空着就让**宿主按引用的文字**判断（中文 → 译文面）：
+                # 界面按译文读时，标在原文面的高亮画不出来（见 `agent/annotations.side_of_text`）。
+                "side": _side_key(side) if side else "",
                 "occurrence": int(occurrence or 1)})
             if data.get("ok"):
                 hl = data.get("highlight") or {}
