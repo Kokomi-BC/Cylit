@@ -25,6 +25,12 @@
  * 只关高亮，**不动** `touch-action` / `user-select`：正文还要划词、长按选择、复制。
  * 放 `*` 上是必须的 —— 该属性不继承，只写在 body 上管不到按钮与链接。 */
 * { -webkit-tap-highlight-color: transparent; }
+
+/* 图片默认是**可拖拽**的（浏览器原生 drag-and-drop）：手指/鼠标按在图上往外划，浏览器会开始
+ * "拖这张图"，而不是滚动它所在的列表 —— 表现就是**列表划不动**（用户报的正是"页面视图无法
+ * 通过触摸滚动"）。我们从来不拖图（要拖的是列表与正文），所以整站关掉它。
+ * 这一条会连带修好「插图」页签那种"整行都是图"的列表：那里有一模一样的坑。 */
+img { -webkit-user-drag: none; user-select: none; }
 html, body, #app { height: 100%; }
 
 body {

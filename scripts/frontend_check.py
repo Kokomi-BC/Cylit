@@ -157,14 +157,24 @@ async function run() {
       const r0 = thumbs[0] ? thumbs[0].getBoundingClientRect() : null;
       const r1 = thumbs[1] ? thumbs[1].getBoundingClientRect() : null;
       res.stacked = !!(r0 && r1) && Math.abs(r0.left - r1.left) <= 2 && r1.top > r0.bottom - 6;
-      /* 页号在**两张图之间**、图片左上角：在图上边之上、与格左边界对齐、且不是压在图上的徽章 */
+      /* 页号在**图外面**（不在图框里）、在图上边、与格左边界对齐，且不是压在图上的徽章 */
       const numEl = thumbs[0] ? thumbs[0].querySelector('.pg-no') : null;
+      const shotEl = thumbs[0] ? thumbs[0].querySelector('.pg-shot') : null;
       const ri = thumbs[0] ? thumbs[0].querySelector('img')?.getBoundingClientRect() : null;
       const rn = numEl ? numEl.getBoundingClientRect() : null;
+      const rs = shotEl ? shotEl.getBoundingClientRect() : null;
       res.numAboveImg = !!(ri && rn) && rn.bottom <= ri.top + 2;
       res.numLeftAligned = !!(r0 && rn) && Math.abs(rn.left - r0.left) <= 10;
       res.numStatic = numEl ? w.getComputedStyle(numEl).position !== 'absolute' : false;
-      res.imgFullWidth = !!(r0 && ri) && ri.width >= r0.width - 4;
+      /* 「在图片外面」：图框里**没有**页号，且页号整块在图框上边之外 */
+      res.numOutsideFrame = !!shotEl && !!numEl && !shotEl.contains(numEl)
+        && !!(rs && rn) && rn.bottom <= rs.top + 1;
+      /* 「图不要这么大」：封顶（宽栏里不铺满整栏） */
+      res.imgCapped = !!(r0 && ri) && ri.width <= 260 && ri.width >= 120;
+      /* 触摸能滚：图不吃指针事件 + 整格允许竖直划动 */
+      const img0El = thumbs[0] ? thumbs[0].querySelector('img') : null;
+      res.imgNoPointer = img0El ? w.getComputedStyle(img0El).pointerEvents === 'none' : false;
+      res.tileTouchAction = thumbs[0] ? w.getComputedStyle(thumbs[0]).touchAction : '';
       res.thumbsLeft = thumbs.length;
       res.noLocateBtn = d.querySelectorAll('.pages [title="定位"]').length === 0;
       /* 那一行里除了图标不该有文字；页面视图也不再自己写「N 页 / 点缩略图…」 */
@@ -1692,19 +1702,23 @@ def main() -> int:
             record("reader", "目录页签里有「目录 / 页面视图」切换", False, "两枚切换按钮没找到")
         else:
             record("reader", "目录页签里有「目录 / 页面视图」切换", True, "两枚切换按钮都在")
-            record("reader", "页面视图：一页一行（类似插图页），图占满栏宽",
-                   bool(data.get("thumbOrdered")) and bool(data.get("stacked"))
-                   and bool(data.get("imgFullWidth")),
-                   f"{data.get('thumbCount')} 张，上下排={data.get('stacked')}，"
-                   f"图满宽={data.get('imgFullWidth')}")
-            record("reader", "页面视图：页号写在两张图之间、图片左上角（不是压在图上的徽章，也无定位键）",
+            record("reader", "页面视图：一页一行（类似插图页）",
+                   bool(data.get("thumbOrdered")) and bool(data.get("stacked")),
+                   f"{data.get('thumbCount')} 张，上下排={data.get('stacked')}")
+            record("reader", "页面视图：页号在**图片外面**、图片左上角（不压图、无定位键）",
                    data.get("numAboveImg") is True and data.get("numLeftAligned") is True
-                   and data.get("numStatic") is True and data.get("noLocateBtn") is True
+                   and data.get("numStatic") is True and data.get("numOutsideFrame") is True
+                   and data.get("noLocateBtn") is True
                    and (data.get("thumbNums") or [])[:2] == ["第 1 页", "第 2 页"]
                    and "/pages/1" in str(data.get("thumbSrc") or ""),
                    f"页号 {data.get('thumbNums')}，在图上方={data.get('numAboveImg')} "
-                   f"左对齐={data.get('numLeftAligned')} 绝对定位={not data.get('numStatic')} "
+                   f"左对齐={data.get('numLeftAligned')} 在图框外={data.get('numOutsideFrame')} "
                    f"定位键={not data.get('noLocateBtn')}")
+            record("reader", "页面视图：图不铺满整栏（封顶显示）+ 触摸能滚（图不吃指针事件、格允许 pan-y）",
+                   data.get("imgCapped") is True and data.get("imgNoPointer") is True
+                   and "pan-y" in str(data.get("tileTouchAction") or ""),
+                   f"封顶={data.get('imgCapped')} 图不吃指针={data.get('imgNoPointer')} "
+                   f"touch-action={data.get('tileTouchAction')!r}")
             record("reader", "目录那一行：切换只剩图标、没有多余文字（页数与提示都去掉）",
                    (data.get("modeLabels") or []) == ["", ""]
                    and data.get("noPagesHead") is True and str(data.get("barText") or "") == "",
