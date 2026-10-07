@@ -29,7 +29,12 @@ const props = withDefaults(defineProps<{
   allowNote?: boolean;
   /** 选区/点击处盖住了几处已有高亮：>0 才显示「禁止」图标（删除对应高亮） */
   hlCount?: number;
-}>(), { anchored: true, allowNote: true, hlCount: 0 });
+  /**
+   * 选区/点击处的那条高亮**已经有笔记**了（《修改计划》第四步）：
+   * 有的话这一项是「打开笔记」（跳到侧栏那条笔记），否则是「笔记」（新建，挂到这条高亮上）。
+   */
+  hasNote?: boolean;
+}>(), { anchored: true, allowNote: true, hlCount: 0, hasNote: false });
 
 const emit = defineEmits<{
   (e: 'explain'): void;
@@ -88,8 +93,12 @@ const COLOR_TITLE: Record<string, string> = {
     </button>
     <!-- 原 PDF 栏（pdf.js 文字层）没有块锚点 → 那一栏只留「解释 / 复制」。
          不写任何说明文字（用户口径：完全移除「原 PDF 栏不支持高亮」那行）。 -->
-    <button v-if="props.anchored && props.allowNote" @click="emit('note')">
-      <AppIcon name="note" :size="14" />笔记
+    <button
+      v-if="props.anchored && props.allowNote"
+      :title="props.hasNote ? '跳到侧栏那条笔记' : '给这段文字写笔记（会挂在这处高亮上）'"
+      @click="emit('note')"
+    >
+      <AppIcon name="note" :size="14" />{{ props.hasNote ? '打开笔记' : '笔记' }}
     </button>
     <button @click="emit('copy')"><AppIcon name="copy" :size="14" />复制</button>
     <span v-if="props.anchored" class="row" style="padding:0 6px;gap:6px">

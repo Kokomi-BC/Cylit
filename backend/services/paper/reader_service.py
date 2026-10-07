@@ -609,14 +609,15 @@ def build_reader(paper_id: str, *, user_id: int = 1,
 
 def _anchor_page(block_id: str | None, row_pages: dict[str, int],
                  block_pages: dict[str, int]) -> int | None:
-    """锚点（行 id / 块 id / Markdown 视图的 `md:p<页号>`）→ 页码；查不到返回 None。"""
+    """锚点（行 id / 块 id / `md:p<页号>` / `pdf:p<页号>`）→ 页码；查不到返回 None。
+
+    前两种显式锚点（Markdown 视图 / 原 PDF 页图）页码**就写在 id 里**，不必查表；
+    剩下的是正文行 id 与解析块 id，走 `row_pages` / `block_pages` 两张映射表。
+    """
     if not block_id:
         return None
-    if block_id.startswith("md:p"):
-        try:
-            return int(block_id[4:])
-        except ValueError:
-            return None
+    if (m := re.match(r"^(?:md|pdf):p(\d+)$", str(block_id))):
+        return int(m.group(1))
     return row_pages.get(block_id) or block_pages.get(block_id)
 
 

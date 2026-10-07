@@ -429,7 +429,11 @@ const explainCard = reactive({
 let explainController: AbortController | null = null;
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
 const chatSelection = ref<AgentSelection | null>(null);
-const noteModal = reactive({ open: false, text: '', rowId: '', selected: '' });
+/** 新建笔记的小弹窗（第五步会换成轻量浮层）。`highlightId`：这条笔记挂靠的高亮。 */
+const noteModal = reactive({
+  open: false, text: '', rowId: '', selected: '',
+  highlightId: '' as string, anchorText: '' as string,
+});
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 
@@ -2742,7 +2746,7 @@ interface MdSegment {
   page?: number;
 }
 
-async function addHighlight(color: string) {
+async function addHighlight(color: string): Promise<Highlight[]> {
   const scope = selection.scope;
   // 多段选区（正文跨行 / Markdown 视图跨页）：每段一条记录，共用同一个分组 id（删除时整组一起删）
   const parts = selection.segments.length
@@ -2777,7 +2781,8 @@ async function addHighlight(color: string) {
     highlights.value.push(...created);
     const unit = scope === 'row' ? '行' : '页';
     toast(parts.length > 1 ? `已高亮（跨 ${parts.length} ${unit}）` : '已高亮', 'ok', 2000);
-  } catch (err) { reportError(err, '高亮失败'); } finally { hideMenu(); }
+    return created;
+  } catch (err) { reportError(err, '高亮失败'); return []; } finally { hideMenu(); }
 }
 
 /**
@@ -2858,15 +2863,69 @@ function openNoteModal() {
   noteModal.text = '';
   noteModal.rowId = selection.rowId;
   noteModal.selected = selection.text;
+  /* 《修改计划》第四步：笔记挂在**高亮**上（PDF/Markdown → Highlight → Note）。
+   * 选区盖住已有高亮就复用第一条；一条都没有时，`saveNote` 会先补一条高亮再挂上去 ——
+   * 所以库里不会出现"没有高亮的孤儿笔记"。 */
+  noteModal.highlightId = selection.hlIds[0] ?? '';
+  /* 引用文字一律用**高亮上那一份**（它就是坐标系统里的那一段）：
+   * PDF 文字层的 `sel.toString()` 会在 span 之间插换行/空格，直接存会和偏移量对不上 ——
+   * 与第三步那个坑同一个原因（见 `pdfAnchor` 那段注释）。 */
+  const hl = highlights.value.find((h) => h.id === noteModal.highlightId);
+  noteModal.anchorText = hl?.text ?? (selection.anchored ? selection.text : '');
   hideMenu();
+}
+
+/** 选区/点击处那条高亮对应的笔记（有的话菜单显示「打开笔记」）。 */
+const selectionNote = computed<Note | null>(() => {
+  const ids = selection.hlIds ?? [];
+  if (!ids.length) return null;
+  return notes.value.find((n) => n.highlight_id && ids.includes(n.highlight_id)) ?? null;
+});
+
+/** 侧栏「批注·笔记」里那条笔记的位置（`openNoteForHighlight` 滚动过去用）。 */
+async function revealNote(noteId: string) {
+  await ensureAsideVisible();
+  sideTab.value = 'annotations';
+  await nextTick();
+  const el = document.querySelector<HTMLElement>(`[data-note-id="${noteId}"]`);
+  el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el?.classList.add('flash');
+  window.setTimeout(() => el?.classList.remove('flash'), 1200);
+}
+
+/**
+ * 划词菜单里的「笔记 / 打开笔记」（《修改计划》第四步的闭环）：
+ * 已经有笔记 → 跳到侧栏那一条（"从高亮位置直接打开对应笔记"）；没有 → 打开编辑器新建。
+ */
+async function onNoteAction() {
+  const existing = selectionNote.value;
+  hideMenu();
+  if (existing) {
+    await revealNote(existing.id);
+    return;
+  }
+  openNoteModal();
 }
 
 async function saveNote() {
   try {
+    /* 先保证有高亮：笔记必须挂在一条高亮上（用户口径："笔记必须与对应的 Highlight 建立关联"）。
+     * 选区已经盖住高亮就复用它，否则按默认色补一条 —— 与新笔记同一次动作完成。 */
+    let highlightId = noteModal.highlightId;
+    let anchorText = noteModal.anchorText;
+    if (!highlightId) {
+      const created = await addHighlight('yellow');
+      highlightId = created[0]?.id ?? '';
+      anchorText = created[0]?.text ?? anchorText;      // 同上：用高亮那份文字
+    }
+    if (!highlightId) throw new Error('没有可挂靠的高亮（选区可能已经失效）');
     await api.post('/notes', {
       paper_id: paperId.value,
       block_id: noteModal.rowId,
-      selected_text: noteModal.selected,
+      highlight_id: highlightId,
+      selected_text: anchorText || noteModal.selected,
+      start_offset: selection.start,
+      end_offset: selection.end,
       content_md: noteModal.text,
     });
     toast('笔记已保存', 'ok');
@@ -3452,9 +3511,10 @@ function renderMarkdown(text?: string | null) {
       :anchored="selection.anchored"
       :allow-note="selection.allowNote"
       :hl-count="selection.hlIds.length"
+      :has-note="!!selectionNote"
       @explain="explainSelection"
       @chat="openSelectionInChat(true)"
-      @note="openNoteModal"
+      @note="onNoteAction"
       @copy="copySelection"
       @highlight="addHighlight"
       @unhighlight="deleteSelectionHighlights"

@@ -318,6 +318,13 @@ export interface Note {
   page?: number | null;
   selected_text: string | null;
   content_md: string;
+  /**
+   * 笔记挂在哪条高亮上（《修改计划》第四步：PDF/Markdown → Highlight → Note）。
+   * 后端在 `_note_dict` 里给出；老笔记（第四步之前建的）没有它 → 退回"只按 block_id 定位"。
+   */
+  highlight_id?: string | null;
+  /** 这条笔记挂在哪一面：`row` / `markdown` / `pdf`（从 block_id 前缀推出来） */
+  scope?: 'row' | 'markdown' | 'pdf';
   tags?: string[];
   created_at?: string | null;
   updated_at?: string | null;

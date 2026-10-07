@@ -102,7 +102,16 @@ interface MergedItem {
   quote: string;
   contentMd: string;
   at: string | null;
+  /** 笔记挂在哪一面（`row` / `markdown` / `pdf`）：侧栏要显示"这条笔记挂在哪" */
+  scope?: 'row' | 'markdown' | 'pdf';
+  /** 笔记 id：`openNoteForHighlight` 靠它把侧栏滚到那一条上（`data-note-id`） */
+  noteId?: string;
 }
+
+/** 面 → 中文（侧栏那枚小徽章）。三种锚点是三套位置模型，界面上要说清挂在哪。 */
+const SCOPE_LABEL: Record<string, string> = {
+  row: '正文行', markdown: 'Markdown 视图', pdf: '原 PDF',
+};
 
 /* ------------------------------ 术语 / 文档简报 ------------------------------ */
 /** 只读是默认态：进页签先看到**内容**，点「编辑」才展开输入框（用户口径）。 */
@@ -184,6 +193,7 @@ const merged = computed<MergedItem[]>(() => {
       anchorId: n.block_id, page: n.page ?? null,
       quote: n.selected_text ?? '', contentMd: n.content_md,
       at: n.updated_at ?? n.created_at ?? null,
+      scope: n.scope ?? 'row', noteId: n.id,
     });
   }
   return items.sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')));
@@ -204,9 +214,15 @@ const merged = computed<MergedItem[]>(() => {
     <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
     <template v-if="props.tab === 'annotations'">
       <div v-if="!merged.length" class="empty small">还没有批注或笔记（在正文里划词即可新建）</div>
-      <div v-for="m in merged" :key="m.key" class="item" :class="m.kind">
+      <div v-for="m in merged" :key="m.key" class="item" :class="m.kind"
+           :data-note-id="m.noteId || undefined"
+           :data-item-kind="m.kind">
         <div class="row tiny">
           <span class="badge" :class="m.badge">{{ m.label }}</span>
+          <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
+          <span v-if="m.scope" class="badge dim" :title="`高亮位置：${SCOPE_LABEL[m.scope] || m.scope}`">
+            {{ SCOPE_LABEL[m.scope] || m.scope }}
+          </span>
           <span v-if="m.page" class="faint">p{{ m.page }}</span>
           <span v-if="m.at" class="faint">{{ fmtRelative(m.at) }}</span>
           <span class="spacer" />
@@ -419,6 +435,14 @@ const merged = computed<MergedItem[]>(() => {
 .item.manual { border-left-color: var(--accent); }
 .item.auto, .item.selection { border-left-color: var(--ok); }
 .item.note { border-left-color: var(--warn); }
+/* 「从高亮打开对应笔记」时的落点提示：闪一下边框与底色，用户才知道跳到了哪一条 */
+.item.flash {
+  animation: note-flash 1.2s var(--ease);
+}
+@keyframes note-flash {
+  0%, 100% { background: var(--bg-layer); }
+  25% { background: color-mix(in srgb, var(--accent) 16%, var(--bg-layer)); }
+}
 .item .figure {
   max-width: 100%; background: #fff; border-radius: var(--radius-sm);
   margin: 6px 0 2px; cursor: zoom-in;

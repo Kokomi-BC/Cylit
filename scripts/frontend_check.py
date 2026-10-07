@@ -800,18 +800,39 @@ async function run() {
   const api = '/api/v1';
   const jget = async (u) => (await fetch(u)).json();
   try {
-    await until(D(), (x) => x.querySelector('[data-pdf-page] .pdf-text-layer span'), 60);
-    const layer = D().querySelector('[data-pdf-page] .pdf-text-layer');
+    /* 开工前先清场：**只清本探针自己会造的东西**（`scope=pdf` 的高亮与笔记）。
+       上一次跑挂在半路时（探针报错、Chrome 被打断）会留下残留，不清的话这次会数出 2 条，
+       断言全乱 —— 而这些记录只可能来自自检本身（用户的高亮都是 row/markdown）。 */
+    const sc0 = () => D().querySelector('.reader-content');
+    const pre = await jget(api + '/highlights?paper_id=__PAPER__');
+    for (const h of ((pre.data && pre.data.items) || []).filter((x) => x.scope === 'pdf')) {
+      await fetch(api + '/highlights/' + h.id, { method: 'DELETE' });
+    }
+    const preNotes = await jget(api + '/notes?paper_id=__PAPER__');
+    for (const n of ((preNotes.data && preNotes.data.items) || []).filter((x) => x.scope === 'pdf')) {
+      await fetch(api + '/notes/' + n.id, { method: 'DELETE' });
+    }
+    /* 回到第 1 页再开工：阅读器会**恢复上次的阅读位置**，而"第一个 `[data-pdf-page]`"
+       只有在页 1 就在附近时才等于第 1 页（顺序渲染，前面的页可能还没建）。 */
+    const scroller0 = sc0();
+    if (scroller0) { scroller0.scrollTop = 0; }
+    await sleep(600); spin(BURN); await sleep(200);
+    /* 等"够用的一段文字"：文字层是**异步**铺出来的，只等一个 span 会在铺到一半时开跑
+       （实测：只等到 1 个 span 就选，`spans[1]` 是 undefined → 整条探针报错）。
+       页号挑**明确写死的那一页**（`[data-pdf-page="1"]`），不靠"DOM 里第一个"。 */
+    const longSpans = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer span')]
+      .filter((s) => (s.textContent || '').trim().length > 8);
+    await until(D(), () => longSpans().length >= 2, 60);
+    const layer = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
     res.hasLayer = !!layer;
     if (!layer) { out(res); return; }
     const pageEl = layer.closest('[data-pdf-page]');
     res.page = Number(pageEl.getAttribute('data-pdf-page'));
-    const spans = [...layer.querySelectorAll('span')]
-      .filter((s) => (s.textContent || '').trim().length > 8);
+    const spans = longSpans();
     res.spans = spans.length;
     const a = spans[0] && spans[0].firstChild;
     const b = spans[1] && spans[1].firstChild;
-    if (!a || !b) { out({ stage: 'no-text-node', spans: res.spans }); return; }
+    if (!a || !b) { out({ stage: 'few-spans', spans: res.spans }); return; }
     const range = D().createRange();
     range.setStart(a, 0);
     range.setEnd(b, Math.min(12, (b.nodeValue || '').length));
@@ -838,20 +859,95 @@ async function run() {
     res.savedRange = mine.length ? [mine[0].start, mine[0].end] : null;
     res.savedText = mine.length ? String(mine[0].text || '') : '';
     /* 一次划词会落成**多个** `<mark>`（跨 span 时按文字节点拆）——拼起来才是那一段文字 */
-    const marks = () => [...D().querySelectorAll('[data-pdf-page] .pdf-text-layer mark.hl')];
+    const marks = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.marked = marks().length;
     res.markedText = marks().map((m) => m.textContent || '').join('');
     /* 重新定位：整页刷新之后，高亮要按同一套偏移量落回**同一段文字**上 */
     f.contentWindow.location.reload();
     await sleep(1500);
-    await until(D(), (x) => x.querySelector('[data-pdf-page] .pdf-text-layer mark.hl'), 60);
-    const afterMarks = [...D().querySelectorAll('[data-pdf-page] .pdf-text-layer mark.hl')];
+    await until(D(), (x) => x.querySelector('[data-pdf-page="1"] .pdf-text-layer mark.hl'), 60);
+    const afterMarks = [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.afterReload = afterMarks.length;
     res.afterText = afterMarks.map((m) => m.textContent || '').join('');
-    /* 收尾：删掉自检造出来的那几条（一条都不留） */
+
+    /* ---- 第四步：高亮 → 笔记（PDF/Markdown → Highlight → Note 的闭环）---- */
+    const longSpans2 = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer span')]
+      .filter((s) => (s.textContent || '').trim().length > 8);
+    await until(D(), () => longSpans2().length >= 2, 60);
+    const spans2 = longSpans2();
+    const ra = spans2[0] && spans2[0].firstChild;
+    const rb = spans2[1] && spans2[1].firstChild;
+    if (!ra || !rb) { out({ stage: 'few-spans-2', spans: spans2.length }); return; }
+    const r2 = D().createRange();
+    r2.setStart(ra, 0);
+    r2.setEnd(rb, Math.min(12, (rb.nodeValue || '').length));
+    const sel2 = w.getSelection();
+    sel2.removeAllRanges();
+    sel2.addRange(r2);
+    D().querySelector('[data-pdf-page="1"]')
+      .dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
+    await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
+    const menu2 = D().querySelector('[data-selection-menu]');
+    const noteBtn = menu2
+      ? [...menu2.querySelectorAll('button')].find((b) => (b.textContent || '').indexOf('笔记') >= 0)
+      : null;
+    res.noteBtn = noteBtn ? (noteBtn.textContent || '').trim() : '';
+    if (noteBtn) {
+      noteBtn.click();
+      await until(D(), (x) => x.querySelector('textarea'), 20);
+      const box = [...D().querySelectorAll('textarea')].pop();
+      res.editor = !!box && (box.getAttribute('placeholder') || '').indexOf('Markdown') >= 0;
+      if (box) {
+        box.value = '自检：这条笔记挂在 PDF 高亮上';
+        box.dispatchEvent(new w.Event('input', { bubbles: true }));
+        await sleep(200);
+        const save = [...D().querySelectorAll('button')]
+          .find((b) => (b.textContent || '').trim() === '保存');
+        res.saveBtn = !!save;
+        if (save) save.click();
+        await sleep(1000); spin(BURN); await sleep(300);
+      }
+    }
+    const ndata = await jget(api + '/notes?paper_id=__PAPER__');
+    const allNotes = (ndata.data && ndata.data.items) || [];
+    const myNote = mine.length ? allNotes.find((n) => n.highlight_id === mine[0].id) : null;
+    res.noteSaved = myNote ? 1 : 0;
+    res.noteScope = myNote ? myNote.scope : '';
+    res.notePage = myNote && myNote.page != null ? myNote.page : null;
+    res.noteQuote = myNote ? String(myNote.selected_text || '') : '';
+    /* 侧栏「批注·笔记」要显示：高亮文本 + 挂在哪一面 + 页码，并且点「定位」能跳回去 */
+    const sideBtn = [...D().querySelectorAll('.side-tab')]
+      .find((b) => (b.textContent || '').indexOf('批注') >= 0);
+    if (sideBtn) sideBtn.click();
+    await until(D(), (x) => x.querySelector('[data-note-id]'), 30);
+    const row = myNote ? D().querySelector('[data-note-id="' + myNote.id + '"]') : null;
+    res.rowFound = !!row;
+    res.rowText = row ? (row.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80) : '';
+    res.rowQuoteOk = !!row && (row.textContent || '')
+      .indexOf(String(res.savedText || '').slice(0, 12)) >= 0;
+    const sc = D().querySelector('.reader-content');
+    if (sc) sc.scrollTop = sc.scrollHeight;
+    await sleep(400); spin(BURN); await sleep(200);
+    res.scrolledAway = sc ? Math.round(sc.scrollTop) : null;
+    const loc = row ? row.querySelector('[title="定位"]') : null;
+    res.hasLocate = !!loc;
+    if (loc) {
+      loc.click();
+      // 平滑滚动要几帧，轮询到落位为止（无头 + 虚拟时间下别只 sleep 一下就读数）
+      await until(D(), () => !sc || sc.scrollTop < 100, 20);
+      spin(BURN);
+      await sleep(200);
+    }
+    res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
+
+    /* 收尾：删掉自检造出来的那几条（笔记 + 高亮，一条都不留） */
+    if (myNote) { await fetch(api + '/notes/' + myNote.id, { method: 'DELETE' }); }
     for (const h of mine) { await fetch(api + '/highlights/' + h.id, { method: 'DELETE' }); }
     const after = await jget(api + '/highlights?paper_id=__PAPER__');
     res.left = (((after.data && after.data.items) || []).filter((h) => h.scope === 'pdf')).length;
+    const afterNotes = await jget(api + '/notes?paper_id=__PAPER__');
+    res.leftNotes = (((afterNotes.data && afterNotes.data.items) || [])
+      .filter((n) => n.scope === 'pdf')).length;
     out(res);
   } catch (err) {
     out({ stage: 'error', error: String((err && err.message) || err) });
@@ -892,8 +988,30 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> 
            (res.get("afterReload") or 0) >= 1
            and str(res.get("afterText") or "").strip() == str(res.get("savedText") or "").strip(),
            f"刷新后 {res.get('afterReload')} 段：{str(res.get('afterText'))[:18]!r}")
-    record("pdfhl", "自检不留痕（造出来的高亮已删）", res.get("left") == 0,
-           f"残留 {res.get('left')} 条")
+    # ---- 第四步闭环：高亮 → 笔记 → 侧栏 → 定位回原文 ----
+    record("pdfhl", "划词菜单里能就这处高亮写笔记（第四步的入口）",
+           str(res.get("noteBtn") or "").strip() in ("笔记", "打开笔记"),
+           f"菜单项：{res.get('noteBtn')!r}")
+    record("pdfhl", "笔记编辑器能开能存（Markdown + 保存）",
+           res.get("editor") is True and res.get("saveBtn") is True,
+           f"编辑器={res.get('editor')} 保存键={res.get('saveBtn')}")
+    record("pdfhl", "笔记**挂在那条高亮上**（highlight_id + 面 + 页码 + 高亮原文）",
+           res.get("noteSaved") == 1 and res.get("noteScope") == "pdf"
+           and res.get("notePage") == 1
+           and str(res.get("noteQuote") or "").strip() == str(res.get("savedText") or "").strip(),
+           f"scope={res.get('noteScope')} p{res.get('notePage')} 引用={str(res.get('noteQuote'))[:14]!r}")
+    record("pdfhl", "侧栏列表显示：高亮原文 + 挂在哪一面 + 页码",
+           res.get("rowFound") is True and res.get("rowQuoteOk") is True
+           and "原 PDF" in str(res.get("rowText") or "")
+           and "p1" in str(res.get("rowText") or ""),
+           f"{res.get('rowText')}")
+    record("pdfhl", "点侧栏「定位」回到那一页（滚回页首）",
+           res.get("hasLocate") is True and (res.get("scrolledAway") or 0) > 100
+           and (res.get("locatedTop") or 0) < 100,
+           f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 {res.get('locatedTop')}")
+    record("pdfhl", "自检不留痕（造出来的高亮与笔记都已删）",
+           res.get("left") == 0 and res.get("leftNotes") == 0,
+           f"残留高亮 {res.get('left')} 条、笔记 {res.get('leftNotes')} 条")
 
 
 # --------------------------------------------------------------------------

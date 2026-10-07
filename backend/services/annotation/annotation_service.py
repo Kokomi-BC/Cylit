@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import re
+
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.events import EVENT_ANNOTATION, bus
 from backend.core.logging import get_logger
@@ -99,12 +101,34 @@ def delete_highlight(highlight_id: str) -> dict:
     return {"deleted": highlight_id, "deleted_ids": ids, "count": len(ids)}
 
 
+def anchor_page(block_id: str | None) -> int | None:
+    """锚点 → 页码（**三种面都能解析**，因为页码本来就编码在锚点里）。
+
+    - 正文行 id：`p004-02` → 第 4 页（行 id 就是"位置编号"）；
+    - Markdown 视图：`md:p8` → 第 8 页；
+    - 原 PDF 页图：`pdf:p3` → 第 3 页。
+
+    为什么放在这里而不是只靠 `reader_service` 那份映射：侧栏列表（`/notes`、`/highlights`）也要
+    "点了跳到哪一页"，而那条链路上没有行/块映射表。老锚点（`attentionisa-p04-b06` 这种解析块 id）
+    解不出来就返回 None，由前端退回"只按页提示"。
+    """
+    if not block_id:
+        return None
+    text = str(block_id).strip()
+    if (m := re.match(r"^(?:md|pdf):p(\d+)$", text)):
+        return int(m.group(1))
+    if (m := re.match(r"^p(\d{1,5})-\d+$", text)):
+        return int(m.group(1))
+    return None
+
+
 def _highlight_dict(row: Highlight) -> dict:
     return {"id": row.id, "paper_id": row.paper_id, "block_id": row.block_id,
             "text": row.selected_text, "start": row.start_offset,
             "end": row.end_offset, "color": row.color,
             "side": row.side or "en", "scope": row.scope or "row",
             "group_id": row.group_id,
+            "page": anchor_page(row.block_id),
             "created_at": iso_utc(row.created_at)}
 
 
@@ -174,6 +198,11 @@ def _note_dict(row: Note) -> dict:
     return {"id": row.id, "paper_id": row.paper_id, "block_id": row.block_id,
             "highlight_id": row.highlight_id, "selected_text": row.selected_text,
             "content_md": row.content_md,
+            # 页码与"面"都给出来：侧栏列表要显示"这条笔记挂在哪、点它能跳到哪"
+            # （`scope` 从锚点前缀推：`pdf:` / `md:` / 其余 = 正文行）
+            "page": anchor_page(row.block_id),
+            "scope": ("pdf" if str(row.block_id or "").startswith("pdf:")
+                      else "markdown" if str(row.block_id or "").startswith("md:") else "row"),
             "tags": [t for t in (row.tags or "").split(",") if t],
             "created_at": iso_utc(row.created_at),
 
