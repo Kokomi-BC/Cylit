@@ -45,7 +45,7 @@
 | GET | `/papers/{id}/pages/{n}` | 页面图（150dpi PNG） |
 | GET | `/papers/{id}/markdown` | Markdown 单一事实源全文 |
 | GET | `/papers/{id}/reconcile` | 三存储对账（只报告不自动删） |
-| GET | `/papers/{id}/references` | **参考文献列表**（`items[]` + `count`，按论文里的顺序）。阅读器「文献」侧栏用它：正文里的引用标号 `[2, 4, 10]` 点开就只显示被提到的那几条 —— 读者只是点了个标号，不必顺带把 `GET /papers/{id}` 那份**整份元数据**拉过来。**中英对照**（2026-10-07）：每条带 `title`（中文标题）/ `title_en`（英文标题）/ `authors`（作者段）—— 提示词要求译文**只把标题换成《中文标题》**、其余逐字照抄原文，抽取时按这副骨架对齐着切（`metadata_fill.split_ref_text`）；没翻译过的论文这三个都是 `null`，前端显示整条 `raw`。**抽取口径**（`metadata_fill.references`）：先读页产物里 `ref` 类型的行；没有就退回 Markdown 的 References 节 —— 那里**不要求条目带编号**：有 `<!-- blk:… type:ref … bbox:… -->` 结构标记时按"顶格 = 新条目、缩进 = 续行"切，没有标记时按空行分段；条目全都无编号（ICLR 那种 `Elastic search., 2025. https://…`）也照样全列出来 |
+| GET | `/papers/{id}/references` | **参考文献列表**（`items[]` + `count`，按论文里的顺序）。阅读器「文献」侧栏用它：正文里的引用标号 `[2, 4, 10]` 点开就只显示被提到的那几条 —— 读者只是点了个标号，不必顺带把 `GET /papers/{id}` 那份**整份元数据**拉过来。**中英对照**（2026-10-07）：每条带 `title`（中文标题）/ `title_en`（英文标题）/ `authors`（作者段）—— 提示词要求译文**只把标题换成《中文标题》**、其余逐字照抄原文，抽取时按这副骨架对齐着切（`metadata_fill.split_ref_text`）；**没翻译过的条目也认得出来**：`metadata_fill.split_ref_by_rule` 纯按形状切（"作者段（纯人名列表，以 `.` 收尾）+ 题名 + 出处（年份 / pp.vol. / 期刊会议词）"），切得出就显示题名（中文在上、英文在下）、切不出才显示整条 `raw`（307 条真实数据里 78% 切得出）。**抽取口径**（`metadata_fill.references`）：先读页产物里 `ref` 类型的行；没有就退回 Markdown 的 References 节 —— 那里**不要求条目带编号**：有 `<!-- blk:… type:ref … bbox:… -->` 结构标记时按"顶格 = 新条目、缩进 = 续行"切，没有标记时按空行分段；条目全都无编号（ICLR 那种 `Elastic search., 2025. https://…`）也照样全列出来 |
 | POST | `/papers/{id}/metadata/auto` | 自动补全元数据（**离线那一段**）：`{"model":false,"overwrite":false}`。默认只读 PDF 首页 + 页产物（不花钱）：标题 / 作者 / 会议 / 年份 / **原文摘要** / **DOI** / **开源地址** / **参考文献** / **推荐阅读时间**；`model=true` 时仍缺的字段再交给模型（读抽样内容）；`overwrite=true` 连已有值一起覆盖（默认**只填空字段**） |
 | POST | `/papers/{id}/metadata/agent` | **「模型补全」按钮**：交给 agent **读全文**填写（中英关键词 / 中文摘要 / 领域 / 一句话概括 / 创新点 / 前置知识 / 难度 / 类型…）。**异步**：排一个 `META_FILL` 任务（队列 `knowledge`）后立刻返回任务行，前端刷新卡片即可（用户口径：完整 agent 功能，不显示细节）。任务内部顺序 = 离线 → agent → 跑不动则回落一次单次模型调用；只在"还缺元数据"时由 `翻译完成 → INDEX → META_FILL` 自动链排队 |
 
@@ -216,7 +216,7 @@ section / heading_level / translation / translation_status / translation_revisio
 | `path` | 任务类型 | 产物 | 说明 |
 |---|---|---|---|
 | `a` | `TRANSCRIBE_EN` | `md/path_a.json` | `original_md` / `breaks` / `src`；事件 `page_transcribed` |
-| `b` | `TRANSLATE_ZH` | `md/path_b.json` | `translation_md` / `breaks` / `src`；事件 `page_translated`（带 `path`）。**块模式**（`blocks_from_a=true`）下改存 `blocks`（定长逐块译文数组）+ `blocks_from_a` / `a_blocks`，此时不产出 `breaks` / `src` / `carry_md` |
+| `b` | `TRANSLATE_ZH` | `md/path_b.json` | **块模式（默认）**：`blocks`（定长逐块译文数组）+ `break_blocks`（同长度的中文语义边界）+ `carry_md` + `blocks_from_a` / `a_blocks`；事件 `page_translated`（带 `path`）。旧契约（`blocks_from_a=false`）才是 `translation_md` / `breaks` / `src` |
 | `fused` | `TRANSLATE_MD` | `md/pages.json` | 融合**对照臂**（改造前行为，逐字保留）；**只能单独跑**（与 `a`/`b` 同传会 400 —— 它写的是同一份 `pages.json`）。`"both"` / `"none"` / `""` 都归一成 `fused` |
 
 阅读器读的是**两路产物的合并**：两侧都带合法 `src` 时按**解析器块号**交格合并
@@ -242,7 +242,7 @@ section / heading_level / translation / translation_status / translation_revisio
 | `context` | `true` | **任务级参数**（`/translate` 不透传）：是否把**完整前文**（第 1..N-1 页）放进本页 prompt（连贯记忆 + 前缀缓存） |
 | `context_chars` | `2000000` | **任务级参数**（同上）：前文长度上限（**仅护栏**：目标模型窗口 1M token，正常论文不截断）。注意别和设置里的 `translate_max_context_chars`（1200，另一回事）混淆 |
 | `pages` | 无 | 只翻指定页（如 `[3,4]`），重跑个别页用 |
-| `blocks_from_a` | `false` | **块模式**（A 定块、B 照译，只对 B 路生效）：B 的正文换成 A 路**本页已转录好的块清单**，逐块译、逐块回；B 不再分块、不申报 `src`/`breaks`。**A 必须领先**：B 的第 N 页会**等** A 的第 N 页（块清单）与第 N+1 页（`a_page_lookahead`，只用来把页尾半句收完整 → `carry_md`，下一页再从自己的第 1 块里剪掉），A 路任务不在就立刻放弃等待。对齐由"生成时约定"保证 —— 读时按序号 1:1 配对（`align: "blocks"`），块数不等才退回 `pair_rows`。见 `docs/dev-log.md` §67 |
+| `blocks_from_a` | `true` | **块模式**（A 定块、B 照译，只对 B 路生效；**默认开**）：B 的正文换成 A 路**本页已转录好的块清单**，逐块译、逐块回，并回一个与块等长的 `break_blocks`（中文侧语义边界）。**A 必须领先**：B 的第 N 页会**等** A 的第 N 页（块清单）与第 N+1 页（`a_page_lookahead`，只用来把页尾半句收完整 → `carry_md`，下一页再从自己的第 1 块里剪掉），A 路任务不在就立刻放弃等待。对齐由"生成时约定"保证 —— 读时按序号 1:1 配对（`align: "blocks"`），块数不等才退回 `pair_rows`；被页边界拆开的那一句在**读时合回上一页末行**（`_rejoin_carried_rows`）。传 `false` 才退回旧契约。见 `docs/dev-log.md` §67–68 |
 | `block_wait_seconds` | `600` | **任务级参数**（`/translate` 不透传）：块模式下等 A 路产物的上限（秒）。等到了就正常译；超时后"块清单"那一页失败、"下一页开头"只是拿不到（页尾照原样停在断处） |
 
 **粒度**：只有 `page`（一页一次调用）。调用输入 = 该页**页图（PNG，150dpi）** + 解析器抽出的

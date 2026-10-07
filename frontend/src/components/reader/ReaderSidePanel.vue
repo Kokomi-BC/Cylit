@@ -393,9 +393,9 @@ function removeRow(r: FeedRow) {
         <span class="ref-head" :class="{ 'ref-clamp': !r.title }">
           <span class="ref-no">[{{ r.order_no }}]</span>
           <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
-          <!-- 没翻译过（没有中文标题）：标号与原文**同一段**一起钳制 ——
-               钳制必须是**块级**的，所以标号得在它里面；把标号单独放外面会被挤成一行 -->
-          <span v-else>{{ r.raw }}</span>
+          <!-- 没有中文标题、但**规则切出了英文标题**（作者名后面是 `.` 那种）→ 显示题名本身，
+               不再把作者段摊在脸上；两样都没有才回退到整条原文（用户口径 2026-10-07）。 -->
+          <span v-else>{{ r.title_en || r.raw }}</span>
         </span>
         <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
              整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->

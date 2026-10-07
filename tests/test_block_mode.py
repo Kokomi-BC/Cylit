@@ -19,8 +19,8 @@ from backend.services.translation.page_translate import (
     BLOCK_HEAD_NOTE, BLOCK_TRANSLATE_SYSTEM, PAGE_SCHEMA_B_BLOCKS,
     PAGE_USER_TEMPLATE_B_BLOCKS, PageCallResult, TRANSLATE_SYSTEM,
     _SHARED_SEGMENTATION_RULES, a_page_lookahead, build_path_payload,
-    format_block_list, parse_blocks, pair_rows_by_blocks, parse_carry,
-    render_block_prompt, split_blocks,
+    format_block_list, parse_blocks, parse_break_flags, pair_rows_by_blocks,
+    parse_carry, render_block_prompt, split_blocks,
 )
 
 A_MD = """# 3 METHOD
@@ -201,6 +201,81 @@ def test_merge_page_prefers_block_pairing() -> None:
 def test_render_block_prompt_has_both_context_slots() -> None:
     assert "{lookahead}" in PAGE_USER_TEMPLATE_B_BLOCKS
     assert "{head_note}" in PAGE_USER_TEMPLATE_B_BLOCKS
+
+
+# --------------------------------------------------------------------------
+# 4b. 中文侧的语义边界：**位置即锚点**（与块等长的布尔数组）
+# --------------------------------------------------------------------------
+
+
+def test_block_prompt_asks_for_chinese_semantic_breaks() -> None:
+    """块模式下中文分块不能没有边界：B 回一个与块等长的布尔数组，位置就是锚点。"""
+    for marker in ("【break_blocks：给检索分块的语义边界（与块等长）】",
+                   "**与块数等长的布尔数组**", "**第 1 块**", "宁少不多"):
+        assert marker in BLOCK_TRANSLATE_SYSTEM, marker
+    assert PAGE_SCHEMA_B_BLOCKS["properties"]["break_blocks"]["items"]["type"] == "boolean"
+    assert "break_blocks" in PAGE_USER_TEMPLATE_B_BLOCKS
+
+
+def test_parse_break_flags_is_lenient() -> None:
+    assert parse_break_flags('{"blocks": ["a", "b"], "break_blocks": [false, true]}') == [False, True]
+    assert parse_break_flags('{"break_blocks": ["true", 1, "否"]}') == [True, True, False]
+    assert parse_break_flags('```json\n{"break_blocks": [true]}\n```') == [True]
+    assert parse_break_flags('{"blocks": ["a"]}') == []
+    assert parse_break_flags("") == []
+
+
+def test_pair_rows_by_blocks_marks_chinese_breaks_by_position() -> None:
+    rows, quality = pair_rows_by_blocks(A_MD, ["一", "二", "三"], 7,
+                                       break_flags=[True, True, False])
+    assert quality == "blocks"
+    assert "block_break" not in rows[0], "第 1 块永远不标（页首没有上一个语义单元）"
+    assert rows[1].get("block_break") is True
+    assert "block_break" not in rows[2]
+
+
+def test_merge_page_turns_block_flags_into_translation_side_breaks() -> None:
+    from backend.services.paper import reader_service
+
+    a = {"original_md": A_MD, "page_total": 1}
+    b = {"translation_md": "一\n\n二\n\n三", "blocks": ["一", "二", "三"],
+         "blocks_from_a": True, "break_blocks": [True, True, False]}
+    merged = reader_service._merge_page("selfcheck-block-breaks", 1, a, b, {}, "paths")
+    rows = merged["rows"]
+    assert rows[1].get("semantic_break") is True
+    assert rows[1]["semantic_break_side"] == "translation"
+    assert "block_break" not in rows[1], "内部键不许漏到接口上"
+    assert merged["break_stats"]["by_side"]["translation"] >= 1
+
+
+def test_read_model_rejoins_the_sentence_split_by_the_page_break() -> None:
+    """页尾那句被上一页收完之后：本页第 1 块整块为空 → 把它的**原文**并回上一页末行、去掉这半行。"""
+    from backend.services.paper import reader_service
+
+    p9 = {"page": 9, "rows": [{"id": "p009-00", "index": 0, "original": "applied to the",
+                               "translation": "……施加于"}], "one_sided": 0}
+    p10 = {"page": 10, "rows": [
+        {"id": "p010-00", "index": 0, "original": "input embedding vectors during training.",
+         "translation": ""},
+        {"id": "p010-01", "index": 1, "original": "Next.", "translation": "下一句"}],
+        "one_sided": 1}
+    reader_service._rejoin_carried_rows(
+        [p9, p10], {9: {"carry_md": "input embedding vectors during training."}})
+    assert p9["rows"][-1]["original"] == "applied to the input embedding vectors during training."
+    assert [r["id"] for r in p10["rows"]] == ["p010-00"]
+    assert p10["rows"][0]["original"] == "Next." and p10["one_sided"] == 0
+
+
+def test_read_model_keeps_rows_when_there_is_no_carry() -> None:
+    """没有 carry 申报（上一页页尾本来就收句了）→ 一行都不许动。"""
+    from backend.services.paper import reader_service
+
+    p1 = {"page": 1, "rows": [{"id": "p001-00", "index": 0, "original": "A", "translation": "甲"}],
+          "one_sided": 0}
+    p2 = {"page": 2, "rows": [{"id": "p002-00", "index": 0, "original": "B", "translation": ""}],
+          "one_sided": 1}
+    reader_service._rejoin_carried_rows([p1, p2], {1: {}})
+    assert [r["id"] for r in p2["rows"]] == ["p002-00"] and p2["one_sided"] == 1
 
 
 # --------------------------------------------------------------------------

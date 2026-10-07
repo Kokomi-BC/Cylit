@@ -458,8 +458,21 @@ A 路会**比你先转录下一页**，所以 prompt 里可能给出【A 路下�
 第 1 项输出**空字符串** `""`（数组长度仍然是 N）。
 一句话绝不两页各写一遍；也不要写"承上页 / 续下页"这类痕迹，不要输出页码。
 
+【break_blocks：给检索分块的语义边界（与块等长）】
+除了 `blocks`，再回一个 **与块数等长的布尔数组** `break_blocks`：第 i 项 `true` 表示
+"**第 i 块是一个新语义单元的开头**"（知识库就切在这里）。它让**中文这一侧**也有自己的边界
+（英文那一侧的边界由转录流水线标注）。
+- 该标 `true`：定义 → 新定义；背景 → 方法；方法 → 实验；问题 → 解决方案；一段推导 → 下一段推导；
+  一个独立论点 → 下一个独立论点；**新小节的标题行本身**（表示这个小节从这里开始）。
+- 该标 `false`：**第 1 块**（页首没有"上一个语义单元"）；一句话中间、一个连续论证的中间；
+  公式与紧随其后的解释之间；表格标题与表体之间；图注与图的说明之间；
+  标题行的**下一行**（标题必须和它下面第一段在一起）。
+- 拿不准就写 `false`（宁少不多）；一页一般 2~6 个 `true`；确实没有自然边界就全写 `false`。
+
 【output：只输出一个 JSON 对象】不要解释、不要代码块：
-{"blocks": ["第 1 块的中文译文", "第 2 块的中文译文", "……"], "carry_md": "……"}"""
+{"blocks": ["第 1 块的中文译文", "第 2 块的中文译文", "……"],
+ "break_blocks": [false, true, false, "……与 blocks 等长"],
+ "carry_md": "……"}"""
 
 
 #: 按路的输出契约（声明用：`call_page` 只把 system prompt 发给 provider，schema 供测试与文档）
@@ -497,6 +510,8 @@ PAGE_SCHEMA_B_BLOCKS = {
     "type": "object",
     "properties": {
         "blocks": {"type": "array", "items": {"type": "string"}},
+        #: 中文侧的语义边界：**位置即锚点**（与 blocks 等长），不需要模型逐字照抄锚点文本
+        "break_blocks": {"type": "array", "items": {"type": "boolean"}},
         "carry_md": {"type": "string"},
     },
     "required": ["blocks"],
@@ -549,6 +564,7 @@ PAGE_USER_TEMPLATE_B_BLOCKS = """{prefix}{previous}
 
 【本页输出】按系统提示输出 JSON：`blocks` 为**长度正好 {block_count}** 的字符串数组，
 第 i 项是第 i 块的中文译文（块数、顺序、块类型必须与清单一致）；
+`break_blocks` 为**同样长度 {block_count}** 的布尔数组（第 i 项 = 第 i 块是不是新语义单元的开头）；
 `carry_md` 为你从【A 路下一页开头】借用来收完整句的那段**原文**（没借就写空串 `""`）。
 不要输出 translation_md / breaks / src。"""
 
@@ -1092,6 +1108,8 @@ class PageCallResult:
     #: `translation_md` 是它的拼接（给搜索 / 导出这类只认"整页 Markdown"的调用方用），
     #: 对齐用的是这个数组本身（顺序是契约的一部分，见 `pair_rows_by_blocks`）。
     blocks: list[str] = field(default_factory=list)
+    #: **块模式**的中文语义边界：与 `blocks` 等长的布尔数组（位置即锚点，见 `parse_break_flags`）
+    break_flags: list[bool] = field(default_factory=list)
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -1139,6 +1157,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         log.info("丢掉图内文字 %d 行（%s 侧 %d / %s 侧 %d）：图里画出来的句子/标记不进正文",
                  noise_a + noise_b, "A", noise_a, "B", noise_b)
     blocks: list[str] = []
+    break_flags: list[bool] = []
     if block_mode:
         # 块模式：译文是**定长数组**（第 i 项 = A 路第 i 块），没有 translation_md 这个字段。
         # 逐块过一遍图内文字兜底：图里画出来的示例句/标记可能被抄进某一块。
@@ -1146,6 +1165,12 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         if not blocks:
             raise ProviderError("模型未返回 blocks（B 路块模式：逐块中文译文）", retryable=True)
         translation = "\n\n".join(blocks).strip()
+        break_flags = parse_break_flags(res.text or "")
+        if break_flags and len(break_flags) != len(blocks):
+            # 项数对不上就当这一页没标（只是少了中文侧边界，不该让整页作废）
+            log.info("break_blocks 项数 %d != 块数 %d：这一页丢掉中文语义边界",
+                     len(break_flags), len(blocks))
+            break_flags = []
     if path == "a":
         if not original.strip():
             raise ProviderError("模型未返回 original_md（A 路：页面转录）", retryable=True)
@@ -1163,6 +1188,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         carry_md=parse_carry(res.text or ""),
         breaks=parse_breaks(res.text or ""),
         blocks=blocks,
+        break_flags=break_flags,
         src=_coords().parse_src(res.text or ""),
         model=getattr(res, "model", "") or provider.model_name,
         prompt_tokens=int(getattr(res, "prompt_tokens", 0) or 0),
@@ -1295,6 +1321,32 @@ def parse_blocks(text: str) -> list[str]:
         if isinstance(got, list):
             return [str(x) for x in got]
     return []
+
+
+#: 宽容的布尔字面量（模型偶尔写 `"true"` / `1` / `是`）
+_TRUEISH = {"true", "1", "yes", "y", "t", "是", "对"}
+
+
+def parse_break_flags(text: str) -> list[bool]:
+    """块模式的 ``break_blocks``：**与块等长**的布尔数组（第 i 项 = 第 i 块是不是新语义单元的开头）。
+
+    这是块模式替代"逐字照抄 12~40 字锚点"的东西：**位置即锚点** —— B 是有序逐块译的，
+    所以"第 i 块"这条信息不需要任何文本匹配（旧契约要代码去 `_locate_anchor` 定位，
+    撞车就丢）。取不到或形状不对就返回空数组：这一页只是少了中文侧边界，不影响翻译。
+    """
+    data = _loads_lenient((text or "").strip(), keys=("break_blocks", "blocks"))
+    got = data.get("break_blocks") if isinstance(data, dict) else None
+    if not isinstance(got, list):
+        return []
+    out: list[bool] = []
+    for item in got:
+        if isinstance(item, bool):
+            out.append(item)
+        elif isinstance(item, (int, float)):
+            out.append(bool(item))
+        else:
+            out.append(str(item).strip().lower() in _TRUEISH)
+    return out
 
 
 def _loads_lenient(raw: str, *, keys: tuple[str, ...] = ("original_md",
@@ -1509,8 +1561,8 @@ def pair_rows(original_md: str, translation_md: str, page: int) -> tuple[list[di
     return rows, quality
 
 
-def pair_rows_by_blocks(original_md: str, blocks: list[str], page: int
-                        ) -> tuple[list[dict], str]:
+def pair_rows_by_blocks(original_md: str, blocks: list[str], page: int,
+                        break_flags: list | None = None) -> tuple[list[dict], str]:
     """**块模式**（A 定块、B 照译）的配对：按序号 1:1，质量标记 ``blocks``。
 
     与 `pair_rows`（事后按结构猜）和 `pair_rows_by_src`（事后按块号验）的本质区别：
@@ -1529,7 +1581,7 @@ def pair_rows_by_blocks(original_md: str, blocks: list[str], page: int
         return [], ""
     rows: list[dict] = []
     for i, (a, text) in enumerate(zip(left, blocks)):
-        rows.append({
+        row = {
             "id": f"p{page:03d}-{i:02d}",
             "index": i,
             "type": a.get("type") or "para",
@@ -1537,7 +1589,13 @@ def pair_rows_by_blocks(original_md: str, blocks: list[str], page: int
             "number": a.get("number") or "",
             "original": a.get("text") or "",
             "translation": str(text or "").strip(),
-        })
+        }
+        # 中文侧语义边界：**位置即锚点**（第 i 项 ↔ A 第 i 块）。这里先存成 `block_break`
+        # 而不是直接写 `semantic_break`：`apply_semantic_breaks` 会先**清空**所有标记再落锚点，
+        # 读时要等它跑完再翻过来；第 0 行不标（页首没有"上一个语义单元"）。
+        if break_flags and 0 < i < len(break_flags) and break_flags[i]:
+            row["block_break"] = True
+        rows.append(row)
     return rows, "blocks"
 
 
@@ -1841,7 +1899,7 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
 def build_path_payload(*, path: str, page: int, page_total: int,
                        result: PageCallResult, source_chars: int = 0,
                        cached: bool = False, blocks: list[str] | None = None,
-                       a_blocks: int = 0) -> dict:
+                       a_blocks: int = 0, break_flags: list | None = None) -> dict:
     """**一路**的页产物：A 只存 `original_md`，B 只存 `translation_md` + `carry_md`。
 
     为什么**不存 `rows`**：单路只有一侧内容，存下来的"行"必然全是单侧行；两路各存一份
@@ -1882,6 +1940,9 @@ def build_path_payload(*, path: str, page: int, page_total: int,
             payload["blocks"] = [str(b) for b in blocks]
             payload["blocks_from_a"] = True
             payload["a_blocks"] = int(a_blocks)
+            if break_flags and len(break_flags) == len(blocks):
+                # 中文侧语义边界（与块等长）：读时按位置落到行上（见 `pair_rows_by_blocks`）
+                payload["break_blocks"] = [bool(x) for x in break_flags]
     return payload
 
 

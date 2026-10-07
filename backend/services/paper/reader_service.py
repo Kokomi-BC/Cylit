@@ -157,7 +157,59 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
                              legacy_pages.get(page) or {}, shape)
         if merged is not None:
             out.append(merged)
+    _rejoin_carried_rows(out, b_pages)
     return out, shape
+
+
+def _ws(text: str) -> str:
+    """空白归一（比对 carry 片段用：产物里的换行/多空格不该影响"是不是同一段"的判断）。"""
+    return " ".join(str(text or "").split())
+
+
+def _rejoin_carried_rows(pages: list[dict], b_pages: dict) -> None:
+    """把被页边界拆开的那一句**读时合回上一页**（只改读模型，不动产物）。
+
+    背景：块模式 + A 路提前转录之后，B 会用下一页的开头把页尾半句收完整（`carry_md`），
+    于是**下一页的第 1 块整块**已经被上一页译完了 —— 那一项是空串，直接显示就是
+    "只有原文、译文空"的一行（用户口径"减少副作用"）。
+
+    修法：把那一行的**原文**并到上一页末行的原文栏（译文本来就在上一页那一行里），
+    再把这半行从本页去掉 —— 拆开的句子在读模型里重新合成一句。
+
+    判据刻意很窄（任一条不满足就原样保留，宁可留个空栏也不乱搬文字）：
+    1. 上一页的 B 产物申报了 `carry_md`；
+    2. 本页第 1 行**译文为空、原文非空**；
+    3. 本页第 1 行的原文确实**以那段 carry 开头**（空白归一后比对）；
+    4. 本页不止这一行（否则整页会被清空）。
+    """
+    by_page = {int(p["page"]): p for p in pages}
+    for page_no in sorted(by_page):
+        cur = by_page[page_no]
+        rows = cur.get("rows") or []
+        prev = by_page.get(page_no - 1)
+        if not prev or len(rows) < 2:
+            continue
+        carry = _ws((b_pages.get(page_no - 1) or {}).get("carry_md") or "")
+        if not carry:
+            continue
+        first = rows[0]
+        if (first.get("translation") or "").strip() or not (first.get("original") or "").strip():
+            continue
+        if not _ws(first["original"]).startswith(carry):
+            continue
+        prev_rows = prev.get("rows") or []
+        if not prev_rows:
+            continue
+        tail = prev_rows[-1]
+        tail["original"] = f"{tail.get('original') or ''} {first['original']}".strip()
+        cur["rows"] = rows[1:]
+        for i, row in enumerate(cur["rows"]):
+            row["id"] = f"p{int(page_no):03d}-{i:02d}"
+            row["index"] = i
+        cur["one_sided"] = sum(
+            1 for r in cur["rows"]
+            if bool((r.get("original") or "").strip())
+            != bool((r.get("translation") or "").strip()))
 
 
 def merged_page(paper_id: str, page: int) -> dict | None:
@@ -179,8 +231,15 @@ def merged_page(paper_id: str, page: int) -> dict | None:
     page = int(page)
     if page not in a_pages and page not in b_pages:
         return None
-    return _merge_page(paper_id, page, a_pages.get(page) or {},
-                       b_pages.get(page) or {}, legacy_pages.get(page) or {}, shape)
+    merged = _merge_page(paper_id, page, a_pages.get(page) or {},
+                         b_pages.get(page) or {}, legacy_pages.get(page) or {}, shape)
+    if merged is not None and page > 1:
+        # 单页也要与整篇口径一致：上一页可能在页尾把这页的第 1 块收完了（见 `_rejoin_carried_rows`）
+        prev = _merge_page(paper_id, page - 1, a_pages.get(page - 1) or {},
+                           b_pages.get(page - 1) or {}, legacy_pages.get(page - 1) or {},
+                           shape)
+        _rejoin_carried_rows([p for p in (prev, merged) if p], b_pages)
+    return merged
 
 
 def _backfill_from_legacy(a_pages: dict, b_pages: dict, legacy_pages: dict) -> None:
@@ -219,7 +278,9 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
     # 所以它排在最前。块数不等（模型自己并/拆了块）→ 退回 `pair_rows`。
     blocks_b = b.get("blocks") if isinstance(b, dict) else None
     if b.get("blocks_from_a") and isinstance(blocks_b, list) and blocks_b:
-        block_rows, block_quality = pair_rows_by_blocks(original_md, blocks_b, page)
+        block_rows, block_quality = pair_rows_by_blocks(
+            original_md, blocks_b, page,
+            break_flags=b.get("break_blocks") if isinstance(b.get("break_blocks"), list) else None)
         if block_rows:
             fresh_rows, quality = block_rows, block_quality
     # P4b 共享坐标：两侧都带合法的 src（页级契约）时，**按解析器块号配对**——
@@ -255,6 +316,19 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
     breaks_a = normalize_breaks(a.get("breaks"))
     breaks_b = normalize_breaks(b.get("breaks"))
     break_stats = apply_semantic_breaks(rows, breaks_a + breaks_b)
+    # 块模式的中文边界（**位置即锚点**）：必须在 `apply_semantic_breaks` **之后**翻过来 ——
+    # 那个函数一上来就把所有行的标记清空（见 `pair_rows_by_blocks` 里的 `block_break`）。
+    # 行可能已经被 `absorb_one_sided_rows` 折过，但 `block_break` 只落在**保留下来的那行**上。
+    flagged = 0
+    for row in rows:
+        if row.pop("block_break", None):
+            row["semantic_break"] = True
+            row["semantic_break_side"] = "translation"
+            flagged += 1
+    if flagged:
+        break_stats["flagged_rows"] = int(break_stats.get("flagged_rows") or 0) + flagged
+        break_stats["by_side"]["translation"] = (
+            int(break_stats["by_side"].get("translation") or 0) + flagged)
     page_total = (int(a.get("page_total") or 0) or int(b.get("page_total") or 0)
                   or int(stored.get("page_total") or 0))
     return {

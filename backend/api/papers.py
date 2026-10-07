@@ -261,8 +261,10 @@ async def trigger_translate(paper_id: str, request: Request,
     - ``mode=resume``（默认）：只做还没有产物的页（断点续跑）；
     - ``mode=retranslate``：忽略已有产物全部重来；
     - ``brief=false`` 关闭文档简报（少一次调用，但 B 路术语一致性下降；A 路本来就不用）；
-    - ``blocks_from_a=true``：**块模式**（只对 B 路生效）—— B 的正文换成 A 路已转录好的块清单，
-      逐块译、逐块回（对齐由"生成时约定"保证，见 `BLOCK_TRANSLATE_SYSTEM`）；A 路缺页则整页失败；
+    - ``blocks_from_a``：**块模式**（只对 B 路生效，**默认开**）—— B 的正文换成 A 路已转录好的
+      块清单，逐块译、逐块回（对齐由"生成时约定"保证，见 `BLOCK_TRANSLATE_SYSTEM`）；
+      B 会**等** A 领先（本页 + 下一页开头），上限 `block_wait_seconds`。
+      传 ``false`` 退回旧契约（两路各自分块 + 事后配对）；
     - ``pages=[3,4]`` 只做指定页（重跑个别页用）。
     """
     mode = payload.get("mode") or "resume"
@@ -296,7 +298,7 @@ async def trigger_translate(paper_id: str, request: Request,
         paper_id, paths=list(paths), mode=mode, force=bool(payload.get("force")),
         brief=payload.get("brief", True),
         pages=[int(p) for p in pages] if pages else None,
-        blocks_from_a=bool(payload.get("blocks_from_a")),
+        blocks_from_a=payload.get("blocks_from_a"),
     )
     roads = "、".join({"a": "英文转录", "b": "中文翻译",
                        "fused": "融合（对照）"}.get(p, p)

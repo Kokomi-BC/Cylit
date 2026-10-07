@@ -194,10 +194,11 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     force = bool(params.get("force")) or mode == "retranslate"
     use_brief = params.get("brief", True) is not False
     only_pages = params.get("pages") or None
-    # **块模式**（A 定块、B 照译）：只对 B 路有意义 —— B 的正文换成 A 路已转录好的块清单，
-    # 逐块译、逐块回，对齐从"事后猜"变成"生成时约定"（见 `BLOCK_TRANSLATE_SYSTEM`）。
-    # 需要 A 路**本页已转录**（`original_md` 在盘上）：A 没跑完时这一页会直接失败，不会静默降级。
-    block_mode = path == "b" and bool(params.get("blocks_from_a"))
+    # **块模式**（A 定块、B 照译）**默认开**（用户口径 2026-10-07 第二轮）：B 的正文换成 A 路
+    # 已转录好的块清单，逐块译、逐块回，对齐从"事后猜"变成"生成时约定"
+    # （见 `BLOCK_TRANSLATE_SYSTEM`）。显式传 `blocks_from_a=False` 才退回旧的两路契约。
+    # A 路缺页会**等**（`await_a_page`），等不到才让那一页失败 —— 不静默降级成另一种契约。
+    block_mode = path == "b" and params.get("blocks_from_a", True) is not False
     # 块模式等 A 路产物的上限（秒）：任务参数可覆盖，默认见 `BLOCK_WAIT_SECONDS`。
     wait_s = float(params.get("block_wait_seconds") or BLOCK_WAIT_SECONDS)
 
@@ -462,7 +463,8 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             payload = build_path_payload(path=path, page=page_no, page_total=page_total,
                                          result=result, source_chars=len(source),
                                          blocks=(result.blocks if block_mode else None),
-                                         a_blocks=(len(a_blocks) if block_mode else 0))
+                                         a_blocks=(len(a_blocks) if block_mode else 0),
+                                         break_flags=(result.break_flags if block_mode else None))
         payload["prev_context_chars"] = len(history)
         # P4b：把 src 校验成"每块覆盖的块号"，不合法就**整页不带坐标**（读时退回结构配对）。
         # 校验放在这里而不是 `coords` 里，是因为"输出块数"要等拿到这一侧的 Markdown 才知道。
@@ -624,15 +626,17 @@ def _finish_paper_status(paper_id: str) -> None:
 def start_translation(paper_id: str, *, paths: list[str] | None = None,
                       mode: str = "resume", force: bool = False,
                       brief: bool = True, pages: list[int] | None = None,
-                      blocks_from_a: bool = False) -> dict:
+                      blocks_from_a: bool | None = None) -> dict:
     """触发页级任务（幂等：每一路已有**活着**的任务则复用）。
 
     `paths`：``["a", "b"]``（默认，两路并发）／``[FUSED]``（融合，对照臂与回滚）／
     ``["b"]``（只补中文翻译）。
 
     `blocks_from_a=True`：**只对 B 路生效**的「块模式」（A 定块、B 照译）—— B 的正文换成
-    A 路已转录好的块清单，逐块译、逐块回，对齐由"生成时约定"保证；要求 A 路**先把这些页
-    转录完**（缺页会整页失败，不静默降级）。实测口径见 `scripts/path_audit.py`。
+    A 路已转录好的块清单，逐块译、逐块回，对齐由"生成时约定"保证；要求 A 路**领先**
+    （B 的第 N 页等 A 的第 N 页与第 N+1 页，`block_wait_seconds` 封顶）。**默认就是开**：
+    只有显式传 `blocks_from_a=False` 才退回旧的两路契约（各自分块 + 事后配对）。
+    实测口径见 `scripts/path_audit.py`。
 
     幂等按**路**判定：同一路上重复触发会复用活动任务（复用**连 `force` 也不例外** ——
     同一路同时跑两套会互相覆盖产物文件，只会更难收拾）；不同路互不影响，这正是并发的意义。
@@ -668,11 +672,12 @@ def start_translation(paper_id: str, *, paths: list[str] | None = None,
         store = page_store(paper_id, path)
         total = len(list_pages(paper_id))
         done = len(store.done_pages())
-        # `blocks_from_a` 只在真开启时写进任务参数：默认路径的参数保持与改造前逐字一致
-        # （自检脚本按整字典断言过它），而"这条任务跑的是块模式"在任务记录里仍然可查。
+        # `blocks_from_a` 只在调用方**显式表态**时写进任务参数：不写 = 用默认（开），
+        # 写 `false` = 这一路退回旧契约。默认路径的参数因此仍与改造前逐字一致
+        # （自检脚本按整字典断言过它），而"这条任务是不是块模式"在任务记录里仍然可查。
         params = {"mode": mode, "force": force, "brief": brief, "pages": pages}
-        if blocks_from_a:
-            params["blocks_from_a"] = True
+        if blocks_from_a is not None:
+            params["blocks_from_a"] = bool(blocks_from_a)
         task = _create_page_task(paper_id, path, params,
                                  total_items=_target_count(pages, total, done, force))
         tasks[key] = {**task, "reused": False}

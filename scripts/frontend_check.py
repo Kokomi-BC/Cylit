@@ -1931,9 +1931,20 @@ _TEMP_REF = {
     "authors": "Josh Achiam, Steven Adler, Sandhini Agarwal.",
 }
 
+#: 临时样本：**没有中文标题、只有规则切出来的英文题名**（用户口径 2026-10-07：
+#: 作者名后面是 `.` 的 → 侧栏显示文献名称而不是整条原文）
+_TEMP_REF_RULE = {
+    "order_no": 9998,
+    "raw": "Ran Hadad and Uri Erez. Dithered quantization via orthogonal transformations. "
+           "IEEE Transactions on Signal Processing, 64(22):5887–5900, 2016.",
+    "title": None,
+    "title_en": "Dithered quantization via orthogonal transformations",
+    "authors": "Ran Hadad and Uri Erez.",
+}
+
 
 def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
-    """插/删那条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
+    """插/删那两条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
     import uuid
 
     import sys
@@ -1943,14 +1954,16 @@ def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
 
     with session_scope() as sess:
         sess.query(PaperReference).filter(PaperReference.paper_id == paper,
-                                          PaperReference.order_no == 9999).delete()
+                                          PaperReference.order_no.in_((9998, 9999))).delete()
         if remove_only:
             return None
-        rid = uuid.uuid4().hex[:32]
-        sess.add(PaperReference(id=rid, paper_id=paper, order_no=9999, source="selfcheck",
-                                raw=_TEMP_REF["raw"], title=_TEMP_REF["title"],
-                                title_en=_TEMP_REF["title_en"], authors=_TEMP_REF["authors"]))
-        return rid
+        rows = [(_TEMP_REF, uuid.uuid4().hex[:32]),
+                (_TEMP_REF_RULE, uuid.uuid4().hex[:32])]
+        for item, rid in rows:
+            sess.add(PaperReference(id=rid, paper_id=paper, order_no=item["order_no"],
+                                    source="selfcheck", raw=item["raw"], title=item["title"],
+                                    title_en=item["title_en"], authors=item["authors"]))
+        return rows[0][1]
 
 
 PROBE_REFS = PROBE_HEAD + """
@@ -1987,7 +2000,7 @@ async function run() {
     /* 没翻译过的那种条目（只有原文）也要标号内联：**标号后面同一行还有正文**
        （第一版是块级钳制把标号挤成独立一行，截图里一眼就看出来了：`[1]` 孤零零一行）。 */
     const plain = [...D().querySelectorAll('.ref-item')]
-      .find((el) => el.getAttribute('data-ref-no') !== '9999');
+      .find((el) => !['9999', '9998'].includes(el.getAttribute('data-ref-no')));
     const pno = plain ? plain.querySelector('.ref-no') : null;
     const phead = plain ? plain.querySelector('.ref-head') : null;
     if (pno && phead) {
@@ -2012,6 +2025,15 @@ async function run() {
     if (row) { row.click(); await sleep(250); }
     w.open = realOpen;
     res.tempUrl = opened[0] || null;
+    /* 只有英文题名的那种条目（没翻译过 / 规则切出来的）：显示**题名**、不显示作者 */
+    const rrow = D().querySelector('[data-ref-no="9998"]');
+    res.ruleText = rrow ? (rrow.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+    res.ruleHasTitle = res.ruleText.indexOf('Dithered quantization via orthogonal transformations') >= 0;
+    res.ruleAuthorHidden = !!rrow && res.ruleText.indexOf('Ran Hadad') < 0;
+    res.ruleTooltipRaw = !!rrow
+      && (rrow.getAttribute('title') || '').indexOf('Ran Hadad and Uri Erez.') >= 0;
+    /* 只有英文题名时**不出现**第二条（英文）行：那条只在有中文标题时才画 */
+    res.ruleNoSecondLine = !!rrow && !rrow.querySelector('.ref-en');
   } catch (err) {
     res.error = String((err && err.message) || err);
   }
@@ -2056,6 +2078,11 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
     record("refs-pane", "整张卡片仍能跳发表网站（原文里的 arXiv 号）",
            str(res.get("tempUrl") or "").startswith("https://arxiv.org/abs/2303.08774"),
            f"{res.get('tempUrl')}")
+    record("refs-pane", "没有中文标题但有英文题名 → 显示题名、作者仍收起（用户口径）",
+           res.get("ruleHasTitle") is True and res.get("ruleAuthorHidden") is True
+           and res.get("ruleTooltipRaw") is True and res.get("ruleNoSecondLine") is True,
+           f"题名={res.get('ruleHasTitle')} 作者收起={res.get('ruleAuthorHidden')} "
+           f"tooltip有原文={res.get('ruleTooltipRaw')}｜{str(res.get('ruleText'))[:44]}")
 
 
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:

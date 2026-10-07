@@ -207,12 +207,47 @@ def test_split_ref_text_reads_the_chinese_title_and_hides_authors() -> None:
     assert got["title"] == "GPT-4 技术报告"
     assert got["authors"] == "Josh Achiam, Steven Adler, Sandhini Agarwal."
     assert got["title_en"] == "GPT-4 technical report"      # 结尾那个句号/分隔符会剥掉
-    # 中文标题永远认得出来；模型没照抄（作者段对不上原文）时不敢乱切，英文标题留空
+    # 中文标题永远认得出来；模型没照抄作者段时，英文标题**退到规则切法**（见下一条测试）
     loose = metadata_fill.split_ref_text(raw, "某作者. 《GPT-4 技术报告》. 某会议, 2023.")
-    assert loose["title"] == "GPT-4 技术报告" and loose["title_en"] is None
-    # 压根没翻译（没有《》）→ 三个字段都空，前端显示整条原文
-    assert metadata_fill.split_ref_text(raw, raw) == {"title": None, "title_en": None, "authors": None}
+    assert loose["title"] == "GPT-4 技术报告"
+    assert loose["title_en"] == "GPT-4 technical report"
+    assert loose["authors"] == "Josh Achiam, Steven Adler, Sandhini Agarwal."
+    # 压根没翻译（没有《》）→ 中文标题没有，但规则依旧切得出英文标题（作者段照旧收起来）
+    plain = metadata_fill.split_ref_text(raw, raw)
+    assert plain["title"] is None
+    assert plain["title_en"] == "GPT-4 technical report"
+    assert plain["authors"] == "Josh Achiam, Steven Adler, Sandhini Agarwal."
     assert metadata_fill.split_ref_text(raw, None)["title"] is None
+
+
+def test_reference_rule_hides_the_author_block() -> None:
+    """用户口径（2026-10-07）：`作者名… .` 之后是题名的 → 只显示文献名称；形状对不上就整条原文。"""
+    from backend.services.paper.metadata_fill import split_ref_by_rule
+
+    assert split_ref_by_rule(
+        "Ran Hadad and Uri Erez. Dithered quantization via orthogonal transformations. "
+        "IEEE Transactions on Signal Processing, 64(22):5887–5900, 2016."
+    ) == {"title": None, "title_en": "Dithered quantization via orthogonal transformations",
+          "authors": "Ran Hadad and Uri Erez."}
+    # 名字**中间**的缩写不能当作者段的结尾（实测踩过：`Max Belitsky, Dawid J. Kopiczko` 被切成
+    # 作者=`Max Belitsky, Dawid J.`、标题=`Kopiczko…`）
+    mid = split_ref_by_rule("Max Belitsky, Dawid J. Kopiczko, and Yuki M. Asano. "
+                            "Kv cache steering for inducing reasoning in small language models, "
+                            "2025. URL https://arxiv.org/abs/2507.08799.")
+    assert mid["authors"] == "Max Belitsky, Dawid J. Kopiczko, and Yuki M. Asano."
+    assert mid["title_en"] == "Kv cache steering for inducing reasoning in small language models"
+    # 斜体书名 / 缩写 / 一堆作者（GPT-3 那种 481 字符的作者段）
+    assert split_ref_by_rule(
+        "Thomas M Cover. *Elements of information theory*. John Wiley & Sons, 1999."
+    )["title_en"] == "Elements of information theory"
+    assert split_ref_by_rule(
+        "Tom B. Brown, Benjamin Mann, and Dario Amodei. Language models are few-shot "
+        "<!-- ===== page 11 ===== --> learners. In Advances in Neural Information Processing "
+        "Systems, 2020.")["title_en"] == "Language models are few-shot learners"
+    # 形状对不上 → None（前端保持"整条原文"）
+    assert split_ref_by_rule("Pgvector search., 2025. https://github.com/pgvector/pgvector/.") is None
+    assert split_ref_by_rule("https://www.elastic.co/x Elasticsearch.,2025. vector-search.") is None
+    assert split_ref_by_rule("") is None
 
 
 def test_references_from_markdown_splits_numbered_entries(monkeypatch, tmp_path: Path) -> None:

@@ -248,6 +248,108 @@ def estimate_read_time(rows: list[tuple[int, str, str, str]]) -> int | None:
 _ZH_TITLE_RE = re.compile(r"《([^》]{1,300})》")
 #: 两段拼接处可能多出来的分隔符（`.`、`,`、`·`、空格…）：比对前后各自剥掉
 _REF_SEP = " \t.,;:·、，。"
+#: 条目前的编号（`[12]` / `(3)` / `4.`）—— 规则切题名时先剥掉
+_REF_LABEL_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*")
+#: 人名片段：`Ran Hadad` / `PF Panter` / `Claude E. Shannon` / `Jianyang Gao` / `AI@Meta LlamaTeam`
+#: 两条硬要求：① 每个词以**大写**起头（小写起头的词是机构名/网址/标题）；② **最后一个词至少两
+#: 个字符** —— 否则 `Tom B.`、`Dawid J.` 这种"名字中间的缩写"会被当成作者段的结尾
+#: （实测：`Max Belitsky, Dawid J. Kopiczko` 会被切成作者=`Max Belitsky, Dawid J.`、标题=`Kopiczko…`）。
+_REF_NAME_RE = re.compile(r"^(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-]+"
+                          r"(?:\s+(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-]+)*$")
+#: "出处"该有的样子：年份 / 卷期页码 / 期刊会议关键词
+_REF_VENUE_RE = re.compile(
+    r"\b(?:19|20)\d{2}\b|\bpp\.|\bvol\.|\bno\.|\d+\s*\(\d+\)|arXiv|doi|Corr\b|"
+    r"Proceedings|Conference|Journal|Transactions|Letters|Advances|International|"
+    r"Symposium|Workshop|Benchmark|Dataset|preprint|Report|Press|Springer|IEEE|ACM|"
+    r"Nature|Science|Systems|"
+    r"ICLR|ICML|NeurIPS|CVPR|ACL|EMNLP|AAAI|SIGIR|KDD", re.I)
+#: 标题尾巴上的年份（`… models, 2025.`）：那属于出处，不属于标题
+_REF_TITLE_YEAR_RE = re.compile(r"[,;]?\s*\(?(?:19|20)\d{2}[a-z]?\)?\s*$")
+#: 标题末尾的孤立首字母（`… Koyejo, S`）：那是被切开的作者名，不是标题
+_REF_TITLE_TAIL_INITIAL_RE = re.compile(r"(?:^|[\s,(])[A-Z]$")
+#: 标题两端要剥掉的 Markdown 强调记号与引号（侧栏不渲染 Markdown，留着就是字面星号）
+_TITLE_JUNK = "*_`\"'“”‘’ \t"
+
+
+def _looks_like_names(segment: str) -> bool:
+    """这一段像不像**纯人名列表**（作者段）。
+
+    判据故意严（宁可漏，也不要把机构名或标题当作者剥掉）：
+    逗号 / 分号 / `and` / `&` 分开的每一段都必须是"名 姓"或"缩写 姓"，允许结尾 `et al.`。
+    `Pgvector search`、`Google Research, New York University`、URL 都会在这里被挡掉。
+    """
+    seg = re.sub(r"\bet\s+al\.?$", "", str(segment or "").strip().rstrip(".").strip(),
+                 flags=re.I).strip().rstrip(",").strip()
+    # 上限宽松一点：GPT-3 那篇的作者段有 481 个字符、31 个人（卡在 300 就会漏掉它）
+    if not seg or len(seg) > 1200:
+        return False
+    parts = [p.strip() for p in re.split(r"\s*(?:,|;|/|&|\band\b)\s*", seg) if p.strip()]
+    if not parts or len(parts) > 60:
+        return False
+    return all(_REF_NAME_RE.match(p) for p in parts)
+
+
+def _clean_title(text: str) -> str:
+    """标题清洗：剥两端的强调记号 / 引号，去掉解析器留下的 `<!-- … -->` 标记并归一空白。
+
+    侧栏不渲染 Markdown，留着就是字面星号；`<!-- ===== page 11 ===== -->` 这种页分隔注释
+    会被原文读出串进来（实测 GPT-3 那条就夹在标题中间）。
+    """
+    out = re.sub(r"<!--.*?-->", " ", str(text or ""), flags=re.S)
+    return " ".join(out.split()).strip(_TITLE_JUNK).strip()
+
+
+def _take_ref_title(rest: str) -> tuple[str, bool]:
+    """从"作者段之后"取 **（标题, 是否剥掉了尾巴上的年份）**。
+
+    斜体段优先（书名/期刊名常斜体）；否则取到**第一个"后面像出处"的句号**为止：
+    取到句号那一版还要过一道闸 —— 剩下的部分必须像出处（年份 / pp.vol. / 期刊会议词）。
+    否则 `… in Proc. of the U.S. …` 这种标题里带缩写的会被切短（切错不如不切）。
+    标题尾巴上的 `, 2025` 属于出处（`authors. title, year.` 这种 ACM 样式），一并剥掉。
+    """
+    m = re.match(r"^\s*(\*[^*\n]{8,300}\*)\s*\.?\s*(.*)$", rest, re.S)
+    if m:
+        return _clean_title(m.group(1)), False
+    for j, ch in enumerate(rest):
+        if ch != ".":
+            continue
+        title, venue = rest[:j].strip(), rest[j + 1:].strip()
+        stripped = False
+        if _REF_TITLE_YEAR_RE.search(title):
+            title, stripped = _REF_TITLE_YEAR_RE.sub("", title).rstrip(_REF_SEP), True
+        if len(title) < 12 or _REF_TITLE_TAIL_INITIAL_RE.search(title) or title.endswith("-"):
+            continue
+        if _REF_VENUE_RE.search(venue) or (stripped and not venue):
+            return _clean_title(title), stripped
+    return "", False
+
+
+def split_ref_by_rule(raw: str) -> dict | None:
+    """**不靠译文**、只按"作者段 / 标题 / 出处"的形状切一条参考文献。
+
+    用户口径（2026-10-07）：像 `Ran Hadad and Uri Erez. Dithered quantization via orthogonal
+    transformations. IEEE Transactions on Signal Processing, 64(22):5887–5900, 2016.` 这样，
+    **作者名后面是 `.`** 的，侧栏直接显示**文献名称**，不要再把作者堆在脸上；
+    形状对不上就保持默认（整条原文照旧显示）。
+
+    判据（宁可漏，不许错）：
+    1. 某个句号之前那段必须是**纯人名列表**（见 `_looks_like_names`）；
+    2. 标题段 ≥ 12 字符，或本身就是一段斜体；
+    3. 以句号收尾的那一版，剩下的部分必须像**出处**（或标题尾巴就是那个年份）。
+
+    任一条不满足 → ``None``（调用方回退到"显示整条原文"）。
+    """
+    text = _REF_LABEL_RE.sub("", str(raw or "").strip())
+    for i, ch in enumerate(text):
+        if ch != ".":
+            continue
+        head, rest = text[:i], text[i + 1:].lstrip()
+        if not rest or not _looks_like_names(head):
+            continue
+        title, _stripped = _take_ref_title(rest)
+        if title:
+            return {"title": None, "title_en": title, "authors": f"{head.strip()}."}
+    return None
 
 
 def split_ref_text(raw: str, translated: str | None) -> dict:
@@ -260,25 +362,30 @@ def split_ref_text(raw: str, translated: str | None) -> dict:
     - `《…》` **之后**那段 = 会议/年份/DOI/链接 → 从原文尾部切掉；
     - 剩下的中间那段就是**英文标题**（连它自己的句号一起留着）。
 
-    任一段对不上（模型没照抄 / 论文本来就没译）就只回中文标题，英文标题留空 ——
-    前端这时显示整条原文（宁可不省，也不能把作者当标题显示）。
+    没有《》时（还没重译 / 模型没照抄）**退到纯规则切法** `split_ref_by_rule` ——
+    用户口径：作者名后面是 `.` 的就显示文献名称，形状对不上才显示整条原文。
     """
     raw = str(raw or "").strip()
     out = {"title": None, "title_en": None, "authors": None}
     text = str(translated or "")
     m = _ZH_TITLE_RE.search(text)
-    if not m:
-        return out
-    out["title"] = m.group(1).strip() or None
-    # 作者段只剥**空白**（不剥标点）：它要能原样对上原文的前缀，也方便日后显示
-    head = text[:m.start()].rstrip()
-    tail = text[m.end():].lstrip(_REF_SEP)
-    if head and raw.startswith(head):
-        out["authors"] = head
-        body = raw[len(head):].lstrip(_REF_SEP)
-        if tail and body.endswith(tail):
-            body = body[: len(body) - len(tail)].rstrip(_REF_SEP)
-        out["title_en"] = body.strip() or None
+    if m:
+        out["title"] = m.group(1).strip() or None
+        # 作者段只剥**空白**（不剥标点）：它要能原样对上原文的前缀，也方便日后显示
+        head = text[:m.start()].rstrip()
+        tail = text[m.end():].lstrip(_REF_SEP)
+        if head and raw.startswith(head):
+            out["authors"] = head
+            body = raw[len(head):].lstrip(_REF_SEP)
+            if tail and body.endswith(tail):
+                body = body[: len(body) - len(tail)].rstrip(_REF_SEP)
+            out["title_en"] = _clean_title(body) or None
+    if not out["title_en"]:
+        # 英文标题缺了（没译文、或模型没照抄作者段）→ 走规则切；切不出来就维持"只显示整条原文"
+        rule = split_ref_by_rule(raw)
+        if rule:
+            out["title_en"] = rule["title_en"]
+            out["authors"] = out["authors"] or rule["authors"]
     return out
 
 
@@ -295,18 +402,46 @@ def reference_pairs(paper_id: str,
     「中文标题 / 英文标题 / 作者段」（见 `split_ref_text`）—— 侧栏要中英对照着显示。
     """
     out: list[tuple[str, str | None]] = []
-    for _page, kind, original, translation in (rows if rows is not None else scan_rows(paper_id)):
+    data = rows if rows is not None else scan_rows(paper_id)
+    for _page, kind, original, translation in data:
         if kind != "ref":
             continue
-        raw = " ".join(str(original or "").split())
+        raw = _ws(original)
         if not raw:
-            raw = " ".join(str(translation or "").split())      # 只译了半边：拿译文当原文
-        zh = " ".join(str(translation or "").split()) or None
+            raw = _ws(translation)                 # 只译了半边：拿译文当原文
+        zh = _ws(translation) or None
         if raw:
             out.append((raw, zh))
     if out:
         return out
-    return [(t, None) for t in _references_from_markdown(paper_id)]
+    # **没有编号**的参考文献（ICLR 那种 `Elastic search., 2025. https://…`）不会被
+    # `split_blocks` 认成 `ref` 类型 → 退回 Markdown 抽条目；但**译文就在页产物的行里**
+    # （块模式下第 i 行 ↔ A 第 i 块），所以拿"空白归一的原文"去行里**认领译文**，
+    # 中文标题才切得出来（实测 turboquant 的 75 条全靠这条路）。
+    by_original: dict[str, str] = {}
+    for _page, _kind, original, translation in data:
+        key, zh = _ws(original), _ws(translation)
+        if key and zh:
+            by_original.setdefault(key, zh)
+    return [(_clean_raw(raw), by_original.get(_ws(raw)))
+            for raw in _references_from_markdown(paper_id)]
+
+
+def _clean_raw(text: str) -> str:
+    """落库的 `raw`（tooltip 里显示的那一份）：去掉结构注释、折叠空白，**保留**斜体记号。"""
+    out = re.sub(r"<!--.*?-->", " ", str(text or ""), flags=re.S)
+    return " ".join(out.split())
+
+
+def _ws(text: str) -> str:
+    """归一化到"可比较"：去结构注释 + 去 Markdown 强调记号 + 空白折叠。
+
+    Markdown 抽出来的条目与页产物的行是**同一段文字**，只差这几处：
+    换行 / 多空格、夹在中间的 `<!-- blk:… -->`（`<!-- ===== page 11 ===== -->` 也会夹进来）、
+    以及 A 路转录给出处加的斜体（`*arXiv preprint arXiv:2303.08774*` 对 `arXiv preprint arXiv:2303.08774`）。
+    """
+    out = re.sub(r"<!--.*?-->", " ", str(text or ""), flags=re.S)
+    return " ".join(out.replace("*", "").replace("`", "").split())
 
 
 def references(paper_id: str, rows: list[tuple[int, str, str, str]] | None = None) -> list[str]:
