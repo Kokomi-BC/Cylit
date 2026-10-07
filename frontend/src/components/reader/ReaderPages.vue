@@ -99,11 +99,16 @@ watch(() => props.currentPage, async (page) => {
 
 <style scoped>
 .pages { display: flex; flex-direction: column; min-width: 0; }
-/* 一页一行：每张图与上一张之间留出足够空隙（页号就落在空出来的那一行里） */
-.pg-list { display: flex; flex-direction: column; gap: 14px; align-content: start; }
+/* 一页一行：整列**居中**（宽栏里不至于把图挤在左边、右边空一大片），
+   每格宽度跟着图走（`min(100%, 240px)`）—— 页号因此仍然贴着图片左上角。 */
+.pg-list {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 14px; padding: 6px 6px 32px;
+}
 
 .pg-item {
   display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: min(100%, 240px);
   padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left;
   font: inherit;
   /* 竖直方向可以划：这一格几乎全是图，不写清楚浏览器可能把它当拖拽/手势目标 */

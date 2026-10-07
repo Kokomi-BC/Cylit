@@ -98,7 +98,9 @@ const items = computed(() =>
 </template>
 
 <style scoped>
-.toc { padding: 6px 6px 32px; height: 100%; overflow-y: auto; overflow-x: hidden; box-sizing: border-box; }
+/* 滚动交给外层 `.toc-pane`（**只留一个滚动容器**：两个嵌套滚动区在触摸下很别扭，
+   而且这里 `height: 100%` 曾经因为父元素没高度而落不了地 —— 见 ReaderView 里那段注释）。 */
+.toc { padding: 6px 6px 32px; box-sizing: border-box; }
 .toc-head { display: flex; align-items: center; gap: 4px; padding: 3px 6px; }
 /* 搜索命中**不再挂在目录里**：搜索已经独立成侧栏的「搜索」页签（`ReaderSearch`），
    一份结果放两处既冗余、又会在翻目录时被顶开。 */

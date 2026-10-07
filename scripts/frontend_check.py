@@ -177,6 +177,29 @@ async function run() {
       res.tileTouchAction = thumbs[0] ? w.getComputedStyle(thumbs[0]).touchAction : '';
       res.thumbsLeft = thumbs.length;
       res.noLocateBtn = d.querySelectorAll('.pages [title="定位"]').length === 0;
+      /* 整列**居中**：第一格的中心 ≈ 滚动容器内容区的中心 */
+      const pane = d.querySelector('.toc-pane');
+      if (pane && r0) {
+        const pr = pane.getBoundingClientRect();
+        const cs = w.getComputedStyle(pane);
+        const inner = { left: pr.left + parseFloat(cs.paddingLeft || '0'),
+                        width: pr.width - parseFloat(cs.paddingLeft || '0')
+                               - parseFloat(cs.paddingRight || '0') };
+        res.paneInnerCenter = Math.round(inner.left + inner.width / 2);
+        res.tileCenter = Math.round(r0.left + r0.width / 2);
+        res.centered = Math.abs(res.tileCenter - res.paneInnerCenter) <= 8;
+      }
+      /* **这一页真的能滚**：容器自己有滚动条，且设 scrollTop 真的动得起来。
+         用户报的"整个目录页彻底无法触摸滚动"就是这里坏过 —— 触摸在无头里测不了，
+         但"有没有可滚动的容器、它动不动"是能测的，而那正是坏掉的那一环。 */
+      if (pane) {
+        res.paneScroll = [Math.round(pane.scrollHeight), Math.round(pane.clientHeight)];
+        res.paneOverflowY = w.getComputedStyle(pane).overflowY;
+        pane.scrollTop = 120;
+        await sleep(200);
+        res.paneScrolledTo = Math.round(pane.scrollTop);
+        pane.scrollTop = 0;
+      }
       /* 那一行里除了图标不该有文字；页面视图也不再自己写「N 页 / 点缩略图…」 */
       const bar = d.querySelector('.toc-bar');
       res.barText = bar ? (bar.textContent || '').replace(/\\s+/g, '').trim() : null;
@@ -204,6 +227,15 @@ async function run() {
       modeOutline.click();
       await sleep(300);
       res.backToOutline = !!d.querySelector('.toc-item');
+      /* 切回目录也验一遍"能滚"：**整页滚不动**当初是这一页的通用问题 */
+      const pane2 = d.querySelector('.toc-pane');
+      if (pane2) {
+        res.tocPaneScroll = [Math.round(pane2.scrollHeight), Math.round(pane2.clientHeight)];
+        pane2.scrollTop = 120;
+        await sleep(200);
+        res.tocPaneScrolledTo = Math.round(pane2.scrollTop);
+        pane2.scrollTop = 0;
+      }
     }
     /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
     const sideBtn = [...d.querySelectorAll('.side-tab')]
@@ -1734,6 +1766,15 @@ def main() -> int:
                    f"page={data.get('jumpWanted')}" in str(data.get("jumpUrl") or "")
                    and data.get("jumpActive") == [data.get("jumpWanted")],
                    f"想跳 {data.get('jumpWanted')}，URL {data.get('jumpUrl')}，高亮 {data.get('jumpActive')}")
+            record("reader", "页面视图：整列**居中**",
+                   data.get("centered") is True,
+                   f"格中心 {data.get('tileCenter')} / 内容区中心 {data.get('paneInnerCenter')}")
+            record("reader", "目录页**自己就是个滚动容器**（内容超出时真的滚得动）",
+                   data.get("paneOverflowY") in ("auto", "scroll")
+                   and data.get("paneScrolledTo", 0) > 0
+                   and data.get("tocPaneScrolledTo", 0) > 0,
+                   f"页面视图 {data.get('paneScroll')} → scrollTop {data.get('paneScrolledTo')}；"
+                   f"目录 {data.get('tocPaneScroll')} → {data.get('tocPaneScrolledTo')}")
             record("reader", "页面视图能切回目录（大纲还在）", data.get("backToOutline") is True, "")
 
     # ---- ② 对话面板（不发消息） ----

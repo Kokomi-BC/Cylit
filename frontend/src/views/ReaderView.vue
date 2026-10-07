@@ -4196,10 +4196,23 @@ function renderMarkdown(text?: string | null) {
 /* 「目录 / 页面视图」切换（《修改计划》第二步）：与侧栏页签同一门语言（无描边的托盘 + 抬起的
    当前项）。**只有图标**（用户口径：胶囊不保留文字），并与目录的折叠/展开同处一行 ——
    以前它单独占一整行，加上目录自己那行「目录 N」，两行文字压在一起很挤。 */
-.toc-pane { display: flex; flex-direction: column; min-width: 0; }
+/* 直接挂在侧栏下的页签（目录 / 对话 / 搜索）：侧栏是 `overflow: hidden` 的纵向 flex，
+   它们得**自己**撑满剩余高度。目录这一页原来把滚动交给 `ReaderToc` 内部的
+   `.toc { height: 100%; overflow-y: auto }`，而它的父元素（`.toc-pane`）**没有高度** ——
+   百分比高度落不了地，于是目录长成内容那么高、被侧栏直接裁掉：**整页滚不动**
+   （用户报的"整个目录页彻底无法触摸滚动，插图页正常"；插图页在 `ReaderSidePanel` 里，
+   那边有 `.panel-body { overflow-y: auto; flex: 1; min-height: 0 }`，所以它是好的）。
+   现在由 `.toc-pane` 自己当**唯一**的滚动容器（两种模式一个样），那一行切换工具条 sticky 在顶部。 */
+.toc-pane {
+  display: flex; flex-direction: column; min-width: 0;
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+}
 .toc-bar {
+  position: sticky; top: 0; z-index: 2;
   display: flex; align-items: center; gap: 4px; flex: none;
-  margin: 0 0 6px; padding: 0 2px 6px;
+  margin: 0 0 6px; padding: 2px 2px 6px;
+  background: var(--bg-elev);
   border-bottom: 1px solid var(--divider);
 }
 .toc-mode {
