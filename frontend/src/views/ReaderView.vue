@@ -47,7 +47,9 @@ import CapPanel from '@/components/reader/CapPanel.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/reader/ReaderSearch.vue';
 import ReaderChat from '@/components/reader/ReaderChat.vue';
-import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
+import ReaderSidePanel, {
+  type BriefDraft, type NoteDraftPayload, type SideTab,
+} from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
 import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
@@ -483,7 +485,7 @@ const sideTab = ref<SideTabKey>('toc');
  *  只存本次会话：它是"这一眼怎么看"，不是论文的属性，没必要进 localStorage 或服务端进度。 */
 const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
-  'toc', 'chat', 'insight', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
+  'toc', 'chat', 'insight', 'search', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
 /* 进「论文解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
    放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
@@ -508,6 +510,20 @@ const termCount = computed(() => {
   return names.size;
 });
 
+/**
+ * 「笔记」页签的角标 = 那个页签里会有**几条**（口径与 `ReaderSidePanel` 的归并一致）：
+ * 一处高亮算一条（跨行划词的多条记录共用一条笔记）、没挂高亮的笔记算一条、批注算一条。
+ * 不能拿"高亮数 + 笔记数"直接相加：那样同一处高亮会被数两遍。
+ */
+const notesFeedCount = computed(() => {
+  const groups = new Set<string>();
+  for (const h of highlights.value) groups.add(h.group_id || h.id);
+  const onHighlight = new Set(highlights.value.map((h) => h.id));
+  const orphan = notes.value
+    .filter((n) => !n.highlight_id || !onHighlight.has(n.highlight_id)).length;
+  return groups.size + orphan + annotations.value.length;
+});
+
 const SIDE_TABS = computed<Array<{
   k: SideTabKey; icon: string; label: string; title: string; count?: number;
 }>>(() => [
@@ -527,9 +543,9 @@ const SIDE_TABS = computed<Array<{
     count: searchMode.value === 'lexical' ? (searchHits.value.length || undefined) : undefined,
   },
   {
-    k: 'annotations', icon: 'quote', label: '批注·笔记',
-    title: '批注与笔记（划词解释 + 人工批注 + 笔记，按时间倒序）',
-    count: annotations.value.length + notes.value.length,
+    k: 'notes', icon: 'marker', label: '笔记',
+    title: '笔记（批注 / 高亮 / 笔记已合并：一条 = 一处高亮 + 它的正文）',
+    count: notesFeedCount.value || undefined,
   },
   {
     k: 'formulas', icon: 'formula', label: '公式',
@@ -1011,9 +1027,9 @@ async function loadAll() {
     if (q.scope === 'all' || q.scope === 'en' || q.scope === 'zh') searchScope.value = q.scope;
     if (q.q) { searchQuery.value = String(q.q); runSearch(); }
     const sideParam = String(q.side ?? '');
-    if (SIDE_TAB_KEYS.includes(sideParam)) {
-      // 兼容旧的 ?side=notes：批注与笔记已合并为一个页签
-      sideTab.value = (sideParam === 'notes' ? 'annotations' : sideParam) as SideTabKey;
+    if (SIDE_TAB_KEYS.includes(sideParam) || sideParam === 'annotations') {
+      // 兼容旧的 ?side=annotations：批注与笔记已合并进「笔记」这一个页签
+      sideTab.value = (sideParam === 'annotations' ? 'notes' : sideParam) as SideTabKey;
       /* `?side=insight` / `?side=chat` 还要**把左栏打开**：回到左栏之后，"选中页签"本身
        * 看不见就等于没反应（用户把左栏收起过 / 窄屏是抽屉）。宽度由 `watch(sideTab)` 统一负责。 */
       if (sideParam === 'insight' || sideParam === 'chat') await ensureAsideVisible();
@@ -2904,18 +2920,28 @@ async function addHighlight(color: string): Promise<Highlight[]> {
     highlights.value.push(...created);
     const unit = scope === 'row' ? '行' : '页';
     toast(parts.length > 1 ? `已高亮（跨 ${parts.length} ${unit}）` : '已高亮', 'ok', 2000);
+    /* 用户口径（2026-10-07）：**选中并高亮之后，浮层要显示「添加笔记」** ——
+       标完就把这处高亮的笔记浮层叫出来（`prompt` 态：只有原文 + 一枚「添加笔记」按钮）。
+       已经在这处高亮上写过笔记的（同一段重复标色）直接显示那条笔记。 */
+    const first = created[0] ?? null;
+    const existing = first ? (notes.value.find((n) => n.highlight_id === first.id) ?? null) : null;
+    if (first) {
+      openNotePopover({
+        note: existing, highlight: first, mode: existing ? 'view' : 'prompt', anchored: true,
+        fallbackXY: { x: selection.x, y: selection.y },
+      });
+    }
     return created;
   } catch (err) { reportError(err, '高亮失败'); return []; } finally { hideMenu(); }
 }
 
 /**
- * 删除高亮：**从划词菜单里点「禁止」图标**（用户口径：不再点高亮本身）。
+ * 删一串高亮（用户口径：删除走菜单的「禁止」图标或侧栏笔记那一条，不点高亮本身）。
  * 后端会把同一分组（跨行高亮）的记录一起删掉，并回传所有被删的 id，这里同步本地列表。
+ * 挂在被删高亮上的笔记由后端级联删掉（`Highlight └── Note`）。
  */
-async function deleteSelectionHighlights() {
-  const ids = selection.hlIds.slice();
-  if (!ids.length) { hideMenu(); return; }
-  hideMenu();
+async function deleteHighlightIds(ids: string[]) {
+  if (!ids.length) return;
   const gone = new Set<string>(ids);
   // 逐条删。**单条失败不能中断**：跨行高亮是"同组多条"，删第一条时后端已经把整组删掉并
   // 回传了 `deleted_ids`，后面那些 id 再删就是 404 —— 以前这里一个异常就把整段跳过，
@@ -2942,7 +2968,44 @@ async function deleteSelectionHighlights() {
     } catch { /* 已经被删掉了（另一个标签页 / 同组兄弟）：忽略 */ }
   }));
   highlights.value = highlights.value.filter((h) => !gone.has(h.id));
+  notes.value = notes.value.filter((n) => !n.highlight_id || !gone.has(n.highlight_id));
   toast(`已删除 ${gone.size} 处高亮`, 'ok', 1800);
+}
+
+async function deleteSelectionHighlights() {
+  const ids = selection.hlIds.slice();
+  hideMenu();
+  await deleteHighlightIds(ids);
+}
+
+/**
+ * 侧栏「笔记」页签里写/改一条笔记。
+ *
+ * 用户口径：**只有插入了高亮，才能在高亮的基础上加笔记** —— 所以新建时必定带着 `highlightId`；
+ * 高亮的原文/偏移量从本地那份高亮里取（侧栏只传了 id 与正文），不重复存一份。
+ */
+async function savePaneNote(p: NoteDraftPayload) {
+  if (!p.contentMd.trim()) { toast('笔记内容不能为空', 'warn', 2200); return; }
+  try {
+    if (p.noteId) {
+      const updated = await api.put<Note>(`/notes/${p.noteId}`, { content_md: p.contentMd });
+      const hit = notes.value.find((n) => n.id === p.noteId);
+      if (hit) hit.content_md = updated?.content_md ?? p.contentMd;
+    } else {
+      const hl = highlights.value.find((h) => h.id === p.highlightId) ?? null;
+      if (!hl) { toast('先给这段文字加个高亮，再写笔记', 'warn', 2600); return; }
+      await api.post<Note>('/notes', {
+        paper_id: paperId.value,
+        block_id: hl.block_id ?? p.anchorId,
+        highlight_id: hl.id,
+        selected_text: hl.text ?? '',
+        start_offset: hl.start, end_offset: hl.end,
+        content_md: p.contentMd,
+      });
+    }
+    toast('笔记已保存', 'ok', 1600);
+    await refreshAnnotations();
+  } catch (err) { reportError(err, '保存笔记失败'); }
 }
 
 /**
@@ -2985,15 +3048,15 @@ function onMdClick(ev: MouseEvent) {
  * 笔记浮层（《修改计划》第五步）：锚在高亮附近的小卡片，取代原来那块**居中大弹窗**。
  *
  * 三种打开方式：
+ * - **刚高亮完**：`mode='prompt'`（只有原文 + 一枚「添加笔记」）—— 用户口径"选中高亮后浮层显示添加笔记"；
  * - **悬停高亮**：只看**已有**笔记（`mode='view'`），鼠标移开自动消失（除非已锚定）；
- * - **划词菜单点「笔记」**：新建（`mode='edit'`），保存时先确保挂到一条高亮上；
- * - **划词菜单点「打开笔记」**：打开已有那条（`mode='view'`，可切到编辑）。
+ * - **划词菜单点「添加笔记 / 打开笔记」**：新建（`mode='edit'`）或查看已有那条（`mode='view'`）。
  */
 const notePop = reactive({
   open: false,
   /** 锚定：鼠标移开也不关（点浮层那枚图钉切换）。**默认不锚定**（用户口径） */
   anchored: false,
-  mode: 'view' as 'view' | 'edit',
+  mode: 'view' as 'view' | 'edit' | 'prompt',
   noteId: '',
   highlightId: '',
   rowId: '',
@@ -3012,7 +3075,7 @@ function rectAnchor(rect: DOMRect | null | undefined, fallback?: { x: number; y:
 
 /** 打开浮层（查看已有笔记 / 编辑某条 / 新建）。 */
 function openNotePopover(opts: {
-  note?: Note | null; highlight?: Highlight | null; mode?: 'view' | 'edit';
+  note?: Note | null; highlight?: Highlight | null; mode?: 'view' | 'edit' | 'prompt';
   rect?: DOMRect | null; anchored?: boolean; fallbackXY?: { x: number; y: number };
 }) {
   const note = opts.note ?? null;
@@ -3042,7 +3105,7 @@ function closeNotePopover() {
 let noteHideTimer: number | undefined;
 function cancelNoteHide() { window.clearTimeout(noteHideTimer); }
 function scheduleNoteHide() {
-  if (!notePop.open || notePop.anchored || notePop.mode === 'edit') return;
+  if (!notePop.open || notePop.anchored || notePop.mode !== 'view') return;
   window.clearTimeout(noteHideTimer);
   noteHideTimer = window.setTimeout(() => {
     /* 鼠标还在浮层上（从高亮挪进来）就别关：直接问 DOM 的 `:hover`，
@@ -3659,6 +3722,7 @@ function renderMarkdown(text?: string | null) {
           :tab="sideTab"
           :annotations="annotations"
           :notes="notes"
+          :highlights="highlights"
           :formulas="formulas"
           :formulas-loading="formulasLoading"
           :figures="figures"
@@ -3676,6 +3740,8 @@ function renderMarkdown(text?: string | null) {
           @reload-brief="syncBriefDraft()"
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
+          @save-note="savePaneNote"
+          @delete-highlight="deleteHighlightIds"
           @cancel-task="cancelTranslate"
           @insight-queued="fetchTasks"
           @open-insight-page="openInsightPage"
@@ -3835,13 +3901,17 @@ function renderMarkdown(text?: string | null) {
       :open="notePop.open"
       :anchor="notePop.anchor"
       :anchored="notePop.anchored"
-      :title="notePop.mode === 'edit' ? '笔记（编辑）' : '笔记'"
+      :title="notePop.mode === 'edit' ? '笔记（编辑）'
+        : notePop.mode === 'prompt' ? '已高亮 · 写条笔记？' : '笔记'"
       :width="360"
       data-note-popover
       @close="closeNotePopover"
       @toggle-anchor="notePop.anchored = !notePop.anchored"
     >
       <div v-if="notePop.quote" class="np-quote small faint" v-html="mdToHtml(`“${notePop.quote}”`)" />
+      <div v-if="notePop.mode === 'prompt'" class="np-hint tiny faint">
+        这段已经标好了。要在这处高亮上写点什么吗？
+      </div>
       <textarea
         v-if="notePop.mode === 'edit'"
         v-model="notePop.draft"
@@ -3850,15 +3920,22 @@ function renderMarkdown(text?: string | null) {
         data-note-edit
         placeholder="用 Markdown 写笔记；支持 $公式$"
       />
-      <div v-else class="np-view md small" data-note-view v-html="mdToHtml(notePop.content)" />
+      <div v-else-if="notePop.mode === 'view'" class="np-view md small" data-note-view v-html="mdToHtml(notePop.content)" />
       <template #footer>
         <template v-if="notePop.mode === 'edit'">
           <button class="btn sm primary" :disabled="notePop.busy" data-note-save @click="saveNotePopover">
             {{ notePop.busy ? '保存中…' : '保存' }}
           </button>
-          <button class="btn sm" @click="notePop.mode = 'view'; notePop.draft = notePop.content">
+          <button class="btn sm" @click="notePop.mode = notePop.content ? 'view' : 'prompt'; notePop.draft = notePop.content">
             取消
           </button>
+        </template>
+        <template v-else-if="notePop.mode === 'prompt'">
+          <button class="btn sm primary" data-note-add @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
+            <AppIcon name="add" :size="12" />添加笔记
+          </button>
+          <span class="spacer"></span>
+          <span class="tiny faint">已锚定</span>
         </template>
         <template v-else>
           <button class="btn sm" data-note-edit-btn @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
@@ -4329,6 +4406,8 @@ function renderMarkdown(text?: string | null) {
 
 /* ---------------- 划词解释卡片（浮动层里的小对话线程） ----------------
  * 由问答 agent 产出（流式），所以这里既要有"正在读"的状态，也要能承接追问。 */
+/* 笔记浮层的 `prompt` 态（刚标完高亮）：原文下面一行提示，再下面是「添加笔记」 */
+.np-hint { margin: 4px 0 2px; }
 .ex-thread { max-height: 46vh; overflow-y: auto; }
 .ex-turn { margin-bottom: 10px; }
 .ex-turn .md :deep(p) { margin: .35em 0; }

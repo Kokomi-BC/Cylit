@@ -101,7 +101,7 @@ const COLOR_TITLE: Record<string, string> = {
       :title="props.hasNote ? '跳到侧栏那条笔记' : '给这段文字写笔记（会挂在这处高亮上）'"
       @click="emit('note')"
     >
-      <AppIcon name="note" :size="14" />{{ props.hasNote ? '打开笔记' : '笔记' }}
+      <AppIcon name="note" :size="14" />{{ props.hasNote ? '打开笔记' : '添加笔记' }}
     </button>
     <button @click="emit('copy')"><AppIcon name="copy" :size="14" />复制</button>
     <span v-if="props.anchored" class="row" style="padding:0 6px;gap:6px">

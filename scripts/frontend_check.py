@@ -924,6 +924,15 @@ async function run() {
     if (!yellow) { out(res); return; }
     yellow.click();
     await sleep(1000); spin(BURN); await sleep(300);
+    /* 用户口径（2026-10-07）：**选中并高亮之后，浮层要显示「添加笔记」** ——
+       标完那一下就该有这么一枚按钮，不必再划一次词、再进一次菜单。
+       （必须在这里读：下面那句 `location.reload()` 会把浮层一起刷掉。） */
+    await until(D(), (x) => x.querySelector('[data-note-add]'), 20);
+    res.hasAddNoteBtn = !!D().querySelector('[data-note-add]');
+    res.afterHlCard = (() => {
+      const c = D().querySelector('[data-float-card] .fc-foot');
+      return c ? (c.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 30) : '';
+    })();
     const data = await jget(api + '/highlights?paper_id=__PAPER__');
     const items = (data.data && data.data.items) || [];
     const mine = items.filter((h) => h.scope === 'pdf' && h.block_id === ('pdf:p' + res.page));
@@ -941,6 +950,17 @@ async function run() {
     const afterMarks = [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.afterReload = afterMarks.length;
     res.afterText = afterMarks.map((m) => m.textContent || '').join('');
+
+    /* 侧栏「笔记」页签：**还没写笔记的高亮也在这个页签里**（批注/高亮/笔记已合并成笔记） */
+    const notesTab = [...D().querySelectorAll('.side-tab')]
+      .find((b) => (b.textContent || '').indexOf('笔记') >= 0);
+    res.notesTab = notesTab ? (notesTab.textContent || '').trim() : '';
+    if (notesTab) {
+      notesTab.click();
+      await until(D(), (x) => x.querySelector('[data-item-kind="highlight"]'), 30);
+      const bare = D().querySelector('[data-item-kind="highlight"]');
+      res.bareRow = bare ? (bare.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 70) : '';
+    }
 
     /* ---- 第四步：高亮 → 笔记（PDF/Markdown → Highlight → Note 的闭环）---- */
     const longSpans2 = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer span')]
@@ -988,9 +1008,9 @@ async function run() {
     res.noteScope = myNote ? myNote.scope : '';
     res.notePage = myNote && myNote.page != null ? myNote.page : null;
     res.noteQuote = myNote ? String(myNote.selected_text || '') : '';
-    /* 侧栏「批注·笔记」要显示：高亮文本 + 挂在哪一面 + 页码，并且点「定位」能跳回去 */
+    /* 侧栏「笔记」页签要显示：高亮原文 + 挂在哪一面 + 页码，并且点「定位」能跳回去 */
     const sideBtn = [...D().querySelectorAll('.side-tab')]
-      .find((b) => (b.textContent || '').indexOf('批注') >= 0);
+      .find((b) => (b.textContent || '').indexOf('笔记') >= 0);
     if (sideBtn) sideBtn.click();
     await until(D(), (x) => x.querySelector('[data-note-id]'), 30);
     const row = myNote ? D().querySelector('[data-note-id="' + myNote.id + '"]') : null;
@@ -1012,6 +1032,48 @@ async function run() {
       await sleep(200);
     }
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
+
+    /* ---- 笔记页签的两种收放：**缩略显示**（每条收成一两行）+ **就地编辑** ----
+       用户口径 2026-10-07："侧栏显示 + 支持编辑高亮内容的笔记内容 + 笔记栏支持缩略显示"。 */
+    const paneRow = () => (myNote ? D().querySelector('[data-note-id="' + myNote.id + '"]') : null);
+    const thumbBtn = D().querySelector('[data-notes-thumb]');
+    res.hasThumbBtn = !!thumbBtn;
+    if (thumbBtn) {
+      const tall = paneRow() ? paneRow().getBoundingClientRect().height : 0;
+      thumbBtn.click();
+      await sleep(300); spin(BURN); await sleep(200);
+      const small = paneRow();
+      res.thumbOn = !!small && small.classList.contains('thumb');
+      res.thumbClamped = !!small && !!small.querySelector('.clamp1');
+      res.thumbShrank = !!small && small.getBoundingClientRect().height < tall;
+      thumbBtn.click();                       // 收回去，后面的断言还按展开态看
+      await sleep(300); spin(BURN); await sleep(200);
+      const back = paneRow();
+      res.thumbOff = !!back && !back.classList.contains('thumb');
+    }
+    const paneEdit = paneRow() ? paneRow().querySelector('[data-item-edit]') : null;
+    res.paneEditBtn = !!paneEdit;
+    if (paneEdit) {
+      paneEdit.click();
+      await until(D(), (x) => x.querySelector('[data-pane-note-edit]'), 20);
+      const ta2 = D().querySelector('[data-pane-note-edit]');
+      res.paneEditor = !!ta2;
+      if (ta2) {
+        ta2.value = '自检：侧栏里改过的笔记';
+        ta2.dispatchEvent(new w.Event('input', { bubbles: true }));
+        await sleep(200);
+        const sv = D().querySelector('[data-pane-note-save]');
+        res.paneSaveBtn = !!sv;
+        if (sv) sv.click();
+        await sleep(900); spin(BURN); await sleep(300);
+      }
+    }
+    const ndataPane = await jget(api + '/notes?paper_id=__PAPER__');
+    const paneNote = (((ndataPane.data && ndataPane.data.items) || [])
+      .find((n) => n.highlight_id === (mine[0] && mine[0].id)));
+    res.paneEdited = paneNote ? String(paneNote.content_md || '') : '';
+    /* 存进去了就自动收起编辑器（保存失败才留着，免得用户敲的字丢了） */
+    res.paneEditorClosed = !D().querySelector('[data-pane-note-edit]');
 
     /* ---- 第五步：笔记浮层（悬停显示 / 移开消失 / 锚定 / 查看↔编辑）---- */
     const card = () => D().querySelector('[data-float-card]');
@@ -1215,8 +1277,20 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and str(res.get("afterText") or "").strip() == str(res.get("savedText") or "").strip(),
            f"刷新后 {res.get('afterReload')} 段：{str(res.get('afterText'))[:18]!r}")
     # ---- 第四步闭环：高亮 → 笔记 → 侧栏 → 定位回原文 ----
+    record("pdfhl", "选中并高亮之后，浮层直接给出「添加笔记」（不用再划一次词）",
+           res.get("hasAddNoteBtn") is True and "添加笔记" in str(res.get("afterHlCard") or ""),
+           f"高亮后的浮层按钮：{str(res.get('afterHlCard'))[:24]!r}")
+    record("pdfhl", "侧栏页签是**一个「笔记」**（批注/高亮/笔记已合并，旧的「批注·笔记」已撤）",
+           "笔记" in str(res.get("notesTab") or "")
+           and "批注" not in str(res.get("notesTab") or ""),
+           f"页签={res.get('notesTab')!r}")
+    record("pdfhl", "**还没写正文的高亮**也在笔记页签里（高亮本身就是一条笔记）",
+           str(res.get("savedText") or "").strip() != ""
+           and "待写" in str(res.get("bareRow") or "")
+           and str(res.get("savedText") or "")[:10] in str(res.get("bareRow") or ""),
+           f"条目：{str(res.get('bareRow'))[:50]!r}")
     record("pdfhl", "划词菜单里能就这处高亮写笔记（第四步的入口）",
-           str(res.get("noteBtn") or "").strip() in ("笔记", "打开笔记"),
+           str(res.get("noteBtn") or "").strip() in ("添加笔记", "笔记", "打开笔记"),
            f"菜单项：{res.get('noteBtn')!r}")
     record("pdfhl", "笔记编辑器能开能存（Markdown + 保存）",
            res.get("editor") is True and res.get("saveBtn") is True,
@@ -1235,6 +1309,18 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            res.get("hasLocate") is True and (res.get("scrolledAway") or 0) > 100
            and (res.get("locatedTop") or 0) < (res.get("scrolledAway") or 1) / 5,
            f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 {res.get('locatedTop')}")
+    record("pdfhl", "笔记栏**缩略显示**：一键把每条收成一两行，再点回来",
+           res.get("hasThumbBtn") is True and res.get("thumbOn") is True
+           and res.get("thumbClamped") is True and res.get("thumbShrank") is True
+           and res.get("thumbOff") is True,
+           f"缩略={res.get('thumbOn')} 省略号={res.get('thumbClamped')} "
+           f"变矮={res.get('thumbShrank')} 还原={res.get('thumbOff')}")
+    record("pdfhl", "侧栏里能**就地改**这处高亮的笔记正文（存进去后编辑器自动收起）",
+           res.get("paneEditBtn") is True and res.get("paneEditor") is True
+           and res.get("paneSaveBtn") is True
+           and res.get("paneEdited") == "自检：侧栏里改过的笔记"
+           and res.get("paneEditorClosed") is True,
+           f"库里正文={str(res.get('paneEdited'))[:20]!r} 收起={res.get('paneEditorClosed')}")
     record("pdfhl", "笔记改用**轻量浮层**（居中大弹窗已撤）",
            res.get("oldModalGone") is True, f"旧弹窗还在={not res.get('oldModalGone')}")
     record("pdfhl", "悬停高亮显示笔记（查看模式渲染 Markdown）",

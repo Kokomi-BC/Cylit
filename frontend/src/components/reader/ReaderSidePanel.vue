@@ -2,7 +2,7 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：批注·笔记（合并）/ 公式 / 插图 / 术语 / 任务 / **论文解读**
+ * 页签：笔记（批注 / 高亮 / 笔记已合并成这一个）/ 引用文献 / 公式 / 插图 / 术语 / 任务 / **论文解读**
  * （目录由 ReaderToc 负责）。公式**只读**：来自 Markdown 提取，不做复核、不分级、不比对裁图。
  *
  * 解读是一个页签：「论文解读」（`a.markdown`）。内容由 `InsightPanel` → `InsightDoc` 渲染；
@@ -14,7 +14,8 @@ import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
-  Annotation, FigureItem, GlossaryTerm, MarkdownFormula, Note, TaskInfo, ZoomTarget,
+  Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
+  TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
@@ -30,13 +31,33 @@ export interface BriefDraft {
   glossaryText: string;
 }
 
-/** 侧栏页签（与 ReaderView 的页签栏一一对应；批注与笔记已合并为一个页签）。 */
-export type SideTab = 'annotations' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
+/**
+ * 侧栏页签（与 ReaderView 的页签栏一一对应）。
+ *
+ * 用户口径 2026-10-07：**批注 / 高亮 / 笔记合并成一种东西 = 笔记**，所以那三个页签并成 `notes` 一个；
+ * `note` 这枚图标挪给新增的「引用文献」，笔记用高亮笔那枚（`marker`）。
+ */
+export type SideTab = 'notes' | 'references' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
+
+/** 笔记页签里「保存」要交给父组件的东西（新建还是更新由 `noteId` 决定）。 */
+export interface NoteDraftPayload {
+  noteId: string;
+  highlightId: string;
+  anchorId: string | null;
+  contentMd: string;
+}
 
 const props = withDefaults(defineProps<{
   tab: SideTab;
+  /** 批注（划词解释 / 人工批注）：已并进「笔记」页签，同一种卡片显示 */
   annotations: Annotation[];
   notes: Note[];
+  /** 高亮：**笔记的骨架**（哪一段文字被标了），页签里和高亮上的笔记合成一条 */
+  highlights: Highlight[];
+  /** 「引用文献」页签：这篇论文的参考文献（按论文里的顺序） */
+  references?: PaperReference[];
+  /** 参考文献页签的过滤：点了正文里的引用标号后**只显示这些编号**（空 = 全部） */
+  refFilter?: number[];
   formulas: MarkdownFormula[];
   formulasLoading?: boolean;
   figures: FigureItem[];
@@ -50,7 +71,7 @@ const props = withDefaults(defineProps<{
   paperId: string;
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
-}>(), { formulasLoading: false, briefSource: '' });
+}>(), { formulasLoading: false, briefSource: '', refFilter: () => [], references: () => [] });
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
@@ -62,6 +83,10 @@ const emit = defineEmits<{
   (e: 'reload-brief'): void;
   (e: 'delete-annotation', id: string): void;
   (e: 'delete-note', id: string): void;
+  /** 笔记页签里写/改一条笔记（`noteId` 空 = 给这处高亮新建） */
+  (e: 'save-note', p: NoteDraftPayload): void;
+  /** 删掉一处高亮（整组一起；挂在它上面的笔记由后端级联删掉） */
+  (e: 'delete-highlight', ids: string[]): void;
   (e: 'cancel-task', task: TaskInfo): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
@@ -91,21 +116,32 @@ function statusClass(status: string): string {
 
 const annotationHtml = (text: string) => mdToHtml(text);
 
-/** 批注 + 笔记：合并成一个按时间倒序的信息流（各自的类型用徽章区分）。 */
-interface MergedItem {
+/**
+ * 「笔记」页签里的一条（用户口径 2026-10-07：**批注 / 高亮 / 笔记统一成笔记**）。
+ *
+ * 一条笔记 = **一处高亮（哪一段文字）+ 它的正文**。所以界面上不再有"三种类型三个页签"：
+ * 没写正文的高亮也是这个页签里的一条（只是正文空着，点铅笔补上），批注（块级解释）同理。
+ */
+interface NoteRow {
   key: string;
-  kind: 'selection' | 'annotation' | 'note';
+  kind: 'highlight' | 'note' | 'annotation';
+  /** 定位用的锚点（正文行 id / `md:p<页>` / `pdf:p<页>`；批注是它的 block_id） */
+  anchorId: string | null;
+  /** 删除用的一串高亮 id（跨行划词切出来的一组共用一条笔记） */
+  anchorIds: string[];
+  page: number | null;
+  /** 高亮原文（批注没有） */
+  quote: string;
+  /** 已有笔记的 id（空 = 还没写正文） */
+  noteId: string;
+  /** 挂在哪条高亮上（批注为空） */
+  highlightId: string;
+  contentMd: string;
   label: string;
   badge: string;
-  anchorId: string | null;
-  page: number | null;
-  quote: string;
-  contentMd: string;
   at: string | null;
-  /** 笔记挂在哪一面（`row` / `markdown` / `pdf`）：侧栏要显示"这条笔记挂在哪" */
+  /** 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 */
   scope?: 'row' | 'markdown' | 'pdf';
-  /** 笔记 id：`openNoteForHighlight` 靠它把侧栏滚到那一条上（`data-note-id`） */
-  noteId?: string;
 }
 
 /** 面 → 中文（侧栏那枚小徽章）。三种锚点是三套位置模型，界面上要说清挂在哪。 */
@@ -175,29 +211,97 @@ function saveNow() {
   emit('save-brief');
 }
 
-const merged = computed<MergedItem[]>(() => {
-  const items: MergedItem[] = [];
+/* ------------------------------ 笔记页签 ------------------------------ */
+/** 缩略显示（用户口径）：每条只占一两行，长笔记多了也一眼扫得完。选择记在本地。 */
+const THUMB_KEY = 'cyl.notes.thumb';
+const thumb = ref(localStorage.getItem(THUMB_KEY) === '1');
+function toggleThumb() {
+  thumb.value = !thumb.value;
+  localStorage.setItem(THUMB_KEY, thumb.value ? '1' : '0');
+}
+
+/** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
+const editKey = ref('');
+const draft = ref('');
+function startEditRow(r: NoteRow) {
+  editKey.value = r.key;
+  draft.value = r.contentMd;
+}
+function cancelEditRow() {
+  editKey.value = '';
+  draft.value = '';
+}
+function saveRow(r: NoteRow) {
+  emit('save-note', {
+    noteId: r.noteId, highlightId: r.highlightId, anchorId: r.anchorId, contentMd: draft.value,
+  });
+}
+/**
+ * 保存后**自动收起编辑器**：父组件写完会刷新列表，这时这条的正文就等于草稿了。
+ * 反过来，保存失败（网络/校验）时正文没变 → 编辑器**保持打开**，用户敲的字不会丢。
+ */
+watch(() => [props.notes, props.annotations, props.highlights], () => {
+  if (!editKey.value) return;
+  const row = merged.value.find((r) => r.key === editKey.value);
+  if (!row || row.contentMd === draft.value) cancelEditRow();
+});
+
+const merged = computed<NoteRow[]>(() => {
+  const rows: NoteRow[] = [];
+  const noteOf = (hlId: string) => props.notes.find((n) => n.highlight_id === hlId) ?? null;
+  const usedNotes = new Set<string>();
+  /* 高亮按**分组**归并：一次跨行划词是好几条记录，界面上是**一条**笔记 */
+  const groups = new Map<string, Highlight[]>();
+  for (const h of props.highlights) {
+    const g = h.group_id || h.id;
+    groups.set(g, [...(groups.get(g) ?? []), h]);
+  }
+  for (const [g, list] of groups) {
+    const ids = list.map((h) => h.id);
+    const note = list.map((h) => noteOf(h.id)).find(Boolean) ?? null;
+    if (note) usedNotes.add(note.id);
+    rows.push({
+      key: `h:${g}`, kind: note ? 'note' : 'highlight',
+      anchorId: list[0].block_id ?? null, anchorIds: ids,
+      page: list[0].page ?? null,
+      quote: list.map((h) => String(h.text ?? '').trim()).filter(Boolean).join(' '),
+      noteId: note?.id ?? '', highlightId: ids[0] ?? '',
+      contentMd: note?.content_md ?? '',
+      label: note ? '笔记' : '待写',
+      badge: note ? 'accent' : 'dim',
+      at: note?.updated_at ?? note?.created_at ?? list[0].created_at ?? null,
+      scope: list[0].scope ?? 'row',
+    });
+  }
+  /* 没挂在任何高亮上的笔记（第四步之前建的 / 高亮先被删了）：照样是笔记，单独成条 */
+  for (const n of props.notes) {
+    if (usedNotes.has(n.id)) continue;
+    rows.push({
+      key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [], page: n.page ?? null,
+      quote: n.selected_text ?? '', noteId: n.id, highlightId: n.highlight_id ?? '',
+      contentMd: n.content_md, label: '笔记', badge: 'accent',
+      at: n.updated_at ?? n.created_at ?? null, scope: n.scope,
+    });
+  }
+  /* 批注（划词解释 / 人工批注）：用户口径是"合并成笔记"，所以同一种卡片、同一个页签 */
   for (const a of props.annotations) {
     const selection = a.source === 'selection';
-    items.push({
-      key: `a:${a.id}`, kind: selection ? 'selection' : 'annotation',
-      label: selection ? '划词解释' : (a.type || '批注'),
-      badge: selection ? 'ok' : 'accent',
-      anchorId: a.block_id, page: a.page ?? null,
-      quote: '', contentMd: a.content_md, at: a.created_at,
+    rows.push({
+      key: `a:${a.id}`, kind: 'annotation', anchorId: a.block_id, anchorIds: [],
+      page: a.page ?? null, quote: '', noteId: '', highlightId: '',
+      contentMd: a.content_md, label: selection ? '划词解释' : (a.type || '批注'),
+      badge: selection ? 'ok' : 'accent', at: a.created_at,
     });
   }
-  for (const n of props.notes) {
-    items.push({
-      key: `n:${n.id}`, kind: 'note', label: '笔记', badge: 'accent',
-      anchorId: n.block_id, page: n.page ?? null,
-      quote: n.selected_text ?? '', contentMd: n.content_md,
-      at: n.updated_at ?? n.created_at ?? null,
-      scope: n.scope ?? 'row', noteId: n.id,
-    });
-  }
-  return items.sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')));
+  return rows.sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')));
 });
+
+/** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
+function removeRow(r: NoteRow) {
+  if (r.kind === 'annotation') { emit('delete-annotation', r.key.slice(2)); return; }
+  if (r.anchorIds.length) { emit('delete-highlight', r.anchorIds.slice()); return; }
+  if (r.noteId) emit('delete-note', r.noteId);
+}
 </script>
 
 <template>
@@ -211,35 +315,95 @@ const merged = computed<MergedItem[]>(() => {
       @open-page="emit('open-insight-page')"
     />
 
-    <!-- 批注 + 笔记（合并页签：按时间倒序的信息流） -->
-    <template v-if="props.tab === 'annotations'">
-      <div v-if="!merged.length" class="empty small">还没有批注或笔记（在正文里划词即可新建）</div>
-      <div v-for="m in merged" :key="m.key" class="item" :class="m.kind"
-           :data-note-id="m.noteId || undefined"
-           :data-item-kind="m.kind">
+    <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：
+         一条 = 一处高亮 + 它的正文；批注也按同一种卡片列在这里） -->
+    <template v-if="props.tab === 'notes'">
+      <div class="notes-bar">
+        <span class="tiny faint">{{ merged.length }} 条</span>
+        <span class="spacer" />
+        <button
+          class="btn icon sm"
+          :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
+          :aria-pressed="thumb"
+          data-notes-thumb
+          @click="toggleThumb"
+        >
+          <AppIcon :name="thumb ? 'expand' : 'list'" :size="13" />
+        </button>
+      </div>
+      <div v-if="!merged.length" class="empty small">
+        还没有笔记（在正文里划词 → 高亮 → 写笔记）
+      </div>
+      <div
+        v-for="r in merged"
+        :key="r.key"
+        class="item note-row"
+        :class="[r.kind, { thumb, editing: editKey === r.key }]"
+        :data-note-id="r.noteId || undefined"
+        :data-item-kind="r.kind"
+      >
         <div class="row tiny">
-          <span class="badge" :class="m.badge">{{ m.label }}</span>
+          <span class="badge" :class="r.badge">{{ r.label }}</span>
           <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
-          <span v-if="m.scope" class="badge dim" :title="`高亮位置：${SCOPE_LABEL[m.scope] || m.scope}`">
-            {{ SCOPE_LABEL[m.scope] || m.scope }}
+          <span v-if="r.scope" class="badge dim" :title="`高亮位置：${SCOPE_LABEL[r.scope] || r.scope}`">
+            {{ SCOPE_LABEL[r.scope] || r.scope }}
           </span>
-          <span v-if="m.page" class="faint">p{{ m.page }}</span>
-          <span v-if="m.at" class="faint">{{ fmtRelative(m.at) }}</span>
+          <span v-if="r.page" class="faint">p{{ r.page }}</span>
+          <span v-if="r.at" class="faint">{{ fmtRelative(r.at) }}</span>
           <span class="spacer" />
-          <button class="btn icon sm" title="定位" @click="locate(m.anchorId, m.page)">
+          <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
             <AppIcon name="locate" :size="13" />
           </button>
           <button
+            v-if="r.kind !== 'annotation'"
             class="btn icon sm"
-            title="删除"
-            @click="m.kind === 'note' ? emit('delete-note', m.key.slice(2)) : emit('delete-annotation', m.key.slice(2))"
+            :title="r.noteId ? '编辑这条笔记' : '给这处高亮写笔记'"
+            data-item-edit
+            @click="startEditRow(r)"
+          >
+            <AppIcon :name="r.noteId ? 'edit' : 'add'" :size="13" />
+          </button>
+          <button
+            class="btn icon sm"
+            :title="r.anchorIds.length ? '删除这处高亮（挂在上面的笔记一起删）' : '删除'"
+            data-item-delete
+            @click="removeRow(r)"
           >
             <AppIcon name="trash" :size="13" />
           </button>
         </div>
-        <!-- 划词原文 / 笔记引用：也是文档里的原文，同样按 Markdown 渲染（含公式） -->
-        <div v-if="m.quote" class="small faint md quote" v-html="mdToHtml(`“${m.quote}”`)" />
-        <div class="small md" v-html="annotationHtml(m.contentMd)" />
+        <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式） -->
+        <div
+          v-if="r.quote"
+          class="small faint md quote"
+          :class="{ clamp1: thumb }"
+          v-html="mdToHtml(`“${r.quote}”`)"
+        />
+        <template v-if="editKey === r.key">
+          <textarea
+            v-model="draft"
+            class="note-edit"
+            rows="4"
+            data-pane-note-edit
+            placeholder="用 Markdown 写这条笔记；支持 $公式$（Ctrl+Enter 保存）"
+            @keyup.ctrl.enter="saveRow(r)"
+          />
+          <div class="row" style="gap:6px">
+            <button class="btn sm primary" data-pane-note-save @click="saveRow(r)">保存</button>
+            <button class="btn sm" @click="cancelEditRow">取消</button>
+            <span class="spacer" />
+            <span class="tiny faint">{{ r.anchorIds.length ? '挂在这处高亮上' : '' }}</span>
+          </div>
+        </template>
+        <template v-else>
+          <div
+            v-if="r.contentMd"
+            class="small md"
+            :class="{ clamp1: thumb }"
+            v-html="annotationHtml(r.contentMd)"
+          />
+          <div v-else-if="r.kind === 'highlight'" class="tiny faint">还没写笔记（点铅笔补上）</div>
+        </template>
       </div>
     </template>
 
@@ -435,6 +599,32 @@ const merged = computed<MergedItem[]>(() => {
 .item.manual { border-left-color: var(--accent); }
 .item.auto, .item.selection { border-left-color: var(--ok); }
 .item.note { border-left-color: var(--warn); }
+/* 笔记页签：顶部一条**细工具条**（条数 + 缩略开关），滚动时钉在顶上。
+   左边框用高亮笔的颜色语义 —— 还没写正文的（`highlight`）压暗一档，一眼分得出"哪些还没写"。 */
+.notes-bar {
+  position: sticky; top: -8px; z-index: 2;
+  display: flex; align-items: center; gap: 6px;
+  margin: -8px -10px 8px; padding: 4px 10px;
+  background: var(--bg-elev); border-bottom: 1px solid var(--divider);
+}
+.item.note-row { border-left-color: var(--accent); }
+.item.note-row.highlight { border-left-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong)); }
+.item.note-row.annotation { border-left-color: var(--ok); }
+.item.note-row .row { gap: 6px; }
+/* 缩略显示（用户口径）：每条只占一两行 —— 引用一行、正文一行，点开编辑器才铺开 */
+.item.note-row.thumb { padding: 6px 9px; margin-bottom: 5px; }
+.clamp1 {
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden; line-clamp: 1;
+}
+.item.note-row.thumb .quote { margin-bottom: 0; }
+.item.note-row .note-edit {
+  width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 6px 8px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 12.5px;
+  line-height: 1.6; resize: vertical;
+}
+.item.note-row .note-edit:focus { outline: none; border-color: var(--accent); }
 /* 「从高亮打开对应笔记」时的落点提示：闪一下边框与底色，用户才知道跳到了哪一条 */
 .item.flash {
   animation: note-flash 1.2s var(--ease);
