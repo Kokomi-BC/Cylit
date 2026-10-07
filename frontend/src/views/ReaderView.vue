@@ -49,6 +49,7 @@ import ReaderSearch, { type SearchMode, type SearchScope } from '@/components/re
 import ReaderChat from '@/components/reader/ReaderChat.vue';
 import ReaderSidePanel, { type BriefDraft, type SideTab } from '@/components/reader/ReaderSidePanel.vue';
 import ReaderToc from '@/components/reader/ReaderToc.vue';
+import ReaderPages from '@/components/reader/ReaderPages.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
@@ -454,6 +455,9 @@ const briefDraft = reactive<BriefDraft>({
  *  ⚠️ 原「阅读地图」页签已随该功能一起删除（2026-10-02）。 */
 type SideTabKey = 'toc' | 'chat' | 'search' | SideTab;
 const sideTab = ref<SideTabKey>('toc');
+/** 「目录」页签里的两种视图：大纲 / 页面缩略图（《修改计划》第二步，二）。
+ *  只存本次会话：它是"这一眼怎么看"，不是论文的属性，没必要进 localStorage 或服务端进度。 */
+const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
   'toc', 'chat', 'insight', 'search', 'annotations', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
@@ -3275,17 +3279,47 @@ function renderMarkdown(text?: string | null) {
             </button>
           </div>
         </div>
-        <ReaderToc
-          v-if="sideTab === 'toc'"
-          :rows="tocRows"
-          :current-row-id="tocActiveId"
-          :page-count="pages.length"
-          :collapsed="collapsed"
-          @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
-          @toggle="toggleCollapse"
-          @collapse-all="collapseAll"
-          @expand-all="expandAll"
-        />
+        <!-- 目录页签里再分「目录 / 页面视图」（《修改计划》第二步）：两者**共享同一个"读到哪"**
+             —— `currentPage` 都从正文当前行来，页面视图据此高亮并把缩略图滚进可视区。 -->
+        <div v-if="sideTab === 'toc'" class="toc-pane">
+          <div class="toc-mode" role="tablist" aria-label="目录 / 页面视图">
+            <button
+              type="button" role="tab" data-toc-mode="outline"
+              :aria-selected="tocMode === 'outline'"
+              :class="{ active: tocMode === 'outline' }"
+              @click="tocMode = 'outline'"
+            >
+              <AppIcon name="list" :size="13" />目录
+            </button>
+            <button
+              type="button" role="tab" data-toc-mode="pages"
+              :aria-selected="tocMode === 'pages'"
+              :class="{ active: tocMode === 'pages' }"
+              @click="tocMode = 'pages'"
+            >
+              <AppIcon name="image" :size="13" />页面视图
+            </button>
+          </div>
+
+          <ReaderToc
+            v-if="tocMode === 'outline'"
+            :rows="tocRows"
+            :current-row-id="tocActiveId"
+            :page-count="pages.length"
+            :collapsed="collapsed"
+            @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+            @toggle="toggleCollapse"
+            @collapse-all="collapseAll"
+            @expand-all="expandAll"
+          />
+          <ReaderPages
+            v-else
+            :paper-id="paperId"
+            :page-count="pages.length"
+            :current-page="currentPage"
+            @focus="gotoPage"
+          />
+        </div>
         <!-- 对话面板用 `KeepAlive` 包住：页签在这条 `v-if` 链上，切走就**卸载** ——
              回来时整块重挂，会话列表要重新请求一次，视觉上就是"点「对话」要等一下才出历史"
              （用户报的延迟）。缓存住实例之后，切回来是**原样还在**（连正在流式的回答都不断），
@@ -3792,6 +3826,26 @@ function renderMarkdown(text?: string | null) {
  * 一行放不下就横向滚（滚轮 / 两端圆箭头，见 onSideTabsWheel），
  * 文字从两枚圆按钮**下面**穿过去 —— 按钮是半透明玻璃，滚过去时底下的字仍然看得见。 */
 .side-tabs-wrap { position: relative; flex: 1 1 auto; min-width: 0; z-index: 3; }
+
+/* 「目录 / 页面视图」切换（《修改计划》第二步）：与侧栏页签同一门语言（无描边的托盘 + 抬起的
+   当前项），但**只一行文字**、比页签那圈矮一档 —— 它是页签内部的次级切换，不该跟页签抢注意力。 */
+.toc-pane { display: flex; flex-direction: column; min-width: 0; }
+.toc-mode {
+  display: inline-flex; align-self: flex-start; gap: 2px; flex: none;
+  margin: 0 0 8px; padding: 2px;
+  border: 0; border-radius: 999px; background: var(--bg-sunken);
+}
+.toc-mode > button {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 10px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.toc-mode > button:hover { color: var(--text); }
+.toc-mode > button.active {
+  background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1);
+}
 .side-tabs {
   display: flex; align-items: center; gap: 2px;   /* 图标之间更紧凑（用户口径） */
   height: var(--cap-h); padding: 3px;

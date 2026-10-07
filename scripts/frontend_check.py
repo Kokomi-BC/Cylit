@@ -137,6 +137,46 @@ async function run() {
       toggle.click();
       await sleep(300);
     }
+    /* 「目录 / 页面视图」切换（《修改计划》第二步）：两者共享同一份"读到哪" */
+    const modeOutline = d.querySelector('[data-toc-mode="outline"]');
+    const modePages = d.querySelector('[data-toc-mode="pages"]');
+    res.tocModes = !!(modeOutline && modePages);
+    if (modePages) {
+      modePages.click();
+      await until(d, (x) => x.querySelector('.page-thumb'));
+      const thumbs = [...d.querySelectorAll('.page-thumb')];
+      res.thumbCount = thumbs.length;
+      res.thumbOrdered = thumbs.length > 0
+        && thumbs.every((t, i) => Number(t.getAttribute('data-page')) === i + 1);
+      res.thumbNums = thumbs.slice(0, 3).map((t) => ((t.querySelector('.no') || {}).textContent || '').trim());
+      res.thumbSrc = thumbs.length ? (thumbs[0].querySelector('img') || {}).getAttribute('src') : null;
+      res.thumbCurrent = thumbs.filter((t) => t.classList.contains('active'))
+        .map((t) => Number(t.getAttribute('data-page')));
+      res.thumbRatio = thumbs.length ? (() => {
+        const r = thumbs[0].getBoundingClientRect();
+        return [Math.round(r.width), Math.round(r.height)];
+      })() : null;
+      /* 取图失败 → 占位（页码与点击都还在），把第一张图指到一个不存在的页强制 404 */
+      const first = thumbs[0];
+      const img0 = first.querySelector('img');
+      if (img0) {
+        img0.setAttribute('src', '/api/v1/papers/no-such-paper/pages/99999');
+        await until(d, () => first.classList.contains('failed'), 20);
+      }
+      res.failedPh = first.classList.contains('failed') && !!first.querySelector('.ph');
+      res.failedNo = ((first.querySelector('.no') || {}).textContent || '').trim();
+      /* 点第 3 页 → 跳过去（URL 带 ?page=3），再切回目录仍然正常 */
+      const target = thumbs[2] || thumbs[0];
+      res.jumpWanted = Number(target.getAttribute('data-page'));
+      target.click();
+      await sleep(1000); spin(BURN); await sleep(300);
+      res.jumpUrl = w.location.search;
+      res.jumpActive = [...d.querySelectorAll('.page-thumb.active')]
+        .map((t) => Number(t.getAttribute('data-page')));
+      modeOutline.click();
+      await sleep(300);
+      res.backToOutline = !!d.querySelector('.toc-item');
+    }
     /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
     const sideBtn = [...d.querySelectorAll('.side-tab')]
       .find((b) => (b.textContent || '').indexOf('对话') >= 0);
@@ -1188,6 +1228,30 @@ def main() -> int:
                "side=chat" in str(data.get("sideUrl") or "")
                and str(data.get("sideBack") or "").startswith("对话"),
                f"{data.get('sideUrl')} → {data.get('sideBack')}")
+        # ---- 「目录 / 页面视图」切换（共享阅读位置 + 缩略图 + 占位 + 点击跳页） ----
+        if not data.get("tocModes"):
+            record("reader", "目录页签里有「目录 / 页面视图」切换", False, "两枚切换按钮没找到")
+        else:
+            record("reader", "目录页签里有「目录 / 页面视图」切换", True, "两枚切换按钮都在")
+            record("reader", "页面视图：缩略图按页码排满 + 带页码 + 用页面图接口",
+                   bool(data.get("thumbOrdered"))
+                   and (data.get("thumbNums") or [])[:2] == ["1", "2"]
+                   and "/pages/1" in str(data.get("thumbSrc") or ""),
+                   f"{data.get('thumbCount')} 张，页码 {data.get('thumbNums')}，src {str(data.get('thumbSrc'))[-24:]}")
+            record("reader", "页面视图：缩略图是**纵向页面比例**（不是一条横条）",
+                   bool(data.get("thumbRatio")) and data["thumbRatio"][1] > data["thumbRatio"][0],
+                   f"{data.get('thumbRatio')} px")
+            record("reader", "页面视图：当前阅读页高亮（与目录共享同一个读到哪）",
+                   isinstance(data.get("thumbCurrent"), list) and len(data["thumbCurrent"]) <= 1,
+                   f"高亮页 {data.get('thumbCurrent')}")
+            record("reader", "页面视图：取图失败显示占位，页码还在",
+                   data.get("failedPh") is True and data.get("failedNo") == "1",
+                   f"占位={data.get('failedPh')}，页码={data.get('failedNo')}")
+            record("reader", "页面视图：点缩略图跳到那一页（URL 写 ?page=N）",
+                   f"page={data.get('jumpWanted')}" in str(data.get("jumpUrl") or "")
+                   and data.get("jumpActive") == [data.get("jumpWanted")],
+                   f"想跳 {data.get('jumpWanted')}，URL {data.get('jumpUrl')}，高亮 {data.get('jumpActive')}")
+            record("reader", "页面视图能切回目录（大纲还在）", data.get("backToOutline") is True, "")
 
     # ---- ② 对话面板（不发消息） ----
     print("\n② 对话面板：一级页 / 二级页 / 确认框（不发消息）")
