@@ -24,6 +24,7 @@ import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import { openTab } from '@/stores/tabs';
 import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
+import { BRAND_ICON } from '@/utils/brand';
 import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentSelection,
@@ -1125,8 +1126,10 @@ watch(() => props.selection, (sel) => {
         <div v-if="loading" class="empty small">读取会话…</div>
 
         <div v-else-if="!messages.length && !sending" class="hello">
-          <!-- 空态**只有一句语录当背景**（用户口径 2026-10-03：不要上传/换一条这类按钮）。 -->
-          <span class="hello-mark"><AppIcon name="quote" :size="26" /></span>
+          <!-- 空态**只有一句语录当背景**（用户口径 2026-10-03：不要上传/换一条这类按钮）。
+               那枚标记从"双引号水印"换成**裁好的应用图标**（用户口径 2026-10-07 第四轮：
+               这个位置本来就是一枚居中图标，居中的语录在它下面）。 -->
+          <span class="hello-mark" data-hello-mark><img :src="BRAND_ICON" alt="" /></span>
           <p class="hello-line">{{ headline }}</p>
         </div>
 
@@ -1417,7 +1420,12 @@ watch(() => props.selection, (sel) => {
 }
 .th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
 
-.msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; overflow-wrap: anywhere; }
+.msgs {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; overflow-wrap: anywhere;
+  /* 列向 flex：空态那一块才能"占满整块高度、把图标 + 语录**竖直居中**"（用户口径 2026-10-07）。
+     消息自己还是从上往下排（块级子项在列向 flex 里本来就是撑满宽度、顺序堆叠）。 */
+  display: flex; flex-direction: column;
+}
 .msg { margin-bottom: 12px; }
 .msg.assistant .body { font-size: 12.5px; line-height: 1.72; color: var(--text); }
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
@@ -1502,10 +1510,16 @@ watch(() => props.selection, (sel) => {
 .msg .md :deep(p) { margin: 5px 0; }
 .msg .md :deep(ul), .msg .md :deep(ol) { margin: 5px 0; padding-left: 18px; }
 
-.hello { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 22px; text-align: center; }
 /* 空态**只是一句语录当背景**：没有按钮、没有可点的东西（用户口径 2026-10-03）。
-   引号做成水印，语录淡到像背景板，别让人以为那是可点的建议条。 */
+   图标 + 语录这一组**在整块高度里竖直居中**（`flex: 1` + `justify-content: center`，用户口径 2026-10-07），
+   语录淡到像背景板，别让人以为那是可点的建议条。 */
+.hello {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px 22px 40px; text-align: center;
+}
 .hello-mark { color: var(--border-strong); line-height: 1; }
+/* 空态标记 = 应用图标（用户口径 2026-10-07：取代双引号水印；尺寸再放大一档） */
+.hello-mark img { display: block; width: 64px; height: 64px; opacity: .92; }
 .hello-line {
   margin: 0; max-width: 100%; color: var(--text-faint);
   font-size: 13px; font-weight: 500; line-height: 1.7;

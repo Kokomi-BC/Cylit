@@ -501,6 +501,22 @@ async function run() {
 
     /* ── 新建 → 二级页 ── */
     const newBtn = root.querySelector('.list-head .new-conv');
+    /* 顶栏品牌：图标在「Cylit」文字**左侧**、垂直居中 */
+    const logo = d.querySelector('.tabbar-logo');
+    const lmark = logo ? logo.querySelector('img.tabbar-mark') : null;
+    res.brandMark = !!lmark;
+    res.brandSrc = lmark ? String(lmark.getAttribute('src') || '') : '';
+    if (lmark && logo) {
+      const node = [...(logo.childNodes || [])]
+        .find((n) => n.nodeType === 3 && (n.nodeValue || '').trim());
+      if (node) {
+        const rng = d.createRange();
+        rng.selectNodeContents(node);
+        const tr = rng.getBoundingClientRect(), mr = lmark.getBoundingClientRect();
+        res.brandLeftOfText = mr.right <= tr.left + 2
+          && Math.abs((mr.top + mr.height / 2) - (tr.top + tr.height / 2)) <= 6;
+      }
+    }
     newBtn.click();
     await until(d, (x) => x.querySelector('.chat textarea.composer-input'), 20);
     const head = [...root.querySelectorAll('.thread-head button')].map((b) => (b.textContent || '').trim());
@@ -510,6 +526,34 @@ async function run() {
     const hello = root.querySelector('.hello');
     res.helloText = ((hello || {}).textContent || '').trim();
     res.helloButtons = hello ? hello.querySelectorAll('button').length : -1;
+    /* 空态那枚标记 = **应用图标**（用户口径 2026-10-07：取代原来的双引号水印），
+       而且要在**居中语录的上方**、与语录同一条中线 */
+    const hmark = hello ? hello.querySelector('[data-hello-mark] img') : null;
+    res.helloMarkSrc = hmark ? String(hmark.getAttribute('src') || '') : '';
+    if (hmark && hello) {
+      const line = hello.querySelector('.hello-line');
+      const mr = hmark.getBoundingClientRect();
+      const lr = line ? line.getBoundingClientRect() : null;
+      res.helloMarkAbove = !!lr && mr.bottom <= lr.top + 2;
+      res.helloMarkCentered = Math.abs((mr.left + mr.right) / 2
+        - (hello.getBoundingClientRect().left + hello.getBoundingClientRect().right) / 2) <= 3;
+      res.helloMarkDebug = { markBottom: Math.round(mr.bottom),
+                             lineTop: lr ? Math.round(lr.top) : -1,
+                             markCx: Math.round((mr.left + mr.right) / 2),
+                             helloCx: Math.round((hello.getBoundingClientRect().left
+                               + hello.getBoundingClientRect().right) / 2) };
+      /* 图标 + 语录这一组要在**整块高度里竖直居中**（用户口径 2026-10-07） */
+      const msgs = root.querySelector('.msgs');
+      if (msgs && lr) {
+        const mbox = msgs.getBoundingClientRect();
+        res.helloCenteredV =
+          Math.abs((mr.top + lr.bottom) / 2 - (mbox.top + mbox.bottom) / 2) <= 40;
+        res.helloMarkSize = Math.round(mr.width);
+        res.helloSelfDebug = { groupMid: Math.round((mr.top + lr.bottom) / 2),
+                               paneMid: Math.round((mbox.top + mbox.bottom) / 2),
+                               mark: Math.round(mr.width) };
+      }
+    }
     const box = root.querySelector('.composer-box');
     res.boxRadius = box ? getComputedStyle(box).borderTopLeftRadius : '';
     res.boxParts = box ? ['textarea.composer-input', '.attach', '.send']
@@ -1962,7 +2006,8 @@ def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
         for item, rid in rows:
             sess.add(PaperReference(id=rid, paper_id=paper, order_no=item["order_no"],
                                     source="selfcheck", raw=item["raw"], title=item["title"],
-                                    title_en=item["title_en"], authors=item["authors"]))
+                                    title_en=item["title_en"], authors=item["authors"],
+                                    page_no=item.get("page_no")))
         return rows[0][1]
 
 
@@ -2034,6 +2079,8 @@ async function run() {
       && (rrow.getAttribute('title') || '').indexOf('Ran Hadad and Uri Erez.') >= 0;
     /* 只有英文题名时**不出现**第二条（英文）行：那条只在有中文标题时才画 */
     res.ruleNoSecondLine = !!rrow && !rrow.querySelector('.ref-en');
+    /* 卡片上**不该**再有「定位」按钮（用户口径 2026-10-07 第三轮：定位到不了精确那一行，撤掉） */
+    res.noLocate = !D().querySelector('[data-ref-locate]');
   } catch (err) {
     res.error = String((err && err.message) || err);
   }
@@ -2083,6 +2130,8 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
            and res.get("ruleTooltipRaw") is True and res.get("ruleNoSecondLine") is True,
            f"题名={res.get('ruleHasTitle')} 作者收起={res.get('ruleAuthorHidden')} "
            f"tooltip有原文={res.get('ruleTooltipRaw')}｜{str(res.get('ruleText'))[:44]}")
+    record("refs-pane", "卡片没有「定位」按钮（撤掉：定位到不了精确那一行）",
+           res.get("noLocate") is True, f"页面里还有定位按钮={not res.get('noLocate')}")
 
 
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:
@@ -2561,6 +2610,37 @@ console.log(JSON.stringify(cases.map((c) => referenceUrl(c))));
 """
 
 
+def check_brand_assets(base: str) -> None:
+    """品牌资源（免费、不开浏览器）：`/app/icon.png` 真能取到，且 index.html 指着它。
+
+    图标本身是**离线裁好的**（仓库根 `icon.png` → Apple 连续圆角 → `frontend/public/icon.png`），
+    这里只验"构建产物里有没有、路径对不对"——那是三次引用的共同前提
+    （favicon / 顶栏品牌 / 新对话按钮）。
+    """
+    print("\n⑬ 品牌图标（favicon 与顶栏、新对话共用同一张裁好的 PNG）")
+    url = f"{base}/app/icon.png"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            body, ctype, code = r.read(), r.headers.get("Content-Type", ""), r.status
+    except Exception as exc:  # noqa: BLE001
+        record("brand", "站点图标 `/app/icon.png` 可访问且是 PNG", False, str(exc)[:80])
+        return
+    record("brand", "站点图标 `/app/icon.png` 可访问且是 PNG",
+           code == 200 and "image/png" in ctype and len(body) > 5000,
+           f"{code} {ctype} {len(body)} bytes")
+    try:
+        with urllib.request.urlopen(f"{base}/app/", timeout=20) as r:
+            html = r.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        record("brand", "index.html 的 favicon 指着那张 PNG（不再是内联 SVG）", False, str(exc)[:80])
+        return
+    record("brand", "index.html 的 favicon 指着那张 PNG（不再是内联 SVG）",
+           "/app/icon.png" in html and "apple-touch-icon" in html
+           and "data:image/svg+xml" not in html,
+           f"icon.png={'/app/icon.png' in html} apple-touch={'apple-touch-icon' in html} "
+           f"残留内联 SVG={'data:image/svg+xml' in html}")
+
+
 def check_reference_urls() -> None:
     """把上面那张表喂给**真代码** `utils/references.ts`（esbuild bundle → node）。"""
     print("\n⓪ 参考文献地址：结构化字段 → 原文里抠 DOI/arXiv → 学术搜索")
@@ -2778,6 +2858,21 @@ def main() -> int:
     if chat:
         record("chat", "顶部工具栏只有「新对话」一个按钮",
                (chat.get("headBtns") or []) == ["新对话"], f"{chat.get('headBtns')}")
+        record("chat", "空态标记 = 应用图标，且在**居中语录的上方**且居中（取代双引号水印）",
+               "icon.png" in str(chat.get("helloMarkSrc") or "")
+               and chat.get("helloMarkAbove") is True
+               and chat.get("helloMarkCentered") is True,
+               f"src={chat.get('helloMarkSrc')} 在语录上方={chat.get('helloMarkAbove')} "
+               f"居中={chat.get('helloMarkCentered')}｜{chat.get('helloMarkDebug')}")
+        record("chat", "空态这一组（图标 + 语录）在整块高度里**竖直居中**，图标够大",
+               chat.get("helloCenteredV") is True and (chat.get("helloMarkSize") or 0) >= 48,
+               f"竖直居中={chat.get('helloCenteredV')} 图标 {chat.get('helloMarkSize')}px"
+               f"｜{chat.get('helloSelfDebug')}")
+        record("shell", "顶栏品牌：图标在「Cylit」**左侧**且垂直居中",
+               chat.get("brandMark") is True and chat.get("brandLeftOfText") is True
+               and "icon.png" in str(chat.get("brandSrc") or ""),
+               f"有图标={chat.get('brandMark')} 在文字左侧={chat.get('brandLeftOfText')} "
+               f"src={chat.get('brandSrc')}")
         record("chat", "分类 / 管理共 2 枚胶囊托盘（无范围选择器）",
                chat.get("trayCount") == 2 and (chat.get("segBtns") or []) == ["全部", "划词", "常规"],
                f"{chat.get('trayCount')} 枚 / {chat.get('segBtns')}")
@@ -2822,8 +2917,7 @@ def main() -> int:
                    and chat.get("modalClosed") is True and chat.get("cancelKeptRows") is True,
                    f"标题={(chat.get('modalTitle') or '')[:14]!r} 分隔线={chat.get('modalDividers')} "
                    f"危险按钮={chat.get('modalDangerSolid')}")
-        record("chat", "会话页顶部不重复「新对话」文字（只留图标钮）",
-               (chat.get("threadHeadBtns") or []) == ["", ""], f"{chat.get('threadHeadBtns')}")
+        record("chat", "会话页顶部不重复「新对话」文字（只留图标钮）",               (chat.get("threadHeadBtns") or []) == ["", ""], f"{chat.get('threadHeadBtns')}")
         record("chat", "输入框文案 = 请输入问题", chat.get("placeholder") == "请输入问题",
                f"{chat.get('placeholder')!r}")
         record("chat", "空态只有一句语录当背景（0 个按钮）",
@@ -2901,6 +2995,7 @@ def main() -> int:
     check_notes_page(browser, base, args.paper, args.budget)
     check_references_pane(browser, base, args.paper, args.budget)
     check_highlight_update_api(base, args.paper)   # 纯 HTTP：浮层色块要用的改色接口
+    check_brand_assets(base)                       # 纯 HTTP：站点图标能取到、路径对
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

@@ -12,6 +12,7 @@
 import { computed, nextTick, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
+import { BRAND_ICON } from '@/utils/brand';
 import {
   HOME_KEY, closeOtherTabs, closeTab, openTab, routeKey, setTabTitle, tabLocation, tabs, tabsState,
 } from '@/stores/tabs';
@@ -95,10 +96,13 @@ function onContextMenu(key: string, ev: MouseEvent) {
 
 <template>
   <header class="tabbar">
-    <!-- 品牌词（用户口径 2026-09-28：原来的图标换成文字「Cylit」）。
-         刻意**不加**底色方块：顶栏本来就是一条细标签条，一块实心青绿方块会跟
-         「首页」那枚常驻胶囊抢注意力；净文字 + 强调色更像"应用名"而不是一个按钮。 -->
-    <span class="tabbar-logo" title="Cylit">Cylit</span>
+    <!-- 品牌：**图标 + 文字**（用户口径 2026-10-07 第三轮：把 icon.png 裁成 Apple 应用图标那种
+         连续圆角，放在「Cylit」左侧）。刻意**不加**底色方块：顶栏本来就是一条细标签条，
+         一块实心方块会跟「首页」那枚常驻胶囊抢注意力。 -->
+    <span class="tabbar-logo" title="Cylit">
+      <img class="tabbar-mark" :src="BRAND_ICON" alt="" />
+      Cylit
+    </span>
 
     <nav ref="strip" class="tab-strip" aria-label="打开的标签页">
       <RouterLink
@@ -159,12 +163,14 @@ function onContextMenu(key: string, ev: MouseEvent) {
    字号/字重比标签页略大一档，读起来是"应用名"而不是一个可点的标签；`user-select: none` +
    右侧留 8px，让它和第一个标签之间有一道自然的呼吸位。 */
 .tabbar-logo {
-  flex: none; display: flex; align-items: center;
+  flex: none; display: flex; align-items: center; gap: 6px;
   padding: 0 8px 0 3px;
   font-size: 14.5px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
   color: var(--accent-text);
   user-select: none;
 }
+/* 品牌图标：PNG 自己带**连续圆角 + 透明四角**，不要再叠一层 CSS 圆角（会切掉曲率） */
+.tabbar-mark { display: block; width: 19px; height: 19px; flex: none; }
 /* 标签条 = **一枚自撑的胶囊托盘**（用户口径：只在样式上与下面那枚页签胶囊对齐）。
  * 三层、**无描边**：① 托盘（--bg-sunken）② 抬起的那枚白 pill（--bg-elev + --shadow-1）
  * ③ 文字。与 base.css 的 `.seg`、阅读器侧栏那枚页签胶囊**同一门语言、同一组颜色**

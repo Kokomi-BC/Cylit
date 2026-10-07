@@ -141,6 +141,10 @@ class PaperReference(Base):
     title_en: Mapped[str | None] = mapped_column(String(512))
     #: 作者段（与原文逐字相同的那一段；侧栏默认**不显示**，只在 tooltip 里给）
     authors: Mapped[str | None] = mapped_column(String(512))
+    #: 这一条出现在**第几页**（侧栏每张卡片的「定位」按钮跳的就是它）。
+    #: 只存页码不存行号：行号是位置编号（`p011-05`），重译后块数一变就指到别的文字上了，
+    #: 页码在"这篇论文的排版没变"这个前提下才是稳的。
+    page_no: Mapped[int | None] = mapped_column(Integer)
     venue: Mapped[str | None] = mapped_column(String(256))
     year: Mapped[int | None] = mapped_column(Integer)
     doi: Mapped[str | None] = mapped_column(String(128))

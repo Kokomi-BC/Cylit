@@ -69,6 +69,9 @@ export interface PaperReference {
   title_en?: string | null;
   authors?: string | null;
   venue?: string | null;
+  /** 这一条出现在**第几页**（接口保留：卡片上那枚「定位」按钮已按用户口径撤掉 —— 定不到精确那一行；
+   *  将来要做"精确到条目"的定位时直接能用） */
+  page_no?: number | null;
   year?: number | null;
   doi?: string | null;
   url?: string | null;

@@ -254,8 +254,9 @@ _REF_LABEL_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*")
 #: 两条硬要求：① 每个词以**大写**起头（小写起头的词是机构名/网址/标题）；② **最后一个词至少两
 #: 个字符** —— 否则 `Tom B.`、`Dawid J.` 这种"名字中间的缩写"会被当成作者段的结尾
 #: （实测：`Max Belitsky, Dawid J. Kopiczko` 会被切成作者=`Max Belitsky, Dawid J.`、标题=`Kopiczko…`）。
-_REF_NAME_RE = re.compile(r"^(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-]+"
-                          r"(?:\s+(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-]+)*$")
+#: `´¨¯` 是解析器把重音写成独立字符时的产物（实测 `Christopher R´e`），不放进字符集整条就切不出来。
+_REF_NAME_RE = re.compile(r"^(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-´¨¯]+"
+                          r"(?:\s+(?:[A-Z]\.?\s+)*[A-Z][\w@&'’\-´¨¯]+)*$")
 #: "出处"该有的样子：年份 / 卷期页码 / 期刊会议关键词
 _REF_VENUE_RE = re.compile(
     r"\b(?:19|20)\d{2}\b|\bpp\.|\bvol\.|\bno\.|\d+\s*\(\d+\)|arXiv|doi|Corr\b|"
@@ -290,13 +291,15 @@ def _looks_like_names(segment: str) -> bool:
 
 
 def _clean_title(text: str) -> str:
-    """标题清洗：剥两端的强调记号 / 引号，去掉解析器留下的 `<!-- … -->` 标记并归一空白。
+    """标题清洗：剥两端的强调记号 / 引号、去掉 `<!-- … -->` 标记、归一空白、去掉**收尾标点**。
 
-    侧栏不渲染 Markdown，留着就是字面星号；`<!-- ===== page 11 ===== -->` 这种页分隔注释
-    会被原文读出串进来（实测 GPT-3 那条就夹在标题中间）。
+    侧栏不渲染 Markdown，留着星号就是字面星号；`<!-- ===== page 11 ===== -->` 这种页分隔注释
+    会被原文读出串进来（实测 GPT-3 那条就夹在标题中间）；标题自己的句末句号不属于标题
+    （`GPT-4 technical report.` → `GPT-4 technical report`），但 `?` / `!` 是标题的一部分，留着。
     """
     out = re.sub(r"<!--.*?-->", " ", str(text or ""), flags=re.S)
-    return " ".join(out.split()).strip(_TITLE_JUNK).strip()
+    return (" ".join(out.split()).strip(_TITLE_JUNK).rstrip(".,;:·、，。")
+            .strip(_TITLE_JUNK).strip())
 
 
 def _take_ref_title(rest: str) -> tuple[str, bool]:
@@ -352,18 +355,66 @@ def split_ref_by_rule(raw: str) -> dict | None:
     return None
 
 
+def _norm_index_map(text: str) -> tuple[str, list[int]]:
+    """归一化后的字符串 + **每个字符在原文里的下标**。
+
+    为什么要下标：标题要在**原文**上切（保留它自己的标点与斜体），但比对必须归一化 ——
+    空白、强调记号在中文那一侧未必一个字符不差。
+    """
+    chars: list[str] = []
+    idx: list[int] = []
+    for i, ch in enumerate(str(text or "")):
+        if ch in "*`":
+            continue
+        if ch.isspace() or ch == "\u3000":
+            if chars and chars[-1] != " ":
+                chars.append(" ")
+                idx.append(i)
+            continue
+        chars.append(ch)
+        idx.append(i)
+    while chars and chars[-1] == " ":
+        chars.pop()
+        idx.pop()
+    return "".join(chars), idx
+
+
+def _locate_fragment(raw: str, frag: str, *, from_end: bool) -> int | None:
+    """在原文里定位"中文那侧 `《》` 之外那段"的边界，返回**原文下标**。
+
+    用户口径（2026-10-07）：**以中文为标准** —— 中文那侧有书名号，`《》` 外面那两段是
+    逐字照抄原文的，拿它们去原文里比对，夹在中间的就是英文标题。
+    比对容忍空白 / 强调记号 / 个别标点的差异：先逐字匹配，不行再退到"取 24 个字符的锚"。
+    """
+    nraw, imap = _norm_index_map(raw)
+    nfrag, _ = _norm_index_map(frag)
+    if not nfrag:
+        return None if from_end else 0
+    if not from_end:
+        if nraw.startswith(nfrag):
+            return imap[len(nfrag) - 1] + 1
+        anchor = nfrag[-24:]
+        pos = nraw.find(anchor, 0, len(nfrag) + 80)
+        return imap[pos + len(anchor) - 1] + 1 if pos >= 0 else None
+    if nraw.endswith(nfrag):
+        return imap[len(nraw) - len(nfrag)]
+    anchor = nfrag[:24]
+    pos = nraw.rfind(anchor)
+    if pos >= 0 and pos >= len(nraw) - len(nfrag) - 80:
+        return imap[pos]
+    return None
+
+
 def split_ref_text(raw: str, translated: str | None) -> dict:
     """一条参考文献的「原文 + 译文」→ ``{title, title_en, authors}``。
 
     为什么切得动：提示词要求译文**只把标题换成《中文标题》**，作者与会议/年份/链接逐字照抄原文。
-    于是译文与原文是**同一副文字骨架**，可以这样切：
-
-    - `《…》` **之前**那段 = 作者段（与原文逐字相同）→ 从原文头部切掉；
-    - `《…》` **之后**那段 = 会议/年份/DOI/链接 → 从原文尾部切掉；
-    - 剩下的中间那段就是**英文标题**（连它自己的句号一起留着）。
+    于是**以中文那侧的《》为标准**（用户口径 2026-10-07）：`《》` 之前那段 = 作者段、
+    之后那段 = 会议/年份/链接，拿这两段去原文里定位（`_locate_fragment`，容忍空白与标点差异），
+    夹在中间的就是**英文标题**。定位不到才退化成"只回中文标题"。
 
     没有《》时（还没重译 / 模型没照抄）**退到纯规则切法** `split_ref_by_rule` ——
-    用户口径：作者名后面是 `.` 的就显示文献名称，形状对不上才显示整条原文。
+    作者名后面是 `.` 的就显示文献名称，形状对不上才显示整条原文。
     """
     raw = str(raw or "").strip()
     out = {"title": None, "title_en": None, "authors": None}
@@ -371,15 +422,15 @@ def split_ref_text(raw: str, translated: str | None) -> dict:
     m = _ZH_TITLE_RE.search(text)
     if m:
         out["title"] = m.group(1).strip() or None
-        # 作者段只剥**空白**（不剥标点）：它要能原样对上原文的前缀，也方便日后显示
+        # 作者段只剥**空白**（不剥标点）：它要能对上原文的前缀，也方便日后显示
         head = text[:m.start()].rstrip()
         tail = text[m.end():].lstrip(_REF_SEP)
-        if head and raw.startswith(head):
-            out["authors"] = head
-            body = raw[len(head):].lstrip(_REF_SEP)
-            if tail and body.endswith(tail):
-                body = body[: len(body) - len(tail)].rstrip(_REF_SEP)
-            out["title_en"] = _clean_title(body) or None
+        start = _locate_fragment(raw, head, from_end=False)
+        end = _locate_fragment(raw, tail, from_end=True) if tail else len(raw)
+        if start is not None:
+            out["authors"] = head or None
+            stop = end if (end is not None and end > start) else len(raw)
+            out["title_en"] = _clean_title(raw[start:stop]) or None
     if not out["title_en"]:
         # 英文标题缺了（没译文、或模型没照抄作者段）→ 走规则切；切不出来就维持"只显示整条原文"
         rule = split_ref_by_rule(raw)
@@ -391,46 +442,142 @@ def split_ref_text(raw: str, translated: str | None) -> dict:
 
 def reference_pairs(paper_id: str,
                     rows: list[tuple[int, str, str, str]] | None = None
-                    ) -> list[tuple[str, str | None]]:
-    """参考文献条目（离线）→ ``[(原文, 译文 or None)]``。
+                    ) -> list[tuple[str, str | None, int | None]]:
+    """参考文献条目（离线）→ ``[(原文, 译文 or None, 页码 or None)]``。
 
     来源是**页产物里 `ref` 类型的行** —— 解析阶段已经把参考文献切成了独立的块，
     阅读器用的就是它。页产物还没有时退回解析出的 Markdown（找 References / 参考文献 那一节），
-    那时只有原文（Markdown 里没有逐块译文）。
+    那时只有原文（Markdown 里没有逐块译文），页码则靠"原文去行里认领"拿到。
 
-    为什么要连译文一起回（2026-10-07）：译文里带着《中文标题》，与原文对齐着切就能同时得到
-    「中文标题 / 英文标题 / 作者段」（见 `split_ref_text`）—— 侧栏要中英对照着显示。
+    为什么要连译文一起回（2026-10-07）：译文里带着《中文标题》，与中文那侧的《》对齐着切，
+    就能同时得到「中文标题 / 英文标题 / 作者段」（见 `split_ref_text`）—— 侧栏要中英对照显示。
+    页码是给侧栏那张卡片的「定位」按钮用的（跳回正文里这一条所在的那一页）。
     """
-    out: list[tuple[str, str | None]] = []
+    out: list[tuple[str, str | None, int | None]] = []
     data = rows if rows is not None else scan_rows(paper_id)
-    for _page, kind, original, translation in data:
+    # 首选：**页产物里参考文献那一节的行**（目录给出这一节占哪几页）。
+    # 为什么不再靠 Markdown 那份：它是另一套切分（bbox/段落），与行只差"解析器痕迹"时能靠
+    # 归一化对上，差得多时（重音、连字符断行、出处被塞进作者段）就永远对不上 ——
+    # 于是那些条目在侧栏里**只有英文题名、没有中文标题**（用户报过两次）。
+    # 直接取这一节的行：原文与译文天然成对，中文标题一个都不会丢。
+    from_rows = _references_from_rows(paper_id, data)
+    if from_rows:
+        return from_rows
+    for page, kind, original, translation in data:
         if kind != "ref":
             continue
-        raw = _ws(original)
+        raw = _clean_raw(original)
         if not raw:
-            raw = _ws(translation)                 # 只译了半边：拿译文当原文
+            raw = _clean_raw(translation)          # 只译了半边：拿译文当原文
         zh = _ws(translation) or None
         if raw:
-            out.append((raw, zh))
+            out.append((raw, zh, int(page) or None))
     if out:
         return out
     # **没有编号**的参考文献（ICLR 那种 `Elastic search., 2025. https://…`）不会被
-    # `split_blocks` 认成 `ref` 类型 → 退回 Markdown 抽条目；但**译文就在页产物的行里**
-    # （块模式下第 i 行 ↔ A 第 i 块），所以拿"空白归一的原文"去行里**认领译文**，
-    # 中文标题才切得出来（实测 turboquant 的 75 条全靠这条路）。
-    by_original: dict[str, str] = {}
-    for _page, _kind, original, translation in data:
-        key, zh = _ws(original), _ws(translation)
-        if key and zh:
-            by_original.setdefault(key, zh)
-    return [(_clean_raw(raw), by_original.get(_ws(raw)))
-            for raw in _references_from_markdown(paper_id)]
+    # `split_blocks` 认成 `ref` 类型 → 退回 Markdown 抽条目；但**译文与页码就在页产物的行里**
+    # （块模式下第 i 行 ↔ A 第 i 块），所以拿"归一化后的原文"去行里**认领译文与页码**，
+    # 中文标题才切得出来、定位按钮才有地方可跳（实测 turboquant 的 75 条全靠这条路）。
+    by_key: dict[str, tuple[str, str, int | None]] = {}
+    for page, _kind, original, translation in data:
+        zh = _ws(translation)
+        if _key(original) and zh:
+            by_key.setdefault(_key(original), (_clean_raw(original), zh, int(page) or None))
+    out: list[tuple[str, str | None, int | None]] = []
+    for raw in _references_from_markdown(paper_id):
+        # 认领到就用**行里的原文**（Markdown 那一份在句号处常常丢空格：`models.In Proceedings`）
+        hit = by_key.get(_key(raw))
+        out.append(hit if hit else (_clean_raw(raw), None, None))
+    return out
+
+
+def _key(text: str) -> str:
+    """匹配用的键：归一化之后**把空白、重音残渣、连字符都去掉**。
+
+    为什么这么激进：Markdown 抽出来的条目与页产物里的行是**同一段文字**，但解析器/排版在两个
+    副本上留下的痕迹不同 —— 实测三类都导致对不上（对上了才有中文标题）：
+
+    - 句子连接处丢空格：`…language models.In International Conference…`；
+    - 重音写成独立字符：`R¨uckl´e` / `Mazar´e`；
+    - 行尾连字符换行：`Lexico:Ex- treme kv cache`（行里是 `Extreme`）。
+
+    只影响"认领译文"的比对，**不改落库文本**（显示用的 `raw` 仍是行里那份干净的原文）。
+    """
+    return re.sub(r"[\s´`¨¯\-–—]+", "", _ws(text))
 
 
 def _clean_raw(text: str) -> str:
     """落库的 `raw`（tooltip 里显示的那一份）：去掉结构注释、折叠空白，**保留**斜体记号。"""
     out = re.sub(r"<!--.*?-->", " ", str(text or ""), flags=re.S)
     return " ".join(out.split())
+
+
+#: "参考文献那一节"的标题（`REFERENCES` / `Bibliography` / `参考文献`）。
+#: 允许带编号与 Markdown 标题记号：**目录里**那一项是 `REFERENCES`，而**行里**是 `# References`。
+_REF_HEAD_TITLE_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\d+\.?\s*)?(references|bibliography|参考文献)\s*$", re.I)
+
+
+def _reference_page_range(paper_id: str) -> tuple[int, int] | None:
+    """参考文献那一节占的页范围 ``[起, 止)``：目录里 `REFERENCES` 那一项 → 下一个一级标题。
+
+    ⚠️ 用目录（`build_outline`）而不是猜 Markdown：目录里的章节**带页码**，而且"这一节到哪结束"
+    由下一个一级标题决定（turboquant 实测：REFERENCES 在 p10，下一个一级标题
+    `A EXTENDED PRIOR WORK` 在 p15 → 范围就是 p10~p14，正好是那 75 条）。
+    """
+    from backend.services.paper import reader_service
+
+    try:
+        outline = reader_service.build_outline(paper_id)
+    except Exception as exc:  # noqa: BLE001 —— 目录取不到只是"退回 Markdown 兜底"
+        log.debug("读目录失败（参考文献页码范围取不到）：%s", exc)
+        return None
+    items = [it for it in (outline.get("items") or []) if int(it.get("page") or 0)]
+    start = None
+    for it in items:
+        if _REF_HEAD_TITLE_RE.match(str(it.get("text") or "")):
+            start = int(it["page"])
+            break
+    if start is None:
+        return None
+    for it in items:
+        if (int(it.get("level") or 0) == 1 and int(it["page"]) > start
+                and not _REF_HEAD_TITLE_RE.match(str(it.get("text") or ""))):
+            return start, int(it["page"])
+    return start, 10 ** 6
+
+
+def _references_from_rows(paper_id: str,
+                          data: list[tuple[int, str, str, str]]
+                          ) -> list[tuple[str, str | None, int | None]]:
+    """参考文献条目 ← **这一节的行**：``[(原文, 译文, 页码)]``。
+
+    条目就是行（块模式下每一行都已经和 A 路的块对齐），所以译文一定拿得到 —— 中文标题不再
+    依赖"两套切分能不能对上"。结构行（标题 / 公式 / 表格 / 图注）跳过；太短的碎片（页码之类）跳过。
+    """
+    rng = _reference_page_range(paper_id)
+    if not rng:
+        return []
+    lo, hi = rng
+    out: list[tuple[str, str | None, int | None]] = []
+    # ⚠️ 起页上**标题之前**的行不算条目：参考文献常常和上一节的尾巴共处一页
+    # （attention 实测：p10 上半页还是结论与致谢，`# References` 标题在它们后面）。
+    started = False
+    for page, kind, original, translation in data:
+        page = int(page)
+        if not (lo <= page < hi):
+            continue
+        if page == lo and not started:
+            if kind == "heading" and _REF_HEAD_TITLE_RE.match(_ws(original)):
+                started = True
+            continue
+        if kind not in ("para", "ref", "list"):
+            continue
+        raw, zh = _clean_raw(original), _ws(translation)
+        if len(_ws(raw)) < 20:                     # 页码 / 脚注横线这类碎片不当条目
+            continue
+        out.append((raw, zh or None, page or None))
+    return out
 
 
 def _ws(text: str) -> str:
@@ -446,7 +593,7 @@ def _ws(text: str) -> str:
 
 def references(paper_id: str, rows: list[tuple[int, str, str, str]] | None = None) -> list[str]:
     """只要原文那一侧（老的调用方/测试用它；要中英成对就用 `reference_pairs`）。"""
-    return [raw for raw, _zh in reference_pairs(paper_id, rows)]
+    return [raw for raw, _zh, _page in reference_pairs(paper_id, rows)]
 
 
 #: Markdown 里的参考文献小节标题
@@ -580,33 +727,36 @@ def save_references(paper_id: str, items: list[str] | list[tuple[str, str | None
     为什么整篇替换而不是增量：抽取是纯函数（同一份页产物 → 同一份条目），
     增量比对只会带来"删掉的那几条还留在库里"的脏数据。
 
-    `items` 现在收 **`(原文, 译文)` 成对**（2026-10-07）：落库时顺手把中文标题、英文标题、作者段
-    一起拆出来存好（`split_ref_text`），侧栏才能中英对照显示、并把作者那一段收起来。
-    也兼容老写法（一串纯字符串）—— 那时只有原文，中文标题留空。
+    `items` 现在收 **`(原文, 译文, 页码)`**（2026-10-07）：落库时顺手把中文标题、英文标题、作者段
+    一起拆出来存好（`split_ref_text`），侧栏才能中英对照显示、并把作者那一段收起来；
+    页码给侧栏那张卡片的「定位」按钮用（跳回正文里这一条所在的那一页）。
+    也兼容老写法（纯字符串 / `(原文, 译文)` 两元组）—— 缺的那几项留空。
     """
     import uuid
 
     from backend.repositories.mysql.models import PaperReference
     from backend.repositories.mysql.session import session_scope
 
-    pairs: list[tuple[str, str | None]] = []
+    pairs: list[tuple[str, str | None, int | None]] = []
     for it in (items or []):
         if isinstance(it, (tuple, list)):
-            raw, zh = (list(it) + [None])[:2]
+            raw, zh, page = (list(it) + [None, None])[:3]
         else:
-            raw, zh = it, None
+            raw, zh, page = it, None, None
         if str(raw or "").strip():
-            pairs.append((str(raw), str(zh) if zh else None))
+            pairs.append((str(raw), str(zh) if zh else None,
+                          int(page) if page else None))
     pairs = pairs[:500]
     with session_scope() as sess:
         sess.query(PaperReference).filter(PaperReference.paper_id == paper_id).delete()
-        for i, (raw, zh) in enumerate(pairs, 1):
+        for i, (raw, zh, page) in enumerate(pairs, 1):
             split = split_ref_text(raw, zh)
             sess.add(PaperReference(id=uuid.uuid4().hex[:32], paper_id=paper_id,
                                     order_no=i, raw=raw[:4000], source="pdf",
                                     title=_cap(split["title"], 512),
                                     title_en=_cap(split["title_en"], 512),
-                                    authors=_cap(split["authors"], 512)))
+                                    authors=_cap(split["authors"], 512),
+                                    page_no=page))
     return len(pairs)
 
 

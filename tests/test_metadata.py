@@ -220,6 +220,84 @@ def test_split_ref_text_reads_the_chinese_title_and_hides_authors() -> None:
     assert metadata_fill.split_ref_text(raw, None)["title"] is None
 
 
+def test_split_ref_text_anchors_on_the_chinese_book_title() -> None:
+    """**以中文那侧的《》为标准**（用户口径 2026-10-07）：书名号外面那两段去原文里定位，
+    容忍空白 / 强调记号的差异 —— 定位到的边界夹出来的就是英文标题。"""
+    from backend.services.paper import metadata_fill
+
+    raw = ("Ran Hadad and Uri Erez. Dithered quantization via orthogonal transformations. "
+           "*IEEE Transactions on Signal Processing*, 64(22):5887–5900, 2016.")
+    # ① 中文侧抄成两个空格（原文一个）→ 归一化后仍定位得到
+    got = metadata_fill.split_ref_text(
+        raw, "Ran Hadad and  Uri Erez. 《正交变换下的抖动量化》. "
+             "IEEE Transactions on Signal Processing, 64(22):5887–5900, 2016.")
+    assert got["title"] == "正交变换下的抖动量化"
+    assert got["title_en"] == "Dithered quantization via orthogonal transformations"
+    assert got["authors"] == "Ran Hadad and  Uri Erez."
+    # ② 原文给出处加了斜体、中文侧没有 → 出处的**尾部**照样能定位（旧实现直接把它算进标题）
+    got = metadata_fill.split_ref_text(
+        raw, "Ran Hadad and Uri Erez. 《正交变换下的抖动量化》. "
+             "IEEE Transactions on Signal Processing, 64(22):5887–5900, 2016.")
+    assert got["title_en"] == "Dithered quantization via orthogonal transformations"
+    # ③ 中文侧没抄出处 → 只夹作者段那一头，剩下的整段都算标题
+    got = metadata_fill.split_ref_text(raw, "Ran Hadad and Uri Erez. 《正交变换下的抖动量化》.")
+    assert got["title_en"].startswith("Dithered quantization via orthogonal transformations")
+    # ④ 出处对不上（模型改写了出处）→ 不硬切：只回中文标题，英文标题交给规则
+    got = metadata_fill.split_ref_text(raw, "某作者. 《正交变换下的抖动量化》. 某会议, 2016.")
+    assert got["title"] == "正交变换下的抖动量化"
+
+
+def test_reference_pairs_reads_the_section_rows(monkeypatch) -> None:
+    """有页产物时**直接取"参考文献那一节"的行**：原文与译文天然成对，中文标题不会因为
+    两套切分（Markdown bbox 切 vs 行块切）对不上而丢（用户前后报了两次）。"""
+    from backend.services.paper import metadata_fill, reader_service
+
+    monkeypatch.setattr(reader_service, "build_outline", lambda _pid: {"items": [
+        {"page": 10, "level": 1, "text": "REFERENCES"},
+        {"page": 12, "level": 1, "text": "A APPENDIX"},
+    ]})
+    rows = [
+        (10, "para", "Old conclusion text that is long enough to count as a paragraph.",
+         "旧的结论正文，长度也够"),
+        (10, "heading", "# References", "参考文献"),
+        (10, "para", "Ran Hadad and Uri Erez. Dithered quantization via orthogonal "
+                     "transformations. IEEE TSP, 2016.",
+         "Ran Hadad and Uri Erez. 《正交变换下的抖动量化》. IEEE TSP, 2016."),
+        (11, "formula", "$$x = 1$$", "$$x = 1$$"),
+        (12, "para", "Appendix text that is long enough to count as a paragraph.", "附录正文"),
+    ]
+    got = metadata_fill.reference_pairs("p", rows)
+    assert len(got) == 1, got                    # 标题之前的行不算、公式不算、附录页不算
+    assert got[0][2] == 10                       # 页码带上（侧栏将来要用）
+    assert metadata_fill.split_ref_text(got[0][0], got[0][1])["title"] == "正交变换下的抖动量化"
+    assert got[0][0].startswith("Ran Hadad")
+
+
+def test_reference_pairs_claims_translations_across_parser_artifacts(monkeypatch) -> None:
+    """没有编号的参考文献走 Markdown 兜底时要**认领译文**（对上了才有中文标题）。
+
+    两边是同一段文字，只差解析器/排版留下的痕迹：句号处丢空格、重音写成独立字符、
+    行尾连字符换行（实测三类都让 turboquant 的条目拿不到中文标题）。
+    """
+    from backend.services.paper import metadata_fill
+
+    row = ("Guangxuan Xiao, Ji Lin, and Song Han. Smoothquant: Accurate and efficient "
+           "post-training quantization for large language models. In International "
+           "Conference on Machine Learning, 2023.")
+    zh = ("Guangxuan Xiao, Ji Lin, and Song Han. 《Smoothquant：面向大语言模型的精确高效训练后量化》. "
+          "In International Conference on Machine Learning, 2023.")
+    monkeypatch.setattr(metadata_fill, "_references_from_markdown",
+                        lambda _pid: [row.replace("models. In", "models.In"),
+                                      "Peter Richt´arik and Dan Alistarh. Pushing the "
+                                      "lim- its of quantization. ICLR, 2022."])
+    got = metadata_fill.reference_pairs("p", [(14, "para", row, zh)])
+    assert got[0][1] is not None and "Smoothquant" in got[0][1], "丢空格的条目也要认领到译文"
+    assert got[0][2] == 14, "认领到就把页码一起带上"
+    assert got[0][0].startswith("Guangxuan Xiao") and "models. In" in got[0][0], \
+        "raw 用行里那份（Markdown 那份在句号处丢了空格）"
+    assert got[1][1] is None and got[1][2] is None, "行里没有的条目原样保留、没有译文"
+
+
 def test_reference_rule_hides_the_author_block() -> None:
     """用户口径（2026-10-07）：`作者名… .` 之后是题名的 → 只显示文献名称；形状对不上就整条原文。"""
     from backend.services.paper.metadata_fill import split_ref_by_rule

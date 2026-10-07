@@ -50,6 +50,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # `authors` 存作者段（侧栏默认收起它）。三者都由翻译产物对齐着拆出来，
     # 允许 NULL —— 没翻译的论文就只有 `raw`，前端显示整条原文。
     ("paper_reference", "title_en", "`title_en` VARCHAR(512) NULL"),
+    # 参考文献的**页码**（2026-10-07）：侧栏每张卡片上的「定位」按钮靠它跳回正文那一页。
+    # 允许 NULL —— 抽不到位置（没有页产物、条目来自 Markdown 兜底）时按钮就不显示。
+    ("paper_reference", "page_no", "`page_no` INT NULL"),
     # 元数据扩展（2026-10-07）：中英文摘要/关键词、领域、创新点、前置知识、难度、
     # 推荐阅读时间、一句话概括、类型、DOI/开源地址、来源标记。
     # 一律允许 NULL —— NULL 表示"还不知道"（与 "" 表示"读过、确实没有"是两回事）。

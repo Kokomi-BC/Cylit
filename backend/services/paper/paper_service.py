@@ -349,6 +349,7 @@ def references(paper_id: str) -> list[dict]:
     `title` / `title_en` / `authors` 是**离线抽取时从翻译产物里对齐着拆出来的**
     （`metadata_fill.split_ref_text`）：中文标题、英文标题、作者段 —— 侧栏据此中英对照显示、
     并把作者那一段收起来（`raw` 永远是完整原文）。没翻译的论文这三个都是 NULL。
+    `page_no` 是这一条所在的页码，侧栏卡片的「定位」按钮用它跳回正文。
     """
     from backend.repositories.mysql.models import PaperReference
 
@@ -358,6 +359,7 @@ def references(paper_id: str) -> list[dict]:
                 .order_by(PaperReference.order_no.asc()).all())
         return [{"id": r.id, "order_no": int(r.order_no or 0), "raw": r.raw or "",
                  "title": r.title, "title_en": r.title_en, "authors": r.authors,
+                 "page_no": int(r.page_no) if r.page_no else None,
                  "venue": r.venue, "year": r.year, "doi": r.doi, "url": r.url,
                  "source": r.source}
                 for r in rows]
