@@ -23,8 +23,6 @@ class Deps:
     registry: RefRegistry
     page_total: int = 0
     title: str = ""
-    #: 预注入的档案块（第一轮之前放进 system/instructions，§9.3）
-    archive_text: str = ""
     #: 本轮检索的低相关度提醒（**软信号**：只告诉模型"这批材料可能不相关"，
     #: 不替它决定"有没有依据" —— 阈值实测会误伤，见 `config.agent_evidence_floor`）
     evidence_note: str = ""

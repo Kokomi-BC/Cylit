@@ -1768,7 +1768,7 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
 
 #: 造出来的轨迹：stage → 思考 → 工具 → 思考 → 工具 → 正文(半句) → 工具 → 正文(回答)
 RUN_STEPS = [
-    {"kind": "stage", "round": 0, "text": "正在准备论文档案…"},
+    {"kind": "stage", "round": 0, "text": "正在这篇论文里检索…"},
     {"kind": "thinking", "round": 1, "text": "用户问的是核心贡献。"},
     {"kind": "tool", "round": 1, "tool": "paper_search", "digest": "query=multi-head",
      "status": "done", "ms": 312},

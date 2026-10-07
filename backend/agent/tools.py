@@ -22,6 +22,7 @@ from pydantic_ai.messages import BinaryContent, ToolReturn
 from backend.agent.citations import Citation
 from backend.agent.deps import Deps
 from backend.agent.host import HostError
+from backend.agent import prompts
 from backend.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -588,6 +589,35 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
     return await _guarded(ctx, "translate_get", {"pages": _clip(pages, 40)}, _impl())
 
 
+async def paper_archive_get(ctx: RunContext[Deps]) -> dict:
+    """读**这篇论文的档案**：标题、篇幅、领域与核心方法、主要论断、统一译法、章节结构。
+
+    什么时候用：需要"这篇论文大概在讲什么 / 有哪几章"这种**背景**时（例如用户问全篇性的问题、
+    或你想先知道结构再决定读哪几页）。**不要**每个问题都先调它一次 —— 本次会话里看过就够。
+
+    ⚠️ 档案**不是可引用的材料**：返回里没有编号，它只帮你决定"该去读哪里"。
+    写进回答的判断必须再用 paper_search / page_markdown_get / block_get 拿到**有编号**的正文。
+    """
+    async def _impl() -> dict:
+        data = await ctx.deps.host.archive(ctx.deps.paper_id)
+        title = str(data.get("title") or ctx.deps.title or "")
+        page_total = int(data.get("page_total") or ctx.deps.page_total or 0) or 0
+        # 页数顺带记进 deps：后面的 page_markdown_get("all") 之类要用
+        ctx.deps.page_total = ctx.deps.page_total or page_total
+        ctx.deps.title = ctx.deps.title or title
+        text = prompts.archive_block(int(ctx.deps.cfg.archive_chars or 6000),
+                                     data.get("brief") or {},
+                                     data.get("outline") or [],
+                                     title=title, page_total=page_total)
+        return {
+            "title": title, "page_total": page_total or None, "archive": text,
+            "note": "档案只是背景（没有编号、不能引用）：要写进回答的判断，"
+                    "请用 paper_search / page_markdown_get 拿有编号的正文。",
+        }
+
+    return await _guarded(ctx, "paper_archive_get", {}, _impl())
+
+
 async def library_list(ctx: RunContext[Deps], query: str | None = None) -> dict:
     """列出书架上的论文（按标题 / 作者模糊匹配），返回元数据。
 
@@ -1004,8 +1034,10 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
 
-#: P1 补齐的五个读工具
-P1_TOOLS = [kb_search, formula_get, translate_get, library_list, notes_search]
+#: P1 补齐的读工具（`paper_archive_get` = 背景档案：以前是**每轮预注入**，
+#: 用户口径 2026-10-07 改成"要背景自己调一次"）
+P1_TOOLS = [kb_search, formula_get, translate_get, library_list, notes_search,
+            paper_archive_get]
 
 #: 写工具（唯一一处会改用户数据的能力；预算与"先读后写"都在实现里）
 EDIT_TOOLS = [page_markdown_edit]

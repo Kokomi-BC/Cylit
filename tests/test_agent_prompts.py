@@ -24,8 +24,7 @@ from backend.agent.runtime import AgentRuntime  # noqa: E402
 def _deps(**kw) -> Deps:
     """最小 Deps：`build_instructions` / `turn_notes` 只看这几个字段。"""
     kws = dict(cfg=SimpleNamespace(max_rounds=60, deadline_seconds=600.0), host=None,
-               paper_id="demo-paper", registry=None, page_total=12, title="Demo Paper",
-               archive_text="【论文档案（本轮的背景材料）】\n标题：Demo Paper")
+               paper_id="demo-paper", registry=None, page_total=12, title="Demo Paper")
     kws.update(kw)
     return Deps(**kws)  # type: ignore[arg-type]
 
@@ -63,6 +62,25 @@ def test_system_prompt_keeps_the_rules() -> None:
     for name in ("SELECTION_RULES", "IMAGE_RULES", "NOTES_RULE"):
         assert getattr(prompts, name) in text
     assert "不要跑去总结全篇" in text and "不要把它当作论文正文去引用" in text
+
+
+def test_system_prompt_does_not_preload_the_archive() -> None:
+    """**不预注入论文档案**（用户口径 2026-10-07："agent 不需要每轮预读材料"）。
+
+    档案改成模型按需调 `paper_archive_get` 去拿：不看的轮次一个 token 都不花。
+    """
+    text = prompts.build_instructions(_deps())
+    assert "【论文档案" not in text
+    assert "主要论断" not in text and "章节结构" not in text
+    # 提示词里要**告诉它怎么拿**（否则就是单纯把能力删了）
+    assert "paper_archive_get" in text
+
+    # 工具那一侧：档案工具在挂载清单里，而且明确写着"不是可引用的材料"
+    from backend.agent import tools as agent_tools
+
+    assert agent_tools.paper_archive_get in agent_tools.AGENT_TOOLS
+    doc = agent_tools.paper_archive_get.__doc__ or ""
+    assert "不是可引用的材料" in doc
 
 
 def test_user_prompt_puts_notes_before_the_question() -> None:

@@ -370,15 +370,14 @@ class AgentRuntime:
             deps.attachments_shown = min(len(req.attachments), inline)
         state = RunState()
         try:
-            yield {"type": "stage", "stage": "routing", "message": "正在准备论文档案…"}
-            state.log.stage("正在准备论文档案…")
+            # 档案**不再预注入**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
+            # 模型要背景就自己调 `paper_archive_get`。这里仍然问一次宿主，但只为两件与提示词无关的事：
+            # ① 页数（工具解析 "3-8" / "all" 要用，拿不到也能按需补）；
+            # ② "这篇论文有没有实质背景"（决定检索没命中时要不要直接护栏 —— 不花模型调用）。
             archive = await self.host.archive(req.paper_id)
             deps.title = str(archive.get("title") or "")
             deps.page_total = int(archive.get("page_total") or 0)
-            deps.archive_text = prompts.archive_block(
-                self.cfg.archive_chars, archive.get("brief") or {},
-                archive.get("outline") or [], title=deps.title,
-                page_total=deps.page_total)
+            log.debug("论文档案就绪（不注入提示词）：%s %d 页", deps.title[:40], deps.page_total)
 
             yield {"type": "stage", "stage": "retrieving", "message": "正在这篇论文里检索…"}
             state.log.stage("正在这篇论文里检索…")

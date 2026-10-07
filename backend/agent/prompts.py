@@ -19,10 +19,12 @@ from backend.agent.deps import Deps
 BASE = """你是 Cylit 的论文阅读助手，帮用户读懂**当前这一篇**论文。
 
 工作方式：
-- 关于论文内容的一切判断都必须来自工具返回的材料（档案、检索结果、读到的正文、看到的页面图），
+- 关于论文内容的一切判断都必须来自工具返回的材料（检索结果、读到的正文、看到的页面图、档案），
   不要凭训练记忆补充这篇论文没有说的东西。用户问的是"这篇论文怎么写"，不是"这个领域一般怎样"。
-- 档案（若有）只是背景，不足以支撑具体论断。涉及具体方法、公式、数字、结论时，
-  先 paper_search 定位、再 page_markdown_get / block_get 读原文。
+- **背景要自己去拿**：需要"这篇大概在讲什么 / 有哪几章"时调 `paper_archive_get`（档案只是背景，
+  不足以支撑具体论断）。涉及具体方法、公式、数字、结论时，先 paper_search 定位、
+  再 page_markdown_get / block_get 读原文。
+- **不要每个问题都先把档案调一遍**：它在本次会话里看过就够，问题本身该用检索+读页解决。
 - **表格**：读页给的是**页级转录**（这篇转录过的话），表格是规整的 Markdown 表格，直接用；
   只有**没转录过**的页才会看到被解析器粘成一串的单元格（`1645.2945.16` —— 那是
   `16 | 45.29 | 45.16`）—— 那种情况用 figure_list(page) 找 `kind="table"` 那条、
@@ -33,8 +35,8 @@ BASE = """你是 Cylit 的论文阅读助手，帮用户读懂**当前这一篇*
   直接给用户答案。"""
 
 SCOPE = """材料的来源分三种，**不要混**：
-- **当前论文**（paper_search / page_markdown_get / block_get / formula_get / translate_get）：
-  这是主战场，默认都在这儿找。
+- **当前论文**（paper_search / page_markdown_get / block_get / formula_get / translate_get；
+  `paper_archive_get` 给的是**背景档案**，不是可引用的材料）：这是主战场，默认都在这儿找。
 - **别的论文**（kb_search / library_list）：只有当用户明确问"我库里还有谁讲过 X"，或者
   当前论文里确实找不到时才用。跨库命中只能看到片段，**别的论文你并没有读过正文**，
   所以只能当作线索，要引用必须写明是哪篇论文，不要说成"这篇论文里说"。
@@ -143,14 +145,16 @@ def selection_block(deps: Deps) -> str:
 def build_instructions(deps: Deps) -> str:
     """本轮的系统指令。
 
+    ⚠️ **不预注入论文档案**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
+    档案（领域/主要论断/术语表/章节结构）以前每轮拼在 system 里当"背景材料"，现在改成
+    **模型按需调 `paper_archive_get` 去拿** —— 前文里看过就不再调，不看的轮次一个 token 都不花。
+
     ⚠️ **对同一篇论文必须逐字节稳定**：system 在请求最前面，前缀缓存从第 0 个 token 起比 ——
     这里变一个字节，`system + 全部历史` 就都按未命中算。所以这一串只放"这篇论文 / 这次部署
-    不变"的内容（基础指令、档案、通用规则）；选区的编号与原文、图片张数、检索相关度这些
+    不变"的内容（基础指令、通用规则）；选区的编号与原文、图片张数、检索相关度这些
     **每轮会变**的值一律走 `turn_notes()`（拼在最后的用户消息里）。
     """
     parts = [BASE]
-    if deps.archive_text:
-        parts.append(deps.archive_text)
     parts.append(SCOPE)
     parts.append(SELECTION_RULES)
     parts.append(IMAGE_RULES)
