@@ -799,6 +799,7 @@ async function run() {
   const res = { stage: 'loaded' };
   const api = '/api/v1';
   const jget = async (u) => (await fetch(u)).json();
+  const MODEL = '__MODEL__' === '1';
   try {
     /* 开工前先清场：**只清本探针自己会造的东西**（`scope=pdf` 的高亮与笔记）。
        上一次跑挂在半路时（探针报错、Chrome 被打断）会留下残留，不清的话这次会数出 2 条，
@@ -1033,6 +1034,52 @@ async function run() {
       .find((n) => n.highlight_id === (mine[0] && mine[0].id)));
     res.editedText = edited ? String(edited.content_md || '') : '';
 
+    /* ---- 第五步·下：AI 解释浮层（**要真调一次模型**，只在 --model 下跑）---- */
+    if (MODEL) {
+      const p4 = pickPair();
+      if (p4[0] && p4[1]) {
+        const r4 = D().createRange();
+        r4.setStart(p4[0], 0);
+        r4.setEnd(p4[1], Math.min(12, (p4[1].nodeValue || '').length));
+        const s4 = w.getSelection();
+        s4.removeAllRanges();
+        s4.addRange(r4);
+        const pg4 = D().querySelector('[data-pdf-page="1"]');
+        pg4.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, clientX: 300, clientY: 300, buttons: 1 }));
+        pg4.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
+        await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
+        const aiBtn = [...D().querySelectorAll('[data-selection-menu] button')]
+          .find((b) => (b.textContent || '').indexOf('AI 解释') >= 0);
+        res.aiBtn = !!aiBtn;
+        if (aiBtn) {
+          aiBtn.click();
+          await until(D(), (x) => x.querySelector('[data-ex-answer]'), 400);
+          const cardEl = D().querySelector('[data-explain-card]');
+          res.aiCard = !!cardEl;
+          res.aiAnswerLen = (D().querySelector('[data-ex-answer]')?.textContent || '').trim().length;
+          res.aiCentered = cardEl ? (() => {
+            const r = cardEl.getBoundingClientRect();
+            return Math.abs((r.left + r.width / 2) - w.innerWidth / 2) < 40
+              && Math.abs((r.top + r.height / 2) - w.innerHeight / 2) < 40;
+          })() : null;
+          res.aiProcCollapsed = !D().querySelector('.ex-proc-body');
+          const head = D().querySelector('[data-ex-proc]');
+          res.aiProcSummary = head ? (head.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+          if (head) { head.click(); await sleep(400); spin(BURN); }
+          res.aiProcSteps = D().querySelectorAll('.ex-proc-body .ex-step').length;
+          const saveNote = D().querySelector('[data-ex-save-note]');
+          res.hasSaveNoteBtn = !!saveNote;
+          if (saveNote) { saveNote.click(); await sleep(1500); spin(BURN); await sleep(400); }
+        }
+      }
+      const ndata3 = await jget(api + '/notes?paper_id=__PAPER__');
+      const notesNow = (ndata3.data && ndata3.data.items) || [];
+      const aiNote = notesNow.filter((n) => n.scope === 'pdf').pop() || null;
+      res.aiNoteSaved = aiNote ? 1 : 0;
+      res.aiNoteText = aiNote ? String(aiNote.content_md || '') : '';
+      res.aiNoteHl = aiNote ? !!aiNote.highlight_id : false;
+    }
+
     /* 收尾：删掉自检造出来的那几条（笔记 + 高亮，一条都不留） */
     if (myNote) { await fetch(api + '/notes/' + myNote.id, { method: 'DELETE' }); }
     for (const h of mine) { await fetch(api + '/highlights/' + h.id, { method: 'DELETE' }); }
@@ -1049,11 +1096,29 @@ async function run() {
 </script>"""
 
 
-def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> None:
+def check_explain_shell() -> None:
+    """AI 解释浮层的**结构**自检（免费、不看浏览器）：它是不是真的换成了浮层。
+
+    为什么要在源码层面也查一遍：这条链路要真调一次模型才能端到端跑（那部分在 `--model` 那条线上），
+    默认自检里至少要把"居中 Modal 已经删掉、用的是共用浮层、默认锚定、过程默认折叠"钉住 ——
+    否则回退成居中弹窗也没人拦得住。
+    """
+    src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
+    float_card = '<FloatingCard' in src and 'data-explain-card' in src
+    no_modal = 'explainCard.open" title="AI 解释' not in src
+    anchored = ':anchored="true"' in src
+    collapsed = 'processOpen: false' in src
+    record("explain", "AI 解释改用共用浮层（居中 Modal 已删、默认锚定、过程默认折叠）",
+           float_card and no_modal and anchored and collapsed,
+           f"浮层={float_card} 无弹窗={no_modal} 锚定={anchored} 过程折叠={collapsed}")
+
+
+def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
+                        model: bool = False) -> None:
     print("\n⑥ PDF 页图高亮 + 笔记浮层（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
     url = f"{base}/app/reader/{paper}?left=page&nosse=1"
     html = (PROBE_PDFHL.replace("__URL__", url).replace("__TITLE__", "pdfhl")
-            .replace("__PAPER__", paper))
+            .replace("__PAPER__", paper).replace("__MODEL__", "1" if model else "0"))
     # 这条探针要**真渲染整份 PDF**（pdf.js 下载 + 光栅化 + 文字层）再走一遍高亮/笔记/浮层的全套，
     # 按默认 40s 的虚拟时间预算跑会在无头里被墙钟掐掉（实测：dump 回来 0 字节）—— 给宽一点。
     res = run_probe(browser, base, "probe_pdfhl", html, max(budget_ms, 90_000))
@@ -1126,6 +1191,23 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> 
     record("pdfhl", "自检不留痕（造出来的高亮与笔记都已删）",
            res.get("left") == 0 and res.get("leftNotes") == 0,
            f"残留高亮 {res.get('left')} 条、笔记 {res.get('leftNotes')} 条")
+    # ---- 第五步·下：AI 解释浮层（**要模型**；默认只做源码层结构检查） ----
+    if not model:
+        skip("AI 解释浮层（真调模型那一半）", "默认不跑（加 --model 才调模型）")
+    elif not res.get("aiBtn"):
+        record("explain", "AI 解释浮层：划词菜单里能打开它", False, "菜单里没有 AI 解释")
+    else:
+        record("explain", "AI 解释是**浮层**（不是居中大弹窗），且不遮整页",
+               res.get("aiCard") is True and res.get("aiCentered") is False,
+               f"浮层={res.get('aiCard')} 居中={res.get('aiCentered')}，回答 {res.get('aiAnswerLen')} 字")
+        record("explain", "过程默认**折叠**（只展示最终回答），点开才铺开",
+               res.get("aiProcCollapsed") is True and (res.get("aiProcSteps") or 0) >= 1,
+               f"折叠时步骤={0 if res.get('aiProcCollapsed') else '?'}，"
+               f"展开后 {res.get('aiProcSteps')} 步，摘要={str(res.get('aiProcSummary'))[:28]!r}")
+        record("explain", "「存为笔记」把解释正文挂到该处高亮上（不自动保存）",
+               res.get("hasSaveNoteBtn") is True and res.get("aiNoteSaved") == 1
+               and res.get("aiNoteHl") is True and len(str(res.get("aiNoteText") or "")) > 20,
+               f"笔记={str(res.get('aiNoteText'))[:24]!r} 挂高亮={res.get('aiNoteHl')}")
 
 
 # --------------------------------------------------------------------------
@@ -1535,6 +1617,7 @@ def main() -> int:
     print("Cylit 前端自检" + ("（含流式问答：--model）" if args.model else "（默认零模型调用）"))
     print("=" * 78)
     check_markdown_shapes()          # 不依赖浏览器与服务，先跑它
+    check_explain_shell()            # 同上：只看源码结构，起服务前就能跑
     browser = find_browser(args.browser)
     if not browser:
         print("[SKIP] 没找到浏览器（--browser 指定 chrome/edge 路径）")
@@ -1705,7 +1788,7 @@ def main() -> int:
     check_run_trace(browser, base, args.paper, args.budget)
 
     # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
-    check_pdf_highlight(browser, base, args.paper, args.budget)
+    check_pdf_highlight(browser, base, args.paper, args.budget, model=args.model)
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

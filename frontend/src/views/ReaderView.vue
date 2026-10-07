@@ -16,7 +16,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import type {
-  AgentCitation, AgentSelection, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
+  AgentCitation, AgentSelection, AgentStep, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
   Highlight, MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
@@ -430,7 +430,19 @@ const explainCard = reactive({
    */
   scope: 'row' as 'row' | 'markdown' | 'pdf',
   selectionText: '', page: 0 as number, conversationId: '' as string | null,
-  turns: [] as Array<{ role: 'user' | 'assistant'; text: string; citations: AgentCitation[] }>,
+  /** 打开时的选区快照：`存为笔记` 要它（那时选区可能已经被用户改了） */
+  highlightId: '' as string, start: 0, end: 0, side: 'en' as 'en' | 'zh', quote: '',
+  /** 浮层锚点（划词那一处的屏幕位置）—— 与笔记浮层同一套定位 */
+  anchor: null as { x: number; y: number; w?: number; h?: number } | null,
+  /**
+   * 过程轨迹（深度思考 / 工具调用）：**默认折叠**，只展示最终回答（用户口径）。
+   * 流式时按事件本地拼，`done` 到了用后端那份权威的 `run.steps` 替换。
+   */
+  processOpen: false,
+  turns: [] as Array<{
+    role: 'user' | 'assistant'; text: string; citations: AgentCitation[];
+    steps?: AgentStep[];
+  }>,
   history: [] as Array<{ id: string; text: string; at?: string | null; rowId?: string | null }>,
   historyOpen: false,
 });
@@ -2589,18 +2601,44 @@ async function askSelection(question: string) {
   if (q) explainCard.turns.push({ role: 'user', text: q, citations: [] });
   // ⚠️ 必须**通过 reactive 对象的下标**改字段：push 进去的是原始对象，直接改它不会触发更新
   const idx = explainCard.turns.length;
-  explainCard.turns.push({ role: 'assistant', text: '', citations: [] });
+  explainCard.turns.push({ role: 'assistant', text: '', citations: [], steps: [] });
   explainCard.loading = true;
   explainController?.abort();
   explainController = new AbortController();
+  /**
+   * 流式期间本地拼的过程轨迹（与 `backend/agent/trace.py` 的形状一致）：
+   * 思考按**轮**并成一条（一轮几百个增量块，一块一条会刷屏），工具按 start/done 配对。
+   */
+  const live: AgentStep[] = [];
+  const mergeThinking = (text: string, round: number) => {
+    const last = live[live.length - 1];
+    if (last && last.kind === 'thinking' && last.round === round) last.text = `${last.text ?? ''}${text}`;
+    else live.push({ kind: 'thinking', round, text });
+  };
   const onEvent = (name: string, data: any) => {
     if (name === 'session' && data?.conversation_id) explainCard.conversationId = data.conversation_id;
+    else if (name === 'stage' && data?.message) live.push({ kind: 'stage', round: 0, text: String(data.message) });
+    else if (name === 'thinking_delta') mergeThinking(String(data?.text ?? ''), Number(data?.round ?? 0));
+    else if (name === 'tool') {
+      const tool = String(data?.tool ?? '');
+      if (data?.status === 'start') {
+        live.push({ kind: 'tool', round: Number(data?.round ?? 0), tool,
+                    digest: String(data?.args_digest ?? ''), status: 'running' });
+      } else {
+        const step = [...live].reverse().find((s) => s.kind === 'tool' && s.tool === tool && s.status === 'running');
+        if (step) { step.status = 'done'; step.ms = Number(data?.ms ?? 0); }
+      }
+    }
     else if (name === 'answer_delta') explainCard.turns[idx].text += data?.text ?? '';
     else if (name === 'done') {
       explainCard.turns[idx].text = data?.answer ?? explainCard.turns[idx].text;
       explainCard.turns[idx].citations = data?.citations ?? [];
+      // `done` 带的 `run` 是后端权威轨迹（轮次、合并后的思考、工具耗时都在里面）
+      const steps = (data?.run?.steps ?? []) as AgentStep[];
+      explainCard.turns[idx].steps = steps.length ? steps : live;
     } else if (name === 'error') {
       explainCard.turns[idx].text = explainCard.turns[idx].text || `（${data?.message ?? '失败'}）`;
+      explainCard.turns[idx].steps = live;
     }
   };
   try {
@@ -2638,6 +2676,14 @@ async function explainSelection() {
   explainCard.conversationId = null;
   explainCard.turns = [];
   explainCard.historyOpen = false;
+  explainCard.processOpen = false;                    // 过程默认折叠（用户口径）
+  /* 选区快照 + 浮层锚点：读完回答再点「存为笔记」时，页面上的选区可能早被改了 */
+  explainCard.highlightId = selection.hlIds[0] ?? '';
+  explainCard.start = selection.start;
+  explainCard.end = selection.end;
+  explainCard.side = selection.side;
+  explainCard.quote = selection.anchorText || selection.text;
+  explainCard.anchor = { x: selection.x, y: selection.y, w: 0, h: 0 };
   void loadExplainHistory();
   await askSelection('');
 }
@@ -2714,6 +2760,44 @@ function focusCitation(citation: AgentCitation) {
   focusRow(citation.row_id || citation.block_id || '', { page: citation.page ?? undefined, flash: true });
 }
 
+/* ------------------------------ AI 解释浮层里的"过程" ------------------------------
+ * 与侧栏对话那条轨迹（`ReaderChat` 的 `TOOL_STEPS` / `TOOL_ICONS`）是同一套工具，
+ * 但这里只需要"一行摘要 + 图标"，所以映射写小一份；新增工具时两处一起补（fallback 是中性图标）。 */
+const EX_TOOL_ICON: Record<string, string> = {
+  paper_search: 'search', page_markdown_get: 'document', block_get: 'list',
+  translate_get: 'translate', kb_search: 'knowledge', formula_get: 'formula',
+  figure_list: 'image', library_list: 'library', notes_search: 'note',
+  page_markdown_edit: 'edit', page_image_get: 'image', figure_image_get: 'image',
+};
+const EX_TOOL_LABEL: Record<string, string> = {
+  paper_search: '检索全文', page_markdown_get: '读正文', block_get: '读段落',
+  translate_get: '读译文', kb_search: '翻书架', formula_get: '查公式',
+  figure_list: '查插图', library_list: '翻书架', notes_search: '查笔记',
+  page_markdown_edit: '改产物', page_image_get: '看原版面', figure_image_get: '看插图',
+};
+
+function stepIcon(s: AgentStep): string {
+  if (s.kind === 'thinking') return 'sparkle';
+  if (s.kind === 'stage') return 'task';
+  if (s.kind === 'text') return 'note';
+  return EX_TOOL_ICON[String(s.tool ?? '')] ?? 'bolt';
+}
+function stepLabel(s: AgentStep): string {
+  if (s.kind === 'thinking') return '思考';
+  if (s.kind === 'stage') return '准备';
+  if (s.kind === 'text') return '正文';
+  return EX_TOOL_LABEL[String(s.tool ?? '')] ?? '工具';
+}
+/** 折叠着的那一行写什么：几段思考、几次工具（用户口径：默认只展示最终回答）。 */
+function stepSummary(steps: AgentStep[]): string {
+  const think = steps.filter((s) => s.kind === 'thinking').length;
+  const tool = steps.filter((s) => s.kind === 'tool').length;
+  const parts: string[] = [];
+  if (think) parts.push(`${think} 段思考`);
+  if (tool) parts.push(`${tool} 次工具`);
+  return `深度思考与工具调用（${parts.join(' · ') || '过程'}）`;
+}
+
 async function saveExplanationAsAnnotation() {
   const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
   if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
@@ -2727,6 +2811,44 @@ async function saveExplanationAsAnnotation() {
     explainCard.open = false;
     await refreshAnnotations();
   } catch (err) { reportError(err, '存为批注失败'); }
+}
+
+/**
+ * 「存为笔记」（《修改计划》第五步）：把 AI 解释的**正文**挂到这段文字对应的**高亮**上。
+ *
+ * 用户口径是"高亮 → AI 解释 → 用户选择 → 保存为笔记"，**不默认自动保存** —— 所以它是个按钮，
+ * 而且与笔记浮层同一条路：选区已经有高亮就复用它，没有就先补一条（笔记必须挂在高亮上）。
+ * 快照在**打开浮层那一刻**就存下了（`explainCard.highlightId/start/end/quote`）：读完回答再点保存时，
+ * 页面上的选区可能早就被用户改了。
+ */
+async function saveExplanationAsNote() {
+  const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
+  if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
+  try {
+    let highlightId = explainCard.highlightId;
+    if (!highlightId) {
+      if (!explainCard.rowId) throw new Error('这段文字没有可挂靠的锚点');
+      const created = await api.post<Highlight>('/highlights', {
+        paper_id: paperId.value, block_id: explainCard.rowId,
+        selected_text: explainCard.quote || explainCard.selectionText,
+        start_offset: explainCard.start, end_offset: explainCard.end,
+        color: 'yellow', side: explainCard.side, scope: explainCard.scope,
+      });
+      highlightId = created?.id ?? '';
+      highlights.value.push({ ...created, block_id: explainCard.rowId,
+                              start: created.start, end: created.end,
+                              side: explainCard.side, scope: explainCard.scope });
+    }
+    if (!highlightId) throw new Error('没有可挂靠的高亮');
+    await api.post('/notes', {
+      paper_id: paperId.value, block_id: explainCard.rowId, highlight_id: highlightId,
+      selected_text: explainCard.quote || explainCard.selectionText,
+      start_offset: explainCard.start, end_offset: explainCard.end,
+      content_md: answer,
+    });
+    toast('已存为这处高亮的笔记', 'ok', 2600);
+    await refreshAnnotations();
+  } catch (err) { reportError(err, '存为笔记失败'); }
 }
 
 /* ------------------------------ 高亮 / 笔记 ------------------------------ */
@@ -3608,12 +3730,41 @@ function renderMarkdown(text?: string | null) {
       @close="hideMenu"
     />
 
-    <Modal :open="explainCard.open" title="AI 解释（只依据论文内容）" @close="explainCard.open = false">
+    <!-- AI 解释浮层（第五步）：与笔记**同一个壳**、**默认锚定**（读完再决定要不要存下来，
+         中途移开鼠标就关掉太容易丢）。没有查看/编辑切换（用户口径：AI 解释不需要）。
+         深度思考与工具调用**默认折叠**，只展示最终回答。 -->
+    <FloatingCard
+      :open="explainCard.open"
+      :anchor="explainCard.anchor"
+      :anchored="true"
+      title="AI 解释（只依据论文内容）"
+      :width="420"
+      :max-height="520"
+      data-explain-card
+      @close="explainCard.open = false"
+    >
       <div class="ex-thread">
         <div v-for="(t, i) in explainCard.turns" :key="i" class="ex-turn" :class="t.role">
           <div v-if="t.role === 'user'" class="ex-q">{{ t.text }}</div>
           <template v-else>
-            <div v-if="t.text" class="md small" v-html="renderMarkdown(t.text)" />
+            <!-- 过程（思考 / 工具）：默认折叠，只露一行摘要，点开才铺开 -->
+            <div v-if="t.steps && t.steps.length" class="ex-proc">
+              <button type="button" class="ex-proc-head" data-ex-proc
+                      :aria-expanded="explainCard.processOpen"
+                      @click="explainCard.processOpen = !explainCard.processOpen">
+                <AppIcon :name="explainCard.processOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
+                <span>{{ stepSummary(t.steps) }}</span>
+              </button>
+              <div v-if="explainCard.processOpen" class="ex-proc-body">
+                <div v-for="(s, k) in t.steps" :key="k" class="ex-step" :class="`is-${s.kind}`">
+                  <AppIcon :name="stepIcon(s)" :size="12" />
+                  <span class="ex-step-tag">{{ stepLabel(s) }}</span>
+                  <span class="ex-step-text">{{ s.text || s.digest || s.tool || '' }}</span>
+                  <span v-if="s.ms" class="tiny faint">{{ Math.round(Number(s.ms) / 100) / 10 }}s</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="t.text" class="md small" data-ex-answer v-html="renderMarkdown(t.text)" />
             <div v-if="t.citations.length" class="ex-cites">
               <button v-for="c in t.citations" :key="c.ref" class="chip" :title="c.snippet || c.label"
                       @click="focusCitation(c)">
@@ -3637,17 +3788,6 @@ function renderMarkdown(text?: string | null) {
         </button>
       </div>
 
-      <div class="ex-foot tiny faint">
-        <span v-if="!explainCard.anchored">来自原 PDF 划词（无段落锚点）</span>
-        <span class="spacer" />
-        <button class="btn sm" @click="explainCard.historyOpen = !explainCard.historyOpen">
-          <AppIcon name="task" :size="12" />历史解释（{{ explainCard.history.length }}）
-        </button>
-        <button class="btn sm" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat(false)">
-          <AppIcon name="chat" :size="12" />在对话里继续
-        </button>
-      </div>
-
       <div v-if="explainCard.historyOpen" class="ex-history">
         <div v-if="!explainCard.history.length" class="tiny faint">
           还没有存过的解释（点下方「存为批注」就会留在这里）
@@ -3659,12 +3799,23 @@ function renderMarkdown(text?: string | null) {
       </div>
 
       <template #footer>
-        <button class="btn" @click="explainCard.open = false">关闭</button>
-        <button class="btn primary" :disabled="explainCard.loading" @click="saveExplanationAsAnnotation">
+        <button class="btn sm primary" :disabled="explainCard.loading" data-ex-save-note
+                title="把这段解释的正文存成这处高亮的笔记"
+                @click="saveExplanationAsNote">
+          <AppIcon name="note" :size="12" />存为笔记
+        </button>
+        <button class="btn sm" :disabled="explainCard.loading" @click="saveExplanationAsAnnotation">
           存为批注
         </button>
+        <span class="spacer"></span>
+        <button class="btn sm ghost" @click="explainCard.historyOpen = !explainCard.historyOpen">
+          <AppIcon name="task" :size="12" />历史（{{ explainCard.history.length }}）
+        </button>
+        <button class="btn sm ghost" title="把这个选区带进侧栏对话里继续聊" @click="openSelectionInChat(false)">
+          <AppIcon name="chat" :size="12" />在对话里继续
+        </button>
       </template>
-    </Modal>
+    </FloatingCard>
 
     <!-- 笔记浮层（第五步）：锚在高亮/选区旁边的小卡片，默认"移开就消失"。
          悬停浮层本身要取消关闭（鼠标从高亮挪进来的时候不能把它关掉）。 -->
@@ -4156,6 +4307,32 @@ function renderMarkdown(text?: string | null) {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .ex-cites { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+/* 过程（深度思考 / 工具调用）：**默认只露一行**，点开才铺开 —— 用户口径是"只展示最终回答"。
+   与侧栏对话那条轨迹同一套信息，但这里更紧凑（浮层窄，一行一条）。 */
+.ex-proc { margin: 0 0 6px; }
+.ex-proc-head {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-layer); color: var(--text-dim);
+  font: inherit; font-size: 11.5px; padding: 3px 7px; cursor: pointer; text-align: left;
+}
+.ex-proc-head:hover { background: var(--bg-hover); color: var(--text); }
+.ex-proc-body {
+  margin-top: 4px; padding: 4px 6px; max-height: 26vh; overflow-y: auto;
+  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+}
+.ex-step {
+  display: flex; align-items: baseline; gap: 5px;
+  font-size: 11.5px; color: var(--text-dim); padding: 2px 0; min-width: 0;
+}
+.ex-step > svg { flex: none; align-self: center; }
+.ex-step-tag { flex: none; color: var(--text-faint); }
+.ex-step-text {
+  flex: 1; min-width: 0; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ex-step.is-thinking .ex-step-text { white-space: normal; }
+.ex-step.is-tool .ex-step-tag { color: var(--accent-text); }
 .chip {
   border: 1px solid var(--border); background: var(--bg-layer); color: var(--text-dim);
   border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
