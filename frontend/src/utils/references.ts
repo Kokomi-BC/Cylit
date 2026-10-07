@@ -95,6 +95,16 @@ export function codeUrl(ref: PaperReference): string {
  * 全都抠不出来时才退回 `referenceUrl` 的学术搜索兜底。
  */
 export function paperUrl(ref: PaperReference): string {
+  return paperHref(ref) || referenceUrl(ref);
+}
+
+/**
+ * 真正的**论文地址**（arXiv / DOI / 结构化 `url` 字段）。抠不出来就空串。
+ *
+ * ⚠️ 刻意**不**拿原文里随便一个网址来顶：`Elastic search., 2025. https://www.elastic.co/…`
+ * 那种是"网址链接"而不是论文页，用户口径里它们要用**链接图标**（`refLink` 按这个区分）。
+ */
+function paperHref(ref: PaperReference): string {
   const direct = tidy(String(ref.url ?? ''));
   if (/^https?:\/\//i.test(direct) && !isGithub(direct)) return direct;
 
@@ -105,13 +115,53 @@ export function paperUrl(ref: PaperReference): string {
   const arxiv = ARXIV_IN_TEXT.exec(raw);
   if (arxiv) return `https://arxiv.org/abs/${arxiv[1]}`;
 
-  for (const hit of raw.matchAll(URL_IN_TEXT_G)) {
+  const doi = DOI_IN_TEXT.exec(raw);
+  if (doi) return `https://doi.org/${tidy(doi[1])}`;
+  return '';
+}
+
+/** 原文里第一个**非 GitHub** 的链接（"网址链接"那种：官网、项目页…） */
+function firstWebUrl(raw: string): string {
+  for (const hit of String(raw ?? '').matchAll(URL_IN_TEXT_G)) {
     const url = tidy(hit[1]);
     if (!isGithub(url)) return url;
   }
+  return '';
+}
 
-  const doi = DOI_IN_TEXT.exec(raw);
-  if (doi) return `https://doi.org/${tidy(doi[1])}`;
+/** 条目左边那枚图标的种类：论文（arXiv/DOI）/ 代码仓库 / 普通网址 */
+export type RefLinkKind = 'paper' | 'github' | 'link';
 
-  return referenceUrl(ref);
+export interface RefLink {
+  kind: RefLinkKind;
+  url: string;
+}
+
+/**
+ * 一条文献的**链接图标**怎么画（用户口径 2026-10-07 第六轮）。
+ *
+ * - 左边那枚：论文（`document` 图标）/ GitHub（`github`）/ 普通网址（`link`）。
+ *   有论文链接就用论文图标；**只有**代码链接时左边直接是 GitHub 图标；只有普通网址时是链接图标；
+ *   什么都没有（只能去学术搜索）时仍然给论文图标 —— "所有条目左边都有论文图标"这条口径不能破。
+ * - `code`：**论文与 GitHub 同时存在**时，GitHub 图标放到**标题下面**（单独的图标行），
+ *   因为左边那枚已经被论文占用了。
+ */
+export function refLink(ref: PaperReference): { primary: RefLink; code: RefLink | null } {
+  const code = codeUrl(ref);
+  const repo: RefLink | null = code ? { kind: 'github', url: code } : null;
+
+  // ① 有**论文**链接（结构化 url / DOI / 原文里的 arXiv 或 DOI）→ 左边论文图标；
+  //    同时有仓库就把它交给"标题下面那一行"。
+  const paper = paperHref(ref);
+  if (paper) return { primary: { kind: 'paper', url: paper }, code: repo };
+
+  // ② 只有代码链接 → 左边直接是 GitHub 图标（不再在标题下面重复一枚）。
+  if (repo) return { primary: repo, code: null };
+
+  // ③ 只有普通网址（官网 / 项目页…）→ 链接图标。
+  const web = firstWebUrl(String(ref.raw ?? ''));
+  if (web) return { primary: { kind: 'link', url: web }, code: null };
+
+  // ④ 什么都抠不出来：仍是论文图标（点它走学术搜索兜底）—— "每条左边都有论文图标"这条不能破。
+  return { primary: { kind: 'paper', url: referenceUrl(ref) }, code: null };
 }

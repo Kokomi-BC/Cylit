@@ -1998,9 +1998,27 @@ _TEMP_REF_CODE = {
     "code_url": "https://github.com/yaofu/data-engineering",
 }
 
+#: 临时样本：**只有 GitHub 链接**（左边那枚图标就该是 GitHub，不再另给一行）
+_TEMP_REF_REPO = {
+    "order_no": 9996,
+    "raw": "Pgvector search., 2025. https://github.com/pgvector/pgvector/.",
+    "title": None, "title_en": None, "authors": None,
+    "code_url": "https://github.com/pgvector/pgvector",
+}
+
+#: 临时样本：**只有普通网址**（左边那枚图标是"链接"）
+_TEMP_REF_WEB = {
+    "order_no": 9995,
+    "raw": "Elastic search., 2025. https://www.elastic.co/enterprise-search/vector-search.",
+    "title": None, "title_en": None, "authors": None,
+}
+
+#: 所有临时样本的 order_no（列表里用 ≥9990 一律当作自检样本，别混进"普通条目"的断言）
+_TEMP_NOS = (9995, 9996, 9997, 9998, 9999)
+
 
 def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
-    """插/删那三条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
+    """插/删那几条临时参考文献（直连应用自己的 MySQL 会话；没有 API 能造参考文献）。"""
     import uuid
 
     import sys
@@ -2010,12 +2028,14 @@ def _temp_ref_sql(paper: str, remove_only: bool = False) -> str | None:
 
     with session_scope() as sess:
         sess.query(PaperReference).filter(PaperReference.paper_id == paper,
-                                          PaperReference.order_no.in_((9997, 9998, 9999))).delete()
+                                          PaperReference.order_no.in_(_TEMP_NOS)).delete()
         if remove_only:
             return None
         rows = [(_TEMP_REF, uuid.uuid4().hex[:32]),
                 (_TEMP_REF_RULE, uuid.uuid4().hex[:32]),
-                (_TEMP_REF_CODE, uuid.uuid4().hex[:32])]
+                (_TEMP_REF_CODE, uuid.uuid4().hex[:32]),
+                (_TEMP_REF_REPO, uuid.uuid4().hex[:32]),
+                (_TEMP_REF_WEB, uuid.uuid4().hex[:32])]
         for item, rid in rows:
             sess.add(PaperReference(id=rid, paper_id=paper, order_no=item["order_no"],
                                     source="selfcheck", raw=item["raw"], title=item["title"],
@@ -2059,13 +2079,14 @@ async function run() {
     /* 没翻译过的那种条目（只有原文）也要标号内联：**标号后面同一行还有正文**
        （第一版是块级钳制把标号挤成独立一行，截图里一眼就看出来了：`[1]` 孤零零一行）。 */
     const plain = [...D().querySelectorAll('.ref-item')]
-      .find((el) => !['9999', '9998'].includes(el.getAttribute('data-ref-no')));
+      .find((el) => Number(el.getAttribute('data-ref-no') || 0) < 9990);
     const pno = plain ? plain.querySelector('.ref-no') : null;
     const phead = plain ? plain.querySelector('.ref-head') : null;
     if (pno && phead) {
       /* 要量的是**标号后面**那段文字（不是标号自己的文本节点）：取 head 里第一段
-         非 `.ref-no` 的内容，再看它的第一个文本节点 */
-      const after = [...phead.children].find((el) => !el.classList.contains('ref-no'));
+         既不是标号、也不是最左边那枚跳转图标的内容，再看它的第一个文本节点 */
+      const after = [...phead.children].find((el) => !el.classList.contains('ref-no')
+        && !el.classList.contains('ref-lead'));
       const tn = after ? D().createTreeWalker(after, w.NodeFilter.SHOW_TEXT).nextNode() : null;
       if (tn) {
         const rng = D().createRange();
@@ -2095,21 +2116,36 @@ async function run() {
     res.ruleNoSecondLine = !!rrow && !rrow.querySelector('.ref-en');
     /* 卡片上**不该**再有「定位」按钮（用户口径 2026-10-07 第三轮：定位到不了精确那一行，撤掉） */
     res.noLocate = !D().querySelector('[data-ref-locate]');
-    /* 两种链接都有的条目：论文图标 + GitHub 图标并排，分别跳不同页面 */
+    /* 两种链接都有的条目：**最左边**是论文图标，**标题下面**才是 GitHub 图标 */
+    const leadOf = (no) => {
+      const el = D().querySelector(`[data-ref-no="${no}"] [data-ref-lead]`);
+      return el ? String(el.getAttribute('data-ref-lead') || '') : '';
+    };
+    const leadIconOf = (no) => {
+      const el = D().querySelector(`[data-ref-no="${no}"] [data-ref-lead] svg`);
+      return el ? String(el.getAttribute('data-icon') || '') : '';
+    };
+    res.leadBoth = leadOf('9997');        // 论文 + GitHub → 左边是论文
+    res.leadRepo = leadOf('9996');        // 只有 GitHub → 左边是 GitHub
+    res.leadWeb = leadOf('9995');         // 只有普通网址 → 左边是链接
+    res.leadFallback = leadOf('9998');    // 什么都抠不出来 → 仍是论文图标（走学术搜索）
+    res.leadIcons = { both: leadIconOf('9997'), repo: leadIconOf('9996'),
+                      web: leadIconOf('9995') };
+    const footIcon = D().querySelector('[data-ref-no="9997"] [data-ref-code] svg');
+    res.footGithubIcon = footIcon ? String(footIcon.getAttribute('data-icon') || '') : '';
+    res.noFootOnRepoOnly = !D().querySelector('[data-ref-no="9996"] [data-ref-code]');
     const crow = D().querySelector('[data-ref-no="9997"]');
-    const cpaper = crow ? crow.querySelector('[data-ref-paper]') : null;
     const ccode = crow ? crow.querySelector('[data-ref-code]') : null;
-    res.codeHasBoth = !!cpaper && !!ccode;
-    res.codeAbsentElsewhere = !D().querySelector('[data-ref-no="9998"] [data-ref-code]');
+    const clead = crow ? crow.querySelector('[data-ref-lead]') : null;
     const opened3 = [];
     const realOpen3 = w.open;
     w.open = (u) => { opened3.push(String(u)); return null; };
+    if (clead) { clead.click(); await sleep(300); }
     if (ccode) { ccode.click(); await sleep(300); }
-    if (cpaper) { cpaper.click(); await sleep(300); }
     w.open = realOpen3;
     res.codeOpened = opened3;
-    res.codeGithub = String(opened3[0] || '').startsWith('https://github.com/yaofu/data-engineering');
-    res.codePaper = String(opened3[1] || '').startsWith('https://arxiv.org/abs/2402.10171');
+    res.codePaper = String(opened3[0] || '').startsWith('https://arxiv.org/abs/2402.10171');
+    res.codeGithub = String(opened3[1] || '').startsWith('https://github.com/yaofu/data-engineering');
   } catch (err) {
     res.error = String((err && err.message) || err);
   }
@@ -2161,12 +2197,18 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
            f"tooltip有原文={res.get('ruleTooltipRaw')}｜{str(res.get('ruleText'))[:44]}")
     record("refs-pane", "卡片没有「定位」按钮（撤掉：定位到不了精确那一行）",
            res.get("noLocate") is True, f"页面里还有定位按钮={not res.get('noLocate')}")
-    record("refs-pane", "两种链接都有 → 论文图标 + GitHub 图标并排，**分别跳不同页面**",
-           res.get("codeHasBoth") is True and res.get("codeGithub") is True
-           and res.get("codePaper") is True and res.get("codeAbsentElsewhere") is True,
-           f"两枚图标={res.get('codeHasBoth')} GitHub={res.get('codeGithub')} "
-           f"论文={res.get('codePaper')} 只有论文那条没有代码图标={res.get('codeAbsentElsewhere')}"
-           f"｜{res.get('codeOpened')}")
+    record("refs-pane", "**每条左边**都有跳转图标，造型按链接类型选（论文 / GitHub / 网页链接）",
+           res.get("leadBoth") == "paper" and res.get("leadRepo") == "github"
+           and res.get("leadWeb") == "link" and res.get("leadFallback") == "paper"
+           and res.get("leadIcons") == {"both": "document", "repo": "github", "web": "link"},
+           f"论文+代码={res.get('leadBoth')} 只有代码={res.get('leadRepo')} "
+           f"只有网址={res.get('leadWeb')} 兜底={res.get('leadFallback')}"
+           f"｜图标 {res.get('leadIcons')}")
+    record("refs-pane", "论文 + GitHub 都有 → GitHub 图标在**标题下面**，两枚图标分别跳不同页面",
+           res.get("footGithubIcon") == "github" and res.get("noFootOnRepoOnly") is True
+           and res.get("codePaper") is True and res.get("codeGithub") is True,
+           f"标题下 GitHub 图标={res.get('footGithubIcon')} 只有代码那条不重复={res.get('noFootOnRepoOnly')} "
+           f"论文={res.get('codePaper')} GitHub={res.get('codeGithub')}｜{res.get('codeOpened')}")
 
 
 def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None:
