@@ -9030,3 +9030,46 @@ overscroll-behavior: contain`），两种模式行为一致；那一行切换工
 5. **就地编辑**：页签里点铅笔 → 写 → 保存 → 库里正文变了，且编辑器自动收起。
 
 `typecheck`（vue-tsc）/ `build` 干净；`pytest` 全绿（本轮没碰后端）。
+
+## 60. 第六十轮：AI 解释浮层的两条（锚定后跳来源不能消失 + 浮层要能拖）
+
+### 一、锚定之后点「来源 chunk」跳转，浮层不能消失
+
+原因很直白：`focusCitation()` 第一句就是 `explainCard.open = false`（那时候"点了就跳走、
+浮层留着挡视线"确实是合理的默认），但用户口径是**锚定之后不许关** —— 用法正是
+"一边看着解释、一边跳过去核对原文"。
+
+改法：浮层的图钉从写死的 `:anchored="true"` 变成真状态 `explainCard.pinned`（默认 `true`），
+`focusCitation` 里改成 `if (!explainCard.pinned) explainCard.open = false;` ——
+锚定的不关，没锚定的（临时浮层）仍然顺手关掉。
+
+顺带修了一处**名不副实**：`explainCard.anchored` 以前存的是"选区**有没有块锚点**"
+（`selection.anchored` 的含义），却跟浮层的"锚定"同名，读代码时极容易当成图钉状态。
+现在改叫 `blockAnchored`，图钉单独一个 `pinned`。
+
+### 二、浮层可以拖
+
+拖动做在共用的浮层壳 `FloatingCard` 里（笔记浮层与 AI 解释浮层同一个壳，一处改两处都能拖）：
+
+- **标题栏就是把手**：`pointerdown/move/up` + `setPointerCapture`，光标 `grab/grabbing`，
+  标题栏 `user-select: none`（不然拖的时候会把标题拖蓝）。点在按钮上不触发拖动。
+- **拖过之后不再自动摆位**（`dragged`）：内容变长（`ResizeObserver`）、锚点变化都不许把它弹回
+  用户挪到的位置；**下次打开**才复位回"贴锚点"（`watch(open)` 里清掉）。
+- 夹在视口里（左边/上边至少留 48px/32px 抓得住），免得拖出屏幕就再也点不到关闭。
+- 合成事件（自检探针）没有真指针，`setPointerCapture` 会抛 `NotFoundError` → 用 try/catch 吞掉：
+  位移本身不依赖捕获。
+
+### 三、验证（免费，零模型调用）
+
+`frontend_check` **88 → 91 项，91/91**：
+
+- **真拖了一次**（在 ⑥ 那条 PDF 探针里，对刚高亮完弹出的笔记浮层）：按住标题栏挪 110×55，
+  断言浮层**真的跟着挪了**（≥100 / ≥45）；松手后再点「添加笔记」把卡片从提示态切成编辑态
+  （高度变了、`ResizeObserver` 一定会响），断言位置**一点没回弹**（±2px 内）。
+  这正是"拖过之后不许自动摆位"那条逻辑的端到端证据，不是"代码里有这个分支"。
+- **源码层钉住**（因为锚定后点来源要真调模型才看得见）：`focusCitation` 里必须带着
+  `if (!explainCard.pinned) explainCard.open = false;`，且默认 `pinned: true`；
+  `FloatingCard` 里必须有三个拖动处理器、`data-float-head`，以及 `place()` 开头的
+  `if (!props.open || dragged.value) return;`。
+
+`typecheck` / `build` 干净；`pytest` 未受影响。

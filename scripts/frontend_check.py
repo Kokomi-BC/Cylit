@@ -933,6 +933,31 @@ async function run() {
       const c = D().querySelector('[data-float-card] .fc-foot');
       return c ? (c.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 30) : '';
     })();
+    /* 浮层可以用鼠标拖动（用户口径 2026-10-07 第二条）：按住标题栏往右下挪，
+       松手后**停在挪到的位置**；此后内容从"提示态"变成"编辑态"（变高）也不许弹回去。 */
+    const head = D().querySelector('[data-float-head]');
+    const card0 = D().querySelector('[data-float-card]');
+    const r0 = card0 ? card0.getBoundingClientRect() : null;
+    res.hasHead = !!head;
+    if (head && r0) {
+      const opt = (t, x, y) => new w.PointerEvent(t, {
+        bubbles: true, cancelable: true, pointerId: 7, pointerType: 'mouse', clientX: x, clientY: y,
+      });
+      head.dispatchEvent(opt('pointerdown', r0.left + 24, r0.top + 9));
+      head.dispatchEvent(opt('pointermove', r0.left + 24 + 110, r0.top + 9 + 55));
+      await sleep(150); spin(BURN); await sleep(100);
+      const moved = D().querySelector('[data-float-card]');
+      const r1 = moved ? moved.getBoundingClientRect() : null;
+      res.dragDx = r1 ? Math.round(r1.left - r0.left) : null;
+      res.dragDy = r1 ? Math.round(r1.top - r0.top) : null;
+      head.dispatchEvent(opt('pointerup', r0.left + 134, r0.top + 64));
+      /* 换到编辑态（卡片变高）：拖过的位置要留着 */
+      const addBtn = D().querySelector('[data-note-add]');
+      if (addBtn) { addBtn.click(); await sleep(300); spin(BURN); await sleep(200); }
+      const r2 = D().querySelector('[data-float-card]')?.getBoundingClientRect();
+      res.dragKeptDx = (r1 && r2) ? Math.round(r2.left - r1.left) : null;
+      res.dragKeptDy = (r1 && r2) ? Math.round(r2.top - r1.top) : null;
+    }
     const data = await jget(api + '/highlights?paper_id=__PAPER__');
     const items = (data.data && data.data.items) || [];
     const mine = items.filter((h) => h.scope === 'pdf' && h.block_id === ('pdf:p' + res.page));
@@ -1231,11 +1256,29 @@ def check_explain_shell() -> None:
     src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
     float_card = '<FloatingCard' in src and 'data-explain-card' in src
     no_modal = 'explainCard.open" title="AI 解释' not in src
-    anchored = ':anchored="true"' in src
+    anchored = ':anchored="explainCard.pinned"' in src
     collapsed = 'processOpen: false' in src
     record("explain", "AI 解释改用共用浮层（居中 Modal 已删、默认锚定、过程默认折叠）",
            float_card and no_modal and anchored and collapsed,
            f"浮层={float_card} 无弹窗={no_modal} 锚定={anchored} 过程折叠={collapsed}")
+
+    # 用户口径 2026-10-07：**锚定之后点浮层底部的来源 chunk 跳转，浮层不能消失**
+    # （没锚定的临时浮层仍然顺手关掉）。这条要真调模型才看得见，所以在源码层钉住。
+    body = src.split("function focusCitation", 1)[-1].split("\n}", 1)[0]
+    jumped = "focusRow(" in body and "explainCard.open = false;" in body
+    guarded = "if (!explainCard.pinned) explainCard.open = false;" in body
+    record("explain", "锚定后点「来源 chunk」跳转**不关**浮层（没锚定的才顺手关）",
+           jumped and guarded and "pinned: true" in src,
+           f"跳转={jumped} 有锚定判断={guarded} 默认锚定={'pinned: true' in src}")
+
+    # 同一份浮层壳（笔记 / AI 解释共用）：**按住标题栏可以拖**
+    fc = (ROOT / "frontend" / "src" / "components" / "reader" / "FloatingCard.vue"
+          ).read_text(encoding="utf-8")
+    drag_handlers = all(k in fc for k in ("onHeadDown", "onHeadMove", "onHeadUp", "data-float-head"))
+    drag_kept = "if (!props.open || dragged.value) return;" in fc and "dragged.value = false;" in fc
+    record("explain", "浮层可以鼠标拖动（标题栏当把手；拖过之后不再自动弹回）",
+           drag_handlers and drag_kept,
+           f"拖动处理={drag_handlers} 拖过不弹回={drag_kept}")
 
 
 def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
@@ -1280,6 +1323,13 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
     record("pdfhl", "选中并高亮之后，浮层直接给出「添加笔记」（不用再划一次词）",
            res.get("hasAddNoteBtn") is True and "添加笔记" in str(res.get("afterHlCard") or ""),
            f"高亮后的浮层按钮：{str(res.get('afterHlCard'))[:24]!r}")
+    kept_dx, kept_dy = res.get("dragKeptDx"), res.get("dragKeptDy")
+    record("pdfhl", "浮层**可以拖**（按住标题栏挪 110×55），拖过之后内容变化也不弹回",
+           res.get("hasHead") is True
+           and (res.get("dragDx") or 0) >= 100 and (res.get("dragDy") or 0) >= 45
+           and kept_dx is not None and kept_dy is not None
+           and abs(int(kept_dx)) <= 2 and abs(int(kept_dy)) <= 2,
+           f"挪了 ({res.get('dragDx')},{res.get('dragDy')})，换编辑态后又挪 ({kept_dx},{kept_dy})")
     record("pdfhl", "侧栏页签是**一个「笔记」**（批注/高亮/笔记已合并，旧的「批注·笔记」已撤）",
            "笔记" in str(res.get("notesTab") or "")
            and "批注" not in str(res.get("notesTab") or ""),

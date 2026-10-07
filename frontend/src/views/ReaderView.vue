@@ -425,7 +425,13 @@ const selection = reactive({
  * 也能"在对话里继续"把选区带进侧栏面板；历史解释来自 `source=selection` 的批注。
  */
 const explainCard = reactive({
-  open: false, loading: false, question: '', rowId: '', anchored: true,
+  open: false, loading: false, question: '', rowId: '', blockAnchored: true,
+  /**
+   * 浮层的**图钉**（用户口径：AI 解释**默认锚定** —— 读完解释再决定要不要存，
+   * 中途移开鼠标就关掉太容易丢）。用户口径 2026-10-07 补了一条：**锚定之后点浮层底部的
+   * 来源 chunk 跳转，浮层不能消失**（那正是"看着解释跳到那一段"的用法），见 `focusCitation`。
+   */
+  pinned: true,
   /**
    * 选区在哪个视图里划的：`row` 有行锚点、`markdown` 只有页号、`pdf` 只有**页号 + 文字层偏移**。
    * 三种都不影响"解释"本身（解释是拿选区文字去问），只影响锚点怎么传回去。
@@ -2687,7 +2693,7 @@ async function explainSelection() {
   explainCard.loading = true;
   explainCard.question = '';
   explainCard.rowId = rowId;
-  explainCard.anchored = selection.anchored;
+  explainCard.blockAnchored = selection.anchored;
   explainCard.scope = selection.scope;
   explainCard.selectionText = selection.text;
   explainCard.page = Number(selection.page) || 0;
@@ -2695,6 +2701,7 @@ async function explainSelection() {
   explainCard.turns = [];
   explainCard.historyOpen = false;
   explainCard.processOpen = false;                    // 过程默认折叠（用户口径）
+  explainCard.pinned = true;                          // 每次打开都从"锚定"开始（默认态）
   /* 选区快照 + 浮层锚点：读完回答再点「存为笔记」时，页面上的选区可能早被改了 */
   explainCard.highlightId = selection.hlIds[0] ?? '';
   explainCard.start = selection.start;
@@ -2754,7 +2761,7 @@ function whereOf(scope: string, page: number, anchored: boolean): string {
  *  数据得从**当前选区**取（`explainCard` 里是上一次解释的残留，用它必然错位）。
  *  带进去之后落成输入框里那枚上下文胶囊：发不发由用户点它决定（见 `ReaderChat`）。 */
 function openSelectionInChat(fromMenu = false) {
-  const anchored = fromMenu ? selection.anchored : explainCard.anchored;
+  const anchored = fromMenu ? selection.anchored : explainCard.blockAnchored;
   const scope = fromMenu ? selection.scope : explainCard.scope;
   const rowId = anchored ? (fromMenu ? selection.rowId : explainCard.rowId) : '';
   const page = fromMenu
@@ -2773,8 +2780,14 @@ function openSelectionInChat(fromMenu = false) {
   void ensureAsideVisible();
 }
 
+/**
+ * 点解释浮层底部的**来源 chunk**：跳到那一段。
+ *
+ * 用户口径 2026-10-07：**浮层锚定之后，这里跳转不能把浮层关掉** ——
+ * 用法就是"一边看着解释、一边跳过去核对"。没锚定的（临时浮层）仍然顺手关掉。
+ */
 function focusCitation(citation: AgentCitation) {
-  explainCard.open = false;
+  if (!explainCard.pinned) explainCard.open = false;
   focusRow(citation.row_id || citation.block_id || '', { page: citation.page ?? undefined, flash: true });
 }
 
@@ -3814,12 +3827,13 @@ function renderMarkdown(text?: string | null) {
     <FloatingCard
       :open="explainCard.open"
       :anchor="explainCard.anchor"
-      :anchored="true"
+      :anchored="explainCard.pinned"
       title="AI 解释（只依据论文内容）"
       :width="420"
       :max-height="520"
       data-explain-card
       @close="explainCard.open = false"
+      @toggle-anchor="explainCard.pinned = !explainCard.pinned"
     >
       <div class="ex-thread">
         <div v-for="(t, i) in explainCard.turns" :key="i" class="ex-turn" :class="t.role">
