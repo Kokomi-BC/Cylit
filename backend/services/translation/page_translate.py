@@ -394,6 +394,58 @@ TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。每次
 - 这段会被**下一页**用来从它的正文里删掉重复部分 —— 照抄准确两边就刚好衔接，抄错就是漏译或重复。"""
 
 
+#: **块模式**（A 定块、B 照译）的 system prompt。与 `TRANSLATE_SYSTEM` 的差别是**职责重新划界**：
+#: 分块、页边界补句、坐标申报全部归 A 路，B 只做"给定块 → 逐块译文"这一件事。
+#:
+#: 为什么值得单开一份 prompt：两路各自分块时 `pair_rows` 只能**事后**对齐 —— 实测 46 页里
+#: 只有 43% 走到"按块号配对"、30% 掉到 `difflib` 兜底。块模式把"对得上"从**算法推论**变成
+#: **生成时约定**（B 收到的就是 A 的块清单，逐块译、逐块回），对齐档位不再随模型漂移。
+#: 代价（实测要看）：B 不再独立读图核对 → 转录漏掉的内容它不会补回；也不再能把页尾半句补完整句。
+BLOCK_TRANSLATE_SYSTEM = """你是学术论文的「**中文翻译**」专家。每次给你**一页论文的页图**，
+以及这一页的**英文原文块清单**（由另一条独立的「页面转录」流水线产出：**块已经切好、编号固定**）。
+你要**逐块**产出中文译文 —— **分块不是你的职责**：块数、块序、块类型都由清单决定，
+你只对译文负责，不转录原文、不合并不拆分。
+
+【最高原则：以**块清单**为准，页图只用于消歧】
+- 清单是转录流水线从页图上抄下来的原文，**它就是本页的事实来源**；你按它逐块翻译。
+- 页图仍然给你，但**只用来消歧**：表格的哪一格属于哪一列、公式符号是上标还是下标、某个数字是 3 还是 8。
+- **清单里没有的内容，页图上看得见也不要新增**：你多译一块，中英两栏就整页错位。
+- 清单里明显是**字符级笔误**的（OCR 错字）可以就地按页图纠正，但**不许因此增删块或句子**。
+- 看不清的照清单写，**禁止用常识补全**。
+
+""" + _SHARED_HEADING_RULES + """
+
+【块清单：输出必须与它一一对应】
+- 清单里每块写成 `【块 i/N】（type=…）`，后面是这一块的原文 Markdown。
+- 输出 JSON 的 `blocks` 必须是**长度正好 N 的字符串数组**：第 i 项 = 第 i 块的中文译文。
+- **不许合并、不许拆分、不许调换顺序、不许增删块**：一块标题译成一行中文标题、一块表格译成一张
+  Markdown 表格、一块公式原样保留公式、一块图注译成一行中文图注。块内可以有换行，
+  但**不要把内容在块之间搬运**（搬一次，中英两栏就整页错位）。
+- **任何一块的译文都不能是空串**（看着简单也要照译，宁可生硬也不要留空）。
+
+【blocks 里的中文译文】
+1. 标题的层级与编号必须与原文一致（例：`## 3.2.1 子中心弧面损失`）。
+2. 公式的 LaTeX **逐字符原样保留**，不改任何符号；**所有数学都必须写进公式定界符**：
+   行内 `$…$`、独立公式 `$$…$$`（单独成段，编号用 `\\tag{n}`）。
+   禁止裸写 LaTeX —— `Q_mse^{-1}`、`S^{d-1}`、`\\text{…}`、`\\mathbb{E}`、`R^{d×d}` 这类**必须包在 `$…$` 里**；
+   方法名带下标写成 `$\\text{TurboQuant}_{\\text{mse}}$`。公式块里不要塞中文（中文说明放在公式外的段落）。
+3. 图注/表注保留编号（例：**图 1：…**）；**表格里的数字、单位、方法名、数据集名原样保留**，
+   只翻译行名/列名这类自然语言表头。
+4. 参考文献条目：**只把论文标题译成中文、用《》括起来**，其余部分（作者、会议/期刊、年份、
+   卷期页码、DOI、链接）**逐字照抄原文的对应文本**，一个字都不要改，编号（`[12]`）保留，
+   条目不合并也不拆分（读者要的是"这条大概讲什么"，中文标题**允许意译**）。
+5. 术语按给定术语表统一；学术书面语；**不增删任何内容**（不加解释、不写"注："、不省略句子）。
+6. **标记不许跨块悬空**：某一块打开的 `*`（斜体/加粗）或 `$$` 要在这一块内闭合。
+
+【页边界不是你的职责】
+本页开头/末尾被版面切断的半句**按清单原样译**（照原样停在断处）：**不要**去猜下一页、
+**不要**把半句补成完整句、**不要**写「……」占位、**不要**写"承上页 / 续下页"、不要输出页码。
+块由转录那一侧决定，你只译它给的块（这一模式下没有 carry、没有【下一页开头】）。
+
+【output：只输出一个 JSON 对象】不要解释、不要代码块：
+{"blocks": ["第 1 块的中文译文", "第 2 块的中文译文", "……"]}"""
+
+
 #: 按路的输出契约（声明用：`call_page` 只把 system prompt 发给 provider，schema 供测试与文档）
 PAGE_SCHEMA_A = {
     "type": "object",
@@ -420,6 +472,14 @@ PAGE_SCHEMA_B = {
         }},
     },
     "required": ["translation_md"],
+}
+
+#: **块模式**（A 定块、B 照译）的输出契约：**定长字符串数组**，第 i 项 = A 路第 i 块的中文译文。
+#: 与 `PAGE_SCHEMA_B` 的区别就是"没有 translation_md 这个字段"—— 块本身就是对齐单位。
+PAGE_SCHEMA_B_BLOCKS = {
+    "type": "object",
+    "properties": {"blocks": {"type": "array", "items": {"type": "string"}}},
+    "required": ["blocks"],
 }
 
 
@@ -456,6 +516,18 @@ PAGE_USER_TEMPLATE_B = """{prefix}{previous}
 
 【本页输出】按系统提示输出 JSON：translation_md 为本页中文译文，carry_md 为本页末尾那句
 从【下一页开头】借用的原文片段（没借就写空串），breaks 为本页的语义边界锚点（没有就写空数组）。{src_tail}"""
+
+#: **块模式**的 user prompt 模板：正文换成 **A 路转录的块清单**，输出契约换成定长数组，
+#: 不给【下一页开头】/【页边界参考】（补句与 carry 在这一模式下不存在，见 `BLOCK_TRANSLATE_SYSTEM`）。
+PAGE_USER_TEMPLATE_B_BLOCKS = """{prefix}{previous}
+
+【本页】第 {page} 页 / 共 {page_total} 页{section_line}
+【A 路（转录）定好的本页块清单：共 {block_count} 块 —— **块数 / 块序 / 块类型就是契约**】
+{blocks}
+
+【本页输出】按系统提示输出 JSON：`blocks` 为**长度正好 {block_count}** 的字符串数组，
+第 i 项是第 i 块的中文译文（块数、顺序、块类型必须与清单一致；
+不要输出 translation_md / carry_md / breaks / src）。"""
 
 # 输出预算（`max_tokens`）。
 #
@@ -897,6 +969,26 @@ def render_page_prompt(*, page: int, page_total: int, body: str,
     )
 
 
+def render_block_prompt(*, page: int, page_total: int, blocks: str, block_count: int,
+                        prefix: str = "", section: str = "",
+                        previous: str = "") -> str:
+    """**块模式**（A 定块、B 照译）的 user prompt。
+
+    与 `render_page_prompt(path="b")` 的三处差别：① 正文换成 **A 路转录的块清单**（不是解析器文本）；
+    ② 不给【下一页开头】/【页边界参考】（补句与 carry 在这一模式下不存在）；
+    ③ 输出契约是定长数组 `blocks`。
+
+    清单放在**页面级尾部**：稳定前缀（system + 简报 + 术语表 + 骨架 + 本路前文）逐字节不变，
+    所以前缀缓存照旧命中 —— 与 `src_tail` 同一个道理。
+    """
+    return PAGE_USER_TEMPLATE_B_BLOCKS.format(
+        prefix=prefix, previous=f"\n\n{previous}" if previous else "",
+        page=page, page_total=page_total,
+        section_line=f"；章节：{section}" if section else "",
+        blocks=blocks or "（转录没有给出任何块：本页无法翻译）",
+        block_count=block_count)
+
+
 #: 页边界参考块的开头（供测试/排查引用）
 EDGE_FACTS_HEADER = "【页边界参考"
 
@@ -935,6 +1027,10 @@ class PageCallResult:
     breaks: list[dict] = field(default_factory=list)
     #: P4b 共享坐标契约：与输出块**一一对应**的解析器块号覆盖（见 `coords`）
     src: list[str] = field(default_factory=list)
+    #: **块模式**（A 定块、B 照译）：与 A 路块清单**一一对应**的逐块译文。
+    #: `translation_md` 是它的拼接（给搜索 / 导出这类只认"整页 Markdown"的调用方用），
+    #: 对齐用的是这个数组本身（顺序是契约的一部分，见 `pair_rows_by_blocks`）。
+    blocks: list[str] = field(default_factory=list)
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -947,14 +1043,21 @@ class PageCallResult:
 
 
 def call_page(provider, prompt: str, image: bytes | None, *,
-              max_tokens: int, path: str | None = None) -> PageCallResult:
+              max_tokens: int, path: str | None = None,
+              block_mode: bool = False) -> PageCallResult:
     """一次页级调用（带页图）。图片不可用时退化为纯文本调用。
 
     `path`：``None`` = 融合模式（同一次回复产出 original_md + translation_md）；
     ``"a"`` / ``"b"`` = 两路模式，只要求**那一路**的输出（另一侧留空）。
     system prompt 按路取 —— 两路各有自己的提示前缀，前缀缓存也各算各的。
+
+    `block_mode`（只在 ``path="b"`` 时用）：**块模式**（A 定块、B 照译）——
+    system prompt 换成 `BLOCK_TRANSLATE_SYSTEM`，输出取 `blocks` 定长数组（见 `parse_blocks`）。
     """
-    system = SYSTEM_PROMPT if path is None else path_system_prompt(path)
+    if block_mode:
+        system = BLOCK_TRANSLATE_SYSTEM
+    else:
+        system = SYSTEM_PROMPT if path is None else path_system_prompt(path)
     try:
         if image and getattr(provider, "supports_vision", False):
             res = provider.generate_vision(prompt, [image], system=system,
@@ -974,6 +1077,14 @@ def call_page(provider, prompt: str, image: bytes | None, *,
     if noise_a or noise_b:
         log.info("丢掉图内文字 %d 行（%s 侧 %d / %s 侧 %d）：图里画出来的句子/标记不进正文",
                  noise_a + noise_b, "A", noise_a, "B", noise_b)
+    blocks: list[str] = []
+    if block_mode:
+        # 块模式：译文是**定长数组**（第 i 项 = A 路第 i 块），没有 translation_md 这个字段。
+        # 逐块过一遍图内文字兜底：图里画出来的示例句/标记可能被抄进某一块。
+        blocks = [strip_figure_noise(b)[0] for b in parse_blocks(res.text or "")]
+        if not blocks:
+            raise ProviderError("模型未返回 blocks（B 路块模式：逐块中文译文）", retryable=True)
+        translation = "\n\n".join(blocks).strip()
     if path == "a":
         if not original.strip():
             raise ProviderError("模型未返回 original_md（A 路：页面转录）", retryable=True)
@@ -990,6 +1101,7 @@ def call_page(provider, prompt: str, image: bytes | None, *,
         original_md=original.strip(), translation_md=translation.strip(),
         carry_md=parse_carry(res.text or ""),
         breaks=parse_breaks(res.text or ""),
+        blocks=blocks,
         src=_coords().parse_src(res.text or ""),
         model=getattr(res, "model", "") or provider.model_name,
         prompt_tokens=int(getattr(res, "prompt_tokens", 0) or 0),
@@ -1095,6 +1207,32 @@ def parse_breaks(text: str) -> list[dict]:
     if not isinstance(data, dict):
         return []
     return normalize_breaks(data.get("breaks"))
+
+
+def parse_blocks(text: str) -> list[str]:
+    """从模型回复里取**块模式**的 ``blocks``（定长字符串数组）。
+
+    容错方式与 `parse_breaks` 相同（裸 JSON / 代码围栏 / 前后有解释文字都能取），
+    但**不可用时不退回旧契约**：块模式的对齐完全靠"第 i 项 ↔ 第 i 块"，
+    少一块就整页错位 —— 所以取不到就返回空数组，由 `call_page` 判这一页失败并重试。
+    """
+    raw = (text or "").strip()
+    candidates = [raw]
+    fence = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1).strip())
+    start, end = raw.find("{"), raw.rfind("}")
+    if 0 <= start < end:
+        candidates.append(raw[start:end + 1])
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        got = data.get("blocks") if isinstance(data, dict) else None
+        if isinstance(got, list):
+            return [str(x) for x in got]
+    return []
 
 
 def _loads_lenient(raw: str) -> dict | None:
@@ -1234,6 +1372,25 @@ def split_blocks(md: str) -> list[dict]:
     return blocks
 
 
+def format_block_list(blocks: list[dict]) -> str:
+    """A 路的块清单 → 给 B 路看的**编号清单**（`format_block_list(split_blocks(a_md))`）。
+
+    与 `coords.lattice_text` 的区别：那个只给每块前 40 个字符（那是给"申报坐标"用的对照，
+    模型不需要看到全文），而块模式的 B 路**就是照着这份清单在译** —— 必须给全文。
+
+    编号用 enumerate 的序号（1..N），与 `pair_rows_by_blocks` 的配对口径一致：
+    第 i 块 ↔ `blocks[i-1]`。
+    """
+    out: list[str] = []
+    total = len(blocks)
+    for i, block in enumerate(blocks, 1):
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        out.append(f"【块 {i}/{total}】（type={block.get('type') or 'para'}）\n{text}")
+    return "\n\n".join(out)
+
+
 def _number_of(text: str) -> str:
     first = (text or "").split("\n", 1)[0]
     first = re.sub(r"^[\s#]+", "", first.strip())
@@ -1277,6 +1434,38 @@ def pair_rows(original_md: str, translation_md: str, page: int) -> tuple[list[di
             "translation": (b or {}).get("text") or "",
         })
     return rows, quality
+
+
+def pair_rows_by_blocks(original_md: str, blocks: list[str], page: int
+                        ) -> tuple[list[dict], str]:
+    """**块模式**（A 定块、B 照译）的配对：按序号 1:1，质量标记 ``blocks``。
+
+    与 `pair_rows`（事后按结构猜）和 `pair_rows_by_src`（事后按块号验）的本质区别：
+    这里"对得上"**不是算出来的，而是生成时就约定好的** —— B 收到的就是 A 的块清单，
+    逐块译、逐块回。于是：
+
+    - 只要求**块数相等**：不比文本、不做差分，`structure`（difflib 兜底）与单侧行整类消失；
+    - 块数不等（模型自己并了/拆了块）→ 返回空，调用方**退回** `pair_rows`：
+      宁可退回旧兜底，也不假装对齐（错位比不对齐更难发现）。
+
+    行形状与 `pair_rows` 逐字一致 —— `level` / `number` 必须跟着搬过来（目录靠它们，
+    见 `coords.pair_rows_by_src` 里同一条教训）。
+    """
+    left = split_blocks(original_md or "")
+    if not left or len(left) != len(blocks):
+        return [], ""
+    rows: list[dict] = []
+    for i, (a, text) in enumerate(zip(left, blocks)):
+        rows.append({
+            "id": f"p{page:03d}-{i:02d}",
+            "index": i,
+            "type": a.get("type") or "para",
+            "level": int(a.get("level") or 0),
+            "number": a.get("number") or "",
+            "original": a.get("text") or "",
+            "translation": str(text or "").strip(),
+        })
+    return rows, "blocks"
 
 
 def _sequence_pairs(left: list[dict], right: list[dict]
@@ -1578,7 +1767,8 @@ def build_page_payload(*, page: int, page_total: int, result: PageCallResult,
 
 def build_path_payload(*, path: str, page: int, page_total: int,
                        result: PageCallResult, source_chars: int = 0,
-                       cached: bool = False) -> dict:
+                       cached: bool = False, blocks: list[str] | None = None,
+                       a_blocks: int = 0) -> dict:
     """**一路**的页产物：A 只存 `original_md`，B 只存 `translation_md` + `carry_md`。
 
     为什么**不存 `rows`**：单路只有一侧内容，存下来的"行"必然全是单侧行；两路各存一份
@@ -1612,6 +1802,13 @@ def build_path_payload(*, path: str, page: int, page_total: int,
         payload["translation_md"] = result.translation_md
         # `carry_md` 是翻译侧独有的：本页从【下一页开头】借走的那段原文，下一页用它去重
         payload["carry_md"] = result.carry_md
+        if blocks is not None:
+            # **块模式**：逐块译文原样留档 + "块清单来自 A 路第几块到第几块"。
+            # 读时按序号与 A 的块一一配对（`pair_rows_by_blocks`），所以这里必须存**数组本身**：
+            # 重新 `split_blocks(translation_md)` 可能把模型块内的空行切出新块，把对齐毁掉。
+            payload["blocks"] = [str(b) for b in blocks]
+            payload["blocks_from_a"] = True
+            payload["a_blocks"] = int(a_blocks)
     return payload
 
 

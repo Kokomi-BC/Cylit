@@ -8,6 +8,8 @@
     python scripts/two_path_run.py                                   # 两篇演示论文，全部页
     python scripts/two_path_run.py --paper turboquant-online-vector-iclr-26
     python scripts/two_path_run.py --paper <id> --pages 3,4          # 只跑指定页
+    python scripts/two_path_run.py --paper <id> --paths b --force --blocks-from-a
+                                                                     # 块模式重译 B 路（A 定块）
     python scripts/two_path_run.py --check-only                      # 只看当前状态，不触发
 
 为什么必须**一篇一篇跑**：两路各占一个 worker（`task_worker_count=3`），
@@ -39,8 +41,11 @@ def call(method: str, path: str, body=None):
 
 
 def run_paper(paper_id: str, pages: list[int] | None, *, force: bool,
-              timeout: float) -> dict:
-    body = {"paths": ["a", "b"], "mode": "retranslate" if force else "resume"}
+              timeout: float, paths: list[str] | None = None,
+              blocks_from_a: bool = False) -> dict:
+    body = {"paths": paths or ["a", "b"], "mode": "retranslate" if force else "resume"}
+    if blocks_from_a:
+        body["blocks_from_a"] = True
     if pages:
         body["pages"] = pages
     res = call("POST", f"/papers/{paper_id}/translate", body)
@@ -79,6 +84,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--paper", action="append")
     ap.add_argument("--pages", default="", help="逗号分隔的页号（只跑这些页）")
+    ap.add_argument("--paths", default="a,b", help="逗号分隔：a / b / fused（默认 a,b）")
+    ap.add_argument("--blocks-from-a", action="store_true",
+                    help="块模式（只对 B 路生效）：B 照 A 的块清单逐块译，见 BLOCK_TRANSLATE_SYSTEM")
     ap.add_argument("--force", action="store_true", help="忽略已有产物重跑")
     ap.add_argument("--timeout", type=float, default=3600.0, help="每篇论文的上限秒数")
     ap.add_argument("--check-only", action="store_true", help="只打印当前两路进度")
@@ -87,6 +95,7 @@ def main() -> int:
 
     papers = args.paper or PAPERS
     pages = [int(p) for p in args.pages.split(",") if p.strip()] or None
+    paths = [p.strip() for p in args.paths.split(",") if p.strip()] or ["a", "b"]
 
     if args.check_only:
         for pid in papers:
@@ -98,7 +107,8 @@ def main() -> int:
             print(f"    形态={shapes} 断点={len(r['page_translations'])} 页")
         return 0
 
-    results = [run_paper(pid, pages, force=args.force, timeout=args.timeout)
+    results = [run_paper(pid, pages, force=args.force, timeout=args.timeout,
+                         paths=paths, blocks_from_a=args.blocks_from_a)
                for pid in papers]
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

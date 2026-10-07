@@ -216,7 +216,7 @@ section / heading_level / translation / translation_status / translation_revisio
 | `path` | 任务类型 | 产物 | 说明 |
 |---|---|---|---|
 | `a` | `TRANSCRIBE_EN` | `md/path_a.json` | `original_md` / `breaks` / `src`；事件 `page_transcribed` |
-| `b` | `TRANSLATE_ZH` | `md/path_b.json` | `translation_md` / `breaks` / `src`；事件 `page_translated`（带 `path`） |
+| `b` | `TRANSLATE_ZH` | `md/path_b.json` | `translation_md` / `breaks` / `src`；事件 `page_translated`（带 `path`）。**块模式**（`blocks_from_a=true`）下改存 `blocks`（定长逐块译文数组）+ `blocks_from_a` / `a_blocks`，此时不产出 `breaks` / `src` / `carry_md` |
 | `fused` | `TRANSLATE_MD` | `md/pages.json` | 融合**对照臂**（改造前行为，逐字保留）；**只能单独跑**（与 `a`/`b` 同传会 400 —— 它写的是同一份 `pages.json`）。`"both"` / `"none"` / `""` 都归一成 `fused` |
 
 阅读器读的是**两路产物的合并**：两侧都带合法 `src` 时按**解析器块号**交格合并
@@ -225,7 +225,7 @@ section / heading_level / translation / translation_status / translation_revisio
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4]}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它）。**两路都翻完后自动串联**：自动开 INDEX（`params.then_understand=true`）→ 索引完成后再自动开论文精读（`docs/dev-log.md` §17.94；2026-10-07 起理解只有这一路）—— 前端不再有「建立索引」按钮 |
+| POST | `/papers/{id}/translate` | 页级翻译/转录（**唯一粒度**）：`{"paths":["a","b"],"mode":"resume\|retranslate","brief":true,"force":bool,"pages":[3,4],"blocks_from_a":false}`。**按路幂等**：该路已有活着的任务时直接返回它并带 `reused: true`（**连 force 也一样** —— 同一路并发两套页翻译会互相覆盖产物；已请求取消/租约过期的僵尸任务会被丢弃后新建）。前置：论文已解析（没有页图时后端会顺带建解析任务并返回它）。**两路都翻完后自动串联**：自动开 INDEX（`params.then_understand=true`）→ 索引完成后再自动开论文精读（`docs/dev-log.md` §17.94；2026-10-07 起理解只有这一路）—— 前端不再有「建立索引」按钮 |
 | GET | `/papers/{id}/translation/stats` | `{total, done, stale}` —— **只报 B 路（中文翻译）**完成度；A 路的进度在 `Paper.transcribe_done`。`stale` 目前恒为 `0` |
 | GET/POST | `/papers/{id}/brief` | 文档简报（全文脉络 + 统一术语）；POST 可重新生成或写入人工修订（`{"apply":{"glossary":{...}}}`） |
 | GET/DELETE | `/papers/{id}/translation/cache` | 页级产物状态（已翻译页数 / 行数 / token 用量 / 对齐质量分布）/ 清空（等于全篇重译） |
@@ -242,6 +242,7 @@ section / heading_level / translation / translation_status / translation_revisio
 | `context` | `true` | **任务级参数**（`/translate` 不透传）：是否把**完整前文**（第 1..N-1 页）放进本页 prompt（连贯记忆 + 前缀缓存） |
 | `context_chars` | `2000000` | **任务级参数**（同上）：前文长度上限（**仅护栏**：目标模型窗口 1M token，正常论文不截断）。注意别和设置里的 `translate_max_context_chars`（1200，另一回事）混淆 |
 | `pages` | 无 | 只翻指定页（如 `[3,4]`），重跑个别页用 |
+| `blocks_from_a` | `false` | **块模式**（A 定块、B 照译，只对 B 路生效）：B 的正文换成 A 路**本页已转录好的块清单**，逐块译、逐块回；B 不再分块、不申报 `src`/`breaks`、不做跨页 carry。前置：A 路这些页**已转录**（缺页则该页失败，不静默降级）。对齐由"生成时约定"保证 —— 读时按序号 1:1 配对（`align: "blocks"`），块数不等才退回 `pair_rows`。见 `docs/dev-log.md` §67 |
 
 **粒度**：只有 `page`（一页一次调用）。调用输入 = 该页**页图（PNG，150dpi）** + 解析器抽出的
 页内文本 + 稳定前缀（简报 + 术语表 + **全文标题骨架**）+ **完整前文历史**；A 路输出 `original_md`

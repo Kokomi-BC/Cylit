@@ -40,9 +40,10 @@ from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
     CONTEXT_MAX_CHARS, PATH_VERSION, PageStore, build_outline_skeleton,
     build_page_payload, build_path_payload, build_stable_prefix, call_page,
-    drop_declared_fragment, effective_max_tokens, history_context, list_pages,
-    load_page_image, next_max_tokens, page_continuity, page_lookahead,
-    page_source_blocks, page_source_text, render_page_prompt, split_blocks,
+    drop_declared_fragment, effective_max_tokens, format_block_list,
+    history_context, list_pages, load_page_image, next_max_tokens,
+    page_continuity, page_lookahead, page_source_blocks, page_source_text,
+    render_block_prompt, render_page_prompt, split_blocks,
 )
 
 log = get_logger(__name__)
@@ -152,6 +153,10 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     force = bool(params.get("force")) or mode == "retranslate"
     use_brief = params.get("brief", True) is not False
     only_pages = params.get("pages") or None
+    # **块模式**（A 定块、B 照译）：只对 B 路有意义 —— B 的正文换成 A 路已转录好的块清单，
+    # 逐块译、逐块回，对齐从"事后猜"变成"生成时约定"（见 `BLOCK_TRANSLATE_SYSTEM`）。
+    # 需要 A 路**本页已转录**（`original_md` 在盘上）：A 没跑完时这一页会直接失败，不会静默降级。
+    block_mode = path == "b" and bool(params.get("blocks_from_a"))
 
     paper_pages = list_pages(paper_id)
     if not paper_pages:
@@ -170,6 +175,9 @@ def run_path_task(ctx, path: str | None = None) -> dict:
 
     store = page_store(paper_id, path)
     store.set_page_total(page_total)
+    # 块模式要读 **A 路对页那一页**的转录产物：整篇建一个 store（`PageStore` 自带缓存，
+    # 逐页读的是同一份内存数据，不会 22 次重读文件）。
+    a_store = page_store(paper_id, "a") if block_mode else None
 
     done: set[int] = {int(p) for p in (ctx.cursor.get("done_pages") or [])}
     if not force:
@@ -315,33 +323,55 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                    if use_context else "")
         # 下一页开头（仅上下文）：页尾被版面折断成 `bot-` 时，让模型知道后面接什么词，
         # 从而把**译文**补成完整词。A 路是转录，只写本页页图内容 —— 给了反而容易把那半句补完。
-        lookahead = (page_lookahead(paper_id, page_no)
-                     if (use_context and path != "a") else "")
+        lookahead = ""
         # 页边界事实（本页开头是否承接上页、末尾是否延续到下页）：
         # 只用解析器原文判定（确定性、与并发顺序无关），直接告诉模型"该停就停、该接就接"，
         # 否则它会自作主张把半句补成一个完整句 → 同一句话被拆成两句（用户报过）。
-        edges = page_continuity(paper_id, page_no)
-        # 上一页在自己产物里申报了"它从本页开头借走的那段原文"（carry_md）→
-        # 本页正文把这截删掉再送模型：重复从结构上不可能发生，行对齐也不会因"少译一句"而错位。
-        # 不靠提示词让模型"自己跳过"（实测执行不稳），也不用启发式猜（会把题注误剪）。
-        # `carry_md` 是**翻译侧**的机制（A 路契约里没有这个字段），所以只有 B 路/融合用它。
+        edges: dict = {}
         body = source
-        if path != "a":
-            prev_payload = store.page(page_no - 1) if page_no > 1 else None
-            carried = str((prev_payload or {}).get("carry_md") or "").strip()
-            if carried:
-                body = drop_declared_fragment(source, carried)
-                if body != source:
-                    log.info("第 %d 页：正文剪掉上一页已译完的头部 %d 字符",
-                             page_no, len(source) - len(body))
-        prompt = render_page_prompt(page=page_no, page_total=page_total,
-                                    body=body, prefix=prefix, section=section,
-                                    previous=history, lookahead=lookahead, edges=edges,
-                                    path=path, src_tail=coord_tail)
+        a_blocks: list[dict] = []
+        if block_mode:
+            # **块模式**：正文 = A 路本页的块清单（不是解析器文本）—— 输入只有一条路径，
+            # B 只做"逐块译"；分块、页边界补句、坐标申报都不再进 B 的 prompt。
+            # 也**不给** lookahead / edges：补句与 carry 在这一模式下不存在（契约是定长数组）。
+            a_md = str((a_store.page(page_no) or {}).get("original_md") or "") if a_store else ""
+            a_blocks = split_blocks(a_md)
+            if not a_blocks:
+                raise ValidationError(
+                    f"块模式需要 A 路先转录完第 {page_no} 页（A 产物里没有 original_md）")
+            prompt = render_block_prompt(
+                page=page_no, page_total=page_total, blocks=format_block_list(a_blocks),
+                block_count=len(a_blocks), prefix=prefix, section=section,
+                previous=history)
+        else:
+            lookahead = (page_lookahead(paper_id, page_no)
+                         if (use_context and path != "a") else "")
+            edges = page_continuity(paper_id, page_no)
+            # 上一页在自己产物里申报了"它从本页开头借走的那段原文"（carry_md）→
+            # 本页正文把这截删掉再送模型：重复从结构上不可能发生，行对齐也不会因"少译一句"而错位。
+            # 不靠提示词让模型"自己跳过"（实测执行不稳），也不用启发式猜（会把题注误剪）。
+            # `carry_md` 是**翻译侧**的机制（A 路契约里没有这个字段），所以只有 B 路/融合用它。
+            if path != "a":
+                prev_payload = store.page(page_no - 1) if page_no > 1 else None
+                carried = str((prev_payload or {}).get("carry_md") or "").strip()
+                if carried:
+                    body = drop_declared_fragment(source, carried)
+                    if body != source:
+                        log.info("第 %d 页：正文剪掉上一页已译完的头部 %d 字符",
+                                 page_no, len(source) - len(body))
+            prompt = render_page_prompt(page=page_no, page_total=page_total,
+                                        body=body, prefix=prefix, section=section,
+                                        previous=history, lookahead=lookahead, edges=edges,
+                                        path=path, src_tail=coord_tail)
         image = load_page_image(paper_id, page_no)
+
+        def invoke(mt: int):
+            """两条 prompt 路径共用一个调用点：重试阶梯必须走**同一份** prompt / 页图。"""
+            return call_page(provider, prompt, image, max_tokens=mt,
+                             path=("b" if block_mode else path), block_mode=block_mode)
+
         try:
-            result = call_page(provider, prompt, image,
-                               max_tokens=max_tokens_current, path=path)
+            result = invoke(max_tokens_current)
         except Exception as exc:  # noqa: BLE001
             escalated = _escalate_max_tokens(exc, max_tokens_current)
             if escalated is None:
@@ -350,7 +380,7 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                         page_no, max_tokens_current, escalated)
             max_tokens_current = escalated
             counters["escalations"] += 1
-            result = call_page(provider, prompt, image, max_tokens=escalated, path=path)
+            result = invoke(escalated)
 
         counters["prompt_tokens"] += result.prompt_tokens
         counters["completion_tokens"] += result.completion_tokens
@@ -368,11 +398,15 @@ def run_path_task(ctx, path: str | None = None) -> dict:
         else:
             # 两路模式：**只存自己那一侧**（行由读时合并产生，单路存行必然是一堆单侧行）
             payload = build_path_payload(path=path, page=page_no, page_total=page_total,
-                                         result=result, source_chars=len(source))
+                                         result=result, source_chars=len(source),
+                                         blocks=(result.blocks if block_mode else None),
+                                         a_blocks=(len(a_blocks) if block_mode else 0))
         payload["prev_context_chars"] = len(history)
         # P4b：把 src 校验成"每块覆盖的块号"，不合法就**整页不带坐标**（读时退回结构配对）。
         # 校验放在这里而不是 `coords` 里，是因为"输出块数"要等拿到这一侧的 Markdown 才知道。
-        if codes:
+        # 块模式**不申报坐标**：块由 A 路定死、第 i 项 ↔ 第 i 块，读时直接按序号配对
+        # （`pair_rows_by_blocks`），坐标契约已经是多余的一层。
+        if codes and not block_mode:
             side_md = payload.get("original_md") if path == "a" else payload.get("translation_md")
             if path is not None:
                 blocks_out = split_blocks(side_md or "")
@@ -527,11 +561,16 @@ def _finish_paper_status(paper_id: str) -> None:
 
 def start_translation(paper_id: str, *, paths: list[str] | None = None,
                       mode: str = "resume", force: bool = False,
-                      brief: bool = True, pages: list[int] | None = None) -> dict:
+                      brief: bool = True, pages: list[int] | None = None,
+                      blocks_from_a: bool = False) -> dict:
     """触发页级任务（幂等：每一路已有**活着**的任务则复用）。
 
     `paths`：``["a", "b"]``（默认，两路并发）／``[FUSED]``（融合，对照臂与回滚）／
     ``["b"]``（只补中文翻译）。
+
+    `blocks_from_a=True`：**只对 B 路生效**的「块模式」（A 定块、B 照译）—— B 的正文换成
+    A 路已转录好的块清单，逐块译、逐块回，对齐由"生成时约定"保证；要求 A 路**先把这些页
+    转录完**（缺页会整页失败，不静默降级）。实测口径见 `scripts/path_audit.py`。
 
     幂等按**路**判定：同一路上重复触发会复用活动任务（复用**连 `force` 也不例外** ——
     同一路同时跑两套会互相覆盖产物文件，只会更难收拾）；不同路互不影响，这正是并发的意义。
@@ -567,9 +606,13 @@ def start_translation(paper_id: str, *, paths: list[str] | None = None,
         store = page_store(paper_id, path)
         total = len(list_pages(paper_id))
         done = len(store.done_pages())
-        task = _create_page_task(paper_id, path, {
-            "mode": mode, "force": force, "brief": brief, "pages": pages,
-        }, total_items=_target_count(pages, total, done, force))
+        # `blocks_from_a` 只在真开启时写进任务参数：默认路径的参数保持与改造前逐字一致
+        # （自检脚本按整字典断言过它），而"这条任务跑的是块模式"在任务记录里仍然可查。
+        params = {"mode": mode, "force": force, "brief": brief, "pages": pages}
+        if blocks_from_a:
+            params["blocks_from_a"] = True
+        task = _create_page_task(paper_id, path, params,
+                                 total_items=_target_count(pages, total, done, force))
         tasks[key] = {**task, "reused": False}
         created_count += 1
 

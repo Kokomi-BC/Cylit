@@ -28,6 +28,7 @@ from backend.services.translation.coords import pair_rows_by_src as coords_pair
 from backend.services.translation.page_translate import (
     PATH_VERSION, PageStore, absorb_one_sided_rows, apply_semantic_breaks,
     mark_rows_continuity, normalize_breaks, page_continuity, pair_rows,
+    pair_rows_by_blocks,
 )
 
 log = get_logger(__name__)
@@ -213,6 +214,14 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
     if not original_md and not translation_md:
         return None                        # 两侧都空的页不产生一页（与旧 done 判据一致）
     fresh_rows, quality = pair_rows(original_md, translation_md, page)
+    # **块模式**（A 定块、B 照译）：B 的产物带着"与 A 的块清单一一对应"的逐块译文数组，
+    # 这时配对是**生成时约定好的**（第 i 项 ↔ A 第 i 块），比事后按结构/坐标猜都硬 ——
+    # 所以它排在最前。块数不等（模型自己并/拆了块）→ 退回 `pair_rows`。
+    blocks_b = b.get("blocks") if isinstance(b, dict) else None
+    if b.get("blocks_from_a") and isinstance(blocks_b, list) and blocks_b:
+        block_rows, block_quality = pair_rows_by_blocks(original_md, blocks_b, page)
+        if block_rows:
+            fresh_rows, quality = block_rows, block_quality
     # P4b 共享坐标：两侧都带合法的 src（页级契约）时，**按解析器块号配对**——
     # 这是唯一能表示"一侧并成一块、另一侧拆成两块"的做法（合成一行，不错位、不留空栏）。
     # 任一侧缺 src → 退回 `pair_rows`（结构 + 跨语言标记差分），行为与改造前一致。
