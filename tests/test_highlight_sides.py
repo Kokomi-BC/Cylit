@@ -71,13 +71,21 @@ def test_defaults_are_en_and_row() -> None:
 
 
 def test_invalid_side_and_scope_fall_back() -> None:
+    """脏值一律落到 en/row；但 `pdf` **不是**脏值（《修改计划》第三步起它是一面）。"""
     from backend.services.annotation import annotation_service as svc
 
     created = svc.create_highlight({
         "paper_id": FAKE_PAPER, "block_id": "p001-03", "selected_text": "x",
-        "side": "jp", "scope": "pdf",
+        "side": "jp", "scope": "weird",
     })
     assert created["side"] == "en" and created["scope"] == "row"
+
+    pdf = svc.create_highlight({
+        "paper_id": FAKE_PAPER, "block_id": "pdf:p1", "selected_text": "Attention Is All You Need",
+        "start_offset": 0, "end_offset": 37, "side": "en", "scope": "pdf",
+    })
+    assert pdf["scope"] == "pdf" and pdf["block_id"] == "pdf:p1"
+    svc.delete_highlight(pdf["id"])
 
 
 def test_side_column_exists() -> None:

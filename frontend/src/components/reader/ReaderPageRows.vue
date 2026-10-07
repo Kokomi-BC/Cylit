@@ -227,6 +227,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             :width="props.pageWidth"
             :page-width="g.info?.width"
             :page-height="g.info?.height"
+            :highlights="props.highlights"
           />
           <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
         </div>
@@ -247,6 +248,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
               :width="props.pageWidth"
               :page-width="g.info?.width"
               :page-height="g.info?.height"
+              :highlights="props.highlights"
             />
             <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
           </div>

@@ -229,8 +229,10 @@ class Formula(Base):
 
 # ---------------------------------------------------------------- ⑤ 高亮
 HIGHLIGHT_SIDES = ("en", "zh")
-# 高亮出现的"面"：正文行（锚点 = 行 id） / Markdown 视图（锚点 = `md:p<页号>`）
-HIGHLIGHT_SCOPES = ("row", "markdown")
+# 高亮出现的"面"：正文行（锚点 = 行 id） / Markdown 视图（锚点 = `md:p<页号>`） /
+# **原 PDF 页图**（锚点 = `pdf:p<页号>`，偏移量相对该页 pdf.js 文字层的渲染文本）。
+# 三套锚点刻意**不统一**：PDF 与 Markdown 是两种页面存储，硬套同一个位置模型必然错位。
+HIGHLIGHT_SCOPES = ("row", "markdown", "pdf")
 
 
 class Highlight(Base):

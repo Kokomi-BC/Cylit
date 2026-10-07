@@ -27,7 +27,7 @@ import { useEventStream, type StreamStatus } from '@/composables/useEventStream'
 import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
-import { markRanges, rangeOffsets } from '@/utils/domMarks';
+import { markRanges, rangeOffsets, renderedText } from '@/utils/domMarks';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -386,8 +386,9 @@ const selection = reactive({
   rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
   /** 选区是否有块锚点（原 PDF 划词只有文字）—— 决定能不能写高亮/笔记 */
   anchored: true,
-  /** 在哪个视图里划的：正文行 row / Markdown 视图 markdown（决定锚点怎么存） */
-  scope: 'row' as 'row' | 'markdown',
+  /** 在哪个视图里划的：正文行 row / Markdown 视图 markdown / **原 PDF 页图 pdf**
+   *  （决定锚点怎么存 —— 三面各自的锚点不同，见 `mdAnchor` / `pdfAnchor`） */
+  scope: 'row' as 'row' | 'markdown' | 'pdf',
   /** scope='markdown' 时的页号（锚点是 `md:p<页号>`） */
   mdPage: 0,
   /** 选区**所在的页**（三种视图都给）：正文行从行 id 里解、Markdown 视图取页号、
@@ -415,8 +416,11 @@ const selection = reactive({
  */
 const explainCard = reactive({
   open: false, loading: false, question: '', rowId: '', anchored: true,
-  /** 选区在哪个视图里划的：`row` 有行锚点，`markdown` 只有页号 */
-  scope: 'row' as 'row' | 'markdown',
+  /**
+   * 选区在哪个视图里划的：`row` 有行锚点、`markdown` 只有页号、`pdf` 只有**页号 + 文字层偏移**。
+   * 三种都不影响"解释"本身（解释是拿选区文字去问），只影响锚点怎么传回去。
+   */
+  scope: 'row' as 'row' | 'markdown' | 'pdf',
   selectionText: '', page: 0 as number, conversationId: '' as string | null,
   turns: [] as Array<{ role: 'user' | 'assistant'; text: string; citations: AgentCitation[] }>,
   history: [] as Array<{ id: string; text: string; at?: string | null; rowId?: string | null }>,
@@ -2324,16 +2328,32 @@ function onMouseUp(ev?: MouseEvent) {
   const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
   const rect = sel.getRangeAt(0).getBoundingClientRect();
 
-  /* 原 PDF 划词：文字来自 pdf.js 的文字层，**没有块锚点**，
-   * 因此只提供「AI 解释 / 复制」（高亮与笔记靠 block_id + 偏移定位，映射不回去）。 */
+  /* 原 PDF 划词（《修改计划》第三步起**支持高亮**）：文字层是 pdf.js 渲染出来的，
+   * 自己就是一套"页面文本"。锚点 = `pdf:p<页号>` + **该页文字层渲染文字里的偏移量**
+   * （`rangeOffsets` 与正文行/Markdown 同一口径）—— 与另两面共用记录形状，但位置模型独立。
+   * 选到页外（跨页拖拽、或没落在文字上）时 `offsets` 为空：那时退回"只解释/复制"，
+   * 不写一条定位不回去的死高亮。 */
   const pdfEl = el?.closest?.('[data-pdf-page]') as HTMLElement | null;
   if (pdfEl) {
+    const page = Number(pdfEl.getAttribute('data-pdf-page') ?? 0) || 0;
+    const layer = pdfEl.querySelector<HTMLElement>('.pdf-text-layer');
+    const offs = layer ? rangeOffsets(layer, sel.getRangeAt(0)) : null;
+    /* ⚠️ 存库的 `selected_text` 必须取**坐标系统里那一段文字**（`renderedText` 的切片），
+     * 不能直接用 `sel.toString()`：文字层的 span 是绝对定位的，浏览器在 span 之间会插换行/空格，
+     * 而偏移量那套坐标系是**把这些文本节点直接拼起来**的 —— 两者长度与空白都不一样。
+     * 存了不一致的文字，画高亮时的"先对一次文本"就会判定错位、整条高亮画不出来
+     * （实测：跨 span 选一段，只画出前半截）。 */
+    const anchorText = offs && layer ? renderedText(layer).slice(offs.start, offs.end) : '';
     Object.assign(selection, {
       show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
-      rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
-      scope: 'row' as const, mdPage: 0, allowNote: true, segments: [], hlIds: [],
-      // 原 PDF 划词没有块锚点，**页号就是唯一的位置** —— 带进对话要写进消息里
-      page: Number(pdfEl.getAttribute('data-pdf-page') ?? 0) || 0,
+      rowId: offs ? pdfAnchor(page) : '', side: 'en' as const,
+      start: offs?.start ?? 0, end: offs?.end ?? 0,
+      anchored: !!offs, scope: 'pdf' as const, mdPage: 0,
+      // 原 PDF 划词的位置就是**页号**（带进对话要写进消息里）；有锚点时按页高亮
+      page,
+      allowNote: true,
+      segments: offs ? [{ rowId: pdfAnchor(page), start: offs.start, end: offs.end, text: anchorText, page }] : [],
+      hlIds: offs ? highlightIdsInRange(sel.getRangeAt(0)) : [],
     });
     return;
   }
@@ -2700,6 +2720,15 @@ async function saveExplanationAsAnnotation() {
 /* ------------------------------ 高亮 / 笔记 ------------------------------ */
 /** Markdown 视图里高亮的锚点：`md:p<页号>`（`block_id` 列宽 32，够用；与正文行 id 不会撞） */
 const mdAnchor = (page: number) => `md:p${page}`;
+/**
+ * **原 PDF 页图**里高亮的锚点：`pdf:p<页号>`（《修改计划》第三步）。
+ *
+ * 为什么 PDF 必须有自己的一套锚点：它的文字来自 pdf.js 的文字层，与"正文行"（页级产物的行 id）
+ * 和"Markdown 视图"（`md:p<页号>` + 渲染后文字的偏移）**都不是同一套东西**。偏移量相对
+ * **该页文字层的渲染文本**（`utils/domMarks.rangeOffsets` 算出来的那一套，与正文行/Markdown 同一口径），
+ * 所以重新渲染同一页时能原样落回去；`selected_text` 一并存下来，位置漂了还认得出是哪一段。
+ */
+const pdfAnchor = (page: number) => `pdf:p${page}`;
 
 /** 划词切出来的一段（正文按行切、Markdown 按页切），每段存成一条高亮记录、共用一个分组。 */
 interface MdSegment {
@@ -2746,7 +2775,7 @@ async function addHighlight(color: string) {
       });
     }
     highlights.value.push(...created);
-    const unit = scope === 'markdown' ? '页' : '行';
+    const unit = scope === 'row' ? '行' : '页';
     toast(parts.length > 1 ? `已高亮（跨 ${parts.length} ${unit}）` : '已高亮', 'ok', 2000);
   } catch (err) { reportError(err, '高亮失败'); } finally { hideMenu(); }
 }

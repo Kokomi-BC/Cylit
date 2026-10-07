@@ -336,6 +336,21 @@ SSE 断线时前端按 `GET /api/v1/papers/{id}/translations?since_page=N` 轮�
 `POST /annotations/from-selection`（划词 AI 解释 → `{explanation, sources, model_id, grounded}`）·
 `POST /annotations/save`（存为批注，`type=qa, source=selection`）
 
+**高亮的三种"面"**（`scope`，2026-10-07 起：《修改计划》第三步）。记录形状共用一条
+`Highlight`（`block_id / start_offset / end_offset / side / scope / group_id / selected_text`），
+**位置模型刻意不统一** —— PDF 与 Markdown 是两种页面存储，硬套同一个锚点必然错位：
+
+| `scope` | 锚点 `block_id` | 偏移量的坐标系 | 说明 |
+|---|---|---|---|
+| `row` | 正文行 id（`p004-02`） | 该行**渲染后**的正文文字（`domMarks.renderedText`，公式算 1 个字符） | 一次划词跨多行 → 每行一条记录、共用一个 `group_id` |
+| `markdown` | `md:p<页号>` | 该页这一侧 Markdown 视图**渲染后**的文字 | 跨页时每页一段（同组） |
+| `pdf` | `pdf:p<页号>` | 该页 **pdf.js 文字层**渲染出来的文字 | 《修改计划》第三步新增：原 PDF 页图也能划词高亮 |
+
+`side`（`en` / `zh`）与 `scope` 是两个维度：前者说"标的是原文还是译文"，后者说"在哪一面标的"。
+PDF 面只有 `side=en`（文字层就是原文）。**存下来的 `selected_text` 必须是坐标系统里的那一段文字**
+（不是浏览器 `selection.toString()`：文字层的 span 是绝对定位的，浏览器会在 span 之间插换行/空格，
+而偏移量那套坐标系是把文本节点直接拼起来的）—— 否则画高亮时的"先对一次文本"会判成错位，整条画不出来。
+
 ## 9. 知识库与检索问答（§20.5 / §20.4）
 
 ### 9.1 知识库（§20.5）

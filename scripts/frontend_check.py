@@ -777,6 +777,126 @@ def skip(path: str, detail: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# 探针 ⑥：PDF 页图上的高亮（《修改计划》第三步）—— 造一条真高亮，验完删掉
+#
+# 为什么必须真在浏览器里做：这条路要 pdf.js 的**真文字层**（span 是异步铺出来的）、
+# 要真的划出选区、要真的点菜单里的色块，还要验"刷新之后高亮回到同一段文字上"——
+# 桩不出来。它写一条高亮记录，验完自己 DELETE 掉（自检不留痕）。
+# --------------------------------------------------------------------------
+PROBE_PDFHL = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 1500);
+/* 不等 `load`：本探针第一件事就是轮询 iframe 里的 DOM（`until`），load 早到晚到都等得到；
+   而这一页要 pdf.js 下载 + 光栅化整份 PDF，等 load 会把虚拟时间预算耗在加载上
+   （实测：只挂 load + 3s 兜底时，探针一次都没跑起来，`<pre>` 一直停在 waiting）。 */
+run();
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow;
+  const D = () => f.contentDocument;
+  const res = { stage: 'loaded' };
+  const api = '/api/v1';
+  const jget = async (u) => (await fetch(u)).json();
+  try {
+    await until(D(), (x) => x.querySelector('[data-pdf-page] .pdf-text-layer span'), 60);
+    const layer = D().querySelector('[data-pdf-page] .pdf-text-layer');
+    res.hasLayer = !!layer;
+    if (!layer) { out(res); return; }
+    const pageEl = layer.closest('[data-pdf-page]');
+    res.page = Number(pageEl.getAttribute('data-pdf-page'));
+    const spans = [...layer.querySelectorAll('span')]
+      .filter((s) => (s.textContent || '').trim().length > 8);
+    res.spans = spans.length;
+    const a = spans[0] && spans[0].firstChild;
+    const b = spans[1] && spans[1].firstChild;
+    if (!a || !b) { out({ stage: 'no-text-node', spans: res.spans }); return; }
+    const range = D().createRange();
+    range.setStart(a, 0);
+    range.setEnd(b, Math.min(12, (b.nodeValue || '').length));
+    const sel = w.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    res.selText = String(sel.toString()).replace(/\\s+/g, ' ').slice(0, 40);
+    pageEl.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
+    await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
+    const menu = D().querySelector('[data-selection-menu]');
+    res.menu = !!menu;
+    if (!menu) { out(res); return; }
+    res.menuText = (menu.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    const yellow = [...menu.querySelectorAll('[title]')]
+      .find((e) => (e.getAttribute('title') || '') === '黄色高亮');
+    res.hasColors = !!yellow;
+    if (!yellow) { out(res); return; }
+    yellow.click();
+    await sleep(1000); spin(BURN); await sleep(300);
+    const data = await jget(api + '/highlights?paper_id=__PAPER__');
+    const items = (data.data && data.data.items) || [];
+    const mine = items.filter((h) => h.scope === 'pdf' && h.block_id === ('pdf:p' + res.page));
+    res.saved = mine.length;
+    res.savedRange = mine.length ? [mine[0].start, mine[0].end] : null;
+    res.savedText = mine.length ? String(mine[0].text || '') : '';
+    /* 一次划词会落成**多个** `<mark>`（跨 span 时按文字节点拆）——拼起来才是那一段文字 */
+    const marks = () => [...D().querySelectorAll('[data-pdf-page] .pdf-text-layer mark.hl')];
+    res.marked = marks().length;
+    res.markedText = marks().map((m) => m.textContent || '').join('');
+    /* 重新定位：整页刷新之后，高亮要按同一套偏移量落回**同一段文字**上 */
+    f.contentWindow.location.reload();
+    await sleep(1500);
+    await until(D(), (x) => x.querySelector('[data-pdf-page] .pdf-text-layer mark.hl'), 60);
+    const afterMarks = [...D().querySelectorAll('[data-pdf-page] .pdf-text-layer mark.hl')];
+    res.afterReload = afterMarks.length;
+    res.afterText = afterMarks.map((m) => m.textContent || '').join('');
+    /* 收尾：删掉自检造出来的那几条（一条都不留） */
+    for (const h of mine) { await fetch(api + '/highlights/' + h.id, { method: 'DELETE' }); }
+    const after = await jget(api + '/highlights?paper_id=__PAPER__');
+    res.left = (((after.data && after.data.items) || []).filter((h) => h.scope === 'pdf')).length;
+    out(res);
+  } catch (err) {
+    out({ stage: 'error', error: String((err && err.message) || err) });
+  }
+}
+</script>"""
+
+
+def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int) -> None:
+    print("\n⑥ PDF 页图高亮（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
+    url = f"{base}/app/reader/{paper}?left=page&nosse=1"
+    html = (PROBE_PDFHL.replace("__URL__", url).replace("__TITLE__", "pdfhl")
+            .replace("__PAPER__", paper))
+    res = run_probe(browser, base, "probe_pdfhl", html, budget_ms)
+    if not res:
+        record("pdfhl", "PDF 页图能划出高亮（真文字层 + 真选区 + 真菜单）", False, "探针没产出结果")
+        return
+    if res.get("stage") == "error":
+        record("pdfhl", "PDF 页图能划出高亮（真文字层 + 真选区 + 真菜单）", False,
+               str(res.get("error"))[:90])
+        return
+    record("pdfhl", "PDF 页图有 pdf.js 真文字层（高亮要画的就在这层上）",
+           res.get("hasLayer") is True and (res.get("spans") or 0) >= 2,
+           f"第 {res.get('page')} 页，{res.get('spans')} 段文字")
+    record("pdfhl", "PDF 划词菜单里有高亮色（第三步之前这里只有解释/复制）",
+           res.get("hasColors") is True and "解释" in str(res.get("menuText") or ""),
+           f"菜单：{res.get('menuText')}")
+    record("pdfhl", "高亮存进库：scope=pdf + `pdf:p<页号>` + 文字层偏移量",
+           res.get("saved") == 1 and isinstance(res.get("savedRange"), list)
+           and res["savedRange"][1] > res["savedRange"][0]
+           and str(res.get("savedText") or "").strip() != "",
+           f"{res.get('saved')} 条，偏移 {res.get('savedRange')}，文字 {str(res.get('savedText'))[:16]!r}")
+    record("pdfhl", "高亮画在 PDF 文字层上，且画的就是存下来那段文字",
+           (res.get("marked") or 0) >= 1
+           and str(res.get("markedText") or "").strip() == str(res.get("savedText") or "").strip(),
+           f"{res.get('marked')} 段 mark：{str(res.get('markedText'))[:18]!r}")
+    record("pdfhl", "刷新后高亮**回到同一段文字**上（重新定位稳）",
+           (res.get("afterReload") or 0) >= 1
+           and str(res.get("afterText") or "").strip() == str(res.get("savedText") or "").strip(),
+           f"刷新后 {res.get('afterReload')} 段：{str(res.get('afterText'))[:18]!r}")
+    record("pdfhl", "自检不留痕（造出来的高亮已删）", res.get("left") == 0,
+           f"残留 {res.get('left')} 条")
+
+
+# --------------------------------------------------------------------------
 # 探针 ④：过程轨迹（思考 / 正文 / 工具**夹杂**）—— 造一条临时会话，验完删掉
 #
 # 这一节为什么要造数据：夹杂渲染只有"一轮里既有思考、又有正文、又有工具"时才看得出来，
@@ -1351,6 +1471,9 @@ def main() -> int:
 
     # ---- ④ 过程轨迹：造一条临时会话，验完删掉（免费：不调模型） ----
     check_run_trace(browser, base, args.paper, args.budget)
+
+    # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
+    check_pdf_highlight(browser, base, args.paper, args.budget)
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

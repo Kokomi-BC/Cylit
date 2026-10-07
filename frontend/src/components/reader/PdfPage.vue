@@ -35,11 +35,13 @@ let autoScrollRaf = 0;
  * 页面**进入视口附近才渲染**（IntersectionObserver），22 页不会一次性全画出来；
  * 容器尺寸变化（窗口缩放 / 页宽滑杆）会重新出图，保证位图与显示宽度 1:1×dpr。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { assetUrl } from '@/api/client';
+import { clearUserMarks, markRanges } from '@/utils/domMarks';
+import type { Highlight } from '@/api/types';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -80,6 +82,12 @@ const props = defineProps<{
   pageHeight?: number | null;
   /** 设备像素比上限（默认按屏幕，最高 2：再高只是徒增内存） */
   maxDpr?: number;
+  /**
+   * 这篇论文的**全部高亮**（各面混在一起，`scope='pdf'` 的才是这一页要画的）：
+   * 偏移量相对**本页文字层的渲染文字**，与正文行/Markdown 视图用的是同一套口径
+   * （`utils/domMarks`），但锚点是 `pdf:p<页号>` —— PDF 与 Markdown 是两种页面存储。
+   */
+  highlights?: Highlight[];
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -95,6 +103,28 @@ const scale = ref(1);
 const fallbackUrl = computed(
   () => assetUrl(`/api/v1/papers/${props.paperId}/pages/${props.page}`),
 );
+
+/* ------------------------------ PDF 页图上的高亮（《修改计划》第三步） ------------------------------
+ * 锚点 `pdf:p<页号>`（与 Markdown 视图的 `md:p<页号>` 同一个形状，但**不是同一套位置模型**）：
+ * 偏移量相对**本页文字层的渲染文字**，所以重渲染同一页能原样落回去。
+ * 画法与正文行高亮同一套（`markRanges` 按偏移包 `<mark class="hl">`）：包一层不改变文字长度，
+ * 划词偏移量因此不受影响。文字层是 pdf.js **异步**铺出来的，所以渲染完再画、之后每次变都重画。
+ */
+const myHighlights = computed(() => (props.highlights ?? []).filter(
+  (h) => (h.scope ?? 'row') === 'pdf' && h.block_id === `pdf:p${props.page}`,
+));
+
+function paintHighlights() {
+  const tl = textHost.value;
+  if (!tl) return;
+  clearUserMarks(tl);
+  const marks = myHighlights.value
+    .filter((h) => h.end > h.start)
+    .map((h) => ({ start: h.start, end: h.end, color: h.color, id: h.id, text: h.text ?? '' }));
+  if (marks.length) markRanges(tl, marks);
+}
+
+watch(myHighlights, () => { void nextTick(paintHighlights); }, { flush: 'post', deep: true });
 
 /* 同一篇论文只加载一次 PDF（22 页共用一份 document） */
 const docCache = new Map<string, Promise<PDFDocumentProxy>>();
@@ -478,7 +508,11 @@ async function render() {
         container: tlHost,
         viewport,
       });
-      void textLayer.render();
+      await textLayer.render();
+      if (destroyed) return;
+      // 文字层铺完才画高亮：`markRanges` 按"文字层渲染文字里的偏移量"包 `<mark>`，
+      // 层还没铺完时一个节点都找不到（画出来是空的）。
+      paintHighlights();
       // 划词由我们自己接管（见文件上方说明：空白处会闪整页、跨页会圈进译文）
       registerTextLayer(tlHost);
     }

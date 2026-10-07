@@ -291,7 +291,7 @@ export interface Annotation {
 export interface Highlight {
   id: string;
   paper_id?: string;
-  /** 锚点：正文行 = 行 id；Markdown 视图 = `md:p<页号>` */
+  /** 锚点：正文行 = 行 id；Markdown 视图 = `md:p<页号>`；原 PDF 页图 = `pdf:p<页号>` */
   block_id: string;
   text: string | null;
   start: number;
@@ -299,8 +299,12 @@ export interface Highlight {
   color: 'yellow' | 'green' | 'blue' | 'pink' | 'purple' | string;
   /** 偏移量相对哪一侧的文字：**原文 en / 译文 zh 分开存**（同一行两侧共用一个 block_id） */
   side?: 'en' | 'zh';
-  /** 在哪个视图标的：正文行 row / Markdown 视图 markdown */
-  scope?: 'row' | 'markdown';
+  /**
+   * 在哪一面标的（《修改计划》第三步起有三面）：正文行 `row` / Markdown 视图 `markdown` /
+   * **原 PDF 页图 `pdf`**（偏移量相对该页 pdf.js 文字层的渲染文本）。
+   * 三套锚点刻意**不统一**：PDF 与 Markdown 是两种页面存储，共用的是记录形状而不是位置模型。
+   */
+  scope?: 'row' | 'markdown' | 'pdf';
   /** 跨行高亮的分组：同一次划词切出来的几条记录共用它，删除时整组一起删 */
   group_id?: string | null;
   page?: number | null;
