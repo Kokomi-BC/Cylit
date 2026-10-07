@@ -75,6 +75,68 @@ export function wrapBareMath(src: string): string {
 }
 
 /**
+ * **软换行归一**：把 Markdown 里的"排版换行"还原成真正的排版。
+ *
+ * 症状（用户口径："Markdown 阅读排版里的异常换行"）：PDF 与模型产物里的段落经常是**硬折行**的
+ * （每 ~40 字一个 `\n`），Markdown 里单个 `\n` 是**软换行**（渲染成一个空格）——
+ * 于是中文句子中间被插进一个空格：`……用了两阶段量化器\n消除内积偏差` → "……量化器 消除内积偏差"。
+ * 英文那边还多一种：PDF 断词留下的 `quantiza-\ntion`（连字符 + 换行）会被渲染成 `quantiza- tion`。
+ *
+ * 这不是"藏起来"能解决的问题（`white-space: nowrap` / 隐藏溢出都会把长公式、URL 一起毁掉），
+ * 得按**排版规则**在渲染前把段落接回去：
+ *   - 两侧任一在中文/全角字符集里 → **不插空格**（中文没有词间空格，硬插一个是错的）；
+ *   - 两侧都是西文 → **一个空格**；
+ *   - 行尾 `-` 且下一行以小写字母开头 → 去掉连字符（PDF 断词还原）。
+ *
+ * 哪些换行**不能动**（动一下就会把文档结构改坏）：
+ *   - 行尾两个以上空格 / 反斜杠 = Markdown **硬换行**（作者故意要换行）；
+ *   - 下一行是标题 / 列表项 / 引用 / 表格行 / 围栏 / 行间公式定界 —— 那是**新块**的开始；
+ *   - 代码围栏内、`$$…$$` 内（公式换行是 LaTeX 的一部分，不能接）。
+ */
+/** 汉字 + 中文标点 + 全角形式：判断"要不要补空格"只看这一类比 */
+const CJK_OR_FULL = /[\u3400-\u9fff\u3000-\u303f\uff01-\uff60\uffe0-\uffe6]/;
+/** 新块的开头：标题 / 无序列表 / 有序列表 / 引用 / 表格行 / 围栏 / 行间公式 / 分隔线 */
+const BLOCK_START = /^\s{0,3}(?:#{1,6}\s|[-*+]\s|\d{1,9}[.)]\s|>|\||```|~~~|\$\$|(?:[-*_]\s*){3,}$)/;
+/** 行尾两个以上空格或反斜杠 = Markdown 硬换行 */
+const HARD_BREAK = /(?:\s{2,}|\\)$/;
+
+export function normalizeSoftBreaks(src: string): string {
+  if (!src || !src.includes('\n')) return src;
+  const lines = src.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let inMath = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\s{0,3}(?:```|~~~)/.test(line)) { inFence = !inFence; out.push(line); continue; }
+    if (inFence) { out.push(line); continue; }
+    const dollars = (line.match(/\$\$/g) || []).length;
+    if (inMath) { if (dollars % 2 === 1) inMath = false; out.push(line); continue; }
+    if (dollars % 2 === 1) { inMath = true; out.push(line); continue; }
+
+    const next = lines[i + 1];
+    const joinable = next !== undefined
+      && line.trim() !== '' && next.trim() !== ''
+      && !BLOCK_START.test(line) && !HARD_BREAK.test(line)
+      && !BLOCK_START.test(next);
+    if (!joinable) { out.push(line); continue; }
+
+    const left = line.replace(/\s+$/, '');
+    const right = next.replace(/^\s+/, '');
+    if (looksHyphenated(left, right)) out.push(left.slice(0, -1) + right);
+    else if (CJK_OR_FULL.test(left.slice(-1)) || CJK_OR_FULL.test(right[0])) out.push(left + right);
+    else out.push(`${left} ${right}`);
+    i += 1;                                   // 这一行已经并进上一行了
+  }
+  return out.join('\n');
+}
+
+/** PDF 断词：`…quantiza-` + `tion…`（下一行以小写字母开头才算） */
+function looksHyphenated(left: string, right: string): boolean {
+  return /[A-Za-z]-$/.test(left) && /^[a-z]/.test(right);
+}
+
+/**
  * 中文里 `**` 紧贴**标点**时，CommonMark 的 flanking 规则会判定"这对定界符不成立"，
  * 字面漏出 `**`（用户 2026-10-03 报的两次："一句话总结没渲染"、
  * `**"压缩再解压之后，向量丢了多大劲"的平均值**`）。
@@ -287,14 +349,14 @@ function renderBlockMath(html: string, math: string[]): string {
   });
 }
 
-/** Markdown → HTML（带缓存；行间公式自己接管，行内公式由扩展接管）。 */
+/** Markdown → HTML（带缓存；软换行归一 → 行间公式自己接管，行内公式由扩展接管）。 */
 export function mdToHtml(text?: string | null, paperId?: string | null): string {
   const src0 = text === null || text === undefined ? '' : String(text);
   if (!src0) return '';
   const key = paperId ? `${paperId}\u0000${src0}` : src0;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const bold = fixCjkBoldEdges(wrapBareMath(src0));
+  const bold = fixCjkBoldEdges(wrapBareMath(normalizeSoftBreaks(src0)));
   const { text: src, math } = extractBlockMath(bold.text);
   let html: string;
   try {

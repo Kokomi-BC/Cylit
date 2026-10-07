@@ -510,6 +510,14 @@ table.data.fixed { table-layout: fixed; }
 .icon.inline { display: inline-block; vertical-align: -2px; }
 
 /* ---------------- Markdown 渲染 ---------------- */
+/* 排版规则（与"折行/间距"有关的两条，2026-10-07）：
+ *   `line-break: strict` —— 中文**禁则处理**：不让 `。，、）】」` 这类标点跑到行首
+ *     （浏览器默认 `auto` 已经做了一部分，`strict` 把"中文的小标点"也纳进来，更接近印刷规则）；
+ *   `text-autospace: normal` —— 中英混排时在汉字与西文之间**自动留一点空隙**（pangu 那种观感），
+ *     不支持的浏览器会直接忽略这一条，不会影响任何既有排版。
+ * ⚠️ 软换行的接回（中文不插空格 / `-` 断词还原）在渲染前做，见 `useMarkdown.normalizeSoftBreaks`：
+ *    那是"内容层"的事，CSS 看不见 `\n`。 */
+.md { line-break: strict; text-autospace: normal; }
 .md p { margin: .35em 0; }
 .md ul, .md ol { margin: .35em 0; padding-left: 1.4em; }
 .md blockquote { margin: .5em 0; padding: .2em .8em; border-left: 3px solid var(--border-strong); color: var(--text-dim); }

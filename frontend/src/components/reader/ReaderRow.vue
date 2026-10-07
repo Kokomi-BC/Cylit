@@ -89,7 +89,9 @@ const emptyLabel = computed(() => {
    两侧只有字体族不同（英文衬线 / 中文无衬线），字号与行距完全一致。 */
 .rrow { min-width: 0; cursor: text; position: relative; font-size: 1em; }
 /* 行内悬浮复制按钮已按用户要求删除：要复制就选词用划词菜单（或直接 Ctrl+C）。 */
-.rr-body { font-size: 1em; line-height: 1.78; overflow-wrap: anywhere; }
+/* 排版规则与 base.css 的 `.md` 同一口径（见那里的注释）：中文禁则 + 中英混排自动留空隙。
+   `overflow-wrap: anywhere` 保留：长公式 / URL 放不下时必须能断，否则会把窄栏顶宽。 */
+.rr-body { font-size: 1em; line-height: 1.78; overflow-wrap: anywhere; line-break: strict; text-autospace: normal; }
 /* 段落间距就交给 markdown 自己的 margin：行容器已不再额外留垂直内边距，
    所以相邻块之间正好是一个正常段落间距（约 .55em），不多不少。
    ⚠️ 不要在这里加 `p:last-child { margin-bottom: 0 }`：那会让相邻块贴在一起，

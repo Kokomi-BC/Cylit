@@ -1017,10 +1017,29 @@ _MD_DRIVER = """import { readFileSync } from 'node:fs';
 import { mdToHtml, inlineHtml } from './md.mjs';
 const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 console.log(JSON.stringify({
-  md: cases.map((c) => mdToHtml(c)),
-  inline: inlineHtml(cases[1]),
+  md: cases.shapes.map((c) => mdToHtml(c)),
+  inline: inlineHtml(cases.shapes[1]),
+  breaks: cases.breaks.map((c) => mdToHtml(c)),
 }));
 """
+
+#: 软换行归一（2026-10-07）：PDF / 模型产物里的**硬折行**要按排版规则接回去 ——
+#: 中文之间不插空格、英文之间一个空格、`-` 断词接回去；而"新块的开头"（列表项 / 表格行 /
+#: 围栏 / 公式定界）与硬换行（行尾两个空格）**一律不动**。
+#: 元组：(名字, 源文, 纯文本里应当出现/等于的内容, 是否要求完全相等, HTML 里必须出现的片段)
+MD_BREAKS = [
+    ("中文软换行不插空格", "这是第一句。\n这是第二句。", "这是第一句。这是第二句。", True, None),
+    ("中文里夹英文也不插空格", "用向量量化建模\nVector Quantization 是基线",
+     "用向量量化建模Vector Quantization 是基线", True, None),
+    ("英文软换行 → 一个空格", "the quick brown\nfox jumps over",
+     "the quick brown fox jumps over", True, None),
+    ("PDF 断词接回去（quantiza-+tion）", "quantiza-\ntion is hard", "quantization is hard", True, None),
+    ("硬换行（行尾两空格）保持", "第一行  \n第二行", "第一行第二行", True, "<br>"),
+    ("粗体跨软换行仍闭合", "**重点**\n继续说完", "重点继续说完", True, "<strong>"),
+    ("列表项之间不合并", "- 甲\n- 乙", "甲\n乙", True, "<li>"),
+    ("代码围栏里的换行不动", "```\n甲\n乙\n```", "甲\n乙", True, "<pre>"),
+    ("表格行不合并", "| 模型 | 准确率 |\n| --- | --- |\n| A | 96.5 |", "96.5", False, "<table"),
+]
 
 
 def _md_plain(html: str) -> str:
@@ -1042,7 +1061,8 @@ def check_markdown_shapes() -> None:
     with tempfile.TemporaryDirectory(prefix="cyl_md_") as tmp:
         tmpdir = Path(tmp)
         bundle, driver, cases = tmpdir / "md.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
-        cases.write_text(json.dumps(src, ensure_ascii=False), encoding="utf-8")
+        cases.write_text(json.dumps({"shapes": src, "breaks": [c[1] for c in MD_BREAKS]},
+                                    ensure_ascii=False), encoding="utf-8")
         driver.write_text(_MD_DRIVER, encoding="utf-8")
         build = subprocess.run(
             [node, "-e",
@@ -1083,6 +1103,23 @@ def check_markdown_shapes() -> None:
            "**" not in re.sub(r"<code[\s\S]*?</code>", "", inline_html)
            and inline_plain == MD_SHAPES[1][2],
            inline_plain[:40])
+
+    # ---- 软换行归一（2026-10-07）：PDF/产物的硬折行按排版规则接回去 ----
+    break_htmls = data.get("breaks") or []
+    if len(break_htmls) != len(MD_BREAKS):
+        record("markdown", "软换行归一：中文不插空格 / 断词接回", False,
+               f"只回 {len(break_htmls)} / {len(MD_BREAKS)} 条")
+        return
+    failed = []
+    for (name, _src, want, exact, html_has), html in zip(MD_BREAKS, break_htmls):
+        plain = _md_plain(html).strip()
+        ok = (plain == want if exact else want in plain)
+        if html_has and html_has not in html:
+            ok = False
+        if not ok:
+            failed.append(f"{name}（{plain[:24]}）")
+    record("markdown", "软换行归一：中文不插空格 / 断词接回 / 硬换行与块结构不动",
+           not failed, f"{len(MD_BREAKS)} 种形状全过" if not failed else "；".join(failed[:3]))
 
 
 # --------------------------------------------------------------------------

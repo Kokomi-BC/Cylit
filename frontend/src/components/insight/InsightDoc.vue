@@ -149,7 +149,7 @@ onMounted(() => { void nextTick(assignAnchors); });
 .note { margin: 4px 0 6px; line-height: 1.5; }
 
 /* 正文排版：数值与阅读器 ReaderRow 的 `.rr-body` 一一对应（见文件头注释）。 */
-.body { line-height: 1.78; overflow-wrap: anywhere; }
+.body { line-height: 1.78; overflow-wrap: anywhere; line-break: strict; text-autospace: normal; }
 .body :deep(p) { margin: 0 0 .55em; }
 .body :deep(h1) { font-size: 1.4em; }
 .body :deep(h2) { font-size: 1.24em; }
