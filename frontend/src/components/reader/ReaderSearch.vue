@@ -357,7 +357,9 @@ function onClear() {
 </template>
 
 <style scoped>
-.side-search { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* 自己撑满侧栏剩下的高度（同 `ReaderChat` 那条说明：`height: 100%` 会把底边推到侧栏外面，
+   被 `.reader-aside` 的 `overflow: hidden` 裁掉约一个页签头的高度）。 */
+.side-search { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* 只有"输入框 + 两枚小胶囊 + 结果"三层：命中条数由页签角标表示，状态文案一律不写长句
    （用户口径：按钮和说明文字都太多）。空结果只在列表里留一行短提示。 */
 .ss-head { flex: none; padding: 8px 8px 4px; display: flex; flex-direction: column; gap: 6px; }

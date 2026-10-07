@@ -1340,7 +1340,11 @@ watch(() => props.selection, (sel) => {
      .seg / .seg button(.active)  分段控件（浅底描边托盘 + 抬起的白色 pill）
      .btn / .btn.sm / .btn.icon / .btn.primary / .btn.on  按钮
    本地只留消息气泡、思考块正文、圆环这些**没有全局对应物**的东西。 */
-.chat { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* 自己撑满侧栏剩下的高度（用户口径 2026-10-07：底部原来被裁掉约一个页签头）。
+   ⚠️ 不能写 `height: 100%`：`.reader-aside` 是**纵向 flex**（上面还有一条 58px 的页签条），
+   百分比算的就是"整个侧栏的高度" → 面板底边落到侧栏外面，被 `overflow: hidden` 裁掉。
+   同一栏里 `ReaderSidePanel` 的 `.panel-body`（`flex: 1; min-height: 0`）从来没这个毛病。 */
+.chat { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .spacer { flex: 1; }
 .grow { flex: 1; min-width: 0; }
 /* 行内小图标按钮（消息 hover 出来的复制 / 重新生成 / 编辑、批量勾选）：

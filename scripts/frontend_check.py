@@ -288,6 +288,31 @@ async function run() {
       if (clear) { clear.click(); await sleep(400); spin(BURN); await sleep(200); }
       res.allRows = d.querySelectorAll('[data-ref-no]').length;
     }
+    /* 直挂侧栏的页签（对话 / 搜索 / 目录）**得自己撑满剩余高度**：用户口径 2026-10-07 ——
+       它们原来用 `height: 100%`（= 整个侧栏高，含上面那条 58px 页签条），底边越过侧栏被裁掉。
+       量法：面板底边 - 侧栏底边，> 0 就是被裁（笔记那条做对照，它在 ReaderSidePanel 里历来是对的）。 */
+    const asideEl = d.querySelector('.reader-aside');
+    const paneProbe = async (label, sel) => {
+      const tabEl = [...d.querySelectorAll('.side-tab')]
+        .find((b) => ((b.querySelector('.side-label') || {}).textContent || '').trim() === label);
+      if (!tabEl) return null;
+      tabEl.click();
+      await until(d, (x) => x.querySelector(sel), 20);
+      await sleep(300); spin(BURN); await sleep(200);
+      const pane = d.querySelector(sel);
+      if (!pane || !asideEl) return null;
+      const pr = pane.getBoundingClientRect();
+      const ar = asideEl.getBoundingClientRect();
+      return {
+        over: Math.round(pr.bottom - ar.bottom),
+        h: Math.round(pr.height),
+        asideH: Math.round(ar.height),
+        scrollable: pane.scrollHeight > pane.clientHeight,
+      };
+    };
+    res.chatPane = await paneProbe('对话', '.chat');
+    res.searchPane = await paneProbe('搜索', '.side-search');
+    res.notesPane = await paneProbe('笔记', '.panel-body');
     /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
     const sideBtn = [...d.querySelectorAll('.side-tab')]
       .find((b) => (b.textContent || '').indexOf('对话') >= 0);
@@ -1115,22 +1140,39 @@ async function run() {
     const loc = row ? row.querySelector('[title="定位"]') : null;
     res.hasLocate = !!loc;
     if (loc) {
-      loc.click();
-      // 平滑滚动要几帧，轮询到落位为止（无头 + 虚拟时间下别只 sleep 一下就读数）
-      await until(D(), () => !sc || sc.scrollTop < 100, 20);
-      spin(BURN);
-      await sleep(200);
-      /* 再点一次兜底：笔记浮层 / 侧栏正好在这一拍重渲染时，第一次点到的可能是**已经脱离文档**的
-         那个按钮（`row` 是先抓下来的），点了等于没点 —— 重抓一次 DOM 再点。 */
-      if (sc && sc.scrollTop >= 100 && myNote) {
-        const again = D().querySelector('[data-note-id="' + myNote.id + '"] [title="定位"]');
-        if (again) {
-          again.click();
-          await until(D(), () => sc.scrollTop < 100, 20);
-          spin(BURN);
-          await sleep(200);
+      /* `focusRow` 用的是 `scrollTo({ behavior: 'smooth' })`，而**补间动画由合成器推进：
+         无头 + 虚拟时间下不一定走**（早前"点了按钮纹丝不动"就是栽在这上面）。
+         所以"滚没滚"不能只看 `scrollTop`，同时把**它请求滚到哪**记下来 ——
+         那才是应用真正的意图，慢/不动是浏览器那一侧的事。 */
+      const proto = w.Element.prototype;
+      const origScrollTo = proto.scrollTo;
+      let asked = null;
+      proto.scrollTo = function (...args) {
+        const o = args[0];
+        asked = (o && typeof o === 'object') ? o.top : args[1];
+        return origScrollTo.apply(this, args);
+      };
+      try {
+        loc.click();
+        // 平滑滚动要几帧，轮询到落位为止（无头 + 虚拟时间下别只 sleep 一下就读数）
+        await until(D(), () => !sc || sc.scrollTop < 100, 20);
+        spin(BURN);
+        await sleep(200);
+        /* 再点一次兜底：笔记浮层 / 侧栏正好在这一拍重渲染时，第一次点到的可能是**已经脱离文档**的
+           那个按钮（`row` 是先抓下来的），点了等于没点 —— 重抓一次 DOM 再点。 */
+        if (sc && sc.scrollTop >= 100 && myNote) {
+          const again = D().querySelector('[data-note-id="' + myNote.id + '"] [title="定位"]');
+          if (again) {
+            again.click();
+            await until(D(), () => sc.scrollTop < 100, 20);
+            spin(BURN);
+            await sleep(200);
+          }
         }
+      } finally {
+        proto.scrollTo = origScrollTo;
       }
+      res.scrollAsked = asked;
     }
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
 
@@ -1434,10 +1476,13 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and "原 PDF" in str(res.get("rowText") or "")
            and "p1" in str(res.get("rowText") or ""),
            f"{res.get('rowText')}")
-    record("pdfhl", "点侧栏「定位」回到那一页（滚回页首）",
+    asked = res.get("scrollAsked")
+    record("pdfhl", "点侧栏「定位」滚回那一页（滚回页首）",
            res.get("hasLocate") is True and (res.get("scrolledAway") or 0) > 100
-           and (res.get("locatedTop") or 0) < (res.get("scrolledAway") or 1) / 5,
-           f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 {res.get('locatedTop')}")
+           and ((res.get("locatedTop") or 0) < (res.get("scrolledAway") or 1) / 5
+                or (asked is not None and asked <= 120)),
+           f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 "
+           f"{res.get('locatedTop')}（请求滚到 {asked}）")
     record("pdfhl", "笔记栏**缩略显示**：一键把每条收成一两行，再点回来",
            res.get("hasThumbBtn") is True and res.get("thumbOn") is True
            and res.get("thumbClamped") is True and res.get("thumbShrank") is True
@@ -1918,6 +1963,160 @@ def check_markdown_shapes() -> None:
 
 
 # --------------------------------------------------------------------------
+# 探针 ⑦：笔记整页（`/app/notes`）—— 批注 / 高亮 / 笔记合并成一个列表
+#
+# 为什么造数据：这一页的归并（高亮 + 它上面的笔记 + 批注 → 一串笔记）只有三类记录都存在时才看得清，
+# 而库里未必有。造的三条**验完自删**（笔记 → 高亮 → 批注），一条不留。
+# 编辑只验"打开编辑器看到的就是这条正文，然后取消"——**不写库**，自检不碰用户的东西。
+# --------------------------------------------------------------------------
+PROBE_NOTES = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 2500);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow;
+  const D = () => f.contentDocument;
+  const res = { stage: 'loaded' };
+  const api = '/api/v1';
+  const jget = async (u) => (await fetch(u)).json();
+  const post = async (u, body) => (await fetch(u, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })).json();
+  const QUOTE = '自检：这是一段被高亮的话';
+  /* 正文写得**够长**（多段）：缩略显示那条断言要看的正是"长正文被收成一两行"，
+     只写一句话的话卡片的头/脚就占满了，收起来也不会变矮（第一版就是这么误报的）。 */
+  const BODY_HEAD = '自检：高亮上的笔记正文';
+  const BODY = BODY_HEAD + '\\n\\n第二段：' + '这一段用来把卡片撑高，'.repeat(6)
+    + '\\n\\n第三段：再补一点，保证缩略态真的能变矮。';
+  const ANN = '自检：这是一条批注';
+  let hl = null, note = null, ann = null;
+  try {
+    hl = (await post(api + '/highlights', {
+      paper_id: '__PAPER__', block_id: 'p001-00', selected_text: QUOTE,
+      start_offset: 0, end_offset: 11, color: 'yellow', side: 'en', scope: 'row',
+    })).data;
+    note = (await post(api + '/notes', {
+      paper_id: '__PAPER__', block_id: 'p001-00', highlight_id: hl.id,
+      selected_text: QUOTE, start_offset: 0, end_offset: 11, content_md: BODY,
+    })).data;
+    ann = (await post(api + '/annotations', {
+      paper_id: '__PAPER__', block_id: 'p001-00', type: 'manual', content_md: ANN,
+    })).data;
+    /* 页面是先加载完的，造完数据点一下「刷新」 */
+    const refreshBtn = [...D().querySelectorAll('button')]
+      .find((b) => (b.getAttribute('title') || '') === '刷新');
+    if (refreshBtn) refreshBtn.click();
+    await until(D(), (x) => x.querySelector('[data-item-kind]'), 60);
+    const rows = () => [...D().querySelectorAll('[data-item-kind]')];
+    const rowWith = (text) => rows().find((r) => (r.textContent || '').indexOf(text) >= 0) || null;
+    res.rowCount = rows().length;
+    /* 一条 = 一处高亮 + 它的正文：两边都得在**同一张卡片**里 */
+    const noteRow = rowWith(BODY_HEAD);
+    res.hasNoteRow = !!noteRow;
+    res.noteKind = noteRow ? noteRow.getAttribute('data-item-kind') : null;
+    res.quoteInRow = !!noteRow && (noteRow.textContent || '').indexOf(QUOTE) >= 0;
+    res.markInRow = !!noteRow && !!noteRow.querySelector('mark.hl');
+    res.rowText = noteRow ? (noteRow.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80) : '';
+    /* 批注也在同一个列表里（同一种卡片，没有"引用原文"那一行） */
+    const annRow = rowWith(ANN);
+    res.hasAnnRow = !!annRow;
+    res.annKind = annRow ? annRow.getAttribute('data-item-kind') : null;
+    /* 三个页签已经撤掉：页面上不该再有「高亮（N）/ 批注（N）」那排页签 */
+    res.oldTabs = [...D().querySelectorAll('.tabs button')]
+      .map((b) => (b.textContent || '').trim())
+      .filter((t) => t.indexOf('高亮') >= 0 || t.indexOf('批注') >= 0);
+    res.hasFeedBar = !!D().querySelector('.feed-bar');
+    /* 缩略显示（与阅读器侧栏同一个开关口径） */
+    const thumbBtn = D().querySelector('[data-notes-thumb]');
+    res.hasThumbBtn = !!thumbBtn;
+    if (thumbBtn && noteRow) {
+      const tall = noteRow.getBoundingClientRect().height;
+      thumbBtn.click();
+      await sleep(300); spin(BURN); await sleep(200);
+      const small = rowWith(BODY_HEAD);
+      res.thumbOn = !!small && small.classList.contains('thumb') && !!small.querySelector('.clamp1');
+      res.thumbShrank = !!small && small.getBoundingClientRect().height < tall;
+      thumbBtn.click();
+      await sleep(300); spin(BURN); await sleep(200);
+      const back = rowWith(BODY_HEAD);
+      res.thumbOff = !!back && !back.classList.contains('thumb');
+    }
+    /* 编辑入口：点「编辑笔记」→ 弹窗里就是这条正文 → **取消**（不写库） */
+    if (noteRow) {
+      const editBtn = [...noteRow.querySelectorAll('button')]
+        .find((b) => (b.textContent || '').indexOf('编辑笔记') >= 0);
+      res.hasEditBtn = !!editBtn;
+      if (editBtn) {
+        editBtn.click();
+        await until(D(), (x) => x.querySelector('[data-feed-edit]'), 20);
+        const ta = D().querySelector('[data-feed-edit]');
+        res.editValue = ta ? String(ta.value) : null;
+        const cancel = [...D().querySelectorAll('button')]
+          .find((b) => (b.textContent || '').trim() === '取消');
+        if (cancel) { cancel.click(); await sleep(300); spin(BURN); await sleep(150); }
+        res.editClosed = !D().querySelector('[data-feed-edit]');
+      }
+    }
+  } catch (err) {
+    res.error = String((err && err.message) || err);
+  }
+  /* 收尾：自检造的三条全部删掉（笔记 → 高亮 → 批注），并确认搜不到了 */
+  try {
+    if (note) await fetch(api + '/notes/' + note.id, { method: 'DELETE' });
+    if (hl) await fetch(api + '/highlights/' + hl.id, { method: 'DELETE' });
+    if (ann) await fetch(api + '/annotations/' + ann.id, { method: 'DELETE' });
+    const leftN = await jget(api + '/notes?paper_id=__PAPER__&q=' + encodeURIComponent(BODY_HEAD));
+    const leftA = await jget(api + '/annotations?paper_id=__PAPER__');
+    res.leftNotes = (((leftN.data && leftN.data.items) || [])).length;
+    res.leftAnns = (((leftA.data && leftA.data.items) || []))
+      .filter((a) => String(a.content_md || '').indexOf('自检：这是') === 0).length;
+  } catch (e) { res.leftErr = String(e); }
+  out(res);
+  document.title = 'done';
+}
+</script>"""
+
+
+def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> None:
+    """笔记整页：三类记录归并成一个列表 + 缩略显示 + 编辑入口（造的数据验完自删）。"""
+    print("\n⑦ 笔记整页（批注 / 高亮 / 笔记合并成一个列表；造的数据验完自删）")
+    url = f"{base}/app/notes"
+    html = (PROBE_NOTES.replace("__URL__", url).replace("__TITLE__", "notes")
+            .replace("__PAPER__", paper))
+    res = run_probe(browser, base, "probe_notes", html, max(budget_ms, 60_000))
+    if not res:
+        record("notes-page", "笔记整页能打开（探针拿到结果）", False, "探针没产出结果")
+        return
+    if res.get("error"):
+        record("notes-page", "笔记整页能打开（探针拿到结果）", False, str(res.get("error"))[:90])
+        return
+    record("notes-page", "三页签（笔记 / 高亮 / 批注）已并成**一个列表**",
+           res.get("oldTabs") == [] and res.get("hasFeedBar") is True,
+           f"残留页签 {res.get('oldTabs')}，工具条={res.get('hasFeedBar')}，共 {res.get('rowCount')} 条")
+    record("notes-page", "一条 = 一处高亮 + 它的正文（引用原文与正文在**同一张卡片**里）",
+           res.get("hasNoteRow") is True and res.get("noteKind") == "note"
+           and res.get("quoteInRow") is True and res.get("markInRow") is True,
+           f"kind={res.get('noteKind')} 引用在卡里={res.get('quoteInRow')} "
+           f"高亮底色={res.get('markInRow')}｜{str(res.get('rowText'))[:44]}")
+    record("notes-page", "批注按**同一种卡片**列在同一个列表里",
+           res.get("hasAnnRow") is True and res.get("annKind") == "annotation",
+           f"kind={res.get('annKind')}")
+    record("notes-page", "缩略显示：一键把每条收成一两行，再点回来",
+           res.get("hasThumbBtn") is True and res.get("thumbOn") is True
+           and res.get("thumbShrank") is True and res.get("thumbOff") is True,
+           f"缩略={res.get('thumbOn')} 变矮={res.get('thumbShrank')} 还原={res.get('thumbOff')}")
+    record("notes-page", "编辑入口打开的就是这条正文（看完取消，不写库）",
+           res.get("hasEditBtn") is True and str(res.get("editValue") or "") != ""
+           and "自检" in str(res.get("editValue") or "") and res.get("editClosed") is True,
+           f"弹窗内容={str(res.get('editValue'))[:24]!r} 关掉了={res.get('editClosed')}")
+    record("notes-page", "自检不留痕（造的高亮 / 笔记 / 批注都已删）",
+           res.get("leftNotes") == 0 and res.get("leftAnns") == 0,
+           f"残留笔记 {res.get('leftNotes')} 条、批注 {res.get('leftAnns')} 条、错误 {res.get('leftErr')}")
+
+
+# --------------------------------------------------------------------------
 # 参考文献的"发表网站"地址（`utils/references.ts`）：三级回退，同样用 node 打真代码
 # --------------------------------------------------------------------------
 #: (名字, 一条文献（`PaperReference` 的字段）, 期望地址开头的片段)
@@ -2080,6 +2279,18 @@ def main() -> int:
                    url.startswith("http")
                    and any(k in url for k in ("doi.org", "arxiv.org", "scholar.google.com", "://")),
                    f"{url[:70]}")
+        chat_pane = data.get("chatPane") or {}
+        search_pane = data.get("searchPane") or {}
+        notes_pane = data.get("notesPane") or {}
+
+        def _pane_ok(p: dict) -> bool:
+            return bool(p) and p.get("over", 99) <= 1 and 0 < p.get("h", 0) < p.get("asideH", 0)
+
+        record("reader", "直挂侧栏的页签（对话 / 搜索）**自己撑满剩余高度**，底部不再被裁",
+               _pane_ok(chat_pane) and _pane_ok(search_pane) and _pane_ok(notes_pane),
+               f"对话 越出 {chat_pane.get('over')}px（高 {chat_pane.get('h')}/{chat_pane.get('asideH')}）· "
+               f"搜索 越出 {search_pane.get('over')}px（高 {search_pane.get('h')}/{search_pane.get('asideH')}）· "
+               f"笔记（对照）越出 {notes_pane.get('over')}px")
         record("reader", "侧栏页签记进 URL（切标签回来还是那一栏）",
                "side=chat" in str(data.get("sideUrl") or "")
                and str(data.get("sideBack") or "").startswith("对话"),
@@ -2233,6 +2444,7 @@ def main() -> int:
 
     # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
     check_pdf_highlight(browser, base, args.paper, args.budget, model=args.model)
+    check_notes_page(browser, base, args.paper, args.budget)
 
     # ---- ③ 划词 → 加入对话 → 上下文胶囊（免费：不发消息） ----
     print("\n③ 划词 → 加入对话（输入框里的上下文胶囊，不发消息）")

@@ -1,10 +1,15 @@
 <script setup lang="ts">
 /**
- * 笔记 / 高亮 / 批注聚合页。
+ * 笔记整页（跨论文汇总）。
  *
- * 数据来源：`GET /notes/overview` 一次取回三类条目（各带上 paper_title）。
- * 搜索走后端 `GET /notes?q=`（只过滤「笔记」），命中结果覆盖笔记 tab 的列表。
- * 编辑：笔记 `PUT /notes/{id}`、批注 `PUT /annotations/{id}`，只提交 `content_md`。
+ * 用户口径（2026-10-07）：**批注 / 高亮 / 笔记统一成「笔记」** —— 与阅读器侧栏同一个口径：
+ * 一条 = **一处高亮（哪一段文字）+ 它的正文**；批注（划词解释 / 人工批注）按同一种卡片列出来。
+ * 归并规则**只有一份**（`utils/notesFeed`），侧栏与这一页共用，免得两边慢慢长歪。
+ *
+ * 数据：`GET /notes/overview` 一次取回三类条目（各带 `paper_title`）；
+ * 搜索走后端 `GET /notes?q=`（只过滤「笔记」）—— 搜索态下列表只留命中的那几条笔记。
+ * 编辑：笔记 `PUT /notes/{id}`、批注 `PUT /annotations/{id}`；
+ * **还没写正文的高亮**当场新建 `POST /notes`（口径不变：笔记必须挂在一处高亮上）。
  */
 
 import { computed, onMounted, reactive, ref, watch } from 'vue';
@@ -16,9 +21,10 @@ import {
 } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
 import {
-  debounce, fmtDate, fmtRelative, truncate,
+  debounce, fmtRelative, truncate,
 } from '@/utils/format';
 import { readerTarget } from '@/utils/navigation';
+import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { mdToHtml } from '@/composables/useMarkdown';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
@@ -71,13 +77,14 @@ type NoteRow = Note & { paper_title?: string };
 type HighlightRow = Highlight & { paper_title?: string };
 type AnnotationRow = Annotation & { paper_title?: string; status?: string };
 
+/** 列表里的一条：**归并规则来自 `utils/notesFeed`**（与阅读器侧栏同一份）。 */
+type FeedRow = NotesFeedRow<HighlightRow, NoteRow, AnnotationRow>;
+
 interface NotesOverview {
   notes: NoteRow[];
   highlights: HighlightRow[];
   annotations: AnnotationRow[];
 }
-
-type EditKind = 'note' | 'annotation';
 
 /** 高亮颜色（与 `.hl.<color>` 一一对应），用于色点。 */
 const COLOR_HEX: Record<string, string> = {
@@ -102,33 +109,58 @@ const ANNOTATION_SOURCE_LABEL: Record<string, string> = {
   pipeline: '自动',
 };
 
-const tab = ref<'notes' | 'highlights' | 'annotations'>('notes');
+/** 缩略显示（与阅读器侧栏**同一个键**：在哪儿切过，另一处也是那个样子）。 */
+const THUMB_KEY = 'cyl.notes.thumb';
+const thumb = ref(localStorage.getItem(THUMB_KEY) === '1');
+function toggleThumb() {
+  thumb.value = !thumb.value;
+  localStorage.setItem(THUMB_KEY, thumb.value ? '1' : '0');
+}
+
 const overview = ref<NotesOverview | null>(null);
 const keyword = ref('');
-const searchItems = ref<NoteRow[] | null>(null);   // null = 未搜索（用 overview.notes）
+/** `null` = 没在搜索（用 overview 的全量）；否则是后端 `GET /notes?q=` 的命中 */
+const searchItems = ref<NoteRow[] | null>(null);
 const editOpen = ref(false);
-const editKind = ref<EditKind>('note');            // note | annotation
-const editTarget = ref<NoteRow | AnnotationRow | null>(null);
+/** 正在编辑的那条（整行，含它挂的高亮 / 批注） */
+const editRow = ref<FeedRow | null>(null);
 const editForm = reactive<{ content_md: string }>({ content_md: '' });
 const saving = ref(false);
 const busyKey = ref('');
 
-const notes = computed<NoteRow[]>(() => (searchItems.value !== null
-  ? searchItems.value
-  : (overview.value?.notes || [])));
 const highlights = computed<HighlightRow[]>(() => overview.value?.highlights || []);
 const annotations = computed<AnnotationRow[]>(() => overview.value?.annotations || []);
+const allNotes = computed<NoteRow[]>(() => overview.value?.notes || []);
 const searching = computed(() => searchItems.value !== null);
+/** 搜索命中的笔记条数（页头那行提示用） */
+const hitCount = computed(() => (searchItems.value ?? []).length);
+
+/** 全量信息流（三类归并成一条条笔记） */
+const feed = computed<FeedRow[]>(() => buildNotesFeed({
+  highlights: highlights.value, notes: allNotes.value, annotations: annotations.value,
+}));
+
+/** 展示的列表：搜索态只留命中的那几条笔记（高亮/批注不参与检索，所以整条信息流过滤） */
+const shownFeed = computed<FeedRow[]>(() => {
+  const items = searchItems.value;
+  if (items === null) return feed.value;
+  const ids = new Set(items.map((n) => n.id));
+  return feed.value.filter((r) => r.noteId && ids.has(r.noteId));
+});
 
 function titleOf(paperId?: string | null): string {
   if (!paperId) return '（未知论文）';
   const all: Array<NoteRow | HighlightRow | AnnotationRow> = [
-    ...(overview.value?.notes || []),
-    ...(overview.value?.highlights || []),
-    ...(overview.value?.annotations || []),
+    ...allNotes.value, ...highlights.value, ...annotations.value,
   ];
   const hit = all.find((x) => x.paper_id === paperId);
   return hit?.paper_title || paperTitle(paperId);
+}
+
+/** 这一条属于哪篇论文（笔记 / 高亮 / 批注任一处带着） */
+function paperOf(row: FeedRow): { id: string; title: string } {
+  const rec = row.highlight || row.note || row.annotation;
+  return { id: rec?.paper_id ?? '', title: rec?.paper_title || titleOf(rec?.paper_id) };
 }
 
 /**
@@ -136,10 +168,7 @@ function titleOf(paperId?: string | null): string {
  *
  * ⚠️ 只能在**点击回调**里调：`:to="fn()"` 会在每次渲染调用 `fn`，而 `openTab()` 会改响应式
  * tabs 状态（以前每次都赋新的 `query` 对象 → 永远"变了"）→ "渲染 → 改状态 → 再渲染"死循环，
- * 页面直接卡死。知识库页已经这么炸过一次，这里（笔记 / 高亮 / 批注三处）是同一个写法。
- *
- * 锚点可能是正文行 id（`p001-06`，本页读到的）也可能是**解析块 id**（历史的 / 检索侧的）：
- * 阅读器做三级解析（行 id → `block_rows` → `page`），所以这里把 `page` 一并带上当兜底。
+ * 页面直接卡死。知识库页已经这么炸过一次。
  */
 function openReader(paperId?: string | null, blockId?: string | null, page?: number | null) {
   void router.push(openTab(readerTarget(paperId ?? '', blockId, page)) as never);
@@ -151,6 +180,14 @@ function colorHex(color?: string | null): string {
 
 function hlClass(color?: string | null): string {
   return color && COLOR_HEX[color] ? `hl ${color}` : 'hl yellow';
+}
+
+/** 高亮挂在哪一面（三种锚点是三套位置模型，界面上要说清）。 */
+const SCOPE_LABEL: Record<string, string> = {
+  row: '正文行', markdown: 'Markdown', pdf: '原 PDF',
+};
+function scopeLabel(scope?: string | null): string {
+  return (scope && SCOPE_LABEL[scope]) || String(scope ?? '');
 }
 
 function typeLabel(type?: string | null): string {
@@ -190,7 +227,6 @@ async function doSearch(): Promise<void> {
     const data = await api.get<{ items: NoteRow[] }>('/notes', { q });
     searchItems.value = data.items || [];
   }, { silent: false });
-  tab.value = 'notes';
 }
 
 /* **打字即搜**（用户口径）：关键词一变就重查（去抖 300ms）；回车立即搜一次（先取消在途那次）。
@@ -216,25 +252,51 @@ onMounted(async () => {
   await refreshAll();
 });
 
-/* ------------------------------ 编辑 ------------------------------ */
+/* ------------------------------ 编辑 / 删除 ------------------------------ */
 
-function openEdit(kind: EditKind, item: NoteRow | AnnotationRow): void {
-  editKind.value = kind;
-  editTarget.value = item;
-  editForm.content_md = item.content_md || '';
+/** 打开编辑器：笔记改正文、**还没写正文的高亮**当场新建、批注改正文。 */
+function openEdit(row: FeedRow): void {
+  editRow.value = row;
+  editForm.content_md = row.contentMd || '';
   editOpen.value = true;
 }
 
+const editTitle = computed(() => {
+  const row = editRow.value;
+  if (!row) return '编辑';
+  if (row.kind === 'annotation') return '编辑批注';
+  return row.noteId ? '编辑笔记' : '给这处高亮写笔记';
+});
+
 async function submitEdit(): Promise<void> {
-  const target = editTarget.value;
-  if (!target) return;
+  const row = editRow.value;
+  if (!row) return;
+  if (row.kind !== 'annotation' && !row.noteId && !editForm.content_md.trim()) {
+    toast('笔记内容不能为空', 'warn', 2200);
+    return;
+  }
   saving.value = true;
   try {
-    const path = editKind.value === 'note'
-      ? `/notes/${target.id}`
-      : `/annotations/${target.id}`;
-    await api.put(path, { content_md: editForm.content_md });
-    toast(editKind.value === 'note' ? '笔记已保存' : '批注已保存', 'ok');
+    if (row.kind === 'annotation') {
+      await api.put(`/annotations/${row.annotation?.id}`, { content_md: editForm.content_md });
+      toast('批注已保存', 'ok');
+    } else if (row.noteId) {
+      await api.put(`/notes/${row.noteId}`, { content_md: editForm.content_md });
+      toast('笔记已保存', 'ok');
+    } else {
+      /* 口径：**只有插入了高亮，才能在高亮的基础上加笔记** —— 这里的高亮就是列表里那一条 */
+      const hl = row.highlight;
+      await api.post('/notes', {
+        paper_id: hl?.paper_id,
+        block_id: hl?.block_id,
+        highlight_id: hl?.id,
+        selected_text: hl?.text ?? '',
+        start_offset: hl?.start,
+        end_offset: hl?.end,
+        content_md: editForm.content_md,
+      });
+      toast('笔记已保存', 'ok');
+    }
     editOpen.value = false;
     await refreshAll();
   } catch (err) {
@@ -244,21 +306,48 @@ async function submitEdit(): Promise<void> {
   }
 }
 
-/* ------------------------------ 删除 ------------------------------ */
-
-async function removeNote(note: NoteRow): Promise<void> {
+/**
+ * 删除一条：批注删批注、**有高亮的删整组高亮**（挂在上面的笔记由后端级联带走）、
+ * 其余（没挂高亮的老笔记）删笔记。
+ */
+function removeRow(row: FeedRow): void {
+  const target = truncate(row.contentMd || row.quote || row.key, 120) || '（空）';
+  if (row.kind === 'annotation') {
+    askConfirm({
+      title: '删除批注',
+      body: '批注删除后无法恢复。',
+      target,
+      action: async () => {
+        busyKey.value = `del:${row.key}`;
+        try {
+          await api.del(`/annotations/${row.annotation?.id}`);
+          toast('批注已删除', 'ok');
+          await refreshAll();
+        } catch (err) {
+          reportError(err, '删除批注失败');
+        } finally {
+          busyKey.value = '';
+        }
+      },
+    });
+    return;
+  }
+  const withHighlight = row.anchorIds.length > 0;
   askConfirm({
-    title: '删除笔记',
-    body: '笔记删除后无法恢复。',
-    target: truncate(note.content_md || note.selected_text || note.id, 120) || '（空笔记）',
+    title: withHighlight ? '删除这处高亮' : '删除笔记',
+    body: withHighlight
+      ? '高亮删除后无法恢复，挂在这处高亮上的笔记会一起删掉。'
+      : '笔记删除后无法恢复。',
+    target,
     action: async () => {
-      busyKey.value = `del:${note.id}`;
+      busyKey.value = `del:${row.key}`;
       try {
-        await api.del(`/notes/${note.id}`);
-        toast('笔记已删除', 'ok');
+        if (withHighlight) await api.del(`/highlights/${row.anchorIds[0]}`);
+        else await api.del(`/notes/${row.noteId}`);
+        toast(withHighlight ? '高亮已删除' : '笔记已删除', 'ok');
         await refreshAll();
       } catch (err) {
-        reportError(err, '删除笔记失败');
+        reportError(err, withHighlight ? '删除高亮失败' : '删除笔记失败');
       } finally {
         busyKey.value = '';
       }
@@ -266,83 +355,25 @@ async function removeNote(note: NoteRow): Promise<void> {
   });
 }
 
-async function removeHighlight(highlight: HighlightRow): Promise<void> {
-  askConfirm({
-    title: '删除高亮',
-    body: '高亮删除后无法恢复。',
-    target: truncate(highlight.text || highlight.id, 120),
-    action: async () => {
-      busyKey.value = `del:${highlight.id}`;
-      try {
-        await api.del(`/highlights/${highlight.id}`);
-        toast('高亮已删除', 'ok');
-        await refreshAll();
-      } catch (err) {
-        reportError(err, '删除高亮失败');
-      } finally {
-        busyKey.value = '';
-      }
-    },
-  });
-}
-
-async function removeAnnotation(annotation: AnnotationRow): Promise<void> {
-  askConfirm({
-    title: '删除批注',
-    body: '批注删除后无法恢复。',
-    target: truncate(annotation.content_md || annotation.id, 120),
-    action: async () => {
-      busyKey.value = `del:${annotation.id}`;
-      try {
-        await api.del(`/annotations/${annotation.id}`);
-        toast('批注已删除', 'ok');
-        await refreshAll();
-      } catch (err) {
-        reportError(err, '删除批注失败');
-      } finally {
-        busyKey.value = '';
-      }
-    },
-  });
-}
-
-/* ---------------------------- 行内操作菜单 ---------------------------- */
-
-/** 笔记：主操作是回原文，编辑 / 删除收进「⋯」。 */
-function noteMenu(n: NoteRow): RowAction[] {
-  return [
-    { key: 'edit', label: '编辑笔记', icon: 'edit' },
-    { key: 'delete', label: '删除笔记', icon: 'trash', danger: true, disabled: busyKey.value === `del:${n.id}` },
+/** 行内操作：主操作（回原文 / 改正文）都在卡片上，这里只留"改"和"删"。 */
+function rowMenu(row: FeedRow): RowAction[] {
+  const busy = busyKey.value === `del:${row.key}`;
+  const items: RowAction[] = [
+    row.kind === 'annotation'
+      ? { key: 'edit', label: '编辑批注', icon: 'edit' }
+      : { key: 'edit', label: row.noteId ? '编辑笔记' : '写笔记', icon: row.noteId ? 'edit' : 'add' },
+    row.kind === 'annotation'
+      ? { key: 'delete', label: '删除批注', icon: 'trash', danger: true, disabled: busy }
+      : row.anchorIds.length
+        ? { key: 'delete', label: '删除高亮', icon: 'trash', danger: true, disabled: busy }
+        : { key: 'delete', label: '删除笔记', icon: 'trash', danger: true, disabled: busy },
   ];
+  return items;
 }
 
-function onNoteAction(n: NoteRow, key: string) {
-  if (key === 'edit') { openEdit('note', n); return; }
-  if (key === 'delete') removeNote(n);
-}
-
-/** 高亮：只有一个删除操作，同样收进「⋯」。 */
-function highlightMenu(h: HighlightRow): RowAction[] {
-  return [
-    { key: 'delete', label: '删除高亮', icon: 'trash', danger: true, disabled: busyKey.value === `del:${h.id}` },
-  ];
-}
-
-function onHighlightAction(h: HighlightRow, key: string) {
-  if (key === 'delete') removeHighlight(h);
-}
-
-/** 批注：同上，主操作是回原文。 */
-function annotationMenu(a: AnnotationRow): RowAction[] {
-  return [
-    { key: 'edit', label: '编辑批注', icon: 'edit' },
-    { key: 'delete', label: '删除批注', icon: 'trash', danger: true, disabled: busyKey.value === `del:${a.id}` },
-  ];
-}
-
-function onAnnotationAction(a: AnnotationRow, key: string) {
-  if (key === 'edit') { openEdit('annotation', a); return; }
-  if (key === 'delete') removeAnnotation(a);
+function onRowAction(row: FeedRow, key: string) {
+  if (key === 'edit') { openEdit(row); return; }
+  if (key === 'delete') removeRow(row);
 }
 </script>
 
@@ -351,7 +382,7 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
     <div class="page-head">
       <div>
         <h1>笔记</h1>
-        <div class="sub">跨论文汇总的笔记、高亮与批注</div>
+        <div class="sub">跨论文汇总：一条 = 一处高亮 + 它的正文（批注也在里面）</div>
       </div>
       <div class="grow"></div>
       <div class="page-actions">
@@ -369,141 +400,109 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
     </div>
 
     <div class="tiny faint search-hint" v-if="searching">
-      关键词「{{ keyword }}」命中 {{ notes.length }} 条笔记。
+      关键词「{{ keyword }}」命中 {{ hitCount }} 条笔记（高亮与批注不参与检索）。
     </div>
 
-    <div class="tabs">
-      <button :class="{ active: tab === 'notes' }" @click="tab = 'notes'">笔记（{{ notes.length }}）</button>
-      <button :class="{ active: tab === 'highlights' }" @click="tab = 'highlights'">高亮（{{ highlights.length }}）</button>
-      <button :class="{ active: tab === 'annotations' }" @click="tab = 'annotations'">批注（{{ annotations.length }}）</button>
+    <!-- 一条工具条：条数 + 缩略开关（与阅读器侧栏同一个口径、同一个本地偏好） -->
+    <div class="feed-bar">
+      <span class="tiny faint">{{ shownFeed.length }} 条</span>
+      <span class="spacer"></span>
+      <button
+        class="btn icon sm"
+        :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
+        :aria-pressed="thumb"
+        data-notes-thumb
+        @click="toggleThumb"
+      >
+        <AppIcon :name="thumb ? 'expand' : 'list'" :size="14" />
+      </button>
     </div>
 
-    <!-- ------------------------------ 笔记 ------------------------------ -->
-    <div style="margin-top:14px" v-if="tab === 'notes'">
-      <div class="card" v-for="n in notes" :key="n.id">
-        <div class="card-head">
-          <span class="badge accent">{{ n.paper_title || titleOf(n.paper_id) }}</span>
-          <span class="tiny faint mono">{{ n.id }}</span>
-          <span class="spacer"></span>
-          <span class="tiny faint">{{ fmtRelative(n.updated_at || n.created_at) }}</span>
-        </div>
-        <div class="card-body">
-          <div class="md small" v-html="mdToHtml(n.content_md || '')"></div>
-          <div class="small muted" v-if="n.selected_text"
-               style="margin-top:8px;border-left:3px solid var(--border-strong);padding:2px 8px">
-            摘录：{{ truncate(n.selected_text, 200) }}
-          </div>
-          <div class="row wrap tiny" style="margin-top:8px" v-if="(n.tags || []).length">
-            <span class="badge" v-for="t in n.tags" :key="t">{{ t }}</span>
-          </div>
-          <div class="row wrap note-actions">
-            <button class="btn sm" v-if="n.block_id" title="跳到这一段原文"
-                    @click="openReader(n.paper_id, n.block_id, n.page)">
-              <AppIcon name="locate" :size="14" />跳回原文
-            </button>
-            <span class="tiny faint" v-else>无关联原文块</span>
-            <span class="spacer"></span>
-            <span class="tiny faint mono" v-if="n.block_id">block {{ n.block_id }}</span>
-            <Menu :items="noteMenu(n)" up :label="`更多操作：${n.id}`"
-                  @select="onNoteAction(n, $event)" />
-          </div>
-        </div>
-      </div>
-      <div class="card empty-state" v-if="!notes.length">
-        <span class="es-icon"><AppIcon name="note" :size="20" /></span>
-        <span class="es-title">{{ searching ? '没有匹配的笔记' : '还没有笔记' }}</span>
-        <span class="es-hint">
-          {{ state.loading['notes-overview'] || state.loading['notes-search']
-            ? '正在读取笔记…'
-            : (searching ? '换个关键词再试，或清除搜索条件。' : '在阅读器里选中一段文字，即可新建笔记。') }}
+    <div
+      v-for="row in shownFeed"
+      :key="row.key"
+      class="card feed-row"
+      :class="[row.kind, { thumb }]"
+      :data-item-kind="row.kind"
+      :data-item-key="row.key"
+    >
+      <div class="card-head">
+        <span v-if="row.color" class="swatch" :style="{ background: colorHex(row.color) }"
+              :title="'高亮颜色：' + row.color"></span>
+        <span class="badge accent">{{ paperOf(row).title }}</span>
+        <!-- 这一条是"笔记"还是"还没写正文的高亮"还是批注（类型） -->
+        <span class="badge" :class="row.badge">{{ row.label }}</span>
+        <span v-if="row.annotation" class="badge">{{ sourceLabel(row.annotation.source) }}</span>
+        <span v-if="row.annotation && confidenceText(row.annotation.confidence)" class="badge">
+          {{ confidenceText(row.annotation.confidence) }}
         </span>
-        <div class="es-actions" v-if="searching && !state.loading['notes-overview']">
-          <button class="btn sm" @click="clearSearch">
-            <AppIcon name="close" :size="14" />清除搜索
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ------------------------------ 高亮 ------------------------------ -->
-    <div style="margin-top:14px" v-if="tab === 'highlights'">
-      <div class="card" v-for="h in highlights" :key="h.id">
-        <div class="card-body">
-          <div class="row wrap tiny">
-            <span class="swatch" :style="{ background: colorHex(h.color) }"
-                  :title="'高亮颜色：' + (h.color || 'yellow')"></span>
-            <span class="badge accent">{{ h.paper_title || titleOf(h.paper_id) }}</span>
-            <span class="mono faint" v-if="h.block_id">{{ h.block_id }}</span>
-            <span class="spacer"></span>
-            <span class="faint">{{ fmtDate(h.created_at) }}</span>
-          </div>
-          <p class="small" style="margin:8px 0 0">
-            <span :class="hlClass(h.color)">{{ h.text || '（无文本）' }}</span>
-          </p>
-          <div class="row wrap tiny faint" style="margin-top:6px">
-            <span>偏移 {{ h.start }} – {{ h.end }}</span>
-            <span v-if="h.color">· 颜色 {{ h.color }}</span>
-          </div>
-          <div class="row wrap note-actions">
-            <button class="btn sm" v-if="h.block_id" title="跳到这一段原文"
-                    @click="openReader(h.paper_id, h.block_id, h.page)">
-              <AppIcon name="locate" :size="14" />跳回原文
-            </button>
-            <span class="tiny faint" v-else>无关联原文块</span>
-            <span class="spacer"></span>
-            <Menu :items="highlightMenu(h)" up :label="`更多操作：${h.id}`"
-                  @select="onHighlightAction(h, $event)" />
-          </div>
-        </div>
-      </div>
-      <div class="card empty-state" v-if="!highlights.length">
-        <span class="es-icon"><AppIcon name="quote" :size="20" /></span>
-        <span class="es-title">还没有高亮</span>
-        <span class="es-hint">
-          {{ state.loading['notes-overview']
-            ? '正在读取高亮…'
-            : '在阅读器里选中文本后，用浮动菜单标记高亮颜色。' }}
+        <span v-if="row.annotation?.status && row.annotation.status !== 'active'" class="badge">
+          {{ row.annotation.status }}
         </span>
+        <span v-if="row.scope && row.kind !== 'annotation'" class="badge dim">
+          {{ scopeLabel(row.scope) }}
+        </span>
+        <span class="spacer"></span>
+        <span class="tiny faint">{{ fmtRelative(row.at) }}</span>
       </div>
-    </div>
 
-    <!-- ------------------------------ 批注 ------------------------------ -->
-    <div style="margin-top:14px" v-if="tab === 'annotations'">
-      <div class="annotation-item" :class="annClass(a)" v-for="a in annotations" :key="a.id">
-        <div class="row wrap tiny">
-          <span class="badge accent">{{ typeLabel(a.type) }}</span>
-          <span class="badge">{{ sourceLabel(a.source) }}</span>
-          <span class="badge accent">{{ a.paper_title || titleOf(a.paper_id) }}</span>
-          <span class="badge" v-if="confidenceText(a.confidence)">{{ confidenceText(a.confidence) }}</span>
-          <span class="badge" v-if="a.status && a.status !== 'active'">{{ a.status }}</span>
-          <span class="spacer"></span>
-          <span class="faint">{{ fmtRelative(a.created_at) }}</span>
+      <div class="card-body">
+        <!-- 引用原文（高亮那一段）：用 `mark.hl`，**配色与正文里的高亮同一份**（base.css） -->
+        <div v-if="row.quote" class="small quote" :class="{ clamp1: thumb }">
+          <mark :class="hlClass(row.color)">{{ row.quote }}</mark>
         </div>
-        <div class="md small" style="margin-top:6px" v-html="mdToHtml(a.content_md || '')"></div>
-        <div class="tiny faint" v-if="a.model_id" style="margin-top:4px">模型 {{ a.model_id }}</div>
-        <div class="tiny muted" style="margin-top:4px" v-for="(s, i) in (a.sources || [])" :key="i">
+        <div
+          v-if="row.contentMd"
+          class="md small clamp-when-thumb"
+          :class="{ clamp1: thumb }"
+          v-html="mdToHtml(row.contentMd)"
+        />
+        <div v-else-if="row.kind === 'highlight'" class="tiny faint">
+          还没写笔记（点「⋯ → 写笔记」补上）
+        </div>
+
+        <div v-if="row.annotation?.model_id" class="tiny faint" style="margin-top:4px">
+          模型 {{ row.annotation.model_id }}
+        </div>
+        <div class="tiny muted" style="margin-top:4px" v-for="(s, i) in (row.annotation?.sources || [])" :key="i">
           来源：{{ s.paper_id }} · {{ s.block_id }} — {{ truncate(s.snippet || '', 120) }}
         </div>
+        <div class="row wrap tiny" style="margin-top:8px" v-if="(row.note?.tags || []).length">
+          <span class="badge" v-for="t in row.note?.tags" :key="t">{{ t }}</span>
+        </div>
+
         <div class="row wrap note-actions">
-          <button class="btn sm" v-if="a.block_id" title="跳到这一段原文"
-                  @click="openReader(a.paper_id, a.block_id, a.page)">
+          <button class="btn sm" v-if="row.anchorId || row.page" title="跳到这一段原文"
+                  @click="openReader(paperOf(row).id, row.anchorId, row.page)">
             <AppIcon name="locate" :size="14" />跳回原文
           </button>
           <span class="tiny faint" v-else>无关联原文块</span>
+          <button class="btn sm" :title="row.noteId ? '改这条笔记的正文' : '给这处高亮写笔记'"
+                  @click="openEdit(row)">
+            <AppIcon :name="row.kind === 'annotation' ? 'edit' : (row.noteId ? 'edit' : 'add')" :size="14" />
+            {{ row.kind === 'annotation' ? '编辑批注' : (row.noteId ? '编辑笔记' : '写笔记') }}
+          </button>
           <span class="spacer"></span>
-          <span class="tiny faint mono truncate" :title="a.id">{{ a.id }}</span>
-          <Menu :items="annotationMenu(a)" up :label="`更多操作：${a.id}`"
-                @select="onAnnotationAction(a, $event)" />
+          <span class="tiny faint mono truncate" v-if="row.anchorId">{{ row.anchorId }}</span>
+          <Menu :items="rowMenu(row)" up :label="`更多操作：${row.key}`"
+                @select="onRowAction(row, $event)" />
         </div>
       </div>
-      <div class="card empty-state" v-if="!annotations.length">
-        <span class="es-icon"><AppIcon name="sparkle" :size="20" /></span>
-        <span class="es-title">还没有批注</span>
-        <span class="es-hint">
-          {{ state.loading['notes-overview']
-            ? '正在读取批注…'
-            : '选中文本后点「AI 解释」，或直接写一段手动批注。' }}
-        </span>
+    </div>
+
+    <div class="card empty-state" v-if="!shownFeed.length">
+      <span class="es-icon"><AppIcon name="note" :size="20" /></span>
+      <span class="es-title">{{ searching ? '没有匹配的笔记' : '还没有笔记' }}</span>
+      <span class="es-hint">
+        {{ state.loading['notes-overview'] || state.loading['notes-search']
+          ? '正在读取笔记…'
+          : (searching ? '换个关键词再试，或清除搜索条件。'
+            : '在阅读器里划词 → 点一个高亮颜色 → 浮层里点「添加笔记」。') }}
+      </span>
+      <div class="es-actions" v-if="searching && !state.loading['notes-overview']">
+        <button class="btn sm" @click="clearSearch">
+          <AppIcon name="close" :size="14" />清除搜索
+        </button>
       </div>
     </div>
 
@@ -519,18 +518,20 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
       @cancel="confirmBox.open = false"
     />
 
-    <Modal :open="editOpen" :title="editKind === 'note' ? '编辑笔记' : '编辑批注'" @close="editOpen = false">
+    <Modal :open="editOpen" :title="editTitle" @close="editOpen = false">
       <label class="field">
         内容（Markdown，支持 $公式$）
-        <textarea v-model="editForm.content_md" rows="8"></textarea>
+        <textarea v-model="editForm.content_md" rows="8" data-feed-edit></textarea>
       </label>
-      <div class="small muted" v-if="editTarget">
-        所属论文：{{ editTarget.paper_title || titleOf(editTarget.paper_id) }}
-        <span v-if="editTarget.block_id"> · block {{ editTarget.block_id }}</span>
+      <div class="small muted" v-if="editRow">
+        所属论文：{{ paperOf(editRow).title }}
+        <span v-if="editRow.anchorId"> · {{ editRow.anchorId }}</span>
       </div>
       <template #footer>
         <button class="btn" @click="editOpen = false">取消</button>
-        <button class="btn primary" :disabled="saving" @click="submitEdit">{{ saving ? '保存中…' : '保存' }}</button>
+        <button class="btn primary" :disabled="saving" data-feed-save @click="submitEdit">
+          {{ saving ? '保存中…' : '保存' }}
+        </button>
       </template>
     </Modal>
   </div>
@@ -538,14 +539,23 @@ function onAnnotationAction(a: AnnotationRow, key: string) {
 
 <style scoped>
 /* 高亮色点；**高亮文本的配色在 base.css**（全站唯一来源，正文/Markdown 视图/这里共用）。 */
-.swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); border: 1px solid var(--border-strong); cursor: pointer; }
+.swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); border: 1px solid var(--border-strong); }
 
-/* 卡片底部操作行：主操作（回原文）在左，⋯ 在右，形成一条基线 */
+/* 卡片底部操作行：主操作（回原文 / 改正文）在左，⋯ 在右，形成一条基线 */
 .note-actions { margin-top: 10px; }
 .search-hint { margin-bottom: 8px; }
 
-/* 批注卡片：问答 / 手动批注用不同左边框区分。 */
-.annotation-item { border-left: 3px solid var(--border-strong); background: var(--bg-sunken); border-radius: var(--r-sm); padding: 10px 12px; margin-bottom: 8px; }
-.annotation-item.manual { border-left-color: var(--accent); }
-.annotation-item.qa { border-left-color: var(--ok); }
+/* 归并后的信息流：一圈工具条（条数 + 缩略开关）+ 一张张卡片。
+   左边框沿用语义色：有正文的笔记=主题色、还没写的（高亮）=暗一档、批注=绿。 */
+.feed-bar { display: flex; align-items: center; gap: 6px; margin: 12px 0 8px; }
+.feed-row { border-left: 3px solid var(--accent); }
+.feed-row.highlight { border-left-color: var(--border-strong); }
+.feed-row.annotation { border-left-color: var(--ok); }
+/* 缩略显示：每条只占一两行（引用一行、正文一行），长笔记多了也一眼扫得完 */
+.feed-row.thumb .card-head { margin-bottom: 2px; }
+.clamp1 {
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden; line-clamp: 1;
+}
+.quote { margin: 0 0 6px; }
 </style>

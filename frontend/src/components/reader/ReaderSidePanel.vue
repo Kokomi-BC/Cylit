@@ -12,6 +12,7 @@
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
+import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { referenceMeta, referenceTitle, referenceUrl } from '@/utils/references';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
@@ -120,34 +121,6 @@ function statusClass(status: string): string {
 
 const annotationHtml = (text: string) => mdToHtml(text);
 
-/**
- * 「笔记」页签里的一条（用户口径 2026-10-07：**批注 / 高亮 / 笔记统一成笔记**）。
- *
- * 一条笔记 = **一处高亮（哪一段文字）+ 它的正文**。所以界面上不再有"三种类型三个页签"：
- * 没写正文的高亮也是这个页签里的一条（只是正文空着，点铅笔补上），批注（块级解释）同理。
- */
-interface NoteRow {
-  key: string;
-  kind: 'highlight' | 'note' | 'annotation';
-  /** 定位用的锚点（正文行 id / `md:p<页>` / `pdf:p<页>`；批注是它的 block_id） */
-  anchorId: string | null;
-  /** 删除用的一串高亮 id（跨行划词切出来的一组共用一条笔记） */
-  anchorIds: string[];
-  page: number | null;
-  /** 高亮原文（批注没有） */
-  quote: string;
-  /** 已有笔记的 id（空 = 还没写正文） */
-  noteId: string;
-  /** 挂在哪条高亮上（批注为空） */
-  highlightId: string;
-  contentMd: string;
-  label: string;
-  badge: string;
-  at: string | null;
-  /** 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 */
-  scope?: 'row' | 'markdown' | 'pdf';
-}
-
 /** 面 → 中文（侧栏那枚小徽章）。三种锚点是三套位置模型，界面上要说清挂在哪。 */
 const SCOPE_LABEL: Record<string, string> = {
   row: '正文行', markdown: 'Markdown 视图', pdf: '原 PDF',
@@ -227,7 +200,7 @@ function toggleThumb() {
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
 const editKey = ref('');
 const draft = ref('');
-function startEditRow(r: NoteRow) {
+function startEditRow(r: FeedRow) {
   editKey.value = r.key;
   draft.value = r.contentMd;
 }
@@ -235,7 +208,7 @@ function cancelEditRow() {
   editKey.value = '';
   draft.value = '';
 }
-function saveRow(r: NoteRow) {
+function saveRow(r: FeedRow) {
   emit('save-note', {
     noteId: r.noteId, highlightId: r.highlightId, anchorId: r.anchorId, contentMd: draft.value,
   });
@@ -250,55 +223,11 @@ watch(() => [props.notes, props.annotations, props.highlights], () => {
   if (!row || row.contentMd === draft.value) cancelEditRow();
 });
 
-const merged = computed<NoteRow[]>(() => {
-  const rows: NoteRow[] = [];
-  const noteOf = (hlId: string) => props.notes.find((n) => n.highlight_id === hlId) ?? null;
-  const usedNotes = new Set<string>();
-  /* 高亮按**分组**归并：一次跨行划词是好几条记录，界面上是**一条**笔记 */
-  const groups = new Map<string, Highlight[]>();
-  for (const h of props.highlights) {
-    const g = h.group_id || h.id;
-    groups.set(g, [...(groups.get(g) ?? []), h]);
-  }
-  for (const [g, list] of groups) {
-    const ids = list.map((h) => h.id);
-    const note = list.map((h) => noteOf(h.id)).find(Boolean) ?? null;
-    if (note) usedNotes.add(note.id);
-    rows.push({
-      key: `h:${g}`, kind: note ? 'note' : 'highlight',
-      anchorId: list[0].block_id ?? null, anchorIds: ids,
-      page: list[0].page ?? null,
-      quote: list.map((h) => String(h.text ?? '').trim()).filter(Boolean).join(' '),
-      noteId: note?.id ?? '', highlightId: ids[0] ?? '',
-      contentMd: note?.content_md ?? '',
-      label: note ? '笔记' : '待写',
-      badge: note ? 'accent' : 'dim',
-      at: note?.updated_at ?? note?.created_at ?? list[0].created_at ?? null,
-      scope: list[0].scope ?? 'row',
-    });
-  }
-  /* 没挂在任何高亮上的笔记（第四步之前建的 / 高亮先被删了）：照样是笔记，单独成条 */
-  for (const n of props.notes) {
-    if (usedNotes.has(n.id)) continue;
-    rows.push({
-      key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [], page: n.page ?? null,
-      quote: n.selected_text ?? '', noteId: n.id, highlightId: n.highlight_id ?? '',
-      contentMd: n.content_md, label: '笔记', badge: 'accent',
-      at: n.updated_at ?? n.created_at ?? null, scope: n.scope,
-    });
-  }
-  /* 批注（划词解释 / 人工批注）：用户口径是"合并成笔记"，所以同一种卡片、同一个页签 */
-  for (const a of props.annotations) {
-    const selection = a.source === 'selection';
-    rows.push({
-      key: `a:${a.id}`, kind: 'annotation', anchorId: a.block_id, anchorIds: [],
-      page: a.page ?? null, quote: '', noteId: '', highlightId: '',
-      contentMd: a.content_md, label: selection ? '划词解释' : (a.type || '批注'),
-      badge: selection ? 'ok' : 'accent', at: a.created_at,
-    });
-  }
-  return rows.sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')));
-});
+/** 「笔记」页签的一个条目：归并规则与笔记整页**共用一份**（`utils/notesFeed`）。 */
+type FeedRow = NotesFeedRow<Highlight, Note, Annotation>;
+const merged = computed<FeedRow[]>(() => buildNotesFeed({
+  highlights: props.highlights, notes: props.notes, annotations: props.annotations,
+}));
 
 /** 参考文献页签要显示的那几条：有过滤就只显示被正文提到的，否则全部。 */
 const shownRefs = computed<PaperReference[]>(() => {
@@ -315,8 +244,8 @@ function openRef(ref: PaperReference) {
 }
 
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
-function removeRow(r: NoteRow) {
-  if (r.kind === 'annotation') { emit('delete-annotation', r.key.slice(2)); return; }
+function removeRow(r: FeedRow) {
+  if (r.kind === 'annotation') { emit('delete-annotation', r.annotation?.id ?? r.key.slice(2)); return; }
   if (r.anchorIds.length) { emit('delete-highlight', r.anchorIds.slice()); return; }
   if (r.noteId) emit('delete-note', r.noteId);
 }
