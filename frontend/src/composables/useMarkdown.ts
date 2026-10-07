@@ -26,6 +26,43 @@ marked.use({
   },
 });
 
+/**
+ * **引用标号可点**（用户口径 2026-10-07 第三条）：正文里的 `[2, 4, 10]` 渲染成一个按钮，
+ * 点它由 `ReaderView` 打开侧栏「文献」页签并**只显示被提到的**那几条。
+ *
+ * 为什么做成 marked 的**行内扩展**、而不是拿正则去改渲染完的 HTML：
+ * 扩展只在"当前词法位置"被调用（`inlineTokens` 里扩展在最前面），所以
+ * 代码块/行内代码里的方括号轮不到它（那些先被 `codespan`/`fences` 吃掉），
+ * 公式里的 `[0,1]` 也一样（`$…$` 由 katex 扩展先接走，它比本扩展先注册 → 先在 `$` 处命中）。
+ * 拿正则扫 HTML 则会把 katex 的 `<annotation>`（里面就是 LaTeX 原文）一起改坏。
+ *
+ * 渲染出来的文字仍然是 `[2, 4, 10]`：**一个字符都没多、也没少**，
+ * 所以"高亮偏移量"那套坐标系（`utils/domMarks` 的渲染文本）不受影响。
+ */
+const CITE_RE = /^\[(\d{1,3}(?:\s*[,;]\s*\d{1,3})*)\]/;
+
+marked.use({
+  extensions: [{
+    name: 'cite',
+    level: 'inline' as const,
+    start(src: string) { return src.indexOf('['); },
+    tokenizer(src: string) {
+      const m = CITE_RE.exec(src);
+      if (!m) return undefined;
+      /* `[2](url)` 是**真的链接**（Markdown 语法），别抢：让内置的 link 规则去处理 */
+      const next = src.charAt(m[0].length);
+      if (next === '(' || next === '[') return undefined;
+      return { type: 'cite', raw: m[0], refs: m[1] };
+    },
+    renderer(token: any) {
+      const nums = String(token.refs).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+      const label = nums.join(', ');
+      return `<button type="button" class="cite-ref" data-refs="${nums.join(',')}"`
+        + ` title="这篇论文引用的第 ${label} 条（点开右侧「文献」）">[${label}]</button>`;
+    },
+  }],
+});
+
 const CACHE_LIMIT = 3000;
 const cache = new Map<string, string>();
 

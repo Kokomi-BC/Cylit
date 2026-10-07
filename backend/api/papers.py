@@ -118,6 +118,18 @@ async def paper_detail(paper_id: str, request: Request):
                     request=request)
 
 
+@router.get("/papers/{paper_id}/references")
+async def paper_references(paper_id: str, request: Request):
+    """这篇论文的参考文献（按论文里的顺序）。
+
+    阅读器「引用文献」侧栏用它：正文里的引用标号（`[2, 4, 10]`）点开就只显示被提到的那几条，
+    所以侧栏要能**单独**取这份列表 —— 详情接口（`GET /papers/{id}`）那份带着**整份元数据**，
+    读者只是点了个标号，不该顺带拉一坨元数据过来。
+    """
+    refs = paper_service.references(paper_id)
+    return envelope({"items": refs, "count": len(refs)}, request=request)
+
+
 @router.put("/papers/{paper_id}")
 async def update_paper(paper_id: str, request: Request, payload: dict = Body(...)):
     return envelope(paper_service.update_paper(paper_id, payload), request=request)

@@ -18,7 +18,7 @@ import { postSse } from '@/api/stream';
 import type {
   AgentCitation, AgentSelection, AgentStep, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
   Highlight, MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
-  PageTranslation, PairOrder, Paper, ReaderPayload, ReaderStats, TaskInfo,
+  PageTranslation, PairOrder, Paper, PaperReference, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
 import { askConfirm } from '@/stores/confirm';
@@ -78,6 +78,11 @@ const pageTranslations = ref<PageTranslation[]>([]);
 const annotations = ref<Annotation[]>([]);
 const highlights = ref<Highlight[]>([]);
 const notes = ref<Note[]>([]);
+/** 「引用文献」页签的数据：**按需取**（`GET /papers/{id}/references`）——
+ *  读者只是点了个引用标号，不该顺带把整份元数据拉过来（见 `ensureReferences`）。 */
+const paperReferences = ref<PaperReference[]>([]);
+/** 引用文献页签的过滤：点了正文里的 `[2, 4, 10]` 就只显示这几条（空 = 全部） */
+const refFilter = ref<number[]>([]);
 const tasks = ref<TaskInfo[]>([]);
 const stats = ref<ReaderStats>({
   blocks: 0, by_type: {}, pages: 0, pages_done: 0, rows: 0,
@@ -491,13 +496,14 @@ const sideTab = ref<SideTabKey>('toc');
  *  只存本次会话：它是"这一眼怎么看"，不是论文的属性，没必要进 localStorage 或服务端进度。 */
 const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
-  'toc', 'chat', 'insight', 'search', 'notes', 'formulas', 'figures', 'terms', 'tasks',
+  'toc', 'chat', 'insight', 'search', 'references', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
 /* 进「论文解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
    放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
 watch(sideTab, (k) => {
   if (k === 'insight') void widenForInsight();
   else if (k === 'chat') void widenForChat();
+  else if (k === 'references') void ensureReferences();
 });
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
@@ -539,7 +545,9 @@ const SIDE_TABS = computed<Array<{
     title: '论文问答（多轮对话；圆环 = 上下文用量，点它压缩）',
   },
   {
-    k: 'insight', icon: 'sparkle', label: '论文解读',
+    /* 页签名尽量都是**两个汉字**（用户口径，2026-10-07）：论文解读 → 解读、引用文献 → 文献。
+       完整意思写在 `title` 里（hover 就能看到），不靠页签上的字撑。 */
+    k: 'insight', icon: 'sparkle', label: '解读',
     title: '论文解读（论文精读：基本信息 / 背景 / 动机 / 贡献 / 方法 / 实验 / 结论）',
   },
   {
@@ -549,7 +557,7 @@ const SIDE_TABS = computed<Array<{
     count: searchMode.value === 'lexical' ? (searchHits.value.length || undefined) : undefined,
   },
   {
-    k: 'notes', icon: 'marker', label: '笔记',
+    k: 'notes', icon: 'note', label: '笔记',
     title: '笔记（批注 / 高亮 / 笔记已合并：一条 = 一处高亮 + 它的正文）',
     count: notesFeedCount.value || undefined,
   },
@@ -566,6 +574,13 @@ const SIDE_TABS = computed<Array<{
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
+  {
+    /* 用户口径 2026-10-07：**放在倒数第二个**（任务之前），图标用**双引号**那枚 `quote` ——
+       参考文献本来就是"别人说过的话"，引号比书架更贴题；笔记那枚 `note`（文稿）也一并定下来。 */
+    k: 'references', icon: 'quote', label: '文献',
+    title: '引用文献（正文里的 [2, 4, 10] 点开就是这里；点条目跳发表网站）',
+    count: paperReferences.value.length || undefined,
+  },
   { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
 ]);
 
@@ -3026,6 +3041,13 @@ async function savePaneNote(p: NoteDraftPayload) {
  * 以前是"点一下弹原生确认框直接删"，用户口径改成菜单删除。
  */
 function onContentClick(ev: MouseEvent) {
+  /* 引用标号（`[2, 4, 10]`）优先：它是正文里最容易被点的小东西，别跟高亮那套混在一起 */
+  const cite = (ev.target as HTMLElement).closest?.('.cite-ref') as HTMLElement | null;
+  if (cite?.dataset.refs) {
+    ev.preventDefault();
+    void openReferences(citeRefs(cite));
+    return;
+  }
   const mark = (ev.target as HTMLElement).closest?.('[data-hl]') as HTMLElement | null;
   if (!mark?.dataset.hl) return;
   const rect = mark.getBoundingClientRect();
@@ -3213,8 +3235,7 @@ async function saveNotePopover() {
   } catch (err) { reportError(err, '保存笔记失败'); } finally { notePop.busy = false; }
 }
 
-async function refreshAnnotations() {
-  const [a, h, n] = await Promise.all([
+async function refreshAnnotations() {  const [a, h, n] = await Promise.all([
     api.get<{ items: Annotation[] }>('/annotations', { paper_id: paperId.value }),
     api.get<{ items: Highlight[] }>('/highlights', { paper_id: paperId.value }),
     api.get<{ items: Note[] }>('/notes', { paper_id: paperId.value }),
@@ -3222,6 +3243,41 @@ async function refreshAnnotations() {
   annotations.value = a.items ?? [];
   highlights.value = h.items ?? [];
   notes.value = n.items ?? [];
+}
+
+/* ------------------------------ 引用文献 ------------------------------ */
+/** 参考文献只取一次（进「引用文献」页签、或点了正文里的引用标号时取），失败下次还能再试。 */
+let refsLoaded = false;
+async function ensureReferences(): Promise<void> {
+  if (refsLoaded || !paperId.value) return;
+  refsLoaded = true;
+  try {
+    const data = await api.get<{ items: PaperReference[]; count: number }>(
+      `/papers/${paperId.value}/references`);
+    paperReferences.value = data.items ?? [];
+  } catch (err) {
+    refsLoaded = false;
+    reportError(err, '取参考文献失败');
+  }
+}
+
+/**
+ * 正文里点了引用标号（`[2, 4, 10]`）：打开侧栏「引用文献」并**只显示这几条**。
+ *
+ * 用户口径是"自动打开侧栏" —— 左栏可能是收起的（窄屏是抽屉），所以这里得把它叫出来，
+ * 否则"点了没反应"（页签选中了但看不见）。
+ */
+async function openReferences(nums: number[]) {
+  refFilter.value = nums.filter((n) => Number.isFinite(n) && n > 0);
+  await ensureAsideVisible();
+  sideTab.value = 'references';
+  await ensureReferences();
+}
+
+/** 标号按钮上的编号（`data-refs="2,4,10"`）。 */
+function citeRefs(el: HTMLElement): number[] {
+  return String(el.dataset.refs ?? '').split(',')
+    .map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
 }
 
 async function deleteAnnotation(id: string) {
@@ -3736,6 +3792,8 @@ function renderMarkdown(text?: string | null) {
           :annotations="annotations"
           :notes="notes"
           :highlights="highlights"
+          :references="paperReferences"
+          :ref-filter="refFilter"
           :formulas="formulas"
           :formulas-loading="formulasLoading"
           :figures="figures"
@@ -3755,6 +3813,7 @@ function renderMarkdown(text?: string | null) {
           @delete-note="deleteNote"
           @save-note="savePaneNote"
           @delete-highlight="deleteHighlightIds"
+          @clear-ref-filter="refFilter = []"
           @cancel-task="cancelTranslate"
           @insight-queued="fetchTasks"
           @open-insight-page="openInsightPage"

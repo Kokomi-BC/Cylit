@@ -1,0 +1,63 @@
+/**
+ * 参考文献的两件小事：**展示标题**与**发表网站地址**。
+ *
+ * 为什么要从原文里抠：`paper_reference` 那几列结构化字段（title/authors/venue/doi/url）
+ * 是留给模型或后续解析补的，**离线抽取只写 `raw`**（见 `metadata_fill.save_references`）——
+ * 也就是说现在库里几乎每条都只有原文。而用户要的"点条跳到发表网站"必须能用，
+ * 所以地址三级回退：结构化字段 → 原文里抠出来的 DOI/arXiv/URL → 学术搜索。
+ */
+import type { PaperReference } from '@/api/types';
+
+/** 原文里的 DOI（`10.xxxx/yyy`，参考文献里最常见的两种写法都吃） */
+const DOI_IN_TEXT = /\b(10\.\d{4,9}\/[^\s"'<>)\]]+)/i;
+/** 原文里的完整链接 */
+const URL_IN_TEXT = /(https?:\/\/[^\s"'<>)\]]+)/i;
+/** 原文里的 arXiv 号（`arXiv:2401.12345` / `arXiv: 2401.12345v2`） */
+const ARXIV_IN_TEXT = /arxiv[:\s]*(\d{4}\.\d{4,5})(v\d+)?/i;
+
+/** 去掉结尾的标点：抄进参考文献的 URL 后面常跟着句号/逗号/括号 */
+function tidy(url: string): string {
+  return url.trim().replace(/[.,;:)\]]+$/, '');
+}
+
+/**
+ * 这条文献的"发表网站"：
+ * `url` → `doi` → 原文里的 arXiv → 原文里的 URL → 原文里的 DOI → 学术搜索。
+ *
+ * 学术搜索放最后是**兜底而不是首选**：它一定能给出点什么（用户点下去不会觉得按钮坏了），
+ * 但只有前面几条都抠不出来时才用它。
+ */
+export function referenceUrl(ref: PaperReference): string {
+  const direct = tidy(String(ref.url ?? ''));
+  if (/^https?:\/\//i.test(direct)) return direct;
+
+  const doiField = String(ref.doi ?? '').trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+  if (doiField) return `https://doi.org/${tidy(doiField)}`;
+
+  const raw = String(ref.raw ?? '');
+  const arxiv = ARXIV_IN_TEXT.exec(raw);
+  if (arxiv) return `https://arxiv.org/abs/${arxiv[1]}`;
+
+  const href = URL_IN_TEXT.exec(raw);
+  if (href) return tidy(href[1]);
+
+  const doi = DOI_IN_TEXT.exec(raw);
+  if (doi) return `https://doi.org/${tidy(doi[1])}`;
+
+  const q = [ref.title, ref.authors, ref.year].filter(Boolean).join(' ') || raw;
+  return `https://scholar.google.com/scholar?q=${encodeURIComponent(q.slice(0, 300))}`;
+}
+
+/** 展示标题：结构化 `title` 优先，没有就用原文（页面上按行截断）。 */
+export function referenceTitle(ref: PaperReference): string {
+  const title = String(ref.title ?? '').trim();
+  if (title) return title;
+  return String(ref.raw ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** 年份/会议（结构化字段那一行的小字）：两个都没有就返回空串。 */
+export function referenceMeta(ref: PaperReference): string {
+  const year = ref.year ? String(ref.year) : '';
+  const venue = String(ref.venue ?? '').trim();
+  return [venue, year].filter(Boolean).join(' · ');
+}

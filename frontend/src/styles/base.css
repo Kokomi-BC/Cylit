@@ -64,6 +64,15 @@ mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
 mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }
 mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); background: var(--hl-bg); }
 mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
+/* 正文里的**引用标号**（`[2, 4, 10]`，`useMarkdown` 的 `cite` 行内扩展渲染的按钮）：
+ * 看着像链接（用 `--accent-text`），但不加下划线 —— 论文正文里这种方括号很多，
+ * 每条都带下划线会把版面撕碎；hover 时给一层浅底，表明"这个能点"。 */
+.cite-ref {
+  font: inherit; color: var(--accent-text); background: transparent;
+  border: 0; padding: 0 1px; margin: 0; border-radius: var(--r-xs); cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.cite-ref:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，
  * 否则底色只画在一条行高上 —— 三行公式看起来"只有中间一行被标黄"（用户报过）。
  * 高亮的元素是 `.katex-display`（块级）时由 `domMarks.ts` 加上这个类。

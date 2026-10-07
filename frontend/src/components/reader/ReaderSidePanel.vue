@@ -12,6 +12,7 @@
 import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
+import { referenceMeta, referenceTitle, referenceUrl } from '@/utils/references';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
@@ -35,7 +36,8 @@ export interface BriefDraft {
  * 侧栏页签（与 ReaderView 的页签栏一一对应）。
  *
  * 用户口径 2026-10-07：**批注 / 高亮 / 笔记合并成一种东西 = 笔记**，所以那三个页签并成 `notes` 一个；
- * `note` 这枚图标挪给新增的「引用文献」，笔记用高亮笔那枚（`marker`）。
+ * 图标也对调过一次（用户口径）：**笔记用 `note`（文稿）、引用文献用 `library`（书架）** ——
+ * 都是现成的 svg，跟我自己画的那枚"高亮笔"不同，跟全站同一套描边风格。
  */
 export type SideTab = 'notes' | 'references' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
 
@@ -87,6 +89,8 @@ const emit = defineEmits<{
   (e: 'save-note', p: NoteDraftPayload): void;
   /** 删掉一处高亮（整组一起；挂在它上面的笔记由后端级联删掉） */
   (e: 'delete-highlight', ids: string[]): void;
+  /** 「引用文献」页签：把"只看正文提到的这几条"取消，回到全量 */
+  (e: 'clear-ref-filter'): void;
   (e: 'cancel-task', task: TaskInfo): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
@@ -296,6 +300,20 @@ const merged = computed<NoteRow[]>(() => {
   return rows.sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')));
 });
 
+/** 参考文献页签要显示的那几条：有过滤就只显示被正文提到的，否则全部。 */
+const shownRefs = computed<PaperReference[]>(() => {
+  const all = props.references ?? [];
+  const want = props.refFilter ?? [];
+  if (!want.length) return all;
+  const set = new Set(want);
+  return all.filter((r) => set.has(Number(r.order_no)));
+});
+
+/** 点一条文献 → 去它的**发表网站**（DOI/arXiv/原文里的链接，兜底是学术搜索，见 utils/references）。 */
+function openRef(ref: PaperReference) {
+  window.open(referenceUrl(ref), '_blank', 'noopener');
+}
+
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
 function removeRow(r: NoteRow) {
   if (r.kind === 'annotation') { emit('delete-annotation', r.key.slice(2)); return; }
@@ -405,6 +423,49 @@ function removeRow(r: NoteRow) {
           <div v-else-if="r.kind === 'highlight'" class="tiny faint">还没写笔记（点铅笔补上）</div>
         </template>
       </div>
+    </template>
+
+    <!-- 引用文献（用户口径 2026-10-07 第三条）：正文里的 `[2, 4, 10]` 点开就是这里，
+         并且**只显示被提到的那几条**（过滤条上写清"只看这几条 / 显示全部"）。
+         点条目 → 去发表网站（DOI / arXiv / 原文里的链接，兜底学术搜索）。 -->
+    <template v-if="props.tab === 'references'">
+      <div class="ref-bar">
+        <span class="tiny faint">
+          <template v-if="(props.refFilter ?? []).length">
+            只看正文提到的 {{ shownRefs.length }} 条（共 {{ (props.references ?? []).length }} 条）
+          </template>
+          <template v-else>{{ (props.references ?? []).length }} 条（按论文里的顺序）</template>
+        </span>
+        <span class="spacer" />
+        <button
+          v-if="(props.refFilter ?? []).length"
+          class="btn sm ghost"
+          data-ref-clear
+          @click="emit('clear-ref-filter')"
+        >
+          显示全部
+        </button>
+      </div>
+      <div v-if="!shownRefs.length" class="empty small">
+        {{ (props.references ?? []).length
+          ? '正文提到的这几条在参考文献里没有对应编号（解析出的编号可能对不上）'
+          : '这篇论文没有参考文献（解析时没抽到 References 一节）' }}
+      </div>
+      <button
+        v-for="r in shownRefs"
+        :key="r.id"
+        class="item ref-item"
+        :data-ref-no="r.order_no"
+        :title="referenceTitle(r)"
+        @click="openRef(r)"
+      >
+        <span class="badge accent ref-no">[{{ r.order_no }}]</span>
+        <span class="ref-body">
+          <span class="ref-title">{{ referenceTitle(r) }}</span>
+          <span v-if="referenceMeta(r)" class="tiny faint">{{ referenceMeta(r) }}</span>
+        </span>
+        <AppIcon name="external" :size="12" class="ref-go" />
+      </button>
     </template>
 
     <!-- 公式（从 Markdown 提取，只读） -->
@@ -625,6 +686,26 @@ function removeRow(r: NoteRow) {
   line-height: 1.6; resize: vertical;
 }
 .item.note-row .note-edit:focus { outline: none; border-color: var(--accent); }
+/* 引用文献：一条一行（编号 + 标题 + 年份/会议 + 外链图标），整条都是按钮 */
+.ref-bar {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 6px; padding: 2px 0;
+}
+.ref-item {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left;
+  font-family: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+  border-left-color: var(--border-strong);
+}
+.ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
+.ref-no { flex: none; font-family: var(--mono); }
+.ref-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 原文常常很长（一整条参考文献）：按三行截断，全文看 hover 的 tooltip */
+.ref-title {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; line-clamp: 3; line-height: 1.5;
+}
+.ref-go { flex: none; color: var(--text-faint); margin-top: 1px; }
+.ref-item:hover .ref-go { color: var(--accent-text); }
 /* 「从高亮打开对应笔记」时的落点提示：闪一下边框与底色，用户才知道跳到了哪一条 */
 .item.flash {
   animation: note-flash 1.2s var(--ease);

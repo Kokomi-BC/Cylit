@@ -237,6 +237,57 @@ async function run() {
         pane2.scrollTop = 0;
       }
     }
+    /* 引用文献（2026-10-07 第三条）：正文里的 `[2, 4, 10]` 是可点的 →
+       点它**自动打开侧栏「引用文献」并只显示被提到的那几条**；点条目跳到发表网站。 */
+    /* 页签名读 `.side-label`（`textContent` 里还带着角标数字：`公式86`） */
+    const labelOf = (el) => {
+      const s = el ? el.querySelector('.side-label') : null;
+      return s ? (s.textContent || '').trim() : null;
+    };
+    const tabEls = [...d.querySelectorAll('.side-tab')];
+    const refsTab = tabEls.find((b) => labelOf(b) === '文献');
+    res.refsTab = labelOf(refsTab);
+    /* 两枚页签图标（用户口径：文献 = 双引号 `quote`、笔记 = 文稿 `note`，都用现成的 svg） */
+    const iconOf = (el) => {
+      const svg = el ? el.querySelector('svg') : null;
+      return svg ? svg.getAttribute('data-icon') : null;
+    };
+    res.refsIcon = iconOf(refsTab);
+    res.notesIcon = iconOf(tabEls.find((b) => labelOf(b) === '笔记'));
+    res.tabLabels = tabEls.map(labelOf);
+    const chips = [...d.querySelectorAll('.cite-ref')];
+    res.citeChips = chips.length;
+    res.citeSample = chips.length ? (chips[0].textContent || '').trim() : null;
+    if (chips.length) {
+      const refApi = await (await fetch('/api/v1/papers/__PAPER__/references')).json();
+      res.apiRefs = (refApi.data || {}).count;
+      /* 挑一个**编号都在参考文献里**的标号来点（正文里也可能出现超过总条数的编号） */
+      const numsOf = (el) => (el.getAttribute('data-refs') || '').split(',')
+        .map((s) => Number(s.trim())).filter((n) => n > 0);
+      const chip = chips.find((c) => numsOf(c).length
+        && numsOf(c).every((n) => n <= (res.apiRefs || 0))) || chips[0];
+      res.clickedRefs = numsOf(chip);
+      chip.click();
+      await until(d, (x) => x.querySelector('[data-ref-no]'), 20);
+      await sleep(300); spin(BURN); await sleep(200);
+      res.refRows = d.querySelectorAll('[data-ref-no]').length;
+      res.filteredNos = [...d.querySelectorAll('[data-ref-no]')]
+        .map((e) => Number(e.getAttribute('data-ref-no')));
+      const active = d.querySelector('.side-tab.active');
+      res.activeAfterClick = active ? (active.textContent || '').trim() : null;
+      /* 点条目 → 发表网站：把 window.open 拦下来看 URL（无头里别真开窗） */
+      const opened = [];
+      const realOpen = w.open;
+      w.open = (u) => { opened.push(String(u)); return null; };
+      const firstRef = d.querySelector('[data-ref-no]');
+      if (firstRef) { firstRef.click(); await sleep(250); }
+      w.open = realOpen;
+      res.refUrl = opened[0] || null;
+      /* 「显示全部」切回全量 */
+      const clear = d.querySelector('[data-ref-clear]');
+      if (clear) { clear.click(); await sleep(400); spin(BURN); await sleep(200); }
+      res.allRows = d.querySelectorAll('[data-ref-no]').length;
+    }
     /* 侧栏页签也要记进 URL query（标签条按标签记路由位置）：点「对话」→ 切首页 → 切回来 */
     const sideBtn = [...d.querySelectorAll('.side-tab')]
       .find((b) => (b.textContent || '').indexOf('对话') >= 0);
@@ -968,9 +1019,14 @@ async function run() {
     const marks = () => [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.marked = marks().length;
     res.markedText = marks().map((m) => m.textContent || '').join('');
-    /* 重新定位：整页刷新之后，高亮要按同一套偏移量落回**同一段文字**上 */
+    /* 重新定位：整页刷新之后，高亮要按同一套偏移量落回**同一段文字**上。
+       ⚠️ 刷新之后**要再滚回页首**：阅读器会恢复"上次读到哪"，落点深了第 1 页的文字层
+       根本没铺出来（`mark` 自然一个都没有）—— 实测在整轮自检里偶发就是这么挂的。 */
     f.contentWindow.location.reload();
     await sleep(1500);
+    const scAfter = sc0();
+    if (scAfter) { scAfter.scrollTop = 0; }
+    await sleep(400); spin(BURN); await sleep(200);
     await until(D(), (x) => x.querySelector('[data-pdf-page="1"] .pdf-text-layer mark.hl'), 60);
     const afterMarks = [...D().querySelectorAll('[data-pdf-page="1"] .pdf-text-layer mark.hl')];
     res.afterReload = afterMarks.length;
@@ -994,18 +1050,27 @@ async function run() {
     /* 每次都**重新取**文本节点：`markRanges` 会把文字节点包进 `<mark>`（节点对象换掉），
        抓着上一轮的节点造选区，可能在已经脱离文档的节点上建 Range。 */
     const pickPair = () => pair(longSpans2());
-    let ra = pickPair()[0], rb = pickPair()[1];
-    if (!ra || !rb) { out({ stage: 'few-spans-2', spans: longSpans2().length }); return; }
-    const r2 = D().createRange();
-    r2.setStart(ra, 0);
-    r2.setEnd(rb, Math.min(12, (rb.nodeValue || '').length));
-    const sel2 = w.getSelection();
-    sel2.removeAllRanges();
-    sel2.addRange(r2);
-    D().querySelector('[data-pdf-page="1"]')
-      .dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
-    await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
-    const menu2 = D().querySelector('[data-selection-menu]');
+    /* 划一次词进菜单。**要重试**：这条路的选区依赖真实指针状态（文字层 span 是异步铺的、
+       上一次交互残留的选区也可能把 `sel.isCollapsed` 搅成真），单发一次偶发不出菜单 ——
+       与下面「打开笔记」那段同一个写法（先 mousedown 再 mouseup，失败隔 300ms 再来一轮）。 */
+    let menu2 = null;
+    for (let attempt = 0; attempt < 3 && !menu2; attempt += 1) {
+      const pp = pickPair();
+      if (!pp[0] || !pp[1]) break;
+      const rr = D().createRange();
+      rr.setStart(pp[0], 0);
+      rr.setEnd(pp[1], Math.min(12, (pp[1].nodeValue || '').length));
+      const ss = w.getSelection();
+      ss.removeAllRanges();
+      ss.addRange(rr);
+      const pg = D().querySelector('[data-pdf-page="1"]');
+      pg.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, clientX: 300, clientY: 300, buttons: 1 }));
+      pg.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
+      await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
+      menu2 = D().querySelector('[data-selection-menu]');
+      if (!menu2) await sleep(300);
+    }
+    res.menu2 = !!menu2;
     const noteBtn = menu2
       ? [...menu2.querySelectorAll('button')].find((b) => (b.textContent || '').indexOf('笔记') >= 0)
       : null;
@@ -1055,6 +1120,17 @@ async function run() {
       await until(D(), () => !sc || sc.scrollTop < 100, 20);
       spin(BURN);
       await sleep(200);
+      /* 再点一次兜底：笔记浮层 / 侧栏正好在这一拍重渲染时，第一次点到的可能是**已经脱离文档**的
+         那个按钮（`row` 是先抓下来的），点了等于没点 —— 重抓一次 DOM 再点。 */
+      if (sc && sc.scrollTop >= 100 && myNote) {
+        const again = D().querySelector('[data-note-id="' + myNote.id + '"] [title="定位"]');
+        if (again) {
+          again.click();
+          await until(D(), () => sc.scrollTop < 100, 20);
+          spin(BURN);
+          await sleep(200);
+        }
+      }
     }
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
 
@@ -1297,6 +1373,9 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
         record("pdfhl", "PDF 页图能划出高亮（真文字层 + 真选区 + 真菜单）", False,
                str(res.get("error"))[:90])
         return
+    # 探针的原始字段全量存一份：报告里只有断言结论，追问题时要看的是**这些**中间量
+    (ROOT / "data" / "logs" / "_pdfhl_raw.json").write_text(
+        json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     record("pdfhl", "PDF 页图有 pdf.js 真文字层（高亮要画的就在这层上）",
            res.get("hasLayer") is True and (res.get("spans") or 0) >= 2,
            f"第 {res.get('page')} 页，{res.get('spans')} 段文字")
@@ -1696,8 +1775,25 @@ console.log(JSON.stringify({
   md: cases.shapes.map((c) => mdToHtml(c)),
   inline: inlineHtml(cases.shapes[1]),
   breaks: cases.breaks.map((c) => mdToHtml(c)),
+  cites: cases.cites.map((c) => mdToHtml(c)),
 }));
 """
+
+#: 引用标号可点（2026-10-07 第三条）：`[2, 4, 10]` → `<button class="cite-ref" data-refs="…">`。
+#: 元组：(名字, 源文, HTML 里必须含的片段, HTML 里**不许**含的片段, 纯文本期望（None = 不比）)
+#: ⚠️ 纯文本那一列是这条链路的命根子：按钮里写的仍是 `[2, 4, 10]`，
+#: "渲染出来的字"一个不多一个不少 —— 高亮的偏移量坐标系（`utils/domMarks`）就建在这上面。
+MD_CITES = [
+    ("单个标号", "如 [12] 所示", 'data-refs="12"', None, None),
+    ("用户那条（多标号）", "见 [2, 4, 10, 12, 20, 25, 33] 的方法",
+     'data-refs="2,4,10,12,20,25,33"', None, "见 [2, 4, 10, 12, 20, 25, 33] 的方法"),
+    ("挤在一起写", "见 [2,4,10] 的方法", 'data-refs="2,4,10"', None, None),
+    ("行内代码里不动", "写法是 `[1]` 这样", None, "cite-ref", "写法是 [1] 这样"),
+    ("代码围栏里不动", "```\n[1]\n```", None, "cite-ref", None),
+    ("公式里的区间不动", "在区间 $[0, 1]$ 上", None, "cite-ref", None),
+    ("真的链接不被抢", "见 [2](https://example.com) 一节",
+     'href="https://example.com"', "cite-ref", None),
+]
 
 #: 软换行归一（2026-10-07）：PDF / 模型产物里的**硬折行**要按排版规则接回去 ——
 #: 中文之间不插空格、英文之间一个空格、`-` 断词接回去；而"新块的开头"（列表项 / 表格行 /
@@ -1737,7 +1833,8 @@ def check_markdown_shapes() -> None:
     with tempfile.TemporaryDirectory(prefix="cyl_md_") as tmp:
         tmpdir = Path(tmp)
         bundle, driver, cases = tmpdir / "md.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
-        cases.write_text(json.dumps({"shapes": src, "breaks": [c[1] for c in MD_BREAKS]},
+        cases.write_text(json.dumps({"shapes": src, "breaks": [c[1] for c in MD_BREAKS],
+                                     "cites": [c[1] for c in MD_CITES]},
                                     ensure_ascii=False), encoding="utf-8")
         driver.write_text(_MD_DRIVER, encoding="utf-8")
         build = subprocess.run(
@@ -1797,6 +1894,95 @@ def check_markdown_shapes() -> None:
     record("markdown", "软换行归一：中文不插空格 / 断词接回 / 硬换行与块结构不动",
            not failed, f"{len(MD_BREAKS)} 种形状全过" if not failed else "；".join(failed[:3]))
 
+    # ---- 引用标号可点（2026-10-07 第三条）：`[2, 4, 10]` → 按钮，且渲染出来的字一个不多一个不少 ----
+    cite_htmls = data.get("cites") or []
+    if len(cite_htmls) != len(MD_CITES):
+        record("markdown", "引用标号渲染成可点的按钮（代码块/公式/真链接里不抢）", False,
+               f"只回 {len(cite_htmls)} / {len(MD_CITES)} 条")
+        return
+    failed = []
+    for (name, _src, must, must_not, plain_want), html in zip(MD_CITES, cite_htmls):
+        plain = _md_plain(html).strip()
+        if must and must not in html:
+            failed.append(f"{name}（没渲染成按钮）")
+        elif must_not and must_not in html:
+            failed.append(f"{name}（不该动的地方动了）")
+        elif plain_want is not None and plain != plain_want:
+            failed.append(f"{name}（字变了：{plain[:24]}）")
+        elif must and "cite-ref" in html and re.findall(r"\d+", _src) != re.findall(r"\d+", plain):
+            # 编号必须**原样**出现（`[2,4,10]` 这种挤着写的会被规范化成 `[2, 4, 10]`，
+            # 但数字一个都不能变、不能少）—— 偏移量坐标系就建在"渲染出来的字"上
+            failed.append(f"{name}（编号变了：{plain[:24]}）")
+    record("markdown", "引用标号渲染成可点的按钮（代码块/公式/真链接里不抢）",
+           not failed, f"{len(MD_CITES)} 种形状全过" if not failed else "；".join(failed[:3]))
+
+
+# --------------------------------------------------------------------------
+# 参考文献的"发表网站"地址（`utils/references.ts`）：三级回退，同样用 node 打真代码
+# --------------------------------------------------------------------------
+#: (名字, 一条文献（`PaperReference` 的字段）, 期望地址开头的片段)
+REF_CASES = [
+    ("有 url 字段就用它", {"raw": "whatever", "url": "https://example.org/paper.pdf"},
+     "https://example.org/paper.pdf"),
+    ("有 doi 字段 → doi.org", {"raw": "whatever", "doi": "10.1000/xyz"}, "https://doi.org/10.1000/xyz"),
+    ("doi 字段写成 doi.org 链接也认", {"raw": "", "doi": "https://doi.org/10.1/a"},
+     "https://doi.org/10.1/a"),
+    ("原文里的 arXiv 号（库里最常见的那种）",
+     {"raw": "[1] J. L. Ba, J. R. Kiros, and G. E. Hinton. Layer normalization. "
+             "arXiv preprint arXiv:1607.06450, 2016."},
+     "https://arxiv.org/abs/1607.06450"),
+    ("原文里的完整链接", {"raw": "代码见 https://github.com/x/y ，年份 2019"},
+     "https://github.com/x/y"),
+    ("原文里裸写的 DOI（结尾标点要去掉）",
+     {"raw": "Journal of X, doi:10.1234/abcd.5678, 2019"}, "https://doi.org/10.1234/abcd.5678"),
+    ("什么都没有 → 学术搜索兜底",
+     {"raw": "Some random reference without any identifier"}, "scholar.google.com"),
+]
+
+_REF_DRIVER = """import { readFileSync } from 'node:fs';
+import { referenceUrl } from './refs.mjs';
+const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+console.log(JSON.stringify(cases.map((c) => referenceUrl(c))));
+"""
+
+
+def check_reference_urls() -> None:
+    """把上面那张表喂给**真代码** `utils/references.ts`（esbuild bundle → node）。"""
+    print("\n⓪ 参考文献地址：结构化字段 → 原文里抠 DOI/arXiv → 学术搜索")
+    node = shutil.which("node")
+    frontend = ROOT / "frontend"
+    if not node or not (frontend / "node_modules" / "esbuild").exists():
+        skip("参考文献地址三级回退", "没有 node / esbuild（先在 frontend 里 npm i）")
+        return
+    with tempfile.TemporaryDirectory(prefix="cyl_ref_") as tmp:
+        tmpdir = Path(tmp)
+        bundle, driver, cases = tmpdir / "refs.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
+        cases.write_text(json.dumps([c[1] for c in REF_CASES], ensure_ascii=False),
+                         encoding="utf-8")
+        driver.write_text(_REF_DRIVER, encoding="utf-8")
+        build = subprocess.run(
+            [node, "-e",
+             "require('esbuild').buildSync({entryPoints:['src/utils/references.ts'],"
+             "bundle:true,format:'esm',alias:{'@':'./src'},logLevel:'error',"
+             "outfile:process.argv[1]})", str(bundle)],
+            cwd=frontend, capture_output=True, text=True)
+        if build.returncode != 0 or not bundle.exists():
+            record("refs", "参考文献地址三级回退能跑（bundle 真代码）", False,
+                   f"bundle 失败：{build.stderr[-200:]}")
+            return
+        proc = subprocess.run([node, str(driver), str(cases)], cwd=tmpdir,
+                              capture_output=True, text=True, encoding="utf-8")
+        if proc.returncode != 0:
+            record("refs", "参考文献地址三级回退能跑（bundle 真代码）", False,
+                   f"node 失败：{(proc.stderr or '')[-200:]}")
+            return
+        urls = json.loads(proc.stdout)
+    failed = [f"{name}（{url[:40]}）"
+              for (name, _ref, want), url in zip(REF_CASES, urls) if want not in str(url)]
+    record("refs", "参考文献地址三级回退（url / doi / 原文里的 arXiv·链接·DOI / 学术搜索）",
+           len(urls) == len(REF_CASES) and not failed,
+           f"{len(REF_CASES)} 条全过" if not failed else "；".join(failed[:3]))
+
 
 # --------------------------------------------------------------------------
 def main() -> int:
@@ -1819,6 +2005,7 @@ def main() -> int:
     print("Cylit 前端自检" + ("（含流式问答：--model）" if args.model else "（默认零模型调用）"))
     print("=" * 78)
     check_markdown_shapes()          # 不依赖浏览器与服务，先跑它
+    check_reference_urls()           # 同上：bundle 真代码，不依赖浏览器 / 数据
     check_explain_shell()            # 同上：只看源码结构，起服务前就能跑
     browser = find_browser(args.browser)
     if not browser:
@@ -1835,7 +2022,8 @@ def main() -> int:
     # ---- ① 阅读器 ----
     print("\n① 阅读器：正文 / 公式 / 胶囊")
     data = run_probe(browser, base, "probe_reader",
-                     PROBE_READER.replace("__URL__", reader_url).replace("__TITLE__", "reader"),
+                     PROBE_READER.replace("__URL__", reader_url).replace("__TITLE__", "reader")
+                     .replace("__PAPER__", args.paper),
                      args.budget)
     if data:
         tabs = data.get("tabs") or []
@@ -1861,6 +2049,37 @@ def main() -> int:
                                   for k in keys)
                and data.get("asidePressed0") != data.get("asidePressed1"),
                f"{data.get('asidePressed0')} → {data.get('asidePressed1')}，键 {keys}")
+        # ---- 「文献」页签（2026-10-07 第三条）----
+        labels = data.get("tabLabels") or []
+        record("reader", "页签名都压到**两个汉字**，且「文献」在**倒数第二个**",
+               bool(labels) and all(len(t) == 2 for t in labels)
+               and len(labels) >= 2 and labels[-2] == "文献",
+               f"页签：{'/'.join(labels)}")
+        if not data.get("citeChips"):
+            record("reader", "正文里的引用标号 `[2, 4, 10]` 是可点的按钮", False,
+                   f"正文里没找到标号（共 {data.get('citeChips')} 个）")
+        else:
+            record("reader", "正文里的引用标号 `[2, 4, 10]` 是可点的按钮",
+                   str(data.get("refsTab") or "") == "文献"
+                   and str(data.get("citeSample") or "").startswith("["),
+                   f"页签={data.get('refsTab')!r} 标号样例={data.get('citeSample')!r}")
+            record("reader", "两枚页签图标：文献=quote（双引号）、笔记=note（文稿）",
+                   data.get("refsIcon") == "quote" and data.get("notesIcon") == "note",
+                   f"文献={data.get('refsIcon')!r} 笔记={data.get('notesIcon')!r}")
+            clicked = data.get("clickedRefs") or []
+            record("reader", "点标号**自动打开侧栏**并**只显示被提到的那几条**",
+                   bool(clicked) and sorted(data.get("filteredNos") or []) == sorted(clicked)
+                   and str(data.get("activeAfterClick") or "").startswith("文献"),
+                   f"点了 {clicked} → 侧栏 {data.get('filteredNos')}（当前页签 "
+                   f"{data.get('activeAfterClick')!r}）")
+            record("reader", "「显示全部」回到全量（与接口条数一致）",
+                   data.get("allRows") == data.get("apiRefs") and (data.get("apiRefs") or 0) > 0,
+                   f"全量 {data.get('allRows')} 条 / 接口 {data.get('apiRefs')} 条")
+            url = str(data.get("refUrl") or "")
+            record("reader", "点文献条目 → 跳到发表网站（DOI / arXiv / 原文里的链接 / 学术搜索）",
+                   url.startswith("http")
+                   and any(k in url for k in ("doi.org", "arxiv.org", "scholar.google.com", "://")),
+                   f"{url[:70]}")
         record("reader", "侧栏页签记进 URL（切标签回来还是那一栏）",
                "side=chat" in str(data.get("sideUrl") or "")
                and str(data.get("sideBack") or "").startswith("对话"),
