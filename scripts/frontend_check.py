@@ -143,19 +143,37 @@ async function run() {
     res.tocModes = !!(modeOutline && modePages);
     if (modePages) {
       modePages.click();
-      await until(d, (x) => x.querySelector('.page-thumb'));
-      const thumbs = [...d.querySelectorAll('.page-thumb')];
+      await until(d, (x) => x.querySelector('.pg-item'));
+      const thumbs = [...d.querySelectorAll('.pg-item')];
       res.thumbCount = thumbs.length;
       res.thumbOrdered = thumbs.length > 0
         && thumbs.every((t, i) => Number(t.getAttribute('data-page')) === i + 1);
-      res.thumbNums = thumbs.slice(0, 3).map((t) => ((t.querySelector('.no') || {}).textContent || '').trim());
+      res.thumbNums = thumbs.slice(0, 3)
+        .map((t) => ((t.querySelector('.pg-no') || {}).textContent || '').trim());
       res.thumbSrc = thumbs.length ? (thumbs[0].querySelector('img') || {}).getAttribute('src') : null;
       res.thumbCurrent = thumbs.filter((t) => t.classList.contains('active'))
         .map((t) => Number(t.getAttribute('data-page')));
-      res.thumbRatio = thumbs.length ? (() => {
-        const r = thumbs[0].getBoundingClientRect();
-        return [Math.round(r.width), Math.round(r.height)];
-      })() : null;
+      /* 一页一行（类似插图页）：第 1、2 张左边界对齐、上下错开；图占满整格宽度 */
+      const r0 = thumbs[0] ? thumbs[0].getBoundingClientRect() : null;
+      const r1 = thumbs[1] ? thumbs[1].getBoundingClientRect() : null;
+      res.stacked = !!(r0 && r1) && Math.abs(r0.left - r1.left) <= 2 && r1.top > r0.bottom - 6;
+      /* 页号在**两张图之间**、图片左上角：在图上边之上、与格左边界对齐、且不是压在图上的徽章 */
+      const numEl = thumbs[0] ? thumbs[0].querySelector('.pg-no') : null;
+      const ri = thumbs[0] ? thumbs[0].querySelector('img')?.getBoundingClientRect() : null;
+      const rn = numEl ? numEl.getBoundingClientRect() : null;
+      res.numAboveImg = !!(ri && rn) && rn.bottom <= ri.top + 2;
+      res.numLeftAligned = !!(r0 && rn) && Math.abs(rn.left - r0.left) <= 10;
+      res.numStatic = numEl ? w.getComputedStyle(numEl).position !== 'absolute' : false;
+      res.imgFullWidth = !!(r0 && ri) && ri.width >= r0.width - 4;
+      res.thumbsLeft = thumbs.length;
+      res.noLocateBtn = d.querySelectorAll('.pages [title="定位"]').length === 0;
+      /* 那一行里除了图标不该有文字；页面视图也不再自己写「N 页 / 点缩略图…」 */
+      const bar = d.querySelector('.toc-bar');
+      res.barText = bar ? (bar.textContent || '').replace(/\\s+/g, '').trim() : null;
+      res.noPagesHead = !d.querySelector('.pages-head');
+      res.modeLabels = [d.querySelector('[data-toc-mode="outline"]'),
+                        d.querySelector('[data-toc-mode="pages"]')]
+        .map((b) => (b ? (b.textContent || '').trim() : null));
       /* 取图失败 → 占位（页码与点击都还在），把第一张图指到一个不存在的页强制 404 */
       const first = thumbs[0];
       const img0 = first.querySelector('img');
@@ -164,14 +182,14 @@ async function run() {
         await until(d, () => first.classList.contains('failed'), 20);
       }
       res.failedPh = first.classList.contains('failed') && !!first.querySelector('.ph');
-      res.failedNo = ((first.querySelector('.no') || {}).textContent || '').trim();
+      res.failedNo = ((first.querySelector('.pg-no') || {}).textContent || '').trim();
       /* 点第 3 页 → 跳过去（URL 带 ?page=3），再切回目录仍然正常 */
       const target = thumbs[2] || thumbs[0];
       res.jumpWanted = Number(target.getAttribute('data-page'));
       target.click();
       await sleep(1000); spin(BURN); await sleep(300);
       res.jumpUrl = w.location.search;
-      res.jumpActive = [...d.querySelectorAll('.page-thumb.active')]
+      res.jumpActive = [...d.querySelectorAll('.pg-item.active')]
         .map((t) => Number(t.getAttribute('data-page')));
       modeOutline.click();
       await sleep(300);
@@ -855,6 +873,9 @@ async function run() {
     res.menu = !!menu;
     if (!menu) { out(res); return; }
     res.menuText = (menu.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
+    res.menuBeforeHl = [...menu.querySelectorAll('button')]
+      .map((b) => (b.textContent || '').trim()).filter(Boolean);
     const yellow = [...menu.querySelectorAll('[title]')]
       .find((e) => (e.getAttribute('title') || '') === '黄色高亮');
     res.hasColors = !!yellow;
@@ -1135,6 +1156,9 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
     record("pdfhl", "PDF 划词菜单里有高亮色（第三步之前这里只有解释/复制）",
            res.get("hasColors") is True and "解释" in str(res.get("menuText") or ""),
            f"菜单：{res.get('menuText')}")
+    record("pdfhl", "还没标高亮时菜单里**没有「笔记」**（先插高亮，才能在高亮上加笔记）",
+           "笔记" not in (res.get("menuBeforeHl") or []),
+           f"菜单项 {res.get('menuBeforeHl')}")
     record("pdfhl", "高亮存进库：scope=pdf + `pdf:p<页号>` + 文字层偏移量",
            res.get("saved") == 1 and isinstance(res.get("savedRange"), list)
            and res["savedRange"][1] > res["savedRange"][0]
@@ -1668,21 +1692,31 @@ def main() -> int:
             record("reader", "目录页签里有「目录 / 页面视图」切换", False, "两枚切换按钮没找到")
         else:
             record("reader", "目录页签里有「目录 / 页面视图」切换", True, "两枚切换按钮都在")
-            record("reader", "页面视图：缩略图按页码排满 + 带页码 + 用页面图接口",
-                   bool(data.get("thumbOrdered"))
-                   and (data.get("thumbNums") or [])[:2] == ["1", "2"]
+            record("reader", "页面视图：一页一行（类似插图页），图占满栏宽",
+                   bool(data.get("thumbOrdered")) and bool(data.get("stacked"))
+                   and bool(data.get("imgFullWidth")),
+                   f"{data.get('thumbCount')} 张，上下排={data.get('stacked')}，"
+                   f"图满宽={data.get('imgFullWidth')}")
+            record("reader", "页面视图：页号写在两张图之间、图片左上角（不是压在图上的徽章，也无定位键）",
+                   data.get("numAboveImg") is True and data.get("numLeftAligned") is True
+                   and data.get("numStatic") is True and data.get("noLocateBtn") is True
+                   and (data.get("thumbNums") or [])[:2] == ["第 1 页", "第 2 页"]
                    and "/pages/1" in str(data.get("thumbSrc") or ""),
-                   f"{data.get('thumbCount')} 张，页码 {data.get('thumbNums')}，src {str(data.get('thumbSrc'))[-24:]}")
-            record("reader", "页面视图：缩略图是**纵向页面比例**（不是一条横条）",
-                   bool(data.get("thumbRatio")) and data["thumbRatio"][1] > data["thumbRatio"][0],
-                   f"{data.get('thumbRatio')} px")
+                   f"页号 {data.get('thumbNums')}，在图上方={data.get('numAboveImg')} "
+                   f"左对齐={data.get('numLeftAligned')} 绝对定位={not data.get('numStatic')} "
+                   f"定位键={not data.get('noLocateBtn')}")
+            record("reader", "目录那一行：切换只剩图标、没有多余文字（页数与提示都去掉）",
+                   (data.get("modeLabels") or []) == ["", ""]
+                   and data.get("noPagesHead") is True and str(data.get("barText") or "") == "",
+                   f"胶囊文字 {data.get('modeLabels')}，旧页头还在={not data.get('noPagesHead')}，"
+                   f"整行文字={data.get('barText')!r}")
             record("reader", "页面视图：当前阅读页高亮（与目录共享同一个读到哪）",
                    isinstance(data.get("thumbCurrent"), list) and len(data["thumbCurrent"]) <= 1,
                    f"高亮页 {data.get('thumbCurrent')}")
             record("reader", "页面视图：取图失败显示占位，页码还在",
-                   data.get("failedPh") is True and data.get("failedNo") == "1",
+                   data.get("failedPh") is True and data.get("failedNo") == "第 1 页",
                    f"占位={data.get('failedPh')}，页码={data.get('failedNo')}")
-            record("reader", "页面视图：点缩略图跳到那一页（URL 写 ?page=N）",
+            record("reader", "页面视图：点图直接跳到那一页（URL 写 ?page=N）",
                    f"page={data.get('jumpWanted')}" in str(data.get("jumpUrl") or "")
                    and data.get("jumpActive") == [data.get("jumpWanted")],
                    f"想跳 {data.get('jumpWanted')}，URL {data.get('jumpUrl')}，高亮 {data.get('jumpActive')}")

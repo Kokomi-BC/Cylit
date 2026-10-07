@@ -92,9 +92,12 @@ const COLOR_TITLE: Record<string, string> = {
       <AppIcon name="chat" :size="14" />加入对话
     </button>
     <!-- 原 PDF 栏（pdf.js 文字层）没有块锚点 → 那一栏只留「解释 / 复制」。
-         不写任何说明文字（用户口径：完全移除「原 PDF 栏不支持高亮」那行）。 -->
+         不写任何说明文字（用户口径：完全移除「原 PDF 栏不支持高亮」那行）。
+
+         「笔记」这一项只挂在**已有高亮**上：用户口径是"只有插入了高亮，才能在高亮的基础上
+         加笔记" —— 没有高亮时它根本不出现，引导用户先点一个颜色标出来。 -->
     <button
-      v-if="props.anchored && props.allowNote"
+      v-if="props.anchored && props.allowNote && props.hlCount > 0"
       :title="props.hasNote ? '跳到侧栏那条笔记' : '给这段文字写笔记（会挂在这处高亮上）'"
       @click="emit('note')"
     >

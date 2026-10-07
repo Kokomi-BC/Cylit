@@ -2397,7 +2397,9 @@ function onMouseUp(ev?: MouseEvent) {
       rowId: first.rowId, side, start: first.start, end: first.end,
       anchored: true, scope: 'markdown' as const, mdPage: Number(first.page ?? 0),
       page: Number(first.page ?? 0),
-      allowNote: false, segments: parts, hlIds: highlightIdsInRange(range),
+      /* 笔记也能挂：`md:p<N>` 这个锚点前端认得（第四步给笔记补了 `scope` 与 `page`，
+         侧栏「定位」按页跳得过去），所以这里不再像第一版那样禁用「笔记」。 */
+      allowNote: true, segments: parts, hlIds: highlightIdsInRange(range),
     });
     return;
   }
@@ -2824,24 +2826,15 @@ async function saveExplanationAsAnnotation() {
 async function saveExplanationAsNote() {
   const answer = [...explainCard.turns].reverse().find(t => t.role === 'assistant')?.text ?? '';
   if (!answer.trim()) { toast('还没有可保存的解释', 'warn'); return; }
+  /* 同样只往**已有高亮**上挂（用户口径：只有插入了高亮，才能在高亮的基础上加笔记）——
+     打开解释浮层那一刻若这段文字没被标过，这里就直说，而不是悄悄替用户标一条。 */
+  if (!explainCard.highlightId) {
+    toast('先给这段文字加个高亮，再存为笔记', 'warn', 2600);
+    return;
+  }
   try {
-    let highlightId = explainCard.highlightId;
-    if (!highlightId) {
-      if (!explainCard.rowId) throw new Error('这段文字没有可挂靠的锚点');
-      const created = await api.post<Highlight>('/highlights', {
-        paper_id: paperId.value, block_id: explainCard.rowId,
-        selected_text: explainCard.quote || explainCard.selectionText,
-        start_offset: explainCard.start, end_offset: explainCard.end,
-        color: 'yellow', side: explainCard.side, scope: explainCard.scope,
-      });
-      highlightId = created?.id ?? '';
-      highlights.value.push({ ...created, block_id: explainCard.rowId,
-                              start: created.start, end: created.end,
-                              side: explainCard.side, scope: explainCard.scope });
-    }
-    if (!highlightId) throw new Error('没有可挂靠的高亮');
     await api.post('/notes', {
-      paper_id: paperId.value, block_id: explainCard.rowId, highlight_id: highlightId,
+      paper_id: paperId.value, block_id: explainCard.rowId, highlight_id: explainCard.highlightId,
       selected_text: explainCard.quote || explainCard.selectionText,
       start_offset: explainCard.start, end_offset: explainCard.end,
       content_md: answer,
@@ -3102,12 +3095,23 @@ async function onNoteAction() {
     openNotePopover({ note: existing, highlight: hl, mode: 'view', anchored: true, fallbackXY });
     return;
   }
+  // 没有高亮就没有"可以挂笔记的地方"（菜单里那一项也不会出现，这里是兜底）
+  if (!selection.hlIds.length) {
+    toast('先给这段文字加个高亮，再写笔记', 'warn', 2600);
+    return;
+  }
   openNotePopover({ mode: 'edit', anchored: true, fallbackXY });
 }
 
-/** 浮层里「保存」：已有笔记走 PUT，新建走 POST（并先确保有高亮挂靠）。 */
+/** 浮层里「保存」：已有笔记走 PUT，新建走 POST（**必须已经挂在一处高亮上**）。 */
 async function saveNotePopover() {
   if (notePop.busy) return;
+  /* 用户口径：**只有插入了高亮，才能在高亮的基础上加笔记** —— 这里不再"顺手补一条高亮"，
+     没有高亮就明说怎么做（划词菜单里那一项本来也不会出现，这是兜底）。 */
+  if (!notePop.noteId && !notePop.highlightId) {
+    toast('先给这段文字加个高亮，再写笔记', 'warn', 2600);
+    return;
+  }
   notePop.busy = true;
   try {
     if (notePop.noteId) {
@@ -3115,25 +3119,16 @@ async function saveNotePopover() {
       notePop.content = updated?.content_md ?? notePop.draft;
       toast('笔记已保存', 'ok', 1600);
     } else {
-      let highlightId = notePop.highlightId;
-      let anchorText = notePop.quote;
-      if (!highlightId) {
-        const created = await addHighlight('yellow');
-        highlightId = created[0]?.id ?? '';
-        anchorText = created[0]?.text ?? anchorText;
-      }
-      if (!highlightId) throw new Error('没有可挂靠的高亮（选区可能已经失效）');
       const created = await api.post<Note>('/notes', {
         paper_id: paperId.value,
         block_id: notePop.rowId,
-        highlight_id: highlightId,
-        selected_text: anchorText,
+        highlight_id: notePop.highlightId,
+        selected_text: notePop.quote,
         start_offset: selection.start,
         end_offset: selection.end,
         content_md: notePop.draft,
       });
       notePop.noteId = created?.id ?? '';
-      notePop.highlightId = highlightId;
       notePop.content = notePop.draft;
       toast('笔记已保存', 'ok', 1600);
     }
@@ -3578,27 +3573,44 @@ function renderMarkdown(text?: string | null) {
         <!-- 目录页签里再分「目录 / 页面视图」（《修改计划》第二步）：两者**共享同一个"读到哪"**
              —— `currentPage` 都从正文当前行来，页面视图据此高亮并把缩略图滚进可视区。 -->
         <div v-if="sideTab === 'toc'" class="toc-pane">
-          <div class="toc-mode" role="tablist" aria-label="目录 / 页面视图">
-            <button
-              type="button" role="tab" data-toc-mode="outline"
-              :aria-selected="tocMode === 'outline'"
-              :class="{ active: tocMode === 'outline' }"
-              @click="tocMode = 'outline'"
-            >
-              <AppIcon name="list" :size="13" />目录
-            </button>
-            <button
-              type="button" role="tab" data-toc-mode="pages"
-              :aria-selected="tocMode === 'pages'"
-              :class="{ active: tocMode === 'pages' }"
-              @click="tocMode = 'pages'"
-            >
-              <AppIcon name="image" :size="13" />页面视图
-            </button>
+          <!-- 一行搞定：左边是「目录 / 页面视图」切换（**只有图标**，不再占一整行文字），
+               右边是目录的折叠/展开。以前切换胶囊单独占一行、目录自己还有一行「目录 N」，
+               两行文字压在一起很挤（用户口径：去掉多余的文字、把胶囊挪进这一行）。 -->
+          <div class="toc-bar">
+            <div class="toc-mode" role="tablist" aria-label="目录 / 页面视图">
+              <button
+                type="button" role="tab" data-toc-mode="outline"
+                :aria-selected="tocMode === 'outline'"
+                :class="{ active: tocMode === 'outline' }"
+                title="目录"
+                @click="tocMode = 'outline'"
+              >
+                <AppIcon name="list" :size="14" />
+              </button>
+              <button
+                type="button" role="tab" data-toc-mode="pages"
+                :aria-selected="tocMode === 'pages'"
+                :class="{ active: tocMode === 'pages' }"
+                title="页面视图"
+                @click="tocMode = 'pages'"
+              >
+                <AppIcon name="grid" :size="14" />
+              </button>
+            </div>
+            <span class="spacer"></span>
+            <template v-if="tocMode === 'outline'">
+              <button class="btn icon sm" title="全部折叠" @click="collapseAll">
+                <AppIcon name="unfold-less" :size="14" />
+              </button>
+              <button class="btn icon sm" title="全部展开" @click="expandAll">
+                <AppIcon name="unfold-more" :size="14" />
+              </button>
+            </template>
           </div>
 
           <ReaderToc
             v-if="tocMode === 'outline'"
+            headless
             :rows="tocRows"
             :current-row-id="tocActiveId"
             :page-count="pages.length"
@@ -4182,18 +4194,24 @@ function renderMarkdown(text?: string | null) {
 .side-tabs-wrap { position: relative; flex: 1 1 auto; min-width: 0; z-index: 3; }
 
 /* 「目录 / 页面视图」切换（《修改计划》第二步）：与侧栏页签同一门语言（无描边的托盘 + 抬起的
-   当前项），但**只一行文字**、比页签那圈矮一档 —— 它是页签内部的次级切换，不该跟页签抢注意力。 */
+   当前项）。**只有图标**（用户口径：胶囊不保留文字），并与目录的折叠/展开同处一行 ——
+   以前它单独占一整行，加上目录自己那行「目录 N」，两行文字压在一起很挤。 */
 .toc-pane { display: flex; flex-direction: column; min-width: 0; }
+.toc-bar {
+  display: flex; align-items: center; gap: 4px; flex: none;
+  margin: 0 0 6px; padding: 0 2px 6px;
+  border-bottom: 1px solid var(--divider);
+}
 .toc-mode {
-  display: inline-flex; align-self: flex-start; gap: 2px; flex: none;
-  margin: 0 0 8px; padding: 2px;
+  display: inline-flex; gap: 2px; flex: none;
+  padding: 2px;
   border: 0; border-radius: 999px; background: var(--bg-sunken);
 }
 .toc-mode > button {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 24px; padding: 0 10px; border: 0; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 22px; padding: 0; border: 0; border-radius: 999px;
   background: transparent; color: var(--text-dim);
-  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  font: inherit; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .toc-mode > button:hover { color: var(--text); }

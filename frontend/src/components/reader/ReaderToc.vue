@@ -22,6 +22,8 @@ const props = defineProps<{
   currentRowId: string;
   pageCount: number;
   collapsed: string[];
+  /** 不画自己那行「目录 N + 折叠/展开」：由 ReaderView 与「目录 / 页面视图」切换同一行画 */
+  headless?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -53,7 +55,9 @@ const items = computed(() =>
 
 <template>
   <div class="toc">
-    <div class="toc-head">
+    <!-- `headless`：目录页签里那行「目录 N + 折叠/展开」由 ReaderView 统一画
+         （与「目录 / 页面视图」切换同一行，省掉一整行高度，也不再重复"目录"两个字）。 -->
+    <div v-if="!props.headless" class="toc-head">
       <span class="tiny faint">目录 {{ props.rows.length }}</span>
       <span class="spacer" />
       <button class="btn icon sm" title="全部折叠" @click="emit('collapse-all')">
