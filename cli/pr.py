@@ -15,6 +15,8 @@
     python cli/pr.py serve [--host] [--port] [--reload]
     python cli/pr.py bench <pdf> [--mode fixed|adaptive] [--concurrency 4]
     python cli/pr.py stats                     # 论文/任务总览
+    python cli/pr.py orphans [--apply]         # 孤儿行清扫（paper_id 已不在库里的行；默认只报告）
+    python cli/pr.py trash [--purge] [--days 30]   # 回收站：软删论文留下的目录
 """
 
 from __future__ import annotations
@@ -350,6 +352,80 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_orphans(args) -> int:
+    """孤儿行清扫：`paper_id` 已经不在 `paper` 表里的行（**默认只看不动**）。
+
+    什么时候用：删过论文之后想确认"有没有留下东西"，或者库里攒了历史残留。
+    加 `--apply` 才真删；删的是**读不到的行**（列表都按 paper_id 过滤），不会碰到在库论文的数据。
+    """
+    from backend.services.paper import paper_service
+
+    report = paper_service.sweep_orphans(apply=bool(args.apply))
+    rows = report.get("tables") or {}
+    total = sum(int(v.get("rows") or 0) for v in rows.values())
+    print(f"=== 孤儿行（paper_id 不在 paper 表里）{'（已清理）' if args.apply else '（只报告，加 --apply 才删）'} ===")
+    for key, info in rows.items():
+        if not info.get("rows"):
+            continue
+        tail = f" → 删了 {info['deleted']} 行" if args.apply else ""
+        print(f"  {key:<14} {info['rows']:>5} 行 / {info['papers']} 篇{tail}   e.g. "
+              f"{', '.join(str(x) for x in (info.get('sample') or [])[:3])}")
+    msg = report.get("orphan_messages") or {}
+    conv = report.get("orphan_conversations") or {}
+    if msg.get("rows"):
+        print(f"  {'messages':<14} {msg['rows']:>5} 行"
+              f"{' → 删了 ' + str(msg['deleted']) + ' 行' if args.apply else ''}")
+    if conv.get("papers"):
+        print(f"  {'conversations':<14}       {conv['papers']} 篇"
+              f"{' → 清了 ' + str(conv['purged']) + ' 个会话' if args.apply else ''}   e.g. "
+              f"{', '.join(str(x) for x in (conv.get('sample') or [])[:3])}")
+    if report.get("vector_chunks"):
+        print(f"  {'lancedb':<14} {'':>5}    → 删了 {report['vector_chunks']} 条向量")
+    print(f"共 {total} 行；没有孤儿就是干净的。" if total else "共 0 行 —— 干净。")
+    return 0
+
+
+def cmd_trash(args) -> int:
+    """回收站：列出软删论文留在 `data/trash/` 里的目录，`--purge` 才真删。
+
+    为什么要有这个命令：`delete_paper(hard=False)` 只是把论文目录**移进** trash，
+    全仓库没有别的地方会清它 —— 不删就一直占盘（PDF + 页产物 + 插图）。
+    `--days N` 只清 N 天前的（默认 30）；`--days 0` 全清。
+    """
+    import shutil
+    import time
+
+    s = get_settings()
+    root = s.trash_dir
+    if not root.is_dir():
+        print(f"回收站是空的（{root} 不存在）。")
+        return 0
+    items = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name)
+    if not items:
+        print(f"回收站是空的（{root}）。")
+        return 0
+    now = time.time()
+    days = int(args.days)
+    doomed = [p for p in items
+              if days <= 0 or (now - p.stat().st_mtime) >= days * 86400]
+    for p in items:
+        age = (now - p.stat().st_mtime) / 86400
+        mark = "→ 清" if (p in doomed and args.purge) else ("可清" if p in doomed else "保留")
+        print(f"  {p.name:<48} {age:6.1f} 天前  {mark}")
+    print(f"共 {len(items)} 个目录，符合条件 {len(doomed)} 个（--days {days}）。")
+    if not args.purge:
+        print("加 --purge 才真删。")
+        return 0
+    freed = 0
+    for p in doomed:
+        for f in p.rglob("*"):
+            if f.is_file():
+                freed += f.stat().st_size
+        shutil.rmtree(p, ignore_errors=True)
+    print(f"已清 {len(doomed)} 个目录，释放约 {freed / 1048576:.1f} MB。")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # serve / bench
 # --------------------------------------------------------------------------
@@ -567,6 +643,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("stats", help="总览")
     sp.set_defaults(func=cmd_stats)
+    sp = sub.add_parser("orphans", help="孤儿行清扫（paper_id 已不在库里的行；默认只报告）")
+    sp.add_argument("--apply", action="store_true", help="真删（不加只看报告）")
+    sp.set_defaults(func=cmd_orphans)
+    sp = sub.add_parser("trash", help="回收站：列出软删论文留下的目录（--purge 才真删）")
+    sp.add_argument("--purge", action="store_true", help="真删符合条件的目录")
+    sp.add_argument("--days", type=int, default=30, help="只清 N 天前的（0 = 全清）")
+    sp.set_defaults(func=cmd_trash)
 
     sp = sub.add_parser("serve", help="启动后端")
     sp.add_argument("--host", default=None)

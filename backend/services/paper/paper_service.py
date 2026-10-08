@@ -16,7 +16,9 @@ from backend.core.utils import (
     iso_utc, json_dumps, json_loads, new_id, now, safe_filename, sha256_file, slugify,
     ts_compact,
 )
-from backend.repositories.mysql.models import Block, Paper, Task, Translation
+from backend.repositories.mysql.models import (Annotation, Block, Chunk, Formula, Highlight, Note,
+                                               Paper, PaperReference, ReadingProgress, Task,
+                                               Translation, Understanding)
 from backend.repositories.mysql.session import session_scope
 from backend.services.task.task_service import task_service
 
@@ -557,19 +559,30 @@ _PURGE_LABELS = {
     "conversations": "对话", "messages": "消息", "attachments": "附件图",
     "annotations": "划词解释", "highlights": "高亮", "notes": "笔记",
     "progress": "阅读进度", "understanding": "解读", "formulas": "公式",
+    "references": "参考文献",
 }
+
+#: **挂在 paper_id 上的所有表**（清理与"孤儿行清扫"共用这一份，避免又漏一张 ——
+#: `paper_reference` 就是这么漏掉的）。`Conversation` 走 agent 侧那条专门的路（要点附件文件），
+#: 所以不在这一份里。
+_PAPER_SCOPED_TABLES = (
+    ("blocks", Block), ("translations", Translation), ("formulas", Formula),
+    ("references", PaperReference), ("highlights", Highlight), ("notes", Note),
+    ("annotations", Annotation), ("progress", ReadingProgress),
+    ("understanding", Understanding), ("chunks", Chunk), ("tasks", Task),
+)
 
 
 def _purge_paper_content(paper_id: str) -> dict:
     """清掉这篇论文的**用户内容**：会话（含附件图）→ 划词解释 / 高亮 / 笔记 /
-    阅读进度 / 解读 / 公式。
+    阅读进度 / 解读 / 公式 / **参考文献**。
 
     会话那几张表归 agent 侧那个模块管（`conversations.purge_paper`：它的表、它的附件），
     这里只负责把结果汇总进删除步骤。**任何一段失败都不该让删论文半途而废** ——
     出错只记日志，磁盘与其它清理照常走。
     """
     from backend.repositories.mysql.models import (Annotation, Formula, Highlight, Note,
-                                                   ReadingProgress, Understanding)
+                                                   PaperReference, ReadingProgress, Understanding)
     from backend.services.agent import conversations as agent_conversations
 
     counts: dict[str, int] = {}
@@ -580,10 +593,67 @@ def _purge_paper_content(paper_id: str) -> dict:
     with session_scope() as sess:
         for key, model in (("annotations", Annotation), ("highlights", Highlight),
                            ("notes", Note), ("progress", ReadingProgress),
-                           ("understanding", Understanding), ("formulas", Formula)):
+                           ("understanding", Understanding), ("formulas", Formula),
+                           ("references", PaperReference)):
             counts[key] = int(sess.query(model).filter(model.paper_id == paper_id)
                               .delete(synchronize_session=False) or 0)
     return counts
+
+
+def sweep_orphans(*, apply: bool = False) -> dict:
+    """清扫**孤儿行**：`paper_id` 已经不在 `paper` 表里的那些行（默认只报告）。
+
+    ⚠️ 为什么会有：删除论文的清理是**逐表**列的（`_purge_paper_content`）——
+    漏掉一张表（`paper_reference` 就漏过）或者删于清理功能上线之前，行就永远留下了。
+    这些行不会再被任何界面读到（列表都按 paper_id 过滤），但会占库、会让"重新导入同一 id"
+    拿到旧数据（论文 id 是标题派生的 slug，重新导入常常是同一个 id）。
+
+    磁盘与向量索引也跟着清：`chunk` 行的孤儿 id 会在 LanceDB 里按 paper_id 删一遍
+    （向量库是派生数据，删错也只是重索引）。
+    """
+    from sqlalchemy import func
+
+    from backend.repositories.mysql.models import Conversation, ConversationMessage
+
+    report: dict = {"apply": bool(apply), "tables": {}, "vector_chunks": 0}
+    with session_scope() as sess:
+        live = {str(x[0]) for x in sess.query(Paper.id).all()}
+        for key, model in _PAPER_SCOPED_TABLES:
+            orphan_ids = sorted({str(x[0]) for x in sess.query(model.paper_id).all()
+                                 if x[0] and str(x[0]) not in live})
+            rows = int(sess.query(func.count()).select_from(model)
+                       .filter(model.paper_id.in_(orphan_ids)).scalar() or 0) if orphan_ids else 0
+            deleted = int(sess.query(model).filter(model.paper_id.in_(orphan_ids))
+                          .delete(synchronize_session=False) or 0) if (apply and orphan_ids) else 0
+            report["tables"][key] = {"papers": len(orphan_ids), "rows": rows,
+                                     "deleted": deleted, "sample": orphan_ids[:5]}
+        # 会话已经没了、消息还在（会话是父亲，消息按 conversation_id 挂）
+        conv_ids = {str(x[0]) for x in sess.query(Conversation.id).all()}
+        msg_ids = [str(x[0]) for x in sess.query(ConversationMessage.id,
+                                                 ConversationMessage.conversation_id).all()
+                   if str(x[1]) not in conv_ids]
+        if apply and msg_ids:
+            sess.query(ConversationMessage).filter(
+                ConversationMessage.id.in_(msg_ids)).delete(synchronize_session=False)
+        report["orphan_messages"] = {"rows": len(msg_ids), "deleted": len(msg_ids) if apply else 0}
+        # 会话：走 agent 侧那条专门的路（它还要删附件文件），别在这里裸删行
+        orphan_papers = sorted({str(x[0]) for x in
+                                sess.query(Conversation.paper_id).all()
+                                if x[0] and str(x[0]) not in live})
+        report["orphan_conversations"] = {"papers": len(orphan_papers),
+                                          "purged": 0, "sample": orphan_papers[:5]}
+        chunk_papers = list(report["tables"]["chunks"]["sample"])
+    if apply and orphan_papers:
+        from backend.services.agent import conversations as agent_conversations
+
+        for pid in orphan_papers:
+            info = agent_conversations.purge_paper(pid)
+            report["orphan_conversations"]["purged"] += int(info.get("conversations") or 0)
+    if apply:
+        for pid in chunk_papers:
+            report["vector_chunks"] += _drop_vector_index(pid)
+    report["ok"] = True
+    return report
 
 
 def delete_paper(paper_id: str, *, hard: bool = False) -> dict:
