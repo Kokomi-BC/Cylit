@@ -295,18 +295,29 @@ async function run() {
       const chip = chips.find((c) => valid(c) && inView(c)) || chips.find(inView)
         || chips.find(valid) || chips[0];
       res.clickedRefs = numsOf(chip);
+      const wantRefs = chip.getAttribute('data-refs') || '';
       /* 标号上不该再有原生 `title`（用户口径 2026-10-08："移除悬浮显示的文字（浏览器 toast）"）：
          悬浮的效果已经由浮层负责，浏览器那条提示会跟浮层叠在一起。 */
       res.citeTitle = chip.getAttribute('title');
       const tabBefore = d.querySelector('.side-tab.active');
       res.tabBeforeClick = tabBefore ? (tabBefore.textContent || '').trim() : null;
-      chip.click();
-      await until(d, (x) => x.querySelector('[data-cite-pop]'), 20);
-      /* ⚠️ 等**卡片**出来再量：参考文献是**按需取**的（`ensureReferences`），第一次点开时
-         浮层先显示"正在取参考文献…" —— 只 sleep 固定时间会量到一个空浮层（实测整轮里偶发）。 */
-      await until(d, (x) => x.querySelector('[data-cite-pop] [data-ref-no]'), 40);
-      await sleep(200); spin(BURN);
-      const pop = d.querySelector('[data-cite-pop]');
+      /* ⚠️ 点之前**重新按属性取一次**这个标号：正文行是渲染出来的，上面那次 `fetch`（拿 apiRefs）
+         期间它可能已经被重画 —— 点一个已经摘掉的节点，事件不会冒泡到正文容器，浮层自然不弹
+         （实测偶发：`citePop=false` 而同一枚标号的悬浮那一路是好的）。点不弹就再试两轮。 */
+      let pop = null;
+      for (let attempt = 0; attempt < 3 && !pop; attempt += 1) {
+        const chipNow = d.querySelector('.cite-inline[data-refs="' + wantRefs + '"]') || chip;
+        chipNow.click();
+        await until(d, (x) => x.querySelector('[data-cite-pop]'), 8);
+        pop = d.querySelector('[data-cite-pop]');
+      }
+      if (pop) {
+        /* 参考文献是**按需取**的（`ensureReferences`）：第一次点开时浮层先显示"正在取参考文献…"，
+           要等**卡片**出来再量（只 sleep 固定时间会量到一个空浮层）。 */
+        await until(d, (x) => x.querySelector('[data-cite-pop] [data-ref-no]'), 40);
+        await sleep(150); spin(BURN);
+        pop = d.querySelector('[data-cite-pop]');
+      }
       res.citePop = !!pop;
       res.citePopRows = pop ? pop.querySelectorAll('[data-ref-no]').length : 0;
       res.citePopNos = pop ? [...pop.querySelectorAll('[data-ref-no]')]
@@ -1492,6 +1503,8 @@ async function run() {
     res.popClosedBefore = !card();
     const m1 = hlMark();
     if (m1) {
+      /* 高亮上不该再有浏览器原生提示（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"） */
+      res.markTitle = m1.getAttribute('title');
       m1.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
       await until(D(), () => !!card(), 20);
       res.popOpen = !!card();
@@ -1916,6 +1929,9 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and "笔记" in str(res.get("popText") or "")
            and "自检" in str(res.get("popText") or ""),
            f"浮层：{str(res.get('popText'))[:40]}")
+    record("pdfhl", "高亮上没有浏览器原生提示条（悬浮的提示交给浮层/菜单）",
+           not str(res.get("markTitle") or ""),
+           f"title={res.get('markTitle')!r}")
     record("pdfhl", "鼠标移开自动消失（默认**不锚定**）", res.get("popAutoClosed") is True,
            f"移开后还在={not res.get('popAutoClosed')}，提示={res.get('popHint')!r}，"
            f"此刻 :hover={res.get('popHoverNow')}")
@@ -2103,20 +2119,40 @@ async function run() {
 
 
 def check_cite_hover() -> None:
-    """引用标号的"悬浮停一会儿才弹"（用户口径 2026-10-08 第五条）——**源码层**钉住。
+    """悬浮"停一会儿才弹"（用户口径 2026-10-08：引用标号 + **高亮**都调）——**源码层**钉住。
 
     为什么不放进浏览器探针：无头探针跑在 `--virtual-time-budget` 下，定时器会被虚拟时间直接推过去，
     "延时窗口内还没弹"这个中间态量不准（真鼠标那一侧的时间在 `data/logs/cite_cdp.mjs` 里量）。
-    这里钉三件事：延时是个常量、两条悬浮入口都走它、点击那条路**不等**延时。
+    这里钉四件事：延时是个常量、两条悬浮入口（标号 / 高亮）都走它、点击那条路**不等**延时、
+    以及"笔记浮层里不再抄一遍高亮原文"（用户口径："浮层不要显示论文正文部分"）。
     """
     src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
-    delay = re.search(r"CITE_HOVER_DELAY\s*=\s*(\d+)", src)
-    hover_scheduled = (src.count("scheduleCiteOpen(citeRefs(chip), chip)") >= 2
-                       and "citeHoverTimer = window.setTimeout" in src)
+    delay = re.search(r"HOVER_OPEN_DELAY\s*=\s*(\d+)", src)
+    cite_path = (src.count("scheduleCiteOpen(citeRefs(chip), chip)") >= 2
+                 and "citeHoverTimer = window.setTimeout" in src)
+    note_path = ("scheduleNoteOpen(note, hl, mark)" in src
+                 and "noteHoverTimer = window.setTimeout" in src)
     click_now = "cancelCiteOpen();" in src and "void openCitePop(citeRefs(cite), cite);" in src
-    record("reader", "悬浮**停一会儿**才弹浮层（点击仍然立刻弹；划过去不弹）",
-           bool(delay) and int(delay.group(1)) >= 250 and hover_scheduled and click_now,
-           f"延时={delay.group(1) if delay else None}ms 悬浮走延时={hover_scheduled} 点击不等={click_now}")
+    record("reader", "悬浮**停一会儿**才弹浮层（标号与高亮同一口径；点击仍然立刻弹）",
+           bool(delay) and int(delay.group(1)) >= 250 and cite_path and note_path and click_now,
+           f"延时={delay.group(1) if delay else None}ms 标号走延时={cite_path} "
+           f"高亮走延时={note_path} 点击不等={click_now}")
+    record("reader", "笔记浮层里**不再抄一遍高亮原文**（只留笔记正文）",
+           "np-quote" not in src and "notePop.quote" in src,
+           f"模板里还有 np-quote={'np-quote' in src}（数据里仍留 notePop.quote 用于存 selected_text）")
+    # 悬浮元素上不留原生 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
+    # 高亮（两条渲染路：正文 DOM / markdown HTML）与浮层标题栏都算 —— 它们都是"悬浮就出卡片"的元素，
+    # 再叠一条浏览器提示只是噪音。真机那一侧在 pdfhl 探针里量（`markTitle`）。
+    dom = (ROOT / "frontend" / "src" / "utils" / "domMarks.ts").read_text(encoding="utf-8")
+    md = (ROOT / "frontend" / "src" / "composables" / "useMarkdown.ts").read_text(encoding="utf-8")
+    fc = (ROOT / "frontend" / "src" / "components" / "reader" / "FloatingCard.vue"
+          ).read_text(encoding="utf-8")
+    marks_clean = (".title =" not in dom and 'title="点击删除高亮"' not in md
+                   and 'title="按住这里可以拖动浮层"' not in fc)
+    record("reader", "悬浮元素上不留原生 `title` 提示（高亮 / 浮层标题栏）",
+           marks_clean,
+           f"domMarks 还有 title={'.title =' in dom} markdown 标记还有 title="
+           f"{'点击删除高亮' in md} 浮层标题栏还有 title={'按住这里可以拖动浮层' in fc}")
 
 
 def _internal_headers() -> dict:

@@ -455,7 +455,9 @@ export function htmlWithHighlights(text: string, highlights: Highlight[], paperI
   if (!list.length) return mdToHtml(text, paperId);
 
   const { html } = renderWithPlaceholders(text, list.map((h) => ({
-    start: h.start, end: h.end, mark: `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}" title="点击删除高亮">`,
+    /* 不加 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：高亮是"悬浮就出笔记浮层"
+       的那类元素，再叠一条浏览器原生提示只是噪音（编辑/删除入口在划词菜单与浮层里）。 */
+    start: h.start, end: h.end, mark: `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}">`,
   })), paperId);
   return html;
 }

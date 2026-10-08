@@ -191,7 +191,9 @@ function makeMark(color: string, id: string): HTMLElement {
   const mark = document.createElement('mark');
   mark.className = `hl ${color || 'yellow'}`;
   mark.setAttribute('data-hl', id);
-  mark.title = '选中这一段，可从菜单删除高亮';
+  /* ⚠️ 这里**不要**写 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
+     高亮是"悬浮就出笔记浮层"的那类元素，再叠一条浏览器原生提示（"选中这一段…"）
+     只是噪音 —— 删除/编辑的入口在划词菜单与浮层里。 */
   return mark;
 }
 

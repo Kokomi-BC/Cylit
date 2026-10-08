@@ -15,6 +15,8 @@
  * 第四条（用户口径 2026-10-07）：**可以按住标题栏拖**。拖过之后就不再做"贴边回拉"了 ——
  * 用户把它挪到哪儿就是哪儿，内容变长/锚点变化都不许把它弹回去（`dragged`），
  * 直到下次打开才回到自动定位。
+ * 标题栏上**不写 `title`**（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
+ * "按住这里可以拖动浮层"这种说明交给光标形状（`cursor: grab`）就够，不必再弹一条浏览器提示。
  *
  * 本组件**不持有业务状态**：谁开、开在哪、里面放什么，全由父组件给。
  */
@@ -136,7 +138,6 @@ const style = computed(() => ({
       class="fc-head"
       :class="{ dragging: drag.on }"
       data-float-head
-      title="按住这里可以拖动浮层"
       @pointerdown="onHeadDown"
       @pointermove="onHeadMove"
       @pointerup="onHeadUp"

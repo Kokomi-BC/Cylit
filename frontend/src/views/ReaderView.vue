@@ -3189,12 +3189,18 @@ function openNotePopover(opts: {
 
 function closeNotePopover() {
   window.clearTimeout(noteHideTimer);
+  cancelNoteOpen();                 // 还没到延时的那一次也别再弹了
   notePop.open = false;
   notePop.anchored = false;
   notePop.mode = 'view';
 }
 
-/* 悬停显示已存在的笔记；移开延时关闭（延时是为了让鼠标能从高亮挪到浮层上） */
+/* 悬停显示已存在的笔记；移开延时关闭（延时是为了让鼠标能从高亮挪到浮层上）
+ *
+ * ⚠️ 浮层自己也要接 `mouseleave`（模板上那一条）：卡片高的时候会自动翻到高亮**上方**，
+ * 于是常常一打开就**盖住了光标** —— 那时指针的 hover 目标已经是卡片，`mouseout` 交回的是卡片、
+ * 不是高亮，光靠 `onContentHoverOut` 永远不会收（实测：移开后浮层还在）。
+ * 锚定的（`anchored`）与编辑态不受影响，`scheduleNoteHide` 自己会挡。 */
 let noteHideTimer: number | undefined;
 function cancelNoteHide() { window.clearTimeout(noteHideTimer); }
 function scheduleNoteHide() {
@@ -3224,14 +3230,20 @@ function onContentHover(ev: MouseEvent) {
   const hl = highlights.value.find((h) => h.id === (mark.getAttribute('data-hl') || ''));
   const note = hl ? notes.value.find((n) => n.highlight_id === hl.id) : null;
   if (!hl || !note) return;
-  if (notePop.open && notePop.noteId === note.id) { cancelNoteHide(); return; }
-  openNotePopover({ note, highlight: hl, mode: 'view', rect: mark.getBoundingClientRect() });
+  if (notePop.open && notePop.noteId === note.id) { cancelNoteOpen(); cancelNoteHide(); return; }
+  scheduleNoteOpen(note, hl, mark);      // 悬停也**停一会儿**才弹（与引用标号同门口径）
 }
 
 function onContentHoverOut(ev: MouseEvent) {
+  /* 挪到**同类**目标上不算"走开"（`mouseout`/`mouseover` 的先后顺序不保证）：
+     不然刚排上的那一次会被这里当场取消，表现就是"从这处高亮划到下一处，浮层再也不弹"。 */
+  const to = ev.relatedTarget as HTMLElement | null;
   const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]');
-  if (chip) { cancelCiteOpen(); scheduleCiteHide(); }   // 还没到延时就走开了：别弹
-  if (markOf(ev)) scheduleNoteHide();
+  if (chip && !to?.closest?.('.cite-inline[data-refs]')) { cancelCiteOpen(); scheduleCiteHide(); }
+  if (markOf(ev)) {
+    if (!to?.closest?.('mark.hl[data-hl]')) cancelNoteOpen();
+    scheduleNoteHide();
+  }
 }
 
 /**
@@ -3247,10 +3259,11 @@ function onMdHover(ev: MouseEvent) {
 }
 
 function onMdHoverOut(ev: MouseEvent) {
-  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) {
-    cancelCiteOpen();
-    scheduleCiteHide();
-  }
+  if (!(ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) return;
+  // 挪到另一枚标号上不算走开（同上：mouseout/mouseover 的先后顺序不保证）
+  if ((ev.relatedTarget as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) return;
+  cancelCiteOpen();
+  scheduleCiteHide();
 }
 
 /** 选区/点击处那条高亮对应的笔记（有的话菜单显示「打开笔记」）。 */
@@ -3401,21 +3414,40 @@ function scheduleCiteHide() {
   }, 220);
 }
 
-/* 悬浮**停一下**才弹（用户口径 2026-10-08 第五条："需要稍长时间悬浮再显示悬浮浮层"）：
- * 鼠标扫过正文时会一路划过好几个标号，立刻弹就是一路闪 —— 停住 350ms 才算"想看"。
- * 点击不受这个延时约束（点一下是明确动作，见 `onContentClick`）。 */
-const CITE_HOVER_DELAY = 350;
+/* 悬浮**停一下**才弹（用户口径 2026-10-08：先"需要稍长时间悬浮再显示"，随后"高亮部分也调一下"）：
+ * 鼠标扫过正文时会一路划过好几个标号 / 高亮，立刻弹就是一路闪 —— 停住 350ms 才算"想看"。
+ * 点击不受这个延时约束（点一下是明确动作，见 `onContentClick`）。
+ * 两条悬浮路各一个定时器：引用标号 → `scheduleCiteOpen`；高亮（悬停看笔记）→ `scheduleNoteOpen`。 */
+const HOVER_OPEN_DELAY = 350;
 let citeHoverTimer: number | undefined;
 function cancelCiteOpen() {
   window.clearTimeout(citeHoverTimer);
   citeHoverTimer = undefined;
 }
 function scheduleCiteOpen(nums: number[], el: HTMLElement) {
+  cancelCiteHide();                 // 从这一处挪到另一处：上一枚的"延时收起"先撤掉，免得闪一下
   window.clearTimeout(citeHoverTimer);
   citeHoverTimer = window.setTimeout(() => {
     citeHoverTimer = undefined;
     void openCitePop(nums, el);
-  }, CITE_HOVER_DELAY);
+  }, HOVER_OPEN_DELAY);
+}
+
+/* 高亮那一路（悬停 → 笔记浮层）：同一门口径、同一个延时 */
+let noteHoverTimer: number | undefined;
+function cancelNoteOpen() {
+  window.clearTimeout(noteHoverTimer);
+  noteHoverTimer = undefined;
+}
+function scheduleNoteOpen(note: Note, hl: Highlight, mark: HTMLElement) {
+  window.clearTimeout(noteHoverTimer);
+  noteHoverTimer = window.setTimeout(() => {
+    noteHoverTimer = undefined;
+    /* 到点再确认一次这处高亮还在：正文行是渲染出来的，期间可能被重画（旧节点已摘掉）——
+       那时按旧矩形弹出来的卡片会悬在半空。 */
+    if (!mark.isConnected) return;
+    openNotePopover({ note, highlight: hl, mode: 'view', rect: mark.getBoundingClientRect() });
+  }, HOVER_OPEN_DELAY);
 }
 
 async function openCitePop(nums: number[], el: HTMLElement) {
@@ -4131,8 +4163,11 @@ function renderMarkdown(text?: string | null) {
       data-note-popover
       @close="closeNotePopover"
       @toggle-anchor="notePop.anchored = !notePop.anchored"
+      @mouseleave="scheduleNoteHide"
     >
-      <div v-if="notePop.quote" class="np-quote small faint" v-html="mdToHtml(`“${notePop.quote}”`)" />
+      <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
+           浮层贴着那处高亮，原文就在眼皮底下，再抄一遍只会把卡片撑长、还多一层"这是哪一段"的噪音。
+           要看按的是哪一段，看浮层**贴着哪儿**就够了。 -->
       <div v-if="notePop.mode === 'prompt'" class="np-hint tiny faint">
         这段已经标好了。要在这处高亮上写点什么吗？
       </div>
