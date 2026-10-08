@@ -279,6 +279,50 @@ def test_read_model_keeps_rows_when_there_is_no_carry() -> None:
 
 
 # --------------------------------------------------------------------------
+# 4.5 译文按原文的**硬换行**对齐分行（用户截图：算法 2 的伪代码挤成一整段）
+# --------------------------------------------------------------------------
+
+
+def test_translation_follows_the_originals_hard_breaks() -> None:
+    """原文行尾两个空格 = Markdown 硬换行 → 译文也要逐行硬换行（否则渲染成一个空格）。"""
+    from backend.services.paper import reader_service
+
+    src = "**Algorithm 2**  \n1: input $d$  \n2: instantiate"
+    dst = "**算法 2**\n1：输入 $d$\n2：实例化"
+    out = reader_service.align_hard_breaks(src, dst)
+    assert out.split("\n") == ["**算法 2**  ", "1：输入 $d$  ", "2：实例化"]
+    # 末行不加（后面没有换行了）
+    assert not out.split("\n")[-1].endswith(" ")
+
+
+def test_align_hard_breaks_never_touches_a_mismatch() -> None:
+    """行数不一致 / 原文本来就没有硬换行 → **一个字都不动**（结构不同时硬对齐只会弄乱别处）。"""
+    from backend.services.paper import reader_service
+
+    assert reader_service.align_hard_breaks("a  \nb", "甲\n乙\n丙") == "甲\n乙\n丙"
+    assert reader_service.align_hard_breaks("a\nb", "甲\n乙") == "甲\n乙"
+    assert reader_service.align_hard_breaks("", "甲") == "甲"
+    assert reader_service.align_hard_breaks("a  \nb", "") == ""
+    # 译文那一行已经是硬换行 → 不重复补空格
+    assert reader_service.align_hard_breaks("a  \nb", "甲  \n乙") == "甲  \n乙"
+
+
+def test_align_page_breaks_covers_rows_and_the_markdown_side() -> None:
+    """一页里**两处**都要对齐：正文行（对照视图渲染的）与 `translation_md`（Markdown 视图）。"""
+    from backend.services.paper import reader_service
+
+    page = {"page": 6,
+            "original_md": "**Algorithm 2**  \n1: a  \n2: b",
+            "translation_md": "**算法 2**\n1：甲\n2：乙",
+            "rows": [{"id": "p006-00", "original": "**Algorithm 2**  \n1: a  \n2: b",
+                      "translation": "**算法 2**\n1：甲\n2：乙"}]}
+    reader_service.align_page_breaks(page)
+    assert page["rows"][0]["translation"] == page["translation_md"]
+    assert page["translation_md"].count("  \n") == 2
+    assert page["original_md"] == "**Algorithm 2**  \n1: a  \n2: b", "原文是标准，永远不动"
+
+
+# --------------------------------------------------------------------------
 # 5. 等 A 路（B 的输入来自 A：**A 必须领先**）
 # --------------------------------------------------------------------------
 

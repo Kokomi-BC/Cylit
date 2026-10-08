@@ -9853,5 +9853,55 @@ turboquant 现在是 **71/76** 有中文标题（上一轮 62 → 本轮按节�
 - 新测试 `test_deleting_a_highlight_takes_its_notes_away`（建高亮 → 挂笔记 → 删高亮 →
   笔记必须没了 + `deleted_notes` 回的是 id 列表 + 幂等）；
 - 实测：删旧高亮时 `deleted_notes=[n-…]`，库里干净收尾。
+
+## 74. 第七十四轮：译文按原文的硬换行分行 + 删论文的清理面补全（含孤儿行清扫）
+
+两件事（用户 2026-10-08 的截图与"修复上述问题"）。
+
+### 一、换行：算法伪代码在译文里挤成一整段
+
+截图是第 6 页的 **Algorithm 2**：左栏（原文）12 行、右栏（译文）糊成一坨。查产物文件：
+**原文每行以 `  \n` 结尾（两个空格 = Markdown 硬换行），译文用的是普通 `\n`（软换行）** ——
+Markdown 里软换行渲染成**一个空格**，于是 12 行伪代码接成一整段（行数其实是一致的：13 : 13）。
+原文这一侧早就修过（`page_translate.split_blocks` 里有"行尾两个空格不能 rstrip 掉"那条注释，
+记的就是"算法 1 的 11 行粘成一段"），译文这一侧一直没管。
+
+修法在**读模型**里（`reader_service.page_products`，阅读器 / 分块 / 双语导出共用的唯一入口）：
+
+- 新函数 `align_hard_breaks(original, translation)`：原文哪一行以硬换行结尾，译文对应那一行也补两个空格；
+- **行数不一致就不动**（结构已经不同，硬对齐只会弄乱别处）；末行不补（后面没有换行）；
+- 一页里两处都对齐（`align_page_breaks`）：正文行 `rows[].translation`（对照视图渲染的就是它）
+  与 `translation_md`（Markdown 视图那一面）；`original` / `original_md` 是标准，永远不动。
+
+为什么放在读模型而不是让 B 重译：**已翻译的论文立刻正常**，产物不用重写，KB 分块（走同一个读模型）
+与双语导出也一起吃到。全库实测命中 **7 行 / 3 篇**（turboquant 的 Algorithm 1、Algorithm 2 与脚注块、
+attention 的两行作者单位、3360 一行），"原文是多行步骤但译文只剩一行"的**0 例** —— 说明对齐能覆盖全部现症。
+新测试：`test_translation_follows_the_originals_hard_breaks`、`test_align_hard_breaks_never_touches_a_mismatch`、
+`test_align_page_breaks_covers_rows_and_the_markdown_side`。
+
+### 二、删论文的清理面：补上漏掉的表，并给历史孤儿一个出口
+
+上一轮审计（§73 附）发现三件事，这轮都处理了：
+
+1. **`paper_reference` 漏清** → 加进 `_purge_paper_content`（标签"参考文献"），
+   并抽出 `_PAPER_SCOPED_TABLES`（挂在 paper_id 上的**全部**表）当作唯一清单，
+   `sweep_orphans` 与清理共用它 —— 下次漏表至少会在测试里露头
+   （`test_paper_scoped_table_list_covers_references`）；
+2. **历史孤儿行**：新增 `paper_service.sweep_orphans(apply=False)`（默认只报告）+
+   `python cli/pr.py orphans [--apply]`。已在库上跑过一次 `--apply`：
+   **formula 275 行、annotation 17 行、reading_progress 11 行、task 1 行、会话 4 个**（`selfcheck`）
+   全部清掉，再跑一次是 0 行（干净）。孤儿消息（会话没了、消息还在）与孤儿会话也一起处理
+   （会话走 `conversations.purge_paper`，顺带删附件文件）；
+3. **trash 永不清理**：新增 `python cli/pr.py trash [--purge] [--days 30]`（默认只列）。
+   实测库里已经攒了 **425 个目录**（大多是集成测试删临时论文留下的），全都在 30 天内 ——
+   要不要清由人决定，脚本不自动删。
+
+顺带确认（上一轮报告里提到的两处怀疑，查完不成立）：`tests/test_reader_progress.py` 的临时论文
+**是**清干净的（fixture 里删了进度行与 Paper 行）；`tests/test_figure_regions.py` 那句
+`DELETE FROM paper` 删的是**IR 的 sqlite 文件**，不是 MySQL。所以历史孤儿来自"清理功能上线前删的论文"
+与自检脚本某次没跑完的清理。
+
+新测试 `tests/test_delete_paper.py`：软删要清掉每一类用户内容（含参考文献）并保留 Paper 行（`deleted_at`）、
+硬删再抹掉 Paper 行、重复硬删是 404（接口口径）、`sweep_orphans` 只报告 vs 真删、在库论文的行不许被碰到。
 > 自检也跟着补了一条**几何断言**（标号 vs 它后面第一个文字节点：顶边差 ≤ 4px、标号右边 ≤ 文字左边），
 > 中英对照那条与"只有原文"那条**都要过** —— 这条正是截图里那个毛病，光看结构断言抓不到。

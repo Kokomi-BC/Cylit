@@ -158,7 +158,52 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
         if merged is not None:
             out.append(merged)
     _rejoin_carried_rows(out, b_pages)
+    for page in out:
+        align_page_breaks(page)
     return out, shape
+
+
+#: 行尾两个以上空格 / 反斜杠 = Markdown **硬换行**（作者故意要换行）
+_HARD_BREAK_RE = re.compile(r"(?:\s{2,}|\\)$")
+
+
+def align_hard_breaks(original: str, translation: str) -> str:
+    """原文行尾是**硬换行**（两个空格 / 反斜杠）时，译文照同样的分行来。
+
+    症状（用户 2026-10-08 截图：算法 2 那一整块伪代码）：原文 12 行、每行以 `  \\n` 结尾 →
+    Markdown 渲染成 12 行；B 路译文用的是普通 `\\n` —— 那是**软换行**，渲染成一个空格，
+    于是伪代码被接成一整段（"1: 输入: 维度 d … 2: 按算法 1 实例化…"）。
+
+    这是"译文与原文逐块对齐"契约的一部分，所以放在**读模型**里做（`page_products`）：
+    产物不用重写、已翻译的论文立刻正常。
+    **行数不一致就不动** —— 行数不同说明结构已经变了，硬对齐只会把别处弄乱。
+    """
+    if not original or not translation or "\n" not in original:
+        return translation
+    src, dst = original.split("\n"), translation.split("\n")
+    if len(src) != len(dst):
+        return translation
+    out: list[str] = []
+    for i, line in enumerate(dst):
+        needs = i < len(src) - 1 and bool(_HARD_BREAK_RE.search(src[i]))
+        if needs and not _HARD_BREAK_RE.search(line):
+            out.append(line.rstrip() + "  ")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def align_page_breaks(page: dict) -> None:
+    """把一页的译文按原文的硬换行**对齐分行**（行文本与整页 Markdown 都要）。
+
+    两个都改：正文（`rows[].translation`，对照视图渲染的就是它）与 Markdown 视图那一面
+    （`translation_md`）。`original` / `original_md` 是标准，永远不动。
+    """
+    for row in page.get("rows") or []:
+        row["translation"] = align_hard_breaks(str(row.get("original") or ""),
+                                               str(row.get("translation") or ""))
+    page["translation_md"] = align_hard_breaks(str(page.get("original_md") or ""),
+                                               str(page.get("translation_md") or ""))
 
 
 def _ws(text: str) -> str:
