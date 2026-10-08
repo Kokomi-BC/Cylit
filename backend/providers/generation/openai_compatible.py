@@ -139,7 +139,7 @@ class OpenAICompatibleGeneration(GenerationProvider):
         except Exception as exc:  # noqa: BLE001
             raise self._translate_error(exc) from exc
         latency = (time.perf_counter() - t0) * 1000
-        return self._to_result(resp, latency)
+        return self._to_result(resp, latency, params=params)
 
     def generate_vision(self, prompt: str, images: list[bytes], *,
                         system: str | None = None,
@@ -172,7 +172,7 @@ class OpenAICompatibleGeneration(GenerationProvider):
         except Exception as exc:  # noqa: BLE001
             raise self._translate_error(exc) from exc
         latency = (time.perf_counter() - t0) * 1000
-        return self._to_result(resp, latency)
+        return self._to_result(resp, latency, params=params)
 
     def stream(self, prompt: str, *, system: str | None = None,
                **kwargs: Any) -> Iterator[str]:
@@ -230,7 +230,8 @@ class OpenAICompatibleGeneration(GenerationProvider):
             return ModelInfo(ok=False, detail=exc.message[:200])
 
     # ------------------------------------------------------------------
-    def _to_result(self, resp: Any, latency_ms: float) -> GenerationResult:
+    def _to_result(self, resp: Any, latency_ms: float,
+                   *, params: dict | None = None) -> GenerationResult:
         reasoning = ""
         try:
             choice = resp.choices[0]
@@ -267,12 +268,25 @@ class OpenAICompatibleGeneration(GenerationProvider):
         # 上层拿到空串会写出空译文段，污染 Markdown 事实源。
         if not (text or "").strip():
             if reasoning_tokens or reasoning:
+                # ⚠️ **不要**再写"请提高 max_tokens（建议 ≥8192）"：预算已经是**模型上限**
+                # （`page_translate.MAX_OUTPUT_TOKENS` = 384K），那句话只会把人带偏
+                # （用户 2026-10-08 就是照着它去找"思考模式的上限"）。
+                # 两种形态要分清，处置也不同：
+                #   (a) finish=length：思维链把预算吃光 —— 上限已经抬不动了，重试同样预算；
+                #   (b) finish=stop：模型自己想完就停了、没写正文（**偶发**，实测同一份任务
+                #       隔一分钟就能成功）—— 重试通常就好。
+                # 两者都标 `retryable=True`：调度器/调用方重试一次是唯一可行的补救。
+                budget = (params or {}).get("max_tokens")
+                what = f"max_tokens={budget}" if budget else "未设 max_tokens"
+                tail = ("预算被思维链吃光（已经是模型上限，抬不动了）"
+                        if finish == "length" else
+                        "这次是模型想完就停了、没写正文（偶发）")
                 raise ProviderError(
                     f"模型只产出思维链（reasoning {reasoning_tokens} tokens，"
-                    f"finish={finish or '?'}）而正文为空："
-                    f"请提高 max_tokens（思考模式建议 ≥8192）或关闭思考模式"
+                    f"finish={finish or '?'}）而正文为空（本次 {what}）：{tail}。"
+                    f"会自动重试；连续几次都这样就关掉思考模式"
                     f"（parameters.thinking=disabled）。",
-                    retryable=finish == "length",
+                    retryable=True,
                 )
             raise ProviderError(
                 f"模型返回空正文（finish={finish or '?'}）", retryable=True)

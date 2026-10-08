@@ -110,14 +110,21 @@ def read_page_markdown(image: bytes | str | Path, provider, *,
     """调视觉模型读一页，返回 ``(markdown, 用量信息)``。
 
     ``image`` 可以是 PNG 字节，也可以是图片路径。
+
+    ⚠️ 兜底预算也走**模型自己的上限**（`page_translate.MAX_OUTPUT_TOKENS` = 384K）：
+    以前这里写 `or 8192`，而视觉配置默认**开着思考模式**（思维链同样计入
+    `completion_tokens`）—— 思考一多就把预算吃光、正文为空，那一页直接失败。
+    调用方想给更小的数就显式传 `max_tokens`。
     """
+    from backend.services.translation.page_translate import MAX_OUTPUT_TOKENS
+
     data = image if isinstance(image, bytes) else Path(image).read_bytes()
     if not data:
         return "", {"error": "页图为空"}
     prompt = PAGE_READ_TEMPLATE.format(page=page_no, page_total=page_total)
     try:
         res = provider.generate_vision(prompt, [data], system=PAGE_READ_SYSTEM,
-                                       max_tokens=max_tokens or 8192)
+                                       max_tokens=max_tokens or MAX_OUTPUT_TOKENS)
     except ProviderError:
         raise
     except Exception as exc:  # noqa: BLE001

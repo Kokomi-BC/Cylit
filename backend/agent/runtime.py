@@ -857,8 +857,12 @@ class AgentRuntime:
                 yield {"type": "answer_delta", "text": text}
                 state.log.text(text, round=deps.model_calls + 1)   # 轨迹里也要有它
         if not text.strip():
+            # 思考模式下"只想不写"是偶发的（实测同一份任务隔一分钟就成功）：
+            # 这一轮一个字的正文都没有，就把原因说清楚，别让用户以为是自己问错了。
+            note = ("（这一轮模型只输出了思维链、没写正文，直接重试通常就有答案）"
+                    if state.thinking else "（可以换一个更具体的问题）")
             yield {"type": "error", "code": "EMPTY_ANSWER",
-                   "message": "模型没有产出任何正文，请重试（可换一个更具体的问题）。",
+                   "message": f"模型没有产出任何正文{note}。",
                    "retryable": True}
             return
         citations = referenced_citations(text, deps.registry)

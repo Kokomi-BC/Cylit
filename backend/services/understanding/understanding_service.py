@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, now_iso
@@ -256,6 +257,13 @@ def _provider(path: str):
 #: "不应该有 token 生成限制"）。以前这里写 12000，于是"思考占满预算 → 正文为空"会白烧一轮。
 MAX_TOKENS = MAX_OUTPUT_TOKENS
 
+#: 一次理解调用最多试几次（**同预算**重试）。为什么必须有：理解是"一次调用 = 整个任务"，
+#: 任务级失败不会被重新排队（`task_service._execute` → `finish(FAILED)`），
+#: 而思考模式偶发"只想不写"（用户 2026-10-08 报的那条 turboquant 精读失败就是它）。
+_ATTEMPTS = 3
+#: 同预算重试之间的等待（秒，按次数递增）：偶发问题隔一两秒再来一次通常就正常了。
+_ATTEMPT_SLEEP = 1.5
+
 
 def _page_context_head(path: str, paper_id: str) -> str:
     """**页级调用的「稳定前缀 + 完整前文」原样搬过来**（逐字节相同）。
@@ -299,29 +307,40 @@ def _page_context_head(path: str, paper_id: str) -> str:
 
 def _generate(provider, prompt: str, *, system: str, path: str,
               min_tokens: int = MAX_TOKENS):
-    """调模型产出理解。
+    """调模型产出理解（**同预算重试**，最多 `_ATTEMPTS` 次）。
 
-    预算**基线就是厂商上限**（65536，用户口径"不应该有 token 生成限制"），所以
-    "思考模式吃光预算 → 正文为空"这类错误**不在本函数里原地放大重试**了：
-    `_escalate_max_tokens` 返回 None（阶梯已到顶）→ 异常直接抛给调度器，
-    由调度器重试该条（同预算再要一次，见 `task.scheduler` 的"第 N 次失败，X 秒后重试"）。
-    真正的网络/500 错误同样只调用一次，不白烧。
+    预算基线就是厂商上限（`MAX_OUTPUT_TOKENS` = 384K，用户口径"不应该有 token 生成限制"），
+    所以那些"正文为空"的错误**没有更高预算可升**（`_escalate_max_tokens` 恒返回 None）——
+    但也不能一次就放弃：任务级失败**不会被重新排队**
+    （`task_service._execute` 直接 `finish(FAILED)`，只有页级翻译那条路有逐项重试的调度器）。
+    实测 turboquant 的 A 路精读就这么永久失败过两次：模型只吐思维链、`finish=stop`
+    （reasoning 5445 / 6954 tokens），而同一份任务在相邻的两次运行里都成功 —— 纯偶发。
+
+    所以：可重试的错误（`ProviderError.retryable`，含"只出思维链"、429、5xx、超时）
+    **同预算再要一次**；不可重试的（密钥错、400）立刻抛。
     """
     from backend.services.translation.translation_service import _escalate_max_tokens
 
     budget = max(MAX_TOKENS, int(min_tokens))
-    for _ in range(3):
+    for attempt in range(1, _ATTEMPTS + 1):
         try:
             return provider.generate(prompt, system=system, temperature=0.3,
                                      max_tokens=budget)
         except Exception as exc:  # noqa: BLE001
             escalated = _escalate_max_tokens(exc, budget)
-            if escalated is None:
+            if escalated is not None:                      # 将来基线还能抬时走这条
+                log.warning("%s 路理解正文为空（思考占满预算），max_tokens %d → %d 重试",
+                            path, budget, escalated)
+                budget = escalated
+                continue
+            if not getattr(exc, "retryable", False) or attempt >= _ATTEMPTS:
+                log.error("%s 路理解失败（第 %d/%d 次，不再重试）：%s",
+                          path, attempt, _ATTEMPTS, str(exc)[:160])
                 raise
-            log.warning("%s 路理解正文为空（思考占满预算），max_tokens %d → %d 重试",
-                        path, budget, escalated)
-            budget = escalated
-    raise RuntimeError(f"{path} 路理解重试 3 次仍失败（max_tokens={budget}）")
+            log.warning("%s 路理解第 %d/%d 次失败（%s），同预算再试一次",
+                        path, attempt, _ATTEMPTS, str(exc)[:120])
+            time.sleep(_ATTEMPT_SLEEP * attempt)
+    raise RuntimeError(f"{path} 路理解重试 {_ATTEMPTS} 次仍失败（max_tokens={budget}）")
 
 
 def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dict:
