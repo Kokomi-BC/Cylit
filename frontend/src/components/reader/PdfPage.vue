@@ -40,7 +40,7 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { assetUrl } from '@/api/client';
-import { clearUserMarks, markRanges } from '@/utils/domMarks';
+import { clearUserMarks, markRanges, textNodes } from '@/utils/domMarks';
 import type { Highlight } from '@/api/types';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -190,14 +190,34 @@ function nearViewport(margin = 900): boolean {
  * ③ 本阅读器是"每页 PDF 一栏、旁边紧跟该页译文"，浏览器原生选区跨页时会把中间的**译文**一起圈进去：
  *    复制出来混着非 PDF 内容。
  *
- * 做法：按下时若落在 PDF 文字上，就接管这次拖拽 ——
+ * ④ **按在页面空白处**（右边距、行间、页脚外的白边）以前根本走不到接管里 —— `textPointAt`
+ *    找不到文字就直接放弃、交给浏览器，而浏览器这时把锚点放到**文字层容器**上
+ *    （`anchorNode = .pdf-text-layer`，offset = "第几个子节点"）：实测在页面右下空白按下、
+ *    往上拖 60px，选区从**页脚**倒长到**页首**（2393 字 = 整页，用户报的"选中到空白区域
+ *    会反过来选中本页上面的所有内容"）；往右下拖 60px 时选区又和拖过的范围对不上（304 字）。
+ *    现在空白处按下也接管：锚点取**层里离按下点最近的一处文字**（见 `nearestTextPoint`）。
+ * ⑤ 拖拽**已经选中的文字**会触发浏览器的原生拖放 —— 我们自己在移动中放选区，按下点必然落在
+ *    这个选区**里面**，于是接着拖就被浏览器当成"搬走这段文字"：Edge 上直接是"拖动字符块"
+ *    开一个拖放搜索（用户报的"从上往下复制会被识别为拖动字符块搜索文本"）。而且原生拖放一旦
+ *    起来 `pointermove` 就断了（实测 14 次移动只收到 1 次），①②④那套接管当场全部失效。
+ *    解法是**在按下时就压掉 `mousedown` 的默认动作**（Blink 只在"按下没被取消"时才记成可能拖放，
+ *    见 `onDocMouseDown`）；`dragstart` 那道只是兜底，单独用它反而会把拖放拦成原生划词。
+ * ⑥ 挡掉原生划词的副作用：**"按在别处 → 上一次的选区收掉"这个默认动作也一起没了** ——
+ *    选完 PDF 再点别的文字（同一页另一处、第 2 页、译文列的文字）选区都还在
+ *    （用户报的"选中 pdf 后点击其他地方应该取消选中"；真鼠标实测：点别处文字后仍是 196 字不散）。
+ *    所以"只点没拖"的那一下松手时自己补上（见 `endDrag` + `dropPdfSelection` ②）。
+ *
+ * 做法：按下时若落在 PDF 文字层里（**包括层上的空白**），就接管这次拖拽 ——
  *   · `selectstart` 里 `preventDefault` 挡掉浏览器自己的划词（从按下那一刻就挡：
  *     它"一开始划"就把焦点给了层容器，事后修一定会闪一帧；双击/三击 detail ≥ 2 放行，选词/选行照旧）；
+ *   · 按下时压掉 `mousedown` 的默认动作 + `dragstart` 兜底：文字层里不起原生拖放（见 ⑤）；
  *   · 焦点自己用 `caretRangeFromPoint` 算，**只接受"某个 PDF 文字层里的文本节点"**
- *     （页内点不到就上下探几个像素找最近一行）：落在页面空白或右侧译文上，
- *     就停在**最后一次有效位置**（不膨胀、也不圈进非 PDF 内容）；跨页则落到那一页的文字上，照常选；
+ *     （页内点不到就上下探几个像素找最近一行，再不够就取层里最近的一处文字 —— 见 `resolvePoint`）：
+ *     落在页面空白或右侧译文上，就停在**最后一次有效位置**（不膨胀、也不圈进非 PDF 内容）；
+ *     跨页则落到那一页的文字上，照常选；
  *   · 拖拽期间给 `<html>` 加 `pm-pdf-drag`（见 applySelection 的说明）：跨页时中间的译文行
- *     不进选区也不进剪贴板；拖到容器上下边缘还会自己滚动，方便跨页选。
+ *     不进选区也不进剪贴板；拖到容器上下边缘还会自己滚动，方便跨页选；
+ *   · "只点没拖"的那一下松手时，自己补上"收掉上一次选区"（见 ⑥）。
  *
  * 状态声明在文件顶部的模块级 `<script>` 里（必须多个实例共享，否则跨页两端凑不到一起）。
  */
@@ -233,6 +253,51 @@ function textPointAt(x: number, y: number): SelPoint | null {
     if (down) return down;
   }
   return null;
+}
+
+/** 按下点落在哪个文字层里（**含层上的空白**：那里只有容器，没有文本节点） */
+function layerAtPoint(x: number, y: number): HTMLElement | null {
+  const el = document.elementFromPoint?.(x, y) as HTMLElement | null;
+  const tl = (el?.closest?.('.pdf-text-layer') ?? null) as HTMLElement | null;
+  return tl && textLayers.has(tl) ? tl : null;
+}
+
+/**
+ * 层里离 (x, y) 最近的一处文字位置（按下点落在页面空白时的锚点）。
+ *
+ * 为什么不能省：交给浏览器的话，空白处按下的锚点是**层容器**，选区按"第几个子节点"整段铺开
+ * （见文件上方 ④ 的实测数字）。
+ *
+ * 取法分两步、**先看行再看列**：先按"离哪一行最近"（`dy` 分 2px 一档 —— 同一行的 span 顶边
+ * 常差一两像素），同档再按横向距离挑那行最近的一段文字。
+ * ⚠️ 不能直接拿"到 span 外接框的欧氏距离"当唯一判据（踩过）：右边距里的点横向很远，会让**上面
+ * 某条通栏行**因为"横向更近"而胜出，锚点与焦点于是落到同一段文字上 —— 实测真拖 60px 选出来 0 字。
+ * 偏移量按"按下点在框的哪半边"落在文字**头**还是**尾**，与在正文里点空白处再拖的手感一致。
+ */
+function nearestTextPoint(layer: HTMLElement, x: number, y: number): SelPoint | null {
+  let best: { node: Text; offset: number; row: number; dx: number } | null = null;
+  for (const node of textNodes(layer)) {
+    const host = node.parentElement;
+    if (!host) continue;
+    const r = host.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const dy = Math.max(r.top - y, 0, y - r.bottom);
+    const dx = Math.max(r.left - x, 0, x - r.right);
+    const row = Math.round(dy / 2);
+    if (best && (row > best.row || (row === best.row && dx >= best.dx))) continue;
+    best = { node, offset: x > (r.left + r.right) / 2 ? (node.nodeValue ?? '').length : 0, row, dx };
+  }
+  return best ? { node: best.node, offset: best.offset } : null;
+}
+
+/** 把 (x, y) 解析成"层里的某个文字位置"：先按上面那套逐点探（行内、行间的空白靠它），
+ *  探不到再退回**最近的一处文字**（右边距、页脚外的白边离文字很远，只探同一列的上下够不着）。
+ *  页面之外（拖出纸面）解析不出来 —— 那时调用方停在最后一次有效位置，选区不跟着往外长。 */
+function resolvePoint(x: number, y: number): SelPoint | null {
+  const p = textPointAt(x, y);
+  if (p) return p;
+  const layer = layerAtPoint(x, y);
+  return layer ? nearestTextPoint(layer, x, y) : null;
 }
 
 /** 把选区放到两点之间。同页、跨页都只是一段 range ——
@@ -275,12 +340,27 @@ function selectionOnPdf(sel: Selection | null): boolean {
  * 不做这一步的后果（用户报过）：在 PDF 里选完一段，那段选区还罩着 → `pm-pdf-drag` 还挂着
  * → 非 PDF 内容一直是 `user-select: none`；而 Chrome **不允许在不可选的内容上开始新选区**，
  * 于是在译文里怎么拖都选不中（"选了 PDF 之后译文就选不了了"）。
- * 只有"按下点不在 PDF 文字上"才收：按在 PDF 上时这个类正是我们要的（跨页选区不圈进中间的译文）。
+ * 只有"按下点**没落在 PDF 文字上**"才收 —— PDF 之外、或页面空白（那时接管会另立锚点，见 ④）：
+ * 按在 PDF 文字上时这个类正是我们要的（跨页选区不圈进中间的译文）。
  */
 function clearPdfSelection(): void {
+  dropPdfSelection();
+  setDragClass(false);
+}
+
+/**
+ * 收掉**落在 PDF 上的**选区。
+ *
+ * 两个地方要用，理由不同：
+ * ① 在非 PDF 内容上按下时（见 `clearPdfSelection`）：上一次的 PDF 选区会让 `pm-pdf-drag` 一直挂着，
+ *    译文那侧就一直是 `user-select: none`，新的划词压根开始不了；
+ * ② 我们挡掉原生划词的**那一下"点击"**松手时（见 `endDrag`）：浏览器本来会在按下时把上一次的选区
+ *    收掉（再普通不过的动作），被我们挡住之后没人补这一步 —— 表现就是"选完 PDF 再点别处的文字，
+ *    上一次的选区还在"（用户报过；真鼠标实测：点同一页另一处文字、点第 2 页的文字，选区都还剩 196 字）。
+ */
+function dropPdfSelection(): void {
   const sel = document.getSelection();
   if (sel && selectionOnPdf(sel)) sel.removeAllRanges();
-  setDragClass(false);
 }
 
 /** 离文字层最近的滚动容器（拖到边缘时自己滚） */
@@ -294,7 +374,7 @@ function scrollerOf(el: HTMLElement): HTMLElement | null {
 /** 用当前拖拽点更新选区（空白处停在 lastGood，不膨胀） */
 function extendDragTo(x: number, y: number): void {
   if (!dragFrom) return;
-  const p = textPointAt(x, y);
+  const p = resolvePoint(x, y);
   if (p) lastGood = p;
   if (lastGood) applySelection(dragFrom, lastGood);
 }
@@ -325,18 +405,37 @@ function onDocPointerDown(ev: PointerEvent): void {
   lastGood = null;
   if (ev.button !== 0) return;
   const p = textPointAt(ev.clientX, ev.clientY);
+  /* 按在页面的**空白**上（右边距、行间、页脚外的白边）也要接管：交给浏览器的话锚点会落到
+   * 文字层**容器**上，选区按"第几个子节点"整段铺开（见文件上方 ④ 的实测）。
+   * 锚点取层里最近的一处文字 —— 拖过去才会按"拖过的范围"长出来。 */
+  const anchor = p ?? resolvePoint(ev.clientX, ev.clientY);
   // 按在非 PDF 内容上：先把上一次的 PDF 选区与 `pm-pdf-drag` 收掉，否则译文那侧一直是
   // `user-select: none`，新的划词压根开始不了（详见 clearPdfSelection 的说明）。
-  if (!p) { clearPdfSelection(); return; }
-  dragFrom = p;
-  lastGood = p;
+  if (!anchor) { clearPdfSelection(); return; }
+  // 空白处按下：上一次的选区也先收掉（同上），本次接管随后自己把类挂回来。
+  if (!p) clearPdfSelection();
+  dragFrom = anchor;
+  lastGood = anchor;
   dragStart.x = dragPoint.x = ev.clientX;
   dragStart.y = dragPoint.y = ev.clientY;
   /* **从按下这一刻就**不让浏览器自己划词：它"一开始划"就先把焦点给了层容器（整页闪一下），
    * 等 selectionchange 交到手上时本帧已经画过了 —— 事后修一定会看到闪烁。
-   * 双击/三击（detail ≥ 2，选词/选行）放行，保持原生手感。 */
-  suppressSelect = ev.detail < 2;
+   * 双击/三击（detail ≥ 2，选词/选行）放行，保持原生手感；空白处没有"词/行"可选，一律挡掉。 */
+  suppressSelect = ev.detail < 2 || !p;
   setDragClass(true);            // 本次拖拽的选区只算 PDF 文字（见 applySelection 的说明）
+}
+
+/**
+ * 由我们把这次拖拽接管时，压掉 **`mousedown` 的默认动作**（见文件上方 ⑤）。
+ *
+ * 这一步不是"顺手多挡一层"，而是**唯一**能让原生拖放不起来的地方：
+ * Blink 是在**按下没有被取消**时才把这次按下记成"可能开始拖放"，于是移动时才会去搬那段选中的文字。
+ * 只在 `dragstart` 上 `preventDefault` 是不够的 —— 实测那把拖放拦掉之后，手势被交回**原生划词**，
+ * 锚点重新落到层容器上，选区反而从 120 字涨到 2247 字（页首到页脚）。
+ * 取消 `mousedown` 不会影响 `click`（菜单/按钮照常），也不会影响我们自己的 pointer 事件。
+ */
+function onDocMouseDown(ev: MouseEvent): void {
+  if (suppressSelect) ev.preventDefault();
 }
 
 function onDocPointerMove(ev: PointerEvent): void {
@@ -355,10 +454,28 @@ function onSelectStart(ev: Event): void {
   if (suppressSelect) ev.preventDefault();      // 这次拖拽由我们自己驱动
 }
 
+/**
+ * 文字层里的原生拖放**兜底**拦一道（主拦在 `onDocMouseDown`，见文件上方 ⑤）。
+ *
+ * 正常情况下根本不会走到这里（按下的默认动作已被压掉）。真走到这里说明那次按下是放行的
+ * （双击/三击那种原生路径）—— 此时宁可把拖放拦掉：拖起来只会变成 Edge 的拖放搜索，
+ * 而且 `pointermove` 一断，接管就全废了。判据取"拖的来源"与"选区锚点"两处，
+ * 覆盖 `dragstart` 的 target 被交成外层元素的情况。
+ */
+function onDocDragStart(ev: Event): void {
+  const sel = document.getSelection();
+  if (layerOf(ev.target as Node) || layerOf(sel?.anchorNode ?? null)) ev.preventDefault();
+}
+
 function endDrag(): void {
+  /* 这一下只是"点击"（没拖）且原生划词被我们挡掉了 → 把浏览器那个默认动作补上：
+   * 按下另一个地方本来就该收掉上一次的选区（见 `dropPdfSelection` ②）。
+   * 双击/三击（`suppressSelect === false`）放行的原生选区不能碰。 */
+  const clicked = !dragTakenOver && suppressSelect;
   dragFrom = null;
   dragTakenOver = false;
   suppressSelect = false;
+  if (clicked) dropPdfSelection();
   // 注意：**不能**在这里无条件摘掉 pm-pdf-drag —— 松手后选区还在（跨页那段 range 依旧罩着中间的译文），
   // 摘掉它会让 `toString()` / 复制立刻又把译文算回来（实测 2106 → 3400 字）。
   // 交给 selectionchange 按"选区还在不在 PDF 上"决定。
@@ -396,6 +513,8 @@ function registerTextLayer(tl: HTMLElement): void {
   if (listenerBound) return;
   document.addEventListener('selectionchange', onDocSelectionChange);
   document.addEventListener('selectstart', onSelectStart, true);
+  document.addEventListener('mousedown', onDocMouseDown, true);
+  document.addEventListener('dragstart', onDocDragStart, true);
   document.addEventListener('pointerdown', onDocPointerDown, true);
   document.addEventListener('pointermove', onDocPointerMove, true);
   document.addEventListener('pointerup', endDrag, true);
@@ -662,6 +781,12 @@ onBeforeUnmount(() => {
 .pdf-text-layer :deep(br) {
   color: transparent; position: absolute; white-space: pre;
   cursor: text; transform-origin: 0% 0%; user-select: text;
+}
+/* 文字层里**不许拖放**（`dragstart` 那道是 JS 兜底，这里是让浏览器压根别起拖）：
+ * 拖起选中的文字只会在 Edge 上开一个"拖放搜索"，见文件上方 ⑤。 */
+.pdf-text-layer,
+.pdf-text-layer :deep(*) {
+  -webkit-user-drag: none;
 }
 .pdf-text-layer :deep(span:not(.markedContent)),
 .pdf-text-layer :deep(.markedContent span:not(.markedContent)) {

@@ -1557,6 +1557,87 @@ async function run() {
       res.aiNoteOnSame = !!(aiNote && aiHl && aiNote.highlight_id === aiHl.id);
     }
 
+    /* 划词接管的两处坑（用户 2026-10-08 报："选中到空白区域时会反过来选中本页上面的所有内容" +
+       "从上往下复制会被 Edge 识别为拖动字符块搜索文本"）：
+       ① 页面**空白**处按下也要接管 —— 以前 `textPointAt` 找不到文字就直接交给浏览器，
+          而浏览器这时把锚点放到**文字层容器**上，选区按"第几个子节点"整段铺开；
+       ② 文字层里不许起**原生拖放** —— 我们自己在移动中放选区，按下点必然落在选区里面，
+          接着拖就被当成"搬走这段文字"，Edge 上就是拖放搜索，而且 `pointermove` 一断接管全废。
+       这里用**合成 pointer/mouse 事件**走一遍真几何（命中点由 `caretRangeFromPoint` /
+       `elementFromPoint` 现算，与真鼠标是同一条代码路径），只量"选区落在哪、多长"与"默认动作有没有被压掉"。
+       真鼠标那一侧的数字见 data/logs 下的一次性 CDP 脚本（改前：空白按下往上一拖 = 2393 字整页）。 */
+    {
+      /* 页 1 的文字层是**懒铺**的（滚出渲染范围就没有 span）—— 前面那几步会把阅读位置挪走，
+         先把它滚回来、等它铺好再量，否则这条会时红时绿（实测有一轮确实没量到）。 */
+      for (let i = 0; i < 12; i += 1) {
+        const l = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
+        if (l && l.querySelectorAll('span').length >= 2) break;
+        D().querySelector('[data-pdf-page="1"]')?.scrollIntoView({ block: 'center' });
+        await sleep(300); spin(BURN);
+      }
+      const layer = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
+      const box = layer ? layer.getBoundingClientRect() : null;
+      const spans = [...(layer ? layer.querySelectorAll('span') : [])]
+        .map((s) => ({ s, r: s.getBoundingClientRect() }))
+        .filter((o) => o.r.width > 4 && o.r.height > 2);
+      /* 找一条"右半段是空白"的行（论文里短行很常见）：从它的**右边距**按下才不会压在文字上 */
+      const short = box ? spans.find((o) => o.r.right < box.right - 60 && o.r.top > box.top + 100) : null;
+      w.getSelection().removeAllRanges();
+      res.blankHasSpot = !!short;
+      res.blankBox = box ? [Math.round(box.left), Math.round(box.top),
+                            Math.round(box.width), Math.round(box.height)] : null;
+      res.blankSpans = spans.length;
+      res.blankShortRight = short ? Math.round(short.r.right) : null;
+      if (layer && box && short) {
+        const x = box.right - 6;
+        const y0 = short.r.top + short.r.height / 2;
+        const y1 = y0 - 60;
+        /* 诊断用：这两个点命中了谁（浮层卡片压在上面时 `elementFromPoint` 交回的就不是文字层） */
+        const who = (el) => (el ? el.tagName + '.' + String(el.className || '').slice(0, 20) : 'null');
+        res.blankHit0 = who(D().elementFromPoint(x, y0));
+        res.blankHit1 = who(D().elementFromPoint(x, y1));
+        const caret1 = D().caretRangeFromPoint(x, y1);
+        res.blankCaret1 = caret1
+          ? (caret1.startContainer.nodeType === 3 ? 'text' : who(caret1.startContainer)) : 'null';
+        const near = (y) => spans.slice().sort((a, b) =>
+          Math.max(a.r.top - y, 0, y - a.r.bottom) - Math.max(b.r.top - y, 0, y - b.r.bottom))[0];
+        res.blankNear0 = near(y0) ? [Math.round(near(y0).r.top), Math.round(near(y0).r.bottom)] : null;
+        res.blankNear1 = near(y1) ? [Math.round(near(y1).r.top), Math.round(near(y1).r.bottom)] : null;
+        const pe = (t, y, buttons) => new w.PointerEvent(t, {
+          bubbles: true, cancelable: true, pointerId: 9, pointerType: 'mouse',
+          clientX: x, clientY: y, button: 0, buttons,
+        });
+        layer.dispatchEvent(pe('pointerdown', y0, 1));
+        const md = new w.MouseEvent('mousedown', {
+          bubbles: true, cancelable: true, clientX: x, clientY: y0, button: 0, buttons: 1,
+        });
+        layer.dispatchEvent(md);
+        res.blankMouseCut = md.defaultPrevented;
+        for (let i = 1; i <= 6; i += 1) layer.dispatchEvent(pe('pointermove', y0 + (y1 - y0) * i / 6, 1));
+        const sel = w.getSelection();
+        const range = sel.rangeCount ? sel.getRangeAt(0) : null;
+        const inLayer = (n) => {
+          const el = n && (n.nodeType === 3 ? n.parentElement : n);
+          return !!(el && el.closest && el.closest('.pdf-text-layer') === layer);
+        };
+        res.blankAnchorText = !!(sel.anchorNode && sel.anchorNode.nodeType === 3 && inLayer(sel.anchorNode));
+        res.blankFocusText = !!(sel.focusNode && sel.focusNode.nodeType === 3 && inLayer(sel.focusNode));
+        res.blankSelLen = String(sel.toString()).length;
+        res.blankSelPx = range ? Math.round(range.getBoundingClientRect().height) : 0;
+        res.blankDragPx = Math.round(y0 - y1);
+        layer.dispatchEvent(pe('pointerup', y1, 0));
+        /* 兜底那道：文字层里的 `dragstart` 必须被拦掉（主拦在按下那一下，见 ⑤） */
+        const span0 = layer.querySelector('span');
+        const ds = new w.DragEvent('dragstart', { bubbles: true, cancelable: true });
+        if (span0) span0.dispatchEvent(ds);
+        res.dragStartCut = ds.defaultPrevented;
+        res.userDrag = span0
+          ? String(w.getComputedStyle(span0).getPropertyValue('-webkit-user-drag') || '').trim()
+          : '';
+        w.getSelection().removeAllRanges();
+      }
+    }
+
     /* 收尾：删掉自检造出来的那几条（笔记 + 高亮，一条都不留） */
     if (myNote) { await fetch(api + '/notes/' + myNote.id, { method: 'DELETE' }); }
     for (const h of mine) { await fetch(api + '/highlights/' + h.id, { method: 'DELETE' }); }
@@ -1701,7 +1782,7 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
     record("pdfhl", "笔记**挂在那条高亮上**（highlight_id + 面 + 页码 + 高亮原文）",
            res.get("noteSaved") == 1 and res.get("noteScope") == "pdf"
            and res.get("notePage") == 1
-           and str(res.get("noteQuote") or "").strip() == str(res.get("savedText") or "").strip(),
+            and str(res.get("noteQuote") or "").strip() == str(res.get("savedText") or "").strip(),
            f"scope={res.get('noteScope')} p{res.get('notePage')} 引用={str(res.get('noteQuote'))[:14]!r}")
     record("pdfhl", "一处高亮 + 它的笔记 = **一条**（不是「待写 + 笔记」两条）",
            res.get("feedNoteRows") == 1 and res.get("feedBareRows") == 0,
@@ -1730,6 +1811,20 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and res.get("thumbOff") is True,
            f"缩略={res.get('thumbOn')} 省略号={res.get('thumbClamped')} "
            f"变矮={res.get('thumbShrank')} 还原={res.get('thumbOff')}")
+    # ---- 划词接管：空白处按下 + 原生拖放（用户 2026-10-08 报的两条） ----
+    # 空白处按下：改之前这条会红（锚点根本进不了接管 → 用合成事件时选不出任何东西；
+    # 真鼠标那侧更糟，交给浏览器后锚点落到文字层容器上，实测往上一拖 = 2393 字整页）。
+    record("pdfhl", "页面**空白处**按下也能选：锚点落在文字上，且只覆盖拖过的范围",
+           res.get("blankAnchorText") is True and res.get("blankFocusText") is True
+           and 0 < (res.get("blankSelLen") or 0) < 400,
+           f"锚点/焦点都在文字上={res.get('blankAnchorText')}/{res.get('blankFocusText')}，"
+           f"拖 {res.get('blankDragPx')}px 选中 {res.get('blankSelLen')} 字"
+           f"（高 {res.get('blankSelPx')}px，空白行={res.get('blankHasSpot')}）")
+    record("pdfhl", "文字层里不起**原生拖放**（按住压掉默认动作 + dragstart 兜底 + user-drag:none）",
+           res.get("blankMouseCut") is True and res.get("dragStartCut") is True
+           and str(res.get("userDrag") or "").startswith("none"),
+           f"mousedown 被取消={res.get('blankMouseCut')} dragstart 被拦={res.get('dragStartCut')} "
+           f"user-drag={res.get('userDrag')!r}")
     record("pdfhl", "侧栏里能**就地改**这处高亮的笔记正文（存进去后编辑器自动收起）",
            res.get("paneEditBtn") is True and res.get("paneEditor") is True
            and res.get("paneSaveBtn") is True
