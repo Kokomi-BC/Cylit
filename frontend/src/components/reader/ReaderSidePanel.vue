@@ -13,7 +13,6 @@ import { computed, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
-import { codeUrl, paperUrl, refLink, type RefLinkKind } from '@/utils/references';
 import { groupPaperTasks } from '@/utils/tasks';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
@@ -22,6 +21,7 @@ import type {
 import AppIcon from '@/components/AppIcon.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import InsightPanel from '@/components/insight/InsightPanel.vue';
+import ReferenceList from './ReferenceList.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
@@ -59,8 +59,6 @@ const props = withDefaults(defineProps<{
   highlights: Highlight[];
   /** 「引用文献」页签：这篇论文的参考文献（按论文里的顺序） */
   references?: PaperReference[];
-  /** 参考文献页签的过滤：点了正文里的引用标号后**只显示这些编号**（空 = 全部） */
-  refFilter?: number[];
   formulas: MarkdownFormula[];
   formulasLoading?: boolean;
   figures: FigureItem[];
@@ -74,7 +72,7 @@ const props = withDefaults(defineProps<{
   paperId: string;
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
-}>(), { formulasLoading: false, briefSource: '', refFilter: () => [], references: () => [] });
+}>(), { formulasLoading: false, briefSource: '', references: () => [] });
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
@@ -90,8 +88,6 @@ const emit = defineEmits<{
   (e: 'save-note', p: NoteDraftPayload): void;
   /** 删掉一处高亮（整组一起；挂在它上面的笔记由后端级联删掉） */
   (e: 'delete-highlight', ids: string[]): void;
-  /** 「引用文献」页签：把"只看正文提到的这几条"取消，回到全量 */
-  (e: 'clear-ref-filter'): void;
   (e: 'cancel-task', task: TaskInfo): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
@@ -229,41 +225,6 @@ const merged = computed<FeedRow[]>(() => buildNotesFeed({
   highlights: props.highlights, notes: props.notes, annotations: props.annotations,
 }));
 
-/** 参考文献页签要显示的那几条：有过滤就只显示被正文提到的，否则全部。 */
-const shownRefs = computed<PaperReference[]>(() => {
-  const all = props.references ?? [];
-  const want = props.refFilter ?? [];
-  if (!want.length) return all;
-  const set = new Set(want);
-  return all.filter((r) => set.has(Number(r.order_no)));
-});
-
-/** 点一条文献 → 去它的**发表网站**（DOI/arXiv/原文里的链接，兜底是学术搜索，见 utils/references）。 */
-function openRef(ref: PaperReference) {
-  // 论文那枚图标与整张卡片都走 `paperUrl`：**跳过 GitHub**（代码图标才是仓库）
-  window.open(paperUrl(ref), '_blank', 'noopener');
-}
-
-/** 打开一个已经确定好的地址（跳转图标用它，避免再走一遍"论文地址"的回退链）。 */
-function openUrl(url: string) {
-  if (url) window.open(url, '_blank', 'noopener');
-}
-
-/** 最左边那枚跳转图标的造型与提示（按"这条文献的主链接是什么"选）。 */
-const LEAD_ICON: Record<RefLinkKind, string> = {
-  paper: 'document', github: 'github', link: 'link',
-};
-const LEAD_TITLE: Record<RefLinkKind, string> = {
-  paper: '打开论文页面', github: '打开代码仓库（GitHub）', link: '打开原网页',
-};
-
-/** 那枚图标的悬停提示：论文图标但其实是兜底搜索时，别谎称"论文页面"。 */
-function leadTitle(ref: PaperReference): string {
-  const link = refLink(ref).primary;
-  if (link.kind === 'paper' && /scholar\.google\.com/i.test(link.url)) return '去学术搜索找这篇';
-  return LEAD_TITLE[link.kind];
-}
-
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
 function removeRow(r: FeedRow) {
   if (r.kind === 'annotation') { emit('delete-annotation', r.annotation?.id ?? r.key.slice(2)); return; }
@@ -380,72 +341,18 @@ function removeRow(r: FeedRow) {
          点条目 → 去发表网站（DOI / arXiv / 原文里的链接，兜底学术搜索）。 -->
     <template v-if="props.tab === 'references'">
       <div class="ref-bar">
-        <span class="tiny faint">
-          <template v-if="(props.refFilter ?? []).length">
-            只看正文提到的 {{ shownRefs.length }} 条（共 {{ (props.references ?? []).length }} 条）
-          </template>
-          <template v-else>{{ (props.references ?? []).length }} 条（按论文里的顺序）</template>
+        <!-- 用户口径 2026-10-08：顶栏写成 `REFERENCES 47 条`（原来的"47 条（按论文里的顺序）"太长）。
+             顺序说明挪到 tooltip 里 —— 信息还在，但不再占着顶栏。 -->
+        <span class="tiny faint" title="按论文里的顺序">
+          <span class="ref-cap">REFERENCES</span>
+          {{ (props.references ?? []).length }} 条
         </span>
-        <span class="spacer" />
-        <button
-          v-if="(props.refFilter ?? []).length"
-          class="btn sm ghost"
-          data-ref-clear
-          @click="emit('clear-ref-filter')"
-        >
-          显示全部
-        </button>
       </div>
-      <div v-if="!shownRefs.length" class="empty small">
-        {{ (props.references ?? []).length
-          ? '正文提到的这几条在参考文献里没有对应编号（解析出的编号可能对不上）'
-          : '这篇论文没有参考文献（解析时没抽到 References 一节）' }}
+      <div v-if="!(props.references ?? []).length" class="empty small">
+        这篇论文没有参考文献（解析时没抽到 References 一节）
       </div>
-      <!-- ⚠️ 是 `<div>` 而不是 `<button>`：卡片**里面**还要放跳转图标（左边那枚 + 可能的 GitHub 图标），
-           按钮套按钮是非法 HTML（浏览器会把内层按钮提出去）。`role=button` + 回车补齐键盘可达。 -->
-      <div
-        v-for="r in shownRefs"
-        :key="r.id"
-        class="item ref-item"
-        role="button"
-        tabindex="0"
-        :data-ref-no="r.order_no"
-        :title="r.raw"
-        @click="openRef(r)"
-        @keydown.enter.prevent="openRef(r)"
-      >
-        <!-- 最左边那枚**跳转图标占一整列**（用户口径 2026-10-08："改大一点，占据一列"）：
-             论文链接 → 论文图标、只有代码链接 → GitHub 图标、只有普通网址 → 链接图标；
-             什么都抠不出来时仍是论文图标（点它是学术搜索兜底）。整张卡片也能点，这枚更明确。 -->
-        <button class="ref-lead" :title="leadTitle(r)"
-                :data-ref-lead="refLink(r).primary.kind"
-                @click.stop="openUrl(refLink(r).primary.url)">
-          <AppIcon :name="LEAD_ICON[refLink(r).primary.kind]" :size="18" />
-        </button>
-        <div class="ref-main">
-          <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
-               腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
-          <span class="ref-head" :class="{ 'ref-clamp': !r.title }">
-            <span class="ref-no">[{{ r.order_no }}]</span>
-            <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
-            <!-- 没有中文标题、但**规则切出了英文标题**（作者名后面是 `.` 那种）→ 显示题名本身，
-                 不再把作者段摊在脸上；两样都没有才回退到整条原文（用户口径 2026-10-07）。 -->
-            <span v-else>{{ r.title_en || r.raw }}</span>
-          </span>
-          <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
-               整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
-          <span v-if="r.title" class="ref-en ref-clamp">{{ r.title_en || r.raw }}</span>
-          <!-- **论文与 GitHub 同时存在**：GitHub 图标放**标题下面**（左边那枚被论文占用了），
-               点它进仓库；只有代码链接的条目左边已经是 GitHub 图标，这里就不再重复。
-               （用户口径 2026-10-07 第六轮） -->
-          <div v-if="refLink(r).code" class="ref-foot">
-            <button class="btn icon sm" title="打开代码仓库（GitHub）" data-ref-code
-                    @click.stop="openUrl(refLink(r).code!.url)">
-              <AppIcon name="github" :size="13" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <!-- 卡片本体在 `ReferenceList` 里：**与论文详情弹窗、正文标号的浮层共用同一份**（样式也自带） -->
+      <ReferenceList v-else :items="props.references ?? []" />
     </template>
 
     <!-- 公式（从 Markdown 提取，只读） -->
@@ -667,47 +574,14 @@ function removeRow(r: FeedRow) {
   line-height: 1.6; resize: vertical;
 }
 .item.note-row .note-edit:focus { outline: none; border-color: var(--accent); }
-/* 引用文献：一条两行 —— 第一行「标号 + 中文标题」（标号内联，不占一整列），
-   第二行英文（只放标题：作者段在 tooltip 里）。整张卡片都是跳转按钮。 */
+/* 引用文献：工具条（那一行 `REFERENCES N 条`）在这里，卡片本身在 `ReferenceList` 里
+   （与论文详情弹窗、正文标号的浮层共用同一份，所以那些 `.ref-item` / `.ref-lead` 样式也搬过去了）。 */
 .ref-bar {
   display: flex; align-items: center; gap: 6px;
   margin: 0 0 6px; padding: 2px 0;
 }
-.ref-item {
-  display: flex; flex-direction: row; align-items: flex-start; gap: 5px;
-  width: 100%; text-align: left;
-  /* 左边距收窄（10 → 6）：图标那一列本来就贴着左边，留 10 会让"图标两侧的空白"一边大一边小 */
-  padding: 8px 10px 8px 6px;
-  font-family: inherit; font-size: 12px; color: var(--text); cursor: pointer;
-  border-left-color: var(--border-strong);
-}
-.ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
-/* 最左边那枚跳转图标**占一整列**（用户口径 2026-10-08："改大一点，占据一列"，
-   随后又要求"图标两侧的空白不要这么大"）：图标 18px，外面只留 2px 点区（22×22）；
-   与卡片首行对齐 —— 一列图标从上到下齐平，扫一眼就知道每条文献是什么类型的链接。 */
-.ref-lead {
-  flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; margin: -2px 0 0; padding: 0;
-  border: 0; border-radius: var(--radius-sm); background: transparent;
-  color: var(--text-faint); cursor: pointer;
-}
-.ref-lead:hover { color: var(--accent); background: var(--bg-elev); }
-/* 图标右边那一栏：标号 + 标题 + 英文行 +（论文与 GitHub 都有时）GitHub 行 */
-.ref-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-/* 「论文 + GitHub 都有」时，GitHub 图标贴在标题下面（右对齐） */
-.ref-foot { display: flex; justify-content: flex-end; gap: 2px; margin-top: 3px; }
-.ref-head { display: block; }
-.ref-no { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
-.ref-zh { font-weight: 600; }
-.ref-en { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
-/* 两行封顶（原文常常很长，整条看 hover 的 tooltip）。
-   ⚠️ 必须是**块级**钳制，而且标号要**在它里面**：块级会独占一行，把标号放在它外面
-   就会被挤到上面单独成行（第一版就是这样，截图里 `[1]` 孤零零一行）；
-   反过来用行内级（`-webkit-inline-box`）又会被长文本挤到下一行 —— 两头都不行。 */
-.ref-clamp {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; line-clamp: 2;
-}
+/* 顶栏那个组名：小一号、加宽字距的大写标签，跟条数拉开一点层次 */
+.ref-cap { letter-spacing: .08em; font-weight: 600; margin-right: 2px; }
 /* 「从高亮打开对应笔记」时的落点提示：闪一下边框与底色，用户才知道跳到了哪一条 */
 .item.flash {
   animation: note-flash 1.2s var(--ease);

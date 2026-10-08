@@ -53,6 +53,7 @@ import ReaderSidePanel, {
 import ReaderToc from '@/components/reader/ReaderToc.vue';
 import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
+import ReferenceList from '@/components/reader/ReferenceList.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
@@ -81,8 +82,6 @@ const notes = ref<Note[]>([]);
 /** 「引用文献」页签的数据：**按需取**（`GET /papers/{id}/references`）——
  *  读者只是点了个引用标号，不该顺带把整份元数据拉过来（见 `ensureReferences`）。 */
 const paperReferences = ref<PaperReference[]>([]);
-/** 引用文献页签的过滤：点了正文里的 `[2, 4, 10]` 就只显示这几条（空 = 全部） */
-const refFilter = ref<number[]>([]);
 const tasks = ref<TaskInfo[]>([]);
 const stats = ref<ReaderStats>({
   blocks: 0, by_type: {}, pages: 0, pages_done: 0, rows: 0,
@@ -2598,12 +2597,20 @@ const hideMenu = () => { selection.show = false; };
  *     点菜单自己（色块/按钮）**绝不能**收：mousedown 的默认动作会清掉选区，菜单会在自己的
  *     click 触发前被卸载 —— 表现就是"点高亮毫无反应"（见 `SelectionMenu.vue` 顶部那段说明）。
  */
-function onAnyScroll() { hideMenu(); }
+function onAnyScroll(ev?: Event) {
+  /* 浮层自己内部滚（一屏放不下几条参考文献）不算"视角变了" —— 别把它自己关掉 */
+  if ((ev?.target as HTMLElement | null)?.closest?.('[data-cite-pop]')) return;
+  citePop.open = false;      // 引用标号的浮层贴着正文，一滚就对不上了（与划词菜单同一处理）
+  hideMenu();
+}
 function onDocPointerDown(ev: PointerEvent) {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('[data-selection-menu]')) return;
   // 顶栏弹出面板：点面板外面就收起来（面板内的点击不动它 —— 改一个分段值不该把面板关掉）
   if (capPanel.value && !target?.closest?.('.reader-toolbar')) capPanel.value = '';
+  /* 引用标号的浮层：点别处就收。⚠️ 点**浮层里面**（条目/跳转图标）绝不能收 ——
+     一收就把元素从 DOM 上摘了，那次 click（`window.open` 在它上面）根本不会再触发。 */
+  if (!target?.closest?.('[data-cite-pop]')) citePop.open = false;
   hideMenu();
 }
 
@@ -3093,7 +3100,7 @@ function onContentClick(ev: MouseEvent) {
   const cite = (ev.target as HTMLElement).closest?.('.cite-inline[data-refs]') as HTMLElement | null;
   if (cite?.dataset.refs) {
     ev.preventDefault();
-    void openReferences(citeRefs(cite));
+    void openCitePop(citeRefs(cite), cite);
     return;
   }
   const mark = (ev.target as HTMLElement).closest?.('[data-hl]') as HTMLElement | null;
@@ -3204,8 +3211,11 @@ function markOf(ev: Event): HTMLElement | null {
   return (t?.closest?.('mark.hl[data-hl]') as HTMLElement | null) ?? null;
 }
 
-/** 悬停到一处高亮：**只看已有笔记**（新建走划词菜单，免得鼠标扫过就弹编辑框）。 */
+/** 悬停到一处高亮：**只看已有笔记**（新建走划词菜单，免得鼠标扫过就弹编辑框）。
+ *  引用标号则相反：**悬浮与点击同一个效果**（用户口径 2026-10-08 第三条）—— 扫过去就弹出那个浮层。 */
 function onContentHover(ev: MouseEvent) {
+  const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]') as HTMLElement | null;
+  if (chip) { void openCitePop(citeRefs(chip), chip); return; }
   const mark = markOf(ev);
   if (!mark) return;
   const hl = highlights.value.find((h) => h.id === (mark.getAttribute('data-hl') || ''));
@@ -3216,7 +3226,24 @@ function onContentHover(ev: MouseEvent) {
 }
 
 function onContentHoverOut(ev: MouseEvent) {
+  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) scheduleCiteHide();
   if (markOf(ev)) scheduleNoteHide();
+}
+
+/**
+ * Markdown 视图**不在** `.reader-content` 里（它是个弹窗），所以悬浮/移开要在那边单独接一下 ——
+ * 只接**引用标号**（用户口径：悬浮与点击一个效果）。
+ *
+ * 高亮那套"悬停看笔记"的浮层**没有**接到这里：它是 `FloatingCard`（`z-index: 60`），
+ * 在这个弹窗（遮罩 `z-index: 150`）底下根本看不见 —— 接上去只会"悬停没反应"。
+ */
+function onMdHover(ev: MouseEvent) {
+  const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]') as HTMLElement | null;
+  if (chip) void openCitePop(citeRefs(chip), chip);
+}
+
+function onMdHoverOut(ev: MouseEvent) {
+  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) scheduleCiteHide();
 }
 
 /** 选区/点击处那条高亮对应的笔记（有的话菜单显示「打开笔记」）。 */
@@ -3310,16 +3337,71 @@ async function ensureReferences(): Promise<void> {
 }
 
 /**
- * 正文里点了引用标号（`[2, 4, 10]`）：打开侧栏「引用文献」并**只显示这几条**。
+ * 正文里**点到或悬浮到**引用标号（`[2, 4, 10]`）：就地弹一个只含这几条的浮层，不动侧栏。
  *
- * 用户口径是"自动打开侧栏" —— 左栏可能是收起的（窄屏是抽屉），所以这里得把它叫出来，
- * 否则"点了没反应"（页签选中了但看不见）。
+ * 用户口径 2026-10-08：原来是"打开侧栏 + 只显示这几条" —— 视线要离开正文，侧栏还会被
+ * 强行叫出来（窄屏是抽屉，等于盖住半屏）。只是想"看一眼这条文献是什么"，所以改成贴标号的
+ * 简约浮层：格式**复用侧栏/详情弹窗那份卡片**（`ReferenceList`，自带跳转），鼠标移开即消失
+ * （见 `scheduleCiteHide`）。第三条口径：**悬浮与点击同一个效果** —— 两条路都进 `openCitePop`。
  */
-async function openReferences(nums: number[]) {
-  refFilter.value = nums.filter((n) => Number.isFinite(n) && n > 0);
-  await ensureAsideVisible();
-  sideTab.value = 'references';
-  await ensureReferences();
+/* 浮层的状态与摆位：只放卡片本体（`ReferenceList` —— 与侧栏/详情弹窗同一份，自带跳转）。
+   `nums` 是标号里那几个编号，显示时按**参考文献本身**的顺序挑出来（与侧栏同一口径）。 */
+const citePopEl = ref<HTMLElement | null>(null);
+const citePop = reactive({
+  open: false,
+  nums: [] as number[],
+  loading: false,
+  left: 0,
+  top: 0,
+  width: 400,
+  maxHeight: 420,
+});
+
+const citeRefItems = computed<PaperReference[]>(() => {
+  const want = new Set(citePop.nums);
+  return paperReferences.value.filter((r) => want.has(Number(r.order_no)));
+});
+
+/** 贴在标号下面；下面放不下就翻到上面，左右夹在视口里。
+ *  宽高先定死（高度不够浮层内部自己滚），不必等渲染完再量 —— 点下去就到位。 */
+function placeCitePop(rect: DOMRect) {
+  const w = Math.min(citePop.width, Math.max(240, window.innerWidth - 20));
+  citePop.width = w;
+  citePop.left = Math.round(Math.min(Math.max(8, rect.left - 10),
+    Math.max(8, window.innerWidth - w - 10)));
+  const below = window.innerHeight - rect.bottom - 16;
+  const above = rect.top - 16;
+  const up = below < 200 && above > below;
+  const room = Math.round(Math.max(140, Math.min(420, up ? above : below)));
+  citePop.maxHeight = room;
+  const top = up ? Math.max(10, rect.top - room - 8) : rect.bottom + 8;
+  /* 最后再夹一次：锚点万一在视口外（贴着上边缘的旧 rect、或滚过一段），
+     也别把浮层画到屏幕外面去 —— 宁可贴边，也不要"点了没东西"。 */
+  citePop.top = Math.round(Math.min(Math.max(10, top), Math.max(10, window.innerHeight - 80)));
+}
+
+/* 移开就收：延时是留给"从标号挪到浮层上"这一步的（与 `scheduleNoteHide` 同一套判法） */
+let citeHideTimer: number | undefined;
+function cancelCiteHide() { window.clearTimeout(citeHideTimer); }
+function scheduleCiteHide() {
+  if (!citePop.open) return;
+  window.clearTimeout(citeHideTimer);
+  citeHideTimer = window.setTimeout(() => {
+    const box = citePopEl.value;
+    if (box && box.matches(':hover')) return;   // 鼠标已经落在浮层上（从标号挪过去了）
+    citePop.open = false;
+  }, 220);
+}
+
+async function openCitePop(nums: number[], el: HTMLElement) {
+  cancelCiteHide();
+  citePop.nums = nums;
+  citePop.open = true;
+  placeCitePop(el.getBoundingClientRect());
+  if (!refsLoaded) {
+    citePop.loading = true;
+    try { await ensureReferences(); } finally { citePop.loading = false; }
+  }
 }
 
 /** 标号按钮上的编号（`data-refs="2,4,10"`）。 */
@@ -3843,7 +3925,6 @@ function renderMarkdown(text?: string | null) {
           :notes="notes"
           :highlights="highlights"
           :references="paperReferences"
-          :ref-filter="refFilter"
           :formulas="formulas"
           :formulas-loading="formulasLoading"
           :figures="figures"
@@ -3863,7 +3944,6 @@ function renderMarkdown(text?: string | null) {
           @delete-note="deleteNote"
           @save-note="savePaneNote"
           @delete-highlight="deleteHighlightIds"
-          @clear-ref-filter="refFilter = []"
           @cancel-task="cancelTranslate"
           @insight-queued="fetchTasks"
           @open-insight-page="openInsightPage"
@@ -4066,6 +4146,33 @@ function renderMarkdown(text?: string | null) {
       </template>
     </FloatingCard>
 
+    <!-- 引用标号的浮层（用户口径 2026-10-08 第二条）：点正文里的 `[2, 4, 10]` 就在标号下面
+         弹这么一小块，只放那几条参考文献的卡片本体（与侧栏/详情弹窗同一份 `ReferenceList`，
+         所以**点条目/图标照样跳发表网站**）；鼠标移开即消失（`scheduleCiteHide`）。
+         ⚠️ **必须传送**到 `<body>`：Markdown 视图本身是个 `Modal`（遮罩 `z-index: 150`），
+         留在阅读器主区（那里最高才 60）会被整个压在弹窗底下 —— 实测在 markdown 视图里
+         浮层"看得见、点不着"（`elementFromPoint` 交回的是弹窗里的段落）。 -->
+    <Teleport to="body">
+      <div
+        v-if="citePop.open"
+        ref="citePopEl"
+        class="cite-pop"
+        data-cite-pop
+        :style="{
+          left: `${citePop.left}px`, top: `${citePop.top}px`,
+          width: `${citePop.width}px`, maxHeight: `${citePop.maxHeight}px`,
+        }"
+        @mouseenter="cancelCiteHide"
+        @mouseleave="scheduleCiteHide"
+      >
+        <div v-if="citePop.loading" class="small faint cite-pop-hint">正在取参考文献…</div>
+        <div v-else-if="!citeRefItems.length" class="small faint cite-pop-hint">
+          这几条在参考文献里没有对应编号（解析出的编号可能对不上）
+        </div>
+        <ReferenceList v-else :items="citeRefItems" />
+      </div>
+    </Teleport>
+
     <Modal :open="!!zoomImage" :title="zoomTitle" wide @close="zoomImage = null">
       <img v-if="zoomImage" :src="zoomImage.url" :alt="zoomTitle" style="max-width:100%;background:#fff">
     </Modal>
@@ -4112,6 +4219,8 @@ function renderMarkdown(text?: string | null) {
         :class="{ full: mdView.full }"
         v-html="mdFullHtml"
         @click="onMdClick"
+        @mouseover="onMdHover"
+        @mouseout="onMdHoverOut"
       />
       <template #footer>
         <button class="btn" @click="closeMarkdownView">关闭</button>
@@ -4510,12 +4619,44 @@ function renderMarkdown(text?: string | null) {
 
 @media (prefers-reduced-motion: reduce) {
   .reader, .reader-aside { transition: none; }
+  .cite-pop { animation: none; }
 }
 
 /* ---------------- 划词解释卡片（浮动层里的小对话线程） ----------------
  * 由问答 agent 产出（流式），所以这里既要有"正在读"的状态，也要能承接追问。 */
 /* 笔记浮层的 `prompt` 态（刚标完高亮）：原文下面一行提示，再下面是「添加笔记」 */
 .np-hint { margin: 4px 0 2px; }
+/* 引用标号的浮层：**毛玻璃**的一张纸（用户口径 2026-10-08："优化样式，比如毛玻璃"）。
+ * 底下的正文透出来一点、卡片仍然读得清 —— 浮在正文上才有"浮"的感觉。
+ * ⚠️ 阴影必须用 `--shadow-flyout`：`--shadow-3` 这个名字**从来没定义过**，写上去整条声明会被丢掉，
+ * 等于一层阴影都没有（`FloatingCard` 也踩了同一个坑，已一并修）。 */
+.cite-pop {
+  position: fixed; z-index: 160; overflow: auto;
+  padding: 6px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  box-shadow: var(--shadow-flyout);
+  /* 滚到两端别把滚动传给正文（浮层是小范围滚动，链式滚动会让页面莫名其妙地动起来） */
+  overscroll-behavior: contain;
+  animation: cite-pop-in .14s var(--ease);
+}
+@keyframes cite-pop-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+/* 里面不做"盒子里再套盒子"（截图里就是那个观感：外框描边 + 每条又自带描边，看着笨重）——
+ * 改成**同一张玻璃纸上的行**：不要边框、不要底色，只有一条发丝分隔线，hover 才浮一点底色。
+ * 内容格式一点没动（跳转图标 / 标号 / 中英标题 / GitHub 那枚都还在，还是 `ReferenceList`）。 */
+.cite-pop :deep(.ref-list > .item) {
+  border: 0; border-radius: 10px; background: transparent; margin-bottom: 0;
+  padding: 7px 8px 7px 4px;
+}
+.cite-pop :deep(.ref-list > .item + .item) { box-shadow: inset 0 1px 0 var(--divider); }
+.cite-pop :deep(.ref-list > .item:hover) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.cite-pop :deep(.ref-list > .item:hover .ref-lead) { color: var(--accent); }
+.cite-pop :deep(.ref-list > .item:focus-visible) { box-shadow: var(--ring); }
+.cite-pop-hint { padding: 6px 8px; }
 .ex-thread { max-height: 46vh; overflow-y: auto; }
 .ex-turn { margin-bottom: 10px; }
 .ex-turn .md :deep(p) { margin: .35em 0; }

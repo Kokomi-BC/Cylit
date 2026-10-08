@@ -58,9 +58,12 @@ marked.use({
       const nums = String(token.refs).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
       const label = nums.join(', ');
       /* 样式用**对话页那个跳转标号**的同一枚类（`.cite-inline`，定义在 `styles/base.css`）：
-         用户口径 2026-10-07 —— 正文里的引用标号要跟对话页长得一样。 */
+         用户口径 2026-10-07 —— 正文里的引用标号要跟对话页长得一样。
+         ⚠️ **不要 `title`**（用户口径 2026-10-08）：悬浮标号时浏览器会额外弹一条原生提示
+         （"这篇论文引用的第 x 条…"），而悬浮本身已经会弹出参考文献浮层 —— 两个提示叠在一起。
+         无障碍名字改用 `aria-label`：它不会画出那条 tooltip。 */
       return `<button type="button" class="cite-inline" data-refs="${nums.join(',')}"`
-        + ` title="这篇论文引用的第 ${label} 条（点开右侧「文献」）">[${label}]</button>`;
+        + ` aria-label="参考文献 ${label}（悬浮或点击查看）">[${label}]</button>`;
     },
   }],
 });

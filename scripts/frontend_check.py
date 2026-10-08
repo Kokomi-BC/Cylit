@@ -237,8 +237,9 @@ async function run() {
         pane2.scrollTop = 0;
       }
     }
-    /* 引用文献（2026-10-07 第三条）：正文里的 `[2, 4, 10]` 是可点的 →
-       点它**自动打开侧栏「引用文献」并只显示被提到的那几条**；点条目跳到发表网站。 */
+    /* 引用文献（用户口径 2026-10-08 第二条）：正文里的 `[2, 4, 10]` 是可点的 →
+       点它**在标号下面弹一个只含这几条的简约浮层**（不再打开侧栏）；点条目跳到发表网站；
+       鼠标移开浮层自己收掉。卡片本体与侧栏/详情弹窗共用 `ReferenceList`。 */
     /* 页签名读 `.side-label`（`textContent` 里还带着角标数字：`公式86`） */
     const labelOf = (el) => {
       const s = el ? el.querySelector('.side-label') : null;
@@ -255,7 +256,15 @@ async function run() {
     res.refsIcon = iconOf(refsTab);
     res.notesIcon = iconOf(tabEls.find((b) => labelOf(b) === '笔记'));
     res.tabLabels = tabEls.map(labelOf);
-    const chips = [...d.querySelectorAll('.cite-inline[data-refs]')];
+    const chips0 = () => [...d.querySelectorAll('.cite-inline[data-refs]')];
+    /* 引用标号长在**正文行**上，而正文行是懒渲染的、阅读位置又会从服务端进度恢复
+       （可能停在很深处 / 参考文献那一节）—— 先滚回文首等它渲染出来，否则这条时有时无。 */
+    const scroller = d.querySelector('.reader-content');
+    for (let i = 0; i < 24 && !chips0().length; i += 1) {
+      if (scroller) scroller.scrollTop = 0;
+      await sleep(250); spin(BURN);
+    }
+    const chips = chips0();
     res.citeChips = chips.length;
     res.citeSample = chips.length ? (chips[0].textContent || '').trim() : null;
     /* 标号的**样式**（用户口径 2026-10-07：跟对话页那个跳转标号一样）：
@@ -275,29 +284,94 @@ async function run() {
       /* 挑一个**编号都在参考文献里**的标号来点（正文里也可能出现超过总条数的编号） */
       const numsOf = (el) => (el.getAttribute('data-refs') || '').split(',')
         .map((s) => Number(s.trim())).filter((n) => n > 0);
-      const chip = chips.find((c) => numsOf(c).length
-        && numsOf(c).every((n) => n <= (res.apiRefs || 0))) || chips[0];
+      /* 挑一个**编号都在参考文献里**、而且**当前就在视口里**的标号来点（正文里也可能出现超过总条数的
+         编号；另外正文行是懒渲染的，滚回文首之后仍可能挑到已经滚上去的旧行 —— 那时浮层会贴着负坐标
+         画到屏幕外，"压在正文之上"这条就无从量起）。 */
+      const inView = (c) => {
+        const r = c.getBoundingClientRect();
+        return r.top > 60 && r.bottom < (w.innerHeight || 800) - 60;
+      };
+      const valid = (c) => numsOf(c).length && numsOf(c).every((n) => n <= (res.apiRefs || 0));
+      const chip = chips.find((c) => valid(c) && inView(c)) || chips.find(inView)
+        || chips.find(valid) || chips[0];
       res.clickedRefs = numsOf(chip);
+      /* 标号上不该再有原生 `title`（用户口径 2026-10-08："移除悬浮显示的文字（浏览器 toast）"）：
+         悬浮的效果已经由浮层负责，浏览器那条提示会跟浮层叠在一起。 */
+      res.citeTitle = chip.getAttribute('title');
+      const tabBefore = d.querySelector('.side-tab.active');
+      res.tabBeforeClick = tabBefore ? (tabBefore.textContent || '').trim() : null;
       chip.click();
-      await until(d, (x) => x.querySelector('[data-ref-no]'), 20);
-      await sleep(300); spin(BURN); await sleep(200);
-      res.refRows = d.querySelectorAll('[data-ref-no]').length;
-      res.filteredNos = [...d.querySelectorAll('[data-ref-no]')]
-        .map((e) => Number(e.getAttribute('data-ref-no')));
+      await until(d, (x) => x.querySelector('[data-cite-pop]'), 20);
+      /* ⚠️ 等**卡片**出来再量：参考文献是**按需取**的（`ensureReferences`），第一次点开时
+         浮层先显示"正在取参考文献…" —— 只 sleep 固定时间会量到一个空浮层（实测整轮里偶发）。 */
+      await until(d, (x) => x.querySelector('[data-cite-pop] [data-ref-no]'), 40);
+      await sleep(200); spin(BURN);
+      const pop = d.querySelector('[data-cite-pop]');
+      res.citePop = !!pop;
+      res.citePopRows = pop ? pop.querySelectorAll('[data-ref-no]').length : 0;
+      res.citePopNos = pop ? [...pop.querySelectorAll('[data-ref-no]')]
+        .map((e) => Number(e.getAttribute('data-ref-no'))) : [];
+      /* 卡片本体就是侧栏那份：`.ref-item` + 左边那枚跳转图标都在 */
+      res.citePopCard = !!(pop && pop.querySelector('.ref-item .ref-lead'));
+      /* 毛玻璃 + 真阴影（用户口径 2026-10-08："优化样式，比如毛玻璃"）：
+         半透明底 + backdrop-filter 才是玻璃；阴影必须真的生效 —— `--shadow-3` 那个名字从来没定义过，
+         写上去整条声明会被丢掉（浮层会变成"一点阴影都没有的白盒子"）。 */
+      res.citePopGlass = pop ? (() => {
+        const cs = w.getComputedStyle(pop);
+        const bd = cs.backdropFilter || cs.webkitBackdropFilter || '';
+        const bg = cs.backgroundColor || '';
+        /* 底色可能是 `rgba(...)`，也可能是 `color(srgb … / .72)`（`color-mix` 的解析结果） */
+        const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
+        return {
+          blur: bd.indexOf('blur') >= 0,
+          bg,
+          alpha: m ? Number(m[1]) : 1,
+          shadow: cs.boxShadow,
+          radius: cs.borderRadius,
+        };
+      })() : null;
+      res.citePopAbove = pop ? (() => {
+        const r = pop.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const hit = d.elementFromPoint(x, y);
+        const who = hit ? (hit.tagName + '.' + String(hit.className || '')).slice(0, 40) : null;
+        return {
+          ok: !!(hit && hit.closest && hit.closest('[data-cite-pop]')),
+          who,
+          rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+          inner: [w.innerWidth, w.innerHeight],
+          z: w.getComputedStyle(pop).zIndex,
+        };
+      })() : null;
       const active = d.querySelector('.side-tab.active');
       res.activeAfterClick = active ? (active.textContent || '').trim() : null;
       /* 点条目 → 发表网站：把 window.open 拦下来看 URL（无头里别真开窗） */
       const opened = [];
       const realOpen = w.open;
       w.open = (u) => { opened.push(String(u)); return null; };
-      const firstRef = d.querySelector('[data-ref-no]');
+      const firstRef = pop ? pop.querySelector('[data-ref-no]') : null;
       if (firstRef) { firstRef.click(); await sleep(250); }
       w.open = realOpen;
       res.refUrl = opened[0] || null;
-      /* 「显示全部」切回全量 */
-      const clear = d.querySelector('[data-ref-clear]');
-      if (clear) { clear.click(); await sleep(400); spin(BURN); await sleep(200); }
-      res.allRows = d.querySelectorAll('[data-ref-no]').length;
+      /* 鼠标移开浮层 → 自己收掉（用户口径："鼠标移开浮层即消失"） */
+      if (pop) {
+        pop.dispatchEvent(new w.MouseEvent('mouseleave'));
+        await sleep(600); spin(BURN);
+      }
+      res.citePopAfterLeave = !!d.querySelector('[data-cite-pop]');
+      /* 悬浮 = 点一下（用户口径 2026-10-08 第三条）：`mouseover` 标号就弹**同一个**浮层，移开就收 */
+      const chipAgain = d.querySelector('.cite-inline[data-refs="' + chip.getAttribute('data-refs') + '"]');
+      if (chipAgain) {
+        chipAgain.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
+        await until(d, (x) => x.querySelector('[data-cite-pop]'), 20);
+        await sleep(200); spin(BURN);
+        const popHover = d.querySelector('[data-cite-pop]');
+        res.citePopHoverNos = popHover ? [...popHover.querySelectorAll('[data-ref-no]')]
+          .map((e) => Number(e.getAttribute('data-ref-no'))) : [];
+        chipAgain.dispatchEvent(new w.MouseEvent('mouseout', { bubbles: true }));
+        await sleep(600); spin(BURN);
+        res.citePopAfterHoverOut = !!d.querySelector('[data-cite-pop]');
+      }
     }
     /* 直挂侧栏的页签（对话 / 搜索 / 目录）**得自己撑满剩余高度**：用户口径 2026-10-07 ——
        它们原来用 `height: 100%`（= 整个侧栏高，含上面那条 58px 页签条），底边越过侧栏被裁掉。
@@ -1568,11 +1642,15 @@ async function run() {
        真鼠标那一侧的数字见 data/logs 下的一次性 CDP 脚本（改前：空白按下往上一拖 = 2393 字整页）。 */
     {
       /* 页 1 的文字层是**懒铺**的（滚出渲染范围就没有 span）—— 前面那几步会把阅读位置挪走，
-         先把它滚回来、等它铺好再量，否则这条会时红时绿（实测有一轮确实没量到）。 */
+         先把它滚回**视口里**再量。⚠️ 判据不能只看"层里有 span"：铺好的 span 会留在 DOM 上，
+         页码滚到 13000px 之外它照样在（实测这一条就因为早退量到了纸外，选区自然是 0 字）。 */
       for (let i = 0; i < 12; i += 1) {
+        const el = D().querySelector('[data-pdf-page="1"]');
+        const r = el ? el.getBoundingClientRect() : null;
         const l = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
-        if (l && l.querySelectorAll('span').length >= 2) break;
-        D().querySelector('[data-pdf-page="1"]')?.scrollIntoView({ block: 'center' });
+        const inView = !!r && r.top > 40 && r.bottom < w.innerHeight - 40;
+        if (inView && l && l.querySelectorAll('span').length >= 2) break;
+        el?.scrollIntoView({ block: 'center' });
         await sleep(300); spin(BURN);
       }
       const layer = D().querySelector('[data-pdf-page="1"] .pdf-text-layer');
@@ -2190,6 +2268,11 @@ async function run() {
     res.authorHidden = res.tempText.indexOf('Sandhini') < 0;
     res.tooltip = row ? (row.getAttribute('title') || '') : '';
     res.tooltipHasRaw = res.tooltip.indexOf('Sandhini') >= 0;
+    /* 顶栏（用户口径 2026-10-08 第一条）：`REFERENCES 47 条`（"按论文里的顺序"挪进 tooltip） */
+    const bar = D().querySelector('.ref-bar');
+    res.refBarText = bar ? (bar.textContent || '').replace(/\\s+/g, ' ').trim() : null;
+    res.refBarCap = bar ? !!bar.querySelector('.ref-cap') : false;
+    res.refBarTitle = bar ? (bar.querySelector('[title]') || {}).title || '' : '';
     /* 右上角那枚跳转图标已移除（整张卡片就是那个跳转） */
     res.noGoIcon = !D().querySelector('.ref-item svg[data-icon="external"]');
     /* 标号**内联**在中文标题前面：同一行（顶边对齐）且在它左边 */
@@ -2321,6 +2404,11 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
         record("refs-pane", "参考文献侧栏能打开（探针拿到结果）", False,
                str((res or {}).get("error") or "探针没产出结果")[:90])
         return
+    bar_text = str(res.get("refBarText") or "")
+    record("refs-pane", "顶栏是 `REFERENCES N 条`（顺序说明挪进 tooltip）",
+           res.get("refBarCap") is True and bar_text.startswith("REFERENCES ")
+           and bar_text.endswith("条") and "按论文里的顺序" in str(res.get("refBarTitle") or ""),
+           f"顶栏={bar_text!r} tooltip={res.get('refBarTitle')!r}")
     record("refs-pane", "中英对照：中文标题在上、英文标题在下",
            res.get("tempRow") is True and res.get("hasZh") is True and res.get("hasEn") is True,
            f"中文={res.get('hasZh')} 英文={res.get('hasEn')}｜{str(res.get('tempText'))[:44]}")
@@ -2514,6 +2602,9 @@ MD_CITES = [
     ("用户那条（多标号）", "见 [2, 4, 10, 12, 20, 25, 33] 的方法",
      'data-refs="2,4,10,12,20,25,33"', None, "见 [2, 4, 10, 12, 20, 25, 33] 的方法"),
     ("挤在一起写", "见 [2,4,10] 的方法", 'data-refs="2,4,10"', None, None),
+    # 悬浮的效果由**参考文献浮层**负责，标号上不能再来一条原生 `title`（用户口径 2026-10-08：
+    # "移除悬浮显示的文字（浏览器 toast）"）—— 两者会叠在一起。
+    ("标号不带原生 title 提示条", "如 [12] 所示", 'aria-label="参考文献 12', 'title=', None),
     ("行内代码里不动", "写法是 `[1]` 这样", None, "cite-inline", "写法是 [1] 这样"),
     ("代码围栏里不动", "```\n[1]\n```", None, "cite-inline", None),
     ("公式里的区间不动", "在区间 $[0, 1]$ 上", None, "cite-inline", None),
@@ -2954,6 +3045,10 @@ def main() -> int:
                      .replace("__PAPER__", args.paper),
                      args.budget)
     if data:
+        # 中间量全量存一份（与 `_pdfhl_raw.json` 同一个理由）：报告里只有断言结论，
+        # 追"这条为什么红"时要看的是这些字段。
+        (ROOT / "data" / "logs" / "_reader_raw.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         tabs = data.get("tabs") or []
         record("reader", "侧栏页签顺序（目录第一、对话第二）",
                len(tabs) > 1 and "目录" in tabs[0] and data.get("chatTabIndex") == 1, f"{tabs[:3]}…")
@@ -2998,14 +3093,34 @@ def main() -> int:
                    _cite_style_ok(data.get("citeStyle")),
                    f"{data.get('citeStyle')}")
             clicked = data.get("clickedRefs") or []
-            record("reader", "点标号**自动打开侧栏**并**只显示被提到的那几条**",
-                   bool(clicked) and sorted(data.get("filteredNos") or []) == sorted(clicked)
-                   and str(data.get("activeAfterClick") or "").startswith("文献"),
-                   f"点了 {clicked} → 侧栏 {data.get('filteredNos')}（当前页签 "
-                   f"{data.get('activeAfterClick')!r}）")
-            record("reader", "「显示全部」回到全量（与接口条数一致）",
-                   data.get("allRows") == data.get("apiRefs") and (data.get("apiRefs") or 0) > 0,
-                   f"全量 {data.get('allRows')} 条 / 接口 {data.get('apiRefs')} 条")
+            record("reader", "点引用标号 → 就地弹浮层，**只显示被提到的那几条**（不再动侧栏）",
+                   data.get("citePop") is True
+                   and sorted(data.get("citePopNos") or []) == sorted(clicked)
+                   and data.get("activeAfterClick") == data.get("tabBeforeClick"),
+                   f"点了 {clicked} → 浮层 {data.get('citePopNos')}（侧栏页签 "
+                   f"{data.get('tabBeforeClick')!r} → {data.get('activeAfterClick')!r}）")
+            record("reader", "浮层里的卡片就是侧栏那份（`.ref-item` + 左边那枚跳转图标）",
+                   data.get("citePopCard") is True
+                   and (data.get("citePopRows") or 0) == len(clicked),
+                   f"{data.get('citePopRows')} 张卡片，带跳转图标={data.get('citePopCard')}")
+            record("reader", "鼠标移开浮层 → 浮层自己收掉（用户口径）",
+                   data.get("citePopAfterLeave") is False,
+                   f"移开后还在={data.get('citePopAfterLeave')}")
+            record("reader", "标号上没有原生 `title` 提示条（悬浮的效果由浮层负责）",
+                   not str(data.get("citeTitle") or ""),
+                   f"title={data.get('citeTitle')!r}")
+            record("reader", "鼠标**悬浮**标号 = 点一下（弹出同一个浮层，移开就收）",
+                   sorted(data.get("citePopHoverNos") or []) == sorted(clicked)
+                   and data.get("citePopAfterHoverOut") is False,
+                   f"悬浮 → 浮层 {data.get('citePopHoverNos')}；移开后还在={data.get('citePopAfterHoverOut')}")
+            glass = data.get("citePopGlass") or {}
+            record("reader", "浮层是**毛玻璃**：半透明底 + backdrop blur + 真阴影（不是白盒子）",
+                   glass.get("blur") is True and float(glass.get("alpha") or 1) < 1
+                   and str(glass.get("shadow") or "none") != "none",
+                   f"blur={glass.get('blur')} 底色={glass.get('bg')} 阴影={str(glass.get('shadow'))[:28]}")
+            record("reader", "浮层**压在正文/弹窗之上**（markdown 视图是弹窗，浮层必须在它上面）",
+                   (data.get("citePopAbove") or {}).get("ok") is True,
+                   f"浮层中心点命中={data.get('citePopAbove')}")
             url = str(data.get("refUrl") or "")
             record("reader", "点文献条目 → 跳到发表网站（DOI / arXiv / 原文里的链接 / 学术搜索）",
                    url.startswith("http")

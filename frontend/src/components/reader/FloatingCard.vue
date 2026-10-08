@@ -7,7 +7,7 @@
  * 浮层要的是：**锚在高亮附近**（视线不用离开原文）、不遮挡大面积正文、观感与侧栏一致。
  *
  * 三条行为约定（用户口径）：
- * - **尺寸小**：默认 340px 宽、圆角 12px、`--shadow-3`，与侧栏卡片同一门语言；
+ * - **尺寸小**：默认 340px 宽、圆角 12px、`--shadow-flyout`，与侧栏卡片同一门语言；
  * - **贴边回拉**：先按锚点右下放，越出视口就翻到上方/左侧（`place()`），永远不会跑到屏幕外；
  * - **锚定**：`anchored=false`（默认）时由**父组件**在鼠标移开时关掉它（本组件只管画 + 提供按钮）；
  *   点那枚图钉切锚定，之后移开也不消失。
@@ -170,13 +170,14 @@ const style = computed(() => ({
 </template>
 
 <style scoped>
-/* 观感与侧栏卡片同一门语言：同一个圆角档、同一档阴影、同一个边框色。
-   阴影比侧栏重一档（`--shadow-3`）—— 它是浮在正文上的，要能一眼看出"这是浮层"。 */
+/* 观感与侧栏卡片同一门语言：同一个圆角档、同一门阴影、同一个边框色。
+   阴影用 `--shadow-flyout`（比侧栏的 `--shadow-2` 重一档）—— 它是浮在正文上的，要能一眼看出"这是浮层"。
+   ⚠️ 这里原来写的是 `--shadow-3`，而那个名字**从来没定义过**：声明被整条丢掉，等于一直没有阴影。 */
 .float-card {
   position: fixed; z-index: 60;
   display: flex; flex-direction: column;
   border: 1px solid var(--border-strong); border-radius: 12px;
-  background: var(--bg-elev); box-shadow: var(--shadow-3);
+  background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   overflow: hidden;
 }
 .fc-head {
