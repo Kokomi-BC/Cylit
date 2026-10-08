@@ -2601,6 +2601,7 @@ function onAnyScroll(ev?: Event) {
   /* 浮层自己内部滚（一屏放不下几条参考文献）不算"视角变了" —— 别把它自己关掉 */
   if ((ev?.target as HTMLElement | null)?.closest?.('[data-cite-pop]')) return;
   citePop.open = false;      // 引用标号的浮层贴着正文，一滚就对不上了（与划词菜单同一处理）
+  cancelCiteOpen();          // 还没弹出来的那一次也别弹了（锚点已经跟着内容跑掉了）
   hideMenu();
 }
 function onDocPointerDown(ev: PointerEvent) {
@@ -2611,6 +2612,7 @@ function onDocPointerDown(ev: PointerEvent) {
   /* 引用标号的浮层：点别处就收。⚠️ 点**浮层里面**（条目/跳转图标）绝不能收 ——
      一收就把元素从 DOM 上摘了，那次 click（`window.open` 在它上面）根本不会再触发。 */
   if (!target?.closest?.('[data-cite-pop]')) citePop.open = false;
+  cancelCiteOpen();          // 点别处了：还没弹出来的那一次也取消
   hideMenu();
 }
 
@@ -3100,6 +3102,7 @@ function onContentClick(ev: MouseEvent) {
   const cite = (ev.target as HTMLElement).closest?.('.cite-inline[data-refs]') as HTMLElement | null;
   if (cite?.dataset.refs) {
     ev.preventDefault();
+    cancelCiteOpen();                      // 点一下是明确动作：不等悬浮那 350ms，立刻弹
     void openCitePop(citeRefs(cite), cite);
     return;
   }
@@ -3215,7 +3218,7 @@ function markOf(ev: Event): HTMLElement | null {
  *  引用标号则相反：**悬浮与点击同一个效果**（用户口径 2026-10-08 第三条）—— 扫过去就弹出那个浮层。 */
 function onContentHover(ev: MouseEvent) {
   const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]') as HTMLElement | null;
-  if (chip) { void openCitePop(citeRefs(chip), chip); return; }
+  if (chip) { scheduleCiteOpen(citeRefs(chip), chip); return; }
   const mark = markOf(ev);
   if (!mark) return;
   const hl = highlights.value.find((h) => h.id === (mark.getAttribute('data-hl') || ''));
@@ -3226,24 +3229,28 @@ function onContentHover(ev: MouseEvent) {
 }
 
 function onContentHoverOut(ev: MouseEvent) {
-  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) scheduleCiteHide();
+  const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]');
+  if (chip) { cancelCiteOpen(); scheduleCiteHide(); }   // 还没到延时就走开了：别弹
   if (markOf(ev)) scheduleNoteHide();
 }
 
 /**
  * Markdown 视图**不在** `.reader-content` 里（它是个弹窗），所以悬浮/移开要在那边单独接一下 ——
- * 只接**引用标号**（用户口径：悬浮与点击一个效果）。
+ * 只接**引用标号**（用户口径：悬浮与点击一个效果，悬浮要先停一会儿才弹）。
  *
  * 高亮那套"悬停看笔记"的浮层**没有**接到这里：它是 `FloatingCard`（`z-index: 60`），
  * 在这个弹窗（遮罩 `z-index: 150`）底下根本看不见 —— 接上去只会"悬停没反应"。
  */
 function onMdHover(ev: MouseEvent) {
   const chip = (ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]') as HTMLElement | null;
-  if (chip) void openCitePop(citeRefs(chip), chip);
+  if (chip) scheduleCiteOpen(citeRefs(chip), chip);
 }
 
 function onMdHoverOut(ev: MouseEvent) {
-  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) scheduleCiteHide();
+  if ((ev.target as HTMLElement | null)?.closest?.('.cite-inline[data-refs]')) {
+    cancelCiteOpen();
+    scheduleCiteHide();
+  }
 }
 
 /** 选区/点击处那条高亮对应的笔记（有的话菜单显示「打开笔记」）。 */
@@ -3342,7 +3349,8 @@ async function ensureReferences(): Promise<void> {
  * 用户口径 2026-10-08：原来是"打开侧栏 + 只显示这几条" —— 视线要离开正文，侧栏还会被
  * 强行叫出来（窄屏是抽屉，等于盖住半屏）。只是想"看一眼这条文献是什么"，所以改成贴标号的
  * 简约浮层：格式**复用侧栏/详情弹窗那份卡片**（`ReferenceList`，自带跳转），鼠标移开即消失
- * （见 `scheduleCiteHide`）。第三条口径：**悬浮与点击同一个效果** —— 两条路都进 `openCitePop`。
+ * （见 `scheduleCiteHide`）。第三条口径：**悬浮与点击同一个效果** —— 两条路都进 `openCitePop`，
+ * 区别只在时机：点击立刻弹，悬浮要**停住 350ms**（见 `CITE_HOVER_DELAY`）。
  */
 /* 浮层的状态与摆位：只放卡片本体（`ReferenceList` —— 与侧栏/详情弹窗同一份，自带跳转）。
    `nums` 是标号里那几个编号，显示时按**参考文献本身**的顺序挑出来（与侧栏同一口径）。 */
@@ -3391,6 +3399,23 @@ function scheduleCiteHide() {
     if (box && box.matches(':hover')) return;   // 鼠标已经落在浮层上（从标号挪过去了）
     citePop.open = false;
   }, 220);
+}
+
+/* 悬浮**停一下**才弹（用户口径 2026-10-08 第五条："需要稍长时间悬浮再显示悬浮浮层"）：
+ * 鼠标扫过正文时会一路划过好几个标号，立刻弹就是一路闪 —— 停住 350ms 才算"想看"。
+ * 点击不受这个延时约束（点一下是明确动作，见 `onContentClick`）。 */
+const CITE_HOVER_DELAY = 350;
+let citeHoverTimer: number | undefined;
+function cancelCiteOpen() {
+  window.clearTimeout(citeHoverTimer);
+  citeHoverTimer = undefined;
+}
+function scheduleCiteOpen(nums: number[], el: HTMLElement) {
+  window.clearTimeout(citeHoverTimer);
+  citeHoverTimer = window.setTimeout(() => {
+    citeHoverTimer = undefined;
+    void openCitePop(nums, el);
+  }, CITE_HOVER_DELAY);
 }
 
 async function openCitePop(nums: number[], el: HTMLElement) {

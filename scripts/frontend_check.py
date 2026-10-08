@@ -2102,6 +2102,23 @@ async function run() {
 </script>"""
 
 
+def check_cite_hover() -> None:
+    """引用标号的"悬浮停一会儿才弹"（用户口径 2026-10-08 第五条）——**源码层**钉住。
+
+    为什么不放进浏览器探针：无头探针跑在 `--virtual-time-budget` 下，定时器会被虚拟时间直接推过去，
+    "延时窗口内还没弹"这个中间态量不准（真鼠标那一侧的时间在 `data/logs/cite_cdp.mjs` 里量）。
+    这里钉三件事：延时是个常量、两条悬浮入口都走它、点击那条路**不等**延时。
+    """
+    src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
+    delay = re.search(r"CITE_HOVER_DELAY\s*=\s*(\d+)", src)
+    hover_scheduled = (src.count("scheduleCiteOpen(citeRefs(chip), chip)") >= 2
+                       and "citeHoverTimer = window.setTimeout" in src)
+    click_now = "cancelCiteOpen();" in src and "void openCitePop(citeRefs(cite), cite);" in src
+    record("reader", "悬浮**停一会儿**才弹浮层（点击仍然立刻弹；划过去不弹）",
+           bool(delay) and int(delay.group(1)) >= 250 and hover_scheduled and click_now,
+           f"延时={delay.group(1) if delay else None}ms 悬浮走延时={hover_scheduled} 点击不等={click_now}")
+
+
 def _internal_headers() -> dict:
     """内部令牌头（`data/secrets/agent.token`，与 agent 服务同一份）。"""
     path = ROOT / "data" / "secrets" / "agent.token"
@@ -3026,6 +3043,7 @@ def main() -> int:
     check_markdown_shapes()          # 不依赖浏览器与服务，先跑它
     check_reference_urls()           # 同上：bundle 真代码，不依赖浏览器 / 数据
     check_explain_shell()            # 同上：只看源码结构，起服务前就能跑
+    check_cite_hover()               # 同上：只读源码（悬浮延时那三个点）
     browser = find_browser(args.browser)
     if not browser:
         print("[SKIP] 没找到浏览器（--browser 指定 chrome/edge 路径）")
