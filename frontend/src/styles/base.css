@@ -57,8 +57,20 @@ a { color: var(--accent-text); text-decoration: none; }
  * 以前这套颜色只写在「笔记」页自己的 scoped 样式里，正文里的 `mark.hl` 没有任何样式 ——
  * 于是不管用户选绿/蓝/粉，渲染出来都是浏览器默认的黄色（选了等于没选）。
  * `--hl-bg` 是**同一份颜色**的变量形式：行间公式的底色要画在公式本体上（见最下面那段），
- * 两处必须是同一个色值，所以颜色只在 `.yellow/.green/…` 这几条里写一次。 */
-mark.hl { border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; }
+ * 两处必须是同一个色值，所以颜色只在 `.yellow/.green/…` 这几条里写一次。
+ *
+ * ⚠️ **文字颜色必须跟着上下文走（`color: inherit`）**：`<mark>` 的浏览器默认样式带
+ * `background: Mark; color: MarkText`（黑字），它**显式设了 color** —— 压过继承。两处后果：
+ *   - 深色主题下正文里被高亮的字变成黑字，压在深色底上几乎看不见；
+ *   - **PDF 文字层**那一面更糟：那一层的 `span` 是 `color: transparent`（字形由画布提供），
+ *     黑字却照画不误 → 叠加层把 DOM 文字也渲染出来，与画布字形叠成**重影**
+ *     （用户报"pdf 添加高亮的叠加层显示文字的问题"）。
+ * `inherit` 一改两治：正文里跟正文色、PDF 那一面跟 span 的透明。 */
+mark.hl { border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; color: inherit; }
+/* 全站的 `mark`（高亮 / 搜索命中）都**只改底色、不改文字色**：UA 那句 `color: MarkText`
+ * 是黑字，在深色主题下几乎看不见，在 PDF 文字层里还会把 DOM 文字画出来变成重影。
+ * 这一条按"作者样式压过 UA 样式"生效，与上面 `mark.hl` 那句是同一件事的两道保险。 */
+mark { color: inherit; }
 mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); background: var(--hl-bg); }
 mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
 mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }

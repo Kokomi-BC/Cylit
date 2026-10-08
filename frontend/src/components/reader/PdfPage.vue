@@ -679,6 +679,17 @@ onBeforeUnmount(() => {
 /* 选中底色与正文同一令牌（仅换底色，字形仍由画布提供，不做重影） */
 .pdf-text-layer :deep(::selection) { background: var(--selection-bg); color: transparent; }
 .pdf-text-layer :deep(br::selection) { background: transparent; }
+/* ⚠️ **高亮叠加层只准画底色，不准画文字**（用户报"pdf 添加高亮的叠加层显示文字的问题"）：
+ * `<mark>` 的浏览器默认样式是 `background: Mark; color: MarkText` —— 它**显式**给了黑字，
+ * 不会继承父 `span` 的 `color: transparent`，于是叠加层把 DOM 文字也渲染了一遍，
+ * 与画布字形错半个像素叠在一起 = 重影。这里在这一层强制透明（`base.css` 里
+ * `mark.hl { color: inherit }` 是同一件事的第一道），并去掉 `mark.hl` 的 1px 内边距 ——
+ * 那 1px 会把底色画到字形框外面，看着像高亮"胖出来一点"。 */
+.pdf-text-layer :deep(mark),
+.pdf-text-layer :deep(mark *) {
+  color: transparent; -webkit-text-fill-color: transparent;
+}
+.pdf-text-layer :deep(mark.hl) { padding: 0; border-radius: 1px; }
 
 .pdf-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-faint); text-align: center; }
 </style>

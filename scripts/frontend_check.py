@@ -1308,6 +1308,18 @@ async function run() {
       .filter((el) => (el.textContent || '').indexOf(sameText) >= 0);
     res.feedNoteRows = feedRows.filter((el) => el.getAttribute('data-item-kind') === 'note').length;
     res.feedBareRows = feedRows.filter((el) => el.getAttribute('data-item-kind') === 'highlight').length;
+    /* 高亮叠加层**只画底色、不画文字**（用户报"pdf 添加高亮的叠加层显示文字的问题"）：
+       文字层那一面的字形由画布提供，`mark` 及它里面任何元素只要算出可见颜色就是重影。 */
+    const pdfMarks = [...D().querySelectorAll('.pdf-text-layer mark.hl')];
+    const invisible = (c) => !c || c === 'transparent' || /rgba?\\([^)]*,\\s*0\\)$/.test(c);
+    res.pdfMarkRows = pdfMarks.length;
+    res.pdfMarkOpaque = pdfMarks.filter((m) => {
+      const cols = [w.getComputedStyle(m).color,
+                    ...[...m.querySelectorAll('*')].map((el) => w.getComputedStyle(el).color)];
+      return cols.some((c) => !invisible(c));
+    }).length;
+    res.pdfMarkColor = pdfMarks.length ? w.getComputedStyle(pdfMarks[0]).color : '';
+    res.pdfMarkPad = pdfMarks.length ? w.getComputedStyle(pdfMarks[0]).paddingTop : '';
     const sc = D().querySelector('.reader-content');
     if (sc) sc.scrollTop = sc.scrollHeight;
     await sleep(400); spin(BURN); await sleep(200);
@@ -1694,6 +1706,12 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
     record("pdfhl", "一处高亮 + 它的笔记 = **一条**（不是「待写 + 笔记」两条）",
            res.get("feedNoteRows") == 1 and res.get("feedBareRows") == 0,
            f"笔记行 {res.get('feedNoteRows')} 条、同文本的待写行 {res.get('feedBareRows')} 条")
+    record("pdfhl", "高亮叠加层**只画底色、不画文字**（PDF 那一面的字形由画布提供）",
+           (res.get("pdfMarkRows") or 0) >= 1 and res.get("pdfMarkOpaque") == 0
+           and str(res.get("pdfMarkColor") or "").endswith(", 0)")
+           and str(res.get("pdfMarkPad") or "") == "0px",
+           f"{res.get('pdfMarkRows')} 段 mark · 文字可见的 {res.get('pdfMarkOpaque')} 段 · "
+           f"color={res.get('pdfMarkColor')} · padding={res.get('pdfMarkPad')}")
     record("pdfhl", "侧栏列表显示：高亮原文 + 挂在哪一面 + 页码",
            res.get("rowFound") is True and res.get("rowQuoteOk") is True
            and "原 PDF" in str(res.get("rowText") or "")
