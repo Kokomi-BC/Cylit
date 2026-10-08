@@ -2142,6 +2142,27 @@ async function run() {
     res.leadFallback = leadOf('9998');    // 什么都抠不出来 → 仍是论文图标（走学术搜索）
     res.leadIcons = { both: leadIconOf('9997'), repo: leadIconOf('9996'),
                       web: leadIconOf('9995') };
+    /* 图标**占一整列**、两侧不留大片空白（用户口径 2026-10-08）：
+       所有条目必须落在同一列（左边界 + 列宽一致）、图标够大（≥16px）、
+       外面只留一点点区（≤3px）、到正文的间距也不大（≤6px）。 */
+    const leadBoxes = [...D().querySelectorAll('.ref-item')].map((el) => {
+      const lead = el.querySelector('.ref-lead');
+      const main = el.querySelector('.ref-main');
+      if (!lead || !main) return null;
+      const lb = lead.getBoundingClientRect();
+      const mb = main.getBoundingClientRect();
+      const svg = lead.querySelector('svg');
+      const sb = svg ? svg.getBoundingClientRect() : null;
+      return { x: Math.round(lb.left), w: Math.round(lb.width),
+               icon: sb ? Math.round(sb.width) : 0,
+               pad: Math.round((lb.width - (sb ? sb.width : 0)) / 2),
+               gap: Math.round(mb.left - lb.right) };
+    }).filter(Boolean);
+    res.leadRows = leadBoxes.length;
+    res.leadColumnKind = new Set(leadBoxes.map((b) => b.x + 'x' + b.w)).size;
+    res.leadIconMin = leadBoxes.length ? Math.min(...leadBoxes.map((b) => b.icon)) : 0;
+    res.leadPadMax = leadBoxes.length ? Math.max(...leadBoxes.map((b) => b.pad)) : 99;
+    res.leadGapMax = leadBoxes.length ? Math.max(...leadBoxes.map((b) => b.gap)) : 99;
     const footIcon = D().querySelector('[data-ref-no="9997"] [data-ref-code] svg');
     res.footGithubIcon = footIcon ? String(footIcon.getAttribute('data-icon') || '') : '';
     res.noFootOnRepoOnly = !D().querySelector('[data-ref-no="9996"] [data-ref-code]');
@@ -2215,6 +2236,13 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
            f"论文+代码={res.get('leadBoth')} 只有代码={res.get('leadRepo')} "
            f"只有网址={res.get('leadWeb')} 兜底={res.get('leadFallback')}"
            f"｜图标 {res.get('leadIcons')}")
+    record("refs-pane", "图标**占一整列**（左边界与列宽一致）且两侧不留大片空白",
+           (res.get("leadRows") or 0) >= 20 and res.get("leadColumnKind") == 1
+           and (res.get("leadIconMin") or 0) >= 16 and (res.get("leadPadMax") or 99) <= 3
+           and (res.get("leadGapMax") or 99) <= 6,
+           f"{res.get('leadRows')} 条 · 列样式 {res.get('leadColumnKind')} 种 · "
+           f"图标最小 {res.get('leadIconMin')}px · 点区最大 {res.get('leadPadMax')}px · "
+           f"到正文最大 {res.get('leadGapMax')}px")
     record("refs-pane", "论文 + GitHub 都有 → GitHub 图标在**标题下面**，两枚图标分别跳不同页面",
            res.get("footGithubIcon") == "github" and res.get("noFootOnRepoOnly") is True
            and res.get("codePaper") is True and res.get("codeGithub") is True,

@@ -414,34 +414,36 @@ function removeRow(r: FeedRow) {
         @click="openRef(r)"
         @keydown.enter.prevent="openRef(r)"
       >
-        <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
-             腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
-        <span class="ref-head" :class="{ 'ref-clamp': !r.title }">
-          <!-- 最左边那枚**跳转图标**（用户口径 2026-10-07 第六轮）：论文链接 → 论文图标、
-               只有代码链接 → GitHub 图标、只有普通网址 → 链接图标；什么都抠不出来时仍是论文图标
-               （点它是学术搜索兜底）。整张卡片也能点，这枚图标点起来更明确。 -->
-          <button class="ref-lead" :title="leadTitle(r)"
-                  :data-ref-lead="refLink(r).primary.kind"
-                  @click.stop="openUrl(refLink(r).primary.url)">
-            <AppIcon :name="LEAD_ICON[refLink(r).primary.kind]" :size="12" />
-          </button>
-          <span class="ref-no">[{{ r.order_no }}]</span>
-          <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
-          <!-- 没有中文标题、但**规则切出了英文标题**（作者名后面是 `.` 那种）→ 显示题名本身，
-               不再把作者段摊在脸上；两样都没有才回退到整条原文（用户口径 2026-10-07）。 -->
-          <span v-else>{{ r.title_en || r.raw }}</span>
-        </span>
-        <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
-             整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
-        <span v-if="r.title" class="ref-en ref-clamp">{{ r.title_en || r.raw }}</span>
-        <!-- **论文与 GitHub 同时存在**：GitHub 图标放**标题下面**（左边那枚被论文占用了），
-             点它进仓库；只有代码链接的条目左边已经是 GitHub 图标，这里就不再重复。
-             （用户口径 2026-10-07 第六轮） -->
-        <div v-if="refLink(r).code" class="ref-foot">
-          <button class="btn icon sm" title="打开代码仓库（GitHub）" data-ref-code
-                  @click.stop="openUrl(refLink(r).code!.url)">
-            <AppIcon name="github" :size="13" />
-          </button>
+        <!-- 最左边那枚**跳转图标占一整列**（用户口径 2026-10-08："改大一点，占据一列"）：
+             论文链接 → 论文图标、只有代码链接 → GitHub 图标、只有普通网址 → 链接图标；
+             什么都抠不出来时仍是论文图标（点它是学术搜索兜底）。整张卡片也能点，这枚更明确。 -->
+        <button class="ref-lead" :title="leadTitle(r)"
+                :data-ref-lead="refLink(r).primary.kind"
+                @click.stop="openUrl(refLink(r).primary.url)">
+          <AppIcon :name="LEAD_ICON[refLink(r).primary.kind]" :size="18" />
+        </button>
+        <div class="ref-main">
+          <!-- 标号**内联**在标题前面（用户口径 2026-10-07：最左侧不整列显示标号，
+               腾出来的宽度给中英对照）；右上角那枚跳转图标也去掉了，整张卡片就是那个跳转。 -->
+          <span class="ref-head" :class="{ 'ref-clamp': !r.title }">
+            <span class="ref-no">[{{ r.order_no }}]</span>
+            <span v-if="r.title" class="ref-zh">{{ r.title }}</span>
+            <!-- 没有中文标题、但**规则切出了英文标题**（作者名后面是 `.` 那种）→ 显示题名本身，
+                 不再把作者段摊在脸上；两样都没有才回退到整条原文（用户口径 2026-10-07）。 -->
+            <span v-else>{{ r.title_en || r.raw }}</span>
+          </span>
+          <!-- 英文那一行：**只有标题**（作者段收起来了 → 用户口径"隐藏作者、把显示效果拉满"），
+               整条原文（含作者、会议、年份、链接）在 tooltip 里，鼠标停一下就能看到。 -->
+          <span v-if="r.title" class="ref-en ref-clamp">{{ r.title_en || r.raw }}</span>
+          <!-- **论文与 GitHub 同时存在**：GitHub 图标放**标题下面**（左边那枚被论文占用了），
+               点它进仓库；只有代码链接的条目左边已经是 GitHub 图标，这里就不再重复。
+               （用户口径 2026-10-07 第六轮） -->
+          <div v-if="refLink(r).code" class="ref-foot">
+            <button class="btn icon sm" title="打开代码仓库（GitHub）" data-ref-code
+                    @click.stop="openUrl(refLink(r).code!.url)">
+              <AppIcon name="github" :size="13" />
+            </button>
+          </div>
         </div>
       </div>
     </template>
@@ -672,18 +674,26 @@ function removeRow(r: FeedRow) {
   margin: 0 0 6px; padding: 2px 0;
 }
 .ref-item {
-  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
+  display: flex; flex-direction: row; align-items: flex-start; gap: 5px;
+  width: 100%; text-align: left;
+  /* 左边距收窄（10 → 6）：图标那一列本来就贴着左边，留 10 会让"图标两侧的空白"一边大一边小 */
+  padding: 8px 10px 8px 6px;
   font-family: inherit; font-size: 12px; color: var(--text); cursor: pointer;
   border-left-color: var(--border-strong);
 }
 .ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
-/* 最左边那枚跳转图标：16×16 的点区，颜色淡、hover 变主题色（点它跳这条文献的链接） */
+/* 最左边那枚跳转图标**占一整列**（用户口径 2026-10-08："改大一点，占据一列"，
+   随后又要求"图标两侧的空白不要这么大"）：图标 18px，外面只留 2px 点区（22×22）；
+   与卡片首行对齐 —— 一列图标从上到下齐平，扫一眼就知道每条文献是什么类型的链接。 */
 .ref-lead {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; padding: 0; margin-right: 1px; vertical-align: -2px;
-  border: 0; background: transparent; color: var(--text-faint); cursor: pointer;
+  width: 22px; height: 22px; margin: -2px 0 0; padding: 0;
+  border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-faint); cursor: pointer;
 }
-.ref-lead:hover { color: var(--accent); }
+.ref-lead:hover { color: var(--accent); background: var(--bg-elev); }
+/* 图标右边那一栏：标号 + 标题 + 英文行 +（论文与 GitHub 都有时）GitHub 行 */
+.ref-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 /* 「论文 + GitHub 都有」时，GitHub 图标贴在标题下面（右对齐） */
 .ref-foot { display: flex; justify-content: flex-end; gap: 2px; margin-top: 3px; }
 .ref-head { display: block; }
