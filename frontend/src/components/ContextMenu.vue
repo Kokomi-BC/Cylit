@@ -35,7 +35,12 @@ const props = withDefaults(defineProps<{
   width?: number;
 }>(), { width: 218 });
 
-const emit = defineEmits<{ (e: 'select', key: string): void; (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'select', key: string): void;
+  (e: 'close'): void;
+  /** 摆完位报一次真实矩形：划词胶囊要**贴在菜单上沿**（用户口径 2026-10-08） */
+  (e: 'placed', rect: { left: number; top: number; width: number; height: number }): void;
+}>();
 
 const panel = ref<HTMLElement | null>(null);
 const pos = ref({ left: 0, top: 0 });
@@ -55,6 +60,7 @@ async function place() {
   if (left + w > window.innerWidth - EDGE) left = Math.max(EDGE, props.x - w - GAP);
   if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, props.y - h - GAP);
   pos.value = { left: Math.round(left), top: Math.round(top) };
+  emit('placed', { left: pos.value.left, top: pos.value.top, width: Math.round(w), height: Math.round(h) });
 }
 
 function close() {
@@ -149,18 +155,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 毛玻璃：半透明底 + backdrop blur（用户口径"毛玻璃右键菜单，样式如图"；
-   随后又两次要求"更透明一点"——所以底色只留 55%，behind 的正文要能明显透出来）。
-   它面积小、贴在鼠标点上，透一点正文才像"从页面上浮起来"。
-   阴影用 `--shadow-flyout`（`--shadow-3` 那个名字从来没定义过，写上去等于没有）。 */
+/* 材质 = **顶部那条（原文/译文对照）胶囊的同款玻璃**（用户口径 2026-10-08："更改这两个材质为
+   顶部的胶囊的材质"）：上下渐变 + `blur(48px) saturate(2.6)`、不画描边，靠 `--shadow-flyout` 浮起来。
+   深浅两套主题用 `--glass-bar-top/bottom` 两个令牌，与顶部胶囊完全同一份。 */
 .ctx-panel {
   position: fixed; z-index: 320; padding: 6px;
   display: flex; flex-direction: column; gap: 1px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
-  background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
-  backdrop-filter: blur(24px) saturate(1.7);
-  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 42%, transparent),
+    color-mix(in srgb, var(--bg-elev) 30%, transparent));
+  backdrop-filter: blur(56px) saturate(2.2);
+  -webkit-backdrop-filter: blur(56px) saturate(2.2);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 45%, transparent);
   box-shadow: var(--shadow-flyout);
   user-select: none;
 }

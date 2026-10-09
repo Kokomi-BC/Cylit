@@ -2754,7 +2754,18 @@ interface CtxItem {
   sep?: boolean;
 }
 
-const ctxMenu = reactive({ open: false, x: 0, y: 0, items: [] as CtxItem[] });
+const ctxMenu = reactive({
+  open: false, x: 0, y: 0, items: [] as CtxItem[],
+  /** 菜单摆完位后的真实矩形（`ContextMenu` 的 `placed` 事件报回来的）：划词胶囊据此贴到它上沿 */
+  rect: null as { left: number; top: number; width: number; height: number } | null,
+});
+/** 胶囊这次该摆在哪：**右键菜单开着时贴在菜单上沿**（用户口径 2026-10-08：
+ *  "希望胶囊能在右键后改变位置到右键菜单上"），否则照旧贴选区。 */
+const pillPos = computed(() => {
+  const r = ctxMenu.rect;
+  if (!ctxMenu.open || !r) return { x: selection.x, y: selection.y };
+  return { x: r.left, y: Math.max(8, r.top - 40) };
+});
 /** 这次右键的上下文。**不放 reactive**：里面是 DOM 节点与临时算出来的地址，不需要跟着重渲染。 */
 let ctxCtx = {
   line: '' as '' | 'pdf' | 'rows' | 'md',
@@ -2806,29 +2817,30 @@ function onContentContextMenu(ev: MouseEvent) {
     imgCaption: imgEl?.getAttribute('alt') || (line === 'pdf' ? `第 ${page} 页` : ''),
   };
   const items: CtxItem[] = [];
+  /* 文案一律精简（用户口径 2026-10-08："精简右键菜单文字，更换图标"）；
+     "搜索"那一行**把选中的文字摆出来**（对齐 Edge 的 `搜索 “…”`）—— 一眼能确认搜的是哪一段。 */
+  const quoted = ctxCtx.text.replace(/\s+/g, ' ').trim().slice(0, 14);
   if (withSel) {
     items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
-    items.push({ key: 'tochat', label: '添加到对话框', icon: 'chat' });
-    items.push({ key: 'bing', label: '网页搜索（Bing）', icon: 'search' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    items.push({
+      key: 'bing', icon: 'search',
+      label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
+    });
     items.push({ key: 'copy', label: '复制', icon: 'copy', shortcut: 'Ctrl+C' });
-    items.push({ key: 'highlight', label: '高亮（笔记）', icon: 'note' });
+    items.push({ key: 'highlight', label: '高亮', icon: 'note' });
   } else if (ctxCtx.imgUrl && line !== 'pdf') {
-    items.push({ key: 'tochat', label: '添加到对话框（带这张图）', icon: 'chat' });
+    items.push({ key: 'tochat', label: '图片加入对话', icon: 'chat' });
   }
-  items.push({
-    key: 'selectall',
-    label: line === 'pdf' ? `全选本页 PDF 文字` : (line === 'md' ? `全选本页 Markdown` : `全选本页正文`),
-    icon: 'list',
-    sep: items.length > 0,
-  });
+  items.push({ key: 'selectall', label: '全选本页', icon: 'checkbox', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
-    items.push({ key: 'saveimg', label: line === 'pdf' ? '本页另存为图片…' : '图片另存为…', icon: 'download', sep: true });
+    items.push({ key: 'saveimg', label: '另存为图片', icon: 'download', sep: true });
     items.push({ key: 'zoomimg', label: '放大打开', icon: 'expand' });
   }
   if (ctxCtx.hlIds.length) {
-    items.push({ key: 'delhl', label: '删除这处高亮与笔记', icon: 'trash', danger: true, sep: true });
+    items.push({ key: 'delhl', label: '删除高亮', icon: 'trash', danger: true, sep: true });
   }
-  items.push({ key: 'export', label: '导出当前视图 Markdown', icon: 'document', sep: true });
+  items.push({ key: 'export', label: '导出 Markdown', icon: 'document', sep: true });
   ctxMenu.items = items;
   ctxMenu.x = ev.clientX;
   ctxMenu.y = ev.clientY;
@@ -4325,8 +4337,8 @@ function renderMarkdown(text?: string | null) {
 
     <SelectionMenu
       :visible="selection.show"
-      :x="selection.x"
-      :y="selection.y"
+      :x="pillPos.x"
+      :y="pillPos.y"
       :colors="HIGHLIGHT_COLORS"
       :anchored="selection.anchored"
       :allow-note="selection.allowNote"
@@ -4513,7 +4525,8 @@ function renderMarkdown(text?: string | null) {
       :y="ctxMenu.y"
       :items="ctxMenu.items"
       @select="onCtxSelect"
-      @close="ctxMenu.open = false"
+      @placed="ctxMenu.rect = $event"
+      @close="ctxMenu.open = false; ctxMenu.rect = null"
     />
 
     <Modal :open="!!zoomImage" :title="zoomTitle" wide @close="zoomImage = null">

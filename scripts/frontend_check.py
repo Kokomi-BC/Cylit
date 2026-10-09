@@ -454,7 +454,7 @@ async function run() {
         .map((e) => e.getAttribute('data-ctx-key'));
       const closeCtx = async () => {
         (d.body || d).dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true }));
-        await sleep(150); spin(BURN);                    // 菜单是下一个 tick 才从 DOM 上摘
+        await sleep(320); spin(BURN);                    // 菜单是下一个 tick 才从 DOM 上摘（玻璃更重，给宽点）
       };
       const body = d.querySelector('.reader-content .rr-body');
       if (body) {
@@ -470,8 +470,8 @@ async function run() {
           const bg = cs.backgroundColor || '';
           const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
           return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
-                   alpha: m ? Number(m[1]) : 1, shadow: cs.boxShadow,
-                   items: p.querySelectorAll('.ctx-item').length };
+                   bgImage: cs.backgroundImage || '', alpha: m ? Number(m[1]) : 1,
+                   shadow: cs.boxShadow, items: p.querySelectorAll('.ctx-item').length };
         })();
         await closeCtx();
         /* 划词之后再右键：该出现"询问 / 添加 / 搜索 / 复制 / 高亮" */
@@ -1382,7 +1382,8 @@ async function run() {
       const bg = cs.backgroundColor || '';
       const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
       return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
-               alpha: m ? Number(m[1]) : 1, z: Number(cs.zIndex) || 0 };
+               bgImage: cs.backgroundImage || '', alpha: m ? Number(m[1]) : 1,
+               z: Number(cs.zIndex) || 0 };
     })();
     /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
     res.menuBeforeHl = [...menu.querySelectorAll('button')]
@@ -1989,7 +1990,7 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            f"有解释键={res.get('menuExplain')} 图标键={res.get('menuIconOnly')}")
     record("pdfhl", "胶囊是**只带图标的同款毛玻璃**，且层级在右键菜单之上",
            res.get("menuIconOnly") is True and (res.get("pillGlass") or {}).get("blur") is True
-           and float((res.get("pillGlass") or {}).get("alpha") or 1) < 0.7
+           and "linear-gradient" in str((res.get("pillGlass") or {}).get("bgImage") or "")
            and int((res.get("pillGlass") or {}).get("z") or 0) > 320,
            f"{res.get('pillGlass')}")
     record("pdfhl", "还没标高亮时菜单里**没有「笔记」**（先插高亮，才能在高亮上加笔记）",
@@ -3356,12 +3357,12 @@ def main() -> int:
             glass = data.get("ctxGlass") or {}
             blank = data.get("ctxKeysBlank") or []
             selk = data.get("ctxKeysSel") or []
-            record("reader", "右键接管了原生菜单，弹的是**毛玻璃**那张（半透明底 + blur + 真阴影）",
+            record("reader", "右键接管了原生菜单，弹的是**顶部胶囊同款玻璃**（渐变 + blur + 真阴影）",
                    data.get("ctxPrevented") is True and glass.get("blur") is True
-                   and float(glass.get("alpha") or 1) < 1
+                   and "linear-gradient" in str(glass.get("bgImage") or "")
                    and str(glass.get("shadow") or "none") != "none",
-                   f"接管={data.get('ctxPrevented')} blur={glass.get('blur')} 底色={glass.get('bg')} "
-                   f"{glass.get('items')} 项")
+                   f"接管={data.get('ctxPrevented')} blur={glass.get('blur')} "
+                   f"渐变={'linear-gradient' in str(glass.get('bgImage') or '')} {glass.get('items')} 项")
             record("reader", "没选区时**不给**复制/高亮（只给全选本页、导出、图片项）",
                    "selectall" in blank and "export" in blank and "copy" not in blank
                    and "highlight" not in blank,
