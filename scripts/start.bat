@@ -45,6 +45,7 @@ if "%PORT%"=="" set "PORT=8710"
 set "SKIP_INIT=0"
 set "NO_BROWSER=0"
 set "RELOAD="
+set "NO_AGENT=0"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -54,6 +55,7 @@ if /I "%~1"=="--host"       ( set "HOST_ADDR=%~2"  & shift & shift & goto parse_
 if /I "%~1"=="--skip-init"  ( set "SKIP_INIT=1"    & shift & goto parse_args )
 if /I "%~1"=="--no-browser" ( set "NO_BROWSER=1"   & shift & goto parse_args )
 if /I "%~1"=="--reload"     ( set "RELOAD=--reload" & shift & goto parse_args )
+if /I "%~1"=="--no-agent"   ( set "NO_AGENT=1"    & shift & goto parse_args )
 if /I "%~1"=="-h"           goto usage
 if /I "%~1"=="--help"       goto usage
 echo [ERROR] unknown argument: %~1
@@ -163,9 +165,25 @@ if errorlevel 1 (
 )
 :init_done
 
-rem --------------------------------------------------------------- 4. serve
+rem --------------------------------------------------------------- 4. agent
+rem The Q&A agent is a SEPARATE process on its own port (on purpose: if the
+rem agent dies, parsing / translation must keep running). This launcher used to
+rem start the API only, so after double-clicking it the UI worked but every Q&A
+rem call failed with "agent not reachable" on :8711. It gets its own window so
+rem its logs stay readable and closing it does not kill the API.
+if "%NO_AGENT%"=="1" (
+  echo.
+  echo [4/5] agent service skipped ^(--no-agent^)
+  goto agent_done
+)
 echo.
-echo [4/4] serving http://%HOST_ADDR%:%PORT%    UI: /app/    API docs: /docs
+echo [4/5] starting agent service on port 8711 ^(separate window^) ...
+start "PaperMind agent" /min cmd /c ""%PY%" cli\pr.py agent"
+:agent_done
+
+rem --------------------------------------------------------------- 5. serve
+echo.
+echo [5/5] serving http://%HOST_ADDR%:%PORT%    UI: /app/    API docs: /docs
 echo       press Ctrl+C in this window to stop
 echo.
 
@@ -185,6 +203,7 @@ echo     --host ^<addr^>    bind address      (default: 127.0.0.1)
 echo     --skip-init      skip database init
 echo     --no-browser     do not open the browser
 echo     --reload         dev hot reload
+echo     --no-agent       do not start the agent service (:8711)
 echo.
 endlocal
 exit /b 0
