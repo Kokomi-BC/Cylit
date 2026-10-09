@@ -38,8 +38,6 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'explain'): void;
-  /** 把选区挂到侧栏对话的输入框（不直接发送，见 `ReaderView.openSelectionInChat`） */
-  (e: 'chat'): void;
   (e: 'note'): void;
   (e: 'copy'): void;
   (e: 'highlight', color: string): void;
@@ -85,31 +83,32 @@ const COLOR_TITLE: Record<string, string> = {
     data-selection-menu
     @mousedown.prevent.stop
   >
-    <button @click="emit('explain')"><AppIcon name="sparkle" :size="14" />AI 解释</button>
-    <!-- 「加入对话」＝ 仿 VS Code 的 Add to Chat：把这段选区挂到侧栏对话的输入框里
-         （落成那枚上下文胶囊），**不直接发** —— 发不发、配什么问题都由用户接着决定。 -->
-    <button title="把这段选区挂到侧栏对话的输入框（发不发由你决定）" @click="emit('chat')">
-      <AppIcon name="chat" :size="14" />加入对话
+    <!-- **只留图标**（用户口径 2026-10-08）：文字标签全撤掉，按钮变成正方形图标键，
+         名称走 `title` / `aria-label`（悬停能看到、读屏也读得到）。
+         「加入对话」也撤掉了 —— 那件事现在在**右键菜单**的「添加到对话框」里。 -->
+    <button title="AI 解释（只依据论文内容）" aria-label="AI 解释" @click="emit('explain')">
+      <AppIcon name="sparkle" :size="15" />
     </button>
     <!-- 原 PDF 栏（pdf.js 文字层）没有块锚点 → 那一栏只留「解释 / 复制」。
-         不写任何说明文字（用户口径：完全移除「原 PDF 栏不支持高亮」那行）。
-
          「笔记」这一项只挂在**已有高亮**上：用户口径是"只有插入了高亮，才能在高亮的基础上
          加笔记" —— 没有高亮时它根本不出现，引导用户先点一个颜色标出来。 -->
     <button
       v-if="props.anchored && props.allowNote && props.hlCount > 0"
-      :title="props.hasNote ? '跳到侧栏那条笔记' : '给这段文字写笔记（会挂在这处高亮上）'"
+      :title="props.hasNote ? '打开这条笔记' : '给这段文字写笔记（会挂在这处高亮上）'"
+      :aria-label="props.hasNote ? '打开笔记' : '添加笔记'"
       @click="emit('note')"
     >
-      <AppIcon name="note" :size="14" />{{ props.hasNote ? '打开笔记' : '添加笔记' }}
+      <AppIcon name="note" :size="15" />
     </button>
-    <button @click="emit('copy')"><AppIcon name="copy" :size="14" />复制</button>
-    <span v-if="props.anchored" class="row" style="padding:0 6px;gap:6px">
+    <button title="复制" aria-label="复制" @click="emit('copy')">
+      <AppIcon name="copy" :size="15" />
+    </button>
+    <span v-if="props.anchored" class="row" style="padding:0 5px;gap:6px">
       <span
         v-for="c in props.colors"
         :key="c"
         :class="['hl-swatch', c]"
-        :title="COLOR_TITLE[c] ?? c"
+        :title="`标成${COLOR_TITLE[c] ?? c}`"
         @click="emit('highlight', c)"
       />
     </span>
@@ -118,30 +117,38 @@ const COLOR_TITLE: Record<string, string> = {
       v-if="props.hlCount > 0"
       class="danger"
       :title="props.hlCount > 1 ? `删除这处高亮（共 ${props.hlCount} 段）` : '删除高亮'"
+      aria-label="删除高亮"
       @click="emit('unhighlight')"
     >
-      <AppIcon name="ban" :size="14" />删除高亮
+      <AppIcon name="ban" :size="15" />
     </button>
-    <button title="关闭" @click="emit('close')"><AppIcon name="close" :size="14" /></button>
+    <button title="关闭" aria-label="关闭" @click="emit('close')">
+      <AppIcon name="close" :size="15" />
+    </button>
   </div>
 </template>
 
 <style scoped>
-/* 划词浮层：一个白色浮层（--bg-elev + --border-strong + --radius，与全站的弹出层同规格），
-   里面每一项都是**胶囊尺寸的小按钮** —— 高度对齐 `.btn.sm`（26px）、圆到底，
-   与旁边那些分段控件同一门语言（用户口径 2026-10-03："以论文译文对照那枚胶囊为准"）。 */
+/* 划词浮层：**与右键菜单同一款毛玻璃**（用户口径 2026-10-08："胶囊也使用同款毛玻璃"）——
+   半透明底 + backdrop blur + `--shadow-flyout`；圆角与全站弹出层同规格（`--radius`）。
+   里面每一项都是**只带图标的胶囊键**（文字标签已撤），高度对齐 `.btn.sm`（26px）。
+   ⚠️ 层级要**高过右键菜单**（`ContextMenu` 是 320）：右键时两个会同时在场上，胶囊在上面。 */
 .selection-menu {
-  position: fixed; z-index: 120; background: var(--bg-elev); border: 1px solid var(--border-strong);
-  border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 3px;
+  position: fixed; z-index: 340; padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
+  backdrop-filter: blur(24px) saturate(1.7);
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  border-radius: var(--radius); box-shadow: var(--shadow-flyout);
   /* 不换行、不收缩：换行会让按钮变成竖排（“AI 解 / 释”） */
   display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap;
   max-width: calc(100vw - 16px);
 }
 .selection-menu button {
   border: 0; background: transparent; color: var(--text-dim);
-  height: var(--control-h-sm); padding: 0 11px;
-  border-radius: var(--radius-ctl); cursor: pointer; font-family: inherit; font-size: 12px;
-  display: inline-flex; align-items: center; gap: 5px;
+  height: var(--control-h-sm); width: var(--control-h-sm); padding: 0;
+  border-radius: var(--radius-ctl); cursor: pointer; font-family: inherit;
+  display: inline-flex; align-items: center; justify-content: center;
   flex: 0 0 auto; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }

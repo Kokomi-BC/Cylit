@@ -453,7 +453,7 @@ async function run() {
       const keys = () => [...d.querySelectorAll('[data-ctx-menu] [data-ctx-key]')]
         .map((e) => e.getAttribute('data-ctx-key'));
       const closeCtx = async () => {
-        d.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true }));
+        (d.body || d).dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true }));
         await sleep(150); spin(BURN);                    // 菜单是下一个 tick 才从 DOM 上摘
       };
       const body = d.querySelector('.reader-content .rr-body');
@@ -1040,9 +1040,26 @@ async function run() {
     await until(d, (x) => x.querySelector('[data-selection-menu]'));
     const menu = d.querySelector('[data-selection-menu]');
     res.menuOpen = !!menu;
-    res.menuBtns = menu ? [...menu.querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
-    const add = menu ? [...menu.querySelectorAll('button')]
-      .find((b) => (b.textContent || '').indexOf('加入对话') >= 0) : null;
+    /* 胶囊现在是**只带图标**的（用户口径 2026-10-08）：名字在 `title`/`aria-label` 上，不再是文字 */
+    res.menuBtns = menu ? [...menu.querySelectorAll('button')]
+      .map((b) => b.getAttribute('aria-label') || b.getAttribute('title') || '') : [];
+    /* 「加入对话」已经从胶囊移走（那件事在**右键菜单**的「添加到对话框」里）：
+       这里改走右键那条路 —— 合成 `mousedown(右键) + contextmenu`，再点 `tochat`。 */
+    /* 右键点必须落在**选区自己的元素**上、坐标也要落在选区矩形里（右键菜单据此判"有没有选区"） */
+    const rr0 = w.getSelection();
+    const rng0 = rr0 && rr0.rangeCount ? rr0.getRangeAt(0) : null;
+    const hostEl = rng0
+      ? (rng0.startContainer.nodeType === 3 ? rng0.startContainer.parentElement : rng0.startContainer)
+      : d.body;
+    const rb = rng0 ? rng0.getBoundingClientRect() : (menu ? menu.getBoundingClientRect() : null);
+    const hx = rb ? Math.round(rb.left + 4) : 300;
+    const hy = rb ? Math.round(rb.top + 4) : 300;
+    hostEl.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, button: 2, buttons: 2, clientX: hx, clientY: hy }));
+    hostEl.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: hx, clientY: hy }));
+    await sleep(200); spin(BURN);
+    res.ctxHasToChat = !!d.querySelector('[data-ctx-key="tochat"]');
+    res.pillOnRightClick = !!d.querySelector('[data-selection-menu]');
+    const add = d.querySelector('[data-ctx-key="tochat"]');
     res.hasAdd = !!add;
     if (add) add.click();
     await until(d, (x) => x.querySelector('.chat .sel-chip'));
@@ -1355,11 +1372,23 @@ async function run() {
     res.menu = !!menu;
     if (!menu) { out(res); return; }
     res.menuText = (menu.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    /* 胶囊**只带图标**（用户口径 2026-10-08："移除文字，只保留图标"）：名字在 aria-label / title 上；
+       而且它现在也是**同款毛玻璃**、层级要**高过右键菜单**（右键时两个同时在场上）。 */
+    const menuBtns = [...menu.querySelectorAll('button')];
+    res.menuExplain = menuBtns.some((b) => ((b.getAttribute('aria-label') || '') + (b.getAttribute('title') || '')).indexOf('解释') >= 0);
+    res.menuIconOnly = menuBtns.every((b) => !(b.textContent || '').trim());
+    res.pillGlass = (() => {
+      const cs = w.getComputedStyle(menu);
+      const bg = cs.backgroundColor || '';
+      const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
+      return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
+               alpha: m ? Number(m[1]) : 1, z: Number(cs.zIndex) || 0 };
+    })();
     /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
     res.menuBeforeHl = [...menu.querySelectorAll('button')]
-      .map((b) => (b.textContent || '').trim()).filter(Boolean);
+      .map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim()).filter(Boolean);
     const yellow = [...menu.querySelectorAll('[title]')]
-      .find((e) => (e.getAttribute('title') || '') === '黄色高亮');
+      .find((e) => (e.getAttribute('title') || '').indexOf('黄色高亮') >= 0);
     res.hasColors = !!yellow;
     if (!yellow) { out(res); return; }
     yellow.click();
@@ -1475,9 +1504,11 @@ async function run() {
     }
     res.menu2 = !!menu2;
     const noteBtn = menu2
-      ? [...menu2.querySelectorAll('button')].find((b) => (b.textContent || '').indexOf('笔记') >= 0)
+      ? [...menu2.querySelectorAll('button')]
+        .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('笔记') >= 0)
       : null;
-    res.noteBtn = noteBtn ? (noteBtn.textContent || '').trim() : '';
+    res.noteBtn = noteBtn
+      ? (noteBtn.getAttribute('aria-label') || noteBtn.getAttribute('title') || '').trim() : '';
     if (noteBtn) {
       noteBtn.click();
       await until(D(), (x) => x.querySelector('textarea'), 20);
@@ -1665,10 +1696,12 @@ async function run() {
         const m3 = D().querySelector('[data-selection-menu]');
         res.menuText3 = m3 ? (m3.textContent || '').replace(/\\s+/g, ' ').trim() : '';
         openBtn = m3 ? [...m3.querySelectorAll('button')]
-          .find((b) => (b.textContent || '').indexOf('打开笔记') >= 0) : null;
+          .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('打开笔记') >= 0)
+          : null;
         if (!openBtn) await sleep(300);
       }
-      res.openNoteBtn = openBtn ? (openBtn.textContent || '').trim() : '';
+      res.openNoteBtn = openBtn
+        ? (openBtn.getAttribute('aria-label') || openBtn.getAttribute('title') || '').trim() : '';
       if (openBtn) {
         openBtn.click();
         await until(D(), () => !!card(), 20);
@@ -1717,7 +1750,7 @@ async function run() {
         pg4.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
         await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
         const aiBtn = [...D().querySelectorAll('[data-selection-menu] button')]
-          .find((b) => (b.textContent || '').indexOf('AI 解释') >= 0);
+          .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('AI 解释') >= 0);
         res.aiBtn = !!aiBtn;
         if (aiBtn) {
           aiBtn.click();
@@ -1952,8 +1985,13 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            res.get("hasLayer") is True and (res.get("spans") or 0) >= 2,
            f"第 {res.get('page')} 页，{res.get('spans')} 段文字")
     record("pdfhl", "PDF 划词菜单里有高亮色（第三步之前这里只有解释/复制）",
-           res.get("hasColors") is True and "解释" in str(res.get("menuText") or ""),
-           f"菜单：{res.get('menuText')}")
+           res.get("hasColors") is True and res.get("menuExplain") is True,
+           f"有解释键={res.get('menuExplain')} 图标键={res.get('menuIconOnly')}")
+    record("pdfhl", "胶囊是**只带图标的同款毛玻璃**，且层级在右键菜单之上",
+           res.get("menuIconOnly") is True and (res.get("pillGlass") or {}).get("blur") is True
+           and float((res.get("pillGlass") or {}).get("alpha") or 1) < 0.7
+           and int((res.get("pillGlass") or {}).get("z") or 0) > 320,
+           f"{res.get('pillGlass')}")
     record("pdfhl", "还没标高亮时菜单里**没有「笔记」**（先插高亮，才能在高亮上加笔记）",
            "笔记" not in (res.get("menuBeforeHl") or []),
            f"菜单项 {res.get('menuBeforeHl')}")
@@ -3573,8 +3611,12 @@ def main() -> int:
         if sel.get("menuOpen") is not True:
             skip("划词 → 加入对话", f"造不出选区或菜单没出来（picked={sel.get('picked')}）")
         else:
-            record("reader", "划词菜单里有「加入对话」", sel.get("hasAdd") is True,
-                   f"{sel.get('menuBtns')}")
+            record("reader", "胶囊只带图标（名称在 aria-label 上），且**右键时胶囊还在**",
+                   sel.get("menuIconOnly") is True and sel.get("pillOnRightClick") is True,
+                   f"按钮名={sel.get('menuBtns')}")
+            record("reader", "「加入对话」已从胶囊移走，改由**右键菜单**的「添加到对话框」承担",
+                   sel.get("ctxHasToChat") is True and sel.get("hasAdd") is True,
+                   f"右键菜单里有 tochat={sel.get('ctxHasToChat')}")
             record("chat", "选区落成输入框上沿的上下文胶囊（按钮样式 + 显示选中文字）",
                    sel.get("chipShown") is True and sel.get("chipTag") == "BUTTON"
                    and bool(sel.get("chipText")),

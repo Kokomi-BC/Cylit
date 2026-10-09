@@ -418,6 +418,10 @@ const selection = reactive({
   segments: [] as MdSegment[],
   /** 选区/点击处盖住的已有高亮 id（菜单据此显示「删除高亮」） */
   hlIds: [] as string[],
+  /** 选区的外接矩形：**右键时用来判"这次右键落在选区上吗"** ——
+   *  浏览器在右键 mousedown 时会把选区折叠掉，那时 `getSelection()` 已经没有选区了，
+   *  只能靠这份快照（右键菜单要给"复制/高亮/询问"那几项）。 */
+  rect: null as { left: number; top: number; right: number; bottom: number } | null,
 });
 /**
  * 划词解释（浮动卡片）。
@@ -2340,6 +2344,14 @@ function syncSelectionColumn() {
 
 /** 按下时就先定下来（拖拽最初那几帧还没有选区，等 `selectionchange` 会闪一下） */
 function onDragStart(ev: MouseEvent) {
+  /* 右键：**保住页面上的选区**（浏览器的默认动作是把选区折叠到点击处）。
+     不挡的话，右键菜单里那几项"复制 / 高亮 / 询问"会因为"没有选区"整组消失
+     （用户报的正是这个），划词胶囊也会跟着没。输入框里放行原生行为。 */
+  if (ev.button === 2) {
+    const t = ev.target as HTMLElement | null;
+    if (!t?.closest?.('input, textarea, [contenteditable="true"]')) ev.preventDefault();
+    return;
+  }
   if (ev.button !== 0) return;
   setColSide(colSide(columnOf(ev.target as Node)));
 }
@@ -2363,9 +2375,10 @@ function onDragMove(ev: MouseEvent) {
 }
 
 function onMouseUp(ev?: MouseEvent) {
-  /* 只认**主键**（左键）：右键那一下不该把划词菜单也叫出来 ——
-     右键现在是毛玻璃菜单的地盘（`onContentContextMenu`），两个菜单叠一起很难看。 */
-  if (ev && ev.button !== 0) return;
+  /* 右键那一下也走这里（用户口径 2026-10-08："顶部的胶囊在右键时也能显示"）：
+     右键 mousedown 已经 `preventDefault` 保住了选区，所以这一步能把胶囊重新摆出来 ——
+     它现在**只带图标**，和右键菜单各管一段（胶囊给颜色/删除，右键菜单给"询问/添加/搜索/…"）。
+     层级上胶囊在上面（见 `SelectionMenu` 的 z-index）。 */
   /* 点的是划词菜单本身（色块/按钮）：**绝不能**当成"新划词"处理。
    * 真实鼠标点色块时，mousedown 的默认动作会把选区清掉（`SelectionMenu` 已 preventDefault 兜住，
    * 但这里再兜一层）—— 一旦把 `selection.show` 置 false，菜单会在自己的 click 触发前被卸载，
@@ -2387,6 +2400,9 @@ function onMouseUp(ev?: MouseEvent) {
   const node = sel.anchorNode;
   const el = (node && node.nodeType === 3 ? node.parentElement : node) as HTMLElement | null;
   const rect = sel.getRangeAt(0).getBoundingClientRect();
+  /* 存一份矩形快照：**右键 mousedown 会把 DOM 选区折叠掉**（浏览器默认动作），
+     那时 `getSelection()` 里已经没有选区了 —— 右键菜单要靠这份快照判"落点在不在选区上"。 */
+  selection.rect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 
   /* 原 PDF 划词（《修改计划》第三步起**支持高亮**）：文字层是 pdf.js 渲染出来的，
    * 自己就是一套"页面文本"。锚点 = `pdf:p<页号>` + **该页文字层渲染文字里的偏移量**
@@ -2763,11 +2779,18 @@ function onContentContextMenu(ev: MouseEvent) {
   const line: 'pdf' | 'rows' | 'md' = pdfEl ? 'pdf' : (mdEl ? 'md' : 'rows');
   const page = Number(pdfEl?.getAttribute('data-pdf-page') ?? pageEl?.getAttribute('data-page')
     ?? mdEl?.getAttribute('data-md-page') ?? 0) || currentPage.value;
-  /* 选区是否就在这次右键的落点上：右键别处时不该冒出"复制选区/高亮选区"（那是上一次划的词） */
+  /* 选区是否就在这次右键的落点上：右键别处时不该冒出"复制选区/高亮选区"（那是上一次划的词）。
+     ⚠️ 两道判据必须都留着：浏览器在右键 `mousedown` 时**会把选区折叠掉**（实测），
+     那时 `getSelection()` 已经拿不到选区，只能退回 `selection.rect` 这份快照；
+     而我们自己又在右键 mousedown 上 `preventDefault` 保住了选区 —— 两条路都得走得通。 */
   const sel = window.getSelection();
   const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
-  const inSel = !!(range && target && (() => {
-    try { return range.intersectsNode(target); } catch { return false; }
+  const inSel = !!(target && (() => {
+    if (range) { try { return range.intersectsNode(target); } catch { return false; } }
+    const r = selection.rect;
+    if (!r) return false;
+    return ev.clientX >= r.left - 2 && ev.clientX <= r.right + 2
+      && ev.clientY >= r.top - 2 && ev.clientY <= r.bottom + 2;
   })());
   const withSel = inSel && selection.show && !!selection.text;
   ctxCtx = {
@@ -4310,7 +4333,6 @@ function renderMarkdown(text?: string | null) {
       :hl-count="selection.hlIds.length"
       :has-note="!!selectionNote"
       @explain="explainSelection"
-      @chat="openSelectionInChat(true)"
       @note="onNoteAction"
       @copy="copySelection"
       @highlight="addHighlight"

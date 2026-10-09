@@ -149,17 +149,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 毛玻璃：半透明底 + backdrop blur（用户口径"毛玻璃右键菜单，样式如图"）——
+/* 毛玻璃：半透明底 + backdrop blur（用户口径"毛玻璃右键菜单，样式如图"；
+   随后又两次要求"更透明一点"——所以底色只留 55%，behind 的正文要能明显透出来）。
    它面积小、贴在鼠标点上，透一点正文才像"从页面上浮起来"。
    阴影用 `--shadow-flyout`（`--shadow-3` 那个名字从来没定义过，写上去等于没有）。 */
 .ctx-panel {
   position: fixed; z-index: 320; padding: 6px;
   display: flex; flex-direction: column; gap: 1px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
-  background: color-mix(in srgb, var(--bg-elev) 76%, transparent);
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
+  backdrop-filter: blur(24px) saturate(1.7);
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
   box-shadow: var(--shadow-flyout);
   user-select: none;
 }
