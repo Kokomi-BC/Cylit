@@ -447,6 +447,10 @@ const explainCard = reactive({
    */
   scope: 'row' as 'row' | 'markdown' | 'pdf',
   selectionText: '', page: 0 as number, conversationId: '' as string | null,
+  /** 解释的是**插图**时（右键图片 → 询问 Cyli）：浮层顶部给个缩略图，而 `attachments` 才是
+   *  真给模型看的东西。⚠️ 附件**每轮都要重发**：历史里只存文字（`history_for_agent` 不带图），
+   *  不重发的话第二轮追问模型就"看不见这张图"了。 */
+  imageUrl: '', imageCaption: '', attachments: [] as string[],
   /** 打开时的选区快照：`存为笔记` 要它（那时选区可能已经被用户改了） */
   highlightId: '' as string, start: 0, end: 0, side: 'en' as 'en' | 'zh', quote: '',
   /** 浮层锚点（划词那一处的屏幕位置）—— 与笔记浮层同一套定位 */
@@ -2775,6 +2779,10 @@ let ctxCtx = {
   imgUrl: '',
   imgName: '',
   imgCaption: '',
+  /** 落点是**真 `<img>`（插图）**，不是 PDF 页那张位图 —— 决定给不给「询问 Cyli」 */
+  isFigure: false,
+  /** 那枚插图的屏幕矩形：解释浮层要锚在它旁边 */
+  imgRect: null as { x: number; y: number; w: number; h: number } | null,
 };
 
 /** 右键：按"落在哪个界面 + 落点是什么"给清单（三套）。输入框里放行浏览器原生菜单。 */
@@ -2804,6 +2812,7 @@ function onContentContextMenu(ev: MouseEvent) {
       && ev.clientY >= r.top - 2 && ev.clientY <= r.bottom + 2;
   })());
   const withSel = inSel && selection.show && !!selection.text;
+  const figRect = imgEl?.getBoundingClientRect();
   ctxCtx = {
     line,
     text: withSel ? (copyPayload(sel as Selection)?.text ?? selection.text) : '',
@@ -2815,6 +2824,9 @@ function onContentContextMenu(ev: MouseEvent) {
       ? `${paperId.value}-${(imgEl.getAttribute('alt') || `p${page}`).replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40)}.png`
       : `${paperId.value}-p${page}.png`,
     imgCaption: imgEl?.getAttribute('alt') || (line === 'pdf' ? `第 ${page} 页` : ''),
+    isFigure: !!imgEl,
+    imgRect: figRect
+      ? { x: figRect.left, y: figRect.top, w: figRect.width, h: figRect.height } : null,
   };
   const items: CtxItem[] = [];
   /* 文案一律精简（用户口径 2026-10-08："精简右键菜单文字，更换图标"）；
@@ -2836,8 +2848,10 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'highlight', label: '高亮', icon: 'note' });
     items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
     items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
-  } else if (ctxCtx.imgUrl && line !== 'pdf') {
-    items.push({ key: 'tochat', label: '图片加入对话', icon: 'chat' });
+  } else if (ctxCtx.isFigure) {
+    /* 插图：**先给「询问 Cyli」**（解释这张图），再是「加入对话」（2026-10-09） */
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
   }
   items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
@@ -2913,7 +2927,10 @@ async function ctxAttachImage() {
 function onCtxSelect(key: string) {
   const c = ctxCtx;
   switch (key) {
-    case 'ask': hideMenu(); void explainSelection(); break;
+    case 'ask':
+      hideMenu();
+      if (c.isFigure) void explainImage(); else void explainSelection();
+      break;
     case 'tochat':
       if (c.text) openSelectionInChat(true);
       if (c.imgUrl) void ctxAttachImage();
@@ -2930,9 +2947,12 @@ function onCtxSelect(key: string) {
   }
 }
 
-/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。 */async function askSelection(question: string) {
+/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。
+ *  `opts.silent` = **不把这句话渲染成用户气泡**：图片解释的默认问法（"请解释这张图片"）
+ *  是系统补的，不是用户打的字（对齐划词解释 —— 那边也是后端补的默认 prompt，不显示气泡）。 */
+async function askSelection(question: string, opts: { silent?: boolean } = {}) {
   const q = question.trim();
-  if (q) explainCard.turns.push({ role: 'user', text: q, citations: [] });
+  if (q && !opts.silent) explainCard.turns.push({ role: 'user', text: q, citations: [] });
   // ⚠️ 必须**通过 reactive 对象的下标**改字段：push 进去的是原始对象，直接改它不会触发更新
   const idx = explainCard.turns.length;
   explainCard.turns.push({ role: 'assistant', text: '', citations: [], steps: [] });
@@ -2988,6 +3008,8 @@ function onCtxSelect(key: string) {
     await postSse('/agent/ask', {
       paper_id: paperId.value, question: q,
       conversation_id: explainCard.conversationId,
+      // 插图解释：**每轮都把附件带上**（理由是历史不带图，见 `explainCard.attachments`）
+      attachments: explainCard.attachments.length ? explainCard.attachments : undefined,
       selection: {
         text: explainCard.selectionText,
         row_id: explainCard.scope === 'row' ? (explainCard.rowId || null) : null,
@@ -3004,6 +3026,65 @@ function onCtxSelect(key: string) {
   }
 }
 
+/** 右键**插图** → 询问 Cyli：把图上传成附件，再走**同一条**问答链路
+ *  （`/agent/ask` + `attachments`），浮层锚在那张图旁边。
+ *
+ *  为什么走附件而不是新接口：问答 agent 本来就吃图片附件（侧栏对话那条路），
+ *  `runtime._user_prompt` 会把附件编成多模态消息 —— 这里只是换了个入口，后端一行都不用改。
+ *  默认问法由前端补（`silent`：不渲染成用户气泡）。 */
+async function explainImage() {
+  const c = ctxCtx;
+  if (!c.imgUrl) return;
+  hideMenu();
+  explainCard.open = true;
+  explainCard.loading = true;
+  explainCard.question = '';
+  explainCard.rowId = '';                        // 插图没有正文块锚点
+  explainCard.blockAnchored = false;
+  explainCard.scope = 'markdown';                // 兜底：那一侧的"存为笔记"已按图收起
+  explainCard.selectionText = '';
+  explainCard.page = c.page || 0;
+  explainCard.conversationId = null;
+  explainCard.turns = [];
+  explainCard.processOpen = false;
+  explainCard.pinned = true;
+  explainCard.highlightId = '';
+  explainCard.start = 0;
+  explainCard.end = 0;
+  explainCard.quote = '';
+  explainCard.imageUrl = c.imgUrl;
+  explainCard.imageCaption = c.imgCaption;
+  explainCard.attachments = [];
+  // 锚在**图片本身**（`FloatingCard` 会把它摆在图的下沿、放不下就翻到上方）
+  explainCard.anchor = c.imgRect
+    ? { x: c.imgRect.x, y: c.imgRect.y, w: c.imgRect.w, h: c.imgRect.h }
+    : { x: 0, y: 0 };
+  /* 先把图"喂"进去再问：上传走侧栏对话那条**同一条**链路（`/agent/attachments`） */
+  try {
+    const res = await fetch(c.imgUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    /* 缩略图直接用**刚取回来的这份 blob**（object URL），不再让卡片去加载那个 URL：
+       实测出现过"模型明明收到了图、卡片里却是裂图"—— etch 拿得到、<img> 却不渲染
+       （重定向/内容处置头/CSP 都可能造成这种不对称）。这样图和喂给模型的是**同一份字节**。 */
+    if (explainCard.imageUrl.startsWith('blob:')) URL.revokeObjectURL(explainCard.imageUrl);
+    explainCard.imageUrl = URL.createObjectURL(blob);
+    const form = new FormData();
+    form.append('files', new File([blob], c.imgName, { type: blob.type || 'image/png' }), c.imgName);
+    const data = await api.upload<{ items: Array<{ attachment_id: string }> }>('/agent/attachments', form);
+    explainCard.attachments = (data.items ?? []).map((a) => a.attachment_id).filter(Boolean);
+  } catch (err) {
+    explainCard.loading = false;
+    explainCard.turns.push({
+      role: 'assistant', citations: [],
+      text: `（这张图没能交给 Cyli：${(err as Error)?.message ?? err}）`,
+    });
+    reportError(err, '把图片交给 Cyli 失败');
+    return;
+  }
+  await askSelection('请解释这张图片：它展示了什么，以及它在这篇论文里说明了什么。', { silent: true });
+}
+
 async function explainSelection() {
   // 无块锚点（原 PDF 划词）时只传文本：agent 那边拿不到块就少一层上下文，仍能解释
   const rowId = selection.anchored ? selection.rowId : '';
@@ -3017,6 +3098,9 @@ async function explainSelection() {
   explainCard.selectionText = selection.text;
   explainCard.page = Number(selection.page) || 0;
   explainCard.conversationId = null;
+  explainCard.imageUrl = '';                     // 划词解释：把上一轮"解释插图"的残留清掉
+  explainCard.imageCaption = '';
+  explainCard.attachments = [];
   explainCard.turns = [];
   explainCard.processOpen = false;                    // 过程默认折叠（用户口径）
   explainCard.pinned = true;                          // 每次打开都从"锚定"开始（默认态）
@@ -3064,6 +3148,8 @@ function answerBody(t: { text?: string; steps?: AgentStep[] }): string {
 const explainTurn = computed(() => (
   [...explainCard.turns].reverse().find((t) => t.role === 'assistant') ?? null
 ));
+/** 这一轮解释的是**插图**（右键图片 → 询问 Cyli）：底部"标出这段并存为笔记"那套要收起来。 */
+const explainIsImage = computed(() => !!explainCard.imageUrl);
 /** 这一轮的过程轨迹有没有东西可看（决定"正在读…"那行还要不要） */
 const explainSteps = computed(() => (explainTurn.value?.steps ?? []).length > 0);
 /**
@@ -4374,6 +4460,11 @@ function renderMarkdown(text?: string | null) {
       @toggle-anchor="explainCard.pinned = !explainCard.pinned"
     >
       <div class="ex-thread">
+        <!-- 解释的是插图时：顶上给张缩略图（一眼知道在解释哪张图；真正给模型看的是附件） -->
+        <div v-if="explainCard.imageUrl" class="ex-fig">
+          <img :src="explainCard.imageUrl" :alt="explainCard.imageCaption || '插图'" data-ex-fig>
+          <span v-if="explainCard.imageCaption" class="tiny faint">{{ explainCard.imageCaption }}</span>
+        </div>
         <div v-for="(t, i) in explainCard.turns" :key="i" class="ex-turn" :class="t.role">
           <div v-if="t.role === 'user'" class="ex-q">{{ t.text }}</div>
           <template v-else>
@@ -4411,7 +4502,7 @@ function renderMarkdown(text?: string | null) {
       <div v-if="!explainBusy" class="ex-ask">
         <input
           v-model="explainCard.question"
-          placeholder="就这段继续问（Enter 发送）"
+          :placeholder="explainIsImage ? '就这张图继续问（Enter 发送）' : '就这段继续问（Enter 发送）'"
           @keyup.enter="submitExplainQuestion"
         >
         <button class="btn sm primary" :disabled="explainCard.loading || !explainCard.question.trim()"
@@ -4421,7 +4512,8 @@ function renderMarkdown(text?: string | null) {
       </div>
 
       <template #footer>
-        <template v-if="!explainBusy">
+        <!-- 插图解释：没有"这段文字"可标，存为笔记那套收起来 -->
+        <template v-if="!explainBusy && !explainIsImage">
           <span class="tiny faint ex-save-hint">标出这段并存为笔记</span>
           <span class="ex-swatches">
             <span
@@ -5022,6 +5114,12 @@ function renderMarkdown(text?: string | null) {
 .cite-pop :deep(.ref-list > .item:focus-visible) { box-shadow: var(--ring); }
 .cite-pop-hint { padding: 6px 8px; }
 .ex-thread { max-height: 46vh; overflow-y: auto; }
+/* 插图解释：顶上那张缩略图（比正文宽、但别把浮层撞成一面墙） */
+.ex-fig { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.ex-fig img {
+  max-width: 100%; max-height: 160px; object-fit: contain;
+  border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elev);
+}
 .ex-turn { margin-bottom: 10px; }
 .ex-turn .md :deep(p) { margin: .35em 0; }
 .ex-q {
