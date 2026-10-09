@@ -97,7 +97,7 @@ const COLOR_HEX: Record<string, string> = {
 
 const ANNOTATION_TYPE_LABEL: Record<string, string> = {
   qa: '问答',
-  explain: 'AI 解释',
+  explain: 'Cyli 解释',
   summary: '摘要',
   manual: '手动批注',
 };

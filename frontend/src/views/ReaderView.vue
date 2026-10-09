@@ -3212,6 +3212,38 @@ function openSelectionInChat(fromMenu = false) {
  * 用户口径 2026-10-07：**浮层锚定之后，这里跳转不能把浮层关掉** ——
  * 用法就是"一边看着解释、一边跳过去核对"。没锚定的（临时浮层）仍然顺手关掉。
  */
+/**
+ * 解释正文的渲染：把 `[3]` 这类标号接成**可点的小按钮**，并把来源（行/页）刻在按钮上。
+ *
+ * 为什么自己做（原来是 `<div v-html="renderMarkdown(...)">`）：正文里的标号点不动 ——
+ * `onContentClick` 只认正文里的 `[data-refs]`（参考文献），解释浮层里的标号谁也没接。
+ * 底部那排"来源标号"撤掉之后（用户口径 2026-10-09），**跳转就全靠正文里这些标号**。
+ */
+function renderExplainAnswer(t: { text: string; citations: AgentCitation[] }): string {
+  const html = renderMarkdown(answerBody(t));
+  const byRef = new Map((t.citations ?? []).map((c) => [String(c.ref), c]));
+  if (!byRef.size) return html;
+  return html.replace(/\[(\d{1,3})\]/g, (whole, num) => {
+    const c = byRef.get(String(num));
+    if (!c) return whole;
+    const row = (c.row_id || '').replace(/"/g, '&quot;');
+    const page = Number(c.page || 0) || '';
+    const tip = (c.snippet || c.label || '').replace(/"/g, '&quot;').slice(0, 120);
+    return `<button type="button" class="cite-inline" data-ex-cite="${num}"`
+      + ` data-row="${row}" data-page="${page}" title="${tip}">[${num}]</button>`;
+  });
+}
+
+/** 点解释正文里的标号 → 跳到那条来源（与原来底部标号同一动作，入口换到正文里） */
+function onExplainCite(ev: MouseEvent) {
+  const btn = (ev.target as HTMLElement | null)?.closest?.('[data-ex-cite]') as HTMLElement | null;
+  if (!btn) return;
+  const rowId = btn.dataset.row || '';
+  const page = Number(btn.dataset.page || 0) || undefined;
+  if (!rowId && !page) return;
+  focusRow(rowId, { page, flash: true });
+}
+
 function focusCitation(citation: AgentCitation) {
   if (!explainCard.pinned) explainCard.open = false;
   focusRow(citation.row_id || citation.block_id || '', { page: citation.page ?? undefined, flash: true });
@@ -4452,7 +4484,7 @@ function renderMarkdown(text?: string | null) {
       :open="explainCard.open"
       :anchor="explainCard.anchor"
       :anchored="explainCard.pinned"
-      title="AI 解释（只依据论文内容）"
+      title="Cyli 解释（只依据论文内容）"
       :width="420"
       :max-height="520"
       data-explain-card
@@ -4485,13 +4517,8 @@ function renderMarkdown(text?: string | null) {
                 </div>
               </div>
             </div>
-            <div v-if="answerBody(t)" class="md small" data-ex-answer v-html="renderMarkdown(answerBody(t))" />
-            <div v-if="t.citations.length" class="ex-cites">
-              <button v-for="c in t.citations" :key="c.ref" class="chip" :title="c.snippet || c.label"
-                      @click="focusCitation(c)">
-                [{{ c.ref }}]<span v-if="c.page"> p{{ c.page }}</span>
-              </button>
-            </div>
+            <div v-if="answerBody(t)" class="md small" data-ex-answer
+                 v-html="renderExplainAnswer(t)" @click="onExplainCite" />
           </template>
         </div>
         <!-- 还在出过程、正文没到：只留这一行（有轨迹可看时连它都不必） -->

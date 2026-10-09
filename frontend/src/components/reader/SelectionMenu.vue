@@ -86,7 +86,7 @@ const COLOR_TITLE: Record<string, string> = {
     <!-- **只留图标**（用户口径 2026-10-08）：文字标签全撤掉，按钮变成正方形图标键，
          名称走 `title` / `aria-label`（悬停能看到、读屏也读得到）。
          「加入对话」也撤掉了 —— 那件事现在在**右键菜单**的「添加到对话框」里。 -->
-    <button title="AI 解释（只依据论文内容）" aria-label="AI 解释" @click="emit('explain')">
+    <button title="Cyli 解释（只依据论文内容）" aria-label="Cyli 解释" @click="emit('explain')">
       <AppIcon name="sparkle" :size="15" />
     </button>
     <!-- 原 PDF 栏（pdf.js 文字层）没有块锚点 → 那一栏只留「解释 / 复制」。
