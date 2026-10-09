@@ -55,6 +55,7 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
+import ContextMenu from '@/components/ContextMenu.vue';
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
 const route = useRoute();
@@ -1990,6 +1991,8 @@ watch(searchMode, (m) => {
 
 /** 搜索框在侧栏里：`/` 快捷键要先把侧栏（窄屏是抽屉）打开、切到「搜索」页签，再聚焦。 */
 const searchPane = ref<InstanceType<typeof ReaderSearch> | null>(null);
+/** 对话面板实例：右键「添加到对话框（带这张图）」要把图片塞进它的附件列表（见 `ctxAttachImage`） */
+const chatRef = ref<InstanceType<typeof ReaderChat> | null>(null);
 async function focusSearchBox() {
   if (!asideVisible.value) await toggleAside();
   sideTab.value = 'search';
@@ -2360,6 +2363,9 @@ function onDragMove(ev: MouseEvent) {
 }
 
 function onMouseUp(ev?: MouseEvent) {
+  /* 只认**主键**（左键）：右键那一下不该把划词菜单也叫出来 ——
+     右键现在是毛玻璃菜单的地盘（`onContentContextMenu`），两个菜单叠一起很难看。 */
+  if (ev && ev.button !== 0) return;
   /* 点的是划词菜单本身（色块/按钮）：**绝不能**当成"新划词"处理。
    * 真实鼠标点色块时，mousedown 的默认动作会把选区清掉（`SelectionMenu` 已 preventDefault 兜住，
    * 但这里再兜一层）—— 一旦把 `selection.show` 置 false，菜单会在自己的 click 触发前被卸载，
@@ -2716,8 +2722,173 @@ function onCopy(ev: ClipboardEvent) {
   ev.preventDefault();
 }
 
-/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。 */
-async function askSelection(question: string) {
+/* ------------------------------ 右键菜单（毛玻璃） ------------------------------
+ * 用户口径 2026-10-08：三处界面（原 PDF 页 / 正文行 / Markdown 视图）**各一套清单**，
+ * 按"有没有选区、右键落在什么上（高亮 / 图片 / 空白）"动态给项 —— 没有的动作一律不出现
+ * （没选区就不给「高亮」，不在图片上就不给「另存为/放大」）。
+ * 复用现成能力：询问=AI 解释浮层（可追问）、添加到对话框=侧栏输入框的上下文胶囊、
+ * 复制=那条公式感知的复制、高亮/删除=划词菜单同一套、导出=当前视图那份 Markdown。
+ * 新做的只有三件：Bing 搜索、全选本页、图片另存为（原图）。
+ */
+interface CtxItem {
+  key: string; label: string; icon?: string;
+  /** 只在**真有**快捷键的项上写（别编一个 Ctrl+X 出来） */
+  shortcut?: string;
+  danger?: boolean;
+  sep?: boolean;
+}
+
+const ctxMenu = reactive({ open: false, x: 0, y: 0, items: [] as CtxItem[] });
+/** 这次右键的上下文。**不放 reactive**：里面是 DOM 节点与临时算出来的地址，不需要跟着重渲染。 */
+let ctxCtx = {
+  line: '' as '' | 'pdf' | 'rows' | 'md',
+  text: '',
+  page: 0,
+  hlIds: [] as string[],
+  imgUrl: '',
+  imgName: '',
+  imgCaption: '',
+};
+
+/** 右键：按"落在哪个界面 + 落点是什么"给清单（三套）。输入框里放行浏览器原生菜单。 */
+function onContentContextMenu(ev: MouseEvent) {
+  const target = ev.target as HTMLElement | null;
+  if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
+  const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
+  const pageEl = target?.closest?.('[data-page]') as HTMLElement | null;
+  const mdEl = target?.closest?.('[data-md-page]') as HTMLElement | null;
+  const imgEl = target?.closest?.('img') as HTMLImageElement | null;
+  const markEl = target?.closest?.('mark.hl[data-hl]') as HTMLElement | null;
+  const line: 'pdf' | 'rows' | 'md' = pdfEl ? 'pdf' : (mdEl ? 'md' : 'rows');
+  const page = Number(pdfEl?.getAttribute('data-pdf-page') ?? pageEl?.getAttribute('data-page')
+    ?? mdEl?.getAttribute('data-md-page') ?? 0) || currentPage.value;
+  /* 选区是否就在这次右键的落点上：右键别处时不该冒出"复制选区/高亮选区"（那是上一次划的词） */
+  const sel = window.getSelection();
+  const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
+  const inSel = !!(range && target && (() => {
+    try { return range.intersectsNode(target); } catch { return false; }
+  })());
+  const withSel = inSel && selection.show && !!selection.text;
+  ctxCtx = {
+    line,
+    text: withSel ? (copyPayload(sel as Selection)?.text ?? selection.text) : '',
+    page,
+    hlIds: markEl?.dataset.hl ? highlightIdsInRange(document.createRange(), markEl) : [],
+    imgUrl: imgEl?.src
+      || (line === 'pdf' ? assetUrl(`/api/v1/papers/${paperId.value}/pages/${page}`) : ''),
+    imgName: imgEl
+      ? `${paperId.value}-${(imgEl.getAttribute('alt') || `p${page}`).replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40)}.png`
+      : `${paperId.value}-p${page}.png`,
+    imgCaption: imgEl?.getAttribute('alt') || (line === 'pdf' ? `第 ${page} 页` : ''),
+  };
+  const items: CtxItem[] = [];
+  if (withSel) {
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    items.push({ key: 'tochat', label: '添加到对话框', icon: 'chat' });
+    items.push({ key: 'bing', label: '网页搜索（Bing）', icon: 'search' });
+    items.push({ key: 'copy', label: '复制', icon: 'copy', shortcut: 'Ctrl+C' });
+    items.push({ key: 'highlight', label: '高亮（笔记）', icon: 'note' });
+  } else if (ctxCtx.imgUrl && line !== 'pdf') {
+    items.push({ key: 'tochat', label: '添加到对话框（带这张图）', icon: 'chat' });
+  }
+  items.push({
+    key: 'selectall',
+    label: line === 'pdf' ? `全选本页 PDF 文字` : (line === 'md' ? `全选本页 Markdown` : `全选本页正文`),
+    icon: 'list',
+    sep: items.length > 0,
+  });
+  if (ctxCtx.imgUrl) {
+    items.push({ key: 'saveimg', label: line === 'pdf' ? '本页另存为图片…' : '图片另存为…', icon: 'download', sep: true });
+    items.push({ key: 'zoomimg', label: '放大打开', icon: 'expand' });
+  }
+  if (ctxCtx.hlIds.length) {
+    items.push({ key: 'delhl', label: '删除这处高亮与笔记', icon: 'trash', danger: true, sep: true });
+  }
+  items.push({ key: 'export', label: '导出当前视图 Markdown', icon: 'document', sep: true });
+  ctxMenu.items = items;
+  ctxMenu.x = ev.clientX;
+  ctxMenu.y = ev.clientY;
+  ctxMenu.open = true;
+  ev.preventDefault();                    // 收掉浏览器原生菜单（要的就是它换成这一张）
+}
+
+function ctxBing(text: string) {
+  const q = text.trim().slice(0, 300);
+  if (!q) return;
+  window.open(`https://www.bing.com/search?q=${encodeURIComponent(q)}`, '_blank', 'noopener');
+}
+
+/** 全选"本页"：PDF 选这一页的文字层、Markdown 选这一页、正文行选这一页的那一组。 */
+function ctxSelectPage() {
+  const { line, page } = ctxCtx;
+  const root = line === 'pdf'
+    ? document.querySelector<HTMLElement>(`[data-pdf-page="${page}"] .pdf-text-layer`)
+    : line === 'md'
+      ? document.querySelector<HTMLElement>(`[data-md-page="${page}"]`)
+      : document.querySelector<HTMLElement>(`[data-page="${page}"]`);
+  const sel = window.getSelection();
+  if (!root || !sel) return;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  hideMenu();
+  toast(`已选中第 ${page} 页${line === 'pdf' ? ' PDF 文字' : '正文'}`, 'ok', 1600);
+}
+
+/** 图片另存为：存**原图**（PDF 页 = 后端渲染的页 PNG；插图 = 它自己的原图地址）。 */
+async function ctxSaveImage() {
+  if (!ctxCtx.imgUrl) return;
+  try {
+    const res = await fetch(ctxCtx.imgUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    saveBlob(ctxCtx.imgName, await res.blob());
+    toast(`已保存 ${ctxCtx.imgName}`, 'ok');
+  } catch (err) { reportError(err, '保存图片失败'); }
+}
+
+function ctxZoomImage() {
+  if (!ctxCtx.imgUrl) return;
+  zoomImage.value = { url: ctxCtx.imgUrl, caption: ctxCtx.imgCaption, page: ctxCtx.page };
+}
+
+/** 图片也能进对话框（用户口径："添加到对话框（支持图片）"）：取回原图当附件上传。 */
+async function ctxAttachImage() {
+  if (!ctxCtx.imgUrl) return;
+  try {
+    const res = await fetch(ctxCtx.imgUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], ctxCtx.imgName, { type: blob.type || 'image/png' });
+    await ensureAsideVisible();
+    sideTab.value = 'chat';
+    await nextTick();
+    (chatRef.value as { uploadFiles?: (f: File[]) => void } | null)?.uploadFiles?.([file]);
+  } catch (err) { reportError(err, '把图片放进对话框失败'); }
+}
+
+function onCtxSelect(key: string) {
+  const c = ctxCtx;
+  switch (key) {
+    case 'ask': hideMenu(); void explainSelection(); break;
+    case 'tochat':
+      if (c.text) openSelectionInChat(true);
+      if (c.imgUrl) void ctxAttachImage();
+      break;
+    case 'bing': ctxBing(c.text); break;
+    case 'copy': void copySelection(); break;
+    case 'highlight': hideMenu(); void addHighlight('yellow'); break;
+    case 'delhl': void deleteHighlightIds(c.hlIds); break;
+    case 'selectall': ctxSelectPage(); break;
+    case 'saveimg': void ctxSaveImage(); break;
+    case 'zoomimg': ctxZoomImage(); break;
+    case 'export': downloadMarkdown(); break;
+    default: break;
+  }
+}
+
+/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。 */async function askSelection(question: string) {
   const q = question.trim();
   if (q) explainCard.turns.push({ role: 'user', text: q, citations: [] });
   // ⚠️ 必须**通过 reactive 对象的下标**改字段：push 进去的是原始对象，直接改它不会触发更新
@@ -4034,6 +4205,7 @@ function renderMarkdown(text?: string | null) {
         <KeepAlive>
           <ReaderChat
             v-if="sideTab === 'chat'"
+            ref="chatRef"
             :paper-id="paperId"
             :selection="chatSelection"
             @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
@@ -4101,6 +4273,7 @@ function renderMarkdown(text?: string | null) {
            `.reader-slide` 是"让位 + 平移"的那一层：侧栏开合时它整体滑过去，
            内部的正文一次都不重排（见 asideGapPx 的说明）。 -->
       <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick"
+               @contextmenu="onContentContextMenu"
                @mouseover="onContentHover" @mouseout="onContentHoverOut">
         <div class="reader-slide">
         <ReaderPageRows
@@ -4311,6 +4484,16 @@ function renderMarkdown(text?: string | null) {
       </div>
     </Teleport>
 
+    <!-- 毛玻璃右键菜单（三处界面各一套清单，见 `onContentContextMenu`） -->
+    <ContextMenu
+      :open="ctxMenu.open"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxMenu.items"
+      @select="onCtxSelect"
+      @close="ctxMenu.open = false"
+    />
+
     <Modal :open="!!zoomImage" :title="zoomTitle" wide @close="zoomImage = null">
       <img v-if="zoomImage" :src="zoomImage.url" :alt="zoomTitle" style="max-width:100%;background:#fff">
     </Modal>
@@ -4357,6 +4540,7 @@ function renderMarkdown(text?: string | null) {
         :class="{ full: mdView.full }"
         v-html="mdFullHtml"
         @click="onMdClick"
+        @contextmenu="onContentContextMenu"
         @mouseover="onMdHover"
         @mouseout="onMdHoverOut"
       />

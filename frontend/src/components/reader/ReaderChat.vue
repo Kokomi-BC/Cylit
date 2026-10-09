@@ -1024,6 +1024,10 @@ watch(() => props.selection, (sel) => {
     void nextTick(() => inputEl.value?.focus());
   }
 });
+
+/* 对外的一个口子：**把图片塞进附件列表**（右键菜单「添加到对话框（支持图片）」，用户口径 2026-10-08）。
+   走的是与"选文件 / 拖进来 / 粘贴"同一条上传链路（`uploadFiles`），所以大小限制、格式校验都一致。 */
+defineExpose({ uploadFiles });
 </script>
 
 <template>

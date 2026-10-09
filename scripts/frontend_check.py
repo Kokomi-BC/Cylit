@@ -441,6 +441,75 @@ async function run() {
         s.removeAllRanges();
       }
     }
+    /* 右键菜单（毛玻璃，用户口径 2026-10-08）：三处界面各一套清单、按落点给项。
+       量法：合成 `contextmenu`（看它有没有 `preventDefault`）、读清单里的 `data-ctx-key`，
+       再点一项看真实动作（Bing 搜索 = `window.open` 收到 bing 地址）。 */
+    {
+      const fire = (el, x, y) => {
+        const ev = new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y });
+        el.dispatchEvent(ev);
+        return ev;
+      };
+      const keys = () => [...d.querySelectorAll('[data-ctx-menu] [data-ctx-key]')]
+        .map((e) => e.getAttribute('data-ctx-key'));
+      const closeCtx = async () => {
+        d.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true }));
+        await sleep(150); spin(BURN);                    // 菜单是下一个 tick 才从 DOM 上摘
+      };
+      const body = d.querySelector('.reader-content .rr-body');
+      if (body) {
+        const r = body.getBoundingClientRect();
+        const ev = fire(body, r.left + 10, r.top + 6);
+        res.ctxPrevented = ev.defaultPrevented;
+        await sleep(150); spin(BURN);                    // ⚠️ 菜单是**下一个 tick**才渲染出来的
+        res.ctxKeysBlank = keys();
+        res.ctxGlass = (() => {
+          const p = d.querySelector('[data-ctx-menu]');
+          if (!p) return null;
+          const cs = w.getComputedStyle(p);
+          const bg = cs.backgroundColor || '';
+          const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
+          return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
+                   alpha: m ? Number(m[1]) : 1, shadow: cs.boxShadow,
+                   items: p.querySelectorAll('.ctx-item').length };
+        })();
+        await closeCtx();
+        /* 划词之后再右键：该出现"询问 / 添加 / 搜索 / 复制 / 高亮" */
+        const rng = d.createRange();
+        rng.selectNodeContents(body);
+        const s = w.getSelection();
+        s.removeAllRanges();
+        s.addRange(rng);
+        body.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: r.left + 10, clientY: r.top + 6 }));
+        await sleep(250); spin(BURN);
+        fire(body, r.left + 10, r.top + 6);
+        await sleep(150); spin(BURN);
+        res.ctxKeysSel = keys();
+        /* 点「网页搜索（Bing）」→ window.open 收到 bing 地址 */
+        const opened = [];
+        const realOpen = w.open;
+        w.open = (u) => { opened.push(String(u)); return null; };
+        const bing = d.querySelector('[data-ctx-key="bing"]');
+        if (bing) { bing.click(); await sleep(250); }
+        w.open = realOpen;
+        res.ctxBing = opened[0] || null;
+        s.removeAllRanges();
+        await closeCtx();
+        res.ctxClosed = !d.querySelector('[data-ctx-menu]');
+        /* 落在**图片**上：多出"另存为 / 放大打开 / 添加到对话框（带这张图）" */
+        const img = [...d.querySelectorAll('.reader-content img')]
+          .find((el) => { const b = el.getBoundingClientRect(); return b.width > 20 && b.height > 20; });
+        res.ctxHasImg = !!img;
+        if (img) {
+          const b = img.getBoundingClientRect();
+          fire(img, b.left + 6, b.top + 6);
+          await sleep(150); spin(BURN);
+          res.ctxKeysImg = keys();
+          res.ctxImgUrl = img.getAttribute('src') || '';
+          await closeCtx();
+        }
+      }
+    }
     /* 直挂侧栏的页签（对话 / 搜索 / 目录）**得自己撑满剩余高度**：用户口径 2026-10-07 ——
        它们原来用 `height: 100%`（= 整个侧栏高，含上面那条 58px 页签条），底边越过侧栏被裁掉。
        量法：面板底边 - 侧栏底边，> 0 就是被裁（笔记那条做对照，它在 ReaderSidePanel 里历来是对的）。 */
@@ -3245,6 +3314,36 @@ def main() -> int:
                            f"剪贴板={str(data.get('dispCopy'))[:34]!r}")
             else:
                 skip("公式整段选中 → 复制 LaTeX", "这一屏没找到公式")
+            # ---- 右键菜单（毛玻璃） ----
+            glass = data.get("ctxGlass") or {}
+            blank = data.get("ctxKeysBlank") or []
+            selk = data.get("ctxKeysSel") or []
+            record("reader", "右键接管了原生菜单，弹的是**毛玻璃**那张（半透明底 + blur + 真阴影）",
+                   data.get("ctxPrevented") is True and glass.get("blur") is True
+                   and float(glass.get("alpha") or 1) < 1
+                   and str(glass.get("shadow") or "none") != "none",
+                   f"接管={data.get('ctxPrevented')} blur={glass.get('blur')} 底色={glass.get('bg')} "
+                   f"{glass.get('items')} 项")
+            record("reader", "没选区时**不给**复制/高亮（只给全选本页、导出、图片项）",
+                   "selectall" in blank and "export" in blank and "copy" not in blank
+                   and "highlight" not in blank,
+                   f"清单={blank}")
+            record("reader", "划词后右键 → 询问 Cyli / 添加到对话框 / Bing / 复制 / 高亮（笔记）都在",
+                   all(k in selk for k in ("ask", "tochat", "bing", "copy", "highlight")),
+                   f"清单={selk}")
+            bing_url = str(data.get("ctxBing") or "")
+            record("reader", "点「网页搜索（Bing）」→ 新标签打开 bing 搜索（带选中的文字）",
+                   bing_url.startswith("https://www.bing.com/search?q=") and len(bing_url) > 40,
+                   f"{bing_url[:64]}")
+            record("reader", "点别处右键菜单自己收掉",
+                   data.get("ctxClosed") is True, f"还开着={not data.get('ctxClosed')}")
+            if data.get("ctxHasImg"):
+                imgk = data.get("ctxKeysImg") or []
+                record("reader", "落在图片上 → 另存为 / 放大打开 / 添加到对话框（带这张图）",
+                       all(k in imgk for k in ("saveimg", "zoomimg", "tochat")),
+                       f"清单={imgk}｜{str(data.get('ctxImgUrl'))[-40:]}")
+            else:
+                skip("右键落在图片上", "这一屏没有图片")
             url = str(data.get("refUrl") or "")
             record("reader", "点文献条目 → 跳到发表网站（DOI / arXiv / 原文里的链接 / 学术搜索）",
                    url.startswith("http")
