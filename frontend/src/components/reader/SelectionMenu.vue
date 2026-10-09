@@ -137,12 +137,15 @@ const COLOR_TITLE: Record<string, string> = {
    而且右键之后它会被**挪到菜单上沿**（见 ReaderView 的 `pillPos`）。 */
 .selection-menu {
   position: fixed; z-index: 340; padding: 3px;
+  /* 「特别透亮」的玻璃：白底只留一成多（再多就是白上加白，看不到玻璃），
+     真正给"透亮"感的是 backdrop 里的 **brightness + saturate** —— 把背后的正文提亮、加饱和，
+     再糊开；顶边一道高光当作玻璃的棱。 */
   background: linear-gradient(180deg,
-    color-mix(in srgb, var(--bg-elev) 42%, transparent),
-    color-mix(in srgb, var(--bg-elev) 30%, transparent));
-  backdrop-filter: blur(56px) saturate(2.2);
-  -webkit-backdrop-filter: blur(56px) saturate(2.2);
-  border: 1px solid color-mix(in srgb, var(--border-strong) 45%, transparent);
+    color-mix(in srgb, var(--bg-elev) 20%, transparent),
+    color-mix(in srgb, var(--bg-elev) 10%, transparent));
+  backdrop-filter: blur(40px) saturate(2.4) brightness(1.14);
+  -webkit-backdrop-filter: blur(40px) saturate(2.4) brightness(1.14);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent);
   border-radius: 999px; box-shadow: var(--shadow-flyout);
   /* 不换行、不收缩：换行会让按钮变成竖排（“AI 解 / 释”） */
   display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap;
