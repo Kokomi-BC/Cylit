@@ -134,7 +134,7 @@ onUnmounted(() => {
     </div>
     <div class="card-body note">
       <span class="tiny faint">
-        记录只存在<strong>本机浏览器</strong>（localStorage），不进数据库：换浏览器、换设备或清理浏览器数据都会一起消失。
+        只存在<strong>本机浏览器</strong>：换设备或清理浏览器数据都会一起消失。
       </span>
     </div>
   </section>

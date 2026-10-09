@@ -1,24 +1,34 @@
 <script setup lang="ts">
-/** 论文详情弹窗（移植自参照项目 retain-pdf 的 BookDetailDialog，图2 那一屏）。
+/** 论文详情弹窗（**Paper Brief**：论文快速理解入口）。
  *
- * 两栏：**左封面栏**（封面 / 身份 / 对照阅读 · 查看原版 / 文件下载）+ **右内容栏**（概览 · 进度 · 文件）。
+ * 两栏：**左封面栏**（封面 / 身份 / 阅读 + 导出）+ **右内容栏**（概览 · 参考文献 · 进度 · 文件）。
  *
- * 数据都在打开时现拉（`GET /papers/{id}` + `/progress` + `/tasks` + 一次 HEAD 取文件大小）：
+ * 「概览」的职责是"快速回答这篇论文是什么"：**论文速览 → 核心创新 → 阅读画像 / 关键词 /
+ * 前置知识 → 推荐阅读路径 → 论文档案**。除了速览那一张主卡，其余都是"分组标题 + 内容"
+ * 的轻分组 —— 不再一个字段一张大卡片。
+ *
+ * 边界（用户口径 2026-10-08）：概览只放**论文本身**。系统信息（大小 / 入库 / 知识库 / 标识）
+ * 压到最下面的「论文档案」；阅读行为数据（阅读次数 / 时长 / 最近打开 / 最近活动）搬到「进度」；
+ * 文件产物（PDF / Markdown / ZIP）在「文件」页与左下角的「导出」菜单里。
+ *
+ * 数据都在打开时现拉（`GET /papers/{id}` + `/progress` + `/outline` + `/tasks` + 一次 Range 取文件大小）：
  * 详情是"看一眼就走"的浮层，不该为了它把整份 reader payload 拉下来；
  * 论文列表里的那一行可能已经旧了（后台任务在跑），所以以这里拉到的那份为准。
  *
- * 三个页签的面板**全都挂载**（用 `v-show`），切页签不丢滚动位置与下载中的状态。
+ * 四个页签的面板**全都挂载**（用 `v-show`），切页签不丢滚动位置与下载中的状态。
  */
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob } from '@/api/client';
-import type { Paper, TaskInfo } from '@/api/types';
+import type { Outline, Paper, TaskInfo } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
+import ReferenceList from '@/components/reader/ReferenceList.vue';
 import { openTab } from '@/stores/tabs';
 import { reportError, toast } from '@/stores/app';
 import { TASK_TYPE_LABEL, fmtRelative, taskStatus } from '@/utils/format';
+import { readerTarget } from '@/utils/navigation';
 import { fmtReadDuration, readReaderStats, type ReaderStats } from '@/utils/readerStats';
 
 const props = defineProps<{ paperId: string }>();
@@ -37,6 +47,8 @@ const tab = ref<TabKey>('overview');
 
 const paper = ref<Paper | null>(null);
 const tasks = ref<TaskInfo[]>([]);
+/** 目录：只用来算「推荐阅读路径」（`/outline` 是纯结构计算，很便宜）。 */
+const outline = ref<Outline>({ items: [], tree: [], count: 0 });
 const percent = ref(0);
 const sizeBytes = ref(0);
 const loading = ref(true);
@@ -74,6 +86,11 @@ async function load() {
     })
     .catch(() => { tasks.value = []; });
 
+  // 目录：概览的「推荐阅读路径」用它挑章节（拉不到就整块不显示，不影响别的）
+  api.get<Outline>(`/papers/${props.paperId}/outline`)
+    .then((o) => { outline.value = o ?? { items: [], tree: [], count: 0 }; })
+    .catch(() => { outline.value = { items: [], tree: [], count: 0 }; });
+
   // 文件大小：后端那个下载路由**只允许 GET**（HEAD 回 405，拿到的 31B 是错误 JSON 的长度），
   // 所以用 `Range: bytes=0-0` 讨一个字节，从 `Content-Range: bytes 0-0/<total>` 里读总大小。
   fetch(assetUrl(`/api/v1/papers/${props.paperId}/file`), { headers: { Range: 'bytes=0-0' } })
@@ -86,12 +103,17 @@ async function load() {
 
 onMounted(() => {
   void load();
+  void nextTick(syncCoverRatio);
   document.addEventListener('keydown', onKey);
 });
 onUnmounted(() => document.removeEventListener('keydown', onKey));
 
-// 换了论文（同一个弹窗换个 id）就重新拉
-watch(() => props.paperId, () => { tab.value = 'overview'; void load(); });
+// 换了论文（同一个弹窗换个 id）就重新拉：封面比例也要回到占位值重算
+watch(() => props.paperId, () => {
+  tab.value = 'overview';
+  coverRatio.value = A4_RATIO;
+  void load();
+});
 
 function onKey(ev: KeyboardEvent) {
   if (ev.key !== 'Escape') return;
@@ -110,6 +132,31 @@ const venueText = computed(() => paper.value?.venue?.trim() || '—');
 const yearText = computed(() => (paper.value?.year ? String(paper.value.year) : '—'));
 
 const coverUrl = computed(() => assetUrl(`/api/v1/papers/${props.paperId}/pages/1`));
+
+/**
+ * 封面框的宽高比 = **首页图自己的比例**（A4 约 `1 / 1.29`，双栏、扫描件各有不同）。
+ *
+ * 为什么不能写死 `3 / 4`：论文首页的比例是数据的一部分 —— 写死了，`object-fit: contain`
+ * 就只能在框里留出空白边（看着像"被压扁 / 被裁掉"）。这里等图加载完把**真实比例**交给 CSS，
+ * 框正好等于图片：不变形、不留白。加载前先用 A4 那一档占位，避免跳版。
+ */
+const A4_RATIO = '1 / 1.29';
+const coverRatio = ref(A4_RATIO);
+const coverEl = ref<HTMLImageElement | null>(null);
+
+/** 图已在缓存里时 `load` 可能早于监听挂上，所以挂载后补量一次。 */
+function syncCoverRatio() {
+  const img = coverEl.value;
+  if (img?.naturalWidth && img?.naturalHeight) {
+    coverRatio.value = `${img.naturalWidth} / ${img.naturalHeight}`;
+  }
+}
+
+function onCoverLoad(ev: Event) {
+  const img = ev.target as HTMLImageElement;
+  if (!img?.naturalWidth || !img?.naturalHeight) return;
+  coverRatio.value = `${img.naturalWidth} / ${img.naturalHeight}`;
+}
 
 function formatBytes(n: number): string {
   if (!n) return '—';
@@ -130,7 +177,7 @@ const addedText = computed(() => {
 
 const kbText = computed(() => (paper.value?.in_knowledge_base ? '已入库' : '未加入'));
 
-/** 摘要与标签：都在 `GET /papers/{id}` 那一份里（`abstract` / `tags`），不需要另开接口。 */
+/** 摘要（原文，英文）与标签：都在 `GET /papers/{id}` 那一份里，不需要另开接口。 */
 const abstractText = computed(() => (paper.value?.abstract || '').trim());
 const tags = computed(() => (paper.value?.tags || []).filter((t) => String(t).trim()));
 
@@ -138,32 +185,101 @@ const tags = computed(() => (paper.value?.tags || []).filter((t) => String(t).tr
 
 /** 中文摘要（模型的译文）。 */
 const abstractZh = computed(() => (paper.value?.abstract_zh || '').trim());
-const contributions = computed(() => (paper.value?.contributions || []).filter((t) => String(t).trim()));
+/** 核心创新：最多取 4 条（再多就不是"速览"了）。 */
+const contributions = computed(() => (paper.value?.contributions || [])
+  .filter((t) => String(t).trim()).slice(0, 4));
 const prereq = computed(() => (paper.value?.prereq || []).filter((t) => String(t).trim()));
 const keywordsEn = computed(() => (paper.value?.keywords_en || []).filter((t) => String(t).trim()));
 const references = computed(() => paper.value?.references || []);
 
-/** 「论文信息」卡上的键值行：**没值的项不画**（空行比没有更烦人）。 */
-const metaFacts = computed<{ k: string; v: string }[]>(() => {
+/* --------------------------- 摘要语言（中文 / English） ---------------------------
+ * 摘要是论文最重要的原始信息：**完整显示、不截断**（用户口径 2026-10-08 ——
+ * 简约靠"少几个大卡片、少几处重复"，不是靠裁掉摘要）。中英共用同一块区域，
+ * 用轻量胶囊切换，默认中文。
+ */
+const lang = ref<'zh' | 'en'>('zh');
+/** 中英都有才值得给切换器（只有一份时切成空白没有意义）。 */
+const hasBothLangs = computed(() => Boolean(abstractZh.value && abstractText.value));
+/** 当前该显示的那份摘要：选中的语言为空就退回另一份，不给用户一片空白。 */
+const briefBody = computed(() => (lang.value === 'en'
+  ? (abstractText.value || abstractZh.value)
+  : (abstractZh.value || abstractText.value)));
+
+/** 关键词语言（左栏）：中文用 `tags`、英文用 `keywords_en`，同一块区域切换，不并排堆两份。 */
+const kwLang = ref<'zh' | 'en'>('zh');
+const hasBothKw = computed(() => Boolean(tags.value.length && keywordsEn.value.length));
+const keywordList = computed(() => {
+  const zh = tags.value;
+  const en = keywordsEn.value;
+  return kwLang.value === 'en' ? (en.length ? en : zh) : (zh.length ? zh : en);
+});
+
+/* --------------------------- 论文属性（右侧最顶部） ---------------------------
+ * 用户进概览第一眼要回答的是"这是什么论文"：领域 / 类型 / 难度 / 推荐阅读时间。
+ * 一行「16px 图标 + 标签 + 值」，**不做成一张大卡**，缺的项直接不出现。
+ * 图标是**一属性一枚、各不相同**的语义图标（Lucide 造型，见 `AppIcon`），不重复用同一个 File。
+ */
+const attrs = computed<{ k: string; v: string; icon: string }[]>(() => {
   const p = paper.value;
   if (!p) return [];
-  const out: { k: string; v: string }[] = [];
-  if (p.domain) out.push({ k: '领域', v: p.domain });
-  if (p.difficulty) out.push({ k: '难度', v: p.difficulty });
-  if (p.paper_type) out.push({ k: '类型', v: p.paper_type });
-  if (p.read_time_min) out.push({ k: '阅读时间', v: `约 ${p.read_time_min} 分钟` });
-  if (references.value.length) out.push({ k: '参考文献', v: `${references.value.length} 条` });
+  const out: { k: string; v: string; icon: string }[] = [];
+  if (p.domain) out.push({ k: '领域', v: p.domain, icon: 'tag' });
+  if (p.paper_type) out.push({ k: '类型', v: p.paper_type, icon: 'book-open' });
+  if (p.difficulty) out.push({ k: '难度', v: p.difficulty, icon: 'gauge' });
+  if (p.read_time_min) out.push({ k: '阅读时间', v: `约 ${p.read_time_min} 分钟`, icon: 'task' });
   return out;
 });
 
-/** 每一项的来源（`pdf` / `model` / `agent` / `manual`）——鼠标停在字段上才看得到。 */
-function sourceOf(key: string): string {
-  const s = paper.value?.meta_sources?.[key] || '';
-  return {
-    pdf: '从论文里读出来的', model: '模型读抽样内容填的',
-    agent: 'agent 读全文填的', manual: '手动填的',
-  }[s] || '';
-}
+/** 「论文档案」的键值行：**没值的项不画**（空行比没有更烦人）。
+ *  期刊 / 会议 / 年份 / 页数已经在左栏的身份区里，这里不再重复。 */
+const archFacts = computed<{ k: string; v: string }[]>(() => {
+  const p = paper.value;
+  if (!p) return [];
+  const out: { k: string; v: string }[] = [];
+  const push = (k: string, v: string) => { if (v && v !== '—') out.push({ k, v }); };
+  if (references.value.length) push('参考文献', `${references.value.length} 条`);
+  push('文件大小', sizeText.value);
+  push('入库', addedText.value);
+  push('知识库', kbText.value);
+  return out;
+});
+
+/* --------------------------- 推荐阅读路径（2026-10-08） ---------------------------
+ * 从**目录**（`/papers/{id}/outline`，纯结构计算）里挑出读者最该先看的几节：
+ * 只认**带章节编号**的标题（`1` / `2.3`）—— 目录里的论文标题、Abstract、Keywords、
+ * References、附录段落天然没有编号，正好一次滤掉，不用维护"黑名单"。
+ *
+ * 一级章节够多（≥3 节）就只列一级（那是论文的骨架）；只有两三节的短文再补上二级，
+ * 免得整块只有两行。顺序按**原文顺序**（页码 → 层级 → 编号）——"路径"读起来要是顺着走的。
+ */
+const PATH_MAX = 5;
+const NUM_RE = /^\d+(?:\.\d+)*$/;
+/** 去掉标题里重复的编号前缀（`0.1 PROBLEM DEFINITION` → `PROBLEM DEFINITION`）。 */
+const stripNumber = (s: string, num: string) => s.replace(new RegExp(`^${num.replace(/\./g, '\\.')}[.\\s、]*`), '').trim();
+
+const readingPath = computed(() => {
+  const paperTitle = (paper.value?.title || '').trim().toLowerCase();
+  const rows = (outline.value.items || [])
+    .filter((it) => NUM_RE.test(String(it.number || '').trim()))
+    .filter((it) => Number(it.level) <= 2 && Number(it.page) > 0)
+    // 目录第一行常常就是论文标题本身（无编号时已被滤掉；这里兜一层"标题与论文同名"）
+    .filter((it) => (it.text || '').trim().toLowerCase() !== paperTitle)
+    .map((it) => ({
+      key: it.block_id,
+      row: it.block_id,
+      page: Number(it.page),
+      level: Number(it.level),
+      number: String(it.number || '').trim(),
+      title: stripNumber((it.text_zh || '').trim() || (it.text || '').trim(), String(it.number || '').trim()),
+    }))
+    .filter((r) => r.title);
+  const level1 = rows.filter((r) => r.level === 1);
+  const picked = level1.length >= 3 ? level1 : rows;
+  return picked
+    .slice()
+    .sort((a, b) => a.page - b.page || a.level - b.level || a.number.localeCompare(b.number, undefined, { numeric: true }))
+    .slice(0, PATH_MAX);
+});
 
 /** 还有哪些项是空的 —— 决定"要不要显示补全按钮"。 */
 const metaMissing = computed(() => {
@@ -360,14 +476,15 @@ const activity = computed(() => {
 
 /* ------------------------------ 动作 ------------------------------ */
 
-/** 打开阅读器：顺手把视图模式记进进度（阅读器读它决定首屏是原文还是对照）。 */
-async function openReader(viewMode: 'bilingual' | 'original') {
-  try {
-    await api.put(`/papers/${props.paperId}/progress`, { view_mode: viewMode });
-  } catch {
-    /* 记不上也该让人读得到：阅读器有本地偏好兜底 */
-  }
-  void router.push(openTab({ name: 'reader', params: { paperId: props.paperId } }) as never);
+/**
+ * 打开阅读器。原文 / 对照 / 翻译是**阅读器内部状态**（它按 `progress.view_mode` 恢复上次那档），
+ * 所以概览这一个按钮只负责"进去读"；带锚点时按深链直接落到某一节（推荐阅读路径用）。
+ */
+function openReader(anchor?: { row?: string; page?: number }) {
+  const target = anchor?.row || anchor?.page
+    ? readerTarget(props.paperId, anchor?.row ?? '', anchor?.page ?? null)
+    : { name: 'reader', params: { paperId: props.paperId } };
+  void router.push(openTab(target) as never);
 }
 
 interface ArtifactDef {
@@ -379,14 +496,17 @@ interface ArtifactDef {
   query?: Record<string, string>;
 }
 
-/** 五块产物：与后端**实际有**的导出接口一一对应（没有的不摆，摆了就是骗人）。 */
+/** 五块产物：与后端**实际有**的导出接口一一对应（没有的不摆，摆了就是骗人）。
+ *  入口只有一个 —— 「文件」页签（概览不重复摆一遍下载）。 */
 const artifacts = computed<ArtifactDef[]>(() => [
-  { key: 'source', label: '原始 PDF', icon: 'document', path: `/papers/${props.paperId}/file`, filename: `${props.paperId}.pdf` },
+  { key: 'source', label: 'PDF', icon: 'document', path: `/papers/${props.paperId}/file`, filename: `${props.paperId}.pdf` },
   { key: 'bilingual', label: '对照 Markdown', icon: 'panel', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-bilingual.md`, query: { mode: 'bilingual' } },
-  { key: 'translation', label: '译文 Markdown', icon: 'translate', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-translation.md`, query: { mode: 'translation' } },
+  { key: 'translation', label: '翻译 Markdown', icon: 'translate', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-translation.md`, query: { mode: 'translation' } },
   { key: 'original', label: '原文 Markdown', icon: 'code', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-original.md`, query: { mode: 'original' } },
-  { key: 'zip', label: '打包（含插图）', icon: 'layers', path: `/papers/${props.paperId}/export/zip`, filename: `${props.paperId}.zip` },
+  { key: 'zip', label: '全部打包（含插图）', icon: 'layers', path: `/papers/${props.paperId}/export/zip`, filename: `${props.paperId}.zip` },
 ]);
+
+/** 左下角「导出」菜单：与「文件」页同一份 `artifacts`，只是换一层入口（下载逻辑完全一样）。 */
 
 /** Markdown / zip 是二进制流，必须走 blob 下载（走 `request()` 会被当 JSON 解析坏掉）。 */
 async function download(a: ArtifactDef) {
@@ -460,51 +580,49 @@ async function doDelete() {
         </div>
 
         <div v-else class="pd-grid">
-          <!-- ---------------- 左：封面 + 身份 + 按钮 + 文件下载 ---------------- -->
+          <!-- ---------------- 左：封面 + 身份 + 阅读 / 导出 ---------------- -->
           <aside class="pd-left">
-            <div class="pd-cover">
-              <img :src="coverUrl" :alt="`${title} 首页`" loading="lazy" decoding="async" />
+            <div class="pd-cover" :style="{ '--cover-ratio': coverRatio }">
+              <img
+                ref="coverEl"
+                :src="coverUrl"
+                :alt="`${title} 首页`"
+                loading="lazy"
+                decoding="async"
+                @load="onCoverLoad"
+              />
             </div>
 
             <div class="pd-identity">
               <h3>
-                <AppIcon name="document" :size="13" />
                 <span class="pd-id-title" :title="title">{{ title }}</span>
               </h3>
-              <p><AppIcon name="note" :size="13" /><span>{{ authors }}</span></p>
-              <p v-if="metaLine"><AppIcon name="document" :size="13" /><span>{{ metaLine }}</span></p>
-              <p>
-                <AppIcon name="link" :size="13" /><span class="mono"># {{ paperId }}</span>
-                <button type="button" class="pd-copy" :title="copied ? '已复制' : '复制 paper_id'" @click="copyId">
-                  <AppIcon :name="copied ? 'check' : 'copy'" :size="12" />
-                </button>
-              </p>
+              <p><span>{{ authors }}</span></p>
+              <p v-if="metaLine"><span>{{ metaLine }}</span></p>
             </div>
 
-            <div class="pd-buttons">
-              <button type="button" class="pd-btn primary" @click="openReader('bilingual')">
-                <AppIcon name="panel" :size="16" />对照阅读
-              </button>
-              <button type="button" class="pd-btn" @click="openReader('original')">
-                <AppIcon name="document" :size="16" />查看原版
+            <!-- 唯一主操作：原文 / 对照 / 翻译是**阅读器内部状态**（阅读器按
+                 `progress.view_mode` 恢复上次那档），概览不让人提前选；
+                 文件导出统一走「文件」页签，这里不再摆第二个入口。 -->
+            <div class="pd-actions">
+              <button type="button" class="pd-btn primary" @click="openReader()">
+                <AppIcon name="play" :size="16" />阅读
               </button>
             </div>
 
-            <div class="pd-downloads">
-              <header><AppIcon name="download" :size="13" />文件下载</header>
-              <div class="pd-download-grid">
-                <button
-                  v-for="a in artifacts"
-                  :key="a.key"
-                  type="button"
-                  class="pd-download-btn"
-                  :disabled="!!downloading"
-                  :aria-busy="downloading === a.key"
-                  :title="`下载${a.label}`"
-                  @click="download(a)"
-                >
-                  <AppIcon :name="downloading === a.key ? 'refresh' : a.icon" :size="14" :class="{ spin: downloading === a.key }" />
-                </button>
+            <!-- 关键词：论文身份的一部分（放在左侧），中英同一块区域切换 -->
+            <div class="pd-kw" v-if="keywordList.length">
+              <div class="pd-kw-head">
+                <span>关键词</span>
+                <div class="seg pd-lang" v-if="hasBothKw" role="group" aria-label="关键词语言">
+                  <button type="button" :class="{ active: kwLang === 'zh' }"
+                          :aria-pressed="kwLang === 'zh'" @click="kwLang = 'zh'">中文</button>
+                  <button type="button" :class="{ active: kwLang === 'en' }"
+                          :aria-pressed="kwLang === 'en'" @click="kwLang = 'en'">English</button>
+                </div>
+              </div>
+              <div class="pd-tags">
+                <span class="pd-tag" v-for="k in keywordList" :key="k">{{ k }}</span>
               </div>
             </div>
           </aside>
@@ -522,195 +640,114 @@ async function doDelete() {
                 :aria-selected="tab === t.key"
                 @click="tab = t.key"
               >
-                <AppIcon :name="t.icon" :size="14" />{{ t.label }}
+                <AppIcon :name="t.icon" :size="16" />{{ t.label }}
               </button>
             </div>
 
             <div class="pd-panel">
               <!-- 概览 -->
               <div v-show="tab === 'overview'" class="pd-overview">
-                <!-- 摘要 + 标签（原来是"9 页文档"那条黑色横幅：用户口径——那行大数字没有信息量，
-                     换成这篇论文**自己的内容**：摘要与标签） -->
-                <div class="pd-card pd-abstract">
-                  <div class="pd-card-head">
-                    <div class="pd-card-title">
-                      <span><AppIcon name="note" :size="20" /></span>
-                      <h3>摘要</h3>
-                    </div>
-                    <div class="pd-abstract-actions" v-if="metaMissing">
-                      <button
-                        type="button"
-                        class="pd-ghost-btn"
-                        :disabled="!!metaBusy"
-                        title="离线读 PDF 首页与页产物：会议、年份、原文摘要、DOI、参考文献、阅读时间（不花钱）"
-                        @click="fillMeta(false)"
-                      >
-                        <AppIcon name="sparkle" :size="13" />{{ metaBusy === 'pdf' ? '识别中…' : '从论文识别' }}
-                      </button>
-                      <button
-                        type="button"
-                        class="pd-ghost-btn"
-                        :disabled="!!metaBusy"
-                        title="交给 agent 读全文填写：中英文关键词、中文摘要、领域、一句话概括、创新点、前置知识、难度"
-                        @click="fillMeta(true)"
-                      >
-                        <AppIcon name="model" :size="13" />{{ metaBusy === 'agent' ? '已排队…' : '模型补全' }}
-                      </button>
-                    </div>
-                  </div>
-
-                  <p v-if="abstractText" class="pd-abstract-text">{{ abstractText }}</p>
-                  <p v-else class="pd-abstract-empty">
-                    还没有摘要。可以用右上角那两个按钮补全（先离线读 PDF，读不出来再问模型）。
-                  </p>
-
-                  <div class="pd-tags" v-if="tags.length">
-                    <span class="pd-tag" v-for="t in tags" :key="t">{{ t }}</span>
-                  </div>
-                  <p v-else class="pd-abstract-empty">还没有标签。</p>
+                <!-- 论文属性：概览**最顶部**，一行「图标 + 标签 + 值」。用户第一眼要回答的是
+                     "这是什么论文"（领域 / 类型 / 难度 / 读起来要多久）。 -->
+                <div class="pd-attrs" v-if="attrs.length">
+                  <span class="pd-attr" v-for="a in attrs" :key="a.k" :title="`${a.k}：${a.v}`">
+                    <AppIcon :name="a.icon" :size="16" />
+                    <i>{{ a.k }}</i>
+                    <strong>{{ a.v }}</strong>
+                  </span>
                 </div>
 
-                <!-- 论文信息：元数据扩展（一句话概括 / 领域·难度·类型·阅读时间 / 中文摘要 /
-                     中英关键词 / 创新点 / 前置知识 / DOI·代码）。**没值的项不画**。 -->
-                <div class="pd-card pd-meta">
+                <!-- 论文速览：一句话概括 + **完整摘要**（中英切换，不截断）。
+                     核心创新在下一段独立成组，不用它顶替摘要。 -->
+                <div class="pd-card pd-brief">
                   <div class="pd-card-head">
-                    <div class="pd-card-title">
-                      <span><AppIcon name="info" :size="20" /></span>
-                      <h3>论文信息</h3>
+                    <h3 class="pd-h3"><AppIcon name="align-left" :size="18" />论文速览</h3>
+                    <div class="seg pd-lang" v-if="hasBothLangs" role="group" aria-label="摘要语言">
+                      <button type="button" :class="{ active: lang === 'zh' }"
+                              :aria-pressed="lang === 'zh'" @click="lang = 'zh'">中文</button>
+                      <button type="button" :class="{ active: lang === 'en' }"
+                              :aria-pressed="lang === 'en'" @click="lang = 'en'">English</button>
                     </div>
-                    <span class="pd-hint" v-if="paper?.meta_filled_at">
-                      最近补全 {{ fmtRelative(paper.meta_filled_at) }}
-                    </span>
                   </div>
 
                   <p v-if="paper?.one_liner" class="pd-oneliner">{{ paper.one_liner }}</p>
 
-                  <div class="pd-facts" v-if="metaFacts.length">
-                    <span v-for="f in metaFacts" :key="f.k" class="pd-fact">
-                      <i>{{ f.k }}</i>{{ f.v }}
-                    </span>
-                  </div>
-
-                  <div class="pd-block" v-if="contributions.length">
-                    <h4>核心创新点<em v-if="sourceOf('contributions')">· {{ sourceOf('contributions') }}</em></h4>
-                    <ul class="pd-list">
-                      <li v-for="(c, i) in contributions" :key="i">{{ c }}</li>
-                    </ul>
-                  </div>
-
-                  <div class="pd-block" v-if="abstractZh">
-                    <h4>中文摘要<em v-if="sourceOf('abstract_zh')">· {{ sourceOf('abstract_zh') }}</em></h4>
-                    <p class="pd-abstract-text">{{ abstractZh }}</p>
-                  </div>
-
-                  <div class="pd-block" v-if="keywordsEn.length">
-                    <h4>英文关键词</h4>
-                    <div class="pd-tags">
-                      <span class="pd-tag" v-for="k in keywordsEn" :key="k">{{ k }}</span>
-                    </div>
-                  </div>
-
-                  <div class="pd-block" v-if="prereq.length">
-                    <h4>前置知识</h4>
-                    <div class="pd-tags">
-                      <span class="pd-tag" v-for="(p, i) in prereq" :key="i">{{ p }}</span>
-                    </div>
-                  </div>
-
-                  <div class="pd-links" v-if="paper?.doi || paper?.code_url">
-                    <a v-if="paper?.doi" class="pd-ghost-btn"
-                       :href="`https://doi.org/${paper.doi}`" target="_blank" rel="noopener">
-                      <AppIcon name="link" :size="13" />DOI
-                    </a>
-                    <a v-if="paper?.code_url" class="pd-ghost-btn"
-                       :href="paper.code_url" target="_blank" rel="noopener">
-                      <AppIcon name="code" :size="13" />代码 / 项目
-                    </a>
-                  </div>
-
-                  <p v-if="!paper?.one_liner && !metaFacts.length && !contributions.length
-                           && !abstractZh && !keywordsEn.length && !prereq.length"
-                     class="pd-abstract-empty">
-                    还没有生成这些信息。点右上角「模型补全」让 agent 读一遍这篇论文
-                    （过程在后台，跑完回来看）。
+                  <!-- 摘要：完整显示（不 line-clamp、不 max-height），长了就让面板自己滚 -->
+                  <p v-if="briefBody" class="pd-brief-text">{{ briefBody }}</p>
+                  <p v-else class="pd-abstract-empty">
+                    还没有摘要。可以用下面的按钮补全（先离线读 PDF，读不出来再问模型）。
                   </p>
-                </div>
 
-                <div class="pd-stats">
-                  <div class="pd-stat">
-                    <span class="pd-stat-icon"><AppIcon name="server" :size="23" /></span>
-                    <div><span>大小</span><strong>{{ sizeText }}</strong></div>
-                  </div>
-                  <div class="pd-stat">
-                    <span class="pd-stat-icon"><AppIcon name="task" :size="23" /></span>
-                    <div><span>入库</span><strong>{{ addedText }}</strong></div>
-                  </div>
-                  <div class="pd-stat">
-                    <span class="pd-stat-icon"><AppIcon name="knowledge" :size="23" /></span>
-                    <div><span>知识库</span><strong>{{ kbText }}</strong></div>
-                  </div>
-                  <div class="pd-stat">
-                    <span class="pd-stat-icon"><AppIcon name="document" :size="23" /></span>
-                    <div><span>篇幅</span><strong>{{ paper?.page_count ? `${paper.page_count} 页` : '—' }}</strong></div>
-                  </div>
-                </div>
-
-                <!-- 两张并列的键值卡（各占一半，高度自然接近 → 不留空洞） -->
-                <div class="pd-main-grid">
-                  <div class="pd-card">
-                    <div class="pd-card-head">
-                      <div class="pd-card-title">
-                        <span><AppIcon name="quote" :size="20" /></span>
-                        <h3>作者与出处</h3>
-                      </div>
-                    </div>
-                    <div class="pd-kv">
-                      <span>作者</span><strong :title="authors">{{ authors }}</strong>
-                    </div>
-                    <div class="pd-kv">
-                      <span>期刊 / 会议</span><strong :title="venueText">{{ venueText }}</strong>
-                    </div>
-                    <div class="pd-kv"><span>年份</span><strong>{{ yearText }}</strong></div>
-                  </div>
-
-                  <div class="pd-card">
-                    <div class="pd-card-head">
-                      <div class="pd-card-title">
-                        <span><AppIcon name="task" :size="20" /></span>
-                        <h3>阅读</h3>
-                      </div>
-                      <!-- 这两个数后端没有字段（只有"读到哪"），所以是本机统计，标出来别让人误会 -->
-                      <span class="pd-hint">本机统计</span>
-                    </div>
-                    <div class="pd-kv"><span>阅读次数</span><strong>{{ readOpens ? `${readOpens} 次` : '—' }}</strong></div>
-                    <div class="pd-kv"><span>阅读时长</span><strong>{{ readDuration }}</strong></div>
-                    <div class="pd-kv"><span>最近打开</span><strong>{{ lastOpenText }}</strong></div>
-                    <p v-if="!hasLocalStats" class="pd-hint">这台机器上还没有打开过这篇论文。</p>
-
-                    <div class="pd-manage-row">
-                      <button
-                        type="button"
-                        class="pd-ghost-btn danger"
-                        :disabled="busy === 'delete'"
-                        @click="confirmDelete = true"
-                      >
-                        <AppIcon name="trash" :size="14" />删除
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 处理流程：**优先级最低**，所以排最后、做成最扁的一条（全宽 + 分段里程碑条） -->
-                <div class="pd-card pd-pipeline">
-                  <div class="pd-card-head">
-                    <div class="pd-card-title">
-                      <span><AppIcon name="sparkle" :size="20" /></span>
-                      <h3>处理流程</h3>
-                    </div>
-                    <button type="button" class="pd-icon-link" title="查看进度" @click="tab = 'progress'">
-                      <AppIcon name="forward" :size="15" />
+                  <!-- 补全入口：放在卡底、只在确实缺东西时出现（不占首屏的视觉重量） -->
+                  <div class="pd-brief-foot" v-if="metaMissing">
+                    <span class="pd-hint">论文信息还没补全</span>
+                    <span class="spacer" />
+                    <button
+                      type="button"
+                      class="pd-ghost-btn"
+                      :disabled="!!metaBusy"
+                      title="离线读 PDF 首页与页产物：会议、年份、原文摘要、DOI、参考文献、阅读时间（不花钱）"
+                      @click="fillMeta(false)"
+                    >
+                      <AppIcon name="search" :size="14" />{{ metaBusy === 'pdf' ? '识别中…' : '从论文识别' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="pd-ghost-btn"
+                      :disabled="!!metaBusy"
+                      title="交给 agent 读全文填写：中英文关键词、中文摘要、领域、一句话概括、创新点、前置知识、难度"
+                      @click="fillMeta(true)"
+                    >
+                      <AppIcon name="model" :size="14" />{{ metaBusy === 'agent' ? '已排队…' : '模型补全' }}
                     </button>
                   </div>
+                </div>
+
+                <!-- 核心创新：快速理解用，3~4 条、一行一条 -->
+                <section class="pd-sec" v-if="contributions.length">
+                  <h3 class="pd-h3"><AppIcon name="sparkle" :size="18" />核心创新</h3>
+                  <ul class="pd-list">
+                    <li v-for="(c, i) in contributions" :key="i">{{ c }}</li>
+                  </ul>
+                </section>
+
+                <!-- 前置知识：辅助阅读，视觉权重低于速览与创新 -->
+                <section class="pd-sec" v-if="prereq.length">
+                  <h3 class="pd-h3"><AppIcon name="info" :size="18" />前置知识</h3>
+                  <div class="pd-tags quiet">
+                    <span class="pd-tag" v-for="(p, i) in prereq" :key="i">{{ p }}</span>
+                  </div>
+                </section>
+
+                <!-- 推荐阅读路径：从真实目录里挑出的几节，点一行跳进阅读器对应位置。
+                     这是**导航**，不是内容，所以做成一行一节的轻列表。 -->
+                <section class="pd-sec" v-if="readingPath.length">
+                  <h3 class="pd-h3"><AppIcon name="list" :size="18" />推荐阅读路径</h3>
+                  <div class="pd-path">
+                    <button
+                      v-for="s in readingPath"
+                      :key="s.key"
+                      type="button"
+                      class="pd-path-row"
+                      :title="`在阅读器里打开：${s.title}`"
+                      @click="openReader({ row: s.row, page: s.page })"
+                    >
+                      <span class="pd-path-no">{{ s.number }}</span>
+                      <span class="pd-path-title">{{ s.title }}</span>
+                      <span class="pd-path-page">第 {{ s.page }} 页</span>
+                      <AppIcon name="chevron-right" :size="16" />
+                    </button>
+                  </div>
+                </section>
+
+                <!-- 处理流程：一条扁的里程碑条（解析 / 翻译 / 索引），回答"现在能不能读" -->
+                <section class="pd-sec">
+                  <h3 class="pd-h3">
+                    <AppIcon name="bolt" :size="18" />处理流程
+                    <button type="button" class="pd-icon-link" title="查看进度" @click="tab = 'progress'">
+                      <AppIcon name="forward" :size="16" />
+                    </button>
+                  </h3>
 
                   <div class="pd-milestones">
                     <div class="pd-ms-bar" role="img" :aria-label="`处理流程：${milestones.map((m) => `${m.label}${m.text}`).join('，')}`">
@@ -727,40 +764,65 @@ async function doDelete() {
                       </span>
                     </div>
                   </div>
-                </div>
+                </section>
 
-                <div class="pd-card pd-activity">
-                  <div class="pd-card-head">
-                    <div class="pd-card-title">
-                      <span><AppIcon name="task" :size="20" /></span>
-                      <h3>最近活动</h3>
+                <!-- 论文档案：系统 / 归档信息（参考文献条数、大小、入库、知识库、标识、外部链接）。
+                     全部保留，但**视觉权重最低** —— 概览的首屏不该由它们占着。 -->
+                <section class="pd-sec pd-arch">
+                  <h3 class="pd-h3"><AppIcon name="server" :size="18" />论文档案</h3>
+
+                  <div class="pd-arch-grid" v-if="archFacts.length">
+                    <div class="pd-arch-row" v-for="f in archFacts" :key="f.k">
+                      <span>{{ f.k }}</span><strong :title="f.v">{{ f.v }}</strong>
                     </div>
                   </div>
-                  <ol>
-                    <li v-for="a in activity" :key="a.id">
-                      <span class="pd-act-icon" :class="`is-${a.tone}`"><AppIcon :name="a.icon" :size="16" /></span>
-                      <div><strong>{{ a.title }}</strong><span>{{ a.text }}</span></div>
-                      <time>{{ a.time }}</time>
-                    </li>
-                    <li v-if="!activity.length" class="pd-act-empty">任务开始后，进度记录会显示在这里。</li>
-                  </ol>
-                </div>
+
+                  <div class="pd-arch-row">
+                    <span>标识</span>
+                    <strong class="mono" :title="paperId"># {{ paperId }}</strong>
+                    <button type="button" class="pd-copy" :title="copied ? '已复制' : '复制 paper_id'" @click="copyId">
+                      <AppIcon :name="copied ? 'check' : 'copy'" :size="14" />
+                    </button>
+                  </div>
+
+                  <div class="pd-links" v-if="paper?.doi || paper?.code_url">
+                    <a v-if="paper?.doi" class="pd-ghost-btn"
+                       :href="`https://doi.org/${paper.doi}`" target="_blank" rel="noopener">
+                      <AppIcon name="link" :size="13" />DOI
+                    </a>
+                    <a v-if="paper?.code_url" class="pd-ghost-btn"
+                       :href="paper.code_url" target="_blank" rel="noopener">
+                      <AppIcon name="code" :size="13" />代码 / 项目
+                    </a>
+                  </div>
+
+                  <div class="pd-manage-row">
+                    <span class="pd-hint" v-if="paper?.meta_filled_at">
+                      信息补全于 {{ fmtRelative(paper.meta_filled_at) }}
+                    </span>
+                    <span class="spacer" />
+                    <button
+                      type="button"
+                      class="pd-ghost-btn danger"
+                      :disabled="busy === 'delete'"
+                      @click="confirmDelete = true"
+                    >
+                      <AppIcon name="trash" :size="14" />删除
+                    </button>
+                  </div>
+                </section>
               </div>
 
               <!-- 参考文献：离线从页产物的 `ref` 行（或 Markdown 的 References 节）抽出来，
-                   原文条目原样保留 —— 结构化字段是后补的，可能不全。 -->
+                   原文条目原样保留。卡片与跳转**与阅读器侧栏用的是同一个组件**
+                   （`ReferenceList`）：点一条去发表网站（DOI / arXiv / 原文链接，兜底学术搜索）。 -->
               <div v-show="tab === 'refs'" class="pd-refs">
                 <p class="pd-hint" v-if="references.length">
-                  共 {{ references.length }} 条。条目原文按论文里的顺序排列。
+                  共 {{ references.length }} 条（按论文里的顺序）。点条目跳到发表网站。
                 </p>
-                <ol class="pd-list pd-ref-list" v-if="references.length">
-                  <li v-for="r in references" :key="r.id">
-                    <span class="pd-ref-no">{{ r.order_no }}</span>
-                    <span class="pd-ref-text">{{ r.raw }}</span>
-                  </li>
-                </ol>
+                <ReferenceList v-if="references.length" :items="references" />
                 <p v-else class="pd-abstract-empty">
-                  还没有参考文献。到「概览」点右上角「从论文识别」离线抽一次
+                  还没有参考文献。到「概览」的「论文速览」卡点「从论文识别」离线抽一次
                   （读的是解析出来的参考文献块，不花钱）。
                 </p>
               </div>
@@ -801,7 +863,7 @@ async function doDelete() {
                 </p>
 
                 <div class="pd-card" v-if="tasks.length">
-                  <div class="pd-card-head"><div class="pd-card-title"><h3>任务记录</h3></div></div>
+                  <div class="pd-card-head"><h3 class="pd-h3">任务记录</h3></div>
                   <div class="pd-task-row" v-for="t in tasks.slice(0, 8)" :key="t.id">
                     <span class="badge" :class="taskStatus(String(t.status)).cls">
                       {{ TASK_TYPE_LABEL[String(t.type)] || t.type }}
@@ -810,6 +872,33 @@ async function doDelete() {
                     <span class="spacer" />
                     <span class="tiny faint nowrap">{{ taskStatus(String(t.status)).label }} · {{ fmtTime(t.updated_at || t.created_at) }}</span>
                   </div>
+                </div>
+
+                <!-- 阅读记录：用户自己的阅读行为数据（**从「概览」搬到这里**）。
+                     后端没有这两个字段（只有"读到哪"），所以是本机统计，标出来别让人误会。 -->
+                <div class="pd-card pd-read-stats">
+                  <div class="pd-card-head">
+                    <h3 class="pd-h3">阅读记录</h3>
+                    <span class="pd-hint">本机统计</span>
+                  </div>
+                  <div class="pd-kv"><span>阅读次数</span><strong>{{ readOpens ? `${readOpens} 次` : '—' }}</strong></div>
+                  <div class="pd-kv"><span>阅读时长</span><strong>{{ readDuration }}</strong></div>
+                  <div class="pd-kv"><span>最近打开</span><strong>{{ lastOpenText }}</strong></div>
+                  <p v-if="!hasLocalStats" class="pd-hint">这台机器上还没有打开过这篇论文。</p>
+                </div>
+
+                <div class="pd-card pd-activity">
+                  <div class="pd-card-head">
+                    <h3 class="pd-h3">最近活动</h3>
+                  </div>
+                  <ol>
+                    <li v-for="a in activity" :key="a.id">
+                      <span class="pd-act-icon" :class="`is-${a.tone}`"><AppIcon :name="a.icon" :size="16" /></span>
+                      <div><strong>{{ a.title }}</strong><span>{{ a.text }}</span></div>
+                      <time>{{ a.time }}</time>
+                    </li>
+                    <li v-if="!activity.length" class="pd-act-empty">任务开始后，进度记录会显示在这里。</li>
+                  </ol>
                 </div>
               </div>
 
@@ -878,7 +967,7 @@ async function doDelete() {
   padding: 16px 56px 12px 22px; border-bottom: 1px solid var(--divider);
 }
 .pd-head-title {
-  margin: 0; min-width: 0; font-size: 16px; font-weight: 700; letter-spacing: -.01em;
+  margin: 0; min-width: 0; font-size: 21px; font-weight: 600; letter-spacing: -.02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pd-close {
@@ -902,29 +991,34 @@ async function doDelete() {
   grid-template-columns: minmax(240px, 284px) minmax(0, 1fr);
 }
 .pd-left {
-  min-height: 0; padding: 20px 18px 20px 22px; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 16px;
+  min-height: 0; padding: 18px 18px 10px 22px; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 14px;
   border-right: 1px solid var(--divider);
   background: color-mix(in srgb, var(--bg) 42%, var(--bg-elev));
 }
+/* 左栏的每一块都**不参与压缩**（`flex: none`）：左栏内容超出时让它自己滚动，
+   而不是把封面/标题挤扁 —— 那正是"页面内容被压缩"的来源。 */
+.pd-left > * { flex: none; }
 .pd-right {
   min-height: 0; padding: 16px 20px 20px;
   display: flex; flex-direction: column; gap: 12px;
 }
 
-/* ---------------- 左栏：封面 ---------------- */
+/* ---------------- 左栏：封面 ----------------
+ * 框的比例 = 首页图自己的比例（`--cover-ratio` 由 `<img @load>` 量出来，见脚本）。
+ * 比例对上之后 `object-fit: contain` 既不裁也不留边，论文页原样呈现。 */
 .pd-cover {
-  width: 100%; aspect-ratio: 3 / 4; overflow: hidden;
+  width: 100%; aspect-ratio: var(--cover-ratio, 1 / 1.29); overflow: hidden;
   border: 1px solid var(--border); border-radius: 16px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
   box-shadow: var(--shadow-2);
 }
-.pd-cover img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top center; background: var(--bg-elev); }
+.pd-cover img { display: block; width: 100%; height: 100%; object-fit: contain; background: var(--bg-elev); }
 
 .pd-identity { display: grid; gap: 5px; }
 .pd-identity h3 {
   display: flex; align-items: flex-start; gap: 6px; margin: 0;
-  font-size: 15px; font-weight: 650; line-height: 1.35; letter-spacing: -.015em;
+  font-size: 18px; font-weight: 600; line-height: 1.4; letter-spacing: -.02em;
   color: var(--text);
 }
 .pd-identity h3 :deep(.icon) { margin-top: 2.5px; }
@@ -935,7 +1029,7 @@ async function doDelete() {
 }
 .pd-identity p {
   display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0;
-  font-size: 11.5px; color: var(--text-dim);
+  font-size: 13px; line-height: 1.65; color: var(--text-dim);
 }
 .pd-identity p span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-copy {
@@ -946,43 +1040,25 @@ async function doDelete() {
 }
 .pd-copy:hover { background: var(--bg-hover); color: var(--text); }
 
-.pd-buttons { display: flex; flex-direction: column; gap: 10px; }
+/* ---------------- 左栏：阅读（唯一主操作） ----------------
+ * 只有一个按钮：原文 / 对照 / 翻译是**阅读器内部状态**，文件导出是「文件」页签的事 ——
+ * 左栏不重复摆第二个入口。按钮占满整栏宽度，是这一栏唯一的强调色。 */
+.pd-actions { display: flex; align-items: center; gap: 8px; }
 .pd-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  width: 100%; height: 34px; border-radius: var(--r-sm);
+  flex: 1; min-width: 0; height: 36px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
   font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.pd-btn:hover { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
+.pd-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .pd-btn.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
 .pd-btn.primary:hover { background: var(--accent-hover); }
 
-/* ---------------- 左栏：文件下载 ---------------- */
-.pd-downloads {
-  display: grid; gap: 7px; padding: 9px 10px 10px;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-elev) 76%, transparent);
-}
-.pd-downloads > header {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; font-weight: 600; color: var(--text-dim);
-}
-.pd-download-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
-.pd-download-btn {
-  display: flex; align-items: center; justify-content: center;
-  height: 34px; border-radius: 9px;
-  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text);
-  cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
-              transform var(--dur) var(--ease);
-}
-.pd-download-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong));
-  background: var(--bg-hover); transform: translateY(-1px);
-}
-.pd-download-btn:active:not(:disabled) { transform: scale(.96); }
-.pd-download-btn:disabled { opacity: .5; cursor: default; }
+/* ---------------- 左栏：关键词 ----------------
+ * 关键词是论文身份的延伸，所以跟封面 / 标题 / 阅读键同一栏；中英同一块区域切换。
+ * 与右侧的分组同一条分隔线的语言（`.pd-sec` 的观感），只把标题换成"标签 + 切换器"。 */
+.pd-kw-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .spin { animation: spin .85s linear infinite; }
 
 /* ---------------- 右栏：页签 ---------------- */
@@ -993,9 +1069,9 @@ async function doDelete() {
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 .pd-tab {
-  display: inline-flex; align-items: center; gap: 5px;
-  min-height: 30px; padding: 4px 13px; border-radius: 8px;
-  color: var(--text-dim); font-family: inherit; font-size: 12px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 34px; padding: 5px 14px; border-radius: 9px;
+  color: var(--text-dim); font-family: inherit; font-size: 15px; font-weight: 550;
   cursor: pointer; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
 }
@@ -1008,113 +1084,136 @@ async function doDelete() {
   padding-right: 5px; padding-bottom: 4px;
 }
 
-/* ---------------- 概览：摘要 + 标签 ----------------
- * 这一块原来是"9 页文档"那条黑色横幅（用户口径：大数字没信息量）——
- * 换成论文自己的内容。摘要是长文本，按 `--measure` 收行宽，别铺满整栏。 */
-.pd-overview { display: grid; gap: 12px; }
-.pd-abstract { gap: 10px; }
-.pd-abstract-actions { display: flex; align-items: center; gap: 6px; flex: none; }
-.pd-abstract-text {
-  margin: 0; max-width: var(--measure);
-  font-size: 13px; line-height: 1.72; color: var(--text);
-  /* 摘要在有的论文里很长：收 6 行，想看全的点「编辑元数据」或进阅读器 */
-  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+/* ---------------- 概览：论文属性（最顶部的一条） ----------------
+ * 领域 / 类型 / 难度 / 推荐阅读时间：一行「16px 线性图标 + 值」，横向铺开、自动换行。
+ * 它是概览的第一眼信息，所以给一层极淡的底把它托住 —— 但**不是一张大卡片**。
+ * 图标只做视觉辅助：中性灰、不抢字的注意力。 */
+.pd-attrs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+  padding: 11px 14px; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg) 55%, var(--bg-elev));
 }
-.pd-abstract-empty { margin: 0; font-size: 12px; color: var(--text-faint); }
-.pd-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.pd-tag {
-  display: inline-flex; align-items: center; height: 24px; padding: 0 11px;
-  border-radius: 999px; background: var(--bg-elev); border: 1px solid var(--border);
-  font-size: 11.5px; color: var(--text-dim);
+.pd-attr { display: inline-flex; align-items: center; gap: 7px; min-width: 0; line-height: 20px; }
+.pd-attr :deep(.icon) { flex: none; color: var(--text-faint); }
+.pd-attr > i { font-style: normal; flex: none; font-size: 13px; font-weight: 400; color: var(--text-dim); }
+.pd-attr > strong {
+  font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 26ch;
 }
 
-/* ---------------- 概览：论文信息（元数据扩展，2026-10-07） ----------------
- * 与摘要卡同一套观感：一句话概括放大一档，其余走"小标签 + 小标题"。
- * 字段来源（pdf / model / agent / manual）写在 `h4` 里的 `<em>` 上，弱化到几乎只是备注。 */
-.pd-meta { gap: 10px; }
+/* ---------------- 概览：论文速览（主卡） ----------------
+ * 摘要按**正文**排：16px / 行高 1.85 / 常规字重 —— 它是"读的内容"，不是标题。
+ * **完整显示**（不 line-clamp、不 max-height、不加省略号），长了就让 `.pd-panel` 自己滚。
+ * 简约靠"少几个大卡片"，不靠裁掉摘要。 */
+.pd-overview { display: grid; gap: 14px; }
+.pd-brief { gap: 12px; }
+.pd-brief-text {
+  margin: 0; max-width: var(--measure);
+  font-size: 16px; line-height: 1.85; font-weight: 400; color: var(--text);
+  overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.pd-abstract-empty { margin: 0; font-size: 13px; color: var(--text-faint); }
+.pd-tags { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+/* 关键词 / 前置知识的标签：**紧凑但可换行**。
+ * 论文关键词常常是一整串英文（`multi-modal fake news detection`），
+ * 所以给 `min-height` 而不是固定 `height` —— 一行放不下时标签自己长高一行，
+ * 不会溢出左栏，也不会把行高撑得参差不齐。 */
+.pd-tag {
+  display: inline-flex; align-items: center;
+  min-height: 22px; padding: 1px 9px; max-width: 100%;
+  border-radius: 999px; background: var(--bg-elev); border: 1px solid var(--border);
+  font-size: 11.5px; font-weight: 400; line-height: 1.5; color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+/* 前置知识：比关键词再轻一档（同一枚标签，去掉描边、底色沉下去） */
+.pd-tags.quiet .pd-tag { background: var(--bg-sunken); border-color: transparent; color: var(--text-dim); }
+
+/* 中 / English：轻量胶囊（复用全站 `.seg` 语言，只把它压小一档） */
+.pd-lang { height: 28px; padding: 2px; flex: none; }
+.pd-lang :deep(button) { height: 24px; padding: 0 11px; font-size: 13px; font-weight: 500; }
+
+/* 补全入口：卡底一条，只在缺信息时出现 */
+.pd-brief-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
+
+/* ---------------- 概览：Section 标题（全页统一的一档） ----------------
+ * 字号 18 / 字重 600：层级靠**字号 + 间距 + 灰度**拉开，不靠加粗。
+ * 图标一律 18px 线性、中性灰，**不再套 36~40px 的圆角底**（那个容器视觉重量太大）。 */
+.pd-h3 {
+  display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0;
+  font-size: 18px; font-weight: 600; letter-spacing: -.02em; color: var(--text);
+}
+.pd-h3 :deep(.icon) { flex: none; color: var(--text-dim); }
+
+/* ---------------- 概览：轻分组（分组标题 + 内容） ----------------
+ * 除了速览那一张卡，其余信息不再各自占一张大卡：一条细分隔线 + 分组标题足够分层，
+ * 省下来的纵向空间留给论文内容本身。左栏的「关键词」用同一条分隔线的语言，
+ * 但**比右侧 Section 低一档**（它是辅助信息，15px/500，见 `.pd-kw-head h3`）。 */
+.pd-sec, .pd-kw { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid var(--divider); }
+.pd-kw-head > h3 {
+  display: flex; align-items: center; gap: 8px; margin: 0; flex: none;
+  font-size: 15px; font-weight: 500; letter-spacing: -.01em; color: var(--text);
+}
+
+/* 推荐阅读路径：一行一节（编号 / 标题 / 页码），点一行跳进阅读器 */
+.pd-path { display: grid; gap: 1px; }
+.pd-path-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  min-height: 32px; padding: 5px 9px; border-radius: var(--r-sm);
+  border: 0; background: transparent; color: var(--text);
+  font-family: inherit; text-align: left; cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.pd-path-row:hover { background: var(--bg-hover); }
+.pd-path-row:focus-visible { outline: none; box-shadow: var(--ring); }
+.pd-path-no { flex: none; min-width: 32px; font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); }
+.pd-path-title { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-path-page { flex: none; font-size: 12.5px; color: var(--text-faint); }
+.pd-path-row :deep(.icon) { flex: none; color: var(--text-faint); }
+
+/* 论文档案：键值两列 + 标识行，视觉权重最低（靠**灰度**降档，不靠缩小字号） */
+.pd-arch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 18px; }
+.pd-arch-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px; }
+.pd-arch-row > span { flex: none; min-width: 58px; color: var(--text-faint); }
+.pd-arch-row > strong {
+  flex: 1; min-width: 0; font-weight: 500; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pd-arch .pd-manage-row { padding-top: 2px; }
+
+/* ---------------- 概览：论文速览的正文与列表 ----------------
+ * 一句话概括是**引导句**，不是标题：16px / 500（整句加粗会读成标题）。
+ * 核心创新按正文排（15px / 400），比摘要低一档。 */
 .pd-oneliner {
   margin: 0; max-width: var(--measure);
-  font-size: 13.5px; line-height: 1.6; font-weight: 560; color: var(--text);
+  font-size: 16px; line-height: 1.8; font-weight: 500; color: var(--text);
 }
-.pd-facts { display: flex; flex-wrap: wrap; gap: 6px; }
-.pd-fact {
-  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
-  border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  font-size: 11.5px; color: var(--text);
-}
-.pd-fact > i { font-style: normal; color: var(--text-dim); }
-.pd-block { display: grid; gap: 5px; }
-.pd-block > h4 {
-  margin: 0; display: flex; align-items: center; gap: 6px;
-  font-size: 11.5px; font-weight: 620; color: var(--text-dim);
-}
-.pd-block > h4 > em { font-style: normal; font-weight: 400; color: var(--text-faint); }
-.pd-list { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
-.pd-list > li { font-size: 12.5px; line-height: 1.65; color: var(--text); }
+.pd-list { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.pd-list > li { font-size: 15px; font-weight: 400; line-height: 1.8; color: var(--text); }
 .pd-links { display: flex; flex-wrap: wrap; gap: 6px; }
 .pd-links > a { text-decoration: none; }
 
-/* 参考文献：一条一段（原文可能很长，按 --measure 收行宽），序号在左。 */
-.pd-ref-list { padding-left: 0; list-style: none; max-width: calc(var(--measure) + 40px); }
-.pd-ref-list > li { display: flex; gap: 8px; align-items: flex-start; }
-.pd-ref-no {
-  flex: none; min-width: 22px; text-align: right; padding-top: 1px;
-  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
-}
-.pd-ref-text { font-size: 12.5px; line-height: 1.65; color: var(--text); overflow-wrap: anywhere; }
+/* ---------------- 参考文献页签 ----------------
+ * 卡片本体（含跳转图标与样式）在 `ReferenceList` 里 —— 与阅读器侧栏共用同一份
+ * （侧栏是窄栏，字号按那边定；这里只留一个列的间距）。 */
+.pd-refs { display: grid; gap: 8px; align-content: start; }
 
-/* ---------------- 概览：信息卡（大小 / 入库 / 知识库 / 篇幅） ---------------- */
-.pd-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.pd-stat {
-  display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 76px;
-  padding: 11px 13px; border-radius: 19px;
-  background: color-mix(in srgb, var(--bg) 72%, var(--bg-elev));
-}
-.pd-stat-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; flex: none; border-radius: 14px;
-  background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1);
-}
-.pd-stat > div { display: grid; gap: 2px; min-width: 0; }
-.pd-stat > div > span { font-size: 10.5px; color: var(--text-dim); }
-.pd-stat > div > strong {
-  font-size: 15px; font-weight: 620; letter-spacing: -.025em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* ---------------- 概览：主网格两张卡 ---------------- */
-/* 主网格：两张**等宽、等高**的键值卡（作者与出处 / 阅读）。
-   等高（默认 stretch）比"各自内容高度"更省地方：两卡行数相近，留白落在卡内，
-   不会在两卡之间裂出一条空洞。处理流程不在这里 —— 它是下面那条独立的全宽扁条。 */
-.pd-main-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px; align-items: stretch;
-}
 .pd-card {
-  display: grid; align-content: start; gap: 11px; padding: 13px; border-radius: 21px;
+  display: grid; align-content: start; gap: 12px; padding: 14px 16px; border-radius: 21px;
   background: color-mix(in srgb, var(--bg) 55%, var(--bg-elev));
 }
 .pd-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.pd-card-title { display: inline-flex; align-items: center; gap: 8px; }
-.pd-card-title > span {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px; border-radius: 13px;
-  background: var(--bg-elev); color: var(--text);
-}
-.pd-card-title h3 { margin: 0; font-size: 14px; font-weight: 620; letter-spacing: -.025em; }
 .pd-icon-link {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border-radius: 999px;
-  background: var(--bg-elev); color: var(--text); cursor: pointer;
-  transition: transform var(--dur) var(--ease);
+  width: 24px; height: 24px; margin-left: 2px; border-radius: 999px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
+.pd-icon-link:hover { background: var(--bg-hover); color: var(--text); }
 .pd-icon-link:active { transform: scale(.94); }
 
-/* ---------------- 处理流程：分段里程碑条（最扁的一条，全宽） ----------------
+/* ---------------- 处理流程：分段里程碑条（最扁的一条） ----------------
  * 三段等宽（解析 / 翻译 / 索引），每段自己按进度填充：完成=满格、进行中=真实比例（至少 20%）、
- * 未开始=空。段底下同一列宽写标签与状态 —— 一张卡只花两行高度，把纵向空间让给上面两张卡。 */
-.pd-pipeline { gap: 9px; }
+ * 未开始=空。段底下同一列宽写标签与状态 —— 只花两行高度。 */
 .pd-milestones { display: grid; gap: 7px; }
 .pd-ms-bar { display: flex; gap: 3px; height: 8px; }
 .pd-ms-seg {
@@ -1131,35 +1230,35 @@ async function doDelete() {
 .pd-ms-labels { display: flex; gap: 3px; }
 .pd-ms-labels > span {
   flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 6px;
-  font-size: 10.5px; color: var(--text-dim);
+  font-size: 12.5px; color: var(--text-dim);
 }
-.pd-ms-labels > span > strong { font-size: 11.5px; font-weight: 620; color: var(--text); }
+.pd-ms-labels > span > strong { font-size: 12.5px; font-weight: 550; color: var(--text); }
 .pd-ms-labels > span > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-ms-labels > span.is-muted > span { color: var(--text-faint); }
 .pd-ms-labels > span.is-failed > span { color: var(--danger); }
 
-/* ---------------- 键值行（作者与出处 / 阅读） ---------------- */
+/* ---------------- 键值行（进度页的阅读记录） ---------------- */
 .pd-kv { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.pd-kv > span { flex: none; width: 66px; font-size: 11px; color: var(--text-dim); }
+.pd-kv > span { flex: none; width: 72px; font-size: 12.5px; color: var(--text-dim); }
 .pd-kv > strong {
-  flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text);
+  flex: 1; min-width: 0; font-size: 14px; font-weight: 500; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.pd-hint { font-size: 10.5px; color: var(--text-faint); }
+.pd-hint { font-size: 12px; color: var(--text-faint); }
 
 .pd-manage-row { display: flex; align-items: center; gap: 8px; }
 .pd-ghost-btn {
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 32px; padding: 0 12px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
-  font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .pd-ghost-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
 .pd-ghost-btn.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .pd-ghost-btn:disabled { opacity: .55; cursor: default; }
 
-/* ---------------- 概览：最近活动 ---------------- */
+/* ---------------- 最近活动（进度页：阅读行为与任务的时间线） ---------------- */
 .pd-activity ol { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .pd-activity li {
   display: grid; grid-template-columns: 32px minmax(0, 1fr) auto;
@@ -1174,10 +1273,10 @@ async function doDelete() {
 .pd-act-icon.is-done, .pd-act-icon.is-active { color: var(--text); }
 .pd-act-icon.is-failed { color: var(--danger); }
 .pd-activity li > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.pd-activity li strong { font-size: 12px; font-weight: 600; color: var(--text); }
-.pd-activity li span, .pd-activity time { font-size: 11px; color: var(--text-dim); }
+.pd-activity li strong { font-size: 13px; font-weight: 550; color: var(--text); }
+.pd-activity li span, .pd-activity time { font-size: 12px; color: var(--text-dim); }
 .pd-activity time { white-space: nowrap; }
-.pd-act-empty { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-dim); }
+.pd-act-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-dim); }
 
 /* ---------------- 进度页签 ---------------- */
 .pd-progress { display: grid; gap: 12px; }
@@ -1186,7 +1285,7 @@ async function doDelete() {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-dim);
-  font-size: 12px;
+  font-size: 13px;
 }
 .pd-stages li.done { color: var(--text); border-color: color-mix(in srgb, var(--ok) 34%, var(--border)); }
 .pd-stages li.active { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
@@ -1198,18 +1297,18 @@ async function doDelete() {
 }
 .pd-live .spinner { width: 20px; height: 20px; }
 .pd-live > div { display: grid; gap: 1px; min-width: 0; }
-.pd-live strong { font-size: 12.5px; font-weight: 650; }
-.pd-live span { font-size: 11.5px; opacity: .9; }
+.pd-live strong { font-size: 13px; font-weight: 600; }
+.pd-live span { font-size: 12.5px; opacity: .9; }
 
 .pd-progress-row { display: grid; gap: 5px; }
 .pd-progress-top {
-  display: flex; align-items: center; font-size: 12px; color: var(--text-dim);
+  display: flex; align-items: center; font-size: 13px; color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
 .pd-progress-top > span:last-child { margin-left: auto; }
 
 .pd-task-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-.pd-task-msg { font-size: 12px; color: var(--text-dim); min-width: 0; }
+.pd-task-msg { font-size: 13px; color: var(--text-dim); min-width: 0; }
 
 /* ---------------- 文件页签 ---------------- */
 .pd-files { display: grid; gap: 8px; }
@@ -1230,7 +1329,7 @@ async function doDelete() {
   background: var(--bg-sunken); color: var(--text);
 }
 .pd-file-copy { display: grid; gap: 1px; min-width: 0; }
-.pd-file-copy strong { font-size: 13px; font-weight: 600; }
+.pd-file-copy strong { font-size: 14px; font-weight: 550; }
 .pd-file-copy span { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------- 窄屏：单栏（封面缩到一条，右侧占满） ---------------- */
@@ -1238,15 +1337,17 @@ async function doDelete() {
   .pd-dialog { width: calc(100dvw - 20px); height: calc(100dvh - 20px); }
   .pd-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .pd-left {
-    flex-direction: row; align-items: flex-start; gap: 12px;
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 12px;
     padding: 12px; overflow: hidden;
     border-right: 0; border-bottom: 1px solid var(--divider);
   }
   .pd-cover { width: 62px; flex: none; }
-  .pd-buttons { flex-direction: row; }
-  .pd-downloads { display: none; }
+  .pd-identity { flex: 1; min-width: 0; }
+  .pd-actions { flex-direction: column; flex: none; }
+  /* 关键词换到第二行（窄屏一行放不下四块） */
+  .pd-kw { flex: 1 1 100%; padding-top: 10px; }
   .pd-right { padding: 10px 12px 12px; }
-  .pd-main-grid, .pd-stats { grid-template-columns: minmax(0, 1fr); }
+  .pd-arch-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

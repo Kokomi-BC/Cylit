@@ -7,7 +7,10 @@
  * - WinUI 3 观感：24 网格、1.6 描边、圆头圆角、无填充色块，颜色跟随文本；
  * - 图标名保持语义化（`search/refresh/translate/...`），禁止在视图里内联 `<svg>`。
  *
- * 用法：`<AppIcon name="search" :size="16" />`
+ * **唯一例外**（2026-10-09）：名字以 `-fill` 结尾的是**填充型（Material 风）**——实心填充、
+ * 无描边，目前只给阅读器右键菜单用（复刻 fakenewsdetect.art 的图标口径，14px）。
+ *
+ * 用法：`<AppIcon name="search" :size="16" />` / `<AppIcon name="copy-fill" :size="14" />`
  */
 import { computed } from 'vue';
 
@@ -106,6 +109,13 @@ const ICONS: Record<string, string> = {
 
   // ---- 内容类型 ----
   document: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
+  // 论文属性用（2026-10-08 图标系统统一，Lucide 造型）：
+  //   tag     = 领域（Tags）；book-open = 类型（BookOpen）；gauge = 难度；align-left = 摘要
+  // 都是 24 网格 / 描边不填充，跟既有图标同一套语言。
+  tag: '<path d="M12.6 3.4 20.6 11.4a2 2 0 0 1 0 2.8l-6.4 6.4a2 2 0 0 1-2.8 0L3.4 12.6A2 2 0 0 1 2.8 11.2V4.8a2 2 0 0 1 2-2h6.4a2 2 0 0 1 1.4.6z"/><circle cx="7.6" cy="7.6" r="1.2"/>',
+  'book-open': '<path d="M12 7.2v12.4"/><path d="M12 7.2C10.9 5.6 9.3 4.8 7.3 4.8H4.4A1.4 1.4 0 0 0 3 6.2v9.4a1.4 1.4 0 0 0 1.4 1.4h2.6c2 0 3.7.9 5 2.6"/><path d="M12 7.2c1.1-1.6 2.7-2.4 4.7-2.4h2.9A1.4 1.4 0 0 1 21 6.2v9.4a1.4 1.4 0 0 1-1.4 1.4h-2.6c-2 0-3.7.9-5 2.6"/>',
+  gauge: '<path d="M3.6 18.6a9.6 9.6 0 1 1 16.8 0"/><path d="M12 13.4 15.6 9.8"/>',
+  'align-left': '<path d="M21 6H3"/><path d="M15 12H3"/><path d="M17 18H3"/>',
   translate: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.4 2.5 3.6 5.4 3.6 8.5s-1.2 6-3.6 8.5c-2.4-2.5-3.6-5.4-3.6-8.5S9.6 6 12 3.5z"/>',
   formula: '<path d="M17 5H7l6 7-6 7h10"/>',
   image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.4"/><path d="M21 16.5 16 11l-6 6.5-2.5-2.5L3 19.5"/>',
@@ -113,6 +123,17 @@ const ICONS: Record<string, string> = {
   code: '<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
   quote: '<path d="M9 6H5.5A1.5 1.5 0 0 0 4 7.5V11h5V7.5"/><path d="M20 6h-3.5A1.5 1.5 0 0 0 15 7.5V11h5V7.5"/><path d="M4 11v3.5C4 17 5.6 18.6 8 18.6M15 11v3.5c0 2.5 1.6 4.1 4 4.1"/>',
   sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
+
+  // ---- 右键菜单专用：**填充型**（Material 风，2026-10-09 复刻 fakenewsdetect.art 的图标口径） ----
+  // 名字以 `-fill` 结尾 → 渲染成 `fill: currentColor` / 无描边（见下方 `filled`）。14px 使用：
+  // 填充图标在 14px 下比线性图标更"实"，与目标站观感一致。这些图标**只给右键菜单用**
+  // （「高亮 / 询问 Cyli / 加入对话」用户口径 2026-10-09 保留线性图标，所以没有对应的填充版）。
+  'search-fill': '<path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>',
+  'copy-fill': '<path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>',
+  'select-all-fill': '<path d="M3 5h2V3c-1.1 0-2 .9-2 2zm0 8h2v-2H3v2zm4 8h2v-2H7v2zM3 9h2V7H3v2zm10-6h-2v2h2V3zm6 0v2h2c0-1.1-.9-2-2-2zM5 21v-2H3c0 1.1.9 2 2 2zm-2-4h2v-2H3v2zM9 3H7v2h2V3zm2 18h2v-2h-2v2zm8-8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2zm0-12h2V7h-2v2zm0 8h2v-2h-2v2zm-4 4h2v-2h-2v2zm0-16h2V3h-2v2zM7 17h10V7H7v10zm2-8h6v6H9V9z"/>',
+  'save-alt-fill': '<path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/>',
+  'open-new-fill': '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>',
+  'delete-fill': '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>',
 
   // ---- 状态 ----
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8h.01"/>',
@@ -124,6 +145,9 @@ const ICONS: Record<string, string> = {
 };
 
 const markup = computed(() => ICONS[props.name] ?? ICONS.info);
+
+/** 填充型图标（Material 风）：名字以 `-fill` 结尾 —— 实心填充、无描边（右键菜单专用）。 */
+const filled = computed(() => props.name.endsWith('-fill'));
 </script>
 
 <template>
@@ -132,9 +156,9 @@ const markup = computed(() => ICONS[props.name] ?? ICONS.info);
     :width="props.size"
     :height="props.size"
     viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    :stroke-width="props.weight"
+    :fill="filled ? 'currentColor' : 'none'"
+    :stroke="filled ? 'none' : 'currentColor'"
+    :stroke-width="filled ? 0 : props.weight"
     stroke-linecap="round"
     stroke-linejoin="round"
     aria-hidden="true"

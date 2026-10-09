@@ -59,7 +59,7 @@ interface FieldDef {
 interface GroupDef {
   key: string;
   title: string;
-  hint: string;
+  hint?: string;
   fields: FieldDef[];
 }
 
@@ -73,7 +73,6 @@ const GROUPS: GroupDef[] = [
   {
     key: 'task',
     title: '任务',
-    hint: '后台任务的工作线程数。翻译本身固定串行（没有并发开关）：串行才能保住跨页前文与前缀缓存。',
     fields: [
       { key: 'task_worker_count', label: '任务工作线程数', type: 'number', min: 1 },
     ],
@@ -81,7 +80,7 @@ const GROUPS: GroupDef[] = [
   {
     key: 'render',
     title: '渲染',
-    hint: '页面图用于复核与降级；公式高倍裁图 dpi 建议为页面 dpi 的 3–4 倍。',
+    hint: '公式裁图 dpi 建议为页面 dpi 的 3–4 倍。',
     fields: [
       { key: 'render_dpi', label: '页面渲染 dpi', type: 'number', min: 72 },
       { key: 'crop_dpi', label: '公式裁图 dpi', type: 'number', min: 72 },
@@ -90,7 +89,6 @@ const GROUPS: GroupDef[] = [
   {
     key: 'rag',
     title: 'RAG 检索',
-    hint: '向量 / 词法召回条数与融合、重排条数。',
     fields: [
       { key: 'rag_top_k_vector', label: '向量召回 top_k', type: 'number', min: 1 },
       { key: 'rag_top_k_lexical', label: '词法召回 top_k', type: 'number', min: 1 },
@@ -101,7 +99,6 @@ const GROUPS: GroupDef[] = [
   {
     key: 'misc',
     title: '其他',
-    hint: '通用知识开关仅影响 RAG 未命中时的兜底回答；默认生成模型留空则使用 mock provider。',
     fields: [
       { key: 'allow_general_knowledge', label: '允许通用知识（RAG 兜底）', type: 'bool' },
       { key: 'default_generation_model', label: '默认生成模型（留空 = mock）', type: 'text' },
@@ -126,22 +123,22 @@ const READONLY_KEYS: ReadonlyDef[] = [
  *
  * 版式是**左导航 + 右内容窗格**（移植自参照项目 retain-pdf 的设置弹窗）：一次只渲染一区，
  * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
- * `desc` 是窗格抬头的说明（下放到 SECTIONS 里，避免每个 section 各写一遍标题）。 */
+ */
 const SECTIONS = [
-  { id: 'general', label: '常规参数', icon: 'settings', desc: '后台任务线程数、页面与公式渲染 dpi、RAG 检索条数。改完要按「保存设置」才落库。' },
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', desc: '界面皮肤：色块就是效果预览，点一下立即换肤，选择记在本机（localStorage）。' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge', desc: '知识库概览、论文索引与 chunk 对账。都是即时操作，没有"保存"这一步。' },
-  { id: 'agent', label: '论文问答', icon: 'chat', desc: '问答（agent）用的模型、服务状态与运行限额。模型本身的编辑在「模型」页。' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt', desc: 'MinerU 云端解析的 token 与默认参数。token 只写不回显（后端只给掩码）。' },
-  { id: 'history', label: '搜索记录', icon: 'search', desc: '知识库检索的历史记录，存在本机（localStorage），不上传后端。' },
-  { id: 'about', label: '系统信息', icon: 'server', desc: '只读配置与后端健康检查（数据库 / 向量库 / 任务池）。' },
+  { id: 'general', label: '常规参数', icon: 'settings' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge' },
+  { id: 'agent', label: '论文问答', icon: 'chat' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt' },
+  { id: 'history', label: '搜索记录', icon: 'search' },
+  { id: 'about', label: '系统信息', icon: 'server' },
 ] as const;
 
 const route = useRoute();
 const router = useRouter();
 const active = ref<string>(SECTIONS[0].id);
 
-/** 当前分区的标题与说明：窗格抬头用它，section 里不再重复写标题。 */
+/** 当前分区：窗格抬头用它，section 里不再重复写标题。 */
 const activeSection = computed(() => SECTIONS.find((s) => s.id === active.value) ?? SECTIONS[0]);
 
 /** 点分区：换窗格 + 把 hash 写进地址栏（用 replace，不堆历史，也不触发任何滚动）。 */
@@ -490,7 +487,6 @@ onMounted(async () => {
     <div class="settings-pane">
       <header class="pane-head">
         <h2>{{ activeSection.label }}</h2>
-        <p>{{ activeSection.desc }}</p>
       </header>
 
     <!-- 首次加载 -->
@@ -524,23 +520,23 @@ onMounted(async () => {
             <div class="grid cols-2">
               <template v-for="f in g.fields" :key="f.key">
                 <label class="field" v-if="f.type === 'number'">
-                  <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
+                  <span class="field-top">{{ f.label }}</span>
                   <input type="number" :min="f.min" v-model.number="form[f.key]" />
                 </label>
                 <label class="field" v-else-if="f.type === 'text'">
-                  <span class="field-top">{{ f.label }}<code class="field-key">{{ f.key }}</code></span>
+                  <span class="field-top">{{ f.label }}</span>
                   <input type="text" v-model="form[f.key]" placeholder="留空 = mock provider" />
                 </label>
                 <label class="field" v-else>
                   <span class="field-top inline">
                     <input type="checkbox" v-model="form[f.key]" />
                     <span>{{ f.label }}</span>
-                    <code class="field-key">{{ f.key }}</code>
+                    
                   </span>
                 </label>
               </template>
             </div>
-            <p class="tiny faint hint">{{ g.hint }}</p>
+            <p class="tiny faint hint" v-if="g.hint">{{ g.hint }}</p>
           </div>
         </div>
       </section>
@@ -665,9 +661,7 @@ onMounted(async () => {
               </select>
             </label>
             <p class="tiny faint hint">
-              这里只是<b>导入弹窗的初值</b>：真要让某一篇走联网解析，还得在导入时把「解析引擎」
-              选成在线解析（弹窗里可以逐篇改）。模型版本选 pipeline 时版面与公式更稳；
-              选 vlm 时复杂版面更好，但更慢。
+              解析引擎只是导入弹窗的初值，导入时仍可逐篇改；pipeline 版面与公式更稳，vlm 复杂版面更好但更慢。
             </p>
           </div>
         </div>
@@ -682,7 +676,7 @@ onMounted(async () => {
       <section id="about" class="sec" v-if="active === 'about'">
         <div class="grid cols-2">
           <div class="card">
-            <div class="card-head">只读信息（不可编辑）</div>
+            <div class="card-head">只读信息</div>
             <div class="card-body">
               <div class="row small" v-for="r in READONLY_KEYS" :key="r.key">
                 <span class="muted">{{ r.label }}</span>
@@ -783,7 +777,6 @@ onMounted(async () => {
 .settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .pane-head { display: grid; gap: 4px; }
 .pane-head h2 { margin: 0; font-size: 17px; }
-.pane-head p { margin: 0; max-width: 76ch; font-size: 12.5px; line-height: 1.6; color: var(--text-dim); }
 
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽） */
 @media (max-width: 860px) {
@@ -802,13 +795,9 @@ onMounted(async () => {
 .sec { scroll-margin-top: calc(var(--header-h) + 62px); }
 .sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 
-/* 表单项：标签与"后端的键名"同一行，键名右对齐靠灰，不再占一整行高度 */
+/* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
 .field-top.inline { align-items: center; }
-.field-key {
-  margin-left: auto; font-family: var(--mono); font-size: 11px; font-weight: 400;
-  color: var(--text-faint);
-}
 
 /* 只读值 / 健康信息的长路径：占一半宽度并省略 */
 .ro-value { max-width: 56%; }

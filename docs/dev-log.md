@@ -10352,3 +10352,53 @@ Chrome 在右键 **mousedown** 时会把页面上的选区**折叠**掉（默认
 - 想再透一档：那两个百分比往 14%/6% 调（ContextMenu.vue 与 SelectionMenu.vue 各一处）。
 - 备注：headless 里**真右键不产生 contextmenu**，所以"右键菜单"的截图这一轮没拍到
   （胶囊那张的状态是实测到的）；菜单的开启逻辑由探针的合成事件覆盖。
+
+
+### 87. 第八十七轮：右键菜单复刻 fakenewsdetect.art（材质 / 图标 / 顺序）+ 划词胶囊同款材质
+
+用户口径（2026-10-09）："修改右键菜单的材质效果、图标和选项顺序，从浏览器打开
+`https://fakenewsdetect.art/Main` 复刻效果（但兼容原有的主题色）"；随后追加
+"**略微改的不透一点**，另外**上面的胶囊使用同样的材质**"，最后把**高亮 / 询问 Cyli 换回线性图标**、
+**导出改用 download 图标**。
+
+**目标站实测**（真浏览器读它的计算样式，不是凭截图猜）：
+- 面板：`rgba(243,244,246,.45)` + `backdrop-filter: blur(8px)` + `1px solid #e9ecef` +
+  双层柔阴影、圆角 12px、内边距 6px、`max-height: 90vh`、4px 细滚动条；
+- 菜单项：`padding: 8px 12px`、圆角 8px、`gap: 8px`、字号 14px；悬停 = 强调色淡底 + 强调色文字 +
+  **一圈 1px 强调色描边**（`box-shadow: 0 0 0 1px accent`）；
+- 图标：14px **填充型**（Material 风）、`fill: currentColor`；快捷键 12px、次要文字色、右对齐、左距 16px；
+- 开合：`menuPopup` = `scale(.8) translateY(-20px)` → `scale(1)`，0.2s `cubic-bezier(.2,.8,.2,1)`。
+
+**落地**（**颜色全部走本项目令牌**，不写死目标站那几个 hex —— 这就是"兼容原有主题色"）：
+- **新增一份两处共用的玻璃令牌**（`tokens.css`）：`--glass-flyout-bg`
+  = `color-mix(in srgb, var(--bg) 60%, transparent)`、`--glass-flyout-blur` = `blur(8px)`。
+  底色按用户要求从目标站的 45% **调到 60%**（"略微改的不透一点"）。
+- `ContextMenu.vue`：材质换成上面这份（**取代**第八十六轮"白底 20%/10% + blur(40) saturate/brightness"的
+  透亮配方）、`1px solid var(--border)`、圆角 12px、菜单项 14px / `8px 12px` / gap 8px、
+  悬停加强调色描边环（图标是 `currentColor`，跟着一起变强调色）、`.ctx-label` 加省略号、
+  快捷键 12px、滚动条 4px、开合走 menuPopup。
+- `SelectionMenu.vue`（划词胶囊）：**同一份材质**（用户口径"上面的胶囊使用同样的材质"），
+  只保留自己特有的胶囊形（`border-radius: 999px`）与 `z-index: 340`。
+- **图标**：`AppIcon` 新增"填充型"一族（名字以 `-fill` 结尾 → `fill: currentColor` / 无描边，
+  **只给右键菜单用**）：`search / copy / select-all / save-alt / open-new / delete-fill`。
+  按用户口径，**高亮（`note`）、询问 Cyli（`sparkle`）、加入对话（`chat`）保留原线性图标**、
+  **导出用 `download`** —— 所以填充族里没有 `highlight / sparkle / comment / document-fill`
+  （不留死图标）。
+- **顺序**（用户口径"按目标站顺序重排"）：搜索 → 复制 → 高亮 → 询问 Cyli → 加入对话 →
+  （分隔）全选 → （分隔）另存为 / 放大 → （分隔）导出 →
+  （分隔）**删除（危险项压到最后）**。
+- **文案压到两个字**（用户口径："就是四个字改两个字就行了"、"导出类的菜单只保留导出"）：
+  全选本页 → **全选**、另存为图片 → **另存为**、放大打开 → **放大**、删除高亮 → **删除**、
+  导出 Markdown → **导出**（这几个叫法都跟目标站一致，菜单也因此收窄了）；
+  **AI 相关项不动**（询问 Cyli / 加入对话 / 图片加入对话）。
+- **顺手修一个旧毛病**：菜单打开时原来会 `focus()` 第一项，而 `:focus-visible` 与 hover 是同一款样式，
+  于是第一项**看着"一直处于鼠标悬浮状态"**（用户口径 2026-10-09）。改成聚焦**面板本身**
+  （`tabindex="-1"` + `outline: none`）；键盘 `↑ ↓ Home End` 仍照常把焦点移到项上，无障碍不受影响。
+- **校验脚本跟着改**（`frontend_check.py`）：右键菜单那条断言从"渐变 + blur"改成
+  "半透明底（alpha<0.8）+ `1px solid` + blur"，另加"填充型图标（`fill=currentColor`）"与
+  "顺序（搜索 → 复制 → 高亮 → … → 全选 → 导出）"两条；划词胶囊那条改成"与菜单同款玻璃"。
+  本轮用户明确"不跑校验"，所以**没有实跑** `frontend_check`，只做了真浏览器实测。
+- **实测**（本地 `127.0.0.1:8710` 真页面，读计算样式）：菜单与胶囊同为
+  `color(srgb .949 .957 .961 / 0.6)` + `blur(8px)` + `0.667px solid`（= 1px @DPR）、
+  胶囊 `z=340` > 菜单 `z=320`；菜单静止时 `:hover` / `:focus-visible` 命中项**均为空**（伪悬停已修）。
+- 想再调"透不透"：只改 `tokens.css` 里 `--glass-flyout-bg` 那一个百分比，两个浮层同时生效。

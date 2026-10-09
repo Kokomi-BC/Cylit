@@ -83,6 +83,15 @@
   --shadow-flyout: 0 12px 20px -8px rgba(13, 32, 38, .12), 0 32px 56px -24px rgba(13, 32, 38, .26);
   --shadow-press: inset 0 1px 2px rgba(13, 32, 38, .10);
 
+  /* ---- 浮层玻璃（右键菜单与划词胶囊**同款**，2026-10-09） ----
+   * 复刻 fakenewsdetect.art 右键菜单的材质：**半透明底 + 弱模糊 + 1px 实描边**，
+   * 靠描边与阴影把浮层"托起来"，而不是靠加厚白底。两处共用这一份 ——
+   * 调"透不透"只改下面的百分比（越大越不透）。用 `--glass` 而非写死的灰，
+   * 所以浅色、深色、各套皮肤的底色都会自动跟随。
+   */
+  --glass-flyout-bg: color-mix(in srgb, var(--bg) 60%, transparent);
+  --glass-flyout-blur: blur(8px);
+
   /* ---- 动效（克制：只做状态反馈与层级提示，不做炫技循环） ---- */
   --dur-fast: .12s;
   --dur: .18s;

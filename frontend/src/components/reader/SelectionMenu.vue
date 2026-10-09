@@ -129,23 +129,19 @@ const COLOR_TITLE: Record<string, string> = {
 </template>
 
 <style scoped>
-/* 划词浮层：**与右键菜单、与顶部那条（原文/译文对照）胶囊同一款玻璃**
-   （用户口径 2026-10-08："胶囊也使用同款毛玻璃" → "更改这两个材质为顶部的胶囊的材质"）：
-   上下渐变 + `blur(48px) saturate(2.6)`、不画描边，圆角与顶部胶囊一致（整条胶囊形）。
-   里面每一项都是**只带图标的胶囊键**（文字标签已撤），高度对齐 `.btn.sm`（26px）。
+/* 划词浮层：**与右键菜单同一款玻璃**（用户口径 2026-10-09："上面的胶囊使用同样的材质"）。
+   材质本身走 `--glass-flyout-*`（见 tokens.css）：半透明底 + 弱模糊 + 1px 实描边 ——
+   两处共用一份，改"透不透"只改令牌。这里只保留自己特有的两件事：
+   ① 形状是**胶囊**（`border-radius: 999px`，与顶部那条对照胶囊一致）；
+   ② 里面每一项都是**只带图标的胶囊键**（文字标签已撤），高度对齐 `.btn.sm`（26px）。
    ⚠️ 层级要**高过右键菜单**（`ContextMenu` 是 320）：右键时两个会同时在场上，
    而且右键之后它会被**挪到菜单上沿**（见 ReaderView 的 `pillPos`）。 */
 .selection-menu {
   position: fixed; z-index: 340; padding: 3px;
-  /* 「特别透亮」的玻璃：白底只留一成多（再多就是白上加白，看不到玻璃），
-     真正给"透亮"感的是 backdrop 里的 **brightness + saturate** —— 把背后的正文提亮、加饱和，
-     再糊开；顶边一道高光当作玻璃的棱。 */
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--bg-elev) 20%, transparent),
-    color-mix(in srgb, var(--bg-elev) 10%, transparent));
-  backdrop-filter: blur(40px) saturate(2.4) brightness(1.14);
-  -webkit-backdrop-filter: blur(40px) saturate(2.4) brightness(1.14);
-  border: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent);
+  background: var(--glass-flyout-bg);
+  backdrop-filter: var(--glass-flyout-blur);
+  -webkit-backdrop-filter: var(--glass-flyout-blur);
+  border: 1px solid var(--border);
   border-radius: 999px; box-shadow: var(--shadow-flyout);
   /* 不换行、不收缩：换行会让按钮变成竖排（“AI 解 / 释”） */
   display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap;

@@ -1383,6 +1383,7 @@ async function run() {
       const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
       return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
                bgImage: cs.backgroundImage || '', alpha: m ? Number(m[1]) : 1,
+               border: cs.borderTopWidth + ' ' + cs.borderTopStyle,
                z: Number(cs.zIndex) || 0 };
     })();
     /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
@@ -1988,9 +1989,10 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
     record("pdfhl", "PDF 划词菜单里有高亮色（第三步之前这里只有解释/复制）",
            res.get("hasColors") is True and res.get("menuExplain") is True,
            f"有解释键={res.get('menuExplain')} 图标键={res.get('menuIconOnly')}")
-    record("pdfhl", "胶囊是**只带图标的同款毛玻璃**，且层级在右键菜单之上",
+    record("pdfhl", "胶囊与右键菜单**同款玻璃**（半透明底 + blur + 1px 描边），且层级在菜单之上",
            res.get("menuIconOnly") is True and (res.get("pillGlass") or {}).get("blur") is True
-           and "linear-gradient" in str((res.get("pillGlass") or {}).get("bgImage") or "")
+           and float((res.get("pillGlass") or {}).get("alpha") or 1) < 1
+           and "solid" in str((res.get("pillGlass") or {}).get("border") or "")
            and int((res.get("pillGlass") or {}).get("z") or 0) > 320,
            f"{res.get('pillGlass')}")
     record("pdfhl", "还没标高亮时菜单里**没有「笔记」**（先插高亮，才能在高亮上加笔记）",
@@ -3357,18 +3359,27 @@ def main() -> int:
             glass = data.get("ctxGlass") or {}
             blank = data.get("ctxKeysBlank") or []
             selk = data.get("ctxKeysSel") or []
-            record("reader", "右键接管了原生菜单，弹的是**顶部胶囊同款玻璃**（渐变 + blur + 真阴影）",
+            record("reader", "右键接管了原生菜单，弹的是**复刻目标站的玻璃**（半透明底 + blur + 1px 描边 + 真阴影）",
                    data.get("ctxPrevented") is True and glass.get("blur") is True
-                   and "linear-gradient" in str(glass.get("bgImage") or "")
+                   and float(glass.get("alpha") or 1) < 0.8
+                   and "solid" in str(glass.get("border") or "")
                    and str(glass.get("shadow") or "none") != "none",
                    f"接管={data.get('ctxPrevented')} blur={glass.get('blur')} "
-                   f"渐变={'linear-gradient' in str(glass.get('bgImage') or '')} {glass.get('items')} 项")
-            record("reader", "没选区时**不给**复制/高亮（只给全选本页、导出、图片项）",
+                   f"底色-alpha={glass.get('alpha')} border={glass.get('border')} {glass.get('items')} 项")
+            record("reader", "右键菜单项用的是**填充型图标**（fill=currentColor / 无描边）",
+                   glass.get("iconFill") == "currentColor",
+                   f"fill={glass.get('iconFill')} 圆角={glass.get('radius')}")
+            record("reader", "没选区时**不给**复制/高亮（只给全选、导出、图片项）",
                    "selectall" in blank and "export" in blank and "copy" not in blank
                    and "highlight" not in blank,
                    f"清单={blank}")
             record("reader", "划词后右键 → 询问 Cyli / 添加到对话框 / Bing / 复制 / 高亮（笔记）都在",
                    all(k in selk for k in ("ask", "tochat", "bing", "copy", "highlight")),
+                   f"清单={selk}")
+            record("reader", "右键顺序复刻目标站：搜索 → 复制 → 高亮 → … → 全选 → 导出",
+                   all(k in selk for k in ("bing", "copy", "highlight", "selectall", "export"))
+                   and selk.index("bing") < selk.index("copy") < selk.index("highlight")
+                   < selk.index("selectall") < selk.index("export"),
                    f"清单={selk}")
             bing_url = str(data.get("ctxBing") or "")
             record("reader", "点「网页搜索（Bing）」→ 新标签打开 bing 搜索（带选中的文字）",
@@ -3378,7 +3389,7 @@ def main() -> int:
                    data.get("ctxClosed") is True, f"还开着={not data.get('ctxClosed')}")
             if data.get("ctxHasImg"):
                 imgk = data.get("ctxKeysImg") or []
-                record("reader", "落在图片上 → 另存为 / 放大打开 / 添加到对话框（带这张图）",
+                record("reader", "落在图片上 → 另存为 / 放大 / 添加到对话框（带这张图）",
                        all(k in imgk for k in ("saveimg", "zoomimg", "tochat")),
                        f"清单={imgk}｜{str(data.get('ctxImgUrl'))[-40:]}")
             else:

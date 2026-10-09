@@ -2744,7 +2744,7 @@ function onCopy(ev: ClipboardEvent) {
  * （没选区就不给「高亮」，不在图片上就不给「另存为/放大」）。
  * 复用现成能力：询问=AI 解释浮层（可追问）、添加到对话框=侧栏输入框的上下文胶囊、
  * 复制=那条公式感知的复制、高亮/删除=划词菜单同一套、导出=当前视图那份 Markdown。
- * 新做的只有三件：Bing 搜索、全选本页、图片另存为（原图）。
+ * 新做的只有三件：Bing 搜索、全选（本页）、另存为（原图）。
  */
 interface CtxItem {
   key: string; label: string; icon?: string;
@@ -2818,29 +2818,36 @@ function onContentContextMenu(ev: MouseEvent) {
   };
   const items: CtxItem[] = [];
   /* 文案一律精简（用户口径 2026-10-08："精简右键菜单文字，更换图标"）；
-     "搜索"那一行**把选中的文字摆出来**（对齐 Edge 的 `搜索 “…”`）—— 一眼能确认搜的是哪一段。 */
+     "搜索"那一行**把选中的文字摆出来**（对齐 Edge 的 `搜索 “…”`）—— 一眼能确认搜的是哪一段。
+     2026-10-09：按用户口径**复刻目标站（fakenewsdetect.art）的顺序与图标** ——
+     选区工具（搜索 / 复制 / 高亮）在前，全选 → 图片 → 导出依次往后，
+     **危险项（删除）压到最后**。图标：以填充型（`-fill`）为主，
+     但「高亮」「询问 Cyli」「加入对话」**保留原来的线性图标**、「导出」用 **download**。
+     同日再按口径把长文案**压到两个字**：全选本页→全选、另存为图片→另存为、
+     放大打开→放大、删除高亮→删除、导出 Markdown→导出（与目标站的叫法一致）；
+     **AI 相关项（询问 Cyli / 加入对话 / 图片加入对话）不动**。 */
   const quoted = ctxCtx.text.replace(/\s+/g, ' ').trim().slice(0, 14);
   if (withSel) {
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
     items.push({
-      key: 'bing', icon: 'search',
+      key: 'bing', icon: 'search-fill',
       label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
     });
-    items.push({ key: 'copy', label: '复制', icon: 'copy', shortcut: 'Ctrl+C' });
+    items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
     items.push({ key: 'highlight', label: '高亮', icon: 'note' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
   } else if (ctxCtx.imgUrl && line !== 'pdf') {
     items.push({ key: 'tochat', label: '图片加入对话', icon: 'chat' });
   }
-  items.push({ key: 'selectall', label: '全选本页', icon: 'checkbox', sep: items.length > 0 });
+  items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
-    items.push({ key: 'saveimg', label: '另存为图片', icon: 'download', sep: true });
-    items.push({ key: 'zoomimg', label: '放大打开', icon: 'expand' });
+    items.push({ key: 'saveimg', label: '另存为', icon: 'save-alt-fill', sep: true });
+    items.push({ key: 'zoomimg', label: '放大', icon: 'open-new-fill' });
   }
+  items.push({ key: 'export', label: '导出', icon: 'download', sep: true });
   if (ctxCtx.hlIds.length) {
-    items.push({ key: 'delhl', label: '删除高亮', icon: 'trash', danger: true, sep: true });
+    items.push({ key: 'delhl', label: '删除', icon: 'delete-fill', danger: true, sep: true });
   }
-  items.push({ key: 'export', label: '导出 Markdown', icon: 'document', sep: true });
   ctxMenu.items = items;
   ctxMenu.x = ev.clientX;
   ctxMenu.y = ev.clientY;

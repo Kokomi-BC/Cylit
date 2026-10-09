@@ -88,7 +88,7 @@ onMounted(load);
     </div>
 
     <div v-if="skillsOpen" class="card">
-      <div class="card-head"><AppIcon name="sparkle" :size="14" />已加载技能（L1 常驻，正文按需加载）</div>
+      <div class="card-head"><AppIcon name="sparkle" :size="14" />已加载技能</div>
       <div class="card-body">
         <p v-if="!skills.length" class="tiny faint">还没有读到技能目录。</p>
         <div v-else class="chips">
@@ -124,8 +124,7 @@ onMounted(load);
           <AppIcon name="warning" :size="13" />当前是离线占位模型：问答会明确报错而不是硬答，请在模型页换成真实模型。
         </p>
         <p v-else-if="model?.fallback_to_generation" class="tiny faint">
-          还没单独配「问答」模型，现在回落到「生成」的默认模型。问答要开思考、会调工具、
-          吃长上下文，建议在模型页给「论文问答」单独配一个。
+          未单独配置，当前回落到「生成」的默认模型；建议到模型页单独配一个。
         </p>
         <p v-else-if="!model?.usable" class="tiny warn-line">
           <AppIcon name="warning" :size="13" />没有可用的密钥，问答不会启动。
@@ -141,10 +140,7 @@ onMounted(load);
           <div class="kv"><span class="k">模型</span><span class="v mono">{{ vision?.model_name || '未配置' }}</span></div>
           <div class="kv"><span class="k">密钥</span><span class="v">{{ vision?.has_key ? '已配置' : '缺失' }}</span></div>
         </div>
-        <p class="tiny faint">
-          用途是扫描件读页（OCR 那一环）。对话里上传/粘贴的图片不走它 ——
-          那些图直接作为多模态内容交给问答模型看（实测 {{ model?.model_name || '当前问答模型' }} 能读图）。
-        </p>
+        <p class="tiny faint">扫描件读页（OCR）用；对话里上传的图片不经过它。</p>
       </div>
     </section>
 
@@ -161,10 +157,8 @@ onMounted(load);
           <div class="kv"><span class="k">单轮送图上限</span><span class="v mono">{{ limits.attachment_inline_limit }} 张</span></div>
         </div>
         <p class="tiny faint">
-          上下文用到预算的 {{ limits?.auto_compress_percent ?? 90 }}% 时，下一轮提问会先自动把已谈过的内容
-          压成一份要点（多出一轮「已压缩」，原文仍可回看），用户不用自己盯圆环。
-          对话本身**不限制轮数**：没到这条线就一直带着完整上下文。
-          单轮送图上限只影响"一次送进模型几张"：上传不受限，超出的图仍留在会话里。
+          上下文用到 {{ limits?.auto_compress_percent ?? 90 }}% 时，下一轮提问会先把已谈过的内容压成要点
+          （原文仍可回看）；对话本身不限轮数。
         </p>
       </div>
     </section>
