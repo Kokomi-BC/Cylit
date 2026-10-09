@@ -384,6 +384,63 @@ async function run() {
         res.citePopAfterHoverOut = !!d.querySelector('[data-cite-pop]');
       }
     }
+    /* 复制：**公式整段选中时给 LaTeX**（用户口径 2026-10-08）。
+       这条链路以前一条断言都没有 —— 量法：把选区放到一个 `.katex` 上，发一次真的 `copy` 事件
+       （带一个 `DataTransfer`），看剪贴板里拿到什么；再用一段纯文字选区对照，
+       确认"没有公式时一个字都不改"（那次复制不接管）。 */
+    {
+      const kx = [...d.querySelectorAll('.reader-content .katex')]
+        .find((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 6 && r.height > 4 && r.top > 40 && r.bottom < (w.innerHeight || 800) - 40;
+        });
+      res.hasFormula = !!kx;
+      if (kx) {
+        const tex = String(((kx.querySelector('annotation[encoding="application/x-tex"]') || {}).textContent) || '').trim();
+        res.texExpect = tex.slice(0, 40);
+        const r = kx.getBoundingClientRect();
+        const rng = d.createRange();
+        rng.selectNode(kx);
+        const s = w.getSelection();
+        s.removeAllRanges();
+        s.addRange(rng);
+        const dt = new w.DataTransfer();
+        const ev = new w.ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt });
+        d.dispatchEvent(ev);
+        res.texCopy = dt.getData('text/plain').slice(0, 90);
+        res.texCopied = !!tex && res.texCopy.indexOf(tex.slice(0, 20)) >= 0 && res.texCopy.indexOf('$') >= 0;
+        /* 行间公式（`$$…$$`）另测一条：包法与行内不同 */
+        const disp = [...d.querySelectorAll('.reader-content .katex-display')]
+          .find((el) => (el.querySelector('annotation[encoding="application/x-tex"]') || {}).textContent);
+        if (disp) {
+          const dtex = String(disp.querySelector('annotation[encoding="application/x-tex"]').textContent).trim();
+          const rng3 = d.createRange();
+          rng3.selectNode(disp);
+          s.removeAllRanges();
+          s.addRange(rng3);
+          const dt3 = new w.DataTransfer();
+          const ev3 = new w.ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt3 });
+          d.dispatchEvent(ev3);
+          res.dispCopy = dt3.getData('text/plain').slice(0, 90);
+          res.dispCopied = dtex && res.dispCopy.indexOf(dtex.slice(0, 16)) >= 0
+            && res.dispCopy.indexOf('$$') === 0;
+        }
+        /* 对照：纯文字选区（这一段里没有公式）不该被接管 */
+        const plain = [...d.querySelectorAll('.reader-content .rr-body')]
+          .find((el) => !el.querySelector('.katex') && (el.textContent || '').trim().length > 20);
+        if (plain) {
+          const rng2 = d.createRange();
+          rng2.selectNodeContents(plain);
+          s.removeAllRanges();
+          s.addRange(rng2);
+          const dt2 = new w.DataTransfer();
+          const ev2 = new w.ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt2 });
+          d.dispatchEvent(ev2);
+          res.plainCopyUntouched = !ev2.defaultPrevented && !dt2.getData('text/plain');
+        }
+        s.removeAllRanges();
+      }
+    }
     /* 直挂侧栏的页签（对话 / 搜索 / 目录）**得自己撑满剩余高度**：用户口径 2026-10-07 ——
        它们原来用 `height: 100%`（= 整个侧栏高，含上面那条 58px 页签条），底边越过侧栏被裁掉。
        量法：面板底边 - 侧栏底边，> 0 就是被裁（笔记那条做对照，它在 ReaderSidePanel 里历来是对的）。 */
@@ -3175,6 +3232,19 @@ def main() -> int:
             record("reader", "浮层**压在正文/弹窗之上**（markdown 视图是弹窗，浮层必须在它上面）",
                    (data.get("citePopAbove") or {}).get("ok") is True,
                    f"浮层中心点命中={data.get('citePopAbove')}")
+            if data.get("hasFormula"):
+                record("reader", "**公式整段选中 → 复制的是 LaTeX**（不是排版后的字形）",
+                       data.get("texCopied") is True,
+                       f"TeX={str(data.get('texExpect'))[:26]!r} → 剪贴板={str(data.get('texCopy'))[:30]!r}")
+                record("reader", "没选中公式的复制**一个字都不改**（不接管那次 copy）",
+                       data.get("plainCopyUntouched") is True,
+                       f"未接管={data.get('plainCopyUntouched')}")
+                if data.get("dispCopy") is not None:
+                    record("reader", "**行间公式**整段选中 → 复制成 `$$…$$`",
+                           data.get("dispCopied") is True,
+                           f"剪贴板={str(data.get('dispCopy'))[:34]!r}")
+            else:
+                skip("公式整段选中 → 复制 LaTeX", "这一屏没找到公式")
             url = str(data.get("refUrl") or "")
             record("reader", "点文献条目 → 跳到发表网站（DOI / arXiv / 原文里的链接 / 学术搜索）",
                    url.startswith("http")

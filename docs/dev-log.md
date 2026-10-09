@@ -10173,3 +10173,42 @@ ProviderError: 模型只产出思维链（reasoning 6954 tokens，finish=stop）
 - 又修掉探针自身两处不稳：拿 `apiRefs` 的那次 `fetch` 期间正文行可能被重画 ——
   点标号前按属性**重取一次**该节点、点不弹再重试两轮（实测偶发 `citePop=false` 而悬浮那一路是好的）；
   源码层那条检查原来会匹配到自己写的注释文字，改成只认属性写法。
+
+## 82. 第八十二轮：完全选中公式时，复制的是 LaTeX（不是排版后的字形）
+
+用户口径：**"支持完全选中公式时，复制的时候复制公式的 latex 而不是简单复制文字"**。
+
+### 一、为什么原来的复制给不出 LaTeX
+
+- `Range.toString()` 对 KaTeX 节点给的是**排版后的字形**，而且还会把 MathML 那份重复副本一起算进去；
+- 真正想要的东西（TeX 源码）就在 KaTeX 的 `<annotation encoding="application/x-tex">` 里 ——
+  但**行内公式根本没有这个节点**：`marked-katex-extension` 的选项里写着 `output: 'html'`，
+  MathML 被整个省掉了。实测抠出来是空串（`hasMathml=false`、`annotation` 一个都没有）。
+  （行间公式是应用自己 `katex.renderToString` 渲染的，用的是默认输出，所以它一直带着 annotation。）
+
+### 二、修法
+
+1. `useMarkdown.ts`：行内公式改成 `output: 'htmlAndMathml'`（KaTeX 默认）——
+   少了 MathML 就永远拿不到源码。KaTeX 的 CSS 把 `.katex-mathml` 收成 1×1 隐藏，视觉/布局不变；
+   偏移量那套（`utils/domMarks`）本来就跳过 `.katex-mathml`，也不会被它的重复文字干扰。
+2. `ReaderView.vue` 新增 `sliceWithLatex(root, start, end)`：按**偏移量那套坐标系**切一段文字 ——
+   文本段取文字，**公式段（atom）换成 LaTeX**（行内 `$…$`、行间 `$$…$$`），
+   顺带回一个 `atoms`（换掉了几个公式）。
+3. `offsetsWithin` 的文字改成：**选中了公式就用 `sliceWithLatex` 的文字**，否则仍用
+   `Range.toString()` —— 没公式时口径一字不动（跨列复制那套空白/换行口径不能碰）。
+   于是划词菜单显示的、以及落库的 `selected_text`，在含公式时也变成 `$…$`（比"重影字形"干净）。
+4. 复制两条路共用 `copyPayload`：Ctrl+C 的 `onCopy` 与菜单「复制」的 `copySelection`。
+   只有**跨列**或**选中了公式**才接管那次复制（`preventDefault` + 写剪贴板），
+   平时一个字都不改（保持浏览器自己的空白/换行口径）。
+
+### 三、验证
+
+`frontend_check` **147/147**（这条链路以前**一条断言都没有**），新增三条：把选区放到一个 `.katex` 上、
+发一次真的 `copy` 事件（带 `DataTransfer`）看剪贴板：
+
+- 行内公式 → `$(x_1, ..., x_n)$`；
+- 行间公式 → `$$\text{Attention}(Q, K, V) = \tex…`；
+- 对照：**纯文字选区不接管**那次复制（`defaultPrevented === false`、剪贴板为空）。
+
+> 排查途中发现本机 8710 后端已经没了（`ERR_CONNECTION_REFUSED`，探针拿到的是 0 字节 DOM），
+> 已按老办法重启；另外 Chrome 从 `Program Files` 换到了**用户目录**那份（`find_browser` 本来就覆盖这个路径）。

@@ -16,7 +16,12 @@ const marked = new Marked();
 marked.use(markedKatex({
   throwOnError: false,
   nonStandard: true,          // 允许 `$…$` 单美元行内公式（论文里很常见）
-  output: 'html',
+  /* ⚠️ 必须是 `htmlAndMathml`（KaTeX 默认）：`output: 'html'` 会把 MathML 一起省掉，
+     而**公式的 LaTeX 源码就藏在 MathML 的 `<annotation encoding="application/x-tex">` 里** ——
+     没有它，"完全选中公式时复制 LaTeX"（用户口径 2026-10-08）就无从谈起（实测抠出来是空串）。
+     KaTeX 的 CSS 把 `.katex-mathml` 收成 1×1 隐藏，视觉与布局都不受影响；
+     偏移量那套（`utils/domMarks`）本来就跳过 `.katex-mathml`，也不会被它的重复文字干扰。 */
+  output: 'htmlAndMathml',
   errorColor: '#d8453f',
 }));
 // 论文正文里出现 `<` 时不能被当成 HTML 注入：HTML 令牌一律转义输出

@@ -27,7 +27,7 @@ import { useEventStream, type StreamStatus } from '@/composables/useEventStream'
 import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
-import { markRanges, rangeOffsets, renderedText } from '@/utils/domMarks';
+import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -2508,7 +2508,7 @@ function mdSegments(range: Range, side: 'en' | 'zh'): MdSegment[] {
  */
 function offsetsWithin(
   root: HTMLElement, range: Range,
-): { start: number; end: number; text: string; rect: DOMRect } | null {
+): { start: number; end: number; text: string; rect: DOMRect; atoms: number } | null {
   const whole = document.createRange();
   whole.selectNodeContents(root);
   const startAfter = range.compareBoundaryPoints(Range.START_TO_START, whole) > 0;
@@ -2523,7 +2523,12 @@ function offsetsWithin(
   } catch { return null; }
   const offsets = rangeOffsets(root, inter);
   if (!offsets) return null;
-  return { ...offsets, text: inter.toString().trim(), rect: inter.getBoundingClientRect() };
+  /* 选中了公式那一段：文字改用它**的 LaTeX**（见 `sliceWithLatex`）—— `Range.toString()` 会把
+     KaTeX 的 MathML 副本也算进去（"重影文字"），排版字形粘到别处也多半用不了。
+     没选中公式时仍用 `Range.toString()`：空白/换行口径与以前一字不差（跨列复制那套口径不能动）。 */
+  const withTex = sliceWithLatex(root, offsets.start, offsets.end);
+  const text = withTex.atoms ? withTex.text.trim() : inter.toString().trim();
+  return { ...offsets, text, rect: inter.getBoundingClientRect(), atoms: withTex.atoms };
 }
 
 /**
@@ -2616,28 +2621,98 @@ function onDocPointerDown(ev: PointerEvent) {
   hideMenu();
 }
 
+/* ------------------------------ 复制：公式整段选中时给 LaTeX ------------------------------
+ * 用户口径 2026-10-08：**完全选中一个公式时，复制出来的是它的 LaTeX**，不是排版后的字形。
+ * 为什么不能直接用 `Range.toString()`：KaTeX 的输出里带一份 MathML（同一个公式的重复副本），
+ * `toString()` 会把两边的字都算进去，粘出去是"重影文字"；而排版后的字形
+ * （`Q^{-1}_{mse}` 这种）粘到别处通常也用不了。TeX 源码就在 KaTeX 的
+ * `<annotation encoding="application/x-tex">` 里，那才是要的。
+ * 口径与偏移量一致：**公式算 1 个字符**（`utils/domMarks` 的 ATOM），所以"选区覆盖到它"就是整段选中。 */
+function latexOfFormula(el: Element | null): string {
+  const tex = el?.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent ?? '';
+  return tex.trim();
+}
+
 /**
- * Ctrl+C：**选区跨到了对面列时，剪贴板只放本列的文字**。
+ * 容器里 `[start, end)` 这一段：文本段取文字，**公式段换成 LaTeX**（显示公式包 `$$…$$`）。
+ * 顺带回一个 `atoms`：换掉了几个公式 —— 调用方据此决定"要不要接管这次复制"
+ * （一个公式都没选中时，保持浏览器默认的空白/换行口径，一个字都不动）。
+ */
+function sliceWithLatex(root: HTMLElement, start: number, end: number): { text: string; atoms: number } {
+  let text = '';
+  let atoms = 0;
+  for (const seg of segments(root)) {
+    const s = Math.max(start, seg.start);
+    const e = Math.min(end, seg.end);
+    if (s >= e) continue;
+    if (seg.kind === 'atom') {
+      const tex = latexOfFormula(seg.el ?? null);
+      if (!tex) continue;                              // 抠不出源码就整体跳过（宁缺勿错）
+      atoms += 1;
+      text += seg.el?.classList?.contains('katex-display') ? `$$${tex}$$` : `$${tex}$`;
+      continue;
+    }
+    text += (seg.node?.nodeValue ?? '').slice(s - seg.start, e - seg.start);
+  }
+  return { text, atoms };
+}
+
+/**
+ * 这次复制该给出什么。返回 `null` = "没什么特别的"，交给浏览器默认复制（一个字都不动）。
+ *
+ * 两种"特别"：
+ * ① **跨列**（选区盖住了对面那一列）：只放锚点这一列的文字（见 `onCopy` 的老说明）；
+ * ② **选中了公式**：那些公式换成 LaTeX。
+ * 只在①或②成立时才接管 —— 平时保持浏览器自己的空白/换行口径（跨列那次实测 4984 → 3631 字的口径不变）。
+ */
+function copyPayload(sel: Selection): { text: string; atoms: number; covers: boolean } | null {
+  if (!sel.rangeCount || !sel.anchorNode) return null;
+  const range = sel.getRangeAt(0);
+  const side = rowsSide(sel.anchorNode) || rowsSide(sel.focusNode);
+  const col = columnOf(sel.anchorNode) || columnOf(sel.focusNode);
+  const faces: Array<{ root: HTMLElement }> = [];
+  if (side) {
+    for (const rowEl of Array.from(document.querySelectorAll<HTMLElement>('[data-row-id]'))) {
+      const body = rowEl.querySelector<HTMLElement>(`.rrow.side-${side} .rr-body`);
+      if (body && range.intersectsNode(body)) faces.push({ root: body });
+    }
+  } else if (col.startsWith('md:')) {
+    const face = col.endsWith('zh') ? 'zh' : 'en';
+    for (const block of Array.from(document.querySelectorAll<HTMLElement>(`[data-md-side="${face}"]`))) {
+      if (range.intersectsNode(block)) faces.push({ root: block });
+    }
+  } else {
+    return null;                                       // 原 PDF 文字层 / 侧栏等：没有公式，照旧
+  }
+  const other = side === 'en' ? 'zh' : 'en';
+  const covers = !!side
+    && Array.from(document.querySelectorAll<HTMLElement>(`.rrow.side-${other} .rr-body`))
+      .some((b) => { try { return !!offsetsWithin(b, range); } catch { return false; } });
+  const parts: string[] = [];
+  let atoms = 0;
+  for (const { root } of faces) {
+    const got = offsetsWithin(root, range);
+    if (!got) continue;
+    atoms += got.atoms;                                // 文字已经由 `offsetsWithin` 换成 LaTeX
+    if (got.text) parts.push(got.text);
+  }
+  const text = joinParts(parts.map((t) => ({ text: t })));
+  if (!text) return null;
+  return { text, atoms, covers };
+}
+
+/**
+ * Ctrl+C：**选区跨到了对面列时，剪贴板只放本列的文字**；**选中公式时放它的 LaTeX**。
  *
  * 浏览器复制的是整段连续选区，而纵向拖多行时它必然包含对面列的单元格（见 `base.css` 里的说明）。
- * 只有"确实盖住了对面列"才改写：平时单列复制原样交给浏览器，别动它的空白/换行口径。
+ * 只有"确实盖住了对面列"或"选中了公式"才改写：平时单列复制原样交给浏览器，别动它的空白/换行口径。
  */
 function onCopy(ev: ClipboardEvent) {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !sel.anchorNode) return;
-  // 判侧与划词/删除高亮同一处（锚点拿不到就看焦点那一端）
-  const side = rowsSide(sel.anchorNode) || rowsSide(sel.focusNode);
-  if (!side) return;
-  const range = sel.getRangeAt(0);
-  const other = side === 'en' ? 'zh' : 'en';
-  const covers = Array.from(document.querySelectorAll<HTMLElement>(`.rrow.side-${other} .rr-body`))
-    .some((b) => { try { return !!offsetsWithin(b, range); } catch { return false; } });
-  if (!covers) return;
-  const text = joinParts(rowSegments(range, side));
-  // 万一本列一段都没取到（全是空白交界处）：**别退回浏览器默认**（那会复制到对面列），
-  // 宁可不改写（`preventDefault` 都不做，剪贴板保持原样由浏览器处理）。
-  if (!text) return;
-  ev.clipboardData?.setData('text/plain', text);
+  const payload = copyPayload(sel);
+  if (!payload || (!payload.covers && !payload.atoms)) return;
+  ev.clipboardData?.setData('text/plain', payload.text);
   ev.preventDefault();
 }
 
@@ -3489,8 +3564,11 @@ async function deleteNote(id: string) {
 
 async function copySelection() {
   /* 用**完整**的选区文字（`selection.text` 是给「AI 解释」截到 600 字的版本）——
-   * 否则跨页/跨行选一大段时，菜单「复制」只给出前 600 字（实测 601 字 vs Ctrl+C 2537 字）。 */
-  await copyText(selection.fullText || selection.text);
+   * 否则跨页/跨行选一大段时，菜单「复制」只给出前 600 字（实测 601 字 vs Ctrl+C 2537 字）。
+   * 另外公式整段选中时要给 LaTeX（与 Ctrl+C 同一条口径，见 `copyPayload`）。 */
+  const sel = window.getSelection();
+  const payload = sel && !sel.isCollapsed ? copyPayload(sel) : null;
+  await copyText(payload?.text || selection.fullText || selection.text);
   hideMenu();
   toast('已复制', 'ok', 1600);
 }
