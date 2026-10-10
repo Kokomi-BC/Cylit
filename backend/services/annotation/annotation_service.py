@@ -23,12 +23,31 @@ from backend.repositories.mysql.session import session_scope
 
 log = get_logger(__name__)
 
-HIGHLIGHT_COLORS = ("yellow", "green", "blue", "pink", "purple")
+#: 高亮色名（用户口径 2026-10-10：色板对齐 alphaXiv 的 7 色）。
+#: ⚠️ 这里是**名字**不是色值 —— 色值在 `frontend/src/styles/base.css` 的 `mark.hl.*` /
+#: `.hl-swatch.*`（两处必须同时加）。`pink` / `purple` 是历史名，留着是为了**存量高亮**
+#: 仍能通过校验、仍能渲染；新界面不再提供它们。
+HIGHLIGHT_COLORS = ("red", "orange", "yellow", "green", "blue", "indigo", "violet",
+                    "pink", "purple")
 
 
 # --------------------------------------------------------------------------
 # 高亮（规划 §10 ⑤）
 # --------------------------------------------------------------------------
+
+
+def _norm_color(raw: object) -> str:
+    """色名，或**自定义 `#rrggbb`**（用户口径 2026-10-10："添加自定义颜色"）。
+
+    为什么后端必须放行自定义色：以前未知色会被**静默退回 yellow** ——
+    取色器选的颜色存进去变成黄色，用户只会当成"取色器坏了"。
+    """
+    c = str(raw or "").strip().lower()
+    if c in HIGHLIGHT_COLORS:
+        return c
+    if len(c) == 7 and c.startswith("#") and all(ch in "0123456789abcdef" for ch in c[1:]):
+        return c
+    return "yellow"
 
 
 def create_highlight(payload: dict, user_id: int = 1) -> dict:
@@ -43,9 +62,7 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
     block_id = payload.get("block_id")
     if not paper_id or not block_id:
         raise ValidationError("paper_id 与 block_id 必填")
-    color = payload.get("color") or "yellow"
-    if color not in HIGHLIGHT_COLORS:
-        color = "yellow"
+    color = _norm_color(payload.get("color"))
     side = str(payload.get("side") or "en").lower()
     if side not in HIGHLIGHT_SIDES:
         side = "en"
@@ -81,7 +98,7 @@ def update_highlight(highlight_id: str, payload: dict) -> dict:
             raise NotFoundError(f"高亮不存在：{highlight_id}")
         color = payload.get("color")
         if color is not None:
-            row.color = str(color) if str(color) in HIGHLIGHT_COLORS else row.color
+            row.color = _norm_color(color)
         if payload.get("selected_text") is not None:
             row.selected_text = str(payload["selected_text"])
         sess.flush()

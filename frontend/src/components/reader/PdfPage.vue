@@ -98,6 +98,9 @@ const state = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const size = ref<{ w: number; h: number } | null>(null);
 /** 显示倍率 = 当前容器宽 / 出图宽。改它不需重新光栅化。 */
 const scale = ref(1);
+/** 重出图那一帧要**临时关掉** `transform` 过渡：尺寸与倍率是同时换的（见 `render`）。
+ *  缩放动画（用户口径 2026-10-10）靠的就是 `.pdf-surface` 上的 `transition: transform`。 */
+const noAnim = ref(false);
 
 /** 渲染失败时的兵底：后端那张 150dpi 页图（宁可退回位图，也不要开天窗） */
 const fallbackUrl = computed(
@@ -538,11 +541,15 @@ let renderCount = 0;
 let visible = false;
 let rerenderTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 重出一次的成本 = 重新光栅化 + 重建文字层；只有倍率偏到肉眼可见才值得 */
+/** 重出一次的成本 = 重新光栅化 + 重建文字层；只有倍率偏到肉眼可见才值得。
+ *
+ * 阈值 2026-10-10 从 0.15 收到 **0.08**：用户口径是"**复刻 pdf.js 的缩放逻辑**"——
+ * pdf.js 是 `--total-scale-factor` 变了就按新倍率重绘（所以放大后依然清晰），
+ * 而旧阈值下点一档放大（×1.25）只走了纯 CSS `scale`，canvas 还是旧分辨率 → 一放大就糊。 */
 function worthRerender(nowW: number): boolean {
   const s = size.value;
   if (!s || !s.w) return true;
-  return Math.abs(nowW / s.w - 1) > 0.15;
+  return Math.abs(nowW / s.w - 1) > 0.08;
 }
 
 /** 只同步 CSS 倍率（零光栅化、零文字层重建） */
@@ -562,8 +569,9 @@ function maybeRender() {
 /**
  * 容器尺寸变了（开/合侧栏、窗口缩放、页宽滑杆）：
  * 1. **先只改 `scale`** —— 立即生效、不花 CPU；
- * 2. 只有在"这一页还在视口附近"且"倍率已偏得肉眼可见（>15%）"时，
- *    才防抖 450ms 后补一次重出（保证清晰度，但不会一开侧栏就把全篇重画）。
+ * 2. 只有在"这一页还在视口附近"且"倍率已偏得肉眼可见（>8%）"时，
+ *    才防抖 **220ms** 后补一次重出（保证清晰度，但不会一开侧栏就把全篇重画）。
+ *    220ms 而不是 450ms（2026-10-10）：档位放大是一下一下点的，等太久会觉得"卡了一下才变清"。
  */
 function onResize() {
   const w = measuredWidth();
@@ -574,7 +582,7 @@ function onResize() {
   if (!nearViewport()) return;                   // 离屏页：等它靠近视口再说
   if (!worthRerender(w)) return;
   if (rerenderTimer) clearTimeout(rerenderTimer);
-  rerenderTimer = setTimeout(() => { renderedFor = ''; maybeRender(); }, 450);
+  rerenderTimer = setTimeout(() => { renderedFor = ''; maybeRender(); }, 220);
 }
 
 async function render() {
@@ -599,15 +607,17 @@ async function render() {
     const viewport = page.getViewport({ scale: scaleRatio });
     const ratio = dpr();
 
-    el.width = Math.max(1, Math.floor(viewport.width * ratio));
-    el.height = Math.max(1, Math.floor(viewport.height * ratio));
-    el.style.width = `${viewport.width}px`;
-    el.style.height = `${viewport.height}px`;
-    size.value = { w: viewport.width, h: viewport.height };
+    /* ⚠️ **先画到离屏画布、画完再贴上去**（用户口径 2026-10-10："最后一帧闪烁还在"）：
+       直接在可见画布上出图时，`canvas.width = …` 会**立刻把它清空** ——
+       从"清空"到"画完"之间那一帧就是闪的那一下（重出越勤越明显）。
+       离屏出图期间旧的那张图一直挂在屏幕上，所以看不到空窗。 */
+    const buf = document.createElement('canvas');
+    buf.width = Math.max(1, Math.floor(viewport.width * ratio));
+    buf.height = Math.max(1, Math.floor(viewport.height * ratio));
 
     if (task) { task.cancel(); task = null; }
     task = page.render({
-      canvas: el,
+      canvas: buf,
       viewport,
       transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0],
     } as Parameters<typeof page.render>[0]);
@@ -615,27 +625,60 @@ async function render() {
     task = null;
     if (destroyed) return;
 
-    // 文字层：真文字（可选中/复制），透明覆盖在画布上并对齐字形位置
+    /* ---- 先把**新文字层**在游离节点里铺好（这一步要跨好几帧，期间屏幕上是旧的那一张）----
+       文字层：真文字（可选中/复制），透明覆盖在画布上并对齐字形位置。
+       ⚠️ 原来这里是"先换画布 → 再 await 铺文字层"：位图与文字层**分处两帧**，中间那几帧
+       图是新的、字是旧的，位置对不上；开侧栏时视口附近多页同时重出，叠起来就是肉眼可见的闪。
+       现在铺好之后再和位图**同一帧**换上去（见下）。
+       `--scale-factor` 那类由 pdf.js 写在容器上的行内样式要**整体搬过来**，否则字号的公式断了。 */
     const tlHost = textHost.value;
+    let nextTL: HTMLDivElement | null = null;
     if (tlHost) {
-      tlHost.replaceChildren();
-      tlHost.style.setProperty('--total-scale-factor', String(scaleRatio));
-      tlHost.style.setProperty('--scale-round-x', '1px');
-      tlHost.style.setProperty('--scale-round-y', '1px');
+      const next = document.createElement('div');
+      next.className = tlHost.className;
+      next.style.cssText = tlHost.style.cssText;
+      next.style.setProperty('--total-scale-factor', String(scaleRatio));
+      next.style.setProperty('--scale-round-x', '1px');
+      next.style.setProperty('--scale-round-y', '1px');
       const textLayer = new pdfjs.TextLayer({
         textContentSource: page.streamTextContent(),
-        container: tlHost,
+        container: next,
         viewport,
       });
       await textLayer.render();
       if (destroyed) return;
+      nextTL = next;
+    }
+
+    /* ---- 换片：出图宽 / 倍率 / 位图 / 文字层，全在**同一帧**里换完 ----
+       ⚠️ 这一帧必须**临时关掉过渡**（`no-anim`）：出图宽（canvas 的 CSS 宽）是瞬变的，
+       而 `transform: scale` 若还带 0.16s 补间，视觉宽 = 新出图宽 × 旧倍率 ——
+       会先跳一下、再缩回来，那一跳就是用户说的"最后一帧闪烁"。
+       同一帧里一起换：视觉宽 = 新宽 × 1 = 旧宽 × 旧倍率，屏幕上完全不动。
+       `no-anim` 的 class 生效要走一次 `nextTick`，所以是"先立 → 改 → 再撤"。 */
+    noAnim.value = true;
+    await nextTick();
+    el.width = buf.width;
+    el.height = buf.height;
+    el.style.width = `${viewport.width}px`;
+    el.style.height = `${viewport.height}px`;
+    el.getContext('2d')?.drawImage(buf, 0, 0);
+    size.value = { w: viewport.width, h: viewport.height };
+    if (tlHost && nextTL) {
+      tlHost.setAttribute('style', nextTL.getAttribute('style') || '');
+      tlHost.replaceChildren(...Array.from(nextTL.childNodes));
+    }
+    syncScale(measuredWidth());   // 倍率也在这同一帧归位（原来在函数尾部，会晚一帧）
+    await nextTick();
+    noAnim.value = false;
+
+    if (tlHost) {
       // 文字层铺完才画高亮：`markRanges` 按"文字层渲染文字里的偏移量"包 `<mark>`，
       // 层还没铺完时一个节点都找不到（画出来是空的）。
       paintHighlights();
       // 划词由我们自己接管（见文件上方说明：空白处会闪整页、跨页会圈进译文）
       registerTextLayer(tlHost);
     }
-    syncScale(measuredWidth());
     state.value = 'ready';
 
     /* 出图期间外框又变了：先调倍率；只有"还在视口附近 + 偏得多"才再出一次，
@@ -646,6 +689,9 @@ async function render() {
       maybeRender();
     }
   } catch (err: unknown) {
+    /* 半路抛错时 `no-anim` 可能还立着（换片那一段的中途）—— 不复位的话这一页之后所有缩放
+       都没有补间，看起来"变生硬了"，还查不出原因。 */
+    noAnim.value = false;
     const name = (err as { name?: string })?.name;
     if (name === 'RenderingCancelledException' || destroyed) return;  // 尺寸变化/卸载导致的取消
     state.value = 'error';   // 调用方回退到页图
@@ -735,12 +781,12 @@ onBeforeUnmount(() => {
       loading="lazy"
     >
     <div v-else class="pdf-box" :style="boxStyle">
-      <div class="pdf-surface" :style="surfaceStyle">
+      <div class="pdf-surface" :class="{ 'no-anim': noAnim }" :style="surfaceStyle">
         <canvas ref="canvas" class="pdf-canvas" />
         <div ref="textHost" class="pdf-text-layer" />
       </div>
     </div>
-    <div v-if="state === 'loading'" class="pdf-hint">正在渲染原 PDF 第 {{ props.page }} 页…</div>
+    <div v-if="state === 'loading' && !size" class="pdf-hint">正在渲染原 PDF 第 {{ props.page }} 页…</div>
     <div v-else-if="state === 'error'" class="pdf-hint">
       原 PDF 渲染失败，已回退为页图
     </div>
@@ -753,7 +799,16 @@ onBeforeUnmount(() => {
 .pdf-box { position: relative; width: 100%; margin: 0 auto; background: #fff; overflow: hidden; }
 /* 页面表面：**固定出图尺寸**，缩放交给 transform（画布与文字层同步缩放，对齐不会跑）。
    这样开合侧栏/拖页宽滑杆时**不需要重新光栅化**，零卡顿。 */
-.pdf-surface { position: absolute; top: 0; left: 0; transform-origin: top left; will-change: transform; }
+.pdf-surface { position: absolute; top: 0; left: 0; transform-origin: top left; will-change: transform;
+  /* 缩放补间（用户口径 2026-10-10）：**始终开着**。
+     ⚠️ 不要为了"重绘那一帧"把它中途关掉 —— 那正是"最后一帧闪烁"的成因：
+     关掉的那一帧，出图宽与倍率是**瞬时**换的，屏幕上就是一下跳变；
+     始终开着，它们被补间成连续位移，就看不到跳了（代价是过渡期间位图被重采样，
+     用户已明确表示这个比跳变好接受）。 */
+  transition: transform .16s var(--ease); }
+/* `no-anim`：**换片那一帧**用它把过渡关掉（用户口径 2026-10-10："开侧栏时 PDF 最后一帧闪烁"）。
+   位图的出图宽与倍率必须同一帧换完，中间不能有补间 —— 否则视觉宽会先跳再缩回来。 */
+.pdf-surface.no-anim { transition: none; }
 .pdf-canvas { display: block; width: 100%; height: 100%; }
 .pdf-fallback { display: block; width: 100%; height: auto; }
 /* 文字层必须在画布**之上**：canvas 会被浏览器提升为独立合成层，

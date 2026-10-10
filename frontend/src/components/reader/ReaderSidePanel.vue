@@ -9,7 +9,7 @@
  * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
  * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
@@ -115,7 +115,8 @@ function statusClass(status: string): string {
   return 'dim';
 }
 
-const annotationHtml = (text: string) => mdToHtml(text);
+/** 批注 / 笔记正文：**作者自己敲的** → `breaks: true`（回车即换行，且不走 PDF 式软换行接回） */
+const annotationHtml = (text: string) => mdToHtml(text, null, { breaks: true });
 
 /** 面 → 中文（侧栏那枚小徽章）。三种锚点是三套位置模型，界面上要说清挂在哪。 */
 const SCOPE_LABEL: Record<string, string> = {
@@ -199,10 +200,46 @@ const draft = ref('');
 function startEditRow(r: FeedRow) {
   editKey.value = r.key;
   draft.value = r.contentMd;
+  // 编辑器是 `v-if` 出来的：等它真的挂上再量高度（同时让已有的长笔记先铺开）
+  void nextTick(() => autoGrowNoteEdit());
 }
 function cancelEditRow() {
   editKey.value = '';
   draft.value = '';
+}
+
+/**
+ * 笔记编辑框：**跟着内容自己长高**（用户口径 2026-10-10："自适应展开大小 / 内容多时自动展开到底部"）。
+ *
+ * 以前是固定 `rows=4` ＋ 框内滚动 —— 笔记一长，人就只能在那条窄缝里上下翻。
+ * 做法与聊天输入框同一套（见 `ReaderChat` 的自动增高）：**先把高度归零**、再按 `scrollHeight` 顶上去；
+ * 到"侧栏能看见的高度"（60vh）就不再长，多出来的交给框内滚动 ——
+ * 不然一条长笔记会把整个侧栏撑得老长。
+ *
+ * ⚠️ 用 **事件对象 / 选择器**取元素，不用模板 `ref`：`input` 事件本身就带着目标，
+ *   不依赖 ref 名绑定、也不用猜 DOM 换没换好（组件里同时只会有一个编辑器）。
+ */
+function autoGrowNoteEdit(ev?: Event) {
+  const el = (ev?.target as HTMLTextAreaElement | undefined)
+    ?? document.querySelector<HTMLTextAreaElement>('textarea[data-pane-note-edit]');
+  if (!el || !el.style) return;
+  try {
+    /* 上限 = **侧栏可视区底部**（用户口径 2026-10-10："应该可以占用整个元素面积方便编辑"）——
+       内容多时就把编辑框一直铺到面板底边，只在"底部那行按钮 + 一点边距"处收住；
+       内容少时仍然贴合自身高度（不会拉出一个大片空白）。 */
+    const pane = el.closest('.panel-body') as HTMLElement | null;
+    const paneBottom = pane?.getBoundingClientRect().bottom;
+    const reserve = 58;   // 保存 / 取消那一行 + 边距
+    /* 两条上限取小：① 面板底边（侧栏本身可滚时它才是"看得见的底"）；
+       ② 视口底边 —— 面板不滚时它的 `bottom` 会在视口之外，只认它就会拉过头。 */
+    const vhMax = window.innerHeight - el.getBoundingClientRect().top - 70;
+    const paneMax = typeof paneBottom === 'number' ? paneBottom - el.getBoundingClientRect().top - reserve : Infinity;
+    const max = Math.max(160, Math.round(Math.min(paneMax, vhMax)));
+    el.style.height = '0px';   // 先归零：否则 `scrollHeight` 只会单调变大（删字不会缩回去）
+    const h = Math.min(el.scrollHeight, max);
+    el.style.height = `${h}px`;
+    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
+  } catch { /* 量不到就算了，退化成默认高度 */ }
 }
 function saveRow(r: FeedRow) {
   emit('save-note', {
@@ -284,7 +321,7 @@ function removeRow(r: FeedRow) {
             <AppIcon name="locate" :size="13" />
           </button>
           <button
-            v-if="r.kind !== 'annotation'"
+            v-if="r.kind !== 'annotation' && editKey !== r.key"
             class="btn icon sm"
             :title="r.noteId ? '编辑这条笔记' : '给这处高亮写笔记'"
             data-item-edit
@@ -314,14 +351,13 @@ function removeRow(r: FeedRow) {
             class="note-edit"
             rows="4"
             data-pane-note-edit
-            placeholder="用 Markdown 写这条笔记；支持 $公式$（Ctrl+Enter 保存）"
+            placeholder="写笔记…"
+            @input="autoGrowNoteEdit"
             @keyup.ctrl.enter="saveRow(r)"
           />
           <div class="row" style="gap:6px">
             <button class="btn sm primary" data-pane-note-save @click="saveRow(r)">保存</button>
             <button class="btn sm" @click="cancelEditRow">取消</button>
-            <span class="spacer" />
-            <span class="tiny faint">{{ r.anchorIds.length ? '挂在这处高亮上' : '' }}</span>
           </div>
         </template>
         <template v-else>
@@ -331,7 +367,7 @@ function removeRow(r: FeedRow) {
             :class="{ clamp1: thumb }"
             v-html="annotationHtml(r.contentMd)"
           />
-          <div v-else-if="r.kind === 'highlight'" class="tiny faint">还没写笔记（点铅笔补上）</div>
+          <!-- 不用再写一行“还没写笔记”：头部那枚「待写」徽章已经说过了（用户口径 2026-10-10："移除多余的文字"） -->
         </template>
       </div>
     </template>
@@ -567,13 +603,32 @@ function removeRow(r: FeedRow) {
   overflow: hidden; line-clamp: 1;
 }
 .item.note-row.thumb .quote { margin-bottom: 0; }
+/* 编辑态：把卡片让给编辑框（用户口径 2026-10-10："编辑笔记时，可以隐藏顶部的部分" →
+   "应该可以占用整个元素面积方便编辑"）——
+   徽章 / 页码 / 时间 / 定位删除按钮那一整行、以及引用原文全部收起，
+   只留编辑框与底部「保存 / 取消」。要定位或删除先按「取消」退回查看态即可。 */
+.item.note-row.editing .row.tiny,
+.item.note-row.editing .quote { display: none; }
+/* 笔记编辑框（用户口径 2026-10-10："优化一下侧栏编辑时的文本框样式"）：
+   全局那条 `input, select, textarea` 是给**表单控件**写的（白底 + 深色描边 + 聚焦时一整圈 accent 光环），
+   摆在笔记卡里像个"被塞进来的控件"。这里改成与阅读器浮层同一门语言：
+   淡底 + 发丝描边，聚焦只把描边点亮一档（**不要 `--ring` 那圈光晕** —— 在窄侧栏里太吵，
+   而且它就是全局 `textarea:focus` 带进来的）；顺手把浏览器自带的右下角 resize 角标去掉。 */
 .item.note-row .note-edit {
-  width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 6px 8px;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 12.5px;
-  line-height: 1.6; resize: vertical;
+  width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 9px 11px;
+  border: 1px solid var(--divider); border-radius: var(--r-sm);
+  background: var(--bg-layer); color: var(--text); font: inherit; font-size: 13px;
+  line-height: 1.7; resize: none;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.item.note-row .note-edit:focus { outline: none; border-color: var(--accent); }
+/* 覆盖全局的 `textarea:hover { background: var(--bg-hover) }`（不然鼠标一过就闪一下灰） */
+.item.note-row .note-edit:hover { background: var(--bg-layer); border-color: var(--border-strong); }
+.item.note-row .note-edit:focus {
+  outline: none; box-shadow: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: var(--bg-elev);
+}
+.item.note-row .note-edit::placeholder { color: var(--text-faint); }
 /* 引用文献：工具条（那一行 `REFERENCES N 条`）在这里，卡片本身在 `ReferenceList` 里
    （与论文详情弹窗、正文标号的浮层共用同一份，所以那些 `.ref-item` / `.ref-lead` 样式也搬过去了）。 */
 .ref-bar {
@@ -644,6 +699,7 @@ function removeRow(r: FeedRow) {
 .task-bar { margin-top: 6px; }
 .task-msg {
   margin-top: 4px; color: var(--danger); line-height: 1.5;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
 }
 </style>

@@ -46,8 +46,8 @@ const emit = defineEmits<{
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 15.5;
 const router = useRouter();
-/** 空态文案池里"与大肥鱼一起讨论…"的固定前缀（大肥鱼 = 这位问答助手的名字） */
-const PERSONA = '与大肥鱼一起讨论';
+/** 空态文案池里"与Cyli一起讨论…"的固定前缀（Cyli = 这位问答助手的名字） */
+const PERSONA = '与Cyli一起讨论';
 
 type Level = 'list' | 'thread';
 type Kind = 'all' | 'selection' | 'normal';
@@ -415,7 +415,7 @@ const WORD_STOP = new Set(['a', 'an', 'the', 'of', 'for', 'and', 'with', 'on', '
 /** 论文标签（与标题一起当关键词的来源） */
 const paperTagText = ref('');
 
-/** 从论文标题 / 标签里抽几个关键词（"与大肥鱼一起讨论 XX 的实现"里的 XX）。 */
+/** 从论文标题 / 标签里抽几个关键词（"与Cyli一起讨论 XX 的实现"里的 XX）。 */
 function keywords(): string[] {
   const raw = `${paperTitle.value} ${paperTagText.value}`;
   const words = raw.split(/[^\p{L}\p{N}+#.-]+/u)

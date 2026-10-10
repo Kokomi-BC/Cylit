@@ -189,7 +189,14 @@ export function clearUserMarks(root: HTMLElement | null): void {
 
 function makeMark(color: string, id: string): HTMLElement {
   const mark = document.createElement('mark');
-  mark.className = `hl ${color || 'yellow'}`;
+  /* 自定义色（`#rrggbb`）：class 只认名字，实体色得走**内联样式**（用户口径 2026-10-10）。
+     `66` = 40% 不透明，与那几个命名色的底色观感对齐。 */
+  if (/^#[0-9a-fA-F]{6}$/.test(String(color || ''))) {
+    mark.className = 'hl';
+    mark.style.background = `${color}66`;
+  } else {
+    mark.className = `hl ${color || 'yellow'}`;
+  }
   mark.setAttribute('data-hl', id);
   /* ⚠️ 这里**不要**写 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
      高亮是"悬浮就出笔记浮层"的那类元素，再叠一条浏览器原生提示（"选中这一段…"）

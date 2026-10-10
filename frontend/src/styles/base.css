@@ -76,6 +76,12 @@ mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
 mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }
 mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); background: var(--hl-bg); }
 mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
+/* 色板扩到 alphaXiv 那 7 色（用户口径 2026-10-10）：旧名 pink/purple 保留 —— 存量高亮还在库里，
+   渲染要认得；只是界面不再提供它们。 */
+mark.hl.red { --hl-bg: rgba(255, 0, 0, .22); background: var(--hl-bg); }
+mark.hl.orange { --hl-bg: rgba(255, 165, 0, .26); background: var(--hl-bg); }
+mark.hl.indigo { --hl-bg: rgba(75, 0, 130, .20); background: var(--hl-bg); }
+mark.hl.violet { --hl-bg: rgba(143, 0, 255, .22); background: var(--hl-bg); }
 /* 正文里的**引用标号**（`[2, 4, 10]`，`useMarkdown` 的 `cite` 行内扩展渲染的按钮）。
  *
  * 用户口径 2026-10-07：**长得要跟对话页那个跳转标号一样**（那是"这个方括号能点"的既有语言），
@@ -114,6 +120,12 @@ mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
 .hl-swatch.blue { background: rgba(110, 180, 255, .55); }
 .hl-swatch.pink { background: rgba(255, 150, 190, .55); }
 .hl-swatch.purple { background: rgba(140, 140, 140, .45); }
+/* 与目标站同色（用户口径 2026-10-10）：它们的色点就是 `rgb(from rgba(R,G,B,.25) … / 60%)`
+   = 实体色 60% 不透明。黄/绿/蓝沿用原有色值（观感已经一致）。 */
+.hl-swatch.red { background: rgba(255, 0, 0, .6); }
+.hl-swatch.orange { background: rgba(255, 165, 0, .6); }
+.hl-swatch.indigo { background: rgba(75, 0, 130, .6); }
+.hl-swatch.violet { background: rgba(143, 0, 255, .6); }
 /* 已经是这个颜色的那枚（AI 解释浮层里标出当前高亮的颜色） */
 .hl-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，

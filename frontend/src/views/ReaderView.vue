@@ -57,7 +57,7 @@ import ReferenceList from '@/components/reader/ReferenceList.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
-const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'];
+const HIGHLIGHT_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
 const route = useRoute();
 const router = useRouter();
 const paperId = computed(() => String(route.params.paperId ?? ''));
@@ -120,15 +120,21 @@ const zoom = ref(1);
  */
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 3;
+/** 缩放**档位**（用户口径 2026-10-10："复刻 pdf 的放大和缩小逻辑"）——
+ *  点一次跳一档（pdf.js 就是档位制），而不是加 10%。
+ *  ⚠️ 这里的 1 = **适应栏宽**（本阅读器的基准），不是 PDF 的 100% 物理尺寸。 */
+const ZOOM_STEPS = [0.4, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 2.5, 3];
 
 function setZoom(next: number) {
   const v = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next)) * 100) / 100;
   if (v !== zoom.value) zoom.value = v;
 }
 
-/** ± 一档：0.1（细步进。以前 0.15 一档，点两下就跳 30%，看不出连续性） */
+/** ± 一档：在 `ZOOM_STEPS` 里取上/下一档（到头就停在端点上）。
+ *  以前是 `zoom ± 0.1`（细步进）：从 1.0 连点两下才到 1.2，看不出"跳了一档"。 */
 function zoomBy(dir: number) {
-  setZoom(zoom.value + dir * 0.1);
+  if (dir > 0) setZoom(ZOOM_STEPS.find((s) => s > zoom.value + 1e-6) ?? ZOOM_MAX);
+  else setZoom([...ZOOM_STEPS].reverse().find((s) => s < zoom.value - 1e-6) ?? ZOOM_MIN);
 }
 
 /**
@@ -138,11 +144,18 @@ function zoomBy(dir: number) {
  * "我明明缩放了、百分比却不动"的根源：浏览器缩放放大的是整个界面（连百分比标签一起放大），
  * 而它并不表示页图的显示比例。拦下来之后，同一个手势改的是 `zoom`，页图与数字一起动。
  */
+/** Ctrl/⌘ + 滚轮/捏合的**累计量**：攒够一格再跳一档。
+ *  触控板交上来的是连续小值，一有就跳档会"哗哗"连跳好几档。 */
+let wheelAcc = 0;
 function onContentWheel(ev: WheelEvent) {
   if (!ev.ctrlKey && !ev.metaKey) return;
   ev.preventDefault();
-  // deltaY 在触控板上是连续小值、在鼠标滚轮上是一格 ±100：用比例步进让两者手感接近
-  setZoom(zoom.value - ev.deltaY * 0.002);
+  /* 档位缩放（2026-10-10）：与 ± 按钮**同一套档位** —— 以前这里是 `zoom - deltaY * 0.002`
+     的连续式，和按钮的步进不是一回事，同一个手势在鼠标滚轮 / 触控板上速度差很多。 */
+  wheelAcc += ev.deltaY;
+  if (Math.abs(wheelAcc) < 30) return;
+  zoomBy(wheelAcc > 0 ? -1 : 1);
+  wheelAcc = 0;
 }
 const searchQuery = ref('');
 const searchScope = ref<SearchScope>('all');
@@ -2610,7 +2623,17 @@ function highlightIdsInRange(range: Range, target?: HTMLElement | null, onlyCol?
   return [...ids];
 }
 
-const hideMenu = () => { selection.show = false; };
+/** 收划词胶囊。**顺带把右键菜单也收掉**：胶囊上的动作（高亮 / 复制 / 解释…）都是"针对这一处"的，
+ *  做完之后菜单还杵在旁边只会挡正文（用户口径 2026-10-10 的连带修复）。 */
+const hideMenu = () => { selection.show = false; ctxMenu.open = false; ctxMenu.rect = null; };
+/** 点胶囊的 × = **连选中状态一起取消**（用户口径 2026-10-10）：只收浮层、留着选区的话，
+ *  鼠标一碰那段文字胶囊又冒出来，看着像"关不掉"；快照也要清（否否则下次右键仍会判成"有选区"）。 */
+function closeSelectionMenu() {
+  window.getSelection()?.removeAllRanges();
+  selection.text = '';
+  selection.rect = null;
+  hideMenu();
+}
 
 /**
  * 滚动 / 失去焦点时收掉划词菜单。
@@ -2756,6 +2779,8 @@ interface CtxItem {
   shortcut?: string;
   danger?: boolean;
   sep?: boolean;
+  /** 色板（`ContextMenu` 读它）：给了就在这一行右侧排一排色点（用户口径 2026-10-10） */
+  swatches?: string[];
 }
 
 const ctxMenu = reactive({
@@ -2845,7 +2870,16 @@ function onContentContextMenu(ev: MouseEvent) {
       label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
     });
     items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
-    items.push({ key: 'highlight', label: '高亮', icon: 'note' });
+  }
+  /* 「高亮」不再放在常规菜单里（用户口径 2026-10-10）：选色已经在**划词胶囊**上，
+     右键菜单这一层重复一遍反而是噪音。右键落在**已有高亮**上才给「编辑笔记」。
+     ⚠️ 这一项**不能写在 `if (withSel)` 里** —— 那样"只右键一处高亮、并没有划词"时，
+     菜单里就只剩「删除」，想改笔记反而没有入口（用户 2026-10-10 复查报的正是这个）。
+     它只跟 `hlIds` 走，与有没有选区无关。 */
+  if (ctxCtx.hlIds.length) {
+    items.push({ key: 'note', label: '编辑笔记', icon: 'note' });
+  }
+  if (withSel) {
     items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
     items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
   } else if (ctxCtx.isFigure) {
@@ -2924,6 +2958,13 @@ async function ctxAttachImage() {
   } catch (err) { reportError(err, '把图片放进对话框失败'); }
 }
 
+/** 右键菜单色板里点了一枚色点（`ContextMenu` 的 `color` 事件）：按那个颜色高亮。
+ *  与行本身的默认色（黄）走的是同一个动作 —— 行只是色板的"默认项"。 */
+function onCtxColor(color: string) {
+  hideMenu();
+  void addHighlight(color);
+}
+
 function onCtxSelect(key: string) {
   const c = ctxCtx;
   switch (key) {
@@ -2938,6 +2979,7 @@ function onCtxSelect(key: string) {
     case 'bing': ctxBing(c.text); break;
     case 'copy': void copySelection(); break;
     case 'highlight': hideMenu(); void addHighlight('yellow'); break;
+    case 'note': void onNoteAction(c.hlIds, { x: ctxMenu.x, y: ctxMenu.y }); break;
     case 'delhl': void deleteHighlightIds(c.hlIds); break;
     case 'selectall': ctxSelectPage(); break;
     case 'saveimg': void ctxSaveImage(); break;
@@ -3559,6 +3601,10 @@ const notePop = reactive({
   noteId: '',
   highlightId: '',
   rowId: '',
+  /** 这处高亮**现在的颜色**：笔记卡内嵌色条靠它显示"选中"；改色走 `PUT /highlights/:id`。 */
+  color: 'yellow',
+  /** 这条笔记的时间戳（头部那行"不到 1 分钟前"，复刻目标站）。只用于展示。 */
+  created: '',
   /** 高亮原文（浮层"引用"那一行） */
   quote: '',
   content: '',
@@ -3584,6 +3630,11 @@ function openNotePopover(opts: {
   notePop.mode = opts.mode ?? (note ? 'view' : 'edit');
   notePop.noteId = note?.id ?? '';
   notePop.highlightId = note?.highlight_id ?? hl?.id ?? selection.hlIds[0] ?? '';
+  notePop.color = String(hl?.color ?? 'yellow');
+  /* ⚠️ `Note` 的时间戳字段名没在类型里确认过：用 `as` 兼容两种常见写法，
+     拿不到就留空（头部那行不显示），不猜也不报错。 */
+  const rawTime = (note ?? null) as unknown as Record<string, unknown> | null;
+  notePop.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
   notePop.rowId = note?.block_id ?? hl?.block_id ?? selection.rowId ?? '';
   notePop.quote = note?.selected_text ?? hl?.text
     ?? (selection.anchored ? (selection.anchorText || selection.text) : '');
@@ -3593,8 +3644,64 @@ function openNotePopover(opts: {
   notePop.busy = false;
 }
 
-function closeNotePopover() {
-  window.clearTimeout(noteHideTimer);
+/** 相对时间（笔记框头部那行"不到 1 分钟前"，用户口径 2026-10-10："复刻这个笔记框"）。 */
+function relTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return '不到 1 分钟前';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)} 天前`;
+  return new Date(t).toLocaleDateString();
+}
+const noteTime = computed(() => relTime(notePop.created));
+
+/**
+ * 笔记卡的**初始尺寸按内容多少来**（用户口径 2026-10-10："根据内容数量默认调整到合适大小"）。
+ *
+ * 为什么不用固定 360px：只有一行字的短笔记拉那么宽看着空、长段落挤在 360px 里又一直在折行。
+ * 按**最长一行**估宽（中英混排按 ~8.5px/字，再加左右内边距），夹在 340–560 之间：
+ * 太窄比正文列还窄、太宽就把正文挡住了。
+ *
+ * 高度不在这里算 —— 查看态的卡片本来就随内容自然高，编辑态的高度交给 `noteEditRows`。
+ */
+const noteCardWidth = computed(() => {
+  const text = notePop.mode === 'view' ? notePop.content : notePop.draft;
+  const longest = (text || '').split('\n').reduce((m, l) => Math.max(m, [...l].length), 0);
+  return Math.round(Math.min(560, Math.max(340, longest * 8.5 + 96)));
+});
+
+/** 编辑框的行数跟着**已有内容**走：空笔记给 4 行就够（不用先占一片白），长笔记一次全露出来 */
+const noteEditRows = computed(() => {
+  const lines = (notePop.draft || '').split('\n').length;
+  return Math.min(16, Math.max(4, lines + 2));
+});
+
+/** 笔记卡里点色点 = **给这处高亮换色**（用户口径 2026-10-10："选色 + 写 + 保存"同一张卡）。
+ *  与保存分开：换色只动高亮，不动笔记文本，所以立刻生效。 */
+async function setNoteColor(color: string) {
+  if (!notePop.highlightId) return;
+  try {
+    await api.put(`/highlights/${notePop.highlightId}`, { color });
+    notePop.color = color;
+    await refreshAnnotations();
+  } catch (err) { reportError(err, '换颜色失败'); }
+}
+
+/** 头部那枚垃圾桶：删掉**这条笔记**（高亮留着 —— 删笔记不该把高亮也带走）。 */
+async function deleteNotePopover() {
+  if (!notePop.noteId || notePop.busy) return;
+  notePop.busy = true;
+  try {
+    await api.del(`/notes/${notePop.noteId}`);
+    toast('笔记已删除', 'ok', 1600);
+    closeNotePopover();
+    await refreshAnnotations();
+  } catch (err) { reportError(err, '删除笔记失败'); } finally { notePop.busy = false; }
+}
+
+function closeNotePopover() {  window.clearTimeout(noteHideTimer);
   cancelNoteOpen();                 // 还没到延时的那一次也别再弹了
   notePop.open = false;
   notePop.anchored = false;
@@ -3680,33 +3787,42 @@ const selectionNote = computed<Note | null>(() => {
 });
 
 /**
- * 划词菜单里的「笔记 / 打开笔记」：
+ * 划词菜单的「笔记 / 打开笔记」**和右键菜单的「编辑笔记」**共用这一个入口：
  * 已有笔记 → 打开**浮层**看它（点菜单是明确动作，所以直接锚定）；
  * 没有 → 打开浮层新建（保存时先确保挂到一条高亮上）。
+ *
+ * ⚠️ `ids` / `anchorXY` 是**右键**那条路径传进来的（用户 2026-10-10 报的：
+ * 右键一处高亮→编辑笔记，只弹“先给这段文字加个高亮”）。
+ * 原因：这里原来只看 `selection.hlIds` —— 那是**划词胶囊**的状态；右键时往往根本没划词，
+ * 于是“右键点在高亮上”这个明确意图被丢掉，既进不了编辑、又报了个莫名其妙的错。
+ * 不传参数时（从划词菜单进）仍然用选区那份，行为不变。
  */
-async function onNoteAction() {
-  const existing = selectionNote.value;
-  // 浮层锚在**划词菜单**出现的位置（选区矩形就在那儿），菜单本身马上要收起
-  const fallbackXY = { x: selection.x, y: selection.y };
+async function onNoteAction(ids?: string[], anchorXY?: { x: number; y: number }) {
+  const hlIds = ids && ids.length ? ids : (selection.hlIds ?? []);
+  const hlOf = (id: string | undefined | null) => highlights.value.find((h) => h.id === id) ?? null;
+  const existing = hlIds.length
+    ? (notes.value.find((n) => n.highlight_id && hlIds.includes(n.highlight_id)) ?? null)
+    : null;
+  // 浮层锚在被点的位置（划词菜单在选区那儿，右键菜单在鼠标那儿）—— 菜单本身马上要收起
+  const fallbackXY = anchorXY ?? { x: selection.x, y: selection.y };
   hideMenu();
   if (existing) {
-    const hl = highlights.value.find((h) => h.id === existing.highlight_id) ?? null;
-    openNotePopover({ note: existing, highlight: hl, mode: 'view', anchored: true, fallbackXY });
+    openNotePopover({ note: existing, highlight: hlOf(existing.highlight_id), mode: 'view', anchored: true, fallbackXY });
     return;
   }
-  // 没有高亮就没有"可以挂笔记的地方"（菜单里那一项也不会出现，这里是兜底）
-  if (!selection.hlIds.length) {
+  // 没有高亮就没有"可以挂笔记的地方"（用户口径 2026-10-10："没有高亮不用写"）
+  if (!hlIds.length) {
     toast('先给这段文字加个高亮，再写笔记', 'warn', 2600);
     return;
   }
-  openNotePopover({ mode: 'edit', anchored: true, fallbackXY });
+  openNotePopover({ mode: 'edit', anchored: true, fallbackXY, highlight: hlOf(hlIds[0]) });
 }
 
 /** 浮层里「保存」：已有笔记走 PUT，新建走 POST（**必须已经挂在一处高亮上**）。 */
 async function saveNotePopover() {
   if (notePop.busy) return;
-  /* 用户口径：**只有插入了高亮，才能在高亮的基础上加笔记** —— 这里不再"顺手补一条高亮"，
-     没有高亮就明说怎么做（划词菜单里那一项本来也不会出现，这是兜底）。 */
+  /* 用户口径：**只有插入了高亮，才能在高亮的基础上加笔记** ——
+     用户 2026-10-10 再次确认："没有高亮不用写"，所以**不**顺手补一条高亮。 */
   if (!notePop.noteId && !notePop.highlightId) {
     toast('先给这段文字加个高亮，再写笔记', 'warn', 2600);
     return;
@@ -3729,6 +3845,7 @@ async function saveNotePopover() {
       });
       notePop.noteId = created?.id ?? '';
       notePop.content = notePop.draft;
+      notePop.created = new Date().toISOString();   // 头部那行"不到 1 分钟前"要立刻有值
       toast('笔记已保存', 'ok', 1600);
     }
     notePop.mode = 'view';
@@ -4261,6 +4378,12 @@ function renderMarkdown(text?: string | null) {
               <button class="btn icon" title="放大" @click="zoomBy(1)">
                 <AppIcon name="zoom-in" :size="15" />
               </button>
+              <!-- 恢复 100% = 适应栏宽（复刻目标站的 Reset zoom：**只在偏离 100% 时出现**，
+                   不缩放时不多占一格工具条）。 -->
+              <button v-if="Math.abs(zoom - 1) > 0.001" class="btn icon" title="恢复 100%（适应栏宽）"
+                      data-zoom-reset @click="setZoom(1)">
+                <AppIcon name="refresh" :size="15" />
+              </button>
             </div>
           </div>
         </CapPanel>
@@ -4481,7 +4604,7 @@ function renderMarkdown(text?: string | null) {
       @copy="copySelection"
       @highlight="addHighlight"
       @unhighlight="deleteSelectionHighlights"
-      @close="hideMenu"
+      @close="closeSelectionMenu"
     />
 
     <!-- AI 解释浮层（第五步）：与笔记**同一个壳**、**默认锚定**（读完再决定要不要存下来，
@@ -4575,53 +4698,77 @@ function renderMarkdown(text?: string | null) {
       :open="notePop.open"
       :anchor="notePop.anchor"
       :anchored="notePop.anchored"
-      :title="notePop.mode === 'edit' ? '笔记（编辑）'
-        : notePop.mode === 'prompt' ? '已高亮 · 写条笔记？' : '笔记'"
-      :width="360"
+      title="笔记"
+      :width="noteCardWidth"
       data-note-popover
       @close="closeNotePopover"
       @toggle-anchor="notePop.anchored = !notePop.anchored"
       @mouseleave="scheduleNoteHide"
     >
+      <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
+           色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
+      <template #head-lead>
+        <AppIcon name="note" :size="14" />
+      </template>
+      <template #head-mid>
+        <div v-if="notePop.mode !== 'view' && notePop.highlightId" class="np-colors">
+          <button
+            v-for="c in HIGHLIGHT_COLORS"
+            :key="c"
+            type="button"
+            class="hl-swatch"
+            :class="[c, { on: notePop.color === c }]"
+            :title="`换成 ${c} 色`"
+            data-note-color
+            @click="setNoteColor(c)"
+          />
+          <!-- 自定义色（用户口径 2026-10-10："少了自定义色彩"）—— 与胶囊上那枚同一做法 -->
+          <label class="hl-swatch custom" title="自定义颜色">
+            <input type="color" value="#ffd700" data-note-custom aria-label="自定义高亮颜色"
+                   @input="setNoteColor(($event.target as HTMLInputElement).value)">
+          </label>
+        </div>
+      </template>
+      <template #head-extra>
+        <!-- 相对时间只在**查看态**显示：编辑态标题行里已经挤了色点行，再塞一条时间就会把标题压没 -->
+        <span v-if="notePop.mode === 'view' && noteTime" class="np-time">{{ noteTime }}</span>
+        <!-- 头部按键照参考实现（铅笔 = 编辑 / 垃圾桶 = 删除，关关闭是壳自带的 ✕）：
+             查看态给铅笔，编辑态把它换成 ✓ 保存。 -->
+        <button v-if="notePop.mode === 'view' && notePop.noteId" class="np-head-save" type="button"
+                title="编辑笔记" data-note-edit
+                @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
+          <AppIcon name="edit" :size="13" />
+        </button>
+        <button v-if="notePop.mode !== 'view'" class="np-head-save" type="button"
+                :disabled="notePop.busy" title="保存笔记" data-note-save @click="saveNotePopover">
+          <AppIcon name="check" :size="13" />
+        </button>
+        <button v-if="notePop.noteId" class="np-head-save danger" type="button"
+                :disabled="notePop.busy" title="删除笔记" data-note-delete @click="deleteNotePopover">
+          <AppIcon name="trash" :size="13" />
+        </button>
+      </template>
+
       <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
            浮层贴着那处高亮，原文就在眼皮底下，再抄一遍只会把卡片撑长、还多一层"这是哪一段"的噪音。
            要看按的是哪一段，看浮层**贴着哪儿**就够了。 -->
-      <div v-if="notePop.mode === 'prompt'" class="np-hint tiny faint">
-        这段已经标好了。要在这处高亮上写点什么吗？
-      </div>
+      <!-- 提示文案已删（用户口径 2026-10-10："去掉多余文字说明"）：**卡片本身就是输入框** ——
+           空着就是"写一条"，有内容就是"编辑"；标题里已经有"已高亮"，正文里再解释一遍是噪音。 -->
       <textarea
-        v-if="notePop.mode === 'edit'"
+        v-if="notePop.mode !== 'view'"
         v-model="notePop.draft"
         class="np-edit"
-        rows="6"
+        :rows="noteEditRows"
         data-note-edit
-        placeholder="用 Markdown 写笔记；支持 $公式$"
       />
-      <div v-else-if="notePop.mode === 'view'" class="np-view md small" data-note-view v-html="mdToHtml(notePop.content)" />
-      <template #footer>
-        <template v-if="notePop.mode === 'edit'">
-          <button class="btn sm primary" :disabled="notePop.busy" data-note-save @click="saveNotePopover">
-            {{ notePop.busy ? '保存中…' : '保存' }}
-          </button>
-          <button class="btn sm" @click="notePop.mode = notePop.content ? 'view' : 'prompt'; notePop.draft = notePop.content">
-            取消
-          </button>
-        </template>
-        <template v-else-if="notePop.mode === 'prompt'">
-          <button class="btn sm primary" data-note-add @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
-            <AppIcon name="add" :size="12" />添加笔记
-          </button>
-          <span class="spacer"></span>
-          <span class="tiny faint">已锚定</span>
-        </template>
-        <template v-else>
-          <button class="btn sm" data-note-edit-btn @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
-            <AppIcon name="edit" :size="12" />编辑
-          </button>
-          <span class="spacer"></span>
-          <span class="tiny faint">{{ notePop.anchored ? '已锚定' : '移开自动关闭' }}</span>
-        </template>
-      </template>
+      <!-- 查看态正文：**用户自己写的笔记**走 `{ breaks: true }`（用户口径 2026-10-10）：
+           不能再跑 `normalizeSoftBreaks` —— 它会把作者敲的回车接回去（"第一行第二行"），
+           那是给 PDF 抽取文本用的。 -->
+      <div v-else-if="notePop.mode === 'view'" class="np-view md small" data-note-view
+           v-html="mdToHtml(notePop.content, null, { breaks: true })" />
+      <!-- 底部**不再传 footer 插槽**（用户口径 2026-10-10："不要有选择的文字框"）：
+           那个 footer 就算只有一行按钮，也会带出一条 1px 上线，看着像正文外面套了一圈框。
+           编辑 / 保存 / 删除 / 关闭 全走头部按键（铅笔 / ✓ / 垃圾桶 / ✕）。 -->
     </FloatingCard>
 
     <!-- 引用标号的浮层（用户口径 2026-10-08 第二条）：点正文里的 `[2, 4, 10]` 就在标号下面
@@ -4658,6 +4805,7 @@ function renderMarkdown(text?: string | null) {
       :y="ctxMenu.y"
       :items="ctxMenu.items"
       @select="onCtxSelect"
+      @color="onCtxColor"
       @placed="ctxMenu.rect = $event"
       @close="ctxMenu.open = false; ctxMenu.rect = null"
     />
@@ -5148,6 +5296,88 @@ function renderMarkdown(text?: string | null) {
 .cite-pop :deep(.ref-list > .item:focus-visible) { box-shadow: var(--ring); }
 .cite-pop-hint { padding: 6px 8px; }
 .ex-thread { max-height: 46vh; overflow-y: auto; }
+/* 笔记框标题行上的 ✓ 保存（用户口径 2026-10-10：复刻目标站的笔记框）。
+   ⚠️ 这个键是**本组件**渲染的（通过 `FloatingCard` 的 `head-extra` 插槽），
+   而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
+.np-head-save {
+  flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text);
+  cursor: pointer; transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.np-head-save:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.np-head-save:active:not(:disabled) { transform: scale(.92); }
+.np-head-save:disabled { opacity: .5; cursor: default; }
+/* 删除键（头部那枚垃圾桶）：语义色与全站 danger 一致 */
+.np-head-save.danger { background: var(--danger-soft); color: var(--danger); }
+.np-head-save.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+/* ---- 翻页 / 视图切换动效（用户口径 2026-10-10）----
+   页面块出现/重建时**只淡入 opacity**。
+   ⚠️ 故意**不用 transform**：① 那会给块建一个"包含块"，里面的 `position: fixed` 定位会跟着跑；
+   ② 块里有 canvas，`transform` 动画的每一帧都要重新采样位图 —— 那正是前几次"闪/抖"的根源。
+   opacity 是合成层属性，不动布局、不重采样。 */
+.reader-content :deep(.pg-pair),
+.reader-content :deep(.row-pair) { animation: pg-in .18s var(--ease); }
+@keyframes pg-in { from { opacity: 0; } to { opacity: 1; } }
+/* 头部那行相对时间（`head-extra` 插槽里的第一个节点，排在 ✓ 前面） */
+.np-time { flex: none; margin-right: 6px; font-size: 11px; color: var(--text-faint); }
+/* 笔记卡内嵌色条：与「笔记」两字**同一行**（用户口径 2026-10-10），
+   所以自身不带外边距/内边距，间距交给标题行的 `gap`。 */
+.np-colors { display: flex; align-items: center; gap: 5px; flex: none; margin: 0; }
+.np-colors .hl-swatch { border: 0; cursor: pointer; }
+/* ---- 笔记框照目标站重做（用户口径 2026-10-10）----
+   标注卡：`rounded-2xl`(16px) + 1px 描边 + 大阴影 + **不透明底**；
+   编辑区：`min-h-24`(96px) / `max-h-64`(256px)、`text-base/relaxed`(16px/1.6)、
+   **无边框无圆角**（用户口径："多了中间的圆角矩形框"，那个框要拿掉）、
+   水平内收 **16px**（与标题同一个缩进："文字位置不能像那样靠边"）。
+   ⚠️ 选择器**带 `[data-note-popover]` 前缀**：权重高于组件里原有的 `.np-edit`，
+   不管两条规则谁前谁后都能盖住（不靠文件里的先后顺序）。*/
+[data-note-popover] { border-radius: 16px; background: var(--bg-elev); }
+/* 笔记卡的正文区（色点在标题行里，正文自己内收 12px 左对齐标题） */
+[data-note-popover] :deep(.fc-body) { padding: 0; }
+[data-note-popover] .np-edit {
+  /* 高度交给模板上的 `rows`（跟着已有内容走，见 `noteEditRows`）：
+     **不设 `max-height`** —— 否则长笔记会在框里再套一层滚动条（框里一根、卡片一根）。
+     内容真的超出卡片时，让外层 `.fc-body` 去滚。 */
+  width: 100%; min-height: 96px; resize: none;
+  /* 左内边距 12px（不是 16）：`.fc-head` 自己还有 12px 内边距，
+     加起来与标题那枚图标同一个缩进（用户口径 2026-10-10："文字位置不能像那样靠边"）。 */
+  padding: 4px 16px 4px 12px; font-size: 16px; line-height: 1.6;
+  border: 0; border-radius: 0; background: transparent;
+}
+[data-note-popover] :deep(.fc-head) {
+  gap: 6px;
+  /* 标题行用**横线**（`--divider` 发丝线）与正文分开（用户口径 2026-10-10）。
+     ⚠️ 底色保持透明：上一版那层 3% 灰底就是用户说的"两个颜色"，不再加回来。 */
+  border-bottom: 1px solid var(--divider);
+  background: transparent;
+}
+/* 聚焦 / 悬浮时要**整圈压掉** base.css 里那条全局 `input, select, textarea`
+   （用户口径 2026-10-10："存在横线的问题"）：它给了
+   `:focus { border-color: accent; box-shadow: var(--ring) }` 与 `:hover { background: hover }`。
+   而 `.np-edit` 宽 100%、紧贴卡片内边，那圈光晕的左右两边被卡片 `overflow: hidden` 裁掉 ——
+   屏幕上只剩**下边一条青线**，看着就像卡片中间无故多了一条分隔线。
+   卡片本身就是输入区，不用再描一圈，也不要悬浮变灰。 */
+[data-note-popover] .np-edit:hover { background: transparent; }
+[data-note-popover] .np-edit:focus {
+  outline: none; box-shadow: none; border-color: transparent; background: transparent;
+}
+/* **查看态**的正文：它是 `.np-view`（不是 `.np-edit`），而 `.fc-body` 的内边距已被清零 ——
+   不给它自己补内边距的话，写好的笔记会贴着卡片左边缘、上面还顶到分隔线（用户报的"第二行显示异常"）。
+   与编辑态那份 `4px 16px 4px 12px` 对齐，底部再留 12px 免得文字贴着卡片下沿。 */
+[data-note-popover] .np-view { padding: 8px 16px 12px 12px; }
+[data-note-popover] :deep(.fc-title) { font-size: 13px; font-weight: 600; flex: none; }
+/* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
+   左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
+[data-note-popover] .np-colors { padding: 0; margin: 0 0 0 2px; }
+/* 自定义色那枚：与胶囊上那枚同一个做法（`SelectionMenu` 的样式是 scoped 的，这里得再来一份） */
+[data-note-popover] .hl-swatch.custom {
+  position: relative; overflow: hidden;
+  background: conic-gradient(from 90deg, #ff0080, #ff8c00, #ffe600, #00d26a, #00b3ff, #7c3aed, #ff0080);
+}
+[data-note-popover] .hl-swatch.custom input {
+  position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0;
+  opacity: 0; cursor: pointer; appearance: none;
+}
 /* 插图解释：顶上那张缩略图（比正文宽、但别把浮层撞成一面墙） */
 .ex-fig { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .ex-fig img {

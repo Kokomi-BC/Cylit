@@ -69,8 +69,8 @@ async function reclamp() {
 watch(() => [props.visible, props.x, props.y] as const, reclamp, { immediate: true });
 
 const COLOR_TITLE: Record<string, string> = {
-  yellow: '黄色高亮', green: '绿色高亮', blue: '蓝色高亮',
-  pink: '粉色高亮', purple: '中性高亮',
+  red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝',
+  indigo: '靖蓝', violet: '紫', pink: '粉', purple: '中性',
 };
 </script>
 
@@ -111,6 +111,12 @@ const COLOR_TITLE: Record<string, string> = {
         :title="`标成${COLOR_TITLE[c] ?? c}`"
         @click="emit('highlight', c)"
       />
+      <!-- 自定义颜色（用户口径 2026-10-10）：一个**原生取色器**盖在七彩圆点上（与目标站同做法），
+           选中即按那个 `#rrggbb` 高亮 —— 后端已放行实体色，不再是"静默变黄"。 -->
+      <label class="hl-swatch custom" title="自定义颜色">
+        <input type="color" value="#ffd700" data-hl-custom aria-label="自定义高亮颜色"
+               @input="emit('highlight', ($event.target as HTMLInputElement).value)">
+      </label>
     </span>
     <!-- 删除高亮：**禁止符号**（用户口径：删除走菜单，不再点高亮本身） -->
     <button
@@ -146,6 +152,12 @@ const COLOR_TITLE: Record<string, string> = {
   /* 不换行、不收缩：换行会让按钮变成竖排（“AI 解 / 释”） */
   display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap;
   max-width: calc(100vw - 16px);
+  /* 弹出（用户口径 2026-10-10："没有动画"）：根节点是 `v-if`，每次划词重新挂载，动画重放。 */
+  animation: sm-pop .16s var(--ease);
+}
+@keyframes sm-pop {
+  from { opacity: 0; transform: scale(.94) translateY(3px); }
+  to { opacity: 1; transform: none; }
 }
 .selection-menu button {
   border: 0; background: transparent; color: var(--text-dim);
@@ -153,13 +165,27 @@ const COLOR_TITLE: Record<string, string> = {
   border-radius: var(--radius-ctl); cursor: pointer; font-family: inherit;
   display: inline-flex; align-items: center; justify-content: center;
   flex: 0 0 auto; white-space: nowrap;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .selection-menu button:hover { background: var(--bg-hover); color: var(--text); }
+/* 按下反馈（借鉴目标站：图标键按下去要有"陷一下"的触感） */
+.selection-menu button:active { transform: scale(.9); }
 /* 删除高亮：危险的破坏性动作，用语义色区分（与全站的 danger 一致） */
 .selection-menu button.danger { color: var(--danger); }
 .selection-menu button.danger:hover { background: var(--danger-soft); color: var(--danger); }
 /* 色块一行：与按钮**同高**（26px），圆点垂直居中 —— 否则整条浮层会一高一低。
    色块本身（`.hl-swatch` 与那组颜色）在 `base.css`：AI 解释浮层的"标出这段"用的是同一份。 */
 .selection-menu .row { display: inline-flex; align-items: center; height: var(--control-h-sm); }
+/* 自定义色那枚：**七彩圆点**（取色器本体是透明的，盖满整枚，点哪都能唤起原生取色器）。
+   ⚠️ 描边**不能改成透明**（用户口径 2026-10-10："图标有点瑕疵"）——
+   其余色点都带那圈 1px 描边，只它没有，尺寸看着就比旁边小一圈、像浮在外面。 */
+.hl-swatch.custom {
+  position: relative; overflow: hidden;
+  background: conic-gradient(from 90deg, #ff0080, #ff8c00, #ffe600, #00d26a, #00b3ff, #7c3aed, #ff0080);
+}
+.hl-swatch.custom input {
+  position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0;
+  opacity: 0; cursor: pointer; appearance: none;
+}
 </style>

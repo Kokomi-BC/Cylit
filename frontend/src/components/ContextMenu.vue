@@ -33,6 +33,9 @@ interface CtxItem {
   disabled?: boolean;
   /** 这一项**之前**插一条分隔线 */
   sep?: boolean;
+  /** 色板：给了就在这一行右侧排一排圆点（复用全站 `.hl-swatch` 那份颜色）。
+   *  点圆点 = 用那个颜色执行；点行本身 = 默认色（用户口径 2026-10-10）。 */
+  swatches?: string[];
 }
 
 const props = withDefaults(defineProps<{
@@ -46,6 +49,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'select', key: string): void;
+  /** 点了色板里的某个色点（`CtxItem.swatches`）：带颜色名回去，调用方直接按色高亮 */
+  (e: 'color', color: string): void;
   (e: 'close'): void;
   /** 摆完位报一次真实矩形：划词胶囊要**贴在菜单上沿**（用户口径 2026-10-08） */
   (e: 'placed', rect: { left: number; top: number; width: number; height: number }): void;
@@ -82,9 +87,21 @@ function pick(item: CtxItem) {
   emit('select', item.key);
 }
 
+/** 点了色板里的某个色点：与 `pick` 同一节奏（先收菜单再动手），只是多带一个颜色。 */
+function pickColor(color: string) {
+  emit('close');
+  emit('color', color);
+}
+
 function onDocPointer(ev: PointerEvent) {
   if (!props.open) return;
-  if (panel.value?.contains(ev.target as Node)) return;
+  const t = ev.target as Node | null;
+  if (panel.value?.contains(t)) return;
+  /* 划词胶囊是**另一个浮层**，而且右键时它就贴在菜单上沿（`ReaderView.pillPos` 算的）：
+     点它的时候如果把菜单先收掉，胶囊会在 `pointerdown` 与 `click` **之间**被挪回选区那边，
+     于是那次点击落在空气上 —— 表现就是"右键之后点胶囊没反应"（用户口径 2026-10-10）。
+     所以胶囊上按下的这一下要放行：菜单先别关，等胶囊把这一下点完。 */
+  if ((t as HTMLElement | null)?.closest?.('[data-selection-menu]')) return;
   close();
 }
 
@@ -159,7 +176,19 @@ onBeforeUnmount(() => {
           >
             <AppIcon v-if="it.icon" :name="it.icon" :size="14" />
             <span class="ctx-label">{{ it.label }}</span>
-            <span v-if="it.shortcut" class="ctx-key">{{ it.shortcut }}</span>
+            <!-- 色板：与划词胶囊/AI 解释浮层**共用** `.hl-swatch` 那份颜色（base.css），
+                 不另起一套色值。`@click.stop` —— 点色点只按那个色，不再走行本身的默认色。 -->
+            <span v-if="it.swatches?.length" class="ctx-colors">
+              <span
+                v-for="c in it.swatches"
+                :key="c"
+                class="hl-swatch"
+                :class="c"
+                :title="`标成${c}色高亮`"
+                @click.stop="pickColor(c)"
+              />
+            </span>
+            <span v-else-if="it.shortcut" class="ctx-key">{{ it.shortcut }}</span>
           </button>
         </template>
       </div>
@@ -214,6 +243,9 @@ onBeforeUnmount(() => {
 .ctx-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 快捷键提示（目标站口径：12px、次要文字色、右对齐、至少隔开 16px） */
 .ctx-key { flex: none; margin-left: 16px; font-size: 12px; color: var(--text-dim); }
+/* 色板（用户口径 2026-10-10）：一排圆点排在行右侧，与弹层右侧内边距对齐；
+   圆点本身用 `base.css` 的 `.hl-swatch`（与划词胶囊同一份颜色），这里只管排布。 */
+.ctx-colors { flex: none; display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; }
 .ctx-item.danger { color: var(--danger); }
 .ctx-item.danger:hover:not(:disabled), .ctx-item.danger:focus-visible {
   background: var(--danger-soft); color: var(--danger); box-shadow: 0 0 0 1px var(--danger);

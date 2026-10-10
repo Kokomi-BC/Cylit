@@ -175,11 +175,19 @@ function openReader(paperId?: string | null, blockId?: string | null, page?: num
 }
 
 function colorHex(color?: string | null): string {
+  /* 自定义色（`#rrggbb`）直通：以前会落到 `COLOR_HEX.yellow` 的兑底，色点就变成黄色了 */
+  if (color && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
   return (color && COLOR_HEX[color]) || COLOR_HEX.yellow;
 }
 
 function hlClass(color?: string | null): string {
+  if (color && /^#[0-9a-fA-F]{6}$/.test(color)) return 'hl';
   return color && COLOR_HEX[color] ? `hl ${color}` : 'hl yellow';
+}
+
+/** 自定义色的**内联底色**（class 只认名字）—— 与正文行 / PDF 文字层 / Markdown 三处同一口径。 */
+function hlStyle(color?: string | null): Record<string, string> {
+  return color && /^#[0-9a-fA-F]{6}$/.test(color) ? { background: `${color}66` } : {};
 }
 
 /** 高亮挂在哪一面（三种锚点是三套位置模型，界面上要说清）。 */
@@ -449,17 +457,16 @@ function onRowAction(row: FeedRow, key: string) {
       <div class="card-body">
         <!-- 引用原文（高亮那一段）：用 `mark.hl`，**配色与正文里的高亮同一份**（base.css） -->
         <div v-if="row.quote" class="small quote" :class="{ clamp1: thumb }">
-          <mark :class="hlClass(row.color)">{{ row.quote }}</mark>
+          <mark :class="hlClass(row.color)" :style="hlStyle(row.color)">{{ row.quote }}</mark>
         </div>
+        <!-- 笔记正文：**用户自己写的** → `breaks: true`（回车就是回车，也不把软换行接回一行） -->
         <div
           v-if="row.contentMd"
           class="md small clamp-when-thumb"
           :class="{ clamp1: thumb }"
-          v-html="mdToHtml(row.contentMd)"
+          v-html="mdToHtml(row.contentMd, null, { breaks: true })"
         />
-        <div v-else-if="row.kind === 'highlight'" class="tiny faint">
-          还没写笔记（点「⋯ → 写笔记」补上）
-        </div>
+        <!-- 空态不另写一行：头部那枚「待写」徽章已经把状态说清楚了 -->
 
         <div v-if="row.annotation?.model_id" class="tiny faint" style="margin-top:4px">
           模型 {{ row.annotation.model_id }}

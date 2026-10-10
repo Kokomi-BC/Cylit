@@ -396,18 +396,32 @@ function renderBlockMath(html: string, math: string[]): string {
   });
 }
 
-/** Markdown → HTML（带缓存；软换行归一 → 行间公式自己接管，行内公式由扩展接管）。 */
-export function mdToHtml(text?: string | null, paperId?: string | null): string {
+/** Markdown → HTML（带缓存；软换行归一 → 行间公式自己接管，行内公式由扩展接管）。
+ *
+ * `opts.breaks` —— **用户自己写的笔记**要传 `true`（用户口径 2026-10-10：
+ * "收起状态下不支持 markdown 和换行"）：
+ *   `normalizeSoftBreaks` 是给**论文抽取文本**用的（PDF 拆出来的硬换行要接回一行，
+ *   中文接回不插空格）；而笔记里的回车是作者**故意敲的排版**，接回去就成了
+ *   "第一行第二行"。传 `true` 时跳过归一，并让 marked 把单个换行渲染成 `<br>`。
+ */
+export function mdToHtml(
+  text?: string | null,
+  paperId?: string | null,
+  opts?: { breaks?: boolean },
+): string {
   const src0 = text === null || text === undefined ? '' : String(text);
   if (!src0) return '';
-  const key = paperId ? `${paperId}\u0000${src0}` : src0;
+  const breaks = opts?.breaks === true;
+  // 缓存键要带上 `breaks`：同一段文字在两条路径下的 HTML 并不一样
+  const key = `${breaks ? '\u0001' : ''}${paperId ? `${paperId}\u0000` : ''}${src0}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const bold = fixCjkBoldEdges(wrapBareMath(normalizeSoftBreaks(src0)));
+  const prepared = wrapBareMath(breaks ? src0 : normalizeSoftBreaks(src0));
+  const bold = fixCjkBoldEdges(prepared);
   const { text: src, math } = extractBlockMath(bold.text);
   let html: string;
   try {
-    html = marked.parse(src) as string;
+    html = marked.parse(src, { breaks }) as string;
   } catch (err) {
     console.warn('[marked] 解析失败，降级为纯文本', err);
     html = `<p>${escapeHtml(src0)}</p>`;
@@ -462,7 +476,12 @@ export function htmlWithHighlights(text: string, highlights: Highlight[], paperI
   const { html } = renderWithPlaceholders(text, list.map((h) => ({
     /* 不加 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：高亮是"悬浮就出笔记浮层"
        的那类元素，再叠一条浏览器原生提示只是噪音（编辑/删除入口在划词菜单与浮层里）。 */
-    start: h.start, end: h.end, mark: `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}">`,
+    start: h.start, end: h.end,
+    /* 自定义色（`#rrggbb`）class 认不出来，得拼**内联底色**（与 `utils/domMarks` 同一口径，
+       `66` = 40%）；命名色照旧走 class。 */
+    mark: /^#[0-9a-fA-F]{6}$/.test(String(h.color || ''))
+      ? `<mark class="hl" style="background:${h.color}66" data-hl="${h.id}">`
+      : `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}">`,
   })), paperId);
   return html;
 }

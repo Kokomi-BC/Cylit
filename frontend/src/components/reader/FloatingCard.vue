@@ -69,8 +69,8 @@ const dragged = ref(false);
 const drag = reactive({ on: false, sx: 0, sy: 0, ox: 0, oy: 0 });
 
 function onHeadDown(ev: PointerEvent) {
-  // 标题栏上的按钮（图钉 / 关闭）不参与拖动，否则点它们会顺手把卡片挪一下
-  if ((ev.target as HTMLElement | null)?.closest?.('button')) return;
+  // 标题栏上的控件（图钉 / 关闭 / 色点 / 取色器）不参与拖动，否则点它们会顺手把卡片挪一下
+  if ((ev.target as HTMLElement | null)?.closest?.('button, label, input')) return;
   const head = ev.currentTarget as HTMLElement | null;
   drag.on = true;
   drag.sx = ev.clientX; drag.sy = ev.clientY;
@@ -104,6 +104,8 @@ watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as c
 watch(() => props.open, (v) => {
   if (!v) return;
   dragged.value = false;          // 每次打开都回到"自动贴锚点"，上次拖的位置不跨次沿用
+  sizeW.value = null;             // 尺寸同理：每次打开回到调用方给的默认宽高
+  sizeH.value = null;
   void place();
 });
 
@@ -118,11 +120,66 @@ watch(el, (node) => {
 });
 onBeforeUnmount(() => ro?.disconnect());
 
+/* -------------------------------- 右下角拖动放大 -------------------------------- */
+/** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
+ *  只在**锚定态**下给手柄（用户口径 2026-10-10）：没锚定时鼠标一移开卡片就没了，拉大没意义。 */
+const sizeW = ref<number | null>(null);
+const sizeH = ref<number | null>(null);
+const rs = reactive({ on: false, corner: 'br' as 'br' | 'bl', sx: 0, sy: 0, sw: 0, sh: 0, sl: 0 });
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+
+function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
+  const box = el.value;
+  if (!box) return;
+  rs.on = true;
+  rs.corner = corner;
+  rs.sx = ev.clientX; rs.sy = ev.clientY;
+  rs.sw = box.offsetWidth; rs.sh = box.offsetHeight;
+  rs.sl = pos.value.left;
+  /* 拉了大小就算"用户自己摆过了"：否则 `ResizeObserver` 一量到尺寸变了就调 `place()`，
+     把我们刚拉出来的宽度又夹回去（拉大时手感和打架一样）。 */
+  dragged.value = true;
+  // 合成事件（自检探针）没有真指针，捕获会抛 NotFoundError —— 与标题栏拖动同一处理
+  try { (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId); } catch { /* 没有真指针 */ }
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function onResizeMove(ev: PointerEvent) {
+  if (!rs.on) return;
+  const MIN_W = 260;
+  const MIN_H = 160;
+  const dx = ev.clientX - rs.sx;
+  const dy = ev.clientY - rs.sy;
+  const maxH = Math.max(MIN_H, window.innerHeight - pos.value.top - 10);
+  if (rs.corner === 'br') {
+    const maxW = Math.max(MIN_W, window.innerWidth - pos.value.left - 10);
+    sizeW.value = Math.round(clamp(rs.sw + dx, MIN_W, maxW));
+  } else {
+    /* 左下角：**右边界钉住不动**（人拉的是左边那条边）—— 宽度反向变化，`left` 跟着推。
+       否则拉左角时卡片会整体往右跑，手感完全不对。 */
+    const right = rs.sl + rs.sw;
+    const w = Math.round(clamp(rs.sw - dx, MIN_W, Math.max(MIN_W, right - 8)));
+    sizeW.value = w;
+    pos.value = { ...pos.value, left: Math.round(right - w) };
+  }
+  sizeH.value = Math.round(clamp(rs.sh + dy, MIN_H, maxH));
+}
+
+function onResizeUp(ev: PointerEvent) {
+  if (!rs.on) return;
+  rs.on = false;
+  try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
+}
+
 const style = computed(() => ({
   left: `${pos.value.left}px`,
   top: `${pos.value.top}px`,
-  width: `${props.width}px`,
-  maxHeight: `${props.maxHeight}px`,
+  width: `${sizeW.value ?? props.width}px`,
+  /* 拉过高度就固定高度（像窗口那样），没拉过就只给上限、高度随内容 */
+  height: sizeH.value === null ? undefined : `${sizeH.value}px`,
+  maxHeight: `${sizeH.value ?? props.maxHeight}px`,
 }));
 </script>
 
@@ -134,6 +191,8 @@ const style = computed(() => ({
     :style="style"
     data-float-card
   >
+    <!-- ⚠️ 标题栏里可能有**可点的东西**（笔记框的色点 / 取色器）：
+         `label` / `input` 也要排掉，否则点取色器会顺手把卡片拖一下。 -->
     <div
       class="fc-head"
       :class="{ dragging: drag.on }"
@@ -143,8 +202,17 @@ const style = computed(() => ({
       @pointerup="onHeadUp"
       @pointercancel="onHeadUp"
     >
+      <!-- 标题**前面**的图标位（2026-10-10：笔记框要照目标站放一枚笔记图标）。
+           不传则为空，解释浮层不受影响。 -->
+      <slot name="head-lead" />
       <span class="fc-title">{{ props.title }}</span>
+      <!-- 标题**之后**、按钮之前的位置（2026-10-10 复查：笔记框的色条要跟「笔记」并排，
+           但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
+      <slot name="head-mid" />
       <span class="spacer" />
+      <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
+           没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
+      <slot name="head-extra" />
       <button
         type="button"
         class="fc-btn"
@@ -167,6 +235,30 @@ const style = computed(() => ({
     <div v-if="$slots.footer" class="fc-foot">
       <slot name="footer" />
     </div>
+
+    <!-- 底部**两个角**都能拉大小（用户口径 2026-10-10），但**不画角标**：
+         只留一小块透明热区负责光标提示与拖拽 —— 之前那两条斜线用户不要了。
+         只在锚定态出现（没锚定时鼠标一移开卡片就关了，拉大没有意义）。 -->
+    <div
+      v-if="props.anchored"
+      class="fc-resize br"
+      data-float-resize
+      aria-label="拖动调整大小"
+      @pointerdown="onResizeDown($event, 'br')"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeUp"
+      @pointercancel="onResizeUp"
+    />
+    <div
+      v-if="props.anchored"
+      class="fc-resize bl"
+      data-float-resize-bl
+      aria-label="拖动调整大小"
+      @pointerdown="onResizeDown($event, 'bl')"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeUp"
+      @pointercancel="onResizeUp"
+    />
   </div>
 </template>
 
@@ -175,6 +267,7 @@ const style = computed(() => ({
    阴影用 `--shadow-flyout`（比侧栏的 `--shadow-2` 重一档）—— 它是浮在正文上的，要能一眼看出"这是浮层"。
    ⚠️ 这里原来写的是 `--shadow-3`，而那个名字**从来没定义过**：声明被整条丢掉，等于一直没有阴影。 */
 .float-card {
+  /* `position: fixed` 同时给右下角那枚拉手当了定位上下文（拉手是卡片内部的 absolute） */
   position: fixed; z-index: 60;
   display: flex; flex-direction: column;
   border: 1px solid var(--border-strong); border-radius: 12px;
@@ -200,7 +293,15 @@ const style = computed(() => ({
 .fc-btn:hover { background: var(--bg-hover); color: var(--text); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
-.fc-body { padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
+.fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
+/* 底部两个角的拖动热区：**完全透明**（用户口径 2026-10-10："不要显示直角标记"），
+   只靠光标形状（`nwse-resize` / `nesw-resize`）告诉用户这儿能拉。 */
+.fc-resize {
+  position: absolute; bottom: 0; width: 18px; height: 18px;
+  touch-action: none; z-index: 2;
+}
+.fc-resize.br { right: 0; cursor: nwse-resize; }
+.fc-resize.bl { left: 0; cursor: nesw-resize; }
 .fc-foot {
   display: flex; align-items: center; gap: 6px; flex: none;
   padding: 8px 12px; border-top: 1px solid var(--divider);
