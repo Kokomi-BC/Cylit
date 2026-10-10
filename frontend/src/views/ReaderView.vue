@@ -3790,21 +3790,28 @@ const citeRefItems = computed<PaperReference[]>(() => {
 });
 
 /** 贴在标号下面；下面放不下就翻到上面，左右夹在视口里。
- *  宽高先定死（高度不够浮层内部自己滚），不必等渲染完再量 —— 点下去就到位。 */
-function placeCitePop(rect: DOMRect) {
+ *
+ *  ⚠️ 高度**必须等渲染完用真实高度算**：早先是"先按最大 420px 预留、往上摆"，于是标号一靠近
+ *  页面底部，浮层就被顶到**页面上半部分**去（用户报的"标号到页面下方时，参考文献跑到页面上部分"）——
+ *  实际卡片常常只有一条、高几十像素，本该紧贴标号上方。
+ */
+async function placeCitePop(rect: DOMRect): Promise<void> {
   const w = Math.min(citePop.width, Math.max(240, window.innerWidth - 20));
   citePop.width = w;
   citePop.left = Math.round(Math.min(Math.max(8, rect.left - 10),
     Math.max(8, window.innerWidth - w - 10)));
   const below = window.innerHeight - rect.bottom - 16;
   const above = rect.top - 16;
-  const up = below < 200 && above > below;
-  const room = Math.round(Math.max(140, Math.min(420, up ? above : below)));
+  const flip = below < 200 && above > below;
+  const room = Math.round(Math.max(140, Math.min(420, flip ? above : below)));
   citePop.maxHeight = room;
-  const top = up ? Math.max(10, rect.top - room - 8) : rect.bottom + 8;
+  citePop.top = Math.round(flip ? Math.max(10, rect.top - room - 8) : rect.bottom + 8);
+  await nextTick();                                   // 先渲染一帧，再按真实高度贴上去
+  const h = Math.min(citePopEl.value?.offsetHeight || room, room);
+  const top = flip ? rect.top - h - 8 : rect.bottom + 8;
   /* 最后再夹一次：锚点万一在视口外（贴着上边缘的旧 rect、或滚过一段），
      也别把浮层画到屏幕外面去 —— 宁可贴边，也不要"点了没东西"。 */
-  citePop.top = Math.round(Math.min(Math.max(10, top), Math.max(10, window.innerHeight - 80)));
+  citePop.top = Math.round(Math.min(Math.max(10, top), Math.max(10, window.innerHeight - h - 10)));
 }
 
 /* 移开就收：延时是留给"从标号挪到浮层上"这一步的（与 `scheduleNoteHide` 同一套判法） */
@@ -3860,7 +3867,7 @@ async function openCitePop(nums: number[], el: HTMLElement) {
   cancelCiteHide();
   citePop.nums = nums;
   citePop.open = true;
-  placeCitePop(el.getBoundingClientRect());
+  await placeCitePop(el.getBoundingClientRect());
   if (!refsLoaded) {
     citePop.loading = true;
     try { await ensureReferences(); } finally { citePop.loading = false; }

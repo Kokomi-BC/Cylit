@@ -496,7 +496,7 @@ async function run() {
         s.removeAllRanges();
         await closeCtx();
         res.ctxClosed = !d.querySelector('[data-ctx-menu]');
-        /* 落在**图片**上：多出"另存为 / 放大打开 / 添加到对话框（带这张图）" */
+        /* 落在**图片**上：多出"询问 Cyli / 另存为 / 放大 / 加入对话" */
         const img = [...d.querySelectorAll('.reader-content img')]
           .find((el) => { const b = el.getBoundingClientRect(); return b.width > 20 && b.height > 20; });
         res.ctxHasImg = !!img;
@@ -2299,11 +2299,15 @@ def check_cite_hover() -> None:
                  and "citeHoverTimer = window.setTimeout" in src)
     note_path = ("scheduleNoteOpen(note, hl, mark)" in src
                  and "noteHoverTimer = window.setTimeout" in src)
+    # 参考文献浮层往上翻时**要按真实高度贴**（否则标号靠页底时会被顶到页面上半部分）
+    cite_measured = "citePopEl.value?.offsetHeight" in src and "await placeCitePop(" in src
     click_now = "cancelCiteOpen();" in src and "void openCitePop(citeRefs(cite), cite);" in src
     record("reader", "悬浮**停一会儿**才弹浮层（标号与高亮同一口径；点击仍然立刻弹）",
            bool(delay) and int(delay.group(1)) >= 250 and cite_path and note_path and click_now,
            f"延时={delay.group(1) if delay else None}ms 标号走延时={cite_path} "
            f"高亮走延时={note_path} 点击不等={click_now}")
+    record("reader", "参考文献浮层往上翻时按**真实高度**贴标号（不再被顶到页面上半部分）",
+           cite_measured, f"量了真实高度={cite_measured}")
     record("reader", "笔记浮层里**不再抄一遍高亮原文**（只留笔记正文）",
            "np-quote" not in src and "notePop.quote" in src,
            f"模板里还有 np-quote={'np-quote' in src}（数据里仍留 notePop.quote 用于存 selected_text）")
@@ -3389,8 +3393,8 @@ def main() -> int:
                    data.get("ctxClosed") is True, f"还开着={not data.get('ctxClosed')}")
             if data.get("ctxHasImg"):
                 imgk = data.get("ctxKeysImg") or []
-                record("reader", "落在图片上 → 另存为 / 放大 / 添加到对话框（带这张图）",
-                       all(k in imgk for k in ("saveimg", "zoomimg", "tochat")),
+                record("reader", "落在图片上 → 询问 Cyli / 另存为 / 放大 / 加入对话",
+                       all(k in imgk for k in ("ask", "saveimg", "zoomimg", "tochat")),
                        f"清单={imgk}｜{str(data.get('ctxImgUrl'))[-40:]}")
             else:
                 skip("右键落在图片上", "这一屏没有图片")
@@ -3539,7 +3543,7 @@ def main() -> int:
                f"{chat.get('placeholder')!r}")
         record("chat", "空态只有一句语录当背景（0 个按钮）",
                chat.get("helloButtons") == 0
-               and (chat.get("helloText") or "").startswith("与大肥鱼一起讨论"),
+               and (chat.get("helloText") or "").startswith("与Cyli一起讨论"),
                f"{(chat.get('helloText') or '')[:26]!r}")
         record("chat", "输入区是一个圆角容器（内含输入框/加号/发送）",
                bool(chat.get("boxRadius")) and all(chat.get("boxParts") or []),
