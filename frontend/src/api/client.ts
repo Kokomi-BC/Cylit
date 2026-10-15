@@ -60,6 +60,24 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** 会话过期 → 回登录页（见下方 `toLoginIfExpired`）。 */
+let kickedToLogin = false;
+
+/**
+ * `/cylit/`、`/api/v1/`、`/papers/` 三处在 nginx 上挂了 `auth_request`
+ * （见 `deploy/nginx/cylit.conf`）：cookie 失效时**不会**把请求转到后端，
+ * 而是直接回 401 + `{error:{code:"UNAUTHORIZED"}}`。前端遇到它就把人送回登录页 ——
+ * 否则 12 小时一到，整个 SPA 还开着，每个请求都只在角落里弹一个红字提示。
+ *
+ * ⚠️ 只认信封里的 `code`：**Cylit 后端自己也返回 401**（`/agent/*` 的"内部令牌不正确"），
+ * 那是接口用法问题，不该把人踢出应用。
+ */
+function toLoginIfExpired(status: number, code: string): void {
+  if (kickedToLogin || status !== 401 || code !== 'UNAUTHORIZED') return;
+  kickedToLogin = true;               // 一次就够，别让并发的请求把页面刷来刷去
+  if (typeof location !== 'undefined') location.href = '/Login';
+}
+
 /** 一个请求要拿到的 `data` 的形状由调用方用泛型声明（后端是动态 JSON，不做运行时校验）。 */
 export async function request<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, query, form, signal } = opts;
@@ -88,6 +106,7 @@ export async function request<T = any>(path: string, opts: RequestOptions = {}):
 
   if (!res.ok) {
     const err = payload?.error ?? {};
+    toLoginIfExpired(res.status, err.code ?? '');
     throw new ApiError(err.message ?? `HTTP ${res.status}`, {
       code: err.code ?? `HTTP_${res.status}`,
       status: res.status,
@@ -145,6 +164,7 @@ export async function downloadBlob(path: string, query?: Query): Promise<Blob> {
     let payload: any = null;
     try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
     const err = payload?.error ?? {};
+    toLoginIfExpired(res.status, err.code ?? '');
     throw new ApiError(err.message ?? `HTTP ${res.status}`, {
       code: err.code ?? `HTTP_${res.status}`,
       status: res.status,

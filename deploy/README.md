@@ -264,6 +264,24 @@ cd /root/Cylit && .venv/bin/python cli/pr.py qa <paper_id>
 改 nginx 之前先备份；`patch-nginx.py` 自己会备份到
 `detect.conf.bak-<时间戳>`，重复执行是幂等的。
 
+### 5.1 Cylit 的访问控制（2026-10-15 起）
+
+`/cylit/`、`/api/v1/`、`/papers/` **三个入口都要登录**。配置在服务器上：
+`/etc/nginx/snippets/cylit.conf`，**仓库里留了一份同样的**（`deploy/nginx/cylit.conf`）。
+
+```bash
+# 改完这样装上去（改前自动备份到 /root/deploy/）
+scp deploy/nginx/cylit.conf 43.136.18.54:/tmp/cylit.conf.new
+ssh 43.136.18.54 'cp -a /etc/nginx/snippets/cylit.conf /root/deploy/cylit.conf.bak-$(date +%Y%m%d-%H%M%S) \
+  && install -m 644 /tmp/cylit.conf.new /etc/nginx/snippets/cylit.conf && nginx -t && systemctl reload nginx'
+```
+
+校验走 `auth_request` 问 Detect 的 `/auth/nginx/user`（**验签 JWT + 核对
+`users.token_version`**，有效 204 / 无效 401），不是全站那套
+`if ($cookie_token = "")` —— 后者只判断 cookie 存不存在，值可以伪造。
+页面未登录回 302 去 `/Login`；接口与论文资源回 401 JSON（信封与后端一致），
+前端 `api/client.ts` 认这个 `code: UNAUTHORIZED` 后自己跳登录页。
+
 ---
 
 ## 6. 从本机同步代码
