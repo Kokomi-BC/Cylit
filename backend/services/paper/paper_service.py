@@ -368,6 +368,20 @@ def references(paper_id: str) -> list[dict]:
                 for r in rows]
 
 
+def references_count(paper_id: str) -> int:
+    """这篇论文**落库了几条**参考文献。
+
+    为什么单开一个"只数个数"的：调用方常常只想知道"是不是空的"（见
+    `task/handlers.py` 的 META_FILL 排队闸门），而 `references()` 会把整表读出来
+    再拼成 dict —— 有的论文七十多条，为了判空读一整遍不值。
+    """
+    from backend.repositories.mysql.models import PaperReference
+
+    with session_scope() as sess:
+        return int(sess.query(PaperReference)
+                   .filter(PaperReference.paper_id == paper_id).count())
+
+
 def touch_read(paper_id: str) -> None:
     with session_scope() as sess:
         row = sess.get(Paper, paper_id)

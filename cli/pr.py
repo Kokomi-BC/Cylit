@@ -336,6 +336,53 @@ def cmd_metadata_auto(args) -> int:
     return 0
 
 
+def cmd_refs(args) -> int:
+    """参考文献回填：给 `paper_reference` 表为空的论文**重新抽一次并落库**（默认只看不动）。
+
+    什么时候用：参考文献的落库挂在元数据填写那条链路上（`metadata_fill.offline()` 里的
+    `save_references`），而 META_FILL 任务在"元数据已齐全"时会整段跳过 —— 于是**元数据齐全、
+    参考文献却没落库**的论文（历史数据，或落库那一步之后才解析完的）表里会一直是空的，
+    前端侧栏就是「0 条 / 解析时没抽到 References 一节」。
+
+    补救刻意做得很窄：只调抽取链路本身（`reference_pairs` → `save_references`），
+    不碰任何元数据字段、也不重新解析 PDF —— 实测这一步就能把 turboquant 的 76 条补齐。
+
+    加 `--apply` 才写库；**抽不到就不动**（绝不用空结果覆盖已有条目）。
+    """
+    from backend.services.paper import metadata_fill, paper_service
+
+    if args.paper:
+        ids = [args.paper]
+    else:
+        ids = [str(p.get("id"))
+               for p in (paper_service.list_papers(page_size=500).get("items") or [])]
+    print(f"=== 参考文献回填{'（已写入）' if args.apply else '（只报告，加 --apply 才写）'}"
+          f" —— 共 {len(ids)} 篇 ===")
+
+    touched = empty = skipped = 0
+    for pid in ids:
+        have = paper_service.references_count(pid)
+        if have and not args.force:
+            skipped += 1
+            continue
+        pairs = metadata_fill.reference_pairs(pid)
+        if not pairs:
+            empty += 1
+            print(f"  {pid:<46} 库 {have:>3} 条 / 抽不到（没有 References 一节，或页产物还没好）")
+            continue
+        if args.apply:
+            saved = metadata_fill.save_references(pid, pairs)
+            touched += 1
+            print(f"  {pid:<46} 库 {have:>3} 条 → 写入 {saved} 条")
+        else:
+            touched += 1
+            print(f"  {pid:<46} 库 {have:>3} 条 → 可补 {len(pairs)} 条（加 --apply 才写）"
+                  f"   首条：{pairs[0][0][:50]}")
+
+    print(f"可补/已补 {touched} 篇，抽不到 {empty} 篇，已有条目跳过 {skipped} 篇。")
+    return 0
+
+
 def cmd_stats(args) -> int:
     from backend.services.knowledge import knowledge_service
     from backend.services.paper import paper_service
@@ -646,6 +693,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("orphans", help="孤儿行清扫（paper_id 已不在库里的行；默认只报告）")
     sp.add_argument("--apply", action="store_true", help="真删（不加只看报告）")
     sp.set_defaults(func=cmd_orphans)
+    sp = sub.add_parser("refs", help="参考文献回填（表为空的论文重新抽一次；默认只报告）")
+    sp.add_argument("paper", nargs="?", default=None, help="只处理这一篇；省略则扫全部")
+    sp.add_argument("--apply", action="store_true", help="真写库（不加只看报告）")
+    sp.add_argument("--force", action="store_true", help="已有条目的也重抽覆盖")
+    sp.set_defaults(func=cmd_refs)
     sp = sub.add_parser("trash", help="回收站：列出软删论文留下的目录（--purge 才真删）")
     sp.add_argument("--purge", action="store_true", help="真删符合条件的目录")
     sp.add_argument("--days", type=int, default=30, help="只清 N 天前的（0 = 全清）")

@@ -413,8 +413,13 @@ def _chain_meta_fill(paper_id: str | None) -> None:
         from backend.services.task.task_service import task_service
 
         paper = paper_service.get_paper(paper_id)
-        if not metadata_fill.missing_fields(paper):
-            log.info("元数据已经齐全，跳过自动填写：%s", paper_id)
+        # ⚠️ 闸门必须连"参考文献表是不是空的"一起看。参考文献**不是** `paper` 行上的字段，
+        # 所以 `missing_fields()` 永远看不见它 —— 而它的抽取偏偏挂在这条链路上
+        # （`metadata_fill.offline()` 里的 `save_references`）。只看元数据的话：
+        # 元数据一齐全就再也不排队，参考文献于是**永远补不上**（实测 turboquant：
+        # 抽取本身能出 76 条，`paper_reference` 表里却是 0 行，前端就是"0 条"）。
+        if not metadata_fill.missing_fields(paper) and paper_service.references_count(paper_id):
+            log.info("元数据与参考文献都齐了，跳过自动填写：%s", paper_id)
             return
         task, created = task_service.get_or_create(
             "META_FILL", "knowledge", paper_id, {"via": "pipeline"}, total_items=1)
