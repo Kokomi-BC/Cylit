@@ -8,6 +8,10 @@
  *
  * 已知边界（详见 `utils/readerStats.ts` 的注释）：后端没有阅读时长字段，数据是本机的，
  * 换浏览器 / 清缓存就没了；因此"某天没有记录"= 0（不是缺失值）。
+ *
+ * 空状态（用户口径 2026-10-15 第四轮）：**不画假曲线**，但也不留一片白 —— 保留一组非常淡的
+ * 网格当"这是趋势图"的暗示，中间一句话说明它以后会长什么样；指标位只给一枚「暂无数据」，
+ * 不摆一排破折号。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -29,7 +33,6 @@ const hasData = computed(() => summary.value.total > 0);
 const todaySeconds = computed(() => series.value[series.value.length - 1]?.seconds ?? 0);
 
 /* ------------------------------- 数值文案 ------------------------------- */
-/** 轴与 tooltip 用的"分钟"（不足 1 分钟不显示成 0） */
 function fmtMinutes(sec: number): string {
   if (sec <= 0) return '0 分钟';
   if (sec < 60) return '不到 1 分钟';
@@ -44,18 +47,19 @@ const axisLabel = (iso: string) => `${Number(iso.slice(5, 7))}/${Number(iso.slic
 
 /* ------------------------------- 折线图几何 -------------------------------
  * 宽按容器实测（ResizeObserver）：SVG 用 1:1 的 px 坐标系，线宽才能到处都锐利。
- * 高度桌面 190px、窄屏收到 140px（用户口径：移动端"适当缩小高度"）。 */
+ * 高度：桌面 190px（有数据）/ 158px（空状态，别留一大块白）、窄屏收到 132px。 */
 const wrap = ref<HTMLElement | null>(null);
 const width = ref(720);
 let ro: ResizeObserver | null = null;
-const height = computed(() => (width.value < 560 ? 140 : 190));
+const height = computed(() => (width.value < 560 ? 132 : hasData.value ? 190 : 158));
 const PAD = { l: 44, r: 14, t: 14, b: 28 };
 const plotW = computed(() => Math.max(60, width.value - PAD.l - PAD.r));
 const plotH = computed(() => height.value - PAD.t - PAD.b);
 
-/** 纵轴刻度：3 段，步长取整（1/2/5/10/15/… 分钟），读数好看 */
+/** 纵轴刻度：3 段，步长取整（1/2/5/10/15/… 分钟），读数好看；空状态给一组固定的示意刻度 */
 const scale = computed(() => {
   const maxMin = Math.max(...series.value.map((d) => d.seconds / 60), 0);
+  if (maxMin <= 0) return { step: 10, max: 30 };
   const steps = [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600];
   const step = steps.find((s) => s * 3 >= maxMin) ?? Math.ceil(maxMin / 3 / 300) * 300;
   return { step, max: step * 3 };
@@ -80,7 +84,7 @@ const labelStep = computed(() => {
 const hover = ref<number | null>(null);
 function onMove(ev: PointerEvent) {
   const el = wrap.value;
-  if (!el || !series.value.length) return;
+  if (!el || !hasData.value) return;
   const px = ev.clientX - el.getBoundingClientRect().left;
   const idx = Math.round(((px - PAD.l) / plotW.value) * (series.value.length - 1));
   hover.value = Math.min(series.value.length - 1, Math.max(0, idx));
@@ -125,41 +129,47 @@ onUnmounted(() => ro?.disconnect());
       </div>
     </header>
 
+    <!-- 指标：有数据给三个数，没数据给**一枚**「暂无数据」（不摆一排破折号）。
+         口径说明**跟在指标下面左对齐**，不再甩到最右边 —— 那样中间会空出一条。 -->
     <div class="metrics">
-      <div class="metric">
-        <span class="k">累计阅读时长</span>
-        <span class="v">{{ hasData ? fmtMinutes(summary.total) : '—' }}</span>
-      </div>
-      <div class="metric">
-        <span class="k">日均阅读时长</span>
-        <span class="v">{{ hasData ? fmtMinutes(avgSeconds) : '—' }}</span>
-      </div>
-      <div class="metric">
-        <span class="k">有阅读记录</span>
-        <span class="v">{{ hasData ? `${summary.activeDays} 天` : '—' }}</span>
-      </div>
-      <span class="spacer" />
-      <span class="note">日均 = 区间总时长 ÷ {{ days }} 天</span>
-    </div>
-
-    <div ref="wrap" class="chart-wrap">
       <template v-if="hasData">
-        <svg
-          class="chart" :width="width" :height="height" role="img"
-          :aria-label="`最近 ${days} 天阅读时长折线图`"
-          @pointermove="onMove" @pointerleave="hover = null"
-        >
-          <!-- 极浅的水平网格线 + 纵轴读数（分钟） -->
-          <g class="grid">
-            <template v-for="g in gridLines" :key="g.value">
-              <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="g.y" :y2="g.y" />
-              <text :x="PAD.l - 9" :y="g.y + 3.5" text-anchor="end">{{ g.value }}</text>
-            </template>
-          </g>
-          <!-- 折线下方那层很淡的面积，只为了让线"落"在图上，不用渐变、不用发光 -->
+        <div class="metric">
+          <span class="k">累计阅读时长</span>
+          <span class="v">{{ fmtMinutes(summary.total) }}</span>
+        </div>
+        <div class="metric">
+          <span class="k">日均阅读时长</span>
+          <span class="v">{{ fmtMinutes(avgSeconds) }}</span>
+        </div>
+        <div class="metric">
+          <span class="k">有阅读记录</span>
+          <span class="v">{{ summary.activeDays }} 天</span>
+        </div>
+      </template>
+      <div v-else class="metric">
+        <span class="k">阅读时长</span>
+        <span class="v dim">暂无数据</span>
+      </div>
+    </div>
+    <p class="basis">{{ hasData ? '日均 = 区间总时长 ÷ ' + days + ' 天' : '读过之后按天记在这里' }}</p>
+
+    <div ref="wrap" class="chart-wrap" :class="{ empty: !hasData }">
+      <!-- 网格**一直画**：空状态时它就是"这里是一张趋势图"的唯一暗示（很淡，不喧宾夺主） -->
+      <svg
+        class="chart" :width="width" :height="height" role="img"
+        :aria-label="hasData ? `最近 ${days} 天阅读时长折线图` : '阅读时长折线图（暂无数据）'"
+        @pointermove="onMove" @pointerleave="hover = null"
+      >
+        <g class="grid">
+          <template v-for="g in gridLines" :key="g.value">
+            <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="g.y" :y2="g.y" />
+            <text :x="PAD.l - 9" :y="g.y + 3.5" text-anchor="end">{{ g.value }}</text>
+          </template>
+        </g>
+
+        <template v-if="hasData">
           <polygon class="area" :points="areaPoints" />
           <polyline class="line" :points="points" />
-          <!-- 横轴日期 -->
           <g class="axis">
             <text
               v-for="(d, i) in series"
@@ -167,60 +177,64 @@ onUnmounted(() => ro?.disconnect());
               :key="d.date" :x="xAt(i)" :y="height - 8" text-anchor="middle"
             >{{ axisLabel(d.date) }}</text>
           </g>
-          <!-- 悬停：一条竖参考线 + 一个点（默认不画数据点） -->
           <g v-if="hoverItem" class="cursor">
             <line :x1="hoverX" :x2="hoverX" :y1="PAD.t" :y2="PAD.t + plotH" />
             <circle :cx="hoverX" :cy="yAt(hoverItem.seconds)" r="3.6" />
           </g>
-        </svg>
-        <div v-if="hoverItem" class="tip" :style="{ left: `${tipLeft}px` }">
-          <span class="tip-date">{{ dateLabel(hoverItem.date) }}</span>
-          <span class="tip-val">{{ fmtMinutes(hoverItem.seconds) }}</span>
-        </div>
-        <div v-if="todaySeconds > 0" class="today-note">
-          今天 · {{ fmtMinutes(todaySeconds) }}（仍在累计）
-        </div>
-      </template>
+        </template>
+      </svg>
 
-      <!-- 空状态：**不画假曲线**，直接把"这里以后会有什么"说清楚 -->
-      <div v-else class="empty-state">
-        <span class="es-icon"><AppIcon name="gauge" :size="20" /></span>
-        <span class="es-title">还没有阅读记录</span>
-        <span class="es-hint">
-          在阅读器里停留的时长会按天记在这里（本机统计）。
-          读过一篇之后回首页，就能看到自己的阅读节奏。
-        </span>
+      <div v-if="!hasData" class="empty-note">
+        <AppIcon name="gauge" :size="17" />
+        <span>开始阅读后，这里会显示你的阅读时长变化</span>
+      </div>
+
+      <div v-if="hoverItem" class="tip" :style="{ left: `${tipLeft}px` }">
+        <span class="tip-date">{{ dateLabel(hoverItem.date) }}</span>
+        <span class="tip-val">{{ fmtMinutes(hoverItem.seconds) }}</span>
+      </div>
+      <div v-if="hasData && todaySeconds > 0" class="today-note">
+        今天 · {{ fmtMinutes(todaySeconds) }}（仍在累计）
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* 与首页其它卡片同一套语言：白底、极浅描边、弱阴影、同一个圆角与内边距 */
+/* 与首页其它卡片同一套语言：白底、浅灰描边、弱阴影、同一个圆角与内边距 */
 .stats {
-  margin-top: 26px; padding: 18px 20px 14px;
+  margin-top: 30px; padding: 18px 20px 12px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-elev); box-shadow: var(--shadow-1);
 }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.head h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.02em; }
+.head h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
 .head p { margin: 5px 0 0; font-size: 11.5px; color: var(--text-faint); }
 
-.metrics { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 26px; margin: 16px 0 6px; }
+.metrics { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 30px; margin: 16px 0 0; min-height: 32px; }
 .metric { display: flex; flex-direction: column; gap: 3px; }
 .metric .k { font-size: 11px; color: var(--text-faint); }
-.metric .v { font-size: 17px; font-weight: 620; letter-spacing: -.02em; color: var(--text); }
-.note { font-size: 10.5px; color: var(--text-faint); align-self: flex-end; padding-bottom: 2px; }
+.metric .v { font-size: 18px; font-weight: 620; letter-spacing: -.02em; color: var(--text); }
+.metric .v.dim { font-size: 15px; font-weight: 550; color: var(--text-faint); }
+.basis { margin: 7px 0 2px; font-size: 10.5px; line-height: 1.5; color: var(--text-faint); }
 
 .chart-wrap { position: relative; width: 100%; }
 .chart { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
 /* 参考线 / 网格 / 坐标轴一律**极浅灰**，图表里只有折线是彩色的 */
 .grid line { stroke: var(--divider); stroke-width: 1; }
 .grid text, .axis text { fill: var(--text-faint); font-size: 10px; font-family: var(--sans); }
+.chart-wrap.empty .grid line { stroke: color-mix(in srgb, var(--divider) 70%, transparent); }
 .area { fill: color-mix(in srgb, var(--accent) 9%, transparent); }
 .line { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
 .cursor line { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
 .cursor circle { fill: var(--bg-elev); stroke: var(--accent); stroke-width: 2; }
+
+/* 空状态：**居中一行**（图标 + 一句话），不是"中间一枚图标、下面几行小字"那种大留白 */
+.empty-note {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  gap: 8px; font-size: 12.5px; color: var(--text-faint); pointer-events: none;
+}
+.empty-note :deep(svg) { flex: none; opacity: .9; }
 
 .tip {
   position: absolute; top: 0; transform: translateX(-50%);
@@ -232,19 +246,10 @@ onUnmounted(() => ro?.disconnect());
 .tip-val { font-size: 12px; font-weight: 600; color: var(--text); }
 .today-note { margin-top: 2px; text-align: right; font-size: 10.5px; color: var(--text-faint); }
 
-.empty-state { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 34px 18px 40px; text-align: center; }
-.es-icon {
-  display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 2px;
-  border-radius: var(--radius-sm); background: var(--bg-sunken); color: var(--text-dim);
-}
-.es-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.es-hint { max-width: 44ch; font-size: 11.5px; line-height: 1.75; color: var(--text-faint); }
-
-@media (max-width: 680px) {
-  .stats { padding: 16px 14px 12px; }
+@media (max-width: 640px) {
+  .stats { margin-top: 24px; padding: 16px 14px 10px; }
   .head { flex-direction: column; gap: 10px; }
-  .metrics { gap: 18px; margin-top: 14px; }
-  .metric .v { font-size: 15px; }
-  .note { width: 100%; align-self: flex-start; }
+  .metrics { gap: 20px; margin-top: 14px; }
+  .metric .v { font-size: 16px; }
 }
 </style>
