@@ -175,7 +175,7 @@ button { color: inherit; }
 
 /* ---------------- 首屏 ----------------
    顺序：眉标 → 标题 → 一句话介绍 → 身份行（学校 + GitHub）→ 状态统计。 */
-.hero { padding: 64px 0 40px; }
+.hero { padding: 60px 0 40px; }
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -193,11 +193,25 @@ h1 {
   color: var(--ink);
   font-size: clamp(2.7rem, 6vw, 4.25rem);
   font-weight: 500;
-  line-height: 1.08;
-  letter-spacing: -.045em;
+  line-height: 1.06;
+  /* 中文标题不要拉太紧：-0.045em 在 68px 上是每字 -3px，笔画会挨在一起。
+     CJK 只做轻微收紧就够了。 */
+  letter-spacing: -.03em;
 }
-.lede { max-width: 52ch; margin: 16px 0 0; color: var(--ink-2); font-size: 1rem; font-weight: 400; }
-.hero-id { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 24px; }
+.lede {
+  /* 用 em 而不是 ch 量中文：1em = 1 个全角字。
+     这段文案约 43 个全角字 + 8 个西文 ≈ 760px，48em 刚好排成**完整一行** ——
+     比压成两行、还断在「论文阅读」中间要干净得多。
+     文案改长了就自然折行，不会出错。 */
+  max-width: 48em;
+  margin: 18px 0 0;
+  color: var(--ink-2);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.75;
+  text-wrap: pretty;
+}
+.hero-id { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 22px; }
 .hero-school { color: var(--ink-3); font-size: 13px; }
 .gh-btn {
   display: inline-flex;
@@ -221,8 +235,8 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 28px;
-  margin-top: 30px;
-  padding-top: 20px;
+  margin-top: 32px;
+  padding-top: 22px;
   border-top: 1px solid var(--hair-2);
   color: var(--ink-3);
   font-size: 12px;
@@ -238,7 +252,7 @@ h1 {
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: 236px;
+  min-height: 212px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--hair);
@@ -296,9 +310,11 @@ h1 {
 .dot { display: inline-block; width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--ink-3); }
 .dot.up { background: var(--ok); }
 .dot.down { background: var(--bad); }
-.core h2 { margin: auto 0 0; overflow-wrap: anywhere; font-size: clamp(1.5rem, 2.4vw, 1.8rem); font-weight: 500; line-height: 1.2; letter-spacing: -.035em; }
-.core p { max-width: 46ch; margin: 9px 0 0; color: var(--ink-2); font-size: .91rem; font-weight: 400; }
-.core-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; }
+.core h2 { margin: 22px 0 0; overflow-wrap: anywhere; font-size: clamp(1.5rem, 2.4vw, 1.8rem); font-weight: 500; line-height: 1.2; letter-spacing: -.035em; }
+.core p { max-width: 46ch; margin: 8px 0 0; color: var(--ink-2); font-size: .91rem; line-height: 1.7; font-weight: 400; }
+/* 页脚钉在卡片底部，余量留在简介与页脚之间 ——
+   之前 h2 用 margin:auto 把整块内容往下推，中间会空出一大段。 */
+.core-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 22px; }
 .foot-meta { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .svc-tag {
   color: var(--ink-3);
@@ -469,15 +485,15 @@ select.f option { background: var(--surface); color: var(--ink); }
   .theme-label { display: none; }
   .hero { padding: 52px 0 32px; }
   h1 { margin-top: 16px; font-size: clamp(2.35rem, 10vw, 3.3rem); }
-  .lede { font-size: .95rem; }
+  .lede { max-width: none; font-size: .95rem; }
   .hero-id { gap: 10px 14px; margin-top: 20px; }
   .hero-school { font-size: 12.5px; }
   .meta-row { gap: 22px; margin-top: 26px; }
   .bento { grid-template-columns: 1fr; gap: 12px; }
-  .shell { min-height: 210px; }
+  .shell { min-height: 190px; }
   .core { padding: 20px 20px 18px; }
-  .core h2 { font-size: 1.55rem; }
-  .core-foot { margin-top: 20px; }
+  .core h2 { font-size: 1.55rem; margin-top: 18px; }
+  .core-foot { padding-top: 18px; }
   .foot { margin-top: 42px; }
   .panel .core { padding: 20px 16px; }
   .panel-title { align-items: flex-start; flex-direction: column; gap: 4px; }
