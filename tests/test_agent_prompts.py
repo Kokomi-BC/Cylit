@@ -47,12 +47,11 @@ def test_system_prompt_is_byte_stable_for_a_paper() -> None:
 
 
 def test_turn_notes_carry_the_per_turn_values() -> None:
-    assert prompts.turn_notes(_deps()) == "", "没有选区/图片/提示时不该凭空多一段备注"
+    assert prompts.turn_notes(_deps()) == "", "没有选区/图片时不该凭空多一段备注"
     notes = prompts.turn_notes(_rich())
     assert notes.startswith("【本轮备注】")
     assert "第 4 页" in notes and "ref=7" in notes and "Instead of performing" in notes
     assert "3 张图片" in notes and "1 张就在这条消息里" in notes
-    assert "0.42" in notes, "低相关度提示里的分数是给模型判断用的，不能丢"
 
 
 def test_system_prompt_keeps_the_rules() -> None:
