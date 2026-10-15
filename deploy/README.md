@@ -314,3 +314,23 @@ curl -X POST http://127.0.0.1:8710/api/v1/knowledge/index \
 断言的是**本机那份语料**的公式数（329）。服务器上重新解析出来是 345，
 于是它在服务器上必然失败 —— 这是一条绑死本地数据的金标测试，不是回归。
 其余 72 项任务相关测试全绿。
+
+### 8.5 点「对话」直接红字报错（已修，`backend/agent/runtime.py`）
+
+**症状**：`WorkspaceError: 路径逃出 workspace：/root/Cylit/backend/agent/skills`。
+
+**根因**：`Skills(...)` 的目录参数是 **workspace 里的路径**，不是宿主机路径。
+`ReadOnlyWorkspace` 把真实 skills 目录挂在虚拟根 `/workspace` 上，
+而框架的 `Workspace.resolve()` 见到以 `/` 开头的路径会**原样返回**
+（它认为那是 workspace 内的绝对路径）—— 于是真实的
+`/root/Cylit/backend/agent/skills` 被 backend 又当成虚拟路径换算一次，
+变成 `<root>/root/Cylit/backend/agent/skills` → 越界。
+
+**改法**：三处（`Skills(...)` ×2、`skill_list()` 里的 `load_skill_libraries`）
+统一改成虚拟根 `VIRTUAL_ROOT`，并提成 `AgentRuntime._SKILL_LIBRARY` 常量 +
+注释写明"不能写 `cfg.skills_dir`"。新增
+`tests/test_agent_skills_workspace.py` 钉死这条（含"传真实路径必须抛错"的反向断言）。
+
+> 注意：这是**跨平台**的代码 bug（Windows 上 `C:/...` 在 POSIX 语义里是相对路径，
+> 拼完同样越界），不是服务器环境特有的。本机跑 `pytest tests -k agent` 也一并受益。
+

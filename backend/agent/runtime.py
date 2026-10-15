@@ -39,7 +39,7 @@ from backend.agent.sanitize import (
 )
 from backend.agent.tools import AGENT_TOOLS, META_TOOLS
 from backend.agent.trace import StepLog
-from backend.agent.workspace import ReadOnlyWorkspace
+from backend.agent.workspace import VIRTUAL_ROOT, ReadOnlyWorkspace
 from backend.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -178,11 +178,21 @@ def instructions_for(ctx: RunContext[Deps]) -> str:
 class AgentRuntime:
     """进程级单例：workspace / Skills / 模型配置缓存都挂在这里。"""
 
+    #: 给 skill 目录用的**虚拟**路径。**不能**写 `cfg.skills_dir`（真实绝对路径）。
+    #:
+    #: `ReadOnlyWorkspace` 把 `cfg.skills_dir` 挂到虚拟根 `/workspace` 上，
+    #: 所以"skill 库在哪"要用虚拟世界的话说：库就在虚拟根自己身上。
+    #: 传真实路径会走成这样：框架的 `Workspace.resolve()` 看到以 `/` 开头就当绝对路径
+    #: 原样返回 → backend 再把它当虚拟路径换算 → `/workspace/root/Cylit/...` → 逃出 workspace。
+    #: 实测报错：`WorkspaceError: 路径逃出 workspace：/root/Cylit/backend/agent/skills`，
+    #: 表现是点开「对话」直接红字报错（2026-10-15 用户报的）。
+    _SKILL_LIBRARY = VIRTUAL_ROOT
+
     def __init__(self, cfg: AgentConfig, host: HostClient) -> None:
         self.cfg = cfg
         self.host = host
         self._workspace = ReadOnlyWorkspace(cfg.skills_dir)
-        self._skills = Skills(str(cfg.skills_dir), workspace=self._workspace)
+        self._skills = Skills(self._SKILL_LIBRARY, workspace=self._workspace)
         self._model_cfg: dict = {}
         self._model_at = 0.0
         self._model_lock = asyncio.Lock()
@@ -200,7 +210,7 @@ class AgentRuntime:
         P0 每轮问答都会重新构造 Agent（见 `_build_agent`），所以 skill 目录的改动
         **下一轮就生效**；这个接口是给"想立刻确认已加载"的场景用的。
         """
-        self._skills = Skills(str(self.cfg.skills_dir), workspace=self._workspace)
+        self._skills = Skills(self._SKILL_LIBRARY, workspace=self._workspace)
 
     async def model_config(self, force: bool = False) -> dict:
         if not force and self._model_cfg and (time.time() - self._model_at) < MODEL_CONFIG_TTL:
@@ -218,17 +228,18 @@ class AgentRuntime:
         走框架自己的加载器取"事实"（它才是真正往提示词里注入的那一份），失败时退回自己扫目录
         —— 诊断接口不该因为框架版本变了就整个 500。
 
-        ⚠️ `load_skill_libraries` 收的是**框架的 `Workspace` 包装**，不是裸 backend
-        （它内部会调 `workspace.resolve(...)`；直接传裸 backend 会 AttributeError ——
-        那正是"看着有 4 个 skill，其实是退化成自己扫目录"的原因）。
-        `source` 字段就是给自检看的：必须是 `framework`。
+        ⚠️ 两个坑，缺一个就退化（`source` 会从 `framework` 变成 `self`）：
+        1. `load_skill_libraries` 收的是**框架的 `Workspace` 包装**，不是裸 backend
+           （它内部要调 `workspace.resolve(...)`；传裸 backend 会 AttributeError）；
+        2. 目录必须写成 **workspace 里的虚拟路径**（`VIRTUAL_ROOT`），
+           不能写 `cfg.skills_dir` 那个真实绝对路径 —— 见下面 `Skills(...)` 的注释。
         """
         try:
             from pydantic_ai.workspaces import Workspace
             from pydantic_ai_harness.skills._loader import load_skill_libraries
 
             defs = await load_skill_libraries(Workspace(self._workspace),
-                                              [str(self.cfg.skills_dir)],
+                                              [self._SKILL_LIBRARY],
                                               include=None, exclude=frozenset())
             return [{"name": d.name, "description": (d.description or "").strip(),
                      "chars": len(d.body or ""), "source": "framework"} for d in defs]
