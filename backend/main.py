@@ -17,8 +17,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import (
-    agent_router, annotations_router, knowledge_router, mineru_router, models_router,
-    papers_router, reader_router, settings_router, tasks_router,
+    agent_router, annotations_router, home_router, knowledge_router, mineru_router,
+    models_router, papers_router, reader_router, settings_router, tasks_router,
 )
 from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, PaperMindError
@@ -137,6 +137,8 @@ def create_app() -> FastAPI:
     app.include_router(models_router, prefix=s.api_prefix)
     app.include_router(annotations_router, prefix=s.api_prefix)
     app.include_router(knowledge_router, prefix=s.api_prefix)
+    # 首页刊头的数据 rail：几条 COUNT，只读
+    app.include_router(home_router, prefix=s.api_prefix)
     app.include_router(settings_router, prefix=s.api_prefix)
     # 问答 agent：对外 /agent/ask（SSE 转发）、/agent/conversations；对内 /agent/papers/... 只读投影
     app.include_router(agent_router, prefix=s.api_prefix)

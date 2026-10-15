@@ -1,6 +1,10 @@
 <script setup lang="ts">
 /**
- * 首页底部的「阅读统计」卡：按天折线图 + 三枚指标 + 区间切换。
+ * 首页底部的「阅读统计」卡：**一张折线图**，没有指标数字行。
+ *
+ * 用户口径 2026-10-15 第六轮：「底部的阅读统计改为折线图，列数字太 ai 感了」——
+ * 所以「累计 / 日均 / 有记录」那三枚数字连同它下面的口径说明**整段删掉**了：数字只活在
+ * 折线图的悬停气泡里（指哪天给哪天），卡面上除了区间切换就只有图。
  *
  * 数据来源（**只有一处**）：`utils/readerStats.ts` 那本"按天"的账 —— 它由阅读器里同一个
  * 30 秒计时器落盘（`addReaderSeconds`），口径与"每篇论文的累计时长"完全相同。
@@ -9,13 +13,12 @@
  * 已知边界（详见 `utils/readerStats.ts` 的注释）：后端没有阅读时长字段，数据是本机的，
  * 换浏览器 / 清缓存就没了；因此"某天没有记录"= 0（不是缺失值）。
  *
- * 空状态（用户口径 2026-10-15 第四轮）：**不画假曲线**，但也不留一片白 —— 保留一组非常淡的
- * 网格当"这是趋势图"的暗示，中间一句话说明它以后会长什么样；指标位只给一枚「暂无数据」，
- * 不摆一排破折号。
+ * 空状态：**不画假曲线**，但也不留一片白 —— 保留一组非常淡的网格当"这里是一张趋势图"的
+ * 暗示，中间一句话说明它以后会长什么样。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
-import { dayKey, readDailySeries, summarizeDaily, type DailyRead } from '@/utils/readerStats';
+import { fmtReadDuration, readDailySeries, type DailyRead } from '@/utils/readerStats';
 
 /** 区间：7 / 30 / 90 天（默认 7 —— 首页上先给"最近"的节奏） */
 const RANGES = [
@@ -26,33 +29,22 @@ const RANGES = [
 const days = ref(7);
 
 const series = computed<DailyRead[]>(() => readDailySeries(days.value));
-const summary = computed(() => summarizeDaily(series.value));
-/** 日均口径固定：**区间总时长 ÷ 区间天数**（含没读的那几天）—— 卡片右下角写明了 */
-const avgSeconds = computed(() => Math.round(summary.value.total / days.value));
-const hasData = computed(() => summary.value.total > 0);
+const hasData = computed(() => series.value.some((d) => d.seconds > 0));
 const todaySeconds = computed(() => series.value[series.value.length - 1]?.seconds ?? 0);
 
 /* ------------------------------- 数值文案 ------------------------------- */
-function fmtMinutes(sec: number): string {
-  if (sec <= 0) return '0 分钟';
-  if (sec < 60) return '不到 1 分钟';
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min} 分钟`;
-  const h = Math.floor(min / 60);
-  const rest = min % 60;
-  return rest ? `${h} 小时 ${rest} 分` : `${h} 小时`;
-}
 const dateLabel = (iso: string) => `${Number(iso.slice(5, 7))} 月 ${Number(iso.slice(8, 10))} 日`;
 const axisLabel = (iso: string) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
 
 /* ------------------------------- 折线图几何 -------------------------------
  * 宽按容器实测（ResizeObserver）：SVG 用 1:1 的 px 坐标系，线宽才能到处都锐利。
- * 高度：桌面 190px（有数据）/ 158px（空状态，别留一大块白）、窄屏收到 132px。 */
+ * 高度：桌面 200px（图是这张卡唯一的主角，给足）；空状态 150px（别留一大块白）；
+ * 窄屏统一收到 140px。 */
 const wrap = ref<HTMLElement | null>(null);
 const width = ref(720);
 let ro: ResizeObserver | null = null;
-const height = computed(() => (width.value < 560 ? 132 : hasData.value ? 190 : 158));
-const PAD = { l: 44, r: 14, t: 14, b: 28 };
+const height = computed(() => (width.value < 560 ? 140 : hasData.value ? 200 : 150));
+const PAD = { l: 44, r: 14, t: 14, b: 26 };
 const plotW = computed(() => Math.max(60, width.value - PAD.l - PAD.r));
 const plotH = computed(() => height.value - PAD.t - PAD.b);
 
@@ -129,30 +121,6 @@ onUnmounted(() => ro?.disconnect());
       </div>
     </header>
 
-    <!-- 指标：有数据给三个数，没数据给**一枚**「暂无数据」（不摆一排破折号）。
-         口径说明**跟在指标下面左对齐**，不再甩到最右边 —— 那样中间会空出一条。 -->
-    <div class="metrics">
-      <template v-if="hasData">
-        <div class="metric">
-          <span class="k">累计阅读时长</span>
-          <span class="v">{{ fmtMinutes(summary.total) }}</span>
-        </div>
-        <div class="metric">
-          <span class="k">日均阅读时长</span>
-          <span class="v">{{ fmtMinutes(avgSeconds) }}</span>
-        </div>
-        <div class="metric">
-          <span class="k">有阅读记录</span>
-          <span class="v">{{ summary.activeDays }} 天</span>
-        </div>
-      </template>
-      <div v-else class="metric">
-        <span class="k">阅读时长</span>
-        <span class="v dim">暂无数据</span>
-      </div>
-    </div>
-    <p class="basis">{{ hasData ? '日均 = 区间总时长 ÷ ' + days + ' 天' : '读过之后按天记在这里' }}</p>
-
     <div ref="wrap" class="chart-wrap" :class="{ empty: !hasData }">
       <!-- 网格**一直画**：空状态时它就是"这里是一张趋势图"的唯一暗示（很淡，不喧宾夺主） -->
       <svg
@@ -174,7 +142,7 @@ onUnmounted(() => ro?.disconnect());
             <text
               v-for="(d, i) in series"
               v-show="i % labelStep === 0 || i === series.length - 1"
-              :key="d.date" :x="xAt(i)" :y="height - 8" text-anchor="middle"
+              :key="d.date" :x="xAt(i)" :y="height - 7" text-anchor="middle"
             >{{ axisLabel(d.date) }}</text>
           </g>
           <g v-if="hoverItem" class="cursor">
@@ -191,19 +159,20 @@ onUnmounted(() => ro?.disconnect());
 
       <div v-if="hoverItem" class="tip" :style="{ left: `${tipLeft}px` }">
         <span class="tip-date">{{ dateLabel(hoverItem.date) }}</span>
-        <span class="tip-val">{{ fmtMinutes(hoverItem.seconds) }}</span>
-      </div>
-      <div v-if="hasData && todaySeconds > 0" class="today-note">
-        今天 · {{ fmtMinutes(todaySeconds) }}（仍在累计）
+        <span class="tip-val">{{ fmtReadDuration(hoverItem.seconds) }}</span>
       </div>
     </div>
+
+    <p v-if="hasData && todaySeconds > 0" class="today-note">
+      今天 · {{ fmtReadDuration(todaySeconds) }}（仍在累计）
+    </p>
   </section>
 </template>
 
 <style scoped>
 /* 与首页其它卡片同一套语言：白底、浅灰描边、弱阴影、同一个圆角与内边距 */
 .stats {
-  margin-top: 30px; padding: 18px 20px 12px;
+  margin-top: 34px; padding: 18px 20px 14px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-elev); box-shadow: var(--shadow-1);
 }
@@ -211,14 +180,8 @@ onUnmounted(() => ro?.disconnect());
 .head h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
 .head p { margin: 5px 0 0; font-size: 11.5px; color: var(--text-faint); }
 
-.metrics { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 30px; margin: 16px 0 0; min-height: 32px; }
-.metric { display: flex; flex-direction: column; gap: 3px; }
-.metric .k { font-size: 11px; color: var(--text-faint); }
-.metric .v { font-size: 18px; font-weight: 620; letter-spacing: -.02em; color: var(--text); }
-.metric .v.dim { font-size: 15px; font-weight: 550; color: var(--text-faint); }
-.basis { margin: 7px 0 2px; font-size: 10.5px; line-height: 1.5; color: var(--text-faint); }
-
-.chart-wrap { position: relative; width: 100%; }
+/* 图上留一点气：抬头与折线之间不贴死 */
+.chart-wrap { position: relative; width: 100%; margin-top: 10px; }
 .chart { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
 /* 参考线 / 网格 / 坐标轴一律**极浅灰**，图表里只有折线是彩色的 */
 .grid line { stroke: var(--divider); stroke-width: 1; }
@@ -244,12 +207,10 @@ onUnmounted(() => ro?.disconnect());
 }
 .tip-date { font-size: 10px; color: var(--text-faint); }
 .tip-val { font-size: 12px; font-weight: 600; color: var(--text); }
-.today-note { margin-top: 2px; text-align: right; font-size: 10.5px; color: var(--text-faint); }
+.today-note { margin: 4px 0 0; text-align: right; font-size: 10.5px; color: var(--text-faint); }
 
 @media (max-width: 640px) {
-  .stats { margin-top: 24px; padding: 16px 14px 10px; }
+  .stats { margin-top: 26px; padding: 16px 14px 12px; }
   .head { flex-direction: column; gap: 10px; }
-  .metrics { gap: 20px; margin-top: 14px; }
-  .metric .v { font-size: 16px; }
 }
 </style>

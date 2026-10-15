@@ -939,3 +939,15 @@ export interface AgentSelection {
   where?: string | null;
   question?: string;
 }
+
+/** 首页概览（`GET /api/v1/home/summary`）：首页刊头数据 rail 要的几个计数。
+ *
+ * 口径见 `backend/services/home/home_service.py`：`readings` 是"翻开过"的篇数，
+ * `highlights` 按 `group_id` 去重后是"标注处数"，`understandings` 是"已解读的篇数"。 */
+export interface HomeSummary {
+  papers: number;
+  readings: number;
+  notes: number;
+  highlights: number;
+  understandings: number;
+}

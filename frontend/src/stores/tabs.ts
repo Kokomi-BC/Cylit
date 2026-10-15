@@ -33,7 +33,9 @@ const TAB_META: Record<string, { title: string; icon: string }> = {
   library: { title: '论文库', icon: 'library' },
   reader: { title: '论文', icon: 'document' },
   // 解读整页（`/understand/:paperId`）。原 `/readmap`（阅读地图）已删除。
-  understand: { title: '论文解读', icon: 'sparkle' },
+  // 图标 2026-10-15 从通用 `sparkle`（AI 星星）换成 `insight`（正文 + 放大镜）：
+  // 与首页那张卡同一枚，别只改一边。
+  understand: { title: '论文解读', icon: 'insight' },
   knowledge: { title: '知识库', icon: 'knowledge' },
   notes: { title: '笔记', icon: 'note' },
   models: { title: '模型', icon: 'model' },

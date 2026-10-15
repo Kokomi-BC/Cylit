@@ -135,18 +135,6 @@ export function readDailySeries(days: number): DailyRead[] {
   return out;
 }
 
-/** 区间汇总。**日均的口径固定为"总时长 ÷ 区间天数"**（含没有阅读的那几天），
- *  与右下角那行辅助说明一致；不要换成"只按有记录的天数平均"，否则切换区间会前后矛盾。 */
-export function summarizeDaily(series: DailyRead[]): { total: number; activeDays: number } {
-  let total = 0;
-  let activeDays = 0;
-  for (const d of series) {
-    total += d.seconds;
-    if (d.seconds > 0) activeDays += 1;
-  }
-  return { total, activeDays };
-}
-
 /** 时长文案：不足一分钟不硬凑数字（"0 分钟"看着像坏了）。 */
 export function fmtReadDuration(seconds: number): string {
   if (!seconds || seconds < 60) return seconds ? '不足 1 分钟' : '—';
