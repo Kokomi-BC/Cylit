@@ -168,7 +168,20 @@ Detect 的登录态是 httpOnly cookie `token`（JWT，带 `role`）。
 
 ### 4.3 首页设计
 
-按 `Cylit/.agents/skills/high-end-visual-design`（Leonxlnx/taste-skill）：
+**当前版**（2026-10-15 由另一个 agent 出稿、本机复核后部署）：**高端极简**。
+
+- **主题**：浅色 / 深色双主题，`<html data-theme="...">` 上切。首次跟随系统，
+  手动选择存 `localStorage` 的 `portal-theme`；`<head>` 顶部有一段内联脚本先落主题，
+  避免刷新时闪白。首页与管理台共用同一套开关。
+- **布局**：桌面两列等宽卡片，移动端单列；统一圆角 + 细边框，弱化光晕/颗粒/玻璃拟态。
+- **数据**：卡片仍读 `links.json`（名称/描述/路径/标签/主色都不写死在 HTML 里）。
+- **字体**：HarmonyOS Sans（复用 `/var/www/detect/font` 那套 ttf，不依赖 CDN）。
+- `--accent` 仍由 JS 从 `links.json` 逐卡片注入。
+
+<details>
+<summary>上一版（Ethereal Glass，已被换掉，留档）</summary>
+
+按 `Cylit/.agents/skills/high-end-visual-design`（Leonxlnx/taste-skill）做的：
 
 - **Vibe**：Ethereal Glass —— OLED 黑 `#050505` + 三团径向 mesh + 胶片颗粒（`opacity .035`，固定层）
 - **Layout**：Asymmetrical Bento —— 12 列栅格，卡片按 `7/5/5/7` 交替，刻意不对称
@@ -176,8 +189,15 @@ Detect 的登录态是 httpOnly cookie `token`（JWT，带 `role`）。
 - **Button-in-Button**：`进入 ↗` 的箭头包在独立圆形里，hover 时对角位移 + 缩放
 - **Motion**：`cubic-bezier(.32,.72,0,1)`，IntersectionObserver 入场（位移 + 模糊 + 淡入），
   只动 `transform`/`opacity`
-- **字体**：HarmonyOS Sans（直接复用 `/var/www/detect/font` 那套 ttf，不依赖 CDN）
 - 768px 以下塌成单列，全部 `col-span` 归 1
+
+想回退：`/root/deploy/portal-backup-20261015-142655.tgz` 是换稿前的那一份。
+
+</details>
+
+> 交给外部 agent 改版时，导出过一份自包含的副本（`Portal-引导页.zip`，含 HTML/CSS/字体
+> 和一份「碰了会坏」的约束说明）。改完用 `scp` 传回 `/var/www/portal/` 即可 —— 纯静态，
+> 不用重启任何进程。收回来之前先 `tar` 备份一份旧的，见 §8.6。
 
 ---
 
@@ -333,4 +353,36 @@ curl -X POST http://127.0.0.1:8710/api/v1/knowledge/index \
 
 > 注意：这是**跨平台**的代码 bug（Windows 上 `C:/...` 在 POSIX 语义里是相对路径，
 > 拼完同样越界），不是服务器环境特有的。本机跑 `pytest tests -k agent` 也一并受益。
+
+### 8.6 门户首页换稿（极简主题）
+
+2026-10-15：把首页交给外部 agent 改版，收回来换成**高端极简 + 浅/深双主题**。
+`index.html` / `assets/app.css` / `admin.html` 三份更新，`links.json` 没动。
+
+收稿流程（纯静态，**不用重启任何进程**）：
+
+```bash
+# 1) 先备份线上旧版
+ssh 43.136.18.54 'cd /var/www/portal && \
+  tar -czf /root/deploy/portal-backup-$(date +%Y%m%d-%H%M%S).tgz \
+  index.html admin.html assets/app.css links.json'
+# 2) 覆盖（font/ 与 links.json 原样保留）
+scp index.html admin.html 43.136.18.54:/var/www/portal/
+scp assets/app.css        43.136.18.54:/var/www/portal/assets/app.css
+# 3) 核对真的换了（比对 sha256，别只看 200）
+sha256sum index.html admin.html assets/app.css
+ssh 43.136.18.54 'sha256sum /var/www/portal/index.html /var/www/portal/admin.html /var/www/portal/assets/app.css'
+```
+
+换稿前的备份：`/root/deploy/portal-backup-20261015-142655.tgz`（要回退就解回 `/var/www/portal/`）。
+
+收稿时要复核的四条（这版都过了）：
+
+| 检查 | 怎么查 |
+|---|---|
+| 顶部实时时钟还在 | `grep 'id="clock"'`，且 `tick()` 往里写 |
+| 管理员判定没被删 | `grep "role === 'admin'"`，`/auth/me`、`api/status`、`api/links` 原样 |
+| 资源仍是相对路径 | 不能出现 `/assets/` 这种根路径（部署在 `/Portal/` 子路径下） |
+| 字体引用没断、没引外部 CDN | `grep "../font/"`；`grep -o 'https\?://[^"]*'` 只应命中 GitHub 链接 |
+
 

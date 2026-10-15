@@ -6,18 +6,33 @@
 <title>个人项目</title>
 <meta name="description" content="个人项目入口：论文阅读、多模态检测、影像分析与写作。">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23050505'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2334d399'/%3E%3C/svg%3E">
+<script>
+(() => {
+  try {
+    const saved = localStorage.getItem('portal-theme');
+    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.dataset.theme = saved || systemTheme;
+  } catch {
+    document.documentElement.dataset.theme = 'dark';
+  }
+})();
+</script>
 <link rel="stylesheet" href="assets/app.css">
 </head>
 <body>
 <div class="mesh"></div>
-<div class="grain"></div>
 
 <div class="nav">
   <div class="nav-inner">
     <span class="brand"><i class="mark"></i><b id="clock">--:--:--</b></span>
     <span class="nav-sep"></span>
     <a class="navlink" href="#services">项目</a>
-    <a class="navlink" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener">GitHub</a>
+    <a class="navlink" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+    <button class="navlink theme-toggle" id="themeToggle" type="button" aria-label="切换页面主题" aria-pressed="false" title="切换页面主题">
+      <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.8"></circle><path d="M12 2.5v2.1M12 19.4v2.1M4.8 4.8l1.5 1.5M17.7 17.7l1.5 1.5M2.5 12h2.1M19.4 12h2.1M4.8 19.2l1.5-1.5M17.7 6.3l1.5-1.5"></path></svg>
+      <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.4 8.4 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"></path></svg>
+      <span class="theme-label">主题</span>
+    </button>
     <a class="navlink" id="adminEntry" href="admin.html" hidden>管理入口</a>
   </div>
 </div>
@@ -46,6 +61,39 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
+
+function setupThemeToggle() {
+  const button = $('#themeToggle');
+  if (!button) return;
+
+  const applyTheme = (theme, save = false) => {
+    const normalized = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = normalized;
+    const isDark = normalized === 'dark';
+    button.setAttribute('aria-pressed', String(isDark));
+    button.setAttribute('aria-label', isDark ? '当前深色模式，点击切换浅色模式' : '当前浅色模式，点击切换深色模式');
+    button.title = isDark ? '切换到浅色模式' : '切换到深色模式';
+    if (save) {
+      try { localStorage.setItem('portal-theme', normalized); } catch { /* 浏览器禁用存储时仍可切换 */ }
+    }
+  };
+
+  applyTheme(document.documentElement.dataset.theme || 'dark');
+  button.addEventListener('click', () => {
+    applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true);
+  });
+
+  const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+  if (media?.addEventListener) {
+    media.addEventListener('change', (event) => {
+      try {
+        if (!localStorage.getItem('portal-theme')) applyTheme(event.matches ? 'dark' : 'light');
+      } catch { /* 无法读取本地存储时不覆盖用户当前选择 */ }
+    });
+  }
+}
+
+setupThemeToggle();
 
 function toast(msg, err) {
   const t = $('#toast');
@@ -99,11 +147,6 @@ function card(link, i) {
         <span class="pill" style="--accent:${link.accent || '#a78bfa'}">进入<span class="ic">↗</span></span>
       </div>
     </a>`;
-  el.addEventListener('pointermove', (e) => {
-    const r = el.getBoundingClientRect();
-    el.style.setProperty('--mx', `${e.clientX - r.left}px`);
-    el.style.setProperty('--my', `${e.clientY - r.top}px`);
-  });
   return el;
 }
 
