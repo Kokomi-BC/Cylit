@@ -202,13 +202,20 @@ function gate(state) {
     $('#console').hidden = false;
     return true;
   }
+  /* 已登录但不是管理员：控制台对他们**完全隐藏** —— 直接回引导页，
+     不留一个"你没权限"的页面（用户口径 2026-10-15）。
+     用 replace 而不是 href：不留历史记录，按返回键不会又弹回来。 */
+  if (state.ok) {
+    location.replace('/Portal/');
+    return false;
+  }
+  /* 没登录 / 登录态过期：这时候给面板比白屏有用，
+     也顺带兜住 whoami() 出错的情况（见上面那段注释）。 */
   badge.classList.add('denied');
-  badge.innerHTML = `<i class="dot down"></i><span>${state.ok ? '普通用户 · ' + esc(state.user.username) : '未登录'}</span>`;
+  badge.innerHTML = '<i class="dot down"></i><span>未登录</span>';
   $('#denied').hidden = false;
-  $('#deniedTitle').textContent = state.ok ? '该账号不是管理员' : '请先登录';
-  $('#deniedMsg').textContent = state.ok
-    ? '管理台只对 role = admin 的账号开放。'
-    : '登录态缺失或已过期，请从 Detect 登录后重试。';
+  $('#deniedTitle').textContent = '请先登录';
+  $('#deniedMsg').textContent = '登录态缺失或已过期，请从 Detect 登录后重试。';
   return false;
 }
 

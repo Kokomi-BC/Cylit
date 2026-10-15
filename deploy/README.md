@@ -452,4 +452,55 @@ ssh 43.136.18.54 'sha256sum /var/www/portal/index.html /var/www/portal/admin.htm
 > 教训：`.reveal` 是**依赖 JS 才会显形**的类。往任何新页面搬的时候，
 > 要么带上那段 IntersectionObserver，要么干脆别用。
 
+### 8.8 普通用户登录后仍被弹去 `/Welcome`（已修）—— 改错了文件
+
+**症状**：管理员的账号能正常落到门户，普通用户登录完还是进 Detect 的 `/Welcome`。
+
+**根因**：Detect 里有**两份** `Login.html`，我只改了其中一份。
+
+| 文件 | 是什么 | 谁在用 |
+|---|---|---|
+| `/root/Detect/Login.html` | Vite 的**源**（多页入口） | 只有 `npm run build` 会读它 |
+| `/root/Detect/dist/Login.html` | Vite 的**构建产物** | `app.get('/Login')` 里 `res.sendFile('../dist/Login.html')` 发的是**这份** |
+
+而且表单提交后的跳转是**内联在这份 HTML 里**的（不在 js 包里），压缩后长这样：
+
+```js
+"admin"===i.role?window.location.href="/Admin":window.location.href="/Welcome"
+```
+
+所以只改源文件 = 线上一点变化都没有，`curl` 也看不出来（服务端一律 200）。
+
+**改法**（都写进 `patch-detect.py` 了）：
+
+- 产物那份：把整个三元表达式换成 `window.location.href="/Portal/"`（两个分支合并，
+  外层仍是 `i.message ? … : …`，语法合法）；
+- 源那份之前已经改过，保留 —— 下次重新构建不会把改动冲掉。
+
+同一轮还收拾了三处「普通用户会撞到 `/Welcome`」的地方：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `src/app.js` `checkAdminAuth` 拒绝分支 | `/Welcome` | `/Portal/` |
+| `src/app.js` `app.get('/Login')` 的已登录分支（死代码） | `/Welcome` | `/Portal/` |
+| 门户 `admin.html` 的 `gate()` 遇到**已登录的非管理员** | 显示 403 面板 | `location.replace('/Portal/')` |
+
+`gate()` 里只有**没登录 / 登录态过期**才显示面板 —— 那种情况给个"请先登录"比白屏有用，
+也顺带兜住 `whoami()` 出错。用 `replace` 不留历史，按返回键不会弹回来。
+
+**验收**（普通用户 token = `detect_db` 里 role=user 的 `test`，手工签发 JWT 测的）：
+
+| 请求 | 匿名 | 普通用户 | 管理员 |
+|---|---|---|---|
+| `/` | 302 `/Login` | 302 `/Portal/` | 302 `/Portal/` |
+| `/Login` | 200 | 302 `/Portal/` | 302 `/Portal/` |
+| `/Admin`（Detect 后台） | 302 `/Login` | 302 **`/Portal/`** | 200 |
+| `/admin`（门户管理台） | 302 `/Login` | 200 + **JS 立即跳回 `/Portal/`** | 200 |
+
+客户端那两条（curl 测不到）用桩数据在浏览器里验过：
+普通用户开 `/admin` 走的是回引导页的分支、403 面板不露；开首页「管理入口」保持 hidden。
+
+> 教训：**改一个页面之前先确认「哪个文件真的被服务出去」**。
+> `sendFile('../dist/...')` 这种写法说明源与产物是分开的，只改源等于没改。
+
 
