@@ -53,6 +53,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 参考文献的**页码**（2026-10-07）：侧栏每张卡片上的「定位」按钮靠它跳回正文那一页。
     # 允许 NULL —— 抽不到位置（没有页产物、条目来自 Markdown 兜底）时按钮就不显示。
     ("paper_reference", "page_no", "`page_no` INT NULL"),
+    # 会话冻结的问答风格（2026-10-15）：**只对新对话生效**，老会话首次提问时判一次再写回。
+    # 允许 NULL —— NULL 就是"升级前建的会话，还没判过"。
+    ("conversation", "agent_style", "`agent_style` LONGTEXT NULL"),
     # 参考文献里的 **GitHub 仓库地址**（2026-10-07）：既有论文链接又有代码链接的条目，
     # 侧栏并排显示"论文图标 + GitHub 图标"，分别跳不同的页面。
     ("paper_reference", "code_url", "`code_url` VARCHAR(512) NULL"),

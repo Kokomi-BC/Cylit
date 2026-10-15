@@ -480,6 +480,12 @@ class Conversation(Base, TimestampMixin):
     title: Mapped[str | None] = mapped_column(String(255))
     #: 当前可见分支的最后一条消息 id（见类文档）
     head_id: Mapped[str | None] = mapped_column(String(36))
+    #: **建会话那一刻冻结的问答风格**（提示词里可改的那一段，见 `services/agent/style.py`）。
+    #: 用户口径 2026-10-15："风格只对新对话生效" —— 所以它记在会话行上，之后设置页怎么改
+    #: 都追不到已有会话：一来行为可预期，二来 system 前缀不会因为一次改动把**所有**会话的
+    #: `system + 全部历史` 缓存同时打掉（前缀缓存是从第 0 个 token 起比的）。
+    #: NULL = 升级前建的老会话（还没有这一列），首次提问时按"谁更晚"判一次再冻结。
+    agent_style: Mapped[str | None] = mapped_column(Text)
     user_id: Mapped[int] = mapped_column(Integer, default=1)
 
 

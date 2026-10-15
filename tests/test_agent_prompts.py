@@ -119,43 +119,43 @@ def test_style_service_reads_the_setting_and_falls_back(monkeypatch) -> None:
                             key, retrieval._MISSING))
     assert style_service.stored() == "你是猫娘助手，喵。"
     assert style_service.effective() == "你是猫娘助手，喵。"
-    assert style_service.describe()["custom"] is True
 
     monkeypatch.setattr(retrieval, "_setting_raw",
                         lambda key: {"agent_style": "   "}.get(key, retrieval._MISSING))
     assert style_service.stored() == ""
-    assert style_service.describe() == {"style": prompts.DEFAULT_STYLE, "custom": False,
-                                        "default": prompts.DEFAULT_STYLE}
+    assert style_service.effective() == prompts.DEFAULT_STYLE
 
 
-def test_style_fetch_reuses_the_last_value_instead_of_flapping() -> None:
-    """取风格失败时**沿用上一次**，不回落默认（2026-10-15，用户问"会不会影响旧对话的缓存"）。
+def test_style_is_frozen_per_conversation() -> None:
+    """**风格只对新对话生效**（用户口径 2026-10-15）：冻结在会话行上，之后谁都追不到它。
 
-    风格在 system **最前面**：一次取失败就跳回默认，那一轮 `system + 全部历史` 整段作废，
-    下一轮取回来又作废一次 —— 一次网络抖动能连坏两轮缓存。沿用上一次只慢"设置页改完的
-    那几秒"，不制造来回跳。
+    为什么必须冻：风格在 system 最前面，而前缀缓存是从第 0 个 token 起比的 ——
+    "每轮按当前设置取一次"等于"设置页改一下，所有历史会话的 `system + 全部历史`
+    下一轮同时作废"。冻在会话行上，改动就只影响新建的会话。
     """
-    from backend.agent.host import HostError
+    from datetime import datetime, timedelta
 
-    class _Host:
-        def __init__(self) -> None:
-            self.value, self.boom = "你是猫娘，喵。", False
+    from backend.services.agent import style as style_service
 
-        async def style(self) -> dict:
-            if self.boom:
-                raise HostError("宿主暂时读不到设置")
-            return {"style": self.value, "custom": True, "default": prompts.DEFAULT_STYLE}
+    cat = "你是猫娘助手，喵。"
+    t0 = datetime(2026, 10, 15, 10, 0, 0)
+    changed = t0 + timedelta(hours=1)
+    old_conv, new_conv = t0, changed + timedelta(minutes=5)
 
-    rt = AgentRuntime.__new__(AgentRuntime)   # 只测取风格这一小段：不建 workspace / skills
-    rt._style = ""
-    host = _Host()
-    rt.host = host
+    # 新会话（行上已经有冻结值）：设置里改成别的，它也只用自己的那一份
+    assert style_service.pick(cat, "换了个风格") == cat
+    assert style_service.pick(cat, "") == cat
 
-    assert asyncio.run(rt._fetch_style()) == "你是猫娘，喵。"
-    host.boom = True
-    assert asyncio.run(rt._fetch_style()) == "你是猫娘，喵。", "取失败要沿用上一次"
-    host.boom, host.value = False, ""
-    assert asyncio.run(rt._fetch_style()) == "", "宿主明确回了空（= 恢复默认）就照收"
+    # 老会话（这一列还是空的，升级前建的）：
+    # 建得**晚于**风格最后一次改动 → 它出生时就见的这一份 → 用当前的
+    assert style_service.pick(None, cat, created_at=new_conv, changed_at=changed) == cat
+    # 建得更早 → 默认（它出生时还没有自定义风格）
+    assert style_service.pick(None, cat, created_at=old_conv,
+                              changed_at=changed) == prompts.DEFAULT_STYLE
+    # 从没设过自定义风格 / 会话比改动晚但设置里是空的 → 一律默认
+    assert style_service.pick(None, cat, created_at=new_conv) == prompts.DEFAULT_STYLE
+    assert style_service.pick(None, "", created_at=new_conv, changed_at=changed) \
+        == prompts.DEFAULT_STYLE
     assert prompts.build_instructions(_deps(style="")).startswith(prompts.DEFAULT_STYLE)
 
 

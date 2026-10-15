@@ -13,6 +13,8 @@
  * 但**对话风格**（提示词里唯一可改的那一段）就地可编辑：它不属于任何模型，
  * 存的是 setting 表的 `agent_style`（`PUT /settings`），**留空保存 = 恢复默认**
  * （后端删掉那一行，读取点回落到 `agent/prompts.DEFAULT_STYLE`）。
+ * **只对新对话生效**（用户口径 2026-10-15）：风格在建会话那一刻冻结到会话行上，
+ * 之后的改动追不到已有会话 —— 否则一次改动会把所有历史会话的 system 前缀缓存同时打掉。
  * 版式：**非编辑态只读**（点正文进编辑），保存 / 恢复默认 / 取消只在编辑态出现；
  * 恢复默认顺便把默认那段填回编辑框（原来那个「看默认风格」的活它一起干了）。
  */
@@ -87,7 +89,7 @@ async function saveStyle(text: string) {
     styleText.value = styleSaved.value;
     styleCustom.value = !!text.trim();
     styleEditing.value = false;
-    toast(text.trim() ? '对话风格已保存，下一句就生效' : '已恢复默认风格');
+    toast(text.trim() ? '对话风格已保存，新开的对话生效' : '已恢复默认风格，新开的对话生效');
   } catch (err) {
     reportError(err, '保存对话风格失败');
   } finally {
@@ -179,6 +181,7 @@ onMounted(() => {
       <div class="card-head">
         <AppIcon name="sparkle" :size="14" />对话风格
         <span class="spacer"></span>
+        <span class="tiny faint">只对新对话生效</span>
         <span v-if="styleCustom" class="badge">已自定义</span>
         <span v-else class="badge ok">默认</span>
       </div>

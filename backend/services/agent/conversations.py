@@ -68,21 +68,48 @@ def create_conversation(conversation_id: str, paper_id: str = "",
     ⚠️ 与 `ensure_conversation` 的区别只有一条，但很关键：那个在"id 查不到"时会**换一个新
     uuid**（前端手里的会话没了时的兜底），所以调用方拿不到它想要的 id。内部落库接口要的是
     "就用这个 id"（自检造临时会话），所以这里是另一个函数。
+
+    建会话时顺手把**此刻的风格**冻结到这一行上（用户口径 2026-10-15："风格只对新对话生效"）——
+    之后设置页怎么改都追不到它，见 `services/agent/style.py` 的文件头。
     """
     from backend.repositories.mysql.models import Conversation
     from backend.repositories.mysql.session import session_scope
+    from backend.services.agent import style as style_service
 
     with session_scope() as sess:
         row = sess.get(Conversation, conversation_id)
         if row is None:
             sess.add(Conversation(id=conversation_id, paper_id=paper_id or None,
-                                  title=(title or "")[:255], head_id=None))
+                                  title=(title or "")[:255], head_id=None,
+                                  agent_style=style_service.effective()))
         else:
             if paper_id and not row.paper_id:
                 row.paper_id = paper_id
             if title and not row.title:
                 row.title = title[:255]
     return conversation_id
+
+
+def frozen_style(conversation_id: str) -> str:
+    """这条会话该用的风格（**冻结**语义：新建时就定下来，之后设置页怎么改都不动它）。
+
+    老会话（升级前建的、`agent_style` 还是 NULL）在这里判一次并**写回** —— 判一次就够了，
+    不写回的话每轮都要重判，而设置页一改重判结果就变，正是要避免的那种"历史会话被追着改"。
+    """
+    from backend.repositories.mysql.models import Conversation
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.agent import style as style_service
+
+    with session_scope() as sess:
+        row = sess.get(Conversation, conversation_id)
+        if row is None:                      # 正常到不了（调用方刚 ensure/建过）
+            return style_service.effective()
+        text = style_service.pick(row.agent_style, style_service.stored(),
+                                  created_at=row.created_at,
+                                  changed_at=style_service.changed_at())
+        if not (row.agent_style or "").strip():
+            row.agent_style = text            # 冻结：这条会话从此只用这一份
+        return text
 
 
 def ensure_conversation(conversation_id: str | None, paper_id: str,

@@ -23,9 +23,9 @@ class Deps:
     registry: RefRegistry
     page_total: int = 0
     title: str = ""
-    #: 生效的**风格**（设置页「论文问答 → 对话风格」可改，空 = 用 `prompts.DEFAULT_STYLE`）。
-    #: 它是 system 的第一段，由 `runtime.ask()` 每轮从宿主取 —— 取不到就用默认值，
-    #: 这是提示词层面的锦上添花，不该让整轮问答跟着失败。
+    #: 这条会话**冻结**的风格（主后端按 `conversation.agent_style` 取好带过来）。
+    #: 设置页的改动只对新对话生效 —— 已开着的会话继续用它出生时那一份，
+    #: 免得一次改动把历史会话的 `system + 全部历史` 前缀缓存全打掉。空 = 用 `prompts.DEFAULT_STYLE`。
     style: str = ""
     #: 是否**本次对话的第一条消息**（判据 = 主后端没给历史）。只有首轮才附论文摘要。
     first_turn: bool = False

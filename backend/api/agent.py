@@ -148,6 +148,10 @@ async def agent_ask(payload: dict = Body(...)):
         "paper_id": paper_id, "question": question,
         "conversation_id": conversation_id, "parent_id": parent_id,
         "history": history,
+        # 这条会话**冻结**的风格（用户口径 2026-10-15："风格只对新对话生效"）：
+        # 在**主后端**取好随请求带走，agent 不再每轮去问一次设置 —— 既少一次往返，
+        # 也杜绝"设置页一改，所有历史会话的 system 前缀同时作废"（见 services/agent/style.py）。
+        "agent_style": conversations.frozen_style(conversation_id),
         "model_id": payload.get("model_id"),
         "selection": selection if selected_text else None,
         "attachments": attachment_meta,
@@ -392,20 +396,6 @@ async def agent_model_config(request: Request,
     """问答模型配置（含已解析的密钥）。**只回环 + 内部令牌可读。**"""
     _require_internal(x_internal_token)
     return envelope(model_config.resolve(), request=request)
-
-
-@router.get("/agent/style")
-async def agent_style(request: Request,
-                      x_internal_token: str | None = Header(None)):
-    """问答**风格**（提示词里可改的那一段）。**只回环 + 内部令牌可读。**
-
-    agent 进程每轮问答前来取一次：风格在 system 的最前面，必须每轮都拿最新的，
-    设置页改完下一句就生效（不能跟着模型配置一起缓存 60 秒）。
-    """
-    _require_internal(x_internal_token)
-    from backend.services.agent import style as style_service
-
-    return envelope(style_service.describe(), request=request)
 
 
 @router.get("/agent/papers/{paper_id}/archive")

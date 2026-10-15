@@ -137,6 +137,7 @@ def create_app() -> FastAPI:
             conversation_id=str(payload.get("conversation_id") or ""),
             parent_id=payload.get("parent_id"),
             history=list(payload.get("history") or []),
+            style=str(payload.get("agent_style") or ""),
             model_id=payload.get("model_id"),
             selection=selection,
             attachments=list(attachments),
