@@ -50,7 +50,11 @@ async function restoreScroll(top: number): Promise<{ top: number; behavior: 'aut
 }
 
 export const router = createRouter({
-  history: createWebHistory('/app/'),
+  // 必须跟着 vite.config.ts 的 `base` 走 —— 写死字符串的话，
+  // 改 base 时漏掉这一处，应用内所有跳转都会拼出旧前缀
+  // （实测：base 改成 /cylit/ 后这里还是 /app/，于是点进阅读器地址栏变成
+  //  /app/reader/xxx，再被 nginx 301 回 /cylit/…，路由 prefix 对不上就白屏）。
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
   scrollBehavior(to, from, saved) {
     // 阅读器自己管理滚动位置（服务端权威进度），不参与全局滚动恢复

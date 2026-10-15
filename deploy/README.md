@@ -111,6 +111,14 @@ Cylit@PM2026-8710  ->  Can't connect to MySQL server on 'PM2026-8710@127.0.0.1'
 > nginx 里给旧路径留了 301（`location /app/ { rewrite ^/app/(.*)$ /cylit/$1 permanent; }`），
 > 书签和深链不会断。
 
+> ⚠️ **换前缀时踩过的坑**：`frontend/src/router/index.ts` 原先是
+> `createWebHistory('/app/')` **写死的字符串**。改 `base` 时漏了它，
+> 后果不是白屏而是**"看着能用"** —— 页面能打开、assets 也正常（`base` 是对的），
+> 但 vue-router 仍在按 `/app/` 剥前缀，于是应用内点任何东西，地址栏都变成
+> `/app/reader/xxx`，再被 nginx 301 回 `/cylit/…`，路由前缀对不上就什么都不渲染。
+> 现在它读 `import.meta.env.BASE_URL`，跟着 `base` 走，这一处不会再对不上。
+> **教训：`base` 这种常量，能推导就别抄写。**
+
 前缀冲突已核对 `/root/Detect/src/app.js`：
 
 | 前缀 | 归属 | 为什么安全 |
