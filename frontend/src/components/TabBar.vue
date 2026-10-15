@@ -10,14 +10,16 @@
  * 右键菜单（关闭其它 / 关闭全部）、拖拽换序、**滚轮横向滑动**。
  *
  * 顶栏的横向布局（用户口径 2026-10-16）：
- *   品牌 → **固定的「首页」** → ←/→ 滚动按钮 → **可滚动的标签托盘**
+ *   品牌 → **固定的「首页」** → **可滚动的标签托盘**（两枚翻页圆钮浮在托盘两端）
  *
- * 两条规矩：
+ * 三条规矩：
  * 1. ⚠️ 「首页」**不在滚动容器里**（它原来是托盘里的第一枚标签，标签一多就被推出视野）。
  *    现在它是托盘**外面**的一枚独立胶囊，任何滚动位置都看得见、点得到 —— 用户报的
  *    「固定首页按钮」就是这条；
- * 2. 箭头按钮**只在真的溢出时出现**（不溢出时它俩是纯噪音），并且到两端各自置灰。
- *    滚轮只在溢出时才 `preventDefault` —— 否则会平白吃掉页面本身的滚动。
+ * 2. 两枚箭头**照阅读器侧栏那套**（`ReaderView` 的 `.side-scroll-btn`）：一枚浮在托盘左端、
+ *    一枚浮在托盘右端 —— 不是并排放在同一侧；而且**哪一侧还有内容就只在那侧出现**，
+ *    所以它们的出现/消失不会让标签跳位；
+ * 3. 滚轮只在真的溢出时才 `preventDefault` —— 否则会平白吃掉页面本身的滚动。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
@@ -49,47 +51,63 @@ const canCloseAll = computed(() => tabs.value.length > 1);
 const homeTab = computed(() => tabs.value.find((t) => t.key === HOME_KEY) ?? null);
 const scrollTabs = computed(() => tabs.value.filter((t) => t.key !== HOME_KEY));
 
-/* --------------------------------- 溢出与滚动 --------------------------------- */
+/* --------------------------------- 溢出与滚动 ---------------------------------
+ * 与阅读器侧栏那套页签**同一份约定**（`ReaderView` 的 `.side-tabs` + `.side-scroll-btn`），
+ * 用户口径就是"照侧栏那两个箭头来"：两枚圆钮**浮在托盘的两端之外的位置**（不是并排堆在一侧），
+ * 哪一侧还有内容就只在那侧出现。
+ */
 const overflowing = ref(false);
-const atStart = ref(true);
-const atEnd = ref(true);
+/** 左/右还藏着内容 → 那一侧浮出圆箭头（与侧栏 `tabsScroll.left/right` 同义） */
+const canLeft = ref(false);
+const canRight = ref(false);
+/** 两端圆钮占掉的宽度：滚动落位时要把它让开（与 `.tab-strip` 的 `scroll-padding` 对齐） */
+const EDGE_INSET = 30;
 
 function syncScrollState() {
   const el = strip.value;
   if (!el) return;
-  const max = el.scrollWidth - el.clientWidth;
-  overflowing.value = max > 1;
-  atStart.value = el.scrollLeft <= 1;
-  atEnd.value = el.scrollLeft >= max - 1;
+  overflowing.value = el.scrollWidth - el.clientWidth > 1;
+  canLeft.value = el.scrollLeft > 1;
+  canRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
 }
 
-/** 一次滚一屏的六成（至少 160px）—— 比"滚一枚标签"更接近浏览器的翻页手感 */
-function scrollStep(dir: number) {
+/** 点箭头：翻一屏的 70%（至少 120px）。
+ *
+ * ⚠️ 用**瞬时**滚动（直接改 `scrollLeft`），不要 `behavior: 'smooth'`：补间由合成器推进，
+ * 无头 + 虚拟时间下根本不走（实测"点了按钮纹丝不动"），真实浏览器也会受"减少动效"影响。
+ * 这条与侧栏 `scrollTabs` 的注释是同一件事。 */
+function scrollStep(dir: -1 | 1) {
   const el = strip.value;
   if (!el) return;
-  el.scrollBy({ left: dir * Math.max(160, Math.round(el.clientWidth * 0.6)), behavior: 'smooth' });
+  const max = el.scrollWidth - el.clientWidth;
+  const step = Math.max(120, el.clientWidth * 0.7);
+  el.scrollLeft = Math.max(0, Math.min(max, el.scrollLeft + dir * step));
+  syncScrollState();          // 程序化滚动后立刻更新按钮显隐，不依赖异步派发的 scroll 事件
 }
 
-/** 滚轮 → 横向滑动。**只在溢出时接管**，否则页面本身的滚动会被平白吃掉。 */
+/** 滚轮 → 横向滑动。**只在真的溢出时接管**，否则页面本身的滚动会被平白吃掉。
+ *  与侧栏一致：只把"竖直滚轮"转成横向；纯横向的触控板滑动交给浏览器原生处理。 */
 function onWheel(ev: WheelEvent) {
   const el = strip.value;
   if (!el || !overflowing.value) return;
-  const d = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY;
-  if (!d) return;
+  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
   ev.preventDefault();
-  el.scrollLeft += d;
+  el.scrollTo({ left: el.scrollLeft + ev.deltaY, behavior: 'instant' });
   syncScrollState();
 }
 
-/** 把激活标签滚进视野：按需滚最小距离（不用 `scrollIntoView`，它会把整页也带着滚）。 */
+/** 把激活标签滚进视野：按需滚最小距离（不用 `scrollIntoView`，它会把整页也带着滚）。
+ *  可视窗口两端各让开一枚圆钮的宽度，免得激活的那枚正好落在按钮底下。 */
 function revealActive() {
   const el = strip.value;
   const active = el?.querySelector<HTMLElement>('.tab.active');
   if (!el || !active) return;
   const a = active.getBoundingClientRect();
   const s = el.getBoundingClientRect();
-  if (a.left < s.left) el.scrollLeft -= s.left - a.left + 8;
-  else if (a.right > s.right) el.scrollLeft += a.right - s.right + 8;
+  const left = s.left + EDGE_INSET;
+  const right = s.right - EDGE_INSET;
+  if (a.left < left) el.scrollLeft -= left - a.left;
+  else if (a.right > right) el.scrollLeft += a.right - right;
 }
 
 let ro: ResizeObserver | null = null;
@@ -212,18 +230,15 @@ function onContextMenu(key: string, ev: MouseEvent) {
       </span>
     </RouterLink>
 
-    <!-- 滚动按钮 + 标签托盘：滚轮在这一块里都是横向滑动 -->
+    <!-- 滚动按钮 + 标签托盘（用户口径 2026-10-16：**照阅读器侧栏那两枚**来 ——
+         一枚浮在托盘左端、一枚浮在右端，哪一侧还藏着内容就只在那侧出现，
+         不是两枚并排堆在同一侧）。滚轮在这一整块里都是横向滑动。 -->
     <div class="tabbar-nav" @wheel="onWheel">
-      <template v-if="overflowing">
-        <button
-          class="nav-scroll" type="button" title="向左滚动标签" aria-label="向左滚动标签"
-          :disabled="atStart" @click="scrollStep(-1)"
-        ><AppIcon name="chevron-left" :size="14" /></button>
-        <button
-          class="nav-scroll" type="button" title="向右滚动标签" aria-label="向右滚动标签"
-          :disabled="atEnd" @click="scrollStep(1)"
-        ><AppIcon name="chevron-right" :size="14" /></button>
-      </template>
+      <button
+        v-if="canLeft"
+        class="nav-scroll left" type="button" title="向左滚动标签" aria-label="向左滚动标签"
+        @click="scrollStep(-1)"
+      ><AppIcon name="chevron-left" :size="13" /></button>
 
       <nav ref="strip" class="tab-strip" aria-label="打开的标签页" @scroll="syncScrollState">
         <RouterLink
@@ -264,6 +279,12 @@ function onContextMenu(key: string, ev: MouseEvent) {
           </span>
         </RouterLink>
       </nav>
+
+      <button
+        v-if="canRight"
+        class="nav-scroll right" type="button" title="向右滚动标签" aria-label="向右滚动标签"
+        @click="scrollStep(1)"
+      ><AppIcon name="chevron-right" :size="13" /></button>
     </div>
   </header>
 </template>
@@ -288,22 +309,31 @@ function onContextMenu(key: string, ev: MouseEvent) {
 /* 品牌图标：PNG 自己带**连续圆角 + 透明四角**，不要再叠一层 CSS 圆角（会切掉曲率） */
 .tabbar-mark { display: block; width: 19px; height: 19px; flex: none; }
 
-/* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。
-   `flex: 0 1 auto` + `min-width: 0` 让它在窗口变窄时**先于**品牌词收缩，
-   于是标签托盘会开始横向滚动，而不是把品牌词挤没。 */
-.tabbar-nav { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+/* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。`position: relative` 是给两枚浮动圆钮
+   当定位基准的。`flex: 0 1 auto` + `min-width: 0` 让它在窗口变窄时**先于**品牌词收缩，
+   于是标签托盘会开始横向滚，而不是把品牌词挤没。 */
+.tabbar-nav { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 0; }
 
-/* 左右滚动按钮：只在托盘真的溢出时渲染（见模板）。
-   24px 圆形、无底、hover 才浮出浅灰 —— 与全站那档"次要图标按钮"同一门语言。 */
+/* 两枚「翻页」圆钮：**浮在托盘两端**、不占布局（哪一侧还有内容才在那一侧出现，
+   所以它们的出现不会让标签跳位）。与阅读器侧栏那枚 `.side-scroll-btn` **同一配方、
+   同样不画描边** —— 半透明 + 模糊，标签滚到它底下时文字照样透出来
+   （用户口径：文字可以在按钮下面显示）。 */
 .nav-scroll {
-  display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 999px;
-  background: transparent; color: var(--text-dim); cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); cursor: pointer;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--text) 10%, transparent),
+    color-mix(in srgb, var(--text) 6%, transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout);
 }
-.nav-scroll:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.nav-scroll:hover { color: var(--accent-text); }
 .nav-scroll:focus-visible { outline: none; box-shadow: var(--ring); }
-.nav-scroll:disabled { opacity: .32; cursor: default; }
+.nav-scroll.left { left: 4px; }
+.nav-scroll.right { right: 4px; }
 
 /* 标签条 = **一枚自撑的胶囊托盘**（用户口径：只在样式上与下面那枚页签胶囊对齐）。
  * 三层、**无描边**：① 托盘（--bg-sunken）② 抬起的那枚白 pill（--bg-elev + --shadow-1）
@@ -317,6 +347,9 @@ function onContextMenu(key: string, ev: MouseEvent) {
   padding: 3px; border: 0; border-radius: 999px;
   background: var(--bg-sunken);
   overflow-x: auto; scrollbar-width: none;
+  /* 两端各让出一枚浮动圆钮的位置：滚进视野的标签不会被压在按钮底下
+     （与侧栏 `.side-tabs` 的 `scroll-padding` 同一条口径）。 */
+  scroll-padding: 0 32px;
 }
 .tab-strip::-webkit-scrollbar { display: none; }
 .tab {

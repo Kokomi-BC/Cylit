@@ -1057,7 +1057,7 @@ defineExpose({ uploadFiles });
         </button>
         <label class="search-field grow">
           <AppIcon name="search" :size="14" />
-          <input v-model="convQuery" placeholder="搜索对话（标题或内容）"
+          <input v-model="convQuery" placeholder="搜索对话"
                  @input="searchLater" @keydown.esc="convQuery = ''; loadConversations()" />
         </label>
         <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
@@ -1305,7 +1305,7 @@ defineExpose({ uploadFiles });
 
           <template v-else>
             <!-- 紧凑起步（一行高），多行自动向上长；到上限后在**框内**滚 -->
-            <textarea ref="inputEl" v-model="draft" class="composer-input" rows="1" placeholder="请输入问题"
+            <textarea ref="inputEl" v-model="draft" class="composer-input" rows="1" placeholder="与Cyli深度交流"
                       @input="autoGrow" @paste="onPaste" @keydown.enter.exact.prevent="ask('send')" />
 
             <div class="composer-bar">

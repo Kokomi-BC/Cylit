@@ -3539,7 +3539,7 @@ def main() -> int:
                    f"标题={(chat.get('modalTitle') or '')[:14]!r} 分隔线={chat.get('modalDividers')} "
                    f"危险按钮={chat.get('modalDangerSolid')}")
         record("chat", "会话页顶部不重复「新对话」文字（只留图标钮）",               (chat.get("threadHeadBtns") or []) == ["", ""], f"{chat.get('threadHeadBtns')}")
-        record("chat", "输入框文案 = 请输入问题", chat.get("placeholder") == "请输入问题",
+        record("chat", "输入框文案 = 与Cyli深度交流", chat.get("placeholder") == "与Cyli深度交流",
                f"{chat.get('placeholder')!r}")
         record("chat", "空态只有一句语录当背景（0 个按钮）",
                chat.get("helloButtons") == 0
