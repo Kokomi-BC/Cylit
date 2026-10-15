@@ -113,6 +113,20 @@ const dragging = ref(false);
 const confirming = ref<{ ids: string[]; body: string; target: string } | null>(null);
 const confirmBusy = ref(false);
 const msgsEl = ref<HTMLElement | null>(null);
+/* 输入区**浮在消息之上**（见 `.composer` 的注释）：浮起来就不占布局高度了，消息区得自己
+   把这块空白留出来，否则最后一条会压在输入框底下滚不上来。高度用 ResizeObserver 量 ——
+   textarea 随输入自动长高（一行 → 上限），写死一个值在长问题下就不够。 */
+const composerEl = ref<HTMLElement | null>(null);
+let composerRO: ResizeObserver | null = null;
+watch(composerEl, (el) => {
+  composerRO?.disconnect();
+  composerRO = null;
+  if (!el || typeof ResizeObserver === 'undefined') return;
+  composerRO = new ResizeObserver(() => {
+    if (msgsEl.value) msgsEl.value.style.paddingBottom = `${el.offsetHeight + 6}px`;
+  });
+  composerRO.observe(el);
+});
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 let controller: AbortController | null = null;
@@ -998,7 +1012,7 @@ onActivated(() => {
   void loadStatus();
 });
 
-onUnmounted(() => controller?.abort());
+onUnmounted(() => { controller?.abort(); composerRO?.disconnect(); });
 
 watch(() => props.paperId, async () => {
   controller?.abort();
@@ -1239,9 +1253,10 @@ defineExpose({ uploadFiles });
         <div v-if="errorText" class="err small">{{ errorText }}</div>
       </div>
 
-      <!-- 输入区 = **一个圆角容器**：上面是 textarea，下面是操作条（用户口径 2026-10-03）。
-           容器自己承担"一块输入组件"的观感，里面的元素不再各自成块。 -->
-      <div class="composer">
+      <!-- 输入区 = **一块浮在消息上的圆角容器**：上面是 textarea，下面是操作条。
+           容器自己承担"一块输入组件"的观感，里面的元素不再各自成块；`ref` 给样式里那个
+           ResizeObserver 量高度用（消息区要按它留出底部空白，见 `.composer`）。 -->
+      <div ref="composerEl" class="composer">
         <div class="composer-box" :class="{ busy: uploading }">
           <!-- 划词带进来的选区：贴在输入框上沿的**上下文胶囊**（用户口径 2026-10-03，仿 VS Code）。
                整块是一枚按钮 → 点它切换"这轮要不要带上"；右侧 ✕ 才是移除。
@@ -1425,7 +1440,8 @@ defineExpose({ uploadFiles });
 .th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
 
 .msgs {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; overflow-wrap: anywhere;
+  /* 底部这块空白是给**悬浮的输入区**让位的（JS 按实测高度覆盖，这里只是兜底） */
+  flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 112px; overflow-wrap: anywhere;
   /* 列向 flex：空态那一块才能"占满整块高度、把图标 + 语录**竖直居中**"（用户口径 2026-10-07）。
      消息自己还是从上往下排（块级子项在列向 flex 里本来就是撑满宽度、顺序堆叠）。 */
   display: flex; flex-direction: column;
@@ -1478,7 +1494,54 @@ defineExpose({ uploadFiles });
 .run-sum { color: var(--text-faint); margin-left: 2px; min-width: 0; }
 .run .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none;
+  position: relative;
   animation: pulse 1.1s ease-in-out infinite;
+}
+/* ── "这一轮还在跑"的强调（用户口径 2026-10-15："再明显一点，但不要动输入框"）──
+   四个信号**只作用在正在跑的那一条**（`.run.live` / `.msg[data-live]`），跑完立刻回静态：
+     ① 轨迹抬头那行字走一道扫光（"活着"的观感）  ② 小圆点往外扩一圈涟漪
+     ③ 左侧竖轨呼吸（accent 与 divider 之间来回） ④ 正在写的那一段末尾跟一枚方块光标
+   动效可被系统级 `prefers-reduced-motion` 关掉（见下面同名媒体查询）。 */
+.run .dot::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: live-ring 1.8s var(--ease) infinite;
+}
+@keyframes live-ring { 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+@keyframes live-rail {
+  0%, 100% { border-left-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
+  50% { border-left-color: color-mix(in srgb, var(--accent) 92%, var(--border)); }
+}
+.run.live .run-body { animation: live-rail 2.4s ease-in-out infinite; }
+@keyframes live-sheen { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* 扫光靠"背景裁到字里"。放进 `@supports`：不支持的浏览器会看见一条彩条压在文字上，
+   那不如干脆不启用（标题保持原来的灰字）。 */
+@supports (-webkit-background-clip: text) or (background-clip: text) {
+  .run.live .run-title {
+    background: linear-gradient(90deg,
+      var(--text-dim) 0%, var(--text-dim) 36%,
+      var(--accent) 47%, var(--accent-hover) 53%,
+      var(--text-dim) 64%, var(--text-dim) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    animation: live-sheen 2.1s linear infinite;
+  }
+}
+/* 光标跟在**这一轮最后落下的那段话**后面（正文段或轨迹里的半句都算）。 */
+@keyframes caret { 50% { opacity: 0; } }
+.msg[data-live="1"] .body :deep(> *:last-child)::after,
+.msg[data-live="1"] .run-text :deep(> *:last-child)::after {
+  content: ""; display: inline-block; width: 6px; height: 12px; margin-left: 3px;
+  vertical-align: -2px; border-radius: 1.5px; background: var(--accent);
+  animation: caret 1.1s step-end infinite;
+}
+/* 纯装饰：系统里关掉动效就都不动。**不动的强调还在**（主题色的点、主题色的停止钮）。 */
+@media (prefers-reduced-motion: reduce) {
+  .run.live .run-body, .run .dot::after,
+  .msg[data-live="1"] .body :deep(> *:last-child)::after,
+  .msg[data-live="1"] .run-text :deep(> *:last-child)::after { animation: none; }
+  .run.live .run-title { animation: none; background-position: 50% 0; }
 }
 .run-body {
   display: flex; flex-direction: column; gap: 3px;
@@ -1546,16 +1609,28 @@ defineExpose({ uploadFiles });
   display: inline-flex; align-items: center; justify-content: center; padding: 0;
 }
 
-/* ── 输入区：**一个圆角容器**（用户口径 2026-10-03）──
-   上面 textarea、下面操作条；容器自己给出"一块输入组件"的边界，里面的元素不再各自成块。 */
-.composer { border-top: 1px solid var(--divider); padding: 8px; }
+/* ── 输入区：**一块浮在对话上的圆角容器**（用户口径 2026-10-15 第二次）──
+   原来 `.composer` 顶上有一条 `border-top`，把面板齐刷刷切成"上面正文 / 下面输入"两半：
+   正文滚到底正好被那条直线**裁断**（用户报的"直线裁切"）。
+   现在整块浮起来 —— 没有分界线，输入框自己是圆角矩形 + 投影；底下那层渐隐只是让从框下
+   穿过的正文淡出去，不跟框里的字打架。
+   ⚠️ 浮起来就不再占布局高度 → 消息区的空白由 JS 按实测高度补（`composerEl` 那个
+   ResizeObserver），`.msgs` 的 `padding-bottom` 只是没跑起来时的兜底值。 */
+.composer {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: 10px 10px 8px;
+  background: linear-gradient(to top,
+    var(--bg-elev) 0%, var(--bg-elev) 58%,
+    color-mix(in srgb, var(--bg-elev) 68%, transparent) 84%, transparent 100%);
+}
 .composer-box {
   border: 1px solid var(--border-strong); border-radius: var(--radius);
   background: var(--bg-elev); padding: 6px 6px 4px;
+  box-shadow: var(--shadow-2);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 /* 轻度焦点反馈：焦点在框内任意位置都亮一圈（用户口径："获得焦点时有轻微视觉反馈"） */
-.composer-box:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+.composer-box:focus-within { border-color: var(--accent); box-shadow: var(--shadow-2), var(--ring); }
 .composer-box.busy { opacity: .75; }
 /* 上下文胶囊（划词选区）：整块可点 → 切换"要不要带上"。
    用 accent-soft 的**实心胶囊**（不是左边一条竖线）：它是"我能点"的按钮，不是一段引文装饰。
@@ -1622,9 +1697,16 @@ defineExpose({ uploadFiles });
 .ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
 .ring-track { fill: none; stroke: var(--divider); stroke-width: 6; }
 .ring-bar { fill: none; stroke: currentColor; stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
-/* 停止 = 危险色的实心圆钮（发送那枚是 .btn.primary.icon.sm，这里只换色） */
-.btn.stop { background: var(--danger); border-color: transparent; color: #fff; }
-.btn.stop:hover:not(:disabled) { background: var(--danger); filter: brightness(1.06); }
+/* 停止 = **主题色**的实心圆钮（用户口径 2026-10-15：原来红/蓝两色像两套系统，
+   现在跟发送那枚 `.btn.primary` 同一份配方，只有图标从箭头换成方块）。位置尺寸都没动。 */
+.btn.stop {
+  background: var(--accent); border-color: transparent; color: var(--text-on-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.btn.stop:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
 
 .drop-hint {
   position: absolute; inset: 6px; z-index: 5; display: flex; align-items: center; justify-content: center;
