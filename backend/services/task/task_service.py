@@ -280,8 +280,21 @@ class TaskService:
                 row.cancel_requested = True
             if pause:
                 row.pause_requested = True
-            row.message = ("已请求取消，等待当前块结束…" if cancel
-                           else "已请求暂停，等待当前块结束…")
+            if cancel and row.status == PENDING:
+                # 还没被领取的任务没人替它收尾：`acquire_next` 会跳过
+                # `cancel_requested` 的行，而唯一写 CANCELLED 的地方是 `_execute`
+                # 里的 `ctx.should_stop()`（那条路径只在任务**已经跑起来**时才有）。
+                # 不在这里直接落终态，这条任务就永远卡在 pending ——
+                # 界面一直显示「翻译 排队中 0/22」，并且它还会继续占着
+                # `find_active()` 的幂等位，让下一次触发以为"已经有任务了"。
+                row.status = CANCELLED
+                row.lease_expire_at = None
+                row.worker = None
+                row.message = "已取消（尚未开始）"
+                row.finished_at = now()
+            else:
+                row.message = ("已请求取消，等待当前块结束…" if cancel
+                               else "已请求暂停，等待当前块结束…")
             d = self.to_dict(row)
         bus.publish("tasks", EVENT_TASK_PROGRESS, d)
         return d
@@ -387,7 +400,14 @@ class TaskService:
         return d
 
     def recycle_stale(self, queues: list[str]) -> int:
-        """回收租约过期的 processing 任务 → pending（进程被杀后的恢复，R13）。"""
+        """两件清扫（都在"没有任务可领"的空闲分支里跑）：
+
+        1. 租约过期的 ``processing`` → ``pending``（进程被杀后的恢复，R13）；
+        2. **已请求取消、却一直没被领取的 ``pending`` → ``cancelled``**。
+           这类行是 `_set_flags` 之外的漏网之鱼（比如先建任务、再取消、
+           中间 worker 正忙没来得及领取），它领不到也结束不了，
+           界面就永远显示「排队中」。
+        """
         from backend.repositories.mysql.session import session_scope
 
         codes = [queue_code(q) for q in queues]
@@ -403,8 +423,21 @@ class TaskService:
                 row.worker = None
                 row.message = "租约过期，已重新入队（上次执行可能被中断）"
                 n += 1
+
+            stuck = (sess.query(Task)
+                     .filter(Task.queue.in_(codes), Task.status == PENDING,
+                             Task.cancel_requested.is_(True))
+                     .all())
+            for row in stuck:
+                row.status = CANCELLED
+                row.lease_expire_at = None
+                row.worker = None
+                row.message = "已取消（尚未开始）"
+                row.finished_at = row.finished_at or now()
         if n:
             log.warning("回收 %d 个租约过期的任务", n)
+        if stuck:
+            log.info("收尾 %d 个「已请求取消但没被领取」的任务", len(stuck))
         return n
 
     # ---------------- 序列化 ----------------

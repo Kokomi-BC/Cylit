@@ -680,6 +680,17 @@ function activeTaskOf(p: Paper): LiveTask | null {
   return paperTasks.value[p.id] ?? null;
 }
 
+/** 论文行自己在跑，但任务表里没有对应记录。
+ *
+ *  典型场景是 CLI（`pr.py translate`）：它**故意不走任务队列**（便于调试），
+ *  于是任务表里空空如也 —— 卡片既不显示转圈遮罩，按钮又写着「继续翻译」，
+ *  看起来像"没在跑"；再点一下就会**同一篇两套翻译并发**（用户报过"任务重新进行"）。
+ *  这里让卡片至少在视觉上承认"在跑"：`running` 只驱动遮罩（`pointer-events: none`），
+ *  不影响按钮语义。 */
+function inFlight(p: Paper): boolean {
+  return p.status === 'parsing' || p.status === 'translating';
+}
+
 /** 卡片徽章：有任务看任务（翻译中 / 已暂停），没任务看论文行。 */
 function cardStatus(p: Paper): { label: string; cls: string } {
   const t = activeTaskOf(p);
@@ -1143,7 +1154,7 @@ async function submitEdit() {
           :meta="cardMeta(p)"
           :progress="progressOf(p)"
           :foot-note="cardFoot(p)"
-          :running="!!activeTaskOf(p)"
+          :running="!!activeTaskOf(p) || inFlight(p)"
           :action-label="pipelineLabel(p)"
           :show-action="stage(p) !== 'translated'"
           :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
