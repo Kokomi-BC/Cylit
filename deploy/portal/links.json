@@ -2,9 +2,9 @@
   "brand": {
     "name": "个人项目",
     "eyebrow": "Personal Projects",
-    "tagline": "这里记录了一些自己动手完成的项目，涉及论文阅读、多模态检测、写作工具和视觉分析。",
+    "tagline": "这里记录了一些我和大肥鱼（deepseek）完成的项目，涉及论文阅读、多模态检测、写作工具和视觉分析。",
     "handle": "Kokomi",
-    "school": "湖南工业大学 · 个人开发项目",
+    "school": "湖南工业大学 计科2303zhm · 个人开发项目",
     "github": "https://github.com/Kokomi-BC"
   },
   "links": [
