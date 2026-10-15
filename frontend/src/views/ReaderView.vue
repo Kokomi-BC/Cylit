@@ -4881,7 +4881,12 @@ function renderMarkdown(text?: string | null) {
    高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
 .reader-loading {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; height: calc(100vh - var(--header-h));
+  gap: 10px;
+  /* ⚠️ `dvh` 写在**后面**当覆盖：手机上 `100vh` 是"地址栏收起时"的高度，而阅读器是
+     整屏不滚动的布局、地址栏根本不会自动收起 —— 底部那一截是实打实读不到的。
+     老浏览器不认识 `dvh`，会忽略第二行、继续用第一行的 `100vh`。 */
+  height: calc(100vh - var(--header-h));
+  height: calc(100dvh - var(--header-h));
   color: var(--text-dim); font-size: 13px;
 }
 /* 解析进度条：固定一个不太宽的宽度，居中在转圈下方（拉满整屏会很怪） */
@@ -4897,6 +4902,7 @@ function renderMarkdown(text?: string | null) {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: calc(100vh - var(--header-h));
+  height: calc(100dvh - var(--header-h));   /* 手机地址栏兜底，见 .reader-loading */
   overflow: hidden;
 
   /* ---------------- 胶囊直径 + 玻璃材质（声明在**根**上，顶栏与侧栏共用一套） ----------------
@@ -5061,7 +5067,10 @@ function renderMarkdown(text?: string | null) {
   font-size: 14px; line-height: 1.75;
 }
 /* 全屏时内容区跟着长高（标题栏 ~48 + 工具行 ~40 + 底栏 ~56 + 内边距 ≈ 190） */
-.md-doc.full { max-height: calc(100vh - 190px); }
+.md-doc.full {
+  max-height: calc(100vh - 190px);
+  max-height: calc(100dvh - 190px);   /* 手机地址栏兜底，见 .reader-loading */
+}
 /* 每一页那一段：页码是**淡标注**（不再是翻页器，也没有分割线），页与页之间靠间距分开 */
 .md-page { padding-bottom: 26px; }
 .md-page + .md-page { border-top: 0; }
@@ -5253,6 +5262,23 @@ function renderMarkdown(text?: string | null) {
   .reader.mobile-aside .reader-aside { transform: none; visibility: visible; }
   /* 抽屉宽度是定死的，拖拽没有意义（拖了也不会生效），干脆不显示把手 */
   .reader-aside > .aside-resizer { display: none; }
+
+  /* ⚠️ 抽屉的 z-index(60) 高于工具栏(40)，一滑出来就把工具栏**整层**盖住 —— 而那枚
+     "关抽屉"的开关正是工具栏左端的那一枚（`.cap-solo.left`），于是抽屉打开后就再也
+     关不掉了（用户报的「左上角的收起侧栏按钮消失」）。侧栏头部那条 `padding-left: 62px`
+     本来就是给这枚钮让位的，说明设计意图就是"开关浮在侧栏之上"。
+     把工具栏抬到抽屉之上即可复位；顺带收掉主胶囊与右侧「⋯」——抽屉打开时它们要么
+     被盖住，要么和抽屉头部那条页签胶囊糊在一起，露出来只会打架。 */
+  .reader.mobile-aside .reader-toolbar { z-index: 70; }
+  .reader.mobile-aside .reader-capsule,
+  .reader.mobile-aside .cap-solo.right { visibility: hidden; }
+}
+
+/* 手机（≤640px）：抽屉**占满整屏**。360px 的抽屉放在 390px 的屏上只剩一条 47px 的
+   正文缝 —— 目录看不全，右边那条缝还会误触正文。全屏之后抽屉头部那条页签胶囊也宽松了
+   （8 个页签不再需要在窄条里横向滚）。 */
+@media (max-width: 640px) {
+  .reader-aside { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

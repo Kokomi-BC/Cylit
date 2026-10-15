@@ -247,6 +247,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 .app-main.wide {
   max-width: none; padding: 0;
   height: calc(100vh - var(--header-h));
+  height: calc(100dvh - var(--header-h));   /* 手机地址栏兜底，见 ReaderView 的 .reader-loading */
   overflow: hidden;
 }
 
