@@ -201,10 +201,16 @@ PERSONAL PROJECTS                     ← 眉标，最轻
   前端只接受 `https://github.com/...` 形式，否则回落到内置默认值。
 - **项目卡片**：编号 `01`–`04` 与在线状态占角上一行；**项目名 → 简介 → 分类/路径/按钮**
   是正文层级。编号由 JS 按 `links.json` 的顺序生成，加项目不用改 HTML。
-- **配色**：只有一处强调色 —— 低饱和绿 `--ok`（状态点、hover 描边、focus 环）。
-  **项目卡片不再使用逐卡彩色**；`links.json` 里的 `accent` 字段保留但已不参与渲染。
-- **去掉的装饰**：毛玻璃（导航改成不透明底 + 顶部淡出）、胶片颗粒、光晕（`--mesh` 降到 4%）、
-  逐卡彩色标签。动效只剩 `.reveal` 的位移淡入与 hover 的 2px 抬起。
+- **配色**：**每张卡有自己的主题色**（`links.json` 的 `accent`，Cylit 是青色 `#22d3ee`），
+  用在三处：编号、hover 描边、鼠标光影。站点级强调色仍是低饱和绿 `--ok`（状态点 / focus 环）。
+  深浅两个主题的用量不同 —— 浅底要更浓才有对比，百分比放在 `--mix-idx/-line/-glow/-tag` 里按主题给值。
+- **鼠标光影**：指针在卡片内的坐标由 `pointermove` 写成 `--mx/--my`，
+  CSS 拿它当径向渐变的圆心（`.shell::after`，`pointer-events:none`、`z-index:0`，
+  内容层 `.core` 是 `z-index:1`，所以不挡链接）。
+  只写自定义属性不改布局，不触发重排；触屏（`hover: none`）与 `prefers-reduced-motion`
+  下直接不画。
+- **去掉的装饰**：毛玻璃（导航改成不透明底 + 顶部淡出）、胶片颗粒、大面积光晕
+  （`--mesh` 降到 4%）。动效只剩 `.reveal` 的位移淡入、hover 的 2px 抬起、光影的透明度渐变。
 - **数据**：`brand` 现在有 `name` / `eyebrow` / `tagline` / `handle` / `school` / `github`
   六项，全部可在管理台编辑（`portal-api` 的 `validate()` 是白名单，**新增字段必须同时改那里**，
   否则管理台一保存就会被抹掉）。
@@ -413,5 +419,29 @@ ssh 43.136.18.54 'sha256sum /var/www/portal/index.html /var/www/portal/admin.htm
 | 管理员判定没被删 | `grep "role === 'admin'"`，`/auth/me`、`api/status`、`api/links` 原样 |
 | 资源仍是相对路径 | 不能出现 `/assets/` 这种根路径（部署在 `/Portal/` 子路径下） |
 | 字体引用没断、没引外部 CDN | `grep "../font/"`；`grep -o 'https\?://[^"]*'` 只应命中 GitHub 链接 |
+
+### 8.7 `/admin` 一片空白（已修）
+
+**症状**：管理员打开 `https://fakenewsdetect.art/admin` 是白页（`curl` 明明返回 200、16KB）。
+
+**根因**：`admin.html` 的头部和两个面板用了 `class="… reveal"`，
+而 `.reveal` 的初始态是 `opacity: 0`，要靠 `index.html` 里那段 **IntersectionObserver**
+加 `.in` 才会显形 —— **`admin.html` 根本没有那段 JS**。于是元素永远停在透明态。
+（`#denied` 那个面板没有 `reveal`，所以"非管理员"反而看得见东西，只有管理员是白页。）
+
+这个坑从第一版就在，只是之前一直只用 `curl` 验过管理台，没在浏览器里看过。
+
+**改法**：
+
+- 去掉 `admin.html` 上全部三处 `reveal`，并在文件里写明"本页不要用 `.reveal`"；
+- 顺手给 `whoami()` 加 try/catch —— 它原来会把异常抛出去，让下面的 `gate()` 永不执行，
+  两个面板都保持 `hidden`，同样是白页；再给 `main()` 套一层兜底 catch，
+  任何意外都至少把 403 面板显示出来而不是留白。
+
+**验收**：用桩数据在本地把 `admin.html` 渲染了一遍（stub 掉 `/auth/me` 返回管理员、
+`/Portal/api/status` 返回假的 PM2 列表），进程表、主机表、首页入口面板全部正常显示。
+
+> 教训：`.reveal` 是**依赖 JS 才会显形**的类。往任何新页面搬的时候，
+> 要么带上那段 IntersectionObserver，要么干脆别用。
 
 

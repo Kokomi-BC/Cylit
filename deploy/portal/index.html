@@ -144,10 +144,12 @@ async function probe(url) {
 
 /* ---------- 卡片 ----------
    层级：编号/状态 → 项目名 → 简介 → 分类 · 路径 · 跳转按钮。
-   项目名、简介、分类、跳转地址全部来自 links.json —— 这里不写死任何项目。 */
+   项目名、简介、分类、跳转地址全部来自 links.json —— 这里不写死任何项目。
+   每张卡自带一个主题色（links.json 的 accent），用于编号、hover 描边与鼠标光影。 */
 function card(link, i) {
   const el = document.createElement('div');
   el.className = 'shell reveal';
+  if (link.accent) el.style.setProperty('--accent', link.accent);
   el.style.transitionDelay = `${i * 60}ms`;
   el.innerHTML = `
     <a class="core" href="${link.href}">
@@ -165,6 +167,13 @@ function card(link, i) {
         <span class="pill">进入<span class="ic" aria-hidden="true">↗</span></span>
       </div>
     </a>`;
+  /* 鼠标光影：把指针在卡片内的坐标写成 --mx/--my，CSS 拿它当径向渐变的圆心。
+     只写自定义属性，不碰布局，所以不会引起重排。 */
+  el.addEventListener('pointermove', (e) => {
+    const r = el.getBoundingClientRect();
+    el.style.setProperty('--mx', `${e.clientX - r.left}px`);
+    el.style.setProperty('--my', `${e.clientY - r.top}px`);
+  });
   return el;
 }
 

@@ -31,6 +31,12 @@
   --ease: cubic-bezier(.2, .7, .2, 1);
   --r-lg: 16px;
   --r-md: 12px;
+  /* 逐项目主题色（卡片上的 --accent）的用量。深色底上淡一点就够显，
+     浅色底要更浓才有对比 —— 所以按主题分别给值，而不是一条写死。 */
+  --mix-idx: 78%;
+  --mix-line: 45%;
+  --mix-glow: 16%;
+  --mix-tag: 62%;
   font-synthesis-weight: none;
 }
 
@@ -52,6 +58,10 @@
   --field-focus: #f5f6f1;
   --ok: #17855c;
   --bad: #c7475a;
+  --mix-idx: 62%;
+  --mix-line: 55%;
+  --mix-glow: 14%;
+  --mix-tag: 70%;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -234,15 +244,36 @@ h1 {
   border: 1px solid var(--hair);
   border-radius: var(--r-lg);
   background: var(--shell);
+  /* 每张卡自己的主题色：JS 从 links.json 的 accent 注入，缺省回落到站点绿。
+     --mx/--my 是指针在卡片内的坐标，鼠标光影用它当圆心。 */
+  --accent: var(--ok);
+  --mx: 50%;
+  --my: 40%;
   transition: transform .18s ease, border-color .18s ease, background-color .18s ease;
 }
+/* 鼠标光影：跟着指针走的柔光。
+   放 ::after 且 pointer-events:none，压在内容下面（.core 有 z-index:1），
+   不会挡住卡片里的链接与按钮，也不参与命中测试。 */
+.shell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(15rem 12rem at var(--mx) var(--my),
+              color-mix(in srgb, var(--accent) var(--mix-glow), transparent), transparent 64%);
+  transition: opacity .28s ease;
+}
+.shell:hover::after { opacity: 1; }
 .shell:hover {
   transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--ok) 32%, var(--hair));
+  border-color: color-mix(in srgb, var(--accent) var(--mix-line), var(--hair));
   background: var(--surface);
 }
 .core {
   position: relative;
+  z-index: 1;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -256,7 +287,7 @@ h1 {
 .core:focus-visible { outline: 2px solid var(--ok); outline-offset: -4px; }
 .core-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .idx {
-  color: var(--ink-3);
+  color: color-mix(in srgb, var(--accent) var(--mix-idx), var(--ink));
   font: 11px/1 ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-variant-numeric: tabular-nums;
   letter-spacing: .1em;
@@ -276,7 +307,9 @@ h1 {
   letter-spacing: .12em;
   text-transform: uppercase;
   white-space: nowrap;
+  transition: color .18s ease;
 }
+.shell:hover .svc-tag { color: color-mix(in srgb, var(--accent) var(--mix-tag), var(--ink-3)); }
 .host { min-width: 0; overflow: hidden; color: var(--ink-3); font: 11px/1.5 ui-monospace, 'SFMono-Regular', Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .pill {
   display: inline-flex;
@@ -294,7 +327,7 @@ h1 {
   transition: background-color .16s ease, border-color .16s ease;
 }
 .pill .ic { display: inline-block; font-size: 14px; transition: transform .16s ease; }
-.pill:hover { background: var(--surface-hover); }
+.pill:hover { background: var(--surface-hover); border-color: color-mix(in srgb, var(--accent) var(--mix-line), var(--hair)); }
 .pill:hover .ic { transform: translate(2px, -2px); }
 .pill:active { transform: scale(.98); }
 
@@ -467,7 +500,15 @@ select.f option { background: var(--surface); color: var(--ink); }
   .host { max-width: 46%; font-size: 10px; }
 }
 
+/* 触屏没有指针，跟着鼠标走的光影没有意义，直接不画（顺带省一层合成）。 */
+@media (hover: none) {
+  .shell::after { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
   .reveal, .reveal.in { opacity: 1 !important; transform: none !important; }
+  /* 光影是"跟着指针动"的效果，reduced-motion 下不该出现 */
+  .shell::after { display: none; }
+  .shell:hover { transform: none; }
 }

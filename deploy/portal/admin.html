@@ -27,6 +27,7 @@
     <span class="brand"><i class="mark"></i><b>管理控制台</b></span>
     <span class="nav-sep"></span>
     <a class="navlink" href="/Portal/">← 返回首页</a>
+    <a class="navlink" id="detectAdmin" href="/Admin" target="_blank" rel="noopener" hidden>Detect 后台<span class="ic" aria-hidden="true">↗</span></a>
     <button class="navlink theme-toggle" id="themeToggle" type="button" aria-label="切换页面主题" aria-pressed="false" title="切换页面主题">
       <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.8"></circle><path d="M12 2.5v2.1M12 19.4v2.1M4.8 4.8l1.5 1.5M17.7 17.7l1.5 1.5M2.5 12h2.1M19.4 12h2.1M4.8 19.2l1.5-1.5M17.7 6.3l1.5-1.5"></path></svg>
       <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.4 8.4 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"></path></svg>
@@ -37,7 +38,7 @@
 </div>
 
 <div class="wrap">
-  <header class="admin-head reveal">
+  <header class="admin-head">
     <span class="eyebrow">Admin Console</span>
     <h1>服务器管理控制台</h1>
     <div class="role-badge" id="roleBadge"><i class="dot"></i><span>正在校验身份…</span></div>
@@ -59,7 +60,7 @@
 
   <!-- 有权限 -->
   <div id="console" hidden>
-    <section class="panel reveal">
+    <section class="panel">
       <div class="shell" style="--accent:#34d399">
         <div class="core">
           <div class="panel-title"><h2>进程与负载</h2><span id="statusStamp">—</span></div>
@@ -78,7 +79,7 @@
       </div>
     </section>
 
-    <section class="panel reveal">
+    <section class="panel">
       <div class="shell" style="--accent:#a78bfa">
         <div class="core">
           <div class="panel-title"><h2>首页入口</h2><span>保存后立即生效，无需重启</span></div>
@@ -174,12 +175,21 @@ function toast(msg, err) {
   t._h = setTimeout(() => t.classList.remove('show'), 3000);
 }
 
-/* ---------- 身份 ---------- */
+/* ---------- 身份 ----------
+   ⚠️ 这个页面**不要**用 `.reveal`：那个类的初始态是 opacity:0，要靠
+   index.html 里的 IntersectionObserver 加 `.in` 才会显形，而本页没有那段逻辑 ——
+   加了就是"管理员登录后看到一片空白"（2026-10-15 用户报的 /admin 为空）。
+   同理 whoami() 必须自己吞掉异常：抛出去会让下面的 gate() 永远不执行，
+   两个面板都保持 hidden，页面同样是一片白。 */
 async function whoami() {
-  const r = await fetch('/auth/me', { credentials: 'include' });
-  if (!r.ok) return { ok: false, code: r.status };
-  const j = await r.json();
-  return { ok: true, user: j.user };
+  try {
+    const r = await fetch('/auth/me', { credentials: 'include' });
+    if (!r.ok) return { ok: false, code: r.status };
+    const j = await r.json();
+    return { ok: true, user: j.user };
+  } catch {
+    return { ok: false, code: 0 };
+  }
 }
 
 function gate(state) {
@@ -188,6 +198,7 @@ function gate(state) {
     badge.classList.add('admin');
     badge.innerHTML = `<i class="dot up"></i><span>管理员 · ${esc(state.user.username)}（ID ${state.user.id}）</span>`;
     $('#who').hidden = false;
+    $('#detectAdmin').hidden = false;
     $('#console').hidden = false;
     return true;
   }
@@ -351,10 +362,18 @@ $('#save').addEventListener('click', async () => {
 /* ---------- 启动 ---------- */
 (async function main() {
   $('#footStamp').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
-  const state = await whoami();
-  if (!gate(state)) return;
-  await Promise.all([loadStatus(), loadLinks()]);
-  setInterval(loadStatus, 15000);
+  try {
+    const state = await whoami();
+    if (!gate(state)) return;
+    await Promise.all([loadStatus(), loadLinks()]);
+    setInterval(loadStatus, 15000);
+  } catch (e) {
+    // 兜底：任何没预料到的异常都不该让这一页留白
+    toast(`页面初始化失败：${e.message}`, true);
+    $('#denied').hidden = false;
+    $('#deniedTitle').textContent = '页面初始化失败';
+    $('#deniedMsg').textContent = String(e.message || e);
+  }
 })();
 </script>
 </body>
