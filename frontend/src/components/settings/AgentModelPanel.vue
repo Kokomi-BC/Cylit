@@ -157,7 +157,7 @@ onMounted(() => {
         <span v-else class="badge ok">默认</span>
       </div>
       <div class="card-body">
-        <textarea v-model="styleText" rows="3" :maxlength="STYLE_MAX"
+        <textarea v-model="styleText" rows="4" :maxlength="STYLE_MAX" class="style-input"
                   placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
         <p class="tiny faint">
           改的是"你是谁、什么语气"。<b>规则改不动</b>：只管这一篇论文、跑题直接拒绝、
@@ -260,7 +260,28 @@ onMounted(() => {
 .kv .v { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .warn-line { display: flex; align-items: center; gap: 5px; color: var(--warn); margin: 10px 0 0; }
-/* 对话风格：输入框走 base.css 的全局表单样式（白底 + 描边 + 聚焦光环），这里只补排布。 */
+/* 对话风格编辑框（用户口径 2026-10-15："太丑了，不符合风格"）：
+   全局那条 `input, select, textarea` 是给**表单控件**写的（白底 + 深色描边 + 聚焦时一整圈 accent 光环），
+   而且**没给宽度** —— `<textarea>` 就按 `cols=20` 撑成一条 300px 的小白框，摆在整宽卡片里格外扎眼。
+   这里换成笔记编辑框（`ReaderSidePanel`）同一门语言：整宽 + 淡底 + 发丝描边，
+   聚焦只把描边点亮一档（不要 `--ring` 那圈光晕）；高度给足（风格本来就该写好几行）。
+   `resize: none` 同笔记编辑框：浏览器自带的右下角斜纹角标是另一个"控件感"的来源，
+   要更多空间就往上滚，别为了可拖拽留一个丑角标。 */
+.style-input {
+  display: block; width: 100%; box-sizing: border-box;
+  min-height: 128px; padding: 11px 13px;
+  border: 1px solid var(--divider); border-radius: var(--r-sm);
+  background: var(--bg-layer); color: var(--text);
+  font: inherit; font-size: 13px; line-height: 1.75; resize: none;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+/* 覆盖全局的 `textarea:hover { background: var(--bg-hover) }`（鼠标一过就闪一下灰） */
+.style-input:hover { background: var(--bg-layer); border-color: var(--border-strong); }
+.style-input:focus {
+  outline: none; box-shadow: none; background: var(--bg-elev);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.style-input::placeholder { color: var(--text-faint); }
 .style-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .style-default {
   margin: 10px 0 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
