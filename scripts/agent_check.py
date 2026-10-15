@@ -723,7 +723,7 @@ def check_conversations(base: str) -> None:
 
 #: 造一条"思考 / 正文 / 工具夹杂"的轨迹用的假数据（形状与 `agent/trace.py` 一致）
 RUN_STEPS = [
-    {"kind": "stage", "round": 0, "text": "正在这篇论文里检索…"},
+    {"kind": "stage", "round": 0, "text": "正在阅读并组织回答…"},
     {"kind": "thinking", "round": 1, "text": "用户问的是核心贡献。"},
     {"kind": "tool", "round": 1, "tool": "paper_search", "digest": "query=multi-head",
      "status": "done", "ms": 312},

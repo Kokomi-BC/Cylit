@@ -66,8 +66,8 @@ NO_EVIDENCE = """回答格式：
 #
 # 为什么分成两堆：system 在请求最前面，provider 的前缀缓存是**从第 0 个 token 起比前缀**的 ——
 # 这里只要变一个字节，`system + 全部历史` 就都按未命中计费（DeepSeek 命中部分约 0.1×）。
-# 2026-10-03 之前 selection_block / image_block / evidence_note 都拼在 system 里，
-# 于是"划词问一次的下一轮"、"检索分低的那一轮"都会把整段前缀打掉，下一轮块消失又打一次。
+# 2026-10-03 之前 selection_block / image_block 都拼在 system 里，
+# 于是"划词问一次的下一轮"都会把整段前缀打掉，下一轮块消失又打一次。
 # 现在：规则常驻（下面这三块），每轮的值走 `turn_notes()` → `runtime._user_prompt()` 拼到最后。
 # --------------------------------------------------------------------------
 
@@ -177,8 +177,6 @@ def turn_notes(deps: Deps) -> str:
         items.append(selection_block(deps))
     if deps.attachments:
         items.append(image_block(deps))
-    if deps.evidence_note:
-        items.append(deps.evidence_note)
     if not items:
         return ""
     return "【本轮备注】\n" + "\n\n".join(items)

@@ -157,15 +157,6 @@ class Settings(BaseSettings):
     #: 注入模型的证据条数 / 字符上限（百万上下文也不是无限免费，仍要设闸）
     agent_evidence_limit: int = 12
     agent_evidence_chars: int = 24000
-    #: 证据闸的**相关度下限**（重排模型给的最高分）。
-    #:
-    #: 为什么需要它：向量检索**永远**会返回 top-k，"有没有命中"本身不携带信息，
-    #: 不带阈值时护栏永远不会触发（"论文里没写"这类问题会被硬答）。
-    #: 实测（qwen3-vl-rerank，Attention Is All You Need）：真问题最高分 0.86~0.87，
-    #: 无关问题 0.44~0.59 → 0.65 落在两者之间。
-    #: ⚠️ 只在**真重排模型**上生效：启发式降级那套是词重合度，量纲完全不同，
-    #: 拿它比阈值会把整库问答全部挡掉。
-    agent_evidence_floor: float = 0.65
     #: 单轮预注入的档案 + 大纲字符上限
     agent_archive_chars: int = 6000
     #: 会话上下文的"预算"（tiktoken 估算的 token 数）。**不是模型的硬上限**（模型是百万上下文），

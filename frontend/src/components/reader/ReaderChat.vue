@@ -267,7 +267,6 @@ const TOOL_STEPS: Record<string, string> = {
   formula_get: '取公式', translate_get: '取译文',
   library_list: '翻书架', notes_search: '查笔记',
   page_markdown_edit: '修订产物',
-  __presearch__: '预读材料',
 };
 
 /** 工具 → 图标（用站点已有的那套；没有对应项的退回 `bolt`）。 */
@@ -278,12 +277,11 @@ const TOOL_ICONS: Record<string, string> = {
   formula_get: 'formula', translate_get: 'translate',
   library_list: 'library', notes_search: 'note',
   page_markdown_edit: 'edit',
-  __presearch__: 'search',
 };
 
 /** 抬头右侧那句话的**分类**：与 DSH 的"已读取文件，已搜索代码"同一种写法。 */
 const TOOL_SUMMARY: Array<[string[], string]> = [
-  [['paper_search', 'kb_search', '__presearch__'], '已检索'],
+  [['paper_search', 'kb_search'], '已检索'],
   [['page_markdown_get', 'block_get'], '已读正文'],
   [['page_image_get', 'figure_image_get', 'figure_list'], '看过插图'],
   [['formula_get'], '看过公式'],

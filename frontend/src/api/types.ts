@@ -814,7 +814,7 @@ export interface AgentStep {
   /** `stage` / `thinking` 的文本（思考可能被后端截断，`truncated` 标记） */
   text?: string;
   truncated?: boolean;
-  /** `tool` 的工具名（`__presearch__` = 宿主的预检索） */
+  /** `tool` 的工具名（`paper_search` / `page_markdown_get` 这类，由模型自己调） */
   tool?: string;
   /** 工具入参摘要（"query=随机旋转 量化"） */
   digest?: string;
@@ -917,7 +917,6 @@ export interface AgentStatus {
     auto_compress_percent: number;
     deadline_seconds: number;
     attachment_inline_limit: number;
-    evidence_floor: number;
   };
 }
 

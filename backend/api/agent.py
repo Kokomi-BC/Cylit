@@ -61,7 +61,6 @@ async def agent_status(request: Request):
             "auto_compress_percent": s.agent_auto_compress_percent,
             "deadline_seconds": s.agent_deadline_seconds,
             "attachment_inline_limit": s.agent_attachment_inline_limit,
-            "evidence_floor": s.agent_evidence_floor,
         },
     }, request=request)
 

@@ -1,4 +1,4 @@
-"""一轮问答的编排：档案预注入 → 证据闸 → agent 循环 → 引用分配 → 清洗 → SSE 事件。
+"""一轮问答的编排：agent 循环 → 引用分配 → 清洗 → SSE 事件。
 
 抄 retain-pdf 的机制落在这里（`docs/agent-接入规划.md` §3）：
 
@@ -7,8 +7,12 @@
 - **M6 清洗**：`StreamingAnswerSanitizer` 对累积原文批量清洗，只推安全前缀；
 - **M8 deadline**：总时限只在"还能省事"的位置检查，**落库之后不再检查**。
 
-比参考实现简单的一处：它的证据闸要判断"模型该不该去检索"，我们的检索是**宿主主动**跑的
-（`_presearch`），所以闸门就是一次函数调用 —— 没有证据就不进模型，直接给护栏文案。
+⚠️ **宿主不再预读材料**（用户口径 2026-10-15：「移除对话的预读取内容逻辑」）：
+这里原先在进模型之前先跑一次 `_presearch`（宿主自己检索一遍，UI 上显示成「预读材料」），
+并据此决定"证据够不够、要不要直接给护栏文案"。到 2026-10-07 删掉的是**档案预注入**
+（那段拼进 system 的论文档案），而这次把**预检索**本身也去掉了：
+要什么材料由模型自己调 `paper_search` / `page_markdown_get` 去拿 —— 这与
+"agent 不需要每轮预读材料"是同一条口径，只是上一轮只删了一半。
 """
 
 from __future__ import annotations
@@ -43,19 +47,6 @@ from backend.agent.workspace import VIRTUAL_ROOT, ReadOnlyWorkspace
 from backend.core.logging import get_logger
 
 log = get_logger(__name__)
-
-#: 检索完全没有命中、档案也没有实质内容 → 不进模型，直接给这句话（规划 §7.6）
-GUARDRAIL_NO_EVIDENCE = (
-    "这篇论文里没有检索到与这个问题相关的内容，我无法基于它可靠回答。"
-    "可以换一个更贴近论文用词的说法（比如直接用它自己的术语）再问一次。"
-)
-
-#: 低相关度提醒（软信号，给模型看的）
-EVIDENCE_NOTE = (
-    "【本轮检索提示】检索回来的材料相关度偏低（最高 {score:.2f}，参考线 {floor:.2f}）。"
-    "它们很可能答不了这个问题 —— 请先判断材料里到底有没有依据：有就只依据它回答，"
-    "没有就直说这篇论文里没有相关内容，不要用这些不相关片段凑答案。"
-)
 
 #: 压缩摘要在历史里挂的抬头（见 `_history`）
 SUMMARY_LABEL = "【之前对话的压缩摘要（更早的内容都在这里）】\n"
@@ -384,20 +375,16 @@ class AgentRuntime:
             # 档案**不再预注入**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
             # 模型要背景就自己调 `paper_archive_get`。这里仍然问一次宿主，但只为两件与提示词无关的事：
             # ① 页数（工具解析 "3-8" / "all" 要用，拿不到也能按需补）；
-            # ② "这篇论文有没有实质背景"（决定检索没命中时要不要直接护栏 —— 不花模型调用）。
+            # ② `content_source` 这个事件字段（前端不用它，留给自检/排查看）。
             archive = await self.host.archive(req.paper_id)
             deps.title = str(archive.get("title") or "")
             deps.page_total = int(archive.get("page_total") or 0)
             log.debug("论文档案就绪（不注入提示词）：%s %d 页", deps.title[:40], deps.page_total)
 
-            yield {"type": "stage", "stage": "retrieving", "message": "正在这篇论文里检索…"}
-            state.log.stage("正在这篇论文里检索…")
-            found = await self._presearch(req, deps, state)
             # 划词提问：把选区所在的块登记成 ref，模型就能自己展开上下文（见 prompts.SELECTION）
             if req.selection:
                 await self._prepare_selection(req, deps)
-            # 档案算不算"证据"：只有**实质内容**（领域/主要论断）才算。章节大纲不算 ——
-            # 光有一串小标题答不了"核心贡献是什么"，拿它当依据等于给模型一个错觉。
+            # 档案算不算"实质背景"：只有**领域/主要论断**才算，光有一串小标题不算
             brief = archive.get("brief") or {}
             archive_evidence = bool(brief.get("domain") or brief.get("key_claims"))
 
@@ -406,21 +393,14 @@ class AgentRuntime:
                    "skills": [s["name"] for s in await self.skill_list()],
                    "content_source": ("selection" if deps.selection
                                       else ("image" if req.attachments
-                                            else ("search" if found
-                                                  else ("archive" if archive_evidence
-                                                        else "none"))))}
+                                            else ("archive" if archive_evidence
+                                                  else "none")))}
 
-            # 划词选区本身就是证据（用户指着这段问的），图片同理（用户自己给的材料），
-            # 都不能因为检索没命中就挡回去
-            if (not found and not archive_evidence and not deps.selection
-                    and not req.attachments):
-                state.text = GUARDRAIL_NO_EVIDENCE
-                state.incomplete_reason = "no_evidence"
-                state.elapsed_ms = int((time.perf_counter() - t0) * 1000)
-                async for ev in self._finalize(req, deps, state):
-                    yield ev
-                return
-
+            # ⚠️ 这里原先有一道"证据闸"：宿主预检索没命中 + 档案没实质内容 + 不是划词/图片
+            # → 不进模型，直接回 GUARDRAIL_NO_EVIDENCE。预检索去掉之后它没有依据可判了，
+            # 一并删除：**每一轮都进模型**，由模型自己检索、自己按提示词里的证据规则判断
+            # "材料里到底有没有依据"（问不相关的问题就直说没有，这与护栏文案同一个效果，
+            # 只是多花一次模型调用）。
             yield {"type": "stage", "stage": "reading", "message": "正在阅读并组织回答…"}
             state.log.stage("正在阅读并组织回答…")
             async for ev in self._stream_model(req, deps, state, deadline, t0):
@@ -544,54 +524,6 @@ class AgentRuntime:
             ids=(block_id,), row_id=row_id or None)
         deps.selection_ref = citation.ref
         deps.selection_page = citation.page
-
-    # ---------------- 证据闸 ----------------
-    async def _presearch(self, req: AskRequest, deps: Deps, state: RunState) -> bool:
-        """宿主主动检索一次，把命中登记进引用表（这是"证据"的定义之一）。
-
-        为什么要宿主来跑而不是等模型调 `paper_search`：证据闸要能在**进模型之前**判断
-        "这次有没有依据"。交给模型就变成"模型自己决定要不要有依据"，护栏文案就没地方放了。
-
-        **阈值只在真重排模型上生效**：向量检索永远返回 top-k，裸看"有没有命中"等于没闸；
-        而启发式降级那套是词重合度，量纲与重排分完全不同，拿它比阈值会把问答全挡掉。
-        """
-        try:
-            data = await self.host.search(req.paper_id, req.question,
-                                          top_k=self.cfg.search_top_k)
-        except HostError as exc:
-            log.warning("预检索失败（不算致命，档案仍可用）：%s", exc.message)
-            return False
-        items = list(data.get("items") or [])[:self.cfg.evidence_limit]
-        deps.page_total = deps.page_total or int(data.get("page_total") or 0)
-        top_score = float(data.get("top_score") or 0.0)
-        degraded = bool(data.get("rerank_degraded", True))
-        deps.trace.append({
-            "tool": "__presearch__", "status": "ok", "ms": 0, "detail": "",
-            "args": {"returned": len(items), "top_score": round(top_score, 4),
-                     "rerank_degraded": degraded, "floor": self.cfg.evidence_floor},
-        })
-        # 过程轨迹里也留一条：用户看到的"它一上来就检索了"就是这一步（工具步骤 + 命中条数）
-        step = state.log.tool_start("__presearch__", round=0,
-                                    digest=f"命中 {len(items)} 条")
-        step["status"] = "done"
-        step.pop("_t0", None)
-        step["ms"] = 0
-        if not items:
-            return False
-        if not degraded and top_score < self.cfg.evidence_floor:
-            # ⚠️ **不在这里拦**：实测这个阈值不可靠（同一个无关问题，问句写长一点
-            # 重排分就从 0.44 涨到 0.68，而真问题最低也只有 0.70）—— 拿它当硬闸会把
-            # 真问题误杀。所以只把信号交给模型，由它判断"材料里到底有没有依据"。
-            deps.evidence_note = EVIDENCE_NOTE.format(score=top_score,
-                                                     floor=self.cfg.evidence_floor)
-            log.info("检索相关度偏低（%.3f < %.2f），已提示模型自行判断",
-                     top_score, self.cfg.evidence_floor)
-        for raw in items:
-            cit = _register_chunk_plain(deps, raw)
-            log.debug("预检索命中 ref=%s page=%s", cit.ref, cit.page)
-        # 宿主这次预检索也占一格检索预算（它是真打了一次后端）
-        deps.search_calls += 1
-        return True
 
     # ---------------- 模型流 ----------------
     async def _stream_model(self, req: AskRequest, deps: Deps, state: RunState,
@@ -938,21 +870,6 @@ def _digest(args: Any) -> str:
             bits.append(f"{key}={str(text)[:40]}")
         return "、".join(bits)[:120]
     return str(args)[:120]
-
-
-def _register_chunk_plain(deps: Deps, item: dict):
-    """不依赖 RunContext 的命中登记（预检索在工具之外跑，拿不到 ctx）。"""
-    from backend.agent.tools import _clip, _locate
-
-    chunk_id = str(item.get("chunk_id") or "")
-    section = item.get("section") or None
-    page = int(item.get("page_no") or item.get("page") or 0) or None
-    return deps.registry.assign(
-        key=f"chunk:{chunk_id}", kind="chunk", page=page, section=section,
-        block_id=item.get("block_id"),
-        snippet=_clip(item.get("translation") or item.get("content") or ""),
-        label=_locate(page, section, item.get("chunk_type") or ""),
-        ids=(chunk_id,) if chunk_id else ())
 
 
 def format_sse(event: dict) -> str:

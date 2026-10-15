@@ -2,13 +2,13 @@
 
 为什么要单独一个模块：这是"这一轮它到底干了什么"的**唯一形状定义**，三方共用 ——
 
-- 运行时按事件往里写（`runtime._translate` / `_presearch` / `ask` 的阶段提示）；
+- 运行时按事件往里写（`runtime._translate` / `ask` 的阶段提示）；
 - SSE 的 `done` 把它整份发给前端（前端流式期间自己拼一份，收到权威值后覆盖）；
 - 落库（`conversation_message.run_json`），重开会话、翻旧消息时读的就是它。
 
 形状（前端照着渲染，别再各自发明）::
 
-    {"steps": [{"kind": "stage",    "round": 1, "text": "正在这篇论文里检索…"},
+    {"steps": [{"kind": "stage",    "round": 1, "text": "正在阅读并组织回答…"},
                {"kind": "thinking", "round": 1, "text": "用户问的是…"},
                {"kind": "tool",     "round": 1, "tool": "paper_search",
                 "digest": "query=随机旋转", "status": "done", "ms": 312}],

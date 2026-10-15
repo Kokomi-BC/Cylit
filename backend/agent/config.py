@@ -33,7 +33,6 @@ class AgentConfig:
     edit_budget: int
     evidence_limit: int
     evidence_chars: int
-    evidence_floor: float
     archive_chars: int
     image_max_pages: int
     image_max_dpi: int
@@ -74,7 +73,6 @@ def load() -> AgentConfig:
         edit_budget=int(s.agent_edit_budget),
         evidence_limit=int(s.agent_evidence_limit),
         evidence_chars=int(s.agent_evidence_chars),
-        evidence_floor=float(s.agent_evidence_floor),
         archive_chars=int(s.agent_archive_chars),
         image_max_pages=int(s.agent_image_max_pages),
         image_max_dpi=int(s.agent_image_max_dpi),

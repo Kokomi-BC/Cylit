@@ -30,10 +30,9 @@ def _deps(**kw) -> Deps:
 
 
 def _rich() -> Deps:
-    """带齐"每轮会变"的三样的 deps：划词选区 + 图片 + 低相关度提示。"""
+    """带齐"每轮会变"的那两样的 deps：划词选区 + 图片。"""
     return _deps(selection="Instead of performing a single attention function", selection_ref=7,
-                 selection_page=4, attachments=3, attachments_shown=1,
-                 evidence_note="【本轮检索提示】检索回来的材料相关度偏低（最高 0.42，参考线 0.65）。")
+                 selection_page=4, attachments=3, attachments_shown=1)
 
 
 def test_system_prompt_is_byte_stable_for_a_paper() -> None:
