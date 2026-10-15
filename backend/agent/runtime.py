@@ -187,6 +187,19 @@ class AgentRuntime:
         self._model_cfg: dict = {}
         self._model_at = 0.0
         self._model_lock = asyncio.Lock()
+        #: 最近一次取到的**风格**。空串 = 还没取到过（那时才用 `prompts.DEFAULT_STYLE`）。
+        #: 为什么要存：风格在 system 最前面，前缀缓存是从第 0 个 token 起比的 ——
+        #: 一次取失败就从"猫娘"跳回默认，那一轮的 `system + 全部历史` 整段作废，
+        #: 下一轮取回来又作废一次。**沿用上一次**只慢一个设置页改动，不制造这种来回跳。
+        self._style: str = ""
+
+    async def _fetch_style(self) -> str:
+        """取风格；失败走"沿用上一次"（理由见 `self._style` 的注释）。"""
+        try:
+            self._style = str((await self.host.style()).get("style") or "")
+        except HostError as exc:
+            log.warning("取问答风格失败，沿用上一次（%d 字）：%s", len(self._style), exc.message)
+        return self._style
 
     # ---------------- 资源 ----------------
     def workspace(self) -> ReadOnlyWorkspace:
@@ -382,14 +395,10 @@ class AgentRuntime:
             log.debug("论文档案就绪（首轮附摘要；档案本身仍不预注入）：%s %d 页",
                       deps.title[:40], deps.page_total)
 
-            # 风格（设置页「论文对话 → 对话风格」可改）：拼在 system 最前面，所以**每轮都取**，
-            # 改完下一句就生效。取不到就用内置默认 —— 这是提示词层面的东西，
-            # 绝不能让整轮问答因为它失败（宿主老版本 / 设置表读不到都算）。
-            try:
-                profile = await self.host.style()
-                deps.style = str(profile.get("style") or "")
-            except HostError as exc:
-                log.warning("取问答风格失败，用默认风格：%s", exc.message)
+            # 风格（设置页「论文问答 → 对话风格」可改）：拼在 system **最前面**，所以每轮都取，
+            # 改完下一句就生效。取失败时**沿用上一次取到的**（见 `_fetch_style`）——
+            # 两种值来回跳会让每一轮的 system 前缀都不一样，缓存全废。
+            deps.style = await self._fetch_style()
 
             # **首轮**附论文摘要（用户口径 2026-10-15）：判据就是"主后端这次给没给历史"，
             # 第一条消息天然没有历史。摘要走**用户消息**（`prompts.abstract_block`），

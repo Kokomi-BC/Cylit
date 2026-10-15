@@ -128,6 +128,37 @@ def test_style_service_reads_the_setting_and_falls_back(monkeypatch) -> None:
                                         "default": prompts.DEFAULT_STYLE}
 
 
+def test_style_fetch_reuses_the_last_value_instead_of_flapping() -> None:
+    """取风格失败时**沿用上一次**，不回落默认（2026-10-15，用户问"会不会影响旧对话的缓存"）。
+
+    风格在 system **最前面**：一次取失败就跳回默认，那一轮 `system + 全部历史` 整段作废，
+    下一轮取回来又作废一次 —— 一次网络抖动能连坏两轮缓存。沿用上一次只慢"设置页改完的
+    那几秒"，不制造来回跳。
+    """
+    from backend.agent.host import HostError
+
+    class _Host:
+        def __init__(self) -> None:
+            self.value, self.boom = "你是猫娘，喵。", False
+
+        async def style(self) -> dict:
+            if self.boom:
+                raise HostError("宿主暂时读不到设置")
+            return {"style": self.value, "custom": True, "default": prompts.DEFAULT_STYLE}
+
+    rt = AgentRuntime.__new__(AgentRuntime)   # 只测取风格这一小段：不建 workspace / skills
+    rt._style = ""
+    host = _Host()
+    rt.host = host
+
+    assert asyncio.run(rt._fetch_style()) == "你是猫娘，喵。"
+    host.boom = True
+    assert asyncio.run(rt._fetch_style()) == "你是猫娘，喵。", "取失败要沿用上一次"
+    host.boom, host.value = False, ""
+    assert asyncio.run(rt._fetch_style()) == "", "宿主明确回了空（= 恢复默认）就照收"
+    assert prompts.build_instructions(_deps(style="")).startswith(prompts.DEFAULT_STYLE)
+
+
 def test_style_default_import_stays_light() -> None:
     """主后端要读默认风格（设置页要显示它、要能恢复），而 `services/agent/__init__` 写着
     "本包不能把 pydantic-ai 拉进主后端的导入图"。

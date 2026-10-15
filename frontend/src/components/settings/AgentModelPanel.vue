@@ -13,8 +13,10 @@
  * 但**对话风格**（提示词里唯一可改的那一段）就地可编辑：它不属于任何模型，
  * 存的是 setting 表的 `agent_style`（`PUT /settings`），**留空保存 = 恢复默认**
  * （后端删掉那一行，读取点回落到 `agent/prompts.DEFAULT_STYLE`）。
+ * 版式：**非编辑态只读**（点正文进编辑），保存 / 恢复默认 / 取消只在编辑态出现；
+ * 恢复默认顺便把默认那段填回编辑框（原来那个「看默认风格」的活它一起干了）。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
 import { reportError, toast } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
@@ -36,7 +38,10 @@ const styleSaved = ref('');
 const styleCustom = ref(false);
 const styleDefault = ref('');
 const styleBusy = ref(false);
-const styleShowDefault = ref(false);
+/** 编辑态：只有进了编辑态才显示按钮（用户口径 2026-10-15："按钮在未处于编辑状态时隐藏"）。
+ *  入口是**点正文**（不是按钮）—— 非编辑态一个按钮都不摆。 */
+const styleEditing = ref(false);
+const styleEl = ref<HTMLTextAreaElement | null>(null);
 const styleDirty = computed(() => styleText.value.trim() !== styleSaved.value.trim());
 
 async function loadStyle() {
@@ -54,7 +59,26 @@ async function loadStyle() {
   }
 }
 
-/** 保存；``text`` 为空串就是**恢复默认**（后端删行，不是存一段空风格）。 */
+/** 进编辑态：先让编辑框等于"服务器上那一份"，光标停在末尾。 */
+async function startEditStyle() {
+  if (styleEditing.value) return;
+  styleText.value = styleSaved.value;
+  styleEditing.value = true;
+  await nextTick();
+  const el = styleEl.value;
+  el?.focus();
+  el?.setSelectionRange(el.value.length, el.value.length);
+}
+
+/** 退出编辑态：丢掉没保存的改动。 */
+function cancelStyle() {
+  styleText.value = styleSaved.value;
+  styleEditing.value = false;
+}
+
+/** 保存；``text`` 为空串就是**恢复默认**（后端删行，不是存一段空风格）。
+ *  恢复默认顺便把默认那段填回编辑框 —— 这就是原来那个「看默认风格」要做的事，
+ *  一个按钮干完（用户口径 2026-10-15："看默认风格改成恢复默认"）。 */
 async function saveStyle(text: string) {
   styleBusy.value = true;
   try {
@@ -62,6 +86,7 @@ async function saveStyle(text: string) {
     styleSaved.value = String(data.values?.agent_style ?? styleDefault.value);
     styleText.value = styleSaved.value;
     styleCustom.value = !!text.trim();
+    styleEditing.value = false;
     toast(text.trim() ? '对话风格已保存，下一句就生效' : '已恢复默认风格');
   } catch (err) {
     reportError(err, '保存对话风格失败');
@@ -148,7 +173,8 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- ① 对话风格：提示词里唯一可改的一段 -->
+    <!-- ① 对话风格：提示词里唯一可改的一段。
+         非编辑态只读（点正文进编辑），按钮只在编辑态出现。 -->
     <section class="card">
       <div class="card-head">
         <AppIcon name="sparkle" :size="14" />对话风格
@@ -157,28 +183,29 @@ onMounted(() => {
         <span v-else class="badge ok">默认</span>
       </div>
       <div class="card-body">
-        <textarea v-model="styleText" rows="4" :maxlength="STYLE_MAX" class="style-input"
-                  placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
-        <p class="tiny faint">
-          改的是"你是谁、什么语气"。<b>规则改不动</b>：只管这一篇论文、跑题直接拒绝、
-          引用要带 [ref]、没证据就说没有、改产物要先读后写 —— 这些写死在代码里。
-          改完<b>下一句问答就生效</b>；留空保存 = 用回默认。
-        </p>
-        <div class="style-actions">
-          <button class="btn primary sm" :disabled="styleBusy || !styleDirty"
-                  @click="saveStyle(styleText)">
-            <AppIcon name="check" :size="15" />保存
-          </button>
-          <button class="btn sm" :disabled="styleBusy || !styleCustom" @click="saveStyle('')">
-            <AppIcon name="refresh" :size="15" />恢复默认
-          </button>
-          <button class="btn sm" @click="styleShowDefault = !styleShowDefault">
-            {{ styleShowDefault ? '收起默认' : '看默认风格' }}
-          </button>
-          <span class="spacer"></span>
-          <span class="tiny faint mono">{{ styleText.length }} / {{ STYLE_MAX }}</span>
-        </div>
-        <pre v-if="styleShowDefault" class="style-default tiny">{{ styleDefault }}</pre>
+        <p v-if="!styleEditing" class="style-view" title="点击编辑"
+           role="button" tabindex="0"
+           @click="startEditStyle"
+           @keydown.enter.prevent="startEditStyle"
+           @keydown.space.prevent="startEditStyle">{{ styleSaved }}</p>
+        <template v-else>
+          <textarea ref="styleEl" v-model="styleText" rows="4" :maxlength="STYLE_MAX"
+                    class="style-input" @keydown.esc="cancelStyle"
+                    placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
+          <div class="style-actions">
+            <button class="btn primary sm" :disabled="styleBusy || !styleDirty"
+                    @click="saveStyle(styleText)">
+              <AppIcon name="check" :size="15" />保存
+            </button>
+            <button class="btn sm" :disabled="styleBusy || (!styleCustom && !styleDirty)"
+                    @click="saveStyle('')">
+              <AppIcon name="refresh" :size="15" />恢复默认
+            </button>
+            <button class="btn sm" :disabled="styleBusy" @click="cancelStyle">取消</button>
+            <span class="spacer"></span>
+            <span class="tiny faint mono">{{ styleText.length }} / {{ STYLE_MAX }}</span>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -282,10 +309,22 @@ onMounted(() => {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 .style-input::placeholder { color: var(--text-faint); }
-.style-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.style-default {
-  margin: 10px 0 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
-  background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text-dim); line-height: 1.7;
+/* 非编辑态：同一只盒子里放**读**的正文，点一下进编辑（用户口径 2026-10-15：
+   "按钮在未处于编辑状态时隐藏" —— 所以入口是正文本身，不是一个"编辑"按钮）。
+   `cursor: text` 而不是 pointer：它本来就是"点进输入框"的手感；
+   `min-height` 与输入框取同一个数，进出编辑态时卡片不会跳一下。 */
+.style-view {
+  margin: 0; padding: 11px 13px; box-sizing: border-box; min-height: 128px;
+  border: 1px solid var(--divider); border-radius: var(--r-sm);
+  background: var(--bg-layer); color: var(--text);
+  font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere;
+  cursor: text;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
+.style-view:hover { border-color: var(--border-strong); background: var(--bg-elev); }
+.style-view:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.style-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 </style>

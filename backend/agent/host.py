@@ -97,7 +97,9 @@ class HostClient:
         """问答**风格**（提示词里可改的那一段，设置页维护）。
 
         **每轮都取**、不缓存：它拼在 system 最前面，用户改完就该下一句生效。
-        返回 ``{style, custom, default}``；取不到时调用方用 `prompts.DEFAULT_STYLE` 兜底。
+        返回 ``{style, custom, default}``；失败抛 `HostError`，调用方
+        （`AgentRuntime._fetch_style`）会**沿用上一次取到的值**，不回落默认 ——
+        风格在 system 最前面，两种值来回跳会把每一轮的 `system + 全部历史` 都打成未命中。
         """
         return dict(await self.get("/agent/style") or {})
 
