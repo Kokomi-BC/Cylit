@@ -16,13 +16,29 @@
 | **`cylit-agent`** | 8711 | `/root/Cylit` | 内部，由 8710 转发 |
 | **`portal-api`** | 3090 | `/var/www/portal-api` | `https://fakenewsdetect.art/Portal/api/` |
 
-登录成功后的默认落点是**门户首页** `/Portal/`（改的是 Detect 的
-`Login.html` + `src/app.js`，脚本见 `patch-detect.py`，幂等）。
+### 从「进门」到「找到东西」的路径
+
+门户是这一站的**默认落点**：登录完、或者已登录时直接敲域名，都落到 `/Portal/`。
+Detect 自己的首页退到 `/Welcome`（门户上那张 Detect 卡片就指向它）。
+
+| 请求 | 未登录 | 已登录 |
+|---|---|---|
+| `/` | 302 → `/Login` | **302 → `/Portal/`** |
+| `/Login` | 200（登录表单） | 302 → `/Portal/` |
+| `/Welcome` | 302 → `/Login` | 200（Detect 首页） |
+| `/Portal/` | 200（门户，隐藏「管理入口」） | 200（管理员多一个「管理入口」） |
+
+> ⚠️ 门户上 Detect 那张卡片**不能**再指 `/` —— 已登录时 `/` 会跳回门户，变成一个死循环。
+> 它在 `links.json` 里指向 `/Welcome`。
+
+这些落点全在 Detect 里（`Login.html` + `src/app.js`），由 `deploy/patch-detect.py`
+幂等改写（每处锚点必须在文件里**恰好出现一次**，否则整体跳过，绝不做半吊子替换）。
 
 nginx 站点配置只有一个：`/etc/nginx/sites-available/detect.conf`
 （`sites-enabled/` 里只有它）。门户和 Cylit 的 location 通过
 `/etc/nginx/snippets/portal.conf`、`/etc/nginx/snippets/cylit.conf` include 进去，
 由 `deploy/patch-nginx.py` 幂等注入。
+
 
 **开放端口**：安全组只放了 80 / 443 / 26010 / 26020。
 所以门户挂在**域名的子路径** `/Portal/`，没有新开端口、也没换证书。

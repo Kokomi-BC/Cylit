@@ -18,10 +18,10 @@
       "id": "detect",
       "name": "Detect",
       "desc": "多模态假新闻检测平台：图文/视频多域识别、批量任务与可视化报告。",
-      "href": "/",
+      "href": "/Welcome",
       "tag": "Detection",
       "accent": "#a78bfa",
-      "probe": "/"
+      "probe": "/Welcome"
     },
     {
       "id": "blog",
