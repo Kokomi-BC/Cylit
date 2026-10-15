@@ -379,7 +379,25 @@ class AgentRuntime:
             archive = await self.host.archive(req.paper_id)
             deps.title = str(archive.get("title") or "")
             deps.page_total = int(archive.get("page_total") or 0)
-            log.debug("论文档案就绪（不注入提示词）：%s %d 页", deps.title[:40], deps.page_total)
+            log.debug("论文档案就绪（首轮附摘要；档案本身仍不预注入）：%s %d 页",
+                      deps.title[:40], deps.page_total)
+
+            # 风格（设置页「论文对话 → 对话风格」可改）：拼在 system 最前面，所以**每轮都取**，
+            # 改完下一句就生效。取不到就用内置默认 —— 这是提示词层面的东西，
+            # 绝不能让整轮问答因为它失败（宿主老版本 / 设置表读不到都算）。
+            try:
+                profile = await self.host.style()
+                deps.style = str(profile.get("style") or "")
+            except HostError as exc:
+                log.warning("取问答风格失败，用默认风格：%s", exc.message)
+
+            # **首轮**附论文摘要（用户口径 2026-10-15）：判据就是"主后端这次给没给历史"，
+            # 第一条消息天然没有历史。摘要走**用户消息**（`prompts.abstract_block`），
+            # 不走 system —— 只有首轮才有的东西放进 system，会让第 2 轮整段前缀缓存作废。
+            deps.first_turn = not req.history
+            meta = archive.get("meta") or {}
+            deps.abstract_en = str(meta.get("abstract") or "").strip()
+            deps.abstract_zh = str(meta.get("abstract_zh") or "").strip()
 
             # 划词提问：把选区所在的块登记成 ref，模型就能自己展开上下文（见 prompts.SELECTION）
             if req.selection:

@@ -7,20 +7,68 @@
  * 会调工具、吃长上下文。混在一张卡里说，用户就只会看到一个"生成模型"，
  * 然后奇怪为什么问答又贵又慢。
  *
- * 这里**只读展示 + 指路**：真正的编辑入口在「模型」页（那儿有密钥、测试连接、预设），
+ * 模型部分**只读展示 + 指路**：真正的编辑入口在「模型」页（那儿有密钥、测试连接、预设），
  * 复制一份表单到这里只会让两处状态打架。
+ *
+ * 但**对话风格**（提示词里唯一可改的那一段）就地可编辑：它不属于任何模型，
+ * 存的是 setting 表的 `agent_style`（`PUT /settings`），**留空保存 = 恢复默认**
+ * （后端删掉那一行，读取点回落到 `agent/prompts.DEFAULT_STYLE`）。
  */
 import { computed, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
 import { reportError, toast } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
-import type { AgentStatus } from '@/api/types';
+import type { AgentStatus, SettingsPayload } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
+
+/** 与后端 `prompts.STYLE_MAX_CHARS` 同一个数：超了后端会截断，这里先挡在输入框上。 */
+const STYLE_MAX = 2000;
 
 const status = ref<AgentStatus | null>(null);
 const loading = ref(false);
 const skills = ref<string[]>([]);
 const skillsOpen = ref(false);
+
+/* ---------------------------- 对话风格（可改的提示词） ---------------------------- */
+const styleText = ref('');
+/** 服务器上**生效**的那一份：用来判断编辑框里有没有改动。 */
+const styleSaved = ref('');
+const styleCustom = ref(false);
+const styleDefault = ref('');
+const styleBusy = ref(false);
+const styleShowDefault = ref(false);
+const styleDirty = computed(() => styleText.value.trim() !== styleSaved.value.trim());
+
+async function loadStyle() {
+  try {
+    const data = await api.get<SettingsPayload>('/settings');
+    const fallback = String(data.defaults?.agent_style ?? '');
+    styleDefault.value = fallback;
+    styleSaved.value = String(data.values?.agent_style ?? fallback);
+    // "改过没有"看的是 setting 表里有没有那一行 —— 用户完全可能把默认那段原样抄进去，
+    // 比较文本是判不出"自定义过"的。
+    styleCustom.value = Object.prototype.hasOwnProperty.call(data.stored ?? {}, 'agent_style');
+    styleText.value = styleSaved.value;
+  } catch (err) {
+    reportError(err, '取对话风格失败');
+  }
+}
+
+/** 保存；``text`` 为空串就是**恢复默认**（后端删行，不是存一段空风格）。 */
+async function saveStyle(text: string) {
+  styleBusy.value = true;
+  try {
+    const data = await api.put<SettingsPayload>('/settings', { agent_style: text });
+    styleSaved.value = String(data.values?.agent_style ?? styleDefault.value);
+    styleText.value = styleSaved.value;
+    styleCustom.value = !!text.trim();
+    toast(text.trim() ? '对话风格已保存，下一句就生效' : '已恢复默认风格');
+  } catch (err) {
+    reportError(err, '保存对话风格失败');
+  } finally {
+    styleBusy.value = false;
+  }
+}
 
 const model = computed(() => status.value?.model ?? null);
 const vision = computed(() => model.value?.vision ?? null);
@@ -66,7 +114,10 @@ function gotoModels() {
   void openTab({ name: 'models' });
 }
 
-onMounted(load);
+onMounted(() => {
+  void load();
+  void loadStyle();
+});
 </script>
 
 <template>
@@ -97,7 +148,41 @@ onMounted(load);
       </div>
     </div>
 
-    <!-- ① 问答模型 -->
+    <!-- ① 对话风格：提示词里唯一可改的一段 -->
+    <section class="card">
+      <div class="card-head">
+        <AppIcon name="sparkle" :size="14" />对话风格
+        <span class="spacer"></span>
+        <span v-if="styleCustom" class="badge">已自定义</span>
+        <span v-else class="badge ok">默认</span>
+      </div>
+      <div class="card-body">
+        <textarea v-model="styleText" rows="3" :maxlength="STYLE_MAX"
+                  placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
+        <p class="tiny faint">
+          改的是"你是谁、什么语气"。<b>规则改不动</b>：只管这一篇论文、跑题直接拒绝、
+          引用要带 [ref]、没证据就说没有、改产物要先读后写 —— 这些写死在代码里。
+          改完<b>下一句问答就生效</b>；留空保存 = 用回默认。
+        </p>
+        <div class="style-actions">
+          <button class="btn primary sm" :disabled="styleBusy || !styleDirty"
+                  @click="saveStyle(styleText)">
+            <AppIcon name="check" :size="15" />保存
+          </button>
+          <button class="btn sm" :disabled="styleBusy || !styleCustom" @click="saveStyle('')">
+            <AppIcon name="refresh" :size="15" />恢复默认
+          </button>
+          <button class="btn sm" @click="styleShowDefault = !styleShowDefault">
+            {{ styleShowDefault ? '收起默认' : '看默认风格' }}
+          </button>
+          <span class="spacer"></span>
+          <span class="tiny faint mono">{{ styleText.length }} / {{ STYLE_MAX }}</span>
+        </div>
+        <pre v-if="styleShowDefault" class="style-default tiny">{{ styleDefault }}</pre>
+      </div>
+    </section>
+
+    <!-- ② 问答模型 -->
     <section class="card">
       <div class="card-head">
         <AppIcon name="chat" :size="14" />问答模型
@@ -132,7 +217,7 @@ onMounted(load);
       </div>
     </section>
 
-    <!-- ② 视觉模型（与图片问答不是一回事） -->
+    <!-- ③ 视觉模型（与图片问答不是一回事） -->
     <section class="card">
       <div class="card-head"><AppIcon name="image" :size="14" />视觉模型</div>
       <div class="card-body">
@@ -144,7 +229,7 @@ onMounted(load);
       </div>
     </section>
 
-    <!-- ③ 运行限额 -->
+    <!-- ④ 运行限额 -->
     <section class="card">
       <div class="card-head"><AppIcon name="sliders" :size="14" />运行限额</div>
       <div class="card-body">
@@ -175,4 +260,11 @@ onMounted(load);
 .kv .v { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .warn-line { display: flex; align-items: center; gap: 5px; color: var(--warn); margin: 10px 0 0; }
+/* 对话风格：输入框走 base.css 的全局表单样式（白底 + 描边 + 聚焦光环），这里只补排布。 */
+.style-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.style-default {
+  margin: 10px 0 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-dim); line-height: 1.7;
+}
 </style>

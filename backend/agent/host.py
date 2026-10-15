@@ -93,6 +93,14 @@ class HostClient:
         data = await self.get("/agent/model-config")
         return dict(data or {})
 
+    async def style(self) -> dict:
+        """问答**风格**（提示词里可改的那一段，设置页维护）。
+
+        **每轮都取**、不缓存：它拼在 system 最前面，用户改完就该下一句生效。
+        返回 ``{style, custom, default}``；取不到时调用方用 `prompts.DEFAULT_STYLE` 兜底。
+        """
+        return dict(await self.get("/agent/style") or {})
+
     async def archive(self, paper_id: str) -> dict:
         """论文档案 + 大纲 + 规模信息（第一轮之前预注入，§9）。"""
         return dict(await self.get(f"/agent/papers/{paper_id}/archive") or {})

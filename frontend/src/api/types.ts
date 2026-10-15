@@ -713,6 +713,9 @@ export interface SettingsPayload {
   values: Record<string, any>;
   stored: Record<string, any>;
   editable: string[];
+  /** 只给"默认值不在后端 `Settings` 字段上"的键（如 `agent_style`）：值被改过之后，
+   *  设置页仍要能显示"默认是哪一段"，用户才能对比与恢复。 */
+  defaults?: Record<string, any>;
 }
 
 /* ------------------------------- 解析引擎 -------------------------------

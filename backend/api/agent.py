@@ -394,6 +394,20 @@ async def agent_model_config(request: Request,
     return envelope(model_config.resolve(), request=request)
 
 
+@router.get("/agent/style")
+async def agent_style(request: Request,
+                      x_internal_token: str | None = Header(None)):
+    """问答**风格**（提示词里可改的那一段）。**只回环 + 内部令牌可读。**
+
+    agent 进程每轮问答前来取一次：风格在 system 的最前面，必须每轮都拿最新的，
+    设置页改完下一句就生效（不能跟着模型配置一起缓存 60 秒）。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.agent import style as style_service
+
+    return envelope(style_service.describe(), request=request)
+
+
 @router.get("/agent/papers/{paper_id}/archive")
 async def agent_archive(paper_id: str, request: Request,
                         x_internal_token: str | None = Header(None)):

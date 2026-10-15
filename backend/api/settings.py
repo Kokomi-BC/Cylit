@@ -31,6 +31,10 @@ EDITABLE: dict[str, type] = {
     "crop_dpi": int,
     "allow_general_knowledge": bool,
     "default_generation_model": str,
+    # ---- 问答（agent）：**可改的只有风格那一段**（用户口径 2026-10-15）----
+    # 护栏/工作方式在 `agent/prompts.py` 的常驻块里，不入设置表 —— 那是底线，不是配置。
+    # 读取点：`services/agent/style.py`（空 = 没设过，回落到 prompts.DEFAULT_STYLE）。
+    "agent_style": str,
     "rag_top_k_vector": int,
     "rag_top_k_lexical": int,
     "rag_top_k_fused": int,
@@ -53,6 +57,11 @@ def _live_default(key: str) -> Any:
     这个项目刚因为"两处键名不一致"吃过一次亏（dev-log §17.66）。
     """
     try:
+        if key == "agent_style":
+            from backend.services.agent import style as style_service
+
+            return style_service.default()
+
         from backend.services.knowledge import knowledge_service as ks
         from backend.services.knowledge import rag_service, retrieval
 
@@ -108,8 +117,17 @@ def _stored() -> dict:
 
 @router.get("/settings")
 async def get_settings_api(request: Request):
+    """设置页的读取口。
+
+    ``defaults`` 只给"默认值不在 `Settings` 字段上"的那些键（当前只有 `agent_style`）：
+    值被改过之后，设置页仍然要能显示"默认是哪一段"，用户才能对比与恢复。
+    """
+    from backend.services.agent import style as style_service
+
     return envelope({"values": _effective(), "stored": _stored(),
-                     "editable": list(EDITABLE)}, request=request)
+                     "editable": list(EDITABLE),
+                     "defaults": {"agent_style": style_service.default()}},
+                    request=request)
 
 
 @router.put("/settings")
@@ -129,6 +147,16 @@ async def put_settings(request: Request, payload: dict = Body(...)):
             caster = EDITABLE.get(key)
             if caster is None:
                 rejected[key] = "不允许修改"
+                continue
+            # **空 = 恢复默认**（只对"没设过就用代码里的默认值"的键，当前是风格）：
+            # 删掉那一行而不是存一段空字符串 —— 存空串会让模型失去身份设定，
+            # 而"删掉"才与"从没设过"是同一种状态（读取点自然回落到代码里的默认）。
+            if key == "agent_style" and not str(value or "").strip():
+                for name in (key, f"kb.{key}"):
+                    row = sess.get(Setting, name)
+                    if row is not None:
+                        sess.delete(row)
+                applied[key] = ""
                 continue
             try:
                 if caster is bool:

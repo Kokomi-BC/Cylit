@@ -23,6 +23,16 @@ class Deps:
     registry: RefRegistry
     page_total: int = 0
     title: str = ""
+    #: 生效的**风格**（设置页「论文问答 → 对话风格」可改，空 = 用 `prompts.DEFAULT_STYLE`）。
+    #: 它是 system 的第一段，由 `runtime.ask()` 每轮从宿主取 —— 取不到就用默认值，
+    #: 这是提示词层面的锦上添花，不该让整轮问答跟着失败。
+    style: str = ""
+    #: 是否**本次对话的第一条消息**（判据 = 主后端没给历史）。只有首轮才附论文摘要。
+    first_turn: bool = False
+    #: 论文摘要原文 / 中文译文：**首轮**拼进用户消息当背景（`prompts.abstract_block`）。
+    #: 它不是可引用的材料（没有 [ref]），规则常驻在 system 的 `ABSTRACT_RULES` 里。
+    abstract_en: str = ""
+    abstract_zh: str = ""
     #: 划词解释：用户选中的原文 + 它对应的 ref（ref 用来让模型自己展开上下文）
     selection: str = ""
     #: 本轮用户上传的图片张数 / 其中真正随消息发出去的那几张（见 `prompts.IMAGE_NOTE`）
