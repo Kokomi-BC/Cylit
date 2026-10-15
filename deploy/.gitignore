@@ -1,0 +1,11 @@
+# 这个仓库是公开的 —— 部署目录里凡是带凭据的东西一律不进库。
+#
+# env.server   ：/root/Cylit/.env 的模板，里面有 MySQL 口令
+# cert-new/    ：证书包（含**私钥**），只用于部署时上传，不留在仓库
+# *.bak-*      ：patch-*.py 留下的备份
+env.server
+cert-new/
+*.bak-*
+
+# 服务器上是直接 cp 过去的，不需要入库
+portal/font/

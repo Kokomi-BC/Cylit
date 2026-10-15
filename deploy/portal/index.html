@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>个人项目</title>
+<meta name="description" content="个人项目入口：论文阅读、多模态检测、影像分析与写作。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23050505'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2334d399'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="mesh"></div>
+<div class="grain"></div>
+
+<div class="nav">
+  <div class="nav-inner">
+    <span class="brand"><i class="mark"></i><b id="clock">--:--:--</b></span>
+    <span class="nav-sep"></span>
+    <a class="navlink" href="#services">项目</a>
+    <a class="navlink" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener">GitHub</a>
+    <a class="navlink" id="adminEntry" href="admin.html" hidden>管理入口</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="hero reveal">
+    <span class="eyebrow"><i class="dot" id="heroDot"></i><span id="eyebrow">Personal Projects</span></span>
+    <h1 id="heroTitle">个人项目</h1>
+    <p class="lede" id="heroLede">自己做过的东西，都收在这一个入口里。</p>
+    <div class="meta-row">
+      <div>在线<b id="statUp">—</b></div>
+      <div>项目数<b id="statTotal">—</b></div>
+      <div>平均响应<b id="statLat">—</b></div>
+    </div>
+  </header>
+
+  <main class="bento" id="services"></main>
+
+  <footer class="foot">
+    <span>nginx 1.24 · PM2 6.0.14 · Node 25 / Python 3.12</span>
+    <span id="footStamp"></span>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!err);
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+/* ---------- 管理员判定：复用 Detect 的 JWT 登录态 ---------- */
+async function whoami() {
+  try {
+    const r = await fetch('/auth/me', { credentials: 'include' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.user || null;
+  } catch { return null; }
+}
+
+/* ---------- 在线探测 ---------- */
+async function probe(url) {
+  const t0 = performance.now();
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 6000);
+    const r = await fetch(url, { credentials: 'include', cache: 'no-store', signal: ctl.signal });
+    clearTimeout(timer);
+    return { ok: r.status < 400 || r.status === 401 || r.status === 403, status: r.status, ms: Math.round(performance.now() - t0) };
+  } catch {
+    return { ok: false, status: 0, ms: Math.round(performance.now() - t0) };
+  }
+}
+
+/* ---------- 卡片 ---------- */
+function card(link, i) {
+  const el = document.createElement('div');
+  el.className = 'shell reveal';
+  el.style.setProperty('--accent', link.accent || '#a78bfa');
+  el.style.transitionDelay = `${i * 70}ms`;
+  el.innerHTML = `
+    <a class="core" href="${link.href}" style="flex:1;display:flex;flex-direction:column">
+      <div class="core-top">
+        <span class="svc-tag">${link.tag || 'Service'}</span>
+        <span class="status"><i class="dot"></i><span class="ms">检测中</span></span>
+      </div>
+      <h2>${link.name}</h2>
+      <p>${link.desc || ''}</p>
+      <div class="core-foot">
+        <span class="host">${link.href}</span>
+        <span class="pill" style="--accent:${link.accent || '#a78bfa'}">进入<span class="ic">↗</span></span>
+      </div>
+    </a>`;
+  el.addEventListener('pointermove', (e) => {
+    const r = el.getBoundingClientRect();
+    el.style.setProperty('--mx', `${e.clientX - r.left}px`);
+    el.style.setProperty('--my', `${e.clientY - r.top}px`);
+  });
+  return el;
+}
+
+/* ---------- 入场 ---------- */
+const io = new IntersectionObserver((es) => {
+  for (const e of es) if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+}, { rootMargin: '0px 0px -8% 0px', threshold: .06 });
+function watch(el) { io.observe(el); }
+
+function tick() {
+  $('#clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+(async function main() {
+  tick(); setInterval(tick, 1000);
+  $('#footStamp').textContent = '渲染于 ' + new Date().toLocaleString('zh-CN', { hour12: false });
+
+  const me = await whoami();
+  if (me && me.role === 'admin') {
+    $('#adminEntry').hidden = false;
+    $('#adminEntry').textContent = `管理入口 · ${me.username}`;
+  }
+
+  let data;
+  try {
+    const r = await fetch('links.json', { cache: 'no-store' });
+    data = await r.json();
+  } catch {
+    toast('无法读取 links.json', true);
+    return;
+  }
+
+  const b = data.brand || {};
+  if (b.name) $('#heroTitle').textContent = b.name;
+  if (b.eyebrow) $('#eyebrow').textContent = b.eyebrow;
+  if (b.tagline) $('#heroLede').textContent = b.tagline;
+  document.title = b.name || '个人项目';
+
+  const links = data.links || [];
+  $('#statTotal').textContent = links.length;
+
+  const host = $('#services');
+  const nodes = links.map((l, i) => { const n = card(l, i); host.appendChild(n); return n; });
+  nodes.forEach(watch);
+  watch($('.hero'));
+
+  const results = await Promise.all(links.map((l) => probe(l.probe || l.href)));
+  let up = 0, latSum = 0, latN = 0;
+  results.forEach((res, i) => {
+    const node = nodes[i];
+    const dot = node.querySelector('.dot');
+    const ms = node.querySelector('.ms');
+    dot.classList.add(res.ok ? 'up' : 'down');
+    ms.textContent = res.ok ? `${res.ms} ms` : (res.status ? `HTTP ${res.status}` : '不可达');
+    if (res.ok) { up++; latSum += res.ms; latN++; }
+  });
+  $('#statUp').textContent = `${up}/${links.length}`;
+  $('#statLat').textContent = latN ? `${Math.round(latSum / latN)} ms` : '—';
+  $('#heroDot').classList.add(up === links.length ? 'up' : (up ? 'up' : 'down'));
+})();
+</script>
+</body>
+</html>

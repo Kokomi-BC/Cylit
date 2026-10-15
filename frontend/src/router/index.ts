@@ -1,4 +1,7 @@
-/** 路由（history 模式，base = /app/；后端对 /app/* 做"文件存在则给文件，否则回退 index.html"）。
+/** 路由（history 模式，base 取自 Vite 的 `base`；后端对 `<base>/*` 做"文件存在则给文件，否则回退 index.html"）。
+ *
+ * 用 `import.meta.env.BASE_URL` 而不是写死字符串：`base` 一改（`/app/` → `/cylit/`）
+ * 这里不用跟着改，少一处能对不上的地方。
  *
  * 应用是**多标签页外壳**：顶栏是标签条（`components/TabBar.vue`），导航入口在首页
  * （`views/HomeView.vue`）。`meta.tab` 给标签条提供默认标题与图标，视图加载完数据后

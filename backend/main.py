@@ -25,6 +25,11 @@ from backend.core.errors import NotFoundError, PaperMindError
 from backend.core.logging import get_logger, setup_logging
 from backend.core.utils import json_dumps
 
+#: 前端 SPA 的挂载前缀。**必须与 `frontend/vite.config.ts` 的 `base` 逐字一致** ——
+#: 两处不一致时浏览器会去根路径拿 assets，表现是"白屏 + 一堆 404"。
+#: 2026-10-15 由 `/app` 改成 `/cylit`（用项目名，也和门户首页的跳转目标对齐）。
+UI_BASE = "/cylit"
+
 log = get_logger(__name__)
 
 
@@ -173,10 +178,13 @@ def _error_response(exc: PaperMindError, trace_id: str) -> JSONResponse:
 def _mount_static(app: FastAPI) -> None:
     """受控静态路由：前端构建产物 + data/ 下论文资源（规划 §6.2 第 3 条硬约束）。
 
-    前端是 Vite 构建的 SPA（history 路由，`base=/app/`）：
-    - `/app/<file>` 命中 `frontend/dist/` 里的真实文件就直接返回（assets/*.js|css、字体…）；
-    - 否则回退 `index.html`，让前端路由自己解析（`/app/reader/xxx` 刷新不会 404）；
+    前端是 Vite 构建的 SPA（history 路由，`base=UI_BASE`）：
+    - `<UI_BASE>/<file>` 命中 `frontend/dist/` 里的真实文件就直接返回（assets/*.js|css、字体…）；
+    - 否则回退 `index.html`，让前端路由自己解析（`/cylit/reader/xxx` 刷新不会 404）；
     - 未构建时给出**明确的构建指引页**（503），不静默 404、也不暴露 `node_modules`。
+
+    `UI_BASE` 必须与 `frontend/vite.config.ts` 的 `base` **逐字一致**：
+    改了这里没改那里，浏览器会去根路径拿 assets，全是 404。
     """
     s = get_settings()
     papers_dir = s.papers_dir
@@ -189,14 +197,14 @@ def _mount_static(app: FastAPI) -> None:
 
     @app.get("/", include_in_schema=False)
     async def _root_redirect():
-        return RedirectResponse("/app/")
+        return RedirectResponse(UI_BASE + "/")
 
-    @app.get("/app", include_in_schema=False)
+    @app.get(UI_BASE, include_in_schema=False)
     async def _frontend_redirect():
-        return RedirectResponse("/app/")
+        return RedirectResponse(UI_BASE + "/")
 
     if not index_file.is_file():
-        @app.get("/app/{path:path}", include_in_schema=False)
+        @app.get(UI_BASE + "/{path:path}", include_in_schema=False)
         async def _frontend_not_built(path: str):  # noqa: ARG001
             return HTMLResponse(_BUILD_HINT_HTML, status_code=503)
         return
@@ -215,7 +223,7 @@ def _mount_static(app: FastAPI) -> None:
     def _dist_file(file: Path, path: str = "") -> FileResponse:
         return FileResponse(file, headers=_IMMUTABLE if path.startswith("assets/") else _NO_CACHE)
 
-    @app.get("/app/{path:path}", include_in_schema=False)
+    @app.get(UI_BASE + "/{path:path}", include_in_schema=False)
     async def _frontend_spa(path: str):
         if path:
             candidate = (dist / path).resolve()
@@ -242,9 +250,9 @@ code{background:#eef0f4;padding:2px 6px;border-radius:4px}pre{background:#eef0f4
 <pre>cd frontend
 npm install        # 首次；本机 npm 已配置 npmmirror 镜像
 npm run build      # 产物输出到 frontend/dist</pre>
-<p>然后刷新本页。<code>pr.py serve</code> 会自动托管 <code>frontend/dist</code> 到 <code>/app/</code>。</p>
-<p>开发模式（热更新）也可以：<code>cd frontend &amp;&amp; npm run dev</code>，访问
-<code>http://127.0.0.1:5173/app/</code>（已把 <code>/api</code>、<code>/papers</code> 代理到 8710）。</p>
+<p>然后刷新本页。<code>pr.py serve</code> 会自动托管 <code>frontend/dist</code>。</p>
+<p>开发模式（热更新）也可以：<code>cd frontend &amp;&amp; npm run dev</code>，访问 dev server 打印的地址
+（已把 <code>/api</code>、<code>/papers</code> 代理到 8710）。</p>
 <p>接口文档：<a href="/docs">/docs</a> ｜ 健康检查：<a href="/health">/health</a></p>
 </body></html>
 """

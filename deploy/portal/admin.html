@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>管理控制台 · 服务门户</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23050505'/%3E%3Crect x='9' y='14' width='14' height='4' rx='2' fill='%23a78bfa'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="mesh"></div>
+<div class="grain"></div>
+
+<div class="nav">
+  <div class="nav-inner">
+    <span class="brand"><i class="mark"></i><b>管理控制台</b></span>
+    <span class="nav-sep"></span>
+    <a class="navlink" href="./">← 返回首页</a>
+    <button class="navlink" id="who" type="button" hidden style="background:none;border:0;cursor:pointer;font:inherit">退出</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="admin-head reveal">
+    <span class="eyebrow">Admin Console</span>
+    <h1>服务器管理控制台</h1>
+    <div class="role-badge" id="roleBadge"><i class="dot"></i><span>正在校验身份…</span></div>
+  </header>
+
+  <!-- 无权限 -->
+  <section class="panel" id="denied" hidden>
+    <div class="shell" style="--accent:#fb7185">
+      <div class="core denied-card">
+        <p class="big" id="deniedTitle">需要管理员权限</p>
+        <p class="lede" id="deniedMsg" style="margin-left:auto;margin-right:auto">该账号已登录，但不是管理员。</p>
+        <div class="toolbar" style="justify-content:center">
+          <button class="btn" type="button" id="switchUser">切换到管理员账号<span class="ic">↗</span></button>
+          <a class="btn plain" href="./">返回首页</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 有权限 -->
+  <div id="console" hidden>
+    <section class="panel reveal">
+      <div class="shell" style="--accent:#34d399">
+        <div class="core">
+          <div class="panel-title"><h2>进程与负载</h2><span id="statusStamp">—</span></div>
+          <table class="grid">
+            <thead><tr><th>PM2 进程</th><th>状态</th><th>脚本</th><th>CPU</th><th>内存</th><th>重启</th></tr></thead>
+            <tbody id="appRows"><tr><td colspan="6">加载中…</td></tr></tbody>
+          </table>
+          <table class="grid">
+            <thead><tr><th>主机</th><th>占用</th><th>数值</th><th></th></tr></thead>
+            <tbody id="hostRows"></tbody>
+          </table>
+          <div class="toolbar">
+            <button class="btn" id="refresh"><span>刷新</span><span class="ic">⟳</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel reveal">
+      <div class="shell" style="--accent:#a78bfa">
+        <div class="core">
+          <div class="panel-title"><h2>首页入口</h2><span>保存后立即生效，无需重启</span></div>
+
+          <table class="grid">
+            <thead><tr><th style="width:34px"></th><th>名称</th><th>路径</th><th>标签</th><th>主色</th></tr></thead>
+            <tbody id="linkRows"></tbody>
+          </table>
+
+          <h3 style="margin:26px 0 0;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:500">品牌文案</h3>
+          <table class="grid">
+            <tbody>
+              <tr><td style="width:120px" class="strong">站点名</td><td><input class="f" id="brandName" maxlength="60"></td></tr>
+              <tr><td class="strong">眉标</td><td><input class="f" id="brandEyebrow" maxlength="40"></td></tr>
+              <tr><td class="strong">副标题</td><td><input class="f" id="brandTagline" maxlength="120"></td></tr>
+            </tbody>
+          </table>
+
+          <div class="toolbar">
+            <button class="btn" id="addRow"><span>新增入口</span><span class="ic">＋</span></button>
+            <button class="btn" id="save"><span>保存</span><span class="ic">↗</span></button>
+            <button class="btn plain" id="reload">放弃修改</button>
+            <a class="btn plain" href="./" target="_blank">预览首页</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="foot">
+    <span>鉴权复用 Detect 的 JWT Cookie（/auth/nginx/admin）</span>
+    <span id="footStamp"></span>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtMB = (b) => `${(b / 1024 / 1024).toFixed(b > 1024 ** 3 ? 0 : 1)} MB`;
+const fmtGB = (b) => `${(b / 1024 ** 3).toFixed(1)} GB`;
+const dur = (sec) => {
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+const ACCENTS = ['#a78bfa', '#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#f472b6', '#22d3ee'];
+
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!err);
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+/* ---------- 身份 ---------- */
+async function whoami() {
+  const r = await fetch('/auth/me', { credentials: 'include' });
+  if (!r.ok) return { ok: false, code: r.status };
+  const j = await r.json();
+  return { ok: true, user: j.user };
+}
+
+function gate(state) {
+  const badge = $('#roleBadge');
+  if (state.ok && state.user.role === 'admin') {
+    badge.classList.add('admin');
+    badge.innerHTML = `<i class="dot up"></i><span>管理员 · ${esc(state.user.username)}（ID ${state.user.id}）</span>`;
+    $('#who').hidden = false;
+    $('#console').hidden = false;
+    return true;
+  }
+  badge.classList.add('denied');
+  badge.innerHTML = `<i class="dot down"></i><span>${state.ok ? '普通用户 · ' + esc(state.user.username) : '未登录'}</span>`;
+  $('#denied').hidden = false;
+  $('#deniedTitle').textContent = state.ok ? '该账号不是管理员' : '请先登录';
+  $('#deniedMsg').textContent = state.ok
+    ? '管理台只对 role = admin 的账号开放。'
+    : '登录态缺失或已过期，请从 Detect 登录后重试。';
+  return false;
+}
+
+/* ---------- 进程 / 主机 ---------- */
+async function loadStatus() {
+  $('#statusStamp').textContent = '刷新中…';
+  try {
+    const r = await fetch('api/status', { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+
+    const apps = Array.isArray(d.apps) ? d.apps : [];
+    $('#appRows').innerHTML = apps.length ? apps.map((a) => `
+      <tr>
+        <td class="strong">${esc(a.name)}</td>
+        <td><span class="badge ${a.status === 'online' ? 'online' : 'stopped'}"><i class="dot ${a.status === 'online' ? 'up' : 'down'}"></i>${esc(a.status)}</span></td>
+        <td class="mono">${esc((a.script || '').replace('/root/', '~/'))}</td>
+        <td>${a.cpu}%</td>
+        <td>${fmtMB(a.mem)}</td>
+        <td>${a.restarts}</td>
+      </tr>`).join('') : `<tr><td colspan="6">${esc(d.apps?.error || '无进程')}</td></tr>`;
+
+    const h = d.host || {};
+    const rows = [];
+    if (h.mem) {
+      const used = h.mem.total - h.mem.available;
+      rows.push(['内存', fmtGB(used) + ' / ' + fmtGB(h.mem.total), (used / h.mem.total) * 100]);
+    }
+    if (h.swap && h.swap.total) {
+      const used = h.swap.total - h.swap.free;
+      rows.push(['交换分区', fmtGB(used) + ' / ' + fmtGB(h.swap.total), (used / h.swap.total) * 100]);
+    }
+    if (h.disk) rows.push(['根分区 /', `${fmtGB(h.disk.used)} / ${fmtGB(h.disk.total)}（${h.disk.pcent}）`, (h.disk.used / h.disk.total) * 100]);
+    if (h.load) rows.push(['1/5/15 分钟负载', h.loadText, Math.min(100, (h.load[0] / 4) * 100)]);
+    rows.push(['portal-api 运行时长', dur(d.portal?.uptimeSec || 0), 0]);
+    $('#hostRows').innerHTML = rows.map(([k, v, pct]) => `
+      <tr><td class="strong">${esc(k)}</td>
+        <td style="width:120px"><span class="bar"><i style="width:${Math.min(100, pct).toFixed(1)}%"></i></span></td>
+        <td class="mono">${esc(v)}</td><td></td></tr>`).join('');
+    $('#statusStamp').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (e) {
+    $('#statusStamp').textContent = '失败';
+    toast(`状态读取失败：${e.message}`, true);
+  }
+}
+
+/* ---------- 入口编辑 ---------- */
+let model = { brand: {}, links: [] };
+
+function rowHTML(l, i) {
+  return `<tr data-i="${i}">
+    <td><span class="status"><i class="dot" style="background:${esc(l.accent || '#a78bfa')};box-shadow:0 0 0 4px ${esc(l.accent || '#a78bfa')}22"></i></span></td>
+    <td><input class="f" data-k="name" value="${esc(l.name)}" maxlength="40" placeholder="名称"></td>
+    <td><input class="f" data-k="href" value="${esc(l.href)}" maxlength="200" placeholder="/app/"></td>
+    <td><input class="f" data-k="tag" value="${esc(l.tag)}" maxlength="24" placeholder="Tag"></td>
+    <td style="width:150px">
+      <div class="row-actions">
+        <select class="f" data-k="accent" style="width:auto">${ACCENTS.map((a) => `<option value="${a}"${a === l.accent ? ' selected' : ''}>${a}</option>`).join('')}</select>
+        <button class="iconbtn danger" data-del title="删除">✕</button>
+      </div>
+    </td>
+  </tr>
+  <tr data-i="${i}" class="desc-row"><td></td><td colspan="4"><input class="f" data-k="desc" value="${esc(l.desc)}" maxlength="200" placeholder="一句话描述"></td></tr>`;
+}
+
+function render() {
+  $('#linkRows').innerHTML = model.links.map(rowHTML).join('') || '<tr><td colspan="5">暂无入口</td></tr>';
+  $('#brandName').value = model.brand.name || '';
+  $('#brandEyebrow').value = model.brand.eyebrow || '';
+  $('#brandTagline').value = model.brand.tagline || '';
+}
+
+function collect() {
+  const links = model.links.map((l) => ({ ...l }));
+  $$('#linkRows tr').forEach((tr) => {
+    const i = Number(tr.dataset.i);
+    if (!links[i]) return;
+    tr.querySelectorAll('[data-k]').forEach((el) => { links[i][el.dataset.k] = el.value.trim(); });
+    if (tr.classList.contains('desc-row')) tr.querySelectorAll('[data-k]').forEach((el) => { links[i].desc = el.value.trim(); });
+  });
+  return {
+    brand: { name: $('#brandName').value.trim(), eyebrow: $('#brandEyebrow').value.trim(), tagline: $('#brandTagline').value.trim() },
+    links: links.map((l) => ({ id: l.id, name: l.name, desc: l.desc, href: l.href, tag: l.tag, accent: l.accent, probe: l.probe })),
+  };
+}
+
+async function loadLinks() {
+  try {
+    const r = await fetch('links.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    model = await r.json();
+    model.brand = model.brand || {};
+    model.links = model.links || [];
+    render();
+  } catch (e) { toast(`读取入口失败：${e.message}`, true); }
+}
+
+$('#linkRows').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-del]');
+  if (!del) return;
+  const i = Number(del.closest('tr').dataset.i);
+  model = collect();
+  model.links.splice(i, 1);
+  render();
+});
+$('#addRow').addEventListener('click', () => {
+  model = collect();
+  model.links.push({ id: `svc-${Date.now().toString(36)}`, name: '新服务', desc: '', href: '/', tag: 'Service', accent: ACCENTS[model.links.length % ACCENTS.length] });
+  render();
+});
+$('#reload').addEventListener('click', loadLinks);
+$('#refresh').addEventListener('click', loadStatus);
+
+/** 退出 / 切换账号：Detect 的登出是 POST /auth/logout，直接当链接点会 404。
+ *  两个入口都先登出再回登录页 —— 不登出的话 app.js 会把已登录的人从 /Login 弹走。 */
+async function signOut() {
+  try { await fetch('/auth/logout', { method: 'POST', credentials: 'include' }); } catch { /* 登出失败也照样跳 */ }
+  location.href = '/Login';
+}
+$('#who').addEventListener('click', signOut);
+$('#switchUser').addEventListener('click', signOut);
+
+$('#save').addEventListener('click', async () => {
+  const doc = collect();
+  const bad = doc.links.find((l) => !l.name || !/^(\/|https?:\/\/)/.test(l.href));
+  if (bad) return toast(`「${bad.name || '未命名'}」的名称或路径不合法`, true);
+  try {
+    const r = await fetch('api/links', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(doc),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    toast(`已保存 ${j.links} 个入口`);
+    await loadLinks();
+  } catch (e) { toast(`保存失败：${e.message}`, true); }
+});
+
+/* ---------- 启动 ---------- */
+(async function main() {
+  $('#footStamp').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+  const state = await whoami();
+  if (!gate(state)) return;
+  await Promise.all([loadStatus(), loadLinks()]);
+  setInterval(loadStatus, 15000);
+})();
+</script>
+</body>
+</html>

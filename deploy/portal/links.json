@@ -1,0 +1,45 @@
+{
+  "brand": {
+    "name": "个人项目",
+    "tagline": "论文阅读、多模态检测、影像分析与写作 —— 自己做过的东西，都收在这一个入口里。",
+    "eyebrow": "Personal Projects"
+  },
+  "links": [
+    {
+      "id": "cylit",
+      "name": "Cylit",
+      "desc": "智能论文阅读与知识管理：本地解析、逐页翻译、三视图阅读器与语义索引。",
+      "href": "/cylit/",
+      "tag": "Paper RAG",
+      "accent": "#38bdf8",
+      "probe": "/cylit/"
+    },
+    {
+      "id": "detect",
+      "name": "Detect",
+      "desc": "多模态假新闻检测平台：图文/视频多域识别、批量任务与可视化报告。",
+      "href": "/",
+      "tag": "Detection",
+      "accent": "#a78bfa",
+      "probe": "/"
+    },
+    {
+      "id": "blog",
+      "name": "Firefly",
+      "desc": "个人技术博客：论文笔记、工程踩坑与长文归档，Astro 静态构建。",
+      "href": "/Blog",
+      "tag": "Writing",
+      "accent": "#34d399",
+      "probe": "/Blog"
+    },
+    {
+      "id": "dust",
+      "name": "Dust Analyzer",
+      "desc": "光伏板灰尘遮挡检测面板：上传影像，输出污染等级与清洁建议。",
+      "href": "/dust/",
+      "tag": "Vision",
+      "accent": "#fbbf24",
+      "probe": "/dust/"
+    }
+  ]
+}
