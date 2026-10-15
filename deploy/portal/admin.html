@@ -17,7 +17,7 @@
   }
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="/Portal/assets/app.css">
 </head>
 <body>
 <div class="mesh"></div>
@@ -26,7 +26,7 @@
   <div class="nav-inner">
     <span class="brand"><i class="mark"></i><b>管理控制台</b></span>
     <span class="nav-sep"></span>
-    <a class="navlink" href="./">← 返回首页</a>
+    <a class="navlink" href="/Portal/">← 返回首页</a>
     <button class="navlink theme-toggle" id="themeToggle" type="button" aria-label="切换页面主题" aria-pressed="false" title="切换页面主题">
       <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.8"></circle><path d="M12 2.5v2.1M12 19.4v2.1M4.8 4.8l1.5 1.5M17.7 17.7l1.5 1.5M2.5 12h2.1M19.4 12h2.1M4.8 19.2l1.5-1.5M17.7 6.3l1.5-1.5"></path></svg>
       <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.4 8.4 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"></path></svg>
@@ -51,7 +51,7 @@
         <p class="lede" id="deniedMsg" style="margin-left:auto;margin-right:auto">该账号已登录，但不是管理员。</p>
         <div class="toolbar" style="justify-content:center">
           <button class="btn" type="button" id="switchUser">切换到管理员账号<span class="ic">↗</span></button>
-          <a class="btn plain" href="./">返回首页</a>
+          <a class="btn plain" href="/Portal/">返回首页</a>
         </div>
       </div>
     </div>
@@ -94,6 +94,9 @@
               <tr><td style="width:120px" class="strong">站点名</td><td><input class="f" id="brandName" maxlength="60"></td></tr>
               <tr><td class="strong">眉标</td><td><input class="f" id="brandEyebrow" maxlength="40"></td></tr>
               <tr><td class="strong">副标题</td><td><input class="f" id="brandTagline" maxlength="120"></td></tr>
+              <tr><td class="strong">个人标识</td><td><input class="f" id="brandHandle" maxlength="40" placeholder="Kokomi"></td></tr>
+              <tr><td class="strong">身份行</td><td><input class="f" id="brandSchool" maxlength="80" placeholder="湖南工业大学 · 个人开发项目"></td></tr>
+              <tr><td class="strong">GitHub</td><td><input class="f" id="brandGithub" maxlength="120" placeholder="https://github.com/Kokomi-BC"></td></tr>
             </tbody>
           </table>
 
@@ -101,7 +104,7 @@
             <button class="btn" id="addRow"><span>新增入口</span><span class="ic">＋</span></button>
             <button class="btn" id="save"><span>保存</span><span class="ic">↗</span></button>
             <button class="btn plain" id="reload">放弃修改</button>
-            <a class="btn plain" href="./" target="_blank">预览首页</a>
+            <a class="btn plain" href="/Portal/" target="_blank" rel="noopener">预览首页</a>
           </div>
         </div>
       </div>
@@ -202,7 +205,7 @@ function gate(state) {
 async function loadStatus() {
   $('#statusStamp').textContent = '刷新中…';
   try {
-    const r = await fetch('api/status', { credentials: 'include', cache: 'no-store' });
+    const r = await fetch('/Portal/api/status', { credentials: 'include', cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
 
@@ -265,6 +268,9 @@ function render() {
   $('#brandName').value = model.brand.name || '';
   $('#brandEyebrow').value = model.brand.eyebrow || '';
   $('#brandTagline').value = model.brand.tagline || '';
+  $('#brandHandle').value = model.brand.handle || '';
+  $('#brandSchool').value = model.brand.school || '';
+  $('#brandGithub').value = model.brand.github || '';
 }
 
 function collect() {
@@ -276,14 +282,21 @@ function collect() {
     if (tr.classList.contains('desc-row')) tr.querySelectorAll('[data-k]').forEach((el) => { links[i].desc = el.value.trim(); });
   });
   return {
-    brand: { name: $('#brandName').value.trim(), eyebrow: $('#brandEyebrow').value.trim(), tagline: $('#brandTagline').value.trim() },
+    brand: {
+      name: $('#brandName').value.trim(),
+      eyebrow: $('#brandEyebrow').value.trim(),
+      tagline: $('#brandTagline').value.trim(),
+      handle: $('#brandHandle').value.trim(),
+      school: $('#brandSchool').value.trim(),
+      github: $('#brandGithub').value.trim(),
+    },
     links: links.map((l) => ({ id: l.id, name: l.name, desc: l.desc, href: l.href, tag: l.tag, accent: l.accent, probe: l.probe })),
   };
 }
 
 async function loadLinks() {
   try {
-    const r = await fetch('links.json', { cache: 'no-store' });
+    const r = await fetch('/Portal/links.json', { cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     model = await r.json();
     model.brand = model.brand || {};
@@ -322,7 +335,7 @@ $('#save').addEventListener('click', async () => {
   const bad = doc.links.find((l) => !l.name || !/^(\/|https?:\/\/)/.test(l.href));
   if (bad) return toast(`「${bad.name || '未命名'}」的名称或路径不合法`, true);
   try {
-    const r = await fetch('api/links', {
+    const r = await fetch('/Portal/api/links', {
       method: 'PUT',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },

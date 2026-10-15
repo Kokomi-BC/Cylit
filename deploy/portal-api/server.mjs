@@ -137,10 +137,16 @@ function validate(doc) {
     };
   });
   const brand = doc.brand && typeof doc.brand === 'object' ? doc.brand : {};
+  const gh = String(brand.github || '').trim();
   doc.brand = {
-    name: String(brand.name || '服务门户').slice(0, 60),
-    tagline: String(brand.tagline || '').slice(0, 120),
-    eyebrow: String(brand.eyebrow || 'Server Portal').slice(0, 40),
+    name: String(brand.name || '个人项目').slice(0, 60),
+    eyebrow: String(brand.eyebrow || 'Personal Projects').slice(0, 40),
+    tagline: String(brand.tagline || '').slice(0, 160),
+    handle: String(brand.handle || 'Kokomi').slice(0, 40),
+    school: String(brand.school || '').slice(0, 80),
+    // 只接受 github.com 的 https 链接；其余一律存空串，前端会回落到内置默认值。
+    // 这里是白名单而不是"原样存" —— 品牌文案会被原样渲染进 href。
+    github: /^https:\/\/github\.com\/[\w.-]+\/?$/.test(gh) ? gh : '',
   };
   return doc;
 }

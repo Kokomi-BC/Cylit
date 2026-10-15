@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>个人项目</title>
-<meta name="description" content="个人项目入口：论文阅读、多模态检测、影像分析与写作。">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23050505'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2334d399'/%3E%3C/svg%3E">
+<title>个人项目 · Kokomi</title>
+<meta name="description" content="Kokomi 的个人项目：论文阅读、多模态检测、写作工具与视觉分析。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23111311'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2343b987'/%3E%3C/svg%3E">
 <script>
 (() => {
   try {
@@ -24,16 +24,20 @@
 
 <div class="nav">
   <div class="nav-inner">
-    <span class="brand"><i class="mark"></i><b id="clock">--:--:--</b></span>
+    <span class="brand"><i class="mark"></i><b id="navOwner">Kokomi</b></span>
     <span class="nav-sep"></span>
     <a class="navlink" href="#services">项目</a>
-    <a class="navlink" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+    <a class="navlink" id="navGithub" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener noreferrer">
+      <svg class="gh-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.3 2.9.1 3.2a4.6 4.6 0 0 1 1.2 3.2c0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>
+      <span>GitHub</span><span class="ic" aria-hidden="true">↗</span>
+    </a>
     <button class="navlink theme-toggle" id="themeToggle" type="button" aria-label="切换页面主题" aria-pressed="false" title="切换页面主题">
       <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.8"></circle><path d="M12 2.5v2.1M12 19.4v2.1M4.8 4.8l1.5 1.5M17.7 17.7l1.5 1.5M2.5 12h2.1M19.4 12h2.1M4.8 19.2l1.5-1.5M17.7 6.3l1.5-1.5"></path></svg>
       <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.4 8.4 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"></path></svg>
       <span class="theme-label">主题</span>
     </button>
-    <a class="navlink" id="adminEntry" href="admin.html" hidden>管理入口</a>
+    <a class="navlink" id="adminEntry" href="/admin" hidden>管理入口</a>
+    <b class="nav-clock" id="clock">--:--:--</b>
   </div>
 </div>
 
@@ -41,7 +45,16 @@
   <header class="hero reveal">
     <span class="eyebrow"><i class="dot" id="heroDot"></i><span id="eyebrow">Personal Projects</span></span>
     <h1 id="heroTitle">个人项目</h1>
-    <p class="lede" id="heroLede">自己做过的东西，都收在这一个入口里。</p>
+    <p class="lede" id="heroLede">这里记录了一些自己动手完成的项目。</p>
+
+    <div class="hero-id">
+      <span class="hero-school" id="heroSchool">湖南工业大学 · 个人开发项目</span>
+      <a class="gh-btn" id="heroGithub" href="https://github.com/Kokomi-BC" target="_blank" rel="noopener noreferrer">
+        <svg class="gh-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.3 2.9.1 3.2a4.6 4.6 0 0 1 1.2 3.2c0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>
+        <span>GitHub</span><span class="ic" aria-hidden="true">↗</span>
+      </a>
+    </div>
+
     <div class="meta-row">
       <div>在线<b id="statUp">—</b></div>
       <div>项目数<b id="statTotal">—</b></div>
@@ -61,6 +74,7 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
+const GITHUB_FALLBACK = 'https://github.com/Kokomi-BC';
 
 function setupThemeToggle() {
   const button = $('#themeToggle');
@@ -128,23 +142,27 @@ async function probe(url) {
   }
 }
 
-/* ---------- 卡片 ---------- */
+/* ---------- 卡片 ----------
+   层级：编号/状态 → 项目名 → 简介 → 分类 · 路径 · 跳转按钮。
+   项目名、简介、分类、跳转地址全部来自 links.json —— 这里不写死任何项目。 */
 function card(link, i) {
   const el = document.createElement('div');
   el.className = 'shell reveal';
-  el.style.setProperty('--accent', link.accent || '#a78bfa');
-  el.style.transitionDelay = `${i * 70}ms`;
+  el.style.transitionDelay = `${i * 60}ms`;
   el.innerHTML = `
-    <a class="core" href="${link.href}" style="flex:1;display:flex;flex-direction:column">
+    <a class="core" href="${link.href}">
       <div class="core-top">
-        <span class="svc-tag">${link.tag || 'Service'}</span>
+        <span class="idx">${String(i + 1).padStart(2, '0')}</span>
         <span class="status"><i class="dot"></i><span class="ms">检测中</span></span>
       </div>
       <h2>${link.name}</h2>
       <p>${link.desc || ''}</p>
       <div class="core-foot">
-        <span class="host">${link.href}</span>
-        <span class="pill" style="--accent:${link.accent || '#a78bfa'}">进入<span class="ic">↗</span></span>
+        <span class="foot-meta">
+          <span class="svc-tag">${link.tag || 'Service'}</span>
+          <span class="host">${link.href}</span>
+        </span>
+        <span class="pill">进入<span class="ic" aria-hidden="true">↗</span></span>
       </div>
     </a>`;
   return el;
@@ -166,8 +184,10 @@ function tick() {
 
   const me = await whoami();
   if (me && me.role === 'admin') {
-    $('#adminEntry').hidden = false;
-    $('#adminEntry').textContent = `管理入口 · ${me.username}`;
+    const entry = $('#adminEntry');
+    entry.hidden = false;
+    entry.textContent = '管理入口';
+    entry.title = `管理入口 · ${me.username}`;
   }
 
   let data;
@@ -183,7 +203,12 @@ function tick() {
   if (b.name) $('#heroTitle').textContent = b.name;
   if (b.eyebrow) $('#eyebrow').textContent = b.eyebrow;
   if (b.tagline) $('#heroLede').textContent = b.tagline;
-  document.title = b.name || '个人项目';
+  if (b.handle) $('#navOwner').textContent = b.handle;
+  if (b.school) $('#heroSchool').textContent = b.school;
+  const gh = typeof b.github === 'string' && /^https:\/\/github\.com\//.test(b.github) ? b.github : GITHUB_FALLBACK;
+  $('#navGithub').href = gh;
+  $('#heroGithub').href = gh;
+  document.title = b.name ? `${b.name} · ${b.handle || 'Kokomi'}` : '个人项目 · Kokomi';
 
   const links = data.links || [];
   $('#statTotal').textContent = links.length;

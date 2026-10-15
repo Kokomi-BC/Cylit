@@ -1,8 +1,11 @@
 {
   "brand": {
     "name": "个人项目",
-    "tagline": "论文阅读、多模态检测、影像分析与写作 —— 自己做过的东西，都收在这一个入口里。",
-    "eyebrow": "Personal Projects"
+    "eyebrow": "Personal Projects",
+    "tagline": "这里记录了一些自己动手完成的项目，涉及论文阅读、多模态检测、写作工具和视觉分析。",
+    "handle": "Kokomi",
+    "school": "湖南工业大学 · 个人开发项目",
+    "github": "https://github.com/Kokomi-BC"
   },
   "links": [
     {

@@ -54,7 +54,7 @@ nginx 站点配置只有一个：`/etc/nginx/sites-available/detect.conf`
   data/secrets/                模型密钥（从本机搬过来的）
   data/papers/                 论文产物（服务器上重新解析出来的）
   frontend/dist                前端构建产物（从本机上传，服务器上没跑 npm build）
-/var/www/portal                门户首页 + admin.html + links.json + 字体
+/var/www/portal                门户首页 + admin.html（经 /admin 提供）+ links.json + 字体
 /var/www/portal-api/server.mjs 门户管理 API（零依赖 node:http）
 /root/deploy/ecosystem.config.cjs  PM2 清单
 /root/deploy/patch-nginx.py        nginx 注入脚本
@@ -156,7 +156,20 @@ Detect 的登录态是 httpOnly cookie `token`（JWT，带 `role`）。
 好处是 `JWT_SECRET` 只有 Detect 一处，门户完全不知道它。
 
 - 首页 `index.html` 调 `/auth/me`，`role === 'admin'` 才显示「管理入口」；
-- `admin.html` 对普通用户显示 403 面板，不显示任何管理数据。
+- 管理台页面 `admin.html` 对普通用户显示 403 面板，不显示任何管理数据。
+
+**管理台挂在短地址 `/admin`**（2026-10-15 用户口径）。注意：
+
+| | |
+|---|---|
+| 门户管理台 | `https://fakenewsdetect.art/admin` |
+| Detect 自己的后台 | `https://fakenewsdetect.art/Admin`（**大写 A**，不受影响） |
+
+nginx 的 location 匹配区分大小写，所以这是两条互不干扰的规则。
+`admin.html` 现在不在 `/Portal/` 下了，它里面的资源与接口引用都改成了
+`/Portal/…` **绝对路径**（`assets/app.css`、`links.json`、`api/status`、`api/links`）——
+**以后改这个文件别再改回相对路径**，否则在 `/admin` 下全部指错。
+老的 `/Portal/admin.html` 留了 301 到 `/admin`。
 
 已存在的管理员账号（`detect_db.users`）：`Nahida`、`abc`、`15771364642@163.com`。
 
@@ -168,30 +181,46 @@ Detect 的登录态是 httpOnly cookie `token`（JWT，带 `role`）。
 
 ### 4.3 首页设计
 
-**当前版**（2026-10-15 由另一个 agent 出稿、本机复核后部署）：**高端极简**。
+**当前版**（2026-10-15 第二轮：极简 + 突出个人身份，本机改源码后部署）。
 
-- **主题**：浅色 / 深色双主题，`<html data-theme="...">` 上切。首次跟随系统，
-  手动选择存 `localStorage` 的 `portal-theme`；`<head>` 顶部有一段内联脚本先落主题，
-  避免刷新时闪白。首页与管理台共用同一套开关。
-- **布局**：桌面两列等宽卡片，移动端单列；统一圆角 + 细边框，弱化光晕/颗粒/玻璃拟态。
-- **数据**：卡片仍读 `links.json`（名称/描述/路径/标签/主色都不写死在 HTML 里）。
-- **字体**：HarmonyOS Sans（复用 `/var/www/detect/font` 那套 ttf，不依赖 CDN）。
-- `--accent` 仍由 JS 从 `links.json` 逐卡片注入。
+**首屏的信息顺序**（这是这一轮的核心）：
+
+```
+PERSONAL PROJECTS                     ← 眉标，最轻
+个人项目                               ← 主标题
+这里记录了一些自己动手完成的项目，涉及论文阅读、多模态检测、写作工具和视觉分析。
+湖南工业大学 · 个人开发项目  [GitHub ↗]   ← 身份行
+──────────────────────────────        ← 一条细线，把"人"和"机器状态"隔开
+在线 4/4   项目数 4   平均响应 30 ms     ← 状态统计
+```
+
+- **个人标识**：顶栏左侧是 `● Kokomi`（不再显示 IP / 时钟），实时钟挪到胶囊**最右**，
+  仍然由 `tick()` 每秒写 `#clock`。
+- **GitHub**：首屏身份行一个按钮 + 顶栏一个链接，都指 `https://github.com/Kokomi-BC`，
+  都是 `target="_blank" rel="noopener noreferrer"`。地址来自 `links.json` 的 `brand.github`，
+  前端只接受 `https://github.com/...` 形式，否则回落到内置默认值。
+- **项目卡片**：编号 `01`–`04` 与在线状态占角上一行；**项目名 → 简介 → 分类/路径/按钮**
+  是正文层级。编号由 JS 按 `links.json` 的顺序生成，加项目不用改 HTML。
+- **配色**：只有一处强调色 —— 低饱和绿 `--ok`（状态点、hover 描边、focus 环）。
+  **项目卡片不再使用逐卡彩色**；`links.json` 里的 `accent` 字段保留但已不参与渲染。
+- **去掉的装饰**：毛玻璃（导航改成不透明底 + 顶部淡出）、胶片颗粒、光晕（`--mesh` 降到 4%）、
+  逐卡彩色标签。动效只剩 `.reveal` 的位移淡入与 hover 的 2px 抬起。
+- **数据**：`brand` 现在有 `name` / `eyebrow` / `tagline` / `handle` / `school` / `github`
+  六项，全部可在管理台编辑（`portal-api` 的 `validate()` 是白名单，**新增字段必须同时改那里**，
+  否则管理台一保存就会被抹掉）。
 
 <details>
-<summary>上一版（Ethereal Glass，已被换掉，留档）</summary>
+<summary>更早的两版（留档）</summary>
 
-按 `Cylit/.agents/skills/high-end-visual-design`（Leonxlnx/taste-skill）做的：
+**第一版（外部 agent 出稿的极简主题）**：浅/深双主题 + 桌面两列，
+但首屏只有标题和统计，个人身份不突出。
 
-- **Vibe**：Ethereal Glass —— OLED 黑 `#050505` + 三团径向 mesh + 胶片颗粒（`opacity .035`，固定层）
-- **Layout**：Asymmetrical Bento —— 12 列栅格，卡片按 `7/5/5/7` 交替，刻意不对称
-- **Double-Bezel**：每张卡是「外壳 `padding:8px` + 内芯」，两层同心圆角（`2rem` / `calc(2rem-.375rem)`）
-- **Button-in-Button**：`进入 ↗` 的箭头包在独立圆形里，hover 时对角位移 + 缩放
-- **Motion**：`cubic-bezier(.32,.72,0,1)`，IntersectionObserver 入场（位移 + 模糊 + 淡入），
-  只动 `transform`/`opacity`
-- 768px 以下塌成单列，全部 `col-span` 归 1
+**第零版（Ethereal Glass）**：按 `Cylit/.agents/skills/high-end-visual-design`
+（Leonxlnx/taste-skill）做的 —— OLED 黑 `#050505` + 三团径向 mesh + 胶片颗粒、
+Asymmetrical Bento 12 列 `7/5/5/7`、Double-Bezel 双层同心圆角、Button-in-Button。
 
-想回退：`/root/deploy/portal-backup-20261015-142655.tgz` 是换稿前的那一份。
+想回退：`/root/deploy/portal-backup-20261015-143250-r2.tgz` 是这一轮之前的线上版本；
+再往前是 `/root/deploy/portal-backup-20261015-142655.tgz`。
 
 </details>
 

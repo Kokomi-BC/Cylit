@@ -1,6 +1,7 @@
 /* ========================================================================
    个人项目门户 · 极简排版 / 浅色与深色主题
    字体文件由项目中的 ../font/ 目录提供。
+   强调色只有一处：低饱和绿（--ok）。项目卡片不再使用逐卡彩色。
    ======================================================================== */
 
 @font-face { font-family: 'HarmonyOS Sans'; src: url('../font/HarmonyOS_Sans_Light.ttf') format('truetype'); font-weight: 300; font-display: swap; }
@@ -22,7 +23,7 @@
   --surface: #171a17;
   --surface-raised: #1d211d;
   --surface-hover: #222722;
-  --nav-bg: rgba(17, 19, 17, .94);
+  --nav-bg: #111311;
   --field-bg: #171a17;
   --field-focus: #202520;
   --ok: #43b987;
@@ -46,7 +47,7 @@
   --surface: #ffffff;
   --surface-raised: #f0f2ec;
   --surface-hover: #ecefe8;
-  --nav-bg: rgba(246, 246, 242, .94);
+  --nav-bg: #f6f6f2;
   --field-bg: #ffffff;
   --field-focus: #f5f6f1;
   --ok: #17855c;
@@ -72,17 +73,19 @@ a { color: inherit; }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 
-/* 背景保留很淡的色温变化，不使用大面积光晕或颗粒。 */
+/* 背景只保留极淡的色温变化，不做光晕、颗粒或渐变装饰。 */
 .mesh {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: radial-gradient(44rem 30rem at 0% 0%, color-mix(in srgb, var(--ok) 5%, transparent), transparent 72%);
+  background: radial-gradient(44rem 30rem at 0% 0%, color-mix(in srgb, var(--ok) 4%, transparent), transparent 72%);
 }
 .wrap { position: relative; z-index: 1; max-width: 1160px; margin: 0 auto; padding: 0 28px 72px; }
 
-/* 导航与主题按钮 */
+/* ---------------- 导航 ----------------
+   左：个人标识；中：站点入口；右：实时钟。
+   不透明底 + 顶部淡出，滚动时不会和内容糊在一起（也就不需要毛玻璃）。 */
 .nav {
   position: sticky;
   top: 0;
@@ -91,6 +94,14 @@ button { color: inherit; }
   justify-content: center;
   padding: 16px 28px 0;
   pointer-events: none;
+}
+.nav::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--bg) 52%, transparent);
 }
 .nav-inner {
   pointer-events: auto;
@@ -102,12 +113,9 @@ button { color: inherit; }
   border: 1px solid var(--hair-2);
   border-radius: 14px;
   background: var(--nav-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
-.brand { display: flex; align-items: center; gap: 10px; font-size: 13px; letter-spacing: .01em; }
-.brand b, #who { font-variant-numeric: tabular-nums; }
-.brand b { font-weight: 500; }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 13px; letter-spacing: .01em; }
+.brand b { font-weight: 500; letter-spacing: -.005em; }
 .brand .mark { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--ok); }
 .nav-sep { width: 1px; height: 18px; margin: 0 8px; background: var(--hair); }
 .nav a.navlink,
@@ -132,6 +140,18 @@ button { color: inherit; }
 .nav button.navlink:hover { background: var(--surface-hover); color: var(--ink); }
 .nav a.navlink:focus-visible,
 .nav button.navlink:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+.nav a.navlink:hover .ic { transform: translate(1px, -1px); }
+.nav .ic { display: inline-block; font-size: 12px; transition: transform .16s ease; }
+.nav-clock {
+  margin-left: auto;
+  padding: 0 4px 0 12px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
 .theme-toggle { min-width: 70px; }
 .theme-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 :root[data-theme="dark"] .theme-icon-sun { display: block; }
@@ -139,8 +159,13 @@ button { color: inherit; }
 :root[data-theme="light"] .theme-icon-sun { display: none; }
 :root[data-theme="light"] .theme-icon-moon { display: block; }
 
-/* 首屏 */
-.hero { padding: 72px 0 38px; }
+/* GitHub 图标（内联 SVG，不依赖外部 CDN） */
+.gh-icon { width: 15px; height: 15px; flex: 0 0 auto; fill: currentColor; }
+.nav .gh-icon { width: 14px; height: 14px; }
+
+/* ---------------- 首屏 ----------------
+   顺序：眉标 → 标题 → 一句话介绍 → 身份行（学校 + GitHub）→ 状态统计。 */
+.hero { padding: 64px 0 40px; }
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -154,7 +179,7 @@ button { color: inherit; }
 .eyebrow .dot { width: 6px; height: 6px; }
 h1 {
   max-width: 14ch;
-  margin: 22px 0 0;
+  margin: 20px 0 0;
   color: var(--ink);
   font-size: clamp(2.7rem, 6vw, 4.25rem);
   font-weight: 500;
@@ -162,17 +187,48 @@ h1 {
   letter-spacing: -.045em;
 }
 .lede { max-width: 52ch; margin: 16px 0 0; color: var(--ink-2); font-size: 1rem; font-weight: 400; }
-.meta-row { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 28px; color: var(--ink-3); font-size: 12px; }
+.hero-id { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 24px; }
+.hero-school { color: var(--ink-3); font-size: 13px; }
+.gh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color .16s ease, border-color .16s ease, background-color .16s ease;
+}
+.gh-btn:hover { border-color: color-mix(in srgb, var(--ok) 42%, var(--hair)); background: var(--surface-hover); color: var(--ink); }
+.gh-btn:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+.gh-btn .ic { font-size: 12px; transition: transform .16s ease; }
+.gh-btn:hover .ic { transform: translate(2px, -2px); }
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--ink-3);
+  font-size: 12px;
+}
 .meta-row div b { display: block; margin-top: 2px; color: var(--ink); font-size: 19px; font-weight: 500; letter-spacing: -.01em; }
 
-/* 项目卡片：桌面端统一两列，避免不必要的视觉主次。 */
+/* ---------------- 项目卡片 ----------------
+   桌面端两列。层级从大到小：项目名 → 简介 → 分类/路径/按钮；
+   编号与在线状态是最轻的一层，只占角上一行。 */
 .bento { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 0; }
 .bento > * { min-width: 0; }
 .shell {
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: 242px;
+  min-height: 236px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--hair);
@@ -182,7 +238,7 @@ h1 {
 }
 .shell:hover {
   transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--accent, var(--ok)) 34%, var(--hair));
+  border-color: color-mix(in srgb, var(--ok) 32%, var(--hair));
   background: var(--surface);
 }
 .core {
@@ -191,7 +247,7 @@ h1 {
   flex: 1;
   min-width: 0;
   flex-direction: column;
-  padding: 23px 24px 20px;
+  padding: 22px 24px 20px;
   border-radius: inherit;
   background: transparent;
   color: var(--ink);
@@ -199,13 +255,11 @@ h1 {
 }
 .core:focus-visible { outline: 2px solid var(--ok); outline-offset: -4px; }
 .core-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.svc-tag {
-  padding: 0;
-  color: color-mix(in srgb, var(--accent, var(--ok)) 68%, var(--ink));
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: .12em;
-  text-transform: uppercase;
+.idx {
+  color: var(--ink-3);
+  font: 11px/1 ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .1em;
 }
 .status { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-3); font-size: 11px; white-space: nowrap; }
 .dot { display: inline-block; width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--ink-3); }
@@ -214,6 +268,15 @@ h1 {
 .core h2 { margin: auto 0 0; overflow-wrap: anywhere; font-size: clamp(1.5rem, 2.4vw, 1.8rem); font-weight: 500; line-height: 1.2; letter-spacing: -.035em; }
 .core p { max-width: 46ch; margin: 9px 0 0; color: var(--ink-2); font-size: .91rem; font-weight: 400; }
 .core-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; }
+.foot-meta { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.svc-tag {
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .host { min-width: 0; overflow: hidden; color: var(--ink-3); font: 11px/1.5 ui-monospace, 'SFMono-Regular', Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .pill {
   display: inline-flex;
@@ -235,7 +298,7 @@ h1 {
 .pill:hover .ic { transform: translate(2px, -2px); }
 .pill:active { transform: scale(.98); }
 
-/* 底部与入场效果 */
+/* ---------------- 底部与入场 ---------------- */
 .foot {
   display: flex;
   flex-wrap: wrap;
@@ -368,15 +431,18 @@ select.f option { background: var(--surface); color: var(--ink); }
   .brand b { font-size: 12px; }
   .nav-sep { margin: 0 3px; }
   .nav a.navlink, .nav button.navlink { padding: 8px 9px; font-size: 12px; }
+  .nav-clock { padding-left: 8px; font-size: 11px; }
   .theme-toggle { min-width: 40px; }
   .theme-label { display: none; }
-  .hero { padding: 58px 0 30px; }
-  h1 { margin-top: 18px; font-size: clamp(2.35rem, 10vw, 3.3rem); }
+  .hero { padding: 52px 0 32px; }
+  h1 { margin-top: 16px; font-size: clamp(2.35rem, 10vw, 3.3rem); }
   .lede { font-size: .95rem; }
-  .meta-row { gap: 22px; margin-top: 24px; }
+  .hero-id { gap: 10px 14px; margin-top: 20px; }
+  .hero-school { font-size: 12.5px; }
+  .meta-row { gap: 22px; margin-top: 26px; }
   .bento { grid-template-columns: 1fr; gap: 12px; }
-  .shell { min-height: 220px; }
-  .core { padding: 21px 20px 18px; }
+  .shell { min-height: 210px; }
+  .core { padding: 20px 20px 18px; }
   .core h2 { font-size: 1.55rem; }
   .core-foot { margin-top: 20px; }
   .foot { margin-top: 42px; }
@@ -386,7 +452,7 @@ select.f option { background: var(--surface); color: var(--ink); }
   table.grid th:nth-child(3), table.grid td:nth-child(3) { display: none; }
 }
 
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .wrap { padding-right: 14px; padding-left: 14px; }
   .nav { padding-right: 10px; padding-left: 10px; }
   .nav-inner { padding: 6px; }
@@ -394,9 +460,11 @@ select.f option { background: var(--surface); color: var(--ink); }
   .brand .mark { width: 6px; height: 6px; }
   .nav-sep { display: none; }
   .nav a.navlink, .nav button.navlink { padding: 8px 7px; font-size: 11.5px; }
+  .nav-clock { padding-left: 6px; font-size: 10.5px; }
   .theme-toggle { min-width: 34px; }
+  .foot-meta { flex-wrap: wrap; gap: 4px 10px; }
   .core-foot { align-items: flex-end; }
-  .host { max-width: 52%; font-size: 10px; }
+  .host { max-width: 46%; font-size: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
