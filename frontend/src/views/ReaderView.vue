@@ -3199,6 +3199,8 @@ const ctxMenu = reactive({
   open: false, x: 0, y: 0, items: [] as CtxItem[],
   /** 贴在**选区上方**打开（触摸长按时用：别盖住选区，也别盖住两端手柄） */
   above: false,
+  /** 触摸屏用**底部操作表**（大按钮两列），桌面仍是贴着手指的小下拉 */
+  sheet: false,
   /** 菜单摆完位后的真实矩形（`ContextMenu` 的 `placed` 事件报回来的）：划词胶囊据此贴到它上沿 */
   rect: null as { left: number; top: number; width: number; height: number } | null,
 });
@@ -3255,6 +3257,8 @@ const LONG_PRESS_MS = 480;
  */
 let suppressNativeSelectUntil = 0;
 let ignoreClickUntil = 0;
+/** 触摸手势期间（含双击）一律不让浏览器自己划词：选区只由我们的长按 + 手柄产生 */
+let touchSelectGuardUntil = 0;
 /** 长按造出来的那段选区：抬手时浏览器会把它折叠，这里留一份用来放回去 */
 let longPressRange: Range | null = null;
 /** 下一次右键是"我们自己派的"（触摸长按 / 拖完手柄重开菜单）：菜单要贴在选区上方 */
@@ -3354,6 +3358,8 @@ function caretNearHandles(x: number, y: number): { node: Node; offset: number } 
 }
 
 function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
+  // 拖选择条时菜单让开（用户口径 2026-10-17）：**只收菜单**，选区与手柄都留着
+  if (ctxMenu.open) { ctxMenu.open = false; ctxMenu.rect = null; }
   draggingHandle = which;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
   ev.preventDefault();
@@ -3388,8 +3394,6 @@ function onHandleMove(ev: PointerEvent): void {
 function onHandleUp(): void {
   if (!draggingHandle) return;
   draggingHandle = null;
-  // 菜单是开着的话，**内容按新选区重算一遍**（不然还显示上一次的"搜索…"与旧文字）
-  if (ctxMenu.open) openCtxForSelection();
 }
 /** 菜单按当前选区重算一次（长按、拖完手柄都走这里；`above` 表示贴在选区上方开） */
 function openCtxForSelection(): void {
@@ -3433,7 +3437,9 @@ function fireLongPress(): void {
 }
 
 function onContentSelectStart(ev: Event): void {
-  if (Date.now() < suppressNativeSelectUntil) ev.preventDefault();
+  // 触摸长按（suppressNativeSelectUntil）与**触摸期间的任何划词**（touchSelectGuardUntil）都挡掉：
+  // 后者是"双击选词"的来源 —— 手机上双击正文会冒出一段选区，用户口径不要这个。
+  if (Date.now() < Math.max(suppressNativeSelectUntil, touchSelectGuardUntil)) ev.preventDefault();
 }
 
 /**
@@ -3441,6 +3447,7 @@ function onContentSelectStart(ev: Event): void {
  * 用户看到的就是『选中焦点消失』）。preventDefault + 下一帧再把选区放回去，双保险。
  */
 function onContentTouchEnd(ev: TouchEvent): void {
+  touchSelectGuardUntil = Math.max(touchSelectGuardUntil, Date.now() + 700);
   if (Date.now() < suppressNativeSelectUntil) {
     ev.preventDefault();
     const saved = longPressRange?.cloneRange() ?? null;
@@ -3463,6 +3470,8 @@ function onContentTouchEnd(ev: TouchEvent): void {
 function onContentTouchStart(ev: TouchEvent): void {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  // 触摸手势开始：这一下到抬手后 700ms 内的原生划词全部挡掉（双击选词就是它）
+  touchSelectGuardUntil = Date.now() + 1500;
   // 又碰了一下正文：上一次长按留下的手柄先收掉（这一下若不长按，就是普通的点/滚）
   hideSelHandles();
   if (ev.touches.length !== 1) { cancelLongPress(); return; }
@@ -3484,9 +3493,11 @@ function onContentContextMenu(ev: MouseEvent) {
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   // 系统自带的右键菜单**不出场**（触摸长按也走这里，见 onContentTouchStart）
   ev.preventDefault();
-  const fromTouch = touchCtxNext || Date.now() < suppressNativeSelectUntil;   // 长按/拖手柄派发的合成右键
+  const fromTouch = touchCtxNext || Date.now() < suppressNativeSelectUntil;   // 长按派发的合成右键
   touchCtxNext = false;
   ctxMenu.above = fromTouch;
+  // 触摸屏一律走底部操作表（手机/平板上手指点小下拉很难点）
+  ctxMenu.sheet = fromTouch;
   const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
   const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
   const pageEl = target?.closest?.('[data-page]') as HTMLElement | null;
@@ -5665,6 +5676,7 @@ function renderMarkdown(text?: string | null) {
       :x="ctxMenu.x"
       :y="ctxMenu.y"
       :above="ctxMenu.above"
+      :sheet="ctxMenu.sheet"
       :items="ctxMenu.items"
       @select="onCtxSelect"
       @color="onCtxColor"
@@ -6009,7 +6021,9 @@ function renderMarkdown(text?: string | null) {
 /* 触摸选区的两端手柄：一枚小圆点 + 一根小尾巴，位置由 refreshSelHandles 按选区矩形给 */
 /* 抓取区比看得见的圆点大得多（44px）：手指要一按就中，不能"不太灵敏" */
 .sel-handle {
-  position: fixed; z-index: 190; width: 44px; height: 44px;
+  /* z-index 要在**底部操作表的遮罩（319）/ 面板（320）之上**：
+     否则操作表开着的时候按手柄只会点到遮罩，拖拽根本起不来（实测踩到）。 */
+  position: fixed; z-index: 330; width: 44px; height: 44px;
   margin: -22px 0 0 -22px; display: flex; align-items: center; justify-content: center;
   touch-action: none; cursor: grab;
 }

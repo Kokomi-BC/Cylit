@@ -50,7 +50,12 @@ const props = withDefaults(defineProps<{
    * 目的是别盖住选区本身，也别盖住两端那两颗拖动手柄（用户口径 2026-10-17）。
    */
   above?: boolean;
-}>(), { width: 218, above: false });
+  /**
+   * **移动端样式**：不再用"贴在手指旁边的小下拉"，而是一张底部操作表（大按钮两列）。
+   * 触摸屏上没有"悬停"、手指也比鼠标粗，桌面那套 8px 行高的小菜单在这类设备上很难点。
+   */
+  sheet?: boolean;
+}>(), { width: 218, above: false, sheet: false });
 
 const emit = defineEmits<{
   (e: 'select', key: string): void;
@@ -71,7 +76,7 @@ const GAP = 2;
 async function place() {
   await nextTick();
   const el = panel.value;
-  if (!el) return;
+  if (!el || props.sheet) return;   // 底部操作表的定位交给 CSS
   const w = el.offsetWidth || props.width;
   const h = el.offsetHeight || 220;
   let left = props.x + GAP;
@@ -169,14 +174,18 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="ctx">
+      <div v-if="props.open && props.sheet" class="ctx-scrim" @click="close" />
+    </Transition>
+    <Transition name="ctx">
       <div
         v-if="props.open"
         ref="panel"
         class="ctx-panel"
+        :class="{ 'ctx-sheet': props.sheet }"
         data-ctx-menu
         role="menu"
         tabindex="-1"
-        :style="{ left: pos.left + 'px', top: pos.top + 'px', width: props.width + 'px' }"
+        :style="props.sheet ? undefined : { left: pos.left + 'px', top: pos.top + 'px', width: props.width + 'px' }"
       >
         <template v-for="(it, i) in props.items" :key="it.key">
           <div v-if="it.sep && i > 0" class="ctx-sep" role="separator" />
@@ -234,6 +243,33 @@ onBeforeUnmount(() => {
 .ctx-panel::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 /* 面板只当"焦点容器"用（`tabindex=-1`），别画浏览器默认的聚焦框 */
 .ctx-panel:focus, .ctx-panel:focus-visible { outline: none; }
+
+/* ---------------- 移动端：底部操作表 ---------------- */
+.ctx-scrim {
+  position: fixed; inset: 0; z-index: 319;
+  background: color-mix(in srgb, var(--bg-sunken) 46%, rgba(10, 14, 22, .42));
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+}
+.ctx-panel.ctx-sheet {
+  left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom));
+  width: auto; min-width: 0; max-height: 60vh;
+  /* 两列大按钮：手指好点，也不占满屏 */
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+  padding: 10px; border-radius: 20px;
+}
+.ctx-panel.ctx-sheet .ctx-sep { display: none; }
+.ctx-panel.ctx-sheet .ctx-key { display: none; }
+.ctx-panel.ctx-sheet .ctx-item {
+  padding: 13px 12px; border-radius: 14px; font-size: 14.5px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.ctx-panel.ctx-sheet .ctx-item:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-text);
+}
+/* 色板那一行铺满整行（它自己是一排小圆点） */
+.ctx-panel.ctx-sheet .ctx-colors { grid-column: 1 / -1; }
+.ctx-panel.ctx-sheet .ctx-item:has(.ctx-colors) { grid-column: 1 / -1; }
 
 .ctx-sep { height: 1px; margin: 4px 0; background: var(--border); }
 
