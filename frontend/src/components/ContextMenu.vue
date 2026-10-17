@@ -248,15 +248,16 @@ onBeforeUnmount(() => {
  * 一排图标按钮浮在选区上方：不带遮罩（否则拖动手柄会被它挡住），也不显示快捷键。
  * 每个按钮 40×40，够手指点；放不下就横向滚（极少见）。 */
 .ctx-panel.ctx-bar {
-  display: flex; flex-direction: row; align-items: center; gap: 2px;
+  display: flex; flex-direction: row; align-items: center; gap: 0;
   width: auto; min-width: 0; max-width: calc(100vw - 16px);
-  padding: 6px; border-radius: 999px;
+  padding: 5px 6px; border-radius: 999px;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .ctx-panel.ctx-bar::-webkit-scrollbar { display: none; }
-.ctx-panel.ctx-bar .ctx-sep { width: 1px; height: 20px; margin: 0 2px; flex: none; }
+/* 触摸条里不要分隔线：一排图标本来就靠图标区分，多一条线只会显得空 */
+.ctx-panel.ctx-bar .ctx-sep { display: none; }
 .ctx-panel.ctx-bar .ctx-item {
-  width: 40px; height: 40px; flex: none; padding: 0;
+  width: 36px; height: 36px; flex: none; padding: 0;
   justify-content: center; gap: 0; border-radius: 999px;
 }
 .ctx-panel.ctx-bar .ctx-key,
@@ -265,8 +266,14 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-text);
 }
-/* 色板：条里排在图标后面的一小排圆点（点一下就是那个颜色） */
-.ctx-panel.ctx-bar .ctx-colors { display: flex; align-items: center; gap: 4px; }
+/* 色板：排在最前面的那一小排圆点（触摸态把"划词胶囊"并进来了，所以这里要能直接选色） */
+.ctx-panel.ctx-bar .ctx-colors {
+  display: flex; align-items: center; gap: 5px; padding: 0 4px 0 2px;
+}
+.ctx-panel.ctx-bar .ctx-colors::after {
+  content: ''; width: 1px; height: 20px; margin-left: 3px; background: var(--border);
+}
+.ctx-panel.ctx-bar .ctx-item:has(.ctx-colors) { width: auto; height: 36px; padding: 0 2px; }
 
 .ctx-sep { height: 1px; margin: 4px 0; background: var(--border); }
 

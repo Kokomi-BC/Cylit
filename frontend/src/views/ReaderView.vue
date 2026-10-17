@@ -2243,8 +2243,8 @@ function onInkKey(ev: KeyboardEvent) {
   }
 }
 
-// 划词胶囊收起 = 这次选择结束了：手柄跟着收（否则会有一对孤零零的小圆点留在页面上）
-watch(() => selection.show, (on) => { if (!on) hideSelHandles(); });
+// 胶囊收起只影响胶囊：手柄跟着**DOM 选区**走（选区还在就一直显示，滚动时跟着重新定位）
+watch(() => selection.show, () => { refreshSelHandles(); });
 
 onMounted(async () => {
   mq = window.matchMedia('(max-width: 1100px)');
@@ -2264,6 +2264,10 @@ onMounted(async () => {
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
   document.addEventListener('keydown', onInkKey);
+  document.addEventListener('selectionchange', scheduleSelSync);
+  document.addEventListener('contextmenu', onDocContextMenu, true);
+  window.addEventListener('scroll', scheduleSelSync, { capture: true, passive: true });
+  window.addEventListener('resize', scheduleSelSync);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('dragstart', onReaderDragStart, true);
   window.addEventListener('pointermove', onCapsuleMove);
@@ -2310,6 +2314,10 @@ onUnmounted(() => {
   try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
   if (immersive.value) setImmersive(false);
   document.removeEventListener('keydown', onInkKey);
+  document.removeEventListener('selectionchange', scheduleSelSync);
+  document.removeEventListener('contextmenu', onDocContextMenu, true);
+  window.removeEventListener('scroll', scheduleSelSync, { capture: true } as EventListenerOptions);
+  window.removeEventListener('resize', scheduleSelSync);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('dragstart', onReaderDragStart, true);
   window.removeEventListener('pointermove', onCapsuleMove);
@@ -3034,7 +3042,7 @@ const hideMenu = () => {
   selection.show = false;
   ctxMenu.open = false;
   ctxMenu.rect = null;
-  hideSelHandles();
+  // ⚠️ 这里**不**收手柄：菜单和两端手柄是两码事（选区还在，手柄就该在）
 };
 /** 点胶囊的 × = **连选中状态一起取消**（用户口径 2026-10-10）：只收浮层、留着选区的话，
  *  鼠标一碰那段文字胶囊又冒出来，看着像"关不掉"；快照也要清（否否则下次右键仍会判成"有选区"）。 */
@@ -3318,14 +3326,27 @@ function wordRangeAt(x: number, y: number): Range | null {
  * 位置取当前选区的首/末矩形，拖动时用 caretRangeFromPoint 找到新焦点，另一端固定。
  */
 const selHandles = ref<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null);
+/**
+ * 这对是不是『触摸选出来的选区』（决定手柄该不该在）。
+ *
+ * ⚠️ 手柄的生死**只看两件事**：这个标记 + DOM 选区还在不在。
+ * 以前它跟着 selection.show（划词胶囊的开关）与 hideMenu() 走 —— 于是点一下胶囊、
+ * 或收一次菜单，选区明明还在、两端手柄却没了（用户报的正是这个）。
+ */
+const touchSelActive = ref(false);
 let selEndA: { node: Node; offset: number } | null = null;
 let selEndB: { node: Node; offset: number } | null = null;
 let draggingHandle: 'start' | 'end' | null = null;
 
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
+  if (!touchSelActive.value) { selHandles.value = null; return; }
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) { selHandles.value = null; return; }
+  if (!sel || sel.isCollapsed || !sel.rangeCount) {
+    touchSelActive.value = false;
+    selHandles.value = null;
+    return;
+  }
   const range = sel.getRangeAt(0);
   const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
   if (!rects.length) { selHandles.value = null; return; }
@@ -3344,6 +3365,7 @@ function hideSelHandles(): void {
   draggingHandle = null;
   selEndA = null;
   selEndB = null;
+  touchSelActive.value = false;
 }
 
 /** 手柄周围探几个点（手柄画在文字**上方/下方**，直接取指针位置的 caret 常常落到别的行或空白上） */
@@ -3355,6 +3377,16 @@ function caretNearHandles(x: number, y: number): { node: Node; offset: number } 
     if (caret.node.nodeType === Node.TEXT_NODE) return caret;
   }
   return null;
+}
+
+/** 选区变了 / 页面滚了：手柄要跟着文字走（否则"选区还在、手柄跑掉/消失"） */
+let selSyncRaf = 0;
+function scheduleSelSync(): void {
+  if (!touchSelActive.value || selSyncRaf) return;
+  selSyncRaf = requestAnimationFrame(() => {
+    selSyncRaf = 0;
+    refreshSelHandles();
+  });
 }
 
 function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
@@ -3394,7 +3426,23 @@ function onHandleMove(ev: PointerEvent): void {
 function onHandleUp(): void {
   if (!draggingHandle) return;
   draggingHandle = null;
+  // 松开手柄后按**新选区**把工具条重新摆出来（拖动过程中是先收起的，见 onHandleDown）
+  openCtxForSelection();
 }
+/**
+ * Markdown 弹层里的右键：**整块弹层**都交给我们的菜单。
+ *
+ * 只绑在 `.md-doc` 上是不够的：点在弹层的留白/页与页之间会落到弹层容器上，
+ * 那时浏览器弹的是**原生菜单**，点它的「全选」会选整个页面 —— 用户看到的就是
+ * "全选又把背后的 PDF 区域选进去了"（用户口径 2026-10-17）。
+ */
+function onDocContextMenu(ev: MouseEvent): void {
+  if (!mdView.open) return;
+  const target = ev.target as HTMLElement | null;
+  if (!target?.closest?.('.modal-mask, .modal-panel, .md-doc')) return;
+  onContentContextMenu(ev);
+}
+
 /** 菜单按当前选区重算一次（长按、拖完手柄都走这里；`above` 表示贴在选区上方开） */
 function openCtxForSelection(): void {
   const sel = window.getSelection();
@@ -3427,6 +3475,7 @@ function fireLongPress(): void {
     sel?.addRange(range);
     // 复用『鼠标松手』那套逻辑：它会算出 selection（划词胶囊 / 高亮锚点 / 位置）
     onMouseUp();
+    touchSelActive.value = true;
     refreshSelHandles();     // 长按之后可以直接拖两个小圆点扩大范围
     longPressRange = range.cloneRange();
   }
@@ -3506,7 +3555,9 @@ function onContentContextMenu(ev: MouseEvent) {
   const markEl = target?.closest?.('mark.hl[data-hl]') as HTMLElement | null;
   /* Markdown 面板打开时，落点只要在面板里就算 md —— 以前只有正好落在 `[data-md-page]` 上才算，
      落在面板的留白/页与页之间就退回 'rows'，于是「全选」去选了**弹层后面**那一页正文（含 PDF 页图）。 */
-  const inMdDoc = !!(target?.closest?.('.md-doc')) || !!target?.closest?.('[data-md-view]');
+  /* Markdown 视图是**整屏弹层**：只要它开着，任何右键都属于它 —— 以前只认 `.md-doc` 内的落点，
+     点在弹层的留白/页与页之间就退回 'rows'，于是「全选」又去选了背后那一页（含 PDF 区域）。 */
+  const inMdDoc = mdView.open || !!target?.closest?.('.md-doc') || !!target?.closest?.('[data-md-view]');
   const line: 'pdf' | 'rows' | 'md' = pdfEl ? 'pdf' : (mdEl || inMdDoc ? 'md' : 'rows');
   const page = Number(pdfEl?.getAttribute('data-pdf-page') ?? pageEl?.getAttribute('data-page')
     ?? mdEl?.getAttribute('data-md-page') ?? 0) || currentPage.value;
@@ -3551,6 +3602,11 @@ function onContentContextMenu(ev: MouseEvent) {
      放大打开→放大、删除高亮→删除、导出 Markdown→导出（与目标站的叫法一致）；
      **AI 相关项（询问 Cyli / 加入对话 / 图片加入对话）不动**。 */
   const quoted = ctxCtx.text.replace(/\s+/g, ' ').trim().slice(0, 14);
+  /* 触摸屏：**色板和动作合成一条工具条**（用户口径 2026-10-17）。
+     桌面仍然只有下拉里的文字项 —— 那边划词胶囊已经把颜色摆出来了，不必重复。 */
+  if (fromTouch && withSel) {
+    items.push({ key: 'hl-color', label: '高亮', icon: 'edit', swatches: HIGHLIGHT_COLORS });
+  }
   if (withSel) {
     items.push({
       key: 'bing', icon: 'search-fill',
@@ -3678,6 +3734,8 @@ function onCtxColor(color: string) {
 
 function onCtxSelect(key: string) {
   const c = ctxCtx;
+  // 触摸工具条里那一格是色板：点**行本身**（不是色点）= 用默认黄
+  if (key === 'hl-color') { hideMenu(); void addHighlight('yellow'); return; }
   switch (key) {
     case 'ask':
       hideMenu();
@@ -5463,7 +5521,7 @@ function renderMarkdown(text?: string | null) {
     </div>
 
     <SelectionMenu
-      :visible="selection.show"
+      :visible="selection.show && !(ctxMenu.open && ctxMenu.compact)"
       :x="pillPos.x"
       :y="pillPos.y"
       :colors="HIGHLIGHT_COLORS"
@@ -5712,6 +5770,7 @@ function renderMarkdown(text?: string | null) {
       title="Markdown"
       wide
       :full="mdView.full"
+      @contextmenu="onContentContextMenu"
       @close="closeMarkdownView"
     >
       <!-- 标题栏右上角：「全屏」用 CSS 铺满视口（不用 Fullscreen API，不弹权限、Esc 逻辑已有） -->
