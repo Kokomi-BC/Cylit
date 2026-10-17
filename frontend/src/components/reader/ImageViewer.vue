@@ -4,6 +4,8 @@
  *
  * 版式照参考图：**底部一枚胶囊**，从左到右 放大 / 百分比读数 / 缩小 / **重置为 100%** / 关闭（红色）。
  * 手写批注**不在这里**（用户口径：画笔属于阅读器页面），所以这个组件只负责"看清楚"。
+ * 图上/图下**不再显示任何文字**（用户口径：查看图片时不要文字）：图注只在侧栏与正文里显示，
+ * 这里留纯图 —— 胶囊里的百分比是控件读数，不算"文字说明"。
  *
  * 交互：滚轮以光标为锚缩放、双指捏合、双击在 100% 与 200% 之间切换、Esc / 点背景关闭。
  */
@@ -222,8 +224,6 @@ onBeforeUnmount(() => {
           <AppIcon name="close" :size="18" />
         </button>
       </div>
-
-      <div v-if="target?.caption" class="cap-caption">{{ target.caption }}</div>
     </div>
   </Teleport>
 </template>
@@ -280,14 +280,6 @@ onBeforeUnmount(() => {
 .zclose { background: rgba(198, 61, 61, .92); color: #fff; }
 .zclose:hover { background: #d04545; color: #fff; }
 
-.cap-caption {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 60px);
-  max-width: min(760px, calc(100vw - 48px));
-  color: rgba(255, 255, 255, .58); font-size: 12.5px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  pointer-events: none;
-}
 @media (max-width: 640px) {
   .zbtn { width: 32px; height: 32px; }
   .zpct { min-width: 52px; }
