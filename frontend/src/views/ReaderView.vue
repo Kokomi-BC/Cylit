@@ -3199,8 +3199,8 @@ const ctxMenu = reactive({
   open: false, x: 0, y: 0, items: [] as CtxItem[],
   /** 贴在**选区上方**打开（触摸长按时用：别盖住选区，也别盖住两端手柄） */
   above: false,
-  /** 触摸屏用**底部操作表**（大按钮两列），桌面仍是贴着手指的小下拉 */
-  sheet: false,
+  /** 触摸屏用 **Android 式悬浮工具条**（一排图标，浮在选区上方），桌面仍是贴着手指的小下拉 */
+  compact: false,
   /** 菜单摆完位后的真实矩形（`ContextMenu` 的 `placed` 事件报回来的）：划词胶囊据此贴到它上沿 */
   rect: null as { left: number; top: number; width: number; height: number } | null,
 });
@@ -3496,8 +3496,8 @@ function onContentContextMenu(ev: MouseEvent) {
   const fromTouch = touchCtxNext || Date.now() < suppressNativeSelectUntil;   // 长按派发的合成右键
   touchCtxNext = false;
   ctxMenu.above = fromTouch;
-  // 触摸屏一律走底部操作表（手机/平板上手指点小下拉很难点）
-  ctxMenu.sheet = fromTouch;
+  // 触摸屏一律走悬浮工具条（Android 那套：一排图标浮在选区上方、不带遮罩）
+  ctxMenu.compact = fromTouch;
   const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
   const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
   const pageEl = target?.closest?.('[data-page]') as HTMLElement | null;
@@ -5676,7 +5676,7 @@ function renderMarkdown(text?: string | null) {
       :x="ctxMenu.x"
       :y="ctxMenu.y"
       :above="ctxMenu.above"
-      :sheet="ctxMenu.sheet"
+      :compact="ctxMenu.compact"
       :items="ctxMenu.items"
       @select="onCtxSelect"
       @color="onCtxColor"
