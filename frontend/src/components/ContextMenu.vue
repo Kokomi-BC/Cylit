@@ -126,8 +126,18 @@ function onDocPointer(ev: PointerEvent) {
   close();
 }
 
-/** 滚动一下就收：菜单长在鼠标点上，页面一动它就跟正文对不上了（与划词菜单同一处理） */
-function onScroll() { close(); }
+/**
+ * 滚动一下就收：菜单长在鼠标点上，页面一动它就跟正文对不上了（与划词菜单同一处理）。
+ *
+ * ⚠️ 但**刚打开的那一小会儿**要放行：触摸屏拖手柄自动滚动时，松手那一刻还有几帧
+ * scroll 在路上，菜单刚摆好就被这些余波收掉 —— 表现就是"滚了一大段松手，工具条不出现"。
+ */
+let openedAt = 0;
+watch(() => props.open, (v) => { if (v) openedAt = Date.now(); });
+function onScroll() {
+  if (Date.now() - openedAt < 300) return;
+  close();
+}
 
 function onKeydown(ev: KeyboardEvent) {
   if (!props.open) return;

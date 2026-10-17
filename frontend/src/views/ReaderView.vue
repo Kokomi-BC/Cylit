@@ -3072,6 +3072,10 @@ function closeSelectionMenu() {
 function onAnyScroll(ev?: Event) {
   /* 浮层自己内部滚（一屏放不下几条参考文献）不算"视角变了" —— 别把它自己关掉 */
   if ((ev?.target as HTMLElement | null)?.closest?.('[data-cite-pop]')) return;
+  /* 拖手柄期间、以及刚松手的那三百毫秒，收菜单这件事交给拖拽那条线自己管：
+   * 自动滚动的 scroll 事件会在松手之后还涌进来几帧，这里一收就把刚摆好的工具条
+   * 又摘掉（用户看到的就是"自动滚完松手，菜单不出现"）。 */
+  if (draggingHandle || performance.now() < suppressScrollCloseUntil) return;
   citePop.open = false;      // 引用标号的浮层贴着正文，一滚就对不上了（与划词菜单同一处理）
   cancelCiteOpen();          // 还没弹出来的那一次也别弹了（锚点已经跟着内容跑掉了）
   hideMenu();
@@ -3219,6 +3223,7 @@ const ctxMenu = reactive({
   /** 菜单摆完位后的真实矩形（`ContextMenu` 的 `placed` 事件报回来的）：划词胶囊据此贴到它上沿 */
   rect: null as { left: number; top: number; width: number; height: number } | null,
 });
+
 /** 胶囊这次该摆在哪：**右键菜单开着时贴在菜单上沿**（用户口径 2026-10-08：
  *  "希望胶囊能在右键后改变位置到右键菜单上"），否则照旧贴选区。 */
 const pillPos = computed(() => {
@@ -3358,6 +3363,11 @@ let dragPoint: { x: number; y: number } | null = null;
 const HANDLE_SCROLL_EDGE = 88;
 const HANDLE_SCROLL_MAX = 18;
 let handleScrollRaf = 0;
+/** 松手后这一小段时间内忽略 scroll 触发的"收菜单"（见 onAnyScroll） */
+let suppressScrollCloseUntil = 0;
+/** 自动滚动时选区重算的节流：滚够这么多像素、或过了这么久才重算一次 */
+let scrollSinceSelUpdate = 0;
+let lastSelUpdateAt = 0;
 
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
@@ -3455,6 +3465,9 @@ function caretAtLine(x: number, y: number): { node: Node; offset: number } | nul
 /** 选区变了 / 页面滚了：手柄要跟着文字走（否则"选区还在、手柄跑掉/消失"） */
 let selSyncRaf = 0;
 function scheduleSelSync(): void {
+  // 拖手柄时由拖拽那条线自己刷新（下面 handleAutoScrollTick 里节流调用），
+  // 滚动事件每次再插一脚就变成"每帧重算两遍"，自动滚动会掉帧。
+  if (draggingHandle) return;
   if (!touchSelActive.value || selSyncRaf) return;
   selSyncRaf = requestAnimationFrame(() => {
     selSyncRaf = 0;
@@ -3486,29 +3499,57 @@ function handleScrollHost(): HTMLElement | null {
 function handleAutoScrollTick(): void {
   handleScrollRaf = 0;
   if (!draggingHandle || !dragPoint) return;
-  const host = handleScrollHost();
-  if (!host) return;
-  const rect = host.getBoundingClientRect();
-  // 滚动容器的上下沿再和视口取交集：容器比视口高时，边缘要从能看见的地方算起
-  const top = Math.max(rect.top, 0);
-  const bottom = Math.min(rect.bottom, window.innerHeight);
+  const box = scrollBox;
+  if (!box) return;
   let dy = 0;
-  if (dragPoint.y < top + HANDLE_SCROLL_EDGE) {
-    const k = Math.min(1, (top + HANDLE_SCROLL_EDGE - dragPoint.y) / HANDLE_SCROLL_EDGE);
+  if (dragPoint.y < box.top + HANDLE_SCROLL_EDGE) {
+    const k = Math.min(1, (box.top + HANDLE_SCROLL_EDGE - dragPoint.y) / HANDLE_SCROLL_EDGE);
     dy = -Math.max(2, Math.round(k * HANDLE_SCROLL_MAX));
-  } else if (dragPoint.y > bottom - HANDLE_SCROLL_EDGE) {
-    const k = Math.min(1, (dragPoint.y - (bottom - HANDLE_SCROLL_EDGE)) / HANDLE_SCROLL_EDGE);
+  } else if (dragPoint.y > box.bottom - HANDLE_SCROLL_EDGE) {
+    const k = Math.min(1, (dragPoint.y - (box.bottom - HANDLE_SCROLL_EDGE)) / HANDLE_SCROLL_EDGE);
     dy = Math.max(2, Math.round(k * HANDLE_SCROLL_MAX));
   }
   if (!dy) return;
-  const before = host.scrollTop;
-  host.scrollTop = before + dy;
-  if (host.scrollTop === before) return;   // 已经滚到头了：别再空转 rAF（手指一动会重新起）
-  moveHandleTo(dragPoint.x, dragPoint.y);
+  /* ⚠️ 这一帧**只写不读**：位置由 box.pos 自己记账，边界由 box.max 夹好。
+   * 以前每帧写完 scrollTop 再读回来，等于逼浏览器当场重排一次布局 —— 掉帧的主要来源。 */
+  const next = Math.max(0, Math.min(box.max, box.pos + dy));
+  const moved = next - box.pos;
+  if (!moved) return;                      // 已经滚到头了：别再空转 rAF（手指一动会重新起）
+  box.el.scrollTop = next;
+  box.pos = next;
+  /* 滚动**每帧都做**（这样才顺），但"按新位置重算选区"很贵：caretRangeFromPoint +
+   * 整段选区的 getClientRects + onMouseUp 里的锚点换算，每帧都跑会直接掉到 15fps。
+   * 所以按「滚够 80px 或过了 90ms」来节流（每帧 18px，实际就是 ~90ms 一次），
+   * 视觉上是连续的，手上也不卡。 */
+  scrollSinceSelUpdate += Math.abs(moved);
+  const now = performance.now();
+  if (scrollSinceSelUpdate >= 80 || now - lastSelUpdateAt >= 90) {
+    scrollSinceSelUpdate = 0;
+    lastSelUpdateAt = now;
+    moveHandleTo(dragPoint.x, dragPoint.y, true);
+  }
   handleScrollRaf = requestAnimationFrame(handleAutoScrollTick);
 }
 
+/** 拖拽期间缓存的滚动盒子：边界与当前位置都记在 JS 里，tick 里不再读布局 */
+let scrollBox: { el: HTMLElement; top: number; bottom: number; max: number; pos: number } | null = null;
+
+function primeScrollBox(): void {
+  const host = handleScrollHost();
+  if (!host) { scrollBox = null; return; }
+  const rect = host.getBoundingClientRect();
+  // 滚动容器的上下沿再和视口取交集：容器比视口高时，边缘要从能看见的地方算起
+  scrollBox = {
+    el: host,
+    top: Math.max(rect.top, 0),
+    bottom: Math.min(rect.bottom, window.innerHeight),
+    max: Math.max(0, host.scrollHeight - host.clientHeight),
+    pos: host.scrollTop,
+  };
+}
+
 function startHandleAutoScroll(): void {
+  if (!scrollBox) primeScrollBox();
   if (!handleScrollRaf) handleScrollRaf = requestAnimationFrame(handleAutoScrollTick);
 }
 
@@ -3516,6 +3557,9 @@ function stopHandleAutoScroll(): void {
   if (handleScrollRaf) cancelAnimationFrame(handleScrollRaf);
   handleScrollRaf = 0;
   dragPoint = null;
+  scrollBox = null;
+  scrollSinceSelUpdate = 0;
+  lastSelUpdateAt = 0;
 }
 
 function beginHandleDrag(which: 'start' | 'end'): void {
@@ -3543,6 +3587,7 @@ function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
   ev.stopPropagation();
   dragPoint = { x: ev.clientX, y: ev.clientY };
   beginHandleDrag(which);
+  primeScrollBox();
 }
 
 function onHandleTouchStart(which: 'start' | 'end', ev: TouchEvent): void {
@@ -3551,6 +3596,7 @@ function onHandleTouchStart(which: 'start' | 'end', ev: TouchEvent): void {
   const t0 = ev.touches[0];
   if (t0) dragPoint = { x: t0.clientX, y: t0.clientY };
   beginHandleDrag(which);
+  primeScrollBox();
 }
 
 function onHandlePointerUp(ev: PointerEvent): void {
@@ -3575,7 +3621,12 @@ function onHandleMove(ev: PointerEvent): void {
   startHandleAutoScroll();
 }
 
-function moveHandleTo(x: number, y: number): void {
+/**
+ * @param light 拖拽自动滚动时用：只把选区、手柄、胶囊位置更新一下，
+ *              **跳过 onMouseUp 那套锚点换算**（它要把整页文字重新拼一遍，
+ *              每帧都跑就是自动滚动掉帧的元凶）；松手时再补一次完整计算。
+ */
+function moveHandleTo(x: number, y: number, light = false): void {
   const caret = caretAtLine(x, y);
   if (!caret) return;
   // 只认文字节点上的插入点（落在元素上说明这附近没文字，等下一次移动）
@@ -3596,6 +3647,14 @@ function moveHandleTo(x: number, y: number): void {
     try { sel.removeAllRanges(); sel.addRange(prev); } catch { /* 忽略 */ }
     return;
   }
+  if (light) {
+    // 轻量更新：胶囊位置贴住选区，锚点/高亮等松手时再算
+    const box = sel.getRangeAt(0).getBoundingClientRect();
+    selection.rect = { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    Object.assign(selection, menuPos(box));
+    refreshSelHandles();
+    return;
+  }
   // 与鼠标松手同一条链路：重算划词胶囊 / 高亮锚点 / 位置
   onMouseUp();
   refreshSelHandles();
@@ -3611,6 +3670,11 @@ function onHandleUp(): void {
   document.removeEventListener('touchmove', onHandleTouchMove);
   document.removeEventListener('touchend', onHandleUp, true);
   document.removeEventListener('touchcancel', onHandleUp, true);
+  // 自动滚动的 scroll 事件可能还在路上：先挂个"别收菜单"的免死金牌
+  suppressScrollCloseUntil = performance.now() + 350;
+  // 拖拽期间为了不卡只做了轻量更新（见 moveHandleTo 的 light 参数）：
+  // 松手这一下补一次完整计算，锚点/高亮 id 才是按最终选区算的
+  onMouseUp();
   // 松开手柄后按**新选区**把工具条重新摆出来（拖动过程中是先收起的，见 onHandleDown）
   openCtxForSelection();
 }
@@ -3632,14 +3696,25 @@ function onDocContextMenu(ev: MouseEvent): void {
 function openCtxForSelection(): void {
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  const x = Math.round((rect.left + rect.right) / 2);
-  const y = Math.round(rect.top);
+  const range0 = sel.getRangeAt(0);
+  const rect = range0.getBoundingClientRect();
+  /* 拖手柄自动滚动跑到很远之后，整个选区的**包围盒**会伸到视口外面（top 是负数），
+   * 菜单就被摆到屏幕外 → 松手看不到工具条。这时改成贴"最后一行还看得见的选区"，
+   * 也就是手指那一头。 */
+  const lineRects = Array.from(range0.getClientRects()).filter((r) => r.height > 0);
+  const visible = lineRects.filter((r) => r.bottom > 8 && r.top < window.innerHeight - 8);
+  const anchor = visible.length ? visible[visible.length - 1] : rect;
+  const x = Math.round((anchor.left + anchor.right) / 2);
+  const y = Math.round(Math.min(Math.max(anchor.top, 8), window.innerHeight - 24));
   /* ⚠️ 不能拿 elementFromPoint：选区左上角正好被"起点手柄"的 44px 热区盖住，
      事件派到那个 div 上根本冒泡不到 .reader-content（表现就是"拖完手柄菜单不出现"）。
      改成从选区的文本节点往上找它所在的页块，直接在那个内容元素上派发。 */
-  const startNode = sel.getRangeAt(0).startContainer;
-  const host = (startNode.nodeType === Node.TEXT_NODE ? startNode.parentElement : startNode) as HTMLElement | null;
+  /* 自动滚动拖得很远时，选区**起点**那一页可能已经被虚拟滚动卸掉了：
+     在脱离文档的节点上派发事件没有任何人收到（表现就是"松手菜单不出来"）。
+     起点不在了就改用终点（手指那一头）的节点。 */
+  const elOf = (node: Node) => (node.nodeType === Node.TEXT_NODE ? node.parentElement : node) as HTMLElement | null;
+  const host = [elOf(range0.startContainer), elOf(range0.endContainer)]
+    .find((el) => el && el.isConnected) ?? null;
   const target = (host?.closest('[data-pdf-page], [data-page], [data-md-page], .md-doc, .row-pair, .row-line')
     ?? host ?? document.querySelector('.reader-content')) as HTMLElement | null;
   touchCtxNext = true;
