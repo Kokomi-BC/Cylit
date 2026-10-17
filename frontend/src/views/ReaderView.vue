@@ -500,23 +500,59 @@ interface ToolbarAction {
   disabled?: boolean;
 }
 
-/** 阅读器工具条：低频动作收进「⋯」，避免一排同权重按钮把主操作淹没。 */
-const toolbarMenu: ToolbarAction[] = [
-  { key: 'retranslate', label: '重新翻译', icon: 'refresh' },
-  // 与论文库卡片「⋯」里那一项**同名**（R4）：同一个后端动作，两处叫法必须一致
-  { key: 'insight', label: '重新生成解读', icon: 'sparkle' },
-  { key: 'pdf', label: '打开原 PDF', icon: 'external' },
+/** 阅读器工具条：低频动作收进「⋯」，避免一排同权重按钮把主操作淹没。
+ *  2026-10-17 用户口径：**精简**——去掉「打开原 PDF」（正文里本来就能切成原 PDF 呈现）
+ *  与「重新生成解读」（论文库卡片的「⋯」里有同一个动作），并补上「全屏 / 退出全屏」。 */
+const isFullscreen = ref(false);
+/** 沉浸模式：浏览器不支持 / 拒绝全屏时的退路（隐藏顶部标签栏，阅读器占满整屏） */
+const immersive = ref(false);
+
+function setImmersive(on: boolean): void {
+  immersive.value = on;
+  const html = document.documentElement;
+  html.classList.toggle('fs-immersive', on);
+  // 标签栏藏起来了，阅读器的高度 calc 还按 52px 留白就会空一条 —— 直接把变量归零
+  if (on) html.style.setProperty('--header-h', '0px');
+  else html.style.removeProperty('--header-h');
+}
+
+const toolbarMenu = computed<ToolbarAction[]>(() => [
   { key: 'markdown', label: 'Markdown 视图', icon: 'document' },
-  // 打包下载（原 PDF + 三个版本的 Markdown + 被引用的插图）：一次拿走，离线可看
-  { key: 'download-zip', label: '下载打包（PDF + Markdown + 图片）', icon: 'download' },
-];
+  { key: 'download-zip', label: '下载打包', icon: 'download' },
+  { key: 'retranslate', label: '重新翻译', icon: 'refresh' },
+  {
+    key: 'fullscreen',
+    label: isFullscreen.value || immersive.value ? '退出全屏' : '全屏',
+    icon: isFullscreen.value || immersive.value ? 'collapse' : 'expand',
+  },
+]);
+
+function onFullscreenChange(): void {
+  isFullscreen.value = !!document.fullscreenElement;
+}
+
+async function toggleFullscreen(): Promise<void> {
+  try {
+    if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+    if (immersive.value) { setImmersive(false); return; }
+    if (!document.fullscreenEnabled) {
+      setImmersive(true);
+      toast('本浏览器不支持全屏，已切到沉浸模式', 'info', 2400);
+      return;
+    }
+    await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  } catch {
+    // 权限被拒（内嵌浏览器 / 无头环境）：退回沉浸模式，别弹一句看不懂的报错
+    setImmersive(true);
+    toast('已切到沉浸模式（浏览器拒绝了全屏请求）', 'warn', 2600);
+  }
+}
 
 function onToolbarAction(key: string) {
   if (key === 'retranslate') { startTranslate('retranslate'); return; }
-  if (key === 'insight') { void regenerateInsight(); return; }
-  if (key === 'pdf') { openPdf(); return; }
-  if (key === 'markdown') openMarkdownView();
-  if (key === 'download-zip') downloadBundle();
+  if (key === 'markdown') { openMarkdownView(); return; }
+  if (key === 'download-zip') { downloadBundle(); return; }
+  if (key === 'fullscreen') void toggleFullscreen();
 }
 
 const selection = reactive({
@@ -2228,6 +2264,7 @@ onMounted(async () => {
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
   document.addEventListener('keydown', onInkKey);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('dragstart', onReaderDragStart, true);
   window.addEventListener('pointermove', onCapsuleMove);
   window.addEventListener('pointerup', onCapsuleUp);
@@ -2271,7 +2308,9 @@ onUnmounted(() => {
   setInkNotesListener(null);
   // 离开阅读器就把提示条的位置放回去（别的页面没有悬浮胶囊）
   try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
+  if (immersive.value) setImmersive(false);
   document.removeEventListener('keydown', onInkKey);
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('dragstart', onReaderDragStart, true);
   window.removeEventListener('pointermove', onCapsuleMove);
   window.removeEventListener('pointerup', onCapsuleUp);
@@ -5909,6 +5948,10 @@ function renderMarkdown(text?: string | null) {
 /* 批注工具是**单选**：始终有一枚是选中的（用户口径 2026-10-17）。
    选中态用"抬起的一枚 pill"（--bg-elev + 一档投影），与 .seg 的选中项同一门语言 ——
    以前只有 hover 的浅灰，四枚按钮看起来永远是"都没选"。 */
+/* 沉浸模式（全屏的退路）：把应用顶部标签栏藏掉，阅读器自己占满整屏。
+   .tabbar 在 App 层、本组件的 scoped 样式够不到，所以用 :global 写全局选择器。 */
+:global(html.fs-immersive .tabbar) { display: none; }
+
 /* 触摸选区的两端手柄：一枚小圆点 + 一根小尾巴，位置由 refreshSelHandles 按选区矩形给 */
 .sel-handle {
   position: fixed; z-index: 190; width: 26px; height: 26px;
