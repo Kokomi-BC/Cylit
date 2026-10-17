@@ -3343,6 +3343,14 @@ const selHandles = ref<{ start: { x: number; y: number }; end: { x: number; y: n
 const touchSelActive = ref(false);
 let selEndA: { node: Node; offset: number } | null = null;
 let selEndB: { node: Node; offset: number } | null = null;
+/**
+ * 拖拽期间**不动的那一端**（按下手柄时锁定一次）。
+ *
+ * ⚠️ 千万不能每次移动都从 selEndA / selEndB 现取：那两个值会跟着选区实时刷新，
+ * 于是『固定端』每次都被换成上一帧的焦点 —— 实测选区在 2 字 / 134 字之间来回跳，
+ * 看起来就是『拖不动』（用户口径 2026-10-17 第 1 条）。
+ */
+let dragAnchor: { node: Node; offset: number } | null = null;
 let draggingHandle: 'start' | 'end' | null = null;
 
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
@@ -3403,15 +3411,38 @@ function hideSelHandles(): void {
   touchSelActive.value = false;
 }
 
-/** 手柄周围探几个点（手柄画在文字**上方/下方**，直接取指针位置的 caret 常常落到别的行或空白上） */
-function caretNearHandles(x: number, y: number): { node: Node; offset: number } | null {
-  const probes = [0, 6, -6, 12, -12, 18, -18];
-  for (const dy of probes) {
-    const caret = caretAt(x, y + dy);
-    if (!caret) continue;
-    if (caret.node.nodeType === Node.TEXT_NODE) return caret;
+/**
+ * 拖手柄时的插入点。
+ *
+ * 手柄画在**行的上沿 / 下沿**，而 `caretRangeFromPoint(x, 上沿)` 永远给"这一行的行首" ——
+ * 所以横向拖起点手柄时位置纹丝不动（用户口径 2026-10-17：上面的手柄拖不到下面手柄后面）。
+ * 做法：先取一次 caret，用它右边一个字的矩形求出**这一行的中线**，再按中线 + 同一个 x 重新取一次，
+ * 迭代几次就收敛；这样横向位置才真正跟着手指走。
+ */
+function caretAtLine(x: number, y: number): { node: Node; offset: number } | null {
+  let cur = caretAt(x, y);
+  if (!cur || cur.node.nodeType !== Node.TEXT_NODE) {
+    // 落点不在文字上：上下探几下找最近的一行
+    for (const dy of [6, -6, 12, -12, 18, -18, 24, -24]) {
+      const c = caretAt(x, y + dy);
+      if (c && c.node.nodeType === Node.TEXT_NODE) { cur = c; break; }
+    }
   }
-  return null;
+  for (let i = 0; i < 4 && cur; i += 1) {
+    const text = cur.node.textContent ?? '';
+    const probe = document.createRange();
+    probe.setStart(cur.node, Math.min(cur.offset, text.length));
+    probe.setEnd(cur.node, Math.min(cur.offset + 1, text.length));
+    const rect = probe.getBoundingClientRect();
+    if (!rect.height) break;
+    const cy = rect.top + rect.height / 2;
+    if (Math.abs(cy - y) < 3) break;              // 已经在这一行的中线上了
+    const next = caretAt(x, cy);
+    if (!next || next.node.nodeType !== Node.TEXT_NODE) break;
+    cur = next;
+    y = cy;
+  }
+  return cur;
 }
 
 /** 选区变了 / 页面滚了：手柄要跟着文字走（否则"选区还在、手柄跑掉/消失"） */
@@ -3424,23 +3455,73 @@ function scheduleSelSync(): void {
   });
 }
 
-function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
+/**
+ * 拖手柄：pointer 与 touch **两条线一起收**（不再依赖 pointer capture）。
+ *
+ * 为什么：手指在手柄上横向移动时，浏览器很容易把它判成"横向滑动"并发 `pointercancel`，
+ * `pointermove` 就此断流 —— 表现是横向拖起点手柄纹丝不动（用户口径 2026-10-17 第 1 条）。
+ * 现在：`pointercancel` 不结束拖拽（只有 pointerup / touchend 才结束），
+ * 移动坐标同时从 document 上的 `pointermove` 与非被动 `touchmove` 拿，谁到都算。
+ */
+function beginHandleDrag(which: 'start' | 'end'): void {
+  if (draggingHandle) return;
   // 拖选择条时菜单让开（用户口径 2026-10-17）：**只收菜单**，选区与手柄都留着
   if (ctxMenu.open) { ctxMenu.open = false; ctxMenu.rect = null; }
   draggingHandle = which;
-  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
+  // 锁定另一头（之后每次移动都用它当锚点）
+  const sel0 = window.getSelection();
+  if (sel0 && sel0.rangeCount && !sel0.isCollapsed) {
+    const r0 = sel0.getRangeAt(0);
+    dragAnchor = which === 'start'
+      ? { node: r0.endContainer, offset: r0.endOffset }
+      : { node: r0.startContainer, offset: r0.startOffset };
+  }
+  document.addEventListener('pointermove', onHandleMove, true);
+  document.addEventListener('pointerup', onHandlePointerUp, true);
+  document.addEventListener('touchmove', onHandleTouchMove, { passive: false });
+  document.addEventListener('touchend', onHandleUp, true);
+  document.addEventListener('touchcancel', onHandleUp, true);
+}
+
+function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
   ev.preventDefault();
   ev.stopPropagation();
+  beginHandleDrag(which);
+}
+
+function onHandleTouchStart(which: 'start' | 'end', ev: TouchEvent): void {
+  ev.preventDefault();
+  ev.stopPropagation();
+  beginHandleDrag(which);
+}
+
+function onHandlePointerUp(ev: PointerEvent): void {
+  if (ev.type === 'pointercancel') return;   // 手指还在，别把拖拽收掉
+  onHandleUp();
+}
+
+function onHandleTouchMove(ev: TouchEvent): void {
+  if (!draggingHandle) return;
+  const t = ev.touches[0];
+  if (!t) return;
+  ev.preventDefault();       // 拖手柄时不要滑页面
+  moveHandleTo(t.clientX, t.clientY);
 }
 
 function onHandleMove(ev: PointerEvent): void {
   if (!draggingHandle) return;
-  const caret = caretNearHandles(ev.clientX, ev.clientY);
+  moveHandleTo(ev.clientX, ev.clientY);
+}
+
+function moveHandleTo(x: number, y: number): void {
+  const caret = caretAtLine(x, y);
   if (!caret) return;
+  // 只认文字节点上的插入点（落在元素上说明这附近没文字，等下一次移动）
+  if (caret.node.nodeType !== Node.TEXT_NODE) return;
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
-  // 拖哪一头就以**另一头**为锚点：setBaseAndExtent 从锚点铺到焦点
-  const fixed = draggingHandle === 'start' ? selEndB : selEndA;
+  // 锚点 = 按下时锁定的另一头（见 dragAnchor 的说明）
+  const fixed = dragAnchor ?? (draggingHandle === 'start' ? selEndB : selEndA);
   if (!fixed) return;
   // 焦点落在锚点上（同一个点）= 空选区：这种一步会"把选区丢掉"，直接跳过
   if (fixed.node === caret.node && fixed.offset === caret.offset) return;
@@ -3461,6 +3542,12 @@ function onHandleMove(ev: PointerEvent): void {
 function onHandleUp(): void {
   if (!draggingHandle) return;
   draggingHandle = null;
+  dragAnchor = null;
+  document.removeEventListener('pointermove', onHandleMove, true);
+  document.removeEventListener('pointerup', onHandlePointerUp, true);
+  document.removeEventListener('touchmove', onHandleTouchMove);
+  document.removeEventListener('touchend', onHandleUp, true);
+  document.removeEventListener('touchcancel', onHandleUp, true);
   // 松开手柄后按**新选区**把工具条重新摆出来（拖动过程中是先收起的，见 onHandleDown）
   openCtxForSelection();
 }
@@ -3485,8 +3572,13 @@ function openCtxForSelection(): void {
   const rect = sel.getRangeAt(0).getBoundingClientRect();
   const x = Math.round((rect.left + rect.right) / 2);
   const y = Math.round(rect.top);
-  const target = (document.elementFromPoint(rect.left + 2, rect.top + Math.min(6, rect.height / 2))
-    ?? document.querySelector('.reader-content')) as HTMLElement | null;
+  /* ⚠️ 不能拿 elementFromPoint：选区左上角正好被"起点手柄"的 44px 热区盖住，
+     事件派到那个 div 上根本冒泡不到 .reader-content（表现就是"拖完手柄菜单不出现"）。
+     改成从选区的文本节点往上找它所在的页块，直接在那个内容元素上派发。 */
+  const startNode = sel.getRangeAt(0).startContainer;
+  const host = (startNode.nodeType === Node.TEXT_NODE ? startNode.parentElement : startNode) as HTMLElement | null;
+  const target = (host?.closest('[data-pdf-page], [data-page], [data-md-page], .md-doc, .row-pair, .row-line')
+    ?? host ?? document.querySelector('.reader-content')) as HTMLElement | null;
   touchCtxNext = true;
   target?.dispatchEvent(new MouseEvent('contextmenu', {
     bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2,
@@ -5818,17 +5910,13 @@ function renderMarkdown(text?: string | null) {
         class="sel-handle start"
         :style="{ left: selHandles.start.x + 'px', top: selHandles.start.y + 'px' }"
         @pointerdown.stop="onHandleDown('start', $event)"
-        @pointermove="onHandleMove"
-        @pointerup="onHandleUp"
-        @pointercancel="onHandleUp"
+        @touchstart.stop="onHandleTouchStart('start', $event)"
       ><i /></div>
       <div
         class="sel-handle end"
         :style="{ left: selHandles.end.x + 'px', top: selHandles.end.y + 'px' }"
         @pointerdown.stop="onHandleDown('end', $event)"
-        @pointermove="onHandleMove"
-        @pointerup="onHandleUp"
-        @pointercancel="onHandleUp"
+        @touchstart.stop="onHandleTouchStart('end', $event)"
       ><i /></div>
     </template>
 
@@ -6168,8 +6256,9 @@ function renderMarkdown(text?: string | null) {
   content: ''; position: absolute; left: 50%; width: 2px; height: 12px;
   border-radius: 999px; background: var(--accent); opacity: .85;
 }
-.sel-handle.start::after { top: 6px; }
-.sel-handle.end::after { bottom: 6px; }
+/* 起点手柄：圆圈在上、小尾巴朝下（指向文字那一行）；终点手柄镜像（尾巴朝上） */
+.sel-handle.start::after { top: 26px; }
+.sel-handle.end::after { top: 6px; }
 
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
    ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */
