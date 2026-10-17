@@ -37,7 +37,10 @@ function iconOf(kind?: string | null): string {
 .toast-host {
   --toast-glass-top: 86%;
   --toast-glass-bottom: 74%;
-  position: fixed; top: calc(var(--header-h) + 12px); left: 50%; transform: translateX(-50%);
+  /* `--toast-drop`：页面里如果有一枚**悬浮胶囊**（阅读器主工具栏），它会把这个值设成
+     "胶囊底边 + 8px"，提示条因此永远落在胶囊**下面**，不会把按钮压住（用户口径 ①）。 */
+  position: fixed; top: calc(var(--header-h) + 12px + var(--toast-drop, 0px));
+  left: 50%; transform: translateX(-50%);
   z-index: 200; display: flex; flex-direction: column; align-items: center; gap: 8px;
   max-width: min(560px, calc(100vw - 32px));
   pointer-events: none;

@@ -274,13 +274,51 @@ const capsuleShiftCss = computed(() => `${capsuleShift.value}px`);
 
 /**
  * 顶栏弹出面板：**同一时刻只开一个**（互斥）。
- * `view` = 版面选项（原文栏呈现 / 文字列侧 / 左右顺序）；`display` = 显示（字号 + 页图缩放）。
+ *
+ * 2026-10-17 用户口径：**常规模式的版面和显示合成一个「设置」面板** ——
+ * 以前是两个按钮（滑块 = 版面、Aa = 显示），在「译文」视图下前者打开后几乎全是
+ * `v-if` 不成立的空行（没有原文栏、没有页图、也不是对照），后者只剩一个 "Aa" 字，
+ * 看起来就是个"空按钮"。合成一个面板后，任何视图下都至少有「视图 / 正文字号」两行。
  * 面板本体始终挂载（`v-show`），原因见 `CapPanel.vue` 的头注释（自检脚本按文字点里面的按钮）。
  */
-const capPanel = ref<'' | 'view' | 'display'>('');
+const capPanel = ref<'' | 'settings'>('');
 
-function toggleCapPanel(which: 'view' | 'display') {
+function toggleCapPanel(which: 'settings') {
   capPanel.value = capPanel.value === which ? '' : which;
+}
+
+/** 批注的**二级菜单**（颜色 / 粗细）：点画笔或荧光笔展开，再点一次收起 */
+const inkOptionsOpen = ref(false);
+/** 二级菜单的位置（fixed，跟着胶囊走：拖动、切换模式都会重新量一次） */
+const inkOptionsStyle = ref<Record<string, string>>({});
+
+function placeInkOptions(): void {
+  const el = capsuleEl.value;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  inkOptionsStyle.value = {
+    left: Math.round(r.left + r.width / 2) + 'px',
+    top: Math.round(r.bottom + 8) + 'px',
+  };
+}
+
+/** 选工具：点"已经在用的"画笔/荧光笔 = 展开/收起它的二级菜单（用户口径） */
+function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
+  if (key === inkTool.value && (key === 'pen' || key === 'marker')) {
+    inkOptionsOpen.value = !inkOptionsOpen.value;
+    void nextTick().then(() => {
+      if (inkOptionsOpen.value) placeInkOptions();
+      syncToastDrop();
+    });
+    return;
+  }
+  inkTool.value = key;
+  inkOptionsOpen.value = key === 'pen' || key === 'marker';
+  // 二级菜单跟着胶囊走：展开/收起后重新摆位，并让提示条再让一层
+  void nextTick().then(() => {
+    if (inkOptionsOpen.value) placeInkOptions();
+    syncToastDrop();
+  });
 }
 
 /** 落盘（每像素写一次没意义；拖完 / 夹取之后才写） */
@@ -1885,7 +1923,6 @@ const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'eraser'; icon: string
   { key: 'marker', icon: 'marker', label: '荧光笔' },
   { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
 ];
-const colorOpen = ref(false);
 /** 粗细三档的圆点直径（细 / 中 / 粗） */
 function inkDotStyle(key: string): Record<string, string> {
   const size = key === 'thin' ? 5 : key === 'mid' ? 7 : 9;
@@ -1908,6 +1945,23 @@ const capsuleStyle = computed<Record<string, string>>(() => ({
   transform: 'translate(' + (capsuleShift.value + capOffset.x) + 'px, ' + capOffset.y + 'px)',
 }));
 
+/**
+ * 让提示条**避开顶部胶囊**（用户口径 ①）：把宿主顶部下移"胶囊底边 + 8px"。
+ * 提示条是全局组件（`ToastHost`），这里只能通过 CSS 变量跟它说话 —— 每次胶囊动完都同步一次。
+ */
+function syncToastDrop(): void {
+  const el = capsuleEl.value;
+  if (!el || typeof document === 'undefined') return;
+  const header = Number.parseInt(
+    getComputedStyle(document.documentElement).getPropertyValue('--header-h') || '0', 10) || 0;
+  let bottom = el.getBoundingClientRect().bottom;
+  // 二级菜单（颜色 / 粗细）展开时正好在胶囊下面：提示条要多让一层，否则会压在颜色行上。
+  // 这里按**状态**估算高度（颜色行 + 粗细行 ≈ 80px），不依赖 DOM 查询的时序。
+  if (inkOptionsOpen.value) bottom += 88;
+  const drop = Math.max(0, Math.round(bottom + 8 - (header + 12)));
+  document.documentElement.style.setProperty('--toast-drop', drop + 'px');
+}
+
 function restoreCapsulePos(): void {
   try {
     const raw = sessionStorage.getItem(CAP_POS_KEY);
@@ -1922,7 +1976,10 @@ function restoreCapsulePos(): void {
 
 function onCapsuleDown(ev: PointerEvent): void {
   const el = capsuleEl.value;
-  if (!el || ev.target !== el) return;      // 按到按钮/色板上：正常点它，不拖
+  if (!el) return;
+  // 只有**空白处**或**那枚抓手**才开始拖；按到按钮上仍然是点按钮
+  const target = ev.target as HTMLElement | null;
+  if (target !== el && !target?.closest?.('[data-cap-grip]')) return;
   const rect = el.getBoundingClientRect();
   capDrag.value = true;
   el.setPointerCapture?.(ev.pointerId);
@@ -1933,11 +1990,21 @@ function onCapsuleDown(ev: PointerEvent): void {
   };
 }
 
+watch(inkOptionsOpen, async (open) => {
+  await nextTick();
+  if (open) placeInkOptions();
+  else syncToastDrop();
+  // 菜单展开/收起后提示条要重新让位（菜单本身就在胶囊下面）
+  if (open) syncToastDrop();
+});
+
 function onCapsuleMove(ev: PointerEvent): void {
   if (!capDrag.value || !capDragFrom) return;
   const from = capDragFrom;
   capOffset.x = Math.min(from.maxX, Math.max(from.minX, from.ox + (ev.clientX - from.x)));
   capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (ev.clientY - from.y)));
+  syncToastDrop();                     // 提示条跟着胶囊走，别被压住
+  if (inkOptionsOpen.value) placeInkOptions();
 }
 
 function onCapsuleUp(): void {
@@ -1946,6 +2013,7 @@ function onCapsuleUp(): void {
   capDragFrom = null;
   try { sessionStorage.setItem(CAP_POS_KEY, JSON.stringify({ x: capOffset.x, y: capOffset.y })); }
   catch { /* 隐私模式：位置只在本次内存里 */ }
+  syncToastDrop();
 }
 
 /** 批注里的笔记写进 note 表之后，把侧栏那份笔记列表同步过来（不用整页重载） */
@@ -1963,6 +2031,8 @@ async function refreshNotes(): Promise<void> {
  */
 function toggleInk() {
   inkOn.value = !inkOn.value;
+  inkOptionsOpen.value = false;
+  void nextTick().then(syncToastDrop);
   if (inkOn.value) {
     inkTool.value = 'pen';
     toast('批注模式：直接在正文上手写，改动自动保存', 'info', 2600);
@@ -1973,6 +2043,7 @@ function toggleInk() {
 
 function closeInk() {
   inkOn.value = false;
+  inkOptionsOpen.value = false;
   void flushInk();
 }
 
@@ -2011,6 +2082,7 @@ onMounted(async () => {
   window.addEventListener('pointerup', onCapsuleUp);
   window.addEventListener('pointercancel', onCapsuleUp);
   restoreCapsulePos();
+  syncToastDrop();
   setInkNotesListener(() => { void refreshNotes(); });
 
   await loadAll();
@@ -2029,6 +2101,9 @@ onMounted(async () => {
   const applied = hasDeepLink() ? await applyDeepLink() : false;
   if (!applied) restorePosition(reader.value?.progress ?? null);
   bootDone.value = true;
+  // 胶囊是**数据到位后**才渲染的：onMounted 那一刻它还不存在，提示条让位要在这之后算一次
+  await nextTick();
+  syncToastDrop();
   if (route.query.md) {                       // ?md=1[&mdpage=8] 直接打开 Markdown 视图
     const want = Number(route.query.mdpage ?? 0);
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
@@ -2040,6 +2115,8 @@ onMounted(async () => {
 onUnmounted(() => {
   void flushInk();
   setInkNotesListener(null);
+  // 离开阅读器就把提示条的位置放回去（别的页面没有悬浮胶囊）
+  try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
   document.removeEventListener('keydown', onInkKey);
   window.removeEventListener('pointermove', onCapsuleMove);
   window.removeEventListener('pointerup', onCapsuleUp);
@@ -4388,6 +4465,11 @@ function renderMarkdown(text?: string | null) {
           :style="capsuleStyle"
           @pointerdown="onCapsuleDown"
         >
+          <!-- 拖动条：**最左侧**一枚抓手（用户口径）。拖它（或胶囊空白处）改位置，
+               位置存 sessionStorage：刷新还在、关掉页面复位。 -->
+          <span class="cap-grip" title="拖动调整位置" data-cap-grip aria-hidden="true">
+            <i /><i /><i />
+          </span>
           <!-- 批注模式：工具**并进这一枚胶囊**（用户口径：合并原有的页面切换胶囊），
                原文/译文/对照等收进右边的面板里 -->
           <template v-if="inkOn">
@@ -4399,31 +4481,10 @@ function renderMarkdown(text?: string | null) {
                 :class="{ active: inkTool === item.key }"
                 :title="item.label"
                 :data-ink-tool="item.key"
-                @click="inkTool = item.key"
+                :aria-expanded="inkOptionsOpen && (item.key === 'pen' || item.key === 'marker')"
+                @click="pickInkTool(item.key)"
               >
                 <AppIcon :name="item.icon" :size="15" />
-              </button>
-            </div>
-            <div class="cap-group">
-              <button
-                class="btn icon ink-color-btn"
-                :class="{ active: colorOpen }"
-                title="笔迹颜色"
-                data-ink-color
-                @pointerdown.stop.prevent="colorOpen = !colorOpen"
-              >
-                <i class="ink-swatch" :style="{ background: inkColor }" />
-              </button>
-              <button
-                v-for="step in WIDTH_STEPS"
-                :key="step.key"
-                class="btn icon ink-width-btn"
-                :class="{ active: inkWidth === step.key }"
-                :title="'粗细：' + step.label"
-                :data-ink-width="step.key"
-                @click="inkWidth = step.key"
-              >
-                <i class="ink-dot" :style="inkDotStyle(step.key)" />
               </button>
             </div>
             <div class="cap-group" v-if="canUndo(inkKey) || canRedo(inkKey)">
@@ -4439,11 +4500,11 @@ function renderMarkdown(text?: string | null) {
             <div class="cap-group">
               <button
                 class="btn icon"
-                data-cap-panel="view"
-                title="版面与视图（原文 / 译文 / 对照）"
+                data-cap-panel="settings"
+                title="设置：视图 / 正文字号 / 页图缩放 / 版面"
                 aria-haspopup="true"
-                :aria-expanded="capPanel === 'view'"
-                @click="toggleCapPanel('view')"
+                :aria-expanded="capPanel === 'settings'"
+                @click="toggleCapPanel('settings')"
               >
                 <AppIcon name="sliders" :size="15" />
               </button>
@@ -4451,18 +4512,7 @@ function renderMarkdown(text?: string | null) {
                 <AppIcon name="close" :size="15" />
               </button>
             </div>
-            <!-- 色板：便签同款，点一下即换 -->
-            <div v-if="colorOpen" class="ink-palette" @pointerdown.stop>
-              <button
-                v-for="c in INK_COLORS"
-                :key="c"
-                class="ink-palette-dot"
-                :class="{ active: inkColor === c }"
-                :style="{ background: c }"
-                :title="c"
-                @click="inkColor = c; colorOpen = false"
-              />
-            </div>
+
           </template>
 
           <div v-if="!inkOn" class="cap-group">
@@ -4474,25 +4524,17 @@ function renderMarkdown(text?: string | null) {
           </div>
 
           <div v-if="!inkOn" class="cap-group">
+            <!-- 设置：**版面 + 显示合成一个面板**（用户口径）。以前是两枚按钮，
+                 在「译文」视图下版面面板几乎是空的、Aa 也只剩一个字母，看着像空按钮。 -->
             <button
               class="btn icon"
-              data-cap-panel="view"
-              title="版面选项（原文栏呈现 / 文字列侧 / 左右顺序）"
+              data-cap-panel="settings"
+              title="设置：视图 / 正文字号 / 页图缩放 / 版面"
               aria-haspopup="true"
-              :aria-expanded="capPanel === 'view'"
-              @click="toggleCapPanel('view')"
+              :aria-expanded="capPanel === 'settings'"
+              @click="toggleCapPanel('settings')"
             >
               <AppIcon name="sliders" :size="15" />
-            </button>
-            <button
-              class="btn cap-aa"
-              data-cap-panel="display"
-              title="显示：正文字号与页图缩放（Ctrl + 滚轮 / 触控板捏合也能缩放）"
-              aria-haspopup="true"
-              :aria-expanded="capPanel === 'display'"
-              @click="toggleCapPanel('display')"
-            >
-              Aa<span v-if="originalIsPage" class="tiny faint nowrap">{{ Math.round(zoom * 100) }}%</span>
             </button>
             <!-- 手写批注：只开关"能不能落笔"，笔迹本身按页存在服务端 -->
             <button
@@ -4533,6 +4575,42 @@ function renderMarkdown(text?: string | null) {
           </div>
         </div>
 
+        <!-- 画笔的二级菜单（颜色 / 粗细）：挂在胶囊**外面** —— 胶囊自己 overflow:auto，
+             放在里面的绝对定位会被裁掉（实测：DOM 有、屏幕上看不见）。 -->
+        <div
+          v-if="inkOptionsOpen && (inkTool === 'pen' || inkTool === 'marker')"
+          class="ink-options"
+          data-ink-options
+          :style="inkOptionsStyle"
+          @pointerdown.stop
+        >
+          <div v-if="inkTool === 'pen'" class="ink-options-row">
+            <span class="ink-options-label">颜色</span>
+            <button
+              v-for="c in INK_COLORS"
+              :key="c"
+              class="ink-palette-dot"
+              :class="{ active: inkColor === c }"
+              :style="{ background: c }"
+              :title="c"
+              @click="inkColor = c"
+            />
+          </div>
+          <div class="ink-options-row">
+            <span class="ink-options-label">粗细</span>
+            <button
+              v-for="step in WIDTH_STEPS"
+              :key="step.key"
+              class="ink-width-pill"
+              :class="{ active: inkWidth === step.key }"
+              :data-ink-width="step.key"
+              :title="'粗细：' + step.label"
+              @click="inkWidth = step.key"
+            >
+              <i class="ink-dot" :style="inkDotStyle(step.key)" />{{ step.label }}
+            </button>
+          </div>
+        </div>
         <!-- 右：更多（低频动作：重译 / 打开 PDF / Markdown 视图） -->
         <div class="cap-solo right">
           <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
@@ -4540,7 +4618,7 @@ function renderMarkdown(text?: string | null) {
 
         <!-- 弹出面板（互斥，落在主胶囊正下方）。里面每个控件都是**常挂载**的：
              `frontend_check.py` 按文字/标题点「原文文本 / 原 PDF / 小」，v-if 会让它点不到。 -->
-        <CapPanel :open="capPanel === 'view'" label="版面选项" data-cap-panel-body="view">
+        <CapPanel :open="capPanel === 'settings'" label="设置" data-cap-panel-body="settings">
           <!-- 批注模式下主胶囊被工具占满，视图切换挪到这里（同一份 viewMode，不会两处不一致） -->
           <div class="cap-row">
             <span class="cap-row-label">视图</span>
@@ -4551,6 +4629,36 @@ function renderMarkdown(text?: string | null) {
             </div>
           </div>
 
+          <div class="cap-row">
+            <span class="cap-row-label">正文字号</span>
+            <div class="seg" title="正文字号">
+              <button
+                v-for="opt in TEXT_SIZE_OPTIONS"
+                :key="opt.k"
+                :class="{ active: textSize === opt.k }"
+                @click="setTextSize(opt.k)"
+              >{{ opt.label }}</button>
+            </div>
+          </div>
+
+          <!-- 页图缩放：只在"原文栏 = 原 PDF"时有意义（文字模式没有页图可缩） -->
+          <div v-if="originalIsPage" class="cap-row">
+            <span class="cap-row-label">页图缩放</span>
+            <div class="cap-zoom">
+              <button class="btn icon" title="缩小" @click="zoomBy(-1)">
+                <AppIcon name="zoom-out" :size="15" />
+              </button>
+              <span class="cap-zoom-value tnum">{{ Math.round(zoom * 100) }}%</span>
+              <button class="btn icon" title="放大" @click="zoomBy(1)">
+                <AppIcon name="zoom-in" :size="15" />
+              </button>
+              <!-- 恢复 100% = 适应栏宽（复刻目标站的 Reset zoom：**只在偏离 100% 时出现**） -->
+              <button v-if="Math.abs(zoom - 1) > 0.001" class="btn icon" title="恢复 100%（适应栏宽）"
+                      data-zoom-reset @click="setZoom(1)">
+                <AppIcon name="refresh" :size="15" />
+              </button>
+            </div>
+          </div>
           <div v-if="originalVisible" class="cap-row">
             <span class="cap-row-label">原文栏呈现</span>
             <div class="seg" title="原文栏呈现">
@@ -4592,39 +4700,6 @@ function renderMarkdown(text?: string | null) {
           </div>
         </CapPanel>
 
-        <CapPanel :open="capPanel === 'display'" label="显示" data-cap-panel-body="display">
-          <div class="cap-row">
-            <span class="cap-row-label">正文字号</span>
-            <div class="seg" title="正文字号">
-              <button
-                v-for="opt in TEXT_SIZE_OPTIONS"
-                :key="opt.k"
-                :class="{ active: textSize === opt.k }"
-                @click="setTextSize(opt.k)"
-              >{{ opt.label }}</button>
-            </div>
-          </div>
-
-          <!-- 页图缩放：只在"原文栏 = 原 PDF"时有意义（文字模式没有页图可缩） -->
-          <div v-if="originalIsPage" class="cap-row">
-            <span class="cap-row-label">页图缩放</span>
-            <div class="cap-zoom">
-              <button class="btn icon" title="缩小" @click="zoomBy(-1)">
-                <AppIcon name="zoom-out" :size="15" />
-              </button>
-              <span class="cap-zoom-value tnum">{{ Math.round(zoom * 100) }}%</span>
-              <button class="btn icon" title="放大" @click="zoomBy(1)">
-                <AppIcon name="zoom-in" :size="15" />
-              </button>
-              <!-- 恢复 100% = 适应栏宽（复刻目标站的 Reset zoom：**只在偏离 100% 时出现**，
-                   不缩放时不多占一格工具条）。 -->
-              <button v-if="Math.abs(zoom - 1) > 0.001" class="btn icon" title="恢复 100%（适应栏宽）"
-                      data-zoom-reset @click="setZoom(1)">
-                <AppIcon name="refresh" :size="15" />
-              </button>
-            </div>
-          </div>
-        </CapPanel>
       </div>
 
       <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
@@ -5280,11 +5355,47 @@ function renderMarkdown(text?: string | null) {
 }
 .ink-palette-dot:hover { transform: scale(1.12); }
 .ink-palette-dot.active { border-color: var(--bg-elev); box-shadow: 0 0 0 2px var(--text); }
-/* 色块：按钮上的那一点颜色（不是整块填充，读起来仍然是一枚图标钮） */
-.ink-swatch { display: block; width: 14px; height: 14px; border-radius: 999px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18); }
 .ink-dot { display: block; border-radius: 999px; background: currentColor; }
-.reader-capsule .cap-group .btn.ink-color-btn,
-.reader-capsule .cap-group .btn.ink-width-btn { padding: 0; }
+
+/* 抓手：**最左侧**一小条三点，**竖排**（用户口径：拖动条要竖着的）。
+   只有它是"拖"，别处按下去仍是点按钮。透明加宽的伪元素把可点面积撑到 18px，
+   视觉上仍然只有半透明的三个小点。 */
+.cap-grip {
+  position: relative; flex: none;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; width: 12px; height: 22px;
+  margin-right: 2px; cursor: grab; touch-action: none;
+}
+.cap-grip::before {
+  content: ''; position: absolute; inset: -6px -3px; border-radius: 6px;
+}
+.cap-grip i { display: block; width: 2px; height: 2px; border-radius: 999px; background: var(--text-faint); }
+.cap-grip:hover i { background: var(--text-dim); }
+.reader-capsule.dragging .cap-grip { cursor: grabbing; }
+
+/* 画笔二级菜单：胶囊正下方一条**横排**（颜色 / 粗细），与弹出面板同一套玻璃 */
+.ink-options {
+  /* fixed：位置由 `inkOptionsStyle` 按胶囊实时算（见 placeInkOptions） */
+  position: fixed; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 8px; z-index: 45; pointer-events: auto;
+  padding: 9px 12px; border-radius: 16px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-panel-top, 86%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-panel-bottom, 74%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout);
+}
+.ink-options-row { display: flex; align-items: center; gap: 7px; }
+.ink-options-label { width: 28px; font-size: 11.5px; color: var(--text-faint); }
+.ink-width-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; cursor: pointer;
+  border: 0; border-radius: 999px; background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 12px;
+}
+.ink-width-pill:hover { background: var(--bg-hover); color: var(--text); }
+.ink-width-pill.active { background: var(--accent-soft, var(--bg-hover)); color: var(--accent); }
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
 /* 分组靠**线**，不靠给每个按钮画边框：胶囊里一排描边按钮会像一张表单 */
 .cap-group + .cap-group { margin-left: 1px; padding-left: 7px; border-left: 1px solid var(--divider); }
