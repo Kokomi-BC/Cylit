@@ -3170,10 +3170,106 @@ let ctxCtx = {
   imgRect: null as { x: number; y: number; w: number; h: number } | null,
 };
 
-/** 右键：按"落在哪个界面 + 落点是什么"给清单（三套）。输入框里放行浏览器原生菜单。 */
+/* ------------------------------ 触摸长按 = 右键 ------------------------------
+ * 触摸屏上长按默认走**系统右键**：iOS 弹 callout、安卓弹选区工具条 —— 和我们自己的右键菜单
+ * 是两套东西（用户口径 2026-10-17）。这里三件事一起做：
+ *   ① 正文禁用 `-webkit-touch-callout`（iOS 不再弹 callout，见样式）；
+ *   ② 正文的 `contextmenu` 一律 `preventDefault()`（系统菜单不出场）；
+ *   ③ 自己识别长按（480ms、位移 <10px）→ 选中落点那个词 → 按右键那套逻辑开菜单。
+ */
+const LONG_PRESS_MS = 480;
+let longPressTimer: number | null = null;
+let longPressFrom: { x: number; y: number; target: HTMLElement | null } | null = null;
+
+function cancelLongPress(): void {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  longPressFrom = null;
+}
+
+/** 落点处那个『词』的范围：西文按字母/数字，中文按连续汉字（长按一下就想选一个词） */
+function wordRangeAt(x: number, y: number): Range | null {
+  const caret = caretAt(x, y);
+  if (!caret) return null;
+  const node = caret.node;
+  if (node.nodeType !== 3) return null;
+  const text = node.textContent || '';
+  const offset = Math.min(caret.offset, text.length);
+  let start = offset;
+  let end = offset;
+  /* 中文没有空格：优先用 Intl.Segmenter 找一个**词**（浏览器不支持就退回"连续汉字/字母"扫描） */
+  const Segmenter = (Intl as unknown as { Segmenter?: new (l?: string, o?: object) => any }).Segmenter;
+  if (Segmenter) {
+    try {
+      const parts = new Segmenter(undefined, { granularity: 'word' }).segment(text);
+      for (const part of parts) {
+        const seg = String(part.segment ?? '');
+        if (part.index <= offset && offset <= part.index + Math.max(1, seg.length) && part.isWordLike !== false) {
+          start = part.index;
+          end = part.index + seg.length;
+          break;
+        }
+      }
+    } catch { /* 老浏览器：走下面的兜底 */ }
+  }
+  if (end <= start) {
+    const isWordChar = (ch: string) => /[A-Za-z0-9_'-]/.test(ch) || /[\u4e00-\u9fff]/.test(ch);
+    start = offset;
+    end = offset;
+    if (!(start > 0 && !isWordChar(text[start - 1] || ''))) {
+      while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+    }
+    while (end < text.length && isWordChar(text[end])) end += 1;
+  }
+  if (end <= start) return null;
+  const range = document.createRange();
+  range.setStart(node, start);
+  range.setEnd(node, end);
+  return range;
+}
+
+function fireLongPress(): void {
+  const from = longPressFrom;
+  longPressTimer = null;
+  if (!from) return;
+  const range = wordRangeAt(from.x, from.y);
+  if (range) {
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    // 复用『鼠标松手』那套逻辑：它会算出 selection（划词胶囊 / 高亮锚点 / 位置）
+    onMouseUp();
+  }
+  // 再按右键那套开菜单：落点、选区、图片、页号都由 onContentContextMenu 自己算
+  const target = from.target ?? document.elementFromPoint(from.x, from.y);
+  target?.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: from.x, clientY: from.y, button: 2,
+  }));
+  navigator.vibrate?.(8);
+  longPressFrom = null;
+}
+
+function onContentTouchStart(ev: TouchEvent): void {
+  const target = ev.target as HTMLElement | null;
+  if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  if (ev.touches.length !== 1) { cancelLongPress(); return; }
+  const touch = ev.touches[0];
+  cancelLongPress();
+  longPressFrom = { x: touch.clientX, y: touch.clientY, target };
+  longPressTimer = window.setTimeout(fireLongPress, LONG_PRESS_MS);
+}
+
+function onContentTouchMove(ev: TouchEvent): void {
+  if (!longPressFrom || !longPressTimer) return;
+  const touch = ev.touches[0];
+  if (!touch) return;
+  if (Math.hypot(touch.clientX - longPressFrom.x, touch.clientY - longPressFrom.y) > 10) cancelLongPress();
+}
+/** 右键：按『落在哪个界面 + 落点是什么』给清单（三套）。输入框里放行浏览器原生菜单。 */
 function onContentContextMenu(ev: MouseEvent) {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  // 系统自带的右键菜单**不出场**（触摸长按也走这里，见 onContentTouchStart）
+  ev.preventDefault();
   const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
   const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
   const pageEl = target?.closest?.('[data-page]') as HTMLElement | null;
@@ -5068,9 +5164,19 @@ function renderMarkdown(text?: string | null) {
       <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============
            `.reader-slide` 是"让位 + 平移"的那一层：侧栏开合时它整体滑过去，
            内部的正文一次都不重排（见 asideGapPx 的说明）。 -->
-      <section ref="scroller" class="reader-content" @scroll="onScroll" @click="onContentClick"
-               @contextmenu="onContentContextMenu"
-               @mouseover="onContentHover" @mouseout="onContentHoverOut">
+      <section
+        ref="scroller"
+        class="reader-content"
+        @scroll="onScroll"
+        @click="onContentClick"
+        @contextmenu="onContentContextMenu"
+        @touchstart.passive="onContentTouchStart"
+        @touchmove.passive="onContentTouchMove"
+        @touchend="cancelLongPress"
+        @touchcancel="cancelLongPress"
+        @mouseover="onContentHover"
+        @mouseout="onContentHoverOut"
+      >
         <div class="reader-slide">
         <ReaderPageRows
           :groups="groups"
@@ -5628,6 +5734,10 @@ function renderMarkdown(text?: string | null) {
 /* 批注工具是**单选**：始终有一枚是选中的（用户口径 2026-10-17）。
    选中态用"抬起的一枚 pill"（--bg-elev + 一档投影），与 .seg 的选中项同一门语言 ——
    以前只有 hover 的浅灰，四枚按钮看起来永远是"都没选"。 */
+/* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
+   ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */
+.reader-content, .reader-content * { -webkit-touch-callout: none; }
+
 .reader-capsule .cap-group .btn.tool-on {
   /* ⚠️ 两层原因：
      ① 必须盖过 `.btn:hover`（优先级更高，而且鼠标通常正停在被选中的那枚上）；
