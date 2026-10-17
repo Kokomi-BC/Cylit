@@ -4796,7 +4796,6 @@ function renderMarkdown(text?: string | null) {
               class="ink-clear-range"
               :model-value="clearProgress"
               :disabled="!inkKeyTarget"
-              tone="danger"
               data-ink-clear-range
               @update:model-value="onClearSlide(String($event))"
             />
@@ -5606,7 +5605,7 @@ function renderMarkdown(text?: string | null) {
 
 /* 清空本页笔迹：一条滑块（滑到右端触发，一次撤销可整个回来） */
 .ink-clear { min-width: 248px; }
-.ink-clear-label { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+.ink-clear-label { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 /* 滑块本体是 M3Slider（自带轨道/手柄/状态层），这里只管它在行里占宽 */
 .ink-clear-range { flex: 1; min-width: 130px; }
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }

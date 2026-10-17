@@ -4,8 +4,10 @@
  *
  * 为什么不直接用 input[type=range]：原生控件的轨道/手柄由浏览器画，各平台长得都不一样，
  * 放进这枚玻璃胶囊里明显"不是同一套设计"。这里照 M3 的规格自己画：
- *   - 轨道 16px 高、全圆角；**激活段与未激活段之间留 4px 空隙**（M3 的标志性细节）；
- *   - 手柄是 4px 宽、26px 高的圆角竖条（按下/拖动时拉长到 34px），外面罩一层状态圆；
+ * 观感取 M3 的**状态层**语言（悬停/拖动时外圈亮一层半透明主色）+ 本仓库自己的尺寸口径：
+ *   - 轨道 6px 细条（与 base.css 的 .bar 同一条），未激活段用"正文色 12%"，激活段用**主题色**；
+ *   - 手柄是 18px 的圆钮（主题色描边 + 一档投影），按下/拖动放大到 20px —— 比 4px 竖条更像
+ *     "能抓住的东西"，也不会在这套浅色玻璃里显得突兀；
  *   - 支持键盘（左右 / PgUp / Home / End）与 aria-valuenow，没丢可访问性。
  */
 import { computed, ref } from 'vue';
@@ -16,7 +18,7 @@ const props = withDefaults(defineProps<{
   max?: number;
   step?: number;
   disabled?: boolean;
-  /** 颜色语义：普通=主色，危险动作（清空笔迹）=错误色 */
+  /** 颜色语义：默认就是**主题色**；只有确实需要警示时才传 danger */
   tone?: 'accent' | 'danger';
 }>(), { min: 0, max: 100, step: 1, disabled: false, tone: 'accent' });
 
@@ -109,7 +111,7 @@ function onKey(ev: KeyboardEvent) {
     </div>
     <div class="m3s-handle" :style="{ left: handleLeft }">
       <span class="m3s-state" />
-      <span class="m3s-bar" />
+      <span class="m3s-knob" />
     </div>
   </div>
 </template>
@@ -122,11 +124,11 @@ function onKey(ev: KeyboardEvent) {
 }
 .m3s.disabled { cursor: default; opacity: .45; }
 
-/* 轨道：16px 高、全圆角；未激活段用"正文色 12%"（浅色/深色皮肤都自动跟随） */
+/* 轨道：6px 细条、全圆角（与 base.css 的进度条同一条），未激活段跟随正文色 */
 .m3s-track {
-  position: relative; width: 100%; height: 16px;
+  position: relative; width: 100%; height: 6px;
   border-radius: 999px; overflow: hidden;
-  background: color-mix(in srgb, var(--text) 12%, transparent);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
 }
 .m3s-active {
   position: absolute; left: 0; top: 0; bottom: 0;
@@ -136,18 +138,21 @@ function onKey(ev: KeyboardEvent) {
 .tone-accent .m3s-active { background: var(--accent); }
 .tone-danger .m3s-active { background: var(--danger); }
 
-/* 手柄：4px 的圆角竖条 + 外面的状态圆（悬停/拖动才显形） */
+/* 手柄：18px 圆钮（主题色描边 + 一档投影），外面罩一层 M3 状态圆 */
 .m3s-handle {
   position: absolute; top: 50%; left: 0; transform: translate(-50%, -50%);
   display: flex; align-items: center; justify-content: center;
   pointer-events: none;
 }
-.m3s-bar {
-  width: 4px; height: 26px; border-radius: 999px;
-  transition: height 120ms var(--ease, ease);
+.m3s-knob {
+  width: 18px; height: 18px; border-radius: 999px;
+  background: var(--bg-elev);
+  border: 2px solid var(--accent);
+  box-shadow: var(--shadow-1);
+  transition: transform 120ms var(--ease, ease), border-color 120ms var(--ease, ease);
 }
-.tone-accent .m3s-bar { background: var(--accent); }
-.tone-danger .m3s-bar { background: var(--danger); }
+.tone-danger .m3s-knob { border-color: var(--danger); }
+
 .m3s-state {
   position: absolute; width: 34px; height: 34px; border-radius: 999px;
   opacity: 0; transition: opacity 120ms var(--ease, ease), transform 120ms var(--ease, ease);
@@ -159,7 +164,7 @@ function onKey(ev: KeyboardEvent) {
 .m3s:hover .m3s-state, .m3s:focus-visible .m3s-state, .m3s.dragging .m3s-state {
   opacity: 1; transform: scale(1);
 }
-/* 按下/拖动时手柄拉长（M3 的"抓住"反馈） */
-.m3s.dragging .m3s-bar { height: 34px; }
+/* 悬停 / 拖动时圆钮放大（M3 的"抓住"反馈） */
+.m3s:hover .m3s-knob, .m3s.dragging .m3s-knob { transform: scale(1.12); }
 .m3s:focus-visible .m3s-track { box-shadow: var(--ring); }
 </style>
