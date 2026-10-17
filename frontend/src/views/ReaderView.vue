@@ -3257,6 +3257,8 @@ let suppressNativeSelectUntil = 0;
 let ignoreClickUntil = 0;
 /** 长按造出来的那段选区：抬手时浏览器会把它折叠，这里留一份用来放回去 */
 let longPressRange: Range | null = null;
+/** 下一次右键是"我们自己派的"（触摸长按 / 拖完手柄重开菜单）：菜单要贴在选区上方 */
+let touchCtxNext = false;
 let longPressTimer: number | null = null;
 let longPressFrom: { x: number; y: number; target: HTMLElement | null } | null = null;
 
@@ -3340,6 +3342,17 @@ function hideSelHandles(): void {
   selEndB = null;
 }
 
+/** 手柄周围探几个点（手柄画在文字**上方/下方**，直接取指针位置的 caret 常常落到别的行或空白上） */
+function caretNearHandles(x: number, y: number): { node: Node; offset: number } | null {
+  const probes = [0, 6, -6, 12, -12, 18, -18];
+  for (const dy of probes) {
+    const caret = caretAt(x, y + dy);
+    if (!caret) continue;
+    if (caret.node.nodeType === Node.TEXT_NODE) return caret;
+  }
+  return null;
+}
+
 function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
   draggingHandle = which;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
@@ -3349,24 +3362,50 @@ function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
 
 function onHandleMove(ev: PointerEvent): void {
   if (!draggingHandle) return;
-  const caret = caretAt(ev.clientX, ev.clientY);
+  const caret = caretNearHandles(ev.clientX, ev.clientY);
   if (!caret) return;
   const sel = window.getSelection();
-  if (!sel) return;
+  if (!sel || !sel.rangeCount) return;
   // 拖哪一头就以**另一头**为锚点：setBaseAndExtent 从锚点铺到焦点
   const fixed = draggingHandle === 'start' ? selEndB : selEndA;
   if (!fixed) return;
+  // 焦点落在锚点上（同一个点）= 空选区：这种一步会"把选区丢掉"，直接跳过
+  if (fixed.node === caret.node && fixed.offset === caret.offset) return;
+  const prev = sel.getRangeAt(0).cloneRange();
   try {
     sel.setBaseAndExtent(fixed.node, fixed.offset, caret.node, caret.offset);
   } catch { return; }
+  // 万一还是折叠了：把上一次的选区放回去（拖手柄绝不能把选区弄没）
+  if (sel.isCollapsed) {
+    try { sel.removeAllRanges(); sel.addRange(prev); } catch { /* 忽略 */ }
+    return;
+  }
   // 与鼠标松手同一条链路：重算划词胶囊 / 高亮锚点 / 位置
   onMouseUp();
   refreshSelHandles();
 }
 
 function onHandleUp(): void {
+  if (!draggingHandle) return;
   draggingHandle = null;
+  // 菜单是开着的话，**内容按新选区重算一遍**（不然还显示上一次的"搜索…"与旧文字）
+  if (ctxMenu.open) openCtxForSelection();
 }
+/** 菜单按当前选区重算一次（长按、拖完手柄都走这里；`above` 表示贴在选区上方开） */
+function openCtxForSelection(): void {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  const x = Math.round((rect.left + rect.right) / 2);
+  const y = Math.round(rect.top);
+  const target = (document.elementFromPoint(rect.left + 2, rect.top + Math.min(6, rect.height / 2))
+    ?? document.querySelector('.reader-content')) as HTMLElement | null;
+  touchCtxNext = true;
+  target?.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2,
+  }));
+}
+
 function fireLongPress(): void {
   const from = longPressFrom;
   longPressTimer = null;
@@ -3388,10 +3427,7 @@ function fireLongPress(): void {
     longPressRange = range.cloneRange();
   }
   // 再按右键那套开菜单：落点、选区、图片、页号都由 onContentContextMenu 自己算
-  const target = from.target ?? document.elementFromPoint(from.x, from.y);
-  target?.dispatchEvent(new MouseEvent('contextmenu', {
-    bubbles: true, cancelable: true, clientX: from.x, clientY: from.y, button: 2,
-  }));
+  if (longPressRange) openCtxForSelection();
   navigator.vibrate?.(8);
   longPressFrom = null;
 }
@@ -3448,7 +3484,8 @@ function onContentContextMenu(ev: MouseEvent) {
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   // 系统自带的右键菜单**不出场**（触摸长按也走这里，见 onContentTouchStart）
   ev.preventDefault();
-  const fromTouch = Date.now() < suppressNativeSelectUntil;   // 长按派发的合成右键
+  const fromTouch = touchCtxNext || Date.now() < suppressNativeSelectUntil;   // 长按/拖手柄派发的合成右键
+  touchCtxNext = false;
   ctxMenu.above = fromTouch;
   const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
   const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
@@ -3456,7 +3493,10 @@ function onContentContextMenu(ev: MouseEvent) {
   const mdEl = target?.closest?.('[data-md-page]') as HTMLElement | null;
   const imgEl = target?.closest?.('img') as HTMLImageElement | null;
   const markEl = target?.closest?.('mark.hl[data-hl]') as HTMLElement | null;
-  const line: 'pdf' | 'rows' | 'md' = pdfEl ? 'pdf' : (mdEl ? 'md' : 'rows');
+  /* Markdown 面板打开时，落点只要在面板里就算 md —— 以前只有正好落在 `[data-md-page]` 上才算，
+     落在面板的留白/页与页之间就退回 'rows'，于是「全选」去选了**弹层后面**那一页正文（含 PDF 页图）。 */
+  const inMdDoc = !!(target?.closest?.('.md-doc')) || !!target?.closest?.('[data-md-view]');
+  const line: 'pdf' | 'rows' | 'md' = pdfEl ? 'pdf' : (mdEl || inMdDoc ? 'md' : 'rows');
   const page = Number(pdfEl?.getAttribute('data-pdf-page') ?? pageEl?.getAttribute('data-page')
     ?? mdEl?.getAttribute('data-md-page') ?? 0) || currentPage.value;
   /* 选区是否就在这次右键的落点上：右键别处时不该冒出"复制选区/高亮选区"（那是上一次划的词）。
@@ -3558,19 +3598,33 @@ function ctxBing(text: string) {
 /** 全选"本页"：PDF 选这一页的文字层、Markdown 选这一页、正文行选这一页的那一组。 */
 function ctxSelectPage() {
   const { line, page } = ctxCtx;
-  const root = line === 'pdf'
-    ? document.querySelector<HTMLElement>(`[data-pdf-page="${page}"] .pdf-text-layer`)
-    : line === 'md'
-      ? document.querySelector<HTMLElement>(`[data-md-page="${page}"]`)
-      : document.querySelector<HTMLElement>(`[data-page="${page}"]`);
   const sel = window.getSelection();
-  if (!root || !sel) return;
+  if (!sel) return;
+  let root: HTMLElement | null = null;
+  let what = '正文';
+  if (line === 'pdf') {
+    root = document.querySelector<HTMLElement>(`[data-pdf-page="${page}"] .pdf-text-layer`);
+    what = ' PDF 文字';
+  } else if (line === 'md') {
+    /* Markdown 面板：先找落点那一页；找不到就**整个面板**。
+       ⚠️ 绝不能退回 `[data-page]` —— 那是面板背后阅读器的页块（原 PDF 页图也在里面），
+       用户报的"在 Markdown 里全选会选中 PDF 区域"就是这么来的。 */
+    root = document.querySelector<HTMLElement>(`.md-doc [data-md-page="${page}"]`)
+      ?? mdDocEl.value
+      ?? document.querySelector<HTMLElement>('.md-doc');
+    what = ' Markdown';
+  } else {
+    root = document.querySelector<HTMLElement>(`[data-page="${page}"]`);
+  }
+  if (!root) return;
+  // 兜底：root 万一仍在弹层之外的正文里，就宁可不选（选错比不选更糟）
+  if (line !== 'rows' && root.closest('.reader-content') && !root.closest('.md-doc')) return;
   const range = document.createRange();
   range.selectNodeContents(root);
   sel.removeAllRanges();
   sel.addRange(range);
   hideMenu();
-  toast(`已选中第 ${page} 页${line === 'pdf' ? ' PDF 文字' : '正文'}`, 'ok', 1600);
+  toast(line === 'md' ? '已选中 Markdown 这一页' : `已选中第 ${page} 页${what}`, 'ok', 1600);
 }
 
 /** 图片另存为：存**原图**（PDF 页 = 后端渲染的页 PNG；插图 = 它自己的原图地址）。 */
@@ -5953,22 +6007,26 @@ function renderMarkdown(text?: string | null) {
 :global(html.fs-immersive .tabbar) { display: none; }
 
 /* 触摸选区的两端手柄：一枚小圆点 + 一根小尾巴，位置由 refreshSelHandles 按选区矩形给 */
+/* 抓取区比看得见的圆点大得多（44px）：手指要一按就中，不能"不太灵敏" */
 .sel-handle {
-  position: fixed; z-index: 190; width: 26px; height: 26px;
-  margin: -13px 0 0 -13px; display: flex; align-items: center; justify-content: center;
-  touch-action: none; cursor: pointer;
+  position: fixed; z-index: 190; width: 44px; height: 44px;
+  margin: -22px 0 0 -22px; display: flex; align-items: center; justify-content: center;
+  touch-action: none; cursor: grab;
 }
+.sel-handle:active { cursor: grabbing; }
 .sel-handle i {
-  display: block; width: 12px; height: 12px; border-radius: 999px;
+  display: block; width: 14px; height: 14px; border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bg-elev) 90%, transparent), var(--shadow-1);
+  /* 白圈 + 一档投影：压在深色正文上也看得清，和胶囊的玻璃语言也对得上 */
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent), var(--shadow-1);
 }
+/* 小尾巴指向文字那一行（上端指向下方、下端指向上方），一眼看出是哪一头 */
 .sel-handle::after {
-  content: ''; position: absolute; width: 2px; height: 14px; border-radius: 999px;
-  background: var(--accent); opacity: .9;
+  content: ''; position: absolute; left: 50%; width: 2px; height: 12px;
+  border-radius: 999px; background: var(--accent); opacity: .85;
 }
-.sel-handle.start::after { left: 50%; top: -12px; }
-.sel-handle.end::after { left: 50%; bottom: -12px; }
+.sel-handle.start::after { top: 6px; }
+.sel-handle.end::after { bottom: 6px; }
 
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
    ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */
