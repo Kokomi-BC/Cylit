@@ -4410,7 +4410,7 @@ function renderMarkdown(text?: string | null) {
                 :class="{ active: colorOpen }"
                 title="笔迹颜色"
                 data-ink-color
-                @click="colorOpen = !colorOpen"
+                @pointerdown.stop.prevent="colorOpen = !colorOpen"
               >
                 <i class="ink-swatch" :style="{ background: inkColor }" />
               </button>
@@ -5233,6 +5233,8 @@ function renderMarkdown(text?: string | null) {
 
 .reader-capsule {
   pointer-events: auto;
+  position: relative;
+  cursor: grab;
   display: flex; align-items: center; gap: 4px;
   margin-top: 10px; padding: 0 6px;
   height: var(--cap-h);
@@ -5253,6 +5255,36 @@ function renderMarkdown(text?: string | null) {
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .reader-capsule::-webkit-scrollbar { display: none; }
+/* 拖动中：不要选中文字、不要"按住发亮"的过渡 */
+.reader-capsule.dragging { cursor: grabbing; }
+.reader-capsule.dragging * { pointer-events: none; }
+
+/* ---------------- 批注：色板 / 色块 / 粗细圆点 ----------------
+ * 色板从胶囊**正下方**展开（与弹出面板同一套玻璃），点一下即换色、随即收起。 */
+.ink-palette {
+  position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 10px; border-radius: 999px; z-index: 3;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-panel-top, 86%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-panel-bottom, 74%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout);
+}
+.ink-palette-dot {
+  width: 20px; height: 20px; padding: 0; cursor: pointer;
+  border: 2px solid transparent; border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
+  transition: transform var(--dur) var(--ease);
+}
+.ink-palette-dot:hover { transform: scale(1.12); }
+.ink-palette-dot.active { border-color: var(--bg-elev); box-shadow: 0 0 0 2px var(--text); }
+/* 色块：按钮上的那一点颜色（不是整块填充，读起来仍然是一枚图标钮） */
+.ink-swatch { display: block; width: 14px; height: 14px; border-radius: 999px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18); }
+.ink-dot { display: block; border-radius: 999px; background: currentColor; }
+.reader-capsule .cap-group .btn.ink-color-btn,
+.reader-capsule .cap-group .btn.ink-width-btn { padding: 0; }
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
 /* 分组靠**线**，不靠给每个按钮画边框：胶囊里一排描边按钮会像一张表单 */
 .cap-group + .cap-group { margin-left: 1px; padding-left: 7px; border-left: 1px solid var(--divider); }

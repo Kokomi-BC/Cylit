@@ -50,7 +50,11 @@ function iconOf(kind?: string | null): string {
  *      尺寸比工具条那颗胶囊再收一档（用户口径 2026-10-03："第二层胶囊稍微调小一点"）。
  * 外壳 3px 内边距、半径逐层递减 3px（24 → 21），边界因此是一条均匀的细带。 */
 .toast {
-  pointer-events: auto; cursor: pointer;
+  /* ⚠️ **不吃指针事件**（用户报"点不到胶囊"的真实原因就在这儿）：提示条是横在顶部居中的，
+     正好压在阅读器那枚主胶囊上 —— 它要能收点击的话，提示条还活着的那几秒里，
+     下面那排按钮全都点不动（实测：批注工具栏的颜色/粗细点不开）。
+     提示条本来也不需要点击：到点自己消失（TTL 见 stores/app 的 toast）。 */
+  pointer-events: none;
   padding: 3px;
   border: 0; border-radius: var(--radius-lg);
   background: linear-gradient(180deg,
