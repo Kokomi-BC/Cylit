@@ -3662,32 +3662,55 @@ function ctxBing(text: string) {
   window.open(`https://www.bing.com/search?q=${encodeURIComponent(q)}`, '_blank', 'noopener');
 }
 
-/** 全选"本页"：PDF 选这一页的文字层、Markdown 选这一页、正文行选这一页的那一组。 */
+/**
+ * 在一段容器里造一个"跳过原 PDF"的 range：从第一个到最后一个**不在 PDF 文字层里**的文本节点。
+ *
+ * 为什么不能直接 selectNodeContents：正文那一页（[data-page]）是"左栏原 PDF + 右栏译文/原文"的
+ * 整块容器，整块一选就把 PDF 文字也圈进来了（用户口径 2026-10-17："在右侧正文全选会选中 pdf"）。
+ * 优先用文字列（.col-rows / .pg-rows）；没有文字列时靠这个函数在节点层面跳过 PDF。
+ */
+function rangeSkippingPdf(root: HTMLElement): Range | null {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n as Text;
+    if (!t.textContent || !t.textContent.trim()) continue;
+    if (t.parentElement?.closest('[data-pdf-page]')) continue;
+    nodes.push(t);
+  }
+  if (!nodes.length) return null;
+  const range = document.createRange();
+  range.setStart(nodes[0], 0);
+  const last = nodes[nodes.length - 1];
+  range.setEnd(last, (last.textContent ?? '').length);
+  return range;
+}
+
+/** 全选"本页"：PDF 选这一页的文字层、Markdown 选这一页、正文行只选文字列（不含原 PDF）。 */
 function ctxSelectPage() {
   const { line, page } = ctxCtx;
   const sel = window.getSelection();
   if (!sel) return;
   let root: HTMLElement | null = null;
   let what = '正文';
+  let range: Range | null = null;
   if (line === 'pdf') {
     root = document.querySelector<HTMLElement>(`[data-pdf-page="${page}"] .pdf-text-layer`);
     what = ' PDF 文字';
+    if (root) { range = document.createRange(); range.selectNodeContents(root); }
   } else if (line === 'md') {
-    /* Markdown 面板：先找落点那一页；找不到就**整个面板**。
-       ⚠️ 绝不能退回 `[data-page]` —— 那是面板背后阅读器的页块（原 PDF 页图也在里面），
-       用户报的"在 Markdown 里全选会选中 PDF 区域"就是这么来的。 */
+    /* 先找落点那一页；找不到就整个面板。⚠️ 绝不退回 [data-page]（那是背后的阅读器页块）。 */
     root = document.querySelector<HTMLElement>(`.md-doc [data-md-page="${page}"]`)
       ?? mdDocEl.value
       ?? document.querySelector<HTMLElement>('.md-doc');
     what = ' Markdown';
+    if (root) { range = document.createRange(); range.selectNodeContents(root); }
   } else {
-    root = document.querySelector<HTMLElement>(`[data-page="${page}"]`);
+    const pageEl = document.querySelector<HTMLElement>(`[data-page="${page}"]`);
+    root = pageEl?.querySelector<HTMLElement>('.col-rows, .pg-rows') ?? pageEl;
+    if (root) range = rangeSkippingPdf(root) ?? (() => { const r = document.createRange(); r.selectNodeContents(root!); return r; })();
   }
-  if (!root) return;
-  // 兜底：root 万一仍在弹层之外的正文里，就宁可不选（选错比不选更糟）
-  if (line !== 'rows' && root.closest('.reader-content') && !root.closest('.md-doc')) return;
-  const range = document.createRange();
-  range.selectNodeContents(root);
+  if (!root || !range) return;
   sel.removeAllRanges();
   sel.addRange(range);
   hideMenu();
