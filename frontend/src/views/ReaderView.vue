@@ -3081,6 +3081,13 @@ function onDocPointerDown(ev: PointerEvent) {
   if (target?.closest?.('[data-selection-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
   if (target?.closest?.('.sel-handle')) return;
+  /* 触摸选区还有效时点正文别处 = 取消这次选择：**选区、手柄、胶囊一起收**。
+     以前只收了手柄，画面上就会剩一枚"没有手柄的胶囊"（用户报的截图正是这个）。 */
+  if (touchSelActive.value) {
+    window.getSelection()?.removeAllRanges();
+    selection.show = false;
+    hideSelHandles();
+  }
   // 顶栏弹出面板：点面板外面就收起来（面板内的点击不动它 —— 改一个分段值不该把面板关掉）
   if (capPanel.value && !target?.closest?.('.reader-toolbar')) capPanel.value = '';
   /* 引用标号的浮层：点别处就收。⚠️ 点**浮层里面**（条目/跳转图标）绝不能收 ——
@@ -3343,8 +3350,36 @@ function refreshSelHandles(): void {
   if (!touchSelActive.value) { selHandles.value = null; return; }
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) {
+    /* 高亮重绘 / 局部 re-render 会把 DOM 选区弄折，selectionchange 一起跟着来。
+       这时**不要**直接把手指柄收掉（用户看到的就是『手柄自己消失』）：
+       先把长按那一段 range 放回去；节点已经换了（真被重绘）才一起收。 */
+    const saved = longPressRange;
+    if (saved && saved.startContainer.isConnected && saved.endContainer.isConnected) {
+      try {
+        sel?.removeAllRanges();
+        sel?.addRange(saved);
+      } catch { /* 放不回去就往下走 */ }
+    }
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      // 放回去了：继续按新位置摆手柄
+      const r2 = sel.getRangeAt(0);
+      const rects2 = Array.from(r2.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+      if (rects2.length) {
+        selHandles.value = {
+          start: { x: rects2[0].left, y: rects2[0].top },
+          end: { x: rects2[rects2.length - 1].right, y: rects2[rects2.length - 1].bottom },
+        };
+        selEndA = { node: r2.startContainer, offset: r2.startOffset };
+        selEndB = { node: r2.endContainer, offset: r2.endOffset };
+        return;
+      }
+    }
+    // 真没了：手柄和胶囊一起收，别留一枚孤零零的胶囊（用户口径 2026-10-17）
     touchSelActive.value = false;
     selHandles.value = null;
+    selection.show = false;
+    ctxMenu.open = false;
+    ctxMenu.rect = null;
     return;
   }
   const range = sel.getRangeAt(0);
@@ -4350,6 +4385,18 @@ function onContentClick(ev: MouseEvent) {
   }
   const mark = (ev.target as HTMLElement).closest?.('[data-hl]') as HTMLElement | null;
   if (!mark?.dataset.hl) return;
+  /* 触摸屏点高亮：**不要再弹那枚没有手柄的胶囊**（用户口径 2026-10-17 的截图就是这个），
+     改成和长按同一条悬浮工具条 —— 里面有「删除高亮 / 编辑笔记」。 */
+  if (Date.now() < touchSelectGuardUntil) {
+    const mr = mark.getBoundingClientRect();
+    hideSelHandles();
+    touchCtxNext = true;
+    mark.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true,
+      clientX: Math.round(mr.left + mr.width / 2), clientY: Math.round(mr.top + 2), button: 2,
+    }));
+    return;
+  }
   const rect = mark.getBoundingClientRect();
   const ids = highlightIdsInRange(document.createRange(), mark);
   Object.assign(selection, {
