@@ -135,12 +135,14 @@ def _note(raw: object) -> dict | None:
     rect = _rect(raw.get("rect"))
     if rect is None:
         return None
-    block_id = raw.get("block_id")
+    # 笔记挂在哪一行也要留下：前端给的是阅读器行 id（row_id），别处可能叫 block_id，两个都收，
+    # 统一落成 block_id（与 Annotation / Note 的字段名一致，前端读的时候再兜回 row_id）
+    row_id = raw.get("row_id") or raw.get("block_id")
     return {
         "id": str(raw.get("id") or new_id("n"))[:32],
         "rect": rect,
         "text": text,
-        "block_id": (str(block_id)[:32] if block_id else None),
+        "block_id": (str(row_id)[:32] if row_id else None),
         "at": str(raw.get("at") or "")[:32] or None,
     }
 

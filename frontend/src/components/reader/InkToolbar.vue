@@ -81,9 +81,9 @@ function dotSize(key: WidthKey): number {
 
 <style scoped>
 /* 与阅读器顶部那两块玻璃**同一套材质**（渐变本体 + 大模糊 + 柔光投影，不画描边），
-   位置在下层居中：既不挡主胶囊，也仍然落在"顶部中间"。 */
+   位置在主胶囊**正下方**（112px = 主胶囊底边 106 + 6 的呼吸），仍然"顶部中间"。 */
 .ink-cap {
-  position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+  position: fixed; top: 112px; left: 50%; transform: translateX(-50%);
   z-index: 60; pointer-events: auto;
   display: flex; align-items: center; gap: 2px;
   padding: 5px 6px; border-radius: 999px;
@@ -114,7 +114,7 @@ function dotSize(key: WidthKey): number {
 .wdot { display: block; border-radius: 999px; background: currentColor; }
 
 @media (max-width: 640px) {
-  .ink-cap { top: 58px; gap: 0; padding: 4px 5px; }
+  .ink-cap { top: 104px; gap: 0; padding: 4px 5px; }
   .ibtn { width: 30px; height: 30px; }
   .wbtn { width: 24px; }
 }

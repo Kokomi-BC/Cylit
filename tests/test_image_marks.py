@@ -57,6 +57,16 @@ def test_note_needs_text_and_gets_a_normalized_rect() -> None:
     assert small[2] - small[0] >= 0.03 and small[3] - small[1] >= 0.03
 
 
+def test_note_keeps_which_row_it_belongs_to() -> None:
+    """笔记挂在**哪一行**上要留下（前端叫 row_id，库里统一成 block_id）。"""
+    doc = ink.normalize_doc({"notes": [
+        {"text": "甲", "rect": [0.1, 0.1, 0.4, 0.2], "row_id": "p001-07"},
+        {"text": "乙", "rect": [0.1, 0.3, 0.4, 0.4], "block_id": "b-09"},
+    ]})
+    assert doc["notes"][0]["block_id"] == "p001-07"
+    assert doc["notes"][1]["block_id"] == "b-09"
+
+
 def test_document_is_capped() -> None:
     strokes = [{"tool": "pen", "pts": [[0.1, 0.1], [0.2, 0.2]]}] * (ink.STROKE_MAX + 50)
     assert len(ink.normalize_doc({"strokes": strokes})["strokes"]) == ink.STROKE_MAX

@@ -182,6 +182,7 @@ const pending = ref<{ rect: [number, number, number, number]; rowId: string | nu
 /** 选中之后先问一句（用户口径："收到点击后再选择是否添加笔记"） */
 const drafting = ref(false);
 const draft = ref('');
+const draftEl = ref<HTMLTextAreaElement | null>(null);
 const editing = ref<InkNote | null>(null);
 const editText = ref('');
 
@@ -326,6 +327,12 @@ onBeforeUnmount(() => {
 watch(() => state.value.version, () => { if (near.value) repaint(); });
 watch(near, (on) => { if (on) sizeCanvases(); });
 watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(props.page); sizeCanvases(); } });
+// 点了「添加笔记」就直接能打字（少一次点击；平板/触屏上也一样）
+watch(drafting, async (on) => {
+  if (!on) return;
+  await nextTick();
+  draftEl.value?.focus();
+});
 </script>
 
 <template>
@@ -338,7 +345,7 @@ watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(props.page);
       v-if="enabled"
       ref="capture"
       class="ink-capture"
-      :class="{ draw: inkTool === 'pen' || inkTool === 'marker', erase: inkTool === 'eraser' }"
+      :class="{ draw: inkTool === 'pen' || inkTool === 'marker', erase: inkTool === 'eraser', passthrough: inkTool === 'hand' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
@@ -366,7 +373,7 @@ watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(props.page);
       :style="{ left: ((pending.rect[0] + pending.rect[2]) / 2) * 100 + '%', top: pending.rect[3] * 100 + '%' }"
       @pointerdown.stop
     >
-      <textarea v-model="draft" class="note-input" rows="3" placeholder="写点什么…（自动保存）" />
+      <textarea ref="draftEl" v-model="draft" class="note-input" rows="3" placeholder="写点什么…（自动保存）" />
     </div>
 
     <button
@@ -405,6 +412,8 @@ watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(props.page);
 .ink-capture { position: absolute; inset: 0; pointer-events: auto; touch-action: none; }
 .ink-capture.draw { cursor: crosshair; }
 .ink-capture.erase { cursor: cell; }
+/* 手：放行。批注模式下也要能正常划词/点链接 —— 只有真的拿笔时才挡事件 */
+.ink-capture.passthrough { pointer-events: none; }
 
 .sel {
   position: absolute; border: 1.5px solid #3b82f6; border-radius: 3px;
