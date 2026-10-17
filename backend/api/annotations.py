@@ -65,6 +65,24 @@ async def notes_overview(request: Request):
     return envelope(svc.notes_overview(), request=request)
 
 
+# ---------------- 图片批注（大图查看器的手写笔迹 + 图片笔记） ----------------
+# ⚠️ 这两条必须排在 `/annotations/{annotation_id}` **前面**：那条是 PUT，路径模板会把
+# "image-marks" 当成一个 annotation_id 吃掉（先注册先匹配），结果永远 404。
+@router.get("/annotations/image-marks")
+async def get_image_marks(request: Request, paper_id: str = Query(...),
+                          key: str = Query(...)):
+    """一份图片批注文档（`key` 是图片锚点，见 `services/annotation/image_marks`）。"""
+    return envelope(ink_svc.load(paper_id, key), request=request)
+
+
+@router.put("/annotations/image-marks")
+async def put_image_marks(request: Request, payload: dict = Body(...)):
+    """覆盖写一份图片批注文档（前端防抖自动保存，没有"保存"按钮）。"""
+    return envelope(ink_svc.save(str(payload.get("paper_id") or ""),
+                                 str(payload.get("key") or ""),
+                                 payload.get("doc")), request=request)
+
+
 # ---------------- 批注 ----------------
 @router.get("/annotations")
 async def list_annotations(request: Request, paper_id: str = Query(...),
@@ -92,19 +110,3 @@ async def delete_annotation(annotation_id: str, request: Request):
 async def save_annotation(request: Request, payload: dict = Body(...)):
     """把划词解释存为批注（**解释本身由问答 agent 产出**，见 `/api/v1/agent/ask`）。"""
     return envelope(svc.save_explanation_as_annotation(payload), request=request)
-
-
-# ---------------- 图片批注（大图查看器的手写笔迹 + 图片笔记） ----------------
-@router.get("/image-marks")
-async def get_image_marks(request: Request, paper_id: str = Query(...),
-                          key: str = Query(...)):
-    """一份图片批注文档（`key` 是图片锚点，见 `services/annotation/image_marks`）。"""
-    return envelope(ink_svc.load(paper_id, key), request=request)
-
-
-@router.put("/image-marks")
-async def put_image_marks(request: Request, payload: dict = Body(...)):
-    """覆盖写一份图片批注文档（前端防抖自动保存，没有"保存"按钮）。"""
-    return envelope(ink_svc.save(str(payload.get("paper_id") or ""),
-                                 str(payload.get("key") or ""),
-                                 payload.get("doc")), request=request)
