@@ -587,6 +587,8 @@ export interface RagAnswer {
 
 export interface FigureItem {
   block_id: string;
+  /** 图注的中文译文（未翻译的页为空，前端回退显示英文原文） */
+  caption_zh?: string | null;
   /** 图注行的行 id（存在时用它定位；重译后行号会变，故另带 page 兜底） */
   row_id?: string | null;
   page: number;

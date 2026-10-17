@@ -15,11 +15,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import {
-  MARKER_COLOR, PEN_COLOR, clamp01, hitStroke, paintDoc, paintStroke, pressureOf,
+  clamp01, hitStroke, paintDoc, paintStroke, pressureOf,
   type InkNote, type InkStroke,
 } from '@/utils/imageInk';
 import {
-  commitInk, ensureInkLoaded, inkPage, inkState, inkTool, widthFor,
+  colorFor, commitInk, createSideNote, deleteSideNote, ensureInkLoaded, inkKey,
+  inkState, inkTool, inkView, pageKey, updateSideNote, widthFor,
 } from '@/composables/useReaderInk';
 
 const props = defineProps<{ page: number; enabled: boolean }>();
@@ -30,7 +31,9 @@ const markerCv = ref<HTMLCanvasElement | null>(null);
 const liveCv = ref<HTMLCanvasElement | null>(null);
 const capture = ref<HTMLElement | null>(null);
 
-const state = computed(() => inkState(props.page));
+/** 这份批注属于「这一页 × 当前视图」（用户口径：每个视图各存一份） */
+const docKey = computed(() => pageKey(props.page));
+const state = computed(() => inkState(docKey.value));
 const size = ref({ w: 0, h: 0 });
 const near = ref(false);
 
@@ -105,12 +108,12 @@ function beginStroke(ev: PointerEvent, kind: 'pen' | 'highlighter') {
   const stroke: InkStroke = {
     id: Math.random().toString(36).slice(2, 10),
     tool: kind,
-    color: kind === 'highlighter' ? MARKER_COLOR : PEN_COLOR,
+    color: colorFor(kind),
     w: widthFor(kind),
     pts: [[pt.x, pt.y, pressureOf(ev.pressure, 0.9, ev.pointerType === 'pen')]],
   };
   drawing = { stroke, lastAt: ev.timeStamp || performance.now(), lastX: ev.clientX, lastY: ev.clientY };
-  inkPage.value = props.page;
+  inkKey.value = docKey.value;
   paintLive(stroke);
 }
 
@@ -135,14 +138,14 @@ function endStroke() {
   drawing = null;
   paintLive(null);
   if (!active || active.stroke.pts.length < 2) return;
-  commitInk(props.page, { ...state.value.doc, strokes: [...state.value.doc.strokes, active.stroke] });
+  commitInk(docKey.value, { ...state.value.doc, strokes: [...state.value.doc.strokes, active.stroke] });
 }
 
 function eraseAt(ev: PointerEvent) {
   const pt = toLocal(ev.clientX, ev.clientY);
   const idx = hitStroke(state.value.doc, pt.x, pt.y, 12, size.value.w, size.value.h);
   if (idx < 0) return;
-  commitInk(props.page, {
+  commitInk(docKey.value, {
     ...state.value.doc,
     strokes: state.value.doc.strokes.filter((_, i) => i !== idx),
   });
@@ -162,7 +165,13 @@ function onPointerDown(ev: PointerEvent) {
     eraseAt(ev);
     return;
   }
-  if (tool === 'select') selectAt(ev);
+}
+
+/** 双击正文 = 框住这一行、问要不要加笔记（工具栏里不再放「文字选择」，见 toolbars 的说明） */
+function onDoubleClick(ev: MouseEvent) {
+  if (!props.enabled) return;
+  if (inkTool.value === 'hand') return;
+  selectAt(ev as unknown as PointerEvent);
 }
 
 function onPointerMove(ev: PointerEvent) {
@@ -233,7 +242,7 @@ function cancelSelect() {
   draft.value = '';
 }
 
-function savePending() {
+async function savePending() {
   const sel = pending.value;
   const text = draft.value.trim();
   if (!sel || !text) { cancelSelect(); return; }
@@ -242,10 +251,18 @@ function savePending() {
     rect: sel.rect,
     text,
     row_id: sel.rowId,
+    note_id: null,
     at: new Date().toISOString(),
   };
-  commitInk(props.page, { ...state.value.doc, notes: [...state.value.doc.notes, note] });
+  commitInk(docKey.value, { ...state.value.doc, notes: [...state.value.doc.notes, note] });
   cancelSelect();
+  // 同步进 note 表（侧栏「笔记」页签读它）；拿到 id 再回填，之后改/删才能对上
+  const noteId = await createSideNote(text, sel.rowId);
+  if (!noteId) return;
+  commitInk(docKey.value, {
+    ...state.value.doc,
+    notes: state.value.doc.notes.map((n) => (n.id === note.id ? { ...n, note_id: noteId } : n)),
+  });
 }
 
 function openNote(note: InkNote) {
@@ -260,18 +277,20 @@ function saveNoteEdit() {
   if (!note) return;
   const text = editText.value.trim();
   if (!text) { deleteNote(note); return; }
-  commitInk(props.page, {
+  commitInk(docKey.value, {
     ...state.value.doc,
     notes: state.value.doc.notes.map((n) => (n.id === note.id ? { ...n, text } : n)),
   });
+  if (note.note_id) void updateSideNote(note.note_id, text);
   editing.value = null;
 }
 
 function deleteNote(note: InkNote) {
-  commitInk(props.page, {
+  commitInk(docKey.value, {
     ...state.value.doc,
     notes: state.value.doc.notes.filter((n) => n.id !== note.id),
   });
+  if (note.note_id) void deleteSideNote(note.note_id);
   editing.value = null;
 }
 
@@ -292,7 +311,7 @@ let io: IntersectionObserver | null = null;
 onMounted(async () => {
   await nextTick();
   sizeCanvases();
-  void ensureInkLoaded(props.page);
+  void ensureInkLoaded(docKey.value);
   if (typeof ResizeObserver !== 'undefined' && root.value) {
     let lastW = 0;
     let lastH = 0;
@@ -326,7 +345,9 @@ onBeforeUnmount(() => {
 
 watch(() => state.value.version, () => { if (near.value) repaint(); });
 watch(near, (on) => { if (on) sizeCanvases(); });
-watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(props.page); sizeCanvases(); } });
+watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(docKey.value); sizeCanvases(); } });
+// 切视图（原文/译文/对照）= 换一份批注：重新拉那一份并重画
+watch(inkView, () => { void ensureInkLoaded(docKey.value); sizeCanvases(); });
 // 点了「添加笔记」就直接能打字（少一次点击；平板/触屏上也一样）
 watch(drafting, async (on) => {
   if (!on) return;
@@ -350,6 +371,7 @@ watch(drafting, async (on) => {
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @dblclick="onDoubleClick"
     />
 
     <div v-if="pending" class="sel" :style="rectStyle(pending.rect)" />

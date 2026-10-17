@@ -67,6 +67,15 @@ def test_note_keeps_which_row_it_belongs_to() -> None:
     assert doc["notes"][1]["block_id"] == "b-09"
 
 
+def test_note_keeps_the_side_panel_link() -> None:
+    """note_id 是这条笔记在侧栏里对应的行：洗掉之后侧栏改/删就与画布脱钩。"""
+    doc = ink.normalize_doc({"notes": [
+        {"text": "甲", "rect": [0.1, 0.1, 0.4, 0.2], "row_id": "p001-07", "note_id": "n_abc123"},
+    ]})
+    assert doc["notes"][0]["note_id"] == "n_abc123"
+    assert doc["notes"][0]["block_id"] == "p001-07"
+
+
 def test_document_is_capped() -> None:
     strokes = [{"tool": "pen", "pts": [[0.1, 0.1], [0.2, 0.2]]}] * (ink.STROKE_MAX + 50)
     assert len(ink.normalize_doc({"strokes": strokes})["strokes"]) == ink.STROKE_MAX

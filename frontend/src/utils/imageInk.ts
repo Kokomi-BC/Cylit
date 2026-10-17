@@ -34,6 +34,8 @@ export interface InkNote {
   text: string;
   /** 这段字对应哪一行（`data-row-id`）：只作溯源，不参与渲染 */
   row_id?: string | null;
+  /** 对应的 note 表行 id：侧栏能改/删同一条笔记（没同步成功时为 null） */
+  note_id?: string | null;
   at?: string | null;
 }
 

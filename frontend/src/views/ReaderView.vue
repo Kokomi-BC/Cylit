@@ -36,8 +36,11 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  flushInk, inkOn, inkTool, inkPage, redoInk, resetInk, undoInk,
+  INK_COLORS, canRedo, canUndo,
+  flushInk, inkColor, inkKey, inkOn, inkTool, inkView, inkWidth,
+  redoInk, resetInk, setInkNotesListener, undoInk,
 } from '@/composables/useReaderInk';
+import { WIDTH_STEPS } from '@/utils/imageInk';
 import {
   copyText, debounce, flattenOutline, fmtRelative, outlineParentIds, pct, saveBlob, truncate,
 } from '@/utils/format';
@@ -58,7 +61,6 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
-import InkToolbar from '@/components/reader/InkToolbar.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
@@ -1024,6 +1026,7 @@ async function loadAll() {
     const data = await withLoading('reader', () => api.get<ReaderPayload>(`/papers/${paperId.value}/reader`));
     reader.value = data;
     resetInk(paperId.value);
+    inkView.value = viewMode.value;
     blocks.value = data.blocks ?? [];
     pages.value = data.pages ?? [];
     pageTranslations.value = data.page_translations ?? [];
@@ -1521,6 +1524,8 @@ watch(sideTab, (k) => {
 async function setViewMode(mode: ViewMode) {
   if (viewMode.value === mode) return;
   viewMode.value = mode;
+  // 每个视图各存一份笔迹：切视图 = 换一份批注（见 useReaderInk 的 pageKey）
+  inkView.value = mode;
   mobilePane.value = '';
   await nextTick();
   syncPaneWidth();
@@ -1873,6 +1878,85 @@ function onMqChange() {
   nextTick(() => { syncPaneWidth(); watchContentSize(); });
 }
 
+/** 批注工具（工具栏里不再有「文字选择」：框注改成在画笔/荧光笔/橡皮下**双击**正文，见 InkSurface） */
+const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'eraser'; icon: string; label: string }> = [
+  { key: 'hand', icon: 'hand', label: '手：只读，可以正常划词' },
+  { key: 'pen', icon: 'pen', label: '画笔' },
+  { key: 'marker', icon: 'marker', label: '荧光笔' },
+  { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
+];
+const colorOpen = ref(false);
+/** 粗细三档的圆点直径（细 / 中 / 粗） */
+function inkDotStyle(key: string): Record<string, string> {
+  const size = key === 'thin' ? 5 : key === 'mid' ? 7 : 9;
+  return { width: size + 'px', height: size + 'px' };
+}
+
+/* ------------------------------ 胶囊拖动 ------------------------------
+ * 用户口径：主胶囊可以拖着挪位，**刷新后还在原地，关掉页面就复位**。
+ * 正好是 sessionStorage 的语义（同一标签页内跨刷新保留、标签页关闭即丢）。
+ * 只有按在胶囊**空白处**才拖动 —— 按到按钮上仍然是点按钮。
+ */
+const CAP_POS_KEY = 'cylit:reader-capsule';
+const capsuleEl = ref<HTMLElement | null>(null);
+const capOffset = reactive({ x: 0, y: 0 });
+const capDrag = ref(false);
+let capDragFrom: { x: number; y: number; ox: number; oy: number;
+  minX: number; maxX: number; minY: number; maxY: number } | null = null;
+
+const capsuleStyle = computed<Record<string, string>>(() => ({
+  transform: 'translate(' + (capsuleShift.value + capOffset.x) + 'px, ' + capOffset.y + 'px)',
+}));
+
+function restoreCapsulePos(): void {
+  try {
+    const raw = sessionStorage.getItem(CAP_POS_KEY);
+    if (!raw) return;
+    const pos = JSON.parse(raw);
+    if (typeof pos?.x === 'number' && typeof pos?.y === 'number') {
+      capOffset.x = pos.x;
+      capOffset.y = pos.y;
+    }
+  } catch { /* 存了个坏值就当没有 */ }
+}
+
+function onCapsuleDown(ev: PointerEvent): void {
+  const el = capsuleEl.value;
+  if (!el || ev.target !== el) return;      // 按到按钮/色板上：正常点它，不拖
+  const rect = el.getBoundingClientRect();
+  capDrag.value = true;
+  el.setPointerCapture?.(ev.pointerId);
+  capDragFrom = {
+    x: ev.clientX, y: ev.clientY, ox: capOffset.x, oy: capOffset.y,
+    minX: 8 - rect.left + capOffset.x, maxX: innerWidth - 8 - rect.right + capOffset.x,
+    minY: 8 - rect.top + capOffset.y, maxY: innerHeight - 8 - rect.bottom + capOffset.y,
+  };
+}
+
+function onCapsuleMove(ev: PointerEvent): void {
+  if (!capDrag.value || !capDragFrom) return;
+  const from = capDragFrom;
+  capOffset.x = Math.min(from.maxX, Math.max(from.minX, from.ox + (ev.clientX - from.x)));
+  capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (ev.clientY - from.y)));
+}
+
+function onCapsuleUp(): void {
+  if (!capDrag.value) return;
+  capDrag.value = false;
+  capDragFrom = null;
+  try { sessionStorage.setItem(CAP_POS_KEY, JSON.stringify({ x: capOffset.x, y: capOffset.y })); }
+  catch { /* 隐私模式：位置只在本次内存里 */ }
+}
+
+/** 批注里的笔记写进 note 表之后，把侧栏那份笔记列表同步过来（不用整页重载） */
+async function refreshNotes(): Promise<void> {
+  try {
+    const d = await api.get<{ items: Note[] }>('/notes', { paper_id: paperId.value });
+    notes.value = d.items ?? [];
+  } catch (err) {
+    console.warn('笔记列表刷新失败', err);
+  }
+}
 /**
  * 批注模式：只切换"能不能落笔"。笔迹本身按页自动存服务端（见 `useReaderInk`），
  * 所以**退出批注 / 关页面都不会丢**，不用担心"还没保存"。
@@ -1898,10 +1982,10 @@ function onInkKey(ev: KeyboardEvent) {
   const key = ev.key.toLowerCase();
   if (key === 'z') {
     ev.preventDefault();
-    if (ev.shiftKey) redoInk(inkPage.value); else undoInk(inkPage.value);
+    if (ev.shiftKey) redoInk(inkKey.value); else undoInk(inkKey.value);
   } else if (key === 'y') {
     ev.preventDefault();
-    redoInk(inkPage.value);
+    redoInk(inkKey.value);
   }
 }
 
@@ -1923,6 +2007,11 @@ onMounted(async () => {
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
   document.addEventListener('keydown', onInkKey);
+  window.addEventListener('pointermove', onCapsuleMove);
+  window.addEventListener('pointerup', onCapsuleUp);
+  window.addEventListener('pointercancel', onCapsuleUp);
+  restoreCapsulePos();
+  setInkNotesListener(() => { void refreshNotes(); });
 
   await loadAll();
   await loadSide();
@@ -1950,7 +2039,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   void flushInk();
+  setInkNotesListener(null);
   document.removeEventListener('keydown', onInkKey);
+  window.removeEventListener('pointermove', onCapsuleMove);
+  window.removeEventListener('pointerup', onCapsuleUp);
+  window.removeEventListener('pointercancel', onCapsuleUp);
   mq?.removeEventListener('change', onMqChange);
   document.removeEventListener('visibilitychange', onReadVisibility);
   stopReadStats();
@@ -4288,8 +4381,91 @@ function renderMarkdown(text?: string | null) {
           <AsideToggle :open="asideVisible" @toggle="toggleAside" />
         </div>
 
-        <div class="reader-capsule" :style="{ transform: `translateX(${capsuleShift}px)` }">
-          <div class="cap-group">
+        <div
+          ref="capsuleEl"
+          class="reader-capsule"
+          :class="{ dragging: capDrag }"
+          :style="capsuleStyle"
+          @pointerdown="onCapsuleDown"
+        >
+          <!-- 批注模式：工具**并进这一枚胶囊**（用户口径：合并原有的页面切换胶囊），
+               原文/译文/对照等收进右边的面板里 -->
+          <template v-if="inkOn">
+            <div class="cap-group">
+              <button
+                v-for="item in INK_TOOLS"
+                :key="item.key"
+                class="btn icon"
+                :class="{ active: inkTool === item.key }"
+                :title="item.label"
+                :data-ink-tool="item.key"
+                @click="inkTool = item.key"
+              >
+                <AppIcon :name="item.icon" :size="15" />
+              </button>
+            </div>
+            <div class="cap-group">
+              <button
+                class="btn icon ink-color-btn"
+                :class="{ active: colorOpen }"
+                title="笔迹颜色"
+                data-ink-color
+                @click="colorOpen = !colorOpen"
+              >
+                <i class="ink-swatch" :style="{ background: inkColor }" />
+              </button>
+              <button
+                v-for="step in WIDTH_STEPS"
+                :key="step.key"
+                class="btn icon ink-width-btn"
+                :class="{ active: inkWidth === step.key }"
+                :title="'粗细：' + step.label"
+                :data-ink-width="step.key"
+                @click="inkWidth = step.key"
+              >
+                <i class="ink-dot" :style="inkDotStyle(step.key)" />
+              </button>
+            </div>
+            <div class="cap-group" v-if="canUndo(inkKey) || canRedo(inkKey)">
+              <button class="btn icon" :disabled="!canUndo(inkKey)" title="撤销（Ctrl+Z）"
+                      data-ink-undo @click="undoInk(inkKey)">
+                <AppIcon name="undo" :size="15" />
+              </button>
+              <button class="btn icon" :disabled="!canRedo(inkKey)" title="重做（Ctrl+Shift+Z）"
+                      data-ink-redo @click="redoInk(inkKey)">
+                <AppIcon name="redo" :size="15" />
+              </button>
+            </div>
+            <div class="cap-group">
+              <button
+                class="btn icon"
+                data-cap-panel="view"
+                title="版面与视图（原文 / 译文 / 对照）"
+                aria-haspopup="true"
+                :aria-expanded="capPanel === 'view'"
+                @click="toggleCapPanel('view')"
+              >
+                <AppIcon name="sliders" :size="15" />
+              </button>
+              <button class="btn icon" title="退出批注（笔迹会保留）" data-ink-exit @click="closeInk">
+                <AppIcon name="close" :size="15" />
+              </button>
+            </div>
+            <!-- 色板：便签同款，点一下即换 -->
+            <div v-if="colorOpen" class="ink-palette" @pointerdown.stop>
+              <button
+                v-for="c in INK_COLORS"
+                :key="c"
+                class="ink-palette-dot"
+                :class="{ active: inkColor === c }"
+                :style="{ background: c }"
+                :title="c"
+                @click="inkColor = c; colorOpen = false"
+              />
+            </div>
+          </template>
+
+          <div v-if="!inkOn" class="cap-group">
             <div class="seg">
               <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
               <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
@@ -4297,7 +4473,7 @@ function renderMarkdown(text?: string | null) {
             </div>
           </div>
 
-          <div class="cap-group">
+          <div v-if="!inkOn" class="cap-group">
             <button
               class="btn icon"
               data-cap-panel="view"
@@ -4332,7 +4508,7 @@ function renderMarkdown(text?: string | null) {
           </div>
 
           <!-- 翻译状态与主操作：翻译完成时**整组消失**（用户口径：不要那个常驻的绿色对勾） -->
-          <div class="cap-group" v-if="!translateDone">
+          <div class="cap-group" v-if="!inkOn && !translateDone">
             <!-- SSE 连得好不好是**实现细节**，连上时不刷存在感；降级轮询 / 连接中才提醒 -->
             <span
               v-if="sseStatus !== 'open'"
@@ -4365,6 +4541,16 @@ function renderMarkdown(text?: string | null) {
         <!-- 弹出面板（互斥，落在主胶囊正下方）。里面每个控件都是**常挂载**的：
              `frontend_check.py` 按文字/标题点「原文文本 / 原 PDF / 小」，v-if 会让它点不到。 -->
         <CapPanel :open="capPanel === 'view'" label="版面选项" data-cap-panel-body="view">
+          <!-- 批注模式下主胶囊被工具占满，视图切换挪到这里（同一份 viewMode，不会两处不一致） -->
+          <div class="cap-row">
+            <span class="cap-row-label">视图</span>
+            <div class="seg" title="视图">
+              <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
+              <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
+              <button :class="{ active: viewMode === 'bilingual' }" @click="setViewMode('bilingual')">对照</button>
+            </div>
+          </div>
+
           <div v-if="originalVisible" class="cap-row">
             <span class="cap-row-label">原文栏呈现</span>
             <div class="seg" title="原文栏呈现">
@@ -4440,10 +4626,6 @@ function renderMarkdown(text?: string | null) {
           </div>
         </CapPanel>
       </div>
-
-      <!-- 批注胶囊（画画时才出现）：工具 / 粗细 / 撤销重做 / 退出。
-           主胶囊的弹出面板打开时先让位 —— 两块玻璃叠在同一个位置上谁都点不准。 -->
-      <InkToolbar v-if="inkOn && !capPanel" @exit="closeInk" />
 
       <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号

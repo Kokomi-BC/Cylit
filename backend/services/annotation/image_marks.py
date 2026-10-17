@@ -138,11 +138,14 @@ def _note(raw: object) -> dict | None:
     # 笔记挂在哪一行也要留下：前端给的是阅读器行 id（row_id），别处可能叫 block_id，两个都收，
     # 统一落成 block_id（与 Annotation / Note 的字段名一致，前端读的时候再兜回 row_id）
     row_id = raw.get("row_id") or raw.get("block_id")
+    # note_id：这条图注笔记在 note 表里的行 id。丢了它，侧栏里改/删就与画布上的笔记脱钩。
+    note_id = raw.get("note_id")
     return {
         "id": str(raw.get("id") or new_id("n"))[:32],
         "rect": rect,
         "text": text,
         "block_id": (str(row_id)[:32] if row_id else None),
+        "note_id": (str(note_id)[:32] if note_id else None),
         "at": str(raw.get("at") or "")[:32] or None,
     }
 

@@ -946,6 +946,11 @@ def _pages_payload(paper_id: str, pages: list[dict] | None = None) -> list[dict]
         rows = payload.get("rows") or []
         media = [m for m in figure_regions.media_of_page(paper_id, page_no)
                  if m["kind"] == "figure"]
+        # 图注补中文译文（用户口径："侧栏图片的图注取中文译文"）：同一条媒体既喂正文也喂侧栏，
+        # 因此中文化在这一处做完，两处口径一致。
+        for m in media:
+            m["caption_zh"] = _caption_zh(m.get("caption") or "", m.get("number") or "",
+                                          rows)
         out.append({
             "page": page_no, "width": p["width"], "height": p["height"],
             "columns": p["columns"], "gutter_x": p["gutter_x"],
@@ -1268,6 +1273,32 @@ def translations_since(paper_id: str, since_page: int = 0,
     return {"items": items, "count": len(items), "since_page": since_page}
 
 
+def _caption_zh(caption: str, number: str, rows: list[dict] | None = None) -> str:
+    """图注行的**中文译文**（没有译文就回空串，前端回退显示英文）。
+
+    两条匹配路径（与 row_id_of_caption 同一口径）：
+    ① 图号对得上（type=caption + number）—— 翻译产物里图注行是结构化标出来的；
+    ② 图号缺失（扫描件常没有）时按英文前缀对 —— 图注文本就是行原文的开头。
+    """
+    num = str(number or "").strip()
+    text = str(caption or "").strip()
+    rows = rows or []
+    if num:
+        for row in rows:
+            zh = str(row.get("translation") or "").strip()
+            if not zh or row.get("type") != "caption":
+                continue
+            if str(row.get("number") or "") == num:
+                return zh
+    head = text[:40]
+    if head:
+        for row in rows:
+            zh = str(row.get("translation") or "").strip()
+            if zh and str(row.get("original") or "").strip().startswith(head):
+                return zh
+    return ""
+
+
 def row_id_of_caption(paper_id: str, page_no: int, number: str,
                       rows: list[dict] | None = None) -> str | None:
     """这一页里"图号 = number"的图注行 id（侧栏/目录定位用）。
@@ -1335,6 +1366,9 @@ def figures_payload(paper_id: str) -> dict:
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",
                 "row_id": row_id,
                 "page": page_no, "caption": r["caption"], "bbox": r["bbox"],
+                # 侧栏的图注走中文译文（与正文里的媒体条目同一套规则）
+                "caption_zh": _caption_zh(r["caption"], r["number"],
+                                          rows_by_page.get(int(page_no))),
                 "number": r["number"],
                 "part": int(r.get("part", 0)), "parts": int(r.get("parts", 1)),
                 "part_label": r.get("part_label") or "",

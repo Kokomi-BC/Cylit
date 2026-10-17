@@ -411,7 +411,13 @@ function removeRow(r: FeedRow) {
         <div class="fig-head">
           <!-- 图注按 **Markdown** 渲染：图注里大量出现 `$\text{TurboQuant}_{\text{mse}}$` 这类公式，
                纯文本会把 LaTeX 原样显示出来（用户口径：侧栏要有 Markdown 支持） -->
-          <div v-if="fig.caption" class="fig-caption md" v-html="mdToHtml(fig.caption)" />
+          <!-- 图注优先用**中文译文**（用户口径）；英文原文留在 title 里，鼠标停一下能对照 -->
+          <div
+            v-if="fig.caption_zh || fig.caption"
+            class="fig-caption md"
+            :title="fig.caption || ''"
+            v-html="mdToHtml(fig.caption_zh || fig.caption || '')"
+          />
           <span v-else class="spacer" />
           <button
             class="btn icon sm fig-locate"
@@ -427,10 +433,10 @@ function removeRow(r: FeedRow) {
             :src="fig.image_url"
             class="figure"
             loading="lazy"
-            :title="`${fig.caption || '插图'}（点击看大图）`"
+            :title="`${fig.caption_zh || fig.caption || '插图'}（点击看大图）`"
             @click="emit('zoom', {
               url: fig.card_url || fig.image_url,
-              caption: fig.caption, page: fig.page, number: fig.number,
+              caption: fig.caption_zh || fig.caption, page: fig.page, number: fig.number,
             })"
           >
         </div>
