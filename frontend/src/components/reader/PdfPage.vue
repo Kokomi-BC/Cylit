@@ -14,6 +14,17 @@ const dragPoint = { x: 0, y: 0 };
 let lastGood: SelPoint | null = null;
 /** 这一轮按下不允许浏览器自己划词（见 onDocPointerDown 里的说明） */
 let suppressSelect = false;
+/**
+ * 『接下来那一下点击不要收掉选区』的计数（触摸长按用）。
+ *
+ * 触摸长按是阅读器自己造的选区（见 ReaderView 的 fireLongPress）：手指抬起时会来一个
+ * pointerup / click，endDrag 会把它当成『点别处』把 PDF 选区收掉 —— 表现就是
+ * 『长按后选中焦点闪一下就没了』。所以长按生效时先在这儿挂一次豁免。
+ */
+let keepSelectionTaps = 0;
+export function keepPdfSelectionOnce(): void {
+  keepSelectionTaps = Math.max(keepSelectionTaps, 1);
+}
 let listenerBound = false;
 let autoScrollRaf = 0;
 /**
@@ -486,7 +497,11 @@ function endDrag(): void {
   dragFrom = null;
   dragTakenOver = false;
   suppressSelect = false;
-  if (clicked) dropPdfSelection();
+  if (clicked) {
+    // 长按造出来的选区：抬起手指那一下不收（见 keepSelectionTaps 的说明）
+    if (keepSelectionTaps > 0) keepSelectionTaps -= 1;
+    else dropPdfSelection();
+  }
   // 注意：**不能**在这里无条件摘掉 pm-pdf-drag —— 松手后选区还在（跨页那段 range 依旧罩着中间的译文），
   // 摘掉它会让 `toString()` / 复制立刻又把译文算回来（实测 2106 → 3400 字）。
   // 交给 selectionchange 按"选区还在不在 PDF 上"决定。

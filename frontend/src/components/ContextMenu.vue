@@ -45,7 +45,12 @@ const props = withDefaults(defineProps<{
   y: number;
   items: CtxItem[];
   width?: number;
-}>(), { width: 218 });
+  /**
+   * 贴在**选区上方**打开（触摸长按用）：此时 `x` 是选区中心、`y` 是选区上沿。
+   * 目的是别盖住选区本身，也别盖住两端那两颗拖动手柄（用户口径 2026-10-17）。
+   */
+  above?: boolean;
+}>(), { width: 218, above: false });
 
 const emit = defineEmits<{
   (e: 'select', key: string): void;
@@ -71,8 +76,16 @@ async function place() {
   const h = el.offsetHeight || 220;
   let left = props.x + GAP;
   let top = props.y + GAP;
-  if (left + w > window.innerWidth - EDGE) left = Math.max(EDGE, props.x - w - GAP);
-  if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, props.y - h - GAP);
+  if (props.above) {
+    // 贴在选区上方：水平居中在选区上、竖直压在选区上沿之外（28px 留出手柄的小尾巴）
+    left = props.x - w / 2;
+    top = props.y - 28 - h;
+    if (top < EDGE) top = Math.min(window.innerHeight - h - EDGE, props.y + 40);
+    left = Math.max(EDGE, Math.min(left, window.innerWidth - w - EDGE));
+  } else {
+    if (left + w > window.innerWidth - EDGE) left = Math.max(EDGE, props.x - w - GAP);
+    if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, props.y - h - GAP);
+  }
   pos.value = { left: Math.round(left), top: Math.round(top) };
   emit('placed', { left: pos.value.left, top: pos.value.top, width: Math.round(w), height: Math.round(h) });
 }
@@ -102,6 +115,8 @@ function onDocPointer(ev: PointerEvent) {
      于是那次点击落在空气上 —— 表现就是"右键之后点胶囊没反应"（用户口径 2026-10-10）。
      所以胶囊上按下的这一下要放行：菜单先别关，等胶囊把这一下点完。 */
   if ((t as HTMLElement | null)?.closest?.('[data-selection-menu]')) return;
+  // 拖选区两端的手柄同理：按在手柄上是为了**扩大选区**，菜单先别收
+  if ((t as HTMLElement | null)?.closest?.('.sel-handle')) return;
   close();
 }
 

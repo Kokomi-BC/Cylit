@@ -61,6 +61,7 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
+import { keepPdfSelectionOnce } from '@/components/reader/PdfPage.vue';
 import M3Slider from '@/components/M3Slider.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
@@ -2206,6 +2207,9 @@ function onInkKey(ev: KeyboardEvent) {
   }
 }
 
+// 划词胶囊收起 = 这次选择结束了：手柄跟着收（否则会有一对孤零零的小圆点留在页面上）
+watch(() => selection.show, (on) => { if (!on) hideSelHandles(); });
+
 onMounted(async () => {
   mq = window.matchMedia('(max-width: 1100px)');
   isNarrow.value = mq.matches;
@@ -2224,6 +2228,7 @@ onMounted(async () => {
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
   document.addEventListener('keydown', onInkKey);
+  document.addEventListener('dragstart', onReaderDragStart, true);
   window.addEventListener('pointermove', onCapsuleMove);
   window.addEventListener('pointerup', onCapsuleUp);
   window.addEventListener('pointercancel', onCapsuleUp);
@@ -2267,6 +2272,7 @@ onUnmounted(() => {
   // 离开阅读器就把提示条的位置放回去（别的页面没有悬浮胶囊）
   try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
   document.removeEventListener('keydown', onInkKey);
+  document.removeEventListener('dragstart', onReaderDragStart, true);
   window.removeEventListener('pointermove', onCapsuleMove);
   window.removeEventListener('pointerup', onCapsuleUp);
   window.removeEventListener('pointercancel', onCapsuleUp);
@@ -2985,7 +2991,12 @@ function highlightIdsInRange(range: Range, target?: HTMLElement | null, onlyCol?
 
 /** 收划词胶囊。**顺带把右键菜单也收掉**：胶囊上的动作（高亮 / 复制 / 解释…）都是"针对这一处"的，
  *  做完之后菜单还杵在旁边只会挡正文（用户口径 2026-10-10 的连带修复）。 */
-const hideMenu = () => { selection.show = false; ctxMenu.open = false; ctxMenu.rect = null; };
+const hideMenu = () => {
+  selection.show = false;
+  ctxMenu.open = false;
+  ctxMenu.rect = null;
+  hideSelHandles();
+};
 /** 点胶囊的 × = **连选中状态一起取消**（用户口径 2026-10-10）：只收浮层、留着选区的话，
  *  鼠标一碰那段文字胶囊又冒出来，看着像"关不掉"；快照也要清（否否则下次右键仍会判成"有选区"）。 */
 function closeSelectionMenu() {
@@ -3021,6 +3032,8 @@ function onAnyScroll(ev?: Event) {
 function onDocPointerDown(ev: PointerEvent) {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('[data-selection-menu]')) return;
+  // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
+  if (target?.closest?.('.sel-handle')) return;
   // 顶栏弹出面板：点面板外面就收起来（面板内的点击不动它 —— 改一个分段值不该把面板关掉）
   if (capPanel.value && !target?.closest?.('.reader-toolbar')) capPanel.value = '';
   /* 引用标号的浮层：点别处就收。⚠️ 点**浮层里面**（条目/跳转图标）绝不能收 ——
@@ -3145,6 +3158,8 @@ interface CtxItem {
 
 const ctxMenu = reactive({
   open: false, x: 0, y: 0, items: [] as CtxItem[],
+  /** 贴在**选区上方**打开（触摸长按时用：别盖住选区，也别盖住两端手柄） */
+  above: false,
   /** 菜单摆完位后的真实矩形（`ContextMenu` 的 `placed` 事件报回来的）：划词胶囊据此贴到它上沿 */
   rect: null as { left: number; top: number; width: number; height: number } | null,
 });
@@ -3170,6 +3185,19 @@ let ctxCtx = {
   imgRect: null as { x: number; y: number; w: number; h: number } | null,
 };
 
+/**
+ * 正文里**禁止原生拖动**（Edge 的『拖动搜索』就是这么来的）。
+ *
+ * 用鼠标/触摸按住一段**已选中的文字**再拖，Blink 会把它当成搬运行内内容：Edge 上直接弹出
+ * 『拖放搜索』浮层（用户口径 2026-10-17 报的正是这个），触摸长按之后想扩大选区也会被它抢走手势。
+ * 捕获阶段一律 preventDefault：正文里不需要原生拖放（下载图片走右键菜单的『另存为』）。
+ */
+function onReaderDragStart(ev: DragEvent): void {
+  const target = ev.target as Node | null;
+  const inReader = !!(target as HTMLElement | null)?.closest?.('.reader-content');
+  const sel = window.getSelection();
+  if (inReader || (sel && !sel.isCollapsed)) ev.preventDefault();
+}
 /* ------------------------------ 触摸长按 = 右键 ------------------------------
  * 触摸屏上长按默认走**系统右键**：iOS 弹 callout、安卓弹选区工具条 —— 和我们自己的右键菜单
  * 是两套东西（用户口径 2026-10-17）。这里三件事一起做：
@@ -3178,6 +3206,18 @@ let ctxCtx = {
  *   ③ 自己识别长按（480ms、位移 <10px）→ 选中落点那个词 → 按右键那套逻辑开菜单。
  */
 const LONG_PRESS_MS = 480;
+/**
+ * 长按之后这段时间内**不许浏览器自己划词**。
+ *
+ * 触摸长按本身就是浏览器的"选中一个词"手势：我们在 480ms 时已经把选区摆好了，浏览器随后
+ * 还会再摆一次自己的（把我们的顶掉），抬手又把它折叠 —— 用户看到的就是
+ * "长按后选中焦点闪一下就没了"。所以从长按生效那一刻起压掉 selectstart，
+ * 并忽略紧跟着的那一下 click。
+ */
+let suppressNativeSelectUntil = 0;
+let ignoreClickUntil = 0;
+/** 长按造出来的那段选区：抬手时浏览器会把它折叠，这里留一份用来放回去 */
+let longPressRange: Range | null = null;
 let longPressTimer: number | null = null;
 let longPressFrom: { x: number; y: number; target: HTMLElement | null } | null = null;
 
@@ -3227,10 +3267,77 @@ function wordRangeAt(x: number, y: number): Range | null {
   return range;
 }
 
+/* ------------------------------ 触摸选区的两个手柄 ------------------------------
+ * 触摸屏上用鼠标那种『拖一下选一段』是没有的；长按选出一个词之后，得能像原生那样**拖两头的
+ * 小圆点**把范围撑开（用户口径 2026-10-17：长按之后没有拖动选择条）。这里自己画两个手柄：
+ * 位置取当前选区的首/末矩形，拖动时用 caretRangeFromPoint 找到新焦点，另一端固定。
+ */
+const selHandles = ref<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null);
+let selEndA: { node: Node; offset: number } | null = null;
+let selEndB: { node: Node; offset: number } | null = null;
+let draggingHandle: 'start' | 'end' | null = null;
+
+/** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
+function refreshSelHandles(): void {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) { selHandles.value = null; return; }
+  const range = sel.getRangeAt(0);
+  const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+  if (!rects.length) { selHandles.value = null; return; }
+  const first = rects[0];
+  const last = rects[rects.length - 1];
+  selHandles.value = {
+    start: { x: first.left, y: first.top },
+    end: { x: last.right, y: last.bottom },
+  };
+  selEndA = { node: range.startContainer, offset: range.startOffset };
+  selEndB = { node: range.endContainer, offset: range.endOffset };
+}
+
+function hideSelHandles(): void {
+  selHandles.value = null;
+  draggingHandle = null;
+  selEndA = null;
+  selEndB = null;
+}
+
+function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
+  draggingHandle = which;
+  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function onHandleMove(ev: PointerEvent): void {
+  if (!draggingHandle) return;
+  const caret = caretAt(ev.clientX, ev.clientY);
+  if (!caret) return;
+  const sel = window.getSelection();
+  if (!sel) return;
+  // 拖哪一头就以**另一头**为锚点：setBaseAndExtent 从锚点铺到焦点
+  const fixed = draggingHandle === 'start' ? selEndB : selEndA;
+  if (!fixed) return;
+  try {
+    sel.setBaseAndExtent(fixed.node, fixed.offset, caret.node, caret.offset);
+  } catch { return; }
+  // 与鼠标松手同一条链路：重算划词胶囊 / 高亮锚点 / 位置
+  onMouseUp();
+  refreshSelHandles();
+}
+
+function onHandleUp(): void {
+  draggingHandle = null;
+}
 function fireLongPress(): void {
   const from = longPressFrom;
   longPressTimer = null;
   if (!from) return;
+  suppressNativeSelectUntil = Date.now() + 1200;   // 这之后 1.2s 内浏览器不许自己划词
+  ignoreClickUntil = Date.now() + 700;             // 抬起手指补的那一下 click 也忽略
+  // PDF 文字层：抬起手指那一下会被 endDrag 当成"点别处"收掉选区，先挂一次豁免
+  if ((from.target ?? document.elementFromPoint(from.x, from.y))?.closest?.('[data-pdf-page]')) {
+    keepPdfSelectionOnce();
+  }
   const range = wordRangeAt(from.x, from.y);
   if (range) {
     const sel = window.getSelection();
@@ -3238,6 +3345,8 @@ function fireLongPress(): void {
     sel?.addRange(range);
     // 复用『鼠标松手』那套逻辑：它会算出 selection（划词胶囊 / 高亮锚点 / 位置）
     onMouseUp();
+    refreshSelHandles();     // 长按之后可以直接拖两个小圆点扩大范围
+    longPressRange = range.cloneRange();
   }
   // 再按右键那套开菜单：落点、选区、图片、页号都由 onContentContextMenu 自己算
   const target = from.target ?? document.elementFromPoint(from.x, from.y);
@@ -3248,9 +3357,39 @@ function fireLongPress(): void {
   longPressFrom = null;
 }
 
+function onContentSelectStart(ev: Event): void {
+  if (Date.now() < suppressNativeSelectUntil) ev.preventDefault();
+}
+
+/**
+ * 抬手：长按这一下**不能**让浏览器当成"点一下"（那一手会把我们刚设的选区折叠掉，
+ * 用户看到的就是『选中焦点消失』）。preventDefault + 下一帧再把选区放回去，双保险。
+ */
+function onContentTouchEnd(ev: TouchEvent): void {
+  if (Date.now() < suppressNativeSelectUntil) {
+    ev.preventDefault();
+    const saved = longPressRange?.cloneRange() ?? null;
+    if (saved) {
+      window.setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel) return;
+        if (!sel.rangeCount || sel.isCollapsed) {
+          sel.removeAllRanges();
+          try { sel.addRange(saved); } catch { return; }
+          onMouseUp();
+          refreshSelHandles();
+        }
+      }, 0);
+    }
+  }
+  cancelLongPress();
+}
+
 function onContentTouchStart(ev: TouchEvent): void {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  // 又碰了一下正文：上一次长按留下的手柄先收掉（这一下若不长按，就是普通的点/滚）
+  hideSelHandles();
   if (ev.touches.length !== 1) { cancelLongPress(); return; }
   const touch = ev.touches[0];
   cancelLongPress();
@@ -3270,6 +3409,8 @@ function onContentContextMenu(ev: MouseEvent) {
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   // 系统自带的右键菜单**不出场**（触摸长按也走这里，见 onContentTouchStart）
   ev.preventDefault();
+  const fromTouch = Date.now() < suppressNativeSelectUntil;   // 长按派发的合成右键
+  ctxMenu.above = fromTouch;
   const pdfEl = target?.closest?.('[data-pdf-page]') as HTMLElement | null;
   const rowEl = target?.closest?.('[data-row-id]') as HTMLElement | null;
   const pageEl = target?.closest?.('[data-page]') as HTMLElement | null;
@@ -3353,8 +3494,18 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'delhl', label: '删除', icon: 'delete-fill', danger: true, sep: true });
   }
   ctxMenu.items = items;
-  ctxMenu.x = ev.clientX;
-  ctxMenu.y = ev.clientY;
+  if (fromTouch) {
+    /* 触摸长按：菜单摆在**选区上方**（用户口径 2026-10-17"右键菜单要避让拖动选择器"）。
+       位置取选区矩形的中心 / 上沿；选区拿不到就退回落点。 */
+    const rect = window.getSelection()?.rangeCount
+      ? window.getSelection()!.getRangeAt(0).getBoundingClientRect()
+      : null;
+    ctxMenu.x = rect ? Math.round((rect.left + rect.right) / 2) : ev.clientX;
+    ctxMenu.y = rect ? Math.round(rect.top) : ev.clientY;
+  } else {
+    ctxMenu.x = ev.clientX;
+    ctxMenu.y = ev.clientY;
+  }
   ctxMenu.open = true;
   ev.preventDefault();                    // 收掉浏览器原生菜单（要的就是它换成这一张）
 }
@@ -4000,6 +4151,8 @@ async function savePaneNote(p: NoteDraftPayload) {
  * 以前是"点一下弹原生确认框直接删"，用户口径改成菜单删除。
  */
 function onContentClick(ev: MouseEvent) {
+  // 长按选完抬起手指会补一个 click：那不是"点了一下"，别让它改状态
+  if (Date.now() < ignoreClickUntil) return;
   /* 引用标号（`[2, 4, 10]`）优先：它是正文里最容易被点的小东西，别跟高亮那套混在一起。
      ⚠️ 认 `[data-refs]`：对话页的跳转标号用的是同一枚 `.cite-inline` 类（但带 `data-ref`），
      它们有自己的处理器，不能被这里抢走。 */
@@ -5170,10 +5323,11 @@ function renderMarkdown(text?: string | null) {
         @scroll="onScroll"
         @click="onContentClick"
         @contextmenu="onContentContextMenu"
+        @selectstart="onContentSelectStart"
         @touchstart.passive="onContentTouchStart"
         @touchmove.passive="onContentTouchMove"
-        @touchend="cancelLongPress"
-        @touchcancel="cancelLongPress"
+        @touchend="onContentTouchEnd"
+        @touchcancel="onContentTouchEnd"
         @mouseover="onContentHover"
         @mouseout="onContentHoverOut"
       >
@@ -5417,12 +5571,33 @@ function renderMarkdown(text?: string | null) {
       :open="ctxMenu.open"
       :x="ctxMenu.x"
       :y="ctxMenu.y"
+      :above="ctxMenu.above"
       :items="ctxMenu.items"
       @select="onCtxSelect"
       @color="onCtxColor"
       @placed="ctxMenu.rect = $event"
       @close="ctxMenu.open = false; ctxMenu.rect = null"
     />
+
+    <!-- 触摸选区的两个手柄：长按选出一个词之后，拖它们把范围撑开（桌面不显示，鼠标直接拖就行） -->
+    <template v-if="selHandles">
+      <div
+        class="sel-handle start"
+        :style="{ left: selHandles.start.x + 'px', top: selHandles.start.y + 'px' }"
+        @pointerdown.stop="onHandleDown('start', $event)"
+        @pointermove="onHandleMove"
+        @pointerup="onHandleUp"
+        @pointercancel="onHandleUp"
+      ><i /></div>
+      <div
+        class="sel-handle end"
+        :style="{ left: selHandles.end.x + 'px', top: selHandles.end.y + 'px' }"
+        @pointerdown.stop="onHandleDown('end', $event)"
+        @pointermove="onHandleMove"
+        @pointerup="onHandleUp"
+        @pointercancel="onHandleUp"
+      ><i /></div>
+    </template>
 
     <!-- 大图查看器：毛玻璃胶囊（放大 / 百分比 / 缩小 / 重置 / 关闭）。手写批注在阅读器页面上。 -->
     <ImageViewer v-if="zoomImage" :target="zoomImage" @close="zoomImage = null" />
@@ -5734,6 +5909,24 @@ function renderMarkdown(text?: string | null) {
 /* 批注工具是**单选**：始终有一枚是选中的（用户口径 2026-10-17）。
    选中态用"抬起的一枚 pill"（--bg-elev + 一档投影），与 .seg 的选中项同一门语言 ——
    以前只有 hover 的浅灰，四枚按钮看起来永远是"都没选"。 */
+/* 触摸选区的两端手柄：一枚小圆点 + 一根小尾巴，位置由 refreshSelHandles 按选区矩形给 */
+.sel-handle {
+  position: fixed; z-index: 190; width: 26px; height: 26px;
+  margin: -13px 0 0 -13px; display: flex; align-items: center; justify-content: center;
+  touch-action: none; cursor: pointer;
+}
+.sel-handle i {
+  display: block; width: 12px; height: 12px; border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bg-elev) 90%, transparent), var(--shadow-1);
+}
+.sel-handle::after {
+  content: ''; position: absolute; width: 2px; height: 14px; border-radius: 999px;
+  background: var(--accent); opacity: .9;
+}
+.sel-handle.start::after { left: 50%; top: -12px; }
+.sel-handle.end::after { left: 50%; bottom: -12px; }
+
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
    ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */
 .reader-content, .reader-content * { -webkit-touch-callout: none; }
