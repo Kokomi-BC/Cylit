@@ -1273,15 +1273,24 @@ def translations_since(paper_id: str, since_page: int = 0,
     return {"items": items, "count": len(items), "since_page": since_page}
 
 
+#: 图注比对前要洗掉的**Markdown 噪声**：图注行在产物里通常是 `**Figure 3: …**`，
+#: 而插图区域里存的是 `Figure 3: …`（没有星号）—— 不清掉永远对不上（实测踩到）。
+_CAPTION_NOISE = re.compile(r"[*_`#>\s]+")
+
+
+def _caption_key(text: str, length: int = 24) -> str:
+    """图注比对键：去掉 Markdown 记号与空白后的前 N 个字符。"""
+    return _CAPTION_NOISE.sub("", str(text or ""))[:length]
+
+
 def _caption_zh(caption: str, number: str, rows: list[dict] | None = None) -> str:
     """图注行的**中文译文**（没有译文就回空串，前端回退显示英文）。
 
     两条匹配路径（与 row_id_of_caption 同一口径）：
     ① 图号对得上（type=caption + number）—— 翻译产物里图注行是结构化标出来的；
-    ② 图号缺失（扫描件常没有）时按英文前缀对 —— 图注文本就是行原文的开头。
+    ② 图号缺失（扫描件常见，连 number 都是空串）时按英文前缀对，且**先洗掉 Markdown**。
     """
     num = str(number or "").strip()
-    text = str(caption or "").strip()
     rows = rows or []
     if num:
         for row in rows:
@@ -1290,12 +1299,13 @@ def _caption_zh(caption: str, number: str, rows: list[dict] | None = None) -> st
                 continue
             if str(row.get("number") or "") == num:
                 return zh
-    head = text[:40]
-    if head:
-        for row in rows:
-            zh = str(row.get("translation") or "").strip()
-            if zh and str(row.get("original") or "").strip().startswith(head):
-                return zh
+    want = _caption_key(caption)
+    if len(want) < 12:
+        return ""
+    for row in rows:
+        zh = str(row.get("translation") or "").strip()
+        if zh and _caption_key(row.get("original"), len(want)) == want:
+            return zh
     return ""
 
 
