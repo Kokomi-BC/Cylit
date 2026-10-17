@@ -16,6 +16,12 @@ let lastGood: SelPoint | null = null;
 let suppressSelect = false;
 let listenerBound = false;
 let autoScrollRaf = 0;
+/**
+ * 这台设备上 pdf.js **已经失败过一次**（平板/手机上很常见：WebAssembly 或
+ * OffscreenCanvas 相关能力缺失）。此后各页**直接走页图**，不再每页都白试一遍 ——
+ * 否则滚动一页就闪一次白。
+ */
+let pdfBroken = false;
 </script>
 
 <script setup lang="ts">
@@ -71,6 +77,8 @@ if (typeof document !== 'undefined') {
   syncRafShim();
   document.addEventListener('visibilitychange', syncRafShim);
 }
+
+const emit = defineEmits<{ (e: 'failed'): void }>();
 
 const props = defineProps<{
   paperId: string;
@@ -563,6 +571,7 @@ function syncScale(nowW: number) {
 function maybeRender() {
   if (!visible || state.value === 'loading') return;
   if (measuredWidth() < 40) return;
+  if (pdfBroken) { state.value = 'error'; return; }   // 这台设备渲染不了：直接给页图
   void render();
 }
 
@@ -696,6 +705,8 @@ async function render() {
     if (name === 'RenderingCancelledException' || destroyed) return;  // 尺寸变化/卸载导致的取消
     state.value = 'error';   // 调用方回退到页图
     renderedFor = '';
+    pdfBroken = true;
+    emit('failed');
   }
 }
 
@@ -787,9 +798,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <div v-if="state === 'loading' && !size" class="pdf-hint">正在渲染原 PDF 第 {{ props.page }} 页…</div>
-    <div v-else-if="state === 'error'" class="pdf-hint">
-      原 PDF 渲染失败，已回退为页图
-    </div>
   </div>
 </template>
 

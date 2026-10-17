@@ -316,6 +316,33 @@ class Annotation(Base):
     __table_args__ = (Index("ix_annotation_paper_block", "paper_id", "block_id"),)
 
 
+# ---------------------------------------------------------------- ⑦b 图片批注文档
+class ImageMark(Base, TimestampMixin):
+    """大图查看器里的一份「图片批注文档」（手写笔迹 + 图上的笔记）。
+
+    为什么不塞进 `highlight` / `note`：这里的坐标系是**图片自身的归一化坐标**（0..1），
+    跟正文行的字符偏移是两套东西；而且一次查看里的笔迹与笔记要**原子地一起存**
+    （撤销 / 橡皮 / 加笔记都是整份文档的变化），所以按 `(paper_id, key)` 存一份 JSON，
+    前端防抖覆盖写。
+
+    `key` 是**图片锚点**：`media:<sha1(url)>`（插图 / 图表卡片）或 `page:<页号>`（整页页图）。
+    用锚点而不是 URL 本身 —— URL 带签名/时间戳时换个会话就换 URL，笔迹会全部丢。
+    """
+
+    __tablename__ = "image_mark"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=1)
+    paper_id: Mapped[str] = mapped_column(String(64), index=True)
+    key: Mapped[str] = mapped_column(String(160))
+    #: 文档本体（`{"v":1,"strokes":[…],"notes":[…]}`），见 `services/annotation/image_marks.py`
+    doc_json: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "paper_id", "key", name="uq_image_mark_owner"),
+    )
+
+
 # ---------------------------------------------------------------- ⑧ 阅读进度
 class ReadingProgress(Base):
     __tablename__ = "reading_progress"

@@ -59,6 +59,8 @@ const emit = defineEmits<{
   (e: 'focus', rowId: string): void;
   (e: 'translate-page', page: number): void;
   (e: 'zoom', target: ZoomTarget): void;
+  /** 原 PDF 图层在这台设备上渲染不了（平板常见）：交给阅读器**只提示一次** */
+  (e: 'pdf-failed'): void;
 }>();
 
 /** 原文在左？ */
@@ -192,6 +194,7 @@ function isLargeFigure(m: Media, info: PageInfo | null): boolean {
 /** 放大目标：URL + **图注**（弹窗标题显示图注，见 `ZoomTarget`）；页码取所在页组 */
 const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   url: zoomUrl(m), caption: m.caption ?? '', page, number: m.number ?? null,
+  bbox: m.bbox ?? null,
 });
 </script>
 
@@ -228,6 +231,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             :page-width="g.info?.width"
             :page-height="g.info?.height"
             :highlights="props.highlights"
+            @failed="emit('pdf-failed')"
           />
           <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
         </div>
@@ -249,6 +253,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
               :page-width="g.info?.width"
               :page-height="g.info?.height"
               :highlights="props.highlights"
+              @failed="emit('pdf-failed')"
             />
             <img v-else :src="pageImage(g.page)" :alt="`第 ${g.page} 页`" loading="lazy">
           </div>

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Query, Request
 
 from backend.api.response import envelope
 from backend.services.annotation import annotation_service as svc
+from backend.services.annotation import image_marks as ink_svc
 
 router = APIRouter(tags=["annotations"])
 
@@ -91,3 +92,19 @@ async def delete_annotation(annotation_id: str, request: Request):
 async def save_annotation(request: Request, payload: dict = Body(...)):
     """把划词解释存为批注（**解释本身由问答 agent 产出**，见 `/api/v1/agent/ask`）。"""
     return envelope(svc.save_explanation_as_annotation(payload), request=request)
+
+
+# ---------------- 图片批注（大图查看器的手写笔迹 + 图片笔记） ----------------
+@router.get("/image-marks")
+async def get_image_marks(request: Request, paper_id: str = Query(...),
+                          key: str = Query(...)):
+    """一份图片批注文档（`key` 是图片锚点，见 `services/annotation/image_marks`）。"""
+    return envelope(ink_svc.load(paper_id, key), request=request)
+
+
+@router.put("/image-marks")
+async def put_image_marks(request: Request, payload: dict = Body(...)):
+    """覆盖写一份图片批注文档（前端防抖自动保存，没有"保存"按钮）。"""
+    return envelope(ink_svc.save(str(payload.get("paper_id") or ""),
+                                 str(payload.get("key") or ""),
+                                 payload.get("doc")), request=request)

@@ -54,6 +54,7 @@ import ReaderToc from '@/components/reader/ReaderToc.vue';
 import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
+import ImageViewer from '@/components/reader/ImageViewer.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
@@ -485,21 +486,34 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 
-/**
- * 放大弹窗的标题 = **这张图的图注**（用户口径）。
- *
- * 以前这里固定写"插图"，看大图时反而不知道在看哪张图 —— 图注本来就在 Markdown 产物里
- * （`media.caption`，形如 `Figure 3: Evaluation of …`），直接拿来当标题即可。
- * 图注通常很长，标题按一行截断（`Modal` 的 `.modal-title` 带省略号，hover 看全文 tooltip）；
- * 万一这张图没有图注，就退回"插图 · 第 N 页"。
- */
-const zoomTitle = computed(() => {
-  const t = zoomImage.value;
-  if (!t) return '插图';
-  const caption = String(t.caption ?? '').trim();
-  if (caption) return caption;
-  return t.page ? `插图 · 第 ${t.page} 页` : '插图';
+/** 正在看大图的那一页（PDF 点尺寸）：查看器用它把点换算成页面坐标 */
+const zoomPage = computed(() => {
+  const page = zoomImage.value?.page;
+  if (!page) return null;
+  return pages.value.find((p) => p.page === page) ?? null;
 });
+/** 同一页的文字块：「自动选择字」点到哪块就框哪块 */
+const zoomBlocks = computed(() => {
+  const page = zoomImage.value?.page;
+  if (!page) return [];
+  return blocks.value.filter((b) => b.page === page && Array.isArray(b.bbox) && b.bbox.length >= 4);
+});
+
+/**
+ * 原 PDF 图层渲染失败（平板/手机上常见）：**全局胶囊 toast 只提示一次**。
+ *
+ * 以前每页都在图上压一行"原 PDF 渲染失败，已回退为页图"——十几页就是十几行，
+ * 用户口径是"移除回退文字，改为胶囊 toast 通知一次"。用 `sessionStorage` 记"已经说过了"：
+ * 同一次会话里翻多少页都只弹一次，重开页面才重新有机会提醒。
+ */
+const PDF_TIP_KEY = 'cylit:pdf-fallback-told';
+function onPdfFailed() {
+  try {
+    if (sessionStorage.getItem(PDF_TIP_KEY)) return;
+    sessionStorage.setItem(PDF_TIP_KEY, '1');
+  } catch { /* 隐私模式下拿不到 storage：那就照常提示 */ }
+  toast('这台设备渲染不了原 PDF 图层，已改用页图（文字选中不可用）', 'warn', 4800);
+}
 const briefDraft = reactive<BriefDraft>({
   domain: '', style: '', notes: '', keepAsIsText: '', glossaryText: '',
 });
@@ -4584,6 +4598,7 @@ function renderMarkdown(text?: string | null) {
           :font-size="readerFont"
           @focus="focusRow"
           @zoom="zoomImage = $event"
+          @pdf-failed="onPdfFailed"
           @translate-page="(p: number) => startTranslate('resume', [p])"
         />
         </div>
@@ -4810,9 +4825,17 @@ function renderMarkdown(text?: string | null) {
       @close="ctxMenu.open = false; ctxMenu.rect = null"
     />
 
-    <Modal :open="!!zoomImage" :title="zoomTitle" wide @close="zoomImage = null">
-      <img v-if="zoomImage" :src="zoomImage.url" :alt="zoomTitle" style="max-width:100%;background:#fff">
-    </Modal>
+    <!-- 大图查看器：毛玻璃胶囊 + 手写批注（缩放 / 旋转 / 画笔 / 荧光笔 / 自动选择 / 橡皮） -->
+    <ImageViewer
+      v-if="zoomImage"
+      :paper-id="paperId"
+      :target="zoomImage"
+      :page-width="zoomPage?.width ?? null"
+      :page-height="zoomPage?.height ?? null"
+      :region="zoomImage.bbox ?? null"
+      :blocks="zoomBlocks"
+      @close="zoomImage = null"
+    />
 
     <Modal
       :open="mdView.open"

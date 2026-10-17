@@ -616,6 +616,13 @@ export interface ZoomTarget {
   /** 图注所在页（没有图注时兜底显示"插图 · 第 N 页"） */
   page?: number | null;
   number?: string | null;
+  /**
+   * 这张图在页面上的**裁切区域**（PDF pt，`[x0,y0,x1,y1]`）。
+   *
+   * 查看器的「自动选择字」要靠它把图上的点换算成页面坐标，再框住该处的文字块；
+   * 纯图片（Markdown 里的图）没有这个 → 退化成"点一处打点"，同样能挂笔记。
+   */
+  bbox?: number[] | null;
 }
 
 export interface GlossaryTerm {
