@@ -4441,8 +4441,9 @@ function renderMarkdown(text?: string | null) {
         </CapPanel>
       </div>
 
-      <!-- 批注胶囊（画画时才出现）：工具 / 粗细 / 撤销重做 / 退出 -->
-      <InkToolbar v-if="inkOn" @exit="closeInk" />
+      <!-- 批注胶囊（画画时才出现）：工具 / 粗细 / 撤销重做 / 退出。
+           主胶囊的弹出面板打开时先让位 —— 两块玻璃叠在同一个位置上谁都点不准。 -->
+      <InkToolbar v-if="inkOn && !capPanel" @exit="closeInk" />
 
       <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号
