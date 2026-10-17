@@ -183,12 +183,12 @@ start "PaperMind agent" /min cmd /c ""%PY%" cli\pr.py agent"
 
 rem --------------------------------------------------------------- 5. serve
 echo.
-echo [5/5] serving http://%HOST_ADDR%:%PORT%    UI: /app/    API docs: /docs
+echo [5/5] serving http://%HOST_ADDR%:%PORT%    UI: /cylit/    API docs: /docs
 echo       press Ctrl+C in this window to stop
 echo.
 
 if "%NO_BROWSER%"=="1" goto no_browser
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://%HOST_ADDR%:%PORT%/app/'"
+start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://%HOST_ADDR%:%PORT%/cylit/'"
 :no_browser
 
 %PY% cli\pr.py serve --host %HOST_ADDR% --port %PORT% %RELOAD%
