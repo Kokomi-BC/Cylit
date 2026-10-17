@@ -36,9 +36,9 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, canRedo, canUndo,
-  flushInk, inkColor, inkKey, inkOn, inkTool, inkView, inkWidth,
-  redoInk, resetInk, setInkNotesListener, undoInk,
+  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk,
+  flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
+  redoInk, resetInk, setInkColor, setInkNotesListener, undoInk,
 } from '@/composables/useReaderInk';
 import { WIDTH_STEPS } from '@/utils/imageInk';
 import {
@@ -61,6 +61,7 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
+import M3Slider from '@/components/M3Slider.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
@@ -296,13 +297,65 @@ const inkOptionsOpen = ref(false);
 /** 二级菜单的位置（fixed，跟着胶囊走：拖动、切换模式都会重新量一次） */
 const inkOptionsStyle = ref<Record<string, string>>({});
 
+/** 橡皮的二级菜单：一条滑块，滑到底就是**清空这一页的笔迹**（用户口径） */
+const eraserClearOpen = ref(false);
+const clearProgress = ref(0);
+
+/** 视口正中那一页的批注键：清空作用于"你正在看的那一页" */
+const inkKeyNear = computed<string | null>(() => {
+  const nodes = Array.from(document.querySelectorAll('.pg[data-page]')) as HTMLElement[];
+  let best: { page: number; d: number } | null = null;
+  for (const el of nodes) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > innerHeight) continue;
+    const d = Math.abs((r.top + r.bottom) / 2 - innerHeight / 2);
+    if (!best || d < best.d) best = { page: Number(el.dataset.page), d };
+  }
+  return best ? pageKey(best.page) : null;
+});
+
+/**
+ * 清空的目标页：**刚画过的那一页**优先（用户口径"清空页面笔迹"就是清他刚画的那页），
+ * 那一页已经滚出视口时退回"视口正中那一页"。注意 view 后缀要用当前视图重新拼，
+ * 否则切过视图就会清到另一份文档上。
+ */
+const inkKeyTarget = computed<string | null>(() => {
+  const last = inkKey.value;
+  if (last) {
+    const page = Number(String(last).split(':')[1]?.split('-')[0]);
+    if (page) {
+      const el = document.querySelector('.pg[data-page="' + page + '"]');
+      const r = el?.getBoundingClientRect();
+      if (r && r.bottom > 0 && r.top < innerHeight) return pageKey(page);
+    }
+  }
+  return inkKeyNear.value;
+});
+
+function onClearSlide(raw: string): void {
+  const value = Number(raw) || 0;
+  clearProgress.value = value;
+  if (value < 95) return;
+  // 滑到底 = 清空（一次撤销就能整个回来）
+  clearPageInk(inkKeyTarget.value);
+  clearProgress.value = 0;
+  eraserClearOpen.value = false;
+  void nextTick().then(syncToastDrop);
+}
+
 function placeInkOptions(): void {
   const el = capsuleEl.value;
   if (!el) return;
   const r = el.getBoundingClientRect();
   const menu = document.querySelector('[data-ink-options]') as HTMLElement | null;
   const height = menu?.offsetHeight ?? 0;
-  const left = Math.round(r.left + r.width / 2) + 'px';
+  const width = menu?.offsetWidth ?? 0;
+  // 横向贴边回夹：胶囊拖到最右/最左时，菜单不要越出视口（与设置面板同一口径）
+  let center = r.left + r.width / 2;
+  if (width) {
+    center = Math.max(8 + width / 2, Math.min(innerWidth - 8 - width / 2, center));
+  }
+  const left = Math.round(center) + 'px';
   // 下方放不下就翻到胶囊上方（胶囊本身可以一路拖到页面底部）
   if (height && innerHeight - r.bottom < height + 16) {
     inkOptionsStyle.value = { left, top: Math.round(r.top - height - 8) + 'px' };
@@ -321,8 +374,19 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
     });
     return;
   }
+  if (key === inkTool.value && key === 'eraser') {
+    // 橡皮二次点击：弹出"清空本页笔迹"的滑块（用户口径）
+    eraserClearOpen.value = !eraserClearOpen.value;
+    clearProgress.value = 0;
+    void nextTick().then(() => {
+      if (eraserClearOpen.value) placeInkOptions();
+      syncToastDrop();
+    });
+    return;
+  }
   inkTool.value = key;
   inkOptionsOpen.value = key === 'pen' || key === 'marker';
+  eraserClearOpen.value = false;
   // 二级菜单跟着胶囊走：展开/收起后重新摆位，并让提示条再让一层
   void nextTick().then(() => {
     if (inkOptionsOpen.value) placeInkOptions();
@@ -2116,12 +2180,16 @@ function toggleInk() {
   void nextTick().then(syncToastDrop);
   // 进入批注**不弹提示**（用户口径 2026-10-17）：胶囊本身已经明确切成了工具，
   // 再横一条提示反而挡住刚展开的二级菜单。
+  eraserClearOpen.value = false;
+  clearProgress.value = 0;
   if (!inkOn.value) void flushInk();
 }
 
 function closeInk() {
   inkOn.value = false;
   inkOptionsOpen.value = false;
+  eraserClearOpen.value = false;
+  clearProgress.value = 0;
   void flushInk();
 }
 
@@ -4568,8 +4636,9 @@ function renderMarkdown(text?: string | null) {
                 v-for="item in INK_TOOLS"
                 :key="item.key"
                 class="btn icon"
-                :class="{ active: inkTool === item.key }"
+                :class="{ 'tool-on': inkTool === item.key }"
                 :title="item.label"
+                :aria-pressed="inkTool === item.key"
                 :data-ink-tool="item.key"
                 :aria-expanded="inkOptionsOpen && (item.key === 'pen' || item.key === 'marker')"
                 @click="pickInkTool(item.key)"
@@ -4674,31 +4743,63 @@ function renderMarkdown(text?: string | null) {
           :style="inkOptionsStyle"
           @pointerdown.stop
         >
-          <div v-if="inkTool === 'pen'" class="ink-options-row">
-            <span class="ink-options-label">颜色</span>
+          <!-- 颜色：色块图标 + 一枚取色器（用户口径：精简默认色数、支持浏览器选色） -->
+          <div class="ink-options-row" data-ink-colors>
             <button
               v-for="c in INK_COLORS"
               :key="c"
               class="ink-palette-dot"
-              :class="{ active: inkColor === c }"
+              :class="{ active: activeInkColor() === c }"
               :style="{ background: c }"
               :title="c"
-              @click="inkColor = c"
+              @click="setInkColor(c)"
             />
+            <label class="ink-color-custom" title="自定义颜色（浏览器取色器）">
+              <span class="ink-color-custom-dot" />
+              <input
+                type="color"
+                :value="activeInkColor()"
+                data-ink-color-input
+                @input="setInkColor(($event.target as HTMLInputElement).value)"
+              >
+            </label>
           </div>
-          <div class="ink-options-row">
-            <span class="ink-options-label">粗细</span>
+          <!-- 粗细：三档图标（不写字，省地方；标题里仍给"细/中/粗"） -->
+          <div class="ink-options-row" data-ink-widths>
             <button
               v-for="step in WIDTH_STEPS"
               :key="step.key"
-              class="ink-width-pill"
+              class="ink-width-icon"
               :class="{ active: inkWidth === step.key }"
               :data-ink-width="step.key"
               :title="'粗细：' + step.label"
               @click="inkWidth = step.key"
             >
-              <i class="ink-dot" :style="inkDotStyle(step.key)" />{{ step.label }}
+              <i class="ink-dot" :style="inkDotStyle(step.key)" />
             </button>
+          </div>
+        </div>
+
+        <!-- 橡皮的二级菜单：滑到底 = 清空本页笔迹 -->
+        <div
+          v-if="eraserClearOpen && inkTool === 'eraser'"
+          class="ink-options ink-clear"
+          data-ink-options
+          data-ink-clear
+          :style="inkOptionsStyle"
+          @pointerdown.stop
+        >
+          <div class="ink-options-row">
+            <span class="ink-clear-label">清空本页笔迹</span>
+            <!-- Material You 3 风格的滑块（原生 range 的轨道/手柄跟这枚玻璃胶囊不是一套设计） -->
+            <M3Slider
+              class="ink-clear-range"
+              :model-value="clearProgress"
+              :disabled="!inkKeyTarget"
+              tone="danger"
+              data-ink-clear-range
+              @update:model-value="onClearSlide(String($event))"
+            />
           </div>
         </div>
         <!-- 右：更多（低频动作：重译 / 打开 PDF / Markdown 视图） -->
@@ -5479,14 +5580,35 @@ function renderMarkdown(text?: string | null) {
 }
 .ink-options-row { display: flex; align-items: center; gap: 7px; }
 .ink-options-label { width: 28px; font-size: 11.5px; color: var(--text-faint); }
-.ink-width-pill {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 10px; cursor: pointer;
+/* 粗细：三档**图标**（只画点，不写字；选中态给一圈浅底） */
+.ink-width-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; cursor: pointer;
   border: 0; border-radius: 999px; background: transparent; color: var(--text-dim);
-  font: inherit; font-size: 12px;
 }
-.ink-width-pill:hover { background: var(--bg-hover); color: var(--text); }
-.ink-width-pill.active { background: var(--accent-soft, var(--bg-hover)); color: var(--accent); }
+.ink-width-icon:hover { background: var(--bg-hover); color: var(--text); }
+.ink-width-icon.active { background: var(--accent-soft, var(--bg-hover)); color: var(--accent); }
+
+/* 自定义颜色：一枚"彩虹点"，点它弹浏览器原生取色器（input 藏起来但可点） */
+.ink-color-custom {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; cursor: pointer;
+}
+.ink-color-custom-dot {
+  display: block; width: 20px; height: 20px; border-radius: 999px;
+  background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
+}
+.ink-color-custom input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; border: 0; padding: 0;
+}
+
+/* 清空本页笔迹：一条滑块（滑到右端触发，一次撤销可整个回来） */
+.ink-clear { min-width: 248px; }
+.ink-clear-label { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+/* 滑块本体是 M3Slider（自带轨道/手柄/状态层），这里只管它在行里占宽 */
+.ink-clear-range { flex: 1; min-width: 130px; }
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
 /* 分组靠**线**，不靠给每个按钮画边框：胶囊里一排描边按钮会像一张表单 */
 .cap-group + .cap-group { margin-left: 1px; padding-left: 7px; border-left: 1px solid var(--divider); }
@@ -5504,6 +5626,17 @@ function renderMarkdown(text?: string | null) {
 .reader-capsule .cap-group .btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
 /* 弹出面板开着的那枚：给一点"我在这里"的浅底（同样不投影） */
 .reader-capsule .cap-group .btn[aria-expanded="true"] { background: var(--bg-hover); }
+/* 批注工具是**单选**：始终有一枚是选中的（用户口径 2026-10-17）。
+   选中态用"抬起的一枚 pill"（--bg-elev + 一档投影），与 .seg 的选中项同一门语言 ——
+   以前只有 hover 的浅灰，四枚按钮看起来永远是"都没选"。 */
+.reader-capsule .cap-group .btn.tool-on {
+  /* ⚠️ 两层原因：
+     ① 必须盖过 `.btn:hover`（优先级更高，而且鼠标通常正停在被选中的那枚上）；
+     ② 用**主色淡底**而不是白底 —— 胶囊本身就是浅色玻璃，白 pill 在白玻璃上等于没选中。 */
+  background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent) !important;
+  color: var(--accent-text) !important;
+}
 .reader-capsule .cap-group .seg {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);

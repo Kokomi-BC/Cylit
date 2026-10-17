@@ -15,7 +15,7 @@ import { reactive, ref } from 'vue';
 import { api } from '@/api/client';
 import { reportError } from '@/stores/app';
 import {
-  MARKER_COLOR, WIDTH_STEPS, clamp01, cloneDoc, emptyDoc,
+  WIDTH_STEPS, clamp01, cloneDoc, emptyDoc,
   type InkDoc, type InkNote, type InkTool, type WidthKey,
 } from '@/utils/imageInk';
 
@@ -23,18 +23,20 @@ import {
 export const inkOn = ref(false);
 export const inkTool = ref<InkTool>('pen');
 export const inkWidth = ref<WidthKey>('mid');
-/** 普通笔的颜色（荧光笔固定是马克笔黄：深色笔迹叠不出荧光感） */
+/** 普通笔的颜色 */
 export const inkColor = ref('#1b1b1f');
+/** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
+export const inkMarkerColor = ref('#ffd60a');
 /** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
 export const inkView = ref<'original' | 'translation' | 'bilingual'>('original');
 /** 最后一次动笔的那份文档键：工具栏的撤销/重做作用于它 */
 export const inkKey = ref<string | null>(null);
 
-/** 便签同款色板：黑白蓝红绿黄紫橙（深色底上也读得清） */
-export const INK_COLORS = [
-  '#1b1b1f', '#8e8e93', '#2f6fed', '#e8384f',
-  '#2aa775', '#f0a11a', '#8b5cf6', '#e2683c',
-];
+/**
+ * 色板：**只留 5 个**（用户口径"精简默认颜色数量"）—— 黑 / 红 / 橙 / 绿 / 蓝。
+ * 想要别的颜色点旁边的取色器（原生 `<input type="color">`），不用在色板里越堆越多。
+ */
+export const INK_COLORS = ['#1b1b1f', '#e8384f', '#f0a11a', '#2aa775', '#2f6fed'];
 
 export interface PageInk {
   doc: InkDoc;
@@ -217,7 +219,23 @@ export function widthFor(kind: 'pen' | 'highlighter'): number {
 }
 
 export function colorFor(kind: 'pen' | 'highlighter'): string {
-  return kind === 'highlighter' ? MARKER_COLOR : inkColor.value;
+  return kind === 'highlighter' ? inkMarkerColor.value : inkColor.value;
+}
+
+/** 当前工具正在用的颜色（二级菜单里的"选中态"按它算） */
+export function activeInkColor(): string {
+  return inkTool.value === 'marker' ? inkMarkerColor.value : inkColor.value;
+}
+
+export function setInkColor(value: string): void {
+  if (inkTool.value === 'marker') inkMarkerColor.value = value;
+  else inkColor.value = value;
+}
+
+/** 清空**这一页**的笔迹（笔记保留）：橡皮二次点击 → 滑块 → 这里 */
+export function clearPageInk(key: string | null): void {
+  if (!key) return;
+  commitInk(key, { ...inkState(key).doc, strokes: [] });
 }
 
 /* ------------------------------ 笔记 ↔ 侧栏 ------------------------------ */
