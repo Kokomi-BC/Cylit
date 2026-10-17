@@ -285,6 +285,10 @@ const capPanel = ref<'' | 'settings'>('');
 
 function toggleCapPanel(which: 'settings') {
   capPanel.value = capPanel.value === which ? '' : which;
+  void nextTick().then(() => {
+    placeCapPanel();
+    syncToastDrop();
+  });
 }
 
 /** 批注的**二级菜单**（颜色 / 粗细）：点画笔或荧光笔展开，再点一次收起 */
@@ -296,10 +300,15 @@ function placeInkOptions(): void {
   const el = capsuleEl.value;
   if (!el) return;
   const r = el.getBoundingClientRect();
-  inkOptionsStyle.value = {
-    left: Math.round(r.left + r.width / 2) + 'px',
-    top: Math.round(r.bottom + 8) + 'px',
-  };
+  const menu = document.querySelector('[data-ink-options]') as HTMLElement | null;
+  const height = menu?.offsetHeight ?? 0;
+  const left = Math.round(r.left + r.width / 2) + 'px';
+  // 下方放不下就翻到胶囊上方（胶囊本身可以一路拖到页面底部）
+  if (height && innerHeight - r.bottom < height + 16) {
+    inkOptionsStyle.value = { left, top: Math.round(r.top - height - 8) + 'px' };
+    return;
+  }
+  inkOptionsStyle.value = { left, top: Math.round(r.bottom + 8) + 'px' };
 }
 
 /** 选工具：点"已经在用的"画笔/荧光笔 = 展开/收起它的二级菜单（用户口径） */
@@ -1276,7 +1285,7 @@ function syncPaneWidth() {
  */
 function onWindowResize() {
   // 窗口变小后胶囊可能落到允许区域外（左右是正文列、下方要留弹出层）
-  if (capsuleEl.value) { enforceCapsuleBounds(); syncToastDrop(); }
+  if (capsuleEl.value) { enforceCapsuleBounds(); syncToastDrop(); placeCapPanel(); }
   winWidth.value = window.innerWidth;
   syncPaneWidth();
 }
@@ -1944,9 +1953,9 @@ let capDragFrom: { x: number; y: number; ox: number; oy: number;
   minX: number; maxX: number; minY: number; maxY: number } | null = null;
 
 /**
- * 胶囊能待的区域（视口坐标）：**只在正文列里**，上不压标签栏、下给弹出层/二级菜单留位。
- * 用户口径 2026-10-17："限制胶囊的放置位置" —— 以前只能夹在视口里，能拖到侧栏上、也能拖到屏幕底，
- * 弹出面板就跟着跑到看不见的地方。
+ * 胶囊能待的区域（视口坐标）：**只在正文列里**，上不压标签栏，下可以一直贴到页面底部。
+ * 用户口径 2026-10-17：先要求"限制放置位置"（别拖出屏幕），再说"要能拖到页面底部" ——
+ * 所以下方不再预留给弹出层，而是让**面板自己翻到胶囊上方**（见 placeCapPanel / placeInkOptions）。
  */
 function capsuleRegion(): { left: number; right: number; top: number; bottom: number } {
   const header = Number.parseInt(
@@ -1958,7 +1967,9 @@ function capsuleRegion(): { left: number; right: number; top: number; bottom: nu
     left,
     right,
     top: header + 8,
-    bottom: Math.max(header + 80, innerHeight - 260),
+    // 下边界就贴视口底（用户口径 2026-10-17："胶囊没法拖到页面底部"）——
+    // 弹出面板放不下时**翻到胶囊上方**，不再靠"给面板留 260px"来换位置。
+    bottom: innerHeight - 8,
   };
 }
 
@@ -1982,6 +1993,35 @@ function dragLimits(rect: DOMRect, region: ReturnType<typeof capsuleRegion>) {
   const maxY = Math.max(region.top - rect.top + capOffset.y, region.bottom - rect.bottom + capOffset.y);
   return { minX, maxX, minY, maxY };
 }
+/** 设置面板要不要翻到胶囊上方（0 = 在下方；负值 = 往上挪多少） */
+const panelFlip = ref(0);
+/** 面板贴边时的横向微调（胶囊拖到靠边时，面板别越出视口） */
+const panelNudge = ref(0);
+
+/**
+ * 摆放设置面板：默认落在胶囊下方（面板 CSS 的 `top: 54px` 就是那个位置）；
+ * 下方放不下时整体翻到**胶囊上方**，这样胶囊可以一路拖到页面底部（用户口径）。
+ */
+function placeCapPanel(): void {
+  const el = document.querySelector('[data-cap-panel-body=settings]') as HTMLElement | null;
+  const cap = capsuleEl.value;
+  if (!el || !cap || capPanel.value !== 'settings') { panelFlip.value = 0; return; }
+  const rect = cap.getBoundingClientRect();
+  const height = el.offsetHeight;
+  if (!height) return;
+  const spaceBelow = innerHeight - rect.bottom;
+  // 面板顶端在胶囊顶端下方 44px（54 − 10 的 margin）：翻上去要挪 高度 + 52 + 边距
+  panelFlip.value = spaceBelow < height + 16 ? -(height + 52) : 0;
+
+  // 横向：面板以胶囊中心为中心，胶囊拖到靠边时面板会越出视口 —— 往回收一点
+  const width = el.offsetWidth;
+  const center = rect.left + rect.width / 2;
+  let nudge = 0;
+  if (center - width / 2 < 8) nudge = 8 - (center - width / 2);
+  if (center + width / 2 > innerWidth - 8) nudge = innerWidth - 8 - (center + width / 2);
+  panelNudge.value = Math.round(nudge);
+}
+
 const capsuleStyle = computed<Record<string, string>>(() => ({
   transform: 'translate(' + (capsuleShift.value + capOffset.x) + 'px, ' + capOffset.y + 'px)',
 }));
@@ -2045,6 +2085,7 @@ function onCapsuleMove(ev: PointerEvent): void {
   capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (ev.clientY - from.y)));
   syncToastDrop();                     // 提示条跟着胶囊走，别被压住
   if (inkOptionsOpen.value) placeInkOptions();
+  if (capPanel.value) placeCapPanel();  // 面板放不下会翻到胶囊上方
 }
 
 function onCapsuleUp(): void {
@@ -2143,6 +2184,7 @@ onMounted(async () => {
   await nextTick();
   enforceCapsuleBounds();
   syncToastDrop();
+  placeCapPanel();
   if (route.query.md) {                       // ?md=1[&mdpage=8] 直接打开 Markdown 视图
     const want = Number(route.query.mdpage ?? 0);
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
@@ -4498,6 +4540,8 @@ function renderMarkdown(text?: string | null) {
         '--panel-shift': capsuleShiftCss,
         '--panel-dx': capOffset.x + 'px',
         '--panel-dy': capOffset.y + 'px',
+        '--panel-flip': panelFlip + 'px',
+        '--panel-nudge': panelNudge + 'px',
       }"
     >
         <div class="cap-solo left">

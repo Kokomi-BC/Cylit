@@ -52,15 +52,16 @@ withDefaults(defineProps<{
 }
 /* 面板落在胶囊正下方：`--panel-shift` 由 ReaderView 按侧栏让位量给（与胶囊同一节奏） */
 .cap-panel.is-center {
-  left: calc(50% + var(--panel-shift, 0px) + var(--panel-dx, 0px));
-  transform: translateX(-50%);
+  left: calc(50% + var(--panel-shift, 0px) + var(--panel-dx, 0px) + var(--panel-nudge, 0px));
+  /* `--panel-flip`：下方放不下时整体翻到胶囊上方（胶囊可以拖到页面底部） */
+  transform: translateX(-50%) translateY(var(--panel-flip, 0px));
 }
 .cap-panel.is-left { left: calc(12px + var(--panel-dx, 0px)); }
 .cap-panel.is-right { right: calc(12px - var(--panel-dx, 0px)); }
 
 @keyframes cap-panel-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(.985); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  from { opacity: 0; transform: translateX(-50%) translateY(calc(var(--panel-flip, 0px) - 6px)) scale(.985); }
+  to { opacity: 1; transform: translateX(-50%) translateY(var(--panel-flip, 0px)) scale(1); }
 }
 .cap-panel.is-left, .cap-panel.is-right { animation-name: cap-panel-in-side; }
 @keyframes cap-panel-in-side {
