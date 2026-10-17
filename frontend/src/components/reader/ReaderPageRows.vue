@@ -16,6 +16,7 @@ import type { Highlight, OriginalMode, PageInfo, PageRow, PairOrder, ViewMode, Z
 import type { PageGroup } from '@/composables/usePageRows';
 import AppIcon from '@/components/AppIcon.vue';
 import PdfPage from './PdfPage.vue';
+import InkSurface from './InkSurface.vue';
 import ReaderRow from './ReaderRow.vue';
 
 type Media = NonNullable<PageInfo['media']>[number];
@@ -53,6 +54,8 @@ const props = defineProps<{
    * 不传的话 `pageWidth` 再大也会被 100% 夹回栏宽，症状就是"百分比在涨、页图不变"。
    */
   pageZoom?: number;
+  /** 批注模式：每页正文上盖一层可画的画布（见 `InkSurface`） */
+  inkOn?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -194,7 +197,6 @@ function isLargeFigure(m: Media, info: PageInfo | null): boolean {
 /** 放大目标：URL + **图注**（弹窗标题显示图注，见 `ZoomTarget`）；页码取所在页组 */
 const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   url: zoomUrl(m), caption: m.caption ?? '', page, number: m.number ?? null,
-  bbox: m.bbox ?? null,
 });
 </script>
 
@@ -207,6 +209,8 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
     <div v-if="!props.groups.length" class="empty">没有可显示的内容（先解析或翻译这篇论文）</div>
 
     <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg">
+      <!-- 手写批注层：批注模式开着才挂载（平时一个 canvas 都不建，46 页也不会吃内存） -->
+      <InkSurface v-if="props.inkOn" :page="g.page" :enabled="props.inkOn" />
       <header class="pg-head">
         <span class="pg-no">第 {{ g.page }} 页</span>
         <!-- 「x/y 行」徽章**已按用户要求删除**：原文行数与译文行数本来就不必相同
@@ -356,7 +360,9 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   font-size: var(--reader-font-size, 13.5px);
 }
 
-.pg { margin-bottom: 26px; }
+/* position: relative 是给批注层（绝对定位铺满这一页）用的：不设的话它会以更外层为参照，
+   笔迹就跑到页外去了 */
+.pg { margin-bottom: 26px; position: relative; }
 /* 页头**不吸顶**。
  * 吸顶（position: sticky）会在正文顶部压出一条只放了页码的空带，并把紧跟着的那行
  * 切掉上半截 —— 看起来像一条"莫名的遮罩"。页码是页与页之间的分隔，跟着内容滚动即可。

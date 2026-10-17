@@ -1,8 +1,9 @@
 /**
- * 大图查看器的「手写笔迹」：文档形状、几何、命中判定与绘制。
+ * 阅读器的「手写批注」：文档形状、命中判定与绘制。
  *
- * 坐标系：**图片自身的归一化坐标**（0..1，左上为原点）。图片会被缩放、旋转、
- * 从平板换到电脑 —— 只有归一化坐标能跟着图片走（与后端 `image_marks.py` 同一套约束）。
+ * 坐标系：**所在页面块的归一化坐标**（0..1，左上为原点）。页面块会随字号 / 视图切换 /
+ * 侧栏开合变宽变高，也会从平板换到电脑 —— 只有归一化坐标能跟着版面走
+ * （与后端 `image_marks.py` 同一套约束）。
  *
  * 一个点存成 `[x, y, pressure?]`：`pressure` 是**落笔轻重**（0..1），
  * 触摸/鼠标没有笔压时由**速度**折算（写得慢＝重）。存进文档而不是渲染时再算 ——
@@ -21,32 +22,32 @@ export interface InkStroke {
   tool: InkKind;
   /** `#rrggbb` */
   color: string;
-  /** 笔画粗细：**图片宽度的比例**（0.004 ≈ 1000px 宽的图上 4px） */
+  /** 笔画粗细：**页面块宽度的比例**（0.004 ≈ 1000px 宽的版面上 4px） */
   w: number;
   pts: InkPoint[];
 }
 
-export interface ImageNote {
+export interface InkNote {
   id: string;
-  /** 框（归一化 `[x0,y0,x1,y1]`）：自动选中的文字块，或一处点选 */
+  /** 框（归一化 `[x0,y0,x1,y1]`）：自动框住的正文行，或一处点选 */
   rect: [number, number, number, number];
   text: string;
-  /** 这段字是哪个解析块（能识别出来时才有；只作溯源，不参与渲染） */
-  block_id?: string | null;
+  /** 这段字对应哪一行（`data-row-id`）：只作溯源，不参与渲染 */
+  row_id?: string | null;
   at?: string | null;
 }
 
 export interface InkDoc {
   v: 1;
   strokes: InkStroke[];
-  notes: ImageNote[];
+  notes: InkNote[];
 }
 
-/** 三档粗细（细 / 中 / 粗）：存的是"占图片宽度的比例"，所以图多大都一样粗 */
+/** 三档粗细（细 / 中 / 粗）：存的是"占版面宽度的比例"，所以窗口多宽都一样粗 */
 export const WIDTH_STEPS = [
-  { key: 'thin', label: '细', pen: 0.0025, marker: 0.018 },
-  { key: 'mid', label: '中', pen: 0.0042, marker: 0.026 },
-  { key: 'bold', label: '粗', pen: 0.0072, marker: 0.038 },
+  { key: 'thin', label: '细', pen: 0.0025, marker: 0.014 },
+  { key: 'mid', label: '中', pen: 0.0042, marker: 0.02 },
+  { key: 'bold', label: '粗', pen: 0.0072, marker: 0.028 },
 ] as const;
 export type WidthKey = (typeof WIDTH_STEPS)[number]['key'];
 
@@ -65,7 +66,7 @@ export function cloneDoc(doc: InkDoc): InkDoc {
   return {
     v: 1,
     strokes: doc.strokes.map((s) => ({ ...s, pts: s.pts.map((p) => [...p] as InkPoint) })),
-    notes: doc.notes.map((n) => ({ ...n, rect: [...n.rect] as ImageNote['rect'] })),
+    notes: doc.notes.map((n) => ({ ...n, rect: [...n.rect] as InkNote['rect'] })),
   };
 }
 
@@ -77,19 +78,7 @@ export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : Number.isFinite(v) ? v : 0;
 }
 
-/**
- * 图片锚点（后端 `image_mark.key`）：**不用 URL 做身份** —— URL 里常带签名/时间戳，
- * 换个会话就换 URL，笔迹会全部"丢"。这里对**去掉查询串的路径**做 djb2 哈希，
- * 同一张图在任何设备上都算出同一个 key。
- */
-export function docKey(url: string): string {
-  const path = String(url || '').split('#')[0].split('?')[0];
-  let h = 5381;
-  for (let i = 0; i < path.length; i += 1) h = ((h << 5) + h + path.charCodeAt(i)) >>> 0;
-  return `rel:${h.toString(36)}`;
-}
-
-/** 笔迹在屏幕上的**直径**（px）：文档存的是比例，这里按当前显示宽度换算 */
+/** 笔迹在屏幕上的**直径**（px）：文档存的是比例，这里按当前版面宽度换算 */
 export function strokeWidthPx(stroke: InkStroke, widthPx: number): number {
   return Math.max(0.6, stroke.w * widthPx);
 }
@@ -99,7 +88,7 @@ export function strokeWidthPx(stroke: InkStroke, widthPx: number): number {
  *
  * `speed` 单位 px/ms。阈值按触屏/鼠标的实际手感取：<0.35 几乎算静止（最粗），
  * >2.2 是快速划过（最细）。曲线开方让"中等速度"落在中间偏粗的位置 —— 线性映射
- * 会让正常书写普遍偏细，用小字写笔记时几乎看不见。
+ * 会让正常书写普遍偏细，用小字写批注时几乎看不见。
  */
 export function pressureOf(rawPressure: number, speed: number, isPen: boolean): number {
   if (isPen && rawPressure > 0.02) return clamp01(rawPressure);
@@ -153,7 +142,7 @@ function smoothRadius(pts: Vec[]): void {
  */
 export function paintStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke,
                             widthPx: number, heightPx: number): void {
-  // x 用宽、y 用高（图片不是正方形，两个方向不能共用一个倍数）；半径按宽度的比例走
+  // x 用宽、y 用高（版面不是正方形，两个方向不能共用一个倍数）；半径按宽度的比例走
   const raw = stroke.pts.map((p) => ({
     x: clamp01(p[0]) * widthPx,
     y: clamp01(p[1]) * heightPx,
@@ -240,60 +229,4 @@ export function hitStroke(doc: InkDoc, nx: number, ny: number,
     }
   }
   return -1;
-}
-
-/** 页面几何（PDF pt）：整页尺寸 + 这张图在页面上的区域（可选） */
-export interface PageGeometry {
-  widthPt: number;
-  heightPt: number;
-  /** 图片裁切区域 `[x0,y0,x1,y1]`（pt）；缺省 = 这张图**就是整页** */
-  region?: [number, number, number, number] | null;
-}
-
-export interface SnapResult {
-  rect: [number, number, number, number];
-  blockId: string | null;
-}
-
-/**
- * 「自动选择字」：点到图上的哪个**文字块**，就框住它。
- *
- * 图片本身没有文字几何，几何来自同一页的解析块（`block.bbox`，PDF pt）。
- * 所以：先把这个图上的点换算成页面坐标，再找**包含它**的块；一个都套不上
- * （点在图上、公式上、空白里）就退化成"点选一个小方框"——用户还能往那儿挂笔记。
- */
-export function snapToBlock(
-  nx: number, ny: number, geo: PageGeometry,
-  blocks: Array<{ id: string; bbox?: number[] | null }> | null | undefined,
-): SnapResult {
-  const pin: SnapResult = {
-    rect: [clamp01(nx - 0.02), clamp01(ny - 0.02), clamp01(nx + 0.02), clamp01(ny + 0.02)],
-    blockId: null,
-  };
-  const region = geo.region;
-  if (!region || !blocks?.length) return pin;
-  const rw = region[2] - region[0];
-  const rh = region[3] - region[1];
-  if (rw <= 0 || rh <= 0) return pin;
-  const px = region[0] + clamp01(nx) * rw;
-  const py = region[1] + clamp01(ny) * rh;
-
-  let best: { id: string; bbox: number[] } | null = null;
-  let bestArea = Infinity;
-  for (const b of blocks) {
-    const bb = b.bbox;
-    if (!bb || bb.length < 4) continue;
-    if (px < bb[0] || px > bb[2] || py < bb[1] || py > bb[3]) continue;
-    const area = (bb[2] - bb[0]) * (bb[3] - bb[1]);
-    if (area < bestArea) { bestArea = area; best = { id: b.id, bbox: bb }; }
-  }
-  if (!best) return pin;
-  const bb = best.bbox;
-  return {
-    rect: [
-      clamp01((bb[0] - region[0]) / rw), clamp01((bb[1] - region[1]) / rh),
-      clamp01((bb[2] - region[0]) / rw), clamp01((bb[3] - region[1]) / rh),
-    ],
-    blockId: best.id,
-  };
 }

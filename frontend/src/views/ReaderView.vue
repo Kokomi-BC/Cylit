@@ -36,6 +36,9 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
+  flushInk, inkOn, inkTool, inkPage, redoInk, resetInk, undoInk,
+} from '@/composables/useReaderInk';
+import {
   copyText, debounce, flattenOutline, fmtRelative, outlineParentIds, pct, saveBlob, truncate,
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
@@ -55,6 +58,7 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
+import InkToolbar from '@/components/reader/InkToolbar.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
@@ -485,19 +489,6 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 笔记浮层的状态见下面 `notePop`（第五步：轻量浮层取代居中弹窗）。 */
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
-
-/** 正在看大图的那一页（PDF 点尺寸）：查看器用它把点换算成页面坐标 */
-const zoomPage = computed(() => {
-  const page = zoomImage.value?.page;
-  if (!page) return null;
-  return pages.value.find((p) => p.page === page) ?? null;
-});
-/** 同一页的文字块：「自动选择字」点到哪块就框哪块 */
-const zoomBlocks = computed(() => {
-  const page = zoomImage.value?.page;
-  if (!page) return [];
-  return blocks.value.filter((b) => b.page === page && Array.isArray(b.bbox) && b.bbox.length >= 4);
-});
 
 /**
  * 原 PDF 图层渲染失败（平板/手机上常见）：**全局胶囊 toast 只提示一次**。
@@ -1032,6 +1023,7 @@ async function loadAll() {
   try {
     const data = await withLoading('reader', () => api.get<ReaderPayload>(`/papers/${paperId.value}/reader`));
     reader.value = data;
+    resetInk(paperId.value);
     blocks.value = data.blocks ?? [];
     pages.value = data.pages ?? [];
     pageTranslations.value = data.page_translations ?? [];
@@ -1881,6 +1873,38 @@ function onMqChange() {
   nextTick(() => { syncPaneWidth(); watchContentSize(); });
 }
 
+/**
+ * 批注模式：只切换"能不能落笔"。笔迹本身按页自动存服务端（见 `useReaderInk`），
+ * 所以**退出批注 / 关页面都不会丢**，不用担心"还没保存"。
+ */
+function toggleInk() {
+  inkOn.value = !inkOn.value;
+  if (inkOn.value) {
+    inkTool.value = 'pen';
+    toast('批注模式：直接在正文上手写，改动自动保存', 'info', 2600);
+  } else {
+    void flushInk();
+  }
+}
+
+function closeInk() {
+  inkOn.value = false;
+  void flushInk();
+}
+
+/** Ctrl/⌘ + Z 撤销、Ctrl/⌘ + Shift + Z（或 +Y）重做：只在批注模式下接管 */
+function onInkKey(ev: KeyboardEvent) {
+  if (!inkOn.value || !(ev.ctrlKey || ev.metaKey)) return;
+  const key = ev.key.toLowerCase();
+  if (key === 'z') {
+    ev.preventDefault();
+    if (ev.shiftKey) redoInk(inkPage.value); else undoInk(inkPage.value);
+  } else if (key === 'y') {
+    ev.preventDefault();
+    redoInk(inkPage.value);
+  }
+}
+
 onMounted(async () => {
   mq = window.matchMedia('(max-width: 1100px)');
   isNarrow.value = mq.matches;
@@ -1898,6 +1922,7 @@ onMounted(async () => {
   // 本机阅读统计：这次算一次"打开"，并在页面可见期间累加时长
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
+  document.addEventListener('keydown', onInkKey);
 
   await loadAll();
   await loadSide();
@@ -1924,6 +1949,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  void flushInk();
+  document.removeEventListener('keydown', onInkKey);
   mq?.removeEventListener('change', onMqChange);
   document.removeEventListener('visibilitychange', onReadVisibility);
   stopReadStats();
@@ -4291,6 +4318,17 @@ function renderMarkdown(text?: string | null) {
             >
               Aa<span v-if="originalIsPage" class="tiny faint nowrap">{{ Math.round(zoom * 100) }}%</span>
             </button>
+            <!-- 手写批注：只开关"能不能落笔"，笔迹本身按页存在服务端 -->
+            <button
+              class="btn icon"
+              data-cap-ink
+              :class="{ active: inkOn }"
+              :title="inkOn ? '退出批注模式' : '批注：在正文上手写 / 荧光笔 / 框注'"
+              :aria-pressed="inkOn"
+              @click="toggleInk"
+            >
+              <AppIcon name="pen" :size="15" />
+            </button>
           </div>
 
           <!-- 翻译状态与主操作：翻译完成时**整组消失**（用户口径：不要那个常驻的绿色对勾） -->
@@ -4401,7 +4439,12 @@ function renderMarkdown(text?: string | null) {
             </div>
           </div>
         </CapPanel>
-      </div>      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
+      </div>
+
+      <!-- 批注胶囊（画画时才出现）：工具 / 粗细 / 撤销重做 / 退出 -->
+      <InkToolbar v-if="inkOn" @exit="closeInk" />
+
+      <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
       <aside :class="['reader-aside', { resizing: asideResizing }]" :style="{ '--reader-font-size': `${readerFont}px` }">
@@ -4589,6 +4632,7 @@ function renderMarkdown(text?: string | null) {
           :paper-id="paperId"
           :page-width="pageWidth"
           :page-zoom="zoom"
+          :ink-on="inkOn"
           :current-row-id="currentRowId"
           :highlights="highlights"
           :search-term="searchQuery.trim()"
@@ -4825,17 +4869,8 @@ function renderMarkdown(text?: string | null) {
       @close="ctxMenu.open = false; ctxMenu.rect = null"
     />
 
-    <!-- 大图查看器：毛玻璃胶囊 + 手写批注（缩放 / 旋转 / 画笔 / 荧光笔 / 自动选择 / 橡皮） -->
-    <ImageViewer
-      v-if="zoomImage"
-      :paper-id="paperId"
-      :target="zoomImage"
-      :page-width="zoomPage?.width ?? null"
-      :page-height="zoomPage?.height ?? null"
-      :region="zoomImage.bbox ?? null"
-      :blocks="zoomBlocks"
-      @close="zoomImage = null"
-    />
+    <!-- 大图查看器：毛玻璃胶囊（放大 / 百分比 / 缩小 / 重置 / 关闭）。手写批注在阅读器页面上。 -->
+    <ImageViewer v-if="zoomImage" :target="zoomImage" @close="zoomImage = null" />
 
     <Modal
       :open="mdView.open"

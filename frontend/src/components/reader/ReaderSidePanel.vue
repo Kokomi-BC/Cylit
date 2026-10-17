@@ -431,7 +431,6 @@ function removeRow(r: FeedRow) {
             @click="emit('zoom', {
               url: fig.card_url || fig.image_url,
               caption: fig.caption, page: fig.page, number: fig.number,
-              bbox: fig.bbox ?? null,
             })"
           >
         </div>
