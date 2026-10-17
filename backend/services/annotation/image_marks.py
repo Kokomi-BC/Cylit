@@ -70,14 +70,22 @@ def _num(raw: object, lo: float, hi: float, default: float | None = None) -> flo
 
 
 def _points(raw: object) -> list[list[float]]:
+    """点串：`[x, y, pressure?]`。
+
+    ⚠️ **第三个值不能丢**：它是落笔轻重（触摸屏由速度折算），画笔的粗细收放全靠它。
+    洗掉之后重开一次，手写就变成一根等粗的线 —— 前端画的时候是对的、第二次看就变样。
+    """
     if not isinstance(raw, list):
         return []
     out: list[list[float]] = []
     for item in raw[:POINT_MAX]:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        out.append([round(_num(item[0], 0.0, 1.0), 5),
-                    round(_num(item[1], 0.0, 1.0), 5)])
+        point = [round(_num(item[0], 0.0, 1.0), 5),
+                 round(_num(item[1], 0.0, 1.0), 5)]
+        if len(item) >= 3 and item[2] is not None:
+            point.append(round(_num(item[2], 0.0, 1.0, 0.6), 3))
+        out.append(point)
     return out
 
 

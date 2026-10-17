@@ -37,6 +37,14 @@ def test_coordinates_and_width_are_clamped() -> None:
     assert stroke["pts"] == [[0.0, 1.0], [0.5, 0.25], [0.0, 0.4]]
 
 
+def test_pressure_of_a_point_survives_the_wash() -> None:
+    """第三个值是落笔轻重：**必须原样留下**（丢了画笔就成等粗线，见 `_points` 的说明）。"""
+    doc = ink.normalize_doc({"strokes": [{
+        "tool": "pen", "pts": [[0.1, 0.2, 0.5], [0.3, 0.4, 7], [0.5, 0.6]],
+    }]})
+    assert doc["strokes"][0]["pts"] == [[0.1, 0.2, 0.5], [0.3, 0.4, 1.0], [0.5, 0.6]]
+
+
 def test_note_needs_text_and_gets_a_normalized_rect() -> None:
     doc = ink.normalize_doc({"notes": [
         {"text": "   ", "rect": [0.1, 0.1, 0.2, 0.2]},       # 空笔记 → 丢（等于"取消"）
