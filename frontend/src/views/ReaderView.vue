@@ -3352,6 +3352,12 @@ let selEndB: { node: Node; offset: number } | null = null;
  */
 let dragAnchor: { node: Node; offset: number } | null = null;
 let draggingHandle: 'start' | 'end' | null = null;
+/** 拖手柄时手指停在哪儿（边缘自动滚动要按它反复重算插入点） */
+let dragPoint: { x: number; y: number } | null = null;
+/** 手指离上下边缘这么近就开始自动滚动，越靠边滚得越快 */
+const HANDLE_SCROLL_EDGE = 88;
+const HANDLE_SCROLL_MAX = 18;
+let handleScrollRaf = 0;
 
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
@@ -3404,6 +3410,7 @@ function refreshSelHandles(): void {
 }
 
 function hideSelHandles(): void {
+  stopHandleAutoScroll();
   selHandles.value = null;
   draggingHandle = null;
   selEndA = null;
@@ -3463,6 +3470,54 @@ function scheduleSelSync(): void {
  * 现在：`pointercancel` 不结束拖拽（只有 pointerup / touchend 才结束），
  * 移动坐标同时从 document 上的 `pointermove` 与非被动 `touchmove` 拿，谁到都算。
  */
+/** 现在该滚谁：Markdown 弹层滚 .md-doc，正常阅读滚 .reader-content */
+function handleScrollHost(): HTMLElement | null {
+  if (mdView.open && mdDocEl.value) return mdDocEl.value;
+  return scroller.value ?? null;
+}
+
+/**
+ * 手柄拖到页面上下边缘时**自动滚动**（用户口径 2026-10-18）。
+ *
+ * 每帧做三件事：算手指离上下边缘的距离 → 换算成滚动量（越靠边越快）→ 滚完按
+ * **同一个手指位置**重新解析插入点。少了最后一步，画面滚了但选区不长，看起来就像
+ * 手柄卡在屏幕边上不动。
+ */
+function handleAutoScrollTick(): void {
+  handleScrollRaf = 0;
+  if (!draggingHandle || !dragPoint) return;
+  const host = handleScrollHost();
+  if (!host) return;
+  const rect = host.getBoundingClientRect();
+  // 滚动容器的上下沿再和视口取交集：容器比视口高时，边缘要从能看见的地方算起
+  const top = Math.max(rect.top, 0);
+  const bottom = Math.min(rect.bottom, window.innerHeight);
+  let dy = 0;
+  if (dragPoint.y < top + HANDLE_SCROLL_EDGE) {
+    const k = Math.min(1, (top + HANDLE_SCROLL_EDGE - dragPoint.y) / HANDLE_SCROLL_EDGE);
+    dy = -Math.max(2, Math.round(k * HANDLE_SCROLL_MAX));
+  } else if (dragPoint.y > bottom - HANDLE_SCROLL_EDGE) {
+    const k = Math.min(1, (dragPoint.y - (bottom - HANDLE_SCROLL_EDGE)) / HANDLE_SCROLL_EDGE);
+    dy = Math.max(2, Math.round(k * HANDLE_SCROLL_MAX));
+  }
+  if (!dy) return;
+  const before = host.scrollTop;
+  host.scrollTop = before + dy;
+  if (host.scrollTop === before) return;   // 已经滚到头了：别再空转 rAF（手指一动会重新起）
+  moveHandleTo(dragPoint.x, dragPoint.y);
+  handleScrollRaf = requestAnimationFrame(handleAutoScrollTick);
+}
+
+function startHandleAutoScroll(): void {
+  if (!handleScrollRaf) handleScrollRaf = requestAnimationFrame(handleAutoScrollTick);
+}
+
+function stopHandleAutoScroll(): void {
+  if (handleScrollRaf) cancelAnimationFrame(handleScrollRaf);
+  handleScrollRaf = 0;
+  dragPoint = null;
+}
+
 function beginHandleDrag(which: 'start' | 'end'): void {
   if (draggingHandle) return;
   // 拖选择条时菜单让开（用户口径 2026-10-17）：**只收菜单**，选区与手柄都留着
@@ -3486,12 +3541,15 @@ function beginHandleDrag(which: 'start' | 'end'): void {
 function onHandleDown(which: 'start' | 'end', ev: PointerEvent): void {
   ev.preventDefault();
   ev.stopPropagation();
+  dragPoint = { x: ev.clientX, y: ev.clientY };
   beginHandleDrag(which);
 }
 
 function onHandleTouchStart(which: 'start' | 'end', ev: TouchEvent): void {
   ev.preventDefault();
   ev.stopPropagation();
+  const t0 = ev.touches[0];
+  if (t0) dragPoint = { x: t0.clientX, y: t0.clientY };
   beginHandleDrag(which);
 }
 
@@ -3504,13 +3562,17 @@ function onHandleTouchMove(ev: TouchEvent): void {
   if (!draggingHandle) return;
   const t = ev.touches[0];
   if (!t) return;
-  ev.preventDefault();       // 拖手柄时不要滑页面
+  ev.preventDefault();       // 拖手柄时不要滑页面（要滚由边缘自动滚动来滚）
+  dragPoint = { x: t.clientX, y: t.clientY };
   moveHandleTo(t.clientX, t.clientY);
+  startHandleAutoScroll();
 }
 
 function onHandleMove(ev: PointerEvent): void {
   if (!draggingHandle) return;
+  dragPoint = { x: ev.clientX, y: ev.clientY };
   moveHandleTo(ev.clientX, ev.clientY);
+  startHandleAutoScroll();
 }
 
 function moveHandleTo(x: number, y: number): void {
@@ -3540,6 +3602,7 @@ function moveHandleTo(x: number, y: number): void {
 }
 
 function onHandleUp(): void {
+  stopHandleAutoScroll();
   if (!draggingHandle) return;
   draggingHandle = null;
   dragAnchor = null;
