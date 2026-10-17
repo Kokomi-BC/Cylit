@@ -33,7 +33,8 @@ withDefaults(defineProps<{
 
 <style scoped>
 .cap-panel {
-  position: absolute; top: 54px; z-index: 41;
+  /* 胶囊可以拖（用户口径）：面板跟着一起挪 —— `--panel-dx/dy` 由 ReaderView 按胶囊偏移写 */
+  position: absolute; top: calc(54px + var(--panel-dy, 0px)); z-index: 41;
   min-width: 292px; max-width: min(560px, calc(100vw - 32px));
   display: grid; gap: 12px; padding: 14px;
   pointer-events: auto;
@@ -50,9 +51,12 @@ withDefaults(defineProps<{
   animation: cap-panel-in .18s cubic-bezier(.32, .72, 0, 1) both;
 }
 /* 面板落在胶囊正下方：`--panel-shift` 由 ReaderView 按侧栏让位量给（与胶囊同一节奏） */
-.cap-panel.is-center { left: calc(50% + var(--panel-shift, 0px)); transform: translateX(-50%); }
-.cap-panel.is-left { left: 12px; }
-.cap-panel.is-right { right: 12px; }
+.cap-panel.is-center {
+  left: calc(50% + var(--panel-shift, 0px) + var(--panel-dx, 0px));
+  transform: translateX(-50%);
+}
+.cap-panel.is-left { left: calc(12px + var(--panel-dx, 0px)); }
+.cap-panel.is-right { right: calc(12px - var(--panel-dx, 0px)); }
 
 @keyframes cap-panel-in {
   from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(.985); }

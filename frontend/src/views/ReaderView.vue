@@ -1275,6 +1275,8 @@ function syncPaneWidth() {
  * 顺带重算正文栏宽 —— 两件事都得做，所以合成一个监听（原来只挂了 `syncPaneWidth`）。
  */
 function onWindowResize() {
+  // 窗口变小后胶囊可能落到允许区域外（左右是正文列、下方要留弹出层）
+  if (capsuleEl.value) { enforceCapsuleBounds(); syncToastDrop(); }
   winWidth.value = window.innerWidth;
   syncPaneWidth();
 }
@@ -1941,6 +1943,45 @@ const capDrag = ref(false);
 let capDragFrom: { x: number; y: number; ox: number; oy: number;
   minX: number; maxX: number; minY: number; maxY: number } | null = null;
 
+/**
+ * 胶囊能待的区域（视口坐标）：**只在正文列里**，上不压标签栏、下给弹出层/二级菜单留位。
+ * 用户口径 2026-10-17："限制胶囊的放置位置" —— 以前只能夹在视口里，能拖到侧栏上、也能拖到屏幕底，
+ * 弹出面板就跟着跑到看不见的地方。
+ */
+function capsuleRegion(): { left: number; right: number; top: number; bottom: number } {
+  const header = Number.parseInt(
+    getComputedStyle(document.documentElement).getPropertyValue('--header-h') || '0', 10) || 0;
+  const content = scroller.value?.getBoundingClientRect();
+  const left = (content ? Math.max(8, content.left) : 8) + 8;
+  const right = (content ? Math.min(innerWidth - 8, content.right) : innerWidth - 8) - 8;
+  return {
+    left,
+    right,
+    top: header + 8,
+    bottom: Math.max(header + 80, innerHeight - 260),
+  };
+}
+
+/** 把胶囊夹回允许区域（恢复位置、窗口缩放、切批注后都叫一次） */
+function enforceCapsuleBounds(): void {
+  const el = capsuleEl.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const region = capsuleRegion();
+  if (rect.left < region.left) capOffset.x += region.left - rect.left;
+  if (rect.right > region.right) capOffset.x -= rect.right - region.right;
+  if (rect.top < region.top) capOffset.y += region.top - rect.top;
+  if (rect.bottom > region.bottom) capOffset.y -= region.bottom - rect.bottom;
+}
+
+/** 拖动时允许的偏移区间（在"当前偏移"这套坐标里；越界即夹住） */
+function dragLimits(rect: DOMRect, region: ReturnType<typeof capsuleRegion>) {
+  const minX = Math.min(region.left - rect.left + capOffset.x, region.right - rect.right + capOffset.x);
+  const maxX = Math.max(region.left - rect.left + capOffset.x, region.right - rect.right + capOffset.x);
+  const minY = Math.min(region.top - rect.top + capOffset.y, region.bottom - rect.bottom + capOffset.y);
+  const maxY = Math.max(region.top - rect.top + capOffset.y, region.bottom - rect.bottom + capOffset.y);
+  return { minX, maxX, minY, maxY };
+}
 const capsuleStyle = computed<Record<string, string>>(() => ({
   transform: 'translate(' + (capsuleShift.value + capOffset.x) + 'px, ' + capOffset.y + 'px)',
 }));
@@ -1985,8 +2026,7 @@ function onCapsuleDown(ev: PointerEvent): void {
   el.setPointerCapture?.(ev.pointerId);
   capDragFrom = {
     x: ev.clientX, y: ev.clientY, ox: capOffset.x, oy: capOffset.y,
-    minX: 8 - rect.left + capOffset.x, maxX: innerWidth - 8 - rect.right + capOffset.x,
-    minY: 8 - rect.top + capOffset.y, maxY: innerHeight - 8 - rect.bottom + capOffset.y,
+    ...dragLimits(rect, capsuleRegion()),
   };
 }
 
@@ -2033,12 +2073,9 @@ function toggleInk() {
   inkOn.value = !inkOn.value;
   inkOptionsOpen.value = false;
   void nextTick().then(syncToastDrop);
-  if (inkOn.value) {
-    inkTool.value = 'pen';
-    toast('批注模式：直接在正文上手写，改动自动保存', 'info', 2600);
-  } else {
-    void flushInk();
-  }
+  // 进入批注**不弹提示**（用户口径 2026-10-17）：胶囊本身已经明确切成了工具，
+  // 再横一条提示反而挡住刚展开的二级菜单。
+  if (!inkOn.value) void flushInk();
 }
 
 function closeInk() {
@@ -2082,6 +2119,7 @@ onMounted(async () => {
   window.addEventListener('pointerup', onCapsuleUp);
   window.addEventListener('pointercancel', onCapsuleUp);
   restoreCapsulePos();
+  enforceCapsuleBounds();
   syncToastDrop();
   setInkNotesListener(() => { void refreshNotes(); });
 
@@ -2101,8 +2139,9 @@ onMounted(async () => {
   const applied = hasDeepLink() ? await applyDeepLink() : false;
   if (!applied) restorePosition(reader.value?.progress ?? null);
   bootDone.value = true;
-  // 胶囊是**数据到位后**才渲染的：onMounted 那一刻它还不存在，提示条让位要在这之后算一次
+  // 胶囊是**数据到位后**才渲染的：onMounted 那一刻它还不存在，夹取与提示条让位要在这之后算一次
   await nextTick();
+  enforceCapsuleBounds();
   syncToastDrop();
   if (route.query.md) {                       // ?md=1[&mdpage=8] 直接打开 Markdown 视图
     const want = Number(route.query.mdpage ?? 0);
@@ -4453,7 +4492,14 @@ function renderMarkdown(text?: string | null) {
              · **右** = 更多（与左侧开关同尺寸、同基线）
            自检脚本依赖的钩子：`[data-aside-toggle]`、`.reader-toolbar .seg button`、
            缩放标签的 `.tiny.faint.nowrap`、以及按标题找的「缩小 / 放大」。 -->
-      <div class="reader-toolbar" :style="{ '--panel-shift': capsuleShiftCss }">
+      <div
+      class="reader-toolbar"
+      :style="{
+        '--panel-shift': capsuleShiftCss,
+        '--panel-dx': capOffset.x + 'px',
+        '--panel-dy': capOffset.y + 'px',
+      }"
+    >
         <div class="cap-solo left">
           <AsideToggle :open="asideVisible" @toggle="toggleAside" />
         </div>
@@ -4524,6 +4570,17 @@ function renderMarkdown(text?: string | null) {
           </div>
 
           <div v-if="!inkOn" class="cap-group">
+            <!-- 手写批注：只开关"能不能落笔"，笔迹本身按页存在服务端 -->
+            <button
+              class="btn icon"
+              data-cap-ink
+              :class="{ active: inkOn }"
+              :title="inkOn ? '退出批注模式' : '批注：在正文上手写 / 荧光笔 / 框注'"
+              :aria-pressed="inkOn"
+              @click="toggleInk"
+            >
+              <AppIcon name="pen" :size="15" />
+            </button>
             <!-- 设置：**版面 + 显示合成一个面板**（用户口径）。以前是两枚按钮，
                  在「译文」视图下版面面板几乎是空的、Aa 也只剩一个字母，看着像空按钮。 -->
             <button
@@ -4535,17 +4592,6 @@ function renderMarkdown(text?: string | null) {
               @click="toggleCapPanel('settings')"
             >
               <AppIcon name="sliders" :size="15" />
-            </button>
-            <!-- 手写批注：只开关"能不能落笔"，笔迹本身按页存在服务端 -->
-            <button
-              class="btn icon"
-              data-cap-ink
-              :class="{ active: inkOn }"
-              :title="inkOn ? '退出批注模式' : '批注：在正文上手写 / 荧光笔 / 框注'"
-              :aria-pressed="inkOn"
-              @click="toggleInk"
-            >
-              <AppIcon name="pen" :size="15" />
             </button>
           </div>
 
@@ -4619,8 +4665,9 @@ function renderMarkdown(text?: string | null) {
         <!-- 弹出面板（互斥，落在主胶囊正下方）。里面每个控件都是**常挂载**的：
              `frontend_check.py` 按文字/标题点「原文文本 / 原 PDF / 小」，v-if 会让它点不到。 -->
         <CapPanel :open="capPanel === 'settings'" label="设置" data-cap-panel-body="settings">
-          <!-- 批注模式下主胶囊被工具占满，视图切换挪到这里（同一份 viewMode，不会两处不一致） -->
-          <div class="cap-row">
+          <!-- 只在**批注模式**下显示：那时胶囊里没有视图段控件，面板补上这一行；
+               常规模式下胶囊里已经有 原文/译文/对照，这里再放一份就是重复（用户口径 2026-10-17）。 -->
+          <div v-if="inkOn" class="cap-row">
             <span class="cap-row-label">视图</span>
             <div class="seg" title="视图">
               <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
