@@ -720,35 +720,47 @@ watchEffect(applyShellDom, { flush: 'sync' });
       <slot name="more-items" :close="closeMore" />
       <div v-if="$slots['more-items']" class="fc-more-sep" />
       <div class="fc-more-row">
+        <!-- 字号排做成一个**步进器**：缩小 | 百分比 | 放大。百分比必须居中 ——
+             它是这一排的"读数"，贴在哪一侧都会让另一侧的钮显得是零头。 -->
+        <div class="fc-step">
+          <button
+            type="button"
+            class="fc-step-btn"
+            role="menuitem"
+            :disabled="fontScale <= F_MIN"
+            :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+            aria-label="缩小字号"
+            data-fc-zoom-out
+            @click="stepFont(-1)"
+          >
+            <AppIcon name="zoom-out" :size="15" />
+          </button>
+          <span
+            class="fc-more-pct"
+            :class="{ on: fontScale !== 1 }"
+            :title="`当前字号 ${Math.round(fontScale * 100)}%`"
+          >{{ Math.round(fontScale * 100) }}%</span>
+          <button
+            type="button"
+            class="fc-step-btn"
+            role="menuitem"
+            :disabled="fontScale >= F_MAX"
+            :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+            aria-label="放大字号"
+            data-fc-zoom-in
+            @click="stepFont(1)"
+          >
+            <AppIcon name="zoom-in" :size="15" />
+          </button>
+        </div>
+        <!-- 还原键**永远占位**（100% 时只是隐藏）：否则"重置"一出现就把步进器挤窄，
+             用户刚点的位置会跟着挪一下。visibility:hidden 同时让它接不到点击。 -->
         <button
           type="button"
-          class="fc-more-ico"
+          class="fc-more-ico fc-reset"
+          :class="{ ghost: fontScale === 1 }"
           role="menuitem"
-          :disabled="fontScale >= F_MAX"
-          :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
-          aria-label="放大字号"
-          data-fc-zoom-in
-          @click="stepFont(1)"
-        >
-          <AppIcon name="zoom-in" :size="15" />
-        </button>
-        <button
-          type="button"
-          class="fc-more-ico"
-          role="menuitem"
-          :disabled="fontScale <= F_MIN"
-          :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
-          aria-label="缩小字号"
-          data-fc-zoom-out
-          @click="stepFont(-1)"
-        >
-          <AppIcon name="zoom-out" :size="15" />
-        </button>
-        <button
-          v-if="fontScale !== 1"
-          type="button"
-          class="fc-more-ico"
-          role="menuitem"
+          :aria-hidden="fontScale === 1"
           title="还原默认字号（100%）"
           aria-label="还原默认字号"
           data-fc-zoom-reset
@@ -756,9 +768,6 @@ watchEffect(applyShellDom, { flush: 'sync' });
         >
           <AppIcon name="refresh" :size="15" />
         </button>
-        <span class="fc-more-pct" :title="`当前字号 ${Math.round(fontScale * 100)}%`">
-          {{ Math.round(fontScale * 100) }}%
-        </span>
       </div>
     </div>
   </div>
@@ -889,25 +898,49 @@ watchEffect(applyShellDom, { flush: 'sync' });
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); }
-/* 第二排字号：两枚图标钮 + 右端常显的百分比（图标认得出"加减"，数字回答"现在多少"） */
-.fc-more-row { display: flex; align-items: center; gap: 2px; }
+/* 第二排字号：**步进器 + 还原**。步进器整体占满剩余宽度，于是百分比正好落在中间 —— */
+.fc-more-row { display: flex; align-items: center; gap: 4px; }
+.fc-step {
+  display: flex; align-items: center; flex: 1 1 auto; min-width: 0;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  overflow: hidden;
+}
+.fc-step-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 100%; flex: none;
+  border: 0; background: transparent; color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.fc-step-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.fc-step-btn:disabled { opacity: .3; cursor: default; }
+/* 读数：等宽数字 + 居中；偏离 100% 时转成强调色，一眼看出"这张卡被我改过" */
+.fc-more-pct {
+  flex: 1 1 auto; min-width: 42px;
+  text-align: center;
+  font-size: calc(11.5px * var(--ts, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease);
+}
+.fc-more-pct.on { color: var(--accent-text); font-weight: 600; }
+/* 还原键：与步进器同高，平时只留位置不显形（见模板里那条：出现就挤位会让手指错位） */
 .fc-more-ico {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; flex: none;
   border: 0; border-radius: 50%;
   background: transparent; color: var(--text-dim);
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+              opacity var(--dur-fast) var(--ease);
 }
 .fc-more-ico:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .fc-more-ico:disabled { opacity: .35; cursor: default; }
-.fc-more-pct {
-  margin-left: auto; padding: 0 5px 0 6px;
-  font-size: calc(11.5px * var(--ts, 1));
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  white-space: nowrap;
-}
+.fc-more-ico.ghost { visibility: hidden; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
   /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */
