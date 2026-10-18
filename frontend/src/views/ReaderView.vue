@@ -6143,6 +6143,12 @@ async function refreshAnnotations() {  const [a, h, n] = await Promise.all([
   notes.value = n.items ?? [];
 }
 
+/** agent 在这一轮里写了笔记 / 高亮 / 批注：**就地**重拉这三份列表。
+ *  用户口径 2026-11-26：agent 加的笔记必须实时出现，不能靠刷新页面。 */
+async function onChatSideChanged() {
+  try { await refreshAnnotations(); } catch (err) { console.warn('侧栏数据刷新失败', err); }
+}
+
 /* ------------------------------ 引用文献 ------------------------------ */
 /** 参考文献只取一次（进「引用文献」页签、或点了正文里的引用标号时取），失败下次还能再试。 */
 let refsLoaded = false;
@@ -7093,6 +7099,7 @@ function renderMarkdown(text?: string | null) {
           :floating="chatFloat"
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @clear-selection="chatSelection = null"
+          @refresh-side="onChatSideChanged"
           @float="openChatFloat"
           @zoom="(t) => { zoomImage = { url: t.url, caption: t.caption ?? '' }; }"
         >

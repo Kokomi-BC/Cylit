@@ -353,7 +353,7 @@ class AgentRuntime:
                 existing=archive.get("meta") or {})
             settings = model_settings_from(model_cfg.get("parameters") or {})
             # 轮数上限比问答小得多：这是"读几页 + 提交一次"的活，不需要几十轮。
-            limits = UsageLimits(request_limit=max(6, min(self.cfg.max_rounds, 24)))
+            limits = UsageLimits(request_limit=None)   # 不设轮数上限（2026-11-26：长程任务）
             await agent.run(prompt, deps=deps, model_settings=settings,
                             usage_limits=limits)
         except UsageLimitExceeded:
@@ -380,7 +380,7 @@ class AgentRuntime:
     async def ask(self, req: AskRequest) -> AsyncIterator[dict]:
         """把一轮问答变成 SSE 事件流（**不含** SSE 帧格式，见 `service.py`）。"""
         t0 = time.perf_counter()
-        deadline = t0 + self.cfg.deadline_seconds
+        deadline = float('inf')   # 不设总时限（2026-11-26：长程任务）；心跳照旧发，前端不会以为卡死
         deps = Deps(cfg=self.cfg, host=self.host, paper_id=req.paper_id,
                     registry=RefRegistry(req.paper_id))
         # 图片张数写进 deps：`prompts.image_block` 把它渲染进**本轮备注**（拼在用户消息里）。
@@ -578,7 +578,7 @@ class AgentRuntime:
         settings = model_settings_from(model_cfg.get("parameters") or {},
                                        effort=req.reasoning_effort)
         sanitizer = StreamingAnswerSanitizer(deps.registry)
-        limits = UsageLimits(request_limit=self.cfg.max_rounds)
+        limits = UsageLimits(request_limit=None)   # 同上：轮数不再设上限
         sent_refs: set[int] = set()
         prompt = await self._user_prompt(req, deps)
         # 思考耗时的起点：**模型调用**发起那一刻（档案预注入与检索不算思考，

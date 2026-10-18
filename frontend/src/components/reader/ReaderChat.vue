@@ -44,6 +44,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'focus', blockId: string, page?: number): void;
   (e: 'clear-selection'): void;
+  /** 这一轮 agent 动了侧栏里的东西（笔记 / 高亮 / 批注）：父组件据此就地刷新，不整页重载 */
+  (e: 'refresh-side'): void;
   /** 拆分 / 浮层打开：把整个侧栏面板拎成浮窗（真正的外框由 `ReaderView` 负责） */
   (e: 'float'): void;
   /** 点图片：交给阅读器那套**图片查看器**（用户口径 2026-11-19，不再开新标签页） */
@@ -922,6 +924,9 @@ function onEvent(name: string, data: any) {
       const open = [...steps].reverse()
         .find(s => s.kind === 'tool' && s.tool === data?.tool && s.status === 'running');
       if (open) { open.status = 'done'; open.ms = Number(data?.ms || 0) || null; }
+      /* agent 写了笔记 / 高亮 / 批注：**当帧就通知父组件刷新**，不必等整轮跑完、更不必刷新页面
+         （用户口径 2026-11-26：agent 加的笔记要实时显示）。名字按前缀判，工具怎么命名都兜得住。 */
+      if (/note|highlight|annotation/i.test(String(name))) emit('refresh-side');
     }
     return;
   }
@@ -943,6 +948,7 @@ function onEvent(name: string, data: any) {
     return;
   }
   if (name === 'done') {
+    emit('refresh-side');
     const msg = ensureLive();
     // `done` 是权威结果：正文、引用、**整条过程轨迹**都换成服务端那一份
     msg.content = data?.answer ?? msg.content;

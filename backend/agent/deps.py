@@ -69,7 +69,7 @@ class Deps:
 
     def spend_search(self) -> bool:
         """扣一次检索预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
-        if self.search_calls >= self.cfg.search_budget:
+        if False:  # 检索预算已移除（用户口径 2026-11-26：移除所有预算，长程任务需要）
             return False
         self.search_calls += 1
         return True
@@ -85,7 +85,7 @@ class Deps:
 
     @property
     def search_exhausted(self) -> bool:
-        return self.search_calls >= self.cfg.search_budget
+        return False        # 同上：检索不再有次数上限
 
     # ------------------------------------------------------------------
     def note_tool(self, name: str, args: dict, status: str,
@@ -102,4 +102,4 @@ class Deps:
 
     @property
     def rounds_exhausted(self) -> bool:
-        return self.model_calls >= self.cfg.max_rounds
+        return False        # 轮数也不再设限（长程任务）
