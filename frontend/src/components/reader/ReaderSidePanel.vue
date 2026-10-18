@@ -19,6 +19,7 @@ import type {
   TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
+import Menu from '@/components/Menu.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import InsightPanel from '@/components/insight/InsightPanel.vue';
 import ReferenceList from './ReferenceList.vue';
@@ -93,6 +94,12 @@ const emit = defineEmits<{
   (e: 'insight-queued'): void;
   /** 解读页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
   (e: 'open-insight-page'): void;
+  /** 笔记卡的「浮层打开 / 编辑」：让父组件弹**同一张**笔记浮层（mode 决定查看还是改） */
+  (e: 'open-note', p: { note: Note | null; highlight: Highlight | null; mode?: 'view' | 'edit' }): void;
+  /** 多选后的批量删除：一次交给父组件确认，再按类型分头删（笔记 / 整组高亮 / 批注） */
+  (e: 'delete-rows', rows: Array<{
+    kind: string; noteId: string; anchorIds: string[]; annotationId: string;
+  }>): void;
 }>();
 
 function locate(id?: string | null, page?: number | null) {
@@ -127,7 +134,7 @@ const SCOPE_LABEL: Record<string, string> = {
 /** 只读是默认态：进页签先看到**内容**，点「编辑」才展开输入框（用户口径）。 */
 const editing = ref(false);
 /** 换页签就退出编辑态，免得切回来还停在半改一半的输入框上。 */
-watch(() => props.tab, () => { editing.value = false; });
+watch(() => props.tab, () => { editing.value = false; exitBatch(); });
 
 const briefSourceLabel = computed(() => {
   const s = props.briefSource;
@@ -268,6 +275,67 @@ function removeRow(r: FeedRow) {
   if (r.anchorIds.length) { emit('delete-highlight', r.anchorIds.slice()); return; }
   if (r.noteId) emit('delete-note', r.noteId);
 }
+
+/* ------------------------------ 多选（批量管理） ------------------------------ */
+/**
+ * 用户口径 2026-11-20：笔记页也要「多选」——**交互照对话页那一套**（ReaderChat 的 batch / picked /
+ * batch-bar），不另起一套：顶部一枚图标切换 → 每张卡行首出现勾选框 → 顶部一条「已选 N / 取消 / 删除」。
+ * 选中的是**归并后的行**（FeedRow.key）；真正怎么删交给父组件（一次确认、按类型分头删）。
+ */
+const batch = ref(false);
+/** 选中的行键（FeedRow.key）—— 用 key 而不是行对象：列表刷新后仍然认得同一条 */
+const picked = ref<string[]>([]);
+
+function toggleBatch() {
+  batch.value = !batch.value;
+  if (!batch.value) picked.value = [];
+}
+function exitBatch() {
+  batch.value = false;
+  picked.value = [];
+}
+const isPicked = (r: FeedRow) => picked.value.includes(r.key);
+function togglePick(r: FeedRow) {
+  picked.value = isPicked(r) ? picked.value.filter((k) => k !== r.key) : [...picked.value, r.key];
+}
+/** 批量态下点卡片本体 = 打勾 / 取消（按钮、输入框、链接除外）—— 与对话页「点整行即选」一致 */
+function onCardClick(ev: MouseEvent, r: FeedRow) {
+  if (!batch.value) return;
+  if ((ev.target as HTMLElement | null)?.closest?.('button, input, textarea, a, label')) return;
+  togglePick(r);
+}
+function deletePicked() {
+  const rows = merged.value.filter((r) => isPicked(r)).map((r) => ({
+    kind: r.kind,
+    noteId: r.noteId,
+    anchorIds: r.anchorIds.slice(),
+    annotationId: r.annotation?.id ?? (r.kind === 'annotation' ? r.key.slice(2) : ''),
+  }));
+  exitBatch();
+  emit('delete-rows', rows);
+}
+
+/* ------------------------ 「更多」菜单（编辑 / 多选 / 删除） ------------------------ */
+/** 批注没有「正文可改」（它没有挂高亮、也没有笔记对象），所以不出现「编辑」那一项 ——
+ *  与以前卡片上那枚铅笔的条件一致（`r.kind !== 'annotation'`）。 */
+function moreItems(r: FeedRow) {
+  return [
+    ...(r.kind === 'annotation' ? [] : [{ key: 'edit', label: '编辑', icon: 'edit' }]),
+    { key: 'pick', label: '多选', icon: 'list-check' },
+    { key: 'del', label: '删除', icon: 'trash', danger: true },
+  ];
+}
+/** 浮层打开 / 编辑：都交给父组件弹**同一张**笔记浮层（mode 决定查看还是改） */
+function openPopover(r: FeedRow, mode: 'view' | 'edit' = 'edit') {
+  emit('open-note', { note: r.note ?? null, highlight: r.highlight ?? null, mode });
+}
+function onMore(key: string, r: FeedRow) {
+  if (key === 'edit') openPopover(r, 'edit');
+  else if (key === 'pick') {
+    batch.value = true;
+    if (!isPicked(r)) picked.value = [...picked.value, r.key];
+  } else if (key === 'del') removeRow(r);
+}
 </script>
 
 <template>
@@ -284,18 +352,48 @@ function removeRow(r: FeedRow) {
     <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：
          一条 = 一处高亮 + 它的正文；批注也按同一种卡片列在这里） -->
     <template v-if="props.tab === 'notes'">
+      <!-- 工具条一条到底（滚动时钉在顶上）：平时是「N 条 + 缩略 + 多选」，
+           进了批量态就换成「已选 N + 取消 + 删除」—— 与对话页同一套动作，只是并进同一行，
+           不必再多一条工具条（多一条就多一层滚动后被滚走的东西）。 -->
       <div class="notes-bar">
-        <span class="tiny faint">{{ merged.length }} 条</span>
-        <span class="spacer" />
-        <button
-          class="btn icon sm"
-          :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
-          :aria-pressed="thumb"
-          data-notes-thumb
-          @click="toggleThumb"
-        >
-          <AppIcon :name="thumb ? 'expand' : 'list'" :size="13" />
-        </button>
+        <template v-if="!batch">
+          <span class="tiny faint">{{ merged.length }} 条</span>
+          <span class="spacer" />
+          <button
+            class="btn icon sm"
+            :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
+            :aria-pressed="thumb"
+            data-notes-thumb
+            @click="toggleThumb"
+          >
+            <AppIcon :name="thumb ? 'expand' : 'list'" :size="13" />
+          </button>
+          <!-- 多选（用户口径 2026-11-20）：与对话页**同一套** —— 同一个图标档胶囊、同一个图标键、
+               同一段交互（点开进入批量态 → 卡片行首出现勾选框 → 顶部「已选 N / 取消 / 删除」）。 -->
+          <div class="seg sq">
+            <button
+              :class="{ active: batch }"
+              title="批量管理（多选 + 批量删除）"
+              data-notes-batch
+              @click="toggleBatch"
+            >
+              <AppIcon name="list-check" :size="13" />
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <span class="tiny faint" data-notes-batch-count>已选 {{ picked.length }}</span>
+          <span class="spacer" />
+          <button class="btn sm" data-notes-batch-cancel @click="exitBatch">取消</button>
+          <button
+            class="btn sm danger"
+            :disabled="!picked.length"
+            data-notes-batch-delete
+            @click="deletePicked"
+          >
+            删除
+          </button>
+        </template>
       </div>
       <div v-if="!merged.length" class="empty small">
         还没有笔记（在正文里划词 → 高亮 → 写笔记）
@@ -304,11 +402,23 @@ function removeRow(r: FeedRow) {
         v-for="r in merged"
         :key="r.key"
         class="item note-row"
-        :class="[r.kind, { thumb, editing: editKey === r.key }]"
+        :class="[r.kind, { thumb, editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
         :data-note-id="r.noteId || undefined"
         :data-item-kind="r.kind"
+        @click="onCardClick($event, r)"
       >
         <div class="row tiny">
+          <!-- 批量态：行首一枚勾选框（与对话页同一个 tick 口径：同一对图标、同一档尺寸） -->
+          <button
+            v-if="batch"
+            class="tick"
+            :class="{ on: isPicked(r) }"
+            :title="isPicked(r) ? '取消选择' : '选择'"
+            data-item-tick
+            @click.stop="togglePick(r)"
+          >
+            <AppIcon :name="isPicked(r) ? 'checkbox' : 'checkbox-off'" :size="15" />
+          </button>
           <span class="badge" :class="r.badge">{{ r.label }}</span>
           <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
           <span v-if="r.scope" class="badge dim" :title="`高亮位置：${SCOPE_LABEL[r.scope] || r.scope}`">
@@ -317,32 +427,37 @@ function removeRow(r: FeedRow) {
           <span v-if="r.page" class="faint">p{{ r.page }}</span>
           <span v-if="r.at" class="faint">{{ fmtRelative(r.at) }}</span>
           <span class="spacer" />
-          <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
-            <AppIcon name="locate" :size="13" />
-          </button>
-          <button
-            v-if="r.kind !== 'annotation' && editKey !== r.key"
-            class="btn icon sm"
-            :title="r.noteId ? '编辑这条笔记' : '给这处高亮写笔记'"
-            data-item-edit
-            @click="startEditRow(r)"
-          >
-            <AppIcon :name="r.noteId ? 'edit' : 'add'" :size="13" />
-          </button>
-          <button
-            class="btn icon sm"
-            :title="r.anchorIds.length ? '删除这处高亮（挂在上面的笔记一起删）' : '删除'"
-            data-item-delete
-            @click="removeRow(r)"
-          >
-            <AppIcon name="trash" :size="13" />
-          </button>
+          <!-- 右侧三枚（用户口径 2026-11-20）：定位 / 浮层打开 / 更多（编辑 · 多选 · 删除）。
+               批量态整排收起 —— 与对话页一样，进了批量态行上就不再挂动作，只剩勾选框。 -->
+          <template v-if="!batch">
+            <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
+              <AppIcon name="locate" :size="13" />
+            </button>
+            <!-- 批注没有可编辑的正文（没有挂高亮、也没有笔记对象），所以不给「浮层打开」 -->
+            <button
+              v-if="r.kind !== 'annotation'"
+              class="btn icon sm"
+              title="打开浮层"
+              data-item-popover
+              @click="openPopover(r)"
+            >
+              <AppIcon name="pip" :size="13" />
+            </button>
+            <Menu
+              :items="moreItems(r)"
+              label="更多"
+              align="end"
+              data-item-more
+              @select="onMore($event, r)"
+            />
+          </template>
         </div>
-        <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式） -->
+        <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式）。
+             用户口径 2026-11-20：这行**字号再小一档**，并**恒为单行省略** —— 它只是「按的是哪一段」的索引，
+             两行以上的引用会把卡片撑高、把正文挤到看不见。 -->
         <div
           v-if="r.quote"
-          class="small faint md quote"
-          :class="{ clamp1: thumb }"
+          class="small faint md quote clamp1"
           v-html="mdToHtml(`“${r.quote}”`)"
         />
         <template v-if="editKey === r.key">
@@ -361,10 +476,11 @@ function removeRow(r: FeedRow) {
           </div>
         </template>
         <template v-else>
+          <!-- 正文：用户口径 2026-11-20 —— **两行，超出省略**（缩略态仍收成一行的老口径） -->
           <div
             v-if="r.contentMd"
             class="small md"
-            :class="{ clamp1: thumb }"
+            :class="thumb ? 'clamp1' : 'clamp2'"
             v-html="annotationHtml(r.contentMd)"
           />
           <!-- 不用再写一行“还没写笔记”：头部那枚「待写」徽章已经说过了（用户口径 2026-10-10："移除多余的文字"） -->
@@ -608,6 +724,27 @@ function removeRow(r: FeedRow) {
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
   overflow: hidden; line-clamp: 1;
 }
+/* 正文两行（用户口径 2026-11-20）：超出就省略，卡片不会因为一条长笔记被拉成一屏 */
+.clamp2 {
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 引用原文再小一档（原来是 .small 的 12px；它只是「按的是哪一段」的索引） */
+.item.note-row .quote { font-size: 11.5px; line-height: 1.55; }
+/* 批量态：行首勾选框 —— 与对话页 .tick 同一口径（24px 热区、无底、选中转主题色） */
+.tick {
+  width: 24px; height: 24px; flex: none; border: 0; background: none; cursor: pointer;
+  color: var(--text-faint); display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-ctl);
+}
+.tick:hover { color: var(--text); background: var(--bg-hover); }
+.tick.on { color: var(--accent); }
+/* 选中的卡片：主题色淡底 + 亮一档描边（与对话页行上的选中语义一致） */
+.item.note-row.pick {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-layer));
+}
+.item.note-row.picking { cursor: pointer; }
 .item.note-row.thumb .quote { margin-bottom: 0; }
 /* 编辑态：把卡片让给编辑框（用户口径 2026-10-10："编辑笔记时，可以隐藏顶部的部分" →
    "应该可以占用整个元素面积方便编辑"）——

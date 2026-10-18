@@ -1221,10 +1221,11 @@ defineExpose({ uploadFiles, ensureThread });
         </div>
         <span class="spacer" />
         <!-- 只留图标 → 用**图标档**的胶囊（`.seg.sq`：左右内边距 9px）；否则按文字档的 12px 撑开，
-             一枚 13px 的图标会被撑成一条胖胶囊（用户口径 2026-11-19 报的"按钮显示样式问题"）。 -->
+             一枚 13px 的图标会被撑成一条胖胶囊（用户口径 2026-11-19 报的"按钮显示样式问题"）。
+             图标用 `list-check`（带勾的清单，用户口径 2026-11-20）——**笔记页那枚是同一个键**，两端同脸。 -->
         <div class="seg sq">
           <button :class="{ active: batch }" title="批量管理（多选 + 批量删除）" @click="toggleBatch">
-            <AppIcon name="checkbox" :size="13" />
+            <AppIcon name="list-check" :size="13" />
           </button>
         </div>
       </div>
@@ -1283,7 +1284,7 @@ defineExpose({ uploadFiles, ensureThread });
               <AppIcon name="pip" :size="13" />浮层打开
             </button>
             <button class="menu-item" @click.stop="rowMenu = ''; toggleBatch()">
-              <AppIcon name="checkbox" :size="12" />多选
+              <AppIcon name="list-check" :size="12" />多选
             </button>
             <button class="menu-item danger" @click.stop="rowMenu = ''; askDeleteOne(c)">
               <AppIcon name="trash" :size="12" />删除

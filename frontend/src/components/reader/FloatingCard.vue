@@ -247,6 +247,10 @@ const style = computed(() => ({
       >
         <AppIcon name="locate" :size="13" />
       </button>
+      <!-- 头部**最右**（锚定之后、✕ 之前）：笔记框的删除键放这里（用户口径 2026-11-20）——
+           删除与「✓ 保存 / 锚定」之间隔开一小段，免得点删除时误触保存。
+           ⚠️ 只有父组件传了才渲染：解释浮层不传，头部与以前完全一致。 -->
+      <span v-if="$slots['head-tail']" class="fc-tail"><slot name="head-tail" /></span>
       <button type="button" class="fc-btn" title="关闭" data-float-close @click="emit('close')">
         <AppIcon name="close" :size="13" />
       </button>
@@ -335,6 +339,8 @@ const style = computed(() => ({
 }
 .fc-btn:hover { background: var(--bg-hover); color: var(--text); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+/* 头部最右那格（head-tail）：与锚定之间再多一小段间距 —— 删除键和「保存 / 锚定」不能挨着 */
+.fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 4px; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
 /* 用户把卡片拉大之后（`sizeH` 有值 → `.sized`）正文区改成**纵向 flex**：

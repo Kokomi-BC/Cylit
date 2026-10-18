@@ -5236,7 +5236,7 @@ async function deleteNotePopover() {
  */
 const noteDelMenu = ref({ open: false, top: 0, left: 0 });
 /** 菜单尺寸上界（两项 + 内边距 ≈ 74px）：只用来判断"下面放不下就翻到按钮上方" */
-const NOTE_DEL_MENU_W = 176;
+const NOTE_DEL_MENU_W = 112;
 const NOTE_DEL_MENU_H = 74;
 
 function closeNoteDelMenu() {
@@ -5607,6 +5607,52 @@ async function deleteNote(id: string) {
     notes.value = notes.value.filter((n) => n.id !== id);
     toast('已删除', 'ok', 1800);
   } catch (err) { reportError(err, '删除失败'); }
+}
+
+/* ---- 侧栏笔记卡：浮层打开 + 多选批量删除（用户口径 2026-11-20） ---- */
+
+/** 「浮层打开」/「编辑」：弹的是**同一张**笔记浮层（编辑态），贴在正文里那处高亮上。
+ *  找不到那处高亮（滚出视口 / 属于别的 scope）就退到主区偏右上 —— 不猜 DOM、也不自动滚页。
+ *  锚定：这是从侧栏点开的，鼠标本来就离正文很远，不锚定会被"移开就关"立刻收掉。 */
+function openPaneNote(p: { note: Note | null; highlight: Highlight | null; mode?: 'view' | 'edit' }) {
+  closeNoteDelMenu();
+  const hlId = p.highlight?.id || p.note?.highlight_id || '';
+  const mark = hlId ? document.querySelector<HTMLElement>(`mark.hl[data-hl="${hlId}"]`) : null;
+  openNotePopover({
+    note: p.note, highlight: p.highlight, mode: p.mode ?? 'edit', anchored: true,
+    rect: mark ? mark.getBoundingClientRect() : null,
+    fallbackXY: { x: Math.round(window.innerWidth * 0.42), y: 160 },
+  });
+}
+
+/** 多选批量删除：**只确认一次**，再按类型分别删 —— 批注走 /annotations/:id、
+ *  整组高亮走 deleteHighlightIds（它按 group 去重、顺带同步本地列表）、其余走 /notes/:id。
+ *  单条失败不中断其余的，最后一次性刷新并报差几条。 */
+async function deleteNoteRows(rows: Array<{
+  kind: string; noteId: string; anchorIds: string[]; annotationId: string;
+}>) {
+  if (!rows.length) return;
+  if (!(await askConfirm({
+    title: `删除选中的 ${rows.length} 条笔记？`,
+    body: '高亮与挂在它上面的笔记会一起删掉，不可恢复。',
+    danger: true, confirmLabel: '删除',
+  }))) return;
+  const annIds: string[] = [];
+  const noteIds: string[] = [];
+  const hlIds: string[] = [];
+  for (const r of rows) {
+    if (r.kind === 'annotation') { if (r.annotationId) annIds.push(r.annotationId); }
+    else if (r.anchorIds.length) hlIds.push(...r.anchorIds);
+    else if (r.noteId) noteIds.push(r.noteId);
+  }
+  const results = await Promise.all([
+    ...annIds.map((id) => api.del(`/annotations/${id}`).then(() => true, () => false)),
+    ...noteIds.map((id) => api.del(`/notes/${id}`).then(() => true, () => false)),
+  ]);
+  if (hlIds.length) await deleteHighlightIds(hlIds);
+  const failed = results.filter((ok) => !ok).length;
+  await refreshAnnotations();
+  toast(failed ? `已删除，${failed} 条失败` : '已删除', failed ? 'warn' : 'ok', 1800);
 }
 
 async function copySelection() {
@@ -6314,6 +6360,8 @@ function renderMarkdown(text?: string | null) {
           @reload-brief="syncBriefDraft()"
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
+          @delete-rows="deleteNoteRows"
+          @open-note="openPaneNote"
           @save-note="savePaneNote"
           @delete-highlight="deleteHighlightIds"
           @cancel-task="cancelTranslate"
@@ -6558,6 +6606,11 @@ function renderMarkdown(text?: string | null) {
                 :disabled="notePop.busy" title="保存笔记" data-note-save @click="saveNotePopover">
           <AppIcon name="check" :size="13" />
         </button>
+      </template>
+      <!-- 删除键挪到**头部最右**（用户口径 2026-11-20）：锚定之后、✕ 之前，
+           与「✓ 保存」隔开一小段 —— 原来它挨着保存，误触一次就弹出删除确认。
+           条件不变：**查看态不给删除**（只读姿态里不该出现删除），只有编辑态 + 已有笔记才有。 -->
+      <template #head-tail>
         <button v-if="notePop.mode !== 'view' && notePop.noteId" class="np-head-save danger" type="button"
                 :disabled="notePop.busy" title="删除笔记" data-note-delete
                 aria-haspopup="menu" :aria-expanded="noteDelMenu.open"
@@ -6600,9 +6653,10 @@ function renderMarkdown(text?: string | null) {
         aria-label="确认删除这条笔记"
         :style="{ top: noteDelMenu.top + 'px', left: noteDelMenu.left + 'px' }"
       >
+        <!-- 菜单项**不带图标**（用户口径 2026-11-20）：两块短条目里再塞图标只显得挤 -->
         <button type="button" class="note-del-item danger" role="menuitem"
                 data-note-del-confirm @click="onNoteDelConfirm">
-          <AppIcon name="trash" :size="13" /><span>删除这条笔记</span>
+          <span>删除这条笔记</span>
         </button>
         <button type="button" class="note-del-item" role="menuitem"
                 data-note-del-cancel @click="closeNoteDelMenu">
@@ -7440,8 +7494,8 @@ function renderMarkdown(text?: string | null) {
    自己吃掉剩余高度（内部滚动），输入框钉在它下面，永远没有中间那块空白。 */
 [data-explain-card] :deep(.fc-body) { display: flex; flex-direction: column; overflow: hidden; }
 .ex-thread { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
-/* 笔记框标题行上的 ✓ 保存（用户口径 2026-10-10：复刻目标站的笔记框）。
-   ⚠️ 这个键是**本组件**渲染的（通过 `FloatingCard` 的 `head-extra` 插槽），
+/* 笔记框标题行上的 ✓ 保存 / 头部那枚删除键（用户口径 2026-10-10：复刻目标站的笔记框）。
+   ⚠️ 这两个键都是**本组件**渲染的（保存走 `head-extra`，删除走 `head-tail`，后者 2026-11-20 新增），
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
 .np-head-save {
   flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
@@ -7460,7 +7514,7 @@ function renderMarkdown(text?: string | null) {
    没有触发钮 —— 触发钮就是头部那枚垃圾桶，位置由 openNoteDelMenu 算好后写在 style 上。
    Teleport 到 body 的节点仍然带本组件的 scoped 属性，所以这几条样式对它生效。 */
 .note-del-menu {
-  position: fixed; z-index: 320; min-width: 176px;
+  position: fixed; z-index: 320; min-width: 0; width: max-content; white-space: nowrap;
   padding: 5px; display: flex; flex-direction: column; gap: 1px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
@@ -7468,7 +7522,7 @@ function renderMarkdown(text?: string | null) {
   box-shadow: var(--shadow-flyout);
 }
 .note-del-item {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; width: 100%;
   padding: 7px 10px; border: 0; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text);
   font-family: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
