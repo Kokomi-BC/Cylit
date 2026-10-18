@@ -253,8 +253,36 @@ try {
     asideWidth.value = Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX_WIDE, Math.round(savedW)));
   }
 } catch { /* 隐私模式下忽略 */ }
-/** 给 `<style>` 里的 `v-bind()` 用：宽度是响应式的，拖到哪侧栏就是多宽 */
-const asideWidthPx = computed(() => `${asideWidth.value}px`);
+
+/* ------------------------------ 侧栏浮窗（对话拎出来） ------------------------------ */
+/**
+ * 用户口径 2026-11-19：「侧栏对话想要一个切换至浮层打开的按钮，点了就收起侧栏」。
+ *
+ * 为什么**复用同一块 DOM** 而不是另开一个浮层组件：换一处渲染就等于换 `ReaderChat` 实例 ——
+ * 正在进行的那轮回答、会话层级、滚动位置全丢（`KeepAlive` 只在同一处缓存）。
+ * 所以浮窗只是把这块面板的外框从「贴左边缘的绝对定位栏」换成「fixed 的卡片」（见 `.aside-float`），
+ * 里面的东西一动不动。
+ *
+ * 与侧栏**互斥**：浮起来的同时把侧栏收起 —— 正文那一列因此回到整宽，
+ * 这才是「浮层」与「侧栏」真正的差别（不收的话浮窗等于白浮，正文还是窄的）。
+ */
+const chatFloat = ref(false);
+/** 浮窗矩形：拖标题栏只改 left/top，右下角手柄只改 w/h，两边都过 `clampFloatBox` */
+const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
+/** 最小边长 + 离视口边缘的留白 */
+const FLOAT_MIN_W = 320;
+const FLOAT_MIN_H = 260;
+const FLOAT_EDGE = 24;
+/* 几何全部走 `<style>` 里的 v-bind：模板不写行内 style，拖拽时重算的也就只有这几个属性 */
+const floatLeftPx = computed(() => `${floatBox.value.left}px`);
+const floatTopPx = computed(() => `${floatBox.value.top}px`);
+const floatWPx = computed(() => `${floatBox.value.w}px`);
+const floatHPx = computed(() => `${floatBox.value.h}px`);
+
+/** 给 `<style>` 里的 `v-bind()` 用：面板当前的**实际**宽度（浮窗时是浮窗宽度）。
+ *  CSS 里那份 `min-width` 也吃这个值 —— 不然浮窗时子元素会被撑回栏宽、
+ *  右侧那条 6px 滚动条被 `overflow: hidden` 裁掉。 */
+const asideWidthPx = computed(() => `${chatFloat.value ? floatBox.value.w : asideWidth.value}px`);
 
 /**
  * 侧栏占位宽度（0 = 收起）：正文那一列靠它让位。
@@ -1388,6 +1416,7 @@ function onWindowResize() {
   // 窗口变小后胶囊可能落到允许区域外（左右是正文列、下方要留弹出层）
   if (capsuleEl.value) { enforceCapsuleBounds(); syncToastDrop(); placeCapPanel(); }
   winWidth.value = window.innerWidth;
+  if (chatFloat.value) clampFloatBox();   // 窗口变小后浮窗可能越界
   syncPaneWidth();
 }
 
@@ -1480,6 +1509,101 @@ async function afterAsideResize() {
   syncPaneWidth();
   watchContentSize();
 }
+
+/* ------------------------------ 侧栏浮窗：开 / 收 / 拖 ------------------------------ */
+
+/** 夹进视口：打开、拖动、改尺寸、窗口 resize 全走这一条 */
+function clampFloatBox() {
+  const b = floatBox.value;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  b.w = Math.round(Math.max(FLOAT_MIN_W, Math.min(b.w, vw - FLOAT_EDGE * 2)));
+  b.h = Math.round(Math.max(FLOAT_MIN_H, Math.min(b.h, vh - FLOAT_EDGE * 2)));
+  b.left = Math.round(Math.max(FLOAT_EDGE, Math.min(b.left, vw - b.w - FLOAT_EDGE)));
+  b.top = Math.round(Math.max(FLOAT_EDGE, Math.min(b.top, vh - b.h - FLOAT_EDGE)));
+}
+
+/** 每次打开都落在**右下角**：胶囊工具栏在上方，两边不抢地盘 */
+function resetFloatBox() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = Math.min(ASIDE_W_CHAT, vw - FLOAT_EDGE * 2);
+  const h = Math.min(560, vh - FLOAT_EDGE * 2);
+  floatBox.value = { w, h, left: vw - w - FLOAT_EDGE, top: vh - h - FLOAT_EDGE };
+  clampFloatBox();
+}
+
+/** 切到浮层：**同时收起侧栏**（用户口径），正文因此回到整宽 */
+async function openChatFloat() {
+  if (isNarrow.value || chatFloat.value) return;
+  pinReadingAnchor();                 // 栏宽要变，先钉住正在读的那一行
+  sideTab.value = 'chat';
+  resetFloatBox();
+  chatFloat.value = true;
+  if (asideOpen.value) {
+    asideOpen.value = false;
+    try { localStorage.setItem(asideKey, '0'); } catch { /* 忽略 */ }
+  }
+  await nextTick();
+  syncPaneWidth();
+}
+
+/** 回到侧栏：贴回左边并展开（与「切到浮层」是同一枚按钮的两个方向） */
+async function dockChatFromFloat() {
+  if (!chatFloat.value) return;
+  pinReadingAnchor();
+  chatFloat.value = false;
+  sideTab.value = 'chat';
+  asideOpen.value = true;
+  try { localStorage.setItem(asideKey, '1'); } catch { /* 忽略 */ }
+  await nextTick();
+  syncPaneWidth();
+}
+
+/** 关掉浮窗：**不回侧栏**（关就是关），侧栏保持收起、正文仍是整宽 */
+function closeChatFloat() {
+  chatFloat.value = false;
+}
+
+/** 浮窗的拖动 / 改尺寸：与侧栏把手同一套 pointer 捕获（拖出窗口再回来也不会断） */
+const floatDrag = { on: false, mode: '' as '' | 'move' | 'size', sx: 0, sy: 0, ox: 0, oy: 0, ow: 0, oh: 0 };
+
+function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size') {
+  // 标题栏上那两枚按钮（回到侧栏 / ×）不参与拖动
+  if (mode === 'move' && (ev.target as HTMLElement | null)?.closest?.('button')) return;
+  const el = ev.currentTarget as HTMLElement | null;
+  floatDrag.on = true;
+  floatDrag.mode = mode;
+  floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
+  floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
+  floatDrag.ow = floatBox.value.w; floatDrag.oh = floatBox.value.h;
+  try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
+  ev.preventDefault();
+}
+
+function onFloatPointerMove(ev: PointerEvent) {
+  if (!floatDrag.on) return;
+  if (ev.buttons === 0) { onFloatPointerUp(ev); return; }   // 兜底：pointerup 丢了
+  const dx = ev.clientX - floatDrag.sx;
+  const dy = ev.clientY - floatDrag.sy;
+  const b = floatBox.value;
+  if (floatDrag.mode === 'move') { b.left = floatDrag.ox + dx; b.top = floatDrag.oy + dy; }
+  else { b.w = floatDrag.ow + dx; b.h = floatDrag.oh + dy; }
+  clampFloatBox();
+}
+
+function onFloatPointerUp(ev: PointerEvent) {
+  if (!floatDrag.on) return;
+  floatDrag.on = false;
+  floatDrag.mode = '';
+  try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
+}
+
+/* 三条线都指向「同一时刻只有一个」：侧栏被别处打开 → 收浮窗；变窄屏（抽屉）→ 收浮窗；
+   页签离开对话 → 收回侧栏（浮窗只承载对话，见 `.float-bar` 的说明）。 */
+watch(asideOpen, (v) => { if (v && chatFloat.value) chatFloat.value = false; });
+watch(isNarrow, (v) => { if (v) chatFloat.value = false; });
+watch(sideTab, (v) => { if (chatFloat.value && v !== 'chat') void dockChatFromFloat(); });
 
 /* ------------------------------ 定位 ------------------------------ */
 /** 「就是这一块」的短暂提醒：跳过去之后让整行亮一下再淡出（CSS 动画，见 ReaderPageRows）。 */
@@ -5306,7 +5430,7 @@ useHotkeys({
   '[': () => { toggleAside(); },
   // 侧栏页签**不用左右键切换**（用户口径：图标换行、全部可见）。
   '/': () => { void focusSearchBox(); },
-  Escape: () => { hideMenu(); mobilePane.value = ''; },
+  Escape: () => { hideMenu(); mobilePane.value = ''; if (chatFloat.value) closeChatFloat(); },
 }, () => !loading.value && !fatal.value);
 
 /* ------------------------------ 其它 ------------------------------ */
@@ -5427,6 +5551,7 @@ function renderMarkdown(text?: string | null) {
       v-else
       :class="['reader',
                asideVisible ? '' : 'no-aside',
+               chatFloat ? 'aside-float' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
                { resizing: asideResizing }]"
     >
@@ -5739,7 +5864,27 @@ function renderMarkdown(text?: string | null) {
         <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），
              侧栏开着时它正好落在这一行的最左 —— 所以这里是"胶囊正左侧就是关闭按钮"。
              `padding-left: 62px` 给它让位（12 + 38 + 12）。 -->
-        <div class="aside-head">
+        <!-- 浮窗的标题栏：**兼拖动抓手**（按住它挪窗）。高度比侧栏头部矮一截 ——
+             浮窗只承载「对话」，页签胶囊在这里没有意义；那两枚按钮跨在右上角。 -->
+        <div
+          v-if="chatFloat"
+          class="float-bar"
+          @pointerdown="(ev) => onFloatPointerDown(ev, 'move')"
+          @pointermove="onFloatPointerMove"
+          @pointerup="onFloatPointerUp"
+          @pointercancel="onFloatPointerUp"
+        >
+          <AppIcon name="chat" :size="13" class="float-ico" />
+          <span class="float-title">对话</span>
+          <span class="spacer"></span>
+          <button class="btn ghost icon sm" title="回到侧栏" @click="dockChatFromFloat">
+            <AppIcon name="collapse" :size="14" />
+          </button>
+          <button class="btn ghost icon sm" title="关闭浮窗" @click="closeChatFloat">
+            <AppIcon name="close" :size="13" />
+          </button>
+        </div>
+        <div v-else class="aside-head">
             <div class="side-tabs-wrap">
             <button
               v-if="tabsScroll.left"
@@ -5772,6 +5917,16 @@ function renderMarkdown(text?: string | null) {
               <AppIcon name="chevron-right" :size="13" />
             </button>
           </div>
+          <!-- 「浮层打开」只对**对话**有意义（用户口径）：点它把这一栏拎成浮窗，顺手收起侧栏。
+               浮窗标题栏里同一位置换成了「回到侧栏」—— 两边互切。 -->
+          <button
+            v-if="!isNarrow && sideTab === 'chat'"
+            class="btn ghost icon sm aside-float-btn"
+            title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
+            @click="openChatFloat"
+          >
+            <AppIcon name="expand" :size="14" />
+          </button>
         </div>
         <!-- 目录页签里再分「目录 / 页面视图」（《修改计划》第二步）：两者**共享同一个"读到哪"**
              —— `currentPage` 都从正文当前行来，页面视图据此高亮并把缩略图滚进可视区。 -->
@@ -5901,6 +6056,16 @@ function renderMarkdown(text?: string | null) {
           @pointercancel="onResizeUp"
           @lostpointercapture="onResizeUp"
           @dblclick="resetAsideWidth"
+        />
+        <!-- 浮窗右下角：拖它改宽高（浮窗里贴边那条竖把手没有意义，见样式） -->
+        <div
+          v-if="chatFloat"
+          class="float-grip"
+          title="拖动改浮窗大小"
+          @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"
+          @pointermove="onFloatPointerMove"
+          @pointerup="onFloatPointerUp"
+          @pointercancel="onFloatPointerUp"
         />
       </aside>
 
@@ -6585,6 +6750,31 @@ function renderMarkdown(text?: string | null) {
   flex: none; display: flex; align-items: center;
   height: 58px; padding: 0 12px 0 62px;
 }
+/* 侧栏头部右端那枚「浮层打开」：与页签胶囊同高，压在胶囊右侧的空白里 */
+.aside-float-btn { flex: none; margin-left: 4px; }
+
+/* 浮窗标题栏：兼**拖动抓手**。比侧栏头部矮一截 —— 浮窗是临时看一眼对话，
+   不该把 58px 花在一条页签胶囊上；`touch-action: none` 让平板上的拖动不变成滚正文。 */
+.float-bar {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  height: 42px; padding: 0 6px 0 12px;
+  background: var(--bg-elev); border-bottom: 1px solid var(--divider);
+  cursor: grab; touch-action: none; user-select: none;
+}
+.float-bar:active { cursor: grabbing; }
+.float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.float-ico { color: var(--text-dim); flex: none; }
+/* 右下角改尺寸手柄：只占那一小角（滚动条最末端那里本来就是圆角，不碍事）。
+   `min-width: 0` 必须写：下面那条 `.reader-aside > *` 的兜底最小宽度会把它撑成整栏宽。 */
+.reader-aside > .float-grip {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; min-width: 0;
+  z-index: 4; cursor: nwse-resize; touch-action: none;
+}
+.reader-aside > .float-grip::after {
+  content: ''; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 1.5px solid var(--text-faint); border-bottom: 1.5px solid var(--text-faint);
+  border-radius: 0 0 2px 0;
+}
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -6653,13 +6843,33 @@ function renderMarkdown(text?: string | null) {
      不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，
      又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。
      宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
-  .reader-aside > * { min-width: v-bind(asideWidthPx); }
+  /* 右边缘让出 9px 的 gutter：那一条是**拖宽把手**的热区，侧栏里的滚动条不能压在它底下 ——
+     压在底下就变成「左右拖宽度」和「上下拖滚动条」抢同一个位置（用户口径 2026-11-19：
+     想拖滚动条结果拖成了改宽度）。让出之后滚动条落在把手左侧，两个手势互不干扰。 */
+  .reader-aside { padding-right: 9px; }
+  /* 子元素的最小宽度跟着减 10px（9 gutter + 1 边框）：不减的话它们会被撑回整栏宽，
+     右侧那条滚动条又被 overflow:hidden 裁掉 —— 等于没让。 */
+  .reader-aside > * { min-width: calc(v-bind(asideWidthPx) - 10px); }
+  .reader-aside > .aside-resizer, .reader-aside > .float-grip { min-width: 0; }
 }
 /* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
    也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
 .reader.no-aside .reader-aside {
   transform: translateX(-100%); opacity: 0; pointer-events: none;
 }
+/* 浮窗（对话拎出来）：**同一块 DOM 换个外框** —— 位置尺寸由 `floatBox` 经 v-bind 给，
+   这里只管「卡片」该长什么样，并把收起状态那份 transform/opacity/pointer-events 顶回来
+   （浮窗时侧栏本来就是收起的，`.no-aside` 那三条必须让位）。 */
+.reader.aside-float .reader-aside {
+  position: fixed; right: auto; bottom: auto;
+  left: v-bind(floatLeftPx); top: v-bind(floatTopPx);
+  width: v-bind(floatWPx); height: v-bind(floatHPx);
+  transform: none; opacity: 1; pointer-events: auto;
+  border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow-flyout);
+}
+/* 贴边那条竖把手在浮窗里没有意义（换成了右下角手柄） */
+.reader.aside-float .reader-aside > .aside-resizer { display: none; }
 /* 侧栏页签：**图标 + 文字**，**一行到底、不换行**；一行放不下就左右滚动（用户口径）。
  * 滚动条隐藏（保持干净），鼠标滚轮 / 触控板 / Shift+滚轮都能滚，见 `onSideTabsWheel`；
  * 切页签时把当前那个滚进可视区（`scrollIntoView`），左右两端还有圆形箭头按钮（见下）。
