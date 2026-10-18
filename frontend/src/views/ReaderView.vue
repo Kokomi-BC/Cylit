@@ -270,6 +270,8 @@ try {
 const chatFloat = ref(false);
 /** 浮窗矩形：拖标题栏只改 left/top，右下角手柄只改 w/h，两边都过 `clampFloatBox` */
 const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
+/** 拖角改大小的增益：指针移动 1px，宽高变化 1.5px（见 `applyFloatMove`） */
+const RESIZE_GAIN = 1.5;
 /** 最小边长 + 离视口边缘的留白 */
 const FLOAT_MIN_W = 320;
 const FLOAT_MIN_H = 260;
@@ -1675,6 +1677,10 @@ function applyFloatMove() {
   if (!at || !floatDrag.on) return;
   const dx = at.x - floatDrag.sx;
   const dy = at.y - floatDrag.sy;
+  /* 拖角改大小的**增益**（用户口径 2026-11-19：灵敏度再高一点）：1:1 的时候把 420×560 的
+     浮窗拉到 900 宽要拖 480px，手指很容易拖到屏幕边上；乘 1.5 之后一半的距离就到位，
+     配合 0.5px 的取整仍然能停到想要的尺寸。 */
+  const k = RESIZE_GAIN;
   const b = floatBox.value;
   if (floatDrag.mode === 'move') {
     /* 只改位移，`left/top` 留在按下那一刻（见 `floatShift` 的说明）。夹取在这里自己做：
@@ -1689,12 +1695,12 @@ function applyFloatMove() {
     /* 左下角：**右下角钉住**（`right` 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
     const right = floatDrag.ox + floatDrag.ow;
     b.top = floatDrag.oy;
-    b.w = floatDrag.ow - dx;
-    b.h = floatDrag.oh + dy;
+    b.w = floatDrag.ow - dx * k;
+    b.h = floatDrag.oh + dy * k;
     clampFloatBox();
     b.left = right - b.w;
   } else {
-    b.w = floatDrag.ow + dx; b.h = floatDrag.oh + dy;
+    b.w = floatDrag.ow + dx * k; b.h = floatDrag.oh + dy * k;
   }
   clampFloatBox();
 }
@@ -1702,6 +1708,9 @@ function applyFloatMove() {
 function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
   if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
+  /* 最后一帧里"移动 + 松手"挤在一起时（快速一划），合并中的位移还没落地 —— 这里补算一次，
+     否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
+  if (floatMoveAt && floatDrag.on) applyFloatMove();
   floatMoveAt = null;
   if (floatDrag.mode === 'move' && (floatShift.value.x || floatShift.value.y)) {
     /* 松手：把位移**一次性**落回真实坐标，然后清掉 transform（否则下次打开还偏着） */
@@ -6974,7 +6983,8 @@ function renderMarkdown(text?: string | null) {
    浮窗的圆角与投影已经把"卡片边界"说清楚了，再画一枚小角标只是噪音。
    `min-width: 0` 必须写：上面那条 `.reader-aside > *` 的兜底最小宽度会把它撑成整栏宽。 */
 .reader-aside > .float-grip {
-  position: absolute; bottom: 0; width: 20px; height: 20px; min-width: 0;
+  /* 28px：角上什么都不画，命中区大一点才拖得到（用户口径 2026-11-19：灵敏度再高一档） */
+  position: absolute; bottom: 0; width: 28px; height: 28px; min-width: 0;
   z-index: 4; touch-action: none;
 }
 .reader-aside > .float-grip.br { right: 0; cursor: nwse-resize; }
