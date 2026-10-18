@@ -25,6 +25,7 @@
  * 本组件**不持有业务状态**：谁开、开在哪、里面放什么，全由父组件给。
  */
 import { nextTick, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
+import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import AppIcon from '@/components/AppIcon.vue';
 
 const props = withDefaults(defineProps<{
@@ -118,8 +119,8 @@ function headLoopTick() {
 /* 拖动/缩放期间锁住全文选区：PDF 文本层是真实 DOM（markdown 侧不是），
    指针扫过时浏览器会顺手起一个选区（用户报的「拖顶部时 PDF 里被选中」）。
    只改 body 的 user-select，松手立刻还原。 */
-function lockSelect() { document.body.style.userSelect = 'none'; }
-function unlockSelect() { document.body.style.userSelect = ''; }
+function lockSelect() { lockFloatSelection(true); }
+function unlockSelect() { lockFloatSelection(false); }
 
 function onHeadDown(ev: PointerEvent) {
   // 标题栏上的控件（图钉 / 关闭 / 色点 / 取色器）不参与拖动，否则点它们会顺手把卡片挪一下
@@ -154,6 +155,7 @@ function onHeadMove(ev: PointerEvent) {
 function applyHeadMove() {
   const at = moveAt;
   if (!at) return;
+  clearDocSelection();
   // 夹在视口里：至少留一条边能抓得住（不然拖出去就再也点不到关闭了）
   const left = Math.min(Math.max(drag.ox + (at.x - drag.sx), 8 - drag.w + 48), window.innerWidth - 48);
   const top = Math.min(Math.max(drag.oy + (at.y - drag.sy), 4), window.innerHeight - 32);
@@ -174,12 +176,9 @@ function onHeadUp(ev: PointerEvent) {
   if (moveAt) applyHeadMove();
   moveAt = null;
   drag.on = false;
-  /* 类名与 body 上的选区锁**延到下一帧**再撤（各要一次样式重算，不该挤在落定那一帧） */
-  requestAnimationFrame(() => {
-    if (drag.on || rs.on) return;
-    markDragging(false);
-    unlockSelect();
-  });
+  /* 类名与闸门同步撤（`.dragging` 只影响抓手药丸、闸门只影响 PDF 文字层，没有文档级重算） */
+  markDragging(false);
+  unlockSelect();
   /* 拖动与落定**是同一种写法**（left/top）：没有 transform 要还原、没有合成层要拆，
      松手那一帧不需要重绘 —— 所以不会「拖完闪一下」（用户口径 2026-11-24）。 */
   const node = el.value;
@@ -268,7 +267,7 @@ watch(el, (node) => {
     ro.observe(node);
   }
 });
-onBeforeUnmount(() => ro?.disconnect());
+onBeforeUnmount(() => { ro?.disconnect(); releaseFloatSelection(); });
 
 /* -------------------------------- 右下角拖动放大 -------------------------------- */
 /** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
@@ -336,6 +335,9 @@ function onResizeMove(ev: PointerEvent) {
 function applyResizeMove() {
   const at = rsAt;
   if (!at || !rs.on) return;
+  /* 手势期间逐帧清选区（只在真有选区时才动）：抓手是 `user-select: none`，
+     浏览器的锚点会跳到卡片正文上，拖一下就划出一片卡片自己的文字。 */
+  clearDocSelection();
   const MIN_W = 260;
   const MIN_H = 160;
   const dx = at.x - rs.sx;
@@ -371,12 +373,9 @@ function onResizeUp(ev: PointerEvent) {
   if (rsAt) applyResizeMove();
   rsAt = null;
   rs.on = false;
-  requestAnimationFrame(() => {
-    if (drag.on || rs.on) return;
-    brEl.value?.classList.remove('is-on');
-    blEl.value?.classList.remove('is-on');
-    unlockSelect();
-  });
+  brEl.value?.classList.remove('is-on');
+  blEl.value?.classList.remove('is-on');
+  unlockSelect();
   /* 同步回响应式状态：值与刚才写进 DOM 的一模一样，Vue 那次 patch 是空操作 */
   pos.value = { left: rlive.left, top: rs.st };
   sizeW.value = rlive.w;

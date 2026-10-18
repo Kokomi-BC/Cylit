@@ -12,6 +12,7 @@
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
+import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import type { CSSProperties } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
@@ -1728,7 +1729,15 @@ function applyFloatDom() {
   host.style.bottom = 'auto';
   /* 焦点层：与两张 FloatingCard 同一档（62 = 有焦点 / 60 = 没有，见 topLayer），
      于是浮窗和两张卡不会互相压死，也不去碰 30/31/40 那几档既有层级。 */
-  host.style.zIndex = topLayer.value === 'chat' ? '62' : '60';
+  const focused = topLayer.value === 'chat';
+  host.style.zIndex = focused ? '62' : '60';
+  /* 两枚角把手也**跟着同一档走**（63 / 61）：写死 63 时，浮窗没焦点（60）而笔记卡有焦点（62），
+     浮窗的把手照样压在人家卡片上面（用户口径 2026-11-24 第 1 条：指示器层级不对）。 */
+  const gripZ = focused ? '63' : '61';
+  const gbl = gripBlEl.value;
+  if (gbl) gbl.style.zIndex = gripZ;
+  const gbr = gripBrEl.value;
+  if (gbr) gbr.style.zIndex = gripZ;
   /* 手势进行中不要插手：几何的真值在 floatLive 里，由手势循环每帧写 */
   if (!floatDrag.on) writeFloatDom(floatBox.value);
 }
@@ -1756,6 +1765,9 @@ const readerEl = ref<HTMLElement | null>(null);
 function setFloatDragging(on: boolean) {
   readerEl.value?.classList.toggle('float-dragging', on);
 }
+
+/* 卸载兜底：手势中途离开阅读器时闸门要放掉，否则 PDF 文字层会一直不可选 */
+onUnmounted(() => releaseFloatSelection());
 
 function onFloatCardDown(ev: PointerEvent) {
   if (!chatFloat.value) return;
@@ -1797,10 +1809,9 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   startFloatLoop();
   try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
   ev.preventDefault();
-  /* ⚠️ 拖角改大小也要锁选区：只有 move 模式才会置 floatDragging，角落那条路径原来什么都不挡，
-     指针扫过 PDF 文本层就选中了一片（用户报的"拖动还是在 pdf 选区"）。这里统一在 body 上锁，
-     与 FloatingCard 的 lockSelect 同一手法，松手在 onFloatPointerUp 里还原。 */
-  document.body.style.userSelect = 'none';
+  /* 任何手势（拖头部 / 拖左右下角）都上闸：PDF 文字层写死了 user-select: text，
+     指针扫过它就会自己长出一段选区 —— 拖角放大时用户报的就是这个（2026-11-24 第 3 条）。 */
+  lockFloatSelection(true);
 }
 
 /**
@@ -1893,14 +1904,11 @@ function onFloatPointerUp(ev: PointerEvent) {
   floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
   floatDrag.on = false;
   floatDrag.mode = '';
-  /* ⚠️ 类名与 body 上的选区锁**延到下一帧**再撤：这两步各要一次样式重算（body 那条是整个文档），
-     挤在落定那一帧里只会把"松手"变成一次肉眼可见的卡顿/闪。延一帧没有任何副作用
-     （这一帧还锁着，只是用户看不出来）。 */
-  requestAnimationFrame(() => {
-    if (floatDrag.on) return;          // 这一帧里又开始了新的手势：留给那一次收尾
-    setFloatDragging(false);
-    document.body.style.userSelect = '';
-  });
+  /* 类名与选区闸门**同步**撤掉：`.float-dragging` 现在只影响抓手那一枚药丸，
+     闸门（`html.cy-float-gesture`）只影响 PDF 文字层 —— 都不再有文档级重算。
+     （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
+  setFloatDragging(false);
+  lockFloatSelection(false);
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
@@ -3267,7 +3275,12 @@ function onDragStart(ev: MouseEvent) {
      （用户报的正是这个），划词胶囊也会跟着没。输入框里放行原生行为。 */
   if (ev.button === 2) {
     const t = ev.target as HTMLElement | null;
-    if (!t?.closest?.('input, textarea, [contenteditable="true"]')) ev.preventDefault();
+    if (t?.closest?.('input, textarea, [contenteditable="true"]')) return;
+    /* 浮层（对话浮窗 / 笔记卡 / 解释卡）里要的是**浏览器原生右键菜单** ——「复制」就在里面
+       （用户口径 2026-11-24 第 2 条：想在浮层里选字，用系统菜单复制）。
+       正文里仍要挡住默认动作：否则浏览器会把选区折叠到点击处，划词胶囊那几项会整组消失。 */
+    if (t?.closest?.('.chat-host, [data-float-card]')) return;
+    ev.preventDefault();
     return;
   }
   if (ev.button !== 0) return;
@@ -5523,37 +5536,12 @@ function scheduleNoteHide() {
  * `stopPropagation`，冒泡阶段收不到；捕获阶段跑在它们之前，所以"拖标题、拖角"照样能锚住。
  * ⚠️ 翻页 / 滚动发生在卡片**外面**，不会触发 —— 正是用户的口径（"不含翻页"）。
  */
-/** 点任何浮层都顺手清掉正文里的选区（用户口径 2026-11-24）：浮层是另一层，
- *  点了它就不该还留着一段"看起来像待操作"的选中文字。 */
-let noteClearRaf = 0;
-let noteDragGuard = false;
-
-function clearDocSelection() {
-  const sel = window.getSelection();
-  if (sel && !sel.isCollapsed) sel.removeAllRanges();
-}
-
+/* 点浮层顺手清掉正文里的选区（浮层是另一层，点了它就不该还留着一段"看起来像待操作"的选中文字）。
+   ⚠️ 这里是**一次**，不是逐帧：以前在卡片的 pointerdown 上挂了一条 rAF 循环逐帧清，
+   结果卡片自己的文字也被一帧一帧清掉 —— 用户选不中、复制不了（2026-11-24 第 2 条）。
+   拖动/缩放期间的逐帧清现在归 `FloatingCard` 的手势循环管（只有真的在拖才清）。 */
 function onNoteCardPointerDown() {
   clearDocSelection();
-  /* 笔记浮层也要有"拖动/缩放期间持续清选区"的机制（用户口径 2026-11-24）：PDF 的原生划词
-     可能在按下之后才起来，只在 pointerdown 清一次挡不住 —— 这里在整段拖动期间逐帧清。 */
-  if (notePop.open) {
-    if (noteClearRaf) cancelAnimationFrame(noteClearRaf);
-    const tick = () => {
-      if (!noteDragGuard) { noteClearRaf = 0; return; }
-      clearDocSelection();
-      noteClearRaf = requestAnimationFrame(tick);
-    };
-    noteDragGuard = true;
-    noteClearRaf = requestAnimationFrame(tick);
-    const stop = () => {
-      noteDragGuard = false;
-      window.removeEventListener('pointerup', stop, true);
-      window.removeEventListener('pointercancel', stop, true);
-    };
-    window.addEventListener('pointerup', stop, true);
-    window.addEventListener('pointercancel', stop, true);
-  }
   if (notePop.open) notePop.anchored = true;
 }
 
@@ -7498,16 +7486,10 @@ function renderMarkdown(text?: string | null) {
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
 /* 会话头 / 列表头那一行：浮窗里往上留出抓手的位置，并整行当拖动把手 */
-/* 拖浮窗的那一会儿：整块阅读区都**不许选中文字**（指针会扫过正文/PDF 文本层） */
-/* ⚠️ 原来这里是 .reader.float-dragging, .reader.float-dragging * —— 那条通配后代选择器在拖动时
-   **每一帧都要对阅读区整棵子树（PDF 文本层有几百个节点）重算样式**，这正是浮窗抓手"卡卡的"的元凶：
-   抓手自己的 width 过渡被主线程的重排拖成一次次的跳变。user-select 会向下继承，所以只设在容器上就够，
-   不需要 * !important。 */
-.reader.float-dragging { user-select: none; }
-/* 拖动期间**定向**锁住 PDF 文本层（那是唯一真实可选中的一层）：不用通配 *，
-   只作用于 pdf 文本层容器与它的文字节点，帧开销可控。 */
-.reader.float-dragging :deep(.pdf-text-layer),
-.reader.float-dragging :deep(.pdf-text-layer span) { user-select: none; }
+/* 拖动期间**不写任何 user-select**（用户口径 2026-11-24 第 2 条）：
+   `.reader.float-dragging { user-select: none }` 会连浮层里的对话/笔记文字一起锁死 ——
+   用户想在浮层里框选一段复制就选不动。真正要挡的 PDF 文字层由 `utils/floatDrag.ts`
+   往 `<html>` 挂的 `cy-float-gesture` 定向处理（见 base.css），其余内容由手势循环逐帧清选区。 */
 .reader > .chat-host.float :deep(.thread-head),
 .reader > .chat-host.float :deep(.list-head) {
   padding-top: 12px; cursor: grab; user-select: none; touch-action: none;
@@ -7546,10 +7528,11 @@ function renderMarkdown(text?: string | null) {
      left/top 由 `floatGripStyle` 按 `floatBox` 算出来（箱子边缘比卡片边缘再出去 3px）。 */
   position: fixed;
   width: 20px; height: 20px; min-width: 0;
-  /* 63：**永远压在浮窗卡片之上** —— 卡片自己现在是 60（没焦点）/ 62（有焦点，见 topLayer），
-     而这两枚把手是它的缩放控件，被任何一张 62 的浮层盖住就再也拖不动了。
-     （原来卡片固定 60，62 就够；改成焦点排序后必须再抬一格。） */
-  z-index: 63; touch-action: none;
+  /* 层级**跟着焦点走**（由 `applyFloatDom` 行内写 63 / 61），CSS 这里只是兜底值 61：
+     写死 63 的话，浮窗没焦点（60）而笔记卡有焦点（62）时，浮窗的两枚角把手照样压在人家卡片上面
+     —— 那就是用户报的「指示器层级不对」（2026-11-24 第 1 条）。
+     61 = 压在浮窗自己那张卡（60）之上，又低于有焦点的浮层（62）。 */
+  z-index: 61; touch-action: none;
 }
 .reader > .float-grip.br { right: 0; cursor: nwse-resize; }
 .reader > .float-grip.bl { left: 0; cursor: nesw-resize; }

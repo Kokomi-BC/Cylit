@@ -717,3 +717,10 @@ table.data.fixed { table-layout: fixed; }
   .page-head h1 { font-size: 19px; }
 }
 
+/* 浮层手势期间（`utils/floatDrag.ts` 给 `<html>` 挂的临时类）：**只有 PDF 文字层**不许起选区。
+ * 它是全站唯一在 CSS 里写死 `user-select: text` 的层 —— 指针扫过就会自己长出一段原生选区
+ * （用户口径 2026-11-24 第 3 条：拖左右下角放大时会选中 PDF 内容）。
+ * ⚠️ **不要**把它扩成"整个文档 user-select: none"：那会把浮层自己的文字也锁死（选不中、复制不了），
+ * 而且一次手势要两次文档级样式重算。其余内容的选区由手势循环逐帧清（`clearDocSelection`）。 */
+html.cy-float-gesture .pdf-text-layer,
+html.cy-float-gesture .pdf-text-layer span { user-select: none !important; }
