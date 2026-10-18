@@ -310,29 +310,20 @@ const asidePreviewShift = computed<CSSProperties>(() => ({}));
  *  平均帧 310ms（用户报的"拖动对话浮层卡顿"）。行内 style 只让它自己那一层重算。 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
-/**
- * 拖浮窗时的位移（**只走 transform**）。
- *
- * 改 `left/top` 会让这 420×560 的卡片连同它让出来的那块正文一起重绘（实测 p50 约 20ms，
- * 拖动时肉眼可见地"跟手但不顺"）；`translate3d` 是合成层属性，拖动期间只有这一层在动，
- * 松手时再把结果落回 `floatBox.left/top`（一次性）。
- */
-const floatShift = ref({ x: 0, y: 0 });
-/** 正在用 transform 拖（给根元素加类：关掉侧栏那条 0.26s 的 transform 过渡，否则会"黏手"） */
-const floatMoving = ref(false);
 
 /** 浮窗的行内几何（拖拽时逐帧变的就是这几个值，写在与浮窗**同一个元素**上） */
 const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
   ? {
+      /* ⚠️ 拖动**直接改 left/top**，不用 transform 平移：试过 translate3d，性能一样
+       *  （实测 p50 都是 ~20ms），但松手时"落回 left/top + 清 transform"会在合成层上
+       *  多出一帧重绘（用户口径 2026-11-19 报的那一帧闪烁）。现在拖动与落位是同一种写法，
+       *  松手时**什么都不用改**，也就没有那一帧。 */
       position: 'fixed', left: `${floatBox.value.left}px`, top: `${floatBox.value.top}px`,
       width: `${floatBox.value.w}px`, height: `${floatBox.value.h}px`,
       right: 'auto', bottom: 'auto',
       /* 子元素的最小宽度（`.reader-aside > *` 那条）也跟着浮窗宽度走 —— 用行内变量，
          而不是让 CSS 去读组件根上的变量 */
       '--aside-min-w': `${floatBox.value.w}px`,
-      ...(floatShift.value.x || floatShift.value.y
-        ? { transform: `translate3d(${floatShift.value.x}px, ${floatShift.value.y}px, 0)` }
-        : {}),
     }
   : {}));
 
@@ -1622,8 +1613,7 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   const el = ev.currentTarget as HTMLElement | null;
   floatDrag.on = true;
   floatDrag.mode = mode;
-  floatShift.value = { x: 0, y: 0 };
-  floatMoving.value = mode === 'move';
+
   floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
   floatDrag.ow = floatBox.value.w; floatDrag.oh = floatBox.value.h;
@@ -1654,13 +1644,9 @@ function applyFloatMove() {
   const k = RESIZE_GAIN;
   const b = floatBox.value;
   if (floatDrag.mode === 'move') {
-    /* 只改位移，`left/top` 留在按下那一刻（见 `floatShift` 的说明）。夹取在这里自己做：
-       位移不经过 `clampFloatBox`（那条读的是 left/top）。 */
-    const maxX = Math.max(FLOAT_EDGE, window.innerWidth - b.w - FLOAT_EDGE);
-    const maxY = Math.max(FLOAT_EDGE, window.innerHeight - b.h - FLOAT_EDGE);
-    const nx = Math.max(FLOAT_EDGE, Math.min(floatDrag.ox + dx, maxX));
-    const ny = Math.max(FLOAT_EDGE, Math.min(floatDrag.oy + dy, maxY));
-    floatShift.value = { x: nx - floatDrag.ox, y: ny - floatDrag.oy };
+    b.left = floatDrag.ox + dx;
+    b.top = floatDrag.oy + dy;
+    clampFloatBox();
     return;
   } else if (floatDrag.mode === 'size-left') {
     /* 左下角：**右下角钉住**（`right` 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
@@ -1683,18 +1669,9 @@ function onFloatPointerUp(ev: PointerEvent) {
      否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
   if (floatMoveAt && floatDrag.on) applyFloatMove();
   floatMoveAt = null;
-  if (floatDrag.mode === 'move' && (floatShift.value.x || floatShift.value.y)) {
-    /* 松手：把位移**一次性**落回真实坐标，然后清掉 transform（否则下次打开还偏着） */
-    floatBox.value.left += floatShift.value.x;
-    floatBox.value.top += floatShift.value.y;
-  }
-  floatShift.value = { x: 0, y: 0 };
+  /* 拖动期间就是直接写 `left/top`，所以松手**不需要再落位、也没有 transform 要清** ——
+     这正是"松手那一帧闪烁"的根治办法（用户口径 2026-11-19 第二轮）。 */
   floatDrag.on = false;
-  /* ⚠️ `float-moving` 要**多留一帧**：`.`reader-aside` 上那条 `transition: transform .26s` 一旦
-   *  在 transform 归零的同一帧恢复，浏览器会把"translate3d(...) → none"当成一次真变化补间，
-   *  看起来就是松手后卡片又滑回去的闪烁动画（用户口径 2026-11-19 报的正是这个）。 */
-  floatMoving.value = true;
-  requestAnimationFrame(() => { if (!floatDrag.on) floatMoving.value = false; });
   floatDrag.mode = '';
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
@@ -5714,7 +5691,7 @@ function renderMarkdown(text?: string | null) {
       :class="['reader',
                asideVisible ? '' : 'no-aside',
                chatFloat ? 'aside-float' : '',
-               floatMoving ? 'float-moving' : '',
+
                asidePreviewW !== null ? 'aside-previewing' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
                { resizing: asideResizing }]"
@@ -7087,14 +7064,9 @@ function renderMarkdown(text?: string | null) {
 /* 这里的几何全由 `asideFloatStyle` 行内给（不写 v-bind：见那条 computed 的说明） */
 .reader.aside-float .reader-aside {
   transform: none; opacity: 1; pointer-events: auto;
-  /* 常驻一个合成层：拖动结束后不再"降级→再升级"，避免松手那一下整块重绘的闪烁 */
-  will-change: transform;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
 }
-/* 拖动浮窗期间：**关掉**侧栏那条 0.26s 的 transform 过渡（不关就是"卡片黏在指针后面"），
-   并把这一层提前提成合成层 —— 逐帧只走 transform，正文那块不用跟着重绘。 */
-.reader.float-moving .reader-aside { transition: none; will-change: transform; }
 
 /* 浮窗里没有「贴边那条竖把手」可拖（换成了右/左下角手柄），规则见 `.reader > .aside-resizer` */
 /* 侧栏页签：**图标 + 文字**，**一行到底、不换行**；一行放不下就左右滚动（用户口径）。
