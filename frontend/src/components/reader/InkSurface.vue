@@ -53,13 +53,16 @@ function clearCv(cv: HTMLCanvasElement | null) {
 }
 
 function repaint() {
-  const pen = clearCv(baseCv.value);
-  const marker = clearCv(markerCv.value);
-  clearCv(liveCv.value);
-  if (!near.value) return;
+  // 没在批注模式 / 不在视口附近：一块画布都不用碰（见 sizeCanvases 的说明）
+  if (!props.enabled || !near.value) return;
   const w = size.value.w;
   const h = size.value.h;
   if (!w || !h) return;
+  // 荧光笔只在真用过时才占一块整页画布
+  if (hasMarkerStrokes()) ensureSize(markerCv.value, w, h, dpr());
+  const pen = clearCv(baseCv.value);
+  const marker = clearCv(markerCv.value);
+  clearCv(liveCv.value);
   if (pen) paintDoc(pen, { ...state.value.doc, strokes: state.value.doc.strokes.filter((s) => s.tool === 'pen') }, w, h);
   if (marker) paintDoc(marker, { ...state.value.doc, strokes: state.value.doc.strokes.filter((s) => s.tool === 'highlighter') }, w, h);
 }
@@ -70,21 +73,49 @@ function paintLive(stroke: InkStroke | null) {
   paintStroke(ctx, stroke, size.value.w, size.value.h);
 }
 
+function hasMarkerStrokes(): boolean {
+  return inkState(docKey.value).doc.strokes.some((s) => s.tool === 'highlighter');
+}
+
+/**
+ * 画布的**离屏缓冲区**很贵：2× dpr 的整页画布 ≈ 20MB，一页三块、22 页就是 1GB ——
+ * 平板一进批注模式就卡住（实测进入瞬间分配 2.57 亿像素）。
+ * 所以：只在「批注模式 + 视口附近」才真的分配，其它时候保持 1×1。
+ */
+function ensureSize(cv: HTMLCanvasElement | null, w: number, h: number, ratio: number): void {
+  if (!cv) return;
+  const cw = Math.max(1, Math.round(w * ratio));
+  const ch = Math.max(1, Math.round(h * ratio));
+  if (cv.width === cw && cv.height === ch) return;   // 尺寸没变：别重新分配（会清空 + 重排）
+  cv.width = cw;
+  cv.height = ch;
+  cv.style.width = w + 'px';
+  cv.style.height = h + 'px';
+}
+
+/** 退出批注模式：把三块画布缩到 1×1，立刻把几十 MB 还给系统 */
+function releaseCanvases(): void {
+  for (const cv of [baseCv.value, markerCv.value, liveCv.value]) {
+    if (!cv) continue;
+    cv.width = 1;
+    cv.height = 1;
+    cv.style.width = '0px';
+    cv.style.height = '0px';
+  }
+}
+
 function sizeCanvases() {
   const el = root.value;
   if (!el) return;
+  if (!props.enabled || !near.value) return;   // 见 ensureSize 的说明
   const w = el.clientWidth;
   const h = el.clientHeight;
   if (!w || !h) return;
   size.value = { w, h };
   const ratio = dpr();
-  for (const cv of [baseCv.value, markerCv.value, liveCv.value]) {
-    if (!cv) continue;
-    cv.width = Math.max(1, Math.round(w * ratio));
-    cv.height = Math.max(1, Math.round(h * ratio));
-    cv.style.width = w + 'px';
-    cv.style.height = h + 'px';
-  }
+  ensureSize(baseCv.value, w, h, ratio);
+  ensureSize(liveCv.value, w, h, ratio);
+  if (hasMarkerStrokes()) ensureSize(markerCv.value, w, h, ratio);
   repaint();
 }
 
@@ -310,8 +341,11 @@ let io: IntersectionObserver | null = null;
 
 onMounted(async () => {
   await nextTick();
-  sizeCanvases();
-  void ensureInkLoaded(docKey.value);
+  // 不在批注模式就先不分配、也不拉数据（进来时才做，见 props.enabled 的 watch）
+  if (props.enabled) {
+    sizeCanvases();
+    void ensureInkLoaded(docKey.value);
+  }
   if (typeof ResizeObserver !== 'undefined' && root.value) {
     let lastW = 0;
     let lastH = 0;
@@ -328,7 +362,14 @@ onMounted(async () => {
   }
   if (typeof IntersectionObserver !== 'undefined' && root.value) {
     io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) near.value = true;
+      for (const e of entries) {
+        if (e.isIntersecting) { near.value = true; continue; }
+        // 离视口远了就把画布还回去：一页两块 2× dpr 画布 ≈ 40MB，翻十几页就吃掉几百 MB
+        if (near.value && !drawing && !erasing) {
+          near.value = false;
+          releaseCanvases();
+        }
+      }
     }, { rootMargin: '600px 0px' });
     io.observe(root.value);
   } else {
@@ -344,10 +385,25 @@ onBeforeUnmount(() => {
 });
 
 watch(() => state.value.version, () => { if (near.value) repaint(); });
-watch(near, (on) => { if (on) sizeCanvases(); });
-watch(() => props.enabled, (on) => { if (on) { void ensureInkLoaded(docKey.value); sizeCanvases(); } });
+watch(near, (on) => {
+  if (!on || !props.enabled) return;
+  void ensureInkLoaded(docKey.value);
+  sizeCanvases();
+});
+watch(() => props.enabled, (on) => {
+  if (on) {
+    void ensureInkLoaded(docKey.value);
+    sizeCanvases();
+  } else {
+    releaseCanvases();
+  }
+});
 // 切视图（原文/译文/对照）= 换一份批注：重新拉那一份并重画
-watch(inkView, () => { void ensureInkLoaded(docKey.value); sizeCanvases(); });
+watch(inkView, () => {
+  if (!props.enabled || !near.value) return;
+  void ensureInkLoaded(docKey.value);
+  sizeCanvases();
+});
 // 点了「添加笔记」就直接能打字（少一次点击；平板/触屏上也一样）
 watch(drafting, async (on) => {
   if (!on) return;

@@ -2050,8 +2050,11 @@ const CAP_POS_KEY = 'cylit:reader-capsule';
 const capsuleEl = ref<HTMLElement | null>(null);
 const capOffset = reactive({ x: 0, y: 0 });
 const capDrag = ref(false);
-let capDragFrom: { x: number; y: number; ox: number; oy: number;
+let capDragFrom: { x: number; y: number; ox: number; oy: number; bottom: number;
   minX: number; maxX: number; minY: number; maxY: number } | null = null;
+/** 拖拽期间的 rAF 合并：一帧只写一次位置、量一次布局（平板 pointermove 有 120Hz） */
+let capMoveRaf = 0;
+let capMoveNext: { x: number; y: number } | null = null;
 
 /**
  * 胶囊能待的区域（视口坐标）：**只在正文列里**，上不压标签栏，下可以一直贴到页面底部。
@@ -2131,17 +2134,38 @@ const capsuleStyle = computed<Record<string, string>>(() => ({
  * 让提示条**避开顶部胶囊**（用户口径 ①）：把宿主顶部下移"胶囊底边 + 8px"。
  * 提示条是全局组件（`ToastHost`），这里只能通过 CSS 变量跟它说话 —— 每次胶囊动完都同步一次。
  */
-function syncToastDrop(): void {
-  const el = capsuleEl.value;
-  if (!el || typeof document === 'undefined') return;
-  const header = Number.parseInt(
-    getComputedStyle(document.documentElement).getPropertyValue('--header-h') || '0', 10) || 0;
-  let bottom = el.getBoundingClientRect().bottom;
+let headerHCache = { at: 0, h: 0 };
+function headerH(): number {
+  const now = performance.now();
+  if (now - headerHCache.at > 1000) {
+    headerHCache = {
+      at: now,
+      h: Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue('--header-h') || '0', 10) || 0,
+    };
+  }
+  return headerHCache.h;
+}
+
+/**
+ * 提示条避开胶囊：拖拽时**直接给底边**（按偏移算），不再每帧量一次 DOM ——
+ * getComputedStyle + getBoundingClientRect 每帧各一次等于把整篇正文重新排版一遍，
+ * 平板上就是拖一下卡一下。
+ */
+function applyToastDrop(capBottom: number): void {
+  if (typeof document === 'undefined') return;
+  const header = headerH();
+  let bottom = capBottom;
   // 二级菜单（颜色 / 粗细）展开时正好在胶囊下面：提示条要多让一层，否则会压在颜色行上。
   // 这里按**状态**估算高度（颜色行 + 粗细行 ≈ 80px），不依赖 DOM 查询的时序。
   if (inkOptionsOpen.value) bottom += 88;
   const drop = Math.max(0, Math.round(bottom + 8 - (header + 12)));
   document.documentElement.style.setProperty('--toast-drop', drop + 'px');
+}
+
+function syncToastDrop(): void {
+  const el = capsuleEl.value;
+  if (!el) return;
+  applyToastDrop(el.getBoundingClientRect().bottom);
 }
 
 function restoreCapsulePos(): void {
@@ -2166,7 +2190,7 @@ function onCapsuleDown(ev: PointerEvent): void {
   capDrag.value = true;
   el.setPointerCapture?.(ev.pointerId);
   capDragFrom = {
-    x: ev.clientX, y: ev.clientY, ox: capOffset.x, oy: capOffset.y,
+    x: ev.clientX, y: ev.clientY, ox: capOffset.x, oy: capOffset.y, bottom: rect.bottom,
     ...dragLimits(rect, capsuleRegion()),
   };
 }
@@ -2181,20 +2205,37 @@ watch(inkOptionsOpen, async (open) => {
 
 function onCapsuleMove(ev: PointerEvent): void {
   if (!capDrag.value || !capDragFrom) return;
+  // 平板的 pointermove 能有 120Hz：合并到一帧一次，位置只写一次、布局只量一次
+  capMoveNext = { x: ev.clientX, y: ev.clientY };
+  if (!capMoveRaf) capMoveRaf = requestAnimationFrame(applyCapsuleMove);
+}
+
+function applyCapsuleMove(): void {
+  capMoveRaf = 0;
   const from = capDragFrom;
-  capOffset.x = Math.min(from.maxX, Math.max(from.minX, from.ox + (ev.clientX - from.x)));
-  capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (ev.clientY - from.y)));
-  syncToastDrop();                     // 提示条跟着胶囊走，别被压住
+  const pt = capMoveNext;
+  capMoveNext = null;
+  if (!capDrag.value || !from || !pt) return;
+  capOffset.x = Math.min(from.maxX, Math.max(from.minX, from.ox + (pt.x - from.x)));
+  capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (pt.y - from.y)));
+  /* ⚠️ 这里**不能**每帧改 --toast-drop：那是写在 <html> 上的自定义属性，一改整篇文档
+   * （22 页正文）都要重新算样式 —— 实测每帧多出 200ms。提示条位置在松手时同步一次就够。 */
   if (inkOptionsOpen.value) placeInkOptions();
   if (capPanel.value) placeCapPanel();  // 面板放不下会翻到胶囊上方
 }
 
 function onCapsuleUp(): void {
   if (!capDrag.value) return;
+  if (capMoveRaf) { cancelAnimationFrame(capMoveRaf); capMoveRaf = 0; }
+  if (capMoveNext) {                 // 松手时把最后一帧补上，别丢最后一小段位移
+    applyCapsuleMove();
+  }
+  capMoveNext = null;
   capDrag.value = false;
   capDragFrom = null;
   try { sessionStorage.setItem(CAP_POS_KEY, JSON.stringify({ x: capOffset.x, y: capOffset.y })); }
   catch { /* 隐私模式：位置只在本次内存里 */ }
+  // 拖完才同步提示条让位（拖拽期间改 <html> 的自定义属性 = 全文档重算样式，太贵）
   syncToastDrop();
 }
 
