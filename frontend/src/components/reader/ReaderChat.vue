@@ -1071,16 +1071,8 @@ defineExpose({ uploadFiles });
         <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
           <AppIcon name="close" :size="12" />
         </button>
-        <!-- 列表这一级的「加号」在左边，所以拆分按钮放在同一行最右（同一枚图标、同一个动作）。
-             图标是**斜对角双箭头**（拆出去看 = 两个箭头朝外），与收回那枚互为镜像。 -->
-        <button
-          v-if="showFloatBtn"
-          class="btn ghost icon sm"
-          title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
-          @click="emit('float')"
-        >
-          <AppIcon name="popout" :size="14" />
-        </button>
+        <!-- 这一行**不放**「浮层打开」（用户口径 2026-11-19）：搜索框右侧再挂一枚图标，
+             「新对话 / 搜索 / 拆分」三件事就挤在一行了；浮层入口留在**会话页**头部那一枚。 -->
       </div>
 
       <div class="filters">
