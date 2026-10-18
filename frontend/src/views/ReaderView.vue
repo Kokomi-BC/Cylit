@@ -497,6 +497,10 @@ watch([viewMode, asideMaxWidth], () => { void applyAsideMax(); });
  */
 async function ensureAsideVisible() {
   if (asideVisible.value) return;
+  /* 浮窗态也算"看得见"：它本来就不占位（`asideOpen=false`），
+     不早退的话下面那句会把侧栏正式展开 —— 副作用是 `watch(asideOpen)` 立刻把浮窗收掉，
+     用户看到的就是"点一下「加入对话」，浮层样式没了"（用户口径 2026-11-19）。 */
+  if (chatFloat.value) return;
   if (isNarrow.value) mobilePane.value = 'side';
   else {
     asideOpen.value = true;
@@ -4280,12 +4284,14 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'note', label: '编辑笔记', icon: 'note' });
   }
   if (withSel) {
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    /* 顺序（用户口径 2026-11-19）：「加入对话」在「询问 Cyli」**左侧** —— 先把这段带进对话里，
+       再决定要不要就地看解释；与划词胶囊上那排的顺序也一致（加对话 → 询问）。 */
     items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   } else if (ctxCtx.isFigure) {
-    /* 插图：**先给「询问 Cyli」**（解释这张图），再是「加入对话」（2026-10-09） */
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    /* 插图同理：先「加入对话」（带这张图），再「询问 Cyli」（解释这张图） */
     items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   }
   items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
