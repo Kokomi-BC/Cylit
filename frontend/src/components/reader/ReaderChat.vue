@@ -1079,7 +1079,7 @@ defineExpose({ uploadFiles });
           title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
           @click="emit('float')"
         >
-          <AppIcon name="expand-diag" :size="14" />
+          <AppIcon name="popout" :size="14" />
         </button>
       </div>
 
@@ -1162,7 +1162,7 @@ defineExpose({ uploadFiles });
             title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
             @click="emit('float')"
           >
-            <AppIcon name="expand-diag" :size="14" />
+            <AppIcon name="popout" :size="14" />
           </button>
           <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
           <button class="th-act" title="新建对话" @click="startNew">

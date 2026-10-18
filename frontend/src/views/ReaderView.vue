@@ -6065,14 +6065,16 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="chat" :size="13" class="float-ico" />
           <span class="float-title">对话</span>
           <span class="spacer"></span>
-          <!-- 两枚按钮与对话页头部那组同一规格（26px 圆钮 + 悬停浮起），图标用**斜对角双箭头**
-               （收回 = 两个箭头朝内，用户口径 2026-11-19）。 -->
-          <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
-            <AppIcon name="collapse-diag" :size="14" />
-          </button>
-          <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
-            <AppIcon name="close" :size="13" />
-          </button>
+          <!-- 两枚按钮与对话页头部那组**完全同规格**：同一个托盘 + 同 26px 圆钮 + 同样悬停浮起
+               （用户口径 2026-11-19：这几处按钮风格统一）。图标用「小窗收回」那枚。 -->
+          <span class="float-acts">
+            <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
+              <AppIcon name="popin" :size="14" />
+            </button>
+            <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
+              <AppIcon name="close" :size="13" />
+            </button>
+          </span>
         </div>
         <div v-else class="aside-head">
             <div class="side-tabs-wrap">
@@ -6968,13 +6970,18 @@ function renderMarkdown(text?: string | null) {
   transition: background var(--dur) var(--ease);
 }
 .float-bar:hover::before, .float-bar:active::before { background: var(--accent); }
-/* 右上角两枚按钮：与对话页头部那组同一规格（`.th-act` 的同一套数字） */
+/* 右上角这组按钮：与对话页头部那组**逐字同规格**（`.th-acts` / `.th-act` 的同一套数字）——
+   同一个托底托盘 + 同 26px 圆钮 + 悬停浮成 `--bg-elev` 并带一档阴影。 */
+.float-acts {
+  display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px;
+  border-radius: 999px; background: var(--bg-sunken);
+}
 .float-act {
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.float-act:hover { background: var(--bg-hover); color: var(--text); }
+.float-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
 .float-act:active { transform: scale(.94); }
 .float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .float-ico { color: var(--text-dim); flex: none; }
@@ -6989,6 +6996,22 @@ function renderMarkdown(text?: string | null) {
 }
 .reader-aside > .float-grip.br { right: 0; cursor: nwse-resize; }
 .reader-aside > .float-grip.bl { left: 0; cursor: nesw-resize; }
+/* 角上那枚"可以拉大"的提示（用户口径 2026-11-19：iOS 那种拖动指示器）：一小段**圆角折角**，
+   贴着卡片的圆角内侧画，平时淡、悬停/拖动时变主题色并放大一点点。 */
+.reader-aside > .float-grip::after {
+  content: ''; position: absolute; bottom: 7px; width: 10px; height: 10px;
+  border: 0 solid color-mix(in srgb, var(--text) 26%, transparent);
+  transition: border-color var(--dur) var(--ease), width var(--dur) var(--ease), height var(--dur) var(--ease);
+}
+.reader-aside > .float-grip.br::after {
+  right: 7px; border-right-width: 1.6px; border-bottom-width: 1.6px; border-bottom-right-radius: 7px;
+}
+.reader-aside > .float-grip.bl::after {
+  left: 7px; border-left-width: 1.6px; border-bottom-width: 1.6px; border-bottom-left-radius: 7px;
+}
+.reader-aside > .float-grip:hover::after {
+  border-color: var(--accent); width: 13px; height: 13px;
+}
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
