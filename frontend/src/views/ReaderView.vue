@@ -11,7 +11,7 @@
  * LiveUpdater：SSE `page_translated` → 只替换那一页的行；断线降级 3s 轮询。
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
 import type { CSSProperties } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
@@ -292,15 +292,6 @@ function takeTop(which: 'note' | 'explain' | 'chat') {
  *  ⚠️ 5 与 FloatingCard.vue 的 `--fc-gap: 5px` 是**同一个数字**：三处指示器必须一样近，改一处必须改另一处。 */
 const FLOAT_GRIP_SIZE = 20;
 const FLOAT_GRIP_GAP = 5;
-const floatGripStyle = computed(() => {
-  const b = floatBox.value;
-  const top = b.top + b.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
-  const left = b.left + b.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
-  return {
-    bl: { left: (b.left - FLOAT_GRIP_GAP) + 'px', top: top + 'px' },
-    br: { left: left + 'px', top: top + 'px' },
-  };
-});
 /** 拖角改大小的增益（用户口径 2026-11-21：**回到 1:1**）。
  *  2026-11-19 曾把它设成 1.5（"灵敏度高一点"），结果是"我拖了 100px，它长了 150px"——
  *  与笔记浮层的 1:1 手感不一致，用户体感就是"拖动距离与实际不符"。这里改回 1，两处同一口径。 */
@@ -339,29 +330,14 @@ const asidePreviewStyle = computed<CSSProperties>(() => (asidePreviewW.value ===
 const asidePreviewShift = computed<CSSProperties>(() => ({}));
 
 /** 给 `<style>` 里的 `v-bind()` 用：**收起态/停靠态**的栏宽。
- *  ⚠️ 浮窗的几何**不在这条链上**（见 `asideFloatStyle`）：走 `v-bind()` 的话，拖浮窗时
+ *  ⚠️ 浮窗的几何**不在这条链上**（见 `applyFloatDom`）：走 `v-bind()` 的话，拖浮窗时
  *  每一帧都要把 CSS 变量写到**组件根**，整棵侧栏（几百行）跟着重算样式 —— 实测拖一下
  *  平均帧 310ms（用户报的"拖动对话浮层卡顿"）。行内 style 只让它自己那一层重算。 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
 
-/** 浮窗的行内几何（拖拽时逐帧变的就是这几个值，写在与浮窗**同一个元素**上 = `.reader > .chat-host`） */
-const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
-  ? {
-      /* ⚠️ 拖动**直接改 left/top**，不用 transform 平移：试过 translate3d，性能一样
-       *  （实测 p50 都是 ~20ms），但松手时"落回 left/top + 清 transform"会在合成层上
-       *  多出一帧重绘（用户口径 2026-11-19 报的那一帧闪烁）。现在拖动与落位是同一种写法，
-       *  松手时**什么都不用改**，也就没有那一帧。 */
-      position: 'fixed', left: `${floatBox.value.left}px`, top: `${floatBox.value.top}px`,
-      width: `${floatBox.value.w}px`, height: `${floatBox.value.h}px`,
-      right: 'auto', bottom: 'auto',
-      /* 焦点层：与两张 FloatingCard 同一档（62 = 有焦点 / 60 = 没有，见 topLayer），
-         于是浮窗和两张卡不会互相压死，也不去碰 30/31/40 那几档既有层级。
-         ⚠️ 只写在浮窗态这一支上：贴栏态若也写 60，就跑到工具栏（40）上面去了。 */
-      zIndex: topLayer.value === 'chat' ? 62 : 60,
-    }
-  : {}));
-
+/* 浮窗的行内几何**不在这里**：见 applyFloatDom（一个直接写 DOM 的 effect）。
+   绑在模板上意味着 floatBox 一变就整棵重渲染 —— 拖动时就是每帧一次。 */
 /**
  * 侧栏占位宽度（0 = 收起）：正文那一列靠它让位。
  *
@@ -370,6 +346,7 @@ const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
  * 于是开合时**只有这一个值在变**，正文的一次重排发生在**动画开始那一帧**，
  * 之后是纯 transform 的平移（合成层，不重排）。窄屏侧栏是抽屉，不占位。
  */
+
 const asideGapPx = computed(() => (asideVisible.value && !isNarrow.value ? `${asideWidth.value}px` : '0px'));
 
 /** 胶囊工具栏要居中在**正文列**上：侧栏展开时整体右移半个栏宽（transition 与侧栏同步）。 */
@@ -1704,36 +1681,63 @@ const chatHostEl = ref<HTMLElement | null>(null);
 const gripBlEl = ref<HTMLElement | null>(null);
 const gripBrEl = ref<HTMLElement | null>(null);
 
-/** 把 floatLive 写进 DOM（绕过 Vue）：宿主几何 + 两枚角把手的位置 */
-function paintFloatLive() {
+/** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
+function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
   const host = chatHostEl.value;
   if (host) {
-    host.style.left = floatLive.left + 'px';
-    host.style.top = floatLive.top + 'px';
-    host.style.width = floatLive.w + 'px';
-    host.style.height = floatLive.h + 'px';
+    host.style.left = b.left + 'px';
+    host.style.top = b.top + 'px';
+    host.style.width = b.w + 'px';
+    host.style.height = b.h + 'px';
   }
-  const top = floatLive.top + floatLive.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
-  const left = floatLive.left + floatLive.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
+  const top = b.top + b.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
+  const left = b.left + b.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
   const bl = gripBlEl.value;
-  if (bl) { bl.style.left = (floatLive.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
+  if (bl) { bl.style.left = (b.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
   const br = gripBrEl.value;
   if (br) { br.style.left = left + 'px'; br.style.top = top + 'px'; }
 }
 
+function paintFloatLive() { writeFloatDom(floatLive); }
+
 /**
- * 纯位移（拖头部那一行）走 transform：宿主与两枚角把手**一起平移**，在合成层里完成 ——
- * 不重排、不重绘。角把手自己的 left/top 一个字都没改，所以它们仍然贴着卡片外沿。
+ * 浮窗几何 / 定位 / 层级由这个 effect **直接写 DOM**，模板里不再绑 `:style`。
+ *
+ * 以前绑在模板上（asideFloatStyle / floatGripStyle）：floatBox 一变，这个几千行的模板就整棵重渲染
+ * —— 拖动时就是每帧一次，这才是掉帧的根。完全不绑又会让手势期间偶发的重渲染按**旧值**把几何写回去。
+ * 写到 DOM 上两头都躲开了：手势每帧写 floatLive，落定后由这里按 floatBox 写一遍（值相同 = 空操作）。
+ * `flush: 'sync'` 是必须的：开关浮层、窗口 resize 这些一次性变化要在这一帧绘制前就落到样式上。
  */
-function paintFloatShift(sx: number, sy: number) {
-  const t = 'translate3d(' + sx + 'px,' + sy + 'px,0)';
+function applyFloatDom() {
   const host = chatHostEl.value;
-  if (host) host.style.transform = t;
-  const bl = gripBlEl.value;
-  if (bl) bl.style.transform = t;
-  const br = gripBrEl.value;
-  if (br) br.style.transform = t;
+  if (!host) return;
+  if (!chatFloat.value) {
+    /* 贴栏态：几何全交回 CSS（position: absolute / v-bind 的宽度） */
+    host.style.position = '';
+    host.style.left = '';
+    host.style.top = '';
+    host.style.width = '';
+    host.style.height = '';
+    host.style.right = '';
+    host.style.bottom = '';
+    host.style.zIndex = '';
+    return;
+  }
+  host.style.position = 'fixed';
+  host.style.right = 'auto';
+  host.style.bottom = 'auto';
+  /* 焦点层：与两张 FloatingCard 同一档（62 = 有焦点 / 60 = 没有，见 topLayer），
+     于是浮窗和两张卡不会互相压死，也不去碰 30/31/40 那几档既有层级。 */
+  host.style.zIndex = topLayer.value === 'chat' ? '62' : '60';
+  /* 手势进行中不要插手：几何的真值在 floatLive 里，由手势循环每帧写 */
+  if (!floatDrag.on) writeFloatDom(floatBox.value);
 }
+watchEffect(applyFloatDom, { flush: 'sync' });
+
+/* ⚠️ **不要**再把位移改成 transform：拖动本身确实更省，但松手要把 transform 落成 left/top
+   并撤掉 will-change，合成层被拆掉、卡片按新位置重新栅格化 —— 看起来就是「拖完闪一下」
+   （用户口径 2026-11-24，与 2026-11-19 那次同一个现象）。现在每帧只写 left/top，
+   不走 Vue，只有这一块 DOM 重算样式，干脆没有那一帧。 */
 
 /**
  * 浮窗的拖动现在挂在**整块面板**上（标题栏那一行已经和会话头合并，没有单独的抓手区了）：
@@ -1777,8 +1781,9 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   /* 手势从这一刻的几何开始算：之后每一帧只改 floatLive 这个普通对象 */
   floatLive.left = floatDrag.ox; floatLive.top = floatDrag.oy;
   floatLive.w = floatDrag.ow; floatLive.h = floatDrag.oh;
-  /* 提前提成合成层：否则「第一帧才加 transform」会让开头几帧顿一下 */
-  if (mode === 'move' && chatHostEl.value) chatHostEl.value.style.willChange = 'transform';
+  /* 首帧就有坐标可算；循环从按下就开始 —— 手势期间每帧都重写一遍，见 floatLoopTick */
+  floatMoveAt = { x: ev.clientX, y: ev.clientY };
+  startFloatLoop();
   try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
   ev.preventDefault();
   /* ⚠️ 拖角改大小也要锁选区：只有 move 模式才会置 floatDragging，角落那条路径原来什么都不挡，
@@ -1787,9 +1792,32 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   document.body.style.userSelect = 'none';
 }
 
-/** 一帧只写一次几何：pointermove 一帧可能来好几次，逐条写等于让样式重算排队 */
+/**
+ * 手势期间**每帧**重写一遍几何（不是「只跟着 pointermove 写」）。
+ *
+ * 两个理由，缺一不可：
+ * 1. pointermove 一帧可能来好几次（平板 120Hz），逐条写等于让样式重算排队；
+ * 2. **防被覆盖**：手势里若这个组件因为别的原因重渲染一次（回答还在流式输出就会），
+ *    Vue 会按 vnode 里那份**旧的** floatBox 把 left/top 写回去。Vue 的补丁跑在微任务里、
+ *    早于下一帧的 rAF —— 每帧再写一遍就把那一下盖回去，肉眼看不到跳动。
+ */
 let floatMoveRaf = 0;
 let floatMoveAt: { x: number; y: number } | null = null;
+
+function startFloatLoop() {
+  if (!floatMoveRaf) floatMoveRaf = requestAnimationFrame(floatLoopTick);
+}
+
+function stopFloatLoop() {
+  if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
+}
+
+function floatLoopTick() {
+  floatMoveRaf = 0;
+  if (!floatDrag.on) return;
+  applyFloatMove();
+  floatMoveRaf = requestAnimationFrame(floatLoopTick);
+}
 
 function onFloatPointerMove(ev: PointerEvent) {
   if (!floatDrag.on) return;
@@ -1799,11 +1827,11 @@ function onFloatPointerMove(ev: PointerEvent) {
      这里每次指针移动都清一次 —— 只在真有选区时才动，代价极小。 */
   clearDocSelection();
   floatMoveAt = { x: ev.clientX, y: ev.clientY };
-  if (!floatMoveRaf) floatMoveRaf = requestAnimationFrame(applyFloatMove);
+  startFloatLoop();
 }
 
+/** 用**最新**的指针位置重算一遍并写 DOM（每帧一次，见 `floatLoopTick`） */
 function applyFloatMove() {
-  floatMoveRaf = 0;
   const at = floatMoveAt;
   if (!at || !floatDrag.on) return;
   const dx = at.x - floatDrag.sx;
@@ -1812,12 +1840,13 @@ function applyFloatMove() {
      以后要调只改 RESIZE_GAIN 一处。 */
   const k = RESIZE_GAIN;
   if (floatDrag.mode === 'move') {
-    /* 位置照旧**每帧夹一次视口**（拖出屏幕的边界手感不变），但写出去的是 transform 的位移量：
-       合成层内平移 —— 没有布局、没有重绘、没有 Vue 补丁，这是本轮的要点。 */
+    /* 位置照旧**每帧夹一次视口**（拖出屏幕的边界手感不变），写出去的还是 left/top：
+       不用 transform，是因为松手要把 transform 落成 left/top、合成层被拆掉，
+       卡片会按新位置重新栅格化，看起来就是「拖完闪一下」（2026-11-24 用户报的）。 */
     floatLive.left = floatDrag.ox + dx;
     floatLive.top = floatDrag.oy + dy;
     clampBox(floatLive);
-    paintFloatShift(floatLive.left - floatDrag.ox, floatLive.top - floatDrag.oy);
+    paintFloatLive();
     return;
   }
   if (floatDrag.mode === 'size-left') {
@@ -1841,21 +1870,15 @@ function applyFloatMove() {
 
 function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
-  if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
+  stopFloatLoop();
   /* 最后一帧里「移动 + 松手」挤在一起时（快速一划），合并中的位移还没落地 —— 这里补算一次，
      否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
   if (floatMoveAt && floatDrag.on) applyFloatMove();
   floatMoveAt = null;
-  /* 收尾三件事**在同一个任务里**做完：写最终 left/top、清 transform、同步回 floatBox。
-     浏览器只绘一帧 —— 所以既没有「松手闪一下」，也不会因为改 floatBox 再整棵重渲染而显得弹。
-     （2026-11-19 那次闪烁的成因正好相反：先清 transform，等 Vue 下一帧才补 left/top。） */
+  /* 收尾：写一次最终几何，再把结果同步回 floatBox。
+     ⚠️ 拖动与落定**是同一种写法**（left/top）—— 没有 transform 要还原、没有合成层要拆，
+     所以松手那一帧不需要重绘，也就没有「拖完闪一下」（用户口径 2026-11-24）。 */
   paintFloatLive();
-  const host = chatHostEl.value;
-  if (host) { host.style.transform = ''; host.style.willChange = ''; }
-  const bl = gripBlEl.value;
-  if (bl) bl.style.transform = '';
-  const br = gripBrEl.value;
-  if (br) br.style.transform = '';
   floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
   floatDrag.on = false;
   floatDrag.mode = '';
@@ -6591,7 +6614,6 @@ function renderMarkdown(text?: string | null) {
         :class="{ float: chatFloat, closing: floatClosing }"
         v-show="chatFloat || railTab === 'chat'"
         :data-warm="chatWarm"
-        :style="asideFloatStyle"
         @pointerdown.capture="clearDocSelection(); takeTop('chat')"
         @focusin.capture="takeTop('chat')"
         @pointerdown="onFloatCardDown"
@@ -6640,7 +6662,6 @@ function renderMarkdown(text?: string | null) {
         class="float-grip bl"
         ref="gripBlEl"
         title="拖动改浮窗大小"
-        :style="floatGripStyle.bl"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size-left')"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
@@ -6651,7 +6672,6 @@ function renderMarkdown(text?: string | null) {
         class="float-grip br"
         ref="gripBrEl"
         title="拖动改浮窗大小"
-        :style="floatGripStyle.br"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"

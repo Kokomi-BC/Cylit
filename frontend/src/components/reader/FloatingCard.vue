@@ -24,7 +24,7 @@
  *
  * 本组件**不持有业务状态**：谁开、开在哪、里面放什么，全由父组件给。
  */
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 
 const props = withDefaults(defineProps<{
@@ -83,6 +83,26 @@ const live = { left: 0, top: 0 };
 let moveRaf = 0;
 let moveAt: { x: number; y: number } | null = null;
 
+/* 手势期间**每帧**重写一遍几何（不是「只跟着 pointermove 写」）：
+   · pointermove 一帧可能来好几次（平板 120Hz），逐条写等于让样式重算排队；
+   · 更要紧的是**防被覆盖** —— 手势期间若父组件因为别的原因重渲染一次（比如回答还在流式输出），
+     Vue 会按 vnode 里那份**旧的** pos 把 left/top 写回去。Vue 的补丁跑在微任务里、早于下一帧的 rAF，
+     所以这里每帧再写一遍就把那一下盖回去，用户看不到任何跳动。 */
+function startHeadLoop() {
+  if (!moveRaf) moveRaf = requestAnimationFrame(headLoopTick);
+}
+
+function stopHeadLoop() {
+  if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+}
+
+function headLoopTick() {
+  moveRaf = 0;
+  if (!drag.on) return;
+  applyHeadMove();
+  moveRaf = requestAnimationFrame(headLoopTick);
+}
+
 /* 拖动/缩放期间锁住全文选区：PDF 文本层是真实 DOM（markdown 侧不是），
    指针扫过时浏览器会顺手起一个选区（用户报的「拖顶部时 PDF 里被选中」）。
    只改 body 的 user-select，松手立刻还原。 */
@@ -103,7 +123,8 @@ function onHeadDown(ev: PointerEvent) {
   drag.w = node?.offsetWidth || props.width;
   drag.h = node?.offsetHeight || 120;
   live.left = drag.ox; live.top = drag.oy;
-  if (node) node.style.willChange = 'transform';    // 提前提成合成层，别在拖动第一帧才升
+  moveAt = { x: ev.clientX, y: ev.clientY };
+  startHeadLoop();
   /* 合成事件（自检探针）没有真指针，捕获会抛 NotFoundError —— 拖不动的是"捕获"，
      位移本身不依赖它，所以这里吞掉就行。 */
   try { head?.setPointerCapture?.(ev.pointerId); } catch { /* 没有真指针 */ }
@@ -113,38 +134,40 @@ function onHeadDown(ev: PointerEvent) {
 function onHeadMove(ev: PointerEvent) {
   if (!drag.on) return;
   moveAt = { x: ev.clientX, y: ev.clientY };
-  if (!moveRaf) moveRaf = requestAnimationFrame(applyHeadMove);
+  startHeadLoop();
 }
 
-/** 一帧一次：夹进视口 → 只写一个 transform（合成层位移，不重排、不重绘） */
+/** 用**最新**的指针位置重算一遍并写 left/top（每帧一次，见 headLoopTick） */
 function applyHeadMove() {
-  moveRaf = 0;
   const at = moveAt;
-  if (!at || !drag.on) return;
+  if (!at) return;
   // 夹在视口里：至少留一条边能抓得住（不然拖出去就再也点不到关闭了）
   const left = Math.min(Math.max(drag.ox + (at.x - drag.sx), 8 - drag.w + 48), window.innerWidth - 48);
   const top = Math.min(Math.max(drag.oy + (at.y - drag.sy), 4), window.innerHeight - 32);
   live.left = Math.round(left); live.top = Math.round(top);
   const node = el.value;
-  if (node) node.style.transform = 'translate3d(' + (live.left - drag.ox) + 'px,' + (live.top - drag.oy) + 'px,0)';
-  if (!dragged.value) dragged.value = true;
+  if (node) {
+    node.style.left = live.left + 'px';
+    node.style.top = live.top + 'px';
+  }
+  /* 只有真的挪动了才算「用户摆过了」（纯点一下标题栏不该把卡片钉在原地） */
+  if (!dragged.value && (live.left !== drag.ox || live.top !== drag.oy)) dragged.value = true;
 }
 
 function onHeadUp(ev: PointerEvent) {
   if (!drag.on) return;
-  if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
-  /* 快速一划时"最后一帧 + 松手"会挤在一起：补算一次，否则那一下被整条丢掉 */
+  stopHeadLoop();
+  /* 快速一划时「最后一帧 + 松手」会挤在一起：补算一次，否则那一下被整条丢掉 */
   if (moveAt) applyHeadMove();
   moveAt = null;
   drag.on = false;
   unlockSelect();
-  /* 落位与清 transform 在**同一个任务**里完成：浏览器只绘一帧，不会有"弹一下" */
+  /* 拖动与落定**是同一种写法**（left/top）：没有 transform 要还原、没有合成层要拆，
+     松手那一帧不需要重绘 —— 所以不会「拖完闪一下」（用户口径 2026-11-24）。 */
   const node = el.value;
   if (node) {
     node.style.left = live.left + 'px';
     node.style.top = live.top + 'px';
-    node.style.transform = '';
-    node.style.willChange = '';
   }
   pos.value = { left: live.left, top: live.top };
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
@@ -242,6 +265,21 @@ const rlive = { w: 0, h: 0, left: 0 };
 let rsRaf = 0;
 let rsAt: { x: number; y: number } | null = null;
 
+function startResizeLoop() {
+  if (!rsRaf) rsRaf = requestAnimationFrame(resizeLoopTick);
+}
+
+function stopResizeLoop() {
+  if (rsRaf) { cancelAnimationFrame(rsRaf); rsRaf = 0; }
+}
+
+function resizeLoopTick() {
+  rsRaf = 0;
+  if (!rs.on) return;
+  applyResizeMove();
+  rsRaf = requestAnimationFrame(resizeLoopTick);
+}
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
 function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
@@ -256,6 +294,8 @@ function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
   /* 视口也只量一次：每帧读 innerWidth/innerHeight 等于每帧问一次布局 */
   rs.vw = window.innerWidth; rs.vh = window.innerHeight;
   rlive.w = rs.sw; rlive.h = rs.sh; rlive.left = rs.sl;
+  rsAt = { x: ev.clientX, y: ev.clientY };
+  startResizeLoop();
   /* 先落一个 sizeH：`.sized` 当场生效（正文区改成纵向 flex），否则要等松手才切、内容跳一下 */
   sizeH.value = rs.sh;
   /* 拉了大小就算"用户自己摆过了"：否则 `ResizeObserver` 一量到尺寸变了就调 `place()`，
@@ -270,12 +310,11 @@ function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
 function onResizeMove(ev: PointerEvent) {
   if (!rs.on) return;
   rsAt = { x: ev.clientX, y: ev.clientY };
-  if (!rsRaf) rsRaf = requestAnimationFrame(applyResizeMove);
+  startResizeLoop();
 }
 
-/** 一帧一次：宽 / 高 / 左边界只写 DOM —— 手势期间一个响应式值都不动，于是零次重渲染 */
+/** 用**最新**的指针位置重算一遍并写 DOM（每帧一次，见 resizeLoopTick） */
 function applyResizeMove() {
-  rsRaf = 0;
   const at = rsAt;
   if (!at || !rs.on) return;
   const MIN_W = 260;
@@ -309,7 +348,7 @@ function applyResizeMove() {
 
 function onResizeUp(ev: PointerEvent) {
   if (!rs.on) return;
-  if (rsRaf) { cancelAnimationFrame(rsRaf); rsRaf = 0; }
+  stopResizeLoop();
   if (rsAt) applyResizeMove();
   rsAt = null;
   rs.on = false;
@@ -322,14 +361,28 @@ function onResizeUp(ev: PointerEvent) {
   savePos();
 }
 
-const style = computed(() => ({
-  left: `${pos.value.left}px`,
-  top: `${pos.value.top}px`,
-  width: `${sizeW.value ?? props.width}px`,
-  /* 拉过高度就固定高度（像窗口那样），没拉过就只给上限、高度随内容 */
-  height: sizeH.value === null ? undefined : `${sizeH.value}px`,
-  maxHeight: `${sizeH.value ?? props.maxHeight}px`,
-}));
+/**
+ * 外壳几何由这个 effect **直接写 DOM**，模板里不再绑 `:style`。
+ *
+ * 两个理由：模板绑定意味着 `pos` / `sizeW` / `sizeH` 一变整块组件就重渲染（手势里就是每帧一次），
+ * 而完全不绑又会让手势期间偶发的重渲染按**旧值**把 left/top 写回去。写到 DOM 上两头都躲开了。
+ * `flush: 'sync'` 是关键：打开、落位这些一次性变化必须在这一帧绘制前就落到样式上，不能等下一拍。
+ */
+function applyShellDom() {
+  const node = el.value;
+  if (!node) return;
+  const h = sizeH.value;
+  if (!drag.on && !rs.on) {
+    node.style.left = pos.value.left + 'px';
+    node.style.top = pos.value.top + 'px';
+  }
+  if (!rs.on) {
+    node.style.width = (sizeW.value ?? props.width) + 'px';
+    node.style.height = h === null ? '' : h + 'px';
+    node.style.maxHeight = (h ?? props.maxHeight) + 'px';
+  }
+}
+watchEffect(applyShellDom, { flush: 'sync' });
 </script>
 
 <template>
@@ -340,7 +393,6 @@ const style = computed(() => ({
     v-if="props.open"
     ref="el"
     class="float-shell"
-    :style="style"
     data-float-card
   >
     <div class="float-card" :class="{ sized: sizeH !== null }">
