@@ -6069,7 +6069,7 @@ function renderMarkdown(text?: string | null) {
                （用户口径 2026-11-19：这几处按钮风格统一）。图标用「小窗收回」那枚。 -->
           <span class="float-acts">
             <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
-              <AppIcon name="popin" :size="14" />
+              <AppIcon name="sidebar" :size="14" />
             </button>
             <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
               <AppIcon name="close" :size="13" />
@@ -6972,13 +6972,10 @@ function renderMarkdown(text?: string | null) {
 .float-bar:hover::before, .float-bar:active::before { background: var(--accent); }
 /* 右上角这组按钮：与对话页头部那组**逐字同规格**（`.th-acts` / `.th-act` 的同一套数字）——
    同一个托底托盘 + 同 26px 圆钮 + 悬停浮成 `--bg-elev` 并带一档阴影。 */
-.float-acts {
-  display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px;
-  border-radius: 999px; background: var(--bg-sunken);
-}
+.float-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .float-act {
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); cursor: pointer;
+  border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .float-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }

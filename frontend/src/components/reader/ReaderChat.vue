@@ -1152,8 +1152,9 @@ defineExpose({ uploadFiles });
         <button class="th-act" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
         <span class="th-title truncate" :title="current?.title || '新对话'" v-html="inlineHtml(currentTitle)" />
         <span class="spacer" />
-        <!-- 右上角这组按钮：**与页面其它工具同一门语言** —— 无描边的托底托盘 + 里面两枚圆按钮
-             （用户口径 2026-11-19：符合页面风格）。以前是两枚散着的裸图标，看着像没做完。 -->
+        <!-- 右上角：**两枚各自独立的圆钮**（用户口径 2026-11-19：新对话和浮层打开要分开），
+             但仍是页面那套"托底圆钮"—— 同一个 `--bg-sunken` 底、同 26px、悬停浮成 `--bg-elev`。
+             浮层打开用**画中画**图标（同一个东西换到小窗里看），与新对话的加号一眼区分。 -->
         <span class="th-acts">
           <!-- 拆分（浮层打开）：**加号左边**；图标用"分享/对外打开"那枚方框加箭头，与加号一眼区分 -->
           <button
@@ -1162,7 +1163,7 @@ defineExpose({ uploadFiles });
             title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
             @click="emit('float')"
           >
-            <AppIcon name="popout" :size="14" />
+            <AppIcon name="pip" :size="15" />
           </button>
           <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
           <button class="th-act" title="新建对话" @click="startNew">
@@ -1468,19 +1469,18 @@ defineExpose({ uploadFiles });
   display: flex; align-items: center; gap: 3px; padding: 5px 8px 5px 6px;
   border-bottom: 1px solid var(--divider);
 }
-/* 顶部按钮：26px 圆钮 + 托盘（`--bg-sunken`），与侧栏页签胶囊、搜索那两枚小胶囊同一门语言。
-   悬停时那枚按钮才"浮起来"（`--bg-elev` + 一档阴影），与 `.seg` 的当前项同一个做法。 */
+/* 顶部按钮：**26px 圆钮、各带自己的 `--bg-sunken` 底**（与侧栏页签胶囊、搜索那两枚小胶囊同一门语言），
+   悬停时那枚"浮起来"（`--bg-elev` + 一档阴影）。
+   外壳 `.th-acts` 只是一条 4px 间距的横排 —— 不再共用一个托盘：新对话与浮层打开是两件不同的事
+   （用户口径 2026-11-19），共用一个底会被读成一个分段控件。 */
 .th-act {
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); cursor: pointer;
+  border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .th-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
 .th-act:active { transform: scale(.94); }
-.th-acts {
-  display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px;
-  border-radius: 999px; background: var(--bg-sunken);
-}
+.th-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
 
 .msgs {
