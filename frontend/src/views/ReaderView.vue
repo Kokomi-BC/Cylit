@@ -6203,6 +6203,7 @@ function renderMarkdown(text?: string | null) {
             @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
             @clear-selection="chatSelection = null"
             @float="openChatFloat"
+            @zoom="(t) => { zoomImage = { url: t.url, caption: t.caption ?? '' }; }"
           >
             <!-- 浮窗态：这两枚塞进对话自己的头部行（与「＋」同一行），不再单占一条标题栏 -->
             <template #head-actions>

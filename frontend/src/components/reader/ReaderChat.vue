@@ -48,6 +48,8 @@ const emit = defineEmits<{
   (e: 'clear-selection'): void;
   /** 拆分 / 浮层打开：把整个侧栏面板拎成浮窗（真正的外框由 `ReaderView` 负责） */
   (e: 'float'): void;
+  /** 点图片：交给阅读器那套**图片查看器**（用户口径 2026-11-19，不再开新标签页） */
+  (e: 'zoom', target: { url: string; caption?: string | null }): void;
 }>();
 
 /* 拆分按钮：会话列表与会话两级都摆在**工具栏最右**（用户口径 2026-11-19：放在加号旁边），
@@ -204,9 +206,19 @@ function renderAnswer(text: string | null | undefined, cites?: AgentCitation[]) 
   return decorateRefs(mdToHtml(text ?? '', props.paperId), cites);
 }
 
-/** 点正文里的 `[n]`：跳到那条引用（阅读器会滚到对应行）。 */
+/**
+ * 点正文里的 `[n]`：跳到那条引用（阅读器会滚到对应行）。
+ * 顺带接管**图片**：回答里自带的 `![](...)` 也走阅读器那套图片查看器（用户口径 2026-11-19），
+ * 而不是点了没反应、或被浏览器当成链接开新页。
+ */
 function onCitationClick(ev: MouseEvent) {
   const target = ev.target as HTMLElement | null;
+  const img = target?.closest?.('img') as HTMLImageElement | null;
+  if (img?.src) {
+    ev.preventDefault();
+    emit('zoom', { url: img.src, caption: img.getAttribute('alt') || '' });
+    return;
+  }
   const btn = target?.closest?.('.cite-inline') as HTMLElement | null;
   if (!btn) return;
   const page = Number(btn.dataset.page || 0);
@@ -1112,9 +1124,11 @@ defineExpose({ uploadFiles, ensureThread });
                   @click="setKind(k.key)">{{ k.label }}</button>
         </div>
         <span class="spacer" />
-        <div class="seg">
+        <!-- 只留图标 → 用**图标档**的胶囊（`.seg.sq`：左右内边距 9px）；否则按文字档的 12px 撑开，
+             一枚 13px 的图标会被撑成一条胖胶囊（用户口径 2026-11-19 报的"按钮显示样式问题"）。 -->
+        <div class="seg sq">
           <button :class="{ active: batch }" title="批量管理（多选 + 批量删除）" @click="toggleBatch">
-            <AppIcon name="checkbox" :size="13" />管理
+            <AppIcon name="checkbox" :size="13" />
           </button>
         </div>
       </div>
@@ -1292,11 +1306,18 @@ defineExpose({ uploadFiles, ensureThread });
                  v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
                  @click="onCitationClick" />
 
+            <!-- 附件图：点开的是阅读器那套**图片查看器**（用户口径 2026-11-19），不再开新标签页 -->
             <div v-if="m.attachments?.length" class="atts">
-              <a v-for="a in m.attachments" :key="a.attachment_id" class="att"
-                 :href="imageSrc(a.url)" target="_blank" rel="noopener" :title="`${a.name} · ${fmtSize(a.bytes)}`">
+              <button
+                v-for="a in m.attachments"
+                :key="a.attachment_id"
+                class="att"
+                type="button"
+                :title="`${a.name} · ${fmtSize(a.bytes)}`"
+                @click="emit('zoom', { url: imageSrc(a.url), caption: a.name })"
+              >
                 <img :src="imageSrc(a.url)" :alt="a.name" loading="lazy" />
-              </a>
+              </button>
             </div>
 
             <!-- 引用**不再在下面列一排 chunk 号**（用户口径 2026-10-03）：
@@ -1560,13 +1581,14 @@ defineExpose({ uploadFiles, ensureThread });
   padding: 8px 12px; font-size: 12.5px; line-height: 1.65; max-width: 88%;
 }
 .msg.user .sel-quote, .msg.user .atts { align-self: flex-end; }
-/* 气泡下面那条：**常显**（时间 / 复制 / 修改），不像以前 hover 才冒出来（用户口径 2026-11-19） */
+/* 气泡下面那条（时间 / 复制 / 修改）：**鼠标移到这条消息上才出现**（用户口径 2026-11-19），
+   平时整排隐去，不占视觉；`min-height` 保留，hover 出现时不会把下面的内容顶一下。 */
 .msg-tools {
   display: flex; align-items: center; gap: 4px; min-height: 20px; margin-top: 3px;
-  opacity: .9;
+  opacity: 0; transition: opacity var(--dur) var(--ease);
 }
 .msg.user .msg-tools { justify-content: flex-end; }
-.msg:hover .msg-tools { opacity: 1; }
+.msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
 .msg-time { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .tool-sep { width: 1px; height: 12px; margin: 0 3px; background: var(--divider); }
 .sel-quote {
