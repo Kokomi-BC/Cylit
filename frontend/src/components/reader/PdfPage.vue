@@ -420,12 +420,26 @@ function autoScrollTick(): void {
   autoScrollRaf = requestAnimationFrame(autoScrollTick);
 }
 
+/**
+ * 这一下按在**浮层**上（对话浮窗 / 笔记卡 / 解释卡，以及浮窗那两枚角把手）吗？
+ *
+ * 浮层浮在 PDF 之上，按点下面的 DOM 恰好就是 PDF 文字层。若不排除，这里会把它当成一次
+ * "PDF 划词"接管：`onDocPointerMove` 于是启动边缘自动滚动，拖着浮层角把手到页面底部时
+ * 页面就自己往下滚（用户口径 2026-11-24，只在 PDF 侧出现）。
+ * 判据用**事件目标**（不是坐标）：浮层的按下从头到尾都不该落在 PDF 的接管范围内。
+ */
+const FLOAT_LAYER_SEL = '.chat-host, [data-float-card], .float-grip, .aside-pip';
+function onFloatLayer(ev: Event): boolean {
+  return !!(ev.target as HTMLElement | null)?.closest?.(FLOAT_LAYER_SEL);
+}
+
 function onDocPointerDown(ev: PointerEvent): void {
   dragFrom = null;
   dragTakenOver = false;
   suppressSelect = false;
   lastGood = null;
   if (ev.button !== 0) return;
+  if (onFloatLayer(ev)) return;         // 浮层上的按下不属于 PDF（见 onFloatLayer）
   const p = textPointAt(ev.clientX, ev.clientY);
   /* 按在页面的**空白**上（右边距、行间、页脚外的白边）也要接管：交给浏览器的话锚点会落到
    * 文字层**容器**上，选区按"第几个子节点"整段铺开（见文件上方 ④ 的实测）。

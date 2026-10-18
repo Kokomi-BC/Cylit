@@ -5541,8 +5541,20 @@ function scheduleNoteHide() {
    结果卡片自己的文字也被一帧一帧清掉 —— 用户选不中、复制不了（2026-11-24 第 2 条）。
    拖动/缩放期间的逐帧清现在归 `FloatingCard` 的手势循环管（只有真的在拖才清）。 */
 function onNoteCardPointerDown() {
-  clearDocSelection();
   if (notePop.open) notePop.anchored = true;
+}
+
+/**
+ * 三块浮层（笔记卡 / 解释卡 / 对话浮窗）上的按下：抬到最上层，顺手清掉**正文**那段选区
+ * （浮层是另一层，点了它就不该还留着一段"看起来像待操作"的选中文字）。
+ *
+ * ⚠️ **右键不清**（用户口径 2026-11-24）：用户刚在浮层里框选了一段文字、正要右键复制 ——
+ * 按下那一刻就把选区清掉，原生菜单里的「复制」当场变灰，等于复制不了。
+ * 左键照旧清：那时要么是在正文里选完了想点浮层，要么是从这里重新开始选。
+ */
+function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat') {
+  takeTop(which);
+  if (ev.button === 0) clearDocSelection();
 }
 
 /**
@@ -6619,7 +6631,7 @@ function renderMarkdown(text?: string | null) {
         :class="{ float: chatFloat, closing: floatClosing }"
         v-show="chatFloat || railTab === 'chat'"
         :data-warm="chatWarm"
-        @pointerdown.capture="clearDocSelection(); takeTop('chat')"
+        @pointerdown.capture="onFloatPress($event, 'chat')"
         @focusin.capture="takeTop('chat')"
         @pointerdown="onFloatCardDown"
         @mousedown="onFloatCardMouseDown"
@@ -6775,7 +6787,7 @@ function renderMarkdown(text?: string | null) {
       :max-height="520"
       data-explain-card
       :style="{ zIndex: topLayer === 'explain' ? 62 : 60 }"
-      @pointerdown.capture="clearDocSelection(); takeTop('explain')"
+      @pointerdown.capture="onFloatPress($event, 'explain')"
       @focusin.capture="takeTop('explain')"
       @close="explainCard.open = false"
       @toggle-anchor="explainCard.pinned = !explainCard.pinned"
@@ -6863,7 +6875,7 @@ function renderMarkdown(text?: string | null) {
       data-note-popover
       :style="{ zIndex: topLayer === 'note' ? 62 : 60 }"
       hide-anchor
-      @pointerdown.capture="takeTop('note'); onNoteCardPointerDown()"
+      @pointerdown.capture="onFloatPress($event, 'note')"
       @focusin.capture="takeTop('note')"
       @close="closeNotePopover"
       @mouseleave="scheduleNoteHide"
