@@ -331,13 +331,19 @@ const style = computed(() => ({
 }
 .fc-head.dragging { cursor: grabbing; }
 .fc-title { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+/* 头部图标钮：**圆形 + 中性淡底**（用户口径 2026-11-21："笔记浮层的按钮样式与对话样式统一"）。
+   参考那套是"灰底圆钮"，不是"透明方角"也不是"强调色方块" —— 两张浮层（笔记 / Cyli 解释）
+   共用这一条，所以它们的锚定 / 关闭 / 笔 / 垃圾桶才会长得一样。 */
 .fc-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; flex: none; border: 0; border-radius: 7px;
-  background: transparent; color: var(--text-faint); cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  width: 25px; height: 25px; flex: none; border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              transform var(--dur-fast) var(--ease);
 }
 .fc-btn:hover { background: var(--bg-hover); color: var(--text); }
+.fc-btn:active { transform: scale(.94); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 /* 头部最右那格（head-tail）：与锚定之间再多一小段间距 —— 删除键和「保存 / 锚定」不能挨着 */
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 4px; }

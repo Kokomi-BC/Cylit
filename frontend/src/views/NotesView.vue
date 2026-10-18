@@ -109,14 +109,6 @@ const ANNOTATION_SOURCE_LABEL: Record<string, string> = {
   pipeline: '自动',
 };
 
-/** 缩略显示（与阅读器侧栏**同一个键**：在哪儿切过，另一处也是那个样子）。 */
-const THUMB_KEY = 'cyl.notes.thumb';
-const thumb = ref(localStorage.getItem(THUMB_KEY) === '1');
-function toggleThumb() {
-  thumb.value = !thumb.value;
-  localStorage.setItem(THUMB_KEY, thumb.value ? '1' : '0');
-}
-
 const overview = ref<NotesOverview | null>(null);
 const keyword = ref('');
 /** `null` = 没在搜索（用 overview 的全量）；否则是后端 `GET /notes?q=` 的命中 */
@@ -411,26 +403,16 @@ function onRowAction(row: FeedRow, key: string) {
       关键词「{{ keyword }}」命中 {{ hitCount }} 条笔记（高亮与批注不参与检索）。
     </div>
 
-    <!-- 一条工具条：条数 + 缩略开关（与阅读器侧栏同一个口径、同一个本地偏好） -->
+    <!-- 一条工具条：只留条数（缩略开关已移除，正文恒定两行 —— 见下方 `.clamp2`） -->
     <div class="feed-bar">
       <span class="tiny faint">{{ shownFeed.length }} 条</span>
-      <span class="spacer"></span>
-      <button
-        class="btn icon sm"
-        :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
-        :aria-pressed="thumb"
-        data-notes-thumb
-        @click="toggleThumb"
-      >
-        <AppIcon :name="thumb ? 'expand' : 'list'" :size="14" />
-      </button>
     </div>
 
     <div
       v-for="row in shownFeed"
       :key="row.key"
       class="card feed-row"
-      :class="[row.kind, { thumb }]"
+      :class="row.kind"
       :data-item-kind="row.kind"
       :data-item-key="row.key"
     >
@@ -456,14 +438,13 @@ function onRowAction(row: FeedRow, key: string) {
 
       <div class="card-body">
         <!-- 引用原文（高亮那一段）：用 `mark.hl`，**配色与正文里的高亮同一份**（base.css） -->
-        <div v-if="row.quote" class="small quote" :class="{ clamp1: thumb }">
+        <div v-if="row.quote" class="small quote">
           <mark :class="hlClass(row.color)" :style="hlStyle(row.color)">{{ row.quote }}</mark>
         </div>
         <!-- 笔记正文：**用户自己写的** → `breaks: true`（回车就是回车，也不把软换行接回一行） -->
         <div
           v-if="row.contentMd"
-          class="md small clamp-when-thumb"
-          :class="{ clamp1: thumb }"
+          class="md small clamp2"
           v-html="mdToHtml(row.contentMd, null, { breaks: true })"
         />
         <!-- 空态不另写一行：头部那枚「待写」徽章已经把状态说清楚了 -->
@@ -558,11 +539,10 @@ function onRowAction(row: FeedRow, key: string) {
 .feed-row { border-left: 3px solid var(--accent); }
 .feed-row.highlight { border-left-color: var(--border-strong); }
 .feed-row.annotation { border-left-color: var(--ok); }
-/* 缩略显示：每条只占一两行（引用一行、正文一行），长笔记多了也一眼扫得完 */
-.feed-row.thumb .card-head { margin-bottom: 2px; }
-.clamp1 {
-  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
-  overflow: hidden; line-clamp: 1;
+/* 正文恒定两行（缩略开关已移除，只保留这套显示口径） */
+.clamp2 {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-clamp: 2;
 }
 .quote { margin: 0 0 6px; }
 </style>

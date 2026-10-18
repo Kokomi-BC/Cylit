@@ -7497,17 +7497,21 @@ function renderMarkdown(text?: string | null) {
 /* 笔记框标题行上的 ✓ 保存 / 头部那枚删除键（用户口径 2026-10-10：复刻目标站的笔记框）。
    ⚠️ 这两个键都是**本组件**渲染的（保存走 `head-extra`，删除走 `head-tail`，后者 2026-11-20 新增），
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
+/* 头部图标钮：与浮层壳的 `.fc-btn`（锚定 / 关闭）**同一套几何与底色** ——
+   25px 圆形、中性淡底、hover 变深、按下缩一格（用户口径 2026-11-21："与对话样式统一"）。
+   语义只体现在**图标颜色**上：保存=主题色、删除=danger，不再铺满整块底色。 */
 .np-head-save {
-  flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text);
+  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--accent-text);
   cursor: pointer; transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.np-head-save:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
-.np-head-save:active:not(:disabled) { transform: scale(.92); }
-.np-head-save:disabled { opacity: .5; cursor: default; }
-/* 删除键（头部那枚垃圾桶）：语义色与全站 danger 一致 */
-.np-head-save.danger { background: var(--danger-soft); color: var(--danger); }
-.np-head-save.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+.np-head-save:hover:not(:disabled) { background: var(--bg-hover); }
+.np-head-save:active:not(:disabled) { transform: scale(.94); }
+.np-head-save:disabled { opacity: .45; cursor: default; }
+/* 删除键（头部那枚垃圾桶）：底色同样中性，只把图标染成 danger；hover 才给 danger 底 */
+.np-head-save.danger { color: var(--danger); }
+.np-head-save.danger:hover:not(:disabled) { background: var(--danger-soft); }
 
 /* ---- 删除的二级确认菜单（用户口径 2026-10-13）----
    观感**照 Menu.vue 的浮层**来（同圆角档、同阴影、同 danger 语义色），但只有两项、
