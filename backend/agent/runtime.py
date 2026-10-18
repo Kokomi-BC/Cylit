@@ -88,6 +88,10 @@ class RunState:
     rounds: int = 0
     incomplete_reason: str | None = None
     usage: dict = field(default_factory=dict)
+    #: 本轮实际用的问答模型配置（services/agent/model_config.resolve 的快照，键名 config_id）。
+    #: 留在这里是给用量统计用的：收尾时要按**真正用的那个**模型落一条 model_usage ——
+    #: 会话上选的模型被删掉时会回落到默认，只看 req.model_id 会记错账。
+    model_cfg: dict = field(default_factory=dict)
     error: str | None = None
     #: 思考模式的思维链（**单独一条通道**，永远不进正文、也不进下一轮历史）。
     #: 为什么不丢掉：模型想什么对用户是有用的上下文；为什么不能混进正文：
@@ -569,6 +573,7 @@ class AgentRuntime:
                               f"「论文问答」（agent）类型配一个支持工具调用的模型并填好 API Key。",
                    "retryable": False}
             return
+        state.model_cfg = model_cfg
         agent = self._build_agent(model_cfg)
         settings = model_settings_from(model_cfg.get("parameters") or {},
                                        effort=req.reasoning_effort)
@@ -725,6 +730,20 @@ class AgentRuntime:
                 }
                 deps.trace.append({"tool": "__usage__", "args": state.usage,
                                    "status": "ok", "ms": 0, "detail": ""})
+                # 问答侧**独立于 provider 门面**（直接走 pydantic-ai），所以在拿到快照的地方落账。
+                # source=ask：与翻译/理解那几条链路区分开，设置页才看得出钱花在哪。
+                from backend.services.model.usage_stats import record
+
+                cfg = state.model_cfg or {}
+                record(
+                    model_config_id=cfg.get("config_id"),
+                    model_name=cfg.get("model_name"),
+                    provider=cfg.get("provider"),
+                    model_type="generation" if cfg.get("fallback_to_generation") else "agent",
+                    source="ask",
+                    prompt_tokens=state.usage["input_tokens"],
+                    completion_tokens=state.usage["output_tokens"],
+                )
             except Exception:  # noqa: BLE001
                 pass
         return []

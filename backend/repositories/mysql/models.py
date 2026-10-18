@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String,
+    BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String,
     Text, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -557,3 +557,42 @@ class ConversationMessage(Base):
     #: stop / rounds_exhausted / cancelled / error（终态口径，见规划 §11）
     finish_reason: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+# ---------------------------------------------------------------- ⑯ 模型用量
+class ModelUsage(Base):
+    """**一次**模型调用的 token 用量（模型设置页的消耗统计数据源）。
+
+    为什么单独一张表：翻译 / 理解 / 元数据 / 问答四条链路的入参口径完全不同，
+    唯一共同的只有 provider 返回的 usage —— 塞进 ``task.stats_json`` 就没法按天折线、
+    按模型排行地查（任务会被清理、会被重跑覆盖）。
+
+    ``model_name`` / ``provider`` / ``model_type`` 是**反规范化**存的一份：模型配置被删掉之后，
+    那条配置历史上的消耗仍然要能在排行榜上显示出来（否则"总消耗"会随删除凭空缩水）。
+    显示名同理，缺失时前端回落到 ``model_name``。
+
+    ``day`` 是按天聚合用的 **本地日**（口径说明见 ``services/model/usage_stats.py``），
+    ``created_at`` 沿用全库约定 = UTC naive。
+    """
+
+    __tablename__ = "model_usage"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"),
+                                    primary_key=True, autoincrement=True)
+    #: 发起这次调用的模型配置（可空：配置被删 / 历史行 / agent 侧只拿到 config_id）
+    model_config_id: Mapped[str | None] = mapped_column(String(64))
+    #: 反规范化的模型标识（配置删了统计仍要显示）
+    model_name: Mapped[str | None] = mapped_column(String(128))
+    provider: Mapped[str | None] = mapped_column(String(32))
+    model_type: Mapped[str | None] = mapped_column(String(16))
+    #: 哪条链路花的钱：translate / transcribe / understand / formula / vision / ask / generation
+    source: Mapped[str] = mapped_column(String(32), default="generation")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    #: 冗余存一份：厂商的 total 有时含缓存计费口径，不等于两项之和
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    #: 聚合键（DATE）。取**本地日** —— 用户看到的「今日消耗」才是他那一整天
+    day: Mapped[date] = mapped_column(Date, default=lambda: datetime.now().date())
+
+    __table_args__ = (Index("ix_model_usage_day", "day"),)

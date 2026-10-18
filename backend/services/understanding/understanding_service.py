@@ -319,13 +319,16 @@ def _generate(provider, prompt: str, *, system: str, path: str,
     所以：可重试的错误（`ProviderError.retryable`，含"只出思维链"、429、5xx、超时）
     **同预算再要一次**；不可重试的（密钥错、400）立刻抛。
     """
+    from backend.services.model.usage_stats import usage_scope
     from backend.services.translation.translation_service import _escalate_max_tokens
 
     budget = max(MAX_TOKENS, int(min_tokens))
     for attempt in range(1, _ATTEMPTS + 1):
         try:
-            return provider.generate(prompt, system=system, temperature=0.3,
-                                     max_tokens=budget)
+            # 用量口径在这里标一次（理解两路共用这一个调用点），重试的每一次都各算各的
+            with usage_scope("understand"):
+                return provider.generate(prompt, system=system, temperature=0.3,
+                                         max_tokens=budget)
         except Exception as exc:  # noqa: BLE001
             escalated = _escalate_max_tokens(exc, budget)
             if escalated is not None:                      # 将来基线还能抬时走这条

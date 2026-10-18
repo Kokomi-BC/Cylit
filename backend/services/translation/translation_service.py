@@ -32,6 +32,7 @@ from backend.core.events import (
 from backend.core.logging import get_logger
 from backend.core.utils import now
 from backend.services.model.model_manager import model_manager
+from backend.services.model.usage_stats import usage_scope
 from backend.services.paper import paper_service, reader_service
 from backend.services.task.scheduler import (
     AdaptiveScheduler, ScheduleItem, SchedulerConfig,
@@ -500,9 +501,15 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             return True
         return False
 
+    def scoped_process(payload) -> None:
+        # 页级调用跑在调度器的**线程池**里：contextvar 不跨线程，所以用量口径要在线程内设
+        # （任务入口设一次对这里无效，见 usage_stats.usage_scope 的注释）。
+        with usage_scope("transcribe" if path == "a" else "translate"):
+            process(payload)
+
     stats = scheduler.run(
         [ScheduleItem(key=f"p{page:03d}", payload=page) for page in pending],
-        process, on_error=on_error, should_stop=should_stop,
+        scoped_process, on_error=on_error, should_stop=should_stop,
     )
 
     store.flush()

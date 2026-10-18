@@ -52,6 +52,61 @@ def pick_default(candidates: list[dict]) -> dict | None:
     return min(candidates, key=key)
 
 
+# --------------------------------------------------------------------------
+# 用量记录代理（token 消耗统计，见 ``services/model/usage_stats.py``）
+# --------------------------------------------------------------------------
+#: 每个 provider 类对应一个「记录子类」（只造一次）。
+_usage_recorders: dict[type, type] = {}
+
+
+def _usage_recorder(base: type) -> type:
+    """给 provider 类造一个会落用量的子类。
+
+    为什么用**子类**而不是 ``__getattr__`` 转发：
+    1. ``structured()`` 内部是 ``self.generate(...)`` —— 只有真的继承下来，那次 generate
+       才会走钩子（元数据补全 / 简报 / 公式修复全走 structured）；
+    2. ``supports_vision`` 是 ``type(self).generate_vision is not GenerationProvider.generate_vision``：
+       转发代理会让不支持图片的 provider 看起来支持；子类只在原类真的覆盖了它时才覆盖。
+    """
+    cached = _usage_recorders.get(base)
+    if cached is not None:
+        return cached
+
+    def _record(self, result) -> None:
+        from backend.services.model.usage_stats import record_result
+
+        record_result(getattr(self, "config", None) or {}, result)
+
+    def generate(self, prompt, *args, **kwargs):
+        result = base.generate(self, prompt, *args, **kwargs)
+        _record(self, result)
+        return result
+
+    attrs: dict = {"generate": generate, "__module__": base.__module__}
+    if getattr(base, "generate_vision", None) is not GenerationProvider.generate_vision:
+        def generate_vision(self, prompt, images, *args, **kwargs):
+            result = base.generate_vision(self, prompt, images, *args, **kwargs)
+            _record(self, result)
+            return result
+
+        attrs["generate_vision"] = generate_vision
+    cls = type(f"UsageRecording{base.__name__}", (base,), attrs)
+    _usage_recorders[base] = cls
+    return cls
+
+
+def _with_usage(provider):
+    """套一层薄代理：与缓存的 provider **共享实例状态**（HTTP 客户端 / 缓存 / config）。
+
+    ``_get()`` 的缓存里存的仍是裸 provider，代理每次现造一个 —— 于是 ``get_generation()``
+    的既有缓存口径（同一份配置复用同一个实例）完全不变。
+    """
+    cls = _usage_recorder(type(provider))
+    proxy = cls.__new__(cls)
+    proxy.__dict__ = provider.__dict__
+    return proxy
+
+
 class ModelManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -162,7 +217,9 @@ class ModelManager:
         return provider
 
     def get_generation(self, model_id: str | None = None) -> GenerationProvider:
-        return self._get(self.get_config(model_id, "generation"))  # type: ignore[return-value]
+        # 业务侧取生成模型的唯一门面 —— 用量统计就套在**返回处**（每次 generate 落一条）
+        provider = self._get(self.get_config(model_id, "generation"))
+        return _with_usage(provider)  # type: ignore[return-value]
 
     def get_embedding(self, model_id: str | None = None) -> EmbeddingProvider:
         return self._get(self.get_config(model_id, "embedding"))  # type: ignore[return-value]
@@ -172,7 +229,8 @@ class ModelManager:
 
     def get_vision(self, model_id: str | None = None):
         """视觉模型（扫描件读页）。未注册 ``vision`` 类型模型时抛错，调用方自行降级。"""
-        return self._get(self.get_config(model_id, "vision"))
+        # 也套用量代理：页级翻译与扫描件兜底走的是这条（token 最贵的两处）
+        return _with_usage(self._get(self.get_config(model_id, "vision")))
 
     def is_mock(self, model_type: str = "generation") -> bool:
         try:
@@ -208,7 +266,8 @@ class ModelManager:
     def test(self, model_id: str, persist: bool = True) -> dict:
         cfg = self.get_config(model_id)
         try:
-            provider = self._get(cfg)
+            # 探测也是一次真调用（真花钱），同样落一条用量
+            provider = _with_usage(self._get(cfg))
             info: ModelInfo = provider.test()  # type: ignore[attr-defined]
         except ProviderError as exc:
             info = ModelInfo(ok=False, detail=exc.message[:300])

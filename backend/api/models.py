@@ -22,6 +22,18 @@ async def model_types(request: Request):
     return envelope(model_service.types_summary(), request=request)
 
 
+@router.get("/models/usage/stats")
+async def model_usage_stats(request: Request, days: int = Query(14)):
+    """模型 token 消耗：总消耗 / 今日 / 按天折线 / 分模型排行。
+
+    days 夹到 1..90（契约见 ``services/model/usage_stats.stats``）：
+    days 连续零填充、从旧到新、长度正好 days；by_model 按 total 降序。
+    """
+    from backend.services.model import usage_stats
+
+    return envelope(usage_stats.stats(days), request=request)
+
+
 # 注意：`/models/presets` 必须**声明在** `/models/{model_id}` 之前，
 # 否则 "presets" 会被当成 model_id 捕获，接口不可达（返回"模型不存在：presets"）。
 @router.get("/models/presets")

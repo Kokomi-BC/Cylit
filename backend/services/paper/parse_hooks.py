@@ -12,6 +12,7 @@ from __future__ import annotations
 from backend.core.config import get_settings
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps
+from backend.services.model.usage_stats import usage_scope
 
 log = get_logger(__name__)
 
@@ -28,10 +29,11 @@ def build_repair_fn():
         return None
 
     def repair(evidence: dict) -> dict:
-        provider = model_manager.get_generation()
-        return provider.structured(json_dumps(evidence, indent=2),
-                                   evidence.get("output_schema", {}),
-                                   system=REPAIR_SYSTEM)
+        with usage_scope("formula"):
+            provider = model_manager.get_generation()
+            return provider.structured(json_dumps(evidence, indent=2),
+                                       evidence.get("output_schema", {}),
+                                       system=REPAIR_SYSTEM)
 
     return repair
 
@@ -62,8 +64,9 @@ def build_vision_fn(params: dict | None = None, *, page_total: int = 0):
     total = int(params.get("page_total") or page_total or 0)
 
     def read(page_no: int, image: bytes) -> str:
-        markdown, usage = read_page_markdown(
-            image, provider, page_no=page_no, page_total=total or page_no)
+        with usage_scope("vision"):
+            markdown, usage = read_page_markdown(
+                image, provider, page_no=page_no, page_total=total or page_no)
         log.info("扫描页 p%d 识别完成：%d 字符，%d+%d token，%.0fms",
                  page_no, usage.get("chars", 0), usage.get("prompt_tokens", 0),
                  usage.get("completion_tokens", 0), usage.get("latency_ms", 0.0))
