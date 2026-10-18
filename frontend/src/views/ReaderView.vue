@@ -8135,31 +8135,26 @@ function renderMarkdown(text?: string | null) {
 .reader > .aside-resizer:hover::after {
   background: var(--accent); width: 5px;
 }
-/* 按住 / 正在拖：**与浮窗那两枚角把手同一套弹性**（用户口径 2026-11-26「同款弹性动画」）。
-   节奏照抄 fc-grip 那一组：加粗 520ms、方向回弹 420ms，同一条回弹曲线；只有两个量不同 ——
-   把手是竖条，所以加粗走 width（4 → 6.4 → 5 → 5.8），回弹走 translateX（3px 一小步）。
-   动的是 ::after 这枚胶囊，12px 的命中带本身一动不动（和浮窗「只让弧动」同一口径）。 */
+/* 按住 / 正在拖：弹性**沿竖线两端**弹（用户口径 2026-11-26 追加），不是往左右变粗。
+ * 用 scaleY 而不是 height：`transform-origin` 默认就在中心，两端会**对称地**往外弹开、
+ * 回缩，绕中轴过冲一次；写 height 得自己补 margin-top，还要顺带触发一次布局。
+ * 帧序与浮窗那枚 `fc-grip-spring` 一致（1 → 1.55 → 1 → 1.28 → 1.16），只是单轴。
+ * 动的仍只是 ::after 这枚胶囊，12px 的命中带一动不动（同「只让弧动」口径）。 */
 .reader > .aside-resizer:active::after,
 .reader > .aside-resizer.active::after {
   background: var(--accent);
-  animation: aside-grip-thicken 520ms cubic-bezier(.22, 1.2, .36, 1) both,
-             aside-grip-glide 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+  animation: aside-grip-spring 520ms cubic-bezier(.22, 1.2, .36, 1) both;
 }
-@keyframes aside-grip-thicken {
-  0% { width: 4px; }
-  38% { width: 6.4px; }
-  72% { width: 5px; }
-  100% { width: 5.8px; }
-}
-@keyframes aside-grip-glide {
-  0% { transform: translateX(0); }
-  40% { transform: translateX(3px); }
-  72% { transform: translateX(2px); }
-  100% { transform: translateX(3px); }
+@keyframes aside-grip-spring {
+  0% { transform: scaleY(1); }
+  28% { transform: scaleY(1.55); }
+  56% { transform: scaleY(1); }
+  78% { transform: scaleY(1.28); }
+  100% { transform: scaleY(1.16); }
 }
 @media (prefers-reduced-motion: reduce) {
   .reader > .aside-resizer:active::after,
-  .reader > .aside-resizer.active::after { animation: none; width: 5px; }
+  .reader > .aside-resizer.active::after { animation: none; }
 }
 /* 侧栏收起 / 浮窗 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉 */
 .reader.no-aside > .aside-resizer { opacity: 0; pointer-events: none; }
