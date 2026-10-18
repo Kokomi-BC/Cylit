@@ -286,14 +286,21 @@ const FLOAT_EDGE = 24;
 const asidePreviewW = ref<number | null>(null);
 /** 面板"看上去"的宽度（拖拽中用预览值，其余时候是落盘值） */
 const asideShownPx = computed(() => `${asidePreviewW.value ?? asideWidth.value}px`);
-/** 拖动期间给 `<aside>` 的行内宽度（+ 子元素最小宽度）：只让这一层重算 */
+/** 拖动期间给 `<aside>` 的行内宽度；内容宽度钉在**按下那一刻**（见 `.aside-previewing`） */
 const asidePreviewStyle = computed<CSSProperties>(() => (asidePreviewW.value === null
   ? {}
-  : { width: `${asidePreviewW.value}px`, '--aside-min-w': `${asidePreviewW.value}px` }));
-/** 拖动期间正文那一层只**平移**（不改变宽度 → 不重排，右端由 `overflow-x: hidden` 裁掉） */
-const asidePreviewShift = computed<CSSProperties>(() => (asidePreviewW.value === null
-  ? {}
-  : { transform: `translateX(${asidePreviewW.value}px)` }));
+  : {
+      width: `${asidePreviewW.value}px`,
+      '--aside-pin-w': `${resizeStartW || asidePreviewW.value}px`,
+    }));
+/**
+ * 拖动期间正文那一层**完全不动**（松手才让位）。
+ *
+ * 试过让它跟着平移：`.reader-slide` 是整篇正文（几百行 + 公式），逐帧改 transform 在软件渲染下
+ * 每帧要多花十几毫秒，而它在本级几乎没有信息量 —— 拖动时看的是那条分隔线。
+ * 所以拖动期间只有"面板边框 + 把手"在跟手，正文原地不动，松手一次性让位/重排。
+ */
+const asidePreviewShift = computed<CSSProperties>(() => ({}));
 
 /** 给 `<style>` 里的 `v-bind()` 用：**收起态/停靠态**的栏宽。
  *  ⚠️ 浮窗的几何**不在这条链上**（见 `asideFloatStyle`）：走 `v-bind()` 的话，拖浮窗时
@@ -339,10 +346,9 @@ const asideGapPx = computed(() => (asideVisible.value && !isNarrow.value ? `${as
 
 /** 胶囊工具栏要居中在**正文列**上：侧栏展开时整体右移半个栏宽（transition 与侧栏同步）。 */
 const capsuleShift = computed(() => (
-  asideVisible.value && !isNarrow.value
-    /* 拖宽度时跟着**预览值**走：它是工具栏的行内变量，不触发正文重排 */
-    ? Math.round((asidePreviewW.value ?? asideWidth.value) / 2)
-    : 0
+  /* 跟着**落盘值**（不是预览值）：拖动期间正文原地不动（见 `asidePreviewShift`），
+     胶囊是"居中在正文列上"的，正文不动它也不该动 —— 否则拖起来两套东西各走各的。 */
+  asideVisible.value && !isNarrow.value ? Math.round(asideWidth.value / 2) : 0
 ));
 
 /** 同一份位移给弹出面板用（CSS 变量形式，见 `.cap-panel` 的 `--panel-shift`）。 */
@@ -5717,6 +5723,7 @@ function renderMarkdown(text?: string | null) {
                asideVisible ? '' : 'no-aside',
                chatFloat ? 'aside-float' : '',
                floatMoving ? 'float-moving' : '',
+               asidePreviewW !== null ? 'aside-previewing' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
                { resizing: asideResizing }]"
     >
@@ -7037,6 +7044,14 @@ function renderMarkdown(text?: string | null) {
   /* 把手已经挪到侧栏外面（见上面的 `.reader > .aside-resizer`），所以这里**不留 gutter**：
      面板里的滚动条回到最右边原位，`.panel-body` / `.toc-pane` 这些滚动容器照旧整宽。 */
   .reader-aside > * { min-width: var(--aside-min-w, v-bind(asideWidthPx)); }
+  /* 拖宽度期间：把面板内容**钉在按下那一刻的宽度**，只让"边框"跟着指针走。
+     不钉的话每帧都要重排里面那一整列（消息 + KaTeX + 目录），实测 42ms/帧；
+     钉住之后内容一次都不重排，松手写回真值时排一次（用户口径 2026-11-19：松手再排）。 */
+  .reader.aside-previewing .reader-aside > * {
+    width: var(--aside-pin-w); min-width: 0;
+  }
+  /* 把面板的绘制/布局隔离出来：拖宽度时只有它自己的边框在动，不牵动别处 */
+  .reader.aside-previewing .reader-aside { contain: layout paint; }
 }
 /* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
    也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
