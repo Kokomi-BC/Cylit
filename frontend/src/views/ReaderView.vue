@@ -1743,8 +1743,19 @@ watchEffect(applyFloatDom, { flush: 'sync' });
  * 浮窗的拖动现在挂在**整块面板**上（标题栏那一行已经和会话头合并，没有单独的抓手区了）：
  * 只有从"头部那一行"按下去才算拖动 —— 正文里选字、点按钮都不该把窗口挪走。
  */
-/** 浮窗正在被拖动（这一会儿整块阅读区**不许选中文字**，见 `.float-dragging`） */
-const floatDragging = ref(false);
+/**
+ * 浮窗正在被拖动（这一会儿整块阅读区**不许选中文字**，抓手也在这时候变宽）。
+ *
+ * ⚠️ 这个类**不走模板绑定**：以前写 `floatDragging ? 'float-dragging' : ''`，于是按下与松手那一下
+ * 都要把 `ReaderView`（几千行 + 整棵对话面板）重渲染一遍，几十毫秒的主线程尖峰正好吃掉抓手补间的
+ * 头几帧 —— 表现就是「点抓手时的动画没有点别处细腻」，松手那一帧还会闪。
+ * 现在直接 `classList.toggle` 到根元素上：类名照旧命中那些 CSS，但一次渲染都不触发。
+ */
+const readerEl = ref<HTMLElement | null>(null);
+
+function setFloatDragging(on: boolean) {
+  readerEl.value?.classList.toggle('float-dragging', on);
+}
 
 function onFloatCardDown(ev: PointerEvent) {
   if (!chatFloat.value) return;
@@ -1773,7 +1784,7 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   const el = ev.currentTarget as HTMLElement | null;
   floatDrag.on = true;
   floatDrag.mode = mode;
-  floatDragging.value = mode === 'move';
+  setFloatDragging(mode === 'move');
 
   floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
@@ -1882,8 +1893,14 @@ function onFloatPointerUp(ev: PointerEvent) {
   floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
   floatDrag.on = false;
   floatDrag.mode = '';
-  floatDragging.value = false;
-  document.body.style.userSelect = '';
+  /* ⚠️ 类名与 body 上的选区锁**延到下一帧**再撤：这两步各要一次样式重算（body 那条是整个文档），
+     挤在落定那一帧里只会把"松手"变成一次肉眼可见的卡顿/闪。延一帧没有任何副作用
+     （这一帧还锁着，只是用户看不出来）。 */
+  requestAnimationFrame(() => {
+    if (floatDrag.on) return;          // 这一帧里又开始了新的手势：留给那一次收尾
+    setFloatDragging(false);
+    document.body.style.userSelect = '';
+  });
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
@@ -6101,10 +6118,10 @@ function renderMarkdown(text?: string | null) {
 
     <div
       v-else
+      ref="readerEl"
       :class="['reader',
                asideVisible ? '' : 'no-aside',
                chatFloat ? 'aside-float' : '',
-               floatDragging ? 'float-dragging' : '',
 
                asidePreviewW !== null ? 'aside-previewing' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
@@ -7470,13 +7487,13 @@ function renderMarkdown(text?: string | null) {
   transition: width 220ms cubic-bezier(.22, 1.2, .36, 1),
               background-color 220ms var(--ease);
 }
-/* 拖动中（`floatDragging` 为真 = `.reader.float-dragging`，拖标题栏拖出来时才有） */
+/* 拖动中才变宽（`floatDragging` = `.reader.float-dragging`，由 onFloatPointerDown 直接挂在根元素上）。
+   ⚠️ 这里**不要**再写 `:active` 兜底：:active 在整个浮窗上都会命中，于是"点卡片正文"也会让抓手
+   变宽（用户口径 2026-11-24 第 1 条）；而且 `:active` 比类名晚一拍生效，两种来源的补间节奏还不一样
+   —— 那正是"点抓手时的动画没有点别处细腻"的来源。 */
 .reader > .chat-host:not(.float) > .chat-grip-pill { display: none; }
-.reader.float-dragging > .chat-host.float > .chat-grip-pill,
-/* :active 是纯 CSS 兜底。 */
-.reader > .chat-host.float:active > .chat-grip-pill {
-  /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。
-     抓手现在是真实子元素，不再跟着宿主每帧被标脏，过渡不会被降级。 */
+.reader.float-dragging > .chat-host.float > .chat-grip-pill {
+  /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。 */
   width: 46px;
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }

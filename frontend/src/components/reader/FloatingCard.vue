@@ -77,6 +77,18 @@ async function place() {
 /** 用户挪过它了：之后不再自动摆位（内容变长、锚点变化都不弹回去），下次打开才复位。 */
 const dragged = ref(false);
 const drag = reactive({ on: false, sx: 0, sy: 0, ox: 0, oy: 0, w: 0, h: 0 });
+/* 抓手/标题带的按下态（`.dragging`）与角把手的按下态（`.is-on`）**直接挂 DOM**：
+   绑在模板上会在按下与松手那一刻把整张卡片（含插槽里的编辑区）重渲染一遍，
+   几十毫秒的尖峰正好吃掉抓手补间的头几帧 —— 表现就是「点抓手时的动画不够细腻」。 */
+const grabEl = ref<HTMLElement | null>(null);
+const headEl = ref<HTMLElement | null>(null);
+const brEl = ref<HTMLElement | null>(null);
+const blEl = ref<HTMLElement | null>(null);
+
+function markDragging(on: boolean) {
+  grabEl.value?.classList.toggle('dragging', on);
+  headEl.value?.classList.toggle('dragging', on);
+}
 /** 手势期间的落点（**普通对象**，不是响应式）：每帧只写 DOM，松手才同步回 `pos` —— 整个手势零次重渲染。
  *  另外 `pointermove` 在一帧里可能来好几次（平板 120Hz），所以用 rAF 合并成每帧一次。 */
 const live = { left: 0, top: 0 };
@@ -115,6 +127,7 @@ function onHeadDown(ev: PointerEvent) {
   const head = ev.currentTarget as HTMLElement | null;
   lockSelect();
   drag.on = true;
+  markDragging(true);
   drag.sx = ev.clientX; drag.sy = ev.clientY;
   drag.ox = pos.value.left; drag.oy = pos.value.top;
   const node = el.value;
@@ -161,7 +174,12 @@ function onHeadUp(ev: PointerEvent) {
   if (moveAt) applyHeadMove();
   moveAt = null;
   drag.on = false;
-  unlockSelect();
+  /* 类名与 body 上的选区锁**延到下一帧**再撤（各要一次样式重算，不该挤在落定那一帧） */
+  requestAnimationFrame(() => {
+    if (drag.on || rs.on) return;
+    markDragging(false);
+    unlockSelect();
+  });
   /* 拖动与落定**是同一种写法**（left/top）：没有 transform 要还原、没有合成层要拆，
      松手那一帧不需要重绘 —— 所以不会「拖完闪一下」（用户口径 2026-11-24）。 */
   const node = el.value;
@@ -288,6 +306,7 @@ function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
   lockSelect();
   rs.on = true;
   rs.corner = corner;
+  (corner === 'br' ? brEl : blEl).value?.classList.add('is-on');
   rs.sx = ev.clientX; rs.sy = ev.clientY;
   rs.sw = box.offsetWidth; rs.sh = box.offsetHeight;
   rs.sl = pos.value.left; rs.st = pos.value.top;
@@ -352,7 +371,12 @@ function onResizeUp(ev: PointerEvent) {
   if (rsAt) applyResizeMove();
   rsAt = null;
   rs.on = false;
-  unlockSelect();
+  requestAnimationFrame(() => {
+    if (drag.on || rs.on) return;
+    brEl.value?.classList.remove('is-on');
+    blEl.value?.classList.remove('is-on');
+    unlockSelect();
+  });
   /* 同步回响应式状态：值与刚才写进 DOM 的一模一样，Vue 那次 patch 是空操作 */
   pos.value = { left: rlive.left, top: rs.st };
   sizeW.value = rlive.w;
@@ -403,7 +427,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
            同样**不写 title**（用户口径 2026-10-08：不要浏览器悬浮提示），只靠光标形状说话。 -->
       <div
         class="fc-grab"
-        :class="{ dragging: drag.on }"
+        ref="grabEl"
         data-float-grab
         @pointerdown="onHeadDown"
         @pointermove="onHeadMove"
@@ -417,7 +441,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
            `label` / `input` 也要排掉，否则点取色器会顺手把卡片拖一下。 -->
       <div
         class="fc-head"
-        :class="{ dragging: drag.on }"
+        ref="headEl"
         data-float-head
         @pointerdown="onHeadDown"
         @pointermove="onHeadMove"
@@ -472,7 +496,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
     <div class="fc-grips">
       <div
         class="fc-resize br"
-        :class="{ 'is-on': rs.on && rs.corner === 'br' }"
+        ref="brEl"
         data-float-resize
         aria-label="拖动调整大小"
         @pointerdown="onResizeDown($event, 'br')"
@@ -482,7 +506,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
       />
       <div
         class="fc-resize bl"
-        :class="{ 'is-on': rs.on && rs.corner === 'bl' }"
+        ref="blEl"
         data-float-resize-bl
         aria-label="拖动调整大小"
         @pointerdown="onResizeDown($event, 'bl')"
