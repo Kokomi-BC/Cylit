@@ -322,6 +322,78 @@ async function saveLimits(): Promise<void> {
   }
 }
 
+/* ---------------------------- ②b Cyli 解释的模型 ----------------------------
+   划词解释 / 插图解释是"一锤子买卖"（读一段、讲清楚），与侧栏对话的负载不同：
+   对话要长上下文与工具编排，解释可以更便宜更快。所以这里让它单独一份。
+   两个值都存 setting 表（空串 = 跟随默认），读取点在 backend/services/agent/explain.py，
+   消费方是 POST /agent/ask 的 mode=explain（只在调用方没显式指定模型时才套用）。 */
+
+interface ExplainModelOption {
+  id: string;
+  name?: string;
+  model_name?: string | null;
+  provider?: string;
+  enabled?: boolean;
+  is_default?: boolean;
+  parameters?: { reasoning_effort?: string; reasoning_levels?: unknown };
+}
+
+/** 内置思考档（与对话页那套同一份）；模型自带 reasoning_levels 时以它为准 */
+const BUILTIN_EFFORTS = ['off', 'low', 'medium', 'high', 'max'];
+
+const explainModels = ref<ExplainModelOption[]>([]);
+const explainModel = ref('');
+const explainEffort = ref('');
+const explainBusy = ref(false);
+
+const explainModelChoice = computed(() =>
+  explainModels.value.find((m) => m.id === explainModel.value) ?? null);
+const explainEffortOptions = computed<string[]>(() => {
+  const raw = explainModelChoice.value?.parameters?.reasoning_levels;
+  if (Array.isArray(raw) && raw.length) {
+    const list = raw
+      .map((item) => (typeof item === 'string' ? item : String((item as { value?: unknown })?.value ?? '')))
+      .filter(Boolean);
+    if (list.length) return list;
+  }
+  return BUILTIN_EFFORTS;
+});
+/** 该模型自己配的那一档：选「跟随模型」时它说了算，界面上要写出来 */
+const explainModelDefaultEffort = computed(() => {
+  const v = explainModelChoice.value?.parameters?.reasoning_effort;
+  return typeof v === 'string' ? v : '';
+});
+
+async function loadExplain(): Promise<void> {
+  const [models, settings] = await Promise.all([
+    api.get<{ items?: ExplainModelOption[] }>('/models', { model_type: 'agent' })
+      .catch(() => ({ items: [] as ExplainModelOption[] })),
+    api.get<SettingsPayload>('/settings').catch(() => null),
+  ]);
+  explainModels.value = (models?.items ?? []).filter((m) => m.enabled !== false);
+  const values = (settings as SettingsPayload | null)?.values ?? {};
+  explainModel.value = String(values.explain_model_config_id ?? '');
+  explainEffort.value = String(values.explain_reasoning_effort ?? '');
+}
+
+async function saveExplain(): Promise<void> {
+  explainBusy.value = true;
+  try {
+    const data = await api.put<SettingsPayload>('/settings', {
+      explain_model_config_id: explainModel.value,
+      explain_reasoning_effort: explainEffort.value,
+    });
+    const values = data?.values ?? {};
+    explainModel.value = String(values.explain_model_config_id ?? explainModel.value);
+    explainEffort.value = String(values.explain_reasoning_effort ?? explainEffort.value);
+    toast('已保存：之后的 Cyli 解释按这份配置运行', 'ok', 2600);
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 5000);
+  } finally {
+    explainBusy.value = false;
+  }
+}
+
 /* ------------------------------- 载入 ------------------------------- */
 
 async function reloadAll(): Promise<void> {
@@ -331,6 +403,7 @@ async function reloadAll(): Promise<void> {
 onMounted(() => {
   void reloadAll();
   void loadStyle();
+  void loadExplain();
 });
 </script>
 
@@ -432,6 +505,42 @@ onMounted(() => {
       </div>
     </section>
 
+    <!-- ②b Cyli 解释：单独一套模型 + 思考强度。留空 = 跟随默认（对话模型 / 模型自己的档）。 -->
+    <section class="card">
+      <div class="card-head">
+        <AppIcon name="sparkle" :size="14" />Cyli 解释
+        <span class="spacer"></span>
+        <span class="tiny faint">下一轮解释生效</span>
+        <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
+          <AppIcon name="check" :size="15" />{{ explainBusy ? '保存中…' : '保存' }}
+        </button>
+      </div>
+      <div class="card-body">
+        <p class="tiny faint explain-hint">
+          划词解释 / 插图解释用的模型与思考强度。解释是"读一段、讲清楚"，
+          与侧栏对话的负载不同 —— 这里可以单独挑一个更快或更便宜的。
+        </p>
+        <div class="grid cols-2">
+          <label class="field">
+            <span class="field-top">模型</span>
+            <select v-model="explainModel" data-explain-model>
+              <option value="">跟随对话默认</option>
+              <option v-for="m in explainModels" :key="m.id" :value="m.id">
+                {{ m.name || m.model_name || m.id }}
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-top">思考强度</span>
+            <select v-model="explainEffort" data-explain-effort>
+              <option value="">跟随模型{{ explainModelDefaultEffort ? `（${explainModelDefaultEffort}）` : '' }}</option>
+              <option v-for="e in explainEffortOptions" :key="e" :value="e">{{ e }}</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </section>
+
     <!-- ③ 运行限额：六个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
     <section class="card">
       <div class="card-head">
@@ -489,6 +598,9 @@ onMounted(() => {
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
 .skill-row.off .skill-desc { opacity: .6; }
 .skill-ops { display: flex; align-items: center; gap: 6px; flex: none; padding-top: 1px; }
+
+/* ②b Cyli 解释：一行说明 + 两个下拉，别让它看起来像又一段要读的正文 */
+.explain-hint { margin: 0 0 10px; line-height: 1.6; max-width: 62ch; }
 
 /* ---------- ③ 运行限额：两列网格，≥1200px 留白更松 ---------- */
 .limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }

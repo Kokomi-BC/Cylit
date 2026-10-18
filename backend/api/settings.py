@@ -36,6 +36,11 @@ EDITABLE: dict[str, type] = {
     # 护栏/工作方式在 `agent/prompts.py` 的常驻块里，不入设置表 —— 那是底线，不是配置。
     # 读取点：`services/agent/style.py`（空 = 没设过，回落到 prompts.DEFAULT_STYLE）。
     "agent_style": str,
+    # ---- Cyli 解释（划词 / 插图解释）单独一份模型配置 ----
+    # 读取点：services/agent/explain.py，消费方是 POST /agent/ask（只在 mode=explain 时用）。
+    # 空串 = 没设过 → 模型跟随对话默认、思考强度跟随模型自己的 parameters。
+    "explain_model_config_id": str,
+    "explain_reasoning_effort": str,
     "rag_top_k_vector": int,
     "rag_top_k_lexical": int,
     "rag_top_k_fused": int,
@@ -62,6 +67,9 @@ def _live_default(key: str) -> Any:
             from backend.services.agent import style as style_service
 
             return style_service.default()
+        if key in ("explain_model_config_id", "explain_reasoning_effort"):
+            # 默认值就是"没设过"：空串让设置页那两个下拉落在「跟随默认」那一项
+            return ""
 
         from backend.services.knowledge import knowledge_service as ks
         from backend.services.knowledge import rag_service, retrieval

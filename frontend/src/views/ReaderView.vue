@@ -5007,6 +5007,9 @@ async function askSelection(question: string, opts: { silent?: boolean } = {}) {
   try {
     await postSse('/agent/ask', {
       paper_id: paperId.value, question: q,
+      // mode=explain：后端据此套用设置里「Cyli 解释」那一份模型配置（模型 + 思考强度）。
+      // 只在用户没在别处显式指定时生效，见 api/agent.py 里那段注释。
+      mode: 'explain',
       conversation_id: explainCard.conversationId,
       // 插图解释：**每轮都把附件带上**（理由是历史不带图，见 `explainCard.attachments`）
       attachments: explainCard.attachments.length ? explainCard.attachments : undefined,
@@ -7360,15 +7363,21 @@ function renderMarkdown(text?: string | null) {
       </div>
 
       <!-- 底部输入框：**出过程期间不显示**（用户口径第 3 条：还没有本轮正文时藏起来） -->
+      <!-- 追问输入（用户口径 2026-11-26：精简冗余文本）：
+           占位符只说"能干什么"，不再写"（Enter 发送）"——回车能用是键盘常识，
+           而且 340px 宽的卡片里那半句会把提示挤成省略号。
+           右边那枚按钮改成图标（与对话页发送键同一套），"提问"两个字在这里是重复的。 -->
       <div v-if="!explainBusy" class="ex-ask">
         <input
           v-model="explainCard.question"
-          :placeholder="explainIsImage ? '就这张图继续问（Enter 发送）' : '就这段继续问（Enter 发送）'"
+          :placeholder="explainIsImage ? '就这张图继续问…' : '就这段继续问…'"
+          :title="'回车发送'"
           @keyup.enter="submitExplainQuestion"
         >
-        <button class="btn sm primary" :disabled="explainCard.loading || !explainCard.question.trim()"
+        <button class="btn primary icon sm" title="发送（Enter）" aria-label="发送"
+                :disabled="explainCard.loading || !explainCard.question.trim()"
                 @click="submitExplainQuestion">
-          提问
+          <AppIcon name="arrow-up" :size="14" />
         </button>
       </div>
 
@@ -8757,11 +8766,20 @@ function renderMarkdown(text?: string | null) {
 }
 .chip:hover { color: var(--accent-text); border-color: var(--accent); }
 /* 追问输入：与侧栏对话那枚输入框同规格（同高、同圆角），按钮同 `btn sm primary` */
-.ex-ask { display: flex; gap: 6px; margin-top: 10px; flex: none; }
-.ex-ask input {
-  flex: 1; min-width: 0; height: var(--control-h-sm); border-radius: var(--radius-ctl);
+/* 追问输入：与正文用一条分隔线划开（它在卡片里是"操作区"，不是内容的一部分），
+   输入框用浅底 + 无重描边，聚焦时才出强调环 —— 和对话页那条 composer 同一门语言。 */
+.ex-ask {
+  display: flex; gap: 6px; align-items: center; flex: none;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--divider);
 }
-.ex-ask .btn { height: var(--control-h-sm); }
+.ex-ask input {
+  flex: 1; min-width: 0; height: var(--control-h-sm);
+  border-radius: var(--radius-ctl);
+  background: var(--bg-sunken); border-color: transparent;
+}
+.ex-ask input:focus { border-color: var(--border-strong); background: var(--bg-elev); }
+.ex-ask .btn { height: var(--control-h-sm); width: var(--control-h-sm); flex: none; }
 .ex-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 /* 底部那排色块（存为笔记）：**不写说明文字**（用户口径 2026-11-19：移除多余的描述文本），
    一排色点 + 各自的 title 提示已经说清楚了。 */

@@ -226,6 +226,18 @@ async def agent_ask(payload: dict = Body(...)):
         patch["model_config_id"] = payload.get("model_id")
     if "reasoning_effort" in payload:
         patch["reasoning_effort"] = payload.get("reasoning_effort")
+    # Cyli 解释（划词 / 插图）单独一份模型配置（设置页可改）：
+    # 前端带 mode=explain 且**自己没有指定**模型/强度时才套用它 ——
+    # 显式传了就以显式为准，免得"设置里改了，某个入口却按另一套跑"。
+    if str(payload.get("mode") or "") == "explain" \
+            and "model_id" not in payload and "reasoning_effort" not in payload:
+        from backend.services.agent import explain as explain_cfg
+
+        exp_model, exp_effort = explain_cfg.pick()
+        if exp_model:
+            patch["model_config_id"] = exp_model
+        if exp_effort:
+            patch["reasoning_effort"] = exp_effort
     choice = conversations.update_conversation(conversation_id, patch)
 
     if regenerate_from:
