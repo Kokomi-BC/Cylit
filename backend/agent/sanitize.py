@@ -181,6 +181,27 @@ _IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*<?(?P<url>[^)\s>]+)[^)]*\)")
 _ALLOWED_IMAGE = "/api/v1/papers/{paper_id}/figures/region/"
 
 
+def _controlled_image_path(url: str) -> str:
+    """把模型写出来的图片地址规整成**绝对路径**（非受控地址原样返回，由调用方决定丢弃）。
+
+    为什么需要：模型会把受控地址写歪 —— 实测 `api/v1/papers/<id>/figures/region/7/0?v=…`
+    少了开头那个 `/`，于是 `startswith("/api/v1/…")` 判不出来，一张本来完全合法的裁图被当成
+    外链删成了「（配图已省略：…）」（用户 2026-11-26 报的正是这个）。只要**路径**对得上就补回 `/`；
+    写成整条 `https://…/api/v1/…` 的只取路径部分，域名一律丢掉 —— 不能因为它长得像就放行站外地址。
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        rest = raw.split("://", 1)[1]
+        raw = "/" + (rest.split("/", 1)[1] if "/" in rest else "")
+    elif raw.startswith("./"):
+        raw = raw[1:]
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    return raw
+
+
 def strip_foreign_images(text: str, paper_id: str) -> str:
     """删掉回答里的非受控图片（外链 / ``data:`` / ``blob:`` / 别的论文）。
 
@@ -192,10 +213,11 @@ def strip_foreign_images(text: str, paper_id: str) -> str:
     allowed = _ALLOWED_IMAGE.format(paper_id=paper_id)
 
     def repl(match: re.Match) -> str:
-        url = match.group("url")
-        if url.startswith(allowed):
-            return match.group(0)
         alt = (match.group("alt") or "").strip() or "插图"
+        path = _controlled_image_path(match.group("url"))
+        if path.startswith(allowed):
+            # 用**规整后的绝对地址**重写：模型少写一个 `/` 时也能真的加载出来
+            return f"![{alt}]({path})"
         return f"（配图已省略：{alt}）"
 
     return _IMAGE_RE.sub(repl, text or "")
