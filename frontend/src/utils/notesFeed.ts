@@ -85,7 +85,10 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
       key: `h:${g}`, kind: note ? 'note' : 'highlight',
       anchorId: first.block_id ?? null, anchorIds: ids,
       page: first.page ?? null,
-      quote: list.map((h) => cleanQuote(h.text ?? '')).filter(Boolean).join(' '),
+      // 原文是占位符（在 PDF 里选中公式 / 图片块）时退回那一行的正文 markdown：
+      // 用户要看到的是"这条笔记标的是哪个式子"，不是一个占位字形。
+      quote: list.map((h) => cleanQuote(h.text ?? '') || cleanQuote(h.quote_md ?? ''))
+        .filter(Boolean).join(' '),
       color: first.color || 'yellow',
       scope: first.scope ?? 'row',
       noteId: note?.id ?? '', highlightId: ids[0] ?? '',
@@ -100,7 +103,9 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     if (usedNotes.has(n.id)) continue;
     rows.push({
       key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [],
-      page: n.page ?? null, quote: cleanQuote(n.selected_text ?? ''), color: '',
+      page: n.page ?? null,
+      quote: cleanQuote(n.selected_text ?? '') || cleanQuote(n.quote_md ?? ''),
+      color: '',
       scope: n.scope, noteId: n.id, highlightId: n.highlight_id ?? '',
       contentMd: n.content_md, label: '笔记', badge: 'accent',
       at: n.updated_at ?? n.created_at ?? null,

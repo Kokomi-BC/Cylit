@@ -318,6 +318,12 @@ export interface Highlight {
   group_id?: string | null;
   page?: number | null;
   created_at?: string | null;
+  /**
+   * 这条高亮锚定那一行的**正文 markdown**。只用来显示：当 text 是占位符
+   * (U+FFFC，即在 PDF 里选中公式 / 图片块) 时，侧栏那条"原文"用它渲染出真正的公式。
+   * 不参与定位 —— 偏移量仍按 text 那一份算。
+   */
+  quote_md?: string | null;
 }
 
 export interface Note {
@@ -334,6 +340,8 @@ export interface Note {
   highlight_id?: string | null;
   /** 这条笔记挂在哪一面：`row` / `markdown` / `pdf`（从 block_id 前缀推出来） */
   scope?: 'row' | 'markdown' | 'pdf';
+  /** 原文是占位符时用来显示的正文 markdown（同 Highlight.quote_md） */
+  quote_md?: string | null;
   tags?: string[];
   created_at?: string | null;
   updated_at?: string | null;

@@ -696,6 +696,14 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                 item["formula"] = _formula_card(f)
             out_blocks.append(item)
 
+        #: 块锚点 → 正文行 markdown。给"原文是占位符"的笔记/高亮兜底用：
+        #: PDF 里选中**公式 / 图片块**时，浏览器交出来的不是文字，而是一枚 U+FFFC（对象替换符），
+        #: 侧栏那条"高亮原文"于是只剩一个看不懂的占位字形（用户 2026-11-26 报的"显示成 obj"）。
+        #: 这里把那一行真正的 markdown（公式的 LaTeX / 图注）带出去 —— 前端只拿它**显示**，
+        #: 不参与定位：`text` 与偏移仍是原来的那一份，划词高亮的绘制逻辑一点不动。
+        row_md_by_id = {str(row.get("id")): str(row.get("original") or row.get("translation") or "")
+                        for page in page_payloads for row in (page.get("rows") or []) if row.get("id")}
+
         payload = {
             "paper": paper,
             "blocks": out_blocks,
@@ -717,6 +725,8 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                             "color": h.color, "text": h.selected_text,
                             "side": h.side or "en", "scope": h.scope or "row",
                             "group_id": h.group_id,
+                            # 原文是占位符时用它显示（见 row_md_by_id 的说明）
+                            "quote_md": row_md_by_id.get(str(h.block_id), ""),
                             "page": _anchor_page(h.block_id, row_pages, block_pages)}
                            for h in highlights],
             "notes": [{"id": n.id, "block_id": n.block_id,
@@ -727,6 +737,8 @@ def build_reader(paper_id: str, *, user_id: int = 1,
                        "highlight_id": n.highlight_id,
                        "content_md": n.content_md,
                        "selected_text": n.selected_text,
+                       # 原文是占位符时用它显示（公式行 → LaTeX、图片行 → 图注）
+                       "quote_md": row_md_by_id.get(str(n.block_id), ""),
                        "scope": _note_scope(n.block_id),
                        "page": _anchor_page(n.block_id, row_pages, block_pages),
                        "updated_at": iso_utc(n.updated_at)}
