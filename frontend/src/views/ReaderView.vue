@@ -689,7 +689,7 @@ const explainCard = reactive({
 let explainController: AbortController | null = null;
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
 const chatSelection = ref<AgentSelection | null>(null);
-/** 笔记浮层的状态见下面 `notePop`（第五步：轻量浮层取代居中弹窗）。 */
+/** 笔记浮层的状态见下面 `noteCards`（第五步：轻量浮层取代居中弹窗）。 */
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 
@@ -5384,62 +5384,214 @@ function onMdClick(ev: MouseEvent) {
  * - **悬停高亮**：只看**已有**笔记（`mode='view'`），鼠标移开自动消失（除非已锚定）；
  * - **划词菜单点「添加笔记 / 打开笔记」**：新建（`mode='edit'`）或查看已有那条（`mode='view'`）。
  */
-const notePop = reactive({
-  open: false,
-  /** 锚定：鼠标移开也不关（点浮层那枚图钉切换）。**默认不锚定**（用户口径） */
-  anchored: false,
-  mode: 'view' as 'view' | 'edit' | 'prompt',
-  noteId: '',
-  highlightId: '',
-  rowId: '',
-  /** 这处高亮**现在的颜色**：笔记卡内嵌色条靠它显示"选中"；改色走 `PUT /highlights/:id`。 */
-  color: 'yellow',
-  /** 这条笔记的时间戳（头部那行"不到 1 分钟前"，复刻目标站）。只用于展示。 */
-  created: '',
-  /** 高亮原文（浮层"引用"那一行） */
-  quote: '',
-  content: '',
-  draft: '',
-  anchor: null as { x: number; y: number; w?: number; h?: number } | null,
-  /** 这一次打开要**居中**（只有侧栏「打开浮层」那个入口会置真；其它入口恢复贴锚点 / 记忆位置） */
-  center: false,
-  busy: false,
-});
+/* ---------------------- 多张笔记卡（用户口径 2026-11-25） ----------------------
+ * 由**单实例**（原来那个 reactive 对象）换成**数组**：可以同时开好几张。
+ * 只有**显式点击**才多开（侧栏「打开浮层」/ 划词菜单「打开 · 添加笔记」各开一张）；
+ * 悬停高亮仍然只有一张**临时卡**（鼠标移开就关，见 `hover`）。
+ *
+ * - `key`：身份，同时当 v-for 的 key。**建好就不再改**（`n:<noteId>` / `h:<highlightId>`）——
+ *   新建笔记保存成功后「按 id 算出来的 key」会变，但那正是**不能改**的时候：换 key 等于换
+ *   vnode，卡片会重挂 —— 用户刚摆好的位置、拉好的尺寸、正在编辑的那份 draft 全丢。
+ * - `memoryKey`：`FloatingCard` 的位置记忆键（`note:<noteId>` / `note:hl-<highlightId>`）。
+ *   保存成功后把它从 `hl-` 换成新 id，下次打开才找得回这条笔记的记忆位置。
+ * - `hover`：悬停**临时卡**。用户点它一下（`onFloatPress`）或它被锚定就转成固定卡 ——
+ *   固定卡**永远**不受"移开就关"影响。
+ * - `open`：先 false、下一拍再置 true。`FloatingCard` 的「恢复记忆位置 / 居中 / 贴锚点」
+ *   全挂在 `open` 的 false→true 上；卡片是 `v-for` 现建的，若一上来就 `open=true`，
+ *   那个 watch 不会触发（它是带着这个值挂载的，不是"变了"），三种落位就都不生效。
+ */
+type NoteCard = {
+  key: string;
+  memoryKey: string;
+  open: boolean;
+  /** 锚定：鼠标移开也不关（点一下卡片就会置真，见 `onFloatPress`） */
+  anchored: boolean;
+  mode: 'view' | 'edit' | 'prompt';
+  noteId: string;
+  highlightId: string;
+  rowId: string;
+  /** 这处高亮**现在的颜色**：卡片里的色条靠它显示"选中"；改色走 `PUT /highlights/:id` */
+  color: string;
+  /** 这条笔记的时间戳（头部那行"不到 1 分钟前"）。只用于展示 */
+  created: string;
+  /** 高亮原文（这张卡挂着的那一段） */
+  quote: string;
+  content: string;
+  draft: string;
+  anchor: { x: number; y: number; w?: number; h?: number } | null;
+  /** 这一次打开要**居中**（只有侧栏「打开浮层」那个入口会置真） */
+  center: boolean;
+  busy: boolean;
+  /** 悬停临时卡：鼠标移开就关 */
+  hover: boolean;
+};
+const noteCards = reactive<NoteCard[]>([]);
+/** 最上层那张（模板里 `zIndex: card.key === activeNoteKey ? 62 : 60`） */
+const activeNoteKey = ref('');
+
+/** 身份键：同一处高亮在"还没有笔记"时也只有一张（`h:`），有笔记之后是 `n:`。 */
+function noteKeyOf(noteId: string, highlightId: string): string {
+  return noteId ? `n:${noteId}` : `h:${highlightId}`;
+}
+/** 位置记忆键（就是 `FloatingCard` 的 persistKey，存储键是 `cylit:float:` + 它）。 */
+function noteMemoryKeyOf(noteId: string, highlightId: string): string {
+  return `note:${noteId || `hl-${highlightId}`}`;
+}
 
 function rectAnchor(rect: DOMRect | null | undefined, fallback?: { x: number; y: number }) {
   if (rect) return { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
   return { x: fallback?.x ?? 40, y: fallback?.y ?? 120, w: 0, h: 0 };
 }
 
-/** 打开浮层（查看已有笔记 / 编辑某条 / 新建）。 */
+/** `FloatingCard` 存位置用的键前缀（那边是 `cylit:float:${persistKey}`，两边必须一致） */
+const FLOAT_POS_PREFIX = 'cylit:float:';
+/** 新卡没有记忆位置时，相对**上一张**右下错开的距离（用户口径：28px） */
+const NOTE_CASCADE = 28;
+
+function readFloatPos(memoryKey: string): { left: number; top: number } | null {
+  if (!memoryKey) return null;
+  try {
+    const raw = localStorage.getItem(FLOAT_POS_PREFIX + memoryKey);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { left?: unknown; top?: unknown };
+    if (typeof v.left !== 'number' || typeof v.top !== 'number') return null;
+    return { left: v.left, top: v.top };
+  } catch { return null; }
+}
+
+/** 「上一张」（当前最上层那张）的左上角 —— 新卡的 28px 错开以它为基准。
+ *  优先量它真实的 DOM 位置：那张卡可能被拖过、被居中打开过、被 place() 夹过，
+ *  只有 rect 是屏幕上看得见的那个位置（localStorage 里那份要等用户拖过才有）。
+ *  量不到（还没渲染）才退到记忆位置，再退到按锚点估（place() 是 left = x-8、top = y+h+8）。 */
+function prevNoteCardOrigin(): { left: number; top: number } | null {
+  const top = noteCards.find((c) => c.key === activeNoteKey.value) ?? noteCards[noteCards.length - 1];
+  if (!top) return null;
+  const el = noteCardEl(top.key);
+  if (el) {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0) return { left: Math.round(r.left), top: Math.round(r.top) };
+  }
+  const saved = readFloatPos(top.memoryKey);
+  if (saved) return saved;
+  const a = top.anchor;
+  if (!a) return null;
+  return { left: a.x - 8, top: a.y + (a.h ?? 0) + 8 };
+}
+
+/** 聚焦某张卡：换成最上层，并让"笔记"这一档盖过解释卡 / 对话浮窗。 */
+function focusNoteCard(key: string) {
+  if (!key) return;
+  activeNoteKey.value = key;
+  takeTop('note');
+}
+
+/** 关掉**一张**卡（`✕` / 删除成功 / 悬停移开都走这里）。关掉的若是当前焦点，
+ *  焦点落到剩下的最后一张（空了就清空）。 */
+function closeNoteCard(key: string) {
+  cancelNoteHide();
+  closeNoteDelMenu();               // 卡片都关了，那块确认菜单不能留在屏幕上
+  const i = noteCards.findIndex((c) => c.key === key);
+  if (i < 0) return;
+  noteCards.splice(i, 1);
+  if (activeNoteKey.value === key || !noteCards.some((c) => c.key === activeNoteKey.value)) {
+    activeNoteKey.value = noteCards[noteCards.length - 1]?.key ?? '';
+  }
+}
+
+/* 换论文：把所有笔记卡收掉。它们挂着的是**上一篇**的高亮与笔记 id，留着不但没用，
+   点保存还容易把内容写回上一篇文章（多卡之后一次能留好几张，比单卡时代更容易踩）。 */
+watch(paperId, () => {
+  noteCards.splice(0, noteCards.length);
+  activeNoteKey.value = '';
+});
+
+/** 打开浮层（查看已有笔记 / 编辑某条 / 新建）—— **同一处高亮 / 同一条笔记永远只有一张卡**：
+ *  已经开着就更新那张并聚焦（置为最上层），不再新增。 */
 function openNotePopover(opts: {
   note?: Note | null; highlight?: Highlight | null; mode?: 'view' | 'edit' | 'prompt';
   rect?: DOMRect | null; anchored?: boolean; fallbackXY?: { x: number; y: number };
   /** 这次打开摆在页面正中（侧栏「打开浮层」用；其它入口不要传） */
   center?: boolean;
+  /** 悬停临时卡（鼠标移开就关）；显式点击进来的都不是 */
+  hover?: boolean;
 }) {
   const note = opts.note ?? null;
   const hl = opts.highlight ?? null;
-  notePop.open = true;
-  /* 只有明确要求居中的入口（侧栏「打开浮层」）会把 notePop.center 提前置真；
-     其它入口（悬停高亮、划词解释里存成笔记）一律复位，改回"贴锚点 / 记忆位置"。 */
-  notePop.center = notePop.center === true && opts.center !== false ? notePop.center : !!opts.center;
-  notePop.anchored = opts.anchored ?? false;
-  notePop.mode = opts.mode ?? (note ? 'view' : 'edit');
-  notePop.noteId = note?.id ?? '';
-  notePop.highlightId = note?.highlight_id ?? hl?.id ?? selection.hlIds[0] ?? '';
-  notePop.color = String(hl?.color ?? 'yellow');
+  const noteId = note?.id ?? '';
+  const highlightId = note?.highlight_id ?? hl?.id ?? selection.hlIds[0] ?? '';
+  const key = noteKeyOf(noteId, highlightId);
+  const mode = opts.mode ?? (note ? 'view' : 'edit');
   /* ⚠️ `Note` 的时间戳字段名没在类型里确认过：用 `as` 兼容两种常见写法，
      拿不到就留空（头部那行不显示），不猜也不报错。 */
   const rawTime = (note ?? null) as unknown as Record<string, unknown> | null;
-  notePop.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
-  notePop.rowId = note?.block_id ?? hl?.block_id ?? selection.rowId ?? '';
-  notePop.quote = note?.selected_text ?? hl?.text
-    ?? (selection.anchored ? (selection.anchorText || selection.text) : '');
-  notePop.content = note?.content_md ?? '';
-  notePop.draft = note?.content_md ?? '';
-  notePop.anchor = rectAnchor(opts.rect, opts.fallbackXY);
-  notePop.busy = false;
+  /* 先按 key 找；再按 noteId / highlightId 找 —— 第二条命中的是"**新建笔记刚保存成功**"
+     那种情况：那张卡的 key 还是 `h:<hl>`（见上面 type 注释），只按 key 找就会又开一张。 */
+  const existing = noteCards.find((c) => c.key === key)
+    ?? noteCards.find((c) => (!!noteId && c.noteId === noteId)
+      || (!!highlightId && c.highlightId === highlightId))
+    ?? null;
+  if (existing) {
+    existing.mode = mode;
+    existing.anchored = opts.anchored ?? false;
+    existing.center = !!opts.center;
+    existing.hover = opts.hover ?? false;
+    if (opts.rect || opts.fallbackXY) existing.anchor = rectAnchor(opts.rect, opts.fallbackXY);
+    if (!existing.highlightId) existing.highlightId = highlightId;
+    if (hl) existing.color = String(hl.color ?? existing.color);
+    /* 这张卡还没有笔记、现在有了：把服务端那份接过来（否则会拿空 draft 去覆盖别人的笔记） */
+    if (note && existing.noteId !== note.id) {
+      existing.noteId = note.id;
+      existing.content = note.content_md ?? '';
+      if (mode !== 'edit') existing.draft = note.content_md ?? existing.draft;
+      existing.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
+      existing.rowId = note.block_id ?? existing.rowId;
+      existing.quote = note.selected_text ?? existing.quote;
+      existing.memoryKey = noteMemoryKeyOf(note.id, existing.highlightId);
+    }
+    focusNoteCard(existing.key);
+    return;
+  }
+  const memoryKey = noteMemoryKeyOf(noteId, highlightId);
+  /* 「居中」只给**第一张**（侧栏「打开浮层」的口径：一进来它落在页面正中）。
+     已经有卡还居中，两张会一模一样地叠在正中（`centerOnOpen` 按视口算，不看锚点）——
+     第二张起改成相对上一张右下错开 28px，用户才看得见自己开了两张。 */
+  const center = !!opts.center && noteCards.length === 0;
+  let anchor = rectAnchor(opts.rect, opts.fallbackXY);
+  /* 位置**按笔记记忆**：恢复记忆位置是 `FloatingCard` 自己按 persistKey 做的；
+     只有"第一次打开"（这条笔记还没有记忆位置）才由这里给落点 —— 相对上一张右下错开 28px。
+     反推锚点：place() 是 left = x-8、top = y+h+8，所以要落在 prev+(28, 28) 上，
+     x 给 prev.left+8+28、y 给 prev.top+28-8。 */
+  if (!center && !readFloatPos(memoryKey)) {
+    const prev = prevNoteCardOrigin();
+    if (prev) anchor = { x: prev.left + 8 + NOTE_CASCADE, y: prev.top + NOTE_CASCADE - 8, w: 0, h: 0 };
+  }
+  const card: NoteCard = {
+    key,
+    memoryKey,
+    open: false,
+    anchored: opts.anchored ?? false,
+    mode,
+    noteId,
+    highlightId,
+    rowId: note?.block_id ?? hl?.block_id ?? selection.rowId ?? '',
+    color: String(hl?.color ?? 'yellow'),
+    created: String(rawTime?.created_at ?? rawTime?.updated_at ?? ''),
+    quote: note?.selected_text ?? hl?.text
+      ?? (selection.anchored ? (selection.anchorText || selection.text) : ''),
+    content: note?.content_md ?? '',
+    draft: note?.content_md ?? '',
+    anchor,
+    center,
+    busy: false,
+    hover: opts.hover ?? false,
+  };
+  noteCards.push(card);
+  /* 必须拿数组里那个响应式代理去置 open：`card` 是普通对象，
+     直接改它绕过了 Proxy 的 set，模板收不到更新（卡片会一直不打开）。 */
+  const live = noteCards[noteCards.length - 1];
+  focusNoteCard(key);
+  /* 下一拍再"打开"：`FloatingCard` 的恢复记忆 / 居中 / 贴锚点都挂在 open 的 false→true 上 */
+  void nextTick().then(() => { live.open = true; });
 }
 
 /** 相对时间（笔记框头部那行"不到 1 分钟前"，用户口径 2026-10-10："复刻这个笔记框"）。 */
@@ -5453,7 +5605,7 @@ function relTime(iso: string): string {
   if (s < 86400 * 30) return `${Math.floor(s / 86400)} 天前`;
   return new Date(t).toLocaleDateString();
 }
-const noteTime = computed(() => relTime(notePop.created));
+/* 多卡之后相对时间**按卡片算**（模板里直接 `relTime(card.created)`）：每张卡一条时间，互不干扰。 */
 
 /**
  * 笔记卡的**初始尺寸按内容多少来**（用户口径 2026-10-10："根据内容数量默认调整到合适大小"）。
@@ -5464,39 +5616,40 @@ const noteTime = computed(() => relTime(notePop.created));
  *
  * 高度不在这里算 —— 查看态的卡片本来就随内容自然高，编辑态的高度交给 `noteEditRows`。
  */
-const noteCardWidth = computed(() => {
-  const text = notePop.mode === 'view' ? notePop.content : notePop.draft;
+function noteCardWidth(card: NoteCard): number {
+  const text = card.mode === 'view' ? card.content : card.draft;
   const longest = (text || '').split('\n').reduce((m, l) => Math.max(m, [...l].length), 0);
   return Math.round(Math.min(560, Math.max(340, longest * 8.5 + 96)));
-});
+}
 
 /** 编辑框的行数跟着**已有内容**走：空笔记给 4 行就够（不用先占一片白），长笔记一次全露出来 */
-const noteEditRows = computed(() => {
-  const lines = (notePop.draft || '').split('\n').length;
+function noteEditRows(card: NoteCard): number {
+  const lines = (card.draft || '').split('\n').length;
   return Math.min(16, Math.max(4, lines + 2));
-});
+}
 
 /** 笔记卡里点色点 = **给这处高亮换色**（用户口径 2026-10-10："选色 + 写 + 保存"同一张卡）。
  *  与保存分开：换色只动高亮，不动笔记文本，所以立刻生效。 */
-async function setNoteColor(color: string) {
-  if (!notePop.highlightId) return;
+async function setNoteColor(card: NoteCard, color: string) {
+  if (!card.highlightId) return;
   try {
-    await api.put(`/highlights/${notePop.highlightId}`, { color });
-    notePop.color = color;
+    await api.put(`/highlights/${card.highlightId}`, { color });
+    card.color = color;
     await refreshAnnotations();
   } catch (err) { reportError(err, '换颜色失败'); }
 }
 
-/** 头部那枚垃圾桶：删掉**这条笔记**（高亮留着 —— 删笔记不该把高亮也带走）。 */
-async function deleteNotePopover() {
-  if (!notePop.noteId || notePop.busy) return;
-  notePop.busy = true;
+/** 头部那枚垃圾桶：删掉**这张卡挂的那条笔记**（高亮留着 —— 删笔记不该把高亮也带走）。
+ *  只影响这一张卡：删成功了就把它关掉，别的卡原样留着。 */
+async function deleteNotePopover(card: NoteCard) {
+  if (!card.noteId || card.busy) return;
+  card.busy = true;
   try {
-    await api.del(`/notes/${notePop.noteId}`);
+    await api.del(`/notes/${card.noteId}`);
     toast('笔记已删除', 'ok', 1600);
-    closeNotePopover();
+    closeNoteCard(card.key);
     await refreshAnnotations();
-  } catch (err) { reportError(err, '删除笔记失败'); } finally { notePop.busy = false; }
+  } catch (err) { reportError(err, '删除笔记失败'); } finally { card.busy = false; }
 }
 
 /* ---------------------- 删除笔记的二级确认（用户口径 2026-10-13） ----------------------
@@ -5504,22 +5657,25 @@ async function deleteNotePopover() {
  * 为什么不用全站那个居中 Modal（askConfirm）：删一条笔记弹整页遮罩比误删更烦人；
  * 菜单跟着按钮走，**点别处 / Esc 就收起**（与 Menu.vue 一个行为）。
  * 定位自己算（fixed + Teleport 到 body）：浮层壳是 overflow: hidden，留在卡片里会被裁掉。
- * 状态就用一个局部 ref，不去动 notePop 的结构。
+ * 状态就用一个局部 ref，不去动卡片数组的结构（只多记一个 `key`：这块菜单是哪张卡的）。
  */
-const noteDelMenu = ref({ open: false, top: 0, left: 0 });
+const noteDelMenu = ref({ open: false, top: 0, left: 0, key: '' });
 /** 菜单尺寸上界（两项 + 内边距 ≈ 74px）：只用来判断"下面放不下就翻到按钮上方" */
 const NOTE_DEL_MENU_W = 112;
 const NOTE_DEL_MENU_H = 74;
 
 function closeNoteDelMenu() {
   if (!noteDelMenu.value.open) return;
-  noteDelMenu.value = { open: false, top: 0, left: 0 };
+  noteDelMenu.value = { open: false, top: 0, left: 0, key: '' };
 }
 
 /** 贴着那枚垃圾桶：右对齐、向下 6px；下方放不下就翻到按钮上方，左右夹在视口里。
  *  再点一次垃圾桶 = 收起（下面的"点别处"监听刻意把垃圾桶排在外面，就是为了让这里能 toggle）。 */
-function openNoteDelMenu(ev: MouseEvent) {
-  if (noteDelMenu.value.open) { closeNoteDelMenu(); return; }
+function openNoteDelMenu(ev: MouseEvent, card: NoteCard) {
+  /* 再点**同一张卡**的垃圾桶 = 收起；点另一张卡的 = 把那块菜单挪到这张卡上 */
+  const same = noteDelMenu.value.open && noteDelMenu.value.key === card.key;
+  closeNoteDelMenu();
+  if (same) return;
   const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   let top = r ? r.bottom + 6 : 12;
   let left = r ? r.right - NOTE_DEL_MENU_W : 12;
@@ -5527,7 +5683,7 @@ function openNoteDelMenu(ev: MouseEvent) {
   if (top + NOTE_DEL_MENU_H > window.innerHeight - 8) {
     top = r ? Math.max(8, r.top - NOTE_DEL_MENU_H - 6) : 8;
   }
-  noteDelMenu.value = { open: true, top: Math.round(top), left: Math.round(left) };
+  noteDelMenu.value = { open: true, top: Math.round(top), left: Math.round(left), key: card.key };
 }
 
 function onNoteDelOutside(ev: PointerEvent) {
@@ -5560,16 +5716,10 @@ onUnmounted(() => {
 
 /** 只有点「删除这条笔记」才真的删（原来那枚垃圾桶的动作原样搬到这里） */
 function onNoteDelConfirm() {
+  const key = noteDelMenu.value.key;
   closeNoteDelMenu();
-  void deleteNotePopover();
-}
-
-function closeNotePopover() {  window.clearTimeout(noteHideTimer);
-  cancelNoteOpen();                 // 还没到延时的那一次也别再弹了
-  closeNoteDelMenu();               // 卡片都关了，那块确认菜单不能留在屏幕上
-  notePop.open = false;
-  notePop.anchored = false;
-  notePop.mode = 'view';
+  const card = noteCards.find((c) => c.key === key);
+  if (card) void deleteNotePopover(card);
 }
 
 /* 悬停显示已存在的笔记；移开延时关闭（延时是为了让鼠标能从高亮挪到浮层上）
@@ -5580,15 +5730,29 @@ function closeNotePopover() {  window.clearTimeout(noteHideTimer);
  * 锚定的（`anchored`）与编辑态不受影响，`scheduleNoteHide` 自己会挡。 */
 let noteHideTimer: number | undefined;
 function cancelNoteHide() { window.clearTimeout(noteHideTimer); }
-function scheduleNoteHide() {
-  if (!notePop.open || notePop.anchored || notePop.mode !== 'view') return;
+
+/** 一张卡自己的 DOM（卡片根节点上带 `data-note-key`，见模板）：用来问"鼠标还在**这张**上吗" */
+function noteCardEl(key: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-note-popover][data-note-key="${CSS.escape(key)}"]`);
+}
+
+/** 只关**悬停临时卡**（`hover && !anchored`）—— 固定卡一张都不许动。
+ *  传 `card` = "从这一张上移开了"；不传（从高亮移开）= 把所有临时卡都过一遍。 */
+function scheduleNoteHide(card?: NoteCard) {
+  const pending = noteCards.filter((c) => c.hover && !c.anchored && c.mode === 'view'
+    && (!card || c.key === card.key));
+  if (!pending.length) return;
   window.clearTimeout(noteHideTimer);
   noteHideTimer = window.setTimeout(() => {
-    /* 鼠标还在浮层上（从高亮挪进来）就别关：直接问 DOM 的 `:hover`，
-     * 比"进/出浮层各挂一个事件"稳 —— 后者在浮层刚好渲染在光标底下时会误判。 */
-    const box = document.querySelector('[data-float-card]');
-    if (box && box.matches(':hover')) return;
-    notePop.open = false;
+    /* 鼠标还在**这张卡**上（从高亮挪进来）就别关：直接问 DOM 的 `:hover`，
+     * 比"进/出浮层各挂一个事件"稳 —— 后者在浮层刚好渲染在光标底下时会误判。
+     * ⚠️ 多卡之后必须**逐张**问：原来那句全局 `[data-float-card]:hover` 在
+     * "离开了 A、光标却压在 B 上"时会把 A 也留下（多开之后 A 就成了关不掉的幽灵卡）。 */
+    for (const c of [...noteCards]) {
+      if (!c.hover || c.anchored || c.mode !== 'view') continue;
+      if (noteCardEl(c.key)?.matches(':hover')) continue;
+      closeNoteCard(c.key);
+    }
   }, 240);
 }
 
@@ -5608,10 +5772,6 @@ function scheduleNoteHide() {
    ⚠️ 这里是**一次**，不是逐帧：以前在卡片的 pointerdown 上挂了一条 rAF 循环逐帧清，
    结果卡片自己的文字也被一帧一帧清掉 —— 用户选不中、复制不了（2026-11-24 第 2 条）。
    拖动/缩放期间的逐帧清现在归 `FloatingCard` 的手势循环管（只有真的在拖才清）。 */
-function onNoteCardPointerDown() {
-  if (notePop.open) notePop.anchored = true;
-}
-
 /**
  * 三块浮层（笔记卡 / 解释卡 / 对话浮窗）上的按下：抬到最上层，顺手清掉**正文**那段选区
  * （浮层是另一层，点了它就不该还留着一段"看起来像待操作"的选中文字）。
@@ -5619,8 +5779,18 @@ function onNoteCardPointerDown() {
  * ⚠️ **右键不清**（用户口径 2026-11-24）：用户刚在浮层里框选了一段文字、正要右键复制 ——
  * 按下那一刻就把选区清掉，原生菜单里的「复制」当场变灰，等于复制不了。
  * 左键照旧清：那时要么是在正文里选完了想点浮层，要么是从这里重新开始选。
+ *
+ * 多卡之后「按下 = 钉住我」还要按**那张卡**生效（第三参数 `key`），
+ * 所以原来那个单独的卡片级处理器（`onNoteCardPointerDown`）已经不需要了。
  */
-function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat') {
+function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat', key?: string) {
+  /* 笔记卡：按下 = 「**这张**是焦点」+「钉住我」（用户口径 2026-11-23：点一下就锚定）。
+     悬停临时卡被点一下当场转成固定卡（`hover = false`），鼠标移开不再自动消失。 */
+  if (which === 'note' && key) {
+    activeNoteKey.value = key;
+    const card = noteCards.find((c) => c.key === key);
+    if (card) { card.anchored = true; card.hover = false; }
+  }
   takeTop(which);
   if (ev.button === 0) clearDocSelection();
 }
@@ -5630,8 +5800,8 @@ function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat') {
  * `rowId` 为空（这条笔记没挂行 / 是从页面视图进来的）时什么都不做 —— 别把卡片关上，
  * 用户只是想知道"这是在说哪一段"。
  */
-function locateNoteRow() {
-  const id = notePop.rowId;
+function locateNoteRow(card: NoteCard) {
+  const id = card.rowId;
   if (!id) return;
   void focusRow(id);
   flashRow(id);
@@ -5652,7 +5822,8 @@ function onContentHover(ev: MouseEvent) {
   const hl = highlights.value.find((h) => h.id === (mark.getAttribute('data-hl') || ''));
   const note = hl ? notes.value.find((n) => n.highlight_id === hl.id) : null;
   if (!hl || !note) return;
-  if (notePop.open && notePop.noteId === note.id) { cancelNoteOpen(); cancelNoteHide(); return; }
+  /* 这条笔记**已经开着一张卡**（固定的或悬停的）：别再开第二张，也别把已有那张收掉 */
+  if (noteCards.some((c) => c.noteId === note.id)) { cancelNoteOpen(); cancelNoteHide(); return; }
   scheduleNoteOpen(note, hl, mark);      // 悬停也**停一会儿**才弹（与引用标号同门口径）
 }
 
@@ -5728,38 +5899,42 @@ async function onNoteAction(ids?: string[], anchorXY?: { x: number; y: number })
 }
 
 /** 浮层里「保存」：已有笔记走 PUT，新建走 POST（**必须已经挂在一处高亮上**）。 */
-async function saveNotePopover() {
-  if (notePop.busy) return;
+async function saveNotePopover(card: NoteCard) {
+  if (card.busy) return;
   /* 用户口径：**只有插入了高亮，才能在高亮的基础上加笔记** ——
      用户 2026-10-10 再次确认："没有高亮不用写"，所以**不**顺手补一条高亮。 */
-  if (!notePop.noteId && !notePop.highlightId) {
+  if (!card.noteId && !card.highlightId) {
     toast('先给这段文字加个高亮，再写笔记', 'warn', 2600);
     return;
   }
-  notePop.busy = true;
+  card.busy = true;
   try {
-    if (notePop.noteId) {
-      const updated = await api.put<Note>(`/notes/${notePop.noteId}`, { content_md: notePop.draft });
-      notePop.content = updated?.content_md ?? notePop.draft;
+    if (card.noteId) {
+      const updated = await api.put<Note>(`/notes/${card.noteId}`, { content_md: card.draft });
+      card.content = updated?.content_md ?? card.draft;
       toast('笔记已保存', 'ok', 1600);
     } else {
       const created = await api.post<Note>('/notes', {
         paper_id: paperId.value,
-        block_id: notePop.rowId,
-        highlight_id: notePop.highlightId,
-        selected_text: notePop.quote,
+        block_id: card.rowId,
+        highlight_id: card.highlightId,
+        selected_text: card.quote,
         start_offset: selection.start,
         end_offset: selection.end,
-        content_md: notePop.draft,
+        content_md: card.draft,
       });
-      notePop.noteId = created?.id ?? '';
-      notePop.content = notePop.draft;
-      notePop.created = new Date().toISOString();   // 头部那行"不到 1 分钟前"要立刻有值
+      card.noteId = created?.id ?? '';
+      card.content = card.draft;
+      card.created = new Date().toISOString();   // 头部那行"不到 1 分钟前"要立刻有值
+      /* ⚠️ `key` **保持不变**（换 key = 换 vnode = 卡片重挂：用户刚摆好的位置、
+         拉好的尺寸、正在编辑的 draft 全丢）；只把**位置记忆键**换成新 id，
+         下次打开这条笔记才找得回它的记忆位置。 */
+      if (created?.id) card.memoryKey = noteMemoryKeyOf(created.id, card.highlightId);
       toast('笔记已保存', 'ok', 1600);
     }
-    notePop.mode = 'view';
+    card.mode = 'view';
     await refreshAnnotations();
-  } catch (err) { reportError(err, '保存笔记失败'); } finally { notePop.busy = false; }
+  } catch (err) { reportError(err, '保存笔记失败'); } finally { card.busy = false; }
 }
 
 async function refreshAnnotations() {  const [a, h, n] = await Promise.all([
@@ -5885,7 +6060,8 @@ function scheduleNoteOpen(note: Note, hl: Highlight, mark: HTMLElement) {
     /* 到点再确认一次这处高亮还在：正文行是渲染出来的，期间可能被重画（旧节点已摘掉）——
        那时按旧矩形弹出来的卡片会悬在半空。 */
     if (!mark.isConnected) return;
-    openNotePopover({ note, highlight: hl, mode: 'view', rect: mark.getBoundingClientRect() });
+    /* `hover: true`：**悬停临时卡**，鼠标移开就关（不参与多开，见 `scheduleNoteHide`） */
+    openNotePopover({ note, highlight: hl, mode: 'view', rect: mark.getBoundingClientRect(), hover: true });
   }, HOVER_OPEN_DELAY);
 }
 
@@ -5934,8 +6110,8 @@ async function deleteNote(id: string) {
 function openPaneNote(p: { note: Note | null; highlight: Highlight | null; mode?: 'view' | 'edit' }) {
   closeNoteDelMenu();
   /* 侧栏那枚「打开浮层」：用户口径 2026-11-21 —— **默认在页面中间打开**，
-     既不贴高亮、也不沿用上次拖到的角落（FloatingCard 的 `centerOnOpen` 负责落位） */
-  notePop.center = true;
+     既不贴高亮、也不沿用上次拖到的角落（FloatingCard 的 `centerOnOpen` 负责落位）。
+     多卡之后"居中"是**这一张卡自己的**标记，跟着 opts 一起下去，不再提前改实例状态。 */
   const hlId = p.highlight?.id || p.note?.highlight_id || '';
   const mark = hlId ? document.querySelector<HTMLElement>(`mark.hl[data-hl="${hlId}"]`) : null;
   openNotePopover({
@@ -6934,22 +7110,28 @@ function renderMarkdown(text?: string | null) {
     </FloatingCard>
 
     <!-- 笔记浮层（第五步）：锚在高亮/选区旁边的小卡片，默认"移开就消失"。
-         悬停浮层本身要取消关闭（鼠标从高亮挪进来的时候不能把它关掉）。 -->
+         用户口径 2026-11-25：**可以同时开好几张** —— 每张一条 `noteCards` 记录，
+         各自独立编辑 / 保存 / 删除 / 换色，`✕` 只关自己；同一条笔记 / 同一处高亮永远只有一张，
+         再点入口 = 把已有的那张抬到最上层（见 `openNotePopover`）。
+         `data-note-key` 是这张卡的 DOM 锚：`scheduleNoteHide` 靠它逐张问"鼠标还在它上面吗"。 -->
     <FloatingCard
-      :open="notePop.open"
-      :anchor="notePop.anchor"
-      :anchored="notePop.anchored"
+      v-for="card in noteCards"
+      :key="card.key"
+      :open="card.open"
+      :anchor="card.anchor"
+      :anchored="card.anchored"
       title="笔记"
-      persist-key="note"
-      :center-on-open="notePop.center"
-      :width="noteCardWidth"
+      :persist-key="card.memoryKey"
+      :center-on-open="card.center"
+      :width="noteCardWidth(card)"
       data-note-popover
-      :style="{ zIndex: topLayer === 'note' ? 62 : 60 }"
+      :data-note-key="card.key"
+      :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
       hide-anchor
-      @pointerdown.capture="onFloatPress($event, 'note')"
+      @pointerdown.capture="onFloatPress($event, 'note', card.key)"
       @focusin.capture="takeTop('note')"
-      @close="closeNotePopover"
-      @mouseleave="scheduleNoteHide"
+      @close="closeNoteCard(card.key)"
+      @mouseleave="scheduleNoteHide(card)"
     >
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
            色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
@@ -6957,21 +7139,21 @@ function renderMarkdown(text?: string | null) {
         <AppIcon name="note" :size="14" />
       </template>
       <template #head-mid>
-        <div v-if="notePop.mode !== 'view' && notePop.highlightId" class="np-colors">
+        <div v-if="card.mode !== 'view' && card.highlightId" class="np-colors">
           <button
             v-for="c in HIGHLIGHT_COLORS"
             :key="c"
             type="button"
             class="hl-swatch"
-            :class="[c, { on: notePop.color === c }]"
+            :class="[c, { on: card.color === c }]"
             :title="`换成 ${c} 色`"
             data-note-color
-            @click="setNoteColor(c)"
+            @click="setNoteColor(card, c)"
           />
           <!-- 自定义色（用户口径 2026-10-10："少了自定义色彩"）—— 与胶囊上那枚同一做法 -->
           <label class="hl-swatch custom" title="自定义颜色">
             <input type="color" value="#ffd700" data-note-custom aria-label="自定义高亮颜色"
-                   @input="setNoteColor(($event.target as HTMLInputElement).value)">
+                   @input="setNoteColor(card, ($event.target as HTMLInputElement).value)">
           </label>
         </div>
       </template>
@@ -6979,28 +7161,29 @@ function renderMarkdown(text?: string | null) {
         <!-- 按钮组**最左**（在相对时间之前）：「定位到原文」。
              这枚键原来放的是**手动锚定**开关（`FloatingCard` 的 `hideAnchor` 一关就有）；
              本轮按用户口径 2026-11-23 换掉了：锚定改**自动** —— 见模板根上那条
-             `@pointerdown.capture="… onNoteCardPointerDown()"`，点一下、拖标题、拖下角放大任一动作
-             都会把卡片锚住（翻页 / 滚动发生在卡片外，不触发 —— 正是用户说的"不含翻页"）。
+             `@pointerdown.capture="onFloatPress($event, 'note', card.key)"`：点一下、拖标题、
+             拖下角放大任一动作都会把**这张**卡锚住（翻页 / 滚动发生在卡片外，不触发）。
              所以这里不再需要一枚手动开关，位置让给"跳回原文"。 -->
         <!-- 定位只在**查看态**给：编辑态右上是 ✓保存 与垃圾桶，再塞一枚只会挤（用户口径 2026-11-24）。 -->
-        <button v-if="notePop.mode === 'view' && notePop.rowId" class="np-head-save locate" type="button"
+        <button v-if="card.mode === 'view' && card.rowId" class="np-head-save locate" type="button"
                 title="定位到原文" data-note-locate
-                @click="locateNoteRow">
+                @click="locateNoteRow(card)">
           <AppIcon name="locate" :size="13" />
         </button>
         <!-- 相对时间只在**查看态**显示：编辑态标题行里已经挤了色点行，再塞一条时间就会把标题压没 -->
-        <span v-if="notePop.mode === 'view' && noteTime" class="np-time">{{ noteTime }}</span>
+        <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
         <!-- 头部按键照参考实现（铅笔 = 编辑 / 垃圾桶 = 删除，关关闭是壳自带的 ✕）：
              查看态给铅笔，编辑态把它换成 ✓ 保存。
              用户口径 2026-10-13：**查看态不再给垃圾桶**（只读姿态里不该出现删除），
              删除只留在**编辑态**；而且点它不再直接删 —— 先弹一小块二级菜单确认。 -->
-        <button v-if="notePop.mode === 'view' && notePop.noteId" class="np-head-save" type="button"
+        <button v-if="card.mode === 'view' && card.noteId" class="np-head-save" type="button"
                 title="编辑笔记" data-note-edit
-                @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
+                @click="card.mode = 'edit'; card.draft = card.content">
           <AppIcon name="edit" :size="13" />
         </button>
-        <button v-if="notePop.mode !== 'view'" class="np-head-save" type="button"
-                :disabled="notePop.busy" title="保存笔记" data-note-save @click="saveNotePopover">
+        <button v-if="card.mode !== 'view'" class="np-head-save" type="button"
+                :disabled="card.busy" title="保存笔记" data-note-save
+                @click="saveNotePopover(card)">
           <AppIcon name="check" :size="13" />
         </button>
       </template>
@@ -7008,10 +7191,11 @@ function renderMarkdown(text?: string | null) {
            与「✓ 保存」隔开一小段 —— 原来它挨着保存，误触一次就弹出删除确认。
            条件不变：**查看态不给删除**（只读姿态里不该出现删除），只有编辑态 + 已有笔记才有。 -->
       <template #head-tail>
-        <button v-if="notePop.mode !== 'view' && notePop.noteId" class="np-head-save danger" type="button"
-                :disabled="notePop.busy" title="删除笔记" data-note-delete
-                aria-haspopup="menu" :aria-expanded="noteDelMenu.open"
-                @click="openNoteDelMenu($event)">
+        <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
+                :disabled="card.busy" title="删除笔记" data-note-delete
+                aria-haspopup="menu"
+                :aria-expanded="noteDelMenu.open && noteDelMenu.key === card.key"
+                @click="openNoteDelMenu($event, card)">
           <AppIcon name="trash" :size="13" />
         </button>
       </template>
@@ -7022,17 +7206,17 @@ function renderMarkdown(text?: string | null) {
       <!-- 提示文案已删（用户口径 2026-10-10："去掉多余文字说明"）：**卡片本身就是输入框** ——
            空着就是"写一条"，有内容就是"编辑"；标题里已经有"已高亮"，正文里再解释一遍是噪音。 -->
       <textarea
-        v-if="notePop.mode !== 'view'"
-        v-model="notePop.draft"
+        v-if="card.mode !== 'view'"
+        v-model="card.draft"
         class="np-edit"
-        :rows="noteEditRows"
+        :rows="noteEditRows(card)"
         data-note-edit
       />
       <!-- 查看态正文：**用户自己写的笔记**走 `{ breaks: true }`（用户口径 2026-10-10）：
            不能再跑 `normalizeSoftBreaks` —— 它会把作者敲的回车接回去（"第一行第二行"），
            那是给 PDF 抽取文本用的。 -->
-      <div v-else-if="notePop.mode === 'view'" class="np-view md small" data-note-view
-           v-html="mdToHtml(notePop.content, null, { breaks: true })" />
+      <div v-else-if="card.mode === 'view'" class="np-view md small" data-note-view
+           v-html="mdToHtml(card.content, null, { breaks: true })" />
       <!-- 底部**不再传 footer 插槽**（用户口径 2026-10-10："不要有选择的文字框"）：
            那个 footer 就算只有一行按钮，也会带出一条 1px 上线，看着像正文外面套了一圈框。
            编辑 / 保存 / 删除 / 关闭 全走头部按键（铅笔 / ✓ / 垃圾桶 / ✕）。 -->
