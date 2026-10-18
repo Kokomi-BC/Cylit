@@ -697,11 +697,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
       />
     </div>
 
-    <!-- 二级菜单：**两排**（用户口径 2026-11-26 三轮）。
-         第一排是动作项（笔记卡的「编辑笔记」，带文字；由调用方用 `#more-items` 塞进来），
-         第二排是字号（放大 / 缩小 / 还原用图标，右边常显当前百分比）。
-         为什么这么分：编辑是"改这条笔记"，字号是"改看的方式"，两件事不该混成一排图标；
-         而百分比必须**一眼看见**——只写在 :title 里等于要用户悬停才知道自己调到了哪儿。 -->
+    <!-- 二级菜单：**一排圆钮**（用户口径 2026-11-26 五轮："紧凑一点，编辑也用圆形按钮"）。
+         左边是调用方塞进来的动作（笔记卡的「编辑」），右边是字号：缩小 | 百分比 | 放大。
+         一排就够：四样东西都是"点一下"的图标动作，分两排只是把菜单撑高、还多一条分隔线。
+         百分比留在中间常显 —— 只写在 :title 里等于要用户悬停才知道自己调到了哪儿。 -->
     <div
       v-if="moreOpen"
       ref="moreEl"
@@ -712,40 +711,36 @@ watchEffect(applyShellDom, { flush: 'sync' });
       :style="{ top: moreTop + 'px', left: moreLeft + 'px' }"
     >
       <slot name="more-items" :close="closeMore" />
-      <!-- 字号排：缩小 | 百分比 | 放大。两枚钮直接用头部的 `.fc-btn`（同一尺寸、同一层淡底），
-           不另起一套"菜单里的圆钮"——用户口径 2026-11-26 四轮：按钮样式全卡统一。
-           还原键已移除（用户口径：两个方向调得回来，第三枚是多余选项）。 -->
-      <div class="fc-more-row">
-        <button
-          type="button"
-          class="fc-btn"
-          role="menuitem"
-          :disabled="fontScale <= F_MIN"
-          :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
-          aria-label="缩小字号"
-          data-fc-zoom-out
-          @click="stepFont(-1)"
-        >
-          <AppIcon name="zoom-out" :size="13" />
-        </button>
-        <span
-          class="fc-more-pct"
-          :class="{ on: fontScale !== 1 }"
-          :title="`当前字号 ${Math.round(fontScale * 100)}%`"
-        >{{ Math.round(fontScale * 100) }}%</span>
-        <button
-          type="button"
-          class="fc-btn"
-          role="menuitem"
-          :disabled="fontScale >= F_MAX"
-          :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
-          aria-label="放大字号"
-          data-fc-zoom-in
-          @click="stepFont(1)"
-        >
-          <AppIcon name="zoom-in" :size="13" />
-        </button>
-      </div>
+      <span v-if="$slots['more-items']" class="fc-more-vsep" aria-hidden="true" />
+      <button
+        type="button"
+        class="fc-btn"
+        role="menuitem"
+        :disabled="fontScale <= F_MIN"
+        :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+        aria-label="缩小字号"
+        data-fc-zoom-out
+        @click="stepFont(-1)"
+      >
+        <AppIcon name="zoom-out" :size="13" />
+      </button>
+      <span
+        class="fc-more-pct"
+        :class="{ on: fontScale !== 1 }"
+        :title="`当前字号 ${Math.round(fontScale * 100)}%`"
+      >{{ Math.round(fontScale * 100) }}%</span>
+      <button
+        type="button"
+        class="fc-btn"
+        role="menuitem"
+        :disabled="fontScale >= F_MAX"
+        :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+        aria-label="放大字号"
+        data-fc-zoom-in
+        @click="stepFont(1)"
+      >
+        <AppIcon name="zoom-in" :size="13" />
+      </button>
     </div>
   </div>
 </template>
@@ -844,45 +839,38 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .fc-tail:empty { display: none; }
 
-/* 「更多」二级菜单：**两排**（第一排动作项、第二排字号），坐标由 toggleMore 量好后写进行内 style。
-   ⚠️ 宽度写死：绝对定位的宽度是 shrink-to-fit，而第二排里有 flex:1 的读数，
-   让内容决定宽度会被撑成一块"大白板"（用户 2026-11-26 截图报的正是这个）。
-   定宽之后，读数才真的落在中间。 */
+/* 「更多」二级菜单：**一排圆钮**，坐标由 toggleMore 量好后写进行内 style。
+   宽度按内容给（max-content）：一排固定的 25px 钮 + 读数，没有会被撑开的伸缩项 ——
+   之前那版是"定宽 + flex:1 读数"，才需要一个 176px 的死尺寸。 */
 .fc-more {
   position: absolute; z-index: 2;
-  width: 176px;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 5px;
+  width: max-content;
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: var(--radius-ctl);
   /* 比卡片那层 --shadow-flyout 轻一档：它只是贴着头部的小菜单，阴影太重会像另一张卡片浮上来 */
   box-shadow: var(--shadow-2);
 }
-/* 第一排动作项：图标 + 文字，整行可点。底色与头部 `.fc-btn` 同一层 6% 淡色 ——
-   `:slotted(button)` 兜住调用方塞进来的那一枚（插槽节点带的是父组件的 scope，
-   本组件的类名到不了它们身上，只能从这一侧兜）。 */
+/* 调用方塞进来的那枚（笔记卡的「编辑」）：插槽节点带的是父组件的 scope，
+   本组件的 `.fc-btn` 到不了它们身上，只能从这一侧用 `:slotted` 复制同一套圆钮尺寸。 */
 .fc-more :slotted(button) {
-  display: flex; align-items: center; gap: 7px;
-  width: 100%; height: 25px; padding: 0 8px;
-  border: 0; border-radius: var(--radius-ctl);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 25px; height: 25px; flex: none;
+  border: 0; border-radius: 50%;
   background: color-mix(in srgb, var(--text) 6%, transparent);
-  color: var(--text);
-  font-family: inherit;
-  font-size: calc(12px * var(--ts, 1));
-  font-weight: 500;
-  text-align: left;
-  white-space: nowrap;
+  color: var(--text-dim);
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-/* 第二排字号：两枚 `.fc-btn` 夹一个居中读数。
-   没有任何内层容器（不画边框、不铺底）—— 菜单本身已经是一层容器，再套一层就是"框里套框"。 */
-.fc-more-row { display: flex; align-items: center; gap: 2px; }
-/* 读数：等宽数字 + 居中；偏离 100% 时转强调色，一眼看出这张卡被单独调过 */
+/* 竖分隔线：动作（编辑）与字号是两件事，一排里靠一条 16px 的细线分开，比空一段距离更清楚 */
+.fc-more-vsep { width: 1px; height: 16px; margin: 0 3px; background: var(--divider); flex: none; }
+/* 读数：等宽数字，宽度留够三位（100%），加减时两枚钮不会左右抽动；
+   偏离 100% 时转强调色，一眼看出这张卡被单独调过。 */
 .fc-more-pct {
-  flex: 1 1 auto; min-width: 0;
+  min-width: 38px; flex: none;
   text-align: center;
   font-size: calc(11px * var(--ts, 1));
   font-variant-numeric: tabular-nums;
