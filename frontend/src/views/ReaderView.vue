@@ -215,10 +215,10 @@ const paneWidth = ref(1200);
  * （再和视口挂钩，不超过 60%）—— 解读、术语表这类内容在窄栏里会被挤成竖排。
  */
 const ASIDE_W_MIN = 220;
-/** 对照模式（原文 + 译文并排）的上限：维持原来的 360px */
-const ASIDE_W_MAX_COMPARE = 360;
-/** 非对照模式的上限：640px，再与视口挂钩（不超过 60%） */
-const ASIDE_W_MAX_WIDE = 640;
+/** 对照模式（原文 + 译文并排）的上限：560px（用户口径 2026-11-19：上限放大一档） */
+const ASIDE_W_MAX_COMPARE = 560;
+/** 非对照模式的上限：960px，再与视口挂钩（不超过 72%） */
+const ASIDE_W_MAX_WIDE = 960;
 const ASIDE_W_DEFAULT = 300;
 /** 点「解读」页签时的目标宽度：解读里全是小标题与概念卡，窄栏会被挤成竖排 */
 const ASIDE_W_INSIGHT = 520;
@@ -234,7 +234,7 @@ const winWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
  */
 const asideMaxWidth = computed(() => (viewMode.value === 'bilingual'
   ? ASIDE_W_MAX_COMPARE
-  : Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX_WIDE, Math.round(winWidth.value * 0.6)))));
+  : Math.max(ASIDE_W_MIN, Math.min(ASIDE_W_MAX_WIDE, Math.round(winWidth.value * 0.72)))));
 
 /**
  * 夹取宽度。**拖拽、切模式、点解读页签都走它** —— 上限只在初始化时算一次的话，
@@ -274,6 +274,27 @@ const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
 const FLOAT_MIN_W = 320;
 const FLOAT_MIN_H = 260;
 const FLOAT_EDGE = 24;
+/**
+ * 拖侧栏宽度时的**预览值**（null = 没在拖）。
+ *
+ * 用户口径 2026-11-19：拖的时候只要跟手，**版面等松手再排**。为什么必须这样：`asideWidth` 挂在
+ * `v-bind()` 上，写一次 = 侧栏 + 正文（几百行 + KaTeX）整块重排，逐帧写就是掉帧的根源；
+ * 而 CSS 里那条 `v-bind(asideGapPx)` 还要写组件根变量、连正文宽度一起变。所以拖动期间只改这个
+ * 预览值：面板宽度走行内 style、正文那一层只**平移**（transform，不重排，右端被 overflow 裁掉），
+ * 松手时才把结果写回 `asideWidth` —— 一次重排。
+ */
+const asidePreviewW = ref<number | null>(null);
+/** 面板"看上去"的宽度（拖拽中用预览值，其余时候是落盘值） */
+const asideShownPx = computed(() => `${asidePreviewW.value ?? asideWidth.value}px`);
+/** 拖动期间给 `<aside>` 的行内宽度（+ 子元素最小宽度）：只让这一层重算 */
+const asidePreviewStyle = computed<CSSProperties>(() => (asidePreviewW.value === null
+  ? {}
+  : { width: `${asidePreviewW.value}px`, '--aside-min-w': `${asidePreviewW.value}px` }));
+/** 拖动期间正文那一层只**平移**（不改变宽度 → 不重排，右端由 `overflow-x: hidden` 裁掉） */
+const asidePreviewShift = computed<CSSProperties>(() => (asidePreviewW.value === null
+  ? {}
+  : { transform: `translateX(${asidePreviewW.value}px)` }));
+
 /** 给 `<style>` 里的 `v-bind()` 用：**收起态/停靠态**的栏宽。
  *  ⚠️ 浮窗的几何**不在这条链上**（见 `asideFloatStyle`）：走 `v-bind()` 的话，拖浮窗时
  *  每一帧都要把 CSS 变量写到**组件根**，整棵侧栏（几百行）跟着重算样式 —— 实测拖一下
@@ -318,7 +339,10 @@ const asideGapPx = computed(() => (asideVisible.value && !isNarrow.value ? `${as
 
 /** 胶囊工具栏要居中在**正文列**上：侧栏展开时整体右移半个栏宽（transition 与侧栏同步）。 */
 const capsuleShift = computed(() => (
-  asideVisible.value && !isNarrow.value ? Math.round(asideWidth.value / 2) : 0
+  asideVisible.value && !isNarrow.value
+    /* 拖宽度时跟着**预览值**走：它是工具栏的行内变量，不触发正文重排 */
+    ? Math.round((asidePreviewW.value ?? asideWidth.value) / 2)
+    : 0
 ));
 
 /** 同一份位移给弹出面板用（CSS 变量形式，见 `.cap-panel` 的 `--panel-shift`）。 */
@@ -1467,6 +1491,7 @@ function onResizeDown(ev: PointerEvent) {
   asideResizing.value = true;
   resizeStartX = ev.clientX;
   resizeStartW = asideWidth.value;
+  asidePreviewW.value = asideWidth.value;  // 从当前宽度起算（拖动期间只动这个）
   resizeEl = ev.currentTarget as HTMLElement;
   resizePointerId = ev.pointerId;
   resizeEl.setPointerCapture?.(ev.pointerId);
@@ -1477,14 +1502,24 @@ function onResizeDown(ev: PointerEvent) {
 }
 
 /** 拖拽实时夹取走 `clampAsideWidth`：**当前模式的上限**在这里也要生效（用户口径），
- *  只在初始化时算一次的话，对照模式下能把侧栏拖到 640、把译文挤没。 */
+ *  只在初始化时算一次的话，对照模式下能把侧栏拖到上限之外、把译文挤没。
+ *  ⚠️ 这里**只写预览值**，`asideWidth`（→ 整页重排）留到松手（见 `onResizeUp`）。 */
+let resizeMoveRaf = 0;
+let resizeMoveX = 0;
 function onResizeMove(ev: PointerEvent) {
   if (!asideResizing.value) return;
   if (ev.buttons === 0) {                   // 兜底：`pointerup` 丢了，但按键其实已经松开
     void onResizeUp();
     return;
   }
-  asideWidth.value = clampAsideWidth(resizeStartW + (ev.clientX - resizeStartX));
+  resizeMoveX = ev.clientX;
+  if (!resizeMoveRaf) resizeMoveRaf = requestAnimationFrame(applyResizeMove);
+}
+
+function applyResizeMove() {
+  resizeMoveRaf = 0;
+  if (!asideResizing.value) return;
+  asidePreviewW.value = clampAsideWidth(resizeStartW + (resizeMoveX - resizeStartX));
 }
 
 function onResizeUpAnywhere() {
@@ -1506,7 +1541,13 @@ async function onResizeUp() {
     try { el.releasePointerCapture(pid); } catch { /* 早已释放 */ }
   }
   if (!asideResizing.value) return;
+  if (resizeMoveRaf) { cancelAnimationFrame(resizeMoveRaf); resizeMoveRaf = 0; }
   asideResizing.value = false;
+  /* 松手才把预览值写回真值：这一次写入 = 整页重排一次（拖动期间一次都没有） */
+  if (asidePreviewW.value !== null) {
+    asideWidth.value = clampAsideWidth(asidePreviewW.value);
+    asidePreviewW.value = null;
+  }
   persistAsideWidth();
   await afterAsideResize();
 }
@@ -5985,7 +6026,7 @@ function renderMarkdown(text?: string | null) {
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
       <aside
         :class="['reader-aside', { resizing: asideResizing }]"
-        :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle]"
+        :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle, asidePreviewStyle]"
       >
         <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），
              侧栏开着时它正好落在这一行的最左 —— 所以这里是"胶囊正左侧就是关闭按钮"。
@@ -6194,6 +6235,7 @@ function renderMarkdown(text?: string | null) {
       <div
         class="aside-resizer"
         :class="{ active: asideResizing }"
+        :style="{ left: asideShownPx }"
         title="拖动调整侧栏宽度（双击复位）"
         @pointerdown="onResizeDown"
         @pointermove="onResizeMove"
@@ -6220,7 +6262,7 @@ function renderMarkdown(text?: string | null) {
         @mouseover="onContentHover"
         @mouseout="onContentHoverOut"
       >
-        <div class="reader-slide">
+        <div class="reader-slide" :style="asidePreviewShift">
         <ReaderPageRows
           :groups="groups"
           :mode="viewMode"
@@ -6887,12 +6929,22 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗标题栏：兼**拖动抓手**。比侧栏头部矮一截 —— 浮窗是临时看一眼对话，
    不该把 58px 花在一条页签胶囊上；`touch-action: none` 让平板上的拖动不变成滚正文。 */
 .float-bar {
+  position: relative;
   flex: none; display: flex; align-items: center; gap: 6px;
-  height: 42px; padding: 0 6px 0 12px;
+  height: 44px; padding: 4px 6px 0 12px;
   background: var(--bg-elev); border-bottom: 1px solid var(--divider);
   cursor: grab; touch-action: none; user-select: none;
 }
 .float-bar:active { cursor: grabbing; }
+/* 拖动指示器（用户口径 2026-11-19）：顶部一条**短圆角横线**（iOS 弹层那枚抓手），
+   一眼看出"这块能拖着走"；hover / 拖动中变主题色，与分隔线那枚拖动指示器同一门语言。 */
+.float-bar::before {
+  content: ''; position: absolute; top: 5px; left: 50%; width: 36px; height: 4px;
+  margin-left: -18px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+  transition: background var(--dur) var(--ease);
+}
+.float-bar:hover::before, .float-bar:active::before { background: var(--accent); }
 .float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .float-ico { color: var(--text-dim); flex: none; }
 /* 两个下角都能改尺寸（用户口径 2026-11-19：去掉右下角那个直角图标，左右两个角都能拖）。
@@ -6956,7 +7008,8 @@ function renderMarkdown(text?: string | null) {
    面板最右边那条滚动条上（上一版为了避让塞了条 9px gutter，用户口径：把滚动条改回原位）。
    现在它是 `.reader` 的绝对定位子元素，`left` 与侧栏宽度同一个变量。 */
 .reader > .aside-resizer {
-  position: absolute; top: 0; bottom: 0; left: v-bind(asideWidthPx); width: 12px;
+  /* `left` 由行内 style 给（`asideShownPx`：拖动期间跟预览值，否则跟落盘值） */
+  position: absolute; top: 0; bottom: 0; width: 12px;
   z-index: 31;                       /* 侧栏是 30：把手永远压在分隔线之上 */
   cursor: col-resize; touch-action: none; background: transparent;
 }

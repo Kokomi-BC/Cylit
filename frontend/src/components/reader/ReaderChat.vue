@@ -1148,23 +1148,26 @@ defineExpose({ uploadFiles });
     <!-- ═══════════════ 二级：会话 ═══════════════ -->
     <template v-else>
       <div class="thread-head">
-        <button class="btn ghost icon sm" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
+        <button class="th-act" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
         <span class="th-title truncate" :title="current?.title || '新对话'" v-html="inlineHtml(currentTitle)" />
         <span class="spacer" />
-        <!-- 拆分（浮层打开）：**加号左边**（用户口径 2026-11-19）；图标用"分享/对外打开"
-             那枚方框加箭头，与「+ 新对话」的加号一眼区分开。 -->
-        <button
-          v-if="showFloatBtn"
-          class="btn ghost icon sm"
-          title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
-          @click="emit('float')"
-        >
-          <AppIcon name="external" :size="14" />
-        </button>
-        <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
-        <button class="btn ghost icon sm new-conv" title="新建对话" @click="startNew">
-          <AppIcon name="add" :size="15" />
-        </button>
+        <!-- 右上角这组按钮：**与页面其它工具同一门语言** —— 无描边的托底托盘 + 里面两枚圆按钮
+             （用户口径 2026-11-19：符合页面风格）。以前是两枚散着的裸图标，看着像没做完。 -->
+        <span class="th-acts">
+          <!-- 拆分（浮层打开）：**加号左边**；图标用"分享/对外打开"那枚方框加箭头，与加号一眼区分 -->
+          <button
+            v-if="showFloatBtn"
+            class="th-act"
+            title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
+            @click="emit('float')"
+          >
+            <AppIcon name="external" :size="14" />
+          </button>
+          <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
+          <button class="th-act" title="新建对话" @click="startNew">
+            <AppIcon name="add" :size="14" />
+          </button>
+        </span>
       </div>
 
       <div ref="msgsEl" class="msgs">
@@ -1461,8 +1464,21 @@ defineExpose({ uploadFiles });
 
 /* ── 二级：会话 ── */
 .thread-head {
-  display: flex; align-items: center; gap: 3px; padding: 5px 8px;
+  display: flex; align-items: center; gap: 3px; padding: 5px 8px 5px 6px;
   border-bottom: 1px solid var(--divider);
+}
+/* 顶部按钮：26px 圆钮 + 托盘（`--bg-sunken`），与侧栏页签胶囊、搜索那两枚小胶囊同一门语言。
+   悬停时那枚按钮才"浮起来"（`--bg-elev` + 一档阴影），与 `.seg` 的当前项同一个做法。 */
+.th-act {
+  width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.th-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
+.th-act:active { transform: scale(.94); }
+.th-acts {
+  display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px;
+  border-radius: 999px; background: var(--bg-sunken);
 }
 .th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
 
