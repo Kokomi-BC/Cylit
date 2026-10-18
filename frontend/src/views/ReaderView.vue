@@ -4406,6 +4406,9 @@ async function ctxAttachImage() {
     await ensureAsideVisible();
     sideTab.value = 'chat';
     await nextTick();
+    /* 同上：没开着对话就先开一个新对话，否则附件列表不在界面上（等于没反应） */
+    chatRef.value?.ensureThread?.();
+    await nextTick();
     (chatRef.value as { uploadFiles?: (f: File[]) => void } | null)?.uploadFiles?.([file]);
   } catch (err) { reportError(err, '把图片放进对话框失败'); }
 }
@@ -4707,7 +4710,12 @@ function openSelectionInChat(fromMenu = false) {
   hideMenu();
   sideTab.value = 'chat';
   // 左栏可能是收起的（例如用户在看 Markdown 视图）——切页签不等于看得见面板
-  void ensureAsideVisible();
+  void ensureAsideVisible().then(async () => {
+    await nextTick();
+    /* 对话面板还停在**会话列表**那一级时，输入框与上下文胶囊都不在 DOM 里 ——
+       直接塞选区等于"点了没反应"。所以先确保有会话开着：没有就用新对话（用户口径 2026-11-19）。 */
+    chatRef.value?.ensureThread?.();
+  });
 }
 
 /**

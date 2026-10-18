@@ -577,6 +577,17 @@ function backToList() {
   void loadConversations();
 }
 
+/**
+ * 确保**有会话开着**（用户口径 2026-11-19：右键「加入对话」时如果没打开任何对话，就用新对话）。
+ *
+ * 外面（`ReaderView`）把选区/图片塞进来之前调一次：停在会话列表那一级的话，输入框与上下文胶囊
+ * 根本不在 DOM 里，塞进去等于"点了没反应"。已经在某一轮对话里就**不动**（不打断当前会话）。
+ */
+function ensureThread() {
+  if (level.value === 'thread') return;
+  startNew();
+}
+
 /* ------------------------------ 一级的操作 ------------------------------ */
 
 function setKind(kind: Kind) {
@@ -1049,7 +1060,7 @@ watch(() => props.selection, (sel) => {
 
 /* 对外的一个口子：**把图片塞进附件列表**（右键菜单「添加到对话框（支持图片）」，用户口径 2026-10-08）。
    走的是与"选文件 / 拖进来 / 粘贴"同一条上传链路（`uploadFiles`），所以大小限制、格式校验都一致。 */
-defineExpose({ uploadFiles });
+defineExpose({ uploadFiles, ensureThread });
 </script>
 
 <template>
