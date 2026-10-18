@@ -1561,7 +1561,33 @@ function clampFloatBox() {
   b.top = Math.round(Math.max(FLOAT_EDGE, Math.min(b.top, vh - b.h - FLOAT_EDGE)));
 }
 
-/** 每次打开都落在**右下角**：胶囊工具栏在上方，两边不抢地盘 */
+/** 浮窗位置/尺寸的记忆键（**全局**一份：它是"我把这个小窗摆哪儿了"，不是某篇论文的属性） */
+const floatBoxKey = 'cylit:reader-float';
+
+/**
+ * 读回上次的位置与尺寸（用户口径 2026-11-19：打开浮层接着放在上次那儿，不要每次都甩到右下角）。
+ * 读完还要过一遍 `clampFloatBox`：换过显示器、窗口变小之后，旧坐标可能整个在屏幕外。
+ * @returns 有没有读到可用的记录
+ */
+function restoreFloatBox(): boolean {
+  try {
+    const raw = localStorage.getItem(floatBoxKey);
+    if (!raw) return false;
+    const b = JSON.parse(raw) as { left?: unknown; top?: unknown; w?: unknown; h?: unknown };
+    const nums = [b.left, b.top, b.w, b.h];
+    if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) return false;
+    floatBox.value = { left: b.left as number, top: b.top as number, w: b.w as number, h: b.h as number };
+    clampFloatBox();
+    return true;
+  } catch { return false; }
+}
+
+/** 落盘（拖动/改尺寸结束时写一次；每像素写没意义） */
+function persistFloatBox() {
+  try { localStorage.setItem(floatBoxKey, JSON.stringify(floatBox.value)); } catch { /* 隐私模式忽略 */ }
+}
+
+/** 没有记录时的兜底：**右下角**（胶囊工具栏在上方，两边不抢地盘） */
 function resetFloatBox() {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
@@ -1576,7 +1602,8 @@ async function openChatFloat() {
   if (isNarrow.value || chatFloat.value) return;
   pinReadingAnchor();                 // 栏宽要变，先钉住正在读的那一行
   sideTab.value = 'chat';
-  resetFloatBox();
+  /* 先试着回到上次的位置；没有记录（或记录已不可用）才落到右下角 */
+  if (!restoreFloatBox()) resetFloatBox();
   chatFloat.value = true;
   if (asideOpen.value) {
     asideOpen.value = false;
@@ -1700,6 +1727,7 @@ function onFloatPointerUp(ev: PointerEvent) {
      这正是"松手那一帧闪烁"的根治办法（用户口径 2026-11-19 第二轮）。 */
   floatDrag.on = false;
   floatDrag.mode = '';
+  persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
 
@@ -4271,7 +4299,10 @@ function onContentContextMenu(ev: MouseEvent) {
       label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
     });
     items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
-    /* 触摸条：色板跟在「搜索 / 复制」后面（常用功能靠左，用户口径 2026-10-18）。
+    /* 顺序（用户口径 2026-11-19 第三轮）：「加入对话」排在「高亮」**左侧**，「询问 Cyli」仍在它右侧 ——
+       也就是 搜索 → 复制 → 加入对话 → 高亮 → 询问 Cyli：先"把这段带走"，再"就地标一下 / 问一下"。 */
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    /* 触摸条：色板排在「加入对话」后面（用户口径 2026-10-18：常用功能靠左）。
        不再带铅笔图标 —— 一排色点自己就说明是上色，多一个笔反而占宽。 */
     if (fromTouch) items.push({ key: 'hl-color', label: '高亮', swatches: HIGHLIGHT_COLORS });
   }
@@ -4284,9 +4315,7 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'note', label: '编辑笔记', icon: 'note' });
   }
   if (withSel) {
-    /* 顺序（用户口径 2026-11-19）：「加入对话」在「询问 Cyli」**左侧** —— 先把这段带进对话里，
-       再决定要不要就地看解释；与划词胶囊上那排的顺序也一致（加对话 → 询问）。 */
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    /* 「加入对话」已经在上面（高亮左侧）排好了，这里只补「询问 Cyli」，让它落在最右 */
     items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   } else if (ctxCtx.isFigure) {
     /* 插图同理：先「加入对话」（带这张图），再「询问 Cyli」（解释这张图） */
