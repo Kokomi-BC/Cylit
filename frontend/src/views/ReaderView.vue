@@ -36,7 +36,7 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk,
+  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor,
   flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
   redoInk, resetInk, setInkColor, setInkNotesListener, undoInk,
 } from '@/composables/useReaderInk';
@@ -3837,10 +3837,15 @@ function onContentTouchStart(ev: TouchEvent): void {
 }
 
 function onContentTouchMove(ev: TouchEvent): void {
-  if (!longPressFrom || !longPressTimer) return;
   const touch = ev.touches[0];
   if (!touch) return;
-  if (Math.hypot(touch.clientX - longPressFrom.x, touch.clientY - longPressFrom.y) > 10) cancelLongPress();
+  const moved = longPressFrom
+    ? Math.hypot(touch.clientX - longPressFrom.x, touch.clientY - longPressFrom.y)
+    : Number.POSITIVE_INFINITY;
+  if (longPressFrom && longPressTimer && moved > 10) cancelLongPress();
+  /* 手指在屏幕上滑动 = 要滚页面 / 要继续看正文：把浮层收掉（用户口径 2026-10-18）。
+   * 注意判断放在长按取消之后：长按已经把 longPressFrom 清空，此时任何移动都算"滑动"。 */
+  if (moved > 12 && (ctxMenu.open || selection.show)) hideMenu();
 }
 /** 右键：按『落在哪个界面 + 落点是什么』给清单（三套）。输入框里放行浏览器原生菜单。 */
 function onContentContextMenu(ev: MouseEvent) {
@@ -3910,15 +3915,15 @@ function onContentContextMenu(ev: MouseEvent) {
   const quoted = ctxCtx.text.replace(/\s+/g, ' ').trim().slice(0, 14);
   /* 触摸屏：**色板和动作合成一条工具条**（用户口径 2026-10-17）。
      桌面仍然只有下拉里的文字项 —— 那边划词胶囊已经把颜色摆出来了，不必重复。 */
-  if (fromTouch && withSel) {
-    items.push({ key: 'hl-color', label: '高亮', icon: 'edit', swatches: HIGHLIGHT_COLORS });
-  }
   if (withSel) {
     items.push({
       key: 'bing', icon: 'search-fill',
       label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
     });
     items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
+    /* 触摸条：色板跟在「搜索 / 复制」后面（常用功能靠左，用户口径 2026-10-18）。
+       不再带铅笔图标 —— 一排色点自己就说明是上色，多一个笔反而占宽。 */
+    if (fromTouch) items.push({ key: 'hl-color', label: '高亮', swatches: HIGHLIGHT_COLORS });
   }
   /* 「高亮」不再放在常规菜单里（用户口径 2026-10-10）：选色已经在**划词胶囊**上，
      右键菜单这一层重复一遍反而是噪音。右键落在**已有高亮**上才给「编辑笔记」。
@@ -5393,6 +5398,7 @@ function renderMarkdown(text?: string | null) {
                 :aria-pressed="inkTool === item.key"
                 :data-ink-tool="item.key"
                 :aria-expanded="inkOptionsOpen && (item.key === 'pen' || item.key === 'marker')"
+                :style="item.key === 'pen' ? { '--pen-color': colorFor('pen') } : undefined"
                 @click="pickInkTool(item.key)"
               >
                 <AppIcon :name="item.icon" :size="15" />
@@ -6314,8 +6320,8 @@ function renderMarkdown(text?: string | null) {
   display: flex; align-items: center; gap: 7px;
   padding: 8px 10px; border-radius: 999px; z-index: 3;
   background: linear-gradient(180deg,
-    color-mix(in srgb, var(--bg-elev) var(--glass-panel-top, 86%), transparent),
-    color-mix(in srgb, var(--bg-elev) var(--glass-panel-bottom, 74%), transparent));
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
   backdrop-filter: blur(48px) saturate(2.6);
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
@@ -6352,9 +6358,10 @@ function renderMarkdown(text?: string | null) {
   position: fixed; transform: translateX(-50%);
   display: flex; flex-direction: column; gap: 8px; z-index: 45; pointer-events: auto;
   padding: 9px 12px; border-radius: 16px;
+  /* 与胶囊/右键菜单同一块玻璃（用户口径 2026-10-18） */
   background: linear-gradient(180deg,
-    color-mix(in srgb, var(--bg-elev) var(--glass-panel-top, 86%), transparent),
-    color-mix(in srgb, var(--bg-elev) var(--glass-panel-bottom, 74%), transparent));
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
   backdrop-filter: blur(48px) saturate(2.6);
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
@@ -6451,6 +6458,10 @@ function renderMarkdown(text?: string | null) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent) !important;
   color: var(--accent-text) !important;
 }
+/* 画笔那枚图标用**当前选中的墨色**（用户口径 2026-10-18）。
+   ⚠️ 必须写在 .tool-on **之后**、并且同样带 !important：两条规则权重相同，靠顺序取胜；
+   写在前面的话选中画笔时图标会被 .tool-on 染成强调色（实测踩过）。 */
+.reader-capsule .cap-group .btn[data-ink-tool='pen'] { color: var(--pen-color, currentColor) !important; }
 .reader-capsule .cap-group .seg {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);

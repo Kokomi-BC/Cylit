@@ -53,8 +53,10 @@ function clearCv(cv: HTMLCanvasElement | null) {
 }
 
 function repaint() {
-  // 没在批注模式 / 不在视口附近：一块画布都不用碰（见 sizeCanvases 的说明）
-  if (!props.enabled || !near.value) return;
+  /* ⚠️ 这里**不能**再判 props.enabled：退出批注模式后墨迹要**留着看得见**
+   * （用户口径 2026-10-18："画笔模式切换到普通模式要保留墨迹"）。
+   * 画布只在视口附近才分配/重绘，所以「留着」的代价只有眼前这几页。 */
+  if (!near.value) return;
   const w = size.value.w;
   const h = size.value.h;
   if (!w || !h) return;
@@ -107,7 +109,7 @@ function releaseCanvases(): void {
 function sizeCanvases() {
   const el = root.value;
   if (!el) return;
-  if (!props.enabled || !near.value) return;   // 见 ensureSize 的说明
+  if (!near.value) return;   // 见 ensureSize 的说明
   const w = el.clientWidth;
   const h = el.clientHeight;
   if (!w || !h) return;
@@ -341,8 +343,8 @@ let io: IntersectionObserver | null = null;
 
 onMounted(async () => {
   await nextTick();
-  // 不在批注模式就先不分配、也不拉数据（进来时才做，见 props.enabled 的 watch）
-  if (props.enabled) {
+  // 墨迹在普通模式下也要显示：进了视口就分配画布 + 拉这一页的笔迹
+  if (near.value) {
     sizeCanvases();
     void ensureInkLoaded(docKey.value);
   }
@@ -386,21 +388,20 @@ onBeforeUnmount(() => {
 
 watch(() => state.value.version, () => { if (near.value) repaint(); });
 watch(near, (on) => {
-  if (!on || !props.enabled) return;
+  if (!on) return;
   void ensureInkLoaded(docKey.value);
   sizeCanvases();
 });
+/* 进入批注：确保画布尺寸/数据就绪；**退出批注不释放**（墨迹要留着看见），
+ * 内存由「滚远了才回收」那条（IntersectionObserver）兜住。 */
 watch(() => props.enabled, (on) => {
-  if (on) {
-    void ensureInkLoaded(docKey.value);
-    sizeCanvases();
-  } else {
-    releaseCanvases();
-  }
+  if (!on) return;
+  void ensureInkLoaded(docKey.value);
+  sizeCanvases();
 });
 // 切视图（原文/译文/对照）= 换一份批注：重新拉那一份并重画
 watch(inkView, () => {
-  if (!props.enabled || !near.value) return;
+  if (!near.value) return;
   void ensureInkLoaded(docKey.value);
   sizeCanvases();
 });

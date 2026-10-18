@@ -231,19 +231,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 材质 = **复刻 fakenewsdetect.art 的右键菜单玻璃**（用户口径 2026-10-09）。
-   配方：半透明底 + 弱模糊 + **一圈 1px 实描边** + 双层柔阴影 —— 靠描边与阴影把菜单
-   "托起来"，而不是靠加厚白底。底色与模糊都走 `--glass-flyout-*`（见 tokens.css），
-   与**划词胶囊同一份**，所以两处永远一致、且浅色/深色/各套皮肤都自动跟随。 */
+/* 材质 = **与顶部胶囊同一块玻璃**（用户口径 2026-10-18：右键菜单和这些菜单都改成胶囊
+   那个材质、样式类似）。配方直接照抄 .reader-capsule：上亮下暗的渐变本体 + 48px 饱和模糊
+   + 柔光投影，**不画描边**（描边在深色下会变成一圈发光环），所以浅色/深色/各套皮肤
+   都和胶囊一起变，两处不会再长得不一样。 */
 .ctx-panel {
   position: fixed; z-index: 320; padding: 6px;
   display: flex; flex-direction: column; gap: 1px;
-  border-radius: 12px;                          /* 目标站 --radius-md */
+  border-radius: 14px;
   min-width: 180px; max-height: 90vh; overflow-y: auto;
-  background: var(--glass-flyout-bg);
-  backdrop-filter: var(--glass-flyout-blur);
-  -webkit-backdrop-filter: var(--glass-flyout-blur);
-  border: 1px solid var(--border);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  border: 0;
   box-shadow: var(--shadow-flyout);
   user-select: none;
 }
@@ -279,6 +281,8 @@ onBeforeUnmount(() => {
 /* 色板：排在最前面的那一小排圆点（触摸态把"划词胶囊"并进来了，所以这里要能直接选色） */
 .ctx-panel.ctx-bar .ctx-colors {
   display: flex; align-items: center; gap: 5px; padding: 0 4px 0 2px;
+  /* 触摸条里色板不再跟在图标后面，去掉左外边距，否则左边会空一块（用户口径 2026-10-18） */
+  margin-left: 0;
 }
 .ctx-panel.ctx-bar .ctx-colors::after {
   content: ''; width: 1px; height: 20px; margin-left: 3px; background: var(--border);

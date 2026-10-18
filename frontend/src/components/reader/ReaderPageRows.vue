@@ -209,8 +209,10 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
     <div v-if="!props.groups.length" class="empty">没有可显示的内容（先解析或翻译这篇论文）</div>
 
     <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg">
-      <!-- 手写批注层：批注模式开着才挂载（平时一个 canvas 都不建，46 页也不会吃内存） -->
-      <InkSurface v-if="props.inkOn" :page="g.page" :enabled="props.inkOn" />
+      <!-- 手写批注层：**始终挂载**（退出批注后墨迹要留着看得见，用户口径 2026-10-18）。
+           平时它 pointer-events: none 不拦事件；画布只在「视口附近」才按 2× dpr 分配，
+           滚远了回收，所以 46 页也不会吃内存（见 InkSurface 的 ensureSize）。 -->
+      <InkSurface :page="g.page" :enabled="props.inkOn" />
       <header class="pg-head">
         <span class="pg-no">第 {{ g.page }} 页</span>
         <!-- 「x/y 行」徽章**已按用户要求删除**：原文行数与译文行数本来就不必相同
