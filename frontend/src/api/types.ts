@@ -1055,6 +1055,22 @@ export interface AgentSelection {
    *  agent 那边也据此在提示词里交代"选区在第几页"（用户口径 2026-10-03）。 */
   where?: string | null;
   question?: string;
+  /**
+   * 选区的**锚点快照**（`start` / `end` / `side` / `scope`）：对话浮层"回答下面那排色点"
+   * 要用它给这段建高亮、把回答存成它的笔记。后端只读 `text` / `row_id` / `page` / `where`，
+   * 多给的字段不会进请求体（见 `ReaderChat` 的 `ask`），所以安全。
+   */
+  start?: number;
+  end?: number;
+  side?: string;
+  /** `row` / `markdown` / `pdf`：决定高亮锚点是行 id、`md:p<页>` 还是 `pdf:p<页>` */
+  scope?: string;
+  /** 高亮要存的原文：原 PDF 划词时它与 `text`（截断版，只给胶囊显示）不是同一个字符串 */
+  quote?: string;
+  /** 这一轮是「解释」：对话浮层据此**自动发送**，并把请求打到后端 `mode: "explain"` */
+  explain?: boolean;
+  /** 自动发送时用的那句问题（`explain` 为真时才有） */
+  ask?: string;
 }
 
 /** 首页概览（`GET /api/v1/home/summary`）：首页刊头数据 rail 要的几个计数。

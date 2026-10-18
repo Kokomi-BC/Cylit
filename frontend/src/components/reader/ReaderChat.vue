@@ -26,7 +26,8 @@ import { BRAND_ICON } from '@/utils/brand';
 import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentModelPick,
-  AgentSelection, AgentStatus, AgentStep, AgentUsage, ModelConfig,
+  AgentSelection, AgentStatus, AgentStep, AgentUsage,
+  Highlight, ModelConfig, Note,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
@@ -97,7 +98,26 @@ const pending = ref<AgentAttachment[]>([]);
  *  - 右侧 ✕ = 整个移除。
  *  `include=false` 时胶囊照样显示（用户看得见自己选过什么），只是不随这轮发出去。 */
 const selCtx = ref<{ text: string; row_id: string | null; page: number | null;
-                     where: string; include: boolean } | null>(null);
+                     where: string; include: boolean;
+                     /** 这一轮是「解释」：请求要打到后端的 `mode: "explain"` */
+                     explain?: boolean;
+                     /** 锚点快照：回答下面那排色点用它建高亮、把回答存成笔记 */
+                     start?: number; end?: number; side?: string; scope?: string;
+                     /** 高亮要存的原文（原 PDF 划词时与 `text` 不是同一个字符串） */
+                     quote?: string } | null>(null);
+/** 这一轮是不是「解释」：后端据此套用设置里「Cyli 解释」那份模型 + 思考强度。
+ *  为什么单独存一份而不是读 `selCtx`：图片解释那一轮没有文字选区，胶囊是空的。 */
+const explainIntent = ref(false);
+/**
+ * 最近一轮**带选区**的提问留下的锚点快照（text/row_id/page/start/end/side/scope）。
+ *
+ * 为什么快照：读到回答再点颜色时，输入框里的胶囊已经发出去清掉了、正文上的选区也可能被改掉，
+ * 那时再去取必然错位（与原来解释浮层"打开那一刻存快照"同一个理由）。`highlightId` 建完回填，
+ * 再点别的颜色就是**改这条高亮的颜色**而不是又建一条。
+ */
+const lastAnchor = ref<{ text: string; quote: string; row_id: string | null; page: number | null;
+                         where: string; start: number; end: number; side: string; scope: string;
+                         highlightId: string; color: string } | null>(null);
 const uploading = ref(false);
 const loading = ref(false);
 const compressing = ref(false);
@@ -704,6 +724,8 @@ function chatSessionKey(): string {
 
 /** 认回上一次会话之前不要落盘：换论文那一瞬间的清空会把新论文的记录抹掉。 */
 let sessionRestored = false;
+/** 那次"认回上次会话"的拉取：自动发送要等它落地，否则这一轮会挂到一个刚被换掉的会话上。 */
+let sessionReady: Promise<void> = Promise.resolve();
 
 function persistChatSession() {
   if (!sessionRestored) return;
@@ -1047,6 +1069,11 @@ const toolLabel = (name: string) => TOOL_LABELS[name] ?? `正在调用 ${name}`;
  */
 async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessage,
                    branch = false) {
+  /* 这一轮是不是「解释」：后端据此套用设置里「Cyli 解释」那份模型 + 思考强度。
+     **拿到就复位**（意图是一次性的）：否则服务没起来 / 正在跑那一轮被挡回来之后，
+     下一次普通提问也会被当成解释、跑到解释那份配置上去。 */
+  const explain = explainIntent.value;
+  explainIntent.value = false;
   if (sending.value) return;
   if (!agentReady.value) { toast('问答服务没有在运行（先 `pr.py agent`）', 'warn'); return; }
 
@@ -1086,6 +1113,19 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   appendLiveStep('stage', mode === 'send' ? '正在准备…'
     : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   if (mode === 'send') {
+    /* 这一轮带过选区就把锚点存下来：回答下面那排色点要用它建高亮 / 存笔记。
+       不带选区的那一轮（普通提问）要把它清掉 —— 否则色点会挂在一条跟选区无关的回答下面。 */
+    const anchor = selected.value;
+    lastAnchor.value = anchor?.text
+      ? {
+        text: anchor.text, quote: anchor.quote || anchor.text,
+        row_id: anchor.row_id ?? null, page: anchor.page ?? null,
+        where: anchor.where || '',
+        start: anchor.start ?? 0, end: anchor.end ?? 0,
+        side: anchor.side || 'en', scope: anchor.scope || 'row',
+        highlightId: '', color: '',
+      }
+      : null;
     // 发出去之后胶囊就完成使命了（选区已经进了这条消息的 `> 引用`）
     selCtx.value = null;
     emit('clear-selection');
@@ -1096,7 +1136,10 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
 
   controller = new AbortController();
   try {
-    await postSse('/agent/ask', {
+    /* 请求体**按需装配**：`mode: "explain"` 只有在 body 里**没有** `model_id` /
+       `reasoning_effort` 这两个键时才会套用设置里那份解释配置（见 `backend/api/agent.py`）——
+       所以这两个字段改成"用户真选了才出现"，不再用 `|| null` 占位把解释配置顶掉。 */
+    const body: Record<string, unknown> = {
       paper_id: props.paperId,
       question,
       conversation_id: currentId.value,
@@ -1109,10 +1152,11 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
       edit_of: mode === 'edit' ? target?.message_id : null,
       // 默认**就地**改/就地重答；只有那枚 git 分支图标传 true（开兄弟分支，两条都留）
       branch,
-      // 这一轮用哪个模型、哪一档推理（`null` = 这一轮按后端默认跑）
-      model_id: pick.value.model_config_id || null,
-      reasoning_effort: pick.value.reasoning_effort || null,
-    }, { signal: controller.signal, onEvent });
+    };
+    if (explain) body.mode = 'explain';
+    if (pick.value.model_config_id) body.model_id = pick.value.model_config_id;
+    if (pick.value.reasoning_effort) body.reasoning_effort = pick.value.reasoning_effort;
+    await postSse('/agent/ask', body, { signal: controller.signal, onEvent });
     const convId = currentId.value;
     if (convId) {
       await loadConversation(convId);            // `done` 是权威结果：重拉一次对齐
@@ -1155,6 +1199,77 @@ function stopTimer() {
 function stop() {
   controller?.abort();
   toast('已停止', 'warn');
+}
+
+/* --------------------------- 存为笔记（解释那一轮的回答） --------------------------- */
+
+/** 那排色点用哪几色：色块本身沿用 `base.css` 的 `.hl-swatch`（与划词胶囊同一份颜色）。 */
+const NOTE_COLORS = ['yellow', 'green', 'blue', 'pink'];
+const NOTE_COLOR_NAMES: Record<string, string> = { yellow: '黄', green: '绿', blue: '蓝', pink: '粉' };
+
+/** 最近一条助手消息：色点只挂在它下面。流式中不给（那时正文还在长，存下去只能是半截）。 */
+const lastAnswerMsg = computed(() => (sending.value ? null
+  : [...messages.value].reverse().find(m => m.role === 'assistant') ?? null));
+
+/** 这条消息下面要不要出那排色点：**这一轮提问带过选区**才有东西可标、可存。 */
+function canSaveAsNote(m: AgentMessage) {
+  return Boolean(lastAnchor.value) && m.message_id === lastAnswerMsg.value?.message_id;
+}
+
+/**
+ * 点色点 = 给这处选区建/改高亮，并把**这条回答**存成它的笔记。
+ *
+ * 语义与原「Cyli 解释」浮层底部那排色块同源（用户口径 2026-10-07：把"先标高亮、再回来存笔记"
+ * 合成一步 —— 挑个颜色就完了），只是壳换成了对话面板：
+ * 已有高亮就**改它的颜色**（`PUT /highlights/{id}`），没有才按 `scope` 选锚点新建
+ * （正文行 = 行 id / Markdown = `md:p<页>` / 原 PDF = `pdf:p<页>`）。
+ */
+async function saveAnswerWithColor(color: string) {
+  const anchor = lastAnchor.value;
+  const answer = (lastAnswerMsg.value ? finalAnswer(lastAnswerMsg.value) : '').trim();
+  if (!anchor || !answer) { toast('还没有可保存的回答', 'warn'); return; }
+  const scope = anchor.scope || 'row';
+  const page = anchor.page ?? 0;
+  const blockId = scope === 'markdown' ? `md:p${page}`
+    : scope === 'pdf' ? `pdf:p${page}` : (anchor.row_id || '');
+  const anchored = scope === 'markdown' || scope === 'pdf'
+    ? (page > 0 && anchor.end > anchor.start)
+    : Boolean(anchor.row_id);
+  if (!anchor.highlightId && !anchored) {
+    toast('这段文字定位不到（标不了高亮）', 'warn', 2600);
+    return;
+  }
+  try {
+    let highlightId = anchor.highlightId;
+    if (highlightId) {
+      await api.put(`/highlights/${highlightId}`, { color });
+    } else {
+      const created = await api.post<Highlight>('/highlights', {
+        paper_id: props.paperId, block_id: blockId,
+        selected_text: anchor.quote || anchor.text,
+        start_offset: anchor.start, end_offset: anchor.end,
+        color, side: anchor.side, scope,
+      });
+      highlightId = created?.id ?? '';
+      anchor.highlightId = highlightId;
+    }
+    if (!highlightId) { toast('高亮没建成，笔记也就没存', 'warn', 2600); return; }
+    /* 同一处高亮已经有笔记就更新它（用户可以再解释一次、再点一次颜色） */
+    const listed = await api.get<{ items: Note[] }>('/notes', { paper_id: props.paperId });
+    const existing = (listed.items ?? []).find((n) => n.highlight_id === highlightId) ?? null;
+    if (existing) await api.put(`/notes/${existing.id}`, { content_md: answer });
+    else {
+      await api.post('/notes', {
+        paper_id: props.paperId, block_id: blockId, highlight_id: highlightId,
+        selected_text: anchor.quote || anchor.text,
+        start_offset: anchor.start, end_offset: anchor.end,
+        content_md: answer,
+      });
+    }
+    anchor.color = color;
+    toast(existing ? '已更新这处高亮的笔记' : '已标色并存为这处高亮的笔记', 'ok', 2400);
+    emit('refresh-side');
+  } catch (err) { reportError(err, '存为笔记失败'); }
 }
 
 /** 编辑提问：`branch=false` 就地改写；`branch=true` 是"用新问法开新分支"（原条保留）。 */
@@ -1361,7 +1476,7 @@ onMounted(() => {
      而 `/agent/status` 里带一次"问答服务在不在"的健康检查 —— 服务没起来时要等它超时
      （实测 2s 左右），于是历史被硬生生拖了两秒。三件事互不依赖，各走各的。 */
   void loadConversations();
-  void restoreChatSession().finally(() => { sessionRestored = true; });
+  sessionReady = restoreChatSession().finally(() => { sessionRestored = true; });
   void loadModelOptions();
   void Promise.all([loadStatus(), loadPaper()]);
 });
@@ -1391,7 +1506,7 @@ watch(() => props.paperId, async () => {
   pick.value = { model_config_id: '', reasoning_effort: '' };
   sessionRestored = false;
   void Promise.all([loadPaper(), loadConversations()]);
-  void restoreChatSession().finally(() => { sessionRestored = true; });
+  sessionReady = restoreChatSession().finally(() => { sessionRestored = true; });
   void loadStatus();
 });
 
@@ -1401,13 +1516,39 @@ watch(() => props.paperId, async () => {
 watch(() => props.selection, (sel) => {
   selCtx.value = sel?.text
     ? { text: sel.text, row_id: sel.row_id ?? null, page: sel.page ?? null,
-        where: sel.where ?? '', include: true }
+        where: sel.where ?? '', include: true, explain: sel.explain === true,
+        start: sel.start ?? 0, end: sel.end ?? 0, side: sel.side, scope: sel.scope,
+        quote: sel.quote }
     : null;
+  explainIntent.value = sel?.explain === true;   // 解释那一轮要打到后端的 `mode: "explain"`
   if (sel?.text) {
     level.value = 'thread';
     void nextTick(() => inputEl.value?.focus());
   }
+  /* 解释意图 → **自动发一轮**（用户口径：划词「解释」不该再开一张独立浮层，直接进对话、直接出答案）。
+     不能只看 `sel.text`：插图解释没有文字选区，图在附件里。 */
+  if (sel?.explain) void autoExplain(sel);
 });
+
+/** 自动发送前等两件事：**会话就绪**与**上一轮跑完**。
+ *  都只等一小会儿 —— 卡住的等待比"没发出去"更让人摸不着头脑。 */
+async function waitChatIdle() {
+  await sessionReady;
+  for (let i = 0; i < 50 && sending.value; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await nextTick();
+}
+
+/** 「解释」那一轮的自动发送：问题用父组件指定的那句（缺省"解释这段内容"）。 */
+async function autoExplain(sel: AgentSelection) {
+  await waitChatIdle();
+  if (level.value !== 'thread') level.value = 'thread';
+  draft.value = sel.ask || '解释这段内容';
+  explainIntent.value = true;
+  await nextTick();
+  await ask('send');
+}
 
 /* 对外的一个口子：**把图片塞进附件列表**（右键菜单「添加到对话框（支持图片）」，用户口径 2026-10-08）。
    走的是与"选文件 / 拖进来 / 粘贴"同一条上传链路（`uploadFiles`），所以大小限制、格式校验都一致。 */
@@ -1645,6 +1786,17 @@ defineExpose({ uploadFiles, ensureThread });
               >
                 <img :src="imageSrc(a.url)" :alt="a.name" loading="lazy" />
               </button>
+            </div>
+
+            <!-- 这一轮提问**带过选区**（划词解释）时：回答下面给一排色点。
+                 挑个颜色 = 把这段标出来 + 把这条回答存成它的笔记（用户口径 2026-10-07：
+                 "想留这段"和"想标黄色"本来就是同一个意图，一次点完）。 -->
+            <div v-if="canSaveAsNote(m)" class="note-swatches">
+              <span class="ns-hint">存为笔记</span>
+              <button v-for="c in NOTE_COLORS" :key="c" type="button"
+                      class="hl-swatch" :class="[c, { on: lastAnchor?.color === c }]"
+                      :title="`标成${NOTE_COLOR_NAMES[c]}色，并把这条回答存成它的笔记`"
+                      @click="saveAnswerWithColor(c)" />
             </div>
 
             <!-- 引用**不再在下面列一排 chunk 号**（用户口径 2026-10-03）：
@@ -2155,6 +2307,11 @@ defineExpose({ uploadFiles, ensureThread });
 
 .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .atts.pending { margin: 0 0 6px; align-items: center; }
+/* 回答下面那排色点（解释那一轮"存为笔记"）：一排小圆点 + 一句淡字，不抢正文。
+   色块本身是 `base.css` 的 `.hl-swatch`（与划词胶囊同一份颜色），这里只管排布。 */
+.note-swatches { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.note-swatches .hl-swatch { border: 0; }
+.ns-hint { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .att {
   position: relative; width: 46px; height: 46px; border-radius: var(--radius-sm);
   overflow: hidden; border: 1px solid var(--border); background: var(--bg-sunken); display: block;

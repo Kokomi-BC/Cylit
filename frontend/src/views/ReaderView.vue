@@ -18,7 +18,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import type {
-  AgentCitation, AgentSelection, AgentStep, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
+  AgentSelection, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
   Highlight, MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, PaperReference, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
@@ -281,8 +281,8 @@ const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
  * ⚠️ 正文 / 侧栏 / 工具栏的既有层级（30 / 31 / 40）一个都不动。
  * ⚠️ **不要挂 hover**：两张卡叠在边缘时鼠标一抖就来回改，读起来就是闪。
  */
-const topLayer = ref<'note' | 'explain' | 'chat'>('note');
-function takeTop(which: 'note' | 'explain' | 'chat') {
+const topLayer = ref<'note' | 'chat'>('note');
+function takeTop(which: 'note' | 'chat') {
   if (topLayer.value === which) return;
   /* 对话那块**只在浮窗态**参与排序：贴栏态它就是侧栏（z-index 30），不该抢浮层的顶 */
   if (which === 'chat' && !chatFloat.value) return;
@@ -644,49 +644,6 @@ const selection = reactive({
    *  只能靠这份快照（右键菜单要给"复制/高亮/询问"那几项）。 */
   rect: null as { left: number; top: number; right: number; bottom: number } | null,
 });
-/**
- * 划词解释（浮动卡片）。
- *
- * **解释由问答 agent 产出**（`/agent/ask` + `selection`，SSE 流式）：
- * 旧那条"后端自己拼 prompt 调 generation provider"的路已删除 —— 它给的答案不带引用、
- * 不能跳转，和问答那条链路口径也不一致（见 dev-log 第二十轮）。
- *
- * 卡片里是一个**小对话线程**：可以就这段继续追问（同一 conversation_id，所以追问有上下文），
- * 也能"在对话里继续"把选区带进侧栏面板；历史解释来自 `source=selection` 的批注。
- */
-const explainCard = reactive({
-  open: false, loading: false, question: '', rowId: '', blockAnchored: true,
-  /**
-   * 浮层的**图钉**（用户口径：AI 解释**默认锚定** —— 读完解释再决定要不要存，
-   * 中途移开鼠标就关掉太容易丢）。用户口径 2026-10-07 补了一条：**锚定之后点浮层底部的
-   * 来源 chunk 跳转，浮层不能消失**（那正是"看着解释跳到那一段"的用法），见 `focusCitation`。
-   */
-  pinned: true,
-  /**
-   * 选区在哪个视图里划的：`row` 有行锚点、`markdown` 只有页号、`pdf` 只有**页号 + 文字层偏移**。
-   * 三种都不影响"解释"本身（解释是拿选区文字去问），只影响锚点怎么传回去。
-   */
-  scope: 'row' as 'row' | 'markdown' | 'pdf',
-  selectionText: '', page: 0 as number, conversationId: '' as string | null,
-  /** 解释的是**插图**时（右键图片 → 询问 Cyli）：浮层顶部给个缩略图，而 `attachments` 才是
-   *  真给模型看的东西。⚠️ 附件**每轮都要重发**：历史里只存文字（`history_for_agent` 不带图），
-   *  不重发的话第二轮追问模型就"看不见这张图"了。 */
-  imageUrl: '', imageCaption: '', attachments: [] as string[],
-  /** 打开时的选区快照：`存为笔记` 要它（那时选区可能已经被用户改了） */
-  highlightId: '' as string, start: 0, end: 0, side: 'en' as 'en' | 'zh', quote: '',
-  /** 浮层锚点（划词那一处的屏幕位置）—— 与笔记浮层同一套定位 */
-  anchor: null as { x: number; y: number; w?: number; h?: number } | null,
-  /**
-   * 过程轨迹（深度思考 / 工具调用）：**默认折叠**，只展示最终回答（用户口径）。
-   * 流式时按事件本地拼，`done` 到了用后端那份权威的 `run.steps` 替换。
-   */
-  processOpen: false,
-  turns: [] as Array<{
-    role: 'user' | 'assistant'; text: string; citations: AgentCitation[];
-    steps?: AgentStep[];
-  }>,
-});
-let explainController: AbortController | null = null;
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
 const chatSelection = ref<AgentSelection | null>(null);
 /** 笔记浮层的状态见下面 `noteCards`（第五步：轻量浮层取代居中弹窗）。 */
@@ -4919,11 +4876,12 @@ function onCtxSelect(key: string) {
   if (key === 'hl-color') { hideMenu(); void addHighlight('yellow'); return; }
   switch (key) {
     case 'ask':
-      hideMenu();
-      if (c.isFigure) void explainImage(); else void explainSelection();
+      /* 「解释」不再开一张独立浮层（用户口径）：一律走对话浮层 —— 文字进上下文胶囊、
+         插图进附件，都在那边自动发一轮。 */
+      if (c.isFigure) void explainFigureInChat(); else void openExplainInChat();
       break;
     case 'tochat':
-      if (c.text) openSelectionInChat(true);
+      if (c.text) openSelectionInChat();
       if (c.imgUrl) void ctxAttachImage();
       break;
     case 'bing': ctxBing(c.text); break;
@@ -4938,236 +4896,6 @@ function onCtxSelect(key: string) {
     default: break;
   }
 }
-
-/** 划词解释 / 追问：都走问答 agent（同一 conversation_id，追问自带上下文）。
- *  `opts.silent` = **不把这句话渲染成用户气泡**：图片解释的默认问法（"请解释这张图片"）
- *  是系统补的，不是用户打的字（对齐划词解释 —— 那边也是后端补的默认 prompt，不显示气泡）。 */
-async function askSelection(question: string, opts: { silent?: boolean } = {}) {
-  const q = question.trim();
-  if (q && !opts.silent) explainCard.turns.push({ role: 'user', text: q, citations: [] });
-  // ⚠️ 必须**通过 reactive 对象的下标**改字段：push 进去的是原始对象，直接改它不会触发更新
-  const idx = explainCard.turns.length;
-  explainCard.turns.push({ role: 'assistant', text: '', citations: [], steps: [] });
-  explainCard.loading = true;
-  explainController?.abort();
-  explainController = new AbortController();
-  /**
-   * 流式期间本地拼的过程轨迹（与 `backend/agent/trace.py` 的形状一致）：
-   * 思考按**轮**并成一条（一轮几百个增量块，一块一条会刷屏），工具按 start/done 配对。
-   *
-   * ⚠️ 数组**就是**这一轮 turn 的 `steps`（不是先攒着、done 时再赋值）：以前只在 `done` 里赋，
-   * 整个回答过程中那一块永远是空的 —— 用户看到的就是"没有实时显示思考过程和工具调用"
-   * （用户口径 2026-11-19）。写进 reactive 的 turn 才会逐块重渲染。
-   */
-  const live = explainCard.turns[idx].steps as AgentStep[];
-  /* 过程**默认展开**：实时看得到思考/工具（这一条就是上面那个现象的正面要求）。
-     用户点一下收起后，本轮直到下一次提问都保持收起。 */
-  explainCard.processOpen = true;
-  const mergeThinking = (text: string, round: number) => {
-    const last = live[live.length - 1];
-    if (last && last.kind === 'thinking' && last.round === round) last.text = `${last.text ?? ''}${text}`;
-    else live.push({ kind: 'thinking', round, text });
-  };
-  const onEvent = (name: string, data: any) => {
-    if (name === 'session' && data?.conversation_id) explainCard.conversationId = data.conversation_id;
-    else if (name === 'stage' && data?.message) live.push({ kind: 'stage', round: 0, text: String(data.message) });
-    else if (name === 'thinking_delta') mergeThinking(String(data?.text ?? ''), Number(data?.round ?? 0));
-    else if (name === 'tool') {
-      const tool = String(data?.tool ?? '');
-      if (data?.status === 'start') {
-        live.push({ kind: 'tool', round: Number(data?.round ?? 0), tool,
-                    digest: String(data?.args_digest ?? ''), status: 'running' });
-      } else {
-        const step = [...live].reverse().find((s) => s.kind === 'tool' && s.tool === tool && s.status === 'running');
-        if (step) { step.status = 'done'; step.ms = Number(data?.ms ?? 0); }
-      }
-    }
-    else if (name === 'answer_delta') {
-      const chunk = String(data?.text ?? '');
-      explainCard.turns[idx].text += chunk;
-      /* 轨迹里也留一段（与后端 `run.steps` 同形）：中间那些"我先读一下…"的正文段归轨迹，
-         浮层只显示**最后一次工具之后**的那段正文（见 `answerBody`）。不在这里落步的话，
-         流式期间就没有轨迹可依，只能显示拼接体 —— 那正是用户报的那个现象。 */
-      const last = live[live.length - 1];
-      if (last && last.kind === 'text') last.text = `${last.text ?? ''}${chunk}`;
-      else live.push({ kind: 'text', round: Number(data?.round ?? 0), text: chunk });
-    }
-    else if (name === 'done') {
-      explainCard.turns[idx].text = data?.answer ?? explainCard.turns[idx].text;
-      explainCard.turns[idx].citations = data?.citations ?? [];
-      // `done` 带的 `run` 是后端权威轨迹（轮次、合并后的思考、工具耗时都在里面）
-      const steps = (data?.run?.steps ?? []) as AgentStep[];
-      if (steps.length) explainCard.turns[idx].steps = steps;
-      else explainCard.turns[idx].steps = live;      // 后端没给：保留流式期间拼的那份
-    } else if (name === 'error') {
-      explainCard.turns[idx].text = explainCard.turns[idx].text || `（${data?.message ?? '失败'}）`;
-      explainCard.turns[idx].steps = live;
-    }
-  };
-  try {
-    await postSse('/agent/ask', {
-      paper_id: paperId.value, question: q,
-      // mode=explain：后端据此套用设置里「Cyli 解释」那一份模型配置（模型 + 思考强度）。
-      // 只在用户没在别处显式指定时生效，见 api/agent.py 里那段注释。
-      mode: 'explain',
-      conversation_id: explainCard.conversationId,
-      // 插图解释：**每轮都把附件带上**（理由是历史不带图，见 `explainCard.attachments`）
-      attachments: explainCard.attachments.length ? explainCard.attachments : undefined,
-      selection: {
-        text: explainCard.selectionText,
-        row_id: explainCard.scope === 'row' ? (explainCard.rowId || null) : null,
-        page: explainCard.page || null,
-      },
-    }, { signal: explainController.signal, onEvent });
-  } catch (err: any) {
-    if (err?.name !== 'AbortError') {
-      explainCard.turns[idx].text = explainCard.turns[idx].text || `（提问失败：${err?.message ?? err}）`;
-    }
-  } finally {
-    explainCard.loading = false;
-    explainController = null;
-  }
-}
-
-/** 右键**插图** → 询问 Cyli：把图上传成附件，再走**同一条**问答链路
- *  （`/agent/ask` + `attachments`），浮层锚在那张图旁边。
- *
- *  为什么走附件而不是新接口：问答 agent 本来就吃图片附件（侧栏对话那条路），
- *  `runtime._user_prompt` 会把附件编成多模态消息 —— 这里只是换了个入口，后端一行都不用改。
- *  默认问法由前端补（`silent`：不渲染成用户气泡）。 */
-async function explainImage() {
-  const c = ctxCtx;
-  if (!c.imgUrl) return;
-  hideMenu();
-  explainCard.open = true;
-  explainCard.loading = true;
-  explainCard.question = '';
-  explainCard.rowId = '';                        // 插图没有正文块锚点
-  explainCard.blockAnchored = false;
-  explainCard.scope = 'markdown';                // 兜底：那一侧的"存为笔记"已按图收起
-  explainCard.selectionText = '';
-  explainCard.page = c.page || 0;
-  explainCard.conversationId = null;
-  explainCard.turns = [];
-  explainCard.processOpen = false;
-  explainCard.pinned = true;
-  explainCard.highlightId = '';
-  explainCard.start = 0;
-  explainCard.end = 0;
-  explainCard.quote = '';
-  explainCard.imageUrl = c.imgUrl;
-  explainCard.imageCaption = c.imgCaption;
-  explainCard.attachments = [];
-  // 锚在**图片本身**（`FloatingCard` 会把它摆在图的下沿、放不下就翻到上方）
-  explainCard.anchor = c.imgRect
-    ? { x: c.imgRect.x, y: c.imgRect.y, w: c.imgRect.w, h: c.imgRect.h }
-    : { x: 0, y: 0 };
-  /* 先把图"喂"进去再问：上传走侧栏对话那条**同一条**链路（`/agent/attachments`） */
-  try {
-    const res = await fetch(c.imgUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    /* 缩略图直接用**刚取回来的这份 blob**（object URL），不再让卡片去加载那个 URL：
-       实测出现过"模型明明收到了图、卡片里却是裂图"—— etch 拿得到、<img> 却不渲染
-       （重定向/内容处置头/CSP 都可能造成这种不对称）。这样图和喂给模型的是**同一份字节**。 */
-    if (explainCard.imageUrl.startsWith('blob:')) URL.revokeObjectURL(explainCard.imageUrl);
-    explainCard.imageUrl = URL.createObjectURL(blob);
-    const form = new FormData();
-    form.append('files', new File([blob], c.imgName, { type: blob.type || 'image/png' }), c.imgName);
-    const data = await api.upload<{ items: Array<{ attachment_id: string }> }>('/agent/attachments', form);
-    explainCard.attachments = (data.items ?? []).map((a) => a.attachment_id).filter(Boolean);
-  } catch (err) {
-    explainCard.loading = false;
-    explainCard.turns.push({
-      role: 'assistant', citations: [],
-      text: `（这张图没能交给 Cyli：${(err as Error)?.message ?? err}）`,
-    });
-    reportError(err, '把图片交给 Cyli 失败');
-    return;
-  }
-  await askSelection('请解释这张图片：它展示了什么，以及它在这篇论文里说明了什么。', { silent: true });
-}
-
-async function explainSelection() {
-  // 无块锚点（原 PDF 划词）时只传文本：agent 那边拿不到块就少一层上下文，仍能解释
-  const rowId = selection.anchored ? selection.rowId : '';
-  hideMenu();
-  explainCard.open = true;
-  explainCard.loading = true;
-  explainCard.question = '';
-  explainCard.rowId = rowId;
-  explainCard.blockAnchored = selection.anchored;
-  explainCard.scope = selection.scope;
-  explainCard.selectionText = selection.text;
-  explainCard.page = Number(selection.page) || 0;
-  explainCard.conversationId = null;
-  explainCard.imageUrl = '';                     // 划词解释：把上一轮"解释插图"的残留清掉
-  explainCard.imageCaption = '';
-  explainCard.attachments = [];
-  explainCard.turns = [];
-  explainCard.processOpen = false;                    // 过程默认折叠（用户口径）
-  explainCard.pinned = true;                          // 每次打开都从"锚定"开始（默认态）
-  /* 选区快照 + 浮层锚点：读完回答再点颜色存笔记时，页面上的选区可能早被改了 */
-  explainCard.highlightId = selection.hlIds[0] ?? '';
-  explainCard.start = selection.start;
-  explainCard.end = selection.end;
-  explainCard.side = selection.side;
-  explainCard.quote = selection.anchorText || selection.text;
-  explainCard.anchor = { x: selection.x, y: selection.y, w: 0, h: 0 };
-  await askSelection('');
-}
-
-function submitExplainQuestion() {
-  const q = explainCard.question.trim();
-  if (!q || explainCard.loading) return;
-  explainCard.question = '';
-  void askSelection(q);
-}
-
-/** 划词解释历史 = `source=selection` 的批注（`存为批注` 存下来的那些）。 */
-/**
- * 一轮助手回复里**真正要给用户看的正文**（用户口径 2026-10-07 第 2 条）。
- *
- * 为什么不能直接用 `t.text`：后端 `done.answer` 是**所有正文段的拼接**
- * （`state.text = sanitizer.clean`）—— 多轮 agent 中间那些"我先读一下这一段…/让我看看附近的上下文"
- * 也在里面，于是浮层第一轮正文就成了"过程碎句 + 最终回答"焊在一起（用户截图报的正是这个）。
- * 那些碎句在 `run.steps` 里本来就有自己的一段（`kind: 'text'`），该显示在**过程轨迹**里。
- *
- * 取法：**最后一次工具调用之后**的正文段拼起来（没有工具调用/后面没正文时退回 `t.text`）。
- * 用"最后一次工具之后"而不是"最后一段"，是因为最终回答也可能被模型拆成两三个 `TextPart`。
- */
-function answerBody(t: { text?: string; steps?: AgentStep[] }): string {
-  const steps = t.steps ?? [];
-  let lastTool = -1;
-  steps.forEach((s, i) => { if (s.kind === 'tool') lastTool = i; });
-  if (lastTool < 0) return String(t.text ?? '');
-  const tail = steps.slice(lastTool + 1)
-    .filter((s) => s.kind === 'text' && String(s.text ?? '').trim())
-    .map((s) => String(s.text));
-  return tail.length ? tail.join('') : String(t.text ?? '');
-}
-
-/** 最后那一轮助手回复（浮层的"当前这轮"）。 */
-const explainTurn = computed(() => (
-  [...explainCard.turns].reverse().find((t) => t.role === 'assistant') ?? null
-));
-/** 这一轮解释的是**插图**（右键图片 → 询问 Cyli）：底部"标出这段并存为笔记"那套要收起来。 */
-const explainIsImage = computed(() => !!explainCard.imageUrl);
-/** 这一轮的过程轨迹有没有东西可看（决定"正在读…"那行还要不要） */
-const explainSteps = computed(() => (explainTurn.value?.steps ?? []).length > 0);
-/**
- * **正在出过程、还没有最终正文**（用户口径第 3 条）：这时把底部的输入框与按钮全藏起来 ——
- * 满屏都是思考/工具在跑，底下却摆着一排"存为…"和提问框，既没法用也干扰读。
- */
-const explainBusy = computed(() => (
-  explainCard.loading
-  && !answerBody(explainTurn.value ?? {}).trim()
-));
-
-/** 这处解释对应的高亮（选择了颜色要标一下当前是哪枚） */
-const explainColor = computed(() => (
-  highlights.value.find((h) => h.id === explainCard.highlightId)?.color ?? ''
-));
 
 /** 行 id（`p004-02`）里的页号；不是这个形状就 0（与 agent 的 `_page_of_row` 同一口径）。 */
 function pageOfRow(rowId?: string | null): number {
@@ -5184,35 +4912,48 @@ function whereOf(scope: string, page: number, anchored: boolean): string {
   return scope === 'markdown' ? `第 ${page} 页 · Markdown` : `第 ${page} 页`;
 }
 
-/** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。
+/** 把选区交给对话面板之后**收干净**：选区、手柄、列标记一起清。
  *
- *  `fromMenu=true` = 划词菜单里直接点「加入对话」—— 这时 AI 解释浮层还没打开过，
- *  数据得从**当前选区**取（`explainCard` 里是上一次解释的残留，用它必然错位）。
- *  带进去之后落成输入框里那枚上下文胶囊：发不发由用户点它决定（见 `ReaderChat`）。 */
-function openSelectionInChat(fromMenu = false) {
-  const anchored = fromMenu ? selection.anchored : explainCard.blockAnchored;
-  const scope = fromMenu ? selection.scope : explainCard.scope;
-  const rowId = anchored ? (fromMenu ? selection.rowId : explainCard.rowId) : '';
-  const page = fromMenu
-    ? (Number(selection.page) || pageOfRow(selection.rowId))
-    : (Number(explainCard.page) || pageOfRow(explainCard.rowId));
-  chatSelection.value = {
-    text: fromMenu ? selection.text : explainCard.selectionText,
-    row_id: scope === 'row' ? (rowId || null) : null,
-    page: page || null,
-    where: whereOf(scope, page, anchored),
-  };
-  explainCard.open = false;
-  hideMenu();
-  /* 选区**用完了就连选区一起收**（用户口径 2026-11-26 第 2 条：添加到对话后没移除手柄选区）。
-     留着的话有两个后果：看着像「还没处理完」；以及触摸点输入框时**那两枚手柄会抢走焦点**
-     —— 手柄压在正文下方固定定位，点下去等于在拖手柄，输入框根本拿不到焦点、键盘弹不出来。
-     这里与「胶囊 ×」同一个口径（清选区 + 清快照），再顺手把手柄与列标记收掉。 */
+ *  理由（用户口径 2026-11-26 第 2 条）：留着会「看着像还没处理完」；而且触摸点输入框时
+ *  **那两枚手柄会抢走焦点** —— 它们压在正文下方固定定位，点下去等于在拖手柄，
+ *  输入框根本拿不到焦点、键盘弹不出来。 */
+function closeSelectionForPanel() {
   window.getSelection()?.removeAllRanges();
   selection.text = '';
   selection.rect = null;
   hideSelHandles();
   setColSide('');
+}
+
+/** 把对话面板**先立起来**（页签 + 浮窗 + 至少一条会话），之后调用方才把选区写进去。
+ *
+ *  顺序不能反：`ReaderChat` 是惰性挂载的（`chatWarm`），而它监听 `props.selection` 的方式
+ *  不是 immediate —— 先写选区再挂载，那一次赋值就落进了空气里，自动发送永远不会发生。 */
+async function revealChatForIntent() {
+  railTab.value = 'chat';
+  await ensureAsideVisible();
+  await openChatFloat();          // 宽屏且没浮起来时顺手浮起来（与「加入对话」同一口径）
+  await nextTick();               // 等 `chatWarm` 那次挂载落地
+  chatRef.value?.ensureThread?.();
+  await nextTick();
+}
+
+/** 把选区带进侧栏「对话」面板继续聊（历史就落在那个会话里，可回看）。
+ *
+ *  带进去之后落成输入框里那枚上下文胶囊：发不发由用户点它决定（见 `ReaderChat`）。 */
+function openSelectionInChat() {
+  const anchored = selection.anchored;
+  const scope = selection.scope;
+  const rowId = anchored ? selection.rowId : '';
+  const page = Number(selection.page) || pageOfRow(selection.rowId);
+  chatSelection.value = {
+    text: selection.text,
+    row_id: scope === 'row' ? (rowId || null) : null,
+    page: page || null,
+    where: whereOf(scope, page, anchored),
+  };
+  hideMenu();
+  closeSelectionForPanel();
   railTab.value = 'chat';
   // 左栏可能是收起的（例如用户在看 Markdown 视图）——切页签不等于看得见面板
   void ensureAsideVisible().then(async () => {
@@ -5223,147 +4964,61 @@ function openSelectionInChat(fromMenu = false) {
   });
 }
 
-/**
- * 点解释浮层底部的**来源 chunk**：跳到那一段。
+/** 划词菜单「解释」：**不再开独立的解释浮层**，改把选区带进对话面板并自动发一轮。
  *
- * 用户口径 2026-10-07：**浮层锚定之后，这里跳转不能把浮层关掉** ——
- * 用法就是"一边看着解释、一边跳过去核对"。没锚定的（临时浮层）仍然顺手关掉。
- */
-/**
- * 解释正文的渲染：把 `[3]` 这类标号接成**可点的小按钮**，并把来源（行/页）刻在按钮上。
+ *  发送为什么交给面板：输入框、会话加载、上下文胶囊都是 `ReaderChat` 自己的状态机，
+ *  这里硬调 `ask` 等于绕过它；面板按 `props.selection` 上的 `explain` / `ask` 自己发。
+ *  锚点（start/end/side/scope）一并带上：回答下面那排色点要用它建高亮、存笔记。 */
+async function openExplainInChat() {
+  const anchored = selection.anchored;
+  const scope = selection.scope;
+  const rowId = anchored ? selection.rowId : '';
+  const page = Number(selection.page) || pageOfRow(selection.rowId);
+  const text = selection.text;
+  const snapshot: AgentSelection = {
+    text,
+    row_id: scope === 'row' ? (rowId || null) : null,
+    page: page || null,
+    where: whereOf(scope, page, anchored),
+    /* 高亮要用**坐标系统里**的那一段文字（原 PDF 的文字层与胶囊上那份截断版不是同一个字符串），
+       所以 quote 单独带一份，`text` 只负责显示。 */
+    quote: selection.anchorText || text,
+    start: selection.start,
+    end: selection.end,
+    side: selection.side,
+    scope,
+    explain: true,
+    ask: '解释这段内容',
+  };
+  hideMenu();
+  closeSelectionForPanel();
+  await revealChatForIntent();
+  chatSelection.value = snapshot;
+}
+
+/** 右键**插图**的「询问 Cyli」：图进对话面板的附件，再自动发一轮「解释这张图」。
  *
- * 为什么自己做（原来是 `<div v-html="renderMarkdown(...)">`）：正文里的标号点不动 ——
- * `onContentClick` 只认正文里的 `[data-refs]`（参考文献），解释浮层里的标号谁也没接。
- * 底部那排"来源标号"撤掉之后（用户口径 2026-10-09），**跳转就全靠正文里这些标号**。
- */
-function renderExplainAnswer(t: { text: string; citations: AgentCitation[] }): string {
-  const html = renderMarkdown(answerBody(t));
-  const byRef = new Map((t.citations ?? []).map((c) => [String(c.ref), c]));
-  if (!byRef.size) return html;
-  return html.replace(/\[(\d{1,3})\]/g, (whole, num) => {
-    const c = byRef.get(String(num));
-    if (!c) return whole;
-    const row = (c.row_id || '').replace(/"/g, '&quot;');
-    const page = Number(c.page || 0) || '';
-    const tip = (c.snippet || c.label || '').replace(/"/g, '&quot;').slice(0, 120);
-    return `<button type="button" class="cite-inline" data-ex-cite="${num}"`
-      + ` data-row="${row}" data-page="${page}" title="${tip}">[${num}]</button>`;
-  });
-}
-
-/** 点解释正文里的标号 → 跳到那条来源（与原来底部标号同一动作，入口换到正文里） */
-function onExplainCite(ev: MouseEvent) {
-  const btn = (ev.target as HTMLElement | null)?.closest?.('[data-ex-cite]') as HTMLElement | null;
-  if (!btn) return;
-  const rowId = btn.dataset.row || '';
-  const page = Number(btn.dataset.page || 0) || undefined;
-  if (!rowId && !page) return;
-  focusRow(rowId, { page, flash: true });
-}
-
-function focusCitation(citation: AgentCitation) {
-  if (!explainCard.pinned) explainCard.open = false;
-  focusRow(citation.row_id || citation.block_id || '', { page: citation.page ?? undefined, flash: true });
-}
-
-/* ------------------------------ AI 解释浮层里的"过程" ------------------------------
- * 与侧栏对话那条轨迹（`ReaderChat` 的 `TOOL_STEPS` / `TOOL_ICONS`）是同一套工具，
- * 但这里只需要"一行摘要 + 图标"，所以映射写小一份；新增工具时两处一起补（fallback 是中性图标）。 */
-const EX_TOOL_ICON: Record<string, string> = {
-  paper_search: 'search', page_markdown_get: 'document', block_get: 'list',
-  translate_get: 'translate', kb_search: 'knowledge', formula_get: 'formula',
-  figure_list: 'image', library_list: 'library', notes_search: 'note',
-  page_markdown_edit: 'edit', page_image_get: 'image', figure_image_get: 'image',
-};
-const EX_TOOL_LABEL: Record<string, string> = {
-  paper_search: '检索全文', page_markdown_get: '读正文', block_get: '读段落',
-  translate_get: '读译文', kb_search: '翻书架', formula_get: '查公式',
-  figure_list: '查插图', library_list: '翻书架', notes_search: '查笔记',
-  page_markdown_edit: '改产物', page_image_get: '看原版面', figure_image_get: '看插图',
-};
-
-function stepIcon(s: AgentStep): string {
-  if (s.kind === 'thinking') return 'sparkle';
-  if (s.kind === 'stage') return 'task';
-  if (s.kind === 'text') return 'note';
-  return EX_TOOL_ICON[String(s.tool ?? '')] ?? 'bolt';
-}
-function stepLabel(s: AgentStep): string {
-  if (s.kind === 'thinking') return '思考';
-  if (s.kind === 'stage') return '准备';
-  if (s.kind === 'text') return '正文';
-  return EX_TOOL_LABEL[String(s.tool ?? '')] ?? '工具';
-}
-/** 折叠着的那一行写什么：几段思考、几次工具（用户口径：默认只展示最终回答）。 */
-function stepSummary(steps: AgentStep[]): string {
-  const think = steps.filter((s) => s.kind === 'thinking').length;
-  const tool = steps.filter((s) => s.kind === 'tool').length;
-  const parts: string[] = [];
-  if (think) parts.push(`${think} 段思考`);
-  if (tool) parts.push(`${tool} 次工具`);
-  return `深度思考与工具调用（${parts.join(' · ') || '过程'}）`;
-}
-
-/**
- * 浮层底部那排色块（用户口径 2026-10-07 第 1 条）：**点颜色 = 标出这段 + 把解释正文存成它的笔记**。
- *
- * 为什么把原来那两枚「存为笔记 / 存为批注」换掉：
- * - 「存为批注」那套（`/annotations/save`）已经过时 —— 批注/高亮/笔记三样在界面上早就合并成「笔记」；
- * - 「存为笔记」还要求"先去正文里标高亮再回来点它"，一次动作被拆成两步；
- * - 合成一步之后，"想留这段"与"想标黄色"本来就是同一个意图：挑个颜色就完了。
- *
- * 快照仍是**打开浮层那一刻**存下的（`explainCard.highlightId/start/end/quote/scope`）：
- * 读完回答再点颜色时，页面上的选区可能早被改了。已有高亮就**改它的颜色**（`PUT /highlights/{id}`），
- * 没有才按当前的锚点新建一条（笔记永远挂在高亮上，口径不变）。
- */
-async function saveExplanationWithColor(color: string) {
-  const answer = answerBody(explainTurn.value ?? {}).trim();
-  if (!answer) { toast('还没有可保存的解释', 'warn'); return; }
-  const scope = explainCard.scope;
-  /* 锚点：正文行用行 id；Markdown / 原 PDF 两面的锚点是 `md:p<页>` / `pdf:p<页>` */
-  const blockId = scope === 'markdown' ? mdAnchor(explainCard.page)
-    : scope === 'pdf' ? pdfAnchor(explainCard.page)
-      : explainCard.rowId;
-  const anchored = scope === 'markdown' || scope === 'pdf'
-    ? (explainCard.page > 0 && explainCard.end > explainCard.start)
-    : !!explainCard.rowId;
-  if (!explainCard.highlightId && !anchored) {
-    toast('这段文字定位不到（标不了高亮）', 'warn', 2600);
-    return;
-  }
+ *  走 `ctxAttachImage` 同一条路（URL → File → `chatRef.uploadFiles`）：上传、大小与格式校验
+ *  全在面板那套里，后端一行都不用改（`runtime._user_prompt` 会把附件编成多模态消息）。 */
+async function explainFigureInChat() {
+  const c = ctxCtx;
+  if (!c.imgUrl) return;
+  hideMenu();
   try {
-    let highlightId = explainCard.highlightId;
-    if (highlightId) {
-      await api.put(`/highlights/${highlightId}`, { color });
-    } else {
-      const created = await api.post<Highlight>('/highlights', {
-        paper_id: paperId.value, block_id: blockId,
-        selected_text: explainCard.quote || explainCard.selectionText,
-        start_offset: explainCard.start, end_offset: explainCard.end,
-        color, side: explainCard.side, scope,
-      });
-      highlightId = created?.id ?? '';
-      explainCard.highlightId = highlightId;
-      highlights.value.push({
-        ...created, block_id: blockId, start: created.start, end: created.end,
-        side: explainCard.side, scope,
-      } as Highlight);
-    }
-    if (!highlightId) { toast('高亮没建成，笔记也就没存', 'warn', 2600); return; }
-    /* 同一处高亮已经有笔记就更新它（用户可以再解释一次、再点一次颜色） */
-    const existing = notes.value.find((n) => n.highlight_id === highlightId) ?? null;
-    if (existing) await api.put(`/notes/${existing.id}`, { content_md: answer });
-    else {
-      await api.post('/notes', {
-        paper_id: paperId.value, block_id: blockId, highlight_id: highlightId,
-        selected_text: explainCard.quote || explainCard.selectionText,
-        start_offset: explainCard.start, end_offset: explainCard.end,
-        content_md: answer,
-      });
-    }
-    toast(existing ? '已更新这处高亮的笔记' : '已标色并存为这处高亮的笔记', 'ok', 2400);
-    await refreshAnnotations();
-  } catch (err) { reportError(err, '存为笔记失败'); }
+    const res = await fetch(c.imgUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], c.imgName, { type: blob.type || 'image/png' });
+    await revealChatForIntent();
+    await (chatRef.value as { uploadFiles?: (f: File[]) => Promise<void> } | null)
+      ?.uploadFiles?.([file]);
+    /* 图已经在附件列表里了，再挂上"解释这张图"的意图；插图没有文字选区，所以 `text` 为空
+       （胶囊不显示，内容全靠附件）—— 自动发送见 `ReaderChat` 里 `props.selection` 的 watch。 */
+    chatSelection.value = {
+      text: '', explain: true,
+      ask: '解释这张图：它展示了什么，以及它在这篇论文里说明了什么。',
+    };
+  } catch (err) { reportError(err, '把图片交给 Cyli 失败'); }
 }
 
 /* ------------------------------ 高亮 / 笔记 ------------------------------ */
@@ -6062,7 +5717,7 @@ function scheduleNoteHide(card?: NoteCard) {
  * 多卡之后「按下 = 钉住我」还要按**那张卡**生效（第三参数 `key`），
  * 所以原来那个单独的卡片级处理器（`onNoteCardPointerDown`）已经不需要了。
  */
-function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat', key?: string) {
+function onFloatPress(ev: PointerEvent, which: 'note' | 'chat', key?: string) {
   /* 笔记卡：按下 = 「**这张**是焦点」+「钉住我」（用户口径 2026-11-23：点一下就锚定）。
      悬停临时卡被点一下当场转成固定卡（`hover = false`），鼠标移开不再自动消失。 */
   if (which === 'note' && key) {
@@ -7302,107 +6957,13 @@ function renderMarkdown(text?: string | null) {
       :allow-note="selection.allowNote"
       :hl-count="selection.hlIds.length"
       :has-note="!!selectionNote"
-      @explain="explainSelection"
+      @explain="openExplainInChat"
       @note="onNoteAction"
       @copy="copySelection"
       @highlight="addHighlight"
       @unhighlight="deleteSelectionHighlights"
       @close="closeSelectionMenu"
     />
-
-    <!-- AI 解释浮层（第五步）：与笔记**同一个壳**、**默认锚定**（读完再决定要不要存下来，
-         中途移开鼠标就关掉太容易丢）。没有查看/编辑切换（用户口径：AI 解释不需要）。
-         深度思考与工具调用**默认折叠**，只展示最终回答。 -->
-    <FloatingCard
-      :open="explainCard.open"
-      :anchor="explainCard.anchor"
-      :anchored="explainCard.pinned"
-      title="Cyli 解释"
-      persist-key="explain"
-      :width="420"
-      :max-height="520"
-      data-explain-card
-      :style="{ zIndex: topLayer === 'explain' ? 62 : 60 }"
-      @pointerdown.capture="onFloatPress($event, 'explain')"
-      @focusin.capture="takeTop('explain')"
-      @close="explainCard.open = false"
-      @toggle-anchor="explainCard.pinned = !explainCard.pinned"
-    >
-      <div class="ex-thread">
-        <!-- 解释的是插图时：顶上给张缩略图（一眼知道在解释哪张图；真正给模型看的是附件） -->
-        <div v-if="explainCard.imageUrl" class="ex-fig">
-          <img :src="explainCard.imageUrl" :alt="explainCard.imageCaption || '插图'" data-ex-fig>
-          <span v-if="explainCard.imageCaption" class="tiny faint">{{ explainCard.imageCaption }}</span>
-        </div>
-        <div v-for="(t, i) in explainCard.turns" :key="i" class="ex-turn" :class="t.role">
-          <div v-if="t.role === 'user'" class="ex-q">{{ t.text }}</div>
-          <template v-else>
-            <!-- 过程（思考 / 工具）：默认折叠，只露一行摘要，点开才铺开 -->
-            <div v-if="t.steps && t.steps.length" class="ex-proc">
-              <button type="button" class="ex-proc-head" data-ex-proc
-                      :aria-expanded="explainCard.processOpen"
-                      @click="explainCard.processOpen = !explainCard.processOpen">
-                <AppIcon :name="explainCard.processOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
-                <span>{{ stepSummary(t.steps) }}</span>
-              </button>
-              <div v-if="explainCard.processOpen" class="ex-proc-body">
-                <div v-for="(s, k) in t.steps" :key="k" class="ex-step" :class="`is-${s.kind}`">
-                  <AppIcon :name="stepIcon(s)" :size="12" />
-                  <span class="ex-step-tag">{{ stepLabel(s) }}</span>
-                  <span class="ex-step-text">{{ s.text || s.digest || s.tool || '' }}</span>
-                  <span v-if="s.ms" class="tiny faint">{{ Math.round(Number(s.ms) / 100) / 10 }}s</span>
-                </div>
-              </div>
-            </div>
-            <div v-if="answerBody(t)" class="md small" data-ex-answer
-                 v-html="renderExplainAnswer(t)" @click="onExplainCite" />
-          </template>
-        </div>
-        <!-- 还在出过程、正文没到：只留这一行（有轨迹可看时连它都不必） -->
-        <div v-if="explainBusy && !explainSteps" class="tiny faint">正在读这篇论文…</div>
-      </div>
-
-      <!-- 底部输入框：**出过程期间不显示**（用户口径第 3 条：还没有本轮正文时藏起来） -->
-      <!-- 追问输入（用户口径 2026-11-26：精简冗余文本）：
-           占位符只说"能干什么"，不再写"（Enter 发送）"——回车能用是键盘常识，
-           而且 340px 宽的卡片里那半句会把提示挤成省略号。
-           右边那枚按钮改成图标（与对话页发送键同一套），"提问"两个字在这里是重复的。 -->
-      <div v-if="!explainBusy" class="ex-ask">
-        <input
-          v-model="explainCard.question"
-          :placeholder="explainIsImage ? '就这张图继续问…' : '就这段继续问…'"
-          :title="'回车发送'"
-          @keyup.enter="submitExplainQuestion"
-        >
-        <button class="btn primary icon sm" title="发送（Enter）" aria-label="发送"
-                :disabled="explainCard.loading || !explainCard.question.trim()"
-                @click="submitExplainQuestion">
-          <AppIcon name="arrow-up" :size="14" />
-        </button>
-      </div>
-
-      <template #footer>
-        <!-- 插图解释：没有"这段文字"可标，存为笔记那套收起来 -->
-        <template v-if="!explainBusy && !explainIsImage">
-          <span class="ex-swatches">
-            <span
-              v-for="c in HIGHLIGHT_COLORS"
-              :key="c"
-              class="hl-swatch"
-              :class="[c, { on: explainColor === c }]"
-              :title="`标成${c === 'yellow' ? '黄' : c === 'green' ? '绿' : c === 'blue' ? '蓝' : '粉'}色，并把这段解释存成它的笔记`"
-              :data-ex-color="c"
-              @click="saveExplanationWithColor(c)"
-            />
-          </span>
-          <span class="spacer"></span>
-          <button class="btn sm ghost" title="把这个选区带进侧栏对话里继续聊" data-ex-to-chat
-                  @click="openSelectionInChat(false)">
-            <AppIcon name="chat" :size="12" />在对话里继续
-          </button>
-        </template>
-      </template>
-    </FloatingCard>
 
     <!-- 笔记浮层（第五步）：锚在高亮/选区旁边的小卡片，默认"移开就消失"。
          用户口径 2026-11-25：**可以同时开好几张** —— 每张一条 `noteCards` 记录，
@@ -8586,12 +8147,6 @@ function renderMarkdown(text?: string | null) {
 .cite-pop :deep(.ref-list > .item:hover .ref-lead) { color: var(--accent); }
 .cite-pop :deep(.ref-list > .item:focus-visible) { box-shadow: var(--ring); }
 .cite-pop-hint { padding: 6px 8px; }
-/* 解释浮层的高度分配（用户口径 2026-11-19：卡片底部一大块空白）：
-   以前 `.ex-thread` 只有**上限**（46vh）、`.fc-body` 又是 `flex: 1 1 auto` —— 卡片一旦被拉到
-   最大高度，正文用不满的那截就变成输入框与底栏之间的死白。现在：body 是列向 flex、正文区
-   自己吃掉剩余高度（内部滚动），输入框钉在它下面，永远没有中间那块空白。 */
-[data-explain-card] :deep(.fc-body) { display: flex; flex-direction: column; overflow: hidden; }
-.ex-thread { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
 /* 笔记框标题行上的 ✓ 保存 / 头部那枚删除键（用户口径 2026-10-10：复刻目标站的笔记框）。
    ⚠️ 这两个键都是**本组件**渲染的（保存走 `head-extra`，删除走 `head-tail`，后者 2026-11-20 新增），
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
@@ -8719,72 +8274,6 @@ function renderMarkdown(text?: string | null) {
   position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0;
   opacity: 0; cursor: pointer; appearance: none;
 }
-/* 插图解释：顶上那张缩略图（比正文宽、但别把浮层撞成一面墙） */
-.ex-fig { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
-.ex-fig img {
-  max-width: 100%; max-height: 160px; object-fit: contain;
-  border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elev);
-}
-.ex-turn { margin-bottom: 10px; }
-.ex-turn .md :deep(p) { margin: .35em 0; }
-.ex-q {
-  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); padding: 3px 8px;
-  border-left: 2px solid var(--accent); background: var(--bg-layer);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-}
-.ex-cites { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-/* 过程（深度思考 / 工具调用）：**默认只露一行**，点开才铺开 —— 用户口径是"只展示最终回答"。
-   与侧栏对话那条轨迹同一套信息，但这里更紧凑（浮层窄，一行一条）。 */
-.ex-proc { margin: 0 0 6px; }
-/* 过程那一行：与全站胶囊同一门语言（无描边的托底 + 圆到底），而不是自己画一个方框 */
-.ex-proc-head {
-  display: flex; align-items: center; gap: 5px; width: 100%;
-  border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim);
-  font: inherit; font-size: calc(11.5px * var(--ts, 1)); padding: 4px 10px; cursor: pointer; text-align: left;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.ex-proc-head:hover { background: var(--bg-hover); color: var(--text); }
-.ex-proc-body {
-  margin-top: 5px; padding: 6px 8px; max-height: 26vh; overflow-y: auto;
-  border-radius: var(--radius-sm); background: var(--bg-layer);
-}
-.ex-step {
-  display: flex; align-items: baseline; gap: 5px;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); padding: 2px 0; min-width: 0;
-}
-.ex-step > svg { flex: none; align-self: center; }
-.ex-step-tag { flex: none; color: var(--text-faint); }
-.ex-step-text {
-  flex: 1; min-width: 0; color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ex-step.is-thinking .ex-step-text { white-space: normal; }
-.ex-step.is-tool .ex-step-tag { color: var(--accent-text); }
-.chip {
-  border: 1px solid var(--border); background: var(--bg-layer); color: var(--text-dim);
-  border-radius: 999px; padding: 1px 7px; font-size: calc(11px * var(--ts, 1)); font-family: var(--mono); cursor: pointer;
-}
-.chip:hover { color: var(--accent-text); border-color: var(--accent); }
-/* 追问输入：与侧栏对话那枚输入框同规格（同高、同圆角），按钮同 `btn sm primary` */
-/* 追问输入：与正文用一条分隔线划开（它在卡片里是"操作区"，不是内容的一部分），
-   输入框用浅底 + 无重描边，聚焦时才出强调环 —— 和对话页那条 composer 同一门语言。 */
-.ex-ask {
-  display: flex; gap: 6px; align-items: center; flex: none;
-  margin-top: 10px; padding-top: 10px;
-  border-top: 1px solid var(--divider);
-}
-.ex-ask input {
-  flex: 1; min-width: 0; height: var(--control-h-sm);
-  border-radius: var(--radius-ctl);
-  background: var(--bg-sunken); border-color: transparent;
-}
-.ex-ask input:focus { border-color: var(--border-strong); background: var(--bg-elev); }
-.ex-ask .btn { height: var(--control-h-sm); width: var(--control-h-sm); flex: none; }
-.ex-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-/* 底部那排色块（存为笔记）：**不写说明文字**（用户口径 2026-11-19：移除多余的描述文本），
-   一排色点 + 各自的 title 提示已经说清楚了。 */
-.ex-swatches { display: inline-flex; align-items: center; gap: 5px; flex: none; }
-
 @media print {
   .reader-toolbar, .reader-aside { display: none !important; }
   .reader, .reader-content { display: block; height: auto; overflow: visible; }
