@@ -53,8 +53,8 @@ class Deps:
     query_cache: dict[str, dict] = field(default_factory=dict)
     #: 已用掉的检索预算（M7：与轮数预算**分开**扣，见 `Settings.agent_search_budget`）
     search_calls: int = 0
-    #: 已用掉的**改动**次数（`page_markdown_edit`）。写比读更需要闸：写错了要人来收拾，
-    #: 所以它有自己的预算（`Settings.agent_edit_budget`），与检索、轮数三者互不顶替。
+    #: 已用掉的改动次数（高亮 / 笔记 / 页级产物都算）。只记账，**不再设上限**（2026-11-26 移除那道闸）：
+    #: 那道 12 处/轮的闸挡的不是滥用，而是一次「把这些都写成笔记」的正常批量写入。
     edit_calls: int = 0
     #: 本轮改过的产物（`done` 事件带给前端做提示，也是自检的断言口）
     edits: list[dict] = field(default_factory=list)
@@ -75,15 +75,13 @@ class Deps:
         return True
 
     def spend_edit(self) -> bool:
-        """扣一次改动预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
-        if self.edit_calls >= self.cfg.edit_budget:
-            return False
+        """记一次改动并放行（**不再有上限**，用户口径 2026-11-26：移除改动预算）。"""
         self.edit_calls += 1
         return True
 
     @property
     def edit_exhausted(self) -> bool:
-        return self.edit_calls >= self.cfg.edit_budget
+        return False        # 同上：永远不会「用尽」
 
     @property
     def search_exhausted(self) -> bool:

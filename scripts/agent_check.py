@@ -184,7 +184,7 @@ def check_service(base: str) -> bool:
                f"{sorted(names)}")
     except Exception as exc:  # noqa: BLE001
         record("service", "skills 已加载（框架加载器，不是目录扫描）", False, f"{exc}")
-    record("service", "改动预算已生效（设置页口径）",
+    record("service", "限额上报可达（editor 预算已于 2026-11-26 移除，仅留字段）",
            int((status.get("limits") or {}).get("edit_budget") or 0) > 0,
            f"edit_budget={((status.get('limits') or {}).get('edit_budget'))}")
     return bool(status.get("running"))
