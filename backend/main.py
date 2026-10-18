@@ -40,6 +40,18 @@ async def lifespan(app: FastAPI):
     s.ensure_dirs()
     log.info("启动 %s v%s（data=%s）", s.app_name, s.app_version, s.data_dir)
 
+    # 技能库：`ensure_dirs()` 已经把自带技能**幂等**物化进 `<data_dir>/skills`
+    # （内容哈希没变就什么都不做；用户改过的副本不覆盖）。这里只把结果说清楚 ——
+    # 失败只记日志，技能只影响问答效果，不该连累主后端起不来。
+    from backend.services.agent import skills_store
+
+    try:
+        skills = skills_store.list_skills(s)
+        log.info("技能库 %s：%d 个（自带 %d）", s.agent_skills_dir, len(skills),
+                 sum(1 for item in skills if item["builtin"]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("技能库概览读取失败（忽略）：%s", exc)
+
     # 数据库就绪 + 任务系统
     from backend.repositories.mysql.session import init_db
 

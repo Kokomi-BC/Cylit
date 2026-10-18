@@ -9,17 +9,89 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from backend.core.errors import ValidationError
 
 # backend/core/config.py -> backend/core -> backend -> Cylit（仓库根，2026-09-28 由 paper-reader 改名）
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
+
+
+#: 设置页可改的**六项问答运行限额**：契约键 → (Settings 字段, 类型, 下限, 上限)。
+#:
+#: 为什么要两张名字：契约键是**前端已经按它写好**的那一套（`max_rounds` /
+#: `compact_threshold` …，见 `docs/agent-接入规划.md` 与本轮前端契约），而字段名是历史包袱
+#: （比如"压缩触发线"在代码里叫 `agent_auto_compress_percent`）。对应关系只写在这里一处，
+#: 读取点、校验、落盘覆盖都从这张表走 —— 抄成三份就会各自漂。
+AGENT_LIMITS: dict[str, tuple[str, type, float, float]] = {
+    "max_rounds": ("agent_max_rounds", int, 1, 200),
+    "search_budget": ("agent_search_budget", int, 0, 50),
+    "deadline_seconds": ("agent_deadline_seconds", float, 30, 3600),
+    "context_budget": ("agent_context_budget", int, 8000, 1000000),
+    "compact_threshold": ("agent_auto_compress_percent", float, 50, 99),
+    "image_max_pages": ("agent_image_max_pages", int, 1, 50),
+}
+
+
+def _fmt_bound(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def normalize_agent_limits(payload: Any, *, strict: bool = True) -> dict[str, float]:
+    """把请求体收敛成 `{契约键: 值}`，顺手做范围校验。
+
+    `strict=True`（PUT 用）：越界/类型不对就抛 `ValidationError`（400）；
+    `strict=False`（读盘用）：只丢掉那一项 —— 磁盘上的文件可能被手改坏，读的时候
+    不该因为一项非法就让整个限额接口 500。
+
+    允许只给其中几项（前端的表单通常全给，但不必强制）：缺的键就是"沿用当前值"。
+    """
+    if not isinstance(payload, dict):
+        raise ValidationError("限额必须是 JSON 对象")
+    out: dict[str, float] = {}
+    for key, (_field, kind, low, high) in AGENT_LIMITS.items():
+        if key not in payload:
+            continue
+        raw = payload.get(key)
+        try:
+            value = kind(raw)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValidationError(f"{key} 必须是数字（收到 {raw!r}）") from None
+            continue
+        if not (low <= value <= high):
+            if strict:
+                raise ValidationError(
+                    f"{key} 必须在 {_fmt_bound(low)}~{_fmt_bound(high)} 之间（收到 {raw!r}）")
+            continue
+        out[key] = value
+    return out
+
+
+def _parse_stamp(raw: Any) -> datetime | None:
+    """读时间戳（ISO 8601 / 秒级浮点都认）；读不懂就是 None。"""
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), timezone.utc)
+        except (OSError, ValueError, OverflowError):
+            return None
+    if isinstance(raw, str) and raw.strip():
+        try:
+            stamp = datetime.fromisoformat(raw.strip())
+        except ValueError:
+            return None
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    return None
 
 
 class Settings(BaseSettings):
@@ -124,8 +196,14 @@ class Settings(BaseSettings):
     #: 主后端 ↔ agent 服务的内部令牌（**不是**模型密钥）。两侧都读同一个密钥文件；
     #: 首次启动主后端会自动生成一个，所以用户不需要手填。
     agent_token_ref: str = "agent.token"
-    #: skill 目录（L1 名字与描述常驻提示词，L2 正文按需加载）
-    agent_skills_dir: Path = PROJECT_ROOT / "backend" / "agent" / "skills"
+    #: **技能库的最终落点**（L1 名字与描述常驻提示词，L2 正文按需加载）。
+    #:
+    #: 为什么不直接读仓库里那份：技能要能被用户上传/禁用/卸载，而仓库目录会被
+    #: `git reset` 抹掉。所以落点是 `<data_dir>/skills`（部署后 data/ 不被版本管理动），
+    #: 自带技能由 `agent_builtin_skills_dir` **幂等物化**进去（见 `ensure_dirs`）。
+    agent_skills_dir: Path = PROJECT_ROOT / "data" / "skills"
+    #: 自带技能的**源目录**（随仓库分发：只能禁用、不能卸载）。
+    agent_builtin_skills_dir: Path = PROJECT_ROOT / "backend" / "agent" / "skills"
     #: 单轮工具调用轮数上限。论文问答的正常形态是"检索 → 读 1~2 页 → 作答"（3~4 轮），
     #: 给 8 是为了容错：跨库问题（"库里还有谁讲过 X"）模型会多查几次，实测能吃到 6 轮 ——
     #: 卡太紧的后果不是"少答一点"，而是**轮数用满、一个字都没输出**。
@@ -184,6 +262,19 @@ class Settings(BaseSettings):
     @classmethod
     def _abs_data_dir(cls, v: Path) -> Path:
         return v if v.is_absolute() else (PROJECT_ROOT / v).resolve()
+
+    @model_validator(mode="after")
+    def _skills_under_data_dir(self) -> "Settings":
+        """默认技能库跟着 `data_dir` 走。
+
+        改了 `PR_DATA_DIR` 之后技能库必须一起搬：否则"默认值"和"数据目录"分成两家，
+        禁用/上传会写进一个跟业务数据无关的地方（而且下次换数据目录就全丢）。
+        显式给了 `PR_AGENT_SKILLS_DIR` 时不动 —— 那是用户自己的决定。
+        """
+        default = PROJECT_ROOT / "data" / "skills"
+        if self.agent_skills_dir == default and self.data_dir != PROJECT_ROOT / "data":
+            self.agent_skills_dir = self.data_dir / "skills"
+        return self
 
     # ---------- 派生路径 ----------
     @property
@@ -249,9 +340,29 @@ class Settings(BaseSettings):
         for p in (
             self.data_dir, self.papers_dir, self.exports_dir, self.index_dir,
             self.uploads_dir, self.trash_dir, self.logs_dir, self.fonts_dir,
-            self.attachments_dir, self.secrets_dir,
+            self.attachments_dir, self.secrets_dir, self.agent_skills_dir,
         ):
             p.mkdir(parents=True, exist_ok=True)
+        self.ensure_builtin_skills()
+
+    def ensure_builtin_skills(self) -> None:
+        """把仓库里的自带技能**幂等**物化进技能库（失败只记日志）。
+
+        挂在这里（而不是只在主后端的 lifespan 里）是因为 agent 是**独立进程**：
+        它可能比主后端先起、甚至主后端压根没起（PM2 单独重启 `cylit-agent`），
+        那时技能库必须已经是有内容的样子。`get_settings()` 两个进程都会走一次，
+        函数本身按内容哈希判断"要不要写"，重复调用的代价就是读 9 个文件。
+
+        **失败不能让进程起不来**：技能只影响问答效果，不该连累主后端/agent 启动。
+        """
+        try:
+            from backend.services.agent import skills_store
+
+            skills_store.ensure_builtin_skills(self)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning("自带技能物化失败（忽略）：%s", exc)
 
     # ---------- 密钥 ----------
     def read_secret(self, name: str) -> str | None:
@@ -292,6 +403,94 @@ class Settings(BaseSettings):
         self.agent_token_file.write_text(token, encoding="utf-8")
         return token
 
+    # ---------- 问答运行限额的落盘覆盖 ----------
+    #
+    # 为什么设成**文件 + 重启生效**而不是即时热更：agent 是独立进程（PM2 `cylit-agent`），
+    # 主后端改一个数没法"推"进它的内存 —— 真做热更就要加一条控制通道，而用户已经接受
+    # "改完重启问答服务"，界面上也明说了。所以这里只负责**写下**去，读是各进程启动时的事。
+    #
+    # 两个文件：
+    # - `agent_limits.json`        —— 用户保存的覆盖值（`{"values": {...}, "saved_at": ...}`）
+    # - `agent_limits.applied.json` —— agent 进程**真正读进去那一刻**的实际生效值 + 时间戳
+    #   （`GET /agent/limits` 的 `restart_required` = saved_at 比 applied_at 新）
+    @property
+    def agent_limits_file(self) -> Path:
+        return self.data_dir / "agent_limits.json"
+
+    @property
+    def agent_limits_applied_file(self) -> Path:
+        return self.data_dir / "agent_limits.applied.json"
+
+    def agent_limits_current(self) -> dict[str, Any]:
+        """本进程里**当前生效**的六个值（契约键）。"""
+        out: dict[str, Any] = {}
+        for key, (field, kind, _low, _high) in AGENT_LIMITS.items():
+            out[key] = kind(getattr(self, field))
+        return out
+
+    def _read_limits_file(self, path: Path) -> tuple[dict[str, Any], Any]:
+        """`(values, stamp)`；文件缺失/坏了都当"没有"。"""
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}, None
+        if not isinstance(payload, dict):
+            return {}, None
+        values = normalize_agent_limits(payload.get("values") or {}, strict=False)
+        return values, _parse_stamp(payload.get("saved_at") or payload.get("applied_at"))
+
+    def agent_limits_saved(self) -> dict[str, Any]:
+        return self._read_limits_file(self.agent_limits_file)[0]
+
+    def agent_limits_payload(self) -> dict[str, Any]:
+        """给 `GET /agent/limits` 的六个值：**保存过就显示保存的**，否则是当前生效值。"""
+        return {**self.agent_limits_current(), **self.agent_limits_saved()}
+
+    def save_agent_limits(self, values: dict[str, Any]) -> dict[str, Any]:
+        """合并写入覆盖值，返回写后的完整六项。"""
+        merged = {**self.agent_limits_saved(), **normalize_agent_limits(values)}
+        payload = {"values": merged,
+                   "saved_at": datetime.now(timezone.utc).isoformat()}
+        self.agent_limits_file.parent.mkdir(parents=True, exist_ok=True)
+        self.agent_limits_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return merged
+
+    def mark_agent_limits_applied(self, values: dict[str, Any] | None = None) -> None:
+        """agent 启动成功后调用：记下"实际生效值 + 这一刻"。"""
+        payload = {
+            "values": dict(values or self.agent_limits_current()),
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+        }
+        self.agent_limits_applied_file.parent.mkdir(parents=True, exist_ok=True)
+        self.agent_limits_applied_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def agent_limits_restart_required(self) -> bool:
+        """保存过之后还没被任何 agent 进程读进去 → True。"""
+        _values, saved_at = self._read_limits_file(self.agent_limits_file)
+        if saved_at is None:
+            return False
+        _applied, applied_at = self._read_limits_file(self.agent_limits_applied_file)
+        return applied_at is None or saved_at > applied_at
+
+    def apply_agent_limits(self) -> list[str]:
+        """把保存的覆盖值贴到本进程的 `Settings` 上，返回被改动的字段名。
+
+        在 `get_settings()` 里调一次（进程启动时）。**主后端也要贴**：
+        `context_budget` / `compact_threshold` 这两项真正的读取点在主后端
+        （`services/agent/conversations.conversation_usage` 与 `api/agent._auto_compress`），
+        不贴的话这两项在界面上能改、实际却永远不生效 —— 那是最难查的那种"静默失效"。
+        """
+        changed: list[str] = []
+        for key, value in self.agent_limits_saved().items():
+            field = AGENT_LIMITS[key][0]
+            if getattr(self, field) != value:
+                setattr(self, field, value)
+                changed.append(field)
+        return changed
+
     @property
     def mineru_token(self) -> str | None:
         """MinerU token：密钥文件优先，其次 `PR_MINERU_TOKEN` 环境变量。
@@ -307,6 +506,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
     s.ensure_dirs()
+    # 问答运行限额的覆盖值：**进程启动时贴一次**（界面上明说"重启后生效"）。
+    # 主后端与 agent 都从这里拿到同一份数字。
+    s.apply_agent_limits()
     return s
 
 

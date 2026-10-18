@@ -1,7 +1,8 @@
 """Agent API（规划 §4.3）。
 
 **对外**（前端直接调，与其它接口一样本地单用户无鉴权）：`/agent/ask` 转发 SSE、
-`/agent/conversations*` 会话 CRUD、`/agent/skills` 已加载的 skill、`/agent/status` 服务状态。
+`/agent/conversations*` 会话 CRUD、`/agent/skills*` 技能管理（列表/上传/导出/启停/卸载）、
+`/agent/limits` 问答运行限额、`/agent/status` 服务状态。
 
 **对内**（只认内部令牌）：`/agent/ping` `/agent/model-config` 与 `/agent/papers/...` 四个
 只读投影，加上 `/agent/internal/messages` 落库。这几条是"agent 能看到什么"的实际边界 ——
@@ -14,13 +15,13 @@ from typing import AsyncIterator
 
 from fastapi import (APIRouter, Body, File, Header, HTTPException, Query, Request,
                      UploadFile)
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.api.response import envelope
-from backend.core.config import get_settings
+from backend.core.config import get_settings, normalize_agent_limits
 from backend.core.errors import ProviderError, ValidationError
 from backend.services.agent import (attachments, bridge, conversations, model_config,
-                                    project)
+                                    project, skills_store)
 from backend.services.paper import paper_service
 from backend.services.translation import page_edit
 
@@ -65,9 +66,111 @@ async def agent_status(request: Request):
     }, request=request)
 
 
+# --------------------------------------------------------------------------
+# 技能管理
+#
+# 事实来源是**磁盘**（`<data_dir>/skills`，见 `services/agent/skills_store.py`）：
+# 上传 / 启用 / 禁用 / 卸载都直接改文件，改完再让 agent 重扫一遍。agent 没在跑的时候
+# 这些接口照样能用 —— 用户不该为了"删掉一个技能"先去看服务起没起。
+# --------------------------------------------------------------------------
+
+
+async def _reload_skills() -> str | None:
+    """让 agent 重扫技能库；**失败不抛**，返回一句给用户看的提示。
+
+    agent 是独立进程（PM2 `cylit-agent`），它没起来时这里必然失败。但技能的改动已经
+    落在磁盘上了，它下次启动就会读到 —— 所以这不是错误，只是一句提示。
+    """
+    try:
+        await bridge.agent_post("/v1/skills/reload", {}, timeout=15.0)
+        return None
+    except Exception as exc:  # noqa: BLE001 —— 只是提示，不能因为这个让接口 500
+        return (f"技能文件已保存，但问答服务没有重载（{str(exc)[:120]}）；"
+                f"它下次启动时会读到新的技能库。")
+
+
 @router.get("/agent/skills")
 async def agent_skills(request: Request):
-    return envelope(await bridge.agent_get("/v1/skills"), request=request)
+    """全部技能：自带 / 用户、启用 / 禁用，以及技能库的绝对路径。"""
+    s = get_settings()
+    return envelope({"skills": skills_store.list_skills(s), "dir": str(s.agent_skills_dir)},
+                    request=request)
+
+
+@router.post("/agent/skills/upload")
+async def agent_skills_upload(request: Request, file: UploadFile = File(...)):
+    """上传一个技能包（multipart 字段名 `file`，**只收 .zip**）。
+
+    解压与全部校验（路径穿越、重名、名字格式、frontmatter）在
+    `skills_store.upload` 里；这里只负责把字节交给它并唤醒 agent。
+    """
+    data = await file.read()
+    skills, added = skills_store.upload(get_settings(), data,
+                                        filename=file.filename or "")
+    note = await _reload_skills() or f"已安装技能：{'、'.join(added)}"
+    return envelope({"skills": skills, "added": added}, message=note, request=request)
+
+
+@router.get("/agent/skills/{name}/download")
+async def agent_skill_download(name: str):
+    """导出一个技能为 zip（`<name>/…` 结构，重新上传即可还原）。"""
+    data = skills_store.export_zip(get_settings(), name)
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.zip"'})
+
+
+@router.put("/agent/skills/{name}")
+async def agent_skill_toggle(name: str, request: Request, payload: dict = Body(...)):
+    """启用 / 禁用。禁用 = 把目录搬进 `.disabled/`（agent 的扫描器自然看不到它）。"""
+    if "enabled" not in payload:
+        raise ValidationError("enabled 必填（true = 启用，false = 禁用）")
+    enabled = bool(payload.get("enabled"))
+    skills = skills_store.set_enabled(get_settings(), name, enabled)
+    note = await _reload_skills() or ("已启用" if enabled else "已禁用") + f"「{name}」"
+    return envelope({"skills": skills}, message=note, request=request)
+
+
+@router.delete("/agent/skills/{name}")
+async def agent_skill_delete(name: str, request: Request):
+    """卸载一个**用户技能**；自带技能只能禁用（403）。"""
+    s = get_settings()
+    if skills_store.is_builtin(s, name):
+        raise HTTPException(status_code=403,
+                            detail=f"「{name}」是自带技能：不能卸载，可以禁用")
+    skills = skills_store.delete(s, name)
+    note = await _reload_skills() or f"已卸载「{name}」"
+    return envelope({"skills": skills}, message=note, request=request)
+
+
+# --------------------------------------------------------------------------
+# 问答运行限额
+#
+# 保存即落盘（`data/agent_limits.json`），**不热更**：agent 是独立进程，
+# 改完要重启它才生效 —— 界面与这里的 message 都这么说。`restart_required` 由
+# "保存时间 vs agent 上次实际读入的时间"算出来（见 `Settings.agent_limits_*`）。
+# --------------------------------------------------------------------------
+
+
+@router.get("/agent/limits")
+async def agent_limits(request: Request):
+    s = get_settings()
+    return envelope({**s.agent_limits_payload(),
+                     "restart_required": s.agent_limits_restart_required()},
+                    request=request)
+
+
+@router.put("/agent/limits")
+async def put_agent_limits(request: Request, payload: dict = Body(...)):
+    """改六项运行限额。越界 → 400（范围表见 `core/config.py` 的 `AGENT_LIMITS`）。"""
+    s = get_settings()
+    values = normalize_agent_limits(payload)
+    if not values:
+        raise ValidationError("没有可保存的项（max_rounds / search_budget / "
+                              "deadline_seconds / context_budget / compact_threshold / "
+                              "image_max_pages 至少给一个）")
+    s.save_agent_limits(values)
+    return envelope({"ok": True, "restart_required": s.agent_limits_restart_required()},
+                    message="已保存。重启问答服务（cylit-agent）后生效。", request=request)
 
 
 @router.post("/agent/ask")

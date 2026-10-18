@@ -25,12 +25,13 @@ router = APIRouter(tags=["settings"])
 #
 # `kb.*` 这一组以前**不在白名单里**：于是"分块 / 检索参数"只能靠脚本直接写库
 # （`scripts/kb_arm_compare.py`），界面上根本调不了（dev-log §17.66）。
+#
+# 2026-10 收敛：`task_worker_count` / `render_dpi` / `crop_dpi` / `default_generation_model`
+# 四项**从这里删掉**（设置页的「常规参数」整页移除）。它们本来就不是"能改的设置" ——
+# 各自的读取点读的是 `Settings`（环境变量 / .env），设置表里那份值没有任何代码去读，
+# 改了一辈子不生效。留一个"能改但没用"的开关比没有更糟。
 EDITABLE: dict[str, type] = {
-    "task_worker_count": int,
-    "render_dpi": int,
-    "crop_dpi": int,
     "allow_general_knowledge": bool,
-    "default_generation_model": str,
     # ---- 问答（agent）：**可改的只有风格那一段**（用户口径 2026-10-15）----
     # 护栏/工作方式在 `agent/prompts.py` 的常驻块里，不入设置表 —— 那是底线，不是配置。
     # 读取点：`services/agent/style.py`（空 = 没设过，回落到 prompts.DEFAULT_STYLE）。

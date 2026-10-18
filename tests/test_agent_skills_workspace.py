@@ -50,8 +50,15 @@ def test_virtual_path_discovers_skills() -> None:
 
 
 def test_real_absolute_path_is_rejected() -> None:
-    """真实路径会越界 —— 这正是线上那个报错。谁改回去，这条会红。"""
+    """workspace 之外的绝对路径会越界 —— 这正是线上那个报错的形状。
+
+    为什么不再拿"技能库自己的真实路径"当反例：2026-10 起技能库就是 workspace 根
+    （`<data_dir>/skills`，见 `core/config.py` 的 `agent_skills_dir`），而
+    `ReadOnlyWorkspace` 把根映射到虚拟根 `/workspace` —— 于是传它自己的真实路径
+    会被**正确**解析成虚拟根（`test_virtual_path_discovers_skills` 就是这条路径）。
+    所以这里改用"另一个绝对路径"，钉住的仍是"越界必须报错"。
+    """
     from pydantic_ai.workspaces import WorkspaceError
 
     with pytest.raises(WorkspaceError):
-        _load([str(get_settings().agent_skills_dir)])
+        _load(["/definitely/not/in/workspace/skills"])

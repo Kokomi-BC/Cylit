@@ -38,6 +38,12 @@ class AgentConfig:
     image_max_dpi: int
     model_timeout: float = 180.0
     host_timeout: float = 60.0
+    #: 这两项 agent 自己不用，但要**跟着一起读**并上报：`context_budget` 与
+    #: `compact_threshold` 的读取点在主后端（`conversation_usage` / 自动压缩），
+    #: 而"设置页改的六个值有没有被这个进程读到"是 `GET /agent/limits` 的
+    #: `restart_required` 唯一的问题 —— 报半套会让时间戳代表的含义失真。
+    context_budget: int = 200000
+    compact_threshold: float = 90.0
 
     @property
     def host_api(self) -> str:
@@ -49,6 +55,10 @@ class AgentConfigError(RuntimeError):
 
 
 def load() -> AgentConfig:
+    #: **限额覆盖值**（设置页改的那六项）就在这一步被读进来：
+    #: `get_settings()` 建好 `Settings` 之后会把 `<data_dir>/agent_limits.json` 里的
+    #: 保存值贴到字段上（见 `Settings.apply_agent_limits`），下面逐项取的就是"覆盖后"的值。
+    #: 所以改完限额必须**重启 agent 进程**才生效 —— 界面与 `PUT /agent/limits` 都这么说。
     s = get_settings()
     token = s.agent_token()
     if not token:
@@ -76,4 +86,26 @@ def load() -> AgentConfig:
         archive_chars=int(s.agent_archive_chars),
         image_max_pages=int(s.agent_image_max_pages),
         image_max_dpi=int(s.agent_image_max_dpi),
+        context_budget=int(s.agent_context_budget),
+        compact_threshold=float(s.agent_auto_compress_percent),
     )
+
+
+def limits_payload(cfg: AgentConfig) -> dict[str, float]:
+    """本进程实际生效的六项限额（契约键，见 `core.config.AGENT_LIMITS`）。
+
+    写进 `data/agent_limits.applied.json`：`GET /agent/limits` 的 `restart_required`
+    就是拿它的时间戳和保存时间比出来的 —— 没有它，"改完到底生效没有"谁都答不上来。
+    """
+    from backend.core.config import AGENT_LIMITS
+
+    actual = {
+        "agent_max_rounds": cfg.max_rounds,
+        "agent_search_budget": cfg.search_budget,
+        "agent_deadline_seconds": cfg.deadline_seconds,
+        "agent_context_budget": cfg.context_budget,
+        "agent_auto_compress_percent": cfg.compact_threshold,
+        "agent_image_max_pages": cfg.image_max_pages,
+    }
+    return {key: AGENT_LIMITS[key][1](actual[field])
+            for key, (field, _kind, _low, _high) in AGENT_LIMITS.items()}

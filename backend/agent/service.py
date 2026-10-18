@@ -16,9 +16,10 @@ from typing import Any
 from fastapi import Body, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from backend.agent.config import AgentConfigError, load
+from backend.agent.config import AgentConfigError, limits_payload, load
 from backend.agent.host import HostClient
 from backend.agent.runtime import AgentRuntime, AskRequest, format_sse
+from backend.core.config import get_settings
 from backend.core.logging import get_logger, setup_logging
 
 log = get_logger(__name__)
@@ -39,6 +40,21 @@ def create_app() -> FastAPI:
     def _auth(token: str | None) -> None:
         if not token or token != cfg.token:
             raise HTTPException(status_code=401, detail="内部令牌不正确")
+
+    @app.on_event("startup")
+    async def _record_limits() -> None:
+        """把本进程**实际生效**的六项限额记进 `data/agent_limits.applied.json`。
+
+        这是 `GET /agent/limits` 里 `restart_required` 的另一半：保存时间比这个
+        时间戳新，就说明"设置页改完还没重启问答服务"。写失败只记日志 ——
+        它只影响一个界面提示，不该把启动拖下来。
+        """
+        actual = limits_payload(cfg)
+        log.info("运行限额：%s", actual)
+        try:
+            get_settings().mark_agent_limits_applied(actual)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("限额生效时间戳写入失败（不影响问答）：%s", exc)
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
