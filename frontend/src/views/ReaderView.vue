@@ -1654,11 +1654,28 @@ const floatDrag = {
  * 浮窗的拖动现在挂在**整块面板**上（标题栏那一行已经和会话头合并，没有单独的抓手区了）：
  * 只有从"头部那一行"按下去才算拖动 —— 正文里选字、点按钮都不该把窗口挪走。
  */
+/** 浮窗正在被拖动（这一会儿整块阅读区**不许选中文字**，见 `.float-dragging`） */
+const floatDragging = ref(false);
+
 function onFloatCardDown(ev: PointerEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
   if (!t?.closest?.('.thread-head, .list-head')) return;
   onFloatPointerDown(ev, 'move');
+}
+
+/**
+ * 拖动抓手上的 `mousedown` 也要挡掉（用户口径 2026-11-19：拖浮层时**有时会选中 PDF 里的字**）。
+ *
+ * 只靠 `pointerdown` 的 `preventDefault()` 不够：鼠标输入下浏览器照样会派发 `mousedown`，
+ * 于是"按住抓手往外拖"被当成一次**文本拖选**的起点 —— 抓手那几行虽然是 `user-select: none`，
+ * Chromium 会把选区锚到下一块可选内容（正文/PDF 文本层）上，松手就留下一条蓝。
+ */
+function onFloatCardMouseDown(ev: MouseEvent) {
+  if (!chatFloat.value) return;
+  const t = ev.target as HTMLElement | null;
+  if (!t?.closest?.('.thread-head, .list-head')) return;
+  ev.preventDefault();
 }
 
 function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left') {
@@ -1667,6 +1684,7 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   const el = ev.currentTarget as HTMLElement | null;
   floatDrag.on = true;
   floatDrag.mode = mode;
+  floatDragging.value = mode === 'move';
 
   floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
@@ -1727,6 +1745,7 @@ function onFloatPointerUp(ev: PointerEvent) {
      这正是"松手那一帧闪烁"的根治办法（用户口径 2026-11-19 第二轮）。 */
   floatDrag.on = false;
   floatDrag.mode = '';
+  floatDragging.value = false;
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
@@ -5749,6 +5768,7 @@ function renderMarkdown(text?: string | null) {
       :class="['reader',
                asideVisible ? '' : 'no-aside',
                chatFloat ? 'aside-float' : '',
+               floatDragging ? 'float-dragging' : '',
 
                asidePreviewW !== null ? 'aside-previewing' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
@@ -6063,6 +6083,7 @@ function renderMarkdown(text?: string | null) {
         :class="['reader-aside', { resizing: asideResizing, closing: floatClosing }]"
         :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle, asidePreviewStyle]"
         @pointerdown="onFloatCardDown"
+        @mousedown="onFloatCardMouseDown"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
@@ -6969,6 +6990,8 @@ function renderMarkdown(text?: string | null) {
   background: color-mix(in srgb, var(--text) 20%, transparent);
 }
 /* 会话头 / 列表头那一行：浮窗里往上留出抓手的位置，并整行当拖动把手 */
+/* 拖浮窗的那一会儿：整块阅读区都**不许选中文字**（指针会扫过正文/PDF 文本层） */
+.reader.float-dragging, .reader.float-dragging * { user-select: none !important; }
 .reader.aside-float .reader-aside :deep(.thread-head),
 .reader.aside-float .reader-aside :deep(.list-head) {
   padding-top: 12px; cursor: grab; user-select: none; touch-action: none;
