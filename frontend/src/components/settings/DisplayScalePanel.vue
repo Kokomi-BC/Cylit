@@ -42,11 +42,6 @@ function pct(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-/** 一类字号的最终倍数：整体 × 该类 —— 面板右侧就是把这件事显式写出来。 */
-function effective(key: DisplayCategory): string {
-  return pct(displayScale.master * displayScale[key]);
-}
-
 function stepMaster(dir: number): void {
   setScale(displayScale.master + dir * SCALE_STEP);
 }
@@ -102,12 +97,12 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
         </p>
       </div>
 
-      <!-- 五个分类：名称 + 说明 + 步进 + 实际值（整体 × 本类） -->
+      <!-- 五个分类：名称 + 说明 + 步进。（不再多一列「实际」：整体×本类是一句能算出来的话，
+           摆在行尾只是重复噪声，用户看得出滑块与整体是相乘的。） -->
       <div class="ds-table">
         <div class="ds-row ds-head" aria-hidden="true">
           <span>分类</span>
-          <span>调节</span>
-          <span class="ds-num">实际</span>
+          <span class="ds-num">调节</span>
         </div>
 
         <div v-for="c in categories" :key="c.key" class="ds-row">
@@ -134,11 +129,10 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
             >+</button>
           </div>
 
-          <span class="ds-num ds-effective">{{ effective(c.key) }}</span>
         </div>
       </div>
 
-      <p class="ds-foot">范围：整体 85%–125%，分类 85%–150%，步进 5%；「实际」= 整体 × 本类。</p>
+      <p class="ds-foot">范围：整体 85%–125%，分类 85%–150%，步进 5%。</p>
     </div>
   </div>
 </template>
@@ -158,7 +152,7 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
 /* 行母版：左边说明自适应，中间步进固定，右边数值定宽 —— 三行对齐靠 grid 而不是空格 */
 .ds-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 64px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 11px 0;
@@ -237,7 +231,6 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
 }
 .ds-head .ds-num { text-align: right; }
 .ds-num { text-align: right; font-variant-numeric: tabular-nums; font-size: calc(12.5px * var(--ts, 1)); }
-.ds-effective { font-weight: 600; color: var(--accent-text); }
 
 .ds-reset { flex: none; }
 
@@ -252,6 +245,5 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
   .ds-row, .ds-row-master { grid-template-columns: minmax(0, 1fr) auto; }
   .ds-row-master .ds-reset { grid-column: 1 / -1; justify-self: start; }
   .ds-head { display: none; }
-  .ds-effective { grid-column: 2; justify-self: end; }
 }
 </style>

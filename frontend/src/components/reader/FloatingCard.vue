@@ -208,8 +208,10 @@ const posKey = () => (props.persistKey ? `cylit:float:${props.persistKey}` : '')
 /* ------------------------------ 字号倍数（A− / A+） ------------------------------
  * 为什么只写一个 CSS 变量：缩放**只该改字号**，不许碰卡片的宽高与位置 —— 拖动/拉角的数学
  * 全是"按下那一刻的 px 快照 + 指针增量"，字体一变就重排，量出来的 offsetWidth 会跟着跳。
- * 所以倍数落到外壳的 `--ts` 上，由**浏览器**去算字号（`.np-view` / `.fc-title` 读 `var(--ts, 1)`）：
- * 点按钮只改一个变量，手势路径与这次缩放都不产生组件重渲染，和拖动/拉角那套零重渲染写法一致。 */
+ * 所以倍数落成一个 CSS 变量，由**浏览器**去算字号（`.np-view` / `.np-edit` 读 `var(--ts, 1)`）：
+ * 点按钮只改一个变量，手势路径与这次缩放都不产生组件重渲染，和拖动/拉角那套零重渲染写法一致。
+ * ⚠️ 变量只挂在**正文区**（`.fc-body`）上，不挂外壳：挂外壳会把标题「笔记」和头部图标一起放大，
+ * 而用户要的是"笔记正文变大，头一行原样"。 */
 const F_MIN = 0.8;
 const F_MAX = 1.5;
 const F_STEP = 0.05;
@@ -227,10 +229,16 @@ function stepFont(dir: -1 | 1) {
   savePos();
 }
 
+/** 还原 = 回到 100%，也就是设置里「笔记」那一档给的默认大小；只在偏离时露这枚键。 */
+function resetFont() {
+  fontScale.value = 1;
+  savePos();
+}
+
 /** textCat 非空才写 `--ts`：解释浮层 / 对话浮窗不传，它们的继承链与以前一模一样。
  *  ⚠️ 行内 style 里只放这一个变量：外壳的 left/top/width/height 仍由 applyShellDom 直接写 DOM，
  *  Vue 的 patchStyle 只增删它自己那几个键，不会把命令式写进去的几何抹掉。 */
-const shellVars = computed(() => (props.textCat
+const bodyVars = computed(() => (props.textCat
   ? { '--ts': `calc(var(--ts-${props.textCat}, 1) * ${fontScale.value})` }
   : null));
 
@@ -522,7 +530,6 @@ watchEffect(applyShellDom, { flush: 'sync' });
     ref="el"
     class="float-shell"
     data-float-card
-    :style="shellVars"
   >
     <div class="float-card" :class="{ sized: sizeH !== null }">
       <!-- 顶部**浮起**的拖动条（用户口径 2026-10-13 二轮："自然融合，不要另起一行"）：
@@ -586,6 +593,17 @@ watchEffect(applyShellDom, { flush: 'sync' });
           >
             <AppIcon name="zoom-in" :size="13" />
           </button>
+          <!-- 偏离默认（≠100%）时才多一枚还原键：平时不出现，三个键挤在一起还得猜哪个是默认。 -->
+          <button
+            v-if="fontScale !== 1"
+            type="button"
+            class="fc-btn"
+            title="还原默认字号（100%）"
+            data-float-zoom-reset
+            @click="resetFont"
+          >
+            <AppIcon name="refresh" :size="13" />
+          </button>
         </template>
         <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
              没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
@@ -610,7 +628,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
         </button>
       </div>
 
-      <div ref="bodyEl" class="fc-body" @scroll.passive="onBodyScroll">
+      <div ref="bodyEl" class="fc-body" :style="bodyVars" @scroll.passive="onBodyScroll">
         <slot />
       </div>
 
@@ -716,7 +734,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
   cursor: grab; user-select: none; touch-action: none;
 }
 .fc-head.dragging { cursor: grabbing; }
-.fc-title { font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; color: var(--text-dim); }
+.fc-title { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
 /* 头部图标钮：**圆形 + 中性淡底**（用户口径 2026-11-21："笔记浮层的按钮样式与对话样式统一"）。
    参考那套是"灰底圆钮"，不是"透明方角"也不是"强调色方块" —— 两张浮层（笔记 / Cyli 解释）
    共用这一条，所以它们的锚定 / 关闭 / 笔 / 垃圾桶才会长得一样。 */
