@@ -1220,14 +1220,20 @@ defineExpose({ uploadFiles, ensureThread });
                   @click="setKind(k.key)">{{ k.label }}</button>
         </div>
         <span class="spacer" />
-        <!-- 只留图标 → 用**图标档**的胶囊（`.seg.sq`：左右内边距 9px）；否则按文字档的 12px 撑开，
-             一枚 13px 的图标会被撑成一条胖胶囊（用户口径 2026-11-19 报的"按钮显示样式问题"）。
-             图标用 `list-check`（带勾的清单，用户口径 2026-11-20）——**笔记页那枚是同一个键**，两端同脸。 -->
-        <div class="seg sq">
-          <button :class="{ active: batch }" title="批量管理（多选 + 批量删除）" @click="toggleBatch">
-            <AppIcon name="list-check" :size="13" />
-          </button>
-        </div>
+        <!-- 多选（用户口径 2026-11-21 改形态）：**圆形按钮**，不再套 `.seg sq` 那层方形胶囊 ——
+             上一版是「胶囊里塞一枚 13px 图标」，读起来像一个分段控件的选项，而不是一枚独立动作；
+             圆钮 + 两枚对勾的 `list-check`（见 AppIcon）才读得出「多项勾选」。
+             尺寸与配色跟笔记页那枚**逐条相同**（`.multi-btn`：30×30、`--bg-sunken` 托底、悬停抬高、
+             active 转主题色）—— 两边各写一份 scoped 样式，数值必须一致，别只改一边。 -->
+        <button
+          class="multi-btn"
+          :class="{ active: batch }"
+          :aria-pressed="batch"
+          title="批量管理（多选 + 批量删除）"
+          @click="toggleBatch"
+        >
+          <AppIcon name="list-check" :size="15" />
+        </button>
       </div>
 
       <div class="list-body" @click="rowMenu = ''">
@@ -1703,6 +1709,21 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   border-top: 1px solid var(--divider); background: var(--bg-layer);
 }
+/* 多选圆钮（用户口径 2026-11-21）：**30×30 正圆**，取代原来 `.seg sq` 那层方形胶囊。
+   三档口径与 `.seg` 一致：`--bg-sunken` 托底 → 悬停换 `--bg-hover` 并抬一档阴影 → active 转主题色
+   （`--accent-soft` 底 + `--accent-text` 图标）。
+   ⚠️ 笔记页那枚是**同一套数值**（ReaderSidePanel 的 `.multi-btn`），改一边必须同时改另一边。 */
+.multi-btn {
+  width: 30px; height: 30px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: var(--bg-sunken); color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.multi-btn:hover { background: var(--bg-hover); color: var(--text); box-shadow: var(--shadow-1); }
+.multi-btn:active { transform: scale(.94); }
+.multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
 
 /* ── 二级：会话 ── */
 .thread-head {

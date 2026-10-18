@@ -11,6 +11,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
+import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
@@ -193,13 +194,9 @@ function saveNow() {
 }
 
 /* ------------------------------ 笔记页签 ------------------------------ */
-/** 缩略显示（用户口径）：每条只占一两行，长笔记多了也一眼扫得完。选择记在本地。 */
-const THUMB_KEY = 'cyl.notes.thumb';
-const thumb = ref(localStorage.getItem(THUMB_KEY) === '1');
-function toggleThumb() {
-  thumb.value = !thumb.value;
-  localStorage.setItem(THUMB_KEY, thumb.value ? '1' : '0');
-}
+/* 用户口径 2026-11-21：「缩略显示」那一整套整条删除（开关、状态位、本地记忆、两套渲染）——
+   卡片正文恒定两行（见下面 clamp2 那条），不再有「缩略 / 展开」两套渲染，
+   于是也没有「每条只占一两行」这个待选状态要记。 */
 
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
 const editKey = ref('');
@@ -298,21 +295,41 @@ const isPicked = (r: FeedRow) => picked.value.includes(r.key);
 function togglePick(r: FeedRow) {
   picked.value = isPicked(r) ? picked.value.filter((k) => k !== r.key) : [...picked.value, r.key];
 }
+/** 全选 = **当前可见的那些行**都在选中里（与对话页 allPicked 同一口径：列表一变就自动成立 / 失效） */
+const allPicked = computed(
+  () => merged.value.length > 0 && merged.value.every((r) => isPicked(r)),
+);
+/** 全选 / 取消全选（用户口径 2026-11-21：笔记页也要这一枚，位置在「已选 N」之前） */
+function toggleAll() {
+  picked.value = allPicked.value ? [] : merged.value.map((r) => r.key);
+}
 /** 批量态下点卡片本体 = 打勾 / 取消（按钮、输入框、链接除外）—— 与对话页「点整行即选」一致 */
 function onCardClick(ev: MouseEvent, r: FeedRow) {
   if (!batch.value) return;
   if ((ev.target as HTMLElement | null)?.closest?.('button, input, textarea, a, label')) return;
   togglePick(r);
 }
-function deletePicked() {
-  const rows = merged.value.filter((r) => isPicked(r)).map((r) => ({
+/** 批量删除：**先过一道确认**（用户口径 2026-11-21 —— 与对话页「删掉选中的这些对话」同一口径：
+ *  点一下就跑掉太轻率，笔记删了收不回来）。取消则**什么都不做**，选中态原样留着。 */
+async function deletePicked() {
+  if (!picked.value.length) return;
+  const rows = merged.value.filter(isPicked);
+  const ok = await askConfirm({
+    title: '删除选中的笔记？',
+    body: '笔记正文连同它挂的高亮一起删掉，不可恢复。',
+    target: rows.slice(0, 3).map((r) => r.label || r.key).join('、')
+      + (rows.length > 3 ? ` 等 ${rows.length} 条` : ''),
+    confirmLabel: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  exitBatch();
+  emit('delete-rows', rows.map((r) => ({
     kind: r.kind,
     noteId: r.noteId,
     anchorIds: r.anchorIds.slice(),
     annotationId: r.annotation?.id ?? (r.kind === 'annotation' ? r.key.slice(2) : ''),
-  }));
-  exitBatch();
-  emit('delete-rows', rows);
+  })));
 }
 
 /* ------------------------ 「更多」菜单（编辑 / 多选 / 删除） ------------------------ */
@@ -352,36 +369,35 @@ function onMore(key: string, r: FeedRow) {
     <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：
          一条 = 一处高亮 + 它的正文；批注也按同一种卡片列在这里） -->
     <template v-if="props.tab === 'notes'">
-      <!-- 工具条一条到底（滚动时钉在顶上）：平时是「N 条 + 缩略 + 多选」，
-           进了批量态就换成「已选 N + 取消 + 删除」—— 与对话页同一套动作，只是并进同一行，
+      <!-- 工具条一条到底（滚动时钉在顶上）：平时是「N 条 + 多选」（缩略开关已删，2026-11-21），
+           进了批量态就换成「全选 + 已选 N + 取消 + 删除」—— 与对话页同一套动作，只是并进同一行，
            不必再多一条工具条（多一条就多一层滚动后被滚走的东西）。 -->
       <div class="notes-bar">
         <template v-if="!batch">
           <span class="tiny faint">{{ merged.length }} 条</span>
           <span class="spacer" />
+          <!-- 多选（用户口径 2026-11-20；2026-11-21 换形态）：与对话页**同一枚圆钮、同一个图标键、同一段交互**
+               （点开进入批量态 → 卡片行首出现勾选框 → 顶部「全选 / 已选 N / 取消 / 删除」）。
+               不再套 `.seg sq` 那层方形胶囊 —— 尺寸与配色逐条照对话页那枚 `.multi-btn`（两份 scoped 样式，数值必须一致）。 -->
           <button
-            class="btn icon sm"
-            :title="thumb ? '展开显示（按排版渲染正文）' : '缩略显示（每条只占一两行）'"
-            :aria-pressed="thumb"
-            data-notes-thumb
-            @click="toggleThumb"
+            class="multi-btn"
+            :class="{ active: batch }"
+            :aria-pressed="batch"
+            title="批量管理（多选 + 批量删除）"
+            data-notes-batch
+            @click="toggleBatch"
           >
-            <AppIcon :name="thumb ? 'expand' : 'list'" :size="13" />
+            <AppIcon name="list-check" :size="15" />
           </button>
-          <!-- 多选（用户口径 2026-11-20）：与对话页**同一套** —— 同一个图标档胶囊、同一个图标键、
-               同一段交互（点开进入批量态 → 卡片行首出现勾选框 → 顶部「已选 N / 取消 / 删除」）。 -->
-          <div class="seg sq">
-            <button
-              :class="{ active: batch }"
-              title="批量管理（多选 + 批量删除）"
-              data-notes-batch
-              @click="toggleBatch"
-            >
-              <AppIcon name="list-check" :size="13" />
-            </button>
-          </div>
         </template>
         <template v-else>
+          <!-- 全选（用户口径 2026-11-21）：与对话页**同一枚胶囊 + 同一个 active 绑定**（allPicked = 当前可见行都选中），
+               位置在「已选 N」之前 —— 先说范围、再报数量，最后才是取消 / 删除。 -->
+          <div class="seg">
+            <button :class="{ active: allPicked }" data-notes-batch-all @click="toggleAll">
+              {{ allPicked ? '取消全选' : '全选' }}
+            </button>
+          </div>
           <span class="tiny faint" data-notes-batch-count>已选 {{ picked.length }}</span>
           <span class="spacer" />
           <button class="btn sm" data-notes-batch-cancel @click="exitBatch">取消</button>
@@ -402,7 +418,7 @@ function onMore(key: string, r: FeedRow) {
         v-for="r in merged"
         :key="r.key"
         class="item note-row"
-        :class="[r.kind, { thumb, editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
+        :class="[r.kind, { editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
         :data-note-id="r.noteId || undefined"
         :data-item-kind="r.kind"
         @click="onCardClick($event, r)"
@@ -476,13 +492,8 @@ function onMore(key: string, r: FeedRow) {
           </div>
         </template>
         <template v-else>
-          <!-- 正文：用户口径 2026-11-20 —— **两行，超出省略**（缩略态仍收成一行的老口径） -->
-          <div
-            v-if="r.contentMd"
-            class="small md"
-            :class="thumb ? 'clamp1' : 'clamp2'"
-            v-html="annotationHtml(r.contentMd)"
-          />
+          <!-- 正文：用户口径 2026-11-20 —— **恒定两行，超出省略**（缩略开关 2026-11-21 已删，不再有单行态） -->
+          <div v-if="r.contentMd" class="small md clamp2" v-html="annotationHtml(r.contentMd)" />
           <!-- 不用再写一行“还没写笔记”：头部那枚「待写」徽章已经说过了（用户口径 2026-10-10："移除多余的文字"） -->
         </template>
       </div>
@@ -705,7 +716,7 @@ function onMore(key: string, r: FeedRow) {
 .item.manual { border-left-color: var(--accent); }
 .item.auto, .item.selection { border-left-color: var(--ok); }
 .item.note { border-left-color: var(--warn); }
-/* 笔记页签：顶部一条**细工具条**（条数 + 缩略开关），滚动时钉在顶上。
+/* 笔记页签：顶部一条**细工具条**（条数 + 多选圆钮），滚动时钉在顶上。
    负 margin 正好吸收 `.panel-body` 的 padding（左右 8px），工具条才能通到边。
    左边框用高亮笔的颜色语义 —— 还没写正文的（`highlight`）压暗一档，一眼分得出"哪些还没写"。 */
 .notes-bar {
@@ -714,17 +725,32 @@ function onMore(key: string, r: FeedRow) {
   margin: -8px -8px 8px; padding: 4px 8px;
   background: var(--bg-elev); border-bottom: 1px solid var(--divider);
 }
+/* 多选圆钮（用户口径 2026-11-21）：**30×30 正圆**，不再套 `.seg sq` 那层方形胶囊 ——
+   底色 / 悬停 / active 三档都跟 `.seg` 同一个口径：`--bg-sunken` 托底 → 悬停换 `--bg-hover` 并抬一档阴影
+   → active 转主题色（`--accent-soft` 底 + `--accent-text` 图标）。
+   ⚠️ 对话页那枚是**同一套数值**（ReaderChat 的 `.multi-btn`），改一边必须同时改另一边。 */
+.multi-btn {
+  width: 30px; height: 30px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: var(--bg-sunken); color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.multi-btn:hover { background: var(--bg-hover); color: var(--text); box-shadow: var(--shadow-1); }
+.multi-btn:active { transform: scale(.94); }
+.multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
 .item.note-row { border-left-color: var(--accent); }
 .item.note-row.highlight { border-left-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong)); }
 .item.note-row.annotation { border-left-color: var(--ok); }
 .item.note-row .row { gap: 6px; }
-/* 缩略显示（用户口径）：每条只占一两行 —— 引用一行、正文一行，点开编辑器才铺开 */
-.item.note-row.thumb { padding: 6px 9px; margin-bottom: 5px; }
+/* 原文引用那一行恒为单行省略（模板里的 `.quote.clamp1`） */
 .clamp1 {
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
   overflow: hidden; line-clamp: 1;
 }
-/* 正文两行（用户口径 2026-11-20）：超出就省略，卡片不会因为一条长笔记被拉成一屏 */
+/* 正文两行（用户口径 2026-11-20）：超出就省略，卡片不会因为一条长笔记被拉成一屏。
+   用户口径 2026-11-21：「缩略显示」开关删掉后**只剩这一档**，正文不再收成一行。 */
 .clamp2 {
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
@@ -745,7 +771,6 @@ function onMore(key: string, r: FeedRow) {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-layer));
 }
 .item.note-row.picking { cursor: pointer; }
-.item.note-row.thumb .quote { margin-bottom: 0; }
 /* 编辑态：把卡片让给编辑框（用户口径 2026-10-10："编辑笔记时，可以隐藏顶部的部分" →
    "应该可以占用整个元素面积方便编辑"）——
    徽章 / 页码 / 时间 / 定位删除按钮那一整行、以及引用原文全部收起，
