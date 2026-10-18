@@ -5988,7 +5988,10 @@ function onFloatPress(ev: PointerEvent, which: 'note' | 'explain' | 'chat', key?
     if (card) { card.anchored = true; card.hover = false; }
   }
   takeTop(which);
-  if (ev.button === 0) clearDocSelection();
+  /* 只在**鼠标**按下时清文档选区：这条是为「拖浮层时正文 / PDF 文字层跟着长出一条选区」设的。
+     触摸按进输入框也走这里（button 同样是 0），清一次文档选区会让移动端把输入框的焦点一起
+     丢掉 —— 键盘弹不出来（用户口径 2026-11-26）。 */
+  if (ev.button === 0 && ev.pointerType === 'mouse') clearDocSelection();
 }
 
 /**

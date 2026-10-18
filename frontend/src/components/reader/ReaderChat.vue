@@ -301,6 +301,24 @@ function splitQuote(content: string): { quote: string; rest: string } {
   return { quote: match[1].trim(), rest: match[2].trim() };
 }
 
+/**
+ * 触摸点输入框时**兜一次焦点**。
+ *
+ * 移动端上焦点会被别处的收尾逻辑顺手带走（文档选区同步、布局变化、右键菜单收起…），
+ * 表现是「点一下输入框，光标闪一下就没了，键盘不出」——尤其是右键菜单「添加到对话框」之后
+ * 第一次点（用户口径 2026-11-26）。这里不去猜是谁带走的：按下后补两拍 focus，
+ * 已经聚焦时 focus() 是空操作，不会打断输入。
+ */
+function keepComposerFocus(ev: PointerEvent) {
+  const t = ev.target as HTMLElement | null;
+  const field = t?.closest?.('textarea, input') as HTMLTextAreaElement | HTMLInputElement | null;
+  if (!field) return;
+  if (ev.pointerType !== 'touch') return;
+  const again = () => { if (document.activeElement !== field) field.focus({ preventScroll: true }); };
+  void nextTick(again);
+  window.setTimeout(again, 120);
+}
+
 /** 胶囊整块可点 = 这轮要不要带上选区（仿 VS Code 的上下文胶囊：点它就切换）。 */
 function toggleSelection() {
   if (selCtx.value) selCtx.value.include = !selCtx.value.include;
@@ -1628,7 +1646,7 @@ defineExpose({ uploadFiles, ensureThread });
       <!-- 输入区 = **一块浮在消息上的圆角容器**：上面是 textarea，下面是操作条。
            容器自己承担"一块输入组件"的观感，里面的元素不再各自成块；`ref` 给样式里那个
            ResizeObserver 量高度用（消息区要按它留出底部空白，见 `.composer`）。 -->
-      <div ref="composerEl" class="composer">
+      <div ref="composerEl" class="composer" @pointerdown="keepComposerFocus">
         <div class="composer-box" :class="{ busy: uploading }">
           <!-- 划词带进来的选区：贴在输入框上沿的**上下文胶囊**（用户口径 2026-10-03，仿 VS Code）。
                整块是一枚按钮 → 点它切换"这轮要不要带上"；右侧 ✕ 才是移除。
