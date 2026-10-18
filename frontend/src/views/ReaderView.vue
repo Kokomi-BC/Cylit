@@ -220,9 +220,8 @@ const ASIDE_W_MAX_COMPARE = 560;
 /** 非对照模式的上限：960px，再与视口挂钩（不超过 72%） */
 const ASIDE_W_MAX_WIDE = 960;
 const ASIDE_W_DEFAULT = 300;
-/** 点「解读」页签时的目标宽度：解读里全是小标题与概念卡，窄栏会被挤成竖排 */
-const ASIDE_W_INSIGHT = 520;
-/** 点「对话」页签时的目标宽度：默认 300 下消息会被挤成竖排字，引用 chip 也放不下 */
+/** 浮窗（对话拎出来）的默认宽度：420 —— 再窄消息会被挤成竖排字、引用 chip 也放不下。
+ *  （以前它同时是"点对话页签自动放宽"的目标宽度，那条逻辑已按用户口径删除。） */
 const ASIDE_W_CHAT = 420;
 const asideWidthKey = `pm.reader.aside-w.${instancePaperId}`;
 /** 视口宽度（响应式）：非对照模式的上限要跟窗口挂钩 */
@@ -521,43 +520,17 @@ async function ensureAsideVisible() {
  * 否则界面上看不到任何变化，像"点了没反应"。
  *
  * 工具栏原来那枚「解读」按钮**已按用户口径删除**（解读在左栏就是一个页签，工具栏不该有重复入口）；
- * `?side=insight` 深链仍然只会"选中页签"，靠 `watch(sideTab)` 变宽。
- *
- * 「变宽」也没有写在这里，而是挂在 `watch(sideTab)` 上：点页签、深链、以后可能加的快捷键
- * 都是"进了解读页签"，写一处必然漏一处。
+ * `?side=insight` 深链也只会"选中页签"，**不改侧栏宽度**（用户口径 2026-11-19：宽度只由用户拖）。
  */
 async function openInsightTab() {
   await ensureAsideVisible();
   sideTab.value = 'insight';
 }
 
-/**
- * 进「解读」页签时把侧栏放宽到 520（用户口径）。
- *
- * **只增不减**：用户手动拖到 700 之后再点解读，不该被缩回 520 —— "我拉宽过"是明确意图。
- * 目标同样走 `clampAsideWidth`：纯译文（上限 640）能到 520，对照模式会被夹到 360
- * （那时正文本来只剩半屏，不能再让侧栏吃掉）。
- */
-async function widenForInsight() {
-  await widenAside(ASIDE_W_INSIGHT);
-}
-
-/** 「对话」页签：目标 420（比解读窄一点，但比默认 300 宽得能读）。 */
-async function widenForChat() {
-  await widenAside(ASIDE_W_CHAT);
-}
-
-/** 放宽左栏到目标宽度（**只增不减**，理由见 `widenForInsight`）。 */
-async function widenAside(target: number) {
-  if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死，变宽没有意义
-  const want = clampAsideWidth(target);
-  if (want <= asideWidth.value) return;
-  asideWidth.value = want;
-  persistAsideWidth();
-  await afterAsideResize();
-}
-/* 「进解读页签 → 变宽」的钩子挂在 `sideTab` 的 watch 上（见下面页签定义处）：
-   点页签、深链、以后可能加的快捷键都是"进了解读"，写一处必然漏一处。 */
+/* ⚠️ 点「对话 / 解读」页签**不再自动加宽侧栏**（用户口径 2026-11-19）：宽度只由用户自己拖，
+   点个页签就变宽会让人"我怎么一进来版面就变了"。原来那几条 `widenForInsight` / `widenForChat`
+   与挂在 `watch(sideTab)` 上的钩子一并删掉；默认宽度仍是 `ASIDE_W_DEFAULT`（300），
+   想要宽一点就直接拖把手（上限已放大到 560 / 960）。 */
 
 /**
  * 左栏「论文解读」页签右上角那枚图标按钮：在**应用内**新开一个标签页
@@ -744,7 +717,7 @@ const briefDraft = reactive<BriefDraft>({
 
 /** 侧栏（左栏，与目录合并）：**目录 / 论文解读**开头，再是搜索与其它页签 / 任务。
  *  解读读 `/understanding`，走 `useUnderstanding` 的整包缓存（与整页版共享）。
- *  进这个页签会自动把侧栏放宽（见 `widenForInsight`）。
+ *  进这个页签**不会**再自动放宽侧栏（用户口径 2026-11-19：宽度只由用户自己拖）。
  *  ⚠️ 顺序是用户口径：**论文解读紧跟「目录」右边**（页签条可横向滚，放前面才不会被挤出可视区）。
  *  ⚠️ 原「阅读地图」页签已随该功能一起删除（2026-10-02）。 */
 type SideTabKey = 'toc' | 'chat' | 'search' | SideTab;
@@ -755,12 +728,9 @@ const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
   'toc', 'chat', 'insight', 'search', 'references', 'notes', 'formulas', 'figures', 'terms', 'tasks',
 ];
-/* 进「论文解读」页签就把左栏放宽（`widenForInsight` 只增不减）。
-   放在这里而不是点击处理器里：点页签 / `?side=` 深链 / 工具栏按钮都算"进了解读"。 */
+/* 切页签只做"进这个页签才需要的事"（例如参考文献首次拉取）；**不再改侧栏宽度**（见上一条注释）。 */
 watch(sideTab, (k) => {
-  if (k === 'insight') void widenForInsight();
-  else if (k === 'chat') void widenForChat();
-  else if (k === 'references') void ensureReferences();
+  if (k === 'references') void ensureReferences();
 });
 /**
  * 「术语」页签的计数 = 简报里的统一译法 ∪ IR 术语表。
