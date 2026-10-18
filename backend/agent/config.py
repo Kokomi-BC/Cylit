@@ -105,7 +105,7 @@ def limits_payload(cfg: AgentConfig) -> dict[str, float]:
         "agent_deadline_seconds": cfg.deadline_seconds,
         "agent_context_budget": cfg.context_budget,
         "agent_auto_compress_percent": cfg.compact_threshold,
-        "agent_image_max_pages": cfg.image_max_pages,
+        "agent_attachment_inline_limit": int(get_settings().agent_attachment_inline_limit),
     }
     return {key: AGENT_LIMITS[key][1](actual[field])
             for key, (field, _kind, _low, _high) in AGENT_LIMITS.items()}

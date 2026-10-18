@@ -1015,8 +1015,8 @@ export interface AgentLimits {
   context_budget: number;
   /** 自动压缩触发线（上下文用量的百分比） */
   compact_threshold: number;
-  /** 单轮最多送几张图给视觉模型 */
-  image_max_pages: number;
+  /** 单轮最多把几张附件图内联给模型（默认 12） */
+  attachment_inline_limit: number;
   /** 改动是否还没被 agent 服务吃到（`PUT` 恒回 true；只读，不回传） */
   restart_required: boolean;
 }

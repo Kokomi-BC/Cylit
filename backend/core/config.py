@@ -39,7 +39,7 @@ AGENT_LIMITS: dict[str, tuple[str, type, float, float]] = {
     "deadline_seconds": ("agent_deadline_seconds", float, 30, 3600),
     "context_budget": ("agent_context_budget", int, 8000, 1000000),
     "compact_threshold": ("agent_auto_compress_percent", float, 50, 99),
-    "image_max_pages": ("agent_image_max_pages", int, 1, 50),
+    "attachment_inline_limit": ("agent_attachment_inline_limit", int, 1, 50),
 }
 
 

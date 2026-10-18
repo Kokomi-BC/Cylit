@@ -167,7 +167,7 @@ async def put_agent_limits(request: Request, payload: dict = Body(...)):
     if not values:
         raise ValidationError("没有可保存的项（max_rounds / search_budget / "
                               "deadline_seconds / context_budget / compact_threshold / "
-                              "image_max_pages 至少给一个）")
+                              "attachment_inline_limit 至少给一个）")
     s.save_agent_limits(values)
     return envelope({"ok": True, "restart_required": s.agent_limits_restart_required()},
                     message="已保存。重启问答服务（cylit-agent）后生效。", request=request)

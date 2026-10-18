@@ -249,7 +249,7 @@ const LIMIT_FIELDS: LimitFieldDef[] = [
   { key: 'deadline_seconds', label: '单轮时限', unit: '秒', min: 1, step: 5 },
   { key: 'context_budget', label: '上下文预算', unit: 'tokens', min: 1000, step: 1000 },
   { key: 'compact_threshold', label: '自动压缩触发', unit: '%', min: 1, max: 100, step: 5 },
-  { key: 'image_max_pages', label: '单轮送图上限', unit: '张', min: 0, step: 1 },
+  { key: 'attachment_inline_limit', label: '单轮送图上限', unit: '张', min: 1, step: 1 },
 ];
 
 type LimitKey = keyof AgentLimitsPatch;
@@ -262,12 +262,12 @@ const limitsHint = ref('');
 
 const limitForm = reactive<Record<LimitKey, number | ''>>({
   max_rounds: '', search_budget: '', deadline_seconds: '',
-  context_budget: '', compact_threshold: '', image_max_pages: '',
+  context_budget: '', compact_threshold: '', attachment_inline_limit: '',
 });
 /** 服务端**当前生效**的那一份：用来算"改了没有"。 */
 const limitBase = reactive<Record<LimitKey, number>>({
   max_rounds: 0, search_budget: 0, deadline_seconds: 0,
-  context_budget: 0, compact_threshold: 0, image_max_pages: 0,
+  context_budget: 0, compact_threshold: 0, attachment_inline_limit: 0,
 });
 
 function fillLimits(data: AgentLimits): void {
@@ -299,7 +299,7 @@ async function saveLimits(): Promise<void> {
   if (!limits.value) return;
   const body: AgentLimitsPatch = {
     max_rounds: 0, search_budget: 0, deadline_seconds: 0,
-    context_budget: 0, compact_threshold: 0, image_max_pages: 0,
+    context_budget: 0, compact_threshold: 0, attachment_inline_limit: 0,
   };
   for (const f of LIMIT_FIELDS) {
     const v = limitForm[f.key];

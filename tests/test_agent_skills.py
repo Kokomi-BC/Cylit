@@ -32,7 +32,7 @@ from backend.core.errors import PaperMindError, ProviderError, ValidationError
 from backend.services.agent import skills_store
 
 LIMITS = {"max_rounds": 60, "search_budget": 5, "deadline_seconds": 600,
-          "context_budget": 200000, "compact_threshold": 90, "image_max_pages": 3}
+          "context_budget": 200000, "compact_threshold": 90, "attachment_inline_limit": 12}
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -259,7 +259,7 @@ def test_limit_keys_map_to_real_config_fields() -> None:
         "deadline_seconds": "agent_deadline_seconds",
         "context_budget": "agent_context_budget",
         "compact_threshold": "agent_auto_compress_percent",
-        "image_max_pages": "agent_image_max_pages",
+        "attachment_inline_limit": "agent_attachment_inline_limit",
     }
 
 
@@ -271,7 +271,7 @@ def test_limits_out_of_range_rejected(client) -> None:
         ({"deadline_seconds": 10}, "30~3600"),
         ({"context_budget": 1000}, "8000~1000000"),
         ({"compact_threshold": 99.5}, "50~99"),
-        ({"image_max_pages": 0}, "1~50"),
+        ({"attachment_inline_limit": 0}, "1~50"),
     ):
         response = http.put("/api/v1/agent/limits", json={**LIMITS, **patch})
         assert response.status_code == 400, (patch, response.text)
