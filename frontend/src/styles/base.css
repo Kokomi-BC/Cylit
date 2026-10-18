@@ -670,15 +670,29 @@ table.data.fixed { table-layout: fixed; }
   color: var(--danger); font-size: .92em; font-style: normal;
 }
 
-/* ---------------- 滚动条（细、圆、跟随主题） ---------------- */
-* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
-*::-webkit-scrollbar { width: 10px; height: 10px; }
+/* ---------------- 滚动条（细、圆角、跟随主题） ----------------
+ * 用户口径 2026-10-18：页面里所有滚动条都要细、要圆角。
+ * 做法：轨道透明 + 6px 宽的胶囊形滑块（border-radius 999px）；
+ * Firefox 走 scrollbar-width / scrollbar-color，Chromium 走 ::-webkit-scrollbar —— 两套都给，
+ * 颜色全部由 --text 按透明度混出来，浅色 / 深色 / 各套皮肤自动跟随。
+ * ⚠️ 组件里显式隐藏滚动条的（标签条 / 胶囊 / 侧栏页签）用的是 scrollbar-width:none
+ * 与 ::-webkit-scrollbar { display:none }，权重更高，不会被这条覆盖掉。 */
+/* ⚠️ scrollbar-width 只在 Firefox 上开：Chromium 自 121 起，元素一旦写了 scrollbar-width
+ * （哪怕只是 thin），::-webkit-scrollbar 那一套就**整段失效** —— 实测宽度会回到 10px、
+ * 圆角也没了（用户口径 2026-10-18 要"细圆角"，必须走伪元素这条路）。 */
+@supports (-moz-appearance: none) {
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text) 20%, transparent);
-  border: 3px solid transparent; border-radius: var(--radius-ctl); background-clip: content-box;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 999px;
+  border: 0;
 }
-*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text) 34%, transparent); background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text) 36%, transparent); }
+/* 右下角那个小方块（两向都能滚时出现）不要露出底色 */
+*::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---------------- 减少动效（无障碍：尊重系统设置） ---------------- */
 @media (prefers-reduced-motion: reduce) {

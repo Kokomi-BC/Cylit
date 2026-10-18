@@ -6512,23 +6512,30 @@ function renderMarkdown(text?: string | null) {
   touch-action: none; cursor: grab;
 }
 .sel-handle:active { cursor: grabbing; }
+/* 圆点：略放大到 16px，白圈收薄到 2.5px，再加一档柔投影 —— 压在文字上既分得开又不糊 */
 .sel-handle i {
-  display: block; width: 14px; height: 14px; border-radius: 999px;
+  position: relative; z-index: 1;
+  display: block; width: 16px; height: 16px; border-radius: 999px;
   background: var(--accent);
-  /* 白圈 + 一档投影：压在深色正文上也看得清，和胶囊的玻璃语言也对得上 */
-  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent), var(--shadow-1);
+  box-shadow: 0 0 0 2.5px var(--bg-elev), 0 1px 4px rgba(0, 0, 0, .22);
+  transition: transform .12s var(--ease);
 }
+/* 按住时圆点轻轻放大一格：给手指一点"拿到了"的反馈 */
+.sel-handle:active i { transform: scale(1.14); }
 /* 小尾巴指向文字那一行（上端指向下方、下端指向上方），一眼看出是哪一头。
-   ⚠️ 必须 translateX(-50%)：只写 left:50% 的话 2px 的线会往右偏半个线宽（用户口径
-   2026-10-18"直接的竖线没有居中"）。外圈给一道与圆点同款的浅描边，压在深浅两套皮肤上都不发虚。 */
+   ⚠️ translateX(-50%) 不能省：只写 left:50% 的话线会往右偏半个线宽（用户口径
+   2026-10-18"直接的竖线没有居中"）。
+   造型：让尾巴**从圆点底下钻出来**（z-index 0、起点落在圆心），中段被圆点盖住，
+   看上去是一枚连续的图钉；以前尾巴自带走一圈白描边，边上糊成一个小方框，
+   用户口径 2026-10-18"手柄样式优化一下"。 */
 .sel-handle::after {
-  content: ''; position: absolute; left: 50%; transform: translateX(-50%);
-  width: 2px; height: 13px; border-radius: 999px;
-  background: var(--accent); opacity: .9;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-elev) 85%, transparent);
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%); z-index: 0;
+  width: 3px; height: 20px; border-radius: 999px;
+  background: var(--accent);
 }
-/* 起点手柄：圆圈在上、小尾巴朝下（指向文字那一行）；终点手柄镜像（尾巴朝上） */
-.sel-handle.start::after { top: 27px; }
+/* 起点手柄：圆点在上、尾巴往下（指向文字那一行）；终点手柄镜像。
+   两头对称：都被圆点的白圈盖住中段，露出约 10px。 */
+.sel-handle.start::after { top: 20px; }
 .sel-handle.end::after { top: 4px; }
 
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
@@ -6758,7 +6765,7 @@ function renderMarkdown(text?: string | null) {
  *   这样侧栏开合时 `.reader-slide` 的位移不会在容器上闪出一条横向滚动条。 */
 .reader-content {
   overflow-y: auto; overflow-x: hidden;
-  background: var(--bg); scrollbar-width: thin; scrollbar-gutter: stable;
+  background: var(--bg); scrollbar-gutter: stable;
   padding-top: 8px;
 }
 /* 让位 + 平移的那一层。

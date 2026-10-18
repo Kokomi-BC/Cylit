@@ -254,8 +254,8 @@ onBeforeUnmount(() => {
 }
 /* 细滚动条（目标站口径：4px、中性色） */
 .ctx-panel::-webkit-scrollbar { width: 4px; }
-.ctx-panel::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
-.ctx-panel::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+.ctx-panel::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text) 24%, transparent); border-radius: 999px; }
+.ctx-panel::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text) 38%, transparent); }
 /* 面板只当"焦点容器"用（`tabindex=-1`），别画浏览器默认的聚焦框 */
 .ctx-panel:focus, .ctx-panel:focus-visible { outline: none; }
 
