@@ -293,7 +293,8 @@ const asidePreviewStyle = computed<CSSProperties>(() => (asidePreviewW.value ===
   ? {}
   : {
       width: `${asidePreviewW.value}px`,
-      '--aside-pin-w': `${resizeStartW || asidePreviewW.value}px`,
+      /* 子元素那条 `min-width` 也跟着预览值：不跟的话面板缩小时内容被撑住、右侧被裁掉一道 */
+      '--aside-min-w': `${asidePreviewW.value}px`,
     }));
 /**
  * 拖动期间正文那一层**完全不动**（松手才让位）。
@@ -7087,13 +7088,13 @@ function renderMarkdown(text?: string | null) {
      宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
   /* 把手已经挪到侧栏外面（见上面的 `.reader > .aside-resizer`），所以这里**不留 gutter**：
      面板里的滚动条回到最右边原位，`.panel-body` / `.toc-pane` 这些滚动容器照旧整宽。 */
+  /* 子元素的兜底最小宽度：拖宽度时跟着**预览值**走（否则面板缩小时内容被这条撑住、右侧被裁），
+     其余时候跟着落盘值。用行内变量，不写组件根上的 `v-bind`。 */
   .reader-aside > * { min-width: var(--aside-min-w, v-bind(asideWidthPx)); }
-  /* 拖宽度期间：把面板内容**钉在按下那一刻的宽度**，只让"边框"跟着指针走。
-     不钉的话每帧都要重排里面那一整列（消息 + KaTeX + 目录），实测 42ms/帧；
-     钉住之后内容一次都不重排，松手写回真值时排一次（用户口径 2026-11-19：松手再排）。 */
-  .reader.aside-previewing .reader-aside > * {
-    width: var(--aside-pin-w); min-width: 0;
-  }
+  /* 拖宽度期间：面板内容**跟着实时重排**（用户口径 2026-11-19 第二轮：要看到内容跟着变）。
+     这一条与上一版相反 —— 上一版把内容钉在按下那一刻的宽度、只让边框动，为的是省掉逐帧重排；
+     现在靠"只动面板 + `contain` 隔离 + 正文那一层不动"来把代价压住，内容就能实时跟手了。
+     正文那一层仍然**不跟着动**（见 `asidePreviewShift`），松手才让位/重排一次。 */
   /* 把面板的绘制/布局隔离出来：拖宽度时只有它自己的边框在动，不牵动别处 */
   .reader.aside-previewing .reader-aside { contain: layout paint; }
 }
