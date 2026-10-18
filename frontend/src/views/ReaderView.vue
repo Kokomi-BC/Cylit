@@ -1709,8 +1709,12 @@ function onFloatPointerUp(ev: PointerEvent) {
     floatBox.value.top += floatShift.value.y;
   }
   floatShift.value = { x: 0, y: 0 };
-  floatMoving.value = false;
   floatDrag.on = false;
+  /* ⚠️ `float-moving` 要**多留一帧**：`.`reader-aside` 上那条 `transition: transform .26s` 一旦
+   *  在 transform 归零的同一帧恢复，浏览器会把"translate3d(...) → none"当成一次真变化补间，
+   *  看起来就是松手后卡片又滑回去的闪烁动画（用户口径 2026-11-19 报的正是这个）。 */
+  floatMoving.value = true;
+  requestAnimationFrame(() => { if (!floatDrag.on) floatMoving.value = false; });
   floatDrag.mode = '';
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
 }
@@ -6052,10 +6056,12 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="chat" :size="13" class="float-ico" />
           <span class="float-title">对话</span>
           <span class="spacer"></span>
-          <button class="btn ghost icon sm" title="回到侧栏" @click="dockChatFromFloat">
-            <AppIcon name="collapse" :size="14" />
+          <!-- 两枚按钮与对话页头部那组同一规格（26px 圆钮 + 悬停浮起），图标用**斜对角双箭头**
+               （收回 = 两个箭头朝内，用户口径 2026-11-19）。 -->
+          <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
+            <AppIcon name="collapse-diag" :size="14" />
           </button>
-          <button class="btn ghost icon sm" title="关闭浮窗" @click="closeChatFloat">
+          <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
             <AppIcon name="close" :size="13" />
           </button>
         </div>
@@ -6953,6 +6959,14 @@ function renderMarkdown(text?: string | null) {
   transition: background var(--dur) var(--ease);
 }
 .float-bar:hover::before, .float-bar:active::before { background: var(--accent); }
+/* 右上角两枚按钮：与对话页头部那组同一规格（`.th-act` 的同一套数字） */
+.float-act {
+  width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.float-act:hover { background: var(--bg-hover); color: var(--text); }
+.float-act:active { transform: scale(.94); }
 .float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .float-ico { color: var(--text-dim); flex: none; }
 /* 两个下角都能改尺寸（用户口径 2026-11-19：去掉右下角那个直角图标，左右两个角都能拖）。
@@ -7064,6 +7078,8 @@ function renderMarkdown(text?: string | null) {
 /* 这里的几何全由 `asideFloatStyle` 行内给（不写 v-bind：见那条 computed 的说明） */
 .reader.aside-float .reader-aside {
   transform: none; opacity: 1; pointer-events: auto;
+  /* 常驻一个合成层：拖动结束后不再"降级→再升级"，避免松手那一下整块重绘的闪烁 */
+  will-change: transform;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
 }

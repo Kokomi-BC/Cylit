@@ -109,6 +109,11 @@ const ICONS: Record<string, string> = {
   search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.4 6.3"/><path d="M20 5.5V11h-5.5"/>',
   filter: '<path d="M4 6h16l-6.2 7.2V19l-3.6 1.6v-7.4z"/>',
+  /* 浮层化 / 收回：**斜对角双箭头**（Material 的 open_in_full / close_fullscreen 那两枚）。
+     用户口径 2026-11-19：全屏（拆出去看）就该是这种「两个箭头朝对角」的记号，
+     方框加箭头（external）容易被当成「在新标签页打开外部链接」。 */
+  'expand-diag': '<path d="M14 4h6v6"/><path d="M20 4l-6.5 6.5"/><path d="M10 20H4v-6"/><path d="M4 20l6.5-6.5"/>',
+  'collapse-diag': '<path d="M20 10h-6V4"/><path d="M14 10l6.5-6.5"/><path d="M4 14h6v6"/><path d="M10 14l-6.5 6.5"/>',
   external: '<path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14v5.5A1.5 1.5 0 0 1 16.5 21h-11A1.5 1.5 0 0 1 4 19.5v-11A1.5 1.5 0 0 1 5.5 7H11"/>',
   upload: '<path d="M12 16.5V4.5"/><path d="M8 8.5l4-4 4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>',
   download: '<path d="M12 4.5v12"/><path d="M8 12.5l4 4 4-4"/><path d="M4 17v1.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V17"/>',

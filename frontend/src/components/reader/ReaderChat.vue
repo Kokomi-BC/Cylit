@@ -1071,14 +1071,15 @@ defineExpose({ uploadFiles });
         <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
           <AppIcon name="close" :size="12" />
         </button>
-        <!-- 列表这一级的「加号」在左边，所以拆分按钮放在同一行最右（同一枚图标、同一个动作） -->
+        <!-- 列表这一级的「加号」在左边，所以拆分按钮放在同一行最右（同一枚图标、同一个动作）。
+             图标是**斜对角双箭头**（拆出去看 = 两个箭头朝外），与收回那枚互为镜像。 -->
         <button
           v-if="showFloatBtn"
           class="btn ghost icon sm"
           title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
           @click="emit('float')"
         >
-          <AppIcon name="external" :size="14" />
+          <AppIcon name="expand-diag" :size="14" />
         </button>
       </div>
 
@@ -1161,7 +1162,7 @@ defineExpose({ uploadFiles });
             title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
             @click="emit('float')"
           >
-            <AppIcon name="external" :size="14" />
+            <AppIcon name="expand-diag" :size="14" />
           </button>
           <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
           <button class="th-act" title="新建对话" @click="startNew">
