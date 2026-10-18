@@ -31,6 +31,20 @@ export function cleanQuote(text: string): string {
     .trim();
 }
 
+/**
+ * 占位符原文的替身：把那一行的正文 markdown 压成**一行行内**文本。
+ * 侧栏那条引用是 `clamp1`（恒一行、超出省略），块级公式（$$…$$）在里面会被裁成一截，
+ * 所以这里把 $$ 降成 $（KaTeX 走行内模式），并把列表前缀 / 换行压平。
+ */
+export function quoteFromMarkdown(md: string): string {
+  return cleanQuote(
+    String(md ?? '')
+      .replace(/\$\$/g, '$')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/\n+/g, ' '),
+  );
+}
+
 export interface NotesFeedRow<H = Highlight, N = Note, A = Annotation> {
   /** 稳定键（`h:<分组>` / `n:<笔记id>` / `a:<批注id>`）：列表 `key`、滚动定位、编辑态都用它 */
   key: string;
@@ -87,7 +101,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
       page: first.page ?? null,
       // 原文是占位符（在 PDF 里选中公式 / 图片块）时退回那一行的正文 markdown：
       // 用户要看到的是"这条笔记标的是哪个式子"，不是一个占位字形。
-      quote: list.map((h) => cleanQuote(h.text ?? '') || cleanQuote(h.quote_md ?? ''))
+      quote: list.map((h) => cleanQuote(h.text ?? '') || quoteFromMarkdown(h.quote_md ?? ''))
         .filter(Boolean).join(' '),
       color: first.color || 'yellow',
       scope: first.scope ?? 'row',
@@ -104,7 +118,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     rows.push({
       key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [],
       page: n.page ?? null,
-      quote: cleanQuote(n.selected_text ?? '') || cleanQuote(n.quote_md ?? ''),
+      quote: cleanQuote(n.selected_text ?? '') || quoteFromMarkdown(n.quote_md ?? ''),
       color: '',
       scope: n.scope, noteId: n.id, highlightId: n.highlight_id ?? '',
       contentMd: n.content_md, label: '笔记', badge: 'accent',
