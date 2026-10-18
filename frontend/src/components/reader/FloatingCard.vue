@@ -869,7 +869,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
   background: transparent;
   color: var(--text);
   font-family: inherit;
-  font-size: inherit;
+  /* 与笔记的删除确认菜单同一档字号：这两块菜单会挨着出现，一大一小立刻看得出来 */
+  font-size: calc(12.5px * var(--ts, 1));
+  font-weight: 500;
   line-height: 1.4;
   text-align: left;
   white-space: nowrap;
