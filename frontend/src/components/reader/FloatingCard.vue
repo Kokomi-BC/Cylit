@@ -338,24 +338,30 @@ function applyResizeMove() {
   /* 手势期间逐帧清选区（只在真有选区时才动）：抓手是 `user-select: none`，
      浏览器的锚点会跳到卡片正文上，拖一下就划出一片卡片自己的文字。 */
   clearDocSelection();
-  const MIN_W = 260;
-  const MIN_H = 160;
   const dx = at.x - rs.sx;
   const dy = at.y - rs.sy;
-  const maxH = Math.max(MIN_H, rs.vh - rs.st - 10);
+  /* ⚠️ 下限**不能**直接用 MIN_W / MIN_H：短笔记（比如只写了一行）初始高度是内容高，
+     可能只有 60~120px。写死 160 的话，手指一碰下角，高度当场被夹到 160 ——
+     用户看到的就是「拖动还没开始，卡片先自己长高一截」（用户口径 2026-11-25）。
+     所以下限取 min(常量, 按下那一刻的真实尺寸)：绝不会在第 0 帧跳一下，
+     而小卡本来也没有再缩的余地（已经比最小高度还小）。上限同理，
+     否则卡片贴近屏幕底部时 maxH < 当前高度，第一帧反而会往回缩。 */
+  const minW = Math.min(260, rs.sw);
+  const minH = Math.min(160, rs.sh);
+  const maxH = Math.max(minH, rs.vh - rs.st - 10);
   if (rs.corner === 'br') {
-    const maxW = Math.max(MIN_W, rs.vw - rs.sl - 10);
-    rlive.w = Math.round(clamp(rs.sw + dx, MIN_W, maxW));
+    const maxW = Math.max(minW, rs.vw - rs.sl - 10);
+    rlive.w = Math.round(clamp(rs.sw + dx, minW, maxW));
     rlive.left = rs.sl;
   } else {
     /* 左下角：**右边界钉住不动**（人拉的是左边那条边）—— 宽度反向变化，`left` 跟着推。
        否则拉左角时卡片会整体往右跑，手感完全不对。 */
     const right = rs.sl + rs.sw;
-    const w = Math.round(clamp(rs.sw - dx, MIN_W, Math.max(MIN_W, right - 8)));
+    const w = Math.round(clamp(rs.sw - dx, minW, Math.max(minW, right - 8)));
     rlive.w = w;
     rlive.left = Math.round(right - w);
   }
-  rlive.h = Math.round(clamp(rs.sh + dy, MIN_H, maxH));
+  rlive.h = Math.round(clamp(rs.sh + dy, minH, maxH));
   const node = el.value;
   if (node) {
     node.style.left = rlive.left + 'px';

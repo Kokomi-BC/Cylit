@@ -1774,6 +1774,9 @@ function onFloatCardTouchStart(ev: TouchEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
   if (!t?.closest?.('.thread-head, .list-head')) return;
+  /* ⚠️ 按在**按钮**上就整条放行（不 preventDefault、不起手势）：取消 touchstart 会把
+     后续的 click 一起掐掉，于是头部那几枚键在触摸屏上点了没反应（用户口径 2026-11-25）。 */
+  if (t.closest('button, input, textarea, label, a')) return;
   const p = ev.touches[0];
   if (!p) return;
   ev.preventDefault();
@@ -1798,7 +1801,9 @@ function onFloatCardDown(ev: PointerEvent) {
 function onFloatCardMouseDown(ev: MouseEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
+  /* 按钮 / 输入类目标放行：这一条是挡"拖选"的，不该连按键的原生按下态一起挡掉 */
   if (!t?.closest?.('.thread-head, .list-head')) return;
+  if (t.closest('button, input, textarea, label, a')) return;
   ev.preventDefault();
 }
 
@@ -1806,7 +1811,10 @@ function onFloatCardMouseDown(ev: MouseEvent) {
 function startFloatGesture(mode: 'move' | 'size' | 'size-left', x: number, y: number) {
   floatDrag.on = true;
   floatDrag.mode = mode;
-  setFloatDragging(mode === 'move');
+  /* 角把手的「按下」反馈走 **class**（不是 `:active`）：触摸屏上我们在 touchstart 里
+     `preventDefault()` 了，`:active` 就未必来；笔记卡那边一直是 `.fc-resize.is-on`，
+     两边必须同一手法，否则「手指按住角把手没有动画」（用户口径 2026-11-25）。 */
+  if (mode !== 'move') (mode === 'size' ? gripBrEl.value : gripBlEl.value)?.classList.add('is-on');
 
   floatDrag.sx = x; floatDrag.sy = y;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
@@ -1937,7 +1945,8 @@ function endFloatGesture() {
   /* 类名与选区闸门**同步**撤掉：`.float-dragging` 现在只影响抓手那一枚药丸，
      闸门（`html.cy-float-gesture`）只影响 PDF 文字层 —— 都不再有文档级重算。
      （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
-  setFloatDragging(false);
+  gripBrEl.value?.classList.remove('is-on');
+  gripBlEl.value?.classList.remove('is-on');
   lockFloatSelection(false);
   untrackFloatTouch();
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
@@ -7842,7 +7851,8 @@ function renderMarkdown(text?: string | null) {
   72% { border-right-width: 2.4px; border-bottom-width: 2.4px; }
   100% { border-right-width: 2.7px; border-bottom-width: 2.7px; }
 }
-.reader > .float-grip.bl:active::after {
+.reader > .float-grip.bl:active::after,
+.reader > .float-grip.bl.is-on::after {
   animation-name: fc-grip-thicken-f-bl, fc-grip-glide-f-bl;
 }
 /* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
@@ -7864,7 +7874,8 @@ function renderMarkdown(text?: string | null) {
   72% { border-left-width: 2.4px; border-bottom-width: 2.4px; }
   100% { border-left-width: 2.7px; border-bottom-width: 2.7px; }
 }
-.reader > .float-grip:active::after {
+.reader > .float-grip:active::after,
+.reader > .float-grip.is-on::after {
   border-color: var(--accent); --fc-stroke: 2.7px;
   animation: fc-grip-thicken-f 520ms cubic-bezier(.22, 1.2, .36, 1) both,
              fc-grip-glide-f 420ms cubic-bezier(.22, 1.2, .36, 1) both;
@@ -7880,7 +7891,8 @@ function renderMarkdown(text?: string | null) {
 @media (prefers-reduced-motion: reduce) {
   .reader > .float-grip::after { transition: border-color var(--dur) var(--ease); transform: none; }
   .reader > .float-grip:hover::after,
-  .reader > .float-grip:active::after { transform: none; animation: none; }
+  .reader > .float-grip:active::after,
+  .reader > .float-grip.is-on::after { transform: none; animation: none; }
 }
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
