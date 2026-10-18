@@ -346,7 +346,12 @@ const style = computed(() => ({
 .fc-btn:active { transform: scale(.94); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 /* 头部最右那格（head-tail）：与锚定之间再多一小段间距 —— 删除键和「保存 / 锚定」不能挨着 */
-.fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 4px; }
+/* 头部最右那格（删除键）。**只靠父级的 gap 与邻居分开**：这里再叠一个 margin-left，
+   就变成"删除前 6px、删除后 6px"，与左边的铅笔/锚定不一致（用户口径 2026-11-21 报的间隔不匀）。
+   `:empty` 那条是同一个问题的另一半：父组件即使只在**编辑态**才渲染里面的按钮，
+   也照样会传这个插槽 —— 空 span 会作为 flex 子项吃掉两个 gap，查看态下 ✕ 就被推远了。 */
+.fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.fc-tail:empty { display: none; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
 /* 用户把卡片拉大之后（`sizeH` 有值 → `.sized`）正文区改成**纵向 flex**：
