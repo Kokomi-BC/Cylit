@@ -7507,6 +7507,8 @@ function renderMarkdown(text?: string | null) {
      **不设 `max-height`** —— 否则长笔记会在框里再套一层滚动条（框里一根、卡片一根）。
      内容真的超出卡片时，让外层 `.fc-body` 去滚。 */
   width: 100%; min-height: 96px; resize: none;
+  /* 卡片被拉大时（`.float-card.sized`）吃满正文区：否则拉高之后下面留一块点不动的白 */
+  flex: 1 1 auto;
   /* 左内边距 12px（不是 16）：`.fc-head` 自己还有 12px 内边距，
      加起来与标题那枚图标同一个缩进（用户口径 2026-10-10："文字位置不能像那样靠边"）。 */
   padding: 4px 16px 4px 12px; font-size: 16px; line-height: 1.6;

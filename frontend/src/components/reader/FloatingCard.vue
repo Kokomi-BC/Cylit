@@ -194,6 +194,7 @@ const style = computed(() => ({
     v-if="props.open"
     ref="el"
     class="float-card"
+    :class="{ sized: sizeH !== null }"
     :style="style"
     data-float-card
   >
@@ -336,6 +337,11 @@ const style = computed(() => ({
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
+/* 用户把卡片拉大之后（`sizeH` 有值 → `.sized`）正文区改成**纵向 flex**：
+   这样里面那层"本该吃满"的内容（笔记卡的可编辑区）可以用 `flex: 1 1 auto` 长高，
+   而不是拉大之后下面空出一大块点不动的白。没拉过尺寸时保持原样（高度随内容），
+   免得默认尺寸的卡片被撑出一条空白。 */
+.float-card.sized .fc-body { display: flex; flex-direction: column; }
 /* 底部两个角的拖动把手（用户口径 2026-10-13）：16×16 的热区，里面用一条**2px 圆弧**画出来 ——
    11×11 的小方块只描右边/下边、再给一个 1/4 圆角，剩下的就是个像 iOS 那样的圆角把手。
    静止时淡（opacity .35 + --border-strong），悬停或正在拖时升到 --accent 且不透明。
