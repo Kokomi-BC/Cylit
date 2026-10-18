@@ -2941,7 +2941,8 @@ onMounted(async () => {
     const want = Number(route.query.mdpage ?? 0);
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
   }
-  // 上次是把对话拎出来看的：布局落定后摆回浮层（切标签页 / 刷新都算）
+  // 上次看的时候开着哪些浮层：笔记卡先摆（数据已就绪），再摆对话浮层
+  await restoreNoteCards();
   await restoreChatFloat();
   fetchTasks();
   taskTimer = setInterval(() => { if (hasRunningTask.value) fetchTasks(); }, 4000);
@@ -5591,6 +5592,57 @@ watch(paperId, () => {
   noteCards.splice(0, noteCards.length);
   activeNoteKey.value = '';
 });
+
+/* ------------------ 跨标签页 / 刷新记住「哪些笔记卡是开着的」 ------------------
+ * 阅读器切走就重新挂载（App 的 RouterView 带 key），卡片全没了 —— 与对话浮层同一个问题
+ * （用户口径 2026-11-26）。按**论文**记：卡片挂的是这篇的高亮 / 笔记 id，换一篇就没意义。
+ * 只记「固定着的」那些：悬停临时卡本来就是路过看一眼，回来时不该凭空冒出一张。 */
+function noteOpenKey(): string {
+  return `cylit:notes-open:${paperId.value}`;
+}
+
+function persistNoteCards() {
+  const keys = noteCards.filter((c) => !c.hover).map((c) => c.key);
+  try {
+    if (keys.length) localStorage.setItem(noteOpenKey(), JSON.stringify(keys));
+    else localStorage.removeItem(noteOpenKey());
+  } catch { /* 隐私模式忽略 */ }
+}
+
+/* 卡片集合一变（开 / 关）就落一次盘；悬停卡不计入，所以鼠标来回扫过文字不会狂写。 */
+watch(() => noteCards.filter((c) => !c.hover).map((c) => c.key).join('|'), persistNoteCards);
+
+/**
+ * 重新挂载后把上次开着的卡片摆回去。
+ *
+ * 必须在 notes / highlights 到位之后调：卡片要靠 id 把内容重建出来，找不到就跳过 ——
+ * 笔记被删了、高亮被合并了，都不该留一张空卡。位置交给 FloatingCard 的 persistKey 记忆，
+ * 没记过的那几张照老规矩按 28px 依次错开（prevNoteCardOrigin 需要前一张已经渲染，故逐张 nextTick）。
+ */
+async function restoreNoteCards() {
+  let keys: string[] = [];
+  try {
+    const raw = localStorage.getItem(noteOpenKey());
+    if (!raw) return;
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) keys = parsed.filter((k): k is string => typeof k === 'string');
+  } catch { return; }
+  for (const key of keys) {
+    const id = key.slice(2);
+    if (!id) continue;
+    if (key.startsWith('n:')) {
+      const note = notes.value.find((n) => n.id === id);
+      if (!note) continue;
+      const hl = highlights.value.find((h) => h.id === note.highlight_id) ?? null;
+      openNotePopover({ note, highlight: hl, anchored: true });
+    } else if (key.startsWith('h:')) {
+      const hl = highlights.value.find((h) => h.id === id);
+      if (!hl) continue;
+      openNotePopover({ highlight: hl, mode: 'edit', anchored: true });
+    }
+    await nextTick();
+  }
+}
 
 /** 打开浮层（查看已有笔记 / 编辑某条 / 新建）—— **同一处高亮 / 同一条笔记永远只有一张卡**：
  *  已经开着就更新那张并聚焦（置为最上层），不再新增。 */
