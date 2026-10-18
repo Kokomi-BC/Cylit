@@ -5546,6 +5546,22 @@ function noteMemoryKeyOf(noteId: string, highlightId: string): string {
   return `note:${noteId || `hl-${highlightId}`}`;
 }
 
+/**
+ * 位置记录的**搬家**：同一处内容先后有两个记忆键 ——
+ * 还没写成笔记时是 note:hl-<高亮>，保存成笔记之后变成 note:<笔记>。
+ * 不搬一次，重新打开时按新键找不到位置记录，卡片就落到锚点 / 级联位（用户口径 2026-11-26：
+ * 「框的位置不在原来的位置了」）。只在新键还没有记录、旧键有记录时搬，搬完两边都在，不会丢。
+ */
+function migrateFloatPos(fromKey: string, toKey: string) {
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  try {
+    const to = FLOAT_POS_PREFIX + toKey;
+    const from = FLOAT_POS_PREFIX + fromKey;
+    const saved = localStorage.getItem(from);
+    if (saved && !localStorage.getItem(to)) localStorage.setItem(to, saved);
+  } catch { /* 隐私模式忽略 */ }
+}
+
 function rectAnchor(rect: DOMRect | null | undefined, fallback?: { x: number; y: number }) {
   if (rect) return { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
   return { x: fallback?.x ?? 40, y: fallback?.y ?? 120, w: 0, h: 0 };
@@ -5705,12 +5721,17 @@ function openNotePopover(opts: {
       existing.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
       existing.rowId = note.block_id ?? existing.rowId;
       existing.quote = note.selected_text ?? existing.quote;
+      /* 键从按高亮换成按笔记：位置记录跟着搬过去，卡片不会因为换键而跳位 */
+      migrateFloatPos(existing.memoryKey,
+        noteMemoryKeyOf(note.id, existing.highlightId));
       existing.memoryKey = noteMemoryKeyOf(note.id, existing.highlightId);
     }
     focusNoteCard(existing.key);
     return;
   }
   const memoryKey = noteMemoryKeyOf(noteId, highlightId);
+  /* 先有高亮、后写笔记的那种：位置当初按高亮那个键存的，搬到现在这个键上 */
+  if (noteId && highlightId) migrateFloatPos(`note:hl-${highlightId}`, memoryKey);
   /* 「居中」只给**第一张**（侧栏「打开浮层」的口径：一进来它落在页面正中）。
      已经有卡还居中，两张会一模一样地叠在正中（`centerOnOpen` 按视口算，不看锚点）——
      第二张起改成相对上一张右下错开 28px，用户才看得见自己开了两张。 */

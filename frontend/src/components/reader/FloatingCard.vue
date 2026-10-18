@@ -290,8 +290,19 @@ watch(() => props.open, (v) => {
   if (saved) {
     /* 摆过：沿用上次的坐标，并且**不再贴锚点**（dragged 同时挡住后面 anchor 变化的 place()） */
     dragged.value = true;
-    pos.value = saved;
-    void nextTick().then(() => { pos.value = clampToViewport(pos.value); });
+    pos.value = { left: saved.left, top: saved.top };
+    /* 连补几拍**再落一次同一个坐标**：卡片打开的那几帧里，内容的尺寸还在变（图片 / 公式 /
+     *  展开态），任何一次按内容算的落位（place / 夹取）都可能把它挪走一点点。用户看到的
+     *  就是「位置不在原来那儿了」（用户口径 2026-11-26）。落三次的成本可以忽略。 */
+    const settle = () => {
+      if (!dragged.value) return;
+      pos.value = clampToViewport({ left: saved.left, top: saved.top });
+    };
+    void nextTick().then(() => {
+      settle();
+      requestAnimationFrame(settle);
+    });
+    window.setTimeout(settle, 180);
     return;
   }
   dragged.value = false;          // 从没摆过：仍然贴锚点，保持初次体验
