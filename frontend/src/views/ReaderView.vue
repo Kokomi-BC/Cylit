@@ -1494,7 +1494,8 @@ function onResizeDown(ev: PointerEvent) {
   asidePreviewW.value = asideWidth.value;  // 从当前宽度起算（拖动期间只动这个）
   resizeEl = ev.currentTarget as HTMLElement;
   resizePointerId = ev.pointerId;
-  resizeEl.setPointerCapture?.(ev.pointerId);
+  /* 合成事件（自检探针）没有真指针，捕获会抛 NotFoundError —— 位移本身不依赖它 */
+  try { resizeEl.setPointerCapture?.(ev.pointerId); } catch { /* 没有真指针 */ }
   window.addEventListener('pointerup', onResizeUpAnywhere, true);
   window.addEventListener('pointercancel', onResizeUpAnywhere, true);
   window.addEventListener('blur', onResizeUpAnywhere, true);
