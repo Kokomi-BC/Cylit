@@ -220,6 +220,35 @@ const compressTitle = computed(() => (canCompress.value
   : '至少聊过一轮才能压缩'));
 /** 圆环很小、里面不写字 —— 数值与用途都放 tooltip（用户口径：小圆环，中间不放图标） */
 const ringTitle = computed(() => `${compressTitle.value}（当前上下文已用 ${Math.round(percent.value)}%）`);
+
+/* ---------------------- 底部那行明细：缓存命中率 + 上下文占比 ----------------------
+   用户口径 2026-11-26：这一行要直接看见"前缀缓存命中了多少"和"上下文用到几成"，
+   而不是两样都要悬停才知道。两个数都来自后端的 conversation_usage：
+   · cache_hit_percent = 上一轮 prompt 里命中缓存的部分 / 总 prompt（没有快照时是 null）；
+   · percent = 当前上下文 token / agent 预算。
+   老会话没有缓存快照 —— 那就整段不渲染，宁可不显示，也不给一个假的 0%。 */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+const cacheHitText = computed(() => {
+  const v = usage.value?.cache_hit_percent;
+  return typeof v === "number" ? `${v.toFixed(1)}%` : "";
+});
+const cacheHitTitle = computed(() => {
+  const u = usage.value;
+  if (!u || typeof u.cache_read_tokens !== "number" || !u.input_tokens) return "";
+  return `上一轮 prompt ${fmtTokens(u.input_tokens)} tok，其中 ${fmtTokens(u.cache_read_tokens)} tok`
+    + " 命中前缀缓存（命中部分按更低单价计费）";
+});
+/** 上下文占比：圆环旁那个数字 —— 圆环只表达粗细，数字负责说清"用了多少" */
+const contextText = computed(() => `${Math.round(percent.value)}%`);
+const contextTitle = computed(() => {
+  const u = usage.value;
+  if (!u) return ringTitle.value;
+  return `${fmtTokens(u.tokens)} / ${fmtTokens(u.budget)} tok · 占上下文 ${Math.round(percent.value)}%`;
+});
 const allPicked = computed(() => conversations.value.length > 0
   && picked.value.length === conversations.value.length);
 
@@ -1721,6 +1750,10 @@ defineExpose({ uploadFiles, ensureThread });
           </button>
           <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
           <span class="spacer" />
+          <!-- 缓存命中率与上下文占比是同族的两个"用量读数"，一起靠右；
+               模型名那一侧本来就会 truncate，读数放这儿才不会被长模型名挤掉。
+               老会话后端没有快照 → cacheHitText 为空 → 整条不渲染。 -->
+          <span v-if="cacheHitText" class="foot-stat" :title="cacheHitTitle">缓存命中 {{ cacheHitText }}</span>
           <button class="ring" :class="{ busy: compressing }" :title="ringTitle"
                   :disabled="!canCompress" @click="compress">
             <svg viewBox="0 0 36 36" class="ring-svg">
@@ -1728,6 +1761,9 @@ defineExpose({ uploadFiles, ensureThread });
               <circle class="ring-bar" cx="18" cy="18" r="15.5" :stroke-dasharray="ringDash" />
             </svg>
           </button>
+          <!-- 上下文占比：圆环只表达粗细，数字说清用了多少；数字本身仍可点（压缩），
+               所以不另起一枚按钮，避免同一行出现两个能点出同一动作的东西。 -->
+          <span class="foot-stat foot-pct" :title="contextTitle">{{ contextText }}</span>
 
           <!-- 模型 / 推理等级：根浮层**只有两行**，点某一行向侧向飞出第二级候选。
                候选不往根浮层里堆 —— 浮层模式最窄只有 320px，堆下去又高又乱。 -->
@@ -2197,6 +2233,18 @@ defineExpose({ uploadFiles, ensureThread });
   border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: calc(11.5px * var(--ts, 1));
 }
 .model-btn:hover { background: var(--bg-hover); color: var(--text-dim); }
+
+/* 底部明细里的两个读数（缓存命中率 / 上下文占比）：比模型名更弱一档，等宽数字，
+   加减/流式刷新时不会把邻居推来推去。 */
+.foot-stat {
+  flex: none;
+  font-size: calc(11.5px * var(--ts, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: default;
+}
+.foot-pct { margin-left: 1px; }
 
 /* ── 模型 / 推理等级浮层 ──
    左右都贴住这一行（left/right 归零）再用 max-width 收窄：胶囊在最左边，浮层向右长多少

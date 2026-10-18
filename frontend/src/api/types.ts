@@ -910,6 +910,12 @@ export interface AgentUsage {
   active: number;
   compressed: boolean;
   compressed_at?: string | null;
+  /** 上一轮真正发出去的 prompt 量（含命中前缀缓存的部分）；老会话没有这个快照 */
+  input_tokens?: number;
+  /** 上面那一份里命中前缀缓存的部分（DeepSeek 命中部分按更低单价计费） */
+  cache_read_tokens?: number;
+  /** 前缀缓存命中率（0–100）；没有快照时为 null —— 前端据此隐藏，不显示假的 0% */
+  cache_hit_percent?: number | null;
 }
 
 export interface AgentConversation {

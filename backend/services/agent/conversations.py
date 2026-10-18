@@ -556,10 +556,32 @@ def _summary_index(chain: list[dict]) -> int:
     return -1
 
 
+def _last_turn_usage(chain: list[dict]) -> dict:
+    """最近一条 assistant 消息里那份 __usage__ 轨迹：前缀缓存命中量的现成来源。
+
+    为什么不另立一张表：runtime 本来就把 requests / input_tokens / output_tokens /
+    cache_read_tokens 这一份塞进了 tool_trace（见 agent/runtime.py 的 AgentRunResultEvent），
+    它跟着消息一起落库、一起重放 —— 再存一份就多一处要同步的真值。
+    老会话（这份快照之前写的）没有它，返回空 dict，前端据此整条隐藏，不显示假的 0%。
+    """
+    for message in reversed(chain):
+        if message.get("role") != "assistant":
+            continue
+        for step in (message.get("tool_trace") or []):
+            if not isinstance(step, dict) or step.get("tool") != "__usage__":
+                continue
+            args = step.get("args")
+            if isinstance(args, dict):
+                return args
+    return {}
+
+
 def conversation_usage(conversation_id: str) -> dict:
     """会话用量：**从最近一次压缩之后**算起（压缩过的部分不再进上下文）。
 
     前端那个圆环显示的就是它；点圆环 → 压缩 → 圆环归零。
+    cache_hit_percent 是**上一轮**的 prompt 前缀缓存命中率（命中量 / 总 prompt）：
+    它回答"这次发出去的上下文里有多少是复用的"，与圆环回答的"上下文用了多少"是两件事。
     """
     from backend.core.config import get_settings
 
@@ -568,6 +590,12 @@ def conversation_usage(conversation_id: str) -> dict:
     active = chain[start:] if start >= 0 else chain
     tokens = count_tokens("\n".join(str(m.get("content") or "") for m in active))
     budget = int(get_settings().agent_context_budget)
+    turn = _last_turn_usage(chain)
+    try:
+        input_tokens = int(turn.get("input_tokens") or 0)
+        cache_read = int(turn.get("cache_read_tokens") or 0)
+    except (TypeError, ValueError):
+        input_tokens, cache_read = 0, 0
     return {
         "tokens": tokens,
         "budget": budget,
@@ -576,6 +604,12 @@ def conversation_usage(conversation_id: str) -> dict:
         "active": len(active),
         "compressed": start >= 0,
         "compressed_at": chain[start]["created_at"] if start >= 0 else None,
+        #: 上一轮真正发出去的 prompt 量（含命中部分）与其中命中前缀缓存的部分
+        "input_tokens": input_tokens,
+        "cache_read_tokens": cache_read,
+        #: 命中率；没有快照（老会话）时为 None，前端据此隐藏，而不是显示一个假的 0%
+        "cache_hit_percent": (round(min(100.0, cache_read * 100.0 / input_tokens), 1)
+                              if input_tokens > 0 else None),
     }
 
 
