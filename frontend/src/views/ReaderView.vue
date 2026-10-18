@@ -1566,9 +1566,14 @@ function closeChatFloat() {
 }
 
 /** 浮窗的拖动 / 改尺寸：与侧栏把手同一套 pointer 捕获（拖出窗口再回来也不会断） */
-const floatDrag = { on: false, mode: '' as '' | 'move' | 'size', sx: 0, sy: 0, ox: 0, oy: 0, ow: 0, oh: 0 };
+const floatDrag = {
+  on: false,
+  /** `size` = 右下角（左边不动），`size-left` = 左下角（右边不动） */
+  mode: '' as '' | 'move' | 'size' | 'size-left',
+  sx: 0, sy: 0, ox: 0, oy: 0, ow: 0, oh: 0,
+};
 
-function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size') {
+function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left') {
   // 标题栏上那两枚按钮（回到侧栏 / ×）不参与拖动
   if (mode === 'move' && (ev.target as HTMLElement | null)?.closest?.('button')) return;
   const el = ev.currentTarget as HTMLElement | null;
@@ -1587,8 +1592,19 @@ function onFloatPointerMove(ev: PointerEvent) {
   const dx = ev.clientX - floatDrag.sx;
   const dy = ev.clientY - floatDrag.sy;
   const b = floatBox.value;
-  if (floatDrag.mode === 'move') { b.left = floatDrag.ox + dx; b.top = floatDrag.oy + dy; }
-  else { b.w = floatDrag.ow + dx; b.h = floatDrag.oh + dy; }
+  if (floatDrag.mode === 'move') {
+    b.left = floatDrag.ox + dx; b.top = floatDrag.oy + dy;
+  } else if (floatDrag.mode === 'size-left') {
+    /* 左下角：**右下角钉住**（`right` 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
+    const right = floatDrag.ox + floatDrag.ow;
+    b.top = floatDrag.oy;
+    b.w = floatDrag.ow - dx;
+    b.h = floatDrag.oh + dy;
+    clampFloatBox();
+    b.left = right - b.w;
+  } else {
+    b.w = floatDrag.ow + dx; b.h = floatDrag.oh + dy;
+  }
   clampFloatBox();
 }
 
@@ -3529,6 +3545,8 @@ let selEndB: { node: Node; offset: number } | null = null;
  */
 let dragAnchor: { node: Node; offset: number } | null = null;
 let draggingHandle: 'start' | 'end' | null = null;
+/** 拖拽期间允许的取值范围（锚点所在那一列，见 `selColumnBand`） */
+let dragColumnBand: { left: number; right: number } | null = null;
 /** 拖手柄时手指停在哪儿（边缘自动滚动要按它反复重算插入点） */
 let dragPoint: { x: number; y: number } | null = null;
 /** 手指离上下边缘这么近就开始自动滚动，越靠边滚得越快 */
@@ -3540,6 +3558,26 @@ let suppressScrollCloseUntil = 0;
 /** 自动滚动时选区重算的节流：滚够这么多像素、或过了这么久才重算一次 */
 let scrollSinceSelUpdate = 0;
 let lastSelUpdateAt = 0;
+
+/**
+ * 触摸选区**属于哪一列**（对照模式下左右各是一个 `.cell`）。
+ *
+ * 用户口径 2026-11-19：拖着手柄往页尾走（还没真的进下一页）时，末端手柄会跳到**左边的页面**上。
+ * 原因是 `caretRangeFromPoint` 在页与页之间的空白/新页开头会落到"最近的文字节点"上 —— 那往往是
+ * 下一页**左栏**的文字，于是选区末端悄悄换了一列，`getClientRects()` 的最后一条也就落在左边。
+ * 有了这条横向范围：①记在选区起点那一列；②拖拽时插入点出了这列就整帧忽略；③摆手柄时也只用
+ * 这一列里的行矩形 —— 手柄永远跟着**看得见的那段高亮**走。
+ */
+let selColumnBand: { left: number; right: number } | null = null;
+
+function columnBandOfNode(node: Node | null | undefined): { left: number; right: number } | null {
+  if (!node) return null;
+  const el = node.nodeType === 1 ? (node as HTMLElement) : node.parentElement;
+  const cell = el?.closest?.('.cell') as HTMLElement | null;
+  if (!cell) return null;                       // 单栏视图：没有 `.cell`，不限制
+  const b = cell.getBoundingClientRect();
+  return { left: b.left - 8, right: b.right + 8 };
+}
 
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
@@ -3581,8 +3619,16 @@ function refreshSelHandles(): void {
   const range = sel.getRangeAt(0);
   const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
   if (!rects.length) { selHandles.value = null; return; }
-  const first = rects[0];
-  const last = rects[rects.length - 1];
+  /* 这一列（每次重算：跨页、滚页都不影响左右两列的位置，取一次就够用） */
+  selColumnBand = columnBandOfNode(range.startContainer);
+  /* 只拿**本列里**的行矩形摆手柄：跨列时最后那一条会落在隔壁页/隔壁栏上（见 selColumnBand）；
+     万一全被滤掉（选区真的只剩别列）就退回原样，不能把两条手柄弄没。 */
+  const inBand = selColumnBand
+    ? rects.filter((r) => r.right > selColumnBand!.left && r.left < selColumnBand!.right)
+    : rects;
+  const usable = inBand.length ? inBand : rects;
+  const first = usable[0];
+  const last = usable[usable.length - 1];
   selHandles.value = {
     start: { x: first.left, y: first.top },
     end: { x: last.right, y: last.bottom },
@@ -3597,6 +3643,7 @@ function hideSelHandles(): void {
   draggingHandle = null;
   selEndA = null;
   selEndB = null;
+  selColumnBand = null;
   touchSelActive.value = false;
 }
 
@@ -3750,6 +3797,7 @@ function beginHandleDrag(which: 'start' | 'end'): void {
       ? { node: r0.endContainer, offset: r0.endOffset }
       : { node: r0.startContainer, offset: r0.startOffset };
   }
+  dragColumnBand = columnBandOfNode(dragAnchor?.node) ?? selColumnBand;
   document.addEventListener('pointermove', onHandleMove, true);
   document.addEventListener('pointerup', onHandlePointerUp, true);
   document.addEventListener('touchmove', onHandleTouchMove, { passive: false });
@@ -3801,11 +3849,24 @@ function onHandleMove(ev: PointerEvent): void {
  *              **跳过 onMouseUp 那套锚点换算**（它要把整页文字重新拼一遍，
  *              每帧都跑就是自动滚动掉帧的元凶）；松手时再补一次完整计算。
  */
+/** 插入点是否还在锚点那一列里（横向判；量不出来就放行，别把拖拽卡死） */
+function caretInDragColumn(caret: { node: Node; offset: number }): boolean {
+  if (!dragColumnBand) return true;
+  const r = document.createRange();
+  try { r.setStart(caret.node, Math.min(caret.offset, (caret.node.textContent ?? '').length)); r.collapse(true); } catch { return true; }
+  const b = r.getBoundingClientRect();
+  const x = b.left || b.right;
+  if (!x) return true;
+  return x >= dragColumnBand.left && x <= dragColumnBand.right;
+}
+
 function moveHandleTo(x: number, y: number, light = false): void {
   const caret = caretAtLine(x, y);
   if (!caret) return;
   // 只认文字节点上的插入点（落在元素上说明这附近没文字，等下一次移动）
   if (caret.node.nodeType !== Node.TEXT_NODE) return;
+  // 出了锚点那一列就整帧忽略（用户口径 2026-11-19：还没进下一页，手柄不许跳到左边的页面）
+  if (!caretInDragColumn(caret)) return;
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
   // 锚点 = 按下时锁定的另一头（见 dragAnchor 的说明）
@@ -3843,6 +3904,7 @@ function onHandleUp(): void {
   if (!draggingHandle) return;
   draggingHandle = null;
   dragAnchor = null;
+  dragColumnBand = null;
   document.removeEventListener('pointermove', onHandleMove, true);
   document.removeEventListener('pointerup', onHandlePointerUp, true);
   document.removeEventListener('touchmove', onHandleTouchMove);
@@ -6038,10 +6100,20 @@ function renderMarkdown(text?: string | null) {
           @insight-queued="fetchTasks"
           @open-insight-page="openInsightPage"
         />
-        <!-- 浮窗右下角：拖它改宽高（浮窗里侧栏那条竖把手是隐藏的，见样式） -->
+        <!-- 浮窗的两个下角都能改大小（用户口径 2026-11-19）：没有可见图标，只有光标与 20px 的角；
+             左下角是"右边不动、往左长"，右下角是"左边不动、往右长"（见 onFloatPointerMove）。 -->
         <div
           v-if="chatFloat"
-          class="float-grip"
+          class="float-grip bl"
+          title="拖动改浮窗大小"
+          @pointerdown="(ev) => onFloatPointerDown(ev, 'size-left')"
+          @pointermove="onFloatPointerMove"
+          @pointerup="onFloatPointerUp"
+          @pointercancel="onFloatPointerUp"
+        />
+        <div
+          v-if="chatFloat"
+          class="float-grip br"
           title="拖动改浮窗大小"
           @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"
           @pointermove="onFloatPointerMove"
@@ -6760,17 +6832,16 @@ function renderMarkdown(text?: string | null) {
 .float-bar:active { cursor: grabbing; }
 .float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .float-ico { color: var(--text-dim); flex: none; }
-/* 右下角改尺寸手柄：只占那一小角（滚动条最末端那里本来就是圆角，不碍事）。
-   `min-width: 0` 必须写：下面那条 `.reader-aside > *` 的兜底最小宽度会把它撑成整栏宽。 */
+/* 两个下角都能改尺寸（用户口径 2026-11-19：去掉右下角那个直角图标，左右两个角都能拖）。
+   角上**什么都不画**，只有光标形状（右下 nwse / 左下 nesw）与 20px 的命中区 ——
+   浮窗的圆角与投影已经把"卡片边界"说清楚了，再画一枚小角标只是噪音。
+   `min-width: 0` 必须写：上面那条 `.reader-aside > *` 的兜底最小宽度会把它撑成整栏宽。 */
 .reader-aside > .float-grip {
-  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; min-width: 0;
-  z-index: 4; cursor: nwse-resize; touch-action: none;
+  position: absolute; bottom: 0; width: 20px; height: 20px; min-width: 0;
+  z-index: 4; touch-action: none;
 }
-.reader-aside > .float-grip::after {
-  content: ''; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
-  border-right: 1.5px solid var(--text-faint); border-bottom: 1.5px solid var(--text-faint);
-  border-radius: 0 0 2px 0;
-}
+.reader-aside > .float-grip.br { right: 0; cursor: nwse-resize; }
+.reader-aside > .float-grip.bl { left: 0; cursor: nesw-resize; }
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */
 .md-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
