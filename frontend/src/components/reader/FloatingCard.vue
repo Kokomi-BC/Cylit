@@ -37,7 +37,13 @@ const props = withDefaults(defineProps<{
   width?: number;
   /** 浮层本体可滚的最大高度（内容多时内部滚，不把页面顶长） */
   maxHeight?: number;
-}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420 });
+  /** 记住用户摆过的位置（每张卡一个键：`note` / `explain`）。空 = 不记忆，每次都贴锚点 */
+  persistKey?: string;
+  /** 这一次打开**居中**（无视记忆与锚点）。用户口径 2026-11-21：笔记的「打开浮层」默认落在页面中间 */
+  centerOnOpen?: boolean;
+  /** 不要那枚手动的锚定按钮（用户口径 2026-11-22：锚定改为"点过浮层就自动锚定"，按钮位让给「定位」） */
+  hideAnchor?: boolean;
+}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -72,10 +78,17 @@ async function place() {
 const dragged = ref(false);
 const drag = reactive({ on: false, sx: 0, sy: 0, ox: 0, oy: 0 });
 
+/* 拖动/缩放期间锁住全文选区：PDF 文本层是真实 DOM（markdown 侧不是），
+   指针扫过时浏览器会顺手起一个选区（用户报的「拖顶部时 PDF 里被选中」）。
+   只改 body 的 user-select，松手立刻还原。 */
+function lockSelect() { document.body.style.userSelect = 'none'; }
+function unlockSelect() { document.body.style.userSelect = ''; }
+
 function onHeadDown(ev: PointerEvent) {
   // 标题栏上的控件（图钉 / 关闭 / 色点 / 取色器）不参与拖动，否则点它们会顺手把卡片挪一下
   if ((ev.target as HTMLElement | null)?.closest?.('button, label, input')) return;
   const head = ev.currentTarget as HTMLElement | null;
+  lockSelect();
   drag.on = true;
   drag.sx = ev.clientX; drag.sy = ev.clientY;
   drag.ox = pos.value.left; drag.oy = pos.value.top;
@@ -100,16 +113,75 @@ function onHeadMove(ev: PointerEvent) {
 function onHeadUp(ev: PointerEvent) {
   if (!drag.on) return;
   drag.on = false;
+  unlockSelect();
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
+  savePos();
+}
+
+/* ------------------------------ 记住摆过的位置 ------------------------------
+ * 用户口径 2026-11-21：笔记浮层每次都在右下角打开，而不是它上次被拖到的位置。
+ * 根因是「每次打开都把 dragged 复位 + 重跑 place()」，没锚点时自然落到 fallbackXY。
+ * 这里把**用户摆过的坐标**单独记下来（按 persistKey 分开存）：下次打开先恢复它，
+ * 没摆过才走 place() 贴锚点 —— dragged 复位只管"这一轮要不要贴锚点"，与记忆互不影响。
+ */
+const posKey = () => (props.persistKey ? `cylit:float:${props.persistKey}` : '');
+
+function readSavedPos(): { left: number; top: number } | null {
+  const key = posKey();
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { left?: unknown; top?: unknown };
+    if (typeof v.left !== 'number' || typeof v.top !== 'number') return null;
+    return { left: v.left, top: v.top };
+  } catch { return null; }
+}
+
+function savePos() {
+  const key = posKey();
+  if (!key) return;
+  try { localStorage.setItem(key, JSON.stringify(pos.value)); } catch { /* 隐私模式忽略 */ }
+}
+
+/** 恢复时按当前视口夹一次：窗口变小/换屏后不要飞到屏幕外（拖动时同一口径：至少留 48×32 在屏内） */
+function clampToViewport(p: { left: number; top: number }): { left: number; top: number } {
+  const box = el.value;
+  const w = box?.offsetWidth || props.width;
+  const left = Math.min(Math.max(p.left, 8 - w + 48), window.innerWidth - 48);
+  const top = Math.min(Math.max(p.top, 4), window.innerHeight - 32);
+  return { left: Math.round(left), top: Math.round(top) };
 }
 
 watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as const,
   () => { void place(); }, { immediate: true });
 watch(() => props.open, (v) => {
   if (!v) return;
-  dragged.value = false;          // 每次打开都回到"自动贴锚点"，上次拖的位置不跨次沿用
-  sizeW.value = null;             // 尺寸同理：每次打开回到调用方给的默认宽高
+  sizeW.value = null;             // 尺寸每次打开回到调用方给的默认宽高
   sizeH.value = null;
+  if (props.centerOnOpen) {
+    /* 「打开浮层」按钮：这次**直接摆到页面正中**（既不贴锚点、也不沿用上次拖到的角落） */
+    dragged.value = true;
+    void nextTick().then(() => {
+      const box = el.value;
+      const w = box?.offsetWidth || props.width;
+      const h = box?.offsetHeight || 240;
+      pos.value = clampToViewport({
+        left: (window.innerWidth - w) / 2,
+        top: (window.innerHeight - h) / 2,
+      });
+    });
+    return;
+  }
+  const saved = readSavedPos();
+  if (saved) {
+    /* 摆过：沿用上次的坐标，并且**不再贴锚点**（dragged 同时挡住后面 anchor 变化的 place()） */
+    dragged.value = true;
+    pos.value = saved;
+    void nextTick().then(() => { pos.value = clampToViewport(pos.value); });
+    return;
+  }
+  dragged.value = false;          // 从没摆过：仍然贴锚点，保持初次体验
   void place();
 });
 
@@ -138,6 +210,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), h
 function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
   const box = el.value;
   if (!box) return;
+  lockSelect();
   rs.on = true;
   rs.corner = corner;
   rs.sx = ev.clientX; rs.sy = ev.clientY;
@@ -176,7 +249,9 @@ function onResizeMove(ev: PointerEvent) {
 function onResizeUp(ev: PointerEvent) {
   if (!rs.on) return;
   rs.on = false;
+  unlockSelect();
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
+  savePos();
 }
 
 const style = computed(() => ({
@@ -190,104 +265,112 @@ const style = computed(() => ({
 </script>
 
 <template>
+  <!-- 外层外壳（用户口径 2026-11-21 三轮）：fixed 与 left/top/width/height 都挂在它身上，
+       **故意不写 overflow:hidden** —— 否则底角那两枚"悬浮在卡片外面"的指示器会被裁掉。
+       内层 .float-card 才是带圆角 / 描边 / 裁切的那张卡（正文照旧被裁）。 -->
   <div
     v-if="props.open"
     ref="el"
-    class="float-card"
-    :class="{ sized: sizeH !== null }"
+    class="float-shell"
     :style="style"
     data-float-card
   >
-    <!-- 顶部**浮起**的拖动条（用户口径 2026-10-13 二轮："自然融合，不要另起一行"）：
-         position:absolute 贴在卡片顶端，中间一枚 34×4 的药丸，不占一行、不带底色。
-         为什么要抓手：头一行挤着色点 / 铅笔 / 垃圾桶，真正"空白可抓"的地方太少。
-         它和 .fc-head 走**同一套**处理器（叠加，不是替代）—— 标题栏照旧能拖。
-         同样**不写 title**（用户口径 2026-10-08：不要浏览器悬浮提示），只靠光标形状说话。 -->
-    <div
-      class="fc-grab"
-      :class="{ dragging: drag.on }"
-      data-float-grab
-      @pointerdown="onHeadDown"
-      @pointermove="onHeadMove"
-      @pointerup="onHeadUp"
-      @pointercancel="onHeadUp"
-    >
-      <span class="fc-grab-pill" />
-    </div>
-
-    <!-- ⚠️ 标题栏里可能有**可点的东西**（笔记框的色点 / 取色器）：
-         `label` / `input` 也要排掉，否则点取色器会顺手把卡片拖一下。 -->
-    <div
-      class="fc-head"
-      :class="{ dragging: drag.on }"
-      data-float-head
-      @pointerdown="onHeadDown"
-      @pointermove="onHeadMove"
-      @pointerup="onHeadUp"
-      @pointercancel="onHeadUp"
-    >
-      <!-- 标题**前面**的图标位（2026-10-10：笔记框要照目标站放一枚笔记图标）。
-           不传则为空，解释浮层不受影响。 -->
-      <slot name="head-lead" />
-      <span class="fc-title">{{ props.title }}</span>
-      <!-- 标题**之后**、按钮之前的位置（2026-10-10 复查：笔记框的色条要跟「笔记」并排，
-           但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
-      <slot name="head-mid" />
-      <span class="spacer" />
-      <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
-           没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
-      <slot name="head-extra" />
-      <button
-        type="button"
-        class="fc-btn"
-        :class="{ on: props.anchored }"
-        :title="props.anchored ? '已锚定：鼠标移开也不关' : '锚定（鼠标移开也不关）'"
-        data-float-anchor
-        @click="emit('toggle-anchor')"
+    <div class="float-card" :class="{ sized: sizeH !== null }">
+      <!-- 顶部**浮起**的拖动条（用户口径 2026-10-13 二轮："自然融合，不要另起一行"）：
+           position:absolute 贴在卡片顶端，中间一枚 34×4 的药丸，不占一行、不带底色。
+           为什么要抓手：头一行挤着色点 / 铅笔 / 垃圾桶，真正"空白可抓"的地方太少。
+           它和 .fc-head 走**同一套**处理器（叠加，不是替代）—— 标题栏照旧能拖。
+           同样**不写 title**（用户口径 2026-10-08：不要浏览器悬浮提示），只靠光标形状说话。 -->
+      <div
+        class="fc-grab"
+        :class="{ dragging: drag.on }"
+        data-float-grab
+        @pointerdown="onHeadDown"
+        @pointermove="onHeadMove"
+        @pointerup="onHeadUp"
+        @pointercancel="onHeadUp"
       >
-        <AppIcon name="locate" :size="13" />
-      </button>
-      <!-- 头部**最右**（锚定之后、✕ 之前）：笔记框的删除键放这里（用户口径 2026-11-20）——
-           删除与「✓ 保存 / 锚定」之间隔开一小段，免得点删除时误触保存。
-           ⚠️ 只有父组件传了才渲染：解释浮层不传，头部与以前完全一致。 -->
-      <span v-if="$slots['head-tail']" class="fc-tail"><slot name="head-tail" /></span>
-      <button type="button" class="fc-btn" title="关闭" data-float-close @click="emit('close')">
-        <AppIcon name="close" :size="13" />
-      </button>
+        <span class="fc-grab-pill" />
+      </div>
+
+      <!-- ⚠️ 标题栏里可能有**可点的东西**（笔记框的色点 / 取色器）：
+           `label` / `input` 也要排掉，否则点取色器会顺手把卡片拖一下。 -->
+      <div
+        class="fc-head"
+        :class="{ dragging: drag.on }"
+        data-float-head
+        @pointerdown="onHeadDown"
+        @pointermove="onHeadMove"
+        @pointerup="onHeadUp"
+        @pointercancel="onHeadUp"
+      >
+        <!-- 标题**前面**的图标位（2026-10-10：笔记框要照目标站放一枚笔记图标）。
+             不传则为空，解释浮层不受影响。 -->
+        <slot name="head-lead" />
+        <span class="fc-title">{{ props.title }}</span>
+        <!-- 标题**之后**、按钮之前的位置（2026-10-10 复查：笔记框的色条要跟「笔记」并排，
+             但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
+        <slot name="head-mid" />
+        <span class="spacer" />
+        <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
+             没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
+        <slot name="head-extra" />
+        <button
+          v-if="!props.hideAnchor"
+          type="button"
+          class="fc-btn"
+          :class="{ on: props.anchored }"
+          :title="props.anchored ? '已锚定：鼠标移开也不关' : '锚定（鼠标移开也不关）'"
+          data-float-anchor
+          @click="emit('toggle-anchor')"
+        >
+          <AppIcon name="locate" :size="13" />
+        </button>
+        <!-- 头部**最右**（锚定之后、✕ 之前）：笔记框的删除键放这里（用户口径 2026-11-20）——
+             删除与「✓ 保存 / 锚定」之间隔开一小段，免得点删除时误触保存。
+             ⚠️ 只有父组件传了才渲染：解释浮层不传，头部与以前完全一致。 -->
+        <span v-if="$slots['head-tail']" class="fc-tail"><slot name="head-tail" /></span>
+        <button type="button" class="fc-btn" title="关闭" data-float-close @click="emit('close')">
+          <AppIcon name="close" :size="13" />
+        </button>
+      </div>
+
+      <div class="fc-body">
+        <slot />
+      </div>
+
+      <div v-if="$slots.footer" class="fc-foot">
+        <slot name="footer" />
+      </div>
+
     </div>
 
-    <div class="fc-body">
-      <slot />
+    <!-- 底角指示器（用户口径 2026-11-21 三轮）：**画在卡片外面**，由这层透明遮罩承载 ——
+         `.fc-grips` 铺满外壳且 pointer-events:none（不挡卡片的任何交互），
+         两枚把手各自 pointer-events:auto、并向外偏移 7px，弧线于是浮在圆角外沿（真正的 iOS 观感）。
+         缩放数学仍是"按下时的尺寸快照 + 指针增量"，1:1 跟随指针；这 7px 的外偏移不参与换算。 -->
+    <div class="fc-grips">
+      <div
+        class="fc-resize br"
+        :class="{ 'is-on': rs.on && rs.corner === 'br' }"
+        data-float-resize
+        aria-label="拖动调整大小"
+        @pointerdown="onResizeDown($event, 'br')"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeUp"
+        @pointercancel="onResizeUp"
+      />
+      <div
+        class="fc-resize bl"
+        :class="{ 'is-on': rs.on && rs.corner === 'bl' }"
+        data-float-resize-bl
+        aria-label="拖动调整大小"
+        @pointerdown="onResizeDown($event, 'bl')"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeUp"
+        @pointercancel="onResizeUp"
+      />
     </div>
-
-    <div v-if="$slots.footer" class="fc-foot">
-      <slot name="footer" />
-    </div>
-
-    <!-- 底部**两个角**都能拉大小（用户口径 2026-10-10）。
-         用户口径 2026-10-13：改成**圆角小把手**（类 iOS），而且**卡片一打开就渲染** ——
-         笔记卡默认不锚定，原来"只在锚定态给手柄"等于默认看不见，用户根本不知道能拉。
-         锚定逻辑本身没动（anchored 只管"移开鼠标关不关"），dragged / sizeW / sizeH 也不动。 -->
-    <div
-      class="fc-resize br"
-      :class="{ 'is-on': rs.on && rs.corner === 'br' }"
-      data-float-resize
-      aria-label="拖动调整大小"
-      @pointerdown="onResizeDown($event, 'br')"
-      @pointermove="onResizeMove"
-      @pointerup="onResizeUp"
-      @pointercancel="onResizeUp"
-    />
-    <div
-      class="fc-resize bl"
-      :class="{ 'is-on': rs.on && rs.corner === 'bl' }"
-      data-float-resize-bl
-      aria-label="拖动调整大小"
-      @pointerdown="onResizeDown($event, 'bl')"
-      @pointermove="onResizeMove"
-      @pointerup="onResizeUp"
-      @pointercancel="onResizeUp"
-    />
   </div>
 </template>
 
@@ -295,11 +378,25 @@ const style = computed(() => ({
 /* 观感与侧栏卡片同一门语言：同一个圆角档、同一门阴影、同一个边框色。
    阴影用 `--shadow-flyout`（比侧栏的 `--shadow-2` 重一档）—— 它是浮在正文上的，要能一眼看出"这是浮层"。
    ⚠️ 这里原来写的是 `--shadow-3`，而那个名字**从来没定义过**：声明被整条丢掉，等于一直没有阴影。 */
-.float-card {
-  /* `position: fixed` 同时给右下角那枚拉手当了定位上下文（拉手是卡片内部的 absolute） */
+.float-shell {
+  /* fixed 定位 + 尺寸都归外壳；它同时是底角指示器的定位上下文 */
   position: fixed; z-index: 60;
   display: flex; flex-direction: column;
-  border: 1px solid var(--border-strong); border-radius: 12px;
+  /* 把手静止时的描边色（两张浮层共用同一套，用户口径 2026-11-21）。
+     ⚠️ 圆角变量 --fc-radius 在这里**故意不给默认值**：笔记卡要在 ReaderView 里覆盖成 16px，
+     而 [data-note-popover] 与 .float-shell 是**同权重**的选择器（类/属性 + 作用域属性各一），
+     谁赢只看样式注入顺序 —— 那等于把"笔记卡圆角悄悄回到 12px"做成一个偶发 bug。
+     默认值改为写在使用处：var(--fc-radius, 12px)，两头都不必跟谁抢优先级。 */
+  --fc-handle: color-mix(in srgb, var(--text) 22%, transparent);
+}
+.float-card {
+  /* 吃满外壳：拉过高度外壳才有确定高度，卡片跟着长；没拉过时由内容撑 */
+  position: relative;   /* 卡片顶端那条浮起的拖动条（.fc-grab）的定位上下文 */
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+  /* 圆角读外壳上的 --fc-radius（默认 12、笔记卡 16）；底角那两道弧读的是**同一个值**，
+     所以"卡片圆角改了、弧没跟着改"这件事从结构上就不可能再发生。 */
+  border: 1px solid var(--border-strong); border-radius: var(--fc-radius, 12px);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   overflow: hidden;
 }
@@ -315,9 +412,23 @@ const style = computed(() => ({
   cursor: grab; user-select: none; touch-action: none;
 }
 .fc-grab.dragging { cursor: grabbing; }
+/* 药丸：拖动中**变宽 + 变亮**（与底角那圈弧同一门「按下就给反馈」的语言）。
+   只动 width 与背景色，**不动 transform**：本项目踩过「缩放 + 半透明描边 → 边缘反复重采样 → 闪」的坑，
+   这一条同样不引入合成层位移。220ms 带轻微过冲，松手自然回落（状态一撤就是反向过渡）。 */
 .fc-grab-pill {
   width: 34px; height: 4px; border-radius: 2px;
   background: color-mix(in srgb, var(--text) 19%, transparent);
+  transition: width 220ms cubic-bezier(.22, 1.2, .36, 1),
+              background-color 220ms var(--ease);
+}
+/* 抓手反馈与对话浮窗**完全同源**（用户口径 2026-11-24）：按下跑同一条三段关键帧，
+   34 → 52 冲过头 → 43 回坐 → 46 停住；松手动画移除后由上面那条 transition 平滑送回 34。
+   两边若各用一套（这边 transition、那边关键帧），观感就会"明显不一致"——这是上一轮的教训。 */
+.fc-grab.dragging .fc-grab-pill,
+.fc-grab:active .fc-grab-pill {
+  /* 纯 transition（34→46 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。 */
+  width: 46px;
+  background: color-mix(in srgb, var(--text) 34%, transparent);
 }
 
 .fc-head {
@@ -359,36 +470,123 @@ const style = computed(() => ({
    而不是拉大之后下面空出一大块点不动的白。没拉过尺寸时保持原样（高度随内容），
    免得默认尺寸的卡片被撑出一条空白。 */
 .float-card.sized .fc-body { display: flex; flex-direction: column; }
-/* 底部两个角的拖动把手（用户口径 2026-10-13）：16×16 的热区，里面用一条**2px 圆弧**画出来 ——
-   11×11 的小方块只描右边/下边、再给一个 1/4 圆角，剩下的就是个像 iOS 那样的圆角把手。
-   静止时淡（opacity .35 + --border-strong），悬停或正在拖时升到 --accent 且不透明。
-   ⚠️ 颜色用 --border-strong 而不是 --line：token 表里**没有 --line**，
-   写了等于整条声明被丢掉（本文件开头那条 --shadow-3 就是这么消失的）。 */
+/* ---- 透明遮罩层：底角指示器的载体（用户口径 2026-11-21 三轮）----
+   铺满外壳（inset: 0）只为拿一个「以卡片盒子为坐标系」的定位上下文 —— 这样把手写负偏移
+   就等于「落在卡片外面」。它自己 pointer-events: none，**卡片照常可点、可拖、可滚**，
+   只有两枚把手各自重新打开事件。
+   ⚠️ 这一层**没有底色、也没有阴影**：卡片外那一圈必须还是「什么都没有」，
+   否则屏幕上会凭空多出一块灰（用户口径：卡片外面多一块灰）。 */
+.fc-grips { position: absolute; inset: 0; pointer-events: none; }
+/* ---- 底角指示器：浮在卡片**外侧**的一道细短弧 ----
+   **三处同一套**：笔记卡 / Cyli 解释卡（这里）与对话浮窗（ReaderView 的
+   `.reader-aside > .float-grip`）。⚠️ 数字照抄，改一处必须改另一处。
+   颜色：静止 22% 的 --text（--fc-handle）；悬停 / 拖动（.is-on）升 --accent。
+   粗细：静止 1.6px（细一点）、悬停 2.1px、拖动加粗到 2.7px（关键帧 1.6 → 3.2 → 2.4 → 2.7）。
+   几何：一切都由 `--fc-gap`（弧离卡片边缘的距离，现为 5px）推出来，与卡片圆角**同心** ——
+      · 热区 20×20，bottom 与 right/left = -gap → 落在卡片**外侧**；
+      · 弧盒 bottom/right 贴 0 → 弧的外沿离卡片边缘正好 = gap；
+      · 弧半径 = --fc-radius + gap，弧盒边长 = 半径 + 2px（给描边留量）。
+        边长必须大于半径，否则 CSS 会按盒子尺寸把圆角**缩比夹小**
+        （12px 与 16px 的卡会得到一样大的弧）；半径增量必须等于 gap，弧心才落在
+        卡片圆角的圆心（cardRight - R, cardBottom - R）上。
+   长度：就是卡片圆角那一段自然弧长（半径 = 圆角）。不再用 mask 去切 ——
+        conic mask 与 transform 同时运动会触发离屏合成，用户报过闪烁，整条已移除。
+   拖动反馈：**只加粗描边**（位置一动不动）。原来还有一条 push 位移关键帧把把手朝拖动方向
+        translate 4px —— 那会让手按着的把手与真正跟手的卡片边缘错开 4px，
+        手感就是「我拖了 4px，它才动 0px」，已整条删除（用户口径 2026-11-22）。
+   只描外两条边，不填充、不带底色/阴影。
+   ⚠️ 颜色不走 --border-strong / --line：token 表里**没有 --line**，写了等于整条声明被丢掉。 */
 .fc-resize {
-  position: absolute; bottom: 0; width: 16px; height: 16px;
-  display: flex; align-items: flex-end;
-  touch-action: none; z-index: 2;
-  opacity: .35;
-  transition: opacity var(--dur) var(--ease);
+  --fc-gap: 5px;   /* 用户口径：7px 还嫌远，再收到 5px（弧贴着卡片外侧）。
+                      ⚠️ 对话浮窗那两枚把手不读这个变量（坐标由 ReaderView 的
+                      FLOAT_GRIP_GAP 在 JS 里算），改这里必须同步改那个常量。 */
+  /* 外沿离卡片 `--fc-gap`；弧半径**不再**跟着 gap 涨（否则圆角越大那道弧越夸张）——
+     半径恒等于卡片自己的圆角，弧是贴着圆角往外平移出来的平行弧。 */
+  position: absolute; bottom: calc(-1 * var(--fc-gap));
+  width: 20px; height: 20px;
+  pointer-events: auto; touch-action: none; z-index: 2;
+  transition: bottom var(--dur) var(--ease), right var(--dur) var(--ease),
+              left var(--dur) var(--ease);
 }
 .fc-resize::before {
-  content: ''; display: block; width: 11px; height: 11px;
-  border-right: 2px solid var(--border-strong);
-  border-bottom: 2px solid var(--border-strong);
-  border-bottom-right-radius: 10px;
+  content: ''; position: absolute; right: 0; bottom: 0;
+  --fc-stroke: 2.2px;
+  /* 弧长只取圆角的 75%：指示器"短一点"（用户口径），而不是整整四分之一圆 */
+  --fc-arc: calc(var(--fc-radius, 12px) * .75);
+  width: calc(var(--fc-arc) + 2px);
+  height: calc(var(--fc-arc) + 2px);
+  border-right: var(--fc-stroke) solid var(--fc-handle);
+  border-bottom: var(--fc-stroke) solid var(--fc-handle);
+  border-bottom-right-radius: var(--fc-arc);
   transition: border-color var(--dur) var(--ease);
 }
-.fc-resize.br { right: 0; justify-content: flex-end; cursor: nwse-resize; }
-.fc-resize.br::before { margin: 0 2px 2px 0; }
-/* 左下角是**镜像**：描边换到左边、圆角换到左下，否则两个角会看起来一模一样（像一个直角） */
-.fc-resize.bl { left: 0; justify-content: flex-start; cursor: nesw-resize; }
-.fc-resize.bl::before {
-  border-right: 0; border-left: 2px solid var(--border-strong);
-  border-bottom-right-radius: 0; border-bottom-left-radius: 10px;
-  margin: 0 0 2px 2px;
+.fc-resize.br { right: calc(-1 * var(--fc-gap)); cursor: nwse-resize; }
+/* 左下角是**镜像**：描边走左边、圆角走左下、着力点与裁切角度一起镜像，
+   否则两个角看起来一模一样（像一个直角），放大方向也会反。 */
+.fc-resize.bl { left: calc(-1 * var(--fc-gap)); cursor: nesw-resize; }
+/* 左下角必须用**完整简写**：原来这里只有 animation-name: fc-grip-thicken-bl，
+   于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
+   现在两条动画都显式列出来，与右下角逐字对齐（只是换成镜像的那对 keyframes）。 */
+.fc-resize.bl.is-on::before {
+  animation: fc-grip-thicken-bl 520ms cubic-bezier(.22, 1.2, .36, 1) both,
+             fc-grip-glide-bl 420ms cubic-bezier(.22, 1.2, .36, 1) both;
 }
-.fc-resize:hover, .fc-resize.is-on { opacity: 1; }
-.fc-resize:hover::before, .fc-resize.is-on::before { border-color: var(--accent); }
+.fc-resize.bl::before {
+  right: auto; left: 0;
+  border-right: 0; border-left: var(--fc-stroke) solid var(--fc-handle);
+  border-bottom-right-radius: 0; border-bottom-left-radius: var(--fc-arc);
+}
+.fc-resize:hover::before { border-color: var(--accent); --fc-stroke: 2.9px; }
+/* 拖动中只改颜色与描边粗细，**不再同时挪 gap、也不再 translate 把手本身**：
+   位移 + 缩放两个运动量叠加会被人眼读成「抖」；而把手的 translate 更严重 ——
+   它会让人手按着的那个点（把手）和真正在跟手的东西（卡片边缘）错开 4px，
+   手感就是「我拖了 4px，它才动 0px」。所以 push 那两条关键帧整条删除。
+   ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
+.fc-resize.is-on::before {
+  border-color: var(--accent); --fc-stroke: 3.4px;
+  animation: fc-grip-thicken 520ms cubic-bezier(.22, 1.2, .36, 1) both,
+             fc-grip-glide 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+}
+/* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
+   只动 border-*-width 与颜色，不动 transform：缩放 + 圆角 + 半透明描边会让边缘反复重采样，
+   那正是「闪烁」的来源。右下 / 左下要分开写，因为描边落在不同的两条边上。 */
+/* 顺着拖动方向的弹性：**只作用在画出来的那道弧上**（::before），
+   **不移动把手命中区** —— 上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，
+   手感就成了"我拖了它没动"。现在命中区纹丝不动，弧自己往外蹬一下再回来。 */
+@keyframes fc-grip-glide {
+  0% { transform: translate(0, 0); }
+  40% { transform: translate(6px, 6px); }
+  72% { transform: translate(5px, 5px); }
+  100% { transform: translate(6px, 6px); }
+}
+@keyframes fc-grip-glide-bl {
+  0% { transform: translate(0, 0); }
+  40% { transform: translate(-6px, 6px); }
+  72% { transform: translate(-5px, 5px); }
+  100% { transform: translate(-6px, 6px); }
+}
+@keyframes fc-grip-thicken {
+  0% { border-right-width: 2.2px; border-bottom-width: 2.2px; }
+  38% { border-right-width: 4.2px; border-bottom-width: 4.2px; }
+  72% { border-right-width: 3px; border-bottom-width: 3px; }
+  100% { border-right-width: 3.4px; border-bottom-width: 3.4px; }
+}
+@keyframes fc-grip-thicken-bl {
+  0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
+  38% { border-left-width: 4.2px; border-bottom-width: 4.2px; }
+  72% { border-left-width: 3px; border-bottom-width: 3px; }
+  100% { border-left-width: 3.4px; border-bottom-width: 3.4px; }
+}
+/* 减少动效：关掉加粗动画（停在 2.7px）与药丸的宽度过渡，颜色 / 粗细反馈照旧 ——
+   这样「按下 → 变粗变亮」在任何系统设置下都还在。 */
+@media (prefers-reduced-motion: reduce) {
+  .fc-resize::before {
+    transition: border-color var(--dur) var(--ease);
+    transform: none;
+  }
+  .fc-resize:hover::before, .fc-resize.is-on::before { animation: none; transform: none; }
+  .fc-grab-pill { transition: none; }
+}
 .fc-foot {
   display: flex; align-items: center; gap: 6px; flex: none;
   padding: 8px 12px; border-top: 1px solid var(--divider);

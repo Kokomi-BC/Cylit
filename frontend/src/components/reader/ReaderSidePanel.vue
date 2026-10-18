@@ -262,9 +262,33 @@ watch(() => [props.notes, props.annotations, props.highlights], () => {
 
 /** 「笔记」页签的一个条目：归并规则与笔记整页**共用一份**（`utils/notesFeed`）。 */
 type FeedRow = NotesFeedRow<Highlight, Note, Annotation>;
-const merged = computed<FeedRow[]>(() => buildNotesFeed({
-  highlights: props.highlights, notes: props.notes, annotations: props.annotations,
-}));
+
+/* ------------------------------ 排序（左上角那枚「N 条」） ------------------------------
+ * 用户口径 2026-11-21：左上角的条数改成**按钮**，点开选「按修改时间 / 按文章顺序」。
+ * 默认按修改时间 —— 那正是 `buildNotesFeed` 原来就排好的顺序（`at` 倒序），所以默认态与旧版完全一致。
+ * 选择记在本地：翻页/切页签/重开面板都还是同一个口径。
+ */
+type NotesOrder = 'time' | 'doc';
+const ORDER_KEY = 'cyl.notes.order';
+const order = ref<NotesOrder>(localStorage.getItem(ORDER_KEY) === 'doc' ? 'doc' : 'time');
+/** 点一下切换：时间 ↔ 文章顺序。图标由模板按 `order` 换（钟 / 三行），不弹菜单。 */
+function toggleOrder() {
+  order.value = order.value === 'time' ? 'doc' : 'time';
+  localStorage.setItem(ORDER_KEY, order.value);
+}
+/** 文章顺序：先按页，再按锚点 id 里的自然序号（`p004-02` 这种靠 `numeric` 比较）；没有页的排最后。 */
+function docOrder(x: FeedRow, y: FeedRow): number {
+  const px = x.page ?? Number.MAX_SAFE_INTEGER;
+  const py = y.page ?? Number.MAX_SAFE_INTEGER;
+  if (px !== py) return px - py;
+  return String(x.anchorId ?? '').localeCompare(String(y.anchorId ?? ''), undefined, { numeric: true });
+}
+const merged = computed<FeedRow[]>(() => {
+  const rows = buildNotesFeed({
+    highlights: props.highlights, notes: props.notes, annotations: props.annotations,
+  });
+  return order.value === 'doc' ? [...rows].sort(docOrder) : rows;
+});
 
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
 function removeRow(r: FeedRow) {
@@ -374,7 +398,19 @@ function onMore(key: string, r: FeedRow) {
            不必再多一条工具条（多一条就多一层滚动后被滚走的东西）。 -->
       <div class="notes-bar">
         <template v-if="!batch">
-          <span class="tiny faint">{{ merged.length }} 条</span>
+          <!-- 条数（纯文本）+ 一枚**排序图标按钮**（用户口径 2026-11-21 二轮：不要二级菜单，
+               点一下就在两种口径间切换，图标本身跟着变：钟 = 按修改时间、三行 = 按文章顺序）。
+               选择记在本地（`cyl.notes.order`），与上一版同一个键。 -->
+          <button
+            class="multi-btn"
+            :title="order === 'time' ? '按修改时间（点击改为按文章顺序）' : '按文章顺序（点击改为按修改时间）'"
+            :aria-label="order === 'time' ? '按修改时间，点击切换为按文章顺序' : '按文章顺序，点击切换为按修改时间'"
+            :aria-pressed="order === 'doc'"
+            data-notes-order
+            @click="toggleOrder"
+          >
+            <AppIcon :name="order === 'time' ? 'sort-time-fill' : 'sort-doc-fill'" :size="15" />
+          </button>
           <span class="spacer" />
           <!-- 多选（用户口径 2026-11-20；2026-11-21 换形态）：与对话页**同一枚圆钮、同一个图标键、同一段交互**
                （点开进入批量态 → 卡片行首出现勾选框 → 顶部「全选 / 已选 N / 取消 / 删除」）。
@@ -423,51 +459,8 @@ function onMore(key: string, r: FeedRow) {
         :data-item-kind="r.kind"
         @click="onCardClick($event, r)"
       >
-        <div class="row tiny">
-          <!-- 批量态：行首一枚勾选框（与对话页同一个 tick 口径：同一对图标、同一档尺寸） -->
-          <button
-            v-if="batch"
-            class="tick"
-            :class="{ on: isPicked(r) }"
-            :title="isPicked(r) ? '取消选择' : '选择'"
-            data-item-tick
-            @click.stop="togglePick(r)"
-          >
-            <AppIcon :name="isPicked(r) ? 'checkbox' : 'checkbox-off'" :size="15" />
-          </button>
-          <span class="badge" :class="r.badge">{{ r.label }}</span>
-          <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
-          <span v-if="r.scope" class="badge dim" :title="`高亮位置：${SCOPE_LABEL[r.scope] || r.scope}`">
-            {{ SCOPE_LABEL[r.scope] || r.scope }}
-          </span>
-          <span v-if="r.page" class="faint">p{{ r.page }}</span>
-          <span v-if="r.at" class="faint">{{ fmtRelative(r.at) }}</span>
-          <span class="spacer" />
-          <!-- 右侧三枚（用户口径 2026-11-20）：定位 / 浮层打开 / 更多（编辑 · 多选 · 删除）。
-               批量态整排收起 —— 与对话页一样，进了批量态行上就不再挂动作，只剩勾选框。 -->
-          <template v-if="!batch">
-            <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
-              <AppIcon name="locate" :size="13" />
-            </button>
-            <!-- 批注没有可编辑的正文（没有挂高亮、也没有笔记对象），所以不给「浮层打开」 -->
-            <button
-              v-if="r.kind !== 'annotation'"
-              class="btn icon sm"
-              title="打开浮层"
-              data-item-popover
-              @click="openPopover(r)"
-            >
-              <AppIcon name="pip" :size="13" />
-            </button>
-            <Menu
-              :items="moreItems(r)"
-              label="更多"
-              align="end"
-              data-item-more
-              @select="onMore($event, r)"
-            />
-          </template>
-        </div>
+        <!-- 页码（用户口径 2026-11-21：正文行胶囊去掉，页码按正文的样式放到**顶部**） -->
+        <div v-if="r.page" class="card-top small faint" data-note-page>p{{ r.page }}</div>
         <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式）。
              用户口径 2026-11-20：这行**字号再小一档**，并**恒为单行省略** —— 它只是「按的是哪一段」的索引，
              两行以上的引用会把卡片撑高、把正文挤到看不见。 -->
@@ -496,6 +489,49 @@ function onMore(key: string, r: FeedRow) {
           <div v-if="r.contentMd" class="small md clamp2" v-html="annotationHtml(r.contentMd)" />
           <!-- 不用再写一行“还没写笔记”：头部那枚「待写」徽章已经说过了（用户口径 2026-10-10："移除多余的文字"） -->
         </template>
+        <!-- 徽章行与三枚动作（用户口径 2026-11-21：移到笔记内容**下方**，内容先读、操作后放） -->
+        <div class="row tiny card-foot">
+          <!-- 批量态：行首一枚勾选框（与对话页同一个 tick 口径：同一对图标、同一档尺寸） -->
+          <button
+            v-if="batch"
+            class="tick"
+            :class="{ on: isPicked(r) }"
+            :title="isPicked(r) ? '取消选择' : '选择'"
+            data-item-tick
+            @click.stop="togglePick(r)"
+          >
+            <AppIcon :name="isPicked(r) ? 'checkbox' : 'checkbox-off'" :size="15" />
+          </button>
+          <span class="badge" :class="r.badge">{{ r.label }}</span>
+          <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
+          <!-- 「正文行」那枚 scope 胶囊已去掉（用户口径 2026-11-21）；页码挪到卡片顶部当正文样式 -->
+          <span v-if="r.at" class="faint">{{ fmtRelative(r.at) }}</span>
+          <span class="spacer" />
+          <!-- 右侧三枚（用户口径 2026-11-20）：定位 / 浮层打开 / 更多（编辑 · 多选 · 删除）。
+               批量态整排收起 —— 与对话页一样，进了批量态行上就不再挂动作，只剩勾选框。 -->
+          <template v-if="!batch">
+            <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
+              <AppIcon name="locate" :size="13" />
+            </button>
+            <!-- 批注没有可编辑的正文（没有挂高亮、也没有笔记对象），所以不给「浮层打开」 -->
+            <button
+              v-if="r.kind !== 'annotation'"
+              class="btn icon sm"
+              title="打开浮层"
+              data-item-popover
+              @click="openPopover(r, r.contentMd.trim() ? 'view' : 'edit')"
+            >
+              <AppIcon name="pip" :size="13" />
+            </button>
+            <Menu
+              :items="moreItems(r)"
+              label="更多"
+              align="end"
+              data-item-more
+              @select="onMore($event, r)"
+            />
+          </template>
+        </div>
       </div>
     </template>
 
@@ -740,7 +776,12 @@ function onMore(key: string, r: FeedRow) {
 .multi-btn:hover { background: var(--bg-hover); color: var(--text); box-shadow: var(--shadow-1); }
 .multi-btn:active { transform: scale(.94); }
 .multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
+/* 条数文字已移除（用户口径 2026-11-21：左上角只留那枚排序图标钮）。 */
 .item.note-row { border-left-color: var(--accent); }
+/* 卡片底部那行（徽章 + 定位/浮层/更多）：内容读完了才轮到操作，所以压到正文下方并与正文留一点距离 */
+.item .row.card-foot { margin-top: 6px; }
+/* 卡片顶部那行页码：与正文同一套字号/行高，只是更淡一点，不抢正文 */
+.item .card-top { margin: 0 0 4px; font-variant-numeric: tabular-nums; }
 .item.note-row.highlight { border-left-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong)); }
 .item.note-row.annotation { border-left-color: var(--ok); }
 .item.note-row .row { gap: 6px; }

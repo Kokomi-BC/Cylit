@@ -3567,9 +3567,11 @@ def main() -> int:
         if chat.get("draftKept") is None:
             skip("切走页签再回来不重挂（列表不用重新请求）", "没找到页签或输入框")
         else:
-            record("chat", "切走页签再回来不重挂（草稿还在 → 列表不用重新请求）",
-                   chat.get("chatUnmounted") is True and chat.get("draftKept") == "keepalive-check",
-                   f"切走时面板卸载={chat.get('chatUnmounted')} "
+            # 语义（2026-11-23 起）：对话面板**常驻**（v-show 收起，实例不卸载），
+            # 所以断言从"切走后应卸载"改成"切走后仍在 DOM 里、且草稿没丢"。
+            record("chat", "切走页签再回来不重挂（面板常驻、草稿还在）",
+                   chat.get("chatUnmounted") is False and chat.get("draftKept") == "keepalive-check",
+                   f"切走时面板仍在={chat.get('chatUnmounted') is False} "
                    f"回来草稿={chat.get('draftKept')!r} 列表 {chat.get('rowsOnReturn')} 行")
         if chat.get("openedConversation") is not True:
             skip("消息操作条 / 引用锚", "这篇论文没有历史会话可打开（--model 那轮会造一个）")
