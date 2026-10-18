@@ -905,6 +905,9 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     对应的正文行**上，挪不动才留在 Markdown 面。原 PDF 那面服务端算不出偏移量（文字层在前端）。
 
       op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
+                   **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
+                   green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行 ——
+                   想按语义配色（比如"术语用紫、结论用绿"）就自己挑 hex，别硬套那七个名字。
                    `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
                    `重点`，公式整体算 1 个字符，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
                    `occurrence`：同一段文字出现多次时标第几次（默认第 1 次）。

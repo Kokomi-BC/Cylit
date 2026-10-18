@@ -189,13 +189,19 @@ export function clearUserMarks(root: HTMLElement | null): void {
 
 function makeMark(color: string, id: string): HTMLElement {
   const mark = document.createElement('mark');
-  /* 自定义色（`#rrggbb`）：class 只认名字，实体色得走**内联样式**（用户口径 2026-10-10）。
-     `66` = 40% 不透明，与那几个命名色的底色观感对齐。 */
-  if (/^#[0-9a-fA-F]{6}$/.test(String(color || ''))) {
+  /* 命名色走 class（全站配色在 base.css 的 `mark.hl.<color>`）；**其它一律内联** ——
+     hex(3/6/8) / rgb() / hsl() 这些「任意色」class 认不出来，会变成透明＝高亮看不见
+     （用户口径 2026-11-26：允许 agent 自定义任意颜色）。
+     `#rrggbb` 用 `66`（40% 不透明）与命名色观感对齐；带 alpha 或函数写法交给 color-mix。 */
+  const c = String(color || '').trim();
+  if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c)) {
     mark.className = 'hl';
-    mark.style.background = `${color}66`;
+    mark.style.background = c.length === 7 ? `${c}66` : c;
+  } else if (/^(?:rgba?|hsla?)\(/i.test(c)) {
+    mark.className = 'hl';
+    mark.style.background = `color-mix(in srgb, ${c} 40%, transparent)`;
   } else {
-    mark.className = `hl ${color || 'yellow'}`;
+    mark.className = `hl ${c || 'yellow'}`;
   }
   mark.setAttribute('data-hl', id);
   /* ⚠️ 这里**不要**写 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
@@ -310,9 +316,23 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
       const same = slice === wanted || norm(slice) === norm(wanted);
       if (!same) {
         const at = wanted ? all.indexOf(wanted) : -1;      // 兜底：按文字找一个位置
-        if (at < 0) continue;
-        start = at;
-        end = Math.min(at + wanted.length, total);
+        if (at >= 0) {
+          start = at;
+          end = Math.min(at + wanted.length, total);
+        } else {
+          /* 再退一步：拿**前缀**找（40 → 24 → 12 字）。agent 建的高亮偏移量来自服务端渲染的
+             近似，差几个字很常见 —— 差一点就整条不画，就成了「笔记在列表里但看不到高亮」
+             （用户口径 2026-11-26）。宁可标得略短一点，也不要一条都不出现。 */
+          let found = -1;
+          for (const n of [40, 24, 12]) {
+            if (wanted.length < n) continue;
+            found = all.indexOf(wanted.slice(0, n));
+            if (found >= 0) break;
+          }
+          if (found < 0) continue;
+          start = found;
+          end = Math.min(found + wanted.length, total);
+        }
       }
     }
     if (wrapRange(segs, start, end, m.color, m.id)) done += 1;

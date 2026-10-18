@@ -45,7 +45,12 @@ def _norm_color(raw: object) -> str:
     c = str(raw or "").strip().lower()
     if c in HIGHLIGHT_COLORS:
         return c
-    if len(c) == 7 and c.startswith("#") and all(ch in "0123456789abcdef" for ch in c[1:]):
+    # 任意色（用户口径 2026-11-26「允许 agent 自定义任意颜色」）：hex 3/6/8 位、rgb()/hsl() 一律放行，
+    # 只有真的认不出来的写法才退回 yellow（静默改色最坑，见上面的说明）。
+    import re as _re
+    if _re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", c):
+        return c
+    if _re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", c):
         return c
     return "yellow"
 

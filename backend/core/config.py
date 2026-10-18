@@ -239,7 +239,7 @@ class Settings(BaseSettings):
     agent_archive_chars: int = 6000
     #: 会话上下文的"预算"（tiktoken 估算的 token 数）。**不是模型的硬上限**（模型是百万上下文），
     #: 而是"聊到多大就该压一压"的提醒线 —— 前端那个圆环显示的就是它，点击即压缩。
-    agent_context_budget: int = 200000
+    agent_context_budget: int = 1_000_000   # 百万（用户口径 2026-11-26）
     #: 一次 `page_image_get` 允许的最大页数与最长边（视觉输入的字节闸）
     agent_image_max_pages: int = 3
     agent_image_max_dpi: int = 400
