@@ -3607,6 +3607,9 @@ function beginHandleDrag(which: 'start' | 'end'): void {
   if (draggingHandle) return;
   // 拖选择条时菜单让开（用户口径 2026-10-17）：**只收菜单**，选区与手柄都留着
   if (ctxMenu.open) { ctxMenu.open = false; ctxMenu.rect = null; }
+  /* 划词胶囊也一起收：拖的时候还挂着一根工具栏挡在选区边上，既挡视线又挡手指
+     （用户口径 2026-10-18"拖动选择时仍然显示工具条"）。松手后会重新摆出来。 */
+  selection.show = false;
   draggingHandle = which;
   // 锁定另一头（之后每次移动都用它当锚点）
   const sel0 = window.getSelection();
@@ -3694,11 +3697,14 @@ function moveHandleTo(x: number, y: number, light = false): void {
     selection.rect = { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
     Object.assign(selection, menuPos(box));
     refreshSelHandles();
+    if (draggingHandle) selection.show = false;   // 拖拽中不摆胶囊
     return;
   }
   // 与鼠标松手同一条链路：重算划词胶囊 / 高亮锚点 / 位置
   onMouseUp();
   refreshSelHandles();
+  /* onMouseUp 会把胶囊重新打开 —— 拖手柄期间再收掉（用户口径 2026-10-18） */
+  if (draggingHandle) selection.show = false;
 }
 
 function onHandleUp(): void {
@@ -3714,8 +3720,9 @@ function onHandleUp(): void {
   // 自动滚动的 scroll 事件可能还在路上：先挂个"别收菜单"的免死金牌
   suppressScrollCloseUntil = performance.now() + 350;
   // 拖拽期间为了不卡只做了轻量更新（见 moveHandleTo 的 light 参数）：
-  // 松手这一下补一次完整计算，锚点/高亮 id 才是按最终选区算的
-  onMouseUp();
+  // 松手这一下补一次完整计算，锚点/高亮 id 才是按最终选区算的。
+  // ⚠️ 包一层 try：跨页选区的锚点换算万一抛错，也**不能**把下面的"摆菜单"整条链路带掉。
+  try { onMouseUp(); } catch (err) { console.warn('松手重算选区失败', err); }
   // 松开手柄后按**新选区**把工具条重新摆出来（拖动过程中是先收起的，见 onHandleDown）
   openCtxForSelection();
 }
@@ -3737,6 +3744,9 @@ function onDocContextMenu(ev: MouseEvent): void {
 function openCtxForSelection(): void {
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
+  /* 选区还在、但胶囊被某次 hideMenu（滚动/点别处）收掉了：这条链路要靠 selection.show
+     判"有没有选区"，不补回来的话菜单会退化成"没有选区动作"甚至不出现（用户口径 2026-10-18）。 */
+  if (!selection.show && !sel.isCollapsed && sel.toString().trim()) selection.show = true;
   const range0 = sel.getRangeAt(0);
   const rect = range0.getBoundingClientRect();
   /* 拖手柄自动滚动跑到很远之后，整个选区的**包围盒**会伸到视口外面（top 是负数），
@@ -3750,18 +3760,41 @@ function openCtxForSelection(): void {
   /* ⚠️ 不能拿 elementFromPoint：选区左上角正好被"起点手柄"的 44px 热区盖住，
      事件派到那个 div 上根本冒泡不到 .reader-content（表现就是"拖完手柄菜单不出现"）。
      改成从选区的文本节点往上找它所在的页块，直接在那个内容元素上派发。 */
-  /* 自动滚动拖得很远时，选区**起点**那一页可能已经被虚拟滚动卸掉了：
-     在脱离文档的节点上派发事件没有任何人收到（表现就是"松手菜单不出来"）。
-     起点不在了就改用终点（手指那一头）的节点。 */
+  /* 派发用的节点要取**看得见的那一段选区**：跨页选的时候起点可能落在上一屏、甚至已经被
+     虚拟滚动卸掉，在那种节点上派发事件没人收 —— 表现就是"跨页选择后菜单不出现"
+     （用户口径 2026-10-18）。先用落点反查那一段文字所在的页块，再退回选区首/尾。 */
   const elOf = (node: Node) => (node.nodeType === Node.TEXT_NODE ? node.parentElement : node) as HTMLElement | null;
-  const host = [elOf(range0.startContainer), elOf(range0.endContainer)]
-    .find((el) => el && el.isConnected) ?? null;
+  const probeY = Math.min(Math.max((anchor.top + anchor.bottom) / 2, 12), window.innerHeight - 12);
+  const atPoint = (() => {
+    const cr = document.caretRangeFromPoint?.(x, probeY);
+    if (cr?.startContainer) return elOf(cr.startContainer);
+    const el = document.elementFromPoint(x, probeY);
+    return (el as HTMLElement | null) ?? null;
+  })();
+  /* 只认"确实被这段选区覆盖到"的节点：落点可能落在页缝/下一段（选区之外），
+     那样派发过去会让 onContentContextMenu 判成"不在选区上"，菜单里就没有选区动作了。 */
+  const usable = (el: HTMLElement | null) => {
+    if (!el?.isConnected) return false;
+    try { return range0.intersectsNode(el); } catch { return false; }
+  };
+  const host = [atPoint, elOf(range0.startContainer), elOf(range0.endContainer)]
+    .find(usable) ?? null;
   const target = (host?.closest('[data-pdf-page], [data-page], [data-md-page], .md-doc, .row-pair, .row-line')
     ?? host ?? document.querySelector('.reader-content')) as HTMLElement | null;
   touchCtxNext = true;
   target?.dispatchEvent(new MouseEvent('contextmenu', {
     bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2,
   }));
+  /* 兜底：跨页选的时候首次派发可能没人收（落点那一段已被卸载 / 页块对不上），
+     那就直接在正文容器上再派发一次 —— 只要选区还在，菜单就必须出来
+     （用户口径 2026-10-18：跨页选择时右键菜单不显示）。 */
+  if (!ctxMenu.open) {
+    touchCtxNext = true;
+    (document.querySelector('.md-doc') ?? document.querySelector('.reader-content'))
+      ?.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2,
+      }));
+  }
 }
 
 function fireLongPress(): void {
@@ -3953,12 +3986,17 @@ function onContentContextMenu(ev: MouseEvent) {
   ctxMenu.items = items;
   if (fromTouch) {
     /* 触摸长按：菜单摆在**选区上方**（用户口径 2026-10-17"右键菜单要避让拖动选择器"）。
-       位置取选区矩形的中心 / 上沿；选区拿不到就退回落点。 */
-    const rect = window.getSelection()?.rangeCount
-      ? window.getSelection()!.getRangeAt(0).getBoundingClientRect()
-      : null;
-    ctxMenu.x = rect ? Math.round((rect.left + rect.right) / 2) : ev.clientX;
-    ctxMenu.y = rect ? Math.round(rect.top) : ev.clientY;
+       ⚠️ 位置只能取**最后一行还看得见的选区**，不能取整段选区的包围盒：跨页拖一大段之后
+       包围盒的 top 是负数，工具条会被摆到屏幕上方外面 —— DOM 里在、屏幕上看不见，
+       用户看到的就是"跨页选择时右键菜单不显示"（用户口径 2026-10-18）。
+       选区拿不到就退回落点。 */
+    const sel0 = window.getSelection();
+    const range = sel0 && sel0.rangeCount ? sel0.getRangeAt(0) : null;
+    const lines = range ? Array.from(range.getClientRects()).filter((r) => r.height > 0) : [];
+    const visible = lines.filter((r) => r.bottom > 8 && r.top < window.innerHeight - 8);
+    const box = visible.length ? visible[visible.length - 1] : range?.getBoundingClientRect() ?? null;
+    ctxMenu.x = box ? Math.round((box.left + box.right) / 2) : ev.clientX;
+    ctxMenu.y = box ? Math.round(Math.min(Math.max(box.top, 12), window.innerHeight - 64)) : ev.clientY;
   } else {
     ctxMenu.x = ev.clientX;
     ctxMenu.y = ev.clientY;

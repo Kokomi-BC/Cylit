@@ -87,6 +87,9 @@ async function place() {
     left = props.x - w / 2;
     top = props.y - 28 - h;
     if (top < EDGE) top = Math.min(window.innerHeight - h - EDGE, props.y + 44);
+    /* 上面算出来的 top 仍可能是负的（调用方给的 y 本身就在屏幕外）：再夹一次，
+       否则面板"在 DOM 里、屏幕上看不见"。 */
+    top = Math.max(EDGE, Math.min(top, window.innerHeight - h - EDGE));
     left = Math.max(EDGE, Math.min(left, window.innerWidth - w - EDGE));
   } else {
     if (left + w > window.innerWidth - EDGE) left = Math.max(EDGE, props.x - w - GAP);
