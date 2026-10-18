@@ -1769,6 +1769,18 @@ function setFloatDragging(on: boolean) {
 /* 卸载兜底：手势中途离开阅读器时闸门要放掉，否则 PDF 文字层会一直不可选 */
 onUnmounted(() => releaseFloatSelection());
 
+/** 触摸拖头部那一行：与 `onFloatCardDown` 同一判据，坐标与收尾走 touch 通道 */
+function onFloatCardTouchStart(ev: TouchEvent) {
+  if (!chatFloat.value) return;
+  const t = ev.target as HTMLElement | null;
+  if (!t?.closest?.('.thread-head, .list-head')) return;
+  const p = ev.touches[0];
+  if (!p) return;
+  ev.preventDefault();
+  if (!floatDrag.on) startFloatGesture('move', p.clientX, p.clientY);
+  trackFloatTouch();
+}
+
 function onFloatCardDown(ev: PointerEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
@@ -1790,28 +1802,34 @@ function onFloatCardMouseDown(ev: MouseEvent) {
   ev.preventDefault();
 }
 
-function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left') {
-  // 标题栏上那两枚按钮（回到侧栏 / ×）不参与拖动
-  if (mode === 'move' && (ev.target as HTMLElement | null)?.closest?.('button')) return;
-  const el = ev.currentTarget as HTMLElement | null;
+/** 手势起手（几何快照 + 循环 + 选区闸门）。鼠标/笔与触摸共用，坐标由调用方给 */
+function startFloatGesture(mode: 'move' | 'size' | 'size-left', x: number, y: number) {
   floatDrag.on = true;
   floatDrag.mode = mode;
   setFloatDragging(mode === 'move');
 
-  floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
+  floatDrag.sx = x; floatDrag.sy = y;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
   floatDrag.ow = floatBox.value.w; floatDrag.oh = floatBox.value.h;
   /* 手势从这一刻的几何开始算：之后每一帧只改 floatLive 这个普通对象 */
   floatLive.left = floatDrag.ox; floatLive.top = floatDrag.oy;
   floatLive.w = floatDrag.ow; floatLive.h = floatDrag.oh;
   /* 首帧就有坐标可算；循环从按下就开始 —— 手势期间每帧都重写一遍，见 floatLoopTick */
-  floatMoveAt = { x: ev.clientX, y: ev.clientY };
+  floatMoveAt = { x, y };
   startFloatLoop();
-  try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
-  ev.preventDefault();
   /* 任何手势（拖头部 / 拖左右下角）都上闸：PDF 文字层写死了 user-select: text，
      指针扫过它就会自己长出一段选区 —— 拖角放大时用户报的就是这个（2026-11-24 第 3 条）。 */
   lockFloatSelection(true);
+}
+
+function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left') {
+  // 标题栏上那两枚按钮（回到侧栏 / ×）不参与拖动
+  if (mode === 'move' && (ev.target as HTMLElement | null)?.closest?.('button')) return;
+  const el = ev.currentTarget as HTMLElement | null;
+  startFloatGesture(mode, ev.clientX, ev.clientY);
+  try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
+  if (ev.pointerType === 'touch') trackFloatTouch();   // 触摸：补一条 touch 通道（见 onFloatTouchStart）
+  ev.preventDefault();
 }
 
 /**
@@ -1892,10 +1910,22 @@ function applyFloatMove() {
 
 function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
+  /* ⚠️ 触摸的 `pointercancel` **不是松手**：浏览器一决定接管滚动/手势就发它。
+     早先这里无条件收尾，于是手指刚碰到把手、还没动，浏览器就把这次拖拽掐掉了 ——
+     表现就是"对话浮窗的角把手点不动"（用户口径 2026-11-24；笔记卡那两枚因为周围不可滚，
+     不会引起浏览器接管，所以一直正常）。触摸真正的结束在 `onFloatTouchEnd`。 */
+  if (ev.type === 'pointercancel' && ev.pointerType === 'touch') return;
+  endFloatGesture();
+  try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
+}
+
+/** 手势收尾（鼠标/笔的 pointerup、触摸的 touchend，两条通道共用） */
+function endFloatGesture() {
+  if (!floatDrag.on) return;
   stopFloatLoop();
   /* 最后一帧里「移动 + 松手」挤在一起时（快速一划），合并中的位移还没落地 —— 这里补算一次，
      否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
-  if (floatMoveAt && floatDrag.on) applyFloatMove();
+  if (floatMoveAt) applyFloatMove();
   floatMoveAt = null;
   /* 收尾：写一次最终几何，再把结果同步回 floatBox。
      ⚠️ 拖动与落定**是同一种写法**（left/top）—— 没有 transform 要还原、没有合成层要拆，
@@ -1909,8 +1939,46 @@ function onFloatPointerUp(ev: PointerEvent) {
      （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
   setFloatDragging(false);
   lockFloatSelection(false);
+  untrackFloatTouch();
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
-  try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
+}
+
+/* ------------------------------ 触摸通道 ------------------------------
+ * 触摸屏上 pointer 事件**会在浏览器接管滚动/手势时断流**（`pointercancel`）——
+ * 选区手柄那边早就踩过这一条，做法一样：坐标与收尾都补一条 non-passive 的 touch 通道，
+ * 谁先到都算（见 onHandleTouchMove 的说明）。这样即便 pointer 流被掐断，把手照样跟手。
+ */
+function trackFloatTouch() {
+  document.addEventListener('touchmove', onFloatTouchMove, { passive: false });
+  document.addEventListener('touchend', onFloatTouchEnd, true);
+  document.addEventListener('touchcancel', onFloatTouchEnd, true);
+}
+
+function untrackFloatTouch() {
+  document.removeEventListener('touchmove', onFloatTouchMove);
+  document.removeEventListener('touchend', onFloatTouchEnd, true);
+  document.removeEventListener('touchcancel', onFloatTouchEnd, true);
+}
+
+function onFloatTouchStart(ev: TouchEvent, mode: 'move' | 'size' | 'size-left') {
+  const t = ev.touches[0];
+  if (!t) return;
+  /* 模板上是 `@touchstart.prevent`：非被动地挡掉默认动作，浏览器就不会把这次触摸当滚动接管，
+     连 `pointercancel` 都不会发。gesture 若已由 pointerdown 起手（正常路径），这里只管补通道。 */
+  if (!floatDrag.on) startFloatGesture(mode, t.clientX, t.clientY);
+  trackFloatTouch();
+}
+
+function onFloatTouchMove(ev: TouchEvent) {
+  if (!floatDrag.on) return;
+  const t = ev.touches[0];
+  if (!t) return;
+  ev.preventDefault();                 // 拖把手就是拖把手，别顺手把页滚了
+  floatMoveAt = { x: t.clientX, y: t.clientY };
+}
+
+function onFloatTouchEnd() {
+  endFloatGesture();
 }
 
 /* 用户口径 2026-11-22 之后浮窗与侧栏**不再互斥**（侧栏留着占位），所以原来那条
@@ -6634,6 +6702,7 @@ function renderMarkdown(text?: string | null) {
         @pointerdown.capture="onFloatPress($event, 'chat')"
         @focusin.capture="takeTop('chat')"
         @pointerdown="onFloatCardDown"
+        @touchstart="onFloatCardTouchStart"
         @mousedown="onFloatCardMouseDown"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
@@ -6680,6 +6749,7 @@ function renderMarkdown(text?: string | null) {
         ref="gripBlEl"
         title="拖动改浮窗大小"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size-left')"
+        @touchstart.prevent="onFloatTouchStart($event, 'size-left')"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
@@ -6690,6 +6760,7 @@ function renderMarkdown(text?: string | null) {
         ref="gripBrEl"
         title="拖动改浮窗大小"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"
+        @touchstart.prevent="onFloatTouchStart($event, 'size')"
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
@@ -7545,6 +7616,12 @@ function renderMarkdown(text?: string | null) {
      —— 那就是用户报的「指示器层级不对」（2026-11-24 第 1 条）。
      61 = 压在浮窗自己那张卡（60）之上，又低于有焦点的浮层（62）。 */
   z-index: 61; touch-action: none;
+}
+/* 手指比鼠标粗得多：把角把手的**热区**放大到 44×44（弧本身一点不动）。
+   20×20 在触摸屏上基本点不中 —— 用户报「对话浮层的角把手点不动」（2026-11-24）。
+   只放开热区、不改视觉：`::before` 这一层本来空着（弧画在 `::after` 上）。 */
+@media (pointer: coarse) {
+  .reader > .float-grip::before { content: ''; position: absolute; inset: -12px; }
 }
 .reader > .float-grip.br { right: 0; cursor: nwse-resize; }
 .reader > .float-grip.bl { left: 0; cursor: nesw-resize; }
