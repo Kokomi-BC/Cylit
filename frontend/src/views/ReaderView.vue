@@ -5696,6 +5696,23 @@ function focusNoteCard(key: string) {
   takeTop('note');
 }
 
+/**
+ * 卡片右上角那枚 ✕：**查看态 = 关掉这张卡；编辑态 = 取消这次编辑（不保存）**。
+ *
+ * 编辑态下把整张卡关掉等于把改了一半的内容一起丢（而且没有二次确认），用户口径 2026-11-26：
+ * 编辑态的 ✕ 只当「取消」，卡片留在原地、回到查看态。新建的空卡（还没有 noteId）没有可回的
+ * 查看态，仍然直接关掉。
+ */
+function onNoteCardClose(card: NoteCard) {
+  if (card.mode !== 'view' && card.noteId) {
+    card.draft = card.content;      // 丢弃这次改动
+    card.mode = 'view';
+    closeNoteDelMenu();
+    return;
+  }
+  closeNoteCard(card.key);
+}
+
 /** 关掉**一张**卡（`✕` / 删除成功 / 悬停移开都走这里）。关掉的若是当前焦点，
  *  焦点落到剩下的最后一张（空了就清空）。 */
 function closeNoteCard(key: string) {
@@ -7407,7 +7424,7 @@ function renderMarkdown(text?: string | null) {
       hide-anchor
       @pointerdown.capture="onFloatPress($event, 'note', card.key)"
       @focusin.capture="takeTop('note')"
-      @close="closeNoteCard(card.key)"
+      @close="onNoteCardClose(card)"
       @mouseleave="scheduleNoteHide(card)"
     >
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
@@ -7416,6 +7433,18 @@ function renderMarkdown(text?: string | null) {
         <AppIcon name="note" :size="14" />
       </template>
       <template #head-mid>
+        <!-- 编辑态：**删除在最左**（用户口径 2026-11-26）。它原来是头部最右、贴着 ✕，
+             紧挨着保存键；现在挪到色点前面，误触距离拉开了。 -->
+        <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
+                :disabled="card.busy" title="删除笔记" data-note-delete
+                aria-haspopup="menu"
+                :aria-expanded="noteDelMenu.open && noteDelMenu.key === card.key"
+                @click="openNoteDelMenu($event, card)">
+          <AppIcon name="trash" :size="13" />
+        </button>
+        <!-- 相对时间紧贴在「笔记」标题右侧（用户口径 2026-11-26）：它是这条笔记的属性，
+             放到按钮区最左边会看着像另一组东西。编辑态不显示（那一行被色点占满）。 -->
+        <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
         <div v-if="card.mode !== 'view' && card.highlightId" class="np-colors">
           <button
             v-for="c in HIGHLIGHT_COLORS"
@@ -7447,8 +7476,8 @@ function renderMarkdown(text?: string | null) {
                 @click="locateNoteRow(card)">
           <AppIcon name="locate" :size="13" />
         </button>
-        <!-- 相对时间只在**查看态**显示：编辑态标题行里已经挤了色点行，再塞一条时间就会把标题压没 -->
-        <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
+        <!-- 时间已经挪到标题右侧（见 head-mid）；这里只剩「定位」——它在「编辑」左边，
+             两枚相邻：先定位再看，动作顺序与视觉顺序一致（用户口径 2026-11-26）。 -->
         <!-- 头部按键照参考实现（铅笔 = 编辑 / 垃圾桶 = 删除，关关闭是壳自带的 ✕）：
              查看态给铅笔，编辑态把它换成 ✓ 保存。
              用户口径 2026-10-13：**查看态不再给垃圾桶**（只读姿态里不该出现删除），
@@ -7464,18 +7493,7 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="check" :size="13" />
         </button>
       </template>
-      <!-- 删除键挪到**头部最右**（用户口径 2026-11-20）：锚定之后、✕ 之前，
-           与「✓ 保存」隔开一小段 —— 原来它挨着保存，误触一次就弹出删除确认。
-           条件不变：**查看态不给删除**（只读姿态里不该出现删除），只有编辑态 + 已有笔记才有。 -->
-      <template #head-tail>
-        <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
-                :disabled="card.busy" title="删除笔记" data-note-delete
-                aria-haspopup="menu"
-                :aria-expanded="noteDelMenu.open && noteDelMenu.key === card.key"
-                @click="openNoteDelMenu($event, card)">
-          <AppIcon name="trash" :size="13" />
-        </button>
-      </template>
+      <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
 
       <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
            浮层贴着那处高亮，原文就在眼皮底下，再抄一遍只会把卡片撑长、还多一层"这是哪一段"的噪音。
