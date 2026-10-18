@@ -229,12 +229,6 @@ function stepFont(dir: -1 | 1) {
   savePos();
 }
 
-/** 还原 = 回到 100%，也就是设置里「笔记」那一档给的默认大小；只在偏离时露这枚键。 */
-function resetFont() {
-  fontScale.value = 1;
-  savePos();
-}
-
 /* ------------------------------ 「更多」二级菜单 ------------------------------
  * 把「编辑 / 放大 / 缩小 / 还原」收进一枚 ⋯：四枚钮并排会把标题行挤满，而它们都是低频动作。
  * 菜单**挂在外壳里**而不是 Teleport 到 body —— 外壳故意不写 overflow:hidden（只有内层 .float-card 裁正文），
@@ -718,55 +712,38 @@ watchEffect(applyShellDom, { flush: 'sync' });
       :style="{ top: moreTop + 'px', left: moreLeft + 'px' }"
     >
       <slot name="more-items" :close="closeMore" />
-      <div v-if="$slots['more-items']" class="fc-more-sep" />
+      <!-- 字号排：缩小 | 百分比 | 放大。两枚钮直接用头部的 `.fc-btn`（同一尺寸、同一层淡底），
+           不另起一套"菜单里的圆钮"——用户口径 2026-11-26 四轮：按钮样式全卡统一。
+           还原键已移除（用户口径：两个方向调得回来，第三枚是多余选项）。 -->
       <div class="fc-more-row">
-        <!-- 字号排做成一个**步进器**：缩小 | 百分比 | 放大。百分比必须居中 ——
-             它是这一排的"读数"，贴在哪一侧都会让另一侧的钮显得是零头。 -->
-        <div class="fc-step">
-          <button
-            type="button"
-            class="fc-step-btn"
-            role="menuitem"
-            :disabled="fontScale <= F_MIN"
-            :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
-            aria-label="缩小字号"
-            data-fc-zoom-out
-            @click="stepFont(-1)"
-          >
-            <AppIcon name="zoom-out" :size="15" />
-          </button>
-          <span
-            class="fc-more-pct"
-            :class="{ on: fontScale !== 1 }"
-            :title="`当前字号 ${Math.round(fontScale * 100)}%`"
-          >{{ Math.round(fontScale * 100) }}%</span>
-          <button
-            type="button"
-            class="fc-step-btn"
-            role="menuitem"
-            :disabled="fontScale >= F_MAX"
-            :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
-            aria-label="放大字号"
-            data-fc-zoom-in
-            @click="stepFont(1)"
-          >
-            <AppIcon name="zoom-in" :size="15" />
-          </button>
-        </div>
-        <!-- 还原键**永远占位**（100% 时只是隐藏）：否则"重置"一出现就把步进器挤窄，
-             用户刚点的位置会跟着挪一下。visibility:hidden 同时让它接不到点击。 -->
         <button
           type="button"
-          class="fc-more-ico fc-reset"
-          :class="{ ghost: fontScale === 1 }"
+          class="fc-btn"
           role="menuitem"
-          :aria-hidden="fontScale === 1"
-          title="还原默认字号（100%）"
-          aria-label="还原默认字号"
-          data-fc-zoom-reset
-          @click="resetFont"
+          :disabled="fontScale <= F_MIN"
+          :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+          aria-label="缩小字号"
+          data-fc-zoom-out
+          @click="stepFont(-1)"
         >
-          <AppIcon name="refresh" :size="15" />
+          <AppIcon name="zoom-out" :size="13" />
+        </button>
+        <span
+          class="fc-more-pct"
+          :class="{ on: fontScale !== 1 }"
+          :title="`当前字号 ${Math.round(fontScale * 100)}%`"
+        >{{ Math.round(fontScale * 100) }}%</span>
+        <button
+          type="button"
+          class="fc-btn"
+          role="menuitem"
+          :disabled="fontScale >= F_MAX"
+          :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+          aria-label="放大字号"
+          data-fc-zoom-in
+          @click="stepFont(1)"
+        >
+          <AppIcon name="zoom-in" :size="13" />
         </button>
       </div>
     </div>
@@ -874,23 +851,23 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-more {
   position: absolute; z-index: 2;
   width: 176px;
-  display: flex; flex-direction: column; gap: 1px;
-  padding: 4px;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 5px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: calc(var(--radius) - 2px);
   /* 比卡片那层 --shadow-flyout 轻一档：它只是贴着头部的小菜单，阴影太重会像另一张卡片浮上来 */
   box-shadow: var(--shadow-2);
 }
-/* 分隔线：横向、两端内缩，把"改笔记"与"改字号"两件事划开 */
-.fc-more-sep { height: 1px; margin: 3px 4px; background: var(--divider); flex: none; }
-/* 第一排动作项：图标 + 文字、整行可点（`:slotted(button)` 兜住调用方塞进来的那一枚 ——
-   插槽节点带的是父组件的 scope，本组件的类名到不了它们身上）。 */
+/* 第一排动作项：图标 + 文字，整行可点。底色与头部 `.fc-btn` 同一层 6% 淡色 ——
+   `:slotted(button)` 兜住调用方塞进来的那一枚（插槽节点带的是父组件的 scope，
+   本组件的类名到不了它们身上，只能从这一侧兜）。 */
 .fc-more :slotted(button) {
   display: flex; align-items: center; gap: 7px;
-  width: 100%; height: 26px; padding: 0 6px;
-  border: 0; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-dim);
+  width: 100%; height: 25px; padding: 0 8px;
+  border: 0; border-radius: var(--radius-ctl);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
   font-family: inherit;
   font-size: calc(12px * var(--ts, 1));
   font-weight: 500;
@@ -900,23 +877,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-/* 第二排字号：读数居中，两端各一枚图标钮。
-   **不加内层边框/底色** —— 上一版把这一排包成一个胶囊，于是菜单里套了个框，看着像两层容器。 */
-.fc-more-row { display: flex; align-items: center; gap: 0; padding: 0 1px; }
-.fc-step { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
-.fc-step-btn, .fc-more-ico {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; flex: none;
-  border: 0; border-radius: 50%;
-  background: transparent; color: var(--text-dim);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-              opacity var(--dur-fast) var(--ease);
-}
-.fc-step-btn:hover:not(:disabled), .fc-more-ico:hover:not(:disabled) {
-  background: var(--bg-hover); color: var(--text);
-}
-.fc-step-btn:disabled, .fc-more-ico:disabled { opacity: .3; cursor: default; }
+/* 第二排字号：两枚 `.fc-btn` 夹一个居中读数。
+   没有任何内层容器（不画边框、不铺底）—— 菜单本身已经是一层容器，再套一层就是"框里套框"。 */
+.fc-more-row { display: flex; align-items: center; gap: 2px; }
 /* 读数：等宽数字 + 居中；偏离 100% 时转强调色，一眼看出这张卡被单独调过 */
 .fc-more-pct {
   flex: 1 1 auto; min-width: 0;
@@ -928,7 +891,6 @@ watchEffect(applyShellDom, { flush: 'sync' });
   transition: color var(--dur-fast) var(--ease);
 }
 .fc-more-pct.on { color: var(--accent-text); font-weight: 600; }
-.fc-more-ico.ghost { visibility: hidden; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
   /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */
