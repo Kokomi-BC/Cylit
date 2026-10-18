@@ -1594,9 +1594,21 @@ async function dockChatFromFloat() {
   syncPaneWidth();
 }
 
-/** 关掉浮窗：**不回侧栏**（关就是关），侧栏保持收起、正文仍是整宽 */
+/** 关浮窗时**禁用一帧过渡**：见 `closeChatFloat` */
+const floatClosing = ref(false);
+
+/**
+ * 关掉浮窗：**不回侧栏**（关就是关），侧栏保持收起、正文仍是整宽。
+ *
+ * ⚠️ 关的那一帧必须**去掉过渡**：侧栏本来就是收起状态（`.no-aside` 把面板 `translateX(-100%)`
+ * + 透明），浮窗一撤，那几个属性会在同一帧里变化 —— 不停用过渡的话，浏览器会老老实实把
+ * "浮窗 → 飞出左边界"补间一遍，看起来就是"关浮窗触发了一次侧栏收起动画"（用户口径 2026-11-19）。
+ */
 function closeChatFloat() {
+  floatClosing.value = true;
   chatFloat.value = false;
+  // 两帧之后再恢复过渡：那时属性都已经落定，恢复不会产生任何补间
+  requestAnimationFrame(() => requestAnimationFrame(() => { floatClosing.value = false; }));
 }
 
 /** 浮窗的拖动 / 改尺寸：与侧栏把手同一套 pointer 捕获（拖出窗口再回来也不会断） */
@@ -6013,7 +6025,7 @@ function renderMarkdown(text?: string | null) {
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
       <aside
-        :class="['reader-aside', { resizing: asideResizing }]"
+        :class="['reader-aside', { resizing: asideResizing, closing: floatClosing }]"
         :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle, asidePreviewStyle]"
         @pointerdown="onFloatCardDown"
         @pointermove="onFloatPointerMove"
@@ -7010,6 +7022,8 @@ function renderMarkdown(text?: string | null) {
 /* 拖拽期间关掉过渡：0.26s 的补间会让把手"黏"在指针后面（松手才追上） */
 .reader-aside.resizing, .reader.resizing .reader-slide,
 .reader.resizing .reader-capsule, .reader.resizing .cap-solo { transition: none; }
+/* 关浮窗的那一帧同样不要过渡（否则会补间一次"飞出左边界"，看起来像侧栏收起的动画） */
+.reader-aside.closing { transition: none; }
 /* 拖拽把手：挂在侧栏**右边缘外侧**（用户口径 2026-11-19：位置右移）。
    为什么不放在 `<aside>` 里：那是 `overflow: hidden`，凸出去就被裁；放内侧又必然压在
    面板最右边那条滚动条上（上一版为了避让塞了条 9px gutter，用户口径：把滚动条改回原位）。
