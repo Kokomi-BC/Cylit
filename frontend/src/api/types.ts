@@ -418,8 +418,6 @@ export interface ModelConfig {
   last_tested_at?: string | null;
   has_secret?: boolean;
   is_mock?: boolean;
-  /** 内置占位模型（离线兜底）：删掉后不会再自动重建，可在模型页「恢复内置占位」找回 */
-  builtin?: boolean;
   /** 兼容旧接口：连通性测试结果可能直接挂在模型记录上 */
   latency_ms?: number | null;
 }
@@ -441,7 +439,6 @@ export interface ModelTypeDefault {
   name: string;
   provider: string;
   model_name: string | null;
-  builtin?: boolean;
   is_mock?: boolean;
 }
 
@@ -884,6 +881,16 @@ export interface AgentConversation {
   /** 会话里出现过划词消息（后端自动判定，列表页据此分类） */
   has_selection?: boolean;
   kind?: 'selection' | 'normal';
+  /** 这条会话单独选定的问答模型（模型配置 id；空 = 跟随 agent 默认模型） */
+  model_config_id?: string | null;
+  /** 这条会话单独选定的推理档（空 = 跟随该模型 `parameters.reasoning_effort`） */
+  reasoning_effort?: string | null;
+}
+
+/** 会话级"用哪个模型 + 哪一档推理"（`PUT /agent/conversations/{id}`；空串 = 清成 NULL = 跟随默认）。 */
+export interface AgentModelPick {
+  model_config_id: string;
+  reasoning_effort: string;
 }
 
 /** 会话列表里那一条有几个消息（列表接口给数字，详情给数组）。 */

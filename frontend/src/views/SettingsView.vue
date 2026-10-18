@@ -5,18 +5,19 @@
  * 版式（移植自参照项目 retain-pdf 的设置弹窗）：**左导航 + 右内容窗格**，一次只渲染一区；
  * 左侧导航吸顶，深链（`/app/settings#kb`）只负责切到对应窗格。
  *
- * 分区：
+ * 分区（左边栏顺序）：
  * 1. **常规参数** —— 任务线程数 / 渲染 / RAG 参数 / 其他；**只有这一区有"保存设置"**
  *    （数据面 `PUT /settings`，仅提交变更项）。
- * 2. **显示主题** —— 皮肤注册表驱动的换肤（`src/theme/registry.ts` + `styles/themes/*.css`），
+ * 2. **模型** —— 问答模型 + 其他类型模型、密钥、预设导入；全是即时操作，没有"保存"。
+ * 3. **显示主题** —— 皮肤注册表驱动的换肤（`src/theme/registry.ts` + `styles/themes/*.css`），
  *    选择写 localStorage，立即生效。
- * 3. **索引管理** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据。
- *    这些原本长在「知识库」页上，用户口径是"那页全是设置"，于是整体搬到这里；
- *    它们都是**即时操作**，没有"保存"这一步。
- * 4. **在线解析（MinerU）** —— 第三方联网解析服务的 token 与默认参数：
+ * 4. **索引管理** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据；
+ *    原本长在「知识库」页上（用户口径"那页全是设置"），都是**即时操作**。
+ * 5. **论文问答** —— 对话风格、运行限额、已加载技能（模型本体在「模型」区）。
+ * 6. **在线解析（MinerU）** —— 第三方联网解析服务的 token 与默认参数：
  *    token **只写不回显**（后端只给掩码），配置后可就地「验证」（真的打一次 MinerU 接口）。
- * 5. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
- * 6. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
+ * 7. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
+ * 8. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
  * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
@@ -33,6 +34,7 @@ import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
 import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
+import ModelPanel from '@/components/settings/ModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
 
@@ -126,6 +128,7 @@ const READONLY_KEYS: ReadonlyDef[] = [
  */
 const SECTIONS = [
   { id: 'general', label: '常规参数', icon: 'settings' },
+  { id: 'models', label: '模型', icon: 'model' },
   { id: 'appearance', label: '显示主题', icon: 'sparkle' },
   { id: 'kb', label: '索引管理', icon: 'knowledge' },
   { id: 'agent', label: '论文问答', icon: 'chat' },
@@ -541,12 +544,17 @@ onMounted(async () => {
         </div>
       </section>
 
+      <!-- ② 模型：原先独立成页，"模型管理"本来也是设置，于是并进来当一区 -->
+      <section id="models" class="sec" v-if="active === 'models'">
+        <ModelPanel />
+      </section>
+
       <!-- ③ 索引管理（管理/诊断，即时生效，没有"保存"） -->
       <section id="kb" class="sec" v-if="active === 'kb'">
         <KbIndexPanel />
       </section>
 
-      <!-- ④ 论文问答：问答模型卡片（只读展示 + 指路到模型页） -->
+      <!-- ④ 论文问答：对话风格与运行限额（模型本体在「模型」区） -->
       <section id="agent" class="sec" v-if="active === 'agent'">
         <AgentModelPanel />
       </section>

@@ -4,8 +4,8 @@
  * 这里不用跟着改，少一处能对不上的地方。
  *
  * 应用是**多标签页外壳**：顶栏是标签条（`components/TabBar.vue`），导航入口在首页
- * （`views/HomeView.vue`）。`meta.tab` 给标签条提供默认标题与图标，视图加载完数据后
- * 可以用 `setTabTitle()` 把标题换成论文名这类更具体的信息。
+ * （`views/HomeView.vue`）。标签条的默认标题与图标在 `stores/tabs.ts` 的 `TAB_META` 里，
+ * 视图加载完数据后可以用 `setTabTitle()` 把标题换成论文名这类更具体的信息。
  */
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
@@ -27,7 +27,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { title: '知识库' } },
   { path: '/study', name: 'study', component: () => import('@/views/StudyView.vue'), meta: { title: '学习' } },
   { path: '/notes', name: 'notes', component: () => import('@/views/NotesView.vue'), meta: { title: '笔记' } },
-  { path: '/models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型' } },
+  // 模型管理并进了设置页的「模型」区。老标签页 / 老书签仍会打到 /models，
+  // 保留 name 是为了让 localStorage 里那批旧标签还能解析出标题，路径本身直接重定向到对应分区。
+  { path: '/models', name: 'models', redirect: '/settings#models' },
   { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue'), meta: { title: '任务' } },
   { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '设置' } },
   { path: '/:pathMatch(.*)*', redirect: '/home' },

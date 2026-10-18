@@ -47,7 +47,6 @@ import {
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
-import Menu from '@/components/Menu.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import AsideToggle from '@/components/reader/AsideToggle.vue';
 import CapPanel from '@/components/reader/CapPanel.vue';
@@ -542,18 +541,10 @@ function openInsightPage() {
   void router.push(target as never);
 }
 
-/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
-interface ToolbarAction {
-  key: string;
-  label: string;
-  icon?: string;
-  danger?: boolean;
-  disabled?: boolean;
-}
-
-/** 阅读器工具条：低频动作收进「⋯」，避免一排同权重按钮把主操作淹没。
- *  2026-10-17 用户口径：**精简**——去掉「打开原 PDF」（正文里本来就能切成原 PDF 呈现）
- *  与「重新生成解读」（论文库卡片的「⋯」里有同一个动作），并补上「全屏 / 退出全屏」。 */
+/** 顶部工具条右端只剩两枚动作：下载打包 / 全屏。
+ *  2026-11-19 用户口径：撤掉「Markdown 视图」与「重新翻译」两个入口（重译的后台任务照旧跑完，
+ *  只是不再从这里发起 —— 想重跑走「继续翻译」；Markdown 视图仍可从正文里的 `md:p<页号>`
+ *  锚点进入），全屏从「⋯」里搬到顶部，并换成对角线箭头。 */
 const isFullscreen = ref(false);
 /** 沉浸模式：浏览器不支持 / 拒绝全屏时的退路（隐藏顶部标签栏，阅读器占满整屏） */
 const immersive = ref(false);
@@ -566,17 +557,6 @@ function setImmersive(on: boolean): void {
   if (on) html.style.setProperty('--header-h', '0px');
   else html.style.removeProperty('--header-h');
 }
-
-const toolbarMenu = computed<ToolbarAction[]>(() => [
-  { key: 'markdown', label: 'Markdown 视图', icon: 'document' },
-  { key: 'download-zip', label: '下载打包', icon: 'download' },
-  { key: 'retranslate', label: '重新翻译', icon: 'refresh' },
-  {
-    key: 'fullscreen',
-    label: isFullscreen.value || immersive.value ? '退出全屏' : '全屏',
-    icon: isFullscreen.value || immersive.value ? 'collapse' : 'expand',
-  },
-]);
 
 function onFullscreenChange(): void {
   isFullscreen.value = !!document.fullscreenElement;
@@ -597,13 +577,6 @@ async function toggleFullscreen(): Promise<void> {
     setImmersive(true);
     toast('已切到沉浸模式（浏览器拒绝了全屏请求）', 'warn', 2600);
   }
-}
-
-function onToolbarAction(key: string) {
-  if (key === 'retranslate') { startTranslate('retranslate'); return; }
-  if (key === 'markdown') { openMarkdownView(); return; }
-  if (key === 'download-zip') { downloadBundle(); return; }
-  if (key === 'fullscreen') void toggleFullscreen();
 }
 
 const selection = reactive({
@@ -5984,9 +5957,17 @@ function renderMarkdown(text?: string | null) {
             />
           </div>
         </div>
-        <!-- 右：更多（低频动作：重译 / 打开 PDF / Markdown 视图） -->
+        <!-- 右：下载打包 + 全屏。2026-11-19 用户口径：全屏搬到顶部、换对角线图标；
+             只剩两项时不再套一层「⋯」—— 多一层菜单只是多一次点击。 -->
         <div class="cap-solo right">
-          <Menu :items="toolbarMenu" label="更多操作" size="md" @select="onToolbarAction" />
+          <button class="cap-act" :disabled="!!busyDownload"
+                  title="下载打包（原 PDF + 三个版本的 Markdown + 插图）" @click="downloadBundle()">
+            <AppIcon name="download" :size="15" />
+          </button>
+          <button class="cap-act" :title="isFullscreen || immersive ? '退出全屏' : '全屏'"
+                  :aria-pressed="isFullscreen || immersive" @click="toggleFullscreen()">
+            <AppIcon :name="isFullscreen || immersive ? 'collapse-diag' : 'expand-diag'" :size="15" />
+          </button>
         </div>
 
         <!-- 弹出面板（互斥，落在主胶囊正下方）。里面每个控件都是**常挂载**的：
@@ -6601,7 +6582,7 @@ function renderMarkdown(text?: string | null) {
           :aria-pressed="mdView.full"
           @click="mdView.full = !mdView.full"
         >
-          <AppIcon :name="mdView.full ? 'collapse' : 'expand'" :size="14" />
+          <AppIcon :name="mdView.full ? 'collapse-diag' : 'expand-diag'" :size="14" />
         </button>
       </template>
       <div class="md-bar">
@@ -6752,15 +6733,18 @@ function renderMarkdown(text?: string | null) {
 .cap-solo.left { left: 12px; }
 /* 右：与左侧那枚**同为正圆**（用户口径：更多也要圆形） */
 .cap-solo.right { right: 12px; }
-/* 右胶囊里的「⋯」：Menu 自带 32px 的圆触发钮（base.css 的 `.btn` 有底色）——
- * ⚠️ 它是**子组件内部**的元素，父组件的 scoped 选择器够不到，必须 `:deep()`。
- * 不穿透的话就会看到"胶囊里还套着一个小圆钮"（用户报的"底部多了一个胶囊样式"）。 */
-.reader-toolbar .cap-solo.right :deep(.menu-root) { width: 100%; height: 100%; }
-.reader-toolbar .cap-solo.right :deep(.menu-trigger) {
-  width: 100%; height: 100%;
-  border-color: transparent; background: transparent; box-shadow: none;
+/* 右侧胶囊装**两枚**动作键（下载 / 全屏）：它是 `.cap-solo` 里唯一的非正圆特例 ——
+   宽度按内容撑开；两键各自 30px 圆热区，hover 才浮出浅底（不常亮，免得像一排按钮墙）。 */
+.cap-solo.right { width: auto; padding: 0 3px; gap: 2px; }
+.cap-act {
+  width: 30px; height: 30px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 999px; background: transparent; color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.reader-toolbar .cap-solo.right :deep(.menu-trigger:hover) { background: var(--bg-hover); }
+.cap-act:hover { background: var(--bg-hover); }
+.cap-act:disabled { opacity: .45; cursor: default; background: transparent; }
 
 .reader-capsule {
   pointer-events: auto;

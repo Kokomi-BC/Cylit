@@ -5,7 +5,7 @@
  * 版面（用户口径 2026-10-15 第六轮：重构，走「极简柔光」方向 + 首页专属的"封面语言"）：
  *   刊头（英文小标签 / display 级大标题 / 说明 → 右侧一条真实数据 rail，发丝线分隔）
  *   → 核心功能（12 栏网格：5×2 的主角卡「阅读」+ 7 / 4 / 3 三张错落小卡）
- *   → 研究工具（一行四枚 pill，权重明显轻一档）
+ *   → 研究工具（一行三枚 pill，权重明显轻一档）
  *   → 阅读统计（底部唯一的数据可视化，见 ReadingStats）
  *
  * 六条规矩：
@@ -51,9 +51,8 @@ const FACES = [
 /** 研究工具：信息密度降一档 —— 名称已经能说明问题，提示语进 `title`，不再占一行字 */
 const TOOLS = [
   { name: 'notes', label: '笔记', icon: 'note', hint: '批注、笔记与高亮' },
-  { name: 'models', label: '模型', icon: 'model', hint: '生成 / 向量 / 视觉模型' },
   { name: 'tasks', label: '任务', icon: 'task', hint: '队列、进度与重试' },
-  { name: 'settings', label: '设置', icon: 'settings', hint: '参数、索引与搜索记录' },
+  { name: 'settings', label: '设置', icon: 'settings', hint: '参数、模型、索引与搜索记录' },
 ];
 
 const papers = computed<Paper[]>(() => state.papers ?? []);
@@ -264,7 +263,7 @@ async function openUnderstand(id: string) {
 .b-desc { max-width: 34em; font-size: 13.5px; line-height: 1.7; color: var(--text-dim); }
 
 /* ── ③ 研究工具：一行 pill ── */
-.tools { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .tool {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl); background: var(--bg-elev);

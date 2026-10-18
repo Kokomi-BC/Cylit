@@ -16,19 +16,17 @@
  *    （后端 `set_head`），一个字节都不删。
  */
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
-import { openTab } from '@/stores/tabs';
 import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
 import { BRAND_ICON } from '@/utils/brand';
 import { convCount } from '@/api/types';
 import type {
-  AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentSelection,
-  AgentStatus, AgentStep, AgentUsage,
+  AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentModelPick,
+  AgentSelection, AgentStatus, AgentStep, AgentUsage, ModelConfig,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
@@ -57,7 +55,6 @@ const emit = defineEmits<{
 const showFloatBtn = computed(() => !!props.canFloat && !props.floating);
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 15.5;
-const router = useRouter();
 /** 空态文案池里"与Cyli一起讨论…"的固定前缀（Cyli = 这位问答助手的名字） */
 const PERSONA = '与Cyli一起讨论';
 
@@ -147,7 +144,43 @@ const current = computed(() => conversations.value.find(c => c.conversation_id =
 const currentTitle = computed(() => current.value?.title || '新对话');
 const percent = computed(() => Math.max(0, Math.min(100, usage.value?.percent ?? 0)));
 const ringDash = computed(() => `${(percent.value / 100) * RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`);
-const modelName = computed(() => status.value?.model?.model_name || '—');
+/* ---------------------- 模型 / 推理等级（输入框下面那枚胶囊） ----------------------
+   候选来自 `/models?model_type=agent`；**一条 agent 行都没有**时退回 `/agent/status`
+   那一份，只读显示 —— 那种情况下没有"可换"的东西，列表里也就没有可点的项。 */
+const modelOptions = ref<ModelConfig[]>([]);
+/** 浮层翻在哪一栏：根（两行）→ 展开某一栏的候选；`none` = 收起 */
+const menuStage = ref<'none' | 'root' | 'model' | 'effort'>('none');
+/** 这条会话单独选的值（空串 = 跟随默认，后端存 NULL） */
+const pick = ref<AgentModelPick>({ model_config_id: '', reasoning_effort: '' });
+/** 自定义档草稿：原样存、原样发，不校验也不映射 */
+const effortDraft = ref('');
+const customOpen = ref(false);
+const savingPick = ref(false);
+const EFFORT_PRESETS = ['low', 'medium', 'high'];
+
+const modelReadonly = computed(() => modelOptions.value.length === 0);
+/** 真正生效的模型：本会话选的那条 → 该类型默认那条；都没有就是 `/agent/status` 的回落 */
+const activeModel = computed(() => modelOptions.value.find(m => m.id === pick.value.model_config_id)
+  ?? modelOptions.value.find(m => m.is_default) ?? modelOptions.value[0] ?? null);
+const modelLabel = computed(() => activeModel.value?.name || activeModel.value?.model_name
+  || status.value?.model?.model_name || '—');
+function subLine(m?: { provider?: string; model_name?: string | null } | null) {
+  return m ? [m.provider, m.model_name].filter(Boolean).join(' · ') : '';
+}
+const modelSub = computed(() => subLine(activeModel.value ?? status.value?.model));
+/** 默认档取模型的 `parameters.reasoning_effort`（没配就只写"默认"） */
+const defaultEffort = computed(() => {
+  const p = activeModel.value?.parameters?.reasoning_effort
+    ?? status.value?.model?.parameters?.reasoning_effort;
+  return typeof p === 'string' ? p : '';
+});
+const effortLabel = computed(() => pick.value.reasoning_effort
+  || (defaultEffort.value ? `默认（${defaultEffort.value}）` : '默认'));
+const pickTitle = computed(() => `问答模型：${modelLabel.value}`
+  + `${modelSub.value ? `（${modelSub.value}）` : ''}｜推理等级：${effortLabel.value}`);
+/** 生效档不在预设里 = 自定义（右半边那一行直接显示它本身） */
+const isCustomEffort = computed(() => Boolean(pick.value.reasoning_effort)
+  && !EFFORT_PRESETS.includes(pick.value.reasoning_effort));
 const agentReady = computed(() => Boolean(status.value?.running) && status.value?.model?.usable !== false);
 /** 这一轮**真的要带出去**的选区（用户在胶囊上关掉之后就是 null）。 */
 const selected = computed(() => (selCtx.value?.include ? selCtx.value : null));
@@ -550,6 +583,10 @@ async function loadConversation(id: string) {
     currentId.value = data.conversation_id;
     messages.value = (data.messages as AgentMessage[]) ?? [];
     usage.value = data.usage ?? null;
+    pick.value = {
+      model_config_id: data.model_config_id || '',
+      reasoning_effort: data.reasoning_effort || '',
+    };
     editing.value = null;
     if (!conversations.value.some(c => c.conversation_id === id)) await loadConversations();
   } catch (err) {
@@ -576,6 +613,7 @@ function startNew() {
   currentId.value = null;
   messages.value = [];
   usage.value = null;
+  pick.value = { model_config_id: '', reasoning_effort: '' };
   errorText.value = '';
   editing.value = null;
   pending.value = [];
@@ -902,6 +940,9 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
       edit_of: mode === 'edit' ? target?.message_id : null,
       // 默认**就地**改/就地重答；只有那枚 git 分支图标传 true（开兄弟分支，两条都留）
       branch,
+      // 这一轮用哪个模型、哪一档推理（`null` = 这一轮按后端默认跑）
+      model_id: pick.value.model_config_id || null,
+      reasoning_effort: pick.value.reasoning_effort || null,
     }, { signal: controller.signal, onEvent });
     const convId = currentId.value;
     if (convId) {
@@ -1008,9 +1049,61 @@ function resetInputHeight() {
   if (el) el.style.height = '';
 }
 
-/** 模型名那枚小按钮：跳到设置的「论文问答」卡片（不在这里做模型下拉 —— 会多一套状态）。 */
-function openModelSettings() {
-  void router.push(openTab({ name: 'settings', hash: '#agent' }) as never);
+async function loadModelOptions() {
+  try {
+    const data = await api.get<{ items: ModelConfig[] }>('/models', { model_type: 'agent' });
+    modelOptions.value = data.items ?? [];
+  } catch (err) {
+    modelOptions.value = [];
+    console.warn('[chat] 取 agent 模型候选失败', err);
+  }
+}
+
+/** 点胶囊：根栏 ↔ 收起。 */
+function toggleMenu() {
+  menuStage.value = menuStage.value === 'none' ? 'root' : 'none';
+  customOpen.value = false;
+}
+
+/** 点根栏某一行：展开它自己的候选（再点一次回到根栏）。 */
+function showStage(stage: 'model' | 'effort') {
+  menuStage.value = menuStage.value === stage ? 'root' : stage;
+  if (stage !== 'effort') customOpen.value = false;
+}
+
+/** 自定义输入框：展开时带上当前自定义值，便于在它上面微调。 */
+function toggleCustom() {
+  customOpen.value = !customOpen.value;
+  if (customOpen.value) effortDraft.value = isCustomEffort.value ? pick.value.reasoning_effort : '';
+}
+
+/** 自定义档：**原样**存、原样下发（不校验不映射），空白才当"清回默认"。 */
+function applyCustomEffort() {
+  const raw = effortDraft.value;
+  if (!raw.trim()) return;
+  void savePick({ reasoning_effort: raw });
+  customOpen.value = false;
+}
+
+/**
+ * 换模型 / 换档：**先本地生效**（点了就得看见），再 PUT 落到这条会话上。
+ * 失败必须回滚并提示 —— 留一个后端其实没存的已选状态，会让下一轮请求与刷新后的显示对不上。
+ */
+async function savePick(patch: Partial<AgentModelPick>) {
+  const prev = { ...pick.value };
+  pick.value = { ...prev, ...patch };
+  menuStage.value = 'none';
+  const id = currentId.value;
+  if (!id) return;       // 还没有会话：这一档随下一轮 `ask` 的 payload 带过去（后端会记到新建的会话行上）
+  savingPick.value = true;
+  try {
+    await api.put(`/agent/conversations/${id}`, { ...pick.value });
+  } catch (err) {
+    pick.value = prev;
+    reportError(err, '保存模型选择失败');
+  } finally {
+    savingPick.value = false;
+  }
 }
 
 /** 点圆环 = 压缩（多一轮会话：模型把已谈过的内容压成要点，存成一条 summary）。
@@ -1052,6 +1145,7 @@ onMounted(() => {
      而 `/agent/status` 里带一次"问答服务在不在"的健康检查 —— 服务没起来时要等它超时
      （实测 2s 左右），于是历史被硬生生拖了两秒。三件事互不依赖，各走各的。 */
   void loadConversations();
+  void loadModelOptions();
   void Promise.all([loadStatus(), loadPaper()]);
 });
 
@@ -1060,6 +1154,7 @@ onMounted(() => {
 onActivated(() => {
   void loadConversations();
   void loadStatus();
+  void loadModelOptions();
 });
 
 onUnmounted(() => { controller?.abort(); composerRO?.disconnect(); });
@@ -1071,6 +1166,7 @@ watch(() => props.paperId, async () => {
   currentId.value = null;
   pending.value = [];
   selCtx.value = null;
+  pick.value = { model_config_id: '', reasoning_effort: '' };
   void Promise.all([loadPaper(), loadConversations()]);
   void loadStatus();
 });
@@ -1422,9 +1518,8 @@ defineExpose({ uploadFiles, ensureThread });
         <!-- 模型与上下文圆环在**输入框外**（用户口径 2026-10-03）：一行低调的明细，
              不跟输入抢位置；圆环很小、里面不放数字，数值写在 tooltip 里。 -->
         <div v-if="!editing" class="composer-foot">
-          <button class="model-btn truncate" :title="`当前问答模型：${modelName}（点一下去设置里换）`"
-                  @click="openModelSettings">
-            <span class="truncate">{{ modelName }}</span><AppIcon name="chevron-right" :size="11" />
+          <button class="model-btn truncate" :title="pickTitle" @click="toggleMenu">
+            <span class="truncate">{{ modelLabel }}</span><AppIcon name="chevron-right" :size="11" />
           </button>
           <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
           <span class="spacer" />
@@ -1435,6 +1530,70 @@ defineExpose({ uploadFiles, ensureThread });
               <circle class="ring-bar" cx="18" cy="18" r="15.5" :stroke-dasharray="ringDash" />
             </svg>
           </button>
+
+          <!-- 模型 / 推理等级：胶囊点开是一条**两行的小浮层**，两行各自往下展开候选。
+               太窄的浮层模式（320px）里没有"右侧再飞一层"的空间，展开放在同一块浮层里。 -->
+          <div v-if="menuStage !== 'none'" class="pick-scrim" @click="menuStage = 'none'" />
+          <div v-if="menuStage !== 'none'" class="pick-pop">
+            <button class="pick-row" :class="{ on: menuStage === 'model' }" @click="showStage('model')">
+              <span class="pick-key">模型</span>
+              <span class="pick-val truncate">{{ modelLabel }}</span>
+              <AppIcon name="chevron-right" :size="11" />
+            </button>
+            <button class="pick-row" :class="{ on: menuStage === 'effort' }" @click="showStage('effort')">
+              <span class="pick-key">推理等级</span>
+              <span class="pick-val truncate">{{ effortLabel }}</span>
+              <AppIcon name="chevron-right" :size="11" />
+            </button>
+
+            <div v-if="menuStage === 'model'" class="pick-sub">
+              <div v-if="modelReadonly" class="pick-empty">
+                <span class="pick-item-name">未单独配置</span>
+                <span class="pick-item-sub truncate">{{ modelSub }}</span>
+              </div>
+              <template v-else>
+                <button v-for="m in modelOptions" :key="m.id" class="pick-item"
+                        :class="{ on: m.id === activeModel?.id }"
+                        :disabled="savingPick || m.enabled === false"
+                        @click="savePick({ model_config_id: m.id })">
+                  <span class="pick-item-main">
+                    <span class="pick-item-name">
+                      <span class="truncate">{{ m.name || m.model_name || m.id }}</span>
+                      <span v-if="m.is_default" class="badge dim tiny">默认</span>
+                    </span>
+                    <span class="pick-item-sub truncate">{{ subLine(m) }}</span>
+                  </span>
+                  <AppIcon v-if="m.id === activeModel?.id" name="check" :size="13" />
+                </button>
+              </template>
+            </div>
+
+            <div v-if="menuStage === 'effort'" class="pick-sub">
+              <button class="pick-item" :class="{ on: !pick.reasoning_effort }" :disabled="savingPick"
+                      @click="savePick({ reasoning_effort: '' })">
+                <span class="pick-item-main">
+                  <span class="pick-item-name truncate">
+                    {{ defaultEffort ? `默认（${defaultEffort}）` : '默认' }}
+                  </span>
+                </span>
+                <AppIcon v-if="!pick.reasoning_effort" name="check" :size="13" />
+              </button>
+              <button v-for="e in EFFORT_PRESETS" :key="e" class="pick-item"
+                      :class="{ on: pick.reasoning_effort === e }" :disabled="savingPick"
+                      @click="savePick({ reasoning_effort: e })">
+                <span class="pick-item-main"><span class="pick-item-name truncate">{{ e }}</span></span>
+                <AppIcon v-if="pick.reasoning_effort === e" name="check" :size="13" />
+              </button>
+              <button class="pick-item" :class="{ on: isCustomEffort }" @click="toggleCustom">
+                <span class="pick-item-main">
+                  <span class="pick-item-name truncate">{{ isCustomEffort ? pick.reasoning_effort : '自定义…' }}</span>
+                </span>
+                <AppIcon v-if="isCustomEffort" name="check" :size="13" />
+              </button>
+              <input v-if="customOpen" v-model="effortDraft" class="pick-input" placeholder="自定义档位"
+                     @keydown.enter.prevent="applyCustomEffort" @keydown.escape="customOpen = false" />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1809,14 +1968,67 @@ defineExpose({ uploadFiles, ensureThread });
 .edit-acts { display: flex; gap: 5px; padding-bottom: 2px; }
 .composer-bar { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
 /* 输入框**外面**那一行：模型 + 圆环（用户口径：这两个不放进输入框里） */
-.composer-foot { display: flex; align-items: center; gap: 6px; padding: 6px 4px 0; }
-/* 模型名：**低调**（幽灵小字 + 一枚箭头），点它去设置里换，不在这一层做下拉 */
+.composer-foot { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 4px 0; }
+/* 模型名：**低调**（幽灵小字 + 一枚箭头），点它就地换模型 / 推理等级 */
 .model-btn {
-  display: inline-flex; align-items: center; gap: 1px; max-width: 55%;
+  display: inline-flex; align-items: center; gap: 1px; max-width: 55%; min-width: 0;
   border: 0; background: none; cursor: pointer; padding: 2px 4px;
   border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: 11.5px;
 }
 .model-btn:hover { background: var(--bg-hover); color: var(--text-dim); }
+
+/* ── 模型 / 推理等级浮层 ──
+   左右都贴住这一行（left/right 归零）再用 max-width 收窄：胶囊在最左边，浮层向右长多少
+   都出不了输入区 —— 浮层模式最窄只有 320px，溢出到面板外就点不到了。 */
+.pick-scrim { position: fixed; inset: 0; z-index: 8; }
+.pick-pop {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 9;
+  max-width: 288px;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  border-radius: 12px; border: 1px solid var(--border);
+  background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+}
+.pick-row {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; padding: 0 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer; flex: none;
+}
+.pick-row:hover, .pick-row.on { background: var(--bg-hover); color: var(--text); }
+.pick-key { flex: none; color: var(--text-faint); }
+.pick-row.on .pick-key { color: var(--text-dim); }
+.pick-val { flex: 1; min-width: 0; color: var(--text); }
+.pick-row.on .pick-val { color: var(--accent-text); }
+.pick-pop svg { color: var(--text-faint); flex: none; }
+.pick-row.on svg { color: var(--accent-text); }
+/* 展开出来的那一栏：跟着浮层往下长，太长就在**浮层内**滚 */
+.pick-sub {
+  display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; padding-top: 4px;
+  border-top: 1px solid var(--divider); max-height: 216px; overflow-y: auto;
+}
+.pick-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.pick-item:hover:not(:disabled) { background: var(--bg-hover); }
+.pick-item.on { background: var(--accent-soft); }
+.pick-item.on svg, .pick-item.on .pick-item-name { color: var(--accent-text); }
+.pick-item:disabled { cursor: default; }
+.pick-item-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.pick-item-name {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: 12px; color: var(--text);
+}
+/* 副行：provider · model_name（小一号、退一档色，只做识别用） */
+.pick-item-sub { font-size: 10.5px; color: var(--text-faint); }
+.pick-empty { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; }
+.pick-empty .pick-item-name { font-size: 12px; color: var(--text-dim); }
+.pick-input {
+  flex: none; height: 26px; margin: 3px 4px 1px; padding: 0 8px; outline: none;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
+  background: var(--bg-sunken); color: var(--text); font: inherit; font-size: 12px;
+}
+.pick-input:focus { border-color: var(--accent); box-shadow: var(--ring); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
   position: relative; width: 16px; height: 16px; flex: none;
