@@ -235,6 +235,61 @@ function resetFont() {
   savePos();
 }
 
+/* ------------------------------ 「更多」二级菜单 ------------------------------
+ * 把「编辑 / 放大 / 缩小 / 还原」收进一枚 ⋯：四枚钮并排会把标题行挤满，而它们都是低频动作。
+ * 菜单**挂在外壳里**而不是 Teleport 到 body —— 外壳故意不写 overflow:hidden（只有内层 .float-card 裁正文），
+ * 所以菜单不会被裁；同时指针仍在卡片区域内，父组件的「鼠标移出就收卡片」不会被误触发。 */
+const moreOpen = ref(false);
+const moreTop = ref(0);
+const moreLeft = ref(0);
+const moreEl = ref<HTMLElement | null>(null);
+const moreBtnEl = ref<HTMLElement | null>(null);
+
+function closeMore() {
+  moreOpen.value = false;
+}
+
+/** 打开后量一次真实尺寸再落位：下方放不下就翻到按钮上方（卡片可能正贴着屏幕底边）。 */
+async function toggleMore() {
+  if (moreOpen.value) { closeMore(); return; }
+  moreOpen.value = true;
+  await nextTick();
+  const shell = el.value;
+  const btn = moreBtnEl.value;
+  const menu = moreEl.value;
+  if (!shell || !btn || !menu) return;
+  const sb = shell.getBoundingClientRect();
+  const bb = btn.getBoundingClientRect();
+  const mh = menu.offsetHeight;
+  const mw = menu.offsetWidth;
+  moreTop.value = Math.round(bb.bottom + 4 + mh > window.innerHeight - 8
+    ? bb.top - sb.top - mh - 4
+    : bb.bottom - sb.top + 4);
+  // 右边缘对齐按钮右边缘；越出卡片就往左拉，但始终留在卡片内（外壳不裁，出界也会飘在正文上）
+  const left = Math.min(Math.max(6, bb.right - sb.left - mw), Math.max(6, sb.width - mw - 6));
+  moreLeft.value = Math.round(left);
+}
+
+function onMoreDocDown(ev: PointerEvent) {
+  const target = ev.target as HTMLElement | null;
+  if (target?.closest?.('[data-fc-more], [data-fc-more-menu]')) return;
+  closeMore();
+}
+function onMoreKey(ev: KeyboardEvent) {
+  if (ev.key !== 'Escape') return;
+  ev.stopPropagation();          // 别让全局 Esc（收浮层）顺手把整张卡也收了
+  closeMore();
+}
+watch(moreOpen, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', onMoreDocDown, true);
+    document.addEventListener('keydown', onMoreKey, true);
+  } else {
+    document.removeEventListener('pointerdown', onMoreDocDown, true);
+    document.removeEventListener('keydown', onMoreKey, true);
+  }
+});
+
 /** textCat 非空才写 `--ts`：解释浮层 / 对话浮窗不传，它们的继承链与以前一模一样。
  *  ⚠️ 行内 style 里只放这一个变量：外壳的 left/top/width/height 仍由 applyShellDom 直接写 DOM，
  *  Vue 的 patchStyle 只增删它自己那几个键，不会把命令式写进去的几何抹掉。 */
@@ -315,7 +370,7 @@ function clampToViewport(p: { left: number; top: number }): { left: number; top:
 watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as const,
   () => { void place(); }, { immediate: true });
 watch(() => props.open, (v) => {
-  if (!v) return;
+  if (!v) { closeMore(); return; }
   /* 尺寸也按卡记忆：上次拉大过的框，再打开还是那么大；没记录才回到调用方给的默认宽高。
      夹一次视口 —— 换到小屏上之后，记下来的大框不该整个超出屏幕。 */
   const saved = readSavedPos();
@@ -373,6 +428,8 @@ watch(el, (node) => {
 onBeforeUnmount(() => {
   ro?.disconnect();
   releaseFloatSelection();
+  document.removeEventListener('pointerdown', onMoreDocDown, true);
+  document.removeEventListener('keydown', onMoreKey, true);
   if (bodySaveTimer) { window.clearTimeout(bodySaveTimer); bodySaveTimer = 0; }
 });
 
@@ -568,46 +625,27 @@ watchEffect(applyShellDom, { flush: 'sync' });
              但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
         <slot name="head-mid" />
         <span class="spacer" />
-        <!-- 字号 A− / A+（只有查看态的笔记卡要）：排在 head-extra **之前** —— 那一组是父组件自己的
-             动作（定位 / 编辑 / 保存），字号属于"看的方式"，挨在一起会读成同一组。
-             到边界就 disabled（title 里写明当前百分比，用户不必点一下才知道到头了）。
-             标题栏的拖动已把 button 排除在外（见 onHeadDown），点它不会顺手把卡片挪一下。 -->
-        <template v-if="props.zoomable">
-          <button
-            type="button"
-            class="fc-btn"
-            :disabled="fontScale <= F_MIN"
-            :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
-            data-float-zoom-out
-            @click="stepFont(-1)"
-          >
-            <AppIcon name="zoom-out" :size="13" />
-          </button>
-          <button
-            type="button"
-            class="fc-btn"
-            :disabled="fontScale >= F_MAX"
-            :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
-            data-float-zoom-in
-            @click="stepFont(1)"
-          >
-            <AppIcon name="zoom-in" :size="13" />
-          </button>
-          <!-- 偏离默认（≠100%）时才多一枚还原键：平时不出现，三个键挤在一起还得猜哪个是默认。 -->
-          <button
-            v-if="fontScale !== 1"
-            type="button"
-            class="fc-btn"
-            title="还原默认字号（100%）"
-            data-float-zoom-reset
-            @click="resetFont"
-          >
-            <AppIcon name="refresh" :size="13" />
-          </button>
-        </template>
         <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
              没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
         <slot name="head-extra" />
+        <!-- ⋯ 排在父组件的动作之后、✕ 之前：最右那枚永远是关闭，不该被它挤走。
+             字号与「编辑」一起收进这里（用户口径 2026-11-26）—— 五枚钮并排必然把标题行挤成一团，
+             而放大/缩小/还原/编辑都是低频动作。只有查看态的笔记卡要它（`zoomable`），
+             别的浮层头部与以前完全一致；它们也没有字号状态，给了按钮也无从下手。 -->
+        <button
+          v-if="props.zoomable"
+          ref="moreBtnEl"
+          type="button"
+          class="fc-btn"
+          :class="{ on: moreOpen }"
+          :aria-expanded="moreOpen"
+          title="更多"
+          data-fc-more
+          @click="toggleMore"
+        >
+          <AppIcon name="more" :size="13" />
+        </button>
+
         <button
           v-if="!props.hideAnchor"
           type="button"
@@ -663,6 +701,52 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointerup="onResizeUp"
         @pointercancel="onResizeUp"
       />
+    </div>
+
+    <!-- 二级菜单：调用方用 `#more-items` 补自己的条目（笔记卡塞「编辑笔记」），
+         字号三项由本组件给 —— 字号状态与持久化都在这里，交出去就等于两处各记一份。
+         插槽内容带的是**父组件的 scope**，所以样式这边统一用 `:slotted(button)` 兜住。 -->
+    <div
+      v-if="moreOpen"
+      ref="moreEl"
+      class="fc-more"
+      data-fc-more-menu
+      role="menu"
+      aria-label="更多操作"
+      :style="{ top: moreTop + 'px', left: moreLeft + 'px' }"
+    >
+      <slot name="more-items" :close="closeMore" />
+      <div v-if="$slots['more-items']" class="fc-more-sep" />
+      <button
+        type="button"
+        class="fc-more-item"
+        role="menuitem"
+        :disabled="fontScale >= F_MAX"
+        data-fc-zoom-in
+        @click="stepFont(1)"
+      >
+        <span>放大字号</span><span class="fc-more-val">{{ Math.round(fontScale * 100) }}%</span>
+      </button>
+      <button
+        type="button"
+        class="fc-more-item"
+        role="menuitem"
+        :disabled="fontScale <= F_MIN"
+        data-fc-zoom-out
+        @click="stepFont(-1)"
+      >
+        <span>缩小字号</span><span class="fc-more-val">{{ Math.round(fontScale * 100) }}%</span>
+      </button>
+      <button
+        v-if="fontScale !== 1"
+        type="button"
+        class="fc-more-item"
+        role="menuitem"
+        data-fc-zoom-reset
+        @click="resetFont"
+      >
+        <span>还原默认字号</span>
+      </button>
     </div>
   </div>
 </template>
@@ -760,6 +844,41 @@ watchEffect(applyShellDom, { flush: 'sync' });
    也照样会传这个插槽 —— 空 span 会作为 flex 子项吃掉两个 gap，查看态下 ✕ 就被推远了。 */
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .fc-tail:empty { display: none; }
+
+/* 「更多」二级菜单：贴着 ⋯ 落下（坐标由 toggleMore 量好后写进行内 style）。
+   观感与笔记的删除确认菜单同一门语言（白底、细边、浅阴影、条目 7/10 内边距）。 */
+.fc-more {
+  position: absolute; z-index: 2;
+  min-width: 172px;
+  padding: 5px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-flyout);
+}
+/* 条目：左边动作、右边数值（百分比对齐靠 tabular-nums，加减时不会左右抖）。
+   `:slotted(button)` 是给调用方塞进来的条目（笔记卡的「编辑笔记」）——
+   插槽节点带的是父组件的 scope，本组件的 .fc-more-item 到不了它们身上。 */
+.fc-more-item, .fc-more :slotted(button) {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.fc-more-item:hover:not(:disabled), .fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); }
+.fc-more-item:disabled { opacity: .4; cursor: default; }
+.fc-more-val { font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.fc-more-sep { height: 1px; margin: 4px 8px; background: var(--divider); }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
   /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */

@@ -7472,19 +7472,22 @@ function renderMarkdown(text?: string | null) {
         </button>
         <!-- 时间已经挪到标题右侧（见 head-mid）；这里只剩「定位」——它在「编辑」左边，
              两枚相邻：先定位再看，动作顺序与视觉顺序一致（用户口径 2026-11-26）。 -->
-        <!-- 头部按键照参考实现（铅笔 = 编辑 / 垃圾桶 = 删除，关关闭是壳自带的 ✕）：
-             查看态给铅笔，编辑态把它换成 ✓ 保存。
-             用户口径 2026-10-13：**查看态不再给垃圾桶**（只读姿态里不该出现删除），
-             删除只留在**编辑态**；而且点它不再直接删 —— 先弹一小块二级菜单确认。 -->
-        <button v-if="card.mode === 'view' && card.noteId" class="np-head-save" type="button"
-                title="编辑笔记" data-note-edit
-                @click="card.mode = 'edit'; card.draft = card.content">
-          <AppIcon name="edit" :size="13" />
-        </button>
+        <!-- 编辑态头部只剩 ✓ 保存：查看态的「编辑」已经收进 ⋯ 二级菜单（与字号同一处），
+             因为查看态那一行同时要塞「定位 / 编辑 / 放大 / 缩小 / 还原 / ✕」，五枚并排必然挤成一团。 -->
         <button v-if="card.mode !== 'view'" class="np-head-save" type="button"
                 :disabled="card.busy" title="保存笔记" data-note-save
                 @click="saveNotePopover(card)">
           <AppIcon name="check" :size="13" />
+        </button>
+      </template>
+      <!-- 「更多」菜单里的父级条目（用户口径 2026-11-26：编辑 / 放大 / 缩小 / 还原合并成 ⋯）。
+           只有查看态、且这条笔记真的存在时才有「编辑」—— 空卡没有可编辑的对象。
+           样式由 FloatingCard 的 `:slotted(button)` 统一给，这里不写类名，免得两处各画一套。 -->
+      <template #more-items="{ close }">
+        <button v-if="card.mode === 'view' && card.noteId" type="button" role="menuitem"
+                title="编辑笔记" data-note-edit
+                @click="card.mode = 'edit'; card.draft = card.content; close()">
+          <span>编辑笔记</span>
         </button>
       </template>
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
