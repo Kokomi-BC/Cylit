@@ -696,11 +696,18 @@ class AgentRuntime:
         if name == "FunctionToolCallEvent":
             part = getattr(event, "part", None)
             deps.note_model_call()
+            # 调工具之前说的那段话是**过程**（『我先看一下第 3 页』），不算最终正文：
+            # 丢掉已累积的正文并让前端清掉已经显示的那一段，否则草稿会整段混进回答
+            # （用户口径 2026-11-26「边思考边输出的正文会被放到最终正文」）。
+            pre: list[dict] = []
+            if sanitizer.clean.strip():
+                sanitizer.reset()
+                pre.append({"type": "answer_reset"})
             tool = getattr(part, "tool_name", "?")
             digest = _digest(getattr(part, "args", None))
             state.log.tool_start(tool, round=deps.model_calls, digest=digest)
-            return [{"type": "tool", "round": deps.model_calls,
-                     "tool": tool, "status": "start", "args_digest": digest}]
+            return pre + [{"type": "tool", "round": deps.model_calls,
+                           "tool": tool, "status": "start", "args_digest": digest}]
         if name == "FunctionToolResultEvent":
             tool = getattr(getattr(event, "part", None), "tool_name", "?")
             step = state.log.tool_done(tool, round=deps.model_calls)

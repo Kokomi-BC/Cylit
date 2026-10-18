@@ -126,6 +126,19 @@ class StreamingAnswerSanitizer:
         self._reclean()
         return self._drain()
 
+    def reset(self) -> None:
+        """丢掉**到目前为止**累积的正文，从头开始。
+
+        用途：模型「边想边说」—— 先讲一段（『我先看一下第 3 页』）再调工具，接着才写正式回答。
+        调工具之前那些话属于**过程**，不该进最终正文，否则整段落进回答里，用户看到的
+        是一段自言自语的草稿（用户口径 2026-11-26）。调用方负责同时通知前端清掉已显示的那段。
+        """
+        self._raw = ""
+        self._clean = ""
+        self._emitted = 0
+        self._last_batch = 0
+        self._batch = 64
+
     def flush(self) -> str:
         """回答结束：把剩下的（含被 guard 挡住的尾巴）全部推出。"""
         self._reclean()

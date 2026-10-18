@@ -932,6 +932,12 @@ function onEvent(name: string, data: any) {
   }
   if (name === 'thinking_delta') { appendLiveStep('thinking', data?.text ?? ''); return; }
   if (name === 'thinking') return;   // 思考段的边界由步骤自己的"换类另起一段"表达
+  /* 调工具了：之前那几句是过程（『我先看一下…』），不算正文 —— 清掉已显示的那一段，
+     与后端 `state.text` 同一口径（用户口径 2026-11-26）。过程轨迹里仍然留着。 */
+  if (name === 'answer_reset') {
+    ensureLive().content = '';
+    return;
+  }
   if (name === 'answer_delta') {
     const text = data?.text ?? '';
     const msg = ensureLive();
