@@ -5416,6 +5416,9 @@ function scheduleNoteHide() {
  */
 /** 点任何浮层都顺手清掉正文里的选区（用户口径 2026-11-24）：浮层是另一层，
  *  点了它就不该还留着一段"看起来像待操作"的选中文字。 */
+let noteClearRaf = 0;
+let noteDragGuard = false;
+
 function clearDocSelection() {
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) sel.removeAllRanges();
@@ -5423,6 +5426,25 @@ function clearDocSelection() {
 
 function onNoteCardPointerDown() {
   clearDocSelection();
+  /* 笔记浮层也要有"拖动/缩放期间持续清选区"的机制（用户口径 2026-11-24）：PDF 的原生划词
+     可能在按下之后才起来，只在 pointerdown 清一次挡不住 —— 这里在整段拖动期间逐帧清。 */
+  if (notePop.open) {
+    if (noteClearRaf) cancelAnimationFrame(noteClearRaf);
+    const tick = () => {
+      if (!noteDragGuard) { noteClearRaf = 0; return; }
+      clearDocSelection();
+      noteClearRaf = requestAnimationFrame(tick);
+    };
+    noteDragGuard = true;
+    noteClearRaf = requestAnimationFrame(tick);
+    const stop = () => {
+      noteDragGuard = false;
+      window.removeEventListener('pointerup', stop, true);
+      window.removeEventListener('pointercancel', stop, true);
+    };
+    window.addEventListener('pointerup', stop, true);
+    window.addEventListener('pointercancel', stop, true);
+  }
   if (notePop.open) notePop.anchored = true;
 }
 
@@ -6780,7 +6802,8 @@ function renderMarkdown(text?: string | null) {
              `@pointerdown.capture="… onNoteCardPointerDown()"`，点一下、拖标题、拖下角放大任一动作
              都会把卡片锚住（翻页 / 滚动发生在卡片外，不触发 —— 正是用户说的"不含翻页"）。
              所以这里不再需要一枚手动开关，位置让给"跳回原文"。 -->
-        <button v-if="notePop.rowId" class="np-head-save locate" type="button"
+        <!-- 定位只在**查看态**给：编辑态右上是 ✓保存 与垃圾桶，再塞一枚只会挤（用户口径 2026-11-24）。 -->
+        <button v-if="notePop.mode === 'view' && notePop.rowId" class="np-head-save locate" type="button"
                 title="定位到原文" data-note-locate
                 @click="locateNoteRow">
           <AppIcon name="locate" :size="13" />
