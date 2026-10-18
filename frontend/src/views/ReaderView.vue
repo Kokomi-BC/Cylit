@@ -5917,16 +5917,6 @@ function renderMarkdown(text?: string | null) {
               <AppIcon name="chevron-right" :size="13" />
             </button>
           </div>
-          <!-- 「浮层打开」只对**对话**有意义（用户口径）：点它把这一栏拎成浮窗，顺手收起侧栏。
-               浮窗标题栏里同一位置换成了「回到侧栏」—— 两边互切。 -->
-          <button
-            v-if="!isNarrow && sideTab === 'chat'"
-            class="btn ghost icon sm aside-float-btn"
-            title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
-            @click="openChatFloat"
-          >
-            <AppIcon name="expand" :size="14" />
-          </button>
         </div>
         <!-- 目录页签里再分「目录 / 页面视图」（《修改计划》第二步）：两者**共享同一个"读到哪"**
              —— `currentPage` 都从正文当前行来，页面视图据此高亮并把缩略图滚进可视区。 -->
@@ -5998,8 +5988,11 @@ function renderMarkdown(text?: string | null) {
             ref="chatRef"
             :paper-id="paperId"
             :selection="chatSelection"
+            :can-float="!isNarrow"
+            :floating="chatFloat"
             @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
             @clear-selection="chatSelection = null"
+            @float="openChatFloat"
           />
         </KeepAlive>
         <ReaderSearch
@@ -6045,19 +6038,7 @@ function renderMarkdown(text?: string | null) {
           @insight-queued="fetchTasks"
           @open-insight-page="openInsightPage"
         />
-        <!-- 拖拽改宽度：贴在侧栏右边缘（见 onResizeDown 的说明），双击复位 -->
-        <div
-          class="aside-resizer"
-          :class="{ active: asideResizing }"
-          title="拖动调整侧栏宽度（双击复位）"
-          @pointerdown="onResizeDown"
-          @pointermove="onResizeMove"
-          @pointerup="onResizeUp"
-          @pointercancel="onResizeUp"
-          @lostpointercapture="onResizeUp"
-          @dblclick="resetAsideWidth"
-        />
-        <!-- 浮窗右下角：拖它改宽高（浮窗里贴边那条竖把手没有意义，见样式） -->
+        <!-- 浮窗右下角：拖它改宽高（浮窗里侧栏那条竖把手是隐藏的，见样式） -->
         <div
           v-if="chatFloat"
           class="float-grip"
@@ -6068,6 +6049,23 @@ function renderMarkdown(text?: string | null) {
           @pointercancel="onFloatPointerUp"
         />
       </aside>
+
+      <!-- 拖拽改宽度：**在侧栏外面**（用户口径 2026-11-19：右移，别压在滚动条上）。
+           不能再放在 `<aside>` 里 —— 那是 `overflow: hidden`，凸出去就被裁；放在内侧又必然
+           盖住面板最右边那条滚动条。所以挂在 `.reader` 上、按 `left: 侧栏宽度` 定位：
+           左边 1px 压在分隔线上，其余落在正文左侧的空白里。
+           收尾的三层 pointerup 兜底见 `onResizeDown`。 -->
+      <div
+        class="aside-resizer"
+        :class="{ active: asideResizing }"
+        title="拖动调整侧栏宽度（双击复位）"
+        @pointerdown="onResizeDown"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeUp"
+        @pointercancel="onResizeUp"
+        @lostpointercapture="onResizeUp"
+        @dblclick="resetAsideWidth"
+      />
 
       <!-- ============ 中：正文（单一滚动容器 → 天然对齐） ============
            `.reader-slide` 是"让位 + 平移"的那一层：侧栏开合时它整体滑过去，
@@ -6750,8 +6748,6 @@ function renderMarkdown(text?: string | null) {
   flex: none; display: flex; align-items: center;
   height: 58px; padding: 0 12px 0 62px;
 }
-/* 侧栏头部右端那枚「浮层打开」：与页签胶囊同高，压在胶囊右侧的空白里 */
-.aside-float-btn { flex: none; margin-left: 4px; }
 
 /* 浮窗标题栏：兼**拖动抓手**。比侧栏头部矮一截 —— 浮窗是临时看一眼对话，
    不该把 58px 花在一条页签胶囊上；`touch-action: none` 让平板上的拖动不变成滚正文。 */
@@ -6821,36 +6817,38 @@ function renderMarkdown(text?: string | null) {
 /* 拖拽期间关掉过渡：0.26s 的补间会让把手"黏"在指针后面（松手才追上） */
 .reader-aside.resizing, .reader.resizing .reader-slide,
 .reader.resizing .reader-capsule, .reader.resizing .cap-solo { transition: none; }
-/* 拖拽把手：贴在侧栏**右边缘内侧**（`.reader-aside` 是 overflow:hidden，凸出去就被裁了）。
-   平时完全透明（不打扰阅读），hover / 拖拽中才亮一条主题色竖线。
-   ⚠️ 选择器必须写到 `.reader-aside > .aside-resizer` 这个权重：上面 `@media (min-width:1101px)`
-   里的 `.reader-aside > * { min-width: … }` 会给**所有**子元素兜一个 300px 起的最小宽度，
-   权重相同、它又写在后面 —— 不压住的话这条 9px 的把手会被撑成 300px，把侧栏半个面板盖住并吃掉点击。 */
-.reader-aside > .aside-resizer {
-  position: absolute; top: 0; right: 0; width: 9px; min-width: 0; height: 100%;
-  /* z-index 压到页签条之下（见 .side-tabs-wrap）：把手只负责"内容区那一竖条"，
-     页签条右端的滚动箭头不能被它抢走点击 */
-  z-index: 1; cursor: col-resize; touch-action: none; background: transparent;
+/* 拖拽把手：挂在侧栏**右边缘外侧**（用户口径 2026-11-19：位置右移）。
+   为什么不放在 `<aside>` 里：那是 `overflow: hidden`，凸出去就被裁；放内侧又必然压在
+   面板最右边那条滚动条上（上一版为了避让塞了条 9px gutter，用户口径：把滚动条改回原位）。
+   现在它是 `.reader` 的绝对定位子元素，`left` 与侧栏宽度同一个变量。 */
+.reader > .aside-resizer {
+  position: absolute; top: 0; bottom: 0; left: v-bind(asideWidthPx); width: 12px;
+  z-index: 31;                       /* 侧栏是 30：把手永远压在分隔线之上 */
+  cursor: col-resize; touch-action: none; background: transparent;
 }
-.reader-aside > .aside-resizer::after {
-  content: ''; position: absolute; top: 0; right: 0; width: 2px; height: 100%;
-  background: transparent; transition: background .15s ease;
+/* 拖动指示器（用户口径：像图里那样给一条抓手）：平时是一条淡胶囊，hover / 拖拽中变主题色。
+   竖向居中 —— 它只是「这里有把手」的提示，12px 的命中带里只有这一条是看得见的。 */
+.reader > .aside-resizer::after {
+  content: ''; position: absolute; left: 3px; top: 50%; width: 4px; height: 40px;
+  margin-top: -20px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+  transition: background var(--dur) var(--ease), width var(--dur) var(--ease);
 }
-.reader-aside > .aside-resizer:hover::after,
-.reader-aside > .aside-resizer.active::after { background: var(--accent); }
+.reader > .aside-resizer:hover::after,
+.reader > .aside-resizer.active::after {
+  background: var(--accent); width: 5px;
+}
+/* 侧栏收起 / 浮窗 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉 */
+.reader.no-aside > .aside-resizer { opacity: 0; pointer-events: none; }
+.reader.aside-float > .aside-resizer { display: none; }
 @media (min-width: 1101px) {
   /* 展开/收起期间侧栏**只被平移、不跟着变窄**：内容保持展开宽度。
      不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，
      又是卡顿的主要来源。裁切由 .reader-aside 的 overflow:hidden 完成。
      宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
-  /* 右边缘让出 9px 的 gutter：那一条是**拖宽把手**的热区，侧栏里的滚动条不能压在它底下 ——
-     压在底下就变成「左右拖宽度」和「上下拖滚动条」抢同一个位置（用户口径 2026-11-19：
-     想拖滚动条结果拖成了改宽度）。让出之后滚动条落在把手左侧，两个手势互不干扰。 */
-  .reader-aside { padding-right: 9px; }
-  /* 子元素的最小宽度跟着减 10px（9 gutter + 1 边框）：不减的话它们会被撑回整栏宽，
-     右侧那条滚动条又被 overflow:hidden 裁掉 —— 等于没让。 */
-  .reader-aside > * { min-width: calc(v-bind(asideWidthPx) - 10px); }
-  .reader-aside > .aside-resizer, .reader-aside > .float-grip { min-width: 0; }
+  /* 把手已经挪到侧栏外面（见上面的 `.reader > .aside-resizer`），所以这里**不留 gutter**：
+     面板里的滚动条回到最右边原位，`.panel-body` / `.toc-pane` 这些滚动容器照旧整宽。 */
+  .reader-aside > * { min-width: v-bind(asideWidthPx); }
 }
 /* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
    也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
@@ -6868,8 +6866,7 @@ function renderMarkdown(text?: string | null) {
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
 }
-/* 贴边那条竖把手在浮窗里没有意义（换成了右下角手柄） */
-.reader.aside-float .reader-aside > .aside-resizer { display: none; }
+/* 浮窗里没有「贴边那条竖把手」可拖（换成了右下角手柄），规则见 `.reader > .aside-resizer` */
 /* 侧栏页签：**图标 + 文字**，**一行到底、不换行**；一行放不下就左右滚动（用户口径）。
  * 滚动条隐藏（保持干净），鼠标滚轮 / 触控板 / Shift+滚轮都能滚，见 `onSideTabsWheel`；
  * 切页签时把当前那个滚进可视区（`scrollIntoView`），左右两端还有圆形箭头按钮（见下）。
@@ -6999,7 +6996,7 @@ function renderMarkdown(text?: string | null) {
   }
   .reader.mobile-aside .reader-aside { transform: none; visibility: visible; }
   /* 抽屉宽度是定死的，拖拽没有意义（拖了也不会生效），干脆不显示把手 */
-  .reader-aside > .aside-resizer { display: none; }
+  .reader > .aside-resizer { display: none; }
 
   /* ⚠️ 抽屉的 z-index(60) 高于工具栏(40)，一滑出来就把工具栏**整层**盖住 —— 而那枚
      "关抽屉"的开关正是工具栏左端的那一枚（`.cap-solo.left`），于是抽屉打开后就再也

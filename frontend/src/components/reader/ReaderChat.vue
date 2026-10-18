@@ -37,12 +37,22 @@ const props = defineProps<{
   paperId: string;
   /** 从正文划词带过来的选区（可空）；发出去之后由父组件清掉 */
   selection?: AgentSelection | null;
+  /** 能不能「浮层打开」（窄屏是抽屉，拎成浮窗没有意义 —— 由父组件判） */
+  canFloat?: boolean;
+  /** 已经在浮窗里了：浮窗标题栏自带「回到侧栏」，这里不再重复一枚拆分按钮 */
+  floating?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'focus', blockId: string, page?: number): void;
   (e: 'clear-selection'): void;
+  /** 拆分 / 浮层打开：把整个侧栏面板拎成浮窗（真正的外框由 `ReaderView` 负责） */
+  (e: 'float'): void;
 }>();
+
+/* 拆分按钮：会话列表与会话两级都摆在**工具栏最右**（用户口径 2026-11-19：放在加号旁边），
+   所以两级共用这一个判断，免得漏一处。 */
+const showFloatBtn = computed(() => !!props.canFloat && !props.floating);
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 15.5;
 const router = useRouter();
@@ -1061,6 +1071,15 @@ defineExpose({ uploadFiles });
         <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
           <AppIcon name="close" :size="12" />
         </button>
+        <!-- 列表这一级的「加号」在左边，所以拆分按钮放在同一行最右（同一枚图标、同一个动作） -->
+        <button
+          v-if="showFloatBtn"
+          class="btn ghost icon sm"
+          title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
+          @click="emit('float')"
+        >
+          <AppIcon name="external" :size="14" />
+        </button>
       </div>
 
       <div class="filters">
@@ -1132,6 +1151,16 @@ defineExpose({ uploadFiles });
         <button class="btn ghost icon sm" title="返回对话列表" @click="backToList"><AppIcon name="back" :size="14" /></button>
         <span class="th-title truncate" :title="current?.title || '新对话'" v-html="inlineHtml(currentTitle)" />
         <span class="spacer" />
+        <!-- 拆分（浮层打开）：**加号左边**（用户口径 2026-11-19）；图标用"分享/对外打开"
+             那枚方框加箭头，与「+ 新对话」的加号一眼区分开。 -->
+        <button
+          v-if="showFloatBtn"
+          class="btn ghost icon sm"
+          title="浮层打开（把这栏拎成浮窗，正文回到整宽）"
+          @click="emit('float')"
+        >
+          <AppIcon name="external" :size="14" />
+        </button>
         <!-- 会话页顶部：标题已经写着会话名了，再造一个「+ 新对话」文字钮就是重复 -->
         <button class="btn ghost icon sm new-conv" title="新建对话" @click="startNew">
           <AppIcon name="add" :size="15" />

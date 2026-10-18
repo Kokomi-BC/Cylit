@@ -140,6 +140,18 @@ function hitText(hit: SemanticHit): string {
   ).trim();
 }
 
+/**
+ * 语义命中带的**缩略图**（插图 / 表格 / 公式的裁图）。
+ *
+ * 后端 `chunk_image_url` 早就把这张图算进 `image_url` 了（知识库页拿它当缩略图），只是阅读器
+ * 这边一直没用 —— 而语义检索恰恰经常命中"这张图在讲什么"（用户口径 2026-11-19：搜索要能显示图片）。
+ * 正文 chunk 没有图，返回空串（列表照旧只有文字）。
+ */
+function hitImage(hit: SemanticHit): string {
+  const meta = (hit.metadata ?? {}) as Record<string, any>;
+  return String(hit.image_url ?? meta.image_url ?? '').trim();
+}
+
 function typeLabel(hit: SemanticHit): string {
   const raw = String(hit.chunk_type ?? (hit.metadata as Record<string, any> | null)?.chunk_type ?? '').trim();
   return CHUNK_TYPE_LABEL[raw] ?? raw ?? '片段';
@@ -346,6 +358,14 @@ function onClear() {
             <span class="tiny faint nowrap">
               {{ typeLabel(hit) }}<template v-if="hit.page"> · p{{ hit.page }}</template>
             </span>
+            <!-- 插图 / 表格 / 公式的裁图（正文命中没有这一块） -->
+            <img
+              v-if="hitImage(hit)"
+              class="ss-fig"
+              :src="hitImage(hit)"
+              alt=""
+              loading="lazy"
+            >
             <span class="tiny ss-snippet" v-html="previewHtml(hit)" />
           </button>
           <div v-if="semantic.ran && !semantic.items.length" class="empty small">没有相近的段落</div>
@@ -384,6 +404,13 @@ function onClear() {
    （与 `.btn.on` 同一种"开关开着"的语义，见 base.css） */
 .ss-chip.on { background: var(--accent-soft); box-shadow: none; color: var(--accent-text); font-weight: 600; }
 .ss-hits { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 4px 28px; }
+/* 语义命中里的裁图：与「插图」页签里那张卡片同源（后端 chunk_image_url 的裁图）。
+   `contain` + 132px 上限：宽图和竖图都不变形，也不把一条命中撑成整屏。 */
+.ss-fig {
+  display: block; width: 100%; max-height: 132px; object-fit: contain;
+  margin: 3px 0; border-radius: 8px;
+  background: var(--bg-elev); border: 1px solid var(--divider);
+}
 /* 一条命中 = 一个整块可点的"行"（与目录项同一种交互：点了跳正文） */
 .ss-hit {
   display: flex; flex-direction: column; gap: 2px; width: 100%;
