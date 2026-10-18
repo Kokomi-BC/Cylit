@@ -593,6 +593,48 @@ async function loadConversations() {
 
 const searchLater = debounce(() => void loadConversations(), 260);
 
+/* ------------------- 上次看的是哪条会话（**按论文**记一份） -------------------
+ * 阅读器切标签页 / 刷新都会重新挂载，currentId 回到 null、level 回到 list —— 用户看到的
+ * 就是「刚聊的那条没了，又得在列表里重新找」（用户口径 2026-11-26：每页分别记、还要记
+ * 打开的对话内容）。会话本来就只属于一篇论文（列表接口按 paper_id 过滤），所以按论文记。
+ * 记的是 id + 当时在不在二级页：内容由 id 重新拉回来，聊天记录一条都不存在浏览器里。 */
+function chatSessionKey(): string {
+  return `cylit:chat-session:${props.paperId}`;
+}
+
+/** 认回上一次会话之前不要落盘：换论文那一瞬间的清空会把新论文的记录抹掉。 */
+let sessionRestored = false;
+
+function persistChatSession() {
+  if (!sessionRestored) return;
+  try {
+    localStorage.setItem(chatSessionKey(), JSON.stringify({
+      id: currentId.value ?? '',
+      thread: level.value === 'thread',
+    }));
+  } catch { /* 隐私模式忽略 */ }
+}
+
+watch([currentId, level], persistChatSession);
+
+/** 把上一次看的那条会话拉回来（内容走 `loadConversation`，与手动点开同一条链路）。 */
+async function restoreChatSession() {
+  if (currentId.value) return;
+  let id = '';
+  let thread = false;
+  try {
+    const raw = localStorage.getItem(chatSessionKey());
+    if (!raw) return;
+    const v = JSON.parse(raw) as { id?: unknown; thread?: unknown };
+    id = typeof v.id === 'string' ? v.id : '';
+    thread = v.thread === true;
+  } catch { return; }
+  /* 上次停在列表：照着列表打开就行，不必为了一条高亮多拉一次会话正文 */
+  if (!thread) return;
+  if (!id) { level.value = 'thread'; return; }   // 上次停在「新对话」界面
+  await openConversation(id);
+}
+
 async function loadConversation(id: string) {
   loading.value = true;
   try {
@@ -1208,6 +1250,7 @@ onMounted(() => {
      而 `/agent/status` 里带一次"问答服务在不在"的健康检查 —— 服务没起来时要等它超时
      （实测 2s 左右），于是历史被硬生生拖了两秒。三件事互不依赖，各走各的。 */
   void loadConversations();
+  void restoreChatSession().finally(() => { sessionRestored = true; });
   void loadModelOptions();
   void Promise.all([loadStatus(), loadPaper()]);
 });
@@ -1234,7 +1277,9 @@ watch(() => props.paperId, async () => {
   pending.value = [];
   selCtx.value = null;
   pick.value = { model_config_id: '', reasoning_effort: '' };
+  sessionRestored = false;
   void Promise.all([loadPaper(), loadConversations()]);
+  void restoreChatSession().finally(() => { sessionRestored = true; });
   void loadStatus();
 });
 

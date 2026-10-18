@@ -1570,8 +1570,13 @@ function clampBox(b: { left: number; top: number; w: number; h: number }) {
 /** 落盘 / 打开时那份（同一套数学：手势里的手感必须与落定后完全一致） */
 function clampFloatBox() { clampBox(floatBox.value); }
 
-/** 浮窗位置/尺寸的记忆键（**全局**一份：它是"我把这个小窗摆哪儿了"，不是某篇论文的属性） */
-const floatBoxKey = 'cylit:reader-float';
+/** 浮窗位置/尺寸的记忆键：**按论文各记一份**（用户口径 2026-11-26 —— 每篇论文的浮层摆在
+ *  哪儿是各自的事：一篇靠左做对照、另一篇摆右下，切回来都该原样）。 */
+function floatBoxKey(): string {
+  return `cylit:reader-float:${paperId.value}`;
+}
+/** 旧版那一条**全局**记录：每篇专属键还没有值时兜底读一次（升上来不丢老位置），写完就不再回读。 */
+const FLOAT_BOX_KEY_LEGACY = 'cylit:reader-float';
 
 /**
  * 读回上次的位置与尺寸（用户口径 2026-11-19：打开浮层接着放在上次那儿，不要每次都甩到右下角）。
@@ -1580,7 +1585,8 @@ const floatBoxKey = 'cylit:reader-float';
  */
 function restoreFloatBox(): boolean {
   try {
-    const raw = localStorage.getItem(floatBoxKey);
+    const raw = localStorage.getItem(floatBoxKey())
+      ?? localStorage.getItem(FLOAT_BOX_KEY_LEGACY);
     if (!raw) return false;
     const b = JSON.parse(raw) as { left?: unknown; top?: unknown; w?: unknown; h?: unknown };
     const nums = [b.left, b.top, b.w, b.h];
@@ -1593,7 +1599,7 @@ function restoreFloatBox(): boolean {
 
 /** 落盘（拖动/改尺寸结束时写一次；每像素写没意义） */
 function persistFloatBox() {
-  try { localStorage.setItem(floatBoxKey, JSON.stringify(floatBox.value)); } catch { /* 隐私模式忽略 */ }
+  try { localStorage.setItem(floatBoxKey(), JSON.stringify(floatBox.value)); } catch { /* 隐私模式忽略 */ }
 }
 
 /**
@@ -1601,18 +1607,26 @@ function persistFloatBox() {
  *
  * 为什么非得记：App 的 RouterView 带 key，切到别的标签页再切回来，阅读器是**重新挂载**的
  * （chatFloat 回到 false）—— 用户看到的就是「切个标签页回来，刚才浮起来的对话不见了」
- * （用户口径 2026-11-26）。位置那一份本来就是全局的（见 floatBoxKey），开关也跟着全局一份：
- * 它属于「我把对话拎出来了」这个习惯，不属于某篇论文。
+ * （用户口径 2026-11-26 第一版）。现在**按论文各记一份**：同一篇论文的浮层开关跟着这篇走，
+ * 换一篇不会把「拎出来看对话」这个习惯硬套上去（用户口径 2026-11-26 追加：每个页面分别记）。
  */
-const floatOpenKey = 'cylit:reader-float-open';
+function floatOpenKey(): string {
+  return `cylit:reader-float-open:${paperId.value}`;
+}
+/** 旧版全局键：只在每篇专属键还没有值时兜底读一次。 */
+const FLOAT_OPEN_KEY_LEGACY = 'cylit:reader-float-open';
 
 /** 只记**用户意图**：窄屏把浮层强制收掉那条路径不写这里（那是环境，不是选择）。 */
 function persistFloatOpen(open: boolean) {
-  try { localStorage.setItem(floatOpenKey, open ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+  try { localStorage.setItem(floatOpenKey(), open ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
 }
 
 function wantsFloatOpen(): boolean {
-  try { return localStorage.getItem(floatOpenKey) === '1'; } catch { return false; }
+  try {
+    const raw = localStorage.getItem(floatOpenKey())
+      ?? localStorage.getItem(FLOAT_OPEN_KEY_LEGACY);
+    return raw === '1';
+  } catch { return false; }
 }
 
 /** 没有记录时的兜底：**右下角**（胶囊工具栏在上方，两边不抢地盘） */
