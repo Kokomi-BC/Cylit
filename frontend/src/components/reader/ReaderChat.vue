@@ -614,6 +614,25 @@ function toggleAll() {
   picked.value = allPicked.value ? [] : conversations.value.map(c => c.conversation_id);
 }
 
+/** 会话行右上角那枚「⋯」展开了哪一条（同一时刻只开一个） */
+const rowMenu = ref<string>('');
+
+/** 浮层打开 = **把这个会话拎成浮窗**（`⋯` 菜单里那一枚；不是"分享"） */
+async function shareToFloat(conv: AgentConversation) {
+  rowMenu.value = '';
+  await openConversation(conv.conversation_id);
+  emit('float');
+}
+
+/** 气泡下面那枚时间（只有时分；悬停给完整时间的 tooltip，与列表里的相对时间同一口径） */
+function msgTime(m: AgentMessage): string {
+  const raw = m.created_at;
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function startRename(conv: AgentConversation) {
   renaming.value = { id: conv.conversation_id, text: conv.title || '' };
   void nextTick(() => {
@@ -1100,7 +1119,7 @@ defineExpose({ uploadFiles, ensureThread });
         </div>
       </div>
 
-      <div class="list-body">
+      <div class="list-body" @click="rowMenu = ''">
         <div v-if="listLoading && !conversations.length" class="empty small">读取会话…</div>
         <div v-else-if="!conversations.length" class="hollow">
           <span class="hollow-ico"><AppIcon name="chat" :size="18" /></span>
@@ -1133,9 +1152,32 @@ defineExpose({ uploadFiles, ensureThread });
             </span>
           </button>
 
+          <!-- 行上只留一枚「⋯」（用户口径 2026-11-19：照 DeepSeek 那种行结构，不再挂两枚图标）：
+               重命名 / 分享 / 多选 / 删除都收进它下面。 -->
           <div v-if="!batch" class="row-acts">
-            <button class="ico" title="重命名" @click.stop="startRename(c)"><AppIcon name="edit" :size="12" /></button>
-            <button class="ico danger" title="删除" @click.stop="askDeleteOne(c)"><AppIcon name="trash" :size="12" /></button>
+            <button
+              class="ico"
+              title="更多"
+              @click.stop="rowMenu = rowMenu === c.conversation_id ? '' : c.conversation_id"
+            >
+              <AppIcon name="more" :size="14" />
+            </button>
+          </div>
+          <div v-if="rowMenu === c.conversation_id" class="row-menu" @click.stop>
+            <button class="menu-item" @click.stop="rowMenu = ''; startRename(c)">
+              <AppIcon name="edit" :size="12" />重命名
+            </button>
+            <!-- 位置照旧（重命名下面那一条），但**不叫"分享"**（用户口径 2026-11-19）：
+                 它是"把这个会话拎成浮窗"，名字就用「浮层打开」。 -->
+            <button v-if="showFloatBtn" class="menu-item" @click.stop="shareToFloat(c)">
+              <AppIcon name="pip" :size="13" />浮层打开
+            </button>
+            <button class="menu-item" @click.stop="rowMenu = ''; toggleBatch()">
+              <AppIcon name="checkbox" :size="12" />多选
+            </button>
+            <button class="menu-item danger" @click.stop="rowMenu = ''; askDeleteOne(c)">
+              <AppIcon name="trash" :size="12" />删除
+            </button>
           </div>
         </div>
       </div>
@@ -1269,17 +1311,12 @@ defineExpose({ uploadFiles, ensureThread });
                 <button class="ico" title="下一个版本" @click="switchBranch(m, 1)"><AppIcon name="forward" :size="11" /></button>
                 <span class="tool-sep" />
               </template>
+              <!-- 气泡下面**只留三样**（用户口径 2026-11-19）：时间 · 复制 · 修改（只有提问能改）。
+                   重新生成 / 开新分支那两枚不再常驻 —— 它们属于"重来一次"，不该和复制挤一排。 -->
+              <span v-if="msgTime(m)" class="msg-time" :title="fmtDate(m.created_at)">{{ msgTime(m) }}</span>
               <button class="ico" title="复制" @click="copyMessage(m)"><AppIcon name="copy" :size="12" /></button>
-              <button v-if="m.role === 'user'" class="ico" title="编辑这条提问（就地改，会替换它之后的回答）"
+              <button v-if="m.role === 'user'" class="ico" title="修改这条提问（会替换它之后的回答）"
                       :disabled="sending" @click="startEdit(m, false)"><AppIcon name="edit" :size="12" /></button>
-              <button v-if="m.role === 'assistant'" class="ico" title="重新生成（就地重答，替换这条回答）"
-                      :disabled="sending" @click="regenerate(m, false)"><AppIcon name="refresh" :size="12" /></button>
-              <button class="ico" :title="m.role === 'user'
-                        ? '用新问法开新分支（原来这条保留）'
-                        : '再答一份，开新分支（原来这条保留）'"
-                      :disabled="sending" @click="branchFrom(m)">
-                <AppIcon name="git-branch" :size="12" />
-              </button>
             </div>
           </template>
         </div>
@@ -1430,9 +1467,25 @@ defineExpose({ uploadFiles, ensureThread });
 
 .list-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 8px; }
 .row {
+  position: relative;
   display: flex; align-items: center; gap: 2px; border-radius: var(--radius);
   padding: 1px 2px; margin-bottom: 2px; border: 1px solid transparent;
 }
+/* 行右上角「⋯」下面那枚小浮层（重命名 / 分享 / 多选 / 删除）：与页面同一门材质 */
+.row-menu {
+  position: absolute; right: 4px; top: calc(100% - 4px); z-index: 6;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 126px;
+  border-radius: 12px; background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+  border: 1px solid var(--border);
+}
+.row-menu .menu-item {
+  display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; padding: 0 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.row-menu .menu-item:hover { background: var(--bg-hover); color: var(--text); }
+.row-menu .menu-item.danger { color: var(--danger); }
+.row-menu .menu-item.danger:hover { background: var(--danger-soft); color: var(--danger); }
 .row:hover { background: var(--bg-hover); }
 .row.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 .row.pick { background: var(--accent-soft); }
@@ -1496,19 +1549,25 @@ defineExpose({ uploadFiles, ensureThread });
      消息自己还是从上往下排（块级子项在列向 flex 里本来就是撑满宽度、顺序堆叠）。 */
   display: flex; flex-direction: column;
 }
-.msg { margin-bottom: 12px; }
+.msg { margin-bottom: 14px; }
 .msg.assistant .body { font-size: 12.5px; line-height: 1.72; color: var(--text); }
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+/* 用户气泡：**圆角矩形**（用户口径 2026-11-19：照 DeepSeek 那种），无描边、用强调色的淡底，
+   右边两个角略小一点，读起来像"我发出去的一块"。 */
 .msg.user .body {
-  background: var(--bg-layer); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 6px 9px; font-size: 12.5px; line-height: 1.65; max-width: 92%;
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
+  border-radius: 16px 16px 4px 16px;
+  padding: 8px 12px; font-size: 12.5px; line-height: 1.65; max-width: 88%;
 }
 .msg.user .sel-quote, .msg.user .atts { align-self: flex-end; }
-/* 消息操作条：**在气泡下面**（用户口径 2026-10-03），hover 才显形；
-   用户消息靠右对齐，跟气泡同侧。 */
-.msg-tools { display: flex; align-items: center; gap: 2px; min-height: 20px; opacity: 0; margin-top: 2px; }
+/* 气泡下面那条：**常显**（时间 / 复制 / 修改），不像以前 hover 才冒出来（用户口径 2026-11-19） */
+.msg-tools {
+  display: flex; align-items: center; gap: 4px; min-height: 20px; margin-top: 3px;
+  opacity: .9;
+}
 .msg.user .msg-tools { justify-content: flex-end; }
-.msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
+.msg:hover .msg-tools { opacity: 1; }
+.msg-time { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .tool-sep { width: 1px; height: 12px; margin: 0 3px; background: var(--divider); }
 .sel-quote {
   display: flex; align-items: center; gap: 4px; max-width: 92%; margin-bottom: 3px;
