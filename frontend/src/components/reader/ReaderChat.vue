@@ -1098,23 +1098,44 @@ function openSub(stage: 'model' | 'effort', ev: MouseEvent) {
   if (subStage.value === stage) { subStage.value = null; return; }
   const row = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   if (!row) return;
+  subRow = row;
+  // 先按视口坐标摆一次（多数情况这一下就是准的），渲染出来再由 placeSub 量真位置校正
+  subPos.value = { left: row.right + 8, top: row.top };
+  subStage.value = stage;
+  void nextTick(placeSub);
+}
+
+/** 被点那一行的视口矩形（子菜单的两趟定位都拿它当锚） */
+let subRow: DOMRect | null = null;
+
+/**
+ * 子菜单落点：**量一次真实位置再把差值补回去**。
+ *
+ * 不能只靠 row.top 直接写：position: fixed 只有在最近祖先没有 transform / filter / contain
+ * 时才以视口为基准，一旦某个祖先建了包含块（历史遗留样式、以后加的动效都可能），
+ * 同样一串数字就会落到别处 —— 表现出来就是「子菜单飞得老高、跟那一行对不上」
+ * （用户口径 2026-11-26）。所以这里不赌基准是谁：渲染后量它**实际**落在哪，把差值加回去，
+ * 落点必然等于期望值。期望值只有两条：与行上沿对齐；下沿顶出视口就整体上移到刚好放得下
+ * （绝不越过行上沿去对齐下沿 —— 那样短列表会被顶到半空）。
+ */
+function placeSub() {
+  const el = subEl.value;
+  const row = subRow;
+  if (!el || !row) return;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  // 水平：优先向右飞；右边放不下就翻到行的左边，两边都放不下就贴住视口右沿
-  let left = row.right + 8;
-  if (left + SUB_W > vw - 8) left = row.left - 8 - SUB_W;
-  if (left < 8) left = Math.max(8, vw - 8 - SUB_W);
-  // 垂直：与行的顶部对齐，再整块夹进视口（上下各留 8px），超出的部分在列表内部滚
-  const top = Math.min(Math.max(8, row.top), Math.max(8, vh - 8 - SUB_H));
-  subPos.value = { left, top };
-  subStage.value = stage;
-  // 只用到行顶部对齐还可能顶出视口下沿：渲染出来量一次真实高度，需要时再往上收
-  void nextTick(() => {
-    const el = subEl.value;
-    if (!el || subPos.value.top === 8) return;
-    const limit = Math.max(8, vh - 8 - el.offsetHeight);
-    if (subPos.value.top > limit) subPos.value = { ...subPos.value, top: limit };
-  });
+  const w = el.offsetWidth || SUB_W;
+  const h = el.offsetHeight || SUB_H;
+  let wantTop = row.top;
+  if (wantTop + h > vh - 8) wantTop = Math.max(8, vh - 8 - h);
+  let wantLeft = row.right + 8;
+  if (wantLeft + w > vw - 8) wantLeft = row.left - 8 - w;
+  if (wantLeft < 8) wantLeft = Math.max(8, vw - 8 - w);
+  const r = el.getBoundingClientRect();
+  subPos.value = {
+    left: subPos.value.left + (wantLeft - r.left),
+    top: subPos.value.top + (wantTop - r.top),
+  };
 }
 
 /** Esc 收浮层（子菜单一起收）。 */
