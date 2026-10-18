@@ -43,6 +43,8 @@ const myMarks = computed(() => (props.highlights ?? [])
   .map((h) => ({
     start: h.start, end: h.end, color: h.color, id: h.id, text: h.text,
     loose: (h.side ?? 'en') !== props.side,
+    /* 跨行选择切出来的几条共用整段选区文字 → 文字校验必然失败，改信偏移量 */
+    trust: Boolean(h.group_id),
   })));
 
 /**

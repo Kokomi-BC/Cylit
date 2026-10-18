@@ -182,6 +182,9 @@ export interface DomMark {
   text?: string | null;
   /** **只按文字找、不信偏移量**：跨面兜底用（见 ReaderRow 的说明），偏移量在另一面没有意义 */
   loose?: boolean;
+  /** **直接信偏移量、跳过文字校验**：跨行选择切出来的那几条共用整段选区文字，
+   *  与单行切片天然不相等（见 ReaderRow 的说明）—— 偏移量本身是 DOM 空间里算的，可信。 */
+  trust?: boolean;
 }
 
 export function clearUserMarks(root: HTMLElement | null): void {
@@ -312,6 +315,13 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
     let end = Math.min(m.end, total);
     if (end <= start) continue;
     const all = renderedText(root);
+    if (m.trust) {
+      /* 跨行高亮：这条记录的 selected_text 是**整段选区**，与这一行的切片本来就不相等 ——
+         拿它做文字校验会把整条高亮判成「对不上」而一条都不画（用户报的「笔记在列表里、
+         正文看不到彩色底」）。偏移量是前端在同一套 DOM 遍历里算的，直接信它。 */
+      if (wrapRange(segs, start, end, m.color, m.id)) done += 1;
+      continue;
+    }
     if (m.loose) {
       /* 跨面兜底：这条高亮当初标在另一面，偏移量在这一面没有意义 —— 只按文字找。
          找不到就跳过（宁可少画一条，也不要画错位置）。 */
@@ -347,9 +357,14 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
             found = all.indexOf(wanted.slice(0, n));
             if (found >= 0) break;
           }
-          if (found < 0) continue;
-          start = found;
-          end = Math.min(found + wanted.length, total);
+          /* 最后一条兜底：**什么都不改，就按记录里的偏移量画**。
+             文字校验的初衷是防「重译之后偏移量错位」，但它现在的作用是**整条不画** ——
+             用户看到的是「笔记在列表里、正文一片白」（2026-11-26 连报两次）。
+             宁可落点差几个字，也要把标记画出来：错位能看见、能改；不画等于功能失效。 */
+          if (found >= 0) {
+            start = found;
+            end = Math.min(found + wanted.length, total);
+          }
         }
       }
     }
