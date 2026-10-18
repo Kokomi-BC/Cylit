@@ -179,7 +179,14 @@ const defaultEffort = computed(() => {
     ?? status.value?.model?.parameters?.reasoning_effort;
   return typeof p === 'string' ? p : '';
 });
-const effortLabel = computed(() => pick.value.reasoning_effort
+/** 默认档本身就在候选里（例如默认 high）：那就**直接把它选上**，不再多一条「默认（high）」。
+ *  用户口径 2026-11-26：菜单里出现的应该就是真正生效的那一档，别让人对着两个 `high` 猜。 */
+const defaultInOptions = computed(() => Boolean(defaultEffort.value)
+  && effortOptions.value.some(o => o.value === defaultEffort.value));
+/** 显示与勾选用哪一档：显式选的；没显式选但默认档就在候选里时，就是那一档。 */
+const activeEffort = computed(() => pick.value.reasoning_effort
+  || (defaultInOptions.value ? defaultEffort.value : ''));
+const effortLabel = computed(() => activeEffort.value
   || (defaultEffort.value ? `默认（${defaultEffort.value}）` : '默认'));
 const pickTitle = computed(() => `问答模型：${modelLabel.value}`
   + `${modelSub.value ? `（${modelSub.value}）` : ''}｜推理等级：${effortLabel.value}`);
@@ -1731,7 +1738,8 @@ defineExpose({ uploadFiles, ensureThread });
             </div>
 
             <div v-else class="pick-sub-list">
-              <button class="pick-item" :class="{ on: !pick.reasoning_effort }" :disabled="savingPick"
+              <button v-if="!defaultInOptions" class="pick-item"
+                      :class="{ on: !pick.reasoning_effort }" :disabled="savingPick"
                       @click="savePick({ reasoning_effort: '' })">
                 <span class="pick-item-main">
                   <span class="pick-item-name truncate">
@@ -1741,13 +1749,13 @@ defineExpose({ uploadFiles, ensureThread });
                 <AppIcon v-if="!pick.reasoning_effort" name="check" :size="13" />
               </button>
               <button v-for="e in effortOptions" :key="e.value" class="pick-item"
-                      :class="{ on: pick.reasoning_effort === e.value }" :disabled="savingPick"
+                      :class="{ on: activeEffort === e.value }" :disabled="savingPick"
                       @click="savePick({ reasoning_effort: e.value })">
                 <span class="pick-item-main">
                   <span class="pick-item-name truncate">{{ e.value }}</span>
                   <span v-if="e.desc" class="pick-item-sub truncate">{{ e.desc }}</span>
                 </span>
-                <AppIcon v-if="pick.reasoning_effort === e.value" name="check" :size="13" />
+                <AppIcon v-if="activeEffort === e.value" name="check" :size="13" />
               </button>
               <!-- 兜底：历史数据里存的档不在候选里，也让它看得见、点得到 -->
               <button v-if="isCustomEffort" class="pick-item on" :disabled="savingPick"
