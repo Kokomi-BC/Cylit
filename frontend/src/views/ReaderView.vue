@@ -12,6 +12,7 @@
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import type { CSSProperties } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
@@ -273,16 +274,23 @@ const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
 const FLOAT_MIN_W = 320;
 const FLOAT_MIN_H = 260;
 const FLOAT_EDGE = 24;
-/* 几何全部走 `<style>` 里的 v-bind：模板不写行内 style，拖拽时重算的也就只有这几个属性 */
-const floatLeftPx = computed(() => `${floatBox.value.left}px`);
-const floatTopPx = computed(() => `${floatBox.value.top}px`);
-const floatWPx = computed(() => `${floatBox.value.w}px`);
-const floatHPx = computed(() => `${floatBox.value.h}px`);
+/** 给 `<style>` 里的 `v-bind()` 用：**收起态/停靠态**的栏宽。
+ *  ⚠️ 浮窗的几何**不在这条链上**（见 `asideFloatStyle`）：走 `v-bind()` 的话，拖浮窗时
+ *  每一帧都要把 CSS 变量写到**组件根**，整棵侧栏（几百行）跟着重算样式 —— 实测拖一下
+ *  平均帧 310ms（用户报的"拖动对话浮层卡顿"）。行内 style 只让它自己那一层重算。 */
+const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
-/** 给 `<style>` 里的 `v-bind()` 用：面板当前的**实际**宽度（浮窗时是浮窗宽度）。
- *  CSS 里那份 `min-width` 也吃这个值 —— 不然浮窗时子元素会被撑回栏宽、
- *  右侧那条 6px 滚动条被 `overflow: hidden` 裁掉。 */
-const asideWidthPx = computed(() => `${chatFloat.value ? floatBox.value.w : asideWidth.value}px`);
+/** 浮窗的行内几何（拖拽时逐帧变的就是这五个值，写在与浮窗**同一个元素**上） */
+const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
+  ? {
+      position: 'fixed', left: `${floatBox.value.left}px`, top: `${floatBox.value.top}px`,
+      width: `${floatBox.value.w}px`, height: `${floatBox.value.h}px`,
+      right: 'auto', bottom: 'auto',
+      /* 子元素的最小宽度（`.reader-aside > *` 那条）也跟着浮窗宽度走 —— 用行内变量，
+         而不是让 CSS 去读组件根上的变量 */
+      '--aside-min-w': `${floatBox.value.w}px`,
+    }
+  : {}));
 
 /**
  * 侧栏占位宽度（0 = 收起）：正文那一列靠它让位。
@@ -1586,11 +1594,23 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   ev.preventDefault();
 }
 
+/** 一帧只写一次几何：pointermove 一帧可能来好几次，逐条写等于让样式重算排队 */
+let floatMoveRaf = 0;
+let floatMoveAt: { x: number; y: number } | null = null;
+
 function onFloatPointerMove(ev: PointerEvent) {
   if (!floatDrag.on) return;
   if (ev.buttons === 0) { onFloatPointerUp(ev); return; }   // 兜底：pointerup 丢了
-  const dx = ev.clientX - floatDrag.sx;
-  const dy = ev.clientY - floatDrag.sy;
+  floatMoveAt = { x: ev.clientX, y: ev.clientY };
+  if (!floatMoveRaf) floatMoveRaf = requestAnimationFrame(applyFloatMove);
+}
+
+function applyFloatMove() {
+  floatMoveRaf = 0;
+  const at = floatMoveAt;
+  if (!at || !floatDrag.on) return;
+  const dx = at.x - floatDrag.sx;
+  const dy = at.y - floatDrag.sy;
   const b = floatBox.value;
   if (floatDrag.mode === 'move') {
     b.left = floatDrag.ox + dx; b.top = floatDrag.oy + dy;
@@ -1610,6 +1630,8 @@ function onFloatPointerMove(ev: PointerEvent) {
 
 function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
+  if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
+  floatMoveAt = null;
   floatDrag.on = false;
   floatDrag.mode = '';
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
@@ -4374,8 +4396,15 @@ async function askSelection(question: string, opts: { silent?: boolean } = {}) {
   /**
    * 流式期间本地拼的过程轨迹（与 `backend/agent/trace.py` 的形状一致）：
    * 思考按**轮**并成一条（一轮几百个增量块，一块一条会刷屏），工具按 start/done 配对。
+   *
+   * ⚠️ 数组**就是**这一轮 turn 的 `steps`（不是先攒着、done 时再赋值）：以前只在 `done` 里赋，
+   * 整个回答过程中那一块永远是空的 —— 用户看到的就是"没有实时显示思考过程和工具调用"
+   * （用户口径 2026-11-19）。写进 reactive 的 turn 才会逐块重渲染。
    */
-  const live: AgentStep[] = [];
+  const live = explainCard.turns[idx].steps as AgentStep[];
+  /* 过程**默认展开**：实时看得到思考/工具（这一条就是上面那个现象的正面要求）。
+     用户点一下收起后，本轮直到下一次提问都保持收起。 */
+  explainCard.processOpen = true;
   const mergeThinking = (text: string, round: number) => {
     const last = live[live.length - 1];
     if (last && last.kind === 'thinking' && last.round === round) last.text = `${last.text ?? ''}${text}`;
@@ -4410,7 +4439,8 @@ async function askSelection(question: string, opts: { silent?: boolean } = {}) {
       explainCard.turns[idx].citations = data?.citations ?? [];
       // `done` 带的 `run` 是后端权威轨迹（轮次、合并后的思考、工具耗时都在里面）
       const steps = (data?.run?.steps ?? []) as AgentStep[];
-      explainCard.turns[idx].steps = steps.length ? steps : live;
+      if (steps.length) explainCard.turns[idx].steps = steps;
+      else explainCard.turns[idx].steps = live;      // 后端没给：保留流式期间拼的那份
     } else if (name === 'error') {
       explainCard.turns[idx].text = explainCard.turns[idx].text || `（${data?.message ?? '失败'}）`;
       explainCard.turns[idx].steps = live;
@@ -5922,7 +5952,10 @@ function renderMarkdown(text?: string | null) {
       <!-- ============ 左栏：目录 + 批注/笔记/公式/插图/术语/任务/论文解读（可整体折叠，可拖宽） ============
            `--reader-font-size` 也设在这一栏上：左栏里的「论文解读」用的是阅读器的正文字号
            （`InsightDoc` 的排版全部以 em 相对它缩放），读者把正文调大，解读也跟着大。 -->
-      <aside :class="['reader-aside', { resizing: asideResizing }]" :style="{ '--reader-font-size': `${readerFont}px` }">
+      <aside
+        :class="['reader-aside', { resizing: asideResizing }]"
+        :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle]"
+      >
         <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），
              侧栏开着时它正好落在这一行的最左 —— 所以这里是"胶囊正左侧就是关闭按钮"。
              `padding-left: 62px` 给它让位（12 + 38 + 12）。 -->
@@ -6207,7 +6240,7 @@ function renderMarkdown(text?: string | null) {
       :open="explainCard.open"
       :anchor="explainCard.anchor"
       :anchored="explainCard.pinned"
-      title="Cyli 解释（只依据论文内容）"
+      title="Cyli 解释"
       :width="420"
       :max-height="520"
       data-explain-card
@@ -6264,7 +6297,6 @@ function renderMarkdown(text?: string | null) {
       <template #footer>
         <!-- 插图解释：没有"这段文字"可标，存为笔记那套收起来 -->
         <template v-if="!explainBusy && !explainIsImage">
-          <span class="tiny faint ex-save-hint">标出这段并存为笔记</span>
           <span class="ex-swatches">
             <span
               v-for="c in HIGHLIGHT_COLORS"
@@ -6919,7 +6951,7 @@ function renderMarkdown(text?: string | null) {
      宽度与上面的 `width` 同一个变量：拖宽之后内容才真的按新宽度排版。 */
   /* 把手已经挪到侧栏外面（见上面的 `.reader > .aside-resizer`），所以这里**不留 gutter**：
      面板里的滚动条回到最右边原位，`.panel-body` / `.toc-pane` 这些滚动容器照旧整宽。 */
-  .reader-aside > * { min-width: v-bind(asideWidthPx); }
+  .reader-aside > * { min-width: var(--aside-min-w, v-bind(asideWidthPx)); }
 }
 /* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
    也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
@@ -6929,10 +6961,8 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗（对话拎出来）：**同一块 DOM 换个外框** —— 位置尺寸由 `floatBox` 经 v-bind 给，
    这里只管「卡片」该长什么样，并把收起状态那份 transform/opacity/pointer-events 顶回来
    （浮窗时侧栏本来就是收起的，`.no-aside` 那三条必须让位）。 */
+/* 这里的几何全由 `asideFloatStyle` 行内给（不写 v-bind：见那条 computed 的说明） */
 .reader.aside-float .reader-aside {
-  position: fixed; right: auto; bottom: auto;
-  left: v-bind(floatLeftPx); top: v-bind(floatTopPx);
-  width: v-bind(floatWPx); height: v-bind(floatHPx);
   transform: none; opacity: 1; pointer-events: auto;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
@@ -7127,7 +7157,12 @@ function renderMarkdown(text?: string | null) {
 .cite-pop :deep(.ref-list > .item:hover .ref-lead) { color: var(--accent); }
 .cite-pop :deep(.ref-list > .item:focus-visible) { box-shadow: var(--ring); }
 .cite-pop-hint { padding: 6px 8px; }
-.ex-thread { max-height: 46vh; overflow-y: auto; }
+/* 解释浮层的高度分配（用户口径 2026-11-19：卡片底部一大块空白）：
+   以前 `.ex-thread` 只有**上限**（46vh）、`.fc-body` 又是 `flex: 1 1 auto` —— 卡片一旦被拉到
+   最大高度，正文用不满的那截就变成输入框与底栏之间的死白。现在：body 是列向 flex、正文区
+   自己吃掉剩余高度（内部滚动），输入框钉在它下面，永远没有中间那块空白。 */
+[data-explain-card] :deep(.fc-body) { display: flex; flex-direction: column; overflow: hidden; }
+.ex-thread { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
 /* 笔记框标题行上的 ✓ 保存（用户口径 2026-10-10：复刻目标站的笔记框）。
    ⚠️ 这个键是**本组件**渲染的（通过 `FloatingCard` 的 `head-extra` 插槽），
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
@@ -7227,16 +7262,17 @@ function renderMarkdown(text?: string | null) {
 /* 过程（深度思考 / 工具调用）：**默认只露一行**，点开才铺开 —— 用户口径是"只展示最终回答"。
    与侧栏对话那条轨迹同一套信息，但这里更紧凑（浮层窄，一行一条）。 */
 .ex-proc { margin: 0 0 6px; }
+/* 过程那一行：与全站胶囊同一门语言（无描边的托底 + 圆到底），而不是自己画一个方框 */
 .ex-proc-head {
   display: flex; align-items: center; gap: 5px; width: 100%;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg-layer); color: var(--text-dim);
-  font: inherit; font-size: 11.5px; padding: 3px 7px; cursor: pointer; text-align: left;
+  border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim);
+  font: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer; text-align: left;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .ex-proc-head:hover { background: var(--bg-hover); color: var(--text); }
 .ex-proc-body {
-  margin-top: 4px; padding: 4px 6px; max-height: 26vh; overflow-y: auto;
-  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  margin-top: 5px; padding: 6px 8px; max-height: 26vh; overflow-y: auto;
+  border-radius: var(--radius-sm); background: var(--bg-layer);
 }
 .ex-step {
   display: flex; align-items: baseline; gap: 5px;
@@ -7255,11 +7291,15 @@ function renderMarkdown(text?: string | null) {
   border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
 }
 .chip:hover { color: var(--accent-text); border-color: var(--accent); }
-.ex-ask { display: flex; gap: 6px; margin-top: 10px; }
-.ex-ask input { flex: 1; min-width: 0; }
+/* 追问输入：与侧栏对话那枚输入框同规格（同高、同圆角），按钮同 `btn sm primary` */
+.ex-ask { display: flex; gap: 6px; margin-top: 10px; flex: none; }
+.ex-ask input {
+  flex: 1; min-width: 0; height: var(--control-h-sm); border-radius: var(--radius-ctl);
+}
+.ex-ask .btn { height: var(--control-h-sm); }
 .ex-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-/* 底部那排"标出这段并存为笔记"的色块（浮层里的横向一排：标签 + 4 枚色点） */
-.ex-save-hint { flex: none; }
+/* 底部那排色块（存为笔记）：**不写说明文字**（用户口径 2026-11-19：移除多余的描述文本），
+   一排色点 + 各自的 title 提示已经说清楚了。 */
 .ex-swatches { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 
 @media print {
