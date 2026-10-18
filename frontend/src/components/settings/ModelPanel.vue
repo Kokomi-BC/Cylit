@@ -335,11 +335,11 @@ function parseParameters(text: string | null | undefined): Record<string, any> {
   return parsed;
 }
 
-function openCreate() {
+function openCreate(type = 'agent') {
   formMode.value = 'create';
   formTarget.value = null;
   Object.assign(form, {
-    name: '', model_type: 'agent', provider: '', model_name: '',
+    name: '', model_type: type, provider: '', model_name: '',
     base_url: '', secret_ref: '', parametersText: '{}', enabled: true,
   });
   formOpen.value = true;
@@ -402,12 +402,11 @@ async function submitForm() {
 <template>
   <div class="model-panel">
     <div class="sec-actions">
-      <span class="badge" v-if="state.models.length">{{ state.models.length }} 个配置</span>
+      <span class="cap">{{ state.models.length }} 个配置</span>
       <span class="spacer"></span>
-      <button class="btn sm" :disabled="state.loading.models" @click="refreshAll">
-        <AppIcon name="refresh" :size="15" />{{ state.loading.models ? '刷新中…' : '刷新' }}
-      </button>
-      <button class="btn primary sm" @click="openCreate">
+      <button class="btn icon sm" :disabled="state.loading.models" title="重新读取模型配置"
+              @click="refreshAll"><AppIcon name="refresh" :size="15" /></button>
+      <button class="btn primary sm" @click="openCreate()">
         <AppIcon name="add" :size="15" />新建模型
       </button>
     </div>
@@ -421,44 +420,56 @@ async function submitForm() {
         type="button" class="card-head fold" :aria-expanded="otherOpen"
         @click="otherOpen = !otherOpen"
       >
-        <AppIcon name="layers" :size="14" />{{ g.title }}
-        <span class="badge">{{ g.rows.length }}</span>
+        <span class="hd-title"><AppIcon name="layers" :size="14" />{{ g.title }}</span>
+        <span class="hd-count">{{ g.rows.length }}</span>
         <span class="spacer"></span>
         <AppIcon :name="otherOpen ? 'chevron-up' : 'chevron-down'" :size="15" />
       </button>
       <div class="card-head" v-else>
-        <AppIcon name="chat" :size="14" />{{ g.title }}
-        <span class="badge">{{ g.rows.length }}</span>
+        <span class="hd-title"><AppIcon name="chat" :size="14" />{{ g.title }}</span>
+        <span class="hd-count">{{ g.rows.length }}</span>
       </div>
 
-      <div class="card-body tight" v-if="g.key === 'agent' || otherOpen">
+      <!-- 空态：直接给"现在能做的事"，不留一整张空卡片 -->
+      <div class="card-body" v-if="!g.rows.length && (g.key === 'agent')">
+        <div class="mempty">
+          <AppIcon name="chat" :size="15" />
+          <span class="mempty-text">{{ g.empty }}</span>
+          <button class="btn sm" @click="openCreate('agent')">
+            <AppIcon name="add" :size="14" />新建
+          </button>
+        </div>
+      </div>
+      <div class="card-body tight" v-else-if="g.key === 'agent' || otherOpen">
         <div class="mlist">
           <div class="mrow" v-for="m in g.rows" :key="m.id">
-            <input
-              v-if="renamingId === m.id"
-              class="rename" :ref="bindRename" v-model="renameText"
-              spellcheck="false"
-              @keydown.enter.prevent="commitRename(m)"
-              @keydown.esc.stop="cancelRename"
-              @blur="commitRename(m)"
-            />
-            <button
-              v-else type="button" class="mname" :title="`${m.id}（点击改名）`"
-              @click="startRename(m)"
-            >{{ m.name || '（未命名）' }}</button>
-
-            <div class="m-model">
-              <span class="mono truncate">{{ m.model_name || '—' }}</span>
-              <span class="tiny faint truncate">{{ providerCell(m) }}</span>
+            <div class="mmain">
+              <input
+                v-if="renamingId === m.id"
+                class="rename" :ref="bindRename" v-model="renameText"
+                spellcheck="false"
+                @keydown.enter.prevent="commitRename(m)"
+                @keydown.esc.stop="cancelRename"
+                @blur="commitRename(m)"
+              />
+              <button
+                v-else type="button" class="mname" :title="`${m.id}（点击改名）`"
+                @click="startRename(m)"
+              >{{ m.name || '（未命名）' }}</button>
+              <div class="msub">
+                <span class="mono truncate">{{ m.model_name || '—' }}</span>
+                <span class="msep">·</span>
+                <span class="truncate">{{ providerCell(m) }}</span>
+              </div>
             </div>
 
-            <div class="m-flags">
-              <span class="badge ok" v-if="m.is_default">默认</span>
-              <span class="badge" :class="statusInfo(m).cls">{{ statusInfo(m).label }}</span>
+            <div class="mtags">
+              <span class="badge dim tiny">{{ tagOf(m).text }}</span>
+              <span class="badge ok tiny" v-if="m.is_default">默认</span>
+              <span class="stat" :class="statusInfo(m).cls"><i class="stat-dot" />{{ statusInfo(m).label }}</span>
             </div>
 
-            <span class="badge" :class="tagOf(m).cls">{{ tagOf(m).text }}</span>
-
+            <!-- 行操作只有 hover / 键盘聚焦时才浮现：静止时一行只留"它是谁、能不能用" -->
             <div class="m-ops">
               <button class="btn sm" :disabled="rowBusy('test:' + m.id)" @click="testModel(m)">
                 <AppIcon name="bolt" :size="14" />{{ rowBusy('test:' + m.id) ? '测试中' : '测试' }}
@@ -472,12 +483,12 @@ async function submitForm() {
             <!-- 测试结论就地一行：通过 / 失败 + 延迟或原因 -->
             <div class="m-test tiny" v-if="testResults[m.id]">
               <template v-if="testResults[m.id].ok">
-                <span class="badge ok">通过</span>
+                <span class="badge ok tiny">通过</span>
                 <span class="faint">延迟 {{ latencyOf(m) }}</span>
                 <span class="faint" v-if="testResults[m.id].dim">维度 {{ testResults[m.id].dim }}</span>
               </template>
               <template v-else>
-                <span class="badge danger">失败</span>
+                <span class="badge danger tiny">失败</span>
                 <span class="faint truncate">{{ truncate(testResults[m.id].detail || '未知原因', 120) }}</span>
               </template>
             </div>
@@ -490,14 +501,14 @@ async function submitForm() {
 
     <section class="card">
       <button type="button" class="card-head fold" :aria-expanded="secretOpen" @click="secretOpen = !secretOpen">
-        <AppIcon name="document" :size="14" />密钥
-        <span class="badge">{{ state.secrets.length }}</span>
+        <span class="hd-title"><AppIcon name="document" :size="14" />密钥</span>
+        <span class="hd-count">{{ state.secrets.length }}</span>
         <span class="spacer"></span>
         <AppIcon :name="secretOpen ? 'chevron-up' : 'chevron-down'" :size="15" />
       </button>
       <div class="card-body" v-if="secretOpen">
-        <div class="row wrap" v-if="state.secrets.length">
-          <span class="badge mono" v-for="name in state.secrets" :key="name">{{ name }}</span>
+        <div class="secrefs" v-if="state.secrets.length">
+          <span class="secref mono" v-for="name in state.secrets" :key="name">{{ name }}</span>
         </div>
         <div class="tiny faint" v-else>还没有密钥文件。</div>
 
@@ -519,8 +530,8 @@ async function submitForm() {
 
     <section class="card">
       <button type="button" class="card-head fold" :aria-expanded="presetOpen" @click="presetOpen = !presetOpen">
-        <AppIcon name="sparkle" :size="14" />一键导入预设
-        <span class="badge">{{ state.presets.length }}</span>
+        <span class="hd-title"><AppIcon name="sparkle" :size="14" />一键导入预设</span>
+        <span class="hd-count">{{ state.presets.length }}</span>
         <span class="spacer"></span>
         <AppIcon :name="presetOpen ? 'chevron-up' : 'chevron-down'" :size="15" />
       </button>
@@ -529,9 +540,9 @@ async function submitForm() {
           base_url
           <input v-model="importBaseUrl" class="mono" placeholder="留空 = 用预设默认" />
         </label>
-        <div class="row wrap gap-top" v-if="state.presets.length">
+        <div class="presets" v-if="state.presets.length">
           <button
-            class="btn sm" v-for="p in state.presets" :key="p.id"
+            class="preset" v-for="p in state.presets" :key="p.id"
             :disabled="rowBusy('preset:' + p.id)" @click="importPreset(p)"
           >{{ rowBusy('preset:' + p.id) ? '导入中…' : (p.label || p.id) }}</button>
         </div>
@@ -595,19 +606,32 @@ async function submitForm() {
 .card-head.fold:hover { color: var(--accent-text); }
 
 .gap-top { margin-top: 10px; }
+.cap { font-size: 12px; color: var(--text-faint); letter-spacing: .01em; }
 
-/* 行：名称 / 模型名·提供方 / 状态 / 推理等级或类型 / 操作。
-   测试结论自己占一整行（第二行），否则窄屏会把「失败 + 原因」挤成竖排。 */
+/* 抬头：标题（图标+文字）与计数分离 —— 计数是"说明"，不该跟标题抢字重 */
+.hd-title { display: inline-flex; align-items: center; gap: 7px; }
+.hd-count {
+  min-width: 20px; padding: 0 6px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: var(--bg-sunken);
+  color: var(--text-faint); font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 行：左边「它是谁」、右边「能不能用」，操作收进 hover。
+   两段式而不是五列：名称长短不一时五列会把右边的徽章推得忽左忽右。 */
 .mlist { display: flex; flex-direction: column; }
 .mrow {
-  display: grid; align-items: center; gap: 10px;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) auto auto auto;
-  padding: 7px 8px;
+  display: grid; align-items: center; gap: 4px 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--divider);
+  transition: background var(--dur-fast) var(--ease);
 }
 .mrow:last-child { border-bottom: 0; }
 .mrow:hover { background: var(--bg-hover); }
 
+.mmain { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* 点名字就地改名：非编辑态是**文字按钮**（cursor: text 而不是 pointer：它就是"点进输入框"的手感） */
 .mname {
   padding: 0; border: 0; background: transparent; color: var(--text);
@@ -616,8 +640,57 @@ async function submitForm() {
 }
 .mname:hover { color: var(--accent-text); }
 .rename { width: 100%; font-size: 13px; font-weight: 600; }
+.msub {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: 11.5px; color: var(--text-faint);
+}
+.msep { opacity: .55; }
 
-.m-model { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 12.5px; }
-.m-flags, .m-ops { display: flex; align-items: center; gap: 6px; }
+.mtags { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.m-ops { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.mrow:hover .m-ops, .mrow:focus-within .m-ops { opacity: 1; }
+/* 触摸设备没有 hover：常显，否则「测试 / ⋯」永远点不到 */
+@media (hover: none) { .m-ops { opacity: 1; } }
+
+/* 状态用"点 + 字"而不是彩底徽章：一行里三枚彩块会打架，只有一个点该有颜色 */
+.stat {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--text-faint);
+}
+.stat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.stat.ok { color: var(--text-dim); }
+.stat.ok .stat-dot { background: var(--ok); }
+.stat.danger { color: var(--danger); }
+.stat.danger .stat-dot { background: var(--danger); }
+
 .m-test { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* 空态：一行说明 + 一个"现在就能做"的按钮，不占一整张白卡 */
+.mempty {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px 0; color: var(--text-faint); font-size: 12.5px;
+}
+.mempty-text { flex: 1; min-width: 0; }
+
+/* 密钥文件：等宽小签，一眼看出"有没有、叫什么"，内容永远不回显 */
+.secrefs { display: flex; flex-wrap: wrap; gap: 6px; }
+.secref {
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--bg-sunken); color: var(--text-dim); font-size: 11.5px;
+}
+
+/* 预设：一排胶囊 chips（原先是一排 .btn，7 个就糊成按钮墙） */
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.preset {
+  height: 28px; padding: 0 11px;
+  border: 1px solid var(--divider); border-radius: 999px;
+  background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 12px; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.preset:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--divider));
+  background: var(--bg-hover); color: var(--text);
+}
+.preset:disabled { opacity: .45; cursor: default; }
 </style>

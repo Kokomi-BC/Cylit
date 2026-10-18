@@ -548,10 +548,16 @@ function openInsightPage() {
  *  锚点进入），全屏从「⋯」里搬到顶部，并换成对角线箭头。 */
 /** 右上角「⋯」里只剩下载这一项：两个动作都摆在外面时，一块 76px 的胶囊上并着
  *  两枚图标，看起来像"两个主操作抢位置"；收进一层，常用度低的那个不再占位。 */
-const headMenu = [{ key: 'download', label: '下载打包', icon: 'download' }];
+const headMenu = [
+  { key: 'download', label: '下载打包', icon: 'download' },
+  { key: 'prefs', label: '首选项', icon: 'settings' },
+];
 
 function onHeadAction(key: string): void {
-  if (key === 'download') downloadBundle();
+  if (key === 'download') { downloadBundle(); return; }
+  // 首选项 = 设置页（与首页「设置」入口同一条路：先登记标签，再推路由 ——
+  // 只调 openTab 不会跳转，它只改标签状态并返回目标，导航是调用方的事）
+  if (key === 'prefs') void router.push(openTab({ name: 'settings' }) as never);
 }
 
 const isFullscreen = ref(false);

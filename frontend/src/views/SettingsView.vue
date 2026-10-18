@@ -5,19 +5,15 @@
  * 版式（移植自参照项目 retain-pdf 的设置弹窗）：**左导航 + 右内容窗格**，一次只渲染一区；
  * 左侧导航吸顶，深链（`/app/settings#kb`）只负责切到对应窗格。
  *
- * 分区（左边栏顺序）：
- * 1. **常规参数** —— 任务线程数 / 渲染 / RAG 参数 / 其他；**只有这一区有"保存设置"**
- *    （数据面 `PUT /settings`，仅提交变更项）。
- * 2. **模型** —— 问答模型 + 其他类型模型、密钥、预设导入；全是即时操作，没有"保存"。
- * 3. **显示主题** —— 皮肤注册表驱动的换肤（`src/theme/registry.ts` + `styles/themes/*.css`），
- *    选择写 localStorage，立即生效。
- * 4. **索引管理** —— 概览统计、论文索引表、索引状态与对账、chunk 元数据；
- *    原本长在「知识库」页上（用户口径"那页全是设置"），都是**即时操作**。
- * 5. **论文问答** —— 对话风格、运行限额、已加载技能（模型本体在「模型」区）。
- * 6. **在线解析（MinerU）** —— 第三方联网解析服务的 token 与默认参数：
- *    token **只写不回显**（后端只给掩码），配置后可就地「验证」（真的打一次 MinerU 接口）。
- * 7. **搜索记录** —— 知识库搜索历史的本地管理（localStorage）。
- * 8. **系统信息** —— 只读信息 + 健康检查（`GET /settings/health`）。
+ * 分区按主题分成四组（左边栏顺序，组内即"改行为 → 改模型 → 改数据 → 改服务"的动线）：
+ * · **通用**：1. 常规参数（任务线程数 / 渲染 / RAG / 其他；**唯一带"保存设置"的一区**，
+ *   数据面 `PUT /settings` 只提交变更项）、2. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
+ * · **智能与模型**：3. 模型（问答模型 + 其他类型、密钥、预设导入，全是即时操作）、
+ *   4. 论文问答（对话风格、运行限额、已加载技能；模型本体在「模型」区）。
+ * · **内容与索引**：5. 索引管理（概览 / 论文索引表 / 对账 / chunk 元数据，原「知识库」页搬来）、
+ *   6. 搜索记录（本地搜索历史）。
+ * · **服务与系统**：7. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
+ *   8. 系统信息（只读信息 + `GET /settings/health`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
  * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
@@ -127,14 +123,14 @@ const READONLY_KEYS: ReadonlyDef[] = [
  * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
  */
 const SECTIONS = [
-  { id: 'general', label: '常规参数', icon: 'settings' },
-  { id: 'models', label: '模型', icon: 'model' },
-  { id: 'appearance', label: '显示主题', icon: 'sparkle' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge' },
-  { id: 'agent', label: '论文问答', icon: 'chat' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt' },
-  { id: 'history', label: '搜索记录', icon: 'search' },
-  { id: 'about', label: '系统信息', icon: 'server' },
+  { id: 'general', label: '常规参数', icon: 'settings', group: '通用' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用' },
+  { id: 'models', label: '模型', icon: 'model', group: '智能与模型' },
+  { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引' },
+  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统' },
+  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统' },
 ] as const;
 
 const route = useRoute();
@@ -474,16 +470,17 @@ onMounted(async () => {
     <aside class="settings-rail">
       <h1 class="settings-rail-title">设置</h1>
       <nav class="settings-nav" aria-label="设置分类">
-        <button
-          v-for="s in SECTIONS"
-          :key="s.id"
-          type="button"
-          class="settings-nav-item"
-          :class="{ active: active === s.id }"
-          @click="go(s.id)"
-        >
-          <AppIcon :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
-        </button>
+        <template v-for="(s, i) in SECTIONS" :key="s.id">
+          <div v-if="i === 0 || SECTIONS[i - 1].group !== s.group" class="settings-nav-group">{{ s.group }}</div>
+          <button
+            type="button"
+            class="settings-nav-item"
+            :class="{ active: active === s.id }"
+            @click="go(s.id)"
+          >
+            <AppIcon :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
+          </button>
+        </template>
       </nav>
     </aside>
 
@@ -771,6 +768,14 @@ onMounted(async () => {
 }
 .settings-rail-title { margin: 0; padding: 0 8px; font-size: 15px; }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; }
+/* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
+   一眼能看出"要改的是行为、模型，还是数据"。 */
+.settings-nav-group {
+  margin: 10px 0 2px; padding: 0 10px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  color: var(--text-faint); text-transform: uppercase;
+}
+.settings-nav-group:first-child { margin-top: 0; }
 .settings-nav-item {
   display: flex; align-items: center; gap: 9px; width: 100%;
   height: 34px; padding: 0 10px; border-radius: var(--r-sm);
@@ -796,6 +801,8 @@ onMounted(async () => {
   .settings-rail-title { flex: none; }
   .settings-nav { flex-direction: row; gap: 4px; }
   .settings-nav-item { width: auto; white-space: nowrap; }
+  /* 横排时分组标题只剩噪声（一段一段断开反而更难扫），直接不显示 */
+  .settings-nav-group { display: none; }
 }
 
 /* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，
