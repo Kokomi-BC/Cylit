@@ -55,8 +55,8 @@ class OpenAICompatibleGeneration(GenerationProvider):
         """
         p = dict(self.config.get("parameters") or {})
         for internal in ("concurrency", "dim", "batch", "timeout",
-                         "thinking", "reasoning_effort", "extra_body",
-                         "cache_prefix"):
+                         "thinking", "reasoning_effort", "reasoning_levels",
+                         "extra_body", "cache_prefix"):
             p.pop(internal, None)
         p.update({k: v for k, v in overrides.items() if v is not None})
         return self._apply_thinking_constraints(p)

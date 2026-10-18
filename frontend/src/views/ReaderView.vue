@@ -1497,6 +1497,8 @@ function applyResizeMove() {
   resizeMoveRaf = 0;
   if (!asideResizing.value) return;
   asidePreviewW.value = clampAsideWidth(resizeStartW + (resizeMoveX - resizeStartX));
+  /* 面板跟手的同时，对话页 / 占位面板也按预览宽度排版（见 paintAsideLiveWidth） */
+  paintAsideLiveWidth(asidePreviewW.value);
 }
 
 function onResizeUpAnywhere() {
@@ -1525,6 +1527,10 @@ async function onResizeUp() {
     asideWidth.value = clampAsideWidth(asidePreviewW.value);
     asidePreviewW.value = null;
   }
+  /* 落盘值那一帧到了再把行内宽度撤掉：先撤会有一帧退回旧宽度（闪一下）。
+     vue 的 CSS 变量写在同一次 flush 里落到根上，所以 nextTick 之后两者已经相等。 */
+  await nextTick();
+  paintAsideLiveWidth(null);
   persistAsideWidth();
   await afterAsideResize();
 }
@@ -1681,6 +1687,8 @@ const floatLive = { left: 0, top: 0, w: 0, h: 0 };
 const chatHostEl = ref<HTMLElement | null>(null);
 const gripBlEl = ref<HTMLElement | null>(null);
 const gripBrEl = ref<HTMLElement | null>(null);
+/** 浮层模式下那块"画中画"占位面板（拖侧栏宽度时要跟预览值同宽） */
+const asidePipEl = ref<HTMLElement | null>(null);
 
 /** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
 function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
@@ -1700,6 +1708,26 @@ function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
 }
 
 function paintFloatLive() { writeFloatDom(floatLive); }
+
+/**
+ * 拖侧栏宽度时，把**预览宽度**同步写到"跟侧栏同宽"的那两块容器上。
+ *
+ * 为什么需要它：对话容器（`.reader > .chat-host`）与浮层占位面板（`.aside-pip`）的宽度都来自
+ * `v-bind(asideWidthPx)`（**落盘值**），而拖动期间只有 `asidePreviewW` 在变 ——
+ * 于是侧栏边框跟着手走、里面的对话页却停在旧宽度上（用户口径 2026-11-25：
+ * 「拖动侧栏时对话页没有实时更新」）。这两块不能改走 v-bind 的预览值（那是组件根上的变量，
+ * 一改整棵树重算样式），所以拖动期间只给它们写一份**行内宽度**：只有它们自己那一层重排。
+ *
+ * 松手后落盘值一更新、行内值就撤掉（两者数值相同，撤掉不会有任何一帧跳动）。
+ * 浮窗态一个字都不碰：那时这两块的几何归 `floatLive` / `applyFloatDom`。
+ */
+function paintAsideLiveWidth(px: number | null) {
+  const w = px === null ? '' : `${px}px`;
+  const host = chatHostEl.value;
+  if (host && !chatFloat.value) host.style.width = w;
+  const pip = asidePipEl.value;
+  if (pip) pip.style.width = w;
+}
 
 /**
  * 浮窗几何 / 定位 / 层级由这个 effect **直接写 DOM**，模板里不再绑 `:style`。
@@ -6696,7 +6724,7 @@ function renderMarkdown(text?: string | null) {
            z-index 50：高于侧栏本体（30）与拖宽把手（31），低于浮窗卡片（60 / 有焦点 62）
            与两枚放大把手（63）；它从 58px 起画，够不到工具栏（40）那一行。
            侧栏收起（no-aside）时整块不渲染，正文照旧整宽。 -->
-      <div v-if="chatFloat && asideVisible && railTab === 'chat'" class="aside-pip" data-aside-pip>
+      <div v-if="chatFloat && asideVisible && railTab === 'chat'" ref="asidePipEl" class="aside-pip" data-aside-pip>
         <span class="aside-pip-icon"><AppIcon name="pip" :size="34" /></span>
         <p class="aside-pip-title">对话正在浮层模式</p>
         <p class="aside-pip-note">关闭浮层后回到这里</p>

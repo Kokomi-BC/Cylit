@@ -148,13 +148,18 @@ const ringDash = computed(() => `${(percent.value / 100) * RING_CIRCUMFERENCE} $
    候选来自 `/models?model_type=agent`；**一条 agent 行都没有**时退回 `/agent/status`
    那一份，只读显示 —— 那种情况下没有"可换"的东西，列表里也就没有可点的项。 */
 const modelOptions = ref<ModelConfig[]>([]);
-/** 浮层翻在哪一栏：根（两行）→ 展开某一栏的候选；`none` = 收起 */
-const menuStage = ref<'none' | 'root' | 'model' | 'effort'>('none');
+/** 根浮层开没开：**只有「模型 / 推理等级」两行**，候选全部搬到侧向子菜单里 */
+const menuOpen = ref(false);
+/** 第二级：哪一行正在飞出候选；`null` = 只开着根浮层 */
+const subStage = ref<'model' | 'effort' | null>(null);
+/** 子菜单的视口坐标 —— 它是 `position: fixed`，由被点那行的 rect 算出来 */
+const subPos = ref({ left: 0, top: 0 });
+const subEl = ref<HTMLElement | null>(null);
+/** 子菜单宽度 / 高度上限（夹视口用；宽 200 是这里定死的） */
+const SUB_W = 200;
+const SUB_H = 250;
 /** 这条会话单独选的值（空串 = 跟随默认，后端存 NULL） */
 const pick = ref<AgentModelPick>({ model_config_id: '', reasoning_effort: '' });
-/** 自定义档草稿：原样存、原样发，不校验也不映射 */
-const effortDraft = ref('');
-const customOpen = ref(false);
 const savingPick = ref(false);
 const EFFORT_PRESETS = ['low', 'medium', 'high'];
 
@@ -178,9 +183,21 @@ const effortLabel = computed(() => pick.value.reasoning_effort
   || (defaultEffort.value ? `默认（${defaultEffort.value}）` : '默认'));
 const pickTitle = computed(() => `问答模型：${modelLabel.value}`
   + `${modelSub.value ? `（${modelSub.value}）` : ''}｜推理等级：${effortLabel.value}`);
-/** 生效档不在预设里 = 自定义（右半边那一行直接显示它本身） */
+/** 等级候选：**按模型配置**取 `parameters.reasoning_levels`（[{value, desc}]）；
+ *  没配 / 空数组就回落到内置的 low/medium/high（DeepSeek 那几个模型就是这个现状）。 */
+const effortOptions = computed<{ value: string; desc: string }[]>(() => {
+  const raw = activeModel.value?.parameters?.reasoning_levels;
+  const fallback = EFFORT_PRESETS.map(value => ({ value, desc: '' }));
+  if (!Array.isArray(raw)) return fallback;
+  const items = raw.map((it: any) => ({
+    value: typeof it === 'string' ? it : String(it?.value ?? ''),
+    desc: typeof it?.desc === 'string' ? it.desc : '',
+  })).filter(it => it.value);
+  return items.length ? items : fallback;
+});
+/** 生效档不在候选里（历史数据）—— 兜底：仍然把它自己渲染成一条带勾的候选 */
 const isCustomEffort = computed(() => Boolean(pick.value.reasoning_effort)
-  && !EFFORT_PRESETS.includes(pick.value.reasoning_effort));
+  && !effortOptions.value.some(o => o.value === pick.value.reasoning_effort));
 const agentReady = computed(() => Boolean(status.value?.running) && status.value?.model?.usable !== false);
 /** 这一轮**真的要带出去**的选区（用户在胶囊上关掉之后就是 null）。 */
 const selected = computed(() => (selCtx.value?.include ? selCtx.value : null));
@@ -1059,31 +1076,56 @@ async function loadModelOptions() {
   }
 }
 
-/** 点胶囊：根栏 ↔ 收起。 */
+function closeMenu() {
+  menuOpen.value = false;
+  subStage.value = null;
+}
+
+/** 点胶囊：开 / 收根浮层（收的时候子菜单跟着收）。 */
 function toggleMenu() {
-  menuStage.value = menuStage.value === 'none' ? 'root' : 'none';
-  customOpen.value = false;
+  if (menuOpen.value) closeMenu();
+  else menuOpen.value = true;
 }
 
-/** 点根栏某一行：展开它自己的候选（再点一次回到根栏）。 */
-function showStage(stage: 'model' | 'effort') {
-  menuStage.value = menuStage.value === stage ? 'root' : stage;
-  if (stage !== 'effort') customOpen.value = false;
+/**
+ * 点根浮层的某一行：在它**侧向**飞出第二级候选（再点同一行收回那一层）。
+ *
+ * 为什么用 `position: fixed` 而不是相对根浮层 absolute：根浮层贴着一行宽 288px 的输入区
+ * 向上弹，再往外开一层必然溢出面板被裁；浮层模式最窄只有 320px。这里按被点那行的
+ * `getBoundingClientRect()` 直接算视口坐标，视口内怎么夹都不会裁。
+ */
+function openSub(stage: 'model' | 'effort', ev: MouseEvent) {
+  if (subStage.value === stage) { subStage.value = null; return; }
+  const row = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  if (!row) return;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  // 水平：优先向右飞；右边放不下就翻到行的左边，两边都放不下就贴住视口右沿
+  let left = row.right + 8;
+  if (left + SUB_W > vw - 8) left = row.left - 8 - SUB_W;
+  if (left < 8) left = Math.max(8, vw - 8 - SUB_W);
+  // 垂直：与行的顶部对齐，再整块夹进视口（上下各留 8px），超出的部分在列表内部滚
+  const top = Math.min(Math.max(8, row.top), Math.max(8, vh - 8 - SUB_H));
+  subPos.value = { left, top };
+  subStage.value = stage;
+  // 只用到行顶部对齐还可能顶出视口下沿：渲染出来量一次真实高度，需要时再往上收
+  void nextTick(() => {
+    const el = subEl.value;
+    if (!el || subPos.value.top === 8) return;
+    const limit = Math.max(8, vh - 8 - el.offsetHeight);
+    if (subPos.value.top > limit) subPos.value = { ...subPos.value, top: limit };
+  });
 }
 
-/** 自定义输入框：展开时带上当前自定义值，便于在它上面微调。 */
-function toggleCustom() {
-  customOpen.value = !customOpen.value;
-  if (customOpen.value) effortDraft.value = isCustomEffort.value ? pick.value.reasoning_effort : '';
+/** Esc 收浮层（子菜单一起收）。 */
+function onMenuKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape' && (menuOpen.value || subStage.value)) closeMenu();
 }
 
-/** 自定义档：**原样**存、原样下发（不校验不映射），空白才当"清回默认"。 */
-function applyCustomEffort() {
-  const raw = effortDraft.value;
-  if (!raw.trim()) return;
-  void savePick({ reasoning_effort: raw });
-  customOpen.value = false;
-}
+watch(menuOpen, (open) => {
+  if (open) window.addEventListener('keydown', onMenuKeydown);
+  else window.removeEventListener('keydown', onMenuKeydown);
+});
 
 /**
  * 换模型 / 换档：**先本地生效**（点了就得看见），再 PUT 落到这条会话上。
@@ -1092,7 +1134,7 @@ function applyCustomEffort() {
 async function savePick(patch: Partial<AgentModelPick>) {
   const prev = { ...pick.value };
   pick.value = { ...prev, ...patch };
-  menuStage.value = 'none';
+  closeMenu();
   const id = currentId.value;
   if (!id) return;       // 还没有会话：这一档随下一轮 `ask` 的 payload 带过去（后端会记到新建的会话行上）
   savingPick.value = true;
@@ -1157,7 +1199,11 @@ onActivated(() => {
   void loadModelOptions();
 });
 
-onUnmounted(() => { controller?.abort(); composerRO?.disconnect(); });
+onUnmounted(() => {
+  controller?.abort();
+  composerRO?.disconnect();
+  window.removeEventListener('keydown', onMenuKeydown);
+});
 
 watch(() => props.paperId, async () => {
   controller?.abort();
@@ -1538,22 +1584,26 @@ defineExpose({ uploadFiles, ensureThread });
             </svg>
           </button>
 
-          <!-- 模型 / 推理等级：胶囊点开是一条**两行的小浮层**，两行各自往下展开候选。
-               太窄的浮层模式（320px）里没有"右侧再飞一层"的空间，展开放在同一块浮层里。 -->
-          <div v-if="menuStage !== 'none'" class="pick-scrim" @click="menuStage = 'none'" />
-          <div v-if="menuStage !== 'none'" class="pick-pop">
-            <button class="pick-row" :class="{ on: menuStage === 'model' }" @click="showStage('model')">
+          <!-- 模型 / 推理等级：根浮层**只有两行**，点某一行向侧向飞出第二级候选。
+               候选不往根浮层里堆 —— 浮层模式最窄只有 320px，堆下去又高又乱。 -->
+          <div v-if="menuOpen" class="pick-scrim" @pointerdown="closeMenu" />
+          <div v-if="menuOpen" class="pick-pop">
+            <button class="pick-row" :class="{ on: subStage === 'model' }" @click="openSub('model', $event)">
               <span class="pick-key">模型</span>
               <span class="pick-val truncate">{{ modelLabel }}</span>
               <AppIcon name="chevron-right" :size="11" />
             </button>
-            <button class="pick-row" :class="{ on: menuStage === 'effort' }" @click="showStage('effort')">
+            <button class="pick-row" :class="{ on: subStage === 'effort' }" @click="openSub('effort', $event)">
               <span class="pick-key">推理等级</span>
               <span class="pick-val truncate">{{ effortLabel }}</span>
               <AppIcon name="chevron-right" :size="11" />
             </button>
+          </div>
 
-            <div v-if="menuStage === 'model'" class="pick-sub">
+          <!-- 第二级：侧向飞出的子菜单（fixed 定位，压在遮罩与根浮层之上） -->
+          <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub"
+               :style="{ left: `${subPos.left}px`, top: `${subPos.top}px` }">
+            <div v-if="subStage === 'model'" class="pick-sub-list">
               <div v-if="modelReadonly" class="pick-empty">
                 <span class="pick-item-name">未单独配置</span>
                 <span class="pick-item-sub truncate">{{ modelSub }}</span>
@@ -1575,7 +1625,7 @@ defineExpose({ uploadFiles, ensureThread });
               </template>
             </div>
 
-            <div v-if="menuStage === 'effort'" class="pick-sub">
+            <div v-else class="pick-sub-list">
               <button class="pick-item" :class="{ on: !pick.reasoning_effort }" :disabled="savingPick"
                       @click="savePick({ reasoning_effort: '' })">
                 <span class="pick-item-main">
@@ -1585,20 +1635,23 @@ defineExpose({ uploadFiles, ensureThread });
                 </span>
                 <AppIcon v-if="!pick.reasoning_effort" name="check" :size="13" />
               </button>
-              <button v-for="e in EFFORT_PRESETS" :key="e" class="pick-item"
-                      :class="{ on: pick.reasoning_effort === e }" :disabled="savingPick"
-                      @click="savePick({ reasoning_effort: e })">
-                <span class="pick-item-main"><span class="pick-item-name truncate">{{ e }}</span></span>
-                <AppIcon v-if="pick.reasoning_effort === e" name="check" :size="13" />
-              </button>
-              <button class="pick-item" :class="{ on: isCustomEffort }" @click="toggleCustom">
+              <button v-for="e in effortOptions" :key="e.value" class="pick-item"
+                      :class="{ on: pick.reasoning_effort === e.value }" :disabled="savingPick"
+                      @click="savePick({ reasoning_effort: e.value })">
                 <span class="pick-item-main">
-                  <span class="pick-item-name truncate">{{ isCustomEffort ? pick.reasoning_effort : '自定义…' }}</span>
+                  <span class="pick-item-name truncate">{{ e.value }}</span>
+                  <span v-if="e.desc" class="pick-item-sub truncate">{{ e.desc }}</span>
                 </span>
-                <AppIcon v-if="isCustomEffort" name="check" :size="13" />
+                <AppIcon v-if="pick.reasoning_effort === e.value" name="check" :size="13" />
               </button>
-              <input v-if="customOpen" v-model="effortDraft" class="pick-input" placeholder="自定义档位"
-                     @keydown.enter.prevent="applyCustomEffort" @keydown.escape="customOpen = false" />
+              <!-- 兜底：历史数据里存的档不在候选里，也让它看得见、点得到 -->
+              <button v-if="isCustomEffort" class="pick-item on" :disabled="savingPick"
+                      @click="savePick({ reasoning_effort: pick.reasoning_effort })">
+                <span class="pick-item-main">
+                  <span class="pick-item-name truncate">{{ pick.reasoning_effort }}</span>
+                </span>
+                <AppIcon name="check" :size="13" />
+              </button>
             </div>
           </div>
         </div>
@@ -2022,10 +2075,15 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-row.on .pick-val { color: var(--accent-text); }
 .pick-pop svg { color: var(--text-faint); flex: none; }
 .pick-row.on svg { color: var(--accent-text); }
-/* 展开出来的那一栏：跟着浮层往下长，太长就在**浮层内**滚 */
+/* 第二级：**侧向飞出**的子菜单。`position: fixed`（坐标由被点那行的 rect 算出），
+   压在遮罩(8)与根浮层(9)之上；宽度定死 200px，内容长了在列表内部滚。 */
 .pick-sub {
-  display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; padding-top: 4px;
-  border-top: 1px solid var(--divider); max-height: 216px; overflow-y: auto;
+  position: fixed; z-index: 10; width: 200px; box-sizing: border-box;
+  padding: 4px; border-radius: 12px; border: 1px solid var(--border);
+  background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+}
+.pick-sub-list {
+  display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
 .pick-item {
   display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px;
@@ -2045,12 +2103,6 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-item-sub { font-size: 10.5px; color: var(--text-faint); }
 .pick-empty { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; }
 .pick-empty .pick-item-name { font-size: 12px; color: var(--text-dim); }
-.pick-input {
-  flex: none; height: 26px; margin: 3px 4px 1px; padding: 0 8px; outline: none;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
-  background: var(--bg-sunken); color: var(--text); font: inherit; font-size: 12px;
-}
-.pick-input:focus { border-color: var(--accent); box-shadow: var(--ring); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
   position: relative; width: 16px; height: 16px; flex: none;

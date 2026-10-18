@@ -23,7 +23,7 @@
  * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
  * 设置写入 setting 表，重启后仍生效。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { HealthPayload, MineruConfig, MineruVerifyResult, ParseEngine } from '@/api/types';
@@ -90,6 +90,18 @@ watch(() => route.hash, (hash) => {
   const id = String(hash || '').replace('#', '');
   if (SECTIONS.some((s) => s.id === id)) active.value = id;
 });
+
+/** 窄屏导航横排会超出宽度：切区后把当前项滚进可视区；宽屏 nav 本身不滚动，直接跳过。 */
+const navRef = ref<HTMLElement | null>(null);
+function revealActive() {
+  void nextTick(() => {
+    const nav = navRef.value;
+    if (!nav || nav.scrollWidth <= nav.clientWidth + 1) return;
+    nav.querySelector<HTMLElement>('.settings-nav-item.active')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+}
+watch(active, () => revealActive());
 
 const loadError = ref('');
 const health = ref<HealthPayload | null>(null);
@@ -320,13 +332,14 @@ onMounted(async () => {
   <div class="settings-layout">
     <aside class="settings-rail">
       <h1 class="settings-rail-title">设置</h1>
-      <nav class="settings-nav" aria-label="设置分类">
+      <nav class="settings-nav" ref="navRef" aria-label="设置分类">
         <template v-for="(s, i) in SECTIONS" :key="s.id">
           <div v-if="i === 0 || SECTIONS[i - 1].group !== s.group" class="settings-nav-group">{{ s.group }}</div>
           <button
             type="button"
             class="settings-nav-item"
             :class="{ active: active === s.id }"
+            :aria-current="active === s.id ? 'page' : undefined"
             @click="go(s.id)"
           >
             <AppIcon :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
@@ -334,11 +347,14 @@ onMounted(async () => {
         </template>
       </nav>
     </aside>
-
     <div class="settings-pane">
+      <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 8 个分节共用同一份模板 -->
       <header class="pane-head">
-        <h2>{{ activeSection.label }}</h2>
-        <p class="pane-desc">{{ activeSection.desc }}</p>
+        <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
+        <div class="pane-head-text">
+          <h2>{{ activeSection.label }}</h2>
+          <p class="pane-desc">{{ activeSection.desc }}</p>
+        </div>
       </header>
 
     <!-- 首次加载 -->
@@ -564,63 +580,113 @@ onMounted(async () => {
  * 版式：左导航 + 右内容窗格（参照 retain-pdf 的设置弹窗）。
  *
  * 导航 208px 固定宽、**吸顶**：设置页很长，滚到索引表下面还要能换区；
- * 底 色必须不透明（`--bg-elev`），否则正文会从卡片下面透出来。
+ * 底色必须不透明（`--bg-elev`），否则正文会从卡片下面透出来。
+ * 内容列最宽 840px（与 KnowledgeView 的 880 同档，长句不散），整块居中。
  */
 .settings-layout {
-  display: grid; gap: 24px; align-items: start;
-  grid-template-columns: 208px minmax(0, 1fr);
+  display: grid; gap: 28px; align-items: start; justify-content: center;
+  grid-template-columns: 208px minmax(0, 840px);
+  max-width: 1120px; margin: 0 auto;
 }
 .settings-rail {
   position: sticky; top: calc(var(--header-h) + 12px);
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 16px 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  /* 分区多于视口高度时，吸顶的导航自己也得能滚，否则末尾几项点不到 */
+  max-height: calc(100dvh - var(--header-h) - 28px); overflow-y: auto;
+  padding: 14px 8px 12px;
   background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow-1);
 }
-.settings-rail-title { margin: 0; padding: 0 8px; font-size: 15px; }
+/* 导航抬头：一条分隔线把"设置"和下面四组分区断开 */
+.settings-rail-title {
+  margin: 0; padding: 0 12px 10px;
+  font-size: 14px; font-weight: 600; letter-spacing: .02em;
+  border-bottom: 1px solid var(--divider);
+}
 .settings-nav { display: flex; flex-direction: column; gap: 2px; }
 /* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
-   一眼能看出"要改的是行为、模型，还是数据"。 */
+   一眼能看出"要改的是行为、模型，还是数据"。大写 + 字距 + 降一档色 = 只当路标，
+   不跟可点项抢注意力。 */
 .settings-nav-group {
-  margin: 8px 0 2px; padding: 0 8px;
-  font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  margin: 10px 0 2px; padding: 0 12px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
   color: var(--text-faint); text-transform: uppercase;
 }
 .settings-nav-group:first-child { margin-top: 0; }
+/* 可点项：高与圆角走既有控制变量（--control-h / --radius-ctl）；
+   当前项 = 强调色浅底 + 左侧 3px 竖条（::before，不占布局），hover 走统一的 --bg-hover。 */
 .settings-nav-item {
+  position: relative;
   display: flex; align-items: center; gap: 9px; width: 100%;
-  height: 34px; padding: 0 10px; border-radius: var(--r-sm);
+  height: var(--control-h); padding: 0 12px; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text-dim);
   font-family: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
+.settings-nav-item::before {
+  content: ''; position: absolute; left: 4px; top: 50%;
+  width: 3px; height: 14px; border-radius: var(--radius-ctl);
+  background: var(--accent); opacity: 0; transform: translateY(-50%);
+  transition: opacity var(--dur) var(--ease);
+}
 .settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.settings-nav-item.active::before { opacity: 1; }
+.settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
-/* 三档层次：标题（600）/ 一行副标题（faint）/ 字段标签（dim 12px） */
-.pane-head { display: grid; gap: 4px; }
-.pane-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+/* 页头：图标底 + 标题 + 一句说明，底下一根细分隔线收尾 —— 「页头 / 内容」两段节奏。
+   近-远：页头到第一张卡 ~34px，卡与卡之间 12px（base.css 的 `.card + .card`）。 */
+.pane-head {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 2px 0 16px; border-bottom: 1px solid var(--divider);
+}
+.pane-head-icon {
+  display: grid; place-items: center; flex: none;
+  width: 34px; height: 34px; border-radius: var(--radius-ctl);
+  background: var(--accent-soft); color: var(--accent-text);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+/* 三档层次：标题（600）/ 一行副标题（faint）/ 字段标签（dim 12px，在分节里） */
+.pane-head-text { display: grid; gap: 3px; min-width: 0; }
+.pane-head h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
 .pane-desc { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-faint); }
 
-/* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽） */
+/* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽）。
+   横向滚动交给 nav 自己 —— "设置"那一格始终留在左边；当前项由 revealActive 滚进可视区。 */
 @media (max-width: 860px) {
-  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr); justify-content: stretch;
+    gap: 14px; max-width: none;
+  }
   .settings-rail {
     position: static; flex-direction: row; align-items: center;
-    gap: 10px; padding: 10px 12px; overflow-x: auto;
+    gap: 10px; padding: 10px 12px; max-height: none; overflow: hidden;
   }
-  .settings-rail-title { flex: none; }
-  .settings-nav { flex-direction: row; gap: 4px; }
-  .settings-nav-item { width: auto; white-space: nowrap; }
+  .settings-rail-title {
+    flex: none; padding: 0 10px 0 0;
+    border-bottom: 0; border-right: 1px solid var(--divider);
+  }
+  .settings-nav {
+    flex: 1; min-width: 0; flex-direction: row; gap: 4px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .settings-nav::-webkit-scrollbar { display: none; }
+  /* flex: none 是关键：不然项会被挤扁，横排就变成"每项都省略号" */
+  .settings-nav-item { width: auto; flex: none; white-space: nowrap; }
+  /* 横排时左侧竖条会顶到文字：当前项由浅底 + 强调色表达，竖条关掉 */
+  .settings-nav-item::before { display: none; }
   /* 横排时分组标题只剩噪声（一段一段断开反而更难扫），直接不显示 */
   .settings-nav-group { display: none; }
+  /* 页头收紧留白，但不贴边（左右留白由 .app-main 的 12px 兜着） */
+  .pane-head { padding: 0 0 12px; }
+  .pane-head h2 { font-size: 17px; }
 }
 
 /* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，
    这里不叠 gap —— 两处都管会出现 22px 的"缝"，看着像两组内容。 */
-.sec { scroll-margin-top: calc(var(--header-h) + 62px); }
+.sec { min-width: 0; scroll-margin-top: calc(var(--header-h) + 62px); }
 .sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 
 /* 表单项：标签一行 */

@@ -51,6 +51,126 @@ const form = reactive({
   base_url: '', secret_ref: '', parametersText: '{}', enabled: true,
 });
 
+/* ---------------------------- 推理等级 ----------------------------
+ * 问答模型可以在 `parameters.reasoning_levels` 里自己定档位（`[{ value, desc? }]`，
+ * 顺序就是展示顺序），默认档仍是 `parameters.reasoning_effort`；两者都留空 = 用内置
+ * low / medium / high。这块以**解析后的对象**为工作副本：只重写这两个键，「高级」里
+ * 手写的其它参数原样保留；那份 JSON 一旦不是合法对象，这块只显示一行红字、不写回。
+ */
+const BUILTIN_LEVELS = ['low', 'medium', 'high'];
+
+interface LevelRow { value: string; desc: string }
+
+const levels = ref<LevelRow[]>([]);
+const defaultLevel = ref('');
+const paramsBroken = ref('');
+
+/** 合法 JSON 对象 → 对象（空串当 `{}`）；非法 / 不是对象 → null，由调用方给提示。 */
+function parseParamsSafe(text: string): Record<string, any> | null {
+  const s = String(text ?? '').trim();
+  if (!s) return {};
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch { /* 落到最后统一返回 null */ }
+  return null;
+}
+
+/** 编辑器状态 ← 那份 JSON（打开弹窗 / 换预设 / 手改 textarea 时走这里）。 */
+function syncReasoning() {
+  const p = parseParamsSafe(form.parametersText);
+  if (!p) {
+    paramsBroken.value = '当前 parameters 不是合法 JSON，先修好再用这块编辑';
+    levels.value = [];
+    defaultLevel.value = '';
+    return;
+  }
+  paramsBroken.value = '';
+  const raw = p.reasoning_levels;
+  levels.value = Array.isArray(raw)
+    ? raw.map((it: any) => ({ value: String(it?.value ?? ''), desc: String(it?.desc ?? '') }))
+    : [];
+  const eff = p.reasoning_effort;
+  defaultLevel.value = eff === undefined || eff === null ? '' : String(eff);
+}
+
+/** 刚写回去的那份文本：由它引起的 watch 不再反过来重读编辑器状态。 */
+let writtenText = '';
+
+/** 编辑器状态 → 那份 JSON：只动这两个键，别的一律原样带回。 */
+function writeReasoning() {
+  if (paramsBroken.value) return;
+  const p = parseParamsSafe(form.parametersText);
+  if (!p) return;
+  const next: Record<string, any> = { ...p };
+  const rows = levels.value
+    .map((r) => ({ value: r.value.trim(), desc: (r.desc || '').trim() }))
+    .filter((r) => r.value)                   // 值还空着的行先不落盘（提交时会被校验拦下）
+    .map((r) => (r.desc ? r : { value: r.value }));
+  if (rows.length) next.reasoning_levels = rows;
+  else delete next.reasoning_levels;
+  const eff = defaultLevel.value.trim();
+  if (eff) next.reasoning_effort = eff;
+  else delete next.reasoning_effort;
+  const text = Object.keys(next).length ? JSON.stringify(next, null, 2) : '{}';
+  if (text === form.parametersText) return;
+  writtenText = text;
+  form.parametersText = text;
+}
+
+function addLevel() {
+  levels.value.push({ value: '', desc: '' });
+}
+
+function removeLevel(i: number) {
+  levels.value.splice(i, 1);
+}
+
+/** 上移 / 下移一位：顺序即展示顺序，所以直接搬数组。 */
+function moveLevel(i: number, delta: number) {
+  const j = i + delta;
+  if (j < 0 || j >= levels.value.length) return;
+  levels.value.splice(j, 0, ...levels.value.splice(i, 1));
+}
+
+/** 未配置时的一键兜底：内置三档，说明留空。 */
+function fillBuiltinLevels() {
+  levels.value = BUILTIN_LEVELS.map((v) => ({ value: v, desc: '' }));
+}
+
+function onDefaultChange(e: Event) {
+  defaultLevel.value = (e.target as HTMLSelectElement).value;
+}
+
+/** 默认档下拉的选项：已配的档位（含刚加的）+ 手写在 JSON 里、不在档位表里的那个值。 */
+const levelValues = computed(() => {
+  const out: string[] = [];
+  for (const r of levels.value) {
+    const v = r.value.trim();
+    if (v && !out.includes(v)) out.push(v);
+  }
+  const d = defaultLevel.value.trim();
+  if (d && !out.includes(d)) out.push(d);
+  return out;
+});
+
+/** 值不能为空、同一模型内不能重复；有错就 toast 拦下提交，不静默丢档位。 */
+function levelError(): string {
+  const seen = new Set<string>();
+  for (let i = 0; i < levels.value.length; i++) {
+    const v = levels.value[i].value.trim();
+    if (!v) return `推理等级第 ${i + 1} 行还没填值`;
+    if (seen.has(v)) return `推理等级「${v}」重复了，同一模型内的值要唯一`;
+    seen.add(v);
+  }
+  return '';
+}
+
+/** 改动先落到状态、再回写成 JSON（深监听 = v-model 已经生效之后，不赌事件先后）。 */
+watch(() => form.parametersText, (t) => { if (t !== writtenText) syncReasoning(); });
+watch(levels, writeReasoning, { deep: true });
+watch(defaultLevel, writeReasoning);
+
 function init() {
   presetId.value = '';
   advanced.value = false;
@@ -77,7 +197,7 @@ function init() {
   });
 }
 
-watch(() => props.open, (v) => { if (v) init(); }, { immediate: true });
+watch(() => props.open, (v) => { if (v) { init(); syncReasoning(); } }, { immediate: true });
 
 /* ---------------------------- 预设 ---------------------------- */
 
@@ -183,6 +303,7 @@ function parseParameters(text: string): Record<string, any> {
 
 function submit() {
   if (!form.name.trim()) { toast('请填写名称', 'warn'); return; }
+  writeReasoning();                    // 档位编辑器的最后一次改动先落地
   let parameters: Record<string, any>;
   try {
     parameters = parseParameters(form.parametersText);
@@ -190,6 +311,10 @@ function submit() {
     advanced.value = true;
     toast(err.message, 'error', 8000);
     return;
+  }
+  if (form.model_type === 'agent') {
+    const bad = levelError();
+    if (bad) { toast(bad, 'error', 6000); return; }
   }
   const payload: Record<string, unknown> = {
     name: form.name.trim(),
@@ -265,6 +390,53 @@ function labelOf(t: string): string {
           :class="{ on: form.model_name === m }"
           @click="pickModelName(m)"
         >{{ m }}</button>
+      </div>
+
+      <!-- 推理等级：问答模型专属，独立于「高级」，默认展开。写回 parameters.reasoning_levels -->
+      <div class="levels" v-if="form.model_type === 'agent'">
+        <div class="lv-head">
+          <span class="lv-title">推理等级</span>
+          <span class="spacer"></span>
+          <span class="tiny faint">{{ levels.length ? `${levels.length} 档` : '未配置' }}</span>
+        </div>
+
+        <p class="lv-broken" v-if="paramsBroken">{{ paramsBroken }}</p>
+        <template v-else>
+          <div class="lv-row" v-for="(r, i) in levels" :key="i">
+            <input v-model="r.value" class="mono" placeholder="值，如 high" />
+            <input v-model="r.desc" placeholder="说明（可空），如 更慢更稳，适合硬题" />
+            <button type="button" class="btn icon sm ghost" title="上移" :disabled="i === 0" @click="moveLevel(i, -1)">
+              <AppIcon name="chevron-up" :size="14" />
+            </button>
+            <button
+              type="button" class="btn icon sm ghost" title="下移" :disabled="i === levels.length - 1"
+              @click="moveLevel(i, 1)"
+            >
+              <AppIcon name="chevron-down" :size="14" />
+            </button>
+            <button type="button" class="btn icon sm ghost lv-del" title="删除这一档" @click="removeLevel(i)">
+              <AppIcon name="trash" :size="14" />
+            </button>
+          </div>
+
+          <div class="lv-foot">
+            <button type="button" class="btn sm ghost" @click="addLevel">
+              <AppIcon name="add" :size="14" />添加档位
+            </button>
+          </div>
+
+          <p class="lv-hint tiny faint" v-if="!levels.length">
+            未配置时用内置 low / medium / high
+            <button type="button" class="lv-fill" @click="fillBuiltinLevels">填入内置三档</button>
+          </p>
+
+          <label class="field lv-default">默认档
+            <select :value="defaultLevel" @change="onDefaultChange">
+              <option value="">不设置</option>
+              <option v-for="v in levelValues" :key="v" :value="v">{{ v }}</option>
+            </select>
+          </label>
+        </template>
       </div>
 
       <button type="button" class="adv-toggle" @click="advanced = !advanced">
@@ -367,4 +539,30 @@ function labelOf(t: string): string {
 }
 .adv-toggle:hover { color: var(--text); }
 .adv { padding-top: 10px; }
+
+/* 推理等级：一行一档（值 / 说明 / 上移 / 下移 / 删），下方是默认档。
+   说明空着也没关系 —— 它是给人看的，不参与请求。 */
+.levels {
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--divider);
+}
+.lv-head { display: flex; align-items: baseline; gap: 8px; }
+.lv-title { font-size: 12.5px; color: var(--text-dim); }
+.lv-broken { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: var(--danger); }
+.lv-row {
+  display: grid; grid-template-columns: 108px minmax(0, 1fr) auto auto auto;
+  gap: 6px; align-items: center; margin-top: 8px;
+}
+.lv-row input { width: 100%; height: var(--control-h-sm); font-size: 12.5px; }
+.lv-row .btn.icon { color: var(--text-faint); }
+.lv-row .btn.icon:hover:not(:disabled) { color: var(--text); }
+.lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
+.lv-foot { margin-top: 8px; }
+.lv-hint { margin: 8px 0 0; line-height: 1.6; }
+.lv-fill {
+  padding: 0; margin-left: 4px; border: 0; background: transparent;
+  color: var(--accent-text); font-size: 11px; cursor: pointer;
+}
+.lv-fill:hover { text-decoration: underline; }
+.lv-default { margin-top: 10px; }
 </style>

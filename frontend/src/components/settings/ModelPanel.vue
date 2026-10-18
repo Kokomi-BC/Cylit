@@ -89,8 +89,13 @@ function providerCell(m: ModelConfig): string {
 /** 行的第四格：问答模型看推理等级，其余类型看它是什么类型（后者没有这一项）。 */
 function tagOf(m: ModelConfig): { text: string; cls: string } {
   if (m.model_type !== 'agent') return { text: typeLabel(m.model_type), cls: 'accent' };
-  const effort = (m.parameters || {}).reasoning_effort;
-  return effort ? { text: String(effort), cls: '' } : { text: '—', cls: '' };
+  const p = m.parameters || {};
+  const effort = p.reasoning_effort;
+  const count = Array.isArray(p.reasoning_levels) ? p.reasoning_levels.length : 0;
+  // 没配档位就是老样子（只有默认档，连默认档都没有就是「—」）
+  if (!count) return effort ? { text: String(effort), cls: '' } : { text: '—', cls: '' };
+  // 配了档位就把"默认档 + 几档"一起报出来：一眼看得出这个模型的思考深度有几档可选
+  return { text: effort ? `默认 ${effort} · ${count} 档` : `${count} 档`, cls: '' };
 }
 
 function latencyOf(m: ModelConfig): string {
