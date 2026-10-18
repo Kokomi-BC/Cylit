@@ -33,12 +33,17 @@ const props = defineProps<{
 const text = computed(() => (props.side === 'zh' ? props.row.translation : props.row.original));
 /** 只渲染 Markdown；**高亮在 DOM 上画**（公式按整体标，见 `utils/domMarks.ts`） */
 const html = computed(() => mdToHtml(text.value ?? '', props.paperId));
-/** 本侧要画的高亮（偏移量相对**渲染后的文字**，公式算 1 个字符） */
+/** 本侧要画的高亮（偏移量相对**渲染后的文字**，公式算 1 个字符）。
+ *
+ * 同侧的直接按偏移量画；**另一面的也带进来一份，`loose` 只按文字找** —— 模型经常把原文的句子
+ * 挂到「译文」那一面（或反过来），那一面根本没有这段字，于是「笔记在列表里、正文看不到高亮」
+ * （用户口径 2026-11-26）。哪一面找得到就画在哪一面，找不到 markRanges 自己会跳过。 */
 const myMarks = computed(() => (props.highlights ?? [])
-  .filter((h) => h.block_id === props.row.id
-    && (h.scope ?? 'row') === 'row'
-    && (h.side ?? 'en') === props.side)
-  .map((h) => ({ start: h.start, end: h.end, color: h.color, id: h.id, text: h.text })));
+  .filter((h) => h.block_id === props.row.id && (h.scope ?? 'row') === 'row')
+  .map((h) => ({
+    start: h.start, end: h.end, color: h.color, id: h.id, text: h.text,
+    loose: (h.side ?? 'en') !== props.side,
+  })));
 
 /**
  * 画标记：**先高亮、后搜索命中**（顺序有讲究 —— 重画高亮时会把搜索标记所在的文本拍平，

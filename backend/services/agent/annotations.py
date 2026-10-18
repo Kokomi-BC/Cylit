@@ -253,10 +253,22 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
                      anchor, hit[0])
             anchor, kind = hit[0], "row"
     raw = anchor_text(paper_id, anchor, side=side)
+    rendered = render_like_dom(raw) if raw is not None else ""
+    span = find_span(rendered, text, occurrence=occurrence) if raw is not None else None
+    # 引用的文字不在这一面 → 换另一面再找一次：模型经常把**原文**的句子挂到「译文」那一面
+    #（或反过来），那一面根本没有这段字，高亮就永远画不出来（用户报的「笔记在列表里、
+    #  正文却看不到高亮」就是这么来的）。哪一面找得到就以那一面为准，并记一条日志。
+    if span is None:
+        other = "zh" if side == "en" else "en"
+        raw2 = anchor_text(paper_id, anchor, side=other)
+        if raw2 is not None:
+            rendered2 = render_like_dom(raw2)
+            span2 = find_span(rendered2, text, occurrence=occurrence)
+            if span2 is not None:
+                log.info("高亮换面：%s 在 %s 面找不到，改落到 %s 面", anchor, side, other)
+                side, raw, rendered, span = other, raw2, rendered2, span2
     if raw is None:
         return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
-    rendered = render_like_dom(raw)
-    span = find_span(rendered, text, occurrence=occurrence)
     if span is None:
         near = near_misses(rendered, text)
         return {"ok": False,

@@ -180,6 +180,8 @@ export interface DomMark {
   id: string;
   /** 当初选中的文字：偏移量对不上时用它兜底重定位 */
   text?: string | null;
+  /** **只按文字找、不信偏移量**：跨面兜底用（见 ReaderRow 的说明），偏移量在另一面没有意义 */
+  loose?: boolean;
 }
 
 export function clearUserMarks(root: HTMLElement | null): void {
@@ -310,6 +312,22 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
     let end = Math.min(m.end, total);
     if (end <= start) continue;
     const all = renderedText(root);
+    if (m.loose) {
+      /* 跨面兜底：这条高亮当初标在另一面，偏移量在这一面没有意义 —— 只按文字找。
+         找不到就跳过（宁可少画一条，也不要画错位置）。 */
+      const want = m.text ?? '';
+      let at = want ? all.indexOf(want) : -1;
+      if (at < 0 && want) {
+        for (const n of [40, 24, 12]) {
+          if (want.length < n) continue;
+          at = all.indexOf(want.slice(0, n));
+          if (at >= 0) break;
+        }
+      }
+      if (at < 0) continue;
+      if (wrapRange(segs, at, Math.min(at + (want || '').length, total), m.color, m.id)) done += 1;
+      continue;
+    }
     const slice = all.slice(start, end);
     const wanted = m.text ?? '';
     if (!slice.includes(ATOM)) {
