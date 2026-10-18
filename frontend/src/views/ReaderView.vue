@@ -1607,6 +1607,17 @@ const floatDrag = {
   sx: 0, sy: 0, ox: 0, oy: 0, ow: 0, oh: 0,
 };
 
+/**
+ * 浮窗的拖动现在挂在**整块面板**上（标题栏那一行已经和会话头合并，没有单独的抓手区了）：
+ * 只有从"头部那一行"按下去才算拖动 —— 正文里选字、点按钮都不该把窗口挪走。
+ */
+function onFloatCardDown(ev: PointerEvent) {
+  if (!chatFloat.value) return;
+  const t = ev.target as HTMLElement | null;
+  if (!t?.closest?.('.thread-head, .list-head')) return;
+  onFloatPointerDown(ev, 'move');
+}
+
 function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left') {
   // 标题栏上那两枚按钮（回到侧栏 / ×）不参与拖动
   if (mode === 'move' && (ev.target as HTMLElement | null)?.closest?.('button')) return;
@@ -1677,7 +1688,7 @@ function onFloatPointerUp(ev: PointerEvent) {
 }
 
 /* 三条线都指向「同一时刻只有一个」：侧栏被别处打开 → 收浮窗；变窄屏（抽屉）→ 收浮窗；
-   页签离开对话 → 收回侧栏（浮窗只承载对话，见 `.float-bar` 的说明）。 */
+   页签离开对话 → 收回侧栏（浮窗只承载对话）。 */
 watch(asideOpen, (v) => { if (v && chatFloat.value) chatFloat.value = false; });
 watch(isNarrow, (v) => { if (v) chatFloat.value = false; });
 watch(sideTab, (v) => { if (chatFloat.value && v !== 'chat') void dockChatFromFloat(); });
@@ -6004,35 +6015,18 @@ function renderMarkdown(text?: string | null) {
       <aside
         :class="['reader-aside', { resizing: asideResizing }]"
         :style="[{ '--reader-font-size': `${readerFont}px` }, asideFloatStyle, asidePreviewStyle]"
+        @pointerdown="onFloatCardDown"
+        @pointermove="onFloatPointerMove"
+        @pointerup="onFloatPointerUp"
+        @pointercancel="onFloatPointerUp"
       >
         <!-- 侧栏头部：**只有页签胶囊**。那枚圆形开关是顶栏里固定的一枚（12px 处），
              侧栏开着时它正好落在这一行的最左 —— 所以这里是"胶囊正左侧就是关闭按钮"。
              `padding-left: 62px` 给它让位（12 + 38 + 12）。 -->
-        <!-- 浮窗的标题栏：**兼拖动抓手**（按住它挪窗）。高度比侧栏头部矮一截 ——
-             浮窗只承载「对话」，页签胶囊在这里没有意义；那两枚按钮跨在右上角。 -->
-        <div
-          v-if="chatFloat"
-          class="float-bar"
-          @pointerdown="(ev) => onFloatPointerDown(ev, 'move')"
-          @pointermove="onFloatPointerMove"
-          @pointerup="onFloatPointerUp"
-          @pointercancel="onFloatPointerUp"
-        >
-          <AppIcon name="chat" :size="13" class="float-ico" />
-          <span class="float-title">对话</span>
-          <span class="spacer"></span>
-          <!-- 两枚按钮与对话页头部那组**完全同规格**：同一个托盘 + 同 26px 圆钮 + 同样悬停浮起
-               （用户口径 2026-11-19：这几处按钮风格统一）。图标用「小窗收回」那枚。 -->
-          <span class="float-acts">
-            <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
-              <AppIcon name="sidebar" :size="14" />
-            </button>
-            <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
-              <AppIcon name="close" :size="13" />
-            </button>
-          </span>
-        </div>
-        <div v-else class="aside-head">
+        <!-- 浮窗态**不再单独占一行标题栏**（用户口径 2026-11-19：标题 + 会话名两行压成一行）。
+             卡片顶部就是会话页那条头（返回 / 标题 / ＋ / 回到侧栏 / ×），它同时兼任拖动抓手 ——
+             见 `onFloatCardDown` 与 `.reader .aside-float` 顶部那枚横线指示器。 -->
+        <div v-if="!chatFloat" class="aside-head">
             <div class="side-tabs-wrap">
             <button
               v-if="tabsScroll.left"
@@ -6141,7 +6135,19 @@ function renderMarkdown(text?: string | null) {
             @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
             @clear-selection="chatSelection = null"
             @float="openChatFloat"
-          />
+          >
+            <!-- 浮窗态：这两枚塞进对话自己的头部行（与「＋」同一行），不再单占一条标题栏 -->
+            <template #head-actions>
+              <template v-if="chatFloat">
+                <button class="float-act" title="回到侧栏" @click="dockChatFromFloat">
+                  <AppIcon name="sidebar" :size="14" />
+                </button>
+                <button class="float-act" title="关闭浮窗" @click="closeChatFloat">
+                  <AppIcon name="close" :size="13" />
+                </button>
+              </template>
+            </template>
+          </ReaderChat>
         </KeepAlive>
         <ReaderSearch
           v-if="sideTab === 'search'"
@@ -6907,28 +6913,23 @@ function renderMarkdown(text?: string | null) {
   height: 58px; padding: 0 12px 0 62px;
 }
 
-/* 浮窗标题栏：兼**拖动抓手**。比侧栏头部矮一截 —— 浮窗是临时看一眼对话，
-   不该把 58px 花在一条页签胶囊上；`touch-action: none` 让平板上的拖动不变成滚正文。 */
-.float-bar {
-  position: relative;
-  flex: none; display: flex; align-items: center; gap: 6px;
-  height: 44px; padding: 4px 6px 0 12px;
-  background: var(--bg-elev); border-bottom: 1px solid var(--divider);
-  cursor: grab; touch-action: none; user-select: none;
-}
-.float-bar:active { cursor: grabbing; }
-/* 拖动指示器（用户口径 2026-11-19）：顶部一条**短圆角横线**（iOS 弹层那枚抓手），
-   一眼看出"这块能拖着走"；hover / 拖动中变主题色，与分隔线那枚拖动指示器同一门语言。 */
-.float-bar::before {
+/* 浮窗顶部那枚**拖动指示器**（iOS 弹层那枚抓手）：画在卡片自己身上 —— 浮窗已经没有单独的
+   标题栏了（会话头那一行兼作抓手，见 `onFloatCardDown`），所以这一条 + 头部多留的 12px
+   就是"这里能拖着走"的全部提示。 */
+.reader.aside-float .reader-aside::before {
   content: ''; position: absolute; top: 5px; left: 50%; width: 36px; height: 4px;
-  margin-left: -18px; border-radius: 999px;
+  margin-left: -18px; border-radius: 999px; z-index: 5; pointer-events: none;
   background: color-mix(in srgb, var(--text) 20%, transparent);
-  transition: background var(--dur) var(--ease);
 }
-.float-bar:hover::before, .float-bar:active::before { background: var(--accent); }
+/* 会话头 / 列表头那一行：浮窗里往上留出抓手的位置，并整行当拖动把手 */
+.reader.aside-float .reader-aside :deep(.thread-head),
+.reader.aside-float .reader-aside :deep(.list-head) {
+  padding-top: 12px; cursor: grab; user-select: none; touch-action: none;
+}
+.reader.aside-float .reader-aside :deep(.thread-head:active),
+.reader.aside-float .reader-aside :deep(.list-head:active) { cursor: grabbing; }
 /* 右上角这组按钮：与对话页头部那组**逐字同规格**（`.th-acts` / `.th-act` 的同一套数字）——
    同一个托底托盘 + 同 26px 圆钮 + 悬停浮成 `--bg-elev` 并带一档阴影。 */
-.float-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .float-act {
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim); cursor: pointer;
@@ -6936,8 +6937,6 @@ function renderMarkdown(text?: string | null) {
 }
 .float-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
 .float-act:active { transform: scale(.94); }
-.float-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
-.float-ico { color: var(--text-dim); flex: none; }
 /* 两个下角都能改尺寸（用户口径 2026-11-19：去掉右下角那个直角图标，左右两个角都能拖）。
    角上**什么都不画**，只有光标形状（右下 nwse / 左下 nesw）与 20px 的命中区 ——
    浮窗的圆角与投影已经把"卡片边界"说清楚了，再画一枚小角标只是噪音。

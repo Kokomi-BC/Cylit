@@ -1082,8 +1082,9 @@ defineExpose({ uploadFiles, ensureThread });
         <button v-if="convQuery" class="btn ghost icon sm" title="清空" @click="convQuery = ''; loadConversations()">
           <AppIcon name="close" :size="12" />
         </button>
-        <!-- 这一行**不放**「浮层打开」（用户口径 2026-11-19）：搜索框右侧再挂一枚图标，
-             「新对话 / 搜索 / 拆分」三件事就挤在一行了；浮层入口留在**会话页**头部那一枚。 -->
+        <!-- 浮窗态下由外面（`ReaderView`）把「回到侧栏 / 关闭」塞进来：一行放得下就不必
+             再单独占一条标题栏（用户口径 2026-11-19：两行压成一行）。停靠态这里为空。 -->
+        <slot name="head-actions" />
       </div>
 
       <div class="filters">
@@ -1172,6 +1173,8 @@ defineExpose({ uploadFiles, ensureThread });
           <button class="th-act" title="新建对话" @click="startNew">
             <AppIcon name="add" :size="14" />
           </button>
+          <!-- 浮窗态的「回到侧栏 / 关闭」由 `ReaderView` 从这个插槽塞进来 -->
+          <slot name="head-actions" />
         </span>
       </div>
 
