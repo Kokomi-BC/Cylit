@@ -194,7 +194,11 @@ class ModelManager:
                 return self._cache[key]
         mtype = cfg.get("model_type")
         api_key = self._api_key(cfg)
-        if mtype == "generation":
+        # `agent` 也走生成 Provider：问答模型就是一个 OpenAI 兼容的 chat 端点
+        # （base_url + model_name + secret_ref + parameters），只是消费方是问答运行时。
+        # 少了这一支，设置页对问答模型点「测试」会拿到
+        # "未配置可用的 agent 模型" —— 行明明在、默认也设了，用户只会一头雾水。
+        if mtype in ("generation", "agent"):
             provider = build_generation_provider(cfg, api_key)
         elif mtype == "embedding":
             provider = build_embedding_provider(cfg, api_key)
