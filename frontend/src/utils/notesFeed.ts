@@ -16,6 +16,21 @@
  */
 import type { Annotation, Highlight, Note } from '@/api/types';
 
+/**
+ * 高亮原文的清洗：PDF 里选中**公式 / 图片块**时，浏览器给的不是文字，而是一个
+ * U+FFFC（对象替换符）。它原样渲染出来就是一枚「OBJ」占位字形（用户 2026-11-26 报的
+ * "公式在笔记里显示成 obj" 就是它，服务端库里 8 条笔记的 selected_text 是 EFBFBC）。
+ *
+ * 这类字符不是内容：换成空格、合并空白、去首尾；清完为空就让调用方整行不渲染
+ * —— 宁可只显示"这条笔记写的是什么"，也不显示一个看不懂的占位方块。
+ */
+export function cleanQuote(text: string): string {
+  return String(text ?? '')
+    .replace(/[\uFFFC\uFFFD\u200B]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export interface NotesFeedRow<H = Highlight, N = Note, A = Annotation> {
   /** 稳定键（`h:<分组>` / `n:<笔记id>` / `a:<批注id>`）：列表 `key`、滚动定位、编辑态都用它 */
   key: string;
@@ -70,7 +85,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
       key: `h:${g}`, kind: note ? 'note' : 'highlight',
       anchorId: first.block_id ?? null, anchorIds: ids,
       page: first.page ?? null,
-      quote: list.map((h) => String(h.text ?? '').trim()).filter(Boolean).join(' '),
+      quote: list.map((h) => cleanQuote(h.text ?? '')).filter(Boolean).join(' '),
       color: first.color || 'yellow',
       scope: first.scope ?? 'row',
       noteId: note?.id ?? '', highlightId: ids[0] ?? '',
@@ -85,7 +100,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     if (usedNotes.has(n.id)) continue;
     rows.push({
       key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [],
-      page: n.page ?? null, quote: n.selected_text ?? '', color: '',
+      page: n.page ?? null, quote: cleanQuote(n.selected_text ?? ''), color: '',
       scope: n.scope, noteId: n.id, highlightId: n.highlight_id ?? '',
       contentMd: n.content_md, label: '笔记', badge: 'accent',
       at: n.updated_at ?? n.created_at ?? null,

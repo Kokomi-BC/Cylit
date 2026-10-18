@@ -1785,7 +1785,12 @@ defineExpose({ uploadFiles, ensureThread });
             </button>
           </div>
 
-          <!-- 第二级：侧向飞出的子菜单（fixed 定位，压在遮罩与根浮层之上） -->
+          <!-- 第二级：侧向飞出的子菜单。**必须 Teleport 到 body**（用户口径 2026-11-26「层级问题」）：
+               它原来留在卡片里，只能跟卡片的 stacking context 比高低（卡片 60），
+               而浮窗的角把手是「挂在卡片外面」的兄弟节点（61 / 有焦点 63）——
+               子菜单于是被那圈弧线压住，看起来像浮层没盖住指示器。挪到 body 之后
+               它与所有浮层同层比较，正文里任何指示器都盖不住它。 -->
+          <Teleport to="body">
           <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub"
                :style="{ left: `${subPos.left}px`, top: `${subPos.top}px` }">
             <div v-if="subStage === 'model'" class="pick-sub-list">
@@ -1840,6 +1845,7 @@ defineExpose({ uploadFiles, ensureThread });
               </button>
             </div>
           </div>
+          </Teleport>
         </div>
       </div>
 
@@ -2276,9 +2282,11 @@ defineExpose({ uploadFiles, ensureThread });
 /* 第二级：**侧向飞出**的子菜单。`position: fixed`（坐标由被点那行的 rect 算出），
    压在遮罩(8)与根浮层(9)之上；宽度定死 200px，内容长了在列表内部滚。 */
 .pick-sub {
-  /* z-index 30：压在遮罩(8) / 根浮层(9) 之上，也压过面板里其它自带层级的元素（用户口径
-     2026-11-26 「层级问题」）。它自己也开一层隔离，内部元素的层级不再泄到外面。 */
-  position: fixed; z-index: 30; width: 200px; box-sizing: border-box; isolation: isolate;
+  /* 传送到 body 之后按**全局**层级比高低：
+     90 高于浮窗/笔记卡（60 / 有焦点 62）与它们的角把手（61 / 63），
+     又低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）——
+     子菜单只该压住正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
+  position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
   padding: 4px; border-radius: 12px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
