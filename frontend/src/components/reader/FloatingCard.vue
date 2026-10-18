@@ -703,9 +703,11 @@ watchEffect(applyShellDom, { flush: 'sync' });
       />
     </div>
 
-    <!-- 二级菜单：调用方用 `#more-items` 补自己的条目（笔记卡塞「编辑笔记」），
-         字号三项由本组件给 —— 字号状态与持久化都在这里，交出去就等于两处各记一份。
-         插槽内容带的是**父组件的 scope**，所以样式这边统一用 `:slotted(button)` 兜住。 -->
+    <!-- 二级菜单：**一条横向图标条**（用户口径 2026-11-26 二轮：菜单用图标，放大/缩小/还原不写文字、并排）。
+         为什么不做文字项：这四个动作一眼就认得出图标，写成「放大字号 105%」既占宽又得读一遍。
+         百分比不丢，挪进 :title —— 想知道当前多少，悬停（触摸长按）就能看到。
+         调用方用 `#more-items` 补自己的条目（笔记卡塞「编辑笔记」），字号三项由本组件给：
+         字号状态与持久化都在这里，交出去就等于两处各记一份。 -->
     <div
       v-if="moreOpen"
       ref="moreEl"
@@ -719,33 +721,39 @@ watchEffect(applyShellDom, { flush: 'sync' });
       <div v-if="$slots['more-items']" class="fc-more-sep" />
       <button
         type="button"
-        class="fc-more-item"
+        class="fc-more-ico"
         role="menuitem"
         :disabled="fontScale >= F_MAX"
+        :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+        aria-label="放大字号"
         data-fc-zoom-in
         @click="stepFont(1)"
       >
-        <span>放大字号</span><span class="fc-more-val">{{ Math.round(fontScale * 100) }}%</span>
+        <AppIcon name="zoom-in" :size="15" />
       </button>
       <button
         type="button"
-        class="fc-more-item"
+        class="fc-more-ico"
         role="menuitem"
         :disabled="fontScale <= F_MIN"
+        :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+        aria-label="缩小字号"
         data-fc-zoom-out
         @click="stepFont(-1)"
       >
-        <span>缩小字号</span><span class="fc-more-val">{{ Math.round(fontScale * 100) }}%</span>
+        <AppIcon name="zoom-out" :size="15" />
       </button>
       <button
         v-if="fontScale !== 1"
         type="button"
-        class="fc-more-item"
+        class="fc-more-ico"
         role="menuitem"
+        title="还原默认字号（100%）"
+        aria-label="还原默认字号"
         data-fc-zoom-reset
         @click="resetFont"
       >
-        <span>还原默认字号</span>
+        <AppIcon name="refresh" :size="15" />
       </button>
     </div>
   </div>
@@ -845,42 +853,34 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .fc-tail:empty { display: none; }
 
-/* 「更多」二级菜单：贴着 ⋯ 落下（坐标由 toggleMore 量好后写进行内 style）。
-   观感与笔记的删除确认菜单同一门语言（白底、细边、浅阴影、条目 7/10 内边距）。 */
+/* 「更多」二级菜单：**一条横向图标条**（坐标由 toggleMore 量好后写进行内 style）。
+   高度与头部那几枚圆钮同档，看起来像从头部"放下来"的一排，而不是另起一块面板。 */
 .fc-more {
   position: absolute; z-index: 2;
-  min-width: 172px;
-  padding: 5px;
-  display: flex; flex-direction: column; gap: 1px;
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-flyout);
 }
-/* 条目：左边动作、右边数值（百分比对齐靠 tabular-nums，加减时不会左右抖）。
-   `:slotted(button)` 是给调用方塞进来的条目（笔记卡的「编辑笔记」）——
-   插槽节点带的是父组件的 scope，本组件的 .fc-more-item 到不了它们身上。 */
-.fc-more-item, .fc-more :slotted(button) {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: var(--radius-ctl);
-  background: transparent;
-  color: var(--text);
-  font-family: inherit;
-  /* 与笔记的删除确认菜单同一档字号：这两块菜单会挨着出现，一大一小立刻看得出来 */
-  font-size: calc(12.5px * var(--ts, 1));
-  font-weight: 500;
-  line-height: 1.4;
-  text-align: left;
-  white-space: nowrap;
+/* 竖分隔线（「编辑」与字号三键之间）：一排图标里，竖线比横线更能保住"这是一排"的读法 */
+.fc-more-sep { width: 1px; align-self: stretch; margin: 3px; background: var(--divider); flex: none; }
+/* 图标钮：与头部 .fc-btn 同尺寸同圆角，但**不铺灰底** —— 菜单底色本来就浅，再垫一层就糊成一片。
+   `:slotted(button)` 兜住调用方塞进来的那一枚（笔记卡的「编辑」）：
+   插槽节点带的是父组件的 scope，本组件的 .fc-more-ico 到不了它们身上。 */
+.fc-more-ico, .fc-more :slotted(button) {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex: none;
+  border: 0; border-radius: 50%;
+  background: transparent; color: var(--text-dim);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.fc-more-item:hover:not(:disabled), .fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); }
-.fc-more-item:disabled { opacity: .4; cursor: default; }
-.fc-more-val { font-variant-numeric: tabular-nums; color: var(--text-faint); }
-.fc-more-sep { height: 1px; margin: 4px 8px; background: var(--divider); }
+.fc-more-ico:hover:not(:disabled), .fc-more :slotted(button):hover:not(:disabled) {
+  background: var(--bg-hover); color: var(--text);
+}
+.fc-more-ico:disabled { opacity: .35; cursor: default; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
   /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */
