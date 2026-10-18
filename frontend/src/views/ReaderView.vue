@@ -11,7 +11,7 @@
  * LiveUpdater：SSE `page_translated` → 只替换那一页的行；断线降级 3s 轮询。
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
 import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import type { CSSProperties } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
@@ -2961,6 +2961,12 @@ onMounted(async () => {
   fetchTasks();
   taskTimer = setInterval(() => { if (hasRunningTask.value) fetchTasks(); }, 4000);
 });
+
+/* 阅读位置最后再存一次：滚动是 900ms 防抖存的，滚完立刻切标签页会把最后那一下漏掉 ——
+ * 「切走再回来，读到哪没记住」就是这么来的（用户口径 2026-11-26）。
+ * 必须放 onBeforeUnmount：onUnmounted 里模板 ref 已经置空，读不到 scroller 的 scrollTop，
+ * 那样会把 scroll_ratio 写成 0（比不存更糟）。 */
+onBeforeUnmount(() => { void saveProgressNow(); });
 
 onUnmounted(() => {
   void flushInk();

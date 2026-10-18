@@ -199,22 +199,35 @@ function onHeadUp(ev: PointerEvent) {
  */
 const posKey = () => (props.persistKey ? `cylit:float:${props.persistKey}` : '');
 
-function readSavedPos(): { left: number; top: number } | null {
+type SavedBox = { left: number; top: number; w?: number; h?: number };
+
+/** 读回上次摆过的位置**与尺寸**（老记录只有 left/top，w/h 缺失就按默认尺寸打开）。 */
+function readSavedPos(): SavedBox | null {
   const key = posKey();
   if (!key) return null;
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    const v = JSON.parse(raw) as { left?: unknown; top?: unknown };
+    const v = JSON.parse(raw) as { left?: unknown; top?: unknown; w?: unknown; h?: unknown };
     if (typeof v.left !== 'number' || typeof v.top !== 'number') return null;
-    return { left: v.left, top: v.top };
+    const box: SavedBox = { left: v.left, top: v.top };
+    if (typeof v.w === 'number' && v.w > 0) box.w = v.w;
+    if (typeof v.h === 'number' && v.h > 0) box.h = v.h;
+    return box;
   } catch { return null; }
 }
 
 function savePos() {
   const key = posKey();
   if (!key) return;
-  try { localStorage.setItem(key, JSON.stringify(pos.value)); } catch { /* 隐私模式忽略 */ }
+  try {
+    const box: SavedBox = { left: pos.value.left, top: pos.value.top };
+    /* 用户拉过的大小一起记（用户口径 2026-11-26）：只记位置的话，下次打开又缩回按内容估的默认尺寸。
+       没拉过时这两个还是 null，就不写进记录 —— 那种情况本来就该按内容自适应。 */
+    if (sizeW.value !== null) box.w = sizeW.value;
+    if (sizeH.value !== null) box.h = sizeH.value;
+    localStorage.setItem(key, JSON.stringify(box));
+  } catch { /* 隐私模式忽略 */ }
 }
 
 /** 恢复时按当前视口夹一次：窗口变小/换屏后不要飞到屏幕外（拖动时同一口径：至少留 48×32 在屏内） */
@@ -230,8 +243,11 @@ watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as c
   () => { void place(); }, { immediate: true });
 watch(() => props.open, (v) => {
   if (!v) return;
-  sizeW.value = null;             // 尺寸每次打开回到调用方给的默认宽高
-  sizeH.value = null;
+  /* 尺寸也按卡记忆：上次拉大过的框，再打开还是那么大；没记录才回到调用方给的默认宽高。
+     夹一次视口 —— 换到小屏上之后，记下来的大框不该整个超出屏幕。 */
+  const saved = readSavedPos();
+  sizeW.value = saved?.w ? Math.min(saved.w, window.innerWidth - 16) : null;
+  sizeH.value = saved?.h ? Math.min(saved.h, window.innerHeight - 16) : null;
   if (props.centerOnOpen) {
     /* 「打开浮层」按钮：这次**直接摆到页面正中**（既不贴锚点、也不沿用上次拖到的角落） */
     dragged.value = true;
@@ -246,7 +262,6 @@ watch(() => props.open, (v) => {
     });
     return;
   }
-  const saved = readSavedPos();
   if (saved) {
     /* 摆过：沿用上次的坐标，并且**不再贴锚点**（dragged 同时挡住后面 anchor 变化的 place()） */
     dragged.value = true;
