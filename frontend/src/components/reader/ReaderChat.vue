@@ -786,6 +786,9 @@ async function openConversation(id: string) {
     await scrollToBottom();      // 同一个会话再点一次：也回到最新那一轮
     return;
   }
+  // 换了一条对话：上一条对话留下的锚点/色点不能挂到这条的回答下面
+  lastAnchor.value = null;
+  anchorAnswerId.value = '';
   await loadConversation(id);
 }
 
@@ -799,6 +802,8 @@ function startNew() {
   editing.value = null;
   pending.value = [];
   draft.value = '';
+  lastAnchor.value = null;              // 新对话：上一条对话的划词锚点与色点一起清掉
+  anchorAnswerId.value = '';
   rollCopy();
   void nextTick(() => { resetInputHeight(); inputEl.value?.focus(); });
 }
@@ -1114,18 +1119,20 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
   if (mode === 'send') {
     /* 这一轮带过选区就把锚点存下来：回答下面那排色点要用它建高亮 / 存笔记。
-       不带选区的那一轮（普通提问）要把它清掉 —— 否则色点会挂在一条跟选区无关的回答下面。 */
+       **同一对话里的追问（这一轮不带选区）不动它** —— 色点钉在第一轮那条回答下面，
+       用户问完追问还想回去存第一轮的解释；换对话 / 开新对话时才随锚点一起清掉。 */
     const anchor = selected.value;
-    lastAnchor.value = anchor?.text
-      ? {
+    if (anchor?.text) {
+      lastAnchor.value = {
         text: anchor.text, quote: anchor.quote || anchor.text,
         row_id: anchor.row_id ?? null, page: anchor.page ?? null,
         where: anchor.where || '',
         start: anchor.start ?? 0, end: anchor.end ?? 0,
         side: anchor.side || 'en', scope: anchor.scope || 'row',
         highlightId: '', color: '',
-      }
-      : null;
+      };
+      anchorAnswerId.value = '';        // 新锚点：等这一轮的回答落库再钉上去
+    }
     // 发出去之后胶囊就完成使命了（选区已经进了这条消息的 `> 引用`）
     selCtx.value = null;
     emit('clear-selection');
@@ -1161,6 +1168,14 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (convId) {
       await loadConversation(convId);            // `done` 是权威结果：重拉一次对齐
       await loadConversations();
+    }
+    /* 把色点钉到这一轮的回答上：新锚点那一轮钉新回答；被钉的那条没了（就地重答换了 id）
+       或重答的正是它，就改钉新的那条。追问那一轮不会动它 —— 这正是"只留在第一轮"的意思。 */
+    const pinned = anchorAnswerId.value;
+    const pinnedGone = Boolean(pinned) && !messages.value.some(m => m.message_id === pinned);
+    if (lastAnchor.value
+        && (!pinned || pinnedGone || (target?.message_id === pinned))) {
+      anchorAnswerId.value = lastAnswerId();
     }
   } catch (err: any) {
     if (err?.name !== 'AbortError') {
@@ -1207,13 +1222,28 @@ function stop() {
 const NOTE_COLORS = ['yellow', 'green', 'blue', 'pink'];
 const NOTE_COLOR_NAMES: Record<string, string> = { yellow: '黄', green: '绿', blue: '蓝', pink: '粉' };
 
-/** 最近一条助手消息：色点只挂在它下面。流式中不给（那时正文还在长，存下去只能是半截）。 */
-const lastAnswerMsg = computed(() => (sending.value ? null
-  : [...messages.value].reverse().find(m => m.role === 'assistant') ?? null));
+/** 最后一条助手消息的 id（不经过 `sending` 判断：锚点要在这一轮刚落库时钉上去）。 */
+function lastAnswerId() {
+  const m = [...messages.value].reverse().find(x => x.role === 'assistant');
+  return m?.message_id ?? '';
+}
 
-/** 这条消息下面要不要出那排色点：**这一轮提问带过选区**才有东西可标、可存。 */
+/**
+ * 划词那一轮落库后那条回答的 id —— 那排色点**只钉在它下面**。
+ *
+ * 为什么记 id 而不跟着"最新那条回答"走：锚点会一直留在这条会话里（答完追问两句还想回去存），
+ * 若色点挂在最新回答下，后面每一轮问答的末尾都会冒出一排"存为笔记"（用户报过这个问题）。
+ */
+const anchorAnswerId = ref('');
+
+/** 划词那一轮的回答：存笔记写进去的是**这条**的正文，不是最新那条。 */
+const anchorAnswerMsg = computed(
+  () => messages.value.find(m => m.message_id === anchorAnswerId.value) ?? null);
+
+/** 这条消息下面要不要出那排色点：**只有划词那一轮的回答**下面才有东西可标、可存。 */
 function canSaveAsNote(m: AgentMessage) {
-  return Boolean(lastAnchor.value) && m.message_id === lastAnswerMsg.value?.message_id;
+  return Boolean(lastAnchor.value) && Boolean(anchorAnswerId.value)
+    && m.message_id === anchorAnswerId.value;
 }
 
 /**
@@ -1226,7 +1256,7 @@ function canSaveAsNote(m: AgentMessage) {
  */
 async function saveAnswerWithColor(color: string) {
   const anchor = lastAnchor.value;
-  const answer = (lastAnswerMsg.value ? finalAnswer(lastAnswerMsg.value) : '').trim();
+  const answer = (anchorAnswerMsg.value ? finalAnswer(anchorAnswerMsg.value) : '').trim();
   if (!anchor || !answer) { toast('还没有可保存的回答', 'warn'); return; }
   const scope = anchor.scope || 'row';
   const page = anchor.page ?? 0;
@@ -1503,6 +1533,8 @@ watch(() => props.paperId, async () => {
   currentId.value = null;
   pending.value = [];
   selCtx.value = null;
+  lastAnchor.value = null;              // 换了论文：锚点与色点都不再成立
+  anchorAnswerId.value = '';
   pick.value = { model_config_id: '', reasoning_effort: '' };
   sessionRestored = false;
   void Promise.all([loadPaper(), loadConversations()]);
