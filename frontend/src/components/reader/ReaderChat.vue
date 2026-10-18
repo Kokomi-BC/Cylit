@@ -1540,10 +1540,21 @@ async function waitChatIdle() {
   await nextTick();
 }
 
-/** 「解释」那一轮的自动发送：问题用父组件指定的那句（缺省"解释这段内容"）。 */
+/** 「解释」那一轮的自动发送：问题用父组件指定的那句（缺省"解释这段内容"）。
+ *
+ *  **每条解释单独开一条新会话**（用户口径 2026-11-26）：解释是"就这一段问一次"的短问答，
+ *  混进正在聊的那条里既搅上下文、回看时也分不清哪句是在解释哪段。旧会话留在列表里，不丢。
+ *
+ *  顺序不能动：先等 `waitChatIdle`（里面等的是 `sessionReady`），再 `startNew()`。
+ *  `restoreChatSession()` 是异步认回"上次那条会话"的，它晚一步落回来就会把 `currentId`
+ *  改回旧会话 —— 这一轮解释就挂到旧会话上去了，正是要避免的事。 */
 async function autoExplain(sel: AgentSelection) {
   await waitChatIdle();
-  if (level.value !== 'thread') level.value = 'thread';
+  /* `startNew()` 会顺手清空附件列表 —— 但插图解释的图**已经在里面了**（父组件先传图、再挂意图），
+     不清掉它这一轮就变成"解释这张图"却什么都没给模型看。所以新会话只清会话，附件跟着带走。 */
+  const keptAtts = pending.value;
+  startNew();
+  pending.value = keptAtts;
   draft.value = sel.ask || '解释这段内容';
   explainIntent.value = true;
   await nextTick();
