@@ -5139,6 +5139,15 @@ function openSelectionInChat(fromMenu = false) {
   };
   explainCard.open = false;
   hideMenu();
+  /* 选区**用完了就连选区一起收**（用户口径 2026-11-26 第 2 条：添加到对话后没移除手柄选区）。
+     留着的话有两个后果：看着像「还没处理完」；以及触摸点输入框时**那两枚手柄会抢走焦点**
+     —— 手柄压在正文下方固定定位，点下去等于在拖手柄，输入框根本拿不到焦点、键盘弹不出来。
+     这里与「胶囊 ×」同一个口径（清选区 + 清快照），再顺手把手柄与列标记收掉。 */
+  window.getSelection()?.removeAllRanges();
+  selection.text = '';
+  selection.rect = null;
+  hideSelHandles();
+  setColSide('');
   railTab.value = 'chat';
   // 左栏可能是收起的（例如用户在看 Markdown 视图）——切页签不等于看得见面板
   void ensureAsideVisible().then(async () => {
