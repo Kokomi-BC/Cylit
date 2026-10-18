@@ -529,6 +529,44 @@ function rollCopy() {
 
 /* ------------------------------ 取数 ------------------------------ */
 
+/* ---------------------- 对话读到哪儿了（按会话记） ----------------------
+ * 长回答滚到一半，切走再回来被拽回底部，就找不回刚才那句了（用户口径 2026-11-26）。
+ * 按**会话**记：每条对话各有自己的位置；还没成会话的「新对话」按论文记一份。
+ * 只存一个 scrollTop，不碰正文内容（聊天记录始终只在服务端）。 */
+function threadScrollKey(id: string | null = currentId.value): string {
+  return `cylit:chat-scroll:${id || `new:${props.paperId}`}`;
+}
+
+let msgsSaveTimer = 0;
+function onMsgsScroll() {
+  if (msgsSaveTimer) return;
+  msgsSaveTimer = window.setTimeout(() => {
+    msgsSaveTimer = 0;
+    const el = msgsEl.value;
+    if (!el) return;
+    try { localStorage.setItem(threadScrollKey(), String(Math.round(el.scrollTop))); } catch { /* 隐私模式忽略 */ }
+  }, 250);
+}
+
+/** 滚回上次读到的位置。返回 false = 没有记录（调用方照老规矩滚到底）。 */
+function restoreThreadScroll(id: string | null): boolean {
+  let y = 0;
+  try {
+    const raw = localStorage.getItem(threadScrollKey(id));
+    if (!raw) return false;
+    y = Number(raw);
+  } catch { return false; }
+  const el = msgsEl.value;
+  if (!el || !Number.isFinite(y) || y <= 0) return false;
+  /* 与 scrollToBottom 同一个理由：KaTeX / 图片 / 折叠块会在随后几帧继续把高度撑开，
+     只滚一次会被后面的布局吃掉。 */
+  const apply = () => { const m = msgsEl.value; if (m) m.scrollTop = y; };
+  apply();
+  void nextTick().then(() => { apply(); requestAnimationFrame(apply); });
+  window.setTimeout(apply, 160);
+  return true;
+}
+
 async function scrollToBottom() {
   await nextTick();
   const el = msgsEl.value;
@@ -655,7 +693,7 @@ async function loadConversation(id: string) {
   }
   /* ⚠️ 滚动必须在 `loading=false` **之后**：加载中列表里只有"读取会话…"那一行，
      这时 `scrollHeight` 约等于 0，滚了也白滚（进来停在顶部就是这么来的）。 */
-  await scrollToBottom();
+  if (!restoreThreadScroll(id)) await scrollToBottom();
 }
 
 async function openConversation(id: string) {
@@ -1267,6 +1305,7 @@ onUnmounted(() => {
   controller?.abort();
   composerRO?.disconnect();
   window.removeEventListener('keydown', onMenuKeydown);
+  if (msgsSaveTimer) { window.clearTimeout(msgsSaveTimer); msgsSaveTimer = 0; }
 });
 
 watch(() => props.paperId, async () => {
@@ -1449,7 +1488,7 @@ defineExpose({ uploadFiles, ensureThread });
         </span>
       </div>
 
-      <div ref="msgsEl" class="msgs">
+      <div ref="msgsEl" class="msgs" @scroll.passive="onMsgsScroll">
         <div v-if="loading" class="empty small">读取会话…</div>
 
         <div v-else-if="!messages.length && !sending" class="hello">

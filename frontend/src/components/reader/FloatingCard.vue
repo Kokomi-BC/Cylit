@@ -199,7 +199,7 @@ function onHeadUp(ev: PointerEvent) {
  */
 const posKey = () => (props.persistKey ? `cylit:float:${props.persistKey}` : '');
 
-type SavedBox = { left: number; top: number; w?: number; h?: number };
+type SavedBox = { left: number; top: number; w?: number; h?: number; s?: number };
 
 /** 读回上次摆过的位置**与尺寸**（老记录只有 left/top，w/h 缺失就按默认尺寸打开）。 */
 function readSavedPos(): SavedBox | null {
@@ -213,8 +213,29 @@ function readSavedPos(): SavedBox | null {
     const box: SavedBox = { left: v.left, top: v.top };
     if (typeof v.w === 'number' && v.w > 0) box.w = v.w;
     if (typeof v.h === 'number' && v.h > 0) box.h = v.h;
+    const s = (v as { s?: unknown }).s;
+    if (typeof s === 'number' && s > 0) box.s = s;
     return box;
   } catch { return null; }
+}
+
+const bodyEl = ref<HTMLElement | null>(null);
+let bodySaveTimer = 0;
+
+/** 正文滚动：停手 250ms 才写一次（滚动本身没必要逐像素落盘）。 */
+function onBodyScroll() {
+  if (!props.persistKey || bodySaveTimer) return;
+  bodySaveTimer = window.setTimeout(() => { bodySaveTimer = 0; savePos(); }, 250);
+}
+
+/** 把正文滚回上次那一行：内容高度是**逐帧撑开**的（图片 / 公式 / 展开态），所以补两拍再滚一次。 */
+function restoreBodyScroll(y: number) {
+  const apply = () => { const b = bodyEl.value; if (b) b.scrollTop = y; };
+  void nextTick().then(() => {
+    apply();
+    requestAnimationFrame(apply);
+    window.setTimeout(apply, 160);
+  });
 }
 
 function savePos() {
@@ -226,6 +247,9 @@ function savePos() {
        没拉过时这两个还是 null，就不写进记录 —— 那种情况本来就该按内容自适应。 */
     if (sizeW.value !== null) box.w = sizeW.value;
     if (sizeH.value !== null) box.h = sizeH.value;
+    /* 正文读到哪也一起记（用户口径 2026-11-26）：长笔记滚到一半，下次打开不该回到开头。 */
+    const s = bodyEl.value?.scrollTop ?? 0;
+    if (s > 0) box.s = Math.round(s);
     localStorage.setItem(key, JSON.stringify(box));
   } catch { /* 隐私模式忽略 */ }
 }
@@ -262,6 +286,7 @@ watch(() => props.open, (v) => {
     });
     return;
   }
+  if (saved?.s) restoreBodyScroll(saved.s);
   if (saved) {
     /* 摆过：沿用上次的坐标，并且**不再贴锚点**（dragged 同时挡住后面 anchor 变化的 place()） */
     dragged.value = true;
@@ -282,7 +307,11 @@ watch(el, (node) => {
     ro.observe(node);
   }
 });
-onBeforeUnmount(() => { ro?.disconnect(); releaseFloatSelection(); });
+onBeforeUnmount(() => {
+  ro?.disconnect();
+  releaseFloatSelection();
+  if (bodySaveTimer) { window.clearTimeout(bodySaveTimer); bodySaveTimer = 0; }
+});
 
 /* -------------------------------- 右下角拖动放大 -------------------------------- */
 /** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
@@ -499,7 +528,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
         </button>
       </div>
 
-      <div class="fc-body">
+      <div ref="bodyEl" class="fc-body" @scroll.passive="onBodyScroll">
         <slot />
       </div>
 
