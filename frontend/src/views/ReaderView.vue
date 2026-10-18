@@ -8132,9 +8132,34 @@ function renderMarkdown(text?: string | null) {
   background: color-mix(in srgb, var(--text) 18%, transparent);
   transition: background var(--dur) var(--ease), width var(--dur) var(--ease);
 }
-.reader > .aside-resizer:hover::after,
-.reader > .aside-resizer.active::after {
+.reader > .aside-resizer:hover::after {
   background: var(--accent); width: 5px;
+}
+/* 按住 / 正在拖：**与浮窗那两枚角把手同一套弹性**（用户口径 2026-11-26「同款弹性动画」）。
+   节奏照抄 fc-grip 那一组：加粗 520ms、方向回弹 420ms，同一条回弹曲线；只有两个量不同 ——
+   把手是竖条，所以加粗走 width（4 → 6.4 → 5 → 5.8），回弹走 translateX（3px 一小步）。
+   动的是 ::after 这枚胶囊，12px 的命中带本身一动不动（和浮窗「只让弧动」同一口径）。 */
+.reader > .aside-resizer:active::after,
+.reader > .aside-resizer.active::after {
+  background: var(--accent);
+  animation: aside-grip-thicken 520ms cubic-bezier(.22, 1.2, .36, 1) both,
+             aside-grip-glide 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+}
+@keyframes aside-grip-thicken {
+  0% { width: 4px; }
+  38% { width: 6.4px; }
+  72% { width: 5px; }
+  100% { width: 5.8px; }
+}
+@keyframes aside-grip-glide {
+  0% { transform: translateX(0); }
+  40% { transform: translateX(3px); }
+  72% { transform: translateX(2px); }
+  100% { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reader > .aside-resizer:active::after,
+  .reader > .aside-resizer.active::after { animation: none; width: 5px; }
 }
 /* 侧栏收起 / 浮窗 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉 */
 .reader.no-aside > .aside-resizer { opacity: 0; pointer-events: none; }
