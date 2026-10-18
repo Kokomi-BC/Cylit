@@ -63,6 +63,7 @@ import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
 import { keepPdfSelectionOnce } from '@/components/reader/PdfPage.vue';
 import M3Slider from '@/components/M3Slider.vue';
+import Menu from '@/components/Menu.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
@@ -545,6 +546,14 @@ function openInsightPage() {
  *  2026-11-19 用户口径：撤掉「Markdown 视图」与「重新翻译」两个入口（重译的后台任务照旧跑完，
  *  只是不再从这里发起 —— 想重跑走「继续翻译」；Markdown 视图仍可从正文里的 `md:p<页号>`
  *  锚点进入），全屏从「⋯」里搬到顶部，并换成对角线箭头。 */
+/** 右上角「⋯」里只剩下载这一项：两个动作都摆在外面时，一块 76px 的胶囊上并着
+ *  两枚图标，看起来像"两个主操作抢位置"；收进一层，常用度低的那个不再占位。 */
+const headMenu = [{ key: 'download', label: '下载打包', icon: 'download' }];
+
+function onHeadAction(key: string): void {
+  if (key === 'download') downloadBundle();
+}
+
 const isFullscreen = ref(false);
 /** 沉浸模式：浏览器不支持 / 拒绝全屏时的退路（隐藏顶部标签栏，阅读器占满整屏） */
 const immersive = ref(false);
@@ -5957,16 +5966,13 @@ function renderMarkdown(text?: string | null) {
             />
           </div>
         </div>
-        <!-- 右：下载打包 + 全屏。2026-11-19 用户口径：全屏搬到顶部、换对角线图标；
-             只剩两项时不再套一层「⋯」—— 多一层菜单只是多一次点击。 -->
+        <!-- 右：更多（下载打包）+ 全屏。2026-11-19 用户口径：全屏在顶部、用对角线图标；
+             两枚按钮都撑满胶囊高度（与左侧侧栏开关同尺寸），竖向不再比左边矮一截。 -->
         <div class="cap-solo right">
-          <button class="cap-act" :disabled="!!busyDownload"
-                  title="下载打包（原 PDF + 三个版本的 Markdown + 插图）" @click="downloadBundle()">
-            <AppIcon name="download" :size="15" />
-          </button>
+          <Menu :items="headMenu" label="更多操作" size="md" @select="onHeadAction" />
           <button class="cap-act" :title="isFullscreen || immersive ? '退出全屏' : '全屏'"
                   :aria-pressed="isFullscreen || immersive" @click="toggleFullscreen()">
-            <AppIcon :name="isFullscreen || immersive ? 'collapse-diag' : 'expand-diag'" :size="15" />
+            <AppIcon :name="isFullscreen || immersive ? 'collapse-diag' : 'expand-diag'" :size="17" />
           </button>
         </div>
 
@@ -6733,11 +6739,12 @@ function renderMarkdown(text?: string | null) {
 .cap-solo.left { left: 12px; }
 /* 右：与左侧那枚**同为正圆**（用户口径：更多也要圆形） */
 .cap-solo.right { right: 12px; }
-/* 右侧胶囊装**两枚**动作键（下载 / 全屏）：它是 `.cap-solo` 里唯一的非正圆特例 ——
-   宽度按内容撑开；两键各自 30px 圆热区，hover 才浮出浅底（不常亮，免得像一排按钮墙）。 */
-.cap-solo.right { width: auto; padding: 0 3px; gap: 2px; }
+/* 右侧胶囊装**两枚**动作键（更多 / 全屏）：它是 `.cap-solo` 里唯一的非正圆特例 ——
+   宽度按内容撑开，高度就是胶囊高度本身（用户口径 2026-11-19：竖向大小要与左侧那枚
+   侧栏开关对齐，所以按钮不再内缩成 30px，而是撑满 `--cap-h`）。 */
+.cap-solo.right { width: auto; padding: 0; gap: 0; }
 .cap-act {
-  width: 30px; height: 30px; flex: none;
+  width: var(--cap-h); height: var(--cap-h); flex: none;
   display: flex; align-items: center; justify-content: center;
   border: 0; border-radius: 999px; background: transparent; color: var(--text);
   cursor: pointer;
@@ -6745,6 +6752,20 @@ function renderMarkdown(text?: string | null) {
 }
 .cap-act:hover { background: var(--bg-hover); }
 .cap-act:disabled { opacity: .45; cursor: default; background: transparent; }
+/* 「⋯」是 Menu 组件的触发钮（自带 .btn 的底色与 32px 尺寸）—— 它在子组件内部，
+   父组件的 scoped 选择器够不到，必须 `:deep()`；不穿透会看到胶囊里又套一个小圆钮。 */
+.reader-toolbar .cap-solo.right :deep(.menu-root) { width: var(--cap-h); height: var(--cap-h); }
+.reader-toolbar .cap-solo.right :deep(.menu-trigger) {
+  width: 100%; height: 100%;
+  border-color: transparent; background: transparent; box-shadow: none;
+}
+.reader-toolbar .cap-solo.right :deep(.menu-trigger:hover),
+.reader-toolbar .cap-solo.right :deep(.menu-trigger.is-open) {
+  background: var(--bg-hover); border-color: transparent;
+}
+/* 图标口径跟左侧那枚侧栏开关一致（17px）：Menu 触发钮里的图标是写死的 14，
+   不覆盖的话两枚按钮并排时右侧会明显小一圈。 */
+.reader-toolbar .cap-solo.right :deep(.menu-trigger svg) { width: 17px; height: 17px; }
 
 .reader-capsule {
   pointer-events: auto;
@@ -6754,7 +6775,7 @@ function renderMarkdown(text?: string | null) {
   margin-top: 10px; padding: 0 6px;
   height: var(--cap-h);
   /* 两侧各给一枚独立胶囊留位：三块玻璃不许叠在一起 */
-  max-width: calc(100% - 148px);
+  max-width: calc(100% - 168px);
   border-radius: 999px;
   /* 同 .cap-solo：渐变本体 + 柔光投影，不画描边、不留内阴影 */
   border: 0;
