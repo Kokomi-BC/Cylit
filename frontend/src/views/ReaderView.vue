@@ -1445,6 +1445,19 @@ function onWindowResize() {
 /* ------------------------------ 侧栏拖拽改宽度 ------------------------------ */
 /** 拖拽中：关掉宽度过渡（`.reader-aside` 上有 0.24s 的 transition，不关就是"拖起来黏手"） */
 const asideResizing = ref(false);
+/** 松手后的「回缩」动画：**只有松开才回缩**（用户口径 2026-11-26）。按住期间让它一直停在弹开
+ *  的状态，所以回缩不能挂在 `.active` 上 —— 类一撤动画就没了。这里单独给一个短命类，
+ *  由 onResizeUp 挂上、动画结束（300ms）后摘掉。 */
+const resizerSettling = ref(false);
+let resizerSettleTimer = 0;
+function settleResizer() {
+  if (resizerSettleTimer) window.clearTimeout(resizerSettleTimer);
+  resizerSettling.value = true;
+  resizerSettleTimer = window.setTimeout(() => {
+    resizerSettling.value = false;
+    resizerSettleTimer = 0;
+  }, 320);
+}
 let resizeStartX = 0;
 let resizeStartW = 0;
 /** 拖拽中的把手元素与 pointerId（收尾时要按它们释放捕获；见 `onResizeUp`） */
@@ -1465,6 +1478,8 @@ let resizePointerId = -1;
 function onResizeDown(ev: PointerEvent) {
   if (isNarrow.value) return;              // 窄屏是抽屉、宽度由 CSS 定死（min(360px, 88vw)），不给拖
   asideResizing.value = true;
+  if (resizerSettleTimer) { window.clearTimeout(resizerSettleTimer); resizerSettleTimer = 0; }
+  resizerSettling.value = false;
   resizeStartX = ev.clientX;
   resizeStartW = asideWidth.value;
   asidePreviewW.value = asideWidth.value;  // 从当前宽度起算（拖动期间只动这个）
@@ -1522,6 +1537,7 @@ async function onResizeUp() {
   if (!asideResizing.value) return;
   if (resizeMoveRaf) { cancelAnimationFrame(resizeMoveRaf); resizeMoveRaf = 0; }
   asideResizing.value = false;
+  settleResizer();                    // 松手才回缩（按住期间停在弹开态）
   /* 松手才把预览值写回真值：这一次写入 = 整页重排一次（拖动期间一次都没有） */
   if (asidePreviewW.value !== null) {
     asideWidth.value = clampAsideWidth(asidePreviewW.value);
@@ -7129,7 +7145,7 @@ function renderMarkdown(text?: string | null) {
            收尾的三层 pointerup 兜底见 `onResizeDown`。 -->
       <div
         class="aside-resizer"
-        :class="{ active: asideResizing }"
+        :class="{ active: asideResizing, settling: resizerSettling }"
         :style="{ left: asideShownPx }"
         title="拖动调整侧栏宽度（双击复位）"
         @pointerdown="onResizeDown"
@@ -8136,25 +8152,35 @@ function renderMarkdown(text?: string | null) {
   background: var(--accent); width: 5px;
 }
 /* 按住 / 正在拖：弹性**沿竖线两端**弹（用户口径 2026-11-26 追加），不是往左右变粗。
- * 用 scaleY 而不是 height：`transform-origin` 默认就在中心，两端会**对称地**往外弹开、
- * 回缩，绕中轴过冲一次；写 height 得自己补 margin-top，还要顺带触发一次布局。
- * 帧序与浮窗那枚 `fc-grip-spring` 一致（1 → 1.55 → 1 → 1.28 → 1.16），只是单轴。
- * 动的仍只是 ::after 这枚胶囊，12px 的命中带一动不动（同「只让弧动」口径）。 */
+ * 用 scaleY 而不是 height：`transform-origin` 默认就在中心，两端会**对称地**往外弹开；
+ * 写 height 得自己补 margin-top，还要顺带触发一次布局。
+ * 关键是**只弹开、不回缩**：动画 100% 停在放大态，`both` 把它保持住 —— 回缩交给松手后的
+ * `.settling`（见下一条），按住期间就一直张着（用户口径 2026-11-26：「仅在松开时再回缩」）。 */
 .reader > .aside-resizer:active::after,
 .reader > .aside-resizer.active::after {
   background: var(--accent);
-  animation: aside-grip-spring 520ms cubic-bezier(.22, 1.2, .36, 1) both;
+  animation: aside-grip-open 360ms cubic-bezier(.22, 1.2, .36, 1) both;
 }
-@keyframes aside-grip-spring {
+@keyframes aside-grip-open {
   0% { transform: scaleY(1); }
-  28% { transform: scaleY(1.55); }
-  56% { transform: scaleY(1); }
-  78% { transform: scaleY(1.28); }
-  100% { transform: scaleY(1.16); }
+  55% { transform: scaleY(1.55); }
+  100% { transform: scaleY(1.18); }
+}
+/* 松手：才回缩，且回缩时轻轻过冲一下（1.18 → 0.92 → 1），与弹开同一条手感。
+   这一枚类由 JS 挂 320ms（= 动画时长），不是 :active 的副产品。 */
+.reader > .aside-resizer.settling::after {
+  background: var(--accent);
+  animation: aside-grip-close 300ms cubic-bezier(.22, 1.2, .36, 1) both;
+}
+@keyframes aside-grip-close {
+  0% { transform: scaleY(1.18); }
+  38% { transform: scaleY(0.92); }
+  100% { transform: scaleY(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .reader > .aside-resizer:active::after,
-  .reader > .aside-resizer.active::after { animation: none; }
+  .reader > .aside-resizer.active::after,
+  .reader > .aside-resizer.settling::after { animation: none; }
 }
 /* 侧栏收起 / 浮窗 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉 */
 .reader.no-aside > .aside-resizer { opacity: 0; pointer-events: none; }
