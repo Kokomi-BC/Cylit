@@ -1596,6 +1596,25 @@ function persistFloatBox() {
   try { localStorage.setItem(floatBoxKey, JSON.stringify(floatBox.value)); } catch { /* 隐私模式忽略 */ }
 }
 
+/**
+ * 浮层**开着还是关着**的记忆键。
+ *
+ * 为什么非得记：App 的 RouterView 带 key，切到别的标签页再切回来，阅读器是**重新挂载**的
+ * （chatFloat 回到 false）—— 用户看到的就是「切个标签页回来，刚才浮起来的对话不见了」
+ * （用户口径 2026-11-26）。位置那一份本来就是全局的（见 floatBoxKey），开关也跟着全局一份：
+ * 它属于「我把对话拎出来了」这个习惯，不属于某篇论文。
+ */
+const floatOpenKey = 'cylit:reader-float-open';
+
+/** 只记**用户意图**：窄屏把浮层强制收掉那条路径不写这里（那是环境，不是选择）。 */
+function persistFloatOpen(open: boolean) {
+  try { localStorage.setItem(floatOpenKey, open ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+}
+
+function wantsFloatOpen(): boolean {
+  try { return localStorage.getItem(floatOpenKey) === '1'; } catch { return false; }
+}
+
 /** 没有记录时的兜底：**右下角**（胶囊工具栏在上方，两边不抢地盘） */
 function resetFloatBox() {
   const vw = window.innerWidth;
@@ -1629,6 +1648,7 @@ async function openChatFloat() {
   }
   chatFloat.value = true;
   topLayer.value = 'chat';           // 刚浮起来的那块在最上面
+  persistFloatOpen(true);
   await nextTick();
   syncPaneWidth();
 }
@@ -1638,6 +1658,7 @@ async function dockChatFromFloat() {
   if (!chatFloat.value) return;
   pinReadingAnchor();
   chatFloat.value = false;
+  persistFloatOpen(false);
   railTab.value = 'chat';
   asideOpen.value = true;
   try { localStorage.setItem(asideKey, '1'); } catch { /* 忽略 */ }
@@ -1661,7 +1682,29 @@ const floatClosing = ref(false);
 function closeChatFloat() {
   floatClosing.value = true;
   chatFloat.value = false;
+  persistFloatOpen(false);
   // 两帧之后再恢复过渡：那时属性都已经落定，恢复不会产生任何补间
+  requestAnimationFrame(() => requestAnimationFrame(() => { floatClosing.value = false; }));
+}
+
+/**
+ * 重新挂载之后把浮层摆回去（切标签页、刷新、从别的页面回来都走这条路）。
+ *
+ * 与 openChatFloat 只差两处，都是为了**别把用户的视线搬走**：不把侧栏页签强切到「对话」
+ * （浮层开着时侧栏本来就允许停在任意页签），也不做那遍「从侧栏飞出来」的补间。
+ */
+async function restoreChatFloat() {
+  if (chatFloat.value || isNarrow.value || !wantsFloatOpen()) return;
+  floatClosing.value = true;         // 恢复不是用户操作：这一帧停掉过渡
+  if (!restoreFloatBox()) resetFloatBox();
+  if (!asideOpen.value) {
+    asideOpen.value = true;
+    try { localStorage.setItem(asideKey, '1'); } catch { /* 忽略 */ }
+  }
+  chatFloat.value = true;
+  topLayer.value = 'chat';
+  await nextTick();
+  syncPaneWidth();
   requestAnimationFrame(() => requestAnimationFrame(() => { floatClosing.value = false; }));
 }
 
@@ -2898,6 +2941,8 @@ onMounted(async () => {
     const want = Number(route.query.mdpage ?? 0);
     await openMarkdownView(want || undefined);   // 不给页码 = 从当前阅读页那一段开始
   }
+  // 上次是把对话拎出来看的：布局落定后摆回浮层（切标签页 / 刷新都算）
+  await restoreChatFloat();
   fetchTasks();
   taskTimer = setInterval(() => { if (hasRunningTask.value) fetchTasks(); }, 4000);
 });
