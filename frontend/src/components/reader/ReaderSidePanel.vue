@@ -469,6 +469,16 @@ function onMore(key: string, r: FeedRow) {
           class="small faint md quote clamp1"
           v-html="mdToHtml(`“${r.quote}”`)"
         />
+        <!-- 原文是占位符（PDF 里选中公式 / 图片块）：那一行**本身就是公式**，按块渲染。
+             不进 clamp1 —— 单行省略会把 $$…$$ 裁成半截；上一版还试过把它降成行内，
+             KaTeX 直接报"源 LaTeX 不完整"（用户截图里那行红字）。
+             限高交给 .quote-md：够看清是哪个式子，又不把笔记正文挤出卡片。 -->
+        <div
+          v-else-if="r.quoteMd"
+          class="small faint md quote-md"
+          data-quote-md
+          v-html="mdToHtml(r.quoteMd)"
+        />
         <template v-if="editKey === r.key">
           <textarea
             v-model="draft"
@@ -798,6 +808,15 @@ function onMore(key: string, r: FeedRow) {
 }
 /* 引用原文再小一档（原来是 .small 的 12px；它只是「按的是哪一段」的索引） */
 .item.note-row .quote { font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; }
+/* 公式当原文时（原文是占位符的那种行）：块级、约两行半高、超出裁掉。
+   比 clamp1 宽松（一个式子放得下行内公式 + 上下标），又比全展开克制（不把笔记正文挤出去）。 */
+.quote-md {
+  margin: 0 0 6px;
+  max-height: 4.6em;
+  overflow: hidden;
+}
+.item.note-row .quote-md { font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; }
+.quote-md :deep(p) { margin: 0; }
 /* 批量态：行首勾选框 —— 与对话页 .tick 同一口径（24px 热区、无底、选中转主题色） */
 .tick {
   width: 24px; height: 24px; flex: none; border: 0; background: none; cursor: pointer;

@@ -32,17 +32,13 @@ export function cleanQuote(text: string): string {
 }
 
 /**
- * 占位符原文的替身：把那一行的正文 markdown 压成**一行行内**文本。
- * 侧栏那条引用是 `clamp1`（恒一行、超出省略），块级公式（$$…$$）在里面会被裁成一截，
- * 所以这里把 $$ 降成 $（KaTeX 走行内模式），并把列表前缀 / 换行压平。
+ * 占位符原文的替身：那一行的**正文 markdown**（含 $$…$$ 块公式）。
+ * ⚠️ 不要再把它"压成一行行内"：块公式降成行内之后 KerTeX 经常报"源 LaTeX 不完整"
+ * （用户 2026-11-26 第二轮截图里那行红字就是这么来的），而且 `clamp1` 会把公式裁半截。
+ * 现在原样交给 mdToHtml 按块渲染，由渲染方自己决定要不要限高。
  */
-export function quoteFromMarkdown(md: string): string {
-  return cleanQuote(
-    String(md ?? '')
-      .replace(/\$\$/g, '$')
-      .replace(/^\s*[-*+]\s+/gm, '')
-      .replace(/\n+/g, ' '),
-  );
+export function quoteMarkdown(md: string): string {
+  return String(md ?? '').trim();
 }
 
 export interface NotesFeedRow<H = Highlight, N = Note, A = Annotation> {
@@ -54,8 +50,14 @@ export interface NotesFeedRow<H = Highlight, N = Note, A = Annotation> {
   /** 删除用的一串高亮 id（跨行划词切出来的一组共用一条笔记） */
   anchorIds: string[];
   page: number | null;
-  /** 高亮原文（批注没有） */
+  /** 高亮原文（批注没有）。**已清洗**：占位符会被去掉，清完为空就是空串 */
   quote: string;
+  /**
+   * 原文是占位符（在 PDF 里选中公式 / 图片块）时，那一行的正文 markdown。
+   * 它是**块级**内容（可能是 `$$…$$`），渲染方要按块显示，不能塞进单行省略。
+   * 正常情况是空串 —— 有真文字时用 quote，不必看它。
+   */
+  quoteMd: string;
   /** 高亮的颜色（整页的色点要用） */
   color: string;
   /** 挂在哪一面：`row` / `markdown` / `pdf`（三套锚点不同，界面要说清） */
@@ -99,10 +101,11 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
       key: `h:${g}`, kind: note ? 'note' : 'highlight',
       anchorId: first.block_id ?? null, anchorIds: ids,
       page: first.page ?? null,
-      // 原文是占位符（在 PDF 里选中公式 / 图片块）时退回那一行的正文 markdown：
-      // 用户要看到的是"这条笔记标的是哪个式子"，不是一个占位字形。
-      quote: list.map((h) => cleanQuote(h.text ?? '') || quoteFromMarkdown(h.quote_md ?? ''))
-        .filter(Boolean).join(' '),
+      // 有真文字就用真文字；只有全是占位符（PDF 里选中公式 / 图片块）时才改用那一行的正文 markdown。
+      quote: list.map((h) => cleanQuote(h.text ?? '')).filter(Boolean).join(' '),
+      quoteMd: list.some((h) => cleanQuote(h.text ?? '') === '')
+        ? quoteMarkdown(list.map((h) => h.quote_md ?? '').find((md) => md.trim()) ?? '')
+        : '',
       color: first.color || 'yellow',
       scope: first.scope ?? 'row',
       noteId: note?.id ?? '', highlightId: ids[0] ?? '',
@@ -118,7 +121,10 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     rows.push({
       key: `n:${n.id}`, kind: 'note', anchorId: n.block_id, anchorIds: [],
       page: n.page ?? null,
-      quote: cleanQuote(n.selected_text ?? '') || quoteFromMarkdown(n.quote_md ?? ''),
+      quote: cleanQuote(n.selected_text ?? ''),
+      quoteMd: cleanQuote(n.selected_text ?? '') === ''
+        ? quoteMarkdown(n.quote_md ?? '')
+        : '',
       color: '',
       scope: n.scope, noteId: n.id, highlightId: n.highlight_id ?? '',
       contentMd: n.content_md, label: '笔记', badge: 'accent',
@@ -130,7 +136,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     const selection = a.source === 'selection';
     rows.push({
       key: `a:${a.id}`, kind: 'annotation', anchorId: a.block_id, anchorIds: [],
-      page: a.page ?? null, quote: '', color: '', noteId: '', highlightId: '',
+      page: a.page ?? null, quote: '', quoteMd: '', color: '', noteId: '', highlightId: '',
       contentMd: a.content_md,
       label: selection ? '划词解释' : (a.type || '批注'),
       badge: selection ? 'ok' : 'accent', at: a.created_at,

@@ -441,6 +441,13 @@ function onRowAction(row: FeedRow, key: string) {
         <div v-if="row.quote" class="small quote">
           <mark :class="hlClass(row.color)" :style="hlStyle(row.color)">{{ row.quote }}</mark>
         </div>
+        <!-- 原文是占位符（在 PDF 里选中公式 / 图片块）：那一行本身就是公式，按块渲染出来。
+             字体高亮没法给公式上色（mark 里塞块级 v-html 会破），所以这里只当"引用原文"显示。 -->
+        <div
+          v-else-if="row.quoteMd"
+          class="small quote quote-md"
+          v-html="mdToHtml(row.quoteMd)"
+        />
         <!-- 笔记正文：**用户自己写的** → `breaks: true`（回车就是回车，也不把软换行接回一行） -->
         <div
           v-if="row.contentMd"
@@ -545,4 +552,6 @@ function onRowAction(row: FeedRow, key: string) {
   overflow: hidden; line-clamp: 2;
 }
 .quote { margin: 0 0 6px; }
+/* 公式当原文时（原文是占位符）：块级、约两行半高，超出裁掉 */
+.quote-md { max-height: 4.6em; overflow: hidden; }
 </style>
