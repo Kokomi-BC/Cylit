@@ -280,7 +280,18 @@ const FLOAT_EDGE = 24;
  *  平均帧 310ms（用户报的"拖动对话浮层卡顿"）。行内 style 只让它自己那一层重算。 */
 const asideWidthPx = computed(() => `${asideWidth.value}px`);
 
-/** 浮窗的行内几何（拖拽时逐帧变的就是这五个值，写在与浮窗**同一个元素**上） */
+/**
+ * 拖浮窗时的位移（**只走 transform**）。
+ *
+ * 改 `left/top` 会让这 420×560 的卡片连同它让出来的那块正文一起重绘（实测 p50 约 20ms，
+ * 拖动时肉眼可见地"跟手但不顺"）；`translate3d` 是合成层属性，拖动期间只有这一层在动，
+ * 松手时再把结果落回 `floatBox.left/top`（一次性）。
+ */
+const floatShift = ref({ x: 0, y: 0 });
+/** 正在用 transform 拖（给根元素加类：关掉侧栏那条 0.26s 的 transform 过渡，否则会"黏手"） */
+const floatMoving = ref(false);
+
+/** 浮窗的行内几何（拖拽时逐帧变的就是这几个值，写在与浮窗**同一个元素**上） */
 const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
   ? {
       position: 'fixed', left: `${floatBox.value.left}px`, top: `${floatBox.value.top}px`,
@@ -289,6 +300,9 @@ const asideFloatStyle = computed<CSSProperties>(() => (chatFloat.value
       /* 子元素的最小宽度（`.reader-aside > *` 那条）也跟着浮窗宽度走 —— 用行内变量，
          而不是让 CSS 去读组件根上的变量 */
       '--aside-min-w': `${floatBox.value.w}px`,
+      ...(floatShift.value.x || floatShift.value.y
+        ? { transform: `translate3d(${floatShift.value.x}px, ${floatShift.value.y}px, 0)` }
+        : {}),
     }
   : {}));
 
@@ -1587,6 +1601,8 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   const el = ev.currentTarget as HTMLElement | null;
   floatDrag.on = true;
   floatDrag.mode = mode;
+  floatShift.value = { x: 0, y: 0 };
+  floatMoving.value = mode === 'move';
   floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
   floatDrag.ow = floatBox.value.w; floatDrag.oh = floatBox.value.h;
@@ -1613,7 +1629,14 @@ function applyFloatMove() {
   const dy = at.y - floatDrag.sy;
   const b = floatBox.value;
   if (floatDrag.mode === 'move') {
-    b.left = floatDrag.ox + dx; b.top = floatDrag.oy + dy;
+    /* 只改位移，`left/top` 留在按下那一刻（见 `floatShift` 的说明）。夹取在这里自己做：
+       位移不经过 `clampFloatBox`（那条读的是 left/top）。 */
+    const maxX = Math.max(FLOAT_EDGE, window.innerWidth - b.w - FLOAT_EDGE);
+    const maxY = Math.max(FLOAT_EDGE, window.innerHeight - b.h - FLOAT_EDGE);
+    const nx = Math.max(FLOAT_EDGE, Math.min(floatDrag.ox + dx, maxX));
+    const ny = Math.max(FLOAT_EDGE, Math.min(floatDrag.oy + dy, maxY));
+    floatShift.value = { x: nx - floatDrag.ox, y: ny - floatDrag.oy };
+    return;
   } else if (floatDrag.mode === 'size-left') {
     /* 左下角：**右下角钉住**（`right` 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
     const right = floatDrag.ox + floatDrag.ow;
@@ -1632,6 +1655,13 @@ function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
   if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
   floatMoveAt = null;
+  if (floatDrag.mode === 'move' && (floatShift.value.x || floatShift.value.y)) {
+    /* 松手：把位移**一次性**落回真实坐标，然后清掉 transform（否则下次打开还偏着） */
+    floatBox.value.left += floatShift.value.x;
+    floatBox.value.top += floatShift.value.y;
+  }
+  floatShift.value = { x: 0, y: 0 };
+  floatMoving.value = false;
   floatDrag.on = false;
   floatDrag.mode = '';
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 早已释放 */ }
@@ -5644,6 +5674,7 @@ function renderMarkdown(text?: string | null) {
       :class="['reader',
                asideVisible ? '' : 'no-aside',
                chatFloat ? 'aside-float' : '',
+               floatMoving ? 'float-moving' : '',
                isNarrow && mobilePane === 'side' ? 'mobile-aside' : '',
                { resizing: asideResizing }]"
     >
@@ -6967,7 +6998,11 @@ function renderMarkdown(text?: string | null) {
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
 }
-/* 浮窗里没有「贴边那条竖把手」可拖（换成了右下角手柄），规则见 `.reader > .aside-resizer` */
+/* 拖动浮窗期间：**关掉**侧栏那条 0.26s 的 transform 过渡（不关就是"卡片黏在指针后面"），
+   并把这一层提前提成合成层 —— 逐帧只走 transform，正文那块不用跟着重绘。 */
+.reader.float-moving .reader-aside { transition: none; will-change: transform; }
+
+/* 浮窗里没有「贴边那条竖把手」可拖（换成了右/左下角手柄），规则见 `.reader > .aside-resizer` */
 /* 侧栏页签：**图标 + 文字**，**一行到底、不换行**；一行放不下就左右滚动（用户口径）。
  * 滚动条隐藏（保持干净），鼠标滚轮 / 触控板 / Shift+滚轮都能滚，见 `onSideTabsWheel`；
  * 切页签时把当前那个滚进可视区（`scrollIntoView`），左右两端还有圆形箭头按钮（见下）。
