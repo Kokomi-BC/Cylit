@@ -868,78 +868,66 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-tail:empty { display: none; }
 
 /* 「更多」二级菜单：**两排**（第一排动作项、第二排字号），坐标由 toggleMore 量好后写进行内 style。
-   宽度按内容给（min-width 让第一排的文字有成段感），不做成 172px 那种固定面板。 */
+   ⚠️ 宽度写死：绝对定位的宽度是 shrink-to-fit，而第二排里有 flex:1 的读数，
+   让内容决定宽度会被撑成一块"大白板"（用户 2026-11-26 截图报的正是这个）。
+   定宽之后，读数才真的落在中间。 */
 .fc-more {
   position: absolute; z-index: 2;
-  display: flex; flex-direction: column; gap: 2px;
-  min-width: 156px;
-  padding: 5px;
+  width: 176px;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-flyout);
+  border-radius: calc(var(--radius) - 2px);
+  /* 比卡片那层 --shadow-flyout 轻一档：它只是贴着头部的小菜单，阴影太重会像另一张卡片浮上来 */
+  box-shadow: var(--shadow-2);
 }
-/* 分隔线：横向，把"改笔记"与"改字号"两件事划开 */
+/* 分隔线：横向、两端内缩，把"改笔记"与"改字号"两件事划开 */
 .fc-more-sep { height: 1px; margin: 3px 4px; background: var(--divider); flex: none; }
 /* 第一排动作项：图标 + 文字、整行可点（`:slotted(button)` 兜住调用方塞进来的那一枚 ——
-   插槽节点带的是父组件的 scope，本组件的类名到不了它们身上）。
-   内边距与下方 .note-del-item 同档，菜单出现时不会一行高一行矮。 */
+   插槽节点带的是父组件的 scope，本组件的类名到不了它们身上）。 */
 .fc-more :slotted(button) {
-  display: flex; align-items: center; gap: 8px;
-  width: 100%; height: 28px; padding: 0 8px;
-  border: 0; border-radius: var(--radius-ctl);
-  background: transparent; color: var(--text);
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; height: 26px; padding: 0 6px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-dim);
   font-family: inherit;
-  font-size: calc(12.5px * var(--ts, 1));
+  font-size: calc(12px * var(--ts, 1));
   font-weight: 500;
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); }
-/* 第二排字号：**步进器 + 还原**。步进器整体占满剩余宽度，于是百分比正好落在中间 —— */
-.fc-more-row { display: flex; align-items: center; gap: 4px; }
-.fc-step {
-  display: flex; align-items: center; flex: 1 1 auto; min-width: 0;
-  height: 26px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-ctl);
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-  overflow: hidden;
-}
-.fc-step-btn {
+.fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+/* 第二排字号：读数居中，两端各一枚图标钮。
+   **不加内层边框/底色** —— 上一版把这一排包成一个胶囊，于是菜单里套了个框，看着像两层容器。 */
+.fc-more-row { display: flex; align-items: center; gap: 0; padding: 0 1px; }
+.fc-step { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
+.fc-step-btn, .fc-more-ico {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 100%; flex: none;
-  border: 0; background: transparent; color: var(--text-dim);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.fc-step-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.fc-step-btn:disabled { opacity: .3; cursor: default; }
-/* 读数：等宽数字 + 居中；偏离 100% 时转成强调色，一眼看出"这张卡被我改过" */
-.fc-more-pct {
-  flex: 1 1 auto; min-width: 42px;
-  text-align: center;
-  font-size: calc(11.5px * var(--ts, 1));
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-  white-space: nowrap;
-  transition: color var(--dur-fast) var(--ease);
-}
-.fc-more-pct.on { color: var(--accent-text); font-weight: 600; }
-/* 还原键：与步进器同高，平时只留位置不显形（见模板里那条：出现就挤位会让手指错位） */
-.fc-more-ico {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; flex: none;
+  width: 24px; height: 24px; flex: none;
   border: 0; border-radius: 50%;
   background: transparent; color: var(--text-dim);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
               opacity var(--dur-fast) var(--ease);
 }
-.fc-more-ico:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.fc-more-ico:disabled { opacity: .35; cursor: default; }
+.fc-step-btn:hover:not(:disabled), .fc-more-ico:hover:not(:disabled) {
+  background: var(--bg-hover); color: var(--text);
+}
+.fc-step-btn:disabled, .fc-more-ico:disabled { opacity: .3; cursor: default; }
+/* 读数：等宽数字 + 居中；偏离 100% 时转强调色，一眼看出这张卡被单独调过 */
+.fc-more-pct {
+  flex: 1 1 auto; min-width: 0;
+  text-align: center;
+  font-size: calc(11px * var(--ts, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease);
+}
+.fc-more-pct.on { color: var(--accent-text); font-weight: 600; }
 .fc-more-ico.ghost { visibility: hidden; }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;

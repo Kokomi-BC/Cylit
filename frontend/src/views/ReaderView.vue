@@ -7488,7 +7488,7 @@ function renderMarkdown(text?: string | null) {
         <button v-if="card.mode === 'view' && card.noteId" type="button" role="menuitem"
                 title="编辑这条笔记" data-note-edit
                 @click="card.mode = 'edit'; card.draft = card.content; close()">
-          <AppIcon name="edit" :size="14" /><span>编辑笔记</span>
+          <AppIcon name="edit" :size="13" /><span>编辑笔记</span>
         </button>
       </template>
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
