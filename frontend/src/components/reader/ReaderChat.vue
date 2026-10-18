@@ -161,7 +161,9 @@ const SUB_H = 250;
 /** 这条会话单独选的值（空串 = 跟随默认，后端存 NULL） */
 const pick = ref<AgentModelPick>({ model_config_id: '', reasoning_effort: '' });
 const savingPick = ref(false);
-const EFFORT_PRESETS = ['low', 'medium', 'high'];
+/** 内置档位（模型没配 reasoning_levels 时用），**由低到高**排好：off < low < medium < high < max。
+ *  两端是用户口径 2026-11-26 补的：关掉推理、以及比 high 更狠的一档。 */
+const EFFORT_PRESETS = ['off', 'low', 'medium', 'high', 'max'];
 
 const modelReadonly = computed(() => modelOptions.value.length === 0);
 /** 真正生效的模型：本会话选的那条 → 该类型默认那条；都没有就是 `/agent/status` 的回落 */
@@ -1215,8 +1217,9 @@ function placeSub() {
   const h = el.offsetHeight || SUB_H;
   let wantTop = row.top;
   if (wantTop + h > vh - 8) wantTop = Math.max(8, vh - 8 - h);
-  let wantLeft = row.right + 8;
-  if (wantLeft + w > vw - 8) wantLeft = row.left - 8 - w;
+  // 间距 12（原来是 8）：根浮层那圈大阴影有一半落在 8px 里，看起来像「被浮层压住」
+  let wantLeft = row.right + 12;
+  if (wantLeft + w > vw - 8) wantLeft = row.left - 12 - w;
   if (wantLeft < 8) wantLeft = Math.max(8, vw - 8 - w);
   const r = el.getBoundingClientRect();
   subPos.value = {
@@ -2191,7 +2194,9 @@ defineExpose({ uploadFiles, ensureThread });
 /* 第二级：**侧向飞出**的子菜单。`position: fixed`（坐标由被点那行的 rect 算出），
    压在遮罩(8)与根浮层(9)之上；宽度定死 200px，内容长了在列表内部滚。 */
 .pick-sub {
-  position: fixed; z-index: 10; width: 200px; box-sizing: border-box;
+  /* z-index 30：压在遮罩(8) / 根浮层(9) 之上，也压过面板里其它自带层级的元素（用户口径
+     2026-11-26 「层级问题」）。它自己也开一层隔离，内部元素的层级不再泄到外面。 */
+  position: fixed; z-index: 30; width: 200px; box-sizing: border-box; isolation: isolate;
   padding: 4px; border-radius: 12px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }

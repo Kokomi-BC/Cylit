@@ -57,7 +57,7 @@ const form = reactive({
  * low / medium / high。这块以**解析后的对象**为工作副本：只重写这两个键，「高级」里
  * 手写的其它参数原样保留；那份 JSON 一旦不是合法对象，这块只显示一行红字、不写回。
  */
-const BUILTIN_LEVELS = ['low', 'medium', 'high'];
+const BUILTIN_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
 
 interface LevelRow { value: string; desc: string }
 
@@ -426,7 +426,7 @@ function labelOf(t: string): string {
           </div>
 
           <p class="lv-hint tiny faint" v-if="!levels.length">
-            未配置时用内置 low / medium / high
+            未配置时用内置 off / low / medium / high / max
             <button type="button" class="lv-fill" @click="fillBuiltinLevels">填入内置三档</button>
           </p>
 
