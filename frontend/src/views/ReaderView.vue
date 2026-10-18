@@ -1843,6 +1843,10 @@ function startFloatGesture(mode: 'move' | 'size' | 'size-left', x: number, y: nu
      `preventDefault()` 了，`:active` 就未必来；笔记卡那边一直是 `.fc-resize.is-on`，
      两边必须同一手法，否则「手指按住角把手没有动画」（用户口径 2026-11-25）。 */
   if (mode !== 'move') (mode === 'size' ? gripBrEl.value : gripBlEl.value)?.classList.add('is-on');
+  /* 顶部那枚抓手的 34→46 变宽动画**只认这个类**（见样式里的
+     .reader.float-dragging > .chat-host.float > .chat-grip-pill）：拖头部才加，
+     角把手自己那两枚走上面的 is-on。 */
+  if (mode === 'move') setFloatDragging(true);
 
   floatDrag.sx = x; floatDrag.sy = y;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
@@ -1975,6 +1979,7 @@ function endFloatGesture() {
      （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
   gripBrEl.value?.classList.remove('is-on');
   gripBlEl.value?.classList.remove('is-on');
+  setFloatDragging(false);
   lockFloatSelection(false);
   untrackFloatTouch();
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
