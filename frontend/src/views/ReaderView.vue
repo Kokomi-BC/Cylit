@@ -3778,6 +3778,17 @@ function onDocPointerDown(ev: PointerEvent) {
   if (target?.closest?.('[data-selection-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
   if (target?.closest?.('.sel-handle')) return;
+  /* 点进输入框（对话 / 笔记 / 搜索…）：**先把正文的选区与两枚手柄收掉再让焦点落下**。
+     手柄是 44px 的抓取区、层级 330，压在输入框旁边时手指一点就落到它身上，focus 直接被吃掉；
+     收掉之后这一次点击就能正常聚焦、键盘也弹得出来（用户口径 2026-11-26 第二轮）。 */
+  if (target?.closest?.('input, textarea, [contenteditable="true"]')) {
+    window.getSelection()?.removeAllRanges();
+    selection.text = '';
+    selection.rect = null;
+    selection.show = false;
+    hideSelHandles();
+    setColSide('');
+  }
   /* 鼠标选区还有效时点别处 = 取消这次选择：**选区、手柄、胶囊一起收**。
      ⚠️ 触摸不再走这条（用户口径 2026-10-18）：手指按下去往往只是要滚动，靠这里的
      pointerdown 取消选取，等于"滚一下就没了"。触摸改由 onContentTouchEnd 的连续双击判定。 */
@@ -4106,6 +4117,29 @@ function selectionInContent(node: Node | null | undefined): boolean {
   return Boolean(el.closest('.reader-content'));
 }
 
+/** 手柄的 44px 热区半径（`margin: -22px` 那一半）。见 placeSelHandles 的夹取。 */
+const SEL_HANDLE_R = 22;
+
+/**
+ * 摆两枚手柄：**中心必须夹在正文容器里**。
+ *
+ * 手柄是 44×44 的抓取区（`.sel-handle`），比看得见的圆点大得多。选区落在正文最左/最右那一列时，
+ * 这个热区会跨出 `.reader-content` 盖到旁边的对话容器 / 侧栏上 —— 手指点输入框点到的是手柄，
+ * 焦点拿不到、键盘弹不出来（用户口径 2026-11-26 第二轮：单击输入框取消不掉手柄）。
+ * 夹一次就够了：手柄仍然贴着那一行的上/下沿，只是不会再伸进别人的地盘。
+ */
+function placeSelHandles(start: { x: number; y: number }, end: { x: number; y: number }) {
+  const box = scroller.value?.getBoundingClientRect() ?? null;
+  const clamp = (p: { x: number; y: number }) => {
+    if (!box) return p;
+    return {
+      x: Math.min(Math.max(p.x, box.left + SEL_HANDLE_R), box.right - SEL_HANDLE_R),
+      y: Math.min(Math.max(p.y, box.top + SEL_HANDLE_R), box.bottom - SEL_HANDLE_R),
+    };
+  };
+  selHandles.value = { start: clamp(start), end: clamp(end) };
+}
+
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
   if (!touchSelActive.value) { selHandles.value = null; return; }
@@ -4133,10 +4167,10 @@ function refreshSelHandles(): void {
       const r2 = sel.getRangeAt(0);
       const rects2 = Array.from(r2.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
       if (rects2.length) {
-        selHandles.value = {
-          start: { x: rects2[0].left, y: rects2[0].top },
-          end: { x: rects2[rects2.length - 1].right, y: rects2[rects2.length - 1].bottom },
-        };
+        placeSelHandles(
+          { x: rects2[0].left, y: rects2[0].top },
+          { x: rects2[rects2.length - 1].right, y: rects2[rects2.length - 1].bottom },
+        );
         selEndA = { node: r2.startContainer, offset: r2.startOffset };
         selEndB = { node: r2.endContainer, offset: r2.endOffset };
         return;
@@ -4163,10 +4197,10 @@ function refreshSelHandles(): void {
   const usable = inBand.length ? inBand : rects;
   const first = usable[0];
   const last = usable[usable.length - 1];
-  selHandles.value = {
-    start: { x: first.left, y: first.top },
-    end: { x: last.right, y: last.bottom },
-  };
+  placeSelHandles(
+    { x: first.left, y: first.top },
+    { x: last.right, y: last.bottom },
+  );
   selEndA = { node: range.startContainer, offset: range.startOffset };
   selEndB = { node: range.endContainer, offset: range.endOffset };
 }
