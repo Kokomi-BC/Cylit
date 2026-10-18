@@ -3126,9 +3126,10 @@ function onDocPointerDown(ev: PointerEvent) {
   if (target?.closest?.('[data-selection-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
   if (target?.closest?.('.sel-handle')) return;
-  /* 触摸选区还有效时点正文别处 = 取消这次选择：**选区、手柄、胶囊一起收**。
-     以前只收了手柄，画面上就会剩一枚"没有手柄的胶囊"（用户报的截图正是这个）。 */
-  if (touchSelActive.value) {
+  /* 鼠标选区还有效时点别处 = 取消这次选择：**选区、手柄、胶囊一起收**。
+     ⚠️ 触摸不再走这条（用户口径 2026-10-18）：手指按下去往往只是要滚动，靠这里的
+     pointerdown 取消选取，等于"滚一下就没了"。触摸改由 onContentTouchEnd 的连续双击判定。 */
+  if (touchSelActive.value && ev.pointerType === 'mouse') {
     window.getSelection()?.removeAllRanges();
     selection.show = false;
     hideSelHandles();
@@ -3318,6 +3319,12 @@ const LONG_PRESS_MS = 480;
  */
 let suppressNativeSelectUntil = 0;
 let ignoreClickUntil = 0;
+/* 触摸手势：滚动**不取消**选取，只有"连续双击"才取消（用户口径 2026-10-18，对齐移动端手感） */
+let touchStartPos: { x: number; y: number } | null = null;
+let lastTapPos: { x: number; y: number; at: number } | null = null;
+const TAP_MOVE_MAX = 10;      // 位移小于它 = 一次"点"，不是滚动
+const DOUBLE_TAP_MS = 320;
+const DOUBLE_TAP_DIST = 44;
 /** 触摸手势期间（含双击）一律不让浏览器自己划词：选区只由我们的长按 + 手柄产生 */
 let touchSelectGuardUntil = 0;
 /** 长按造出来的那段选区：抬手时浏览器会把它折叠，这里留一份用来放回去 */
@@ -3836,6 +3843,29 @@ function onContentSelectStart(ev: Event): void {
  */
 function onContentTouchEnd(ev: TouchEvent): void {
   touchSelectGuardUntil = Math.max(touchSelectGuardUntil, Date.now() + 700);
+  /* 手势结束：判断这是"滚动"还是"点"。滚动 → 什么都不动（选区留着）；
+     点 → 记下来，连着点第二下（时间/位置都接近）才取消选取。 */
+  const started = touchStartPos;
+  const endTouch = ev.changedTouches[0];
+  touchStartPos = null;
+  if (started && endTouch) {
+    const movedPx = Math.hypot(endTouch.clientX - started.x, endTouch.clientY - started.y);
+    // 长按刚刚造出选区的那一下不算"点"（否则紧接着的一次点击会被当成双击，把选区干掉）
+    const justLongPressed = Date.now() < suppressNativeSelectUntil;
+    if (movedPx <= TAP_MOVE_MAX && !justLongPressed) {
+      const hit = lastTapPos
+        && Date.now() - lastTapPos.at <= DOUBLE_TAP_MS
+        && Math.hypot(endTouch.clientX - lastTapPos.x, endTouch.clientY - lastTapPos.y) <= DOUBLE_TAP_DIST;
+      if (hit) {
+        lastTapPos = null;
+        clearTouchSelection();
+      } else {
+        lastTapPos = { x: endTouch.clientX, y: endTouch.clientY, at: Date.now() };
+      }
+    } else {
+      lastTapPos = null;          // 滚动/长按：双击计数清零
+    }
+  }
   if (Date.now() < suppressNativeSelectUntil) {
     ev.preventDefault();
     const saved = longPressRange?.cloneRange() ?? null;
@@ -3855,15 +3885,28 @@ function onContentTouchEnd(ev: TouchEvent): void {
   cancelLongPress();
 }
 
+/** 连续双击 = 取消这次触摸选择（选区、手柄、胶囊、工具条一起收） */
+function clearTouchSelection(): void {
+  window.getSelection()?.removeAllRanges();
+  longPressRange = null;
+  selection.show = false;
+  selection.text = '';
+  selection.rect = null;
+  ctxMenu.open = false;
+  ctxMenu.rect = null;
+  hideSelHandles();
+}
+
 function onContentTouchStart(ev: TouchEvent): void {
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   // 触摸手势开始：这一下到抬手后 700ms 内的原生划词全部挡掉（双击选词就是它）
   touchSelectGuardUntil = Date.now() + 1500;
-  // 又碰了一下正文：上一次长按留下的手柄先收掉（这一下若不长按，就是普通的点/滚）
-  hideSelHandles();
-  if (ev.touches.length !== 1) { cancelLongPress(); return; }
+  /* ⚠️ 这里**不再**收手柄：以前一碰正文就把上一次的选择收掉，于是"想滚一下页面"等于
+     "取消选取"（用户口径 2026-10-18）。现在滚动保留选区，只有连续双击才取消。 */
+  if (ev.touches.length !== 1) { touchStartPos = null; cancelLongPress(); return; }
   const touch = ev.touches[0];
+  touchStartPos = { x: touch.clientX, y: touch.clientY };
   cancelLongPress();
   longPressFrom = { x: touch.clientX, y: touch.clientY, target };
   longPressTimer = window.setTimeout(fireLongPress, LONG_PRESS_MS);
@@ -6475,18 +6518,25 @@ function renderMarkdown(text?: string | null) {
   /* 白圈 + 一档投影：压在深色正文上也看得清，和胶囊的玻璃语言也对得上 */
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent), var(--shadow-1);
 }
-/* 小尾巴指向文字那一行（上端指向下方、下端指向上方），一眼看出是哪一头 */
+/* 小尾巴指向文字那一行（上端指向下方、下端指向上方），一眼看出是哪一头。
+   ⚠️ 必须 translateX(-50%)：只写 left:50% 的话 2px 的线会往右偏半个线宽（用户口径
+   2026-10-18"直接的竖线没有居中"）。外圈给一道与圆点同款的浅描边，压在深浅两套皮肤上都不发虚。 */
 .sel-handle::after {
-  content: ''; position: absolute; left: 50%; width: 2px; height: 12px;
-  border-radius: 999px; background: var(--accent); opacity: .85;
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+  width: 2px; height: 13px; border-radius: 999px;
+  background: var(--accent); opacity: .9;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-elev) 85%, transparent);
 }
 /* 起点手柄：圆圈在上、小尾巴朝下（指向文字那一行）；终点手柄镜像（尾巴朝上） */
-.sel-handle.start::after { top: 26px; }
-.sel-handle.end::after { top: 6px; }
+.sel-handle.start::after { top: 27px; }
+.sel-handle.end::after { top: 4px; }
 
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
    ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */
 .reader-content, .reader-content * { -webkit-touch-callout: none; }
+/* 双击缩放交给脚本：双击在这里表示"取消选取"（用户口径 2026-10-18）。
+   manipulation = 允许拖动/双指缩放，只禁掉双击缩放那一下。 */
+.reader-content { touch-action: manipulation; }
 
 .reader-capsule .cap-group .btn.tool-on {
   /* ⚠️ 两层原因：

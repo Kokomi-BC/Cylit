@@ -489,11 +489,14 @@ function onDocDragStart(ev: Event): void {
   if (layerOf(ev.target as Node) || layerOf(sel?.anchorNode ?? null)) ev.preventDefault();
 }
 
-function endDrag(): void {
+function endDrag(ev?: Event): void {
   /* 这一下只是"点击"（没拖）且原生划词被我们挡掉了 → 把浏览器那个默认动作补上：
    * 按下另一个地方本来就该收掉上一次的选区（见 `dropPdfSelection` ②）。
-   * 双击/三击（`suppressSelect === false`）放行的原生选区不能碰。 */
-  const clicked = !dragTakenOver && suppressSelect;
+   * 双击/三击（`suppressSelect === false`）放行的原生选区不能碰。
+   * ⚠️ `pointercancel` 不算"点击"：手机上手指一滑浏览器就把指针取消掉，按原来的写法
+   * 会把选区当场收走 —— 也就是"滚一下页面选区就没了"（用户口径 2026-10-18）。 */
+  const cancelled = ev?.type === 'pointercancel';
+  const clicked = !dragTakenOver && suppressSelect && !cancelled;
   dragFrom = null;
   dragTakenOver = false;
   suppressSelect = false;
