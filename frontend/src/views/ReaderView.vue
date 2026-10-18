@@ -7480,15 +7480,15 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="check" :size="13" />
         </button>
       </template>
-      <!-- 「更多」菜单里的父级条目（用户口径 2026-11-26：编辑 / 放大 / 缩小 / 还原合并成 ⋯，
-           菜单里一律用图标、不写文字）。只有查看态、且这条笔记真的存在时才有「编辑」——
-           空卡没有可编辑的对象。尺寸与圆钮样式由 FloatingCard 的 `:slotted(button)` 统一给，
-           这里不写类名，免得两处各画一套。 -->
+      <!-- 「更多」菜单第一排（用户口径 2026-11-26 三轮）：动作项**带文字**，占满一行；
+           第二排才是字号那两枚图标 + 百分比。只有查看态、且这条笔记真的存在时才有「编辑」——
+           空卡没有可编辑的对象。行高 / 圆角 / 字号由 FloatingCard 的 `:slotted(button)` 统一给，
+           这里只放图标与文字，免得两处各画一套。 -->
       <template #more-items="{ close }">
         <button v-if="card.mode === 'view' && card.noteId" type="button" role="menuitem"
-                title="编辑笔记" aria-label="编辑笔记" data-note-edit
+                title="编辑这条笔记" data-note-edit
                 @click="card.mode = 'edit'; card.draft = card.content; close()">
-          <AppIcon name="edit" :size="15" />
+          <AppIcon name="edit" :size="14" /><span>编辑笔记</span>
         </button>
       </template>
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->

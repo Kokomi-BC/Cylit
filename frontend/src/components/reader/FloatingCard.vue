@@ -703,11 +703,11 @@ watchEffect(applyShellDom, { flush: 'sync' });
       />
     </div>
 
-    <!-- 二级菜单：**一条横向图标条**（用户口径 2026-11-26 二轮：菜单用图标，放大/缩小/还原不写文字、并排）。
-         为什么不做文字项：这四个动作一眼就认得出图标，写成「放大字号 105%」既占宽又得读一遍。
-         百分比不丢，挪进 :title —— 想知道当前多少，悬停（触摸长按）就能看到。
-         调用方用 `#more-items` 补自己的条目（笔记卡塞「编辑笔记」），字号三项由本组件给：
-         字号状态与持久化都在这里，交出去就等于两处各记一份。 -->
+    <!-- 二级菜单：**两排**（用户口径 2026-11-26 三轮）。
+         第一排是动作项（笔记卡的「编辑笔记」，带文字；由调用方用 `#more-items` 塞进来），
+         第二排是字号（放大 / 缩小 / 还原用图标，右边常显当前百分比）。
+         为什么这么分：编辑是"改这条笔记"，字号是"改看的方式"，两件事不该混成一排图标；
+         而百分比必须**一眼看见**——只写在 :title 里等于要用户悬停才知道自己调到了哪儿。 -->
     <div
       v-if="moreOpen"
       ref="moreEl"
@@ -719,42 +719,47 @@ watchEffect(applyShellDom, { flush: 'sync' });
     >
       <slot name="more-items" :close="closeMore" />
       <div v-if="$slots['more-items']" class="fc-more-sep" />
-      <button
-        type="button"
-        class="fc-more-ico"
-        role="menuitem"
-        :disabled="fontScale >= F_MAX"
-        :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
-        aria-label="放大字号"
-        data-fc-zoom-in
-        @click="stepFont(1)"
-      >
-        <AppIcon name="zoom-in" :size="15" />
-      </button>
-      <button
-        type="button"
-        class="fc-more-ico"
-        role="menuitem"
-        :disabled="fontScale <= F_MIN"
-        :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
-        aria-label="缩小字号"
-        data-fc-zoom-out
-        @click="stepFont(-1)"
-      >
-        <AppIcon name="zoom-out" :size="15" />
-      </button>
-      <button
-        v-if="fontScale !== 1"
-        type="button"
-        class="fc-more-ico"
-        role="menuitem"
-        title="还原默认字号（100%）"
-        aria-label="还原默认字号"
-        data-fc-zoom-reset
-        @click="resetFont"
-      >
-        <AppIcon name="refresh" :size="15" />
-      </button>
+      <div class="fc-more-row">
+        <button
+          type="button"
+          class="fc-more-ico"
+          role="menuitem"
+          :disabled="fontScale >= F_MAX"
+          :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+          aria-label="放大字号"
+          data-fc-zoom-in
+          @click="stepFont(1)"
+        >
+          <AppIcon name="zoom-in" :size="15" />
+        </button>
+        <button
+          type="button"
+          class="fc-more-ico"
+          role="menuitem"
+          :disabled="fontScale <= F_MIN"
+          :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+          aria-label="缩小字号"
+          data-fc-zoom-out
+          @click="stepFont(-1)"
+        >
+          <AppIcon name="zoom-out" :size="15" />
+        </button>
+        <button
+          v-if="fontScale !== 1"
+          type="button"
+          class="fc-more-ico"
+          role="menuitem"
+          title="还原默认字号（100%）"
+          aria-label="还原默认字号"
+          data-fc-zoom-reset
+          @click="resetFont"
+        >
+          <AppIcon name="refresh" :size="15" />
+        </button>
+        <span class="fc-more-pct" :title="`当前字号 ${Math.round(fontScale * 100)}%`">
+          {{ Math.round(fontScale * 100) }}%
+        </span>
+      </div>
     </div>
   </div>
 </template>
@@ -853,23 +858,40 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .fc-tail:empty { display: none; }
 
-/* 「更多」二级菜单：**一条横向图标条**（坐标由 toggleMore 量好后写进行内 style）。
-   高度与头部那几枚圆钮同档，看起来像从头部"放下来"的一排，而不是另起一块面板。 */
+/* 「更多」二级菜单：**两排**（第一排动作项、第二排字号），坐标由 toggleMore 量好后写进行内 style。
+   宽度按内容给（min-width 让第一排的文字有成段感），不做成 172px 那种固定面板。 */
 .fc-more {
   position: absolute; z-index: 2;
-  display: flex; align-items: center; gap: 2px;
-  padding: 4px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 156px;
+  padding: 5px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-flyout);
 }
-/* 竖分隔线（「编辑」与字号三键之间）：一排图标里，竖线比横线更能保住"这是一排"的读法 */
-.fc-more-sep { width: 1px; align-self: stretch; margin: 3px; background: var(--divider); flex: none; }
-/* 图标钮：与头部 .fc-btn 同尺寸同圆角，但**不铺灰底** —— 菜单底色本来就浅，再垫一层就糊成一片。
-   `:slotted(button)` 兜住调用方塞进来的那一枚（笔记卡的「编辑」）：
-   插槽节点带的是父组件的 scope，本组件的 .fc-more-ico 到不了它们身上。 */
-.fc-more-ico, .fc-more :slotted(button) {
+/* 分隔线：横向，把"改笔记"与"改字号"两件事划开 */
+.fc-more-sep { height: 1px; margin: 3px 4px; background: var(--divider); flex: none; }
+/* 第一排动作项：图标 + 文字、整行可点（`:slotted(button)` 兜住调用方塞进来的那一枚 ——
+   插槽节点带的是父组件的 scope，本组件的类名到不了它们身上）。
+   内边距与下方 .note-del-item 同档，菜单出现时不会一行高一行矮。 */
+.fc-more :slotted(button) {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; height: 28px; padding: 0 8px;
+  border: 0; border-radius: var(--radius-ctl);
+  background: transparent; color: var(--text);
+  font-family: inherit;
+  font-size: calc(12.5px * var(--ts, 1));
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.fc-more :slotted(button):hover:not(:disabled) { background: var(--bg-hover); }
+/* 第二排字号：两枚图标钮 + 右端常显的百分比（图标认得出"加减"，数字回答"现在多少"） */
+.fc-more-row { display: flex; align-items: center; gap: 2px; }
+.fc-more-ico {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; flex: none;
   border: 0; border-radius: 50%;
@@ -877,10 +899,15 @@ watchEffect(applyShellDom, { flush: 'sync' });
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.fc-more-ico:hover:not(:disabled), .fc-more :slotted(button):hover:not(:disabled) {
-  background: var(--bg-hover); color: var(--text);
-}
+.fc-more-ico:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .fc-more-ico:disabled { opacity: .35; cursor: default; }
+.fc-more-pct {
+  margin-left: auto; padding: 0 5px 0 6px;
+  font-size: calc(11.5px * var(--ts, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
   /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */
