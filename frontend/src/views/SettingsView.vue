@@ -6,14 +6,18 @@
  * 左侧导航吸顶，深链（`/app/settings#kb`）只负责切到对应窗格。
  *
  * 分区按主题分成四组（左边栏顺序，组内即"改行为 → 改模型 → 改数据 → 改服务"的动线）：
- * · **通用**：1. 常规参数（任务线程数 / 渲染 / RAG / 其他；**唯一带"保存设置"的一区**，
- *   数据面 `PUT /settings` 只提交变更项）、2. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
- * · **智能与模型**：3. 模型（问答模型 + 其他类型、密钥、预设导入，全是即时操作）、
- *   4. 论文问答（对话风格、运行限额、已加载技能；模型本体在「模型」区）。
- * · **内容与索引**：5. 索引管理（概览 / 论文索引表 / 对账 / chunk 元数据，原「知识库」页搬来）、
- *   6. 搜索记录（本地搜索历史）。
- * · **服务与系统**：7. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
- *   8. 系统信息（只读信息 + `GET /settings/health`）。
+ * · **通用**：1. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
+ * · **智能与模型**：2. 模型（问答模型 + 其他类型、密钥、预设导入，全是即时操作）、
+ *   3. 论文问答（技能、对话风格、运行限额；模型本体在「模型」区）。
+ * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
+ *   5. 搜索记录（本地搜索历史）。
+ * · **服务与系统**：6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
+ *   7. 系统信息（只读信息 + `GET /settings/health`）。
+ *
+ * 原来的「常规参数」整区**已拆掉**（用户口径）：真生效的检索参数搬进「索引管理」的检索规模小节，
+ * 任务工作线程数 / 页面渲染 dpi / 公式裁图 dpi / 默认生成模型四项直接删除 —— 前两个的读取点
+ * 读的是环境变量、设置表里的值没人读；末一个已被模型系统的「默认模型」取代。
+ * 老深链 `/settings#general` 由路由守卫改写到 `#kb`（见 `router/index.ts`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
  * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
@@ -33,79 +37,14 @@ import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
 import ModelPanel from '@/components/settings/ModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
+import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
 
-/* ---------------------------- 表单结构定义 ---------------------------- */
-
-/** 可编辑项键（必须落在后端 EDITABLE 白名单内）。 */
-type EditableKey =
-  | 'task_worker_count' | 'render_dpi' | 'crop_dpi'
-  | 'rag_top_k_vector' | 'rag_top_k_lexical' | 'rag_top_k_fused' | 'rag_top_n_rerank'
-  | 'allow_general_knowledge' | 'default_generation_model';
-
-/** 表单值：数字项未填时为 ''，开关为布尔，文本项为字符串。 */
-type FormValue = number | string | boolean;
-
-type SettingsForm = Record<EditableKey, FormValue>;
-
-interface FieldDef {
-  key: EditableKey;
-  label: string;
-  type: 'number' | 'text' | 'bool';
-  min?: number;
-}
-
-interface GroupDef {
-  key: string;
-  title: string;
-  hint?: string;
-  fields: FieldDef[];
-}
+/* ---------------------------- 只读信息 ---------------------------- */
 
 interface ReadonlyDef {
   key: string;
   label: string;
 }
-
-/** 分组表单：键必须在后端白名单内。 */
-const GROUPS: GroupDef[] = [
-  {
-    key: 'task',
-    title: '任务',
-    fields: [
-      { key: 'task_worker_count', label: '任务工作线程数', type: 'number', min: 1 },
-    ],
-  },
-  {
-    key: 'render',
-    title: '渲染',
-    hint: '公式裁图 dpi 建议为页面 dpi 的 3–4 倍。',
-    fields: [
-      { key: 'render_dpi', label: '页面渲染 dpi', type: 'number', min: 72 },
-      { key: 'crop_dpi', label: '公式裁图 dpi', type: 'number', min: 72 },
-    ],
-  },
-  {
-    key: 'rag',
-    title: 'RAG 检索',
-    fields: [
-      { key: 'rag_top_k_vector', label: '向量召回 top_k', type: 'number', min: 1 },
-      { key: 'rag_top_k_lexical', label: '词法召回 top_k', type: 'number', min: 1 },
-      { key: 'rag_top_k_fused', label: '融合后 top_k', type: 'number', min: 1 },
-      { key: 'rag_top_n_rerank', label: '重排条数 n', type: 'number', min: 0 },
-    ],
-  },
-  {
-    key: 'misc',
-    title: '其他',
-    fields: [
-      { key: 'allow_general_knowledge', label: '允许通用知识（RAG 兜底）', type: 'bool' },
-      { key: 'default_generation_model', label: '默认生成模型（留空 = mock）', type: 'text' },
-    ],
-  },
-];
-
-/** 编辑表单涉及的全部键（与后端 EDITABLE 白名单一致）。 */
-const EDITABLE_KEYS: EditableKey[] = GROUPS.flatMap((g) => g.fields.map((f) => f.key));
 
 /** 只读信息卡片。 */
 const READONLY_KEYS: ReadonlyDef[] = [
@@ -123,14 +62,14 @@ const READONLY_KEYS: ReadonlyDef[] = [
  * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
  */
 const SECTIONS = [
-  { id: 'general', label: '常规参数', icon: 'settings', group: '通用' },
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用' },
-  { id: 'models', label: '模型', icon: 'model', group: '智能与模型' },
-  { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引' },
-  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统' },
-  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '点一下立即换肤，也可以自建一套。' },
+  { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '问答与生成用的模型、密钥与预设。' },
+  { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '技能、对话风格与运行限额。' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '检索规模、知识库概览与论文索引。' },
+  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '只存在本机浏览器里的检索记录。' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: 'MinerU 的 token 与默认参数。' },
+  { id: 'tasks', label: '任务队列', icon: 'task', group: '服务与系统', desc: '任务进度、状态与重试。' },
+  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '只读信息与健康检查。' },
 ] as const;
 
 const route = useRoute();
@@ -152,23 +91,6 @@ watch(() => route.hash, (hash) => {
   if (SECTIONS.some((s) => s.id === id)) active.value = id;
 });
 
-/* ---------------------------- 表单状态 ---------------------------- */
-
-/** 当前编辑值与「当前生效值」，用于变更检测与撤销。 */
-const form = reactive<SettingsForm>({
-  task_worker_count: '',
-  render_dpi: '',
-  crop_dpi: '',
-  rag_top_k_vector: '',
-  rag_top_k_lexical: '',
-  rag_top_k_fused: '',
-  rag_top_n_rerank: '',
-  allow_general_knowledge: false,
-  default_generation_model: '',
-});
-const base = reactive<SettingsForm>({ ...form });
-
-const busy = ref(false);
 const loadError = ref('');
 const health = ref<HealthPayload | null>(null);
 const healthError = ref('');
@@ -176,34 +98,12 @@ const healthError = ref('');
 /** 首次进入用骨架提示，加载失败给明确错误而不是空白页。 */
 const loading = computed(() => !!state.loading.settings && !state.settings && !loadError.value);
 
-/** PUT /settings 的返回形状：逐键生效 / 被拒 + 服务端权威 values。 */
-interface SettingsApplyResult {
-  applied?: Record<string, unknown>;
-  rejected?: Record<string, string>;
-  values?: Record<string, unknown>;
-}
-
 /* ---------------------------- 载入 ---------------------------- */
-
-function fillFrom(values?: Record<string, unknown> | null) {
-  for (const key of EDITABLE_KEYS) {
-    const v = values?.[key];
-    if (key === 'allow_general_knowledge') {
-      form[key] = v === true || v === 'true' || v === 1;
-    } else if (key === 'default_generation_model') {
-      form[key] = v === null || v === undefined ? '' : String(v);
-    } else {
-      form[key] = v === null || v === undefined || v === '' ? '' : Number(v);
-    }
-    base[key] = form[key];
-  }
-}
 
 async function load() {
   loadError.value = '';
   try {
-    const data = await withLoading('settings', () => loadSettings(), { silent: true });
-    fillFrom(data?.values || {});
+    await withLoading('settings', () => loadSettings(), { silent: true });
   } catch (err) {
     loadError.value = `设置加载失败：${(err as Error)?.message ?? String(err)}`;
     reportError(err, '设置加载失败');
@@ -218,55 +118,6 @@ async function loadHealthCard() {
   } catch (err) {
     healthError.value = (err as Error)?.message ?? String(err);
   }
-}
-
-/* ---------------------------- 变更检测 ---------------------------- */
-
-function changedKeys(): EditableKey[] {
-  return EDITABLE_KEYS.filter((k) => form[k] !== base[k]);
-}
-
-const changed = computed<EditableKey[]>(() => changedKeys());
-const canSave = computed(() => changed.value.length > 0 && !busy.value);
-
-async function save() {
-  const keys = changedKeys();
-  if (!keys.length) { toast('没有需要保存的改动', 'warn'); return; }
-  const payload: Partial<Record<EditableKey, FormValue>> = {};
-  for (const k of keys) {
-    const v = form[k];
-    if (v === '') {
-      toast(`「${k}」不能为空，请填入数字或文本后再保存`, 'warn');
-      return;
-    }
-    payload[k] = v;
-  }
-  busy.value = true;
-  try {
-    const res = await api.put<SettingsApplyResult>('/settings', payload);
-    const rejected = res?.rejected || {};
-    const applied = Object.keys(res?.applied || {});
-    if (res?.values) fillFrom(res.values);      // 以服务端生效值为准（含被拒项回滚）
-    if (applied.length) {
-      toast(`已保存（重启后仍生效）：${applied.join('、')}`, 'ok', 4200);
-    }
-    for (const [k, reason] of Object.entries(rejected)) {
-      toast(`「${k}」未生效：${reason}`, 'warn', 5200);
-    }
-    if (!applied.length && !Object.keys(rejected).length) {
-      toast('服务端未返回任何生效项，请检查请求内容', 'warn');
-    }
-    await loadHealthCard();
-  } catch (err) {
-    reportError(err, '保存设置失败');
-  } finally {
-    busy.value = false;
-  }
-}
-
-function reset() {
-  for (const k of EDITABLE_KEYS) form[k] = base[k];
-  toast('已还原为当前生效值（未保存）', 'info', 2400);
 }
 
 /* ---------------------------- 健康展示 ---------------------------- */
@@ -309,7 +160,7 @@ function valueOf(key: string): string {
  * - **凭证**：token 输入框 + 保存 / 验证 / 清除（token 只写不回显：后端只给掩码）；
  * - **默认参数**：模型版本、语言、默认解析引擎（导入弹窗的初值）。
  *
- * 与上面「常规参数」的区别：这些**不进 `PUT /settings`**，而是各自的 `/mineru/config`。
+ * 与「索引管理」里那些检索参数的区别：这些**不进 `PUT /settings`**，而是各自的 `/mineru/config`。
  * 原因是 token 属于敏感值，不该混在通用设置白名单里（也方便后端单独做权限与掩码）。
  * ========================================================================== */
 
@@ -487,6 +338,7 @@ onMounted(async () => {
     <div class="settings-pane">
       <header class="pane-head">
         <h2>{{ activeSection.label }}</h2>
+        <p class="pane-desc">{{ activeSection.desc }}</p>
       </header>
 
     <!-- 首次加载 -->
@@ -501,67 +353,27 @@ onMounted(async () => {
     </div>
 
     <template v-else>
-      <!-- ① 常规参数：唯一需要"保存"的一区 -->
-      <section id="general" class="sec" v-if="active === 'general'">
-        <div class="sec-actions">
-          <span class="badge warn" v-if="changed.length">有 {{ changed.length }} 项未保存</span>
-          <span class="spacer"></span>
-          <button class="btn sm" :disabled="busy || !changed.length" @click="reset">
-            <AppIcon name="refresh" :size="15" />撤销改动
-          </button>
-          <button class="btn primary sm" :disabled="!canSave" @click="save">
-            <AppIcon name="check" :size="15" />{{ busy ? '保存中…' : '保存设置' }}
-          </button>
-        </div>
-
-        <div class="card" v-for="g in GROUPS" :key="g.key">
-          <div class="card-head">{{ g.title }}</div>
-          <div class="card-body">
-            <div class="grid cols-2">
-              <template v-for="f in g.fields" :key="f.key">
-                <label class="field" v-if="f.type === 'number'">
-                  <span class="field-top">{{ f.label }}</span>
-                  <input type="number" :min="f.min" v-model.number="form[f.key]" />
-                </label>
-                <label class="field" v-else-if="f.type === 'text'">
-                  <span class="field-top">{{ f.label }}</span>
-                  <input type="text" v-model="form[f.key]" placeholder="留空 = mock provider" />
-                </label>
-                <label class="field" v-else>
-                  <span class="field-top inline">
-                    <input type="checkbox" v-model="form[f.key]" />
-                    <span>{{ f.label }}</span>
-                    
-                  </span>
-                </label>
-              </template>
-            </div>
-            <p class="tiny faint hint" v-if="g.hint">{{ g.hint }}</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ② 模型：原先独立成页，"模型管理"本来也是设置，于是并进来当一区 -->
+      <!-- ① 模型：原先独立成页，"模型管理"本来也是设置，于是并进来当一区 -->
       <section id="models" class="sec" v-if="active === 'models'">
         <ModelPanel />
       </section>
 
-      <!-- ③ 索引管理（管理/诊断，即时生效，没有"保存"） -->
+      <!-- ② 索引管理（管理/诊断，即时生效，没有"保存"） -->
       <section id="kb" class="sec" v-if="active === 'kb'">
         <KbIndexPanel />
       </section>
 
-      <!-- ④ 论文问答：对话风格与运行限额（模型本体在「模型」区） -->
+      <!-- ③ 论文问答：技能、对话风格与运行限额（模型本体在「模型」区） -->
       <section id="agent" class="sec" v-if="active === 'agent'">
         <AgentModelPanel />
       </section>
 
-      <!-- ② 显示主题：注册表驱动的皮肤网格，点一下立即换肤 -->
+      <!-- ④ 显示主题：注册表驱动的皮肤网格，点一下立即换肤 -->
       <section id="appearance" class="sec" v-if="active === 'appearance'">
         <ThemeAppearancePanel />
       </section>
 
-      <!-- ③ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
+      <!-- ⑤ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
       <section id="mineru" class="sec" v-if="active === 'mineru'">
         <div class="sec-actions">
           <span class="badge accent" v-if="mineruBase.online_ready">已就绪</span>
@@ -585,11 +397,7 @@ onMounted(async () => {
           <div class="card-head">凭证</div>
           <div class="card-body">
             <label class="field">
-              <span class="field-top">
-                API token
-                <span class="spacer"></span>
-                <span class="tiny faint" v-if="mineruTokenText">已保存 {{ mineruTokenText }}</span>
-              </span>
+              <span class="field-top">API token</span>
               <input
                 type="password"
                 autocomplete="off"
@@ -609,7 +417,6 @@ onMounted(async () => {
                 <AppIcon name="trash" :size="14" />{{ mineruBusy === 'clear' ? '清除中…' : '清除 token' }}
               </button>
               <span class="spacer"></span>
-              <span class="tiny faint">token 每 90 天过期，过期后需到 mineru.net 重新申请</span>
             </div>
             <!-- 验证结论：有效 / 无效 / 过期 / 连不上，各自给不同的语义色与可执行提示 -->
             <div class="row row-gap" v-if="mineruVerify">
@@ -631,11 +438,9 @@ onMounted(async () => {
               :class="mineruVerify?.ok ? 'ok' : 'bad'"
               v-if="mineruVerify?.message"
             >{{ mineruVerify.message }}</p>
-            <p class="tiny faint">
-              token 文件：<span class="mono">{{ mineruBase.token_file || '（后端未返回）' }}</span>
-            </p>
-            <p class="tiny faint" v-if="mineruBase.base_url">
-              服务地址：<span class="mono">{{ mineruBase.base_url }}</span>
+            <p class="tiny faint meta-line">
+              <span>token 文件 <span class="mono">{{ mineruBase.token_file || '—' }}</span></span>
+              <span v-if="mineruBase.base_url">服务地址 <span class="mono">{{ mineruBase.base_url }}</span></span>
             </p>
             <p class="load-error tiny" v-if="mineruError">{{ mineruError }}</p>
           </div>
@@ -659,25 +464,28 @@ onMounted(async () => {
               </label>
             </div>
             <label class="field field-block">
-              默认解析引擎（导入弹窗的初始值）
+              默认解析引擎
               <select v-model="mineruForm.engine_default">
                 <option value="local">本地解析（离线、快）</option>
                 <option value="mineru">在线解析（MinerU 云端）</option>
               </select>
             </label>
-            <p class="tiny faint hint">
-              解析引擎只是导入弹窗的初值，导入时仍可逐篇改；pipeline 版面与公式更稳，vlm 复杂版面更好但更慢。
-            </p>
+            <p class="tiny faint hint">仅作导入弹窗初值，导入时仍可逐篇改。</p>
           </div>
         </div>
       </section>
 
-      <!-- ⑤ 搜索记录（本机 localStorage） -->
+      <!-- ⑥ 任务队列：原「任务」页的精简版（进度 / 取消 · 重试 · 删除 + 实时指示灯） -->
+      <section id="tasks" class="sec" v-if="active === 'tasks'">
+        <TaskQueuePanel />
+      </section>
+
+      <!-- ⑦ 搜索记录（本机 localStorage） -->
       <section id="history" class="sec" v-if="active === 'history'">
         <SearchHistoryPanel />
       </section>
 
-      <!-- ⑥ 系统信息（只读） -->
+      <!-- ⑧ 系统信息（只读） -->
       <section id="about" class="sec" v-if="active === 'about'">
         <div class="grid cols-2">
           <div class="card">
@@ -746,8 +554,11 @@ onMounted(async () => {
 <style scoped>
 /* 设置页私有细节（其余样式复用 base.css 的通用类） */
 .load-error { color: var(--danger); }
-.hint { margin: 10px 0 0; }
+/* 字段下面那行提示：一行、小字、离字段 8px（不留段落式留白） */
+.hint { margin: 8px 0 0; }
 .health-row { margin-top: 8px; }
+/* token 文件 / 服务地址：并成一行，中间 16px 分隔 */
+.meta-line { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; }
 
 /**
  * 版式：左导航 + 右内容窗格（参照 retain-pdf 的设置弹窗）。
@@ -756,13 +567,13 @@ onMounted(async () => {
  * 底 色必须不透明（`--bg-elev`），否则正文会从卡片下面透出来。
  */
 .settings-layout {
-  display: grid; gap: 20px; align-items: start;
+  display: grid; gap: 24px; align-items: start;
   grid-template-columns: 208px minmax(0, 1fr);
 }
 .settings-rail {
   position: sticky; top: calc(var(--header-h) + 12px);
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 16px 8px;
   background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow-1);
 }
@@ -771,7 +582,7 @@ onMounted(async () => {
 /* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
    一眼能看出"要改的是行为、模型，还是数据"。 */
 .settings-nav-group {
-  margin: 10px 0 2px; padding: 0 10px;
+  margin: 8px 0 2px; padding: 0 8px;
   font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
   color: var(--text-faint); text-transform: uppercase;
 }
@@ -787,9 +598,11 @@ onMounted(async () => {
 .settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+/* 三档层次：标题（600）/ 一行副标题（faint）/ 字段标签（dim 12px） */
 .pane-head { display: grid; gap: 4px; }
-.pane-head h2 { margin: 0; font-size: 17px; }
+.pane-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.pane-desc { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-faint); }
 
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽） */
 @media (max-width: 860px) {
@@ -808,7 +621,7 @@ onMounted(async () => {
 /* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，
    这里不叠 gap —— 两处都管会出现 22px 的"缝"，看着像两组内容。 */
 .sec { scroll-margin-top: calc(var(--header-h) + 62px); }
-.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 
 /* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
@@ -818,10 +631,10 @@ onMounted(async () => {
 .ro-value { max-width: 56%; }
 
 /* 在线解析（MinerU）：卡片内的行间距与验证结论的语义色 */
-.row-gap { margin-top: 10px; }
+.row-gap { margin-top: 8px; }
 /* token 输入框不跟着 `.field > input` 的 340px 上限走：token 很长，宽一点更好核对 */
 .field input[type="password"] { max-width: 100%; width: 100%; font-family: var(--mono); }
-.field-block { margin-top: 12px; }
+.field-block { margin-top: 8px; }
 /* 验证结论：成功走 --ok、失败走 --danger（与徽章同一套语义色，不用新色） */
 .verify-msg { margin: 8px 0 0; line-height: 1.6; }
 .verify-msg.ok { color: var(--ok); }

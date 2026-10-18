@@ -18,6 +18,10 @@
  * 标题栏上**不写 `title`**（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
  * "按住这里可以拖动浮层"这种说明交给光标形状（`cursor: grab`）就够，不必再弹一条浏览器提示。
  *
+ * 第五条（用户口径 2026-10-13）：标题栏**之上**还有一条 14px 的独立拖动条（data-float-grab，
+ * 中间一枚 36×4 的药丸），底部两个角换成**圆角小把手**（类 iOS）且卡片一打开就渲染 ——
+ * 两者对笔记与解释浮层同时生效。
+ *
  * 本组件**不持有业务状态**：谁开、开在哪、里面放什么，全由父组件给。
  */
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
@@ -122,7 +126,9 @@ onBeforeUnmount(() => ro?.disconnect());
 
 /* -------------------------------- 右下角拖动放大 -------------------------------- */
 /** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
- *  只在**锚定态**下给手柄（用户口径 2026-10-10）：没锚定时鼠标一移开卡片就没了，拉大没意义。 */
+ *  手柄**卡片一打开就给**（用户口径 2026-10-13 改了 2026-10-10 那条）：笔记卡默认不锚定，
+ *  只在锚定态给手柄 = 默认看不见把手。拉一下大小本身就置 dragged（见 onResizeDown），
+ *  所以不锚定也不会被 place() 弹回去。 */
 const sizeW = ref<number | null>(null);
 const sizeH = ref<number | null>(null);
 const rs = reactive({ on: false, corner: 'br' as 'br' | 'bl', sx: 0, sy: 0, sw: 0, sh: 0, sl: 0 });
@@ -191,6 +197,23 @@ const style = computed(() => ({
     :style="style"
     data-float-card
   >
+    <!-- 顶部独立的**拖动条**（用户口径 2026-10-13）：标题栏之上一条 14px 的窄条，
+         中间一枚 36×4 的药丸。为什么要它：头一行挤着色点 / 铅笔 / 垃圾桶，真正"空白可抓"
+         的地方太少，一不小心就点到了按钮。
+         它和 .fc-head 走**同一套**处理器（叠加，不是替代）—— 标题栏照旧能拖。
+         同样**不写 title**（用户口径 2026-10-08：不要浏览器悬浮提示），只靠光标形状说话。 -->
+    <div
+      class="fc-grab"
+      :class="{ dragging: drag.on }"
+      data-float-grab
+      @pointerdown="onHeadDown"
+      @pointermove="onHeadMove"
+      @pointerup="onHeadUp"
+      @pointercancel="onHeadUp"
+    >
+      <span class="fc-grab-pill" />
+    </div>
+
     <!-- ⚠️ 标题栏里可能有**可点的东西**（笔记框的色点 / 取色器）：
          `label` / `input` 也要排掉，否则点取色器会顺手把卡片拖一下。 -->
     <div
@@ -236,12 +259,13 @@ const style = computed(() => ({
       <slot name="footer" />
     </div>
 
-    <!-- 底部**两个角**都能拉大小（用户口径 2026-10-10），但**不画角标**：
-         只留一小块透明热区负责光标提示与拖拽 —— 之前那两条斜线用户不要了。
-         只在锚定态出现（没锚定时鼠标一移开卡片就关了，拉大没有意义）。 -->
+    <!-- 底部**两个角**都能拉大小（用户口径 2026-10-10）。
+         用户口径 2026-10-13：改成**圆角小把手**（类 iOS），而且**卡片一打开就渲染** ——
+         笔记卡默认不锚定，原来"只在锚定态给手柄"等于默认看不见，用户根本不知道能拉。
+         锚定逻辑本身没动（anchored 只管"移开鼠标关不关"），dragged / sizeW / sizeH 也不动。 -->
     <div
-      v-if="props.anchored"
       class="fc-resize br"
+      :class="{ 'is-on': rs.on && rs.corner === 'br' }"
       data-float-resize
       aria-label="拖动调整大小"
       @pointerdown="onResizeDown($event, 'br')"
@@ -250,8 +274,8 @@ const style = computed(() => ({
       @pointercancel="onResizeUp"
     />
     <div
-      v-if="props.anchored"
       class="fc-resize bl"
+      :class="{ 'is-on': rs.on && rs.corner === 'bl' }"
       data-float-resize-bl
       aria-label="拖动调整大小"
       @pointerdown="onResizeDown($event, 'bl')"
@@ -274,6 +298,20 @@ const style = computed(() => ({
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   overflow: hidden;
 }
+/* 顶部拖动条：14px 的窄条（标题栏之上），中间一枚药丸当"这里有把手"的唯一提示。
+   光标 / 不可选中 / touch-action 与标题栏完全一致（同一套拖动处理器）。 */
+.fc-grab {
+  display: flex; align-items: center; justify-content: center;
+  height: 14px; flex: none;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  cursor: grab; user-select: none; touch-action: none;
+}
+.fc-grab.dragging { cursor: grabbing; }
+.fc-grab-pill {
+  width: 36px; height: 4px; border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+}
+
 .fc-head {
   display: flex; align-items: center; gap: 4px; flex: none;
   padding: 6px 8px 6px 12px;
@@ -294,14 +332,36 @@ const style = computed(() => ({
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
 .fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
-/* 底部两个角的拖动热区：**完全透明**（用户口径 2026-10-10："不要显示直角标记"），
-   只靠光标形状（`nwse-resize` / `nesw-resize`）告诉用户这儿能拉。 */
+/* 底部两个角的拖动把手（用户口径 2026-10-13）：16×16 的热区，里面用一条**2px 圆弧**画出来 ——
+   11×11 的小方块只描右边/下边、再给一个 1/4 圆角，剩下的就是个像 iOS 那样的圆角把手。
+   静止时淡（opacity .35 + --border-strong），悬停或正在拖时升到 --accent 且不透明。
+   ⚠️ 颜色用 --border-strong 而不是 --line：token 表里**没有 --line**，
+   写了等于整条声明被丢掉（本文件开头那条 --shadow-3 就是这么消失的）。 */
 .fc-resize {
-  position: absolute; bottom: 0; width: 18px; height: 18px;
+  position: absolute; bottom: 0; width: 16px; height: 16px;
+  display: flex; align-items: flex-end;
   touch-action: none; z-index: 2;
+  opacity: .35;
+  transition: opacity var(--dur) var(--ease);
 }
-.fc-resize.br { right: 0; cursor: nwse-resize; }
-.fc-resize.bl { left: 0; cursor: nesw-resize; }
+.fc-resize::before {
+  content: ''; display: block; width: 11px; height: 11px;
+  border-right: 2px solid var(--border-strong);
+  border-bottom: 2px solid var(--border-strong);
+  border-bottom-right-radius: 10px;
+  transition: border-color var(--dur) var(--ease);
+}
+.fc-resize.br { right: 0; justify-content: flex-end; cursor: nwse-resize; }
+.fc-resize.br::before { margin: 0 2px 2px 0; }
+/* 左下角是**镜像**：描边换到左边、圆角换到左下，否则两个角会看起来一模一样（像一个直角） */
+.fc-resize.bl { left: 0; justify-content: flex-start; cursor: nesw-resize; }
+.fc-resize.bl::before {
+  border-right: 0; border-left: 2px solid var(--border-strong);
+  border-bottom-right-radius: 0; border-bottom-left-radius: 10px;
+  margin: 0 0 2px 2px;
+}
+.fc-resize:hover, .fc-resize.is-on { opacity: 1; }
+.fc-resize:hover::before, .fc-resize.is-on::before { border-color: var(--accent); }
 .fc-foot {
   display: flex; align-items: center; gap: 6px; flex: none;
   padding: 8px 12px; border-top: 1px solid var(--divider);

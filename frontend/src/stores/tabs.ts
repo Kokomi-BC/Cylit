@@ -39,6 +39,8 @@ const TAB_META: Record<string, { title: string; icon: string }> = {
   knowledge: { title: '知识库', icon: 'knowledge' },
   notes: { title: '笔记', icon: 'note' },
   models: { title: '模型', icon: 'model' },
+  // 「任务」页已并入设置（`/tasks` 现在重定向到 `/settings#tasks`）。这一条**只留给
+  // localStorage 里的旧标签**解析标题与图标 —— 打开它会重定向，不会再有新标签用它。
   tasks: { title: '任务', icon: 'task' },
   settings: { title: '设置', icon: 'settings' },
 };

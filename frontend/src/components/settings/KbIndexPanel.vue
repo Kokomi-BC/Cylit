@@ -6,6 +6,10 @@
  * **概览统计 / 论文索引表 / 索引状态与对账 / chunk 元数据**。它们都是"管理与诊断"，
  * 不属于读者要用的功能；知识库页正在按新规划重做成「搜索 + 浏览」工作台。
  *
+ * 顶上多出的「检索规模」是**唯一可写**的一块：它原来长在设置页的「常规参数」区（整区已拆），
+ * 那里真正生效的就是这几个检索数字，于是搬到"检索"这件事自己的地盘上，
+ * 仍然写 setting 表、仍然走 `PUT /settings`（只提交变更项）。
+ *
  * 数据面完全复用既有接口：`/knowledge/overview`、`/knowledge/index/status`、
  * `/knowledge/chunks`、`/knowledge/index`、`/knowledge/remove`、`/knowledge/reconcile`。
  * 这里**只读 + 触发任务**，不碰论文与译文。
@@ -13,10 +17,10 @@
  * ⚠️ 加载键统一加 `setkb-` 前缀：`state.loading` 是全页共享的，知识库页同时开着时
  * 不该互相点亮对方的"加载中"。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { ChunkMeta, KnowledgeOverview } from '@/api/types';
+import type { ChunkMeta, KnowledgeOverview, SettingsPayload } from '@/api/types';
 import {
   loadPapers, paperTitle, reportError, state, toast, withLoading,
 } from '@/stores/app';
@@ -25,6 +29,7 @@ import { copyText, paperStatus, pct } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import { readerTarget } from '@/utils/navigation';
 import Menu from '@/components/Menu.vue';
+import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
 
 /** 四类 chunk（与后端 knowledge_service.CHUNK_TYPES 一致）。 */
@@ -80,6 +85,112 @@ const chunkLimit = ref(50);
 
 // 索引状态：空字符串 = 全部知识库
 const statusPaperId = ref('');
+
+/* --------------------------- 检索规模（RAG 参数） ---------------------------
+ * 这五项原在设置页「常规参数」区（唯一带"保存设置"的一区）。该区已拆：真生效的那几项
+ * 搬到这里，数据面仍是 `PUT /settings`（**只提交变更项**，写 setting 表，重启后仍生效）。
+ *
+ * 为什么搬这一块：它们是"检索规模"本身（召回多少条、重排多少条、允不允许兜底），
+ * 与下面的 chunk 表 / 对账放一起，用户调参数时能当场看到 chunk 数变不变。
+ * 同区删掉的那四项（任务线程数 / 页面渲染 dpi / 公式裁图 dpi / 默认生成模型）不在这里复活：
+ * 前三个的读取点读的是环境变量、设置表里的值没人读，末一个已被模型系统的「默认模型」取代。
+ * ------------------------------------------------------------------------- */
+
+/** 四个数字项（三项召回一行、重排条数单独一行）。 */
+interface RagNumField {
+  key: 'rag_top_k_vector' | 'rag_top_k_lexical' | 'rag_top_k_fused' | 'rag_top_n_rerank';
+  label: string;
+  hint: string;
+  min: number;
+}
+
+type RagKey = RagNumField['key'] | 'allow_general_knowledge';
+
+const RAG_NUM: RagNumField[] = [
+  { key: 'rag_top_k_vector', label: '向量召回 top_k', hint: '语义检索取回多少条', min: 1 },
+  { key: 'rag_top_k_lexical', label: '词法召回 top_k', hint: '关键词检索取回多少条', min: 1 },
+  { key: 'rag_top_k_fused', label: '融合后 top_k', hint: '两路合并后留给重排的条数', min: 1 },
+  { key: 'rag_top_n_rerank', label: '重排条数 n', hint: '重排后交给模型引用的条数，0 = 不重排', min: 0 },
+];
+/** 三项召回一行；重排条数自己一行。 */
+const RAG_TOP = RAG_NUM.slice(0, 3);
+const RAG_RERANK = RAG_NUM[3];
+const RAG_KEYS: RagKey[] = [...RAG_NUM.map((f) => f.key), 'allow_general_knowledge'];
+
+const ragForm = reactive<Record<RagKey, number | '' | boolean>>({
+  rag_top_k_vector: '', rag_top_k_lexical: '', rag_top_k_fused: '',
+  rag_top_n_rerank: '', allow_general_knowledge: false,
+});
+/** 服务端**当前生效**的那一份：用来算"改了没有"，以及保存成功后回填。 */
+const ragBase = reactive<Record<RagKey, number | '' | boolean>>({ ...ragForm });
+const ragBusy = ref(false);
+
+/** 后端 values 是动态 JSON：在边界处收敛成"数字 or 空串 / 布尔"。 */
+function fillRag(values: Record<string, any> | null | undefined): void {
+  const v = values || {};
+  for (const f of RAG_NUM) {
+    const raw = v[f.key];
+    ragForm[f.key] = raw === null || raw === undefined || raw === '' ? '' : Number(raw);
+    ragBase[f.key] = ragForm[f.key];
+  }
+  ragForm.allow_general_knowledge = v.allow_general_knowledge === true
+    || v.allow_general_knowledge === 'true' || v.allow_general_knowledge === 1;
+  ragBase.allow_general_knowledge = ragForm.allow_general_knowledge;
+}
+
+/** 开关单独取一个布尔模型：`ragForm` 的值类型是 `number | '' | boolean`，直接 v-model 给 Switch 会是三选一。 */
+const allowGeneral = computed<boolean>({
+  get: () => ragForm.allow_general_knowledge === true,
+  set: (v) => { ragForm.allow_general_knowledge = v; },
+});
+
+const ragChanged = computed<RagKey[]>(() => RAG_KEYS.filter((k) => ragForm[k] !== ragBase[k]));
+
+async function loadRag(): Promise<void> {
+  try {
+    const data = await api.get<SettingsPayload>('/settings');
+    fillRag(data?.values);
+  } catch (err) {
+    reportError(err, '取检索规模失败');
+  }
+}
+
+async function saveRag(): Promise<void> {
+  const keys = ragChanged.value;
+  if (!keys.length) { toast('没有需要保存的改动', 'warn'); return; }
+  const patch: Record<string, unknown> = {};
+  for (const k of keys) {
+    const v = ragForm[k];
+    if (v === '') {
+      const label = RAG_NUM.find((f) => f.key === k)?.label || k;
+      toast(`「${label}」不能为空，请填入数字`, 'warn');
+      return;
+    }
+    patch[k] = v;
+  }
+  ragBusy.value = true;
+  try {
+    const res = await api.put<{
+      applied?: Record<string, unknown>;
+      rejected?: Record<string, string>;
+      values?: Record<string, unknown>;
+    }>('/settings', patch);
+    if (res?.values) fillRag(res.values);          // 以服务端生效值为准（含被拒项回滚）
+    const applied = Object.keys(res?.applied || {});
+    const rejected = res?.rejected || {};
+    if (applied.length) toast(`已保存（重启后仍生效）：${applied.join('、')}`, 'ok', 4200);
+    for (const [k, reason] of Object.entries(rejected)) {
+      toast(`「${k}」未生效：${reason}`, 'warn', 5200);
+    }
+    if (!applied.length && !Object.keys(rejected).length) {
+      toast('服务端未返回任何生效项，请检查请求内容', 'warn');
+    }
+  } catch (err) {
+    reportError(err, '保存检索规模失败');
+  } finally {
+    ragBusy.value = false;
+  }
+}
 
 /* ------------------------------ 派生值 ------------------------------ */
 
@@ -215,6 +326,7 @@ async function refreshAll(): Promise<void> {
 }
 
 onMounted(async () => {
+  void loadRag();                    // 检索参数与论文列表互不依赖，各走各的
   try { await loadPapers(); } catch { /* 论文列表失败不阻塞本面板 */ }
   await refreshAll();
 });
@@ -297,6 +409,41 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 
 <template>
   <div class="kb-panel">
+    <!-- 检索规模：本面板唯一可写的一块（原「常规参数」区里真生效的那几项） -->
+    <section class="card">
+      <div class="card-head">
+        <AppIcon name="sliders" :size="15" />检索规模
+        <span class="spacer"></span>
+        <button class="btn primary sm" :disabled="ragBusy || !ragChanged.length" @click="saveRag">
+          <AppIcon name="check" :size="14" />{{ ragBusy ? '保存中…' : '保存' }}
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="rag-grid">
+          <label class="rag-field" v-for="f in RAG_TOP" :key="f.key">
+            <span class="rag-label">{{ f.label }}</span>
+            <span class="rag-control">
+              <input type="number" :min="f.min" v-model.number="ragForm[f.key]" />
+              <i class="rag-unit">条</i>
+            </span>
+            <span class="rag-hint">{{ f.hint }}</span>
+          </label>
+        </div>
+        <label class="rag-field rag-single">
+          <span class="rag-label">{{ RAG_RERANK.label }}</span>
+          <span class="rag-control">
+            <input type="number" :min="RAG_RERANK.min" v-model.number="ragForm.rag_top_n_rerank" />
+            <i class="rag-unit">条</i>
+          </span>
+          <span class="rag-hint">{{ RAG_RERANK.hint }}</span>
+        </label>
+        <div class="rag-field rag-single">
+          <Switch v-model="allowGeneral">允许通用知识</Switch>
+          <span class="rag-hint">检索结果不够时允许模型用自身知识回答（RAG 兜底）</span>
+        </div>
+      </div>
+    </section>
+
     <!-- 概览 -->
     <section class="card">
       <div class="card-head">
@@ -341,9 +488,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
     <section class="card">
       <div class="card-head">
         <AppIcon name="layers" :size="15" />论文索引
-        <span class="badge" v-if="papers.length">{{ papers.length }} 篇</span>
         <span class="spacer"></span>
-        <span class="tiny faint">建索引 = 纳入知识库</span>
       </div>
       <div class="card-body tight">
         <table class="data fixed" v-if="papers.length">
@@ -448,7 +593,6 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
     <section class="card">
       <div class="card-head">
         <AppIcon name="list" :size="15" />Chunk 元数据
-        <span class="badge" v-if="chunks.length">{{ chunks.length }} 条</span>
         <span class="spacer"></span>
         <select v-model="chunkPaperId" @change="loadChunks" style="min-width:200px">
           <option value="">选择论文…</option>
@@ -534,4 +678,24 @@ td a.truncate { display: block; }
 
 /* 卡头里的下拉不撑满整行（卡片头是 flex，select 容易被拉长） */
 .card-head select { max-width: 300px; }
+
+/* 检索规模：三项召回一行（窄屏折成两列/一列），重排与开关各占一行。
+ * 单位跟在输入框**右侧**做后缀，不塞进输入框；数字用等宽数字，几行对齐才不跳。 */
+.rag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; }
+.rag-single { margin-top: 12px; display: grid; gap: 6px; max-width: 340px; }
+.rag-field { display: grid; gap: 6px; min-width: 0; }
+.rag-label { font-size: 12px; color: var(--text-dim); }
+.rag-control { display: flex; align-items: center; gap: 8px; }
+.rag-control input {
+  width: 100%; max-width: 120px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rag-unit { flex: none; font-style: normal; font-size: 12px; color: var(--text-faint); }
+.rag-hint { font-size: 11px; line-height: 1.5; color: var(--text-faint); }
+@media (max-width: 900px) {
+  .rag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .rag-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

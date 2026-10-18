@@ -2,12 +2,12 @@
 /**
  * 设置页「模型」面板。
  *
- * 问答模型（`model_type === "agent"`）单独排在最前：它是对话选择器的数据源，
- * 其余类型（生成 / 向量 / 重排 / 视觉 / OCR）是别处功能在用，收进折叠块，
- * 免得一屏二十行里找不着今天要换的那一个。
- * 密钥只写 `data/secrets/` 下的文件，界面只列文件名、不回显内容。
+ * 自上而下三块：**消耗统计**（UsageChart）→ **模型列表** → 密钥 / 一键导入（默认收起）。
+ * 列表里问答模型（`model_type === "agent"`）排最前：它是对话选择器的数据源，
+ * 其余类型是别处功能在用，收进折叠块，免得一屏二十行里找不着今天要换的那一个。
+ * 新建 / 编辑走 ModelForm 的两步式表单；密钥只写 `data/secrets/` 下的文件，界面只列文件名。
  */
-import { computed, nextTick, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { api } from '@/api/client';
 import type { ModelConfig, ModelPreset } from '@/api/types';
 import {
@@ -17,7 +17,8 @@ import { roundMs, truncate } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
-import Modal from '@/components/Modal.vue';
+import ModelForm from '@/components/settings/ModelForm.vue';
+import UsageChart from '@/components/settings/UsageChart.vue';
 
 /** 模型类型中文标签（类型是产品概念，不是硬编码的模型名）。 */
 const TYPE_LABEL: Record<string, string> = {
@@ -43,9 +44,12 @@ const testResults = ref<Record<string, any>>({});   // model_id -> 最近一次�
 const otherOpen = ref(false);                       // 「其他模型」默认收起
 const secretOpen = ref(false);
 const presetOpen = ref(false);
+const highlightId = ref('');                         // 刚建好的那一行，短暂提亮
 
 const secretForm = reactive({ name: '', value: '' });
 const importBaseUrl = ref('');
+
+const usageRef = ref<InstanceType<typeof UsageChart> | null>(null);
 
 /* ---------------------------- 列表分组 ---------------------------- */
 
@@ -54,11 +58,11 @@ const otherRows = computed(() => (state.models || []).filter((m) => m.model_type
 
 /** 两张卡同一套行版式，只有抬头与折叠状态不同。 */
 const groups = computed(() => [
-  { key: 'agent', title: '问答模型', rows: agentRows.value, empty: '还没有问答模型配置，对话会回落到生成模型。' },
-  { key: 'other', title: '其他模型', rows: otherRows.value, empty: '没有其它类型的模型配置。' },
+  { key: 'agent', title: '问答模型', rows: agentRows.value, empty: '还没有问答模型，对话会回落到生成模型。' },
+  { key: 'other', title: '其他模型', rows: otherRows.value, empty: '暂无。' },
 ]);
 
-/** 类型下拉：优先后端 `/models/types`（新类型不用改前端），回退到内置标签表。 */
+/** 类型胶囊：优先后端 `/models/types`（新类型不用改前端），回退到内置标签表。 */
 const allTypes = computed<string[]>(() => {
   const fromApi = state.modelTypes?.types;
   if (Array.isArray(fromApi) && fromApi.length) return [...new Set(fromApi)];
@@ -140,6 +144,7 @@ onMounted(() => {
 async function refreshAll() {
   await refresh();
   await loadPresets();
+  usageRef.value?.reload();
 }
 
 function rowBusy(key: string): boolean {
@@ -252,6 +257,7 @@ async function removeModel(m: ModelConfig) {
     await api.del(`/models/${m.id}`);
     toast('已删除模型配置', 'ok');
     await refresh();
+    usageRef.value?.reload();
   } catch (err) {
     reportError(err, '删除失败');
   } finally {
@@ -310,93 +316,65 @@ async function writeSecret() {
   }
 }
 
-/* ---------------------------- 新建 / 编辑 ---------------------------- */
+/* ---------------------------- 新建 / 编辑（统一走 ModelForm） ---------------------------- */
 
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
-const form = reactive({
-  name: '', model_type: 'agent', provider: '', model_name: '',
-  base_url: '', secret_ref: '', parametersText: '{}', enabled: true,
-});
-
-function parseParameters(text: string | null | undefined): Record<string, any> {
-  const s = String(text ?? '').trim();
-  if (!s) return {};
-  let parsed: any;
-  try {
-    parsed = JSON.parse(s);
-  } catch (err: any) {
-    throw new Error(`parameters 不是合法 JSON：${err.message}`);
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('parameters 必须是 JSON 对象');
-  }
-  return parsed;
-}
+const formDefaultType = ref('agent');
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 function openCreate(type = 'agent') {
   formMode.value = 'create';
   formTarget.value = null;
-  Object.assign(form, {
-    name: '', model_type: type, provider: '', model_name: '',
-    base_url: '', secret_ref: '', parametersText: '{}', enabled: true,
-  });
+  formDefaultType.value = type;
   formOpen.value = true;
 }
 
 function openEdit(m: ModelConfig) {
   formMode.value = 'edit';
   formTarget.value = m;
-  Object.assign(form, {
-    name: m.name || '',
-    model_type: m.model_type || 'agent',
-    provider: m.provider || '',
-    model_name: m.model_name || '',
-    base_url: m.base_url || '',
-    secret_ref: m.secret_ref || '',
-    parametersText: JSON.stringify(m.parameters || {}, null, 2),
-    enabled: m.enabled !== false,
-  });
+  formDefaultType.value = m.model_type || 'agent';
   formOpen.value = true;
 }
 
-async function submitForm() {
-  if (!form.name.trim()) { toast('请填写名称', 'warn'); return; }
-  let parameters: Record<string, any>;
-  try {
-    parameters = parseParameters(form.parametersText);
-  } catch (err: any) {
-    toast(err.message, 'error', 8000);
-    return;
-  }
-  const payload: Record<string, any> = {
-    name: form.name.trim(),
-    model_type: form.model_type,
-    provider: form.provider.trim() || 'openai_compatible',
-    model_name: form.model_name.trim() || null,
-    base_url: form.base_url.trim() || null,
-    secret_ref: form.secret_ref.trim() || null,
-    parameters,
-  };
-  if (formMode.value === 'edit') payload.enabled = !!form.enabled;
+function flash(id: string) {
+  highlightId.value = id;
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    if (highlightId.value === id) highlightId.value = '';
+    highlightTimer = null;
+  }, 2800);
+}
+
+async function submitForm(payload: Record<string, any>) {
   busyKey.value = 'submit';
   try {
     if (formMode.value === 'edit' && formTarget.value) {
       await api.put(`/models/${formTarget.value.id}`, payload);
       toast('模型配置已更新', 'ok');
+      formOpen.value = false;
+      await refresh();
+      flash(formTarget.value.id);
     } else {
-      await api.post('/models', payload);
-      toast('模型配置已创建，建议点「测试」验证连通性', 'ok', 4800);
+      const created = await api.post<any>('/models', payload);
+      formOpen.value = false;
+      await refresh();
+      const id = String(created?.id || created?.model?.id || payload.name || '');
+      if (id) flash(id);
+      toast('已创建，建议点「测试」验证连通性', 'ok', 4800);
     }
-    formOpen.value = false;
-    await refresh();
   } catch (err) {
     reportError(err, '保存失败');
   } finally {
     busyKey.value = '';
   }
 }
+
+onBeforeUnmount(() => {
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = null;
+});
 </script>
 
 <template>
@@ -412,6 +390,8 @@ async function submitForm() {
     </div>
 
     <div class="load-error" v-if="loadError">{{ loadError }}</div>
+
+    <UsageChart ref="usageRef" />
 
     <!-- 两张卡共用一套行版式：「其他模型」只是默认收起，不是另一套写法 -->
     <section class="card" v-for="g in groups" :key="g.key">
@@ -442,7 +422,7 @@ async function submitForm() {
       </div>
       <div class="card-body tight" v-else-if="g.key === 'agent' || otherOpen">
         <div class="mlist">
-          <div class="mrow" v-for="m in g.rows" :key="m.id">
+          <div class="mrow" v-for="m in g.rows" :key="m.id" :class="{ fresh: highlightId === m.id }">
             <div class="mmain">
               <input
                 v-if="renamingId === m.id"
@@ -550,35 +530,12 @@ async function submitForm() {
       </div>
     </section>
 
-    <Modal
-      :open="formOpen" :title="formMode === 'edit' ? '编辑模型' : '新建模型'"
-      wide @close="formOpen = false"
-    >
-      <div class="grid cols-2">
-        <label class="field">名称<input v-model="form.name" placeholder="界面显示用" /></label>
-        <label class="field">类型
-          <select v-model="form.model_type">
-            <option v-for="t in allTypes" :key="t" :value="t">{{ typeLabel(t) }}</option>
-          </select>
-        </label>
-        <label class="field">提供方<input v-model="form.provider" class="mono" placeholder="deepseek / dashscope / ollama" /></label>
-        <label class="field">模型名<input v-model="form.model_name" class="mono" placeholder="provider 侧的 model" /></label>
-        <label class="field">base_url<input v-model="form.base_url" class="mono" placeholder="https://…/v1" /></label>
-        <label class="field">密钥文件名<input v-model="form.secret_ref" class="mono" placeholder="provider.key" /></label>
-      </div>
-      <label class="field gap-top">parameters
-        <textarea v-model="form.parametersText" rows="6" class="mono" placeholder='{"reasoning_effort": "high"}'></textarea>
-      </label>
-      <label class="row small gap-top" v-if="formMode === 'edit'">
-        <input type="checkbox" v-model="form.enabled" /> 启用该模型
-      </label>
-      <template #footer>
-        <button class="btn" @click="formOpen = false">取消</button>
-        <button class="btn primary" :disabled="rowBusy('submit')" @click="submitForm">
-          {{ rowBusy('submit') ? '保存中…' : '保存' }}
-        </button>
-      </template>
-    </Modal>
+    <ModelForm
+      :open="formOpen" :mode="formMode" :target="formTarget"
+      :default-type="formDefaultType" :types="allTypes" :type-labels="TYPE_LABEL"
+      :presets="state.presets" :secrets="state.secrets" :busy="rowBusy('submit')"
+      @close="formOpen = false" @submit="submitForm"
+    />
   </div>
 </template>
 
@@ -630,6 +587,8 @@ async function submitForm() {
 }
 .mrow:last-child { border-bottom: 0; }
 .mrow:hover { background: var(--bg-hover); }
+/* 刚建好 / 刚保存的那一行：提亮一下再退回去（用户不用自己找"哪个是我刚建的"） */
+.mrow.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
 
 .mmain { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* 点名字就地改名：非编辑态是**文字按钮**（cursor: text 而不是 pointer：它就是"点进输入框"的手感） */

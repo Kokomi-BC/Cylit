@@ -1,0 +1,362 @@
+<script setup lang="ts">
+/**
+ * 模型分区的**消耗统计卡**：三个数字块 + 每日折线图 + 分模型排行。
+ *
+ * 折线图是手写内联 SVG（不引图表库）：
+ * - 坐标系用**像素**（容器宽度由 ResizeObserver 实测 → viewBox 与 CSS 像素 1:1），
+ *   所以描边不会被拉伸、hover 的 x→日期映射也就是一次除法；
+ * - 纵轴永远从 0 起（`max(1, 峰值)`）—— 全 0 时是贴基线的一条直线，不是 NaN 也不是空白；
+ * - 面积用同一条路径闭合到基线 + 线性渐变，末端一个实心点；
+ * - hover 出虚线游标 + 空心点 + 一个 HTML 小签（日期 / 数值），x 轴只标起止与中点。
+ *
+ * 统计接口可能还没上线（404）：**静默降级成空态**，绝不抛错、不挡整个面板；
+ * 后端就绪后这里不改一行也会自动有数。
+ */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { api } from '@/api/client';
+import type { ModelUsageStats } from '@/api/types';
+import AppIcon from '@/components/AppIcon.vue';
+
+const props = withDefaults(defineProps<{ days?: number }>(), { days: 14 });
+
+const stats = ref<ModelUsageStats | null>(null);
+const win = ref(props.days);
+
+async function load() {
+  try {
+    const data = await api.get<ModelUsageStats>('/models/usage/stats', { days: win.value });
+    stats.value = data && Array.isArray(data.days) ? data : null;
+  } catch {
+    stats.value = null;   // 接口未就绪 / 网络失败：只是没数，不是错误
+  }
+}
+
+function setWin(n: number) {
+  if (n === win.value) return;
+  win.value = n;
+  void load();
+}
+
+onMounted(() => { void load(); });
+watch(() => props.days, (n) => {
+  if (n === win.value) return;
+  win.value = n;
+  void load();
+});
+defineExpose({ reload: load });
+
+/* ---------------------------- 数字 ---------------------------- */
+
+function trim1(v: number): string {
+  const s = (Math.round(v * 10) / 10).toFixed(1);
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
+/** 万 / 亿 的紧凑写法（12400 → 1.2万），大数字不撑破数字块。 */
+function fmtN(v: number): string {
+  const n = Number(v) || 0;
+  if (n >= 1e8) return trim1(n / 1e8) + '亿';
+  if (n >= 1e4) return trim1(n / 1e4) + '万';
+  return String(Math.round(n));
+}
+
+const totals = computed(() => ({
+  total: Number(stats.value?.totals?.total) || 0,
+  today: Number(stats.value?.today?.total) || 0,
+  requests: Number(stats.value?.totals?.requests) || 0,
+}));
+
+/* ---------------------------- 折线几何 ---------------------------- */
+
+const H = 132;
+const padL = 0;    // 折线两端与上方数字左/右对齐（只给末端点留 3px，免得圆点被裁）
+const padR = 3;
+const padT = 16;
+const padB = 16;
+const innerH = H - padT - padB;
+const baseY = padT + innerH;
+
+const box = ref<HTMLDivElement | null>(null);
+const boxW = ref(640);
+let ro: ResizeObserver | null = null;
+
+function measure() {
+  const el = box.value;
+  if (el) boxW.value = Math.max(220, Math.round(el.clientWidth) || 640);
+}
+
+onMounted(() => {
+  measure();
+  if (typeof ResizeObserver === 'undefined' || !box.value) return;
+  ro = new ResizeObserver(measure);
+  ro.observe(box.value);
+});
+onBeforeUnmount(() => { ro?.disconnect(); ro = null; });
+
+const days = computed(() => stats.value?.days ?? []);
+const series = computed(() => days.value.map((d) => Number(d.total) || 0));
+const innerW = computed(() => Math.max(1, boxW.value - padL - padR));
+/** 峰值；全 0 时取 1，于是所有点正好落在基线上（直线，不是空白）。 */
+const peak = computed(() => Math.max(1, ...series.value));
+
+function xAt(i: number): number {
+  const n = series.value.length;
+  if (n <= 1) return padL + innerW.value / 2;
+  return padL + (innerW.value * i) / (n - 1);
+}
+
+function yAt(v: number): number {
+  return padT + innerH * (1 - v / peak.value);
+}
+
+interface Pt { i: number; x: number; y: number; v: number }
+
+const pts = computed<Pt[]>(() => series.value.map((v, i) => ({ i, x: xAt(i), y: yAt(v), v })));
+
+const linePath = computed(() => pts.value
+  .map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)} ${p.y.toFixed(2)}`)
+  .join(' '));
+
+/** 同一条折线闭合回基线：只有一天时宽度为 0，退化成一枚竖条（仍合法）。 */
+const areaPath = computed(() => {
+  const list = pts.value;
+  if (!list.length) return '';
+  const base = baseY.toFixed(2);
+  const head = `M${list[0].x.toFixed(2)} ${base}`;
+  const body = list.map((p) => `L${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join('');
+  return `${head}${body}L${list[list.length - 1].x.toFixed(2)} ${base}Z`;
+});
+
+const lastPt = computed(() => pts.value[pts.value.length - 1] ?? null);
+
+/** x 轴只标 起 / 中 / 止（一天时只标那个点）。 */
+const ticks = computed(() => {
+  const list = pts.value;
+  if (!list.length) return [] as Array<{ i: number; x: number; label: string; anchor: string }>;
+  const idx = list.length <= 3
+    ? list.map((p) => p.i)
+    : [...new Set([0, Math.floor((list.length - 1) / 2), list.length - 1])];
+  return idx.map((i) => ({
+    i,
+    x: list[i].x,
+    label: shortDate(days.value[i]?.date || ''),
+    anchor: i === 0 ? 'start' : (i === list.length - 1 ? 'end' : 'middle'),
+  }));
+});
+
+function shortDate(d: string): string {
+  const s = String(d || '');
+  if (s.length >= 10) return `${s.slice(5, 7)}/${s.slice(8, 10)}`;
+  return s;
+}
+
+/* ---------------------------- hover ---------------------------- */
+
+const hoverIdx = ref(-1);
+
+function onMove(ev: MouseEvent) {
+  const el = box.value;
+  const n = series.value.length;
+  if (!el || !n) return;
+  const r = el.getBoundingClientRect();
+  // 容器被 max-width 压窄时 svg 是等比缩放的，先把鼠标位置换算回坐标系像素
+  const mx = (ev.clientX - r.left) * (r.width ? boxW.value / r.width : 1);
+  const i = n <= 1 ? 0 : Math.round(((mx - padL) / innerW.value) * (n - 1));
+  hoverIdx.value = Math.max(0, Math.min(n - 1, i));
+}
+
+function onLeave() { hoverIdx.value = -1; }
+
+const hoverPt = computed<Pt | null>(() => pts.value[hoverIdx.value] ?? null);
+/** 点太靠上时小签改挂在下方，否则会顶出卡片。 */
+const tipBelow = computed(() => (hoverPt.value ? hoverPt.value.y < padT + 34 : false));
+
+/** 小签的横坐标：贴边时向内收一点，否则会被容器边缘裁掉半截。 */
+const tipX = computed(() => {
+  const p = hoverPt.value;
+  if (!p) return 0;
+  const pad = 44;
+  return Math.min(Math.max(p.x, pad), Math.max(pad, boxW.value - pad));
+});
+
+/* ---------------------------- 分模型排行 ---------------------------- */
+
+const rank = computed(() => {
+  const rows = (stats.value?.by_model ?? [])
+    .map((r) => ({ name: r.name || r.model_name || r.model_config_id || '未命名', total: Number(r.total) || 0 }))
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const top = rows.slice(0, 5);
+  const rest = rows.slice(5).reduce((s, r) => s + r.total, 0);
+  const sum = top.reduce((s, r) => s + r.total, 0) + rest;
+  const out = top.map((r) => ({ ...r, share: sum ? r.total / sum : 0 }));
+  if (rest > 0) out.push({ name: '其他', total: rest, share: sum ? rest / sum : 0 });
+  return out;
+});
+
+/** 渐变 id 必须全局唯一：同页两个实例共用 "u-grad" 会互相抢。 */
+const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
+</script>
+
+<template>
+  <section class="card usage">
+    <div class="card-head usage-head">
+      <span class="hd-title"><AppIcon name="gauge" :size="14" />消耗</span>
+      <span class="spacer"></span>
+      <div class="seg win" role="group" aria-label="统计窗口">
+        <button type="button" :class="{ active: win === 14 }" @click="setWin(14)">14 天</button>
+        <button type="button" :class="{ active: win === 30 }" @click="setWin(30)">30 天</button>
+      </div>
+    </div>
+
+    <!-- 接口未就绪 / 无任何记录：一行，不占屏 -->
+    <div class="card-body usage-none" v-if="!days.length">
+      <AppIcon name="gauge" :size="14" /><span>暂无消耗记录</span>
+    </div>
+
+    <div class="card-body usage-body" v-else>
+      <div class="usage-main">
+        <div class="nums">
+          <div class="num-block">
+            <b class="n">{{ fmtN(totals.total) }}</b><span class="k">总消耗</span>
+          </div>
+          <div class="num-block">
+            <b class="n">{{ fmtN(totals.today) }}</b><span class="k">今日</span>
+          </div>
+          <div class="num-block">
+            <b class="n">{{ fmtN(totals.requests) }}</b><span class="k">请求数</span>
+          </div>
+        </div>
+
+        <div
+          class="chart" ref="box" @mousemove="onMove" @mouseleave="onLeave"
+          :aria-label="`近 ${win} 天每日 token 消耗`"
+        >
+          <svg :width="boxW" :height="H" :viewBox="`0 0 ${boxW} ${H}`" role="img">
+            <defs>
+              <linearGradient :id="gradId" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" class="g-a" />
+                <stop offset="100%" class="g-b" />
+              </linearGradient>
+            </defs>
+
+            <line class="axis" :x1="padL" :y1="baseY" :x2="boxW - padR" :y2="baseY" />
+            <path class="area" :d="areaPath" :fill="`url(#${gradId})`" />
+            <path class="ln" :d="linePath" />
+
+            <circle class="end" v-if="lastPt" :cx="lastPt.x" :cy="lastPt.y" r="3" />
+
+            <g v-if="hoverPt">
+              <line class="guide" :x1="hoverPt.x" :y1="padT" :x2="hoverPt.x" :y2="baseY" />
+              <circle class="hp" :cx="hoverPt.x" :cy="hoverPt.y" r="3.6" />
+            </g>
+
+            <text
+              class="tick" v-for="t in ticks" :key="t.i"
+              :x="t.x" :y="H - 2" :text-anchor="t.anchor"
+            >{{ t.label }}</text>
+          </svg>
+
+          <div
+            class="tip" :class="{ below: tipBelow }" v-if="hoverPt"
+            :style="{ left: tipX + 'px', top: hoverPt.y + 'px' }"
+          >
+            <b>{{ fmtN(hoverPt.v) }}</b>
+            <span>{{ days[hoverPt.i]?.date }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rank">
+        <div class="rank-title">分模型</div>
+        <template v-if="rank.length">
+          <div class="rank-row" v-for="r in rank" :key="r.name">
+            <span class="rk-name truncate" :title="r.name">{{ r.name }}</span>
+            <span class="rk-n">{{ fmtN(r.total) }}</span>
+            <span class="rk-bar"><i :style="{ width: Math.max(3, r.share * 100) + '%' }" /></span>
+            <span class="rk-p">{{ Math.round(r.share * 100) }}%</span>
+          </div>
+        </template>
+        <div class="rank-none" v-else>暂无消耗记录</div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.usage-head { font-weight: 600; }
+.hd-title { display: inline-flex; align-items: center; gap: 7px; }
+/* 14/30 天用全站那枚胶囊（.seg），高度跟着控件规范走 */
+.win { height: var(--control-h-sm); }
+.win button { height: calc(var(--control-h-sm) - 6px); font-size: 12px; padding: 0 10px; }
+
+.usage-none {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--text-faint); font-size: 12.5px;
+}
+
+.usage-body { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) 248px; }
+
+.nums { display: flex; align-items: flex-end; gap: 22px; }
+.num-block { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.num-block .n {
+  font-size: 23px; font-weight: 650; line-height: 1.1; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.num-block .k { font-size: 11.5px; color: var(--text-faint); }
+
+/* 图表：容器即坐标系（svg 的 CSS 像素 = 计算像素），hover 只需要减 left */
+.chart { position: relative; margin-top: 10px; max-width: 100%; }
+.chart svg { display: block; max-width: 100%; }
+
+.axis { stroke: var(--divider); stroke-width: 1; }
+.area { stroke: none; }
+.g-a { stop-color: var(--accent); stop-opacity: .26; }
+.g-b { stop-color: var(--accent); stop-opacity: 0; }
+.ln { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.end { fill: var(--accent); }
+.guide { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55; }
+.hp { fill: var(--bg-elev); stroke: var(--accent); stroke-width: 1.8; }
+.tick { font-size: 10px; fill: var(--text-faint); font-family: var(--mono); }
+
+/* hover 小签：贴在游标点上方的玻璃片，永远不挡折线 */
+.tip {
+  position: absolute; z-index: 2; pointer-events: none;
+  transform: translate(-50%, -140%);
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px 9px; border-radius: var(--r-sm);
+  background: var(--glass-flyout-bg); backdrop-filter: var(--glass-flyout-blur);
+  -webkit-backdrop-filter: var(--glass-flyout-blur);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-1);
+  white-space: nowrap;
+}
+.tip.below { transform: translate(-50%, 10px); }
+.tip b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }
+.tip span { font-size: 10.5px; color: var(--text-faint); font-family: var(--mono); }
+
+/* 分模型排行：名字 + 总量一行，占比横条 + 百分数一行 */
+.rank { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.rank-title { font-size: 11.5px; font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
+.rank-row {
+  display: grid; gap: 2px 8px; min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name n" "bar p";
+}
+.rk-name { grid-area: name; font-size: 12px; color: var(--text); }
+.rk-n { grid-area: n; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.rk-bar {
+  grid-area: bar; height: 4px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--text) 10%, transparent); align-self: center;
+}
+.rk-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--accent); opacity: .75; }
+.rk-p {
+  grid-area: p; font-size: 10.5px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums; min-width: 30px; text-align: right;
+}
+.rank-none { font-size: 12px; color: var(--text-faint); }
+
+@media (max-width: 860px) {
+  .usage-body { grid-template-columns: minmax(0, 1fr); }
+  .nums { gap: 18px; }
+}
+</style>

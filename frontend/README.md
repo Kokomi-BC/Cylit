@@ -102,7 +102,7 @@ frontend/
    │                     · ReaderToc（中英双语目录）· ReaderSidePanel（侧栏内容区）
    │                     · ReaderFormulaList（从 Markdown 提取的公式，只读）· SelectionMenu
    └─ views/             LibraryView · ReaderView · KnowledgeView
-                         · NotesView · ModelsView · TasksView · SettingsView
+                         · NotesView · ModelsView · SettingsView
 ```
 
 ## 4. 三个必须知道的坑（都已在 `docs/dev-log.md` 记录）

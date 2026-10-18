@@ -442,10 +442,54 @@ export interface ModelTypeDefault {
   is_mock?: boolean;
 }
 
+/** 预设里**某一种类型**的完整配置（`generation` / `agent` / `embedding` / `reranker` / `vision`）。 */
+export interface ModelPresetSpec {
+  provider?: string;
+  model_name?: string;
+  base_url?: string | null;
+  /** 密钥文件名（不是密钥内容） */
+  secret_ref?: string | null;
+  parameters?: Record<string, unknown>;
+}
+
+/** `GET /models/presets` 一条：可一键填满新建表单的模板（后端的空档位是 `null`）。 */
 export interface ModelPreset {
   id: string;
   label: string;
   provider: string;
+  generation?: ModelPresetSpec | null;
+  agent?: ModelPresetSpec | null;
+  embedding?: ModelPresetSpec | null;
+  reranker?: ModelPresetSpec | null;
+  vision?: ModelPresetSpec | null;
+}
+
+/** `GET /models/usage/stats` 的一天（后端已按天零填充、旧→新）。 */
+export interface ModelUsageDay {
+  date: string;
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
+/** 分模型消耗一行。 */
+export interface ModelUsageByModel {
+  /** 配置已被删掉时后端回 `null`（历史消耗仍要上榜） */
+  model_config_id: string | null;
+  name: string;
+  model_name: string | null;
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
+/** 模型消耗统计（`GET /models/usage/stats?days=14`）。 */
+export interface ModelUsageStats {
+  days: ModelUsageDay[];
+  by_model: ModelUsageByModel[];
+  totals: { prompt: number; completion: number; total: number; requests: number };
+  today: { date: string; total: number };
+  range: { days: number; from: string; to: string };
 }
 
 export interface KnowledgeOverview {
@@ -931,6 +975,54 @@ export interface AgentStatus {
     attachment_inline_limit: number;
   };
 }
+
+/** agent 技能目录里的一条（`GET /agent/skills`）。
+ *
+ * `builtin` = 随仓库发的**自带技能**：可以禁用（`PUT /agent/skills/{name}`）但删不掉
+ * （`DELETE` 对自带技能回 403，前端干脆不给卸载入口）；`chars` 是 SKILL.md 的字符数，
+ * 设置页只用它判"这个技能是不是空的"。
+ */
+export interface AgentSkill {
+  name: string;
+  description: string;
+  builtin: boolean;
+  enabled: boolean;
+  chars: number;
+  updated_at?: string | null;
+}
+
+/** `GET /agent/skills`：技能表 + 技能目录（后端还没上线这一组接口时，前端按空态降级）。 */
+export interface AgentSkillsPayload {
+  skills: AgentSkill[];
+  dir?: string;
+}
+
+/** `POST /agent/skills/upload`（multipart 字段名 `file`，.zip 内含 `<name>/SKILL.md`）。 */
+export interface AgentSkillsUploadResult extends AgentSkillsPayload {
+  /** 本次新增/覆盖的技能名（前端拿它拼"已上传：a、b"这句 toast） */
+  added?: string[];
+}
+
+/** 运行限额（`GET/PUT /agent/limits`）：agent 服务的启动参数，**改完要重启 agent 服务**。 */
+export interface AgentLimits {
+  /** 单轮工具轮数上限 */
+  max_rounds: number;
+  /** 单轮检索次数预算 */
+  search_budget: number;
+  /** 单轮时限（秒） */
+  deadline_seconds: number;
+  /** 上下文预算（tokens） */
+  context_budget: number;
+  /** 自动压缩触发线（上下文用量的百分比） */
+  compact_threshold: number;
+  /** 单轮最多送几张图给视觉模型 */
+  image_max_pages: number;
+  /** 改动是否还没被 agent 服务吃到（`PUT` 恒回 true；只读，不回传） */
+  restart_required: boolean;
+}
+
+/** `PUT /agent/limits` 的请求体：六个数字，**不带 `restart_required`**。 */
+export type AgentLimitsPatch = Omit<AgentLimits, 'restart_required'>;
 
 /** 划词解释：选区 + 可选追问（`question` 为空时后端默认"解释这段内容"）。
  *

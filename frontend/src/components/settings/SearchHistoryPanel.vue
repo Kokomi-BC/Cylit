@@ -86,10 +86,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="card">
-    <div class="card-head">
-      <AppIcon name="search" :size="15" />搜索记录
-      <span class="badge" v-if="entries.length">{{ entries.length }} 条</span>
+  <div class="sh">
+    <!-- 控制条：标题与"只存本机"都在窗格抬头，这里只放要动手的两样 -->
+    <div class="toolbar">
       <span class="spacer"></span>
       <label class="tiny faint row nowrap">
         最多保留
@@ -101,8 +100,9 @@ onUnmounted(() => {
         <AppIcon name="trash" :size="14" />清空
       </button>
     </div>
-    <div class="card-body tight">
-      <table class="data fixed" v-if="entries.length">
+
+    <div class="card" v-if="entries.length">
+      <table class="data fixed">
         <thead>
           <tr>
             <th>搜索词</th>
@@ -128,16 +128,9 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
-      <div class="empty" v-else>
-        还没有搜索记录 —— 在「知识库」页检索一次就会记在这里。
-      </div>
     </div>
-    <div class="card-body note">
-      <span class="tiny faint">
-        只存在<strong>本机浏览器</strong>：换设备或清理浏览器数据都会一起消失。
-      </span>
-    </div>
-  </section>
+    <div class="empty" v-else>还没有搜索记录。</div>
+  </div>
 </template>
 
 <style scoped>
@@ -146,7 +139,5 @@ onUnmounted(() => {
 .w-hits { width: 64px; }
 .w-time { width: 96px; }
 .w-ops { width: 56px; }
-/* 分隔线用卡片自己的 divider，上面那块 body 已经带了 8px 内边距 */
-.note { padding: 8px 16px 12px; }
-.card-head select { max-width: 120px; }
+select { max-width: 120px; }
 </style>

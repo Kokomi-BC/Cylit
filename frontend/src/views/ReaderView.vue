@@ -5227,8 +5227,74 @@ async function deleteNotePopover() {
   } catch (err) { reportError(err, '删除笔记失败'); } finally { notePop.busy = false; }
 }
 
+/* ---------------------- 删除笔记的二级确认（用户口径 2026-10-13） ----------------------
+ * 头部那枚垃圾桶**不再直接删**：先弹一小块贴着按钮的菜单问一句「删除这条笔记 / 取消」。
+ * 为什么不用全站那个居中 Modal（askConfirm）：删一条笔记弹整页遮罩比误删更烦人；
+ * 菜单跟着按钮走，**点别处 / Esc 就收起**（与 Menu.vue 一个行为）。
+ * 定位自己算（fixed + Teleport 到 body）：浮层壳是 overflow: hidden，留在卡片里会被裁掉。
+ * 状态就用一个局部 ref，不去动 notePop 的结构。
+ */
+const noteDelMenu = ref({ open: false, top: 0, left: 0 });
+/** 菜单尺寸上界（两项 + 内边距 ≈ 74px）：只用来判断"下面放不下就翻到按钮上方" */
+const NOTE_DEL_MENU_W = 176;
+const NOTE_DEL_MENU_H = 74;
+
+function closeNoteDelMenu() {
+  if (!noteDelMenu.value.open) return;
+  noteDelMenu.value = { open: false, top: 0, left: 0 };
+}
+
+/** 贴着那枚垃圾桶：右对齐、向下 6px；下方放不下就翻到按钮上方，左右夹在视口里。
+ *  再点一次垃圾桶 = 收起（下面的"点别处"监听刻意把垃圾桶排在外面，就是为了让这里能 toggle）。 */
+function openNoteDelMenu(ev: MouseEvent) {
+  if (noteDelMenu.value.open) { closeNoteDelMenu(); return; }
+  const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  let top = r ? r.bottom + 6 : 12;
+  let left = r ? r.right - NOTE_DEL_MENU_W : 12;
+  left = Math.max(8, Math.min(left, window.innerWidth - NOTE_DEL_MENU_W - 8));
+  if (top + NOTE_DEL_MENU_H > window.innerHeight - 8) {
+    top = r ? Math.max(8, r.top - NOTE_DEL_MENU_H - 6) : 8;
+  }
+  noteDelMenu.value = { open: true, top: Math.round(top), left: Math.round(left) };
+}
+
+function onNoteDelOutside(ev: PointerEvent) {
+  /* 菜单自己 + 那枚垃圾桶都算"里面"：再点一次垃圾桶走收起（否则 pointerdown 先收起、
+     紧接着的 click 又打开 —— 看着像点不动）。 */
+  if ((ev.target as HTMLElement | null)?.closest?.('[data-note-del-menu], [data-note-delete]')) return;
+  closeNoteDelMenu();
+}
+function onNoteDelKeydown(ev: KeyboardEvent) {
+  if (ev.key !== 'Escape') return;
+  ev.preventDefault();
+  ev.stopPropagation();          // 捕获阶段就拦住：别让全局 Esc（收浮层）顺手再跑一遍
+  closeNoteDelMenu();
+}
+
+/** 全局监听只在菜单打开期间挂（不打开就一个都不挂） */
+watch(() => noteDelMenu.value.open, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', onNoteDelOutside, true);
+    document.addEventListener('keydown', onNoteDelKeydown, true);
+  } else {
+    document.removeEventListener('pointerdown', onNoteDelOutside, true);
+    document.removeEventListener('keydown', onNoteDelKeydown, true);
+  }
+});
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onNoteDelOutside, true);
+  document.removeEventListener('keydown', onNoteDelKeydown, true);
+});
+
+/** 只有点「删除这条笔记」才真的删（原来那枚垃圾桶的动作原样搬到这里） */
+function onNoteDelConfirm() {
+  closeNoteDelMenu();
+  void deleteNotePopover();
+}
+
 function closeNotePopover() {  window.clearTimeout(noteHideTimer);
   cancelNoteOpen();                 // 还没到延时的那一次也别再弹了
+  closeNoteDelMenu();               // 卡片都关了，那块确认菜单不能留在屏幕上
   notePop.open = false;
   notePop.anchored = false;
   notePop.mode = 'view';
@@ -6480,7 +6546,9 @@ function renderMarkdown(text?: string | null) {
         <!-- 相对时间只在**查看态**显示：编辑态标题行里已经挤了色点行，再塞一条时间就会把标题压没 -->
         <span v-if="notePop.mode === 'view' && noteTime" class="np-time">{{ noteTime }}</span>
         <!-- 头部按键照参考实现（铅笔 = 编辑 / 垃圾桶 = 删除，关关闭是壳自带的 ✕）：
-             查看态给铅笔，编辑态把它换成 ✓ 保存。 -->
+             查看态给铅笔，编辑态把它换成 ✓ 保存。
+             用户口径 2026-10-13：**查看态不再给垃圾桶**（只读姿态里不该出现删除），
+             删除只留在**编辑态**；而且点它不再直接删 —— 先弹一小块二级菜单确认。 -->
         <button v-if="notePop.mode === 'view' && notePop.noteId" class="np-head-save" type="button"
                 title="编辑笔记" data-note-edit
                 @click="notePop.mode = 'edit'; notePop.draft = notePop.content">
@@ -6490,8 +6558,10 @@ function renderMarkdown(text?: string | null) {
                 :disabled="notePop.busy" title="保存笔记" data-note-save @click="saveNotePopover">
           <AppIcon name="check" :size="13" />
         </button>
-        <button v-if="notePop.noteId" class="np-head-save danger" type="button"
-                :disabled="notePop.busy" title="删除笔记" data-note-delete @click="deleteNotePopover">
+        <button v-if="notePop.mode !== 'view' && notePop.noteId" class="np-head-save danger" type="button"
+                :disabled="notePop.busy" title="删除笔记" data-note-delete
+                aria-haspopup="menu" :aria-expanded="noteDelMenu.open"
+                @click="openNoteDelMenu($event)">
           <AppIcon name="trash" :size="13" />
         </button>
       </template>
@@ -6517,6 +6587,29 @@ function renderMarkdown(text?: string | null) {
            那个 footer 就算只有一行按钮，也会带出一条 1px 上线，看着像正文外面套了一圈框。
            编辑 / 保存 / 删除 / 关闭 全走头部按键（铅笔 / ✓ / 垃圾桶 / ✕）。 -->
     </FloatingCard>
+
+    <!-- 删除的**二级确认**（用户口径 2026-10-13）：贴着头部那枚垃圾桶弹出，点别处 / Esc 收起。
+         ⚠️ 必须 Teleport 到 body：浮层壳是 overflow: hidden + 12px 圆角，留在卡片里会被裁掉。
+         坐标在 openNoteDelMenu 里按按钮矩形算好（fixed，相对视口），这里只负责画。 -->
+    <Teleport to="body">
+      <div
+        v-if="noteDelMenu.open"
+        class="note-del-menu"
+        data-note-del-menu
+        role="menu"
+        aria-label="确认删除这条笔记"
+        :style="{ top: noteDelMenu.top + 'px', left: noteDelMenu.left + 'px' }"
+      >
+        <button type="button" class="note-del-item danger" role="menuitem"
+                data-note-del-confirm @click="onNoteDelConfirm">
+          <AppIcon name="trash" :size="13" /><span>删除这条笔记</span>
+        </button>
+        <button type="button" class="note-del-item" role="menuitem"
+                data-note-del-cancel @click="closeNoteDelMenu">
+          <span>取消</span>
+        </button>
+      </div>
+    </Teleport>
 
     <!-- 引用标号的浮层（用户口径 2026-10-08 第二条）：点正文里的 `[2, 4, 10]` 就在标号下面
          弹这么一小块，只放那几条参考文献的卡片本体（与侧栏/详情弹窗同一份 `ReferenceList`，
@@ -7361,6 +7454,30 @@ function renderMarkdown(text?: string | null) {
 /* 删除键（头部那枚垃圾桶）：语义色与全站 danger 一致 */
 .np-head-save.danger { background: var(--danger-soft); color: var(--danger); }
 .np-head-save.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+
+/* ---- 删除的二级确认菜单（用户口径 2026-10-13）----
+   观感**照 Menu.vue 的浮层**来（同圆角档、同阴影、同 danger 语义色），但只有两项、
+   没有触发钮 —— 触发钮就是头部那枚垃圾桶，位置由 openNoteDelMenu 算好后写在 style 上。
+   Teleport 到 body 的节点仍然带本组件的 scoped 属性，所以这几条样式对它生效。 */
+.note-del-menu {
+  position: fixed; z-index: 320; min-width: 176px;
+  padding: 5px; display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-flyout);
+}
+.note-del-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 10px; border: 0; border-radius: var(--radius-ctl);
+  background: transparent; color: var(--text);
+  font-family: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.note-del-item:hover { background: var(--bg-hover); }
+.note-del-item:focus-visible { outline: none; box-shadow: var(--ring); background: var(--bg-hover); }
+.note-del-item.danger { color: var(--danger); }
+.note-del-item.danger:hover { background: var(--danger-soft); }
 /* ---- 翻页 / 视图切换动效（用户口径 2026-10-10）----
    页面块出现/重建时**只淡入 opacity**。
    ⚠️ 故意**不用 transform**：① 那会给块建一个"包含块"，里面的 `position: fixed` 定位会跟着跑；

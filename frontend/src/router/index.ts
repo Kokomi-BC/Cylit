@@ -30,8 +30,24 @@ const routes: RouteRecordRaw[] = [
   // 模型管理并进了设置页的「模型」区。老标签页 / 老书签仍会打到 /models，
   // 保留 name 是为了让 localStorage 里那批旧标签还能解析出标题，路径本身直接重定向到对应分区。
   { path: '/models', name: 'models', redirect: '/settings#models' },
-  { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue'), meta: { title: '任务' } },
-  { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '设置' } },
+  // 任务页并进了设置页的「任务队列」区（队列本来就是设置的一部分）。
+  // 老标签页 / 老书签到 /tasks 直接落到那一区；name 保留是为了让 localStorage 里那批旧标签
+  // 还能解析出标题（见 stores/tabs.ts 的 TAB_META）。
+  { path: '/tasks', name: 'tasks', redirect: '/settings#tasks' },
+  {
+    path: '/settings', name: 'settings',
+    component: () => import('@/views/SettingsView.vue'),
+    meta: { title: '设置' },
+    // 设置页的「常规参数」整区已拆（检索参数并进「索引管理」，其余四项直接删除），
+    // 老深链 / 老标签里的 /settings#general 落到「索引管理」，不给一屏空白。
+    // 写法与上面 /models → /settings#models 同一思路，差别只在**锚点落在同一路径上**：
+    // 那种情形用不了 route-level `redirect`（重定向目标还是自己，会自指死循环，
+    // 而 vue-router 的 redirect 函数类型也不接受 "undefined = 不改写"），
+    // 所以改用进入前的守卫：hash 是旧分区名就地换成新锚点，其余原样放行。
+    beforeEnter: (to) => (to.hash === '#general'
+      ? { path: '/settings', hash: '#kb', replace: true }
+      : true),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/home' },
 ];
 

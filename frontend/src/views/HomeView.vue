@@ -51,7 +51,6 @@ const FACES = [
 /** 研究工具：信息密度降一档 —— 名称已经能说明问题，提示语进 `title`，不再占一行字 */
 const TOOLS = [
   { name: 'notes', label: '笔记', icon: 'note', hint: '批注、笔记与高亮' },
-  { name: 'tasks', label: '任务', icon: 'task', hint: '队列、进度与重试' },
   { name: 'settings', label: '设置', icon: 'settings', hint: '参数、模型、索引与搜索记录' },
 ];
 
@@ -263,7 +262,8 @@ async function openUnderstand(id: string) {
 .b-desc { max-width: 34em; font-size: 13.5px; line-height: 1.7; color: var(--text-dim); }
 
 /* ── ③ 研究工具：一行 pill ── */
-.tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+/* 两枚 pill 就铺两列：写死 3 列会在右边留一块空洞 */
+.tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .tool {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl); background: var(--bg-elev);
@@ -281,7 +281,6 @@ async function openUnderstand(id: string) {
   .hero { grid-template-columns: minmax(0, 1fr); row-gap: 14px; padding-bottom: 24px; }
   .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sp3, .sp4, .sp5, .sp7 { grid-column: auto; }
-  .tools { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dots { display: none; }
 }
 @media (max-width: 640px) {
