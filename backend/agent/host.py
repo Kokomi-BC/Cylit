@@ -88,9 +88,15 @@ class HostClient:
         return resp.content, resp.headers.get("content-type", "image/png")
 
     # ---------------- 拓扑用到的具体接口 ----------------
-    async def model_config(self) -> dict:
-        """模型配置（含已解析的 key）。agent **只**从这一条路拿模型与密钥。"""
-        data = await self.get("/agent/model-config")
+    async def model_config(self, config_id: str | None = None,
+                           reasoning_effort: str | None = None) -> dict:
+        """模型配置（含已解析的 key）。agent **只**从这一条路拿模型与密钥。
+
+        ``config_id`` / ``reasoning_effort`` 用会话行上选的那一份；都不给 = 跟随默认。
+        """
+        params = {k: v for k, v in (("config_id", config_id),
+                                    ("reasoning_effort", reasoning_effort)) if v}
+        data = await self.get("/agent/model-config", params or None)
         return dict(data or {})
 
     async def archive(self, paper_id: str) -> dict:

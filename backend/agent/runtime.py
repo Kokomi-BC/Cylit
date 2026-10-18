@@ -63,7 +63,10 @@ class AskRequest:
     parent_id: str | None = None
     #: 可见分支的历史（主后端从 MySQL 取好传进来，agent 不碰数据库）
     history: list[dict] = field(default_factory=list)
+    #: 会话行上的模型与推理等级（主后端取好带过来；空 = 跟随默认）。
+    #: 两个都要参与模型配置缓存的键，否则同一进程里换模型会串味（见 `model_config`）。
     model_id: str | None = None
+    reasoning_effort: str = ""
     #: 划词解释：``{text, block_id?, page?}``。有它时 `question` 可以为空（默认"解释这段内容"）
     selection: dict | None = None
     #: 这条会话**冻结**的问答风格（主后端按会话行取好带过来；空 = 用 `prompts.DEFAULT_STYLE`）。
@@ -111,7 +114,7 @@ class RunState:
 # --------------------------------------------------------------------------
 
 
-def model_settings_from(parameters: dict) -> dict:
+def model_settings_from(parameters: dict, effort: str | None = None) -> dict:
     """把主后端存的 ``parameters`` 翻译成 pydantic-ai 的 model_settings。
 
     与 `providers/generation/openai_compatible.py` 的口径保持一致（那是翻译链路验证过的）：
@@ -131,7 +134,11 @@ def model_settings_from(parameters: dict) -> dict:
         out["max_tokens"] = int(p["max_tokens"])
     if extra:
         out["extra_body"] = extra
-    if p.get("reasoning_effort") and not disabled:
+    # 会话选的等级**原样**透传：厂商档位名各不相同（low/medium/high、minimal、none…），
+    # 校验或映射只会把用户填的东西改成厂商不认识的；配置里那一档仍按老口径（关思考就不传）。
+    if effort:
+        out["openai_reasoning_effort"] = str(effort)
+    elif p.get("reasoning_effort") and not disabled:
         out["openai_reasoning_effort"] = str(p["reasoning_effort"])
     if disabled:
         if p.get("temperature") is not None:
@@ -189,8 +196,10 @@ class AgentRuntime:
         self.host = host
         self._workspace = ReadOnlyWorkspace(cfg.skills_dir)
         self._skills = Skills(self._SKILL_LIBRARY, workspace=self._workspace)
-        self._model_cfg: dict = {}
-        self._model_at = 0.0
+        # 模型配置缓存：键 = (config_id, 推理等级)。**必须按 override 分桶** ——
+        # 只留一份的话，同一进程里两条会话各换一个模型，后取到的会把前一个盖掉，
+        # 于是建模用的是上一条会话的模型（串味）。
+        self._model_cfgs: dict[tuple[str, str], tuple[float, dict]] = {}
         self._model_lock = asyncio.Lock()
 
     # ---------------- 资源 ----------------
@@ -208,15 +217,20 @@ class AgentRuntime:
         """
         self._skills = Skills(self._SKILL_LIBRARY, workspace=self._workspace)
 
-    async def model_config(self, force: bool = False) -> dict:
-        if not force and self._model_cfg and (time.time() - self._model_at) < MODEL_CONFIG_TTL:
-            return self._model_cfg
+    async def model_config(self, config_id: str | None = None,
+                           reasoning_effort: str | None = None,
+                           *, force: bool = False) -> dict:
+        key = (str(config_id or ""), str(reasoning_effort or ""))
+        cached = self._model_cfgs.get(key)
+        if not force and cached and (time.time() - cached[0]) < MODEL_CONFIG_TTL:
+            return cached[1]
         async with self._model_lock:
-            if not force and self._model_cfg and (time.time() - self._model_at) < MODEL_CONFIG_TTL:
-                return self._model_cfg
-            self._model_cfg = await self.host.model_config()
-            self._model_at = time.time()
-            return self._model_cfg
+            cached = self._model_cfgs.get(key)
+            if not force and cached and (time.time() - cached[0]) < MODEL_CONFIG_TTL:
+                return cached[1]
+            cfg = await self.host.model_config(config_id or None, reasoning_effort or None)
+            self._model_cfgs[key] = (time.time(), cfg)
+            return cfg
 
     async def skill_list(self) -> list[dict]:
         """已加载的 skill（名 / 描述 / 正文长度 / 来源）。
@@ -545,18 +559,19 @@ class AgentRuntime:
     # ---------------- 模型流 ----------------
     async def _stream_model(self, req: AskRequest, deps: Deps, state: RunState,
                             deadline: float, t0: float) -> AsyncIterator[dict]:
-        model_cfg = await self.model_config()
+        model_cfg = await self.model_config(req.model_id, req.reasoning_effort)
         if not model_cfg.get("usable"):
             # 明确失败，不要让 mock 模型编一段像样的答案（那比报错更坏）
             which = "generation（回落）" if model_cfg.get("fallback_to_generation") else "agent"
             yield {"type": "error", "code": "MODEL_NOT_CONFIGURED",
                    "message": f"问答模型没有配好（当前用的是 {which}，provider="
-                              f"{model_cfg.get('provider')}）。请到设置页给「问答」配一个"
-                              f"支持工具调用的模型并填好 API Key。",
+                              f"{model_cfg.get('provider')}）。请到「设置 · 模型」里给"
+                              f"「论文问答」（agent）类型配一个支持工具调用的模型并填好 API Key。",
                    "retryable": False}
             return
         agent = self._build_agent(model_cfg)
-        settings = model_settings_from(model_cfg.get("parameters") or {})
+        settings = model_settings_from(model_cfg.get("parameters") or {},
+                                       effort=req.reasoning_effort)
         sanitizer = StreamingAnswerSanitizer(deps.registry)
         limits = UsageLimits(request_limit=self.cfg.max_rounds)
         sent_refs: set[int] = set()

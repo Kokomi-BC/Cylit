@@ -139,6 +139,7 @@ def create_app() -> FastAPI:
             history=list(payload.get("history") or []),
             style=str(payload.get("agent_style") or ""),
             model_id=payload.get("model_id"),
+            reasoning_effort=str(payload.get("reasoning_effort") or ""),
             selection=selection,
             attachments=list(attachments),
         )

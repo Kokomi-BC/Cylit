@@ -66,12 +66,14 @@ class RateLimitError(ProviderError):
 
 class ModelNotConfiguredError(ProviderError):
     code = "MODEL_NOT_CONFIGURED"
-    http_status = 503
+    # 缺模型是用户去 /models 就能自解的状态，不是服务端临时故障：别用 5xx，
+    # 否则前端/网关会当成"稍后重试"，而 retryable=False 说明重试永远没用。
+    http_status = 400
 
     def __init__(self, model_type: str):
         super().__init__(
-            f"未配置可用的 {model_type} 模型。请在 /models 中新增模型并设为默认，"
-            f"或配置 data/secrets/ 下的密钥。",
+            f"未配置可用的 {model_type} 模型。请在「设置 · 模型」里新增一个并设为默认，"
+            f"密钥也在同一个分区写入。",
             retryable=False,
         )
 

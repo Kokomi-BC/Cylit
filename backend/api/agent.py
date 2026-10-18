@@ -74,8 +74,8 @@ async def agent_skills(request: Request):
 async def agent_ask(payload: dict = Body(...)):
     """一轮问答（SSE 直通）。
 
-    请求体：``{paper_id, question?, conversation_id?, selection?: {text, row_id?, page?},
-    attachments?: [id], regenerate_from?, edit_of?}``。
+    请求体：``{paper_id, question?, conversation_id?, model_id?, reasoning_effort?,
+    selection?: {text, row_id?, page?}, attachments?: [id], regenerate_from?, edit_of?}``。
 
     ``selection`` 就是**划词解释 / 划词追问**：给了它，``question`` 可以为空
     （默认"解释这段内容"）。``attachments`` 是图片附件的 id 列表（见 `/agent/attachments`）。
@@ -116,6 +116,15 @@ async def agent_ask(payload: dict = Body(...)):
     if not conversation_id:                    # 理论上不会发生，兜住更安全
         raise ValidationError("conversation_id 缺失")
 
+    # 模型 + 推理等级**记在会话行上**（换会话就换回它自己那份）：payload 给了以它为准，
+    # 没给就沿用行上的值 —— 老前端/重新生成只发 question，不能因此把模型清成默认。
+    patch: dict = {}
+    if "model_id" in payload:
+        patch["model_config_id"] = payload.get("model_id")
+    if "reasoning_effort" in payload:
+        patch["reasoning_effort"] = payload.get("reasoning_effort")
+    choice = conversations.update_conversation(conversation_id, patch)
+
     if regenerate_from:
         question, selection, attachment_meta, parent_id, history = _branch_regenerate(
             conversation_id, regenerate_from, branch=branch)
@@ -152,7 +161,8 @@ async def agent_ask(payload: dict = Body(...)):
         # 在**主后端**取好随请求带走，agent 不再每轮去问一次设置 —— 既少一次往返，
         # 也杜绝"设置页一改，所有历史会话的 system 前缀同时作废"（见 services/agent/style.py）。
         "agent_style": conversations.frozen_style(conversation_id),
-        "model_id": payload.get("model_id"),
+        "model_id": choice["model_config_id"],
+        "reasoning_effort": choice["reasoning_effort"] or "",
         "selection": selection if selected_text else None,
         "attachments": attachment_meta,
     }
@@ -367,10 +377,13 @@ async def get_conversation(conversation_id: str, request: Request):
 
 
 @router.put("/agent/conversations/{conversation_id}")
-async def rename_conversation(conversation_id: str, request: Request,
+async def update_conversation(conversation_id: str, request: Request,
                               payload: dict = Body(...)):
-    return envelope(conversations.rename_conversation(
-        conversation_id, str(payload.get("title") or "")), request=request)
+    """改标题 / 问答模型 / 推理等级。只改出现的键；空字符串 = 清成 NULL（跟随默认）。"""
+    fields = ("title", "model_config_id", "reasoning_effort")
+    return envelope(conversations.update_conversation(
+        conversation_id, {k: payload[k] for k in fields if k in payload}),
+        request=request)
 
 
 @router.delete("/agent/conversations/{conversation_id}")
@@ -392,10 +405,16 @@ async def agent_ping(request: Request,
 
 @router.get("/agent/model-config")
 async def agent_model_config(request: Request,
+                             config_id: str | None = Query(None),
+                             reasoning_effort: str | None = Query(None),
                              x_internal_token: str | None = Header(None)):
-    """问答模型配置（含已解析的密钥）。**只回环 + 内部令牌可读。**"""
+    """问答模型配置（含已解析的密钥）。**只回环 + 内部令牌可读。**
+
+    ``config_id`` / ``reasoning_effort`` 来自会话行（见 `model_config.resolve`）：
+    两级缓存都要按它分桶，否则同一进程里两条会话换模型会串味（见 `runtime.model_config`）。
+    """
     _require_internal(x_internal_token)
-    return envelope(model_config.resolve(), request=request)
+    return envelope(model_config.resolve(config_id, reasoning_effort), request=request)
 
 
 @router.get("/agent/papers/{paper_id}/archive")

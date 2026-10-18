@@ -54,12 +54,9 @@ def _print(obj, title: str | None = None) -> None:
 
 def cmd_init(args) -> int:
     from backend.repositories.mysql.session import init_db
-    from backend.services.model import model_service
 
     info = init_db(drop=args.drop)
     _print(info, "数据库初始化")
-    n = model_service.ensure_builtin_models()
-    print(f"内置模型：新增 {n} 个")
     s = get_settings()
     print(f"数据目录：{s.data_dir}")
     return 0

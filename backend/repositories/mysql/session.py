@@ -56,6 +56,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 会话冻结的问答风格（2026-10-15）：**只对新对话生效**，老会话首次提问时判一次再写回。
     # 允许 NULL —— NULL 就是"升级前建的会话，还没判过"。
     ("conversation", "agent_style", "`agent_style` LONGTEXT NULL"),
+    # 会话上选的问答模型与推理等级：**允许 NULL = 跟随默认**，所以不给默认值
+    # （给了默认值就等于替用户选了一个模型，那个模型被删掉后全库会话一起失效）。
+    ("conversation", "model_config_id", "`model_config_id` VARCHAR(36) NULL"),
+    ("conversation", "reasoning_effort", "`reasoning_effort` VARCHAR(32) NULL"),
     # 参考文献里的 **GitHub 仓库地址**（2026-10-07）：既有论文链接又有代码链接的条目，
     # 侧栏并排显示"论文图标 + GitHub 图标"，分别跳不同的页面。
     ("paper_reference", "code_url", "`code_url` VARCHAR(512) NULL"),

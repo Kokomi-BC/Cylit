@@ -26,13 +26,12 @@ log = get_logger(__name__)
 #: ``agent`` 是**问答 agent 自己的模型**（`pr.py agent` 那个独立进程用）。
 #: 单独一个类型而不是复用 ``generation``：翻译要"关思考 + 低温度 + 便宜"，
 #: 问答要"开思考 + 会调工具 + 能读长上下文"，两者挤在一个配置里必然互相将就。
-#: **没有内置占位档**（mock 不会调工具，放上去只会让 agent 静默给出垃圾答案）：
-#: 未注册时 `resolve_agent_config()` 回落到 ``generation`` 默认，存量用户零配置可用。
+#: 不内置任何默认档：未注册时 `resolve_agent_config()` 回落到 ``generation`` 默认。
 MODEL_TYPES = ("generation", "embedding", "reranker", "vision", "ocr", "agent")
 # 本地模型 LRU 上限（省显存，规划 §12.2）
 CACHE_SIZE = 4
 # 需要密钥才能用的真模型之外，这些 provider 是"离线降级档"：同一类型里
-# **不能**让它们压过真模型当默认（真实踩过：内置 mock 被重新插入时又盖了个 is_default，
+# **不能**让它们压过真模型当默认（真实踩过：降级档被重新插入时又盖了个 is_default，
 # 于是 reranker 取到 heuristic-overlap，重排静默降级 —— 检索质量掉了但界面看不出来）
 MOCK_PROVIDERS = ("mock", "hash", "heuristic", "local")
 
@@ -51,82 +50,6 @@ def pick_default(candidates: list[dict]) -> dict | None:
                 str(cfg.get("id") or ""))
 
     return min(candidates, key=key)
-
-# 内置默认（provider=mock，不需要任何密钥即可运行；规划 §1.2）
-BUILTIN_DEFAULTS: list[dict] = [
-    {
-        "id": "mock-generation", "name": "离线占位生成器（Mock）",
-        "provider": "mock", "model_type": "generation",
-        "model_name": "mock-generation",
-        "parameters": {"delay_ms": 0}, "enabled": True, "is_default": True,
-        "status": "unknown",
-    },
-    {
-        "id": "mock-embedding", "name": "离线哈希向量（Mock）",
-        "provider": "mock", "model_type": "embedding",
-        "model_name": "mock-embedding",
-        "parameters": {"dim": 512}, "enabled": True, "is_default": True,
-        "status": "unknown",
-    },
-    {
-        "id": "heuristic-reranker", "name": "词法启发式重排（降级）",
-        "provider": "heuristic", "model_type": "reranker",
-        "model_name": "heuristic-overlap",
-        "parameters": {}, "enabled": True, "is_default": True,
-        "status": "unknown",
-    },
-    {
-        # 扫描件兜底的离线替身：返回一段结构完整的假 Markdown 页，
-        # 让"扫描页 → 块 → 翻译"整条链路在无密钥环境下也能跑通。
-        # **不是默认模型**：注册了真实视觉模型时应当用它读页。
-        "id": "mock-vision", "name": "离线占位视觉模型（Mock）",
-        "provider": "mock", "model_type": "vision",
-        "model_name": "mock-vision",
-        "parameters": {}, "enabled": True, "is_default": False,
-        "status": "unknown",
-    },
-]
-
-
-#: 用户在界面上**删掉**的内置占位模型记在这里（`setting` 表的键）。
-#:
-#: 为什么需要它：`main.py` 启动时调 `ensure_builtin_models()`，而它是按 id"缺了就补"——
-#: 于是"删掉内置占位模型"这件事在**下次重启后失效**（用户报的"删不掉的占位模型"，
-#: 实测：删 mock-vision → 重启 → 又回来了）。
-#: 删过一次就记一笔，之后不再自动塞回来；想找回来走 `restore_builtin_models()`。
-#: ⚠️ 删掉它们**不会**让系统不可用：`get_config` 在没有可用配置时会回落到内存里的内置档
-#: （见 `get_config` 末尾那段 `BUILTIN_DEFAULTS` 兜底）。
-SUPPRESS_KEY = "models.builtin_suppressed"
-
-
-def builtin_ids() -> set[str]:
-    """内置占位模型的 id 集合。"""
-    return {str(d["id"]) for d in BUILTIN_DEFAULTS}
-
-
-def parse_suppressed(raw) -> set[str]:
-    """把 setting 里存的值解析成 id 集合（坏数据当空集合，不抛）。"""
-    if raw is None:
-        return set()
-    if isinstance(raw, (bytes, bytearray)):
-        raw = raw.decode("utf-8", "ignore")
-    if isinstance(raw, str):
-        try:
-            raw = json_loads(raw, None)
-        except Exception:  # noqa: BLE001
-            return set()
-    if not isinstance(raw, list):
-        return set()
-    return {str(x) for x in raw if isinstance(x, str) and x}
-
-
-def missing_builtins(existing: set[str], suppressed: set[str]) -> list[dict]:
-    """该补哪些内置档：**用户没删过**（不在 suppressed 里）且当前不存在。
-
-    纯函数（可离线测）：`ensure_builtin_models` 与 `restore_builtin_models` 共用同一套判定。
-    """
-    return [d for d in BUILTIN_DEFAULTS
-            if str(d["id"]) not in existing and str(d["id"]) not in suppressed]
 
 
 class ModelManager:
@@ -153,8 +76,6 @@ class ModelManager:
             "parameters": json_loads(row.parameters_json, {}) or {},
             "secret_ref": row.secret_ref, "enabled": bool(row.enabled),
             "is_default": bool(row.is_default), "status": row.status,
-            # 内置占位模型（离线兜底）：界面上要给"删掉就不会再自动重建"的提示
-            "builtin": row.id in builtin_ids(),
         }
 
     def list_configs(self, model_type: str | None = None) -> list[dict]:
@@ -164,7 +85,7 @@ class ModelManager:
         return out
 
     def get_config(self, model_id: str | None, model_type: str = "generation") -> dict:
-        """取配置：指定 id > 该类型默认 > 该类型任一可用 > 内置 mock。
+        """取配置：指定 id > 该类型默认 > 该类型任一可用；都没有就抛未配置。
 
         ★ 「该类型默认」可能有多行（历史遗留 / 内置档补插时又盖了一次默认）——
         以前取"按 id 排序的第一个"，于是 `heuristic-reranker` 会压过 `qwen3-vl-rerank`，
@@ -184,11 +105,6 @@ class ModelManager:
         for r in rows:
             if r.model_type == model_type and r.enabled:
                 return self._row_to_config(r)
-        for d in BUILTIN_DEFAULTS:
-            if d["model_type"] == model_type:
-                cfg = dict(d)
-                cfg["builtin"] = True
-                return cfg
         raise ModelNotConfiguredError(model_type)
 
     # ------------------------------------------------------------------
@@ -316,85 +232,6 @@ class ModelManager:
             row.status_detail = info.detail[:500]
             row.last_tested_at = now()
 
-    # ------------------------------------------------------------------
-    # 初始化内置模型（阶段 06：代码零硬编码模型名，但内置默认必须存在）
-    # ------------------------------------------------------------------
-    def ensure_builtin_models(self) -> int:
-        from backend.repositories.mysql.models import ModelConfig
-        from backend.repositories.mysql.session import session_scope
-
-        with session_scope() as sess:
-            existing = {r.id for r in sess.query(ModelConfig.id)}
-            suppressed = self._suppressed(sess)
-            todo = missing_builtins(existing, suppressed)
-            created = self._insert_builtins(sess, todo)
-            if suppressed & builtin_ids():
-                log.info("内置占位模型已被用户删除、不再自动补：%s", sorted(suppressed))
-        if created:
-            log.info("写入 %d 个内置模型配置（离线可跑）", created)
-        self.repair_defaults()
-        return created
-
-    def restore_builtin_models(self) -> dict:
-        """把用户删过的内置占位模型找回来（清掉"已删除"记录，缺谁补谁）。"""
-        from backend.repositories.mysql.models import ModelConfig
-        from backend.repositories.mysql.session import session_scope
-
-        with session_scope() as sess:
-            self._write_suppressed(sess, set())
-            existing = {r.id for r in sess.query(ModelConfig.id)}
-            todo = missing_builtins(existing, set())
-            created = self._insert_builtins(sess, todo)
-        self.repair_defaults()
-        log.info("恢复内置占位模型：新建 %d 个 %s", created, [d["id"] for d in todo])
-        return {"created": created, "ids": [str(d["id"]) for d in todo]}
-
-    def _insert_builtins(self, sess, items: list[dict]) -> int:
-        """把给定的内置档写进库：该类型**已有默认（真模型）时只能 is_default=False**。
-
-        否则就出现"两行都是默认"，而按 id 排序取第一个会把真模型顶掉（第 38 轮真实事故：
-        内置 mock 被重新插入时又盖了个 is_default，导致重排静默降级）。
-        """
-        from backend.repositories.mysql.models import ModelConfig
-
-        has_default = {
-            t: any(r.is_default and r.enabled for r in
-                   sess.query(ModelConfig).filter(ModelConfig.model_type == t))
-            for t in MODEL_TYPES
-        }
-        created = 0
-        for d in items:
-            want_default = bool(d["is_default"]) and not has_default.get(d["model_type"])
-            sess.add(ModelConfig(
-                id=d["id"], name=d["name"], provider=d["provider"],
-                model_type=d["model_type"], model_name=d["model_name"],
-                base_url=None, device=None,
-                parameters_json=_dumps(d["parameters"]),
-                secret_ref=None, enabled=True, is_default=want_default,
-                status="unknown",
-            ))
-            if want_default:
-                has_default[d["model_type"]] = True
-            created += 1
-        return created
-
-    @staticmethod
-    def _suppressed(sess) -> set[str]:
-        from backend.repositories.mysql.models import Setting
-
-        row = sess.get(Setting, SUPPRESS_KEY)
-        return parse_suppressed(row.value if row is not None else None)
-
-    @staticmethod
-    def _write_suppressed(sess, ids: set[str]) -> None:
-        from backend.repositories.mysql.models import Setting
-
-        row = sess.get(Setting, SUPPRESS_KEY)
-        if row is None:
-            row = Setting(key=SUPPRESS_KEY)
-            sess.add(row)
-        row.value = json_dumps(sorted(ids))
-
     def repair_defaults(self) -> dict:
         """同一类型出现多个 ``is_default`` 时只留一个（启动时自动修）。
 
@@ -485,9 +322,6 @@ class ModelManager:
             was_default = row.is_default
             mtype = row.model_type
             sess.delete(row)
-            # 内置占位模型：删了就记一笔，**重启不再补回来**（否则用户永远删不掉）
-            if model_id in builtin_ids():
-                self._write_suppressed(sess, self._suppressed(sess) | {model_id})
             if was_default:
                 # 回落到该类型的其它模型，避免"无默认模型"
                 nxt = (sess.query(ModelConfig)
@@ -531,7 +365,6 @@ class ModelManager:
                 out[t] = {"id": cfg.get("id"), "name": cfg.get("name"),
                           "provider": cfg.get("provider"),
                           "model_name": cfg.get("model_name"),
-                          "builtin": cfg.get("builtin", False),
                           "is_mock": cfg.get("provider") in ("mock", "hash", "heuristic")}
             except ModelNotConfiguredError:
                 out[t] = None

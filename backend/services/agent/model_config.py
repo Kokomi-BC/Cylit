@@ -11,6 +11,7 @@ agent 侧即使被读内存也拿不到别的模型的凭据。
 
 from __future__ import annotations
 
+from backend.core.errors import ValidationError
 from backend.core.logging import get_logger
 from backend.services.model.model_manager import ModelNotConfiguredError, model_manager
 
@@ -30,16 +31,37 @@ def _snapshot(cfg: dict, *, include_key: bool) -> dict:
     return data
 
 
-def resolve() -> dict:
-    """问答模型（``agent`` 优先、回落 ``generation``）+ 视觉模型（``vision``）。"""
+def resolve(config_id: str | None = None, effort: str | None = None) -> dict:
+    """问答模型（会话选的 ``agent`` 配置 → ``agent`` 默认 → 回落 ``generation``）。
+
+    ``config_id`` 是会话行上的 ``model_config.id``：命中且**确实是 agent 类型**才用它。
+    其它类型（用户把 generation 的 id 写了进来）或 id 已删掉都算无效直接回落默认 ——
+    不报错，是因为"会话里选过的模型被删了"不该让这条会话从此问不出话。
+
+    ``effort`` 是会话里选的推理等级，**原样**带出去：厂商各叫各的档位名，校验、映射、
+    改大小写都会把用户填的 high 变成厂商不认识的东西；没选才用该模型配置里的那一档。
+    """
+    cfg = None
+    if config_id:
+        try:
+            hit = model_manager.get_config(config_id)
+        except (ValidationError, ModelNotConfiguredError):
+            hit = None
+        if hit and hit.get("model_type") == "agent":
+            cfg = hit
+
     fallback = False
-    try:
-        cfg = model_manager.get_config(None, "agent")
-    except ModelNotConfiguredError:
-        cfg = model_manager.get_config(None, "generation")
-        fallback = True
+    if cfg is None:
+        try:
+            cfg = model_manager.get_config(None, "agent")
+        except ModelNotConfiguredError:
+            cfg = model_manager.get_config(None, "generation")
+            fallback = True
     out = _snapshot(cfg, include_key=True)
     out["fallback_to_generation"] = fallback
+    out["requested_config_id"] = str(config_id or "") or None
+    used = effort or out["parameters"].get("reasoning_effort") or ""
+    out["effort_used"] = str(used) or None
     out["usable"] = bool(out.get("api_key")) and not out["is_mock"]
 
     try:

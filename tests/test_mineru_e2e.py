@@ -33,9 +33,6 @@ def db_ready():
     from backend.repositories.mysql.session import init_db
 
     init_db()
-    from backend.services.model import model_service
-
-    model_service.ensure_builtin_models()
     return True
 
 

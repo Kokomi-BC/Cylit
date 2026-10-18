@@ -71,18 +71,6 @@ async def list_secrets(request: Request):
     return envelope({"secrets": files, "dir": str(s.secrets_dir)}, request=request)
 
 
-@router.post("/models/builtin/restore")
-async def restore_builtin_models(request: Request):
-    """把删过的内置占位模型找回来（清掉"已删除"记录，缺谁补谁）。
-
-    ⚠️ 必须声明在 `/models/{model_id}` 之前：否则 "builtin" 会被当成 model_id 捕获。
-    """
-    res = model_service.restore_builtin_models()
-    msg = (f"已恢复 {res['created']} 个内置占位模型" if res["created"]
-           else "内置占位模型都在，无需恢复")
-    return envelope(res, message=msg, request=request)
-
-
 @router.post("/models")
 async def create_model(request: Request, payload: dict = Body(...)):
     return envelope(model_service.create_model(payload), message="已创建",
@@ -101,11 +89,6 @@ async def update_model(model_id: str, request: Request, payload: dict = Body(...
 
 @router.delete("/models/{model_id}")
 async def delete_model(model_id: str, request: Request):
-    """删除模型配置。
-
-    内置占位模型（离线兜底）删掉后会**记一笔**，重启不再自动补回来 ——
-    以前是按 id"缺了就补"，于是"删掉"在下次重启后失效（用户报的"删不掉的占位模型"）。
-    """
     res = model_service.delete_model(model_id)
     return envelope(res, request=request)
 

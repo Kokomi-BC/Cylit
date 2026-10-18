@@ -513,6 +513,11 @@ class Conversation(Base, TimestampMixin):
     #: `system + 全部历史` 缓存同时打掉（前缀缓存是从第 0 个 token 起比的）。
     #: NULL = 升级前建的老会话（还没有这一列），首次提问时按"谁更晚"判一次再冻结。
     agent_style: Mapped[str | None] = mapped_column(Text)
+    #: 这一条会话选的问答模型（`model_config.id`，只认 agent 类型）与推理等级。
+    #: **NULL = 跟随默认**（agent 默认 → generation 默认，见 services/agent/model_config.py）：
+    #: 升级前的老会话与"没在对话里换过模型"的会话都落在这一档，不给默认值就等于替用户选。
+    model_config_id: Mapped[str | None] = mapped_column(String(36))
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32))
     user_id: Mapped[int] = mapped_column(Integer, default=1)
 
 

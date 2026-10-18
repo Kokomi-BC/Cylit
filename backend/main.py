@@ -40,15 +40,12 @@ async def lifespan(app: FastAPI):
     s.ensure_dirs()
     log.info("启动 %s v%s（data=%s）", s.app_name, s.app_version, s.data_dir)
 
-    # 数据库就绪 + 内置模型 + 任务系统
+    # 数据库就绪 + 任务系统
     from backend.repositories.mysql.session import init_db
 
     try:
         info = init_db()
         log.info("业务库就绪：%s", info["backend"])
-        from backend.services.model import model_service
-
-        model_service.ensure_builtin_models()
     except Exception as exc:  # noqa: BLE001
         log.error("数据库初始化失败：%s", exc)
 

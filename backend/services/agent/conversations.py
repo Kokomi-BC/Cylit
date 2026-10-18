@@ -48,6 +48,9 @@ def _row_to_conversation(row, *, messages: list[dict] | None = None) -> dict:
     data = {
         "conversation_id": row.id, "paper_id": row.paper_id, "title": row.title or "",
         "head_id": row.head_id,
+        # 这条会话用的问答模型 / 推理等级（NULL = 跟随默认）：前端据此回显当前选择
+        "model_config_id": getattr(row, "model_config_id", None),
+        "reasoning_effort": getattr(row, "reasoning_effort", None),
         "created_at": iso_utc(row.created_at),
         "updated_at": iso_utc(row.updated_at),
     }
@@ -297,7 +300,12 @@ def delete_conversation(conversation_id: str) -> dict:
     return {"deleted": conversation_id, "messages": int(deleted or 0)}
 
 
-def rename_conversation(conversation_id: str, title: str) -> dict:
+def update_conversation(conversation_id: str, payload: dict) -> dict:
+    """改会话行上的三样：标题 / 问答模型 / 推理等级（`api/agent.py` 的 PUT 与 ask 共用）。
+
+    **只改出现的键**：每轮问答都会带模型那两项，顺手改标题就等于用户问一句标题就变了。
+    空字符串 = 清成 NULL（模型两列回到"跟随默认"），与标题的旧语义一致。
+    """
     from backend.repositories.mysql.models import Conversation
     from backend.repositories.mysql.session import session_scope
 
@@ -305,8 +313,14 @@ def rename_conversation(conversation_id: str, title: str) -> dict:
         row = sess.get(Conversation, conversation_id)
         if row is None:
             raise NotFoundError(f"会话不存在：{conversation_id}")
-        row.title = (title or "")[:255]
-    return {"conversation_id": conversation_id, "title": title}
+        if "title" in payload:
+            row.title = str(payload.get("title") or "")[:255]
+        for key in ("model_config_id", "reasoning_effort"):
+            if key in payload:
+                setattr(row, key, str(payload.get(key) or "").strip() or None)
+        return {"conversation_id": conversation_id, "title": row.title or "",
+                "model_config_id": row.model_config_id,
+                "reasoning_effort": row.reasoning_effort}
 
 
 # --------------------------------------------------------------------------
