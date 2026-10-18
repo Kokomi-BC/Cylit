@@ -197,9 +197,9 @@ const style = computed(() => ({
     :style="style"
     data-float-card
   >
-    <!-- 顶部独立的**拖动条**（用户口径 2026-10-13）：标题栏之上一条 14px 的窄条，
-         中间一枚 36×4 的药丸。为什么要它：头一行挤着色点 / 铅笔 / 垃圾桶，真正"空白可抓"
-         的地方太少，一不小心就点到了按钮。
+    <!-- 顶部**浮起**的拖动条（用户口径 2026-10-13 二轮："自然融合，不要另起一行"）：
+         position:absolute 贴在卡片顶端，中间一枚 34×4 的药丸，不占一行、不带底色。
+         为什么要抓手：头一行挤着色点 / 铅笔 / 垃圾桶，真正"空白可抓"的地方太少。
          它和 .fc-head 走**同一套**处理器（叠加，不是替代）—— 标题栏照旧能拖。
          同样**不写 title**（用户口径 2026-10-08：不要浏览器悬浮提示），只靠光标形状说话。 -->
     <div
@@ -298,23 +298,27 @@ const style = computed(() => ({
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   overflow: hidden;
 }
-/* 顶部拖动条：14px 的窄条（标题栏之上），中间一枚药丸当"这里有把手"的唯一提示。
+/* 顶部拖动条（用户口径第二轮："最好能自然融合，而不是另起一行"）：
+   **浮**在标题带顶端（absolute），不占一行高度、没有自己的底色 —— 药丸看起来就是标题带
+   上沿的一枚抓手，而不是"多出来的一条"。标题带给的 padding-top 让按钮从 12px 才开始，
+   所以这 12px 抓手区不会盖住标题栏上的按钮（拖动落空 = 拖标题带，行为不变）。
    光标 / 不可选中 / touch-action 与标题栏完全一致（同一套拖动处理器）。 */
 .fc-grab {
-  display: flex; align-items: center; justify-content: center;
-  height: 14px; flex: none;
-  background: color-mix(in srgb, var(--text) 3%, transparent);
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  height: 12px; padding-top: 4px; z-index: 2;
   cursor: grab; user-select: none; touch-action: none;
 }
 .fc-grab.dragging { cursor: grabbing; }
 .fc-grab-pill {
-  width: 36px; height: 4px; border-radius: 2px;
-  background: color-mix(in srgb, var(--text) 20%, transparent);
+  width: 34px; height: 4px; border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 19%, transparent);
 }
 
 .fc-head {
   display: flex; align-items: center; gap: 4px; flex: none;
-  padding: 6px 8px 6px 12px;
+  /* 上 12px 留给浮在顶端的抓手药丸（见 .fc-grab）：按钮从 12px 才开始，不会被抓手盖住 */
+  padding: 12px 8px 6px 12px;
   border-bottom: 1px solid var(--divider);
   background: color-mix(in srgb, var(--text) 3%, transparent);
   /* 标题栏就是"把手"：光标与不可选中都按拖动来给，免得拖的时候把标题拖蓝 */
