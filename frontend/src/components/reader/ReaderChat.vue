@@ -243,7 +243,11 @@ const cacheHitTitle = computed(() => {
     + " 命中前缀缓存（命中部分按更低单价计费）";
 });
 /** 上下文占比：圆环旁那个数字 —— 圆环只表达粗细，数字负责说清"用了多少" */
-const contextText = computed(() => `${Math.round(percent.value)}%`);
+const contextText = computed(() => {
+  const v = percent.value;
+  // 预算调大之后（百万级）占比常是个位数，四舍五入到 1% 会把 0.6% 显示成「1%」—— 小数位留给它
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
+});
 const contextTitle = computed(() => {
   const u = usage.value;
   if (!u) return ringTitle.value;
