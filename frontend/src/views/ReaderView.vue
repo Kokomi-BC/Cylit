@@ -1575,8 +1575,7 @@ async function afterAsideResize() {
 /* ------------------------------ 侧栏浮窗：开 / 收 / 拖 ------------------------------ */
 
 /** 夹进视口：打开、拖动、改尺寸、窗口 resize 全走这一条 */
-function clampFloatBox() {
-  const b = floatBox.value;
+function clampBox(b: { left: number; top: number; w: number; h: number }) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   b.w = Math.round(Math.max(FLOAT_MIN_W, Math.min(b.w, vw - FLOAT_EDGE * 2)));
@@ -1584,6 +1583,8 @@ function clampFloatBox() {
   b.left = Math.round(Math.max(FLOAT_EDGE, Math.min(b.left, vw - b.w - FLOAT_EDGE)));
   b.top = Math.round(Math.max(FLOAT_EDGE, Math.min(b.top, vh - b.h - FLOAT_EDGE)));
 }
+/** 落盘 / 打开时那份（同一套数学：手势里的手感必须与落定后完全一致） */
+function clampFloatBox() { clampBox(floatBox.value); }
 
 /** 浮窗位置/尺寸的记忆键（**全局**一份：它是"我把这个小窗摆哪儿了"，不是某篇论文的属性） */
 const floatBoxKey = 'cylit:reader-float';
@@ -1689,6 +1690,52 @@ const floatDrag = {
 };
 
 /**
+ * 拖动期间的几何 —— **普通对象，不是响应式**。
+ *
+ * 以前手势里每帧写 floatBox（响应式 ref）：left 一变就让 asideFloatStyle / floatGripStyle 失效，
+ * 于是 ReaderView 这几千行的模板**整棵重渲染**一遍，一次指针移动就是十几到几十毫秒 ——
+ * 这才是「拖浮层卡顿掉帧」的真正成本（在 CSS 层面怎么调都治不好）。
+ * 现在手势期间只往**三个真实 DOM**（宿主 + 两枚角把手）上写样式，松手才把结果同步回 floatBox：
+ * 整个手势零次重渲染。
+ */
+const floatLive = { left: 0, top: 0, w: 0, h: 0 };
+/** 手势期间直接操作的那三个节点（ref 只在浮窗态存在） */
+const chatHostEl = ref<HTMLElement | null>(null);
+const gripBlEl = ref<HTMLElement | null>(null);
+const gripBrEl = ref<HTMLElement | null>(null);
+
+/** 把 floatLive 写进 DOM（绕过 Vue）：宿主几何 + 两枚角把手的位置 */
+function paintFloatLive() {
+  const host = chatHostEl.value;
+  if (host) {
+    host.style.left = floatLive.left + 'px';
+    host.style.top = floatLive.top + 'px';
+    host.style.width = floatLive.w + 'px';
+    host.style.height = floatLive.h + 'px';
+  }
+  const top = floatLive.top + floatLive.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
+  const left = floatLive.left + floatLive.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
+  const bl = gripBlEl.value;
+  if (bl) { bl.style.left = (floatLive.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
+  const br = gripBrEl.value;
+  if (br) { br.style.left = left + 'px'; br.style.top = top + 'px'; }
+}
+
+/**
+ * 纯位移（拖头部那一行）走 transform：宿主与两枚角把手**一起平移**，在合成层里完成 ——
+ * 不重排、不重绘。角把手自己的 left/top 一个字都没改，所以它们仍然贴着卡片外沿。
+ */
+function paintFloatShift(sx: number, sy: number) {
+  const t = 'translate3d(' + sx + 'px,' + sy + 'px,0)';
+  const host = chatHostEl.value;
+  if (host) host.style.transform = t;
+  const bl = gripBlEl.value;
+  if (bl) bl.style.transform = t;
+  const br = gripBrEl.value;
+  if (br) br.style.transform = t;
+}
+
+/**
  * 浮窗的拖动现在挂在**整块面板**上（标题栏那一行已经和会话头合并，没有单独的抓手区了）：
  * 只有从"头部那一行"按下去才算拖动 —— 正文里选字、点按钮都不该把窗口挪走。
  */
@@ -1727,6 +1774,11 @@ function onFloatPointerDown(ev: PointerEvent, mode: 'move' | 'size' | 'size-left
   floatDrag.sx = ev.clientX; floatDrag.sy = ev.clientY;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
   floatDrag.ow = floatBox.value.w; floatDrag.oh = floatBox.value.h;
+  /* 手势从这一刻的几何开始算：之后每一帧只改 floatLive 这个普通对象 */
+  floatLive.left = floatDrag.ox; floatLive.top = floatDrag.oy;
+  floatLive.w = floatDrag.ow; floatLive.h = floatDrag.oh;
+  /* 提前提成合成层：否则「第一帧才加 transform」会让开头几帧顿一下 */
+  if (mode === 'move' && chatHostEl.value) chatHostEl.value.style.willChange = 'transform';
   try { el?.setPointerCapture?.(ev.pointerId); } catch { /* 合成事件没有真指针 */ }
   ev.preventDefault();
   /* ⚠️ 拖角改大小也要锁选区：只有 move 模式才会置 floatDragging，角落那条路径原来什么都不挡，
@@ -1756,38 +1808,55 @@ function applyFloatMove() {
   if (!at || !floatDrag.on) return;
   const dx = at.x - floatDrag.sx;
   const dy = at.y - floatDrag.sy;
-  /* 增益现在是 1（1:1 跟手，与笔记浮层一致）。保留 `k` 这个乘法：它是唯一的"手感旋钮"，
-     以后要调只改 `RESIZE_GAIN` 一处，不必在这里散落常量。 */
+  /* 增益现在是 1（1:1 跟手，与笔记浮层一致）。保留 k 这个乘法：它是唯一的「手感旋钮」，
+     以后要调只改 RESIZE_GAIN 一处。 */
   const k = RESIZE_GAIN;
-  const b = floatBox.value;
   if (floatDrag.mode === 'move') {
-    b.left = floatDrag.ox + dx;
-    b.top = floatDrag.oy + dy;
-    clampFloatBox();
+    /* 位置照旧**每帧夹一次视口**（拖出屏幕的边界手感不变），但写出去的是 transform 的位移量：
+       合成层内平移 —— 没有布局、没有重绘、没有 Vue 补丁，这是本轮的要点。 */
+    floatLive.left = floatDrag.ox + dx;
+    floatLive.top = floatDrag.oy + dy;
+    clampBox(floatLive);
+    paintFloatShift(floatLive.left - floatDrag.ox, floatLive.top - floatDrag.oy);
     return;
-  } else if (floatDrag.mode === 'size-left') {
-    /* 左下角：**右下角钉住**（`right` 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
-    const right = floatDrag.ox + floatDrag.ow;
-    b.top = floatDrag.oy;
-    b.w = floatDrag.ow - dx * k;
-    b.h = floatDrag.oh + dy * k;
-    clampFloatBox();
-    b.left = right - b.w;
-  } else {
-    b.w = floatDrag.ow + dx * k; b.h = floatDrag.oh + dy * k;
   }
-  clampFloatBox();
+  if (floatDrag.mode === 'size-left') {
+    /* 左下角：**右下角钉住**（right 先记下来），宽高怎么变都不该让整块浮窗跳一下 */
+    const right = floatDrag.ox + floatDrag.ow;
+    floatLive.top = floatDrag.oy;
+    floatLive.w = floatDrag.ow - dx * k;
+    floatLive.h = floatDrag.oh + dy * k;
+    clampBox(floatLive);
+    floatLive.left = right - floatLive.w;
+  } else {
+    floatLive.left = floatDrag.ox;
+    floatLive.top = floatDrag.oy;
+    floatLive.w = floatDrag.ow + dx * k;
+    floatLive.h = floatDrag.oh + dy * k;
+    clampBox(floatLive);
+  }
+  /* 改尺寸没法合成（宽高不是可合成属性），但至少只写这三块 DOM，不惊动 Vue */
+  paintFloatLive();
 }
 
 function onFloatPointerUp(ev: PointerEvent) {
   if (!floatDrag.on) return;
   if (floatMoveRaf) { cancelAnimationFrame(floatMoveRaf); floatMoveRaf = 0; }
-  /* 最后一帧里"移动 + 松手"挤在一起时（快速一划），合并中的位移还没落地 —— 这里补算一次，
+  /* 最后一帧里「移动 + 松手」挤在一起时（快速一划），合并中的位移还没落地 —— 这里补算一次，
      否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
   if (floatMoveAt && floatDrag.on) applyFloatMove();
   floatMoveAt = null;
-  /* 拖动期间就是直接写 `left/top`，所以松手**不需要再落位、也没有 transform 要清** ——
-     这正是"松手那一帧闪烁"的根治办法（用户口径 2026-11-19 第二轮）。 */
+  /* 收尾三件事**在同一个任务里**做完：写最终 left/top、清 transform、同步回 floatBox。
+     浏览器只绘一帧 —— 所以既没有「松手闪一下」，也不会因为改 floatBox 再整棵重渲染而显得弹。
+     （2026-11-19 那次闪烁的成因正好相反：先清 transform，等 Vue 下一帧才补 left/top。） */
+  paintFloatLive();
+  const host = chatHostEl.value;
+  if (host) { host.style.transform = ''; host.style.willChange = ''; }
+  const bl = gripBlEl.value;
+  if (bl) bl.style.transform = '';
+  const br = gripBrEl.value;
+  if (br) br.style.transform = '';
+  floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
   floatDrag.on = false;
   floatDrag.mode = '';
   floatDragging.value = false;
@@ -6517,6 +6586,7 @@ function renderMarkdown(text?: string | null) {
            否则每切一次页签就是一次卸载 + 重挂，会话列表要重拉。 -->
       <div
         id="chat-host"
+        ref="chatHostEl"
         class="chat-host"
         :class="{ float: chatFloat, closing: floatClosing }"
         v-show="chatFloat || railTab === 'chat'"
@@ -6568,6 +6638,7 @@ function renderMarkdown(text?: string | null) {
       <div
         v-if="chatFloat"
         class="float-grip bl"
+        ref="gripBlEl"
         title="拖动改浮窗大小"
         :style="floatGripStyle.bl"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size-left')"
@@ -6578,6 +6649,7 @@ function renderMarkdown(text?: string | null) {
       <div
         v-if="chatFloat"
         class="float-grip br"
+        ref="gripBrEl"
         title="拖动改浮窗大小"
         :style="floatGripStyle.br"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"

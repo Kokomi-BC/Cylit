@@ -76,7 +76,12 @@ async function place() {
 /* ------------------------------ 拖动（按住标题栏） ------------------------------ */
 /** 用户挪过它了：之后不再自动摆位（内容变长、锚点变化都不弹回去），下次打开才复位。 */
 const dragged = ref(false);
-const drag = reactive({ on: false, sx: 0, sy: 0, ox: 0, oy: 0 });
+const drag = reactive({ on: false, sx: 0, sy: 0, ox: 0, oy: 0, w: 0, h: 0 });
+/** 手势期间的落点（**普通对象**，不是响应式）：每帧只写 DOM，松手才同步回 `pos` —— 整个手势零次重渲染。
+ *  另外 `pointermove` 在一帧里可能来好几次（平板 120Hz），所以用 rAF 合并成每帧一次。 */
+const live = { left: 0, top: 0 };
+let moveRaf = 0;
+let moveAt: { x: number; y: number } | null = null;
 
 /* 拖动/缩放期间锁住全文选区：PDF 文本层是真实 DOM（markdown 侧不是），
    指针扫过时浏览器会顺手起一个选区（用户报的「拖顶部时 PDF 里被选中」）。
@@ -92,6 +97,13 @@ function onHeadDown(ev: PointerEvent) {
   drag.on = true;
   drag.sx = ev.clientX; drag.sy = ev.clientY;
   drag.ox = pos.value.left; drag.oy = pos.value.top;
+  const node = el.value;
+  /* 尺寸**只量一次**：以前每次 pointermove 都读 offsetWidth/offsetHeight，等于每帧强制同步一次布局
+     （底下还有整篇正文 / PDF 时尤其贵）—— 这是掉帧的另一半来源。 */
+  drag.w = node?.offsetWidth || props.width;
+  drag.h = node?.offsetHeight || 120;
+  live.left = drag.ox; live.top = drag.oy;
+  if (node) node.style.willChange = 'transform';    // 提前提成合成层，别在拖动第一帧才升
   /* 合成事件（自检探针）没有真指针，捕获会抛 NotFoundError —— 拖不动的是"捕获"，
      位移本身不依赖它，所以这里吞掉就行。 */
   try { head?.setPointerCapture?.(ev.pointerId); } catch { /* 没有真指针 */ }
@@ -100,20 +112,41 @@ function onHeadDown(ev: PointerEvent) {
 
 function onHeadMove(ev: PointerEvent) {
   if (!drag.on) return;
-  const box = el.value;
-  const w = box?.offsetWidth ?? props.width;
-  const h = box?.offsetHeight ?? 120;
+  moveAt = { x: ev.clientX, y: ev.clientY };
+  if (!moveRaf) moveRaf = requestAnimationFrame(applyHeadMove);
+}
+
+/** 一帧一次：夹进视口 → 只写一个 transform（合成层位移，不重排、不重绘） */
+function applyHeadMove() {
+  moveRaf = 0;
+  const at = moveAt;
+  if (!at || !drag.on) return;
   // 夹在视口里：至少留一条边能抓得住（不然拖出去就再也点不到关闭了）
-  const left = Math.min(Math.max(drag.ox + (ev.clientX - drag.sx), 8 - w + 48), window.innerWidth - 48);
-  const top = Math.min(Math.max(drag.oy + (ev.clientY - drag.sy), 4), window.innerHeight - 32);
-  pos.value = { left: Math.round(left), top: Math.round(top) };
-  dragged.value = true;
+  const left = Math.min(Math.max(drag.ox + (at.x - drag.sx), 8 - drag.w + 48), window.innerWidth - 48);
+  const top = Math.min(Math.max(drag.oy + (at.y - drag.sy), 4), window.innerHeight - 32);
+  live.left = Math.round(left); live.top = Math.round(top);
+  const node = el.value;
+  if (node) node.style.transform = 'translate3d(' + (live.left - drag.ox) + 'px,' + (live.top - drag.oy) + 'px,0)';
+  if (!dragged.value) dragged.value = true;
 }
 
 function onHeadUp(ev: PointerEvent) {
   if (!drag.on) return;
+  if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+  /* 快速一划时"最后一帧 + 松手"会挤在一起：补算一次，否则那一下被整条丢掉 */
+  if (moveAt) applyHeadMove();
+  moveAt = null;
   drag.on = false;
   unlockSelect();
+  /* 落位与清 transform 在**同一个任务**里完成：浏览器只绘一帧，不会有"弹一下" */
+  const node = el.value;
+  if (node) {
+    node.style.left = live.left + 'px';
+    node.style.top = live.top + 'px';
+    node.style.transform = '';
+    node.style.willChange = '';
+  }
+  pos.value = { left: live.left, top: live.top };
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
   savePos();
 }
@@ -203,7 +236,11 @@ onBeforeUnmount(() => ro?.disconnect());
  *  所以不锚定也不会被 place() 弹回去。 */
 const sizeW = ref<number | null>(null);
 const sizeH = ref<number | null>(null);
-const rs = reactive({ on: false, corner: 'br' as 'br' | 'bl', sx: 0, sy: 0, sw: 0, sh: 0, sl: 0 });
+const rs = reactive({ on: false, corner: 'br' as 'br' | 'bl', sx: 0, sy: 0, sw: 0, sh: 0, sl: 0, st: 0, vw: 0, vh: 0 });
+/** 手势期间的尺寸（普通对象，与 `live` 同一手法）：每帧只写 DOM */
+const rlive = { w: 0, h: 0, left: 0 };
+let rsRaf = 0;
+let rsAt: { x: number; y: number } | null = null;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
@@ -215,7 +252,12 @@ function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
   rs.corner = corner;
   rs.sx = ev.clientX; rs.sy = ev.clientY;
   rs.sw = box.offsetWidth; rs.sh = box.offsetHeight;
-  rs.sl = pos.value.left;
+  rs.sl = pos.value.left; rs.st = pos.value.top;
+  /* 视口也只量一次：每帧读 innerWidth/innerHeight 等于每帧问一次布局 */
+  rs.vw = window.innerWidth; rs.vh = window.innerHeight;
+  rlive.w = rs.sw; rlive.h = rs.sh; rlive.left = rs.sl;
+  /* 先落一个 sizeH：`.sized` 当场生效（正文区改成纵向 flex），否则要等松手才切、内容跳一下 */
+  sizeH.value = rs.sh;
   /* 拉了大小就算"用户自己摆过了"：否则 `ResizeObserver` 一量到尺寸变了就调 `place()`，
      把我们刚拉出来的宽度又夹回去（拉大时手感和打架一样）。 */
   dragged.value = true;
@@ -227,29 +269,55 @@ function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
 
 function onResizeMove(ev: PointerEvent) {
   if (!rs.on) return;
+  rsAt = { x: ev.clientX, y: ev.clientY };
+  if (!rsRaf) rsRaf = requestAnimationFrame(applyResizeMove);
+}
+
+/** 一帧一次：宽 / 高 / 左边界只写 DOM —— 手势期间一个响应式值都不动，于是零次重渲染 */
+function applyResizeMove() {
+  rsRaf = 0;
+  const at = rsAt;
+  if (!at || !rs.on) return;
   const MIN_W = 260;
   const MIN_H = 160;
-  const dx = ev.clientX - rs.sx;
-  const dy = ev.clientY - rs.sy;
-  const maxH = Math.max(MIN_H, window.innerHeight - pos.value.top - 10);
+  const dx = at.x - rs.sx;
+  const dy = at.y - rs.sy;
+  const maxH = Math.max(MIN_H, rs.vh - rs.st - 10);
   if (rs.corner === 'br') {
-    const maxW = Math.max(MIN_W, window.innerWidth - pos.value.left - 10);
-    sizeW.value = Math.round(clamp(rs.sw + dx, MIN_W, maxW));
+    const maxW = Math.max(MIN_W, rs.vw - rs.sl - 10);
+    rlive.w = Math.round(clamp(rs.sw + dx, MIN_W, maxW));
+    rlive.left = rs.sl;
   } else {
     /* 左下角：**右边界钉住不动**（人拉的是左边那条边）—— 宽度反向变化，`left` 跟着推。
        否则拉左角时卡片会整体往右跑，手感完全不对。 */
     const right = rs.sl + rs.sw;
     const w = Math.round(clamp(rs.sw - dx, MIN_W, Math.max(MIN_W, right - 8)));
-    sizeW.value = w;
-    pos.value = { ...pos.value, left: Math.round(right - w) };
+    rlive.w = w;
+    rlive.left = Math.round(right - w);
   }
-  sizeH.value = Math.round(clamp(rs.sh + dy, MIN_H, maxH));
+  rlive.h = Math.round(clamp(rs.sh + dy, MIN_H, maxH));
+  const node = el.value;
+  if (node) {
+    node.style.left = rlive.left + 'px';
+    node.style.width = rlive.w + 'px';
+    node.style.height = rlive.h + 'px';
+    /* max-height 必须一起写：外壳的 max-height 默认是 props.maxHeight，
+       不覆盖的话拖高会被旧上限夹住，看起来就是"拖不动" */
+    node.style.maxHeight = rlive.h + 'px';
+  }
 }
 
 function onResizeUp(ev: PointerEvent) {
   if (!rs.on) return;
+  if (rsRaf) { cancelAnimationFrame(rsRaf); rsRaf = 0; }
+  if (rsAt) applyResizeMove();
+  rsAt = null;
   rs.on = false;
   unlockSelect();
+  /* 同步回响应式状态：值与刚才写进 DOM 的一模一样，Vue 那次 patch 是空操作 */
+  pos.value = { left: rlive.left, top: rs.st };
+  sizeW.value = rlive.w;
+  sizeH.value = rlive.h;
   try { (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId); } catch { /* 同上 */ }
   savePos();
 }
