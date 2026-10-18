@@ -4091,10 +4091,32 @@ function columnBandOfNode(node: Node | null | undefined): { left: number; right:
   return { left: b.left - 8, right: b.right + 8 };
 }
 
+/** 选区是否落在**正文 / PDF 文字层**这一面（Markdown 正文、对照行、PDF 文字层都算）。
+ *
+ * 对话浮层 / 笔记浮层 / 侧栏 / 工具栏里选字**不算**（用户口径 2026-11-26）：那几块里用户
+ * 要的是系统原生的复制菜单，我们的两枚手柄与划词胶囊留在那儿只会挡在前面抢焦点 ——
+ * 手指点输入框点到的是手柄，键盘就弹不出来。
+ */
+function selectionInContent(node: Node | null | undefined): boolean {
+  if (!node) return false;
+  const el = node.nodeType === 1 ? (node as HTMLElement) : node.parentElement;
+  if (!el) return false;
+  if (el.closest('.md-doc')) return true;                    // Markdown 弹层：允许
+  if (el.closest('.chat-host, [data-float-card], .reader-aside, .reader-toolbar')) return false;
+  return Boolean(el.closest('.reader-content'));
+}
+
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
   if (!touchSelActive.value) { selHandles.value = null; return; }
   const sel = window.getSelection();
+  /* 选区跑到正文以外（浮层 / 侧栏里选字）→ 手柄与胶囊一起收，别留在那儿挡焦点 */
+  if (sel && !sel.isCollapsed && !selectionInContent(sel.anchorNode)) {
+    touchSelActive.value = false;
+    selHandles.value = null;
+    selection.show = false;
+    return;
+  }
   if (!sel || sel.isCollapsed || !sel.rangeCount) {
     /* 高亮重绘 / 局部 re-render 会把 DOM 选区弄折，selectionchange 一起跟着来。
        这时**不要**直接把手指柄收掉（用户看到的就是『手柄自己消失』）：
@@ -4451,7 +4473,8 @@ function openCtxForSelection(): void {
   if (!sel || !sel.rangeCount) return;
   /* 选区还在、但胶囊被某次 hideMenu（滚动/点别处）收掉了：这条链路要靠 selection.show
      判"有没有选区"，不补回来的话菜单会退化成"没有选区动作"甚至不出现（用户口径 2026-10-18）。 */
-  if (!selection.show && !sel.isCollapsed && sel.toString().trim()) selection.show = true;
+  if (!selection.show && !sel.isCollapsed && sel.toString().trim()
+      && selectionInContent(sel.anchorNode)) selection.show = true;
   const range0 = sel.getRangeAt(0);
   const rect = range0.getBoundingClientRect();
   /* 拖手柄自动滚动跑到很远之后，整个选区的**包围盒**会伸到视口外面（top 是负数），
