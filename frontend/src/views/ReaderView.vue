@@ -3775,9 +3775,14 @@ function onAnyScroll(ev?: Event) {
 }
 function onDocPointerDown(ev: PointerEvent) {
   const target = ev.target as HTMLElement | null;
-  if (target?.closest?.('[data-selection-menu]')) return;
+  if (target?.closest?.('[data-selection-menu], [data-ctx-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
   if (target?.closest?.('.sel-handle')) return;
+  /* 单击（触摸或鼠标）**任何别处** = 取消这次选取：选区、两枚手柄、划词胶囊一起收。
+     以前触摸只能靠「连点两下」取消 —— 用户得记住这个手势，而且单击别处时手柄还赖在原地
+     （用户口径 2026-11-26 第三轮：单击其他地方移除手柄选区）。
+     滚动不算单击（`onContentTouchEnd` 里按位移判定），所以想滚页面不会把选区弄丢。 */
+  if (touchSelActive.value) clearTouchSelection();
   /* 点进输入框（对话 / 笔记 / 搜索…）：**先把正文的选区与两枚手柄收掉再让焦点落下**。
      手柄是 44px 的抓取区、层级 330，压在输入框旁边时手指一点就落到它身上，focus 直接被吃掉；
      收掉之后这一次点击就能正常聚焦、键盘也弹得出来（用户口径 2026-11-26 第二轮）。 */
