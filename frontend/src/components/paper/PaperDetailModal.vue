@@ -967,7 +967,7 @@ async function doDelete() {
   padding: 16px 56px 12px 22px; border-bottom: 1px solid var(--divider);
 }
 .pd-head-title {
-  margin: 0; min-width: 0; font-size: 21px; font-weight: 600; letter-spacing: -.02em;
+  margin: 0; min-width: 0; font-size: calc(21px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pd-close {
@@ -982,7 +982,7 @@ async function doDelete() {
 
 .pd-state {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-  color: var(--text-dim); font-size: 13px;
+  color: var(--text-dim); font-size: calc(13px * var(--ts, 1));
 }
 
 /* ---------------- 两栏骨架 ---------------- */
@@ -1018,7 +1018,7 @@ async function doDelete() {
 .pd-identity { display: grid; gap: 5px; }
 .pd-identity h3 {
   display: flex; align-items: flex-start; gap: 6px; margin: 0;
-  font-size: 18px; font-weight: 600; line-height: 1.4; letter-spacing: -.02em;
+  font-size: calc(18px * var(--ts, 1)); font-weight: 600; line-height: 1.4; letter-spacing: -.02em;
   color: var(--text);
 }
 .pd-identity h3 :deep(.icon) { margin-top: 2.5px; }
@@ -1029,7 +1029,7 @@ async function doDelete() {
 }
 .pd-identity p {
   display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0;
-  font-size: 13px; line-height: 1.65; color: var(--text-dim);
+  font-size: calc(13px * var(--ts, 1)); line-height: 1.65; color: var(--text-dim);
 }
 .pd-identity p span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-copy {
@@ -1048,7 +1048,7 @@ async function doDelete() {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   flex: 1; min-width: 0; height: 36px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .pd-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
@@ -1071,7 +1071,7 @@ async function doDelete() {
 .pd-tab {
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 34px; padding: 5px 14px; border-radius: 9px;
-  color: var(--text-dim); font-family: inherit; font-size: 15px; font-weight: 550;
+  color: var(--text-dim); font-family: inherit; font-size: calc(15px * var(--ts, 1)); font-weight: 550;
   cursor: pointer; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
 }
@@ -1095,9 +1095,9 @@ async function doDelete() {
 }
 .pd-attr { display: inline-flex; align-items: center; gap: 7px; min-width: 0; line-height: 20px; }
 .pd-attr :deep(.icon) { flex: none; color: var(--text-faint); }
-.pd-attr > i { font-style: normal; flex: none; font-size: 13px; font-weight: 400; color: var(--text-dim); }
+.pd-attr > i { font-style: normal; flex: none; font-size: calc(13px * var(--ts, 1)); font-weight: 400; color: var(--text-dim); }
 .pd-attr > strong {
-  font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--text);
+  font-size: calc(15px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 26ch;
 }
 
@@ -1109,10 +1109,10 @@ async function doDelete() {
 .pd-brief { gap: 12px; }
 .pd-brief-text {
   margin: 0; max-width: var(--measure);
-  font-size: 16px; line-height: 1.85; font-weight: 400; color: var(--text);
+  font-size: calc(16px * var(--ts, 1)); line-height: 1.85; font-weight: 400; color: var(--text);
   overflow-wrap: anywhere; white-space: pre-wrap;
 }
-.pd-abstract-empty { margin: 0; font-size: 13px; color: var(--text-faint); }
+.pd-abstract-empty { margin: 0; font-size: calc(13px * var(--ts, 1)); color: var(--text-faint); }
 .pd-tags { display: flex; flex-wrap: wrap; gap: 4px 6px; }
 /* 关键词 / 前置知识的标签：**紧凑但可换行**。
  * 论文关键词常常是一整串英文（`multi-modal fake news detection`），
@@ -1122,7 +1122,7 @@ async function doDelete() {
   display: inline-flex; align-items: center;
   min-height: 22px; padding: 1px 9px; max-width: 100%;
   border-radius: 999px; background: var(--bg-elev); border: 1px solid var(--border);
-  font-size: 11.5px; font-weight: 400; line-height: 1.5; color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); font-weight: 400; line-height: 1.5; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
 /* 前置知识：比关键词再轻一档（同一枚标签，去掉描边、底色沉下去） */
@@ -1130,7 +1130,7 @@ async function doDelete() {
 
 /* 中 / English：轻量胶囊（复用全站 `.seg` 语言，只把它压小一档） */
 .pd-lang { height: 28px; padding: 2px; flex: none; }
-.pd-lang :deep(button) { height: 24px; padding: 0 11px; font-size: 13px; font-weight: 500; }
+.pd-lang :deep(button) { height: 24px; padding: 0 11px; font-size: calc(13px * var(--ts, 1)); font-weight: 500; }
 
 /* 补全入口：卡底一条，只在缺信息时出现 */
 .pd-brief-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
@@ -1140,7 +1140,7 @@ async function doDelete() {
  * 图标一律 18px 线性、中性灰，**不再套 36~40px 的圆角底**（那个容器视觉重量太大）。 */
 .pd-h3 {
   display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0;
-  font-size: 18px; font-weight: 600; letter-spacing: -.02em; color: var(--text);
+  font-size: calc(18px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em; color: var(--text);
 }
 .pd-h3 :deep(.icon) { flex: none; color: var(--text-dim); }
 
@@ -1151,7 +1151,7 @@ async function doDelete() {
 .pd-sec, .pd-kw { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid var(--divider); }
 .pd-kw-head > h3 {
   display: flex; align-items: center; gap: 8px; margin: 0; flex: none;
-  font-size: 15px; font-weight: 500; letter-spacing: -.01em; color: var(--text);
+  font-size: calc(15px * var(--ts, 1)); font-weight: 500; letter-spacing: -.01em; color: var(--text);
 }
 
 /* 推荐阅读路径：一行一节（编号 / 标题 / 页码），点一行跳进阅读器 */
@@ -1165,14 +1165,14 @@ async function doDelete() {
 }
 .pd-path-row:hover { background: var(--bg-hover); }
 .pd-path-row:focus-visible { outline: none; box-shadow: var(--ring); }
-.pd-path-no { flex: none; min-width: 32px; font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); }
-.pd-path-title { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pd-path-page { flex: none; font-size: 12.5px; color: var(--text-faint); }
+.pd-path-no { flex: none; min-width: 32px; font-family: var(--mono); font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
+.pd-path-title { flex: 1; min-width: 0; font-size: calc(14px * var(--ts, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-path-page { flex: none; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
 .pd-path-row :deep(.icon) { flex: none; color: var(--text-faint); }
 
 /* 论文档案：键值两列 + 标识行，视觉权重最低（靠**灰度**降档，不靠缩小字号） */
 .pd-arch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 18px; }
-.pd-arch-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px; }
+.pd-arch-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: calc(13px * var(--ts, 1)); }
 .pd-arch-row > span { flex: none; min-width: 58px; color: var(--text-faint); }
 .pd-arch-row > strong {
   flex: 1; min-width: 0; font-weight: 500; color: var(--text-dim);
@@ -1185,10 +1185,10 @@ async function doDelete() {
  * 核心创新按正文排（15px / 400），比摘要低一档。 */
 .pd-oneliner {
   margin: 0; max-width: var(--measure);
-  font-size: 16px; line-height: 1.8; font-weight: 500; color: var(--text);
+  font-size: calc(16px * var(--ts, 1)); line-height: 1.8; font-weight: 500; color: var(--text);
 }
 .pd-list { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
-.pd-list > li { font-size: 15px; font-weight: 400; line-height: 1.8; color: var(--text); }
+.pd-list > li { font-size: calc(15px * var(--ts, 1)); font-weight: 400; line-height: 1.8; color: var(--text); }
 .pd-links { display: flex; flex-wrap: wrap; gap: 6px; }
 .pd-links > a { text-decoration: none; }
 
@@ -1230,28 +1230,28 @@ async function doDelete() {
 .pd-ms-labels { display: flex; gap: 3px; }
 .pd-ms-labels > span {
   flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 6px;
-  font-size: 12.5px; color: var(--text-dim);
+  font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim);
 }
-.pd-ms-labels > span > strong { font-size: 12.5px; font-weight: 550; color: var(--text); }
+.pd-ms-labels > span > strong { font-size: calc(12.5px * var(--ts, 1)); font-weight: 550; color: var(--text); }
 .pd-ms-labels > span > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-ms-labels > span.is-muted > span { color: var(--text-faint); }
 .pd-ms-labels > span.is-failed > span { color: var(--danger); }
 
 /* ---------------- 键值行（进度页的阅读记录） ---------------- */
 .pd-kv { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.pd-kv > span { flex: none; width: 72px; font-size: 12.5px; color: var(--text-dim); }
+.pd-kv > span { flex: none; width: 72px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
 .pd-kv > strong {
-  flex: 1; min-width: 0; font-size: 14px; font-weight: 500; color: var(--text);
+  flex: 1; min-width: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 500; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.pd-hint { font-size: 12px; color: var(--text-faint); }
+.pd-hint { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 
 .pd-manage-row { display: flex; align-items: center; gap: 8px; }
 .pd-ghost-btn {
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 32px; padding: 0 12px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
-  font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .pd-ghost-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
@@ -1273,10 +1273,10 @@ async function doDelete() {
 .pd-act-icon.is-done, .pd-act-icon.is-active { color: var(--text); }
 .pd-act-icon.is-failed { color: var(--danger); }
 .pd-activity li > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.pd-activity li strong { font-size: 13px; font-weight: 550; color: var(--text); }
-.pd-activity li span, .pd-activity time { font-size: 12px; color: var(--text-dim); }
+.pd-activity li strong { font-size: calc(13px * var(--ts, 1)); font-weight: 550; color: var(--text); }
+.pd-activity li span, .pd-activity time { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .pd-activity time { white-space: nowrap; }
-.pd-act-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-dim); }
+.pd-act-empty { grid-column: 1 / -1; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
 
 /* ---------------- 进度页签 ---------------- */
 .pd-progress { display: grid; gap: 12px; }
@@ -1285,7 +1285,7 @@ async function doDelete() {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-dim);
-  font-size: 13px;
+  font-size: calc(13px * var(--ts, 1));
 }
 .pd-stages li.done { color: var(--text); border-color: color-mix(in srgb, var(--ok) 34%, var(--border)); }
 .pd-stages li.active { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
@@ -1297,18 +1297,18 @@ async function doDelete() {
 }
 .pd-live .spinner { width: 20px; height: 20px; }
 .pd-live > div { display: grid; gap: 1px; min-width: 0; }
-.pd-live strong { font-size: 13px; font-weight: 600; }
-.pd-live span { font-size: 12.5px; opacity: .9; }
+.pd-live strong { font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
+.pd-live span { font-size: calc(12.5px * var(--ts, 1)); opacity: .9; }
 
 .pd-progress-row { display: grid; gap: 5px; }
 .pd-progress-top {
-  display: flex; align-items: center; font-size: 13px; color: var(--text-dim);
+  display: flex; align-items: center; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
 .pd-progress-top > span:last-child { margin-left: auto; }
 
 .pd-task-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-.pd-task-msg { font-size: 13px; color: var(--text-dim); min-width: 0; }
+.pd-task-msg { font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); min-width: 0; }
 
 /* ---------------- 文件页签 ---------------- */
 .pd-files { display: grid; gap: 8px; }
@@ -1329,7 +1329,7 @@ async function doDelete() {
   background: var(--bg-sunken); color: var(--text);
 }
 .pd-file-copy { display: grid; gap: 1px; min-width: 0; }
-.pd-file-copy strong { font-size: 14px; font-weight: 550; }
+.pd-file-copy strong { font-size: calc(14px * var(--ts, 1)); font-weight: 550; }
 .pd-file-copy span { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------- 窄屏：单栏（封面缩到一条，右侧占满） ---------------- */

@@ -298,7 +298,7 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 8px 12px; border: 0; border-radius: 8px;
   background: transparent; color: var(--text);
-  font-family: inherit; font-size: 14px; font-weight: 500; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: calc(14px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease);
 }
@@ -314,7 +314,7 @@ onBeforeUnmount(() => {
 .ctx-item .icon { flex: none; }
 .ctx-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 快捷键提示（目标站口径：12px、次要文字色、右对齐、至少隔开 16px） */
-.ctx-key { flex: none; margin-left: 16px; font-size: 12px; color: var(--text-dim); }
+.ctx-key { flex: none; margin-left: 16px; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 /* 色板（用户口径 2026-10-10）：一排圆点排在行右侧，与弹层右侧内边距对齐；
    圆点本身用 `base.css` 的 `.hl-swatch`（与划词胶囊同一份颜色），这里只管排布。 */
 .ctx-colors { flex: none; display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; }

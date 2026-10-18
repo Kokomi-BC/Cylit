@@ -66,9 +66,9 @@ const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>();
 }
 .cf-icon.danger { background: var(--danger-soft); color: var(--danger); }
 .cf-body { min-width: 0; flex: 1; padding-top: 1px; }
-.cf-text { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.65; }
+.cf-text { margin: 0; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); line-height: 1.65; }
 .cf-target {
-  margin: 8px 0 0; padding: 9px 12px; font-size: 13px; font-weight: 600;
+  margin: 8px 0 0; padding: 9px 12px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
   background: var(--bg-sunken); border-radius: var(--r-sm); overflow-wrap: anywhere;
 }
 /* 危险确认做成**实心红钮**：一个描边红字按钮在"确认删除"这一步太轻了 */

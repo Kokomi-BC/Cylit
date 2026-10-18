@@ -146,7 +146,7 @@ watch(outline, () => { void nextTick(syncActive); });
   overflow-y: auto; overflow-x: hidden; padding-right: 4px;
 }
 .toc-title {
-  font-size: 11px; letter-spacing: .04em; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); letter-spacing: .04em; color: var(--text-faint);
   text-transform: uppercase; margin: 0 0 6px 6px;
 }
 

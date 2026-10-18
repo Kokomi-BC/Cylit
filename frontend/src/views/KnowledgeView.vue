@@ -1421,27 +1421,27 @@ onUnmounted(() => {
    ========================================================================== */
 .kb-top { display: flex; flex-direction: column; gap: 10px; }
 .kb-topline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.kb-title { margin: 0; font-size: 19px; color: var(--text); letter-spacing: -.01em; }
+.kb-title { margin: 0; font-size: calc(19px * var(--ts, 1)); color: var(--text); letter-spacing: -.01em; }
 .kb-modes { height: 28px; }
-.kb-modes button { height: 22px; font-size: 12px; padding: 0 10px; }
+.kb-modes button { height: 22px; font-size: calc(12px * var(--ts, 1)); padding: 0 10px; }
 
 .kb-search { width: min(560px, 100%); height: 36px; border-radius: var(--radius-ctl); }
-.kb-search input { flex: 1; width: auto; min-width: 0; font-size: 13.5px; }
+.kb-search input { flex: 1; width: auto; min-width: 0; font-size: calc(13.5px * var(--ts, 1)); }
 
 .kb-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kb-filters .seg { height: 28px; }
-.kb-filters .seg button { height: 22px; font-size: 12px; padding: 0 11px; }
-.kb-paper-select { min-width: 200px; max-width: 280px; height: 28px; font-size: 12px; }
+.kb-filters .seg button { height: 22px; font-size: calc(12px * var(--ts, 1)); padding: 0 11px; }
+.kb-paper-select { min-width: 200px; max-width: 280px; height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .kb-type-select, .kb-lang-select { height: 28px; }
 .kb-type-select { gap: 5px; color: var(--text-faint); }
-.kb-type-select select, .kb-lang-select { height: 28px; font-size: 12px; }
+.kb-type-select select, .kb-lang-select { height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .kb-type-select select { max-width: 132px; }
 .kb-lang-select { max-width: 108px; }
 
 .kb-resultline {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin: 14px 0 8px;
-  font-size: 12px; color: var(--text-dim);
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim);
 }
 .kb-resultline b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .kb-spin { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin-right: 4px; }
@@ -1451,7 +1451,7 @@ onUnmounted(() => {
 .search-wrap { position: relative; width: min(620px, 100%); }
 .search-field.hero-search { display: flex; width: 100%; height: 46px; padding: 0 16px; }
 .search-field.hero-search .icon { color: var(--text-dim); }
-.search-field.hero-search input { flex: 1; width: auto; min-width: 0; font-size: 14.5px; }
+.search-field.hero-search input { flex: 1; width: auto; min-width: 0; font-size: calc(14.5px * var(--ts, 1)); }
 .hist {
   position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
   padding: 5px; display: flex; flex-direction: column; gap: 1px;
@@ -1462,7 +1462,7 @@ onUnmounted(() => {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 7px 10px; border: 0; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text); cursor: pointer;
-  font-family: inherit; font-size: 12.5px; text-align: left;
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); text-align: left;
 }
 .hist-item .icon { color: var(--text-faint); }
 .hist-item:hover, .hist-item.active { background: var(--bg-hover); }
@@ -1519,7 +1519,7 @@ onUnmounted(() => {
   text-align: left; cursor: pointer; margin-bottom: 4px;
 }
 .paper-title {
-  font-size: 13.5px; font-weight: 600; color: var(--accent-text);
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; color: var(--accent-text);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .paper-head:hover .paper-title { text-decoration: underline; }
@@ -1550,14 +1550,14 @@ onUnmounted(() => {
 
 .chunk-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .chunk-page {
-  font-size: 11px; font-weight: 600; color: var(--accent-text);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 600; color: var(--accent-text);
   font-variant-numeric: tabular-nums;
 }
 .chunk-sec {
-  font-size: 11px; color: var(--text-dim); text-transform: none;
+  font-size: calc(11px * var(--ts, 1)); color: var(--text-dim); text-transform: none;
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chunk-type { font-size: 11px; }
+.chunk-type { font-size: calc(11px * var(--ts, 1)); }
 
 /* 摘要右侧的「复制 LaTeX」：默认很淡，hover 那一行才明显（不抢正文） */
 .chunk-copy {
@@ -1574,7 +1574,7 @@ onUnmounted(() => {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden;
   margin-top: 3px;
-  font-size: 12px; line-height: 1.5; color: var(--text-dim);
+  font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
 .chunk-sum :deep(.katex) { font-size: .95em; }
@@ -1585,7 +1585,7 @@ onUnmounted(() => {
 .chunk-sum :deep(h1), .chunk-sum :deep(h2), .chunk-sum :deep(h3), .chunk-sum :deep(h4) {
   display: inline; font-size: 1em; margin: 0;
 }
-.chunk-sum :deep(table) { font-size: 11px; }
+.chunk-sum :deep(table) { font-size: calc(11px * var(--ts, 1)); }
 /* 命中词：低饱和强调底色，不抢正文的视觉权重 */
 .chunk-sum :deep(.kb-mark) {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
@@ -1598,7 +1598,7 @@ onUnmounted(() => {
 .paper-more {
   display: inline-flex; align-items: center; gap: 4px;
   margin-top: 6px; padding: 2px 0;
-  font-size: 11.5px; color: var(--text-dim); cursor: pointer;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); cursor: pointer;
 }
 .paper-more:hover { color: var(--accent-text); }
 
@@ -1631,14 +1631,14 @@ onUnmounted(() => {
   to { opacity: 1; transform: none; }
 }
 .kb-detail-title {
-  margin: 0 0 6px; font-size: 17px; line-height: 1.35; color: var(--text);
+  margin: 0 0 6px; font-size: calc(17px * var(--ts, 1)); line-height: 1.35; color: var(--text);
   overflow-wrap: anywhere;
 }
 .kb-detail-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kb-hr { height: 1px; border: 0; background: var(--divider); margin: 14px 0; }
 
 .kb-content {
-  font-size: 13.5px; line-height: 1.72; color: var(--text);
+  font-size: calc(13.5px * var(--ts, 1)); line-height: 1.72; color: var(--text);
   overflow-wrap: anywhere;
 }
 /* 插图尺寸（560×420 以内、点开看大图）由 base.css 的 `.md img` 统一管 —— 这里不能再写一条
@@ -1659,7 +1659,7 @@ onUnmounted(() => {
   border-radius: var(--r-sm);
   overflow-x: auto; overflow-y: hidden;
   text-align: left;
-  font-size: 15px; line-height: 1.8; color: var(--text);
+  font-size: calc(15px * var(--ts, 1)); line-height: 1.8; color: var(--text);
 }
 .kb-formula :deep(.katex-display) { margin: 0; text-align: left; }
 .kb-formula :deep(.katex-display > .katex) { text-align: left; }
@@ -1670,7 +1670,7 @@ onUnmounted(() => {
 /* LaTeX 源码（默认折叠，点开是等宽块，可整段复制） */
 .kb-latex { margin-top: 8px; }
 .kb-latex > summary {
-  cursor: pointer; font-size: 11.5px; color: var(--text-faint);
+  cursor: pointer; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
   list-style: none; display: inline-flex; align-items: center; gap: 5px;
 }
 .kb-latex > summary::-webkit-details-marker { display: none; }
@@ -1684,7 +1684,7 @@ onUnmounted(() => {
 .kb-latex > pre {
   margin: 6px 0 0; padding: 8px 10px;
   background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm);
-  font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  font-family: var(--mono); font-size: calc(12px * var(--ts, 1)); line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; color: var(--text-dim);
   max-height: 260px; overflow: auto;
 }
@@ -1696,7 +1696,7 @@ onUnmounted(() => {
 }
 
 .kb-sec-title {
-  margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  margin: 0 0 8px; font-size: calc(12px * var(--ts, 1)); font-weight: 600; letter-spacing: .02em;
   color: var(--text-dim);
 }
 .kb-source { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
@@ -1705,19 +1705,19 @@ onUnmounted(() => {
 .kb-kv { margin: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; }
 .kb-kv-row { display: flex; gap: 10px; align-items: baseline; }
 .kb-kv-row dt {
-  flex: none; width: 92px; font-size: 11.5px; color: var(--text-faint);
+  flex: none; width: 92px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
-.kb-kv-row dd { margin: 0; min-width: 0; font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+.kb-kv-row dd { margin: 0; min-width: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); overflow-wrap: anywhere; }
 
 .kb-disclosure {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 4px 0; cursor: pointer;
-  font-size: 12.5px; font-weight: 600; color: var(--text-dim);
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text-dim);
 }
 .kb-disclosure:hover { color: var(--text); }
 .kb-disclosure .icon { color: var(--text-faint); }
 .kb-meta-body { padding: 10px 0 0; display: flex; flex-direction: column; gap: 10px; }
-.kb-meta-sub { font-size: 11.5px; color: var(--text-faint); margin-bottom: -4px; }
+.kb-meta-sub { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); margin-bottom: -4px; }
 .kb-meta-note { margin: 0; line-height: 1.5; }
 
 /* ==========================================================================
@@ -1728,20 +1728,20 @@ onUnmounted(() => {
   padding: 40px 0 4px;
 }
 .hero.compact { padding: 6px 0 4px; }
-.hero-title { margin: 0; font-size: 22px; color: var(--accent-text); }
+.hero-title { margin: 0; font-size: calc(22px * var(--ts, 1)); color: var(--accent-text); }
 .kb-body { margin-top: 26px; }
 
 .result-head {
-  font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums;
   margin-bottom: 2px;
 }
 
 .hit-main { min-width: 0; flex: 1; }
 .hit-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.hit-sec { font-size: 11px; color: var(--text-faint); max-width: 200px; overflow: hidden;
+.hit-sec { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); max-width: 200px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 /* 浏览列表里的摘要同样走 Markdown/KaTeX，只按 2 行截断 */
-.hit-text { margin-top: 2px; font-size: 12px; color: var(--text-dim); line-height: 1.55;
+.hit-text { margin-top: 2px; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); line-height: 1.55;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   overflow-wrap: anywhere; }
 .hit-text :deep(p) { margin: 0; }
@@ -1774,7 +1774,7 @@ onUnmounted(() => {
 .fig-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .fig-thumb:hover { border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
 .fig-cap {
-  font-size: 11.5px; color: var(--text-dim); line-height: 1.45;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .fig-ops { gap: 6px; margin-top: 2px; }

@@ -131,7 +131,7 @@ const rows = computed(() => filtered.value.map((f) => {
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-layer); padding: 6px 8px;
 }
-.fbody { margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; font-size: 12.5px; padding-bottom: 2px; }
+.fbody { margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; font-size: calc(12.5px * var(--ts, 1)); padding-bottom: 2px; }
 /* 窄栏里居中会让超长公式"看着被切"；左对齐从行首开始读，需要时横向滚动。 */
 .fbody.display { text-align: left; }
 .fbody :deep(.katex) { font-size: 1.02em; }

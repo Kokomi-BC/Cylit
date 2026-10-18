@@ -14,6 +14,23 @@
  * (0,1,0)），谁在后面谁生效 —— 放到 tokens 前面会被默认配色盖掉。 */
 @import './themes/index.css';
 
+/* ---- 字号缩放的分类根 --------------------------------------------------------
+ * 为什么必须写在这里而不是组件里：scoped 样式只到组件自己的根元素，够不到
+ * 「正文 / 对话 / 侧栏」这些跨组件的子树；这条级联才有办法一次管住整片区域。
+ *
+ * 读法：组件一律写 `font-size: calc(Npx * var(--ts, 1))`。
+ * - 默认（页面骨架、按钮、表格…）吃「界面」那一档；
+ * - 正文区改指「正文」，对话区改指「对话」，侧栏改指「侧栏」；
+ * - 真正乘多少由 stores/display 算好写在 :root 的 `--ts-*` 上（= master × 该类）。
+ */
+:root { --ts: var(--ts-ui); }
+.md-doc, .reader-content { --ts: var(--ts-body); }
+.chat-host, .chat { --ts: var(--ts-chat); }
+.reader-aside { --ts: var(--ts-side); }
+/* 笔记整页（跨论文汇总）：它没有别的归属，给「笔记」这一档单独一个根，
+   否则设置里那条滑块只影响阅读器的笔记浮层，用户会觉得它失灵。 */
+.notes-page { --ts: var(--ts-note); }
+
 * { box-sizing: border-box; }
 
 /* 触摸设备：关掉浏览器给可点元素叠的**原生灰色遮罩**（tap highlight）。
@@ -40,7 +57,7 @@ body {
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: calc(14px * var(--ts, 1));
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -93,7 +110,7 @@ mark.hl.violet { --hl-bg: rgba(143, 0, 255, .22); background: var(--hl-bg); }
  * 观感：accent 淡底胶囊 + mono 小字 + 实心下划线 —— 与论文自己的 `[12]`（纯文字）分得开。 */
 .cite-inline {
   border: 0; background: var(--accent-soft); color: var(--accent-text);
-  font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1.5;
+  font-family: var(--mono); font-size: calc(11px * var(--ts, 1)); font-weight: 700; line-height: 1.5;
   padding: 0 5px; margin: 0 1px; border-radius: var(--radius-ctl); cursor: pointer;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--accent) 72%, transparent);
@@ -256,14 +273,14 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   position: fixed; top: 6px; left: 8px; z-index: 200;
   transform: translateY(-160%);
   padding: 7px 14px; border-radius: var(--radius-ctl);
-  background: var(--accent); color: var(--text-on-accent); font-size: 13px; font-weight: 600;
+  background: var(--accent); color: var(--text-on-accent); font-size: calc(13px * var(--ts, 1)); font-weight: 600;
   box-shadow: var(--shadow-2);
 }
 .skip-link:focus-visible { transform: none; text-decoration: none; }
 
 .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.page-head h1 { font-size: 22px; margin: 0; }
-.page-head .sub { color: var(--text-dim); font-size: 12.5px; margin-top: 2px; }
+.page-head h1 { font-size: calc(22px * var(--ts, 1)); margin: 0; }
+.page-head .sub { color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1)); margin-top: 2px; }
 .page-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
 /* 通用工具条：搜索 / 筛选 / 主操作同一行的标准节奏 */
@@ -285,7 +302,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   border: 1px solid transparent;
   box-shadow: var(--shadow-1);
   background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1; cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease), color var(--dur) var(--ease),
               transform var(--dur-fast) var(--ease), opacity var(--dur) var(--ease);
@@ -327,7 +344,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 55%, var(--border-strong));
 }
-.btn.sm { height: var(--control-h-sm); padding: 0 11px; font-size: 12px; gap: 5px; }
+.btn.sm { height: var(--control-h-sm); padding: 0 11px; font-size: calc(12px * var(--ts, 1)); gap: 5px; }
 /* 图标按钮：它同时带 .btn 与 .icon 两个类，而全局 `.icon { display: block }` 会
  * 把 `.btn` 的 inline-flex 覆盖掉 → 图标被当成块级元素贴在按钮左侧（不是居中）。
  * 这里用更高权重（.btn.icon）把布局抢回来，别删。 */
@@ -338,7 +355,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 .btn.icon.sm { width: var(--control-h-sm); padding: 0; }
 
 input, select, textarea {
-  font-family: inherit; font-size: 13px; color: var(--text);
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); color: var(--text);
   background: var(--bg-elev); border: 1px solid var(--border-strong);
   border-radius: var(--r-sm); padding: 0 11px;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
@@ -378,7 +395,7 @@ input[type="checkbox"] {
   accent-color: var(--accent); width: 15px; height: 15px; margin: 0;
   padding: 0; border-radius: var(--r-xs); cursor: pointer;
 }
-label.field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+label.field { display: flex; flex-direction: column; gap: 5px; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 label.field > input, label.field > select, label.field > textarea { width: 100%; max-width: 340px; }
 
 /* 带图标的搜索框：图标与输入框同高居中，永远在同一行上 */
@@ -416,7 +433,7 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 .seg button {
   border: 0; background: transparent; color: var(--text-dim);
   height: calc(var(--control-h) - 6px); flex: none; padding: 0 12px;
-  font-family: inherit; font-size: 13px; line-height: 1;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); line-height: 1;
   font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
   border-radius: var(--radius-ctl);
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -435,7 +452,7 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--divider); overflow-x: auto; }
 .tabs button {
   border: 0; background: transparent; color: var(--text-dim); cursor: pointer;
-  height: 36px; padding: 0 12px; font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1;
+  height: 36px; padding: 0 12px; font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1;
   border-bottom: 2px solid transparent; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 6px;
 }
@@ -446,7 +463,7 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 .badge {
   display: inline-flex; align-items: center; gap: 5px; padding: 0 10px;
   height: 22px; border-radius: var(--radius-ctl);
-  font-size: 11.5px; font-weight: 600; line-height: 1;
+  font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; line-height: 1;
   white-space: nowrap;
   background: var(--bg-subtle); color: var(--text-dim); border: 1px solid var(--border);
 }
@@ -492,16 +509,16 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .stat { padding: 14px 16px; }
-.stat .n { font-size: 24px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
-.stat .k { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.stat .n { font-size: calc(24px * var(--ts, 1)); font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.stat .k { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); margin-top: 2px; }
 
-table.data { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+table.data { width: 100%; border-collapse: separate; border-spacing: 0; font-size: calc(13px * var(--ts, 1)); }
 table.data th, table.data td {
   text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--divider);
   vertical-align: top; overflow-wrap: anywhere;
 }
 table.data th {
-  color: var(--text-dim); font-weight: 600; font-size: 12px;
+  color: var(--text-dim); font-weight: 600; font-size: calc(12px * var(--ts, 1));
   background: var(--bg-sunken); position: sticky; top: 0; z-index: 2; white-space: nowrap;
 }
 table.data thead tr:first-child th:first-child { border-top-left-radius: var(--r-sm); }
@@ -526,8 +543,8 @@ table.data.fixed { table-layout: fixed; }
   width: 42px; height: 42px; border-radius: var(--radius-ctl);
   background: var(--bg-subtle); color: var(--text-faint); border: 1px solid var(--border);
 }
-.empty-state .es-title { font-weight: 600; color: var(--text); font-size: 14px; }
-.empty-state .es-hint { font-size: 12.5px; color: var(--text-dim); max-width: 42ch; line-height: 1.6; }
+.empty-state .es-title { font-weight: 600; color: var(--text); font-size: calc(14px * var(--ts, 1)); }
+.empty-state .es-hint { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); max-width: 42ch; line-height: 1.6; }
 .empty-state .es-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 2px; }
 
 .drop-zone {
@@ -561,8 +578,8 @@ table.data.fixed { table-layout: fixed; }
 .spacer { flex: 1; }
 .muted { color: var(--text-dim); }
 .faint { color: var(--text-faint); }
-.small { font-size: 12px; }
-.tiny { font-size: 11px; }
+.small { font-size: calc(12px * var(--ts, 1)); }
+.tiny { font-size: calc(11px * var(--ts, 1)); }
 .nowrap { white-space: nowrap; }
 .mono { font-family: var(--mono); }
 .center { text-align: center; }
@@ -714,7 +731,7 @@ table.data.fixed { table-layout: fixed; }
 }
 @media (max-width: 720px) {
   .grid.cols-3, .grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
-  .page-head h1 { font-size: 19px; }
+  .page-head h1 { font-size: calc(19px * var(--ts, 1)); }
 }
 
 /* 浮层手势期间（`utils/floatDrag.ts` 给 `<html>` 挂的临时类）：**只有 PDF 文字层**不许起选区。

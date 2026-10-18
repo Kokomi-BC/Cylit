@@ -113,14 +113,14 @@ const items = computed(() =>
 .toc-item.active { background: var(--accent-soft); }
 .toc-item.active .txt .en { color: var(--accent-text); }
 .toc-item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.toc-item .en { font-size: 12.5px; font-weight: 500; }
-.toc-item .zh { font-size: 11.5px; color: var(--text-faint); }
+.toc-item .en { font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; }
+.toc-item .zh { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 /* KaTeX 默认 1.21em，在 11.5~12.5px 的目录行里会显得比中文大一圈；压回正文尺寸。 */
 .toc-item .md :deep(.katex) { font-size: 1em; }
 .toc-item .md :deep(strong) { font-weight: 600; }
 .toc-item .md :deep(code) { font-size: .95em; padding: 0 3px; }
-.toc-item .num { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
-.toc-item .pg { font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: 4px; }
+.toc-item .num { font-family: var(--mono); font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); margin-right: 4px; }
+.toc-item .pg { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: 4px; }
 .caret {
   border: 0; background: transparent; cursor: pointer; color: var(--text-faint);
   padding: 1px 0 0; line-height: 1; width: 15px; display: inline-flex; justify-content: center;

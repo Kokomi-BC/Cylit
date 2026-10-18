@@ -180,14 +180,14 @@ async function openUnderstand(id: string) {
 .hero.solo { grid-template-columns: minmax(0, 1fr); }
 .eyebrow {
   margin: 0 0 14px; font-family: var(--mono);
-  font-size: 10.5px; font-weight: 600; letter-spacing: .2em;
+  font-size: calc(10.5px * var(--ts, 1)); font-weight: 600; letter-spacing: .2em;
   text-transform: uppercase; color: var(--accent-text);
 }
 .hero h1 {
   margin: 0; font-size: clamp(30px, 3.2vw, 46px); font-weight: 600;
   line-height: 1.1; letter-spacing: -.038em; color: var(--text);
 }
-.hero .sub { margin: 16px 0 0; max-width: 30em; font-size: 14.5px; line-height: 1.7; color: var(--text-dim); }
+.hero .sub { margin: 16px 0 0; max-width: 30em; font-size: calc(14.5px * var(--ts, 1)); line-height: 1.7; color: var(--text-dim); }
 
 .rail { margin: 0; }
 .rail-row {
@@ -195,15 +195,15 @@ async function openUnderstand(id: string) {
   padding: 10px 0; border-bottom: 1px solid var(--divider);
 }
 .rail-row:first-child { border-top: 1px solid var(--divider); }
-.rail dt { font-size: 12.5px; color: var(--text-faint); }
-.rail dd { margin: 0; font-size: 18px; font-weight: 620; letter-spacing: -.02em; color: var(--text); }
+.rail dt { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
+.rail dd { margin: 0; font-size: calc(18px * var(--ts, 1)); font-weight: 620; letter-spacing: -.02em; color: var(--text); }
 
 /* ── 模块抬头：一条发丝线 + 一档小字，全页只有这一种 ── */
 .block { margin-top: 34px; }
 .sec {
   margin: 0 0 14px; padding-top: 12px;
   border-top: 1px solid var(--divider);
-  font-size: 12.5px; font-weight: 650; letter-spacing: .01em; color: var(--text-dim);
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; letter-spacing: .01em; color: var(--text-dim);
 }
 
 /* ── ② 便当格 ──
@@ -248,8 +248,8 @@ async function openUnderstand(id: string) {
 }
 .bcard:hover .go { color: var(--accent); transform: translate(2px, -2px); }
 
-.b-stat { font-size: 40px; font-weight: 600; line-height: 1; letter-spacing: -.045em; color: var(--text); }
-.b-stat em { margin-left: 7px; font-size: 12.5px; font-weight: 400; font-style: normal; letter-spacing: 0; color: var(--text-faint); }
+.b-stat { font-size: calc(40px * var(--ts, 1)); font-weight: 600; line-height: 1; letter-spacing: -.045em; color: var(--text); }
+.b-stat em { margin-left: 7px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 400; font-style: normal; letter-spacing: 0; color: var(--text-faint); }
 /* 点阵：右下角一小片极淡的圆点，给主角卡一点"数据"的质感（纯装饰，不参与命中） */
 .dots {
   position: absolute; right: 20px; bottom: 18px; width: 120px; height: 60px; pointer-events: none;
@@ -258,8 +258,8 @@ async function openUnderstand(id: string) {
 }
 
 .b-text { display: flex; flex-direction: column; gap: 6px; }
-.b-title { font-size: 19px; font-weight: 620; letter-spacing: -.025em; }
-.b-desc { max-width: 34em; font-size: 13.5px; line-height: 1.7; color: var(--text-dim); }
+.b-title { font-size: calc(19px * var(--ts, 1)); font-weight: 620; letter-spacing: -.025em; }
+.b-desc { max-width: 34em; font-size: calc(13.5px * var(--ts, 1)); line-height: 1.7; color: var(--text-dim); }
 
 /* ── ③ 研究工具：一行 pill ── */
 /* 两枚 pill 就铺两列：写死 3 列会在右边留一块空洞 */
@@ -274,7 +274,7 @@ async function openUnderstand(id: string) {
 .tool:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ico-box.sm { width: 26px; height: 26px; border-radius: 999px; }
 .tool:hover .ico-box { color: var(--accent); }
-.tool-name { font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; }
+.tool-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em; }
 
 /* ── 响应式：先收成两列，再收成一列（主角卡跨行只在宽屏有意义） ── */
 @media (max-width: 1080px) {
@@ -288,9 +288,9 @@ async function openUnderstand(id: string) {
   .bento { grid-template-columns: minmax(0, 1fr); }
   .bcard.lead { grid-row: auto; }
   .bcard { padding: 18px; gap: 14px; }
-  .b-stat { font-size: 34px; }
-  .b-title { font-size: 18px; }
-  .b-desc { font-size: 13px; }
+  .b-stat { font-size: calc(34px * var(--ts, 1)); }
+  .b-title { font-size: calc(18px * var(--ts, 1)); }
+  .b-desc { font-size: calc(13px * var(--ts, 1)); }
 }
 @media (max-width: 460px) {
   .tools { grid-template-columns: minmax(0, 1fr); }

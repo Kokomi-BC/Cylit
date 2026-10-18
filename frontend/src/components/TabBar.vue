@@ -302,7 +302,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
 .tabbar-logo {
   flex: none; display: flex; align-items: center; gap: 6px;
   padding: 0 8px 0 3px;
-  font-size: 14.5px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
+  font-size: calc(14.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em; line-height: 1;
   color: var(--accent-text);
   user-select: none;
 }
@@ -362,7 +362,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
      标题那枚 span 带 .truncate（overflow: hidden），行高只给 1em 时字体的 ascent + descent
      （≈ 1.16em）高出内容盒，上下缘被切掉，就是用户报的「胶囊把字裁了」。 */
   border-radius: 999px; color: var(--text-dim);
-  font-size: 13px; font-weight: 500; line-height: 1.45; white-space: nowrap;
+  font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1.45; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 /* 没选中**不画底**：托盘本身已经有浅底，再给每枚叠一层只会糊成一片
@@ -388,7 +388,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
 }
 .tab-title { max-width: 130px; cursor: default; }
 .tab-rename {
-  width: 120px; height: 20px; padding: 0 4px; font-size: 12.5px;
+  width: 120px; height: 20px; padding: 0 4px; font-size: calc(12.5px * var(--ts, 1));
   border-radius: var(--r-xs); border-color: var(--accent);
 }
 .tab-close {
@@ -406,7 +406,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
 }
 .tab-menu button {
   border: 0; background: transparent; color: var(--text); text-align: left;
-  padding: 6px 9px; border-radius: var(--r-xs); font-size: 12.5px; cursor: pointer;
+  padding: 6px 9px; border-radius: var(--r-xs); font-size: calc(12.5px * var(--ts, 1)); cursor: pointer;
 }
 .tab-menu button:hover:not(:disabled) { background: var(--bg-hover); }
 .tab-menu button:disabled { opacity: .45; cursor: default; }

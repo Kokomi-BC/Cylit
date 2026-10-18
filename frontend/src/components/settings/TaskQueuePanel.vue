@@ -222,7 +222,7 @@ onMounted(() => { void refresh(); });
 }
 .tq-live.sse { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
 .tq-live.poll { background: var(--warn); }
-.tq-empty { padding: 16px 0; color: var(--text-faint); font-size: 12.5px; }
+.tq-empty { padding: 16px 0; color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1)); }
 .tq-prog {
   display: flex; align-items: baseline; gap: 6px;
   margin-bottom: 4px; color: var(--text-dim);

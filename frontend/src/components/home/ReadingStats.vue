@@ -177,15 +177,15 @@ onUnmounted(() => ro?.disconnect());
   background: var(--bg-elev); box-shadow: var(--shadow-1);
 }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.head h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
-.head p { margin: 5px 0 0; font-size: 11.5px; color: var(--text-faint); }
+.head h2 { margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650; letter-spacing: .01em; }
+.head p { margin: 5px 0 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
 /* 图上留一点气：抬头与折线之间不贴死 */
 .chart-wrap { position: relative; width: 100%; margin-top: 10px; }
 .chart { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
 /* 参考线 / 网格 / 坐标轴一律**极浅灰**，图表里只有折线是彩色的 */
 .grid line { stroke: var(--divider); stroke-width: 1; }
-.grid text, .axis text { fill: var(--text-faint); font-size: 10px; font-family: var(--sans); }
+.grid text, .axis text { fill: var(--text-faint); font-size: calc(10px * var(--ts, 1)); font-family: var(--sans); }
 .chart-wrap.empty .grid line { stroke: color-mix(in srgb, var(--divider) 70%, transparent); }
 .area { fill: color-mix(in srgb, var(--accent) 9%, transparent); }
 .line { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
@@ -195,7 +195,7 @@ onUnmounted(() => ro?.disconnect());
 /* 空状态：**居中一行**（图标 + 一句话），不是"中间一枚图标、下面几行小字"那种大留白 */
 .empty-note {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  gap: 8px; font-size: 12.5px; color: var(--text-faint); pointer-events: none;
+  gap: 8px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); pointer-events: none;
 }
 .empty-note :deep(svg) { flex: none; opacity: .9; }
 
@@ -205,9 +205,9 @@ onUnmounted(() => ro?.disconnect());
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
   background: var(--bg-elev); box-shadow: var(--shadow-2); pointer-events: none; white-space: nowrap;
 }
-.tip-date { font-size: 10px; color: var(--text-faint); }
-.tip-val { font-size: 12px; font-weight: 600; color: var(--text); }
-.today-note { margin: 4px 0 0; text-align: right; font-size: 10.5px; color: var(--text-faint); }
+.tip-date { font-size: calc(10px * var(--ts, 1)); color: var(--text-faint); }
+.tip-val { font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text); }
+.today-note { margin: 4px 0 0; text-align: right; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); }
 
 @media (max-width: 640px) {
   .stats { margin-top: 26px; padding: 16px 14px 12px; }

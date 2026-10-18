@@ -72,7 +72,7 @@ function iconOf(kind?: string | null): string {
   padding: 5px 11px;
   border-radius: calc(var(--radius-lg) - 3px);
   background: var(--bg-sunken);
-  font-size: 13px; line-height: 1.5;
+  font-size: calc(13px * var(--ts, 1)); line-height: 1.5;
 }
 .toast-ico { flex: none; margin-top: 1px; color: var(--accent-text); }
 .toast-text { min-width: 0; word-break: break-word; }

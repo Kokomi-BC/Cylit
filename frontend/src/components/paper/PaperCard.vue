@@ -215,14 +215,14 @@ function onCard() {
     color-mix(in srgb, var(--text) 2%, transparent));
   color: var(--text-faint);
 }
-.pc-cover-empty span { font-size: 10px; letter-spacing: .08em; }
+.pc-cover-empty span { font-size: calc(10px * var(--ts, 1)); letter-spacing: .08em; }
 
 /* ---------------- 徽章 / 进度 / 处理中 ---------------- */
 .pc-badge {
   position: absolute; right: 8px; top: 8px; z-index: 2;
   display: inline-flex; align-items: center; gap: 4px;
   height: 20px; padding: 0 8px; border-radius: 999px;
-  font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap;
+  font-size: calc(10px * var(--ts, 1)); font-weight: 600; line-height: 1; white-space: nowrap;
   /* 徽章压在论文首页图上：用极强玻璃（20px 模糊）把封面那点字迹糊开，自身读数才清楚。
      不画描边、不留内阴影（深色下都会成发光边），层次靠渐变本体 + 柔光投影。 */
   --glass-top: 86%;
@@ -321,18 +321,18 @@ function onCard() {
 .pc-name-row { display: flex; align-items: flex-start; gap: 2px; min-width: 0; }
 .pc-name {
   flex: 1; min-width: 0; margin: 0;
-  font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--text);
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; line-height: 1.4; color: var(--text);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   transition: color var(--dur) var(--ease);
 }
 .paper-card:hover .pc-name { color: var(--accent-text); }
 .pc-meta {
-  margin: 0; font-size: 10.5px; color: var(--text-dim);
+  margin: 0; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pc-foot {
   display: flex; align-items: center; gap: 4px; margin: 2px 0 0;
-  font-size: 10.5px; color: var(--text-dim);
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-dim);
 }
 /* 菜单按钮：平时隐形但**保留占位**（不占位会让标题在悬停时跳一下） */
 .pc-menu { flex: none; opacity: 0; transition: opacity var(--dur) var(--ease); }
@@ -354,8 +354,8 @@ function onCard() {
 .paper-card.list .pc-cover > .pc-badge { display: none; }
 .paper-card.list .pc-text { flex: 1; margin-top: 0; }
 /* 列表里标题**按内容收缩**：徽章要紧跟在标题后面，被 `flex: 1` 推到最右边会像另一个按钮 */
-.paper-card.list .pc-name { flex: 0 1 auto; font-size: 14px; }
-.paper-card.list .pc-meta { font-size: 11px; }
+.paper-card.list .pc-name { flex: 0 1 auto; font-size: calc(14px * var(--ts, 1)); }
+.paper-card.list .pc-meta { font-size: calc(11px * var(--ts, 1)); }
 .pc-inline-actions { display: flex; align-items: center; gap: 6px; flex: none; align-self: center; }
 
 /* 窄屏：hover 操作在触屏上永远不会出现，改成常显（否则手机上进不了阅读器） */

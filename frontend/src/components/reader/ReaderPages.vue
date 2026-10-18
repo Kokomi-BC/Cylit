@@ -117,7 +117,7 @@ watch(() => props.currentPage, async (page) => {
 
 /* 页号：**图外面**的一行文字（不是压在图上的徽章，也不在图的边框里） */
 .pg-no {
-  font-size: 11px; line-height: 16px; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); line-height: 16px; color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 .pg-item.active .pg-no { color: var(--accent-text); font-weight: 600; }
@@ -143,6 +143,6 @@ watch(() => props.currentPage, async (page) => {
 .pg-shot .ph {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; aspect-ratio: 3 / 4; padding: 6px;
-  color: var(--text-faint); font-size: 11px; text-align: center;
+  color: var(--text-faint); font-size: calc(11px * var(--ts, 1)); text-align: center;
 }
 </style>

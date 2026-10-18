@@ -61,7 +61,7 @@ const rows = computed(() => props.items.map((h) => ({
    `text-overflow` 对**行内 HTML**（KaTeX 的 span、`<strong>`）同样生效：截断发生在按钮这一层的行盒上。 */
 .toc-item {
   display: block; width: 100%; text-align: left; border: 0; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-dim); font: inherit; font-size: 12.5px;
+  background: transparent; color: var(--text-dim); font: inherit; font-size: calc(12.5px * var(--ts, 1));
   line-height: 1.45; padding: 4px 6px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   /* hover/active 只改底色与字色：加边框会让整列在滚动时抖动 */
@@ -69,7 +69,7 @@ const rows = computed(() => props.items.map((h) => ({
 }
 .toc-item:hover { background: var(--bg-hover); color: var(--text); }
 .toc-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
-.toc-item.deep { font-size: 12px; }
+.toc-item.deep { font-size: calc(12px * var(--ts, 1)); }
 .toc-item .label { display: inline; }
 /* KaTeX 默认 1.21em，在 12px 的目录行里会比中文大一圈；压回行内尺寸
    （与阅读器目录 `ReaderToc` 的同名规则一致，两处目录才看着是同一套东西）。 */
@@ -79,6 +79,6 @@ const rows = computed(() => props.items.map((h) => ({
 /* 行间公式（`$$…$$`）不该出现在标题里，但万一出现，别把目录行撑成三行 */
 .toc-item .label :deep(.katex-display) { display: inline; margin: 0; }
 /* 紧凑版（阅读器左栏）：字号再小一档，条目更密 */
-.toc-list.compact .toc-item { font-size: 11.5px; padding: 3px 5px; line-height: 1.4; }
-.toc-list.compact .toc-item.deep { font-size: 11px; }
+.toc-list.compact .toc-item { font-size: calc(11.5px * var(--ts, 1)); padding: 3px 5px; line-height: 1.4; }
+.toc-list.compact .toc-item.deep { font-size: calc(11px * var(--ts, 1)); }
 </style>

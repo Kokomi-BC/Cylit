@@ -75,7 +75,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 .modal-head {
   display: flex; align-items: center; gap: 8px;
   padding: 16px 16px 4px 20px;
-  font-size: 15px; font-weight: 650; color: var(--text);
+  font-size: calc(15px * var(--ts, 1)); font-weight: 650; color: var(--text);
 }
 /* 标题可能很长（放大插图时显示的是**图注**，一句话能有几十字）：按**一行截断**，
    省略号 + 原生 tooltip 看全文；`min-width: 0` 是必须的 —— 否则 flex 项不肯收缩，

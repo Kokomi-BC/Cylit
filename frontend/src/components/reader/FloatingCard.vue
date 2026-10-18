@@ -24,7 +24,7 @@
  *
  * 本组件**不持有业务状态**：谁开、开在哪、里面放什么，全由父组件给。
  */
-import { nextTick, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
 import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import AppIcon from '@/components/AppIcon.vue';
 
@@ -44,7 +44,13 @@ const props = withDefaults(defineProps<{
   centerOnOpen?: boolean;
   /** 不要那枚手动的锚定按钮（用户口径 2026-11-22：锚定改为"点过浮层就自动锚定"，按钮位让给「定位」） */
   hideAnchor?: boolean;
-}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false });
+  /** 这张浮层属于哪一类文字：非空时在外壳写行内 `--ts` = 分类全局倍数 × 本卡字号倍数。
+   *  为什么要分类：正文 / 对话 / 笔记 / 侧栏 / 界面各有各的全局缩放，浮层得自己声明是哪一类，
+   *  否则它只能继承**宿主页面**的倍数 —— 而宿主是谁完全看这张卡浮在哪。空 = 不写（保持原样继承）。 */
+  textCat?: '' | 'body' | 'chat' | 'note' | 'side' | 'ui';
+  /** 标题栏给 A− / A+ 两枚字号钮（只有笔记卡的**查看态**才传：编辑态那行已被色点 / ✓ 占满） */
+  zoomable?: boolean;
+}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -199,7 +205,36 @@ function onHeadUp(ev: PointerEvent) {
  */
 const posKey = () => (props.persistKey ? `cylit:float:${props.persistKey}` : '');
 
-type SavedBox = { left: number; top: number; w?: number; h?: number; s?: number };
+/* ------------------------------ 字号倍数（A− / A+） ------------------------------
+ * 为什么只写一个 CSS 变量：缩放**只该改字号**，不许碰卡片的宽高与位置 —— 拖动/拉角的数学
+ * 全是"按下那一刻的 px 快照 + 指针增量"，字体一变就重排，量出来的 offsetWidth 会跟着跳。
+ * 所以倍数落到外壳的 `--ts` 上，由**浏览器**去算字号（`.np-view` / `.fc-title` 读 `var(--ts, 1)`）：
+ * 点按钮只改一个变量，手势路径与这次缩放都不产生组件重渲染，和拖动/拉角那套零重渲染写法一致。 */
+const F_MIN = 0.8;
+const F_MAX = 1.5;
+const F_STEP = 0.05;
+const fontScale = ref(1);
+
+/** 越界 / 非数字（老记录没这个字段，也可能被手改过）一律当 1 —— 读的那一侧必须自己兜住。 */
+function clampF(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 1;
+  return Math.round(Math.min(F_MAX, Math.max(F_MIN, v)) * 100) / 100;
+}
+
+/** 点一下加减：**立刻落盘**。字号是单击行为，没有"手势结束"这个时机可以等。 */
+function stepFont(dir: -1 | 1) {
+  fontScale.value = clampF(fontScale.value + dir * F_STEP);
+  savePos();
+}
+
+/** textCat 非空才写 `--ts`：解释浮层 / 对话浮窗不传，它们的继承链与以前一模一样。
+ *  ⚠️ 行内 style 里只放这一个变量：外壳的 left/top/width/height 仍由 applyShellDom 直接写 DOM，
+ *  Vue 的 patchStyle 只增删它自己那几个键，不会把命令式写进去的几何抹掉。 */
+const shellVars = computed(() => (props.textCat
+  ? { '--ts': `calc(var(--ts-${props.textCat}, 1) * ${fontScale.value})` }
+  : null));
+
+type SavedBox = { left: number; top: number; w?: number; h?: number; s?: number; f?: number };
 
 /** 读回上次摆过的位置**与尺寸**（老记录只有 left/top，w/h 缺失就按默认尺寸打开）。 */
 function readSavedPos(): SavedBox | null {
@@ -208,13 +243,16 @@ function readSavedPos(): SavedBox | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    const v = JSON.parse(raw) as { left?: unknown; top?: unknown; w?: unknown; h?: unknown };
+    const v = JSON.parse(raw) as { left?: unknown; top?: unknown; w?: unknown; h?: unknown; f?: unknown };
     if (typeof v.left !== 'number' || typeof v.top !== 'number') return null;
     const box: SavedBox = { left: v.left, top: v.top };
     if (typeof v.w === 'number' && v.w > 0) box.w = v.w;
     if (typeof v.h === 'number' && v.h > 0) box.h = v.h;
     const s = (v as { s?: unknown }).s;
     if (typeof s === 'number' && s > 0) box.s = s;
+    /* 字号倍数也在这份记录里（每张卡各记各的）。读出来**先钳一次范围**：
+       手改过 localStorage、或者以后收窄了区间，都不该让一张卡用 0.3 的字号打开。 */
+    box.f = clampF(v.f);
     return box;
   } catch { return null; }
 }
@@ -250,6 +288,9 @@ function savePos() {
     /* 正文读到哪也一起记（用户口径 2026-11-26）：长笔记滚到一半，下次打开不该回到开头。 */
     const s = bodyEl.value?.scrollTop ?? 0;
     if (s > 0) box.s = Math.round(s);
+    /* 字号倍数与位置 / 尺寸同一份记录（正好每个 persistKey 一张卡）：点击时立刻写，下次打开原样恢复。
+       默认 1 不写 —— 没缩过的卡片不必多一个字段。 */
+    if (fontScale.value !== 1) box.f = fontScale.value;
     localStorage.setItem(key, JSON.stringify(box));
   } catch { /* 隐私模式忽略 */ }
 }
@@ -270,6 +311,9 @@ watch(() => props.open, (v) => {
   /* 尺寸也按卡记忆：上次拉大过的框，再打开还是那么大；没记录才回到调用方给的默认宽高。
      夹一次视口 —— 换到小屏上之后，记下来的大框不该整个超出屏幕。 */
   const saved = readSavedPos();
+  /* 字号跟着同一份记录恢复（clampF 已在 readSavedPos 里钳过范围，坏数据就是 1）。
+     必须在 centerOnOpen 那个提前 return **之前** —— 居中打开的卡片同样要带回自己的字号。 */
+  fontScale.value = saved?.f ?? 1;
   sizeW.value = saved?.w ? Math.min(saved.w, window.innerWidth - 16) : null;
   sizeH.value = saved?.h ? Math.min(saved.h, window.innerHeight - 16) : null;
   if (props.centerOnOpen) {
@@ -478,6 +522,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
     ref="el"
     class="float-shell"
     data-float-card
+    :style="shellVars"
   >
     <div class="float-card" :class="{ sized: sizeH !== null }">
       <!-- 顶部**浮起**的拖动条（用户口径 2026-10-13 二轮："自然融合，不要另起一行"）：
@@ -516,6 +561,32 @@ watchEffect(applyShellDom, { flush: 'sync' });
              但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
         <slot name="head-mid" />
         <span class="spacer" />
+        <!-- 字号 A− / A+（只有查看态的笔记卡要）：排在 head-extra **之前** —— 那一组是父组件自己的
+             动作（定位 / 编辑 / 保存），字号属于"看的方式"，挨在一起会读成同一组。
+             到边界就 disabled（title 里写明当前百分比，用户不必点一下才知道到头了）。
+             标题栏的拖动已把 button 排除在外（见 onHeadDown），点它不会顺手把卡片挪一下。 -->
+        <template v-if="props.zoomable">
+          <button
+            type="button"
+            class="fc-btn"
+            :disabled="fontScale <= F_MIN"
+            :title="`缩小字号（当前 ${Math.round(fontScale * 100)}%）`"
+            data-float-zoom-out
+            @click="stepFont(-1)"
+          >
+            <AppIcon name="zoom-out" :size="13" />
+          </button>
+          <button
+            type="button"
+            class="fc-btn"
+            :disabled="fontScale >= F_MAX"
+            :title="`放大字号（当前 ${Math.round(fontScale * 100)}%）`"
+            data-float-zoom-in
+            @click="stepFont(1)"
+          >
+            <AppIcon name="zoom-in" :size="13" />
+          </button>
+        </template>
         <!-- 头部附加内容（2026-10-10：笔记框要照目标站把「✓ 保存」放在标题行上）。
              没传这个插槽时渲染为空，**解释浮层那边完全不受影响**。 -->
         <slot name="head-extra" />
@@ -645,7 +716,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
   cursor: grab; user-select: none; touch-action: none;
 }
 .fc-head.dragging { cursor: grabbing; }
-.fc-title { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+.fc-title { font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; color: var(--text-dim); }
 /* 头部图标钮：**圆形 + 中性淡底**（用户口径 2026-11-21："笔记浮层的按钮样式与对话样式统一"）。
    参考那套是"灰底圆钮"，不是"透明方角"也不是"强调色方块" —— 两张浮层（笔记 / Cyli 解释）
    共用这一条，所以它们的锚定 / 关闭 / 笔 / 垃圾桶才会长得一样。 */
@@ -660,6 +731,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-btn:hover { background: var(--bg-hover); color: var(--text); }
 .fc-btn:active { transform: scale(.94); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+/* 字号钮到头了（0.8 / 1.5）：淡下去并撤掉悬停反馈 —— 悬停还变亮的话，"点不动"会像卡住。
+   只管 disabled 的钮：头部其它键（锚定 / ✕ / 铅笔）永远不禁用，外观与以前一致。 */
+.fc-btn:disabled { opacity: .4; cursor: default; }
+.fc-btn:disabled:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim); }
 /* 头部最右那格（head-tail）：与锚定之间再多一小段间距 —— 删除键和「保存 / 锚定」不能挨着 */
 /* 头部最右那格（删除键）。**只靠父级的 gap 与邻居分开**：这里再叠一个 margin-left，
    就变成"删除前 6px、删除后 6px"，与左边的铅笔/锚定不一致（用户口径 2026-11-21 报的间隔不匀）。
@@ -668,7 +743,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .fc-tail:empty { display: none; }
 
-.fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0; font-size: 12.5px; }
+.fc-body { flex: 1 1 auto; padding: 10px 12px; overflow: auto; min-height: 0;
+  /* 卡片默认字号也要读 --ts：插槽里没自己写字号的段落（解释浮层的过程行等）才会跟着缩放 */
+  font-size: calc(12.5px * var(--ts, 1)); }
 /* 用户把卡片拉大之后（`sizeH` 有值 → `.sized`）正文区改成**纵向 flex**：
    这样里面那层"本该吃满"的内容（笔记卡的可编辑区）可以用 `flex: 1 1 auto` 长高，
    而不是拉大之后下面空出一大块点不动的白。没拉过尺寸时保持原样（高度随内容），

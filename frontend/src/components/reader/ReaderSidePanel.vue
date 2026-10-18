@@ -797,7 +797,7 @@ function onMore(key: string, r: FeedRow) {
   overflow: hidden;
 }
 /* 引用原文再小一档（原来是 .small 的 12px；它只是「按的是哪一段」的索引） */
-.item.note-row .quote { font-size: 11.5px; line-height: 1.55; }
+.item.note-row .quote { font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; }
 /* 批量态：行首勾选框 —— 与对话页 .tick 同一口径（24px 热区、无底、选中转主题色） */
 .tick {
   width: 24px; height: 24px; flex: none; border: 0; background: none; cursor: pointer;
@@ -826,7 +826,7 @@ function onMore(key: string, r: FeedRow) {
 .item.note-row .note-edit {
   width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 9px 11px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
-  background: var(--bg-layer); color: var(--text); font: inherit; font-size: 13px;
+  background: var(--bg-layer); color: var(--text); font: inherit; font-size: calc(13px * var(--ts, 1));
   line-height: 1.7; resize: none;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
@@ -865,7 +865,7 @@ function onMore(key: string, r: FeedRow) {
 .fig-head { display: flex; align-items: flex-start; gap: 6px; margin: 0 0 2px; }
 .fig-caption {
   flex: 1; min-width: 0;
-  font-size: 12px; line-height: 1.5; color: var(--text-dim);
+  font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
 /* 图注/引用是**渲染过的 Markdown**（外层已经定了字号与行高，这里只把块级元素的间距压掉，
@@ -886,24 +886,24 @@ function onMore(key: string, r: FeedRow) {
 .brief-sec { margin: 0 0 10px; }
 .brief-sec.last { margin-bottom: 0; }
 .brief-k {
-  font-size: 10.5px; color: var(--text-faint); letter-spacing: .04em;
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .04em;
   text-transform: uppercase; margin-bottom: 2px;
 }
-.brief-v { font-size: 12.5px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.brief-v { font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
 .brief-list {
   margin: 0; padding-left: 16px;
-  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text);
 }
 .brief-list li { margin: 1px 0; }
 .brief-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .brief-terms-head { margin: 12px 0 2px; gap: 6px; }
-.term-row { display: flex; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--divider); font-size: 12.5px; }
-.term-row .en { flex: 1; font-family: var(--mono); font-size: 12px; }
+.term-row { display: flex; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--divider); font-size: calc(12.5px * var(--ts, 1)); }
+.term-row .en { flex: 1; font-family: var(--mono); font-size: calc(12px * var(--ts, 1)); }
 .term-row .zh { flex: 1; }
 /* 任务清单：一类一行。类型名固定宽度，几行的状态徽章才能对齐成一条竖线；
    失败原因单独一行、最多两行（长错误信息不该把清单撑成一屏）。 */
 .task-row { padding: 7px 10px; margin-bottom: 6px; }
-.task-name { font-size: 12.5px; font-weight: 600; min-width: 3.5em; }
+.task-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; min-width: 3.5em; }
 /* 进度条：夹在信息行与失败原因之间留一点缝（`.bar` 本身只有 5px 高，不像卡片那样占地方） */
 .task-bar { margin-top: 6px; }
 .task-msg {

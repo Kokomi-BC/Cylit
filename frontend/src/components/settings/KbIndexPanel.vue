@@ -684,14 +684,14 @@ td a.truncate { display: block; }
 .rag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; }
 .rag-single { margin-top: 12px; display: grid; gap: 6px; max-width: 340px; }
 .rag-field { display: grid; gap: 6px; min-width: 0; }
-.rag-label { font-size: 12px; color: var(--text-dim); }
+.rag-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .rag-control { display: flex; align-items: center; gap: 8px; }
 .rag-control input {
   width: 100%; max-width: 120px; text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.rag-unit { flex: none; font-style: normal; font-size: 12px; color: var(--text-faint); }
-.rag-hint { font-size: 11px; line-height: 1.5; color: var(--text-faint); }
+.rag-unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
+.rag-hint { font-size: calc(11px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 @media (max-width: 900px) {
   .rag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

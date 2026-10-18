@@ -911,5 +911,5 @@ onBeforeUnmount(() => {
 }
 .pdf-text-layer :deep(mark.hl) { padding: 0; border-radius: 1px; }
 
-.pdf-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-faint); text-align: center; }
+.pdf-hint { margin-top: 6px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); text-align: center; }
 </style>

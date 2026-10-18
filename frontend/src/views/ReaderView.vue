@@ -5530,18 +5530,10 @@ function onContentClick(ev: MouseEvent) {
   }
   const mark = (ev.target as HTMLElement).closest?.('[data-hl]') as HTMLElement | null;
   if (!mark?.dataset.hl) return;
-  /* 触摸屏点高亮：**不要再弹那枚没有手柄的胶囊**（用户口径 2026-10-17 的截图就是这个），
-     改成和长按同一条悬浮工具条 —— 里面有「删除高亮 / 编辑笔记」。 */
-  if (Date.now() < touchSelectGuardUntil) {
-    const mr = mark.getBoundingClientRect();
-    hideSelHandles();
-    touchCtxNext = true;
-    mark.dispatchEvent(new MouseEvent('contextmenu', {
-      bubbles: true, cancelable: true,
-      clientX: Math.round(mr.left + mr.width / 2), clientY: Math.round(mr.top + 2), button: 2,
-    }));
-    return;
-  }
+  /* 触摸屏点高亮：**不再转派合成右键**（用户口径 2026-11-26，收掉上一轮的触屏专属路径）。
+     那条悬浮工具条只有触摸会看到，点一下高亮却弹出一排图标、与桌面点高亮出胶囊对不上，
+     等于同一处高亮在两种设备上有两套动作。现在触屏点高亮与桌面同路：出划词胶囊
+     （里面有删除 / 笔记），想要那排工具条仍然可以**长按正文**（onContentTouchStart）。 */
   const rect = mark.getBoundingClientRect();
   const ids = highlightIdsInRange(document.createRange(), mark);
   Object.assign(selection, {
@@ -7418,6 +7410,8 @@ function renderMarkdown(text?: string | null) {
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
+      text-cat="note"
+      :zoomable="card.mode === 'view'"
       data-note-popover
       :data-note-key="card.key"
       :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
@@ -7675,7 +7669,7 @@ function renderMarkdown(text?: string | null) {
      老浏览器不认识 `dvh`，会忽略第二行、继续用第一行的 `100vh`。 */
   height: calc(100vh - var(--header-h));
   height: calc(100dvh - var(--header-h));
-  color: var(--text-dim); font-size: 13px;
+  color: var(--text-dim); font-size: calc(13px * var(--ts, 1));
 }
 /* 解析进度条：固定一个不太宽的宽度，居中在转圈下方（拉满整屏会很怪） */
 .reader-loading-bar { width: 220px; max-width: 60vw; }
@@ -7878,7 +7872,7 @@ function renderMarkdown(text?: string | null) {
   box-shadow: var(--shadow-flyout);
 }
 .ink-options-row { display: flex; align-items: center; gap: 7px; }
-.ink-options-label { width: 28px; font-size: 11.5px; color: var(--text-faint); }
+.ink-options-label { width: 28px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 /* 粗细：三档**图标**（只画点，不写字；选中态给一圈浅底） */
 .ink-width-icon {
   display: inline-flex; align-items: center; justify-content: center;
@@ -7905,7 +7899,7 @@ function renderMarkdown(text?: string | null) {
 
 /* 清空本页笔迹：一条滑块（滑到右端触发，一次撤销可整个回来） */
 .ink-clear { min-width: 248px; }
-.ink-clear-label { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.ink-clear-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); white-space: nowrap; }
 /* 滑块本体是 M3Slider（自带轨道/手柄/状态层），这里只管它在行里占宽 */
 .ink-clear-range { flex: 1; min-width: 130px; }
 .cap-group { display: flex; align-items: center; gap: 3px; flex: none; }
@@ -7995,19 +7989,19 @@ function renderMarkdown(text?: string | null) {
 /* 胶囊里紧凑一档：32px 的控件缩到 28px，整条胶囊能短 ~10%，仍然是可点尺寸 */
 .reader-capsule .cap-group .btn.icon { width: 28px; height: 28px; }
 .reader-capsule .cap-group .seg { height: 28px; }
-.reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: 12px; }
-.reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: 12px; }
+.reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: calc(12px * var(--ts, 1)); }
+.reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .reader-capsule .cap-group .badge { height: 20px; }
 /* 「Aa」：字号 + 页图缩放合成一个入口（用户口径：缩放和字号合并），
    按钮上顺手带出当前缩放值 —— 也是自检脚本读的那个 `.tiny.faint.nowrap`。 */
-.reader-capsule .cap-group .cap-aa { gap: 5px; padding: 0 9px; font-size: 13px; font-weight: 600; }
-.reader-capsule .cap-group .cap-aa .tiny { font-size: 10.5px; font-weight: 500; }
+.reader-capsule .cap-group .cap-aa { gap: 5px; padding: 0 9px; font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
+.reader-capsule .cap-group .cap-aa .tiny { font-size: calc(10.5px * var(--ts, 1)); font-weight: 500; }
 
 /* 弹出面板里的一行：左标签 + 右分段/步进 */
 .cap-row { display: flex; align-items: center; gap: 12px; }
-.cap-row-label { flex: none; width: 68px; font-size: 12px; color: var(--text-dim); }
+.cap-row-label { flex: none; width: 68px; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .cap-zoom { display: flex; align-items: center; gap: 6px; }
-.cap-zoom-value { min-width: 46px; text-align: center; font-size: 13px; }
+.cap-zoom-value { min-width: 46px; text-align: center; font-size: calc(13px * var(--ts, 1)); }
 
 /* 侧栏头部：**只有一条页签胶囊**，左端留出那枚圆形开关的位置（12 + 38 + 12 = 62）。
    高度 58 是为了让胶囊中线（29px）与顶栏那三块玻璃的中线对齐 —— 四样东西在一条线上。 */
@@ -8187,7 +8181,7 @@ function renderMarkdown(text?: string | null) {
    注意这里**没有上边框**了 —— 用户口径：移除分割线。 */
 .md-doc {
   max-height: 68vh; overflow: auto; padding: 16px 2px 4px;
-  font-size: 14px; line-height: 1.75;
+  font-size: calc(14px * var(--ts, 1)); line-height: 1.75;
 }
 /* 全屏时内容区跟着长高（标题栏 ~48 + 工具行 ~40 + 底栏 ~56 + 内边距 ≈ 190） */
 .md-doc.full {
@@ -8198,7 +8192,7 @@ function renderMarkdown(text?: string | null) {
 .md-page { padding-bottom: 26px; }
 .md-page + .md-page { border-top: 0; }
 .md-page-no {
-  font-size: 11px; font-weight: 600; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 600; color: var(--text-faint);
   font-variant-numeric: tabular-nums; margin: 0 0 6px;
 }
 /* 一页里的原文 / 译文两面：只在上下对照时同时出现，中间留白隔开（不画分割线）。
@@ -8211,7 +8205,7 @@ function renderMarkdown(text?: string | null) {
 .md-doc :deep(img) { cursor: zoom-in; }
 /* `---` 不再画线，只当一段空白（用户口径：移除分割线）；正文里模型自己写的 `---` 同理。 */
 .md-doc :deep(hr) { border: 0; height: 18px; margin: 0; background: none; }
-.md-doc :deep(h2) { font-size: 16px; }
+.md-doc :deep(h2) { font-size: calc(16px * var(--ts, 1)); }
 /* 各栏都要 min-width/min-height: 0，否则 grid 子项不收缩、内容会顶破布局 */
 .reader-aside, .reader-content { min-width: 0; min-height: 0; }
 .reader-aside {
@@ -8327,14 +8321,14 @@ function renderMarkdown(text?: string | null) {
   pointer-events: none;
 }
 .aside-pip-icon { color: var(--text-faint); opacity: .72; display: inline-flex; }
-.aside-pip-title { margin: 0; font-size: 12.5px; color: var(--text-dim); }
-.aside-pip-note { margin: 0; font-size: 11px; color: var(--text-faint); }
+.aside-pip-title { margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
+.aside-pip-note { margin: 0; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .aside-pip-btn {
   /* 整块禁用了交互，这里单独把按钮的事件放开 */
   pointer-events: auto;
   margin-top: 4px; padding: 3px 10px; border: 0; border-radius: 999px;
   background: transparent; color: var(--text-dim);
-  font-size: 11.5px; cursor: pointer;
+  font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .aside-pip-btn:hover { background: var(--bg-hover); color: var(--text); }
@@ -8449,13 +8443,13 @@ function renderMarkdown(text?: string | null) {
   padding: 0 14px;
   background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1);
 }
-.side-label { display: none; font-size: 10.5px; line-height: 1; }
+.side-label { display: none; font-size: calc(10.5px * var(--ts, 1)); line-height: 1; }
 .side-tab.active .side-label { display: block; font-weight: 600; }
 /* 角标挪到**右上角**（绝对定位）：页签是「图标 +（只在当前页才有的）文字」，
    横向没有空位可以内联挂一个数字了。 */
 .side-count {
   position: absolute; top: 0; right: 3px;
-  font-size: 9px; line-height: 1;
+  font-size: calc(9px * var(--ts, 1)); line-height: 1;
   color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
 /* 两枚「翻页」圆按钮：**浮在胶囊两端**、不占布局（有内容才出现，所以不会让页签跳动）。
@@ -8624,7 +8618,7 @@ function renderMarkdown(text?: string | null) {
   display: flex; align-items: center; width: 100%;
   padding: 7px 10px; border: 0; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text);
-  font-family: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .note-del-item:hover { background: var(--bg-hover); }
@@ -8640,7 +8634,7 @@ function renderMarkdown(text?: string | null) {
 .reader-content :deep(.row-pair) { animation: pg-in .18s var(--ease); }
 @keyframes pg-in { from { opacity: 0; } to { opacity: 1; } }
 /* 头部那行相对时间（`head-extra` 插槽里的第一个节点，排在 ✓ 前面） */
-.np-time { flex: none; margin-right: 6px; font-size: 11px; color: var(--text-faint); }
+.np-time { flex: none; margin-right: 6px; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 /* 笔记卡内嵌色条：与「笔记」两字**同一行**（用户口径 2026-10-10），
    所以自身不带外边距/内边距，间距交给标题行的 `gap`。 */
 .np-colors { display: flex; align-items: center; gap: 5px; flex: none; margin: 0; }
@@ -8670,7 +8664,7 @@ function renderMarkdown(text?: string | null) {
   flex: 1 1 auto;
   /* 左内边距 12px（不是 16）：`.fc-head` 自己还有 12px 内边距，
      加起来与标题那枚图标同一个缩进（用户口径 2026-10-10："文字位置不能像那样靠边"）。 */
-  padding: 4px 16px 4px 12px; font-size: 16px; line-height: 1.6;
+  padding: 4px 16px 4px 12px; font-size: calc(16px * var(--ts, 1)); line-height: 1.6;
   border: 0; border-radius: 0; background: transparent;
 }
 [data-note-popover] :deep(.fc-head) {
@@ -8693,8 +8687,14 @@ function renderMarkdown(text?: string | null) {
 /* **查看态**的正文：它是 `.np-view`（不是 `.np-edit`），而 `.fc-body` 的内边距已被清零 ——
    不给它自己补内边距的话，写好的笔记会贴着卡片左边缘、上面还顶到分隔线（用户报的"第二行显示异常"）。
    与编辑态那份 `4px 16px 4px 12px` 对齐，底部再留 12px 免得文字贴着卡片下沿。 */
-[data-note-popover] .np-view { padding: 8px 16px 12px 12px; }
-[data-note-popover] :deep(.fc-title) { font-size: 13px; font-weight: 600; flex: none; }
+[data-note-popover] .np-view {
+  padding: 8px 16px 12px 12px;
+  /* 查看态正文的字号必须自己声明：它吃的是 base.css 里 .small 的 12px，那条不读 --ts，
+     不给这一条的话，壳上的 A− / A+ 只会放大标题、正文纹丝不动。
+     12px 就是 .small 的现值 —— 默认（--ts 未定义）渲染与改动前一模一样。 */
+  font-size: calc(12px * var(--ts, 1));
+}
+[data-note-popover] :deep(.fc-title) { font-size: calc(13px * var(--ts, 1)); font-weight: 600; flex: none; }
 /* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
    左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
 [data-note-popover] .np-colors { padding: 0; margin: 0 0 0 2px; }
@@ -8716,7 +8716,7 @@ function renderMarkdown(text?: string | null) {
 .ex-turn { margin-bottom: 10px; }
 .ex-turn .md :deep(p) { margin: .35em 0; }
 .ex-q {
-  font-size: 12px; color: var(--text-dim); padding: 3px 8px;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); padding: 3px 8px;
   border-left: 2px solid var(--accent); background: var(--bg-layer);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
@@ -8728,7 +8728,7 @@ function renderMarkdown(text?: string | null) {
 .ex-proc-head {
   display: flex; align-items: center; gap: 5px; width: 100%;
   border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim);
-  font: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer; text-align: left;
+  font: inherit; font-size: calc(11.5px * var(--ts, 1)); padding: 4px 10px; cursor: pointer; text-align: left;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .ex-proc-head:hover { background: var(--bg-hover); color: var(--text); }
@@ -8738,7 +8738,7 @@ function renderMarkdown(text?: string | null) {
 }
 .ex-step {
   display: flex; align-items: baseline; gap: 5px;
-  font-size: 11.5px; color: var(--text-dim); padding: 2px 0; min-width: 0;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); padding: 2px 0; min-width: 0;
 }
 .ex-step > svg { flex: none; align-self: center; }
 .ex-step-tag { flex: none; color: var(--text-faint); }
@@ -8750,7 +8750,7 @@ function renderMarkdown(text?: string | null) {
 .ex-step.is-tool .ex-step-tag { color: var(--accent-text); }
 .chip {
   border: 1px solid var(--border); background: var(--bg-layer); color: var(--text-dim);
-  border-radius: 999px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); cursor: pointer;
+  border-radius: 999px; padding: 1px 7px; font-size: calc(11px * var(--ts, 1)); font-family: var(--mono); cursor: pointer;
 }
 .chip:hover { color: var(--accent-text); border-color: var(--accent); }
 /* 追问输入：与侧栏对话那枚输入框同规格（同高、同圆角），按钮同 `btn sm primary` */

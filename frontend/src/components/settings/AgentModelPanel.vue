@@ -480,9 +480,9 @@ onMounted(() => {
 .skill-main { min-width: 0; flex: 1; }
 .skill-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 三档灰阶之一：名字用正文色（禁用的降一档），说明用 fading 的 12px 单行 */
-.skill-name { font-size: 13px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.skill-name { font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .skill-desc {
-  margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-dim);
+  margin: 2px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 禁用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
@@ -493,7 +493,7 @@ onMounted(() => {
 /* ---------- ③ 运行限额：两列网格，≥1200px 留白更松 ---------- */
 .limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
 .limit-field { display: grid; gap: 6px; min-width: 0; }
-.limit-label { font-size: 12px; color: var(--text-dim); }
+.limit-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .limit-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .limit-control input {
   width: 100%; max-width: 160px; text-align: right;
@@ -501,7 +501,7 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 /* 单位是输入框**右侧的后缀**，不是占位符也不是塞进框里 */
-.limit-unit { flex: none; font-style: normal; font-size: 12px; color: var(--text-faint); }
+.limit-unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .limit-hint { margin: 12px 0 0; color: var(--ok); }
 @media (min-width: 1200px) {
   .limit-grid { gap: 24px 40px; }
@@ -523,7 +523,7 @@ onMounted(() => {
   min-height: 128px; padding: 11px 13px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer); color: var(--text);
-  font: inherit; font-size: 13px; line-height: 1.75; resize: none;
+  font: inherit; font-size: calc(13px * var(--ts, 1)); line-height: 1.75; resize: none;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 /* 覆盖全局的 `textarea:hover { background: var(--bg-hover) }`（鼠标一过就闪一下灰） */
@@ -541,7 +541,7 @@ onMounted(() => {
   margin: 0; padding: 11px 13px; box-sizing: border-box; min-height: 128px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer); color: var(--text);
-  font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: calc(13px * var(--ts, 1)); line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere;
   cursor: text;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }

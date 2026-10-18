@@ -37,6 +37,7 @@ import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
 import ModelPanel from '@/components/settings/ModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
+import DisplayScalePanel from '@/components/settings/DisplayScalePanel.vue';
 import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
 
 /* ---------------------------- 只读信息 ---------------------------- */
@@ -62,7 +63,7 @@ const READONLY_KEYS: ReadonlyDef[] = [
  * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
  */
 const SECTIONS = [
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '点一下立即换肤，也可以自建一套。' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '点一下立即换肤，也可以自建一套；字号大小也在这里调。' },
   { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '问答与生成用的模型、密钥与预设。' },
   { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '技能、对话风格与运行限额。' },
   { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '检索规模、知识库概览与论文索引。' },
@@ -384,9 +385,10 @@ onMounted(async () => {
         <AgentModelPanel />
       </section>
 
-      <!-- ④ 显示主题：注册表驱动的皮肤网格，点一下立即换肤 -->
+      <!-- ④ 显示主题 + 显示大小：换肤与字号都即时生效，不放"保存" -->
       <section id="appearance" class="sec" v-if="active === 'appearance'">
         <ThemeAppearancePanel />
+        <DisplayScalePanel />
       </section>
 
       <!-- ⑤ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
@@ -600,7 +602,7 @@ onMounted(async () => {
 /* 导航抬头：一条分隔线把"设置"和下面四组分区断开 */
 .settings-rail-title {
   margin: 0; padding: 0 12px 10px;
-  font-size: 14px; font-weight: 600; letter-spacing: .02em;
+  font-size: calc(14px * var(--ts, 1)); font-weight: 600; letter-spacing: .02em;
   border-bottom: 1px solid var(--divider);
 }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; }
@@ -609,7 +611,7 @@ onMounted(async () => {
    不跟可点项抢注意力。 */
 .settings-nav-group {
   margin: 10px 0 2px; padding: 0 12px;
-  font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+  font-size: calc(10.5px * var(--ts, 1)); font-weight: 600; letter-spacing: .08em;
   color: var(--text-faint); text-transform: uppercase;
 }
 .settings-nav-group:first-child { margin-top: 0; }
@@ -620,7 +622,7 @@ onMounted(async () => {
   display: flex; align-items: center; gap: 9px; width: 100%;
   height: var(--control-h); padding: 0 12px; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text-dim);
-  font-family: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .settings-nav-item::before {
@@ -650,8 +652,8 @@ onMounted(async () => {
 }
 /* 三档层次：标题（600）/ 一行副标题（faint）/ 字段标签（dim 12px，在分节里） */
 .pane-head-text { display: grid; gap: 3px; min-width: 0; }
-.pane-head h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
-.pane-desc { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-faint); }
+.pane-head h2 { margin: 0; font-size: calc(18px * var(--ts, 1)); font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
+.pane-desc { margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽）。
    横向滚动交给 nav 自己 —— "设置"那一格始终留在左边；当前项由 revealActive 滚进可视区。 */
@@ -681,7 +683,7 @@ onMounted(async () => {
   .settings-nav-group { display: none; }
   /* 页头收紧留白，但不贴边（左右留白由 .app-main 的 12px 兜着） */
   .pane-head { padding: 0 0 12px; }
-  .pane-head h2 { font-size: 17px; }
+  .pane-head h2 { font-size: calc(17px * var(--ts, 1)); }
 }
 
 /* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，

@@ -510,7 +510,7 @@ watch(drafting, async (on) => {
 .nb {
   height: 26px; padding: 0 10px; cursor: pointer;
   border: 0; border-radius: 7px; background: transparent; color: rgba(255, 255, 255, .84);
-  font-size: 12.5px; font-weight: 600;
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600;
 }
 .nb:hover { background: rgba(255, 255, 255, .14); color: #fff; }
 .nb.primary { background: #3b82f6; color: #fff; }
@@ -526,7 +526,7 @@ watch(drafting, async (on) => {
   width: 100%; box-sizing: border-box; resize: none;
   padding: 7px 8px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .14);
   background: rgba(255, 255, 255, .06); color: #f2f4f8;
-  font: inherit; font-size: 12.5px; line-height: 1.5;
+  font: inherit; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5;
 }
 .note-input:focus { outline: none; border-color: #3b82f6; }
 .note-dot {

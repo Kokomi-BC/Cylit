@@ -358,8 +358,10 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
 <style scoped>
 .rows-wrap {
   padding: 10px 16px 72px; max-width: 1400px; margin: 0 auto;
-  /* 正文字号的唯一来源：标题/图注/公式都用 em 相对它缩放 */
-  font-size: var(--reader-font-size, 13.5px);
+  /* 正文字号的唯一来源：标题/图注/公式都用 em 相对它缩放。
+     `* var(--ts, 1)`：正文那一档的字号倍数必须乘在这条上 —— 它是全篇正文的根，
+     只乘别的声明等于"设置里调正文，论文文字不动"。 */
+  font-size: calc(var(--reader-font-size, 13.5px) * var(--ts, 1));
 }
 
 /* position: relative 是给批注层（绝对定位铺满这一页）用的：不设的话它会以更外层为参照，
@@ -372,7 +374,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
 .pg-head {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 2px 0;
-  font-size: 11.5px; color: var(--text-faint);
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
 .pg-no { font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 

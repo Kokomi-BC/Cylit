@@ -378,7 +378,7 @@ function onRowAction(row: FeedRow, key: string) {
 </script>
 
 <template>
-  <div>
+  <div class="notes-page">
     <div class="page-head">
       <div>
         <h1>笔记</h1>

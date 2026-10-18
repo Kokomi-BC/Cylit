@@ -395,7 +395,7 @@ function onClear() {
   height: var(--control-h-sm); padding: 0 11px;
   border: 1px solid transparent; border-radius: var(--radius-ctl);
   background: var(--bg-elev); box-shadow: var(--shadow-1);
-  color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer;
+  color: var(--text-dim); font-size: calc(12px * var(--ts, 1)); line-height: 1; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease);
 }

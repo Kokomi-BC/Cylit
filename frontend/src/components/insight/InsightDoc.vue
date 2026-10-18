@@ -135,7 +135,7 @@ onMounted(() => { void nextTick(assignAnchors); });
 <style scoped>
 /* 字号跟着阅读器的 `--reader-font-size`（宿主设；取不到时 15px 与阅读器中档接近）。
    下面所有排版都用 em 相对它缩放 —— 与阅读器"标题/图注/公式一起缩放"同一口径。 */
-.doc { font-size: var(--reader-font-size, 15px); color: var(--text); min-width: 0; }
+.doc { font-size: calc(var(--reader-font-size, 15px) * var(--ts, 1)); color: var(--text); min-width: 0; }
 /* 整页阅读：正文列按阅读器的文本列行宽收窄（`.pg-rows:not(.two-col)` 用的是 880px） */
 .doc.narrow { max-width: 880px; margin: 0 auto; }
 

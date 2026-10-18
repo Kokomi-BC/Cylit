@@ -90,8 +90,8 @@ async function openUnderstand(id: string) {
 
 <style scoped>
 .study { max-width: 860px; margin: 0 auto; padding: 20px 20px 64px; display: flex; flex-direction: column; gap: 12px; }
-.st-head h1 { font-size: 20px; margin: 0 0 4px; }
-.st-head p { margin: 0; line-height: 1.7; font-size: 13px; }
+.st-head h1 { font-size: calc(20px * var(--ts, 1)); margin: 0 0 4px; }
+.st-head p { margin: 0; line-height: 1.7; font-size: calc(13px * var(--ts, 1)); }
 .plan-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
 .plan-icon {
   display: flex; align-items: center; justify-content: center; flex: none;
@@ -99,12 +99,12 @@ async function openUnderstand(id: string) {
   background: var(--accent-soft); color: var(--accent-text);
 }
 .plan-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.plan-label { font-size: 13px; font-weight: 600; }
-.plan-hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+.plan-label { font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
+.plan-hint { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); line-height: 1.5; }
 .paper-row {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px;
   border: 0; border-radius: var(--radius-sm); background: transparent;
-  color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  color: var(--text); font: inherit; font-size: calc(13px * var(--ts, 1)); text-align: left; cursor: pointer;
 }
 .paper-row:hover { background: var(--bg-hover); }
 </style>

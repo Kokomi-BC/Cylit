@@ -509,14 +509,14 @@ function labelOf(t: string): string {
 }
 .prov:focus-visible { outline: none; box-shadow: var(--ring); }
 .prov.on { border-color: var(--accent); background: var(--accent-soft); }
-.pv-label { font-size: 13px; font-weight: 600; max-width: 100%; }
-.pv-host { font-size: 11.5px; color: var(--text-dim); max-width: 100%; }
-.pv-model { font-size: 11px; color: var(--text-faint); max-width: 100%; }
+.pv-label { font-size: calc(13px * var(--ts, 1)); font-weight: 600; max-width: 100%; }
+.pv-host { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); max-width: 100%; }
+.pv-model { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); max-width: 100%; }
 .prov.custom { border-style: dashed; }
 
 /* 类型：全站那枚胶囊，一屏放得下六档 */
 .types { height: var(--control-h-sm); }
-.types button { height: calc(var(--control-h-sm) - 6px); font-size: 12px; padding: 0 11px; }
+.types button { height: calc(var(--control-h-sm) - 6px); font-size: calc(12px * var(--ts, 1)); padding: 0 11px; }
 
 /* 模型名建议 chips：与「预设」同一套胶囊语言 */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -524,7 +524,7 @@ function labelOf(t: string): string {
   height: 26px; padding: 0 10px;
   border: 1px solid var(--divider); border-radius: 999px;
   background: transparent; color: var(--text-dim);
-  font-size: 11.5px; cursor: pointer;
+  font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); background: var(--bg-hover); color: var(--text); }
@@ -535,7 +535,7 @@ function labelOf(t: string): string {
   display: flex; align-items: center; gap: 6px; width: 100%;
   margin-top: 12px; padding: 7px 2px;
   border: 0; border-top: 1px solid var(--divider);
-  background: transparent; color: var(--text-dim); font-size: 12.5px; cursor: pointer;
+  background: transparent; color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1)); cursor: pointer;
 }
 .adv-toggle:hover { color: var(--text); }
 .adv { padding-top: 10px; }
@@ -547,13 +547,13 @@ function labelOf(t: string): string {
   border-top: 1px solid var(--divider);
 }
 .lv-head { display: flex; align-items: baseline; gap: 8px; }
-.lv-title { font-size: 12.5px; color: var(--text-dim); }
-.lv-broken { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: var(--danger); }
+.lv-title { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
+.lv-broken { margin: 8px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
 .lv-row {
   display: grid; grid-template-columns: 108px minmax(0, 1fr) auto auto auto;
   gap: 6px; align-items: center; margin-top: 8px;
 }
-.lv-row input { width: 100%; height: var(--control-h-sm); font-size: 12.5px; }
+.lv-row input { width: 100%; height: var(--control-h-sm); font-size: calc(12.5px * var(--ts, 1)); }
 .lv-row .btn.icon { color: var(--text-faint); }
 .lv-row .btn.icon:hover:not(:disabled) { color: var(--text); }
 .lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
@@ -561,7 +561,7 @@ function labelOf(t: string): string {
 .lv-hint { margin: 8px 0 0; line-height: 1.6; }
 .lv-fill {
   padding: 0; margin-left: 4px; border: 0; background: transparent;
-  color: var(--accent-text); font-size: 11px; cursor: pointer;
+  color: var(--accent-text); font-size: calc(11px * var(--ts, 1)); cursor: pointer;
 }
 .lv-fill:hover { text-decoration: underline; }
 .lv-default { margin-top: 10px; }

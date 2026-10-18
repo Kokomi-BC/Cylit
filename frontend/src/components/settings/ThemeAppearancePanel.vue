@@ -373,7 +373,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .theme-filter { width: fit-content; max-width: 100%; flex-wrap: wrap; height: auto; }
 .theme-filter :deep(button) { gap: 6px; }
 .theme-filter-n {
-  font-size: 11px; font-weight: 500; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 500; color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 .theme-filter :deep(button.active) .theme-filter-n { color: inherit; opacity: .7; }
@@ -439,7 +439,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 
 .theme-option-copy { display: grid; gap: 2px; min-width: 0; padding-right: 18px; }
 .theme-option-copy strong {
-  font-size: 13px; font-weight: 600; letter-spacing: -.01em;
+  font-size: calc(13px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -462,27 +462,27 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 /* ---------------------------- 编辑器 ---------------------------- */
 .ce { display: grid; gap: 16px; }
 .ce-row { display: flex; align-items: flex-end; gap: 12px; }
-.ce-name { flex: 1; display: grid; gap: 5px; font-size: 12.5px; color: var(--text-dim); }
+.ce-name { flex: 1; display: grid; gap: 5px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
 .ce-name input {
   height: var(--control-h); padding: 0 11px; border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: 13px;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1));
 }
 .ce-name input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ce-mode { display: inline-flex; gap: 2px; padding: 3px; height: var(--control-h); box-sizing: border-box; border-radius: var(--radius-ctl); background: var(--bg-sunken); }
 .ce-mode button {
   border: 0; border-radius: var(--radius-ctl); padding: 0 12px; cursor: pointer;
-  background: transparent; color: var(--text-dim); font-family: inherit; font-size: 12.5px;
+  background: transparent; color: var(--text-dim); font-family: inherit; font-size: calc(12.5px * var(--ts, 1));
 }
 .ce-mode button.active { background: var(--bg-elev); color: var(--accent-text); font-weight: 600; box-shadow: var(--shadow-1); }
 
 .ce-block { display: grid; gap: 8px; }
-.ce-block h4 { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
+.ce-block h4 { margin: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text-dim); }
 .ce-palettes { display: flex; flex-wrap: wrap; gap: 8px; }
 .ce-palette {
   display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px 5px 5px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
-  background: var(--bg-elev); color: var(--text); font-family: inherit; font-size: 12.5px;
+  background: var(--bg-elev); color: var(--text); font-family: inherit; font-size: calc(12.5px * var(--ts, 1));
   cursor: pointer; transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .ce-palette:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); background: var(--bg-hover); }
@@ -494,7 +494,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .ce-palette-bar { position: absolute; left: 2px; right: 2px; bottom: 1px; height: 3px; border-radius: 2px; }
 
 .ce-fields { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.ce-field { display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+.ce-field { display: flex; align-items: center; gap: 9px; font-size: calc(12.5px * var(--ts, 1)); }
 .ce-field-label { flex: none; width: 68px; color: var(--text-dim); }
 .ce-color {
   position: relative; flex: none; width: 30px; height: 30px;
@@ -512,7 +512,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .ce-hex {
   flex: 1; min-width: 0; height: 30px; padding: 0 9px;
   border-radius: 9px; border: 1px solid var(--border);
-  background: var(--bg-sunken); color: var(--text-dim); font-size: 12px;
+  background: var(--bg-sunken); color: var(--text-dim); font-size: calc(12px * var(--ts, 1));
 }
 .ce-hex:focus { outline: none; border-color: var(--accent); color: var(--text); }
 

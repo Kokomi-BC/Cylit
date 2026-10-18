@@ -1461,13 +1461,13 @@ async function submitEdit() {
 }
 .lib-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .lib-heading h1 {
-  margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em;
+  margin: 0; font-size: calc(16px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-count {
   flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
   border-radius: 999px; background: var(--bg-subtle); border: 1px solid var(--border);
-  font-size: 11px; color: var(--text-dim);
+  font-size: calc(11px * var(--ts, 1)); color: var(--text-dim);
 }
 .lib-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -1476,7 +1476,7 @@ async function submitEdit() {
   display: inline-flex; align-items: center; gap: 6px;
   height: 30px; padding: 0 12px; border-radius: var(--radius-ctl);
   border: 1px solid var(--border); background: transparent; color: var(--text);
-  font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
               color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
 }
@@ -1487,7 +1487,7 @@ async function submitEdit() {
   border-color: color-mix(in srgb, var(--accent) 42%, transparent);
   color: var(--accent-text);
 }
-.lib-tool-num { font-size: 11px; color: var(--accent-text); }
+.lib-tool-num { font-size: calc(11px * var(--ts, 1)); color: var(--accent-text); }
 
 .lib-filter { position: relative; }
 
@@ -1498,18 +1498,18 @@ async function submitEdit() {
   background: var(--bg-elev); border: 1px solid var(--border-strong);
   border-radius: var(--radius); box-shadow: var(--shadow-flyout);
 }
-.lib-pop-label { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-dim); }
+.lib-pop-label { font-size: calc(11px * var(--ts, 1)); font-weight: 600; letter-spacing: .02em; color: var(--text-dim); }
 .lib-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .lib-pill {
   display: inline-flex; align-items: center; height: 26px; padding: 0 11px;
   border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev);
-  color: var(--text-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  color: var(--text-dim); font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .lib-pill:hover { color: var(--text); border-color: var(--border-strong); }
 .lib-pill.on { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); font-weight: 600; }
 .lib-clear {
-  justify-self: start; padding: 2px 0; font-family: inherit; font-size: 12px;
+  justify-self: start; padding: 2px 0; font-family: inherit; font-size: calc(12px * var(--ts, 1));
   color: var(--text-dim); cursor: pointer;
 }
 .lib-clear:hover { color: var(--text); text-decoration: underline; }
@@ -1523,7 +1523,7 @@ async function submitEdit() {
 .lib-sort select {
   height: 100%; max-width: 148px; padding: 0 4px;
   border: 0; border-radius: 0; background: transparent; box-shadow: none;
-  font-size: 12px; color: var(--text); cursor: pointer;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text); cursor: pointer;
 }
 .lib-sort select:hover, .lib-sort select:focus { background: transparent; box-shadow: none; border: 0; }
 
@@ -1619,7 +1619,7 @@ async function submitEdit() {
 .lib-dock-search:focus-within { border-color: var(--accent); box-shadow: var(--ring); background: var(--bg-elev); }
 .lib-dock-search input {
   width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0;
-  background: transparent; box-shadow: none; font-size: 13px;
+  background: transparent; box-shadow: none; font-size: calc(13px * var(--ts, 1));
 }
 .lib-dock-search input:hover, .lib-dock-search input:focus {
   background: transparent; box-shadow: none; border: 0;
@@ -1629,14 +1629,14 @@ async function submitEdit() {
 .lib-dock.is-batch { width: min(640px, calc(100vw - 32px)); padding: 8px 8px 8px 14px; }
 .lib-dock-cancel {
   flex: none; padding: 5px 9px; border-radius: var(--radius-ctl);
-  color: var(--text-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  color: var(--text-dim); font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
 }
 .lib-dock-cancel:hover { background: var(--bg-hover); color: var(--text); }
-.lib-dock-count { flex: none; font-size: 12px; color: var(--text-dim); }
+.lib-dock-count { flex: none; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .lib-dock-select {
   flex: none; height: 28px; padding: 0 12px; border-radius: 999px;
   border: 1px solid var(--border); background: transparent; color: var(--text);
-  font-family: inherit; font-size: 12px; cursor: pointer;
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
 }
 .lib-dock-select:hover:not(:disabled) { background: var(--bg-hover); }
 .lib-dock-select:disabled { opacity: .5; cursor: default; }
@@ -1644,7 +1644,7 @@ async function submitEdit() {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
   height: 32px; padding: 0 13px; border-radius: 999px;
   border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .lib-dock-action:hover:not(:disabled) { background: var(--bg-hover); }
@@ -1661,15 +1661,15 @@ async function submitEdit() {
   .lib-dock.is-batch { flex-wrap: wrap; border-radius: var(--radius); width: calc(100vw - 24px); justify-content: center; }
 }
 
-.confirm-text { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+.confirm-text { margin: 0 0 8px; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); line-height: 1.6; }
 .confirm-target {
-  margin: 0; padding: 10px 12px; font-size: 13px; font-weight: 600;
+  margin: 0; padding: 10px 12px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
   background: var(--bg-sunken); border-radius: var(--r-sm); overflow-wrap: anywhere;
 }
 
 .drop-zone-inline {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
-  width: min(460px, 100%); margin-top: 4px; font-size: 13px;
+  width: min(460px, 100%); margin-top: 4px; font-size: calc(13px * var(--ts, 1));
 }
 .drop-zone-inline .icon { color: var(--text-faint); }
 .drop-zone-inline.over .icon { color: var(--accent); }
@@ -1681,7 +1681,7 @@ async function submitEdit() {
  * 引擎用"块状二选一"（`.seg` 是紧凑胶囊，塞不下一行说明），所以按 `.btn` 的观感自绘：
  * 同样的描边 / 圆角 / 高度语言，选中态用 `--accent-soft` + `--accent-text`（与设置页分区药丸一致）。 */
 .engine { margin-top: 12px; }
-.engine-label { font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+.engine-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); margin-bottom: 5px; }
 .engine-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .engine-opt {
   flex: 1 1 200px; min-width: 0; text-align: left;
@@ -1699,9 +1699,9 @@ async function submitEdit() {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
-.engine-name { font-size: 13px; font-weight: 600; }
+.engine-name { font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
 .engine-opt.active .engine-name { color: var(--accent-text); }
-.engine-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.engine-note { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); line-height: 1.5; }
 .engine-warn {
   display: flex; align-items: flex-start; gap: 6px;
   margin: 8px 0 0; color: var(--danger);
@@ -1712,8 +1712,8 @@ async function submitEdit() {
  * 旧版把说明接在标签后面用行内流排，长说明会折到轨道下面、缩进也对不齐（用户看到的
  * "（在线解析由 MinerU 决定…）"掉到第三行）。两行都从文字列开始，读起来是一条一条的。 */
 .opt { display: flex; flex-direction: column; gap: 2px; }
-.opt-text { font-size: 12.5px; color: var(--text); }
-.opt-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.opt-text { font-size: calc(12.5px * var(--ts, 1)); color: var(--text); }
+.opt-note { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); line-height: 1.5; }
 
 /* 引擎块与第一个开关之间补出行距：`.switch-row + .switch-row` 只覆盖连续两个开关，
  * 而"引擎 → 第一个开关"这一对在 DOM 上是跨元素的（`<div class="engine">` 之后）。 */
@@ -1729,7 +1729,7 @@ async function submitEdit() {
   border-left: 3px solid var(--accent);
   border-radius: var(--r-sm);
 }
-.op-head { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.op-head { font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .op-hint { font-weight: 400; color: var(--text-faint); }
 .op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .op-grid .field { margin-top: 0; }

@@ -110,7 +110,7 @@ async function onStart() {
   display: flex; align-items: center; gap: 6px; flex: none;
   margin: 0 0 8px;
 }
-.pane-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.pane-title { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text); }
 
 /* 紧凑目录：标题行整行可点（展开/收起），条目区自己滚（最多 ~34vh，别把正文挤到看不见） */
 .toc-compact { flex: none; margin: 0 0 10px; }
@@ -118,7 +118,7 @@ async function onStart() {
   display: flex; align-items: center; gap: 5px; width: 100%;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-layer); color: var(--text-dim);
-  font: inherit; font-size: 11.5px; padding: 4px 7px; cursor: pointer; text-align: left;
+  font: inherit; font-size: calc(11.5px * var(--ts, 1)); padding: 4px 7px; cursor: pointer; text-align: left;
 }
 .toc-bar:hover { background: var(--bg-hover); color: var(--text); }
 .toc-body {

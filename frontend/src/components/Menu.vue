@@ -212,7 +212,7 @@ onUnmounted(() => {
   display: flex; align-items: center; gap: 9px; width: 100%;
   padding: 7px 11px; border: 0; border-radius: var(--radius-ctl);
   background: transparent; color: var(--text);
-  font-family: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .menu-item:hover:not(:disabled) { background: var(--bg-hover); }

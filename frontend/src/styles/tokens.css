@@ -116,6 +116,18 @@
   --serif: Cambria, "Source Serif Pro", Georgia, "Times New Roman", serif;
 
   --header-h: 52px;
+
+  /* ---- 字号缩放（设置页「显示大小」；1 = 100%） ----
+   * `--ts` 是**当前子树**实际要乘的倍数，分类根（base.css 顶部）把它指向对应分类；
+   * 其余五个由 stores/display 写在 :root 上（= master × 该类）。
+   * 组件只读 `--ts`，不要直接读分类令牌 —— 那样写就绑死了分类，子树关系会失效。
+   */
+  --ts: 1;
+  --ts-body: 1;
+  --ts-chat: 1;
+  --ts-note: 1;
+  --ts-side: 1;
+  --ts-ui: 1;
 }
 
 /* 深色只属于"跟随系统"那一档：`html[data-theme]` 一旦被设成具体皮肤（见 themes/*.css），

@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
      ⚠️ 字体走界面字体变量：以前这里写死 monospace 栈，中文环境落到宋体，数字还高低不齐。 */
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 62px; height: 34px; padding: 0 6px;
-  color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
+  color: #fff; font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
   line-height: 1; letter-spacing: .2px;
   font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;
   user-select: none;

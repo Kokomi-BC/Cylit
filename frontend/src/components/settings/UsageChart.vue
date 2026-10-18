@@ -288,11 +288,11 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 .hd-title { display: inline-flex; align-items: center; gap: 7px; }
 /* 14/30 天用全站那枚胶囊（.seg），高度跟着控件规范走 */
 .win { height: var(--control-h-sm); }
-.win button { height: calc(var(--control-h-sm) - 6px); font-size: 12px; padding: 0 10px; }
+.win button { height: calc(var(--control-h-sm) - 6px); font-size: calc(12px * var(--ts, 1)); padding: 0 10px; }
 
 .usage-none {
   display: flex; align-items: center; gap: 8px;
-  color: var(--text-faint); font-size: 12.5px;
+  color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
 }
 
 .usage-body { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) 248px; }
@@ -300,10 +300,10 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 .nums { display: flex; align-items: flex-end; gap: 22px; }
 .num-block { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .num-block .n {
-  font-size: 23px; font-weight: 650; line-height: 1.1; letter-spacing: -.02em;
+  font-size: calc(23px * var(--ts, 1)); font-weight: 650; line-height: 1.1; letter-spacing: -.02em;
   font-variant-numeric: tabular-nums; color: var(--text);
 }
-.num-block .k { font-size: 11.5px; color: var(--text-faint); }
+.num-block .k { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
 /* 图表：容器即坐标系（svg 的 CSS 像素 = 计算像素），hover 只需要减 left */
 .chart { position: relative; margin-top: 10px; max-width: 100%; }
@@ -317,7 +317,7 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 .end { fill: var(--accent); }
 .guide { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55; }
 .hp { fill: var(--bg-elev); stroke: var(--accent); stroke-width: 1.8; }
-.tick { font-size: 10px; fill: var(--text-faint); font-family: var(--mono); }
+.tick { font-size: calc(10px * var(--ts, 1)); fill: var(--text-faint); font-family: var(--mono); }
 
 /* hover 小签：贴在游标点上方的玻璃片，永远不挡折线 */
 .tip {
@@ -331,29 +331,29 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
   white-space: nowrap;
 }
 .tip.below { transform: translate(-50%, 10px); }
-.tip b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }
-.tip span { font-size: 10.5px; color: var(--text-faint); font-family: var(--mono); }
+.tip b { font-size: calc(12.5px * var(--ts, 1)); font-variant-numeric: tabular-nums; color: var(--text); }
+.tip span { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); font-family: var(--mono); }
 
 /* 分模型排行：名字 + 总量一行，占比横条 + 百分数一行 */
 .rank { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-.rank-title { font-size: 11.5px; font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
+.rank-title { font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
 .rank-row {
   display: grid; gap: 2px 8px; min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas: "name n" "bar p";
 }
-.rk-name { grid-area: name; font-size: 12px; color: var(--text); }
-.rk-n { grid-area: n; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.rk-name { grid-area: name; font-size: calc(12px * var(--ts, 1)); color: var(--text); }
+.rk-n { grid-area: n; font-size: calc(12px * var(--ts, 1)); font-variant-numeric: tabular-nums; color: var(--text-dim); }
 .rk-bar {
   grid-area: bar; height: 4px; border-radius: 999px; overflow: hidden;
   background: color-mix(in srgb, var(--text) 10%, transparent); align-self: center;
 }
 .rk-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--accent); opacity: .75; }
 .rk-p {
-  grid-area: p; font-size: 10.5px; color: var(--text-faint);
+  grid-area: p; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
   font-variant-numeric: tabular-nums; min-width: 30px; text-align: right;
 }
-.rank-none { font-size: 12px; color: var(--text-faint); }
+.rank-none { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 
 @media (max-width: 860px) {
   .usage-body { grid-template-columns: minmax(0, 1fr); }

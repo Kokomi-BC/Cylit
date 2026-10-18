@@ -556,7 +556,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ts, 1));
 }
 
 /* 折叠块的抬头：仍是 .card-head 的位置与分割线，只是整条可点 */
@@ -568,7 +568,7 @@ onBeforeUnmount(() => {
 .card-head.fold:hover { color: var(--accent-text); }
 
 .gap-top { margin-top: 10px; }
-.cap { font-size: 12px; color: var(--text-faint); letter-spacing: .01em; }
+.cap { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .01em; }
 
 /* 抬头：标题（图标+文字）与计数分离 —— 计数是"说明"，不该跟标题抢字重 */
 .hd-title { display: inline-flex; align-items: center; gap: 7px; }
@@ -576,7 +576,7 @@ onBeforeUnmount(() => {
   min-width: 20px; padding: 0 6px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 999px; background: var(--bg-sunken);
-  color: var(--text-faint); font-size: 11px; font-weight: 600;
+  color: var(--text-faint); font-size: calc(11px * var(--ts, 1)); font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -599,14 +599,14 @@ onBeforeUnmount(() => {
 /* 点名字就地改名：非编辑态是**文字按钮**（cursor: text 而不是 pointer：它就是"点进输入框"的手感） */
 .mname {
   padding: 0; border: 0; background: transparent; color: var(--text);
-  font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: text;
+  font: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: text;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .mname:hover { color: var(--accent-text); }
-.rename { width: 100%; font-size: 13px; font-weight: 600; }
+.rename { width: 100%; font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
 .msub {
   display: flex; align-items: center; gap: 5px; min-width: 0;
-  font-size: 11.5px; color: var(--text-faint);
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
 .msep { opacity: .55; }
 
@@ -619,7 +619,7 @@ onBeforeUnmount(() => {
 /* 状态用"点 + 字"而不是彩底徽章：一行里三枚彩块会打架，只有一个点该有颜色 */
 .stat {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11.5px; color: var(--text-faint);
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
 .stat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
 .stat.ok { color: var(--text-dim); }
@@ -632,7 +632,7 @@ onBeforeUnmount(() => {
 /* 空态：一行说明 + 一个"现在就能做"的按钮，不占一整张白卡 */
 .mempty {
   display: flex; align-items: center; gap: 8px;
-  padding: 2px 0; color: var(--text-faint); font-size: 12.5px;
+  padding: 2px 0; color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
 }
 .mempty-text { flex: 1; min-width: 0; }
 
@@ -640,7 +640,7 @@ onBeforeUnmount(() => {
 .secrefs { display: flex; flex-wrap: wrap; gap: 6px; }
 .secref {
   padding: 2px 8px; border-radius: 999px;
-  background: var(--bg-sunken); color: var(--text-dim); font-size: 11.5px;
+  background: var(--bg-sunken); color: var(--text-dim); font-size: calc(11.5px * var(--ts, 1));
 }
 
 /* 预设：一排胶囊 chips（原先是一排 .btn，7 个就糊成按钮墙） */
@@ -649,7 +649,7 @@ onBeforeUnmount(() => {
   height: 28px; padding: 0 11px;
   border: 1px solid var(--divider); border-radius: 999px;
   background: transparent; color: var(--text-dim);
-  font: inherit; font-size: 12px; cursor: pointer;
+  font: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .preset:hover:not(:disabled) {

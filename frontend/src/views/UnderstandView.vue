@@ -64,7 +64,7 @@ watch(paperId, () => { void loadFont(); });
 <style scoped>
 .doc-page { padding: 18px 20px 0; }
 .head { max-width: 1400px; margin: 0 auto; }
-.head h1 { font-size: 19px; line-height: 1.35; margin: 0 0 4px; }
+.head h1 { font-size: calc(19px * var(--ts, 1)); line-height: 1.35; margin: 0 0 4px; }
 @media (max-width: 1099px) {
   .doc-page { padding: 14px 14px 0; }
 }

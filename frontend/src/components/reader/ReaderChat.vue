@@ -1867,7 +1867,7 @@ defineExpose({ uploadFiles, ensureThread });
 .row-menu .menu-item {
   display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; padding: 0 8px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
-  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  font: inherit; font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer;
 }
 .row-menu .menu-item:hover { background: var(--bg-hover); color: var(--text); }
 .row-menu .menu-item.danger { color: var(--danger); }
@@ -1880,10 +1880,10 @@ defineExpose({ uploadFiles, ensureThread });
   gap: 2px; border: 0; background: none; color: var(--text); cursor: pointer;
   text-align: left; padding: 7px 6px; font: inherit;
 }
-.row-title { font-size: 12.5px; font-weight: 500; max-width: 100%; }
+.row-title { font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; max-width: 100%; }
 .row-meta { display: flex; align-items: center; gap: 5px; max-width: 100%; }
 .kd {
-  display: inline-flex; align-items: center; gap: 2px; font-size: 10px; padding: 0 5px;
+  display: inline-flex; align-items: center; gap: 2px; font-size: calc(10px * var(--ts, 1)); padding: 0 5px;
   border-radius: var(--radius-ctl); background: var(--accent-soft); color: var(--accent-text);
 }
 .row-acts { display: flex; gap: 1px; opacity: 0; }
@@ -1896,7 +1896,7 @@ defineExpose({ uploadFiles, ensureThread });
 .tick.on { color: var(--accent); }
 .rename-input {
   flex: 1; min-width: 0; border: 1px solid var(--accent); border-radius: var(--radius-ctl);
-  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 13px;
+  background: var(--bg-elev); color: var(--text); font: inherit; font-size: calc(13px * var(--ts, 1));
   height: var(--control-h-sm); padding: 0 11px; outline: none;
 }
 .hollow { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 34px 18px; text-align: center; }
@@ -1941,7 +1941,7 @@ defineExpose({ uploadFiles, ensureThread });
 .th-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
 .th-act:active { transform: scale(.94); }
 .th-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
-.th-title { font-size: 13px; font-weight: 600; color: var(--text); max-width: 52%; }
+.th-title { font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); max-width: 52%; }
 
 .msgs {
   /* 底部这块空白是给**悬浮的输入区**让位的（JS 按实测高度覆盖，这里只是兜底） */
@@ -1951,14 +1951,14 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; flex-direction: column;
 }
 .msg { margin-bottom: 14px; }
-.msg.assistant .body { font-size: 12.5px; line-height: 1.72; color: var(--text); }
+.msg.assistant .body { font-size: calc(12.5px * var(--ts, 1)); line-height: 1.72; color: var(--text); }
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
 /* 用户气泡：**圆角矩形**（用户口径 2026-11-19：照 DeepSeek 那种），无描边、用强调色的淡底，
    右边两个角略小一点，读起来像"我发出去的一块"。 */
 .msg.user .body {
   background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
   border-radius: 16px 16px 4px 16px;
-  padding: 8px 12px; font-size: 12.5px; line-height: 1.65; max-width: 88%;
+  padding: 8px 12px; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.65; max-width: 88%;
 }
 .msg.user .sel-quote, .msg.user .atts { align-self: flex-end; }
 /* 气泡下面那条（时间 / 复制 / 修改）：**鼠标移到这条消息上才出现**（用户口径 2026-11-19），
@@ -1969,13 +1969,13 @@ defineExpose({ uploadFiles, ensureThread });
 }
 .msg.user .msg-tools { justify-content: flex-end; }
 .msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
-.msg-time { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.msg-time { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .tool-sep { width: 1px; height: 12px; margin: 0 3px; background: var(--divider); }
 .sel-quote {
   display: flex; align-items: center; gap: 4px; max-width: 92%; margin-bottom: 3px;
   padding: 3px 7px; border-left: 2px solid var(--accent);
   background: var(--bg-layer); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  font-size: 11.5px; color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
 }
 .sum-card {
   border: 1px dashed var(--border-strong); border-radius: var(--radius);
@@ -1983,7 +1983,7 @@ defineExpose({ uploadFiles, ensureThread });
 }
 .sum-head {
   display: flex; align-items: center; gap: 4px; margin-bottom: 4px;
-  font-size: 11px; color: var(--text-faint); letter-spacing: .02em;
+  font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .02em;
 }
 .sum-card .md :deep(p) { margin: 3px 0; }
 /* 正文里的引用锚：`[n]` 就在句子里，点它直接跳（用户口径 2026-10-03）。
@@ -1998,7 +1998,7 @@ defineExpose({ uploadFiles, ensureThread });
 .run-head {
   display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
   padding: 2px 0; border: 0; background: none; cursor: pointer;
-  color: var(--text-dim); font-size: 11.5px;
+  color: var(--text-dim); font-size: calc(11.5px * var(--ts, 1));
 }
 .run-head:hover { color: var(--text); }
 .run-title { font-weight: 600; white-space: nowrap; }
@@ -2063,12 +2063,12 @@ defineExpose({ uploadFiles, ensureThread });
   /* `flex-start`：图标/标签钉在**第一行**上（用 baseline/center 时，多行思考的图标会飘到
      整段中间，看着不像"图标与文字并排"，用户 2026-10-03 报过） */
   display: flex; align-items: flex-start; gap: 5px;
-  font-size: 11.5px; line-height: 1.65; color: var(--text-faint);
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.65; color: var(--text-faint);
 }
 .run-step :deep(svg), .run-step svg { flex: none; margin-top: 2px; }
 .run-step .step-tag { color: var(--text-dim); flex: none; }
 .run-step .step-arg { color: var(--text-faint); overflow-wrap: anywhere; }
-.run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: 10.5px; }
+.run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: calc(10.5px * var(--ts, 1)); }
 .run-step.tool.running .step-tag { color: var(--accent-text); }
 /* 阶段提示（准备档案 / 检索 / 组织回答）：比步骤再淡一档，它只是过程的背景 */
 .run-step.stage .step-text { color: var(--text-faint); font-style: italic; }
@@ -2100,7 +2100,7 @@ defineExpose({ uploadFiles, ensureThread });
 .hello-mark img { display: block; width: 64px; height: 64px; opacity: .92; }
 .hello-line {
   margin: 0; max-width: 100%; color: var(--text-faint);
-  font-size: 13px; font-weight: 500; line-height: 1.7;
+  font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1.7;
   user-select: text;
 }
 
@@ -2154,7 +2154,7 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
   border: 0; background: none; cursor: pointer; padding: 3px 6px; text-align: left;
   border-radius: var(--radius-sm); color: var(--accent-text);
-  font: inherit; font-size: 11.5px;
+  font: inherit; font-size: calc(11.5px * var(--ts, 1));
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .sel-chip-main:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
@@ -2162,7 +2162,7 @@ defineExpose({ uploadFiles, ensureThread });
 /* 位置那一小段（"第 4 页 · Markdown"）：比正文小一号、后面一条细竖线隔开，
    不抢原文的位置，但一眼能看出这段是从哪儿来的。 */
 .sel-chip-where {
-  flex: none; font-size: 10.5px; letter-spacing: .01em; opacity: .85;
+  flex: none; font-size: calc(10.5px * var(--ts, 1)); letter-spacing: .01em; opacity: .85;
   padding-right: 5px; margin-right: 1px;
   border-right: 1px solid color-mix(in srgb, currentColor 30%, transparent);
 }
@@ -2180,7 +2180,7 @@ defineExpose({ uploadFiles, ensureThread });
   display: block; width: 100%; resize: none; overflow-y: auto;
   min-height: 26px; max-height: 160px;
   border: 0; outline: none; box-shadow: none; background: none;
-  color: var(--text); font-family: inherit; font-size: 13px; line-height: 1.6; padding: 4px 7px;
+  color: var(--text); font-family: inherit; font-size: calc(13px * var(--ts, 1)); line-height: 1.6; padding: 4px 7px;
   box-sizing: border-box;
 }
 .composer-input::placeholder { color: var(--text-faint); }
@@ -2194,7 +2194,7 @@ defineExpose({ uploadFiles, ensureThread });
 .model-btn {
   display: inline-flex; align-items: center; gap: 1px; max-width: 55%; min-width: 0;
   border: 0; background: none; cursor: pointer; padding: 2px 4px;
-  border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: 11.5px;
+  border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: calc(11.5px * var(--ts, 1));
 }
 .model-btn:hover { background: var(--bg-hover); color: var(--text-dim); }
 
@@ -2212,7 +2212,7 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-row {
   display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; padding: 0 8px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
-  font: inherit; font-size: 12px; text-align: left; cursor: pointer; flex: none;
+  font: inherit; font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer; flex: none;
 }
 .pick-row:hover, .pick-row.on { background: var(--bg-hover); color: var(--text); }
 .pick-key { flex: none; color: var(--text-faint); }
@@ -2245,12 +2245,12 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-item-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
 .pick-item-name {
   display: flex; align-items: center; gap: 5px; min-width: 0;
-  font-size: 12px; color: var(--text);
+  font-size: calc(12px * var(--ts, 1)); color: var(--text);
 }
 /* 副行：provider · model_name（小一号、退一档色，只做识别用） */
-.pick-item-sub { font-size: 10.5px; color: var(--text-faint); }
+.pick-item-sub { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); }
 .pick-empty { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; }
-.pick-empty .pick-item-name { font-size: 12px; color: var(--text-dim); }
+.pick-empty .pick-item-name { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
   position: relative; width: 16px; height: 16px; flex: none;
@@ -2277,6 +2277,6 @@ defineExpose({ uploadFiles, ensureThread });
   position: absolute; inset: 6px; z-index: 5; display: flex; align-items: center; justify-content: center;
   gap: 6px; border: 1.5px dashed var(--accent); border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent-soft) 88%, transparent);
-  color: var(--accent-text); font-size: 12.5px; pointer-events: none;
+  color: var(--accent-text); font-size: calc(12.5px * var(--ts, 1)); pointer-events: none;
 }
 </style>

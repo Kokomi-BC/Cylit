@@ -102,7 +102,7 @@ function leadTitle(ref: PaperReference): string {
   width: 100%; text-align: left;
   /* 左边距收窄（10 → 6）：图标那一列本来就贴着左边，留 10 会让"图标两侧的空白"一边大一边小 */
   padding: 8px 10px 8px 6px;
-  font-family: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); color: var(--text); cursor: pointer;
   border-left-color: var(--border-strong);
 }
 .ref-item:hover { border-color: var(--accent); background: var(--bg-hover); }
@@ -121,9 +121,9 @@ function leadTitle(ref: PaperReference): string {
 /* 「论文 + GitHub 都有」时，GitHub 图标贴在标题下面（右对齐） */
 .ref-foot { display: flex; justify-content: flex-end; gap: 2px; margin-top: 3px; }
 .ref-head { display: block; }
-.ref-no { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-right: 4px; }
+.ref-no { font-family: var(--mono); font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); margin-right: 4px; }
 .ref-zh { font-weight: 600; }
-.ref-en { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
+.ref-en { color: var(--text-dim); font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; }
 /* 两行封顶（原文常常很长，整条看 hover 的 tooltip）。
    ⚠️ 必须是**块级**钳制，而且标号要**在它里面**：块级会独占一行，把标号放在它外面
    就会被挤到上面单独成行；反过来用行内级（`-webkit-inline-box`）又会被长文本挤到下一行。 */
