@@ -170,30 +170,49 @@ function onWheel(ev: WheelEvent) {
 
 const pointers = new Map<number, { x: number; y: number }>();
 let pressAt: { x: number; y: number } | null = null;
-let panFrom: { x: number; y: number; tx: number; ty: number } | null = null;
-type PinchFrom = { dist: number; z: number; midX: number; midY: number; tx: number; ty: number };
+/** 上一帧指针位置：位移按帧间增量累加，不是按「起点 + 总位移」重算 */
+let panFrom: { x: number; y: number } | null = null;
+type PinchFrom = {
+  dist: number; startDist: number; armed: boolean; z: number;
+  startMidX: number; startMidY: number; lastMidX: number; lastMidY: number;
+};
 let pinchFrom: PinchFrom | null = null;
+
+/** 双指"真正开始分合"的门槛：指距没有变化到这一步之前，一律不碰倍率（见 applyPinch） */
+const PINCH_ARM_PX = 10;
+
+/** 拖动 / 双指动过就算 moved：手指离开时不要把这次手势当成"点了下背景" */
+let moved = false;
 
 function onPointerDown(ev: PointerEvent) {
   if (ev.button !== undefined && ev.button > 0) return;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
   pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
   if (pointers.size >= 2) {
+    moved = true;
     panFrom = null;
     pressAt = null;
     freeze();
     const pair = [...pointers.values()];
+    const dist = Math.max(1, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y));
+    const midX = (pair[0].x + pair[1].x) / 2;
+    const midY = (pair[0].y + pair[1].y) / 2;
     pinchFrom = {
-      dist: Math.max(24, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y)),
-      z: tz, tx: ttx, ty: tty,
-      midX: (pair[0].x + pair[1].x) / 2,
-      midY: (pair[0].y + pair[1].y) / 2,
+      dist, startDist: dist, armed: false, z: tz,
+      startMidX: midX, startMidY: midY, lastMidX: midX, lastMidY: midY,
     };
     return;
   }
   pressAt = { x: ev.clientX, y: ev.clientY };
   panFrom = null;
   pinchFrom = null;
+  moved = false;
+}
+
+/** 点背景关闭：刚拖过/缩放过就不算点击 */
+function onBgClick() {
+  if (moved) { moved = false; return; }
+  emit('close');
 }
 
 function onPointerMove(ev: PointerEvent) {
@@ -204,13 +223,18 @@ function onPointerMove(ev: PointerEvent) {
     return;
   }
   if (!pressAt) return;
-  /* 真的开始拖了才接管：接手时画面停在这一帧，基线按当前渲染值取，不会先跳一下再跟手 */
+  if (!moved && Math.hypot(ev.clientX - pressAt.x, ev.clientY - pressAt.y) > 6) moved = true;
+  /* 真的开始拖了才接管：接手时画面停在这一帧 */
   if (!panFrom) {
     freeze();
-    panFrom = { x: pressAt.x, y: pressAt.y, tx: tx.value, ty: ty.value };
+    panFrom = { x: ev.clientX, y: ev.clientY };
+    return;
   }
-  ttx = panFrom.tx + (ev.clientX - panFrom.x);
-  tty = panFrom.ty + (ev.clientY - panFrom.y);
+  /* 逐帧增量：被边界压掉的那部分位移当场丢掉，缩回来时不会又自己冒出来 */
+  ttx += ev.clientX - panFrom.x;
+  tty += ev.clientY - panFrom.y;
+  panFrom.x = ev.clientX;
+  panFrom.y = ev.clientY;
   clampTarget();
   tx.value = ttx;
   ty.value = tty;
@@ -229,17 +253,40 @@ function onPointerUp(ev: PointerEvent) {
   }
 }
 
-/** 双指：指距只改倍率，中点位移只改平移 —— 全是手指直接量出来的量，不从锚点反推位移 */
+/**
+ * 双指：指距定倍率，中点位移定平移。
+ *
+ * 两条都是触摸屏上「莫名其妙位移」的成因：
+ * 1. 刚接触那一下不动 —— 手指落上去时指距读数本来就在抖，直接按比例缩放等于把噪声当倍数。
+ *    指距与中点都没真正变化超过 PINCH_ARM_PX 之前什么都不做；一过门槛就把基准锁到当前读数，
+ *    从 1 倍、0 位移开始，接触那一下画面纹丝不动。
+ * 2. 平移只按帧间增量累加，绝不「起点 + 总位移」重算。后者会把早先被边界压掉的位移一直记在
+ *    账上，等可滑动余量一大就自己滑出去 —— 手指没动、画面却在飘。增量式被压掉就当场丢掉。
+ */
 function applyPinch() {
   const p = pinchFrom;
   if (!p || pointers.size < 2) return;
   const pair = [...pointers.values()];
   const midX = (pair[0].x + pair[1].x) / 2;
   const midY = (pair[0].y + pair[1].y) / 2;
-  const dist = Math.max(24, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y));
+  const dist = Math.max(1, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y));
+
+  if (!p.armed) {
+    const armDist = Math.abs(dist - p.startDist);
+    const armMid = Math.hypot(midX - p.startMidX, midY - p.startMidY);
+    if (armDist < PINCH_ARM_PX && armMid < PINCH_ARM_PX) return;
+    p.armed = true;
+    p.dist = dist;
+    p.z = tz;
+    p.lastMidX = midX;
+    p.lastMidY = midY;
+  }
+
   tz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
-  ttx = p.tx + (midX - p.midX);
-  tty = p.ty + (midY - p.midY);
+  ttx += midX - p.lastMidX;
+  tty += midY - p.lastMidY;
+  p.lastMidX = midX;
+  p.lastMidY = midY;
   clampTarget();
   snap();
 }
@@ -299,7 +346,17 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div ref="stage" class="viewer" @wheel.prevent="onWheel" @click.self="emit('close')">
+    <div
+      ref="stage"
+      class="viewer"
+      @wheel.prevent="onWheel"
+      @click.self="onBgClick"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+      @dblclick="onDoubleClick"
+    >
       <div ref="sheet" class="sheet" :style="sheetStyle">
         <img
           ref="imgEl"
@@ -309,14 +366,6 @@ onBeforeUnmount(() => {
           draggable="false"
           @load="onImgLoad"
         >
-        <div
-          class="capture"
-          @pointerdown="onPointerDown"
-          @pointermove="onPointerMove"
-          @pointerup="onPointerUp"
-          @pointercancel="onPointerUp"
-          @dblclick="onDoubleClick"
-        />
       </div>
 
       <div class="cap cap-zoom" @click.stop>
@@ -343,9 +392,10 @@ onBeforeUnmount(() => {
 .viewer {
   position: fixed; inset: 0; z-index: 240; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
-  background: #0d0f13;
+  background: #0d0f13; cursor: grab;
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
+.viewer:active { cursor: grabbing; }
 /* 平滑交给 rAF（见脚本注释），这里不能再叠一层 CSS 过渡，否则两段插值会互相追赶 */
 .sheet {
   position: relative; flex: none; transform-origin: center center;
@@ -353,8 +403,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
 }
 .shot { display: block; width: 100%; height: 100%; -webkit-user-drag: none; }
-.capture { position: absolute; inset: 0; touch-action: none; cursor: grab; }
-.capture:active { cursor: grabbing; }
 
 /* 毛玻璃胶囊：半透明壳 + 大模糊 + 亮描边 + 柔投影，按钮是壳里的圆片 */
 .cap {
