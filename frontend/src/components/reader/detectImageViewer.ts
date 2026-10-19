@@ -409,7 +409,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   const PREVIEW_SWITCH_OVERFLOW_THRESHOLD = 8;
   const PREVIEW_SWITCH_EDGE_TOLERANCE = 6;
   const PREVIEW_DETACH_VERTICAL_THRESHOLD = 110;
-  const PREVIEW_VERTICAL_UNLOCK_THRESHOLD = 14;
+  const PREVIEW_VERTICAL_UNLOCK_THRESHOLD = 40;
   const PREVIEW_SPRING_MS = 360;
   const PREVIEW_SPRING_EASE = 'cubic-bezier(0.2, 0.88, 0.24, 1.16)';
   const PREVIEW_SPRING_Y_SHIFT = 18;
@@ -870,7 +870,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       lastMoveTime = performance.now();
 
       if (!dragIntent) {
-        if (Math.abs(totalDx) > 8 || Math.abs(totalDy) > 8) {
+        /* 意图判定放大到 24px：8px 太近，手指落下的抖动就足以把一次普通拖动判成"往下拽"。 */
+        if (Math.abs(totalDx) > 24 || Math.abs(totalDy) > 24) {
           dragIntent = Math.abs(totalDx) > Math.abs(totalDy) * 1.05 ? 'horizontal' : 'vertical';
         }
       }
@@ -882,8 +883,10 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       const overflowX = nextX - clampedX;
       const overflowY = nextY - clampedY;
       const dismissScaleEligible = imageScale <= 1.04 || (imageScale <= CLOSE_DRAG_MAX_SCALE && maxY <= PREVIEW_SWITCH_EDGE_TOLERANCE);
-      const verticalDismissIntent = dismissScaleEligible && totalDy > 12 && Math.abs(totalDy) > Math.abs(totalDx) * 1.15;
-      const verticalGestureActive = totalDy > 8 && Math.abs(totalDy) > Math.abs(totalDx) * 0.6;
+      /* 下滑关闭的门槛（用户口径：略微下移不该关掉）：
+         要么往下 32px 且明确是竖向，要么 40px 且竖向分量占绝对多数。 */
+      const verticalDismissIntent = dismissScaleEligible && totalDy > 32 && Math.abs(totalDy) > Math.abs(totalDx) * 1.6;
+      const verticalGestureActive = totalDy > 40 && Math.abs(totalDy) > Math.abs(totalDx) * 1.4;
       const dismissShrinkThreshold = vh * CLOSE_SHRINK_THRESHOLD_RATIO;
       const verticalModeLocked = dragIntent === 'vertical' && totalDy > PREVIEW_VERTICAL_UNLOCK_THRESHOLD;
       const previewOccupancy = getPreviewOccupancyRatio();
@@ -1032,7 +1035,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         const dismissScaleEligible = imageScale <= 1.04 || (imageScale <= CLOSE_DRAG_MAX_SCALE && maxY <= PREVIEW_SWITCH_EDGE_TOLERANCE);
 
         const verticalDismissReady = dismissScaleEligible && totalDy > winH * CLOSE_SHRINK_THRESHOLD_RATIO && totalDy > Math.abs(totalDx) * 1.15;
-        const heavyMoveDown = dismissScaleEligible && imageY > winH * 0.12;
+        /* 松手时的关闭判定：要拖到视口 1/4 以上才算"往下甩"，之前 12% 太容易触发 */
+        const heavyMoveDown = dismissScaleEligible && imageY > winH * 0.24;
         const outOfBounds = Math.abs(imageX) > maxX || Math.abs(imageY) > maxY || imageScale < 1;
         const heavyMoveOut = Math.abs(imageX) > winW * 0.4 || Math.abs(imageY) > winH * 0.4;
 

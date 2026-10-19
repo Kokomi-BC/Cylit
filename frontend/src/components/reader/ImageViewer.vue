@@ -143,7 +143,15 @@ function requestClose() {
   if (closing.value) return;
   closing.value = true;
   const o = props.origin;
-  if (!viewer || !o || !size.value.w) { finishClose(); return; }
+  if (!viewer) { finishClose(); return; }
+  if (!o || !size.value.w) {
+    /* 拿不到源图矩形（例如对话里贴的图、外部链接图）：退化成原地缩小 + 整屏淡出，
+       总之不能一按就"啪"地消失。 */
+    const s = viewer.getScale();
+    viewer.animateTo(Math.max(0.2, s * 0.86), 0, 0, 200);
+    closeTimer = window.setTimeout(finishClose, 210);
+    return;
+  }
   const stageW = stage.value?.clientWidth || window.innerWidth;
   const stageH = stage.value?.clientHeight || window.innerHeight;
   const tScale = o.width / size.value.w;

@@ -660,7 +660,10 @@ const zoomImage = ref<ZoomTarget | null>(null);
  */
 const zoomOrigin = ref<{ left: number; top: number; width: number; height: number } | null>(null);
 function onZoomOriginDown(ev: PointerEvent) {
-  const el = ev.target instanceof Element ? ev.target.closest('img') : null;
+  /* 触发放大的可能是 img 本身，也可能是包着它的容器（正文图点击落在 wrapper 上），
+     所以向祖先找不到时再往子孙里找一次 —— 否则 origin 恒为 null，关闭就没有飞回动画。 */
+  const t = ev.target instanceof Element ? ev.target : null;
+  const el = t ? (t.closest('img') ?? t.querySelector('img')) : null;
   if (!el) { zoomOrigin.value = null; return; }
   const r = el.getBoundingClientRect();
   zoomOrigin.value = { left: r.left, top: r.top, width: r.width, height: r.height };
