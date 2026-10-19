@@ -5703,10 +5703,10 @@ onUnmounted(() => {
  * 查看态 / 编辑态都有；菜单带"从按钮那一角张开"的弹出动画。
  * 状态与删除菜单同一个写法（局部 ref + Teleport + 打开期间才挂全局监听）。 */
 const noteColorMenu = ref({ open: false, top: 0, left: 0, key: '', origin: 'top left' });
-/// 菜单尺寸：与查看态那个「⋯」二级菜单同一套几何（4px 内边距 + 2px 间距 + 25px 圆钮）
-/// 8 × 25 + 7 × 2 + 2 × 4 = 222 宽、25 + 2 × 4 = 33 高
-const NOTE_COLOR_MENU_W = 222;
-const NOTE_COLOR_MENU_H = 33;
+/// 菜单尺寸：色块 21px + 6px 内边距 + 2px 间距 → 外高 35px，与查看态「⋯」菜单完全等高
+/// 8 × 21 + 7 × 2 + 2 × 6 + 2 描边 = 196 宽、21 + 12 + 2 = 35 高
+const NOTE_COLOR_MENU_W = 196;
+const NOTE_COLOR_MENU_H = 35;
 /** 菜单正对着的那张卡（菜单里高亮"当前色"、点色时改的都是它） */
 const colorMenuCard = computed(() => (noteColorMenu.value.open
   ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
@@ -7021,7 +7021,7 @@ function renderMarkdown(text?: string | null) {
       >
         <!-- 与笔记卡的角指示器同一条 SVG 弧（45°、两端圆头），见 FloatingCard 的 .fc-grip -->
         <svg class="fg-arc" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M32.4 92.5 A46 46 0 0 1 7.5 67.6" vector-effect="non-scaling-stroke" />
+          <path d="M30.6 91.7 A46 46 0 0 1 8.3 69.4" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
       <div
@@ -7037,7 +7037,7 @@ function renderMarkdown(text?: string | null) {
         @pointercancel="onFloatPointerUp"
       >
         <svg class="fg-arc" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M92.5 67.6 A46 46 0 0 1 67.6 92.5" vector-effect="non-scaling-stroke" />
+          <path d="M91.7 69.4 A46 46 0 0 1 69.4 91.7" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
 
@@ -7886,7 +7886,7 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip .fg-arc path {
   fill: none;
   stroke: var(--fc-handle);
-  stroke-width: 2.2px;
+  stroke-width: 2.6px;
   stroke-linecap: round;
   transition: stroke 200ms var(--ease),
               stroke-width 460ms cubic-bezier(.33, 0, .2, 1);
@@ -7900,14 +7900,14 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip.unfocused:hover .fg-arc,
 .reader > .float-grip.unfocused:active .fg-arc,
 .reader > .float-grip.unfocused.is-on .fg-arc { opacity: 1; }
-.reader > .float-grip:hover .fg-arc path { stroke: var(--accent); stroke-width: 2.9px; }
+.reader > .float-grip:hover .fg-arc path { stroke: var(--accent); stroke-width: 3.2px; }
 /* 拖动中（`:active` 是纯 CSS 的按下态）：**只让弧自己让一下 + 加粗**，命中区一动不动。
    keyframes 必须写在本文件 —— 组件 scoped 的 @keyframes 不会跨组件生效。 */
 @keyframes fc-grip-thicken-f {
-  0% { stroke-width: 2.2px; }
-  50% { stroke-width: 3.9px; }
-  78% { stroke-width: 3.3px; }
-  100% { stroke-width: 3.6px; }
+  0% { stroke-width: 2.6px; }
+  50% { stroke-width: 4.2px; }
+  78% { stroke-width: 3.7px; }
+  100% { stroke-width: 4px; }
 }
 @keyframes fc-grip-glide-f {
   0% { transform: translate(0, 0); }
@@ -7932,7 +7932,7 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip:active .fg-arc path,
 .reader > .float-grip.is-on .fg-arc path {
   stroke: var(--accent);
-  stroke-width: 3.6px;
+  stroke-width: 4px;
   animation: fc-grip-thicken-f 340ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 @keyframes fc-grip-spring {
@@ -8435,7 +8435,7 @@ function renderMarkdown(text?: string | null) {
   position: fixed; z-index: 321;
   width: max-content;
   display: flex; align-items: center; gap: 2px;
-  padding: 4px;
+  padding: 6px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-ctl);
@@ -8444,7 +8444,9 @@ function renderMarkdown(text?: string | null) {
 }
 /* 色块与触发钮**同尺寸（25px）**、圆角一致、整行居中 —— 一级 / 二级看起来是一套 */
 .note-color-menu .ncm-row { display: flex; align-items: center; justify-content: center; gap: 2px; }
-.note-color-menu .hl-swatch { width: 25px; height: 25px; border: 0; }
+/* 色块 21px（比触发钮小一档，不再"比标题行那几枚还大"），配合 6px 内边距 →
+   菜单外高 = 21 + 12 + 2(描边) = 35px，与查看态那个「⋯」菜单逐像素一致（用户口径 2026-11-28 十一轮）。 */
+.note-color-menu .hl-swatch { width: 21px; height: 21px; border: 0; }
 .note-color-menu .hl-swatch:hover { transform: scale(1.08); }
 .note-color-menu .hl-swatch.on { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 3px var(--accent); }
 @keyframes ncm-pop {

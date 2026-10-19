@@ -702,7 +702,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
              所以从"整圈描边 + 扇形裁剪"换成一条 SVG path（用户口径 2026-11-28 十轮）。
              `vector-effect="non-scaling-stroke"`：描边宽度永远按 CSS 像素算，不随 viewBox 缩放。 -->
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M92.5 67.6 A46 46 0 0 1 67.6 92.5" vector-effect="non-scaling-stroke" />
+          <path d="M91.7 69.4 A46 46 0 0 1 69.4 91.7" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
       <div
@@ -716,7 +716,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointercancel="onResizeUp"
       >
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M32.4 92.5 A46 46 0 0 1 7.5 67.6" vector-effect="non-scaling-stroke" />
+          <path d="M30.6 91.7 A46 46 0 0 1 8.3 69.4" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
     </div>
@@ -971,7 +971,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-resize .fc-grip path {
   fill: none;
   stroke: var(--fc-handle);
-  stroke-width: 2.2px;
+  stroke-width: 2.6px;
   /* **两端圆头**：CSS 边框画出来的弧只能是直角端点（用户口径 2026-11-28 十轮） */
   stroke-linecap: round;
   transition: stroke 200ms var(--ease),
@@ -993,7 +993,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-unfocused .fc-resize .fc-grip { opacity: .24; }
 .fc-unfocused .fc-resize:hover .fc-grip,
 .fc-unfocused .fc-resize.is-on .fc-grip { opacity: 1; }
-.fc-resize:hover .fc-grip path { stroke: var(--accent); stroke-width: 2.9px; }
+.fc-resize:hover .fc-grip path { stroke: var(--accent); stroke-width: 3.2px; }
 /* 拖动中：**只让弧自己顺着方向轻轻让一下 + 加粗**，命中区（把手盒）一动不动 ——
    上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，手感成了"我拖了它没动"。
    ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
@@ -1005,7 +1005,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
 }
 .fc-resize.is-on .fc-grip path {
   stroke: var(--accent);
-  stroke-width: 3.6px;
+  stroke-width: 4px;
   animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 /* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
@@ -1033,10 +1033,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
 }
 /* 两个角只剩 glide 的方向不同 —— 加粗一套就够（动的是 SVG 的 stroke-width） */
 @keyframes fc-grip-thicken {
-  0% { stroke-width: 2.2px; }
-  50% { stroke-width: 3.9px; }
-  78% { stroke-width: 3.3px; }
-  100% { stroke-width: 3.6px; }
+  0% { stroke-width: 2.6px; }
+  50% { stroke-width: 4.2px; }
+  78% { stroke-width: 3.7px; }
+  100% { stroke-width: 4px; }
 }
 /* 减少动效：关掉加粗 / 让位动画，颜色与粗细的静态反馈照旧 ——
    这样「按下 → 变粗变亮」在任何系统设置下都还在。 */
