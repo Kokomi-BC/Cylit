@@ -50,7 +50,10 @@ const props = withDefaults(defineProps<{
   textCat?: '' | 'body' | 'chat' | 'note' | 'side' | 'ui';
   /** 标题栏给 A− / A+ 两枚字号钮（只有笔记卡的**查看态**才传：编辑态那行已被色点 / ✓ 占满） */
   zoomable?: boolean;
-}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false });
+  /** 这张卡现在是**焦点卡**（最上层那张）。不是的话底角指示器会**大幅减淡** ——
+   *  多卡同屏时视觉重心只该有一处（用户口径 2026-11-28）。 */
+  focused?: boolean;
+}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -583,6 +586,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
     v-if="props.open"
     ref="el"
     class="float-shell"
+    :class="{ 'fc-unfocused': !props.focused }"
     data-float-card
   >
     <div class="float-card" :class="{ sized: sizeH !== null }">
@@ -902,7 +906,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
    **三处同一套**：笔记卡 / Cyli 解释卡（这里）与对话浮窗（ReaderView 的
    `.reader-aside > .float-grip`）。⚠️ 数字照抄，改一处必须改另一处。
    颜色：静止 22% 的 --text（--fc-handle）；悬停 / 拖动（.is-on）升 --accent。
-   粗细：静止 1.6px（细一点）、悬停 2.1px、拖动加粗到 2.7px（关键帧 1.6 → 3.2 → 2.4 → 2.7）。
+   粗细：静止 2.2px、悬停 2.9px、拖动 3.4px（关键帧 2.2 → 3.6 → 3.2 → 3.4）。
+   浓淡：**不是焦点卡**（多卡同屏时在下面那张）降到 0.42 透明度，悬停 / 拖动回到 1 ——
+     淡入淡出走 260ms 过渡，不是瞬间切换（用户口径 2026-11-28）。
    几何：一切都由 `--fc-gap`（弧离卡片边缘的距离，现为 5px）推出来，与卡片圆角**同心** ——
       · 热区 20×20，bottom 与 right/left = -gap → 落在卡片**外侧**；
       · 弧盒 bottom/right 贴 0 → 弧的外沿离卡片边缘正好 = gap；
@@ -939,7 +945,13 @@ watchEffect(applyShellDom, { flush: 'sync' });
   border-right: var(--fc-stroke) solid var(--fc-handle);
   border-bottom: var(--fc-stroke) solid var(--fc-handle);
   border-bottom-right-radius: var(--fc-arc);
-  transition: border-color var(--dur) var(--ease);
+  /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
+     瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
+  transition: border-color var(--dur) var(--ease),
+              opacity 260ms var(--ease),
+              border-width 260ms var(--ease),
+              transform 240ms var(--ease);
+  opacity: 1;
 }
 .fc-resize.br { right: calc(-1 * var(--fc-gap)); cursor: nwse-resize; }
 /* 左下角是**镜像**：描边走左边、圆角走左下、着力点与裁切角度一起镜像，
@@ -949,14 +961,19 @@ watchEffect(applyShellDom, { flush: 'sync' });
    于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
    现在两条动画都显式列出来，与右下角逐字对齐（只是换成镜像的那对 keyframes）。 */
 .fc-resize.bl.is-on::before {
-  animation: fc-grip-thicken-bl 520ms cubic-bezier(.22, 1.2, .36, 1) both,
-             fc-grip-glide-bl 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+  animation: fc-grip-thicken-bl 560ms cubic-bezier(.33, .85, .3, 1) both,
+             fc-grip-glide-bl 620ms cubic-bezier(.33, .85, .3, 1) both;
 }
 .fc-resize.bl::before {
   right: auto; left: 0;
   border-right: 0; border-left: var(--fc-stroke) solid var(--fc-handle);
   border-bottom-right-radius: 0; border-bottom-left-radius: var(--fc-arc);
 }
+/* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的一半出头，
+   小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */
+.fc-unfocused .fc-resize::before { opacity: .42; }
+.fc-unfocused .fc-resize:hover::before,
+.fc-unfocused .fc-resize.is-on::before { opacity: 1; }
 .fc-resize:hover::before { border-color: var(--accent); --fc-stroke: 2.9px; }
 /* 拖动中只改颜色与描边粗细，**不再同时挪 gap、也不再 translate 把手本身**：
    位移 + 缩放两个运动量叠加会被人眼读成「抖」；而把手的 translate 更严重 ——
@@ -965,8 +982,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
 .fc-resize.is-on::before {
   border-color: var(--accent); --fc-stroke: 3.4px;
-  animation: fc-grip-thicken 520ms cubic-bezier(.22, 1.2, .36, 1) both,
-             fc-grip-glide 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+  animation: fc-grip-thicken 560ms cubic-bezier(.33, .85, .3, 1) both,
+             fc-grip-glide 620ms cubic-bezier(.33, .85, .3, 1) both;
 }
 /* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
    只动 border-*-width 与颜色，不动 transform：缩放 + 圆角 + 半透明描边会让边缘反复重采样，
@@ -974,28 +991,30 @@ watchEffect(applyShellDom, { flush: 'sync' });
 /* 顺着拖动方向的弹性：**只作用在画出来的那道弧上**（::before），
    **不移动把手命中区** —— 上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，
    手感就成了"我拖了它没动"。现在命中区纹丝不动，弧自己往外蹬一下再回来。 */
+/* 位移从 6px 收到 3.4px、时长 420 → 620ms、缓动去掉回弹（用户口径 2026-11-28：更柔和）——
+   过冲 + 大位移在"卡片跟着手走"的同时读起来像抖，收到这个量级才是顺着拖动方向轻轻一让。 */
 @keyframes fc-grip-glide {
   0% { transform: translate(0, 0); }
-  40% { transform: translate(6px, 6px); }
-  72% { transform: translate(5px, 5px); }
-  100% { transform: translate(6px, 6px); }
+  38% { transform: translate(3.6px, 3.6px); }
+  74% { transform: translate(3px, 3px); }
+  100% { transform: translate(3.4px, 3.4px); }
 }
 @keyframes fc-grip-glide-bl {
   0% { transform: translate(0, 0); }
-  40% { transform: translate(-6px, 6px); }
-  72% { transform: translate(-5px, 5px); }
-  100% { transform: translate(-6px, 6px); }
+  38% { transform: translate(-3.6px, 3.6px); }
+  74% { transform: translate(-3px, 3px); }
+  100% { transform: translate(-3.4px, 3.4px); }
 }
 @keyframes fc-grip-thicken {
   0% { border-right-width: 2.2px; border-bottom-width: 2.2px; }
-  38% { border-right-width: 4.2px; border-bottom-width: 4.2px; }
-  72% { border-right-width: 3px; border-bottom-width: 3px; }
+  36% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
+  74% { border-right-width: 3.2px; border-bottom-width: 3.2px; }
   100% { border-right-width: 3.4px; border-bottom-width: 3.4px; }
 }
 @keyframes fc-grip-thicken-bl {
   0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
-  38% { border-left-width: 4.2px; border-bottom-width: 4.2px; }
-  72% { border-left-width: 3px; border-bottom-width: 3px; }
+  36% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
+  74% { border-left-width: 3.2px; border-bottom-width: 3.2px; }
   100% { border-left-width: 3.4px; border-bottom-width: 3.4px; }
 }
 /* 减少动效：关掉加粗动画（停在 2.7px）与药丸的宽度过渡，颜色 / 粗细反馈照旧 ——

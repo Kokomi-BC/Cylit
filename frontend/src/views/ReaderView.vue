@@ -6915,6 +6915,7 @@ function renderMarkdown(text?: string | null) {
       <div
         v-if="chatFloat"
         class="float-grip bl"
+        :class="{ unfocused: topLayer !== 'chat' }"
         ref="gripBlEl"
         title="拖动改浮窗大小"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size-left')"
@@ -6926,6 +6927,7 @@ function renderMarkdown(text?: string | null) {
       <div
         v-if="chatFloat"
         class="float-grip br"
+        :class="{ unfocused: topLayer !== 'chat' }"
         ref="gripBrEl"
         title="拖动改浮窗大小"
         @pointerdown="(ev) => onFloatPointerDown(ev, 'size')"
@@ -7034,6 +7036,7 @@ function renderMarkdown(text?: string | null) {
       data-note-popover
       :data-note-key="card.key"
       :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
+      :focused="topLayer === 'note' && card.key === activeNoteKey"
       hide-anchor
       @pointerdown.capture="onFloatPress($event, 'note', card.key)"
       @focusin.capture="takeTop('note')"
@@ -7690,8 +7693,9 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗态的圆角裁切现在挂在 `.chat-host.float` 自己身上（见下面那个块）：
    侧栏永远是普通侧栏，不再为浮窗做任何排版让步。 */
 /* 角上那枚「可以拉大」的指示器：与两张 FloatingCard **逐条同一套**（用户口径 2026-11-22）——
-   静止 1.6px（细一点）、悬停 2.1px、拖动加粗到 2.7px（关键帧 1.6 → 3.2 → 2.4 → 2.7）、
+   静止 2.2px、悬停 2.9px、拖动 3.4px（关键帧 2.2 → 3.6 → 3.2 → 3.4）、
    22% 文字色、弧心与卡片圆角同心、外沿离卡片 5px（FLOAT_GRIP_GAP，与 --fc-gap 同一个数字）、
+   非焦点（浮窗不是最上层）时透明度降到 0.42、悬停 / 拖动回 1，走 260ms 过渡、
    弧长只取圆角的 75%。
    ⚠️ 数字照抄 FloatingCard.vue 的 `.fc-resize`（半径 = 圆角 + gap、外沿 = gap），
    浮窗圆角 16 → 弧半径 21、弧盒 23。改一处必须改另一处。
@@ -7727,7 +7731,12 @@ function renderMarkdown(text?: string | null) {
   width: calc(var(--fc-arc) + 2px);
   height: calc(var(--fc-arc) + 2px);
   border: 0 solid var(--fc-handle);
-  transition: border-color var(--dur) var(--ease);
+  /* 与 FloatingCard 逐条一致：浓淡、粗细、松手回位都要渐变 */
+  transition: border-color var(--dur) var(--ease),
+              opacity 260ms var(--ease),
+              border-width 260ms var(--ease),
+              transform 240ms var(--ease);
+  opacity: 1;
 }
 .reader > .float-grip.br::after {
   border-right-width: var(--fc-stroke); border-bottom-width: var(--fc-stroke);
@@ -7738,6 +7747,11 @@ function renderMarkdown(text?: string | null) {
   border-left-width: var(--fc-stroke); border-bottom-width: var(--fc-stroke);
   border-bottom-left-radius: var(--fc-arc);
 }
+/* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
+.reader > .float-grip.unfocused::after { opacity: .42; }
+.reader > .float-grip.unfocused:hover::after,
+.reader > .float-grip.unfocused:active::after,
+.reader > .float-grip.unfocused.is-on::after { opacity: 1; }
 .reader > .float-grip:hover::after {
   border-color: var(--accent); --fc-stroke: 2.9px;
 }
@@ -7748,10 +7762,10 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗这套的「拖动加粗」动画（与 FloatingCard 同一手感，但 keyframes 必须写在本文件 ——
    组件 scoped 的 @keyframes 不会跨组件生效）。只动描边宽度与颜色，不动 transform：不闪烁。 */
 @keyframes fc-grip-thicken-f {
-  0% { border-width: 0; border-right-width: 1.6px; border-bottom-width: 1.6px; }
-  38% { border-right-width: 3.2px; border-bottom-width: 3.2px; }
-  72% { border-right-width: 2.4px; border-bottom-width: 2.4px; }
-  100% { border-right-width: 2.7px; border-bottom-width: 2.7px; }
+  0% { border-width: 0; border-right-width: 2.2px; border-bottom-width: 2.2px; }
+  36% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
+  74% { border-right-width: 3.2px; border-bottom-width: 3.2px; }
+  100% { border-right-width: 3.4px; border-bottom-width: 3.4px; }
 }
 .reader > .float-grip.bl:active::after,
 .reader > .float-grip.bl.is-on::after {
@@ -7760,27 +7774,27 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
 @keyframes fc-grip-glide-f {
   0% { transform: translate(0, 0); }
-  40% { transform: translate(6px, 6px); }
-  72% { transform: translate(5px, 5px); }
-  100% { transform: translate(6px, 6px); }
+  38% { transform: translate(3.6px, 3.6px); }
+  74% { transform: translate(3px, 3px); }
+  100% { transform: translate(3.4px, 3.4px); }
 }
 @keyframes fc-grip-glide-f-bl {
   0% { transform: translate(0, 0); }
-  40% { transform: translate(-6px, 6px); }
-  72% { transform: translate(-5px, 5px); }
-  100% { transform: translate(-6px, 6px); }
+  38% { transform: translate(-3.6px, 3.6px); }
+  74% { transform: translate(-3px, 3px); }
+  100% { transform: translate(-3.4px, 3.4px); }
 }
 @keyframes fc-grip-thicken-f-bl {
-  0% { border-left-width: 1.6px; border-bottom-width: 1.6px; }
-  38% { border-left-width: 3.2px; border-bottom-width: 3.2px; }
-  72% { border-left-width: 2.4px; border-bottom-width: 2.4px; }
-  100% { border-left-width: 2.7px; border-bottom-width: 2.7px; }
+  0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
+  36% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
+  74% { border-left-width: 3.2px; border-bottom-width: 3.2px; }
+  100% { border-left-width: 3.4px; border-bottom-width: 3.4px; }
 }
 .reader > .float-grip:active::after,
 .reader > .float-grip.is-on::after {
-  border-color: var(--accent); --fc-stroke: 2.7px;
-  animation: fc-grip-thicken-f 520ms cubic-bezier(.22, 1.2, .36, 1) both,
-             fc-grip-glide-f 420ms cubic-bezier(.22, 1.2, .36, 1) both;
+  border-color: var(--accent); --fc-stroke: 3.4px;
+  animation: fc-grip-thicken-f 560ms cubic-bezier(.33, .85, .3, 1) both,
+             fc-grip-glide-f 620ms cubic-bezier(.33, .85, .3, 1) both;
 }
 @keyframes fc-grip-spring {
   0% { transform: scale(1); }
