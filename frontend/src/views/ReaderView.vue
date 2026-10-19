@@ -8378,6 +8378,9 @@ function renderMarkdown(text?: string | null) {
 .np-back {
   flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center;
   justify-content: center; border: 0; border-radius: 50%; padding: 0;
+  /* 头部左边距是 12（留给查看态那枚图标），箭头自己往左咬回 6px，
+     与对话浮层里那枚返回键的 6px 位置对齐 */
+  margin-left: -6px;
   background: var(--bg-sunken); color: var(--text-dim);
   cursor: pointer; transition: background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
@@ -8529,11 +8532,12 @@ function renderMarkdown(text?: string | null) {
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.72;
   border: 0; border-radius: 0; background: transparent;
 }
-/* 头部**逐条照对话浮层**的 `.thread-head`：`gap: 3px`、`padding: … 8px … 6px`。
-   （上一轮那套"左右各 12px 对齐"的补丁按用户口径撤掉，2026-11-28 二十三轮。） */
+/* 头部：间距与右侧留白照对话浮层的 `.thread-head`（gap 3 / padding-right 8）；
+   **左边仍留 12px** —— 查看态那枚「笔记」图标要保持此前的留白（用户口径 2026-11-28 二十四轮），
+   编辑态的返回箭头由 `.np-back` 自己左移 6px 去贴齐对话浮层里那枚的位置。 */
 [data-note-popover] :deep(.fc-head) {
   gap: 3px;
-  padding-left: 6px;
+  padding-left: 12px;
   padding-right: 8px;
   gap: 6px;
   /* 标题行用**横线**（`--divider` 发丝线）与正文分开（用户口径 2026-10-10）。
