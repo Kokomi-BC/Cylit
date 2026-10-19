@@ -27,10 +27,16 @@ import { createDetectImageViewer, type DetectImageViewer } from './detectImageVi
 /** 视口矩形：触发查看器的那张缩略图关闭时飞回去用的落点 */
 type ViewerRect = { left: number; top: number; width: number; height: number };
 
+/**
+ * 相邻图条目：同一个 figure 可能有两种 URL（合成卡片 / 原图），正文里点开的是哪一种并不固定，
+ * 所以两个都带上 —— url 用来显示，altUrl 只用来匹配"用户点的是哪一张"。
+ */
+type GalleryTarget = ZoomTarget & { altUrl?: string | null };
+
 const props = withDefaults(defineProps<{
   target: ZoomTarget | null;
   /** 同一页组里的所有图：左右拖动就在它们之间切换；不给就是单图 */
-  gallery?: ZoomTarget[];
+  gallery?: GalleryTarget[];
   /** 打开查看器的那张缩略图在视口中的矩形（飞回原位用）；缺省或已失效时直接关闭 */
   origin?: ViewerRect | null;
 }>(), { gallery: () => [], origin: null });
@@ -77,20 +83,25 @@ function onImgLoad() {
 /** 控制器内部下标：切图成功后由控制器回调同步过来（父组件暂不依赖，不新增 emit） */
 const currentIndex = ref(0);
 /** 当前正在用的相邻图列表（决定胶囊上要不要出现上/下一张） */
-const galleryList = ref<ZoomTarget[]>([]);
+const galleryList = ref<GalleryTarget[]>([]);
 const hasPrev = computed(() => currentIndex.value > 0);
 const hasNext = computed(() => currentIndex.value < galleryList.value.length - 1);
 
 /** gallery 的内容指纹：父组件每次渲染都传新数组时，不至于无谓地复位视图 */
-const galleryKey = computed(() => (props.gallery || []).map((g) => `${g?.url ?? ''}#${g?.page ?? ''}`).join('|'));
+const galleryKey = computed(() => (props.gallery || [])
+  .map((g) => `${g?.url ?? ''}#${g?.altUrl ?? ''}#${g?.page ?? ''}`).join('|'));
 
-/** 定"相邻图列表 + 当前下标"：先按 url 全等找，再按 page 相同找，都没有就退化成 [target] 单图 */
-function resolveGallery(target: ZoomTarget | null): { list: ZoomTarget[]; idx: number } {
+/**
+ * 定「相邻图列表 + 当前下标」：只按 URL 精确匹配（url 或 altUrl）。
+ *
+ * 以前匹配不上时会退化成"同页的第一张"，同页有多张图时就会**显示出不是点击的那一张**。
+ * 匹配不上就老老实实当单图 —— 宁可没有左右切换，也不能显示错的图。
+ */
+function resolveGallery(target: ZoomTarget | null): { list: GalleryTarget[]; idx: number } {
   if (!target) return { list: [], idx: 0 };
   const gallery = (props.gallery || []).filter((g) => !!g && !!g.url);
   if (!gallery.length) return { list: [target], idx: 0 };
-  let idx = gallery.findIndex((g) => g.url === target.url);
-  if (idx < 0 && target.page != null) idx = gallery.findIndex((g) => g.page === target.page);
+  const idx = gallery.findIndex((g) => g.url === target.url || (!!g.altUrl && g.altUrl === target.url));
   if (idx < 0) return { list: [target], idx: 0 };
   return { list: gallery, idx };
 }
@@ -320,6 +331,8 @@ onBeforeUnmount(() => {
 .viewer.open { opacity: 1; transition: opacity 140ms ease; }
 /* 关闭：只让黑底淡出，图片保持可见地飞回原位 */
 .viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 240ms ease; }
+/* 飞回原位时不再拖着一张 60px 的投影：它是"弹窗"的语义，飞回缩略图时留着会很突兀 */
+.viewer.closing .shot { box-shadow: none; transition: box-shadow 160ms ease; }
 /* 下一张用同一枚返回箭头镜像一下 */
 .zflip { display: inline-flex; transform: scaleX(-1); }
 /* 只负责定尺寸，真正的 transform 在 .shot 上（控制器直接写） */

@@ -779,6 +779,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       baseScale = imageScale;
       baseRotation = imageRotation;
       img.style.transition = 'none';
+      /* 旋转时那张 60px 模糊投影每帧都要重算，是掉帧的大头；捏合期间先摘掉，松手再挂回来 */
+      img.style.boxShadow = 'none';
 
       // 记录捏合中心点相对于屏幕中心的初始坐标
       const vw = window.innerWidth;
@@ -986,21 +988,22 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     if (e.touches.length < 2) {
       if (isPinching) {
         isPinching = false;
+        img.style.boxShadow = '';
         // 手动缩放极其小时直接关闭（源文件是 window.history.back()）
         if (imageScale < 0.45) {
           onClose();
           return;
         }
 
-        /* 松手回正：只有转到"接近直角"时才吸附（偏差 <= 12°，视觉上几乎无感）。
-           转了一大截（比如 30°）就保持用户转到的角度 —— 以前无条件吸回 90° 的整数倍，
-           松手那一下会突然弹回去，看起来就是"跳变"。 */
+        /* 松手回正：**只保留 90° 的倍数**（用户口径）。
+           以前是瞬间把角度改成 snap 值，看上去是"啪"地跳一下；现在保留当前角度、
+           用 0.4s 过渡转正，所以是"自己转回来"的动画。 */
         const snappedRotation = Math.round(imageRotation / 90) * 90;
         const rotationDelta = Math.abs(snappedRotation - imageRotation);
-        const shouldSnap = rotationDelta <= 12;
+        const shouldSnap = true;
 
         if (imageScale < 1) {
-          settleImageToNaturalSize(shouldSnap ? snappedRotation : imageRotation, 420);
+          settleImageToNaturalSize(snappedRotation, 420);
         } else if (shouldSnap && rotationDelta > 0) {
           // 转到了接近直角：轻微回正（几度，看不出来）
           imageRotation = snappedRotation;
@@ -1070,8 +1073,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
           const currentSnapped = Math.round(imageRotation / 90) * 90;
           const dragRotationDelta = Math.abs(currentSnapped - imageRotation);
-          /* 同样只在接近直角时回正：大角度旋转保持原样，不然松手会突然弹回 */
-          const dragShouldSnapRotation = dragRotationDelta <= 12;
+          /* 同样只保留 90° 的倍数 */
+          const dragShouldSnapRotation = true;
 
           if (dragShouldSnapRotation) {
             settleImageToNaturalSize(currentSnapped, 420);

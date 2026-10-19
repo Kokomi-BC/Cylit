@@ -675,17 +675,24 @@ function onZoomOriginDown(ev: PointerEvent) {
 /**
  * 大图查看器里可以左右拖动切换的图片集合：全书插图，按页序。
  *
- * URL 与图注跟 `zoomImage` 同一套口径（合成图优先，退回原图），查看器内部先按 url 全等定位，
- * 找不到再按 page 兜底；都匹配不上（比如对话里贴的图）就自然退化成单图。
+ * 每条同时带上两种 URL：`url` 用来显示（合成卡片优先），`altUrl` 是同一个 figure 的原图 URL，
+ * 只用来匹配"用户点的到底是哪一张"。正文里点开的可能是二者之一，只按显示 URL 匹配会落空，
+ * 以前落空后按 page 兜底 —— 同页有多张图时就会显示出不是点击的那一张。现在按 url / altUrl 精确匹配，
+ * 匹配不上就老实当单图。
  */
-const zoomGallery = computed<ZoomTarget[]>(() => figures.value
+const zoomGallery = computed<Array<ZoomTarget & { altUrl?: string | null }>>(() => figures.value
   .filter((f) => !!(f.card_url || f.image_url))
-  .map((f) => ({
-    url: (f.card_url || f.image_url) as string,
-    caption: f.caption_zh || f.caption,
-    page: f.page,
-    number: f.number,
-  }))
+  .map((f) => {
+    const display = (f.card_url || f.image_url) as string;
+    const raw = f.image_url;
+    return {
+      url: display,
+      altUrl: raw && raw !== display ? raw : null,
+      caption: f.caption_zh || f.caption,
+      page: f.page,
+      number: f.number,
+    };
+  })
   .sort((a, b) => (a.page ?? 0) - (b.page ?? 0)));
 
 /**
