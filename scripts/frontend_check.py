@@ -1230,6 +1230,8 @@ async function run() {
     res.brandSrc = mark ? String(mark.getAttribute('src') || '') : '';
     res.brandW = mark ? Math.round(mark.getBoundingClientRect().width) : 0;
     res.brandText = brand ? (brand.textContent || '').trim() : '';
+    /* 品牌本身就是"回工作区"的入口（用户口径 2026-11）：它必须是个指到 /home 的链接 */
+    res.brandHref = brand ? String(brand.getAttribute('href') || '') : '';
     res.railBrand = !!rail.querySelector('.rail-brand, img');
     if (mark && brand) {
       const mr = mark.getBoundingClientRect(), brr = brand.getBoundingClientRect();
@@ -3309,22 +3311,27 @@ def check_shell(browser: str, base: str, budget_ms: int) -> None:
     record("shell", "品牌在**顶栏**：图标在「Cylit」左侧、垂直居中（侧栏里不再有第二份）",
            data.get("brandMark") is True and data.get("brandLeftOfText") is True
            and data.get("brandText") == "Cylit" and data.get("railBrand") is False
+           and str(data.get("brandHref") or "").rstrip("/").endswith("/home")
            and "icon.png" in str(data.get("brandSrc") or ""),
            f"顶栏有图标={data.get('brandMark')}（{data.get('brandW')}px）文字="
            f"{data.get('brandText')!r} 在文字左侧={data.get('brandLeftOfText')} "
            f"侧栏里还有品牌={data.get('railBrand')} src={data.get('brandSrc')}")
     # 顶栏只允许出现：胶囊托盘 + 论文标签（+ 两端浮动圆钮）。四样"不该有"的东西逐个钉住，
     # 因为每一样都是从"导航住在顶栏"那个旧结构里留下来的（品牌 / 首页胶囊 / 新建 / AI 对话）。
-    # 用户口径 2026-11：顶栏**保留**常驻「首页」胶囊（回工作区的路），但仍然不要「+」新建入口
-    # 与「AI 对话」胶囊 —— 后两样分别被侧栏的论文库 / AI 对话取代了。
-    record("shell", "顶栏有常驻「首页」胶囊，且没有「+」新建入口、没有「AI 对话」胶囊",
+    # 用户口径 2026-11：顶栏**不要**独立的「首页」按钮 —— 品牌（Cylit）本身就是回工作区的入口；
+    # 「+」新建入口与「AI 对话」胶囊也都不要（分别被侧栏的论文库 / AI 对话取代）。
+    record("shell", "顶栏没有独立的「首页」按钮、没有「+」新建入口、没有「AI 对话」胶囊（品牌即入口）",
            data.get("tabbar") is True
            and data.get("tabbarBrand") is True
-           and data.get("tabbarPinned") is True and data.get("pinnedText") == "首页"
+           and data.get("tabbarPinned") is False
            and data.get("tabAdd") is False
            and data.get("chatPill") is False,
-           f"品牌={data.get('tabbarBrand')} 首页胶囊={data.get('pinnedText')} "
+           f"品牌={data.get('tabbarBrand')} 首页胶囊={data.get('tabbarPinned')} "
            f"加号={data.get('tabAdd')} 对话胶囊={data.get('chatPill')}")
+    # 顶栏品牌本身就是"回工作区"的链接（点 Cylit 回 /home）
+    record("shell", "点顶栏的 Cylit 回工作区（品牌是指到 /home 的链接）",
+           str(data.get("brandHref") or "").rstrip("/").endswith("/home"),
+           f"href={data.get('brandHref')!r}")
     record("shell", "没有论文标签时托盘整块不渲染（顶栏就是一条空条，不留空胶囊）",
            not (data.get("tabs") or []) and data.get("stripRendered") is False,
            f"标签={data.get('tabs')} 托盘渲染={data.get('stripRendered')}（{data.get('path')}）")

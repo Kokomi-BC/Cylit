@@ -183,20 +183,9 @@ function onContextMenu(key: string, ev: MouseEvent) {
   <header class="tabbar">
     <!-- 品牌（图标 + Cylit）：用户口径 2026-11 要它回到顶栏最左，侧栏随之变成纯导航。
          PNG 自带连续圆角 + 透明四角，不要再叠 CSS 圆角（会切掉曲率）。 -->
-    <span class="tabbar-logo" title="Cylit">
+    <RouterLink class="tabbar-logo" :to="{ name: 'home' }" title="回到工作区">
       <img class="tabbar-mark" :src="BRAND_ICON" alt="" />
       Cylit
-    </span>
-    <!-- 常驻「首页」入口（用户口径 2026-11）：标签条只装论文标签，回工作区的路就靠这一枚胶囊。
-         它**不在托盘里** —— 标签一多也不会被横向滚动推出视野。 -->
-    <RouterLink
-      class="tab pinned"
-      :class="{ active: route.name === 'home' }"
-      :to="{ name: 'home' }"
-      title="首页"
-    >
-      <AppIcon name="home" :size="13" />
-      <span class="tab-title">首页</span>
     </RouterLink>
     <!-- 滚动按钮 + 标签托盘（两枚圆钮**浮在托盘两端**，哪一侧还藏着内容就只在那侧出现，
          不是两枚并排堆在同一侧）。滚轮在这一整块里都是横向滑动。 -->
@@ -273,15 +262,13 @@ function onContextMenu(key: string, ev: MouseEvent) {
   padding: 0 6px 0 3px;
   font-size: calc(15px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em; line-height: 1;
   color: var(--accent-text); user-select: none;
+  /* 品牌就是"回工作区"的入口（用户口径 2026-11），所以它得是链接：不要下划线，hover 提一档亮度 */
+  text-decoration: none; border-radius: var(--r-xs);
 }
+.tabbar-logo:hover { color: var(--accent); text-decoration: none; }
+.tabbar-logo:focus-visible { outline: none; box-shadow: var(--ring); }
 .tabbar-mark { display: block; width: 19px; height: 19px; flex: none; }
 
-/* 常驻「首页」胶囊：实心主题色 + 反白文字，与「继续翻译」那枚 .btn.primary 同一档 ——
-   一眼看出"这是回工作区的入口"，而不是一枚普通的灰字标签。它没有 ×，左右内边距对称。 */
-.tab.pinned { flex: none; padding: 0 12px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent); }
-.tab.pinned:hover { background: var(--accent-hover); color: var(--text-on-accent); }
-.tab.pinned.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-on-accent) 50%, transparent); }
 
 /* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。`position: relative` 是给两枚浮动圆钮
    当定位基准的；`flex: 0 1 auto` + `min-width: 0` 让它在标签变多时**先收缩**（托盘横向滚），

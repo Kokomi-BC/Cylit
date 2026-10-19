@@ -35,7 +35,7 @@ interface RailItem {
 
 /** 第一组：读与学（顺序即分组）。 */
 const PRIMARY: RailItem[] = [
-  { key: 'home', label: '工作区', icon: 'home' },
+  { key: 'home', label: '工作区', icon: 'grid' },
   { key: 'library', label: '论文库', icon: 'library' },
   { key: 'understand', label: '论文解读', icon: 'insight' },
   { key: 'knowledge', label: '知识库', icon: 'knowledge' },
