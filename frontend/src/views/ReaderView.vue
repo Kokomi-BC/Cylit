@@ -7018,7 +7018,12 @@ function renderMarkdown(text?: string | null) {
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
-      />
+      >
+        <!-- 与笔记卡的角指示器同一条 SVG 弧（45°、两端圆头），见 FloatingCard 的 .fc-grip -->
+        <svg class="fg-arc" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <path d="M32.4 92.5 A46 46 0 0 1 7.5 67.6" vector-effect="non-scaling-stroke" />
+        </svg>
+      </div>
       <div
         v-if="chatFloat"
         class="float-grip br"
@@ -7030,7 +7035,11 @@ function renderMarkdown(text?: string | null) {
         @pointermove="onFloatPointerMove"
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
-      />
+      >
+        <svg class="fg-arc" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <path d="M92.5 67.6 A46 46 0 0 1 67.6 92.5" vector-effect="non-scaling-stroke" />
+        </svg>
+      </div>
 
       <!-- 拖拽改宽度：**在侧栏外面**（用户口径 2026-11-19：右移，别压在滚动条上）。
            不能再放在 `<aside>` 里 —— 那是 `overflow: hidden`，凸出去就被裁；放在内侧又必然
@@ -7858,65 +7867,48 @@ function renderMarkdown(text?: string | null) {
 }
 .reader > .float-grip.br { right: 0; cursor: nwse-resize; }
 .reader > .float-grip.bl { left: 0; cursor: nesw-resize; }
-.reader > .float-grip::after {
-  content: ''; position: absolute;
-  --fc-stroke: 2.2px;
-  /* 与 FloatingCard 同一套：**大半径 + 只留 60°（整圆的 1/6）**。
-     CSS 的 border 只能画 90° 四分之一弧，所以走"整圈描边环 + clip-path 扇形"。
-     `--fc-gap` 必须写死 5px：这枚把手的坐标是 JS 按 FLOAT_GRIP_GAP 算的，CSS 里没有那个变量。 */
+/* 弧：一条 45° 的 SVG path（**两端圆头**），与 FloatingCard 的 `.fc-grip` 逐条同一套几何。
+   `--fc-gap` 必须写死 5px：这两枚把手的坐标是 JS 按 FLOAT_GRIP_GAP 算的，CSS 里没有那个变量。 */
+.reader > .float-grip .fg-arc {
+  position: absolute;
   --fc-gap: 5px;
-  --fc-ring: calc((var(--fc-radius) + var(--fc-gap)) * 2 + 2.2px);
-  width: var(--fc-ring);
-  height: var(--fc-ring);
-  right: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
-  bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
-  border: var(--fc-stroke) solid var(--fc-handle);
-  border-radius: 50%;
-  /* 只留 40°（对角线两侧各 20°）：cos25/sin25 = 90.63% / 42.26% */
-  clip-path: polygon(50% 50%,
-    calc(50% + 90.63%) calc(50% + 42.26%),
-    calc(50% + 42.26%) calc(50% + 90.63%));
-  /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
-  transition: border-color var(--dur) var(--ease),
-              opacity 280ms var(--ease),
-              border-width 460ms cubic-bezier(.33, 0, .2, 1),
-              transform 520ms cubic-bezier(.33, 0, .2, 1);
+  --fc-grip-box: calc((var(--fc-radius) + var(--fc-gap)) * 2.1739);
+  width: var(--fc-grip-box);
+  height: var(--fc-grip-box);
+  right: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
+  bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
+  overflow: visible;
+  pointer-events: none;
   opacity: 1;
+  transition: opacity 280ms var(--ease),
+              transform 520ms cubic-bezier(.33, 0, .2, 1);
 }
-.reader > .float-grip.bl::after {
-  /* 左下角：环心在左下，扇形镜像 */
+.reader > .float-grip .fg-arc path {
+  fill: none;
+  stroke: var(--fc-handle);
+  stroke-width: 2.2px;
+  stroke-linecap: round;
+  transition: stroke 200ms var(--ease),
+              stroke-width 460ms cubic-bezier(.33, 0, .2, 1);
+}
+.reader > .float-grip.bl .fg-arc {
   right: auto;
-  left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
-  clip-path: polygon(50% 50%,
-    calc(50% - 90.63%) calc(50% + 42.26%),
-    calc(50% - 42.26%) calc(50% + 90.63%));
+  left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
-.reader > .float-grip.unfocused::after { opacity: .24; }
-.reader > .float-grip.unfocused:hover::after,
-.reader > .float-grip.unfocused:active::after,
-.reader > .float-grip.unfocused.is-on::after { opacity: 1; }
-.reader > .float-grip:hover::after {
-  border-color: var(--accent); --fc-stroke: 2.9px;
-}
-/* 拖动中（`:active` 是纯 CSS 的按下态）：**只加粗描边**（1.6 → 2.7px）并升主题色，
-   位置一动不动 —— 与 FloatingCard 的同名关键帧逐帧一致。
-   原来这里还叠了一条 gap 外跳 + 顺拖动方向的位移，两者都会让把手离开「卡片角 + gap」那个点，
-   手感就成了「我拖了 4px，它才动 0px」，整条已删。 */
-/* 浮窗这套的「拖动加粗」动画（与 FloatingCard 同一手感，但 keyframes 必须写在本文件 ——
-   组件 scoped 的 @keyframes 不会跨组件生效）。只动描边宽度与颜色，不动 transform：不闪烁。 */
-/* 环是整圈描边：加粗一套就够，两个角只有 glide 的方向不同 */
+.reader > .float-grip.unfocused .fg-arc { opacity: .24; }
+.reader > .float-grip.unfocused:hover .fg-arc,
+.reader > .float-grip.unfocused:active .fg-arc,
+.reader > .float-grip.unfocused.is-on .fg-arc { opacity: 1; }
+.reader > .float-grip:hover .fg-arc path { stroke: var(--accent); stroke-width: 2.9px; }
+/* 拖动中（`:active` 是纯 CSS 的按下态）：**只让弧自己让一下 + 加粗**，命中区一动不动。
+   keyframes 必须写在本文件 —— 组件 scoped 的 @keyframes 不会跨组件生效。 */
 @keyframes fc-grip-thicken-f {
-  0% { border-width: 2.2px; }
-  50% { border-width: 3.9px; }
-  78% { border-width: 3.3px; }
-  100% { border-width: 3.6px; }
+  0% { stroke-width: 2.2px; }
+  50% { stroke-width: 3.9px; }
+  78% { stroke-width: 3.3px; }
+  100% { stroke-width: 3.6px; }
 }
-.reader > .float-grip.bl:active::after,
-.reader > .float-grip.bl.is-on::after {
-  animation-name: fc-grip-thicken-f, fc-grip-glide-f-bl;
-}
-/* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
 @keyframes fc-grip-glide-f {
   0% { transform: translate(0, 0); }
   52% { transform: translate(4px, 4px); }
@@ -7929,12 +7921,19 @@ function renderMarkdown(text?: string | null) {
   78% { transform: translate(-3.3px, 3.3px); }
   100% { transform: translate(-3.6px, 3.6px); }
 }
-
-.reader > .float-grip:active::after,
-.reader > .float-grip.is-on::after {
-  border-color: var(--accent); --fc-stroke: 3.6px;
-  animation: fc-grip-thicken-f 340ms cubic-bezier(.25, 1.1, .35, 1) both,
-             fc-grip-glide-f 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+.reader > .float-grip:active .fg-arc,
+.reader > .float-grip.is-on .fg-arc {
+  animation: fc-grip-glide-f 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+}
+.reader > .float-grip.bl:active .fg-arc,
+.reader > .float-grip.bl.is-on .fg-arc {
+  animation: fc-grip-glide-f-bl 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+}
+.reader > .float-grip:active .fg-arc path,
+.reader > .float-grip.is-on .fg-arc path {
+  stroke: var(--accent);
+  stroke-width: 3.6px;
+  animation: fc-grip-thicken-f 340ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 @keyframes fc-grip-spring {
   0% { transform: scale(1); }
@@ -7943,12 +7942,13 @@ function renderMarkdown(text?: string | null) {
   78% { transform: scale(1.28); }
   100% { transform: scale(1.16); }
 }
-/* 减少动效：关掉弹簧，但 gap / 颜色 / 粗细照旧（反馈在任何设置下都还在） */
+/* 减少动效：关掉动画，但颜色 / 粗细的静态反馈照旧（在任何设置下都还在） */
 @media (prefers-reduced-motion: reduce) {
-  .reader > .float-grip::after { transition: border-color var(--dur) var(--ease); transform: none; }
-  .reader > .float-grip:hover::after,
-  .reader > .float-grip:active::after,
-  .reader > .float-grip.is-on::after { transform: none; animation: none; }
+  .reader > .float-grip .fg-arc,
+  .reader > .float-grip .fg-arc path { transition: none; transform: none; }
+  .reader > .float-grip:hover .fg-arc,
+  .reader > .float-grip:active .fg-arc,
+  .reader > .float-grip.is-on .fg-arc { transform: none; animation: none; }
 }
 
 /* Markdown 视图：正文宽一点、插图按容器宽度自适应 */

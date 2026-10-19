@@ -267,8 +267,11 @@ async function toggleMore() {
   moreTop.value = Math.round(bb.bottom + 4 + mh > window.innerHeight - 8
     ? bb.top - sb.top - mh - 4
     : bb.bottom - sb.top + 4);
-  // 右边缘对齐按钮右边缘；越出卡片就往左拉，但始终留在卡片内（外壳不裁，出界也会飘在正文上）
-  const left = Math.min(Math.max(6, bb.right - sb.left - mw), Math.max(6, sb.width - mw - 6));
+  // **居中**：菜单中线对准按钮中线（用户口径 2026-11-28 十轮）——
+  // 原来是右对齐按钮右边缘，与换色菜单的居中一左一右，看着像两套东西。
+  // 越出卡片就往内夹，但始终留在卡片里（外壳不裁，出界会飘在正文上）。
+  const center = bb.left + bb.width / 2 - sb.left;
+  const left = Math.min(Math.max(6, center - mw / 2), Math.max(6, sb.width - mw - 6));
   moreLeft.value = Math.round(left);
 }
 
@@ -694,7 +697,14 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointermove="onResizeMove"
         @pointerup="onResizeUp"
         @pointercancel="onResizeUp"
-      />
+      >
+        <!-- 45° 的一段弧，**两端是圆头**（`stroke-linecap: round`）—— CSS 边框只能画 90° 直角端点，
+             所以从"整圈描边 + 扇形裁剪"换成一条 SVG path（用户口径 2026-11-28 十轮）。
+             `vector-effect="non-scaling-stroke"`：描边宽度永远按 CSS 像素算，不随 viewBox 缩放。 -->
+        <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <path d="M92.5 67.6 A46 46 0 0 1 67.6 92.5" vector-effect="non-scaling-stroke" />
+        </svg>
+      </div>
       <div
         class="fc-resize bl"
         ref="blEl"
@@ -704,7 +714,11 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointermove="onResizeMove"
         @pointerup="onResizeUp"
         @pointercancel="onResizeUp"
-      />
+      >
+        <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <path d="M32.4 92.5 A46 46 0 0 1 7.5 67.6" vector-effect="non-scaling-stroke" />
+        </svg>
+      </div>
     </div>
 
     <!-- 二级菜单：**一排圆钮**（用户口径 2026-11-26 五轮："紧凑一点，编辑也用圆形按钮"）。
@@ -938,72 +952,61 @@ watchEffect(applyShellDom, { flush: 'sync' });
   transition: bottom var(--dur) var(--ease), right var(--dur) var(--ease),
               left var(--dur) var(--ease);
 }
-.fc-resize::before {
-  content: ''; position: absolute;
-  --fc-stroke: 2.2px;
-  /* **大半径 + 短弧**（用户口径 2026-11-28 五轮）：画一个整圆的描边环，再只用 `clip-path`
-     留出 **60°（整圆的 1/6）** 的扇形。半径仍是「卡片圆角 + gap」，所以曲率与卡片圆角平行、
-     够缓；而弧长只有 1/6 圈。CSS 的 border 只能画 90° 的四分之一弧，这就是为什么要走"环 + 扇形裁剪"。 */
-  --fc-ring: calc((var(--fc-radius, 12px) + var(--fc-gap)) * 2 + 2.2px);
-  width: var(--fc-ring);
-  height: var(--fc-ring);
-  /* 环心落在卡片圆角的圆心上：把手盒右下角 = 卡片角 + gap，往回退 gap + 圆角 - 半径 */
-  right: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
-  bottom: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
-  border: var(--fc-stroke) solid var(--fc-handle);
-  border-radius: 50%;
-  /* 只留 **40°**（对角线两侧各 20°）：cos25 / sin25 = 90.63% / 42.26% 的盒宽 ——
-     半径大 → 弧很缓；角度定在 40°（用户口径 2026-11-28 九轮）。 */
-  clip-path: polygon(50% 50%,
-    calc(50% + 90.63%) calc(50% + 42.26%),
-    calc(50% + 42.26%) calc(50% + 90.63%));
-  /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
-     瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
-  /* 这三条只管**松手之后**的回位：动画一摘，浏览器就按这里从前一刻的值渐变回静止态
-     —— 不是瞬移，也不是"拖动途中自己缩回去"（后者是上一版 keyframes 尽头写 0 造成的）。 */
-  transition: border-color var(--dur) var(--ease),
-              opacity 280ms var(--ease),
-              border-width 460ms cubic-bezier(.33, 0, .2, 1),
-              transform 520ms cubic-bezier(.33, 0, .2, 1);
+.fc-resize .fc-grip {
+  position: absolute;
+  /* SVG：viewBox 100，弧半径 46（留出圆头的余量）→ 元素边长 = 半径 / 0.46 = 半径 × 2.174 */
+  --fc-grip-box: calc((var(--fc-radius, 12px) + var(--fc-gap)) * 2.1739);
+  width: var(--fc-grip-box);
+  height: var(--fc-grip-box);
+  /* 弧心落在卡片圆角的圆心上：把手盒右下角 = 卡片角 + gap，往回退 gap + 圆角 - 半边 */
+  right: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
+  bottom: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
+  overflow: visible;
+  pointer-events: none;
   opacity: 1;
+  /* 浓淡渐变 + 松手后的平滑回位（动画一摘，浏览器按这里从当前值过渡回去） */
+  transition: opacity 280ms var(--ease),
+              transform 520ms cubic-bezier(.33, 0, .2, 1);
+}
+.fc-resize .fc-grip path {
+  fill: none;
+  stroke: var(--fc-handle);
+  stroke-width: 2.2px;
+  /* **两端圆头**：CSS 边框画出来的弧只能是直角端点（用户口径 2026-11-28 十轮） */
+  stroke-linecap: round;
+  transition: stroke 200ms var(--ease),
+              stroke-width 460ms cubic-bezier(.33, 0, .2, 1);
 }
 .fc-resize.br { right: calc(-1 * var(--fc-gap)); cursor: nwse-resize; }
 /* 拖动中：把手命中区**不做缓动** —— 卡片边缘是 1:1 跟手的，把手若带 transition 会拖后一拍，
    读起来就是"我拖了，指示器慢半拍才跟到"（用户口径 2026-11-28 三轮）。 */
 .fc-resize.is-on { transition: none; }
-/* 左下角是**镜像**：描边走左边、圆角走左下、着力点与裁切角度一起镜像，
-   否则两个角看起来一模一样（像一个直角），放大方向也会反。 */
+/* 左下角是**镜像**：弧走左下、着力点镜像，否则两个角看起来一样、放大方向也会反。
+   弧本身由 SVG 的 path 决定形状，这里只需把它挪到左下角。 */
 .fc-resize.bl { left: calc(-1 * var(--fc-gap)); cursor: nesw-resize; }
-/* 左下角必须用**完整简写**（两条动画都列出来）：原来只写了 animation-name，
-   于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
-   加粗那一套两角共用（环是整圈描边），只有 glide 走镜像的 keyframes。 */
-.fc-resize.bl.is-on::before {
-  animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both,
-             fc-grip-glide-bl 380ms cubic-bezier(.25, 1.1, .35, 1) both;
-}
-.fc-resize.bl::before {
-  /* 左下角：环心在左下，镜像过去（扇形仍然对着 45° 对角线两侧各 30°） */
+.fc-resize.bl .fc-grip {
   right: auto;
-  left: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
-  clip-path: polygon(50% 50%,
-    calc(50% - 90.63%) calc(50% + 42.26%),
-    calc(50% - 42.26%) calc(50% + 90.63%));
+  left: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
 }
-/* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的一半出头，
+/* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的四分之一，
    小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */
-.fc-unfocused .fc-resize::before { opacity: .24; }
-.fc-unfocused .fc-resize:hover::before,
-.fc-unfocused .fc-resize.is-on::before { opacity: 1; }
-.fc-resize:hover::before { border-color: var(--accent); --fc-stroke: 2.9px; }
-/* 拖动中只改颜色与描边粗细，**不再同时挪 gap、也不再 translate 把手本身**：
-   位移 + 缩放两个运动量叠加会被人眼读成「抖」；而把手的 translate 更严重 ——
-   它会让人手按着的那个点（把手）和真正在跟手的东西（卡片边缘）错开 4px，
-   手感就是「我拖了 4px，它才动 0px」。所以 push 那两条关键帧整条删除。
+.fc-unfocused .fc-resize .fc-grip { opacity: .24; }
+.fc-unfocused .fc-resize:hover .fc-grip,
+.fc-unfocused .fc-resize.is-on .fc-grip { opacity: 1; }
+.fc-resize:hover .fc-grip path { stroke: var(--accent); stroke-width: 2.9px; }
+/* 拖动中：**只让弧自己顺着方向轻轻让一下 + 加粗**，命中区（把手盒）一动不动 ——
+   上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，手感成了"我拖了它没动"。
    ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
-.fc-resize.is-on::before {
-  border-color: var(--accent); --fc-stroke: 3.6px;
-  animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both,
-             fc-grip-glide 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+.fc-resize.is-on .fc-grip {
+  animation: fc-grip-glide 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+}
+.fc-resize.bl.is-on .fc-grip {
+  animation: fc-grip-glide-bl 380ms cubic-bezier(.25, 1.1, .35, 1) both;
+}
+.fc-resize.is-on .fc-grip path {
+  stroke: var(--accent);
+  stroke-width: 3.6px;
+  animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 /* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
    只动 border-*-width 与颜色，不动 transform：缩放 + 圆角 + 半透明描边会让边缘反复重采样，
@@ -1028,21 +1031,18 @@ watchEffect(applyShellDom, { flush: 'sync' });
   78% { transform: translate(-3.3px, 3.3px); }
   100% { transform: translate(-3.6px, 3.6px); }
 }
-/* 环是**整圈**描边，两个角只剩 glide 的方向不同 —— 加粗一套就够 */
+/* 两个角只剩 glide 的方向不同 —— 加粗一套就够（动的是 SVG 的 stroke-width） */
 @keyframes fc-grip-thicken {
-  0% { border-width: 2.2px; }
-  50% { border-width: 3.9px; }
-  78% { border-width: 3.3px; }
-  100% { border-width: 3.6px; }
+  0% { stroke-width: 2.2px; }
+  50% { stroke-width: 3.9px; }
+  78% { stroke-width: 3.3px; }
+  100% { stroke-width: 3.6px; }
 }
-/* 减少动效：关掉加粗动画（停在 2.7px）与药丸的宽度过渡，颜色 / 粗细反馈照旧 ——
+/* 减少动效：关掉加粗 / 让位动画，颜色与粗细的静态反馈照旧 ——
    这样「按下 → 变粗变亮」在任何系统设置下都还在。 */
 @media (prefers-reduced-motion: reduce) {
-  .fc-resize::before {
-    transition: border-color var(--dur) var(--ease);
-    transform: none;
-  }
-  .fc-resize:hover::before, .fc-resize.is-on::before { animation: none; transform: none; }
+  .fc-resize .fc-grip, .fc-resize .fc-grip path { transition: none; transform: none; }
+  .fc-resize:hover .fc-grip, .fc-resize.is-on .fc-grip { animation: none; transform: none; }
   .fc-grab-pill { transition: none; }
 }
 .fc-foot {
