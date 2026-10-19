@@ -7725,13 +7725,22 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip.br { right: 0; cursor: nwse-resize; }
 .reader > .float-grip.bl { left: 0; cursor: nesw-resize; }
 .reader > .float-grip::after {
-  content: ''; position: absolute; right: 0; bottom: 0;
+  content: ''; position: absolute;
   --fc-stroke: 2.2px;
-  /* 与 FloatingCard 同口径：弧长是原来的 1/2 */
-  --fc-arc: calc(var(--fc-radius) * .375);
-  width: calc(var(--fc-arc) + 2px);
-  height: calc(var(--fc-arc) + 2px);
-  border: 0 solid var(--fc-handle);
+  /* 与 FloatingCard 同一套：**大半径 + 只留 60°（整圆的 1/6）**。
+     CSS 的 border 只能画 90° 四分之一弧，所以走"整圈描边环 + clip-path 扇形"。
+     `--fc-gap` 必须写死 5px：这枚把手的坐标是 JS 按 FLOAT_GRIP_GAP 算的，CSS 里没有那个变量。 */
+  --fc-gap: 5px;
+  --fc-ring: calc((var(--fc-radius) + var(--fc-gap)) * 2 + 2.2px);
+  width: var(--fc-ring);
+  height: var(--fc-ring);
+  right: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
+  bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
+  border: var(--fc-stroke) solid var(--fc-handle);
+  border-radius: 50%;
+  clip-path: polygon(50% 50%,
+    calc(50% + 96.6%) calc(50% + 25.9%),
+    calc(50% + 25.9%) calc(50% + 96.6%));
   /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
               opacity 280ms var(--ease),
@@ -7739,14 +7748,13 @@ function renderMarkdown(text?: string | null) {
               transform 520ms cubic-bezier(.33, 0, .2, 1);
   opacity: 1;
 }
-.reader > .float-grip.br::after {
-  border-right-width: var(--fc-stroke); border-bottom-width: var(--fc-stroke);
-  border-bottom-right-radius: var(--fc-arc);
-}
 .reader > .float-grip.bl::after {
-  right: auto; left: 0;
-  border-left-width: var(--fc-stroke); border-bottom-width: var(--fc-stroke);
-  border-bottom-left-radius: var(--fc-arc);
+  /* 左下角：环心在左下，扇形镜像 */
+  right: auto;
+  left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
+  clip-path: polygon(50% 50%,
+    calc(50% - 25.9%) calc(50% + 96.6%),
+    calc(50% - 96.6%) calc(50% + 25.9%));
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
 .reader > .float-grip.unfocused::after { opacity: .24; }
@@ -7762,15 +7770,16 @@ function renderMarkdown(text?: string | null) {
    手感就成了「我拖了 4px，它才动 0px」，整条已删。 */
 /* 浮窗这套的「拖动加粗」动画（与 FloatingCard 同一手感，但 keyframes 必须写在本文件 ——
    组件 scoped 的 @keyframes 不会跨组件生效）。只动描边宽度与颜色，不动 transform：不闪烁。 */
+/* 环是整圈描边：加粗一套就够，两个角只有 glide 的方向不同 */
 @keyframes fc-grip-thicken-f {
-  0% { border-width: 0; border-right-width: 2.2px; border-bottom-width: 2.2px; }
-  50% { border-right-width: 3.9px; border-bottom-width: 3.9px; }
-  78% { border-right-width: 3.3px; border-bottom-width: 3.3px; }
-  100% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
+  0% { border-width: 2.2px; }
+  50% { border-width: 3.9px; }
+  78% { border-width: 3.3px; }
+  100% { border-width: 3.6px; }
 }
 .reader > .float-grip.bl:active::after,
 .reader > .float-grip.bl.is-on::after {
-  animation-name: fc-grip-thicken-f-bl, fc-grip-glide-f-bl;
+  animation-name: fc-grip-thicken-f, fc-grip-glide-f-bl;
 }
 /* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
 @keyframes fc-grip-glide-f {
@@ -7785,12 +7794,7 @@ function renderMarkdown(text?: string | null) {
   78% { transform: translate(-3.3px, 3.3px); }
   100% { transform: translate(-3.6px, 3.6px); }
 }
-@keyframes fc-grip-thicken-f-bl {
-  0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
-  50% { border-left-width: 3.9px; border-bottom-width: 3.9px; }
-  78% { border-left-width: 3.3px; border-bottom-width: 3.3px; }
-  100% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
-}
+
 .reader > .float-grip:active::after,
 .reader > .float-grip.is-on::after {
   border-color: var(--accent); --fc-stroke: 3.6px;

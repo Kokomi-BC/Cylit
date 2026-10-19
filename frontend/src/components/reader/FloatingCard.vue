@@ -911,8 +911,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
      淡入淡出走 260ms 过渡，不是瞬间切换（用户口径 2026-11-28）。
    几何：一切都由 `--fc-gap`（弧离卡片边缘的距离，现为 5px）推出来，与卡片圆角**同心** ——
       · 热区 20×20，bottom 与 right/left = -gap → 落在卡片**外侧**；
-      · 弧盒 bottom/right 贴 0 → 弧的外沿离卡片边缘正好 = gap；
-      · 弧半径 = --fc-radius + gap，弧盒边长 = 半径 + 2px（给描边留量）。
+      · 画的是**整圈**描边环（边长 = (圆角 + gap) × 2 + 描边），环心落在卡片圆角的圆心上，
+        再用 `clip-path` 只留 60°（整圆的 1/6）扇形 —— 半径大、弧度缓、长度短。
         边长必须大于半径，否则 CSS 会按盒子尺寸把圆角**缩比夹小**
         （12px 与 16px 的卡会得到一样大的弧）；半径增量必须等于 gap，弧心才落在
         卡片圆角的圆心（cardRight - R, cardBottom - R）上。
@@ -936,16 +936,23 @@ watchEffect(applyShellDom, { flush: 'sync' });
               left var(--dur) var(--ease);
 }
 .fc-resize::before {
-  content: ''; position: absolute; right: 0; bottom: 0;
+  content: ''; position: absolute;
   --fc-stroke: 2.2px;
-  /* 弧长只取圆角的 **37.5%** —— 用户口径 2026-11-28 四轮："长度砍到原来的一半"。
-     画出来的就是这么一小段弧（半径跟着缩，仍然是四分之一圆的那一段，不带直边）。 */
-  --fc-arc: calc(var(--fc-radius, 12px) * .375);
-  width: calc(var(--fc-arc) + 2px);
-  height: calc(var(--fc-arc) + 2px);
-  border-right: var(--fc-stroke) solid var(--fc-handle);
-  border-bottom: var(--fc-stroke) solid var(--fc-handle);
-  border-bottom-right-radius: var(--fc-arc);
+  /* **大半径 + 短弧**（用户口径 2026-11-28 五轮）：画一个整圆的描边环，再只用 `clip-path`
+     留出 **60°（整圆的 1/6）** 的扇形。半径仍是「卡片圆角 + gap」，所以曲率与卡片圆角平行、
+     够缓；而弧长只有 1/6 圈。CSS 的 border 只能画 90° 的四分之一弧，这就是为什么要走"环 + 扇形裁剪"。 */
+  --fc-ring: calc((var(--fc-radius, 12px) + var(--fc-gap)) * 2 + 2.2px);
+  width: var(--fc-ring);
+  height: var(--fc-ring);
+  /* 环心落在卡片圆角的圆心上：把手盒右下角 = 卡片角 + gap，往回退 gap + 圆角 - 半径 */
+  right: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
+  bottom: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
+  border: var(--fc-stroke) solid var(--fc-handle);
+  border-radius: 50%;
+  /* 右下角：扇形张开在 45° 对角线两侧各 30°（cos15/sin15 = 96.6% / 25.9% 的盒宽） */
+  clip-path: polygon(50% 50%,
+    calc(50% + 96.6%) calc(50% + 25.9%),
+    calc(50% + 25.9%) calc(50% + 96.6%));
   /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
      瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
   /* 这三条只管**松手之后**的回位：动画一摘，浏览器就按这里从前一刻的值渐变回静止态
@@ -963,17 +970,20 @@ watchEffect(applyShellDom, { flush: 'sync' });
 /* 左下角是**镜像**：描边走左边、圆角走左下、着力点与裁切角度一起镜像，
    否则两个角看起来一模一样（像一个直角），放大方向也会反。 */
 .fc-resize.bl { left: calc(-1 * var(--fc-gap)); cursor: nesw-resize; }
-/* 左下角必须用**完整简写**：原来这里只有 animation-name: fc-grip-thicken-bl，
+/* 左下角必须用**完整简写**（两条动画都列出来）：原来只写了 animation-name，
    于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
-   现在两条动画都显式列出来，与右下角逐字对齐（只是换成镜像的那对 keyframes）。 */
+   加粗那一套两角共用（环是整圈描边），只有 glide 走镜像的 keyframes。 */
 .fc-resize.bl.is-on::before {
-  animation: fc-grip-thicken-bl 340ms cubic-bezier(.25, 1.1, .35, 1) both,
+  animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both,
              fc-grip-glide-bl 380ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 .fc-resize.bl::before {
-  right: auto; left: 0;
-  border-right: 0; border-left: var(--fc-stroke) solid var(--fc-handle);
-  border-bottom-right-radius: 0; border-bottom-left-radius: var(--fc-arc);
+  /* 左下角：环心在左下，镜像过去（扇形仍然对着 45° 对角线两侧各 30°） */
+  right: auto;
+  left: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
+  clip-path: polygon(50% 50%,
+    calc(50% - 25.9%) calc(50% + 96.6%),
+    calc(50% - 96.6%) calc(50% + 25.9%));
 }
 /* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的一半出头，
    小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */
@@ -1014,17 +1024,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
   78% { transform: translate(-3.3px, 3.3px); }
   100% { transform: translate(-3.6px, 3.6px); }
 }
+/* 环是**整圈**描边，两个角只剩 glide 的方向不同 —— 加粗一套就够 */
 @keyframes fc-grip-thicken {
-  0% { border-right-width: 2.2px; border-bottom-width: 2.2px; }
-  50% { border-right-width: 3.9px; border-bottom-width: 3.9px; }
-  78% { border-right-width: 3.3px; border-bottom-width: 3.3px; }
-  100% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
-}
-@keyframes fc-grip-thicken-bl {
-  0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
-  50% { border-left-width: 3.9px; border-bottom-width: 3.9px; }
-  78% { border-left-width: 3.3px; border-bottom-width: 3.3px; }
-  100% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
+  0% { border-width: 2.2px; }
+  50% { border-width: 3.9px; }
+  78% { border-width: 3.3px; }
+  100% { border-width: 3.6px; }
 }
 /* 减少动效：关掉加粗动画（停在 2.7px）与药丸的宽度过渡，颜色 / 粗细反馈照旧 ——
    这样「按下 → 变粗变亮」在任何系统设置下都还在。 */
