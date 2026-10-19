@@ -15,6 +15,7 @@ import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
+import { highlightCss } from '@/utils/highlightColors';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
   TaskInfo, ZoomTarget,
@@ -455,6 +456,7 @@ function onMore(key: string, r: FeedRow) {
         :key="r.key"
         class="item note-row"
         :class="[r.kind, { editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
+        :style="r.color ? { borderLeftColor: highlightCss(r.color) } : undefined"
         :data-note-id="r.noteId || undefined"
         :data-item-kind="r.kind"
         @click="onCardClick($event, r)"
@@ -787,6 +789,9 @@ function onMore(key: string, r: FeedRow) {
 .multi-btn:active { transform: scale(.94); }
 .multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
 /* 条数文字已移除（用户口径 2026-11-21：左上角只留那枚排序图标钮）。 */
+/* 左竖线默认是主题色；**有高亮色的行**由行上那条行内 style 覆盖成这处高亮自己的颜色
+   （用户口径 2026-11-28 二十一轮：笔记栏左侧竖线用高亮的颜色）。
+   批注行没有高亮色，仍走下面 `.annotation` 那条。 */
 .item.note-row { border-left-color: var(--accent); }
 /* 卡片底部那行（徽章 + 定位/浮层/更多）：内容读完了才轮到操作，所以压到正文下方并与正文留一点距离 */
 .item .row.card-foot { margin-top: 6px; }

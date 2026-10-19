@@ -30,6 +30,7 @@ import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
+import { highlightCss } from '@/utils/highlightColors';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -5702,17 +5703,11 @@ const NOTE_COLOR_MENU_H = 35;
 const colorMenuCard = computed(() => (noteColorMenu.value.open
   ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
 const isHexColor = (color: string) => color.startsWith('#');
-/** 色名 → 实际色值：与 base.css 的 `.hl-swatch.*` 同一组，只给"查看态图标染色"用 */
-const HL_SWATCH_CSS: Record<string, string> = {
-  red: 'rgba(255, 0, 0, .9)', orange: 'rgba(255, 165, 0, .95)',
-  yellow: 'rgba(230, 180, 20, .95)', green: 'rgba(60, 205, 130, .95)',
-  blue: 'rgba(85, 165, 255, .95)', indigo: 'rgba(75, 0, 130, .95)',
-  violet: 'rgba(143, 0, 255, .9)',
-};
+/* 色表在 `utils/highlightColors`：笔记侧栏那条左竖线也用同一份 */
 /** 查看态：这处高亮的颜色（编辑态不给 —— 那时色点按钮就在旁边，不必重复） */
 function noteAccentColor(card: NoteCard) {
   if (card.mode !== 'view') return '';
-  return isHexColor(card.color) ? card.color : (HL_SWATCH_CSS[card.color] ?? '');
+  return highlightCss(card.color);
 }
 /** 图标与标题共用同一个色：`head-lead` 那枚图标 + 「笔记」两个字一起染 */
 function noteLeadStyle(card: NoteCard) {
