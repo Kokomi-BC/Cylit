@@ -652,6 +652,21 @@ const chatSelection = ref<AgentSelection | null>(null);
 const zoomImage = ref<ZoomTarget | null>(null);
 
 /**
+ * 关闭大图查看器时"飞回原位"的落点：触发它的那张缩略图在视口中的矩形。
+ *
+ * 必须在 **capture 阶段**记：Vue 组件 emit 的 zoom 事件在冒泡阶段才被这一层处理，
+ * 而 capture 的 pointerdown 比冒泡更早，所以打开查看器的那一刻这里存的就已经是"刚被点的那张图"。
+ * 按下的不是图片（点空白 / 点文字 / 点按钮）就置 null —— 查看器会退化成直接关闭。
+ */
+const zoomOrigin = ref<{ left: number; top: number; width: number; height: number } | null>(null);
+function onZoomOriginDown(ev: PointerEvent) {
+  const el = ev.target instanceof Element ? ev.target.closest('img') : null;
+  if (!el) { zoomOrigin.value = null; return; }
+  const r = el.getBoundingClientRect();
+  zoomOrigin.value = { left: r.left, top: r.top, width: r.width, height: r.height };
+}
+
+/**
  * 大图查看器里可以左右拖动切换的图片集合：全书插图，按页序。
  *
  * URL 与图注跟 `zoomImage` 同一套口径（合成图优先，退回原图），查看器内部先按 url 全等定位，
@@ -2924,6 +2939,8 @@ onMounted(async () => {
   window.addEventListener('scroll', onAnyScroll, { capture: true, passive: true });
   window.addEventListener('blur', hideMenu);
   document.addEventListener('pointerdown', onDocPointerDown, true);
+  // 放大查看器的飞回原位：capture 阶段抢在 @zoom（冒泡）之前记下被点那张图的矩形
+  window.addEventListener('pointerdown', onZoomOriginDown, true);
   // 本机阅读统计：这次算一次"打开"，并在页面可见期间累加时长
   startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
@@ -2978,7 +2995,10 @@ onMounted(async () => {
  * 「切走再回来，读到哪没记住」就是这么来的（用户口径 2026-11-26）。
  * 必须放 onBeforeUnmount：onUnmounted 里模板 ref 已经置空，读不到 scroller 的 scrollTop，
  * 那样会把 scroll_ratio 写成 0（比不存更糟）。 */
-onBeforeUnmount(() => { void saveProgressNow(); });
+onBeforeUnmount(() => {
+  void saveProgressNow();
+  window.removeEventListener('pointerdown', onZoomOriginDown, true);
+});
 
 onUnmounted(() => {
   void flushInk();
@@ -7391,6 +7411,7 @@ function renderMarkdown(text?: string | null) {
       v-if="zoomImage"
       :target="zoomImage"
       :gallery="zoomGallery"
+      :origin="zoomOrigin"
       @close="zoomImage = null"
     />
 

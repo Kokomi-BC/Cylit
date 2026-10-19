@@ -76,6 +76,11 @@ export interface DetectImageViewer {
   zoomBy: (factor: number, cx?: number, cy?: number) => void;
   /** 回到 100%、旋转归零、位移归零 */
   reset: () => void;
+  /**
+   * 退出动画：把缩放 / 位移直接写成给定值、旋转归零，带 `ms` 的过渡飞过去。
+   * 几何由组件按触发缩略图的矩形算好，这里**不做 clamp**（那是手势边界的事，不是退出动画的事）。
+   */
+  animateTo: (scale: number, x: number, y: number, ms?: number) => void;
   getScale: () => number;
   onChange: (cb: (scale: number) => void) => void;
   /**
@@ -1165,7 +1170,24 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
     const clamped = Math.max(-240, Math.min(240, d));
     const perUnit = e.ctrlKey ? 0.01 : 0.0012;
-    imageScale = Math.min(Math.max(0.6, imageScale * Math.exp(-clamped * perUnit)), 12);
+
+    // 以光标为锚做**增量**补偿：放大时光标下的那一点必须原地不动（否则内容会往视口中心跑）。
+    // stage 是 position: fixed; inset: 0，所以 e.clientX / e.clientY 本身就是相对 stage 的坐标；
+    // scale 与 rotate 都以图心为原点、彼此可交换，因此这个式子对任意 rotation 都成立。
+    const oldScale = imageScale;
+    const nextScale = Math.min(Math.max(0.6, oldScale * Math.exp(-clamped * perUnit)), 12);
+    if (Math.abs(nextScale - oldScale) < 1e-6) return;
+
+    const k = nextScale / oldScale;
+    const vw = stage.clientWidth || window.innerWidth;
+    const vh = stage.clientHeight || window.innerHeight;
+    // 图心在视口中的绝对坐标（transform 的 translate 相对 .viewer 中心）
+    const Px = vw / 2 + imageX;
+    const Py = vh / 2 + imageY;
+    imageX = e.clientX - k * (e.clientX - Px);
+    imageY = e.clientY - k * (e.clientY - Py);
+    imageScale = nextScale;
+
     updateImageTransform();
     clampImagePosition();   // 滚轮缩放没有「松手」，边界得当场夹一次
   };
@@ -1212,6 +1234,24 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
   const reset = () => {
     settleImageToNaturalSize(0, 420);
+  };
+
+  /**
+   * 退出动画：组件按"触发缩略图的矩形"算好目标几何后调这里，图片飞回它原来所在的位置。
+   * 只负责写值 + 开过渡（与 settleImageToNaturalSize 同一套过渡的临时开关写法），
+   * 不 clamp、也不重锁尺寸 —— 尺寸锁定会改 .sheet，退出动画期间改它只会抖。
+   */
+  const animateTo = (scale: number, x: number, y: number, ms = 260) => {
+    imageScale = scale;
+    imageX = x;
+    imageY = y;
+    imageRotation = 0;
+    img.style.transition = `transform ${ms}ms cubic-bezier(0.22, 0.61, 0.36, 1)`;
+    updateImageTransform();
+    window.setTimeout(() => {
+      if (!active) return;
+      img.style.transition = 'transform 0.1s ease-out';
+    }, ms);
   };
 
   /**
@@ -1295,6 +1335,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     setGallery,
     zoomBy,
     reset,
+    animateTo,
     getScale: () => imageScale,
     getIndex: () => modalImageIndex,
     onChange: (cb: (scale: number) => void) => { listeners.push(cb); },

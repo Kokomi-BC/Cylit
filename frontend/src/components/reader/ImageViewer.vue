@@ -24,11 +24,16 @@ import AppIcon from '@/components/AppIcon.vue';
 import type { ZoomTarget } from '@/api/types';
 import { createDetectImageViewer, type DetectImageViewer } from './detectImageViewer';
 
+/** 视口矩形：触发查看器的那张缩略图关闭时飞回去用的落点 */
+type ViewerRect = { left: number; top: number; width: number; height: number };
+
 const props = withDefaults(defineProps<{
   target: ZoomTarget | null;
   /** 同一页组里的所有图：左右拖动就在它们之间切换；不给就是单图 */
   gallery?: ZoomTarget[];
-}>(), { gallery: () => [] });
+  /** 打开查看器的那张缩略图在视口中的矩形（飞回原位用）；缺省或已失效时直接关闭 */
+  origin?: ViewerRect | null;
+}>(), { gallery: () => [], origin: null });
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const stage = ref<HTMLElement | null>(null);
@@ -116,17 +121,49 @@ function onDoubleClick(ev: MouseEvent) {
   viewer.zoomBy(target / cur, ev.clientX, ev.clientY);
 }
 
+/* ------------------------------ 关闭（飞回原位） ------------------------------ */
+
+/** 关闭中（透明度在淡出）：既是 class，也是"只关一次"的守卫 */
+const closing = ref(false);
+let closeTimer: number | null = null;
+
+function finishClose() {
+  closeTimer = null;
+  emit('close');
+}
+
+/**
+ * 唯一的关闭出口：图片先飞回触发它的那张缩略图，同时整屏淡出，再通知父组件卸载。
+ *
+ * 落点几何：查看器里图片 100% 时是 `size.w × size.h`（.sheet 的像素尺寸，以视口中心居中），
+ * 缩略图是 `origin.width × origin.height` 居中在 (left + w/2, top + h/2)。
+ * 于是 tScale = 缩略图宽 / 100% 宽；位移 = 缩略图中心 - 视口中心（控制器里的 translate 就是相对视口中心的）。
+ */
+function requestClose() {
+  if (closing.value) return;
+  closing.value = true;
+  const o = props.origin;
+  if (!viewer || !o || !size.value.w) { finishClose(); return; }
+  const stageW = stage.value?.clientWidth || window.innerWidth;
+  const stageH = stage.value?.clientHeight || window.innerHeight;
+  const tScale = o.width / size.value.w;
+  const tx = o.left + o.width / 2 - stageW / 2;
+  const ty = o.top + o.height / 2 - stageH / 2;
+  viewer.animateTo(tScale, tx, ty, 260);
+  closeTimer = window.setTimeout(finishClose, 280);
+}
+
 /** 点背景关闭：刚拖动 / 捏合过就不算点击 */
 function onBgClick() {
   /* 指针捕获会把 click 的 target 变成 stage，所以不能只看 @click.self：
      真正判断依据是「按下时是不是落在黑底上」，否则点胶囊按钮、点图片都会把查看器关掉。 */
   if (!viewer?.isBackgroundPress()) return;
   if (viewer.isGesturing()) return;
-  emit('close');
+  requestClose();
 }
 
 function onKey(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') { emit('close'); return; }
+  if (ev.key === 'Escape') { requestClose(); return; }
   if (ev.key === '+' || ev.key === '=') { zoomStep(1); return; }
   if (ev.key === '-') { zoomStep(-1); return; }
   if (ev.key === '0') resetView();
@@ -146,7 +183,7 @@ onMounted(() => {
     viewer = createDetectImageViewer({
       stage: stageEl,
       img: imageEl,
-      onClose: () => emit('close'),
+      onClose: requestClose,        // 下滑关闭 / 捏合过小：同样走飞回原位
       getSize: fitBox,
       onSize: (w, h) => { size.value = { w, h }; },
     });
@@ -167,6 +204,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (closeTimer !== null) { clearTimeout(closeTimer); closeTimer = null; }
   document.removeEventListener('keydown', onKey);
   ro?.disconnect();
   ro = null;
@@ -180,6 +218,7 @@ onBeforeUnmount(() => {
     <div
       ref="stage"
       class="viewer"
+      :class="{ closing }"
       @click.self="onBgClick"
       @dblclick="onDoubleClick"
     >
@@ -205,7 +244,7 @@ onBeforeUnmount(() => {
         <button class="zbtn" title="重置为 100%（适应窗口）" data-viewer-zoom="reset" @click="resetView">
           <AppIcon name="rotate" :size="18" />
         </button>
-        <button class="zbtn zclose" title="关闭" data-viewer-zoom="close" @click="emit('close')">
+        <button class="zbtn zclose" title="关闭" data-viewer-zoom="close" @click="requestClose">
           <AppIcon name="close" :size="18" />
         </button>
       </div>
@@ -222,6 +261,8 @@ onBeforeUnmount(() => {
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .viewer:active { cursor: grabbing; }
+/* 关闭时整屏淡出（图片飞回缩略图的 260ms 里一起走）；只作用在 .viewer 上，胶囊结构不动 */
+.viewer.closing { opacity: 0; transition: opacity 180ms ease 60ms; }
 /* 只负责定尺寸，真正的 transform 在 .shot 上（控制器直接写） */
 .sheet {
   position: relative; flex: none;
