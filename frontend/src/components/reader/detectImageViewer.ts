@@ -81,6 +81,8 @@ export interface DetectImageViewer {
    * 几何由组件按触发缩略图的矩形算好，这里**不做 clamp**（那是手势边界的事，不是退出动画的事）。
    */
   animateTo: (scale: number, x: number, y: number, ms?: number) => void;
+  /** 切到相邻图（-1 上一张 / +1 下一张）；越界或正在切换时自己会拒绝 */
+  stepTo: (delta: number) => void;
   getScale: () => number;
   onChange: (cb: (scale: number) => void) => void;
   /**
@@ -1353,6 +1355,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     zoomBy,
     reset,
     animateTo,
+    stepTo: (delta: number) => { switchModalImageByDelta(delta); },
     getScale: () => imageScale,
     getIndex: () => modalImageIndex,
     onChange: (cb: (scale: number) => void) => { listeners.push(cb); },

@@ -76,6 +76,10 @@ function onImgLoad() {
 
 /** 控制器内部下标：切图成功后由控制器回调同步过来（父组件暂不依赖，不新增 emit） */
 const currentIndex = ref(0);
+/** 当前正在用的相邻图列表（决定胶囊上要不要出现上/下一张） */
+const galleryList = ref<ZoomTarget[]>([]);
+const hasPrev = computed(() => currentIndex.value > 0);
+const hasNext = computed(() => currentIndex.value < galleryList.value.length - 1);
 
 /** gallery 的内容指纹：父组件每次渲染都传新数组时，不至于无谓地复位视图 */
 const galleryKey = computed(() => (props.gallery || []).map((g) => `${g?.url ?? ''}#${g?.page ?? ''}`).join('|'));
@@ -94,6 +98,7 @@ function resolveGallery(target: ZoomTarget | null): { list: ZoomTarget[]; idx: n
 /** 把 gallery 推给控制器：真正换 src、复位视图、按 100% 重新锁定尺寸都由它负责 */
 function syncGallery() {
   const { list, idx } = resolveGallery(props.target);
+  galleryList.value = list;
   currentIndex.value = idx;
   viewer?.setGallery(list.map((g) => ({ url: g.url, caption: g.caption ?? null })), idx);
 }
@@ -114,6 +119,11 @@ function resetView() {
   viewer?.reset();
 }
 
+/** 胶囊上的上一张 / 下一张 */
+function stepImage(dir: number) {
+  viewer?.stepTo(dir);
+}
+
 function onDoubleClick(ev: MouseEvent) {
   if (!viewer) return;
   const cur = viewer.getScale();
@@ -122,6 +132,34 @@ function onDoubleClick(ev: MouseEvent) {
 }
 
 /* ------------------------------ 关闭（飞回原位） ------------------------------ */
+
+/** 入场完成（背景色与整体透明度由它驱动） */
+const opened = ref(false);
+let openDone = false;
+
+/**
+ * 入场：把图片先摆到源缩略图的位置（瞬时、不可见），下一帧再放大回 100%，同时背景淡入。
+ * onSize 是"100% 基准尺寸"就绪的唯一信号，所以入场必须等它 —— 早一帧算出来的目标矩形是错的。
+ */
+function playOpen() {
+  if (openDone || !viewer) return;
+  openDone = true;
+  const o = props.origin;
+  const st = stage.value;
+  if (!o || !size.value.w || !st) { opened.value = true; return; }
+  const stageW = st.clientWidth || window.innerWidth;
+  const stageH = st.clientHeight || window.innerHeight;
+  viewer.animateTo(
+    Math.max(0.02, o.width / size.value.w),
+    o.left + o.width / 2 - stageW / 2,
+    o.top + o.height / 2 - stageH / 2,
+    0,
+  );
+  requestAnimationFrame(() => {
+    opened.value = true;
+    viewer?.animateTo(1, 0, 0, 320);
+  });
+}
 
 /** 关闭中（透明度在淡出）：既是 class，也是"只关一次"的守卫 */
 const closing = ref(false);
@@ -193,7 +231,7 @@ onMounted(() => {
       img: imageEl,
       onClose: requestClose,        // 下滑关闭 / 捏合过小：同样走飞回原位
       getSize: fitBox,
-      onSize: (w, h) => { size.value = { w, h }; },
+      onSize: (w, h) => { size.value = { w, h }; playOpen(); },
     });
     viewer.onChange((s) => { pct.value = Math.round(s * 100); });
     viewer.onIndexChange((i) => { currentIndex.value = i; });
@@ -226,7 +264,7 @@ onBeforeUnmount(() => {
     <div
       ref="stage"
       class="viewer"
-      :class="{ closing }"
+      :class="{ closing, open: opened }"
       @click.self="onBgClick"
       @dblclick="onDoubleClick"
     >
@@ -242,6 +280,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cap cap-zoom" @click.stop>
+        <button v-if="hasPrev" class="zbtn" title="上一张" data-viewer-zoom="prev" @click="stepImage(-1)">
+          <AppIcon name="back" :size="18" />
+        </button>
         <button class="zbtn" title="放大" data-viewer-zoom="in" @click="zoomStep(1)">
           <AppIcon name="zoom-in" :size="18" />
         </button>
@@ -251,6 +292,9 @@ onBeforeUnmount(() => {
         </button>
         <button class="zbtn" title="重置为 100%（适应窗口）" data-viewer-zoom="reset" @click="resetView">
           <AppIcon name="rotate" :size="18" />
+        </button>
+        <button v-if="hasNext" class="zbtn" title="下一张" data-viewer-zoom="next" @click="stepImage(1)">
+          <span class="zflip"><AppIcon name="back" :size="18" /></span>
         </button>
         <button class="zbtn zclose" title="关闭" data-viewer-zoom="close" @click="requestClose">
           <AppIcon name="close" :size="18" />
@@ -269,8 +313,14 @@ onBeforeUnmount(() => {
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .viewer:active { cursor: grabbing; }
-/* 关闭时整屏淡出（图片飞回缩略图的 260ms 里一起走）；只作用在 .viewer 上，胶囊结构不动 */
-.viewer.closing { opacity: 0; transition: opacity 180ms ease 60ms; }
+/* 入场：整体从透明显形（图片同时从缩略图位置放大过来）。
+   中途不能靠整屏透明度做过渡 —— 那样关闭时图片会跟着一起淡掉，看不到"飞回去"。 */
+.viewer { opacity: 0; }
+.viewer.open { opacity: 1; transition: opacity 140ms ease; }
+/* 关闭：只让黑底淡出，图片保持可见地飞回原位 */
+.viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 240ms ease; }
+/* 下一张用同一枚返回箭头镜像一下 */
+.zflip { display: inline-flex; transform: scaleX(-1); }
 /* 只负责定尺寸，真正的 transform 在 .shot 上（控制器直接写） */
 .sheet {
   position: relative; flex: none;
