@@ -8359,11 +8359,10 @@ function renderMarkdown(text?: string | null) {
 /* 笔记框标题行上的 ✓ 保存 / 头部那枚删除键（用户口径 2026-10-10：复刻目标站的笔记框）。
    ⚠️ 这两个键都是**本组件**渲染的（保存走 `head-extra`，删除走 `head-tail`，后者 2026-11-20 新增），
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
-/* 头部图标钮：与浮层壳的 `.fc-btn`（锚定 / 关闭）**同一套几何与底色** ——
-   25px 圆形、中性淡底、hover 变深、按下缩一格（用户口径 2026-11-21："与对话样式统一"）。
-   语义只体现在**图标颜色**上：保存=主题色、删除=danger，不再铺满整块底色。 */
+/* 头部图标钮：**26px 圆钮**，与对话浮层顶部那几枚（ReaderChat `.th-act`）同尺寸、同底色、同按下反馈
+   （用户口径 2026-11-28 二十二轮）。语义只体现在**图标颜色**上：保存=主题色、删除=danger。 */
 .np-head-save {
-  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%;
   background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--accent-text);
   cursor: pointer; transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
@@ -8377,7 +8376,7 @@ function renderMarkdown(text?: string | null) {
 /* 「定位到原文」：中性色 —— 它只是"跳过去看一眼"，不该与主题色的 ✓ 保存抢注意力 */
 /* 编辑态最左那枚返回箭头：几何照 `.np-head-save`（25px、中性淡底、按下缩一格） */
 .np-back {
-  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center;
+  flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center;
   justify-content: center; border: 0; border-radius: 50%; padding: 0;
   background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
   cursor: pointer; transition: background var(--dur-fast) var(--ease),
@@ -8386,7 +8385,8 @@ function renderMarkdown(text?: string | null) {
 /* 箭头右侧那行「编辑」：与标题同一档字号 / 字重，左补 6px —— 箭头到它的距离 = head 的 gap 6 + 6 = 12，
    与箭头到卡片左沿（padding-left 12）一模一样。 */
 .np-back-label {
-  margin-left: 6px; font-size: calc(11.5px * var(--ts, 1)); font-weight: 600;
+  /* 箭头到它 = head gap 4 + 8 = 12，与箭头到卡片左沿（padding-left 12）相等 */
+  margin-left: 8px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
   color: var(--text-dim); white-space: nowrap;
 }
 .np-back:hover { background: var(--bg-hover); color: var(--text); }
@@ -8448,7 +8448,7 @@ function renderMarkdown(text?: string | null) {
    逐条一致 —— 25px、中性淡底、无描边；语义只由里面那枚色点表达，不再套一圈边框。
    点开的二级菜单单独画在下面的 `.note-color-menu`（Teleport 到 body）。 */
 .np-color-btn {
-  flex: none; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 50%;
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--text) 6%, transparent); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
@@ -8522,13 +8522,19 @@ function renderMarkdown(text?: string | null) {
   /* 字号**与查看态同一个值**（用户口径 2026-11-28 十二轮）：查看态那份是 `.np-view`（吃 .small 的 12px，
      再乘壳上的 A− / A+ 缩放），编辑态原来写死 16px —— 一进编辑文字就变大，切回来又变小。
      两处都走 `calc(12px * var(--ts, 1))`，放大缩小才是同一个比例。 */
-  font-size: calc(12px * var(--ts, 1)); line-height: 1.6;
+  /* 字号 / 行高一字不差地对齐对话浮层的回答正文（ReaderChat `.msg.assistant .body`：12.5px、1.72）——
+     用户口径 2026-11-28 二十二轮："编辑文字的大小样式与对话浮层一致"。
+     查看态那份 `.np-view` 用同一组数字，两态仍然一样。 */
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.72;
   border: 0; border-radius: 0; background: transparent;
 }
 /* 头部左右两端留白必须一样：FloatingCard 的 `.fc-head` 是 `12px 8px 6px 12px` ——
    左边 12、右边 8，于是"返回箭头到卡片左沿"比"✓ 到卡片右沿"宽 4px（用户口径 2026-11-28 十九轮）。
    这里把右内边距补成 12，两端对齐。 */
 [data-note-popover] :deep(.fc-head) {
+  /* 与对话浮层（ReaderChat 的 `.thread-head` / `.th-acts`）同一套：按钮间距 4px、两头留白 12px。
+     用户口径 2026-11-28 二十二轮："调整按钮之间的间隔，与对话浮层一致"。 */
+  gap: 4px;
   padding-right: 12px;
   gap: 6px;
   /* 标题行用**横线**（`--divider` 发丝线）与正文分开（用户口径 2026-10-10）。
@@ -8551,18 +8557,20 @@ function renderMarkdown(text?: string | null) {
    与编辑态那份 `4px 16px 4px 12px` 对齐，底部再留 12px 免得文字贴着卡片下沿。 */
 [data-note-popover] .np-view {
   padding: 8px 16px 12px 12px;
+  line-height: 1.72;
   /* 查看态正文的字号必须自己声明：它吃的是 base.css 里 .small 的 12px，那条不读 --ts，
      不给这一条的话，壳上的 A− / A+ 只会放大标题、正文纹丝不动。
      12px 就是 .small 的现值 —— 默认（--ts 未定义）渲染与改动前一模一样。 */
-  font-size: calc(12px * var(--ts, 1));
+  font-size: calc(12.5px * var(--ts, 1));
 }
+/* 标题与对话浮层的 `.th-title` 同一档（13px / 600） */
 [data-note-popover] :deep(.fc-title) { font-size: calc(13px * var(--ts, 1)); font-weight: 600; flex: none; }
 /* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
    左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
 /* 头部间距一律 6px：`head-tail` 那格 FloatingCard 自己写的是 2px，于是编辑态
    "⋯ ↕ 色点 ↕ ✓" 的缝比左边的删除/⋯窄一截（用户口径 2026-11-28 十八轮）。
    色点那枚也**不再额外加 margin**（原来的 2px 就是第二处不一致）。 */
-[data-note-popover] :deep(.fc-tail) { gap: 6px; }
+[data-note-popover] :deep(.fc-tail) { gap: 4px; }
 [data-note-popover] .np-color-btn { margin: 0; }
 /* 自定义色那枚：与胶囊上那枚同一个做法（`SelectionMenu` 的样式是 scoped 的，这里得再来一份）。
    ⚠️ 选择器要**两处都写**：换色菜单 Teleport 到 body，不在 `[data-note-popover]` 里面。 */
