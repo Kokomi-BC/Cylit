@@ -135,38 +135,19 @@ function resetView() {
 
 /* ------------------------------ 缩放 ------------------------------ */
 
-function smoothstep(t: number) {
-  const c = Math.min(1, Math.max(0, t));
-  return c * c * (3 - 2 * c);
-}
-
 /**
- * 锚点权重：余量从 0 长到 15% 视口的那一段里，锚点由「视口中心」平滑交棒给「光标」。
- * 余量为 0 的轴滑不动，只能用中心锚；硬切到光标锚会在交接那一步凭空甩出一段位移，
- * 用 smoothstep（两端导数为 0）把交棒拉成连续的一段，就没有那一下了。
+ * 缩放**只改倍率**，位移一律由拖动产生 —— 恒以视口中心为锚。
+ *
+ * 原因：任何"以光标为锚"的缩放，都要先推导一个位移，而这个位移会被「内容不得露出视口」的
+ * 钳制截断；截掉的部分没人记账，等可滑动余量变大又得补回来，放大过程里那一记跳变就是这么来的。
+ * 中心锚没有需要推导的位移，自然也就没有补账 —— 位移的唯一来源是手指/鼠标，钳制只是把它压在
+ * 边界内，而边界随倍率连续变化，所以画面前后帧永远接得上。
  */
-function anchorWeight(m: number, view: number) {
-  return smoothstep(m / Math.max(1, view * 0.15));
-}
-
-/** 以某个屏幕点为锚缩放（滚轮 / 按钮 / 双指都走这里）：锚点下的画面不动 */
-function zoomAt(next: number, px?: number, py?: number, smooth = true) {
-  const el = stage.value;
+function zoomTo(next: number, smooth = true) {
   const nz = Math.min(Z_MAX, Math.max(Z_MIN, next));
-  if (!el || Math.abs(nz - tz) < 1e-4) return;
-  const rect = el.getBoundingClientRect();
-  const ox = rect.left + rect.width / 2;
-  const oy = rect.top + rect.height / 2;
-  const m = panRange(nz);
-  const cx = ox + ((px ?? ox) - ox) * anchorWeight(m.x, box.value.w);
-  const cy = oy + ((py ?? oy) - oy) * anchorWeight(m.y, box.value.h);
-  const ax = ox + ttx;   // 图片中心在屏幕上的位置
-  const ay = oy + tty;
-  const k = nz / tz;
-  ttx += (cx - ax) * (1 - k);
-  tty += (cy - ay) * (1 - k);
+  if (Math.abs(nz - tz) < 1e-4) return;
   tz = nz;
-  clampTarget();
+  clampTarget();   // 缩到装不下时，位移随着余量一起连续收回 0，不会弹回
   if (smooth) kick(); else snap();
 }
 
@@ -174,7 +155,7 @@ function zoomStep(dir: number) {
   const next = dir > 0
     ? Z_STEPS.find((s) => s > tz + 1e-6) ?? Z_MAX
     : [...Z_STEPS].reverse().find((s) => s < tz - 1e-6) ?? Z_MIN;
-  zoomAt(next);
+  zoomTo(next);
 }
 
 function onWheel(ev: WheelEvent) {
@@ -182,7 +163,7 @@ function onWheel(ev: WheelEvent) {
   /* 归一化：行/页模式换算成像素，单次增量封顶，触控板的小 delta 也走连续曲线 */
   const d = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 400 : ev.deltaY;
   const step = Math.max(-240, Math.min(240, d));
-  zoomAt(tz * Math.exp(-step * 0.0012), ev.clientX, ev.clientY);
+  zoomTo(tz * Math.exp(-step * 0.0012));
 }
 
 /* ------------------------------ 拖动 / 双指 ------------------------------ */
@@ -248,34 +229,23 @@ function onPointerUp(ev: PointerEvent) {
   }
 }
 
-/**
- * 双指捏合：**解析式**——从捏合起点一次算到位，而不是每帧在上一帧的结果上累加。
- * 这样即使中途位移被"内容不得露出视口"的钳制压掉，理想位置也一直由起点保留着；
- * 余量一旦打开，画面是接着连续往下走的，不会把之前欠下的位移一口气补回来。
- */
+/** 双指：指距只改倍率，中点位移只改平移 —— 全是手指直接量出来的量，不从锚点反推位移 */
 function applyPinch() {
-  const el = stage.value;
   const p = pinchFrom;
-  if (!el || !p || pointers.size < 2) return;
+  if (!p || pointers.size < 2) return;
   const pair = [...pointers.values()];
   const midX = (pair[0].x + pair[1].x) / 2;
   const midY = (pair[0].y + pair[1].y) / 2;
   const dist = Math.max(24, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y));
-  const rect = el.getBoundingClientRect();
-  const ox = rect.left + rect.width / 2;
-  const oy = rect.top + rect.height / 2;
-  const nz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
-  const k = nz / p.z;
-  tz = nz;
-  /* 以起点双指中点为缩放锚（保持那一点下的画面不动），再叠加中点自身的位移 —— 捏合与两指平移可以同时发生 */
-  ttx = p.tx + (p.midX - (ox + p.tx)) * (1 - k) + (midX - p.midX);
-  tty = p.ty + (p.midY - (oy + p.ty)) * (1 - k) + (midY - p.midY);
+  tz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
+  ttx = p.tx + (midX - p.midX);
+  tty = p.ty + (midY - p.midY);
   clampTarget();
   snap();
 }
 
-function onDoubleClick(ev: MouseEvent) {
-  zoomAt(tz > 1.05 ? 1 : 2, ev.clientX, ev.clientY);
+function onDoubleClick() {
+  zoomTo(tz > 1.05 ? 1 : 2);
 }
 
 /* ------------------------------ 尺寸 / 键位 ------------------------------ */
