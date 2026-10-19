@@ -5221,6 +5221,28 @@ function onContentClick(ev: MouseEvent) {
      （里面有删除 / 笔记），想要那排工具条仍然可以**长按正文**（onContentTouchStart）。 */
   const rect = mark.getBoundingClientRect();
   const ids = highlightIdsInRange(document.createRange(), mark);
+  /* 这处高亮**已经有了笔记**：点它弹的是那张笔记浮层，而且**自动锚定**
+     （点击是明确动作，鼠标移开也不该收）；悬浮弹出的那张照旧是临时卡、不锚定。
+     没有笔记的高亮不弹浮层 —— 还是那只划词胶囊（新建笔记 / 删除都在里面）。
+     用户口径 2026-11-28。 */
+  const hitNote = ids.length
+    ? (notes.value.find((n) => n.highlight_id && ids.includes(n.highlight_id)) ?? null) : null;
+  if (hitNote) {
+    hideMenu();                       // 胶囊收掉：这一下的主角是那张浮层
+    const opened = noteCards.find((c) => c.noteId === hitNote.id);
+    if (opened) {
+      opened.anchored = true;         // 悬浮来的临时卡就地点钉住
+      opened.hover = false;
+      focusNoteCard(opened.key);
+    } else {
+      openNotePopover({
+        note: hitNote,
+        highlight: highlights.value.find((h) => h.id === hitNote.highlight_id) ?? null,
+        mode: 'view', anchored: true, rect,
+      });
+    }
+    return;
+  }
   Object.assign(selection, {
     show: true, ...menuPos(rect), text: truncate(mark.textContent ?? '', 600),
     rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
