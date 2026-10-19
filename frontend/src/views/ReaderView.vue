@@ -7696,7 +7696,7 @@ function renderMarkdown(text?: string | null) {
    静止 2.2px、悬停 2.9px、拖动 3.4px（关键帧 2.2 → 3.6 → 3.2 → 3.4）、
    22% 文字色、弧心与卡片圆角同心、外沿离卡片 5px（FLOAT_GRIP_GAP，与 --fc-gap 同一个数字）、
    非焦点（浮窗不是最上层）时透明度降到 0.42、悬停 / 拖动回 1，走 260ms 过渡、
-   弧长只取圆角的 75%。
+   弧长只取圆角的 37.5%（= 原来的一半）。
    ⚠️ 数字照抄 FloatingCard.vue 的 `.fc-resize`（半径 = 圆角 + gap、外沿 = gap），
    浮窗圆角 16 → 弧半径 21、弧盒 23。改一处必须改另一处。
    **拖动反馈只有描边加粗**：原来那条 push 位移关键帧会把把手本身朝拖动方向 translate 4px，
@@ -7727,7 +7727,8 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip::after {
   content: ''; position: absolute; right: 0; bottom: 0;
   --fc-stroke: 2.2px;
-  --fc-arc: calc(var(--fc-radius) * .75);
+  /* 与 FloatingCard 同口径：弧长是原来的 1/2 */
+  --fc-arc: calc(var(--fc-radius) * .375);
   width: calc(var(--fc-arc) + 2px);
   height: calc(var(--fc-arc) + 2px);
   border: 0 solid var(--fc-handle);

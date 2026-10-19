@@ -938,8 +938,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-resize::before {
   content: ''; position: absolute; right: 0; bottom: 0;
   --fc-stroke: 2.2px;
-  /* 弧长只取圆角的 75%：指示器"短一点"（用户口径），而不是整整四分之一圆 */
-  --fc-arc: calc(var(--fc-radius, 12px) * .75);
+  /* 弧长只取圆角的 **37.5%** —— 用户口径 2026-11-28 四轮："长度砍到原来的一半"。
+     画出来的就是这么一小段弧（半径跟着缩，仍然是四分之一圆的那一段，不带直边）。 */
+  --fc-arc: calc(var(--fc-radius, 12px) * .375);
   width: calc(var(--fc-arc) + 2px);
   height: calc(var(--fc-arc) + 2px);
   border-right: var(--fc-stroke) solid var(--fc-handle);
