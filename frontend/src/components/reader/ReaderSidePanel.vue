@@ -817,6 +817,22 @@ function onMore(key: string, r: FeedRow) {
 }
 .item.note-row .quote-md { font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; }
 .quote-md :deep(p) { margin: 0; }
+/* 笔记正文里的 Markdown：**结构留着、字号压平**。
+   用户口径 2026-11-22：笔记项要保 Markdown 兼容，但那里的字号得跟卡片正文同一档 ——
+   原来 h1~h6 走浏览器默认的 2em / 1.5em / 1.17em，一条把整段解释存下来的笔记里
+   标题比正文大三四倍，整张卡片被撑歪。这里只在**笔记项内**压平，层级交给粗体；
+   阅读器正文、对话回答里的 Markdown 一律不受影响。 */
+.item.note-row .md :deep(:is(h1, h2, h3, h4, h5, h6)) {
+  font-size: calc(12.5px * var(--ts, 1));
+  font-family: inherit; font-weight: 700; letter-spacing: 0;
+  line-height: 1.45; margin: .2em 0 .1em; text-wrap: pretty;
+}
+.item.note-row .md :deep(:is(h1, h2, h3, h4, h5, h6):first-child) { margin-top: 0; }
+.item.note-row .md :deep(p) { margin: .15em 0; }
+.item.note-row .md :deep(:is(ul, ol)) { margin: .15em 0; padding-left: 1.2em; }
+/* 公式也不许比正文大一档（KaTeX 默认 1.21em，块级还自带 1em 上下边距） */
+.item.note-row .md :deep(.katex) { font-size: 1.02em; }
+.item.note-row .md :deep(.katex-display) { margin: .2em 0; }
 /* 批量态：行首勾选框 —— 与对话页 .tick 同一口径（24px 热区、无底、选中转主题色） */
 .tick {
   width: 24px; height: 24px; flex: none; border: 0; background: none; cursor: pointer;
