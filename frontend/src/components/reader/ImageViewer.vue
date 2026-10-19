@@ -195,8 +195,8 @@ function requestClose(reason?: 'dismiss') {
   if (!viewer) { finishClose(); return; }
   if (reason === 'dismiss') {
     /* 图片已经被甩出去了：顺着方向缩着淡掉就行，飞回原位又远又慢 */
-    viewer.fadeOut(160);
-    closeTimer = window.setTimeout(finishClose, 170);
+    viewer.fadeOut(110);
+    closeTimer = window.setTimeout(finishClose, 120);
     return;
   }
   if (!o || !size.value.w) {
@@ -331,6 +331,8 @@ onBeforeUnmount(() => {
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .viewer:active { cursor: grabbing; }
+/* 往下甩的时候胶囊先走一步（控制器在进入下滑手势时给 stage 挂 dismissing） */
+.viewer.dismissing .cap { opacity: 0; transition: opacity 120ms ease; }
 /* 入场：整体从透明显形（图片同时从缩略图位置放大过来）。
    中途不能靠整屏透明度做过渡 —— 那样关闭时图片会跟着一起淡掉，看不到"飞回去"。 */
 .viewer { opacity: 0; }

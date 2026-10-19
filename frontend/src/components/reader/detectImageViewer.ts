@@ -451,6 +451,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   const resetDragBackdrop = () => {
     stage.style.transition = 'none';
     stage.style.backgroundColor = '';
+    stage.classList.remove('dismissing');
   };
 
   const syncAdjacentImageBox = (el: HTMLImageElement | null) => {
@@ -926,6 +927,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
       if (shouldHandleAsVerticalDismiss) {
         dragIntent = 'vertical';
+        /* 一开始往下拽就把胶囊藏掉：这时候用户已经决定要走，界面不该再留一堆按钮 */
+        stage.classList.add('dismissing');
         if (dragPreviewActive) {
           releaseAdjacentPreview();
         }
@@ -936,7 +939,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         imageY = Math.max(0, totalDy * 0.96);
 
         const shrinkTargetScale = Math.max(0.58, dragDismissBaseScale * CLOSE_SHRINK_SCALE);
-        const shrinkRange = Math.max(dismissShrinkThreshold + 32, vh * 0.34);
+        /* 缩小的行程缩短：以前要拖到视口 1/3 才缩到底，手感像"拖不动"，现在 1/5 就到底 */
+        const shrinkRange = Math.max(dismissShrinkThreshold + 24, vh * 0.2);
         const shrinkProgress = Math.min(1, imageY / shrinkRange);
 
         img.style.transition = 'none';
@@ -1305,7 +1309,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
    * 下滑关闭专用：图片已经被手指甩出去了，再飞回缩略图既远又久（用户口径：动画时间过长）。
    * 顺着甩出去的方向缩一点、淡掉即可，160ms 结束。
    */
-  const fadeOut = (ms = 160) => {
+  const fadeOut = (ms = 110) => {
     exiting = true;
     img.style.transition = `transform ${ms}ms cubic-bezier(0.4, 0, 1, 1), opacity ${ms}ms ease-out`;
     imageScale = imageScale * 0.82;
