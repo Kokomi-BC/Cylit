@@ -342,7 +342,9 @@ onBeforeUnmount(() => {
 .viewer { opacity: 0; }
 .viewer.open { opacity: 1; transition: opacity 110ms ease; }
 /* 关闭：只让黑底淡出，图片保持可见地飞回原位 */
-.viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 180ms ease; }
+/* 黑底要在图飞/淡出去的同时就退干净，否则图没了还压着一层 */
+.viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 110ms ease; }
+.viewer.closing.dismissing { transition: background-color 80ms ease; }
 /* 关的时候胶囊立刻退场，不跟着图一起等 */
 .viewer.closing .cap { opacity: 0; transition: opacity 90ms ease; }
 /* 飞回原位时不再拖着一张 60px 的投影：它是"弹窗"的语义，飞回缩略图时留着会很突兀 */
