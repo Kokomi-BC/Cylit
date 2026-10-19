@@ -86,12 +86,16 @@ function resetView() {
 }
 
 function zoomStep(dir: number) {
-  if (!pz) return;
+  const el = stage.value;
+  if (!pz || !el) return;
   const cur = pz.getScale();
   const next = dir > 0
     ? Z_STEPS.find((s) => s > cur + 1e-6) ?? Z_MAX
     : [...Z_STEPS].reverse().find((s) => s < cur - 1e-6) ?? Z_MIN;
-  pz.zoom(next, { animate: true });
+  /* 以视口中心为锚：panzoom 的 zoom() 保持的是元素坐标系里的位移，屏幕位移会被 scale 乘一遍，
+     直接用它会看着往左上漂，所以走 focal 版本 */
+  const r = el.getBoundingClientRect();
+  pz.zoomToPoint(next, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }, { animate: true });
 }
 
 function onDblClick(ev: MouseEvent) {
