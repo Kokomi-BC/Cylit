@@ -118,7 +118,10 @@ function onDoubleClick(ev: MouseEvent) {
 
 /** 点背景关闭：刚拖动 / 捏合过就不算点击 */
 function onBgClick() {
-  if (viewer?.isGesturing()) return;
+  /* 指针捕获会把 click 的 target 变成 stage，所以不能只看 @click.self：
+     真正判断依据是「按下时是不是落在黑底上」，否则点胶囊按钮、点图片都会把查看器关掉。 */
+  if (!viewer?.isBackgroundPress()) return;
+  if (viewer.isGesturing()) return;
   emit('close');
 }
 

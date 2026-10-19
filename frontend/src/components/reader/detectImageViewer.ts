@@ -78,6 +78,12 @@ export interface DetectImageViewer {
   reset: () => void;
   getScale: () => number;
   onChange: (cb: (scale: number) => void) => void;
+  /**
+   * 本次按下是否落在黑底上（没落在图片、也没落在胶囊等 UI 上）。
+   * 指针被捕获后 click 的 target 会变成 stage，光看 click 无法分辨点的到底是背景还是按钮，
+   * 所以由按下时记下的目标来判断「这算不算点了背景」。
+   */
+  isBackgroundPress: () => boolean;
   /** 本次手势是否已经动过（拖动 / 捏合）—— 背景点击关闭时用来区分"只是点了下" */
   isGesturing: () => boolean;
 }
@@ -1071,7 +1077,19 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     preventDefault: () => e.preventDefault(),
   });
 
-  const onTouchStart = (e: TouchEvent) => handleTouchStart(fromTouch(e));
+  /* 胶囊按钮等 UI 元素上的按下不算手势：既不该拖动图片，也不该让 stage 抢走指针捕获
+     （捕获一开，click 的 target 就变成 stage，一次「点放大」会被当成「点了背景」直接关掉查看器）。 */
+  const isUiTarget = (t: EventTarget | null) =>
+    t instanceof Element && !!t.closest('.cap, [data-viewer-ui]');
+
+  /** 按下的目标：点到背景才算「点背景关闭」的依据，见 isBackgroundPress */
+  let backgroundPress = false;
+
+  const onTouchStart = (e: TouchEvent) => {
+    backgroundPress = e.target === stage;
+    if (isUiTarget(e.target)) return;
+    handleTouchStart(fromTouch(e));
+  };
   const onTouchMove = (e: TouchEvent) => handleTouchMove(fromTouch(e));
   const onTouchEnd = (e: TouchEvent) => handleTouchEnd(fromTouch(e));
   const onTouchCancel = () => handleTouchCancel();
@@ -1094,6 +1112,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     if (e.pointerType === 'touch') return; // 触摸只走通道 1
     if (e.button !== 0) return; // 只认鼠标左键
     if (!active) return;
+    backgroundPress = e.target === stage;
+    if (isUiTarget(e.target)) return; // 胶囊上按下：不拖图、不抢捕获
     pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
     // 捕获到 stage：拖出图片、甚至拖出窗口之后仍然收得到 move / up
     if (stage.setPointerCapture) {
@@ -1131,15 +1151,23 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     if (pointers.size === 0) handleTouchCancel();
   };
 
-  // Handle mouse wheel for desktop preview testing if needed
+  /**
+   * 滚轮 / 触控板缩放。
+   *
+   * 源文件是「一格 ±10%」，那是给鼠标滚轮用的：触控板双指捏合会在一秒内发出几十个 wheel 事件，
+   * 每个都乘 10%，瞬间就顶到上限 —— 手感就是「灵敏度过高、一碰就飞」。这里改成按 delta 连续取值：
+   * 触控板捏合（浏览器会带 ctrlKey）每单位只给 1%，鼠标滚轮一格（deltaY≈±100）约 12%。
+   */
   const onWheel = (e: WheelEvent) => {
-    if (active) {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      imageScale *= delta;
-      imageScale = Math.min(Math.max(0.1, imageScale), 10);
-      updateImageTransform();
-    }
+    if (!active) return;
+    if (isUiTarget(e.target)) return;   // 胶囊上滚动不缩放
+    e.preventDefault();
+    const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    const clamped = Math.max(-240, Math.min(240, d));
+    const perUnit = e.ctrlKey ? 0.01 : 0.0012;
+    imageScale = Math.min(Math.max(0.6, imageScale * Math.exp(-clamped * perUnit)), 12);
+    updateImageTransform();
+    clampImagePosition();   // 滚轮缩放没有「松手」，边界得当场夹一次
   };
 
   stage.addEventListener('touchstart', onTouchStart, { passive: false });
@@ -1272,5 +1300,6 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     onChange: (cb: (scale: number) => void) => { listeners.push(cb); },
     onIndexChange: (cb: (index: number) => void) => { indexListeners.push(cb); },
     isGesturing: () => moved,
+    isBackgroundPress: () => backgroundPress,
   };
 }
