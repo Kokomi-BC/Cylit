@@ -7136,7 +7136,7 @@ function renderMarkdown(text?: string | null) {
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
       text-cat="note"
-      :zoomable="card.mode === 'view'"
+      zoomable
       data-note-popover
       :data-note-key="card.key"
       :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
@@ -8481,7 +8481,11 @@ function renderMarkdown(text?: string | null) {
   flex: 1 1 auto;
   /* 左内边距 12px（不是 16）：`.fc-head` 自己还有 12px 内边距，
      加起来与标题那枚图标同一个缩进（用户口径 2026-10-10："文字位置不能像那样靠边"）。 */
-  padding: 4px 16px 4px 12px; font-size: calc(16px * var(--ts, 1)); line-height: 1.6;
+  padding: 4px 16px 4px 12px;
+  /* 字号**与查看态同一个值**（用户口径 2026-11-28 十二轮）：查看态那份是 `.np-view`（吃 .small 的 12px，
+     再乘壳上的 A− / A+ 缩放），编辑态原来写死 16px —— 一进编辑文字就变大，切回来又变小。
+     两处都走 `calc(12px * var(--ts, 1))`，放大缩小才是同一个比例。 */
+  font-size: calc(12px * var(--ts, 1)); line-height: 1.6;
   border: 0; border-radius: 0; background: transparent;
 }
 [data-note-popover] :deep(.fc-head) {
