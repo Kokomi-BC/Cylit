@@ -50,14 +50,19 @@ const sheetStyle = computed(() => ({
   transform: 'translate3d(' + tx.value + 'px, ' + ty.value + 'px, 0) scale(' + z.value + ')',
 }));
 
-function clampPan() {
+/** 可滑动余量：只有内容比视口大才有（单轴独立） */
+function panRange(vz = z.value) {
   const b = box.value;
-  const visW = sheetW.value * z.value;
-  const visH = sheetH.value * z.value;
-  const mx = Math.max(0, (visW - b.w) / 2);
-  const my = Math.max(0, (visH - b.h) / 2);
-  tx.value = Math.min(mx, Math.max(-mx, tx.value));
-  ty.value = Math.min(my, Math.max(-my, ty.value));
+  return {
+    x: Math.max(0, (sheetW.value * vz - b.w) / 2),
+    y: Math.max(0, (sheetH.value * vz - b.h) / 2),
+  };
+}
+
+function clampPan() {
+  const m = panRange();
+  tx.value = Math.min(m.x, Math.max(-m.x, tx.value));
+  ty.value = Math.min(m.y, Math.max(-m.y, ty.value));
 }
 
 function resetView() {
@@ -72,10 +77,15 @@ function zoomAt(next: number, px?: number, py?: number) {
   const nz = Math.min(Z_MAX, Math.max(Z_MIN, next));
   if (!el || Math.abs(nz - z.value) < 1e-4) return;
   const rect = el.getBoundingClientRect();
-  const cx = px ?? rect.left + rect.width / 2;
-  const cy = py ?? rect.top + rect.height / 2;
-  const ax = rect.left + rect.width / 2 + tx.value;   // 图片中心在屏幕上的位置
-  const ay = rect.top + rect.height / 2 + ty.value;
+  const ox = rect.left + rect.width / 2;
+  const oy = rect.top + rect.height / 2;
+  const m = panRange(nz);
+  /* 余量为 0 的轴还滑不动：锚点退化到该轴中心。
+     否则这一轴每步算出的偏移都会被钳掉，等余量出现后再一次性补回来 —— 表现为画面突跳。 */
+  const cx = m.x > 0 ? px ?? ox : ox;
+  const cy = m.y > 0 ? py ?? oy : oy;
+  const ax = ox + tx.value;   // 图片中心在屏幕上的位置
+  const ay = oy + ty.value;
   const k = nz / z.value;
   tx.value += (cx - ax) * (1 - k);
   ty.value += (cy - ay) * (1 - k);
@@ -92,7 +102,10 @@ function zoomStep(dir: number) {
 
 function onWheel(ev: WheelEvent) {
   ev.preventDefault();
-  zoomAt(z.value * (ev.deltaY < 0 ? 1.12 : 1 / 1.12), ev.clientX, ev.clientY);
+  /* 归一化：行/页模式换算成像素，单次增量封顶，触控板的小 delta 也走连续曲线 */
+  const d = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 400 : ev.deltaY;
+  const step = Math.max(-240, Math.min(240, d));
+  zoomAt(z.value * Math.exp(-step * 0.0012), ev.clientX, ev.clientY);
 }
 
 /* ------------------------------ 拖动 / 双指 ------------------------------ */
@@ -101,8 +114,12 @@ const pointers = new Map<number, { x: number; y: number }>();
 let panFrom: { x: number; y: number; tx: number; ty: number } | null = null;
 let pinchFrom: { dist: number; z: number } | null = null;
 
+/** 拖动 / 捏合中：transform 不加过渡，保持跟手 */
+const live = ref(false);
+
 function onPointerDown(ev: PointerEvent) {
   if (ev.button !== undefined && ev.button > 0) return;
+  live.value = true;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
   pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
   if (pointers.size >= 2) {
@@ -135,6 +152,7 @@ function onPointerUp(ev: PointerEvent) {
   pointers.delete(ev.pointerId);
   if (pointers.size < 2) pinchFrom = null;
   panFrom = null;
+  if (pointers.size === 0) live.value = false;
 }
 
 function onDoubleClick(ev: MouseEvent) {
@@ -190,7 +208,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <div ref="stage" class="viewer" @wheel.prevent="onWheel" @click.self="emit('close')">
-      <div ref="sheet" class="sheet" :style="sheetStyle">
+      <div ref="sheet" class="sheet" :class="{ live }" :style="sheetStyle">
         <img
           ref="imgEl"
           class="shot"
@@ -240,7 +258,11 @@ onBeforeUnmount(() => {
   position: relative; flex: none; transform-origin: center center;
   will-change: transform; background: #fff;
   box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  /* 缩放/钳制的每一步都插值过去：可滑动余量变化的瞬间不再是一记硬跳 */
+  transition: transform 130ms cubic-bezier(.22, .61, .36, 1);
 }
+/* 拖动、捏合时必须是瞬时响应，否则手感是"拖着弹簧" */
+.sheet.live { transition: none; }
 .shot { display: block; width: 100%; height: 100%; -webkit-user-drag: none; }
 .capture { position: absolute; inset: 0; touch-action: none; cursor: grab; }
 .capture:active { cursor: grabbing; }
@@ -279,6 +301,10 @@ onBeforeUnmount(() => {
 /* 关闭：参考图里那枚**红色**圆片，是唯一的警示色 */
 .zclose { background: rgba(198, 61, 61, .92); color: #fff; }
 .zclose:hover { background: #d04545; color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet { transition: none; }
+}
 
 @media (max-width: 640px) {
   .zbtn { width: 32px; height: 32px; }
