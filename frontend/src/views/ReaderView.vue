@@ -8364,7 +8364,7 @@ function renderMarkdown(text?: string | null) {
 .np-head-save {
   flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%;
-  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--accent-text);
+  background: var(--bg-sunken); color: var(--accent-text);
   cursor: pointer; transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .np-head-save:hover:not(:disabled) { background: var(--bg-hover); }
@@ -8378,16 +8378,17 @@ function renderMarkdown(text?: string | null) {
 .np-back {
   flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center;
   justify-content: center; border: 0; border-radius: 50%; padding: 0;
-  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
+  background: var(--bg-sunken); color: var(--text-dim);
   cursor: pointer; transition: background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 /* 箭头右侧那行「编辑」：与标题同一档字号 / 字重，左补 6px —— 箭头到它的距离 = head 的 gap 6 + 6 = 12，
    与箭头到卡片左沿（padding-left 12）一模一样。 */
 .np-back-label {
-  /* 箭头到它 = head gap 4 + 8 = 12，与箭头到卡片左沿（padding-left 12）相等 */
-  margin-left: 8px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
-  color: var(--text-dim); white-space: nowrap;
+  /* 与对话浮层标题（`.th-title`）一字不差：13px / 600 / 正文色；不再额外补左边距 ——
+     间距就是 head 的 gap（3px），与对话浮层里"箭头 ↕ 标题"完全同一套。 */
+  font-size: calc(13px * var(--ts, 1)); font-weight: 600;
+  color: var(--text); white-space: nowrap;
 }
 .np-back:hover { background: var(--bg-hover); color: var(--text); }
 .np-back:active { transform: scale(.94); }
@@ -8450,7 +8451,7 @@ function renderMarkdown(text?: string | null) {
 .np-color-btn {
   flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--text) 6%, transparent); cursor: pointer;
+  background: var(--bg-sunken); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
               box-shadow var(--dur-fast) var(--ease);
 }
@@ -8528,14 +8529,12 @@ function renderMarkdown(text?: string | null) {
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.72;
   border: 0; border-radius: 0; background: transparent;
 }
-/* 头部左右两端留白必须一样：FloatingCard 的 `.fc-head` 是 `12px 8px 6px 12px` ——
-   左边 12、右边 8，于是"返回箭头到卡片左沿"比"✓ 到卡片右沿"宽 4px（用户口径 2026-11-28 十九轮）。
-   这里把右内边距补成 12，两端对齐。 */
+/* 头部**逐条照对话浮层**的 `.thread-head`：`gap: 3px`、`padding: … 8px … 6px`。
+   （上一轮那套"左右各 12px 对齐"的补丁按用户口径撤掉，2026-11-28 二十三轮。） */
 [data-note-popover] :deep(.fc-head) {
-  /* 与对话浮层（ReaderChat 的 `.thread-head` / `.th-acts`）同一套：按钮间距 4px、两头留白 12px。
-     用户口径 2026-11-28 二十二轮："调整按钮之间的间隔，与对话浮层一致"。 */
-  gap: 4px;
-  padding-right: 12px;
+  gap: 3px;
+  padding-left: 6px;
+  padding-right: 8px;
   gap: 6px;
   /* 标题行用**横线**（`--divider` 发丝线）与正文分开（用户口径 2026-10-10）。
      ⚠️ 底色保持透明：上一版那层 3% 灰底就是用户说的"两个颜色"，不再加回来。 */
@@ -8563,8 +8562,10 @@ function renderMarkdown(text?: string | null) {
      12px 就是 .small 的现值 —— 默认（--ts 未定义）渲染与改动前一模一样。 */
   font-size: calc(12.5px * var(--ts, 1));
 }
-/* 标题与对话浮层的 `.th-title` 同一档（13px / 600） */
-[data-note-popover] :deep(.fc-title) { font-size: calc(13px * var(--ts, 1)); font-weight: 600; flex: none; }
+/* 标题与对话浮层 `.th-title` 同一档：13px / 600 / **正文色**（原来是 11.5px 的淡色小字） */
+[data-note-popover] :deep(.fc-title) {
+  font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); flex: none;
+}
 /* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
    左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
 /* 头部间距一律 6px：`head-tail` 那格 FloatingCard 自己写的是 2px，于是编辑态
