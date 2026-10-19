@@ -18,9 +18,8 @@ import { useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
 import { loadPapers, state } from '@/stores/app';
 import { lastNavHash } from '@/stores/navMemory';
-import { railCollapsed, toggleRail } from '@/stores/shellPrefs';
+import { railCollapsed } from '@/stores/shellPrefs';
 import { isPaperRoute, openTab } from '@/stores/tabs';
-import { BRAND_ICON } from '@/utils/brand';
 import type { RouteLocationRaw } from 'vue-router';
 import type { Paper } from '@/api/types';
 
@@ -92,23 +91,8 @@ async function go(item: RailItem): Promise<void> {
 
 <template>
   <aside class="rail" :class="{ collapsed: railCollapsed }" aria-label="主导航">
-    <!-- 品牌：图标 PNG 自带**连续圆角 + 透明四角**，不要再叠 CSS 圆角（会切掉曲率）。
-         右侧那枚圆钮把侧栏在 216px ↔ 64px 之间切换（状态记在 stores/shellPrefs）。 -->
-    <div class="rail-brand">
-      <img class="rail-mark" :src="BRAND_ICON" alt="" />
-      <span class="rail-name">Cylit</span>
-      <button
-        class="rail-toggle"
-        type="button"
-        :title="railCollapsed ? '展开侧栏' : '收起侧栏'"
-        :aria-label="railCollapsed ? '展开侧栏' : '收起侧栏'"
-        :aria-expanded="!railCollapsed"
-        @click="toggleRail"
-      >
-        <AppIcon :name="railCollapsed ? 'chevron-right' : 'chevron-left'" :size="14" />
-      </button>
-    </div>
-
+    <!-- 品牌与「收起 / 展开侧栏」那枚钮都住在顶栏（`TabBar`）：用户口径 2026-11 把 Cylit 搬回
+         标签页栏，侧栏就只留导航，顶部不再有品牌行 —— 这里不要再加回一份。 -->
     <nav class="rail-nav">
       <button
         v-for="item in PRIMARY"
@@ -176,27 +160,6 @@ async function go(item: RailItem): Promise<void> {
   border-right: 1px solid var(--border);
 }
 
-.rail-brand {
-  display: flex; align-items: center; gap: 9px;
-  padding: 0 2px 14px 6px; min-width: 0;
-}
-.rail-mark { display: block; width: 20px; height: 20px; flex: none; }
-.rail-name {
-  flex: 1 1 auto;                      /* 把右侧那枚收缩钮顶到行尾 */
-  font-size: calc(17px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em;
-  line-height: 1; color: var(--text); white-space: nowrap;
-}
-
-/* 展开 / 收起：24px 圆形 ghost（不描边、不投影，hover 才上浅底） */
-.rail-toggle {
-  flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 999px;
-  background: transparent; color: var(--text-faint); cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.rail-toggle:hover { background: var(--bg-hover); color: var(--text); }
-.rail-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
-
 .rail-nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; }
 
 .rail-item {
@@ -219,13 +182,8 @@ async function go(item: RailItem): Promise<void> {
 .rail-bottom { margin-top: auto; }
 
 /* ---- 手动收起成的**图标轨**（≥1024px 才看得到效果；更窄的由下面的媒体查询接管） ----
- * 文字一律 display:none（不是 opacity：挤着排会把 40px 的行高撑歪），全称退进 title 提示；
- * 品牌行改成**竖排**（20px 图标 + 24px 收缩钮），64px 里一行放不下两个元素。 */
+ * 文字一律 display:none（不是 opacity：挤着排会把 40px 的行高撑歪），全称退进 title 提示。 */
 .rail.collapsed { width: var(--rail-w-min); }
-.rail.collapsed .rail-brand {
-  flex-direction: column; justify-content: center; gap: 6px; padding: 0 0 12px;
-}
-.rail.collapsed .rail-name,
 .rail.collapsed .rail-label { display: none; }
 .rail.collapsed .rail-item { justify-content: center; gap: 0; padding: 0; }
 .rail.collapsed .rail-sep { margin: 8px 8px; }
@@ -235,8 +193,7 @@ async function go(item: RailItem): Promise<void> {
  * 已经把 `--rail-w` 指向 `--rail-w-min`。 */
 @media (max-width: 1024px) {
   .rail { padding: 14px 8px; }
-  .rail-brand { flex-direction: column; justify-content: center; gap: 6px; padding: 0 0 12px; }
-  .rail-name, .rail-label { display: none; }
+  .rail-label { display: none; }
   .rail-item { justify-content: center; gap: 0; padding: 0; }
   .rail-sep { margin: 8px 8px; }
 }

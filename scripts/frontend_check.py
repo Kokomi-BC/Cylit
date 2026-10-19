@@ -1220,16 +1220,19 @@ async function run() {
     res.railSticky = rail ? getComputedStyle(rail).position : null;
     res.railItems = rail
       ? [...rail.querySelectorAll('.rail-item')].map((b) => (b.textContent || '').trim()) : [];
-    /* 品牌在**侧栏**：图标在「Cylit」文字左侧、垂直居中（PNG 自带圆角，不要叠 CSS 圆角） */
-    const brand = rail ? rail.querySelector('.rail-brand') : null;
-    const mark = brand ? brand.querySelector('img.rail-mark') : null;
-    const name = brand ? brand.querySelector('.rail-name') : null;
+    /* 品牌在**顶栏**（用户口径 2026-11 从侧栏搬回来）：图标在「Cylit」文字左侧、垂直居中
+       （PNG 自带圆角，不要叠 CSS 圆角）。侧栏那一份必须**不存在** —— 搬走还留半份就是两只 logo。 */
+    const barEl = d.querySelector('.tabbar');
+    const brand = barEl ? barEl.querySelector('.tabbar-logo') : null;
+    const mark = brand ? brand.querySelector('img.tabbar-mark') : null;
     res.brandMark = !!mark;
     res.brandSrc = mark ? String(mark.getAttribute('src') || '') : '';
     res.brandW = mark ? Math.round(mark.getBoundingClientRect().width) : 0;
-    if (mark && name) {
-      const mr = mark.getBoundingClientRect(), nr = name.getBoundingClientRect();
-      res.brandLeftOfText = mr.right <= nr.left + 2 && Math.abs(midY(mr) - midY(nr)) <= 6;
+    res.brandText = brand ? (brand.textContent || '').trim() : '';
+    res.railBrand = !!rail.querySelector('.rail-brand, img');
+    if (mark && brand) {
+      const mr = mark.getBoundingClientRect(), brr = brand.getBoundingClientRect();
+      res.brandLeftOfText = mr.left <= brr.left + 4 && Math.abs(midY(mr) - midY(brr)) <= 6;
     }
     /* 当前项高亮：停在 /home 就该点亮「首页」。
        ⚠️ 必须**再等一次**：外壳刚挂上时路由还没落定（`route.name` 是 undefined），
@@ -1271,7 +1274,7 @@ async function run() {
     res.railBottom = rr ? Math.round(rr.bottom) : null;
 
     /* ---- 手动收缩：64px 图标轨 ↔ 216px ---- */
-    const toggle = rail ? rail.querySelector('.rail-toggle') : null;
+    const toggle = d.querySelector('.tabbar-rail-toggle');
     const labelHidden = () => {
       const l = rail ? rail.querySelector('.rail-label') : null;
       return !l || getComputedStyle(l).display === 'none' || l.offsetWidth === 0;
@@ -3298,16 +3301,18 @@ def check_shell(browser: str, base: str, budget_ms: int) -> None:
     record("shell", "侧栏导航项齐全（模型 / 任务**不单列**，已并入设置页）",
            items == ["首页", "论文库", "论文解读", "知识库", "学习", "笔记", "AI 对话", "设置"],
            f"{items}")
-    record("shell", "品牌在**左侧栏**：图标在「Cylit」左侧、垂直居中（PNG 自带圆角）",
+    record("shell", "品牌在**顶栏**：图标在「Cylit」左侧、垂直居中（侧栏里不再有第二份）",
            data.get("brandMark") is True and data.get("brandLeftOfText") is True
+           and data.get("brandText") == "Cylit" and data.get("railBrand") is False
            and "icon.png" in str(data.get("brandSrc") or ""),
-           f"有图标={data.get('brandMark')}（{data.get('brandW')}px）在文字左侧="
-           f"{data.get('brandLeftOfText')} src={data.get('brandSrc')}")
+           f"顶栏有图标={data.get('brandMark')}（{data.get('brandW')}px）文字="
+           f"{data.get('brandText')!r} 在文字左侧={data.get('brandLeftOfText')} "
+           f"侧栏里还有品牌={data.get('railBrand')} src={data.get('brandSrc')}")
     # 顶栏只允许出现：胶囊托盘 + 论文标签（+ 两端浮动圆钮）。四样"不该有"的东西逐个钉住，
     # 因为每一样都是从"导航住在顶栏"那个旧结构里留下来的（品牌 / 首页胶囊 / 新建 / AI 对话）。
-    record("shell", "顶栏没有品牌、没有固定的「首页」胶囊、没有「+」新建入口、没有「AI 对话」胶囊",
+    record("shell", "顶栏没有固定的「首页」胶囊、没有「+」新建入口、没有「AI 对话」胶囊",
            data.get("tabbar") is True
-           and data.get("tabbarBrand") is False
+           and data.get("tabbarBrand") is True
            and data.get("tabbarPinned") is False
            and data.get("tabAdd") is False
            and data.get("chatPill") is False,

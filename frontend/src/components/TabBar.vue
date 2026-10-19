@@ -18,12 +18,17 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
+import { BRAND_ICON } from '@/utils/brand';
+import { railCollapsed, toggleRail } from '@/stores/shellPrefs';
 import {
   closeOtherTabs, closeTab, routeKey, setTabTitle, tabLocation, tabs, tabsState,
 } from '@/stores/tabs';
 
 const route = useRoute();
 const router = useRouter();
+
+/** 侧栏收起 / 展开那枚钮跟着品牌放在顶栏，而阅读器（`reader`）**没有侧栏** —— 那时它不该出现。 */
+const showRailToggle = computed(() => route.name !== 'reader');
 
 const strip = ref<HTMLElement | null>(null);
 const renaming = ref('');
@@ -179,6 +184,24 @@ function onContextMenu(key: string, ev: MouseEvent) {
 
 <template>
   <header class="tabbar">
+    <!-- 品牌（图标 + Cylit）：用户口径 2026-11 要它回到顶栏最左，侧栏随之变成纯导航。
+         PNG 自带连续圆角 + 透明四角，不要再叠 CSS 圆角（会切掉曲率）。 -->
+    <span class="tabbar-logo" title="Cylit">
+      <img class="tabbar-mark" :src="BRAND_ICON" alt="" />
+      Cylit
+    </span>
+    <!-- 侧栏收起 / 展开：跟着品牌住顶栏，侧栏顶部就不再留一枚孤零零的按钮行。 -->
+    <button
+      v-if="showRailToggle"
+      class="tabbar-rail-toggle"
+      type="button"
+      :title="railCollapsed ? '展开侧栏' : '收起侧栏'"
+      :aria-label="railCollapsed ? '展开侧栏' : '收起侧栏'"
+      :aria-expanded="!railCollapsed"
+      @click="toggleRail"
+    >
+      <AppIcon :name="railCollapsed ? 'chevron-right' : 'chevron-left'" :size="14" />
+    </button>
     <!-- 滚动按钮 + 标签托盘（两枚圆钮**浮在托盘两端**，哪一侧还藏着内容就只在那侧出现，
          不是两枚并排堆在同一侧）。滚轮在这一整块里都是横向滑动。 -->
     <!-- 一枚论文标签都没有时不渲染托盘（并排的空胶囊只会让人以为坏了）；顶栏就只是一条空条。 -->
@@ -246,6 +269,26 @@ function onContextMenu(key: string, ev: MouseEvent) {
   display: flex; align-items: center; gap: 8px; padding: 0 10px;
   background: var(--bg-elev); border-bottom: 1px solid var(--border);
 }
+
+/* 左上角品牌：图标 + 文字（用户口径 2026-11 从侧栏搬回顶栏）。
+   字号/字重比标签略大一档，读起来是"应用名"而不是一枚可点的标签；user-select: none 让它不可选。 */
+.tabbar-logo {
+  flex: none; display: flex; align-items: center; gap: 7px;
+  padding: 0 6px 0 3px;
+  font-size: calc(15px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em; line-height: 1;
+  color: var(--accent-text); user-select: none;
+}
+.tabbar-mark { display: block; width: 19px; height: 19px; flex: none; }
+
+/* 侧栏收起 / 展开：24px 圆形 ghost（不描边、不投影，hover 才上浅底） */
+.tabbar-rail-toggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 999px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.tabbar-rail-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.tabbar-rail-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。`position: relative` 是给两枚浮动圆钮
    当定位基准的；`flex: 0 1 auto` + `min-width: 0` 让它在标签变多时**先收缩**（托盘横向滚），
