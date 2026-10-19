@@ -5703,13 +5703,27 @@ onUnmounted(() => {
  * 查看态 / 编辑态都有；菜单带"从按钮那一角张开"的弹出动画。
  * 状态与删除菜单同一个写法（局部 ref + Teleport + 打开期间才挂全局监听）。 */
 const noteColorMenu = ref({ open: false, top: 0, left: 0, key: '', origin: 'top left' });
-/// 菜单尺寸（8 枚 25px 圆 + 7 个 7px 间距 + 左右 7px 内边距）
-const NOTE_COLOR_MENU_W = 263;
-const NOTE_COLOR_MENU_H = 39;
+/// 菜单尺寸：与查看态那个「⋯」二级菜单同一套几何（4px 内边距 + 2px 间距 + 25px 圆钮）
+/// 8 × 25 + 7 × 2 + 2 × 4 = 222 宽、25 + 2 × 4 = 33 高
+const NOTE_COLOR_MENU_W = 222;
+const NOTE_COLOR_MENU_H = 33;
 /** 菜单正对着的那张卡（菜单里高亮"当前色"、点色时改的都是它） */
 const colorMenuCard = computed(() => (noteColorMenu.value.open
   ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
 const isHexColor = (color: string) => color.startsWith('#');
+/** 色名 → 实际色值：与 base.css 的 `.hl-swatch.*` 同一组，只给"查看态图标染色"用 */
+const HL_SWATCH_CSS: Record<string, string> = {
+  red: 'rgba(255, 0, 0, .9)', orange: 'rgba(255, 165, 0, .95)',
+  yellow: 'rgba(230, 180, 20, .95)', green: 'rgba(60, 205, 130, .95)',
+  blue: 'rgba(85, 165, 255, .95)', indigo: 'rgba(75, 0, 130, .95)',
+  violet: 'rgba(143, 0, 255, .9)',
+};
+/** 查看态：图标就用这处高亮的颜色（编辑态不染 —— 那时色点按钮就在旁边，不必重复） */
+function noteLeadStyle(card: NoteCard) {
+  if (card.mode !== 'view') return undefined;
+  const css = isHexColor(card.color) ? card.color : HL_SWATCH_CSS[card.color];
+  return css ? { color: css } : undefined;
+}
 /** 自定义色不是那 7 个类名之一，只能行内给（否则圆点会是空的） */
 function colorDotStyle(color: string) {
   return isHexColor(color) ? { background: color } : undefined;
@@ -5720,7 +5734,8 @@ function closeNoteColorMenu() {
   noteColorMenu.value = { open: false, top: 0, left: 0, key: '', origin: 'top left' };
 }
 
-/** 贴着那枚圆钮弹开：左边对齐、向下 6px；下方放不下就翻到上面（`transform-origin` 跟着换）。
+/** 弹开的位置：**以那枚圆钮为中线居中**、向下 4px；下方放不下就翻到上面
+ *  （`transform-origin` 跟着换，弹出动画始终从按钮那一侧张开）。
  *  再点同一枚 = 收起（所以"点别处就收"把触发钮排在外面）。 */
 function openNoteColorMenu(ev: MouseEvent, card: NoteCard) {
   const same = noteColorMenu.value.open && noteColorMenu.value.key === card.key;
@@ -5728,13 +5743,15 @@ function openNoteColorMenu(ev: MouseEvent, card: NoteCard) {
   closeNoteDelMenu();
   if (same) return;
   const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
-  const left = Math.max(8, Math.min(r ? r.left : 12,
+  /* 居中：菜单中线对准按钮中线（夹在视口里，靠边时不会跑出去） */
+  const center = r ? r.left + r.width / 2 : window.innerWidth / 2;
+  const left = Math.max(8, Math.min(center - NOTE_COLOR_MENU_W / 2,
     window.innerWidth - NOTE_COLOR_MENU_W - 8));
-  let top = r ? r.bottom + 6 : 12;
-  let origin = 'top left';
+  let top = r ? r.bottom + 4 : 12;
+  let origin = 'top center';
   if (top + NOTE_COLOR_MENU_H > window.innerHeight - 8) {
-    top = r ? Math.max(8, r.top - NOTE_COLOR_MENU_H - 6) : 8;
-    origin = 'bottom left';
+    top = r ? Math.max(8, r.top - NOTE_COLOR_MENU_H - 4) : 8;
+    origin = 'bottom center';
   }
   noteColorMenu.value = { open: true, top: Math.round(top), left: Math.round(left),
     key: card.key, origin };
@@ -7120,7 +7137,9 @@ function renderMarkdown(text?: string | null) {
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
            色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
       <template #head-lead>
-        <AppIcon name="note" :size="14" />
+        <!-- 查看态**不摆色点按钮**（用户口径 2026-11-28 七轮），颜色改由这枚图标表达：
+             图标染成这处高亮的颜色，零新增元素、不抢标题，也不多一枚控件。 -->
+        <AppIcon name="note" :size="14" :style="noteLeadStyle(card)" />
       </template>
       <template #head-mid>
         <!-- 编辑态：**删除在最左**（用户口径 2026-11-26）。它原来是头部最右、贴着 ✕，
@@ -7160,6 +7179,13 @@ function renderMarkdown(text?: string | null) {
              拖下角放大任一动作都会把**这张**卡锚住（翻页 / 滚动发生在卡片外，不触发）。
              所以这里不再需要一枚手动开关，位置让给"跳回原文"。 -->
         <!-- 定位只在**查看态**给：编辑态右上是 ✓保存 与垃圾桶，再塞一枚只会挤（用户口径 2026-11-24）。 -->
+        <!-- 查看态的**编辑**：先定位、后编辑（动作顺序与视觉顺序一致）。图标钮几何与
+             删除 / 保存 / 定位同一套；语义只靠图标 + hover 底色，不给它上主题色。 -->
+        <button v-if="card.mode === 'view' && card.noteId" class="np-head-save edit" type="button"
+                title="编辑这条笔记" data-note-edit
+                @click="card.mode = 'edit'; card.draft = card.content">
+          <AppIcon name="edit" :size="13" />
+        </button>
         <button v-if="card.mode === 'view' && card.rowId" class="np-head-save locate" type="button"
                 title="定位到原文" data-note-locate
                 @click="locateNoteRow(card)">
@@ -7175,16 +7201,10 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="check" :size="13" />
         </button>
       </template>
-      <!-- 「更多」菜单里那枚**圆形图标钮**（用户口径 2026-11-26 五轮：紧凑一点，编辑也用圆钮）。
-           只有查看态、且这条笔记真的存在时才有 —— 空卡没有可编辑的对象。
-           尺寸 / 圆角 / 淡底由 FloatingCard 的 `:slotted(button)` 统一给，这里只放图标。 -->
-      <template #more-items="{ close }">
-        <button v-if="card.mode === 'view' && card.noteId" type="button" role="menuitem"
-                title="编辑这条笔记" aria-label="编辑这条笔记" data-note-edit
-                @click="card.mode = 'edit'; card.draft = card.content; close()">
-          <AppIcon name="edit" :size="13" />
-        </button>
-      </template>
+      <!-- 「编辑」**不再放在「⋯」二级菜单里**（用户口径 2026-11-28 八轮）：它是最常用的动作，
+           藏进二级菜单等于每次多点一次 —— 现在搬到头部的 `head-extra`，与「定位」并排。
+           于是本卡**不再传 `#more-items` 插槽**：FloatingCard 里那条竖分隔线只在有插槽时才画，
+           不留空槽就不会在「⋯」菜单最前面多出一道孤零零的分隔线。 -->
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
 
       <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
@@ -7847,10 +7867,10 @@ function renderMarkdown(text?: string | null) {
   bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   border: var(--fc-stroke) solid var(--fc-handle);
   border-radius: 50%;
-  /* 只留 25°（对角线两侧各 12.5°）：cos32.5/sin32.5 = 84.34% / 53.73% */
+  /* 只留 30°（对角线两侧各 15°）：cos30/sin30 = 86.6% / 50% */
   clip-path: polygon(50% 50%,
-    calc(50% + 84.34%) calc(50% + 53.73%),
-    calc(50% + 53.73%) calc(50% + 84.34%));
+    calc(50% + 86.6%) calc(50% + 50%),
+    calc(50% + 50%) calc(50% + 86.6%));
   /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
               opacity 280ms var(--ease),
@@ -7863,8 +7883,8 @@ function renderMarkdown(text?: string | null) {
   right: auto;
   left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   clip-path: polygon(50% 50%,
-    calc(50% - 84.34%) calc(50% + 53.73%),
-    calc(50% - 53.73%) calc(50% + 84.34%));
+    calc(50% - 86.6%) calc(50% + 50%),
+    calc(50% - 50%) calc(50% + 86.6%));
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
 .reader > .float-grip.unfocused::after { opacity: .24; }
@@ -8344,6 +8364,8 @@ function renderMarkdown(text?: string | null) {
 .np-head-save.danger { color: var(--danger); }
 .np-head-save.danger:hover:not(:disabled) { background: var(--danger-soft); }
 /* 「定位到原文」：中性色 —— 它只是"跳过去看一眼"，不该与主题色的 ✓ 保存抢注意力 */
+.np-head-save.edit { color: var(--text-dim); }
+.np-head-save.edit:hover:not(:disabled) { color: var(--text); }
 .np-head-save.locate { color: var(--text-dim); }
 .np-head-save.locate:hover:not(:disabled) { color: var(--text); }
 
@@ -8402,20 +8424,24 @@ function renderMarkdown(text?: string | null) {
   pointer-events: none;
 }
 /* 换色菜单：贴着按钮弹开，弹出时**从按钮那一角张开**（transform-origin 由 JS 写） */
+/* 几何照**查看态那个「⋯」二级菜单**（`.fc-more`）来：4px 内边距、2px 间距、ctl 圆角、
+   轻一档的阴影 —— 两块二级菜单摆在一起是一套（用户口径 2026-11-28 八轮）。 */
 .note-color-menu {
   position: fixed; z-index: 321;
-  padding: 7px; display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: max-content;
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-flyout);
+  border-radius: var(--radius-ctl);
+  box-shadow: var(--shadow-2);
   animation: ncm-pop 190ms cubic-bezier(.2, 1.15, .35, 1);
 }
-/* 菜单里的色块与触发钮**同尺寸（25px）**、圆角一致、整行居中 —— 一级 / 二级看起来是一套 */
-.note-color-menu .ncm-row { display: flex; align-items: center; justify-content: center; gap: 7px; }
+/* 色块与触发钮**同尺寸（25px）**、圆角一致、整行居中 —— 一级 / 二级看起来是一套 */
+.note-color-menu .ncm-row { display: flex; align-items: center; justify-content: center; gap: 2px; }
 .note-color-menu .hl-swatch { width: 25px; height: 25px; border: 0; }
 .note-color-menu .hl-swatch:hover { transform: scale(1.08); }
-.note-color-menu .hl-swatch.on { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 3.5px var(--accent); }
+.note-color-menu .hl-swatch.on { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 3px var(--accent); }
 @keyframes ncm-pop {
   from { opacity: 0; transform: translateY(6px) scale(.9); }
   to { opacity: 1; transform: none; }
