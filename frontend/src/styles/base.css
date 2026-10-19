@@ -259,6 +259,13 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 }
 
 /* ---------------- 页面容器 ---------------- */
+/* 左侧栏宽度：常驻侧栏（`components/AppSidebar.vue`）读它。两档宽度都只在这里定义 ——
+ *   `--rail-w`      手动展开态（≥1024px）；
+ *   `--rail-w-min`  图标轨（用户手动收起，或窗口 <1024px 时的强制值）；
+ * <1024px 的强制收窄见文件末尾的媒体查询，<720px 整栏隐藏（组件里的媒体查询）。
+ * 放在 base.css 而不是 tokens.css，是因为它属于**外壳布局**，不是配色/形状令牌。 */
+:root { --rail-w: 216px; --rail-w-min: 64px; }
+
 .app-main { max-width: 1440px; margin: 0 auto; padding: 18px 20px 64px; }
 /* 阅读器：整屏布局且**自身不滚动**（滚动都在栏内），避免"滚侧栏带动整页" */
 .app-main.wide {
@@ -266,6 +273,15 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   height: calc(100vh - var(--header-h));
   height: calc(100dvh - var(--header-h));   /* 手机地址栏兜底，见 ReaderView 的 .reader-loading */
   overflow: hidden;
+}
+/* 整屏页（`chat`）：整套外壳都不显示（没有侧栏、没有标签条），页面自己就是一屏。
+ * `100dvh` + `overflow: auto` 是**两边都能用**的那一档：页面内容短时正好铺满一屏（子元素
+ * `height:100%` 也有确定高度可算），内容长时滚动留在页面内部，不会把窗口撑出第二条滚动条。 */
+.app-main.fill {
+  max-width: none; padding: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: auto;
 }
 
 /* 跳转到主内容（键盘用户第一个 Tab 就能拿到） */
@@ -726,6 +742,10 @@ table.data.fixed { table-layout: fixed; }
   .grid.cols-3, .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1024px) {
+  /* <1024px：侧栏**强制**收成图标轨（用户手动展开也不管用，文字退进 title 提示），
+     内容列拿回那 152px。手动收缩状态只在 ≥1024px 生效 —— 两档宽度都走同一个令牌，
+     所以这里改 `--rail-w` 就够了，组件不用再写第二套断点。 */
+  :root { --rail-w: var(--rail-w-min); }
   .app-main { padding: 14px 12px 56px; }
   .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 }

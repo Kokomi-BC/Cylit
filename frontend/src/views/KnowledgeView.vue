@@ -825,9 +825,14 @@ function openCurrentSource() {
   });
 }
 
-/** 去设置页的「索引管理」建索引（深链到那一段）。 */
+/**
+ * 去设置页的「索引管理」建索引（深链到那一段）。
+ *
+ * ⚠️ 设置是**导航页**：不进标签条（见 `stores/tabs.ts` 的 `isPaperRoute`），所以这里直接
+ * `router.push`，不要走 `openTab` —— 那条路现在只登记论文类路由。
+ */
 function goIndexSettings() {
-  void router.push(openTab({ name: 'settings', hash: '#kb' }) as never);
+  void router.push({ name: 'settings', hash: '#kb' });
 }
 
 /* ------------------------------ 载入 ------------------------------ */

@@ -570,9 +570,9 @@ const headMenu = [
 
 function onHeadAction(key: string): void {
   if (key === 'download') { downloadBundle(); return; }
-  // 首选项 = 设置页（与首页「设置」入口同一条路：先登记标签，再推路由 ——
-  // 只调 openTab 不会跳转，它只改标签状态并返回目标，导航是调用方的事）
-  if (key === 'prefs') void router.push(openTab({ name: 'settings' }) as never);
+  // 首选项 = 设置页。设置是**导航页**（不进标签条），所以直接推路由 —— 不经过 `openTab`，
+  // 那条路现在只登记论文类路由（见 stores/tabs.ts 的 isPaperRoute）。
+  if (key === 'prefs') void router.push({ name: 'settings' });
 }
 
 const isFullscreen = ref(false);

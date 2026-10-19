@@ -712,22 +712,8 @@ async function run() {
 
     /* ── 新建 → 二级页 ── */
     const newBtn = root.querySelector('.list-head .new-conv');
-    /* 顶栏品牌：图标在「Cylit」文字**左侧**、垂直居中 */
-    const logo = d.querySelector('.tabbar-logo');
-    const lmark = logo ? logo.querySelector('img.tabbar-mark') : null;
-    res.brandMark = !!lmark;
-    res.brandSrc = lmark ? String(lmark.getAttribute('src') || '') : '';
-    if (lmark && logo) {
-      const node = [...(logo.childNodes || [])]
-        .find((n) => n.nodeType === 3 && (n.nodeValue || '').trim());
-      if (node) {
-        const rng = d.createRange();
-        rng.selectNodeContents(node);
-        const tr = rng.getBoundingClientRect(), mr = lmark.getBoundingClientRect();
-        res.brandLeftOfText = mr.right <= tr.left + 2
-          && Math.abs((mr.top + mr.height / 2) - (tr.top + tr.height / 2)) <= 6;
-      }
-    }
+    /* 品牌 2026-11 从顶栏搬到了**左侧栏**：这条断言（连方向相反的那条"顶栏里不该再有品牌"）
+       一起搬到探针 ⓪「外壳」（`PROBE_SHELL`）—— 那里是零数据依赖的 /home，跑得动也查得准。 */
     newBtn.click();
     await until(d, (x) => x.querySelector('.chat textarea.composer-input'), 20);
     const head = [...root.querySelectorAll('.thread-head button')].map((b) => (b.textContent || '').trim());
@@ -1109,12 +1095,19 @@ async function run() {
   started = true;
   const w = f.contentWindow, d = f.contentDocument;
   const res = { stage: 'loaded' };
-  const tabBy = (frag) => [...d.querySelectorAll('.tab')].find((a) => (a.getAttribute('href') || '').indexOf(frag) >= 0);
+  /* 2026-11 起**导航页不再进标签条**（首页 / 设置都是导航页），所以"切走再回来"改走左侧栏：
+     设置页里侧栏是可见的，两个入口都点得到。`.tab` 那条老路只剩论文标签，这里用不上了。
+     侧栏跳转会带上 `stores/navMemory` 记下的 hash，所以回来仍应停在 #kb 那一区。 */
+  const railBy = (text) => [...d.querySelectorAll('aside.rail .rail-item')]
+    .find((b) => (b.textContent || '').trim() === text);
   const activeSec = () => {
     const b = d.querySelector('.settings-nav-item.active');
     return b ? (b.textContent || '').trim() : null;
   };
-  const click = async (el, ms) => { el.click(); await sleep(ms || 600); spin(BURN); await sleep(250); };
+  const click = async (el, ms) => {
+    if (!el) return false;
+    el.click(); await sleep(ms || 600); spin(BURN); await sleep(250); return true;
+  };
   try {
     await until(d, (x) => x.querySelector('.settings-rail'), 30);
     res.sec0 = activeSec();
@@ -1128,10 +1121,10 @@ async function run() {
     w.scrollTo(0, Math.min(1200, res.maxY));
     await sleep(400);
     res.scrolled = Math.round(w.scrollY);
-    await click(tabBy('/home'), 700);
-    await until(d, (x) => x.querySelector('.nav-card'), 20);
+    res.clickedHome = await click(railBy('首页'), 700);
+    await until(d, (x) => x.querySelector('#main'), 20);
     res.homeY = Math.round(w.scrollY);
-    await click(tabBy('/settings'), 1200);
+    res.clickedSettings = await click(railBy('设置'), 1200);
     await until(d, (x) => x.querySelector('.settings-rail'), 25);
     await sleep(700);
     res.backHash = d.location.hash;
@@ -1207,6 +1200,102 @@ async function run() {
 
 
 # --------------------------------------------------------------------------
+# 探针 ⓪b：外壳（左侧栏 + 论文标签条）—— **零数据依赖**，起个静态服务就能跑
+# --------------------------------------------------------------------------
+PROBE_SHELL = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  const midY = (r) => r.top + r.height / 2;
+  try {
+    await until(d, (x) => x.querySelector('aside.rail') && x.querySelector('.tabbar'), 40);
+    const rail = d.querySelector('aside.rail');
+    res.rail = !!rail;
+    res.railW = rail ? Math.round(rail.getBoundingClientRect().width) : 0;
+    res.railSticky = rail ? getComputedStyle(rail).position : null;
+    res.railItems = rail
+      ? [...rail.querySelectorAll('.rail-item')].map((b) => (b.textContent || '').trim()) : [];
+    /* 品牌在**侧栏**：图标在「Cylit」文字左侧、垂直居中（PNG 自带圆角，不要叠 CSS 圆角） */
+    const brand = rail ? rail.querySelector('.rail-brand') : null;
+    const mark = brand ? brand.querySelector('img.rail-mark') : null;
+    const name = brand ? brand.querySelector('.rail-name') : null;
+    res.brandMark = !!mark;
+    res.brandSrc = mark ? String(mark.getAttribute('src') || '') : '';
+    res.brandW = mark ? Math.round(mark.getBoundingClientRect().width) : 0;
+    if (mark && name) {
+      const mr = mark.getBoundingClientRect(), nr = name.getBoundingClientRect();
+      res.brandLeftOfText = mr.right <= nr.left + 2 && Math.abs(midY(mr) - midY(nr)) <= 6;
+    }
+    /* 当前项高亮：停在 /home 就该点亮「首页」。
+       ⚠️ 必须**再等一次**：外壳刚挂上时路由还没落定（`route.name` 是 undefined），
+       这时侧栏已经画出来了、但一枚 active 都没有 —— 早读一步就量到 None。 */
+    await until(d, (x) => x.querySelector('aside.rail .rail-item.active'), 30);
+    /* 量底色前先把过渡停掉：`--dump-dom` 走虚拟时钟，过渡没有帧可推进，
+       计算样式会**停在 from 值**（透明底 + 灰字），量出来像"没高亮"。 */
+    const noAnim = d.createElement('style');
+    noAnim.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}';
+    d.head.appendChild(noAnim);
+    await sleep(200);
+    const act = rail ? rail.querySelector('.rail-item.active') : null;
+    res.activeText = act ? (act.textContent || '').trim() : null;
+    res.activeBg = act ? getComputedStyle(act).backgroundColor : null;
+    res.activeColor = act ? getComputedStyle(act).color : null;
+    /* 顶栏：**只有**胶囊托盘 + 论文标签（+ 两端浮动圆钮）。不该有品牌、不该有固定「首页」胶囊、
+       不该有「+」新建入口、也不该有「AI 对话」胶囊 —— 那些入口都在左侧栏。 */
+    const bar = d.querySelector('.tabbar');
+    res.tabbar = !!bar;
+    res.tabbarBrand = bar ? !!bar.querySelector('.tabbar-logo, img') : false;
+    res.tabbarPinned = bar ? !!bar.querySelector('.tab.pinned') : false;
+    res.tabAdd = bar ? !!bar.querySelector('.tab-add') : false;
+    res.chatPill = bar ? !!bar.querySelector('.chat-pill') : false;
+    /* 一枚标签都没有时托盘整块不渲染（顶栏只是一条空条，别留一枚空胶囊） */
+    res.stripRendered = bar ? !!bar.querySelector('.tab-strip') : false;
+    res.tabs = [...d.querySelectorAll('.tab-strip .tab')].map((a) => (a.textContent || '').trim());
+    res.path = d.location.pathname;
+
+    /* ---- 几何：顶栏**通栏**、侧栏在顶栏**下方** ---- */
+    const viewW = w.innerWidth, viewH = w.innerHeight;
+    const br = bar ? bar.getBoundingClientRect() : null;
+    const rr = rail ? rail.getBoundingClientRect() : null;
+    res.viewW = Math.round(viewW);
+    res.viewH = Math.round(viewH);
+    res.tabbarLeft = br ? Math.round(br.left) : null;
+    res.tabbarRight = br ? Math.round(br.right) : null;
+    res.headerH = br ? Math.round(br.height) : null;
+    res.railTop = rr ? Math.round(rr.top) : null;
+    res.railBottom = rr ? Math.round(rr.bottom) : null;
+
+    /* ---- 手动收缩：64px 图标轨 ↔ 216px ---- */
+    const toggle = rail ? rail.querySelector('.rail-toggle') : null;
+    const labelHidden = () => {
+      const l = rail ? rail.querySelector('.rail-label') : null;
+      return !l || getComputedStyle(l).display === 'none' || l.offsetWidth === 0;
+    };
+    res.toggle = !!toggle;
+    res.wideW = res.railW;
+    res.wideLabelVisible = !labelHidden();
+    if (toggle) {
+      toggle.click(); await sleep(500); spin(BURN); await sleep(250);
+      res.narrowW = Math.round(rail.getBoundingClientRect().width);
+      res.narrowLabelHidden = labelHidden();
+      res.narrowTitle = (rail.querySelector('.rail-item') || {}).title || null;
+      toggle.click(); await sleep(500); spin(BURN); await sleep(250);
+      res.backW = Math.round(rail.getBoundingClientRect().width);
+      res.backLabelVisible = !labelHidden();
+    }
+    out(res);
+    document.title = 'done';
+  } catch (err) { res.error = String(err); out(res); document.title = 'error'; }
+}
+</script>"""
+
+
+# --------------------------------------------------------------------------
 # 跑探针
 # --------------------------------------------------------------------------
 
@@ -1252,7 +1341,7 @@ def run_probe(browser: str, base: str, name: str, html: str, budget_ms: int) -> 
     target = ROOT / "frontend" / "dist" / f"_{name}.html"
     try:
         target.write_text(html, encoding="utf-8")
-        dom = render(browser, f"{base}/app/_{name}.html", budget_ms)
+        dom = render(browser, f"{base}/cylit/_{name}.html", budget_ms)
         match = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
         if not match or match.group(1).strip() == "waiting":
             print(f"[WARN] 探针 {name} 没产出结果（dom {len(dom)} 字节）")
@@ -1967,7 +2056,7 @@ def check_explain_shell() -> None:
 def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
                         model: bool = False) -> None:
     print("\n⑥ PDF 页图高亮 + 笔记浮层（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
-    url = f"{base}/app/reader/{paper}?left=page&nosse=1"
+    url = f"{base}/cylit/reader/{paper}?left=page&nosse=1"
     html = (PROBE_PDFHL.replace("__URL__", url).replace("__TITLE__", "pdfhl")
             .replace("__PAPER__", paper).replace("__MODEL__", "1" if model else "0"))
     # 这条探针要**真渲染整份 PDF**（pdf.js 下载 + 光栅化 + 文字层）再走一遍高亮/笔记/浮层的全套，
@@ -2616,7 +2705,7 @@ def check_references_pane(browser: str, base: str, paper: str, budget_ms: int) -
         skip("参考文献侧栏中英对照", f"造样本失败：{str(exc)[:60]}")
         return
     try:
-        url = f"{base}/app/reader/{paper}?side=references&nosse=1"
+        url = f"{base}/cylit/reader/{paper}?side=references&nosse=1"
         html = (PROBE_REFS.replace("__URL__", url).replace("__TITLE__", "refs"))
         res = run_probe(browser, base, "probe_refs", html, max(budget_ms, 60_000))
     finally:
@@ -2703,7 +2792,7 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
                               {"kind": "text", "round": 2, "text": "只有半截"}],
                     "elapsed_ms": 2000, "rounds": 2},
         }, head)
-        url = f"{base}/app/reader/{paper}?side=chat&nosse=1"
+        url = f"{base}/cylit/reader/{paper}?side=chat&nosse=1"
         res = run_probe(browser, base, "probe_run",
                         PROBE_RUN.replace("__URL__", url).replace("__TITLE__", "run"),
                         budget_ms)
@@ -2959,7 +3048,7 @@ def check_markdown_shapes() -> None:
 
 
 # --------------------------------------------------------------------------
-# 探针 ⑦：笔记整页（`/app/notes`）—— 批注 / 高亮 / 笔记合并成一个列表
+# 探针 ⑦：笔记整页（`/cylit/notes`）—— 批注 / 高亮 / 笔记合并成一个列表
 #
 # 为什么造数据：这一页的归并（高亮 + 它上面的笔记 + 批注 → 一串笔记）只有三类记录都存在时才看得清，
 # 而库里未必有。造的三条**验完自删**（笔记 → 高亮 → 批注），一条不留。
@@ -3086,7 +3175,7 @@ async function run() {
 def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> None:
     """笔记整页：三类记录归并成一个列表 + 缩略显示 + 编辑入口（造的数据验完自删）。"""
     print("\n⑦ 笔记整页（批注 / 高亮 / 笔记合并成一个列表；造的数据验完自删）")
-    url = f"{base}/app/notes"
+    url = f"{base}/cylit/notes"
     html = (PROBE_NOTES.replace("__URL__", url).replace("__TITLE__", "notes")
             .replace("__PAPER__", paper))
     res = run_probe(browser, base, "probe_notes", html, max(budget_ms, 60_000))
@@ -3155,35 +3244,135 @@ console.log(JSON.stringify(cases.map((c) => referenceUrl(c))));
 
 
 def check_brand_assets(base: str) -> None:
-    """品牌资源（免费、不开浏览器）：`/app/icon.png` 真能取到，且 index.html 指着它。
+    """品牌资源（免费、不开浏览器）：`/cylit/icon.png` 真能取到，且 index.html 指着它。
 
     图标本身是**离线裁好的**（仓库根 `icon.png` → Apple 连续圆角 → `frontend/public/icon.png`），
     这里只验"构建产物里有没有、路径对不对"——那是三次引用的共同前提
-    （favicon / 顶栏品牌 / 新对话按钮）。
+    （favicon / 侧栏品牌 / 新对话按钮）。
     """
     print("\n⑬ 品牌图标（favicon 与顶栏、新对话共用同一张裁好的 PNG）")
-    url = f"{base}/app/icon.png"
+    url = f"{base}/cylit/icon.png"
     try:
         with urllib.request.urlopen(url, timeout=20) as r:
             body, ctype, code = r.read(), r.headers.get("Content-Type", ""), r.status
     except Exception as exc:  # noqa: BLE001
-        record("brand", "站点图标 `/app/icon.png` 可访问且是 PNG", False, str(exc)[:80])
+        record("brand", "站点图标 `/cylit/icon.png` 可访问且是 PNG", False, str(exc)[:80])
         return
-    record("brand", "站点图标 `/app/icon.png` 可访问且是 PNG",
+    record("brand", "站点图标 `/cylit/icon.png` 可访问且是 PNG",
            code == 200 and "image/png" in ctype and len(body) > 5000,
            f"{code} {ctype} {len(body)} bytes")
     try:
-        with urllib.request.urlopen(f"{base}/app/", timeout=20) as r:
+        with urllib.request.urlopen(f"{base}/cylit/", timeout=20) as r:
             html = r.read().decode("utf-8", "replace")
     except Exception as exc:  # noqa: BLE001
         record("brand", "index.html 的 favicon 指着那张 PNG（不再是内联 SVG）", False, str(exc)[:80])
         return
     record("brand", "index.html 的 favicon 指着那张 PNG（不再是内联 SVG）",
-           "/app/icon.png" in html and "apple-touch-icon" in html
+           "/cylit/icon.png" in html and "apple-touch-icon" in html
            and "data:image/svg+xml" not in html,
-           f"icon.png={'/app/icon.png' in html} apple-touch={'apple-touch-icon' in html} "
+           f"icon.png={'/cylit/icon.png' in html} apple-touch={'apple-touch-icon' in html} "
            f"残留内联 SVG={'data:image/svg+xml' in html}")
 
+
+def check_shell(browser: str, base: str, budget_ms: int) -> None:
+    """外壳：导航住在**左侧栏**，顶栏只装**论文标签**（2026-11 改版的口径）。
+
+    零数据依赖 —— 只看 `/home` 这一屏的 DOM：不需要论文数据、不碰模型，所以它排在
+    "主后端可达"那道门**前面**（起一个静态服务 / `vite preview` 就能跑）。
+    首页那几块数据拿不到时页面只是少一块内容，外壳照样画得出来。
+    """
+    print("\n⓪b 外壳：左侧栏（导航）+ 顶栏（只有论文标签）")
+    data = run_probe(browser, base, "probe_shell",
+                     PROBE_SHELL.replace("__URL__", f"{base}/cylit/home").replace("__TITLE__", "shell"),
+                     budget_ms)
+    if not data:
+        skip("外壳：左侧栏与顶栏", "探针没产出结果（服务没起 / /home 打不开）")
+        return
+    items = data.get("railItems") or []
+    record("shell", "/home 有常驻左侧栏，且当前项高亮（首页）",
+           data.get("rail") is True and data.get("railSticky") == "sticky"
+           and data.get("activeText") == "首页"
+           and str(data.get("activeBg") or "") not in ("", "transparent", "rgba(0, 0, 0, 0)"),
+           f"侧栏 {data.get('railW')}px（{data.get('railSticky')}）当前项 "
+           f"{data.get('activeText')!r} 底色 {data.get('activeBg')} 文字 {data.get('activeColor')}")
+    record("shell", "侧栏导航项齐全（模型 / 任务**不单列**，已并入设置页）",
+           items == ["首页", "论文库", "论文解读", "知识库", "学习", "笔记", "AI 对话", "设置"],
+           f"{items}")
+    record("shell", "品牌在**左侧栏**：图标在「Cylit」左侧、垂直居中（PNG 自带圆角）",
+           data.get("brandMark") is True and data.get("brandLeftOfText") is True
+           and "icon.png" in str(data.get("brandSrc") or ""),
+           f"有图标={data.get('brandMark')}（{data.get('brandW')}px）在文字左侧="
+           f"{data.get('brandLeftOfText')} src={data.get('brandSrc')}")
+    # 顶栏只允许出现：胶囊托盘 + 论文标签（+ 两端浮动圆钮）。四样"不该有"的东西逐个钉住，
+    # 因为每一样都是从"导航住在顶栏"那个旧结构里留下来的（品牌 / 首页胶囊 / 新建 / AI 对话）。
+    record("shell", "顶栏没有品牌、没有固定的「首页」胶囊、没有「+」新建入口、没有「AI 对话」胶囊",
+           data.get("tabbar") is True
+           and data.get("tabbarBrand") is False
+           and data.get("tabbarPinned") is False
+           and data.get("tabAdd") is False
+           and data.get("chatPill") is False,
+           f"品牌={data.get('tabbarBrand')} 首页胶囊={data.get('tabbarPinned')} "
+           f"加号={data.get('tabAdd')} 对话胶囊={data.get('chatPill')}")
+    record("shell", "没有论文标签时托盘整块不渲染（顶栏就是一条空条，不留空胶囊）",
+           not (data.get("tabs") or []) and data.get("stripRendered") is False,
+           f"标签={data.get('tabs')} 托盘渲染={data.get('stripRendered')}（{data.get('path')}）")
+    # ---- 几何：顶栏通栏 + 侧栏在顶栏下方（用户口径 2026-11） ----
+    record("shell", "顶栏**通栏**：从视口左边缘 0 起、到右边缘（不再被侧栏截断）",
+           data.get("tabbarLeft") == 0
+           and abs((data.get("tabbarRight") or 0) - (data.get("viewW") or 0)) <= 2,
+           f"左 {data.get('tabbarLeft')} / 右 {data.get('tabbarRight')}（视口 {data.get('viewW')}）")
+    record("shell", "侧栏在顶栏**下方**：top = 顶栏高（≈52），底边贴视口底部",
+           data.get("railSticky") == "sticky"
+           and abs((data.get("railTop") or -1) - (data.get("headerH") or 0)) <= 2
+           and abs((data.get("railBottom") or 0) - (data.get("viewH") or 0)) <= 2,
+           f"顶栏高 {data.get('headerH')}，侧栏 top {data.get('railTop')} / 底 {data.get('railBottom')}"
+           f"（视口高 {data.get('viewH')}）")
+    # ---- 手动收缩：64px 图标轨 ↔ 216px（状态存 stores/shellPrefs 的 pm.shell.rail） ----
+    record("shell", "侧栏可收缩：点圆钮 → 64px 图标轨（label 不可见），再点回 216px",
+           data.get("toggle") is True
+           and data.get("wideW") == 216 and data.get("wideLabelVisible") is True
+           and data.get("narrowW") == 64 and data.get("narrowLabelHidden") is True
+           and data.get("backW") == 216 and data.get("backLabelVisible") is True,
+           f"{data.get('wideW')}px →（点）{data.get('narrowW')}px label 隐藏="
+           f"{data.get('narrowLabelHidden')}（title={data.get('narrowTitle')!r}）→（再点）"
+           f"{data.get('backW')}px label 可见={data.get('backLabelVisible')}")
+
+
+def check_tabs(browser: str, base: str, budget_ms: int) -> None:
+    """探针 ④：导航页的分区记忆（停在 #kb，切走再回来还是那一区）。
+
+    零数据依赖：只看设置页的 DOM + `location.hash`，不需要论文数据 —— 所以它既能排在
+    "主后端可达"那道门后面，也能被 `--static` 单独拉出来跑（静态服务下一样出结论）。
+    """
+    print("\n④ 标签页状态：切走再回来，分区与阅读位置还在")
+    tabs = run_probe(browser, base, "probe_tabs",
+                     PROBE_TABS.replace("__URL__", f"{base}/cylit/settings").replace("__TITLE__", "tabs"),
+                     budget_ms)
+    if not tabs:
+        skip("标签页状态", "探针没产出结果（服务没起 / 设置页打不开）")
+        return
+    record("tabs", "设置页的分区记进 URL（点「索引管理」就是 #kb 那一区）",
+           tabs.get("hashKb") == "#kb" and bool(tabs.get("secKb")),
+           f"{tabs.get('hashKb')} / {tabs.get('secKb')}")
+    # 2026-11 标签条收窄成"只装论文标签"之后，导航页的分区记忆搬到了 `stores/navMemory.ts`
+    # （localStorage 键 `pm.shell.navhash`）：侧栏点「设置」时会带上上次记下的 hash。
+    # ⚠️ 这依赖那层记忆 —— 删掉 `stores/navMemory.ts`、或不再在 `router.afterEach` 里记录，这条就会红。
+    record("tabs", "设置页的分区**记得住**（从侧栏离开再点回来还是 #kb 那一区）",
+           tabs.get("clickedHome") is True and tabs.get("clickedSettings") is True
+           and tabs.get("hashKb") == "#kb" and tabs.get("backHash") == "#kb"
+           and bool(tabs.get("secKb")) and tabs.get("backSec") == tabs.get("secKb"),
+           f"离开 {tabs.get('hashKb')!r}/{tabs.get('secKb')!r} → "
+           f"回来 {tabs.get('backHash')!r}/{tabs.get('backSec')!r}")
+    # 滚动那条要页面**真的够长**才量得到：静态服务（没有后端数据）下设置页不足一屏，
+    # `maxY` 是 0 —— 那种情况按"这一屏滚不动"跳过，而不是记一条假红。
+    if (tabs.get("maxY") or 0) <= 200:
+        skip("切走再回来阅读位置还在",
+             f"页面滚不动（可滚 {tabs.get('maxY')}px，静态服务下设置页不足一屏）")
+    else:
+        record("tabs", "切走再回来阅读位置还在（窗口滚动回到离开时）",
+               (tabs.get("scrolled") or 0) > 200
+               and abs((tabs.get("backY") or 0) - (tabs.get("scrolled") or 0)) <= 60,
+               f"离开 {tabs.get('scrolled')}px（可滚 {tabs.get('maxY')}）→ 回来 {tabs.get('backY')}px")
 
 def check_reference_urls() -> None:
     """把上面那张表喂给**真代码** `utils/references.ts`（esbuild bundle → node）。"""
@@ -3239,6 +3428,8 @@ def main() -> int:
     ap.add_argument("--paper", default="attention-is-all-you-need")
     ap.add_argument("--browser", default=None)
     ap.add_argument("--budget", type=int, default=40000, help="单页虚拟时间预算（毫秒）")
+    ap.add_argument("--static", action="store_true",
+                    help="只跑零数据依赖的探针（源码结构 + 外壳 + 标签页状态）：静态服务也能出结论")
     ap.add_argument("--model", action="store_true",
                     help="额外跑一条流式问答（**会调用模型**；跑完自动删掉造出来的会话）")
     args = ap.parse_args()
@@ -3255,13 +3446,20 @@ def main() -> int:
     if not browser:
         print("[SKIP] 没找到浏览器（--browser 指定 chrome/edge 路径）")
         return 0
+    # 外壳探针零数据依赖：排在"主后端可达"这道门**前面**，静态服务下也跑得动
+    check_shell(browser, base, args.budget)
+    if args.static:
+        # --static：不碰任何需要后端数据的探针（外壳 / 导航分区只靠 DOM + location.hash），
+        # 给"起个 vite preview 看外壳"的场景用 —— 没有后端也能出一条真结论。
+        check_tabs(browser, base, max(args.budget, 60000))
+        return 0
     status, _ = fetch(f"{base}/api/v1/agent/status", timeout=10)
     if status != 200:
         print(f"[SKIP] 主后端不可达（HTTP {status}）：先 `pr.py serve`")
         return 0
 
-    reader_url = f"{base}/app/reader/{args.paper}?nosse=1"
-    chat_url = f"{base}/app/reader/{args.paper}?side=chat&nosse=1"
+    reader_url = f"{base}/cylit/reader/{args.paper}?nosse=1"
+    chat_url = f"{base}/cylit/reader/{args.paper}?side=chat&nosse=1"
 
     # ---- ① 阅读器 ----
     print("\n① 阅读器：正文 / 公式 / 胶囊")
@@ -3489,11 +3687,6 @@ def main() -> int:
                chat.get("helloCenteredV") is True and (chat.get("helloMarkSize") or 0) >= 48,
                f"竖直居中={chat.get('helloCenteredV')} 图标 {chat.get('helloMarkSize')}px"
                f"｜{chat.get('helloSelfDebug')}")
-        record("shell", "顶栏品牌：图标在「Cylit」**左侧**且垂直居中",
-               chat.get("brandMark") is True and chat.get("brandLeftOfText") is True
-               and "icon.png" in str(chat.get("brandSrc") or ""),
-               f"有图标={chat.get('brandMark')} 在文字左侧={chat.get('brandLeftOfText')} "
-               f"src={chat.get('brandSrc')}")
         record("chat", "分类 / 管理共 2 枚胶囊托盘（无范围选择器）",
                chat.get("trayCount") == 2 and (chat.get("segBtns") or []) == ["全部", "划词", "常规"],
                f"{chat.get('trayCount')} 枚 / {chat.get('segBtns')}")
@@ -3653,24 +3846,13 @@ def main() -> int:
             record("chat", "✕ 把胶囊整块移除（选区一起清掉）", sel.get("chipGone") is True)
 
     # ---- ④ 标签页状态：切走再回来（免费） ----
-    print("\n④ 标签页状态：切走再回来，分区与阅读位置还在")
-    tabs = run_probe(browser, base, "probe_tabs",
-                     PROBE_TABS.replace("__URL__", f"{base}/app/settings").replace("__TITLE__", "tabs"),
-                     max(args.budget, 60000))
-    if tabs:
-        record("tabs", "设置页的分区记进标签（切回来还是 #kb 那一区）",
-               tabs.get("hashKb") == "#kb" and tabs.get("backHash") == "#kb"
-               and bool(tabs.get("secKb")) and tabs.get("backSec") == tabs.get("secKb"),
-               f"{tabs.get('hashKb')} / {tabs.get('secKb')} → {tabs.get('backHash')} / {tabs.get('backSec')}")
-        record("tabs", "切标签回来阅读位置还在（窗口滚动回到离开时）",
-               (tabs.get("scrolled") or 0) > 200
-               and abs((tabs.get("backY") or 0) - (tabs.get("scrolled") or 0)) <= 60,
-               f"离开 {tabs.get('scrolled')}px（可滚 {tabs.get('maxY')}）→ 回来 {tabs.get('backY')}px")
+    check_tabs(browser, base, max(args.budget, 60000))
+
 
     # ---- ⑤ 提示条 toast（免费） ----
     print("\n⑤ 提示条：页面顶部居中 / 三层胶囊 / 毛玻璃 / 无左侧色条")
     tst = run_probe(browser, base, "probe_toast",
-                    PROBE_TOAST.replace("__URL__", f"{base}/app/settings").replace("__TITLE__", "toast"),
+                    PROBE_TOAST.replace("__URL__", f"{base}/cylit/settings").replace("__TITLE__", "toast"),
                     args.budget)
     if tst:
         if tst.get("toastCount"):

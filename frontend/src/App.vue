@@ -1,17 +1,34 @@
 <script setup lang="ts">
-/** 应用根组件：顶栏（标签条）/ 路由视图 / Toast；阅读器使用通栏布局。
+/**
+ * 应用根组件：多标签外壳（左侧栏 + 论文标签条）/ 路由视图 / Toast。
  *
- * 外壳 = **多标签页**：`TabBar` 显示当前打开的路由位置，导航入口在首页（`HomeView`）。
- * 标签状态由 `stores/tabs` 持有（localStorage 持久化），路由变化时自动登记（见 router）。
+ * 外壳由 `shellMode` 一个字符串驱动（模板里只读这一处，避免三个 v-if 各写一套条件）：
+ *   - `rail`：**左侧栏 + 标签条**。导航页（首页 / 论文库 / 知识库 / 学习 / 笔记 / 设置）走这个形态；
+ *   - `tabs`：**只有标签条**。`reader` 用 —— 用户明确要求"论文阅读器不显示侧栏"，
+ *     工作区占满整宽（阅读器自己要在有限宽度里排双语列，少 216px 就是多一整列）；
+ *   - `bare`：**整套外壳都不显示**。`chat` 用 —— ChatView 自己就是一屏，套一层标签条只会浪费高度。
+ *
+ * 标签条只装论文标签（`stores/tabs` 的 `isPaperRoute`），导航住在侧栏
+ * （`components/AppSidebar.vue`）：改造前导航在首页、顶栏是"什么都能开"的标签条，
+ * 于是首页/设置这类页面也被当成标签堆在顶栏里，既关不掉也点不亮。
  */
 import { computed } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
+import AppSidebar from '@/components/AppSidebar.vue';
 import ConfirmHost from '@/components/ConfirmHost.vue';
 import TabBar from '@/components/TabBar.vue';
 import ToastHost from '@/components/ToastHost.vue';
 import { routeKey } from '@/stores/tabs';
 
 const route = useRoute();
+
+/** 三种外壳形态，见文件头注释。 */
+const shellMode = computed<'rail' | 'tabs' | 'bare'>(() => {
+  if (route.name === 'chat') return 'bare';
+  if (route.name === 'reader') return 'tabs';
+  return 'rail';
+});
+/** 阅读器：整屏布局且自身不滚动（滚动都在栏内），见 base.css 的 `.app-main.wide` */
 const wide = computed(() => route.name === 'reader');
 
 /**
@@ -30,11 +47,51 @@ const viewKey = computed(() => routeKey(route));
 
 <template>
   <a class="skip-link" href="#main">跳到主内容</a>
-  <TabBar />
-  <main id="main" :class="['app-main', { wide }]">
-    <RouterView :key="viewKey" />
-  </main>
+  <div class="shell" :class="`shell-${shellMode}`">
+    <TabBar v-if="shellMode !== 'bare'" />
+    <div class="shell-body">
+      <AppSidebar v-if="shellMode === 'rail'" />
+      <main id="main" :class="['app-main', { wide, fill: shellMode === 'bare' }]">
+        <RouterView :key="viewKey" />
+      </main>
+    </div>
+  </div>
   <ToastHost />
   <!-- 站内确认框：全局挂一次，任何地方 `await askConfirm({...})`（见 stores/confirm.ts） -->
   <ConfirmHost />
 </template>
+
+<style scoped>
+/* 外壳 = 两行网格：① 顶栏（标签条，**横跨整宽**）② 内容行（侧栏 + 主区）。
+ *
+ * 为什么顶栏在网格里、而不是"左列侧栏 + 右列顶栏+内容"：用户要的是顶栏通栏 —— 侧栏从顶栏
+ * **下方**才开始（见 `AppSidebar` 的 sticky top: var(--header-h)）。行高 auto 让顶栏保持
+ * var(--header-h)，1fr 把剩下的高度给内容行。
+ * ⚠️ 滚动仍然发生在**窗口**上，不给内容列单开滚动容器：`router` 的 scrollBehavior、
+ * 阅读器进度、各处 `window.scrollY` 都建立在这个前提上。 */
+/* ⚠️ 显式写一列 `minmax(0, 1fr)`：不写的话隐式列是 `auto`，会被内容撑成"按内容收缩"——
+ * 实测阅读器主区会从整宽缩到 164px（`.shell-body` 里那列 1fr 于是在一个窄容器里解析）。 */
+.shell {
+  display: grid; grid-template-rows: auto 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100%;
+}
+/* bare（`chat`）没有顶栏那一行，单独声明一次，免得内容被塞进 auto 行里按内容高度趴着 */
+.shell-bare { grid-template-rows: 1fr; }
+
+/* 内容行：默认单列（阅读器 / chat —— 没有侧栏时主区满宽）。
+ * ⚠️ **必须是 grid，不能是 flex 行**：`.app-main` 带 `margin: 0 auto`，在 flex 容器里
+ * auto 外边距会让子项放弃拉伸、按内容收缩（实测阅读器主区从整宽缩到 481px）。
+ * grid 轨道给 `minmax(0, 1fr)`、项默认 stretch，才和块级流等价。 */
+.shell-body { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+/* ⚠️ `.app-main` 自带 `margin: 0 auto`：在 **grid** 里 auto 外边距同样会取消 stretch，
+   主区于是按内容收缩（实测阅读器主区 164px，flex 时代是 481px）。显式给满宽，让 auto 只管居中。 */
+.shell-body > .app-main { width: 100%; }
+.shell-rail .shell-body { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+
+/* <720px 侧栏整栏 display:none —— 但显式轨道不会自己消失，必须同时把这一列收掉，
+   否则主区右边会白留一条 64px。 */
+@media (max-width: 720px) {
+  .shell-rail .shell-body { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

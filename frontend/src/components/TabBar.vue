@@ -1,32 +1,25 @@
 <script setup lang="ts">
 /**
- * 应用外壳的**标签条**（顶栏）。
+ * 应用外壳的**论文标签条**（顶栏）。
  *
- * 这里**不再放主导航**：导航在首页（`HomeView`）与各页面内部，顶栏只回答
- * "我现在开着哪些页面、在哪一个"。
+ * 这里只装一类东西：**按论文打开的标签**（`reader` / `understand`，见 `stores/tabs.ts` 的
+ * `isPaperRoute`）。导航页（首页 / 论文库 / 知识库 / 学习 / 笔记 / 设置）不再进标签条，
+ * 它们的入口是左侧栏（`components/AppSidebar.vue`）—— 所以这里既没有品牌词，也没有
+ * 常驻的「首页」胶囊：两者都在侧栏里，重复一遍只是占地方。
  *
- * 交互：点标签切换（`RouterLink`，可用中键/Ctrl 点击开新标签）、× 关闭、
- * 双击标签名就地重命名（与浏览器/VS Code 一致，纯本地展示偏好）、
- * 右键菜单（关闭其它 / 关闭全部）、拖拽换序、**滚轮横向滑动**。
+ * 版面（用户口径）：**只有**胶囊托盘（横向可滚、两端浮动圆钮、滚轮横滑）。
+ * 没有品牌（在左侧栏）、没有固定的「首页」胶囊（在左侧栏）、没有「+」新建入口、没有「AI 对话」胶囊
+ * —— 顶栏只回答"我开着哪几篇论文"，其余入口一律在左侧栏。一枚标签都没有时它就是一条空条。
+ * 交互沿用原有实现：点标签切换、× 关闭、双击重命名、右键菜单（关闭其它 / 关闭标签）、拖拽换序。
  *
- * 顶栏的横向布局（用户口径 2026-10-16）：
- *   品牌 → **固定的「首页」** → **可滚动的标签托盘**（两枚翻页圆钮浮在托盘两端）
- *
- * 三条规矩：
- * 1. ⚠️ 「首页」**不在滚动容器里**（它原来是托盘里的第一枚标签，标签一多就被推出视野）。
- *    现在它是托盘**外面**的一枚独立胶囊，任何滚动位置都看得见、点得到 —— 用户报的
- *    「固定首页按钮」就是这条；
- * 2. 两枚箭头**照阅读器侧栏那套**（`ReaderView` 的 `.side-scroll-btn`）：一枚浮在托盘左端、
- *    一枚浮在托盘右端 —— 不是并排放在同一侧；而且**哪一侧还有内容就只在那侧出现**，
- *    所以它们的出现/消失不会让标签跳位；
- * 3. 滚轮只在真的溢出时才 `preventDefault` —— 否则会平白吃掉页面本身的滚动。
+ * ⚠️ 「一个都不剩」必须显式处理：改造前首页是**不可关闭**的兜底标签，现在没有兜底了 ——
+ * 关掉最后一枚之后要 `/home`，否则会停在刚被关掉的那个 `/reader/xxx` 上白屏。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
-import { BRAND_ICON } from '@/utils/brand';
 import {
-  HOME_KEY, closeOtherTabs, closeTab, openTab, routeKey, setTabTitle, tabLocation, tabs, tabsState,
+  closeOtherTabs, closeTab, routeKey, setTabTitle, tabLocation, tabs, tabsState,
 } from '@/stores/tabs';
 
 const route = useRoute();
@@ -40,16 +33,11 @@ const dragKey = ref('');
 
 /** 当前激活标签：**只认当前路由**。
  *
- * `tabsState.activeKey` 是"持久化 + 挤掉最老标签"用的，不作为高亮依据 ——
- * 以前这里写的是 `tabsState.activeKey || routeKey(route)`，只要持久化里残留一个旧值
- * （上次会话停在首页、或路由还没落定），标签条就会点亮**错的**那个标签，
- * 看起来就是"首页标签始终高亮"（用户报过）。高亮永远跟着地址栏走，才不会说谎。 */
+ * 高亮永远跟着地址栏走，不看 `tabsState.activeKey`：停在导航页时后者是空串（见 `activateRoute`），
+ * 而一旦持久化里残留一个旧值，标签条就会点亮**错的**那枚（用户报过"首页标签始终高亮"）。
+ * 导航页下 `currentKey` 是 `home`/`library`/`settings` 这类名字，没有任何标签与之相等 —— 全不亮，正确。 */
 const currentKey = computed(() => routeKey(route));
 const canCloseAll = computed(() => tabs.value.length > 1);
-
-/* ------------------------- 固定首页 + 可滚动的其余标签 ------------------------- */
-const homeTab = computed(() => tabs.value.find((t) => t.key === HOME_KEY) ?? null);
-const scrollTabs = computed(() => tabs.value.filter((t) => t.key !== HOME_KEY));
 
 /* --------------------------------- 溢出与滚动 ---------------------------------
  * 与阅读器侧栏那套页签**同一份约定**（`ReaderView` 的 `.side-tabs` + `.side-scroll-btn`），
@@ -57,7 +45,7 @@ const scrollTabs = computed(() => tabs.value.filter((t) => t.key !== HOME_KEY));
  * 哪一侧还有内容就只在那侧出现。
  */
 const overflowing = ref(false);
-/** 左/右还藏着内容 → 那一侧浮出圆箭头（与侧栏 `tabsScroll.left/right` 同义） */
+/** 左/右还藏着内容 → 那一侧浮出圆箭头 */
 const canLeft = ref(false);
 const canRight = ref(false);
 /** 两端圆钮占掉的宽度：滚动落位时要把它让开（与 `.tab-strip` 的 `scroll-padding` 对齐） */
@@ -74,8 +62,7 @@ function syncScrollState() {
 /** 点箭头：翻一屏的 70%（至少 120px）。
  *
  * ⚠️ 用**瞬时**滚动（直接改 `scrollLeft`），不要 `behavior: 'smooth'`：补间由合成器推进，
- * 无头 + 虚拟时间下根本不走（实测"点了按钮纹丝不动"），真实浏览器也会受"减少动效"影响。
- * 这条与侧栏 `scrollTabs` 的注释是同一件事。 */
+ * 无头 + 虚拟时间下根本不走（实测"点了按钮纹丝不动"），真实浏览器也会受"减少动效"影响。 */
 function scrollStep(dir: -1 | 1) {
   const el = strip.value;
   if (!el) return;
@@ -136,7 +123,7 @@ async function go(key: string) {
   if (tab) await router.push(tabLocation(tab) as never);
 }
 
-/** 关标签：关掉了当前这个就跳到邻居。首页不可关闭，所以不会出现"一个都不剩"。 */
+/** 关标签：关掉了当前这枚就跳到邻居；一枚都不剩就回首页（没有首页标签兜底了）。 */
 async function onClose(key: string, ev: MouseEvent) {
   ev.preventDefault();
   ev.stopPropagation();
@@ -146,7 +133,7 @@ async function onClose(key: string, ev: MouseEvent) {
   if (!wasActive) return;
   const next = tabs.value[Math.min(idx, tabs.value.length - 1)];
   if (next) await go(next.key);
-  else await router.push(openTab({ name: 'home' }) as never);
+  else await router.push({ name: 'home' });
 }
 
 function startRename(key: string) {
@@ -192,57 +179,19 @@ function onContextMenu(key: string, ev: MouseEvent) {
 
 <template>
   <header class="tabbar">
-    <!-- 品牌：**图标 + 文字**（用户口径 2026-10-07 第三轮：把 icon.png 裁成 Apple 应用图标那种
-         连续圆角，放在「Cylit」左侧）。刻意**不加**底色方块：顶栏本来就是一条细标签条，
-         一块实心方块会跟「首页」那枚常驻胶囊抢注意力。 -->
-    <span class="tabbar-logo" title="Cylit">
-      <img class="tabbar-mark" :src="BRAND_ICON" alt="" />
-      Cylit
-    </span>
-
-    <!-- 固定首页：托盘**外面**，不受横向滚动影响（用户口径 2026-10-16） -->
-    <RouterLink
-      v-if="homeTab"
-      class="tab pinned"
-      :class="{ active: HOME_KEY === currentKey }"
-      :to="tabLocation(homeTab)"
-      :title="homeTab.title"
-      @contextmenu="onContextMenu(HOME_KEY, $event)"
-    >
-      <AppIcon :name="homeTab.icon" :size="13" />
-      <input
-        v-if="renaming === HOME_KEY"
-        v-model="renameText"
-        class="tab-rename"
-        @keyup.enter="commitRename"
-        @keyup.esc="renaming = ''"
-        @blur="commitRename"
-        @click.stop.prevent
-      >
-      <span
-        v-else
-        class="tab-title truncate"
-        @dblclick.stop.prevent="startRename(HOME_KEY)"
-      >{{ homeTab.title }}</span>
-
-      <span v-if="menuFor === HOME_KEY" class="tab-menu" @click.stop>
-        <button :disabled="!canCloseAll" @click="closeOtherTabs(HOME_KEY); menuFor = ''">关闭其它标签</button>
-      </span>
-    </RouterLink>
-
-    <!-- 滚动按钮 + 标签托盘（用户口径 2026-10-16：**照阅读器侧栏那两枚**来 ——
-         一枚浮在托盘左端、一枚浮在右端，哪一侧还藏着内容就只在那侧出现，
+    <!-- 滚动按钮 + 标签托盘（两枚圆钮**浮在托盘两端**，哪一侧还藏着内容就只在那侧出现，
          不是两枚并排堆在同一侧）。滚轮在这一整块里都是横向滑动。 -->
-    <div class="tabbar-nav" @wheel="onWheel">
+    <!-- 一枚论文标签都没有时不渲染托盘（并排的空胶囊只会让人以为坏了）；顶栏就只是一条空条。 -->
+    <div v-if="tabs.length" class="tabbar-nav" @wheel="onWheel">
       <button
         v-if="canLeft"
         class="nav-scroll left" type="button" title="向左滚动标签" aria-label="向左滚动标签"
         @click="scrollStep(-1)"
       ><AppIcon name="chevron-left" :size="13" /></button>
 
-      <nav ref="strip" class="tab-strip" aria-label="打开的标签页" @scroll="syncScrollState">
+      <nav ref="strip" class="tab-strip" aria-label="打开的论文标签" @scroll="syncScrollState">
         <RouterLink
-          v-for="t in scrollTabs"
+          v-for="t in tabs"
           :key="t.key"
           class="tab"
           :class="{ active: t.key === currentKey }"
@@ -278,6 +227,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
             <button @click="closeTab(t.key); menuFor = ''">关闭标签</button>
           </span>
         </RouterLink>
+
       </nav>
 
       <button
@@ -296,28 +246,15 @@ function onContextMenu(key: string, ev: MouseEvent) {
   display: flex; align-items: center; gap: 8px; padding: 0 10px;
   background: var(--bg-elev); border-bottom: 1px solid var(--border);
 }
-/* 左上角品牌词：**净文字**（用户口径 2026-09-28，原来是一个图标方块）。
-   字号/字重比标签页略大一档，读起来是"应用名"而不是一个可点的标签；`user-select: none` +
-   右侧留 8px，让它和第一个标签之间有一道自然的呼吸位。 */
-.tabbar-logo {
-  flex: none; display: flex; align-items: center; gap: 6px;
-  padding: 0 8px 0 3px;
-  font-size: calc(14.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em; line-height: 1;
-  color: var(--accent-text);
-  user-select: none;
-}
-/* 品牌图标：PNG 自己带**连续圆角 + 透明四角**，不要再叠一层 CSS 圆角（会切掉曲率） */
-.tabbar-mark { display: block; width: 19px; height: 19px; flex: none; }
 
 /* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。`position: relative` 是给两枚浮动圆钮
-   当定位基准的。`flex: 0 1 auto` + `min-width: 0` 让它在窗口变窄时**先于**品牌词收缩，
-   于是标签托盘会开始横向滚，而不是把品牌词挤没。 */
+   当定位基准的；`flex: 0 1 auto` + `min-width: 0` 让它在标签变多时**先收缩**（托盘横向滚），
+   于是「+」永远被挤不出去。整行靠左，右侧留白 —— 右侧没有别的东西了。 */
 .tabbar-nav { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 0; }
 
 /* 两枚「翻页」圆钮：**浮在托盘两端**、不占布局（哪一侧还有内容才在那一侧出现，
    所以它们的出现不会让标签跳位）。与阅读器侧栏那枚 `.side-scroll-btn` **同一配方、
-   同样不画描边** —— 半透明 + 模糊，标签滚到它底下时文字照样透出来
-   （用户口径：文字可以在按钮下面显示）。 */
+   同样不画描边** —— 半透明 + 模糊，标签滚到它底下时文字照样透出来。 */
 .nav-scroll {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
   width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
@@ -335,10 +272,8 @@ function onContextMenu(key: string, ev: MouseEvent) {
 .nav-scroll.left { left: 4px; }
 .nav-scroll.right { right: 4px; }
 
-/* 标签条 = **一枚自撑的胶囊托盘**（用户口径：只在样式上与下面那枚页签胶囊对齐）。
- * 三层、**无描边**：① 托盘（--bg-sunken）② 抬起的那枚白 pill（--bg-elev + --shadow-1）
- * ③ 文字。与 base.css 的 `.seg`、阅读器侧栏那枚页签胶囊**同一门语言、同一组颜色**
- * （2026-10-03 统一：以前这里用 color-mix 自调了个灰，跟 `.seg` 的 --bg-sunken 不是同一个色）。
+/* 标签托盘 = **一枚自撑的胶囊**：① 托盘（--bg-sunken）② 抬起的白 pill（--bg-elev + --shadow-1）
+ * ③ 文字。与 base.css 的 `.seg`、阅读器侧栏那枚页签胶囊**同一门语言、同一组颜色**。
  * 宽度跟着内容走（标签少时不会拉成一根长条），放不下就横向滚；
  * `3px + 32px` 让托盘正好 38px —— 与阅读器里那枚页签胶囊、那枚圆形开关同高。 */
 .tab-strip {
@@ -347,8 +282,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
   padding: 3px; border: 0; border-radius: 999px;
   background: var(--bg-sunken);
   overflow-x: auto; scrollbar-width: none;
-  /* 两端各让出一枚浮动圆钮的位置：滚进视野的标签不会被压在按钮底下
-     （与侧栏 `.side-tabs` 的 `scroll-padding` 同一条口径）。 */
+  /* 两端各让出一枚浮动圆钮的位置：滚进视野的标签不会被压在按钮底下 */
   scroll-padding: 0 32px;
 }
 .tab-strip::-webkit-scrollbar { display: none; }
@@ -358,34 +292,15 @@ function onContextMenu(key: string, ev: MouseEvent) {
   /* 右内边距 8px：关闭按钮自己还有 3.5px 的余量（18px 盒子装 11px 图标），
    * 于是「图标左边缘」和「× 字形右边缘」到胶囊边缘的距离都是 ~12px —— 肉眼看才是居中的。 */
   height: 32px; padding: 0 8px 0 12px; max-width: 200px; flex: none;
-  /* 圆到底的**胶囊**，顺带把胶囊加高 ——
-     标题那枚 span 带 .truncate（overflow: hidden），行高只给 1em 时字体的 ascent + descent
-     （≈ 1.16em）高出内容盒，上下缘被切掉，就是用户报的「胶囊把字裁了」。 */
+  /* 圆到底的**胶囊**；标题那枚 span 带 .truncate（overflow: hidden），行高只给 1em 时字体的
+     ascent + descent 高出内容盒，上下缘被切掉，就是用户报的「胶囊把字裁了」。 */
   border-radius: 999px; color: var(--text-dim);
   font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1.45; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-/* 没选中**不画底**：托盘本身已经有浅底，再给每枚叠一层只会糊成一片
-   （浅色下 `--text` 5% 混出来的灰与激活用的 `--bg` 几乎同色，反而看不出谁被选中）。 */
+/* 没选中**不画底**：托盘本身已经有浅底，再给每枚叠一层只会糊成一片。 */
 .tab:hover { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); text-decoration: none; }
 .tab.active { background: var(--bg-elev); color: var(--accent-text); font-weight: 600; box-shadow: var(--shadow-1); }
-/* 常驻的「首页」标签（= 被删掉的 🏠 按钮的替身）**任何状态下都特殊显示**（用户口径）：
- *   - 平时（没选中）：**实心主题色**胶囊 + 反白文字 —— 与「继续翻译」那枚 `.btn.primary`
- *     同一档，一眼看出"这是回首页的入口"，而不是一枚普通的灰字标签；
- *     它没有 ×，所以左右内边距必须对称（否则内容偏右，用户报过）；
- *   - 落在首页时：同一块底色，再加一圈**反白细内描边** + 加粗，"你在这里"照样看得出来。
- * ⚠️ 底色一律用**主题色**（--accent），不是内容标签激活时那块中性灰胶囊（--bg-elev）——
- *    两者不混，所以不会重演"首页看起来一直是被选中的标签"（用户早先报过的问题）。
- * 2026-10-16 起它是**独立的 flex 子项**（不在 `.tab-strip` 里），所以任何滚动位置都在。 */
-.tab.pinned {
-  flex: none; padding: 0 12px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent);
-}
-.tab.pinned:hover { background: var(--accent-hover); color: var(--text-on-accent); }
-.tab.pinned.active {
-  background: var(--accent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-on-accent) 50%, transparent);
-}
 .tab-title { max-width: 130px; cursor: default; }
 .tab-rename {
   width: 120px; height: 20px; padding: 0 4px; font-size: calc(12.5px * var(--ts, 1));
@@ -397,6 +312,8 @@ function onContextMenu(key: string, ev: MouseEvent) {
   background: transparent; color: var(--text-faint); cursor: pointer; flex: none;
 }
 .tab-close:hover { background: var(--bg-pressed); color: var(--text); }
+
+
 /* 标签右键菜单：挂在标签内绝对定位，点空白处由标签条的 click 收起 */
 .tab-menu {
   position: absolute; top: 36px; left: 4px; z-index: 50;

@@ -3,14 +3,15 @@
  * 用 `import.meta.env.BASE_URL` 而不是写死字符串：`base` 一改（`/app/` → `/cylit/`）
  * 这里不用跟着改，少一处能对不上的地方。
  *
- * 应用是**多标签页外壳**：顶栏是标签条（`components/TabBar.vue`），导航入口在首页
- * （`views/HomeView.vue`）。标签条的默认标题与图标在 `stores/tabs.ts` 的 `TAB_META` 里，
- * 视图加载完数据后可以用 `setTabTitle()` 把标题换成论文名这类更具体的信息。
+ * 应用是**多标签页外壳**：左侧栏（`components/AppSidebar.vue`）负责导航，顶栏
+ * （`components/TabBar.vue`）只装**论文标签**。标签的默认标题与图标在 `stores/tabs.ts` 的
+ * `TAB_META` 里，视图加载完数据后可以用 `setTabTitle()` 把标题换成论文名这类更具体的信息。
  */
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { rememberScroll, savedScroll } from '@/stores/scrollMemory';
-import { activateRoute, routeKey, tabHash } from '@/stores/tabs';
+import { lastNavHash, rememberNavHash } from '@/stores/navMemory';
+import { NAV_ROUTES, activateRoute, routeKey, tabHash } from '@/stores/tabs';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/home' },
@@ -27,6 +28,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { title: '知识库' } },
   { path: '/study', name: 'study', component: () => import('@/views/StudyView.vue'), meta: { title: '学习' } },
   { path: '/notes', name: 'notes', component: () => import('@/views/NotesView.vue'), meta: { title: '笔记' } },
+  // AI 对话整页：**整套外壳都不显示**（侧栏与标签条都藏掉，它自己就是一屏），见 App.vue 的 shellMode。
+  // 组件由另一个改动并行创建；滚动按普通页处理即可（不需要特殊分支）。
+  { path: '/chat', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: 'AI 对话' } },
   // 模型管理并进了设置页的「模型」区。老标签页 / 老书签仍会打到 /models，
   // 保留 name 是为了让 localStorage 里那批旧标签还能解析出标题，路径本身直接重定向到对应分区。
   { path: '/models', name: 'models', redirect: '/settings#models' },
@@ -86,8 +90,10 @@ export const router = createRouter({
       //   ① **深链**（`/app/settings#kb`，或在别处 `openTab({hash})`）：hash 是"要去哪一区"，
       //      交给页面自己滚 —— 这里返回 `{top:0}` 会跟它抢，落点变成随机的；
       //   ② **标签切回来**：这个 hash 是标签自己记下的（见 `activateRoute`），此时该回到上次的位置。
-      // 判据：标签记的 hash 与 `to.hash` 一致 = ②（深链那次标签还没登记/记的是别的区）。
-      if (tabHash(key) !== to.hash) return false;
+      // 判据：**本应用记着的** hash 与 `to.hash` 一致 = ②（深链那次还没登记/记的是别的区）。
+      // 两处都能"记着"：论文页在标签里（`tabHash`），导航页在 `stores/navMemory`（侧栏带着它跳回来）。
+      const known = tabHash(key) || lastNavHash(String(to.name ?? ''));
+      if (known !== to.hash) return false;
       return top ? restoreScroll(top) : false;
     }
     // 切标签回来：回到**这个标签**上次看到的地方（没记过 = 顶部）
@@ -102,8 +108,14 @@ router.beforeEach((to, from) => {
 });
 
 router.afterEach((to) => {
-  // 标签条跟着路由走：当前位置一定有对应标签，且它是激活的那个
+  // 标签条跟着路由走：论文页会登记/激活标签（导航页只把 activeKey 置空）
   activateRoute(to);
+  // 导航页记下"停在哪个分区"：设置页的 #kb 这类锚点，下次从侧栏点回来要还原
+  // （标签条不再装导航页，`stores/tabs` 那份 hash 记忆对它就没有载体了）。
+  // ⚠️ hash 为空时**不覆盖**旧记忆（见 `rememberNavHash` 的注释）：从别处点一下「设置」
+  //    落在默认分区，不该把用户记住的 #kb 抹掉。论文页不记，它们的 hash 归标签管。
+  const navName = String(to.name ?? '');
+  if (NAV_ROUTES.has(navName)) rememberNavHash(navName, to.hash);
   const title = (to.meta?.title as string) ?? 'Cylit';
   document.title = `${title} · Cylit`;
 });
