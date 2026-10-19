@@ -7121,7 +7121,7 @@ function renderMarkdown(text?: string | null) {
       :open="card.open"
       :anchor="card.anchor"
       :anchored="card.anchored"
-      :title="card.mode === 'view' ? '笔记' : '编辑'"
+      :title="card.mode === 'view' ? '笔记' : ''"
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
@@ -7156,28 +7156,15 @@ function renderMarkdown(text?: string | null) {
       </template>
       <template #head-mid>
         <!-- 相对时间紧贴在「笔记」标题右侧（用户口径 2026-11-26）：它是这条笔记的属性，
-             放到按钮区最左边会看着像另一组东西。编辑态不显示（那一行被色点占满）。 -->
+             放到按钮区最左边会看着像另一组东西。编辑态不显示。
+             ⚠️ 按钮都在右侧（head-extra / head-tail），这一格只放属性文字 ——
+             用户口径 2026-11-28 十七轮：编辑态从左到右 = 删除 · 更多 · 色点 · 保存。 -->
         <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
-        <!-- 高亮颜色：**一枚圆形按钮**（里面就是当前颜色，与头部其它按钮同尺寸、同底色），
-             点开是贴着它的二级菜单。**只在编辑态给** —— 查看态保持干净（用户口径 2026-11-28 七轮）。
-             顺序：**色点在前、删除在后**（用户口径 2026-11-28 十四轮：删除挨着色点左键太容易误触，
-             挪到它右边、离返回箭头也远一格）。 -->
-        <button
-          v-if="card.highlightId && card.mode !== 'view'"
-          type="button"
-          class="np-color-btn"
-          data-note-color
-          :class="{ on: noteColorMenu.open && noteColorMenu.key === card.key }"
-          title="高亮颜色"
-          aria-haspopup="menu"
-          :aria-expanded="noteColorMenu.open && noteColorMenu.key === card.key"
-          @click.stop="openNoteColorMenu($event, card)"
-        >
-          <span class="np-color-dot hl-swatch" :class="card.color"
-                :style="colorDotStyle(card.color)" />
-        </button>
-        <!-- 删除键排在**色点右侧**（用户口径 2026-11-28 十四轮）：它是最危险的一枚，
-             不能紧贴返回箭头或色点，右边只与 ✓ 保存相邻（中间还隔着⋯那一格）。 -->
+      </template>
+      <template #head-extra>
+        <!-- 编辑态**最靠左**的那枚：删除（用户口径 2026-11-28 十七轮：删除 · ⋯ · 色点 · ✓）。
+             它后面才是 ⋯（由 FloatingCard 渲染），所以两者相邻但顺序是定死的；
+             `@click.stop` 是为了不触发卡片的"按下即锚定"那条捕获逻辑之外的其他点击行为。 -->
         <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
                 :disabled="card.busy" title="删除笔记" data-note-delete
                 aria-haspopup="menu"
@@ -7185,8 +7172,6 @@ function renderMarkdown(text?: string | null) {
                 @click.stop="openNoteDelMenu($event, card)">
           <AppIcon name="trash" :size="13" />
         </button>
-      </template>
-      <template #head-extra>
         <!-- 按钮组**最左**（在相对时间之前）：「定位到原文」。
              这枚键原来放的是**手动锚定**开关（`FloatingCard` 的 `hideAnchor` 一关就有）；
              本轮按用户口径 2026-11-23 换掉了：锚定改**自动** —— 见模板根上那条
@@ -7208,8 +7193,25 @@ function renderMarkdown(text?: string | null) {
         </button>
         <!-- 时间已经挪到标题右侧（见 head-mid）；这里只剩「定位」——它在「编辑」左边，
              两枚相邻：先定位再看，动作顺序与视觉顺序一致（用户口径 2026-11-26）。 -->
-        <!-- 编辑态头部只剩 ✓ 保存：查看态的「编辑」已经收进 ⋯ 二级菜单（与字号同一处），
-             因为查看态那一行同时要塞「定位 / 编辑 / 放大 / 缩小 / 还原 / ✕」，五枚并排必然挤成一团。 -->
+      </template>
+      <!-- 编辑态最右那两枚：**色点 → ✓ 保存**（用户口径 2026-11-28 十七轮）。
+           它们必须排在 ⋯ 之后，所以走 `head-tail` 插槽（FloatingCard 里那一格渲染在 ⋯ 与 ✕ 之间）。
+           色点与头部其它按钮同几何；点开是贴着它的换色菜单。 -->
+      <template #head-tail>
+        <button
+          v-if="card.highlightId && card.mode !== 'view'"
+          type="button"
+          class="np-color-btn"
+          data-note-color
+          :class="{ on: noteColorMenu.open && noteColorMenu.key === card.key }"
+          title="高亮颜色"
+          aria-haspopup="menu"
+          :aria-expanded="noteColorMenu.open && noteColorMenu.key === card.key"
+          @click.stop="openNoteColorMenu($event, card)"
+        >
+          <span class="np-color-dot hl-swatch" :class="card.color"
+                :style="colorDotStyle(card.color)" />
+        </button>
         <button v-if="card.mode !== 'view'" class="np-head-save" type="button"
                 :disabled="card.busy" title="保存笔记" data-note-save
                 @click="saveNotePopover(card)">
