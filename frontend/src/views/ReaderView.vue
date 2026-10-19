@@ -5697,6 +5697,79 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onNoteDelKeydown, true);
 });
 
+/* ---------------------- 笔记卡的高亮颜色（用户口径 2026-11-28） ----------------------
+ * 原来头部把 8 枚色点一字排开（而且只有编辑态给），又挤、查看态还改不了色。
+ * 现在合并成**一枚圆形按钮**：里面就是当前高亮色，点开是一块贴着它的二级菜单（7 色 + 自定义）。
+ * 查看态 / 编辑态都有；菜单带"从按钮那一角张开"的弹出动画。
+ * 状态与删除菜单同一个写法（局部 ref + Teleport + 打开期间才挂全局监听）。 */
+const noteColorMenu = ref({ open: false, top: 0, left: 0, key: '', origin: 'top left' });
+const NOTE_COLOR_MENU_W = 196;
+const NOTE_COLOR_MENU_H = 62;
+/** 菜单正对着的那张卡（菜单里高亮"当前色"、点色时改的都是它） */
+const colorMenuCard = computed(() => (noteColorMenu.value.open
+  ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
+const isHexColor = (color: string) => color.startsWith('#');
+/** 自定义色不是那 7 个类名之一，只能行内给（否则圆点会是空的） */
+function colorDotStyle(color: string) {
+  return isHexColor(color) ? { background: color } : undefined;
+}
+
+function closeNoteColorMenu() {
+  if (!noteColorMenu.value.open) return;
+  noteColorMenu.value = { open: false, top: 0, left: 0, key: '', origin: 'top left' };
+}
+
+/** 贴着那枚圆钮弹开：左边对齐、向下 6px；下方放不下就翻到上面（`transform-origin` 跟着换）。
+ *  再点同一枚 = 收起（所以"点别处就收"把触发钮排在外面）。 */
+function openNoteColorMenu(ev: MouseEvent, card: NoteCard) {
+  const same = noteColorMenu.value.open && noteColorMenu.value.key === card.key;
+  closeNoteColorMenu();
+  closeNoteDelMenu();
+  if (same) return;
+  const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r ? r.left : 12,
+    window.innerWidth - NOTE_COLOR_MENU_W - 8));
+  let top = r ? r.bottom + 6 : 12;
+  let origin = 'top left';
+  if (top + NOTE_COLOR_MENU_H > window.innerHeight - 8) {
+    top = r ? Math.max(8, r.top - NOTE_COLOR_MENU_H - 6) : 8;
+    origin = 'bottom left';
+  }
+  noteColorMenu.value = { open: true, top: Math.round(top), left: Math.round(left),
+    key: card.key, origin };
+}
+
+function onNoteColorOutside(ev: PointerEvent) {
+  if ((ev.target as HTMLElement | null)?.closest?.('[data-note-color-menu], [data-note-color]')) return;
+  closeNoteColorMenu();
+}
+function onNoteColorKeydown(ev: KeyboardEvent) {
+  if (ev.key !== 'Escape') return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  closeNoteColorMenu();
+}
+watch(() => noteColorMenu.value.open, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', onNoteColorOutside, true);
+    document.addEventListener('keydown', onNoteColorKeydown, true);
+  } else {
+    document.removeEventListener('pointerdown', onNoteColorOutside, true);
+    document.removeEventListener('keydown', onNoteColorKeydown, true);
+  }
+});
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onNoteColorOutside, true);
+  document.removeEventListener('keydown', onNoteColorKeydown, true);
+});
+
+/** 选一个颜色：立刻写回这处高亮；自定义取色**不关**菜单（可以边调边看） */
+async function pickNoteColor(color: string, close = true) {
+  const card = colorMenuCard.value;
+  if (close) closeNoteColorMenu();
+  if (card) await setNoteColor(card, color);
+}
+
 /** 只有点「删除这条笔记」才真的删（原来那枚垃圾桶的动作原样搬到这里） */
 function onNoteDelConfirm() {
   const key = noteDelMenu.value.key;
@@ -7061,23 +7134,22 @@ function renderMarkdown(text?: string | null) {
         <!-- 相对时间紧贴在「笔记」标题右侧（用户口径 2026-11-26）：它是这条笔记的属性，
              放到按钮区最左边会看着像另一组东西。编辑态不显示（那一行被色点占满）。 -->
         <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
-        <div v-if="card.mode !== 'view' && card.highlightId" class="np-colors">
-          <button
-            v-for="c in HIGHLIGHT_COLORS"
-            :key="c"
-            type="button"
-            class="hl-swatch"
-            :class="[c, { on: card.color === c }]"
-            :title="`换成 ${c} 色`"
-            data-note-color
-            @click="setNoteColor(card, c)"
-          />
-          <!-- 自定义色（用户口径 2026-10-10："少了自定义色彩"）—— 与胶囊上那枚同一做法 -->
-          <label class="hl-swatch custom" title="自定义颜色">
-            <input type="color" value="#ffd700" data-note-custom aria-label="自定义高亮颜色"
-                   @input="setNoteColor(card, ($event.target as HTMLInputElement).value)">
-          </label>
-        </div>
+        <!-- 高亮颜色：**一枚圆形按钮**（里面就是当前颜色，尺寸与其它按钮一致），
+             点开是贴着它的二级菜单。查看态也给 —— 查看时也想改色（用户口径 2026-11-28）。 -->
+        <button
+          v-if="card.highlightId"
+          type="button"
+          class="np-color-btn"
+          data-note-color
+          :class="{ on: noteColorMenu.open && noteColorMenu.key === card.key }"
+          title="高亮颜色"
+          aria-haspopup="menu"
+          :aria-expanded="noteColorMenu.open && noteColorMenu.key === card.key"
+          @click.stop="openNoteColorMenu($event, card)"
+        >
+          <span class="np-color-dot hl-swatch" :class="card.color"
+                :style="colorDotStyle(card.color)" />
+        </button>
       </template>
       <template #head-extra>
         <!-- 按钮组**最左**（在相对时间之前）：「定位到原文」。
@@ -7157,6 +7229,43 @@ function renderMarkdown(text?: string | null) {
                 data-note-del-cancel @click="closeNoteDelMenu">
           <span>取消</span>
         </button>
+      </div>
+    </Teleport>
+
+    <!-- 换色菜单：贴着那枚圆钮弹开。同样 Teleport 到 body（浮层壳是 overflow: hidden，留在里面会被裁），
+         弹出时从按钮那一角张开（`transform-origin` 由 openNoteColorMenu 写）。 -->
+    <Teleport to="body">
+      <div
+        v-if="noteColorMenu.open"
+        class="note-color-menu"
+        data-note-color-menu
+        role="menu"
+        aria-label="高亮颜色"
+        :style="{ top: noteColorMenu.top + 'px', left: noteColorMenu.left + 'px',
+          transformOrigin: noteColorMenu.origin }"
+      >
+        <div class="ncm-row">
+          <button
+            v-for="c in HIGHLIGHT_COLORS"
+            :key="c"
+            type="button"
+            class="hl-swatch"
+            :class="[c, { on: colorMenuCard?.color === c }]"
+            :title="`换成 ${c} 色`"
+            data-note-color-pick
+            @click="pickNoteColor(c)"
+          />
+          <!-- 自定义色（用户口径 2026-10-10："少了自定义色彩"）—— 与胶囊上那枚同一做法 -->
+          <label class="hl-swatch custom" title="自定义颜色">
+            <input
+              type="color"
+              :value="colorMenuCard && isHexColor(colorMenuCard.color) ? colorMenuCard.color : '#ffd700'"
+              data-note-custom aria-label="自定义高亮颜色"
+              @input="pickNoteColor(($event.target as HTMLInputElement).value, false)"
+            >
+          </label>
+        </div>
+        <span class="ncm-hint">高亮颜色</span>
       </div>
     </Teleport>
 
@@ -7738,9 +7847,10 @@ function renderMarkdown(text?: string | null) {
   bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   border: var(--fc-stroke) solid var(--fc-handle);
   border-radius: 50%;
+  /* 只留 15°（对角线两侧各 7.5°）：cos37.5/sin37.5 = 79.34% / 60.88% */
   clip-path: polygon(50% 50%,
-    calc(50% + 96.6%) calc(50% + 25.9%),
-    calc(50% + 25.9%) calc(50% + 96.6%));
+    calc(50% + 79.34%) calc(50% + 60.88%),
+    calc(50% + 60.88%) calc(50% + 79.34%));
   /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
               opacity 280ms var(--ease),
@@ -7753,8 +7863,8 @@ function renderMarkdown(text?: string | null) {
   right: auto;
   left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   clip-path: polygon(50% 50%,
-    calc(50% - 25.9%) calc(50% + 96.6%),
-    calc(50% - 96.6%) calc(50% + 25.9%));
+    calc(50% - 79.34%) calc(50% + 60.88%),
+    calc(50% - 60.88%) calc(50% + 79.34%));
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
 .reader > .float-grip.unfocused::after { opacity: .24; }
@@ -8270,10 +8380,40 @@ function renderMarkdown(text?: string | null) {
 @keyframes pg-in { from { opacity: 0; } to { opacity: 1; } }
 /* 头部那行相对时间（`head-extra` 插槽里的第一个节点，排在 ✓ 前面） */
 .np-time { flex: none; margin-right: 6px; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
-/* 笔记卡内嵌色条：与「笔记」两字**同一行**（用户口径 2026-10-10），
-   所以自身不带外边距/内边距，间距交给标题行的 `gap`。 */
-.np-colors { display: flex; align-items: center; gap: 5px; flex: none; margin: 0; }
-.np-colors .hl-swatch { border: 0; cursor: pointer; }
+/* 高亮颜色：**一枚圆形按钮**（与头部其它按钮同尺寸），里面就是当前颜色。
+   点开的二级菜单单独画在下面的 `.note-color-menu`（Teleport 到 body）。 */
+.np-color-btn {
+  width: 24px; height: 24px; flex: none; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-strong); background: var(--bg-layer); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.np-color-btn:hover { background: var(--bg-hover); border-color: var(--text-dim); }
+.np-color-btn.on { border-color: var(--accent); background: var(--accent-soft); }
+.np-color-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+/* 圆点本身沿用 `.hl-swatch` 那套颜色类（自定义色由行内 style 给），只收小一点 */
+.np-color-btn .np-color-dot { width: 14px; height: 14px; border: 0; pointer-events: none; }
+/* 换色菜单：贴着按钮弹开，弹出时**从按钮那一角张开**（transform-origin 由 JS 写） */
+.note-color-menu {
+  position: fixed; z-index: 321;
+  padding: 6px 7px; display: flex; flex-direction: column; gap: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-flyout);
+  animation: ncm-pop 190ms cubic-bezier(.2, 1.15, .35, 1);
+}
+.note-color-menu .ncm-row { display: flex; align-items: center; gap: 6px; }
+.note-color-menu .ncm-hint {
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); padding-left: 1px;
+}
+@keyframes ncm-pop {
+  from { opacity: 0; transform: translateY(6px) scale(.9); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .note-color-menu { animation: none; }
+}
 /* ---- 笔记框照目标站重做（用户口径 2026-10-10）----
    标注卡：`rounded-2xl`(16px) + 1px 描边 + 大阴影 + **不透明底**；
    编辑区：`min-h-24`(96px) / `max-h-64`(256px)、`text-base/relaxed`(16px/1.6)、
@@ -8332,13 +8472,16 @@ function renderMarkdown(text?: string | null) {
 [data-note-popover] :deep(.fc-title) { font-size: calc(13px * var(--ts, 1)); font-weight: 600; flex: none; }
 /* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
    左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
-[data-note-popover] .np-colors { padding: 0; margin: 0 0 0 2px; }
-/* 自定义色那枚：与胶囊上那枚同一个做法（`SelectionMenu` 的样式是 scoped 的，这里得再来一份） */
-[data-note-popover] .hl-swatch.custom {
+[data-note-popover] .np-color-btn { margin: 0 0 0 2px; }
+/* 自定义色那枚：与胶囊上那枚同一个做法（`SelectionMenu` 的样式是 scoped 的，这里得再来一份）。
+   ⚠️ 选择器要**两处都写**：换色菜单 Teleport 到 body，不在 `[data-note-popover]` 里面。 */
+[data-note-popover] .hl-swatch.custom,
+.note-color-menu .hl-swatch.custom {
   position: relative; overflow: hidden;
   background: conic-gradient(from 90deg, #ff0080, #ff8c00, #ffe600, #00d26a, #00b3ff, #7c3aed, #ff0080);
 }
-[data-note-popover] .hl-swatch.custom input {
+[data-note-popover] .hl-swatch.custom input,
+.note-color-menu .hl-swatch.custom input {
   position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0;
   opacity: 0; cursor: pointer; appearance: none;
 }

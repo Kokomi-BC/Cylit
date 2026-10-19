@@ -949,10 +949,11 @@ watchEffect(applyShellDom, { flush: 'sync' });
   bottom: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
   border: var(--fc-stroke) solid var(--fc-handle);
   border-radius: 50%;
-  /* 右下角：扇形张开在 45° 对角线两侧各 30°（cos15/sin15 = 96.6% / 25.9% 的盒宽） */
+  /* 只留 **15°**（对角线两侧各 7.5°）：cos37.5 / sin37.5 = 79.34% / 60.88% 的盒宽 ——
+     半径大 → 弧很缓；角度小 → 只是一小段，像笔尖轻轻带过（用户口径 2026-11-28 六轮）。 */
   clip-path: polygon(50% 50%,
-    calc(50% + 96.6%) calc(50% + 25.9%),
-    calc(50% + 25.9%) calc(50% + 96.6%));
+    calc(50% + 79.34%) calc(50% + 60.88%),
+    calc(50% + 60.88%) calc(50% + 79.34%));
   /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
      瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
   /* 这三条只管**松手之后**的回位：动画一摘，浏览器就按这里从前一刻的值渐变回静止态
@@ -982,8 +983,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
   right: auto;
   left: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-ring) / 2);
   clip-path: polygon(50% 50%,
-    calc(50% - 25.9%) calc(50% + 96.6%),
-    calc(50% - 96.6%) calc(50% + 25.9%));
+    calc(50% - 79.34%) calc(50% + 60.88%),
+    calc(50% - 60.88%) calc(50% + 79.34%));
 }
 /* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的一半出头，
    小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */
