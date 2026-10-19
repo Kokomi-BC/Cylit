@@ -81,6 +81,8 @@ export interface DetectImageViewer {
    * 几何由组件按触发缩略图的矩形算好，这里**不做 clamp**（那是手势边界的事，不是退出动画的事）。
    */
   animateTo: (scale: number, x: number, y: number, ms?: number) => void;
+  /** 退出动画专用：立 exiting 标志，期间手势 / 归位 / 切图全部让路 */
+  beginExit: (scale: number, x: number, y: number, ms?: number) => void;
   /** 切到相邻图（-1 上一张 / +1 下一张）；越界或正在切换时自己会拒绝 */
   stepTo: (delta: number) => void;
   getScale: () => number;
@@ -105,6 +107,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
   /** 视图状态：位移是屏幕像素，绕自身中心缩放与旋转 */
   let imageScale = 1;
+  /** 退出动画进行中：期间一切会改写 transform / transition 的入口都要让路，否则过渡会被打断成瞬跳 */
+  let exiting = false;
   let imageX = 0;
   let imageY = 0;
   let imageRotation = 0;
@@ -218,6 +222,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   /* ---------- 松手归位（源文件 settleImageToNaturalSize） ---------- */
 
   const settleImageToNaturalSize = (targetRotation = 0, duration = 420) => {
+    if (exiting) return;
     if (!active) return;
 
     imageRotation = targetRotation;
@@ -268,6 +273,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   };
 
   const clampImagePosition = (animate = false) => {
+    if (exiting) return { maxX: 0, maxY: 0 };
     const { vw, vh, transformedW, transformedH } = getImageRenderMetrics();
     const maxX = Math.max(0, (transformedW - vw) / 2);
     const maxY = Math.max(0, (transformedH - vh) / 2);
@@ -582,6 +588,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     onFinalize?: () => void;
   } = {}) => {
     // 单图（列表长度 <= 1）没有相邻图可切，直接退出
+    if (exiting) return false;
     if (!Array.isArray(modalImageList) || modalImageList.length <= 1) return false;
     if (modalImageSwitching) return false;
     const nextIndex = modalImageIndex + delta;
@@ -755,7 +762,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
    * 归位 / 旋转吸附 90° / 下滑关闭阈值）因此只有下面这一份，没有任何一处针对鼠标另写。 */
 
   const handleTouchStart = (e: GestureEvent) => {
-    if (!active) return;
+    if (!active || exiting) return;
     if (previewCommitInProgress || modalImageSwitching) {
       e.preventDefault();
       return;
@@ -800,6 +807,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   };
 
   const handleTouchMove = (e: GestureEvent) => {
+    if (exiting) return;
     if (!active) return;
     if (isPinching && e.touches.length === 2) {
       e.preventDefault();
@@ -970,6 +978,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   };
 
   const handleTouchEnd = (e: GestureEvent) => {
+    if (exiting) return;
     if (!active) return;
     const winH = window.innerHeight;
     const winW = window.innerWidth;
@@ -1252,7 +1261,14 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   };
 
   const reset = () => {
+    exiting = false;
     settleImageToNaturalSize(0, 420);
+  };
+
+  /** 进入退出动画：先立标志（期间拒绝手势 / 归位 / 切图），再交给 animateTo 写几何 */
+  const beginExit = (scale: number, x: number, y: number, ms = 260) => {
+    exiting = true;
+    animateTo(scale, x, y, ms);
   };
 
   /**
@@ -1355,6 +1371,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     zoomBy,
     reset,
     animateTo,
+    beginExit,
     stepTo: (delta: number) => { switchModalImageByDelta(delta); },
     getScale: () => imageScale,
     getIndex: () => modalImageIndex,

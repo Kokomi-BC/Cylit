@@ -186,16 +186,20 @@ function requestClose() {
     /* 拿不到源图矩形（例如对话里贴的图、外部链接图）：退化成原地缩小 + 整屏淡出，
        总之不能一按就"啪"地消失。 */
     const s = viewer.getScale();
-    viewer.animateTo(Math.max(0.2, s * 0.86), 0, 0, 200);
+    viewer.beginExit(Math.max(0.2, s * 0.86), 0, 0, 200);
     closeTimer = window.setTimeout(finishClose, 210);
     return;
   }
+  /* 旋转过（90°/270°）说明 .sheet 现在是旋转后的包围盒，直接飞回长宽比会对不上；
+     先让控制器把旋转归零、按正向重新锁一次尺寸，几何才是对的。 */
+  if (nat.value.w) viewer.setImage(nat.value.w, nat.value.h);
   const stageW = stage.value?.clientWidth || window.innerWidth;
   const stageH = stage.value?.clientHeight || window.innerHeight;
-  const tScale = o.width / size.value.w;
+  const w = size.value.w || 1;
+  const tScale = o.width / w;
   const tx = o.left + o.width / 2 - stageW / 2;
   const ty = o.top + o.height / 2 - stageH / 2;
-  viewer.animateTo(tScale, tx, ty, 260);
+  viewer.beginExit(tScale, tx, ty, 260);
   closeTimer = window.setTimeout(finishClose, 280);
 }
 
@@ -289,9 +293,6 @@ onBeforeUnmount(() => {
         <span class="zpct" data-viewer-zoom="pct">{{ pct }}%</span>
         <button class="zbtn" title="缩小" data-viewer-zoom="out" @click="zoomStep(-1)">
           <AppIcon name="zoom-out" :size="18" />
-        </button>
-        <button class="zbtn" title="重置为 100%（适应窗口）" data-viewer-zoom="reset" @click="resetView">
-          <AppIcon name="rotate" :size="18" />
         </button>
         <button v-if="hasNext" class="zbtn" title="下一张" data-viewer-zoom="next" @click="stepImage(1)">
           <span class="zflip"><AppIcon name="back" :size="18" /></span>
