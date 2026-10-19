@@ -992,21 +992,23 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
           return;
         }
 
-        // 统一弹性回正逻辑
+        /* 松手回正：只有转到"接近直角"时才吸附（偏差 <= 12°，视觉上几乎无感）。
+           转了一大截（比如 30°）就保持用户转到的角度 —— 以前无条件吸回 90° 的整数倍，
+           松手那一下会突然弹回去，看起来就是"跳变"。 */
         const snappedRotation = Math.round(imageRotation / 90) * 90;
         const rotationDelta = Math.abs(snappedRotation - imageRotation);
+        const shouldSnap = rotationDelta <= 12;
 
         if (imageScale < 1) {
-          settleImageToNaturalSize(snappedRotation, 420);
-        } else if (rotationDelta > 0) {
-          // 只要有旋转偏差，不论多小，松手时都要回正，且不改变 scale
+          settleImageToNaturalSize(shouldSnap ? snappedRotation : imageRotation, 420);
+        } else if (shouldSnap && rotationDelta > 0) {
+          // 转到了接近直角：轻微回正（几度，看不出来）
           imageRotation = snappedRotation;
           img.style.transition = 'transform 0.4s cubic-bezier(0.2, 0, 0.2, 1)';
           updateImageTransform();
           clampImagePosition(true);
         } else {
-          // 未发生旋转
-          imageRotation = snappedRotation;
+          // 没有旋转，或转了一大截：保持用户转到的角度，只把位移夹回边界
           clampImagePosition(true);
         }
       }
@@ -1068,7 +1070,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
           const currentSnapped = Math.round(imageRotation / 90) * 90;
           const dragRotationDelta = Math.abs(currentSnapped - imageRotation);
-          const dragShouldSnapRotation = dragRotationDelta >= ROTATION_INTENT_THRESHOLD;
+          /* 同样只在接近直角时回正：大角度旋转保持原样，不然松手会突然弹回 */
+          const dragShouldSnapRotation = dragRotationDelta <= 12;
 
           if (dragShouldSnapRotation) {
             settleImageToNaturalSize(currentSnapped, 420);

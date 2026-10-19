@@ -660,6 +660,9 @@ const zoomImage = ref<ZoomTarget | null>(null);
  */
 const zoomOrigin = ref<{ left: number; top: number; width: number; height: number } | null>(null);
 function onZoomOriginDown(ev: PointerEvent) {
+  /* 查看器已经开着时，这一下按的是查看器自己（关闭按钮、背景、胶囊）—— 绝不能拿它覆盖落点，
+     否则点关闭的那一下 origin 就被清成 null，退出动画直接退化成"原地淡出"。 */
+  if (zoomImage.value) return;
   /* 触发放大的可能是 img 本身，也可能是包着它的容器（正文图点击落在 wrapper 上），
      所以向祖先找不到时再往子孙里找一次 —— 否则 origin 恒为 null，关闭就没有飞回动画。 */
   const t = ev.target instanceof Element ? ev.target : null;
