@@ -7121,7 +7121,7 @@ function renderMarkdown(text?: string | null) {
       :open="card.open"
       :anchor="card.anchor"
       :anchored="card.anchored"
-      :title="card.mode === 'view' ? '笔记' : '编辑'"
+      :title="card.mode === 'view' ? '笔记' : ''"
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
@@ -7150,6 +7150,9 @@ function renderMarkdown(text?: string | null) {
                 title="返回" data-note-back @click="onNoteBack(card)">
           <AppIcon name="back" :size="14" />
         </button>
+        <!-- 「编辑」这行字放在**插槽里紧跟箭头**，不走标题位：插槽里的两个元素只隔一层 gap，
+             再补 6px 就与"箭头到卡片左沿"的 12px 完全相等（用户口径 2026-11-28 十九轮之二）。 -->
+        <span v-if="card.mode !== 'view'" class="np-back-label">编辑</span>
         <!-- 查看态**不摆色点按钮**（用户口径 2026-11-28 七轮），颜色改由图标 + 标题表达：
              图标和「笔记」两个字一起染成这处高亮的颜色，零新增元素、不多一枚控件。 -->
         <AppIcon v-else name="note" :size="14" :style="noteLeadStyle(card)" />
@@ -8392,6 +8395,12 @@ function renderMarkdown(text?: string | null) {
   background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
   cursor: pointer; transition: background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+/* 箭头右侧那行「编辑」：与标题同一档字号 / 字重，左补 6px —— 箭头到它的距离 = head 的 gap 6 + 6 = 12，
+   与箭头到卡片左沿（padding-left 12）一模一样。 */
+.np-back-label {
+  margin-left: 6px; font-size: calc(11.5px * var(--ts, 1)); font-weight: 600;
+  color: var(--text-dim); white-space: nowrap;
 }
 .np-back:hover { background: var(--bg-hover); color: var(--text); }
 .np-back:active { transform: scale(.94); }
