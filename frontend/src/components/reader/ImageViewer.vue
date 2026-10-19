@@ -272,6 +272,9 @@ onBeforeUnmount(() => {
 .shot {
   display: block; width: 100%; height: 100%;
   background: #fff; box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  /* 旋转 / 缩放全程交给合成层，避免每帧重新栅格化造成掉帧 */
+  will-change: transform;
+  backface-visibility: hidden;
   transform-origin: center center; will-change: transform;
   -webkit-user-drag: none;
 }

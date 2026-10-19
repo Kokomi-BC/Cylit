@@ -148,6 +148,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   let baseImageY = 0;
   let lastPinchAngle = 0;
   let accumulatedAngleDiff = 0;
+  /** 旋转死区：累计转角没越过这个值之前一律不转（手指搭上去的微小扰动不该让图跟着晃） */
+  const ROT_DEAD_ZONE = 7;
+  let rotArmed = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let dragPreviewActive = false;
@@ -763,6 +766,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       initialAngle = getAngle(e.touches[0], e.touches[1]);
       lastPinchAngle = initialAngle;
       accumulatedAngleDiff = 0;
+      rotArmed = false;
       baseScale = imageScale;
       baseRotation = imageRotation;
       img.style.transition = 'none';
@@ -811,9 +815,18 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       accumulatedAngleDiff += stepAngleDiff;
       lastPinchAngle = angle;
 
-      let newRotation = baseRotation + (accumulatedAngleDiff * sensitivity);
-      // 保持角度在稳定区间，避免长时间旋转后数值过大造成精度抖动
-      newRotation = normalizeAbsoluteAngle(newRotation);
+      /* 旋转死区：越过阈值之前不转；越过的那一下把累计量对齐到「刚好越过」，
+         所以起转是从 0 连续长出来的，不会一次跳掉阈值那么多度。 */
+      if (!rotArmed && Math.abs(accumulatedAngleDiff) >= ROT_DEAD_ZONE) {
+        rotArmed = true;
+        accumulatedAngleDiff -= Math.sign(accumulatedAngleDiff) * ROT_DEAD_ZONE;
+      }
+      /* 捏合过程中**不做角度归一化**：一旦在 ±180° 处折返，imageRotation 会突变 358°，
+         同一帧的位移补偿拿这个突变去算，画面就是一次明显的跳动。角度连续增长，
+         归一化留到松手吸附 90° 的时候做。 */
+      const newRotation = rotArmed
+        ? baseRotation + accumulatedAngleDiff * sensitivity
+        : baseRotation;
 
       // 计算当前捏合中心点
       const vw = window.innerWidth;
