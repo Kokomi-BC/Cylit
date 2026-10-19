@@ -7221,17 +7221,9 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="check" :size="13" />
         </button>
       </template>
-      <!-- 「⋯」二级菜单里放**定位到原文**（用户口径 2026-11-28 十八轮）。
-           「编辑」在八轮就搬回了头部（最常用的一枚，不该藏二级），这里只剩定位；
-           拿到焦点 / 滚出视口时也不必先回查看态就能跳回去。
-           几何由 FloatingCard 的 `:slotted(button)` 统一给（25px 圆钮），这里只放图标。 -->
-      <template #more-items="{ close }">
-        <button v-if="card.rowId" type="button" role="menuitem"
-                title="定位到原文" aria-label="定位到原文" data-note-locate-more
-                @click="locateNoteRow(card); close()">
-          <AppIcon name="locate" :size="13" />
-        </button>
-      </template>
+      <!-- 「⋯」二级菜单里**不再放定位**（用户口径 2026-11-28 二十轮）：定位已经是头部那枚常显键，
+           二级里再来一枚只是重复。于是本卡也不再传 `#more-items` 插槽 ——
+           FloatingCard 里那条竖分隔线只在有插槽时才画，不留空槽就不会在菜单最前面多出一道分隔线。 -->
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
 
       <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
