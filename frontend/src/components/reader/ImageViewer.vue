@@ -11,17 +11,24 @@
  * 1. 提供 DOM：整屏 `.viewer` / 定尺寸的 `.sheet` / 被变换的 `.shot` / 底部毛玻璃胶囊；
  * 2. 把 100% 的可用框（留出边距与胶囊）喂给控制器，接回它锁定的像素尺寸渲染 `.sheet`；
  * 3. 把胶囊按钮、键盘、双击接到控制器（放大缩小走 Z_STEPS 阶梯，重置调 reset）；
- * 4. 订阅控制器上报的倍率，刷新百分比读数。
+ * 4. 订阅控制器上报的倍率，刷新百分比读数；订阅切图下标，同步"当前第几张"。
+ *
+ * 相邻图由 prop `gallery` 决定（左右拖动在它们之间切上一张 / 下一张）；不传就是单图，行为与之前一致。
+ * 桌面鼠标拖动由控制器里的 pointer 通道接住，这个组件不用为它做任何事。
  *
  * 控制器自己直接写 transform（这是手势时序正确的前提：Vue 的渲染在下一个 tick，边界会读到上一帧尺寸），
  * 过渡也由它在"归位"那一下临时开，所以 CSS 里没有常驻的 `transition: transform`。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import type { ZoomTarget } from '@/api/types';
 import { createDetectImageViewer, type DetectImageViewer } from './detectImageViewer';
 
-const props = defineProps<{ target: ZoomTarget | null }>();
+const props = withDefaults(defineProps<{
+  target: ZoomTarget | null;
+  /** 同一页组里的所有图：左右拖动就在它们之间切换；不给就是单图 */
+  gallery?: ZoomTarget[];
+}>(), { gallery: () => [] });
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const stage = ref<HTMLElement | null>(null);
@@ -58,6 +65,32 @@ function onImgLoad() {
   if (!el) return;
   nat.value = { w: el.naturalWidth || 0, h: el.naturalHeight || 0 };
   relock();
+}
+
+/* ------------------------------ 相邻图（gallery） ------------------------------ */
+
+/** 控制器内部下标：切图成功后由控制器回调同步过来（父组件暂不依赖，不新增 emit） */
+const currentIndex = ref(0);
+
+/** gallery 的内容指纹：父组件每次渲染都传新数组时，不至于无谓地复位视图 */
+const galleryKey = computed(() => (props.gallery || []).map((g) => `${g?.url ?? ''}#${g?.page ?? ''}`).join('|'));
+
+/** 定"相邻图列表 + 当前下标"：先按 url 全等找，再按 page 相同找，都没有就退化成 [target] 单图 */
+function resolveGallery(target: ZoomTarget | null): { list: ZoomTarget[]; idx: number } {
+  if (!target) return { list: [], idx: 0 };
+  const gallery = (props.gallery || []).filter((g) => !!g && !!g.url);
+  if (!gallery.length) return { list: [target], idx: 0 };
+  let idx = gallery.findIndex((g) => g.url === target.url);
+  if (idx < 0 && target.page != null) idx = gallery.findIndex((g) => g.page === target.page);
+  if (idx < 0) return { list: [target], idx: 0 };
+  return { list: gallery, idx };
+}
+
+/** 把 gallery 推给控制器：真正换 src、复位视图、按 100% 重新锁定尺寸都由它负责 */
+function syncGallery() {
+  const { list, idx } = resolveGallery(props.target);
+  currentIndex.value = idx;
+  viewer?.setGallery(list.map((g) => ({ url: g.url, caption: g.caption ?? null })), idx);
 }
 
 /* ------------------------------ 胶囊 / 键盘 / 双击 ------------------------------ */
@@ -98,9 +131,9 @@ function onKey(ev: KeyboardEvent) {
 
 /* ------------------------------ 生命周期 ------------------------------ */
 
-watch(() => props.target?.url, () => {
+watch([() => props.target?.url, () => props.target?.page, galleryKey], () => {
   nat.value = { w: 0, h: 0 };
-  viewer?.reset();
+  syncGallery();
 });
 
 onMounted(() => {
@@ -115,6 +148,8 @@ onMounted(() => {
       onSize: (w, h) => { size.value = { w, h }; },
     });
     viewer.onChange((s) => { pct.value = Math.round(s * 100); });
+    viewer.onIndexChange((i) => { currentIndex.value = i; });
+    syncGallery();
   }
 
   document.addEventListener('keydown', onKey);

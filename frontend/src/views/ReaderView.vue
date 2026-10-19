@@ -652,6 +652,22 @@ const chatSelection = ref<AgentSelection | null>(null);
 const zoomImage = ref<ZoomTarget | null>(null);
 
 /**
+ * 大图查看器里可以左右拖动切换的图片集合：全书插图，按页序。
+ *
+ * URL 与图注跟 `zoomImage` 同一套口径（合成图优先，退回原图），查看器内部先按 url 全等定位，
+ * 找不到再按 page 兜底；都匹配不上（比如对话里贴的图）就自然退化成单图。
+ */
+const zoomGallery = computed<ZoomTarget[]>(() => figures.value
+  .filter((f) => !!(f.card_url || f.image_url))
+  .map((f) => ({
+    url: (f.card_url || f.image_url) as string,
+    caption: f.caption_zh || f.caption,
+    page: f.page,
+    number: f.number,
+  }))
+  .sort((a, b) => (a.page ?? 0) - (b.page ?? 0)));
+
+/**
  * 原 PDF 图层渲染失败（平板/手机上常见）：**全局胶囊 toast 只提示一次**。
  *
  * 以前每页都在图上压一行"原 PDF 渲染失败，已回退为页图"——十几页就是十几行，
@@ -7371,7 +7387,12 @@ function renderMarkdown(text?: string | null) {
     </template>
 
     <!-- 大图查看器：毛玻璃胶囊（放大 / 百分比 / 缩小 / 重置 / 关闭）。手写批注在阅读器页面上。 -->
-    <ImageViewer v-if="zoomImage" :target="zoomImage" @close="zoomImage = null" />
+    <ImageViewer
+      v-if="zoomImage"
+      :target="zoomImage"
+      :gallery="zoomGallery"
+      @close="zoomImage = null"
+    />
 
     <Modal
       :open="mdView.open"

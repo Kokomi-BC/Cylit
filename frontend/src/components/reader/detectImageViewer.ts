@@ -15,6 +15,10 @@
  *    window.history.back() 换成 opts.onClose()。
  * 3. 布局尺寸：源文件把锁定的像素宽高写进 img.style.width / height；Cylit 里 .sheet 才是被定尺寸的
  *    元素（由组件渲染），所以 lockImageElementDimension 把锁定结果回推给组件，控制器本身只写 transform。
+ * 4. 源文件只有 touch 事件（移动端），桌面上按住鼠标拖图会失效。这里加一层 pointer 通道：鼠标左键的
+ *    pointerdown/move/up 折成与 touch 同参数的 GestureEvent（当前活动指针 + 本次变化指针 + preventDefault），
+ *    喂给同一套状态机 —— 手势数学只有一份。触摸设备上 pointerType === 'touch' 的事件直接丢弃，
+ *    保证一份手势不会被 touch 与 pointer 各处理一遍。
  */
 
 /** 源文件模块级常量（第 78 行） */
@@ -29,6 +33,18 @@ const SENS = 1.25;
 /** zoomBy（按钮 / 键盘 / 双击）的倍率夹取范围：取捏合 0.2~12 与滚轮 0.1~10 的并集 */
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 12;
+
+/** 状态机只认"点的屏幕坐标"：touch 与 pointer 两条通道都折成它 */
+type Pt = { clientX: number; clientY: number };
+
+/** 状态机的入参：当前所有活动指针、本次变化的指针、preventDefault */
+type GestureEvent = { touches: Pt[]; changedTouches: Pt[]; preventDefault: () => void };
+
+/** setGallery 的列表项：url 必填，caption 对齐 ZoomTarget 的字段（这里不渲染标题，只透传） */
+export interface GalleryEntry {
+  url: string;
+  caption?: string | null;
+}
 
 export interface DetectImageViewerOptions {
   /** 整屏舞台：手势监听挂在这里（源文件的 #imageModal），拖拽关闭时变的也是它的底色 */
@@ -47,6 +63,15 @@ export interface DetectImageViewer {
   destroy: () => void;
   /** 图片自然尺寸就绪 / 容器尺寸变化后重新锁定 100% 基准（不重置缩放位移） */
   setImage: (w: number, h: number) => void;
+  /**
+   * 写入相邻图片列表与当前下标：长度 > 1 时左右拖动就能切上一张 / 下一张。
+   * 会把当前图换成 list[index].url，并把视图复位到 100%（缩放 / 位移 / 旋转全部归零后重新锁定尺寸）。
+   */
+  setGallery: (list: GalleryEntry[], index: number) => void;
+  /** 当前在列表中的下标（切图成功后由控制器推进） */
+  getIndex: () => number;
+  /** 切图成功后回调一次新下标（左右拖动切图的唯一对外信号） */
+  onIndexChange: (cb: (index: number) => void) => void;
   /** 按倍率缩放，可指定屏幕锚点（默认绕视口中心） */
   zoomBy: (factor: number, cx?: number, cy?: number) => void;
   /** 回到 100%、旋转归零、位移归零 */
@@ -71,9 +96,11 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   let imageY = 0;
   let imageRotation = 0;
 
-  /** 相邻图片列表：Cylit 只有单图，恒为长度 1，所有相邻预览分支因此永不触发（结构照留） */
+  /** 相邻图片列表（存原始 url 字符串，真正展示时才过 getDisplayUrl）；由组件的 setGallery 写入 */
   let modalImageList: string[] = [img.getAttribute('src') || ''];
   let modalImageIndex = 0;
+  /** 最近一次真正写进 img.src 的原始 url：setGallery 据此判断要不要换 src（挂载时不重复请求同一张图） */
+  let currentRawUrl = img.getAttribute('src') || '';
   /** 源文件第 83 行的模块级切换锁 */
   let modalImageSwitching = false;
   /** 图片自然尺寸（组件通过 setImage 报告；源文件直接读 imgEl.naturalWidth） */
@@ -88,6 +115,11 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   let moved = false;
 
   const listeners: ((s: number) => void)[] = [];
+  /** 切图成功后的下标订阅（组件用来同步它记的"当前第几张"） */
+  const indexListeners: ((index: number) => void)[] = [];
+  const emitIndex = (index: number) => {
+    for (const cb of indexListeners) cb(index);
+  };
 
   /* ---------- 源文件 initImageTouchHandlers 内的局部状态 ---------- */
 
@@ -150,7 +182,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     const nextH = nh * fitScale;
 
     if (imgEl !== img) {
-      // 相邻预览图（Cylit 永远走不到）：源文件就是直接写这张图的宽高
+      // 相邻预览图：源文件就是直接写这张图的宽高（只有 img 这一张走 lockedW / onSize）
       imgEl.style.width = nextW + 'px';
       imgEl.style.height = nextH + 'px';
       imgEl.style.maxWidth = 'none';
@@ -264,7 +296,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     return { maxX, maxY };
   };
 
-  /* ---------- 相邻图片预览（Cylit 单图，永不触发，结构照留） ---------- */
+  /* ---------- 相邻图片预览（列表长度 > 1 时，左右拖动才会走到） ---------- */
 
   const getDisplayUrl = (src: string) => {
     if (src && !src.startsWith('data:') && !src.startsWith('blob:') && src.startsWith('http')) {
@@ -533,7 +565,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     restoreTransitionAfterFinalize?: boolean;
     onFinalize?: () => void;
   } = {}) => {
-    // Cylit 只有单图：列表长度恒为 1，这里永远返回 false（结构照留，便于日后接多图）
+    // 单图（列表长度 <= 1）没有相邻图可切，直接退出
     if (!Array.isArray(modalImageList) || modalImageList.length <= 1) return false;
     if (modalImageSwitching) return false;
     const nextIndex = modalImageIndex + delta;
@@ -543,6 +575,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
     modalImageIndex = nextIndex;
     const nextSrc = modalImageList[nextIndex];
+    currentRawUrl = nextSrc;
 
     const preserveState = options && options.preserveState ? options.preserveState : null;
     const restoreTransitionAfterFinalize = options.restoreTransitionAfterFinalize !== false;
@@ -574,6 +607,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       img.onerror = null;
       if (!preserveState) {
         lockImageDimension(0);
+      } else if (opts.onSize) {
+        // preserveState 的 lockedW/H 是从预览节点的 style 反推的，组件拿不到那个节点，这里主动回推一次
+        opts.onSize(lockedW, lockedH);
       }
       img.style.transition = 'none';
       updateImageTransform();
@@ -592,6 +628,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       if (typeof options.onFinalize === 'function') {
         options.onFinalize();
       }
+      // 切换落定：把新下标播给订阅者（左右拖动切图的唯一对外信号；加载失败的分支不播）
+      emitIndex(modalImageIndex);
     };
 
     img.onload = finalizeSwitch;
@@ -692,12 +730,15 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     return next;
   };
 
-  const getDist = (t1: Touch, t2: Touch) => Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-  const getAngle = (t1: Touch, t2: Touch) => Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180 / Math.PI;
+  const getDist = (t1: Pt, t2: Pt) => Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+  const getAngle = (t1: Pt, t2: Pt) => Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180 / Math.PI;
 
-  /* ---------- 手势入口：touch + wheel（与源文件一致） ---------- */
+  /* ---------- 手势入口：一套状态机 + 两条输入通道 ----------
+   * 状态机只认三样东西（GestureEvent）：当前所有活动指针、本次变化的指针、preventDefault。
+   * touch 与 pointer 各自折成它再喂进来 —— 手势数学（1.25 灵敏度 / 捏合中不夹取 / 松手 0.35~0.42s
+   * 归位 / 旋转吸附 90° / 下滑关闭阈值）因此只有下面这一份，没有任何一处针对鼠标另写。 */
 
-  const onTouchStart = (e: TouchEvent) => {
+  const handleTouchStart = (e: GestureEvent) => {
     if (!active) return;
     if (previewCommitInProgress || modalImageSwitching) {
       e.preventDefault();
@@ -741,7 +782,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     }
   };
 
-  const onTouchMove = (e: TouchEvent) => {
+  const handleTouchMove = (e: GestureEvent) => {
     if (!active) return;
     if (isPinching && e.touches.length === 2) {
       e.preventDefault();
@@ -899,7 +940,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     }
   };
 
-  const onTouchEnd = (e: TouchEvent) => {
+  const handleTouchEnd = (e: GestureEvent) => {
     if (!active) return;
     const winH = window.innerHeight;
     const winW = window.innerWidth;
@@ -1009,7 +1050,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     }
   };
 
-  const onTouchCancel = () => {
+  const handleTouchCancel = () => {
     if (!active) return;
     isPinching = false;
     isDragging = false;
@@ -1020,6 +1061,74 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     resetDragBackdrop();
     imageRotation = normalizeAbsoluteAngle(imageRotation);
     clampImagePosition(true);
+  };
+
+  /* ---------- 通道 1：touch（原样折包，逻辑零改动） ---------- */
+
+  const fromTouch = (e: TouchEvent): GestureEvent => ({
+    touches: Array.from(e.touches || []),
+    changedTouches: Array.from(e.changedTouches || []),
+    preventDefault: () => e.preventDefault(),
+  });
+
+  const onTouchStart = (e: TouchEvent) => handleTouchStart(fromTouch(e));
+  const onTouchMove = (e: TouchEvent) => handleTouchMove(fromTouch(e));
+  const onTouchEnd = (e: TouchEvent) => handleTouchEnd(fromTouch(e));
+  const onTouchCancel = () => handleTouchCancel();
+
+  /* ---------- 通道 2：pointer（桌面鼠标拖动） ----------
+   * 鼠标没有 touches：自己维护活动指针集合，每次 move / up 生成"当前指针数组 + 本次变化的指针"，
+   * 连 preventDefault 一起折成同一个 GestureEvent 交给上面那套状态机。
+   * 触摸设备上 pointer 事件同样会派发，所以 pointerType === 'touch' 一律放行给通道 1，避免双份处理。 */
+
+  const pointers = new Map<number, Pt>();
+  const pointerList = (): Pt[] => Array.from(pointers.values());
+
+  const fromPointer = (touches: Pt[], changed: Pt[], e: PointerEvent): GestureEvent => ({
+    touches,
+    changedTouches: changed,
+    preventDefault: () => e.preventDefault(),
+  });
+
+  const onPointerDown = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') return; // 触摸只走通道 1
+    if (e.button !== 0) return; // 只认鼠标左键
+    if (!active) return;
+    pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    // 捕获到 stage：拖出图片、甚至拖出窗口之后仍然收得到 move / up
+    if (stage.setPointerCapture) {
+      try { stage.setPointerCapture(e.pointerId); } catch { /* 拿不到捕获也能用，忽略 */ }
+    }
+    handleTouchStart(fromPointer(pointerList(), [], e));
+  };
+
+  const onPointerMove = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') return;
+    if (!pointers.has(e.pointerId)) return;
+    const point = { clientX: e.clientX, clientY: e.clientY };
+    pointers.set(e.pointerId, point);
+    handleTouchMove(fromPointer(pointerList(), [point], e));
+  };
+
+  const onPointerUp = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') return;
+    if (!pointers.has(e.pointerId)) return;
+    const point = { clientX: e.clientX, clientY: e.clientY };
+    pointers.delete(e.pointerId);
+    if (stage.releasePointerCapture) {
+      try { stage.releasePointerCapture(e.pointerId); } catch { /* 忽略 */ }
+    }
+    // 剩余指针交给状态机：通常为空 → handleTouchEnd 走正常的"拖拽结束"分支
+    handleTouchEnd(fromPointer(pointerList(), [point], e));
+  };
+
+  const onPointerCancel = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') return;
+    if (!pointers.delete(e.pointerId)) return;
+    if (stage.releasePointerCapture) {
+      try { stage.releasePointerCapture(e.pointerId); } catch { /* 忽略 */ }
+    }
+    if (pointers.size === 0) handleTouchCancel();
   };
 
   // Handle mouse wheel for desktop preview testing if needed
@@ -1037,6 +1146,10 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   stage.addEventListener('touchmove', onTouchMove, { passive: false });
   stage.addEventListener('touchend', onTouchEnd);
   stage.addEventListener('touchcancel', onTouchCancel, { passive: true });
+  stage.addEventListener('pointerdown', onPointerDown);
+  stage.addEventListener('pointermove', onPointerMove);
+  stage.addEventListener('pointerup', onPointerUp);
+  stage.addEventListener('pointercancel', onPointerCancel);
   stage.addEventListener('wheel', onWheel, { passive: false });
 
   /* ---------- 对外接口 ---------- */
@@ -1073,13 +1186,67 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     settleImageToNaturalSize(0, 420);
   };
 
+  /**
+   * 写入相邻图列表与当前下标。四件事：
+   * 1. 列表只留有效 url，空列表退回"当前这张的单图"，保证 modalImageList 永远非空；
+   * 2. 清掉手势 / 切换 / 拖拽预览的所有中间态（否则上一张图的状态会漏进新图）；
+   * 3. 缩放 / 位移 / 旋转归零，按 100% 重新锁定尺寸（组件的 .sheet 通过 onSize 同步）；
+   * 4. 只在 url 真的变了时才写 img.src（挂载时组件已经把 :src 绑好了，重复赋值等于再请求一次）。
+   */
+  const setGallery = (list: GalleryEntry[], index: number) => {
+    const urls: string[] = [];
+    for (const item of list || []) {
+      const url = item && item.url ? item.url : '';
+      if (url) urls.push(url);
+    }
+    modalImageList = urls.length ? urls : [currentRawUrl || img.getAttribute('src') || ''];
+    modalImageIndex = Math.min(Math.max(0, Math.floor(Number(index) || 0)), modalImageList.length - 1);
+
+    isPinching = false;
+    isDragging = false;
+    dragPreviewActive = false;
+    dragPreviewOverflowX = 0;
+    dragIntent = '';
+    previewCommitInProgress = false;
+    modalImageSwitching = false;
+    moved = false;
+    clearAdjacentImages();
+    resetDragBackdrop();
+
+    imageScale = 1;
+    imageX = 0;
+    imageY = 0;
+    imageRotation = 0;
+
+    const nextSrc = modalImageList[modalImageIndex];
+    img.style.transition = 'none';
+    img.style.opacity = '1';
+    if (nextSrc && nextSrc !== currentRawUrl) {
+      currentRawUrl = nextSrc;
+      img.src = getDisplayUrl(nextSrc);
+    }
+
+    lockImageDimension(0);
+    updateImageTransform();
+
+    requestAnimationFrame(() => {
+      if (!active) return;
+      img.style.transition = 'transform 0.1s ease-out';
+    });
+  };
+
   const destroy = () => {
     active = false;
     stage.removeEventListener('touchstart', onTouchStart);
     stage.removeEventListener('touchmove', onTouchMove);
     stage.removeEventListener('touchend', onTouchEnd);
     stage.removeEventListener('touchcancel', onTouchCancel);
+    stage.removeEventListener('pointerdown', onPointerDown);
+    stage.removeEventListener('pointermove', onPointerMove);
+    stage.removeEventListener('pointerup', onPointerUp);
+    stage.removeEventListener('pointercancel', onPointerCancel);
     stage.removeEventListener('wheel', onWheel);
+    pointers.clear();
     if (adjacentReleaseTimer) {
       clearTimeout(adjacentReleaseTimer);
       adjacentReleaseTimer = null;
@@ -1091,15 +1258,19 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     img.style.transform = '';
     stage.style.backgroundColor = '';
     listeners.length = 0;
+    indexListeners.length = 0;
   };
 
   return {
     destroy,
     setImage,
+    setGallery,
     zoomBy,
     reset,
     getScale: () => imageScale,
+    getIndex: () => modalImageIndex,
     onChange: (cb: (scale: number) => void) => { listeners.push(cb); },
+    onIndexChange: (cb: (index: number) => void) => { indexListeners.push(cb); },
     isGesturing: () => moved,
   };
 }
