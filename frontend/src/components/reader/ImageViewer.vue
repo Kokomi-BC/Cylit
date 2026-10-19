@@ -136,16 +136,20 @@ function resetView() {
 /* ------------------------------ 缩放 ------------------------------ */
 
 /**
- * 缩放**只改倍率**，位移一律由拖动产生 —— 恒以视口中心为锚。
+ * 缩放：给了屏幕点就以它为锚（锚点下的画面不动），没给就以视口中心为锚。
  *
- * 原因：任何"以光标为锚"的缩放，都要先推导一个位移，而这个位移会被「内容不得露出视口」的
- * 钳制截断；截掉的部分没人记账，等可滑动余量变大又得补回来，放大过程里那一记跳变就是这么来的。
- * 中心锚没有需要推导的位移，自然也就没有补账 —— 位移的唯一来源是手指/鼠标，钳制只是把它压在
- * 边界内，而边界随倍率连续变化，所以画面前后帧永远接得上。
+ * 锚点位移按**帧间比例**增量推导：ttx += (光标 − 图片中心) × (1 − 本帧倍率变化)。
+ * 每帧都从当前的实际位置重新算，被「内容不得露出视口」压掉的部分当场丢弃 —— 所以既跟光标，
+ * 又不会像"起点 + 总位移"那样把压掉的位移记成账、等余量变大再自己滑出去。
  */
-function zoomTo(next: number, smooth = true) {
+function zoomTo(next: number, cx?: number, cy?: number, smooth = true) {
   const nz = Math.min(Z_MAX, Math.max(Z_MIN, next));
   if (Math.abs(nz - tz) < 1e-4) return;
+  const k = nz / tz;
+  if (cx !== undefined && cy !== undefined) {
+    ttx += (cx - (box.value.w / 2 + ttx)) * (1 - k);
+    tty += (cy - (box.value.h / 2 + tty)) * (1 - k);
+  }
   tz = nz;
   clampTarget();   // 缩到装不下时，位移随着余量一起连续收回 0，不会弹回
   if (smooth) kick(); else snap();
@@ -163,7 +167,7 @@ function onWheel(ev: WheelEvent) {
   /* 归一化：行/页模式换算成像素，单次增量封顶，触控板的小 delta 也走连续曲线 */
   const d = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 400 : ev.deltaY;
   const step = Math.max(-240, Math.min(240, d));
-  zoomTo(tz * Math.exp(-step * 0.0012));
+  zoomTo(tz * Math.exp(-step * 0.0012), ev.clientX, ev.clientY);
 }
 
 /* ------------------------------ 拖动 / 双指 ------------------------------ */
@@ -254,7 +258,7 @@ function onPointerUp(ev: PointerEvent) {
 }
 
 /**
- * 双指：指距定倍率，中点位移定平移。
+ * 双指：指距定倍率（以双指中点为缩放中心），中点位移定平移。
  *
  * 两条都是触摸屏上「莫名其妙位移」的成因：
  * 1. 刚接触那一下不动 —— 手指落上去时指距读数本来就在抖，直接按比例缩放等于把噪声当倍数。
@@ -282,17 +286,22 @@ function applyPinch() {
     p.lastMidY = midY;
   }
 
-  tz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
+  const nz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
+  const k = nz / tz;
+  /* 以双指中点为中心放大：中点下的画面不动，再叠加中点自身的位移（两指整体平移） */
+  ttx += (midX - (box.value.w / 2 + ttx)) * (1 - k);
+  tty += (midY - (box.value.h / 2 + tty)) * (1 - k);
   ttx += midX - p.lastMidX;
   tty += midY - p.lastMidY;
+  tz = nz;
   p.lastMidX = midX;
   p.lastMidY = midY;
   clampTarget();
   snap();
 }
 
-function onDoubleClick() {
-  zoomTo(tz > 1.05 ? 1 : 2);
+function onDoubleClick(ev: MouseEvent) {
+  zoomTo(tz > 1.05 ? 1 : 2, ev.clientX, ev.clientY);
 }
 
 /* ------------------------------ 尺寸 / 键位 ------------------------------ */
