@@ -7218,10 +7218,17 @@ function renderMarkdown(text?: string | null) {
           <AppIcon name="check" :size="13" />
         </button>
       </template>
-      <!-- 「编辑」**不再放在「⋯」二级菜单里**（用户口径 2026-11-28 八轮）：它是最常用的动作，
-           藏进二级菜单等于每次多点一次 —— 现在搬到头部的 `head-extra`，与「定位」并排。
-           于是本卡**不再传 `#more-items` 插槽**：FloatingCard 里那条竖分隔线只在有插槽时才画，
-           不留空槽就不会在「⋯」菜单最前面多出一道孤零零的分隔线。 -->
+      <!-- 「⋯」二级菜单里放**定位到原文**（用户口径 2026-11-28 十八轮）。
+           「编辑」在八轮就搬回了头部（最常用的一枚，不该藏二级），这里只剩定位；
+           拿到焦点 / 滚出视口时也不必先回查看态就能跳回去。
+           几何由 FloatingCard 的 `:slotted(button)` 统一给（25px 圆钮），这里只放图标。 -->
+      <template #more-items="{ close }">
+        <button v-if="card.rowId" type="button" role="menuitem"
+                title="定位到原文" aria-label="定位到原文" data-note-locate-more
+                @click="locateNoteRow(card); close()">
+          <AppIcon name="locate" :size="13" />
+        </button>
+      </template>
       <!-- 删除键已挪到头部**最左**（见 head-mid）：编辑态的顺序是 删除 · 色点 · … · 保存 · ✕ -->
 
       <!-- ⚠️ **不显示高亮的那段原文**（用户口径 2026-10-08："浮层不要显示论文正文部分"）：
@@ -8552,7 +8559,11 @@ function renderMarkdown(text?: string | null) {
 [data-note-popover] :deep(.fc-title) { font-size: calc(13px * var(--ts, 1)); font-weight: 600; flex: none; }
 /* 色条（在标题行里，排在「笔记」**右边**）：不再自占一行，所以没有内边距；
    左边留 2px 与标题错开一点，不要和「笔记」两个字粘死 */
-[data-note-popover] .np-color-btn { margin: 0 0 0 2px; }
+/* 头部间距一律 6px：`head-tail` 那格 FloatingCard 自己写的是 2px，于是编辑态
+   "⋯ ↕ 色点 ↕ ✓" 的缝比左边的删除/⋯窄一截（用户口径 2026-11-28 十八轮）。
+   色点那枚也**不再额外加 margin**（原来的 2px 就是第二处不一致）。 */
+[data-note-popover] :deep(.fc-tail) { gap: 6px; }
+[data-note-popover] .np-color-btn { margin: 0; }
 /* 自定义色那枚：与胶囊上那枚同一个做法（`SelectionMenu` 的样式是 scoped 的，这里得再来一份）。
    ⚠️ 选择器要**两处都写**：换色菜单 Teleport 到 body，不在 `[data-note-popover]` 里面。 */
 [data-note-popover] .hl-swatch.custom,
