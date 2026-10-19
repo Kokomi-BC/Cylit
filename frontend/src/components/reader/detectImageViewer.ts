@@ -52,7 +52,8 @@ export interface DetectImageViewerOptions {
   /** 被变换的那张图（源文件的 #modalImage） */
   img: HTMLImageElement;
   /** 源文件里的 window.history.back() */
-  onClose: () => void;
+  /** 请求关闭。reason = 'dismiss' 表示是下滑 / 缩得过小甩掉的，不要再飞回原位 */
+  onClose: (reason?: 'dismiss') => void;
   /** 100% 时的可用框（已留出边距与底部胶囊），由组件按现有 fit 计算给出 */
   getSize: () => { w: number; h: number };
   /** 锁定后的 100% 基准像素尺寸回推给组件，组件据此渲染 .sheet 的 width / height */
@@ -80,9 +81,11 @@ export interface DetectImageViewer {
    * 退出动画：把缩放 / 位移直接写成给定值、旋转归零，带 `ms` 的过渡飞过去。
    * 几何由组件按触发缩略图的矩形算好，这里**不做 clamp**（那是手势边界的事，不是退出动画的事）。
    */
-  animateTo: (scale: number, x: number, y: number, ms?: number) => void;
+  animateTo: (scale: number, x: number, y: number, ms?: number, easing?: string) => void;
   /** 退出动画专用：立 exiting 标志，期间手势 / 归位 / 切图全部让路 */
-  beginExit: (scale: number, x: number, y: number, ms?: number) => void;
+  beginExit: (scale: number, x: number, y: number, ms?: number, easing?: string) => void;
+  /** 下滑关闭：不飞回原位，原地缩一点 + 淡掉（快） */
+  fadeOut: (ms?: number) => void;
   /** 切到相邻图（-1 上一张 / +1 下一张）；越界或正在切换时自己会拒绝 */
   stepTo: (delta: number) => void;
   getScale: () => number;
@@ -991,7 +994,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         img.style.boxShadow = '';
         // 手动缩放极其小时直接关闭（源文件是 window.history.back()）
         if (imageScale < 0.45) {
-          onClose();
+          onClose('dismiss');
           return;
         }
 
@@ -1060,7 +1063,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         // 1. 如果图片未放大 (imageScale <= 1.05)，允许下滑退出
         // 2. 如果图片已放大但处于回弹区且下滑距离极大，也允许退出，但逻辑需更保守
         if (verticalDismissReady || heavyMoveDown) {
-          onClose();
+          onClose('dismiss');
           return;
         }
 
@@ -1272,9 +1275,25 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   };
 
   /** 进入退出动画：先立标志（期间拒绝手势 / 归位 / 切图），再交给 animateTo 写几何 */
-  const beginExit = (scale: number, x: number, y: number, ms = 260) => {
+  const beginExit = (
+    scale: number, x: number, y: number, ms = 240,
+    easing = 'cubic-bezier(0.45, 0, 0.55, 1)',
+  ) => {
     exiting = true;
-    animateTo(scale, x, y, ms);
+    animateTo(scale, x, y, ms, easing);
+  };
+
+  /**
+   * 下滑关闭专用：图片已经被手指甩出去了，再飞回缩略图既远又久（用户口径：动画时间过长）。
+   * 顺着甩出去的方向缩一点、淡掉即可，160ms 结束。
+   */
+  const fadeOut = (ms = 160) => {
+    exiting = true;
+    img.style.transition = `transform ${ms}ms cubic-bezier(0.4, 0, 1, 1), opacity ${ms}ms ease-out`;
+    imageScale = imageScale * 0.82;
+    imageY = imageY + 48;
+    img.style.opacity = '0';
+    updateImageTransform();
   };
 
   /**
@@ -1282,15 +1301,18 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
    * 只负责写值 + 开过渡（与 settleImageToNaturalSize 同一套过渡的临时开关写法），
    * 不 clamp、也不重锁尺寸 —— 尺寸锁定会改 .sheet，退出动画期间改它只会抖。
    */
-  const animateTo = (scale: number, x: number, y: number, ms = 260) => {
+  const animateTo = (
+    scale: number, x: number, y: number, ms = 260,
+    easing = 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+  ) => {
     imageScale = scale;
     imageX = x;
     imageY = y;
     imageRotation = 0;
-    img.style.transition = `transform ${ms}ms cubic-bezier(0.22, 0.61, 0.36, 1)`;
+    img.style.transition = `transform ${ms}ms ${easing}`;
     updateImageTransform();
     window.setTimeout(() => {
-      if (!active) return;
+      if (!active || exiting) return;
       img.style.transition = 'transform 0.1s ease-out';
     }, ms);
   };
@@ -1378,6 +1400,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     reset,
     animateTo,
     beginExit,
+    fadeOut,
     stepTo: (delta: number) => { switchModalImageByDelta(delta); },
     getScale: () => imageScale,
     getIndex: () => modalImageIndex,

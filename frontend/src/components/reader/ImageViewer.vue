@@ -168,7 +168,7 @@ function playOpen() {
   );
   requestAnimationFrame(() => {
     opened.value = true;
-    viewer?.animateTo(1, 0, 0, 320);
+    viewer?.animateTo(1, 0, 0, 300, 'cubic-bezier(0.16, 0.84, 0.28, 1)');
   });
 }
 
@@ -188,11 +188,17 @@ function finishClose() {
  * 缩略图是 `origin.width × origin.height` 居中在 (left + w/2, top + h/2)。
  * 于是 tScale = 缩略图宽 / 100% 宽；位移 = 缩略图中心 - 视口中心（控制器里的 translate 就是相对视口中心的）。
  */
-function requestClose() {
+function requestClose(reason?: 'dismiss') {
   if (closing.value) return;
   closing.value = true;
   const o = props.origin;
   if (!viewer) { finishClose(); return; }
+  if (reason === 'dismiss') {
+    /* 图片已经被甩出去了：顺着方向缩着淡掉就行，飞回原位又远又慢 */
+    viewer.fadeOut(160);
+    closeTimer = window.setTimeout(finishClose, 170);
+    return;
+  }
   if (!o || !size.value.w) {
     /* 拿不到源图矩形（例如对话里贴的图、外部链接图）：退化成原地缩小 + 整屏淡出，
        总之不能一按就"啪"地消失。 */
@@ -210,8 +216,8 @@ function requestClose() {
   const tScale = o.width / w;
   const tx = o.left + o.width / 2 - stageW / 2;
   const ty = o.top + o.height / 2 - stageH / 2;
-  viewer.beginExit(tScale, tx, ty, 260);
-  closeTimer = window.setTimeout(finishClose, 280);
+  viewer.beginExit(tScale, tx, ty, 240, 'cubic-bezier(0.45, 0, 0.55, 1)');
+  closeTimer = window.setTimeout(finishClose, 260);
 }
 
 /** 点背景关闭：刚拖动 / 捏合过就不算点击 */
@@ -244,7 +250,7 @@ onMounted(() => {
     viewer = createDetectImageViewer({
       stage: stageEl,
       img: imageEl,
-      onClose: requestClose,        // 下滑关闭 / 捏合过小：同样走飞回原位
+      onClose: (reason) => requestClose(reason),   // 下滑 / 缩得过小：走短的淡出，不飞回
       getSize: fitBox,
       onSize: (w, h) => { size.value = { w, h }; playOpen(); },
     });
@@ -308,7 +314,7 @@ onBeforeUnmount(() => {
         <button v-if="hasNext" class="zbtn" title="下一张" data-viewer-zoom="next" @click="stepImage(1)">
           <span class="zflip"><AppIcon name="back" :size="18" /></span>
         </button>
-        <button class="zbtn zclose" title="关闭" data-viewer-zoom="close" @click="requestClose">
+        <button class="zbtn zclose" title="关闭" data-viewer-zoom="close" @click="requestClose()">
           <AppIcon name="close" :size="18" />
         </button>
       </div>
