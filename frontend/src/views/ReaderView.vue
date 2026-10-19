@@ -5318,6 +5318,10 @@ type NoteCard = {
   busy: boolean;
   /** 悬停临时卡：鼠标移开就关 */
   hover: boolean;
+  /** 编辑态点了返回箭头、而草稿和已保存内容不一样：卡片里那块小确认弹窗开着 */
+  confirmBack: boolean;
+  /** 点了垃圾桶、等二次确认（同一块卡内弹窗，只是问的是删除） */
+  confirmDel: boolean;
 };
 const noteCards = reactive<NoteCard[]>([]);
 /** 最上层那张（模板里 `zIndex: card.key === activeNoteKey ? 62 : 60`） */
@@ -5406,7 +5410,8 @@ function onNoteCardClose(card: NoteCard) {
   if (card.mode !== 'view' && card.noteId) {
     card.draft = card.content;      // 丢弃这次改动
     card.mode = 'view';
-    closeNoteDelMenu();
+    card.confirmDel = false;
+    card.confirmBack = false;
     return;
   }
   closeNoteCard(card.key);
@@ -5416,7 +5421,7 @@ function onNoteCardClose(card: NoteCard) {
  *  焦点落到剩下的最后一张（空了就清空）。 */
 function closeNoteCard(key: string) {
   cancelNoteHide();
-  closeNoteDelMenu();               // 卡片都关了，那块确认菜单不能留在屏幕上
+  closeNoteColorMenu();             // 卡片都关了，卡内那些弹窗 / 贴着按钮的菜单都不该留在屏幕上
   const i = noteCards.findIndex((c) => c.key === key);
   if (i < 0) return;
   noteCards.splice(i, 1);
@@ -5567,6 +5572,8 @@ function openNotePopover(opts: {
     center,
     busy: false,
     hover: opts.hover ?? false,
+    confirmBack: false,
+    confirmDel: false,
   };
   noteCards.push(card);
   /* 必须拿数组里那个响应式代理去置 open：`card` 是普通对象，
@@ -5622,6 +5629,32 @@ async function setNoteColor(card: NoteCard, color: string) {
   } catch (err) { reportError(err, '换颜色失败'); }
 }
 
+/** 草稿有没有改过 —— 编辑态那枚返回箭头要不要先问一句，就靠它判 */
+function noteDirty(card: NoteCard): boolean {
+  return card.draft !== card.content;
+}
+
+/** 编辑态最左那枚**返回箭头**（复用对话页的 back 图标）= 不保存地退出：
+ *  没有改动直接关；有改动先在**卡片内部**弹一块小确认（用户口径 2026-11-28 十三轮）。
+ *  ⚠️ 不用全站那个居中 `askConfirm` —— 一整页遮罩比误关一张浮层重得多。 */
+function onNoteBack(card: NoteCard) {
+  if (noteDirty(card)) { card.confirmBack = true; return; }
+  closeNoteCard(card.key);
+}
+
+/** 确认弹窗里的「保存」：存成功它自己会关；失败就留在这张卡上，草稿不动 */
+async function confirmBackSave(card: NoteCard) {
+  card.confirmBack = false;
+  await saveNotePopover(card);
+}
+
+/** 「不保存」：丢掉草稿再关，下次进来看到的是已保存的那一份 */
+function confirmBackDiscard(card: NoteCard) {
+  card.confirmBack = false;
+  card.draft = card.content;
+  closeNoteCard(card.key);
+}
+
 /** 头部那枚垃圾桶：删掉**这张卡挂的那条笔记**（高亮留着 —— 删笔记不该把高亮也带走）。
  *  只影响这一张卡：删成功了就把它关掉，别的卡原样留着。 */
 async function deleteNotePopover(card: NoteCard) {
@@ -5635,67 +5668,18 @@ async function deleteNotePopover(card: NoteCard) {
   } catch (err) { reportError(err, '删除笔记失败'); } finally { card.busy = false; }
 }
 
-/* ---------------------- 删除笔记的二级确认（用户口径 2026-10-13） ----------------------
- * 头部那枚垃圾桶**不再直接删**：先弹一小块贴着按钮的菜单问一句「删除这条笔记 / 取消」。
+/* ---------------------- 删除笔记的二次确认（用户口径 2026-10-13；2026-11-28 改成卡内弹窗） ----------------------
+ * 头部那枚垃圾桶**不直接删**：先在**卡片内部**弹一块小确认问一句（删除 / 取消）。
  * 为什么不用全站那个居中 Modal（askConfirm）：删一条笔记弹整页遮罩比误删更烦人；
- * 菜单跟着按钮走，**点别处 / Esc 就收起**（与 Menu.vue 一个行为）。
- * 定位自己算（fixed + Teleport 到 body）：浮层壳是 overflow: hidden，留在卡片里会被裁掉。
- * 状态就用一个局部 ref，不去动卡片数组的结构（只多记一个 `key`：这块菜单是哪张卡的）。
+ * 为什么不再用贴着按钮的 fixed 菜单（上一版）：它得算坐标、得管点别处 / Esc 收起、
+ * 还要 Teleport 出浮层（壳是 overflow:hidden），与"返回"那块卡内确认各写一套 ——
+ * 现在两块走同一个 `card.confirmXxx` 开关 + 同一套 `.np-confirm` 样式，行为与观感都统一。
  */
-const noteDelMenu = ref({ open: false, top: 0, left: 0, key: '' });
-/** 菜单尺寸上界（两项 + 内边距 ≈ 74px）：只用来判断"下面放不下就翻到按钮上方" */
-const NOTE_DEL_MENU_W = 112;
-const NOTE_DEL_MENU_H = 74;
-
-function closeNoteDelMenu() {
-  if (!noteDelMenu.value.open) return;
-  noteDelMenu.value = { open: false, top: 0, left: 0, key: '' };
+function openNoteDelMenu(_ev: MouseEvent, card: NoteCard) {
+  closeNoteColorMenu();            // 两块卡内弹窗不叠加
+  card.confirmBack = false;
+  card.confirmDel = !card.confirmDel;
 }
-
-/** 贴着那枚垃圾桶：右对齐、向下 6px；下方放不下就翻到按钮上方，左右夹在视口里。
- *  再点一次垃圾桶 = 收起（下面的"点别处"监听刻意把垃圾桶排在外面，就是为了让这里能 toggle）。 */
-function openNoteDelMenu(ev: MouseEvent, card: NoteCard) {
-  /* 再点**同一张卡**的垃圾桶 = 收起；点另一张卡的 = 把那块菜单挪到这张卡上 */
-  const same = noteDelMenu.value.open && noteDelMenu.value.key === card.key;
-  closeNoteDelMenu();
-  if (same) return;
-  const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
-  let top = r ? r.bottom + 6 : 12;
-  let left = r ? r.right - NOTE_DEL_MENU_W : 12;
-  left = Math.max(8, Math.min(left, window.innerWidth - NOTE_DEL_MENU_W - 8));
-  if (top + NOTE_DEL_MENU_H > window.innerHeight - 8) {
-    top = r ? Math.max(8, r.top - NOTE_DEL_MENU_H - 6) : 8;
-  }
-  noteDelMenu.value = { open: true, top: Math.round(top), left: Math.round(left), key: card.key };
-}
-
-function onNoteDelOutside(ev: PointerEvent) {
-  /* 菜单自己 + 那枚垃圾桶都算"里面"：再点一次垃圾桶走收起（否则 pointerdown 先收起、
-     紧接着的 click 又打开 —— 看着像点不动）。 */
-  if ((ev.target as HTMLElement | null)?.closest?.('[data-note-del-menu], [data-note-delete]')) return;
-  closeNoteDelMenu();
-}
-function onNoteDelKeydown(ev: KeyboardEvent) {
-  if (ev.key !== 'Escape') return;
-  ev.preventDefault();
-  ev.stopPropagation();          // 捕获阶段就拦住：别让全局 Esc（收浮层）顺手再跑一遍
-  closeNoteDelMenu();
-}
-
-/** 全局监听只在菜单打开期间挂（不打开就一个都不挂） */
-watch(() => noteDelMenu.value.open, (open) => {
-  if (open) {
-    document.addEventListener('pointerdown', onNoteDelOutside, true);
-    document.addEventListener('keydown', onNoteDelKeydown, true);
-  } else {
-    document.removeEventListener('pointerdown', onNoteDelOutside, true);
-    document.removeEventListener('keydown', onNoteDelKeydown, true);
-  }
-});
-onUnmounted(() => {
-  document.removeEventListener('pointerdown', onNoteDelOutside, true);
-  document.removeEventListener('keydown', onNoteDelKeydown, true);
-});
 
 /* ---------------------- 笔记卡的高亮颜色（用户口径 2026-11-28） ----------------------
  * 原来头部把 8 枚色点一字排开（而且只有编辑态给），又挤、查看态还改不了色。
@@ -5744,7 +5728,8 @@ function closeNoteColorMenu() {
 function openNoteColorMenu(ev: MouseEvent, card: NoteCard) {
   const same = noteColorMenu.value.open && noteColorMenu.value.key === card.key;
   closeNoteColorMenu();
-  closeNoteDelMenu();
+  card.confirmDel = false;          // 两块卡内弹窗不叠加
+  card.confirmBack = false;
   if (same) return;
   const r = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   /* 居中：菜单中线对准按钮中线（夹在视口里，靠边时不会跑出去） */
@@ -5792,12 +5777,10 @@ async function pickNoteColor(color: string, close = true) {
   if (card) await setNoteColor(card, color);
 }
 
-/** 只有点「删除这条笔记」才真的删（原来那枚垃圾桶的动作原样搬到这里） */
-function onNoteDelConfirm() {
-  const key = noteDelMenu.value.key;
-  closeNoteDelMenu();
-  const card = noteCards.find((c) => c.key === key);
-  if (card) void deleteNotePopover(card);
+/** 卡内弹窗点「删除」才真的删（垃圾桶只是打开确认） */
+function onNoteDelConfirm(card: NoteCard) {
+  card.confirmDel = false;
+  void deleteNotePopover(card);
 }
 
 /* 悬停显示已存在的笔记；移开延时关闭（延时是为了让鼠标能从高亮挪到浮层上）
@@ -6195,7 +6178,7 @@ async function deleteNote(id: string) {
  *  找不到那处高亮（滚出视口 / 属于别的 scope）就退到主区偏右上 —— 不猜 DOM、也不自动滚页。
  *  锚定：这是从侧栏点开的，鼠标本来就离正文很远，不锚定会被"移开就关"立刻收掉。 */
 function openPaneNote(p: { note: Note | null; highlight: Highlight | null; mode?: 'view' | 'edit' }) {
-  closeNoteDelMenu();
+  closeNoteColorMenu();
   /* 侧栏那枚「打开浮层」：用户口径 2026-11-21 —— **默认在页面中间打开**，
      既不贴高亮、也不沿用上次拖到的角落（FloatingCard 的 `centerOnOpen` 负责落位）。
      多卡之后"居中"是**这一张卡自己的**标记，跟着 opts 一起下去，不再提前改实例状态。 */
@@ -7131,7 +7114,7 @@ function renderMarkdown(text?: string | null) {
       :open="card.open"
       :anchor="card.anchor"
       :anchored="card.anchored"
-      title="笔记"
+      :title="card.mode === 'view' ? '笔记' : ''"
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
@@ -7143,6 +7126,7 @@ function renderMarkdown(text?: string | null) {
       :focused="topLayer === 'note' && card.key === activeNoteKey"
       :title-color="noteAccentColor(card)"
       hide-anchor
+      :hide-close="card.mode !== 'view'"
       @pointerdown.capture="onFloatPress($event, 'note', card.key)"
       @focusin.capture="takeTop('note')"
       @close="onNoteCardClose(card)"
@@ -7151,25 +7135,25 @@ function renderMarkdown(text?: string | null) {
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
            色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
       <template #head-lead>
+        <!-- 编辑态：**最左那枚返回箭头**（复用对话页的 back 图标）= 不保存地退出；
+             有改动时它先在卡片里问一句（见 onNoteBack）。标题与「笔记」图标在这一档收起，
+             把头一行让给"返回 + 删除 + 色点"这三件事（用户口径 2026-11-28 十三轮）。 -->
+        <button v-if="card.mode !== 'view'" class="np-back" type="button"
+                title="返回" data-note-back @click="onNoteBack(card)">
+          <AppIcon name="back" :size="14" />
+        </button>
         <!-- 查看态**不摆色点按钮**（用户口径 2026-11-28 七轮），颜色改由图标 + 标题表达：
              图标和「笔记」两个字一起染成这处高亮的颜色，零新增元素、不多一枚控件。 -->
-        <AppIcon name="note" :size="14" :style="noteLeadStyle(card)" />
+        <AppIcon v-else name="note" :size="14" :style="noteLeadStyle(card)" />
       </template>
       <template #head-mid>
-        <!-- 编辑态：**删除在最左**（用户口径 2026-11-26）。它原来是头部最右、贴着 ✕，
-             紧挨着保存键；现在挪到色点前面，误触距离拉开了。 -->
-        <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
-                :disabled="card.busy" title="删除笔记" data-note-delete
-                aria-haspopup="menu"
-                :aria-expanded="noteDelMenu.open && noteDelMenu.key === card.key"
-                @click="openNoteDelMenu($event, card)">
-          <AppIcon name="trash" :size="13" />
-        </button>
         <!-- 相对时间紧贴在「笔记」标题右侧（用户口径 2026-11-26）：它是这条笔记的属性，
              放到按钮区最左边会看着像另一组东西。编辑态不显示（那一行被色点占满）。 -->
         <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
         <!-- 高亮颜色：**一枚圆形按钮**（里面就是当前颜色，与头部其它按钮同尺寸、同底色），
-             点开是贴着它的二级菜单。**只在编辑态给** —— 查看态保持干净（用户口径 2026-11-28 七轮）。 -->
+             点开是贴着它的二级菜单。**只在编辑态给** —— 查看态保持干净（用户口径 2026-11-28 七轮）。
+             顺序：**色点在前、删除在后**（用户口径 2026-11-28 十四轮：删除挨着色点左键太容易误触，
+             挪到它右边、离返回箭头也远一格）。 -->
         <button
           v-if="card.highlightId && card.mode !== 'view'"
           type="button"
@@ -7183,6 +7167,15 @@ function renderMarkdown(text?: string | null) {
         >
           <span class="np-color-dot hl-swatch" :class="card.color"
                 :style="colorDotStyle(card.color)" />
+        </button>
+        <!-- 删除键排在**色点右侧**（用户口径 2026-11-28 十四轮）：它是最危险的一枚，
+             不能紧贴返回箭头或色点，右边只与 ✓ 保存相邻（中间还隔着⋯那一格）。 -->
+        <button v-if="card.mode !== 'view' && card.noteId" class="np-head-save danger" type="button"
+                :disabled="card.busy" title="删除笔记" data-note-delete
+                aria-haspopup="menu"
+                :aria-expanded="card.confirmDel"
+                @click.stop="openNoteDelMenu($event, card)">
+          <AppIcon name="trash" :size="13" />
         </button>
       </template>
       <template #head-extra>
@@ -7233,6 +7226,33 @@ function renderMarkdown(text?: string | null) {
         :rows="noteEditRows(card)"
         data-note-edit
       />
+      <!-- 垃圾桶的二次确认：同一块卡内弹窗（用户口径 2026-11-28 十五轮），只问删除 / 取消 -->
+      <div v-if="card.confirmDel" class="np-confirm" data-note-confirm-del>
+        <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="确认删除这条笔记">
+          <p class="np-confirm-text">删除这条笔记？</p>
+          <div class="np-confirm-acts">
+            <button type="button" class="btn sm danger" data-note-del-confirm
+                    @click="onNoteDelConfirm(card)">删除</button>
+            <button type="button" class="btn sm" data-note-del-cancel
+                    @click="card.confirmDel = false">取消</button>
+          </div>
+        </div>
+      </div>
+      <!-- 编辑态点返回、且有未保存改动：**卡片内部**的一小块确认（不用全站那个居中遮罩。
+           三个选项与用户口径一致：保存 / 不保存 / 取消）。 -->
+      <div v-if="card.confirmBack" class="np-confirm" data-note-confirm>
+        <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="是否保存更改">
+          <p class="np-confirm-text">是否保存更改？</p>
+          <div class="np-confirm-acts">
+            <button type="button" class="btn sm primary" data-note-confirm-save
+                    @click="confirmBackSave(card)">保存</button>
+            <button type="button" class="btn sm" data-note-confirm-discard
+                    @click="confirmBackDiscard(card)">不保存</button>
+            <button type="button" class="btn sm" data-note-confirm-cancel
+                    @click="card.confirmBack = false">取消</button>
+          </div>
+        </div>
+      </div>
       <!-- 查看态正文：**用户自己写的笔记**走 `{ breaks: true }`（用户口径 2026-10-10）：
            不能再跑 `normalizeSoftBreaks` —— 它会把作者敲的回车接回去（"第一行第二行"），
            那是给 PDF 抽取文本用的。 -->
@@ -7243,29 +7263,8 @@ function renderMarkdown(text?: string | null) {
            编辑 / 保存 / 删除 / 关闭 全走头部按键（铅笔 / ✓ / 垃圾桶 / ✕）。 -->
     </FloatingCard>
 
-    <!-- 删除的**二级确认**（用户口径 2026-10-13）：贴着头部那枚垃圾桶弹出，点别处 / Esc 收起。
-         ⚠️ 必须 Teleport 到 body：浮层壳是 overflow: hidden + 12px 圆角，留在卡片里会被裁掉。
-         坐标在 openNoteDelMenu 里按按钮矩形算好（fixed，相对视口），这里只负责画。 -->
-    <Teleport to="body">
-      <div
-        v-if="noteDelMenu.open"
-        class="note-del-menu"
-        data-note-del-menu
-        role="menu"
-        aria-label="确认删除这条笔记"
-        :style="{ top: noteDelMenu.top + 'px', left: noteDelMenu.left + 'px' }"
-      >
-        <!-- 菜单项**不带图标**（用户口径 2026-11-20）：两块短条目里再塞图标只显得挤 -->
-        <button type="button" class="note-del-item danger" role="menuitem"
-                data-note-del-confirm @click="onNoteDelConfirm">
-          <span>删除这条笔记</span>
-        </button>
-        <button type="button" class="note-del-item" role="menuitem"
-                data-note-del-cancel @click="closeNoteDelMenu">
-          <span>取消</span>
-        </button>
-      </div>
-    </Teleport>
+    <!-- 删除的二次确认**也在卡片里**（用户口径 2026-11-28 十五轮）：与「返回」那块同一套
+         `.np-confirm` 观感与交互（渲染在各自卡片的插槽里，见上面 `card.confirmDel` 那一段）。 -->
 
     <!-- 换色菜单：贴着那枚圆钮弹开。同样 Teleport 到 body（浮层壳是 overflow: hidden，留在里面会被裁），
          弹出时从按钮那一角张开（`transform-origin` 由 openNoteColorMenu 写）。 -->
@@ -8369,34 +8368,57 @@ function renderMarkdown(text?: string | null) {
 .np-head-save.danger { color: var(--danger); }
 .np-head-save.danger:hover:not(:disabled) { background: var(--danger-soft); }
 /* 「定位到原文」：中性色 —— 它只是"跳过去看一眼"，不该与主题色的 ✓ 保存抢注意力 */
+/* 编辑态最左那枚返回箭头：几何照 `.np-head-save`（25px、中性淡底、按下缩一格） */
+.np-back {
+  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center;
+  justify-content: center; border: 0; border-radius: 50%; padding: 0;
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
+  cursor: pointer; transition: background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.np-back:hover { background: var(--bg-hover); color: var(--text); }
+.np-back:active { transform: scale(.94); }
+.np-back:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* 编辑态「返回」且有未保存改动：**卡片内部**的一小块确认（不铺满整页，也不弹全站 Modal）。
+   遮罩用浮层底色的半透明版 + 一点毛玻璃 —— 卡片自己的圆角已经裁好了，不用再描一层。 */
+.np-confirm {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: center; padding: 12px;
+  background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
+  backdrop-filter: blur(2px);
+  animation: np-confirm-in 140ms var(--ease);
+}
+.np-confirm-box {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; max-width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-flyout);
+  animation: np-confirm-pop 170ms cubic-bezier(.2, 1.15, .35, 1);
+}
+.np-confirm-text {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
+}
+.np-confirm-acts { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+@keyframes np-confirm-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes np-confirm-pop {
+  from { opacity: 0; transform: translateY(4px) scale(.96); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .np-confirm, .np-confirm-box { animation: none; }
+}
+
 .np-head-save.edit { color: var(--text-dim); }
 .np-head-save.edit:hover:not(:disabled) { color: var(--text); }
 .np-head-save.locate { color: var(--text-dim); }
 .np-head-save.locate:hover:not(:disabled) { color: var(--text); }
 
-/* ---- 删除的二级确认菜单（用户口径 2026-10-13）----
-   观感**照 Menu.vue 的浮层**来（同圆角档、同阴影、同 danger 语义色），但只有两项、
-   没有触发钮 —— 触发钮就是头部那枚垃圾桶，位置由 openNoteDelMenu 算好后写在 style 上。
-   Teleport 到 body 的节点仍然带本组件的 scoped 属性，所以这几条样式对它生效。 */
-.note-del-menu {
-  position: fixed; z-index: 320; min-width: 0; width: max-content; white-space: nowrap;
-  padding: 5px; display: flex; flex-direction: column; gap: 1px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-flyout);
-}
-.note-del-item {
-  display: flex; align-items: center; width: 100%;
-  padding: 7px 10px; border: 0; border-radius: var(--radius-ctl);
-  background: transparent; color: var(--text);
-  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.note-del-item:hover { background: var(--bg-hover); }
-.note-del-item:focus-visible { outline: none; box-shadow: var(--ring); background: var(--bg-hover); }
-.note-del-item.danger { color: var(--danger); }
-.note-del-item.danger:hover { background: var(--danger-soft); }
+/* 删除的二次确认**不再是一块贴在按钮上的 fixed 菜单**（用户口径 2026-11-28 十五轮）：
+   它现在与「返回」那块确认走同一个卡内弹窗（`card.confirmDel` + `.np-confirm`），
+   于是不用算坐标、不用 Teleport、也不用再管"点别处 / Esc 收起"。 */
 /* ---- 翻页 / 视图切换动效（用户口径 2026-10-10）----
    页面块出现/重建时**只淡入 opacity**。
    ⚠️ 故意**不用 transform**：① 那会给块建一个"包含块"，里面的 `position: fixed` 定位会跟着跑；

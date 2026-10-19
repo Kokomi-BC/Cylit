@@ -56,7 +56,10 @@ const props = withDefaults(defineProps<{
   /** 标题文字的颜色（空 = 用默认）。笔记卡在**查看态**用它把「笔记」染成高亮色，
    *  于是标题行本身就是"这条笔记是哪一色"的指示器（用户口径 2026-11-28 九轮）。 */
   titleColor?: string;
-}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '' });
+  /** 不要右上那枚 ✕。笔记卡的**编辑态**用它：那一档的"关闭"改由左侧的返回箭头承担
+   *  （箭头还要负责"有改动先问一句"，两枚按钮做同一件事只会让用户犹豫，用户口径 2026-11-28 十三轮）。 */
+  hideClose?: boolean;
+}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '', hideClose: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -669,7 +672,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
              删除与「✓ 保存 / 锚定」之间隔开一小段，免得点删除时误触保存。
              ⚠️ 只有父组件传了才渲染：解释浮层不传，头部与以前完全一致。 -->
         <span v-if="$slots['head-tail']" class="fc-tail"><slot name="head-tail" /></span>
-        <button type="button" class="fc-btn" title="关闭" data-float-close @click="emit('close')">
+        <button v-if="!props.hideClose" type="button" class="fc-btn" title="关闭"
+                data-float-close @click="emit('close')">
           <AppIcon name="close" :size="13" />
         </button>
       </div>
