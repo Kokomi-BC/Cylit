@@ -7733,9 +7733,9 @@ function renderMarkdown(text?: string | null) {
   border: 0 solid var(--fc-handle);
   /* 与 FloatingCard 逐条一致：浓淡、粗细、松手回位都要渐变 */
   transition: border-color var(--dur) var(--ease),
-              opacity 260ms var(--ease),
-              border-width 260ms var(--ease),
-              transform 240ms var(--ease);
+              opacity 300ms var(--ease),
+              border-width 420ms cubic-bezier(.45, .05, .25, 1),
+              transform 420ms cubic-bezier(.45, .05, .25, 1);
   opacity: 1;
 }
 .reader > .float-grip.br::after {
@@ -7748,7 +7748,7 @@ function renderMarkdown(text?: string | null) {
   border-bottom-left-radius: var(--fc-arc);
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
-.reader > .float-grip.unfocused::after { opacity: .42; }
+.reader > .float-grip.unfocused::after { opacity: .24; }
 .reader > .float-grip.unfocused:hover::after,
 .reader > .float-grip.unfocused:active::after,
 .reader > .float-grip.unfocused.is-on::after { opacity: 1; }
@@ -7774,15 +7774,15 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
 @keyframes fc-grip-glide-f {
   0% { transform: translate(0, 0); }
-  38% { transform: translate(3.6px, 3.6px); }
-  74% { transform: translate(3px, 3px); }
-  100% { transform: translate(3.4px, 3.4px); }
+  30% { transform: translate(3.6px, 3.6px); }
+  62% { transform: translate(3px, 3px); }
+  100% { transform: translate(0, 0); }
 }
 @keyframes fc-grip-glide-f-bl {
   0% { transform: translate(0, 0); }
-  38% { transform: translate(-3.6px, 3.6px); }
-  74% { transform: translate(-3px, 3px); }
-  100% { transform: translate(-3.4px, 3.4px); }
+  30% { transform: translate(-3.6px, 3.6px); }
+  62% { transform: translate(-3px, 3px); }
+  100% { transform: translate(0, 0); }
 }
 @keyframes fc-grip-thicken-f-bl {
   0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
@@ -7793,8 +7793,8 @@ function renderMarkdown(text?: string | null) {
 .reader > .float-grip:active::after,
 .reader > .float-grip.is-on::after {
   border-color: var(--accent); --fc-stroke: 3.4px;
-  animation: fc-grip-thicken-f 560ms cubic-bezier(.33, .85, .3, 1) both,
-             fc-grip-glide-f 620ms cubic-bezier(.33, .85, .3, 1) both;
+  animation: fc-grip-thicken-f 700ms cubic-bezier(.45, .05, .25, 1) both,
+             fc-grip-glide-f 760ms cubic-bezier(.45, .05, .25, 1) both;
 }
 @keyframes fc-grip-spring {
   0% { transform: scale(1); }

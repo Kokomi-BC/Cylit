@@ -948,9 +948,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
   /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
      瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
   transition: border-color var(--dur) var(--ease),
-              opacity 260ms var(--ease),
-              border-width 260ms var(--ease),
-              transform 240ms var(--ease);
+              opacity 300ms var(--ease),
+              border-width 420ms cubic-bezier(.45, .05, .25, 1),
+              transform 420ms cubic-bezier(.45, .05, .25, 1);
   opacity: 1;
 }
 .fc-resize.br { right: calc(-1 * var(--fc-gap)); cursor: nwse-resize; }
@@ -961,8 +961,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
    现在两条动画都显式列出来，与右下角逐字对齐（只是换成镜像的那对 keyframes）。 */
 .fc-resize.bl.is-on::before {
-  animation: fc-grip-thicken-bl 560ms cubic-bezier(.33, .85, .3, 1) both,
-             fc-grip-glide-bl 620ms cubic-bezier(.33, .85, .3, 1) both;
+  animation: fc-grip-thicken-bl 700ms cubic-bezier(.45, .05, .25, 1) both,
+             fc-grip-glide-bl 760ms cubic-bezier(.45, .05, .25, 1) both;
 }
 .fc-resize.bl::before {
   right: auto; left: 0;
@@ -971,7 +971,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
 }
 /* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的一半出头，
    小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */
-.fc-unfocused .fc-resize::before { opacity: .42; }
+.fc-unfocused .fc-resize::before { opacity: .24; }
 .fc-unfocused .fc-resize:hover::before,
 .fc-unfocused .fc-resize.is-on::before { opacity: 1; }
 .fc-resize:hover::before { border-color: var(--accent); --fc-stroke: 2.9px; }
@@ -982,8 +982,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
 .fc-resize.is-on::before {
   border-color: var(--accent); --fc-stroke: 3.4px;
-  animation: fc-grip-thicken 560ms cubic-bezier(.33, .85, .3, 1) both,
-             fc-grip-glide 620ms cubic-bezier(.33, .85, .3, 1) both;
+  animation: fc-grip-thicken 700ms cubic-bezier(.45, .05, .25, 1) both,
+             fc-grip-glide 760ms cubic-bezier(.45, .05, .25, 1) both;
 }
 /* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
    只动 border-*-width 与颜色，不动 transform：缩放 + 圆角 + 半透明描边会让边缘反复重采样，
@@ -991,19 +991,22 @@ watchEffect(applyShellDom, { flush: 'sync' });
 /* 顺着拖动方向的弹性：**只作用在画出来的那道弧上**（::before），
    **不移动把手命中区** —— 上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，
    手感就成了"我拖了它没动"。现在命中区纹丝不动，弧自己往外蹬一下再回来。 */
-/* 位移从 6px 收到 3.4px、时长 420 → 620ms、缓动去掉回弹（用户口径 2026-11-28：更柔和）——
-   过冲 + 大位移在"卡片跟着手走"的同时读起来像抖，收到这个量级才是顺着拖动方向轻轻一让。 */
+/* 位移是一条**闭合的路径**（用户口径 2026-11-28 二轮："完整的路径动画，而不是瞬间缩回去"）——
+   0 → 3.6px（顺着拖动方向轻轻让一下）→ 3.0px → **回到 0**。尽头必须是 0：
+   原来停在 3.4px，动画一摘（松手）弧就"啪"地弹回原位，看着像瞬移。
+   时长 760ms、缓动 `cubic-bezier(.45, .05, .25, 1)`（两头都软、中段才走量），
+   出去与回来各占一半路程，读起来是"让出去再收回来"而不是抖一下。 */
 @keyframes fc-grip-glide {
   0% { transform: translate(0, 0); }
-  38% { transform: translate(3.6px, 3.6px); }
-  74% { transform: translate(3px, 3px); }
-  100% { transform: translate(3.4px, 3.4px); }
+  30% { transform: translate(3.6px, 3.6px); }
+  62% { transform: translate(3px, 3px); }
+  100% { transform: translate(0, 0); }
 }
 @keyframes fc-grip-glide-bl {
   0% { transform: translate(0, 0); }
-  38% { transform: translate(-3.6px, 3.6px); }
-  74% { transform: translate(-3px, 3px); }
-  100% { transform: translate(-3.4px, 3.4px); }
+  30% { transform: translate(-3.6px, 3.6px); }
+  62% { transform: translate(-3px, 3px); }
+  100% { transform: translate(0, 0); }
 }
 @keyframes fc-grip-thicken {
   0% { border-right-width: 2.2px; border-bottom-width: 2.2px; }
