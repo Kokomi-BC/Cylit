@@ -73,6 +73,8 @@ export interface DetectImageViewer {
   getIndex: () => number;
   /** 切图成功后回调一次新下标（左右拖动切图的唯一对外信号） */
   onIndexChange: (cb: (index: number) => void) => void;
+  /** 下滑手势开始 / 结束（组件据此提前把胶囊淡出，别等卸载） */
+  onDismissChange: (cb: (dismissing: boolean) => void) => void;
   /** 按倍率缩放，可指定屏幕锚点（默认绕视口中心） */
   zoomBy: (factor: number, cx?: number, cy?: number) => void;
   /** 回到 100%、旋转归零、位移归零 */
@@ -137,6 +139,8 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   const listeners: ((s: number) => void)[] = [];
   /** 切图成功后的下标订阅（组件用来同步它记的"当前第几张"） */
   const indexListeners: ((index: number) => void)[] = [];
+  const dismissListeners: ((dismissing: boolean) => void)[] = [];
+  const setDismissing = (on: boolean) => { for (const cb of dismissListeners) cb(on); };
   const emitIndex = (index: number) => {
     for (const cb of indexListeners) cb(index);
   };
@@ -451,7 +455,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
   const resetDragBackdrop = () => {
     stage.style.transition = 'none';
     stage.style.backgroundColor = '';
-    stage.classList.remove('dismissing');
+    setDismissing(false);
   };
 
   const syncAdjacentImageBox = (el: HTMLImageElement | null) => {
@@ -927,8 +931,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
       if (shouldHandleAsVerticalDismiss) {
         dragIntent = 'vertical';
-        /* 一开始往下拽就把胶囊藏掉：这时候用户已经决定要走，界面不该再留一堆按钮 */
-        stage.classList.add('dismissing');
+        /* 一开始往下拽就把胶囊藏掉：这时候用户已经决定要走，界面不该再留一堆按钮。
+           走回调而不是直接改 class —— Vue 重渲染会把手工加的 class 抹掉。 */
+        setDismissing(true);
         if (dragPreviewActive) {
           releaseAdjacentPreview();
         }
@@ -1413,6 +1418,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     if (transformRaf) { cancelAnimationFrame(transformRaf); transformRaf = 0; }
     listeners.length = 0;
     indexListeners.length = 0;
+    dismissListeners.length = 0;
   };
 
   return {
@@ -1429,6 +1435,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     getIndex: () => modalImageIndex,
     onChange: (cb: (scale: number) => void) => { listeners.push(cb); },
     onIndexChange: (cb: (index: number) => void) => { indexListeners.push(cb); },
+    onDismissChange: (cb: (dismissing: boolean) => void) => { dismissListeners.push(cb); },
     isGesturing: () => moved,
     isBackgroundPress: () => backgroundPress,
   };

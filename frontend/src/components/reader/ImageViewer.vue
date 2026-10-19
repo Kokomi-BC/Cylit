@@ -168,12 +168,14 @@ function playOpen() {
   );
   requestAnimationFrame(() => {
     opened.value = true;
-    viewer?.animateTo(1, 0, 0, 300, 'cubic-bezier(0.16, 0.84, 0.28, 1)');
+    viewer?.animateTo(1, 0, 0, 230, 'cubic-bezier(0.16, 0.84, 0.28, 1)');
   });
 }
 
 /** 关闭中（透明度在淡出）：既是 class，也是"只关一次"的守卫 */
 const closing = ref(false);
+/** 下滑手势进行中：胶囊提前淡出，不等组件卸载 */
+const dismissing = ref(false);
 let closeTimer: number | null = null;
 
 function finishClose() {
@@ -195,8 +197,9 @@ function requestClose(reason?: 'dismiss') {
   if (!viewer) { finishClose(); return; }
   if (reason === 'dismiss') {
     /* 图片已经被甩出去了：顺着方向缩着淡掉就行，飞回原位又远又慢 */
-    viewer.fadeOut(110);
-    closeTimer = window.setTimeout(finishClose, 120);
+    dismissing.value = true;
+    viewer.fadeOut(90);
+    closeTimer = window.setTimeout(finishClose, 100);
     return;
   }
   if (!o || !size.value.w) {
@@ -216,8 +219,8 @@ function requestClose(reason?: 'dismiss') {
   const tScale = o.width / w;
   const tx = o.left + o.width / 2 - stageW / 2;
   const ty = o.top + o.height / 2 - stageH / 2;
-  viewer.beginExit(tScale, tx, ty, 240, 'cubic-bezier(0.45, 0, 0.55, 1)');
-  closeTimer = window.setTimeout(finishClose, 260);
+  viewer.beginExit(tScale, tx, ty, 190, 'cubic-bezier(0.45, 0, 0.55, 1)');
+  closeTimer = window.setTimeout(finishClose, 205);
 }
 
 /** 点背景关闭：刚拖动 / 捏合过就不算点击 */
@@ -256,6 +259,7 @@ onMounted(() => {
     });
     viewer.onChange((s) => { pct.value = Math.round(s * 100); });
     viewer.onIndexChange((i) => { currentIndex.value = i; });
+    viewer.onDismissChange((on) => { dismissing.value = on; });
     syncGallery();
   }
 
@@ -285,7 +289,7 @@ onBeforeUnmount(() => {
     <div
       ref="stage"
       class="viewer"
-      :class="{ closing, open: opened }"
+      :class="{ closing, open: opened, dismissing }"
       @click.self="onBgClick"
       @dblclick="onDoubleClick"
     >
@@ -332,13 +336,15 @@ onBeforeUnmount(() => {
 }
 .viewer:active { cursor: grabbing; }
 /* 往下甩的时候胶囊先走一步（控制器在进入下滑手势时给 stage 挂 dismissing） */
-.viewer.dismissing .cap { opacity: 0; transition: opacity 120ms ease; }
+.viewer.dismissing .cap { opacity: 0; transition: opacity 90ms ease; }
 /* 入场：整体从透明显形（图片同时从缩略图位置放大过来）。
    中途不能靠整屏透明度做过渡 —— 那样关闭时图片会跟着一起淡掉，看不到"飞回去"。 */
 .viewer { opacity: 0; }
-.viewer.open { opacity: 1; transition: opacity 140ms ease; }
+.viewer.open { opacity: 1; transition: opacity 110ms ease; }
 /* 关闭：只让黑底淡出，图片保持可见地飞回原位 */
-.viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 240ms ease; }
+.viewer.closing { background: rgba(13, 15, 19, 0); transition: background-color 180ms ease; }
+/* 关的时候胶囊立刻退场，不跟着图一起等 */
+.viewer.closing .cap { opacity: 0; transition: opacity 90ms ease; }
 /* 飞回原位时不再拖着一张 60px 的投影：它是"弹窗"的语义，飞回缩略图时留着会很突兀 */
 .viewer.closing .shot { box-shadow: none; transition: box-shadow 160ms ease; }
 /* 下一张用同一枚返回箭头镜像一下 */
