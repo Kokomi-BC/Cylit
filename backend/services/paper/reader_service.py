@@ -1346,6 +1346,25 @@ def row_id_of_caption(paper_id: str, page_no: int, number: str,
     return None
 
 
+def caption_row_ids(paper_id: str, page_no: int) -> dict[str, str]:
+    """这一页「图号 → 图注行的行 id」。
+
+    引用登记要用它：前端点 ``[n]`` 时靠行 id 才能"闪一下那一行"，而插图引用以前只带页码，
+    点过去只滚到位、什么都不亮。行 id 只有翻译产物知道（页内序号 ``p010-03``）。
+    这里**一页只装一次行**再逐图号比对 —— 逐图调 `row_id_of_caption` 会把整篇产物重装 N 遍。
+    """
+    rows = _rows_of_page(paper_id, int(page_no))
+    out: dict[str, str] = {}
+    for row in rows:
+        number = str(row.get("number") or "").strip()
+        if not number or number in out:
+            continue
+        rid = row_id_of_caption(paper_id, int(page_no), number, rows=rows)
+        if rid:
+            out[number] = str(rid)
+    return out
+
+
 def _rows_of_page(paper_id: str, page_no: int) -> list[dict]:
     for payload in page_translations(paper_id):
         if int(payload["page"]) == int(page_no):

@@ -65,6 +65,20 @@ def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:
     return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
+def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
+    """这一页「图号 → 图注行的行 id」：引用要带行锚点，点 `[n]` 才闪得到那一行。
+
+    拿不到（还没翻译 / 扫描件）就回空表 —— 引用照样能跳页，只是没有行锚点。
+    """
+    try:
+        from backend.services.paper import reader_service
+
+        return reader_service.caption_row_ids(paper_id, int(page))
+    except Exception as exc:  # noqa: BLE001 —— 锚点拿不到不该让工具失败
+        log.debug("取图注行 id 失败（不影响看图）：%s", exc)
+        return {}
+
+
 def _locate(page: int | None, section: str | None, kind: str = "") -> str:
     bits = []
     if page:
@@ -371,6 +385,7 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
     """
     async def _impl() -> dict:
         data = await ctx.deps.host.figures(ctx.deps.paper_id, int(page))
+        rows = _caption_rows(ctx.deps.paper_id, int(page))
         items = []
         for fig in data.get("items") or []:
             url = fig.get("url") or ""
@@ -379,6 +394,8 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
             cit = ctx.deps.registry.assign(
                 key=f"figure:{page}:{fig.get('index')}", kind=kind, page=int(page),
                 snippet=_clip(fig.get("caption") or ""),
+                # 图注行的行 id：前端点 `[n]` 才能闪到那一行（模型侧看不到这个 id）
+                row_id=rows.get(str(fig.get("number") or "")),
                 image_urls=[url] if url else [],
                 label=f"第 {page} 页 · {label}")
             items.append({
@@ -428,6 +445,9 @@ async def figure_image_get(ctx: RunContext[Deps], page: int, index: int):
         what = ("表 " if kind == "table" else "图 ") + (number or f"#{index}")
         cit = ctx.deps.registry.assign(key=f"figure_img:{page}:{index}", kind=kind,
                                        page=int(page),
+                                       # 图注行的行 id：前端点 `[n]` 闪到那一行
+                                       row_id=_caption_rows(ctx.deps.paper_id,
+                                                           int(page)).get(number),
                                        snippet=_clip(f"第 {page} 页 · {what}"),
                                        label=f"第 {page} 页 · {what}")
         note = f"已附上第 {page} 页的{what}（ref={cit.ref}）。"
