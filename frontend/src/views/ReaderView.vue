@@ -5718,10 +5718,14 @@ const HL_SWATCH_CSS: Record<string, string> = {
   blue: 'rgba(85, 165, 255, .95)', indigo: 'rgba(75, 0, 130, .95)',
   violet: 'rgba(143, 0, 255, .9)',
 };
-/** 查看态：图标就用这处高亮的颜色（编辑态不染 —— 那时色点按钮就在旁边，不必重复） */
+/** 查看态：这处高亮的颜色（编辑态不给 —— 那时色点按钮就在旁边，不必重复） */
+function noteAccentColor(card: NoteCard) {
+  if (card.mode !== 'view') return '';
+  return isHexColor(card.color) ? card.color : (HL_SWATCH_CSS[card.color] ?? '');
+}
+/** 图标与标题共用同一个色：`head-lead` 那枚图标 + 「笔记」两个字一起染 */
 function noteLeadStyle(card: NoteCard) {
-  if (card.mode !== 'view') return undefined;
-  const css = isHexColor(card.color) ? card.color : HL_SWATCH_CSS[card.color];
+  const css = noteAccentColor(card);
   return css ? { color: css } : undefined;
 }
 /** 自定义色不是那 7 个类名之一，只能行内给（否则圆点会是空的） */
@@ -7128,6 +7132,7 @@ function renderMarkdown(text?: string | null) {
       :data-note-key="card.key"
       :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
       :focused="topLayer === 'note' && card.key === activeNoteKey"
+      :title-color="noteAccentColor(card)"
       hide-anchor
       @pointerdown.capture="onFloatPress($event, 'note', card.key)"
       @focusin.capture="takeTop('note')"
@@ -7137,8 +7142,8 @@ function renderMarkdown(text?: string | null) {
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
            色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
       <template #head-lead>
-        <!-- 查看态**不摆色点按钮**（用户口径 2026-11-28 七轮），颜色改由这枚图标表达：
-             图标染成这处高亮的颜色，零新增元素、不抢标题，也不多一枚控件。 -->
+        <!-- 查看态**不摆色点按钮**（用户口径 2026-11-28 七轮），颜色改由图标 + 标题表达：
+             图标和「笔记」两个字一起染成这处高亮的颜色，零新增元素、不多一枚控件。 -->
         <AppIcon name="note" :size="14" :style="noteLeadStyle(card)" />
       </template>
       <template #head-mid>
@@ -7867,10 +7872,10 @@ function renderMarkdown(text?: string | null) {
   bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   border: var(--fc-stroke) solid var(--fc-handle);
   border-radius: 50%;
-  /* 只留 30°（对角线两侧各 15°）：cos30/sin30 = 86.6% / 50% */
+  /* 只留 40°（对角线两侧各 20°）：cos25/sin25 = 90.63% / 42.26% */
   clip-path: polygon(50% 50%,
-    calc(50% + 86.6%) calc(50% + 50%),
-    calc(50% + 50%) calc(50% + 86.6%));
+    calc(50% + 90.63%) calc(50% + 42.26%),
+    calc(50% + 42.26%) calc(50% + 90.63%));
   /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
               opacity 280ms var(--ease),
@@ -7883,8 +7888,8 @@ function renderMarkdown(text?: string | null) {
   right: auto;
   left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   clip-path: polygon(50% 50%,
-    calc(50% - 86.6%) calc(50% + 50%),
-    calc(50% - 50%) calc(50% + 86.6%));
+    calc(50% - 90.63%) calc(50% + 42.26%),
+    calc(50% - 42.26%) calc(50% + 90.63%));
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
 .reader > .float-grip.unfocused::after { opacity: .24; }
