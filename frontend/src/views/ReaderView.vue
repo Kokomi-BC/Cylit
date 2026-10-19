@@ -2100,6 +2100,14 @@ async function focusRow(
   opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean } = {},
 ) {
   const { smooth = true, save = true } = opts;
+  /* 合成锚点 `fig:p<页>:n<图号>`（见 ReaderChat.gotoCitation）：解析成那张图的**图注行** id。
+     历史引用没有行 id，只能靠这条兜底 —— 认不出来就退化成整页闪。 */
+  const figAnchor = /^fig:p(\d+):n(\d+)$/.exec(id);
+  if (figAnchor) {
+    const hit = figures.value.find((f) => Number(f.page) === Number(figAnchor[1])
+      && String(f.number ?? '') === figAnchor[2]);
+    id = hit?.row_id || '';
+  }
   const known = rowById.value.get(id);
   const page = opts.page ?? known?.page ?? currentPage.value ?? 1;
   if (!id && !page) return;

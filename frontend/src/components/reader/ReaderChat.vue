@@ -1497,7 +1497,15 @@ function gotoCitation(citation: AgentCitation) {
     toast(`这条引用来自《${citation.label || citation.paper_id}》，不在当前论文里`, 'warn');
     return;
   }
-  emit('focus', citation.row_id || citation.block_id || '', citation.page ?? undefined);
+  let anchor = citation.row_id || citation.block_id || '';
+  /* 插图 / 表格引用在这一版之前**没有行 id**（后端只登了页码），点过去只能整页闪。
+     这里用引用标题里的「图 4 / 表 1」+ 页码拼一个锚点，阅读器据此找到那张图所在的图注行，
+     闪的就跟「标号 1」一样是**图和图注**那一行。 */
+  if (!anchor && citation.page) {
+    const hit = /(?:图|表|figure|fig\.?|table)\s*(\d{1,3})/i.exec(citation.label || citation.snippet || '');
+    if (hit) anchor = `fig:p${citation.page}:n${hit[1]}`;
+  }
+  emit('focus', anchor, citation.page ?? undefined);
 }
 
 onMounted(() => {
