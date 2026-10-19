@@ -7,16 +7,16 @@
  * 图上/图下**不再显示任何文字**（用户口径：查看图片时不要文字）：图注只在侧栏与正文里显示，
  * 这里留纯图 —— 胶囊里的百分比是控件读数，不算"文字说明"。
  *
- * 交互：滚轮以光标为锚缩放、双指捏合、双击在 100% 与 200% 之间切换、Esc / 点背景关闭。
+ * 手势与变换交给 @panzoom/panzoom：滚动缩放、双指捏合、拖动都是它内部**按手势起点解析式算**
+ * 的（每个事件都从 startScale / 起点距离重新推导，不在一帧的结果上累加），而且每次都会用
+ * contain 重新求解位置。我们自己手写时丢掉的正是这两点 —— 被"内容不得露出视口"钳掉的位移
+ * 记不住，等可滑动余量一出现就得把欠的补回来，于是放大过程中总有一记跳变。
  *
- * 为什么分成「目标 + 渲染」两套状态：
- * "内容不得露出视口"是硬约束，它的可滑动余量 max(0, (内容 - 视口) / 2) 在内容刚好等于视口的那一刻
- * 由 0 开始增长 —— 这一轴此前攒下的锚点位移无处可去，全被钳掉；余量一打开，缺失的位移又必须以
- * 正常速度补回来，位移对缩放的一阶导数在这里必然不连续，眼睛看到的就是"跳一下"。
- * 硬约束无法放弃（放弃就露白），所以把阶跃挡在渲染层：输入只改目标，渲染用一阶平滑去追，
- * 任何来自约束的突变都被吸收成一段连续的滑动。拖动/捏合不排队（必须跟手），直接落到渲染值上。
+ * contain: 'inside' 的含义正好是我们要的约束（元素不许被拖出视口，缩放后自动贴边），
+ * 配合 panOnlyWhenZoomed：100% 时锁定居中，放大后余量一出现就能拖，且余量是连续增长的。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import Panzoom from '@panzoom/panzoom';
 import AppIcon from '@/components/AppIcon.vue';
 import type { ZoomTarget } from '@/api/types';
 
@@ -30,16 +30,6 @@ const imgEl = ref<HTMLImageElement | null>(null);
 /** 图片原始像素（只用来算宽高比） */
 const nat = ref({ w: 0, h: 0 });
 const box = ref({ w: 0, h: 0 });
-
-/** 渲染值：模板只认这一套 */
-const z = ref(1);
-const tx = ref(0);
-const ty = ref(0);
-
-/** 目标值：输入直接改这一套，渲染层负责追上去 */
-let tz = 1;
-let ttx = 0;
-let tty = 0;
 
 const Z_MIN = 0.6;
 const Z_MAX = 6;
@@ -56,245 +46,58 @@ const fit = computed(() => {
 });
 const sheetW = computed(() => Math.max(1, nat.value.w * fit.value));
 const sheetH = computed(() => Math.max(1, nat.value.h * fit.value));
-const pct = computed(() => Math.round(z.value * 100));
 const sheetStyle = computed(() => ({
   width: sheetW.value + 'px',
   height: sheetH.value + 'px',
-  // 先缩放、后平移（CSS 从右往左算）—— 平移因此是**屏幕像素**
-  transform: 'translate3d(' + tx.value + 'px, ' + ty.value + 'px, 0) scale(' + z.value + ')',
 }));
 
-/* ------------------------------ 约束 ------------------------------ */
+/** 当前倍率（panzoom 是唯一真相，这里只镜像出来给读数与按钮用） */
+const scale = ref(1);
+const pct = computed(() => Math.round(scale.value * 100));
+/** 首帧定位完成前先不画，避免图片在左上角闪一下 */
+const ready = ref(false);
 
-/** 可滑动余量：只有内容比视口大才有（两轴独立） */
-function panRange(vz = tz) {
-  const b = box.value;
-  return {
-    x: Math.max(0, (sheetW.value * vz - b.w) / 2),
-    y: Math.max(0, (sheetH.value * vz - b.h) / 2),
-  };
-}
+let pz: ReturnType<typeof Panzoom> | null = null;
+let boundWheel: ((ev: WheelEvent) => void) | null = null;
+let boundChange: ((ev: Event) => void) | null = null;
+let boundEl: HTMLElement | null = null;
+let boundStage: HTMLElement | null = null;
 
-function clampTarget() {
-  const m = panRange();
-  ttx = Math.min(m.x, Math.max(-m.x, ttx));
-  tty = Math.min(m.y, Math.max(-m.y, tty));
-}
-
-/* --------------------------- 渲染层（平滑） --------------------------- */
-
-const reduceMotion = typeof matchMedia !== 'undefined'
-  && matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-/** 一阶平滑的时间常数：短到不拖沓，长到足以吸收约束造成的阶跃 */
-const TAU = reduceMotion ? 0 : 0.07;
-
-let raf = 0;
-let lastT = 0;
-
-function tick(now: number) {
-  const dt = Math.min(64, Math.max(1, now - lastT)) / 1000;
-  lastT = now;
-  const a = TAU > 0 ? 1 - Math.exp(-dt / TAU) : 1;
-  z.value += (tz - z.value) * a;
-  tx.value += (ttx - tx.value) * a;
-  ty.value += (tty - ty.value) * a;
-  const done = Math.abs(tz - z.value) < 1e-4
-    && Math.abs(ttx - tx.value) < 0.05
-    && Math.abs(tty - ty.value) < 0.05;
-  if (done) {
-    z.value = tz; tx.value = ttx; ty.value = tty;
-    raf = 0;
-    return;
-  }
-  raf = requestAnimationFrame(tick);
-}
-
-function kick() {
-  if (raf) return;
-  lastT = performance.now();
-  raf = requestAnimationFrame(tick);
-}
-
-/** 目标立刻落到渲染上（换图、接管动画这类不能排队的情况） */
-function snap() {
-  if (raf) { cancelAnimationFrame(raf); raf = 0; }
-  z.value = tz; tx.value = ttx; ty.value = tty;
-}
-
-/** 停掉正在跑的缓动，且让目标 == 当前画面（拖动接管时用，避免松手后又弹一下） */
-function freeze() {
-  if (raf) { cancelAnimationFrame(raf); raf = 0; }
-  tz = z.value; ttx = tx.value; tty = ty.value;
+/**
+ * 把图片摆回视口正中。panzoom 的 translate 在 scale 之前，所以位移要除一次 scale 才是屏幕像素；
+ * force 是必需的：panOnlyWhenZoomed 会把 100% 下的 pan 整个忽略掉。
+ */
+function recenter(animate = false) {
+  const el = stage.value;
+  if (!pz || !el) return;
+  const s = pz.getScale() || 1;
+  pz.pan(
+    (el.clientWidth - sheetW.value) / (2 * s),
+    (el.clientHeight - sheetH.value) / (2 * s),
+    { animate, force: true },
+  );
+  ready.value = true;
 }
 
 function resetView() {
-  tz = 1; ttx = 0; tty = 0;
-  kick();
-}
-
-/* ------------------------------ 缩放 ------------------------------ */
-
-function smoothstep(t: number) {
-  const c = Math.min(1, Math.max(0, t));
-  return c * c * (3 - 2 * c);
-}
-
-/**
- * 锚点权重：余量从 0 长到 15% 视口的那一段里，锚点由「视口中心」平滑交棒给「光标」。
- * 余量为 0 的轴滑不动，只能用中心锚；硬切到光标锚会在交接那一步凭空甩出一段位移，
- * 用 smoothstep（两端导数为 0）把交棒拉成连续的一段，就没有那一下了。
- */
-function anchorWeight(m: number, view: number) {
-  return smoothstep(m / Math.max(1, view * 0.15));
-}
-
-/** 以某个屏幕点为锚缩放（滚轮 / 按钮 / 双指都走这里）：锚点下的画面不动 */
-function zoomAt(next: number, px?: number, py?: number, smooth = true) {
-  const el = stage.value;
-  const nz = Math.min(Z_MAX, Math.max(Z_MIN, next));
-  if (!el || Math.abs(nz - tz) < 1e-4) return;
-  const rect = el.getBoundingClientRect();
-  const ox = rect.left + rect.width / 2;
-  const oy = rect.top + rect.height / 2;
-  const m = panRange(nz);
-  const cx = ox + ((px ?? ox) - ox) * anchorWeight(m.x, box.value.w);
-  const cy = oy + ((py ?? oy) - oy) * anchorWeight(m.y, box.value.h);
-  const ax = ox + ttx;   // 图片中心在屏幕上的位置
-  const ay = oy + tty;
-  const k = nz / tz;
-  ttx += (cx - ax) * (1 - k);
-  tty += (cy - ay) * (1 - k);
-  tz = nz;
-  clampTarget();
-  if (smooth) kick(); else snap();
+  if (!pz) return;
+  pz.zoom(1, { animate: true });
+  recenter(true);
 }
 
 function zoomStep(dir: number) {
+  if (!pz) return;
+  const cur = pz.getScale();
   const next = dir > 0
-    ? Z_STEPS.find((s) => s > tz + 1e-6) ?? Z_MAX
-    : [...Z_STEPS].reverse().find((s) => s < tz - 1e-6) ?? Z_MIN;
-  zoomAt(next);
+    ? Z_STEPS.find((s) => s > cur + 1e-6) ?? Z_MAX
+    : [...Z_STEPS].reverse().find((s) => s < cur - 1e-6) ?? Z_MIN;
+  pz.zoom(next, { animate: true });
 }
 
-function onWheel(ev: WheelEvent) {
-  ev.preventDefault();
-  /* 归一化：行/页模式换算成像素，单次增量封顶，触控板的小 delta 也走连续曲线 */
-  const d = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 400 : ev.deltaY;
-  const step = Math.max(-240, Math.min(240, d));
-  zoomAt(tz * Math.exp(-step * 0.0012), ev.clientX, ev.clientY);
-}
-
-/* ------------------------------ 拖动 / 双指 ------------------------------ */
-
-const pointers = new Map<number, { x: number; y: number }>();
-let pressAt: { x: number; y: number } | null = null;
-let panFrom: { x: number; y: number; tx: number; ty: number } | null = null;
-type PinchFrom = { dist: number; z: number; midX: number; midY: number; tx: number; ty: number };
-let pinchFrom: PinchFrom | null = null;
-
-function onPointerDown(ev: PointerEvent) {
-  if (ev.button !== undefined && ev.button > 0) return;
-  (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
-  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-  if (pointers.size >= 2) {
-    panFrom = null;
-    pressAt = null;
-    freeze();
-    const pair = [...pointers.values()];
-    pinchFrom = {
-      dist: Math.max(24, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y)),
-      z: tz, tx: ttx, ty: tty,
-      midX: (pair[0].x + pair[1].x) / 2,
-      midY: (pair[0].y + pair[1].y) / 2,
-    };
-    return;
-  }
-  pressAt = { x: ev.clientX, y: ev.clientY };
-  panFrom = null;
-  pinchFrom = null;
-}
-
-function onPointerMove(ev: PointerEvent) {
-  if (!pointers.has(ev.pointerId)) return;
-  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-  if (pointers.size >= 2 && pinchFrom) {
-    applyPinch();
-    return;
-  }
-  if (!pressAt) return;
-  /* 真的开始拖了才接管：接手时画面停在这一帧，基线按当前渲染值取，不会先跳一下再跟手 */
-  if (!panFrom) {
-    freeze();
-    panFrom = { x: pressAt.x, y: pressAt.y, tx: tx.value, ty: ty.value };
-  }
-  ttx = panFrom.tx + (ev.clientX - panFrom.x);
-  tty = panFrom.ty + (ev.clientY - panFrom.y);
-  clampTarget();
-  tx.value = ttx;
-  ty.value = tty;
-}
-
-function onPointerUp(ev: PointerEvent) {
-  pointers.delete(ev.pointerId);
-  panFrom = null;
-  if (pointers.size < 2) pinchFrom = null;
-  if (pointers.size === 1) {
-    /* 抬起一根手指后，剩下这根要当作"刚刚按下"：否则下一次移动会从它按下的旧位置起算，画面被甩一下 */
-    const rest = [...pointers.values()][0];
-    pressAt = { x: rest.x, y: rest.y };
-  } else {
-    pressAt = null;
-  }
-}
-
-/**
- * 双指捏合：**解析式**——从捏合起点一次算到位，而不是每帧在上一帧的结果上累加。
- * 这样即使中途位移被"内容不得露出视口"的钳制压掉，理想位置也一直由起点保留着；
- * 余量一旦打开，画面是接着连续往下走的，不会把之前欠下的位移一口气补回来。
- */
-function applyPinch() {
-  const el = stage.value;
-  const p = pinchFrom;
-  if (!el || !p || pointers.size < 2) return;
-  const pair = [...pointers.values()];
-  const midX = (pair[0].x + pair[1].x) / 2;
-  const midY = (pair[0].y + pair[1].y) / 2;
-  const dist = Math.max(24, Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y));
-  const rect = el.getBoundingClientRect();
-  const ox = rect.left + rect.width / 2;
-  const oy = rect.top + rect.height / 2;
-  const nz = Math.min(Z_MAX, Math.max(Z_MIN, p.z * (dist / p.dist)));
-  const k = nz / p.z;
-  tz = nz;
-  /* 以起点双指中点为缩放锚（保持那一点下的画面不动），再叠加中点自身的位移 —— 捏合与两指平移可以同时发生 */
-  ttx = p.tx + (p.midX - (ox + p.tx)) * (1 - k) + (midX - p.midX);
-  tty = p.ty + (p.midY - (oy + p.ty)) * (1 - k) + (midY - p.midY);
-  clampTarget();
-  snap();
-}
-
-function onDoubleClick(ev: MouseEvent) {
-  zoomAt(tz > 1.05 ? 1 : 2, ev.clientX, ev.clientY);
-}
-
-/* ------------------------------ 尺寸 / 键位 ------------------------------ */
-
-let ro: ResizeObserver | null = null;
-
-function measure() {
-  const el = stage.value;
-  if (!el) return;
-  box.value = { w: el.clientWidth, h: el.clientHeight };
-  clampTarget();
-  kick();
-}
-
-function onImgLoad() {
-  const img = imgEl.value;
-  if (!img) return;
-  nat.value = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
-  measure();
+function onDblClick(ev: MouseEvent) {
+  if (!pz) return;
+  if (pz.getScale() > 1.05) { resetView(); return; }
+  pz.zoomToPoint(2, { clientX: ev.clientX, clientY: ev.clientY }, { animate: true });
 }
 
 function onKey(ev: KeyboardEvent) {
@@ -304,24 +107,74 @@ function onKey(ev: KeyboardEvent) {
   if (ev.key === '0') resetView();
 }
 
+let ro: ResizeObserver | null = null;
+
+function measure() {
+  const el = stage.value;
+  if (!el) return;
+  box.value = { w: el.clientWidth, h: el.clientHeight };
+}
+
+function onImgLoad() {
+  const img = imgEl.value;
+  if (!img) return;
+  nat.value = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
+  measure();
+}
+
+/* 视口或适应尺寸一变，居中位置就得跟着重算（放大的图也重新居中，改动窗口时才发生） */
+watch([() => box.value.w, () => box.value.h, sheetW, sheetH], () => recenter(), { flush: 'post' });
+
+/* 换图：倍率归 1，尺寸由上面的 watch 接手居中 */
 watch(() => props.target?.url, () => {
-  tz = 1; ttx = 0; tty = 0;
-  snap();
   nat.value = { w: 0, h: 0 };
+  pz?.zoom(1, { animate: false });
+  nextTick(() => recenter());
 });
 
 onMounted(() => {
+  const el = sheet.value;
+  const st = stage.value;
+  if (st) {
+    box.value = { w: st.clientWidth || window.innerWidth, h: st.clientHeight || window.innerHeight };
+  }
+  if (el) {
+    pz = Panzoom(el, {
+      minScale: Z_MIN,
+      maxScale: Z_MAX,
+      step: 0.34,             // 与旧的每格 12% 对齐（exp(step / 3)）
+      contain: 'inside',      // 不许把图拖出视口 —— 放大后自动贴边
+      panOnlyWhenZoomed: true, // 100% 时锁居中，余量一出现就连续放开
+      cursor: 'grab',
+    });
+    boundChange = (ev) => { scale.value = (ev as CustomEvent<{ scale: number }>).detail.scale; };
+    el.addEventListener('panzoomchange', boundChange);
+    boundEl = el;
+  }
+  if (st && pz) {
+    boundWheel = (ev) => { pz?.zoomWithWheel(ev); };
+    st.addEventListener('wheel', boundWheel, { passive: false });
+    boundStage = st;
+  }
   measure();
+  recenter();
   document.addEventListener('keydown', onKey);
-  if (typeof ResizeObserver !== 'undefined' && stage.value) {
+  if (typeof ResizeObserver !== 'undefined' && st) {
     ro = new ResizeObserver(() => measure());
-    ro.observe(stage.value);
+    ro.observe(st);
   }
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
-  if (raf) { cancelAnimationFrame(raf); raf = 0; }
+  if (boundWheel && boundStage) boundStage.removeEventListener('wheel', boundWheel);
+  if (boundChange && boundEl) boundEl.removeEventListener('panzoomchange', boundChange);
+  pz?.destroy();
+  pz = null;
+  boundWheel = null;
+  boundChange = null;
+  boundEl = null;
+  boundStage = null;
   ro?.disconnect();
   ro = null;
 });
@@ -329,8 +182,14 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div ref="stage" class="viewer" @wheel.prevent="onWheel" @click.self="emit('close')">
-      <div ref="sheet" class="sheet" :style="sheetStyle">
+    <div ref="stage" class="viewer" @click.self="emit('close')">
+      <div
+        ref="sheet"
+        class="sheet"
+        :class="{ ready }"
+        :style="sheetStyle"
+        @dblclick="onDblClick"
+      >
         <img
           ref="imgEl"
           class="shot"
@@ -339,17 +198,9 @@ onBeforeUnmount(() => {
           draggable="false"
           @load="onImgLoad"
         >
-        <div
-          class="capture"
-          @pointerdown="onPointerDown"
-          @pointermove="onPointerMove"
-          @pointerup="onPointerUp"
-          @pointercancel="onPointerUp"
-          @dblclick="onDoubleClick"
-        />
       </div>
 
-      <div class="cap cap-zoom" @click.stop>
+      <div class="cap cap-zoom panzoom-exclude" @click.stop>
         <button class="zbtn" title="放大" data-viewer-zoom="in" @click="zoomStep(1)">
           <AppIcon name="zoom-in" :size="18" />
         </button>
@@ -372,19 +223,21 @@ onBeforeUnmount(() => {
 /* 整屏深底（参考图就是黑底看图）；图片本身保持白底（论文插图是白的） */
 .viewer {
   position: fixed; inset: 0; z-index: 240; overflow: hidden;
-  display: flex; align-items: center; justify-content: center;
   background: #0d0f13;
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
-/* 平滑交给 rAF（见脚本注释），这里不能再叠一层 CSS 过渡，否则两段插值会互相追赶 */
+/* 图片绝对定位在左上角，居中由 panzoom 的 pan 负责（contain 的求解以左上角为原点） */
 .sheet {
-  position: relative; flex: none; transform-origin: center center;
+  position: absolute; left: 0; top: 0;
+  transform-origin: 50% 50%;
   will-change: transform; background: #fff;
   box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  cursor: grab;
+  opacity: 0;
 }
+.sheet.ready { opacity: 1; }
+.sheet:active { cursor: grabbing; }
 .shot { display: block; width: 100%; height: 100%; -webkit-user-drag: none; }
-.capture { position: absolute; inset: 0; touch-action: none; cursor: grab; }
-.capture:active { cursor: grabbing; }
 
 /* 毛玻璃胶囊：半透明壳 + 大模糊 + 亮描边 + 柔投影，按钮是壳里的圆片 */
 .cap {
