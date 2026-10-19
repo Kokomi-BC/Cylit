@@ -1262,6 +1262,14 @@ async function loadAll() {
  * 写回 URL（`replace`）时把自己再触发一遍。
  */
 const deepLinkDone = ref('');
+/**
+ * 这一次深链定位要不要**动画**滚动。
+ *
+ * 深链默认直接落位（`smooth: false`）：刷新 / 首次进入时那一跳来自浏览器自己，
+ * 加动画反而像"页面在抽动"。但**点目录的页面视图**也是走深链（先写 `?page=N`）——
+ * 用户点的是"带我过去"，不是"重新打开"，所以要动画（用户口径 2026-11-28）。
+ */
+let deepLinkSmooth = false;
 /** 已经"尽力过"的锚点签名：只提示一次，别在 SSE 逐页回填时反复弹 */
 const deepLinkTried = ref('');
 /** 挂载流程（载数据 → 恢复位置 → 深链定位）走完没 */
@@ -1274,6 +1282,8 @@ function hasDeepLink(): boolean {
 }
 
 async function applyDeepLink(): Promise<boolean> {
+  const smooth = deepLinkSmooth;      // 取一次就复位：只对紧接着这一次生效
+  deepLinkSmooth = false;
   const raw = route.query.row ?? route.query.block;
   const anchor = raw === undefined || raw === null ? '' : String(raw);
   const wantPage = Number(route.query.page ?? 0) || 0;
@@ -1289,7 +1299,7 @@ async function applyDeepLink(): Promise<boolean> {
     deepLinkDone.value = sig;
     currentRowId.value = row.id;
     await nextTick();
-    await focusRow(row.id, { smooth: false, save: false, flash: true });
+    await focusRow(row.id, { smooth, save: false, flash: true });
     return true;
   }
 
@@ -1299,7 +1309,7 @@ async function applyDeepLink(): Promise<boolean> {
     if (first) {
       currentRowId.value = first.id;
       await nextTick();
-      await focusRow(first.id, { smooth: false, save: false, flash: true });
+      await focusRow(first.id, { smooth, save: false, flash: true });
     } else {
       await focusPage(wantPage);
     }
@@ -2171,6 +2181,8 @@ async function gotoPage(page: number) {
   delete q.row;
   delete q.block;
   q.page = String(target);
+  // 滚动交给深链那一支去做时，要求它**带动画**（点目录的页面视图是"带我过去"）
+  if (!samePage || hadAnchor) deepLinkSmooth = true;
   await router.replace({ path: route.path, query: q });
   // 路由串没变化时 `applyDeepLink` 不会被触发（那个 watch 只看 query 的快照），自己滚一次；
   // 真变了就交给它 —— 它带"闪一下"的提示，这里再滚一次反而会跟它抢落点。
