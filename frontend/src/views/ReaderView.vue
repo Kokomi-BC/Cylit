@@ -7731,11 +7731,11 @@ function renderMarkdown(text?: string | null) {
   width: calc(var(--fc-arc) + 2px);
   height: calc(var(--fc-arc) + 2px);
   border: 0 solid var(--fc-handle);
-  /* 与 FloatingCard 逐条一致：浓淡、粗细、松手回位都要渐变 */
+  /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
-              opacity 300ms var(--ease),
-              border-width 420ms cubic-bezier(.45, .05, .25, 1),
-              transform 420ms cubic-bezier(.45, .05, .25, 1);
+              opacity 280ms var(--ease),
+              border-width 460ms cubic-bezier(.33, 0, .2, 1),
+              transform 520ms cubic-bezier(.33, 0, .2, 1);
   opacity: 1;
 }
 .reader > .float-grip.br::after {
@@ -7763,9 +7763,9 @@ function renderMarkdown(text?: string | null) {
    组件 scoped 的 @keyframes 不会跨组件生效）。只动描边宽度与颜色，不动 transform：不闪烁。 */
 @keyframes fc-grip-thicken-f {
   0% { border-width: 0; border-right-width: 2.2px; border-bottom-width: 2.2px; }
-  36% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
-  74% { border-right-width: 3.2px; border-bottom-width: 3.2px; }
-  100% { border-right-width: 3.4px; border-bottom-width: 3.4px; }
+  50% { border-right-width: 3.9px; border-bottom-width: 3.9px; }
+  78% { border-right-width: 3.3px; border-bottom-width: 3.3px; }
+  100% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
 }
 .reader > .float-grip.bl:active::after,
 .reader > .float-grip.bl.is-on::after {
@@ -7774,27 +7774,27 @@ function renderMarkdown(text?: string | null) {
 /* 浮窗这枚也只让**弧**（::after）做方向弹性，把手命中区不动 —— 与 FloatingCard 同一口径 */
 @keyframes fc-grip-glide-f {
   0% { transform: translate(0, 0); }
-  30% { transform: translate(3.6px, 3.6px); }
-  62% { transform: translate(3px, 3px); }
-  100% { transform: translate(0, 0); }
+  52% { transform: translate(4px, 4px); }
+  78% { transform: translate(3.3px, 3.3px); }
+  100% { transform: translate(3.6px, 3.6px); }
 }
 @keyframes fc-grip-glide-f-bl {
   0% { transform: translate(0, 0); }
-  30% { transform: translate(-3.6px, 3.6px); }
-  62% { transform: translate(-3px, 3px); }
-  100% { transform: translate(0, 0); }
+  52% { transform: translate(-4px, 4px); }
+  78% { transform: translate(-3.3px, 3.3px); }
+  100% { transform: translate(-3.6px, 3.6px); }
 }
 @keyframes fc-grip-thicken-f-bl {
   0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
-  36% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
-  74% { border-left-width: 3.2px; border-bottom-width: 3.2px; }
-  100% { border-left-width: 3.4px; border-bottom-width: 3.4px; }
+  50% { border-left-width: 3.9px; border-bottom-width: 3.9px; }
+  78% { border-left-width: 3.3px; border-bottom-width: 3.3px; }
+  100% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
 }
 .reader > .float-grip:active::after,
 .reader > .float-grip.is-on::after {
-  border-color: var(--accent); --fc-stroke: 3.4px;
-  animation: fc-grip-thicken-f 700ms cubic-bezier(.45, .05, .25, 1) both,
-             fc-grip-glide-f 760ms cubic-bezier(.45, .05, .25, 1) both;
+  border-color: var(--accent); --fc-stroke: 3.6px;
+  animation: fc-grip-thicken-f 340ms cubic-bezier(.25, 1.1, .35, 1) both,
+             fc-grip-glide-f 380ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 @keyframes fc-grip-spring {
   0% { transform: scale(1); }

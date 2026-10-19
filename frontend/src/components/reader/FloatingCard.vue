@@ -947,13 +947,18 @@ watchEffect(applyShellDom, { flush: 'sync' });
   border-bottom-right-radius: var(--fc-arc);
   /* opacity 必须在过渡里：焦点切换 / 悬停 / 拖动三种浓淡都要**渐变**过去，
      瞬间变淡看起来像"指示器闪了一下"（用户口径 2026-11-28）。 */
+  /* 这三条只管**松手之后**的回位：动画一摘，浏览器就按这里从前一刻的值渐变回静止态
+     —— 不是瞬移，也不是"拖动途中自己缩回去"（后者是上一版 keyframes 尽头写 0 造成的）。 */
   transition: border-color var(--dur) var(--ease),
-              opacity 300ms var(--ease),
-              border-width 420ms cubic-bezier(.45, .05, .25, 1),
-              transform 420ms cubic-bezier(.45, .05, .25, 1);
+              opacity 280ms var(--ease),
+              border-width 460ms cubic-bezier(.33, 0, .2, 1),
+              transform 520ms cubic-bezier(.33, 0, .2, 1);
   opacity: 1;
 }
 .fc-resize.br { right: calc(-1 * var(--fc-gap)); cursor: nwse-resize; }
+/* 拖动中：把手命中区**不做缓动** —— 卡片边缘是 1:1 跟手的，把手若带 transition 会拖后一拍，
+   读起来就是"我拖了，指示器慢半拍才跟到"（用户口径 2026-11-28 三轮）。 */
+.fc-resize.is-on { transition: none; }
 /* 左下角是**镜像**：描边走左边、圆角走左下、着力点与裁切角度一起镜像，
    否则两个角看起来一模一样（像一个直角），放大方向也会反。 */
 .fc-resize.bl { left: calc(-1 * var(--fc-gap)); cursor: nesw-resize; }
@@ -961,8 +966,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    于是它压根没跑 glide（方向弹性），右下角有、左下角没有 —— 用户报的"左右下角不一致"。
    现在两条动画都显式列出来，与右下角逐字对齐（只是换成镜像的那对 keyframes）。 */
 .fc-resize.bl.is-on::before {
-  animation: fc-grip-thicken-bl 700ms cubic-bezier(.45, .05, .25, 1) both,
-             fc-grip-glide-bl 760ms cubic-bezier(.45, .05, .25, 1) both;
+  animation: fc-grip-thicken-bl 340ms cubic-bezier(.25, 1.1, .35, 1) both,
+             fc-grip-glide-bl 380ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 .fc-resize.bl::before {
   right: auto; left: 0;
@@ -981,9 +986,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
    手感就是「我拖了 4px，它才动 0px」。所以 push 那两条关键帧整条删除。
    ⚠️ 必须排在 :hover 之后：两者权重相同，胜负只看先后。 */
 .fc-resize.is-on::before {
-  border-color: var(--accent); --fc-stroke: 3.4px;
-  animation: fc-grip-thicken 700ms cubic-bezier(.45, .05, .25, 1) both,
-             fc-grip-glide 760ms cubic-bezier(.45, .05, .25, 1) both;
+  border-color: var(--accent); --fc-stroke: 3.6px;
+  animation: fc-grip-thicken 340ms cubic-bezier(.25, 1.1, .35, 1) both,
+             fc-grip-glide 380ms cubic-bezier(.25, 1.1, .35, 1) both;
 }
 /* 拖动时**描边加粗**的动画（用户口径：不要缩放弹簧，改成加粗动画）——
    只动 border-*-width 与颜色，不动 transform：缩放 + 圆角 + 半透明描边会让边缘反复重采样，
@@ -991,34 +996,34 @@ watchEffect(applyShellDom, { flush: 'sync' });
 /* 顺着拖动方向的弹性：**只作用在画出来的那道弧上**（::before），
    **不移动把手命中区** —— 上一版动的是把手本身，于是"卡片边缘 1:1 跟手、把手却被推走 4px"，
    手感就成了"我拖了它没动"。现在命中区纹丝不动，弧自己往外蹬一下再回来。 */
-/* 位移是一条**闭合的路径**（用户口径 2026-11-28 二轮："完整的路径动画，而不是瞬间缩回去"）——
-   0 → 3.6px（顺着拖动方向轻轻让一下）→ 3.0px → **回到 0**。尽头必须是 0：
-   原来停在 3.4px，动画一摘（松手）弧就"啪"地弹回原位，看着像瞬移。
-   时长 760ms、缓动 `cubic-bezier(.45, .05, .25, 1)`（两头都软、中段才走量），
-   出去与回来各占一半路程，读起来是"让出去再收回来"而不是抖一下。 */
+/* 拖动时的手感（用户口径 2026-11-28 三轮）：**出去就停住**，别在拖的过程中自己缩回来 ——
+   上一版把 keyframes 尽头写成 0（想让它"有去有回"），结果手指还按着、弧先遛回原位，
+   看着像指示器不跟手。回位改由**松手之后**的 transition 负责（见 `.fc-resize::before`）。
+   节奏：380ms 一路让到 4px 再轻轻回落到 3.6px（末段那点回落就是"灵动"的来源），
+   缓动 `cubic-bezier(.25, 1.1, .35, 1)`：起手快、末端软，像被手带出去一样。 */
 @keyframes fc-grip-glide {
   0% { transform: translate(0, 0); }
-  30% { transform: translate(3.6px, 3.6px); }
-  62% { transform: translate(3px, 3px); }
-  100% { transform: translate(0, 0); }
+  52% { transform: translate(4px, 4px); }
+  78% { transform: translate(3.3px, 3.3px); }
+  100% { transform: translate(3.6px, 3.6px); }
 }
 @keyframes fc-grip-glide-bl {
   0% { transform: translate(0, 0); }
-  30% { transform: translate(-3.6px, 3.6px); }
-  62% { transform: translate(-3px, 3px); }
-  100% { transform: translate(0, 0); }
+  52% { transform: translate(-4px, 4px); }
+  78% { transform: translate(-3.3px, 3.3px); }
+  100% { transform: translate(-3.6px, 3.6px); }
 }
 @keyframes fc-grip-thicken {
   0% { border-right-width: 2.2px; border-bottom-width: 2.2px; }
-  36% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
-  74% { border-right-width: 3.2px; border-bottom-width: 3.2px; }
-  100% { border-right-width: 3.4px; border-bottom-width: 3.4px; }
+  50% { border-right-width: 3.9px; border-bottom-width: 3.9px; }
+  78% { border-right-width: 3.3px; border-bottom-width: 3.3px; }
+  100% { border-right-width: 3.6px; border-bottom-width: 3.6px; }
 }
 @keyframes fc-grip-thicken-bl {
   0% { border-left-width: 2.2px; border-bottom-width: 2.2px; }
-  36% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
-  74% { border-left-width: 3.2px; border-bottom-width: 3.2px; }
-  100% { border-left-width: 3.4px; border-bottom-width: 3.4px; }
+  50% { border-left-width: 3.9px; border-bottom-width: 3.9px; }
+  78% { border-left-width: 3.3px; border-bottom-width: 3.3px; }
+  100% { border-left-width: 3.6px; border-bottom-width: 3.6px; }
 }
 /* 减少动效：关掉加粗动画（停在 2.7px）与药丸的宽度过渡，颜色 / 粗细反馈照旧 ——
    这样「按下 → 变粗变亮」在任何系统设置下都还在。 */
