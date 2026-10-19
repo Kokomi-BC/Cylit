@@ -180,6 +180,17 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     for (const cb of listeners) cb(imageScale);
   };
 
+  /* 捏合 / 旋转时把样式写入合并到每帧一次：120Hz 触摸会在一帧里送好几次 move，
+     每次都写 transform 等于让合成器多做几次无用功，旋转大图时就掉帧。 */
+  let transformRaf = 0;
+  const scheduleTransform = () => {
+    if (transformRaf) return;
+    transformRaf = requestAnimationFrame(() => {
+      transformRaf = 0;
+      updateImageTransform();
+    });
+  };
+
   /* ---------- 尺寸锁定（源文件 lockImageDimension / lockImageElementDimension） ---------- */
 
   const lockImageElementDimension = (imgEl: HTMLImageElement | null, rotation = 0) => {
@@ -637,7 +648,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         // preserveState 的 lockedW/H 是从预览节点的 style 反推的，组件拿不到那个节点，这里主动回推一次
         opts.onSize(lockedW, lockedH);
       }
-      img.style.transition = 'none';
+      img.style.transition = 'opacity 140ms ease-out';
       updateImageTransform();
       img.style.opacity = '1';
 
@@ -669,6 +680,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         options.onFinalize();
       }
     };
+    /* 切图不要"继承"上一张的缩放与位置：先把透明度压低，加载完成后淡进来，
+       视觉上是换了一张图，而不是旧图先缩回原点再换。 */
+    img.style.opacity = '0';
     img.src = displayUrl;
     if (img.complete) {
       finalizeSwitch();
@@ -869,7 +883,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       imageScale = newScale;
       imageRotation = newRotation;
 
-      updateImageTransform();
+      scheduleTransform();
       // 旋转/缩放过程中不做硬性边界夹取，避免高频重排导致卡顿与"卡住"
     } else if (isDragging && e.touches.length === 1) {
       moved = true;
@@ -1056,7 +1070,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
         const verticalDismissReady = dismissScaleEligible && totalDy > winH * CLOSE_SHRINK_THRESHOLD_RATIO && totalDy > Math.abs(totalDx) * 1.15;
         /* 松手时的关闭判定：要拖到视口 1/4 以上才算"往下甩"，之前 12% 太容易触发 */
         const heavyMoveDown = dismissScaleEligible && imageY > winH * 0.24;
-        const outOfBounds = Math.abs(imageX) > maxX || Math.abs(imageY) > maxY || imageScale < 1;
+        /* 容差是必须的：拖动时位置就被夹在 ±maxX，浮点/亚像素误差会让 > 成立，
+           一次普通拖到边界就被判成"越界大幅回弹"。 */
+        const outOfBounds = Math.abs(imageX) > maxX + 0.5 || Math.abs(imageY) > maxY + 0.5 || imageScale < 1 - 1e-6;
         const heavyMoveOut = Math.abs(imageX) > winW * 0.4 || Math.abs(imageY) > winH * 0.4;
 
         // 下滑退出判定：增加对放大状态的严格限制
@@ -1077,7 +1093,9 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
           const currentSnapped = Math.round(imageRotation / 90) * 90;
           const dragRotationDelta = Math.abs(currentSnapped - imageRotation);
           /* 同样只保留 90° 的倍数 */
-          const dragShouldSnapRotation = true;
+          /* 只有真的转过角度才需要回正。以前这里恒为 true，于是"放大后拖到边界"也会走
+             settleImageToNaturalSize —— 它会把 imageScale 锁回 100%，看起来就是"拖到边界就恢复原大小"。 */
+          const dragShouldSnapRotation = dragRotationDelta > 0.5;
 
           if (dragShouldSnapRotation) {
             settleImageToNaturalSize(currentSnapped, 420);
@@ -1388,6 +1406,7 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     img.style.transition = '';
     img.style.transform = '';
     stage.style.backgroundColor = '';
+    if (transformRaf) { cancelAnimationFrame(transformRaf); transformRaf = 0; }
     listeners.length = 0;
     indexListeners.length = 0;
   };
