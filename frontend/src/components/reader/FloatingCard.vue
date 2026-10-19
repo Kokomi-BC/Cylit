@@ -131,6 +131,8 @@ function unlockSelect() { lockFloatSelection(false); }
 function onHeadDown(ev: PointerEvent) {
   // 标题栏上的控件（图钉 / 关闭 / 色点 / 取色器）不参与拖动，否则点它们会顺手把卡片挪一下
   if ((ev.target as HTMLElement | null)?.closest?.('button, label, input')) return;
+  // 只认左键：右键按在标题栏上不该起一次拖动（它还会顺手把编辑框里的选区清掉）
+  if (ev.button !== 0) return;
   const head = ev.currentTarget as HTMLElement | null;
   lockSelect();
   drag.on = true;
@@ -460,6 +462,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), h
 function onResizeDown(ev: PointerEvent, corner: 'br' | 'bl') {
   const box = el.value;
   if (!box) return;
+  if (ev.button !== 0) return;      // 同上：只认左键
   lockSelect();
   rs.on = true;
   rs.corner = corner;

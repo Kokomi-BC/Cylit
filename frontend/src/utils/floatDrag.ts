@@ -27,6 +27,10 @@ export function releaseFloatSelection(): void {
 
 /** 清掉已有的选区：手势期间不该在正文里留着一段"看起来像待操作"的选中文字 */
 export function clearDocSelection(): void {
+  /* 焦点在输入框里（笔记编辑态 / 对话输入框）：那是用户自己框的一段，准备右键复制或改写，
+     `removeAllRanges()` 会把它收掉 —— 手势期间要清的只是正文/PDF 那条原生选区。 */
+  const active = document.activeElement as HTMLElement | null;
+  if (active?.closest?.('input, textarea, [contenteditable="true"]')) return;
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) sel.removeAllRanges();
 }

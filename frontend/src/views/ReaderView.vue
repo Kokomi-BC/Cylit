@@ -3428,7 +3428,8 @@ function onDragStart(ev: MouseEvent) {
     /* 浮层（对话浮窗 / 笔记卡 / 解释卡）里要的是**浏览器原生右键菜单** ——「复制」就在里面
        （用户口径 2026-11-24 第 2 条：想在浮层里选字，用系统菜单复制）。
        正文里仍要挡住默认动作：否则浏览器会把选区折叠到点击处，划词胶囊那几项会整组消失。 */
-    if (t?.closest?.('.chat-host, [data-float-card]')) return;
+    /* 侧栏也放行：笔记侧栏的编辑框就在里面，右键要的是原生「复制 / 粘贴」 */
+    if (t?.closest?.('.chat-host, [data-float-card], .reader-aside')) return;
     ev.preventDefault();
     return;
   }
@@ -3731,6 +3732,10 @@ function onAnyScroll(ev?: Event) {
   hideMenu();
 }
 function onDocPointerDown(ev: PointerEvent) {
+  /* 右键 / 中键**不归这条线管**：菜单由 `contextmenu` 那一支自己摆（见 onContentContextMenu）。
+     这里管的是"单击别处 = 取消这次选取"，而输入框里（笔记编辑态 / 对话输入框 / 搜索框）
+     刚框好、准备右键复制的那一段，一清就没了 —— 用户口径 2026-11-27。 */
+  if (ev.button !== 0) return;
   const target = ev.target as HTMLElement | null;
   if (target?.closest?.('[data-selection-menu], [data-ctx-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
