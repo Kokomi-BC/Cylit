@@ -101,6 +101,8 @@ const rowClass = (id: string) => ({
   current: id === props.currentRowId,
   [flashKind.value]: id === props.flashRowId,
 });
+/** 整页闪：目标引用没有行锚点（插图 / 表格 / 纯页码引用）时，亮的是整页 */
+const pageClass = (page: number) => ({ [flashKind.value]: props.flashRowId === `page:${page}` });
 /* 页头原来的「结构对齐」徽章**已按用户要求删除**：它只是在说"模型给的块数与解析器不一致、
  * 走了结构兜底对齐"，人工复核内容并没有问题，白示一个告警只会让人以为译错了。
  * `align` 字段仍在产物与接口里（供自检脚本审计），前端不再展示。 */
@@ -208,7 +210,8 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   >
     <div v-if="!props.groups.length" class="empty">没有可显示的内容（先解析或翻译这篇论文）</div>
 
-    <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg">
+    <section v-for="g in props.groups" :key="g.page" :data-page="g.page" class="pg"
+             :class="pageClass(g.page)">
       <!-- 手写批注层：**始终挂载**（退出批注后墨迹要留着看得见，用户口径 2026-10-18）。
            平时它 pointer-events: none 不拦事件；画布只在「视口附近」才按 2× dpr 分配，
            滚远了回收，所以 46 页也不会吃内存（见 InkSurface 的 ensureSize）。 -->
@@ -430,10 +433,22 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   60% { opacity: .6; }
   100% { opacity: 0; }
 }
+/* 整页闪（引用没有行锚点时）：同一套观感，罩在整页上 —— 只描边 + 淡底，不动内容 */
+.pg.flash-a::before,
+.pg.flash-b::before {
+  content: ''; position: absolute; inset: -6px -10px; pointer-events: none;
+  border-radius: 12px; opacity: .95;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.pg.flash-a::before { animation: row-flash-a 1.5s ease-out forwards; }
+.pg.flash-b::before { animation: row-flash-b 1.5s ease-out forwards; }
 @media (prefers-reduced-motion: reduce) {
   /* 尊重系统设置：不做淡出动画，亮着等 JS 摘类即可 */
   .row-pair.flash-a::before,
-  .row-pair.flash-b::before { animation: none; opacity: .5; }
+  .row-pair.flash-b::before,
+  .pg.flash-a::before,
+  .pg.flash-b::before { animation: none; opacity: .5; }
 }
 
 /* 文本对照：一行两列；两侧只有字体不同，字号/行距完全一致 */

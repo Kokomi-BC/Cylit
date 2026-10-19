@@ -2126,7 +2126,9 @@ async function focusRow(
   } else {
     node?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
   }
-  if (opts.flash) void flashRow(id);
+  /* 闪一下"就是这块"：有对应行就闪那一行；**没有行 id 的引用**（插图/表格引用只带页码）闪整页 ——
+     否则点引用标号会"跳过去但什么都没亮"（用户口径 2026-11-27）。 */
+  if (opts.flash) void flashRow(known ? id : (page ? `page:${page}` : ''));
   if (save) saveProgressDebounced();
 }
 
