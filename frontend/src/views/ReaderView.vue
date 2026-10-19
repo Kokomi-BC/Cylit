@@ -5674,7 +5674,7 @@ async function deleteNotePopover(card: NoteCard) {
     await api.del(`/notes/${card.noteId}`);
     /* 高亮用整组删（跨行高亮是"同组多条"，`deleteHighlightIds` 按 group_id 去重、只发一次） */
     if (card.highlightId) await deleteHighlightIds([card.highlightId]);
-    toast('笔记与高亮已删除', 'ok', 1600);
+    toast('笔记已删除', 'ok', 1600);
     closeNoteCard(card.key);
     await refreshAnnotations();
   } catch (err) { reportError(err, '删除笔记失败'); } finally { card.busy = false; }
@@ -7239,8 +7239,8 @@ function renderMarkdown(text?: string | null) {
       />
       <!-- 垃圾桶的二次确认：同一块卡内弹窗（用户口径 2026-11-28 十五轮），只问删除 / 取消 -->
       <div v-if="card.confirmDel" class="np-confirm" data-note-confirm-del>
-        <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="确认删除这条笔记及其高亮">
-          <p class="np-confirm-text">删除这条笔记和它的高亮？</p>
+        <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="确认删除这条笔记">
+          <p class="np-confirm-text">删除这条笔记？</p>
           <div class="np-confirm-acts">
             <button type="button" class="btn danger" data-note-del-confirm
                     @click="onNoteDelConfirm(card)">删除</button>
