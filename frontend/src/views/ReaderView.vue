@@ -5703,8 +5703,9 @@ onUnmounted(() => {
  * 查看态 / 编辑态都有；菜单带"从按钮那一角张开"的弹出动画。
  * 状态与删除菜单同一个写法（局部 ref + Teleport + 打开期间才挂全局监听）。 */
 const noteColorMenu = ref({ open: false, top: 0, left: 0, key: '', origin: 'top left' });
-const NOTE_COLOR_MENU_W = 196;
-const NOTE_COLOR_MENU_H = 62;
+/// 菜单尺寸（8 枚 25px 圆 + 7 个 7px 间距 + 左右 7px 内边距）
+const NOTE_COLOR_MENU_W = 263;
+const NOTE_COLOR_MENU_H = 39;
 /** 菜单正对着的那张卡（菜单里高亮"当前色"、点色时改的都是它） */
 const colorMenuCard = computed(() => (noteColorMenu.value.open
   ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
@@ -7134,10 +7135,10 @@ function renderMarkdown(text?: string | null) {
         <!-- 相对时间紧贴在「笔记」标题右侧（用户口径 2026-11-26）：它是这条笔记的属性，
              放到按钮区最左边会看着像另一组东西。编辑态不显示（那一行被色点占满）。 -->
         <span v-if="card.mode === 'view' && relTime(card.created)" class="np-time">{{ relTime(card.created) }}</span>
-        <!-- 高亮颜色：**一枚圆形按钮**（里面就是当前颜色，尺寸与其它按钮一致），
-             点开是贴着它的二级菜单。查看态也给 —— 查看时也想改色（用户口径 2026-11-28）。 -->
+        <!-- 高亮颜色：**一枚圆形按钮**（里面就是当前颜色，与头部其它按钮同尺寸、同底色），
+             点开是贴着它的二级菜单。**只在编辑态给** —— 查看态保持干净（用户口径 2026-11-28 七轮）。 -->
         <button
-          v-if="card.highlightId"
+          v-if="card.highlightId && card.mode !== 'view'"
           type="button"
           class="np-color-btn"
           data-note-color
@@ -7265,7 +7266,6 @@ function renderMarkdown(text?: string | null) {
             >
           </label>
         </div>
-        <span class="ncm-hint">高亮颜色</span>
       </div>
     </Teleport>
 
@@ -7847,10 +7847,10 @@ function renderMarkdown(text?: string | null) {
   bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   border: var(--fc-stroke) solid var(--fc-handle);
   border-radius: 50%;
-  /* 只留 15°（对角线两侧各 7.5°）：cos37.5/sin37.5 = 79.34% / 60.88% */
+  /* 只留 25°（对角线两侧各 12.5°）：cos32.5/sin32.5 = 84.34% / 53.73% */
   clip-path: polygon(50% 50%,
-    calc(50% + 79.34%) calc(50% + 60.88%),
-    calc(50% + 60.88%) calc(50% + 79.34%));
+    calc(50% + 84.34%) calc(50% + 53.73%),
+    calc(50% + 53.73%) calc(50% + 84.34%));
   /* 与 FloatingCard 逐条一致：浓淡 280ms；粗细 / 位移只在**松手之后**渐变回位 */
   transition: border-color var(--dur) var(--ease),
               opacity 280ms var(--ease),
@@ -7863,8 +7863,8 @@ function renderMarkdown(text?: string | null) {
   right: auto;
   left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-ring) / 2);
   clip-path: polygon(50% 50%,
-    calc(50% - 79.34%) calc(50% + 60.88%),
-    calc(50% - 60.88%) calc(50% + 79.34%));
+    calc(50% - 84.34%) calc(50% + 53.73%),
+    calc(50% - 53.73%) calc(50% + 84.34%));
 }
 /* 对话浮窗不是焦点时（笔记卡在上面）：两枚角把手**大幅减淡**，与笔记卡同一套口径 */
 .reader > .float-grip.unfocused::after { opacity: .24; }
@@ -8380,33 +8380,42 @@ function renderMarkdown(text?: string | null) {
 @keyframes pg-in { from { opacity: 0; } to { opacity: 1; } }
 /* 头部那行相对时间（`head-extra` 插槽里的第一个节点，排在 ✓ 前面） */
 .np-time { flex: none; margin-right: 6px; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
-/* 高亮颜色：**一枚圆形按钮**（与头部其它按钮同尺寸），里面就是当前颜色。
+/* 高亮颜色：**一枚圆形按钮**，几何 / 底色 / 按下反馈与头部其它图标钮（`.np-head-save`）
+   逐条一致 —— 25px、中性淡底、无描边；语义只由里面那枚色点表达，不再套一圈边框。
    点开的二级菜单单独画在下面的 `.note-color-menu`（Teleport 到 body）。 */
 .np-color-btn {
-  width: 24px; height: 24px; flex: none; padding: 0; border-radius: 50%;
+  flex: none; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border-strong); background: var(--bg-layer); cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  background: color-mix(in srgb, var(--text) 6%, transparent); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease);
 }
-.np-color-btn:hover { background: var(--bg-hover); border-color: var(--text-dim); }
-.np-color-btn.on { border-color: var(--accent); background: var(--accent-soft); }
+.np-color-btn:hover { background: var(--bg-hover); }
+.np-color-btn:active { transform: scale(.94); }
+/* 打开时给一圈主题色细环（不用整块底色，免得跟色点抢） */
+.np-color-btn.on { box-shadow: 0 0 0 1.5px var(--accent); }
 .np-color-btn:focus-visible { outline: none; box-shadow: var(--ring); }
-/* 圆点本身沿用 `.hl-swatch` 那套颜色类（自定义色由行内 style 给），只收小一点 */
-.np-color-btn .np-color-dot { width: 14px; height: 14px; border: 0; pointer-events: none; }
+/* 色点沿用 `.hl-swatch` 的颜色类（自定义色由行内 style 给）；描边只用极淡一道，
+   浅色（黄 / 绿）在白底上才看得出边界 */
+.np-color-btn .np-color-dot {
+  width: 15px; height: 15px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  pointer-events: none;
+}
 /* 换色菜单：贴着按钮弹开，弹出时**从按钮那一角张开**（transform-origin 由 JS 写） */
 .note-color-menu {
   position: fixed; z-index: 321;
-  padding: 6px 7px; display: flex; flex-direction: column; gap: 5px;
+  padding: 7px; display: flex; align-items: center; justify-content: center; gap: 7px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-flyout);
   animation: ncm-pop 190ms cubic-bezier(.2, 1.15, .35, 1);
 }
-.note-color-menu .ncm-row { display: flex; align-items: center; gap: 6px; }
-.note-color-menu .ncm-hint {
-  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); padding-left: 1px;
-}
+/* 菜单里的色块与触发钮**同尺寸（25px）**、圆角一致、整行居中 —— 一级 / 二级看起来是一套 */
+.note-color-menu .ncm-row { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.note-color-menu .hl-swatch { width: 25px; height: 25px; border: 0; }
+.note-color-menu .hl-swatch:hover { transform: scale(1.08); }
+.note-color-menu .hl-swatch.on { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 3.5px var(--accent); }
 @keyframes ncm-pop {
   from { opacity: 0; transform: translateY(6px) scale(.9); }
   to { opacity: 1; transform: none; }
