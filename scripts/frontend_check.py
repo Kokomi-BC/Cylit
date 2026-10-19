@@ -1121,7 +1121,8 @@ async function run() {
     w.scrollTo(0, Math.min(1200, res.maxY));
     await sleep(400);
     res.scrolled = Math.round(w.scrollY);
-    res.clickedHome = await click(railBy('首页'), 700);
+    /* 侧栏那一项 2026-11 改名叫「工作区」（顶栏的常驻胶囊仍叫「首页」） */
+    res.clickedHome = await click(railBy('工作区'), 700);
     await until(d, (x) => x.querySelector('#main'), 20);
     res.homeY = Math.round(w.scrollY);
     res.clickedSettings = await click(railBy('设置'), 1200);
@@ -1254,6 +1255,8 @@ async function run() {
     res.tabbar = !!bar;
     res.tabbarBrand = bar ? !!bar.querySelector('.tabbar-logo, img') : false;
     res.tabbarPinned = bar ? !!bar.querySelector('.tab.pinned') : false;
+    res.pinnedText = bar && bar.querySelector('.tab.pinned')
+      ? (bar.querySelector('.tab.pinned').textContent || '').trim() : null;
     res.tabAdd = bar ? !!bar.querySelector('.tab-add') : false;
     res.chatPill = bar ? !!bar.querySelector('.chat-pill') : false;
     /* 一枚标签都没有时托盘整块不渲染（顶栏只是一条空条，别留一枚空胶囊） */
@@ -1262,7 +1265,9 @@ async function run() {
     res.path = d.location.pathname;
 
     /* ---- 几何：顶栏**通栏**、侧栏在顶栏**下方** ---- */
-    const viewW = w.innerWidth, viewH = w.innerHeight;
+    /* 宽度量**布局视口**（clientWidth）：页面出竖向滚动条时 innerWidth 还含滚动条那几像素，
+       拿它比 "顶栏右边缘" 会差出一个滚动条的宽度（实测 1494 vs 1500）。 */
+    const viewW = d.documentElement.clientWidth || w.innerWidth, viewH = w.innerHeight;
     const br = bar ? bar.getBoundingClientRect() : null;
     const rr = rail ? rail.getBoundingClientRect() : null;
     res.viewW = Math.round(viewW);
@@ -1274,7 +1279,7 @@ async function run() {
     res.railBottom = rr ? Math.round(rr.bottom) : null;
 
     /* ---- 手动收缩：64px 图标轨 ↔ 216px ---- */
-    const toggle = d.querySelector('.tabbar-rail-toggle');
+    const toggle = rail ? rail.querySelector('.rail-toggle') : null;
     const labelHidden = () => {
       const l = rail ? rail.querySelector('.rail-label') : null;
       return !l || getComputedStyle(l).display === 'none' || l.offsetWidth === 0;
@@ -3292,14 +3297,14 @@ def check_shell(browser: str, base: str, budget_ms: int) -> None:
         skip("外壳：左侧栏与顶栏", "探针没产出结果（服务没起 / /home 打不开）")
         return
     items = data.get("railItems") or []
-    record("shell", "/home 有常驻左侧栏，且当前项高亮（首页）",
+    record("shell", "/home 有常驻左侧栏，且当前项高亮（工作区）",
            data.get("rail") is True and data.get("railSticky") == "sticky"
-           and data.get("activeText") == "首页"
+           and data.get("activeText") == "工作区"
            and str(data.get("activeBg") or "") not in ("", "transparent", "rgba(0, 0, 0, 0)"),
            f"侧栏 {data.get('railW')}px（{data.get('railSticky')}）当前项 "
            f"{data.get('activeText')!r} 底色 {data.get('activeBg')} 文字 {data.get('activeColor')}")
     record("shell", "侧栏导航项齐全（模型 / 任务**不单列**，已并入设置页）",
-           items == ["首页", "论文库", "论文解读", "知识库", "学习", "笔记", "AI 对话", "设置"],
+           items == ["工作区", "论文库", "论文解读", "知识库", "学习", "笔记", "AI 对话", "设置"],
            f"{items}")
     record("shell", "品牌在**顶栏**：图标在「Cylit」左侧、垂直居中（侧栏里不再有第二份）",
            data.get("brandMark") is True and data.get("brandLeftOfText") is True
@@ -3310,13 +3315,15 @@ def check_shell(browser: str, base: str, budget_ms: int) -> None:
            f"侧栏里还有品牌={data.get('railBrand')} src={data.get('brandSrc')}")
     # 顶栏只允许出现：胶囊托盘 + 论文标签（+ 两端浮动圆钮）。四样"不该有"的东西逐个钉住，
     # 因为每一样都是从"导航住在顶栏"那个旧结构里留下来的（品牌 / 首页胶囊 / 新建 / AI 对话）。
-    record("shell", "顶栏没有固定的「首页」胶囊、没有「+」新建入口、没有「AI 对话」胶囊",
+    # 用户口径 2026-11：顶栏**保留**常驻「首页」胶囊（回工作区的路），但仍然不要「+」新建入口
+    # 与「AI 对话」胶囊 —— 后两样分别被侧栏的论文库 / AI 对话取代了。
+    record("shell", "顶栏有常驻「首页」胶囊，且没有「+」新建入口、没有「AI 对话」胶囊",
            data.get("tabbar") is True
            and data.get("tabbarBrand") is True
-           and data.get("tabbarPinned") is False
+           and data.get("tabbarPinned") is True and data.get("pinnedText") == "首页"
            and data.get("tabAdd") is False
            and data.get("chatPill") is False,
-           f"品牌={data.get('tabbarBrand')} 首页胶囊={data.get('tabbarPinned')} "
+           f"品牌={data.get('tabbarBrand')} 首页胶囊={data.get('pinnedText')} "
            f"加号={data.get('tabAdd')} 对话胶囊={data.get('chatPill')}")
     record("shell", "没有论文标签时托盘整块不渲染（顶栏就是一条空条，不留空胶囊）",
            not (data.get("tabs") or []) and data.get("stripRendered") is False,
@@ -3333,7 +3340,7 @@ def check_shell(browser: str, base: str, budget_ms: int) -> None:
            f"顶栏高 {data.get('headerH')}，侧栏 top {data.get('railTop')} / 底 {data.get('railBottom')}"
            f"（视口高 {data.get('viewH')}）")
     # ---- 手动收缩：64px 图标轨 ↔ 216px（状态存 stores/shellPrefs 的 pm.shell.rail） ----
-    record("shell", "侧栏可收缩：点圆钮 → 64px 图标轨（label 不可见），再点回 216px",
+    record("shell", "侧栏底部的圆钮可收缩：64px 图标轨（label 不可见），再点回 216px",
            data.get("toggle") is True
            and data.get("wideW") == 216 and data.get("wideLabelVisible") is True
            and data.get("narrowW") == 64 and data.get("narrowLabelHidden") is True

@@ -18,7 +18,7 @@ import { useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
 import { loadPapers, state } from '@/stores/app';
 import { lastNavHash } from '@/stores/navMemory';
-import { railCollapsed } from '@/stores/shellPrefs';
+import { railCollapsed, toggleRail } from '@/stores/shellPrefs';
 import { isPaperRoute, openTab } from '@/stores/tabs';
 import type { RouteLocationRaw } from 'vue-router';
 import type { Paper } from '@/api/types';
@@ -35,7 +35,7 @@ interface RailItem {
 
 /** 第一组：读与学（顺序即分组）。 */
 const PRIMARY: RailItem[] = [
-  { key: 'home', label: '首页', icon: 'home' },
+  { key: 'home', label: '工作区', icon: 'home' },
   { key: 'library', label: '论文库', icon: 'library' },
   { key: 'understand', label: '论文解读', icon: 'insight' },
   { key: 'knowledge', label: '知识库', icon: 'knowledge' },
@@ -125,17 +125,30 @@ async function go(item: RailItem): Promise<void> {
       </button>
     </nav>
 
-    <button
-      type="button"
-      class="rail-item rail-bottom"
-      :class="{ active: isActive(SETTINGS) }"
-      :title="SETTINGS.label"
-      :aria-current="isActive(SETTINGS) ? 'page' : undefined"
-      @click="go(SETTINGS)"
-    >
-      <AppIcon :name="SETTINGS.icon" :size="18" />
-      <span class="rail-label">{{ SETTINGS.label }}</span>
-    </button>
+    <!-- 底部一行：设置 + 收起 / 展开侧栏（用户口径 2026-11：这枚钮归侧栏底部，顶栏不留） -->
+    <div class="rail-foot">
+      <button
+        type="button"
+        class="rail-item"
+        :class="{ active: isActive(SETTINGS) }"
+        :title="SETTINGS.label"
+        :aria-current="isActive(SETTINGS) ? 'page' : undefined"
+        @click="go(SETTINGS)"
+      >
+        <AppIcon :name="SETTINGS.icon" :size="18" />
+        <span class="rail-label">{{ SETTINGS.label }}</span>
+      </button>
+      <button
+        class="rail-toggle"
+        type="button"
+        :title="railCollapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-label="railCollapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-expanded="!railCollapsed"
+        @click="toggleRail"
+      >
+        <AppIcon :name="railCollapsed ? 'chevron-right' : 'chevron-left'" :size="14" />
+      </button>
+    </div>
   </aside>
 </template>
 
@@ -178,8 +191,17 @@ async function go(item: RailItem): Promise<void> {
 /* 两组之间的发丝分隔线（比描边更淡的那一档） */
 .rail-sep { flex: none; height: 1px; margin: 8px 10px; background: var(--divider); }
 
-/* 设置顶到最下面 */
-.rail-bottom { margin-top: auto; }
+/* 底部一行顶到最下面：设置（占满剩余宽度）+ 收起 / 展开那枚 24px 圆钮 */
+.rail-foot { margin-top: auto; display: flex; align-items: center; gap: 4px; }
+.rail-foot .rail-item { flex: 1 1 auto; min-width: 0; }
+.rail-toggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 999px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.rail-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.rail-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* ---- 手动收起成的**图标轨**（≥1024px 才看得到效果；更窄的由下面的媒体查询接管） ----
  * 文字一律 display:none（不是 opacity：挤着排会把 40px 的行高撑歪），全称退进 title 提示。 */
@@ -187,6 +209,8 @@ async function go(item: RailItem): Promise<void> {
 .rail.collapsed .rail-label { display: none; }
 .rail.collapsed .rail-item { justify-content: center; gap: 0; padding: 0; }
 .rail.collapsed .rail-sep { margin: 8px 8px; }
+/* 64px 里"设置 + 圆钮"一行放不下：改成上下两行、各自居中 */
+.rail.collapsed .rail-foot { flex-direction: column; gap: 6px; }
 
 /* ---- 窄屏：<1024px **强制**图标轨（手动展开也不管用，见 `stores/shellPrefs` 的注释） ----
  * 这几条与上面 `.rail.collapsed` 那份必须保持一致；宽度不用管：base.css 的同档媒体查询
