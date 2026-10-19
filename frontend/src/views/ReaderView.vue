@@ -7121,7 +7121,7 @@ function renderMarkdown(text?: string | null) {
       :open="card.open"
       :anchor="card.anchor"
       :anchored="card.anchored"
-      :title="card.mode === 'view' ? '笔记' : ''"
+      :title="card.mode === 'view' ? '笔记' : '编辑'"
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
@@ -8529,7 +8529,11 @@ function renderMarkdown(text?: string | null) {
   font-size: calc(12px * var(--ts, 1)); line-height: 1.6;
   border: 0; border-radius: 0; background: transparent;
 }
+/* 头部左右两端留白必须一样：FloatingCard 的 `.fc-head` 是 `12px 8px 6px 12px` ——
+   左边 12、右边 8，于是"返回箭头到卡片左沿"比"✓ 到卡片右沿"宽 4px（用户口径 2026-11-28 十九轮）。
+   这里把右内边距补成 12，两端对齐。 */
 [data-note-popover] :deep(.fc-head) {
+  padding-right: 12px;
   gap: 6px;
   /* 标题行用**横线**（`--divider` 发丝线）与正文分开（用户口径 2026-10-10）。
      ⚠️ 底色保持透明：上一版那层 3% 灰底就是用户说的"两个颜色"，不再加回来。 */
