@@ -808,7 +808,32 @@ function startNew() {
   void nextTick(() => { resetInputHeight(); inputEl.value?.focus(); });
 }
 
+/**
+ * **正在生成的会话**（用户口径 2026-11-28 十六轮）：点返回回到列表时，那一轮**继续跑**，
+ * 列表里它的左边转一个圈，跑完自己消失。
+ *
+ * 为什么不用 `sending`：`sending` 只代表"当前这个面板在跑"，而列表要的是"这一条会话在跑" ——
+ * 用户可能在列表里切到别的对话去看，那时 `sending` 会被新的一轮覆盖。
+ * 所以按 conversation_id 记一份集合，`ask()` 开始时加、结束时删。 */
+const runningIds = ref<string[]>([]);
+/** 这一轮跑在哪个会话上（新会话的 id 是服务端建的，`watch(currentId)` 里补记） */
+let runningId = '';
+const isRunning = (id: string) => runningIds.value.includes(id);
+/* 新会话：`currentId` 在本轮跑到一半才有值 —— 那也照样算"它在跑" */
+watch(currentId, (id) => {
+  if (!sending.value || !id) return;
+  runningId = id;
+  markRunning(id);
+});
+function markRunning(id: string) {
+  if (id && !runningIds.value.includes(id)) runningIds.value = [...runningIds.value, id];
+}
+function unmarkRunning(id: string) {
+  if (id) runningIds.value = runningIds.value.filter((x) => x !== id);
+}
+
 function backToList() {
+  /* **不中止**正在跑的那一轮：返回只是换个视角，跑完的消息照样会落库、列表里的转圈也会自己收。 */
   level.value = 'list';
   void loadConversations();
 }
@@ -1094,6 +1119,8 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
 
   errorText.value = '';
   sending.value = true;
+  runningId = currentId.value ?? '';    // 新会话此刻还没有 id，watch(currentId) 会补记
+  markRunning(runningId);
   elapsedMs.value = 0;
   startTimer();
   const optimistic: AgentMessage | null = mode === 'send' ? {
@@ -1186,6 +1213,11 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (optimistic) messages.value = messages.value.filter(m => m.message_id !== optimistic.message_id);
   } finally {
     sending.value = false;
+    unmarkRunning(runningId);
+    unmarkRunning(currentId.value ?? '');
+    runningId = '';
+    /* 跑完时用户可能正停在列表页：刷一次让条数 / 时间跟着更新 */
+    if (level.value === 'list') void loadConversations();
     stopTimer();
     // 占位消息撤掉：成功后 `loadConversation` 已经把它换成了落库那条；
     // 失败/中止时它没有对应的库记录，留着会与刷新后的结果不一致。
@@ -1671,9 +1703,16 @@ defineExpose({ uploadFiles, ensureThread });
             <AppIcon :name="isPicked(c) ? 'checkbox' : 'checkbox-off'" :size="15" />
           </button>
 
+          <!-- 这一条还在生成：左边转个圈（点返回不会打断它，跑完自己消失）。
+               ⚠️ 必须**排在 input/button 那条 v-if–v-else 链之前**：插在中间会把 v-else 断开。 -->
+          <span v-if="isRunning(c.conversation_id)" class="row-run" title="正在生成…"
+                data-conv-running>
+            <svg class="row-run-ring" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6" />
+            </svg>
+          </span>
           <input v-if="renaming?.id === c.conversation_id" v-model="renaming.text" class="rename-input"
                  @keydown.enter="submitRename" @keydown.esc="renaming = null" @blur="submitRename" />
-
           <button v-else class="row-main" @click="batch ? togglePick(c) : openConversation(c.conversation_id)">
             <!-- 标题按**行内 markdown** 渲染：标题就是用户问的第一句，里面常有 $…$ 公式 -->
             <span class="row-title truncate" v-html="inlineHtml(c.title || '未命名对话')" />
@@ -2123,6 +2162,22 @@ defineExpose({ uploadFiles, ensureThread });
 .row-menu .menu-item.danger:hover { background: var(--danger-soft); color: var(--danger); }
 .row:hover { background: var(--bg-hover); }
 .row.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+/* 「这一条还在生成」：行首一枚转圈环（比文字矮一档，落在标题行的中线附近）。
+   用 SVG 的两段 dash 做缺口环，转的是它自己 —— 与加载指示器同一个观感，但不吃布局。 */
+.row-run {
+  flex: none; width: 15px; height: 15px; margin: 0 2px 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent);
+}
+.row-run-ring { width: 15px; height: 15px; animation: row-run-spin 900ms linear infinite; }
+.row-run-ring circle {
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-dasharray: 26 12; stroke-linecap: round; opacity: .9;
+}
+@keyframes row-run-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .row-run-ring { animation: none; opacity: .75; }
+}
 .row.pick { background: var(--accent-soft); }
 .row-main {
   flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start;

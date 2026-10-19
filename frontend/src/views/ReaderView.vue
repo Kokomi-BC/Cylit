@@ -5639,7 +5639,15 @@ function noteDirty(card: NoteCard): boolean {
  *  ⚠️ 不用全站那个居中 `askConfirm` —— 一整页遮罩比误关一张浮层重得多。 */
 function onNoteBack(card: NoteCard) {
   if (noteDirty(card)) { card.confirmBack = true; return; }
-  closeNoteCard(card.key);
+  backToView(card);
+}
+
+/** 返回 = **回到查看态**（不是关掉浮层）；还没有笔记可看（新建的空卡）时才真的关掉。 */
+function backToView(card: NoteCard) {
+  card.confirmBack = false;
+  if (!card.noteId) { closeNoteCard(card.key); return; }
+  card.draft = card.content;
+  card.mode = 'view';
 }
 
 /** 确认弹窗里的「保存」：存成功它自己会关；失败就留在这张卡上，草稿不动 */
@@ -5648,11 +5656,10 @@ async function confirmBackSave(card: NoteCard) {
   await saveNotePopover(card);
 }
 
-/** 「不保存」：丢掉草稿再关，下次进来看到的是已保存的那一份 */
+/** 「不保存」：丢掉草稿、回到查看态（下次进来看到的是已保存的那一份） */
 function confirmBackDiscard(card: NoteCard) {
   card.confirmBack = false;
-  card.draft = card.content;
-  closeNoteCard(card.key);
+  backToView(card);
 }
 
 /** 头部那枚垃圾桶：删掉**这张卡挂的那条笔记**（高亮留着 —— 删笔记不该把高亮也带走）。
@@ -7114,7 +7121,7 @@ function renderMarkdown(text?: string | null) {
       :open="card.open"
       :anchor="card.anchor"
       :anchored="card.anchored"
-      :title="card.mode === 'view' ? '笔记' : ''"
+      :title="card.mode === 'view' ? '笔记' : '编辑'"
       :persist-key="card.memoryKey"
       :center-on-open="card.center"
       :width="noteCardWidth(card)"
@@ -7135,9 +7142,10 @@ function renderMarkdown(text?: string | null) {
       <!-- 「笔记」和左边那枚图标必须在**最左**（用户口径 2026-10-10 复查）；
            色条跟它并排、排它**右边** —— 所以色点走 `head-mid`（标题之后、按钮之前）。 -->
       <template #head-lead>
-        <!-- 编辑态：**最左那枚返回箭头**（复用对话页的 back 图标）= 不保存地退出；
-             有改动时它先在卡片里问一句（见 onNoteBack）。标题与「笔记」图标在这一档收起，
-             把头一行让给"返回 + 删除 + 色点"这三件事（用户口径 2026-11-28 十三轮）。 -->
+        <!-- 编辑态：**最左那枚返回箭头**（复用对话页的 back 图标）= 回到**查看态**；
+             有未保存改动时它先在卡片里问一句（见 onNoteBack）。
+             箭头右边就是标题位置的「编辑」两个字（`title` 传值），再往右才是色点 / 删除 ——
+             一行读下来是「← 编辑 · 色点 · 删除」（用户口径 2026-11-28 十六轮）。 -->
         <button v-if="card.mode !== 'view'" class="np-back" type="button"
                 title="返回" data-note-back @click="onNoteBack(card)">
           <AppIcon name="back" :size="14" />
@@ -7231,9 +7239,9 @@ function renderMarkdown(text?: string | null) {
         <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="确认删除这条笔记">
           <p class="np-confirm-text">删除这条笔记？</p>
           <div class="np-confirm-acts">
-            <button type="button" class="btn sm danger" data-note-del-confirm
+            <button type="button" class="btn danger" data-note-del-confirm
                     @click="onNoteDelConfirm(card)">删除</button>
-            <button type="button" class="btn sm" data-note-del-cancel
+            <button type="button" class="btn" data-note-del-cancel
                     @click="card.confirmDel = false">取消</button>
           </div>
         </div>
@@ -7244,11 +7252,11 @@ function renderMarkdown(text?: string | null) {
         <div class="np-confirm-box" role="dialog" aria-modal="true" aria-label="是否保存更改">
           <p class="np-confirm-text">是否保存更改？</p>
           <div class="np-confirm-acts">
-            <button type="button" class="btn sm primary" data-note-confirm-save
+            <button type="button" class="btn primary" data-note-confirm-save
                     @click="confirmBackSave(card)">保存</button>
-            <button type="button" class="btn sm" data-note-confirm-discard
+            <button type="button" class="btn" data-note-confirm-discard
                     @click="confirmBackDiscard(card)">不保存</button>
-            <button type="button" class="btn sm" data-note-confirm-cancel
+            <button type="button" class="btn" data-note-confirm-cancel
                     @click="card.confirmBack = false">取消</button>
           </div>
         </div>
@@ -8389,19 +8397,21 @@ function renderMarkdown(text?: string | null) {
   backdrop-filter: blur(2px);
   animation: np-confirm-in 140ms var(--ease);
 }
+/* 弹窗本体：**不描边**（用户口径 2026-11-28 十六轮）—— 浮层里再套一圈描边会显得像第二个控件；
+   靠阴影与底色分层，尺寸也放大一档（内边距 16/18、最小宽 232、正文 13.5px、按钮用默认档）。 */
 .np-confirm-box {
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 12px 14px; max-width: 100%;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 16px 18px; min-width: 232px; max-width: 100%;
   background: var(--bg-elev);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-flyout);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: var(--shadow-2), 0 0 0 1px color-mix(in srgb, var(--text) 6%, transparent);
   animation: np-confirm-pop 170ms cubic-bezier(.2, 1.15, .35, 1);
 }
 .np-confirm-text {
-  margin: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
+  margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
 }
-.np-confirm-acts { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.np-confirm-acts { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 @keyframes np-confirm-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes np-confirm-pop {
   from { opacity: 0; transform: translateY(4px) scale(.96); }
