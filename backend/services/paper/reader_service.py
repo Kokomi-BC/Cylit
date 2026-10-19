@@ -1346,6 +1346,10 @@ def row_id_of_caption(paper_id: str, page_no: int, number: str,
     return None
 
 
+_CAPTION_NO = re.compile(
+    r"^\*{0,2}\s*(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})\b", re.IGNORECASE)
+
+
 def caption_row_ids(paper_id: str, page_no: int) -> dict[str, str]:
     """这一页「图号 → 图注行的行 id」。
 
@@ -1356,12 +1360,17 @@ def caption_row_ids(paper_id: str, page_no: int) -> dict[str, str]:
     rows = _rows_of_page(paper_id, int(page_no))
     out: dict[str, str] = {}
     for row in rows:
-        number = str(row.get("number") or "").strip()
-        if not number or number in out:
+        rid = str(row.get("id") or "")
+        if not rid:
             continue
-        rid = row_id_of_caption(paper_id, int(page_no), number, rows=rows)
-        if rid:
-            out[number] = str(rid)
+        number = str(row.get("number") or "").strip()
+        if not number:
+            # 图号经常没被结构化抽出来（实测 TurboQuant 的 p010-00：type=caption 但 number 空），
+            # 那就从图注正文首行取 —— 与 `row_id_of_caption` 的兜底正则同一口径。
+            hit = _CAPTION_NO.match(str(row.get("original") or "").strip())
+            number = hit.group(1) if hit else ""
+        if number:
+            out.setdefault(number, rid)
     return out
 
 
