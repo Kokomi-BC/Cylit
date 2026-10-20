@@ -88,6 +88,8 @@ const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
   (e: 'copy', text: string): void;
   (e: 'zoom', target: ZoomTarget): void;
+  /** 表格 / 公式的浮层打开：`{ icon, title, markdown }`，由阅读器那层挂 `BlockOverlay` */
+  (e: 'overlay', p: { icon: string; title: string; markdown: string }): void;
   (e: 'save-brief'): void;
   (e: 'regenerate-brief'): void;
   /** 取消编辑：让父组件用服务端的简报**重新灌一次草稿**（丢弃本地未保存的改动） */
@@ -595,6 +597,7 @@ function onMore(key: string, r: FeedRow) {
         :loading="props.formulasLoading"
         @focus="(id: string, page?: number) => emit('focus', id, page)"
         @copy="emit('copy', $event)"
+        @overlay="emit('overlay', $event)"
       />
     </template>
 
@@ -606,6 +609,7 @@ function onMore(key: string, r: FeedRow) {
         :loading="props.tablesLoading"
         @focus="(id: string, page?: number) => emit('focus', id, page)"
         @copy="emit('copy', $event)"
+        @overlay="emit('overlay', $event)"
       />
     </template>
 
@@ -627,6 +631,20 @@ function onMore(key: string, r: FeedRow) {
             v-html="mdToHtml(fig.caption_zh || fig.caption || '')"
           />
           <span v-else class="spacer" />
+          <!-- 浮层打开（用户口径）：图注标题右侧一枚，与「定位」并排 ——
+               点图本身也能开，但按钮是「看得见」的那个入口。 -->
+          <button
+            v-if="fig.card_url || fig.image_url"
+            class="btn icon sm fig-overlay"
+            title="浮层打开"
+            data-figure-overlay
+            @click="emit('zoom', {
+              url: fig.card_url || fig.image_url || '',
+              caption: fig.caption_zh || fig.caption, page: fig.page, number: fig.number,
+            })"
+          >
+            <AppIcon name="open-new-fill" :size="13" />
+          </button>
           <button
             class="btn icon sm fig-locate"
             title="定位到图注"

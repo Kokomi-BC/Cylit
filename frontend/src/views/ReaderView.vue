@@ -63,6 +63,7 @@ import ReaderPages from '@/components/reader/ReaderPages.vue';
 import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
+import BlockOverlay from '@/components/reader/BlockOverlay.vue';
 import { keepPdfSelectionOnce } from '@/components/reader/PdfPage.vue';
 import M3Slider from '@/components/M3Slider.vue';
 import Menu from '@/components/Menu.vue';
@@ -653,6 +654,8 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 笔记浮层的状态见下面 `noteCards`（第五步：轻量浮层取代居中弹窗）。 */
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
+/** 表格 / 公式的浮层（用户口径：侧栏列表里「浮层打开」）。图片不走这里 —— 它有查看器那套缩放。 */
+const blockOverlay = ref<{ icon: string; title: string; markdown: string } | null>(null);
 
 /**
  * 关闭大图查看器时"飞回原位"的落点：触发它的那张缩略图在视口中的矩形。
@@ -4841,12 +4844,20 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
     items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   }
+  /* 「空白处」= 没划词、没点在图上、没点在已有高亮上，也不是公式/表格/插图这种「实体块」。
+     用户口径：**导出只在空白处保留**，同时空白处多一项「召唤 Cyli」（就地开对话浮层）。 */
+  const onBlank = !withSel && !ctxCtx.isFigure && !ctxCtx.hlIds.length
+    && !target?.closest?.('.katex, table, .fig-card, mjx-container, .cite-inline');
+  if (onBlank) {
+    items.push({ key: 'summon', label: '召唤 Cyli', icon: 'sparkle', sep: items.length > 0 });
+  }
   items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
     items.push({ key: 'saveimg', label: '另存为', icon: 'save-alt-fill', sep: true });
+    items.push({ key: 'copyimg', label: '复制图像', icon: 'copy-fill' });
     items.push({ key: 'zoomimg', label: '放大', icon: 'open-new-fill' });
   }
-  items.push({ key: 'export', label: '导出', icon: 'download', sep: true });
+  if (onBlank) items.push({ key: 'export', label: '导出', icon: 'download', sep: true });
   if (ctxCtx.hlIds.length) {
     items.push({ key: 'delhl', label: '删除', icon: 'delete-fill', danger: true, sep: true });
   }
@@ -4949,6 +4960,59 @@ function ctxZoomImage() {
   zoomImage.value = { url: ctxCtx.imgUrl, caption: ctxCtx.imgCaption, page: ctxCtx.page };
 }
 
+/** 复制的位图：浏览器只保证认 **image/png**，所以非 png 的先用 canvas 转一道。 */
+async function blobToPng(blob: Blob): Promise<Blob> {
+  const bmp = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas 不可用');
+  ctx.drawImage(bmp, 0, 0);
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('转 PNG 失败'))), 'image/png');
+  });
+}
+
+/** 右键图片「复制图像」：把**位图**写进剪贴板（用户口径：要能直接粘进 Word / 聊天框）。 */
+async function ctxCopyImage() {
+  if (!ctxCtx.imgUrl) return;
+  try {
+    const res = await fetch(ctxCtx.imgUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.blob();
+    const png = raw.type === 'image/png' ? raw : await blobToPng(raw);
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      throw new Error('这个浏览器不支持把图片写进剪贴板');
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    hideMenu();
+    toast('已复制图像', 'ok', 1400);
+  } catch (err) { reportError(err, '复制图像失败'); }
+}
+
+/**
+ * 右键空白处「召唤 Cyli」：在**点击的位置**开出对话浮层。
+ *
+ * 用户口径：**整个页面只能存在一个对话浮层** —— 已经浮着就「挪过去」（不另开一个），
+ * 没浮着才 `openChatFloat()`。浮窗本来就是单实例（`.reader > .chat-host` 那一块），
+ * 所以「只有一个」是结构上成立的，这里只负责不去重复创建。
+ * 窄屏没有浮窗（`isNarrow`），退化成切到「对话」页签。
+ */
+async function summonCyliAt(x: number, y: number) {
+  hideMenu();
+  if (isNarrow.value) {
+    await ensureAsideVisible();
+    railTab.value = 'chat';
+    return;
+  }
+  if (!chatFloat.value) await openChatFloat();
+  /* 左上角对齐落点；再按视口收一次（别让卡片一半在屏幕外） */
+  floatBox.value = { ...floatBox.value, left: Math.round(x), top: Math.round(y) };
+  clampFloatBox();
+  topLayer.value = 'chat';
+}
+
 /** 图片也能进对话框（用户口径："添加到对话框（支持图片）"）：取回原图当附件上传。 */
 async function ctxAttachImage() {
   if (!ctxCtx.imgUrl) return;
@@ -4995,7 +5059,9 @@ function onCtxSelect(key: string) {
     case 'delhl': void deleteHighlightIds(c.hlIds); break;
     case 'selectall': ctxSelectPage(); break;
     case 'saveimg': void ctxSaveImage(); break;
+    case 'copyimg': void ctxCopyImage(); break;
     case 'zoomimg': ctxZoomImage(); break;
+    case 'summon': void summonCyliAt(ctxMenu.x, ctxMenu.y); break;
     case 'export': downloadMarkdown(); break;
     default: break;
   }
@@ -6996,6 +7062,7 @@ function renderMarkdown(text?: string | null) {
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
+          @overlay="blockOverlay = $event"
           @save-brief="saveBrief"
           @regenerate-brief="regenerateBrief"
           @reload-brief="syncBriefDraft()"
@@ -7454,7 +7521,18 @@ function renderMarkdown(text?: string | null) {
       :target="zoomImage"
       :gallery="zoomGallery"
       :origin="zoomOrigin"
+      icon="image"
+      :title="zoomImage.caption || (zoomImage.page ? `第 ${zoomImage.page} 页` : '插图')"
       @close="zoomImage = null"
+    />
+
+    <!-- 表格 / 公式的浮层：左上角图标 + 标题（表格用它的说明，公式一律写「公式」） -->
+    <BlockOverlay
+      v-if="blockOverlay"
+      :icon="blockOverlay.icon"
+      :title="blockOverlay.title"
+      :markdown="blockOverlay.markdown"
+      @close="blockOverlay = null"
     />
 
     <Modal

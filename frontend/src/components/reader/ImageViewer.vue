@@ -39,7 +39,10 @@ const props = withDefaults(defineProps<{
   gallery?: GalleryTarget[];
   /** 打开查看器的那张缩略图在视口中的矩形（飞回原位用）；缺省或已失效时直接关闭 */
   origin?: ViewerRect | null;
-}>(), { gallery: () => [], origin: null });
+  /** 左上角那枚「图标 + 标题」（用户口径：图片的浮层要标出图注）；不给就整条不画 */
+  icon?: string;
+  title?: string;
+}>(), { gallery: () => [], origin: null, icon: 'image', title: '' });
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const stage = ref<HTMLElement | null>(null);
@@ -293,6 +296,13 @@ onBeforeUnmount(() => {
       @click.self="onBgClick"
       @dblclick="onDoubleClick"
     >
+      <!-- 左上角：图标 + 标题（图注）。与表格/公式浮层同一门语言 —— 那两块是浅色卡片，
+           这里是黑底看图，所以壳子换成同一套深色玻璃。 -->
+      <div v-if="props.title" class="ov-title-bar" data-viewer-title>
+        <span class="ov-title-icon"><AppIcon :name="props.icon" :size="14" /></span>
+        <span class="ov-title-text">{{ props.title }}</span>
+      </div>
+
       <div class="sheet" :style="{ width: size.w + 'px', height: size.h + 'px' }">
         <img
           ref="imgEl"
@@ -366,6 +376,31 @@ onBeforeUnmount(() => {
   transform-origin: center center; will-change: transform;
   -webkit-user-drag: none;
 }
+
+/* 左上角「图标 + 标题」：与底部那枚胶囊同一套深色玻璃，只是不居中 */
+.ov-title-bar {
+  position: absolute; left: 16px; top: 16px; z-index: 2;
+  display: flex; align-items: center; gap: 8px; max-width: min(60vw, 560px);
+  padding: 6px 12px 6px 8px; border-radius: 999px;
+  background: color-mix(in srgb, #2b2f36 62%, transparent);
+  border: 1px solid rgba(255, 255, 255, .10);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .08);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  color: #e8edf0;
+  pointer-events: none;
+}
+.ov-title-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 999px; flex: none;
+  background: rgba(255, 255, 255, .12); color: #dfe8ec;
+}
+.ov-title-text {
+  font-size: calc(12px * var(--ts, 1)); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 关的时候与胶囊一起退场 */
+.viewer.closing .ov-title-bar, .viewer.dismissing .ov-title-bar { opacity: 0; transition: opacity 90ms ease; }
 
 /* 毛玻璃胶囊：半透明壳 + 大模糊 + 亮描边 + 柔投影，按钮是壳里的圆片 */
 .cap {

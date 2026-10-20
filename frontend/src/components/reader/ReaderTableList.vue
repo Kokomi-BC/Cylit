@@ -23,7 +23,27 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
   (e: 'copy', text: string): void;
+  /** 浮层打开：标题取表格说明（没有就写「表格」），见 `openOverlay` */
+  (e: 'overlay', p: { icon: string; title: string; markdown: string }): void;
 }>();
+
+/** 说明是 Markdown（常带 `**表 1：**` 与 `$d_{\text{model}}$`），标题栏要的是**纯文字** */
+function plainTitle(md: string): string {
+  return String(md || '')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function openOverlay(t: { markdown: string; caption: string; number: string }) {
+  const cap = plainTitle(t.caption);
+  emit('overlay', {
+    icon: 'table',
+    title: cap || (t.number ? `表 ${t.number}` : '表格'),
+    markdown: t.markdown,
+  });
+}
 
 /** 表格说明也走 Markdown（说明里常带 `$d_{\text{model}}$` 这种公式） */
 const rows = computed(() => props.items.map((t) => ({
@@ -51,6 +71,9 @@ const rows = computed(() => props.items.map((t) => ({
           title="这一页还没有中文译文，表头与格内文字都是原文"
         >原文</span>
         <span class="spacer" />
+        <button class="btn icon sm" title="浮层打开" data-table-overlay @click="openOverlay(t)">
+          <AppIcon name="open-new-fill" :size="13" />
+        </button>
         <button class="btn icon sm" title="复制 Markdown 表格" @click="emit('copy', t.markdown)">
           <AppIcon name="copy" :size="13" />
         </button>
