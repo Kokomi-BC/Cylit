@@ -1139,7 +1139,7 @@ async function run() {
 
 
 # --------------------------------------------------------------------------
-# 探针 ⑤：提示条 toast（页面顶部居中 / 三层胶囊 / 毛玻璃 / **没有左侧色条**）
+# 探针 ⑤：提示条 toast（**右上角通知卡** / 标题+正文+关闭钮 / 主题令牌配色）
 # --------------------------------------------------------------------------
 PROBE_TOAST = PROBE_HEAD + """
 let started = false;
@@ -1172,26 +1172,29 @@ async function run() {
     const pill = d.querySelector('.toast .toast-pill');
     res.toastCount = d.querySelectorAll('.toast').length;
     res.host = host ? { pos: getComputedStyle(host).position, top: getComputedStyle(host).top,
+                        right: getComputedStyle(host).right,
                         pe: getComputedStyle(host).pointerEvents } : null;
-    res.toast = toast ? {
-      borderLeft: getComputedStyle(toast).borderLeftWidth,
-      radius: getComputedStyle(toast).borderTopLeftRadius,
-      glass: getComputedStyle(toast).backgroundImage.indexOf('gradient') >= 0
-             && getComputedStyle(toast).backdropFilter.indexOf('blur') >= 0,
-      padding: getComputedStyle(toast).padding,
-      centerX: (() => { const r = toast.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })(),
-      top: (() => Math.round(toast.getBoundingClientRect().top))(),
-      vw: w.innerWidth,
-    } : null;
-    const tray = d.querySelector('.toast .toast-tray');
-    res.tray = tray ? { bg: getComputedStyle(tray).backgroundColor,
-                        radius: getComputedStyle(tray).borderTopLeftRadius,
-                        pad: getComputedStyle(tray).padding } : null;
-    /* **两层**：外壳里直接是灰托盘，不该再有白色 pill（用户口径 2026-10-03） */
-    res.whitePill = d.querySelectorAll('.toast .toast-pill, .toast [class*="pill"]').length;
-    res.trayRef = rgbOf(w, 'var(--bg-sunken)');
-    const ico = d.querySelector('.toast .toast-ico');
-    res.iconColor = ico ? getComputedStyle(ico).color : null;
+    res.toast = toast ? (() => {
+      const cs = getComputedStyle(toast);
+      const r = toast.getBoundingClientRect();
+      return {
+        radius: cs.borderTopLeftRadius,
+        padding: cs.padding,
+        pe: cs.pointerEvents,
+        bg: cs.backgroundColor,
+        borderLeft: cs.borderLeftWidth, borderRight: cs.borderRightWidth,
+        borderLeftColor: cs.borderLeftColor, borderRightColor: cs.borderRightColor,
+        rightGap: Math.round(w.innerWidth - r.right),
+        top: Math.round(r.top),
+        vw: w.innerWidth,
+      };
+    })() : null;
+    /* 卡片式通知的三件套：标题行 / 正文 / 右上角关闭钮 */
+    res.title = (d.querySelector('.toast .toast-title')?.textContent || '').trim();
+    res.hasClose = !!d.querySelector('.toast .toast-x');
+    res.hasBody = !!d.querySelector('.toast .toast-text');
+    res.iconColor = (() => { const ico = d.querySelector('.toast .toast-ico');
+                             return ico ? getComputedStyle(ico).color : null; })();
     res.text = toast ? (toast.textContent || '').trim().slice(0, 16) : null;
     out(res);
     document.title = 'done';
@@ -3869,7 +3872,7 @@ def main() -> int:
 
 
     # ---- ⑤ 提示条 toast（免费） ----
-    print("\n⑤ 提示条：页面顶部居中 / 三层胶囊 / 毛玻璃 / 无左侧色条")
+    print("\n⑤ 提示条：右上角通知卡 / 标题 + 正文 + 关闭钮 / 无左侧色条")
     tst = run_probe(browser, base, "probe_toast",
                     PROBE_TOAST.replace("__URL__", f"{base}/cylit/settings").replace("__TITLE__", "toast"),
                     args.budget)
@@ -3877,26 +3880,29 @@ def main() -> int:
         if tst.get("toastCount"):
             host = tst.get("host") or {}
             toast = tst.get("toast") or {}
-            pill = tst.get("pill") or {}
-            record("toast", "提示条在**页面顶部居中**（固定定位 + 水平居中 + 不挡点击）",
+            # 距右取一段区间：量的时候卡片可能还在**滑入**动画里（translateX(28px)），
+            # 所以上界放到 48px；真正的位置由宿主的 right 决定。
+            record("toast", "提示条在**右上角**（固定定位 + 贴右边缘 + 整列不吃点击、卡片自己吃）",
                    host.get("pos") == "fixed" and host.get("pe") == "none"
-                   and abs((toast.get("centerX") or 0) - (toast.get("vw") or 0) / 2) <= 2
-                   and 40 <= (toast.get("top") or 0) <= 96,
-                   f"{host.get('pos')} top={host.get('top')} 中心 x={toast.get('centerX')}"
-                   f"/{toast.get('vw')} 胶囊 top={toast.get('top')}")
-            tray = tst.get("tray") or {}
-            record("toast", "两层胶囊 + 毛玻璃（玻璃外壳 → 灰色托盘装图标文字）",
-                   toast.get("glass") is True and toast.get("radius") == "24px"
-                   and toast.get("padding") == "3px"
-                   and tray.get("bg") == tst.get("trayRef") and tray.get("radius") == "21px"
-                   and tray.get("pad") == "5px 11px"
-                   and (tst.get("whitePill") or 0) == 0,
-                   f"外壳 r={toast.get('radius')} 玻璃={toast.get('glass')} pad={toast.get('padding')}；"
-                   f"托盘 {tray.get('bg')}（--bg-sunken={tst.get('trayRef')}）r={tray.get('radius')} "
-                   f"pad={tray.get('pad')}；白色 pill {tst.get('whitePill')} 层")
-            record("toast", "左侧颜色竖线已移除（级别只由图标颜色表达）",
-                   toast.get("borderLeft") == "0px" and bool(tst.get("iconColor")),
-                   f"左边框 {toast.get('borderLeft')}，图标 {tst.get('iconColor')}（{tst.get('text')}）")
+                   and host.get("right") == "18px"
+                   and toast.get("pe") == "auto"
+                   and -8 <= (toast.get("rightGap") or 99) <= 48
+                   and 40 <= (toast.get("top") or 0) <= 110,
+                   f"{host.get('pos')} right={host.get('right')} 宿主 pe={host.get('pe')} "
+                   f"卡片 pe={toast.get('pe')} 距右 {toast.get('rightGap')}px top={toast.get('top')}")
+            record("toast", "卡片式通知：图标 + 标题 + 正文 + 右上角关闭钮（圆角比胶囊档更大）",
+                   toast.get("radius") == "30px" and toast.get("padding") == "13px 13px 14px 14px"
+                   and bool(tst.get("title")) and tst.get("hasBody") is True
+                   and tst.get("hasClose") is True,
+                   f"r={toast.get('radius')} pad={toast.get('padding')} 标题={tst.get('title')!r} "
+                   f"正文={tst.get('hasBody')} 关闭={tst.get('hasClose')}")
+            record("toast", "配色走主题令牌：四周同一圈边框（不再有左侧色条），级别只由图标颜色表达",
+                   toast.get("borderLeft") == toast.get("borderRight")
+                   and toast.get("borderLeftColor") == toast.get("borderRightColor")
+                   and bool(tst.get("iconColor")),
+                   f"左 {toast.get('borderLeft')}/{toast.get('borderLeftColor')} "
+                   f"右 {toast.get('borderRight')}/{toast.get('borderRightColor')} "
+                   f"图标 {tst.get('iconColor')}（{tst.get('text')}）")
         else:
             skip("提示条样式", f"没弹出 toast（resetEnabled={tst.get('resetEnabled')}）")
 
