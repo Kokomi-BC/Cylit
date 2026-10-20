@@ -155,10 +155,10 @@ const briefSourceLabel = computed(() => {
   return s === 'model' ? '模型生成' : s === 'manual' ? '人工修订'
     : s === 'cached' ? '已有简报' : '';
 });
-/** 简报卡片的左边框色沿用批注/笔记的语义：人工=主题色、模型=绿、其它=中性。 */
-const briefCardClass = computed(() => (
-  props.briefSource === 'manual' ? 'item manual'
-    : props.briefSource === 'model' ? 'item auto' : 'item'));
+/* 简报**不再套卡片**（用户口径：各个内容不要放在一个框里显示）。
+   以前用的是 `.item.manual / .item.auto`，那两条会给它画一条 2px 彩色左边框 ——
+   上一版想把那条竖线改成中性色，但 `.item.manual`（两个类）权重高于我写的 `.brief-card`（一个类），
+   于是竖线一直在。这轮直接把壳子去掉：各段落直接排在面板上，只用留白与小标题分区。 */
 /** 视图态判空：只要有任何一段内容就算「有简报」，不要因为 domain 为空就整块空掉。 */
 const hasBrief = computed(() => Boolean(
   props.briefDraft.domain || props.briefDraft.style
@@ -737,7 +737,7 @@ function onMore(key: string, r: FeedRow) {
 
       <!-- 只读态：和批注/笔记一样是**卡片 + 排版好的内容**（不再是一组表单框） -->
       <template v-else>
-        <div :class="[briefCardClass, 'brief-card']">
+        <div class="brief-view">
           <template v-if="hasBrief">
             <div v-if="props.briefDraft.domain" class="brief-sec">
               <div class="brief-k">领域</div>
@@ -1051,15 +1051,11 @@ function onMore(key: string, r: FeedRow) {
    编辑态的输入框由 `.field` 提供样式，两者互斥出现。
    用户口径（本轮）：**去掉侧边那条竖线**（`.item.manual/.auto` 会画一条彩色左边框），
    改成一圈发丝描边 + 留白分区；要点换成点状符号、保持英文换成胶囊、术语表两列对齐。 */
-.brief-bar { gap: 6px; margin-bottom: 10px; }
-.brief-card {
-  padding: 11px 12px;
-  border: 1px solid var(--border);
-  /* 覆盖 `.item.manual`（主题色）/`.item.auto`（通过色）那条 2px 左边框 */
-  border-left: 1px solid var(--border);
-}
-.brief-sec { margin: 0 0 12px; }
-.brief-sec.last, .brief-sec:last-child { margin-bottom: 0; }
+.brief-bar { gap: 6px; margin-bottom: 12px; }
+/* 简报正文：**不套框**（用户口径：各个内容不要放在一个框里），只靠留白分区。
+   也不再是 `.item` —— 那条 2px 彩色左边框（"竖线"）随壳子一起消失了。 */
+.brief-view { display: flex; flex-direction: column; gap: 14px; padding: 2px 2px 2px; }
+.brief-sec { margin: 0; }
 .brief-k {
   font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .06em;
   text-transform: uppercase; margin-bottom: 3px;
