@@ -7901,9 +7901,9 @@ function renderMarkdown(text?: string | null) {
    用户口径 2026-10-18"手柄样式优化一下"。 */
 .sel-handle::after {
   content: ''; position: absolute; left: 50%; transform: translateX(-50%); z-index: 0;
-  /* 直线**加长**到 26px（用户口径：底部直线长一点）：起点仍在圆心（44px 热区的中心 = 22），
-     所以露在圆点外面的那一段从 6px 变成 9px，指得准是哪一头。 */
-  width: 3px; height: 26px; border-radius: 999px;
+  /* 直线 26px → **22px**（用户口径：略微减少底部竖线的长度）。
+     起点仍在圆心（44px 热区的中心 = 22），露在圆点外面的那一段是 6px。 */
+  width: 3px; height: 22px; border-radius: 999px;
   background: var(--accent);
 }
 /* 起点手柄：圆点在上、尾巴往下（指向文字那一行）；终点手柄镜像。

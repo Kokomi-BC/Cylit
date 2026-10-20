@@ -488,8 +488,46 @@ function onMore(key: string, r: FeedRow) {
         :data-item-kind="r.kind"
         @click="onCardClick($event, r)"
       >
-        <!-- 页码（用户口径 2026-11-21：正文行胶囊去掉，页码按正文的样式放到**顶部**） -->
-        <div v-if="r.page" class="card-top small faint" data-note-page>p{{ r.page }}</div>
+        <!-- 顶部一条：页码 + 时间 + 三枚动作（用户口径：时间与按钮**上移**、去掉「笔记」文字胶囊）。
+             这一行自带一层半透明遮罩（见 .card-top 的底色），内容从它下面滚过时仍然读得清。 -->
+        <div class="card-top" data-note-head>
+          <span v-if="r.page" class="small faint" data-note-page>p{{ r.page }}</span>
+          <span v-if="r.at" class="tiny faint" data-note-time>{{ fmtRelative(r.at) }}</span>
+          <span class="spacer" />
+          <!-- 批量态：一枚勾选框（与对话页同一个 tick 口径）；非批量态：定位 / 浮层 / 更多 -->
+          <button
+            v-if="batch"
+            class="tick"
+            :class="{ on: isPicked(r) }"
+            :title="isPicked(r) ? '取消选择' : '选择'"
+            data-item-tick
+            @click.stop="togglePick(r)"
+          >
+            <AppIcon :name="isPicked(r) ? 'checkbox' : 'checkbox-off'" :size="15" />
+          </button>
+          <template v-if="!batch">
+            <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
+              <AppIcon name="locate" :size="13" />
+            </button>
+            <!-- 批注没有可编辑的正文（没有挂高亮、也没有笔记对象），所以不给「浮层打开」 -->
+            <button
+              v-if="r.kind !== 'annotation'"
+              class="btn icon sm"
+              title="打开浮层"
+              data-item-popover
+              @click="openPopover(r, r.contentMd.trim() ? 'view' : 'edit')"
+            >
+              <AppIcon name="pip" :size="13" />
+            </button>
+            <Menu
+              :items="moreItems(r)"
+              label="更多"
+              align="end"
+              data-item-more
+              @select="onMore($event, r)"
+            />
+          </template>
+        </div>
         <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式）。两种走法：
              ① 纯文字 —— **恒为单行省略**（用户口径 2026-11-20：它只是"按的是哪一段"的索引，
                 两行以上的引用会把卡片撑高、把正文挤到看不见）；
@@ -523,51 +561,7 @@ function onMore(key: string, r: FeedRow) {
         <template v-else>
           <!-- 正文：用户口径 2026-11-20 —— **恒定两行，超出省略**（缩略开关 2026-11-21 已删，不再有单行态） -->
           <div v-if="r.contentMd" class="small md clamp2" v-html="annotationHtml(r.contentMd)" />
-          <!-- 不用再写一行“还没写笔记”：头部那枚「待写」徽章已经说过了（用户口径 2026-10-10："移除多余的文字"） -->
         </template>
-        <!-- 徽章行与三枚动作（用户口径 2026-11-21：移到笔记内容**下方**，内容先读、操作后放） -->
-        <div class="row tiny card-foot">
-          <!-- 批量态：行首一枚勾选框（与对话页同一个 tick 口径：同一对图标、同一档尺寸） -->
-          <button
-            v-if="batch"
-            class="tick"
-            :class="{ on: isPicked(r) }"
-            :title="isPicked(r) ? '取消选择' : '选择'"
-            data-item-tick
-            @click.stop="togglePick(r)"
-          >
-            <AppIcon :name="isPicked(r) ? 'checkbox' : 'checkbox-off'" :size="15" />
-          </button>
-          <span class="badge" :class="r.badge">{{ r.label }}</span>
-          <!-- 笔记挂在哪一面（`row` / `markdown` / `pdf`）：三套锚点不同，界面要说清 -->
-          <!-- 「正文行」那枚 scope 胶囊已去掉（用户口径 2026-11-21）；页码挪到卡片顶部当正文样式 -->
-          <span v-if="r.at" class="faint">{{ fmtRelative(r.at) }}</span>
-          <span class="spacer" />
-          <!-- 右侧三枚（用户口径 2026-11-20）：定位 / 浮层打开 / 更多（编辑 · 多选 · 删除）。
-               批量态整排收起 —— 与对话页一样，进了批量态行上就不再挂动作，只剩勾选框。 -->
-          <template v-if="!batch">
-            <button class="btn icon sm" title="定位" data-item-locate @click="locate(r.anchorId, r.page)">
-              <AppIcon name="locate" :size="13" />
-            </button>
-            <!-- 批注没有可编辑的正文（没有挂高亮、也没有笔记对象），所以不给「浮层打开」 -->
-            <button
-              v-if="r.kind !== 'annotation'"
-              class="btn icon sm"
-              title="打开浮层"
-              data-item-popover
-              @click="openPopover(r, r.contentMd.trim() ? 'view' : 'edit')"
-            >
-              <AppIcon name="pip" :size="13" />
-            </button>
-            <Menu
-              :items="moreItems(r)"
-              label="更多"
-              align="end"
-              data-item-more
-              @select="onMore($event, r)"
-            />
-          </template>
-        </div>
       </div>
     </template>
 
@@ -643,7 +637,7 @@ function onMore(key: string, r: FeedRow) {
               caption: fig.caption_zh || fig.caption, page: fig.page, number: fig.number,
             })"
           >
-            <AppIcon name="open-new-fill" :size="13" />
+            <AppIcon name="expand-diag" :size="13" />
           </button>
           <button
             class="btn icon sm fig-locate"
@@ -854,10 +848,22 @@ function onMore(key: string, r: FeedRow) {
   border-left-color: var(--note-hl);
   background: color-mix(in srgb, var(--note-hl) 12%, var(--bg-layer));
 }
-/* 卡片底部那行（徽章 + 定位/浮层/更多）：内容读完了才轮到操作，所以压到正文下方并与正文留一点距离 */
-.item .row.card-foot { margin-top: 6px; }
 /* 卡片顶部那行页码：与正文同一套字号/行高，只是更淡一点，不抢正文 */
 .item .card-top { margin: 0 0 4px; font-variant-numeric: tabular-nums; }
+/* 笔记卡的顶部条（页码 + 时间 + 三枚动作，用户口径：时间与按钮上移、去掉「笔记」文字胶囊）：
+   **自带一层遮罩** —— 拿这张卡自己的高亮色混一档铺在行底下，内容（公式 / 表格 / 正文）
+   从它下面滚过时这一行仍然读得清。负 margin 吸收 .item 的 padding（8px 10px），铺满上沿。 */
+.item.note-row .card-top {
+  display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+  margin: -8px -10px 6px; padding: 5px 10px;
+  background: color-mix(in srgb, var(--note-hl, var(--accent)) 16%, var(--bg-layer));
+  border-bottom: 1px solid color-mix(in srgb, var(--note-hl, var(--accent)) 24%, transparent);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-variant-numeric: tabular-nums;
+}
+/* 这一行里三枚动作 + 页码 + 时间要挤在一行：按钮收小一档，别把行撑宽 */
+.item.note-row .card-top .btn.icon.sm { width: 24px; height: 24px; }
+.item.note-row .card-top .spacer { flex: 1; }
 /* 还没写正文的（只有高亮）：竖线压暗一档，底色跟着退到 6%，一眼分得出"哪些还没写" */
 .item.note-row.highlight {
   --note-hl: color-mix(in srgb, var(--hl, var(--accent)) 35%, var(--border-strong));
@@ -1004,8 +1010,11 @@ function onMore(key: string, r: FeedRow) {
 .quote :deep(p) { margin: 0; display: inline; }
 .fig-head .spacer { flex: 1; }
 /* 光学对齐：按钮 26px、图注行盒 18px，上移 4px 后两者的**中心线**才对得上（图标不会看起来偏低）。 */
-.fig-locate { flex: none; margin-top: -4px; color: var(--text-dim); }
-.fig-locate:hover { color: var(--accent-text); }
+/* 图注右侧那两枚按钮（浮层打开 / 定位）**共用一套几何**：
+   以前只给「定位」写了 margin-top: -4px（让它跟图注首行对齐），新加的浮层按钮没写，
+   于是两枚钮一高一低（用户口径：没有与旁边按钮对齐）。 */
+.fig-locate, .fig-overlay { flex: none; margin-top: -4px; color: var(--text-dim); }
+.fig-locate:hover, .fig-overlay:hover { color: var(--accent-text); }
 .fig-body { display: flex; }
 .fig-body .figure { width: 100%; }
 .fig-meta { margin-top: 2px; gap: 6px; }
