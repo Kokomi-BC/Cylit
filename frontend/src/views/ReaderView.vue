@@ -2840,6 +2840,15 @@ const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'eraser'; icon: string
   { key: 'marker', icon: 'marker', label: '荧光笔' },
   { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
 ];
+/** 当前工具该用哪一排色（画笔 = 红橙黄绿青蓝紫；荧光笔 = 荧光色） */
+function inkPalette(): string[] {
+  return inkTool.value === 'marker' ? MARKER_COLORS : INK_COLORS;
+}
+/** 当前颜色是不是「色板以外的自选色」：是的话让最前面那枚彩虹点带选中环 */
+function isCustomInkColor(): boolean {
+  return !inkPalette().includes(activeInkColor());
+}
+
 /** 粗细三档的圆点直径（细 / 中 / 粗） */
 function inkDotStyle(key: string): Record<string, string> {
   const size = key === 'thin' ? 5 : key === 'mid' ? 7 : 9;
@@ -6889,18 +6898,14 @@ function renderMarkdown(text?: string | null) {
           :style="inkOptionsStyle"
           @pointerdown.stop
         >
-          <!-- 颜色：色块图标 + 一枚取色器（用户口径：精简默认色数、支持浏览器选色） -->
+          <!-- 颜色：**自选色摆最前**（用户口径），后面跟色板（画笔 = 红橙黄绿青蓝紫，荧光笔 = 荧光色）。
+               自选色那枚彩虹点在「当前色不在色板里」时也带选中环，否则挑完取色器看不出选中了谁。 -->
           <div class="ink-options-row" data-ink-colors>
-            <button
-              v-for="c in (inkTool === 'marker' ? MARKER_COLORS : INK_COLORS)"
-              :key="c"
-              class="ink-palette-dot"
-              :class="{ active: activeInkColor() === c }"
-              :style="{ background: c }"
-              :title="c"
-              @click="setInkColor(c)"
-            />
-            <label class="ink-color-custom" title="自定义颜色（浏览器取色器）">
+            <label
+              class="ink-color-custom"
+              :class="{ active: isCustomInkColor() }"
+              title="自定义颜色（浏览器取色器）"
+            >
               <span class="ink-color-custom-dot" />
               <input
                 type="color"
@@ -6909,6 +6914,15 @@ function renderMarkdown(text?: string | null) {
                 @input="setInkColor(($event.target as HTMLInputElement).value)"
               >
             </label>
+            <button
+              v-for="c in inkPalette()"
+              :key="c"
+              class="ink-palette-dot"
+              :class="{ active: activeInkColor() === c }"
+              :style="{ background: c }"
+              :title="c"
+              @click="setInkColor(c)"
+            />
           </div>
           <!-- 粗细：三档图标（不写字，省地方；标题里仍给"细/中/粗"） -->
           <div class="ink-options-row" data-ink-widths>
@@ -7994,8 +8008,10 @@ function renderMarkdown(text?: string | null) {
 /* 自定义颜色：一枚"彩虹点"，点它弹浏览器原生取色器（input 藏起来但可点） */
 .ink-color-custom {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; cursor: pointer;
+  width: 24px; height: 24px; cursor: pointer; border-radius: 999px;
 }
+/* 「当前色是自选色」时，这枚彩虹点也带一圈**同色点同款的选中环**（用户口径：自选色放第一，也要看得出选中） */
+.ink-color-custom.active { box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px color-mix(in srgb, var(--text) 72%, transparent); }
 .ink-color-custom-dot {
   display: block; width: 24px; height: 24px; border-radius: 999px;
   background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);

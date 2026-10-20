@@ -50,7 +50,8 @@ function saveInkPrefs(): void {
  * 色板：**只留 5 个**（用户口径"精简默认颜色数量"）—— 黑 / 红 / 橙 / 绿 / 蓝。
  * 想要别的颜色点旁边的取色器（原生 `<input type="color">`），不用在色板里越堆越多。
  */
-export const INK_COLORS = ['#1b1b1f', '#e8384f', '#f0a11a', '#2aa775', '#2f6fed'];
+/** 红 → 橙 → 黄 → 绿 → 青 → 蓝 → 紫（用户口径：按这个顺序排；自选颜色摆在最前，见模板） */
+export const INK_COLORS = ['#e8384f', '#f08c1a', '#e8c518', '#2aa775', '#20b2c8', '#2f6fed', '#8b5cf6'];
 
 /**
  * 荧光笔**自己的一排色**（用户口径：荧光笔用另一套颜色菜单）：
@@ -73,8 +74,12 @@ function migrateMarkerColor(value: string): string {
 export const inkOn = ref(false);
 export const inkTool = ref<InkTool>(inkPrefs.tool === 'marker' ? 'marker' : 'pen');
 export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
-/** 普通笔的颜色 */
-export const inkColor = ref(inkPrefs.pen || '#1b1b1f');
+/**
+ * 普通笔的颜色。
+ * 默认取色板的第一个（红）：色板里已经没有黑色了（用户口径：红橙黄绿青蓝紫），
+ * 老数据里那个默认黑也一并映射到它，否则打开菜单会「一个色点都不亮」。
+ */
+export const inkColor = ref(inkPrefs.pen === '#1b1b1f' || !inkPrefs.pen ? INK_COLORS[0] : inkPrefs.pen);
 /** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
 export const inkMarkerColor = ref(migrateMarkerColor(inkPrefs.marker || MARKER_COLORS[0]));
 /** 进橡皮之前拿的是哪支笔（橡皮擦完自动切回它，用户口径第 3 条） */
