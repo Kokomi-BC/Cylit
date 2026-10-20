@@ -655,13 +655,57 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 笔记浮层的状态见下面 `noteCards`（第五步：轻量浮层取代居中弹窗）。 */
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
-/** 表格 / 公式的浮层（用户口径：侧栏列表里「浮层打开」）。图片不走这里 —— 它有查看器那套缩放。 */
-const blockOverlay = ref<{
+/**
+ * 表格 / 公式 / 插图的浮层（用户口径：侧栏列表里「浮层打开」）。
+ *
+ * 用户口径（本轮）：**可以同时开好几张** —— 以前是一个 `ref`，开第二张就把第一张顶掉；
+ * 而且没有层级：点哪张都不会到最上层。现在是一**列**，每张自带 `z`：
+ *   · 新开的那张拿 `++overlayZ`（永远在最上面）；
+ *   · 点任意一张（`@activate`）把它的 `z` 抬到最新 —— 于是「点过的在最上」；
+ *   · 层级区间从 70 起（笔记 / 解释 / 对话浮窗是 60~63，浮层永远压在它们之上），
+ *     抬到 96 就整体重排一次，避免数目涨到几万。
+ */
+type BlockOverlayItem = {
+  id: number;
   icon: string; title: string; titleMd?: string;
   markdown?: string; imageUrl?: string;
   /** 触发它的那枚按钮的矩形：浮层贴着按钮下方打开 */
   anchor?: OverlayAnchor | null;
-} | null>(null);
+  /** 这一张的层级（数字越大越靠上） */
+  z: number;
+};
+const blockOverlays = ref<BlockOverlayItem[]>([]);
+let blockOverlaySeq = 0;
+const OVERLAY_Z_BASE = 70;
+/** 当前最高层（模板里要用它算 `focused`，所以必须是响应式的） */
+const blockOverlayZ = ref(OVERLAY_Z_BASE);
+
+/** 打开一张浮层（可以叠很多张；同一处连点会给同一张抬层级，而不是叠一摞一模一样的） */
+function openBlockOverlay(p: Omit<BlockOverlayItem, 'id' | 'z'>) {
+  const same = blockOverlays.value.find((o) => o.icon === p.icon
+    && o.title === p.title && o.markdown === p.markdown && o.imageUrl === p.imageUrl);
+  if (same) { focusBlockOverlay(same.id); return; }
+  blockOverlayZ.value += 1;
+  blockOverlays.value = [...blockOverlays.value, { ...p, id: ++blockOverlaySeq, z: blockOverlayZ.value }];
+}
+
+function closeBlockOverlay(id: number) {
+  blockOverlays.value = blockOverlays.value.filter((o) => o.id !== id);
+}
+
+/** 点哪张就把哪张抬到最上层（用户口径：浮层要支持多层级、点击到最上层） */
+function focusBlockOverlay(id: number) {
+  const item = blockOverlays.value.find((o) => o.id === id);
+  if (!item || item.z === blockOverlayZ.value) return;
+  blockOverlayZ.value += 1;
+  item.z = blockOverlayZ.value;
+  /* 抬到 96 就整体重排一档（40 张以内都够用；重排只是重写 z，不动位置） */
+  if (blockOverlayZ.value > OVERLAY_Z_BASE + 26) {
+    blockOverlayZ.value = OVERLAY_Z_BASE;
+    for (const o of blockOverlays.value) { blockOverlayZ.value += 1; o.z = blockOverlayZ.value; }
+  }
+  blockOverlays.value = [...blockOverlays.value];
+}
 
 /**
  * 关闭大图查看器时"飞回原位"的落点：触发它的那张缩略图在视口中的矩形。
@@ -7075,7 +7119,7 @@ function renderMarkdown(text?: string | null) {
           @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
-          @overlay="blockOverlay = $event"
+          @overlay="openBlockOverlay($event)"
           @save-brief="saveBrief"
           @regenerate-brief="regenerateBrief"
           @reload-brief="syncBriefDraft()"
@@ -7539,16 +7583,22 @@ function renderMarkdown(text?: string | null) {
       @close="zoomImage = null"
     />
 
-    <!-- 表格 / 公式的浮层：左上角图标 + 标题（表格用它的说明，公式一律写「公式」） -->
+    <!-- 表格 / 公式 / 插图的浮层：**可以叠多张**，每张自带层级（点哪张哪张到最上层）。
+         左上角图标 + 标题（表格用它的说明、公式写「公式」、插图用图注）。 -->
     <BlockOverlay
-      v-if="blockOverlay"
-      :icon="blockOverlay.icon"
-      :title="blockOverlay.title"
-      :title-md="blockOverlay.titleMd || ''"
-      :anchor="blockOverlay.anchor || null"
-      :markdown="blockOverlay.markdown || ''"
-      :image-url="blockOverlay.imageUrl || ''"
-      @close="blockOverlay = null"
+      v-for="o in blockOverlays"
+      :key="o.id"
+      :icon="o.icon"
+      :title="o.title"
+      :title-md="o.titleMd || ''"
+      :anchor="o.anchor || null"
+      :markdown="o.markdown || ''"
+      :image-url="o.imageUrl || ''"
+      :style="{ zIndex: o.z }"
+      :focused="o.z === blockOverlayZ"
+      @activate="focusBlockOverlay(o.id)"
+      @zoom-image="o.imageUrl && (zoomImage = { url: o.imageUrl, caption: o.title })"
+      @close="closeBlockOverlay(o.id)"
     />
 
     <Modal

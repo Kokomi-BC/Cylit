@@ -239,7 +239,10 @@ onBeforeUnmount(() => {
    + 柔光投影，**不画描边**（描边在深色下会变成一圈发光环），所以浅色/深色/各套皮肤
    都和胶囊一起变，两处不会再长得不一样。 */
 .ctx-panel {
-  position: fixed; z-index: 320; padding: 6px;
+  /* 层级：手柄 330、划词胶囊 340，菜单原来写 320 —— 触摸长按之后两端手柄正好压在菜单上，
+     点菜单第一行点到的是手柄（用户口径：右键菜单要在手柄之上）。抬到 360。
+     （与图片查看器 240 不共存：查看器一开就没有菜单。） */
+  position: fixed; z-index: 360; padding: 6px;
   display: flex; flex-direction: column; gap: 1px;
   border-radius: 14px;
   min-width: 180px; max-height: 90vh; overflow-y: auto;

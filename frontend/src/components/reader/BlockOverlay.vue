@@ -22,12 +22,20 @@ const props = defineProps<{
   titleMd?: string;
   /** 触发它的那枚按钮的矩形：浮层**贴着按钮下方打开**（用户口径：不要跑到左上角） */
   anchor?: OverlayAnchor | null;
+  /** 这张现在是**最上层**那张（FloatingCard 用它决定底角指示器亮不亮） */
+  focused?: boolean;
   /** 内容本体：GFM Markdown（表格是 `| … |`，公式是 `$$…$$`） */
   markdown?: string;
   /** 插图走这一条：**直接显示这张图**（用户口径：图片的「浮层打开」不是那个带缩放的黑底查看器） */
   imageUrl?: string;
 }>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  /** 被点了一下：父组件据此把这张抬到最上层（多张浮层时的层级） */
+  (e: 'activate'): void;
+  /** 图片浮层里点了那张图：交给图片查看器去放大（缩放 / 拖动 / 旋转都在那边） */
+  (e: 'zoom-image'): void;
+}>();
 
 /* ⚠️ 没有「锚定」图钉（`hide-anchor`）：笔记浮层也是这么做的（那边交给"点过浮层就自动锚定"）。
    留着它有两个坏处：① 这张浮层本来就不会因为鼠标移开而消失，图钉是枚死控件；
@@ -35,6 +43,8 @@ const emit = defineEmits<{ (e: 'close'): void }>();
 
 function onKey(ev: KeyboardEvent) {
   if (ev.key !== 'Escape') return;
+  /* 同时开着好几张时**只关最上面那张**（其余几张也各挂了一个监听，不加这道判断会一起关掉） */
+  if (props.focused === false) return;
   ev.stopPropagation();
   emit('close');
 }
@@ -46,28 +56,43 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
 <template>
   <FloatingCard
     :open="true"
+    data-block-overlay
     :title="props.title"
     :title-md="props.titleMd || ''"
     :anchor="props.anchor || null"
+    :focused="props.focused !== false"
     zoomable
     hide-anchor
     :width="480"
     :max-height="520"
     text-cat="body"
     @close="emit('close')"
+    @pointerdown.capture="emit('activate')"
   >
     <template #head-lead>
       <span class="ov-icon"><AppIcon :name="props.icon" :size="13" /></span>
     </template>
     <!-- 图片：白底一块，按卡片宽度等比缩放（要缩放/旋转/切图请点图片本身开查看器） -->
     <div v-if="props.imageUrl" class="ov-image" data-block-overlay-image>
-      <img :src="props.imageUrl" :alt="props.title">
+      <!-- 点图 = 交给图片查看器放大（用户口径：图片浮层要能放大；缩放/拖动/旋转在那边） -->
+      <img
+        :src="props.imageUrl"
+        :alt="props.title"
+        title="点击放大"
+        data-block-overlay-zoom
+        @click="emit('zoom-image')"
+      >
     </div>
     <div v-else class="ov-body md" data-block-overlay-body v-html="mdToHtml(props.markdown || '')" />
   </FloatingCard>
 </template>
 
 <style scoped>
+/* 头部**不要那层 3% 灰底**（用户口径：浮层顶部颜色偏深、跟笔记浮层不一致）。
+   那层底在 `FloatingCard` 的 `.fc-head` 上是给「解释卡」那类内容的；笔记浮层当年就把它撤掉、
+   换成一条发丝线（见 ReaderView 的 `[data-note-popover] .fc-head`），这里跟它对齐。 */
+[data-block-overlay] :deep(.fc-head) { background: transparent; }
+
 /* 标题行左边那枚图标（与标题同一档大小、方形小底） */
 .ov-icon {
   display: inline-flex; align-items: center; justify-content: center;
@@ -77,6 +102,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
 /* 图片：白底 + 圆角，宽度跟随卡片（卡片可拖动 / 缩放，图等比跟着变） */
 .ov-image { line-height: 0; }
 .ov-image img {
+  cursor: zoom-in;
   display: block; width: 100%; height: auto;
   background: #fff; border-radius: var(--radius-sm);
 }
