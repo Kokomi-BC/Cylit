@@ -19,6 +19,7 @@ import ConfirmHost from '@/components/ConfirmHost.vue';
 import TabBar from '@/components/TabBar.vue';
 import ToastHost from '@/components/ToastHost.vue';
 import { routeKey } from '@/stores/tabs';
+import { railCollapsed } from '@/stores/shellPrefs';
 
 const route = useRoute();
 
@@ -47,7 +48,7 @@ const viewKey = computed(() => routeKey(route));
 
 <template>
   <a class="skip-link" href="#main">跳到主内容</a>
-  <div class="shell" :class="`shell-${shellMode}`">
+  <div class="shell" :class="[`shell-${shellMode}`, { 'is-rail-collapsed': railCollapsed }]">
     <TabBar v-if="shellMode !== 'bare'" />
     <div class="shell-body">
       <AppSidebar v-if="shellMode === 'rail'" />
@@ -88,6 +89,10 @@ const viewKey = computed(() => routeKey(route));
    主区于是按内容收缩（实测阅读器主区 164px，flex 时代是 481px）。显式给满宽，让 auto 只管居中。 */
 .shell-body > .app-main { width: 100%; }
 .shell-rail .shell-body { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+/* 收起成图标轨：**轨道一起收**（用户口径：收起要立刻反应，不要动画）。
+   只让 `.rail` 自己变窄是不够的 —— 这一列写的是 `var(--rail-w)`（216px），
+   主区仍会从 216 起排，右边留一条空带。 */
+.shell-rail.is-rail-collapsed .shell-body { grid-template-columns: var(--rail-w-min) minmax(0, 1fr); }
 
 /* <720px 侧栏整栏 display:none —— 但显式轨道不会自己消失，必须同时把这一列收掉，
    否则主区右边会白留一条 64px。 */

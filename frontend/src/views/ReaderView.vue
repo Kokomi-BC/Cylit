@@ -618,6 +618,10 @@ function onFullscreenChange(): void {
 }
 
 async function toggleFullscreen(): Promise<void> {
+  /* 反馈先给（用户口径：全屏 / 退出全屏那枚按钮状态反应慢）：
+     `requestFullscreen()` 的 promise 要等浏览器把过渡做完才 resolve，`fullscreenchange` 更晚，
+     于是图标要迟一拍才换。这里**先**把状态置上，再由 onFullscreenChange 校正到真值。 */
+  isFullscreen.value = !document.fullscreenElement && !isFullscreen.value;
   try {
     if (document.fullscreenElement) { await document.exitFullscreen(); return; }
     if (immersive.value) { setImmersive(false); return; }
@@ -629,6 +633,7 @@ async function toggleFullscreen(): Promise<void> {
     await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
   } catch {
     // 权限被拒（内嵌浏览器 / 无头环境）：退回沉浸模式，别弹一句看不懂的报错
+    isFullscreen.value = !!document.fullscreenElement;   // 撤回刚才那次乐观置位
     setImmersive(true);
     toast('已切到沉浸模式（浏览器拒绝了全屏请求）', 'warn', 2600);
   }

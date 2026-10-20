@@ -166,7 +166,9 @@ async function go(item: RailItem): Promise<void> {
   width: var(--rail-w);
   height: calc(100vh - var(--header-h));
   height: calc(100dvh - var(--header-h));
-  transition: width 160ms var(--ease);
+  /* ⚠️ 这里**不写 width 过渡**（用户口径：连续点那枚手柄时收起要立刻落地，
+     留着 160ms 补间会让人以为"点不动"，松开后还要等它缩完）。收起/展开是一次布局切换，
+     格子（App.vue 的 `.is-rail-collapsed`）同样没有过渡，两处必须一致。 */
   display: flex; flex-direction: column;
   padding: 14px 10px;
   background: var(--bg-elev);
