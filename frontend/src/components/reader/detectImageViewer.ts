@@ -290,11 +290,24 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     return { vw, vh, transformedW: boundingW, transformedH: boundingH };
   };
 
-  const clampImagePosition = (animate = false) => {
+  /**
+   * 把平移夹回边界。
+   *
+   * `freeSmall`：**图比视口小的那几档，允许在视口内自由摆放**（范围 = 视口比图多出来的那一半），
+   * 而不是强行归零居中。
+   * 为什么需要它（用户口径：滚轮要以鼠标为锚点放大）：缩放锚点补偿算出的 imageX 在
+   * 「图比视口小」时一定会被 `maxX = 0` 那条**拽回正中** —— 手感就是「放大的时候图突然归位、
+   抖一下，鼠标底下那一点跑了」。滚轮那条路径传 true；手势 / 按钮仍走原来的夹法（松手归位是它们的设计）。
+   */
+  const clampImagePosition = (animate = false, freeSmall = false) => {
     if (exiting) return { maxX: 0, maxY: 0 };
     const { vw, vh, transformedW, transformedH } = getImageRenderMetrics();
-    const maxX = Math.max(0, (transformedW - vw) / 2);
-    const maxY = Math.max(0, (transformedH - vh) / 2);
+    const maxX = freeSmall && transformedW < vw
+      ? (vw - transformedW) / 2
+      : Math.max(0, (transformedW - vw) / 2);
+    const maxY = freeSmall && transformedH < vh
+      ? (vh - transformedH) / 2
+      : Math.max(0, (transformedH - vh) / 2);
 
     let changed = false;
 
@@ -310,12 +323,13 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
       changed = true;
     }
 
-    if (maxX === 0 && imageX !== 0) {
+    /* 只有「图比视口小、且不要求自由摆放」这一档才强行回正中（手势 / 按钮的老行为） */
+    if (!freeSmall && maxX === 0 && imageX !== 0) {
       imageX = 0;
       changed = true;
     }
 
-    if (maxY === 0 && imageY !== 0) {
+    if (!freeSmall && maxY === 0 && imageY !== 0) {
       imageY = 0;
       changed = true;
     }
@@ -1235,9 +1249,13 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     const clamped = Math.max(-240, Math.min(240, d));
     const perUnit = e.ctrlKey ? 0.01 : 0.0012;
 
-    // 以光标为锚做**增量**补偿：放大时光标下的那一点必须原地不动（否则内容会往视口中心跑）。
-    // stage 是 position: fixed; inset: 0，所以 e.clientX / e.clientY 本身就是相对 stage 的坐标；
-    // scale 与 rotate 都以图心为原点、彼此可交换，因此这个式子对任意 rotation 都成立。
+    /* 以光标为锚做**增量**补偿：放大时光标下的那一点必须原地不动。
+       ⚠️ 这里的坐标系：`translate(imageX, imageY)` 是**相对视口中心**的位移（.shot 由 flex 居中、
+       transform-origin 是自身中心），所以锚点补偿要拿「光标相对视口中心的位移 dx」来算，
+       与 `zoomBy` 那条完全同一个式子：
+         imageX' = imageX + (dx - imageX) * (1 - k)
+       之前写成了 `p - k * (p - (vw/2 + imageX))` —— 把绝对坐标和相对位移混在一起，
+       算出来整整偏了半个视口，于是「以鼠标为锚点」根本不成立（用户报的就是这个）。 */
     const oldScale = imageScale;
     const nextScale = Math.min(Math.max(0.6, oldScale * Math.exp(-clamped * perUnit)), 12);
     if (Math.abs(nextScale - oldScale) < 1e-6) return;
@@ -1245,15 +1263,19 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
     const k = nextScale / oldScale;
     const vw = stage.clientWidth || window.innerWidth;
     const vh = stage.clientHeight || window.innerHeight;
-    // 图心在视口中的绝对坐标（transform 的 translate 相对 .viewer 中心）
-    const Px = vw / 2 + imageX;
-    const Py = vh / 2 + imageY;
-    imageX = e.clientX - k * (e.clientX - Px);
-    imageY = e.clientY - k * (e.clientY - Py);
+    const dx = e.clientX - vw / 2;
+    const dy = e.clientY - vh / 2;
+    imageX += (dx - imageX) * (1 - k);
+    imageY += (dy - imageY) * (1 - k);
     imageScale = nextScale;
 
+    /* ⚠️ 滚轮必须是**瞬时**的：留着 `transform 0.1s ease-out` 的话，每个 wheel 事件都要补间
+       一次，下一格又改目标 —— 连续滚轮的几十帧互相追，看起来就是整体在抖、锚点还在漂。
+       手势那两个入口（touchstart / pointerdown）会自己把 transition 写回 none / 0.1s。 */
+    img.style.transition = 'none';
     updateImageTransform();
-    clampImagePosition();   // 滚轮缩放没有「松手」，边界得当场夹一次
+    /* 自由摆放：缩放中不许被「归位到正中」那条拽走（否则鼠标锚点就丢了） */
+    clampImagePosition(false, true);
   };
 
   stage.addEventListener('touchstart', onTouchStart, { passive: false });
