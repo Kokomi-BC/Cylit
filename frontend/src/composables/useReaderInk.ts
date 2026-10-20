@@ -46,21 +46,6 @@ function saveInkPrefs(): void {
   } catch { /* 忽略 */ }
 }
 
-/** 批注模式开关：开着时正文上盖一层可画的画布（关掉就完全回到普通阅读） */
-export const inkOn = ref(false);
-export const inkTool = ref<InkTool>(inkPrefs.tool === 'marker' ? 'marker' : 'pen');
-export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
-/** 普通笔的颜色 */
-export const inkColor = ref(inkPrefs.pen || '#1b1b1f');
-/** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
-export const inkMarkerColor = ref(inkPrefs.marker || '#ffd60a');
-/** 进橡皮之前拿的是哪支笔（橡皮擦完自动切回它，用户口径第 3 条） */
-export const lastDrawTool = ref<'pen' | 'marker'>('pen');
-/** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
-export const inkView = ref<'original' | 'translation' | 'bilingual'>('original');
-/** 最后一次动笔的那份文档键：工具栏的撤销/重做作用于它 */
-export const inkKey = ref<string | null>(null);
-
 /**
  * 色板：**只留 5 个**（用户口径"精简默认颜色数量"）—— 黑 / 红 / 橙 / 绿 / 蓝。
  * 想要别的颜色点旁边的取色器（原生 `<input type="color">`），不用在色板里越堆越多。
@@ -73,6 +58,32 @@ export const INK_COLORS = ['#1b1b1f', '#e8384f', '#f0a11a', '#2aa775', '#2f6fed'
  * 拿墨黑/正红去涂会把正文盖死。选中的那一档与墨色分开记（`inkMarkerColor`）。
  */
 export const MARKER_COLORS = ['#ffd60a', '#a3e635', '#5ad2f4', '#ff9ecb', '#ffb020'];
+
+/**
+ * 老数据迁移：两套色板分开之前，荧光笔用的是墨色那排（里面有**黑**）。
+ * 存在本机的 `marker` 若正好是墨色之一，说明它来自旧的共享色板 —— 换成荧光笔默认色，
+ * 否则荧光笔打开时会出现"选中黑 / 一个都没选中"这种怪状态（用户口径：荧光笔不该有黑色）。
+ * 用户在取色器里自选的颜色（不在墨色表里）原样保留。
+ */
+function migrateMarkerColor(value: string): string {
+  return INK_COLORS.includes(value) ? MARKER_COLORS[0] : value;
+}
+
+/** 批注模式开关：开着时正文上盖一层可画的画布（关掉就完全回到普通阅读） */
+export const inkOn = ref(false);
+export const inkTool = ref<InkTool>(inkPrefs.tool === 'marker' ? 'marker' : 'pen');
+export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
+/** 普通笔的颜色 */
+export const inkColor = ref(inkPrefs.pen || '#1b1b1f');
+/** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
+export const inkMarkerColor = ref(migrateMarkerColor(inkPrefs.marker || MARKER_COLORS[0]));
+/** 进橡皮之前拿的是哪支笔（橡皮擦完自动切回它，用户口径第 3 条） */
+export const lastDrawTool = ref<'pen' | 'marker'>('pen');
+/** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
+export const inkView = ref<'original' | 'translation' | 'bilingual'>('original');
+/** 最后一次动笔的那份文档键：工具栏的撤销/重做作用于它 */
+export const inkKey = ref<string | null>(null);
+
 
 export interface PageInk {
   doc: InkDoc;

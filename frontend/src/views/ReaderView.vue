@@ -3999,11 +3999,16 @@ function onDocPointerDown(ev: PointerEvent) {
   if (!target?.closest?.('[data-cite-pop]')) citePop.open = false;
   cancelCiteOpen();          // 点别处了：还没弹出来的那一次也取消
   hideMenu();
-  /* 画笔 / 橡皮的二级菜单：**按下即收**（用户口径第 1 条：点其他地方要立刻收回）。
-     挂在 pointerdown 而不是 click，所以是"手指一落就没了"，不用等抬起；
-     菜单自己 `@pointerdown.stop`，点里面的色块 / 粗细不会走到这里。 */
-  if (inkOptionsOpen.value) inkOptionsOpen.value = false;
-  if (eraserClearOpen.value && !target?.closest?.('[data-ink-clear]')) eraserClearOpen.value = false;
+  /* 画笔 / 橡皮的二级菜单：**按下即收**（用户口径：点其他地方要立刻收回）。
+     ⚠️ 这个监听是 **capture 阶段**的（`document.addEventListener('pointerdown', …, true)`），
+     所以菜单自己那条 `@pointerdown.stop` **挡不住它** —— 上一版就是在这里把菜单收掉，
+     色块在 click 到达之前就被卸载，表现是「点颜色 / 点粗细没反应」。
+     现在显式排掉落在菜单里的那一下（`[data-ink-options]` 范围内一律不动）。 */
+  const inInkMenu = !!target?.closest?.('[data-ink-options]');
+  if (!inInkMenu) {
+    if (inkOptionsOpen.value) inkOptionsOpen.value = false;
+    if (eraserClearOpen.value) eraserClearOpen.value = false;
+  }
 }
 
 /* ------------------------------ 复制：公式整段选中时给 LaTeX ------------------------------
