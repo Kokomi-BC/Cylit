@@ -63,7 +63,10 @@ const props = withDefaults(defineProps<{
   /** 不要右上那枚 ✕。笔记卡的**编辑态**用它：那一档的"关闭"改由左侧的返回箭头承担
    *  （箭头还要负责"有改动先问一句"，两枚按钮做同一件事只会让用户犹豫，用户口径 2026-11-28 十三轮）。 */
   hideClose?: boolean;
-}>(), { anchor: null, title: '', titleMd: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '', hideClose: false });
+  /** 没有锚点、也没有位置记录时的**斜向错开**序号（0,1,2…）。
+   *  刷新后恢复的浮层就是这种情况：它们没有锚点，全落在 (0,0) 会叠成一摞。 */
+  spawn?: number;
+}>(), { anchor: null, title: '', titleMd: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '', hideClose: false, spawn: 0 });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -78,9 +81,20 @@ const pos = ref({ left: 0, top: 0 });
 async function place() {
   if (!props.open || dragged.value) return;
   await nextTick();
+  /* ⚠️ 跨过 await 之后必须**再判一次** dragged：恢复记忆的那条 watcher 是 immediate 的，
+     它在 setup 阶段就把 dragged 置 true 并写好了坐标 —— 而这里 await 之前读到的是"还没恢复"，
+     等下一拍回来照着锚点/兜底又摆一遍，把刚恢复的位置盖掉（刷新后位置丢失的真凶）。 */
+  if (dragged.value) return;
   const a = props.anchor;
   const box = el.value;
-  if (!a || !box) return;
+  if (!box) return;
+  /* 没有锚点（刷新后恢复的浮层）：以前这里直接 return，pos 就停在上一次的 0,0 ——
+     于是「刷新之后所有浮层都挤在左上角」。按 spawn 斜着错开落下，位置稳定（每次算出来一样）。 */
+  if (!a) {
+    const i = Math.max(0, Math.floor(Number(props.spawn) || 0)) % 8;
+    pos.value = clampToViewport({ left: 72 + i * 28, top: 76 + i * 28 });
+    return;
+  }
   const w = box.offsetWidth || props.width;
   const h = box.offsetHeight || 120;
   const vw = window.innerWidth;
@@ -381,6 +395,10 @@ function clampToViewport(p: { left: number; top: number }): { left: number; top:
 
 watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as const,
   () => { void place(); }, { immediate: true });
+/* ⚠️ immediate 不能省：**刷新后恢复的浮层是"创建即打开"**（`BlockOverlay` 写死 :open="true"），
+   非 immediate 的 watcher 对它们一次都不会跑 —— 记录里的坐标读不出来，pos 停在初始的 0,0，
+   表现就是「刷新之后表格 / 公式 / 图片浮层全挤在左上角」（用户口径 2026-12-02）。
+   open 为 false 时下面第一句就 return，挂 immediate 对其它卡片没有任何副作用。 */
 watch(() => props.open, (v) => {
   if (!v) { closeMore(); return; }
   /* 尺寸也按卡记忆：上次拉大过的框，再打开还是那么大；没记录才回到调用方给的默认宽高。
@@ -426,7 +444,7 @@ watch(() => props.open, (v) => {
   }
   dragged.value = false;          // 从没摆过：仍然贴锚点，保持初次体验
   void place();
-});
+}, { immediate: true });
 
 /** 内容尺寸变了（切换查看/编辑、流式回答变长）也要重新夹一次 */
 let ro: ResizeObserver | null = null;

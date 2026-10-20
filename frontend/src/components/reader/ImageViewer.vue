@@ -91,6 +91,19 @@ const galleryList = ref<GalleryTarget[]>([]);
 const hasPrev = computed(() => currentIndex.value > 0);
 const hasNext = computed(() => currentIndex.value < galleryList.value.length - 1);
 
+/**
+ * 每次渲染都重新算，因为图片是**控制器自己换的**：拖一下换到下一张时，父组件的 `target` 还停在
+ * 最初点开的那张（`zoomImage` 没人去改，也不该改 —— 那是"打开哪张"的入参），于是顶部标题会一直
+ * 挂着第一张的图注。只有指数组里的下标是活的，所以标题就从 `galleryList[currentIndex]` 里取。
+ * 相邻图没给图注时按页号兜底，与父组件那套口径一致。
+ */
+const currentTitle = computed(() => {
+  const g = galleryList.value[currentIndex.value];
+  const caption = (g?.caption || '').trim();
+  if (caption) return caption;
+  return g?.page ? `第 ${g.page} 页` : props.title;
+});
+
 /** gallery 的内容指纹：父组件每次渲染都传新数组时，不至于无谓地复位视图 */
 const galleryKey = computed(() => (props.gallery || [])
   .map((g) => `${g?.url ?? ''}#${g?.altUrl ?? ''}#${g?.page ?? ''}`).join('|'));
@@ -299,11 +312,12 @@ onBeforeUnmount(() => {
     >
       <!-- 左上角：图标 + 标题（图注）。与表格/公式浮层同一门语言 —— 那两块是浅色卡片，
            这里是黑底看图，所以壳子换成同一套深色玻璃。 -->
-      <div v-if="props.title" class="ov-title-bar" data-viewer-title>
+      <div v-if="currentTitle" class="ov-title-bar" data-viewer-title>
         <span class="ov-title-icon"><AppIcon :name="props.icon" :size="14" /></span>
         <!-- 标题**按 Markdown 渲染**（用户口径）：图注里常有 `$\text{TurboQuant}_{\text{prod}}$`
-             这种公式，纯文本会把 LaTeX 原样吐出来。 -->
-        <span class="ov-title-text" v-html="mdToHtml(props.title)" />
+             这种公式，纯文本会把 LaTeX 原样吐出来。取的是 currentTitle（跟着当前下标走），
+             不是 props.title —— 换到下一张时标题也要跟着换。 -->
+        <span class="ov-title-text" v-html="mdToHtml(currentTitle)" />
       </div>
 
       <div class="sheet" :style="{ width: size.w + 'px', height: size.h + 'px' }">

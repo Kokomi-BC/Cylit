@@ -85,6 +85,42 @@ const CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
 const TOKEN = /[^\s，。；：、（）()【】「」“”《》,.;:]+/g;
 
 /**
+ * 把 LaTeX 的圆括号 / 方括号定界符改写成 $ / $$。
+ *
+ * 症状（用户口径：标题的 markdown 有时候没有渲染）：图注里写成 \(x_t\) 或 \[ \min_q ... \]，
+ * 而 marked-katex-extension 只认 $ 定界符 —— 结果是标题里原样吐出反斜杠和括号。
+ * 围栏代码块里跳过：那里的反斜杠是代码，不是公式。
+ */
+function normalizeTexDelimiters(src: string): string {
+  if (!src.includes('\\(') && !src.includes('\\[')) return src;
+  /* 按围栏切成「代码段 / 非代码段」交替，只处理偶数位（非代码段） */
+  return src.split(/(^[ \t]*(?:```|~~~)[^\n]*\n[\s\S]*?^[ \t]*(?:```|~~~)[ \t]*$)/m)
+    .map((seg, i) => (i % 2 === 1 ? seg : seg
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_m, tex) => '$$' + tex + '$$')
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_m, tex) => '$' + tex + '$')))
+    .join('');
+}
+
+/** 公式区间（$$…$$、$…$）或一个行内文本命令（\textbf{…} 等） */
+const MATH_OR_TEXT_CMD = /\$\$[\s\S]*?\$\$|\$[^$\n]*\$|\\(textbf|textit|textsc|emph)\{([^{}]*)\}/g;
+
+/**
+ * 公式**之外**的排版命令换成 Markdown：\textbf{Cylit} 一直是原样吐出来的
+ * （用户口径：标题的 markdown 有时候没有渲染 —— 图注常常这么写）。
+ * 公式里的 \textbf 不动，那是 KaTeX 该管的。
+ */
+function unwrapTextCommands(src: string): string {
+  if (!src.includes('\\text') && !src.includes('\\emph')) return src;
+  return src.replace(MATH_OR_TEXT_CMD, (m: string, cmd: string, body: string) => {
+    if (!cmd) return m;                                   // 公式区间原样放行
+    return cmd === 'emph' || cmd === 'textit' ? '*' + body + '*' : '**' + body + '**';
+  });
+}
+
+/** 明确的数学命令：裸写在正文里时据此补 $…$（排版命令不在此列，它们已转成 Markdown） */
+const BARE_MATH_CMD = /\\(?:mathbb|mathrm|mathbf|mathcal|mathit|operatorname|hat|bar|tilde|vec|frac|sqrt|sum|prod|int|partial|nabla|infty|alpha|beta|gamma|delta|lambda|mu|sigma|theta|omega|pi|le|leq|ge|geq|neq|approx|equiv|times|cdot|pm|to)\b/;
+
+/**
  * 把**裸写的 LaTeX**补上公式定界符。
  *
  * 为什么会裸写：模型偶尔忘了包 `$…$`，直接写 `Q_mse^{-1}`、`S^{d-1}`、`\text{(MSE)} \quad \mathbb{E}`。
@@ -93,7 +129,7 @@ const TOKEN = /[^\s，。；：、（）()【】「」“”《》,.;:]+/g;
  *
  * 守则：宁可少补，也不要误把普通文字塞进公式 —— 只在两种情况下动手：
  *   ① 整行就是一段公式（含高置信 LaTeX 命令且**没有中文**）→ 整行包 `$$…$$`；
- *   ② 某个“词”里出现 `^{` / `_{` → 只把这个词包进 `$…$`。
+ *   ② 某个“词”里出现 `^{` / `_{`，或者带一个明确的数学命令（`\mathbb{E}[x]`）→ 只把这个词包进 `$…$`。
  * 已有 `$` 的行、代码围栏、以及不常见的写法一律不动。
  */
 export function wrapBareMath(src: string): string {
@@ -113,8 +149,9 @@ export function wrapBareMath(src: string): string {
     const strong = t ? (t.match(STRONG_TEX_G) || []).length : 0;
     if (t && !CJK.test(t) && STRONG_TEX.test(t) && (strong >= 2 || /[_^]\{/.test(t))) return `$$${t}$$`;
     return line.replace(TOKEN, (tok) => {
-      if (!/[_^]\{/.test(tok)) return tok;
-      if (tok.includes('$') || tok.includes('`') || tok.includes('\\') || tok.startsWith('http')) return tok;
+      /* 带 ^{ / _{ 的「词」，或者裸写的数学命令（\mathbb{E}[x] 这种）才补 —— 别的词一律不动 */
+      if (!/[_^]\{/.test(tok) && !BARE_MATH_CMD.test(tok)) return tok;
+      if (tok.includes('$') || tok.includes('`') || tok.startsWith('http')) return tok;
       if (tok.length > 60 || CJK.test(tok)) return tok;
       return `$${tok}$`;
     });
@@ -416,7 +453,11 @@ export function mdToHtml(
   const key = `${breaks ? '\u0001' : ''}${paperId ? `${paperId}\u0000` : ''}${src0}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const prepared = wrapBareMath(breaks ? src0 : normalizeSoftBreaks(src0));
+  /* 三步前置，顺序不能换：先把 \(…\) / \[…\] 归一到 $ 定界符，再转排版命令，
+     最后才补裸公式 —— 反过来的话后一步看不见前面刚造出来的 $…$。 */
+  const prepared = wrapBareMath(
+    unwrapTextCommands(normalizeTexDelimiters(breaks ? src0 : normalizeSoftBreaks(src0))),
+  );
   const bold = fixCjkBoldEdges(prepared);
   const { text: src, math } = extractBlockMath(bold.text);
   let html: string;
@@ -439,7 +480,8 @@ export function mdToHtml(
 export function inlineHtml(text?: string | null): string {
   const src = String(text ?? '').trim();
   if (!src) return '';
-  const bold = fixCjkBoldEdges(src);
+  /* 短标题（图注 / 术语）同样要吃 \(…\) 与排版命令，否则标题里会露出反斜杠 */
+  const bold = fixCjkBoldEdges(unwrapTextCommands(normalizeTexDelimiters(src)));
   try {
     return renderStrong(marked.parseInline(bold.text) as string, bold.strong);
   } catch {

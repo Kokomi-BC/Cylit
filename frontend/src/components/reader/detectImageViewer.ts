@@ -1070,7 +1070,14 @@ export function createDetectImageViewer(opts: DetectImageViewerOptions): DetectI
 
         if (dragPreviewActive) {
           const delta = dragPreviewOverflowX < 0 ? 1 : -1;
-          const occupancyEnough = getPreviewOccupancyRatio() >= 0.25;
+          /* 松手判定：以前只看「相邻图占屏 ≥25%」—— 分母是整条泳道（≈1.02 个视口宽），
+             桌面 1500px 下要拖近 400px 才算切，手感就是「怎么甩都换不了图」。
+             现在「拉过边缘的距离」与「占屏比例」任一够就切：
+             距离按屏宽取 8%，夹在 48–96px（手机 ≈48px、桌面 ≈96px）。
+             用 overflow 而不是 imageX —— 放大后贴着边界时 imageX 本身就很大，那不是用户拉出来的。 */
+          const commitPx = Math.min(96, Math.max(48, vw * 0.08));
+          const occupancyEnough = getPreviewOccupancyRatio() >= 0.12
+            || Math.abs(dragPreviewOverflowX) >= commitPx;
           dragPreviewActive = false;
 
           if (!modalImageSwitching && occupancyEnough) {

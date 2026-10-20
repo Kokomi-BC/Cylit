@@ -7700,8 +7700,9 @@ function renderMarkdown(text?: string | null) {
     <!-- 表格 / 公式 / 插图的浮层：**可以叠多张**，每张自带层级（点哪张哪张到最上层）。
          左上角图标 + 标题（表格用它的说明、公式写「公式」、插图用图注）。 -->
     <BlockOverlay
-      v-for="o in blockOverlays"
+      v-for="(o, oi) in blockOverlays"
       :key="o.id"
+      :spawn="oi"
       :icon="o.icon"
       :title="o.title"
       :title-md="o.titleMd || ''"

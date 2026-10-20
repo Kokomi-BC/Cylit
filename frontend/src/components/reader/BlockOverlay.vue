@@ -30,6 +30,8 @@ const props = defineProps<{
   markdown?: string;
   /** 插图走这一条：**直接显示这张图**（用户口径：图片的「浮层打开」不是那个带缩放的黑底查看器） */
   imageUrl?: string;
+  /** 没有锚点时（刷新恢复的那批）的斜向错开序号，避免全叠在左上角 */
+  spawn?: number;
 }>();
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -64,6 +66,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
     :anchor="props.anchor || null"
     :focused="props.focused !== false"
     :persist-key="props.persistKey || ''"
+    :spawn="props.spawn || 0"
     zoomable
     hide-anchor
     :width="480"
