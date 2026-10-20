@@ -40,9 +40,9 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor,
+  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, lastDrawTool,
   flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
-  redoInk, resetInk, setInkColor, setInkNotesListener, undoInk,
+  redoInk, resetInk, setInkColor, setInkNotesListener, setInkWidth, undoInk,
 } from '@/composables/useReaderInk';
 import { WIDTH_STEPS } from '@/utils/imageInk';
 import {
@@ -453,7 +453,10 @@ function onClearSlide(raw: string): void {
   clearPageInk(inkKeyTarget.value);
   clearProgress.value = 0;
   eraserClearOpen.value = false;
-  void nextTick().then(syncToastDrop);
+  /* 这一下"清完"之后**切回橡皮之前那支笔**（用户口径第 3 条）：清空是一次性的收尾动作，
+     没必要让用户再手动点回画笔。 */
+  inkTool.value = lastDrawTool.value;
+  void nextTick().then(() => { syncToastDrop(); });
 }
 
 function placeInkOptions(): void {
@@ -497,6 +500,10 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
     });
     return;
   }
+  /* 进橡皮之前记一下拿的是哪支笔 —— 擦完一笔自动切回它（用户口径第 3 条） */
+  if (key === 'eraser' && (inkTool.value === 'pen' || inkTool.value === 'marker')) {
+    lastDrawTool.value = inkTool.value;
+  }
   inkTool.value = key;
   inkOptionsOpen.value = key === 'pen' || key === 'marker';
   eraserClearOpen.value = false;
@@ -506,6 +513,7 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
     syncToastDrop();
   });
 }
+
 
 /** 落盘（每像素写一次没意义；拖完 / 夹取之后才写） */
 function persistAsideWidth() {
@@ -3990,6 +3998,11 @@ function onDocPointerDown(ev: PointerEvent) {
   if (!target?.closest?.('[data-cite-pop]')) citePop.open = false;
   cancelCiteOpen();          // 点别处了：还没弹出来的那一次也取消
   hideMenu();
+  /* 画笔 / 橡皮的二级菜单：**按下即收**（用户口径第 1 条：点其他地方要立刻收回）。
+     挂在 pointerdown 而不是 click，所以是"手指一落就没了"，不用等抬起；
+     菜单自己 `@pointerdown.stop`，点里面的色块 / 粗细不会走到这里。 */
+  if (inkOptionsOpen.value) inkOptionsOpen.value = false;
+  if (eraserClearOpen.value && !target?.closest?.('[data-ink-clear]')) eraserClearOpen.value = false;
 }
 
 /* ------------------------------ 复制：公式整段选中时给 LaTeX ------------------------------
@@ -6900,7 +6913,7 @@ function renderMarkdown(text?: string | null) {
               :class="{ active: inkWidth === step.key }"
               :data-ink-width="step.key"
               :title="'粗细：' + step.label"
-              @click="inkWidth = step.key"
+              @click="setInkWidth(step.key)"
             >
               <i class="ink-dot" :style="inkDotStyle(step.key)" />
             </button>
@@ -7910,14 +7923,20 @@ function renderMarkdown(text?: string | null) {
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
 }
+/* 色块：照 iPad 那套的排布 —— 一排**大一点**的实心圆（26px），选中项外面套一圈同色环，
+   而不是"换边框色"那种容易被底色吃掉的写法（用户口径第 1 条：优化颜色排版）。 */
 .ink-palette-dot {
-  width: 20px; height: 20px; padding: 0; cursor: pointer;
-  border: 2px solid transparent; border-radius: 999px;
+  width: 26px; height: 26px; padding: 0; cursor: pointer;
+  border: 2px solid var(--bg-elev); border-radius: 999px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
-  transition: transform var(--dur) var(--ease);
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.ink-palette-dot:hover { transform: scale(1.12); }
-.ink-palette-dot.active { border-color: var(--bg-elev); box-shadow: 0 0 0 2px var(--text); }
+.ink-palette-dot:hover { transform: scale(1.08); }
+/* 选中：白圈 + 一圈**文字色**外环（浅色/深色主题下都读得出来），与旁的色点拉开一档 */
+.ink-palette-dot.active {
+  border-color: var(--bg-elev);
+  box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px color-mix(in srgb, var(--text) 72%, transparent);
+}
 .ink-dot { display: block; border-radius: 999px; background: currentColor; }
 
 /* 抓手：**最左侧**一小条三点，**竖排**（用户口径：拖动条要竖着的）。
@@ -7941,7 +7960,7 @@ function renderMarkdown(text?: string | null) {
   /* fixed：位置由 `inkOptionsStyle` 按胶囊实时算（见 placeInkOptions） */
   position: fixed; transform: translateX(-50%);
   display: flex; flex-direction: column; gap: 8px; z-index: 45; pointer-events: auto;
-  padding: 9px 12px; border-radius: 16px;
+  padding: 10px 12px; border-radius: 18px;
   /* 与胶囊/右键菜单同一块玻璃（用户口径 2026-10-18） */
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
@@ -7950,7 +7969,11 @@ function renderMarkdown(text?: string | null) {
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
 }
-.ink-options-row { display: flex; align-items: center; gap: 7px; }
+/* 两排：上排颜色（26px 圆点，间距大一点才点得准），下排粗细（与上排之间一条发丝线） */
+.ink-options-row { display: flex; align-items: center; gap: 10px; }
+.ink-options-row + .ink-options-row {
+  padding-top: 8px; border-top: 1px solid var(--divider);
+}
 .ink-options-label { width: 28px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 /* 粗细：三档**图标**（只画点，不写字；选中态给一圈浅底） */
 .ink-width-icon {
@@ -7964,10 +7987,10 @@ function renderMarkdown(text?: string | null) {
 /* 自定义颜色：一枚"彩虹点"，点它弹浏览器原生取色器（input 藏起来但可点） */
 .ink-color-custom {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; cursor: pointer;
+  width: 26px; height: 26px; cursor: pointer;
 }
 .ink-color-custom-dot {
-  display: block; width: 20px; height: 20px; border-radius: 999px;
+  display: block; width: 26px; height: 26px; border-radius: 999px;
   background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
 }

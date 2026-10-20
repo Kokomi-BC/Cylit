@@ -24,6 +24,8 @@ import {
 } from '@/composables/useReaderInk';
 
 const props = defineProps<{ page: number; enabled: boolean }>();
+/** `erased`：这一笔橡皮**真的擦掉了东西**（父组件据此把工具切回橡皮之前那支笔） */
+const emit = defineEmits<{ (e: 'erased'): void }>();
 
 const root = ref<HTMLElement | null>(null);
 const baseCv = ref<HTMLCanvasElement | null>(null);
@@ -178,15 +180,28 @@ function eraseAt(ev: PointerEvent) {
   const pt = toLocal(ev.clientX, ev.clientY);
   const idx = hitStroke(state.value.doc, pt.x, pt.y, 12, size.value.w, size.value.h);
   if (idx < 0) return;
+  eraseTouched = true;
   commitInk(docKey.value, {
     ...state.value.doc,
     strokes: state.value.doc.strokes.filter((_, i) => i !== idx),
   });
 }
 
+/**
+ * 多点触控（用户口径第 4 条）：**只有第一根落下的指针算**，第二根一律忽略。
+ * 以前没这道闸：两根手指同时按下去会开两笔（后一笔把前一筆的 `drawing` 覆盖掉，
+ * 前一笔永远收不了尾，屏幕上留一条"画不完的线"）；橡皮同理会被两处同时删。
+ * 现在记一个 `activePointer`：落下时没有它才接管，抬起 / 取消时清掉。
+ */
+let activePointer: number | null = null;
+/** 这一笔橡皮有没有真的擦掉过东西（决定抬起时要不要 emit 'erased'） */
+let eraseTouched = false;
+
 function onPointerDown(ev: PointerEvent) {
   if (!props.enabled) return;
   if (ev.button !== undefined && ev.button > 0) return;
+  if (activePointer !== null) return;          // 已经有一根手指在画：后来的忽略
+  activePointer = ev.pointerId;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
   const tool = inkTool.value;
   if (tool === 'pen' || tool === 'marker') {
@@ -195,6 +210,7 @@ function onPointerDown(ev: PointerEvent) {
   }
   if (tool === 'eraser') {
     erasing = true;
+    eraseTouched = false;
     eraseAt(ev);
     return;
   }
@@ -209,13 +225,19 @@ function onDoubleClick(ev: MouseEvent) {
 
 function onPointerMove(ev: PointerEvent) {
   if (!props.enabled) return;
+  if (activePointer !== null && ev.pointerId !== activePointer) return;   // 不是那根手指：不算数
   if (drawing) { extendStroke(ev); return; }
   if (erasing) eraseAt(ev);
 }
 
-function onPointerUp() {
+function onPointerUp(ev?: PointerEvent) {
+  if (ev && activePointer !== null && ev.pointerId !== activePointer) return;
   if (drawing) endStroke();
   erasing = false;
+  activePointer = null;
+  /* 橡皮擦掉过东西 → 告诉父组件（它会把工具切回橡皮之前那支笔，用户口径第 3 条）。
+     只擦了个寂寞（没命中任何笔迹）就不切：用户可能还想继续擦。 */
+  if (eraseTouched) { eraseTouched = false; emit('erased'); }
 }
 
 /* ------------------------------ 自动选择 → 加笔记 ------------------------------ */

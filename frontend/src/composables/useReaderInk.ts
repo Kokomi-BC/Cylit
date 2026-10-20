@@ -19,14 +19,38 @@ import {
   type InkDoc, type InkNote, type InkTool, type WidthKey,
 } from '@/utils/imageInk';
 
+/**
+ * 笔的偏好（颜色 / 粗细）**记在本机**：下次进来直接还是上次那支。
+ * 只记"最后用过的那一档"，不另做"常用色"面板 —— 用户口径：不另外排版，
+ * 打开菜单时选中态就落在上次那个颜色 / 粗细上（见 `activeInkColor`）。
+ */
+const INK_PREFS_KEY = 'pm.ink.prefs';
+interface InkPrefs { pen?: string; marker?: string; width?: WidthKey }
+function loadInkPrefs(): InkPrefs {
+  try {
+    const raw = localStorage.getItem(INK_PREFS_KEY);
+    return raw ? (JSON.parse(raw) as InkPrefs) : {};
+  } catch { return {}; }    /* 隐私模式 / 坏数据：当没有 */
+}
+const inkPrefs = loadInkPrefs();
+function saveInkPrefs(): void {
+  try {
+    localStorage.setItem(INK_PREFS_KEY, JSON.stringify({
+      pen: inkColor.value, marker: inkMarkerColor.value, width: inkWidth.value,
+    }));
+  } catch { /* 忽略 */ }
+}
+
 /** 批注模式开关：开着时正文上盖一层可画的画布（关掉就完全回到普通阅读） */
 export const inkOn = ref(false);
 export const inkTool = ref<InkTool>('pen');
-export const inkWidth = ref<WidthKey>('mid');
+export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
 /** 普通笔的颜色 */
-export const inkColor = ref('#1b1b1f');
+export const inkColor = ref(inkPrefs.pen || '#1b1b1f');
 /** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
-export const inkMarkerColor = ref('#ffd60a');
+export const inkMarkerColor = ref(inkPrefs.marker || '#ffd60a');
+/** 进橡皮之前拿的是哪支笔（橡皮擦完自动切回它，用户口径第 3 条） */
+export const lastDrawTool = ref<'pen' | 'marker'>('pen');
 /** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
 export const inkView = ref<'original' | 'translation' | 'bilingual'>('original');
 /** 最后一次动笔的那份文档键：工具栏的撤销/重做作用于它 */
@@ -230,6 +254,13 @@ export function activeInkColor(): string {
 export function setInkColor(value: string): void {
   if (inkTool.value === 'marker') inkMarkerColor.value = value;
   else inkColor.value = value;
+  saveInkPrefs();          /* 每换一次色就落盘：下次打开菜单直接选中它 */
+}
+
+/** 换粗细（同样落盘） */
+export function setInkWidth(value: WidthKey): void {
+  inkWidth.value = value;
+  saveInkPrefs();
 }
 
 /** 清空**这一页**的笔迹（笔记保留）：橡皮二次点击 → 滑块 → 这里 */
