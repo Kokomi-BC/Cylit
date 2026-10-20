@@ -265,6 +265,9 @@ export interface MarkdownTable {
   model?: string | null;
 }
 
+/** 触发浮层的那枚按钮在视口中的矩形：浮层贴着它下方打开（表格 / 公式 / 插图的「浮层打开」）。 */
+export interface OverlayAnchor { x: number; y: number; w?: number; h?: number }
+
 export type MarkdownViewMode = 'bilingual' | 'original' | 'translation';
 
 export interface ReadingProgress {

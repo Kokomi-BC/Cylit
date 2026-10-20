@@ -13,10 +13,15 @@ import { onBeforeUnmount, onMounted } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import FloatingCard from './FloatingCard.vue';
 import { mdToHtml } from '@/composables/useMarkdown';
+import type { OverlayAnchor } from '@/api/types';
 
 const props = defineProps<{
   icon: string;
   title: string;
+  /** 标题的 Markdown 版（图注里有公式）；不给就只显示 `title` 那份纯文字 */
+  titleMd?: string;
+  /** 触发它的那枚按钮的矩形：浮层**贴着按钮下方打开**（用户口径：不要跑到左上角） */
+  anchor?: OverlayAnchor | null;
   /** 内容本体：GFM Markdown（表格是 `| … |`，公式是 `$$…$$`） */
   markdown?: string;
   /** 插图走这一条：**直接显示这张图**（用户口径：图片的「浮层打开」不是那个带缩放的黑底查看器） */
@@ -42,13 +47,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
   <FloatingCard
     :open="true"
     :title="props.title"
+    :title-md="props.titleMd || ''"
+    :anchor="props.anchor || null"
     zoomable
     hide-anchor
     :width="480"
     :max-height="520"
-    persist-key="block-overlay"
     text-cat="body"
-    center-on-open
     @close="emit('close')"
   >
     <template #head-lead>

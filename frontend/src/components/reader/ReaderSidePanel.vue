@@ -17,8 +17,8 @@ import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
 import { highlightCss } from '@/utils/highlightColors';
 import type {
-  Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, MarkdownTable, Note, PaperReference,
-  TaskInfo, ZoomTarget,
+  Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, MarkdownTable, Note, OverlayAnchor,
+  PaperReference, TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
@@ -89,7 +89,10 @@ const emit = defineEmits<{
   (e: 'copy', text: string): void;
   (e: 'zoom', target: ZoomTarget): void;
   /** 表格 / 公式的浮层打开：`{ icon, title, markdown }`，由阅读器那层挂 `BlockOverlay` */
-  (e: 'overlay', p: { icon: string; title: string; markdown?: string; imageUrl?: string }): void;
+  (e: 'overlay', p: {
+    icon: string; title: string; titleMd?: string;
+    markdown?: string; imageUrl?: string; anchor?: OverlayAnchor | null;
+  }): void;
   (e: 'save-brief'): void;
   (e: 'regenerate-brief'): void;
   /** 取消编辑：让父组件用服务端的简报**重新灌一次草稿**（丢弃本地未保存的改动） */
@@ -165,6 +168,19 @@ const hasBrief = computed(() => Boolean(
 /** 图注当作**浮层标题**时要的是纯文字（浮层标题栏不解析 Markdown）：去掉 `**` 与 `$` 这些记号。 */
 function plainCaption(md: string): string {
   return String(md || '').replace(/\*\*|__|`/g, '').replace(/\$/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** 插图的「浮层打开」：贴在那枚按钮下方开一张浮层显示原图（标题走 Markdown，图注里的公式能排出来） */
+function openFigureOverlay(fig: FigureItem, ev?: MouseEvent) {
+  const capMd = fig.caption_zh || fig.caption || '';
+  const r = (ev?.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  emit('overlay', {
+    icon: 'image',
+    title: plainCaption(capMd) || (fig.number ? `图 ${fig.number}` : '插图'),
+    titleMd: capMd,
+    imageUrl: fig.card_url || fig.image_url || '',
+    anchor: r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null,
+  });
 }
 
 const noteLines = computed(() => props.briefDraft.notes.split('\n').map(s => s.trim()).filter(Boolean));
@@ -642,12 +658,7 @@ function onMore(key: string, r: FeedRow) {
             class="btn icon sm fig-overlay"
             title="浮层打开"
             data-figure-overlay
-            @click="emit('overlay', {
-              icon: 'image',
-              title: plainCaption(fig.caption_zh || fig.caption || '')
-                || (fig.number ? `图 ${fig.number}` : '插图'),
-              imageUrl: fig.card_url || fig.image_url || '',
-            })"
+            @click="openFigureOverlay(fig, $event)"
           >
             <AppIcon name="pip" :size="13" />
           </button>

@@ -19,7 +19,8 @@ import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import type {
   AgentSelection, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
-  Highlight, MarkdownFormula, MarkdownTable, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
+  Highlight, MarkdownFormula, MarkdownTable, MarkdownViewMode, Note, OriginalMode, Outline, OverlayAnchor,
+  PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, PaperReference, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
@@ -655,7 +656,12 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 /** 表格 / 公式的浮层（用户口径：侧栏列表里「浮层打开」）。图片不走这里 —— 它有查看器那套缩放。 */
-const blockOverlay = ref<{ icon: string; title: string; markdown?: string; imageUrl?: string } | null>(null);
+const blockOverlay = ref<{
+  icon: string; title: string; titleMd?: string;
+  markdown?: string; imageUrl?: string;
+  /** 触发它的那枚按钮的矩形：浮层贴着按钮下方打开 */
+  anchor?: OverlayAnchor | null;
+} | null>(null);
 
 /**
  * 关闭大图查看器时"飞回原位"的落点：触发它的那张缩略图在视口中的矩形。
@@ -7538,6 +7544,8 @@ function renderMarkdown(text?: string | null) {
       v-if="blockOverlay"
       :icon="blockOverlay.icon"
       :title="blockOverlay.title"
+      :title-md="blockOverlay.titleMd || ''"
+      :anchor="blockOverlay.anchor || null"
       :markdown="blockOverlay.markdown || ''"
       :image-url="blockOverlay.imageUrl || ''"
       @close="blockOverlay = null"

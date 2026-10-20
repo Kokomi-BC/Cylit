@@ -27,12 +27,16 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
 import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import AppIcon from '@/components/AppIcon.vue';
+import { mdToHtml } from '@/composables/useMarkdown';
 
 const props = withDefaults(defineProps<{
   open: boolean;
   /** 锚点（一般给高亮/选区的 `getBoundingClientRect()`）：浮层贴在它右下 */
   anchor?: { x: number; y: number; w?: number; h?: number } | null;
   title?: string;
+  /** 标题的 **Markdown 版**（图注里常有 `$\\text{TurboQuant}_{\\text{prod}}$` 这种公式）。
+   *  给了就用它渲染，`title` 只当兜底文本（无障碍名字也用它）。 */
+  titleMd?: string;
   /** 锚定模式：移开不自动消失（笔记默认关、AI 解释默认开） */
   anchored?: boolean;
   width?: number;
@@ -59,7 +63,7 @@ const props = withDefaults(defineProps<{
   /** 不要右上那枚 ✕。笔记卡的**编辑态**用它：那一档的"关闭"改由左侧的返回箭头承担
    *  （箭头还要负责"有改动先问一句"，两枚按钮做同一件事只会让用户犹豫，用户口径 2026-11-28 十三轮）。 */
   hideClose?: boolean;
-}>(), { anchor: null, title: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '', hideClose: false });
+}>(), { anchor: null, title: '', titleMd: '', anchored: false, width: 340, maxHeight: 420, persistKey: '', centerOnOpen: false, hideAnchor: false, textCat: '', zoomable: false, focused: true, titleColor: '', hideClose: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -630,7 +634,13 @@ watchEffect(applyShellDom, { flush: 'sync' });
         <!-- 标题**前面**的图标位（2026-10-10：笔记框要照目标站放一枚笔记图标）。
              不传则为空，解释浮层不受影响。 -->
         <slot name="head-lead" />
-        <span class="fc-title" :style="props.titleColor ? { color: props.titleColor } : undefined">{{ props.title }}</span>
+        <span
+          v-if="props.titleMd"
+          class="fc-title fc-title-md"
+          :style="props.titleColor ? { color: props.titleColor } : undefined"
+          v-html="mdToHtml(props.titleMd)"
+        />
+        <span v-else class="fc-title" :style="props.titleColor ? { color: props.titleColor } : undefined">{{ props.title }}</span>
         <!-- 标题**之后**、按钮之前的位置（2026-10-10 复查：笔记框的色条要跟「笔记」并排，
              但「笔记」和左边那枚图标必须在**最左侧** —— 所以色点排在标题右边，而不是它左边）。 -->
         <slot name="head-mid" />
@@ -842,6 +852,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
 }
 .fc-head.dragging { cursor: grabbing; }
 .fc-title { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+/* Markdown 标题：段落压成行内、公式收到与标题同字号（KaTeX 默认 1.21em 会把标题顶高） */
+.fc-title-md :deep(p) { margin: 0; display: inline; }
+.fc-title-md :deep(.katex) { font-size: 1em; }
+.fc-title-md :deep(.katex-display) { display: inline; margin: 0; }
 /* 头部图标钮：**圆形 + 中性淡底**（用户口径 2026-11-21："笔记浮层的按钮样式与对话样式统一"）。
    参考那套是"灰底圆钮"，不是"透明方角"也不是"强调色方块" —— 两张浮层（笔记 / Cyli 解释）
    共用这一条，所以它们的锚定 / 关闭 / 笔 / 垃圾桶才会长得一样。 */

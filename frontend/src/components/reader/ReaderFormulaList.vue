@@ -13,6 +13,7 @@ import { computed, ref } from 'vue';
 import type { MarkdownFormula } from '@/api/types';
 import { latexToHtml } from '@/composables/useMarkdown';
 import AppIcon from '@/components/AppIcon.vue';
+import type { OverlayAnchor } from '@/api/types';
 
 const props = withDefaults(defineProps<{
   items: MarkdownFormula[];
@@ -23,7 +24,10 @@ const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
   (e: 'copy', text: string): void;
   /** 浮层打开：交给阅读器那张 `BlockOverlay`（左上角只有「公式」两个字 —— 公式自己没有标题） */
-  (e: 'overlay', p: { icon: string; title: string; markdown: string }): void;
+  (e: 'overlay', p: {
+    icon: string; title: string; titleMd?: string;
+    markdown: string; anchor?: OverlayAnchor | null;
+  }): void;
 }>();
 
 /** 默认只列行间公式（论文里编号的公式）；行内公式多达数百条，按需切换。 */
@@ -65,12 +69,19 @@ function splitLabel(latex: string): { label: string; body: string } {
 }
 
 /** 浮层打开：**补回定界符**再交给 Markdown 渲染器（列表里的 `latex` 已经把 `$` 去掉了）。 */
-function openOverlay(f: { body: string; display: boolean }) {
+function openOverlay(f: { body: string; display: boolean }, ev?: MouseEvent) {
   emit('overlay', {
     icon: 'formula',
     title: '公式',
     markdown: f.display ? `$$${f.body}$$` : `$${f.body}$`,
+    /* 浮层贴着这枚按钮下方打开（用户口径：不要跑到左上角） */
+    anchor: anchorOf(ev),
   });
+}
+
+function anchorOf(ev?: Event): OverlayAnchor | null {
+  const r = (ev?.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null;
 }
 
 /** 列表项（顺手把要显示/复制的内容算好，模板里不再重复解析）。 */
@@ -111,7 +122,7 @@ const rows = computed(() => filtered.value.map((f) => {
           :title="`这一页还没翻译，公式来自解析产物${f.grade ? `（${f.grade} 级）` : ''}`"
         >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
         <span class="spacer" />
-        <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f)">
+        <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f, $event)">
           <AppIcon name="pip" :size="13" />
         </button>
         <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
