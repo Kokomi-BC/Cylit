@@ -24,6 +24,8 @@ const props = defineProps<{
   anchor?: OverlayAnchor | null;
   /** 这张现在是**最上层**那张（FloatingCard 用它决定底角指示器亮不亮） */
   focused?: boolean;
+  /** 位置/尺寸记忆键（`FloatingCard` 的 persistKey）：刷新回来还在原来的地方 */
+  persistKey?: string;
   /** 内容本体：GFM Markdown（表格是 `| … |`，公式是 `$$…$$`） */
   markdown?: string;
   /** 插图走这一条：**直接显示这张图**（用户口径：图片的「浮层打开」不是那个带缩放的黑底查看器） */
@@ -61,6 +63,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
     :title-md="props.titleMd || ''"
     :anchor="props.anchor || null"
     :focused="props.focused !== false"
+    :persist-key="props.persistKey || ''"
     zoomable
     hide-anchor
     :width="480"

@@ -288,11 +288,31 @@ const floatBox = ref({ left: 0, top: 0, w: ASIDE_W_CHAT, h: 560 });
  * ⚠️ **不要挂 hover**：两张卡叠在边缘时鼠标一抖就来回改，读起来就是闪。
  */
 const topLayer = ref<'note' | 'chat'>('note');
-function takeTop(which: 'note' | 'chat') {
-  if (topLayer.value === which) return;
+/**
+ * **所有浮层共用的一条层级序列**（用户口径：笔记浮层不能永远压在下面）。
+ *
+ * 以前是两档固定值：笔记 / 对话浮窗在 60~62，表格公式图片浮层从 70 起 ——
+ * 于是浮层一开，笔记卡**再怎么点也上不去**。现在改成一条单调递增的序列：
+ * 谁新开 / 谁被点一下，就拿一个新的、更大的 `z`，谁也不占死档位。
+ * 起点 60（正文 30 / 侧栏 31 / 工具栏 40 那几档一个都不动）。
+ */
+const layerZ = ref(60);
+function nextLayerZ() { layerZ.value += 1; return layerZ.value; }
+/** 对话浮窗自己的 z（开浮窗 / 点它时抬一档） */
+const chatZ = ref(60);
+
+function takeTop(which: 'note' | 'chat', key?: string) {
   /* 对话那块**只在浮窗态**参与排序：贴栏态它就是侧栏（z-index 30），不该抢浮层的顶 */
-  if (which === 'chat' && !chatFloat.value) return;
-  topLayer.value = which;
+  if (which === 'chat') {
+    if (!chatFloat.value) return;
+    topLayer.value = 'chat';
+    chatZ.value = nextLayerZ();
+    return;
+  }
+  topLayer.value = 'note';
+  /* 点的是哪张就抬哪张（多卡时不能只抬「最后一张」） */
+  const card = key ? noteCards.find((c) => c.key === key) : undefined;
+  if (card) card.z = nextLayerZ();
 }
 
 /** 浮窗两枚把手的位置：箱子 20px，箱子边缘比卡片边缘再出去 FLOAT_GRIP_GAP（弧就贴在卡片外面）。
@@ -667,6 +687,8 @@ const zoomImage = ref<ZoomTarget | null>(null);
  */
 type BlockOverlayItem = {
   id: number;
+  /** 稳定键：位置记忆（FloatingCard 的 persistKey）与「刷新后恢复」都按它认 */
+  key: string;
   icon: string; title: string; titleMd?: string;
   markdown?: string; imageUrl?: string;
   /** 触发它的那枚按钮的矩形：浮层贴着按钮下方打开 */
@@ -676,34 +698,66 @@ type BlockOverlayItem = {
 };
 const blockOverlays = ref<BlockOverlayItem[]>([]);
 let blockOverlaySeq = 0;
-const OVERLAY_Z_BASE = 70;
-/** 当前最高层（模板里要用它算 `focused`，所以必须是响应式的） */
-const blockOverlayZ = ref(OVERLAY_Z_BASE);
+/** 当前最高的那张（模板里用它算 `focused`，所以是派生的） */
+const topOverlayZ = computed(() => blockOverlays.value.reduce((m, o) => Math.max(m, o.z), 0));
 
 /** 打开一张浮层（可以叠很多张；同一处连点会给同一张抬层级，而不是叠一摞一模一样的） */
-function openBlockOverlay(p: Omit<BlockOverlayItem, 'id' | 'z'>) {
+function openBlockOverlay(p: Omit<BlockOverlayItem, 'id' | 'z' | 'key'>) {
   const same = blockOverlays.value.find((o) => o.icon === p.icon
     && o.title === p.title && o.markdown === p.markdown && o.imageUrl === p.imageUrl);
   if (same) { focusBlockOverlay(same.id); return; }
-  blockOverlayZ.value += 1;
-  blockOverlays.value = [...blockOverlays.value, { ...p, id: ++blockOverlaySeq, z: blockOverlayZ.value }];
+  const key = `${p.icon}|${p.title}|${p.imageUrl || ''}`;
+  blockOverlays.value = [
+    ...blockOverlays.value,
+    { ...p, key, id: ++blockOverlaySeq, z: nextLayerZ() },
+  ];
+  persistBlockOverlays();
 }
 
 function closeBlockOverlay(id: number) {
   blockOverlays.value = blockOverlays.value.filter((o) => o.id !== id);
+  persistBlockOverlays();
+}
+
+/* ------------------ 刷新 / 切走再回来：把浮层恢复回来 ------------------
+ * 与笔记卡同一套思路（`cylit:notes-open:<paperId>`）：按**论文**记 —— 表格公式是这篇的产物。
+ * 记的是**内容本身**（icon / 标题 / markdown / 图片地址），所以恢复时不必等接口；
+ * 位置与大小由 `FloatingCard` 自己按 `persistKey`（`bo:<key>`）记，互不重复。 */
+function blockOverlayStoreKey(): string {
+  return `cylit:block-overlays:${paperId.value}`;
+}
+function persistBlockOverlays() {
+  try {
+    const payload = blockOverlays.value.map((o) => ({
+      key: o.key, icon: o.icon, title: o.title, titleMd: o.titleMd,
+      markdown: o.markdown, imageUrl: o.imageUrl,
+    }));
+    if (payload.length) localStorage.setItem(blockOverlayStoreKey(), JSON.stringify(payload));
+    else localStorage.removeItem(blockOverlayStoreKey());
+  } catch { /* 隐私模式忽略 */ }
+}
+function restoreBlockOverlays() {
+  blockOverlays.value = [];
+  try {
+    const raw = localStorage.getItem(blockOverlayStoreKey());
+    if (!raw) return;
+    const saved = JSON.parse(raw) as Array<Omit<BlockOverlayItem, 'id' | 'z' | 'anchor'>>;
+    if (!Array.isArray(saved) || !saved.length) return;
+    /* 顺序照旧（后开的在上），层级按顺序重新发一遍 */
+    blockOverlays.value = saved.slice(0, 12).map((o) => ({
+      ...o,
+      anchor: null,
+      id: ++blockOverlaySeq,
+      z: nextLayerZ(),
+    }));
+  } catch { /* 坏数据就当作没有 */ }
 }
 
 /** 点哪张就把哪张抬到最上层（用户口径：浮层要支持多层级、点击到最上层） */
 function focusBlockOverlay(id: number) {
   const item = blockOverlays.value.find((o) => o.id === id);
-  if (!item || item.z === blockOverlayZ.value) return;
-  blockOverlayZ.value += 1;
-  item.z = blockOverlayZ.value;
-  /* 抬到 96 就整体重排一档（40 张以内都够用；重排只是重写 z，不动位置） */
-  if (blockOverlayZ.value > OVERLAY_Z_BASE + 26) {
-    blockOverlayZ.value = OVERLAY_Z_BASE;
-    for (const o of blockOverlays.value) { blockOverlayZ.value += 1; o.z = blockOverlayZ.value; }
-  }
+  if (!item || item.z === topOverlayZ.value) return;
+  item.z = nextLayerZ();
   blockOverlays.value = [...blockOverlays.value];
 }
 
@@ -1770,6 +1824,7 @@ async function openChatFloat() {
   }
   chatFloat.value = true;
   topLayer.value = 'chat';           // 刚浮起来的那块在最上面
+  chatZ.value = nextLayerZ();        // 层级走那条共用序列（否则会比后开的笔记卡低）
   persistFloatOpen(true);
   await nextTick();
   syncPaneWidth();
@@ -1923,10 +1978,11 @@ function applyFloatDom() {
   /* 焦点层：与两张 FloatingCard 同一档（62 = 有焦点 / 60 = 没有，见 topLayer），
      于是浮窗和两张卡不会互相压死，也不去碰 30/31/40 那几档既有层级。 */
   const focused = topLayer.value === 'chat';
-  host.style.zIndex = focused ? '62' : '60';
+  /* 层级来自那条共用序列（点一下就抬一档），不是固定的 62/60 —— 否则笔记卡永远压不上去 */
+  host.style.zIndex = String(chatZ.value);
   /* 两枚角把手也**跟着同一档走**（63 / 61）：写死 63 时，浮窗没焦点（60）而笔记卡有焦点（62），
      浮窗的把手照样压在人家卡片上面（用户口径 2026-11-24 第 1 条：指示器层级不对）。 */
-  const gripZ = focused ? '63' : '61';
+  const gripZ = String(chatZ.value + 1);
   const gbl = gripBlEl.value;
   if (gbl) gbl.style.zIndex = gripZ;
   const gbr = gripBrEl.value;
@@ -3079,6 +3135,7 @@ onMounted(async () => {
   }
   // 上次看的时候开着哪些浮层：笔记卡先摆（数据已就绪），再摆对话浮层
   await restoreNoteCards();
+  restoreBlockOverlays();       // 表格 / 公式 / 图片浮层同样恢复到刷新前那一摞
   await restoreChatFloat();
   fetchTasks();
   taskTimer = setInterval(() => { if (hasRunningTask.value) fetchTasks(); }, 4000);
@@ -5522,6 +5579,8 @@ type NoteCard = {
   confirmBack: boolean;
   /** 点了垃圾桶、等二次确认（同一块卡内弹窗，只是问的是删除） */
   confirmDel: boolean;
+  /** 这张卡现在的层级（与表格/公式浮层共用同一条序列，见 `nextLayerZ`） */
+  z: number;
 };
 const noteCards = reactive<NoteCard[]>([]);
 /** 最上层那张（模板里 `zIndex: card.key === activeNoteKey ? 62 : 60`） */
@@ -5596,7 +5655,7 @@ function prevNoteCardOrigin(): { left: number; top: number } | null {
 function focusNoteCard(key: string) {
   if (!key) return;
   activeNoteKey.value = key;
-  takeTop('note');
+  takeTop('note', key);       // 连层级一起抬：否则刚聚焦的卡可能还在别人下面
 }
 
 /**
@@ -5635,6 +5694,8 @@ function closeNoteCard(key: string) {
 watch(paperId, () => {
   noteCards.splice(0, noteCards.length);
   activeNoteKey.value = '';
+  blockOverlays.value = [];
+  restoreBlockOverlays();       // 换论文：换成那篇自己的那一摞
 });
 
 /* ------------------ 跨标签页 / 刷新记住「哪些笔记卡是开着的」 ------------------
@@ -5774,6 +5835,8 @@ function openNotePopover(opts: {
     hover: opts.hover ?? false,
     confirmBack: false,
     confirmDel: false,
+    /** 新开的这张拿一个新的层级 —— 于是它一定在已有浮层的上面 */
+    z: nextLayerZ(),
   };
   noteCards.push(card);
   /* 必须拿数组里那个响应式代理去置 open：`card` 是普通对象，
@@ -6057,7 +6120,7 @@ function onFloatPress(ev: PointerEvent, which: 'note' | 'chat', key?: string) {
     const card = noteCards.find((c) => c.key === key);
     if (card) { card.anchored = true; card.hover = false; }
   }
-  takeTop(which);
+  takeTop(which, key);
   /* 只在**鼠标**按下时清文档选区：这条是为「拖浮层时正文 / PDF 文字层跟着长出一条选区」设的。
      触摸按进输入框也走这里（button 同样是 0），清一次文档选区会让移动端把输入框的焦点一起
      丢掉 —— 键盘弹不出来（用户口径 2026-11-26）。 */
@@ -7330,7 +7393,7 @@ function renderMarkdown(text?: string | null) {
       zoomable
       data-note-popover
       :data-note-key="card.key"
-      :style="{ zIndex: topLayer === 'note' && card.key === activeNoteKey ? 62 : 60 }"
+      :style="{ zIndex: card.z }"
       :focused="topLayer === 'note' && card.key === activeNoteKey"
       :title-color="noteAccentColor(card)"
       hide-anchor
@@ -7595,7 +7658,8 @@ function renderMarkdown(text?: string | null) {
       :markdown="o.markdown || ''"
       :image-url="o.imageUrl || ''"
       :style="{ zIndex: o.z }"
-      :focused="o.z === blockOverlayZ"
+      :focused="o.z === topOverlayZ"
+      :persist-key="'bo:' + o.key"
       @activate="focusBlockOverlay(o.id)"
       @zoom-image="o.imageUrl && (zoomImage = { url: o.imageUrl, caption: o.title })"
       @close="closeBlockOverlay(o.id)"
