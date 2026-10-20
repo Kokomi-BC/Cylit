@@ -202,9 +202,25 @@ function saveNow() {
 }
 
 /* ------------------------------ 笔记页签 ------------------------------ */
-/* 用户口径 2026-11-21：「缩略显示」那一整套整条删除（开关、状态位、本地记忆、两套渲染）——
-   卡片正文恒定两行（见下面 clamp2 那条），不再有「缩略 / 展开」两套渲染，
-   于是也没有「每条只占一两行」这个待选状态要记。 */
+/* 卡片正文照旧**恒定两行、超出省略**（用户口径 2026-11-21 删掉「缩略显示」开关之后就是这一档，
+   本轮不动它 —— 用户口径：只修"引原文那行只剩一个省略号"这一处）。 */
+/* 「引原文」只剩标点（`...` / `…`）时**整行不画**：那是占位符，不是内容。 */
+const DOT_ONLY = /^[\s.。…·•・,，;；:：\-—_*~?？!！'"“”‘’]+$/;
+
+/**
+ * 引原文**本身就是一块公式**时，不能走"单行省略"那条。
+ *
+ * 为什么：在 PDF / Markdown 里选中一整块公式时，存下来的 `selected_text` 是**LaTeX 源码**，
+ * 实测库里长这样：`$$(\text{inner-prod error}) \quad D_{\text{prod}} := … \tag{2}$$`。
+ * 这种字符串交给 `clamp1`（-webkit-line-clamp: 1）会被裁成一枚「…」——
+ * 用户截图里第一张卡（p3）引原文那行只剩一个引号包着的省略号，就是这么来的。
+ * 现在与占位符原文（`quoteMd`）走**同一条路**：按块渲染、由 `.quote-md` 限高
+ * （够看清是哪个式子，又不把笔记正文挤出卡片）。
+ */
+const MATH_ONLY = /^\s*\$\$[\s\S]*\$\$\s*$|^\s*\$(?!\$)[^$\n]*\$\s*$/;
+const quoteIsBlock = (r: FeedRow) => !!r.quoteMd || MATH_ONLY.test(r.quote || '');
+const quoteBlockHtml = (r: FeedRow) => mdToHtml(r.quoteMd || r.quote);
+const hasQuote = (r: FeedRow) => !!r.quote && !DOT_ONLY.test(r.quote);
 
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
 const editKey = ref('');
@@ -470,23 +486,20 @@ function onMore(key: string, r: FeedRow) {
       >
         <!-- 页码（用户口径 2026-11-21：正文行胶囊去掉，页码按正文的样式放到**顶部**） -->
         <div v-if="r.page" class="card-top small faint" data-note-page>p{{ r.page }}</div>
-        <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式）。
-             用户口径 2026-11-20：这行**字号再小一档**，并**恒为单行省略** —— 它只是「按的是哪一段」的索引，
-             两行以上的引用会把卡片撑高、把正文挤到看不见。 -->
+        <!-- 高亮原文：也是文档里的原文，同样按 Markdown 渲染（含公式）。两种走法：
+             ① 纯文字 —— **恒为单行省略**（用户口径 2026-11-20：它只是"按的是哪一段"的索引，
+                两行以上的引用会把卡片撑高、把正文挤到看不见）；
+             ② **本身就是一块公式** —— 按块渲染、由 .quote-md 限高（见 quoteIsBlock 的说明）。 -->
         <div
-          v-if="r.quote"
-          class="small faint md quote clamp1"
-          v-html="mdToHtml(`“${r.quote}”`)"
-        />
-        <!-- 原文是占位符（PDF 里选中公式 / 图片块）：那一行**本身就是公式**，按块渲染。
-             不进 clamp1 —— 单行省略会把 $$…$$ 裁成半截；上一版还试过把它降成行内，
-             KaTeX 直接报"源 LaTeX 不完整"（用户截图里那行红字）。
-             限高交给 .quote-md：够看清是哪个式子，又不把笔记正文挤出卡片。 -->
-        <div
-          v-else-if="r.quoteMd"
+          v-if="quoteIsBlock(r)"
           class="small faint md quote-md"
           data-quote-md
-          v-html="mdToHtml(r.quoteMd)"
+          v-html="quoteBlockHtml(r)"
+        />
+        <div
+          v-else-if="hasQuote(r)"
+          class="small faint md quote clamp1"
+          v-html="mdToHtml(`“${r.quote}”`)"
         />
         <template v-if="editKey === r.key">
           <textarea
