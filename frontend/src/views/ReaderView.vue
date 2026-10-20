@@ -8336,26 +8336,28 @@ function renderMarkdown(text?: string | null) {
 /* 按住 / 正在拖：弹性**沿竖线两端**弹（用户口径 2026-11-26 追加），不是往左右变粗。
  * 用 scaleY 而不是 height：`transform-origin` 默认就在中心，两端会**对称地**往外弹开；
  * 写 height 得自己补 margin-top，还要顺带触发一次布局。
- * 关键是**只弹开、不回缩**：动画 100% 停在放大态，`both` 把它保持住 —— 回缩交给松手后的
- * `.settling`（见下一条），按住期间就一直张着（用户口径 2026-11-26：「仅在松开时再回缩」）。 */
+ * 口径（本轮）：**按下就一直停在最长那一档，只有松手才回缩**。
+ * 所以打开动画 100% 停在 1.5 且 `both` 把它保持住 —— 按住多久都张着；
+ * 回缩交给松手后 `.settling` 的 `aside-grip-close`（起点同为 1.5，接得上、不会先跳一下）。
+ * `.active` 绑的是 `asideResizing`（不是 `:active`）：拖到把手外面时手指/鼠标已不在元素上，
+ * 但拖动还在继续，这一档必须仍然亮着。 */
 .reader > .aside-resizer:active::after,
 .reader > .aside-resizer.active::after {
   background: var(--accent);
-  animation: aside-grip-open 360ms cubic-bezier(.22, 1.2, .36, 1) both;
+  animation: aside-grip-open 260ms cubic-bezier(.22, 1.2, .36, 1) both;
 }
 @keyframes aside-grip-open {
   0% { transform: scaleY(1); }
-  55% { transform: scaleY(1.55); }
-  100% { transform: scaleY(1.18); }
+  100% { transform: scaleY(1.5); }
 }
-/* 松手：才回缩，且回缩时轻轻过冲一下（1.18 → 0.92 → 1），与弹开同一条手感。
+/* 松手：才回缩，且回缩时轻轻过冲一下（1.5 → 0.92 → 1），与弹开同一条手感。
    这一枚类由 JS 挂 320ms（= 动画时长），不是 :active 的副产品。 */
 .reader > .aside-resizer.settling::after {
   background: var(--accent);
   animation: aside-grip-close 300ms cubic-bezier(.22, 1.2, .36, 1) both;
 }
 @keyframes aside-grip-close {
-  0% { transform: scaleY(1.18); }
+  0% { transform: scaleY(1.5); }
   38% { transform: scaleY(0.92); }
   100% { transform: scaleY(1); }
 }
