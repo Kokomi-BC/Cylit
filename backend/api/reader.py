@@ -114,6 +114,16 @@ async def paper_formulas(paper_id: str, request: Request,
     return envelope(reader_service.formulas_payload(paper_id, source), request=request)
 
 
+@router.get("/papers/{paper_id}/tables")
+async def paper_tables(paper_id: str, request: Request):
+    """表格列表：从**页级译文的 Markdown** 里抽（只读，不复核）。
+
+    含表格说明（中文译文优先）与行/列数；未翻译的页不出条目 —— 解析产物里的 table 块
+    只是按坐标拼起来的纯文本，画不成表（口径见 `reader_service.markdown_tables`）。
+    """
+    return envelope(reader_service.tables_payload(paper_id), request=request)
+
+
 @router.get("/papers/{paper_id}/figures")
 async def paper_figures(paper_id: str, request: Request):
     """插图列表（含体检状态）。"""

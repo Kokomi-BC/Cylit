@@ -237,6 +237,34 @@ export interface MarkdownFormula {
   crop_url?: string | null;
 }
 
+/**
+ * 表格条目：从**页级产物**的行里抽出来的 Markdown 表（只读）。
+ *
+ * 与公式不同，**没有解析产物兜底**：解析那边的 table 块是按坐标拼的纯文本
+ * （一张表的格子被连成一行），画不成表。所以未翻译的页不出条目。
+ */
+export interface MarkdownTable {
+  id: string;
+  page: number;
+  /** 表格所在行的行 id（定位用） */
+  row_id: string | null;
+  /** 论文里这张表的编号（`表 1` 里的那个 `1`；说明里没写编号时是空串） */
+  number: string;
+  /** 表格说明：中文译文优先（没有译文才退回原文） */
+  caption: string;
+  /** 说明的原文（鼠标停一下对照用） */
+  caption_original: string;
+  /** 表格本体：GFM Markdown 表（`| a | b |` + 分隔行），译文是逐格翻过的中文表 */
+  markdown: string;
+  /** 表体行数（不含表头与分隔行） */
+  rows: number;
+  /** 列数 */
+  cols: number;
+  /** `translation` = 中文表；`original` = 这一页还没有译文，按原文显示 */
+  source: 'translation' | 'original' | string;
+  model?: string | null;
+}
+
 export type MarkdownViewMode = 'bilingual' | 'original' | 'translation';
 
 export interface ReadingProgress {

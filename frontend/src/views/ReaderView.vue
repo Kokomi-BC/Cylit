@@ -19,7 +19,7 @@ import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import type {
   AgentSelection, Annotation, Block, BriefPayload, FigureItem, GlossaryTerm,
-  Highlight, MarkdownFormula, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
+  Highlight, MarkdownFormula, MarkdownTable, MarkdownViewMode, Note, OriginalMode, Outline, PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, PaperReference, ReaderPayload, ReaderStats, TaskInfo,
   TranslatedMarkdownPage, ViewMode, ZoomTarget,
 } from '@/api/types';
@@ -105,6 +105,9 @@ const formulasLoading = ref(false);
 /** 这批公式的来源：`markdown`（译文）/ `parse`（解析产物，还没翻译）/ `mixed`（半翻译，按页兜底）。
  *  只用来把页签标题写准 —— 用户要能一眼看出"这些公式是从译文来的还是从解析产物来的"。 */
 const formulasSource = ref<'markdown' | 'parse' | 'mixed' | string>('markdown');
+/** 表格（与公式同源：页级产物）；**没有解析产物兜底** —— 解析那边的 table 块是坐标拼的纯文本 */
+const tables = ref<MarkdownTable[]>([]);
+const tablesLoading = ref(false);
 const figures = ref<FigureItem[]>([]);
 const brief = ref<BriefPayload | null>(null);
 const glossary = ref<GlossaryTerm[]>([]);
@@ -725,7 +728,8 @@ const railTab = ref<RailTabKey>('toc');
  *  只存本次会话：它是"这一眼怎么看"，不是论文的属性，没必要进 localStorage 或服务端进度。 */
 const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
-  'toc', 'chat', 'insight', 'search', 'references', 'notes', 'formulas', 'figures', 'terms', 'tasks',
+  'toc', 'chat', 'insight', 'search', 'references', 'notes', 'formulas', 'tables', 'figures', 'terms',
+  'tasks',
 ];
 /* 切页签只做"进这个页签才需要的事"（例如参考文献首次拉取）；**不再改侧栏宽度**（见上一条注释）。 */
 watch(railTab, (k) => {
@@ -797,6 +801,13 @@ const SIDE_TABS = computed<Array<{
         ? '公式（已翻译的页取译文，未翻译的页按原文兜底）'
         : '公式（从译文提取，只读）',
     count: formulas.value.length,
+  },
+  {
+    /* 用户口径：表格页签**紧挨公式**（两个都是"从正文里抽出来的独立对象"，相邻才好扫）。
+       页签位置只放得下两个汉字，所以标签写「表格」、完整口径放在 title 里。 */
+    k: 'tables', icon: 'table', label: '表格',
+    title: '表格（从译文提取：中文表格 + 中文表格说明；点定位回到正文那张表）',
+    count: tables.value.length || undefined,
   },
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
@@ -1407,6 +1418,22 @@ async function loadSide() {
     console.warn('侧栏数据加载失败', err);
   }
   void loadFormulas();
+  void loadTables();
+}
+
+/** 表格：从页级译文的 Markdown 里抽（口径见后端 `reader_service.markdown_tables`） */
+async function loadTables() {
+  tablesLoading.value = true;
+  try {
+    const d = await api.get<{ items: MarkdownTable[] }>(
+      `/papers/${paperId.value}/tables`);
+    tables.value = d.items ?? [];
+  } catch (err) {
+    console.warn('表格提取失败', err);
+    tables.value = [];
+  } finally {
+    tablesLoading.value = false;
+  }
 }
 
 /** 公式：**译文优先、未翻译的页用原文兜底**（口径见后端 `reader_service.markdown_formulas`） */
@@ -6957,6 +6984,8 @@ function renderMarkdown(text?: string | null) {
           :references="paperReferences"
           :formulas="formulas"
           :formulas-loading="formulasLoading"
+          :tables="tables"
+          :tables-loading="tablesLoading"
           :figures="figures"
           :glossary="glossary"
           :brief-draft="briefDraft"

@@ -17,7 +17,7 @@ import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
 import { highlightCss } from '@/utils/highlightColors';
 import type {
-  Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, Note, PaperReference,
+  Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, MarkdownTable, Note, PaperReference,
   TaskInfo, ZoomTarget,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
@@ -26,6 +26,7 @@ import ProgressBar from '@/components/ProgressBar.vue';
 import InsightPanel from '@/components/insight/InsightPanel.vue';
 import ReferenceList from './ReferenceList.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
+import ReaderTableList from './ReaderTableList.vue';
 
 /** 简报草稿：`reactive` 对象由父组件持有，这里直接双向使用（不复制，避免两份状态）。 */
 export interface BriefDraft {
@@ -43,7 +44,7 @@ export interface BriefDraft {
  * 图标也对调过一次（用户口径）：**笔记用 `note`（文稿）、引用文献用 `library`（书架）** ——
  * 都是现成的 svg，跟我自己画的那枚"高亮笔"不同，跟全站同一套描边风格。
  */
-export type SideTab = 'notes' | 'references' | 'formulas' | 'figures' | 'terms' | 'tasks' | 'insight';
+export type SideTab = 'notes' | 'references' | 'formulas' | 'tables' | 'figures' | 'terms' | 'tasks' | 'insight';
 
 /** 笔记页签里「保存」要交给父组件的东西（新建还是更新由 `noteId` 决定）。 */
 export interface NoteDraftPayload {
@@ -64,6 +65,9 @@ const props = withDefaults(defineProps<{
   references?: PaperReference[];
   formulas: MarkdownFormula[];
   formulasLoading?: boolean;
+  /** 「表格」页签：从页级译文抽出来的 Markdown 表（含中文表格说明） */
+  tables?: MarkdownTable[];
+  tablesLoading?: boolean;
   figures: FigureItem[];
   glossary: GlossaryTerm[];
   briefDraft: BriefDraft;
@@ -75,7 +79,10 @@ const props = withDefaults(defineProps<{
   paperId: string;
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
-}>(), { formulasLoading: false, briefSource: '', references: () => [] });
+}>(), {
+  formulasLoading: false, briefSource: '', references: () => [],
+  tables: () => [], tablesLoading: false,
+});
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
@@ -571,6 +578,17 @@ function onMore(key: string, r: FeedRow) {
       <ReaderFormulaList
         :items="props.formulas"
         :loading="props.formulasLoading"
+        @focus="(id: string, page?: number) => emit('focus', id, page)"
+        @copy="emit('copy', $event)"
+      />
+    </template>
+
+    <!-- 表格（从页级译文提取，只读）：页签排在「公式」右边 —— 两者都是"从正文里抽出来的
+         独立对象"，一组相邻的页签扫起来才顺（用户口径：图标放在公式栏侧）。 -->
+    <template v-if="props.tab === 'tables'">
+      <ReaderTableList
+        :items="props.tables ?? []"
+        :loading="props.tablesLoading"
         @focus="(id: string, page?: number) => emit('focus', id, page)"
         @copy="emit('copy', $event)"
       />

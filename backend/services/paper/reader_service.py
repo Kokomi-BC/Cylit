@@ -937,6 +937,139 @@ def _parse_formulas(paper_id: str) -> list[Formula]:
                 .order_by(Formula.page_number.asc()).all())
 
 
+# --------------------------------------------------------------------------
+# 表格列表（从页级产物里抽 Markdown 表；说明取中文译文那行图注）
+# --------------------------------------------------------------------------
+
+#: Markdown 表的**分隔行**（`|---|:--:|---|`）：有它才算一张表，光有竖线不算
+#: （行内公式 `|x|`、矩阵、切分符都带竖线，不能拿竖线当判据）。
+_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$", re.M)
+#: 表格说明的开头：`表 1：…` / `Table 2. …`（中英文都认，编号可有可无）
+_TABLE_CAP = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(?:表|Table)\s*([0-9]{1,3}[a-zA-Z]?|[IVXivx]{1,5})\s*[:：.、]?", re.I)
+
+
+def _as_table(text: str) -> str:
+    """这一行的文本是不是一张 Markdown 表：是就返回去掉首尾空白的它，不是返回空串。"""
+    s = (text or "").strip()
+    if not s or "|" not in s or not _TABLE_SEP.search(s):
+        return ""
+    return s
+
+
+def _table_shape(md: str) -> tuple[int, int]:
+    """`(表体行数, 列数)`：行数不含表头与分隔行，列数按表头那行的单元格数。"""
+    lines = [ln for ln in md.splitlines() if "|" in ln and not _TABLE_SEP.match(ln)]
+    if not lines:
+        return 0, 0
+    return max(0, len(lines) - 1), max(1, len(lines[0].strip().strip("|").split("|")))
+
+
+#: 图注开头：`图 1` / `Figure 2`（给 `type=caption` 兜底时用来**排除**图注）
+_FIG_CAP = re.compile(r"^\s*(?:\*\*|__)?\s*(?:图|Figure|Fig\.?)\s*[0-9]", re.I)
+
+
+def _table_captions(rows: list[dict]) -> dict[int, tuple[str, str, str]]:
+    """把这一页的表和它们的说明配起来：`{表所在行下标: (中文说明, 原文说明, 表号)}`。
+
+    配对是**贪心最近、每条说明只用一次**。为什么不是"±1 优先"硬取：论文里「表 N：…」
+    **既可能排在表上方、也可能排在下方**（实测 attention 那篇 p9 就是表 3 在上、
+    表 4 在下，两条紧挨），只看相邻那行会把两条说明取成同一条（四张表全叫「表 4」）。
+    同距离时取上方那条：正文里表题在表上方的写法更常见。
+
+    判据两层：先认文本以 `表 N` / `Table N` 开头的行；一条都没配上才退到 `type=caption`
+    （并排除 `图 N` / `Figure N` 那种图注 —— 图注紧挨着表时会被误抢）。
+    中文那半来自 `translation`（用户口径：表格说明要中文），没有译文才退回原文。
+    """
+    strong: list[tuple[int, str, str, str]] = []
+    weak: list[tuple[int, str, str, str]] = []
+    for i, row in enumerate(rows):
+        zh = (row.get("translation") or "").strip()
+        en = (row.get("original") or "").strip()
+        m = _TABLE_CAP.match(zh) or _TABLE_CAP.match(en)
+        if m:
+            strong.append((i, zh or en, en, m.group(1)))
+        elif row.get("type") == "caption" and not _FIG_CAP.match(zh or en):
+            weak.append((i, zh or en, en, ""))
+    tables = [i for i, row in enumerate(rows)
+              if _as_table(row.get("translation") or "") or _as_table(row.get("original") or "")]
+    used: set[int] = set()
+    out: dict[int, tuple[str, str, str]] = {}
+    for i in tables:
+        pick = _nearest_caption(i, strong, used) or _nearest_caption(i, weak, used)
+        if pick is None:
+            continue
+        used.add(pick[0])
+        out[i] = (pick[1], pick[2], pick[3])
+    return out
+
+
+def _nearest_caption(i: int, cands: list[tuple[int, str, str, str]],
+                     used: set[int]) -> tuple[int, str, str, str] | None:
+    """离第 `i` 行最近、还没被占用的那条说明（最远跨两行；同距离取上方）。"""
+    best: tuple[tuple[int, int], tuple[int, str, str, str]] | None = None
+    for c in cands:
+        if c[0] in used:
+            continue
+        dist = abs(c[0] - i)
+        if dist > 2:
+            continue
+        key = (dist, 0 if c[0] < i else 1)
+        if best is None or key < best[0]:
+            best = (key, c)
+    return best[1] if best else None
+
+
+def markdown_tables(paper_id: str) -> dict:
+    """表格列表：从**页级产物**的行里抽 Markdown 表（只读，不做复核）。
+
+    为什么只认页级产物：那里表格才是真的 Markdown 表（`| … |` + 分隔行）。
+    解析产物里的 table 块是**按坐标拼出来的纯文本**（实测一整张表的格子被连成一行，
+    `KV SizeSingleQAMultiQA…`），拿它画表只会画出一团乱码 —— 所以**未翻译的页不出条目**，
+    空状态由前端说明白（"要先翻译那几页"），不在这里编一条假的。
+
+    译文优先：同一行的 `translation` 是中文表就取它（模型逐格翻译），否则退回 `original`。
+    """
+    products = page_translations(paper_id)
+    items: list[dict] = []
+    for payload in products:
+        page = int(payload["page"])
+        rows = payload.get("rows") or []
+        captions = _table_captions(rows)
+        for i, row in enumerate(rows):
+            body = _as_table(row.get("translation") or "")
+            source = "translation"
+            if not body:
+                body = _as_table(row.get("original") or "")
+                source = "original"
+            if not body:
+                continue
+            caption, caption_original, number = captions.get(i, ("", "", ""))
+            row_count, col_count = _table_shape(body)
+            items.append({
+                "id": f"t{page:03d}-{len(items):04d}",
+                "page": page,
+                "row_id": row.get("id"),
+                "number": number,
+                "caption": caption,
+                "caption_original": caption_original,
+                "markdown": body,
+                "rows": row_count,
+                "cols": col_count,
+                "source": source,
+                "model": payload.get("model"),
+            })
+    items.sort(key=lambda it: (it["page"], it.get("row_id") or ""))
+    return {"items": items, "count": len(items),
+            "translated": sum(1 for it in items if it["source"] == "translation"),
+            "pages": len(products)}
+
+
+def tables_payload(paper_id: str) -> dict:
+    """表格列表（`GET /papers/{id}/tables`；口径见 `markdown_tables`）。"""
+    return markdown_tables(paper_id)
+
+
 def _pages_payload(paper_id: str, pages: list[dict] | None = None) -> list[dict]:
     """每页的版面信息 + 翻译状态 + 该页插图（**按图注锚定的裁图**，图注驱动）。
 
