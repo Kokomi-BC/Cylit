@@ -3842,11 +3842,12 @@ function onDocPointerDown(ev: PointerEvent) {
   if (target?.closest?.('[data-selection-menu], [data-ctx-menu]')) return;
   // 拖两端手柄：不是"点了别处"，别把菜单/选区/手柄一起收掉（那会把拖拽当场打断）
   if (target?.closest?.('.sel-handle')) return;
-  /* 单击（触摸或鼠标）**任何别处** = 取消这次选取：选区、两枚手柄、划词胶囊一起收。
-     以前触摸只能靠「连点两下」取消 —— 用户得记住这个手势，而且单击别处时手柄还赖在原地
-     （用户口径 2026-11-26 第三轮：单击其他地方移除手柄选区）。
-     滚动不算单击（`onContentTouchEnd` 里按位移判定），所以想滚页面不会把选区弄丢。 */
-  if (touchSelActive.value) clearTouchSelection();
+  /* 单击别处 = 取消这次选取（用户口径 2026-11-26 第三轮）。
+     ⚠️ 这里**只管鼠标**：触摸的 pointerdown 在"只是想滚一下页面"时也会先来一发，
+        在这儿清就等于「滚一下就丢选区」（用户口径本轮：触摸滚动不影响选区）。
+        触摸的「点别处取消」改由 onContentTouchEnd 的点击判定做 —— 那里知道这一下
+        到底有没有位移，滚动不算点。 */
+  if (touchSelActive.value && ev.pointerType === 'mouse') clearTouchSelection();
   /* 点进输入框（对话 / 笔记 / 搜索…）：**先把正文的选区与两枚手柄收掉再让焦点落下**。
      手柄是 44px 的抓取区、层级 330，压在输入框旁边时手指一点就落到它身上，focus 直接被吃掉；
      收掉之后这一次点击就能正常聚焦、键盘也弹得出来（用户口径 2026-11-26 第二轮）。 */
@@ -4685,6 +4686,12 @@ function onContentTouchEnd(ev: TouchEvent): void {
         clearTouchSelection();
       } else {
         lastTapPos = { x: endTouch.clientX, y: endTouch.clientY, at: Date.now() };
+        /* 单击（位移小 = 不是滚动）落在**别处** = 取消这次触摸选取（用户口径 2026-11-26）。
+           触发点放在抬手这一下，而不是 pointerdown：那一发在滚动开始时也会来，
+           在那儿清会把「想滚一下」当成「点了别处」。 */
+        const t = endTouch.target as HTMLElement | null;
+        const keep = t?.closest?.('.sel-handle, [data-selection-menu], [data-ctx-menu], .reader-aside, .chat-host, [data-float-card], input, textarea, [contenteditable="true"]');
+        if (touchSelActive.value && !keep) clearTouchSelection();
       }
     } else {
       lastTapPos = null;          // 滚动/长按：双击计数清零
@@ -7876,12 +7883,12 @@ function renderMarkdown(text?: string | null) {
   touch-action: none; cursor: grab;
 }
 .sel-handle:active { cursor: grabbing; }
-/* 圆点：略放大到 16px，白圈收薄到 2.5px，再加一档柔投影 —— 压在文字上既分得开又不糊 */
+/* 圆点：**12px**（用户口径：手柄的圆小一点）、白圈 2px + 一档柔投影 —— 压在文字上既分得开又不糊 */
 .sel-handle i {
   position: relative; z-index: 1;
-  display: block; width: 16px; height: 16px; border-radius: 999px;
+  display: block; width: 12px; height: 12px; border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 2.5px var(--bg-elev), 0 1px 4px rgba(0, 0, 0, .22);
+  box-shadow: 0 0 0 2px var(--bg-elev), 0 1px 4px rgba(0, 0, 0, .22);
   transition: transform .12s var(--ease);
 }
 /* 按住时圆点轻轻放大一格：给手指一点"拿到了"的反馈 */
@@ -7894,13 +7901,15 @@ function renderMarkdown(text?: string | null) {
    用户口径 2026-10-18"手柄样式优化一下"。 */
 .sel-handle::after {
   content: ''; position: absolute; left: 50%; transform: translateX(-50%); z-index: 0;
-  width: 3px; height: 20px; border-radius: 999px;
+  /* 直线**加长**到 26px（用户口径：底部直线长一点）：起点仍在圆心（44px 热区的中心 = 22），
+     所以露在圆点外面的那一段从 6px 变成 9px，指得准是哪一头。 */
+  width: 3px; height: 26px; border-radius: 999px;
   background: var(--accent);
 }
 /* 起点手柄：圆点在上、尾巴往下（指向文字那一行）；终点手柄镜像。
    两头对称：都被圆点的白圈盖住中段，露出约 10px。 */
-.sel-handle.start::after { top: 20px; }
-.sel-handle.end::after { top: 4px; }
+.sel-handle.start::after { top: 22px; }
+.sel-handle.end::after { bottom: 22px; }
 
 /* 触摸长按不再弹系统 callout（iOS）：我们自己在 onContentTouchStart 里接管成右键菜单。
    ⚠️ 只关 callout，**不关选择**：划词、高亮、复制都还要用原生选区。 */

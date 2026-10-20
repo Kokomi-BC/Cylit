@@ -217,7 +217,8 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
            滚远了回收，所以 46 页也不会吃内存（见 InkSurface 的 ensureSize）。 -->
       <InkSurface :page="g.page" :enabled="props.inkOn" />
       <header class="pg-head">
-        <span class="pg-no">第 {{ g.page }} 页</span>
+        <!-- 对照模式下页码挪到 **PDF 那一列**（居中、不可选中），这里就不再重复一遍 -->
+        <span v-if="!pageLeft" class="pg-no">第 {{ g.page }} 页</span>
         <!-- 「x/y 行」徽章**已按用户要求删除**：原文行数与译文行数本来就不必相同
              （跨页承接句、列表合并都会差一行），写出来只会让人以为少了内容。 -->
         <span class="spacer" />        <button
@@ -253,6 +254,8 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
         :class="enLeft ? 'image-left' : 'image-right'"
       >
         <div class="col-image">
+          <!-- PDF 侧自己的页码：**在本列居中**、**不可选中**（划词时不该把「第 3 页」选进去） -->
+          <div class="pdf-no" data-pdf-no>第 {{ g.page }} 页</div>
           <div class="media-box" :style="{ width: `${props.pageWidth}px` }">
             <PdfPage
               v-if="useRealPdf(g)"
@@ -379,7 +382,11 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   padding: 6px 2px 0;
   font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
-.pg-no { font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.pg-no {
+  font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums;
+  /* 页码不是内容：别被划进选区（用户口径） */
+  user-select: none; -webkit-user-select: none;
+}
 
 /* 正文内容**顶部留一点白**（用户口径）：左边是论文页图，页图里自带纸面页边距，
  * 右边如果贴着页头就开始，两栏顶部一高一低看着突兀；给**右侧 markdown** 下移一点点就顺眼了。
@@ -515,7 +522,21 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
    所以 `top` 不需要给工具栏留位：原来写 34px → 页图顶部白空多出 34px（用户报过）。
    这里贴顶 2px，只留一丝缝。 */
 .pg-pair .col-image .media-box { position: sticky; top: 2px; }
+/* 分割线：**永远画在「文字列挨着 PDF 列」的那一条边上** ——
+   以前只有 `border-left`，页图在右（`.image-right`）时那条线就跑到整页最左缘去了，
+   PDF 与译文之间反而是空的（用户口径：PDF 侧要有一条分割线）。 */
 .pg-pair .col-rows { min-width: 0; border-left: 1px solid var(--divider); padding-left: 20px; }
+.pg-pair.image-right .col-rows {
+  border-left: 0; border-right: 1px solid var(--divider);
+  padding-left: 0; padding-right: 20px;
+}
+/* PDF 侧那行页码：**在本列居中**、**不可选中**（划词时不该把「第 3 页」选进去） */
+.pdf-no {
+  text-align: center; padding: 0 0 6px;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  user-select: none; -webkit-user-select: none;
+}
 
 .pg-image-only { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0 4px; }
 .media-box { max-width: 100%; margin: 0 auto; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
@@ -541,7 +562,8 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
     border-left: 0; border-top: 0;
     padding-left: 0; margin-top: 8px; padding-top: 0;
   }
-  .pg-pair .col-rows { border-left: 0; padding-left: 0; }
+  .pg-pair .col-rows,
+  .pg-pair.image-right .col-rows { border-left: 0; border-right: 0; padding-left: 0; padding-right: 0; }
   .pg-pair .col-image .media-box { position: static; }
 }
 </style>
