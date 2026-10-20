@@ -395,10 +395,39 @@ function clampToViewport(p: { left: number; top: number }): { left: number; top:
 
 watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as const,
   () => { void place(); }, { immediate: true });
+
+/** 内容尺寸变了（切换查看/编辑、流式回答变长）也要重新夹一次 */
+let ro: ResizeObserver | null = null;
+watch(el, (node) => {
+  ro?.disconnect();
+  if (node && typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => { void place(); });
+    ro.observe(node);
+  }
+});
+onBeforeUnmount(() => {
+  ro?.disconnect();
+  releaseFloatSelection();
+  document.removeEventListener('pointerdown', onMoreDocDown, true);
+  document.removeEventListener('keydown', onMoreKey, true);
+  if (bodySaveTimer) { window.clearTimeout(bodySaveTimer); bodySaveTimer = 0; }
+});
+
+/* -------------------------------- 右下角拖动放大 -------------------------------- */
+/** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
+ *  手柄**卡片一打开就给**（用户口径 2026-10-13 改了 2026-10-10 那条）：笔记卡默认不锚定，
+ *  只在锚定态给手柄 = 默认看不见把手。拉一下大小本身就置 dragged（见 onResizeDown），
+ *  所以不锚定也不会被 place() 弹回去。 */
+const sizeW = ref<number | null>(null);
+const sizeH = ref<number | null>(null);
+
 /* ⚠️ immediate 不能省：**刷新后恢复的浮层是"创建即打开"**（`BlockOverlay` 写死 :open="true"），
    非 immediate 的 watcher 对它们一次都不会跑 —— 记录里的坐标读不出来，pos 停在初始的 0,0，
    表现就是「刷新之后表格 / 公式 / 图片浮层全挤在左上角」（用户口径 2026-12-02）。
-   open 为 false 时下面第一句就 return，挂 immediate 对其它卡片没有任何副作用。 */
+   open 为 false 时下面第一句就 return，挂 immediate 对其它卡片没有任何副作用。
+   ⚠️ 位置也不能挪到 `sizeW/sizeH` 声明之前：immediate 让它在 setup 里**当场**跑，
+   而它第一句就写这两个 ref —— 放前面就是 TDZ（Cannot access 'sizeW' before initialization，
+   用户报的那条「界面异常」），整张卡的恢复逻辑一起废掉（用户口径 2026-12-02 二轮）。 */
 watch(() => props.open, (v) => {
   if (!v) { closeMore(); return; }
   /* 尺寸也按卡记忆：上次拉大过的框，再打开还是那么大；没记录才回到调用方给的默认宽高。
@@ -446,30 +475,6 @@ watch(() => props.open, (v) => {
   void place();
 }, { immediate: true });
 
-/** 内容尺寸变了（切换查看/编辑、流式回答变长）也要重新夹一次 */
-let ro: ResizeObserver | null = null;
-watch(el, (node) => {
-  ro?.disconnect();
-  if (node && typeof ResizeObserver !== 'undefined') {
-    ro = new ResizeObserver(() => { void place(); });
-    ro.observe(node);
-  }
-});
-onBeforeUnmount(() => {
-  ro?.disconnect();
-  releaseFloatSelection();
-  document.removeEventListener('pointerdown', onMoreDocDown, true);
-  document.removeEventListener('keydown', onMoreKey, true);
-  if (bodySaveTimer) { window.clearTimeout(bodySaveTimer); bodySaveTimer = 0; }
-});
-
-/* -------------------------------- 右下角拖动放大 -------------------------------- */
-/** 用户拉过大小后就不再每次打开都用默认尺寸（下次打开复位）。
- *  手柄**卡片一打开就给**（用户口径 2026-10-13 改了 2026-10-10 那条）：笔记卡默认不锚定，
- *  只在锚定态给手柄 = 默认看不见把手。拉一下大小本身就置 dragged（见 onResizeDown），
- *  所以不锚定也不会被 place() 弹回去。 */
-const sizeW = ref<number | null>(null);
-const sizeH = ref<number | null>(null);
 const rs = reactive({ on: false, corner: 'br' as 'br' | 'bl', sx: 0, sy: 0, sw: 0, sh: 0, sl: 0, st: 0, vw: 0, vh: 0 });
 /** 手势期间的尺寸（普通对象，与 `live` 同一手法）：每帧只写 DOM */
 const rlive = { w: 0, h: 0, left: 0 };
