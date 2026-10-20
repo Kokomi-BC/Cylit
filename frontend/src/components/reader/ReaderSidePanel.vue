@@ -9,7 +9,7 @@
  * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
  * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
-import { computed, nextTick, ref, watch, type CSSProperties } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
@@ -222,6 +222,56 @@ const quoteIsBlock = (r: FeedRow) => !!r.quoteMd || MATH_ONLY.test(r.quote || ''
 const quoteBlockHtml = (r: FeedRow) => mdToHtml(r.quoteMd || r.quote);
 const hasQuote = (r: FeedRow) => !!r.quote && !DOT_ONLY.test(r.quote);
 
+/**
+ * 块公式按栏宽**缩到放得下**（用户口径：宽公式不许被裁成一截，也别把一条灰滚动条横在式子下面）。
+ *
+ * 为什么用 font-size 而不是 `transform: scale`：本仓口径是正文一律不用 `zoom` / `transform: scale`
+ * （缩放文字会发糊）；KaTeX 的字形宽度随 font-size **线性**变化，量一次比例就够 ——
+ * 先归零、量自然宽度，再按比例写回去。
+ * 最窄只缩到 60%（再小就看不清了）；缩到地板还放不下的，交给 `.quote-md` 的横向滚动（滚动条已隐藏）。
+ * 侧栏可以拖宽，所以除了"换笔记 / 换页签"还要跟一次 `ResizeObserver`。
+ */
+const MIN_FIT = 0.6;
+const panelBodyEl = ref<HTMLElement | null>(null);
+function fitQuoteMath() {
+  const host = panelBodyEl.value;
+  if (!host) return;
+  /* 量的是**滚动容器自己的** scrollWidth —— 这里的滚动容器是 `.katex-display`：
+     base.css 有一条第 685 行 `.md .katex-display { overflow-x: auto }`（正文里给宽公式兜底用的），
+     所以溢出发生在它身上、滚动条也画在它身上（用户截图里公式下面那条灰条就是它）。
+     量 `.katex` 或 `.quote-md` 都量不到（前者的宽=容器宽，后者根本不滚动）—— 上一版就是这么漏的。 */
+  host.querySelectorAll<HTMLElement>('[data-quote-md] .katex-display').forEach((disp) => {
+    disp.style.fontSize = '';                   // 先回到 CSS 那一档，量出来的才是自然宽度
+    const avail = disp.clientWidth;
+    const need = disp.scrollWidth;
+    if (!avail || need <= avail + 1) return;
+    /* 收缩写成 **em**（不是 px）：设置页调「显示大小」时 `--ts` 一变，这里跟着一起缩放，
+       不会把这一块钉死成某个像素值。 */
+    const ratio = Math.max(MIN_FIT, (avail / need) * 0.99);
+    const next = ratio.toFixed(3) + 'em';
+    if (disp.style.fontSize !== next) disp.style.fontSize = next;   // 同值不重写：免得 RO 自己逗自己
+  });
+}
+let fitRaf = 0;
+/** 一帧内多次触发只量一次（换页签 / 拖宽 / 笔记列表变化都会来） */
+function scheduleFitQuoteMath() {
+  cancelAnimationFrame(fitRaf);
+  fitRaf = requestAnimationFrame(fitQuoteMath);
+}
+let panelRo: ResizeObserver | null = null;
+onMounted(() => {
+  const host = panelBodyEl.value;
+  if (!host || typeof ResizeObserver === 'undefined') return;
+  panelRo = new ResizeObserver(scheduleFitQuoteMath);
+  panelRo.observe(host);
+});
+onBeforeUnmount(() => {
+  panelRo?.disconnect();
+  panelRo = null;
+  cancelAnimationFrame(fitRaf);
+});
+
+
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
 const editKey = ref('');
 const draft = ref('');
@@ -314,6 +364,9 @@ const merged = computed<FeedRow[]>(() => {
   return order.value === 'doc' ? [...rows].sort(docOrder) : rows;
 });
 
+/** 列表一变（换页签 / 改排序 / 新增或删掉笔记）就重新量一次块公式的宽度 */
+watch([() => props.tab, merged], () => { void nextTick(scheduleFitQuoteMath); });
+
 /** 删掉一条：批注删批注、有高亮的删整组高亮（它的笔记由后端级联带走）、其余删笔记。 */
 function removeRow(r: FeedRow) {
   if (r.kind === 'annotation') { emit('delete-annotation', r.annotation?.id ?? r.key.slice(2)); return; }
@@ -404,7 +457,7 @@ function onMore(key: string, r: FeedRow) {
 </script>
 
 <template>
-  <div class="panel-body">
+  <div ref="panelBodyEl" class="panel-body">
     <!-- 论文解读：顶部只有「标题 + 一枚只有图标的按钮」（打开整页 = 应用内新标签页）。 -->
     <InsightPanel
       v-if="props.tab === 'insight'"
@@ -864,8 +917,18 @@ function onMore(key: string, r: FeedRow) {
 .quote-md {
   margin: 0 0 6px;
   max-height: 4.6em;
-  overflow: hidden;
+  /* 竖向按 4.6em 裁（原本的设计：够看清是哪个式子，又不把笔记正文挤出去）；
+     横向在**缩到地板（60%）还放不下**时才滚 —— 否则宽公式只能被切掉一截。
+     滚动条隐藏：用户截图里最刺眼的就是横在式子下面那条灰条（JS 那边先把公式缩到放得下）。 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
+.quote-md::-webkit-scrollbar { display: none; }
+/* 滚动其实发生在里面那层（base.css 的 `.md .katex-display { overflow-x: auto }`），
+   那条灰条也要收掉：缩到地板还放不下时才轮到它滚，但不该画出来。 */
+.quote-md :deep(.katex-display) { scrollbar-width: none; }
+.quote-md :deep(.katex-display)::-webkit-scrollbar { display: none; }
 .item.note-row .quote-md { font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; }
 .quote-md :deep(p) { margin: 0; }
 /* 笔记正文里的 Markdown：**结构留着、字号压平**。
