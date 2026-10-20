@@ -851,7 +851,16 @@ watchEffect(applyShellDom, { flush: 'sync' });
   cursor: grab; user-select: none; touch-action: none;
 }
 .fc-head.dragging { cursor: grabbing; }
-.fc-title { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+/* 标题**恒为一行**，放不下就省略（用户口径：浮层标题只显示一行，剩下的省略）。
+   `min-width: 0` 是必须的：`fc-head` 是 flex 行，不写它标题会按内容撑开、把右侧按钮挤走，
+   而 `text-overflow: ellipsis` 在撑开的盒子里也不会生效。 */
+.fc-title {
+  font-size: 11.5px; font-weight: 600; color: var(--text-dim);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Markdown 标题里的块级内容（表格 / 图片）也压成行内，否则 nowrap 会被它们撑成多行 */
+.fc-title-md :deep(p), .fc-title-md :deep(ul), .fc-title-md :deep(ol) { display: inline; margin: 0; }
+.fc-title-md :deep(li) { display: inline; margin: 0; }
 /* Markdown 标题：段落压成行内、公式收到与标题同字号（KaTeX 默认 1.21em 会把标题顶高） */
 .fc-title-md :deep(p) { margin: 0; display: inline; }
 .fc-title-md :deep(.katex) { font-size: 1em; }
