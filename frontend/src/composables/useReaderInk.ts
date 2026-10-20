@@ -25,7 +25,7 @@ import {
  * 打开菜单时选中态就落在上次那个颜色 / 粗细上（见 `activeInkColor`）。
  */
 const INK_PREFS_KEY = 'pm.ink.prefs';
-interface InkPrefs { pen?: string; marker?: string; width?: WidthKey }
+interface InkPrefs { pen?: string; marker?: string; width?: WidthKey; tool?: InkTool }
 function loadInkPrefs(): InkPrefs {
   try {
     const raw = localStorage.getItem(INK_PREFS_KEY);
@@ -33,17 +33,22 @@ function loadInkPrefs(): InkPrefs {
   } catch { return {}; }    /* 隐私模式 / 坏数据：当没有 */
 }
 const inkPrefs = loadInkPrefs();
+/** 工具切换时由阅读器调一次（颜色/粗细那两个 setter 里已经各自调过了） */
+export function persistInkPrefs(): void { saveInkPrefs(); }
+
 function saveInkPrefs(): void {
   try {
     localStorage.setItem(INK_PREFS_KEY, JSON.stringify({
       pen: inkColor.value, marker: inkMarkerColor.value, width: inkWidth.value,
+      /* 连上次拿的是哪支笔一起记：下次打开工具栏就停在它上面（橡皮不记，退回画笔那档） */
+      tool: inkTool.value === 'eraser' ? lastDrawTool.value : inkTool.value,
     }));
   } catch { /* 忽略 */ }
 }
 
 /** 批注模式开关：开着时正文上盖一层可画的画布（关掉就完全回到普通阅读） */
 export const inkOn = ref(false);
-export const inkTool = ref<InkTool>('pen');
+export const inkTool = ref<InkTool>(inkPrefs.tool === 'marker' ? 'marker' : 'pen');
 export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
 /** 普通笔的颜色 */
 export const inkColor = ref(inkPrefs.pen || '#1b1b1f');
@@ -61,6 +66,13 @@ export const inkKey = ref<string | null>(null);
  * 想要别的颜色点旁边的取色器（原生 `<input type="color">`），不用在色板里越堆越多。
  */
 export const INK_COLORS = ['#1b1b1f', '#e8384f', '#f0a11a', '#2aa775', '#2f6fed'];
+
+/**
+ * 荧光笔**自己的一排色**（用户口径：荧光笔用另一套颜色菜单）：
+ * 都是高亮纸常用的荧光色、比墨色浅一档 —— 荧光笔本来就是盖一层淡色，
+ * 拿墨黑/正红去涂会把正文盖死。选中的那一档与墨色分开记（`inkMarkerColor`）。
+ */
+export const MARKER_COLORS = ['#ffd60a', '#a3e635', '#5ad2f4', '#ff9ecb', '#ffb020'];
 
 export interface PageInk {
   doc: InkDoc;

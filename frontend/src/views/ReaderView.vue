@@ -40,9 +40,9 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, lastDrawTool,
+  INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, lastDrawTool,
   flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
-  redoInk, resetInk, setInkColor, setInkNotesListener, setInkWidth, undoInk,
+  redoInk, resetInk, persistInkPrefs, setInkColor, setInkNotesListener, setInkWidth, undoInk,
 } from '@/composables/useReaderInk';
 import { WIDTH_STEPS } from '@/utils/imageInk';
 import {
@@ -507,6 +507,7 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
   inkTool.value = key;
   inkOptionsOpen.value = key === 'pen' || key === 'marker';
   eraserClearOpen.value = false;
+  persistInkPrefs();          // 记住这次拿的是哪支笔 / 荧光笔
   // 二级菜单跟着胶囊走：展开/收起后重新摆位，并让提示条再让一层
   void nextTick().then(() => {
     if (inkOptionsOpen.value) placeInkOptions();
@@ -6886,7 +6887,7 @@ function renderMarkdown(text?: string | null) {
           <!-- 颜色：色块图标 + 一枚取色器（用户口径：精简默认色数、支持浏览器选色） -->
           <div class="ink-options-row" data-ink-colors>
             <button
-              v-for="c in INK_COLORS"
+              v-for="c in (inkTool === 'marker' ? MARKER_COLORS : INK_COLORS)"
               :key="c"
               class="ink-palette-dot"
               :class="{ active: activeInkColor() === c }"
@@ -7926,7 +7927,7 @@ function renderMarkdown(text?: string | null) {
 /* 色块：照 iPad 那套的排布 —— 一排**大一点**的实心圆（26px），选中项外面套一圈同色环，
    而不是"换边框色"那种容易被底色吃掉的写法（用户口径第 1 条：优化颜色排版）。 */
 .ink-palette-dot {
-  width: 26px; height: 26px; padding: 0; cursor: pointer;
+  width: 24px; height: 24px; padding: 0; cursor: pointer;
   border: 2px solid var(--bg-elev); border-radius: 999px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
   transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur) var(--ease);
@@ -7960,7 +7961,7 @@ function renderMarkdown(text?: string | null) {
   /* fixed：位置由 `inkOptionsStyle` 按胶囊实时算（见 placeInkOptions） */
   position: fixed; transform: translateX(-50%);
   display: flex; flex-direction: column; gap: 8px; z-index: 45; pointer-events: auto;
-  padding: 10px 12px; border-radius: 18px;
+  padding: 8px 10px; border-radius: 14px;
   /* 与胶囊/右键菜单同一块玻璃（用户口径 2026-10-18） */
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
@@ -7969,16 +7970,17 @@ function renderMarkdown(text?: string | null) {
   -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
 }
-/* 两排：上排颜色（26px 圆点，间距大一点才点得准），下排粗细（与上排之间一条发丝线） */
-.ink-options-row { display: flex; align-items: center; gap: 10px; }
+/* 两排：上排颜色（24px 圆点、间距 8）、下排粗细（24px 圆钮）—— 各收一档，
+   让整块从「一大块面板」回到「胶囊下面一小条」（用户口径：还是太丑）。 */
+.ink-options-row { display: flex; align-items: center; gap: 8px; }
 .ink-options-row + .ink-options-row {
-  padding-top: 8px; border-top: 1px solid var(--divider);
+  padding-top: 6px; border-top: 1px solid var(--divider); gap: 4px;
 }
 .ink-options-label { width: 28px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 /* 粗细：三档**图标**（只画点，不写字；选中态给一圈浅底） */
 .ink-width-icon {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0; cursor: pointer;
+  width: 24px; height: 24px; padding: 0; cursor: pointer;
   border: 0; border-radius: 999px; background: transparent; color: var(--text-dim);
 }
 .ink-width-icon:hover { background: var(--bg-hover); color: var(--text); }
@@ -7987,10 +7989,10 @@ function renderMarkdown(text?: string | null) {
 /* 自定义颜色：一枚"彩虹点"，点它弹浏览器原生取色器（input 藏起来但可点） */
 .ink-color-custom {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; cursor: pointer;
+  width: 24px; height: 24px; cursor: pointer;
 }
 .ink-color-custom-dot {
-  display: block; width: 26px; height: 26px; border-radius: 999px;
+  display: block; width: 24px; height: 24px; border-radius: 999px;
   background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
 }
