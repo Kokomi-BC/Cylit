@@ -491,8 +491,11 @@ function onMore(key: string, r: FeedRow) {
         <!-- 顶部一条：页码 + 时间 + 三枚动作（用户口径：时间与按钮**上移**、去掉「笔记」文字胶囊）。
              这一行自带一层半透明遮罩（见 .card-top 的底色），内容从它下面滚过时仍然读得清。 -->
         <div class="card-top" data-note-head>
-          <span v-if="r.page" class="small faint" data-note-page>p{{ r.page }}</span>
-          <span v-if="r.at" class="tiny faint" data-note-time>{{ fmtRelative(r.at) }}</span>
+          <!-- 页码 + 时间合成一枚**胶囊**（用户口径：不要整条遮罩带，材质与旁边那几枚圆钮一致） -->
+          <span v-if="r.page || r.at" class="card-meta">
+            <span v-if="r.page" class="small faint" data-note-page>p{{ r.page }}</span>
+            <span v-if="r.at" class="tiny faint" data-note-time>{{ fmtRelative(r.at) }}</span>
+          </span>
           <span class="spacer" />
           <!-- 批量态：一枚勾选框（与对话页同一个 tick 口径）；非批量态：定位 / 浮层 / 更多 -->
           <button
@@ -714,7 +717,7 @@ function onMore(key: string, r: FeedRow) {
 
       <!-- 只读态：和批注/笔记一样是**卡片 + 排版好的内容**（不再是一组表单框） -->
       <template v-else>
-        <div :class="briefCardClass">
+        <div :class="[briefCardClass, 'brief-card']">
           <template v-if="hasBrief">
             <div v-if="props.briefDraft.domain" class="brief-sec">
               <div class="brief-k">领域</div>
@@ -731,7 +734,7 @@ function onMore(key: string, r: FeedRow) {
             <div v-if="keepLines.length" class="brief-sec last">
               <div class="brief-k">保持英文不译</div>
               <div class="brief-chips">
-                <span v-for="k in keepLines" :key="k" class="badge mono">{{ k }}</span>
+                <span v-for="k in keepLines" :key="k" class="brief-chip">{{ k }}</span>
               </div>
             </div>
           </template>
@@ -850,16 +853,22 @@ function onMore(key: string, r: FeedRow) {
 }
 /* 卡片顶部那行页码：与正文同一套字号/行高，只是更淡一点，不抢正文 */
 .item .card-top { margin: 0 0 4px; font-variant-numeric: tabular-nums; }
-/* 笔记卡的顶部条（页码 + 时间 + 三枚动作，用户口径：时间与按钮上移、去掉「笔记」文字胶囊）：
-   **自带一层遮罩** —— 拿这张卡自己的高亮色混一档铺在行底下，内容（公式 / 表格 / 正文）
-   从它下面滚过时这一行仍然读得清。负 margin 吸收 .item 的 padding（8px 10px），铺满上沿。 */
+/* 笔记卡的顶部条（页码 + 时间 + 三枚动作）。
+   用户口径（本轮）：**撤掉那条铺满整行的遮罩带**，只让页码与时间这枚**胶囊**带材质 ——
+   材质与旁边那几枚圆钮完全一致（`--bg-elev` + `--shadow-1`、不描边），
+   于是这一行读起来是「内容 + 几枚浮起的小片」，而不是「卡片被切成两段」。 */
 .item.note-row .card-top {
   display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
-  margin: -8px -10px 6px; padding: 5px 10px;
-  background: color-mix(in srgb, var(--note-hl, var(--accent)) 16%, var(--bg-layer));
-  border-bottom: 1px solid color-mix(in srgb, var(--note-hl, var(--accent)) 24%, transparent);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  margin: 0 0 6px; padding: 0;
+  background: none; border: 0; border-radius: 0;
   font-variant-numeric: tabular-nums;
+}
+.item.note-row .card-top .card-meta {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  height: var(--control-h-sm); padding: 0 10px;
+  border-radius: 999px;
+  background: var(--bg-elev); box-shadow: var(--shadow-1); color: var(--text-faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 /* 这一行里三枚动作 + 页码 + 时间要挤在一行：按钮收小一档，别把行撑宽 */
 .item.note-row .card-top .btn.icon.sm { width: 24px; height: 24px; }
@@ -1019,25 +1028,52 @@ function onMore(key: string, r: FeedRow) {
 .fig-body .figure { width: 100%; }
 .fig-meta { margin-top: 2px; gap: 6px; }
 /* 简报：只读态是「小标题 + 正文」的排版（跟侧栏其它内容一致），不是一组表单框。
-   编辑态的输入框由 `.field` 提供样式，两者互斥出现。 */
-.brief-bar { gap: 6px; margin-bottom: 8px; }
-.brief-sec { margin: 0 0 10px; }
-.brief-sec.last { margin-bottom: 0; }
-.brief-k {
-  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .04em;
-  text-transform: uppercase; margin-bottom: 2px;
+   编辑态的输入框由 `.field` 提供样式，两者互斥出现。
+   用户口径（本轮）：**去掉侧边那条竖线**（`.item.manual/.auto` 会画一条彩色左边框），
+   改成一圈发丝描边 + 留白分区；要点换成点状符号、保持英文换成胶囊、术语表两列对齐。 */
+.brief-bar { gap: 6px; margin-bottom: 10px; }
+.brief-card {
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  /* 覆盖 `.item.manual`（主题色）/`.item.auto`（通过色）那条 2px 左边框 */
+  border-left: 1px solid var(--border);
 }
-.brief-v { font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.brief-sec { margin: 0 0 12px; }
+.brief-sec.last, .brief-sec:last-child { margin-bottom: 0; }
+.brief-k {
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); letter-spacing: .06em;
+  text-transform: uppercase; margin-bottom: 3px;
+}
+.brief-v { font-size: calc(12.5px * var(--ts, 1)); line-height: 1.65; color: var(--text); overflow-wrap: anywhere; }
+/* 要点：**点状符号**自己画（原来用圆点列表，缩进在窄栏里吃掉半行之宽） */
 .brief-list {
-  margin: 0; padding-left: 16px;
+  margin: 0; padding: 0; list-style: none;
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text);
 }
-.brief-list li { margin: 1px 0; }
-.brief-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.brief-terms-head { margin: 12px 0 2px; gap: 6px; }
-.term-row { display: flex; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--divider); font-size: calc(12.5px * var(--ts, 1)); }
-.term-row .en { flex: 1; font-family: var(--mono); font-size: calc(12px * var(--ts, 1)); }
-.term-row .zh { flex: 1; }
+.brief-list li { position: relative; padding-left: 13px; margin: 4px 0; }
+.brief-list li::before {
+  content: ''; position: absolute; left: 3px; top: .66em;
+  width: 4px; height: 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 34%, transparent);
+}
+/* 保持英文不译：胶囊（等宽字体、不换行挤压） */
+.brief-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.brief-chip {
+  font-family: var(--mono); font-size: calc(11.5px * var(--ts, 1)); line-height: 1;
+  padding: 4px 8px; border-radius: 999px;
+  /* 底色用「文字色 8%」而不是 `--bg-sunken`：后者与卡片底（`--bg-layer`）只差三格，
+     胶囊在浅色主题里等于看不见（预览时确认过）。 */
+  background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text);
+}
+/* 术语表：与简报卡之间留一档空、表头更淡，两列各自截断 */
+.brief-terms-head { margin: 14px 0 4px; gap: 6px; }
+.term-row {
+  display: flex; gap: 10px; padding: 6px 2px;
+  border-bottom: 1px solid var(--divider);
+  font-size: calc(12.5px * var(--ts, 1));
+}
+.term-row .en { flex: 1; min-width: 0; font-family: var(--mono); font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
+.term-row .zh { flex: 1; min-width: 0; color: var(--text); }
 /* 任务清单：一类一行。类型名固定宽度，几行的状态徽章才能对齐成一条竖线；
    失败原因单独一行、最多两行（长错误信息不该把清单撑成一屏）。 */
 .task-row { padding: 7px 10px; margin-bottom: 6px; }
