@@ -399,6 +399,8 @@ const capPanel = ref<'' | 'settings'>('');
 
 function toggleCapPanel(which: 'settings') {
   capPanel.value = capPanel.value === which ? '' : which;
+  // 二级菜单与它互斥：面板一开就把画笔 / 橡皮的菜单收掉，免得两层叠在一起
+  if (capPanel.value) { inkOptionsOpen.value = false; eraserClearOpen.value = false; }
   void nextTick().then(() => {
     placeCapPanel();
     syncToastDrop();
@@ -4001,8 +4003,15 @@ function onDocPointerDown(ev: PointerEvent) {
     selection.show = false;
     hideSelHandles();
   }
-  // 顶栏弹出面板：点面板外面就收起来（面板内的点击不动它 —— 改一个分段值不该把面板关掉）
-  if (capPanel.value && !target?.closest?.('.reader-toolbar')) capPanel.value = '';
+  /* 「设置」面板：**除了它自己与打开它的那枚按钮，点哪儿都收**（用户口径 2026-10-20：点其他位置要自动消失）。
+     老判据是 `!closest('.reader-toolbar')` —— 只挡了「点正文」这一种，于是点胶囊里的另一枚按钮
+     （画笔 / 荧光笔 / 撤销…）面板还赖着，和随后弹出的二级菜单叠在一起。
+     现在按「是不是面板 / 它的触发按钮」来判，胶囊上的其它按钮一律算「别处」。 */
+  if (capPanel.value) {
+    const inPanel = !!target?.closest?.('[data-cap-panel-body="settings"]');
+    const onTrigger = !!target?.closest?.('[data-cap-panel="settings"]');
+    if (!inPanel && !onTrigger) capPanel.value = '';
+  }
   /* 引用标号的浮层：点别处就收。⚠️ 点**浮层里面**（条目/跳转图标）绝不能收 ——
      一收就把元素从 DOM 上摘了，那次 click（`window.open` 在它上面）根本不会再触发。 */
   if (!target?.closest?.('[data-cite-pop]')) citePop.open = false;
@@ -6795,7 +6804,8 @@ function renderMarkdown(text?: string | null) {
                 :aria-pressed="inkTool === item.key"
                 :data-ink-tool="item.key"
                 :aria-expanded="inkOptionsOpen && (item.key === 'pen' || item.key === 'marker')"
-                :style="item.key === 'pen' ? { '--pen-color': colorFor('pen') } : undefined"
+                :style="item.key === 'pen' ? { '--pen-color': colorFor('pen') }
+                  : item.key === 'marker' ? { '--marker-color': colorFor('highlighter') } : undefined"
                 @click="pickInkTool(item.key)"
               >
                 <AppIcon :name="item.icon" :size="15" />
@@ -8103,10 +8113,16 @@ function renderMarkdown(text?: string | null) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent) !important;
   color: var(--accent-text) !important;
 }
-/* 画笔那枚图标用**当前选中的墨色**（用户口径 2026-10-18）。
+/* 画笔 / 荧光笔那两枚图标用**当前选中的墨色**（用户口径 2026-10-18，荧光笔 2026-10-20 补上：
+   以前只有画笔染色，荧光笔那枚永远是黑的，看不出它现在是黄还是绿）。
    ⚠️ 必须写在 .tool-on **之后**、并且同样带 !important：两条规则权重相同，靠顺序取胜；
-   写在前面的话选中画笔时图标会被 .tool-on 染成强调色（实测踩过）。 */
+   写在前面的话选中画笔时图标会被 .tool-on 染成强调色（实测踩过）。
+   荧光笔不直接用它的墨色（#ffd60a 这类浅黄描在浅色胶囊上几乎看不见），
+   混 62% 的正文色把它压深：既看得出是哪个颜色，也不会糊成一片淡黄。 */
 .reader-capsule .cap-group .btn[data-ink-tool='pen'] { color: var(--pen-color, currentColor) !important; }
+.reader-capsule .cap-group .btn[data-ink-tool='marker'] {
+  color: color-mix(in srgb, var(--marker-color, currentColor) 62%, var(--text)) !important;
+}
 .reader-capsule .cap-group .seg {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);
