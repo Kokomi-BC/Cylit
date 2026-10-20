@@ -9,7 +9,7 @@
  * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
  * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch, type CSSProperties } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
@@ -456,7 +456,7 @@ function onMore(key: string, r: FeedRow) {
         :key="r.key"
         class="item note-row"
         :class="[r.kind, { editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
-        :style="r.color ? { borderLeftColor: highlightCss(r.color) } : undefined"
+        :style="r.color ? ({ '--hl': highlightCss(r.color) } as CSSProperties) : undefined"
         :data-note-id="r.noteId || undefined"
         :data-item-kind="r.kind"
         @click="onCardClick($event, r)"
@@ -789,16 +789,31 @@ function onMore(key: string, r: FeedRow) {
 .multi-btn:active { transform: scale(.94); }
 .multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
 /* 条数文字已移除（用户口径 2026-11-21：左上角只留那枚排序图标钮）。 */
-/* 左竖线默认是主题色；**有高亮色的行**由行上那条行内 style 覆盖成这处高亮自己的颜色
+/* 左竖线默认是主题色；**有高亮色的行**由行内那个 `--hl` 变量覆盖成这处高亮自己的颜色
    （用户口径 2026-11-28 二十一轮：笔记栏左侧竖线用高亮的颜色）。
-   批注行没有高亮色，仍走下面 `.annotation` 那条。 */
-.item.note-row { border-left-color: var(--accent); }
+   批注行没有高亮色，仍走下面 `.annotation` 那条。
+
+   本轮（用户口径）：**卡片底色也用这根颜色，但比竖线略浅** ——
+   竖线画的是原色（.9~.95 不透明），底色只取它的 12% 混进 `--bg-layer`，
+   浅色主题是一层薄薄的荧光笔印、深色主题是同一根色的暗底，两边都自动跟。
+   `--note-hl` 只是把"这张卡该用哪根色"收敛成一个变量，竖线和底色各取自己那一档浓度。
+   ⚠️ 实测过一次改不动：这里不能直接写行内 `background` —— 会盖掉下面 `.pick` 的选中态。 */
+.item.note-row {
+  --note-hl: var(--hl, var(--accent));
+  border-left-color: var(--note-hl);
+  background: color-mix(in srgb, var(--note-hl) 12%, var(--bg-layer));
+}
 /* 卡片底部那行（徽章 + 定位/浮层/更多）：内容读完了才轮到操作，所以压到正文下方并与正文留一点距离 */
 .item .row.card-foot { margin-top: 6px; }
 /* 卡片顶部那行页码：与正文同一套字号/行高，只是更淡一点，不抢正文 */
 .item .card-top { margin: 0 0 4px; font-variant-numeric: tabular-nums; }
-.item.note-row.highlight { border-left-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong)); }
-.item.note-row.annotation { border-left-color: var(--ok); }
+/* 还没写正文的（只有高亮）：竖线压暗一档，底色跟着退到 6%，一眼分得出"哪些还没写" */
+.item.note-row.highlight {
+  --note-hl: color-mix(in srgb, var(--hl, var(--accent)) 35%, var(--border-strong));
+  background: color-mix(in srgb, var(--hl, var(--accent)) 6%, var(--bg-layer));
+}
+/* 批注行没有高亮色：竖线与底色都走「通过/已处理」那根绿 */
+.item.note-row.annotation { --note-hl: var(--ok); }
 .item.note-row .row { gap: 6px; }
 /* 原文引用那一行恒为单行省略（模板里的 `.quote.clamp1`） */
 .clamp1 {
