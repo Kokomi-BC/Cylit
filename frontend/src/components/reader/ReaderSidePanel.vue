@@ -89,7 +89,7 @@ const emit = defineEmits<{
   (e: 'copy', text: string): void;
   (e: 'zoom', target: ZoomTarget): void;
   /** 表格 / 公式的浮层打开：`{ icon, title, markdown }`，由阅读器那层挂 `BlockOverlay` */
-  (e: 'overlay', p: { icon: string; title: string; markdown: string }): void;
+  (e: 'overlay', p: { icon: string; title: string; markdown?: string; imageUrl?: string }): void;
   (e: 'save-brief'): void;
   (e: 'regenerate-brief'): void;
   /** 取消编辑：让父组件用服务端的简报**重新灌一次草稿**（丢弃本地未保存的改动） */
@@ -162,6 +162,11 @@ const hasBrief = computed(() => Boolean(
   || props.briefDraft.notes.trim() || props.briefDraft.keepAsIsText.trim()
   || props.briefDraft.glossaryText.trim() || props.glossary.length,
 ));
+/** 图注当作**浮层标题**时要的是纯文字（浮层标题栏不解析 Markdown）：去掉 `**` 与 `$` 这些记号。 */
+function plainCaption(md: string): string {
+  return String(md || '').replace(/\*\*|__|`/g, '').replace(/\$/g, '').replace(/\s+/g, ' ').trim();
+}
+
 const noteLines = computed(() => props.briefDraft.notes.split('\n').map(s => s.trim()).filter(Boolean));
 const keepLines = computed(() => props.briefDraft.keepAsIsText.split('\n').map(s => s.trim()).filter(Boolean));
 
@@ -630,17 +635,21 @@ function onMore(key: string, r: FeedRow) {
           <span v-else class="spacer" />
           <!-- 浮层打开（用户口径）：图注标题右侧一枚，与「定位」并排 ——
                点图本身也能开，但按钮是「看得见」的那个入口。 -->
+          <!-- 浮层打开（用户口径）：走**新的那个浮层**（FloatingCard 里显示这张图），
+               不是图片查看器 —— 查看器是「点图片本身」那一手（要缩放 / 旋转 / 切图才用它）。 -->
           <button
             v-if="fig.card_url || fig.image_url"
             class="btn icon sm fig-overlay"
             title="浮层打开"
             data-figure-overlay
-            @click="emit('zoom', {
-              url: fig.card_url || fig.image_url || '',
-              caption: fig.caption_zh || fig.caption, page: fig.page, number: fig.number,
+            @click="emit('overlay', {
+              icon: 'image',
+              title: plainCaption(fig.caption_zh || fig.caption || '')
+                || (fig.number ? `图 ${fig.number}` : '插图'),
+              imageUrl: fig.card_url || fig.image_url || '',
             })"
           >
-            <AppIcon name="expand-diag" :size="13" />
+            <AppIcon name="pip" :size="13" />
           </button>
           <button
             class="btn icon sm fig-locate"

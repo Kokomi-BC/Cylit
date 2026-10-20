@@ -3,13 +3,13 @@
  * 表格 / 公式的**浮层**（用户口径：侧栏列表里点「浮层打开」，把这一块放大来看）。
  *
  * 第一版是一张**居中卡片 + 全屏遮罩**，用户口径否掉了：要的是「像笔记浮层那样」
- * —— 可拖动、可缩放、可锚定、不带遮罩。所以这里不再自己画壳子，直接复用 `FloatingCard`
- * （笔记 / AI 解释浮层用的同一套外壳）：拖动条、四角缩放、锚定、位置记忆、字号档全都有。
+ * —— 可拖动、可缩放、不带遮罩。所以这里不再自己画壳子，直接复用 `FloatingCard`
+ * （笔记 / AI 解释浮层用的同一套外壳）：拖动条、四角缩放、位置/尺寸记忆、字号档全都有。
  *
  * 本组件只负责两件事：① 标题行左边那枚图标；② 浮层里的内容本身（Markdown 渲染）。
  * 关法：右上角 ×、Esc（与站内其他浮层一致）。
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import FloatingCard from './FloatingCard.vue';
 import { mdToHtml } from '@/composables/useMarkdown';
@@ -18,12 +18,15 @@ const props = defineProps<{
   icon: string;
   title: string;
   /** 内容本体：GFM Markdown（表格是 `| … |`，公式是 `$$…$$`） */
-  markdown: string;
+  markdown?: string;
+  /** 插图走这一条：**直接显示这张图**（用户口径：图片的「浮层打开」不是那个带缩放的黑底查看器） */
+  imageUrl?: string;
 }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-/** 锚定态：是「鼠标移开也不关」那个图钉。浮层默认钉住 —— 它是用户主动打开的，不该自己消失。 */
-const pinned = ref(true);
+/* ⚠️ 没有「锚定」图钉（`hide-anchor`）：笔记浮层也是这么做的（那边交给"点过浮层就自动锚定"）。
+   留着它有两个坏处：① 这张浮层本来就不会因为鼠标移开而消失，图钉是枚死控件；
+   ② 它默认亮的 `on` 态让它比旁边 ⋯ / ✕ 深一档，头部三枚钮颜色对不上（用户口径）。 */
 
 function onKey(ev: KeyboardEvent) {
   if (ev.key !== 'Escape') return;
@@ -39,20 +42,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
   <FloatingCard
     :open="true"
     :title="props.title"
-    :anchored="pinned"
     zoomable
+    hide-anchor
     :width="480"
     :max-height="520"
     persist-key="block-overlay"
     text-cat="body"
     center-on-open
     @close="emit('close')"
-    @toggle-anchor="pinned = !pinned"
   >
     <template #head-lead>
       <span class="ov-icon"><AppIcon :name="props.icon" :size="13" /></span>
     </template>
-    <div class="ov-body md" data-block-overlay-body v-html="mdToHtml(props.markdown)" />
+    <!-- 图片：白底一块，按卡片宽度等比缩放（要缩放/旋转/切图请点图片本身开查看器） -->
+    <div v-if="props.imageUrl" class="ov-image" data-block-overlay-image>
+      <img :src="props.imageUrl" :alt="props.title">
+    </div>
+    <div v-else class="ov-body md" data-block-overlay-body v-html="mdToHtml(props.markdown || '')" />
   </FloatingCard>
 </template>
 
@@ -62,6 +68,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
   display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; border-radius: 6px; flex: none;
   background: var(--accent-soft); color: var(--accent-text);
+}
+/* 图片：白底 + 圆角，宽度跟随卡片（卡片可拖动 / 缩放，图等比跟着变） */
+.ov-image { line-height: 0; }
+.ov-image img {
+  display: block; width: 100%; height: auto;
+  background: #fff; border-radius: var(--radius-sm);
 }
 /* 内容：**不再自己定宽高**（壳子是 FloatingCard 的，宽高由拖动/缩放决定） */
 .ov-body { min-width: 0; font-size: calc(13px * var(--ts, 1)); line-height: 1.7; }

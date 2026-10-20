@@ -655,7 +655,7 @@ const chatSelection = ref<AgentSelection | null>(null);
 /** 放大查看的目标（图 URL + 图注）：见下面的 `zoomTitle` */
 const zoomImage = ref<ZoomTarget | null>(null);
 /** 表格 / 公式的浮层（用户口径：侧栏列表里「浮层打开」）。图片不走这里 —— 它有查看器那套缩放。 */
-const blockOverlay = ref<{ icon: string; title: string; markdown: string } | null>(null);
+const blockOverlay = ref<{ icon: string; title: string; markdown?: string; imageUrl?: string } | null>(null);
 
 /**
  * 关闭大图查看器时"飞回原位"的落点：触发它的那张缩略图在视口中的矩形。
@@ -7538,7 +7538,8 @@ function renderMarkdown(text?: string | null) {
       v-if="blockOverlay"
       :icon="blockOverlay.icon"
       :title="blockOverlay.title"
-      :markdown="blockOverlay.markdown"
+      :markdown="blockOverlay.markdown || ''"
+      :image-url="blockOverlay.imageUrl || ''"
       @close="blockOverlay = null"
     />
 

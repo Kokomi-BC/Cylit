@@ -112,7 +112,7 @@ const rows = computed(() => filtered.value.map((f) => {
         >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
         <span class="spacer" />
         <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f)">
-          <AppIcon name="expand-diag" :size="13" />
+          <AppIcon name="pip" :size="13" />
         </button>
         <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
           <AppIcon name="copy" :size="13" />

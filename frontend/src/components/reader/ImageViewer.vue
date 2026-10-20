@@ -21,6 +21,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
+import { mdToHtml } from '@/composables/useMarkdown';
 import type { ZoomTarget } from '@/api/types';
 import { createDetectImageViewer, type DetectImageViewer } from './detectImageViewer';
 
@@ -300,7 +301,9 @@ onBeforeUnmount(() => {
            这里是黑底看图，所以壳子换成同一套深色玻璃。 -->
       <div v-if="props.title" class="ov-title-bar" data-viewer-title>
         <span class="ov-title-icon"><AppIcon :name="props.icon" :size="14" /></span>
-        <span class="ov-title-text">{{ props.title }}</span>
+        <!-- 标题**按 Markdown 渲染**（用户口径）：图注里常有 `$\text{TurboQuant}_{\text{prod}}$`
+             这种公式，纯文本会把 LaTeX 原样吐出来。 -->
+        <span class="ov-title-text" v-html="mdToHtml(props.title)" />
       </div>
 
       <div class="sheet" :style="{ width: size.w + 'px', height: size.h + 'px' }">
@@ -399,6 +402,11 @@ onBeforeUnmount(() => {
   font-size: calc(12px * var(--ts, 1)); font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 标题里的 Markdown / 公式：段落压成行内、公式不许比标题大（KaTeX 默认 1.21em） */
+.ov-title-text :deep(p) { margin: 0; display: inline; }
+.ov-title-text :deep(.katex) { font-size: 1em; }
+.ov-title-text :deep(.katex-display) { display: inline; margin: 0; }
+.ov-title-text :deep(strong) { font-weight: 700; }
 /* 关的时候与胶囊一起退场 */
 .viewer.closing .ov-title-bar, .viewer.dismissing .ov-title-bar { opacity: 0; transition: opacity 90ms ease; }
 

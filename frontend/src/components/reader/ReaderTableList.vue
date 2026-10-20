@@ -72,7 +72,7 @@ const rows = computed(() => props.items.map((t) => ({
         >原文</span>
         <span class="spacer" />
         <button class="btn icon sm" title="浮层打开" data-table-overlay @click="openOverlay(t)">
-          <AppIcon name="expand-diag" :size="13" />
+          <AppIcon name="pip" :size="13" />
         </button>
         <button class="btn icon sm" title="复制 Markdown 表格" @click="emit('copy', t.markdown)">
           <AppIcon name="copy" :size="13" />
