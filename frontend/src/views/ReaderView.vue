@@ -7217,7 +7217,6 @@ function renderMarkdown(text?: string | null) {
           :figures="figures"
           :glossary="glossary"
           :brief-draft="briefDraft"
-          :brief-source="brief?.source ?? ''"
           :tasks="tasks"
           :paper-id="paperId"
           :insight-running="understandingRunning"

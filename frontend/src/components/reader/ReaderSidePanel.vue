@@ -71,8 +71,6 @@ const props = withDefaults(defineProps<{
   figures: FigureItem[];
   glossary: GlossaryTerm[];
   briefDraft: BriefDraft;
-  /** 简报来源（model / manual / cached），只用于视图上的一枚小徽章 */
-  briefSource?: string;
   /** 「任务」页签：这篇论文的**全部**任务（各类型都算），页签里按类型汇总成清单 */
   tasks: TaskInfo[];
   /** 「论文解读」页签：按论文取解读结果（整页版共用同一份缓存） */
@@ -80,7 +78,7 @@ const props = withDefaults(defineProps<{
   /** 这篇论文有理解任务在跑：解读内容据此决定要不要每 5s 轮询 */
   insightRunning: boolean;
 }>(), {
-  formulasLoading: false, briefSource: '', references: () => [],
+  formulasLoading: false, references: () => [],
   tables: () => [], tablesLoading: false,
 });
 
@@ -150,11 +148,8 @@ const editing = ref(false);
 /** 换页签就退出编辑态，免得切回来还停在半改一半的输入框上。 */
 watch(() => props.tab, () => { editing.value = false; exitBatch(); });
 
-const briefSourceLabel = computed(() => {
-  const s = props.briefSource;
-  return s === 'model' ? '模型生成' : s === 'manual' ? '人工修订'
-    : s === 'cached' ? '已有简报' : '';
-});
+/* 简报来源徽章（模型生成 / 人工修订 / 已有简报）已移除（用户口径：这一枚文字胶囊是"模型生成的文字"，
+   不需要在界面上标出来）。来源仍由后端 `source` 字段保存，只是不再渲染。 */
 /* 简报**不再套卡片**（用户口径：各个内容不要放在一个框里显示）。
    以前用的是 `.item.manual / .item.auto`，那两条会给它画一条 2px 彩色左边框 ——
    上一版想把那条竖线改成中性色，但 `.item.manual`（两个类）权重高于我写的 `.brief-card`（一个类），
@@ -699,7 +694,6 @@ function onMore(key: string, r: FeedRow) {
     <template v-if="props.tab === 'terms'">
       <div class="row tiny brief-bar">
         <span class="muted">文档简报</span>
-        <span v-if="briefSourceLabel" class="badge dim">{{ briefSourceLabel }}</span>
         <span class="spacer" />
         <template v-if="editing">
           <button class="btn sm" @click="cancelEdit"><AppIcon name="close" :size="13" />取消</button>
