@@ -4439,37 +4439,93 @@ function hideSelHandles(): void {
 }
 
 /**
- * 拖手柄时的插入点。
+ * 拖手柄时的插入点：**先定行，再定字**。
  *
- * 手柄画在**行的上沿 / 下沿**，而 `caretRangeFromPoint(x, 上沿)` 永远给"这一行的行首" ——
- * 所以横向拖起点手柄时位置纹丝不动（用户口径 2026-10-17：上面的手柄拖不到下面手柄后面）。
- * 做法：先取一次 caret，用它右边一个字的矩形求出**这一行的中线**，再按中线 + 同一个 x 重新取一次，
- * 迭代几次就收敛；这样横向位置才真正跟着手指走。
+ * 两件事一起解（用户口径 2026-12-02）：
+ *   ① 起点手柄画在行的**上沿**，而这条边同时也是上一段最后一行的下沿 ——
+ *      caretRangeFromPoint 落在分界线上时偏向哪一行，是按"最近的插入点"算的，实测系统性地偏上。
+ *      于是手指按在"本行首"却把焦点交给上一段末（横着拖多远都选不回本行）；
+ *      在每段第一行上更狠：插入点一路被算到这段开头之上，选区一口气从那儿连到锚点
+ *      —— 用户看到的正是「第一行必定选到所有内容」。
+ *   ② 起点手柄横向拖不动（2026-10-17）：一次 caret 只给出"行首"，要靠行中线迭代横坐标才跟手。
+ *
+ * 现在的做法分三步：
+ *   1. 在手指上下各取几个候选（±0/4/8/12px），每个候选都量出**它所在那一行**的矩形；
+ *   2. 按手柄方向挑行 —— 起点取"最靠上、且底边在手指**之下**"的那一行，
+ *      终点取"最靠下、且顶边在手指**之上**"的那一行。分界线因此不再有歧义：
+ *      手指压在哪一行、或者刚好压在两行之间，拿到的都是**下面/上面那一行**，不会跨段；
+ *      全都不满足（手指已经拖到文字之外）才退化成"最靠末/最靠初"那一行；
+ *   3. 在这一行的**中线**上按同一个 x 再取一次，横坐标就贴着手指走（第 ② 条）。
+ * 为什么不用固定 bias：手柄的 y 是**行矩形**的上下沿，而行矩形常常带着行距甚至单元格内边距，
+ * 手指到"文字那一行"可能差 10px 以上，写死 6px 在该偏的时候仍然会选错行。
  */
-function caretAtLine(x: number, y: number): { node: Node; offset: number } | null {
-  let cur = caretAt(x, y);
-  if (!cur || cur.node.nodeType !== Node.TEXT_NODE) {
-    // 落点不在文字上：上下探几下找最近的一行
-    for (const dy of [6, -6, 12, -12, 18, -18, 24, -24]) {
-      const c = caretAt(x, y + dy);
-      if (c && c.node.nodeType === Node.TEXT_NODE) { cur = c; break; }
-    }
+/* 探针分两档：先打三个（绝大多数情况够用，一次拖动只做 6 次 DOM 读）；
+ * 都没有落在"手指那一侧"的行时再加打远的几个 —— 手柄的 y 是**行矩形**的上下沿，
+ * 行矩形可能带着行距 / 单元格内边距，手指到真正那一行有时差 16px 以上。 */
+const HANDLE_PROBES_NEAR = [0, 8, -8];
+const HANDLE_PROBES_FAR = [4, 12, 16, 20, -12, -16];
+
+/** 插入点所在那个"字"的矩形（行顶 / 行底 / 行高都从它读） */
+function caretCharRect(caret: { node: Node; offset: number }): DOMRect | null {
+  const text = caret.node.textContent ?? '';
+  const at = Math.min(caret.offset, text.length);
+  const probe = document.createRange();
+  try {
+    if (at < text.length) { probe.setStart(caret.node, at); probe.setEnd(caret.node, at + 1); }
+    else if (at > 0) { probe.setStart(caret.node, at - 1); probe.setEnd(caret.node, at); }
+    else return null;
+  } catch { return null; }
+  const r = probe.getBoundingClientRect();
+  return r.height > 0 ? r : null;
+}
+
+type CaretCand = { node: Node; offset: number; rect: DOMRect };
+
+/** 按手柄方向挑行：起点取"底边在手指之下"的最靠上那行，终点取"顶边在手指之上"的最靠下那行 */
+function pickCaretLine(cands: CaretCand[], y: number, side: 'start' | 'end'): CaretCand | null {
+  let pick: CaretCand | null = null;
+  if (side === 'start') {
+    for (const c of cands) if (c.rect.bottom > y + 1 && (!pick || c.rect.top < pick.rect.top)) pick = c;
+  } else {
+    for (const c of cands) if (c.rect.top < y - 1 && (!pick || c.rect.bottom > pick.rect.bottom)) pick = c;
   }
-  for (let i = 0; i < 4 && cur; i += 1) {
-    const text = cur.node.textContent ?? '';
-    const probe = document.createRange();
-    probe.setStart(cur.node, Math.min(cur.offset, text.length));
-    probe.setEnd(cur.node, Math.min(cur.offset + 1, text.length));
-    const rect = probe.getBoundingClientRect();
-    if (!rect.height) break;
-    const cy = rect.top + rect.height / 2;
-    if (Math.abs(cy - y) < 3) break;              // 已经在这一行的中线上了
-    const next = caretAt(x, cy);
-    if (!next || next.node.nodeType !== Node.TEXT_NODE) break;
-    cur = next;
-    y = cy;
+  return pick;
+}
+
+function collectCands(x: number, y: number, steps: number[], into: CaretCand[]): void {
+  for (const dy of steps) {
+    const c = caretAt(x, y + dy);
+    if (!c || c.node.nodeType !== Node.TEXT_NODE) continue;
+    const rect = caretCharRect(c);
+    if (rect) into.push({ node: c.node, offset: c.offset, rect });
   }
-  return cur;
+}
+
+function caretAtLine(x: number, y: number, side: 'start' | 'end' = 'end'): { node: Node; offset: number } | null {
+  const cands: CaretCand[] = [];
+  collectCands(x, y, HANDLE_PROBES_NEAR, cands);
+  let pick = pickCaretLine(cands, y, side);
+  if (!pick) {
+    collectCands(x, y, HANDLE_PROBES_FAR, cands);
+    pick = pickCaretLine(cands, y, side);
+  }
+  if (!pick) {
+    if (!cands.length) return null;
+    /* 全在手指的同一侧（已经拖到文字外面）：退化成最靠末 / 最靠初那一行，
+       但**绝不**退化成"文档开头"—— 那正是"第一行选到所有内容"的来源。 */
+    pick = side === 'start'
+      ? cands.reduce((a, b) => (a.rect.bottom >= b.rect.bottom ? a : b))
+      : cands.reduce((a, b) => (a.rect.top <= b.rect.top ? a : b));
+  }
+
+  /* 行内精修：同一个 x 打在这一行的中线上，横坐标才跟手（换行不换行由上面的行判定负责） */
+  const cy = (pick.rect.top + pick.rect.bottom) / 2;
+  const better = caretAt(x, cy);
+  if (better && better.node.nodeType === Node.TEXT_NODE) {
+    const r2 = caretCharRect(better);
+    if (r2 && Math.abs(r2.top - pick.rect.top) < 2) return { node: better.node, offset: better.offset };
+  }
+  return { node: pick.node, offset: pick.offset };
 }
 
 /** 选区变了 / 页面滚了：手柄要跟着文字走（否则"选区还在、手柄跑掉/消失"） */
@@ -4652,7 +4708,8 @@ function caretInDragColumn(caret: { node: Node; offset: number }): boolean {
 }
 
 function moveHandleTo(x: number, y: number, light = false): void {
-  const caret = caretAtLine(x, y);
+  /* 起点手柄在行上沿、终点手柄在行下沿：插入点按**手柄那一侧**偏一点取，见 HANDLE_CARET_BIAS */
+  const caret = caretAtLine(x, y, draggingHandle === 'start' ? 'start' : 'end');
   if (!caret) return;
   // 只认文字节点上的插入点（落在元素上说明这附近没文字，等下一次移动）
   if (caret.node.nodeType !== Node.TEXT_NODE) return;
