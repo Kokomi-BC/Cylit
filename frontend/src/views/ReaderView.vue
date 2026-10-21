@@ -6853,11 +6853,22 @@ async function refreshAnnotations() {  const [a, h, n] = await Promise.all([
  * 它由 `highlights` 派生，`refreshAnnotations()` 一跑就跟着更新，不需要额外接口。
  */
 const annotatedFormulas = computed(() => {
-  const out = new Set<string>();
+  /* 值里带**那条高亮本身**与它的笔记：公式页签的圆点要显示高亮自己的颜色，点开要能打开笔记
+     （用户口径 2026-12-06）。同一个公式被标过多次时取**最后一条**（最新）。 */
+  const out = new Map<string, { color: string; highlight: Highlight; note: Note | null }>();
+  const noteOf = new Map<string, Note>();
+  for (const n of notes.value) {
+    if (n.highlight_id) noteOf.set(String(n.highlight_id), n);
+  }
   for (const h of highlights.value) {
     const text = String(h.text || '');
     if (!text.includes('$')) continue;
-    out.add(text.replace(/\$/g, '').replace(/\s+/g, ''));
+    const key = text.replace(/\$/g, '').replace(/\s+/g, '');
+    out.set(key, {
+      color: String(h.color || ''),
+      highlight: h,
+      note: noteOf.get(String(h.id)) ?? null,
+    });
   }
   return out;
 });

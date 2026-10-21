@@ -12,33 +12,44 @@
 import { computed, ref } from 'vue';
 import type { MarkdownFormula } from '@/api/types';
 import { latexToHtml } from '@/composables/useMarkdown';
+import { highlightCss } from '@/utils/highlightColors';
 import AppIcon from '@/components/AppIcon.vue';
 import type { OverlayAnchor } from '@/api/types';
 
 const props = withDefaults(defineProps<{
   items: MarkdownFormula[];
   loading?: boolean;
-  /** 已被高亮 / 笔记标过的公式（LaTeX 规范化后的集合）：让"我标过哪几条"一眼可见。
-   *  高亮存的就是公式的原始 LaTeX（见 `services/agent/annotations.create`），所以能直接比。 */
-  marked?: Set<string>;
-}>(), { loading: false, marked: () => new Set<string>() });
+  /** 已被标注的公式：LaTeX 规范化 → 那一条高亮（带颜色）与它的笔记。
+   *  高亮存的就是公式的原始 LaTeX（见 `services/agent/annotations.create`），所以能直接比。
+   *  2026-12-06：从"集合"升级成"带色与笔记的映射" —— 圆点要显示**高亮自己的颜色**，
+   *  点它要能**打开那条笔记**（用户口径）。 */
+  marked?: Map<string, { color: string; highlight: any; note: any | null }>;
+}>(), { loading: false, marked: () => new Map() });
 
 /** 与后端同一套规范化：空白一律去掉，`$` 包裹也去掉（`\\frac {a} {b}` = `\\frac{a}{b}`）。 */
 function normLatex(value?: string): string {
   return String(value || '').replace(/\$/g, '').replace(/\s+/g, '');
 }
 
-/** 这条公式标过没有（高亮 / 笔记都算，笔记必然挂在高亮上）。 */
-function isMarked(f: MarkdownFormula): boolean {
-  return props.marked.has(normLatex(f.latex));
+/** 这条公式的标注信息（没有就是 undefined）。 */
+function markOf(f: MarkdownFormula) {
+  return props.marked.get(normLatex(f.latex));
 }
 
-const markedCount = computed(() => props.items.filter(isMarked).length);
+/** 点圆点：打开那一条笔记；没有笔记时也打开浮层（不传 note 就是 view 模式新建）。 */
+function openMark(f: MarkdownFormula, ev: MouseEvent) {
+  ev.stopPropagation();
+  const info = markOf(f);
+  if (!info) return;
+  emit('open-note', { note: info.note ?? null, highlight: info.highlight, mode: 'view' });
+}
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
   (e: 'copy', text: string): void;
   /** 浮层打开：交给阅读器那张 `BlockOverlay`（左上角只有「公式」两个字 —— 公式自己没有标题） */
+  /** 点「已标注」圆点：打开那一条笔记（交给阅读器的笔记浮层） */
+  (e: 'open-note', p: { note: any | null; highlight: any; mode?: 'view' | 'edit' }): void;
   (e: 'overlay', p: {
     icon: string; title: string; titleMd?: string;
     markdown: string; anchor?: OverlayAnchor | null;
@@ -119,9 +130,7 @@ const rows = computed(() => filtered.value.map((f) => {
         <button :class="{ active: filter === 'all' }" @click="filter = 'all'">
           全部 {{ props.items.length }}
         </button>
-        <span v-if="markedCount" class="tiny faint marked-sum" title="已标注的公式条数">
-          已标注 {{ markedCount }}
-        </span>
+
       </div>
     </div>
 
@@ -139,8 +148,15 @@ const rows = computed(() => filtered.value.map((f) => {
           class="badge dim"
           :title="`这一页还没翻译，公式来自解析产物${f.grade ? `（${f.grade} 级）` : ''}`"
         >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
-        <!-- 标过（高亮或笔记）：一枚小圆点，数量在顶部"已标注 N"里 -->
-        <span v-if="isMarked(f)" class="marked-dot" title="这条公式已标注（高亮 / 笔记）" />
+        <!-- 标过的公式：圆点用**这条高亮自己的颜色**，点开就是那条笔记（用户口径 2026-12-06） -->
+        <button
+          v-if="markOf(f)"
+          type="button"
+          class="marked-dot"
+          :style="{ background: highlightCss(markOf(f)!.color) }"
+          :title="markOf(f)!.note ? '打开这条公式的笔记' : '这条公式已标注（无笔记）'"
+          @click="openMark(f, $event)"
+        />
         <span class="spacer" />
         <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f, $event)">
           <AppIcon name="pip" :size="13" />
