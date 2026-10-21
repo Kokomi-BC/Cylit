@@ -624,22 +624,6 @@ def _resolve_registry(registry: dict, pids: list[str], rows: list[dict]) -> dict
     return row_identity.resolve_registry(registry, pids, rows)
 
 
-def _prefer_anchor_row(pids: list[str], verdict: dict, anchor: dict | None) -> list[str]:
-    """多种证据冲突时，**以还活着的 chunk 锚点为准**（把与它一致的那个 pid 排到最前）。
-
-    `_healed_item` 取第一个能解析的 pid 当落点，所以"顺序"就是"结论"。锚点（chunk 的
-    ``row_id``）是另一条独立来源：它活着就说明这一块还在原位，pid 解出来的行若与它不一致
-    （实测 A196：p020-06 vs 锚点的 p020-07），以锚点为准 —— 宁可不动，也不让引用乱跳。
-    """
-    row_id = str((anchor or {}).get("row_id") or "")
-    if not row_id or not pids:
-        return list(pids)
-    for pid in pids:
-        if str((verdict.get(pid) or {}).get("row_id") or "") == row_id:
-            return [pid] + [other for other in pids if other != pid]
-    return list(pids)
-
-
 def _heal_pids(registry: dict, pids: list[str], rows: list[dict],
                states: list[str] | None = None) -> tuple[list[str], dict]:
     """退休 pid → 同页后继 pid（`row_identity.heal_pid`）。返回 ``(新 pids, 愈合表)``。
@@ -666,6 +650,40 @@ def _heal_pids(registry: dict, pids: list[str], rows: list[dict],
         if hit["pid"] not in new_pids:
             new_pids.append(hit["pid"])
     return new_pids, healed
+
+
+def resolve_ref_pids(registry: dict, pids: list[str], rows: list[dict] | None
+                     ) -> tuple[list[str], str | None, dict]:
+    """一条引用的 pid 落到哪一级 —— **读路径与自检共用这一份判据**。
+
+    返回 ``(有效 pids, 降级原因, 逐 pid 判定)``，原因取值：
+
+    - ``None``       全部 ok（行级精确）；
+    - ``"healed"``   退休身份按后继映射/指纹找回了同一行（仍然行级精确）；
+    - ``"partial"``  剪掉失效的那几个，剩下的仍精确（一条引用常带多个 pid）；
+    - ``"gone"`` / ``"text-changed"``  认不回来 —— 只能退到 chunk 锚点（块级）。
+
+    为什么要有这个函数：这段判定以前只写在读路径里，`verify_pid_rules` 的 A4 又照着
+    自己的理解判了一遍（逐 pid 一律要求 ok），于是同一个事实两个数字（12 条 gone vs
+    实际 4 条）。判据只能有一份。
+    """
+    pids = [str(x) for x in (pids or []) if str(x)]
+    if not pids or rows is None:
+        return pids, None, {}
+    verdict = _resolve_registry(registry, pids, rows)
+    states = [str((verdict.get(pid) or {}).get("state") or "gone") for pid in pids]
+    if all(one == "ok" for one in states):
+        return pids, None, verdict
+    if "gone" in states:
+        new_pids, healed = _heal_pids(registry, pids, rows, states)
+        if healed:
+            heals = _resolve_registry(registry, new_pids, rows)
+            if all(str((heals.get(one) or {}).get("state")) == "ok" for one in new_pids):
+                return new_pids, "healed", heals
+    kept = [pid for pid, one in zip(pids, states) if one == "ok"]
+    if kept:
+        return kept, "partial", _resolve_registry(registry, kept, rows)
+    return pids, ("gone" if "gone" in states else "text-changed"), verdict
 
 
 def _page_rows(pages) -> list[dict]:
@@ -829,40 +847,16 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
         if pids:
             live_rows = rows()
             if live_rows is not None:      # 取不到读模型就不猜，直接退回 ②③
-                verdict = _resolve_registry(registry(), pids, live_rows)
-                states = [str((verdict.get(pid) or {}).get("state") or "gone")
-                          for pid in pids]
-                if all(one == "ok" for one in states):
-                    out_live.append(
-                        _healed_item(code, chunk_id, by_code, anchors, pids, verdict))
-                    continue
-                # 退休身份就地愈合：重译 / 重排会让旧 pid 退休（reason=gone），但退休记录
-                # 留着那一行的指纹与页号 —— 同页最像的活行就是它的后继。命中就按 ok 处理
-                # （只多标 pid_state=healed），命中不了才降级，绝不硬猜。
-                if "gone" in states:
-                    new_pids, healed = _heal_pids(registry(), pids, live_rows, states)
-                    if healed:
-                        heals = _resolve_registry(registry(), new_pids, live_rows)
-                        if all(str((heals.get(x) or {}).get("state")) == "ok"
-                               for x in new_pids):
-                            item = _healed_item(code, chunk_id, by_code, anchors,
-                                                new_pids, heals)
-                            item["pid_state"] = "healed"
-                            out_live.append(item)
-                            continue
-                # 愈合不行才剪：一条引用常带多个 pid（一行被拆成几行、或块内若干行），
-                # 一半活着一半退休时，**剪掉失效的那半**剩下的仍是行级精确 ——
-                # 以前「有一个 gone 就整条降级」，把本来还精确的引用一起拖进 stale。
-                # 顺序很重要：愈合优先（它能把失效那份找回原行），剪枝在后（只做减法）。
-                kept = [pid for pid, one in zip(pids, states) if one == "ok"]
-                if kept:
-                    keeps = _resolve_registry(registry(), kept, live_rows)
-                    kept = _prefer_anchor_row(kept, keeps, anchors.get(chunk_id))
-                    item = _healed_item(code, chunk_id, by_code, anchors, kept, keeps)
-                    item["pid_state"] = "partial"
+                # 判据只有一份（resolve_ref_pids）：读路径与 verify_pid_rules 共用，
+                # 免得同一个事实算出两个数字（A4 的 12 条 vs 实际的 4 条）。
+                effective, why, verdict = resolve_ref_pids(registry(), pids, live_rows)
+                if why in (None, "healed", "partial"):
+                    item = _healed_item(code, chunk_id, by_code, anchors, effective, verdict)
+                    if why:
+                        item["pid_state"] = why
                     out_live.append(item)
                     continue
-                state = "gone" if "gone" in states else "text-changed"
+                state = why
         if state is not None:
             item["pid_state"] = state
         (out_live if code in live_by_code else out_stale).append(item)

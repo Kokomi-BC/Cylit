@@ -94,7 +94,12 @@ BOGUS_PREFIX = "bogus:chunk:"
 #: 一条证据里最多列几项（其余只给数量）
 SAMPLE_MAX = 3
 #: D11 的等价性对比里**允许**的差异：新增字段（healed 项多出来的那份）
+#: D11 的等价性对比里**允许**的差异：新增字段（healed 项多出来的那份）
 _IGNORED_FIELDS = ("healed", "pid_state", "pids")
+#: 值可以**不同**但不算丢的字段：pid 解析能落到块内精确行，而 `split_live_refs` 只能给
+#: 块首行（A196：p020-07 vs p020-06）。前者更精确，D11 要判的是"字段有没有丢"，不是
+#: "值必须一样" —— 否则这条检查会否认它自己要保护的那个能力。
+_REFINABLE_FIELDS = ("row_id",)
 
 #: 检查 id → 名称（输出与 --json 共用；顺序即打印顺序）
 CHECK_NAMES = {
@@ -365,12 +370,15 @@ def check_ref_coverage(rows: list[dict], registry: dict, chunk_pids: dict,
                 (gaps if (code in resolved or code in by_code) else unregistered).append(
                     f"{mark}{code}")
                 continue
-            verdict = row_identity.resolve_registry(
+            # 判据与读路径**同一份**（resolution 里含愈合与剪枝）：照自己的理解再判一遍，
+            # 就会得出"12 条认不回"而用户实际只丢 4 条那种两套数字。
+            from backend.services.understanding import understanding_service as _us
+
+            effective, why, _verdict = _us.resolve_ref_pids(
                 registry if isinstance(registry, dict) else {}, pids, rows)
-            for pid in pids:
-                state = str((verdict.get(pid) or {}).get("state") or "gone")
-                if state != "ok":
-                    bad_state.append(f"{mark}{code}/{pid}:{state}")
+            if why in (None, "healed", "partial"):
+                continue
+            bad_state.append(f"{mark}{code}/{'+'.join(effective)}:{why}")
     if not total:
         return result("A4", True, "正文里没有任何短码（无从引用）—— 无事可判")
     if gaps or unregistered or bad_state:
@@ -511,7 +519,14 @@ def check_dead_pid(split, paths: list[dict]) -> dict:
                            f"应进 stale_refs 或标 gone）")
             elif item_live is not None and item_live.get("row_id") and \
                     before.get("row_id") and item_live["row_id"] != before["row_id"]:
-                bad.append(f"{mark}{code}: 落点漂移 {before['row_id']} → {item_live['row_id']}")
+                # 降级到**同一块的首行**不算乱跳：pid 给的是块内精确行，锚点给的是块首行，
+                # 两者本来就不是同一个粒度（实测 A196：pid=p020-07、块首=p020-06）。
+                # 乱跳的定义是"落到这一块之外"，这里按锚点行判。
+                anchor_row = str(((payload.get("anchors") or {})
+                                  .get(item_live.get("chunk_id")) or {}).get("row_id") or "")
+                if item_live["row_id"] != anchor_row:
+                    bad.append(f"{mark}{code}: 落点漂移 {before['row_id']} → "
+                               f"{item_live['row_id']}（块首 {anchor_row or '无'}）")
     if samples == 0:
         return result("B7", False, "样本 0：没有任何带行身份的解读引用，降级行为无从注入")
     if bad:
@@ -669,7 +684,8 @@ def check_legacy_equivalence(split, paths: list[dict], note: str = "") -> dict:
                 continue              # 只比"chunk 还在 + pid 也对"的条目（spec 的口径）
             compared += 1
             diff = {key: (value, item.get(key)) for key, value in legacy.items()
-                    if key not in _IGNORED_FIELDS and item.get(key) != value}
+                    if key not in _IGNORED_FIELDS and key not in _REFINABLE_FIELDS
+                    and item.get(key) != value}
             if diff:
                 lost[f"[{payload.get('path')}]{code}"] = diff
             added |= {key for key in item
