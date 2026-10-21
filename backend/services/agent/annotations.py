@@ -144,9 +144,13 @@ def find_formula_span(md: str, probe: str) -> tuple[int, int, str] | None:
         if _norm_latex(latex) == want:
             target = (start, end)
             break
-    if target is None and len(want) >= 8:
+    if target is None:
         for start, end, latex in spans:
             hay = _norm_latex(latex)
+            # 片段匹配要**两边都够长**：只要其中一方只有一两个字符，就是巧合而不是同一式子
+            # （实测 `C(f_X, b) :=` 会命中行内公式 `$b$` —— `hay in want` 成立）。
+            if min(len(want), len(hay)) < 8:
+                continue
             if want in hay or hay in want:
                 target = (start, end)
                 break
@@ -374,28 +378,40 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
             log.info("高亮锚点从 Markdown 挪到正文行（用户读的是对照 / 译文）：%s → %s",
                      anchor, hit[0])
             anchor, kind = hit[0], "row"
-    raw = anchor_text(paper_id, anchor, side=side)
-    rendered = render_like_dom(raw) if raw is not None else ""
+    def _locate(on: str):
+        """在这一面找落点：返回 (渲染文本, 命中)；这一面没有这段文字时命中为 None。"""
+        text_md = anchor_text(paper_id, anchor, side=on)
+        if text_md is None:
+            return None, None
+        return render_like_dom(text_md), locate_in_markdown(text_md, text, occurrence=occurrence)
+
+    other = "zh" if side == "en" else "en"
+    order = [side, other] if side != other else [side]
+    if is_formula_probe:
+        # 探针看上去就是公式 → **先试译文面**（哪怕调用方显式给了 en）
+        order = ["zh"] + [one for one in order if one != "zh"]
+    raw = rendered = None
     span = None
     is_formula = False
     formula_src = ""
-    if raw is not None:
-        hit = locate_in_markdown(raw, text, occurrence=occurrence)
-        if hit is not None:
-            span, is_formula, formula_src = hit
-    # 引用的文字不在这一面 → 换另一面再找一次：模型经常把**原文**的句子挂到「译文」那一面
-    #（或反过来），那一面根本没有这段字，高亮就永远画不出来（用户报的「笔记在列表里、
-    #  正文却看不到高亮」就是这么来的）。哪一面找得到就以那一面为准，并记一条日志。
-    if span is None:
-        other = "zh" if side == "en" else "en"
-        raw2 = anchor_text(paper_id, anchor, side=other)
-        if raw2 is not None:
-            rendered2 = render_like_dom(raw2)
-            hit2 = locate_in_markdown(raw2, text, occurrence=occurrence)
-            if hit2 is not None:
-                log.info("高亮换面：%s 在 %s 面找不到，改落到 %s 面", anchor, side, other)
-                side, raw, rendered = other, raw2, rendered2
-                span, is_formula, formula_src = hit2
+    for candidate in order:
+        cand_rendered, cand_hit = _locate(candidate)
+        if cand_hit is None:
+            continue
+        # 命中的是**公式**时，即便这一面是原文面也要再试译文面：侧别该跟着**匹配结果**走，
+        # 不能跟着探针长相走（实测探针写成 `C(f_X, b) :=` 时 looks_like_formula=False，
+        # 于是"公式命中了、侧别却留在 en"）。
+        if cand_hit[1] and candidate != "zh":
+            zh_rendered, zh_hit = _locate("zh")
+            if zh_hit is not None:
+                cand_rendered, cand_hit = zh_rendered, zh_hit
+                candidate = "zh"
+        if candidate != side:
+            log.info("高亮落面：%s 由 %s 面改到 %s 面（%s）", anchor, side, candidate,
+                     "公式固定译文面" if cand_hit[1] else "这一面才有这段文字")
+        side, raw, rendered = candidate, anchor_text(paper_id, anchor, side=candidate), cand_rendered
+        span, is_formula, formula_src = cand_hit
+        break
     if raw is None:
         return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
     if span is None:

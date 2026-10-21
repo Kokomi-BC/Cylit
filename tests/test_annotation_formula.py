@@ -82,6 +82,34 @@ def test_explicit_english_is_pulled_to_the_chinese_side_for_formulas(paper):
     assert paper[-1]["side"] == "zh"
 
 
+def test_a_one_letter_formula_is_not_matched_by_a_long_probe():
+    """片段匹配要**两边都够长**：否则 `C(f_X, b) :=` 会命中行内公式 `$b$`（实测）。"""
+    md = "其中 $b$ 是位宽，另有 $$C(f_X, b) := \\min\\sum |x - c_i|^2$$ 的完整式子。"
+    hit = ann.find_formula_span(md, "C(f_X, b) :=")
+    assert hit is not None
+    # 命中的必须是那条**行间公式**，不是旁边的 `$b$`
+    assert hit[2].startswith("$$C(") and "b$" not in hit[2][:3]
+    # 完全相同的短式仍然认（那是用户真的要标它）；只有"片段包含"才卡长度
+    hit_short = ann.find_formula_span(md, "b")
+    assert hit_short is not None and hit_short[2] == "$b$"
+
+
+def test_a_formula_match_pulls_the_side_to_chinese_even_without_dollar_signs(monkeypatch):
+    """命中的是公式就落译文面 —— 探针长相（没有 `$`、没有反斜杠）不算数。"""
+    md = "本页给出 $$d = 2 b$$ 这个关系。"
+    rows = [{"id": "p001-00", "original": md, "translation": md}]
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: _payloads(*rows))
+    monkeypatch.setattr(ann.svc, "anchor_page", lambda block_id: 1)
+    made: list[dict] = []
+    monkeypatch.setattr(ann.svc, "create_highlight",
+                        lambda payload, user_id=1: made.append(dict(payload)) or {"id": "h1"})
+    assert ann.looks_like_formula("d = 2 b") is False       # 探针看着不像公式
+    got = ann.create("p1", anchor="p001-00", text="d = 2 b", side="en")
+    assert got["ok"] is True
+    assert made[-1]["side"] == "zh"                        # 但命中是公式 → 译文面
+    assert made[-1]["selected_text"] == "$$d = 2 b$$"
+
+
 def test_create_highlight_still_handles_plain_text(paper):
     """文字探针不受影响（回归）：中文句子仍自动落到译文面。"""
     got = ann.create("p1", anchor="p001-00", text="本页讨论量化误差")
