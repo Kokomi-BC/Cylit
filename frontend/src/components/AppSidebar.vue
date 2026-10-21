@@ -16,6 +16,7 @@
 import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
+import SidebarFolders from '@/components/SidebarFolders.vue';
 import { loadPapers, state } from '@/stores/app';
 import { lastNavHash } from '@/stores/navMemory';
 import { railCollapsed, toggleRail } from '@/stores/shellPrefs';
@@ -125,6 +126,9 @@ async function go(item: RailItem): Promise<void> {
       </button>
     </nav>
 
+    <!-- 分类区插在导航与底部之间：自己滚动、自己可收起，「设置」永远留在视口里 -->
+    <SidebarFolders :icon-only="railCollapsed" />
+
     <!-- 底部一行：设置 + 收起 / 展开侧栏（用户口径 2026-11：这枚钮归侧栏底部，顶栏不留） -->
     <div class="rail-foot">
       <button
@@ -194,7 +198,8 @@ async function go(item: RailItem): Promise<void> {
 .rail-sep { flex: none; height: 1px; margin: 8px 10px; background: var(--divider); }
 
 /* 底部一行顶到最下面：设置（占满剩余宽度）+ 收起 / 展开那枚 24px 圆钮 */
-.rail-foot { margin-top: auto; display: flex; align-items: center; gap: 4px; }
+/* flex: none —— 窗口再矮也不许被挤：分类区收缩并自己滚动，「设置」始终整颗留在视口里 */
+.rail-foot { flex: none; margin-top: auto; display: flex; align-items: center; gap: 4px; }
 .rail-foot .rail-item { flex: 1 1 auto; min-width: 0; }
 .rail-toggle {
   flex: none; display: inline-flex; align-items: center; justify-content: center;

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from backend.api.response import envelope
 from backend.core.errors import ValidationError
-from backend.services.paper import paper_service
+from backend.services.paper import folder_service, paper_service
 from backend.services.translation import translation_service
 
 router = APIRouter(tags=["papers"])
@@ -102,11 +102,24 @@ async def list_papers(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     include_deleted: bool = Query(False),
+    folder: str | None = Query(None, description="按自定义分类过滤：分类 id，或 none = 未分类"),
 ):
     data = paper_service.list_papers(q=q, status=status, tag=tag, sort=sort,
                                      order=order, page=page, page_size=page_size,
-                                     include_deleted=include_deleted)
+                                     include_deleted=include_deleted, folder=folder)
     return envelope(data, request=request)
+
+
+@router.post("/papers/folder")
+async def assign_papers_folder(request: Request, payload: dict = Body(...)):
+    """批量归类（``folder_id=null`` = 移回未分类），返回 ``updated`` = 实际改到的篇数。
+
+    ⚠️ 这个路由必须排在 ``/papers/{paper_id}`` **之前**：FastAPI 按声明顺序匹配，
+    放到后面时 ``folder`` 会被当成论文 id 吃掉（404 "论文不存在：folder"）。
+    """
+    return envelope(folder_service.assign_papers(payload.get("paper_ids"),
+                                                payload.get("folder_id")),
+                    request=request)
 
 
 @router.get("/papers/{paper_id}")

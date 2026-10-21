@@ -26,6 +26,8 @@ export interface Paper {
   last_read_at: string | null;
   created_at: string | null;
   deleted_at: string | null;
+  /** 所属自定义分类（`null` = 未分类）；分类本身见 `PaperFolder` */
+  folder_id: string | null;
 
   /* ---- 元数据扩展（2026-10-04）：中英文摘要/关键词、领域、创新点、前置知识、
      难度、推荐阅读时间、一句话概括、类型、DOI/开源地址、字段来源 ---- */
@@ -55,6 +57,16 @@ export interface Paper {
   /** 参考文献（只有详情接口 `GET /papers/{id}` 带；列表接口不带） */
   references?: PaperReference[];
   reference_count?: number;
+}
+
+/** 论文自定义分类（单层、全局唯一，一篇论文最多属于一个）。`GET /folders` 的一行。 */
+export interface PaperFolder {
+  id: string;
+  name: string;
+  /** 组内排序序号（后端按它升序返回） */
+  sort: number;
+  /** 分类内的论文数（列表接口才有；刚建出来是 0） */
+  paper_count?: number;
 }
 
 /** 参考文献一条（离线从页产物的 `ref` 行 / Markdown 的 References 节抽出来）。 */

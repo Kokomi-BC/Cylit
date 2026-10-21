@@ -88,6 +88,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 与 `tool_trace_json` 分开 —— 那个是工具审计表，这份是"用户看得见的过程"，
     # 重开会话时前端照着它重画（老消息没有这一列，读出来空对象 → 前端回退到旧画法）。
     ("conversation_message", "run_json", "`run_json` LONGTEXT NULL"),
+    # 论文的自定义分类（`paper_folder.id`）：**允许 NULL = 未分类**，所以不给默认值 ——
+    # 给了默认值就变成三态（NULL / 空串 / 真 id），每次判未分类都要多写一个分支。
+    # 新表 `paper_folder` 由 `create_all` 建，只有这个后加的列要走这里。
+    ("paper", "folder_id", "`folder_id` VARCHAR(32) NULL"),
 )
 
 

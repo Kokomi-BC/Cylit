@@ -20,6 +20,7 @@ from backend.api import (
     agent_router, annotations_router, home_router, knowledge_router, mineru_router,
     models_router, papers_router, reader_router, settings_router, tasks_router,
 )
+from backend.api.folders import router as folders_router
 from backend.core.config import get_settings
 from backend.core.errors import NotFoundError, PaperMindError
 from backend.core.logging import get_logger, setup_logging
@@ -141,6 +142,8 @@ def create_app() -> FastAPI:
 
     # ---------------- 路由 ----------------
     app.include_router(papers_router, prefix=s.api_prefix)
+    # 论文自定义分类（文件夹）
+    app.include_router(folders_router, prefix=s.api_prefix)
     app.include_router(reader_router, prefix=s.api_prefix)
     app.include_router(tasks_router, prefix=s.api_prefix)
     app.include_router(models_router, prefix=s.api_prefix)

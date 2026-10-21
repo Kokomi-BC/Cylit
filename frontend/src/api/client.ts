@@ -53,7 +53,7 @@ function buildQuery(query?: Query): string {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   query?: Query;
   form?: FormData;
@@ -160,6 +160,8 @@ export const api = {
     request<T>(path, { ...opts, method: 'POST', body: body ?? {}, query }),
   put: <T = any>(path: string, body?: unknown, query?: Query, opts: RequestOptions = {}) =>
     request<T>(path, { ...opts, method: 'PUT', body: body ?? {}, query }),
+  patch: <T = any>(path: string, body?: unknown, query?: Query, opts: RequestOptions = {}) =>
+    request<T>(path, { ...opts, method: 'PATCH', body: body ?? {}, query }),
   del: <T = any>(path: string, query?: Query, opts: RequestOptions = {}) =>
     request<T>(path, { ...opts, method: 'DELETE', query }),
   upload: <T = any>(path: string, form: FormData, opts: RequestOptions = {}) =>

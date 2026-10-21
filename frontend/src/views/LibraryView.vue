@@ -2,15 +2,16 @@
 /**
  * 论文库：导入 → 解析 → 翻译 → 三视图阅读。
  *
- * 版式（移植自参照项目 retain-pdf 的书库页）：**顶部工具栏**（批量 / 筛选 / 排序 / 视图切换）
- * + **封面卡片网格**（列表视图可切成一行一条）+ **底部悬浮条**（导入 / 搜索 / 刷新 / 设置）。
+ * 版式（移植自参照项目 retain-pdf 的书库页）：**顶部两行**（第一行 标题 + 批量 / 筛选 / 排序 / 视图切换；
+ * 第二行 搜索 + 导入 / 刷新 / 设置）+ **封面卡片网格**（列表视图可切成一行一条）。
+ * 批量模式时两行下面再出现一条批量工具条；它们都随页面滚动，没有浮在视口上的东西。
  * 卡片本体在 `components/paper/PaperCard.vue`，点卡片打开的详情在 `PaperDetailModal.vue`。
  *
  * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`。
  * 删除语义：软删除会清理索引、知识库记录，以及**这篇论文的用户内容**
  * （对话历史 / 划词解释 / 高亮 / 笔记），PDF 文件移入 data/trash（不物理删除）。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
 import type { MineruConfig, MineruModelVersion, Paper, ParseEngine, TaskInfo } from '@/api/types';
@@ -25,6 +26,7 @@ import { debounce } from '@/utils/format';
 import {
   loadPapers, reportError, state, toast, withLoading,
 } from '@/stores/app';
+import { assignFolder, createFolder, folderName, folderState, loadFolders } from '@/stores/folders';
 import { openTab } from '@/stores/tabs';
 import { fmtRelative, paperStatus } from '@/utils/format';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -124,15 +126,17 @@ function clearFilters() {
   void refresh();
 }
 
-/** 浮层：点外面 / 按 Esc 收起（与 Menu 的关闭口径一致）。 */
+/** 浮层：点外面 / 按 Esc 收起（与 Menu 的关闭口径一致）。两个浮层各判各的，互不牵连。 */
 function onDocPointer(ev: PointerEvent) {
-  if (!filterOpen.value) return;
-  if (filterBox.value?.contains(ev.target as Node)) return;
-  filterOpen.value = false;
+  const target = ev.target as Node;
+  if (filterOpen.value && !filterBox.value?.contains(target)) filterOpen.value = false;
+  if (moveOpen.value && !moveBox.value?.contains(target)) moveOpen.value = false;
 }
 
 function onDocKey(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') filterOpen.value = false;
+  if (ev.key !== 'Escape') return;
+  filterOpen.value = false;
+  moveOpen.value = false;
 }
 
 /* ------------------------------ 批量选择 ------------------------------ */
@@ -160,6 +164,87 @@ function selectAll() {
   selectedIds.value = allSelected.value ? [] : visible.value.map((p) => p.id);
 }
 
+/* ------------------------------ 移到分类 ------------------------------
+ * 卡片菜单与批量条走同一个浮层，免得单篇/批量各写一套分类选择。 */
+
+const moveOpen = ref(false);
+const moveIds = ref<string[]>([]);
+const moveBox = ref<HTMLElement | null>(null);
+/** fixed 定位坐标：浮层贴在触发它的按钮旁边，所以不能用普通文档流定位。 */
+const movePos = ref({ top: 0, left: 0 });
+const moveBusy = ref(false);
+const newFolderOpen = ref(false);
+const newFolderName = ref('');
+const newFolderInput = ref<HTMLInputElement | null>(null);
+
+const MOVE_W = 240;
+
+/** 锚点：卡片菜单那条路没按钮可传，但 Menu 关闭时会把焦点交还给触发按钮。 */
+function moveAnchor(el?: HTMLElement | null): DOMRect | null {
+  const node = el ?? (document.activeElement as HTMLElement | null);
+  if (!node || node === document.body || typeof node.getBoundingClientRect !== 'function') return null;
+  return node.getBoundingClientRect();
+}
+
+function openMove(ids: string[], el?: HTMLElement | null) {
+  if (!ids.length) return;
+  moveIds.value = [...ids];
+  newFolderOpen.value = false;
+  newFolderName.value = '';
+  const r = moveAnchor(el);
+  const left = r
+    ? Math.min(Math.max(8, r.right - MOVE_W), window.innerWidth - MOVE_W - 8)
+    : Math.max(8, (window.innerWidth - MOVE_W) / 2);
+  const top = r ? Math.min(r.bottom + 6, window.innerHeight - 280) : 120;
+  movePos.value = { top: Math.max(8, top), left };
+  moveOpen.value = true;
+  void loadFolders();
+}
+
+function openMoveFromBatch(ev: MouseEvent) {
+  openMove(selectedIds.value, ev.currentTarget as HTMLElement);
+}
+
+async function doMove(folderId: string | null) {
+  if (moveBusy.value || !moveIds.value.length) return;
+  const ids = [...moveIds.value];
+  moveBusy.value = true;
+  const updated = await assignFolder(ids, folderId);
+  moveBusy.value = false;
+  if (!updated) {
+    toast(folderState.error || '没有论文被移动', 'error');
+    return;
+  }
+  moveOpen.value = false;
+  toast(`已把 ${updated} 篇移到「${folderName(folderId)}」`, 'ok', 3200);
+  // 归类完这批就结束：留着选中只会让人以为还能继续对它们动手
+  selectedIds.value = [];
+  batchMode.value = false;
+  await refresh();
+}
+
+/** 「新建分类…」就地变成输入框（不在浮层里再叠一层弹窗）。 */
+async function startNewFolder() {
+  newFolderOpen.value = true;
+  await nextTick();
+  newFolderInput.value?.focus();
+}
+
+async function submitNewFolder() {
+  const name = newFolderName.value.trim();
+  if (!name || moveBusy.value) return;
+  moveBusy.value = true;
+  const folder = await createFolder(name);
+  moveBusy.value = false;
+  if (!folder) {
+    toast(folderState.error || '新建分类失败', 'error');
+    return;
+  }
+  newFolderOpen.value = false;
+  newFolderName.value = '';
+  await doMove(folder.id);      // 建完就把选中的放进去：少让用户再点一次
+}
+
 /* ------------------------------ 卡片展示 ------------------------------ */
 
 /** 封面 = 第一页整页渲染（后端按需生成并缓存；没解析过的 PDF 也能出图）。 */
@@ -172,6 +257,7 @@ function cardMeta(p: Paper): string {
   const parts: string[] = [`${p.page_count || '?'} 页`];
   if (p.venue) parts.push(p.venue);
   if (p.year) parts.push(String(p.year));
+  if (p.folder_id) parts.push(folderName(p.folder_id));
   parts.push(p.last_read_at ? `读于 ${fmtRelative(p.last_read_at)}` : '未读过');
   return parts.join(' · ');
 }
@@ -217,6 +303,7 @@ function refreshNow() { refreshDebounced.cancel(); void refresh(); }
 watch(keyword, () => refreshDebounced());
 
 onMounted(async () => {
+  void loadFolders();
   await refresh();
   void pollTick();      // 进页面时若已有解析/翻译任务在跑，直接跟上状态
   document.addEventListener('pointerdown', onDocPointer, true);
@@ -631,6 +718,7 @@ function rowMenu(p: Paper): RowAction[] {
       danger: true,
       disabled: busy('remove') || !p.in_knowledge_base,
     },
+    { key: 'move', label: '移到分类', icon: 'tag' },
     { key: 'edit', label: '编辑元数据', icon: 'edit' },
     { key: 'delete', label: '删除（移入回收站）', icon: 'trash', danger: true },
     { key: 'purge', label: '彻底删除', icon: 'trash', danger: true },
@@ -655,6 +743,7 @@ function onRowAction(p: Paper, key: string) {
   if (key === 'retranslate') { askRetranslate(p); return; }
   if (key === 'insight') { void askRegenerateInsight(p); return; }
   if (key === 'remove-kb') { removeFromKb(p); return; }
+  if (key === 'move') { openMove([p.id]); return; }
   if (key === 'edit') { openEdit(p); return; }
   if (key === 'delete') { askRemove(p, false); return; }
   if (key === 'purge') { askRemove(p, true); }
@@ -999,8 +1088,7 @@ async function submitEdit() {
 
 <template>
   <div class="library-view">
-    <!-- 顶部工具栏（图1 版式）：左标题 + 计数，右 批量 / 筛选 / 排序 / 视图切换。
-         搜索与导入搬到底部悬浮条（图1 的搜索岛）—— 这里只留"看"与"筛"。 -->
+    <!-- 顶部第一行（图1 版式）：左标题 + 计数，右 批量 / 筛选 / 排序 / 视图切换。 -->
     <header class="lib-toolbar">
       <div class="lib-heading">
         <h1>论文库</h1>
@@ -1083,6 +1171,62 @@ async function submitEdit() {
         </div>
       </div>
     </header>
+
+    <!-- 顶部第二行（随页面滚动）：搜索吃满剩余宽度 + 导入 / 刷新 / 设置。 -->
+    <div class="lib-searchbar">
+      <label class="lib-search">
+        <AppIcon name="search" :size="15" />
+        <input
+          v-model="keyword"
+          type="search"
+          placeholder="搜索标题、作者、会议或年份"
+          @keyup.enter="refreshNow"
+        />
+      </label>
+      <button type="button" class="lib-tool primary" title="导入 PDF" @click="openImport">
+        <AppIcon name="add" :size="16" />导入
+      </button>
+      <button type="button" class="lib-tool square" title="刷新列表" :disabled="loading" @click="refresh">
+        <AppIcon name="refresh" :size="15" />
+      </button>
+      <button type="button" class="lib-tool square" title="设置" @click="router.push('/settings')">
+        <AppIcon name="settings" :size="15" />
+      </button>
+    </div>
+
+    <!-- 批量工具条：只在批量模式出现（顶部第三行，随页面滚动） -->
+    <div v-if="batchMode" class="lib-batch" role="toolbar" aria-label="批量操作">
+      <button type="button" class="lib-batch-x" @click="toggleBatch">取消</button>
+      <span class="lib-batch-count tnum">已选 {{ selectedCount }} / {{ visible.length }}</span>
+      <button type="button" class="lib-batch-all" :disabled="!visible.length" @click="selectAll">
+        {{ allSelected ? '取消全选' : '全选' }}
+      </button>
+      <span class="spacer" />
+      <button
+        type="button"
+        class="lib-tool"
+        :disabled="!selectedCount || batchBusy"
+        @click="openMoveFromBatch"
+      >
+        <AppIcon name="tag" :size="14" />移到分类
+      </button>
+      <button
+        type="button"
+        class="lib-tool"
+        :disabled="!selectedCount || batchBusy"
+        @click="askBatch('translate')"
+      >
+        <AppIcon name="translate" :size="14" />翻译
+      </button>
+      <button
+        type="button"
+        class="lib-tool danger"
+        :disabled="!selectedCount || batchBusy"
+        @click="askBatch('delete')"
+      >
+        <AppIcon name="trash" :size="14" />删除
+      </button>
+    </div>
 
     <!-- 加载中：与真实卡片同形的骨架（封面框 + 两行字），不用一行灰字 -->
     <div class="lib-grid" v-if="showLoading" aria-busy="true">
@@ -1178,55 +1322,51 @@ async function submitEdit() {
       @close="detailId = ''"
       @changed="refresh"
     />
-    <!-- ---------------- 底部悬浮条（图1 的搜索岛） ----------------
-         导入（+）/ 搜索 / 刷新 / 设置；`fixed` 定位在视口底部居中，与内容滚动无关。
-         批量模式时它让位给下面那条批量工具条（两边同一套定位与观感）。 -->
-    <div class="lib-dock" :class="{ away: batchMode }">
-      <button type="button" class="lib-dock-btn primary" title="导入 PDF" @click="openImport">
-        <AppIcon name="add" :size="18" />
-      </button>
-      <label class="lib-dock-search">
-        <AppIcon name="search" :size="15" />
+    <!-- 「移到分类」浮层：与筛选同一个 .lib-pop（同一套浮层语言），fixed 贴在触发它的按钮旁边。 -->
+    <Teleport to="body">
+      <div
+        v-if="moveOpen"
+        ref="moveBox"
+        class="lib-pop is-move"
+        role="dialog"
+        aria-label="移到分类"
+        :style="{ top: movePos.top + 'px', left: movePos.left + 'px' }"
+      >
+        <div class="lib-pop-label">移到分类</div>
+        <button type="button" class="lib-folder" :disabled="moveBusy" @click="doMove(null)">
+          <AppIcon name="tag" :size="13" />
+          <span class="lib-folder-name">未分类</span>
+        </button>
+        <button
+          v-for="f in folderState.items"
+          :key="f.id"
+          type="button"
+          class="lib-folder"
+          :disabled="moveBusy"
+          @click="doMove(f.id)"
+        >
+          <span class="lib-folder-name">{{ f.name }}</span>
+          <span v-if="f.paper_count" class="lib-folder-num tnum">{{ f.paper_count }}</span>
+        </button>
+        <p v-if="folderState.error" class="lib-folder-err">{{ folderState.error }}</p>
+        <div class="lib-sep" role="separator" />
         <input
-          v-model="keyword"
-          type="search"
-          placeholder="搜索标题、作者、会议或年份"
-          @keyup.enter="refreshNow"
+          v-if="newFolderOpen"
+          ref="newFolderInput"
+          v-model="newFolderName"
+          class="lib-folder-input"
+          type="text"
+          maxlength="32"
+          placeholder="分类名，回车确认"
+          @keydown.enter.prevent="submitNewFolder"
+          @keydown.esc.stop="newFolderOpen = false"
         />
-      </label>
-      <button type="button" class="lib-dock-btn" title="刷新列表" :disabled="loading" @click="refresh">
-        <AppIcon name="refresh" :size="17" />
-      </button>
-      <button type="button" class="lib-dock-btn" title="设置" @click="router.push('/settings')">
-        <AppIcon name="settings" :size="17" />
-      </button>
-    </div>
-
-    <!-- 批量工具条：替代搜索岛（不是叠在它上面），动作都要先过确认 -->
-    <div v-if="batchMode" class="lib-dock is-batch" role="toolbar" aria-label="批量操作">
-      <button type="button" class="lib-dock-cancel" @click="toggleBatch">取消</button>
-      <span class="lib-dock-count tnum">已选 {{ selectedCount }} / {{ visible.length }}</span>
-      <button type="button" class="lib-dock-select" :disabled="!visible.length" @click="selectAll">
-        {{ allSelected ? '取消全选' : '全选' }}
-      </button>
-      <span class="spacer" />
-      <button
-        type="button"
-        class="lib-dock-action"
-        :disabled="!selectedCount || batchBusy"
-        @click="askBatch('translate')"
-      >
-        <AppIcon name="translate" :size="14" />翻译
-      </button>
-      <button
-        type="button"
-        class="lib-dock-action danger"
-        :disabled="!selectedCount || batchBusy"
-        @click="askBatch('delete')"
-      >
-        <AppIcon name="trash" :size="14" />删除
-      </button>
-    </div>
+        <button v-else type="button" class="lib-folder create" :disabled="moveBusy" @click="startNewFolder">
+          <AppIcon name="add" :size="13" />
+          <span class="lib-folder-name">新建分类…</span>
+        </button>
+      </div>
+    </Teleport>
 
     <!-- 批量操作的确认（与单篇删除同一套弹窗，口径一致） -->
     <ConfirmModal
@@ -1456,8 +1596,7 @@ async function submitEdit() {
 .lib-toolbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap;
-  margin-bottom: 16px; padding-bottom: 12px;
-  border-bottom: 1px solid var(--divider);
+  margin-bottom: 10px;
 }
 .lib-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .lib-heading h1 {
@@ -1488,6 +1627,59 @@ async function submitEdit() {
   color: var(--accent-text);
 }
 .lib-tool-num { font-size: calc(11px * var(--ts, 1)); color: var(--accent-text); }
+/* 只有图标的工具按钮：收到 30px 见方，别留一大块空白 */
+.lib-tool.square { width: 30px; padding: 0; justify-content: center; }
+.lib-tool.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
+.lib-tool.primary:hover { background: var(--accent-hover); border-color: transparent; }
+.lib-tool.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--border-strong)); }
+.lib-tool.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.lib-tool:disabled { opacity: .5; cursor: default; }
+
+/* ---------------- 顶部第二行：搜索 + 导入 / 刷新 / 设置 ----------------
+ * 搜索框 flex:1 + min-width:0：窄窗口里它先收窄，右侧按钮固定宽，页面不会被撑出横向滚动。 */
+.lib-searchbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.lib-search {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 12px;
+  border-radius: var(--radius-ctl);
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.lib-search:focus-within { border-color: var(--accent); box-shadow: var(--ring); background: var(--bg-elev); }
+.lib-search input {
+  width: 100%; min-width: 0; height: 100%; padding: 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  font-size: calc(13px * var(--ts, 1));
+}
+.lib-search input:hover, .lib-search input:focus { background: transparent; box-shadow: none; border: 0; }
+.lib-searchbar .lib-tool { height: 34px; flex: none; }
+.lib-searchbar .lib-tool.square { width: 34px; }
+
+/* ---------------- 批量工具条（顶部第三行，只在批量模式出现） ---------------- */
+.lib-batch {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+.lib-batch-x {
+  flex: none; padding: 4px 9px; border-radius: var(--radius-ctl);
+  color: var(--text-dim); font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
+}
+.lib-batch-x:hover { background: var(--bg-hover); color: var(--text); }
+.lib-batch-count { flex: none; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
+.lib-batch-all {
+  flex: none; height: 26px; padding: 0 11px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
+}
+.lib-batch-all:hover:not(:disabled) { background: var(--bg-hover); }
+.lib-batch-all:disabled { opacity: .5; cursor: default; }
 
 .lib-filter { position: relative; }
 
@@ -1544,122 +1736,43 @@ async function submitEdit() {
 
 /* ---------------- 内容区：封面网格 / 列表 ----------------
  * 列宽下限 168px：宽屏一行 4–6 张封面（图1 就是这一档密度），窄屏自然降到 2 列。
- * 底部留 96px：悬浮条是 fixed 的，不占文档流，不留白最后一行会被压在它下面。 */
+ * 页面里已没有 fixed 的浮条，底部只留一点呼吸位。 */
 .lib-grid {
   display: grid; gap: 22px 18px; align-items: start;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-  padding-bottom: 96px;
+  padding-bottom: 12px;
 }
 .sk-card { min-width: 0; }
 
-.lib-list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 96px; }
+.lib-list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; }
 
-/* ---------------- 底部悬浮条 ---------------- */
-.lib-dock {
-  position: fixed; left: 50%; bottom: 16px; z-index: 40;
-  transform: translateX(-50%);
-  display: inline-flex; align-items: center; gap: 8px;
-  max-width: calc(100vw - 32px);
-  padding: 8px; border-radius: 999px;
-  /* 极强玻璃（与阅读器顶栏同一档）：渐变本体 + 柔光投影，**不画描边、不留内阴影**
-     （描边与顶部高光在深色下都会变成发光边）。本体透明度按主题分档。 */
-  --glass-bar-top: 82%;
-  --glass-bar-bottom: 70%;
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top), transparent),
-    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom), transparent));
-  border: 0;
-  box-shadow: var(--shadow-flyout);
-  backdrop-filter: blur(44px) saturate(2.4);
-  -webkit-backdrop-filter: blur(44px) saturate(2.4);
-  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur);
+/* ---------------- 移到分类浮层 ----------------
+ * 与筛选同一个 .lib-pop；坐标由锚点按钮现算，是视口坐标，所以走 fixed。 */
+.lib-pop.is-move {
+  position: fixed; right: auto; top: 0; left: 0; z-index: 300;
+  width: 240px; max-height: min(64vh, 420px); overflow-y: auto;
+  gap: 2px; padding: 8px;
 }
-/* 深色皮肤下：玻璃加实一档（与阅读器同一套口径）。
-   ⚠️ `:global()` 里要写**整条选择器**，否则 Vue 的 scoped 编译器会吞掉后半段（见 ReaderView 的注释）。 */
-:global(html.theme-dark .lib-dock) {
-  --glass-bar-top: 92%;
-  --glass-bar-bottom: 84%;
+.lib-folder {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 7px 9px; border: 0; border-radius: var(--radius-ctl);
+  background: transparent; color: var(--text);
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-@media (prefers-color-scheme: dark) {
-  :global(html[data-theme="auto"] .lib-dock),
-  :global(html:not([data-theme]) .lib-dock) {
-    --glass-bar-top: 92%;
-    --glass-bar-bottom: 84%;
-  }
+.lib-folder:hover:not(:disabled) { background: var(--bg-hover); }
+.lib-folder:focus-visible { outline: none; box-shadow: var(--ring); }
+.lib-folder:disabled { opacity: .5; cursor: default; }
+.lib-folder .icon { flex: none; color: var(--text-dim); }
+.lib-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-folder-num { flex: none; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
+.lib-folder.create { color: var(--text-dim); }
+.lib-folder-input {
+  width: 100%; height: 30px; padding: 0 9px; border-radius: var(--radius-ctl);
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1));
 }
-/* 批量模式：搜索岛**隐藏但不卸载**（输入框的焦点与内容都留着，退出批量立刻能用） */
-.lib-dock.away {
-  opacity: 0; visibility: hidden; pointer-events: none;
-  transform: translateX(-50%) translateY(8px);
-}
-
-.lib-dock-btn {
-  flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px; border-radius: 999px;
-  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); cursor: pointer;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
-              transform var(--dur-fast) var(--ease);
-}
-.lib-dock-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong));
-}
-.lib-dock-btn:active:not(:disabled) { transform: scale(.94); }
-.lib-dock-btn:disabled { opacity: .5; cursor: default; }
-.lib-dock-btn.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
-.lib-dock-btn.primary:hover { background: var(--accent-hover); }
-
-.lib-dock-search {
-  display: inline-flex; align-items: center; gap: 8px;
-  width: min(420px, calc(100vw - 210px));
-  height: 38px; padding: 0 14px; border-radius: 999px;
-  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
-.lib-dock-search:focus-within { border-color: var(--accent); box-shadow: var(--ring); background: var(--bg-elev); }
-.lib-dock-search input {
-  width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0;
-  background: transparent; box-shadow: none; font-size: calc(13px * var(--ts, 1));
-}
-.lib-dock-search input:hover, .lib-dock-search input:focus {
-  background: transparent; box-shadow: none; border: 0;
-}
-
-/* 批量条：同一位置与几何，但更宽（要放得下动作）；`spacer` 把动作推到右端 */
-.lib-dock.is-batch { width: min(640px, calc(100vw - 32px)); padding: 8px 8px 8px 14px; }
-.lib-dock-cancel {
-  flex: none; padding: 5px 9px; border-radius: var(--radius-ctl);
-  color: var(--text-dim); font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
-}
-.lib-dock-cancel:hover { background: var(--bg-hover); color: var(--text); }
-.lib-dock-count { flex: none; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.lib-dock-select {
-  flex: none; height: 28px; padding: 0 12px; border-radius: 999px;
-  border: 1px solid var(--border); background: transparent; color: var(--text);
-  font-family: inherit; font-size: calc(12px * var(--ts, 1)); cursor: pointer;
-}
-.lib-dock-select:hover:not(:disabled) { background: var(--bg-hover); }
-.lib-dock-select:disabled { opacity: .5; cursor: default; }
-.lib-dock-action {
-  flex: none; display: inline-flex; align-items: center; gap: 6px;
-  height: 32px; padding: 0 13px; border-radius: 999px;
-  border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 500; cursor: pointer;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-.lib-dock-action:hover:not(:disabled) { background: var(--bg-hover); }
-.lib-dock-action:disabled { opacity: .5; cursor: default; }
-.lib-dock-action.danger {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 38%, var(--border-strong));
-}
-.lib-dock-action.danger:hover:not(:disabled) { background: var(--danger-soft); }
-
-/* 窄屏：搜索岛收窄，批量条换行（宁可两行，也不把按钮挤成图标） */
-@media (max-width: 720px) {
-  .lib-dock-search { width: calc(100vw - 172px); }
-  .lib-dock.is-batch { flex-wrap: wrap; border-radius: var(--radius); width: calc(100vw - 24px); justify-content: center; }
-}
+.lib-folder-err { margin: 2px 0 0; font-size: calc(11px * var(--ts, 1)); color: var(--danger); }
+.lib-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
 
 .confirm-text { margin: 0 0 8px; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); line-height: 1.6; }
 .confirm-target {

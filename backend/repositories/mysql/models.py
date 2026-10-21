@@ -79,6 +79,9 @@ class Paper(Base, TimestampMixin):
     in_knowledge_base: Mapped[bool] = mapped_column(Boolean, default=False)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # 自定义分类（`paper_folder.id`）。允许 NULL = 未分类；一篇论文最多属于一个分类、只有一层。
+    # 不做外键：删分类时把这一列置 NULL 即可，论文要留下（见 folder_service.delete_folder）。
+    folder_id: Mapped[str | None] = mapped_column(String(32))
 
     # 解析摘要（便于论文库列表直接展示，不存正文）
     abstract: Mapped[str | None] = mapped_column(String(2000))
@@ -111,6 +114,23 @@ class Paper(Base, TimestampMixin):
         Index("ix_paper_status", "status"),
         Index("ix_paper_last_read_at", "last_read_at"),
     )
+
+
+# ------------------------------------------------- ①.2 自定义分类（文件夹）
+class PaperFolder(Base, TimestampMixin):
+    """论文库的自定义分类（单层文件夹）。
+
+    为什么不是"给论文加一个 category 字符串"：分类要能改名、能删、要能算"这一类有几篇" ——
+    字符串列做不到"改名一次全体生效"，也数不出空分类。单用户系统，所以分类全局唯一、不带 owner 列。
+    """
+
+    __tablename__ = "paper_folder"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: 分类名。唯一索引是**兜底**：业务层先按名查重给 409，并发窗口里才靠它报冲突。
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    #: 排序号，小的在前
+    sort: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # --------------------------------------------------- ①.1 参考文献（元数据的一部分）

@@ -261,7 +261,8 @@ def get_paper(paper_id: str, include_deleted: bool = False) -> dict:
 def list_papers(*, q: str | None = None, status: str | None = None,
                 tag: str | None = None, include_deleted: bool = False,
                 sort: str = "last_read_at", order: str = "desc",
-                page: int = 1, page_size: int = 50) -> dict:
+                page: int = 1, page_size: int = 50,
+                folder: str | None = None) -> dict:
     with session_scope() as sess:
         query = sess.query(Paper)
         if not include_deleted:
@@ -270,6 +271,10 @@ def list_papers(*, q: str | None = None, status: str | None = None,
             query = query.filter(Paper.status == status)
         if tag:
             query = query.filter(Paper.tags.like(f"%{tag}%"))
+        # `folder=none` = 未分类（folder_id IS NULL）；否则按分类 id 过滤（新加的见 folder_service）
+        if folder:
+            query = query.filter(Paper.folder_id.is_(None) if folder == "none"
+                                 else Paper.folder_id == folder)
         if q:
             like = f"%{q}%"
             query = query.filter((Paper.title.like(like)) | (Paper.authors.like(like)))
@@ -845,6 +850,8 @@ def _to_dict(row: Paper) -> dict:
         "pdf_translate_total": row.pdf_translate_total,
         "in_knowledge_base": bool(row.in_knowledge_base),
         "source_hash": row.source_hash,
+        # 自定义分类：NULL = 未分类（前端据此显示"未分类"而不是空字符串）
+        "folder_id": row.folder_id,
         "abstract": row.abstract,
         # ---- 元数据扩展（2026-10-07）：列表字段一律给数组，空值给 None 让前端区分
         #      "还没有"（None/[]）与"读过、确实没有"（""）。----
