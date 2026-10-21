@@ -334,12 +334,12 @@ def test_d11_legacy_equivalence(split):
     assert got["ok"] is True and "对比 3 条" in got["evidence"]
     assert "原样保留" in got["evidence"]
 
-    # chunk 还没带 pids（当前库的形态）：chunk_id / block_id 被清空 = 不等价，
-    # 证据里要同时写清"丢了哪些字段"与"新增字段只有 pids"
+    # chunk 还没带 pids（**老索引的形态**）：仍然要逐字段等价 —— 原 chunk 还在时
+    # _healed_item 保留它的 chunk_id / block_id / latex，pid 只提供 row_id / page。
+    # （这里以前把"chunk_id 被清空"那条缺陷写成了期望值，缺陷修好后必须跟着翻过来。）
     got = vr.check_legacy_equivalence(split, [_payload(anchors=_anchors(False))])
-    assert got["ok"] is False
-    assert "chunk_id" in got["evidence"] and "没保留旧逻辑的字段" in got["evidence"]
-    assert "新增字段 ['pids']" in got["evidence"]
+    assert got["ok"] is True, got["evidence"]
+    assert "原样保留" in got["evidence"]
 
 
 # --------------------------------------------------------------------------
@@ -360,13 +360,17 @@ def test_main_returns_1_when_a_check_fails(monkeypatch, capsys):
     monkeypatch.setattr(module, "_load_context", lambda paper_id: _ctx())
     assert module.main([]) == 0                    # 全 PASS → 0
 
-    # 老索引形态（chunk 无 metadata.pids）→ D11 FAIL → 退出码 1
-    monkeypatch.setattr(module, "_load_context",
-                        lambda paper_id: _ctx(anchors_pids=False))
+    # 造一条**真会失败**的检查（D11 现在两种形态都通过，不能再用它当反例）：
+    # 把行上的 pid 全部抹掉 → A1「行 pid 覆盖率」必然 FAIL → 退出码 1。
+    def _broken_ctx(paper_id):
+        ctx = _ctx()
+        ctx["rows"] = [dict(r, pid=None) for r in ctx["rows"]]
+        return ctx
+
+    monkeypatch.setattr(module, "_load_context", _broken_ctx)
     assert module.main([]) == 1
     out = capsys.readouterr().out
-    assert "[FAIL] D11" in out and "[PASS] A1" in out
-    assert "FAIL=1" in out
+    assert "[FAIL] A1" in out and "FAIL=" in out
 
 
 def test_main_json_payload_and_help(monkeypatch, capsys):

@@ -276,6 +276,7 @@ def check_chunk_pids(chunks: list[dict], registry: dict) -> dict:
     整个字段缺失（老索引，建块时还没有行身份）不算 FAIL，只记进证据 —— 判级与
     ``index_audit.check_chunk_pids`` 同口径（那边是 warn），重建索引后字段才会带上。
     长度不等 = FAIL；pid 在注册表里找不到 = FAIL（chunk 引用了不存在的身份）。
+    注册表为空时"找不到"没有基准（还没生成过），那时只做长度检查 —— 否则老库会整片假红。
     """
     reg = registry if isinstance(registry, dict) else {}
     known = {str(e.get("pid")) for e in (reg.get("rows") or [])

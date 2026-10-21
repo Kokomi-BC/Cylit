@@ -699,11 +699,22 @@ def _best_chunk_by_pids(pids: list[str], chunk_id: str,
 
 def _healed_item(code: str, chunk_id: str, by_code: dict, anchors: dict,
                  pids: list[str], verdict: dict) -> dict:
-    """① 的 ref 项：page / row_id 用 pid 解析出来的（重建后自愈），能配上现存 chunk
-    就再补 chunk_id / block_id / latex；配不到也给 row_id + page（chunk_id 空串）。"""
+    """① 的 ref 项：page / row_id 用 pid 解析出来的（重建后自愈）；chunk 落点**先认原 chunk**，
+    它不在了才按 pids 交集找现存 chunk，都配不上才给空 chunk_id（只留 row_id + page）。
+
+    为什么原 chunk 还活着就一个字段都不许丢：pid 解析成功说明"这一段"还在原处，可**老索引的
+    chunk 没有 metadata.pids**，按 pids 交集永远配不上它 —— 只按交集选，就会把完全有效的
+    chunk_id 清成空串，block_id / latex（公式标号精度）跟着一起丢。那是纯丢信息：
+    没有 pids 的老 chunk 照样被 pid 认回了行，chunk_id 依然是能跳过去的有效锚点。
+    """
     meta = by_code.get(code) or {}
     first = next((verdict.get(pid) or {} for pid in pids if verdict.get(pid)), {})
-    hit_id, hit = _best_chunk_by_pids(pids, chunk_id, anchors)
+    # 锚点里有它 = chunk 表里还在（_chunk_anchors 一次 in(...) 查询即"在不在 + 落在哪个块"）
+    kept = anchors.get(chunk_id) if chunk_id else None
+    if isinstance(kept, dict):
+        hit_id, hit = str(chunk_id), kept
+    else:
+        hit_id, hit = _best_chunk_by_pids(pids, chunk_id, anchors)
     item = {"code": code, "chunk_id": hit_id,
             "chunk_type": meta.get("chunk_type"),
             "page": _int_or(first.get("page"), meta.get("page"))}
@@ -729,7 +740,9 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
 
     ① pid 解析（首选）：pids = refs_json.pids[code]（老数据退现存 chunk 的
        metadata.pids）；全部 state == ok → 用解析出来的 page / row_id —— 这就是
-       "重建后自愈"：chunk id 全变了，位置仍然认得回来。
+       "重建后自愈"：chunk id 全变了，位置仍然认得回来。原 chunk 还活着时它的
+       chunk_id / block_id / latex **原样保留**（见 _healed_item：没有 pids 的老 chunk
+       按交集配不上，只按交集选就等于把有效锚点清空）；它不在了才按交集换现存 chunk。
     ② 现存 chunk 锚点（今天的行为）：pids 缺失，或解析成 text-changed / gone → 原样改用
        split_live_refs（chunk 还在就给 block_id / row_id / latex，不在就进 stale）。
        解析状态非 ok 时在项上补一个 pid_state（前端可选用）。

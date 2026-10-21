@@ -573,7 +573,7 @@ def _escalate_max_tokens(exc: Exception, current: int) -> int | None:
 
 
 def _model_id_for(path: str | None) -> str | None:
-    """每一路可以各配一个模型（空 = 用 vision 默认）。
+    """每一路可以各配一个模型（空 = 用 generation 默认）。
 
     键名：``translate_model_a`` / ``translate_model_b``（裸键，`retrieval.setting` 会先试
     ``kb.`` 前缀；两路拆开的意义之一就是"两个模型可以不同"，所以留出这个口子）。
@@ -590,44 +590,36 @@ def _model_id_for(path: str | None) -> str | None:
 
 
 def _max_tokens_hint(path: str | None) -> int | None:
-    """这一路**实际会用的**模型的 `max_tokens`：vision 优先，退回 generation，都没有就给 None。
+    """这一路**实际会用的**纯文本生成模型的 `max_tokens`；没有配置就给 None。
 
-    ⚠️ 这里必须兜住 —— 翻译本身在没有 vision 模型时会退回纯文本 generation（见
-    `_path_provider`），但输出预算原先直接去取 **vision 配置**：没配 vision 就抛
-    `ModelNotConfiguredError`，整条页级任务在开始前就失败（2026-12-04 实测：新导入的论文
-    在没有 vision 模型时 TRANSCRIBE_EN / TRANSLATE_ZH 都是 0/15 全挂，而纯文本路径本来可用）。
-    顺序与 `_path_provider` 一致：vision → generation。
+    页级翻译只走 generation（见 `_path_provider`），输出预算必须问**同一个**模型 ——
+    以前这里先去取读图模型的配置，于是没配读图模型的机器上整条任务在开始前就抛
+    `ModelNotConfiguredError`（2026-12-04 实测：新导入的论文 TRANSCRIBE_EN /
+    TRANSLATE_ZH 都是 0/15 全挂，而纯文本路径本来可用）。
     """
-    for mtype in ("vision", "generation"):
-        try:
-            cfg = model_manager.get_config(_model_id_for(path), mtype)
-        except Exception:  # noqa: BLE001 —— 某一路型没配，试下一个
-            continue
-        return (cfg.get("parameters") or {}).get("max_tokens")
-    return None
+    try:
+        cfg = model_manager.get_config(_model_id_for(path), "generation")
+    except Exception:  # noqa: BLE001 —— 没配生成模型 = 没有预算提示，用调用方的默认值
+        return None
+    return (cfg.get("parameters") or {}).get("max_tokens")
 
 
 def _path_provider(path: str | None = None):
-    """优先用 vision 模型（要读页图）；未配置时退回 generation（纯文本翻译）。
+    """页级翻译只走纯文本生成模型（generation），不带页图。
 
-    `path` 对应 `translate_model_a` / `translate_model_b` 里配置的模型 id（可为空）。
+    翻译/转录的输入是解析器抽出来的页文本，读图模型不属于这条链路 —— 它只服务于
+    扫描件解析侧（`backend/parsing/ocr/`）。`path` 对应 `translate_model_a` /
+    `translate_model_b` 里配置的模型 id（可为空）。
     """
-    model_id = _model_id_for(path)
-    try:
-        return model_manager.get_vision(model_id)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("未配置 vision 模型，退回 generation（不带页图）：%s", exc)
-        return model_manager.get_generation(model_id)
+    return model_manager.get_generation(_model_id_for(path))
 
 
 def _current_model_id(path: str | None = None) -> str | None:
-    model_id = _model_id_for(path)
-    for mtype in ("vision", "generation"):
-        try:
-            return model_manager.get_config(model_id, mtype).get("id")
-        except Exception:  # noqa: BLE001
-            continue
-    return None
+    """这一路实际用到的生成模型的 id（只探测 generation，与 `_path_provider` 一致）。"""
+    try:
+        return model_manager.get_config(_model_id_for(path), "generation").get("id")
+    except Exception:  # noqa: BLE001 —— 没配生成模型：未知模型 id
+        return None
 
 
 def _finish_paper_status(paper_id: str) -> None:

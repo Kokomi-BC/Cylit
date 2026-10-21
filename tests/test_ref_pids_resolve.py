@@ -377,3 +377,77 @@ def test_audit_ref_resolution_counts_persisted_pids() -> None:
     assert ref_pids(refs, []) == [("A001", ["r-1"])]
     assert ref_pids({"resolved": {"A001": "cid1"}},
                     [{"id": "cid1", "metadata": {"pids": ["r-9"]}}]) == [("A001", ["r-9"])]
+
+# --------------------------------------------------------------------------
+# 原 chunk 还活着：字段一个都不许丢（老索引的 chunk 没有 metadata.pids）
+# --------------------------------------------------------------------------
+
+
+def test_alive_chunk_without_pids_keeps_its_fields(monkeypatch) -> None:
+    """原 chunk 还活着 + 老 chunk 没有 metadata.pids（没重建过索引）：
+    pid 只负责 row_id / page，chunk_id / block_id / latex **原样保留**。
+
+    这正是 D11（"与旧逻辑逐字段等价"）全红的那条路：只按 pids 交集选，老 chunk 永远配不上，
+    chunk_id 被清成 ""、block_id / latex 一起丢。
+    """
+    row = _row("p003-04", 3, 4, "alpha beta gamma")
+    alive = {"p:a:unit:p001-00-p001-00:en": {"block_id": "p001-00", "row_id": None,
+                                             "latex": "E = mc^2", "pids": None}}
+    monkeypatch.setattr(us, "_chunk_anchors", lambda ids: dict(alive))
+    monkeypatch.setattr(us, "_registry", lambda pid: _reg({"r-1": row}))
+    monkeypatch.setattr(us, "_read_model_rows", lambda pid: [row])
+
+    got = us.to_dict(_understanding(
+        {"A001": "p:a:unit:p001-00-p001-00:en"},
+        _inventory(A001=("p:a:unit:p001-00-p001-00:en", 1)),     # 落库页码故意与行不同
+        pids={"A001": ["r-1"]}))
+
+    item = got["refs_resolved"][0]
+    assert got["stale_refs"] == []
+    assert item["chunk_id"] == "p:a:unit:p001-00-p001-00:en", "原 chunk 还在就不许清空"
+    assert (item["block_id"], item["latex"]) == ("p001-00", "E = mc^2"), "跟着 chunk 一起保留"
+    assert (item["row_id"], item["page"]) == ("p003-04", 3), "row_id / page 来自 pid 解析"
+    assert item["healed"] is True and item["pids"] == ["r-1"]
+    assert "pid_state" not in item
+
+
+def test_gone_original_chunk_falls_back_to_pid_matched_chunk(monkeypatch) -> None:
+    """原 chunk 不在了（重建索引后换了 id）：用 pids 交集最大的那条现存 chunk 的字段。"""
+    row = _row("p003-04", 3, 4, "alpha beta gamma")
+    anchors = {"p:a:unit:new1": {"block_id": "b-new", "row_id": "p003-04",
+                                 "latex": "y^2", "pids": ["r-1", "r-2"]},
+               "p:a:unit:far": {"block_id": "b-far", "latex": "z", "pids": ["r-9"]}}
+    monkeypatch.setattr(us, "_chunk_anchors", lambda ids: dict(anchors))
+    monkeypatch.setattr(us, "_registry", lambda pid: _reg({"r-1": row}))
+    monkeypatch.setattr(us, "_read_model_rows", lambda pid: [row])
+
+    got = us.to_dict(_understanding({"A001": "旧:cid"},
+                                    _inventory(A001=("旧:cid", 1)),
+                                    pids={"A001": ["r-1"]}))
+
+    item = got["refs_resolved"][0]
+    assert got["stale_refs"] == []
+    assert item["chunk_id"] == "p:a:unit:new1", "交集最大的现存 chunk（不是交集为 0 的那条）"
+    assert (item["block_id"], item["latex"]) == ("b-new", "y^2")
+    assert (item["row_id"], item["page"]) == ("p003-04", 3)
+    assert item["healed"] is True
+
+
+def test_gone_chunk_without_any_match_heals_without_chunk_id(monkeypatch) -> None:
+    """原 chunk 不在、现存 chunk 也没有 pid 交集：chunk_id 空串，但仍给 row_id + page + healed。"""
+    row = _row("p003-04", 3, 4, "alpha beta gamma")
+    anchors = {"p:a:unit:other": {"block_id": "b-other", "latex": "z", "pids": ["r-9"]}}
+    monkeypatch.setattr(us, "_chunk_anchors", lambda ids: dict(anchors))
+    monkeypatch.setattr(us, "_registry", lambda pid: _reg({"r-1": row}))
+    monkeypatch.setattr(us, "_read_model_rows", lambda pid: [row])
+
+    got = us.to_dict(_understanding({"A001": "旧:cid"},
+                                    _inventory(A001=("旧:cid", 1)),
+                                    pids={"A001": ["r-1"]}))
+
+    item = got["refs_resolved"][0]
+    assert got["stale_refs"] == [], "pid 认回来了就不算过期"
+    assert item["chunk_id"] == "", "只剩 pid 认得回位置"
+    assert "block_id" not in item and "latex" not in item, "没配到的 chunk 不许借字段"
+    assert (item["row_id"], item["page"]) == ("p003-04", 3)
+    assert item["healed"] is True and item["pids"] == ["r-1"]

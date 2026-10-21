@@ -1138,6 +1138,9 @@ def call_page(provider, prompt: str, image: bytes | None, *,
     else:
         system = SYSTEM_PROMPT if path is None else path_system_prompt(path)
     try:
+        # 翻译不依赖视觉模型；仅当模型本身是多模态时才会用页图。provider 取自
+        # `generation` 时 `supports_vision` 为 False，页图天然不会送进去 —— 这条分支
+        # 保留只为兼容多模态生成模型（不要按"反正不用"删掉）。
         if image and getattr(provider, "supports_vision", False):
             res = provider.generate_vision(prompt, [image], system=system,
                                            max_tokens=max_tokens)
