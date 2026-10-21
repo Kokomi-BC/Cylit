@@ -65,14 +65,16 @@ function titleOf(kind?: string | null): string {
   width: min(420px, calc(100vw - 36px));
   pointer-events: none;
 }
-/* 卡片本体：实底 + 细描边 + 浮层投影（比玻璃更符合"通知"的语义：它要能一眼读清）。 */
+/* 卡片本体：**主题色**的浅底 + 同色系描边 + 浮层投影（用户口径 2026-12-02）。
+   底子仍是 `--bg-elev`（深浅两档都能读），只掺 7% 主色 —— 换肤时整张卡跟着换色调，
+   而不是一张与主题无关的白纸。 ⚠️ 别直接把底色写成主色：那条绿/橙上的正文会糊成一片。 */
 .toast {
   pointer-events: auto;
   display: flex; align-items: flex-start; gap: 10px;
   width: 100%; padding: 13px 13px 14px 14px;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-lg) + 6px);
-  background: var(--bg-elev);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-radius: calc(var(--radius-lg) + 2px);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev));
   box-shadow: var(--shadow-flyout);
   font-size: calc(13px * var(--ts, 1)); line-height: 1.55;
 }
@@ -86,7 +88,9 @@ function titleOf(kind?: string | null): string {
 }
 .toast-body { flex: 1 1 auto; min-width: 0; }
 .toast-title {
-  font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; color: var(--text);
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 650;
+  /* 标题用主题色（正文仍走 --text-dim）：一行彩色标题就把这张卡"归到主题里" */
+  color: var(--accent-text);
 }
 .toast-text {
   margin-top: 2px;
@@ -107,19 +111,18 @@ function titleOf(kind?: string | null): string {
 
 /* ------------------------------ 动画 ------------------------------
  * 三件事一起做，才有"通知"那种利落感：
- *   ① 进：从右边滑进来 + 轻微放大（24px 位移，不大动干戈）；
- *   ② 出：往回滑 + 淡出（它就在右边，往上飘会像"掉下来"）；
+ *   ① 进：从右边滑进来 + 轻微放大（28px 位移，不大动干戈）；
+ *   ② 出：**慢慢**往回滑 + 淡出（用户口径 2026-12-02：原来是"到点就没了"）——
+ *      留 260ms，眼睛跟得上"它要走了"，不会觉得是被谁一下拔掉；
  *   ③ 中间那张被关掉后，剩下的**平滑上移**补位 —— 少了这条，列表会"跳"一下。
- * 时长/缓动全部吃全站令牌（--dur / --ease），跟其它浮层一个节奏。 */
-.toast-enter-active { transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
-.toast-leave-active {
-  transition: opacity 140ms var(--ease), transform 140ms var(--ease);
-  position: absolute;          /* 离场时脱离布局，下面的卡片立刻补位 */
-  right: 18px;
-}
+ * ⚠️ 离场**不要**改成 position:absolute（曾经这么写过）：一脱离布局，剩下的卡片瞬间补位，
+ *    而它自己还停在半路 → 看起来就是"闪一下消失"。留在文档流里，靠 .toast-move 补位才顺。
+ * ⚠️ 时长比全站 --dur（180ms）略长：提示条是"看一眼"的东西，退场太快反而像出错闪一下就没了。 */
+.toast-enter-active { transition: opacity 220ms var(--ease), transform 260ms cubic-bezier(.2, .9, .3, 1.05); }
+.toast-leave-active { transition: opacity 260ms var(--ease), transform 260ms var(--ease); }
 .toast-enter-from { opacity: 0; transform: translateX(28px) scale(.96); }
-.toast-leave-to { opacity: 0; transform: translateX(20px) scale(.98); }
-.toast-move { transition: transform var(--dur) var(--ease); }
+.toast-leave-to { opacity: 0; transform: translateX(36px) scale(.97); }
+.toast-move { transition: transform 260ms var(--ease); }
 /* 图标入场的微弹：只动图标本身，卡片几何不变（不然一行字会跟着抖） */
 @keyframes toast-ico-pop {
   0% { transform: scale(.6); opacity: 0; }
@@ -132,6 +135,7 @@ function titleOf(kind?: string | null): string {
   .toast-enter-active, .toast-leave-active, .toast-move { transition-duration: 1ms; }
   .toast-enter-active .toast-ico { animation: none; }
 }
+/* 键盘/读屏用户的减动效：内容照旧出现，只是不做位移 */
 
 @media (max-width: 640px) {
   /* 窄屏：贴满两侧留 12px，别再让 max-width 把它裁成一条窄条 */

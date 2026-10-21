@@ -46,7 +46,9 @@ export const state = reactive<AppState>({
 
 let toastSeq = 0;
 
-export function toast(message: string, kind: Toast['kind'] = 'info', ttl = 3600): number {
+/** 默认停留 4.6s（用户口径 2026-12-02：原来 3.6s "一眼就没了"，尤其带正文的通知读完要时间）。
+ *  ⚠️ 退场还有 260ms 的滑出淡出动画，所以肉眼看到的总时长比这个数再长一点。 */
+export function toast(message: string, kind: Toast['kind'] = 'info', ttl = 4600): number {
   const id = ++toastSeq;
   state.toasts.push({ id, message: String(message ?? ''), kind });
   if (ttl > 0) setTimeout(() => dismissToast(id), ttl);
