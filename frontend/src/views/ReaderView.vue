@@ -8462,9 +8462,22 @@ function renderMarkdown(text?: string | null) {
 }
 .reader > .chat-host.float :deep(.thread-head:active),
 .reader > .chat-host.float :deep(.list-head:active) { cursor: grabbing; }
+/* 兜底（用户口径：浮窗上是「手型但不是抓取」，笔记浮层才对）：
+   逐层给 cursor 总有某层被别的规则改成 pointer / auto —— 这里让浮窗里**一切不可交互的元素**
+   直接继承宿主那枚 `grab`，不再逐个猜是哪个 wrapper 掉了。按钮 / 输入框 / 可编辑区除外，
+   正文与列表那两块（要读要选）最后再改回普通箭头。 */
+.reader > .chat-host.float :deep(*:not(button):not(a):not(input):not(textarea):not([contenteditable="true"])) {
+  cursor: inherit;
+}
+.reader > .chat-host.float :deep(.msgs),
+.reader > .chat-host.float :deep(.msgs *),
+.reader > .chat-host.float :deep(.list-body),
+.reader > .chat-host.float :deep(.list-body *) { cursor: auto; }
+/* 按钮最后再统一回「点得动」的箭头手 —— 它比上面两条都晚，赢的是它 */
+.reader > .chat-host.float :deep(button) { cursor: pointer; }
+
 /* 头部上方那 12px（抓手药丸所在的一条）属于 `.chat-host` 自己、不属于头部 ——
-   鼠标停在那条上原来是一枚普通箭头。补一条透明抓取带：光标是手形，按下照旧落到
-   `.chat-host`（拖动由 `onFloatCardDown` 接管），不影响任何子元素。 */
+   补一条透明抓取带：光标是手形，按下照旧落到 `.chat-host`（拖动由 `onFloatCardDown` 接管）。 */
 .reader > .chat-host.float::before {
   content: ''; position: absolute; left: 12px; right: 12px; top: 0; height: 16px;
   cursor: grab;
@@ -8812,8 +8825,7 @@ function renderMarkdown(text?: string | null) {
    transform/opacity/pointer-events 顶回来（浮窗时侧栏是**开着**的，原位置留给 `.aside-pip`）。 */
 .reader > .chat-host.float {
   transform: none; opacity: 1; pointer-events: auto;
-  /* 整块浮窗都拖着走：光标在**宿主**这一层就给手型（正文 / 列表这些要读要选的区域
-     由 ReaderChat 自己改回普通箭头，见 `.chat.is-float` 那组规则） */
+  /* 整块浮窗都拖着走：光标在**宿主**这一层就给手型 */
   cursor: grab;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
