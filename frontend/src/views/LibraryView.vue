@@ -143,6 +143,49 @@ const filterCount = computed(() => (folderFilter.value ? 1 : 0));
 /** 界面真正渲染的那一份：关键词 / 分类 / 排序都由后端做完了，前端不再二次过滤。 */
 const visible = computed<Paper[]>(() => filtered.value);
 
+interface PaperSegment {
+  key: string;
+  /** 分组标题文案（空串 = 这一段不带标题，即非分组档的平铺列表） */
+  name: string;
+  items: Paper[];
+}
+
+/** 分组只服务于「按分类」这一档排序：其它排序**完全不走**这里（直接返回空数组）。
+ *  切段只合并「连续的同一个 folder_id」—— 顺序就是后端给的顺序（分类按 sort/name、未分类钉在
+ *  最后、组内最近阅读优先），前端**不重排**，否则前后端会各说一套顺序。 */
+const folderGroups = computed<PaperSegment[]>(() => {
+  if (sortKey.value !== 'folder:asc') return [];
+  const out: PaperSegment[] = [];
+  for (const p of visible.value) {
+    const key = p.folder_id || 'none';
+    const last = out[out.length - 1];
+    if (last && last.key === key) last.items.push(p);
+    else out.push({ key, name: key === 'none' ? '未分类' : folderName(key), items: [p] });
+  }
+  return out;
+});
+
+/** 渲染用的分段：分组档 = 每个分类一段；其它档 = 唯一一段且没有标题。
+ *  这样卡片模板只写一份，平铺与分组共用同一套 DOM，不会出现两份会走样的卡片树。 */
+const segments = computed<PaperSegment[]>(() => (
+  sortKey.value === 'folder:asc'
+    ? folderGroups.value
+    : [{ key: '__all__', name: '', items: visible.value }]
+));
+
+/** 已收起的段（空数组 = 全部展开，默认）。**有意不持久化**：刷新 / 重进库页一律回到全展开 ——
+ *  记住上次折了哪几组只会让人以为论文丢了，列表的折叠态也不该多进一条 localStorage。 */
+const collapsedGroups = ref<string[]>([]);
+
+function isGroupOpen(key: string): boolean {
+  return !collapsedGroups.value.includes(key);
+}
+
+function toggleGroup(key: string): void {
+  collapsedGroups.value = collapsedGroups.value.includes(key)
+    ? collapsedGroups.value.filter((k) => k !== key)
+    : [...collapsedGroups.value, key];
+}
 function clearFilters() {
   folderFilter.value = '';
   syncFolderQuery('');
@@ -1232,31 +1275,54 @@ async function submitEdit() {
         刷新失败：{{ loadError }}（下方为上次成功加载的数据）
       </p>
 
-      <!-- 封面网格（图1 版式）/ 列表：同一份数据两种排布，卡片本体见 PaperCard.vue -->
-      <div :class="viewMode === 'grid' ? 'lib-grid' : 'lib-list'">
-        <PaperCard
-          v-for="p in visible"
-          :key="p.id"
-          :variant="viewMode"
-          :title="p.title"
-          :cover-url="coverUrl(p)"
-          :meta="cardMeta(p)"
-          :folder-label="folderLabelOf(p)"
-          :progress="progressOf(p)"
-          :foot-note="cardFoot(p)"
-          :running="!!activeTaskOf(p) || inFlight(p)"
-          :action-label="pipelineLabel(p)"
-          :show-action="stage(p) !== 'translated'"
-          :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
-          :menu="rowMenu()"
-          :batch="batchMode"
-          :selected="selectedIds.includes(p.id)"
-          @open="detailId = p.id"
-          @read="openPaper(p.id)"
-          @action="runPipeline(p)"
-          @pick="onRowAction(p, $event)"
-          @toggle="toggleSelect(p.id)"
-        />
+      <!-- 封面网格（图1 版式）/ 列表：同一份数据两种排布，卡片本体见 PaperCard.vue。
+           「按分类」排序时外面多一层分组：标题行 + 该段**同一个** .lib-grid / .lib-list ——
+           网格 / 列表本身的定义一行没改，只是多了一层包装，标题因此天然占满整行。 -->
+      <div class="lib-groups">
+        <div v-for="seg in segments" :key="seg.key" class="lib-group">
+          <button
+            v-if="seg.name"
+            type="button"
+            class="lib-group-head"
+            :aria-expanded="isGroupOpen(seg.key)"
+            :title="isGroupOpen(seg.key) ? `收起「${seg.name}」` : `展开「${seg.name}」`"
+            @click="toggleGroup(seg.key)"
+          >
+            <AppIcon
+              class="lib-group-caret"
+              :name="isGroupOpen(seg.key) ? 'chevron-down' : 'chevron-right'"
+              :size="18"
+            />
+            <span class="lib-group-name">{{ seg.name }}</span>
+            <span class="lib-group-count tnum">{{ seg.items.length }}</span>
+          </button>
+          <!-- 收起时整段不渲染（标题与计数仍在上方），展开态才渲染卡片 -->
+          <div v-if="isGroupOpen(seg.key)" :class="viewMode === 'grid' ? 'lib-grid' : 'lib-list'">
+            <PaperCard
+              v-for="p in seg.items"
+              :key="p.id"
+              :variant="viewMode"
+              :title="p.title"
+              :cover-url="coverUrl(p)"
+              :meta="cardMeta(p)"
+              :folder-label="folderLabelOf(p)"
+              :progress="progressOf(p)"
+              :foot-note="cardFoot(p)"
+              :running="!!activeTaskOf(p) || inFlight(p)"
+              :action-label="pipelineLabel(p)"
+              :show-action="stage(p) !== 'translated'"
+              :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
+              :menu="rowMenu()"
+              :batch="batchMode"
+              :selected="selectedIds.includes(p.id)"
+              @open="detailId = p.id"
+              @read="openPaper(p.id)"
+              @action="runPipeline(p)"
+              @pick="onRowAction(p, $event)"
+              @toggle="toggleSelect(p.id)"
+            />
+          </div>
+        </div>
       </div>
     </template>
 
@@ -1698,6 +1764,28 @@ async function submitEdit() {
 }
 .sk-card { min-width: 0; }
 
+.lib-list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; }
+
+/* ---------------- 分组（只在「按分类」排序时出现） ----------------
+ * 标题行 34px、与下方卡片隔 10px；组与组之间 20px。段内的 .lib-grid / .lib-list 不再自带
+ * 底部留白，否则那 12px 会和这里的 gap 叠成 32px。 */
+.lib-groups { display: flex; flex-direction: column; gap: 20px; min-width: 0; padding-bottom: 12px; }
+.lib-group { min-width: 0; }
+.lib-groups .lib-grid, .lib-groups .lib-list { padding-bottom: 0; }
+.lib-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 34px;
+  padding: 0 8px; margin-bottom: 10px;
+  border: 0; border-radius: var(--radius-ctl); background: transparent; color: var(--text);
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
+  text-align: left; cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.lib-group-head:hover { background: var(--bg-hover); }
+.lib-group-head:focus-visible { outline: none; box-shadow: var(--ring); }
+.lib-group-caret { flex: none; color: var(--text-faint); }
+.lib-group-head:hover .lib-group-caret { color: var(--text); }
+.lib-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-group-count { flex: none; font-size: calc(11.5px * var(--ts, 1)); font-weight: 500; color: var(--text-faint); }
 .lib-list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; }
 
 /* ---------------- 移到分类浮层 ----------------
