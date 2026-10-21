@@ -18,6 +18,7 @@
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
+import { withNoteRefs } from '@/utils/noteRefs';
 import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
@@ -1467,13 +1468,15 @@ async function saveAnswerWithColor(color: string) {
     /* 同一处高亮已经有笔记就更新它（用户可以再解释一次、再点一次颜色） */
     const listed = await api.get<{ items: Note[] }>('/notes', { paper_id: props.paperId });
     const existing = (listed.items ?? []).find((n) => n.highlight_id === highlightId) ?? null;
-    if (existing) await api.put(`/notes/${existing.id}`, { content_md: answer });
+    /* 标号跳转信息一起存（见 `utils/noteRefs`）：回答正文里的 `[1]`/`A045` 落成笔记后还要能点。 */
+    const noteMd = withNoteRefs(answer, anchorAnswerMsg.value?.citations ?? []);
+    if (existing) await api.put(`/notes/${existing.id}`, { content_md: noteMd });
     else {
       await api.post('/notes', {
         paper_id: props.paperId, block_id: blockId, highlight_id: highlightId,
         selected_text: anchor.quote || anchor.text,
         start_offset: anchor.start, end_offset: anchor.end,
-        content_md: answer,
+        content_md: noteMd,
       });
     }
     anchor.color = color;
