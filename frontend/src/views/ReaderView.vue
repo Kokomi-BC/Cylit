@@ -8462,6 +8462,14 @@ function renderMarkdown(text?: string | null) {
 }
 .reader > .chat-host.float :deep(.thread-head:active),
 .reader > .chat-host.float :deep(.list-head:active) { cursor: grabbing; }
+/* 头部上方那 12px（抓手药丸所在的一条）属于 `.chat-host` 自己、不属于头部 ——
+   鼠标停在那条上原来是一枚普通箭头。补一条透明抓取带：光标是手形，按下照旧落到
+   `.chat-host`（拖动由 `onFloatCardDown` 接管），不影响任何子元素。 */
+.reader > .chat-host.float::before {
+  content: ''; position: absolute; left: 12px; right: 12px; top: 0; height: 16px;
+  cursor: grab;
+}
+.reader.float-dragging > .chat-host.float::before { cursor: grabbing; }
 /* 右上角这组按钮：与对话页头部那组**逐字同规格**（`.th-acts` / `.th-act` 的同一套数字）——
    同一个托底托盘 + 同 26px 圆钮 + 悬停浮成 `--bg-elev` 并带一档阴影。 */
 .float-act {

@@ -1639,7 +1639,7 @@ defineExpose({ uploadFiles, ensureThread });
 </script>
 
 <template>
-  <div class="chat" @dragover.prevent="dragging = true" @dragleave="dragging = false"
+  <div class="chat" :class="{ 'is-float': props.floating }" @dragover.prevent="dragging = true" @dragleave="dragging = false"
        @drop.prevent="onDrop">
     <!-- ═══════════════ 一级：会话列表 ═══════════════ -->
     <template v-if="level === 'list'">
@@ -2261,6 +2261,14 @@ defineExpose({ uploadFiles, ensureThread });
 .th-act:active { transform: scale(.94); }
 .th-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .th-title { font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); max-width: 52%; }
+/* 浮窗态：会话头 / 列表头就是拖动把手，光标要是「抓取的手」。
+   以前只在 ReaderView 那边用 :deep(.thread-head) 写了一条，标题区常落到子元素上，
+   用户看到的是普通箭头（用户口径：笔记浮层是手形、对话浮层不是）。
+   这里按 floating 属性在组件自己的作用域里直接写一遍，最稳。 */
+.chat.is-float .thread-head,
+.chat.is-float .list-head { cursor: grab; user-select: none; }
+.chat.is-float .thread-head:active,
+.chat.is-float .list-head:active { cursor: grabbing; }
 
 .msgs {
   /* 底部这块空白是给**悬浮的输入区**让位的（JS 按实测高度覆盖，这里只是兜底） */
