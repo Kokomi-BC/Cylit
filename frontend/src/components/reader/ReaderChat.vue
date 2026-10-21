@@ -1728,11 +1728,12 @@ defineExpose({ uploadFiles, ensureThread });
                重命名 / 分享 / 多选 / 删除都收进它下面。 -->
           <div v-if="!batch" class="row-acts">
             <button
-              class="ico"
+              class="ico ico-more"
               title="更多"
+              data-conv-more
               @click.stop="rowMenu = rowMenu === c.conversation_id ? '' : c.conversation_id"
             >
-              <AppIcon name="more" :size="14" />
+              <AppIcon name="more-vert" :size="18" />
             </button>
           </div>
           <div v-if="rowMenu === c.conversation_id" class="row-menu" @click.stop>
@@ -2128,6 +2129,8 @@ defineExpose({ uploadFiles, ensureThread });
 .ico:hover { background: var(--bg-hover); color: var(--text); }
 .ico.danger:hover { background: var(--danger-soft); color: var(--danger); }
 .ico:disabled { opacity: .4; cursor: default; }
+/* 会话行上那枚「更多」：**竖排三点 + 大一号**（用户口径：改为竖向并增大按钮） */
+.ico-more { width: 30px; height: 30px; border-radius: 999px; }
 .hidden-file { display: none; }
 
 /* ── 一级：列表 ── */
@@ -2150,7 +2153,8 @@ defineExpose({ uploadFiles, ensureThread });
 .list-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 8px; }
 .row {
   position: relative;
-  display: flex; align-items: center; gap: 2px; border-radius: var(--radius);
+  /* 圆角比全局 `--radius` 收一档（用户口径：对话行的悬浮 / 选中框圆角略小一点） */
+  display: flex; align-items: center; gap: 2px; border-radius: calc(var(--radius) - 3px);
   padding: 1px 2px; margin-bottom: 2px; border: 1px solid transparent;
 }
 /* 行右上角「⋯」下面那枚小浮层（重命名 / 分享 / 多选 / 删除）：与页面同一门材质 */

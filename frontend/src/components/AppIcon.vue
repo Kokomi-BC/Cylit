@@ -110,6 +110,8 @@ const ICONS: Record<string, string> = {
   ban: '<circle cx="12" cy="12" r="8.5"/><path d="M6.6 17.4 17.4 6.6"/>',
   // 溢出菜单（等价于 Phosphor 的 DotsThree）：把次要操作收起来，避免按钮墙
   more: '<circle cx="6" cy="12" r="1.35"/><circle cx="12" cy="12" r="1.35"/><circle cx="18" cy="12" r="1.35"/>',
+  /** 竖向三点（⋮）：对话列表行上的「更多」（用户口径：改成竖向） */
+  'more-vert': '<circle cx="12" cy="5.4" r="1.45"/><circle cx="12" cy="12" r="1.45"/><circle cx="12" cy="18.6" r="1.45"/>',
 
   // ---- 动作 ----
   add: '<path d="M12 5v14M5 12h14"/>',

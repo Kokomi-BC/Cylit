@@ -3137,9 +3137,11 @@ function restoreCapsulePos(): void {
 function onCapsuleDown(ev: PointerEvent): void {
   const el = capsuleEl.value;
   if (!el) return;
-  // 只有**空白处**或**那枚抓手**才开始拖；按到按钮上仍然是点按钮
+  /* 从胶囊上**除按钮以外**的任何地方都能起拖（用户口径：拖胶囊会把 PDF 那边选中、页面还跟着滚）。
+     以前要求正好按到那 12px 的抓手：偏一点点就落进正文 —— 那一下既开始拖选 PDF、又开始滚页面。
+     现在胶囊本身（含内边距 / 抓手）都是把手，按钮、输入框、二级菜单照旧是点它们自己。 */
   const target = ev.target as HTMLElement | null;
-  if (target !== el && !target?.closest?.('[data-cap-grip]')) return;
+  if (target?.closest?.('button, a, input, label, [data-ink-options]')) return;
   const rect = el.getBoundingClientRect();
   capDrag.value = true;
   /* 拖动期间**关掉 PDF 文字层那一路选区**（用户口径 2026-12-03：拖胶囊会在 PDF 里带出一段选中）。
@@ -3147,6 +3149,9 @@ function onCapsuleDown(ev: PointerEvent): void {
      不动我们自己界面里的可选文字 —— 不需要第二套做法。 */
   lockFloatSelection(true);
   clearDocSelection();
+  /* 再加一道全局闸：拖动期间整个文档**不许选字、不许被触摸滚走**（见 base.css 的 `html.cy-cap-drag`）。
+     只锁 PDF 文字层不够 —— 译文行、侧栏、目录都还能被拖出一段选区，浏览器随之自动滚动。 */
+  document.documentElement.classList.add('cy-cap-drag');
   /* 只 preventDefault pointerdown 挡不住鼠标输入：浏览器照样会派发 mousedown，把「按住抓手拖」
      当成一次文本拖选的起点（浮层那边 2026-11-19 踩过同一条，见 onFloatCardMouseDown）。 */
   ev.preventDefault();
@@ -3204,6 +3209,7 @@ function onCapsuleUp(): void {
   capMoveNext = null;
   capDrag.value = false;
   lockFloatSelection(false);
+  document.documentElement.classList.remove('cy-cap-drag');
   capDragFrom = null;
   try { sessionStorage.setItem(CAP_POS_KEY, JSON.stringify({ x: capOffset.x, y: capOffset.y })); }
   catch { /* 隐私模式：位置只在本次内存里 */ }
@@ -8218,8 +8224,9 @@ function renderMarkdown(text?: string | null) {
   gap: 2px; width: 12px; height: 22px;
   margin-right: 2px; cursor: grab; touch-action: none;
 }
+/* 热区再放宽一档（用户口径：拖胶囊容易按漏）：竖向 ±10px、横向 ±8px，视觉仍是那三个小点 */
 .cap-grip::before {
-  content: ''; position: absolute; inset: -6px -3px; border-radius: 6px;
+  content: ''; position: absolute; inset: -10px -8px; border-radius: 8px;
 }
 .cap-grip i { display: block; width: 2px; height: 2px; border-radius: 999px; background: var(--text-faint); }
 .cap-grip:hover i { background: var(--text-dim); }

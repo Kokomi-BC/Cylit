@@ -761,3 +761,12 @@ table.data.fixed { table-layout: fixed; }
  * 而且一次手势要两次文档级样式重算。其余内容的选区由手势循环逐帧清（`clearDocSelection`）。 */
 html.cy-float-gesture .pdf-text-layer,
 html.cy-float-gesture .pdf-text-layer span { user-select: none !important; }
+
+/* 拖胶囊期间（`ReaderView` 起拖时给 `<html>` 挂 `cy-cap-drag`）：
+ * ① **整个正文都不许起选区** —— 胶囊是浮在正文上的一条，拖它时指针会一路扫过译文行 / 目录 /
+ *    侧栏，只锁 PDF 文字层挡不住（用户口径：拖胶囊会把 PDF 那边选中）；
+ * ② `touch-action: none`：触摸拖动不让浏览器把这一下判成滚页面。
+ * 胶囊自身在类挂上的那一刻已经 `preventDefault` + 指针捕获，所以它自己的拖拽不受影响。 */
+html.cy-cap-drag .reader-content,
+html.cy-cap-drag .reader-content * { user-select: none !important; -webkit-user-select: none !important; }
+html.cy-cap-drag .reader-content { touch-action: none; }
