@@ -2761,17 +2761,19 @@ defineExpose({ uploadFiles, ensureThread });
 /* ── 模型 / 推理等级浮层 ──
    左右都贴住这一行（left/right 归零）再用 max-width 收窄：胶囊在最左边，浮层向右长多少
    都出不了输入区 —— 浮层模式最窄只有 320px，溢出到面板外就点不到了。 */
-/* 内边距收到 2px / 4px（用户口径「留白更小」，第二轮）：两行菜单本来就短，
-   外圈 + 行内的横向留白只剩 6px，文字几乎贴着浮层边，重量全落在字上。 */
+/* 宽度**按内容自适应**（用户口径）：原来 right: 0 让它拉满整行输入区的宽度，
+   而两行内容的右边是一片空地 —— 看着像"左右留白很大"。现在 max-content 收边，
+   内容长了（模型名很长）才被 max-width 截住、由 .pick-val 的 truncate 收尾。
+   min-width 兜住"名字很短"的极端，免得浮层小到像一枚标签。 */
 .pick-pop {
-  position: absolute; left: 0; right: 0; bottom: calc(100% + 5px); z-index: 9;
-  max-width: 288px;
-  display: flex; flex-direction: column; gap: 1px; padding: 2px;
+  position: absolute; left: 0; right: auto; bottom: calc(100% + 5px); z-index: 9;
+  width: max-content; min-width: 176px; max-width: 288px;
+  display: flex; flex-direction: column; gap: 1px; padding: 3px;
   border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-row {
-  display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 4px;
+  display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 6px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer; flex: none;
 }
@@ -2790,14 +2792,14 @@ defineExpose({ uploadFiles, ensureThread });
      又低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）——
      子菜单只该压住正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
   position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
-  padding: 2px; border-radius: 11px; border: 1px solid var(--border);
+  padding: 3px; border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
 .pick-item {
-  display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 4px;
+  display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; text-align: left; cursor: pointer;
 }
@@ -2812,7 +2814,7 @@ defineExpose({ uploadFiles, ensureThread });
 }
 /* 副行：provider · model_name（小一号、退一档色，只做识别用） */
 .pick-item-sub { font-size: calc(10px * var(--ts, 1)); line-height: 1.25; color: var(--text-faint); }
-.pick-empty { display: flex; flex-direction: column; gap: 0; padding: 4px; }
+.pick-empty { display: flex; flex-direction: column; gap: 0; padding: 4px 6px; }
 .pick-empty .pick-item-name { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
