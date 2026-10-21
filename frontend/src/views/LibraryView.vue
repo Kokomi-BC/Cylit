@@ -42,12 +42,25 @@ const detailId = ref('');
 /* ------------------------------ 筛选与列表 ------------------------------ */
 
 const keyword = ref('');
-const sort = ref('last_read_at');
-const order = ref('desc');
-/** 正在进行的行内操作键：`import` / `tr:<id>` / `del:<id>`。 */
-const busyKey = ref('');
-/** 列表加载失败原因（非空时界面显式给出错误卡片 + 重试）。 */
-const loadError = ref('');
+
+/* 本机记忆（页面设定）：视图形态 / 排序 / 最后一次分类。关键词**故意不记**（搜索词是一次性的），
+ * 批量模式与分组折叠同理 —— 只有「页面设定」该被记住；localStorage 一律 try/catch，
+ * 隐私模式读不到就当「没有记忆」，不许因此把页面拖崩。 */
+const VIEW_KEY = 'pm.library.view';
+const SORT_KEY = 'pm.library.sort';
+const FOLDER_KEY = 'pm.library.folder';
+
+function readPref(key: string): string {
+  try { return localStorage.getItem(key) ?? ''; } catch { return ''; }
+}
+
+/** 写记忆：空串 = 没有记忆（顺手 removeItem，别在 storage 里留一排空值）。 */
+function writePref(key: string, value: string): void {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch { /* 隐私模式：存不下也不影响本次会话 */ }
+}
 
 /** 排序：把「字段 + 方向」合并成一个下拉，页面上少一个冗余控件。 */
 const SORT_OPTIONS = [
@@ -57,12 +70,27 @@ const SORT_OPTIONS = [
   { value: 'created_at:asc', label: '最早导入' },
   { value: 'title:asc', label: '标题 A→Z' },
 ] as const;
+
+/** 记忆值可能是老版本 / 手改过的脏数据：不在 SORT_OPTIONS 里就落回默认。 */
+const DEFAULT_SORT = 'last_read_at:desc';
+const SORT_VALUES = SORT_OPTIONS.map((o) => o.value) as readonly string[];
+const rememberedSort = readPref(SORT_KEY);
+const initialSort = SORT_VALUES.includes(rememberedSort) ? rememberedSort : DEFAULT_SORT;
+const sort = ref(initialSort.split(':')[0] || 'last_read_at');
+const order = ref(initialSort.split(':')[1] === 'asc' ? 'asc' : 'desc');
+
+/** 正在进行的行内操作键：`import` / `tr:<id>` / `del:<id>`。 */
+const busyKey = ref('');
+/** 列表加载失败原因（非空时界面显式给出错误卡片 + 重试）。 */
+const loadError = ref('');
+
 const sortKey = computed({
   get: () => `${sort.value}:${order.value}`,
   set: (v: string) => {
     const [s, o] = v.split(':');
     sort.value = s || 'last_read_at';
     order.value = o === 'asc' ? 'asc' : 'desc';
+    writePref(SORT_KEY, sortKey.value);      // 排序是「页面设定」，用户一改就写回
   },
 });
 
@@ -74,12 +102,11 @@ const loading = computed(() => !!state.loading.papers);
  * 形态记在本机：同一个人不该每次进来都重选一遍。
  */
 
-const VIEW_KEY = 'pm.library.view';
-const viewMode = ref<'grid' | 'list'>(localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid');
+const viewMode = ref<'grid' | 'list'>(readPref(VIEW_KEY) === 'list' ? 'list' : 'grid');
 
 function setView(v: 'grid' | 'list') {
   viewMode.value = v;
-  try { localStorage.setItem(VIEW_KEY, v); } catch { /* 隐私模式：不留也无妨 */ }
+  writePref(VIEW_KEY, v);
 }
 
 /* ------------------------------ 筛选 ------------------------------
@@ -91,7 +118,8 @@ const filterOpen = ref(false);
 const filterBox = ref<HTMLElement | null>(null);
 
 /* 分类是库页的一等维度：'' = 全部，'none' = 未分类，其余 = 分类 id。
- * 它记在**路由 query**（?folder=…）上，所以刷新、分享、从侧栏进来都还是同一个分类。 */
+ * 它记在**路由 query**（?folder=…）上，所以刷新、分享、从侧栏进来都还是同一个分类；
+ * 没有 query 时才用本机记忆（FOLDER_KEY）—— URL 优先，分享 / 深链永远复现对方看到的那一屏。 */
 const folderFilter = ref('');
 const folderFilterLabel = computed(() => (
   folderFilter.value === 'none' ? '未分类' : folderName(folderFilter.value)
@@ -110,6 +138,7 @@ function setFolder(v: string) {
   if (folderFilter.value === v) return;
   folderFilter.value = v;
   syncFolderQuery(v);
+  writePref(FOLDER_KEY, v);      // 切回「全部」时 v 是空串 = 把记忆删掉，而不是记一个空值
   void refresh();
 }
 
@@ -118,6 +147,7 @@ watch(() => route.query.folder, (q) => {
   const v = typeof q === 'string' ? q : '';
   if (v === folderFilter.value) return;
   folderFilter.value = v;
+  writePref(FOLDER_KEY, v);      // 地址栏变了 = 用户换过一次分类（前进/后退、外部链接）
   void refresh();
 });
 
@@ -135,6 +165,7 @@ watch(() => [
   } else if (folderState.items.some((f) => f.id === v)) return;
   folderFilter.value = '';
   syncFolderQuery('');
+  writePref(FOLDER_KEY, '');     // 记忆里那个分类已经不存在了：连记忆一起清，别下次又把人带回空列表
   void refresh();
 });
 
@@ -189,6 +220,7 @@ function toggleGroup(key: string): void {
 function clearFilters() {
   folderFilter.value = '';
   syncFolderQuery('');
+  writePref(FOLDER_KEY, '');      // 清筛选 = 回到「全部」，记忆跟着清
   void refresh();
 }
 
@@ -385,14 +417,18 @@ function refreshNow() { refreshDebounced.cancel(); void refresh(); }
 watch(keyword, () => refreshDebounced());
 
 onMounted(async () => {
-  folderFilter.value = typeof route.query.folder === 'string' ? route.query.folder : '';
+  // URL 优先：链接里带 folder 就以它为准（老链接 / 分享 / 侧栏点某分类进来），没有才用记忆值
+  const q = typeof route.query.folder === 'string' ? route.query.folder : '';
+  folderFilter.value = q || readPref(FOLDER_KEY);
   await loadFolders(true);      // 分类可能在别的窗口被删，回落判断要拿最新一份
   // 分类已被删（query 里那个 id 不在列表里）或未分类已归零：回落到「全部」并清掉参数，
   // 否则页面会一直停在空列表
   if (folderFilter.value && (folderFilter.value === 'none'
     ? folderState.unclassified === 0
-    : !folderState.items.some((f) => f.id === folderFilter.value))) {    folderFilter.value = '';
+    : !folderState.items.some((f) => f.id === folderFilter.value))) {
+    folderFilter.value = '';
     syncFolderQuery('');
+    writePref(FOLDER_KEY, '');   // 记忆值也可能已失效（分类被删 / 未分类归零）：回落「全部」并清掉它
   }
   await refresh();
   void pollTick();      // 进页面时若已有解析/翻译任务在跑，直接跟上状态
