@@ -8481,14 +8481,14 @@ function renderMarkdown(text?: string | null) {
 }
 .reader > .chat-host.float :deep(.thread-head:active),
 .reader > .chat-host.float :deep(.list-head:active) { cursor: grabbing; }
-/* 光标分工照笔记浮层那套来，**不做全局兜底**（上一版那条 `*` 继承把正文也说成了手型）：
+/* 光标分工（用户口径 2026-12-03 第 3 条：对话页里鼠标停在**不是文字**的地方也是 I 形，
+   一拖就选中文字）：
    · 能拖的只有两处：顶部抓手条 `.chat-grab`、会话头 / 列表头 → `grab`（按住 `grabbing`）；
-   · 正文与列表是**要读要选的文字** → 明确给 `text`（以前是继承来的箭头，选字时手感也不对）；
-   · 按钮仍是 `pointer`（`.th-act` 自己写了）。 */
-.reader > .chat-host.float :deep(.msgs),
-.reader > .chat-host.float :deep(.msgs *),
-.reader > .chat-host.float :deep(.list-body),
-.reader > .chat-host.float :deep(.list-body *) { cursor: text; }
+   · 正文/列表**不再强制 `cursor: text`** —— 那条会把整个盒子（包括内边距、消息之间的空隙、
+     头像与留白）都算成文字，指到哪儿都是 I 形。改回 `auto`：Chromium 自己只在**真的有字形**
+     的地方给 I 形，空隙里是箭头，这才是正常手感（浮窗的 `grab` 也不会漏进来，
+     `ReaderChat` 的 `.chat.is-float .msgs/.list-body` 已经把类名收回到 auto）；
+   · 按钮仍是 `pointer`（`.th-act` 自己写了，这里只兜底一遍）。 */
 .reader > .chat-host.float :deep(button) { cursor: pointer; }
 
 /* 头部上方那 12px（抓手药丸所在的一条）属于 `.chat-host` 自己、不属于头部 ——
