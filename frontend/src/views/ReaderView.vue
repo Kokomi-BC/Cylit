@@ -282,13 +282,31 @@ function peekViewOf(card: PeekCard) {
   /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 —— 有了它片段就是重复的第三份 */
   const latex = String(ask.latex || '').trim();
   const quote = quoteRaw && !quoteCovered && !latex ? quoteRaw : '';
+  /*
+   * **正文就是这条公式本身**时不要再画一遍（用户口径 2026-12-05：连续使用相同公式的问题）。
+   *
+   * 公式类的行常常**整行只有那条公式**，于是卡片变成「上面一条公式（来自 chunk 的 latex，
+   * 带竖条底色）+ 下面同一行正文再一条」。判据：把公式骨架从正文骨架里抠掉，剩下的只有
+   * 公式编号（≤2 个字符）就算「正文没有新内容」，该侧正文清空、只留那条精确的公式块；
+   * 正文里还有别的句子时**照旧两段都画**（同一行里的段落 + 公式那种要靠它区分）。
+   */
+  const coreLatex = core(latex);
+  const onlyFormula = (text: string): boolean => {
+    if (!coreLatex || !text) return false;
+    const body = core(text);
+    if (!body) return false;
+    if (body === coreLatex) return true;
+    return body.includes(coreLatex) && body.replace(coreLatex, '').length <= 2;
+  };
+  const showZh = onlyFormula(bodyZh) ? '' : bodyZh;
+  const showEn = onlyFormula(bodyEn) ? '' : bodyEn;
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
-    zh: bodyZh,
-    en: bodyEn,
+    zh: showZh,
+    en: showEn,
     /* 只有原文（未翻译的页 / 只有英文的材料）时，别让中/EN 切换出现 */
-    bilingual: Boolean(bodyZh) && Boolean(bodyEn) && bodyZh !== bodyEn,
-    body: card.lang === 'en' ? bodyEn : bodyZh,
+    bilingual: Boolean(showZh) && Boolean(showEn) && showZh !== showEn,
+    body: card.lang === 'en' ? showEn : showZh,
     imageUrl: fig?.image_url || '',
     caption,
     quote,
@@ -7983,7 +8001,9 @@ function renderMarkdown(text?: string | null) {
              v-html="mdToHtml(peekViewOf(card).quote, paperId)" />
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
              v-html="mdToHtml(peekViewOf(card).body, paperId)" />
-        <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl" class="tiny faint">
+        <!-- 有 latex（精确公式）时也算"有内容"：正文被上面那条公式去重清空后，不该再落一句"没有内容" -->
+        <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl && !peekViewOf(card).latex"
+             class="tiny faint">
           这一段没有可显示的内容（可能是图片页或纯公式块）
         </div>
       </div>
