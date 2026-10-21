@@ -374,7 +374,9 @@ function decorateRefs(html: string, cites?: AgentCitation[]) {
       const cite = byRef.get(Number(num));
       if (!cite) return whole;
       const title = escapeAttr(cite.snippet || cite.label || `引用 ${num}`);
-      return `<button type="button" class="cite-inline" title="${title}"`
+      /* 用 aria-label 而不是 title：title 会弹**浏览器原生**那一条灰气泡，
+         而悬浮标号已经会弹速览卡了 —— 两个提示叠在一起（用户口径 2026-12-04）。 */
+      return `<button type="button" class="cite-inline" aria-label="${title}"`
         + ` data-ref="${num}" data-paper="${escapeAttr(cite.paper_id || '')}"`
         + ` data-row="${escapeAttr(cite.row_id || '')}"`
         + ` data-block="${escapeAttr(cite.block_id || '')}"`
@@ -412,7 +414,7 @@ function onCitationClick(ev: MouseEvent) {
     block_id: btn.dataset.block || null,
     row_id: btn.dataset.row || null,
     page: page > 0 ? page : null,
-    label: btn.getAttribute('title') || '',
+    label: btn.getAttribute('aria-label') || '',
   } as AgentCitation);
 }
 
@@ -432,7 +434,7 @@ function onCitePeek(ev: PointerEvent) {
     page: page > 0 ? page : null,
     rowId: btn.dataset.row || null,
     blockId: btn.dataset.block || null,
-    label: btn.dataset.label || btn.getAttribute('title') || '',
+    label: btn.dataset.label || btn.getAttribute('aria-label') || '',
     /* 引用自带的片段：老引用可能既没有行 id 也没有可映射的块 id，
        这时卡片至少能显示这一两句话，而不是一句「没有可显示的内容」 */
     snippet: btn.dataset.snippet || '',

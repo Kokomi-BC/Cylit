@@ -146,7 +146,8 @@ function decorateCites(html: string): string {
          那正是「点标号却整页闪」的原因（用户 2026-12-03）。 */
       const anchor = String(ref?.row_id || ref?.block_id || '');
       return '<button type="button" class="cite-inline ins-cite"'
-        + ' title="' + escapeAttr(title) + '"'
+        /* aria-label 而不是 title：title 会弹浏览器原生那一条灰气泡，而悬浮标号本来就会弹速览卡 */
+        + ' aria-label="' + escapeAttr(title) + '"'
         + ' data-code="' + code + '"'
         + ' data-block="' + escapeAttr(anchor) + '"'
         + ' data-page="' + (ref?.page ?? '') + '"'
@@ -166,7 +167,7 @@ function onCitePeek(ev: PointerEvent) {
     page: page > 0 ? page : null,
     rowId: btn.dataset.block || null,
     blockId: btn.dataset.code || null,
-    label: btn.getAttribute('title') || '',
+    label: btn.getAttribute('aria-label') || '',
   });
 }
 
