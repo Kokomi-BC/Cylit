@@ -300,6 +300,9 @@ def test_capture_includes_inventory_only_code_with_pids(tmp_path) -> None:
     """resolved 漏登记、只有 inventory 有的 code 也要 capture（线上 A116 就是这形态）。"""
     understanding = [{"path": "a",
                       "refs_json": _refs_json({"A001": "p:a:unit:u1"}),
+                      # 正文真引用了 A116 —— 这才是"resolved 漏登记"的定义；
+                      # inventory 里**没被引用过**的短码不该被写进 resolved（见下一条用例）。
+                      "markdown": "作者把方法归纳成一个困境 [A001] …… 而这一点 [A116]。",
                       "inventory": _inventory_json([
                           {"code": "A001", "chunk_id": "p:a:unit:u1",
                            "chunk_type": "unit", "page": 1},
@@ -495,3 +498,28 @@ def test_apply_without_capture_file_is_an_error(tmp_path) -> None:
         assert "capture" in str(exc)
     else:                                  # pragma: no cover - 失败时更好看
         raise AssertionError("缺少 ref_pids.json 时必须抛 FileNotFoundError")
+
+
+def test_capture_skips_inventory_code_never_cited(tmp_path) -> None:
+    """inventory 是全篇材料（213 条）：**没被正文引用过**的短码绝不能写成 resolved。
+
+    否则重建一次就把"resolved = 引用了且能解析"的语义改掉（引用表凭空多出一百多条）。
+    """
+    understanding = [{"path": "a",
+                      "refs_json": _refs_json({"A001": "p:a:unit:u1"}),
+                      "markdown": "只引用了 [A001]。",
+                      "inventory": _inventory_json([
+                          {"code": "A001", "chunk_id": "p:a:unit:u1",
+                           "chunk_type": "unit", "page": 1},
+                          {"code": "A999", "chunk_id": "p:a:unit:u999",
+                           "chunk_type": "unit", "page": 9}])}]
+    chunk_rows = [("p:a:unit:u1", "p001-00", 1, "unit",
+                   json.dumps({"row_ids": ["p001-00"]})),
+                  ("p:a:unit:u999", "p009-00", 9, "unit",
+                   json.dumps({"row_ids": ["p009-00"]}))]
+    sess = _FakeSession(understanding, chunk_rows)
+    got = rm.capture("p", root=tmp_path, pages=_pages(),
+                     session_factory=lambda: _SessionCtx(sess),
+                     captured_at="2026-01-01T00:00:00")
+    codes = got["doc"]["paths"]["a"]["codes"]
+    assert set(codes) == {"A001"}, "没被引用的 inventory 短码不许进 resolved"

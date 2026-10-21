@@ -43,6 +43,7 @@ remap_refs），IO 只在 capture / apply 里；单测喂构造数据即可（te
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -188,6 +189,21 @@ def pids_for_chunk(chunk: dict | None, pid_of: dict[str, str]) -> list[str]:
     return pids
 
 
+#: 正文里的短码（与 understanding_service._REF_RE 同口径：A001 / 来源 Chunk: A023 都认）。
+#: 这里不 import 那个模块 —— 它会把 sqlalchemy / 服务层整条链拉进来，脚本要保持能单文件编译。
+_CITED_RE = re.compile(r"\b([A-Z]\d{2,4})\b")
+
+
+def _cited_codes(markdown: str) -> list[str]:
+    """正文里出现过的短码（按首次出现顺序去重）。"""
+    out: list[str] = []
+    for match in _CITED_RE.finditer(markdown or ""):
+        code = match.group(1).upper()
+        if code not in out:
+            out.append(code)
+    return out
+
+
 def payloads_from_rows(rows: Iterable[Any]) -> list[dict]:
     """understanding 记录 → [{"path","refs","inventory"}]（ORM 行与 dict 都吃）。"""
     out: list[dict] = []
@@ -198,6 +214,9 @@ def payloads_from_rows(rows: Iterable[Any]) -> list[dict]:
             "path": str(get("path") or ""),
             "refs": json_loads(get("refs_json"), {}) or {},
             "inventory": json_loads(get("inventory"), []) or [],
+            # 正文也用得上：inventory 是全篇材料（213 条），而"resolved 漏登记"的只有
+            # **正文真引用了**的那几条 —— 靠 markdown 才能把范围收窄到实际用到的短码。
+            "markdown": str(get("markdown") or ""),
         })
     return out
 
@@ -247,11 +266,17 @@ def build_ref_doc(paper_id: str, understanding: Sequence[dict], chunks: dict[str
         for raw_code, raw_id in resolved.items():
             code = str(raw_code)
             codes[code] = entry(str(raw_id or ""), inv_by_code.get(code) or {}, "resolved")
-        # inventory-only：resolved 漏登记的那一类，chunk_id 只有 inventory 有。
-        # 放后面（顺序 = resolved 原序 → inventory 原序），重复的以 resolved 为准。
-        for code, inv in inv_by_code.items():
-            if code not in codes:
-                codes[code] = entry(str(inv.get("chunk_id") or ""), inv, "inventory")
+        # inventory-only：**正文真引用了**、resolved 却漏登记的那一类（线上 A116 / A045）。
+        # 范围必须按 markdown 里的短码收窄：inventory 是全篇材料（213 条），把它整个并进来
+        # 会把从来没被引用过的短码写成 resolved，等于改掉"resolved = 引用了且能解析"的语义。
+        # 放后面（顺序 = resolved 原序 → 正文出现顺序），重复的以 resolved 为准。
+        for code in _cited_codes(payload.get("markdown") or ""):
+            if code in codes:
+                continue
+            inv = inv_by_code.get(code)
+            if inv is None:
+                continue
+            codes[code] = entry(str(inv.get("chunk_id") or ""), inv, "inventory")
         paths[path] = {"codes": codes}
     return {"version": VERSION, "paper_id": paper_id,
             "captured_at": captured_at or now_iso(), "paths": paths}
