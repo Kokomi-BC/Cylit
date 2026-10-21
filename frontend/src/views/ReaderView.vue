@@ -224,10 +224,13 @@ function peekViewOf(card: PeekCard) {
   };
 }
 
-/** 标题栏那枚「定位到原文」：与点标号走**同一条** focusRow，然后收起这张卡 */
+/** 标题栏那枚「定位到原文」：与点标号走**同一条** focusRow。
+ *
+ *  ⚠️ 跳完**不关卡片**（用户口径 2026-12-04）：它的用法是「看完这段再回去看别处」，
+ *  关掉就得重新悬浮一次。卡片本身已经自动钉住，留在原地即可。 */
 function jumpFromPeek(card: PeekCard): void {
   const v = peekViewOf(card);
-  closePeekCard(card);
+  card.pinned = true;
   void focusRow(v.rowId, { page: v.page || undefined, flash: true });
 }
 const brief = ref<BriefPayload | null>(null);
@@ -7817,6 +7820,7 @@ function renderMarkdown(text?: string | null) {
       :anchor="peekViewOf(card).anchor"
       :title="peekViewOf(card).title || '引用'"
       :anchored="card.pinned"
+      hide-anchor
       :width="360"
       :max-height="420"
       text-cat="chat"
@@ -7825,7 +7829,6 @@ function renderMarkdown(text?: string | null) {
       @pointerdown.capture="keepCitePeek(card)"
       @mouseenter="keepCitePeek(card)"
       @mouseleave="onCitePeekHide"
-      @toggle-anchor="card.pinned = !card.pinned"
       @close="closePeekCard(card)"
     >
       <template #head-extra>
