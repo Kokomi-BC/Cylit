@@ -483,16 +483,19 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
             # （205,206,229..241），校验层报 `order_between_chunks`+`coverage`，
             # 调用方于是整篇退回"只按目录层级"（实测就发生了这一次）。
             best: tuple[int, dict] | None = None
-            for chunk in chunks[mark:]:
-                if not chunk["rows"]:
-                    continue
+            # 按**行序**取第一个候选，且**只取这一个**：紧邻引言的那个块装不下时就放弃合并，
+            # 绝不许跳到更远的块 —— 中间那些行在各自己的块里，跳过去合并会造出
+            # 「205,206 + 229..242」这种中间有洞的块，校验层报 order_between_chunks
+            # （实测 turbo p018，B 路；最终整篇退回不用锚点）。宁可引言单独成块。
+            adjacent = sorted((c for c in chunks[mark:] if c["rows"]),
+                              key=lambda c: c["rows"][0]["index"])
+            for chunk in adjacent:
                 first = chunk["rows"][0]["index"]
                 if first <= tail:
                     continue
-                if own_size + chars(chunk["rows"]) > hard:
-                    continue
-                if best is None or first < best[0]:
+                if own_size + chars(chunk["rows"]) <= hard:
                     best = (first, chunk)
+                break
             if best is not None:
                 best[1]["rows"] = own + best[1]["rows"]
             else:
