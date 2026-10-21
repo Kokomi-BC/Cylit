@@ -185,6 +185,9 @@ export interface DomMark {
   /** **直接信偏移量、跳过文字校验**：跨行选择切出来的那几条共用整段选区文字，
    *  与单行切片天然不相等（见 ReaderRow 的说明）—— 偏移量本身是 DOM 空间里算的，可信。 */
   trust?: boolean;
+  /** 跨面的**公式**：它在另一面里是第几条公式（0 起）。给了就按这一面的第 N 个 ATOM 画，
+   *  不走文字匹配 —— 渲染文本里没有 LaTeX（见 `formulaOrdinal`）。 */
+  atom?: number;
 }
 
 export function clearUserMarks(root: HTMLElement | null): void {
@@ -298,6 +301,52 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
  * 重复副本），跟拼接文本（公式 = 1 个占位符）永远对不上。真的一点都对不上就跳过：
  * 宁可少画一条，也不要画错位置。
  */
+/** 公式的两种写法（行间优先，行内不重复计入行间内部）—— 与后端 math_spans 同一口径。 */
+const MATH_RE = /\$\$([\s\S]+?)\$\$|(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)/g;
+
+/** 公式比对前的规范化：去掉 $ 与所有空白（\\frac {a} {b} 与 \\frac{a}{b} 是同一个式子）。 */
+function normLatex(value: string): string {
+  return String(value || '').replace(/\$/g, '').replace(/\s+/g, '');
+}
+
+/** 这段文字看起来是不是**公式**（没有汉字，且带 $ 或反斜杠命令）。 */
+export function isFormulaText(text?: string | null): boolean {
+  const probe = String(text ?? '').trim();
+  if (!probe || /[\u3400-\u9fff]/.test(probe)) return false;
+  return probe.includes('$') || probe.includes('\\');
+}
+
+/**
+ * 这条公式是那一面里的**第几条**（0 起）；不是公式 / 找不到给 -1。
+ *
+ * 为什么要"序号"而不是"文字"：高亮挂在另一面时（loose），渲染文本里根本没有 LaTeX
+ * （公式被压成 1 个 U+FFFC），按文字找必然落空 —— 以前跨面的公式高亮就是这么不画的。
+ * 两面的公式**顺序一致**，所以"另一面里它是第几条"就能在**这一面**指向同一个 ATOM。
+ */
+export function formulaOrdinal(md: string, probe?: string | null): number {
+  const want = normLatex(probe ?? '');
+  if (!want) return -1;
+  const re = new RegExp(MATH_RE.source, 'g');
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(md || ''))) {
+    const latex = normLatex(match[1] ?? match[2] ?? '');
+    const short = Math.min(latex.length, want.length);
+    if (latex === want || (short >= 8 && (latex.includes(want) || want.includes(latex)))) {
+      return index;
+    }
+    index += 1;
+  }
+  return -1;
+}
+
+/** 渲染文本里所有 ATOM 的位置（公式各占 1 个字符）。 */
+function atomPositions(text: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; i += 1) if (text[i] === ATOM) out.push(i);
+  return out;
+}
+
 export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
   if (!root) return 0;
   clearUserMarks(root);
@@ -320,6 +369,14 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
          拿它做文字校验会把整条高亮判成「对不上」而一条都不画（用户报的「笔记在列表里、
          正文看不到彩色底」）。偏移量是前端在同一套 DOM 遍历里算的，直接信它。 */
       if (wrapRange(segs, start, end, m.color, m.id)) done += 1;
+      continue;
+    }
+    /* 跨面的**公式**高亮：文字里没有 LaTeX，只认 ATOM 序号（见 formulaOrdinal）。 */
+    if (typeof m.atom === 'number' && m.atom >= 0) {
+      const at = atomPositions(all)[m.atom];
+      if (typeof at === 'number') {
+        if (wrapRange(segs, at, at + 1, m.color, m.id)) done += 1;
+      }
       continue;
     }
     if (m.loose) {

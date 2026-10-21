@@ -2753,6 +2753,23 @@ async function focusRow(
   if (save) saveProgressDebounced();
 }
 
+/**
+ * 这条锚点上挂的高亮是不是**公式** → 它的 LaTeX（否则空串）。
+ *
+ * 为什么要它（用户口径 2026-12-06「定位怎么是整页定位」）：笔记/高亮只带行 id，而一行里
+ * 可能有好几枚公式 —— 不把 LaTeX 带下去，`focusRow` 只能停在"这一行"，公式行的闪烁也就
+ * 落到整行；带上下面的 `findFormula` / `flashFormulaNode` 才能精确到那一枚。
+ */
+function formulaLatexOf(anchorId: string): string {
+  const hit = highlights.value.find((h) => h.block_id === anchorId);
+  const text = String(hit?.text ?? '');
+  if (!text) return '';
+  // 与 `utils/domMarks.isFormulaText` 同一口径：没有汉字，且带 $ 或反斜杠命令
+  return /[\u3400-\u9fff]/.test(text) || !(text.includes('$') || text.includes('\\'))
+    ? ''
+    : text;
+}
+
 /** 跳到某一页（目录/页导航用） */
 async function focusPage(page: number) {
   const row = allRows.value.find((r) => r.page === page);
@@ -7760,7 +7777,8 @@ function renderMarkdown(text?: string | null) {
           :tasks="tasks"
           :paper-id="paperId"
           :insight-running="understandingRunning"
-          @focus="(id: string, page?: number, latex?: string) => focusRow(id, { page, flash: true, latex })"
+          @focus="(id: string, page?: number, latex?: string) => focusRow(
+            id, { page, flash: true, latex: latex || formulaLatexOf(id) })"
           @cite-peek="onCitePeekAsk"
           @cite-peek-hide="onCitePeekHide"
           @copy="copyFormula"

@@ -8,7 +8,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Highlight, PageRow } from '@/api/types';
 import { mdToHtml } from '@/composables/useMarkdown';
-import { markRanges, markSearchTerm } from '@/utils/domMarks';
+import { formulaOrdinal, isFormulaText, markRanges, markSearchTerm } from '@/utils/domMarks';
 
 const props = defineProps<{
   row: PageRow;
@@ -40,12 +40,21 @@ const html = computed(() => mdToHtml(text.value ?? '', props.paperId));
  * （用户口径 2026-11-26）。哪一面找得到就画在哪一面，找不到 markRanges 自己会跳过。 */
 const myMarks = computed(() => (props.highlights ?? [])
   .filter((h) => h.block_id === props.row.id && (h.scope ?? 'row') === 'row')
-  .map((h) => ({
-    start: h.start, end: h.end, color: h.color, id: h.id, text: h.text,
-    loose: (h.side ?? 'en') !== props.side,
-    /* 跨行选择切出来的几条共用整段选区文字 → 文字校验必然失败，改信偏移量 */
-    trust: Boolean(h.group_id),
-  })));
+  .map((h) => {
+    const loose = (h.side ?? 'en') !== props.side;
+    /* 跨面 + 公式：偏移量在另一面没有意义，按文字也找不到（LaTeX 不在渲染文本里，那里只有
+       一个 U+FFFC）。两面公式的顺序一致，所以取"它在另一面里是第几条"，到这一面指同一个
+       ATOM —— 这就是"跨面的公式高亮从来不画"的修法（2026-12-06）。 */
+    const otherMd = props.side === 'zh' ? props.row.original : props.row.translation;
+    const atom = loose && isFormulaText(h.text) ? formulaOrdinal(otherMd ?? '', h.text) : -1;
+    return {
+      start: h.start, end: h.end, color: h.color, id: h.id, text: h.text,
+      atom,
+      loose: loose && atom < 0,
+      /* 跨行选择切出来的几条共用整段选区文字 → 文字校验必然失败，改信偏移量 */
+      trust: Boolean(h.group_id),
+    };
+  }));
 
 /**
  * 画标记：**先高亮、后搜索命中**（顺序有讲究 —— 重画高亮时会把搜索标记所在的文本拍平，
