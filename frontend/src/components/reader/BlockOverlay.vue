@@ -73,7 +73,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
     :spawn="props.spawn || 0"
     zoomable
     hide-anchor
-    :width="480"
+    :width="props.icon === 'table' ? 660 : 480"
     :max-height="520"
     text-cat="body"
     @close="emit('close')"
@@ -141,17 +141,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
 }
 /* 内容：**不再自己定宽高**（壳子是 FloatingCard 的，宽高由拖动/缩放决定） */
 .ov-body { min-width: 0; font-size: calc(13px * var(--ts, 1)); line-height: 1.7; }
-/* 表体：格线与表头跟着主题走（这里不是正文那套 `.md-doc`，样式要自己写一份） */
-.ov-body :deep(table) {
-  border-collapse: collapse; margin: 0;
-  font-size: calc(12.5px * var(--ts, 1));
-}
-.ov-body :deep(th), .ov-body :deep(td) {
-  border: 1px solid var(--divider); padding: 5px 9px;
-  text-align: left; vertical-align: top;
-}
-.ov-body :deep(th) { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
-.ov-body :deep(td) { color: var(--text-dim); }
+/* 表体：**一个字都不在这里写**。以前这里另画了一套「1px 方格 + 表头灰底 + 数字灰字」，
+   跟站内别处（正文行 / Markdown 视图 / 知识库 / AI 解读）的论文式三线表**不是一张脸**
+   —— 用户 2026-12-06："表格显示与 Markdown 的渲染风格一致"。
+   现在统一由 base.css 的 `.md table` 负责（顶线 2px / 表头线 1px / 底线 2px、无竖线、
+   数字列右对齐、分组细线、表头不折行）；`.ov-body` 本身带 `md` 类，样式已经命中。 */
 /* 公式按块居中；宽就横滚（与笔记卡同一口径） */
 .ov-body :deep(.katex-display) { margin: 0; }
 </style>

@@ -108,7 +108,8 @@ const rows = computed(() => props.items.map((t) => ({
         :title="t.caption_original || ''"
         v-html="t.captionHtml"
       />
-      <div class="tbody" v-html="t.html" />
+      <!-- ⚠️ 这里必须带 md 类：表体的观感只由 base.css 的 .md table 决定，这一层不再自己画 -->
+      <div class="tbody md" v-html="t.html" />
     </div>
   </div>
 </template>
@@ -130,19 +131,13 @@ const rows = computed(() => props.items.map((t) => ({
 .tcap :deep(p) { margin: 0; }
 .tcap :deep(strong) { color: var(--text); }
 .tcap :deep(.katex) { font-size: 1.02em; }
-/* 表体：横向滚动、竖向裁掉（表高由内容决定，卡片不内部滚动） */
-.tbody { margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
-.tbody :deep(table) {
-  border-collapse: collapse;
-  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.45;
-}
-/* 单元格不折行：窄栏里折过之后"第几列"就对不上号了，横向滚比折行好读 */
-.tbody :deep(th), .tbody :deep(td) {
-  border: 1px solid var(--divider);
-  padding: 3px 6px; text-align: left; vertical-align: top;
-  white-space: nowrap;
-}
-.tbody :deep(th) { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
-.tbody :deep(td) { color: var(--text-dim); }
+/* 表体：以前这里另画了一套「1px 方格 + 表头灰底 + 数字灰字」，跟站内别处的论文式三线表
+   不是一张脸（用户口径 2026-12-06："表格显示与 Markdown 的渲染风格一致"）。现在观感全部交给
+   base.css 的 .md table（顶线 2px / 表头线 1px / 底线 2px、无竖线、数字列右对齐、分组细线），
+   这一层只剩两条窄栏自己的约束：
+   ① 字号跟着侧栏的 --ts 走（三线表本身是 .93em，所以这里给 12.5px 的基准）；
+   ② 单元格不折行 —— 窄栏里折过之后"第几列"就对不上号了，横向滚（.tbl-wrap）比折行好读。 */
+.tbody { margin: 4px 0 2px; font-size: calc(12.5px * var(--ts, 1)); }
+.tbody :deep(th), .tbody :deep(td) { white-space: nowrap; }
 .tbody :deep(.katex) { font-size: 1.02em; }
 </style>
