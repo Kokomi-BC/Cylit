@@ -28,6 +28,8 @@ const emit = defineEmits<{
   (e: 'overlay', p: {
     icon: string; title: string; titleMd?: string;
     markdown: string; anchor?: OverlayAnchor | null;
+    /** 浮层上「定位」要用的落点（2026-12-06）：行 id + 页 + 公式 LaTeX */
+    rowId?: string; page?: number; latex?: string;
   }): void;
 }>();
 
@@ -40,7 +42,10 @@ function plainTitle(md: string): string {
     .trim();
 }
 
-function openOverlay(t: { markdown: string; caption: string; number: string }, ev?: MouseEvent) {
+function openOverlay(
+  t: { markdown: string; caption: string; number: string; row_id?: string | null; page?: number },
+  ev?: MouseEvent,
+) {
   const cap = plainTitle(t.caption);
   const r = (ev?.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   emit('overlay', {
@@ -50,6 +55,8 @@ function openOverlay(t: { markdown: string; caption: string; number: string }, e
     titleMd: t.caption || '',
     markdown: t.markdown,
     anchor: r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null,
+    /* 浮层上的「定位」要用（用户口径 2026-12-06：图片/表格/公式浮层都要能定位回正文） */
+    rowId: t.row_id || '', page: t.page,
   });
 }
 

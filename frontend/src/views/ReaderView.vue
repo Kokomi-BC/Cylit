@@ -949,6 +949,9 @@ type BlockOverlayItem = {
   markdown?: string; imageUrl?: string;
   /** 触发它的那枚按钮的矩形：浮层贴着按钮下方打开 */
   anchor?: OverlayAnchor | null;
+  /** 定位回正文的落点（用户口径 2026-12-06：图片/表格/公式浮层也要有"定位"按钮）——
+   *  行 id + 页 + 公式 LaTeX，交给 `focusRow`（它支持行 / 页 / 公式三级）。 */
+  rowId?: string; page?: number; latex?: string;
   /** 这一张的层级（数字越大越靠上） */
   z: number;
 };
@@ -968,6 +971,13 @@ function openBlockOverlay(p: Omit<BlockOverlayItem, 'id' | 'z' | 'key'>) {
     { ...p, key, id: ++blockOverlaySeq, z: nextLayerZ() },
   ];
   persistBlockOverlays();
+}
+
+/** 浮层里的「定位到原文」：与点引用走**同一条** `focusRow`，浮层不关（看完还能回来接着看）。 */
+function locateBlockOverlay(o: BlockOverlayItem) {
+  const rowId = String(o.rowId || '');
+  if (!rowId && !o.page) return;
+  void focusRow(rowId, { page: o.page, flash: true, latex: o.latex });
 }
 
 function closeBlockOverlay(id: number) {
@@ -8347,7 +8357,9 @@ function renderMarkdown(text?: string | null) {
       :style="{ zIndex: o.z }"
       :focused="o.z === layerZ"
       :persist-key="'bo:' + o.key"
+      :can-locate="Boolean(o.rowId || o.page)"
       @activate="focusBlockOverlay(o.id)"
+      @locate="locateBlockOverlay(o)"
       @zoom-image="o.imageUrl && (zoomImage = { url: o.imageUrl, caption: o.title })"
       @close="closeBlockOverlay(o.id)"
     />

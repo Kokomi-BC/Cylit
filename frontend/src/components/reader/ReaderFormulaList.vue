@@ -46,6 +46,8 @@ const emit = defineEmits<{
   (e: 'overlay', p: {
     icon: string; title: string; titleMd?: string;
     markdown: string; anchor?: OverlayAnchor | null;
+    /** 浮层上「定位」要用的落点（2026-12-06）：行 id + 页 + 公式 LaTeX */
+    rowId?: string; page?: number; latex?: string;
   }): void;
 }>();
 
@@ -104,6 +106,8 @@ function openOverlay(f: { body: string; display: boolean } & MarkdownFormula, ev
     markdown: noteMd ? `${body}\n\n---\n\n${noteMd}` : body,
     /* 浮层贴着这枚按钮下方打开（用户口径：不要跑到左上角） */
     anchor: anchorOf(ev),
+    /* 浮层上的「定位」要用：行 id + 页 + LaTeX（公式能精确到那一枚） */
+    rowId: f.row_id || '', page: f.page, latex: f.body,
   });
 }
 

@@ -32,6 +32,8 @@ const props = defineProps<{
   imageUrl?: string;
   /** 没有锚点时（刷新恢复的那批）的斜向错开序号，避免全叠在左上角 */
   spawn?: number;
+  /** 有没有可定位的落点（图片 / 表格 / 公式都能量回正文；刷新恢复的那批可能没有） */
+  canLocate?: boolean;
 }>();
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -39,6 +41,8 @@ const emit = defineEmits<{
   (e: 'activate'): void;
   /** 图片浮层里点了那张图：交给图片查看器去放大（缩放 / 拖动 / 旋转都在那边） */
   (e: 'zoom-image'): void;
+  /** 定位回原文（用户口径 2026-12-06：图片/表格/公式浮层都要这枚按钮，样式与笔记卡一致） */
+  (e: 'locate'): void;
 }>();
 
 /* ⚠️ 没有「锚定」图钉（`hide-anchor`）：笔记浮层也是这么做的（那边交给"点过浮层就自动锚定"）。
@@ -77,6 +81,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
   >
     <template #head-lead>
       <span class="ov-icon"><AppIcon :name="props.icon" :size="13" /></span>
+    </template>
+    <!-- 定位到原文：与笔记卡那枚「定位」同一形态（`btn icon sm` + 靶心图标），
+         跳完**不关浮层**（看完还能接着看）。没有落点（刷新恢复的那批）就不给这枚钮。 -->
+    <template v-if="props.canLocate" #head-extra>
+      <button class="btn icon sm" title="定位到原文" data-block-overlay-locate
+              @click.stop="emit('locate')">
+        <AppIcon name="locate" :size="13" />
+      </button>
     </template>
     <!-- 图片：白底一块，按卡片宽度等比缩放（要缩放/旋转/切图请点图片本身开查看器） -->
     <div v-if="props.imageUrl" class="ov-image" data-block-overlay-image>

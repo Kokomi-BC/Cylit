@@ -105,6 +105,8 @@ const emit = defineEmits<{
   (e: 'overlay', p: {
     icon: string; title: string; titleMd?: string;
     markdown?: string; imageUrl?: string; anchor?: OverlayAnchor | null;
+    /** 浮层上「定位」要用的落点（2026-12-06）：行 id + 页 + 公式 LaTeX */
+    rowId?: string; page?: number; latex?: string;
   }): void;
   (e: 'save-brief'): void;
   (e: 'regenerate-brief'): void;
@@ -225,6 +227,8 @@ function openFigureOverlay(fig: FigureItem, ev?: MouseEvent) {
     titleMd: capMd,
     imageUrl: fig.card_url || fig.image_url || '',
     anchor: r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null,
+    /* 浮层上的「定位」要用：定位到那张图的图注行 */
+    rowId: fig.row_id || '', page: fig.page,
   });
 }
 
