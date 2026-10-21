@@ -68,6 +68,36 @@ async function reclamp() {
 }
 watch(() => [props.visible, props.x, props.y] as const, reclamp, { immediate: true });
 
+/* 「更多颜色」那枚是**系统取色器**：一按下去焦点就离开正文，浏览器顺手把 DOM 选区折叠掉 ——
+   用户看到的是"刚选好的文字突然不蓝了"，取色回来点色块时凡是依赖 getSelection() 的后续动作
+   （手柄、选区矩形）都在对着空选区干活（用户口径 2026-12-02：点更多颜色选区就丢）。
+   所以按下去之前先存一份范围，选完（input）立刻放回去 —— 视觉与状态都不动。 */
+let savedRange: Range | null = null;
+
+function rememberRange(): void {
+  const sel = window.getSelection();
+  savedRange = sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+}
+
+function restoreRange(): void {
+  const r = savedRange;
+  savedRange = null;
+  if (!r) return;
+  try {
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+  } catch { /* 节点已经被重渲染换掉：放不回去就作罢，别把这一次上色也带掉 */ }
+}
+
+function pickCustom(ev: Event): void {
+  restoreRange();
+  /* 取色器交回颜色之后立刻把那枚 input 的焦点交出去：父组件的 hideMenu 会看 activeElement
+     判断"取色器是不是还开着"，不收焦点的话菜单会一直赖着不消失（收在上色之后那一下）。 */
+  (ev.target as HTMLInputElement).blur?.();
+  emit('highlight', (ev.target as HTMLInputElement).value);
+}
+
 const COLOR_TITLE: Record<string, string> = {
   red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝',
   indigo: '靖蓝', violet: '紫', pink: '粉', purple: '中性',
@@ -113,9 +143,9 @@ const COLOR_TITLE: Record<string, string> = {
       />
       <!-- 自定义颜色（用户口径 2026-10-10）：一个**原生取色器**盖在七彩圆点上（与目标站同做法），
            选中即按那个 `#rrggbb` 高亮 —— 后端已放行实体色，不再是"静默变黄"。 -->
-      <label class="hl-swatch custom" title="自定义颜色">
+      <label class="hl-swatch custom" title="自定义颜色" @pointerdown="rememberRange">
         <input type="color" value="#ffd700" data-hl-custom aria-label="自定义高亮颜色"
-               @input="emit('highlight', ($event.target as HTMLInputElement).value)">
+               @input="pickCustom">
       </label>
     </span>
     <!-- 删除高亮：**禁止符号**（用户口径：删除走菜单，不再点高亮本身） -->

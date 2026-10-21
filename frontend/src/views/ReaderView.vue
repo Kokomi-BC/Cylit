@@ -686,6 +686,32 @@ const selection = reactive({
    *  只能靠这份快照（右键菜单要给"复制/高亮/询问"那几项）。 */
   rect: null as { left: number; top: number; right: number; bottom: number } | null,
 });
+
+/**
+ * 菜单打开那一刻的选区快照（只留「上色」要用的那几项）。
+ *
+ * 为什么需要：点「更多颜色」弹的是**系统取色器**，焦点一离开正文，浏览器就会折叠 DOM 选区；
+ * 取色回来时有些路径连 selection 的 offsets 也一起被清掉了 —— 那时 addHighlight 拼出来的
+ * 请求是「没有位置、没有原文」的一条，后端直接判非法，用户看到的就是
+ * 「点了颜色没反应 / 刚选好的那段没了」（用户口径 2026-12-02）。
+ * 菜单每次打开都重拍一张，所以快照永远对应当前这一次选区。
+ */
+type SelectionSnapshot = {
+  text: string; fullText: string; anchorText: string;
+  rowId: string; start: number; end: number; side: 'en' | 'zh';
+  scope: 'row' | 'markdown' | 'pdf'; mdPage: number; page: number;
+  segments: typeof selection.segments; x: number; y: number;
+};
+let menuSelSnapshot: SelectionSnapshot | null = null;
+watch(() => selection.show, (on) => {
+  if (!on) return;
+  menuSelSnapshot = {
+    text: selection.text, fullText: selection.fullText, anchorText: selection.anchorText,
+    rowId: selection.rowId, start: selection.start, end: selection.end, side: selection.side,
+    scope: selection.scope, mdPage: selection.mdPage, page: selection.page,
+    segments: selection.segments.map((s) => ({ ...s })), x: selection.x, y: selection.y,
+  };
+});
 /** 从正文划词带进「对话」面板的选区（发出去之后由面板 `clear-selection` 清掉） */
 const chatSelection = ref<AgentSelection | null>(null);
 /** 笔记浮层的状态见下面 `noteCards`（第五步：轻量浮层取代居中弹窗）。 */
@@ -3927,7 +3953,21 @@ function highlightIdsInRange(range: Range, target?: HTMLElement | null, onlyCol?
 
 /** 收划词胶囊。**顺带把右键菜单也收掉**：胶囊上的动作（高亮 / 复制 / 解释…）都是"针对这一处"的，
  *  做完之后菜单还杵在旁边只会挡正文（用户口径 2026-10-10 的连带修复）。 */
+/**
+ * 系统取色器（菜单里的「更多颜色」）是否正开着。
+ *
+ * 那个对话框是浏览器自己的 UI，**一开窗口就失焦** → 我们挂在 window 上的 blur 会调 hideMenu →
+ * 菜单被 v-if 卸掉，取色器的 input 事件就再没人接 —— 用户选完颜色什么都没发生，
+ * 看起来就是「点了更多颜色，选区/颜色一起丢了」（用户口径 2026-12-02）。
+ * 判据用 activeElement：对话框开着时被聚焦的就是那枚 input[type=color]。
+ */
+function colorPickerOpen(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  return !!el?.matches?.('input[type="color"]');
+}
+
 const hideMenu = () => {
+  if (colorPickerOpen()) return;      /* 取色器开着：先别收，等它把颜色交回来（见 pickCustom 里的 blur） */
   selection.show = false;
   ctxMenu.open = false;
   ctxMenu.rect = null;
@@ -5434,6 +5474,11 @@ interface MdSegment {
 }
 
 async function addHighlight(color: string): Promise<Highlight[]> {
+  /* 系统取色器可能把 selection 清空过（见 menuSelSnapshot 的说明）：先按快照补回来再算请求体，
+     否则 rowId / start / end / 原文全是空，后端判非法 —— 表现就是「点颜色没反应」。 */
+  if (!selection.text && !selection.segments.length && menuSelSnapshot) {
+    Object.assign(selection, menuSelSnapshot);
+  }
   const scope = selection.scope;
   // 多段选区（正文跨行 / Markdown 视图跨页）：每段一条记录，共用同一个分组 id（删除时整组一起删）
   const parts = selection.segments.length
@@ -7893,6 +7938,10 @@ function renderMarkdown(text?: string | null) {
      而胶囊自带 overflow: hidden → 里面的文字被裁掉一半（只露出字头）。 */
   align-items: flex-start;
   pointer-events: none;
+  /* 工具栏里所有**图标**统一走主题色（用户口径 2026-12-02：换主题后原来的正文色不搭）。
+     只染图标 —— 段控件（原文/译文/对照）与文字按钮保持正文色，否则三枚 tab 看着像全选中了。
+     收在一个变量里：胶囊、左右两枚 solo、⋯ 触发钮、侧栏开关都读它，改一处就全改。 */
+  --cap-icon-color: var(--accent-text);
 }
 /* 深色皮肤（含「跟随系统」落到深色的那一档）：玻璃加实一档。
  * ⚠️ :global() 必须**把整条选择器包进去**：写成 :global(html.theme-dark) .reader
@@ -7948,7 +7997,7 @@ function renderMarkdown(text?: string | null) {
 .cap-act {
   width: var(--cap-h); height: var(--cap-h); flex: none;
   display: flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 999px; background: transparent; color: var(--text);
+  border: 0; border-radius: 999px; background: transparent; color: var(--cap-icon-color);
   cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -7960,7 +8009,10 @@ function renderMarkdown(text?: string | null) {
 .reader-toolbar .cap-solo.right :deep(.menu-trigger) {
   width: 100%; height: 100%;
   border-color: transparent; background: transparent; box-shadow: none;
+  color: var(--cap-icon-color);
 }
+/* 左侧那枚侧栏开关是子组件，它自己的 scoped 规则写着正文灰 —— 父级要穿透进来才盖得住 */
+.reader-toolbar .cap-solo.left :deep(.aside-toggle) { color: var(--cap-icon-color); }
 .reader-toolbar .cap-solo.right :deep(.menu-trigger:hover),
 .reader-toolbar .cap-solo.right :deep(.menu-trigger.is-open) {
   background: var(--bg-hover); border-color: transparent;
@@ -8171,6 +8223,10 @@ function renderMarkdown(text?: string | null) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent) !important;
   color: var(--accent-text) !important;
 }
+/* 胶囊里的**图标**统一走主题色（用户口径 2026-12-02：换主题后原来的正文色不搭）。
+   只染 icon 钮：段控件与文字按钮仍是正文色，三枚 tab 才不会看起来全选中。
+   ⚠️ 写在 .tool-on 与下面两条墨色规则**之前**：那两条带 !important、且同权重靠顺序取胜。 */
+.reader-capsule .cap-group .btn.icon { color: var(--cap-icon-color); }
 /* 画笔 / 荧光笔那两枚图标用**当前选中的墨色**（用户口径 2026-10-18，荧光笔 2026-10-20 补上：
    以前只有画笔染色，荧光笔那枚永远是黑的，看不出它现在是黄还是绿）。
    ⚠️ 必须写在 .tool-on **之后**、并且同样带 !important：两条规则权重相同，靠顺序取胜；
