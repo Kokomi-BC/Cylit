@@ -82,6 +82,11 @@ class RefRegistry:
         """
         existing = self._by_key.get(key)
         if existing is not None:
+            # 复用一个号时，**新出现的内部 id 也要登记**：同一处证据的两条命中（A 路 / B 路
+            # 各自的 chunk id）共用一个号，清洗阶段仍要认得出这两个 id 都属于它。
+            for raw in (block_id, *ids):
+                if raw:
+                    self._by_id.setdefault(str(raw), existing)
             return self._by_ref[existing]
         ref = len(self._by_ref) + 1
         citation = Citation(ref=ref, paper_id=paper_id or self.paper_id, kind=kind,

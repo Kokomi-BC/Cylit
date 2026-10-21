@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 
@@ -146,15 +147,33 @@ def _spend_search(ctx: RunContext[Deps]) -> bool:
     return ctx.deps.spend_search()
 
 
+def _chunk_key(paper_id: str, block_id: object, chunk_id: str, snippet: str) -> str:
+    """检索命中的引用去重键 = **落点 + 展示片段**，不是 chunk id。
+
+    为什么不能用 chunk id：同一行在索引里有**两条命中** —— A 路英文 unit 与 B 路中文 unit。
+    project.search 还会把中文预览配给 A 路那条（translation），于是两条命中的
+    页码、block_id、片段**三者全一样**，只有 chunk id 不同。按 chunk id 去重就会发出
+    两个引用号：正文里出现两枚标号、两张一模一样的速览卡（用户 2026-12-04 报的 12 / 13）。
+    按「落点 + 片段」去重才能把它们合并成一条 —— 同一处证据只该有一个号。
+
+    片段不同的两条（例如同一行里指向两条**不同公式**、或一条带 latex）仍然分开：
+    它们确实指向不同的证据。
+    """
+    loc = str(block_id or chunk_id or "")
+    sig = hashlib.sha1(snippet.encode("utf-8")).hexdigest()[:12]
+    return f"chunk:{paper_id}:{loc}:{sig}"
+
+
 def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
     """把一条检索命中登记进引用表，返回 citation。"""
     chunk_id = str(item.get("chunk_id") or "")
+    paper_id = str(item.get("paper_id") or ctx.deps.paper_id)
     section = item.get("section") or None
     page = int(item.get("page_no") or item.get("page") or 0) or None
     # 片段优先用译文：给用户看的引用表是中文语境；原文留给模型去读
     snippet = _clip(item.get("translation") or item.get("content") or "")
     return ctx.deps.registry.assign(
-        key=f"chunk:{chunk_id}", kind="chunk",
+        key=_chunk_key(paper_id, item.get("block_id"), chunk_id, snippet), kind="chunk",
         page=page, section=section, block_id=item.get("block_id"),
         snippet=snippet, label=_locate(page, section, item.get("chunk_type") or ""),
         ids=(chunk_id,) if chunk_id else ())
@@ -491,11 +510,12 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
             title = str(raw.get("paper_title") or "") or paper_id
             page = int(raw.get("page_no") or 0) or None
             section = raw.get("section")
+            snippet = _clip(raw.get("translation") or raw.get("content") or "")
             cit = ctx.deps.registry.assign(
-                key=f"kb:{paper_id}:{raw.get('chunk_id')}", kind="chunk",
+                key=_chunk_key(paper_id, raw.get("block_id"),
+                               str(raw.get("chunk_id") or ""), snippet), kind="chunk",
                 paper_id=paper_id, page=page, section=section,
-                block_id=raw.get("block_id"),
-                snippet=_clip(raw.get("translation") or raw.get("content") or ""),
+                block_id=raw.get("block_id"), snippet=snippet,
                 label=" · ".join(x for x in (title, _locate(page, section)) if x),
                 ids=(str(raw.get("chunk_id") or ""),))
             items.append({
