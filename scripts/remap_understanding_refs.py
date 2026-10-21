@@ -305,6 +305,8 @@ def _road_rank(cand: dict, road: str | None) -> int:
     """
     if not road:
         return 0                          # 路未知（老中间文件）：不偏袒
+    if "road" not in cand:
+        return 1                          # 老索引根本没写这个字段 → 未知，排在已知的后面
     cand_road = str(cand.get("road") or "").strip()
     if not cand_road:
         return 0                          # 空串 = 与语言无关的共用块，算本路
