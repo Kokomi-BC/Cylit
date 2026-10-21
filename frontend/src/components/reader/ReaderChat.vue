@@ -144,6 +144,62 @@ const dragging = ref(false);
 const confirming = ref<{ ids: string[]; body: string; target: string } | null>(null);
 const confirmBusy = ref(false);
 const msgsEl = ref<HTMLElement | null>(null);
+const chatEl = ref<HTMLElement | null>(null);
+/** 「贴着底部 / 跟随」：流式输出时决定要不要把视口拉着走。
+ *  用户往上翻 = 退出跟随（不再被拽下去）；翻回底部或点「回到最新」= 恢复。 */
+const BOTTOM_GAP = 56;
+const atBottom = ref(true);
+const follow = ref(true);
+
+/** 流式正文的**合帧**（用户口径 2026-12-03：流式输出感觉卡卡的）。
+ *
+ *  以前每来一条 delta 就 msg.content += text 一次，紧接着 scrollToBottom() 一次 ——
+ *  那个函数是个**三帧 rAF 循环**，每帧读 scrollHeight、写 scrollTop。一条回答几千个 delta，
+ *  等于把整段 markdown 重排几百遍 + 几百次强制布局。现在：delta 先进缓冲，最多每 90ms
+ *  落一次盘；滚动只在落盘那一帧做**一次赋值**，而且只在跟随状态下做。 */
+const DELTA_FLUSH_MS = 90;
+let deltaBuf = '';
+let deltaTarget: { content: string } | null = null;
+let deltaTimer = 0;
+
+function stickToBottom() {
+  const el = msgsEl.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+function flushDelta() {
+  if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = 0; }
+  const target = deltaTarget;
+  const buf = deltaBuf;
+  deltaBuf = '';
+  deltaTarget = null;
+  if (!target || !buf) return;
+  target.content += buf;
+  appendLiveStep('text', buf);
+  if (follow.value) stickToBottom();
+}
+
+function pushDelta(target: { content: string }, text: string) {
+  if (!text) return;
+  deltaTarget = target;
+  deltaBuf += text;
+  if (!deltaTimer) deltaTimer = window.setTimeout(flushDelta, DELTA_FLUSH_MS);
+}
+
+/** 丢掉还没落盘的尾巴（reset / done 会用服务端那份整体替换） */
+function dropDelta() {
+  if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = 0; }
+  deltaBuf = '';
+  deltaTarget = null;
+}
+
+/** 回到最新：恢复跟随并滚到底（那枚圆形按钮） */
+async function backToLatest() {
+  follow.value = true;
+  atBottom.value = true;
+  await scrollToBottom();
+}
 /* 输入区**浮在消息之上**（见 `.composer` 的注释）：浮起来就不占布局高度了，消息区得自己
    把这块空白留出来，否则最后一条会压在输入框底下滚不上来。高度用 ResizeObserver 量 ——
    textarea 随输入自动长高（一行 → 上限），写死一个值在长问题下就不够。 */
@@ -155,6 +211,8 @@ watch(composerEl, (el) => {
   if (!el || typeof ResizeObserver === 'undefined') return;
   composerRO = new ResizeObserver(() => {
     if (msgsEl.value) msgsEl.value.style.paddingBottom = `${el.offsetHeight + 6}px`;
+    /* 「回到最新」那枚圆钮要浮在输入区**上方**：高度交给 CSS 变量，别写死。 */
+    chatEl.value?.style.setProperty('--composer-h', `${el.offsetHeight}px`);
   });
   composerRO.observe(el);
 });
@@ -621,6 +679,14 @@ function threadScrollKey(id: string | null = currentId.value): string {
 
 let msgsSaveTimer = 0;
 function onMsgsScroll() {
+  const box = msgsEl.value;
+  if (box) {
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_GAP;
+    atBottom.value = near;
+    /* 往上翻 = 退出跟随：流式内容继续进来也不再把人拽下去；翻回底部自动恢复。
+       这样「回到最新」那枚按钮只是**快捷方式**，不是唯一出路。 */
+    follow.value = near;
+  }
   if (msgsSaveTimer) return;
   msgsSaveTimer = window.setTimeout(() => {
     msgsSaveTimer = 0;
@@ -1038,15 +1104,13 @@ function onEvent(name: string, data: any) {
   /* 调工具了：之前那几句是过程（『我先看一下…』），不算正文 —— 清掉已显示的那一段，
      与后端 `state.text` 同一口径（用户口径 2026-11-26）。过程轨迹里仍然留着。 */
   if (name === 'answer_reset') {
+    dropDelta();
     ensureLive().content = '';
     return;
   }
   if (name === 'answer_delta') {
-    const text = data?.text ?? '';
-    const msg = ensureLive();
-    msg.content += text;
-    appendLiveStep('text', text);
-    void scrollToBottom();
+    /* 进缓冲，最多每 90ms 落一次盘（见 DELTA_FLUSH_MS 的说明） */
+    pushDelta(ensureLive(), data?.text ?? '');
     return;
   }
   if (name === 'citation' && data?.ref) {
@@ -1057,6 +1121,7 @@ function onEvent(name: string, data: any) {
     return;
   }
   if (name === 'done') {
+    dropDelta();
     emit('refresh-side');
     const msg = ensureLive();
     // `done` 是权威结果：正文、引用、**整条过程轨迹**都换成服务端那一份
@@ -1639,7 +1704,7 @@ defineExpose({ uploadFiles, ensureThread });
 </script>
 
 <template>
-  <div class="chat" :class="{ 'is-float': props.floating }" @dragover.prevent="dragging = true" @dragleave="dragging = false"
+  <div ref="chatEl" class="chat" :class="{ 'is-float': props.floating }" @dragover.prevent="dragging = true" @dragleave="dragging = false"
        @drop.prevent="onDrop">
     <!-- ═══════════════ 一级：会话列表 ═══════════════ -->
     <template v-if="level === 'list'">
@@ -1922,6 +1987,21 @@ defineExpose({ uploadFiles, ensureThread });
       <!-- 输入区 = **一块浮在消息上的圆角容器**：上面是 textarea，下面是操作条。
            容器自己承担"一块输入组件"的观感，里面的元素不再各自成块；`ref` 给样式里那个
            ResizeObserver 量高度用（消息区要按它留出底部空白，见 `.composer`）。 -->
+
+      <!-- 回到最新：往上翻（尤其流式输出时）就浮出来。点它 = 回到最新一句 + **恢复跟随**，
+           之后新内容继续自动往下走（用户口径 2026-12-03）。 -->
+      <button
+        v-if="!atBottom"
+        class="to-bottom"
+        type="button"
+        data-to-bottom
+        :title="sending ? '回到最新（继续跟随输出）' : '回到最新'"
+        :aria-label="sending ? '回到最新（继续跟随输出）' : '回到最新'"
+        @click="backToLatest"
+      >
+        <AppIcon name="chevron-down" :size="16" />
+        <span v-if="sending" class="to-bottom-live" aria-hidden="true" />
+      </button>
       <div ref="composerEl" class="composer" @pointerdown="keepComposerFocus">
         <div class="composer-box" :class="{ busy: uploading }">
           <!-- 划词带进来的选区：贴在输入框上沿的**上下文胶囊**（用户口径 2026-10-03，仿 VS Code）。
@@ -2467,6 +2547,29 @@ defineExpose({ uploadFiles, ensureThread });
    穿过的正文淡出去，不跟框里的字打架。
    ⚠️ 浮起来就不再占布局高度 → 消息区的空白由 JS 按实测高度补（`composerEl` 那个
    ResizeObserver），`.msgs` 的 `padding-bottom` 只是没跑起来时的兜底值。 */
+/* 「回到最新」：浮在输入区上方右侧的一枚圆钮（用户口径 2026-12-03）。
+   `--composer-h` 由 ResizeObserver 实测写入（输入框会长高），所以不用写死位置。
+   流式输出时多一个呼吸的小点，表示「下面还在长」。 */
+.to-bottom {
+  position: absolute; right: 14px; bottom: calc(var(--composer-h, 112px) + 10px); z-index: 4;
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-elev); color: var(--accent-text);
+  box-shadow: var(--shadow-2); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+  animation: to-bottom-in .18s var(--ease);
+}
+.to-bottom:hover { background: var(--accent-soft); color: var(--accent-hover); }
+.to-bottom:active { transform: scale(.94); }
+.to-bottom:focus-visible { outline: none; box-shadow: var(--ring); }
+.to-bottom-live {
+  position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 999px;
+  background: var(--accent); animation: to-bottom-pulse 1.1s ease-in-out infinite;
+}
+@keyframes to-bottom-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes to-bottom-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
 .composer {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
   padding: 10px 10px 8px;

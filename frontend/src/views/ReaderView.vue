@@ -8498,6 +8498,16 @@ function renderMarkdown(text?: string | null) {
   cursor: grab;
 }
 .reader.float-dragging > .chat-host.float::before { cursor: grabbing; }
+/* 拖动中**整张卡**都是「抓紧」的手型（用户口径 2026-12-03 第 1 条：按下后还是张开的手）。
+   `:active` 靠不住 —— 拖头的 pointerdown 里 preventDefault 了（为了不让 PDF 起选区），
+   浏览器因此不进入 :active；下面这些类名由手势自己挂（setFloatDragging），不看 UA 状态。 */
+.reader.float-dragging > .chat-host.float,
+.reader.float-dragging > .chat-host.float :deep(.thread-head),
+.reader.float-dragging > .chat-host.float :deep(.list-head),
+.reader.float-dragging > .chat-host.float :deep(.msgs),
+.reader.float-dragging > .chat-host.float :deep(.msgs *),
+.reader.float-dragging > .chat-host.float :deep(.list-body),
+.reader.float-dragging > .chat-host.float :deep(.list-body *) { cursor: grabbing; }
 /* 右上角这组按钮：与对话页头部那组**逐字同规格**（`.th-acts` / `.th-act` 的同一套数字）——
    同一个托底托盘 + 同 26px 圆钮 + 悬停浮成 `--bg-elev` 并带一档阴影。 */
 .float-act {
