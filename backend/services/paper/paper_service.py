@@ -10,6 +10,8 @@ import re
 import shutil
 from pathlib import Path
 
+from sqlalchemy import case
+
 from backend.core.config import get_settings
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.core.logging import get_logger
@@ -18,8 +20,9 @@ from backend.core.utils import (
     ts_compact,
 )
 from backend.repositories.mysql.models import (Annotation, Block, Chunk, Formula, Highlight, Note,
-                                               Paper, PaperReference, ReadingProgress, Task,
-                                               Translation, Understanding)
+                                               Paper, PaperFolder, PaperReference,
+                                               ReadingProgress, Task, Translation,
+                                               Understanding)
 from backend.repositories.mysql.session import session_scope
 from backend.services.task.task_service import task_service
 
@@ -279,8 +282,18 @@ def list_papers(*, q: str | None = None, status: str | None = None,
         if q:
             like = f"%{q}%"
             query = query.filter((Paper.title.like(like)) | (Paper.authors.like(like)))
-        col = getattr(Paper, sort, Paper.created_at)
-        query = query.order_by(col.desc() if order == "desc" else col.asc())
+        if str(sort or "").strip().lower() == "folder":
+            # 未分类不是"某个分类"，降序时也不该跑到最前面，所以把它单独钉到最后。
+            query = query.outerjoin(PaperFolder, Paper.folder_id == PaperFolder.id)
+            query = query.order_by(
+                case((Paper.folder_id.is_(None), 1), else_=0).asc(),
+                PaperFolder.sort.desc() if order == "desc" else PaperFolder.sort.asc(),
+                PaperFolder.name.desc() if order == "desc" else PaperFolder.name.asc(),
+                Paper.last_read_at.desc(),
+            )
+        else:
+            col = getattr(Paper, sort, Paper.created_at)
+            query = query.order_by(col.desc() if order == "desc" else col.asc())
         total = query.count()
         rows = query.offset(max(0, (page - 1) * page_size)).limit(page_size).all()
         items = [_to_dict(r) for r in rows]

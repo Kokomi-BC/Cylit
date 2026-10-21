@@ -52,6 +52,7 @@ const loadError = ref('');
 /** 排序：把「字段 + 方向」合并成一个下拉，页面上少一个冗余控件。 */
 const SORT_OPTIONS = [
   { value: 'last_read_at:desc', label: '最近阅读优先' },
+  { value: 'folder:asc', label: '按分类' },
   { value: 'created_at:desc', label: '最新导入' },
   { value: 'created_at:asc', label: '最早导入' },
   { value: 'title:asc', label: '标题 A→Z' },
@@ -82,13 +83,12 @@ function setView(v: 'grid' | 'list') {
 }
 
 /* ------------------------------ 筛选 ------------------------------
- * 状态走**后端筛**（`refresh()` 带上 status 参数），标签走**前端筛** ——
- * 论文标签是自由文本（导入时手填），没有后端字典，也没必要为它做索引查询。
+ * 筛选只有一个维度（分类），且走**后端筛**（`refresh()` 带上 folder 参数）——
+ * 后端能为分类做索引查询，前端不必再收一份候选、再筛一遍。
  */
 
 const filterOpen = ref(false);
 const filterBox = ref<HTMLElement | null>(null);
-const tagFilter = ref('');
 
 /* 分类是库页的一等维度：'' = 全部，'none' = 未分类，其余 = 分类 id。
  * 它记在**路由 query**（?folder=…）上，所以刷新、分享、从侧栏进来都还是同一个分类。 */
@@ -138,30 +138,12 @@ watch(() => [
   void refresh();
 });
 
-const filterCount = computed(() => (
-  (tagFilter.value ? 1 : 0) + (folderFilter.value ? 1 : 0)
-));
+const filterCount = computed(() => (folderFilter.value ? 1 : 0));
 
-/** 标签候选：从**当前列表**现收（库里没标签就不显示这一组）。 */
-const tagOptions = computed(() => {
-  const set = new Set<string>();
-  for (const p of filtered.value) for (const t of p.tags || []) set.add(t);
-  return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
-});
-
-/** 界面真正渲染的那一份（后端结果 → 标签筛选）。 */
-const visible = computed<Paper[]>(() => (
-  tagFilter.value
-    ? filtered.value.filter((p) => (p.tags || []).includes(tagFilter.value))
-    : filtered.value
-));
-
-function toggleTag(t: string) {
-  tagFilter.value = tagFilter.value === t ? '' : t;
-}
+/** 界面真正渲染的那一份：关键词 / 分类 / 排序都由后端做完了，前端不再二次过滤。 */
+const visible = computed<Paper[]>(() => filtered.value);
 
 function clearFilters() {
-  tagFilter.value = '';
   folderFilter.value = '';
   syncFolderQuery('');
   void refresh();
@@ -322,8 +304,8 @@ function isTranslated(p: Paper): boolean {
 }
 const showLoading = computed(() => loading.value && visible.value.length === 0 && !loadError.value);
 const showLoadError = computed(() => !!loadError.value && filtered.value.length === 0);
-/** 有任何筛选在生效（含分类）：空列表这时是"被筛掉了"，不是"库里没论文"。 */
-const hasFilter = computed(() => !!(folderFilter.value || tagFilter.value));
+/** 有筛选在生效（分类）：空列表这时是"被筛掉了"，不是"库里没论文"。 */
+const hasFilter = computed(() => !!folderFilter.value);
 const showEmpty = computed(() => (
   !loading.value && visible.value.length === 0 && !loadError.value && !hasFilter.value
 ));
@@ -332,13 +314,10 @@ const filteredOut = computed(() => (
   !loading.value && visible.value.length === 0 && !loadError.value
   && (hasFilter.value || filtered.value.length > 0)
 ));
-/** 空态的归因口径：说清是被哪几项筛掉的，分类必须在里面。 */
-const filterScope = computed(() => {
-  const parts: string[] = [];
-  if (folderFilter.value) parts.push(`「${folderFilterLabel.value}」分类`);
-  if (tagFilter.value) parts.push('标签');
-  return parts.join(' / ');
-});
+/** 空态的归因口径：说清是被哪个分类筛掉的。 */
+const filterScope = computed(() => (
+  folderFilter.value ? `「${folderFilterLabel.value}」分类` : ''
+));
 
 /** 拉取论文列表：加载中 / 请求失败 / 空列表三种状态都在模板里显式呈现。 */
 async function refresh() {
@@ -1138,21 +1117,6 @@ async function submitEdit() {
                 @click="setFolder(f.id)"
               >{{ f.name }}</button>
             </div>
-
-            <template v-if="tagOptions.length">
-              <div class="lib-pop-label">标签</div>
-              <div class="lib-pills">
-                <button type="button" class="lib-pill" :class="{ on: tagFilter === '' }" @click="tagFilter = ''">全部</button>
-                <button
-                  v-for="t in tagOptions"
-                  :key="t"
-                  type="button"
-                  class="lib-pill"
-                  :class="{ on: tagFilter === t }"
-                  @click="toggleTag(t)"
-                >{{ t }}</button>
-              </div>
-            </template>
 
             <button v-if="filterCount" type="button" class="lib-clear" @click="clearFilters">清空筛选</button>
           </div>
