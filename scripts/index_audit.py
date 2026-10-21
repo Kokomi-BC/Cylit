@@ -13,7 +13,7 @@ chunk 的 ``row_ids`` 指向不存在的行、公式块落成 ``row-x`` 这种�
 
 退出码：有 error 级发现 → 1；只有 warn 或全通过 → 0；跑不起来（读不到论文列表）→ 2。
 
-四组检查（每条发现都带 level=error/warn/ok）：
+五组检查（每条发现都带 level=error/warn/ok）：
 
 1. **行覆盖**（row ⊆ unit ⊆ chunk）：正文行是否都落在某个 unit chunk 的
    ``metadata.row_ids`` 里；unit 的 ``row_ids`` 是否非空、是否都能在页级产物里找到
@@ -25,6 +25,11 @@ chunk 的 ``row_ids`` 指向不存在的行、公式块落成 ``row-x`` 这种�
    ``refs_json`` 的 ``resolved``（或 ``inventory``）里；``inventory`` 为空而 markdown 非空 → error。
 4. **索引卫生**：chunk id 重复（error）、``order_global`` 并列（warn）、
    ``prev/next/parent`` 指针悬空（warn）；``row_ids`` 跨页**仅统计**。
+5. **行身份（pid）覆盖率**：正文行是否都带 ``pid``；pid 是否 1:1（不跨页、不重复）、
+   是否都是注册表里的活身份（孤儿 / 已退休的 pid 复用）；注册表自身是否自洽
+   （同页 ``order`` 撞车、pid 重复登记）；注册表还没生成时只 warn。
+   行**只取** ``reader_service.page_products``（pid 的唯一真实来源），注册表**只取**
+   ``row_identity.load``；见 ``docs/身份模型.md`` §7「验收不变量」。
 
 设计约束：**判定逻辑全是模块级纯函数**（``check_*``，入参是普通 dict 列表，返回发现列表），
 IO 只在外层 ``_load_*`` 里做 —— 单测喂构造数据即可（``tests/test_index_audit.py``）。
@@ -55,6 +60,8 @@ SAMPLE_MAX = 12
 _CODE_RE = re.compile(r"\b(A\d{2,4})\b")
 #: 解析器给的 markdown 锚点前缀（``anchor_map.PSEUDO_PREFIXES`` 之一）
 _BLK_PREFIX = "blk-"
+#: 页级行 id 的页码前缀（``p015-06`` → 15）：行没有 ``page`` 字段时的兜底
+_PAGE_ID_RE = re.compile(r"^p(\d+)")
 #: 指针类元数据：指向**别的 chunk**
 _POINTERS = ("prev_unit_id", "next_unit_id", "parent_chunk_id")
 #: 入库行 id 末尾的语言后缀（`knowledge_service._variant_row` 加的），与
@@ -369,6 +376,158 @@ def row_span_stats(chunks: list[dict], rows: list[dict]) -> dict:
 
 
 # --------------------------------------------------------------------------
+# 检查 5：行身份（pid）覆盖率
+# --------------------------------------------------------------------------
+
+
+def _row_page(row: dict) -> int:
+    """行（或注册表条目）所在页：优先 ``page`` 字段，退回行 id 的 ``p015`` 前缀。
+
+    两个来源的行形状不同 —— 阅读器读模型的行只有 ``id``（``p015-06``），注册表条目才有
+    ``page``；0 = 认不出（宁可认不出，也不猜）。
+    """
+    try:
+        value = int(row.get("page"))
+        if value:
+            return value
+    except (TypeError, ValueError):
+        pass
+    match = _PAGE_ID_RE.match(str(row.get("id") or ""))
+    return int(match.group(1)) if match else 0
+
+
+def flatten_page_rows(pages: list[dict]) -> list[dict]:
+    """页级读模型 → 行列表，逐行补 ``page``（行本身不带页号，页才知道）。
+
+    只**读**页产物、不合并也不改写任何字段；``pid`` 原样带着（它由
+    ``reader_service.page_products`` 在赋值挂钩点上写进行字典）。
+    """
+    out: list[dict] = []
+    for page in (pages or []):
+        if not isinstance(page, dict):
+            continue
+        page_no = _row_page(page)
+        for row in (page.get("rows") or []):
+            if isinstance(row, dict):
+                out.append({**row, "page": _row_page(row) or page_no})
+    return out
+
+
+def pid_stats(rows: list[dict], registry: dict) -> dict:
+    """行身份覆盖率的**统计**（不产生发现）：零发现时也要看得见"这组跑了、覆盖率多少"。
+
+    ``{"rows","with_pid","unique_pids","registry","retired"}`` —— 一个数字可疑（``with_pid`` 远小于
+    ``rows``、``unique_pids`` 远小于 ``with_pid``）就是发现列表在说话的同一件事，只是这里不判级。
+    """
+    body = [r for r in (rows or []) if isinstance(r, dict)]
+    reg = registry if isinstance(registry, dict) else {}
+    pids = [str(r.get("pid")) for r in body if str(r.get("pid") or "").strip()]
+    return {"rows": len(body), "with_pid": len(pids),
+            "unique_pids": len(set(pids)),
+            "registry": len([e for e in (reg.get("rows") or []) if isinstance(e, dict)]),
+            "retired": len([e for e in (reg.get("retired") or []) if isinstance(e, dict)])}
+
+
+def check_row_pids(rows: list[dict], registry: dict) -> list[dict]:
+    """行的稳定身份覆盖率与一致性（``docs/身份模型.md`` §7「验收不变量」）。
+
+    rows:     阅读器读模型里的行（每项应带 ``pid`` / ``page``；见 ``flatten_page_rows``）
+    registry: ``row_identity.load(paper_id)`` 的结果（``rows`` / ``retired``）
+
+    规则（level）：
+
+    - 正文行里**没有 pid** → error（附前 5 个行 id）；全都有 → 不报；
+    - 同一个 pid 出现在**不同页**或**同一页多行** → error（pid 必须 1:1）；
+    - pid 在 ``registry["rows"]`` 里找不到 → error（孤儿 pid）；
+    - registry 里同一页的 ``order`` 重复 / 同一 pid 重复登记 → error；
+    - ``registry["retired"]`` 里的 pid 又被当作活行使用 → error（重绑 = 最严重的错）；
+    - registry 里**没有**对应活行的 pid（既不在 rows 也不在 retired）→ warn；
+    - 注册表为空而 rows 非空 → warn（还没生成，第一次读 ``page_products`` 会建）。
+    """
+    out: list[dict] = []
+    body = [r for r in (rows or []) if isinstance(r, dict)]
+    reg = registry if isinstance(registry, dict) else {}
+    entries = [e for e in (reg.get("rows") or []) if isinstance(e, dict) and e.get("pid")]
+    retired_entries = [e for e in (reg.get("retired") or []) if isinstance(e, dict) and e.get("pid")]
+    retired = {str(e.get("pid")) for e in retired_entries}
+
+    # ① 正文行必须有 pid（阅读器读模型的行就是正文行：skip/structural 是分块层的标记）
+    missing = [str(r.get("id") or "∅") for r in body if not str(r.get("pid") or "").strip()]
+    if missing:
+        out.append(finding("error", "row_pids",
+                           f"{len(missing)}/{len(body)} 个正文行没有 pid: "
+                           f"{_sample(missing, 5)}"))
+    # ② 注册表为空（缺失 / 还没生成）：下面的一致性判定没有基准，只报一条 warn 就返回。
+    #    否则"没生成过"会把每个 pid 都变成孤儿 error —— 那是假警，会把真问题埋掉。
+    if not entries and not retired:
+        if body:
+            out.append(finding("warn", "row_pids",
+                               f"行身份注册表为空（{len(body)} 个正文行）：pid 一致性无从校验"
+                               f"—— 还没生成，第一次读 page_products 时会建"))
+        return out
+
+    uses: dict[str, list[int]] = {}
+    for row in body:
+        pid = str(row.get("pid") or "").strip()
+        if pid:
+            uses.setdefault(pid, []).append(_row_page(row))
+
+    # ③ pid 必须 1:1：同一页多行、或跨页复用同一个身份
+    dup = {pid: pages for pid, pages in uses.items() if len(pages) > 1}
+    if dup:
+        cross = sum(1 for pages in dup.values() if len(set(pages)) > 1)
+        shown = [f"{pid}(p{','.join(str(p) for p in pages)})"
+                 for pid, pages in list(dup.items())[:SAMPLE_MAX]]
+        out.append(finding("error", "row_pids",
+                           f"{len(dup)} 个 pid 不是 1:1（同一页多行或跨页；跨页 {cross} 个）: "
+                           f"{_sample(shown)}"))
+
+    # ④ 已退休的 pid 又出现在活行上：身份被重绑，引用会指向"内容已变 / 已失效"的行
+    revived = sorted(pid for pid in uses if pid in retired)
+    if revived:
+        out.append(finding("error", "row_pids",
+                           f"{len(revived)} 个已退休的 pid 又出现在活行上（身份被重绑）: "
+                           f"{_sample(revived)}"))
+
+    # ⑤ 孤儿 pid：活行用了注册表里没有的身份（已退休的由 ④ 单独报，这里不重复计）
+    known = {str(e.get("pid")) for e in entries}
+    orphan = sorted(pid for pid in uses if pid not in known and pid not in retired)
+    if orphan:
+        out.append(finding("error", "row_pids",
+                           f"{len(orphan)} 个 pid 在注册表里找不到（孤儿身份）: {_sample(orphan)}"))
+
+    # ⑥ 注册表自身：同一 pid 重复登记
+    dup_pid = sorted(pid for pid, n in Counter(str(e.get("pid")) for e in entries).items()
+                     if n > 1)
+    if dup_pid:
+        out.append(finding("error", "row_pids",
+                           f"{len(dup_pid)} 个 pid 在注册表里重复登记: {_sample(dup_pid)}"))
+
+    # ⑦ 注册表自身：同一页的 order 撞车（同一槽位两条身份，页内顺序不再唯一）
+    slots: dict[tuple, list[str]] = {}
+    for entry in entries:
+        try:
+            order = int(entry.get("order"))
+        except (TypeError, ValueError):
+            continue  # order 缺失/坏掉不是"撞车"（那是另一类问题，这里不猜）
+        slots.setdefault((_row_page(entry), order), []).append(str(entry.get("pid")))
+    dup_slots = {slot: pids for slot, pids in slots.items() if len(pids) > 1}
+    if dup_slots:
+        shown = [f"p{page}#{order}×{len(pids)}"
+                 for (page, order), pids in list(dup_slots.items())[:SAMPLE_MAX]]
+        out.append(finding("error", "row_pids",
+                           f"{len(dup_slots)} 个 (页, order) 槽位被重复登记"
+                           f"（两条身份抢同一位置）: {_sample(shown)}"))
+
+    # ⑧ 注册表里有身份、却没有任何活行用它（也没退休）→ 只 warn：读模型可能还没算全
+    stale = sorted(pid for pid in known if pid not in uses and pid not in retired)
+    if stale:
+        out.append(finding("warn", "row_pids",
+                           f"{len(stale)} 个注册表 pid 没有对应活行（既不在读模型也不在 retired）: "
+                           f"{_sample(stale)}"))
+    return out
+
+# --------------------------------------------------------------------------
 # IO（全部只读；每个 loader 独立 try/except）
 # --------------------------------------------------------------------------
 
@@ -426,12 +585,57 @@ def _load_rows(paper_id: str) -> list[dict]:
                               structural_caption_ids=caption_ids)
 
 
-def _load_anchors(paper_id: str, rows: list[dict]) -> dict:
-    """``{"row_pages", "block_pages", "block_row"}``：``anchor_map.resolve_anchor`` 的入参 + 块→行映射。"""
+def _load_pages(paper_id: str) -> list[dict]:
+    """页级读模型 —— ``reader_service.page_products`` 的页列表（**pid 只在这份产物上**）。
+
+    一篇论文**只取一次**：锚点检查（``_load_anchors``）与行身份检查（``_run_row_pids``）
+    共用这一份结果。行绝不能自己从别处拼 —— 别处（``chunking.row_units`` 的页级行）没有
+    ``pid``，拼出来只会得到"每行都没 pid"的假 error。
+    """
+    from backend.services.paper import reader_service
+
+    pages, _shape = reader_service.page_products(paper_id)
+    return pages
+
+
+def _load_row_registry(paper_id: str) -> dict:
+    """行身份注册表（``row_identity.load``：缺失 / 损坏都返回空注册表，不抛）。"""
+    from backend.services.paper import row_identity
+
+    return row_identity.load(paper_id)
+
+
+def _run_row_pids(findings: list[dict], paper_id: str,
+                  pages: list[dict] | None) -> dict:
+    """第 5 组：行身份覆盖率。行只走 ``page_products``、注册表只走 ``row_identity.load``；
+    任一取不到 → 记 ``check crashed``，其它检查照跑。返回 ``pid_stats``（取不到就给空 dict）。"""
+    if pages is None:
+        findings.append(finding("error", "row_pids",
+                                "check crashed: 页级读模型取不到"
+                                "（reader_service.page_products 失败），行身份无从校验"))
+        return {}
+    try:
+        registry = _load_row_registry(paper_id)
+    except Exception as exc:  # noqa: BLE001 —— 取不到注册表只影响这一组
+        findings.append(finding("error", "row_pids",
+                                f"check crashed: {exc.__class__.__name__}: {exc}"))
+        return {}
+    rows = flatten_page_rows(pages)
+    _run(findings, "row_pids", check_row_pids, rows, registry)
+    return pid_stats(rows, registry)
+
+
+def _load_anchors(paper_id: str, rows: list[dict], pages: list[dict] | None) -> dict:
+    """``{"row_pages", "block_pages", "block_row"}``：``anchor_map.resolve_anchor`` 的入参 + 块→行映射。
+
+    ``pages`` 是调用方已经取好的页级读模型（一篇论文只取一次，见 ``_load_pages``）。
+    """
     from backend.repositories.mysql.models import Block
     from backend.repositories.mysql.session import session_scope
     from backend.services.paper import anchor_map, reader_service
 
+    if pages is None:
+        raise RuntimeError("页级读模型取不到（reader_service.page_products 失败）")
     md_map = reader_service.load_markdown_map(paper_id)
     with session_scope() as sess:
         blocks = (sess.query(Block).filter(Block.paper_id == paper_id)
@@ -440,9 +644,8 @@ def _load_anchors(paper_id: str, rows: list[dict]) -> dict:
                        "text": ((md_map.get(b.id) or {}).get("text")
                                 or b.preview or "")} for b in blocks]
         block_pages = {str(b.id): int(b.page_no or 0) for b in blocks}
-    payloads = reader_service.page_translations(paper_id)
     block_row = anchor_map.build_block_row_map(
-        parse_rows, anchor_map.rows_by_page(payloads))
+        parse_rows, anchor_map.rows_by_page(pages))
     return {"row_pages": {str(r.get("id")): int(r.get("page") or 0)
                           for r in rows if r.get("id")},
             "block_pages": block_pages, "block_row": block_row}
@@ -487,10 +690,13 @@ def _run(findings: list[dict], name: str, fn, *args) -> None:
 
 
 def audit_paper(paper_id: str) -> dict:
-    """审计一篇论文，返回 ``{"paper_id","chunks","findings","row_span","id_forms"}``。"""
+    """审计一篇论文，返回 ``{"paper_id","chunks","findings","row_pids","row_span","id_forms"}``。"""
     findings: list[dict] = []
     chunks = _guard("load_chunks", lambda: _load_chunks(paper_id), findings) or []
     rows = _guard("load_rows", lambda: _load_rows(paper_id), findings) or []
+    # 页级读模型**只取一次**：锚点检查与行身份检查共用（pid 只在这份产物上）。
+    # None = loader 炸了（已记一条 load crashed）—— 两组检查各自报"取不到"。
+    pages = _guard("load_pages", lambda: _load_pages(paper_id), findings)
 
     anchors = None
     if not chunks:
@@ -503,12 +709,16 @@ def audit_paper(paper_id: str) -> dict:
                                     "读不到页级行，行覆盖无法校验"))
         _run(findings, "unit_links", check_unit_links, chunks)
 
-        anchors = _guard("load_anchors", lambda: _load_anchors(paper_id, rows), findings)
+        anchors = _guard("load_anchors", lambda: _load_anchors(paper_id, rows, pages),
+                         findings)
         if anchors:
             _run(findings, "anchor", check_anchors, chunks, anchors)
         else:
             findings.append(finding("error", "anchor", "读不到解析块，锚点无从校验"))
         _run(findings, "index_hygiene", check_index_hygiene, chunks)
+
+    # 行身份覆盖率：与 chunk 无关（它查的是"行有没有稳定身份"），所以放在 if 外面独立跑
+    pid_summary = _run_row_pids(findings, paper_id, pages)
 
     for item in _guard("load_understanding",
                        lambda: _load_understanding(paper_id), findings) or []:
@@ -516,6 +726,7 @@ def audit_paper(paper_id: str) -> dict:
              item["markdown"], item["refs"], item["inventory"])
 
     return {"paper_id": paper_id, "chunks": len(chunks), "findings": findings,
+            "row_pids": pid_summary,
             "row_span": row_span_stats(chunks, rows),
             "id_forms": id_form_stats(chunks, anchors) if anchors else {}}
 
@@ -542,6 +753,11 @@ def print_human(results: list[dict]) -> None:
         print(f"{res['paper_id']}  chunks={res['chunks']}  errors={e}  warns={w}")
         for item in res["findings"]:
             print(f"[{item['level']}] {item['check']}: {item['detail']}")
+        pids = res.get("row_pids") or {}
+        if pids.get("rows"):   # 读模型为空就没有覆盖率可说（那篇论文还没译）
+            print(f"[stat] row_pids: {pids['with_pid']}/{pids['rows']} 个正文行有 pid"
+                  f"（唯一 {pids['unique_pids']}；注册表 {pids['registry']} 条，"
+                  f"retired {pids['retired']}）")
         span = res.get("row_span") or {}
         if span.get("cross_page"):
             print(f"[stat] row_span: {span['cross_page']} 个 chunk 的 row_ids 跨页"
@@ -562,7 +778,7 @@ def build_payload(results: list[dict]) -> dict:
 
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="索引健康自检（只读）：行覆盖 / 锚点可解析 / 解读引用 / 索引卫生")
+        description="索引健康自检（只读）：行覆盖 / 锚点可解析 / 解读引用 / 索引卫生 / 行身份")
     parser.add_argument("paper_ids", nargs="*", help="只审计这些论文（默认：全库有 chunk 的论文）")
     parser.add_argument("--json", action="store_true", help="机器可读输出（stdout 只出 JSON）")
     args = parser.parse_args(argv)
