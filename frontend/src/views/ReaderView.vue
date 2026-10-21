@@ -1951,6 +1951,8 @@ const floatLive = { left: 0, top: 0, w: 0, h: 0 };
 /** 手势期间直接操作的那三个节点（ref 只在浮窗态存在） */
 const chatHostEl = ref<HTMLElement | null>(null);
 const gripBlEl = ref<HTMLElement | null>(null);
+/* 顶部那条抓手（`.chat-grab`）：药丸的「变宽」反馈挂在它身上，与笔记浮层的 `.fc-grab.dragging` 同一手法 */
+const chatGrabEl = ref<HTMLElement | null>(null);
 const gripBrEl = ref<HTMLElement | null>(null);
 /** 浮层模式下那块"画中画"占位面板（拖侧栏宽度时要跟预览值同宽） */
 const asidePipEl = ref<HTMLElement | null>(null);
@@ -2143,10 +2145,14 @@ function startFloatGesture(mode: 'move' | 'size' | 'size-left', x: number, y: nu
      `preventDefault()` 了，`:active` 就未必来；笔记卡那边一直是 `.fc-resize.is-on`，
      两边必须同一手法，否则「手指按住角把手没有动画」（用户口径 2026-11-25）。 */
   if (mode !== 'move') (mode === 'size' ? gripBrEl.value : gripBlEl.value)?.classList.add('is-on');
-  /* 顶部那枚抓手的 34→46 变宽动画**只认这个类**（见样式里的
-     .reader.float-dragging > .chat-host.float > .chat-grip-pill）：拖头部才加，
-     角把手自己那两枚走上面的 is-on。 */
-  if (mode === 'move') setFloatDragging(true);
+  /* 顶部那枚抓手的「变宽 + 变亮」**与笔记浮层逐字同一手法**：类挂在抓手条自己身上
+     （`.chat-grab.dragging` ↔ `.fc-grab.dragging`），按下就加、松手就撤，
+     与合成层那条 `.float-dragging`（它是给 will-change 用的，晚一帧撤）解耦 ——
+     两件事共用一个类的话，药丸回弹会被拖晚一帧（用户口径 2026-12-03 第 5 条）。 */
+  if (mode === 'move') {
+    setFloatDragging(true);
+    chatGrabEl.value?.classList.add('dragging');
+  }
 
   floatDrag.sx = x; floatDrag.sy = y;
   floatDrag.ox = floatBox.value.left; floatDrag.oy = floatBox.value.top;
@@ -2287,6 +2293,7 @@ function endFloatGesture() {
      （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
   gripBrEl.value?.classList.remove('is-on');
   gripBlEl.value?.classList.remove('is-on');
+  chatGrabEl.value?.classList.remove('dragging');   // 药丸立刻回弹（与笔记抓手同一刻）
   /* 合成层（.float-dragging 的 will-change）**晚一帧**才撤：与 left/top 在同一帧里一起翻面，
      Chromium 要按新位置重新栅格化，那一帧可能先画出空白 —— 就是「拖完闪一下」。 */
   requestAnimationFrame(() => { if (!floatDrag.on) setFloatDragging(false); });
@@ -7520,7 +7527,7 @@ function renderMarkdown(text?: string | null) {
              以前药丸是 `pointer-events: none`，顶部那一条命中的是下面的层，光标因此不是抓取手。 -->
         <!-- 抓手条的 `cursor` 直接写行内：这件事已经绕过好几轮 CSS 优先级了，
              行内样式不会被任何选择器抢走（药丸自己 `pointer-events: none`，命中的是这条）。 -->
-        <div class="chat-grab" data-float-grab style="cursor: grab">
+        <div ref="chatGrabEl" class="chat-grab" data-float-grab style="cursor: grab">
           <span class="chat-grip-pill" />
         </div>
         <!-- 惰性挂载：没进过对话页签、也没浮起过就整块不挂（省一次会话列表请求）；
@@ -8469,9 +8476,13 @@ function renderMarkdown(text?: string | null) {
    （跟手变成拖拽感），松手把 transform 撤回 `none` 时更要补间着滑回起点 —— 那就是抖动。
    手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
 .reader.float-dragging > .chat-host.float { will-change: transform; transition: none; }
-.reader.float-dragging > .chat-host.float .chat-grip-pill {
-  /* 与笔记抓手同一套：纯 transition、220ms、回弹曲线过冲一次。
-     只换长度（scaleX 1.3529 = 视觉上的 34→46），不碰宽度 —— 见上面那条注释。 */
+/* 拖动中变宽变亮：**与笔记浮层（`.fc-grab.dragging .fc-grab-pill`）逐字同一套** ——
+   类挂在抓手条自己身上，另加 `:active` 兜底（按下即反馈，不必等手势判定）。
+   ⚠️ 触发源**只有** `.chat-grab` 一个：以前是 `.reader.float-dragging`（挂在根元素上），
+   而那个类为了防「拖完闪一下」要晚一帧才撤 —— 药丸的回弹跟着被拖后一帧，
+   与笔记抓手看起来就不同步了（用户口径 2026-12-03 第 5 条）。 */
+.reader > .chat-host.float .chat-grab.dragging .chat-grip-pill,
+.reader > .chat-host.float .chat-grab:active .chat-grip-pill {
   transform: translateX(-50%) scaleX(1.3529);
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
