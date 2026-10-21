@@ -27,7 +27,7 @@ import {
 } from '@/stores/app';
 import { assignFolder, createFolder, folderName, folderState, loadFolders } from '@/stores/folders';
 import { openTab } from '@/stores/tabs';
-import { fmtRelative, paperStatus } from '@/utils/format';
+import { fmtRelative } from '@/utils/format';
 const router = useRouter();
 const route = useRoute();
 
@@ -42,16 +42,12 @@ const detailId = ref('');
 /* ------------------------------ 筛选与列表 ------------------------------ */
 
 const keyword = ref('');
-const statusFilter = ref('');
 const sort = ref('last_read_at');
 const order = ref('desc');
 /** 正在进行的行内操作键：`import` / `tr:<id>` / `del:<id>`。 */
 const busyKey = ref('');
 /** 列表加载失败原因（非空时界面显式给出错误卡片 + 重试）。 */
 const loadError = ref('');
-
-/** 状态筛选项（与后端 PaperStatus 取值一致）。 */
-const STATUS_OPTIONS = ['imported', 'parsed', 'translating', 'translated', 'indexed', 'failed'] as const;
 
 /** 排序：把「字段 + 方向」合并成一个下拉，页面上少一个冗余控件。 */
 const SORT_OPTIONS = [
@@ -143,7 +139,7 @@ watch(() => [
 });
 
 const filterCount = computed(() => (
-  (statusFilter.value ? 1 : 0) + (tagFilter.value ? 1 : 0) + (folderFilter.value ? 1 : 0)
+  (tagFilter.value ? 1 : 0) + (folderFilter.value ? 1 : 0)
 ));
 
 /** 标签候选：从**当前列表**现收（库里没标签就不显示这一组）。 */
@@ -160,17 +156,11 @@ const visible = computed<Paper[]>(() => (
     : filtered.value
 ));
 
-function setStatus(s: string) {
-  statusFilter.value = s;
-  void refresh();
-}
-
 function toggleTag(t: string) {
   tagFilter.value = tagFilter.value === t ? '' : t;
 }
 
 function clearFilters() {
-  statusFilter.value = '';
   tagFilter.value = '';
   folderFilter.value = '';
   syncFolderQuery('');
@@ -333,7 +323,7 @@ function isTranslated(p: Paper): boolean {
 const showLoading = computed(() => loading.value && visible.value.length === 0 && !loadError.value);
 const showLoadError = computed(() => !!loadError.value && filtered.value.length === 0);
 /** 有任何筛选在生效（含分类）：空列表这时是"被筛掉了"，不是"库里没论文"。 */
-const hasFilter = computed(() => !!(folderFilter.value || statusFilter.value || tagFilter.value));
+const hasFilter = computed(() => !!(folderFilter.value || tagFilter.value));
 const showEmpty = computed(() => (
   !loading.value && visible.value.length === 0 && !loadError.value && !hasFilter.value
 ));
@@ -346,7 +336,6 @@ const filteredOut = computed(() => (
 const filterScope = computed(() => {
   const parts: string[] = [];
   if (folderFilter.value) parts.push(`「${folderFilterLabel.value}」分类`);
-  if (statusFilter.value) parts.push('状态');
   if (tagFilter.value) parts.push('标签');
   return parts.join(' / ');
 });
@@ -357,7 +346,6 @@ async function refresh() {
   try {
     await withLoading('papers', () => loadPapers({
       q: keyword.value || undefined,
-      status: statusFilter.value || undefined,
       folder: folderFilter.value || undefined,      // 分类走后端筛（none = 未分类）
       sort: sort.value,
       order: order.value,
@@ -778,15 +766,6 @@ function inFlight(p: Paper): boolean {
   return p.status === 'parsing' || p.status === 'translating';
 }
 
-/** 卡片徽章：有任务看任务（翻译中 / 已暂停），没任务看论文行。 */
-function cardStatus(p: Paper): { label: string; cls: string } {
-  const t = activeTaskOf(p);
-  if (!t) return paperStatus(p.status);
-  return t.status === 'paused'
-    ? { label: '已暂停', cls: 'warn' }
-    : { label: '翻译中', cls: 'accent' };
-}
-
 /** 进度条数据：优先用论文行（后端每译完一页就回写，最接近磁盘事实），
  *  行里还是上一轮的「已完成」时退回任务的计数器；两者都没有就不显示进度条。 */
 function progressOf(p: Paper): { done: number; total: number } | null {
@@ -1160,19 +1139,6 @@ async function submitEdit() {
               >{{ f.name }}</button>
             </div>
 
-            <div class="lib-pop-label">处理状态</div>
-            <div class="lib-pills">
-              <button type="button" class="lib-pill" :class="{ on: statusFilter === '' }" @click="setStatus('')">全部</button>
-              <button
-                v-for="s in STATUS_OPTIONS"
-                :key="s"
-                type="button"
-                class="lib-pill"
-                :class="{ on: statusFilter === s }"
-                @click="setStatus(s)"
-              >{{ paperStatus(s).label }}</button>
-            </div>
-
             <template v-if="tagOptions.length">
               <div class="lib-pop-label">标签</div>
               <div class="lib-pills">
@@ -1310,7 +1276,6 @@ async function submitEdit() {
           :variant="viewMode"
           :title="p.title"
           :cover-url="coverUrl(p)"
-          :badge="cardStatus(p)"
           :meta="cardMeta(p)"
           :folder-label="folderLabelOf(p)"
           :progress="progressOf(p)"

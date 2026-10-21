@@ -10,7 +10,7 @@
  * · **智能与模型**：2. 模型（问答模型 + 其他类型、密钥、预设导入，全是即时操作）、
  *   3. 论文问答（技能、对话风格、运行限额；模型本体在「模型」区）。
  * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
- *   5. 搜索记录（本地搜索历史）。
+ *   5. 搜索记录（本地搜索历史）、回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）。
  * · **服务与系统**：6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
  *   7. 系统信息（只读信息 + `GET /settings/health`）。
  *
@@ -39,6 +39,7 @@ import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
 import DisplayScalePanel from '@/components/settings/DisplayScalePanel.vue';
 import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
+import TrashPanel from '@/components/trash/TrashPanel.vue';
 
 /* ---------------------------- 只读信息 ---------------------------- */
 
@@ -68,6 +69,9 @@ const SECTIONS = [
   { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '技能、对话风格与运行限额。' },
   { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '检索规模、知识库概览与论文索引。' },
   { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '只存在本机浏览器里的检索记录。' },
+  // 回收站并进「内容与索引」：它管的是论文数据本身（恢复 / 彻底删除），与索引管理同一档；
+  // 放在组尾 —— 这是低频且不可逆的操作，不该排在日常入口前面。
+  { id: 'trash', label: '回收站', icon: 'trash', group: '内容与索引', desc: '软删的论文在这里恢复或彻底删除；批注 / 笔记 / 对话与解读不会带回来。' },
   { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: 'MinerU 的 token 与默认参数。' },
   { id: 'tasks', label: '任务队列', icon: 'task', group: '服务与系统', desc: '任务进度、状态与重试。' },
   { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '只读信息与健康检查。' },
@@ -503,7 +507,12 @@ onMounted(async () => {
         <SearchHistoryPanel />
       </section>
 
-      <!-- ⑧ 系统信息（只读） -->
+      <!-- ⑧ 回收站：原独立页 /trash，老链接与老标签由路由重定向落到这一区 -->
+      <section id="trash" class="sec" v-if="active === 'trash'">
+        <TrashPanel />
+      </section>
+
+      <!-- ⑨ 系统信息（只读） -->
       <section id="about" class="sec" v-if="active === 'about'">
         <div class="grid cols-2">
           <div class="card">

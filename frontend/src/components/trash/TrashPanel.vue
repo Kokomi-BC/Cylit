@@ -1,9 +1,14 @@
 <script setup lang="ts">
 /**
- * 回收站：软删除的论文在这里恢复，或者彻底删掉。
+ * 回收站面板 —— 设置页「回收站」分节的正文，也可以被任何容器直接嵌（宽度自适应）。
  *
- * 删除时后端已经清掉批注 / 笔记 / 对话历史与解读产物（见 LibraryView 顶部注释），
- * 所以这页只回答"记录和文件还在不在"，顶部那行小字就是讲这件事 —— 别把它写成"恢复如初"。
+ * 为什么从 TrashView 的整页搬成面板：回收站不是"每天要看的页面"，而是一件**数据处理的工具**
+ * （恢复 / 彻底删除），跟索引管理、搜索记录同一档，放在设置里省掉一枚常驻导航入口。
+ *
+ * 删除时后端已经把批注 / 笔记 / 对话历史与解读产物清掉了（见 paper_service 的 _purge_paper_content），
+ * 所以这里只回答"记录和文件还在不在" —— 顶部那行小字就是讲这件事，别改成"恢复如初"。
+ *
+ * 标题不在这里画：调用方（设置页的窗格抬头）已经给出「回收站」，面板只带工具行（计数 + 刷新 + 清空）。
  */
 import { computed, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
@@ -63,7 +68,6 @@ async function restore(item: TrashItem) {
     } else {
       toast(`已恢复《${item.title}》`, 'ok');
     }
-    // 恢复出来的论文回到论文库那份列表里，那边下次进入自己会重拉（不走全局 store，避免这页顺手改了库页筛选）
   } catch (err) {
     reportError(err, '恢复失败');
   } finally {
@@ -121,27 +125,23 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="trash-view">
-    <!-- 顶部一行：与论文库同一套版式（左 标题 + 计数；右 刷新 / 清空） -->
-    <header class="tr-toolbar">
-      <div class="tr-heading">
-        <h1>回收站</h1>
-        <span class="tr-count tnum">{{ count }} 篇</span>
-      </div>
-      <div class="tr-tools">
-        <button type="button" class="tr-tool square" title="刷新列表" :disabled="loading || clearing" @click="load">
-          <AppIcon name="refresh" :size="15" />
-        </button>
-        <button
-          type="button"
-          class="tr-tool danger"
-          :disabled="clearing || !items.length"
-          @click="clearAll"
-        >
-          <AppIcon name="trash" :size="14" />{{ clearing ? '清空中…' : '清空回收站' }}
-        </button>
-      </div>
-    </header>
+  <div class="trash-panel">
+    <!-- 工具行：计数 + 刷新 + 清空（标题由调用方的窗格抬头给，这里不重复画） -->
+    <div class="tr-toolbar">
+      <span class="tr-count tnum">{{ count }} 篇</span>
+      <span class="spacer" />
+      <button type="button" class="tr-tool square" title="刷新列表" :disabled="loading || clearing" @click="load">
+        <AppIcon name="refresh" :size="15" />
+      </button>
+      <button
+        type="button"
+        class="tr-tool danger"
+        :disabled="clearing || !items.length"
+        @click="clearAll"
+      >
+        <AppIcon name="trash" :size="14" />{{ clearing ? '清空中…' : '清空回收站' }}
+      </button>
+    </div>
 
     <p class="tr-note">
       回收站里的论文可以恢复；但批注、笔记、对话历史与解读产物在删除时就已清掉，恢复不会带回它们。
@@ -192,22 +192,21 @@ onMounted(load);
 </template>
 
 <style scoped>
-/* 顶部一行：与论文库的 .lib-toolbar 同一套语言（这里是 scoped，所以类名各写一份、令牌共用）。 */
+/* 面板宽度完全跟随容器（设置页窗格 / 任何嵌入处）：下面每一处都 min-width:0 + 可换行，
+   所以窄到 900px 甚至更窄也不会出现横向滚动。 */
+.trash-panel { display: flex; flex-direction: column; min-width: 0; }
+
 .tr-toolbar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-bottom: 12px; padding-bottom: 12px;
   border-bottom: 1px solid var(--divider);
-}
-.tr-heading { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
-.tr-heading h1 {
-  margin: 0; font-size: calc(16px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em;
 }
 .tr-count {
   flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
   border-radius: 999px; background: var(--bg-subtle); border: 1px solid var(--border);
   font-size: calc(11px * var(--ts, 1)); color: var(--text-dim);
 }
-.tr-tools { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+.spacer { flex: 1 1 auto; min-width: 0; }
 .tr-tool {
   display: inline-flex; align-items: center; gap: 6px;
   height: 30px; padding: 0 12px; border-radius: var(--radius-ctl);
@@ -223,25 +222,22 @@ onMounted(load);
 .tr-tool.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .tr-tool:disabled { opacity: .5; cursor: default; }
 
-/* 顶部说明：小字、一行读得完；窄屏自然换行，不设固定宽度 */
-.tr-note {
-  margin: 0 0 14px; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
-}
+.tr-note { margin: 0 0 14px; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
 .tr-error { margin: 0 0 12px; font-size: calc(12.5px * var(--ts, 1)); color: var(--danger); }
 .tr-loading { margin: 0; padding: 26px 4px; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); }
 
-.tr-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 12px; list-style: none; }
+.tr-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 12px; list-style: none; min-width: 0; }
 
-/* 一行一条：左标题 + 元信息（可伸缩、可截断），右操作（不许被文本挤出视口）。
-   两侧都 min-width: 0，长标题只会 ellipsis / 换行，永远不产生横向滚动。 */
+/* 一行一条：左标题 + 元信息（可伸缩、可截断），右操作（可换行、可收缩）。
+   两侧都 min-width: 0 且 flex-shrink 生效，长标题 / 长提示只会 ellipsis 或换行，永远不产生横向滚动。 */
 .tr-row {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0;
   padding: 10px 12px; border-radius: var(--radius-ctl);
   border: 1px solid var(--border); background: var(--bg-elev);
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .tr-row:hover { border-color: var(--border-strong); background: var(--bg-hover); }
-.tr-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tr-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .tr-title {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: calc(13px * var(--ts, 1)); font-weight: 500; color: var(--text);
@@ -252,11 +248,12 @@ onMounted(load);
 }
 .tr-dot { color: var(--divider); }
 
-.tr-acts { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-/* 文件缺失提示：紧挨「恢复」，只在它旁边出现一次；长度可控（一行中文），跟着操作组一起换行 */
-.tr-warn {
-  min-width: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--warn);
+.tr-acts {
+  flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; justify-content: flex-end;
 }
+/* 文件缺失提示：紧挨「恢复」；宽度不够时它自己换行（允许收缩 + 正常换行，不撑宽容器） */
+.tr-warn { flex: 0 1 auto; min-width: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--warn); }
 .tr-act {
   display: inline-flex; align-items: center; gap: 5px;
   height: 28px; padding: 0 11px; border-radius: var(--radius-ctl);
@@ -270,9 +267,8 @@ onMounted(load);
 .tr-act.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .tr-act:disabled { opacity: .5; cursor: default; }
 
-/* 窄屏（900px 档）：标题行占满，操作组整体落到下一行并右对齐，不挤成一团 */
-@media (max-width: 980px) {
-  .tr-acts { width: 100%; justify-content: flex-start; }
-  .tr-warn { flex: 1 1 100%; }
+/* 窄窗格（含 1024 以下的设置页）：操作组整体落到标题下一行，不再和标题抢宽 */
+@media (max-width: 1024px) {
+  .tr-acts { flex: 0 0 100%; justify-content: flex-start; }
 }
 </style>

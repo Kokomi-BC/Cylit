@@ -7,7 +7,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
 import { api } from '@/api/client';
@@ -24,29 +24,7 @@ const props = withDefaults(defineProps<{
   iconOnly?: boolean;
 }>(), { iconOnly: false });
 
-const route = useRoute();
 const router = useRouter();
-
-/**
- * 「全部」的篇数口径：后端各分类 paper_count 之和 + 未分类（两半都来自 GET /folders）。
- * 不用 papersTotal —— 它会被论文库当前的关键词 / 状态筛选覆盖（stores/app.ts:91-95），
- * 那样"全部"的数字会跟着搜索框变，和这一区其它数字打架。
- */
-const allCount = computed(() => folderState.items.reduce((n, f) => n + (f.paper_count ?? 0), 0)
-  + folderState.unclassified);
-
-/** 高亮判据：停在论文库且没有带分类筛选；回收站按路由名判断。 */
-const allActive = computed(() => route.name === 'library' && !route.query.folder);
-const trashActive = computed(() => route.name === 'trash');
-
-function goAll(): void {
-  // query: {} —— 从 ?folder=… 过来时要把筛选清掉，否则"全部"还是那个分类
-  void router.push({ name: 'library', query: {} });
-}
-
-function goTrash(): void {
-  void router.push({ name: 'trash' });
-}
 
 /** 「未分类」这一行在展开集合里的键（服务端 id 不会长这样，不会撞）。 */
 const UNFILED = '__unfiled__';
@@ -298,17 +276,6 @@ onUnmounted(() => {
     >
       <AppIcon name="tag" :size="18" />
     </button>
-    <!-- 图标轨里也要留回收站的入口：窄屏 / 收起态下树的底部节点整块都看不见了 -->
-    <button
-      type="button"
-      class="sf-icon-btn"
-      :class="{ active: trashActive }"
-      title="回收站"
-      aria-label="回收站"
-      @click="goTrash"
-    >
-      <AppIcon name="trash" :size="18" />
-    </button>
   </section>
 
   <section v-else class="sf" :class="{ 'is-collapsed': sectionCollapsed }" aria-label="分类">
@@ -345,15 +312,6 @@ onUnmounted(() => {
       </div>
 
       <div class="sf-list">
-        <!-- 全部：去论文库且不带分类筛选（树里固定在最上面，不可折叠所以没有箭头） -->
-        <div class="sf-row" :class="{ active: allActive }">
-          <button type="button" class="sf-node" title="全部" @click="goAll">
-            <span class="sf-node-lead"><AppIcon name="library" :size="14" class="sf-node-icon" /></span>
-            <span class="sf-text">全部</span>
-            <span class="sf-count">{{ allCount }}</span>
-          </button>
-        </div>
-
         <template v-for="row in rows" :key="row.id">
           <div class="sf-row" :class="{ open: isOpen(row.id) }">
             <input
@@ -417,16 +375,6 @@ onUnmounted(() => {
           还没有分类
           <button type="button" class="sf-link" @click="startCreate">新建分类</button>
         </p>
-
-        <div class="sf-sep" aria-hidden="true"></div>
-
-        <!-- 回收站：与上面的分类用一条发丝线隔开，是"放东西的地方"而不是一个分类 -->
-        <div class="sf-row" :class="{ active: trashActive }">
-          <button type="button" class="sf-node" title="回收站" @click="goTrash">
-            <span class="sf-node-lead"><AppIcon name="trash" :size="14" class="sf-node-icon" /></span>
-            <span class="sf-text">回收站</span>
-          </button>
-        </div>
       </div>
     </div>
   </section>
@@ -443,11 +391,8 @@ onUnmounted(() => {
 }
 /* 收起态只留一行标题：不再占据剩余高度，也不滚动 */
 .sf.is-collapsed { flex: 0 0 auto; overflow: hidden; }
-/* 图标轨：两枚竖排（宽 40px，64px 轨道扣掉左右内边距还有 48px），不换行也不溢出 */
-.sf-icon {
-  flex: 0 0 auto; overflow: visible; margin: 8px 0;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-}
+/* 图标轨：单个 40px 入口（64px 轨道扣掉内边距还有 44~48px，居中放得下） */
+.sf-icon { flex: 0 0 auto; overflow: visible; margin: 8px 0; }
 
 .sf-head {
   /* 列表滚动时标题（和那枚「+」）停在顶部 */
@@ -482,12 +427,8 @@ onUnmounted(() => {
 
 .sf-row { display: flex; align-items: center; gap: 2px; padding-left: 2px; border-radius: 8px; }
 .sf-row:hover { background: var(--bg-hover); }
-/* 选中态（「全部」/「回收站」）：与导航项同一套 --accent-soft / --accent-text，不新造配色。
-   放在 :hover 之后，悬停时也保持选中色 */
-.sf-row.active { background: var(--accent-soft); }
-.sf-row.active .sf-node, .sf-row.active .sf-node-lead { color: var(--accent-text); font-weight: 600; }
-
-/* 折叠箭头：独立按钮、固定 18px 让「全部」「回收站」的文字与分类名对齐；
+/* 折叠箭头：独立按钮、固定 18px（行首那一格），
+   文字因此从同一竖线起排；
    颜色比原来那档 faint 提一档，收起 / 展开都在（只旋转，不隐藏） */
 .sf-caret-btn {
   flex: none; width: 18px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
@@ -509,24 +450,6 @@ onUnmounted(() => {
 .sf-row-caret { flex: none; transition: transform var(--dur) var(--ease); }
 .sf-row.open .sf-row-caret { transform: rotate(90deg); }
 
-/* 不可折叠的节点（「全部」「回收站」）：图标占的正是箭头那一格 18px，
-   所以文字与分类名同一竖线（2 + 18 + 2 = 22px） */
-.sf-node {
-  flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 2px;
-  height: 28px; padding: 0 6px 0 0; border: 0; border-radius: 8px; background: transparent;
-  color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1)); font-weight: 500;
-  text-align: left; cursor: pointer; transition: color var(--dur) var(--ease);
-}
-.sf-node:hover { color: var(--text); }
-.sf-node:focus-visible { outline: none; box-shadow: var(--ring); }
-.sf-node-lead {
-  flex: none; width: 18px; display: inline-flex; align-items: center; justify-content: center;
-  color: var(--text-faint);
-}
-.sf-node-icon { flex: none; }
-
-/* 分类与回收站之间的发丝线（比照 .rail-sep 那一档） */
-.sf-sep { flex: none; height: 1px; margin: 5px 6px 5px 20px; background: var(--divider); }
 .sf-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-count {
   flex: none; padding-left: 6px; color: var(--text-faint);
@@ -579,6 +502,4 @@ onUnmounted(() => {
 }
 .sf-icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 .sf-icon-btn:focus-visible { outline: none; box-shadow: var(--ring); }
-/* 选中态：与 .rail-item.active 同一套令牌（放在 :hover 之后，悬停时不掉色） */
-.sf-icon-btn.active { background: var(--accent-soft); color: var(--accent-text); }
 </style>

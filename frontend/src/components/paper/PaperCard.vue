@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 论文卡「壳」：封面 + 状态徽章 + 进度 + 标题/元信息 + hover 操作（移植自参照项目 retain-pdf 的 BookCard）。
+/** 论文卡「壳」：封面 + 分类徽章 + 进度 + 标题/元信息 + hover 操作（移植自参照项目 retain-pdf 的 BookCard）。
  *
  * 纯展示：**不决定有哪些操作、也不发请求** —— 按钮语义与菜单项由父级注入（一句话的 label + 事件）。
  * 两种形态共用一套 DOM：`grid`（封面卡，默认）与 `list`（一行一条，缩略图 + 标题 + 元信息）。
@@ -23,8 +23,6 @@ interface MenuItem {
 const props = withDefaults(defineProps<{
   title: string;
   coverUrl: string;
-  /** 状态徽章（`paperStatus()` 那一份：label + cls）。 */
-  badge: { label: string; cls: string };
   /** 一行元信息（页数 · 会议 · 年份 · 读于…） */
   meta: string;
   /** 分类名（空串 = 未分类，不显示徽章）：分类是库里的一等维度，得能一眼看出来 */
@@ -71,17 +69,6 @@ const pct = computed(() => {
   return Math.max(0, Math.min(100, Math.round((p.done / p.total) * 100)));
 });
 
-/** 徽章图标：与状态语义一一对应，不按文案猜。 */
-const badgeIcon = computed(() => {
-  switch (props.badge.cls) {
-    case 'ok': return 'check_circle';
-    case 'warn': return 'pause';
-    case 'danger': return 'warning';
-    case 'accent': return 'bolt';
-    default: return 'document';
-  }
-});
-
 /** 卡片本体：批量模式下是"勾选"，否则是"打开详情"。 */
 function onCard() {
   if (props.batch) { emit('toggle'); return; }
@@ -115,12 +102,7 @@ function onCard() {
         <span>PDF</span>
       </div>
 
-      <!-- 状态徽章：常驻右上角（封面上唯一"常亮"的标记） -->
-      <span class="pc-badge" :class="badge.cls">
-        <AppIcon :name="badgeIcon" :size="11" />{{ badge.label }}
-      </span>
-
-      <!-- 分类徽章：放左下（右上让给状态、右下角是进度条），未分类不显示 -->
+      <!-- 分类徽章：常驻右上角（左上让给批量勾选、右下是进度条），未分类不显示 -->
       <span v-if="folderLabel && variant === 'grid'" class="pc-badge is-folder" :title="`分类：${folderLabel}`">
         <AppIcon name="tag" :size="11" /><span class="pc-folder-name">{{ folderLabel }}</span>
       </span>
@@ -162,10 +144,6 @@ function onCard() {
     <div class="pc-text">
       <div class="pc-name-row">
         <h3 class="pc-name" :title="title">{{ title }}</h3>
-        <!-- 列表形态把状态挪到标题这一行（缩略图只有 48px，徽章挂在图上会盖住标题） -->
-        <span v-if="variant === 'list'" class="pc-badge is-inline" :class="badge.cls">
-          <AppIcon :name="badgeIcon" :size="11" />{{ badge.label }}
-        </span>
         <!-- 列表形态的缩略图只有 48px，分类徽章跟着进到标题这一行 -->
         <span
           v-if="folderLabel && variant === 'list'"
@@ -264,18 +242,12 @@ function onCard() {
     --glass-bottom: 88%;
   }
 }
-/* 语义色只用于状态：完成走实心强调（图1 里「已翻译」就是这一枚），
-   进行中走浅底（遮罩上的转圈已经在说"在跑"），失败走红。 */
-.pc-badge.ok { background: var(--accent); color: var(--text-on-accent); border-color: transparent; }
-.pc-badge.accent { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
-.pc-badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
-.pc-badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 /* 列表形态：同一个徽章改成"正文里的一枚"，不再绝对定位在缩略图上 */
 .pc-badge.is-inline { position: static; right: auto; top: auto; height: 18px; padding: 0 7px; flex: none; }
-/* 分类徽章复用同一套玻璃变量与圆角（不另立配色）：换个角，名字长了就截断，
-   免得长分类名把封面 / 列表行撑出横向滚动。 */
-.pc-badge.is-folder { left: 8px; right: auto; top: auto; bottom: 8px; max-width: calc(100% - 16px); }
-.pc-badge.is-folder.is-inline { bottom: auto; max-width: 132px; }
+/* 分类徽章复用同一套玻璃变量与圆角（不另立配色）：换成右上角（原先状态徽章那一格，
+   左上留给批量勾选、右下留给进度条），名字长了就截断，免得长分类名把封面撑宽。 */
+.pc-badge.is-folder { left: auto; right: 8px; top: 8px; bottom: auto; max-width: calc(100% - 16px); }
+.pc-badge.is-folder.is-inline { max-width: 132px; }
 .pc-folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pc-processing {
@@ -374,7 +346,6 @@ function onCard() {
   flex: none; width: 48px; aspect-ratio: 3 / 4; border-radius: 10px;
   box-shadow: var(--shadow-1);
 }
-.paper-card.list .pc-cover > .pc-badge { display: none; }
 .paper-card.list .pc-text { flex: 1; margin-top: 0; }
 /* 列表里标题**按内容收缩**：徽章要紧跟在标题后面，被 `flex: 1` 推到最右边会像另一个按钮 */
 .paper-card.list .pc-name { flex: 0 1 auto; font-size: calc(14px * var(--ts, 1)); }
