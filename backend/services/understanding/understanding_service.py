@@ -624,6 +624,22 @@ def _resolve_registry(registry: dict, pids: list[str], rows: list[dict]) -> dict
     return row_identity.resolve_registry(registry, pids, rows)
 
 
+def _prefer_anchor_row(pids: list[str], verdict: dict, anchor: dict | None) -> list[str]:
+    """多种证据冲突时，**以还活着的 chunk 锚点为准**（把与它一致的那个 pid 排到最前）。
+
+    `_healed_item` 取第一个能解析的 pid 当落点，所以"顺序"就是"结论"。锚点（chunk 的
+    ``row_id``）是另一条独立来源：它活着就说明这一块还在原位，pid 解出来的行若与它不一致
+    （实测 A196：p020-06 vs 锚点的 p020-07），以锚点为准 —— 宁可不动，也不让引用乱跳。
+    """
+    row_id = str((anchor or {}).get("row_id") or "")
+    if not row_id or not pids:
+        return list(pids)
+    for pid in pids:
+        if str((verdict.get(pid) or {}).get("row_id") or "") == row_id:
+            return [pid] + [other for other in pids if other != pid]
+    return list(pids)
+
+
 def _heal_pids(registry: dict, pids: list[str], rows: list[dict],
                states: list[str] | None = None) -> tuple[list[str], dict]:
     """退休 pid → 同页后继 pid（`row_identity.heal_pid`）。返回 ``(新 pids, 愈合表)``。
@@ -841,6 +857,7 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
                 kept = [pid for pid, one in zip(pids, states) if one == "ok"]
                 if kept:
                     keeps = _resolve_registry(registry(), kept, live_rows)
+                    kept = _prefer_anchor_row(kept, keeps, anchors.get(chunk_id))
                     item = _healed_item(code, chunk_id, by_code, anchors, kept, keeps)
                     item["pid_state"] = "partial"
                     out_live.append(item)
