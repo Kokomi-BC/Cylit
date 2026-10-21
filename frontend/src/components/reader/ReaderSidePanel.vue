@@ -92,6 +92,7 @@ const emit = defineEmits<{
     rowId?: string | null;
     blockId?: string | null;
     label?: string | null;
+    latex?: string | null;
   }): void;
   (e: 'cite-peek-hide'): void;
   (e: 'copy', text: string): void;

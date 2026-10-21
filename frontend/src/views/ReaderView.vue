@@ -127,6 +127,8 @@ type CitePeekAsk = {
   label?: string | null;
   /** 引用自带的一两句原文（老引用没有可映射的锚点时，卡片里至少有内容） */
   snippet?: string | null;
+  /** 公式类引用的 LaTeX（解读页的标号自带；对话那侧没有） */
+  latex?: string | null;
 };
 
 /** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
@@ -249,6 +251,20 @@ function peekViewOf(card: PeekCard) {
     && (norm(text) === norm(caption) || norm(text).includes(norm(caption)));
   const bodyZh = sameAsCaption(zh) ? '' : zh;
   const bodyEn = sameAsCaption(en) ? '' : en;
+  /*
+   * 「引用片段」：同一行里的两条引用（例如 60=段落、61=其中的公式）会因为**落点相同**而
+   * 显出完全一样的内容（用户口径 2026-12-04）。引用自带的那一段正好能区分它们：
+   * 公式类 chunk 的片段就是那条公式本身，段落类 chunk 的片段则是正文开头 —— 后者已经被
+   * 正文覆盖，归一化后包含就不必再画一遍。 */
+  const quoteRaw = String(ask.snippet || '').trim()
+    /* 公式 chunk 的片段是我们自己拼的「公式 p018-01：$$…$$」—— 那个抬头是给检索看的，
+       卡片里只需要公式本身。 */
+    .replace(/^公式\s*\S*?\s*[:：]\s*/, '');
+  const quote = quoteRaw && !norm(zh).includes(norm(quoteRaw)) && !norm(en).includes(norm(quoteRaw))
+    ? quoteRaw
+    : '';
+  /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 */
+  const latex = String(ask.latex || '').trim();
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
     zh: bodyZh,
@@ -258,6 +274,8 @@ function peekViewOf(card: PeekCard) {
     body: card.lang === 'en' ? bodyEn : bodyZh,
     imageUrl: fig?.image_url || '',
     caption,
+    quote,
+    latex,
     page, rowId,
     anchor: ask.anchor,
   };
@@ -7898,6 +7916,11 @@ function renderMarkdown(text?: string | null) {
              :src="assetUrl(peekViewOf(card).imageUrl)" :alt="peekViewOf(card).caption || ''" />
         <div v-if="peekViewOf(card).caption" class="cite-peek-cap md small"
              v-html="mdToHtml(peekViewOf(card).caption, paperId)" />
+        <!-- 这条引用具体指向哪一句 / 哪条公式：同一行里的两条引用靠它区分 -->
+        <div v-if="peekViewOf(card).latex" class="cite-peek-quote cite-peek-formula md small"
+             v-html="mdToHtml('$$' + peekViewOf(card).latex + '$$', paperId)" />
+        <div v-else-if="peekViewOf(card).quote" class="cite-peek-quote md small"
+             v-html="mdToHtml(peekViewOf(card).quote, paperId)" />
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
              v-html="mdToHtml(peekViewOf(card).body, paperId)" />
         <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl" class="tiny faint">
@@ -8272,6 +8295,14 @@ function renderMarkdown(text?: string | null) {
 }
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
+/* 引用片段：左竖条 + 淡底，与正文分开 —— 它回答的是这条引用指向哪一句，不是这一段讲了什么。 */
+.cite-peek-quote {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 4px 8px; max-height: 150px; overflow: auto;
+}
+.cite-peek-formula { display: flex; justify-content: center; overflow-x: auto; }
 /* 原文对照：小一号、淡一档，只作参照，不抢正文的注意力 */
 /* 中/英 切换（用户口径 2026-12-04）：**胶囊里两个圆**，高度与右侧的圆钮同高（25px），
    于是标题行右半边是一条对齐的线：胶囊 25 → 圆钮 25 → ✕ 25。

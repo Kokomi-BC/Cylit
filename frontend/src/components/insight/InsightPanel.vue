@@ -42,6 +42,8 @@ const emit = defineEmits<{
     rowId?: string | null;
     blockId?: string | null;
     label?: string | null;
+    /** 公式类引用带 LaTeX：卡片里直接画那条公式（同行两条引用才分得开） */
+    latex?: string | null;
   }): void;
   (e: 'peek-hide'): void;
 }>();
