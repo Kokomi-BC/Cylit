@@ -11,6 +11,10 @@ python scripts/kb_break_rehearsal.py <paper_id> <page> a          # A 路：英�
 python scripts/kb_break_rehearsal.py <paper_id> <page> b          # B 路：中文翻译
 ```
 
+⚠️ B 路的**产线**现在是「块模式」（A 定块、B 照译，见 `render_block_prompt`），而这里彩排的是
+旧的两路契约（各自分块）。所以本脚本只能回答「模型会不会按契约给锚点」，不能代表 B 路产物的
+真实判定 —— 后者要看 `page_products` 的 `break_stats`。
+
 ⚠️ 单路彩排的**校验结果偏乐观**：`apply_semantic_breaks` 的"前一行收句了吗"要用锚点自己
 那一侧的文本判（`_break_reject_reason(..., side)`），而单路拿到的行只有一侧有内容。
 想看真实判定，得等两路都落盘后看 `page_products` 的 `break_stats`（读时会用合并行重算一次）。
@@ -24,7 +28,7 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.services.model.model_manager import model_manager
+from backend.services.translation import translation_service
 from backend.services.translation.page_translate import (
     PATH_A_FILENAME, PATH_B_FILENAME, apply_semantic_breaks, build_outline_skeleton,
     build_stable_prefix, call_page, load_page_image, page_source_text, pair_rows,
@@ -40,7 +44,8 @@ if path not in (None, "a", "b"):
 label = {"a": f"A 路（英文转录 → {PATH_A_FILENAME}）",
          "b": f"B 路（中文翻译 → {PATH_B_FILENAME}）"}.get(path, "融合模式（一次调用产出两侧）")
 
-provider = model_manager.get_vision()
+# 视觉模型已下线（翻译链路不再挂它）：彩排改用**本路**的生成模型，与产线同一套解析。
+provider = translation_service._path_provider(path)
 body, _src = page_source_text(paper_id, page)
 prompt = render_page_prompt(
     page=page, page_total=22, body=body,
