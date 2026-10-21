@@ -85,6 +85,15 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   /** latex：公式类引用的 LaTeX —— 行级落点分不开「这一段」与「这一段里的那条公式」 */
   (e: 'focus', rowId: string, page?: number, latex?: string): void;
+  /** 悬浮标号：把速览请求交给阅读器（那里才有整篇的行 / 图 / 表） */
+  (e: 'cite-peek', p: {
+    anchor: { x: number; y: number; w: number; h: number };
+    page?: number | null;
+    rowId?: string | null;
+    blockId?: string | null;
+    label?: string | null;
+  }): void;
+  (e: 'cite-peek-hide'): void;
   (e: 'copy', text: string): void;
   (e: 'zoom', target: ZoomTarget): void;
   /** 表格 / 公式的浮层打开：`{ icon, title, markdown }`，由阅读器那层挂 `BlockOverlay` */
@@ -434,6 +443,8 @@ function onMore(key: string, r: FeedRow) {
       @started="emit('insight-queued')"
       @open-page="emit('open-insight-page')"
       @cite="(c) => locate(c.block, c.page || undefined, c.latex)"
+      @peek="(p) => emit('cite-peek', p)"
+      @peek-hide="emit('cite-peek-hide')"
     />
 
     <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：

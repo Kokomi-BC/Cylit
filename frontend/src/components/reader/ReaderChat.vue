@@ -44,6 +44,16 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'focus', blockId: string, page?: number): void;
+  /** 悬浮正文里的引用标号：请求在旁边 peek 一眼（点标号照旧跳转，不受影响） */
+  (e: 'peek', p: {
+    anchor: { x: number; y: number; w: number; h: number };
+    page?: number | null;
+    rowId?: string | null;
+    blockId?: string | null;
+    label?: string | null;
+    snippet?: string | null;
+  }): void;
+  (e: 'peek-hide'): void;
   (e: 'clear-selection'): void;
   /** 这一轮 agent 动了侧栏里的东西（笔记 / 高亮 / 批注）：父组件据此就地刷新，不整页重载 */
   (e: 'refresh-side'): void;
@@ -404,6 +414,29 @@ function onCitationClick(ev: MouseEvent) {
     label: btn.getAttribute('title') || '',
   } as AgentCitation);
 }
+
+/**
+ * 悬浮正文里的引用标号 → 请求在旁边 peek 一眼（用户口径 2026-12-03）。
+ *
+ * 只上报位置与锚点，**不碰点击**：点标号仍然走 onCitationClick（跳原文）；
+ * 悬浮只是先看一眼。真正的浮层在 ReaderView —— 那里才有整篇的行 / 图 / 表。
+ */
+function onCitePeek(ev: PointerEvent) {
+  const btn = (ev.target as HTMLElement | null)?.closest?.('.cite-inline') as HTMLElement | null;
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const page = Number(btn.dataset.page || 0);
+  emit('peek', {
+    anchor: { x: r.left, y: r.top, w: r.width, h: r.height },
+    page: page > 0 ? page : null,
+    rowId: btn.dataset.row || null,
+    blockId: btn.dataset.block || null,
+    label: btn.getAttribute('title') || '',
+    snippet: '',
+  });
+}
+
+function onCitePeekOut() { emit('peek-hide'); }
 
 /** 划词那种以 `> 引用` 开头的用户消息：正文只显示引用之后的部分（引用单独排版）。 */
 function splitQuote(content: string): { quote: string; rest: string } {
@@ -1897,7 +1930,8 @@ defineExpose({ uploadFiles, ensureThread });
                 <template v-for="(s, i) in stepsOf(m)" :key="`${m.message_id}-${i}`">
                   <!-- 过程里说的半句（调工具之前那句）：留在轨迹里，最终回答在外面 -->
                   <div v-if="s.kind === 'text' && showInTrace(m, s)" class="md run-text"
-                       v-html="renderAnswer(s.text || '', m.citations)" @click="onCitationClick" />
+                       v-html="renderAnswer(s.text || '', m.citations)" @click="onCitationClick"
+                       @pointerover="onCitePeek" @pointerout="onCitePeekOut" />
                   <template v-else-if="s.kind === 'text'" /><!-- 最后一段正文＝回答本体，渲染在轨迹外 -->
                   <!-- 思考段：默认只露 4 行，点一下展开（长思考不占满整屏） -->
                   <div v-else-if="s.kind === 'thinking'" class="run-step think"
@@ -1928,7 +1962,8 @@ defineExpose({ uploadFiles, ensureThread });
 
             <div class="md body"
                  v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
-                 @click="onCitationClick" />
+                 @click="onCitationClick"
+                 @pointerover="onCitePeek" @pointerout="onCitePeekOut" />
 
             <!-- 附件图：点开的是阅读器那套**图片查看器**（用户口径 2026-11-19），不再开新标签页 -->
             <div v-if="m.attachments?.length" class="atts">

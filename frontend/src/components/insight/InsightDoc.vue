@@ -63,6 +63,15 @@ const emit = defineEmits<{
   (e: 'anchors-ready'): void;
   /** 点了正文里的引用标号：宿主负责跳到原文（阅读器滚到那一段，整页则开阅读器） */
   (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
+  /** 悬浮标号：宿主在旁边弹一张速览卡（点标号仍然走 cite，不受影响） */
+  (e: 'peek', p: {
+    anchor: { x: number; y: number; w: number; h: number };
+    page?: number | null;
+    rowId?: string | null;
+    blockId?: string | null;
+    label?: string | null;
+  }): void;
+  (e: 'peek-hide'): void;
 }>();
 
 const root = ref<HTMLElement | null>(null);
@@ -147,6 +156,22 @@ function decorateCites(html: string): string {
 }
 
 /** 点标号：只上报，不自己滚 —— 整页那侧根本没有阅读器，滚不动的活儿得宿主决定 */
+function onCitePeek(ev: PointerEvent) {
+  const btn = (ev.target as HTMLElement | null)?.closest?.('.ins-cite') as HTMLElement | null;
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const page = Number(btn.dataset.page || 0);
+  emit('peek', {
+    anchor: { x: r.left, y: r.top, w: r.width, h: r.height },
+    page: page > 0 ? page : null,
+    rowId: btn.dataset.block || null,
+    blockId: btn.dataset.code || null,
+    label: btn.getAttribute('title') || '',
+  });
+}
+
+function onCitePeekOut() { emit('peek-hide'); }
+
 function onCiteClick(ev: MouseEvent) {
   const btn = (ev.target as HTMLElement | null)?.closest?.('.ins-cite') as HTMLElement | null;
   if (!btn) return;
@@ -199,7 +224,8 @@ onMounted(() => { void nextTick(assignAnchors); });
 </script>
 
 <template>
-  <div ref="root" class="doc" :class="{ narrow }" @click="onCiteClick">
+  <div ref="root" class="doc" :class="{ narrow }" @click="onCiteClick"
+     @pointerover="onCitePeek" @pointerout="onCitePeekOut">
     <div v-if="error" class="item err">
       <div class="tiny">{{ error }}</div>
       <!-- 只在"确实卡在前置条件"时补这句：网络抖动也挂一句"先建索引"会把人引到错的方向 -->

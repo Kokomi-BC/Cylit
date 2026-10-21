@@ -35,6 +35,15 @@ const emit = defineEmits<{
   (e: 'open-page'): void;
   /** 正文里点了引用标号（`InsightDoc` 只上报，往哪跳由 ReaderView 决定） */
   (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
+  /** 悬浮标号的速览请求（宿主在阅读器那侧弹卡；点击照旧走 cite） */
+  (e: 'peek', p: {
+    anchor: { x: number; y: number; w: number; h: number };
+    page?: number | null;
+    rowId?: string | null;
+    blockId?: string | null;
+    label?: string | null;
+  }): void;
+  (e: 'peek-hide'): void;
 }>();
 
 /* 阅读器这边任务列表已经在轮询，把 `running` 传进组合式即可（它不会再自己拉 /tasks） */
@@ -114,6 +123,8 @@ async function onStart() {
       :refs="refs"
       @start="onStart"
       @cite="(c) => emit('cite', c)"
+      @peek="(p) => emit('peek', p)"
+      @peek-hide="emit('peek-hide')"
     />
   </div>
 </template>

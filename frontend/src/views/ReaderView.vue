@@ -111,6 +111,100 @@ const formulasSource = ref<'markdown' | 'parse' | 'mixed' | string>('markdown');
 const tables = ref<MarkdownTable[]>([]);
 const tablesLoading = ref(false);
 const figures = ref<FigureItem[]>([]);
+
+/* ---------------------- 引用标号的「速览卡」（悬浮标号就地在旁边看一眼） ----------------------
+ * 用户口径 2026-12-03：对话页 / 解读页里悬浮引用标号，旁边弹一张卡片显示它指向的内容
+ * （正文 / 表格 / 插图），**点卡片 = 定位到原文**；点标号本身的跳转逻辑一点没动。
+ * 复用 FloatingCard：拖动 / 收起 / 焦点层 / 字号 全跟笔记浮层同一套。
+ *
+ * 内容从**阅读器自己的 payload** 里取（行 / 表格 / 插图），所以三类都能出 ——
+ * 引用里带的 snippet 只有一两句，且没有图表的地址，当兜底就够了。 */
+type CitePeekAsk = {
+  anchor: { x: number; y: number; w: number; h: number };
+  page?: number | null;
+  rowId?: string | null;
+  blockId?: string | null;
+  label?: string | null;
+};
+const citePeek = reactive({ open: false, ask: null as CitePeekAsk | null });
+let peekShowTimer = 0;
+let peekHideTimer = 0;
+/** 悬浮多久才弹（与「参考文献浮层」同一条口径：停一下才弹，扫过去不打扰） */
+const PEEK_SHOW_MS = 320;
+const PEEK_HIDE_MS = 240;
+
+function cancelPeekTimers(): void {
+  if (peekShowTimer) { clearTimeout(peekShowTimer); peekShowTimer = 0; }
+  if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
+}
+
+function onCitePeekAsk(ask: CitePeekAsk): void {
+  cancelPeekTimers();
+  /* 已经开着就立刻换内容（在标号之间横扫时不用每次都等 320ms） */
+  if (citePeek.open) { citePeek.ask = ask; return; }
+  peekShowTimer = window.setTimeout(() => {
+    peekShowTimer = 0;
+    citePeek.ask = ask;
+    citePeek.open = true;
+  }, PEEK_SHOW_MS);
+}
+
+function onCitePeekHide(): void {
+  if (peekShowTimer) { clearTimeout(peekShowTimer); peekShowTimer = 0; }
+  if (!citePeek.open) return;
+  if (peekHideTimer) clearTimeout(peekHideTimer);
+  peekHideTimer = window.setTimeout(() => {
+    peekHideTimer = 0;
+    citePeek.open = false;
+  }, PEEK_HIDE_MS);
+}
+
+/** 鼠标进到卡片里：取消待收（否则刚滑过去看一下就没了） */
+function keepCitePeek(): void {
+  if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
+}
+
+function closeCitePeek(): void {
+  cancelPeekTimers();
+  citePeek.open = false;
+}
+
+const CITE_KIND: Record<string, string> = {
+  heading: '标题', para: '段落', list: '列表', table: '表格', formula: '公式',
+  caption: '图注', code: '代码', ref: '参考文献', figure: '插图',
+};
+
+const citePeekView = computed(() => {
+  const ask = citePeek.ask;
+  if (!ask) return null;
+  const rowId = rowAnchorId(String(ask.rowId || ''))
+    || (ask.blockId ? String(reader.value?.block_rows?.[rowAnchorId(String(ask.blockId))] ?? '') : '');
+  const row = rowId ? rowById.value.get(rowId) : undefined;
+  const fig = rowId ? figures.value.find((f) => f.row_id === rowId) : undefined;
+  const tbl = rowId ? tables.value.find((t) => t.row_id === rowId) : undefined;
+  const page = row?.page ?? ask.page ?? fig?.page ?? tbl?.page ?? 0;
+  const kind = tbl ? '表格' : fig ? '插图' : CITE_KIND[String(row?.type ?? '')] || '正文';
+  const md = (tbl?.markdown || row?.translation || row?.original || '').trim();
+  /* 译文当正文，原文另起一段小字对照（只有两侧都有时才出） */
+  const side = (row?.translation || '').trim() ? (row?.original || '').trim() : '';
+  return {
+    title: page ? '第 ' + page + ' 页 · ' + kind : kind,
+    md,
+    side,
+    imageUrl: fig?.image_url || '',
+    caption: (fig?.caption_zh || fig?.caption || '').trim(),
+    page, rowId,
+    anchor: ask.anchor,
+  };
+});
+
+/** 点卡片：与点标号走**同一条**定位（focusRow），然后收起 */
+function jumpFromCitePeek(): void {
+  const v = citePeekView.value;
+  if (!v) return;
+  closeCitePeek();
+  void focusRow(v.rowId, { page: v.page || undefined, flash: true });
+}
 const brief = ref<BriefPayload | null>(null);
 const glossary = ref<GlossaryTerm[]>([]);
 const outline = ref<Outline>({ items: [], tree: [], count: 0 });
@@ -7477,6 +7571,8 @@ function renderMarkdown(text?: string | null) {
           :paper-id="paperId"
           :insight-running="understandingRunning"
           @focus="(id: string, page?: number, latex?: string) => focusRow(id, { page, flash: true, latex })"
+          @cite-peek="onCitePeekAsk"
+          @cite-peek-hide="onCitePeekHide"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
           @overlay="openBlockOverlay($event)"
@@ -7539,7 +7635,9 @@ function renderMarkdown(text?: string | null) {
           :selection="chatSelection"
           :can-float="!isNarrow"
           :floating="chatFloat"
-          @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+          @focus="(id: string, page?: number, latex?: string) => focusRow(id, { page, flash: true, latex })"
+          @peek="onCitePeekAsk"
+          @peek-hide="onCitePeekHide"
           @clear-selection="chatSelection = null"
           @refresh-side="onChatSideChanged"
           @float="openChatFloat"
@@ -7682,6 +7780,41 @@ function renderMarkdown(text?: string | null) {
          各自独立编辑 / 保存 / 删除 / 换色，`✕` 只关自己；同一条笔记 / 同一处高亮永远只有一张，
          再点入口 = 把已有的那张抬到最上层（见 `openNotePopover`）。
          `data-note-key` 是这张卡的 DOM 锚：`scheduleNoteHide` 靠它逐张问"鼠标还在它上面吗"。 -->
+    <FloatingCard
+      v-if="citePeek.ask"
+      :open="citePeek.open"
+      :anchor="citePeekView?.anchor || null"
+      :title="citePeekView?.title || '引用'"
+      :anchored="true"
+      :width="360"
+      :max-height="360"
+      text-cat="chat"
+      hide-anchor
+      data-cite-peek
+      @mouseenter="keepCitePeek"
+      @mouseleave="onCitePeekHide"
+      @close="closeCitePeek"
+    >
+      <div class="cite-peek" role="button" tabindex="0" title="定位到原文"
+           @click="jumpFromCitePeek" @keydown.enter.prevent="jumpFromCitePeek">
+        <img v-if="citePeekView?.imageUrl" class="cite-peek-img"
+             :src="assetUrl(citePeekView.imageUrl)" :alt="citePeekView?.caption || ''" />
+        <div v-if="citePeekView?.caption" class="cite-peek-cap md small"
+             v-html="mdToHtml(citePeekView.caption, paperId)" />
+        <div v-if="citePeekView?.md" class="cite-peek-md md small"
+             v-html="mdToHtml(citePeekView.md, paperId)" />
+        <div v-if="citePeekView?.side" class="cite-peek-side tiny faint">
+          {{ citePeekView.side }}
+        </div>
+        <div v-if="!citePeekView?.md && !citePeekView?.imageUrl" class="tiny faint">
+          这一段没有可显示的内容（可能是图片页或纯公式块）
+        </div>
+        <div class="cite-peek-hint tiny">
+          <AppIcon name="locate" :size="11" /> 点击定位到原文
+        </div>
+      </div>
+    </FloatingCard>
+
     <FloatingCard
       v-for="card in noteCards"
       :key="card.key"
@@ -8033,6 +8166,30 @@ function renderMarkdown(text?: string | null) {
 </template>
 
 <style scoped>
+/* ---------------- 引用速览卡（悬浮标号弹出的那张） ----------------
+ * 整块可点 = 定位到原文；里面是**只读**内容，所以不放任何按钮 ——
+ * 唯一的交互就是这张卡片本身，点哪都跳（比再放一枚「定位」小按钮更省一次瞄准）。 */
+.cite-peek {
+  display: flex; flex-direction: column; gap: 8px;
+  cursor: pointer; border-radius: var(--radius-sm);
+}
+.cite-peek:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.cite-peek-img {
+  display: block; width: 100%; max-height: 200px; object-fit: contain;
+  border-radius: var(--radius-sm); background: var(--bg-sunken);
+}
+.cite-peek-cap { color: var(--text-dim); }
+.cite-peek-md { max-height: 190px; overflow: auto; }
+/* 原文对照：小一号、淡一档，只作参照，不抢正文的注意力 */
+.cite-peek-side {
+  border-top: 1px dashed var(--divider); padding-top: 6px;
+  max-height: 96px; overflow: auto; line-height: 1.6;
+}
+.cite-peek-hint {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--accent-text); font-weight: 600;
+}
+
 /* 阅读器数据加载占位：整屏布局下正文区还是空的，把圈 + 文案**居中**摆（用 `.empty` 会贴在左上角）。
    高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
 .reader-loading {
