@@ -8812,6 +8812,9 @@ function renderMarkdown(text?: string | null) {
    transform/opacity/pointer-events 顶回来（浮窗时侧栏是**开着**的，原位置留给 `.aside-pip`）。 */
 .reader > .chat-host.float {
   transform: none; opacity: 1; pointer-events: auto;
+  /* 整块浮窗都拖着走：光标在**宿主**这一层就给手型（正文 / 列表这些要读要选的区域
+     由 ReaderChat 自己改回普通箭头，见 `.chat.is-float` 那组规则） */
+  cursor: grab;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
   overflow: hidden;      /* 圆角裁内容（原来那条给 aside 的 overflow 放行，现在归这里） */

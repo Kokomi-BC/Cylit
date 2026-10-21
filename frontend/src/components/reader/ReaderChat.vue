@@ -2265,10 +2265,18 @@ defineExpose({ uploadFiles, ensureThread });
    以前只在 ReaderView 那边用 :deep(.thread-head) 写了一条，标题区常落到子元素上，
    用户看到的是普通箭头（用户口径：笔记浮层是手形、对话浮层不是）。
    这里按 floating 属性在组件自己的作用域里直接写一遍，最稳。 */
+/* 浮窗态：整块都是把手（拖动由 ReaderView 的 onFloatCardDown 接管），所以从根上给手型；
+   正文与列表这些「要读要选」的区域再改回普通箭头，否则整窗都是抓手、看着像点不了。 */
+.chat.is-float { cursor: grab; }
+.chat.is-float .msgs,
+.chat.is-float .list-body { cursor: auto; }
 .chat.is-float .thread-head,
 .chat.is-float .list-head { cursor: grab; user-select: none; }
 .chat.is-float .thread-head:active,
 .chat.is-float .list-head:active { cursor: grabbing; }
+/* 标题 / 空隙这类不可交互的子元素一律继承手型（有的浏览器在 span 上会退回默认箭头） */
+.chat.is-float .thread-head > span,
+.chat.is-float .list-head > span { cursor: inherit; }
 
 .msgs {
   /* 底部这块空白是给**悬浮的输入区**让位的（JS 按实测高度覆盖，这里只是兜底） */
