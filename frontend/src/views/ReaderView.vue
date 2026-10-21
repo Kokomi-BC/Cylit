@@ -997,6 +997,9 @@ function persistBlockOverlays() {
     const payload = blockOverlays.value.map((o) => ({
       key: o.key, icon: o.icon, title: o.title, titleMd: o.titleMd,
       markdown: o.markdown, imageUrl: o.imageUrl,
+      /* 落点一起存档（用户口径 2026-12-06）：不存的话刷新恢复出来的浮层没有「定位到原文」——
+         而"关掉标签页再回来接着看"正是浮层最常见的用法。 */
+      rowId: o.rowId, page: o.page, latex: o.latex,
     }));
     if (payload.length) localStorage.setItem(blockOverlayStoreKey(), JSON.stringify(payload));
     else localStorage.removeItem(blockOverlayStoreKey());

@@ -85,7 +85,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
     <!-- 定位到原文：与笔记卡那枚「定位」同一形态（`btn icon sm` + 靶心图标），
          跳完**不关浮层**（看完还能接着看）。没有落点（刷新恢复的那批）就不给这枚钮。 -->
     <template v-if="props.canLocate" #head-extra>
-      <button class="btn icon sm" title="定位到原文" data-block-overlay-locate
+      <button class="ov-head-btn" title="定位到原文" data-block-overlay-locate
               @click.stop="emit('locate')">
         <AppIcon name="locate" :size="13" />
       </button>
@@ -106,6 +106,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
 </template>
 
 <style scoped>
+/* 头部那枚「定位到原文」：**必须与邻居（⋯ / ✕）长得一样**。
+   它们用的是 `FloatingCard` 里的 `.fc-btn`（主题色 + 6% 底 + hover 变亮），而那是该组件的
+   scoped 样式，插槽内容拿不到 —— 所以这里按同一组值重写一份（改 `fc-btn` 时要同步这里）。
+   之前用 `btn icon sm`，图标是正文色（黑），夹在两只主题色圆钮中间像坏掉了（用户 2026-12-06 报）。 */
+.ov-head-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 25px; height: 25px; flex: none; border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--accent-text); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+.ov-head-btn:hover { background: var(--bg-hover); color: var(--accent-hover); }
+.ov-head-btn:active { transform: scale(.94); }
+
 /* 头部**不要那层 3% 灰底**（用户口径：浮层顶部颜色偏深、跟笔记浮层不一致）。
    那层底在 `FloatingCard` 的 `.fc-head` 上是给「解释卡」那类内容的；笔记浮层当年就把它撤掉、
    换成一条发丝线（见 ReaderView 的 `[data-note-popover] .fc-head`），这里跟它对齐。 */
