@@ -8561,6 +8561,21 @@ function renderMarkdown(text?: string | null) {
   /* 把面板的绘制/布局隔离出来：拖宽度时只有它自己的边框在动，不牵动别处 */
   .reader.aside-previewing .reader-aside { contain: layout paint; }
 }
+/* 侧栏里所有**图标钮**统一走主题色（用户口径 2026-12-02：目录 / 公式 / 表格 / 笔记那几排
+   动作键原来是正文灰，换主题之后一片灰，跟界面对不上）。:deep 是必须的 —— 这些面板
+   （ReaderToc / ReaderFormulaList / ReaderTableList / ReaderSidePanel）都是子组件，
+   父组件的 scoped 选择器够不到它们内部。
+   ⚠️ 排掉 .danger / .primary / .tool-on：删除键要红、实底钮要反白、选中项要保持主色实底，
+   被这一条盖掉就等于把语义抹平了。 */
+.reader-aside :deep(.btn.icon:not(.danger):not(.primary):not(.tool-on)) { color: var(--accent-text); }
+.reader-aside :deep(.btn.icon:not(.danger):not(.primary):not(.tool-on):hover:not(:disabled)) {
+  color: var(--accent-hover);
+}
+/* 分段控件（目录 / 页面视图）：两枚都染主题色，未选中的**降一档**——
+   否则两枚一样亮，看不出点了哪一个（选中态本来只靠那枚白色 pill 表达，太弱）。 */
+.reader-aside :deep(.seg button) { color: color-mix(in srgb, var(--accent-text) 72%, var(--text-dim)); }
+.reader-aside :deep(.seg button.active) { color: var(--accent-text); }
+
 /* 收起：整块滑出左边界。transform 走合成层，比过渡 width 便宜得多，
    也不会像"宽度收到 0"那样在右边缘留一条来不及收掉的 1px 分隔线。 */
 .reader.no-aside .reader-aside {
