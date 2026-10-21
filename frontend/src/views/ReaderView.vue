@@ -2101,7 +2101,7 @@ onUnmounted(() => releaseFloatSelection());
 function onFloatCardTouchStart(ev: TouchEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
-  if (!t?.closest?.('.thread-head, .list-head')) return;
+  if (!t?.closest?.('.thread-head, .list-head, .chat-grab')) return;
   /* ⚠️ 按在**按钮**上就整条放行（不 preventDefault、不起手势）：取消 touchstart 会把
      后续的 click 一起掐掉，于是头部那几枚键在触摸屏上点了没反应（用户口径 2026-11-25）。 */
   if (t.closest('button, input, textarea, label, a')) return;
@@ -2115,7 +2115,7 @@ function onFloatCardTouchStart(ev: TouchEvent) {
 function onFloatCardDown(ev: PointerEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
-  if (!t?.closest?.('.thread-head, .list-head')) return;
+  if (!t?.closest?.('.thread-head, .list-head, .chat-grab')) return;
   onFloatPointerDown(ev, 'move');
 }
 
@@ -2130,7 +2130,7 @@ function onFloatCardMouseDown(ev: MouseEvent) {
   if (!chatFloat.value) return;
   const t = ev.target as HTMLElement | null;
   /* 按钮 / 输入类目标放行：这一条是挡"拖选"的，不该连按键的原生按下态一起挡掉 */
-  if (!t?.closest?.('.thread-head, .list-head')) return;
+  if (!t?.closest?.('.thread-head, .list-head, .chat-grab')) return;
   if (t.closest('button, input, textarea, label, a')) return;
   ev.preventDefault();
 }
@@ -8481,18 +8481,14 @@ function renderMarkdown(text?: string | null) {
 }
 .reader > .chat-host.float :deep(.thread-head:active),
 .reader > .chat-host.float :deep(.list-head:active) { cursor: grabbing; }
-/* 兜底（用户口径：浮窗上是「手型但不是抓取」，笔记浮层才对）：
-   逐层给 cursor 总有某层被别的规则改成 pointer / auto —— 这里让浮窗里**一切不可交互的元素**
-   直接继承宿主那枚 `grab`，不再逐个猜是哪个 wrapper 掉了。按钮 / 输入框 / 可编辑区除外，
-   正文与列表那两块（要读要选）最后再改回普通箭头。 */
-.reader > .chat-host.float :deep(*:not(button):not(a):not(input):not(textarea):not([contenteditable="true"])) {
-  cursor: inherit;
-}
+/* 光标分工照笔记浮层那套来，**不做全局兜底**（上一版那条 `*` 继承把正文也说成了手型）：
+   · 能拖的只有两处：顶部抓手条 `.chat-grab`、会话头 / 列表头 → `grab`（按住 `grabbing`）；
+   · 正文与列表是**要读要选的文字** → 明确给 `text`（以前是继承来的箭头，选字时手感也不对）；
+   · 按钮仍是 `pointer`（`.th-act` 自己写了）。 */
 .reader > .chat-host.float :deep(.msgs),
 .reader > .chat-host.float :deep(.msgs *),
 .reader > .chat-host.float :deep(.list-body),
-.reader > .chat-host.float :deep(.list-body *) { cursor: auto; }
-/* 按钮最后再统一回「点得动」的箭头手 —— 它比上面两条都晚，赢的是它 */
+.reader > .chat-host.float :deep(.list-body *) { cursor: text; }
 .reader > .chat-host.float :deep(button) { cursor: pointer; }
 
 /* 头部上方那 12px（抓手药丸所在的一条）属于 `.chat-host` 自己、不属于头部 ——
@@ -8844,8 +8840,6 @@ function renderMarkdown(text?: string | null) {
    transform/opacity/pointer-events 顶回来（浮窗时侧栏是**开着**的，原位置留给 `.aside-pip`）。 */
 .reader > .chat-host.float {
   transform: none; opacity: 1; pointer-events: auto;
-  /* 整块浮窗都拖着走：光标在**宿主**这一层就给手型 */
-  cursor: grab;
   border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow-flyout);
   overflow: hidden;      /* 圆角裁内容（原来那条给 aside 的 overflow 放行，现在归这里） */
