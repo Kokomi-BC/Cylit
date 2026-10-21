@@ -78,3 +78,4 @@ skills-lock.json
 # 启动脚本产生的本机文件（脚本本身要提交，见下）
 # *.log 已在上面统一忽略，这里只补 pid
 scripts/*.pid
+backups/

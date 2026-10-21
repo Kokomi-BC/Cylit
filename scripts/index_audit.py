@@ -26,6 +26,10 @@ chunk 的 ``row_ids`` 指向不存在的行、公式块落成 ``row-x`` 这种�
    同一组还看**引用带的 pid**（``check_understanding_pids``）：引用到的 chunk 有 ``pids`` 时，
    每条 pid 都该能在注册表里找到（找不到只 warn）；整篇都没有 pids 只进 ``[stat]`` ——
    存量 chunk 本来就没有这个字段，重建索引后才会带上。
+   还有一条**别名表完整性**（``check_ref_pid_alias``，阶段 4）：正文里出现的每个短码，
+   要么 ``refs_json.pids`` 里有它，要么它那条 chunk 有 ``metadata.pids`` —— 两边都没有 =
+   这条引用只能按旧 chunk id 认（重建后即失效），warn 并提示跑
+   ``scripts/backfill_ref_pids.py``（不重建索引就能补）；覆盖 100% 只进 ``[stat]``。
 4. **索引卫生**：chunk id 重复（error）、``order_global`` 并列（warn）、
    ``prev/next/parent`` 指针悬空（warn）；``row_ids`` 跨页**仅统计**。
 5. **行身份（pid）覆盖率**：正文行是否都带 ``pid``；pid 是否 1:1（不跨页、不重复）、
@@ -331,6 +335,17 @@ def check_understanding(markdown: str | None, refs: dict | None,
     return out
 
 
+def _pids_by_chunk(chunks: list[dict]) -> dict[str, list[str]]:
+    """``{chunk id: metadata.pids}``（没有 pids 的 chunk 给空列表，保持"这条 chunk 存在"）。"""
+    out: dict[str, list[str]] = {}
+    for chunk in chunks or []:
+        if not isinstance(chunk, dict):
+            continue
+        meta = chunk.get("metadata") or {}
+        out[str(chunk.get("id") or "")] = [str(p) for p in (meta.get("pids") or []) if p]
+    return out
+
+
 def ref_pids(refs: dict | None, chunks: list[dict]) -> list[tuple[str, list[str]]]:
     """每条已解析的解读引用（``code -> chunk_id``）能拿到的**行身份**。
 
@@ -338,12 +353,7 @@ def ref_pids(refs: dict | None, chunks: list[dict]) -> list[tuple[str, list[str]
     （``knowledge_service._attach_row_pids`` 写的）。存量 chunk 还没有这个字段 ——
     重建索引后才有，所以"空"是常态，不是缺数据。
     """
-    by_chunk: dict[str, list[str]] = {}
-    for chunk in chunks or []:
-        if not isinstance(chunk, dict):
-            continue
-        meta = chunk.get("metadata") or {}
-        by_chunk[str(chunk.get("id") or "")] = [str(p) for p in (meta.get("pids") or []) if p]
+    by_chunk = _pids_by_chunk(chunks)
     # 阶段 3 起理解结果自己存了 pids（refs_json.pids）：它才是**跨重建**的那一份 ——
     # chunk 已经重建过的论文，按 chunk 查只会得到空（旧 id 全没了）。所以持久的那份先看。
     saved = (refs or {}).get("pids")
@@ -392,6 +402,77 @@ def understanding_pid_stats(refs_list: list, chunks: list[dict]) -> dict:
             if pids:
                 stats["with_pids"] += 1
                 stats["pids"] += len(pids)
+    return stats
+
+
+def ref_pid_coverage(markdown: str | None, refs: dict | None, inventory: list | None,
+                     chunks: list[dict]) -> dict:
+    """正文短码的**行身份覆盖率**（阶段 4 的"别名表完整性"）。
+
+    对**正文里出现**的每个短码（``_CODE_RE``，与 ``check_understanding`` 同一口径）判它有没有行身份：
+    ``refs_json.pids[code]`` 里有（阶段 3 落库的那一份，跨重建）→ 有；否则它那条 chunk
+    （先 ``resolved``，再 ``inventory`` 的 ``chunk_id``）的 ``metadata.pids`` 非空 → 有；
+    两边都没有 = **缺口**（这条引用只能按旧 chunk id 认，重建索引后即失效）。
+
+    只看 ``resolved ∪ inventory`` 认得的短码：完全不认得的那些由 ``check_understanding`` 报 error
+    （它们连 chunk 都没有，backfill 也补不出来，在这里再报一遍只会重复）。
+
+    返回 ``{"codes","with_pids","gaps"}`` —— 纯统计 + 缺口清单（判级在 check_ref_pid_alias）。
+    """
+    md = markdown or ""
+    inv = [it for it in (inventory or []) if isinstance(it, dict)]
+    inv_by_code = {str(it.get("code")): it for it in inv if it.get("code")}
+    resolved = (refs or {}).get("resolved")
+    resolved = resolved if isinstance(resolved, dict) else {}
+    saved = (refs or {}).get("pids")
+    saved = saved if isinstance(saved, dict) else {}
+    by_chunk = _pids_by_chunk(chunks)
+    known = {str(code) for code in resolved} | set(inv_by_code)
+    codes = [code for code in sorted(set(_CODE_RE.findall(md))) if code in known]
+    gaps: list[str] = []
+    for code in codes:
+        stored = saved.get(code)
+        if isinstance(stored, list) and any(str(p) for p in stored):
+            continue
+        # 两条候选 chunk 都要问：resolved 那条可能已经过期（旧 id），而 inventory 那份
+        # 是"生成时"的定位（重建后 chunk id 全变，它通常才是现存的）。
+        candidates = (resolved.get(code), (inv_by_code.get(code) or {}).get("chunk_id"))
+        if any(by_chunk.get(str(cid or "").strip()) for cid in candidates):
+            continue
+        gaps.append(code)
+    return {"codes": len(codes), "with_pids": len(codes) - len(gaps), "gaps": gaps}
+
+
+def check_ref_pid_alias(markdown: str | None, refs: dict | None, inventory: list | None,
+                        chunks: list[dict]) -> list[dict]:
+    """**别名表完整性**：正文短码既没有 ``refs_json.pids``、其 chunk 也没有 ``metadata.pids`` → warn。
+
+    为什么是 warn 不是 error：引用照样能按旧 chunk id 跳（重建索引之前一切正常），
+    坏的只是"重建之后还认得回来"这件事；补法就是跑 ``scripts/backfill_ref_pids.py``
+    （**不重建索引**，capture 产物 + 现有 chunk 就够）。覆盖 100% 时不产生任何发现，
+    只由 ``ref_pid_alias_stats`` 进 ``[stat]``。
+    """
+    got = ref_pid_coverage(markdown, refs, inventory, chunks)
+    if not got["gaps"]:
+        return []
+    return [finding("warn", "understanding_ref_alias",
+                    f"{len(got['gaps'])}/{got['codes']} 个正文短码既没有 refs_json.pids、"
+                    f"其 chunk 也没有 metadata.pids（重建索引后认不回原行）: "
+                    f"{_sample(got['gaps'], 5)}"
+                    f" —— 跑 python scripts/backfill_ref_pids.py <paper_id> 补齐")]
+
+
+def ref_pid_alias_stats(items: list, chunks: list[dict]) -> dict:
+    """整篇的别名表覆盖率（仅统计）：``{"codes","with_pids","gaps"}``。
+
+    items: ``[(markdown, refs, inventory)]``（一条 understanding 一项）。
+    """
+    stats = {"codes": 0, "with_pids": 0, "gaps": 0}
+    for markdown, refs, inventory in items or []:
+        got = ref_pid_coverage(markdown, refs, inventory, chunks)
+        stats["codes"] += got["codes"]
+        stats["with_pids"] += got["with_pids"]
+        stats["gaps"] += len(got["gaps"])
     return stats
 
 
@@ -966,6 +1047,10 @@ def audit_paper(paper_id: str) -> dict:
         # 出现 text-changed / gone 才 warn —— 行还在不在是 pid 说的事，chunk id 说不清。
         _run(findings, f"understanding_ref_resolve[{item['path']}]",
              check_ref_resolution, item["refs"], chunks, page_rows, registry)
+        # 别名表完整性（阶段 4）：正文短码有没有行身份 —— 两边都没有只 warn（提示跑 backfill）
+        _run(findings, f"understanding_ref_alias[{item['path']}]",
+             check_ref_pid_alias, item["markdown"], item["refs"], item["inventory"],
+             chunks)
 
     return {"paper_id": paper_id, "chunks": len(chunks), "findings": findings,
             "row_pids": pid_summary,
@@ -975,6 +1060,10 @@ def audit_paper(paper_id: str) -> dict:
             # 带 pids 的引用能认出多少条原行：纯统计（全 ok 时**一条发现都不产生**）
             "understanding_ref_resolve": ref_resolution_stats(
                 [item["refs"] for item in understanding], chunks, page_rows, registry),
+            # 别名表覆盖率（纯统计；缺口见上面的 understanding_ref_alias warn）
+            "understanding_ref_alias": ref_pid_alias_stats(
+                [(item["markdown"], item["refs"], item["inventory"])
+                 for item in understanding], chunks),
             "row_span": row_span_stats(chunks, rows),
             "id_forms": id_form_stats(chunks, anchors) if anchors else {}}
 
@@ -1020,6 +1109,12 @@ def print_human(results: list[dict]) -> None:
             if resolve.get("bad"):
                 detail += f"；{resolve['bad']} 条认不回（见上面的 warn）"
             print(f"[stat] understanding_ref_resolve: {detail}")
+        alias = res.get("understanding_ref_alias") or {}
+        if alias.get("codes"):   # 正文里一条短码都没有就没什么可统计的
+            detail = f"{alias['with_pids']}/{alias['codes']} 个正文短码有行身份"
+            detail += (f"；{alias['gaps']} 个缺口（见上面的 warn）" if alias.get("gaps")
+                       else "（别名表完整）")
+            print(f"[stat] understanding_ref_alias: {detail}")
         span = res.get("row_span") or {}
         if span.get("cross_page"):
             print(f"[stat] row_span: {span['cross_page']} 个 chunk 的 row_ids 跨页"

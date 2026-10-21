@@ -1,6 +1,8 @@
 """批注 / 笔记 / 高亮服务（规划 §10 ⑤⑥⑦）。
 
-- 高亮锚定 ``block_id + 字符偏移``（规划 §10 ⑤），重译后按 ``anchor_hash`` 重定位；
+- 高亮锚定 ``block_id + 字符偏移``（规划 §10 ⑤），重译后按 ``anchor_hash`` 重定位
+  —— 哈希**pid 优先**（``row_pid`` 取得就 pid+偏移+侧，取不到才退回 block_id 的旧形式，
+  见 ``anchor_hash`` 与 ``docs/身份模型.md`` §8）；
 - **划词解释已改由问答 agent 负责**（`/api/v1/agent/ask` + `selection`），本模块只负责
   把 agent 给出的解释**存成批注**（`source=selection`）—— 旧的那条"自己拼 prompt 调
   generation provider"的链路已删除，见 dev-log 第二十轮。
@@ -55,6 +57,54 @@ def _norm_color(raw: object) -> str:
     return "yellow"
 
 
+#: 正文行 id（行 id = 位置编号，``p015-06``）：只有这种锚点才可能有行身份 pid
+_ROW_ID_RE = re.compile(r"^p(\d{1,5})-\d+$")
+
+
+def row_pid(paper_id: str | None, block_id: str | None) -> str | None:
+    """锚点（正文行 id）→ 这一行的稳定身份 pid；取不到给 ``None``（**不猜**）。
+
+    pid **只从页产物取**（``reader_service._finalize_page`` 是唯一写 ``row["pid"]`` 的地方），
+    所以这里问 ``merged_page``（单页就够：高亮一定落在某一页的行上，没必要整篇重算）——
+    自己按 block_id 推出来的 pid 与阅读器下发的对不上，存下来就是错的。
+    ``md:p3`` / ``pdf:p1`` 这类面没有行身份，老锚点（解析块 id）也没有，一律 None，
+    由调用方退回旧口径（见 ``anchor_hash``）。
+    """
+    text = str(block_id or "").strip()
+    match = _ROW_ID_RE.match(text)
+    if not paper_id or not match:
+        return None
+    try:
+        from backend.services.paper import reader_service
+
+        page = reader_service.merged_page(str(paper_id), int(match.group(1)))
+        for row in (page or {}).get("rows") or []:
+            if isinstance(row, dict) and str(row.get("id") or "") == text:
+                return str(row.get("pid") or "").strip() or None
+    except Exception as exc:  # noqa: BLE001 —— 取不到 pid 只是退回旧哈希，不许挡住"存高亮"
+        log.warning("取行身份失败（这条高亮按旧口径存）：%s/%s: %s", paper_id, text, exc)
+    return None
+
+
+def anchor_hash(selected_text: object, block_id: str, side: str,
+                start: object = 0, end: object = 0, *, pid: str | None = None) -> str:
+    """高亮的重定位键 —— "重译后按它找回同一条"（规划 §10 ⑤）。
+
+    **pid 优先**（阶段 2）：pid 是行的稳定身份（生成一次、重建时按指纹继承），而
+    ``block_id`` 只是位置编号（``p015-06``，页内插一行后面全换号）。旧实现把 block_id
+    拼进哈希，于是"id 一变哈希就变"，``docs/身份模型.md`` §8 记的"重译后按 anchor_hash
+    重定位从未生效"就是这一条。拿得到 pid 时用 ``pid + start + end + side``（冒号拼，
+    免得 a|b 与 ab| 撞在一起；side 是同一行的第二维 —— 原文/译文共用 block_id，
+    不加它两侧的哈希会撞）。
+
+    拿不到 pid（markdown / pdf 面、老锚点、注册表还没生成）时**逐字节**退回旧形式
+    ``selected_text + block_id + side``：存量高亮的哈希不变，向后兼容。
+    """
+    if pid:
+        return sha256_text(f"{pid}:{start}:{end}:{side}")[:64]
+    return sha256_text(str(selected_text or "") + str(block_id) + side)[:64]
+
+
 def create_highlight(payload: dict, user_id: int = 1) -> dict:
     """存一条高亮。
 
@@ -75,15 +125,18 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
     if scope not in HIGHLIGHT_SCOPES:
         scope = "row"
     group_id = str(payload.get("group_id") or "").strip()[:32] or None
+    start = int(payload.get("start_offset") or 0)
+    end = int(payload.get("end_offset") or 0)
+    # 行身份**先**算：它在页产物那边（reader_service）有自己的 session，不在这个 DB 会话里开
+    pid = row_pid(paper_id, block_id)
     with session_scope() as sess:
         row = Highlight(
             id=new_id("h"), user_id=user_id, paper_id=paper_id, block_id=block_id,
             selected_text=payload.get("selected_text"),
-            start_offset=int(payload.get("start_offset") or 0),
-            end_offset=int(payload.get("end_offset") or 0),
+            start_offset=start, end_offset=end,
             color=color, side=side, scope=scope, group_id=group_id,
-            anchor_hash=sha256_text(
-                (payload.get("selected_text") or "") + block_id + side)[:64],
+            anchor_hash=anchor_hash(payload.get("selected_text"), block_id, side,
+                                    start, end, pid=pid),
         )
         sess.add(row)
         sess.flush()
