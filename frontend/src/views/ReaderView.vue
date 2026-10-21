@@ -1955,15 +1955,8 @@ const gripBrEl = ref<HTMLElement | null>(null);
 /** 浮层模式下那块"画中画"占位面板（拖侧栏宽度时要跟预览值同宽） */
 const asidePipEl = ref<HTMLElement | null>(null);
 
-/** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
-function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
-  const host = chatHostEl.value;
-  if (host) {
-    host.style.left = b.left + 'px';
-    host.style.top = b.top + 'px';
-    host.style.width = b.w + 'px';
-    host.style.height = b.h + 'px';
-  }
+/** 两枚角把手的几何（跟着卡片走；拖头时卡片走 transform，它们只能逐帧写 left/top） */
+function writeFloatGrips(b: { left: number; top: number; w: number; h: number }) {
   const top = b.top + b.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
   const left = b.left + b.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
   const bl = gripBlEl.value;
@@ -1972,7 +1965,46 @@ function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
   if (br) { br.style.left = left + 'px'; br.style.top = top + 'px'; }
 }
 
-function paintFloatLive() { writeFloatDom(floatLive); }
+/** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
+function writeFloatDom(b: { left: number; top: number; w: number; h: number }) {
+  const host = chatHostEl.value;
+  if (host) {
+    /* transform 只在拖头的手势里用（见 paintFloatLive），落在别处要撤干净，
+       否则一次拖动之后再改 left/top 会叠着上一次的位移。 */
+    if (host.style.transform) host.style.transform = '';
+    host.style.left = b.left + 'px';
+    host.style.top = b.top + 'px';
+    host.style.width = b.w + 'px';
+    host.style.height = b.h + 'px';
+  }
+  writeFloatGrips(b);
+}
+
+/**
+ * 手势里把 `floatLive` 画到屏幕上。
+ *
+ * **拖头走 transform、其余走 left/top**（用户口径 2026-12-03：拖对话浮层卡顿掉帧）。
+ * 原因：一张 500×560、带 48px 柔光投影、圆角裁切、里面还塞着整段对话的卡片，
+ * 每帧改 left/top 就是**整块重新绘制**（Chromium 不会为 left/top 建合成层）；
+ * transform 只让合成器挪一次贴图，卡片里一个像素都不用重画。
+ * ⚠️ 改尺寸（两条角把手）没法合成 —— 宽高不是可合成属性，那条路照旧写 left/top/宽高。
+ */
+function paintFloatLive() {
+  const host = chatHostEl.value;
+  if (host && floatDrag.mode === 'move') {
+    const dx = Math.round(floatLive.left - floatDrag.ox);
+    const dy = Math.round(floatLive.top - floatDrag.oy);
+    const next = 'translate3d(' + dx + 'px,' + dy + 'px,0)';
+    if (host.style.transform !== next) host.style.transform = next;
+  } else if (host) {
+    if (host.style.transform) host.style.transform = '';
+    host.style.left = floatLive.left + 'px';
+    host.style.top = floatLive.top + 'px';
+    host.style.width = floatLive.w + 'px';
+    host.style.height = floatLive.h + 'px';
+  }
+  writeFloatGrips(floatLive);
+}
 
 /**
  * 拖侧栏宽度时，把**预览宽度**同步写到"跟侧栏同宽"的那两块容器上。
@@ -2015,6 +2047,7 @@ function applyFloatDom() {
     host.style.right = '';
     host.style.bottom = '';
     host.style.zIndex = '';
+    host.style.transform = '';      // 拖头用过 transform：回贴栏态必须撤干净（见 paintFloatLive）
     return;
   }
   host.style.position = 'fixed';
@@ -2169,10 +2202,6 @@ function floatLoopTick() {
 function onFloatPointerMove(ev: PointerEvent) {
   if (!floatDrag.on) return;
   if (ev.buttons === 0) { onFloatPointerUp(ev); return; }   // 兜底：pointerup 丢了
-  /* 拖动/改大小的**全过程**里持续清选区：PDF 的划词是它自己的原生行为（甚至可能在我们
-     preventDefault 之前就已经起了一个锚点），单靠 CSS user-select 与一次性 preventDefault 挡不干净。
-     这里每次指针移动都清一次 —— 只在真有选区时才动，代价极小。 */
-  clearDocSelection();
   floatMoveAt = { x: ev.clientX, y: ev.clientY };
   startFloatLoop();
 }
@@ -2181,15 +2210,19 @@ function onFloatPointerMove(ev: PointerEvent) {
 function applyFloatMove() {
   const at = floatMoveAt;
   if (!at || !floatDrag.on) return;
+  /* 拖动/改大小的**全过程**里持续清选区：PDF 的划词是它自己的原生行为（甚至可能在我们
+     preventDefault 之前就起了一个锚点），单靠 CSS user-select 与一次性 preventDefault 挡不干净。
+     ⚠️ 以前挂在 pointermove 上：120Hz 平板一帧能来两三条，等于把同一次 DOM 操作排三次队；
+     现在每帧最多一次（这一帧真要在改几何的时候）。 */
+  clearDocSelection();
   const dx = at.x - floatDrag.sx;
   const dy = at.y - floatDrag.sy;
   /* 增益现在是 1（1:1 跟手，与笔记浮层一致）。保留 k 这个乘法：它是唯一的「手感旋钮」，
      以后要调只改 RESIZE_GAIN 一处。 */
   const k = RESIZE_GAIN;
   if (floatDrag.mode === 'move') {
-    /* 位置照旧**每帧夹一次视口**（拖出屏幕的边界手感不变），写出去的还是 left/top：
-       不用 transform，是因为松手要把 transform 落成 left/top、合成层被拆掉，
-       卡片会按新位置重新栅格化，看起来就是「拖完闪一下」（2026-11-24 用户报的）。 */
+    /* 位置照旧**每帧夹一次视口**（拖出屏幕的边界手感不变）；真正写出去的是 transform
+       （见 paintFloatLive），所以这里只更新 floatLive —— 卡片每帧只被合成器挪一次，不重绘。 */
     floatLive.left = floatDrag.ox + dx;
     floatLive.top = floatDrag.oy + dy;
     clampBox(floatLive);
@@ -2234,10 +2267,18 @@ function endFloatGesture() {
      否则那一下被整条丢掉（拖角快速一甩等于没反应）。 */
   if (floatMoveAt) applyFloatMove();
   floatMoveAt = null;
-  /* 收尾：写一次最终几何，再把结果同步回 floatBox。
-     ⚠️ 拖动与落定**是同一种写法**（left/top）—— 没有 transform 要还原、没有合成层要拆，
-     所以松手那一帧不需要重绘，也就没有「拖完闪一下」（用户口径 2026-11-24）。 */
-  paintFloatLive();
+  /* 收尾：**先写终态 left/top、同一帧里再撤 transform**，最后把结果同步回 floatBox。
+     两件事在同一个任务里做，浏览器只算一次样式 —— 中间那个「既没位移又没 transform」的
+     瞬间永远不会被画出来，所以不会「拖完闪一下」（2026-11-24 那条口径仍然成立）。 */
+  const host = chatHostEl.value;
+  if (host) {
+    host.style.left = floatLive.left + 'px';
+    host.style.top = floatLive.top + 'px';
+    host.style.width = floatLive.w + 'px';
+    host.style.height = floatLive.h + 'px';
+    host.style.transform = '';
+  }
+  writeFloatGrips(floatLive);
   floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
   floatDrag.on = false;
   floatDrag.mode = '';
@@ -2246,7 +2287,9 @@ function endFloatGesture() {
      （延帧反而危险：万一这一帧里又起了手势，那次释放就丢了，整个应用会一直不可选。） */
   gripBrEl.value?.classList.remove('is-on');
   gripBlEl.value?.classList.remove('is-on');
-  setFloatDragging(false);
+  /* 合成层（.float-dragging 的 will-change）**晚一帧**才撤：与 left/top 在同一帧里一起翻面，
+     Chromium 要按新位置重新栅格化，那一帧可能先画出空白 —— 就是「拖完闪一下」。 */
+  requestAnimationFrame(() => { if (!floatDrag.on) setFloatDragging(false); });
   lockFloatSelection(false);
   untrackFloatTouch();
   persistFloatBox();                  // 记住这一轮的摆位（下次打开接着放这儿）
@@ -3034,11 +3077,27 @@ function onCapsuleDown(ev: PointerEvent): void {
   if (target !== el && !target?.closest?.('[data-cap-grip]')) return;
   const rect = el.getBoundingClientRect();
   capDrag.value = true;
+  /* 拖动期间**关掉 PDF 文字层那一路选区**（用户口径 2026-12-03：拖胶囊会在 PDF 里带出一段选中）。
+     与浮层那一套是**同一份实现**（utils/floatDrag）：给 <html> 挂一个类，只关 PDF 文字层，
+     不动我们自己界面里的可选文字 —— 不需要第二套做法。 */
+  lockFloatSelection(true);
+  clearDocSelection();
+  /* 只 preventDefault pointerdown 挡不住鼠标输入：浏览器照样会派发 mousedown，把「按住抓手拖」
+     当成一次文本拖选的起点（浮层那边 2026-11-19 踩过同一条，见 onFloatCardMouseDown）。 */
+  ev.preventDefault();
   el.setPointerCapture?.(ev.pointerId);
   capDragFrom = {
     x: ev.clientX, y: ev.clientY, ox: capOffset.x, oy: capOffset.y, bottom: rect.bottom,
     ...dragLimits(rect, capsuleRegion()),
   };
+}
+
+function onCapsuleMouseDown(ev: MouseEvent): void {
+  const el = capsuleEl.value;
+  const target = ev.target as HTMLElement | null;
+  if (!el || (target !== el && !target?.closest?.('[data-cap-grip]'))) return;
+  if (target?.closest?.('button, a, input, label')) return;   // 按到按钮上就是点按钮
+  ev.preventDefault();
 }
 
 watch(inkOptionsOpen, async (open) => {
@@ -3062,6 +3121,7 @@ function applyCapsuleMove(): void {
   const pt = capMoveNext;
   capMoveNext = null;
   if (!capDrag.value || !from || !pt) return;
+  clearDocSelection();
   capOffset.x = Math.min(from.maxX, Math.max(from.minX, from.ox + (pt.x - from.x)));
   capOffset.y = Math.min(from.maxY, Math.max(from.minY, from.oy + (pt.y - from.y)));
   /* ⚠️ 这里**不能**每帧改 --toast-drop：那是写在 <html> 上的自定义属性，一改整篇文档
@@ -3078,6 +3138,7 @@ function onCapsuleUp(): void {
   }
   capMoveNext = null;
   capDrag.value = false;
+  lockFloatSelection(false);
   capDragFrom = null;
   try { sessionStorage.setItem(CAP_POS_KEY, JSON.stringify({ x: capOffset.x, y: capOffset.y })); }
   catch { /* 隐私模式：位置只在本次内存里 */ }
@@ -6891,6 +6952,7 @@ function renderMarkdown(text?: string | null) {
           :class="{ dragging: capDrag }"
           :style="capsuleStyle"
           @pointerdown="onCapsuleDown"
+          @mousedown="onCapsuleMouseDown"
         >
           <!-- 拖动条：**最左侧**一枚抓手（用户口径）。拖它（或胶囊空白处）改位置，
                位置存 sessionStorage：刷新还在、关掉页面复位。 -->
@@ -8296,6 +8358,9 @@ function renderMarkdown(text?: string | null) {
    变宽（用户口径 2026-11-24 第 1 条）；而且 `:active` 比类名晚一拍生效，两种来源的补间节奏还不一样
    —— 那正是"点抓手时的动画没有点别处细腻"的来源。 */
 .reader > .chat-host:not(.float) > .chat-grip-pill { display: none; }
+/* 拖头期间**保住合成层**：卡片走 transform 移位（见 paintFloatLive），有了 will-change 就
+   不必等合成器自己判断要不要提升，第一帧就跟手，也不会在提升那一刻抖一下。 */
+.reader.float-dragging > .chat-host.float { will-change: transform; }
 .reader.float-dragging > .chat-host.float > .chat-grip-pill {
   /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。 */
   width: 46px;
