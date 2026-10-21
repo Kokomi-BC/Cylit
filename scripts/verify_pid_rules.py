@@ -94,7 +94,7 @@ BOGUS_PREFIX = "bogus:chunk:"
 #: 一条证据里最多列几项（其余只给数量）
 SAMPLE_MAX = 3
 #: D11 的等价性对比里**允许**的差异：新增字段（healed 项多出来的那份）
-_IGNORED_FIELDS = ("healed", "pid_state")
+_IGNORED_FIELDS = ("healed", "pid_state", "pids")
 
 #: 检查 id → 名称（输出与 --json 共用；顺序即打印顺序）
 CHECK_NAMES = {

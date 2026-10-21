@@ -371,6 +371,53 @@ def _slot_index(rows: list[dict] | None) -> dict[tuple[int, int], dict]:
     return out
 
 
+def heal_pid(registry: dict, pid: str, rows: list[dict] | None,
+             *, threshold: float = MATCH_THRESHOLD) -> dict | None:
+    """退休身份 → **同页最像的活行**（``{"pid","row_id","page","similarity"}``；没命中给 None）。
+
+    为什么需要它：重译 / 重排会把"这一行的文字"切成不同的行，旧 pid 于是退休
+    （``retired`` 里 reason=``gone``）。退休记录**留着那一行的指纹与页号**，所以后继是
+    确定性地找得回来的 —— 不做这一步，引用只能退化成"跳整页"。
+
+    判据刻意保守：① 只在**同一页**里找（跨页同文多半是页眉 / 水印这类重复文本）；
+    ② 相似度沿用 `plan_page` 的继承阈值（0.72，与 `rebind` 同口径），不另立一套；
+    ③ 只在身份**不在活表里**时动手（活着的 pid 一律不作替代）。
+    """
+    reg = registry if isinstance(registry, dict) else {}
+    if not isinstance(pid, str) or not pid or not rows:
+        return None
+    if any(str(e.get("pid")) == pid for e in (reg.get("rows") or []) if isinstance(e, dict)):
+        return None                     # 还活着：不许替代
+    entry = next((e for e in (reg.get("retired") or [])
+                  if isinstance(e, dict) and str(e.get("pid")) == pid), None)
+    if not entry:
+        return None                     # 压根没登记过：没有指纹可用
+    try:
+        page = int(entry.get("page"))
+    except (TypeError, ValueError):
+        return None
+    old_fp = str(entry.get("fp") or "")
+    if not old_fp:
+        return None
+    best: tuple[float, dict] | None = None
+    for row in rows:
+        try:
+            if int(row.get("page")) != page:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if not str(row.get("pid") or ""):
+            continue
+        score = similarity(old_fp, fingerprint(row))
+        if best is None or score > best[0]:
+            best = (score, row)
+    if best is None or best[0] < threshold:
+        return None
+    score, row = best
+    return {"pid": str(row["pid"]), "row_id": str(row.get("id") or ""),
+            "page": page, "similarity": round(score, 4)}
+
+
 def resolve_registry(registry: dict, pids: list[str],
                      rows: list[dict] | None = None) -> dict[str, dict]:
     """纯函数：`注册表 + 行 → pid → {"page","order","row_id","fp_match","state"}`。

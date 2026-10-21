@@ -624,6 +624,26 @@ def _resolve_registry(registry: dict, pids: list[str], rows: list[dict]) -> dict
     return row_identity.resolve_registry(registry, pids, rows)
 
 
+def _heal_pids(registry: dict, pids: list[str], rows: list[dict]) -> tuple[list[str], dict]:
+    """退休 pid → 同页后继 pid（`row_identity.heal_pid`）。返回 ``(新 pids, 愈合表)``。
+
+    只在"这一条引用**全部** pid 都恢复得了"时才采用 —— 部分恢复会把找不到的那半当成
+    ok，反而造出"看着精确、其实指错行"的引用（比 stale 更糟）。
+    """
+    from backend.services.paper import row_identity
+
+    new_pids: list[str] = []
+    healed: dict[str, dict] = {}
+    for pid in pids:
+        hit = row_identity.heal_pid(registry, pid, rows)
+        if hit is None:
+            return list(pids), {}
+        healed[pid] = hit
+        if hit["pid"] not in new_pids:
+            new_pids.append(hit["pid"])
+    return new_pids, healed
+
+
 def _page_rows(pages) -> list[dict]:
     """页级读模型 → 行列表，逐行补 page（行 id 只是位置编号，页才知道页号）。
 
@@ -792,6 +812,20 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
                     out_live.append(
                         _healed_item(code, chunk_id, by_code, anchors, pids, verdict))
                     continue
+                # 退休身份就地愈合：重译 / 重排会让旧 pid 退休（reason=gone），但退休记录
+                # 留着那一行的指纹与页号 —— 同页最像的活行就是它的后继。命中就按 ok 处理
+                # （只多标 pid_state=healed），命中不了才降级，绝不硬猜。
+                if "gone" in states:
+                    new_pids, healed = _heal_pids(registry(), pids, live_rows)
+                    if healed:
+                        heals = _resolve_registry(registry(), new_pids, live_rows)
+                        if all(str((heals.get(x) or {}).get("state")) == "ok"
+                               for x in new_pids):
+                            item = _healed_item(code, chunk_id, by_code, anchors,
+                                                new_pids, heals)
+                            item["pid_state"] = "healed"
+                            out_live.append(item)
+                            continue
                 state = "gone" if "gone" in states else "text-changed"
         if state is not None:
             item["pid_state"] = state
