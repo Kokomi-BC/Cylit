@@ -429,6 +429,17 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
         # 长度判据按**本路**的文本算（B 路看译文字数）
         return sum(len(road_text(r, road)) for r in items)
 
+    def hard_len(items: list[dict]) -> int:
+        """按**最终文本**（行之间用空行连接）量长度 —— 与 `validate` 的 `hard` 判据同口径。
+
+        为什么不能复用 `chars`：它只把各行长度相加，**少了 n-1 个 "
+
+"**。实测 17 行的块
+        装配算出 2215 ≤ hard(2240)、校验按真文本算出 2247 > hard —— 于是"通过装配、复核超标"
+        （turboquant 路 b p017-00，7 个字）。这两个数必须是同一把尺子。
+        """
+        return len("\n\n".join(road_text(r, road) for r in items))
+
     def emit(items: list[dict], node: dict | None) -> None:
         if not items:
             return
@@ -493,7 +504,7 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
                 first = chunk["rows"][0]["index"]
                 if first <= tail:
                     continue
-                if own_size + chars(chunk["rows"]) <= hard:
+                if hard_len(own + chunk["rows"]) <= hard:
                     best = (first, chunk)
                 break
             if best is not None:
@@ -510,7 +521,7 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     # 超过 hard 的块按**单元边界**二次切分（单元自身超 hard 才退回行边界）
     out: list[dict] = []
     for chunk in chunks:
-        if chars(chunk["rows"]) <= hard:
+        if hard_len(chunk["rows"]) <= hard:
             out.append(chunk)
             continue
         stats["unit_split"] += 1
@@ -560,7 +571,8 @@ def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = 
         buf, size = [], 0
 
     for unit in units:
-        unit_size = sum(len(road_text(r, road)) for r in unit["rows"])
+        # 与 validate 同口径：行之间要算上 "\n\n"（见 assemble.hard_len 的说明）
+        unit_size = len("\n\n".join(road_text(r, road) for r in unit["rows"]))
         if unit_size > hard:
             used_rows = True
             flush()
