@@ -19,6 +19,7 @@ pid 的做法：**生成一次、重建时继承、永不重绑**。内容的指
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from pathlib import Path
@@ -36,6 +37,8 @@ MATCH_THRESHOLD = 0.72
 CHANGED_THRESHOLD = 0.5
 # retired 上限（超出丢最旧）：退休名单只是审计线索，不能无限长
 RETIRED_LIMIT = 5000
+
+log = logging.getLogger(__name__)
 
 _pid_lock = threading.Lock()
 _paper_locks: dict[str, threading.Lock] = {}
@@ -221,62 +224,101 @@ def _lock_for(paper_id: str) -> threading.Lock:
         return lock
 
 
-def assign(paper_id: str, page: int, rows: list[dict], *, root: Path | None = None) -> list[str]:
-    """给一页的行分配 pid：读注册表 → plan_page → 合并 → **只有真的变化才写盘** → 返回 pids。
+def assign_pages(paper_id: str, pages: dict[int, list[dict]],
+                *, root: Path | None = None) -> dict[int, list[str]]:
+    """多页一起分配 pid：**一次 load** + 每页 plan_page + 合并 + **至多一次 save**。
 
-    每次读页面都会调用，所以必须幂等（同一批行连着调两次，第二次不写文件）、
-    快（一次文件读，无 DB）、并发安全（同 paper 一把线程锁）。
+    逐页语义与 `assign` **完全一致**（同一份注册表、同样的退休/新建规则、幂等、
+    不变则不写）—— `assign` 就是它的薄包装。批量入口只为 `reader_service.page_products`
+    存在：那边一次要出一整篇的页，逐页调 `assign` 会把注册表读/写"页数"那么多遍
+    （每次读都要解析整份 JSON），而"整篇一次算完"才保证同一份注册表下的一致结果。
 
-    空页（rows 为空）不动注册表：那是"这页这次没产出"，不是"这页的行都没了"。
-    否则一次瞬时读失败就会把整页身份退休掉，再回来时全是新 pid。
+    空页（`rows` 为空）与 `assign` 同口径：不碰注册表，结果给空列表。
     """
-    if not rows:
-        return []
+    wanted: dict[int, list[dict]] = {int(p): list(rows or [])
+                                     for p, rows in (pages or {}).items()}
+    result: dict[int, list[str]] = {p: [] for p in wanted}
+    todo = {p: rows for p, rows in wanted.items() if rows}
+    if not todo:
+        return result
     with _lock_for(paper_id):
         reg = load(paper_id, root=root)
-        page_rows = [e for e in reg["rows"] if _page_of(e) == page]
-        page_rows.sort(key=lambda e: int(e.get("order") or 0))
-        plan = plan_page(rows, page_rows)
+        entries: dict[int, list[dict]] = {}                    # 每页原有的条目（按 order）
+        plans: dict[int, tuple[dict, dict[str, dict]]] = {}    # 每页 (plan, pid→条目)
+        changed = False
+        # ① 逐页规划：只读内存里的 reg，页与页互不干扰（与单页算法逐行同构）
+        for page in sorted(todo):
+            rows = todo[page]
+            page_rows = [e for e in reg["rows"] if _page_of(e) == page]
+            page_rows.sort(key=lambda e: int(e.get("order") or 0))
+            plan = plan_page(rows, page_rows)
 
-        by_pid = {str(e.get("pid")): e for e in page_rows}
-        changed = bool(plan["created"]) or bool(plan["retired"])
-        for index, pid in enumerate(plan["pids"]):
-            entry = by_pid.get(pid)
-            if entry is None:
-                continue
-            fp = fingerprint(rows[index])
-            if entry.get("order") != index or entry.get("fp") != fp:
-                changed = True  # 行挪了位 / 文本小改（过阈值）→ 注册表要跟着更新
-            entry["order"] = index
-            entry["fp"] = fp
+            by_pid = {str(e.get("pid")): e for e in page_rows}
+            if plan["created"] or plan["retired"]:
+                changed = True
+            for index, pid in enumerate(plan["pids"]):
+                entry = by_pid.get(pid)
+                if entry is None:
+                    continue
+                fp = fingerprint(rows[index])
+                if entry.get("order") != index or entry.get("fp") != fp:
+                    changed = True  # 行挪了位 / 文本小改（过阈值）→ 注册表要跟着更新
+                entry["order"] = index
+                entry["fp"] = fp
+            entries[page] = page_rows
+            plans[page] = (plan, by_pid)
+            result[page] = list(plan["pids"])
         if not changed:
-            return list(plan["pids"])
+            return result
 
-        fps = [fingerprint(r) for r in rows]
-        others = [e for e in reg["rows"] if _page_of(e) != page]
-        live = {str(pid) for pid in plan["pids"]}
-        merged = others + [by_pid[str(e["pid"])] for e in page_rows if str(e["pid"]) in live]
-        merged += [{**item, "page": page} for item in plan["created"]]
-        merged.sort(key=lambda e: (_page_of(e), int(e.get("order") or 0)))
-
+        # ② 合并：没碰的页原样带走；碰到的页只留"被认领的旧条目"+新建条目
+        merged = [e for e in reg["rows"] if _page_of(e) not in todo]
         retired = list(reg["retired"])
-        for pid in plan["retired"]:
-            old = by_pid.get(str(pid)) or {}
-            retired.append({
-                "pid": str(pid),
-                "page": page,
-                "fp": str(old.get("fp") or ""),
-                "retired_at": now_iso(),
-                "reason": _retire_reason(old, fps),
-            })
+        for page in sorted(todo):
+            plan, by_pid = plans[page]
+            live = {str(pid) for pid in plan["pids"]}
+            merged += [by_pid[str(e["pid"])] for e in entries[page]
+                       if str(e["pid"]) in live]
+            merged += [{**item, "page": page} for item in plan["created"]]
+            if plan["retired"]:
+                fps = [fingerprint(r) for r in todo[page]]
+                for pid in plan["retired"]:
+                    old = by_pid.get(str(pid)) or {}
+                    retired.append({
+                        "pid": str(pid),
+                        "page": page,
+                        "fp": str(old.get("fp") or ""),
+                        "retired_at": now_iso(),
+                        "reason": _retire_reason(old, fps),
+                    })
         if len(retired) > RETIRED_LIMIT:
             retired = retired[-RETIRED_LIMIT:]  # 超出丢最旧
+        merged.sort(key=lambda e: (_page_of(e), int(e.get("order") or 0)))
 
         reg["version"] = reg.get("version") or VERSION
         reg["rows"] = merged
         reg["retired"] = retired
-        save(paper_id, reg, root=root)
-        return list(plan["pids"])
+        # 写盘失败**不许炸读路径**：注册表是派生物，磁盘满 / 只读挂载时宁可这次身份不落盘
+        # （下次读会重新分配，日志里有痕迹），也不能让"打开论文"失败。
+        try:
+            save(paper_id, reg, root=root)  # 整批**一次**写盘
+        except Exception as exc:  # noqa: BLE001
+            log.warning("行身份注册表写入失败（本次 pid 不落盘）：%s: %s",
+                        paper_id, exc)
+        return result
+
+
+def assign(paper_id: str, page: int, rows: list[dict], *, root: Path | None = None) -> list[str]:
+    """给一页的行分配 pid（`assign_pages` 的单页薄包装，语义与它完全一致）。
+
+    每次读页面都会调用，所以必须幂等（同一批行连着调两次，第二次不写文件）、
+    快（一次文件读，无 DB）、并发安全（同 paper 一把线程锁）—— 这三条都在
+    `assign_pages` 里落实，本函数只是把这一页塞进批量入口、再把那一页的 pids 拿回来。
+
+    空页（rows 为空）不动注册表：那是"这页这次没产出"，不是"这页的行都没了"。
+    否则一次瞬时读失败就会把整页身份退休掉，再回来时全是新 pid。
+    """
+    return assign_pages(paper_id, {int(page): rows}, root=root).get(int(page), [])
 
 
 def _page_of(entry: dict) -> int:

@@ -23,7 +23,7 @@ from backend.repositories.mysql.models import (
     Annotation, Block, Formula, Highlight, Note, ReadingProgress, Task,
 )
 from backend.repositories.mysql.session import session_scope
-from backend.services.paper import anchor_map, paper_service
+from backend.services.paper import anchor_map, paper_service, row_identity
 from backend.services.translation.coords import pair_rows_by_src as coords_pair
 from backend.services.translation.page_translate import (
     PATH_VERSION, PageStore, absorb_one_sided_rows, apply_semantic_breaks,
@@ -160,6 +160,17 @@ def page_products(paper_id: str) -> tuple[list[dict], str]:
     _rejoin_carried_rows(out, b_pages)
     for page in out:
         align_page_breaks(page)
+    # 稳定身份 pid：**唯一挂钩点** `_finalize_page`，但整篇**批量**算（一次读、至多一次写）。
+    # 页数几十上百页，在循环里逐页 `assign` 会把注册表读/写几十上百遍（每次都要解析整份 JSON），
+    # 而批量入口算的是**同一份注册表**，结果与逐页调用逐条一致（tests/test_reader_row_pid.py 钉住）。
+    try:
+        batched = row_identity.assign_pages(
+            paper_id, {int(page["page"]): (page.get("rows") or []) for page in out})
+    except Exception as exc:  # noqa: BLE001 —— 身份这层永远不许让"打开论文"失败
+        log.warning("整篇分配行身份失败（本次不下发 pid）：%s: %s", paper_id, exc)
+        batched = {}
+    for page in out:
+        _finalize_page(paper_id, page, pids=batched.get(int(page["page"])))
     return out, shape
 
 
@@ -257,6 +268,35 @@ def _rejoin_carried_rows(pages: list[dict], b_pages: dict) -> None:
             != bool((r.get("translation") or "").strip()))
 
 
+def _finalize_page(paper_id: str, page: dict, *, pids: list[str] | None = None) -> dict:
+    """给这一页的行赋稳定身份 pid（**唯一挂钩点**）。
+
+    ⚠️ 必须在 `_rejoin_carried_rows` 与 `align_page_breaks` **之后**调用：前两者会增删 /
+    改写行（页边界的半句合回上一页、译文按原文硬换行对齐），先赋 pid 就会把"上一版的行"
+    配到改过的行上（`plan_page` 只看文本指纹对齐，喂错行就是错身份）。
+
+    只写 `row["pid"]`：`id` / `index` / 正文 / 顺序一律不动，也不删 / 不改任何已有字段
+    —— 阶段 1b 是"只加字段、行为零变化"，pid 只是随行字典一起被接口原样带出去。
+    空页（没有行）直接返回，**不碰注册表**（与 `row_identity.assign` 的空页语义一致：
+    "这页这次没产出"不等于"这页的行都没了"）。
+
+    `pids` 传**已经算好的**那一批（`page_products` 用 `assign_pages` 整篇一次算完）；
+    不传就单页现算（`assign`）。两条路的结果必须一致 —— 见 tests/test_reader_row_pid.py。
+    """
+    rows = page.get("rows") or []
+    if not rows:
+        return page
+    try:
+        if pids is None:
+            pids = row_identity.assign(paper_id, int(page.get("page") or 0), rows)
+        for row, pid in zip(rows, pids):
+            row["pid"] = pid
+    except Exception as exc:  # noqa: BLE001 —— 同上：身份失败只丢字段，不丢页面
+        log.warning("分配行身份失败（第 %s 页，本次不下发 pid）：%s: %s",
+                    page.get("page"), paper_id, exc)
+    return page
+
+
 def merged_page(paper_id: str, page: int) -> dict | None:
     """**单页**的合并读模型（与 `page_products` 的同一页逐字段一致）。
 
@@ -284,6 +324,10 @@ def merged_page(paper_id: str, page: int) -> dict | None:
                            b_pages.get(page - 1) or {}, legacy_pages.get(page - 1) or {},
                            shape)
         _rejoin_carried_rows([p for p in (prev, merged) if p], b_pages)
+    if merged is not None:
+        # 与 page_products 同一个挂钩点、同一套顺序（先合句后赋身份）→ 两边算出来的 pid 一致，
+        # 单页 SSE 下发的行与刷新后整篇读到的行，pid 不会对不上。
+        _finalize_page(paper_id, merged)
     return merged
 
 
