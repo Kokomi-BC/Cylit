@@ -429,6 +429,22 @@ export interface ReaderPayload {
    * 表里没有的块（公式 / 插图 / 表格，正文行里没有独立段落）退化为按 `page` 跳。
    */
   block_rows?: Record<string, string>;
+  /**
+   * **无行可落的块**：没有正文行、但知道落在哪一页的块（公式 / 插图 / 表格在正文里没有独立段落）。
+   *
+   * `block_rows` 只收录"能匹配到行"的块；线上那篇 509 块里有 119 块不在表里，
+   * 阅读器以前对它们一无所知，点引用只能退化成"整页闪一下"。这张表把落点显式说清楚：
+   * 有 `page` 就到那一页；公式再带 `latex`（与引用里的同一套写法），
+   * 让阅读器在页内认出那一枚 KaTeX 节点，落点精确到公式而不是整页。
+   */
+  row_less_blocks?: Array<{
+    id: string;
+    page?: number | null;
+    /** 块类型（formula / figure / table …）：只有公式块会带 `latex` */
+    type?: string | null;
+    /** 公式的 LaTeX（页内定位用；签名匹配的规则见 ReaderView.findFormula） */
+    latex?: string | null;
+  }>;
   progress: ReadingProgress;
   annotations: Annotation[];
   highlights: Highlight[];

@@ -704,16 +704,23 @@ def build_reader(paper_id: str, *, user_id: int = 1,
         row_md_by_id = {str(row.get("id")): str(row.get("original") or row.get("translation") or "")
                         for page in page_payloads for row in (page.get("rows") or []) if row.get("id")}
 
+        # 块 id → 正文行 id：检索/RAG 给的是**块 id**（`attentionisa-p01-b06`），
+        # 已翻译页的正文行 id 却是页级产物的位置编号（`p001-06`）—— 两套命名空间。
+        # 没有这张表，"跳回原文"就是空跳（真实事故）。见 anchor_map 模块头。
+        # **只算一遍**：它同时喂给下面的 `block_rows` 与 `row_less_blocks`。
+        block_rows = anchor_map.build_block_row_map(
+            out_blocks, anchor_map.rows_by_page(page_payloads))
+
         payload = {
             "paper": paper,
             "blocks": out_blocks,
             "pages": _pages_payload(paper_id, pages=page_payloads),
             "page_translations": page_payloads,
-            # 块 id → 正文行 id：检索/RAG 给的是**块 id**（`attentionisa-p01-b06`），
-            # 已翻译页的正文行 id 却是页级产物的位置编号（`p001-06`）—— 两套命名空间。
-            # 没有这张表，"跳回原文"就是空跳（真实事故）。见 anchor_map 模块头。
-            "block_rows": anchor_map.build_block_row_map(
-                out_blocks, anchor_map.rows_by_page(page_payloads)),            "progress": _progress_payload(progress),
+            "block_rows": block_rows,
+            # 匹配不到正文行的块（公式块、对不上文本的表/图/段落）：显式下发"到页/到公式"的
+            # 落点。以前前端只能从"block_rows 里查不到"猜，于是整页闪一次（真实事故）。
+            "row_less_blocks": anchor_map.row_less_blocks(out_blocks, block_rows),
+            "progress": _progress_payload(progress),
             "annotations": [{"id": a.id, "block_id": a.block_id, "type": a.type,
                              "content_md": a.content_md, "source": a.source,
                              "confidence": a.confidence,

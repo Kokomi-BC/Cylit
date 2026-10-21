@@ -112,9 +112,12 @@ def chunk_inventory(paper_id: str, path: str) -> list[dict]:
         # Python 侧做，而 limit 是 SQL 先截 —— 截掉的是"过滤之前"的材料，别的路别的语言
         # 白占配额，长论文的尾巴于是整段从解读里消失（审计 2026-12-04 的 P1）。
         # 现在：全取 → 按路/语言过滤 → 再按 MAX_ITEMS 截断（截断只此一处）。
+        # 二级键 `id` 不能省：A/B 两路的单元**共用行序**，`order_global` 因此系统性并列
+        # （线上实测一篇 99 组 / 313 条）。只按它排，并列的先后由 MySQL 自由决定 ——
+        # 短码 A001… 是按这份顺序发的，于是重建索引后同一段可能换号（审计 2026-12-04）。
         rows = (sess.query(Chunk)
                 .filter(Chunk.paper_id == paper_id, Chunk.chunk_type.in_(TYPES))
-                .order_by(Chunk.order_global.asc()).all())
+                .order_by(Chunk.order_global.asc(), Chunk.id.asc()).all())
         items = _inventory_items(rows, road, langs)
     # 短码按论文顺序编号（A 路 A001… / B 路 B001…）
     prefix = path.upper()

@@ -22,7 +22,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 #: 归一化：只留字母数字与汉字（与 ``page_translate.anchor_key`` 同一口径）
 _SIG_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
@@ -34,6 +37,10 @@ WINDOW_CHARS = 12
 #: 归一化后短于这个长度的块（公式符号、页码、"†"、Common Word）不做文本匹配：
 #: 这么短的串在别处撞车太容易，宁可交给按页兜底，也不要跳错一段。
 MIN_SIG_CHARS = 8
+
+#: ``row_less_blocks`` 的条数上限：正常论文（500 块量级）远到不了，
+#: 只在下游数据坏掉时挡住一次无界的 payload 膨胀。
+MAX_ROW_LESS_BLOCKS = 5000
 
 
 def normalize(text: str | None) -> str:
@@ -129,6 +136,80 @@ def build_block_row_map(
                 continue
             out[str(block["id"])] = str(row_ids[idx])
             cursor = idx
+    return out
+
+
+def _page_no(raw) -> int | None:
+    """块的页号 → 正整数；缺页 / 0 / 非数字一律 ``None``（与 ``build_block_row_map`` 同口径）。"""
+    try:
+        page = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return page if page > 0 else None
+
+
+def _block_latex(block: dict) -> str:
+    """块自带的 LaTeX（取自 ``reader_service._formula_card`` 的字段，口径同 ``_parse_formula_item``）。
+
+    那张卡片里**没有**叫 ``latex`` 的键：最终值在 ``latex_final``，退化到 ``latex_repaired``，
+    再退化到候选列表 ``latex_candidate`` 的第一条（解析器流水线自己也是这么取，
+    见 ``parsing/md/generator.py``）。取不到就是空串，调用方据此**不写**那个键。
+    """
+    formula = block.get("formula")
+    if not isinstance(formula, dict):
+        return ""
+    for key in ("latex_final", "latex_repaired"):
+        value = formula.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    candidates = formula.get("latex_candidate")
+    if isinstance(candidates, str):
+        return candidates.strip()
+    for candidate in candidates or []:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def row_less_blocks(blocks: list[dict], block_row_map: dict[str, str]) -> list[dict]:
+    """没有正文行可落的块：给前端一个"到页/到公式"的落点（而不是整页闪）。
+
+    ``block_row_map``（``build_block_row_map`` 的输出）**只包含能匹配到行**的块，于是
+    "查不到"同时意味着"这页没有它的行"和"这张表没算它"——前端只能猜。线上那篇 509 个
+    块里有 119 个匹配不到行（66 个是归一化后 <8 字符的公式块，53 个内容对不上），
+    整页闪一次就是因为它们无处可跳。这里把它们**显式下发**：
+
+    - 只收**有 id、有合法页号（int > 0）且不在 ``block_row_map`` 里**的块；
+    - 每项 ``{"id", "page", "type"}``，能取到 LaTeX 时再加 ``"latex"``（取不到就**不写这个键**，
+      免得前端拿到空串还以为有公式可定位）；
+    - 顺序与 ``blocks`` 一致；重复 id 只留第一条；超过 ``MAX_ROW_LESS_BLOCKS`` 条截断并告警。
+    """
+    mapped = block_row_map or {}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for block in blocks or []:
+        raw_id = block.get("id")
+        if not raw_id:
+            continue
+        block_id = str(raw_id)
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+        if block_id in mapped:
+            continue
+        page = _page_no(block.get("page"))
+        if page is None:
+            continue
+        item = {"id": block_id, "page": page,
+                "type": str(block.get("type") or "")}
+        latex = _block_latex(block)
+        if latex:
+            item["latex"] = latex
+        out.append(item)
+    if len(out) > MAX_ROW_LESS_BLOCKS:
+        log.warning("row_less_blocks 超过上限，截断：%d → %d",
+                    len(out), MAX_ROW_LESS_BLOCKS)
+        out = out[:MAX_ROW_LESS_BLOCKS]
     return out
 
 

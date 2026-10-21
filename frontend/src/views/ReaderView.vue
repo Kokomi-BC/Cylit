@@ -1438,6 +1438,20 @@ const rowById = computed(() => {
   for (const r of allRows.value) map.set(r.id, r);
   return map;
 });
+/**
+ * **无行可落的块**：`block_rows` 只收"能匹配到行"的块，剩下的块没有正文行 ——
+ * 后端现在在 `row_less_blocks` 里单独告诉我们落点是"哪一页"（公式还多带一条 `latex`）。
+ *
+ * 键按 `rowAnchorId` 归一（与 `focusRow` 查表时的写法一致）：`row-p006-03` 与 `p006-03`
+ * 是同一块。payload 不在（首屏 / 加载失败）时是空表，`focusRow` 照旧走原来的三级回退。
+ */
+const rowLessById = computed(() => {
+  const map = new Map<string, NonNullable<ReaderPayload['row_less_blocks']>[number]>();
+  for (const b of reader.value?.row_less_blocks ?? []) {
+    if (b?.id) map.set(rowAnchorId(String(b.id)), b);
+  }
+  return map;
+});
 const currentRow = computed(() => rowById.value.get(currentRowId.value) ?? null);
 const currentPage = computed(() => currentRow.value?.page ?? 1);
 
@@ -1690,7 +1704,11 @@ async function applyDeepLink(): Promise<boolean> {
   deepLinkSmooth = false;
   const raw = route.query.row ?? route.query.block;
   const anchor = raw === undefined || raw === null ? '' : rowAnchorId(String(raw));
-  const wantPage = Number(route.query.page ?? 0) || 0;
+  /* 深链只给了一个"无行可落"的块 id（公式 / 插图 / 表格）时，页号从 `row_less_blocks` 取：
+     后端已经告诉我们它落在哪一页，就不该再报"锚点已失效"，而该走下面那条
+     "该段落没有独立正文行…已跳到第 N 页"的诚实分支。 */
+  const wantPage = Number(route.query.page ?? 0)
+    || Number(rowLessById.value.get(anchor)?.page ?? 0) || 0;
   if (!anchor && !wantPage) return true;
   const sig = `${anchor}|${wantPage}`;
   if (deepLinkDone.value === sig) return true;
@@ -2655,9 +2673,19 @@ async function focusRow(
   id = rowAnchorId(id);
   if (id && !rowById.value.has(id)) id = String(reader.value?.block_rows?.[id] ?? id);
   const known = rowById.value.get(id);
-  const page = opts.page ?? known?.page ?? currentPage.value ?? 1;
+  /* 落点解析链的**再下一级**：`row_less_blocks` 里的块没有正文行（公式 / 插图 / 表格在正文里
+     没有独立段落）。以前走到这里就再无任何信息可用了 —— 页内到底有什么看不出来，于是不管
+     点到哪一块都只能"整页亮一下"（用户口径的"整页闪"就是这个）。现在后端显式给出落点：
+     有 `page` 就到那一页，公式的 `latex` 还能把落点收进页内那一枚 KaTeX。
+     只在**真的落不到行**时启用，能解析到行的路径一个字没动。 */
+  const rowLess = known ? undefined : rowLessById.value.get(id);
+  const rowLessPage = Number(rowLess?.page ?? 0) || 0;
+  const rowLessLatex = String(rowLess?.latex ?? '');
+  const page = opts.page ?? known?.page ?? (rowLessPage || undefined) ?? currentPage.value ?? 1;
   if (!id && !page) return;
-  if (id && !known && opts.page === undefined) {
+  /* 明确"无行可落但知道页"的块不算锚点失效：它有页可去，交给下面那条既有的"到页 + 闪整页"
+     分支即可（不再弹"锚点已失效"）。 */
+  if (id && !known && !rowLessPage && opts.page === undefined) {
     // 历史锚点（重译后行号变了，且后端也没能给出页码）：明确提示，不乱跳
     toast('该定位锚点已失效（重译后行号已变）', 'warn', 2400);
     return;
@@ -2676,6 +2704,21 @@ async function focusRow(
     if (opts.flash) flashFormulaNode(formulaNode);
     if (save) saveProgressDebounced();
     return;
+  }
+  /* 无行可落的**公式块**：先滚到那一页（这一级以前根本不存在，所以只能整页闪），再用同一个
+     `findFormula` / `flashFormulaNode` 在**页内**认出那枚 KaTeX，落点与闪烁都交给它。
+     门槛与 `findFormula` 内部一致（`formulaSig` 去掉非字母数字后 < 12 不做匹配）：
+     页内比行内更容易撞上 `x`、`d` 这种单符号公式。认不出来就落回下面的整页分支。 */
+  if (!known && rowLessLatex && node && el && formulaSig(rowLessLatex).length >= 12) {
+    scrollNodeToLine(el, node, smooth);
+    await nextTick();
+    const inPage = findFormula(node, rowLessLatex);
+    if (inPage) {
+      scrollNodeToLine(el, inPage, smooth);
+      if (opts.flash) flashFormulaNode(inPage);
+      if (save) saveProgressDebounced();
+      return;
+    }
   }
   if (node && el) {
     // 把目标行停在**阅读线**上（而不是居中）：滚动结束后"当前行"正好还是它，
