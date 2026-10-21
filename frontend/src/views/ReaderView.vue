@@ -1493,7 +1493,7 @@ async function applyDeepLink(): Promise<boolean> {
   const smooth = deepLinkSmooth;      // 取一次就复位：只对紧接着这一次生效
   deepLinkSmooth = false;
   const raw = route.query.row ?? route.query.block;
-  const anchor = raw === undefined || raw === null ? '' : String(raw);
+  const anchor = raw === undefined || raw === null ? '' : rowAnchorId(String(raw));
   const wantPage = Number(route.query.page ?? 0) || 0;
   if (!anchor && !wantPage) return true;
   const sig = `${anchor}|${wantPage}`;
@@ -2375,6 +2375,19 @@ function flashRow(id: string) {
  * （重译后行号会变），这时按页跳转而不是乱跳到第 1 页。
  * `flash`：点搜索命中 / 目录这些"跳到这里"的动作要亮一下；滚动恢复、切视图模式不要。
  */
+/**
+ * 锚点归一：后端给公式/表格类 chunk 的块 id 是 row-<行 id>（见 knowledge_service 里
+ * f"row-{row_id}" 那一支），它的后缀本来就是一正文行 id。
+ *
+ * 不拆这个前缀，结果就是「点了没落到那一段、整页亮一下」—— 行 id 查不到、block_rows
+ * 里也没有这个键（那张表只解析解析块 id），只能退到按页闪（用户 2026-12-03 报的
+ * 「标号 23 高亮整页」：那一条正好是公式 chunk，锚点是 row-p006-03）。
+ * 所有跳转（对话引用、解读标号、目录、搜索、深链）最后都过 focusRow，所以归一放在这里。
+ */
+function rowAnchorId(id: string): string {
+  return id.startsWith('row-') ? id.slice(4) : id;
+}
+
 async function focusRow(
   id: string,
   opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean } = {},
@@ -2391,6 +2404,7 @@ async function focusRow(
   /* 解读/检索给的锚点是**解析块 id**（`attentionisa-p01-b06`），正文行 id 却是 `p001-06` ——
      两套命名空间，后端为此下发 `block_rows`。不翻这一下，"点引用标号"就是空跳：
      `rowById` 查不到，下面会当成"锚点已失效"直接 toast（用户看到的正是"点了没反应"）。 */
+  id = rowAnchorId(id);
   if (id && !rowById.value.has(id)) id = String(reader.value?.block_rows?.[id] ?? id);
   const known = rowById.value.get(id);
   const page = opts.page ?? known?.page ?? currentPage.value ?? 1;
