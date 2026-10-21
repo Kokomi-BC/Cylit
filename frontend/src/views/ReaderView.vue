@@ -7518,7 +7518,9 @@ function renderMarkdown(text?: string | null) {
         <!-- 浮窗顶部那枚抓手：**照 FloatingCard 那条 `.fc-grab` 的做法** ——
              一整条 14px 高的**真元素**（`pointer-events: auto`，光标 grab），药丸只是它里面的装饰。
              以前药丸是 `pointer-events: none`，顶部那一条命中的是下面的层，光标因此不是抓取手。 -->
-        <div class="chat-grab" data-float-grab>
+        <!-- 抓手条的 `cursor` 直接写行内：这件事已经绕过好几轮 CSS 优先级了，
+             行内样式不会被任何选择器抢走（药丸自己 `pointer-events: none`，命中的是这条）。 -->
+        <div class="chat-grab" data-float-grab style="cursor: grab">
           <span class="chat-grip-pill" />
         </div>
         <!-- 惰性挂载：没进过对话页签、也没浮起过就整块不挂（省一次会话列表请求）；
@@ -8450,6 +8452,8 @@ function renderMarkdown(text?: string | null) {
   cursor: grab; touch-action: none;
 }
 .chat-grab:active { cursor: grabbing; }
+/* 拖动中这条也保持「抓紧」（行内那句只在静止时） */
+.reader.float-dragging > .chat-host.float .chat-grab { cursor: grabbing !important; }
 .reader > .chat-host:not(.float) > .chat-grab { display: none; }
 .reader > .chat-host:not(.float) .chat-grip-pill { display: none; }
 /* 拖头期间**保住合成层**：卡片走 transform 移位（见 paintFloatLive），有了 will-change 就
