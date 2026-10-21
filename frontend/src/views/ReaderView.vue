@@ -126,47 +126,69 @@ type CitePeekAsk = {
   blockId?: string | null;
   label?: string | null;
 };
-const citePeek = reactive({ open: false, ask: null as CitePeekAsk | null });
+
+/** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
+ *  与笔记浮层同一思路；没钉住的那张会被下一次悬浮就地复用（在标号之间横扫时很顺）。 */
+type PeekCard = {
+  key: string;
+  ask: CitePeekAsk;
+  open: boolean;
+  pinned: boolean;
+  /** 显示哪一侧：zh = 译文 / en = 原文（用户口径 2026-12-04：两侧同时铺太挤，给个中/EN 切换） */
+  lang: 'zh' | 'en';
+};
+
+const peekCards = reactive<PeekCard[]>([]);
+let peekSeq = 0;
 let peekShowTimer = 0;
 let peekHideTimer = 0;
 /** 悬浮多久才弹（与「参考文献浮层」同一条口径：停一下才弹，扫过去不打扰） */
 const PEEK_SHOW_MS = 320;
 const PEEK_HIDE_MS = 240;
 
-function cancelPeekTimers(): void {
+function loosePeekCard(): PeekCard | null {
+  return peekCards.find((c) => !c.pinned) ?? null;
+}
+
+function clearPeekTimers(): void {
   if (peekShowTimer) { clearTimeout(peekShowTimer); peekShowTimer = 0; }
   if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
 }
 
 function onCitePeekAsk(ask: CitePeekAsk): void {
-  cancelPeekTimers();
-  /* 已经开着就立刻换内容（在标号之间横扫时不用每次都等 320ms） */
-  if (citePeek.open) { citePeek.ask = ask; return; }
+  clearPeekTimers();
+  const loose = loosePeekCard();
+  /* 已经有一张没钉住的：立刻换内容（不必每次重等 320ms） */
+  if (loose) { loose.ask = ask; loose.open = true; return; }
   peekShowTimer = window.setTimeout(() => {
     peekShowTimer = 0;
-    citePeek.ask = ask;
-    citePeek.open = true;
+    if (peekCards.some((c) => !c.pinned)) return;
+    peekSeq += 1;
+    peekCards.push({ key: 'peek-' + peekSeq, ask, open: true, pinned: false, lang: 'zh' });
   }, PEEK_SHOW_MS);
 }
 
 function onCitePeekHide(): void {
   if (peekShowTimer) { clearTimeout(peekShowTimer); peekShowTimer = 0; }
-  if (!citePeek.open) return;
+  if (!loosePeekCard()) return;          // 只剩钉住的：不动它
   if (peekHideTimer) clearTimeout(peekHideTimer);
   peekHideTimer = window.setTimeout(() => {
     peekHideTimer = 0;
-    citePeek.open = false;
+    const i = peekCards.findIndex((c) => !c.pinned);
+    if (i >= 0) peekCards.splice(i, 1);
   }, PEEK_HIDE_MS);
 }
 
-/** 鼠标进到卡片里：取消待收（否则刚滑过去看一下就没了） */
-function keepCitePeek(): void {
-  if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
+/** 鼠标进到卡片里 / 在卡片里按了一下：取消待收，并**钉住** —— 拖过、看过的那张不该自己消失 */
+function keepCitePeek(card: PeekCard): void {
+  clearPeekTimers();
+  card.pinned = true;
 }
 
-function closeCitePeek(): void {
-  cancelPeekTimers();
-  citePeek.open = false;
+function closePeekCard(card: PeekCard): void {
+  clearPeekTimers();
+  const i = peekCards.indexOf(card);
+  if (i >= 0) peekCards.splice(i, 1);
 }
 
 const CITE_KIND: Record<string, string> = {
@@ -174,9 +196,9 @@ const CITE_KIND: Record<string, string> = {
   caption: '图注', code: '代码', ref: '参考文献', figure: '插图',
 };
 
-const citePeekView = computed(() => {
-  const ask = citePeek.ask;
-  if (!ask) return null;
+/** 一张卡要显示什么：整篇的行 / 表格 / 插图三选一（引用自带的 snippet 不参与） */
+function peekViewOf(card: PeekCard) {
+  const ask = card.ask;
   const rowId = rowAnchorId(String(ask.rowId || ''))
     || (ask.blockId ? String(reader.value?.block_rows?.[rowAnchorId(String(ask.blockId))] ?? '') : '');
   const row = rowId ? rowById.value.get(rowId) : undefined;
@@ -184,25 +206,28 @@ const citePeekView = computed(() => {
   const tbl = rowId ? tables.value.find((t) => t.row_id === rowId) : undefined;
   const page = row?.page ?? ask.page ?? fig?.page ?? tbl?.page ?? 0;
   const kind = tbl ? '表格' : fig ? '插图' : CITE_KIND[String(row?.type ?? '')] || '正文';
-  const md = (tbl?.markdown || row?.translation || row?.original || '').trim();
-  /* 译文当正文，原文另起一段小字对照（只有两侧都有时才出） */
-  const side = (row?.translation || '').trim() ? (row?.original || '').trim() : '';
+  /* 中/EN 各一份 Markdown：**两侧都走 mdToHtml**（原文里的 LaTeX 也得渲染，
+     否则一整段 `$...$` 原样铺出来，就是用户说的「部分没有适配 markdown」） */
+  const zh = (tbl?.markdown || row?.translation || '').trim();
+  const en = (tbl?.markdown || row?.original || '').trim();
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
-    md,
-    side,
+    zh,
+    en,
+    /* 只有原文（未翻译的页 / 只有英文的材料）时，别让中/EN 切换出现 */
+    bilingual: Boolean(zh) && Boolean(en) && zh !== en,
+    body: card.lang === 'en' ? en : zh,
     imageUrl: fig?.image_url || '',
     caption: (fig?.caption_zh || fig?.caption || '').trim(),
     page, rowId,
     anchor: ask.anchor,
   };
-});
+}
 
-/** 点卡片：与点标号走**同一条**定位（focusRow），然后收起 */
-function jumpFromCitePeek(): void {
-  const v = citePeekView.value;
-  if (!v) return;
-  closeCitePeek();
+/** 标题栏那枚「定位到原文」：与点标号走**同一条** focusRow，然后收起这张卡 */
+function jumpFromPeek(card: PeekCard): void {
+  const v = peekViewOf(card);
+  closePeekCard(card);
   void focusRow(v.rowId, { page: v.page || undefined, flash: true });
 }
 const brief = ref<BriefPayload | null>(null);
@@ -7780,37 +7805,54 @@ function renderMarkdown(text?: string | null) {
          各自独立编辑 / 保存 / 删除 / 换色，`✕` 只关自己；同一条笔记 / 同一处高亮永远只有一张，
          再点入口 = 把已有的那张抬到最上层（见 `openNotePopover`）。
          `data-note-key` 是这张卡的 DOM 锚：`scheduleNoteHide` 靠它逐张问"鼠标还在它上面吗"。 -->
+    <!-- 引用速览卡（悬浮标号时在旁边弹）：与笔记浮层**同一套** FloatingCard ——
+         可拖、可锚定（拖过 / 点过 / 鼠标进去就钉住，移开不自动关；✕ 才关），
+         多张可以同时存在（钉住的那几张不会被下一次悬浮顶掉）。
+         「定位到原文」在**标题栏**（✕ 左边）：点内容不再跳转，免得想选一段文字复制时被带走
+         （用户口径 2026-12-04）。 -->
     <FloatingCard
-      v-if="citePeek.ask"
-      :open="citePeek.open"
-      :anchor="citePeekView?.anchor || null"
-      :title="citePeekView?.title || '引用'"
-      :anchored="true"
+      v-for="card in peekCards"
+      :key="card.key"
+      :open="card.open"
+      :anchor="peekViewOf(card).anchor"
+      :title="peekViewOf(card).title || '引用'"
+      :anchored="card.pinned"
       :width="360"
-      :max-height="360"
+      :max-height="420"
       text-cat="chat"
-      hide-anchor
       data-cite-peek
-      @mouseenter="keepCitePeek"
+      :data-peek-key="card.key"
+      @pointerdown.capture="keepCitePeek(card)"
+      @mouseenter="keepCitePeek(card)"
       @mouseleave="onCitePeekHide"
-      @close="closeCitePeek"
+      @toggle-anchor="card.pinned = !card.pinned"
+      @close="closePeekCard(card)"
     >
-      <div class="cite-peek" role="button" tabindex="0" title="定位到原文"
-           @click="jumpFromCitePeek" @keydown.enter.prevent="jumpFromCitePeek">
-        <img v-if="citePeekView?.imageUrl" class="cite-peek-img"
-             :src="assetUrl(citePeekView.imageUrl)" :alt="citePeekView?.caption || ''" />
-        <div v-if="citePeekView?.caption" class="cite-peek-cap md small"
-             v-html="mdToHtml(citePeekView.caption, paperId)" />
-        <div v-if="citePeekView?.md" class="cite-peek-md md small"
-             v-html="mdToHtml(citePeekView.md, paperId)" />
-        <div v-if="citePeekView?.side" class="cite-peek-side tiny faint">
-          {{ citePeekView.side }}
+      <template #head-extra>
+        <button
+          type="button"
+          class="fc-btn"
+          title="定位到原文"
+          aria-label="定位到原文"
+          data-peek-jump
+          @click.stop="jumpFromPeek(card)"
+        >
+          <AppIcon name="locate" :size="13" />
+        </button>
+      </template>
+      <div class="cite-peek">
+        <img v-if="peekViewOf(card).imageUrl" class="cite-peek-img"
+             :src="assetUrl(peekViewOf(card).imageUrl)" :alt="peekViewOf(card).caption || ''" />
+        <div v-if="peekViewOf(card).caption" class="cite-peek-cap md small"
+             v-html="mdToHtml(peekViewOf(card).caption, paperId)" />
+        <div v-if="peekViewOf(card).bilingual" class="cite-peek-lang seg sq">
+          <button type="button" :class="{ active: card.lang === 'zh' }" @click="card.lang = 'zh'">译文</button>
+          <button type="button" :class="{ active: card.lang === 'en' }" @click="card.lang = 'en'">原文</button>
         </div>
-        <div v-if="!citePeekView?.md && !citePeekView?.imageUrl" class="tiny faint">
+        <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
+             v-html="mdToHtml(peekViewOf(card).body, paperId)" />
+        <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl" class="tiny faint">
           这一段没有可显示的内容（可能是图片页或纯公式块）
-        </div>
-        <div class="cite-peek-hint tiny">
-          <AppIcon name="locate" :size="11" /> 点击定位到原文
         </div>
       </div>
     </FloatingCard>
@@ -8181,14 +8223,9 @@ function renderMarkdown(text?: string | null) {
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
 /* 原文对照：小一号、淡一档，只作参照，不抢正文的注意力 */
-.cite-peek-side {
-  border-top: 1px dashed var(--divider); padding-top: 6px;
-  max-height: 96px; overflow: auto; line-height: 1.6;
-}
-.cite-peek-hint {
-  display: inline-flex; align-items: center; gap: 4px;
-  color: var(--accent-text); font-weight: 600;
-}
+/* 中/EN 切换：只在两侧都真有内容时出现（只有英文的材料不该多一枚没用的开关）。 */
+.cite-peek-lang { align-self: flex-start; }
+.cite-peek-lang button { padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
 
 /* 阅读器数据加载占位：整屏布局下正文区还是空的，把圈 + 文案**居中**摆（用 `.empty` 会贴在左上角）。
    高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
