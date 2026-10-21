@@ -325,18 +325,14 @@ onUnmounted(() => {
               @blur="cancelEdit"
             />
             <template v-else>
-              <!-- 箭头是独立按钮：只折叠 / 展开这一行，不参与"点名字"那套点击 -->
+              <!-- 没有箭头按钮了：整行名字就是折叠开关，可折叠语义靠 aria-expanded + title 传达 -->
               <button
                 type="button"
-                class="sf-caret-btn"
+                class="sf-name"
                 :aria-expanded="isOpen(row.id)"
-                :aria-label="'展开或收起：' + row.name"
-                :title="isOpen(row.id) ? '收起' : '展开'"
-                @click.stop="toggleRow(row.id)"
+                :title="(isOpen(row.id) ? '收起：' : '展开：') + row.name"
+                @click="toggleRow(row.id)"
               >
-                <AppIcon name="chevron-right" :size="12" class="sf-row-caret" />
-              </button>
-              <button type="button" class="sf-name" :title="row.name" @click="toggleRow(row.id)">
                 <span class="sf-text">{{ row.name }}</span>
                 <span class="sf-count">{{ row.count }}</span>
               </button>
@@ -384,15 +380,17 @@ onUnmounted(() => {
 /* ⚠️ 这一区是固定高度侧栏里的第二块弹性区：必须自己滚动、且允许被压缩（min-height: 0），
  * 否则高度不够时会把「设置」挤出视口，或者让整条侧栏冒出外层滚动条。 */
 .sf {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+  /* flex-basis 0 + min-height 地板：分类再多也只在这里滚，不会和 .rail-nav 互相挤（避免两层滚动条）；
+     窗口极矮时先牺牲 nav 的空间，这一区仍留 120px（标题 + 三行） */
+  flex: 1 1 0; min-height: 120px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 2px;
   margin: 8px 0; padding-top: 8px;
   border-top: 1px solid var(--divider);
 }
-/* 收起态只留一行标题：不再占据剩余高度，也不滚动 */
-.sf.is-collapsed { flex: 0 0 auto; overflow: hidden; }
-/* 图标轨：单个 40px 入口（64px 轨道扣掉内边距还有 44~48px，居中放得下） */
-.sf-icon { flex: 0 0 auto; overflow: visible; margin: 8px 0; }
+/* 收起态只留一行标题：不占剩余高度、不滚动，也要把上面那 120px 的地板还回去 */
+.sf.is-collapsed { flex: 0 0 auto; min-height: 0; overflow: hidden; }
+/* 图标轨：单个 40px 入口（同上，min-height 归零，否则会被撑成 120px 高） */
+.sf-icon { flex: 0 0 auto; min-height: 0; overflow: visible; margin: 8px 0; }
 
 .sf-head {
   /* 列表滚动时标题（和那枚「+」）停在顶部 */
@@ -427,38 +425,27 @@ onUnmounted(() => {
 .sf-body { display: flex; flex-direction: column; gap: 2px; }
 .sf-list { display: flex; flex-direction: column; gap: 1px; }
 
-/* 行高 30px（就地编辑时也不塌）；组间距 6px 由分类行的 margin-top 出，
+/* 行高 28px（就地编辑时 26px 的输入框也不会把行压矮）；组间距 6px 由分类行的 margin-top 出，
  * 同一分类的论文之间只隔 .sf-list 的 1px —— 归属一眼可见。 */
 .sf-row {
-  display: flex; align-items: center; gap: 2px; padding-left: 2px;
+  display: flex; align-items: center; gap: 2px;
   min-height: 28px; border-radius: 8px;
 }
 .sf-list > .sf-row { margin-top: 6px; }
 .sf-list > .sf-row:first-child { margin-top: 0; }
 .sf-row:hover { background: var(--bg-hover); }
-/* 折叠箭头：独立按钮、定宽 18px（行首那一格），展开 / 收起都不会让名字左右跳；
- * 颜色取最弱一档，悬停与展开时提亮（只旋转，从不隐藏） */
-.sf-caret-btn {
-  flex: none; width: 18px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint);
-  cursor: pointer; transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-.sf-row:hover .sf-caret-btn, .sf-row.open .sf-caret-btn { color: var(--accent-text); }
-.sf-caret-btn:focus-visible { outline: none; box-shadow: var(--ring); }
-.sf-caret-btn:active { background: var(--bg-pressed); }
 /* 第一档（最强）：分类名走主题色 + 600，比子项亮也比它大 2px；
  * 「未分类」用的是同一个类，自然同档。悬停 / 展开再深一档（--accent-hover，全站文字加强用的就是它） */
 .sf-name {
   flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 6px 0 0; border: 0; border-radius: 8px;
+  height: 28px; padding: 0 6px 0 8px; border: 0; border-radius: 8px;   /* 左起点 8px：与标题、论文题、提示行同一条线 */
   background: transparent; color: var(--accent-text);
   font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: pointer;
   transition: color var(--dur) var(--ease);
 }
 .sf-name:hover, .sf-row.open .sf-name { color: var(--accent-hover); }
 .sf-name:focus-visible { outline: none; box-shadow: var(--ring); }
-.sf-row-caret { flex: none; transition: transform var(--dur) var(--ease); }
-.sf-row.open .sf-row-caret { transform: rotate(90deg); }
+
 
 .sf-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-count {
