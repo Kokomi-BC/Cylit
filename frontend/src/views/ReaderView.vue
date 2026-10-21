@@ -260,11 +260,28 @@ function peekViewOf(card: PeekCard) {
     /* 公式 chunk 的片段是我们自己拼的「公式 p018-01：$$…$$」—— 那个抬头是给检索看的，
        卡片里只需要公式本身。 */
     .replace(/^公式\s*\S*?\s*[:：]\s*/, '');
-  const quote = quoteRaw && !norm(zh).includes(norm(quoteRaw)) && !norm(en).includes(norm(quoteRaw))
-    ? quoteRaw
-    : '';
-  /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 */
+  /*
+   * 片段与正文的比对**要穿过 LaTeX**（用户口径 2026-12-04：卡片里内容显示了两遍）。
+   *
+   * 片段是 LaTeX 源码（「$$D_{\text{prod}}(Q) = \mathbb{E}\left[…」），正文里那条公式被渲染成
+   * KaTeX —— 两边字面完全不同，只按空白归一化一比就"不认识"，同一条公式于是上下各来一遍。
+   * 这里把两边都剥成骨架再比包含：去掉数学定界符、LaTeX 命令名、标点与空白，
+   * 只留字母数字与汉字。片段被后端截断（少了收尾的 $）也不影响前缀匹配。
+   */
+  const core = (s: string) => s
+    .replace(/\$\$?/g, ' ')
+    .replace(/\\[a-zA-Z]+/g, ' ')
+    .replace(/[^0-9a-zA-Z\u4e00-\u9fff]+/g, '')
+    .toLowerCase();
+  const quoteCore = core(quoteRaw);
+  /* 骨架太短（「1/4」这种）容易被正文误中，只让够长的片段走这条判定 */
+  const quoteCovered = Boolean(quoteRaw) && (
+    norm(zh).includes(norm(quoteRaw)) || norm(en).includes(norm(quoteRaw))
+    || (quoteCore.length >= 8 && (core(zh).includes(quoteCore) || core(en).includes(quoteCore)))
+  );
+  /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 —— 有了它片段就是重复的第三份 */
   const latex = String(ask.latex || '').trim();
+  const quote = quoteRaw && !quoteCovered && !latex ? quoteRaw : '';
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
     zh: bodyZh,
