@@ -935,7 +935,7 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
 
 
 async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", text: str = "",
-                           color: str = "yellow", side: str = "", occurrence: int = 1,
+                           color: str = "", side: str = "", occurrence: int = 1,
                            highlight_id: str = "", query: str = "", reason: str = "") -> dict:
     """给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
 
@@ -950,8 +950,11 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
 
       op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
                    **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
-                   green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行 ——
-                   想按语义配色（比如"术语用紫、结论用绿"）就自己挑 hex，别硬套那七个名字。
+                   green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行。
+                   ⚠️ **一律用多彩、尽量不一样**（用户口径 2026-12-06）：一片同色等于没有颜色。
+                   做法：动手前先 `op=list` 看这篇已经用过哪些颜色，**挑没出现过/用得最少**的那个；
+                   一次标好几处就**逐个换色**，别整批一个色。不传 `color` 时宿主会自动挑当前
+                   用得最少的，但你自己按语义配色（术语紫 / 结论绿 / 公式蓝 / 疑点橙）更好。
                    `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
                    `重点`，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
                    **公式可以标**（2026-12-06 补）：把公式的 LaTeX 原样给它（带不带 `$$` 都行，

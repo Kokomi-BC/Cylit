@@ -607,7 +607,9 @@ async def agent_highlight_create(paper_id: str, request: Request,
 
     data = ann.create(paper_id, anchor=str(payload.get("anchor") or ""),
                       text=str(payload.get("text") or ""),
-                      color=str(payload.get("color") or "yellow"),
+                      # 空 = 交给宿主挑**当前用得最少**的颜色（用户口径 2026-12-06：多彩、尽量不一样）。
+                      # 以前这里硬写 "yellow"，模型不给颜色时就是一片黄。
+                      color=str(payload.get("color") or ""),
                       side=str(payload.get("side") or "en"),
                       occurrence=int(payload.get("occurrence") or 1))
     return envelope(data, message=("已建立高亮" if data.get("ok") else str(data.get("error"))[:120]),

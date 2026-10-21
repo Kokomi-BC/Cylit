@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
@@ -341,7 +342,37 @@ def anchor_text(paper_id: str, anchor: str, *, side: str = "en") -> str | None:
     return None
 
 
-def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
+#: 配色建议（与 `annotation_service.HIGHLIGHT_COLORS` 里"新界面会提供"的那七个一致）。
+#: 用户口径（2026-12-06）：**多彩、尽量不一样** —— 一片同色等于没有颜色，标注就看不出层次。
+PALETTE = ("blue", "violet", "green", "orange", "red", "indigo", "yellow")
+
+
+def spare_color(used: Iterable[str]) -> str:
+    """在调色板里挑一个**最少被用过**的颜色（全都没用过就是第一个）。
+
+    为什么要有这个（用户口径 2026-12-06「多彩、尽量不一样」）：让模型每次都自己挑，实测结果
+    是清一色（8 条高亮 5 条同色）—— 颜色就不再携带信息了。这里做**兜底分配**：模型显式给了
+    颜色就尊重它（它可能按语义配色），没给才由宿主挑一个当前用得最少的。
+    """
+    counts = {name: 0 for name in PALETTE}
+    for raw in used or []:
+        name = str(raw or "").strip().lower()
+        if name in counts:
+            counts[name] += 1
+    # sorted 稳定：同票时按 PALETTE 顺序取，结果可预期（不会每次挑到不同的颜色）
+    return min(PALETTE, key=lambda name: (counts[name], PALETTE.index(name)))
+
+
+def spare_color_for(paper_id: str) -> str:
+    """这篇论文当前**用得最少**的颜色（读一次高亮表，失败就退回调色板第一个）。"""
+    try:
+        items = svc.list_highlights(paper_id).get("items") or []
+    except Exception as exc:  # noqa: BLE001 —— 配色不该挡住"存高亮"
+        log.warning("取现有高亮配色失败（用调色板第一个）：%s: %s", paper_id, exc)
+        return PALETTE[0]
+    return spare_color([item.get("color") for item in items if isinstance(item, dict)])
+
+def create(paper_id: str, *, anchor: str, text: str, color: str = "",
            side: str = "", occurrence: int = 1) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
 
@@ -351,6 +382,8 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     anchor = str(anchor or "").strip()
     if not anchor:
         raise ValidationError("anchor 必填（正文行 id / `md:p<页号>` / `pdf:p<页号>`）")
+    # 没指定颜色就挑**当前用得最少**的（用户口径：多彩、尽量不一样）
+    color = str(color or "").strip() or spare_color_for(paper_id)
     # 面没指定（或给了个不认识的值）→ 按**引用的文字**判：引中文就落在译文面
     # （界面按译文读时，原文那一面的高亮根本画不出来，见 `side_of_text`）。
     # 面没指定时：**公式优先落在译文面**（用户口径：平时看的是中文那一列，标在原文面
