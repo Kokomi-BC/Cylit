@@ -80,3 +80,45 @@ def test_all_stale_keeps_every_ref() -> None:
     resolved = {"B001": "x", "B002": "y"}
     live, stale = us.split_live_refs(resolved, _by_code(), exists=lambda ids: set())
     assert live == [] and len(stale) == 2, "全部过期也要全部保留（解读内容还在）"
+
+# ---------------------------------------------------------------------------
+# 标号在正文里出现、但收尾 JSON 的 refs 没登记它（用户 2026-12-04 的标号 16）
+# ---------------------------------------------------------------------------
+
+
+def _row(markdown: str, resolved: dict, inventory: list) -> "us.Understanding":
+    return us.Understanding(
+        id="p:a", paper_id="p", path="a", markdown=markdown,
+        refs_json=us.json_dumps({"codes": list(resolved), "resolved": resolved,
+                                 "invalid": [], "cross_road": [], "ok": True}),
+        inventory=us.json_dumps(inventory), refs_ok=True, model="m",
+        prompt_tokens=0, completion_tokens=0, updated_at=None,
+    )
+
+
+def test_code_cited_only_in_markdown_still_resolves(monkeypatch) -> None:
+    """正文写了 [A002]、refs_json 里却没有 A002 —— 读的时候按清单补齐，标号照样能跳。"""
+    inventory = [{"code": "A001", "chunk_id": "cid1", "chunk_type": "unit", "page": 3},
+                 {"code": "A002", "chunk_id": "cid2", "chunk_type": "unit", "page": 15}]
+    monkeypatch.setattr(us, "_chunk_anchors",
+                        lambda ids: {"cid1": {"block_id": "b1", "row_id": "r1"},
+                                     "cid2": {"block_id": "b2", "row_id": "r2"}})
+    got = us.to_dict(_row("见 [A001] 与 [A002]。", {"A001": "cid1"}, inventory))
+    assert [r["code"] for r in got["refs_resolved"]] == ["A001", "A002"]
+    assert got["refs_resolved"][1]["chunk_id"] == "cid2"
+    assert got["refs_resolved"][1]["row_id"] == "r2"
+
+
+def test_markdown_code_missing_from_inventory_stays_unresolved(monkeypatch) -> None:
+    """清单里没有的短码（模型抄错/跨路）不能凭空补一条，免得前端跳到一个不存在的位置。"""
+    monkeypatch.setattr(us, "_chunk_anchors", lambda ids: {"cid1": {"row_id": "r1"}})
+    got = us.to_dict(_row("见 [A001] 与 [A999]。", {"A001": "cid1"}, [
+        {"code": "A001", "chunk_id": "cid1", "chunk_type": "unit", "page": 3}]))
+    assert [r["code"] for r in got["refs_resolved"]] == ["A001"]
+
+
+def test_merge_ref_codes_keeps_order_and_dedupes() -> None:
+    assert us.merge_ref_codes(["A002", "A001"], "正文 [A001]，[A002]，再来一次 [A001]") \
+        == ["A002", "A001"]
+    assert us.merge_ref_codes(["A001"], "正文 [A001] 与 [A004]") == ["A001", "A004"]
+

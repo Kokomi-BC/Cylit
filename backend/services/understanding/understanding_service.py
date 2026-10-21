@@ -215,6 +215,20 @@ def _scan_refs(text: str) -> list[str]:
     return out
 
 
+def merge_ref_codes(refs: list[str], markdown: str) -> list[str]:
+    """短码 = 模型 JSON 里登记的那一份 ∪ 正文里**实际出现**的那一份（去重、保序）。
+
+    为什么必须并：模型经常在正文里写足标号、收尾 JSON 的 refs 却只抄了一部分
+    （实测一份 104 个标号的解读漏了 2 个）。漏掉的那几个没有 chunk id 落库，
+    前端点标号就既跳不动、速览卡也只好说"没有可显示的内容"（用户 2026-12-04 的标号 16）。
+    """
+    out = list(refs)
+    for code in _scan_refs(markdown):
+        if code not in out:
+            out.append(code)
+    return out
+
+
 def validate_refs(refs: list[str], valid: dict[str, str], *, path: str = "a") -> dict:
     """校验引用：短码必须在本路清单里。
 
@@ -395,11 +409,12 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
                         min_tokens=MAX_TOKENS)
         parsed = parse_result(res.text or "")
     valid = code_map(inventory)
-    check = validate_refs(parsed["refs"], valid, path=path)
+    codes = merge_ref_codes(parsed["refs"], parsed["markdown"])
+    check = validate_refs(codes, valid, path=path)
     payload = {
         "paper_id": paper_id, "path": path,
         "markdown": parsed["markdown"],
-        "refs_json": json_dumps({"codes": parsed["refs"], **check}),
+        "refs_json": json_dumps({"codes": codes, **check}),
         "model": getattr(res, "model", "") or provider.model_name or model_id or "",
         "prompt_tokens": int(getattr(res, "prompt_tokens", 0) or 0),
         "completion_tokens": int(getattr(res, "completion_tokens", 0) or 0),
@@ -412,7 +427,7 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     }
     _save(paper_id, path, payload)
     log.info("理解完成（%s，%s 路）：Markdown %d 字，引用 %d 条（有效 %d / 无效 %d / 跨路 %d）",
-             paper_id, path, len(payload["markdown"]), len(parsed["refs"]),
+             paper_id, path, len(payload["markdown"]), len(codes),
              len(check["resolved"]), len(check["invalid"]), len(check["cross_road"]))
     return get_understanding(paper_id, path)
 
@@ -529,7 +544,12 @@ def to_dict(row: Understanding) -> dict:
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
-    resolved = refs.get("resolved") or {}
+    resolved = dict(refs.get("resolved") or {})
+    # 老解读里"正文写了、refs_json 却没登记"的标号就地补齐：只要材料清单里还有它，
+    # 短码 → chunk id 的映射就还在，没理由让那一枚标号点不动（见 merge_ref_codes 的说明）。
+    for code in _scan_refs(row.markdown or ""):
+        if code not in resolved and code in by_code:
+            resolved[code] = by_code[code]["chunk_id"]
     # 一次 in(...) 查询同时给出"还在不在"与"落在哪个块"：分两次查就是两次 RTT。
     anchors = _chunk_anchors([cid for cid in resolved.values() if cid])
     live_refs, stale_refs = split_live_refs(
