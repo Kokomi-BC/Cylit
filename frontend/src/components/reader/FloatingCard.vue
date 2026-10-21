@@ -690,17 +690,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
           <AppIcon name="more" :size="13" />
         </button>
 
-        <button
-          v-if="!props.hideAnchor"
-          type="button"
-          class="fc-btn"
-          :class="{ on: props.anchored }"
-          :title="props.anchored ? '已锚定：鼠标移开也不关' : '锚定（鼠标移开也不关）'"
-          data-float-anchor
-          @click="emit('toggle-anchor')"
-        >
-          <AppIcon name="locate" :size="13" />
-        </button>
+        <!-- 锚定按钮整条删掉（用户口径 2026-12-04）：
+             ① 全仓没有任何父组件接 toggle-anchor，点了不会有任何反应（就是那枚按了没反应的键）；
+             ② 现在所有浮层都是自动锚定（点一下 / 拖标题 / 拖角就钉住，见各自的 onFloatPress），
+                手动开关本来就没有存在的理由；
+             ③ 它的图标还是 locate，与「定位到原文」一模一样，并排放只能让人点错。
+             anchored / hideAnchor 两个 prop 保留：调用点很多，删签名只会逼着处处改。 -->
         <!-- 头部**最右**（锚定之后、✕ 之前）：笔记框的删除键放这里（用户口径 2026-11-20）——
              删除与「✓ 保存 / 锚定」之间隔开一小段，免得点删除时误触保存。
              ⚠️ 只有父组件传了才渲染：解释浮层不传，头部与以前完全一致。 -->
@@ -875,7 +870,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
   /* 上 12px 留给浮在顶端的抓手药丸（见 .fc-grab）：按钮从 12px 才开始，不会被抓手盖住 */
   padding: 12px 8px 6px 12px;
   border-bottom: 1px solid var(--divider);
-  background: color-mix(in srgb, var(--text) 3%, transparent);
+  /* 底色透明（用户口径 2026-12-04：各浮层背景不一致）。以前这里有一层 3% 的文字色调，
+     笔记卡又在 ReaderView 里把它覆盖成透明 —— 同一屏两张卡，一张标题行发灰、一张是白的。
+     现在统一透明：只靠那条发丝线与正文分开。 */
   /* 标题栏就是"把手"：光标与不可选中都按拖动来给，免得拖的时候把标题拖蓝 */
   cursor: grab; user-select: none; touch-action: none;
 }

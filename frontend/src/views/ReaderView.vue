@@ -9326,10 +9326,14 @@ function renderMarkdown(text?: string | null) {
    而 `FloatingCard` 的 `.fc-btn` 是它自己的 scoped 样式，管不到这里，所以在这里整形。 */
 /* 头部图标钮：**26px 圆钮**，与对话浮层顶部那几枚（ReaderChat `.th-act`）同尺寸、同底色、同按下反馈
    （用户口径 2026-11-28 二十二轮）。语义只体现在**图标颜色**上：保存=主题色、删除=danger。 */
+/* 头部圆钮**与 FloatingCard 的 `.fc-btn` 逐条一致**（用户口径 2026-12-04：按钮样式不一致）：
+   25px、文字色 6% 的淡底、图标主题色、悬停只换底色、按下缩一格。
+   以前这里是 26px + `--bg-sunken`（实色托底）—— 与同一行里的 ⋯ / ✕ 差 1px 且底色更重，
+   并排就能看出「有两套按钮」。 */
 .np-head-save {
-  flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%;
-  background: var(--bg-sunken); color: var(--accent-text);
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--accent-text);
   cursor: pointer; transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .np-head-save:hover:not(:disabled) { background: var(--bg-hover); }
@@ -9341,12 +9345,12 @@ function renderMarkdown(text?: string | null) {
 /* 「定位到原文」：中性色 —— 它只是"跳过去看一眼"，不该与主题色的 ✓ 保存抢注意力 */
 /* 编辑态最左那枚返回箭头：几何照 `.np-head-save`（25px、中性淡底、按下缩一格） */
 .np-back {
-  flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center;
+  flex: none; width: 25px; height: 25px; display: inline-flex; align-items: center;
   justify-content: center; border: 0; border-radius: 50%; padding: 0;
   /* 头部左边距是 12（留给查看态那枚图标），箭头自己往左咬回 6px，
      与对话浮层里那枚返回键的 6px 位置对齐 */
   margin-left: -6px;
-  background: var(--bg-sunken); color: var(--text-dim);
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-dim);
   cursor: pointer; transition: background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
