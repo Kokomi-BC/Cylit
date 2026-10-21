@@ -7850,15 +7850,17 @@ function renderMarkdown(text?: string | null) {
         <!-- 中/EN 切换放在**标题栏**（用户口径 2026-12-04）：正文里那块太占高度，
              看起来也像一段内容。它是内容口径的开关，不属于头部那组动作按钮，
              所以单独设计（小分段钮），不与 .fc-btn 混在一起。 -->
-        <div v-if="peekViewOf(card).bilingual" class="cite-peek-lang seg sq">
-          <button type="button" :class="{ active: card.lang === 'zh' }" @click="card.lang = 'zh'">译文</button>
-          <button type="button" :class="{ active: card.lang === 'en' }" @click="card.lang = 'en'">原文</button>
+        <div v-if="peekViewOf(card).bilingual" class="cite-peek-lang" role="group" aria-label="显示译文或原文">
+          <button type="button" :class="{ active: card.lang === 'zh' }" title="显示译文"
+                  @click="card.lang = 'zh'">中</button>
+          <button type="button" :class="{ active: card.lang === 'en' }" title="显示原文"
+                  @click="card.lang = 'en'">英</button>
         </div>
       </template>
       <template #head-extra>
         <button
           type="button"
-          class="fc-btn"
+          class="cite-peek-jump"
           title="定位到原文"
           aria-label="定位到原文"
           data-peek-jump
@@ -8247,21 +8249,42 @@ function renderMarkdown(text?: string | null) {
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
 /* 原文对照：小一号、淡一档，只作参照，不抢正文的注意力 */
-/* 中/EN 切换：标题栏里的一枚小分段钮（只在两侧都真有内容时出现）。
-   不套 .fc-btn：那组是 26px 圆钮的动作键，这个是内容显示哪一侧的开关，
-   形状与语义都不同，混排会让标题行看起来像有四个同级动作（用户口径 2026-12-04）。 */
+/* 中/英 切换（用户口径 2026-12-04）：**胶囊里两个圆**，高度与右侧的圆钮同高（25px），
+   于是标题行右半边是一条对齐的线：胶囊 25 → 圆钮 25 → ✕ 25。
+   只留一个字（中 / 英）：两个字的「译文 / 原文」在这个宽度里既挤又抢注意力。
+   ⚠️ 插槽内容在**父组件作用域**里渲染，FloatingCard 的 scoped `.fc-btn` 到不了这儿 ——
+   所以这里必须把自己那套几何写全（笔记卡那排按钮当年就是因此另起了一套）。 */
 .cite-peek-lang {
-  flex: none; height: 20px; padding: 1px; gap: 0;
+  flex: none; display: inline-flex; align-items: center; gap: 1px; padding: 1px;
+  height: 25px; border-radius: 999px;
   background: color-mix(in srgb, var(--text) 6%, transparent);
-  border-radius: var(--radius-ctl);
 }
 .cite-peek-lang button {
-  height: 18px; padding: 0 7px; font-size: calc(10.5px * var(--ts, 1)); font-weight: 600;
-  border-radius: calc(var(--radius-ctl) - 2px); color: var(--text-dim);
+  width: 23px; height: 23px; padding: 0; border: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: calc(10.5px * var(--ts, 1)); font-weight: 700; line-height: 1;
+  color: var(--text-dim); background: transparent; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
+.cite-peek-lang button:hover { color: var(--accent-hover); }
 .cite-peek-lang button.active {
   background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1);
 }
+.cite-peek-lang button:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* 「定位到原文」：与 FloatingCard 里那排圆钮**逐条同规格**（25px / 文字色 6% 淡底 / 主题色图标 /
+   悬停只换底色 / 按下缩一格）。模板里不再挂 .fc-btn —— 它在子组件作用域，套不上。 */
+.cite-peek-jump {
+  flex: none; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--accent-text);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+.cite-peek-jump:hover { background: var(--bg-hover); color: var(--accent-hover); }
+.cite-peek-jump:active { transform: scale(.94); }
+.cite-peek-jump:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* 阅读器数据加载占位：整屏布局下正文区还是空的，把圈 + 文案**居中**摆（用 `.empty` 会贴在左上角）。
    高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
