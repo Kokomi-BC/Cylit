@@ -899,7 +899,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
               transform var(--dur-fast) var(--ease);
 }
-.fc-btn:hover { background: var(--bg-hover); color: var(--text); }
+/* 头部圆钮的**图标**走主题色（用户口径 2026-12-02）：锚定 / ⋯ / ✕ 那一排原来是中性灰，
+   换主题之后跟卡片对不上。底子仍是那层淡灰圆片，只有 glyph 跟着主题走。 */
+.fc-btn { color: var(--accent-text); }
+.fc-btn:hover { background: var(--bg-hover); color: var(--accent-hover); }
 .fc-btn:active { transform: scale(.94); }
 .fc-btn.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 /* 字号钮到头了（0.8 / 1.5）：淡下去并撤掉悬停反馈 —— 悬停还变亮的话，"点不动"会像卡住。

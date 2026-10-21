@@ -8314,8 +8314,11 @@ function renderMarkdown(text?: string | null) {
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  /* 浮窗右上角这两枚（回到侧栏 / 关闭）**图标走主题色**（用户口径 2026-12-02）：
+     与对话页那组 .th-act 同一口径 —— 底子仍是托底圆片，只染图标。 */
+  color: var(--accent-text);
 }
-.float-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
+.float-act:hover { background: var(--bg-elev); color: var(--accent-hover); box-shadow: var(--shadow-1); }
 .float-act:active { transform: scale(.94); }
 /* 两个下角都能改尺寸（用户口径 2026-11-19：去掉右下角那个直角图标，左右两个角都能拖）。
    角上**什么都不画**，只有光标形状（右下 nwse / 左下 nesw）与 20px 的命中区 ——
@@ -8929,10 +8932,11 @@ function renderMarkdown(text?: string | null) {
   .np-confirm, .np-confirm-box { animation: none; }
 }
 
-.np-head-save.edit { color: var(--text-dim); }
-.np-head-save.edit:hover:not(:disabled) { color: var(--text); }
-.np-head-save.locate { color: var(--text-dim); }
-.np-head-save.locate:hover:not(:disabled) { color: var(--text); }
+/* 头部这几枚（编辑 / 定位 / 保存）图标统一走**主题色**（用户口径 2026-12-02：浮层的按钮也要跟主题）。
+   删除那枚不在此列 —— 它有自己的 .danger（红），语义比"好看"重要。 */
+.np-head-save:not(.danger) { color: var(--accent-text); }
+.np-head-save.edit:hover:not(:disabled) { color: var(--accent-hover); }
+.np-head-save.locate:hover:not(:disabled) { color: var(--accent-hover); }
 
 /* 删除的二次确认**不再是一块贴在按钮上的 fixed 菜单**（用户口径 2026-11-28 十五轮）：
    它现在与「返回」那块确认走同一个卡内弹窗（`card.confirmDel` + `.np-confirm`），
