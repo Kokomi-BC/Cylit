@@ -24,6 +24,7 @@ from typing import Iterable
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.annotation import annotation_service as svc
+from backend.services.annotation.annotation_service import HIGHLIGHT_COLORS
 
 log = get_logger(__name__)
 
@@ -398,11 +399,24 @@ CSS_COLOR_NAMES = {
 
 
 def normalize_color(value: object) -> str:
-    """颜色词 / hex → 落库值：先认七个色名，再认 CSS 颜色词（落成 hex）。认不出才留空。"""
+    """颜色词 / 色码 → 落库值；**认不出就返回空串**（交给调色板分配）。
+
+    为什么认不出要给空串而不是原样透传：`_norm_color` 对未知写法会**静默退回 yellow**
+    （那是"取色器坏了"观感的来源）。这里先自己把好关 —— 认不出就当"没指定"，由宿主挑一个
+    当前用得最少的颜色，用户至少能看到一个像样的颜色，而不是一片黄。
+    """
     raw = str(value or "").strip().lower()
     if not raw:
         return ""
-    return CSS_COLOR_NAMES.get(raw, raw)
+    if raw in CSS_COLOR_NAMES:
+        return CSS_COLOR_NAMES[raw]
+    if raw in HIGHLIGHT_COLORS:
+        return raw
+    if re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", raw):
+        return raw
+    if re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", raw):
+        return raw
+    return ""
 
 
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
