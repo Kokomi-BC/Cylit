@@ -3,7 +3,7 @@
  *
  * 设计（"标签条只装论文"改版后）：
  * - **只有论文类路由才进标签条**（`reader` / `understand`，见 `isPaperRoute`）。首页、论文库、
- *   知识库、学习、笔记、设置、AI 对话这些**导航页不登记标签** —— 它们由左侧栏
+ *   知识库、学习、笔记、设置、AI 对话、回收站这些**导航页不登记标签** —— 它们由左侧栏
  *   （`components/AppSidebar.vue`）直接 `router.push` 切换，顶栏只回答"我开着哪几篇论文"。
  * - 一个标签 = 一个论文路由位置（`routeKey` = `name + params`）；同一篇论文重复打开不会开两个标签。
  * - 状态存 `localStorage`，刷新/重开浏览器后论文标签还在；论文标题这类"异步才知道"的信息
@@ -38,7 +38,7 @@ export const PAPER_ROUTES = ['reader', 'understand'] as const;
  * 导出是为了让别处（侧栏、外壳）判断"这条路线属于导航还是论文"，不必各写一份名单。
  */
 export const NAV_ROUTES: ReadonlySet<string> = new Set([
-  'home', 'library', 'knowledge', 'study', 'notes', 'settings', 'chat',
+  'home', 'library', 'knowledge', 'study', 'notes', 'settings', 'chat', 'trash',
 ]);
 
 /** 这个路由名是不是"按论文打开"的（= 该不该进标签条）。 */

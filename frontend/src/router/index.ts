@@ -31,6 +31,9 @@ const routes: RouteRecordRaw[] = [
   // AI 对话整页：**整套外壳都不显示**（侧栏与标签条都藏掉，它自己就是一屏），见 App.vue 的 shellMode。
   // 组件由另一个改动并行创建；滚动按普通页处理即可（不需要特殊分支）。
   { path: '/chat', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: 'AI 对话' } },
+  // 回收站：删除只是移入这里，彻底删除与清空都在这页 —— 所以它跟在「记与问」那几条后面，
+  // 而不是并进论文库（库页只该出现活着的论文）。
+  { path: '/trash', name: 'trash', component: () => import('@/views/TrashView.vue'), meta: { title: '回收站' } },
   // 模型管理并进了设置页的「模型」区。老标签页 / 老书签仍会打到 /models，
   // 保留 name 是为了让 localStorage 里那批旧标签还能解析出标题，路径本身直接重定向到对应分区。
   { path: '/models', name: 'models', redirect: '/settings#models' },

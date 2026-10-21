@@ -21,7 +21,6 @@ import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import PaperCard from '@/components/paper/PaperCard.vue';
 import PaperDetailModal from '@/components/paper/PaperDetailModal.vue';
-import { askConfirm } from '@/stores/confirm';
 import { debounce } from '@/utils/format';
 import {
   loadPapers, reportError, state, toast, withLoading,
@@ -29,8 +28,6 @@ import {
 import { assignFolder, createFolder, folderName, folderState, loadFolders } from '@/stores/folders';
 import { openTab } from '@/stores/tabs';
 import { fmtRelative, paperStatus } from '@/utils/format';
-import { confirmRegenerateInsight } from '@/utils/understanding';
-
 const router = useRouter();
 const route = useRoute();
 
@@ -48,7 +45,7 @@ const keyword = ref('');
 const statusFilter = ref('');
 const sort = ref('last_read_at');
 const order = ref('desc');
-/** 正在进行的行内操作键：`import` / `insight:<id>` / `tr:<id>` / `idx:<id>` / `del:<id>`。 */
+/** 正在进行的行内操作键：`import` / `tr:<id>` / `del:<id>`。 */
 const busyKey = ref('');
 /** 列表加载失败原因（非空时界面显式给出错误卡片 + 重试）。 */
 const loadError = ref('');
@@ -128,12 +125,18 @@ watch(() => route.query.folder, (q) => {
   void refresh();
 });
 
-/* 侧栏在同一页里删掉当前分类时也回落到「全部」，别留一个指向已删分类的空列表。
- * 盯 items/loading/error 三个信号：拉失败不等于分类被删（error 非空时一律不回落）。 */
-watch(() => [folderState.items.length, folderState.loading, folderState.error] as const, () => {
+/* 侧栏在同一页里删掉当前分类（或把最后一篇未分类论文归类 / 删掉）时也回落到「全部」，
+ * 别留一个指向已不存在分类的空列表。盯 items/unclassified/loading/error：拉失败不等于分类被删
+ * （error 非空时一律不回落）。 */
+watch(() => [
+  folderState.items.length, folderState.unclassified, folderState.loading, folderState.error,
+] as const, () => {
   const v = folderFilter.value;
-  if (!v || v === 'none' || folderState.loading || folderState.error) return;
-  if (folderState.items.some((f) => f.id === v)) return;
+  if (!v || folderState.loading || folderState.error) return;
+  // 'none' 不是分类项：未分类归零后侧栏与筛选里那一行都没了，筛选不能还停在它上面
+  if (v === 'none') {
+    if (folderState.unclassified > 0) return;
+  } else if (folderState.items.some((f) => f.id === v)) return;
   folderFilter.value = '';
   syncFolderQuery('');
   void refresh();
@@ -374,10 +377,11 @@ watch(keyword, () => refreshDebounced());
 onMounted(async () => {
   folderFilter.value = typeof route.query.folder === 'string' ? route.query.folder : '';
   await loadFolders(true);      // 分类可能在别的窗口被删，回落判断要拿最新一份
-  // 分类已被删（query 里那个 id 不在列表里）：回落到「全部」并清掉参数，否则页面会一直是空的
-  if (folderFilter.value && folderFilter.value !== 'none'
-    && !folderState.items.some((f) => f.id === folderFilter.value)) {
-    folderFilter.value = '';
+  // 分类已被删（query 里那个 id 不在列表里）或未分类已归零：回落到「全部」并清掉参数，
+  // 否则页面会一直停在空列表
+  if (folderFilter.value && (folderFilter.value === 'none'
+    ? folderState.unclassified === 0
+    : !folderState.items.some((f) => f.id === folderFilter.value))) {    folderFilter.value = '';
     syncFolderQuery('');
   }
   await refresh();
@@ -688,32 +692,6 @@ async function submitImport() {
 
 /* ------------------------------ 行内操作 ------------------------------ */
 
-/**
- * 「重新生成解读」：让后端把论文精读重跑一遍（`force: true`）。
- *
- * 已经有解读时先 HTML 原生 confirm 二次确认（与「重新翻译」同一风格）。这份口径**不写在这里**：
- * 论文库 / 阅读器 / 理解页三处都有这个动作，文案与"要不要问"的判据统一放在
- * `utils/understanding.ts`，三处必须一模一样。
- */
-async function askRegenerateInsight(paper: Paper) {
-  if (!(await confirmRegenerateInsight(paper.id, paper.title))) return;
-  await runInsight(paper);
-}
-
-async function runInsight(paper: Paper) {
-  busyKey.value = `insight:${paper.id}`;
-  try {
-    const res = await api.post<any>(`/papers/${paper.id}/understand`, { force: true });
-    toast(metaMessage(res) || '解读任务已排队', 'ok', 4200);
-    await refresh();
-  } catch (err) {
-    /* 后端 400 会给一句**可执行的人话**（"这篇论文还没有可理解的 chunk：先建索引（知识库页）再来理解"），
-     * 原样 toast：加前缀、或按普通失败静默掉，都会让这条指引失效（用户口径：不要静默失败）。 */
-    toast((err as Error)?.message ?? String(err), 'error', 6000);
-    console.warn('重新生成解读失败', err);
-  } finally { busyKey.value = ''; }
-}
-
 /** 后端 `envelope(message=…)` 的文案（client 挂在 `__meta` 上）——直接用它，前后端话术就不再各写一套 */
 function metaMessage(res: any): string {
   return String(res?.__meta?.message ?? '');
@@ -736,24 +714,6 @@ async function runTranslate(paper: Paper, mode: TranslateMode = 'resume') {
   } catch (err) { reportError(err, '触发翻译失败'); } finally { busyKey.value = ''; }
 }
 
-/** 从知识库移除：清向量 + 清 chunk 元数据（论文、译文、笔记、高亮都不动）。
- *  「纳入」那个开关已经取消 —— **建立索引即纳入**（用户口径：合并冗余说法与按钮）；
- *  「建立索引」按钮本身也下线了：翻译跑完自动建索引，所以这里告诉用户怎么加回来。 */
-async function removeFromKb(paper: Paper) {
-  if (!(await askConfirm({
-    title: `从知识库移除《${paper.title}》？`,
-    body: '会清掉它的 chunk 元数据与向量（论文、译文、笔记、高亮不受影响）。'
-      + '重新翻译一次（或去「设置 → 索引管理」）即可加回来。',
-    confirmLabel: '移除',
-  }))) return;
-  busyKey.value = `remove:${paper.id}`;
-  try {
-    const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
-    toast(`已从知识库移除（清 ${res?.removed_chunks ?? 0} 条 chunk）`, 'ok', 3200);
-    await refresh();
-  } catch (err) { reportError(err, '移除失败'); } finally { busyKey.value = ''; }
-}
-
 interface DeleteResult {
   steps?: unknown[];
 }
@@ -769,60 +729,22 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 次要操作（重新翻译 / 重新生成解读 / 知识库 / 编辑 / 删除）收进「⋯」菜单：
- * 卡片上只留「阅读（主）+ 翻译（次）」两个按钮 —— 翻译与解析**不再并列暴露**（选项 B）：
- * 未解析时点「翻译」由后端先把解析串起来（解析完自动接着翻译）。
- *
- * ⚠️ 「重新解析」已按用户口径下线（解析由翻译入口自动串起来，单独重解析只会让产物半新半旧）；
- * 原位置换成「重新生成解读」（与阅读器工具栏「⋯」里那一项同名，同一个后端动作）。
- *
- * ⚠️ 「建立索引（纳入知识库）」也已按用户口径**下线**（2026-09-27）：翻译任务完成后由后端
- * 自动开 INDEX 任务，索引完成后再自动生成两路解读（见 `handlers._chain_index` /
- * `_chain_understand`）。要手动重建仍可在「设置 → 索引管理」里做（那是排障入口）。
+/** 卡片「⋯」菜单只剩三项：移到分类 / 编辑元数据 / 删除（移入回收站）。
+ *  重新翻译、重新生成解读、从知识库移除、彻底删除都已下线 —— 重译在卡片主按钮与批量条上，
+ *  彻底删除搬进了回收站；留着点不到实现的分支只会让人以为菜单还能做别的事。
  */
-function rowMenu(p: Paper): RowAction[] {
-  const busy = (k: string) => busyKey.value === `${k}:${p.id}`;
+function rowMenu(): RowAction[] {
   return [
-    ...(stage(p) === 'translated'
-      ? [{ key: 'retranslate', label: '重新翻译', icon: 'refresh' } as RowAction]
-      : []),
-    { key: 'insight', label: '重新生成解读', icon: 'sparkle', disabled: busy('insight') },
-    {
-      key: 'remove-kb',
-      label: '从知识库移除',
-      icon: 'link-off',
-      danger: true,
-      disabled: busy('remove') || !p.in_knowledge_base,
-    },
     { key: 'move', label: '移到分类', icon: 'tag' },
     { key: 'edit', label: '编辑元数据', icon: 'edit' },
     { key: 'delete', label: '删除（移入回收站）', icon: 'trash', danger: true },
-    { key: 'purge', label: '彻底删除', icon: 'trash', danger: true },
   ];
 }
 
-/** 重新翻译（忽略已有产物、按页重跑）：用**HTML 原生 confirm** 二次确认（用户口径）。
- *  删除那条路仍然走站内弹窗（不可逆、还要显示论文名与影响范围）；重译只是"重跑一遍"，
- *  原生确认足够，也不用为一个确认框维护状态。 */
-async function askRetranslate(p: Paper) {
-  const pages = p.translate_total || 0;
-  const ok = await askConfirm({
-    title: `重新翻译《${p.title || p.id}》？`,
-    body: `会忽略已有的 ${pages} 页译文，从第 1 页重跑（现有对齐结果会被覆盖）。`,
-    confirmLabel: '重新翻译',
-  });
-  if (!ok) return;
-  void runTranslate(p, 'retranslate');
-}
-
 function onRowAction(p: Paper, key: string) {
-  if (key === 'retranslate') { askRetranslate(p); return; }
-  if (key === 'insight') { void askRegenerateInsight(p); return; }
-  if (key === 'remove-kb') { removeFromKb(p); return; }
   if (key === 'move') { openMove([p.id]); return; }
   if (key === 'edit') { openEdit(p); return; }
-  if (key === 'delete') { askRemove(p, false); return; }
-  if (key === 'purge') { askRemove(p, true); }
+  if (key === 'delete') { askRemove(p); }
 }
 
 /* --------------------------- 流水线状态（前后端对齐） --------------------------- */
@@ -923,32 +845,28 @@ function runPipeline(p: Paper) {
 
 interface ConfirmState {
   open: boolean;
-  hard: boolean;
   paper: Paper | null;
 }
 
-const confirmBox = reactive<ConfirmState>({ open: false, hard: false, paper: null });
+const confirmBox = reactive<ConfirmState>({ open: false, paper: null });
 
 /** 删除不可逆：用站内弹窗确认（不再用原生 window.confirm，风格与动效统一）。 */
-function askRemove(paper: Paper, hard = false) {
+function askRemove(paper: Paper) {
   confirmBox.paper = paper;
-  confirmBox.hard = hard;
   confirmBox.open = true;
 }
 
 async function doRemove() {
   const p = confirmBox.paper;
   if (!p) return;
-  const hard = confirmBox.hard;
   confirmBox.open = false;
   busyKey.value = `del:${p.id}`;
   try {
-    const res = await api.del<DeleteResult>(`/papers/${p.id}`, { hard });
-    toast(`${hard ? '已彻底删除' : '已删除'} ${p.id}${res?.steps?.length ? `（${res.steps.length} 步）` : ''}`, 'ok');
+    const res = await api.del<DeleteResult>(`/papers/${p.id}`, { hard: false });
+    toast(`已删除 ${p.id}${res?.steps?.length ? `（${res.steps.length} 步）` : ''}`, 'ok');
     await refresh();
   } catch (err) { reportError(err, '删除失败'); } finally { busyKey.value = ''; confirmBox.paper = null; }
 }
-
 /* ------------------------------ 批量操作 ------------------------------
  * 后端只有单篇接口（`DELETE /papers/{id}`、`POST /papers/{id}/translate`），
  * 所以批量 = 前端**逐篇顺序发**，并逐篇吞掉失败 —— 一篇失败不该把剩下九篇也停掉。
@@ -1230,7 +1148,8 @@ async function submitEdit() {
             <div class="lib-pop-label">分类</div>
             <div class="lib-pills">
               <button type="button" class="lib-pill" :class="{ on: folderFilter === '' }" @click="setFolder('')">全部</button>
-              <button type="button" class="lib-pill" :class="{ on: folderFilter === 'none' }" @click="setFolder('none')">未分类</button>
+              <!-- 未分类为 0 时不出现（与侧栏同口径），否则选了它就是一面空列表 -->
+              <button v-if="folderState.unclassified > 0" type="button" class="lib-pill" :class="{ on: folderFilter === 'none' }" @click="setFolder('none')">未分类</button>
               <button
                 v-for="f in folderState.items"
                 :key="f.id"
@@ -1400,7 +1319,7 @@ async function submitEdit() {
           :action-label="pipelineLabel(p)"
           :show-action="stage(p) !== 'translated'"
           :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
-          :menu="rowMenu(p)"
+          :menu="rowMenu()"
           :batch="batchMode"
           :selected="selectedIds.includes(p.id)"
           @open="detailId = p.id"
@@ -1471,7 +1390,7 @@ async function submitEdit() {
       :open="batchBox.open"
       :title="batchBox.kind === 'delete' ? '批量删除论文' : '批量翻译'"
       :body="batchBox.kind === 'delete'
-        ? `会把选中的 ${selectedCount} 篇移入 data/trash（可从回收站恢复），并清理索引、知识库记录与各自的对话历史。`
+        ? `会把选中的 ${selectedCount} 篇移入回收站（之后可在回收站逐篇恢复论文与 PDF）；但批注、高亮、笔记、对话历史、阅读进度与解读产物在删除时就一并清掉，恢复也带不回来。`
         : `会为选中的 ${selectedCount} 篇各起一个翻译任务；已在跑或已译完的会跳过。`"
       :confirm-label="batchBox.kind === 'delete' ? '删除' : '开始翻译'"
       :danger="batchBox.kind === 'delete'"
@@ -1482,12 +1401,10 @@ async function submitEdit() {
     <!-- 删除确认（站内弹窗，不用原生 confirm） -->
     <ConfirmModal
       :open="confirmBox.open"
-      :title="confirmBox.hard ? '彻底删除论文' : '删除论文'"
-      :body="confirmBox.hard
-        ? '这一步不可撤销：数据库记录、论文文件，以及它的对话历史 / 划词解释 / 高亮 / 笔记都会被删除。'
-        : '会清理索引、知识库记录与这篇论文的对话历史（含划词解释、高亮、笔记）；PDF 文件移入 data/trash（可从回收站恢复，但历史不会回来）。'"
+      title="删除论文"
+      :body="'会移入回收站（之后可在回收站恢复论文与 PDF）；但批注、高亮、笔记、对话历史、阅读进度与解读产物在删除时就一并清掉，恢复也带不回来。'"
       :target="confirmBox.paper?.title || ''"
-      :confirm-label="confirmBox.hard ? '彻底删除' : '删除'"
+      confirm-label="删除"
       danger
       @confirm="doRemove"
       @cancel="confirmBox.open = false"

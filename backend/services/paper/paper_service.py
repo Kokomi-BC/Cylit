@@ -6,6 +6,7 @@ MySQL 软删 → 清向量索引 → 取消任务 → 清 chunk 元数据 → �
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -744,6 +745,118 @@ def delete_paper(paper_id: str, *, hard: bool = False) -> dict:
     log.info("删除论文 %s：%s", paper_id, "；".join(steps))
     return {"paper_id": paper_id, "hard": hard, "steps": steps, "trash": str(trash)
             if trash else None, "was": p["title"]}
+
+
+# --------------------------------------------------------------------------
+# 回收站：软删论文的列表 / 恢复 / 清空
+# --------------------------------------------------------------------------
+
+#: trash 目录名 = `<paper_id>-<ts_compact()>`；论文 id 自己也可能带 `-`，只能按尾部时间戳切
+_TRASH_NAME = re.compile(r"^(?P<paper_id>.+)-(?P<ts>\d{8}-\d{6})$")
+
+
+def _trash_dirs(s=None) -> dict[str, list[Path]]:
+    """`data/trash` 按论文 id 归组的目录，每组新→旧（列表与恢复共用这一份解析）。"""
+    s = s or get_settings()
+    found: list[tuple[str, str, Path]] = []
+    if s.trash_dir.is_dir():
+        for entry in s.trash_dir.iterdir():
+            m = _TRASH_NAME.match(entry.name)
+            if m and entry.is_dir():
+                found.append((m.group("paper_id"), m.group("ts"), entry))
+    found.sort(key=lambda t: t[1], reverse=True)
+    out: dict[str, list[Path]] = {}
+    for pid, _ts, path in found:
+        out.setdefault(pid, []).append(path)
+    return out
+
+
+def list_trash() -> dict:
+    """回收站列表：只列 `deleted_at` 非空的论文，最后删的排最前。"""
+    s = get_settings()
+    dirs = _trash_dirs(s)
+    with session_scope() as sess:
+        rows = (sess.query(Paper).filter(Paper.deleted_at.isnot(None))
+                .order_by(Paper.deleted_at.desc()).all())
+        items = [{"id": r.id, "title": r.title, "status": r.status,
+                  "page_count": r.page_count, "deleted_at": iso_utc(r.deleted_at),
+                  "folder_id": r.folder_id, "has_files": bool(dirs.get(r.id))}
+                 for r in rows]
+    return {"items": items, "total": len(items)}
+
+
+def _reopen_index(paper_id: str) -> bool:
+    """按自动索引那处的口径重开 INDEX 任务（与 `handlers._chain_index` 同类型、同队列）。"""
+    try:
+        task, _ = task_service.get_or_create(
+            "INDEX", "knowledge", paper_id,
+            params={"rebuild": True, "auto": "trash_restore"},
+            total_items=0, message="从回收站恢复，重建索引（chunk + 向量）")
+        log.info("回收站恢复 → 重开索引：%s（任务 %s）", paper_id, task.get("id"))
+        return True
+    except Exception as exc:  # noqa: BLE001 —— 索引没起来不该让恢复整体失败
+        log.warning("恢复后的索引任务没能启动：%s", exc)
+        return False
+
+
+def restore_paper(paper_id: str) -> dict:
+    """从回收站恢复：文件搬回 `data/papers/<id>` + 清 `deleted_at` + 重开索引。
+
+    **批注 / 笔记 / 对话 / 解读产物在软删那一刻就清掉了，恢复带不回来** ——
+    能回来的只有 PDF、页级解析产物，以及库里的块 / 译文 / 分块行。
+    """
+    s = get_settings()
+    p = get_paper(paper_id, include_deleted=True)     # 不存在 → 404
+    if not p.get("deleted_at"):
+        raise ValidationError("这篇论文不在回收站里")
+
+    steps: list[str] = []
+    target = s.paper_dir(paper_id)
+    dirs = _trash_dirs(s).get(paper_id) or []
+    if dirs and not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dirs[0]), str(target))
+        steps.append(f"fs: trash/{dirs[0].name} → papers/{paper_id}")
+    files = target.exists()
+    if not files:
+        steps.append("fs: trash 里没有这篇的文件，只恢复元数据")
+
+    with session_scope() as sess:
+        row = sess.get(Paper, paper_id)
+        if row is not None:
+            # 索引在软删时已删掉，**不回填 in_knowledge_base**：否则界面说"在知识库"、检索却永远查不到
+            row.deleted_at = None
+        steps.append("mysql: 清 deleted_at")
+
+    indexed = False
+    if str(p.get("status") or "") in ("parsed", "translated"):
+        indexed = _reopen_index(paper_id)
+        steps.append("task: " + ("重开 INDEX 任务（chunk + 向量）" if indexed
+                                 else "INDEX 任务没能启动（只记日志，不影响恢复）"))
+    log.info("回收站恢复 %s：%s", paper_id, "；".join(steps))
+    return {"paper_id": paper_id, "restored": True, "steps": steps,
+            "files": files, "indexed": indexed}
+
+
+def clear_trash() -> dict:
+    """清空回收站：逐篇彻底删除，一篇失败不中断其余。"""
+    s = get_settings()
+    dirs = _trash_dirs(s)
+    failed: list[dict] = []
+    purged = 0
+    for item in list_trash()["items"]:
+        pid = item["id"]
+        try:
+            delete_paper(pid, hard=True)
+            # 已软删论文的目录在早先那次软删就已进了 trash，hard 那条路只删"它这次刚移入的"那份
+            for d in dirs.get(pid) or []:
+                shutil.rmtree(d, ignore_errors=True)
+            purged += 1
+        except Exception as exc:  # noqa: BLE001 —— 一篇失败不该拖死整批
+            log.warning("清空回收站时删除 %s 失败：%s", pid, exc)
+            failed.append({"paper_id": pid, "error": str(exc)})
+    log.info("清空回收站：彻底删除 %s 篇，失败 %s 篇", purged, len(failed))
+    return {"purged": purged, "failed": failed}
 
 
 def _drop_vector_index(paper_id: str) -> int:

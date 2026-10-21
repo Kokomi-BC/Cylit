@@ -122,6 +122,30 @@ async def assign_papers_folder(request: Request, payload: dict = Body(...)):
                     request=request)
 
 
+@router.get("/papers/trash")
+async def list_trash(request: Request):
+    """回收站列表（只含已软删的论文），最后删的排最前。
+
+    ⚠️ 这个路由必须排在 `/papers/{paper_id}` **之前**：放到后面时 `trash` 会被当成论文 id 吃掉。
+    """
+    return envelope(paper_service.list_trash(), request=request)
+
+
+@router.post("/papers/trash/clear")
+async def clear_trash(request: Request):
+    """清空回收站：逐篇彻底删除（trash 目录 + MySQL 行），返回 `purged` 与失败明细。"""
+    return envelope(paper_service.clear_trash(), request=request)
+
+
+@router.post("/papers/{paper_id}/restore")
+async def restore_paper(paper_id: str, request: Request):
+    """从回收站恢复（文件搬回 + 清 deleted_at + 按需重开索引）。
+
+    批注 / 笔记 / 对话 / 解读产物在软删时就已清掉，恢复不会带回。
+    """
+    return envelope(paper_service.restore_paper(paper_id), request=request)
+
+
 @router.get("/papers/{paper_id}")
 async def paper_detail(paper_id: str, request: Request):
     """论文详情：元数据 + **参考文献**（列表页不带它 —— 一篇论文几十上百条，太重）。"""
