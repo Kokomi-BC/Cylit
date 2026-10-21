@@ -399,7 +399,8 @@ function onClear() {
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease);
 }
-.ss-chip:hover { color: var(--text); }
+/* 悬浮走主题色（用户口径 2026-12-03）：与侧栏那批图标钮同一口径，别在悬浮时变正文黑 */
+.ss-chip:hover { color: var(--accent-hover); }
 /* 「语义」是另一种检索范式：亮一块强调色底，提醒"现在不是按字面搜"
    （与 `.btn.on` 同一种"开关开着"的语义，见 base.css） */
 .ss-chip.on { background: var(--accent-soft); box-shadow: none; color: var(--accent-text); font-weight: 600; }

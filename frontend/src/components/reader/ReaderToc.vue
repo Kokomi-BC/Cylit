@@ -125,7 +125,8 @@ const items = computed(() =>
   border: 0; background: transparent; cursor: pointer; color: var(--text-faint);
   padding: 1px 0 0; line-height: 1; width: 15px; display: inline-flex; justify-content: center;
 }
-.caret:hover { color: var(--text); }
+/* 悬浮走主题色（用户口径 2026-12-03）：侧栏里这一排小控件都该是主题色系 */
+.caret:hover { color: var(--accent-hover); }
 .caret-space { display: inline-block; width: 15px; flex: none; }
 .depth-0 { padding-left: 6px; }
 .depth-1 { padding-left: 15px; }

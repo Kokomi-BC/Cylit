@@ -850,7 +850,8 @@ function onMore(key: string, r: FeedRow) {
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
     box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
-.multi-btn:hover { background: var(--bg-hover); color: var(--text); box-shadow: var(--shadow-1); }
+/* 悬浮走主题色（用户口径 2026-12-03），与侧栏那批图标钮同一口径 */
+.multi-btn:hover { background: var(--bg-hover); color: var(--accent-hover); box-shadow: var(--shadow-1); }
 .multi-btn:active { transform: scale(.94); }
 .multi-btn.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
 /* 条数文字已移除（用户口径 2026-11-21：左上角只留那枚排序图标钮）。 */
@@ -973,7 +974,7 @@ function onMore(key: string, r: FeedRow) {
   color: var(--text-faint); display: inline-flex; align-items: center; justify-content: center;
   border-radius: var(--radius-ctl);
 }
-.tick:hover { color: var(--text); background: var(--bg-hover); }
+.tick:hover { color: var(--accent-hover); background: var(--bg-hover); }
 .tick.on { color: var(--accent); }
 /* 选中的卡片：主题色淡底 + 亮一档描边（与对话页行上的选中语义一致） */
 .item.note-row.pick {

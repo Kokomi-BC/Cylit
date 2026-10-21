@@ -8311,6 +8311,13 @@ function renderMarkdown(text?: string | null) {
 /* 胶囊里紧凑一档：32px 的控件缩到 28px，整条胶囊能短 ~10%，仍然是可点尺寸 */
 .reader-capsule .cap-group .btn.icon { width: 28px; height: 28px; }
 .reader-capsule .cap-group .seg { height: 28px; }
+/* 胶囊里的**文字**（原文 / 译文 / 对照、Aa 那几枚）悬浮也走主题色（用户口径 2026-12-03）。
+   base.css 的 .seg button:hover 与 .btn:hover 都把字改成正文黑 —— 在这枚玻璃胶囊上，
+   黑字是最扎眼的一种颜色，跟旁边已经染成主题色的图标完全不在一条线上。
+   ⚠️ 排掉 .active / .primary / .tool-on / 批注工具：选中项与实底钮的语义不能被 hover 抹平，
+   画笔与荧光笔更是各有自己的墨色（那两条带 !important）。 */
+.reader-capsule .cap-group .seg button:not(.active):hover { color: var(--accent-hover); }
+.reader-capsule .cap-group .btn:not(.icon):not(.primary):not(.tool-on):hover:not(:disabled) { color: var(--accent-hover); }
 .reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: calc(12px * var(--ts, 1)); }
 .reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .reader-capsule .cap-group .badge { height: 20px; }
@@ -8684,7 +8691,7 @@ function renderMarkdown(text?: string | null) {
   font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.aside-pip-btn:hover { background: var(--bg-hover); color: var(--text); }
+.aside-pip-btn:hover { background: var(--bg-hover); color: var(--accent-hover); }
 /* ================= 对话容器：**一个常驻实例 + 两种定位**（本轮三修）=================
    DOM 从不搬家（不 Teleport / 不 v-if / 不 KeepAlive），只切两样东西：
      · `.float` 类：定位与卡片外框；
@@ -8788,7 +8795,10 @@ function renderMarkdown(text?: string | null) {
   gap: 1px; flex: none; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.side-tab:hover { background: var(--bg-hover); color: var(--text); }
+/* 悬浮走主题色（用户口径 2026-12-03：鼠标停在侧栏页签上时文字要变主题色，不是正文黑）。
+   选中态是 --accent-text，悬浮用深一档的 --accent-hover —— 两者都离得开正文色，
+   又不会让人误以为已经选中了这一页。 */
+.side-tab:hover { background: var(--bg-hover); color: var(--accent-hover); }
 /* 汉字**只在当前页显示**（用户口径：其余页签移除汉字、只留图标，整条胶囊因此紧凑一截）；
    当前页那枚**横向放宽 + 文字缩小一号** —— 图标在上、文字在下时，窄胶囊会把内容挤成一小团，
    加宽并收小字号才像个"选中态"。 */
