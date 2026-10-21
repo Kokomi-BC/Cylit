@@ -295,14 +295,19 @@ _SHARED_ROAD = "shared"
 
 
 def _road_rank(cand: dict, road: str | None) -> int:
-    """候选与这一路的 road 匹配度：0 = 本路 / 共用，1 = 不匹配或没有 road 字段。
+    """候选与这一路的 road 匹配度：0 = 本路 / 共用，1 = 明确属于另一路。
 
-    没有 road 字段的老索引**保留**在候选里（不能因为缺字段就把老库判死），但排在
-    匹配的后面 —— 这是 ③ 那一档，只在 ①②（集合相等 / 交集）打平时才起作用。
+    ⚠️ `road` 为**空串**与"没有这个字段"都按**共用**处理（0）：图表公式这类与语言无关的块，
+    入库时 metadata.road 常常是 `""` 而不是 `"shared"`。把它们当"不匹配"会踩到一个真实的坑 ——
+    公式块与它所在的行**共用同一批 pids**，集合相等时若按 road 先裁决，公式块会被同行的
+    unit 块挤掉，于是引用从"精确到这条公式"退回"精确到这一行"（线上 A045 就是这样变钝的）。
+    排序里 ③ 只在 ①② 打平时起作用，所以这一修正不会推翻"集合相等优先"。
     """
     if not road:
         return 0                          # 路未知（老中间文件）：不偏袒
-    cand_road = str(cand.get("road") or "")
+    cand_road = str(cand.get("road") or "").strip()
+    if not cand_road:
+        return 0                          # 空串 = 与语言无关的共用块，算本路
     return 0 if cand_road in (road, _SHARED_ROAD) else 1
 
 

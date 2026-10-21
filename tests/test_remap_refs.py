@@ -523,3 +523,18 @@ def test_capture_skips_inventory_code_never_cited(tmp_path) -> None:
                      captured_at="2026-01-01T00:00:00")
     codes = got["doc"]["paths"]["a"]["codes"]
     assert set(codes) == {"A001"}, "没被引用的 inventory 短码不许进 resolved"
+
+
+def test_shared_road_as_empty_string_keeps_formula_precision() -> None:
+    """真实坑：共用块的 metadata.road 常常是空串，不能当"另一路"。
+
+    公式块与它所在的行共用同一批 pids ⇒ 集合相等时两条候选打平；若把空串 road 判成不匹配，
+    公式块会被同行的 unit 块挤掉，引用就从"精确到这条公式"退回"精确到这一行"（线上 A045）。
+    """
+    pids = ["r-1"]
+    unit = {"chunk_id": "p:a:unit:p004-04-p004-04:en", "chunk_type": "unit",
+            "page": 4, "road": "a", "pids": pids}
+    formula = {"chunk_id": "p:formula:f004-0041:any", "chunk_type": "formula",
+               "page": 4, "road": "", "pids": pids}
+    picked = rm.choose_chunk(pids, [unit, formula], chunk_type="formula", page=4, road="a")
+    assert picked["chunk_id"] == "p:formula:f004-0041:any", "共用块（road 空串）要按本路算，chunk_type 才能决胜"
