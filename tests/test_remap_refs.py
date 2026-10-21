@@ -165,12 +165,17 @@ def test_road_filter_picks_same_road_for_identical_pids() -> None:
 
 
 def test_candidates_without_road_still_map() -> None:
-    """老索引的候选没有 road 字段：照样能选中，只是排在"road 匹配"的后面。"""
+    """老索引的候选**没有 road 这个键**：照样能选中，只是排在"road 已知"的后面。
+
+    注意与「road 是空串」区分：空串是**共用块（图表公式）**，算本路（见
+    test_shared_road_as_empty_string_keeps_formula_precision）；键根本不存在才是"老索引、未知"。
+    """
     plain = rm.choose_chunk(["r-1", "r-2"], [_cand("c-old", ["r-1", "r-2"])], road="a")
     assert plain is not None and plain["chunk_id"] == "c-old"
 
-    mixed = [_cand("p:a:unit:u1", ["r-1", "r-2"], road="a"),
-             _cand("c-old-no-road", ["r-1", "r-2"])]
+    no_road_key = {"chunk_id": "c-old-no-road", "pids": ["r-1", "r-2"],
+                   "chunk_type": "unit", "page": 1}        # ← 故意不带 road 键
+    mixed = [_cand("p:a:unit:u1", ["r-1", "r-2"], road="a"), no_road_key]
     got = rm.choose_chunk(["r-1", "r-2"], mixed, road="a")
     order_flipped = rm.choose_chunk(["r-1", "r-2"], list(reversed(mixed)), road="a")
     assert got["chunk_id"] == order_flipped["chunk_id"] == "p:a:unit:u1"
