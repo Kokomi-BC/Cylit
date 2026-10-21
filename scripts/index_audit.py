@@ -248,6 +248,41 @@ def anchor_status(block_id: str, anchors: dict) -> str:
     return "unknown"
 
 
+def check_break_walls(chunks: list[dict]) -> list[dict]:
+    """检查 2b：断点是否真的落在**块的边界**上（`break_walls` 的不变量）。
+
+    判据：正文块的 ``metadata.anchor_rows``（本路断点行）里，除了**首行**，不许有别的行 ——
+    一旦出现，就说明这个块把模型的语义断点吞进了块内部，分块层又退回"块边界只看 TOC + 长度"
+    （改造前的实测：跨断点块 27 个，锚点被吞 43%）。
+
+    没有 ``anchor_rows`` 的块（改造前建的索引）跳过不计：那种索引确实不知道断点在哪，
+    报 error 只会让人去修一件已经不存在的事。
+    """
+    out: list[dict] = []
+    bad: list[str] = []
+    checked = legacy = 0
+    for chunk in chunks:
+        if str(chunk.get("chunk_type") or "") != "text":
+            continue
+        meta = chunk.get("metadata") or {}
+        if "anchor_rows" not in meta:
+            legacy += 1
+            continue
+        checked += 1
+        anchors = {str(x) for x in (meta.get("anchor_rows") or [])}
+        interior = [rid for rid in _row_ids_of(chunk)[1:] if rid in anchors]
+        if interior:
+            bad.append(f"{chunk.get('id')}:{_SEP.join(interior[:2])}")
+    if bad:
+        out.append(finding("error", "break_walls",
+                           f"{len(bad)} 个正文块内部含断点行（断点必须在块首）：{_sample(bad)}"))
+    elif checked:
+        note = f"（另有 {legacy} 个旧块无 anchor_rows，跳过）" if legacy else ""
+        out.append(finding("ok", "break_walls",
+                           f"{checked} 个正文块的断点都落在块首{note}"))
+    return out
+
+
 def check_anchors(chunks: list[dict], anchors: dict) -> list[dict]:
     """每个 chunk 的 ``block_id`` 能不能落到正文行；``row-x`` 这类恒等假 id 直接 error。
 
@@ -1026,6 +1061,7 @@ def audit_paper(paper_id: str) -> dict:
         else:
             findings.append(finding("error", "anchor", "读不到解析块，锚点无从校验"))
         _run(findings, "index_hygiene", check_index_hygiene, chunks)
+        _run(findings, "break_walls", check_break_walls, chunks)
 
     # 注册表**只读一次**：行覆盖率那组与解读引用的 pids 那组共用同一份。
     # ``pages is None`` 时那两组都无从判定，别白读一次文件。

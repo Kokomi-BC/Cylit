@@ -10,7 +10,9 @@
    ``row_ids`` 跨页只进统计（不产生发现）；
 5. 行身份（pid）覆盖率：缺 pid、pid 1:1 冲突（跨页 / 同页）、孤儿 pid、retired 复用
    → error；注册表为空（还没生成）、注册表里有身份却没活行 → 只 warn；
-6. 全部健康时**零发现**（否则"有发现"这个信号本身就没有意义）。
+6. 断点硬边界：正文块内部（首行之外）出现断点行 → error；断点在块首 → ok；
+   旧索引没有 ``anchor_rows`` → 跳过（不假装查过）；
+7. 全部健康时**零发现**（否则"有发现"这个信号本身就没有意义）。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from scripts.index_audit import (
     _run,
     base_id,
     check_anchors,
+    check_break_walls,
     check_chunk_pids,
     check_index_hygiene,
     check_row_coverage,
@@ -540,4 +543,37 @@ def test_chunk_pids_skip_unknown_check_when_registry_is_empty():
     chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
                      row_ids=["p001-00"], pids=["r-1"])]
     assert check_chunk_pids(chunks, {}) == []
+
+
+# --------------------------------------------------------------------------
+# 8. 断点硬边界：断点行必须在块首
+# --------------------------------------------------------------------------
+
+
+def test_break_walls_flags_a_break_inside_the_chunk():
+    """断点被吞进块内部 → error（分块层退回"只看 TOC + 长度"就是这个信号）。"""
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00", "p001-01"], anchor_rows=["p001-01"])]
+    findings = check_break_walls(chunks)
+    assert _levels(findings) == ["error"]
+    assert "p001-01" in findings[0]["detail"]
+
+
+def test_break_walls_accepts_a_break_at_the_chunk_head():
+    chunks = [_chunk("p:a:text:p001-01", chunk_type="text",
+                     row_ids=["p001-01", "p001-02"], anchor_rows=["p001-01"])]
+    findings = check_break_walls(chunks)
+    assert _levels(findings) == ["ok"]
+
+
+def test_break_walls_skips_chunks_built_before_anchor_rows_existed():
+    """旧索引没有 anchor_rows（那时断点还不进库）：不报，也不假装查过。"""
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text", row_ids=["p001-00"])]
+    assert check_break_walls(chunks) == []
+
+
+def test_break_walls_ignores_non_text_chunks():
+    chunks = [_chunk("p:formula:f001", chunk_type="formula",
+                     row_ids=["p001-00", "p001-01"], anchor_rows=["p001-01"])]
+    assert check_break_walls(chunks) == []
 
