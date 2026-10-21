@@ -2396,15 +2396,20 @@ function formulaSig(text: string): string {
 /** 在这一行里找那条公式的 KaTeX（找不到就返回 null，调用方退回整行） */
 function findFormula(node: HTMLElement, latex: string): HTMLElement | null {
   const want = formulaSig(latex);
-  if (want.length < 4) return null;
+  /* 太短的 LaTeX 不做匹配：行内到处是 x、d、q 这种单符号公式，撞车比命中多。
+     （实测把「d」当成命中，标到了一枚无关的行内符号上。） */
+  if (want.length < 12) return null;
+  let best: { el: HTMLElement; score: number } | null = null;
   for (const hit of Array.from(node.querySelectorAll<HTMLElement>('.katex'))) {
     const tex = hit.querySelector('annotation')?.textContent ?? hit.textContent ?? '';
     const sig = formulaSig(tex);
-    if (sig && (sig.includes(want) || want.includes(sig))) {
-      return hit.closest<HTMLElement>('.katex-display') || hit;
-    }
+    if (sig.length < 12) continue;
+    let score = 0;
+    if (sig === want) score = 1e6;
+    else if (sig.includes(want) || want.includes(sig)) score = Math.min(sig.length, want.length);
+    if (score > (best?.score ?? 0)) best = { el: hit.closest<HTMLElement>('.katex-display') || hit, score };
   }
-  return null;
+  return best ? best.el : null;
 }
 
 let targetFlashTimer: ReturnType<typeof setTimeout> | null = null;
