@@ -86,10 +86,10 @@ function setOpen(id: string, value: boolean): void {
   persist();
 }
 
-/** 展开（并取数）：每次展开都重取，组件内的缓存只在本次展开内有效。 */
+/** 展开（并取数）：每次展开都强制重取 —— 上一代即使卡在飞着，也会被新 token 取代。 */
 function openRow(id: string): void {
   setOpen(id, true);
-  void fetchRow(id);
+  void fetchRow(id, true);
 }
 
 function toggleRow(id: string): void {
@@ -126,28 +126,56 @@ interface RowData {
  */
 const rowData = reactive<Record<string, RowData>>({});
 const EMPTY_ROW: RowData = { items: [], loading: false, error: '' };
+/** 每一行"最近一次请求"的序号：回来时对不上号 = 已被更新的一次取代，结果直接丢。 */
+const reqSeq = new Map<string, number>();
+/** 同一行在飞的请求：mount / watch / 展开三个入口复用它，别叠着发好几条。 */
+const inflight = new Map<string, Promise<void>>();
 
 function stateOf(rowId: string): RowData {
   return rowData[rowId] ?? EMPTY_ROW;
 }
 
-/** 展开时重新取一次（单用户，一次请求很便宜），因此库页刚归类完、回来展开就能看到。 */
-async function fetchRow(rowId: string): Promise<void> {
-  const entry = rowData[rowId] ?? (rowData[rowId] = { items: [], loading: false, error: '' });
+function ensureRow(rowId: string): RowData {
+  return rowData[rowId] ?? (rowData[rowId] = { items: [], loading: false, error: '' });
+}
+
+/**
+ * 取某一行的篇目。force = 另起一代（用户展开 / 缓存刚被清），无视在飞请求的复用。
+ * 展开时重新取一次（单用户，一次请求很便宜），所以库页刚归类完、回来展开就能看到新数据。
+ */
+function fetchRow(rowId: string, force = false): Promise<void> {
+  const running = inflight.get(rowId);
+  if (!force && running) return running;
+  const token = (reqSeq.get(rowId) ?? 0) + 1;
+  reqSeq.set(rowId, token);
+  const entry = ensureRow(rowId);      // 同步进入 loading；异步写回时不信这个引用（见下）
   entry.loading = true;
   entry.error = '';
-  try {
-    const res = await api.get<{ items: Paper[] }>('/papers', {
-      folder: rowId === UNFILED ? 'none' : rowId,
-      page_size: 200,      // 后端单页上限；超出部分见行尾那行提示
-    });
-    entry.items = res?.items ?? [];
-  } catch (err) {
-    entry.items = [];
-    entry.error = (err as Error)?.message ?? String(err);
-  } finally {
-    entry.loading = false;
-  }
+  let task: Promise<void>;
+  task = api.get<{ items: Paper[] }>('/papers', {
+    folder: rowId === UNFILED ? 'none' : rowId,
+    page_size: 200,      // 后端单页上限；超出部分见行尾那行提示
+  }).then((res) => {
+    // 不能写回闭包里的 entry：清缓存会把它从 rowData 删掉，写进去的是一份没人再读的数据
+    if (reqSeq.get(rowId) !== token) return;
+    const cur = rowData[rowId];
+    if (!cur) return;
+    cur.items = res?.items ?? [];
+    cur.error = '';
+  }, (err: unknown) => {
+    if (reqSeq.get(rowId) !== token) return;
+    const cur = rowData[rowId];
+    if (!cur) return;
+    cur.items = [];
+    cur.error = (err as Error)?.message ?? String(err);
+  }).finally(() => {
+    if (reqSeq.get(rowId) !== token) return;   // 已被取代：loading 归新的那一次管
+    const cur = rowData[rowId];
+    if (cur) cur.loading = false;
+    if (inflight.get(rowId) === task) inflight.delete(rowId);
+  });
+  inflight.set(rowId, task);
+  return task;
 }
 
 const rows = computed<Row[]>(() => [
@@ -162,7 +190,8 @@ const rows = computed<Row[]>(() => [
 // 分类列表一变（新建 / 改名 / 删除 / 归类后 force 重拉），缓存里的篇目就是旧的：清掉并重取还展开着的行
 watch(() => folderState.items, () => {
   for (const key of Object.keys(rowData)) delete rowData[key];
-  for (const id of openIds.value) void fetchRow(id);
+  // 缓存刚清空 ⇒ 必须另起一代：复用"那一次会被丢弃的"请求会让行停在空态
+  for (const id of openIds.value) void fetchRow(id, true);
 });
 
 function openPaper(id: string): void {
@@ -250,11 +279,12 @@ async function onRowAction(row: Row, key: string): Promise<void> {
   setOpen(folder.id, false);
 }
 
-onMounted(() => {
+onMounted(async () => {
   narrow.value = mq ? mq.matches : false;
   if (mq) mq.addEventListener('change', onMqChange);
-  void loadFolders();
-  // 上次留在展开态的行，刷新回来得自己去取（否则要先收起再展开才有内容）
+  // 先等分类列表：否则"先取篇目"必然和随之而来的清缓存（watch）撞在一起
+  await loadFolders();
+  // 上次留在展开态的行由自己取；watch 已经发过的，这里会被 in-flight 复用掉，不会重复请求
   for (const id of openIds.value) void fetchRow(id);
 });
 
