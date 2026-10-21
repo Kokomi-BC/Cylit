@@ -2345,6 +2345,10 @@ async function focusRow(
       && String(f.number ?? '') === figAnchor[2]);
     id = hit?.row_id || '';
   }
+  /* 解读/检索给的锚点是**解析块 id**（`attentionisa-p01-b06`），正文行 id 却是 `p001-06` ——
+     两套命名空间，后端为此下发 `block_rows`。不翻这一下，"点引用标号"就是空跳：
+     `rowById` 查不到，下面会当成"锚点已失效"直接 toast（用户看到的正是"点了没反应"）。 */
+  if (id && !rowById.value.has(id)) id = String(reader.value?.block_rows?.[id] ?? id);
   const known = rowById.value.get(id);
   const page = opts.page ?? known?.page ?? currentPage.value ?? 1;
   if (!id && !page) return;

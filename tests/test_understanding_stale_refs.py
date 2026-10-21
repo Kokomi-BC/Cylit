@@ -39,6 +39,23 @@ def test_stale_refs_are_kept_with_page_not_dropped() -> None:
     assert stale[0]["chunk_type"] == "unit"
 
 
+def test_live_refs_carry_the_block_id_for_jumping() -> None:
+    """有效引用要带上**块 id**：前端点标号直接落到原文那一段（只给页码只能跳整页）。"""
+    live, _ = us.split_live_refs(
+        {"B001": "paper:b:unit:p003-01:zh"}, _by_code(),
+        exists=lambda ids: set(ids),
+        blocks={"paper:b:unit:p003-01:zh": "paper-p03-b004"})
+    assert live[0]["block_id"] == "paper-p03-b004"
+    assert live[0]["page"] == 3
+
+
+def test_stale_ref_has_no_block_id() -> None:
+    live, stale = us.split_live_refs(
+        {"B001": "旧:chunk:id"}, _by_code(), exists=lambda ids: set(),
+        blocks={})
+    assert live == [] and "block_id" not in stale[0]
+
+
 def test_no_refs_is_not_an_error() -> None:
     assert us.split_live_refs({}, {}, exists=lambda ids: set()) == ([], [])
 

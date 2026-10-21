@@ -432,6 +432,7 @@ function onMore(key: string, r: FeedRow) {
       :running="props.insightRunning"
       @started="emit('insight-queued')"
       @open-page="emit('open-insight-page')"
+      @cite="(c) => locate(c.block, c.page || undefined)"
     />
 
     <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：

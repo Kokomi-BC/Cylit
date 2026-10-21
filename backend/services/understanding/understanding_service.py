@@ -362,7 +362,8 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
 
     inventory = chunk_inventory(paper_id, path)
     if not inventory:
-        raise ValueError(f"{paper_id} 还没有可理解的 chunk（先建索引）")
+        # 这句会原样显示给用户（InsightDoc 的 error 分支），所以不写 chunk 这个字
+        raise ValueError(f"{paper_id} 还没有可用的段落索引（先建索引）")
     brief = _brief(paper_id)
     # system 用**页级那一套**（逐字节相同）→ 解读调用能吃该路的前缀缓存；
     # 解读的任务说明与材料跟在「稳定前缀 + 完整前文」之后（都在 user 里）。
@@ -446,6 +447,21 @@ def _save(paper_id: str, path: str, payload: dict) -> None:
             setattr(row, key, payload[key])
 
 
+def _chunk_blocks(ids: list[str]) -> dict[str, str | None]:
+    """这些 chunk id → 它落在的**块 id**（已不存在的 id 不会出现在返回值里）。
+
+    值可能是 None（老数据的 chunk 没记 block_id）：那是"还在、但落不到具体段落"，
+    与"不在了"（key 缺失）必须分开 —— 前者照样算有效引用，只是只能跳到页。
+    """
+    if not ids:
+        return {}
+    from backend.repositories.mysql.models import Chunk
+
+    with session_scope() as sess:
+        rows = sess.query(Chunk.id, Chunk.block_id).filter(Chunk.id.in_(ids)).all()
+    return {r[0]: r[1] for r in rows}
+
+
 def _live_chunk_ids(ids: list[str]) -> set[str]:
     """这些 chunk id 现在还存在于库里吗（重新翻译 + 重建索引后 id 会变）。"""
     if not ids:
@@ -458,7 +474,9 @@ def _live_chunk_ids(ids: list[str]) -> set[str]:
 
 
 def split_live_refs(resolved: dict[str, str], by_code: dict, *,
-                    exists=_live_chunk_ids) -> tuple[list[dict], list[dict]]:
+                    exists=_live_chunk_ids,
+                    blocks: dict[str, str | None] | None = None
+                    ) -> tuple[list[dict], list[dict]]:
     """引用分两类：**还能跳到原文**的 与 **已过期**的（chunk 已不存在）。
 
     为什么保留过期的、而不是丢掉：解读内容本身仍然有效（概念解释、阅读顺序、方法链条），
@@ -474,6 +492,11 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
         meta = by_code.get(code) or {}
         item = {"code": code, "chunk_id": chunk_id,
                 "chunk_type": meta.get("chunk_type"), "page": meta.get("page")}
+        # **块 id**：前端点标号要落到"原文那一段"，只给页码只能跳到整页。
+        # 正文行 id 是另一套命名空间，由阅读器用它的 block_rows 再翻译一次。
+        block = (blocks or {}).get(chunk_id)
+        if block:
+            item["block_id"] = block
         (live if chunk_id in alive else stale).append(item)
     return live, stale
 
@@ -483,7 +506,10 @@ def to_dict(row: Understanding) -> dict:
     inventory = json_loads(row.inventory, []) or []
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
     resolved = refs.get("resolved") or {}
-    live_refs, stale_refs = split_live_refs(resolved, by_code)
+    # 一次 in(...) 查询同时给出"还在不在"与"落在哪个块"：分两次查就是两次 RTT。
+    blocks = _chunk_blocks([cid for cid in resolved.values() if cid])
+    live_refs, stale_refs = split_live_refs(
+        resolved, by_code, exists=lambda ids: set(blocks) & set(ids), blocks=blocks)
     return {
         "paper_id": row.paper_id, "path": row.path,
         "label": PATH_LABELS.get(row.path, row.path),

@@ -18,19 +18,43 @@
  * ⚠️ 2026-10-02：原「阅读地图」整页（`/readmap/:paperId`）随该功能一起删除，本组件不再有 `section`。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
 import InsightDoc from './InsightDoc.vue';
 import InsightToc from './InsightToc.vue';
 import { useUnderstanding } from '@/composables/useUnderstanding';
 import { buildInsightOutline } from '@/utils/insightOutline';
+import { openTab } from '@/stores/tabs';
+import { readerTarget } from '@/utils/navigation';
+import type { UnderstandingRefItem } from '@/api/types';
 
 const props = defineProps<{ paperId: string }>();
 
-const { entry, markdown, hasContent, starting, timedOut, running, started, start }
+const { entry, payload, markdown, hasContent, starting, timedOut, running, started, start }
   = useUnderstanding(computed(() => props.paperId));
 
 /** anchor 前缀：整页一套、左栏页签一套；同一时刻只会挂一个，但前缀不同更保险 */
 const prefix = 'ins';
+
+/** 引用标号的落点（过期的在前、有效的在后：同号时后写覆盖先写） */
+const refs = computed<UnderstandingRefItem[]>(() => [
+  ...(payload.value?.stale_refs ?? []),
+  ...(payload.value?.refs_resolved ?? []),
+]);
+
+const router = useRouter();
+
+/**
+ * 整页这边**没有阅读器**，所以点标号只能「把阅读器开到那一段」：
+ * 走 readerTarget + openTab（应用内标签页），锚点是块 id + 页码，
+ * 阅读器的深链解析会再把它翻成正文行 id（block_rows）。
+ *
+ * ⚠️ 必须在事件回调里转，不能拿渲染期的值去 push（openTab 会改响应式状态）。
+ */
+function onCite(p: { code: string; block: string; page: number }) {
+  if (!props.paperId || (!p.block && !p.page)) return;
+  void router.push(openTab(readerTarget(props.paperId, p.block, p.page)) as never);
+}
 
 const outline = computed(() => buildInsightOutline(markdown.value, { prefix }));
 /** 有内容、且这份 markdown 真的有小节时才画目录（空状态 / 没标题时不留一列空栏） */
@@ -122,7 +146,9 @@ watch(outline, () => { void nextTick(syncActive); });
           :timed-out="timedOut"
           :anchor-prefix="prefix"
           :paper-id="paperId"
+          :refs="refs"
           @start="start"
+          @cite="onCite"
           @anchors-ready="syncActive"
         />
       </div>

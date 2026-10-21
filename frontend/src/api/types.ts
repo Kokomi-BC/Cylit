@@ -727,16 +727,22 @@ export interface BriefPayload {
 /* ------------------- 第二阶段「论文理解」（阅读器「解读」页签用） ------------------- */
 
 /**
- * 一条 chunk 引用（后端把短码解析成真实 chunk 之后的那一份）。
+ * 一条 chunk 引用（后端把编号解析成真实 chunk 之后的那一份）。
  *
- * `unit`（语义单元）也会出现在这里：理解读的就是 chunk，引用基准单位与知识库同一套
- * （用户口径：`来源 Chunk: B003` 这种小胶囊点一下要能跳回原文那一页）。
+ * `unit`（语义单元）也会出现在这里：理解读的就是 chunk，引用基准单位与知识库同一套。
+ * 正文里它被渲染成一枚跳转标号（[1]、[2]…），点一下回到原文那一段（用户口径 2026-11-28）。
  */
 export interface UnderstandingRefItem {
   code: string;
   chunk_id: string;
   chunk_type?: string | null;
   page?: number | null;
+  /**
+   * 这条引用落在的**块 id**（后端查 chunk 表补的）。
+   * 页码只能跳到整页，块 id 才能让阅读器落在原文那一段；老数据的 chunk 没记 block_id，
+   * 所以是可选的（缺失时退化成跳页）。
+   */
+  block_id?: string | null;
 }
 
 /** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */

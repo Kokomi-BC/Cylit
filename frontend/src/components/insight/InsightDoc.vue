@@ -12,6 +12,7 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
+import type { UnderstandingRefItem } from '@/api/types';
 import { buildInsightOutline } from '@/utils/insightOutline';
 
 const props = withDefaults(defineProps<{
@@ -46,6 +47,11 @@ const props = withDefaults(defineProps<{
    * 但产物里一旦出现就整块裂图，所以照传。
    */
   paperId?: string;
+  /**
+   * 解读里的引用位置（后端 `refs_resolved` + `stale_refs`，按编号索引）。
+   * 没有它，正文里的 `[A023]` 也能渲染成标号，只是点了跳不动 —— 所以是可选 prop。
+   */
+  refs?: UnderstandingRefItem[];
 }>(), {
   markdown: '', empty: false, loading: false, starting: false, running: false,
   error: '', timedOut: false, narrow: false, anchorPrefix: 'ins', paperId: '',
@@ -55,18 +61,109 @@ const emit = defineEmits<{
   (e: 'start'): void;
   /** 标题 anchor 已贴好（宿主据此算一次"当前小节"，否则首屏一个高亮都没有） */
   (e: 'anchors-ready'): void;
+  /** 点了正文里的引用标号：宿主负责跳到原文（阅读器滚到那一段，整页则开阅读器） */
+  (e: 'cite', p: { code: string; block: string; page: number }): void;
 }>();
 
 const root = ref<HTMLElement | null>(null);
 
+/** 材料类型 → 悬停提示里的短名（后端 chunk_type 的值域；不认识的就不写） */
+const TYPE_LABEL: Record<string, string> = {
+  formula: '公式', table: '表格', figure: '插图', unit: '段落', text: '段落',
+};
+
+/**
+ * 旧产物的引用写法：「（来源 Chunk: A023, A031）」。
+ *
+ * 2026-11-28 起提示词只让模型写 「[A023][A031]」，但**库里已有的解读全是旧写法** ——
+ * 解读不该因为换了提示词就继续显示一坨「（来源 Chunk: …）」原文，所以渲染这侧两种写法
+ * 都归一成方括号，顺带让这个词从界面上彻底消失。
+ */
+const LEGACY_GROUP = /[（(]\s*来源\s*Chunk\s*[:：]\s*([A-Za-z]\d{2,4}(?:\s*[,，、;；]\s*[A-Za-z]\d{2,4})*)\s*[）)]/g;
+const LEGACY_BARE = /来源\s*Chunk\s*[:：]\s*([A-Za-z]\d{2,4})/g;
+
+function normalizeMarks(md: string): string {
+  if (!/Chunk/i.test(md)) return md;
+  return md
+    .replace(LEGACY_GROUP, (_m, codes: string) =>
+      String(codes).split(/[,，、;；]/).map((c) => '[' + c.trim().toUpperCase() + ']').join(''))
+    .replace(LEGACY_BARE, (_m, code: string) => '[' + String(code).toUpperCase() + ']');
+}
+
+/** 编号 → 引用位置（宿主把 stale_refs 排在前面、refs_resolved 排在后面，有效的覆盖过期的） */
+const refMap = computed(() => {
+  const map = new Map<string, UnderstandingRefItem>();
+  for (const item of props.refs ?? []) {
+    const code = String(item?.code ?? '').toUpperCase();
+    if (code) map.set(code, item);
+  }
+  return map;
+});
+
+function escapeAttr(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * 正文里的「[A023]」→ 可点的**跳转标号**「[1]」。
+ *
+ * 为什么在渲染后的 HTML 上换、而不是给 marked 加一条行内扩展（正文里的参考文献标号
+ * 就是那么做的）：序号要按**这一篇里第一次出现**的顺序编（1、2、3…），还得把编号查成
+ * 页码/块 id —— 那条链路是纯函数、拿不到 refs。这里只认方括号里带字母的编号，
+ * 与「[2, 4]」那套参考文献标号（数字）天然不冲突；代码块里的方括号照样跳过。
+ *
+ * 查不到位置的编号也照样编上号（只是点了不跳）：它们本来就是模型编出来的/
+ * 已被重建索引冲掉的，直接从正文里抹掉反而会让用户以为漏了内容。
+ */
+function decorateCites(html: string): string {
+  const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
+  const order = new Map<string, number>();
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;                      // 代码块原样返回
+    return part.replace(/\[([A-Z]\d{2,4})\]/g, (whole, code: string) => {
+      let n = order.get(code);
+      if (!n) {
+        n = order.size + 1;
+        order.set(code, n);
+      }
+      const ref = refMap.value.get(code);
+      const where = ref?.page ? '第 ' + ref.page + ' 页' : '';
+      const kind = TYPE_LABEL[String(ref?.chunk_type ?? '')] || '';
+      const tip = [where, kind].filter(Boolean).join(' · ');
+      const title = ref ? (tip ? tip + ' · 跳到原文' : '跳到原文') : '这一条引用已不在清单里';
+      return '<button type="button" class="cite-inline ins-cite"'
+        + ' title="' + escapeAttr(title) + '"'
+        + ' data-code="' + code + '"'
+        + ' data-block="' + escapeAttr(String(ref?.block_id ?? '')) + '"'
+        + ' data-page="' + (ref?.page ?? '') + '">[' + n + ']</button>';
+    });
+  }).join('');
+}
+
+/** 点标号：只上报，不自己滚 —— 整页那侧根本没有阅读器，滚不动的活儿得宿主决定 */
+function onCiteClick(ev: MouseEvent) {
+  const btn = (ev.target as HTMLElement | null)?.closest?.('.ins-cite') as HTMLElement | null;
+  if (!btn) return;
+  const page = Number(btn.dataset.page || 0);
+  emit('cite', {
+    code: btn.dataset.code || '',
+    block: btn.dataset.block || '',
+    page: page > 0 ? page : 0,
+  });
+}
+
 /**
  * markdown → HTML。
  *
- * 表格外面那层横向滚动容器与「三线表」样式**不再由这里负责**：`mdToHtml` 现在统一把
- * `<table>` 包进 `.tbl-wrap`（见 `useMarkdown.decorateTables`），样式在 base.css 的 `.md table`。
+ * 表格外面那层横向滚动容器与「三线表」样式**不再由这里负责**：mdToHtml 现在统一把
+ * <table> 包进 .tbl-wrap（见 useMarkdown.decorateTables），样式在 base.css 的 .md table。
+ *
+ * 引用标记在这之后换成一枚枚标号（decorateCites）—— 顺序不能反：先换会把 HTML 弄脏，
+ * marked 再把按钮当文本转义一次就全废了。
  */
 function render(md?: string | null): string {
-  return mdToHtml(md ?? '', props.paperId);
+  return decorateCites(mdToHtml(normalizeMarks(String(md ?? '')), props.paperId));
 }
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));
@@ -96,12 +193,12 @@ onMounted(() => { void nextTick(assignAnchors); });
 </script>
 
 <template>
-  <div ref="root" class="doc" :class="{ narrow }">
+  <div ref="root" class="doc" :class="{ narrow }" @click="onCiteClick">
     <div v-if="error" class="item err">
       <div class="tiny">{{ error }}</div>
       <!-- 只在"确实卡在前置条件"时补这句：网络抖动也挂一句"先建索引"会把人引到错的方向 -->
-      <div v-if="/chunk|索引|index/i.test(error)" class="tiny faint">
-        前置条件：这篇论文要先建过知识库索引（解读读的是 chunk，不是页图）。
+      <div v-if="/索引|index|段落/i.test(error)" class="tiny faint">
+        前置条件：这篇论文要先建过知识库索引（解读读的是索引里的段落，不是页图）。
       </div>
     </div>
     <div v-else-if="timedOut" class="hint">
@@ -113,7 +210,7 @@ onMounted(() => { void nextTick(assignAnchors); });
     <div v-else-if="empty" class="item">
       <div class="tiny faint">还没有解读</div>
       <div class="tiny faint note">
-        解读读的是知识库的 chunk（不是页图），所以需要先对这篇论文建索引。
+        解读读的是知识库索引里的段落（不是页图），所以需要先对这篇论文建索引。
       </div>
       <button class="btn sm primary" :disabled="starting" @click="emit('start')">
         {{ starting ? '已发起…' : '开始解读' }}

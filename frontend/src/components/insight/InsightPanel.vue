@@ -20,6 +20,7 @@ import InsightDoc from '@/components/insight/InsightDoc.vue';
 import InsightToc from '@/components/insight/InsightToc.vue';
 import { useUnderstanding } from '@/composables/useUnderstanding';
 import { buildInsightOutline } from '@/utils/insightOutline';
+import type { UnderstandingRefItem } from '@/api/types';
 
 const props = defineProps<{
   paperId: string;
@@ -32,15 +33,26 @@ const emit = defineEmits<{
   (e: 'started'): void;
   /** 打开整页版：由 ReaderView 新开一个应用内标签页 */
   (e: 'open-page'): void;
+  /** 正文里点了引用标号（`InsightDoc` 只上报，往哪跳由 ReaderView 决定） */
+  (e: 'cite', p: { code: string; block: string; page: number }): void;
 }>();
 
 /* 阅读器这边任务列表已经在轮询，把 `running` 传进组合式即可（它不会再自己拉 /tasks） */
-const { entry, markdown, hasContent, starting, timedOut, running, started, start } = useUnderstanding(
+const { entry, payload, markdown, hasContent, starting, timedOut, running, started, start } = useUnderstanding(
   computed(() => props.paperId),
   { running: computed(() => props.running) },
 );
 
 const title = '论文解读';
+
+/**
+ * 正文里那些标号的落点：**过期的排前面、有效的排后面**（`InsightDoc` 按编号建表，
+ * 后写覆盖先写），于是重翻译过的引用退化到页码，正常的引用落到块上。
+ */
+const refs = computed<UnderstandingRefItem[]>(() => [
+  ...(payload.value?.stale_refs ?? []),
+  ...(payload.value?.refs_resolved ?? []),
+]);
 
 /** anchor 前缀：与整页（`ins`）不同，即使两个视图同时在 DOM 里也不会撞 id */
 const prefix = 'pane-insight';
@@ -99,7 +111,9 @@ async function onStart() {
       :timed-out="timedOut"
       :anchor-prefix="prefix"
       :paper-id="props.paperId"
+      :refs="refs"
       @start="onStart"
+      @cite="(c) => emit('cite', c)"
     />
   </div>
 </template>

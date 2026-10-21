@@ -45,9 +45,12 @@ def test_prompts_are_not_the_translation_prompts() -> None:
 
 
 def test_prompt_shares_the_reference_contract() -> None:
+    """引用标记只有编号本身（用户 2026-11-28："避免出现 chunk 这个文字"）。"""
     text = prompts.UNDERSTAND_A_SYSTEM
-    assert "来源 Chunk" in text
-    assert "只许引用清单里出现过的短码" in text
+    assert "[A023]" in text, "示例必须就是最终形态：句末紧跟方括号编号"
+    assert "只许用清单里出现过的编号" in text
+    assert "chunk" not in text.lower(), "提示词自己不许再出现这个词，模型会照着抄"
+    assert "来源 Chunk" not in text
     # 自由 Markdown（用户 ⑦）
     assert "不要套固定模板" in text
     assert "不要按固定 schema 校验" in text or "系统不会按固定 schema 校验" in text
