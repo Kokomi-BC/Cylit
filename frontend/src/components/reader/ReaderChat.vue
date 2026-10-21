@@ -378,6 +378,7 @@ function decorateRefs(html: string, cites?: AgentCitation[]) {
         + ` data-ref="${num}" data-paper="${escapeAttr(cite.paper_id || '')}"`
         + ` data-row="${escapeAttr(cite.row_id || '')}"`
         + ` data-block="${escapeAttr(cite.block_id || '')}"`
+        + ` data-snippet="${escapeAttr(cite.snippet || '')}"`
         + ` data-page="${cite.page ?? ''}">[${num}]</button>`;
     });
   }).join('');
@@ -431,8 +432,10 @@ function onCitePeek(ev: PointerEvent) {
     page: page > 0 ? page : null,
     rowId: btn.dataset.row || null,
     blockId: btn.dataset.block || null,
-    label: btn.getAttribute('title') || '',
-    snippet: '',
+    label: btn.dataset.label || btn.getAttribute('title') || '',
+    /* 引用自带的片段：老引用可能既没有行 id 也没有可映射的块 id，
+       这时卡片至少能显示这一两句话，而不是一句「没有可显示的内容」 */
+    snippet: btn.dataset.snippet || '',
   });
 }
 

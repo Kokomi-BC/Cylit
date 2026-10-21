@@ -125,6 +125,8 @@ type CitePeekAsk = {
   rowId?: string | null;
   blockId?: string | null;
   label?: string | null;
+  /** 引用自带的一两句原文（老引用没有可映射的锚点时，卡片里至少有内容） */
+  snippet?: string | null;
 };
 
 /** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
@@ -155,10 +157,19 @@ function clearPeekTimers(): void {
   if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
 }
 
+/** 一张卡的指纹：行 / 块 / 页码任一相同就算同一处引用 */
+function peekSig(ask: CitePeekAsk): string {
+  return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? ''].join('|');
+}
+
 function onCitePeekAsk(ask: CitePeekAsk): void {
   clearPeekTimers();
+  /* 已经有同一处的卡（钉住的也算）：不再开第二张 —— 否则先钉住一张、再悬浮同一处，
+     会叠出两张一模一样的内容（用户口径 2026-12-04）。 */
+  const same = peekCards.find((c) => peekSig(c.ask) === peekSig(ask));
+  if (same) { same.open = true; return; }
   const loose = loosePeekCard();
-  /* 已经有一张没钉住的：立刻换内容（不必每次重等 320ms） */
+  /* 有一张没钉住的（别处的）：立刻换内容（不必每次重等 320ms） */
   if (loose) { loose.ask = ask; loose.open = true; return; }
   peekShowTimer = window.setTimeout(() => {
     peekShowTimer = 0;
@@ -208,7 +219,11 @@ function peekViewOf(card: PeekCard) {
   const kind = tbl ? '表格' : fig ? '插图' : CITE_KIND[String(row?.type ?? '')] || '正文';
   /* 中/EN 各一份 Markdown：**两侧都走 mdToHtml**（原文里的 LaTeX 也得渲染，
      否则一整段 `$...$` 原样铺出来，就是用户说的「部分没有适配 markdown」） */
-  const zh = (tbl?.markdown || row?.translation || '').trim();
+  const snippet = String(ask.snippet || '').trim();
+  /* 行 / 表 / 图都取不到时用**引用自带的那一两句**兜底：
+     老引用（重译前生成的）往往既没有行 id、块 id 也映射不出来，
+     只显示一句「没有可显示的内容」等于这张卡白弹（用户口径 2026-12-04：标号 7 就是这种）。 */
+  const zh = (tbl?.markdown || row?.translation || snippet).trim();
   const en = (tbl?.markdown || row?.original || '').trim();
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
@@ -7831,6 +7846,15 @@ function renderMarkdown(text?: string | null) {
       @mouseleave="onCitePeekHide"
       @close="closePeekCard(card)"
     >
+      <template #head-mid>
+        <!-- 中/EN 切换放在**标题栏**（用户口径 2026-12-04）：正文里那块太占高度，
+             看起来也像一段内容。它是内容口径的开关，不属于头部那组动作按钮，
+             所以单独设计（小分段钮），不与 .fc-btn 混在一起。 -->
+        <div v-if="peekViewOf(card).bilingual" class="cite-peek-lang seg sq">
+          <button type="button" :class="{ active: card.lang === 'zh' }" @click="card.lang = 'zh'">译文</button>
+          <button type="button" :class="{ active: card.lang === 'en' }" @click="card.lang = 'en'">原文</button>
+        </div>
+      </template>
       <template #head-extra>
         <button
           type="button"
@@ -7848,10 +7872,6 @@ function renderMarkdown(text?: string | null) {
              :src="assetUrl(peekViewOf(card).imageUrl)" :alt="peekViewOf(card).caption || ''" />
         <div v-if="peekViewOf(card).caption" class="cite-peek-cap md small"
              v-html="mdToHtml(peekViewOf(card).caption, paperId)" />
-        <div v-if="peekViewOf(card).bilingual" class="cite-peek-lang seg sq">
-          <button type="button" :class="{ active: card.lang === 'zh' }" @click="card.lang = 'zh'">译文</button>
-          <button type="button" :class="{ active: card.lang === 'en' }" @click="card.lang = 'en'">原文</button>
-        </div>
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
              v-html="mdToHtml(peekViewOf(card).body, paperId)" />
         <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl" class="tiny faint">
@@ -8214,11 +8234,12 @@ function renderMarkdown(text?: string | null) {
 /* ---------------- 引用速览卡（悬浮标号弹出的那张） ----------------
  * 整块可点 = 定位到原文；里面是**只读**内容，所以不放任何按钮 ——
  * 唯一的交互就是这张卡片本身，点哪都跳（比再放一枚「定位」小按钮更省一次瞄准）。 */
+/* 正文区不是可点区域（定位在标题栏），所以既没有手型也没有悬浮高亮 ——
+   那层淡底只会让人以为点这里会发生什么（用户口径 2026-12-04）。 */
 .cite-peek {
   display: flex; flex-direction: column; gap: 8px;
-  cursor: pointer; border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm);
 }
-.cite-peek:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .cite-peek-img {
   display: block; width: 100%; max-height: 200px; object-fit: contain;
   border-radius: var(--radius-sm); background: var(--bg-sunken);
@@ -8226,9 +8247,21 @@ function renderMarkdown(text?: string | null) {
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
 /* 原文对照：小一号、淡一档，只作参照，不抢正文的注意力 */
-/* 中/EN 切换：只在两侧都真有内容时出现（只有英文的材料不该多一枚没用的开关）。 */
-.cite-peek-lang { align-self: flex-start; }
-.cite-peek-lang button { padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
+/* 中/EN 切换：标题栏里的一枚小分段钮（只在两侧都真有内容时出现）。
+   不套 .fc-btn：那组是 26px 圆钮的动作键，这个是内容显示哪一侧的开关，
+   形状与语义都不同，混排会让标题行看起来像有四个同级动作（用户口径 2026-12-04）。 */
+.cite-peek-lang {
+  flex: none; height: 20px; padding: 1px; gap: 0;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-radius: var(--radius-ctl);
+}
+.cite-peek-lang button {
+  height: 18px; padding: 0 7px; font-size: calc(10.5px * var(--ts, 1)); font-weight: 600;
+  border-radius: calc(var(--radius-ctl) - 2px); color: var(--text-dim);
+}
+.cite-peek-lang button.active {
+  background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1);
+}
 
 /* 阅读器数据加载占位：整屏布局下正文区还是空的，把圈 + 文案**居中**摆（用 `.empty` 会贴在左上角）。
    高度对齐 `.reader` 网格，加载完切成正文时不会跳一下。 */
