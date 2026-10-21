@@ -382,12 +382,22 @@ def plan_path(codes: dict[str, dict], candidates: Sequence[dict], *,
         chunk_type = str(info.get("chunk_type") or "") or None
         page = _as_int(info.get("page"), None)
         match = choose_chunk(pids, candidates, chunk_type=chunk_type, page=page, road=road)
+        # 身份落到哪一级：capture 的 pids 是**行**级；万一它和新 chunk 一个都不沾边
+        # （重译 / 重排把那一行切成了别的行 —— 实测补完附录后有 7 条这种），退到**块**级
+        # 身份（新 chunk 自己的 pids）。不降级的话这条引用唯一可靠的键已经失效，下次重建
+        # 必定掉成 stale；降级后它至少钉在这个块上，跨重建仍然认得住。
+        chunk_pids = _as_str_list((match or {}).get("pids"))
+        pids_source = "capture"
+        if match and chunk_pids and not (set(pids) & set(chunk_pids)):
+            pids = chunk_pids
+            pids_source = "chunk"
         items.append({
             "code": str(raw_code),
             "old_chunk_id": str(info.get("chunk_id") or ""),
             "new_chunk_id": (match["chunk_id"] if match else None),
             "mode": (match["mode"] if match else "none"),
             "pids": pids,
+            "pids_source": pids_source,
             # source 来自中间文件：resolved（正常登过记）/ inventory（正文写了但漏登记）
             "source": str(info.get("source") or ""),
             # 未映射时保留旧值：写回那一步只认 new_chunk_id，这两项只是报告用
@@ -423,6 +433,11 @@ def plan_apply(ref_doc: dict, candidates: Sequence[dict], *,
         for item in summary["items"]:
             if item["new_chunk_id"] and len(samples) < SAMPLE_MAX:
                 samples.append({"path": path, **item})
+    # 身份降到块级（行被重切）的条数：这个数**必须报出来** —— 它意味着这几条引用
+    # 只能精确到块，不是精确到行。
+    totals["pids_from_chunk"] = sum(1 for s in paths.values()
+                                    for it in s["items"]
+                                    if it.get("pids_source") == "chunk")
     return {"paper_id": paper_id or str((ref_doc or {}).get("paper_id") or ""),
             "paths": paths, **totals, "unmapped": unmapped, "samples": samples}
 
