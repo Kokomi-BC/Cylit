@@ -2,9 +2,9 @@
 /**
  * 论文库：导入 → 解析 → 翻译 → 三视图阅读。
  *
- * 版式（移植自参照项目 retain-pdf 的书库页）：**顶部两行**（第一行 标题 + 批量 / 筛选 / 排序 / 视图切换；
- * 第二行 搜索 + 导入 / 刷新 / 设置）+ **封面卡片网格**（列表视图可切成一行一条）。
- * 批量模式时两行下面再出现一条批量工具条；它们都随页面滚动，没有浮在视口上的东西。
+ * 版式（移植自参照项目 retain-pdf 的书库页）：**顶部一行**（左 标题 + 计数 + 当前分类 chip；中 搜索；
+ * 右 导入 / 刷新 ｜ 批量 / 筛选 / 排序 / 视图切换）+ **封面卡片网格**（列表视图可切成一行一条）。
+ * 批量模式时这一行下面再出现一条批量工具条；它们都随页面滚动，没有浮在视口上的东西。
  * 卡片本体在 `components/paper/PaperCard.vue`，点卡片打开的详情在 `PaperDetailModal.vue`。
  *
  * REST 走 `@/api/client`，列表与计数走全局 store，弹窗走 `Modal`。
@@ -12,7 +12,7 @@
  * （对话历史 / 划词解释 / 高亮 / 笔记），PDF 文件移入 data/trash（不物理删除）。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
 import type { MineruConfig, MineruModelVersion, Paper, ParseEngine, TaskInfo } from '@/api/types';
 import Modal from '@/components/Modal.vue';
@@ -32,6 +32,7 @@ import { fmtRelative, paperStatus } from '@/utils/format';
 import { confirmRegenerateInsight } from '@/utils/understanding';
 
 const router = useRouter();
+const route = useRoute();
 
 /** 打开论文 = **开一个新标签页**（`openTab` 负责登记，重复点同一篇只会激活已有标签）。 */
 function openPaper(id: string) {
@@ -95,7 +96,52 @@ function setView(v: 'grid' | 'list') {
 const filterOpen = ref(false);
 const filterBox = ref<HTMLElement | null>(null);
 const tagFilter = ref('');
-const filterCount = computed(() => (statusFilter.value ? 1 : 0) + (tagFilter.value ? 1 : 0));
+
+/* 分类是库页的一等维度：'' = 全部，'none' = 未分类，其余 = 分类 id。
+ * 它记在**路由 query**（?folder=…）上，所以刷新、分享、从侧栏进来都还是同一个分类。 */
+const folderFilter = ref('');
+const folderFilterLabel = computed(() => (
+  folderFilter.value === 'none' ? '未分类' : folderName(folderFilter.value)
+));
+
+/** 把分类写回 query；用 replace，切分类不该往后退历史里堆记录。 */
+function syncFolderQuery(v: string) {
+  if ((route.query.folder ?? '') === v) return;
+  const query: Record<string, string> = {};
+  for (const [k, val] of Object.entries(route.query)) if (typeof val === 'string') query[k] = val;
+  if (v) query.folder = v; else delete query.folder;
+  void router.replace({ query });
+}
+
+function setFolder(v: string) {
+  if (folderFilter.value === v) return;
+  folderFilter.value = v;
+  syncFolderQuery(v);
+  void refresh();
+}
+
+/** 地址栏变了（前进/后退、外部链接）也要跟上，否则 url 与列表会脱节。 */
+watch(() => route.query.folder, (q) => {
+  const v = typeof q === 'string' ? q : '';
+  if (v === folderFilter.value) return;
+  folderFilter.value = v;
+  void refresh();
+});
+
+/* 侧栏在同一页里删掉当前分类时也回落到「全部」，别留一个指向已删分类的空列表。
+ * 盯 items/loading/error 三个信号：拉失败不等于分类被删（error 非空时一律不回落）。 */
+watch(() => [folderState.items.length, folderState.loading, folderState.error] as const, () => {
+  const v = folderFilter.value;
+  if (!v || v === 'none' || folderState.loading || folderState.error) return;
+  if (folderState.items.some((f) => f.id === v)) return;
+  folderFilter.value = '';
+  syncFolderQuery('');
+  void refresh();
+});
+
+const filterCount = computed(() => (
+  (statusFilter.value ? 1 : 0) + (tagFilter.value ? 1 : 0) + (folderFilter.value ? 1 : 0)
+));
 
 /** 标签候选：从**当前列表**现收（库里没标签就不显示这一组）。 */
 const tagOptions = computed(() => {
@@ -123,6 +169,8 @@ function toggleTag(t: string) {
 function clearFilters() {
   statusFilter.value = '';
   tagFilter.value = '';
+  folderFilter.value = '';
+  syncFolderQuery('');
   void refresh();
 }
 
@@ -257,9 +305,14 @@ function cardMeta(p: Paper): string {
   const parts: string[] = [`${p.page_count || '?'} 页`];
   if (p.venue) parts.push(p.venue);
   if (p.year) parts.push(String(p.year));
-  if (p.folder_id) parts.push(folderName(p.folder_id));
   parts.push(p.last_read_at ? `读于 ${fmtRelative(p.last_read_at)}` : '未读过');
   return parts.join(' · ');
+}
+
+/** 卡片的分类徽章文案：未分类（或分类已删）给空串 = 不显示徽章。 */
+function folderLabelOf(p: Paper): string {
+  if (!p.folder_id) return '';
+  return folderState.items.find((f) => f.id === p.folder_id)?.name ?? '';
 }
 
 /** 卡片收尾行：译完给一行"已完成"，压根没动过给"尚未开始"；正在跑的不给（进度条在说这件事）。 */
@@ -276,9 +329,24 @@ function isTranslated(p: Paper): boolean {
 }
 const showLoading = computed(() => loading.value && visible.value.length === 0 && !loadError.value);
 const showLoadError = computed(() => !!loadError.value && filtered.value.length === 0);
-const showEmpty = computed(() => !loading.value && visible.value.length === 0 && !loadError.value);
+/** 有任何筛选在生效（含分类）：空列表这时是"被筛掉了"，不是"库里没论文"。 */
+const hasFilter = computed(() => !!(folderFilter.value || statusFilter.value || tagFilter.value));
+const showEmpty = computed(() => (
+  !loading.value && visible.value.length === 0 && !loadError.value && !hasFilter.value
+));
 /** 有论文、只是被筛掉了：这种"空"要说明是筛选造成的，别显示成"还没有论文"。 */
-const filteredOut = computed(() => !loading.value && visible.value.length === 0 && filtered.value.length > 0);
+const filteredOut = computed(() => (
+  !loading.value && visible.value.length === 0 && !loadError.value
+  && (hasFilter.value || filtered.value.length > 0)
+));
+/** 空态的归因口径：说清是被哪几项筛掉的，分类必须在里面。 */
+const filterScope = computed(() => {
+  const parts: string[] = [];
+  if (folderFilter.value) parts.push(`「${folderFilterLabel.value}」分类`);
+  if (statusFilter.value) parts.push('状态');
+  if (tagFilter.value) parts.push('标签');
+  return parts.join(' / ');
+});
 
 /** 拉取论文列表：加载中 / 请求失败 / 空列表三种状态都在模板里显式呈现。 */
 async function refresh() {
@@ -287,6 +355,7 @@ async function refresh() {
     await withLoading('papers', () => loadPapers({
       q: keyword.value || undefined,
       status: statusFilter.value || undefined,
+      folder: folderFilter.value || undefined,      // 分类走后端筛（none = 未分类）
       sort: sort.value,
       order: order.value,
     }), { silent: true });
@@ -303,7 +372,14 @@ function refreshNow() { refreshDebounced.cancel(); void refresh(); }
 watch(keyword, () => refreshDebounced());
 
 onMounted(async () => {
-  void loadFolders();
+  folderFilter.value = typeof route.query.folder === 'string' ? route.query.folder : '';
+  await loadFolders(true);      // 分类可能在别的窗口被删，回落判断要拿最新一份
+  // 分类已被删（query 里那个 id 不在列表里）：回落到「全部」并清掉参数，否则页面会一直是空的
+  if (folderFilter.value && folderFilter.value !== 'none'
+    && !folderState.items.some((f) => f.id === folderFilter.value)) {
+    folderFilter.value = '';
+    syncFolderQuery('');
+  }
   await refresh();
   void pollTick();      // 进页面时若已有解析/翻译任务在跑，直接跟上状态
   document.addEventListener('pointerdown', onDocPointer, true);
@@ -1088,14 +1164,45 @@ async function submitEdit() {
 
 <template>
   <div class="library-view">
-    <!-- 顶部第一行（图1 版式）：左标题 + 计数，右 批量 / 筛选 / 排序 / 视图切换。 -->
+    <!-- 顶部一行（左 标题 + 计数 + 当前分类 chip；中 搜索；右 导入 / 刷新 ｜ 批量 / 筛选 / 排序 / 视图切换） -->
     <header class="lib-toolbar">
       <div class="lib-heading">
         <h1>论文库</h1>
         <span class="lib-count tnum">共 {{ state.papersTotal }} 篇</span>
+        <!-- 当前分类常驻：筛选浮层一收就看不见了，这枚 chip 让它一直可见、点 × 回全部 -->
+        <button
+          v-if="folderFilter"
+          type="button"
+          class="lib-fchip"
+          :title="`当前分类：${folderFilterLabel}（点 × 回到全部）`"
+          @click="setFolder('')"
+        >
+          <AppIcon name="tag" :size="13" />
+          <span class="lib-fchip-name">{{ folderFilterLabel }}</span>
+          <AppIcon name="close" :size="12" />
+        </button>
       </div>
 
+      <label class="lib-search">
+        <AppIcon name="search" :size="15" />
+        <input
+          v-model="keyword"
+          type="search"
+          placeholder="搜索标题、作者、会议或年份"
+          @keyup.enter="refreshNow"
+        />
+      </label>
+
       <div class="lib-tools">
+        <button type="button" class="lib-tool primary" title="导入 PDF" @click="openImport">
+          <AppIcon name="add" :size="16" />导入
+        </button>
+        <button type="button" class="lib-tool square" title="刷新列表" :disabled="loading" @click="refresh">
+          <AppIcon name="refresh" :size="15" />
+        </button>
+
+        <span class="lib-divider" />
+
         <button
           type="button"
           class="lib-tool"
@@ -1120,6 +1227,20 @@ async function submitEdit() {
           </button>
 
           <div v-if="filterOpen" class="lib-pop" role="dialog" aria-label="筛选">
+            <div class="lib-pop-label">分类</div>
+            <div class="lib-pills">
+              <button type="button" class="lib-pill" :class="{ on: folderFilter === '' }" @click="setFolder('')">全部</button>
+              <button type="button" class="lib-pill" :class="{ on: folderFilter === 'none' }" @click="setFolder('none')">未分类</button>
+              <button
+                v-for="f in folderState.items"
+                :key="f.id"
+                type="button"
+                class="lib-pill"
+                :class="{ on: folderFilter === f.id }"
+                @click="setFolder(f.id)"
+              >{{ f.name }}</button>
+            </div>
+
             <div class="lib-pop-label">处理状态</div>
             <div class="lib-pills">
               <button type="button" class="lib-pill" :class="{ on: statusFilter === '' }" @click="setStatus('')">全部</button>
@@ -1159,8 +1280,6 @@ async function submitEdit() {
           </select>
         </label>
 
-        <span class="lib-divider" />
-
         <div class="lib-view" role="group" aria-label="视图切换">
           <button type="button" :class="{ on: viewMode === 'grid' }" title="封面视图" @click="setView('grid')">
             <AppIcon name="grid" :size="14" />
@@ -1171,28 +1290,6 @@ async function submitEdit() {
         </div>
       </div>
     </header>
-
-    <!-- 顶部第二行（随页面滚动）：搜索吃满剩余宽度 + 导入 / 刷新 / 设置。 -->
-    <div class="lib-searchbar">
-      <label class="lib-search">
-        <AppIcon name="search" :size="15" />
-        <input
-          v-model="keyword"
-          type="search"
-          placeholder="搜索标题、作者、会议或年份"
-          @keyup.enter="refreshNow"
-        />
-      </label>
-      <button type="button" class="lib-tool primary" title="导入 PDF" @click="openImport">
-        <AppIcon name="add" :size="16" />导入
-      </button>
-      <button type="button" class="lib-tool square" title="刷新列表" :disabled="loading" @click="refresh">
-        <AppIcon name="refresh" :size="15" />
-      </button>
-      <button type="button" class="lib-tool square" title="设置" @click="router.push('/settings')">
-        <AppIcon name="settings" :size="15" />
-      </button>
-    </div>
 
     <!-- 批量工具条：只在批量模式出现（顶部第三行，随页面滚动） -->
     <div v-if="batchMode" class="lib-batch" role="toolbar" aria-label="批量操作">
@@ -1272,7 +1369,7 @@ async function submitEdit() {
     <div class="card empty-state" v-else-if="filteredOut">
       <span class="es-icon"><AppIcon name="filter" :size="20" /></span>
       <span class="es-title">没有符合条件的论文</span>
-      <span class="es-hint">当前的状态 / 标签筛选下没有结果。</span>
+      <span class="es-hint">当前筛选（{{ filterScope }}）下没有结果。</span>
       <div class="es-actions">
         <button class="btn sm" @click="clearFilters">
           <AppIcon name="close" :size="14" />清空筛选
@@ -1296,6 +1393,7 @@ async function submitEdit() {
           :cover-url="coverUrl(p)"
           :badge="cardStatus(p)"
           :meta="cardMeta(p)"
+          :folder-label="folderLabelOf(p)"
           :progress="progressOf(p)"
           :foot-note="cardFoot(p)"
           :running="!!activeTaskOf(p) || inFlight(p)"
@@ -1594,11 +1692,12 @@ async function submitEdit() {
  * 左：标题 + 计数胶囊；右：批量 / 筛选 / 排序 / 视图切换。
  * 工具条那条下划线只到 `--divider` 的强度 —— 它是"分组线"，不是卡片描边。 */
 .lib-toolbar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap;
-  margin-bottom: 10px;
+  display: flex; align-items: center;
+  gap: 10px; flex-wrap: wrap;      /* 窄到放不下时整行换行，不把按钮挤出视口 */
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--divider);   /* 两行合并后只剩这一条分隔线 */
 }
-.lib-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lib-heading { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
 .lib-heading h1 {
   margin: 0; font-size: calc(16px * var(--ts, 1)); font-weight: 600; letter-spacing: -.02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1608,7 +1707,7 @@ async function submitEdit() {
   border-radius: 999px; background: var(--bg-subtle); border: 1px solid var(--border);
   font-size: calc(11px * var(--ts, 1)); color: var(--text-dim);
 }
-.lib-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lib-tools { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; }
 
 /* 工具条控件统一 30px 高：同一排里按钮 / 下拉 / 分段不许参差 */
 .lib-tool {
@@ -1627,6 +1726,19 @@ async function submitEdit() {
   color: var(--accent-text);
 }
 .lib-tool-num { font-size: calc(11px * var(--ts, 1)); color: var(--accent-text); }
+
+/* 当前分类 chip：与 .lib-tool.on 同色（选中态那一套），长分类名截断，别把工具条撑出横向滚动 */
+.lib-fchip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 190px;
+  height: 30px; padding: 0 9px; border-radius: var(--radius-ctl);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--accent-soft); color: var(--accent-text);
+  font-family: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 500; cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.lib-fchip:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.lib-fchip .icon { flex: none; }
+.lib-fchip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 只有图标的工具按钮：收到 30px 见方，别留一大块空白 */
 .lib-tool.square { width: 30px; padding: 0; justify-content: center; }
 .lib-tool.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
@@ -1635,17 +1747,14 @@ async function submitEdit() {
 .lib-tool.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .lib-tool:disabled { opacity: .5; cursor: default; }
 
-/* ---------------- 顶部第二行：搜索 + 导入 / 刷新 / 设置 ----------------
- * 搜索框 flex:1 + min-width:0：窄窗口里它先收窄，右侧按钮固定宽，页面不会被撑出横向滚动。 */
-.lib-searchbar {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 16px; padding-bottom: 12px;
-  border-bottom: 1px solid var(--divider);
-}
+/* 搜索框：与工具行同一排（左中右三段）。flex:1 让它在窄窗口里**第一个收窄**，
+   右侧按钮组 flex:none 固定宽；但收窄有个底线（min-width），到底了就让整行 flex-wrap 换行，
+   而不是把输入框压成一条缝（900px + 分类 chip 同时在场时就会到这条线）。
+   横向滚动不会出现：任何一项都不许超过它自己的 max/min 宽度。 */
 .lib-search {
-  flex: 1; min-width: 0;
+  flex: 1 1 200px; min-width: 168px;
   display: flex; align-items: center; gap: 8px;
-  height: 34px; padding: 0 12px;
+  height: 30px; padding: 0 12px;
   border-radius: var(--radius-ctl);
   background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
@@ -1657,8 +1766,6 @@ async function submitEdit() {
   font-size: calc(13px * var(--ts, 1));
 }
 .lib-search input:hover, .lib-search input:focus { background: transparent; box-shadow: none; border: 0; }
-.lib-searchbar .lib-tool { height: 34px; flex: none; }
-.lib-searchbar .lib-tool.square { width: 34px; }
 
 /* ---------------- 批量工具条（顶部第三行，只在批量模式出现） ---------------- */
 .lib-batch {
@@ -1686,6 +1793,7 @@ async function submitEdit() {
 /* 筛选浮层：与 Menu 浮层同一套语言（同一个"浮起来的东西"该长什么样） */
 .lib-pop {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 60; width: 268px;
+  max-height: min(70vh, 520px); overflow-y: auto;      /* 分类一多也要能滚，别顶出视口 */
   padding: 14px; display: grid; gap: 8px;
   background: var(--bg-elev); border: 1px solid var(--border-strong);
   border-radius: var(--radius); box-shadow: var(--shadow-flyout);

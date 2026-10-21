@@ -27,6 +27,8 @@ const props = withDefaults(defineProps<{
   badge: { label: string; cls: string };
   /** 一行元信息（页数 · 会议 · 年份 · 读于…） */
   meta: string;
+  /** 分类名（空串 = 未分类，不显示徽章）：分类是库里的一等维度，得能一眼看出来 */
+  folderLabel?: string;
   /** 翻译进度：null = 不显示进度条 */
   progress: { done: number; total: number } | null;
   /** 进度条下的收尾文案（已完成为一行灰字；空串 = 不显示） */
@@ -45,6 +47,7 @@ const props = withDefaults(defineProps<{
   selected?: boolean;
 }>(), {
   readLabel: '阅读',
+  folderLabel: '',
   variant: 'grid',
   batch: false,
   selected: false,
@@ -117,6 +120,11 @@ function onCard() {
         <AppIcon :name="badgeIcon" :size="11" />{{ badge.label }}
       </span>
 
+      <!-- 分类徽章：放左下（右上让给状态、右下角是进度条），未分类不显示 -->
+      <span v-if="folderLabel && variant === 'grid'" class="pc-badge is-folder" :title="`分类：${folderLabel}`">
+        <AppIcon name="tag" :size="11" /><span class="pc-folder-name">{{ folderLabel }}</span>
+      </span>
+
       <!-- 正在跑任务：压一层薄遮罩 + 转圈，比只改徽章文案更容易一眼看到 -->
       <div v-if="running" class="pc-processing" aria-hidden="true">
         <span class="pc-disc">
@@ -158,7 +166,15 @@ function onCard() {
         <span v-if="variant === 'list'" class="pc-badge is-inline" :class="badge.cls">
           <AppIcon :name="badgeIcon" :size="11" />{{ badge.label }}
         </span>
-        <!-- 菜单按钮只在指针悬停 / 键盘聚焦时显形，平时让标题占满（与 hover 操作同一套"按需出现"） -->
+        <!-- 列表形态的缩略图只有 48px，分类徽章跟着进到标题这一行 -->
+        <span
+          v-if="folderLabel && variant === 'list'"
+          class="pc-badge is-inline is-folder"
+          :title="`分类：${folderLabel}`"
+        >
+          <AppIcon name="tag" :size="11" /><span class="pc-folder-name">{{ folderLabel }}</span>
+        </span>
+        <!-- 菜单按钮常显：它是「移到分类」的唯一入口，藏起来等于让人先悬停再猜 -->
         <span class="pc-menu" @click.stop>
           <Menu :items="menu" :label="`更多操作：${title}`" @select="emit('pick', $event)" />
         </span>
@@ -256,6 +272,11 @@ function onCard() {
 .pc-badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 /* 列表形态：同一个徽章改成"正文里的一枚"，不再绝对定位在缩略图上 */
 .pc-badge.is-inline { position: static; right: auto; top: auto; height: 18px; padding: 0 7px; flex: none; }
+/* 分类徽章复用同一套玻璃变量与圆角（不另立配色）：换个角，名字长了就截断，
+   免得长分类名把封面 / 列表行撑出横向滚动。 */
+.pc-badge.is-folder { left: 8px; right: auto; top: auto; bottom: 8px; max-width: calc(100% - 16px); }
+.pc-badge.is-folder.is-inline { bottom: auto; max-width: 132px; }
+.pc-folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pc-processing {
   position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center;
@@ -334,10 +355,12 @@ function onCard() {
   display: flex; align-items: center; gap: 4px; margin: 2px 0 0;
   font-size: calc(10.5px * var(--ts, 1)); color: var(--text-dim);
 }
-/* 菜单按钮：平时隐形但**保留占位**（不占位会让标题在悬停时跳一下） */
-.pc-menu { flex: none; opacity: 0; transition: opacity var(--dur) var(--ease); }
-.paper-card:hover .pc-menu,
-.paper-card:focus-within .pc-menu { opacity: 1; }
+/* 菜单按钮常显（它是「移到分类」的唯一入口）：悬停卡片只把图标颜色提一档，
+   **不再动 opacity** —— 否则又变成"闪一下才出现"，等于没改。 */
+.pc-menu { flex: none; }
+.pc-menu :deep(.menu-trigger) { color: var(--text-faint); transition: color var(--dur) var(--ease); }
+.paper-card:hover .pc-menu :deep(.menu-trigger),
+.paper-card:focus-within .pc-menu :deep(.menu-trigger) { color: var(--text); }
 
 /* ---------------- 列表形态 ---------------- */
 .paper-card.list {
@@ -361,6 +384,5 @@ function onCard() {
 /* 窄屏：hover 操作在触屏上永远不会出现，改成常显（否则手机上进不了阅读器） */
 @media (hover: none) {
   .paper-card:not(.batch) .pc-hover { opacity: 1; background: color-mix(in srgb, var(--text) 22%, transparent); }
-  .pc-menu { opacity: 1; }
 }
 </style>
