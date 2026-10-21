@@ -7515,8 +7515,12 @@ function renderMarkdown(text?: string | null) {
         @pointerup="onFloatPointerUp"
         @pointercancel="onFloatPointerUp"
       >
-        <!-- 浮窗顶部那枚抓手（真子元素，不是 ::before：见样式里的说明） -->
-        <span class="chat-grip-pill" />
+        <!-- 浮窗顶部那枚抓手：**照 FloatingCard 那条 `.fc-grab` 的做法** ——
+             一整条 14px 高的**真元素**（`pointer-events: auto`，光标 grab），药丸只是它里面的装饰。
+             以前药丸是 `pointer-events: none`，顶部那一条命中的是下面的层，光标因此不是抓取手。 -->
+        <div class="chat-grab" data-float-grab>
+          <span class="chat-grip-pill" />
+        </div>
         <!-- 惰性挂载：没进过对话页签、也没浮起过就整块不挂（省一次会话列表请求）；
              挂上之后 v-show 收起，永不卸载。 -->
         <ReaderChat
@@ -8419,7 +8423,8 @@ function renderMarkdown(text?: string | null) {
    ⚠️ 居中只能写 `left: 50%` + `translateX(-50%)`（静态、不参与过渡）：宽 36→46 时若靠
    `margin-left: -18px` 居中，变宽那一帧会整体右偏 5px（就是"越拉越偏"）。
    ⚠️ transition **只列 width 与 background-color**：写 `all` 会把 transform 也带进补间。 */
-.reader > .chat-host.float > .chat-grip-pill {
+/* ⚠️ 用**后代**选择器：药丸现在是 `.chat-grab` 的子元素（那一整条才是真把手） */
+.reader > .chat-host.float .chat-grip-pill {
   /* 与笔记浮层的抓手（FloatingCard 的 .fc-grab-pill）逐字同一套：
      34x4 / 19% 文字色 → 拖动中 46 / 34%，220ms、同一条回弹曲线；只补间 width 与 background-color。 */
   /* 用**真实子元素**而不是 ::before：父容器 .chat-host 的 left/top/width/height 是拖动中逐帧写的，
@@ -8436,7 +8441,17 @@ function renderMarkdown(text?: string | null) {
    ⚠️ 这里**不要**再写 `:active` 兜底：:active 在整个浮窗上都会命中，于是"点卡片正文"也会让抓手
    变宽（用户口径 2026-11-24 第 1 条）；而且 `:active` 比类名晚一拍生效，两种来源的补间节奏还不一样
    —— 那正是"点抓手时的动画没有点别处细腻"的来源。 */
-.reader > .chat-host:not(.float) > .chat-grip-pill { display: none; }
+/* 顶部那条**真抓手**（照 FloatingCard 的 `.fc-grab`）：一整条 14px 高、可命中、光标 grab。
+   药丸只是它中间的装饰 —— 以前药丸自己 `pointer-events: none`，顶部这一条命中的是下面的层，
+   光标自然不是抓取手（用户口径：和笔记浮层不一致）。 */
+.chat-grab {
+  position: absolute; left: 0; right: 0; top: 0; height: 14px; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  cursor: grab; touch-action: none;
+}
+.chat-grab:active { cursor: grabbing; }
+.reader > .chat-host:not(.float) > .chat-grab { display: none; }
+.reader > .chat-host:not(.float) .chat-grip-pill { display: none; }
 /* 拖头期间**保住合成层**：卡片走 transform 移位（见 paintFloatLive），有了 will-change 就
    不必等合成器自己判断要不要提升，第一帧就跟手，也不会在提升那一刻抖一下。
 
@@ -8446,7 +8461,7 @@ function renderMarkdown(text?: string | null) {
    （跟手变成拖拽感），松手把 transform 撤回 `none` 时更要补间着滑回起点 —— 那就是抖动。
    手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
 .reader.float-dragging > .chat-host.float { will-change: transform; transition: none; }
-.reader.float-dragging > .chat-host.float > .chat-grip-pill {
+.reader.float-dragging > .chat-host.float .chat-grip-pill {
   /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。 */
   width: 46px;
   background: color-mix(in srgb, var(--text) 34%, transparent);
@@ -9013,7 +9028,7 @@ function renderMarkdown(text?: string | null) {
 @media (prefers-reduced-motion: reduce) {
   .reader, .reader-aside, .reader > .chat-host { transition: none; }
   /* 抓手：不补间宽度/颜色，但**终态照旧**（拖动中仍是 46 宽 / 34%），只是瞬间到位 */
-  .reader > .chat-host.float > .chat-grip-pill { transition: none; }
+  .reader > .chat-host.float .chat-grip-pill { transition: none; }
   .cite-pop { animation: none; }
 }
 
