@@ -303,9 +303,7 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                 "align_structure": 0}
     cursor_lock = threading.Lock()
     t_start = time.time()
-    max_tokens_current = effective_max_tokens(
-        (model_manager.get_config(_model_id_for(path), "vision").get("parameters") or {})
-        .get("max_tokens"))
+    max_tokens_current = effective_max_tokens(_max_tokens_hint(path))
     # SSE 事件名与进度字段按路区分：A 路发 `page_transcribed`、写 `transcribe_done`；
     # B 路/融合发 `page_translated`（带 `path`）、写 `translate_done`。
     event = EVENT_PAGE_TRANSCRIBED if path == "a" else EVENT_PAGE_TRANSLATED
@@ -589,6 +587,24 @@ def _model_id_for(path: str | None) -> str | None:
         return value or None
     except Exception:  # noqa: BLE001 —— 设置读不到就用默认模型
         return None
+
+
+def _max_tokens_hint(path: str | None) -> int | None:
+    """这一路**实际会用的**模型的 `max_tokens`：vision 优先，退回 generation，都没有就给 None。
+
+    ⚠️ 这里必须兜住 —— 翻译本身在没有 vision 模型时会退回纯文本 generation（见
+    `_path_provider`），但输出预算原先直接去取 **vision 配置**：没配 vision 就抛
+    `ModelNotConfiguredError`，整条页级任务在开始前就失败（2026-12-04 实测：新导入的论文
+    在没有 vision 模型时 TRANSCRIBE_EN / TRANSLATE_ZH 都是 0/15 全挂，而纯文本路径本来可用）。
+    顺序与 `_path_provider` 一致：vision → generation。
+    """
+    for mtype in ("vision", "generation"):
+        try:
+            cfg = model_manager.get_config(_model_id_for(path), mtype)
+        except Exception:  # noqa: BLE001 —— 某一路型没配，试下一个
+            continue
+        return (cfg.get("parameters") or {}).get("max_tokens")
+    return None
 
 
 def _path_provider(path: str | None = None):
