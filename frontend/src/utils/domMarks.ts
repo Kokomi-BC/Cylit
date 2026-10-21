@@ -185,6 +185,11 @@ export interface DomMark {
   /** **直接信偏移量、跳过文字校验**：跨行选择切出来的那几条共用整段选区文字，
    *  与单行切片天然不相等（见 ReaderRow 的说明）—— 偏移量本身是 DOM 空间里算的，可信。 */
   trust?: boolean;
+  /** 公式的 LaTeX（`Highlight.text`）：**优先按它认那枚 KaTeX**，偏移量/序号只当兜底。
+   *  为什么：服务端偏移与"第几条"都假定两边公式数量一致，客户端一旦少渲染一枚就整体错位
+   *  （用户报「位置不对」）；而 KaTeX 会把 LaTeX 写在 `annotation[encoding=application/x-tex]` 里，
+   *  按它找是**内容匹配**，不怕顺序变化。 */
+  formula?: string;
   /** 跨面的**公式**：它在另一面里是第几条公式（0 起）。给了就按这一面的第 N 个 ATOM 画，
    *  不走文字匹配 —— 渲染文本里没有 LaTeX（见 `formulaOrdinal`）。 */
   atom?: number;
@@ -340,6 +345,34 @@ export function formulaOrdinal(md: string, probe?: string | null): number {
   return -1;
 }
 
+/** KaTeX 节点里的 LaTeX 源码（MathML 的 annotation）；没有就给空串。 */
+function atomLatex(el: Element | null | undefined): string {
+  if (!el) return '';
+  const node = el.querySelector('annotation[encoding="application/x-tex"]');
+  return normLatex(node?.textContent ?? '');
+}
+
+/**
+ * 按 LaTeX 在**这一行**里认出那枚公式 → 它的 ATOM 段；认不出给 null。
+ *
+ * 先比完全相同，再退到片段包含（两边都 ≥ 8 个字符，免得一个 `x` 撞到别的式子）——
+ * 与后端 `find_formula_span` 同一套口径。
+ */
+function matchFormulaAtom(segs: Seg[], probe: string): Seg | null {
+  const want = normLatex(probe);
+  if (!want) return null;
+  const atoms = segs.filter((s) => s.kind === 'atom');
+  for (const seg of atoms) {
+    if (atomLatex(seg.el) === want) return seg;
+  }
+  for (const seg of atoms) {
+    const latex = atomLatex(seg.el);
+    if (Math.min(latex.length, want.length) < 8) continue;
+    if (latex.includes(want) || want.includes(latex)) return seg;
+  }
+  return null;
+}
+
 /** 渲染文本里所有 ATOM 的位置（公式各占 1 个字符）。 */
 function atomPositions(text: string): number[] {
   const out: number[] = [];
@@ -370,6 +403,14 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
          正文看不到彩色底」）。偏移量是前端在同一套 DOM 遍历里算的，直接信它。 */
       if (wrapRange(segs, start, end, m.color, m.id)) done += 1;
       continue;
+    }
+    /* 公式：**先按 LaTeX 认出那枚 KaTeX**（内容匹配，不怕顺序变化），认不出才退到序号/偏移。 */
+    if (m.formula) {
+      const hit = matchFormulaAtom(segs, m.formula);
+      if (hit && wrapRange(segs, hit.start, hit.end, m.color, m.id)) {
+        done += 1;
+        continue;
+      }
     }
     /* 跨面的**公式**高亮：文字里没有 LaTeX，只认 ATOM 序号（见 formulaOrdinal）。 */
     if (typeof m.atom === 'number' && m.atom >= 0) {

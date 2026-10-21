@@ -46,9 +46,13 @@ const myMarks = computed(() => (props.highlights ?? [])
        一个 U+FFFC）。两面公式的顺序一致，所以取"它在另一面里是第几条"，到这一面指同一个
        ATOM —— 这就是"跨面的公式高亮从来不画"的修法（2026-12-06）。 */
     const otherMd = props.side === 'zh' ? props.row.original : props.row.translation;
-    const atom = loose && isFormulaText(h.text) ? formulaOrdinal(otherMd ?? '', h.text) : -1;
+    const formula = isFormulaText(h.text) ? String(h.text) : '';
+    const atom = loose && formula ? formulaOrdinal(otherMd ?? '', formula) : -1;
     return {
       start: h.start, end: h.end, color: h.color, id: h.id, text: h.text,
+      /* 公式给 LaTeX：markRanges 会按它去认那枚 KaTeX（同面也认 —— 服务端偏移量在
+         客户端少渲染一枚公式时就会错位，用户报的「位置不对」就是这么来的）。 */
+      formula,
       atom,
       loose: loose && atom < 0,
       /* 跨行选择切出来的几条共用整段选区文字 → 文字校验必然失败，改信偏移量 */
