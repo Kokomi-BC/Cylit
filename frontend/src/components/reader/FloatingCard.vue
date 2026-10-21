@@ -851,7 +851,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-grab-pill {
   width: 34px; height: 4px; border-radius: 2px;
   background: color-mix(in srgb, var(--text) 19%, transparent);
-  transition: width 220ms cubic-bezier(.22, 1.2, .36, 1),
+  /* 变长走 **transform: scaleX**，不补间 width（与对话浮窗同一套，2026-12-03）：
+     width 是布局属性，每帧重排这条药丸；它就压在正在被拖的合成层上，一帧重排就吃掉
+     拖动的余量，看起来就是「抓手动画偶尔卡一下」。scaleX 只让合成器换贴图。 */
+  transform: scaleX(1);
+  will-change: transform;
+  transition: transform 220ms cubic-bezier(.22, 1.2, .36, 1),
               background-color 220ms var(--ease);
 }
 /* 抓手反馈与对话浮窗**完全同源**（用户口径 2026-11-24）：按下跑同一条三段关键帧，
@@ -859,8 +864,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
    两边若各用一套（这边 transition、那边关键帧），观感就会"明显不一致"——这是上一轮的教训。 */
 .fc-grab.dragging .fc-grab-pill,
 .fc-grab:active .fc-grab-pill {
-  /* 纯 transition（34→46 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。 */
-  width: 46px;
+  /* 纯 transition（34→46 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。
+     46/34 = 1.3529；弹丸居中，从中间往两边长，与改 width 的观感一致。 */
+  transform: scaleX(1.3529);
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
 

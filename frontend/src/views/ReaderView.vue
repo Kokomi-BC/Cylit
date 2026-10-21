@@ -8431,12 +8431,16 @@ function renderMarkdown(text?: string | null) {
      34x4 / 19% 文字色 → 拖动中 46 / 34%，220ms、同一条回弹曲线；只补间 width 与 background-color。 */
   /* 用**真实子元素**而不是 ::before：父容器 .chat-host 的 left/top/width/height 是拖动中逐帧写的，
      伪元素跟着宿主一起被标记为 dirty，过渡会被打断 —— 那正是"浮窗抓手没有回弹感"的原因。 */
-  display: block; position: absolute; top: 5px; left: 50%; transform: translateX(-50%);
+  display: block; position: absolute; top: 5px; left: 50%;
+  /* ⚠️ 变宽走 **transform: scaleX**，不再补间 width（用户口径 2026-12-03 第 4 条：抓手动画发卡）。
+     width 是布局属性：每帧都要重排 + 重绘这一条，而它正压在**正在被拖的合成层**上，
+     一帧重排就把拖动的那点余量吃掉了。scaleX 只是合成器换贴图，主线程一帧都不占。
+     46/34 = 1.3529（与原来看起来完全等宽的终态）。 */
   width: 34px; height: 4px; border-radius: 999px; z-index: 5; pointer-events: none;
+  transform: translateX(-50%) scaleX(1);
   background: color-mix(in srgb, var(--text) 19%, transparent);
-  /* 提示合成器这一层会变宽：避免每次改 width 都走一次完整重绘（拖动中体感更顺） */
-  will-change: width;
-  transition: width 220ms cubic-bezier(.22, 1.2, .36, 1),
+  will-change: transform;
+  transition: transform 220ms cubic-bezier(.22, 1.2, .36, 1),
               background-color 220ms var(--ease);
 }
 /* 拖动中才变宽（`floatDragging` = `.reader.float-dragging`，由 onFloatPointerDown 直接挂在根元素上）。
@@ -8466,8 +8470,9 @@ function renderMarkdown(text?: string | null) {
    手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
 .reader.float-dragging > .chat-host.float { will-change: transform; transition: none; }
 .reader.float-dragging > .chat-host.float .chat-grip-pill {
-  /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。 */
-  width: 46px;
+  /* 与笔记抓手同一套：纯 transition、220ms、回弹曲线过冲一次。
+     只换长度（scaleX 1.3529 = 视觉上的 34→46），不碰宽度 —— 见上面那条注释。 */
+  transform: translateX(-50%) scaleX(1.3529);
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
 /* 会话头 / 列表头那一行：浮窗里往上留出抓手的位置，并整行当拖动把手 */
