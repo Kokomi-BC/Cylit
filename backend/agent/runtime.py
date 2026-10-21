@@ -711,9 +711,10 @@ class AgentRuntime:
         if name == "FunctionToolResultEvent":
             tool = getattr(getattr(event, "part", None), "tool_name", "?")
             step = state.log.tool_done(tool, round=deps.model_calls)
+            ok, detail = _tool_outcome(getattr(event, "part", None))
             out: list[dict] = [{"type": "tool", "round": deps.model_calls,
                                 "tool": tool, "status": "done", "args_digest": "",
-                                "ms": step.get("ms")}]
+                                "ms": step.get("ms"), "ok": ok, "detail": detail}]
             for cit in deps.registry.all():
                 if cit.ref not in sent_refs:
                     sent_refs.add(cit.ref)
@@ -915,6 +916,47 @@ class AgentRuntime:
 # --------------------------------------------------------------------------
 # 小工具
 # --------------------------------------------------------------------------
+
+
+def _tool_outcome(part: Any) -> tuple[bool, str]:
+    """工具返回的**成败**与一句摘要（前端在轨迹里标 ✓/✗ 并说清"改了什么"）。
+
+    为什么要把结果回给前端（用户口径 2026-12-06「模型调用工具时，实时显示效果」）：
+    步骤行以前只有"工具名 + 入参摘要 + 耗时"，工具到底成功没有、写了什么，都要等整轮回答
+    出来才知道。工具返回体里的 ``ok: false`` 是最常见的失败形态（拒绝也是正常返回），
+    所以这里既看异常标记，也看返回体里的 ``ok``。
+    """
+    content = getattr(part, "content", None)
+    if content is None:
+        content = getattr(part, "result", None)
+    if isinstance(content, str):
+        text = content
+    elif content is None:
+        text = ""
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(content)
+    ok = not bool(getattr(part, "is_error", False))
+    payload: Any = None
+    if text[:1] in ("{", "["):
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            payload = None
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        ok = False
+    detail = ""
+    if isinstance(payload, dict):
+        for key in ("error", "message", "note", "hint"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                detail = value.strip()
+                break
+    if not detail:
+        detail = " ".join(text.split())
+    return ok, detail[:120]
 
 
 def _digest(args: Any) -> str:

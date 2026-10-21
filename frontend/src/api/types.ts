@@ -941,6 +941,12 @@ export interface AgentStep {
   digest?: string;
   status?: 'running' | 'done' | string;
   ms?: number | null;
+  /** 工具调用**成败**（`ok=false` 时前端标红，并把 `detail` 当原因显示） */
+  ok?: boolean;
+  /** 工具返回的一句话摘要（写操作 = 改了什么；失败 = 原因） */
+  detail?: string;
+  /** 前端本地字段：这一步开始的时刻（`running` 时用它走秒） */
+  startedAt?: number;
 }
 
 /** 一轮问答的过程轨迹：有序的 `steps` + 整轮耗时 + 轮数。 */

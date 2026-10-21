@@ -510,8 +510,12 @@ function fmtElapsed(ms?: number) {
  * 工具 → **名词短语**（步骤行用）。与 `TOOL_LABELS`（进行时，给"正在…"抬头用）
  * 刻意分开：步骤行写的是"它干了什么"（翻书架），抬头写的是"它现在在干什么"。
  */
+/** 写操作（改用户数据）：它的返回摘要值得直接展示，且做完要立刻刷新侧栏。 */
+const WRITE_TOOL = /note|highlight|annotation|page_edit|page_markdown_edit|page_product|meta_write/i;
+
 const TOOL_STEPS: Record<string, string> = {
   paper_search: '检索论文', kb_search: '检索知识库',
+  highlight_manage: '标高亮', note_manage: '写笔记', paper_meta_write: '填元数据',
   page_markdown_get: '读正文', block_get: '读段落',
   page_image_get: '看页面图', figure_list: '看插图清单', figure_image_get: '看插图',
   formula_get: '取公式', translate_get: '取译文',
@@ -527,6 +531,7 @@ const TOOL_ICONS: Record<string, string> = {
   formula_get: 'formula', translate_get: 'translate',
   library_list: 'library', notes_search: 'note',
   page_markdown_edit: 'edit',
+  highlight_manage: 'formula', note_manage: 'note', paper_meta_write: 'check',
 };
 
 /** 抬头右侧那句话的**分类**：与 DSH 的"已读取文件，已搜索代码"同一种写法。 */
@@ -643,6 +648,36 @@ function toggleStep(id: string, i: number) {
 }
 
 /** 步骤行右侧的参数摘要：`query=随机旋转` → `随机旋转`（键名对用户没意义）。 */
+/* ------------------------------ 工具步的实时反馈 ------------------------------ */
+
+/**
+ * 走秒：`running` 的步骤要看得见"还在跑"。
+ *
+ * 为什么需要它（用户口径 2026-12-06「模型调用工具时，实时显示效果」）：耗时以前要等工具
+ * **返回之后**才有值，跑得久的那几步（看页面图、检索知识库）在界面上是**完全静止**的，
+ * 看上去像卡住了。这里只在整轮进行中每 0.5 秒推进一个计数器，模板按 `startedAt` 现算。
+ */
+const tickMs = ref(0);
+/* 不另起一个定时器：整轮本来就有 200ms 的跑表（见 `runWatch`），跟着它跳一格即可。 */
+watch(elapsedMs, () => { tickMs.value = Date.now(); });;
+
+/** 这一步的耗时（跑着就现算，跑完用后端给的 `ms`）。 */
+function stepMs(s: AgentStep): number {
+  if (s.status === 'running' && s.startedAt) return Math.max(0, tickMs.value - s.startedAt);
+  return Number(s.ms || 0);
+}
+
+/**
+ * 这一步要不要展示返回摘要：**失败一定展示**（原因比耗时有用），写操作也展示
+ * （"改了什么"就是用户要的效果）；读工具的成功返回通常是一大段 JSON，展示它只是噪音。
+ */
+function stepDetail(s: AgentStep): string {
+  const text = String(s.detail || '').trim();
+  if (!text) return '';
+  if (s.ok !== false && !WRITE_TOOL.test(String(s.tool || ''))) return '';
+  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+}
+
 function fmtDigest(digest?: string) {
   const text = String(digest || '').trim();
   if (!text) return '';
@@ -1126,14 +1161,23 @@ function onEvent(name: string, data: any) {
     const steps = ensureLive().run!.steps!;
     if (data?.status === 'start') {
       steps.push({ kind: 'tool', round: Number(data?.round || 0), tool: data?.tool ?? '',
-                   digest: String(data?.args_digest || ''), status: 'running' });
+                   digest: String(data?.args_digest || ''), status: 'running',
+                   startedAt: Date.now() });
     } else {
       const open = [...steps].reverse()
         .find(s => s.kind === 'tool' && s.tool === data?.tool && s.status === 'running');
-      if (open) { open.status = 'done'; open.ms = Number(data?.ms || 0) || null; }
-      /* agent 写了笔记 / 高亮 / 批注：**当帧就通知父组件刷新**，不必等整轮跑完、更不必刷新页面
-         （用户口径 2026-11-26：agent 加的笔记要实时显示）。名字按前缀判，工具怎么命名都兜得住。 */
-      if (/note|highlight|annotation/i.test(String(name))) emit('refresh-side');
+      const ms = Number(data?.ms || 0);
+      if (open) {
+        open.status = 'done';
+        open.ok = data?.ok !== false;
+        open.detail = String(data?.detail || '');
+        open.ms = ms || (open.startedAt ? Date.now() - open.startedAt : null);
+      }
+      /* agent 写了笔记 / 高亮 / 修订产物：**当帧就通知父组件刷新**，不必等整轮跑完、更不必刷新
+         页面（用户口径 2026-11-26：agent 加的笔记要实时显示）。
+         ⚠️ 判的是**工具名**（`data.tool`）：以前写成 `String(name)`，而 `name` 是事件名 `"tool"`，
+         正则永远不成立 —— 于是这条刷新从来没发生过（2026-12-06 修）。 */
+      if (WRITE_TOOL.test(String(data?.tool || ''))) emit('refresh-side');
     }
     return;
   }
@@ -2012,11 +2056,16 @@ defineExpose({ uploadFiles, ensureThread });
                     <span class="step-text">{{ s.text }}</span>
                   </div>
                   <!-- 工具段：短语 + 参数摘要（短语来自 TOOL_STEPS，与"正在…"那套同源） -->
-                  <div v-else class="run-step tool" :class="{ running: s.status === 'running' }">
+                  <div v-else class="run-step tool"
+                       :class="{ running: s.status === 'running', bad: s.ok === false }">
                     <AppIcon :name="toolIcon(s.tool)" :size="11" />
                     <span class="step-tag">{{ stepLabel(s.tool) }}</span>
-                    <span v-if="fmtDigest(s.digest)" class="step-arg">· {{ fmtDigest(s.digest) }}</span>
-                    <span v-if="s.ms" class="step-ms">{{ fmtMs(s.ms) }}</span>
+                    <span v-if="stepDetail(s)" class="step-arg">· {{ stepDetail(s) }}</span>
+                    <span v-else-if="fmtDigest(s.digest) && s.status === 'running'"
+                          class="step-arg">· {{ fmtDigest(s.digest) }}</span>
+                    <AppIcon v-if="s.ok === false" class="step-flag bad" name="error" :size="11" />
+                    <AppIcon v-else-if="s.ok === true" class="step-flag ok" name="check" :size="11" />
+                    <span v-if="stepMs(s)" class="step-ms">{{ fmtMs(stepMs(s)) }}</span>
                   </div>
                 </template>
               </div>
@@ -2590,6 +2639,11 @@ defineExpose({ uploadFiles, ensureThread });
 .run-step .step-arg { color: var(--text-faint); overflow-wrap: anywhere; }
 .run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: calc(10.5px * var(--ts, 1)); }
 .run-step.tool.running .step-tag { color: var(--accent-text); }
+/* 成败标记：跑完给一个淡勾，失败换成红色的感叹（原因直接写在 `step-arg` 里） */
+.run-step .step-flag { flex: none; margin-left: 4px; opacity: .55; }
+.run-step .step-flag.ok { color: var(--ok-text, var(--accent-text)); }
+.run-step .step-flag.bad { opacity: 1; color: var(--danger-text, #c0392b); }
+.run-step.tool.bad .step-tag, .run-step.tool.bad .step-arg { color: var(--danger-text, #c0392b); }
 /* 阶段提示（准备档案 / 检索 / 组织回答）：比步骤再淡一档，它只是过程的背景 */
 .run-step.stage .step-text { color: var(--text-faint); font-style: italic; }
 /* 思考段：默认只露 4 行（一轮思考可能上万字），点一下展开全文。
