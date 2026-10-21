@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.services.paper import row_identity
 from backend.services.understanding.understanding_service import _heal_pids
 
@@ -55,6 +57,48 @@ def test_heal_pid_only_looks_within_the_same_page():
 
 def test_heal_pid_needs_a_registered_fingerprint():
     assert row_identity.heal_pid(_reg(), "r-unknown", [_row("r-new", 3, OLD)]) is None
+
+
+def _assign_page(tmp_path, rows: list[dict]) -> dict:
+    """跑一次真实的身份分配（写 tmp 的注册表，不碰 data/）。"""
+    row_identity.assign("p1", 3, rows, root=tmp_path)
+    return row_identity.load("p1", root=tmp_path)
+
+
+def test_retirement_records_the_slot_and_its_successor(tmp_path):
+    """重切之后必须留下"这条身份原来在第几行、那里现在是谁"。"""
+    v1 = [{"id": "p003-00", "original": OLD},
+          {"id": "p003-01", "original": "Second paragraph of the original split."}]
+    v2 = [{"id": "p003-00", "original": OLD},
+          {"id": "p003-01", "original": "Second paragraph of the original split, cut later."},
+          {"id": "p003-02", "original": "A brand new row that did not exist before."}]
+    first = _assign_page(tmp_path, v1)
+    old_pid = first["rows"][1]["pid"]
+    _assign_page(tmp_path, v2)
+    reg = row_identity.load("p1", root=tmp_path)
+    retired = {e["pid"]: e for e in reg["retired"]}
+    if old_pid in retired:                        # 相似度过阈值时会被认领，不算退休
+        entry = retired[old_pid]
+        assert entry["order"] == 1
+        assert entry["successor"], "退休条目必须记下槽位上的新行"
+        assert isinstance(entry["successor_similarity"], float)
+
+
+def test_heal_pid_follows_a_trusted_successor():
+    """映射可信（过 0.5）时按表跳，哪怕与任何活行的相似度都低。"""
+    rows = [_row("r-new", 3, "Completely different wording appears here now.", "p003-01")]
+    retired = [{"pid": "r-old", "page": 3, "order": 1, "fp": _fp(OLD),
+                "successor": "r-new", "successor_similarity": 0.62, "reason": "gone"}]
+    hit = row_identity.heal_pid(_reg(rows, retired), "r-old", rows)
+    assert hit and hit["pid"] == "r-new" and hit["row_id"] == "p003-01"
+
+
+def test_heal_pid_ignores_an_untrusted_successor():
+    """相似度只有 0.4 的"槽位新行"不是后继 —— 顺着它绑就是编造精确度。"""
+    rows = [_row("r-new", 3, "Completely different wording appears here now.", "p003-01")]
+    retired = [{"pid": "r-old", "page": 3, "order": 1, "fp": _fp(OLD),
+                "successor": "r-new", "successor_similarity": 0.40, "reason": "gone"}]
+    assert row_identity.heal_pid(_reg(rows, retired), "r-old", rows) is None
 
 
 def test_partial_pids_are_pruned_so_the_rest_stays_row_level():

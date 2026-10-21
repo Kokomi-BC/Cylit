@@ -146,7 +146,12 @@ def test_deleted_row_is_retired_as_gone(tmp_path):
     gone = reg["retired"][0]
     assert gone["pid"] == pids[1]
     assert gone["page"] == 15 and gone["reason"] == "gone"
-    assert set(gone) == {"pid", "page", "fp", "retired_at", "reason"}
+    # 退休条目现在还带"槽位 + 后继"（重切时靠它把引用接回去，见 row_identity.heal_pid）：
+    # 这里第 2 行被删掉、槽位上换成了原来的第 3 行，相似度低 → 记下但不可信（< 0.5）。
+    assert set(gone) == {"pid", "page", "order", "fp", "retired_at", "reason",
+                         "successor", "successor_similarity"}
+    assert gone["order"] == 1 and gone["successor"] == pids[2]
+    assert float(gone["successor_similarity"]) < ri.CHANGED_THRESHOLD
 
 
 # --------------------------------------------------------------------------

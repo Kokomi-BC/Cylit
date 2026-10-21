@@ -120,6 +120,7 @@ def plan_page(rows: list[dict], existing: list[dict]) -> dict:
     """
     fps = [fingerprint(r) for r in rows]
     pool = sorted(existing, key=lambda e: int(e.get("order") or 0))
+    by_pid_all = {str(e["pid"]): e for e in pool}
 
     # ① 精确命中：同 fp 的条目按 order 排队，行按页内顺序一对一取用。
     buckets: dict[str, list[dict]] = {}
@@ -165,7 +166,25 @@ def plan_page(rows: list[dict], existing: list[dict]) -> dict:
             pids.append(item["pid"])
 
     retired = [str(e["pid"]) for e in pool if str(e["pid"]) not in used]
-    return {"pids": pids, "created": created, "retired": retired, "reused": reused}
+    # 退休条目的**后继**：同一槽位（page + order）上的新行是哪一条。
+    #
+    # 为什么是"槽位"而不是"最像的那一行"：重切之后"原来那一行"不再作为实体存在（内容
+    # 跨到了别的行上，实测退休指纹与同页活行的相似度只有 0.40~0.54），任何"最像"都是猜。
+    # 能确定记下来的只有位置事实 —— 这条身份原来在第几行，那里现在是谁。相似度一并存下，
+    # 让调用方自己判断这份映射可信到什么程度（`heal_pid` 只认过 CHANGED_THRESHOLD 的）。
+    old_fp = {str(e["pid"]): str(e.get("fp") or "") for e in pool}
+    successors: dict[str, dict] = {}
+    for pid in retired:
+        try:
+            slot = int((by_pid_all.get(pid) or {}).get("order"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= slot < len(pids)):
+            continue
+        successors[pid] = {"pid": pids[slot],
+                           "similarity": round(similarity(old_fp.get(pid, ""), fps[slot]), 4)}
+    return {"pids": pids, "created": created, "retired": retired, "reused": reused,
+            "successors": successors}
 
 
 # --------------------------------------------------------------------------
@@ -284,12 +303,19 @@ def assign_pages(paper_id: str, pages: dict[int, list[dict]],
             merged += [{**item, "page": page} for item in plan["created"]]
             if plan["retired"]:
                 fps = [fingerprint(r) for r in todo[page]]
+                successors = plan.get("successors") or {}
                 for pid in plan["retired"]:
                     old = by_pid.get(str(pid)) or {}
+                    succ = successors.get(str(pid)) or {}
                     retired.append({
                         "pid": str(pid),
                         "page": page,
+                        # 位子：有它就等于"这条身份当时在第几行"，重切后能对回去
+                        "order": old.get("order"),
                         "fp": str(old.get("fp") or ""),
+                        # 后继：内容被切到哪条新行（愈合时查表，不再靠相似度搜索）
+                        "successor": str(succ.get("pid") or ""),
+                        "successor_similarity": succ.get("similarity"),
                         "retired_at": now_iso(),
                         "reason": _retire_reason(old, fps),
                     })
@@ -392,6 +418,30 @@ def heal_pid(registry: dict, pid: str, rows: list[dict] | None,
                   if isinstance(e, dict) and str(e.get("pid")) == pid), None)
     if not entry:
         return None                     # 压根没登记过：没有指纹可用
+    # ① 后继映射优先（确定性）：重切时 `plan_page` 已经把"这条身份的内容去了哪一行"记下来了。
+    #    顺着映射链走（身份可能连着退休几轮），带环保护。
+    #    只认可信的映射：`successor_similarity` 必须过 CHANGED_THRESHOLD（"这一行还在、只是
+    #    文本变了"的那条线）；低于它就当没有映射，绝不顺着槽位硬绑。
+    live = {str(e.get("pid")) for e in (reg.get("rows") or []) if isinstance(e, dict)}
+    cur, hops = entry, 0
+    while hops < 5:
+        nxt = str(cur.get("successor") or "")
+        try:
+            trusted = float(cur.get("successor_similarity") or 0.0) >= CHANGED_THRESHOLD
+        except (TypeError, ValueError):
+            trusted = False
+        if not nxt or not trusted:
+            break
+        if nxt in live:
+            row = next((r for r in rows if str(r.get("pid")) == nxt), None)
+            return {"pid": nxt, "row_id": str((row or {}).get("id") or ""),
+                    "page": cur.get("page"),
+                    "similarity": float(cur.get("successor_similarity") or 0.0)}
+        nxt_entry = next((e for e in (reg.get("retired") or [])
+                          if isinstance(e, dict) and str(e.get("pid")) == nxt), None)
+        if nxt_entry is None or nxt_entry is cur:
+            break
+        cur, hops = nxt_entry, hops + 1
     try:
         page = int(entry.get("page"))
     except (TypeError, ValueError):
