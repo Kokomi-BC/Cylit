@@ -78,6 +78,18 @@ function toLoginIfExpired(status: number, code: string): void {
   if (typeof location !== 'undefined') location.href = '/Login';
 }
 
+/**
+ * **可重试的瞬时失败**：nginx 连不上上游（重启窗口）时回 502/503/504。
+ *
+ * 为什么需要：部署时 `pm2 restart cylit-api` 有 1~2 秒没有上游，nginx 立刻回 502。
+ * 阅读器是**逐页**拉 `/annotations/image-marks?key=page:N-bilingual`，正好撞进这个窗口的那一页
+ * 就会弹一次「批注读取错误」，刷新又好了（用户 2026-12-04 报的正是这个）。
+ * 只重试**幂等**的 GET，且最多两次（400ms / 900ms）—— 真故障时只多花 1.3 秒，不会把请求堆起来。
+ */
+const RETRY_STATUS = new Set([502, 503, 504]);
+const RETRY_DELAYS = [400, 900];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /** 一个请求要拿到的 `data` 的形状由调用方用泛型声明（后端是动态 JSON，不做运行时校验）。 */
 export async function request<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, query, form, signal } = opts;
@@ -90,12 +102,26 @@ export async function request<T = any>(path: string, opts: RequestOptions = {}):
     init.body = JSON.stringify(body);
   }
 
-  let res: Response;
-  try {
-    res = await fetch(url, init);
-  } catch (err: any) {
-    if (err?.name === 'AbortError') throw err;
-    throw new ApiError(`无法连接后端（${API_BASE}）：${err?.message ?? err}`, { code: 'NETWORK_ERROR' });
+  const retriable = method === 'GET';
+  let res: Response | null = null;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      res = await fetch(url, init);
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+      if (retriable && !signal?.aborted && attempt < RETRY_DELAYS.length) {
+        await sleep(RETRY_DELAYS[attempt]);
+        continue;
+      }
+      throw new ApiError(`无法连接后端（${API_BASE}）：${err?.message ?? err}`, { code: 'NETWORK_ERROR' });
+    }
+    if (retriable && RETRY_STATUS.has(res.status) && !signal?.aborted
+        && attempt < RETRY_DELAYS.length) {
+      try { await res.body?.cancel(); } catch { /* 丢掉这一响应体即可 */ }
+      await sleep(RETRY_DELAYS[attempt]);
+      continue;
+    }
+    break;
   }
 
   const text = await res.text();
