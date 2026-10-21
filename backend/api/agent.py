@@ -11,6 +11,7 @@ agent 服务没有数据库凭据，它要什么都得从这里过。
 
 from __future__ import annotations
 
+import asyncio
 from typing import AsyncIterator
 
 from fastapi import (APIRouter, Body, File, Header, HTTPException, Query, Request,
@@ -20,10 +21,13 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from backend.api.response import envelope
 from backend.core.config import get_settings, normalize_agent_limits
 from backend.core.errors import ProviderError, ValidationError
+from backend.core.logging import get_logger
 from backend.services.agent import (attachments, bridge, conversations, model_config,
                                     project, skills_store)
 from backend.services.paper import paper_service
 from backend.services.translation import page_edit
+
+log = get_logger(__name__)
 
 router = APIRouter(tags=["agent"])
 
@@ -343,22 +347,63 @@ def _branch_edit(conversation_id: str, user_id: str, question: str,
     return user_message["message_id"], history
 
 
+#: 后台还在跑的问答泵（**唯一目的**：别让它们被 GC 掉）。
+_ASK_PUMPS: set[asyncio.Task] = set()
+
+
 async def _ask_stream(body: dict, conversation_id: str) -> AsyncIterator[bytes]:
     """问答的 SSE：自动压缩提示 → 透传 agent 字节。
 
     **没有追问建议**：那一轮要用另一套 instructions，与主对话的缓存前缀毫无重叠，
     等于每轮多打一次冷启动的 API；而"接下来问什么"本来就能靠接着聊解决
     （阅读器还有目录与引用跳转）。为一个锦上添花的功能付这个代价不值。
+
+    ⚠️ **这一轮不能绑在请求上**（2026-12-06，用户报「后台跑对话没有历史记录」）：
+    以前是直接 `async for` 上游，客户端切走 / 关面板 / 刷新时这个生成器被取消，
+    httpx 随之关闭上游连接 —— **agent 那一轮连落库都没跑到**（实测会话里只剩用户那条提问，
+    日志里既没有落库失败也没有报错）。现在把上游灌进一个**独立任务 + 队列**：
+    读的一侧断了只是没人取队列，上游照常跑完、照常在 `done` 之前落库。
     """
+    queue: asyncio.Queue = asyncio.Queue()
+    reading = True
+
+    async def pump() -> None:
+        """把上游字节灌进队列；读端走了就丢弃（**绝不取消上游**）。"""
+
+        def offer(frame) -> None:
+            if reading:
+                queue.put_nowait(frame)
+
+        try:
+            if await _auto_compress(conversation_id):
+                offer(bridge.frame("stage", stage="compressing",
+                                   message="上下文接近预算，已自动压成要点，接着聊…"))
+            async for chunk in bridge.stream_ask(body):
+                offer(chunk)
+        except ProviderError as exc:
+            offer(bridge.frame("error", code=exc.code or "PROVIDER_ERROR",
+                               message=exc.message, retryable=bool(exc.retryable)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 兜底：别让后台任务把异常吞成静默
+            log.warning("问答上游异常（这一轮可能没有落库）：%s", exc)
+            offer(bridge.frame("error", code="INTERNAL", message=str(exc)[:200]))
+        finally:
+            if reading:
+                queue.put_nowait(None)
+
+    task = asyncio.create_task(pump())
+    _ASK_PUMPS.add(task)
+    task.add_done_callback(_ASK_PUMPS.discard)
     try:
-        if await _auto_compress(conversation_id):
-            yield bridge.frame("stage", stage="compressing",
-                               message="上下文接近预算，已自动压成要点，接着聊…")
-        async for chunk in bridge.stream_ask(body):
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
             yield chunk
-    except ProviderError as exc:
-        yield bridge.frame("error", code=exc.code or "PROVIDER_ERROR",
-                           message=exc.message, retryable=bool(exc.retryable))
+    finally:
+        # 读端结束（正常读完 or 客户端断开）：停止往队列塞，但**不动 task**
+        reading = False
 
 
 async def _auto_compress(conversation_id: str) -> bool:
