@@ -12,6 +12,7 @@
 import { computed, ref } from 'vue';
 import type { MarkdownFormula } from '@/api/types';
 import { latexToHtml } from '@/composables/useMarkdown';
+import { splitNoteRefs } from '@/utils/noteRefs';
 import { highlightCss } from '@/utils/highlightColors';
 import AppIcon from '@/components/AppIcon.vue';
 import type { OverlayAnchor } from '@/api/types';
@@ -34,14 +35,6 @@ function normLatex(value?: string): string {
 /** 这条公式的标注信息（没有就是 undefined）。 */
 function markOf(f: MarkdownFormula) {
   return props.marked.get(normLatex(f.latex));
-}
-
-/** 点圆点：打开那一条笔记；没有笔记时也打开浮层（不传 note 就是 view 模式新建）。 */
-function openMark(f: MarkdownFormula, ev: MouseEvent) {
-  ev.stopPropagation();
-  const info = markOf(f);
-  if (!info) return;
-  emit('open-note', { note: info.note ?? null, highlight: info.highlight, mode: 'view' });
 }
 
 const emit = defineEmits<{
@@ -95,11 +88,20 @@ function splitLabel(latex: string): { label: string; body: string } {
 }
 
 /** 浮层打开：**补回定界符**再交给 Markdown 渲染器（列表里的 `latex` 已经把 `$` 去掉了）。 */
-function openOverlay(f: { body: string; display: boolean }, ev?: MouseEvent) {
+/**
+ * 打开公式浮层：**上面是公式，下面接那条笔记**（用户口径 2026-12-06）。
+ *
+ * 笔记正文里的标号注释（`<!-- refs:… -->`）先剥掉再拼 —— 浮层用的是通用 Markdown 渲染，
+ * 注释本来也会被丢弃，剥掉只是为了不把一行注释塞进正文里。
+ */
+function openOverlay(f: { body: string; display: boolean } & MarkdownFormula, ev?: MouseEvent) {
+  const info = markOf(f);
+  const body = f.display ? `$$${f.body}$$` : `$${f.body}$`;
+  const noteMd = splitNoteRefs(info?.note?.content_md ?? '').text.trim();
   emit('overlay', {
     icon: 'formula',
-    title: '公式',
-    markdown: f.display ? `$$${f.body}$$` : `$${f.body}$`,
+    title: noteMd ? '公式与笔记' : '公式',
+    markdown: noteMd ? `${body}\n\n---\n\n${noteMd}` : body,
     /* 浮层贴着这枚按钮下方打开（用户口径：不要跑到左上角） */
     anchor: anchorOf(ev),
   });
@@ -148,17 +150,16 @@ const rows = computed(() => filtered.value.map((f) => {
           class="badge dim"
           :title="`这一页还没翻译，公式来自解析产物${f.grade ? `（${f.grade} 级）` : ''}`"
         >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
-        <!-- 标过的公式：圆点用**这条高亮自己的颜色**，点开就是那条笔记（用户口径 2026-12-06） -->
-        <button
-          v-if="markOf(f)"
-          type="button"
-          class="marked-dot"
-          :style="{ background: highlightCss(markOf(f)!.color) }"
-          :title="markOf(f)!.note ? '打开这条公式的笔记' : '这条公式已标注（无笔记）'"
-          @click="openMark(f, $event)"
-        />
         <span class="spacer" />
-        <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f, $event)">
+        <!-- 标注过的公式：**浮层按钮描一圈高亮色**（替代原来那枚圆点），点开就是"公式 + 笔记" -->
+        <button
+          class="btn icon sm"
+          :class="{ marked: markOf(f) }"
+          :style="{ '--hl': highlightCss(markOf(f)?.color || '') }"
+          :title="markOf(f)?.note ? '打开公式与它的笔记' : '浮层打开'"
+          data-formula-overlay
+          @click="openOverlay(f, $event)"
+        >
           <AppIcon name="pip" :size="13" />
         </button>
         <button class="btn icon sm" title="复制 LaTeX" @click="emit('copy', f.body)">
@@ -179,10 +180,13 @@ const rows = computed(() => filtered.value.map((f) => {
 </template>
 
 <style scoped>
-/* 「已标注」：小圆点走主题色，视觉重量与 `.badge` 同级（不抢公式本身） */
-.marked-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
-.marked-sum { margin-left: auto; padding-left: 6px; }
+/* 标注过的公式：浮层按钮**描一圈高亮色**（`--hl` 由模板按那条高亮的颜色写进来）。
+   比原来的圆点好两点：不额外占位；"点开就是公式 + 笔记"由按钮自己承担，不必多点一个入口。 */
+.btn.icon.marked {
+  border-color: var(--hl, var(--accent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hl, var(--accent)) 45%, transparent);
+}
+.btn.icon.marked:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--hl, var(--accent)) 55%, transparent); }
 .fl { display: flex; flex-direction: column; gap: 6px; }
 /* top: -8px 吸收滚动容器的 padding-top：否则 sticky 栏头上会留 8px 缝，
    下面的公式正好从缝里露出半行（用户截图报过）。负数 offset 是 sticky 允许的。
