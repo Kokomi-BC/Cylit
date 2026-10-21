@@ -9,7 +9,7 @@
  * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
  * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
-import { computed, nextTick, ref, watch, type CSSProperties } from 'vue';
+import { computed, nextTick, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
 import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
@@ -251,6 +251,35 @@ const DOT_ONLY = /^[\s.。…·•・,，;；:：\-—_*~?？!！'"“”‘’]
 const MATH_ONLY = /^\s*\$\$[\s\S]*\$\$\s*$|^\s*\$(?!\$)[^$\n]*\$\s*$/;
 const quoteIsBlock = (r: FeedRow) => !!r.quoteMd || MATH_ONLY.test(r.quote || '');
 const quoteBlockHtml = (r: FeedRow) => mdToHtml(r.quoteMd || r.quote);
+
+/**
+ * 把卡片里的公式**缩放到能看全**。
+ *
+ * 为什么（用户口径 2026-12-06「有些就是散块，根本不是公式」）：卡片只有侧栏那么窄，而一条
+ * 行间公式常常比它宽两三倍 —— `.quote-md` 靠 `overflow-x: auto` 兜底，于是一屏里只露出
+ * 公式的**左半截**，看着就像几个散落的符号。存储一直是完整的 LaTeX，问题只在"放不下"。
+ *
+ * 做法：量出公式的自然宽度与卡片宽度，按比例 `zoom` 下去（`zoom` 会**改变占位**，用它而不是
+ * `transform: scale` —— 后者不缩布局盒，会把卡片撑出横向滚动条）。最小到 0.5 倍：再小就\n"
+ * 读不清了，那时宁可保留横向滚动。
+ */
+const QUOTE_MIN_ZOOM = 0.5;
+function fitFormulaQuotes() {
+  const boxes = document.querySelectorAll<HTMLElement>('[data-quote-md]');
+  boxes.forEach((box) => {
+    const inner = box.querySelector<HTMLElement>('.katex-display') || box;
+    box.style.zoom = '';                 // 先复位，否则量到的是上一次缩过的宽度
+    const natural = inner.scrollWidth;
+    const room = box.clientWidth;
+    if (!natural || !room || natural <= room) return;
+    const ratio = Math.max(QUOTE_MIN_ZOOM, room / natural);
+    box.style.zoom = String(Math.round(ratio * 100) / 100);
+    // 限高按**缩放后**的真实高度写死：`max-height: 4.6em` 是相对本盒字号算的，
+    // zoom 一改它也跟着缩，本来一行公式会被裁掉下半截（看着又像散块）。\n"
+    box.style.maxHeight = `${Math.ceil((inner.scrollHeight || natural) * ratio)}px`;
+  });
+}
+onMounted(() => { void nextTick(fitFormulaQuotes); });
 const hasQuote = (r: FeedRow) => !!r.quote && !DOT_ONLY.test(r.quote);
 
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
@@ -344,6 +373,10 @@ const merged = computed<FeedRow[]>(() => {
   });
   return order.value === 'doc' ? [...rows].sort(docOrder) : rows;
 });
+
+/* 列表一变（新建 / 删除 / agent 实时写入 / 切排序）就重新量一次公式宽度。
+   `flush: post` = 等 DOM 落定再量，否则量到的是上一版的高度。 */
+watch(merged, () => { void nextTick(fitFormulaQuotes); }, { flush: 'post' });
 
 
 
