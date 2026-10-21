@@ -80,6 +80,25 @@ def normalize_path(value) -> str:
 # --------------------------------------------------------------------------
 
 
+def _inventory_items(rows, road: str, langs: tuple[str, ...]) -> list[dict]:
+    """chunk 行 → 材料清单条目：只留**本路 + 共用**、且**本路语言**的行（保持论文顺序）。
+
+    单独拎出来是为了能单测"先过滤、后截断"这件事（截断发生在调用方，见 chunk_inventory）。
+    """
+    items: list[dict] = []
+    for row in rows:
+        meta = json_loads(row.metadata_json, {}) or {}
+        if (meta.get("road") or "shared") not in (road, "shared"):
+            continue
+        if (meta.get("lang") or "en") not in langs:
+            continue
+        items.append({"chunk_id": row.id, "chunk_type": row.chunk_type,
+                      "page": int(row.page_no or 0),
+                      "section": row.section or "",
+                      "preview": row.content_preview or ""})
+    return items
+
+
 def chunk_inventory(paper_id: str, path: str) -> list[dict]:
     """本路要看的材料清单（按论文顺序），每项带短码。
 
@@ -89,22 +108,14 @@ def chunk_inventory(paper_id: str, path: str) -> list[dict]:
     road = ROAD_OF_PATH[path]
     langs = LANGS_OF_PATH[path]
     with session_scope() as sess:
+        # **不在 SQL 里 limit**：road / lang 存在 metadata_json（JSON 文本）里，过滤只能在
+        # Python 侧做，而 limit 是 SQL 先截 —— 截掉的是"过滤之前"的材料，别的路别的语言
+        # 白占配额，长论文的尾巴于是整段从解读里消失（审计 2026-12-04 的 P1）。
+        # 现在：全取 → 按路/语言过滤 → 再按 MAX_ITEMS 截断（截断只此一处）。
         rows = (sess.query(Chunk)
                 .filter(Chunk.paper_id == paper_id, Chunk.chunk_type.in_(TYPES))
-                .order_by(Chunk.order_global.asc())
-                .limit(MAX_ITEMS * 3).all())
-        items: list[dict] = []
-        for row in rows:
-            meta = json_loads(row.metadata_json, {}) or {}
-            if (meta.get("road") or "shared") not in (road, "shared"):
-                continue
-            lang = meta.get("lang") or "en"
-            if lang not in langs:
-                continue
-            items.append({"chunk_id": row.id, "chunk_type": row.chunk_type,
-                          "page": int(row.page_no or 0),
-                          "section": row.section or "",
-                          "preview": row.content_preview or ""})
+                .order_by(Chunk.order_global.asc()).all())
+        items = _inventory_items(rows, road, langs)
     # 短码按论文顺序编号（A 路 A001… / B 路 B001…）
     prefix = path.upper()
     for i, item in enumerate(items, 1):

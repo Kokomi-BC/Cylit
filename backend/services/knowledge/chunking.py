@@ -401,13 +401,18 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     # 行归属必须在装配前定好（`load()` 已经做过一次）；这里再调一次是幂等的，
     # 保证"装配看到的 section_path"与"校验看到的"是同一份。
     _assign_sections(rows, tree)
+    if tree and text_rows and not _locates_rows(tree, text_rows):
+        # 树在、但**一个节点都对不上正文行**（目录退回了解析块 id，或老产物缺 heading 行）：
+        # 这时每个节点的 row_index 都是 None，_own_rows 一律返回空，pack_node 的
+        # 「not subtree → 只递归子节点」会把整篇静默跳完，正文块层**整层为空**，
+        # 而调用方只打一行 ERROR 就照常入库（审计 2026-12-04 的 P0）。
+        # 处理与"没有目录"完全一致：整篇按一个合成节点切，宁可没有小节边界，也不能没有块。
+        log.warning("目录树 %d 个节点没有一个对得上正文行 → 整篇按一个合成节点切", len(_walk(tree)))
+        tree = []
     if not tree and text_rows:
         # 没有目录（未翻译 / 缺索引）→ 整篇当一个合成节点，只靠 target/hard 切。
         # 这是**降级**而不是失败：内容与顺序不变，只是没有小节边界。
-        tree = [{"key": "", "number": "", "title": "", "title_zh": "", "level": 1,
-                 "page": text_rows[0]["page"], "row_id": text_rows[0]["id"],
-                 "children": [], "parent": None, "path": "",
-                 "row_index": text_rows[0]["index"]}]
+        tree = _synthetic_tree(text_rows)
     all_nodes = _walk(tree)
     unit_partition = semantic_units(text_rows, use_breaks=use_breaks,
                                     max_chars=unit_max_chars, road=road)
@@ -570,6 +575,24 @@ def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = 
             flush()
     flush()
     return out, used_rows
+
+
+def _synthetic_tree(text_rows: list[dict]) -> list[dict]:
+    """整篇当一个合成节点（没有可用目录时的降级树：内容与顺序不变，只是没有小节边界）。"""
+    return [{"key": "", "number": "", "title": "", "title_zh": "", "level": 1,
+             "page": text_rows[0]["page"], "row_id": text_rows[0]["id"],
+             "children": [], "parent": None, "path": "",
+             "row_index": text_rows[0]["index"]}]
+
+
+def _locates_rows(tree: list[dict], text_rows: list[dict]) -> bool:
+    """这棵树能不能认出行：**至少一个节点**的 row_index 落在正文行的下标里。
+
+    目录有可能是退回解析块 id 得来的（reader_service 里的 _outline_from_index），
+    那些 id 与页级产物的行 id 不同源，映射过来全是 None —— 这种树一行都认领不到。
+    """
+    known = {r["index"] for r in text_rows}
+    return any(node.get("row_index") in known for node in _walk(tree))
 
 
 def _own_rows(node: dict, rows: list[dict], text_rows: list[dict],
