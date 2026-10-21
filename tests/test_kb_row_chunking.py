@@ -137,8 +137,13 @@ def test_units_ignore_breaks_when_disabled(paper):
 
 
 def test_small_subtree_becomes_one_chunk(paper):
+    """TOC 合并口径（断点硬边界**关掉**）：1.1 与 1.2 的子树都装得进 target → 整棵成一块。
+
+    默认口径（断点是硬边界，见 tests/test_chunking_break_walls.py）下 1.1 会被 p001-04
+    那个断点切开，所以这里显式关掉 walls —— 本文件测的是"目录层级 + 长度"这一层。
+    """
     rows, tree = paper
-    chunks, stats = _assemble(rows, tree)
+    chunks, stats = _assemble(rows, tree, break_walls=False)
     beta = [c for c in chunks if c["rows"][0]["id"] == "p001-05"]
     assert len(beta) == 1
     assert [r["id"] for r in beta[0]["rows"]] == ["p001-05", "p001-06"]
@@ -164,10 +169,10 @@ def test_long_leaf_is_split_at_unit_boundaries(paper):
     **单元不可拆**是刻意的：宁可块长偏离 target，也不要让检索单位被切成两半。
     """
     rows, tree = paper
-    chunks, stats = _assemble(rows, tree)
+    chunks, stats = _assemble(rows, tree, break_walls=False)
     gamma = [c for c in chunks if c["rows"][0]["section_key"] == "1.3"]
     assert len(gamma) == 1                      # 1800 < hard=2000 → 整块
-    chunks, stats = _assemble(rows, tree, hard=1000, target=600)
+    chunks, stats = _assemble(rows, tree, hard=1000, target=600, break_walls=False)
     gamma = [c for c in chunks if c["rows"][0]["section_key"] == "1.3"]
     assert [[r["id"] for r in c["rows"]] for c in gamma] == \
         [["p002-07", "p002-08"], ["p002-09"]]

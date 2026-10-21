@@ -330,6 +330,29 @@ def is_break(row: dict, road: str | None = None) -> bool:
     return row.get("semantic_break_side") == SIDE_OF_ROAD[road]
 
 
+def spans_break(items: list[dict], road: str | None = None) -> bool:
+    """这段行**内部**（不含首行）有没有本路断点 —— 有就说明它不能整段成一块。"""
+    return any(is_break(row, road) for row in items[1:])
+
+
+def split_at_breaks(items: list[dict], road: str | None = None) -> list[list[dict]]:
+    """按**本路**断点把一段连续行切开：断点所在行恒为下一片的开头。
+
+    没有断点时原样返回一片 —— 「模型没给锚点」的论文（以及 "use_breaks=False" 的对照臂）
+    行为与改造前**逐字一致**，这条兜底是 "break_walls" 能默认打开的前提。
+    """
+    pieces: list[list[dict]] = []
+    cur: list[dict] = []
+    for row in items:
+        if cur and is_break(row, road):
+            pieces.append(cur)
+            cur = []
+        cur.append(row)
+    if cur:
+        pieces.append(cur)
+    return pieces
+
+
 def semantic_units(rows: list[dict], *, use_breaks: bool = True,
                    max_chars: int = 0, road: str | None = None) -> list[dict]:
     """正文行 → 语义单元（连续行的一段），边界 = TOC 节点边界 ∪ LLM 锚点 ∪（可选）长度上限。
@@ -378,7 +401,7 @@ def semantic_units(rows: list[dict], *, use_breaks: bool = True,
 
 
 def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
-             use_breaks: bool = True,
+             use_breaks: bool = True, break_walls: bool = True,
              unit_max_chars: int = UNIT_MAX_CHARS,
              road: str | None = None) -> tuple[list[dict], dict]:
     """行 + TOC + 语义单元 → 正文 chunk 列表（外加一份装配统计）。
@@ -396,7 +419,15 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     3. 同一节点内按单元**贪心累加**到 ``target`` 之上即封口，``当前 + 下一个 > hard`` 必须停；
     4. 单元自身 > ``hard``（只可能是"单行就超长"）→ 退回**行边界**兜底（实测单行最长 1487 <
        hard=2240，正常语料不会发生）。
+
+    外加一条**硬约束**（``break_walls``，默认开）：**块的边界必须是本路的语义断点** ——
+    任何一条 chunk 内部（首行之外）都不许出现断点行。没有这条约束，"语义分块"只是一句
+    口号：实测同一份文本只切 ``use_breaks`` 开/关，四组块集合**一字不差**（锚点只把
+    单元切细了 2~2.6 倍，随后又被 target 贪心合并回去）。模型没给锚点时 ``spans_break``
+    恒为 False，装配路径与改造前逐字一致。
     """
+    # 断点硬边界实际生效的开关：没有锚点的对照臂（use_breaks=False）不许被它改写行为
+    walls = bool(break_walls and use_breaks)
     text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
     # 行归属必须在装配前定好（`load()` 已经做过一次）；这里再调一次是幂等的，
     # 保证"装配看到的 section_path"与"校验看到的"是同一份。
@@ -418,6 +449,7 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
                                     max_chars=unit_max_chars, road=road)
     unit_of_row = {r["index"]: u for u in unit_partition for r in u["rows"]}
     stats = {"nodes": 0, "whole_subtree": 0, "own_chunk": 0, "intro_merged": 0,
+             "intro_alone": 0, "break_cuts": 0,
              "unit_split": 0, "row_fallback": 0, "chunks": 0, "units": len(unit_partition),
              # cap 额外切出来的单元数 = 有 cap 与无 cap 的单元数之差（确定性，不必埋计数器）
              "unit_capped": (len(unit_partition)
@@ -463,19 +495,27 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
             for child in node["children"]:
                 pack_node(child)
             return
-        if chars(subtree) <= target:
+        # 断点是硬边界：整棵子树即使装得进 target，也不能跨过它内部的断点（见 docstring）
+        if chars(subtree) <= target and not (walls and spans_break(subtree, road)):
             stats["whole_subtree"] += 1
             emit(subtree, node)
             return
 
         intro_merged = False
         if own:
-            if chars(own) < floor and node["children"]:
+            # 节点自己的行（标题 + 引言）内部也可能有断点 → 先按断点切片，每片独立成块。
+            # 只有一片时才谈"并进首个子块"：多片意味着这段行本身就是两个语义段。
+            pieces = split_at_breaks(own, road) if walls else [own]
+            if len(pieces) > 1:
+                stats["break_cuts"] += len(pieces) - 1
+            if len(pieces) == 1 and chars(own) < floor and node["children"]:
+                # 只是"打算并进首个子块"：能不能成还要过下面的硬边界与 hard 两道闸，
+                # 所以计数放在真正合上的那一刻（否则统计会把"被拒的合并"也算成合并）。
                 intro_merged = True
-                stats["intro_merged"] += 1
             else:
-                stats["own_chunk"] += 1
-                emit(own, node)
+                stats["own_chunk"] += len(pieces)
+                for piece in pieces:
+                    emit(piece, node)
         mark = len(chunks)
         for child in node["children"]:
             pack_node(child)
@@ -504,12 +544,17 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
                 first = chunk["rows"][0]["index"]
                 if first <= tail:
                     continue
+                if walls and is_break(chunk["rows"][0], road):
+                    # 合并会把一个断点挤到块内部（块的首行变成引言）→ 宁可引言单独成块
+                    break
                 if hard_len(own + chunk["rows"]) <= hard:
                     best = (first, chunk)
                 break
             if best is not None:
+                stats["intro_merged"] += 1
                 best[1]["rows"] = own + best[1]["rows"]
             else:
+                stats["intro_alone"] += 1
                 # 合不进任何子块 → 引言单独成块。这时**追加**即可：`assemble` 最后会按
                 # 首行下标整体排序，位置自然正确（以前插在 `mark` 处，在 TOC 顺序 ≠ 行序时是错的）。
                 stats["chunks"] += 1
@@ -526,7 +571,7 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
             continue
         stats["unit_split"] += 1
         pieces, used_rows = pack_units(units_of(chunk["rows"]), target=target, hard=hard,
-                                      road=road)
+                                      road=road, break_walls=walls)
         if used_rows:
             stats["row_fallback"] += 1
         for piece in pieces:
@@ -549,8 +594,8 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
     return out, stats
 
 
-def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = None
-               ) -> tuple[list[list[dict]], bool]:
+def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = None,
+               break_walls: bool = True) -> tuple[list[list[dict]], bool]:
     """单元序列 → 块的划分（贪心）：累加到 ``target`` 之上即封口，``+下一个 > hard`` 必停。
 
     返回 ``(块的列表, 是否用到行边界兜底)``。单元自身 > ``hard`` 时按**行边界**兜底
@@ -558,6 +603,9 @@ def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = 
 
     字数一律按**本路**的文本算（`road_text`）：中英字符数差异很大，混用会让其中一路的
     chunk 长度系统性偏大或偏小。
+
+    ``break_walls`` 与 `assemble` 同义：**以断点开头的单元不许并进上一块**（这一层是
+    超 hard 的二次切分，正常不会碰到断点；留着是防"某片自身超 hard 后又被重新合并）。
     """
     out: list[list[dict]] = []
     buf: list[dict] = []
@@ -571,6 +619,8 @@ def pack_units(units: list[dict], *, target: int, hard: int, road: str | None = 
         buf, size = [], 0
 
     for unit in units:
+        if buf and break_walls and is_break(unit["rows"][0], road):
+            flush()                     # 硬边界：断点行恒为块的起点
         # 与 validate 同口径：行之间要算上 "\n\n"（见 assemble.hard_len 的说明）
         unit_size = len("\n\n".join(road_text(r, road) for r in unit["rows"]))
         if unit_size > hard:
@@ -721,7 +771,7 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
 
 
 def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
-          use_breaks: bool = True,
+          use_breaks: bool = True, break_walls: bool = True,
           unit_max_chars: int = UNIT_MAX_CHARS,
           road: str | None = None) -> dict:
     """一次产出三层：``{chunks, units, stats, report}``（索引层的唯一入口）。
@@ -735,8 +785,8 @@ def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: 
     ``road=None`` 是并集口径，行为与改造前逐字一致。
     """
     chunks, stats = assemble(rows, tree, target=target, hard=hard, floor=floor,
-                             use_breaks=use_breaks, unit_max_chars=unit_max_chars,
-                             road=road)
+                             use_breaks=use_breaks, break_walls=break_walls,
+                             unit_max_chars=unit_max_chars, road=road)
     units = unit_records(rows, chunks, use_breaks=use_breaks,
                          unit_max_chars=unit_max_chars, road=road)
     by_parent: dict[str, list[str]] = {}
