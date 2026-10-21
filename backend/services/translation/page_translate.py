@@ -1769,6 +1769,7 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         row.pop("semantic_break", None)
         row.pop("semantic_type", None)
         row.pop("semantic_break_side", None)
+        row.pop("semantic_break_sides", None)
     if not rows or not entries:
         return stats
 
@@ -1804,6 +1805,10 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         # **哪一路标的**：分块层按路取边界的关键（A 路的锚点是英文、B 路的是中文，
         # 于是两路各得到一套自己的单元划分 —— 这正是"两路 Chunk 允许不同"的实现方式）。
         rows[idx]["semantic_break_side"] = entry["side"]
+        # **两路都标同一条行**是正常的（英文锚点与中文块边界常落在同一段）——单值字段
+        # 只记得住后写的那一个，所以另存一份完整集合；分块层按路取边界以它为准
+        # （见 chunking.is_break）。
+        rows[idx]["semantic_break_sides"] = [entry["side"]]
         if entry["type"]:
             rows[idx]["semantic_type"] = entry["type"]
     stats["accepted"] = len(wanted)

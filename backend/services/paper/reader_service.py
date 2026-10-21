@@ -412,7 +412,16 @@ def _merge_page(paper_id: str, page: int, a: dict, b: dict, stored: dict,
     for row in rows:
         if row.pop("block_break", None):
             row["semantic_break"] = True
-            row["semantic_break_side"] = "translation"
+            # 这一行可能**已经**是 A 路标的边界（两条路常常落在同一段）：sides 记全集、
+            # 单值只在空着时补。早先无条件写 "translation"，把 A 路的归属整片覆盖掉 ——
+            # 实测 turboquant 的 A 路边界因此从 63 掉到 38（B 路一有锚点就发生）。
+            sides = list(row.get("semantic_break_sides") or [])
+            if not sides and row.get("semantic_break_side"):
+                sides = [row["semantic_break_side"]]
+            if "translation" not in sides:
+                sides.append("translation")
+            row["semantic_break_sides"] = sides
+            row["semantic_break_side"] = row.get("semantic_break_side") or "translation"
             flagged += 1
     if flagged:
         break_stats["flagged_rows"] = int(break_stats.get("flagged_rows") or 0) + flagged

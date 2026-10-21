@@ -710,12 +710,14 @@ def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None,
 
 
 def _is_road_break(row: dict, road: str | None) -> bool:
-    """这一行是不是**本路**标的语义边界（`row["semantic_break_side"]`，见 page_translate）。"""
-    if not row.get("semantic_break"):
-        return False
-    if road is None:
-        return True
-    return row.get("semantic_break_side") == ("original" if road == "a" else "translation")
+    """这一行是不是**本路**标的语义边界。
+
+    口径只有一份（`chunking.is_break`）：一条行可能被**两路同时**标为边界，
+    单值的 `semantic_break_side` 只记得住一个，所以判据要以 `semantic_break_sides` 为准。
+    """
+    from backend.services.knowledge import chunking  # 本模块在函数内导入它（见 index_paper）
+
+    return chunking.is_break(row, road)
 
 
 def _road_row_text(row: dict, road: str | None) -> str:

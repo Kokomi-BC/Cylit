@@ -183,6 +183,7 @@ def row_units(paper_id: str, *, authors: str = "",
         # （原文侧匹配= 英文锚点=A 路；译文侧= 中文锚点=B 路）。按路分块靠后者区分。
         "semantic_break": bool(r.get("semantic_break")),
         "semantic_break_side": str(r.get("semantic_break_side") or ""),
+        "semantic_break_sides": list(r.get("semantic_break_sides") or []),
         "semantic_type": str(r.get("semantic_type") or ""),
     } for i, r in enumerate(raw_rows)]
 
@@ -327,6 +328,12 @@ def is_break(row: dict, road: str | None = None) -> bool:
         return False
     if road is None:
         return True
+    # `semantic_break_sides` 是"两路都标了"时的完整集合（见 reader_service 的合成）；
+    # 没有这个字段的旧产物退回单值口径 —— 一条行两路都标时单值只能记住一个，
+    # 实测 turboquant 的 A 路因此从 63 个边界掉到 38 个（B 路那次覆盖写把它抹了）。
+    sides = row.get("semantic_break_sides")
+    if sides:
+        return SIDE_OF_ROAD[road] in sides
     return row.get("semantic_break_side") == SIDE_OF_ROAD[road]
 
 
