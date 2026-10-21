@@ -58,10 +58,21 @@ def test_heal_pid_needs_a_registered_fingerprint():
 
 
 def test_heal_pids_is_all_or_nothing():
-    """一条引用有多个 pid 时，只恢复一半就等于"看着精确、其实指错行" —— 整体放弃。"""
+    """认不回来的 pid 只要还剩一个，整条引用就整体放弃（半恢复 = 看着精确、其实指错行）。"""
     old = {"pid": "r-old", "page": 3, "fp": _fp(OLD), "reason": "gone"}
     new = _row("r-new", 3, OLD + " rate", "p003-01")
-    pids, healed = _heal_pids(_reg([new], [old]), ["r-old", "r-lost"], [new])
+    pids, healed = _heal_pids(_reg([new], [old]), ["r-old", "r-lost"], [new],
+                              ["gone", "gone"])
     assert healed == {} and pids == ["r-old", "r-lost"]
-    pids, healed = _heal_pids(_reg([new], [old]), ["r-old"], [new])
+    pids, healed = _heal_pids(_reg([new], [old]), ["r-old"], [new], ["gone"])
     assert healed and pids == ["r-new"]
+
+
+def test_heal_pids_keeps_the_live_half_untouched():
+    """`ok` 的 pid 原样留着：它本来就不该被替代，也不该挡住另一半愈合。"""
+    alive = _row("r-live", 3, "Something else entirely.")
+    old = {"pid": "r-old", "page": 3, "fp": _fp(OLD), "reason": "gone"}
+    new = _row("r-new", 3, OLD + " rate", "p003-01")
+    pids, healed = _heal_pids(_reg([alive, new], [old]), ["r-live", "r-old"],
+                              [alive, new], ["ok", "gone"])
+    assert pids == ["r-live", "r-new"] and set(healed) == {"r-old"}

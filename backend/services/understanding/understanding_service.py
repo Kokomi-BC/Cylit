@@ -624,17 +624,25 @@ def _resolve_registry(registry: dict, pids: list[str], rows: list[dict]) -> dict
     return row_identity.resolve_registry(registry, pids, rows)
 
 
-def _heal_pids(registry: dict, pids: list[str], rows: list[dict]) -> tuple[list[str], dict]:
+def _heal_pids(registry: dict, pids: list[str], rows: list[dict],
+               states: list[str] | None = None) -> tuple[list[str], dict]:
     """退休 pid → 同页后继 pid（`row_identity.heal_pid`）。返回 ``(新 pids, 愈合表)``。
 
-    只在"这一条引用**全部** pid 都恢复得了"时才采用 —— 部分恢复会把找不到的那半当成
-    ok，反而造出"看着精确、其实指错行"的引用（比 stale 更糟）。
+    `states` 是 `resolve_registry` 给出的逐 pid 判定：``ok`` 的 pid **原样留着**（活着的
+    身份不许被替代，也不该参与"能不能恢复"的判定），只有认不回来的才去愈合。
+    一条引用**每个**认不回来的 pid 都必须恢复，否则整体放弃 —— 只恢复一半会把找不到的
+    那半当成 ok，造出"看着精确、其实指错行"的引用（比 stale 更糟）。
     """
     from backend.services.paper import row_identity
 
+    states = list(states or ["gone"] * len(pids))
     new_pids: list[str] = []
     healed: dict[str, dict] = {}
-    for pid in pids:
+    for pid, state in zip(pids, states):
+        if state == "ok":
+            if pid not in new_pids:
+                new_pids.append(pid)
+            continue
         hit = row_identity.heal_pid(registry, pid, rows)
         if hit is None:
             return list(pids), {}
@@ -816,7 +824,7 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
                 # 留着那一行的指纹与页号 —— 同页最像的活行就是它的后继。命中就按 ok 处理
                 # （只多标 pid_state=healed），命中不了才降级，绝不硬猜。
                 if "gone" in states:
-                    new_pids, healed = _heal_pids(registry(), pids, live_rows)
+                    new_pids, healed = _heal_pids(registry(), pids, live_rows, states)
                     if healed:
                         heals = _resolve_registry(registry(), new_pids, live_rows)
                         if all(str((heals.get(x) or {}).get("state")) == "ok"
