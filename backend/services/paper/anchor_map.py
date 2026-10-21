@@ -87,6 +87,12 @@ def build_block_row_map(
 
     没有译文行的页（``rows_by_page`` 里没有该页）**不进映射** —— 那些页的正文行 id
     本来就是 ``block.id``，前端直命即可。
+
+    **降级而不是静默**（两条都是实测过的"一个坏输入毒死一整页"）：
+
+    - 没有页码的块**不映射**：以前缺省成第 1 页，于是那些块被拿去和第 1 页的行硬配
+      （宁可不跳，也不能乱跳一页）；
+    - 一页里有一行缺 id 时**只跳过那一行**：以前是整页 continue，其他块全都失去锚点。
     """
     out: dict[str, str] = {}
     by_page: dict[int, list[dict]] = {}
@@ -94,16 +100,21 @@ def build_block_row_map(
         block_id = block.get("id")
         if not block_id:
             continue
-        page = int(block.get("page") or 1)
-        by_page.setdefault(page, []).append(block)
+        page = str(block.get("page") or "").strip()
+        if not page:
+            continue
+        try:
+            page_no = int(page)
+        except (TypeError, ValueError):
+            continue
+        by_page.setdefault(page_no, []).append(block)
 
     for page, page_blocks in by_page.items():
-        rows = rows_by_page.get(page) or []
+        # 坏行（缺 id）只跳过它自己：它的 id 本来也不能当锚点用，其余行照常映射
+        rows = [r for r in (rows_by_page.get(page) or []) if r.get("id")]
         if not rows:
             continue
         row_ids = [r.get("id") for r in rows]
-        if any(not rid for rid in row_ids):
-            continue
         row_sigs = [normalize(r.get("original")) for r in rows]
         cursor = 0
         for block in page_blocks:
@@ -119,6 +130,95 @@ def build_block_row_map(
             out[str(block["id"])] = str(row_ids[idx])
             cursor = idx
     return out
+
+
+# --------------------------------------------------------------------------
+# 5. 锚点 id 的**唯一定义**（批注 / 高亮 / 笔记 / 检索结果 → 页码）
+# --------------------------------------------------------------------------
+#
+# 锚点前缀有五套，以前各写一套规则、互不认识：md:p3 / pdf:p3（视图页锚点，页码写在 id 里）、
+# row-<行 id>（公式/表格类 chunk 的锚点）、blk-<块 id>（解析器给的 markdown 锚点，见
+# parsing/md/generator.py）、fig-p010-01（图目录 id）与 fig:p10:n1（前端 ReaderChat 合成的
+# 引用锚点）。reader_service._anchor_page 当时只认 md/pdf 两种，于是 row- 那一类锚点的
+# page 恒为 None（侧栏里那条批注无法"跳到第几页"）。这里把口径收成一处，谁也别再自己写一套。
+
+#: 伪前缀：不是 id 的一部分，只是"这是哪一类锚点"的标记
+PSEUDO_PREFIXES = ("row-", "blk-")
+
+#: 视图页锚点：md:p3 / pdf:p3 —— 页码就写在 id 里
+_PAGE_ANCHOR_RE = re.compile(r"^(md|pdf):p(\d+)$")
+#: 图锚点：fig-p010-01（图目录 id）与 fig:p10:n1（前端合成），都取紧跟 p 后的页码段
+_FIG_PAGE_RE = re.compile(r"^fig[-:]p(\d+)")
+
+
+def normalize_block_id(raw) -> str:
+    """去掉伪前缀（幂等；None → ""）。row-p006-03 → p006-03，blk-X → X。
+
+    **幂等**：一次调用就把所有层的伪前缀剥干净（row-blk-X → X），所以
+    f(f(x)) == f(x) 恒成立 —— 调用方不必关心自己拿到的是第几手 id。
+    """
+    text = "" if raw is None else str(raw).strip()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in PSEUDO_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                changed = True
+    return text
+
+
+def _anchor(kind: str, row_id: str = "", page: int | None = None) -> dict:
+    return {"kind": kind, "row_id": row_id, "page": page}
+
+
+def resolve_anchor(block_id, *, row_pages: dict[str, int] | None = None,
+                   block_pages: dict[str, int] | None = None,
+                   fig_pages: dict[str, int] | None = None) -> dict:
+    """锚点 id → {kind, row_id, page}（锚点解析的**唯一定义**，纯函数、不查库）。
+
+    kind 取值：md-page / pdf-page / row / block / figure / unknown。"查不到页"是 None，
+    与"第 1 页"必须分得开 —— 否则会静默跳错页（这是这条规则唯一在乎的事）。
+
+    规则：
+
+    1. md:p3 / pdf:p3 → 页码直接来自 id（kind 对应）；
+    2. row-<id> → kind=row，row_id=<id>，页从 row_pages 取（id 里没有页号，猜不出来）；
+    3. fig-p010-01 / fig:p10:n1 → kind=figure，页先查 fig_pages，查不到再取 id 里的
+       页码段，都没有就 None；
+    4. 其余 → 归一化后依次查 row_pages / block_pages，命中即定 kind（row / block），
+       都不命中 kind=unknown；
+    5. None / 空 → {kind: unknown, row_id: "", page: None}。
+    """
+    raw = "" if block_id is None else str(block_id).strip()
+    if not raw:
+        return _anchor("unknown")
+    rows = row_pages or {}
+    blocks = block_pages or {}
+    figs = fig_pages or {}
+
+    if (m := _PAGE_ANCHOR_RE.match(raw)):
+        return _anchor("md-page" if raw.startswith("md:") else "pdf-page",
+                       page=int(m.group(2)))
+
+    if raw.startswith(("fig-", "fig:")):
+        page = figs.get(raw)
+        if page is None and (m := _FIG_PAGE_RE.match(raw)):
+            page = int(m.group(1))
+        return _anchor("figure", page=page)
+
+    normalized = normalize_block_id(raw)
+    if raw.startswith("row-"):
+        return _anchor("row", normalized, rows.get(normalized))
+
+    for table, kind in ((rows, "row"), (blocks, "block")):
+        page = table.get(normalized)
+        if page is None and normalized != raw:
+            # 兼容"表里存的就是带前缀的原样 id"的旧数据
+            page = table.get(raw)
+        if page is not None:
+            return _anchor(kind, normalized, page)
+    return _anchor("unknown", normalized)
 
 
 def rows_by_page(page_payloads: list[dict]) -> dict[int, list[dict]]:

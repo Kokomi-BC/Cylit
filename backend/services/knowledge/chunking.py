@@ -524,6 +524,14 @@ def assemble(rows: list[dict], tree: list[dict], *, target: int, hard: int, floo
         # 单元再通过这个键挂到父块上（`unit_records` → `build` → 索引层重写一次）。
         chunk["key"] = f"{chunk['rows'][0]['id']}-{chunk['rows'][-1]['id']}"
     stats["chunks"] = len(out)
+    if not out and text_rows:
+        # **正文块层整层为空必须出声**：有正文行却一个块都没装配出来，等于拿一张空索引去
+        # 入库（调用方以前只打一行 ERROR 就照常写库 —— 库里 359 条元数据、检索永远为空的
+        # 那种半截状态）。这里直接失败，让建索引任务在任务面板里失败，而不是静默写空索引。
+        # 论文本来就没有正文行（纯图片页）时不抛：那种情况 text_rows 是空的。
+        raise ValueError(
+            f"正文块装配结果为空：正文行 {len(text_rows)} 条，但一个 chunk 都没生成"
+            f"（目录节点 {len(_walk(tree))} 个）")
     return out, stats
 
 

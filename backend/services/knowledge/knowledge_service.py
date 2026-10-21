@@ -833,13 +833,28 @@ def _row_formula_chunks(paper_id: str, rows: list[dict], entries: list[dict],
     """canonical 公式条目 → 公式原子 chunk（章节与排序改成"它所在的行"）。"""
     row_of = {r["id"]: r for r in rows}
     out: list[dict] = []
+    # 没有锚点 id 的公式条目（既缺 formula_block_id 也缺 row_id）：跳过并汇总一条日志
+    skipped_no_anchor = 0
     for e in entries:
         latex = (e.get("latex") or "").strip()
         if not latex or formula_source.is_noise_latex(latex):
             continue
-        unique_key = e.get("formula_block_id") or e.get("id")
+        # 锚点 id **不许造假**：以前缺 row_id 时写 f"row-x"，于是所有这类条目共用
+        # 一条 `{paper}:formula:row-x` 的 chunk id（互相覆盖）和一条指向不存在的锚点。
+        # 现在只有"真有 id"这一种情况：formula_block_id 优先，其次 row-<row_id>；
+        # 两者都没有说明这一条定位不到任何东西 —— 跳过，不造 id。
+        row_id = str(e.get("row_id") or "").strip()
+        formula_block_id = str(e.get("formula_block_id") or "").strip()
+        if formula_block_id:
+            first_id = formula_block_id
+        elif row_id:
+            first_id = f"row-{row_id}"
+        else:
+            skipped_no_anchor += 1
+            continue
+        unique_key = formula_block_id or e.get("id") or row_id
         cid = f"{paper_id}:formula:{unique_key}"
-        label = e.get("row_id") or e.get("formula_block_id") or e.get("id")
+        label = row_id or formula_block_id or e.get("id")
         content = f"公式 {label}：$${latex}$$"
         anchor_row = row_of.get(str(e.get("row_id") or "")) or row_of.get(
             str(block_to_row.get(str(e.get("formula_block_id") or "")) or ""))
@@ -861,7 +876,7 @@ def _row_formula_chunks(paper_id: str, rows: list[dict], entries: list[dict],
                          "parsed_latex": e.get("parsed_latex"),
                          "grade": e.get("grade"), "crop": e.get("crop"),
                          "align_score": e.get("align_score")})
-        first = {"id": e.get("formula_block_id") or f"row-{e.get('row_id') or 'x'}",
+        first = {"id": first_id,
                  "page": int((anchor_row or {}).get("page") or e.get("page") or 1),
                  "order": int((anchor_row or {}).get("index") or 0)}
         out.append(_make_chunk(
@@ -872,6 +887,11 @@ def _row_formula_chunks(paper_id: str, rows: list[dict], entries: list[dict],
     if out:
         log.info("canonical 公式条目 %d 条（%s）：%s", len(out), paper_id,
                  [c["id"].rsplit(":", 1)[-1] for c in out][:6])
+    if skipped_no_anchor:
+        # 一条汇总，不一条一条打：这些条目定位不到任何位置（无 formula_block_id 也无
+        # row_id），强行造 id 只会造出一个指向不存在锚点的 chunk。
+        log.warning("公式条目缺少锚点 id，已跳过 %d 条（%s）",
+                    skipped_no_anchor, paper_id)
     return out
 
 

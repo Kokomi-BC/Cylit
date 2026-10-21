@@ -139,3 +139,28 @@ def test_real_page_mapping_is_total_for_prose() -> None:
     mapping = build_block_row_map(_ATTENTION_BLOCKS, _ATTENTION_ROWS)
     missing = {b["id"] for b in _ATTENTION_BLOCKS if b["id"] not in mapping}
     assert missing == {"attentionisa-p01-b04", "attentionisa-p01-b06"}
+
+def test_bad_row_id_only_skips_that_row() -> None:
+    """一页里有一行缺 id（坏产物）→ **只跳过那一行**，其余块照常映射。
+
+    以前是 ``if any(not rid for rid in row_ids): continue``：那一页的**所有**块都失去锚点
+    （一个坏行毒死整页）。题头/脚注这类行的 id 缺失本来就不该影响正文块。
+    """
+    blocks = _blocks(("p1-b01", 1, "the distortion rate of the quantizer is bounded"),
+                     ("p1-b02", 1, "codebook rotation is applied on the unit sphere"))
+    rows = {1: [
+        {"id": "", "original": "filler filler filler filler"},
+        {"id": "p001-01", "original": "the distortion rate of the quantizer is bounded"},
+        {"id": "p001-02", "original": "codebook rotation is applied on the unit sphere"},
+    ]}
+    mapping = build_block_row_map(blocks, rows)
+    assert mapping == {"p1-b01": "p001-01", "p1-b02": "p001-02"}
+
+
+def test_block_without_page_is_not_mapped() -> None:
+    """没有页码的块**不映射**（以前缺省成第 1 页，拿去和第 1 页的行硬配 → 跳错页）。"""
+    blocks = [{"id": "p1-b01", "page": None, "text": "the distortion rate is bounded"},
+              {"id": "p1-b02", "page": "", "text": "the distortion rate is bounded"},
+              {"id": "p1-b03", "page": 1, "text": "the distortion rate is bounded"}]
+    rows = _rows(1, ("p001-00", "the distortion rate is bounded"))
+    assert build_block_row_map(blocks, rows) == {"p1-b03": "p001-00"}

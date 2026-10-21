@@ -759,16 +759,15 @@ def build_reader(paper_id: str, *, user_id: int = 1,
 
 def _anchor_page(block_id: str | None, row_pages: dict[str, int],
                  block_pages: dict[str, int]) -> int | None:
-    """锚点（行 id / 块 id / `md:p<页号>` / `pdf:p<页号>`）→ 页码；查不到返回 None。
+    """锚点（行 id / 块 id / `row-<行 id>` / `blk-<块 id>` / `md:p<页号>` / `pdf:p<页号>`）
+    → 页码；查不到返回 **None**（"查不到"与"第 1 页"是两个意思）。
 
-    前两种显式锚点（Markdown 视图 / 原 PDF 页图）页码**就写在 id 里**，不必查表；
-    剩下的是正文行 id 与解析块 id，走 `row_pages` / `block_pages` 两张映射表。
+    规则**只有一处**：`anchor_map.resolve_anchor`。这里曾经自己写了一套，只认 md/pdf，
+    于是公式/表格类 chunk 的 `row-` 锚点、解析器的 `blk-` 锚点页码恒为 None
+    （侧栏批注跳不到那一页）。签名与"查不到 = None"的语义保持不变。
     """
-    if not block_id:
-        return None
-    if (m := re.match(r"^(?:md|pdf):p(\d+)$", str(block_id))):
-        return int(m.group(1))
-    return row_pages.get(block_id) or block_pages.get(block_id)
+    return anchor_map.resolve_anchor(
+        block_id, row_pages=row_pages, block_pages=block_pages)["page"]
 
 
 # --------------------------------------------------------------------------
