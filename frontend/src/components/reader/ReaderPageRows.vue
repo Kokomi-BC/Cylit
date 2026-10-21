@@ -421,12 +421,17 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
  * 连点**同一个**标号时，`flash` 类被"摘掉又挂回"的两次写 DOM 在同一个任务里，样式引擎
  * 合并成"没变" → 同一个 CSSAnimation 实例接着跑（实测 `getAnimations()` 前后是同一个对象），
  * 而它已经 `forwards` 停在 opacity:0，用户看到的就是"再点没反应，先点别的再点回来才行"。
- * 换动画名 = 计算样式真的变了，浏览器只能重播一遍。 */
+ * 换动画名 = 计算样式真的变了，浏览器只能重播一遍。 *
+ * ⚠️ 底色**必须淡**（20% → 11%，并在左边加一根竖条）：正文行的粒度是"一个语义单元"，
+ * 长行可能有 1600+ 字符、350px 高 —— 整片 20% 的底色糊在这种行上，看起来跟"整页刷了一下"
+ * 没区别（用户 2026-12-03 报的「标号 1 也是整页」：那一条落的行正好 354px 高）。
+ * 现在由**左侧竖条**负责"从这里开始"的定位感，淡底只负责"亮一下"。 */
 .row-pair.flash-a::before,
 .row-pair.flash-b::before {
   content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
   border-radius: 8px; opacity: .95;
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 3px 0 0 0 color-mix(in srgb, var(--accent) 62%, transparent);
 }
 .row-pair.flash-a::before { animation: row-flash-a 1.5s ease-out forwards; }
 .row-pair.flash-b::before { animation: row-flash-b 1.5s ease-out forwards; }

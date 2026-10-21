@@ -132,10 +132,14 @@ function decorateCites(html: string): string {
       const kind = TYPE_LABEL[String(ref?.chunk_type ?? '')] || '';
       const tip = [where, kind].filter(Boolean).join(' · ');
       const title = ref ? (tip ? tip + ' · 跳到原文' : '跳到原文') : '这一条引用已不在清单里';
+      /* 落点优先用**正文行 id**（后端从 chunk 元数据补的），块 id 只当兜底：
+         公式 chunk 的块 id 是 row-xxx 或 …-x01 这类伪块 id，阅读器翻不成行 ——
+         那正是「点标号却整页闪」的原因（用户 2026-12-03）。 */
+      const anchor = String(ref?.row_id || ref?.block_id || '');
       return '<button type="button" class="cite-inline ins-cite"'
         + ' title="' + escapeAttr(title) + '"'
         + ' data-code="' + code + '"'
-        + ' data-block="' + escapeAttr(String(ref?.block_id ?? '')) + '"'
+        + ' data-block="' + escapeAttr(anchor) + '"'
         + ' data-page="' + (ref?.page ?? '') + '">[' + n + ']</button>';
     });
   }).join('');

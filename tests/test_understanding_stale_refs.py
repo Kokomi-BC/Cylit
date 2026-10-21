@@ -39,21 +39,37 @@ def test_stale_refs_are_kept_with_page_not_dropped() -> None:
     assert stale[0]["chunk_type"] == "unit"
 
 
-def test_live_refs_carry_the_block_id_for_jumping() -> None:
-    """有效引用要带上**块 id**：前端点标号直接落到原文那一段（只给页码只能跳整页）。"""
+def test_live_refs_carry_block_and_row_id_for_jumping() -> None:
+    """有效引用同时带**块 id**与**正文行 id**：前端点标号要落到原文那一段。
+
+    row_id 是从 chunk 元数据里取的（page_row / formula_block 两种锚定都写它）：
+    公式 chunk 的 block_id 是 row-<行 id> 甚至 …-x01 这种伪块 id，阅读器翻不成行，
+    只靠 block_id 点标号就只剩整页闪（2026-12-03 用户报的那两条）。
+    """
     live, _ = us.split_live_refs(
         {"B001": "paper:b:unit:p003-01:zh"}, _by_code(),
         exists=lambda ids: set(ids),
-        blocks={"paper:b:unit:p003-01:zh": "paper-p03-b004"})
+        anchors={"paper:b:unit:p003-01:zh": {"block_id": "paper-p03-b004",
+                                            "row_id": "p003-04"}})
     assert live[0]["block_id"] == "paper-p03-b004"
+    assert live[0]["row_id"] == "p003-04"
     assert live[0]["page"] == 3
 
 
-def test_stale_ref_has_no_block_id() -> None:
+def test_live_ref_survives_without_anchor_keys() -> None:
+    """锚点表里只给了一个键（老数据没有 block_id / 没有 row_id）也不能丢引用。"""
+    live, _ = us.split_live_refs(
+        {"B001": "paper:b:unit:p003-01:zh"}, _by_code(),
+        exists=lambda ids: set(ids),
+        anchors={"paper:b:unit:p003-01:zh": {"block_id": None, "row_id": "p003-04"}})
+    assert live[0]["row_id"] == "p003-04" and "block_id" not in live[0]
+
+
+def test_stale_ref_has_no_anchor() -> None:
     live, stale = us.split_live_refs(
         {"B001": "旧:chunk:id"}, _by_code(), exists=lambda ids: set(),
-        blocks={})
-    assert live == [] and "block_id" not in stale[0]
+        anchors={})
+    assert live == [] and "block_id" not in stale[0] and "row_id" not in stale[0]
 
 
 def test_no_refs_is_not_an_error() -> None:

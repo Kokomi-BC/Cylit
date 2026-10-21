@@ -447,19 +447,35 @@ def _save(paper_id: str, path: str, payload: dict) -> None:
             setattr(row, key, payload[key])
 
 
-def _chunk_blocks(ids: list[str]) -> dict[str, str | None]:
-    """这些 chunk id → 它落在的**块 id**（已不存在的 id 不会出现在返回值里）。
+def _chunk_anchors(ids: list[str]) -> dict[str, dict]:
+    """这些 chunk id → 它落在原文的哪个位置（已不存在的 id 不会出现在返回值里）。
 
-    值可能是 None（老数据的 chunk 没记 block_id）：那是"还在、但落不到具体段落"，
-    与"不在了"（key 缺失）必须分开 —— 前者照样算有效引用，只是只能跳到页。
+    两个锚点都带出来，因为它们回答的是两个不同问题：
+
+    - block_id：解析块 / 正文行的原始 id。文本块的 block_id 往往就是正文行 id
+      （p006-03），但公式块有 row-<行 id> 这种写法，还有 …-x01 这种**伪块 id**
+      （版面模型给的公式块，正文里根本没有这一行）。
+    - row_id：chunk 元数据里记下的**真正落在哪一正文行**（page_row / formula_block
+      两种锚定方式都写它）。它才是"跳到那一段"的可靠答案 —— 上面那两种 block_id
+      阅读器都翻不成行，用户点标号就只能整页闪（2026-12-03 报的「标号 23 / 22
+      高亮整页」：恰好都是公式 chunk）。
+
+    值里的键可能缺：那是"还在、但落不到具体段落"，与"不在了"（key 缺失）必须分开 ——
+    前者照样算有效引用，只是只能跳到页。
     """
     if not ids:
         return {}
     from backend.repositories.mysql.models import Chunk
 
     with session_scope() as sess:
-        rows = sess.query(Chunk.id, Chunk.block_id).filter(Chunk.id.in_(ids)).all()
-    return {r[0]: r[1] for r in rows}
+        rows = (sess.query(Chunk.id, Chunk.block_id, Chunk.metadata_json)
+                .filter(Chunk.id.in_(ids)).all())
+    out: dict[str, dict] = {}
+    for cid, block_id, meta_json in rows:
+        meta = json_loads(meta_json, {}) or {}
+        row_id = meta.get("row_id") or (meta.get("row_ids") or [None])[0]
+        out[cid] = {"block_id": block_id, "row_id": row_id}
+    return out
 
 
 def _live_chunk_ids(ids: list[str]) -> set[str]:
@@ -475,7 +491,7 @@ def _live_chunk_ids(ids: list[str]) -> set[str]:
 
 def split_live_refs(resolved: dict[str, str], by_code: dict, *,
                     exists=_live_chunk_ids,
-                    blocks: dict[str, str | None] | None = None
+                    anchors: dict[str, dict] | None = None
                     ) -> tuple[list[dict], list[dict]]:
     """引用分两类：**还能跳到原文**的 与 **已过期**的（chunk 已不存在）。
 
@@ -492,11 +508,12 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
         meta = by_code.get(code) or {}
         item = {"code": code, "chunk_id": chunk_id,
                 "chunk_type": meta.get("chunk_type"), "page": meta.get("page")}
-        # **块 id**：前端点标号要落到"原文那一段"，只给页码只能跳到整页。
-        # 正文行 id 是另一套命名空间，由阅读器用它的 block_rows 再翻译一次。
-        block = (blocks or {}).get(chunk_id)
-        if block:
-            item["block_id"] = block
+        # 落点：前端点标号要落到"原文那一段"，只给页码只能跳到整页（见 _chunk_anchors）。
+        anchor = (anchors or {}).get(chunk_id) or {}
+        if anchor.get("block_id"):
+            item["block_id"] = anchor["block_id"]
+        if anchor.get("row_id"):
+            item["row_id"] = anchor["row_id"]
         (live if chunk_id in alive else stale).append(item)
     return live, stale
 
@@ -507,9 +524,9 @@ def to_dict(row: Understanding) -> dict:
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
     resolved = refs.get("resolved") or {}
     # 一次 in(...) 查询同时给出"还在不在"与"落在哪个块"：分两次查就是两次 RTT。
-    blocks = _chunk_blocks([cid for cid in resolved.values() if cid])
+    anchors = _chunk_anchors([cid for cid in resolved.values() if cid])
     live_refs, stale_refs = split_live_refs(
-        resolved, by_code, exists=lambda ids: set(blocks) & set(ids), blocks=blocks)
+        resolved, by_code, exists=lambda ids: set(anchors) & set(ids), anchors=anchors)
     return {
         "paper_id": row.paper_id, "path": row.path,
         "label": PATH_LABELS.get(row.path, row.path),

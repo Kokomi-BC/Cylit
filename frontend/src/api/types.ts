@@ -743,6 +743,13 @@ export interface UnderstandingRefItem {
    * 所以是可选的（缺失时退化成跳页）。
    */
   block_id?: string | null;
+  /**
+   * 这条引用落在的**正文行 id**（p006-03，来自 chunk 元数据）。
+   *
+   * 比 block_id 更可靠：公式 chunk 的 block_id 是 row-<行 id> 甚至 …-x01 这种伪块 id，
+   * 阅读器翻不成行，只能整页闪（用户 2026-12-03 报的那两条）。点标号优先用它。
+   */
+  row_id?: string | null;
 }
 
 /** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */
