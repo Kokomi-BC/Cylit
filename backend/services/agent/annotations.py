@@ -146,15 +146,23 @@ def find_formula_span(md: str, probe: str) -> tuple[int, int, str] | None:
             target = (start, end)
             break
     if target is None:
+        # 片段匹配：**取"覆盖最长"的那一条，不是第一个**。
+        #
+        # 反例（agent 报过）：探针 `D_{\text{mse}} \leq \frac{\sqrt{3\pi}}{2} \cdot \frac{1}{4^b}`
+        # 里天然包含 `_{\text{mse}}`，而后者是行里更早出现的一枚行内公式 —— 取第一个就把高亮
+        # 挂到了那个碎片上。按覆盖长度取最大，才会命中整条式子。
+        best: tuple[int, tuple[int, int]] | None = None
         for start, end, latex in spans:
             hay = _norm_latex(latex)
-            # 片段匹配要**两边都够长**：只要其中一方只有一两个字符，就是巧合而不是同一式子
-            # （实测 `C(f_X, b) :=` 会命中行内公式 `$b$` —— `hay in want` 成立）。
-            if min(len(want), len(hay)) < 8:
+            covered = min(len(want), len(hay))
+            # 两边都够长才算"同一式子"的一部分：一方只有一两个字符就是巧合
+            if covered < 8:
                 continue
             if want in hay or hay in want:
-                target = (start, end)
-                break
+                if best is None or covered > best[0]:
+                    best = (covered, (start, end))
+        if best is not None:
+            target = best[1]
     if target is None:
         return None
     offset = 0
@@ -372,6 +380,31 @@ def spare_color_for(paper_id: str) -> str:
         return PALETTE[0]
     return spare_color([item.get("color") for item in items if isinstance(item, dict)])
 
+#: 常见 CSS 颜色词 → hex。用户口径 2026-12-06：模型说 `teal` 不能被**静默改成黄色**。
+#: 调色板（`HIGHLIGHT_COLORS`）只有七个名字，其余颜色词在这里落成 hex —— 前端本来就能画 hex，
+#: 于是"任意颜色词"都能如实存下来。
+CSS_COLOR_NAMES = {
+    # 蓝绿系（agent 最常用它，之前全被吞成 yellow）
+    "teal": "#0d9488", "cyan": "#06b6d4", "aqua": "#06b6d4", "turquoise": "#14b8a6",
+    "sky": "#0ea5e9", "emerald": "#10b981", "lime": "#84cc16", "mint": "#6ee7b7",
+    # 红橙黄系
+    "coral": "#f87171", "salmon": "#fb7185", "rose": "#e11d48", "amber": "#f59e0b",
+    "gold": "#eab308", "brown": "#92400e", "maroon": "#7f1d1d", "crimson": "#dc2626",
+    # 紫粉 / 中性 / 其它
+    "magenta": "#d946ef", "fuchsia": "#d946ef", "pink": "#ec4899", "plum": "#a855f7",
+    "slate": "#64748b", "gray": "#6b7280", "grey": "#6b7280", "zinc": "#71717a",
+    "navy": "#1e3a8a", "olive": "#65a30d", "forest": "#166534",
+}
+
+
+def normalize_color(value: object) -> str:
+    """颜色词 / hex → 落库值：先认七个色名，再认 CSS 颜色词（落成 hex）。认不出才留空。"""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    return CSS_COLOR_NAMES.get(raw, raw)
+
+
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
            side: str = "", occurrence: int = 1) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
@@ -383,7 +416,7 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     if not anchor:
         raise ValidationError("anchor 必填（正文行 id / `md:p<页号>` / `pdf:p<页号>`）")
     # 没指定颜色就挑**当前用得最少**的（用户口径：多彩、尽量不一样）
-    color = str(color or "").strip() or spare_color_for(paper_id)
+    color = normalize_color(color) or spare_color_for(paper_id)
     # 面没指定（或给了个不认识的值）→ 按**引用的文字**判：引中文就落在译文面
     # （界面按译文读时，原文那一面的高亮根本画不出来，见 `side_of_text`）。
     # 面没指定时：**公式优先落在译文面**（用户口径：平时看的是中文那一列，标在原文面

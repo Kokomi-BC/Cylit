@@ -365,12 +365,17 @@ function matchFormulaAtom(segs: Seg[], probe: string): Seg | null {
   for (const seg of atoms) {
     if (atomLatex(seg.el) === want) return seg;
   }
+  /* 片段匹配**取覆盖最长的那一枚**（不是第一个）：探针 `D_{\text{mse}} \leq …` 里天热包含
+     `_{\text{mse}}`，取第一个就会挂到那个碎片上（agent 报过"只匹配到 $_{\text{mse}}$"）。 */
+  let best: { seg: Seg; covered: number } | null = null;
   for (const seg of atoms) {
     const latex = atomLatex(seg.el);
-    if (Math.min(latex.length, want.length) < 8) continue;
-    if (latex.includes(want) || want.includes(latex)) return seg;
+    const covered = Math.min(latex.length, want.length);
+    if (covered < 8) continue;
+    if (!(latex.includes(want) || want.includes(latex))) continue;
+    if (!best || covered > best.covered) best = { seg, covered };
   }
-  return null;
+  return best?.seg ?? null;
 }
 
 /** 渲染文本里所有 ATOM 的位置（公式各占 1 个字符）。 */
