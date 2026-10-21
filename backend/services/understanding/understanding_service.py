@@ -820,6 +820,17 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
                     out_live.append(
                         _healed_item(code, chunk_id, by_code, anchors, pids, verdict))
                     continue
+                # 一条引用常带多个 pid（一行被拆成几行、或块内若干行）：其中一半还活着、
+                # 一半退休时，**剪掉失效的那半**就够 —— 剩下的全 ok 就仍是行级精确。
+                # 以前"有一个 gone 就整条降级"，把 7 条本来还精确到行的引用一起拖进
+                # stale（实测 turboquant 补完附录后）。
+                kept = [pid for pid, one in zip(pids, states) if one == "ok"]
+                if kept:
+                    keeps = _resolve_registry(registry(), kept, live_rows)
+                    item = _healed_item(code, chunk_id, by_code, anchors, kept, keeps)
+                    item["pid_state"] = "partial"
+                    out_live.append(item)
+                    continue
                 # 退休身份就地愈合：重译 / 重排会让旧 pid 退休（reason=gone），但退休记录
                 # 留着那一行的指纹与页号 —— 同页最像的活行就是它的后继。命中就按 ok 处理
                 # （只多标 pid_state=healed），命中不了才降级，绝不硬猜。

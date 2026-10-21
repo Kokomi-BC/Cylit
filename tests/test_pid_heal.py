@@ -57,6 +57,22 @@ def test_heal_pid_needs_a_registered_fingerprint():
     assert row_identity.heal_pid(_reg(), "r-unknown", [_row("r-new", 3, OLD)]) is None
 
 
+def test_partial_pids_are_pruned_so_the_rest_stays_row_level():
+    """一条引用带多个 pid 时，失效的那几个只该被剪掉，不该把整条拖进 stale。"""
+    from backend.services.understanding import understanding_service as us
+
+    rows = [{"pid": "r-live", "id": "p003-01", "page": 3, "original": "A surviving row."}]
+    registry = {"rows": [{"pid": "r-live", "page": 3, "order": 0,
+                         "fp": _fp("A surviving row.")}],
+                "retired": [{"pid": "r-gone", "page": 3, "fp": _fp("A vanished row.")}]}
+    pids = ["r-live", "r-gone"]
+    verdict = us._resolve_registry(registry, pids, rows)
+    assert [verdict[p]["state"] for p in pids] == ["ok", "gone"]
+    kept = [p for p in pids if verdict[p]["state"] == "ok"]
+    keeps = us._resolve_registry(registry, kept, rows)
+    assert kept == ["r-live"] and keeps["r-live"]["row_id"] == "p003-01"
+
+
 def test_heal_pids_is_all_or_nothing():
     """认不回来的 pid 只要还剩一个，整条引用就整体放弃（半恢复 = 看着精确、其实指错行）。"""
     old = {"pid": "r-old", "page": 3, "fp": _fp(OLD), "reason": "gone"}
