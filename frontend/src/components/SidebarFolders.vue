@@ -287,7 +287,7 @@ onUnmounted(() => {
         :title="sectionCollapsed ? '展开分类' : '收起分类'"
         @click="toggleSection"
       >
-        <AppIcon name="chevron-down" :size="12" class="sf-caret" />
+        <AppIcon name="chevron-down" :size="14" class="sf-caret" />
         <span class="sf-title">分类</span>
       </button>
       <button type="button" class="sf-add" title="新建分类" aria-label="新建分类" @click="startCreate">
@@ -402,21 +402,22 @@ onUnmounted(() => {
   background: var(--bg-elev);
 }
 
+/* 这一块里最大的一档：14px 标签（不是按钮面 —— 没有底色、没有边框，只有文字和箭头） */
 .sf-fold {
   flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
-  height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: var(--radius-ctl);
-  background: transparent; color: var(--text-faint);
-  font-size: calc(11px * var(--ts, 1)); font-weight: 650; letter-spacing: .045em;
+  height: 30px; padding: 0 4px 0 8px; border: 0; border-radius: var(--radius-ctl);
+  background: transparent; color: var(--text);
+  font-size: calc(14px * var(--ts, 1)); font-weight: 650; letter-spacing: .02em;
   cursor: pointer; transition: color var(--dur) var(--ease);
 }
-.sf-fold:hover { color: var(--text); }
+.sf-fold:hover { color: var(--accent-text); }
 .sf-fold:focus-visible { outline: none; box-shadow: var(--ring); }
 .sf-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-caret { flex: none; transition: transform var(--dur) var(--ease); }
 .sf.is-collapsed .sf-caret { transform: rotate(-90deg); }
 
 .sf-add {
-  flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
   padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-faint);
   cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -430,7 +431,7 @@ onUnmounted(() => {
  * 同一分类的论文之间只隔 .sf-list 的 1px —— 归属一眼可见。 */
 .sf-row {
   display: flex; align-items: center; gap: 2px; padding-left: 2px;
-  min-height: 30px; border-radius: 8px;
+  min-height: 28px; border-radius: 8px;
 }
 .sf-list > .sf-row { margin-top: 6px; }
 .sf-list > .sf-row:first-child { margin-top: 0; }
@@ -438,7 +439,7 @@ onUnmounted(() => {
 /* 折叠箭头：独立按钮、定宽 18px（行首那一格），展开 / 收起都不会让名字左右跳；
  * 颜色取最弱一档，悬停与展开时提亮（只旋转，从不隐藏） */
 .sf-caret-btn {
-  flex: none; width: 18px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 18px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
   padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint);
   cursor: pointer; transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
@@ -449,9 +450,9 @@ onUnmounted(() => {
  * 「未分类」用的是同一个类，自然同档。悬停 / 展开再深一档（--accent-hover，全站文字加强用的就是它） */
 .sf-name {
   flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 6px 0 0; border: 0; border-radius: 8px;
+  height: 28px; padding: 0 6px 0 0; border: 0; border-radius: 8px;
   background: transparent; color: var(--accent-text);
-  font-size: calc(13px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: pointer;
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: pointer;
   transition: color var(--dur) var(--ease);
 }
 .sf-name:hover, .sf-row.open .sf-name { color: var(--accent-hover); }
@@ -469,11 +470,11 @@ onUnmounted(() => {
 .sf-more { flex: none; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
 .sf-row:hover .sf-more, .sf-row:focus-within .sf-more { opacity: 1; }
 
-/* 第二档（明显更弱）：11px / 400 / 弱色，缩进 46px（比分类名的 22px 深 24px）。
- * 树形感只靠缩进 + 字号 + 颜色，不加任何竖线 / 分支线 */
+/* 第二档（明显更弱）：11px / 400 / 弱色。用户口径「论文题目铺满整行、不考虑层级」，
+ * 所以不再缩进：左 8px 与侧栏其它行同一条边线，宽度几乎交给标题 */
 .sf-paper {
   display: flex; align-items: center; width: 100%; min-width: 0;
-  height: 25px; padding: 0 8px 0 46px; border: 0; border-radius: 6px;
+  height: 25px; padding: 0 8px; border: 0; border-radius: 6px;
   background: transparent; color: var(--text-dim);
   font-size: calc(11px * var(--ts, 1)); font-weight: 400; text-align: left; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -482,10 +483,10 @@ onUnmounted(() => {
 .sf-paper:focus-visible { outline: none; box-shadow: var(--ring); }
 .sf-paper-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 就地输入：28px 高、外面那格与分类行同为 30px，编辑时行高不跳 */
-.sf-input { display: flex; align-items: center; min-height: 30px; }
+/* 就地输入：字号跟分类行走（12.5px），外格 min-height 与所属行一致（28px），编辑时行高不跳 */
+.sf-input { display: flex; align-items: center; min-height: 28px; }
 .sf-input input, .sf-row input {
-  width: 100%; height: 28px; padding: 0 8px; font-size: calc(13px * var(--ts, 1));
+  width: 100%; height: 26px; padding: 0 8px; font-size: calc(12.5px * var(--ts, 1));
 }
 
 .sf-error {
@@ -503,11 +504,11 @@ onUnmounted(() => {
 }
 .sf-link:hover { text-decoration: underline; }
 .sf-none {
-  margin: 0 0 2px 46px;     /* 与论文行正文同一竖线 */
+  margin: 0 0 2px 8px;      /* 与论文行同一条左线（论文铺满整行后，提示不能还缩进） */
   color: var(--text-faint); font-size: calc(11px * var(--ts, 1));
 }
-/* 行内取数失败：缩进到论文行那一档，字号也跟论文行一致，仍走 --danger 那一套 */
-.sf-error-row { margin: 0 6px 4px 46px; font-size: calc(11px * var(--ts, 1)); }
+/* 行内取数失败：左线同论文行，字号也一致，仍走 --danger 那一套 */
+.sf-error-row { margin: 0 6px 4px 8px; font-size: calc(11px * var(--ts, 1)); }
 
 .sf-icon-btn {
   display: flex; align-items: center; justify-content: center;
