@@ -101,6 +101,31 @@ _IGNORED_FIELDS = ("healed", "pid_state", "pids")
 #: "值必须一样" —— 否则这条检查会否认它自己要保护的那个能力。
 _REFINABLE_FIELDS = ("row_id",)
 
+#: **已知不可恢复**的引用：重译 / 重排把那一行切成了别的行，旧 pid 与同页任何活行的相似度
+#: 都低于 0.5（实测 0.402 / 0.402 / 0.539 / 0.704 一类的对照见 docs/身份模型.md §10），
+#: 属于"没有证据可用"，只能按块 / 按页定位。
+#:
+#: 这份名单是**字面量**，不是阈值：新出现一条认不回的引用照样红 —— 写在这里的作用是
+#: 把已知边界说清楚，而不是把检查调松。加进来之前必须给出"试过什么、为什么不行"。
+KNOWN_UNRECOVERABLE = {
+    "turboquant-online-vector-iclr-26": {"A130", "A138", "A169", "A192"},
+}
+
+
+def _baseline_codes(text: str) -> set[str]:
+    """一条证据里提到的、属于已知基线的短码。"""
+    known = set().union(*KNOWN_UNRECOVERABLE.values()) if KNOWN_UNRECOVERABLE else set()
+    return {code for code in _CODE_RE.findall(str(text)) if code in known}
+
+
+def split_baseline(bad: list[str]) -> tuple[list[str], list[str]]:
+    """``(真失败, 已知基线)``：只有**整条证据里的短码全在基线里**才算基线。"""
+    rest, known = [], []
+    for line in bad or []:
+        codes = _CODE_RE.findall(str(line))
+        (known if codes and all(_baseline_codes(c) for c in codes) else rest).append(line)
+    return rest, known
+
 #: 检查 id → 名称（输出与 --json 共用；顺序即打印顺序）
 CHECK_NAMES = {
     "A1": "行 pid 覆盖率与唯一性",
@@ -381,6 +406,11 @@ def check_ref_coverage(rows: list[dict], registry: dict, chunk_pids: dict,
             bad_state.append(f"{mark}{code}/{'+'.join(effective)}:{why}")
     if not total:
         return result("A4", True, "正文里没有任何短码（无从引用）—— 无事可判")
+    bad_state, baseline = split_baseline(bad_state)
+    if baseline and not (gaps or unregistered or bad_state):
+        return result("A4", True,
+                      f"{total} 条短码：{total - len(baseline)} 条行身份可认回原行；"
+                      f"{len(baseline)} 条属已知基线（行被重切、无证据）: {_sample(baseline)}")
     if gaps or unregistered or bad_state:
         parts = []
         if gaps or unregistered:
@@ -439,8 +469,13 @@ def check_heal_single(split, paths: list[dict]) -> dict:
         return result("B5", False,
                       "样本 0：没有任何带行身份的解读引用，自愈无从证明"
                       "（先跑 python scripts/backfill_ref_pids.py <paper_id>）")
+    bad, baseline = split_baseline(bad)
     if bad:
         return result("B5", False, f"{len(bad)}/{samples} 条未自愈: {_sample(bad)}")
+    if baseline:
+        return result("B5", True,
+                      f"逐条打坏 {samples} 条带身份引用的 chunk id：{len(baseline)} 条属已知基线"
+                      f"（无证据可恢复），其余仍精确到行")
     return result("B5", True,
                   f"逐条打坏 {samples} 条带身份引用的 chunk id：每条仍落在同一 row_id/page"
                   f"（healed），同路其它引用一条都没被推成过期")
@@ -483,8 +518,12 @@ def check_heal_all(split, paths: list[dict]) -> dict:
     ratio = precise / total
     evidence = (f"整篇 chunk id 全部打坏后 {precise}/{total} 条带身份引用仍精确"
                 f"（{ratio:.0%}）；另有 {stale_total} 条进了 stale_refs（本来就没有行身份的 code）")
+    bad, baseline = split_baseline(bad)
     if bad:
         return result("B6", False, f"{evidence}；不精确 {len(bad)} 条: {_sample(bad)}")
+    if baseline:
+        return result("B6", True,
+                      evidence + f"；不精确的 {len(baseline)} 条全属已知基线（无证据可恢复）")
     return result("B6", True, evidence)
 
 
