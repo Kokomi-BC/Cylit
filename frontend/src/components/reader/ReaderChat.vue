@@ -1609,9 +1609,33 @@ function onMenuKeydown(ev: KeyboardEvent) {
   if (ev.key === 'Escape' && (menuOpen.value || subStage.value)) closeMenu();
 }
 
+/**
+ * 点浮层外面收起 —— **用捕获阶段的 document 监听，不再铺一层全视口遮罩**（用户口径）。
+ *
+ * 遮罩那套的毛病：它盖住整个界面，于是"关浮层"和"点别处"是两件事，
+ * 点输入框的第一下只吃掉遮罩、焦点不落到输入框里。这里只在捕获阶段看一眼 target，
+ * 不阻止默认行为、不吞事件：点哪儿都照常生效，浮层顺手收掉。
+ */
+function onOutsidePointer(ev: PointerEvent) {
+  const t = ev.target as Element | null;
+  if (t && typeof t.closest === 'function' && t.closest('.pick-pop, .pick-sub, .model-btn')) return;
+  closeMenu();
+}
+
 watch(menuOpen, (open) => {
-  if (open) window.addEventListener('keydown', onMenuKeydown);
-  else window.removeEventListener('keydown', onMenuKeydown);
+  if (open) {
+    window.addEventListener('keydown', onMenuKeydown);
+    document.addEventListener('pointerdown', onOutsidePointer, true);
+  } else {
+    window.removeEventListener('keydown', onMenuKeydown);
+    document.removeEventListener('pointerdown', onOutsidePointer, true);
+  }
+});
+
+/** 浮层还开着就被卸载（切论文 / 关浮窗）：监听要跟着摘掉，别留给下一份。 */
+onUnmounted(() => {
+  window.removeEventListener('keydown', onMenuKeydown);
+  document.removeEventListener('pointerdown', onOutsidePointer, true);
 });
 
 /**
@@ -2134,7 +2158,10 @@ defineExpose({ uploadFiles, ensureThread });
                 <AppIcon name="add" :size="15" />
               </button>
               <span class="spacer" />
-              <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="14" /></button>
+              <!-- 停止 = 主题色**圆环 + 实心方块**（用户口径：换成图里这枚 SVG 的样子）。
+           圆环交给按钮自己的描边（比画在 SVG 里更锐），方块仍是 stop 图标。
+           方块 10px 照参考图的比例（≈ 圆环内径的 0.45）定的。 -->
+      <button v-if="sending" class="btn icon sm stop send" title="停止" @click="stop"><AppIcon name="stop" :size="10" /></button>
               <button v-else class="btn primary icon sm send" :disabled="!canSend" title="发送" @click="ask('send')">
                 <AppIcon name="arrow-up" :size="15" />
               </button>
@@ -2169,9 +2196,8 @@ defineExpose({ uploadFiles, ensureThread });
                所以不另起一枚按钮，避免同一行出现两个能点出同一动作的东西。 -->
           <span class="foot-stat foot-pct" :title="contextTitle">{{ contextText }}</span>
 
-          <!-- 模型 / 推理等级：根浮层**只有两行**，点某一行向侧向飞出第二级候选。
+          <!-- 模型 / 推理等级：根浮层**只有两行**，悬浮某一行向侧向飞出第二级候选。
                候选不往根浮层里堆 —— 浮层模式最窄只有 320px，堆下去又高又乱。 -->
-          <div v-if="menuOpen" class="pick-scrim" @pointerdown="closeMenu" />
           <div v-if="menuOpen" class="pick-pop" @mouseenter="hoverPick" @mouseleave="leavePick">
             <button class="pick-row" :class="{ on: subStage === 'model' }"
                     @mouseenter="openSub('model', $event)" @click="toggleSub('model', $event)">
@@ -2714,10 +2740,6 @@ defineExpose({ uploadFiles, ensureThread });
 .composer-foot { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 4px 0; }
 /* 模型名：**低调**（幽灵小字 + 一枚箭头），点它就地换模型 / 推理等级 */
 .model-btn {
-  /* 层级压过 .pick-scrim(8)：遮罩是**全视口** fixed，盖住这枚按钮的话，
-     浮层一开浏览器就判定指针"离开了按钮"，260ms 后自己把菜单收掉。
-     z-index 9 与浮层同档，DOM 在后 → 浮层仍压在按钮之上。 */
-  position: relative; z-index: 9;
   display: inline-flex; align-items: center; gap: 1px; max-width: 55%; min-width: 0;
   border: 0; background: none; cursor: pointer; padding: 2px 4px;
   border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: calc(11.5px * var(--ts, 1));
@@ -2739,18 +2761,17 @@ defineExpose({ uploadFiles, ensureThread });
 /* ── 模型 / 推理等级浮层 ──
    左右都贴住这一行（left/right 归零）再用 max-width 收窄：胶囊在最左边，浮层向右长多少
    都出不了输入区 —— 浮层模式最窄只有 320px，溢出到面板外就点不到了。 */
-.pick-scrim { position: fixed; inset: 0; z-index: 8; }
-/* 内边距一路收到 3px / 6px（用户口径「留白更小」）：两行菜单本来就短，
-   4px 外圈 + 8px 行内 + 30px 行高会显得浮层在"飘"，收完贴着文字更紧凑。 */
+/* 内边距收到 2px / 4px（用户口径「留白更小」，第二轮）：两行菜单本来就短，
+   外圈 + 行内的横向留白只剩 6px，文字几乎贴着浮层边，重量全落在字上。 */
 .pick-pop {
   position: absolute; left: 0; right: 0; bottom: calc(100% + 5px); z-index: 9;
   max-width: 288px;
-  display: flex; flex-direction: column; gap: 1px; padding: 3px;
+  display: flex; flex-direction: column; gap: 1px; padding: 2px;
   border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-row {
-  display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 6px;
+  display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 4px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer; flex: none;
 }
@@ -2769,14 +2790,14 @@ defineExpose({ uploadFiles, ensureThread });
      又低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）——
      子菜单只该压住正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
   position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
-  padding: 3px; border-radius: 11px; border: 1px solid var(--border);
+  padding: 2px; border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
 .pick-item {
-  display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px;
+  display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 4px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; text-align: left; cursor: pointer;
 }
@@ -2791,7 +2812,7 @@ defineExpose({ uploadFiles, ensureThread });
 }
 /* 副行：provider · model_name（小一号、退一档色，只做识别用） */
 .pick-item-sub { font-size: calc(10px * var(--ts, 1)); line-height: 1.25; color: var(--text-faint); }
-.pick-empty { display: flex; flex-direction: column; gap: 0; padding: 4px 6px; }
+.pick-empty { display: flex; flex-direction: column; gap: 0; padding: 4px; }
 .pick-empty .pick-item-name { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
@@ -2806,13 +2827,15 @@ defineExpose({ uploadFiles, ensureThread });
 .ring-bar { fill: none; stroke: currentColor; stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
 /* 停止 = **主题色**的实心圆钮（用户口径 2026-10-15：原来红/蓝两色像两套系统，
    现在跟发送那枚 `.btn.primary` 同一份配方，只有图标从箭头换成方块）。位置尺寸都没动。 */
+/* （用户口径 2026-11-26 取代 2026-10-15 那份"实心圆钮"）：现在是**描边圆环 + 实心方块**，
+   两样都取主题色。描边 2px 是照参考图的比例（环粗 ≈ 直径的 1/13），1px 在浅底上偏虚。 */
 .btn.stop {
-  background: var(--accent); border-color: transparent; color: var(--text-on-accent);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 28%, transparent);
+  background: transparent; border-color: var(--accent); color: var(--accent);
+  border-width: 2px; box-shadow: none;
 }
 .btn.stop:hover:not(:disabled) {
-  background: var(--accent-hover);
-  box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-color: var(--accent-hover); color: var(--accent-hover);
 }
 
 .drop-hint {
