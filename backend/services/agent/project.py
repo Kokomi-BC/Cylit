@@ -275,7 +275,7 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
     out: list[dict] = []
     for item in items:
         chunk_id = str(item.get("chunk_id") or "")
-        out.append({
+        hit = {
             "chunk_id": chunk_id,
             "block_id": item.get("block_id"),
             "page_no": int(item.get("page_no") or 0) or None,
@@ -286,7 +286,13 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
             # 中文预览（同 chunk 的 zh 行）：**引用片段优先用译文**，用户看得懂；
             # 拿不到就是 None，绝不现译一次（那会让"检索"变成"翻译"）。
             "translation": zh_previews.get(chunk_id),
-        })
+        }
+        # 行身份（阶段 2b）：引用带着 pid 才能在重新翻译/重建索引后认回同一行。
+        # 存量 chunk 还没有 pids → 不写这个键（不写空列表假装有）。
+        pids = _chunk_pids(item)
+        if pids:
+            hit["pids"] = pids
+        out.append(hit)
     return {"paper_id": paper_id, "page_total": total, "query": query,
             "returned": len(out), "items": out,
             # 证据闸用的元信息（**不发给模型**，见 §7.5）：向量检索永远返回 top-k，
@@ -315,7 +321,7 @@ def kb_search(query: str, *, top_k: int = 8) -> dict:
     for item in items:
         paper_id = str(item.get("paper_id") or "")
         chunk_id = str(item.get("chunk_id") or "")
-        out.append({
+        hit = {
             "paper_id": paper_id, "paper_title": titles.get(paper_id, ""),
             "chunk_id": chunk_id, "block_id": item.get("block_id"),
             "page_no": int(item.get("page_no") or 0) or None,
@@ -323,11 +329,27 @@ def kb_search(query: str, *, top_k: int = 8) -> dict:
             "lang": item.get("lang"),
             "content": _clip(_neutralize_images(item.get("content"))),
             "translation": zh_previews.get(chunk_id),
-        })
+        }
+        # 同上：行身份来自这条命中自己的 chunk metadata（跨库命中属于它自己那篇）。
+        pids = _chunk_pids(item)
+        if pids:
+            hit["pids"] = pids
+        out.append(hit)
     return {"query": query, "returned": len(out), "items": out,
             "top_score": max((float(i.get("rerank_score") or 0) for i in items), default=0.0),
             "rerank_degraded": bool((result.get("retrieval") or {}).get("rerank", {})
                                     .get("degraded", True))}
+
+
+def _chunk_pids(item: dict) -> list[str]:
+    """这一条命中记住的**行身份**（chunk 的 ``metadata.pids``，阶段 2b）。
+
+    **不额外查库**：检索结果本来就带着 ``metadata``（``rrf_fuse`` 的 content_fields 里有它，
+    值来自 ``metadata_json``），pids 就在里面。存量 chunk 的 metadata 还没有这个字段 ——
+    拿不到就是空列表，调用方据此**不写** ``pids`` 键（写空列表等于假装"这一条没有身份"）。
+    """
+    meta = item.get("metadata") or {}
+    return [str(p) for p in (meta.get("pids") or []) if p]
 
 
 def _paper_titles(paper_ids: set[str]) -> dict[str, str]:

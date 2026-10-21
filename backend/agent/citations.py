@@ -26,6 +26,10 @@ class Citation:
     row_id: str | None = None
     snippet: str = ""
     image_urls: list[str] = field(default_factory=list)
+    #: 这条证据记住的**行身份**（chunk 的 ``metadata.pids``）。阶段 2b 只是读时导出：
+    #: 存量 chunk 还没有这个字段，非 chunk 证据（页图 / 公式块）也没有 ——
+    #: 空列表时 ``to_dict`` **不写这个键**，所以前端拿到的形状与改造前一致。
+    pids: list[str] = field(default_factory=list)
     #: 人话定位串（``第 3 页 §3.1 · 公式``），给模型指位置用，也顺手当引用表标题
     label: str = ""
 
@@ -47,13 +51,25 @@ class Citation:
         return " · ".join(bits) or self.kind
 
     def to_dict(self) -> dict:
-        return {
+        item = {
             "ref": self.ref, "paper_id": self.paper_id, "kind": self.kind,
             "page": self.page, "section": self.section,
             "block_id": self.block_id, "row_id": self.row_id,
             "snippet": self.snippet, "image_urls": list(self.image_urls),
             "label": self.label or self._locate(),
         }
+        # 只在真有身份时才出现：老索引（chunk 还没有 pids）与非 chunk 证据的形状一个字不变。
+        if self.pids:
+            item["pids"] = list(self.pids)
+        return item
+
+
+def _merge_pids(citation: Citation, pids: list[str] | None) -> None:
+    """把新拿到的行身份并进已有引用：按先来后到去重，**绝不覆盖成空**。"""
+    for raw in (pids or []):
+        pid = str(raw or "")
+        if pid and pid not in citation.pids:
+            citation.pids.append(pid)
 
 
 class RefRegistry:
@@ -71,7 +87,8 @@ class RefRegistry:
                page: int | None = None, section: str | None = None,
                block_id: str | None = None, row_id: str | None = None,
                image_urls: list[str] | None = None, label: str = "",
-               ids: tuple[str, ...] = (), paper_id: str | None = None) -> Citation:
+               ids: tuple[str, ...] = (), paper_id: str | None = None,
+               pids: list[str] | None = None) -> Citation:
         """登记一条证据；同一个 ``key`` 重复登记会复用原编号。
 
         复用很重要：模型很爱把同一页读两遍（真机探测里 `paper_search` 连发两次），
@@ -79,9 +96,15 @@ class RefRegistry:
 
         ``paper_id`` 只在**跨库检索**（`kb_search`）时才显式传：那条命中不属于当前论文，
         引用必须带上它自己那篇的 id，否则前端会跳到当前论文的同一页 —— 一个不相干的段落。
+
+        ``pids`` 是这条证据记住的**行身份**（阶段 2b，读时导出）：同一 ``key`` 复用编号时
+        与已有的 pids **合并**，所以先到的那份不会因为后到的命中没带而丢。
         """
         existing = self._by_key.get(key)
         if existing is not None:
+            # 复用编号时**合并**行身份，不是覆盖：同一处证据的第二条命中（A 路 / B 路）
+            # 可能只带着自己那一份 pids，覆盖就会把先到的那份抹掉。
+            _merge_pids(self._by_ref[existing], pids)
             # 复用一个号时，**新出现的内部 id 也要登记**：同一处证据的两条命中（A 路 / B 路
             # 各自的 chunk id）共用一个号，清洗阶段仍要认得出这两个 id 都属于它。
             for raw in (block_id, *ids):
@@ -92,7 +115,8 @@ class RefRegistry:
         citation = Citation(ref=ref, paper_id=paper_id or self.paper_id, kind=kind,
                             page=page, section=section, block_id=block_id,
                             row_id=row_id, snippet=snippet,
-                            image_urls=list(image_urls or []), label=label)
+                            image_urls=list(image_urls or []), label=label,
+                            pids=[str(p) for p in (pids or []) if p])
         self._by_ref[ref] = citation
         self._by_key[key] = ref
         for raw in (block_id, *ids):

@@ -505,7 +505,10 @@ def _chunk_anchors(ids: list[str]) -> dict[str, dict]:
         row_id = meta.get("row_id") or (meta.get("row_ids") or [None])[0]
         out[cid] = {"block_id": block_id, "row_id": row_id,
                     #: 公式条目带上 LaTeX：前端据此在**同一行里**认出是哪一枚公式（见下）
-                    "latex": meta.get("latex")}
+                    "latex": meta.get("latex"),
+                    #: 这个 chunk 记住的**行身份**（与 ``row_ids`` 同序等长）。存量 chunk 还没有
+                    #: 这个字段（建块时取不到 pid，重建索引后才写），所以缺失是 None 而不是空列表。
+                    "pids": meta.get("pids")}
     return out
 
 
@@ -545,6 +548,12 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
             item["block_id"] = anchor["block_id"]
         if anchor.get("row_id"):
             item["row_id"] = anchor["row_id"]
+        # 行身份（阶段 2b）：引用带上 pid 才能在重新翻译/重建索引后**认回同一行**。
+        # 拿不到就不写这个键 —— 存量 chunk 的 metadata 里还没有 pids（重建索引后才有），
+        # 写个空列表等于假装"这一条没有身份"，与"老数据还没带"分不开。
+        pids = [str(p) for p in (anchor.get("pids") or []) if p]
+        if pids:
+            item["pids"] = pids
         # 公式的 LaTeX：一条公式与它所在的**同一个正文行**本来是两条引用（用户 2026-12-03 的
         # 「56、57 为什么是同一块地方」）—— 行级落点必然重合，只有精确到公式元素才分得开，
         # 所以正文行 id 之外再带上这条公式本身。

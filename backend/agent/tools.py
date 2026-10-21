@@ -176,7 +176,9 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
         key=_chunk_key(paper_id, item.get("block_id"), chunk_id, snippet), kind="chunk",
         page=page, section=section, block_id=item.get("block_id"),
         snippet=snippet, label=_locate(page, section, item.get("chunk_type") or ""),
-        ids=(chunk_id,) if chunk_id else ())
+        ids=(chunk_id,) if chunk_id else (),
+        # 行身份（阶段 2b）：检索命中带过来的 pid，复用编号时由 assign 合并（不覆盖）。
+        pids=list(item.get("pids") or []))
 
 
 # --------------------------------------------------------------------------
@@ -517,7 +519,9 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
                 paper_id=paper_id, page=page, section=section,
                 block_id=raw.get("block_id"), snippet=snippet,
                 label=" · ".join(x for x in (title, _locate(page, section)) if x),
-                ids=(str(raw.get("chunk_id") or ""),))
+                ids=(str(raw.get("chunk_id") or ""),),
+                # 跨库命中同样带自己那条 chunk 的 pids（拿不到就是空，to_dict 里不出现）
+                pids=list(raw.get("pids") or []))
             items.append({
                 "ref": cit.ref, "paper_id": paper_id, "paper_title": title,
                 "page": page, "section": section, "type": raw.get("chunk_type"),

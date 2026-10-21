@@ -23,6 +23,9 @@ chunk 的 ``row_ids`` 指向不存在的行、公式块落成 ``row-x`` 这种�
    ``anchor_map.resolve_anchor``，绝不另写一套口径）；``row-x`` 这类恒等假 id 直接 error。
 3. **解读引用的完整性**：``understanding.markdown`` 里的每个 ``[Axxx]`` 短码都要在
    ``refs_json`` 的 ``resolved``（或 ``inventory``）里；``inventory`` 为空而 markdown 非空 → error。
+   同一组还看**引用带的 pid**（``check_understanding_pids``）：引用到的 chunk 有 ``pids`` 时，
+   每条 pid 都该能在注册表里找到（找不到只 warn）；整篇都没有 pids 只进 ``[stat]`` ——
+   存量 chunk 本来就没有这个字段，重建索引后才会带上。
 4. **索引卫生**：chunk id 重复（error）、``order_global`` 并列（warn）、
    ``prev/next/parent`` 指针悬空（warn）；``row_ids`` 跨页**仅统计**。
 5. **行身份（pid）覆盖率**：正文行是否都带 ``pid``；pid 是否 1:1（不跨页、不重复）、
@@ -59,6 +62,10 @@ if str(ROOT) not in sys.path:
 DETAIL_MAX = 200
 #: 一条发现里最多列几个 id（其余只给数量）
 SAMPLE_MAX = 12
+#: 多条短码并列时的分隔（f-string 里不留嵌套引号）
+_SEP = ", "
+#: ``_run_row_pids`` 的"注册表没传"哨兵（``None`` 另有含义：上游已取不到）
+_UNLOADED = object()
 
 #: 解读正文里的短码，与 ``understanding_service._REF_RE`` 同一口径（``A`` + 2~4 位数字）
 _CODE_RE = re.compile(r"\b(A\d{2,4})\b")
@@ -322,6 +329,62 @@ def check_understanding(markdown: str | None, refs: dict | None,
                            f"{len(missing)}/{len(used)} 个短码在 resolved/inventory 里找不到: "
                            f"{_sample(missing)}"))
     return out
+
+
+def ref_pids(refs: dict | None, chunks: list[dict]) -> list[tuple[str, list[str]]]:
+    """每条已解析的解读引用（``code -> chunk_id``）能拿到的**行身份**。
+
+    与 ``understanding_service.split_live_refs`` **同源**：pids 在 chunk 的 ``metadata`` 里
+    （``knowledge_service._attach_row_pids`` 写的）。存量 chunk 还没有这个字段 ——
+    重建索引后才有，所以"空"是常态，不是缺数据。
+    """
+    by_chunk: dict[str, list[str]] = {}
+    for chunk in chunks or []:
+        if not isinstance(chunk, dict):
+            continue
+        meta = chunk.get("metadata") or {}
+        by_chunk[str(chunk.get("id") or "")] = [str(p) for p in (meta.get("pids") or []) if p]
+    return [(str(code), list(by_chunk.get(str(cid or ""), [])))
+            for code, cid in ((refs or {}).get("resolved") or {}).items()]
+
+
+def check_understanding_pids(refs: dict | None, chunks: list[dict],
+                            registry: dict | None) -> list[dict]:
+    """解读引用带的 pid 是否都能在行身份注册表里找到 —— 找不到只 **warn**。
+
+    为什么不升级成 error：pids 是**读时导出**的（阶段 2b），存量 chunk 还没有这个字段；
+    而且"整篇引用都没有 pids"是重建索引之前的常态，那一条只进 ``[stat]``（见
+    ``understanding_pid_stats``），一条发现都不该产生。
+    注册表为空（还没生成过）时"找不到"没有基准 —— 直接不判，免得老库整片假红。
+    """
+    known = {str(e.get("pid")) for e in ((registry or {}).get("rows") or [])
+             if isinstance(e, dict) and e.get("pid")}
+    if not known:
+        return []
+    unknown: dict[str, list[str]] = {}
+    for code, pids in ref_pids(refs, chunks):
+        for pid in pids:
+            if pid not in known:
+                unknown.setdefault(pid, []).append(code)
+    if not unknown:
+        return []
+    shown = []
+    for pid, codes in list(unknown.items())[:SAMPLE_MAX]:
+        shown.append(f"{pid}(@{_SEP.join(codes[:2])})")
+    return [finding("warn", "understanding_ref_pids",
+                    f"{len(unknown)} 个解读引用的 pid 在注册表里找不到: {_sample(shown)}")]
+
+
+def understanding_pid_stats(refs_list: list, chunks: list[dict]) -> dict:
+    """解读引用里有多少条带 pid（**仅统计**：存量 chunk 还没有 pids，不报错）。"""
+    stats = {"refs": 0, "with_pids": 0, "pids": 0}
+    for refs in refs_list:
+        for _code, pids in ref_pids(refs, chunks):
+            stats["refs"] += 1
+            if pids:
+                stats["with_pids"] += 1
+                stats["pids"] += len(pids)
+    return stats
 
 
 # --------------------------------------------------------------------------
@@ -685,24 +748,34 @@ def _load_row_registry(paper_id: str) -> dict:
     return row_identity.load(paper_id)
 
 
+def _row_registry(findings: list[dict], paper_id: str) -> dict | None:
+    """行身份注册表读**一次**（行覆盖率组与解读 pids 组共用）；取不到只记一条发现。"""
+    try:
+        return _load_row_registry(paper_id)
+    except Exception as exc:  # noqa: BLE001 —— 取不到注册表只影响这两组
+        findings.append(finding("error", "row_pids",
+                                f"check crashed: {exc.__class__.__name__}: {exc}"))
+        return None
+
+
 def _run_row_pids(findings: list[dict], paper_id: str,
-                  pages: list[dict] | None, chunks: list[dict] | None = None) -> dict:
+                  pages: list[dict] | None, chunks: list[dict] | None = None,
+                  registry: dict | None = _UNLOADED) -> dict:
     """第 5 组：行身份覆盖率 + chunk 的 ``pids``。行只走 ``page_products``、注册表只走
     ``row_identity.load``；任一取不到 → 记 ``check crashed``，其它检查照跑。
 
     返回 ``pid_stats``（取不到就给空 dict）。``chunks`` 是 ``_load_chunks`` 那一批，
-    缺省不算 chunk 这一半（老调用方只关心行覆盖率）。
+    缺省不算 chunk 这一半（老调用方只关心行覆盖率）。``registry`` 由调用方传入时**不再重读**
+    （解读 pids 那组要用同一份）；传 ``None`` = 上游已经取不到（发现已记过），直接返回。
     """
     if pages is None:
         findings.append(finding("error", "row_pids",
                                 "check crashed: 页级读模型取不到"
                                 "（reader_service.page_products 失败），行身份无从校验"))
         return {}
-    try:
-        registry = _load_row_registry(paper_id)
-    except Exception as exc:  # noqa: BLE001 —— 取不到注册表只影响这一组
-        findings.append(finding("error", "row_pids",
-                                f"check crashed: {exc.__class__.__name__}: {exc}"))
+    if registry is _UNLOADED:
+        registry = _row_registry(findings, paper_id)
+    if registry is None:
         return {}
     rows = flatten_page_rows(pages)
     _run(findings, "row_pids", check_row_pids, rows, registry)
@@ -776,7 +849,8 @@ def _run(findings: list[dict], name: str, fn, *args) -> None:
 
 
 def audit_paper(paper_id: str) -> dict:
-    """审计一篇论文，返回 ``{"paper_id","chunks","findings","row_pids","row_span","id_forms"}``。"""
+    """审计一篇论文，返回 ``{"paper_id","chunks","findings","row_pids",
+    "understanding_pids","row_span","id_forms"}``。"""
     findings: list[dict] = []
     chunks = _guard("load_chunks", lambda: _load_chunks(paper_id), findings) or []
     rows = _guard("load_rows", lambda: _load_rows(paper_id), findings) or []
@@ -803,16 +877,26 @@ def audit_paper(paper_id: str) -> dict:
             findings.append(finding("error", "anchor", "读不到解析块，锚点无从校验"))
         _run(findings, "index_hygiene", check_index_hygiene, chunks)
 
+    # 注册表**只读一次**：行覆盖率那组与解读引用的 pids 那组共用同一份。
+    # ``pages is None`` 时那两组都无从判定，别白读一次文件。
+    registry = _row_registry(findings, paper_id) if pages is not None else None
     # 行身份覆盖率：与 chunk 无关（它查的是"行有没有稳定身份"），所以放在 if 外面独立跑
-    pid_summary = _run_row_pids(findings, paper_id, pages, chunks)
+    pid_summary = _run_row_pids(findings, paper_id, pages, chunks, registry)
 
-    for item in _guard("load_understanding",
-                       lambda: _load_understanding(paper_id), findings) or []:
+    understanding = _guard("load_understanding",
+                           lambda: _load_understanding(paper_id), findings) or []
+    for item in understanding:
         _run(findings, f"understanding_refs[{item['path']}]", check_understanding,
              item["markdown"], item["refs"], item["inventory"])
+        # 引用带的 pid 是否认得回来：找不到只 warn（存量 chunk 还没有 pids）
+        _run(findings, f"understanding_ref_pids[{item['path']}]",
+             check_understanding_pids, item["refs"], chunks, registry)
 
     return {"paper_id": paper_id, "chunks": len(chunks), "findings": findings,
             "row_pids": pid_summary,
+            # 解读引用带了几条 pid：**纯统计**，整篇都没有也只是这一行
+            "understanding_pids": understanding_pid_stats(
+                [item["refs"] for item in understanding], chunks),
             "row_span": row_span_stats(chunks, rows),
             "id_forms": id_form_stats(chunks, anchors) if anchors else {}}
 
@@ -844,6 +928,13 @@ def print_human(results: list[dict]) -> None:
             print(f"[stat] row_pids: {pids['with_pid']}/{pids['rows']} 个正文行有 pid"
                   f"（唯一 {pids['unique_pids']}；注册表 {pids['registry']} 条，"
                   f"retired {pids['retired']}）")
+        upids = res.get("understanding_pids") or {}
+        if upids.get("refs"):   # 一条引用都没有就没什么可统计的
+            detail = (f"{upids['with_pids']}/{upids['refs']} 条引用带 pid"
+                      f"（共 {upids['pids']} 个）")
+            if not upids.get("with_pids"):
+                detail += "：存量 chunk 还没有 metadata.pids，重建索引后才有（仅统计）"
+            print(f"[stat] understanding_pids: {detail}")
         span = res.get("row_span") or {}
         if span.get("cross_page"):
             print(f"[stat] row_span: {span['cross_page']} 个 chunk 的 row_ids 跨页"
