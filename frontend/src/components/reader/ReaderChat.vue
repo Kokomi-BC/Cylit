@@ -1509,6 +1509,7 @@ async function loadModelOptions() {
 }
 
 function closeMenu() {
+  cancelPickHide();
   menuOpen.value = false;
   subStage.value = null;
 }
@@ -1516,18 +1517,44 @@ function closeMenu() {
 /** 点胶囊：开 / 收根浮层（收的时候子菜单跟着收）。 */
 function toggleMenu() {
   if (menuOpen.value) closeMenu();
-  else menuOpen.value = true;
+  else openMenu();
+}
+
+/* ── 悬浮展开 ──
+   用户口径：鼠标移上去就该看见内容，别先点一下。收起必须**延时**：
+   触发片与浮层之间有 5px 缝，侧向子菜单与根浮层之间还有 12px 缝，
+   斜着飞过去要 100ms 上下，一离开就收会在半路把菜单抽走。 */
+const PICK_HIDE_MS = 260;
+let pickHideTimer = 0;
+function cancelPickHide() {
+  if (pickHideTimer) { clearTimeout(pickHideTimer); pickHideTimer = 0; }
+}
+/** 进入任一片（触发片 / 根浮层 / 子菜单）：撤销收起；根浮层没开就顺手开。 */
+function hoverPick() {
+  cancelPickHide();
+  openMenu();
+}
+/** 离开任一片：延时收起，中途进到另一片会被 cancelPickHide 撤销。 */
+function leavePick() {
+  cancelPickHide();
+  pickHideTimer = window.setTimeout(() => { pickHideTimer = 0; closeMenu(); }, PICK_HIDE_MS);
+}
+function openMenu() {
+  cancelPickHide();
+  if (!menuOpen.value) menuOpen.value = true;
 }
 
 /**
- * 点根浮层的某一行：在它**侧向**飞出第二级候选（再点同一行收回那一层）。
+ * 展开根浮层的某一行：在它**侧向**飞出第二级候选（悬浮即展开，点同一行可收回）。
  *
  * 为什么用 `position: fixed` 而不是相对根浮层 absolute：根浮层贴着一行宽 288px 的输入区
  * 向上弹，再往外开一层必然溢出面板被裁；浮层模式最窄只有 320px。这里按被点那行的
  * `getBoundingClientRect()` 直接算视口坐标，视口内怎么夹都不会裁。
  */
 function openSub(stage: 'model' | 'effort', ev: MouseEvent) {
-  if (subStage.value === stage) { subStage.value = null; return; }
+  cancelPickHide();
+  // 悬浮已经展开过这一层：别重复测量（重摆一次会让子菜单抖一下）
+  if (subStage.value === stage) return;
   const row = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   if (!row) return;
   subRow = row;
@@ -1535,6 +1562,12 @@ function openSub(stage: 'model' | 'effort', ev: MouseEvent) {
   subPos.value = { left: row.right + 8, top: row.top };
   subStage.value = stage;
   void nextTick(placeSub);
+}
+
+/** 点某一行：已展开就收回（悬浮展开之外仍留一条"点一下收"的路）。 */
+function toggleSub(stage: 'model' | 'effort', ev: MouseEvent) {
+  if (subStage.value === stage) { subStage.value = null; return; }
+  openSub(stage, ev);
 }
 
 /** 被点那一行的视口矩形（子菜单的两趟定位都拿它当锚） */
@@ -2112,7 +2145,11 @@ defineExpose({ uploadFiles, ensureThread });
         <!-- 模型与上下文圆环在**输入框外**（用户口径 2026-10-03）：一行低调的明细，
              不跟输入抢位置；圆环很小、里面不放数字，数值写在 tooltip 里。 -->
         <div v-if="!editing" class="composer-foot">
-          <button class="model-btn truncate" :title="pickTitle" @click="toggleMenu">
+          <!-- 悬浮即展开（用户口径）：移上去就看见模型 / 推理等级两行，
+               点一下仍是"开/收"（触屏与键盘只有这条路）。 -->
+          <button class="model-btn truncate" :class="{ on: menuOpen }" :title="pickTitle"
+                  :aria-expanded="menuOpen" @click="toggleMenu"
+                  @mouseenter="hoverPick" @mouseleave="leavePick">
             <span class="truncate">{{ modelLabel }}</span><AppIcon name="chevron-right" :size="11" />
           </button>
           <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
@@ -2135,13 +2172,15 @@ defineExpose({ uploadFiles, ensureThread });
           <!-- 模型 / 推理等级：根浮层**只有两行**，点某一行向侧向飞出第二级候选。
                候选不往根浮层里堆 —— 浮层模式最窄只有 320px，堆下去又高又乱。 -->
           <div v-if="menuOpen" class="pick-scrim" @pointerdown="closeMenu" />
-          <div v-if="menuOpen" class="pick-pop">
-            <button class="pick-row" :class="{ on: subStage === 'model' }" @click="openSub('model', $event)">
+          <div v-if="menuOpen" class="pick-pop" @mouseenter="hoverPick" @mouseleave="leavePick">
+            <button class="pick-row" :class="{ on: subStage === 'model' }"
+                    @mouseenter="openSub('model', $event)" @click="toggleSub('model', $event)">
               <span class="pick-key">模型</span>
               <span class="pick-val truncate">{{ modelLabel }}</span>
               <AppIcon name="chevron-right" :size="11" />
             </button>
-            <button class="pick-row" :class="{ on: subStage === 'effort' }" @click="openSub('effort', $event)">
+            <button class="pick-row" :class="{ on: subStage === 'effort' }"
+                    @mouseenter="openSub('effort', $event)" @click="toggleSub('effort', $event)">
               <span class="pick-key">推理等级</span>
               <span class="pick-val truncate">{{ effortLabel }}</span>
               <AppIcon name="chevron-right" :size="11" />
@@ -2155,7 +2194,8 @@ defineExpose({ uploadFiles, ensureThread });
                它与所有浮层同层比较，正文里任何指示器都盖不住它。 -->
           <Teleport to="body">
           <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub"
-               :style="{ left: `${subPos.left}px`, top: `${subPos.top}px` }">
+               :style="{ left: `${subPos.left}px`, top: `${subPos.top}px` }"
+               @mouseenter="hoverPick" @mouseleave="leavePick">
             <div v-if="subStage === 'model'" class="pick-sub-list">
               <div v-if="modelReadonly" class="pick-empty">
                 <span class="pick-item-name">未单独配置</span>
@@ -2167,10 +2207,9 @@ defineExpose({ uploadFiles, ensureThread });
                         :disabled="savingPick || m.enabled === false"
                         @click="savePick({ model_config_id: m.id })">
                   <span class="pick-item-main">
-                    <span class="pick-item-name">
-                      <span class="truncate">{{ m.name || m.model_name || m.id }}</span>
-                      <span v-if="m.is_default" class="badge dim tiny">默认</span>
-                    </span>
+                    <!-- 不再挂「默认」胶囊（用户口径）：谁生效看右侧勾选，
+                         胶囊只把这一行撑高、撑乱。 -->
+                    <span class="pick-item-name truncate">{{ m.name || m.model_name || m.id }}</span>
                     <span class="pick-item-sub truncate">{{ subLine(m) }}</span>
                   </span>
                   <AppIcon v-if="m.id === activeModel?.id" name="check" :size="13" />
@@ -2675,11 +2714,15 @@ defineExpose({ uploadFiles, ensureThread });
 .composer-foot { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 4px 0; }
 /* 模型名：**低调**（幽灵小字 + 一枚箭头），点它就地换模型 / 推理等级 */
 .model-btn {
+  /* 层级压过 .pick-scrim(8)：遮罩是**全视口** fixed，盖住这枚按钮的话，
+     浮层一开浏览器就判定指针"离开了按钮"，260ms 后自己把菜单收掉。
+     z-index 9 与浮层同档，DOM 在后 → 浮层仍压在按钮之上。 */
+  position: relative; z-index: 9;
   display: inline-flex; align-items: center; gap: 1px; max-width: 55%; min-width: 0;
   border: 0; background: none; cursor: pointer; padding: 2px 4px;
   border-radius: var(--radius-ctl); color: var(--text-faint); font: inherit; font-size: calc(11.5px * var(--ts, 1));
 }
-.model-btn:hover { background: var(--bg-hover); color: var(--text-dim); }
+.model-btn:hover, .model-btn.on { background: var(--bg-hover); color: var(--text-dim); }
 
 /* 底部明细里的两个读数（缓存命中率 / 上下文占比）：比模型名更弱一档，等宽数字，
    加减/流式刷新时不会把邻居推来推去。 */
@@ -2697,15 +2740,17 @@ defineExpose({ uploadFiles, ensureThread });
    左右都贴住这一行（left/right 归零）再用 max-width 收窄：胶囊在最左边，浮层向右长多少
    都出不了输入区 —— 浮层模式最窄只有 320px，溢出到面板外就点不到了。 */
 .pick-scrim { position: fixed; inset: 0; z-index: 8; }
+/* 内边距一路收到 3px / 6px（用户口径「留白更小」）：两行菜单本来就短，
+   4px 外圈 + 8px 行内 + 30px 行高会显得浮层在"飘"，收完贴着文字更紧凑。 */
 .pick-pop {
-  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 9;
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 5px); z-index: 9;
   max-width: 288px;
-  display: flex; flex-direction: column; gap: 1px; padding: 4px;
-  border-radius: 12px; border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 1px; padding: 3px;
+  border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-row {
-  display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; padding: 0 8px;
+  display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 6px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer; flex: none;
 }
@@ -2724,14 +2769,14 @@ defineExpose({ uploadFiles, ensureThread });
      又低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）——
      子菜单只该压住正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
   position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
-  padding: 4px; border-radius: 12px; border: 1px solid var(--border);
+  padding: 3px; border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
 }
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
 .pick-item {
-  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px;
+  display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
   font: inherit; text-align: left; cursor: pointer;
 }
@@ -2739,14 +2784,14 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-item.on { background: var(--accent-soft); }
 .pick-item.on svg, .pick-item.on .pick-item-name { color: var(--accent-text); }
 .pick-item:disabled { cursor: default; }
-.pick-item-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.pick-item-main { display: flex; flex-direction: column; gap: 0; flex: 1; min-width: 0; }
 .pick-item-name {
-  display: flex; align-items: center; gap: 5px; min-width: 0;
-  font-size: calc(12px * var(--ts, 1)); color: var(--text);
+  display: flex; align-items: center; gap: 4px; min-width: 0;
+  font-size: calc(12px * var(--ts, 1)); line-height: 1.35; color: var(--text);
 }
 /* 副行：provider · model_name（小一号、退一档色，只做识别用） */
-.pick-item-sub { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); }
-.pick-empty { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; }
+.pick-item-sub { font-size: calc(10px * var(--ts, 1)); line-height: 1.25; color: var(--text-faint); }
+.pick-empty { display: flex; flex-direction: column; gap: 0; padding: 4px 6px; }
 .pick-empty .pick-item-name { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 /* 小圆环：**里面不放数字**（用户口径），数值在 tooltip 里；16px 也不适合写字 */
 .ring {
