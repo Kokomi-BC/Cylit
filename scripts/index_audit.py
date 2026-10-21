@@ -28,6 +28,10 @@ chunk 的 ``row_ids`` 指向不存在的行、公式块落成 ``row-x`` 这种�
 5. **行身份（pid）覆盖率**：正文行是否都带 ``pid``；pid 是否 1:1（不跨页、不重复）、
    是否都是注册表里的活身份（孤儿 / 已退休的 pid 复用）；注册表自身是否自洽
    （同页 ``order`` 撞车、pid 重复登记）；注册表还没生成时只 warn。
+   同一组还查 **chunk 的 ``metadata.pids``**（``check_chunk_pids``）：与 ``row_ids`` 同序等长
+   （``len(pids) + pids_missing`` ≠ ``row_ids`` = error）、每条都能在注册表里找到
+   （找不到 = error）；``pids_missing > 0`` 只 warn，
+   而**整个字段缺失**（老索引，重建后才带上）也只 warn —— 否则存量库会一片红。
    行**只取** ``reader_service.page_products``（pid 的唯一真实来源），注册表**只取**
    ``row_identity.load``；见 ``docs/身份模型.md`` §7「验收不变量」。
 
@@ -527,6 +531,82 @@ def check_row_pids(rows: list[dict], registry: dict) -> list[dict]:
                            f"{_sample(stale)}"))
     return out
 
+def check_chunk_pids(chunks: list[dict], registry: dict) -> list[dict]:
+    """chunk 元数据里的 `pids` 是否与 `row_ids` 同序等长、每条都在注册表里。
+
+    chunks:   ``_load_chunks`` 的形状（``metadata`` 是解析好的 dict）
+    registry: ``row_identity.load(paper_id)`` 的结果
+
+    规则（level）：
+
+    - ``pids`` **字段整个缺失** → warn（老索引：建块时还没有行身份，重建索引后才会带上）；
+    - ``pids`` + ``pids_missing`` 不等于 ``row_ids`` 条数 → error（同序等长是“引用能
+      落回行”的前提；缺 pid 的那几条是**被跳过**的，所以口径要算上它们）；
+    - ``pids`` 里有注册表找不到的身份 → error（chunk 引用了不存在的身份）；
+    - ``pids_missing > 0`` → warn（建索引时有行还没 pid：那几条引用落不回来）。
+
+    注册表为空时“找不到”无从判定（还没生成过），只做长度检查 —— 否则老库会整片假红。
+    """
+    out: list[dict] = []
+    items = [c for c in (chunks or []) if isinstance(c, dict)]
+    if not items:
+        return out
+    reg = registry if isinstance(registry, dict) else {}
+    known = {str(e.get("pid")) for e in (reg.get("rows") or [])
+             if isinstance(e, dict) and e.get("pid")}
+    no_field: list[str] = []
+    length_bad: list[str] = []
+    unknown: dict[str, list[str]] = {}
+    partial: list[str] = []
+    for chunk in items:
+        cid = str(chunk.get("id") or "∅")
+        meta = chunk.get("metadata") or {}
+        row_ids = [str(x) for x in (meta.get("row_ids") or [])]
+        pids = meta.get("pids")
+        if pids is None:
+            no_field.append(cid)
+            continue
+        if not isinstance(pids, list):
+            length_bad.append(f"{cid}(pids 不是列表)")
+            continue
+        pids = [str(x) for x in pids]
+        try:
+            missing = int(meta.get("pids_missing") or 0)
+        except (TypeError, ValueError):
+            missing = 0
+        missing = max(missing, 0)
+        # 同序等长的口径要算上被跳过的那几条：len(pids) + 缺的 = row_ids 条数；
+        # 否则“有行没 pid”这条正常情况会同时被判成 error（它本来就该只是 warn）。
+        if len(pids) + missing != len(row_ids):
+            length_bad.append(f"{cid}(pids {len(pids)} + 缺 {missing}"
+                              f" ≠ row_ids {len(row_ids)})")
+        if known:
+            for pid in pids:
+                if pid not in known:
+                    unknown.setdefault(pid, []).append(cid)
+        if missing > 0:
+            partial.append(cid)
+
+    if no_field:
+        out.append(finding("warn", "chunk_pids",
+                           f"{len(no_field)}/{len(items)} 条 chunk 的 metadata 里没有 pids 字段"
+                           f"（老索引：建块时还没有行身份，重建后才会带上）: "
+                           f"{_sample(no_field, 5)}"))
+    if length_bad:
+        out.append(finding("error", "chunk_pids",
+                           f"{len(length_bad)} 条 chunk 的 pids 与 row_ids 不是同序等长: "
+                           f"{_sample(length_bad, 5)}"))
+    if unknown:
+        shown = [f"{pid}(@{', '.join(cids[:2])})"
+                 for pid, cids in list(unknown.items())[:SAMPLE_MAX]]
+        out.append(finding("error", "chunk_pids",
+                           f"{len(unknown)} 个 chunk pid 在注册表里找不到: {_sample(shown)}"))
+    if partial:
+        out.append(finding("warn", "chunk_pids",
+                           f"{len(partial)} 条 chunk 有行没 pid（pids_missing>0，那几条落不回来）: "
+                           f"{_sample(partial, 5)}"))
+    return out
+
 # --------------------------------------------------------------------------
 # IO（全部只读；每个 loader 独立 try/except）
 # --------------------------------------------------------------------------
@@ -606,9 +686,13 @@ def _load_row_registry(paper_id: str) -> dict:
 
 
 def _run_row_pids(findings: list[dict], paper_id: str,
-                  pages: list[dict] | None) -> dict:
-    """第 5 组：行身份覆盖率。行只走 ``page_products``、注册表只走 ``row_identity.load``；
-    任一取不到 → 记 ``check crashed``，其它检查照跑。返回 ``pid_stats``（取不到就给空 dict）。"""
+                  pages: list[dict] | None, chunks: list[dict] | None = None) -> dict:
+    """第 5 组：行身份覆盖率 + chunk 的 ``pids``。行只走 ``page_products``、注册表只走
+    ``row_identity.load``；任一取不到 → 记 ``check crashed``，其它检查照跑。
+
+    返回 ``pid_stats``（取不到就给空 dict）。``chunks`` 是 ``_load_chunks`` 那一批，
+    缺省不算 chunk 这一半（老调用方只关心行覆盖率）。
+    """
     if pages is None:
         findings.append(finding("error", "row_pids",
                                 "check crashed: 页级读模型取不到"
@@ -622,6 +706,8 @@ def _run_row_pids(findings: list[dict], paper_id: str,
         return {}
     rows = flatten_page_rows(pages)
     _run(findings, "row_pids", check_row_pids, rows, registry)
+    if chunks is not None:
+        _run(findings, "chunk_pids", check_chunk_pids, chunks, registry)
     return pid_stats(rows, registry)
 
 
@@ -718,7 +804,7 @@ def audit_paper(paper_id: str) -> dict:
         _run(findings, "index_hygiene", check_index_hygiene, chunks)
 
     # 行身份覆盖率：与 chunk 无关（它查的是"行有没有稳定身份"），所以放在 if 外面独立跑
-    pid_summary = _run_row_pids(findings, paper_id, pages)
+    pid_summary = _run_row_pids(findings, paper_id, pages, chunks)
 
     for item in _guard("load_understanding",
                        lambda: _load_understanding(paper_id), findings) or []:

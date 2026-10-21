@@ -8,10 +8,12 @@ pid 的做法：**生成一次、重建时继承、永不重绑**。内容的指
 （把旧 pid 续给新行），不参与身份；对不上的旧 pid 进 retired，
 引用它的时候才能提示"内容已变/已失效"，而不是静默跳错。
 
-本模块只提供三件事：
+本模块只提供四件事：
 1. 指纹 —— 复用 rebind.text_fingerprint（行文本取"原文优先、退译文"）；
 2. 继承/新建/退休 —— plan_page 是纯函数，可单测；
-3. 注册表读写 —— registry_path / load / save / assign（唯一碰文件的地方）。
+3. 注册表读写 —— registry_path / load / save / assign（唯一碰文件的地方）；
+4. 解析 —— resolve_pids：pid → 它现在落在哪一行、内容还是不是那一份（阶段 2 给
+   "引用存 pid"用）；判定段是纯函数 resolve_registry，IO 只有一次 load。
 
 刻意不做的事：不接线给 reader_service / page_translate，不写数据库，不动前端。
 接线是下一步（阶段 1b）。
@@ -326,3 +328,115 @@ def _page_of(entry: dict) -> int:
         return int(entry.get("page"))
     except (TypeError, ValueError):
         return -1
+
+# --------------------------------------------------------------------------
+# 解析：pid → 它现在落在哪（阶段 2 给“引用存 pid”用）
+# --------------------------------------------------------------------------
+
+
+def _page_int(row: dict) -> int:
+    """行所在页（认不出就是 0 —— 与 `_page_of` 的“宁可认不出也不猜”同口径）。"""
+    try:
+        return int(row.get("page") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _slot_of(row: dict, fallback: int) -> int:
+    """行在**本页**的序号：优先 `index`（页产物里的口径）、退回 `order`、再退回位置。
+
+    注册表条目的 `order` 就是“这行在那一页的 rows 里排第几个”（见 `plan_page`），
+    所以只有拿页产物的行来比才有意义 —— 换别的行（比如 `chunking.row_units` 那种
+    全篇连续编号的 `index`）会整体错位，调用方必须传页产物里的行。
+    """
+    for key in ("index", "order"):
+        try:
+            return int(row[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return fallback
+
+
+def _slot_index(rows: list[dict] | None) -> dict[tuple[int, int], dict]:
+    """页产物行 → `{(页, 页内序号): 行}`；同槽位重复只留第一条（页产物本来就是唯一的）。"""
+    out: dict[tuple[int, int], dict] = {}
+    seen: dict[int, int] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        page = _page_int(row)
+        position = seen.get(page, 0)
+        seen[page] = position + 1
+        out.setdefault((page, _slot_of(row, position)), row)
+    return out
+
+
+def resolve_registry(registry: dict, pids: list[str],
+                     rows: list[dict] | None = None) -> dict[str, dict]:
+    """纯函数：`注册表 + 行 → pid → {"page","order","row_id","fp_match","state"}`。
+
+    state 三态（`rows` 传了才判得出前两态）：
+    - `ok`           注册表有这条、当前页那个 `order` 上有行、指纹一致；
+    - `text-changed` 位子还在、文本变了（指纹对不上）；
+    - `gone`         注册表里没有（没登记过 / 已 retired），或当前页没有那个 `order`。
+
+    `fp_match`：`True` / `False`，以及 **`None` = 没校验**（`rows` 没传时只能看注册表
+    这一层）。`row_id` 只在 `rows` 传了且槽位确实有行时才有值 —— 绝不从注册表反推行 id
+    （注册表只存 (页, 序号, 指纹)，本来就没有行 id）。
+    """
+    reg = registry if isinstance(registry, dict) else {}
+    live: dict[str, dict] = {}
+    for entry in reg.get("rows") or []:
+        if isinstance(entry, dict) and entry.get("pid"):
+            live.setdefault(str(entry["pid"]), entry)
+    retired: dict[str, dict] = {}
+    for entry in reg.get("retired") or []:
+        if isinstance(entry, dict) and entry.get("pid"):
+            retired.setdefault(str(entry["pid"]), entry)
+    slots = _slot_index(rows)
+
+    out: dict[str, dict] = {}
+    for raw in pids or []:
+        pid = str(raw or "").strip()
+        if not pid:
+            continue
+        entry = live.get(pid)
+        if entry is None:
+            # 没登记过、或已经退休：位子可能还在，但那条内容**不再属于这个身份**
+            old = retired.get(pid) or {}
+            out[pid] = {"page": old.get("page"), "order": old.get("order"),
+                        "row_id": "", "fp_match": False, "state": "gone"}
+            continue
+        page, order = entry.get("page"), entry.get("order")
+        if rows is None:
+            out[pid] = {"page": page, "order": order, "row_id": "",
+                        "fp_match": None, "state": "ok"}
+            continue
+        try:
+            slot = (int(page), int(order))
+        except (TypeError, ValueError):
+            slot = None
+        row = slots.get(slot) if slot is not None else None
+        if row is None:
+            out[pid] = {"page": page, "order": order, "row_id": "",
+                        "fp_match": False, "state": "gone"}
+            continue
+        match = fingerprint(row) == str(entry.get("fp") or "")
+        out[pid] = {"page": page, "order": order,
+                    "row_id": str(row.get("id") or ""),
+                    "fp_match": match,
+                    "state": "ok" if match else "text-changed"}
+    return out
+
+
+def resolve_pids(paper_id: str, pids: list[str], *,
+                 rows: list[dict] | None = None) -> dict[str, dict]:
+    """pid → `{"page","order","row_id","fp_match","state"}`（判定见 `resolve_registry`）。
+
+    state: `ok`（注册表有、当前页对应行存在且指纹一致）/ `text-changed`（位子还在
+    但文本变了）/ `gone`（注册表里没有或当前页没有这个 order）。
+
+    `rows` 可传入**已经算好的**行（调用方别为了这里重跑一遍 `page_products`）；
+    不传就只查注册表（于是 `row_id` 为空、`fp_match` 为 `None`）。
+    """
+    return resolve_registry(load(paper_id), pids, rows)

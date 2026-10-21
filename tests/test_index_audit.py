@@ -20,6 +20,7 @@ from scripts.index_audit import (
     _run,
     base_id,
     check_anchors,
+    check_chunk_pids,
     check_index_hygiene,
     check_row_coverage,
     check_row_pids,
@@ -478,3 +479,65 @@ def test_healthy_index_has_no_findings():
                                       [{"code": "A001", "chunk_id": "p:unit:u1"}]))
     assert findings == []
     assert row_span_stats(chunks, rows)["cross_page"] == 0
+
+
+# --------------------------------------------------------------------------
+# 5b. chunk 的 pids（阶段 2a）
+# --------------------------------------------------------------------------
+
+
+def _registry(*pids: str) -> dict:
+    """注册表的最小形状：每个 pid 一个活条目（页/序号够用即可）。"""
+    return {"version": 1, "retired": [],
+            "rows": [{"pid": pid, "page": 1, "order": i, "fp": "x"}
+                     for i, pid in enumerate(pids)]}
+
+
+def test_chunk_pids_missing_field_is_only_warn():
+    """老索引（建块时还没有行身份）整片缺字段 —— 只能 warn，否则线上立刻一片红。"""
+    chunks = [_chunk("p:unit:u1", row_ids=["p001-00"]),
+              _chunk("p:unit:u2", row_ids=["p001-01"])]
+    findings = check_chunk_pids(chunks, _registry("r-1", "r-2"))
+    assert _levels(findings) == ["warn"]
+    assert "pids" in findings[0]["detail"]
+    assert "2/2" in findings[0]["detail"]
+
+
+def test_chunk_pids_length_mismatch_is_error():
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00", "p001-01"], pids=["r-1"])]
+    findings = check_chunk_pids(chunks, _registry("r-1", "r-2"))
+    assert _levels(findings) == ["error"]
+    assert "p:a:text:p001-00" in findings[0]["detail"]
+
+
+def test_chunk_pids_unknown_pid_is_error():
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00", "p001-01"], pids=["r-1", "r-ghost"])]
+    findings = check_chunk_pids(chunks, _registry("r-1", "r-2"))
+    assert _levels(findings) == ["error"]
+    assert "r-ghost" in findings[0]["detail"]
+
+
+def test_chunk_pids_partial_pids_only_warns():
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00", "p001-01"], pids=["r-1"], pids_missing=1)]
+    findings = check_chunk_pids(chunks, _registry("r-1", "r-2"))
+    assert _levels(findings) == ["warn"]
+    assert "pids_missing" in findings[0]["detail"]
+
+
+def test_chunk_pids_healthy_has_no_findings():
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00", "p001-01"], pids=["r-1", "r-2"]),
+              _chunk("p:formula:f001", chunk_type="formula",
+                     row_ids=["p001-00"], pids=["r-1"])]
+    assert check_chunk_pids(chunks, _registry("r-1", "r-2")) == []
+
+
+def test_chunk_pids_skip_unknown_check_when_registry_is_empty():
+    """注册表还没生成 → 不判“找不到”（否则每篇论文第一次建索引都假红）。"""
+    chunks = [_chunk("p:a:text:p001-00", chunk_type="text",
+                     row_ids=["p001-00"], pids=["r-1"])]
+    assert check_chunk_pids(chunks, {}) == []
+

@@ -559,6 +559,8 @@ def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
     shared.extend(_row_formula_chunks(paper_id, rows, f_entries, block_to_row))
     out.extend(shared)
     _attach_formula_ids(out, rows, f_entries, block_to_row)
+    # 行身份：pid 只从页产物取（不重算），与 row_ids 同序等长 —— 只加字段
+    _attach_row_pids(out, _pid_by_row_id(paper_id))
     out.sort(key=lambda c: (c["order_global"],
                             (c.get("metadata") or {}).get("road") or "",
                             0 if c["chunk_type"] in ("text", "unit") else 1))
@@ -568,6 +570,59 @@ def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
              road_summary["b"]["chunks"] + road_summary["b"]["units"], len(shared))
     return _link_formulas(out), road_summary
 
+
+# --------------------------------------------------------------------------
+# 行身份（pid）：让 chunk 记住“这块是哪些行”的稳定身份（阶段 2a）
+# --------------------------------------------------------------------------
+
+
+def _pid_by_row_id(paper_id: str) -> dict[str, str]:
+    """`{行 id: pid}` —— pid **只从页产物取**，这里不算也不发身份。
+
+    `_finalize_page` 是唯一写 `row[pid]` 的地方，而它写的就是
+    `reader_service.page_translations`（= `page_products(paper_id)[0]`，见
+    reader_service.py:451）这份读模型；所以“行 id → pid”只能从那里取，
+    **绝不调 `row_identity.assign` 自己算一遍** —— 重算出来的号与阅读器下发的
+    对不上，引用一存就指错行。
+
+    读不到产物（未翻译 / 异常）就给空表：chunk 少这个字段是小事，建索引不能因此失败。
+    """
+    try:
+        pages = reader_service.page_translations(paper_id)
+    except Exception as exc:  # noqa: BLE001 —— 与 pid 挂钩点同口径：身份失败只丢字段
+        log.warning("读页产物失败，本次不给 chunk 带 pid（%s）：%s", paper_id, exc)
+        return {}
+    out: dict[str, str] = {}
+    for page in pages or []:
+        if not isinstance(page, dict):
+            continue
+        for row in page.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or "")
+            pid = str(row.get("pid") or "").strip()
+            if rid and pid:
+                out[rid] = pid
+    return out
+
+
+def _attach_row_pids(chunks: list[dict], pid_of: dict[str, str]) -> None:
+    """给每条 chunk 的 metadata 补 `pids`：与 `row_ids` **同序等长**，只加字段。
+
+    某行没有 pid 就**跳过这一条**（不填假值），缺了几条写进 `pids_missing` ——
+    于是“有 pid 的都在这里、还缺几条”都能从元数据里读出来，audit 也能分级报警。
+    `chunk[id]` / `row_ids` / 排序 / 检索候选集一律不动（本函数只写这两个键）。
+    """
+    for chunk in chunks:
+        meta = chunk.get("metadata")
+        if not isinstance(meta, dict):
+            meta = chunk["metadata"] = {}
+        row_ids = [str(x) for x in (meta.get("row_ids") or [])]
+        pids = [pid_of[rid] for rid in row_ids if rid in pid_of]
+        meta["pids"] = pids
+        missing = len(row_ids) - len(pids)
+        if missing > 0:
+            meta["pids_missing"] = missing
 
 def _row_unit_chunks(paper_id: str, units: list[dict], key_to_id: dict[str, str], *,
                      use_breaks: bool, road: str | None = None) -> list[dict]:
