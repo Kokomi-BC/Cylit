@@ -235,15 +235,29 @@ function peekViewOf(card: PeekCard) {
      只显示一句「没有可显示的内容」等于这张卡白弹（用户口径 2026-12-04：标号 7 就是这种）。 */
   const zh = (tbl?.markdown || row?.translation || snippet).trim();
   const en = (tbl?.markdown || row?.original || '').trim();
+  const caption = (fig?.caption_zh || fig?.caption || '').trim();
+  /*
+   * 插图：**图注只出现一次**（用户口径 2026-12-04：图注显示了两遍）。
+   *
+   * 图注行本身就是一条正文行（chunk 锚在它上面），于是图注会从两条路各来一次：
+   * ① `/figures` 里的 caption（画在图的下面）；② 这一行的译文（画在正文里）。
+   * 两条路取到的其实是同一句话 —— 归一化后比较，只要正文就是/包含了图注，
+   * 正文那一块就不画了（否则同一段文字上下各来一遍）。
+   */
+  const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+  const sameAsCaption = (text: string) => Boolean(caption) && Boolean(text)
+    && (norm(text) === norm(caption) || norm(text).includes(norm(caption)));
+  const bodyZh = sameAsCaption(zh) ? '' : zh;
+  const bodyEn = sameAsCaption(en) ? '' : en;
   return {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
-    zh,
-    en,
+    zh: bodyZh,
+    en: bodyEn,
     /* 只有原文（未翻译的页 / 只有英文的材料）时，别让中/EN 切换出现 */
-    bilingual: Boolean(zh) && Boolean(en) && zh !== en,
-    body: card.lang === 'en' ? en : zh,
+    bilingual: Boolean(bodyZh) && Boolean(bodyEn) && bodyZh !== bodyEn,
+    body: card.lang === 'en' ? bodyEn : bodyZh,
     imageUrl: fig?.image_url || '',
-    caption: (fig?.caption_zh || fig?.caption || '').trim(),
+    caption,
     page, rowId,
     anchor: ask.anchor,
   };
