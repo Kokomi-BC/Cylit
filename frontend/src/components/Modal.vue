@@ -20,7 +20,10 @@ const props = withDefaults(defineProps<{
   closeOnMask?: boolean;
   /** 铺满整个视口（全屏） */
   full?: boolean;
-}>(), { title: '', wide: false, closeOnMask: true, full: false });
+  /** 窄版（440px）：二次确认那种"一句话 + 两枚按钮"的弹窗用它 ——
+   *  默认宽度是给表单 / 正文用的，确认框套上去左右会空出一大片（用户口径 2026-12-02）。 */
+  narrow?: boolean;
+}>(), { title: '', wide: false, closeOnMask: true, full: false, narrow: false });
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
@@ -35,7 +38,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 <template>
   <Teleport to="body">
     <div v-if="open" class="modal-mask" :class="{ full }" @click.self="onMask">
-      <div class="modal" :class="{ wide, full }" role="dialog" aria-modal="true">
+      <div class="modal" :class="{ wide, full, narrow }" role="dialog" aria-modal="true">
         <div class="modal-head">
           <span class="modal-title" :title="title">{{ title }}</span>
           <span class="spacer" />
@@ -62,11 +65,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 }
 .modal {
   display: flex; flex-direction: column;
-  width: min(680px, 100%); max-height: 86vh;
+  /* 默认宽从 680 收到 620（用户口径 2026-12-02：弹窗都太宽，读起来"空")。
+     表单类仍然够用；真正需要宽的自己传 wide。 */
+  width: min(620px, 100%); max-height: 86vh;
   background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-2);
 }
 .modal.wide { width: min(1100px, 100%); }
+.modal.narrow { width: min(440px, 100%); }
 /* 全屏：铺满视口。遮罩去掉内边距、弹窗去掉圆角/描边/最大宽高（贴着屏幕边看更"满"）。 */
 .modal-mask.full { padding: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .modal.full { width: 100%; max-width: none; height: 100%; max-height: none; border-radius: 0; border: 0; }
@@ -93,4 +99,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
 .modal-body { padding: 12px 20px 20px; overflow: auto; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 0 20px 18px; }
+/* 底部按钮的**键盘焦点框**（用户口径 2026-12-02：焦点落在按钮上时要"多一个框"）。
+   base.css 那圈 --ring 柔光在浅底上偏淡，再叠一条主色实描边 —— 键盘用户一眼看出
+   现在按下去的是哪一个（Tab 走一遍就能看到）；鼠标点击不会亮，避免每次点都闪一圈。 */
+.modal-foot .btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
 </style>
