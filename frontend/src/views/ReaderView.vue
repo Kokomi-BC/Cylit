@@ -6827,10 +6827,36 @@ async function refreshAnnotations() {  const [a, h, n] = await Promise.all([
   notes.value = n.items ?? [];
 }
 
+/**
+ * 「哪几条公式被标过」：高亮存的就是公式的原始 LaTeX（见 `services/agent/annotations.create`），
+ * 所以直接按 LaTeX 比对即可，不需要把偏移量翻译回公式序号。规范化口径与后端一致
+ * （去 `$`、去空白），两边各写一处是为了不跨层引常量。
+ *
+ * 用户口径（2026-12-06）：公式页签要能看见"我标过哪几条"，并且随 agent 的动作**实时**变 ——
+ * 它由 `highlights` 派生，`refreshAnnotations()` 一跑就跟着更新，不需要额外接口。
+ */
+const annotatedFormulas = computed(() => {
+  const out = new Set<string>();
+  for (const h of highlights.value) {
+    const text = String(h.text || '');
+    if (!text.includes('$')) continue;
+    out.add(text.replace(/\$/g, '').replace(/\s+/g, ''));
+  }
+  return out;
+});
+
 /** agent 在这一轮里写了笔记 / 高亮 / 批注：**就地**重拉这三份列表。
- *  用户口径 2026-11-26：agent 加的笔记必须实时出现，不能靠刷新页面。 */
-async function onChatSideChanged() {
+ *  用户口径 2026-11-26：agent 加的笔记必须实时出现，不能靠刷新页面。
+ *
+ *  再补一层（用户口径 2026-12-06「侧栏要实时更新数量」）：公式 / 表格是从**页级产物的
+ *  Markdown** 里抽出来的，agent 一旦修订产物，它们的内容与条数就变了 —— 那两份列表以前
+ *  要等重新打开页签才刷新，看上去就是"数量不动"。工具名一起带过来，按名字决定要不要重取。 */
+async function onChatSideChanged(tool?: string) {
   try { await refreshAnnotations(); } catch (err) { console.warn('侧栏数据刷新失败', err); }
+  if (/page_edit|page_markdown_edit|page_product|meta_write/i.test(String(tool || ''))) {
+    void loadFormulas();
+    void loadTables();
+  }
 }
 
 /* ------------------------------ 引用文献 ------------------------------ */
@@ -7725,6 +7751,7 @@ function renderMarkdown(text?: string | null) {
           :references="paperReferences"
           :formulas="formulas"
           :formulas-loading="formulasLoading"
+          :marked-formulas="annotatedFormulas"
           :tables="tables"
           :tables-loading="tablesLoading"
           :figures="figures"

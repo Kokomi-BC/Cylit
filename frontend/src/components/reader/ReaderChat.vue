@@ -56,7 +56,8 @@ const emit = defineEmits<{
   (e: 'peek-hide'): void;
   (e: 'clear-selection'): void;
   /** 这一轮 agent 动了侧栏里的东西（笔记 / 高亮 / 批注）：父组件据此就地刷新，不整页重载 */
-  (e: 'refresh-side'): void;
+  /** 带**工具名**：父组件据此判断要不要连公式 / 表格一起重取（修订产物会改它们的来源） */
+  (e: 'refresh-side', tool?: string): void;
   /** 拆分 / 浮层打开：把整个侧栏面板拎成浮窗（真正的外框由 `ReaderView` 负责） */
   (e: 'float'): void;
   /** 点图片：交给阅读器那套**图片查看器**（用户口径 2026-11-19，不再开新标签页） */
@@ -1177,7 +1178,7 @@ function onEvent(name: string, data: any) {
          页面（用户口径 2026-11-26：agent 加的笔记要实时显示）。
          ⚠️ 判的是**工具名**（`data.tool`）：以前写成 `String(name)`，而 `name` 是事件名 `"tool"`，
          正则永远不成立 —— 于是这条刷新从来没发生过（2026-12-06 修）。 */
-      if (WRITE_TOOL.test(String(data?.tool || ''))) emit('refresh-side');
+      if (WRITE_TOOL.test(String(data?.tool || ''))) emit('refresh-side', String(data?.tool || ''));
     }
     return;
   }

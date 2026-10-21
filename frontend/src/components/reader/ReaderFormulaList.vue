@@ -18,7 +18,22 @@ import type { OverlayAnchor } from '@/api/types';
 const props = withDefaults(defineProps<{
   items: MarkdownFormula[];
   loading?: boolean;
-}>(), { loading: false });
+  /** 已被高亮 / 笔记标过的公式（LaTeX 规范化后的集合）：让"我标过哪几条"一眼可见。
+   *  高亮存的就是公式的原始 LaTeX（见 `services/agent/annotations.create`），所以能直接比。 */
+  marked?: Set<string>;
+}>(), { loading: false, marked: () => new Set<string>() });
+
+/** 与后端同一套规范化：空白一律去掉，`$` 包裹也去掉（`\\frac {a} {b}` = `\\frac{a}{b}`）。 */
+function normLatex(value?: string): string {
+  return String(value || '').replace(/\$/g, '').replace(/\s+/g, '');
+}
+
+/** 这条公式标过没有（高亮 / 笔记都算，笔记必然挂在高亮上）。 */
+function isMarked(f: MarkdownFormula): boolean {
+  return props.marked.has(normLatex(f.latex));
+}
+
+const markedCount = computed(() => props.items.filter(isMarked).length);
 
 const emit = defineEmits<{
   (e: 'focus', rowId: string, page?: number): void;
@@ -104,6 +119,9 @@ const rows = computed(() => filtered.value.map((f) => {
         <button :class="{ active: filter === 'all' }" @click="filter = 'all'">
           全部 {{ props.items.length }}
         </button>
+        <span v-if="markedCount" class="tiny faint marked-sum" title="已标注的公式条数">
+          已标注 {{ markedCount }}
+        </span>
       </div>
     </div>
 
@@ -121,6 +139,8 @@ const rows = computed(() => filtered.value.map((f) => {
           class="badge dim"
           :title="`这一页还没翻译，公式来自解析产物${f.grade ? `（${f.grade} 级）` : ''}`"
         >解析{{ f.grade ? ` ${f.grade}` : '' }}</span>
+        <!-- 标过（高亮或笔记）：一枚小圆点，数量在顶部"已标注 N"里 -->
+        <span v-if="isMarked(f)" class="marked-dot" title="这条公式已标注（高亮 / 笔记）" />
         <span class="spacer" />
         <button class="btn icon sm" title="浮层打开" data-formula-overlay @click="openOverlay(f, $event)">
           <AppIcon name="pip" :size="13" />
@@ -143,6 +163,10 @@ const rows = computed(() => filtered.value.map((f) => {
 </template>
 
 <style scoped>
+/* 「已标注」：小圆点走主题色，视觉重量与 `.badge` 同级（不抢公式本身） */
+.marked-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.marked-sum { margin-left: auto; padding-left: 6px; }
 .fl { display: flex; flex-direction: column; gap: 6px; }
 /* top: -8px 吸收滚动容器的 padding-top：否则 sticky 栏头上会留 8px 缝，
    下面的公式正好从缝里露出半行（用户截图报过）。负数 offset 是 sticky 允许的。

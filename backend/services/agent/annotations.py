@@ -121,7 +121,7 @@ def math_spans(md: str) -> list[tuple[int, int, str]]:
     return out
 
 
-def find_formula_span(md: str, probe: str) -> tuple[int, int] | None:
+def find_formula_span(md: str, probe: str) -> tuple[int, int, str] | None:
     """公式探针 → 渲染坐标系里的 ``(start, end)``（公式整体只占 **1 个** `ATOM`）。
 
     为什么需要它（agent 报过「公式没法加高亮」）：本模块的坐标系把每条公式压成一个
@@ -157,7 +157,9 @@ def find_formula_span(md: str, probe: str) -> tuple[int, int] | None:
     for start, end, _latex in spans:
         offset += len(render_like_dom(md[pos:start]))
         if start == target[0]:
-            return offset, offset + 1
+            # 第三个值是**命中的那条公式的原始 Markdown**（含 `$$`），不是模型给的探针 ——
+            # 探针允许是片段，存进库里笔记卡就会显示半截式子（用户报的"散块"）。
+            return offset, offset + 1, md[start:end]
         offset += 1                      # 这条公式自己占 1 个 ATOM
         pos = end
     return None
@@ -256,18 +258,19 @@ def side_of_text(text: str) -> str:
 
 
 def locate_in_markdown(md: str, text: str, *, occurrence: int = 1
-                      ) -> tuple[tuple[int, int], bool] | None:
+                      ) -> tuple[tuple[int, int], bool, str] | None:
     """在这一面的 Markdown 里找落点：先按**文字**，找不到再当**公式探针**。
 
-    返回 ``((start, end), 是否公式)``。两者是两套口径：文字走 `find_span`（坐标系里的
-    逐字匹配），公式走 `find_formula_span`（LaTeX → 那个占位符的位置）。
+    返回 ``((start, end), 是否公式, 该存进库的文字)``。两者是两套口径：文字走 `find_span`
+    （坐标系里的逐字匹配），公式走 `find_formula_span`（LaTeX → 那个占位符的位置）。
+    公式那条的第三个值是**命中的完整公式**（不是探针片段），因为笔记卡显示的就是它。
     """
     span = find_span(render_like_dom(md), text, occurrence=occurrence)
     if span is not None:
-        return span, False
-    span = find_formula_span(md, text)
-    if span is not None:
-        return span, True
+        return span, False, ""
+    hit = find_formula_span(md, text)
+    if hit is not None:
+        return (hit[0], hit[1]), True, hit[2]
     return None
 
 
@@ -351,7 +354,13 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     is_formula_probe = looks_like_formula(text)
     side = normalize_side(side)
     if not side:
-        side = "zh" if is_formula_probe else side_of_text(text)
+        side = side_of_text(text)
+    # 公式**一律先落译文面**，即便调用方显式给了 `en`：用户读的是中文那一列，标在原文面的
+    # 高亮根本画不出来。实测（2026-12-06）agent 每次都显式传 `side=en`，8 条公式高亮全落在
+    # 英文列 —— 只做"没给时才优先中文"挡不住它。译文面确实没有这条公式时，下面的换面
+    # 兜底会退回原文面。
+    if is_formula_probe:
+        side = "zh"
     kind = anchor_kind(anchor)
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："
@@ -369,10 +378,11 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     rendered = render_like_dom(raw) if raw is not None else ""
     span = None
     is_formula = False
+    formula_src = ""
     if raw is not None:
         hit = locate_in_markdown(raw, text, occurrence=occurrence)
         if hit is not None:
-            span, is_formula = hit
+            span, is_formula, formula_src = hit
     # 引用的文字不在这一面 → 换另一面再找一次：模型经常把**原文**的句子挂到「译文」那一面
     #（或反过来），那一面根本没有这段字，高亮就永远画不出来（用户报的「笔记在列表里、
     #  正文却看不到高亮」就是这么来的）。哪一面找得到就以那一面为准，并记一条日志。
@@ -385,7 +395,7 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
             if hit2 is not None:
                 log.info("高亮换面：%s 在 %s 面找不到，改落到 %s 面", anchor, side, other)
                 side, raw, rendered = other, raw2, rendered2
-                span, is_formula = hit2
+                span, is_formula, formula_src = hit2
     if raw is None:
         return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
     if span is None:
@@ -396,7 +406,7 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
     start, end = span
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
     # （`markRanges`），所以不影响定位；而列表 / 笔记里显示一个隐形的 U+FFFC 毫无意义。
-    stored_text = str(text or "").strip() if is_formula else rendered[start:end]
+    stored_text = (formula_src or str(text or "").strip()) if is_formula else rendered[start:end]
     created = svc.create_highlight({
         "paper_id": paper_id, "block_id": anchor,
         "selected_text": stored_text,   # 文字高亮存坐标系里那一段；公式存 LaTeX

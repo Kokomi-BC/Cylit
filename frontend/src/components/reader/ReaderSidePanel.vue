@@ -64,6 +64,8 @@ const props = withDefaults(defineProps<{
   /** 「引用文献」页签：这篇论文的参考文献（按论文里的顺序） */
   references?: PaperReference[];
   formulas: MarkdownFormula[];
+  /** 已被高亮 / 笔记标过的公式（LaTeX 规范化后的集合，见 `ReaderFormulaList.marked`） */
+  markedFormulas?: Set<string>;
   formulasLoading?: boolean;
   /** 「表格」页签：从页级译文抽出来的 Markdown 表（含中文表格说明） */
   tables?: MarkdownTable[];
@@ -624,6 +626,7 @@ function onMore(key: string, r: FeedRow) {
       <ReaderFormulaList
         :items="props.formulas"
         :loading="props.formulasLoading"
+        :marked="props.markedFormulas"
         @focus="(id: string, page?: number) => emit('focus', id, page)"
         @copy="emit('copy', $event)"
         @overlay="emit('overlay', $event)"

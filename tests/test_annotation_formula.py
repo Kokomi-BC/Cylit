@@ -38,15 +38,18 @@ def paper(monkeypatch):
 def test_formula_span_points_at_the_atom():
     rendered = ann.render_like_dom(ROW_MD)
     assert ann.ATOM in rendered                       # 公式在坐标系里就是 1 个占位符
-    span = ann.find_formula_span(ROW_MD, "$$D := \\mathbb{E}\\langle y, x\\rangle$$")
-    assert span is not None
-    start, end = span
+    hit = ann.find_formula_span(ROW_MD, "$$D := \\mathbb{E}\\langle y, x\\rangle$$")
+    assert hit is not None
+    start, end, source = hit
     assert end - start == 1 and rendered[start:end] == ann.ATOM
+    # 第三个值是**命中的完整公式**（笔记卡显示的就是它），不是探针片段
+    assert source.startswith("$$D :=") and source.endswith("$$")
 
 
 def test_formula_span_accepts_a_bare_latex_fragment():
     """模型常常只给不带 $$ 的片段（甚至只是式子的一部分）。"""
-    assert ann.find_formula_span(ROW_MD, "D := \\mathbb{E}\\langle y, x\\rangle") is not None
+    hit = ann.find_formula_span(ROW_MD, "D := \\mathbb{E}\\langle y, x\\rangle")
+    assert hit is not None and hit[2].startswith("$$D :=")
     assert ann.find_formula_span(ROW_MD, "D:=:=") is None       # 太短 / 不像公式：不猜
 
 
@@ -60,6 +63,23 @@ def test_create_highlight_lands_on_the_formula_in_the_chinese_side(paper):
     assert payload["selected_text"] == probe
     rendered = ann.render_like_dom(ROW_MD)
     assert rendered[payload["start_offset"]:payload["end_offset"]] == ann.ATOM
+
+
+def test_fragment_probe_still_stores_the_whole_formula(paper):
+    """探针只给片段时，库里的 `selected_text` 必须是**完整公式**（否则笔记卡显示散块）。"""
+    got = ann.create("p1", anchor="p001-00", text="D := \\mathbb{E}")
+    assert got["ok"] is True
+    payload = paper[-1]
+    assert payload["selected_text"].startswith("$$D :=")
+    assert payload["selected_text"].endswith("$$")
+
+
+def test_explicit_english_is_pulled_to_the_chinese_side_for_formulas(paper):
+    """agent 每次都显式传 side=en（实测 8 条公式高亮全落英文列）：公式必须无视它。"""
+    probe = "$$D := \\mathbb{E}\\langle y, x\\rangle$$"
+    got = ann.create("p1", anchor="p001-00", text=probe, side="en")
+    assert got["ok"] is True
+    assert paper[-1]["side"] == "zh"
 
 
 def test_create_highlight_still_handles_plain_text(paper):
