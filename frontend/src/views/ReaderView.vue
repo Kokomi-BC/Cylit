@@ -2368,14 +2368,7 @@ function flashRow(id: string) {
   flashTimer = setTimeout(() => { flashRowId.value = ''; flashTimer = null; }, 1600);
 }
 
-/**
- * 定位到某一行（或退化为某一页）。
- *
- * `page` 是锚点失效时的兜底：批注/笔记/插图锚点可能是**历史产物**里的行号
- * （重译后行号会变），这时按页跳转而不是乱跳到第 1 页。
- * `flash`：点搜索命中 / 目录这些"跳到这里"的动作要亮一下；滚动恢复、切视图模式不要。
- */
-/**
+/*
  * 锚点归一：后端给公式/表格类 chunk 的块 id 是 row-<行 id>（见 knowledge_service 里
  * f"row-{row_id}" 那一支），它的后缀本来就是一正文行 id。
  *
@@ -2388,9 +2381,56 @@ function rowAnchorId(id: string): string {
   return id.startsWith('row-') ? id.slice(4) : id;
 }
 
+
+/* ---- 公式级落点：同一行里可能有好多条公式，行 id 分不开它们 ----
+ * 用户 2026-12-03 的「56、57 为什么是同一块地方」：一条公式 chunk 与它所在的**正文行**
+ * 是两条独立引用，行级落点必然重合。所以引用额外带一条 LaTeX，能在这行里认出那枚 KaTeX
+ * 时就把落点与闪烁都精确到它，认不出才退回整行。
+ */
+
+/** LaTeX 的签名：只留字母数字（KaTeX 的 annotation 与后端存的写法在空格/转义上会有差异） */
+function formulaSig(text: string): string {
+  return String(text || '').toLowerCase().replace(/[^0-9a-z]/g, '');
+}
+
+/** 在这一行里找那条公式的 KaTeX（找不到就返回 null，调用方退回整行） */
+function findFormula(node: HTMLElement, latex: string): HTMLElement | null {
+  const want = formulaSig(latex);
+  if (want.length < 4) return null;
+  for (const hit of Array.from(node.querySelectorAll<HTMLElement>('.katex'))) {
+    const tex = hit.querySelector('annotation')?.textContent ?? hit.textContent ?? '';
+    const sig = formulaSig(tex);
+    if (sig && (sig.includes(want) || want.includes(sig))) {
+      return hit.closest<HTMLElement>('.katex-display') || hit;
+    }
+  }
+  return null;
+}
+
+let targetFlashTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 闪一条公式（与行闪同一节奏，同样用「先摘再挂 + 强制回流」让连点也能重播） */
+function flashFormulaNode(node: HTMLElement): void {
+  node.classList.remove('flash-target');
+  void node.offsetWidth;
+  node.classList.add('flash-target');
+  if (targetFlashTimer) clearTimeout(targetFlashTimer);
+  targetFlashTimer = setTimeout(() => {
+    node.classList.remove('flash-target');
+    targetFlashTimer = null;
+  }, 1600);
+}
+
+/** 把某个节点停在**阅读线**上（行与公式共用同一套坐标换算） */
+function scrollNodeToLine(el: HTMLElement, node: HTMLElement, smooth: boolean): void {
+  const base = el.getBoundingClientRect().top - el.scrollTop;
+  const top = node.getBoundingClientRect().top - base;
+  el.scrollTo({ top: Math.max(0, top - readingLine() + 2), behavior: smooth ? 'smooth' : 'auto' });
+}
+
 async function focusRow(
   id: string,
-  opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean } = {},
+  opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean; latex?: string } = {},
 ) {
   const { smooth = true, save = true } = opts;
   /* 合成锚点 `fig:p<页>:n<图号>`（见 ReaderChat.gotoCitation）：解析成那张图的**图注行** id。
@@ -2421,14 +2461,20 @@ async function focusRow(
   const node = (id ? el?.querySelector<HTMLElement>(`[data-row-id="${id}"]`) : null)
     ?? el?.querySelector<HTMLElement>(`[data-page="${page}"]`);
   if (el) spyLockUntil = performance.now() + 1200;
+  /* 公式引用先在这一行里找那条公式：找到就把落点与闪烁都交给它（同一行里几枚公式才分得开） */
+  const formulaNode = opts.latex && node && el ? findFormula(node, opts.latex) : null;
+  if (formulaNode && el) {
+    scrollNodeToLine(el, formulaNode, smooth);
+    if (opts.flash) flashFormulaNode(formulaNode);
+    if (save) saveProgressDebounced();
+    return;
+  }
   if (node && el) {
     // 把目标行停在**阅读线**上（而不是居中）：滚动结束后"当前行"正好还是它，
     // 目录高亮才不会落到上一个章节。
     // 视口位置 = 行内容坐标 - scrollTop，要让它落在阅读线上就解 scrollTop = top - line；
     // 再 +2px 让行顶略微越过阅读线，避免浮点误差把"当前行"判给上一行。
-    const base = el.getBoundingClientRect().top - el.scrollTop;
-    const top = node.getBoundingClientRect().top - base;
-    el.scrollTo({ top: Math.max(0, top - readingLine() + 2), behavior: smooth ? 'smooth' : 'auto' });
+    scrollNodeToLine(el, node, smooth);
   } else {
     node?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
   }
@@ -7412,7 +7458,7 @@ function renderMarkdown(text?: string | null) {
           :tasks="tasks"
           :paper-id="paperId"
           :insight-running="understandingRunning"
-          @focus="(id: string, page?: number) => focusRow(id, { page, flash: true })"
+          @focus="(id: string, page?: number, latex?: string) => focusRow(id, { page, flash: true, latex })"
           @copy="copyFormula"
           @zoom="zoomImage = $event"
           @overlay="openBlockOverlay($event)"
@@ -8870,6 +8916,20 @@ function renderMarkdown(text?: string | null) {
   width: calc(100% - v-bind(asideGapPx));
   transform: translateX(v-bind(asideGapPx));
   transition: transform .26s cubic-bezier(.32, .72, 0, 1);
+}
+
+/* 「就是这**一条公式**」：点解读里的公式标号时精确标到这里（同一正文行里可能有好几条公式，
+   行级落点分不开 —— 用户 2026-12-03 的「56、57 为什么是同一块地方」）。
+   语言与行闪一致：淡底 + 左侧竖条，1.6s 淡出；`:deep` 是因为 KaTeX 在子组件里渲染。 */
+.reader-content :deep(.flash-target) {
+  background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 3px 0 0 0 color-mix(in srgb, var(--accent) 62%, transparent);
+  border-radius: 6px;
+  animation: katex-flash 1.6s ease-out forwards;
+}
+@keyframes katex-flash {
+  0%, 40% { background-color: color-mix(in srgb, var(--accent) 16%, transparent); }
+  100% { background-color: transparent; }
 }
 
 @media (max-width: 1100px) {

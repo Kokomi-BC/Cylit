@@ -750,6 +750,13 @@ export interface UnderstandingRefItem {
    * 阅读器翻不成行，只能整页闪（用户 2026-12-03 报的那两条）。点标号优先用它。
    */
   row_id?: string | null;
+  /**
+   * 公式条目的 LaTeX（只有 formula 类有）。
+   *
+   * 公式与它所在的正文行是两条独立引用（用户 2026-12-03 的「56、57 为什么是同一块地方」）：
+   * 行级落点必然重合，所以额外带上这条公式，标号才能落在那**一枚 KaTeX** 上。
+   */
+  latex?: string | null;
 }
 
 /** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */

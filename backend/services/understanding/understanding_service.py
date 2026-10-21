@@ -474,7 +474,9 @@ def _chunk_anchors(ids: list[str]) -> dict[str, dict]:
     for cid, block_id, meta_json in rows:
         meta = json_loads(meta_json, {}) or {}
         row_id = meta.get("row_id") or (meta.get("row_ids") or [None])[0]
-        out[cid] = {"block_id": block_id, "row_id": row_id}
+        out[cid] = {"block_id": block_id, "row_id": row_id,
+                    #: 公式条目带上 LaTeX：前端据此在**同一行里**认出是哪一枚公式（见下）
+                    "latex": meta.get("latex")}
     return out
 
 
@@ -514,6 +516,11 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
             item["block_id"] = anchor["block_id"]
         if anchor.get("row_id"):
             item["row_id"] = anchor["row_id"]
+        # 公式的 LaTeX：一条公式与它所在的**同一个正文行**本来是两条引用（用户 2026-12-03 的
+        # 「56、57 为什么是同一块地方」）—— 行级落点必然重合，只有精确到公式元素才分得开，
+        # 所以正文行 id 之外再带上这条公式本身。
+        if anchor.get("latex"):
+            item["latex"] = anchor["latex"]
         (live if chunk_id in alive else stale).append(item)
     return live, stale
 

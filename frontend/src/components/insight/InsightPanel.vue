@@ -34,7 +34,7 @@ const emit = defineEmits<{
   /** 打开整页版：由 ReaderView 新开一个应用内标签页 */
   (e: 'open-page'): void;
   /** 正文里点了引用标号（`InsightDoc` 只上报，往哪跳由 ReaderView 决定） */
-  (e: 'cite', p: { code: string; block: string; page: number }): void;
+  (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
 }>();
 
 /* 阅读器这边任务列表已经在轮询，把 `running` 传进组合式即可（它不会再自己拉 /tasks） */

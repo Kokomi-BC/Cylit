@@ -62,7 +62,7 @@ const emit = defineEmits<{
   /** 标题 anchor 已贴好（宿主据此算一次"当前小节"，否则首屏一个高亮都没有） */
   (e: 'anchors-ready'): void;
   /** 点了正文里的引用标号：宿主负责跳到原文（阅读器滚到那一段，整页则开阅读器） */
-  (e: 'cite', p: { code: string; block: string; page: number }): void;
+  (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
 }>();
 
 const root = ref<HTMLElement | null>(null);
@@ -140,7 +140,8 @@ function decorateCites(html: string): string {
         + ' title="' + escapeAttr(title) + '"'
         + ' data-code="' + code + '"'
         + ' data-block="' + escapeAttr(anchor) + '"'
-        + ' data-page="' + (ref?.page ?? '') + '">[' + n + ']</button>';
+        + ' data-page="' + (ref?.page ?? '') + '"'
+        + ' data-latex="' + escapeAttr(String(ref?.latex ?? '')) + '">[' + n + ']</button>';
     });
   }).join('');
 }
@@ -154,6 +155,7 @@ function onCiteClick(ev: MouseEvent) {
     code: btn.dataset.code || '',
     block: btn.dataset.block || '',
     page: page > 0 ? page : 0,
+    latex: btn.dataset.latex || '',
   });
 }
 

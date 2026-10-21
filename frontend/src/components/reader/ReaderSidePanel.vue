@@ -83,7 +83,8 @@ const props = withDefaults(defineProps<{
 });
 
 const emit = defineEmits<{
-  (e: 'focus', rowId: string, page?: number): void;
+  /** latex：公式类引用的 LaTeX —— 行级落点分不开「这一段」与「这一段里的那条公式」 */
+  (e: 'focus', rowId: string, page?: number, latex?: string): void;
   (e: 'copy', text: string): void;
   (e: 'zoom', target: ZoomTarget): void;
   /** 表格 / 公式的浮层打开：`{ icon, title, markdown }`，由阅读器那层挂 `BlockOverlay` */
@@ -114,9 +115,9 @@ const emit = defineEmits<{
   }>): void;
 }>();
 
-function locate(id?: string | null, page?: number | null) {
+function locate(id?: string | null, page?: number | null, latex?: string | null) {
   if (!id && !page) return;
-  emit('focus', id ?? '', page ?? undefined);
+  emit('focus', id ?? '', page ?? undefined, latex || undefined);
 }
 
 /**
@@ -432,7 +433,7 @@ function onMore(key: string, r: FeedRow) {
       :running="props.insightRunning"
       @started="emit('insight-queued')"
       @open-page="emit('open-insight-page')"
-      @cite="(c) => locate(c.block, c.page || undefined)"
+      @cite="(c) => locate(c.block, c.page || undefined, c.latex)"
     />
 
     <!-- 笔记（用户口径 2026-10-07：批注 / 高亮 / 笔记统一成这一个页签：
