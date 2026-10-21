@@ -174,10 +174,16 @@ let deltaBuf = '';
 let deltaTarget: { content: string } | null = null;
 let deltaTimer = 0;
 
+/** 上一次的 scrollTop / 程序滚动的保护窗口 —— 见 `onMsgsScroll` 里"别把长高当成上翻"。 */
+let lastScrollTop = 0;
+let programmaticUntil = 0;
+
 function stickToBottom() {
   const el = msgsEl.value;
   if (!el) return;
+  programmaticUntil = performance.now() + 600;
   el.scrollTop = el.scrollHeight;
+  lastScrollTop = el.scrollTop;
 }
 
 function flushDelta() {
@@ -207,9 +213,13 @@ function dropDelta() {
 }
 
 /** 回到最新：恢复跟随并滚到底（那枚圆形按钮） */
+/** 回到最新：**恢复跟随**并滚到底（那枚圆形按钮）。
+ *  用户口径 2026-12-06：点了它之后要像真正的 AI 对话那样**一直贴着底部输出**，
+ *  所以这里既恢复 follow，也把随后的滚动标成"程序滚动"，免得被 `onMsgsScroll` 判成上翻。 */
 async function backToLatest() {
   follow.value = true;
   atBottom.value = true;
+  programmaticUntil = performance.now() + 900;
   await scrollToBottom();
 }
 /* 输入区**浮在消息之上**（见 `.composer` 的注释）：浮起来就不占布局高度了，消息区得自己
@@ -758,9 +768,20 @@ function onMsgsScroll() {
   if (box) {
     const near = box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_GAP;
     atBottom.value = near;
-    /* 往上翻 = 退出跟随：流式内容继续进来也不再把人拽下去；翻回底部自动恢复。
-       这样「回到最新」那枚按钮只是**快捷方式**，不是唯一出路。 */
-    follow.value = near;
+    /* 退出跟随的判据只有一条：**用户真的往上翻了**（scrollTop 变小）。
+     *
+     * 以前这里写的是 `follow = near`，于是有两种情况会误判成"人往上翻了"：
+     * ① 流式正文长高 → scrollHeight 变大、scrollTop 没动 → near 变 false → 立刻退出跟随，
+     *    回答还没写完就不跟了（用户口语："点了跳到底部，但只要它继续输出就又掉下去"）；
+     * ② `scrollToBottom()` 是多帧滚到底，中间那几帧还没到底就被判成"没贴底"。
+     * 现在：程序滚动的窗口内一律不改跟随状态；窗口外只有"往上翻"才退出，翻回底部则恢复。 */
+    const movedUp = box.scrollTop < lastScrollTop - 4;
+    const programmatic = performance.now() < programmaticUntil;
+    if (!programmatic) {
+      if (movedUp) follow.value = false;
+      else if (near) follow.value = true;
+    }
+    lastScrollTop = box.scrollTop;
   }
   if (msgsSaveTimer) return;
   msgsSaveTimer = window.setTimeout(() => {
@@ -791,6 +812,8 @@ function restoreThreadScroll(id: string | null): boolean {
 }
 
 async function scrollToBottom() {
+  /** 多帧滚动：整个过程中都算"程序滚动"，`onMsgsScroll` 不许因此改动跟随状态。 */
+  programmaticUntil = performance.now() + 900;
   await nextTick();
   const el = msgsEl.value;
   if (!el) return;
@@ -801,7 +824,14 @@ async function scrollToBottom() {
     await new Promise((done) => requestAnimationFrame(() => done(null)));
   }
   // 附件缩略图这类"加载完才知道高度"的，再补一次
-  window.setTimeout(() => { el.scrollTop = el.scrollHeight; }, 160);
+  window.setTimeout(() => {
+    const m = msgsEl.value;
+    if (!m) return;
+    programmaticUntil = performance.now() + 400;
+    m.scrollTop = m.scrollHeight;
+    lastScrollTop = m.scrollTop;
+  }, 160);
+  lastScrollTop = el.scrollTop;
 }
 
 async function loadStatus() {
@@ -2592,11 +2622,8 @@ defineExpose({ uploadFiles, ensureThread });
   animation: live-ring 1.8s var(--ease) infinite;
 }
 @keyframes live-ring { 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
-@keyframes live-rail {
-  0%, 100% { border-left-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
-  50% { border-left-color: color-mix(in srgb, var(--accent) 92%, var(--border)); }
-}
-.run.live .run-body { animation: live-rail 2.4s ease-in-out infinite; }
+/* 原来这里有一条"进行中"的竖线呼吸动画（`live-rail`），随竖线一起去掉了 ——
+   整轮在跑的信号由抬头那枚脉冲圆点承担（`live-ring`），不需要两条动效抢注意力。 */
 @keyframes live-sheen { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 /* 扫光靠"背景裁到字里"。放进 `@supports`：不支持的浏览器会看见一条彩条压在文字上，
    那不如干脆不启用（标题保持原来的灰字）。 */
@@ -2628,9 +2655,10 @@ defineExpose({ uploadFiles, ensureThread });
   .run.live .run-title { animation: none; background-position: 50% 0; }
 }
 .run-body {
+  /* 用户口径 2026-12-06：**去掉那条竖线**。它原本是"轨迹是一个整体"的视觉分组，
+     但思考段一多就变成一条贴满整屏的线，和正文抢注意力；现在靠缩进 + 更淡的字色分组就够了。 */
   display: flex; flex-direction: column; gap: 3px;
-  margin: 4px 0 0 5px; padding-left: 9px;
-  border-left: 2px solid var(--border);
+  margin: 4px 0 0 6px;
 }
 .run-step {
   /* `flex-start`：图标/标签钉在**第一行**上（用 baseline/center 时，多行思考的图标会飘到
