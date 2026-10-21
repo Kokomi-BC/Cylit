@@ -8366,8 +8366,14 @@ function renderMarkdown(text?: string | null) {
    —— 那正是"点抓手时的动画没有点别处细腻"的来源。 */
 .reader > .chat-host:not(.float) > .chat-grip-pill { display: none; }
 /* 拖头期间**保住合成层**：卡片走 transform 移位（见 paintFloatLive），有了 will-change 就
-   不必等合成器自己判断要不要提升，第一帧就跟手，也不会在提升那一刻抖一下。 */
-.reader.float-dragging > .chat-host.float { will-change: transform; }
+   不必等合成器自己判断要不要提升，第一帧就跟手，也不会在提升那一刻抖一下。
+
+   ⚠️ `transition: none` 是必须的（用户口径 2026-12-03 第 1 条：松手时浮层会抖一下）。
+   `.reader > .chat-host` 那条常驻的 `transition: transform .26s` 本来是给"侧栏开合时
+   整块滑出去"用的；手势里每帧改 transform 会让它**每帧重新起一次 260ms 补间**
+   （跟手变成拖拽感），松手把 transform 撤回 `none` 时更要补间着滑回起点 —— 那就是抖动。
+   手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
+.reader.float-dragging > .chat-host.float { will-change: transform; transition: none; }
 .reader.float-dragging > .chat-host.float > .chat-grip-pill {
   /* 与笔记抓手同一套：纯 transition 34→46 / 220ms / 回弹曲线过冲一次。 */
   width: 46px;
