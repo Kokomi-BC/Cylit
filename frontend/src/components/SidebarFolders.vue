@@ -287,7 +287,6 @@ onUnmounted(() => {
         :title="sectionCollapsed ? '展开分类' : '收起分类'"
         @click="toggleSection"
       >
-        <AppIcon name="chevron-down" :size="14" class="sf-caret" />
         <span class="sf-title">分类</span>
       </button>
       <button type="button" class="sf-add" title="新建分类" aria-label="新建分类" @click="startCreate">
@@ -325,7 +324,17 @@ onUnmounted(() => {
               @blur="cancelEdit"
             />
             <template v-else>
-              <!-- 没有箭头按钮了：整行名字就是折叠开关，可折叠语义靠 aria-expanded + title 传达 -->
+              <!-- 箭头 = 折叠开关（只折叠这一行、不跳转）；点名字也仍可折叠，语义靠 aria-expanded + title -->
+              <button
+                type="button"
+                class="sf-caret-btn"
+                :aria-expanded="isOpen(row.id)"
+                :aria-label="'展开或收起：' + row.name"
+                :title="isOpen(row.id) ? '收起' : '展开'"
+                @click.stop="toggleRow(row.id)"
+              >
+                <AppIcon name="chevron-right" :size="12" class="sf-row-caret" />
+              </button>
               <button
                 type="button"
                 class="sf-name"
@@ -411,8 +420,6 @@ onUnmounted(() => {
 .sf-fold:hover { color: var(--accent-text); }
 .sf-fold:focus-visible { outline: none; box-shadow: var(--ring); }
 .sf-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sf-caret { flex: none; transition: transform var(--dur) var(--ease); }
-.sf.is-collapsed .sf-caret { transform: rotate(-90deg); }
 
 .sf-add {
   flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
@@ -428,17 +435,30 @@ onUnmounted(() => {
 /* 行高 28px（就地编辑时 26px 的输入框也不会把行压矮）；组间距 6px 由分类行的 margin-top 出，
  * 同一分类的论文之间只隔 .sf-list 的 1px —— 归属一眼可见。 */
 .sf-row {
-  display: flex; align-items: center; gap: 2px;
+  display: flex; align-items: center; gap: 2px; padding-left: 2px;
   min-height: 28px; border-radius: 8px;
 }
 .sf-list > .sf-row { margin-top: 6px; }
 .sf-list > .sf-row:first-child { margin-top: 0; }
 .sf-row:hover { background: var(--bg-hover); }
+/* 折叠箭头：独立按钮、定宽 18px（行首那一格），展开 / 收起都不会让名字左右跳；
+ * 颜色最弱一档，悬停与展开时提亮（只旋转，从不隐藏） */
+.sf-caret-btn {
+  flex: none; width: 18px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint);
+  cursor: pointer; transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.sf-row:hover .sf-caret-btn, .sf-row.open .sf-caret-btn { color: var(--accent-text); }
+.sf-caret-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.sf-caret-btn:active { background: var(--bg-pressed); }
+.sf-row-caret { flex: none; transition: transform var(--dur) var(--ease); }
+.sf-row.open .sf-row-caret { transform: rotate(90deg); }
+
 /* 第一档（最强）：分类名走主题色 + 600，比子项亮也比它大 2px；
  * 「未分类」用的是同一个类，自然同档。悬停 / 展开再深一档（--accent-hover，全站文字加强用的就是它） */
 .sf-name {
   flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 6px 0 8px; border: 0; border-radius: 8px;   /* 左起点 8px：与标题、论文题、提示行同一条线 */
+  height: 28px; padding: 0 6px 0 0; border: 0; border-radius: 8px;   /* 文字 x=22px：2(行) + 18(箭头列) + 2(gap) */
   background: transparent; color: var(--accent-text);
   font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: pointer;
   transition: color var(--dur) var(--ease);
