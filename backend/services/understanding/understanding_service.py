@@ -95,7 +95,11 @@ def _inventory_items(rows, road: str, langs: tuple[str, ...]) -> list[dict]:
         items.append({"chunk_id": row.id, "chunk_type": row.chunk_type,
                       "page": int(row.page_no or 0),
                       "section": row.section or "",
-                      "preview": row.content_preview or ""})
+                      "preview": row.content_preview or "",
+                      #: 这条 chunk 记住的**行身份**（与 row_ids 同序等长）。留在清单条目上
+                      #: 只为一件事：落库时写进 refs_json.pids —— 重建索引后 chunk id 全变，
+                      #: 它是唯一能认回同一行的桥（读路径首选它，见 split_refs_by_pids）。
+                      "pids": [str(p) for p in (meta.get("pids") or []) if p]})
     return items
 
 
@@ -165,6 +169,27 @@ def _attach_full_content(items: list[dict]) -> None:
 def code_map(inventory: list[dict]) -> dict[str, str]:
     """短码 → 真正的 chunk id。"""
     return {item["code"]: item["chunk_id"] for item in inventory}
+
+
+def ref_pids_by_code(inventory: list[dict],
+                     resolved: dict[str, str]) -> dict[str, list[str]]:
+    """短码 → 行身份列表（落库到 refs_json.pids）：只给**这次解析出 chunk** 的那几条。
+
+    与 resolved **同源** —— 取的就是那个 chunk 的 metadata.pids（建索引时写的，
+    与 row_ids 同序等长）。取不到就**不写这个键**：存量 chunk 还没有这个字段，
+    写空列表等于假装"这条证据没有身份"，与"老数据还没带"分不开。
+
+    为什么必须落库：重建索引后 chunk id 全变，resolved 整份过期；pid 是唯一
+    跨重建可比的键（生成一次、重建时按指纹继承），读路径凭它认回同一行。
+    """
+    by_code = {str(it.get("code") or ""): it for it in inventory or []
+               if isinstance(it, dict)}
+    out: dict[str, list[str]] = {}
+    for code in resolved or {}:
+        pids = [str(p) for p in ((by_code.get(code) or {}).get("pids") or []) if p]
+        if pids:
+            out[code] = pids
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -428,7 +453,10 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
     payload = {
         "paper_id": paper_id, "path": path,
         "markdown": parsed["markdown"],
-        "refs_json": json_dumps({"codes": codes, **check}),
+        # pids 与 resolved 同源落库：重建索引后 chunk id 全变，这一份才是能认回同一行的桥
+        # （读路径首选它，见 split_refs_by_pids）。现有键一个都不动。
+        "refs_json": json_dumps({"codes": codes, **check,
+                                 "pids": ref_pids_by_code(inventory, check["resolved"])}),
         "model": getattr(res, "model", "") or provider.model_name or model_id or "",
         "prompt_tokens": int(getattr(res, "prompt_tokens", 0) or 0),
         "completion_tokens": int(getattr(res, "completion_tokens", 0) or 0),
@@ -563,7 +591,211 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
     return live, stale
 
 
+# --------------------------------------------------------------------------
+# 读路径：pid 优先，旧 chunk id 降级为兜底（阶段 3）
+# --------------------------------------------------------------------------
+
+#: 行提供者的"还没取过"哨兵（None 另有含义：取不到 → 这次不做 pid 解析）
+_UNLOADED_ROWS = object()
+
+
+def _int_or(value, default):
+    """尽量转 int；转不了给 default（不猜页码，与 row_identity._page_of 同口径）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _registry(paper_id: str) -> dict:
+    """行身份注册表（row_identity.load：缺失 / 损坏都返回空表，不抛）。
+
+    单独一层是为了能替换（单测不碰真实 data/）：读路径这里只需要一次文件读。
+    """
+    from backend.services.paper import row_identity
+
+    return row_identity.load(paper_id)
+
+
+def _resolve_registry(registry: dict, pids: list[str], rows: list[dict]) -> dict:
+    """pid → 落点判定（纯函数，IO 已经在 _registry 里做过一次）。"""
+    from backend.services.paper import row_identity
+
+    return row_identity.resolve_registry(registry, pids, rows)
+
+
+def _page_rows(pages) -> list[dict]:
+    """页级读模型 → 行列表，逐行补 page（行 id 只是位置编号，页才知道页号）。
+
+    与 row_identity._slot_index 的口径对齐：它按 (页, 页内序号) 认位置，
+    index 就是页产物里的页内序号。
+    """
+    out: list[dict] = []
+    for page in pages or []:
+        if not isinstance(page, dict):
+            continue
+        page_no = _int_or(page.get("page"), 0)
+        for row in page.get("rows") or []:
+            if isinstance(row, dict):
+                out.append({**row, "page": _int_or(row.get("page"), 0) or page_no})
+    return out
+
+
+def _read_model_rows(paper_id: str) -> list[dict] | None:
+    """阅读器的行（整篇只取一次 page_products；读不到给 None = 不做 pid 解析）。
+
+    为什么整篇一次：这是账面上最贵的读（要合并两路产物、重算行、批量算 pid）。
+    to_dict 里惰性调用它 —— 只有至少一条 code 带 pids 时才取，且只取一次。
+
+    取不到返回 None 而不是空列表：空列表会让每条 pid 都判成 gone（"行没了"），
+    那是猜；取不到就是"这次不知道"，退回旧 chunk id 那条路即可。
+    """
+    try:
+        from backend.services.paper import reader_service
+
+        pages = reader_service.page_products(paper_id)[0]
+    except Exception as exc:  # noqa: BLE001 —— 身份这层永远不许把"读解读"弄挂
+        log.warning("%s 页级读模型取不到（本次不做 pid 解析）：%s", paper_id, exc)
+        return None
+    return _page_rows(pages)
+
+
+def _ref_pids(refs_pids: dict, code: str, chunk_id: str, anchors: dict) -> list[str]:
+    """这条 code 的行身份：持久的 refs_json.pids 优先，其次现存 chunk 的 metadata.pids。
+
+    后者是给老数据留的惰性补齐（只在内存里，不写库）：解读是重建索引之前生成的，
+    refs_json 里没有 pids，但 chunk 重建后会带上 —— 那一样是"这一段"的身份。
+    """
+    saved = (refs_pids or {}).get(code)
+    pids = [str(p) for p in saved if p] if isinstance(saved, list) else []
+    if pids:
+        return pids
+    anchor = anchors.get(chunk_id) or {}
+    return [str(p) for p in (anchor.get("pids") or []) if p]
+
+
+def _best_chunk_by_pids(pids: list[str], chunk_id: str,
+                        anchors: dict) -> tuple[str, dict]:
+    """现存 chunk 里与这组 pids 交集最大的那条 —— 只认已经查到的锚点，不多查一次库。
+
+    交集相同优先这一条 code 原本的 chunk id：公式块与它所在的行共用同一批 pids，
+    别把"精确到这条公式"换成"精确到这一行"（remap 脚本的 ③ 是同一件事）。
+    再按 id 排序，同样的输入永远选出同一条。
+    """
+    wanted = set(pids)
+    best_id, best, best_key = "", {}, None
+    for cid, anchor in (anchors or {}).items():
+        if not isinstance(anchor, dict):
+            continue
+        have = {str(p) for p in (anchor.get("pids") or []) if p}
+        overlap = len(wanted & have)
+        if not overlap:
+            continue
+        key = (-overlap, 0 if str(cid) == str(chunk_id) else 1, str(cid))
+        if best_key is None or key < best_key:
+            best_id, best, best_key = str(cid), anchor, key
+    return best_id, best
+
+
+def _healed_item(code: str, chunk_id: str, by_code: dict, anchors: dict,
+                 pids: list[str], verdict: dict) -> dict:
+    """① 的 ref 项：page / row_id 用 pid 解析出来的（重建后自愈），能配上现存 chunk
+    就再补 chunk_id / block_id / latex；配不到也给 row_id + page（chunk_id 空串）。"""
+    meta = by_code.get(code) or {}
+    first = next((verdict.get(pid) or {} for pid in pids if verdict.get(pid)), {})
+    hit_id, hit = _best_chunk_by_pids(pids, chunk_id, anchors)
+    item = {"code": code, "chunk_id": hit_id,
+            "chunk_type": meta.get("chunk_type"),
+            "page": _int_or(first.get("page"), meta.get("page"))}
+    if hit.get("block_id"):
+        item["block_id"] = hit["block_id"]
+    row_id = str(first.get("row_id") or "")
+    if row_id:
+        item["row_id"] = row_id
+    if hit.get("latex"):
+        item["latex"] = hit["latex"]
+    if pids:
+        item["pids"] = list(pids)
+    #: 前端不认识也无害：它说的是"这一条的位置是 pid 认回来的，不是当年那个 chunk id"
+    item["healed"] = True
+    return item
+
+
+def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
+                       anchors: dict[str, dict], *, refs_pids: dict | None = None,
+                       rows_of=None, registry_of=None
+                       ) -> tuple[list[dict], list[dict]]:
+    """引用分三类落地（三级）：pid 认回同一行 > 现存 chunk 锚点 > 过期兜底。
+
+    ① pid 解析（首选）：pids = refs_json.pids[code]（老数据退现存 chunk 的
+       metadata.pids）；全部 state == ok → 用解析出来的 page / row_id —— 这就是
+       "重建后自愈"：chunk id 全变了，位置仍然认得回来。
+    ② 现存 chunk 锚点（今天的行为）：pids 缺失，或解析成 text-changed / gone → 原样改用
+       split_live_refs（chunk 还在就给 block_id / row_id / latex，不在就进 stale）。
+       解析状态非 ok 时在项上补一个 pid_state（前端可选用）。
+    ③ 过期兜底（今天的行为）：进 stale_refs（带 page）。
+
+    行为零变化的判据：chunk 还在、pid 也对时，①②给出的字段逐一致（只多 pid_state /
+    healed）。性能：page_products 只在真要做 pid 解析时取，且整篇一次；
+    注册表同样只读一次。
+    """
+    # 默认实现**调用时**解析（不是 def 时绑定）：两层 IO 是能被替换的接缝，单测要换得动。
+    rows_of = rows_of or _read_model_rows
+    registry_of = registry_of or _registry
+    rows_cache: dict = {"rows": _UNLOADED_ROWS}
+    reg_cache: dict = {"reg": None}
+
+    def rows():
+        if rows_cache["rows"] is _UNLOADED_ROWS:
+            rows_cache["rows"] = rows_of(paper_id)   # None = 取不到
+        return rows_cache["rows"]
+
+    def registry() -> dict:
+        if reg_cache["reg"] is None:
+            reg_cache["reg"] = registry_of(paper_id) or {}
+        return reg_cache["reg"]
+
+    # ②③（今天的行为）先算好：没有 pids / 解析不全都走它，字段与改造前逐一致。
+    live, stale = split_live_refs(
+        resolved, by_code, exists=lambda ids: set(anchors) & set(ids), anchors=anchors)
+    live_by_code = {item["code"]: item for item in live}
+    stale_by_code = {item["code"]: item for item in stale}
+
+    out_live: list[dict] = []
+    out_stale: list[dict] = []
+    for code, chunk_id in resolved.items():
+        item = live_by_code.get(code) or stale_by_code.get(code)
+        if item is None:
+            continue                 # 不该发生：split_live_refs 已覆盖 resolved 的全部 code
+        pids = _ref_pids(refs_pids or {}, code, chunk_id, anchors)
+        state = None
+        if pids:
+            live_rows = rows()
+            if live_rows is not None:      # 取不到读模型就不猜，直接退回 ②③
+                verdict = _resolve_registry(registry(), pids, live_rows)
+                states = [str((verdict.get(pid) or {}).get("state") or "gone")
+                          for pid in pids]
+                if all(one == "ok" for one in states):
+                    out_live.append(
+                        _healed_item(code, chunk_id, by_code, anchors, pids, verdict))
+                    continue
+                state = "gone" if "gone" in states else "text-changed"
+        if state is not None:
+            item["pid_state"] = state
+        (out_live if code in live_by_code else out_stale).append(item)
+    return out_live, out_stale
+
+
 def to_dict(row: Understanding) -> dict:
+    """库里那一行 → 接口形状。引用走三级回落（见 split_refs_by_pids）：
+
+    ① pid 解析（refs_json.pids 优先，老数据用现存 chunk 的 metadata.pids 惰性补齐）——
+      全部 ok 就用解析出来的 page / row_id，并把 healed 标上；
+    ② 现存 chunk 锚点（_chunk_anchors 那一次查询，今天的形状）；
+    ③ 过期兜底（stale_refs，带 page）。
+
+    page_products 只在真要做 pid 解析（至少一条 code 带 pids）时取，且整篇一次。
+    """
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
@@ -575,8 +807,11 @@ def to_dict(row: Understanding) -> dict:
             resolved[code] = by_code[code]["chunk_id"]
     # 一次 in(...) 查询同时给出"还在不在"与"落在哪个块"：分两次查就是两次 RTT。
     anchors = _chunk_anchors([cid for cid in resolved.values() if cid])
-    live_refs, stale_refs = split_live_refs(
-        resolved, by_code, exists=lambda ids: set(anchors) & set(ids), anchors=anchors)
+    # refs_json.pids 可能整个缺失（老数据）：split_refs_by_pids 会按现存 chunk 的
+    # metadata.pids 在内存里惰性补，不写库。
+    saved_pids = refs.get("pids") if isinstance(refs.get("pids"), dict) else {}
+    live_refs, stale_refs = split_refs_by_pids(
+        row.paper_id, resolved, by_code, anchors, refs_pids=saved_pids)
     return {
         "paper_id": row.paper_id, "path": row.path,
         "label": PATH_LABELS.get(row.path, row.path),

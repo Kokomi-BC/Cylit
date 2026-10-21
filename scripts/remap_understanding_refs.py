@@ -436,8 +436,10 @@ def remap_refs(refs: dict, inventory: Sequence[dict], items: Sequence[dict]
                ) -> tuple[dict, list[dict], list[str]]:
     """按计划改一份 refs_json + inventory；返回 (新 refs, 新 inventory, 改了的 code)。
 
-    只动两处：resolved[code] 与 inventory 里该 code 的 chunk_id / chunk_type / page
-    （inventory 决定引用显示哪一页、什么类型，不改就是"跳到新块、显示旧页"）。
+    只动三处：resolved[code]、inventory 里该 code 的 chunk_id / chunk_type / page
+    （inventory 决定引用显示哪一页、什么类型，不改就是"跳到新块、显示旧页"），
+    以及 refs_json.pids[code]（capture 算好的行身份，落库后读路径首选它认回同一行 ——
+    chunk id 下次重建还会变，pid 不会）。pids 取不到就**不写这个键**（与读路径同口径）。
     codes / invalid / cross_road / ok 原样带走；**未映射的 code 一个字段都不碰**
     （旧 chunk id 留着，前端按过期引用处理，至少还能按页跳）。
     """
@@ -445,6 +447,11 @@ def remap_refs(refs: dict, inventory: Sequence[dict], items: Sequence[dict]
     resolved = dict(new_refs.get("resolved") or {})
     new_inventory = [dict(it) for it in (inventory or []) if isinstance(it, dict)]
     by_code = {str(it.get("code") or ""): it for it in new_inventory}
+    # 行身份一起写回：capture 已经把这组 pids 算好了，写进 refs_json 后读路径就能**首选**它
+    # 认回同一行（chunk id 下次重建又会变，pids 不会）。老结构里没有 pids 时这份是空的。
+    saved = new_refs.get("pids")
+    pids_map = ({str(k): _as_str_list(v) for k, v in saved.items() if isinstance(v, list)}
+                if isinstance(saved, dict) else {})
     changed: list[str] = []
     for item in items or []:
         new_id = str(item.get("new_chunk_id") or "")
@@ -454,6 +461,10 @@ def remap_refs(refs: dict, inventory: Sequence[dict], items: Sequence[dict]
         touched = False
         if resolved.get(code) != new_id:
             resolved[code] = new_id
+            touched = True
+        pids = _as_str_list(item.get("pids"))
+        if pids and pids_map.get(code) != pids:
+            pids_map[code] = pids
             touched = True
         inv = by_code.get(code)
         if inv is not None:
@@ -468,6 +479,8 @@ def remap_refs(refs: dict, inventory: Sequence[dict], items: Sequence[dict]
         if touched:
             changed.append(code)
     new_refs["resolved"] = resolved
+    if pids_map:
+        new_refs["pids"] = pids_map
     return new_refs, new_inventory, changed
 
 

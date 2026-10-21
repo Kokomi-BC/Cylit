@@ -344,8 +344,16 @@ def ref_pids(refs: dict | None, chunks: list[dict]) -> list[tuple[str, list[str]
             continue
         meta = chunk.get("metadata") or {}
         by_chunk[str(chunk.get("id") or "")] = [str(p) for p in (meta.get("pids") or []) if p]
-    return [(str(code), list(by_chunk.get(str(cid or ""), [])))
-            for code, cid in ((refs or {}).get("resolved") or {}).items()]
+    # 阶段 3 起理解结果自己存了 pids（refs_json.pids）：它才是**跨重建**的那一份 ——
+    # chunk 已经重建过的论文，按 chunk 查只会得到空（旧 id 全没了）。所以持久的那份先看。
+    saved = (refs or {}).get("pids")
+    saved = saved if isinstance(saved, dict) else {}
+    out: list[tuple[str, list[str]]] = []
+    for code, cid in ((refs or {}).get("resolved") or {}).items():
+        stored = saved.get(str(code))
+        own = [str(p) for p in stored if p] if isinstance(stored, list) else []
+        out.append((str(code), own or list(by_chunk.get(str(cid or ""), []))))
+    return out
 
 
 def check_understanding_pids(refs: dict | None, chunks: list[dict],
@@ -384,6 +392,67 @@ def understanding_pid_stats(refs_list: list, chunks: list[dict]) -> dict:
             if pids:
                 stats["with_pids"] += 1
                 stats["pids"] += len(pids)
+    return stats
+
+
+def _known_pids(registry: dict | None) -> set[str]:
+    """注册表里登记过的 pid（空表 = 还没生成过，任何"找不到"都没有基准）。"""
+    return {str(e.get("pid")) for e in ((registry or {}).get("rows") or [])
+            if isinstance(e, dict) and e.get("pid")}
+
+
+def resolve_ref_pids(refs: dict | None, chunks: list[dict], rows: list[dict],
+                     registry: dict | None) -> list[dict]:
+    """每条**带 pids** 的引用认回来是什么样：[{code, pids, states, ok}]。
+
+    rows:    阅读器读模型的行（flatten_page_rows，带 page）—— 没有它判不出 ok/gone；
+    registry：row_identity.load 的结果（调用方只读一次）。
+    注册表为空时直接返回空列表：还没生成过，每条都会是 gone，那是假警。
+    """
+    known = _known_pids(registry)
+    if not known:
+        return []
+    from backend.services.paper import row_identity
+
+    out: list[dict] = []
+    for code, pids in ref_pids(refs, chunks):
+        if not pids:
+            continue
+        verdict = row_identity.resolve_registry(registry or {}, pids, rows)
+        states = {pid: str((verdict.get(pid) or {}).get("state") or "gone")
+                  for pid in pids}
+        out.append({"code": code, "pids": pids, "states": states,
+                    "ok": all(state == "ok" for state in states.values())})
+    return out
+
+
+def check_ref_resolution(refs: dict | None, chunks: list[dict], rows: list[dict],
+                         registry: dict | None) -> list[dict]:
+    """带 pids 的解读引用能否**认回同一行**：全 ok 只进 [stat]，text-changed / gone 才 warn。
+
+    为什么不是 error：行文本变了 / 这一段没了，引用照样能按页码跳（stale_refs 仍在），
+    解读内容也不因此失效 —— 这是提示"标号指向的那句话已经变了"，不是索引坏了。
+    """
+    bad: list[str] = []
+    for item in resolve_ref_pids(refs, chunks, rows, registry):
+        for pid, state in item["states"].items():
+            if state != "ok":
+                bad.append(f"{item['code']}/{pid}:{state}")
+    if not bad:
+        return []
+    return [finding("warn", "understanding_ref_resolve",
+                    f"{len(bad)} 个解读引用的行身份认不回原行（文本已变 / 行已失效）: "
+                    f"{_sample(bad, 5)}")]   # 附 code 与 pid，最多 5 条
+
+
+def ref_resolution_stats(refs_list: list, chunks: list[dict], rows: list[dict],
+                         registry: dict | None) -> dict:
+    """带 pids 的引用认回来的汇总（仅统计）：{refs, ok, bad}。"""
+    stats = {"refs": 0, "ok": 0, "bad": 0}
+    for refs in refs_list:
+        for item in resolve_ref_pids(refs, chunks, rows, registry):
+            stats["refs"] += 1
+            stats["ok" if item["ok"] else "bad"] += 1
     return stats
 
 
@@ -885,18 +954,27 @@ def audit_paper(paper_id: str) -> dict:
 
     understanding = _guard("load_understanding",
                            lambda: _load_understanding(paper_id), findings) or []
+    # pid 解析判据要的是**行**（带 page）：与行覆盖率那组同一份页产物，整篇只摊平一次。
+    page_rows = flatten_page_rows(pages) if pages else []
     for item in understanding:
         _run(findings, f"understanding_refs[{item['path']}]", check_understanding,
              item["markdown"], item["refs"], item["inventory"])
         # 引用带的 pid 是否认得回来：找不到只 warn（存量 chunk 还没有 pids）
         _run(findings, f"understanding_ref_pids[{item['path']}]",
              check_understanding_pids, item["refs"], chunks, registry)
+        # 带 pids 的引用能否**认回同一行**（阶段 3 的读路径判据）：全 ok 只进统计，
+        # 出现 text-changed / gone 才 warn —— 行还在不在是 pid 说的事，chunk id 说不清。
+        _run(findings, f"understanding_ref_resolve[{item['path']}]",
+             check_ref_resolution, item["refs"], chunks, page_rows, registry)
 
     return {"paper_id": paper_id, "chunks": len(chunks), "findings": findings,
             "row_pids": pid_summary,
             # 解读引用带了几条 pid：**纯统计**，整篇都没有也只是这一行
             "understanding_pids": understanding_pid_stats(
                 [item["refs"] for item in understanding], chunks),
+            # 带 pids 的引用能认出多少条原行：纯统计（全 ok 时**一条发现都不产生**）
+            "understanding_ref_resolve": ref_resolution_stats(
+                [item["refs"] for item in understanding], chunks, page_rows, registry),
             "row_span": row_span_stats(chunks, rows),
             "id_forms": id_form_stats(chunks, anchors) if anchors else {}}
 
@@ -935,6 +1013,13 @@ def print_human(results: list[dict]) -> None:
             if not upids.get("with_pids"):
                 detail += "：存量 chunk 还没有 metadata.pids，重建索引后才有（仅统计）"
             print(f"[stat] understanding_pids: {detail}")
+        resolve = res.get("understanding_ref_resolve") or {}
+        if resolve.get("refs"):   # 一条带 pids 的引用都没有就没什么可统计的
+            detail = (f"{resolve['ok']}/{resolve['refs']} 条带 pids 的引用可认回原行"
+                      f"（pid 全部 ok）")
+            if resolve.get("bad"):
+                detail += f"；{resolve['bad']} 条认不回（见上面的 warn）"
+            print(f"[stat] understanding_ref_resolve: {detail}")
         span = res.get("row_span") or {}
         if span.get("cross_page"):
             print(f"[stat] row_span: {span['cross_page']} 个 chunk 的 row_ids 跨页"
