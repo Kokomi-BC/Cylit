@@ -442,17 +442,19 @@ onUnmounted(() => {
   padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint);
   cursor: pointer; transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.sf-row:hover .sf-caret-btn, .sf-row.open .sf-caret-btn { color: var(--text); }
+.sf-row:hover .sf-caret-btn, .sf-row.open .sf-caret-btn { color: var(--accent-text); }
 .sf-caret-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .sf-caret-btn:active { background: var(--bg-pressed); }
-/* 第一档（最强）：分类名用正文色 + 600，比论文名亮，也比它大 1.5px */
+/* 第一档（最强）：分类名走主题色 + 600，比子项亮也比它大 2px；
+ * 「未分类」用的是同一个类，自然同档。悬停 / 展开再深一档（--accent-hover，全站文字加强用的就是它） */
 .sf-name {
   flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
   height: 30px; padding: 0 6px 0 0; border: 0; border-radius: 8px;
-  background: transparent; color: var(--text);
+  background: transparent; color: var(--accent-text);
   font-size: calc(13px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: pointer;
   transition: color var(--dur) var(--ease);
 }
+.sf-name:hover, .sf-row.open .sf-name { color: var(--accent-hover); }
 .sf-name:focus-visible { outline: none; box-shadow: var(--ring); }
 .sf-row-caret { flex: none; transition: transform var(--dur) var(--ease); }
 .sf-row.open .sf-row-caret { transform: rotate(90deg); }
@@ -467,13 +469,13 @@ onUnmounted(() => {
 .sf-more { flex: none; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
 .sf-row:hover .sf-more, .sf-row:focus-within .sf-more { opacity: 1; }
 
-/* 第二档（明显更弱）：更小、常规字重、弱色，左内边距 40px（比分类名的 22px 再深一格，
- * 读起来就是"这是某个分类里面的东西"） */
+/* 第二档（明显更弱）：11px / 400 / 弱色，缩进 46px（比分类名的 22px 深 24px）。
+ * 树形感只靠缩进 + 字号 + 颜色，不加任何竖线 / 分支线 */
 .sf-paper {
   display: flex; align-items: center; width: 100%; min-width: 0;
-  height: 25px; padding: 0 8px 0 40px; border: 0; border-radius: 6px;
+  height: 25px; padding: 0 8px 0 46px; border: 0; border-radius: 6px;
   background: transparent; color: var(--text-dim);
-  font-size: calc(11.5px * var(--ts, 1)); font-weight: 400; text-align: left; cursor: pointer;
+  font-size: calc(11px * var(--ts, 1)); font-weight: 400; text-align: left; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .sf-paper:hover { background: var(--bg-hover); color: var(--text); }
@@ -483,7 +485,7 @@ onUnmounted(() => {
 /* 就地输入：28px 高、外面那格与分类行同为 30px，编辑时行高不跳 */
 .sf-input { display: flex; align-items: center; min-height: 30px; }
 .sf-input input, .sf-row input {
-  width: 100%; height: 28px; padding: 0 8px; font-size: calc(12.5px * var(--ts, 1));
+  width: 100%; height: 28px; padding: 0 8px; font-size: calc(13px * var(--ts, 1));
 }
 
 .sf-error {
@@ -501,11 +503,11 @@ onUnmounted(() => {
 }
 .sf-link:hover { text-decoration: underline; }
 .sf-none {
-  margin: 0 0 2px 40px;     /* 与论文行的正文同一竖线 */
-  color: var(--text-faint); font-size: calc(11.5px * var(--ts, 1));
+  margin: 0 0 2px 46px;     /* 与论文行正文同一竖线 */
+  color: var(--text-faint); font-size: calc(11px * var(--ts, 1));
 }
-/* 行内取数失败：缩进到论文行那一档，仍走 --danger 那一套 */
-.sf-error-row { margin: 0 6px 4px 40px; }
+/* 行内取数失败：缩进到论文行那一档，字号也跟论文行一致，仍走 --danger 那一套 */
+.sf-error-row { margin: 0 6px 4px 46px; font-size: calc(11px * var(--ts, 1)); }
 
 .sf-icon-btn {
   display: flex; align-items: center; justify-content: center;
