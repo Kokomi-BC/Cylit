@@ -16,6 +16,8 @@ import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
 import { highlightCss } from '@/utils/highlightColors';
+import { splitNoteRefs } from '@/utils/noteRefs';
+import { decorateRefs } from '@/utils/citeRefs';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, MarkdownTable, Note, OverlayAnchor,
   PaperReference, TaskInfo, ZoomTarget,
@@ -148,7 +150,42 @@ function statusClass(status: string): string {
 }
 
 /** 批注 / 笔记正文：**作者自己敲的** → `breaks: true`（回车即换行，且不走 PDF 式软换行接回） */
+/**
+ * 笔记正文 → HTML：**先把 `[n]` 接成可点锚点**（用户口径 2026-12-06：存为笔记时带上的标号
+ * 跳转信息，要让笔记浮层里点得动）。
+ *
+ * `splitNoteRefs` 把正文末尾那行 `<!-- refs:[…] -->` 拆出来 —— 它本来就被 Markdown 当注释丢弃，
+ * 这里是为了拿到"编号 → 落点"的表，好让 `decorateRefs` 只装饰**真实存在**的编号。
+ */
+function noteHtml(md?: string | null): string {
+  const { text, refs } = splitNoteRefs(md);
+  const html = mdToHtml(text, null, { breaks: true });
+  return decorateRefs(html, refs.map((r) => ({
+    ref: r.ref,
+    row_id: r.row_id ?? null,
+    block_id: r.block_id ?? null,
+    page: r.page ?? null,
+  })));
+}
+
 const annotationHtml = (text: string) => mdToHtml(text, null, { breaks: true });
+
+/**
+ * 点笔记里的 `[n]`：带着锚点信息交给阅读器（`focusRow` 支持行 id / 页 / 公式 LaTeX）。
+ * 没命中 `[n]` 的点击一律放行（正文里的链接、图片照旧）。
+ */
+function onNoteRefClick(ev: MouseEvent) {
+  const el = (ev.target as HTMLElement | null)?.closest?.('button[data-ref]') as HTMLElement | null;
+  if (!el) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const row = el.getAttribute('data-row') || '';
+  const block = el.getAttribute('data-block') || '';
+  const page = Number(el.getAttribute('data-page') || 0) || undefined;
+  const anchor = row || block;
+  if (anchor) emit('focus', anchor, page);
+  else if (page) emit('focus', '', page);
+}
 
 /** 面 → 中文（侧栏那枚小徽章）。三种锚点是三套位置模型，界面上要说清挂在哪。 */
 const SCOPE_LABEL: Record<string, string> = {
@@ -630,7 +667,8 @@ function onMore(key: string, r: FeedRow) {
         </template>
         <template v-else>
           <!-- 正文：用户口径 2026-11-20 —— **恒定两行，超出省略**（缩略开关 2026-11-21 已删，不再有单行态） -->
-          <div v-if="r.contentMd" class="small md clamp2" v-html="annotationHtml(r.contentMd)" />
+          <div v-if="r.contentMd" class="small md clamp2" v-html="noteHtml(r.contentMd)"
+               @click="onNoteRefClick" />
         </template>
       </div>
     </template>
