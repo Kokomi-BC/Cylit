@@ -90,6 +90,79 @@ def render_like_dom(md: str) -> str:
     return "\n".join(out)
 
 
+#: 公式探针：`$…$` / `$$…$$` 包裹，或者一段带反斜杠命令的 LaTeX（模型常常只给片段）
+_DOLLAR_WRAP = re.compile(r"^\s*\${1,2}(.*)\${1,2}\s*$", re.DOTALL)
+
+
+def _norm_latex(value: str) -> str:
+    """公式比对前的规范化：空白一律去掉（`\frac {a} {b}` 与 `\frac{a}{b}` 是同一个公式）。"""
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def looks_like_formula(text: str) -> bool:
+    """这段探针是**公式**还是正文句子。"""
+    probe = str(text or "").strip()
+    if not probe or _CJK_RE.search(probe):
+        return False
+    return "$" in probe or "\\" in probe
+
+
+def math_spans(md: str) -> list[tuple[int, int, str]]:
+    """Markdown 里所有公式的 ``(start, end, latex)``，按出现顺序（行内公式不重复计入行间公式内部）。"""
+    md = md or ""
+    out: list[tuple[int, int, str]] = []
+    for match in _DISPLAY_MATH.finditer(md):
+        out.append((match.start(), match.end(), match.group(1)))
+    for match in _INLINE_MATH.finditer(md):
+        if any(start <= match.start() < end for start, end, _ in out):
+            continue
+        out.append((match.start(), match.end(), match.group(1)))
+    out.sort()
+    return out
+
+
+def find_formula_span(md: str, probe: str) -> tuple[int, int] | None:
+    """公式探针 → 渲染坐标系里的 ``(start, end)``（公式整体只占 **1 个** `ATOM`）。
+
+    为什么需要它（agent 报过「公式没法加高亮」）：本模块的坐标系把每条公式压成一个
+    `U+FFFC`（前端 `domMarks` 同一口径），于是拿 LaTeX 去 `find_span` **永远**匹配不上 ——
+    整式、片段都不行。但前端 `wrapRange` 早就支持「选区里是 ATOM」：它会把整个公式元素包进
+    `mark`（块级公式还专门画在 `.katex-html` 的外接框上）。所以缺的只是**把 LaTeX 换成那个
+    ATOM 的位置**，这一步在这里做。
+
+    匹配口径：先比「规范化后完全相同」，再退到「探针是它的片段 / 它是探针的片段」（片段至少
+    8 个字符才认，免得一个字母 `x` 匹配到别的公式）。偏移量按**逐段渲染**累加，与
+    `render_like_dom` 同一套规则（前一段的渲染长度 + 前面各公式各占 1）。
+    """
+    raw = str(probe or "").strip()
+    want = _norm_latex(_DOLLAR_WRAP.sub(r"\1", raw) or raw)
+    if not want:
+        return None
+    spans = math_spans(md)
+    target: tuple[int, int] | None = None
+    for start, end, latex in spans:
+        if _norm_latex(latex) == want:
+            target = (start, end)
+            break
+    if target is None and len(want) >= 8:
+        for start, end, latex in spans:
+            hay = _norm_latex(latex)
+            if want in hay or hay in want:
+                target = (start, end)
+                break
+    if target is None:
+        return None
+    offset = 0
+    pos = 0
+    for start, end, _latex in spans:
+        offset += len(render_like_dom(md[pos:start]))
+        if start == target[0]:
+            return offset, offset + 1
+        offset += 1                      # 这条公式自己占 1 个 ATOM
+        pos = end
+    return None
+
+
 def find_span(text: str, probe: str, *, occurrence: int = 1) -> tuple[int, int] | None:
     """``probe`` 在 ``text`` 里的第 ``occurrence`` 次出现 → ``(start, end)``；找不到返回 None。"""
     probe = (probe or "").strip()
@@ -151,6 +224,26 @@ def anchor_page_no(anchor: str) -> int:
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
+#: 侧别词表 → 数据库口径（`HIGHLIGHT_SIDES = ("en", "zh")`）。
+#:
+#: ⚠️ 页级产物用的是**另一套**词（`original` / `translation`），调用方常常把两套混着传：
+#: `highlight_manage` 早先就把 `zh` 翻成 `translation` 再送进来，而落库只认 `en`/`zh`，
+#: 于是被 `create_highlight` 静默改成 `en` —— "要求标中文、高亮却画在英文面"（agent 报过）。
+#: 这里把两套都收进来，任何一边传哪套都对。
+SIDE_ALIASES = {
+    "en": "en", "zh": "zh",
+    "original": "en", "transcript": "en", "transcription": "en", "ocr": "en",
+    "translation": "zh", "translated": "zh",
+    "原文": "en", "英文": "en", "转录": "en",
+    "译文": "zh", "中文": "zh", "翻译": "zh",
+}
+
+
+def normalize_side(value: object) -> str:
+    """侧别 → ``"en"`` / ``"zh"``；不认识返回空串（交给调用方按文字自动判）。"""
+    return SIDE_ALIASES.get(str(value or "").strip().lower(), "")
+
+
 def side_of_text(text: str) -> str:
     """引用的文字是中文还是英文 → ``"zh"`` / ``"en"``。
 
@@ -160,6 +253,22 @@ def side_of_text(text: str) -> str:
     所以 `create()` 在调用方没指定面时按文字判断：引中文 → 译文面。
     """
     return "zh" if _CJK_RE.search(str(text or "")) else "en"
+
+
+def locate_in_markdown(md: str, text: str, *, occurrence: int = 1
+                      ) -> tuple[tuple[int, int], bool] | None:
+    """在这一面的 Markdown 里找落点：先按**文字**，找不到再当**公式探针**。
+
+    返回 ``((start, end), 是否公式)``。两者是两套口径：文字走 `find_span`（坐标系里的
+    逐字匹配），公式走 `find_formula_span`（LaTeX → 那个占位符的位置）。
+    """
+    span = find_span(render_like_dom(md), text, occurrence=occurrence)
+    if span is not None:
+        return span, False
+    span = find_formula_span(md, text)
+    if span is not None:
+        return span, True
+    return None
 
 
 def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
@@ -182,9 +291,9 @@ def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
             if not raw.strip():
                 continue
             rendered = render_like_dom(raw)
-            span = find_span(rendered, text, occurrence=occurrence)
-            if span is not None:
-                return str(row.get("id") or ""), span, rendered
+            hit = locate_in_markdown(raw, text, occurrence=occurrence)
+            if hit is not None:
+                return str(row.get("id") or ""), hit[0], rendered
         return None                      # 这一页的行里没有（别去别的页找：锚点本来就指定了页）
     return None
 
@@ -237,8 +346,12 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
         raise ValidationError("anchor 必填（正文行 id / `md:p<页号>` / `pdf:p<页号>`）")
     # 面没指定（或给了个不认识的值）→ 按**引用的文字**判：引中文就落在译文面
     # （界面按译文读时，原文那一面的高亮根本画不出来，见 `side_of_text`）。
-    if side not in ("en", "zh"):
-        side = side_of_text(text)
+    # 面没指定时：**公式优先落在译文面**（用户口径：平时看的是中文那一列，标在原文面
+    # 根本画不出来）；正文句子按文字判（引中文 → 译文面）。
+    is_formula_probe = looks_like_formula(text)
+    side = normalize_side(side)
+    if not side:
+        side = "zh" if is_formula_probe else side_of_text(text)
     kind = anchor_kind(anchor)
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："
@@ -254,7 +367,12 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
             anchor, kind = hit[0], "row"
     raw = anchor_text(paper_id, anchor, side=side)
     rendered = render_like_dom(raw) if raw is not None else ""
-    span = find_span(rendered, text, occurrence=occurrence) if raw is not None else None
+    span = None
+    is_formula = False
+    if raw is not None:
+        hit = locate_in_markdown(raw, text, occurrence=occurrence)
+        if hit is not None:
+            span, is_formula = hit
     # 引用的文字不在这一面 → 换另一面再找一次：模型经常把**原文**的句子挂到「译文」那一面
     #（或反过来），那一面根本没有这段字，高亮就永远画不出来（用户报的「笔记在列表里、
     #  正文却看不到高亮」就是这么来的）。哪一面找得到就以那一面为准，并记一条日志。
@@ -263,10 +381,11 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
         raw2 = anchor_text(paper_id, anchor, side=other)
         if raw2 is not None:
             rendered2 = render_like_dom(raw2)
-            span2 = find_span(rendered2, text, occurrence=occurrence)
-            if span2 is not None:
+            hit2 = locate_in_markdown(raw2, text, occurrence=occurrence)
+            if hit2 is not None:
                 log.info("高亮换面：%s 在 %s 面找不到，改落到 %s 面", anchor, side, other)
-                side, raw, rendered, span = other, raw2, rendered2, span2
+                side, raw, rendered = other, raw2, rendered2
+                span, is_formula = hit2
     if raw is None:
         return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
     if span is None:
@@ -275,9 +394,12 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "yellow",
                 "error": f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。",
                 "near_miss": near}
     start, end = span
+    # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
+    # （`markRanges`），所以不影响定位；而列表 / 笔记里显示一个隐形的 U+FFFC 毫无意义。
+    stored_text = str(text or "").strip() if is_formula else rendered[start:end]
     created = svc.create_highlight({
         "paper_id": paper_id, "block_id": anchor,
-        "selected_text": rendered[start:end],       # 存**坐标系里的那一段**（前端画标记要靠它校验）
+        "selected_text": stored_text,   # 文字高亮存坐标系里那一段；公式存 LaTeX
         "start_offset": start, "end_offset": end,
         "color": color, "side": side, "scope": kind,
     })

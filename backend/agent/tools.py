@@ -935,7 +935,7 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
 
 
 async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", text: str = "",
-                           color: str = "yellow", side: str = "en", occurrence: int = 1,
+                           color: str = "yellow", side: str = "", occurrence: int = 1,
                            highlight_id: str = "", query: str = "", reason: str = "") -> dict:
     """给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
 
@@ -953,13 +953,19 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行 ——
                    想按语义配色（比如"术语用紫、结论用绿"）就自己挑 hex，别硬套那七个名字。
                    `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
-                   `重点`，公式整体算 1 个字符，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
+                   `重点`，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。
+                   **公式可以标**（2026-12-06 补）：把公式的 LaTeX 原样给它（带不带 `$$` 都行，
+                   只给式子的一部分也认，但至少 8 个字符）—— 坐标系里公式只占 1 个占位符，
+                   宿主会把 LaTeX 换成那个占位符的位置，前端据此把整个公式节点包起来（块级
+                   公式连外接框一起）。**不要因为"公式不是文字"就退回去标引出它的那句话。**
                    `occurrence`：同一段文字出现多次时标第几次（默认第 1 次）。
                    **找不到会回"最像的原文"**，照着改一版再试，不要瞎猜。
-                   ⚠️ **`side` 要跟 `text` 是同一种语言，更要跟用户正在读的那一面一致**：高亮只画在
-                   它那一面 —— 界面按"译文"读（`pside=zh`，读者最常这么看）时只渲染中文那一列，
-                   标在原文面的高亮**根本画不出来**（用户报过"未产生高亮"）。所以要标用户眼前那段
-                   中文，就用 `translate_get` 拿中文原文再标（`side` 不填时宿主按文字自动判断面）。
+                   ⚠️ **默认标在译文面（中文）**（用户口径 2026-12-06）：读者平时看的是中文那一列，
+                   标在原文面的高亮**根本画不出来**（用户报过"未产生高亮"）。所以：
+                   - 一般**不要显式给 `side`**，宿主按文字自动判（中文 → 译文面；公式 → 译文面）；
+                   - 要给，就写 `zh`（= 译文面）/ `en`（= 原文面）—— 两套词表（`original`/`translation`）
+                     也认，但只有 `zh`/`en` 是准的；
+                   - 只有用户明确说"我在读英文原文"时才用 `en`。
       op="list"    query（可选）→ 列这篇的高亮（带页码与"在哪一面"）。
       op="locate"  highlight_id → 这条高亮挂在哪一面、第几页、原文是什么（还能顺带看它有没有笔记）。
       op="update"  highlight_id + color（改颜色）或 text（改引用文字）。**改不了位置**：
@@ -981,9 +987,10 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
             data = await ctx.deps.host.highlight_create(ctx.deps.paper_id, {
                 "anchor": str(anchor or ""), "text": str(text or ""),
                 "color": str(color or "yellow"),
-                # `side` 空着就让**宿主按引用的文字**判断（中文 → 译文面）：
-                # 界面按译文读时，标在原文面的高亮画不出来（见 `agent/annotations.side_of_text`）。
-                "side": _side_key(side) if side else "",
+                # **原样透传**：`en` / `zh` 是库里的侧别词表，翻译成 `original` / `translation`
+                # 反而会被 `create_highlight` 当成不认识而回落成 `en` —— 用户要标中文，高亮却画在
+                # 英文面（agent 报过"未产生高亮"）。空着则宿主按文字自动判（中文 / 公式 → 译文面）。
+                "side": str(side or "").strip().lower(),
                 "occurrence": int(occurrence or 1)})
             if data.get("ok"):
                 hl = data.get("highlight") or {}
