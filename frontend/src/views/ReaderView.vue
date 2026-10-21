@@ -190,9 +190,19 @@ function onCitePeekHide(): void {
   }, PEEK_HIDE_MS);
 }
 
-/** 鼠标进到卡片里 / 在卡片里按了一下：取消待收，并**钉住** —— 拖过、看过的那张不该自己消失 */
-function keepCitePeek(card: PeekCard): void {
-  clearPeekTimers();
+/** 鼠标进到卡片里：**只取消待收**，不钉住。
+ *
+ *  钉住必须留给真的动过手（按下 / 拖动）—— 与笔记浮层同一口径：那边是
+ *  pointerdown 上的 onFloatPress 才锚定，鼠标扫过去不会。
+ *  之前这里在 mouseenter 里就置了 pinned，于是只悬浮看了几个标号、一次都没点，
+ *  卡片也会一张张被钉住（用户口径 2026-12-04）。 */
+function holdCitePeek(): void {
+  if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
+}
+
+/** 在卡片里按下（含拖标题栏 / 拖下角）：这才锚定 */
+function pinCitePeek(card: PeekCard): void {
+  holdCitePeek();
   card.pinned = true;
 }
 
@@ -7841,8 +7851,8 @@ function renderMarkdown(text?: string | null) {
       text-cat="chat"
       data-cite-peek
       :data-peek-key="card.key"
-      @pointerdown.capture="keepCitePeek(card)"
-      @mouseenter="keepCitePeek(card)"
+      @pointerdown.capture="pinCitePeek(card)"
+      @mouseenter="holdCitePeek"
       @mouseleave="onCitePeekHide"
       @close="closePeekCard(card)"
     >
