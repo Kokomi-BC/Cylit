@@ -508,10 +508,12 @@ function onMore(key: string, r: FeedRow) {
              这一行自带一层半透明遮罩（见 .card-top 的底色），内容从它下面滚过时仍然读得清。 -->
         <div class="card-top" data-note-head>
           <!-- 页码 + 时间合成一枚**胶囊**（用户口径：不要整条遮罩带，材质与旁边那几枚圆钮一致） -->
-          <span v-if="r.page || r.at" class="card-meta">
-            <span v-if="r.page" class="small faint" data-note-page>p{{ r.page }}</span>
-            <span v-if="r.at" class="tiny faint" data-note-time>{{ fmtRelative(r.at) }}</span>
+          <span v-if="r.page" class="card-meta">
+            <span class="small faint" data-note-page>p{{ r.page }}</span>
           </span>
+          <!-- 相对时间**移出那枚胶囊**（用户口径 2026-12-02）：它是说明文字，跟页码挤在同一个色块里
+               既显得那枚胶囊很挤，也让"p3"和"2 天前"读起来像同一类信息。现在它单独排在旁边。 -->
+          <span v-if="r.at" class="tiny faint card-time" data-note-time>{{ fmtRelative(r.at) }}</span>
           <span class="spacer" />
           <!-- 批量态：一枚勾选框（与对话页同一个 tick 口径）；非批量态：定位 / 浮层 / 更多 -->
           <button
@@ -885,7 +887,15 @@ function onMore(key: string, r: FeedRow) {
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 /* 这一行里三枚动作 + 页码 + 时间要挤在一行：按钮收小一档，别把行撑宽 */
-.item.note-row .card-top .btn.icon.sm { width: 24px; height: 24px; }
+.item.note-row .card-top .btn.icon.sm {
+  width: 24px; height: 24px;
+  /* 动作键统一走**主题色**（用户口径 2026-12-02：这些按钮原来是正文灰，跟系统主题不搭）。
+     只染图标：底子仍是那层 --bg-elev 圆片，悬停由 .btn 自己的规则抬高。 */
+  color: var(--accent-text);
+}
+/* 移出胶囊之后的时间：贴着胶囊右侧、比页码更淡一档 —— 它是注释，不是位置。
+   ⚠️ 不换行不收缩：那条 card-top 是 nowrap，它被挤窄就会把标题行推歪。 */
+.item.note-row .card-top .card-time { flex: none; color: var(--text-faint); }
 .item.note-row .card-top .spacer { flex: 1; }
 /* 还没写正文的（只有高亮）：竖线压暗一档，底色跟着退到 6%，一眼分得出"哪些还没写" */
 .item.note-row.highlight {

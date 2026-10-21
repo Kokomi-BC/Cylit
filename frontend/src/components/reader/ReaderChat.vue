@@ -2132,6 +2132,14 @@ defineExpose({ uploadFiles, ensureThread });
 
 /* ── 一级：列表 ── */
 .list-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; }
+/* 列表页唯一那枚动作「＋ 新对话」：改成主题色淡底 + 强调色文字（用户口径 2026-12-02）。
+   与胶囊里那套"主色淡底"同一门语言；描边留空，免得变成一枚独立的白 pill。 */
+.list-head .new-conv {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: transparent;
+}
+.list-head .new-conv:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 /* 搜索框用全局 .search-field：这里只把它撑满侧栏（全局是给工具栏定的固定宽度） */
 .list-head .search-field { width: 100%; }
 .list-head .search-field input { width: 100%; min-width: 0; }
@@ -2241,8 +2249,11 @@ defineExpose({ uploadFiles, ensureThread });
   width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 999px; background: var(--bg-sunken); color: var(--text-dim); cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  /* 顶部这几枚（返回 / 浮层打开 / 新对话）**图标走主题色**（用户口径 2026-12-02：
+     原来是正文灰，换主题后跟界面不搭）。底子不动，悬停时浮成 --bg-elev。 */
+  color: var(--accent-text);
 }
-.th-act:hover { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-1); }
+.th-act:hover { background: var(--bg-elev); color: var(--accent-hover); box-shadow: var(--shadow-1); }
 .th-act:active { transform: scale(.94); }
 .th-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .th-title { font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); max-width: 52%; }
