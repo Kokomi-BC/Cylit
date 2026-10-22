@@ -512,6 +512,16 @@ function imageSrc(url?: string) {
   return assetUrl(url);
 }
 
+/** 后端给"只发了图片"的提问合成的占位正文（`（图片 ×1）`），见 `api/agent.py`。 */
+const IMAGE_ONLY_BODY = /^（图片\s*[×x]\s*\d+）$/;
+
+/** 这条消息有没有**该渲染的正文**：图片占位文案不算（它只是给模型留的上下文）。 */
+function hasBody(m: { role?: string; content?: string | null }) {
+  const text = String(m.content ?? '').trim();
+  if (!text) return false;
+  return !(m.role === 'user' && IMAGE_ONLY_BODY.test(text));
+}
+
 function fmtSize(bytes?: number) {
   const n = Number(bytes || 0);
   return n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -2211,7 +2221,9 @@ defineExpose({ uploadFiles, ensureThread });
                  只有**带轨迹**（有 run/steps）的助手消息才画；普通回答不凭空多一条线。 -->
             <div v-if="m.role === 'assistant' && stepsOf(m).length" class="run-rule" aria-hidden="true" />
 
-            <div class="md body"
+            <!-- 只发了图片的提问没有正文：后端为给模型留上下文会存一句「（图片 ×N）」，
+                 那不该渲染成一个空消息泡（用户口径 2026-12-07）—— 图在下面单独显示就够了。 -->
+            <div v-if="hasBody(m)" class="md body"
                  v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
                  @click="onCitationClick"
                  @pointerover="onCitePeek" @pointerout="onCitePeekOut" />
