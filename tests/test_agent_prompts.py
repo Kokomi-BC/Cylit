@@ -229,10 +229,16 @@ _FAT_BRIEF = {
     "glossary": {f"term-{i}": f"译法{i}" for i in range(16)},
     "keep_as_is": [f"KEEP{i}" for i in range(16)],
 }
-_OUTLINE = [{"level": 1, "title": "Introduction"},
-            {"level": 2, "title": "Method"},
-            {"level": 2, "title": "Experiments"},
-            {"level": 1, "title": "Conclusion"}]
+#: **真实 outline 形状**（见 `reader_service.outline_payload`）：键是
+#: `block_id / page / level / number / text / text_zh / children`，**没有 title**。
+#: 上一版的测试自己捏了 `title`，于是"取错字段导致 24 条全被过滤"这个 bug 一条都没照出来。
+_OUTLINE = [
+    {"level": 1, "number": "0", "page": 1, "text": "ABSTRACT", "text_zh": "摘要"},
+    {"level": 2, "number": "0.1", "page": 1, "text": "0.1 PROBLEM DEFINITION",
+     "text_zh": "0.1 问题定义"},
+    {"level": 2, "number": "0.2", "page": 3, "text": "0.2 OUR APPROACH", "text_zh": ""},
+    {"level": 1, "number": "1", "page": 9, "text": "1 CONCLUSION", "text_zh": "1 结论"},
+]
 
 
 def _archive(budget: int = 6000, *, brief=None, outline=None) -> str:
@@ -247,7 +253,10 @@ def test_archive_keeps_the_structure_even_when_the_brief_is_fat() -> None:
     text = _archive()
     assert "章节结构：" in text
     for node in _OUTLINE:
-        assert node["title"] in text
+        assert node["text"] in text          # 英文标题必须出现（就是这一条曾经全丢）
+    # 中文并排：有 text_zh 的用全角竖线接在后面，空的只留英文
+    assert "ABSTRACT｜摘要" in text
+    assert "0.2 OUR APPROACH" in text and "0.2 OUR APPROACH｜" not in text
     # 结构必须在可选的 brief 字段之前 —— 否则又会被挤到截断线外
     assert text.index("章节结构：") < text.index("主要论断：")
     assert text.index("章节结构：") < text.index("统一译法：")
@@ -264,7 +273,7 @@ def test_archive_marks_truncation_but_the_structure_survives() -> None:
     small = _archive(budget=600)
     assert small.endswith("…（档案过长已截断）")
     for node in _OUTLINE:
-        assert node["title"] in small
+        assert node["text"] in small
     # 大纲永远在，被牺牲的是后面的长字段
     assert small.index("章节结构：") < small.index("领域与核心方法")
 
@@ -272,6 +281,36 @@ def test_archive_marks_truncation_but_the_structure_survives() -> None:
 def test_archive_without_truncation_has_no_marker() -> None:
     """没被截就别加标记：加了模型会以为结构也被切了。"""
     text = _archive(budget=6000, brief={"domain": "量化"},
-                    outline=[{"level": 1, "title": "Introduction"}])
+                    outline=[{"level": 1, "text": "ABSTRACT", "text_zh": "摘要"}])
     assert "已截断" not in text
-    assert "章节结构：\n  - Introduction" in text
+    assert "章节结构：\n  - ABSTRACT｜摘要" in text
+
+#: 线上那条论文的 outline 就是 24 条，键是 text / text_zh（其中一条没有中文）。
+_REAL_OUTLINE = [
+    {"level": 1 if i % 4 == 0 else 2, "number": str(i // 4), "page": i + 1,
+     "text": f"{i // 4}.{i % 4} SECTION HEADING {i}",
+     "text_zh": "" if i == 7 else f"{i // 4}.{i % 4} 小节标题 {i}"}
+    for i in range(24)
+]
+
+
+def test_archive_renders_the_outline_from_the_real_shape() -> None:
+    """**24 条真实形状**的 outline 必须整段出现：有条数、有层级缩进、没有空行与 None。
+
+    这是这次 bug 的正面用例：`text` / `text_zh`、没有 `title`，
+    旧实现按 `title` 过滤 → 24 条全丢，档案里连「章节结构：」都不出现。
+    """
+    text = _archive(outline=_REAL_OUTLINE)
+    assert "章节结构：" in text
+
+    struct = text.split("章节结构：\n", 1)[1].split("\n领域与核心方法", 1)[0]
+    lines = struct.split("\n")
+    assert len(lines) == 24, f"应为 24 条，实际 {len(lines)} 条"
+    assert all(line.strip() for line in lines), "章节结构里出现了空行"
+    assert "None" not in struct
+    # 层级缩进：level=1 顶格 2 空格，level=2 四空格
+    assert lines[0].startswith("  - 0.0 SECTION HEADING 0")
+    assert lines[1].startswith("    - 0.1 SECTION HEADING 1")
+    # 中文并排；第 7 条没有中文，就只留英文
+    assert "0.0 SECTION HEADING 0｜0.0 小节标题 0" in struct
+    assert "1.3 SECTION HEADING 7" in struct and "1.3 SECTION HEADING 7｜" not in struct

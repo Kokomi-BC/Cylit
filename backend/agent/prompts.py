@@ -291,6 +291,24 @@ def image_block(deps: Deps) -> str:
     return "\n".join(lines)
 
 
+def _outline_label(node: dict, sep: str = "") -> str:
+    """一条章节节点的显示文本：英文 `text`（兜底 `title`），有中文 `text_zh` 就并排。
+
+    - `text` 里**已经带编号**（`0.1 PROBLEM DEFINITION`），不要再拼 `number`；
+    - 中文与英文相同（例如 ABSTRACT vs 摘要不是相同，但偶尔会有逐字相同的情况）就只留中文，
+      避免 `SUMMARY｜SUMMARY` 这种废话；
+    - 用**全角竖线**分隔：半角 `|` 会被当成 Markdown 表格的分隔符。
+    """
+    en = str((node or {}).get("text") or (node or {}).get("title") or "").strip()
+    zh = str((node or {}).get("text_zh") or "").strip()
+    if not en:
+        return zh
+    if not zh or zh == en:
+        return en
+    joiner = sep or "｜"
+    return f"{en}{joiner}{zh}"
+
+
 def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
                   title: str, page_total: int) -> str:
     """把论文档案渲染成**注入用**的稳定文本块。
@@ -312,12 +330,15 @@ def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
     if page_total:
         head.append(f"篇幅：共 {page_total} 页")
 
-    nodes = [node for node in (outline or []) if str((node or {}).get("title") or "").strip()]
+    # 真实 outline 的键是 `text` / `text_zh`（见 `reader_service.outline_payload`），
+    # **没有 title**：上一版取 `node.get("title")` 于是 24 条全被过滤掉，模型那边看到的是
+    # "这份档案没有章节结构"。`title` 只留作向后兼容的兜底。
+    nodes = [node for node in (outline or []) if _outline_label(node)]
     struct = ""
     if nodes:
         struct = "\n".join(
             ["章节结构："]
-            + [f"  {'  ' * (int(node.get('level', 1) or 1) - 1)}- {node['title']}"
+            + [f"  {'  ' * (int(node.get('level', 1) or 1) - 1)}- {_outline_label(node, '｜')}"
                for node in nodes[:40]])
         if len(struct) > struct_chars:      # 大纲本身异常长：截在预算内，但明说是"结构被截"
             struct = struct[:struct_chars] + "\n  …（章节结构过长已截断）"
