@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import difflib
+
 import re
 from difflib import SequenceMatcher
 from typing import Iterable
@@ -694,6 +696,66 @@ def _span_row_hint(paper_id: str, page: int, text: str) -> str:
         return f"这一页的正文行里没有这一段（它只存在于 Markdown 面）：{advice}"
     return ""
 
+def _note(result: dict, msg: str) -> None:
+    """往 `warning` 上**追加**一句（别覆盖前一句：落面警告与重叠提醒常常同时发生）。"""
+    old = str(result.get("warning") or "").strip()
+    result["warning"] = f"{old}；{msg}" if old else msg
+
+
+def _overlaps(paper_id: str, block_id: str, side: str, start: int, end: int,
+              *, exclude: str = "") -> list[dict]:
+    """这条和已有的哪几条**区间重叠**（同一行、同一面）。只提醒，不拦（用户口径 2026-12-07）。"""
+    if not block_id or end <= start:
+        return []
+    try:
+        items = svc.list_highlights(paper_id)["items"]
+    except Exception as exc:  # noqa: BLE001 —— 重叠提醒拿不到不该让建高亮失败
+        log.debug("取已有高亮做重叠检查失败：%s", exc)
+        return []
+    out: list[dict] = []
+    for one in items:
+        if str(one.get("id") or "") == str(exclude or ""):
+            continue
+        if str(one.get("block_id") or "") != block_id:
+            continue
+        if str(one.get("side") or "") != side:
+            continue
+        a, b = int(one.get("start") or 0), int(one.get("end") or 0)
+        if a < end and start < b:
+            out.append({"id": one.get("id"), "text": _brief(one.get("text"), 30),
+                        "start": a, "end": b})
+    return out[:5]
+
+
+def _similar_notes(paper_id: str, content: str, *, ratio: float = 0.85) -> list[dict]:
+    """这篇里**已经很像**的笔记（同一段内容写两遍是常见的手滑）。只提醒，不拦。"""
+    probe = re.sub(r"\s+", "", str(content or ""))
+    if len(probe) < 12:
+        return []
+    try:
+        items = svc.list_notes(paper_id)["items"]
+    except Exception as exc:  # noqa: BLE001
+        log.debug("取已有笔记做重复检查失败：%s", exc)
+        return []
+    out: list[dict] = []
+    for one in items:
+        body = re.sub(r"\s+", "", str(one.get("content_md") or ""))
+        if not body:
+            continue
+        same = body == probe
+        if same or difflib.SequenceMatcher(None, probe, body).ratio() >= ratio:
+            out.append({"id": one.get("id"), "content": _brief(one.get("content_md"), 30),
+                        "same": same})
+    return out[:3]
+
+
+def relocate(paper_id: str, *, anchor: str, text: str, side: str = "",
+             occurrence: int = 1) -> dict:
+    """**只算落点、不落库**（改锚点用）：返回 ``{"ok": True, "target": {...}}`` 或拒绝。"""
+    return create(paper_id, anchor=anchor, text=text, side=side,
+                  occurrence=occurrence, dry_run=True)
+
+
 def _side_word(side: str) -> str:
     """回执里的叫法：用户看到的是「原文面 / 译文面 / Markdown 面」。"""
     return {"zh": "译文面", "en": "原文面"}.get(str(side or ""), "Markdown 面")
@@ -705,11 +767,14 @@ def _brief(value: object, limit: int = 40) -> str:
 
 
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
-           side: str = "", occurrence: int = 1) -> dict:
+           side: str = "", occurrence: int = 1, dry_run: bool = False) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
 
     借用 `annotation_service.create_highlight` 落库（同一套表与校验），这里只负责
     "把文字翻成偏移量"这一件事。
+
+    `dry_run=True` 只**算出落点**不落库（``result["target"]``）：改锚点（`highlight_manage
+    op="update"` 挪位置）要的是同一套定位规则，但绝不能顺手建出一条新的。
     """
     anchor = str(anchor or "").strip()
     if not anchor:
@@ -753,6 +818,10 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     def _write(on: str, on_side: str, on_kind: str, span_: tuple[int, int],
                stored: str, rendered_: str) -> dict:
         """落库这一步只此一处：整式快路与常规路径共用，免得两边的字段慢慢走偏。"""
+        if dry_run:
+            return {"ok": True, "dry_run": True, "page": svc.anchor_page(on),
+                    "target": {"anchor": on, "side": on_side, "scope": on_kind,
+                               "start": span_[0], "end": span_[1], "text": stored}}
         created = svc.create_highlight({
             "paper_id": paper_id, "block_id": on,
             "selected_text": stored,   # 文字高亮存坐标系里那一段；公式存 LaTeX
@@ -879,6 +948,8 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 文字校验"，所以不影响定位（实测 2026-12-07 用户报的"那个方块是什么"就是它）。
         stored_text = matched.replace(ATOM, "")
     result = _write(anchor, side, kind, (start, end), stored_text, rendered)
+    if dry_run:
+        return result
     if had_atom and not is_formula:
         # 回执里的 text 会有"两个空格"：那里原本是公式。不说一句，用户会以为文字被吞了
         # （2026-12-07 实测）。
@@ -897,6 +968,18 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 中文句号后面不要再加空格（实测 2026-12-07 用户点名：「看不到它」。 这段」中间那个空格）。
         result["warning"] = ("这条标在 **Markdown 视图** —— 阅读视图（对照 / 译文）里**看不到它**。"
                              + (why or "要让它出现在正文里，就把范围缩到单个段落内再标。"))
+    # 重叠检查（用户口径 2026-12-07）：标错位置最省事的补救是「先看见这里已经有了」。
+    # **只提醒不拒绝**：两个高亮压在一起有时就是用户要的（强调 + 术语）。
+    hl = result.get("highlight") or {}
+    clash = _overlaps(paper_id, str(hl.get("block_id") or ""), str(hl.get("side") or ""),
+                      int(hl.get("start") or 0), int(hl.get("end") or 0),
+                      exclude=str(hl.get("id") or ""))
+    if clash:
+        result["overlap"] = clash
+        first = clash[0]
+        _note(result, f"这段与你已有的 {len(clash)} 条高亮重叠（{first.get('id')}"
+
+                      f"「{first.get('text')}」…）：要合并就先 op=list 核对，必要时删掉旧的。")
     return result
 
 
@@ -962,8 +1045,17 @@ def create_note(paper_id: str, *, highlight_id: str, content: str) -> dict:
     hl = next((h for h in svc.list_highlights(paper_id)["items"] if h["id"] == highlight_id), None)
     if hl is None:
         raise NotFoundError(f"高亮不存在：{highlight_id}")
-    return svc.create_note({
+    note = svc.create_note({
         "paper_id": paper_id, "block_id": hl.get("block_id"), "highlight_id": highlight_id,
         "selected_text": hl.get("text"), "start_offset": hl.get("start"),
         "end_offset": hl.get("end"), "content_md": content,
     })
+    # 重复笔记检查（用户口径 2026-12-07）：同一段内容写两遍是常见手滑，**只提醒不拒绝**。
+    similar = [one for one in _similar_notes(paper_id, content)
+               if str(one.get("id") or "") != str(note.get("id") or "")]
+    if similar:
+        note["similar"] = similar
+        head = similar[0]
+        note["warning"] = (f"这篇里已经有很像的笔记（{head.get('id')}「{head.get('content')}」）："
+                           "要改那条就用 note_manage op=update，别写重。")
+    return note

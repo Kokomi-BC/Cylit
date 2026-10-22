@@ -144,11 +144,12 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
 
 
 def update_highlight(highlight_id: str, payload: dict) -> dict:
-    """改一条高亮：现在只开放**颜色**（`color`）与 `selected_text`（引用文字）。
+    """改一条高亮：颜色 / 引用文字，**以及换位置**（`block_id` + 偏移量 + `side` + `scope`）。
 
-    为什么不动偏移量：偏移量是"渲染文字里的位置"，改了它就必须同时重画文字 ——
-    那等于把这条高亮挪到别处，用户看不出来（agent 的"改高亮"需求是改颜色/改错标的文字，
-    要换位置就删了重建，语义更清楚）。
+    换位置这条是 2026-12-07 补的（用户口径：标错一行时，删了重建会**连带删掉笔记**，
+    成本太高）。语义是"把这一条挪过去"，不是"新建一条"：**id 不变**，挂在它上面的笔记
+    跟着走（笔记里的 `block_id` / 偏移 / 引用文字是冗余副本，这里一并同步）。
+    偏移量变了就得重算 `anchor_hash`，否则重译后按哈希重定位会把它找回旧位置。
     """
     with session_scope() as sess:
         row = sess.get(Highlight, highlight_id)
@@ -159,6 +160,32 @@ def update_highlight(highlight_id: str, payload: dict) -> dict:
             row.color = _norm_color(color)
         if payload.get("selected_text") is not None:
             row.selected_text = str(payload["selected_text"])
+        moved = False
+        if str(payload.get("block_id") or "").strip():
+            row.block_id = str(payload["block_id"]).strip()
+            moved = True
+        scope = str(payload.get("scope") or "").lower()
+        if scope in HIGHLIGHT_SCOPES and scope != row.scope:
+            row.scope = scope
+            moved = True
+        side = str(payload.get("side") or "").lower()
+        if side in HIGHLIGHT_SIDES and side != row.side:
+            row.side = side
+            moved = True
+        for field in ("start_offset", "end_offset"):
+            if payload.get(field) is not None and int(payload[field]) != int(getattr(row, field) or 0):
+                setattr(row, field, int(payload[field]))
+                moved = True
+        if moved:
+            row.anchor_hash = anchor_hash(row.selected_text, row.block_id, row.side,
+                                          row.start_offset, row.end_offset,
+                                          pid=row_pid(row.paper_id, row.block_id))
+            # 笔记是挂在这条高亮上的附注：位置副本一起搬，否则点笔记会跳到旧地方。
+            for note in sess.query(Note).filter(Note.highlight_id == highlight_id).all():
+                note.block_id = row.block_id
+                note.selected_text = row.selected_text
+                note.start_offset = row.start_offset
+                note.end_offset = row.end_offset
         sess.flush()
         return _highlight_dict(row)
 

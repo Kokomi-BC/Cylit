@@ -206,6 +206,11 @@ class HostClient:
     async def highlight_update(self, highlight_id: str, payload: dict) -> dict:
         return dict(await self.put(f"/agent/highlights/{highlight_id}", payload) or {})
 
+    async def annotation_locate(self, paper_id: str, payload: dict) -> dict:
+        """**只算落点不落库**（改锚点用）：同一套定位规则，但不会建出新的一条。"""
+        return dict(await self.post(f"/agent/papers/{paper_id}/annotations/locate",
+                                    payload or {}) or {})
+
     async def highlight_delete(self, highlight_id: str) -> dict:
         """删高亮（连带它挂着的笔记）。"""
         return dict(await self.delete(f"/agent/highlights/{highlight_id}") or {})

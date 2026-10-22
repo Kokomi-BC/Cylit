@@ -662,6 +662,26 @@ async def agent_highlight_create(paper_id: str, request: Request,
                     request=request)
 
 
+@router.post("/agent/papers/{paper_id}/annotations/locate")
+async def agent_annotation_locate(paper_id: str, request: Request,
+                                   payload: dict = Body(default={}),
+                                   x_internal_token: str | None = Header(None)):
+    """**只算落点、不落库**：``highlight_manage op="update"`` 挪锚点时用。
+
+    为什么要有它：挪位置必须复用 `create` 那套"Markdown → 渲染文字 → 偏移量"的定位
+    （包括公式整式优先、两面都试、落面判定），但那一步绝不能顺手建出一条新的高亮 ——
+    所以给 `ann.create` 一个 `dry_run`，这里只把算出来的落点回给工具层。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.agent import annotations as ann
+
+    return envelope(ann.relocate(paper_id, anchor=str(payload.get("anchor") or ""),
+                                 text=str(payload.get("text") or ""),
+                                 side=str(payload.get("side") or ""),
+                                 occurrence=int(payload.get("occurrence") or 1)),
+                    request=request)
+
+
 @router.put("/agent/highlights/{highlight_id}")
 async def agent_highlight_update(highlight_id: str, request: Request,
                                  payload: dict = Body(default={}),

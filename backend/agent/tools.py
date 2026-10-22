@@ -1437,9 +1437,13 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    一条失败不影响别的。
                    **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
                    green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行。
-                   ⚠️ **一律用多彩、尽量不一样**（用户口径 2026-12-06）：一片同色等于没有颜色。
-                   做法：动手前先 `op=list` 看这篇已经用过哪些颜色，**挑没出现过/用得最少**的那个；
-                   一次标好几处就**逐个换色**，别整批一个色。
+                   ⚠️ **配色分两级**（用户口径 2026-12-07 修正）：先按**类别**定色系，再在同一
+                   色系里用深浅区分条目 —— 颜色表达语义，不是「每条都不一样」。
+                   公式 = indigo（`#6366f1`/`#4f46e5`）、定理/结论 = emerald（`#10b981`/`#059669`）、
+                   术语/定义 = violet（`#8b5cf6`/`#7c3aed`）、存疑 = amber（`#f59e0b`/`#d97706`）、
+                   错误/待办 = rose（`#f43f5e`/`#e11d48`）。**同类别允许同色**，跨类别才必须不同；
+                   同色系条目多了就换深浅（indigo-400/500/600），不要跳到别的色系去。
+                   动手前先 `op=list` 看这篇已经用过哪几套色系，跟着已有的走。
                    ✅ **颜色代码可以由你自己给**（2026-12-06 明确）：`#0d9488` / `#f59e0b` /
                    `rgb(20,120,140)` / `hsl(180 60% 40%)` 都能如实存下并原样画出 —— 想按语义
                    自己设计一套配色（这套论文用 teal 系、那套用 indigo 系）就直给 hex，不必迁就
@@ -1468,8 +1472,10 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                      后面写着原因（跨行 / 页内对不上）—— 请如实转述给用户。
       op="list"    query（可选）→ 列这篇的高亮（带页码与"在哪一面"）。
       op="locate"  highlight_id → 这条高亮挂在哪一面、第几页、原文是什么（还能顺带看它有没有笔记）。
-      op="update"  highlight_id + color（改颜色）或 text（改引用文字）。**改不了位置**：
-                   要换个地方标就删了重建。
+      op="update"  highlight_id + color（改颜色）/ text（改引用文字）/ **anchor（挪位置）**。
+                   改锚点：`anchor="md:p6"`（+ 可选 `text`）→ 宿主在新锚点重新定位这段文字，
+                   **id 不变**、挂在它上面的笔记跟着走（用户口径 2026-12-07：标错一行时删了
+                   重建会连带删笔记，成本太高）。新锚点那边找不到会回原因，什么都不改。
       op="delete"  highlight_id + reason → 删一条高亮（跨行/跨页的整组一起删，
                    **它挂着的笔记也会一起删**）。删之前先 `op="locate"` 确认是那一条；
                    用户没明确说"删掉这处高亮"就不要删。
@@ -1507,7 +1513,7 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 # 宿主的两条"别忽略我"的信号必须原样带出去：这里是白名单字典，新增字段
                 # 不显式搬一遍就会被丢掉（2026-12-07 实测：跨块落在 Markdown 面的高亮
                 # 明明带了 warning，模型侧一个字都没看到）。
-                for extra in ("warning", "side_note", "text_note"):
+                for extra in ("warning", "side_note", "text_note", "overlap"):
                     if data.get(extra):
                         out[extra] = data[extra]
                 return out
@@ -1564,18 +1570,58 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 return {"ok": False, "error": "locate 要给 highlight_id（先用 op=list 拿）。"}
             return await ctx.deps.host.highlights(ctx.deps.paper_id,
                                                   highlight_id=str(highlight_id))
-        if what in ("update", "color", "set"):
+        if what in ("update", "color", "set", "move"):
             if not highlight_id:
-                return {"ok": False, "error": "update 要给 highlight_id。"}
+                return {"ok": False, "error": "update 要给 highlight_id（先用 op=list 拿）。"}
             payload: dict = {}
             if str(color or "").strip():
                 payload["color"] = str(color).strip()
             if str(text or "").strip():
                 payload["selected_text"] = str(text).strip()
+            move_to = str(anchor or "").strip()
+            target: dict = {}
+            moved_page = None
+            if move_to:
+                # 改锚点（用户口径 2026-12-07）：标错一行时**挪**，不要删了重建 ——
+                # 删高亮会连带删笔记。这里先在新锚点算落点（不建新的），再把坐标写回这一条，
+                # id 不变、笔记跟着走。
+                probe = str(text or "").strip()
+                if not probe:
+                    cur = await ctx.deps.host.highlights(ctx.deps.paper_id,
+                                                         highlight_id=str(highlight_id))
+                    probe = str(((cur.get("highlight") or {}).get("text")) or "")
+                if not probe:
+                    return {"ok": False,
+                            "error": "改锚点要知道标的是哪段文字：给 text，或先 op=locate 看它引用的原文。"}
+                found = await ctx.deps.host.annotation_locate(ctx.deps.paper_id, {
+                    "anchor": move_to, "text": probe, "side": str(side or ""),
+                    "occurrence": int(occurrence or 1)})
+                if not found.get("ok"):
+                    return {**found,
+                            "error": "新锚点那边定位不到这段文字："
+                                     + str(found.get("error") or "")}
+                target = found.get("target") or {}
+                moved_page = found.get("page")
+                payload.update({"block_id": target.get("anchor"),
+                                "scope": target.get("scope"), "side": target.get("side"),
+                                "start_offset": target.get("start"),
+                                "end_offset": target.get("end")})
+                if not str(text or "").strip():
+                    payload["selected_text"] = str(target.get("text") or "")
             if not payload:
-                return {"ok": False, "error": "update 至少要给 color 或 text。"}
+                return {"ok": False, "error": "update 至少要给 color / text / anchor 之一。"}
             got = await ctx.deps.host.highlight_update(str(highlight_id), payload)
-            return {"ok": True, "highlight": got}
+            out: dict = {"ok": True, "highlight": got}
+            if move_to:
+                side_word = {"zh": "译文面", "en": "原文面"}.get(
+                    str(target.get("side") or ""), "Markdown 面")
+                quote = _clip(str(target.get("text") or ""), 30)
+                out["moved_to"] = {"page": moved_page, "side": target.get("side"),
+                                   "scope": target.get("scope"), "text": quote}
+                out["summary"] = (f"已挪到第 {moved_page} 页 · {side_word} · 「{quote}」"
+                                  if moved_page else f"已挪到新位置 · {side_word} · 「{quote}」")
+                out["note"] = "高亮 id 没变，挂在它上面的笔记跟着走；位置不对再挪一次即可。"
+            return out
         if what in ("delete", "remove", "rm"):
             if not highlight_id:
                 return {"ok": False, "error": "delete 要给 highlight_id。"}
@@ -1628,10 +1674,14 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
             note = data.get("note") or {}
             page = note.get("page")
             quote = str(note.get("selected_text") or "")
-            return {"ok": True, "note_id": note.get("id"), "page": page,
-                    "scope": note.get("scope"), "quote": quote,
-                    "summary": f"第 {page} 页 · 挂在「{_clip(quote, 24)}」上" if page
-                               else f"挂在「{_clip(quote, 24)}」上"}
+            out = {"ok": True, "note_id": note.get("id"), "page": page,
+                   "scope": note.get("scope"), "quote": quote,
+                   "summary": f"第 {page} 页 · 挂在「{_clip(quote, 24)}」上" if page
+                              else f"挂在「{_clip(quote, 24)}」上"}
+            for extra in ("warning", "similar"):   # 重复笔记提醒（只提醒不拒绝）
+                if note.get(extra):
+                    out[extra] = note[extra]
+            return out
 
         if what in ("create", "add", "new"):
             rows = [one for one in (items or []) if isinstance(one, dict)]
