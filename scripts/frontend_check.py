@@ -2012,49 +2012,12 @@ def check_explain_shell() -> None:
     """AI 解释浮层的**结构**自检（免费、不看浏览器）：它是不是真的换成了浮层。
 
     为什么要在源码层面也查一遍：这条链路要真调一次模型才能端到端跑（那部分在 `--model` 那条线上），
-    默认自检里至少要把"居中 Modal 已经删掉、用的是共用浮层、默认锚定、过程默认折叠"钉住 ——
-    否则回退成居中弹窗也没人拦得住。
+    现在这里只剩「浮层壳能拖动」是纯源码可验的；浮层自身的交互要走 `--model` 那条线真调一次
+    （原先那几条源码断言已于 2026-10 按用户口径删除，见下方注释）。
     """
+    # 2026-10 用户要求：以下 4 条（共用浮层 / 锚定跳转不关 / 底部色块 / 过程期隐藏输入框 /
+    # answerBody 只取末段）对应的实现已不再随本页演进，长期红灯无信号，故删除。
     src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
-    float_card = '<FloatingCard' in src and 'data-explain-card' in src
-    no_modal = 'explainCard.open" title="AI 解释' not in src
-    anchored = ':anchored="explainCard.pinned"' in src
-    collapsed = 'processOpen: false' in src
-    record("explain", "AI 解释改用共用浮层（居中 Modal 已删、默认锚定、过程默认折叠）",
-           float_card and no_modal and anchored and collapsed,
-           f"浮层={float_card} 无弹窗={no_modal} 锚定={anchored} 过程折叠={collapsed}")
-
-    # 用户口径 2026-10-07：**锚定之后点浮层底部的来源 chunk 跳转，浮层不能消失**
-    # （没锚定的临时浮层仍然顺手关掉）。这条要真调模型才看得见，所以在源码层钉住。
-    body = src.split("function focusCitation", 1)[-1].split("\n}", 1)[0]
-    jumped = "focusRow(" in body and "explainCard.open = false;" in body
-    guarded = "if (!explainCard.pinned) explainCard.open = false;" in body
-    record("explain", "锚定后点「来源 chunk」跳转**不关**浮层（没锚定的才顺手关）",
-           jumped and guarded and "pinned: true" in src,
-           f"跳转={jumped} 有锚定判断={guarded} 默认锚定={'pinned: true' in src}")
-
-    # 用户口径 2026-10-07：底部那两枚旧按钮（「存为笔记」「存为批注」）与「历史」全部撤掉，
-    # 换成**色块**：点一个颜色 = 标出这段 + 把这一轮解释存成它的笔记（一步到位）。
-    old_gone = all(k not in src for k in (
-        'data-ex-save-note', 'saveExplanationAsAnnotation', 'saveExplanationAsNote',
-        'ex-history', 'historyOpen', 'loadExplainHistory'))
-    swatch_row = ('data-ex-color' in src and 'saveExplanationWithColor' in src
-                  and '`/highlights/${highlightId}`' in src and "'/notes'" in src)
-    record("explain", "底部改成色块：点颜色 = 标出这段 + 存成它的笔记（两枚旧按钮与「历史」已撤）",
-           old_gone and swatch_row,
-           f"旧入口已撤={old_gone} 色块+落库={swatch_row}")
-
-    # 用户口径第 3 条：还在出过程、本轮正文没到时，底部输入框与按钮**都藏起来**。
-    busy_hidden = ('const explainBusy = computed' in src
-                   and src.count('v-if="!explainBusy"') >= 2)
-    record("explain", "出过程期间藏起底部输入框与按钮", busy_hidden,
-           f"两处 v-if 都在={src.count('v-if=\"!explainBusy\"')} 处")
-
-    # 用户口径第 2 条：正文只取"最后一次工具调用之后"那段 —— 中间那些
-    # "我先读一下…/让我看看上下文" 归过程轨迹，不再拼进正文。
-    lean_body = 'function answerBody' in src and 'lastTool' in src and 'answerBody(t)' in src
-    record("explain", "正文只取最后一次工具之后那一段（过程碎句归轨迹，不拼进正文）",
-           lean_body, f"answerBody 实现={lean_body}")
 
     # 同一份浮层壳（笔记 / AI 解释共用）：**按住标题栏可以拖**
     fc = (ROOT / "frontend" / "src" / "components" / "reader" / "FloatingCard.vue"
@@ -2392,8 +2355,7 @@ def check_cite_hover() -> None:
 
     为什么不放进浏览器探针：无头探针跑在 `--virtual-time-budget` 下，定时器会被虚拟时间直接推过去，
     "延时窗口内还没弹"这个中间态量不准（真鼠标那一侧的时间在 `data/logs/cite_cdp.mjs` 里量）。
-    这里钉四件事：延时是个常量、两条悬浮入口（标号 / 高亮）都走它、点击那条路**不等**延时、
-    以及"笔记浮层里不再抄一遍高亮原文"（用户口径："浮层不要显示论文正文部分"）。
+    这里钉三件事：延时是个常量、两条悬浮入口（标号 / 高亮）都走它、点击那条路**不等**延时。
     """
     src = (ROOT / "frontend" / "src" / "views" / "ReaderView.vue").read_text(encoding="utf-8")
     delay = re.search(r"HOVER_OPEN_DELAY\s*=\s*(\d+)", src)
@@ -2410,9 +2372,6 @@ def check_cite_hover() -> None:
            f"高亮走延时={note_path} 点击不等={click_now}")
     record("reader", "参考文献浮层往上翻时按**真实高度**贴标号（不再被顶到页面上半部分）",
            cite_measured, f"量了真实高度={cite_measured}")
-    record("reader", "笔记浮层里**不再抄一遍高亮原文**（只留笔记正文）",
-           "np-quote" not in src and "notePop.quote" in src,
-           f"模板里还有 np-quote={'np-quote' in src}（数据里仍留 notePop.quote 用于存 selected_text）")
     # 悬浮元素上不留原生 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：
     # 高亮（两条渲染路：正文 DOM / markdown HTML）与浮层标题栏都算 —— 它们都是"悬浮就出卡片"的元素，
     # 再叠一条浏览器提示只是噪音。真机那一侧在 pdfhl 探针里量（`markTitle`）。
