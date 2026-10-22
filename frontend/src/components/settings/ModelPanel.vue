@@ -17,6 +17,7 @@ import { roundMs, truncate } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
+import { vendorColorIcon } from '@/assets/model-icons';
 import Modal from '@/components/Modal.vue';
 import ModelForm from '@/components/settings/ModelForm.vue';
 import UsageChart from '@/components/settings/UsageChart.vue';
@@ -84,6 +85,11 @@ const TYPE_DESC: Record<string, string> = {
 const HIDDEN_TYPES = new Set(['ocr']);
 const panelTypes = computed(() => allTypes.value.filter((t) => !HIDDEN_TYPES.has(t)
   || (state.models || []).some((m) => m.model_type === t)));
+
+/** 厂商图标（彩色，来自 `assets/model-icons` 的统一映射；认不出来就给空串，模板里回落方块图标） */
+function vendorIco(provider?: string | null): string {
+  return vendorColorIcon(provider);
+}
 
 function hostOf(url?: string | null): string {
   if (!url) return '';
@@ -544,7 +550,8 @@ onBeforeUnmount(() => {
           class="tc-cur" v-if="g.current"
           :title="`当前使用的${g.title}模型：${g.current.name || g.current.id}`"
         >
-          <AppIcon name="check" :size="11" />
+          <img v-if="vendorIco(g.current.provider)" class="pv-ico" :src="vendorIco(g.current.provider)" alt="">
+          <AppIcon v-else name="check" :size="11" />
           <span class="truncate">{{ g.current.name || g.current.model_name || g.current.id }}</span>
         </div>
         <div class="tc-cur none" v-else>未设默认</div>
@@ -553,6 +560,8 @@ onBeforeUnmount(() => {
           <div class="tc-item" v-for="m in g.rows" :key="m.id" :class="{ fresh: highlightId === m.id }">
             <div class="tc-line">
               <span class="stat-dot" :class="statusInfo(m).cls" :title="statusInfo(m).label" />
+              <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
+              <span v-else class="pv-fallback" :title="providerCell(m)"><AppIcon name="model" :size="11" /></span>
               <input
                 v-if="renamingId === m.id"
                 class="rename" :ref="bindRename" v-model="renameText"
@@ -854,6 +863,10 @@ onBeforeUnmount(() => {
 .tc-line .rename { flex: 1 1 auto; min-width: 0; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
 .tc-default { flex: none; display: inline-flex; color: var(--ok); }
 /* 第二行：小方块图标 + 模型名（等宽）+ 需要时的缺密钥小旗 */
+/* 厂商图标：统一 13px 视觉框、保持比例（`object-fit` 不拉伸），缺图标就回落一枚方块字形 */
+.pv-ico { flex: none; width: 14px; height: 14px; object-fit: contain; border-radius: 3px; }
+.pv-fallback { flex: none; display: inline-flex; color: var(--text-faint); }
+.tc-cur .pv-ico { width: 13px; height: 13px; }
 .tc-sub {
   display: flex; align-items: center; gap: 4px; min-width: 0;
   margin-top: 1px; padding-left: 11px;

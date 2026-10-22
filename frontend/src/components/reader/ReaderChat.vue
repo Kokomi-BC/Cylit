@@ -31,6 +31,7 @@ import type {
   Highlight, ModelConfig, Note,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
+import { vendorColorIcon } from '@/assets/model-icons';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 
 const props = defineProps<{
@@ -290,6 +291,12 @@ const activeModel = computed(() => modelOptions.value.find(m => m.id === pick.va
   ?? modelOptions.value.find(m => m.is_default) ?? modelOptions.value[0] ?? null);
 const modelLabel = computed(() => activeModel.value?.name || activeModel.value?.model_name
   || status.value?.model?.model_name || '—');
+/** 厂商图标：走 `assets/model-icons` 的**统一映射**（不在本组件里再维护一份别名表）。
+ *  彩色原色图标用 `<img>`；认不出厂商就是空串，模板里那枚 `<img>` 直接不渲染。 */
+function vendorIco(provider?: string | null): string {
+  return vendorColorIcon(provider);
+}
+
 function subLine(m?: { provider?: string; model_name?: string | null } | null) {
   return m ? [m.provider, m.model_name].filter(Boolean).join(' · ') : '';
 }
@@ -2386,6 +2393,10 @@ defineExpose({ uploadFiles, ensureThread });
           <button class="model-btn truncate" :class="{ on: menuOpen }" :title="pickTitle"
                   :aria-expanded="menuOpen" @click="toggleMenu"
                   @mouseenter="hoverPick" @mouseleave="leavePick">
+            <img
+              v-if="vendorIco(activeModel?.provider ?? status?.model?.provider)"
+              class="pv-ico" :src="vendorIco(activeModel?.provider ?? status?.model?.provider)" alt=""
+            >
             <span class="truncate">{{ modelLabel }}</span><AppIcon name="chevron-right" :size="11" />
           </button>
           <span v-if="usage?.compressed" class="badge dim tiny">已压缩</span>
@@ -2441,6 +2452,7 @@ defineExpose({ uploadFiles, ensureThread });
                         :class="{ on: m.id === activeModel?.id }"
                         :disabled="savingPick || m.enabled === false"
                         @click="savePick({ model_config_id: m.id })">
+                  <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
                   <span class="pick-item-main">
                     <!-- 不再挂「默认」胶囊（用户口径）：谁生效看右侧勾选，
                          胶囊只把这一行撑高、撑乱。 -->
@@ -3014,6 +3026,8 @@ defineExpose({ uploadFiles, ensureThread });
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
+/* 厂商图标（对话页胶囊与子菜单每一项共用）：固定视觉框 + `object-fit` 保比例、不拉伸 */
+.pv-ico { flex: none; width: 14px; height: 14px; object-fit: contain; border-radius: 3px; }
 .pick-item {
   display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px;
   border: 0; border-radius: 8px; background: transparent; color: var(--text-dim);
