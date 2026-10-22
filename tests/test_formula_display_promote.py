@@ -163,6 +163,43 @@ def test_short_symbol_in_a_bullet_stays_inline(page4) -> None:
 
 
 
+
+
+def test_paragraph_emphasis_is_not_a_list_item(page4) -> None:
+    """`*Proof.* First we compute … $\\langle y, \\tilde{x}\\rangle$ …` —— 段落里的记号不能算块级。
+
+    根因：`*` 既是列表标记又是强调标记，旧正则把 `*Proof.*` 开头那个 `*` 当成了 bullet。
+    """
+    from backend.services.paper import reader_service
+
+    line = ("*Proof.* First we compute the conditional expectation of the inner product estimate "
+            "$\\langle \\boldsymbol{y}, \\tilde{\\boldsymbol{x}}\\rangle$ conditioned on "
+            "$\\tilde{x}_{\\text{mse}}$ as follows:")
+    page4([{"id": "p019-03", "original": line, "translation": line}], page=19)
+    data = reader_service.markdown_formulas("demo")
+    assert data["display_count"] == 0, [i["latex"] for i in data["items"] if i["display"]]
+
+
+def test_bullet_marker_must_be_followed_by_space(page4) -> None:
+    """`- *标签* $A \\leq B$` 仍算块级；`*强调*` 开头那行不算（同一条正则两头都管）。"""
+    from backend.services.paper import reader_service
+
+    bullet = ("- *Expected inner-product* $\\mathbb{E}_{\\tilde{x}}\\left\\{\\langle y, "
+              "\\tilde{x}\\rangle\\right\\} = \\langle y, x\\rangle$")
+    page4([{"id": "p007-00", "original": bullet, "translation": bullet}], page=7)
+    data = reader_service.markdown_formulas("demo")
+    assert data["display_count"] == 1
+
+
+def test_short_expression_without_a_relation_stays_inline(page4) -> None:
+    """列表项里、无关系符、53 字符的记号 → 仍归行内（`display_total` 不该虚高）。"""
+    from backend.services.paper import reader_service
+
+    line = "- *the inner product* $\\langle \\boldsymbol{y}, \\tilde{\\boldsymbol{x}}\\rangle$ *appears here*"
+    page4([{"id": "p019-09", "original": line, "translation": line}], page=19)
+    data = reader_service.markdown_formulas("demo")
+    assert data["display_count"] == 0
+
 def test_three_counts_share_one_denominator(monkeypatch) -> None:
     """`total == display_total + inline_total` 恒成立，且不随 include_inline 变。"""
     md = [{"id": f"f005-{i}", "page": 5, "row_id": f"p005-{i:02d}", "latex": t,

@@ -853,10 +853,21 @@ DISPLAY_LINE_TAIL_RATIO = 3
 LIST_ITEM_PROSE_MAX = 120
 LIST_ITEM_MIN_LATEX = 40
 
+#: 「这条式子是否**完整**」：有关系符（`=` / `\leq` / `\approx` / `\to` / `:=` …）就算；
+#: 没有关系符的必须够长（`DISPLAY_NO_RELATION_MIN`）才提升 —— 段落里的**单个记号**
+#: （`$\langle y, \tilde{x}\rangle$` 53 字符，没有关系符）不该进块级公式列表（实测 2026-12-07）。
+_RELATION_RE = re.compile(
+    r"(?:=|\\leq|\\geq|\\le\b|\\ge\b|\\approx|\\sim|\\simeq|\\cong|\\to|\\mapsto|"
+    r"\\equiv|\\propto|\\triangleq|:=|\\subset|\\in\b|<|>)")
+DISPLAY_NO_RELATION_MIN = 60
+
 
 
 #: 行首的列表标记 / 引用标记（剥掉之后还剩字就是"句首有散文"→ 只是句中公式，不提升）
-_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)]|>)\s*")
+#: 行首的列表标记 / 引用标记。⚠️ 标记后**必须有空白**：`*Proof.* First we compute …` 开头那个 `*`
+#: 是强调，不是列表项 —— 以前把它当列表标记，整段散文就被当成"列表项里的短说明"，段落里一个
+#: 记号 `$\langle y, \tilde{x}\rangle$` 因此被提升成块级公式（实测 2026-12-07，第 19 页）。
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)]|>)\s+")
 #: 行尾那段文字里所有公式段（`$$` 优先，再 `$`）—— 判定前要先删干净再数长度
 _ANY_MATH_RE = re.compile(r"\$\$.+?\$\$|\$[^$]+\$")
 #: Markdown 强调标记：判"这一行还剩多少散文"时不算字
@@ -939,9 +950,14 @@ def _promote_to_display(text: str, start: int, end: int, latex: str) -> bool:
     # 这是第 7 页那三条定义式的生存条件（`- *Expected inner-product* $…$`）。
     if not _LIST_MARKER_RE.match(line):
         return False
+    if len(latex) < LIST_ITEM_MIN_LATEX:
+        return False
+    # 完整性门槛：没有关系符又不够长 → 多半只是段落里的一个记号（`$\langle y, \tilde{x}\rangle$`）
+    if not _RELATION_RE.search(latex) and len(latex) < DISPLAY_NO_RELATION_MIN:
+        return False
     prose = _EMPHASIS_RE.sub("", _ANY_MATH_RE.sub("", line))
     prose = _LIST_MARKER_RE.sub("", prose).strip()
-    return len(prose) <= LIST_ITEM_PROSE_MAX and len(latex) >= LIST_ITEM_MIN_LATEX
+    return len(prose) <= LIST_ITEM_PROSE_MAX
 
 
 def markdown_formulas(paper_id: str) -> dict:
