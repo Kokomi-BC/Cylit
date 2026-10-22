@@ -447,6 +447,10 @@ class ModelProvider(Base):
     secret_ref: Mapped[str | None] = mapped_column(String(128))
     note: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(16), default="unknown")
+    # 目录里的展示顺序（小的在前）：用户在模型页拖出来的顺序，接口按它升序返回。
+    # 0 是"还没排过"的默认值 —— 第一次跑 ensure_providers 会按默认口径回填
+    # （DeepSeek → Claude → ChatGPT → Gemini → 其他 → 自定义，见 provider_store）。
+    sort: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 

@@ -34,6 +34,16 @@ FOLD_SOURCES = ("dashscope_multimodal", "dashscope_vl", "qwen_vl")
 FOLD_PROTOCOL = "dashscope_multimodal"
 
 
+# ---------------------------------------------------------------- 目录展示顺序
+# 用户口径：「默认顺序 DeepSeek → Claude → ChatGPT(OpenAI) → Gemini → 其他 → 自定义」。
+# 只给*从没排过*的库回填（见 _backfill_sort）：用户拖过一次之后就不再自动动它。
+SORT_DEFAULTS = {"deepseek": 0, "anthropic": 1, "openai": 2, "gemini": 3}
+SORT_OTHERS_BASE = 10        # 其余官方家按 id 字典序 10,11,12…
+SORT_CUSTOM_ID = "custom"    # 自定义入口那一行（如果有）永远排最后
+SORT_CUSTOM = 999999
+SORT_UNLISTED_BASE = 1000    # 排序接口里"没提到的"排在后面，用这个段位
+
+
 def _official_ids() -> set[str]:
     """官方提供方 id 的唯一出处 = ``providers_catalog.PROVIDER_META``（跳过 hidden）。
 
@@ -51,6 +61,88 @@ def _meta_for(provider: str) -> dict:
     return providers_catalog.meta_for(provider)
 
 
+def _default_sort(provider_id: str, official: set[str], others_rank: int) -> int:
+    """一家的默认 sort（只有"从没排过"的库才用，见 _backfill_sort）。"""
+    pid = str(provider_id or "").strip().lower()
+    if pid == SORT_CUSTOM_ID:
+        return SORT_CUSTOM
+    if pid in SORT_DEFAULTS:
+        return SORT_DEFAULTS[pid]
+    if pid in official:
+        return SORT_OTHERS_BASE + others_rank
+    # 用户自己建的端点：排在官方之后、custom 之前（同段内按 id 稳定）
+    return SORT_UNLISTED_BASE + others_rank
+
+
+def _backfill_sort(s) -> list[str]:
+    """给**从没排过**的库回填默认展示顺序（幂等；返回被写的 id）。
+
+    只在这些行还是默认值 0 时才动，并且**整库只要有一行非 0 就完全不碰** ——
+    否则用户拖过一次顺序，下次启动就会被"默认顺序"冲掉（deepseek 本来就是 0，
+    逐行补会把它重新捡回来）。新库 / 老库升级后立刻就是用户要的那个顺序。
+    """
+    rows = {r.id: r for r in s.query(ModelProvider).all()}
+    if not rows:
+        return []
+    if any(int(r.sort or 0) != 0 for r in rows.values()):
+        return []
+    official = _official_ids()
+    others = sorted(pid for pid in rows
+                    if pid not in SORT_DEFAULTS and pid != SORT_CUSTOM_ID)
+    written = []
+    for rank, pid in enumerate(others):
+        rows[pid].sort = _default_sort(pid, official, rank)
+        written.append(pid)
+    for pid, value in SORT_DEFAULTS.items():
+        if pid in rows:
+            rows[pid].sort = value
+            written.append(pid)
+    if SORT_CUSTOM_ID in rows:
+        rows[SORT_CUSTOM_ID].sort = SORT_CUSTOM
+        written.append(SORT_CUSTOM_ID)
+    return written
+
+
+def _next_sort(s) -> int:
+    """新提供方排到最后（比现有最大值还大 1）—— 0 是"没排过"的默认值，新行给 0 会插队到第一位。"""
+    values = [int(r.sort or 0) for r in s.query(ModelProvider).all()]
+    return (max(values) + 1) if values else 0
+
+
+def set_order(ids: list[str]) -> list[dict]:
+    """按数组下标把 sort 写成 0..n-1（同一事务）；没提到的排在后面、保持相对顺序。
+
+    规则（用户口径）：
+
+    · 数组里每个 id 必须是**已知提供方**，否则 400 并点名是哪个（不静默忽略 ——
+      前端拼错一个 id 却"顺序没生效"最难查）；
+    · 没提到的补 1000+i：既落在所有被点名的之后，又不会和 0..n-1 / 默认档撞车；
+    · 幂等：同样的 body 调两次，库里的值完全一样。
+    """
+    ensure_providers()
+    wanted: list[str] = []
+    for raw in ids or []:
+        pid = str(raw or "").strip().lower()
+        if pid and pid not in wanted:
+            wanted.append(pid)
+    if not wanted:
+        raise ValidationError("ids 不能为空")
+    with session_scope() as s:
+        rows = {r.id: r for r in s.query(ModelProvider).all()}
+        unknown = [pid for pid in wanted if pid not in rows]
+        if unknown:
+            raise ValidationError(f"未知的提供方：{unknown[0]}",
+                                  detail={"ids": unknown})
+        for index, pid in enumerate(wanted):
+            rows[pid].sort = index
+        rest = sorted(pid for pid in rows if pid not in wanted)
+        for index, pid in enumerate(rest):
+            rows[pid].sort = SORT_UNLISTED_BASE + index
+        s.commit()
+        ordered = sorted(rows.values(), key=lambda r: (int(r.sort or 0), r.id))
+        return [_to_dict(r) for r in ordered]
+
+
 def _to_dict(row: ModelProvider) -> dict:
     # 图标回落：历史行的 icon 是空串，目录里已经给它登记了图标键 ——
     # 读的时候补上，不必回头改数据。
@@ -64,6 +156,8 @@ def _to_dict(row: ModelProvider) -> dict:
         "auth": row.auth or "bearer",
         "note": row.note or "",
         "status": row.status or "unknown",
+        # 展示顺序（小的在前）；前端照它排列，也可以用 PUT /models/providers/order 改
+        "sort": int(row.sort or 0),
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else None,
     }
 
@@ -96,6 +190,7 @@ def ensure_providers() -> int:
                 base_url=meta.get("base_url", ""),
                 auth=meta.get("auth", "bearer"),
                 note=meta.get("note", ""),
+                sort=_next_sort(s),
             ))
             created += 1
         # 已存在的官方行顺手对齐（幂等）：官方身份只由后端判定；base_url / icon 空着就补
@@ -111,12 +206,16 @@ def ensure_providers() -> int:
                 row.icon = str(meta["icon"])
         # 多模态厂商折叠进百炼（幂等；启动时经 ensure_keys → 这里跑到）
         folded = _fold_into_dashscope(s)
+        # 默认展示顺序回填（幂等；只对"从没排过"的库生效）
+        sorted_ids = _backfill_sort(s)
         s.commit()
     if any(folded.values()):
         log.info("折叠多模态厂商 → %s：模型 %s / 密钥 %s / 删行 %s",
                  FOLD_TARGET, folded["models"], folded["keys"], folded["providers"])
     if created:
         log.info("provider 回填：新建 %s 条", created)
+    if sorted_ids:
+        log.info("目录顺序回填：%s 家", len(sorted_ids))
     return created
 
 
@@ -185,9 +284,11 @@ def _fold_into_dashscope(s) -> dict:
 
 
 def list_providers() -> list[dict]:
+    """全部提供方，按展示顺序（sort 升序，同 sort 按 id 稳定）。"""
     ensure_providers()
     with session_scope() as s:
-        rows = s.query(ModelProvider).order_by(ModelProvider.id).all()
+        rows = s.query(ModelProvider).all()
+        rows.sort(key=lambda r: (int(r.sort or 0), r.id))
         return [_to_dict(r) for r in rows]
 
 
@@ -229,6 +330,8 @@ def upsert(payload: dict) -> dict:
                 auth=auth,
                 secret_ref=str(payload.get("secret_ref") or "") or None,
                 note=str(payload.get("note") or meta.get("note", "")),
+                # 新建的家排到最后（0 = 没排过，给 0 会插队到第一位）
+                sort=_next_sort(s),
             )
             s.add(row)
         else:

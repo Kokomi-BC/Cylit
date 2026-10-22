@@ -80,6 +80,8 @@ async def list_providers(request: Request):
         item["key_count"] = int(info.get("key_count") or 0)
         item["default_key_id"] = info.get("default_key_id") or ""
         item["default_key_label"] = info.get("default_key_label") or ""
+        # 展示顺序：官方目录里还没入库的家沿用 0（= 没排过），入库后就是用户拖出来的值
+        item["sort"] = int(db.get("sort") or 0)
         return item
 
     for item in data["providers"]:
@@ -90,7 +92,30 @@ async def list_providers(request: Request):
         row["configured"] = counts.get(row["id"], 0)
         row["types"] = []
         data["providers"].append(_decorate(row))
+    # 数组按 sort 升序（同 sort 按 id 稳定）；自定义入口是单独的 custom 键，仍排在最后
+    data["providers"].sort(key=lambda p: (p["sort"], p["id"]))
     return envelope(data, request=request)
+
+
+
+
+@router.put("/models/providers/order")
+async def reorder_providers(request: Request, payload: dict = Body(default={})):
+    """按数组下标重排提供方目录（模型页拖拽）。
+
+    body：`{"ids": ["deepseek", "anthropic", "openai", ...]}`——
+    下标即新的 sort（0..n-1）；没提到的提供方保持相对顺序、排在后面（补 1000+i）。
+    未知 id → 400 并点名是哪个；同样的 body 调两次结果一样（幂等）。
+    """
+    from backend.services.model import provider_store
+
+    ids = payload.get("ids")
+    if not isinstance(ids, list):
+        from backend.core.errors import ValidationError
+
+        raise ValidationError("ids 必须是提供方 id 数组")
+    rows = provider_store.set_order(ids)
+    return envelope({"items": rows}, message="提供方顺序已保存", request=request)
 
 
 @router.post("/models/providers")

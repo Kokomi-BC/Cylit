@@ -98,6 +98,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 默认值必须给：老模型一律 `auto`（= 改造前的行为），provider_key_id 保持 NULL。
     ("model_config", "key_mode", "`key_mode` VARCHAR(8) NOT NULL DEFAULT 'auto'"),
     ("model_config", "provider_key_id", "`provider_key_id` VARCHAR(64) NULL"),
+    # 提供方目录的展示顺序（用户可拖拽）：`model_provider` 早就在线上库里了，
+    # `create_all` 不会补列 —— 不补这条，读提供方会报 Unknown column 'model_provider.sort'。
+    # 默认 0 = "还没排过"，第一次启动由 provider_store 的默认回填写成正式顺序。
+    ("model_provider", "sort", "`sort` INT NOT NULL DEFAULT 0"),
 )
 
 
