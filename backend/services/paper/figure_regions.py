@@ -257,6 +257,87 @@ def _number_of(text: str) -> str:
     return m.group(1) if m else ""
 
 
+#: 一条图注被拆成多块时，块与块之间的最大间隔（pt）—— 超过它就不是"这一串图注"了
+CAPTION_CHAIN_GAP = 18.0
+#: 图注的续行只能这样起头（小写字母 / 数字 / 标点）。大写开头的是另一段正文
+_CONTINUES_CAPTION = re.compile(r"^[a-z0-9(\[\-—,;:.]")
+#: 另一张图/表的题注（续行到它为止）
+_CAPTION_HEAD = re.compile(r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|Table|图|表)\s*\d",
+                           re.IGNORECASE)
+
+
+def _ends_sentence(text: str) -> bool:
+    """这句话已经收尾了吗（图注的续行不会以句末标点结尾）。"""
+    s = (text or "").strip()
+    return bool(s) and s[-1] in ".。！？!?…"
+
+
+def _caption_lines(block: dict | None) -> list[str]:
+    """块文本按行切开、逐行压成单行空白（图的 alt 里不能带换行）。"""
+    raw = str((block or {}).get("text_clean") or (block or {}).get("text") or "")
+    return [ln for ln in (" ".join(x.split()) for x in raw.splitlines()) if ln]
+
+
+def _caption_text(block_order: list[dict], row: dict, cap_block: dict | None) -> str:
+    """图表记录的**完整**图注：记录里存的那条天生只有**首行**。
+
+    ⚠️ 解析层把"以 Figure/Table N 开头的那一行"强制独立成块
+    （见 parsing.extract.text_layer.group_lines_into_blocks 的 caption_break），
+    而 FigureBlock.caption / TableBlock.caption 是在那一步**之前**按单个原始块取的
+    （见 structure.figure_cut._caption_anchor）—— 续行因此进不了记录：实测 turboquant p9
+    的表 1 只存下 "… compression methods on"，"Llama-3.1-8B-Instruct." 丢了，
+    figure_list / 侧栏 / 卡片 alt 全是半句话。
+
+    续行并没有丢：段落层把图注那几行又并回了**同一个块**（block.text 是多行的）。
+    所以这里在读时把整段图注还原出来 —— 先取图注块自己到句末为止的那几行，再续接紧随
+    其后、同栏、且以续行方式起头的普通块。**不回填 IR**：旧论文重解析才会有新产物，
+    而这条逻辑每次读都按现有行集合拼，天然一致。
+    """
+    text = " ".join(str(row.get("caption") or "").split())
+    lines = _caption_lines(cap_block)
+    if lines and text and " ".join(lines).startswith(text):
+        joined = ""
+        for line in lines:                 # 块里的续行：遇到句末标点就停（别吞后面的正文）
+            joined = f"{joined} {line}".strip()
+            if len(joined) > len(text) and _ends_sentence(line):
+                break
+        if len(joined) > len(text):
+            text = joined
+    if not text or _ends_sentence(text) or cap_block is None:
+        return text
+    # 续行落在**后面的普通块**里（图注被切成 caption 行 + 若干 para 行时）
+    col = _rect_of(cap_block)
+    last = col.y1
+    for b in block_order:
+        rect = _rect_of(b)
+        if rect.y0 <= last + 0.5 or str(b.get("id") or "") == str(cap_block.get("id") or ""):
+            continue
+        if (b.get("type") or "") in ("figure", "table", "formula", "heading"):
+            break                          # 图体/表体/公式/标题都不是图注
+        # 与 caption_rects 同口径：不比本栏宽多少、不越出本栏、间隔不过大
+        if rect.width > col.width + 20.0:
+            break
+        if rect.x0 < col.x0 - 6.0 or rect.x1 > col.x1 + 6.0:
+            break
+        if rect.y0 - last > CAPTION_CHAIN_GAP:
+            break
+        lines = _caption_lines(b)
+        # ⚠️ 判"是不是续行"而不是"离得近不近"：实测 DAMMFND p1 图 1 的图注后面紧跟着
+        # 整段摘要（"In this section, …"），只按距离续会挂 10 块正文上去。
+        if not lines or _CAPTION_HEAD.match(lines[0]) \
+                or not _CONTINUES_CAPTION.match(lines[0]):
+            break
+        for line in lines:
+            text = f"{text} {line}".strip()
+            if _ends_sentence(line):
+                break
+        else:
+            last = rect.y1
+            continue
+        break
+    return text
+
+
 def _tighten(bbox: list[float], caption: dict | None, structs: list[dict],
              page_bottom: float, *, below: bool) -> list[float]:
     """把插图 bbox 收到"图注"边上（图）或"题注 + 结构分隔"之间（表）。
@@ -681,6 +762,7 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
         if not blocks:
             continue
         rect = page_rect(page_no)
+        block_order = sorted(blocks, key=lambda b: (_num(b.get("y0")), _num(b.get("x0"))))
         by_id = {b["id"]: b for b in blocks}
         structs = sorted([b for b in blocks
                           if (b.get("type") or "") in STRUCT_TYPES],
@@ -701,8 +783,11 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                                 .strip().startswith(head)), None)
             raw = _bbox(row)
             below = row["_kind"] == "figure"
-            cap_text = str(row.get("caption") or (caption or {}).get("text_clean") or "").strip()
-            number = _number_of(cap_text)
+            # 记录里的 caption 只有首行（见 _caption_text）：读时按行集合补回续行
+            cap_text = _caption_text(block_order, row, caption)
+            # 图号仍只从**记录里那条**（首行）取：续行里出现的 "Figure 2" 是正文引用，
+            # 拿它当本区域的图号会让页内/跨页去重认错人。
+            number = _number_of(str(row.get("caption") or cap_text))
             cap_id = row.get("caption_block_id") or (caption or {}).get("id") or None
             scan = _has_precise_bbox(row)
             if scan:
@@ -999,14 +1084,6 @@ def caption_rects(paper_id: str, page_no: int, region: dict) -> list[Rect]:
         head = re.match(r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})",
                         text or "", re.IGNORECASE)
         return bool(head) and head.group(1) == number
-
-    #: 同一个图注被拆成多块时，块与块之间的最大间隔（pt）—— 超过它就不是"这一串图注"了
-    CAPTION_CHAIN_GAP = 18.0
-
-    def _ends_sentence(text: str) -> bool:
-        """这句话已经收尾了吗（图注的续行不会以句末标点结尾）。"""
-        s = (text or "").strip()
-        return bool(s) and s[-1] in ".。！？!?…"
 
     cand: list[tuple[str, Rect, str]] = []
     for b in ir.blocks():

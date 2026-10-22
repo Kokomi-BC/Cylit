@@ -24,6 +24,8 @@ from backend.services.paper import anchor_map, paper_service, reader_service
 PAGES_MAX = 30
 #: 检索片段给模型看的长度
 SNIPPET_CHARS = 400
+#: 图注给模型看的长度上限：拼接后的完整图注最长约 700 字符，400 太重（会把句子截在半句）
+CAPTION_CHARS = 800
 
 _PAGES_RE = re.compile(r"^\s*(?P<a>\d+)\s*(?:[-~–]\s*(?P<b>\d+))?\s*$")
 
@@ -523,7 +525,9 @@ def figures(paper_id: str, page: int | None = None) -> dict:
             "index": index,
             "kind": str(item.get("kind") or "figure"),
             "number": item.get("number") or "",
-            "caption": _clip(item.get("caption") or "", 400),
+            # 图注上限 800：读时**拼接**后完整图注实测最长约 700 字符，400 会把句子截在
+            # 半句（14/138 条中招）；800 是给将来略长的图注留的余量，超过仍然截断。
+            "caption": _clip(item.get("caption") or "", CAPTION_CHARS),
             "url": item.get("url") or "",
             "card_url": item.get("card_url") or "",
             "part": item.get("part"), "parts": item.get("parts"),

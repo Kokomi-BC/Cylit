@@ -299,29 +299,80 @@ def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
     必须字节级稳定（改了就把翻译的缓存前缀打掉）。这里是问答用的，可以带大纲、可以有更多字段。
     两个用途挤进一个函数，早晚会因为"问答想加点东西"而破坏翻译的缓存命中。
     """
-    lines: list[str] = ["【论文档案（本轮的背景材料）】"]
+    total = max(int(cfg_chars or 0), 400)
+    #: **章节结构有自己的预算**：它是最先被需要的那一段（`summarize-paper` 第 1 步就靠它），
+    #: 以前却渲染在最后、被 brief 的长字段挤到截断线外 —— 实测 24 条大纲一条都没出现，
+    #: 而模型那边看到的就是"这份档案没有章节结构"。结构最多占 1/3 且不超过 2000 字符，
+    #: 24 条按现在的缩进格式只有几百字符，稳落得下。
+    struct_chars = min(2000, total // 3)
+
+    head: list[str] = ["【论文档案（本轮的背景材料）】"]
     if title:
-        lines.append(f"标题：{title}")
+        head.append(f"标题：{title}")
     if page_total:
-        lines.append(f"篇幅：共 {page_total} 页")
+        head.append(f"篇幅：共 {page_total} 页")
+
+    nodes = [node for node in (outline or []) if str((node or {}).get("title") or "").strip()]
+    struct = ""
+    if nodes:
+        struct = "\n".join(
+            ["章节结构："]
+            + [f"  {'  ' * (int(node.get('level', 1) or 1) - 1)}- {node['title']}"
+               for node in nodes[:40]])
+        if len(struct) > struct_chars:      # 大纲本身异常长：截在预算内，但明说是"结构被截"
+            struct = struct[:struct_chars] + "\n  …（章节结构过长已截断）"
+
+    fixed = "\n".join(head)
+    if struct:
+        fixed = f"{fixed}\n{struct}"
+
+    #: 后面的字段都是"有就用、没有就算了"，共用剩下的预算；**整块**放不下就停，
+    #: 不做半行截断（半句定义比没有更误导）。截了才补结尾那句标记。
+    rest_budget = max(total - len(fixed), 0)
+    used = 0
+    rest: list[str] = []
+    truncated = False
+
+    def emit(block: str) -> bool:
+        nonlocal used, truncated
+        if not block:
+            return True
+        cost = len(block) + 1
+        if used + cost > rest_budget:
+            truncated = True
+            return False
+        rest.append(block)
+        used += cost
+        return True
+
+    stopped = False
+
+    def keep(block: str) -> None:
+        """可选字段：一块放不下就**停在这里**（后面的更不重要，硬塞半句更误导）。"""
+        nonlocal stopped
+        if stopped:
+            return
+        if not emit(block):
+            stopped = True
+
     if brief.get("domain"):
-        lines.append(f"领域与核心方法：{brief['domain']}")
+        keep(f"领域与核心方法：{brief['domain']}")
     claims = [str(x).strip() for x in (brief.get("key_claims") or []) if str(x).strip()]
     if claims:
-        lines.append("主要论断：")
-        lines.extend(f"  - {c}" for c in claims[:6])
+        keep("主要论断：\n" + "\n".join(f"  - {c}" for c in claims[:6]))
     glossary = brief.get("glossary") or {}
     if glossary:
-        items = "；".join(f"{en}→{zh}" for en, zh in list(glossary.items())[:16])
-        lines.append(f"统一译法：{items}")
+        keep("统一译法：" + "；".join(f"{en}→{zh}"
+                                     for en, zh in list(glossary.items())[:16]))
     if brief.get("keep_as_is"):
-        lines.append(f"保持英文不译：{'、'.join(list(brief['keep_as_is'])[:16])}")
-    if outline:
-        lines.append("章节结构：")
-        lines.extend(f"  {'  ' * int(node.get('level', 1) - 1)}- {node.get('title')}"
-                     for node in outline[:40] if node.get("title"))
-    text = "\n".join(lines)
-    return text[:cfg_chars] + ("\n…（档案过长已截断）" if len(text) > cfg_chars else "")
+        keep("保持英文不译：" + "、".join(list(brief["keep_as_is"])[:16]))
+    return _finish(fixed, rest, truncated)
+
+
+def _finish(fixed: str, rest: list[str], truncated: bool) -> str:
+    text = "\n".join([fixed, *rest]) if rest else fixed
+    # 标记只在**可选字段真被截**时加：否则模型会以为"章节结构也被切了"
+    return text + ("\n…（档案过长已截断）" if truncated else "")
 
 
 # --------------------------------------------------------------------------

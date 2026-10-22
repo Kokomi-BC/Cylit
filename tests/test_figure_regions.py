@@ -13,8 +13,8 @@ import pytest
 
 from backend.services.paper import figure_regions as fr
 from backend.services.paper.figure_regions import (
-    SEP_PAD, _clamp_bottom_above_caption, _number_of, _parts_of, _snap_edges, _tighten,
-    inject_images,
+    SEP_PAD, _caption_text, _clamp_bottom_above_caption, _number_of, _parts_of, _snap_edges,
+    _tighten, inject_images,
 )
 from backend.parsing.extract.render import ink_bbox
 from backend.parsing.models import Rect
@@ -402,3 +402,81 @@ def test_clamp_bottom_only_trusts_a_caption_below_the_body():
     assert out[:3] == overrun[:3]
     # ④ 题注紧贴图体顶边（不足 MIN_HEIGHT）时同样不动它（防抖）
     assert _clamp_bottom_above_caption(overrun, 650.0) == overrun
+
+
+# --------------------------------------------------------------------------
+# 图注文本：记录里那条**只有首行**，续行在读时按行集合补回（见 _caption_text）
+# 真实故障（turboquant p9 表 1）：/agent/papers/<id>/figures?page=9 返回
+#   "Table 1: LongBench-V1 Bai et al. (2023) results of various KV cache compression methods on"
+# 后面那句 "Llama-3.1-8B-Instruct."（以及各图表普遍丢掉的续行）都被切掉了。
+# 成因在解析层：`text_layer.group_lines_into_blocks` 把"以图号开头的那一行"强制独立成块，
+# `figure_cut._caption_anchor` 只看得见那块 → FigureBlock/TableBlock.caption 天生半句。
+# --------------------------------------------------------------------------
+
+
+def _blk(bid, type_, box, text):
+    return {"id": bid, "type": type_, "x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3],
+            "text": text}
+
+
+def test_caption_text_restores_lines_merged_back_into_the_caption_block():
+    """p9 表 1：续行被段落层并回了同一个图注块 → 整句补回来。"""
+    box = [108.0, 232.71, 504.0, 253.88]
+    cap = _blk("b18", "caption", box,
+               "Table 1: LongBench-V1 Bai et al. (2023) results of various KV cache "
+               "compression methods on\nLlama-3.1-8B-Instruct.")
+    row = {"caption": "Table 1: LongBench-V1 Bai et al. (2023) results of various KV cache "
+                      "compression methods on", "caption_block_id": "b18"}
+    assert _caption_text([cap], row, cap) == (
+        "Table 1: LongBench-V1 Bai et al. (2023) results of various KV cache compression "
+        "methods on Llama-3.1-8B-Instruct.")
+
+
+def test_caption_text_does_not_append_the_body_paragraph_below_the_caption():
+    """图注后面紧跟正文段时**不许**续（DAMMFND p1 的翻版：按距离续会挂上整段摘要）。"""
+    cap = _blk("b12", "caption", [121.08, 531.18, 475.13, 541.14],
+               "Figure 1: Distribution of Inner Product error for TURBOQUANT\nand TURBOQUANT")
+    body = _blk("b13", "para", [108.0, 553.77, 504.0, 585.65],
+                "In this section, we validate the theoretical results using experiments on the "
+                "DBpedia Entities dataset.")
+    row = {"caption": "Figure 1: Distribution of Inner Product error for TURBOQUANT"}
+    out = _caption_text([cap, body], row, cap)
+    assert out == ("Figure 1: Distribution of Inner Product error for TURBOQUANT "
+                   "and TURBOQUANT")
+
+
+def test_caption_text_stops_at_a_finished_caption_even_if_lowercase_follows():
+    """图注已经收尾（句末标点）就到此为止 —— 不因为下面那段是小写起头就续。"""
+    cap = _blk("c", "caption", [108.0, 500.0, 504.0, 510.0],
+               "Figure 4: Recall comparison on different datasets.")
+    body = _blk("n", "para", [108.0, 512.0, 504.0, 522.0],
+                "the remaining settings are reported in Appendix C.")
+    row = {"caption": "Figure 4: Recall comparison on different datasets."}
+    assert _caption_text([cap, body], row, cap) == row["caption"]
+
+
+def test_caption_text_joins_a_following_block_that_reads_as_a_continuation():
+    """续行落在**另一块**里（图注被切成 caption 行 + para 行）时按行续上。"""
+    cap = _blk("c", "caption", [108.0, 500.0, 504.0, 510.0],
+               "Figure 2: Recall of the proposed index at 2.5 bits on")
+    nxt = _blk("n", "para", [108.0, 512.0, 504.0, 522.0],
+               "the GloVe dataset with 200 dimensions.")
+    row = {"caption": "Figure 2: Recall of the proposed index at 2.5 bits on"}
+    assert _caption_text([cap, nxt], row, cap) == (
+        "Figure 2: Recall of the proposed index at 2.5 bits on the GloVe dataset with "
+        "200 dimensions.")
+
+
+def test_caption_text_needs_a_lowercase_continuation_to_extend():
+    """同栏、贴得够近，但下一块以大写起头（另一段话）→ 不续。"""
+    cap = _blk("c", "caption", [108.0, 500.0, 504.0, 510.0],
+               "Figure 2: Recall of the proposed index at 2.5 bits on")
+    nxt = _blk("n", "para", [108.0, 512.0, 504.0, 522.0],
+               "We report the numbers on the GloVe dataset.")
+    row = {"caption": "Figure 2: Recall of the proposed index at 2.5 bits on"}
+    assert _caption_text([cap, nxt], row, cap) == row["caption"]
+
+
+def test_caption_text_falls_back_to_the_record_caption_without_a_caption_block():
+    row = {"caption": "Table 2: Results on the ablation"}
+    assert _caption_text([], row, None) == "Table 2: Results on the ablation"

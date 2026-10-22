@@ -214,3 +214,64 @@ def test_user_prompt_puts_notes_before_the_question() -> None:
         _deps(first_turn=True, abstract_zh="本文提出 TurboQuant。")))
     assert first.startswith("【论文摘要")
     assert first.endswith("【用户这一轮的问题】\n这篇讲了什么？")
+
+# --------------------------------------------------------------------------
+# 档案渲染：**章节结构先出现**，且不被 brief 的长字段挤掉
+#
+# 线上实测（2026-12）：archive 接口的 outline 有 24 条，agent 读到的档案里「章节结构」
+# 却是空的 —— 它当时渲染在最后，brief 的「主要论断 / 统一译法（16 条）」把 6000 字预算
+# 吃光，整段被 \`text[:cfg_chars]\` 一刀切掉。而 summarize-paper 第 1 步恰恰依赖它。
+# --------------------------------------------------------------------------
+
+_FAT_BRIEF = {
+    "domain": "向量量化与 KV cache 压缩",
+    "key_claims": ["论断" + "很长的说明" * 12] * 6,
+    "glossary": {f"term-{i}": f"译法{i}" for i in range(16)},
+    "keep_as_is": [f"KEEP{i}" for i in range(16)],
+}
+_OUTLINE = [{"level": 1, "title": "Introduction"},
+            {"level": 2, "title": "Method"},
+            {"level": 2, "title": "Experiments"},
+            {"level": 1, "title": "Conclusion"}]
+
+
+def _archive(budget: int = 6000, *, brief=None, outline=None) -> str:
+    return prompts.archive_block(budget,
+                                 _FAT_BRIEF if brief is None else brief,
+                                 _OUTLINE if outline is None else outline,
+                                 title="TurboQuant", page_total=22)
+
+
+def test_archive_keeps_the_structure_even_when_the_brief_is_fat() -> None:
+    """brief 塞满 key_claims / glossary 时，章节结构**仍然完整出现**（它排在最前面）。"""
+    text = _archive()
+    assert "章节结构：" in text
+    for node in _OUTLINE:
+        assert node["title"] in text
+    # 结构必须在可选的 brief 字段之前 —— 否则又会被挤到截断线外
+    assert text.index("章节结构：") < text.index("主要论断：")
+    assert text.index("章节结构：") < text.index("统一译法：")
+
+
+def test_archive_omits_the_heading_when_there_is_no_outline() -> None:
+    text = _archive(outline=[])
+    assert "章节结构" not in text
+    assert "标题：TurboQuant" in text
+
+
+def test_archive_marks_truncation_but_the_structure_survives() -> None:
+    """预算不够时：结尾带截断标记、结构一条不少、可选字段整块停掉（不留半句）。"""
+    small = _archive(budget=600)
+    assert small.endswith("…（档案过长已截断）")
+    for node in _OUTLINE:
+        assert node["title"] in small
+    # 大纲永远在，被牺牲的是后面的长字段
+    assert small.index("章节结构：") < small.index("领域与核心方法")
+
+
+def test_archive_without_truncation_has_no_marker() -> None:
+    """没被截就别加标记：加了模型会以为结构也被切了。"""
+    text = _archive(budget=6000, brief={"domain": "量化"},
+                    outline=[{"level": 1, "title": "Introduction"}])
+    assert "已截断" not in text
+    assert "章节结构：\n  - Introduction" in text
