@@ -92,6 +92,12 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 给了默认值就变成三态（NULL / 空串 / 真 id），每次判未分类都要多写一个分支。
     # 新表 `paper_folder` 由 `create_all` 建，只有这个后加的列要走这里。
     ("paper", "folder_id", "`folder_id` VARCHAR(32) NULL"),
+    # 「模型用哪把密钥」（改造计划 A 阶段）：`create_all` 不会给既有表补列，而
+    # `model_config` 早就在线上库里了 —— 不补这两列，读模型配置会直接报
+    # "Unknown column 'model_config.key_mode'"，整条模型链断掉。
+    # 默认值必须给：老模型一律 `auto`（= 改造前的行为），provider_key_id 保持 NULL。
+    ("model_config", "key_mode", "`key_mode` VARCHAR(8) NOT NULL DEFAULT 'auto'"),
+    ("model_config", "provider_key_id", "`provider_key_id` VARCHAR(64) NULL"),
 )
 
 

@@ -39,11 +39,14 @@ def _meta_for(provider: str) -> dict:
 
 
 def _to_dict(row: ModelProvider) -> dict:
+    # 图标回落：历史行的 icon 是空串（例如线上 dashscope_multimodal），
+    # 目录里已经给它登记了图标键 —— 读的时候补上，不必回头改数据。
+    meta = _meta_for(row.id)
     return {
         "id": row.id,
         "kind": row.kind,
         "label": row.label,
-        "icon": row.icon or "",
+        "icon": row.icon or meta.get("icon", DEFAULT_ICON),
         "base_url": row.base_url or "",
         "auth": row.auth or "bearer",
         "note": row.note or "",

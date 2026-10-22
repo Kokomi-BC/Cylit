@@ -62,6 +62,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         log.error("数据库初始化失败：%s", exc)
 
+    # 提供方 / 密钥迁移：把老库里散落的密钥文件名归到 provider 名下（幂等，只建不改）。
+    # 必须在 init_db 之后跑（新表就是它建出来的）；失败只记日志 —— 迁移没跑通时
+    # 解析链会退回 legacy 回落，模型照样能用，不该连累后端起不来。
+    from backend.services.model import key_store
+
+    try:
+        migrated = key_store.ensure_keys()
+        log.info("模型密钥迁移：%s", migrated)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("模型密钥迁移失败（忽略，解析链会走历史回落）：%s", exc)
+
     from backend.services.task.handlers import register_all
     from backend.services.task.task_service import task_runner
 

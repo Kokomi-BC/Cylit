@@ -83,7 +83,9 @@ def test_provider_catalog_shape_and_no_secret_leak(monkeypatch):
     ])
     data = providers_catalog.catalog()
     ids = [p["id"] for p in data["providers"]]
-    assert ids == ["deepseek", "ollama"]
+    # ollama 在 PROVIDER_META 里已标 hidden（没有品牌图标 → 前端只会画个空白方块），
+    # 目录按用户口径跳过它 —— 所以这里只剩 deepseek。
+    assert ids == ["deepseek"]
     deep = next(p for p in data["providers"] if p["id"] == "deepseek")
     assert deep["kind"] == "official"
     assert deep["icon"] == "deepseek"

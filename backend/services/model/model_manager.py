@@ -9,7 +9,6 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 
-from backend.core.config import get_settings
 from backend.core.errors import (
     ModelNotConfiguredError, ProviderError, ValidationError,
 )
@@ -20,6 +19,7 @@ from backend.providers.factory import (
     build_embedding_provider, build_generation_provider, build_reranker_provider,
 )
 from backend.providers.generation.mock import MockEmbedding, MockGeneration
+from backend.services.model import secret_resolver
 
 log = get_logger(__name__)
 
@@ -131,6 +131,10 @@ class ModelManager:
             "parameters": json_loads(row.parameters_json, {}) or {},
             "secret_ref": row.secret_ref, "enabled": bool(row.enabled),
             "is_default": bool(row.is_default), "status": row.status,
+            # 用哪把密钥：**只存选择**（模式 + 行 id），绝不缓存密钥内容或文件名快照 ——
+            # 提供方默认密钥一变，跟随默认的模型下次调用就必须跟着变。
+            "key_mode": getattr(row, "key_mode", None) or "auto",
+            "provider_key_id": getattr(row, "provider_key_id", None),
         }
 
     def list_configs(self, model_type: str | None = None) -> list[dict]:
@@ -166,23 +170,29 @@ class ModelManager:
     # 实例化与缓存
     # ------------------------------------------------------------------
     def _cache_key(self, cfg: dict) -> str:
-        return f"{cfg.get('id')}|{cfg.get('provider')}|{cfg.get('model_name')}"
+        """缓存键：模型身份 + **密钥指纹**。
+
+        密钥指纹（`secret_resolver.cache_token`）只有"哪一行 / 更新时间"，没有内容：
+        密钥行换了文件内容或换了默认，指纹就变，旧 Provider（揣着旧密钥）自然不再命中 ——
+        这是"改了密钥却还是 401"的根治办法（见验收「缓存键现在不带密钥」）。
+        """
+        return (f"{cfg.get('id')}|{cfg.get('provider')}|{cfg.get('model_name')}"
+                f"|{cfg.get('key_mode') or 'auto'}:{cfg.get('provider_key_id') or ''}"
+                f"|{secret_resolver.cache_token(cfg)}")
 
     def _api_key(self, cfg: dict) -> str | None:
-        ref = cfg.get("secret_ref")
-        if not ref:
-            return None
-        s = get_settings()
-        key = s.read_secret(ref)
-        if key is None:
-            key = s.read_secret(cfg.get("id") or "")
-        return key
+        """模型实际用的密钥 —— **统一走 `secret_resolver`**（唯一一套解析逻辑）。"""
+        return secret_resolver.resolve_for_model(cfg)[0]
+
+    def key_source(self, cfg: dict) -> dict:
+        """密钥来源（给接口显示"这把密钥哪来的、还灵不灵"），不含明文。"""
+        return secret_resolver.describe(cfg)
 
     def resolve_secret(self, cfg: dict) -> str | None:
         """公开的密钥解析入口（agent 服务经 HTTP 拿配置时要用，见 `services/agent/model_config`）。
 
-        ``secret_ref`` 优先，回落配置 id —— 这个顺序是历史约定（老配置只用 id 当文件名），
-        对外暴露时必须与 `_api_key` 完全一致，否则会出现"设置页测通了、agent 却说没密钥"。
+        与 `_api_key` 是**同一个函数**（都只是 `secret_resolver.resolve_for_model` 的别名），
+        否则会出现"设置页测通了、agent 却说没密钥"。
         """
         return self._api_key(cfg)
 
@@ -267,19 +277,57 @@ class ModelManager:
     # ------------------------------------------------------------------
     # 能力探测
     # ------------------------------------------------------------------
-    def test(self, model_id: str, persist: bool = True) -> dict:
+    def test(self, model_id: str, persist: bool = True,
+             key_id: str | None = None) -> dict:
+        """探测一次（真调用）。
+
+        ``key_id`` 是"换一把密钥试算"：只在**本次**探测里生效，**不落库、不改模型的
+        key_mode / provider_key_id**（用户只是想验证"换成这把还能不能用"）。
+        返回里带 ``key_id`` / ``key_label`` / ``key_status`` / ``failure``，
+        前端据此说清"用的是哪把、失败在哪一步"（认证 / 没有 /models / 超时 / 未配置密钥）。
+        """
         cfg = self.get_config(model_id)
+        probe = cfg
+        if key_id:
+            provider_of_model = str(cfg.get("provider") or "").strip().lower()
+            row = secret_resolver.key_row(key_id)
+            if row is None:
+                raise ValidationError(f"密钥不存在：{key_id}")
+            if row["provider_id"] != provider_of_model:
+                raise ValidationError(
+                    "这把密钥不属于该模型所在的提供方（不能跨家借密钥）。",
+                    detail={"key_provider": row["provider_id"],
+                            "model_provider": provider_of_model},
+                )
+            probe = {**cfg, "key_mode": "key", "provider_key_id": key_id}
+        api_key, source = secret_resolver.resolve_for_model(probe)
+        head = {"model_id": model_id, "key_id": source.get("key_id") or "",
+                "key_label": source.get("key_label") or "",
+                "key_status": source.get("status") or "missing"}
+        if head["key_status"] != "ok":
+            # 还没摸到网络就已经知道不行：别拿一个空 key 去撞 401（那会让人以为密钥错了）
+            detail = ("这把密钥的文件读不到了" if source.get("status") == "invalid"
+                      else "没有可用密钥（提供方没有默认密钥，模型也没单独选一把）")
+            head.update({"ok": False, "dimension": None, "latency_ms": None,
+                         "model_name": "", "detail": detail, "failure": "no_key"})
+            if persist and not key_id:
+                self._persist_status(cfg.get("id"),
+                                     ModelInfo(ok=False, detail=detail))
+            return head
         try:
             # 探测也是一次真调用（真花钱），同样落一条用量
-            provider = _with_usage(self._get(cfg))
+            provider = _with_usage(self._get(probe))
             info: ModelInfo = provider.test()  # type: ignore[attr-defined]
         except ProviderError as exc:
             info = ModelInfo(ok=False, detail=exc.message[:300])
         except Exception as exc:  # noqa: BLE001
             info = ModelInfo(ok=False, detail=f"{type(exc).__name__}: {str(exc)[:300]}")
-        if persist:
+        if persist and not key_id:
+            # 借密钥试算的结果不写回模型的 status：那一行说的是"按它自己的配置灵不灵"
             self._persist_status(cfg.get("id"), info)
-        return {"model_id": model_id, **info.to_dict()}
+        head.update(info.to_dict())
+        head["failure"] = _failure_of(info)
+        return head
 
     def _persist_status(self, model_id: str | None, info: ModelInfo) -> None:
         if not model_id:
@@ -337,14 +385,17 @@ class ModelManager:
         with session_scope() as sess:
             if sess.get(ModelConfig, model_id) is not None:
                 raise ValidationError(f"模型 id 已存在：{model_id}")
+            provider = payload.get("provider") or "openai_compatible"
+            key_mode, provider_key_id = _key_selection(payload, provider, cur=None)
             row = ModelConfig(
                 id=model_id, name=payload.get("name") or model_id,
-                provider=payload.get("provider") or "openai_compatible",
+                provider=provider,
                 model_type=mtype, model_name=payload.get("model_name"),
                 base_url=payload.get("base_url"), device=payload.get("device"),
                 parameters_json=_dumps(payload.get("parameters") or {}),
                 secret_ref=payload.get("secret_ref"), enabled=True,
                 is_default=False, status="unknown",
+                key_mode=key_mode, provider_key_id=provider_key_id,
             )
             sess.add(row)
             sess.flush()
@@ -368,6 +419,12 @@ class ModelManager:
                 row.parameters_json = _dumps(payload["parameters"])
             if "enabled" in payload and payload["enabled"] is not None:
                 row.enabled = bool(payload["enabled"])
+            # provider 变了也要重新校验：不然改到 B 家、密钥还指着 A 家的行 = 跨家借密钥
+            if ("key_mode" in payload or "provider_key_id" in payload
+                    or "provider" in payload):
+                key_mode, provider_key_id = _key_selection(payload, row.provider, cur=row)
+                row.key_mode = key_mode
+                row.provider_key_id = provider_key_id
             if payload.get("is_default"):
                 self._set_default(sess, model_id, row.model_type)
             sess.flush()
@@ -432,6 +489,61 @@ class ModelManager:
             except ModelNotConfiguredError:
                 out[t] = None
         return out
+
+
+def _failure_of(info: ModelInfo) -> str:
+    """把一次探测失败归成前端能显示的一类（成功给空串）。"""
+    if info.ok:
+        return ""
+    text = str(info.detail or "").lower()
+    if "401" in text or "403" in text or "认证" in text or "unauthor" in text:
+        return "auth"
+    if "404" in text or "not found" in text:
+        return "not_found"
+    if "超时" in text or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "连接" in text or "connect" in text:
+        return "network"
+    return "error"
+
+
+def _key_selection(payload: dict, provider: str | None,
+                   cur=None) -> tuple[str, str | None]:
+    """校验并归一化「模型用哪把密钥」（``key_mode`` + ``provider_key_id``）。
+
+    三条硬规则：
+
+    1. ``key_mode`` 只能是 auto / key / none；
+    2. 引用的密钥行必须**存在**（否则静默回落 = 悄悄换账号）；
+    3. 密钥行的 ``provider_id`` 必须等于模型自己的 provider —— **禁止跨家借密钥**
+       （把 A 家的 key 打到 B 家的 base_url 上，轻则 401，重则把 B 家的数据发给 A 家）。
+
+    只存"选择"，**不在这里写 secret_ref 快照**：提供方默认密钥一变，跟随默认的模型
+    下次调用必须立刻跟着变（解析在调用时实时做，见 `secret_resolver`）。
+    """
+    mode = payload.get("key_mode")
+    if mode is None:
+        mode = getattr(cur, "key_mode", None) or "auto"
+    mode = str(mode).strip().lower()
+    if mode not in secret_resolver.KEY_MODES:
+        raise ValidationError(f"key_mode 必须是 {secret_resolver.KEY_MODES}", detail={"key_mode": mode})
+    if "provider_key_id" in payload:
+        key_id = str(payload.get("provider_key_id") or "").strip() or None
+    else:
+        key_id = getattr(cur, "provider_key_id", None) or None
+    if key_id:
+        row = secret_resolver.key_row(key_id)
+        if row is None:
+            raise ValidationError(f"密钥不存在：{key_id}")
+        pid = str(provider or "").strip().lower()
+        if row["provider_id"] != pid:
+            raise ValidationError(
+                "这把密钥不属于该模型所在的提供方（不能跨家借密钥）。",
+                detail={"key_provider": row["provider_id"], "model_provider": pid},
+            )
+    if mode == "key" and not key_id:
+        raise ValidationError("key_mode=key 必须同时指定 provider_key_id（否则不知道用哪把）")
+    return mode, key_id
 
 
 def _dumps(obj) -> str:

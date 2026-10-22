@@ -11,9 +11,22 @@ from backend.services.model import model_service
 router = APIRouter(tags=["models"])
 
 
+def _with_key_source(items: list[dict]) -> list[dict]:
+    """给每行补「密钥来源」（``ok`` / ``missing`` / ``invalid``，前端据此标红）。
+
+    只有来源与状态，**没有明文、也没有 secret_ref** —— 密钥内容是后端的事。
+    """
+    from backend.services.model import secret_resolver
+
+    for item in items:
+        item["key_source"] = secret_resolver.describe(item)
+    return items
+
+
 @router.get("/models")
 async def list_models(request: Request, model_type: str | None = Query(None)):
-    return envelope({"items": model_service.list_models(model_type)}, request=request)
+    return envelope({"items": _with_key_source(model_service.list_models(model_type))},
+                    request=request)
 
 
 @router.get("/models/types")
@@ -51,19 +64,38 @@ async def list_providers(request: Request):
 
     `kind` 由后端按 `presets.py` 里真实存在的厂商算出来 —— 前端无法把自定义端点伪装成官方。
     """
-    from backend.services.model import provider_store, providers_catalog
+    from backend.services.model import key_store, provider_store, providers_catalog
 
     data = providers_catalog.catalog()
     # 官方目录来自 presets（后端唯一真源）；DB 里那些**自定义**家的记录补在后面，
     # 这样「+」既能挑官方厂商，也能看到/编辑自己建过的端点。
     official_ids = {p["id"] for p in data["providers"]}
     counts = provider_store.model_counts()
-    for row in provider_store.list_providers():
+    db_rows = {row["id"]: row for row in provider_store.list_providers()}
+    keys = key_store.provider_summary()
+
+    def _decorate(item: dict) -> dict:
+        """补「这家有几把密钥 / 默认是哪把 / 连得上吗」——不含任何密钥内容。"""
+        pid = item["id"]
+        db = db_rows.get(pid, {})
+        base_url = str(db.get("base_url") or item.get("base_url") or "").strip()
+        info = keys.get(pid, {})
+        item["base_url"] = base_url
+        item["has_base_url"] = bool(base_url)
+        item["status"] = db.get("status") or item.get("status") or "unknown"
+        item["key_count"] = int(info.get("key_count") or 0)
+        item["default_key_id"] = info.get("default_key_id") or ""
+        item["default_key_label"] = info.get("default_key_label") or ""
+        return item
+
+    for item in data["providers"]:
+        _decorate(item)
+    for row in db_rows.values():
         if row["id"] in official_ids:
             continue
         row["configured"] = counts.get(row["id"], 0)
         row["types"] = []
-        data["providers"].append(row)
+        data["providers"].append(_decorate(row))
     return envelope(data, request=request)
 
 
@@ -84,6 +116,105 @@ async def delete_provider(request: Request, provider_id: str):
     return envelope(provider_store.delete(provider_id), message="提供方已删除", request=request)
 
 
+# ---------------------------------------------------------------------------
+# 提供方级密钥（改造计划 A 阶段：一家可以有多把密钥，模型再挑一把）
+#
+# ⚠️ 与 /models/providers 同理：这些都必须声明在 /models/{model_id} **之前**，
+# 否则 "keys" 会被当成 model_id 捕获（返回"模型不存在：keys"）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/models/keys")
+async def list_keys(request: Request, unassigned: int = Query(0)):
+    """全部密钥；``?unassigned=1`` 只给「未归属待确认」那一组（迁移进来的散装文件）。
+
+    两个口径分开给：某家的列表在 ``GET /models/providers/{id}/keys``，
+    这一条是"跨家总览 + 未归属组"，前端「待认领」区就吃它。
+    """
+    from backend.services.model import key_store
+
+    if unassigned:
+        rows = key_store.list_keys(unassigned=True)
+        return envelope({"items": rows, "unassigned": len(rows)}, request=request)
+    return envelope({"items": key_store.list_keys()}, request=request)
+
+
+@router.get("/models/providers/{provider_id}/keys")
+async def list_provider_keys(provider_id: str, request: Request):
+    """这一家的密钥列表 + 「未归属」那一组（认领入口就在同一屏）。"""
+    from backend.services.model import key_store
+
+    return envelope({"items": key_store.list_keys(provider_id),
+                     "unassigned": key_store.list_keys(unassigned=True)},
+                    request=request)
+
+
+@router.post("/models/providers/{provider_id}/keys")
+async def create_provider_key(request: Request, provider_id: str,
+                              payload: dict = Body(default={})):
+    """新建一把密钥：``{label, api_key}``（明文落 data/secrets/）或 ``{label, secret_ref}``。
+
+    给 api_key 时后端生成文件名并写文件，**库里只存文件名**（不新增第二种存储）。
+    第一把自动成为默认（否则 auto 模式无密钥可用）。
+    """
+    from backend.services.model import key_store
+
+    row = key_store.create_key(provider_id, payload)
+    return envelope(row, message="密钥已添加", request=request)
+
+
+@router.put("/models/keys/{key_id}")
+async def update_key(key_id: str, request: Request, payload: dict = Body(default={})):
+    """改显示名 / 状态 / 是否默认；带 ``api_key`` 时**只改文件内容，不换文件名**（不破坏引用）。"""
+    from backend.services.model import key_store
+
+    return envelope(key_store.update_key(key_id, payload), message="密钥已更新",
+                    request=request)
+
+
+@router.delete("/models/keys/{key_id}")
+async def delete_key(key_id: str, request: Request,
+                     force_default: str | None = Query(None)):
+    """删一把密钥。
+
+    · 被模型引用 → 409（报数量与模型名，先去改模型）；
+    · 删默认密钥且还有别的 → 不自动指定，要求先手选；想一次做完给
+      ``?force_default=<key_id>``（同一事务里交接完再删）。
+    """
+    from backend.services.model import key_store
+
+    return envelope(key_store.delete_key(key_id, force_default=force_default),
+                    message="密钥已删除", request=request)
+
+
+@router.post("/models/keys/{key_id}/test")
+async def test_key(key_id: str, request: Request):
+    """用**这一把**密钥探该家的 ``GET {base_url}/models``，写回 status / last_tested_at。"""
+    from backend.services.model import key_store
+
+    return envelope(await key_store.test_key(key_id), request=request)
+
+
+@router.post("/models/providers/{provider_id}/test")
+async def test_provider(request: Request, provider_id: str,
+                        payload: dict = Body(default={})):
+    """用**这家的 base_url** 探一次 ``/models``（可带 ``{key_id}`` 指定用哪把，默认用默认密钥）。"""
+    from backend.services.model import key_store
+
+    key_id = str(payload.get("key_id") or "").strip() or None
+    return envelope(await key_store.test_provider(provider_id, key_id=key_id),
+                    request=request)
+
+
+@router.post("/models/providers/{provider_id}/keys/{key_id}/assign")
+async def assign_key(provider_id: str, key_id: str, request: Request):
+    """把「未归属密钥」认领到这家（迁移用，幂等）。"""
+    from backend.services.model import key_store
+
+    return envelope(key_store.assign_key(key_id, provider_id), message="密钥已归属该提供方",
+                    request=request)
+
+
 @router.post("/models/probe-models")
 async def probe_models(request: Request, payload: dict = Body(default={})):
     """拉取某个端点的模型列表（`GET {base}/models`）。
@@ -97,7 +228,9 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
     响应里**永远不回显**密钥。
     """
     from backend.core.errors import ValidationError
-    from backend.services.model import endpoint_guard, model_service, remote_models
+    from backend.services.model import (
+        endpoint_guard, model_service, remote_models, secret_resolver,
+    )
 
     model_id = str(payload.get("model_id") or "").strip()
     base_url = str(payload.get("base_url") or "").strip()
@@ -111,15 +244,13 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
             raise ValidationError("模型配置不存在")
         base_url = str(cfg.get("base_url") or "").strip()
         if not api_key:
-            ref = str(cfg.get("secret_ref") or secret_ref or "").strip()
-            if ref:
-                from backend.core.config import get_settings
-
-                api_key = get_settings().read_secret(ref)
+            # **统一解析器**：密钥从哪来只有一处决定（改造前这里自己又读了一遍文件，
+            # 于是"设置页测通了、调用链 401"这种事迟早发生）
+            api_key = secret_resolver.resolve_for_model(cfg)[0]
     elif secret_ref and not api_key:
-        from backend.core.config import get_settings
-
-        api_key = get_settings().read_secret(secret_ref)
+        # 没落库的自定义端点：借同一条解析链的"历史回落"读这个文件（不另写一套）
+        api_key = secret_resolver.resolve_for_model(
+            {"id": "", "secret_ref": secret_ref, "key_mode": "auto", "provider": ""})[0]
 
     if not base_url:
         raise ValidationError("请提供 Base URL（或传 model_id 用已保存的配置）")
@@ -195,9 +326,17 @@ async def delete_model(model_id: str, request: Request):
 
 
 @router.post("/models/{model_id}/test")
-async def test_model(model_id: str, request: Request):
-    """连通性 + 维度 + 延迟（规划 §12.2 能力探测）。"""
-    return envelope(model_service.test_model(model_id), request=request)
+async def test_model(model_id: str, request: Request, payload: dict = Body(default={})):
+    """连通性 + 维度 + 延迟（规划 §12.2 能力探测）。
+
+    可带 ``{key_id}`` **换一把密钥试算**：只在这次探测里生效，不写回模型的
+    key_mode / provider_key_id（也不写回模型的 status —— 那一行说的是"按它自己的配置灵不灵"）。
+    返回里 key_id / key_label 说明用的是哪把，failure 说明失败在哪一步
+    （``no_key`` 未配置密钥 / ``auth`` 401、403 / ``not_found`` 没有 /models /
+    ``timeout`` 超时 / ``network`` 连不上 / ``error`` 其它）。
+    """
+    key_id = str(payload.get("key_id") or "").strip() or None
+    return envelope(model_service.test_model(model_id, key_id=key_id), request=request)
 
 
 @router.put("/models/{model_id}/default")

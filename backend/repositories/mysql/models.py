@@ -451,6 +451,36 @@ class ModelProvider(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
+# ------------------------------------------------- ⑨¾ 提供方级密钥（多密钥）
+class ModelProviderKey(Base):
+    """一家提供方可以有多把密钥（**一条密钥一行**），模型再挑其中一把。
+
+    为什么要有这张表：原来「一家厂商 = 一把密钥」，两个账号 / 一个正式一个测试额度
+    就得分身成两家厂商，`model_config.provider` 也跟着散架。密钥的**明文永远不在库里**
+    —— 这里只存 `data/secrets/<secret_ref>` 的文件名（与 `POST /models/secret` 同一套存储），
+    列表接口只回 `••••` + 末 4 位（见 `key_store.mask`）。
+
+    `provider_id` 用**空串**表示“未归属待确认”：迁移时从 `data/secrets/` 捡到、但没有任何
+    模型或提供方引用它的文件会落在这一组，**绝不猜归属**（猜错 = 悄悄用错账号）。
+    """
+
+    __tablename__ = "model_provider_key"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: 指向 `model_provider.id`；空串 = 未归属（见类文档）
+    provider_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    label: Mapped[str] = mapped_column(String(128), default="")
+    #: `data/secrets/` 下的文件名（**不含路径**，也永远不返给前端）
+    secret_ref: Mapped[str] = mapped_column(String(128), default="")
+    #: 同一家提供方至多一条 True（切换时由 `key_store._set_default` 同一事务内互斥）
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: unknown | unverified | ok | error | missing
+    status: Mapped[str] = mapped_column(String(16), default="unknown")
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 # ---------------------------------------------------------------- ⑩ 模型配置
 class ModelConfig(Base):
     __tablename__ = "model_config"
@@ -464,6 +494,11 @@ class ModelConfig(Base):
     device: Mapped[str | None] = mapped_column(String(16))
     parameters_json: Mapped[str | None] = mapped_column(Text)
     secret_ref: Mapped[str | None] = mapped_column(String(128))
+    # 模型用哪把密钥（改造计划 A 阶段）：auto = 跟提供方默认密钥；key = 锁定
+    # `provider_key_id` 那一行；none = 不用密钥（本地模型 / 免密端点）。
+    # 只有 `auto` 才会走历史回落，老配置默认就是它 —— 行为与改造前一致。
+    key_mode: Mapped[str] = mapped_column(String(8), default="auto")
+    provider_key_id: Mapped[str | None] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), default="unknown")

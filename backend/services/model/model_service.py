@@ -32,8 +32,9 @@ def delete_model(model_id: str) -> dict:
     return {"deleted": model_id}
 
 
-def test_model(model_id: str) -> dict:
-    return model_manager.test(model_id)
+def test_model(model_id: str, key_id: str | None = None) -> dict:
+    # key_id = "换一把密钥试算"（不落库，见 model_manager.test）
+    return model_manager.test(model_id, key_id=key_id)
 
 
 def set_default(model_id: str) -> dict:
