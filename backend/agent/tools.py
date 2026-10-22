@@ -31,8 +31,9 @@ log = get_logger(__name__)
 
 #: 一次 `paper_search` 最多返回几条（模型爱传 top_k=10，宿主必须自己封顶）
 SEARCH_MAX = 12
-#: 一次批量改写最多多少处（页 × 侧）；再多就让模型分批，免得一次改动几十页没人看得住
-EDIT_BATCH_MAX = 24
+#: 一次批量改写最多多少处（页 × 侧）。定在 60：一篇 30 页的论文「全文两侧」正好装得下，
+#: 再多就要求分批（每次改动都会写进改动日志，几十页连改没人看得住）。
+EDIT_BATCH_MAX = 60
 
 #: 一次批量建高亮 / 笔记最多多少条
 ANNOTATE_BATCH_MAX = 24
@@ -1231,8 +1232,11 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int = 0, side
                             "error": f"side 只能是 original / translation / both，收到 {side!r}。"}
                 want_sides = [one]
             spec = str(pages or "").strip() or str(page or "")
-            want, _clipped = parse_pages(spec, total=ctx.deps.page_total,
-                                         limit=TEXT_PAGES_MAX)
+            #: 这里**不能**用 `TEXT_PAGES_MAX`（读正文的上限 20 页）：批量改写不往上下文里塞正文，
+            #: 按读正文的上限截会静默漏掉第 21 页往后（2026-12-07 实测：唯一的命中就在第 22 页，
+            #: 结果 `pages="all"` 根本没把它算进来）。
+            want, clipped = parse_pages(spec, total=ctx.deps.page_total,
+                                        limit=EDIT_BATCH_MAX)
             if not want:
                 return {"ok": False, "error": pages_error(spec, total=ctx.deps.page_total)}
             if len(want) * len(want_sides) > EDIT_BATCH_MAX:
@@ -1268,7 +1272,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int = 0, side
                 _forget_searches(ctx, "批量改写")
             total = len(want) * len(want_sides)
             out: dict = {"op": "replace_all", "pages": want, "sides": want_sides,
-                         "done": done, "skipped": skipped,
+                         "truncated": clipped, "done": done, "skipped": skipped,
                          "summary": f"{total} 处里改了 {len(done)} 处"
                                     + (f"，{len(skipped)} 处没动" if skipped else "")}
             out["ok"] = bool(done)

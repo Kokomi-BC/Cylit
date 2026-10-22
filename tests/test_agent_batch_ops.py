@@ -76,10 +76,22 @@ def test_replace_all_refuses_when_nothing_changed() -> None:
 
 
 def test_replace_all_caps_the_batch_size() -> None:
+    """60 处（页 × 侧）是上限：一篇 30 页的论文「全文两侧」正好装得下，再多要求分批。"""
     ctx = _ctx(_EditHost())
     out = asyncio.run(page_markdown_edit(ctx, op="replace_all", page=1, side="both",
-                                         pages="1-20", find=FIND, replace=REPLACE))
+                                         pages="1-40", find=FIND, replace=REPLACE))
     assert out["ok"] is False and "最多" in out["error"]
+
+
+def test_replace_all_does_not_truncate_pages_like_reading_does() -> None:
+    """读正文上限 20 页**不能**套在批量改写上：那会静默漏掉第 21 页往后。"""
+    ctx = _ctx(_EditHost())
+    ctx.deps.page_total = 22                      # 页数拿得到，`all` 才摊得开
+    for page in range(1, 23):
+        _read(ctx, page)
+    out = asyncio.run(page_markdown_edit(ctx, op="replace_all", page=1, side="original",
+                                         pages="all", find=FIND, replace=REPLACE))
+    assert out["truncated"] is False and 22 in out["pages"]
 
 
 def test_replace_all_rejects_unknown_side_and_empty_find() -> None:
