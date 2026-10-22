@@ -114,9 +114,13 @@ def test_items_come_out_in_document_order(fake_sources) -> None:
 class _FakeHost:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        #: 想换一份回执就设它（默认是下面那份"两来源"的固定数据）
+        self.payload: dict | None = None
 
     async def formulas(self, paper_id, *, page=None, query=None, include_inline=False):
         self.calls.append({"page": page, "include_inline": include_inline})
+        if self.payload is not None:
+            return self.payload
         return {"total": 2, "returned": 2, "source": "mixed", "truncated": False,
                 "display_total": 2, "inline_total": 3,
                 "items": [
@@ -187,6 +191,32 @@ def test_inline_hint_when_not_requested() -> None:
     assert "另有 3 条行内公式" in (out.get("hint") or "")
     assert out["inline_total"] == 3 and out["display_total"] == 2
 
+
+
+
+def test_two_formulas_sharing_a_prefix_get_distinct_refs() -> None:
+    """两条公式前 24 字符相同（第 4 页那对）→ 必须是**两个** ref，不能共用一个号。"""
+    import asyncio
+
+    from backend.agent import tools as agent_tools
+
+    prefix = "D_{\\text{prod}}(Q_{\\text{prod}})"
+    # 用例本身要保证"前 24 字符完全相同"这个前提成立（否则测不到撞键）
+    assert len(prefix) >= 24
+    host = _FakeHost()
+    host.payload = {"total": 2, "returned": 2, "source": "markdown", "truncated": False,
+                    "display_total": 2, "inline_total": 0, "omitted_inline": 0,
+                    "items": [
+                        {"page": 4, "row_id": "p004-01", "latex": prefix + " := E[…] \\leq b^{-1}",
+                         "display": True, "grade": None, "partial": False,
+                         "source": "markdown", "context": "", "context_zh": ""},
+                        {"page": 4, "row_id": "p004-01", "latex": prefix + " \\approx 1.57/d",
+                         "display": True, "grade": None, "partial": False,
+                         "source": "markdown", "context": "", "context_zh": ""},
+                    ]}
+    out = asyncio.run(agent_tools.formula_get(_Ctx(_Deps(host)), page=4))
+    refs = [item["ref"] for item in out["items"]]
+    assert len(set(refs)) == 2, f"两条不同公式不能共用一个 ref：{refs}"
 
 def test_no_inline_hint_when_include_inline_is_on() -> None:
     """③ 已经把行内要来了就不再提示（否则模型会以为还有没取的）。"""

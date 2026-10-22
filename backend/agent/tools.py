@@ -101,6 +101,15 @@ def _snippet_around(text: str, query: str, limit: int = SNIPPET_CHARS) -> str:
     return (head + body[start:end] + tail)[:limit]
 
 
+def _latex_key(latex: str) -> str:
+    """公式引用键用的短摘要（**不能只取前 N 个字符**）。
+
+    实测 2026-12-07（第 4 页）：两条公式都以 `D_{\\text{prod}}(Q_{\\text{prod}})` 开头，前 24 字符
+    一模一样 —— 键一撞，`RefRegistry.assign` 就把第二条当成"同一处证据"复用第一个 ref，
+    于是回执里出现两个 ``[7]``：一条是上界、一条是数值收紧，模型引用时分不清指哪条。
+    """
+    return hashlib.sha1(" ".join(str(latex or "").split()).encode("utf-8")).hexdigest()[:12]
+
 def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
     """这一页「图号 → 图注行的行 id」：引用要带行锚点，点 `[n]` 才闪得到那一行。
 
@@ -731,7 +740,7 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             latex = str(raw.get("latex") or "")
             page_no = int(raw.get("page") or 0) or None
             cit = ctx.deps.registry.assign(
-                key=f"formula:{page_no}:{raw.get('row_id')}:{latex[:24]}", kind="formula",
+                key=f"formula:{page_no}:{raw.get('row_id')}:{_latex_key(latex)}", kind="formula",
                 page=page_no, row_id=raw.get("row_id"), snippet=_clip(latex, 160),
                 label=_locate(page_no, None, "formula"),
                 ids=(f"f{page_no:03d}",) if page_no else ())

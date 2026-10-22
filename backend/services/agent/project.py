@@ -674,7 +674,12 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         "context": _clip(i.get("context") or "", 240),
         "context_zh": _clip(i.get("context_zh") or "", 240),
     } for i in kept]
-    sources = {one["source"] for one in out}
+    #: `source` 说的是"这一份列表**从哪来**"，所以要看**筛选后的全集**（`items`），
+    #: 而不是这次真正发出去的 `out`：第 8 页只有一条行内公式，默认（不要行内）时 `out` 是空的，
+    #: 以前就因此落到 else 分支报 `mixed` —— 明明一条解析卡都没有（实测 2026-12-07）。
+    sources = {one.get("source") for one in items}
+    if not sources:
+        sources = {"markdown"} if md_items else {"parse"}
     return {"paper_id": paper_id, "total": len(items), "returned": len(out),
             # 这一份列表**从哪来**：全解析卡 = parse（可信），全 markdown = markdown，
             # 两路混 = mixed。模型据此决定要不要再 page_markdown_get 复核
