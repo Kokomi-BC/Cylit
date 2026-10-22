@@ -68,6 +68,23 @@ const TYPE_ICON: Record<string, string> = {
 /** 卡片顺序：问答放第二（最常换），生成第一（别处功能都靠它兜底），其余按离正文的远近排 */
 const TYPE_ORDER = ['generation', 'agent', 'embedding', 'reranker', 'vision', 'ocr'];
 
+/** 一句话说明「这个类型是给谁用的」—— 一列一列摆着，最容易被问的就是「这个模型有用吗」。
+ *  这些说明都对着后端真实的取用点写（`model_manager.get_*` 的调用方），不是猜的。 */
+const TYPE_DESC: Record<string, string> = {
+  generation: '翻译 / 解读 / 摘要',
+  agent: '正文里的问答对话',
+  embedding: '知识库检索的向量化',
+  reranker: '检索结果的重排',
+  vision: '扫描件整页识别',
+  ocr: '当前无调用方',
+};
+
+/** 页面上**不列**的类型：后端枚举里还留着（老数据 / 以后接 OCR 引擎用），但没有任何代码取用它。
+ *  ⚠️ 只在「这一类一条模型都没有」时才隐藏：万一库里真有 ocr 配置，列出来才看得见、删得掉。 */
+const HIDDEN_TYPES = new Set(['ocr']);
+const panelTypes = computed(() => allTypes.value.filter((t) => !HIDDEN_TYPES.has(t)
+  || (state.models || []).some((m) => m.model_type === t)));
+
 function hostOf(url?: string | null): string {
   if (!url) return '';
   try { return new URL(url).host; } catch { return String(url); }
@@ -82,7 +99,7 @@ interface TypeGroup {
 }
 
 const typeGroups = computed<TypeGroup[]>(() => {
-  const known = allTypes.value;
+  const known = panelTypes.value;
   const order = [...TYPE_ORDER.filter((t) => known.includes(t)), ...known.filter((t) => !TYPE_ORDER.includes(t))];
   return order.map((t) => {
     const rows = (state.models || []).filter((m) => m.model_type === t);
@@ -274,9 +291,24 @@ async function commitRename(m: ModelConfig) {
 
 /* ---------------------------- 测试 / 默认 / 删除 ---------------------------- */
 
+/** 条目的悬浮说明：模型名 · 服务商 · 域名（这些细节在狭列里排不下，看悬停即可） */
+/** ⋯ 里那条信息行的文字：服务商 · 域名 */
+function infoLabel(m: ModelConfig): string {
+  const host = hostOf(m.base_url);
+  return [providerCell(m), host].filter(Boolean).join(' · ') || '—';
+}
+
+function itemTitle(m: ModelConfig): string {
+  const host = hostOf(m.base_url);
+  const extra = [m.model_name || '', providerCell(m), host].filter(Boolean).join(' · ');
+  return m.has_secret === false && !m.is_mock ? `${extra}（缺密钥）` : extra;
+}
+
 function rowMenu(m: ModelConfig): RowAction[] {
   return [
-    /* 列很窄，行内只剩「名称 + 默认 + 状态」；测试挪到这里（一列放不下第二枚按钮） */
+    /* 第一条是**信息行**（不可点）：服务商与域名从行里收进这里 —— 菜单里看得全，行内才精简 */
+    { key: 'info', label: infoLabel(m), icon: 'server', disabled: true },
+    /* 列很窄，行内只剩「状态点 + 名称」；测试也收进来 */
     { key: 'test', label: '测试连通性', icon: 'bolt', disabled: rowBusy('test:' + m.id) },
     {
       key: 'default',
@@ -290,6 +322,7 @@ function rowMenu(m: ModelConfig): RowAction[] {
 }
 
 function onRowAction(m: ModelConfig, key: string) {
+  if (key === 'info') return;
   if (key === 'test') { void testModel(m); return; }
   if (key === 'default') { void setDefault(m); return; }
   if (key === 'edit') { openEdit(m); return; }
@@ -489,7 +522,10 @@ onBeforeUnmount(() => {
     <div class="types-row">
       <section class="type-col" v-for="g in typeGroups" :key="g.key">
         <div class="tc-head">
-          <span class="tc-title"><AppIcon :name="g.icon" :size="13" />{{ g.title }}</span>
+          <span class="tc-title" :title="`${g.title}：${TYPE_DESC[g.key] || '—'}`">
+            <span class="tc-ico"><AppIcon :name="g.icon" :size="12" /></span>
+            {{ g.title }}
+          </span>
           <span class="hd-count">{{ g.rows.length }}</span>
           <span class="spacer"></span>
           <button
@@ -501,6 +537,7 @@ onBeforeUnmount(() => {
             <AppIcon name="add" :size="14" />
           </button>
         </div>
+
 
         <!-- 当前使用的那个：一行胶囊，名字长了省略号（列宽固定，不能让它把列撑开） -->
         <div
@@ -534,11 +571,12 @@ onBeforeUnmount(() => {
                 <AppIcon name="check" :size="11" />
               </span>
             </div>
-            <div class="tc-sub mono truncate">{{ m.model_name || '—' }}</div>
-            <div class="tc-sub truncate">
-              {{ providerCell(m) }}
-              <template v-if="hostOf(m.base_url)"> · {{ hostOf(m.base_url) }}</template>
-              <span class="miss" v-if="m.has_secret === false && !m.is_mock"> · 缺密钥</span>
+            <!-- 第二行只留模型名（带一枚小方块图标）：服务商 / 域名 / 缺密钥都收进 ⋯，
+                 想看细节就点那一枚 —— 列宽 140px，三条小字会让一列比名字还长。 -->
+            <div class="tc-sub truncate" :title="itemTitle(m)">
+              <AppIcon name="model" :size="10" />
+              <span class="mono truncate">{{ m.model_name || '—' }}</span>
+              <AppIcon v-if="m.has_secret === false && !m.is_mock" name="warning" :size="10" class="tc-warn" />
             </div>
             <div class="tc-test tiny" v-if="testResults[m.id]">
               <template v-if="testResults[m.id].ok">
@@ -656,7 +694,7 @@ onBeforeUnmount(() => {
     <ModelForm
       :open="formOpen" :mode="formMode" :target="formTarget"
       :default-type="formDefaultType" :default-preset="formPreset"
-      :types="allTypes" :type-labels="TYPE_LABEL"
+      :types="panelTypes" :type-labels="TYPE_LABEL"
       :presets="state.presets" :secrets="state.secrets" :busy="rowBusy('submit')"
       @close="formOpen = false" @submit="submitForm"
     />
@@ -754,12 +792,11 @@ onBeforeUnmount(() => {
  * 窗口窄了依次降为 3 列 / 2 列 / 1 列：宁可换行，也不要 6 个 90px 的夹缝。 */
 .types-row {
   grid-column: 1 / -1;
-  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* 列数**跟着类型数量走**：`auto-fit` + 140px 下限 → 宽屏一行摆满（5 个类型就是 5 列，
+     不会在末尾留一格空档），窄屏自动折行。写死 repeat(6) 在只有 5 类时右边会空一块。 */
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px; align-items: start;
 }
-@media (max-width: 1239px) { .types-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 820px) { .types-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .types-row { grid-template-columns: minmax(0, 1fr); } }
 
 /* 列的外框：与 .card 同一门语言（同圆角、同边框、同阴影），但不吃 `.card + .card` 的间距 */
 .type-col {
@@ -777,8 +814,20 @@ onBeforeUnmount(() => {
   font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 类型图标：一枚 20px 的软色方块承住它 —— 五个列头一字排开，图标各自漂着会显得散 */
+.tc-ico {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 20px; height: 20px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent-text);
+}
+/* 计数：淡字而不是胶囊 —— 抬头一行里已经有三样东西，再加一枚底座就吵了 */
+.tc-head .hd-count { background: transparent; padding: 0; min-width: 0; color: var(--text-faint); }
 
 /* 当前在用的那个（用户口径「放置当前使用的模型名称」）：一枚淡色胶囊，名字长了省略 */
+.tc-desc {
+  margin: 5px 9px 0; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
+  letter-spacing: .01em;
+}
 .tc-cur {
   display: flex; align-items: center; gap: 4px; min-width: 0;
   margin: 7px 8px 0; padding: 0 7px; height: 20px;
@@ -788,8 +837,9 @@ onBeforeUnmount(() => {
 .tc-cur.none { background: var(--bg-sunken); color: var(--text-faint); }
 
 .tc-list { display: flex; flex-direction: column; padding: 4px 0 6px; }
-/* 一条模型：三小行 + 右上角那枚 ⋯ */
+/* 一条模型：两小行 + 右上角那枚 ⋯。条目之间一条极淡的分隔线 —— 狭列里没有它，两条记录会连成一片 */
 .tc-item { position: relative; padding: 6px 8px; min-width: 0; }
+.tc-item + .tc-item { border-top: 1px solid var(--divider); }
 .tc-item:hover { background: var(--bg-hover); }
 /* 刚建好 / 刚保存的那一条：提亮一下再退回去（不用自己找「哪个是我刚建的」） */
 .tc-item.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
@@ -803,12 +853,14 @@ onBeforeUnmount(() => {
 .tc-name:hover { color: var(--accent-text); }
 .tc-line .rename { flex: 1 1 auto; min-width: 0; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
 .tc-default { flex: none; display: inline-flex; color: var(--ok); }
+/* 第二行：小方块图标 + 模型名（等宽）+ 需要时的缺密钥小旗 */
 .tc-sub {
+  display: flex; align-items: center; gap: 4px; min-width: 0;
   margin-top: 1px; padding-left: 11px;
   font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
 }
-.tc-sub.mono { font-family: var(--mono); }
-.tc-sub .miss { color: var(--warn); }
+.tc-sub .mono { font-family: var(--mono); }
+.tc-warn { flex: none; color: var(--warn); }
 .tc-test { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding-left: 11px; min-width: 0; }
 
 /* 状态点：只有一个点该有颜色（三种状态各自的色） */
