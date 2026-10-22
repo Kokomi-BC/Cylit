@@ -31,6 +31,12 @@ log = get_logger(__name__)
 
 #: 一次 `paper_search` 最多返回几条（模型爱传 top_k=10，宿主必须自己封顶）
 SEARCH_MAX = 12
+#: 一次批量改写最多多少处（页 × 侧）；再多就让模型分批，免得一次改动几十页没人看得住
+EDIT_BATCH_MAX = 24
+
+#: 一次批量建高亮 / 笔记最多多少条
+ANNOTATE_BATCH_MAX = 24
+
 #: 一次 `page_markdown_get` 最多读几页正文
 TEXT_PAGES_MAX = 20
 #: 片段长度上限：给全文就等于把"读哪页"的决定权收走
@@ -1169,7 +1175,7 @@ def _side_key(side: str) -> str:
 
 async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: str,
                              find: str = "", replace: str = "",
-                             reason: str = "") -> dict:
+                             reason: str = "", pages: str = "") -> dict:
     """改**页级产物**（A 路英文转录 / B 路中文译文）里的**一处**文本 —— 修正 OCR 认错、
     译文译错、术语不统一这类问题。
 
@@ -1184,6 +1190,9 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                     的段落结构变化（块数或行数变了）都会被拒绝，结果里会写清下一步怎么做。
       op="undo"    撤回这一页**最后一次**改动（把改动前的整页文本原样写回）。
                     **不占改动预算**：它只会把东西改回去。
+      op="replace_all" 同一串文字一次改**多页 / 两侧**（用户口径 2026-12-07：定理在 3 页各
+                    陈述一遍，改一处要 6 次调用）。传 `pages="4,7,19"` 与 `side="both"`；
+                    逐处回报（`done` / `skipped`），**一处失败不影响别处**，没读过的页会被跳过。
 
     改之前请先确认"哪个才是对的"：**OCR 认错**要对着 `page_image_get` 的原版面核对；
     **译文错**要对着原文核对（`page_markdown_get` 一次给两侧）。拿不准就先问用户，
@@ -1195,11 +1204,81 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
       find  —— 要改掉的**原文**（必须与 view 的结果逐字一致，且整页唯一）。
       replace —— 改成什么（空串 = 删除这一处）。
       reason —— 一句话说明为什么改（写进改动日志，便于用户回看）。
+      pages  —— 只有 op="replace_all" 用：页码范围 ``"4,7"`` / ``"4-7"`` / ``"all"``。
+                `side` 可以给 ``"both"``（两侧一起改）。最多 24 处（页 × 侧）一次。
     """
     async def _impl() -> dict:
         page_no = int(page)
         key = _side_key(side)
         what = "view" if op in ("view", "read", "show") else str(op or "").strip().lower()
+
+        async def _replace_many() -> dict:
+            """同一串文字在**多页 / 两侧**一次换掉（用户口径 2026-12-07：定理在 3 页各陈述一遍，
+            改一处要 6 次操作）。逐页逐侧落，**一处失败不影响别处**，回执里分开写。"""
+            if not str(find or "").strip():
+                return {"ok": False, "error": "find 不能为空：它是要改掉的原文，逐字取自 view。"}
+            if len(str(find)) > EDIT_MAX_FIND or len(str(replace or "")) > EDIT_MAX_FIND:
+                return {"ok": False,
+                        "error": f"find / replace 各不超过 {EDIT_MAX_FIND} 字；"
+                                 "整页覆盖请分多次调用。"}
+            raw_side = str(side or "").strip().lower()
+            if raw_side in ("both", "两侧", "两路", "all", "全部"):
+                want_sides = ["original", "translation"]
+            else:
+                one = _side_key(raw_side)
+                if one not in ("original", "translation"):
+                    return {"ok": False,
+                            "error": f"side 只能是 original / translation / both，收到 {side!r}。"}
+                want_sides = [one]
+            spec = str(pages or "").strip() or str(page or "")
+            want, _clipped = parse_pages(spec, total=ctx.deps.page_total,
+                                         limit=TEXT_PAGES_MAX)
+            if not want:
+                return {"ok": False, "error": pages_error(spec, total=ctx.deps.page_total)}
+            if len(want) * len(want_sides) > EDIT_BATCH_MAX:
+                return {"ok": False,
+                        "error": f"一次最多改 {EDIT_BATCH_MAX} 处（现在是 "
+                                 f"{len(want)} 页 × {len(want_sides)} 侧 = "
+                                 f"{len(want) * len(want_sides)}）：缩小页码范围再分批。"}
+            done: list[dict] = []
+            skipped: list[dict] = []
+            for no in want:
+                for one_side in want_sides:
+                    if ((no, one_side) not in ctx.deps.viewed_sides
+                            and no not in ctx.deps.pages_read):
+                        skipped.append({"page": no, "side": one_side,
+                                        "reason": f"先读后写：这一轮还没读第 {no} 页"})
+                        continue
+                    ctx.deps.count_edit()
+                    got = await ctx.deps.host.page_edit(
+                        ctx.deps.paper_id, no, one_side, str(find), str(replace or ""),
+                        reason=str(reason or ""))
+                    if got.get("ok"):
+                        ctx.deps.edits.append({
+                            "page": got.get("page", no), "side": got.get("side", one_side),
+                            "line": got.get("line"), "before": got.get("before"),
+                            "after": got.get("after"), "reason": str(reason or "")[:120]})
+                        done.append({"page": no, "side": one_side,
+                                     "line": got.get("line"),
+                                     "summary": got.get("summary") or ""})
+                    else:
+                        skipped.append({"page": no, "side": one_side,
+                                        "reason": str(got.get("error") or "没改成")})
+            if done:
+                _forget_searches(ctx, "批量改写")
+            total = len(want) * len(want_sides)
+            out: dict = {"op": "replace_all", "pages": want, "sides": want_sides,
+                         "done": done, "skipped": skipped,
+                         "summary": f"{total} 处里改了 {len(done)} 处"
+                                    + (f"，{len(skipped)} 处没动" if skipped else "")}
+            out["ok"] = bool(done)
+            if not done:
+                why = "；".join(str(s.get("reason") or "") for s in skipped[:3])
+                out["error"] = f"一处都没改成：{why}"
+            return out
+
+        if what in ("replace_all", "replaceall", "replace-many", "bulk"):
+            return await _replace_many()
 
         if what == "view":
             data = await ctx.deps.host.page_product(ctx.deps.paper_id, page_no, side)
@@ -1331,7 +1410,8 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
 
 async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", text: str = "",
                            color: str = "", side: str = "", occurrence: int = 1,
-                           highlight_id: str = "", query: str = "", reason: str = "") -> dict:
+                           highlight_id: str = "", query: str = "", reason: str = "",
+                           items: list[dict] | None = None) -> dict:
     """给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
 
     高亮是"用户在某一面上标出来的一段文字"，也是**笔记的锚点**（`Highlight └── Note`）。
@@ -1345,6 +1425,9 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     用户在你面前看不到（实测被报过"高亮没出现"）。原 PDF 那面服务端算不出偏移量（文字层在前端）。
 
       op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
+                   **批量**：改传 `items`（数组，每条 `{anchor, text, color?, side?}`，最多 24 条），
+                   一次建一批；回执逐条给 `created` / `failed`（含原因与最像的原文），
+                   一条失败不影响别的。
                    **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
                    green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行。
                    ⚠️ **一律用多彩、尽量不一样**（用户口径 2026-12-06）：一片同色等于没有颜色。
@@ -1389,18 +1472,22 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     """
     async def _impl() -> dict:
         what = str(op or "").strip().lower()
-        writes = {"create", "add", "new", "update", "delete", "remove"}
+        writes = {"update", "delete", "remove"}
         if what in writes:
             ctx.deps.count_edit()
-        if what in ("create", "add", "new"):
+
+        async def _create_one(a_anchor: str, a_text: str, a_color: str,
+                              a_side: str, a_occurrence: int) -> dict:
+            """建**一条**高亮（单条与批量共用同一个落库路径，省得两份字段慢慢走偏）。"""
+            ctx.deps.count_edit()
             data = await ctx.deps.host.highlight_create(ctx.deps.paper_id, {
-                "anchor": str(anchor or ""), "text": str(text or ""),
-                "color": str(color or "yellow"),
+                "anchor": str(a_anchor or ""), "text": str(a_text or ""),
+                "color": str(a_color or "yellow"),
                 # **原样透传**：`en` / `zh` 是库里的侧别词表，翻译成 `original` / `translation`
                 # 反而会被 `create_highlight` 当成不认识而回落成 `en` —— 用户要标中文，高亮却画在
                 # 英文面（agent 报过"未产生高亮"）。空着则宿主按文字自动判（中文 / 公式 → 译文面）。
-                "side": str(side or "").strip().lower(),
-                "occurrence": int(occurrence or 1)})
+                "side": str(a_side or "").strip().lower(),
+                "occurrence": int(a_occurrence or 1)})
             if data.get("ok"):
                 hl = data.get("highlight") or {}
                 out = {"ok": True, "highlight_id": hl.get("id"), "page": data.get("page"),
@@ -1423,6 +1510,46 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
             if near:
                 error = f"{error}最接近的是：{' / '.join(near)}（照着它逐字改 text 再试一次）"
             return {**data, "error": error}
+
+        if what in ("create", "add", "new"):
+            rows = [one for one in (items or []) if isinstance(one, dict)]
+            if items and not rows:
+                return {"ok": False,
+                        "error": "items 要是数组：每条 {anchor, text, color?, side?}。"}
+            if rows:
+                #: 批量：**一条失败不影响别的**（用户口径 2026-12-07：12 条高亮 + 12 条笔记，
+                #: 一条条来回 24 次太贵）。逐条回报，模型据此只重试失败的那几条。
+                if len(rows) > ANNOTATE_BATCH_MAX:
+                    return {"ok": False,
+                            "error": f"一次最多建 {ANNOTATE_BATCH_MAX} 条（收到 {len(rows)} 条）："
+                                     "分批来。"}
+                made: list[dict] = []
+                missed: list[dict] = []
+                for i, one in enumerate(rows):
+                    got = await _create_one(one.get("anchor") or anchor,
+                                            one.get("text") or "",
+                                            one.get("color") or color,
+                                            one.get("side") or side,
+                                            one.get("occurrence") or occurrence)
+                    if got.get("ok"):
+                        entry = {"index": i, "highlight_id": got.get("highlight_id"),
+                                 "page": got.get("page"), "color": got.get("color"),
+                                 "summary": got.get("summary")}
+                        if got.get("warning"):
+                            entry["warning"] = got["warning"]
+                        made.append(entry)
+                    else:
+                        missed.append({"index": i, "error": got.get("error"),
+                                       "near_miss": got.get("near_miss") or []})
+                out = {"ok": bool(made), "op": "create", "created": made,
+                       "failed": missed,
+                       "summary": f"建了 {len(made)} 条高亮"
+                                  + (f"，{len(missed)} 条没建成" if missed else "")}
+                if not made:
+                    out["error"] = "一条都没建成：" + "；".join(
+                        str(one.get("error") or "") for one in missed[:2])
+                return out
+            return await _create_one(anchor, text, color, side, occurrence)
         if what in ("list", "search"):
             return await ctx.deps.host.highlights(ctx.deps.paper_id, query=str(query or ""))
         if what in ("locate", "info", "show"):
@@ -1460,7 +1587,8 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
 
 
 async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", note_id: str = "",
-                      content: str = "", query: str = "", reason: str = "") -> dict:
+                      content: str = "", query: str = "", reason: str = "",
+                      items: list[dict] | None = None) -> dict:
     """给**高亮**写笔记 / 查笔记 / 改笔记 / 删笔记 / 看这条笔记对应的高亮。
 
     关系是固定的：`Highlight └── Note` —— **笔记必须挂在一条高亮上**（高亮是它的位置锚点），
@@ -1468,6 +1596,8 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
     把那段文字标出来，别建"孤儿笔记"（用户口径）。
 
       op="create"  highlight_id + content（Markdown）→ 加笔记。
+                   **批量**：改传 `items`（数组，每条 `{highlight_id, content}`，最多 24 条），
+                   一次写一批；回执逐条给 `created` / `failed`。
       op="list"    query（可选）→ 列这篇的笔记（每条带**它挂靠的高亮原文**与页码）。
       op="locate"  note_id → 这条笔记挂在哪一面的哪一处（"定位到某条笔记对应的原文"）。
       op="update"  note_id + content → 改正文。
@@ -1479,17 +1609,52 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
         what = str(op or "").strip().lower()
         if what in {"create", "add", "new", "update", "delete", "remove"}:
             ctx.deps.count_edit()
-        if what in ("create", "add", "new"):
-            if not highlight_id:
-                return {"ok": False, "error": "create 要给 highlight_id：笔记必须挂在一处高亮上"
+        async def _create_one(hid: str, body: str) -> dict:
+            """写**一条**笔记（单条与批量共用；批量省掉一条一来回的 12 次往返）。"""
+            if not str(hid or "").strip():
+                return {"ok": False, "error": "笔记必须挂在一处高亮上：要给 highlight_id"
                                               "（先用 highlight_manage op=create 标出来）。"}
-            if not str(content or "").strip():
-                return {"ok": False, "error": "create 要给 content（笔记正文）。"}
+            if not str(body or "").strip():
+                return {"ok": False, "error": "content 不能为空（笔记正文）。"}
             data = await ctx.deps.host.note_create(ctx.deps.paper_id, {
-                "highlight_id": str(highlight_id), "content": str(content)})
+                "highlight_id": str(hid), "content": str(body)})
             note = data.get("note") or {}
-            return {"ok": True, "note_id": note.get("id"), "page": note.get("page"),
-                    "scope": note.get("scope"), "quote": note.get("selected_text")}
+            page = note.get("page")
+            quote = str(note.get("selected_text") or "")
+            return {"ok": True, "note_id": note.get("id"), "page": page,
+                    "scope": note.get("scope"), "quote": quote,
+                    "summary": f"第 {page} 页 · 挂在「{_clip(quote, 24)}」上" if page
+                               else f"挂在「{_clip(quote, 24)}」上"}
+
+        if what in ("create", "add", "new"):
+            rows = [one for one in (items or []) if isinstance(one, dict)]
+            if items and not rows:
+                return {"ok": False,
+                        "error": "items 要是数组：每条 {highlight_id, content}。"}
+            if rows:
+                if len(rows) > ANNOTATE_BATCH_MAX:
+                    return {"ok": False,
+                            "error": f"一次最多写 {ANNOTATE_BATCH_MAX} 条（收到 {len(rows)} 条）："
+                                     "分批来。"}
+                made: list[dict] = []
+                missed: list[dict] = []
+                for i, one in enumerate(rows):
+                    got = await _create_one(one.get("highlight_id") or highlight_id,
+                                            one.get("content") or "")
+                    if got.get("ok"):
+                        made.append({"index": i, "note_id": got.get("note_id"),
+                                     "page": got.get("page"), "summary": got.get("summary")})
+                    else:
+                        missed.append({"index": i, "error": got.get("error")})
+                out = {"ok": bool(made), "op": "create", "created": made,
+                       "failed": missed,
+                       "summary": f"写了 {len(made)} 条笔记"
+                                  + (f"，{len(missed)} 条没写成" if missed else "")}
+                if not made:
+                    out["error"] = "一条都没写成：" + "；".join(
+                        str(one.get("error") or "") for one in missed[:2])
+                return out
+            return await _create_one(highlight_id, content)
         if what in ("list", "search"):
             return await ctx.deps.host.paper_notes(ctx.deps.paper_id,
                                                    query=str(query or ""))

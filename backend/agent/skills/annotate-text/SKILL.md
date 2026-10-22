@@ -78,6 +78,28 @@ highlight_manage op=create anchor=p016-17 text="$$D(B) \geq 2^{-2B/d}$$"
   配色（术语 teal、结论 emerald、公式 indigo、疑点 amber）就直给色码，不必迁就那七个色名；
 - 不传 `color` 时宿主会挑**当前用得最少**的颜色兜底，但别指望它替你表达语义。
 
+## 批量：一次标一批 / 记一批
+
+用户一口气要十几处（"把这些术语都标出来，每条配一条笔记"）时**不要一条一来回**：
+`op="create"` 改传 `items`，一次建一批。
+
+```
+highlight_manage op=create items=[
+  {"anchor": "md:p5", "text": "随机旋转", "color": "indigo"},
+  {"anchor": "md:p6", "text": "残差量化", "color": "teal"}
+]
+note_manage op=create items=[
+  {"highlight_id": "h-…", "content": "这里的 prod 指内积误差那一支"},
+  {"highlight_id": "h-…", "content": "与式 (3) 同一个口径"}
+]
+```
+
+- 每条可以带自己的 `anchor` / `text` / `color` / `side`；没给的用顶层的默认值。
+- 回执是**逐条**的：`created` 里是建成的（带 id、页码、命中原文），`failed` 里是没建成的
+  （带原因与"最像的原文"）——**照着 `failed` 只补那几条**，不要整批重来。
+- 一次最多 24 条；要标更多就分批（每批之间可以先 `op=list` 核对一下）。
+- 笔记要挂在刚建好的高亮 id 上：先建高亮、**看回执拿到 id**，再建笔记（同一个回合里连着做）。
+
 ## 三条硬规则
 
 1. **`text` 必须逐字一致**，但**记号不用你手工剥**：`**重点**` 与 `重点` 两种写法都认
