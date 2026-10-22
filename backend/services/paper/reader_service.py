@@ -1022,15 +1022,18 @@ def markdown_formulas(paper_id: str) -> dict:
     #: 这一页转录层已经给出的公式（去空白后）—— 解析卡若只是它的**一段**，就别再列一遍：
     #: 实测 2026-12-07 第 22 页 `\boldsymbol{K}, \boldsymbol{V} \in \mathbb{R}^{n \times d}` 的行内版
     #: 已经完整在列表里，兜底又把提取卡的碎片 `n\times d` 当成块级公式列了一次（同一式子出现两条）。
+    def _squash(text: object) -> str:
+        """比对用：**去掉全部空白**（`n\times d` 与 `n \times d` 是同一个式子）。"""
+        return "".join(str(text or "").split())
+
     known: dict[int, list[str]] = {}
     for known_page, _known_seq, one in collected:
-        known.setdefault(int(known_page), []).append(
-            " ".join(str(one.get("latex") or "").split()))
+        known.setdefault(int(known_page), []).append(_squash(one.get("latex")))
     for item in _dedupe_parse_items(paper_id, _parse_formulas(paper_id)):
         page = int(item.get("page") or 0)
         if page <= 0 or page in covered:
             continue
-        key = " ".join(str(item.get("latex") or "").split())
+        key = _squash(item.get("latex"))
         if any(key and key in bigger for bigger in known.get(page, [])):
             continue                      # 只是已列公式的一段 → 不重复列
         fallback_pages.add(page)
