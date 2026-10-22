@@ -630,9 +630,22 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
     #: 这些页在 markdown 源里已经有块级公式了 → 不再用解析卡补
     pages_with_display = {int(one.get("page") or 0) for one in md_items if one.get("display")}
 
+    #: 转录层已经给出的公式（去空白）：解析卡若只是它的**一段**，就别再列一遍 ——
+    #: 实测 2026-12-07 第 22 页：行内完整版 `\\boldsymbol{K},\\boldsymbol{V}\\in\\mathbb{R}^{n\\times d}` 已在列表里，
+    #: 兜底又把提取卡的碎片 `n\\times d` 当块级公式列了一次（同一式子出现两条，还带 grade A）。
+    def _squash(text: object) -> str:
+        return "".join(str(text or "").split())
+
+    known: dict[int, list[str]] = {}
+    for known_page, _row, latex in ((int(i.get("page") or 0), i.get("row_id"), i.get("latex"))
+                                    for i in scoped_md):
+        known.setdefault(known_page, []).append(_squash(latex))
     for one in (reader_service.formulas_payload(paper_id, "parse") or {}).get("items") or []:
         one_page = int(one.get("page") or 0)
         if one_page in pages_with_display or not _in_scope(one):
+            continue
+        probe = _squash(one.get("latex"))
+        if any(probe and probe in bigger for bigger in known.get(one_page, [])):
             continue
         items.append({**one, "source": "parse"})
     # markdown 那一路是**按出现次数**给的（同一段里同一个 $x$ 出现两三遍 → 两三条条目），

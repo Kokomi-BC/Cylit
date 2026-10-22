@@ -75,6 +75,25 @@ def test_include_inline_lists_the_inline_ones_too(fake_sources) -> None:
     assert out["returned"] == 5 and out["total"] == 5
 
 
+
+
+def test_parse_fallback_skips_a_fragment_of_a_listed_formula(fake_sources) -> None:
+    """卡片只是转录里那条公式的**一段** → 不再单独列（第 22 页 `n\\times d` 那种重复）。"""
+    fake_sources([_md(22, 1, "\\boldsymbol{K}, \\boldsymbol{V} \\in \\mathbb{R}^{n \\times d}",
+                       display=False)],
+                 [_card(22, 1, "n\\times d")])
+    out = project.formulas("p1", page=22)
+    assert out["returned"] == 0, [i["latex"] for i in out["items"]]
+    assert out["display_total"] == 0 and out["source"] == "markdown"
+
+
+def test_parse_fallback_still_lists_a_card_that_is_not_in_the_text(fake_sources) -> None:
+    """对不上的卡片照旧兜底（别把整条兜底路径堵死）。"""
+    fake_sources([_md(22, 1, "\\boldsymbol{q} \\in \\mathbb{R}^d", display=False)],
+                 [_card(22, 1, "Q_{\\text{qjl}}(x) := \\text{sign}(S x)")])
+    out = project.formulas("p1", page=22)
+    assert out["returned"] == 1 and out["items"][0]["source"] == "parse"
+
 def test_page_without_block_formula_falls_back_to_the_parse_card(fake_sources) -> None:
     """③ 某页 markdown 里连一条块级公式都没有 → 用该页解析卡补，并标 source=parse。"""
     fake_sources([_md(5, 4, "D_{\\text{mse}} := E[…]"),
