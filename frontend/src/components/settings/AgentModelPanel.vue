@@ -73,7 +73,7 @@ const SKILL_NAME_ZH: Record<string, string> = {
 const SKILL_BLURB: Record<string, string> = {
   'web-search': '查论文之外的公开信息（官方文档、开源实现、收录情况），答案附链接与站点名。',
   'figure-reading': '讲清某张图或表画了什么、曲线怎么走、结论是什么。',
-  'formula-explain': '说明公式在算什么、符号定义与推导步骤。',
+  'formula-explain': '取出页面上的公式，逐个符号讲清含义与作用。',
   'highlight-note': '按你的要求标出原文、设成颜色，或在某处写一条笔记。',
   'page-visual-check': '直接看页面原图，核对版式、公式排版与表格结构。',
   'paper-overview': '一句话结论、章节脉络与建议阅读顺序。',
