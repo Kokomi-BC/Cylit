@@ -960,12 +960,44 @@ let blockOverlaySeq = 0;
 /* 「谁在最上面」的唯一口径：`layerZ` 就是**最后发出去的那个号**，也就是当前最上层。
    所有层的 `focused` 都拿自己的 z 跟它比 —— 不按「种类」各算一遍。 */
 
+/**
+ * 浮层的记忆键（`FloatingCard` 的 `persistKey`，位置 / 宽高 / 字号都按它分槽存）。
+ *
+ * ⚠️ **必须把内容算进去**。早先只拼 `icon|title|imageUrl`，而公式浮层的标题恒为「公式」、
+ * 没有图片地址 —— 于是每一条公式都落到同一个 localStorage 槽里：后开的那条直接读回上一条的
+ * 坐标与宽高，表现就是「新浮层总压在上一条身上，位置大小一模一样」（用户口径 2026-12-07）。
+ * 兜底摘要用 FNV-1a：同一份内容每次算出来一样（刷新恢复才对得上），也不占键长。
+ */
+function blockOverlayKey(p: {
+  icon: string; title: string; markdown?: string; imageUrl?: string;
+  rowId?: string; latex?: string;
+}): string {
+  const rowId = String(p.rowId || '');
+  /* 有落点（行 id）就按落点认身份：给公式补一条笔记之后它的 markdown 会变（正文 + 笔记拼在一起），
+     但它还是「那一条公式」—— 记忆必须跟着来源走，不能跟着此刻的渲染内容走。 */
+  if (rowId) return `${p.icon}|${rowId}|${String(p.latex || p.imageUrl || '')}`;
+  /* 没有落点的（老记录 / 别处塞进来的浮层）退回内容摘要 */
+  const md = String(p.markdown || '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < md.length; i++) {
+    h ^= md.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${p.icon}|${p.title}|${p.imageUrl || ''}|${(h >>> 0).toString(36)}`;
+}
+
 /** 打开一张浮层（可以叠很多张；同一处连点会给同一张抬层级，而不是叠一摞一模一样的） */
 function openBlockOverlay(p: Omit<BlockOverlayItem, 'id' | 'z' | 'key'>) {
-  const same = blockOverlays.value.find((o) => o.icon === p.icon
-    && o.title === p.title && o.markdown === p.markdown && o.imageUrl === p.imageUrl);
-  if (same) { focusBlockOverlay(same.id); return; }
-  const key = `${p.icon}|${p.title}|${p.imageUrl || ''}`;
+  const key = blockOverlayKey(p);
+  /* 认「同一张」也改成按 key，而不是按 markdown 全等：给公式补过笔记之后它的 markdown 变了，
+     但仍是同一条公式 —— 以前会再叠一张，两张抢同一个位置槽，照样压在一起。 */
+  const same = blockOverlays.value.find((o) => o.key === key);
+  if (same) {
+    Object.assign(same, p, { key });   // 内容换成最新的一份（补进去的笔记要能看见）
+    focusBlockOverlay(same.id);
+    persistBlockOverlays();
+    return;
+  }
   blockOverlays.value = [
     ...blockOverlays.value,
     { ...p, key, id: ++blockOverlaySeq, z: nextLayerZ() },
@@ -1012,13 +1044,19 @@ function restoreBlockOverlays() {
     if (!raw) return;
     const saved = JSON.parse(raw) as Array<Omit<BlockOverlayItem, 'id' | 'z' | 'anchor'>>;
     if (!Array.isArray(saved) || !saved.length) return;
-    /* 顺序照旧（后开的在上），层级按顺序重新发一遍 */
-    blockOverlays.value = saved.slice(0, 12).map((o) => ({
-      ...o,
-      anchor: null,
-      id: ++blockOverlaySeq,
-      z: nextLayerZ(),
-    }));
+    /* 顺序照旧（后开的在上），层级按顺序重新发一遍。
+       ⚠️ key **按来源重算**，不沿用存档里那个：老记录里公式浮层的 key 都是
+       `formula|公式|`（那时没把内容算进去），照抄回来会让几条公式继续共用一个位置槽。
+       重算之后撞键的（老记录里同一条公式存了两份）只留一份，免得两张又抢同一个槽。 */
+    const seen = new Set<string>();
+    const list: BlockOverlayItem[] = [];
+    for (const o of saved.slice(0, 12)) {
+      const key = blockOverlayKey(o);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push({ ...o, anchor: null, key, id: ++blockOverlaySeq, z: nextLayerZ() });
+    }
+    blockOverlays.value = list;
   } catch { /* 坏数据就当作没有 */ }
 }
 
