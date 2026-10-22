@@ -421,6 +421,36 @@ class Task(Base, TimestampMixin):
     )
 
 
+# ---------------------------------------------------------------- ⑨½ 模型提供方
+class ModelProvider(Base):
+    """模型提供方（厂商身份 + 连接方式 + 凭据引用）。
+
+    用户口径（改造计划 §5）：Provider 是**一级实体** —— 一家厂商一条记录，
+    模型挂在这条记录上；官方 / 自定义由 `kind` 区分，`kind="official"` 只能由后端
+    按 `presets.py` 里真有的厂商写，前端字段管不到它。
+
+    ⚠️ 历史数据里「提供方」只是 `model_config.provider` 一个字符串，所以本表允许
+    **先有模型、后有 provider 行**：读取时会把模型行上的字符串回填成 provider 记录
+    （`provider_store.ensure_providers`，幂等）。表由启动时的 `create_all` 建。
+    """
+
+    __tablename__ = "model_provider"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # official = 后端预设里真有的厂商；custom = 用户自己填的端点
+    kind: Mapped[str] = mapped_column(String(16), default="custom")
+    label: Mapped[str] = mapped_column(String(128))
+    # 图标键（与前端 assets/model-icons 同一套），空 = 用统一占位图标
+    icon: Mapped[str] = mapped_column(String(32), default="")
+    base_url: Mapped[str | None] = mapped_column(String(256))
+    auth: Mapped[str] = mapped_column(String(16), default="bearer")   # bearer | none
+    secret_ref: Mapped[str | None] = mapped_column(String(128))
+    note: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 # ---------------------------------------------------------------- ⑩ 模型配置
 class ModelConfig(Base):
     __tablename__ = "model_config"

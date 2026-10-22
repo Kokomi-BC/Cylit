@@ -51,9 +51,37 @@ async def list_providers(request: Request):
 
     `kind` 由后端按 `presets.py` 里真实存在的厂商算出来 —— 前端无法把自定义端点伪装成官方。
     """
-    from backend.services.model import providers_catalog
+    from backend.services.model import provider_store, providers_catalog
 
-    return envelope(providers_catalog.catalog(), request=request)
+    data = providers_catalog.catalog()
+    # 官方目录来自 presets（后端唯一真源）；DB 里那些**自定义**家的记录补在后面，
+    # 这样「+」既能挑官方厂商，也能看到/编辑自己建过的端点。
+    official_ids = {p["id"] for p in data["providers"]}
+    counts = provider_store.model_counts()
+    for row in provider_store.list_providers():
+        if row["id"] in official_ids:
+            continue
+        row["configured"] = counts.get(row["id"], 0)
+        row["types"] = []
+        data["providers"].append(row)
+    return envelope(data, request=request)
+
+
+@router.post("/models/providers")
+async def upsert_provider(request: Request, payload: dict = Body(default={})):
+    """新建 / 更新一家提供方（`kind` 由后端判定，请求体里给什么都不算）。"""
+    from backend.services.model import provider_store
+
+    row = provider_store.upsert(payload)
+    return envelope(row, message="提供方已保存", request=request)
+
+
+@router.delete("/models/providers/{provider_id}")
+async def delete_provider(request: Request, provider_id: str):
+    """删除一家提供方；还有模型挂着会返回 409（不制造失效引用）。"""
+    from backend.services.model import provider_store
+
+    return envelope(provider_store.delete(provider_id), message="提供方已删除", request=request)
 
 
 @router.post("/models/probe-models")
