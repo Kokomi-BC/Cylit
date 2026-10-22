@@ -480,3 +480,41 @@ def test_caption_text_needs_a_lowercase_continuation_to_extend():
 def test_caption_text_falls_back_to_the_record_caption_without_a_caption_block():
     row = {"caption": "Table 2: Results on the ablation"}
     assert _caption_text([], row, None) == "Table 2: Results on the ablation"
+
+# --------------------------------------------------------------------------
+# markdown_refs：无图注的插图要用**图号**兜底（曾经少一对引号 → 整页导出 500）
+# --------------------------------------------------------------------------
+
+
+def _fake_regions(monkeypatch, regions: list[dict]) -> None:
+    monkeypatch.setattr(fr, "page_regions", lambda paper_id, page_no: regions)
+    monkeypatch.setattr(fr, "ensure_region_crop",
+                        lambda paper_id, page_no, index: Path(f"region-p{page_no}-{index}.png"))
+
+
+def test_markdown_refs_falls_back_to_the_figure_number_when_caption_is_empty(monkeypatch):
+    """caption 为空时用「Figure 2」兜底。
+
+    以前这里写成 `f'Figure {r[number]}'`（少了一对引号）：只要某张图没有图注就抛
+    `NameError: name 'number' is not defined`，而 `reader_service` 是**裸调用**（没有 try），
+    于是那一页的 Markdown 导出整页 500。今天线上 5 个 region 恰好都有图注，所以没被触发。
+    """
+    _fake_regions(monkeypatch, [
+        {"kind": "figure", "number": "Figure 2", "caption": ""},
+        {"kind": "figure", "number": "Figure 3", "caption": "注意力温度随位宽变化的曲线" * 10},
+    ])
+    refs = fr.markdown_refs("p1", 8, prefix="../figures")
+
+    assert refs["Figure 2"] == "![Figure 2](../figures/region-p8-0.png)"
+
+    # 有图注时仍用 caption 的前 80 字符
+    caption = ("注意力温度随位宽变化的曲线" * 10)
+    assert refs["Figure 3"].startswith(f"![{caption[:80]}](")
+
+
+def test_markdown_refs_skips_tables_and_unnumbered_regions(monkeypatch):
+    _fake_regions(monkeypatch, [
+        {"kind": "table", "number": "Table 1", "caption": "…"},
+        {"kind": "figure", "number": "", "caption": "没有图号"},
+    ])
+    assert fr.markdown_refs("p1", 8, prefix="../figures") == {}

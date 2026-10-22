@@ -1295,7 +1295,10 @@ def markdown_refs(paper_id: str, page_no: int, *, prefix: str) -> dict[str, str]
                     + (f"?v={ver}" if ver else ""))
         else:
             base = f"{prefix.rstrip('/')}/{path.name}"
-        refs[r["number"]] = f"![{r['caption'][:80] or f'Figure {r[number]}'}]({base})"
+        # 兜底写图号：没有图注的插图很常见，别让这一行把整页 Markdown 导出打崩。
+        # `number` 本身已经是 "Figure 2" / "Table 1" 形态，别再补一个 "Figure " 前缀。
+        label = r["caption"][:80] or r["number"]
+        refs[r["number"]] = f"![{label}]({base})"
     return refs
 
 
