@@ -152,12 +152,15 @@ def find_formula_span(md: str, probe: str) -> tuple[int, int, str] | None:
         # 反例（agent 报过）：探针 `D_{\text{mse}} \leq \frac{\sqrt{3\pi}}{2} \cdot \frac{1}{4^b}`
         # 里天然包含 `_{\text{mse}}`，而后者是行里更早出现的一枚行内公式 —— 取第一个就把高亮
         # 挂到了那个碎片上。按覆盖长度取最大，才会命中整条式子。
+        #: 片段必须**解释得了探针的大部分**（至少一半，且不少于 8 字符）。只要求 8 个字符时，
+        #: 一条 165 字符的整式会被 14 字符的 `_{\text{prod}}` 碎片"解释"掉 8 个字符 ——
+        #: 覆盖率 8%，高亮却挂到了碎片上（实测 2026-12-07，第 6 页）。
+        need = max(8, (len(want) + 1) // 2)
         best: tuple[int, tuple[int, int]] | None = None
         for start, end, latex in spans:
             hay = _norm_latex(latex)
             covered = min(len(want), len(hay))
-            # 两边都够长才算"同一式子"的一部分：一方只有一两个字符就是巧合
-            if covered < 8:
+            if covered < need:
                 continue
             if want in hay or hay in want:
                 if best is None or covered > best[0]:
@@ -288,6 +291,58 @@ def locate_in_markdown(md: str, text: str, *, occurrence: int = 1
     return None
 
 
+def _probe_latex(text: str) -> str:
+    """公式探针 → 规范化 LaTeX（剥掉 `$$` 包裹、再去掉所有空白）。"""
+    raw = str(text or "").strip()
+    return _norm_latex(_DOLLAR_WRAP.sub(r"\1", raw) or raw)
+
+
+def locate_formula_in_rows(paper_id: str, page: int, text: str, *,
+                           prefer_side: str = "zh"
+                           ) -> tuple[str, tuple[int, int], str, str, str] | None:
+    r"""这一页里**覆盖面最大**的那条公式 → ``(行 id, (start, end), LaTeX, 渲染文本, 命中面)``。
+
+    为什么不能"第一个命中就返回"（实测 2026-12-07）：agent 给的是第 6 页整条
+    ``Q_{prod}(x) = [Q_{mse}(x), ...]``，而它在正文里第一次出现是 ``p006-00`` 里的一枚行内
+    碎片 ``$_{prod}$``（覆盖率 8%）；真正那一条在 ``p006-09``（``$$Q_{prod}(x) = ...$$``，
+    覆盖率 100%）。按行序取第一个就把高亮挂到了碎片上 —— 用户看到的就是"标错地方"。
+
+    所以：**按覆盖率排名**，并要求覆盖率至少达到探针长度的一半（至少 8 字符）；达不到就
+    返回 None —— 宁可让调用方报"找不到"，也不拿碎片冒充整式。`find_formula_span` 对单面
+    做同样的把关，两处口径一致。
+    """
+    want = _probe_latex(text)
+    if not want or not page:
+        return None
+    need = max(8, (len(want) + 1) // 2)
+    sides = (prefer_side, "en" if prefer_side == "zh" else "zh")
+    for payload in _page_payloads(paper_id):
+        if int(payload.get("page") or 0) != int(page):
+            continue
+        best: tuple[int, int, str, tuple[int, int], str, str, str] | None = None
+        for row in payload.get("rows") or []:
+            row_id = str(row.get("id") or "")
+            for order, side in enumerate(sides):
+                raw = str(row.get("translation") if side == "zh"
+                          else row.get("original") or "")
+                if not raw.strip():
+                    continue
+                hit = find_formula_span(raw, text)
+                if hit is None:
+                    continue
+                covered = min(len(want), len(_probe_latex(hit[2])))
+                if covered < need:
+                    continue
+                # 覆盖率相同 → 优先 prefer_side（`-order` 越小越靠前）
+                if best is None or (covered, -order) > (best[0], best[1]):
+                    best = (covered, -order, row_id, (hit[0], hit[1]), hit[2],
+                            render_like_dom(raw), side)
+        if best is None:
+            return None
+        return best[2], best[3], best[4], best[5], best[6]
+    return None
+
+
 def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
                    occurrence: int = 1) -> tuple[str, tuple[int, int], str] | None:
     """在这一页的**正文行**里找这段文字 → ``(行 id, (start, end), 渲染后的行文本)``。
@@ -300,6 +355,13 @@ def locate_in_rows(paper_id: str, page: int, text: str, *, side: str = "en",
     """
     if not page:
         return None
+    if looks_like_formula(text):
+        # 公式要**整式优先**（跨行比覆盖率），不能按行序取第一个命中：碎片常常出现在整式之前。
+        best = locate_formula_in_rows(paper_id, page, text, prefer_side=side)
+        if best is None:
+            return None
+        row_id, span, _src, rendered, _hit_side = best
+        return row_id, span, rendered
     for payload in _page_payloads(paper_id):
         if int(payload.get("page") or 0) != int(page):
             continue
@@ -445,19 +507,52 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     # 兜底会退回原文面。
     if is_formula_probe:
         side = "zh"
+    # **中文引文只可能落在译文面**：调用方显式给 `en` 也不听（与上面公式那条同一个理由）。
+    # 实测（2026-12-07）4 条中文高亮全被当 `en` 面 → `locate_in_rows` 在英文行里找不到中文
+    # → 退成 `md:pN`，而 Markdown 面的高亮在阅读视图里**根本画不出来**（用户报过"没出现"）。
+    if _CJK_RE.search(str(text or "")):
+        side = "zh"
     kind = anchor_kind(anchor)
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："
                                       "请让用户在 PDF 页上自己划词高亮（或者改标正文行 / Markdown 视图）。"}
+    def _write(on: str, on_side: str, on_kind: str, span_: tuple[int, int],
+               stored: str, rendered_: str) -> dict:
+        """落库这一步只此一处：整式快路与常规路径共用，免得两边的字段慢慢走偏。"""
+        created = svc.create_highlight({
+            "paper_id": paper_id, "block_id": on,
+            "selected_text": stored,   # 文字高亮存坐标系里那一段；公式存 LaTeX
+            "start_offset": span_[0], "end_offset": span_[1],
+            "color": color, "side": on_side, "scope": on_kind,
+        })
+        created["page"] = svc.anchor_page(on)
+        log.info("agent 建高亮 %s %s[%d:%d] %r", paper_id, on, span_[0], span_[1],
+                 (rendered_ or "")[span_[0]:span_[1]][:30])
+        return {"ok": True, "highlight": created, "page": created["page"],
+                "scope": on_kind}
+
+    # 公式走**整式优先**的快路：就算调用方给的是某一行，只要这一页里有覆盖面更大的整式，
+    # 就落到那条上（`locate_formula_in_rows`）。实测（2026-12-07）agent 给的是整条
+    # `Q_prod(x) = \left[…]\right]`，却因为所在行只匹配到 `$_{\text{prod}}$` 碎片而挂错节点。
+    page_no = svc.anchor_page(anchor)
+    if is_formula_probe and page_no:
+        best = locate_formula_in_rows(paper_id, page_no, text)
+        if best is not None:
+            row_id, f_span, f_src, f_rendered, f_side = best
+            log.info("公式高亮整式对齐：%s → %s[%d:%d]", anchor, row_id, f_span[0], f_span[1])
+            return _write(row_id, f_side, "row", f_span, f_src, f_rendered)
     if kind == "markdown":
         # Markdown 锚点的文字能在**正文行**里找到 → 落在行上（用户默认读的就是那一面，
         # 高亮才看得见；见 `locate_in_rows`）。找不到才留在 Markdown 面。
-        hit = locate_in_rows(paper_id, anchor_page_no(anchor), text,
-                             side=side, occurrence=occurrence)
-        if hit:
-            log.info("高亮锚点从 Markdown 挪到正文行（用户读的是对照 / 译文）：%s → %s",
-                     anchor, hit[0])
-            anchor, kind = hit[0], "row"
+        # **两面都试**：调用方给 `en`、引文却是中文时，只试 en 会把中文逼回 Markdown 面。
+        for want_side in dict.fromkeys((side, "zh" if side == "en" else "en")):
+            hit = locate_in_rows(paper_id, anchor_page_no(anchor), text,
+                                 side=want_side, occurrence=occurrence)
+            if hit:
+                log.info("高亮锚点从 Markdown 挪到正文行（%s 面）：%s → %s",
+                         want_side, anchor, hit[0])
+                anchor, kind, side = hit[0], "row", want_side
+                break
     def _locate(on: str):
         """在这一面找落点：返回 (渲染文本, 命中)；这一面没有这段文字时命中为 None。"""
         text_md = anchor_text(paper_id, anchor, side=on)
@@ -514,15 +609,7 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
     # （`markRanges`），所以不影响定位；而列表 / 笔记里显示一个隐形的 U+FFFC 毫无意义。
     stored_text = (formula_src or str(text or "").strip()) if is_formula else rendered[start:end]
-    created = svc.create_highlight({
-        "paper_id": paper_id, "block_id": anchor,
-        "selected_text": stored_text,   # 文字高亮存坐标系里那一段；公式存 LaTeX
-        "start_offset": start, "end_offset": end,
-        "color": color, "side": side, "scope": kind,
-    })
-    created["page"] = svc.anchor_page(anchor)
-    log.info("agent 建高亮 %s %s[%d:%d] %r", paper_id, anchor, start, end, rendered[start:end][:30])
-    return {"ok": True, "highlight": created, "page": created["page"], "scope": kind}
+    return _write(anchor, side, kind, (start, end), stored_text, rendered)
 
 
 def list_items(paper_id: str, *, kind: str = "highlight", query: str | None = None) -> dict:

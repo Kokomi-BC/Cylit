@@ -126,10 +126,18 @@ def test_create_resolves_the_face_from_the_quoted_language(monkeypatch) -> None:
     ann.create("p1", anchor="p009-08", text="Product Quantization", side="")
     assert captured["side"] == "en"
 
-    # 显式给了面就听调用方的（不再替它猜）
+    # **中文引文一律落译文面**，调用方显式给 `en` 也不听：中文只存在于译文行，标到原文面
+    # 就画不出来。实测（2026-12-07）4 条中文高亮全被判成 en 面 → 只能退回 `md:pN`（阅读视图
+    # 里看不见）。这条与"公式一律先落译文面"是同一条规则。
     captured.clear()
     monkeypatch.setattr(ann, "anchor_text", lambda pid, anchor, side="en": "乘积量化用 k-means")
     ann.create("p1", anchor="p009-08", text="乘积量化", side="en")
+    assert captured["side"] == "zh"
+
+    # 英文引文仍然听调用方的 `en`
+    captured.clear()
+    monkeypatch.setattr(ann, "anchor_text", lambda pid, anchor, side="en": "Product Quantization")
+    ann.create("p1", anchor="p009-08", text="Product Quantization", side="en")
     assert captured["side"] == "en"
 
 
