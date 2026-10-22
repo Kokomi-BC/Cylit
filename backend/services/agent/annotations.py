@@ -224,15 +224,21 @@ def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 80) -> li
                          if len(one.strip()) >= 4)
     if not cands:
         cands = [str(text).strip()]
-    scored: list[tuple[float, str]] = []
+    #: 打分用**探针被解释了多少**（匹配字符 / 探针长度），不是整体相似度：
+    #: 「对估计内积是有偏的」vs 原文「…在内积估计上是有偏的」= 8/10 = 0.8（要留）；
+    #: 而一句无关的英文 vs 那句中文只有 0.18 —— 给出来只会把模型带偏（它会以为论文就是
+    #: 这么写的，照着抄一遍还是错）。0.6 是"大部分字都在"的下限。
+    scored: list[tuple[float, float, str]] = []
     for cand in cands:
-        ratio = SequenceMatcher(None, probe, cand).ratio()
-        if ratio >= 0.3:                      # 低于这个比例给出来只会误导
-            scored.append((ratio, cand))
+        matcher = SequenceMatcher(None, probe, cand)
+        matched = sum(block.size for block in matcher.get_matching_blocks())
+        coverage = matched / max(1, len(probe))
+        if coverage >= 0.6:
+            scored.append((coverage, matcher.ratio(), cand))
     if not scored:
         return []
-    scored.sort(key=lambda one: -one[0])
-    return [cand[:width] for _ratio, cand in scored[:limit]]
+    scored.sort(key=lambda one: (-one[0], -one[1]))
+    return [cand[:width] for _cov, _ratio, cand in scored[:limit]]
 
 
 #: 行锚点长什么样（`p004-06`）。认不出来的锚点要**当场报格式错**，不能当成"这一行没这段文字"。
