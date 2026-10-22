@@ -23,6 +23,33 @@ from backend.parsing.models import Rect
 PAGE = Rect(0, 0, 612, 792)
 
 
+
+
+def test_markdown_caption_completes_a_dollar_truncated_caption(monkeypatch) -> None:
+    """IR 的 caption preview 截在第一个 `$` → 用转录那一行补全（含 `$…$`）。"""
+    from backend.services.paper import reader_service as rs
+
+    rows = [{"id": "p007-06", "type": "caption", "number": "1",
+             "original": "**Figure 1: Distribution of Inner Product error for "
+                         "TURBOQUANT$_{\\text{prod}}$ and TURBOQUANT$_{\\text{mse}}$.**"}]
+    monkeypatch.setattr(rs, "_rows_of_page", lambda pid, page: rows)
+    got = fr.markdown_caption("p", 7, "1")
+    assert got.startswith("Figure 1: Distribution")
+    assert "TURBOQUANT$_{\\text{prod}}$" in got
+    assert got.endswith("TURBOQUANT$_{\\text{mse}}$.")
+    assert "**" not in got
+
+
+def test_markdown_caption_is_empty_when_page_products_fail(monkeypatch) -> None:
+    """拿不到页产物时返回空串（插图列表绝不能被图注补全拖垮）。"""
+    from backend.services.paper import reader_service as rs
+
+    def boom(pid, page):
+        raise KeyError("path_a")
+
+    monkeypatch.setattr(rs, "_rows_of_page", boom)
+    assert fr.markdown_caption("p", 7, "1") == ""
+
 def test_tighten_figure_ignores_heading_inside_the_ink_band():
     """图注在下：解析层给的 raw bbox 已经是"墨迹带"，带内的标题/图注**不算分隔**。
 

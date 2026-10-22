@@ -1228,6 +1228,45 @@ def ensure_region_crop(paper_id: str, page_no: int, index: int,
     return target
 
 
+#: 图注行首（可带 `**` 加粗）：`Figure 1:` / `Table 1:` / `图 1` / `表 1`
+_MD_CAPTION_HEAD = re.compile(
+    r"^\s*(?:\*\*)?\s*(?:Figure|Fig\.?|Table|图|表)\s*(\d{1,3})\b", re.IGNORECASE)
+
+
+def _plain_caption(text: str) -> str:
+    """去掉图注行两侧的 Markdown 加粗记号（`**Figure 1: …**` → `Figure 1: …`）。"""
+    return re.sub(r"^\s*\*\*|\*\*\s*$", "", str(text or "")).strip()
+
+
+def markdown_caption(paper_id: str, page_no: int, number: str) -> str:
+    """这一页「图号 = number」在**译文那一面**的完整图注（含 `$…$`）。
+
+    为什么需要（实测 2026-12-07）：IR 里 caption 块的 `preview` 在**第一个 `$` 处就断了**
+    （`Figure 1: … for TURBOQUANT and TURBOQUANT`，后面 `$_{\\text{prod}}$` 整段丢了），
+    于是含公式的图注一律被截半句；不含 `$` 的（p8 图 2/3、p9 表 1）反而完整 —— 症状很整齐。
+    转录产物那一行是完整的，读时补回来即可（不改 IR：旧论文重解析才会有新产物）。
+    """
+    want = str(number or "").strip()
+    if not want:
+        return ""
+    from backend.services.paper import reader_service
+
+    try:
+        rows = reader_service._rows_of_page(paper_id, int(page_no)) or []
+    except Exception as exc:  # noqa: BLE001 —— 没有页产物 / 路径不全时**不许**拖垮插图列表
+        log.debug("取第 %s 页行失败（图注只用 IR 那份）：%s", page_no, exc)
+        return ""
+    for row in rows:
+        text = _plain_caption(row.get("original") or "")
+        if not text:
+            continue
+        hit = _MD_CAPTION_HEAD.match(text)
+        if not hit:
+            continue
+        if hit.group(1) == want or str(row.get("number") or "") == want:
+            return text
+    return ""
+
 def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> list[dict]:
     """阅读器/侧栏用的插图条目（url 指向按需裁图接口）。
 
@@ -1249,8 +1288,13 @@ def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> 
         # 版本串里还有**图注开关**（`_ver`）：开关不改 bbox，光靠哈希挡不住旧卡片。
         ver = region_version(r, paper_id)
         q = f"v={ver}" if ver else ""
+        # 图注：IR 的 preview 会截在第一个 `$` 处，转录那一行才是完整的 —— 补回来（不改产物）。
+        caption = r["caption"]
+        full = markdown_caption(paper_id, int(page_no), str(r["number"] or ""))
+        if full and len(full) > len(caption) and full[:40].lower() == caption[:40].lower():
+            caption = full
         out.append({
-            "kind": r["kind"], "number": r["number"], "caption": r["caption"],
+            "kind": r["kind"], "number": r["number"], "caption": caption,
             "bbox": r["bbox"],
             "part": part, "parts": int(r.get("parts", 1)),
             "part_label": r.get("part_label") or "",
