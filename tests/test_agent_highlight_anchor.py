@@ -167,6 +167,21 @@ def test_message_says_the_text_is_on_another_page(capture, monkeypatch) -> None:
     assert "第 3 页" in out["error"]
 
 
+def test_no_contradictory_tail_when_the_text_is_on_another_page(capture, monkeypatch) -> None:
+    """已经查出"在第 3 页"时，不能再补一句"这一段里没有相近的句子"。"""
+    p3 = {"page": 3, "rows": [{"id": "p003-08", "original": "Online quantization ...",
+                               "translation": "在线（数据无关的）量化方法无需针对特定数据调参，即可即时应用。"}],
+          "original_md": "Online ...", "translation_md": "在线（数据无关的）量化方法无需针对特定数据调参，即可即时应用。"}
+    p4 = {"page": 4, "rows": [{"id": "p004-04", "original": "Lower ...",
+                               "translation": "如我们的下界所示。"}],
+          "original_md": "Lower ...", "translation_md": "如我们的下界所示。"}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [p3, p4])
+    out = ann.create(PAPER, anchor="md:p4",
+                     text="在线（数据无关的）量化方法无需针对特定数据调参，即可即时应用。")
+    assert out["ok"] is False
+    assert "第 3 页" in out["error"]
+    assert "没有相近的句子" not in out["error"]
+
 def test_message_says_the_text_spans_two_rows(capture, monkeypatch) -> None:
     """把两段拼成一句 → 报错要点明"跨了两行"。"""
     rows = [{"id": "p005-07", "original": "a", "translation": "我们先做 QR 分解来生成"},

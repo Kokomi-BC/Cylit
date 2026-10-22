@@ -738,8 +738,9 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 用户看不出那里原本是什么，也就没法照着改）。
         near = near_misses(raw if raw is not None else (rendered or ""), text)
         why = _miss_reason(paper_id, svc.anchor_page(anchor) or anchor_page_no(anchor), text)
-        # near_miss 为空时也要说人话：回一个空数组，模型只能猜"我到底差在哪"
-        tail = "" if near else "这一段里没有相近的句子，换一段更完整的原文再试。"
+        # near_miss 为空时也要说人话：回一个空数组，模型只能猜"我到底差在哪"。
+        # 已经查出"它在别的页 / 跨行"时不再补这句 —— 否则等于自己跟自己打脸（实测 2026-12-07）。
+        tail = "" if (near or why) else "这一段里没有相近的句子，换一段更完整的原文再试。"
         message = " ".join(one for one in (
             f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。", why, tail) if one)
         return {"ok": False, "error": message, "near_miss": near}
