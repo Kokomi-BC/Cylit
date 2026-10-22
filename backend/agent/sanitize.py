@@ -18,6 +18,9 @@ import re
 from typing import Iterable
 
 from backend.agent.citations import RefRegistry
+from backend.core.logging import get_logger
+
+log = get_logger(__name__)
 
 #: 尾部保留多少个字符不推（可能还有一个 id 只写了一半）
 GUARD_CHARS = 48
@@ -177,8 +180,17 @@ def sanitize_many(texts: Iterable[str], registry: RefRegistry) -> list[str]:
 
 #: Markdown 图片（含 ``![alt](url "title")`` 形式）
 _IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*<?(?P<url>[^)\s>]+)[^)]*\)")
-#: 允许的受控地址：**只能是本论文自己的 region 裁图**
-_ALLOWED_IMAGE = "/api/v1/papers/{paper_id}/figures/region/"
+#: 允许的受控地址：**只能是本论文自己的受控图**（region 裁图 / 整页图 / 静态裁图）。
+#: 2026-12-07 放宽一次：用户那次配图全被删成「（配图已省略：…）」，而模型写的到底是哪种地址
+#: 我看不出来（清洗器把原文吃掉了）。与其猜，不如把"本论文的所有受控图路径"都放行；
+#: 站外地址仍然一律拒绝（域名在 `_controlled_image_path` 里已经先丢掉了）。
+_ALLOWED_IMAGE_PREFIXES = (
+    "/api/v1/papers/{paper_id}/figures/",
+    "/api/v1/papers/{paper_id}/pages/",
+    "/papers/{paper_id}/",
+)
+#: 兼容旧名（单条前缀），避免其它引用处炸掉
+_ALLOWED_IMAGE = _ALLOWED_IMAGE_PREFIXES[0]
 #: 规整图片地址时用来削掉部署前缀的锚点（`/cylit/api/v1/papers/…` → `/api/v1/papers/…`）
 _API_PATH_MARK = "/api/v1/papers/"
 
@@ -219,7 +231,7 @@ def strip_foreign_images(text: str, paper_id: str) -> str:
     那是论文地址，根本不是图片）。前端渲染出来就是一个裂图，而且这条链路会把用户
     引到站外。规则只能有一条：**只允许本论文自己的受控裁图地址**。
     """
-    allowed = _ALLOWED_IMAGE.format(paper_id=paper_id)
+    allowed = tuple(p.format(paper_id=paper_id) for p in _ALLOWED_IMAGE_PREFIXES)
 
     def repl(match: re.Match) -> str:
         alt = (match.group("alt") or "").strip() or "插图"
@@ -227,6 +239,9 @@ def strip_foreign_images(text: str, paper_id: str) -> str:
         if path.startswith(allowed):
             # 用**规整后的绝对地址**重写：模型少写一个 `/` 时也能真的加载出来
             return f"![{alt}]({path})"
+        # 被删掉的地址**记下来**：上一次排查就是查不到"模型到底写了什么"，只能靠猜
+        log.warning("回答里的图片地址不在白名单，换成文字占位：paper=%s url=%s",
+                    paper_id, path[:200])
         return f"（配图已省略：{alt}）"
 
     return _IMAGE_RE.sub(repl, text or "")
