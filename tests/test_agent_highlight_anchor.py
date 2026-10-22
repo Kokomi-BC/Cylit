@@ -235,6 +235,21 @@ def test_snippet_centers_on_the_match() -> None:
     assert out.startswith("…"), "前面被截掉了就要有省略号"
     assert len(out) <= 200
 
+
+
+def test_unspecified_side_never_produces_a_side_note(capture, monkeypatch) -> None:
+    """没指定 `side` 时落译文面是**默认正确**，不该回「你要的是 en 面」（实测误报）。"""
+    from backend.services.agent import annotations as ann
+
+    raw = "我们的量化器先对输入做随机旋转。"
+    payload = {"page": 2, "rows": [{"id": "p002-01", "original": "We rotate ...",
+                                   "translation": raw}],
+               "original_md": "We rotate ...", "translation_md": raw}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p2", text=raw, side="")
+    assert out["ok"] is True and capture["side"] == "zh"
+    assert "side_note" not in out, out.get("side_note")
+
 def test_near_miss_drops_the_nested_short_candidate() -> None:
     """长句与它的子串只会被切成两个候选 —— 只留长的那条（短的不提供新信息）。"""
     block = "该上界可以表述为内积误差的上界，且与比特宽度无关。"

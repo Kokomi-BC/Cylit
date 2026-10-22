@@ -94,6 +94,35 @@ def _clip(text: str | None, limit: int = SNIPPET_CHARS) -> str:
     return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
+def clip_around(text: str | None, query: str, limit: int = SNIPPET_CHARS) -> str:
+    r"""片段**以命中处为中心**截（默认从块首截，命中落在块尾就整段证据都截掉了）。
+
+    实测 2026-12-07：搜 `QR decomposition`、`i.i.d Normal entries`，命中的是第 5 页那段**结尾**
+    的句子，可下发片段是块首「## 1.1 MSE OPTIMAL TURBOQUANT Let $x \in …$」—— 400 字符的窗口
+    从块首起算，命中处根本不在窗口里，回执看着像"没搜到"。这里改成围着命中处取窗口。
+
+    ⚠️ 与 `backend/agent/tools.py` 的 `_snippet_around` **不能合并**：那边跑在 agent 进程里，
+    不能 import 服务层的 DB 依赖；它拿到的已经是这里中心化过的文本，再夹一次是无害的。
+    """
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not body:
+        return ""
+    at = -1
+    for needle in [str(query or "").strip()] + [w for w in str(query or "").split() if len(w) >= 2]:
+        if not needle:
+            continue
+        found = body.lower().find(needle.lower())
+        if found >= 0:
+            at = found
+            break
+    if at < 0 or len(body) <= limit:
+        return _clip(body, limit)
+    inner = max(1, limit - 2)
+    start = max(0, min(at - inner // 3, len(body) - inner))
+    end = min(len(body), start + inner)
+    return ("…" if start else "") + body[start:end] + ("…" if end < len(body) else "")
+
+
 def parse_pages(spec: str, total: int, limit: int = PAGES_MAX) -> list[int]:
     """``"3"`` / ``"3-8"`` / ``"all"`` / ``"3,5,7"`` → 页码列表（越界与超量都截断）。"""
     text = (spec or "").strip().lower()
@@ -349,7 +378,7 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
             "section": item.get("section"),
             "chunk_type": item.get("chunk_type"),
             "lang": item.get("lang"),
-            "content": _clip(_neutralize_images(item.get("content"))),
+            "content": clip_around(_neutralize_images(item.get("content")), query),
             # 中文预览（同 chunk 的 zh 行）：**引用片段优先用译文**，用户看得懂；
             # 拿不到就是 None，绝不现译一次（那会让"检索"变成"翻译"）。
             "translation": zh_previews.get(chunk_id),
@@ -404,7 +433,7 @@ def kb_search(query: str, *, top_k: int = 8) -> dict:
             **anchor_ids(item),
             "section": item.get("section"), "chunk_type": item.get("chunk_type"),
             "lang": item.get("lang"),
-            "content": _clip(_neutralize_images(item.get("content"))),
+            "content": clip_around(_neutralize_images(item.get("content")), query),
             "translation": zh_previews.get(chunk_id),
         }
         # 同上：行身份来自这条命中自己的 chunk metadata（跨库命中属于它自己那篇）。

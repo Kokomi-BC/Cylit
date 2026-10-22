@@ -653,7 +653,10 @@ async def agent_highlight_create(paper_id: str, request: Request,
                       # 空 = 交给宿主挑**当前用得最少**的颜色（用户口径 2026-12-06：多彩、尽量不一样）。
                       # 以前这里硬写 "yellow"，模型不给颜色时就是一片黄。
                       color=str(payload.get("color") or ""),
-                      side=str(payload.get("side") or "en"),
+                      # 空着就是**没指定** → 交给宿主按文字判（中文 / 公式 → 译文面）。
+                      # 以前这里把"没给"写成 "en"，`create` 便以为调用方显式要英文面，
+                      # 落 zh 后回一句多余的「你要的是 en 面」（2026-12-07 实测的误报）。
+                      side=str(payload.get("side") or ""),
                       occurrence=int(payload.get("occurrence") or 1))
     return envelope(data, message=("已建立高亮" if data.get("ok") else str(data.get("error"))[:120]),
                     request=request)
