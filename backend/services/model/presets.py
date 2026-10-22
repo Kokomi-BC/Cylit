@@ -142,6 +142,116 @@ PRESETS: dict[str, dict] = {
             "parameters": {},
         },
     },
+
+    # ---------------- OpenAI / Anthropic / Google / 字节 / 月之暗面 / 硅基流动 ----------------
+    # 这几家都提供 **OpenAI 兼容**端点（见 `providers/factory.py` 的注释），所以复用同一条 provider 实现。
+    # model_name 取各家当前的主力名，**账号里没有就改掉**（表单里能拉列表、也能手填）。
+    "openai": {
+        "label": "OpenAI · GPT",
+        "provider": "openai",
+        "generation": {
+            "model_name": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+            "secret_ref": "openai.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        "agent": {
+            "model_name": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+            "secret_ref": "openai.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        "vision": {
+            "model_name": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+            "secret_ref": "openai.key",
+            "parameters": {"max_tokens": 4096},
+        },
+        "embedding": {
+            "model_name": "text-embedding-3-large",
+            "base_url": "https://api.openai.com/v1",
+            "secret_ref": "openai.key",
+            "parameters": {},
+        },
+    },
+    "claude": {
+        "label": "Claude · Anthropic",
+        "provider": "anthropic",
+        "generation": {
+            "model_name": "claude-sonnet-4-5",
+            "base_url": "https://api.anthropic.com/v1",
+            "secret_ref": "anthropic.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        "agent": {
+            "model_name": "claude-sonnet-4-5",
+            "base_url": "https://api.anthropic.com/v1",
+            "secret_ref": "anthropic.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        # ⚠️ 走的是 Anthropic 官方提供的 OpenAI 兼容层；model 名仍是 claude-*
+        "vision": None,
+    },
+    "gemini": {
+        "label": "Gemini · Google",
+        "provider": "gemini",
+        "generation": {
+            "model_name": "gemini-2.5-flash",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "secret_ref": "gemini.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        "agent": {
+            "model_name": "gemini-2.5-flash",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "secret_ref": "gemini.key",
+            "parameters": {"max_tokens": 8192},
+        },
+    },
+    "doubao": {
+        "label": "豆包 · 火山方舟（Ark）",
+        "provider": "doubao",
+        # ⚠️ model_name 填**推理接入点**（控制台里创建的那个 ID，形如 ep-xxxx 或 doubao-…），
+        # 不填接入点会 404 —— 所以这里给的是常见默认值，账号里不一样就改。
+        "generation": {
+            "model_name": "doubao-seed-1-6-250615",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "secret_ref": "doubao.key",
+            "parameters": {"max_tokens": 8192},
+        },
+        "agent": {
+            "model_name": "doubao-seed-1-6-250615",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "secret_ref": "doubao.key",
+            "parameters": {"max_tokens": 8192},
+        },
+    },
+    "moonshot": {
+        "label": "Kimi · 月之暗面",
+        "provider": "moonshot",
+        "generation": {
+            "model_name": "moonshot-v1-8k",
+            "base_url": "https://api.moonshot.cn/v1",
+            "secret_ref": "moonshot.key",
+            "parameters": {"max_tokens": 4096},
+        },
+        "agent": {
+            "model_name": "moonshot-v1-32k",
+            "base_url": "https://api.moonshot.cn/v1",
+            "secret_ref": "moonshot.key",
+            "parameters": {"max_tokens": 8192},
+        },
+    },
+    "minimax": {
+        "label": "MiniMax",
+        "provider": "minimax",
+        "generation": {
+            "model_name": "MiniMax-Text-01",
+            "base_url": "https://api.minimaxi.com/v1",
+            "secret_ref": "minimax.key",
+            "parameters": {"max_tokens": 8192},
+        },
+    },
 }
 
 

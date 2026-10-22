@@ -415,9 +415,16 @@ async function setDefault(m: ModelConfig) {
 }
 
 async function removeModel(m: ModelConfig) {
+  /* 删之前先看它是不是某一类的默认（改造计划 §2.2：删除前检查关联与任务路由）。
+     后端会自动把默认顺延到下一条，但用户得先知道「这个类型会换人」。 */
+  const sameType = (state.models || []).filter((x) => x.model_type === m.model_type && x.id !== m.id);
+  const next = sameType.find((x) => x.enabled !== false) || sameType[0] || null;
+  const routeNote = m.is_default
+    ? `这是「${typeLabel(m.model_type)}」当前默认模型 —— 删掉后会自动顺延到「${next?.name || next?.id || '（没有可用的了，该类型将不可用）'}」。`
+    : '';
   if (!(await askConfirm({
     title: `删除模型配置「${m.name || m.id}」？`,
-    body: '删除后这个配置就没了，不可撤销。',
+    body: [routeNote, '删除后这个配置就没了，不可撤销。'].filter(Boolean).join(' '),
     danger: true,
     confirmLabel: '删除',
   }))) return;
@@ -563,9 +570,7 @@ onBeforeUnmount(() => {
       <span class="spacer"></span>
       <button class="btn icon sm" :disabled="state.loading.models" title="重新读取模型配置"
               @click="refreshAll"><AppIcon name="refresh" :size="15" /></button>
-      <button class="btn primary sm" @click="openCreate()">
-        <AppIcon name="add" :size="15" />新建模型
-      </button>
+
     </div>
 
     <div class="load-error" v-if="loadError">{{ loadError }}</div>
@@ -692,28 +697,6 @@ onBeforeUnmount(() => {
           <span class="spacer"></span>
           <span class="tiny faint mono truncate" v-if="state.secretsDir">{{ state.secretsDir }}</span>
         </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <button type="button" class="card-head fold" :aria-expanded="presetOpen" @click="presetOpen = !presetOpen">
-        <span class="hd-title"><AppIcon name="sparkle" :size="14" />一键导入预设</span>
-        <span class="hd-count">{{ state.presets.length }}</span>
-        <span class="spacer"></span>
-        <AppIcon :name="presetOpen ? 'chevron-up' : 'chevron-down'" :size="15" />
-      </button>
-      <div class="card-body" v-if="presetOpen">
-        <label class="field">
-          base_url
-          <input v-model="importBaseUrl" class="mono" placeholder="留空 = 用预设默认" />
-        </label>
-        <div class="presets" v-if="state.presets.length">
-          <button
-            class="preset" v-for="p in state.presets" :key="p.id"
-            :disabled="rowBusy('preset:' + p.id)" @click="importPreset(p)"
-          >{{ rowBusy('preset:' + p.id) ? '导入中…' : (p.label || p.id) }}</button>
-        </div>
-        <div class="tiny faint gap-top" v-else>没有可用预设。</div>
       </div>
     </section>
 

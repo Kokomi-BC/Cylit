@@ -34,6 +34,18 @@ GENERATION_PROVIDERS = {
     "moonshot": OpenAICompatibleGeneration,
     "ollama": OpenAICompatibleGeneration,     # Ollama 提供 OpenAI 兼容端点
     "vllm": OpenAICompatibleGeneration,
+    # 下面几家都提供 **OpenAI 兼容**端点（不是原生协议）：
+    #   · OpenAI / Gemini：官方文档明确的 /chat/completions 兼容层；
+    #   · Anthropic：官方 OpenAI SDK 兼容层（beta），model 名仍用 claude-*；
+    #   · 豆包 = 火山方舟 Ark，model 填「推理接入点 ID」（ep-… 或 doubao-…）。
+    # 别名多写几个：用户手填 provider 时写 anthropic / claude 都能落到同一条路。
+    "anthropic": OpenAICompatibleGeneration,
+    "claude": OpenAICompatibleGeneration,
+    "gemini": OpenAICompatibleGeneration,
+    "google": OpenAICompatibleGeneration,
+    "doubao": OpenAICompatibleGeneration,
+    "volcengine": OpenAICompatibleGeneration,
+    "ark": OpenAICompatibleGeneration,
     "local": MockGeneration,                  # 本地未接入时回落 mock
 }
 
