@@ -702,107 +702,81 @@ def _note(result: dict, msg: str) -> None:
     result["warning"] = f"{old}；{msg}" if old else msg
 
 
-def _index_map(old: str, new: str) -> list[int]:
-    """``old`` 里每个下标 → ``new`` 里对应的下标（编辑差异映射，猜的部分只有被替换段内部）。"""
-    sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
-    mapping: list[int | None] = [None] * (len(old) + 1)
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            for k in range(i1, i2 + 1):
-                mapping[k] = j1 + (k - i1)
-        elif tag in ("replace", "delete"):
-            width = max(1, i2 - i1)
-            for k in range(i1, i2 + 1):
-                if mapping[k] is None:
-                    mapping[k] = j1 + int(round((j2 - j1) * (k - i1) / width))
-    last = 0
-    for k in range(len(mapping)):
-        if mapping[k] is None:
-            mapping[k] = last
-        else:
-            last = int(mapping[k])
-    return [int(one) for one in mapping]
+def _row_md(paper_id: str, block_id: str, side: str) -> str | None:
+    """这一条高亮所在那一行的**当前** Markdown（认不出就 None）。"""
+    try:
+        return anchor_text(paper_id, block_id, side=side)
+    except Exception as exc:  # noqa: BLE001 —— 取不到就当"这条跳不过"，不影响正文改写
+        log.debug("取高亮所在行的文本失败 %s/%s: %s", paper_id, block_id, exc)
+        return None
 
 
-def _refresh_formula_texts(paper_id: str, page: int, side: str, md: str,
-                          *, only_before: str = "") -> int:
-    r"""公式高亮存的是 **LaTeX**：正文里那条式子改了就换过来（换掉 `\sqrt{3\pi^2}` 那种笔误）。"""
-    positions: list[tuple[int, str]] = []
-    for start, _end, latex in math_spans(md):
-        positions.append((len(render_like_dom(md[:start])), latex))
-    if not positions:
-        return 0
-    changed = 0
-    for hl in svc.list_highlights(paper_id)["items"]:
-        if str(hl.get("side") or "") != side:
-            continue
-        if int(svc.anchor_page(str(hl.get("block_id") or "")) or 0) != int(page):
-            continue
-        if only_before and str(hl.get("created_at") or "") >= only_before:
-            continue
-        start, end = int(hl.get("start") or 0), int(hl.get("end") or 0)
-        hit = next((latex for pos, latex in positions if pos == start and end - start == 1),
-                   None)
-        if hit is None or str(hl.get("text") or "") == hit:
-            continue
-        svc.update_highlight(str(hl.get("id") or ""), {"selected_text": hit})
-        changed += 1
-    return changed
-
-
-def realign_after_edit(paper_id: str, page: int, side: str, prev_md: str, new_md: str,
-                       *, only_before: str = "") -> dict:
-    r"""正文改了以后，把这一页这一面的**高亮与笔记**重新对齐到新文本。
+def realign_page(paper_id: str, page: int, side: str, *, only_before: str = "") -> dict:
+    r"""正文改过之后，把这一页这一面的**高亮与笔记**按**现在的**正文重新对齐。
 
     为什么要有它（用户口径 2026-12-07 发现的真 bug）：改完产物，正文与检索索引都更新了，
-    可高亮里存的还是**旧字符串**与**旧偏移** —— 高亮 `…\sqrt{3\pi^2}…` 还留在库里，
-    阅读视图按旧偏移画，笔记里的 `selected_text` 也是旧写法。
+    可高亮里存的还是旧字符串 / 旧偏移 —— 高亮 `…\sqrt{3\pi^2}…` 还留在库里，阅读视图按旧
+    偏移画，挂着的笔记 `selected_text` 也是旧写法。
 
-    做法：两边都渲染成坐标系文字（`render_like_dom`，公式各占一个 ATOM），按编辑差异把
-    旧区间映射到新区间，再写上新的引用文字。`only_before` 给 ISO 时间戳时只处理那之前的
-    高亮（补历史数据用：按改动日志从头重放，别把新建的高亮也一起挪）。
+    为什么不按"编辑差异"映射（第一版就这么写的）：高亮的偏移是**行内**坐标，而改动日志记的
+    是**整页** Markdown —— 2026-12-07 实测按页级位置映射，公式高亮一条都没挪对。所以这里
+    不依赖旧文本，拿到那一行现在的 Markdown 与渲染文字，按两种情形重算：
+
+    1. **公式高亮**（选区就是 1 个 ATOM，存的是 LaTeX）：按"本行第几条公式"取现在的 LaTeX；
+    2. **文字高亮**：现在的选区还等于存的引文 → 不动；否则按引文在这一行里重新找位置。
+
+    `only_before` 给 ISO 时间戳时只处理那之前的高亮（补历史数据用：按改动日志从头重放，
+    别把后来新建的高亮也一起挪）。
     """
-    try:
-        old_r = render_like_dom(prev_md)
-        new_r = render_like_dom(new_md)
-    except Exception as exc:  # noqa: BLE001 —— 对齐失败不该影响正文改写
-        log.warning("高亮对齐：渲染失败，跳过 %s p%s：%s", paper_id, page, exc)
-        return {"ok": False, "moved": 0}
-    if old_r == new_r:
-        # 公式**内部**的改动在渲染文字里看不见（整条公式只占一个 ATOM），可高亮存的是 LaTeX：
-        # 用户那个 `\sqrt{3\pi^2}` → `\sqrt{3}\,\pi^2` 就属于这种，偏移没变、引文变了。
-        want = "zh" if str(side or "").lower().startswith(("translation", "zh")) else "en"
-        return {"ok": True, "moved": 0, "stale": 0,
-                "formula": _refresh_formula_texts(paper_id, page, want, new_md,
-                                                only_before=only_before)}
     want_side = "zh" if str(side or "").lower().startswith(("translation", "zh")) else "en"
-    mapping = _index_map(old_r, new_r)
-    moved = stale = 0
+    moved = formula = stale = 0
+    cache: dict[str, str | None] = {}
     for hl in svc.list_highlights(paper_id)["items"]:
         if str(hl.get("side") or "") != want_side:
             continue
-        if int(svc.anchor_page(str(hl.get("block_id") or "")) or 0) != int(page):
+        block = str(hl.get("block_id") or "")
+        if not block or int(svc.anchor_page(block) or 0) != int(page):
             continue
         if only_before and str(hl.get("created_at") or "") >= only_before:
             continue
+        if block not in cache:
+            cache[block] = _row_md(paper_id, block, want_side)
+        md = cache[block]
+        if not md:
+            continue
+        rendered = render_like_dom(md)
         start, end = int(hl.get("start") or 0), int(hl.get("end") or 0)
-        if end <= start or end >= len(mapping):
+        stored = str(hl.get("text") or "")
+        if end - start == 1 and start < len(rendered) and rendered[start] == ATOM:
+            spans = math_spans(md)
+            index = rendered[:start].count(ATOM)
+            if index >= len(spans):
+                stale += 1
+                continue
+            latex = spans[index][2]
+            if latex != stored:
+                svc.update_highlight(str(hl.get("id") or ""), {"selected_text": latex})
+                formula += 1
             continue
-        new_start, new_end = mapping[start], mapping[end]
-        new_text = new_r[new_start:new_end].replace(ATOM, "")
+        current = rendered[start:end].replace(ATOM, "")
+        if current.strip() and current == stored:
+            continue
+        hit = find_span_ignoring_atoms(rendered, stored, occurrence=1) if stored.strip() else None
+        if hit is None:
+            stale += 1                       # 引文自己也变了：不硬猜，留着让 op=list 看得见
+            continue
+        new_start, new_end = hit
+        new_text = rendered[new_start:new_end].replace(ATOM, "")
         if new_end <= new_start or not new_text.strip():
-            stale += 1               # 这段被整段删掉了：保留记录，不硬猜新位置
-            continue
-        if (new_start, new_end) == (start, end) and new_text == str(hl.get("text") or ""):
+            stale += 1
             continue
         svc.update_highlight(str(hl.get("id") or ""), {
-            "selected_text": new_text,
-            "start_offset": new_start, "end_offset": new_end})
+            "selected_text": new_text, "start_offset": new_start, "end_offset": new_end})
         moved += 1
-    if moved or stale:
-        log.info("高亮对齐 %s p%s %s：挪了 %d 条，%d 条找不到落点", paper_id, page, want_side,
-                 moved, stale)
-    return {"ok": True, "moved": moved, "stale": stale}
+    if moved or formula or stale:
+        log.info("高亮对齐 %s p%s %s：挪 %d 条、公式引文 %d 条、%d 条找不到落点",
+                 paper_id, page, want_side, moved, formula, stale)
+    return {"ok": True, "moved": moved, "formula": formula, "stale": stale}
 
 
 def _overlaps(paper_id: str, block_id: str, side: str, start: int, end: int,
