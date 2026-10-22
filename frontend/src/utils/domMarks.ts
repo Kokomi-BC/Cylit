@@ -398,11 +398,17 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
     const total = segs.length ? segs[segs.length - 1].end : 0;
     if (!total) break;
     let start = m.start;
-    if (start < 0 || start >= total) continue;
+    if (start < 0) start = 0;
     let end = Math.min(m.end, total);
-    if (end <= start) continue;
+    /* ⚠️ 偏移量**超出这一行**时不能直接放弃（2026-12-07 实测的真 bug）：服务端把一行的
+       多段 Markdown 用 `\n` 拼起来算偏移（`render_like_dom`），而 DOM 里 `<li>` / `<p>` 之间
+       **没有换行这个字** —— 一条两段的项目行，后端第 2 枚公式在偏移 2、DOM 里却在 1。于是一条
+       完全正常的高亮因为 `start >= total` 被 `continue` 掉，界面上就是「模型说加了、正却没画」。
+       现在只是标记「偏移量不可信」，继续走下面按 LaTeX / ATOM 序号 / 文字的那几条兜底路。 */
+    const usable = start < total && end > start;
     const all = renderedText(root);
     if (m.trust) {
+      if (!usable) continue;                 // 跨行记录只信偏移量（没有别的依据）
       /* 跨行高亮：这条记录的 selected_text 是**整段选区**，与这一行的切片本来就不相等 ——
          拿它做文字校验会把整条高亮判成「对不上」而一条都不画（用户报的「笔记在列表里、
          正文看不到彩色底」）。偏移量是前端在同一套 DOM 遍历里算的，直接信它。 */
