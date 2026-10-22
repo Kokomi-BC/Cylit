@@ -73,6 +73,34 @@ def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:
     return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
+def _snippet_around(text: str, query: str, limit: int = SNIPPET_CHARS) -> str:
+    """片段以**匹配处**为中心截（默认从块首截，命中点常常在片段之外）。
+
+    实测 2026-12-07：搜「〔自检甲〕」命中第 5 页那块，可片段给的是「注意式 (3) 中的 …」——
+    标记在下一段末尾，回执看起来像"没搜到"。块再长一点，命中处就彻底被截掉了。
+    先按整串找，找不到再按词找；都不中才退回块首。
+    """
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not body:
+        return ""
+    at = -1
+    for needle in [str(query or "").strip()] + [w for w in str(query or "").split() if len(w) >= 2]:
+        if not needle:
+            continue
+        found = body.lower().find(needle.lower())
+        if found >= 0:
+            at = found
+            break
+    if at < 0 or len(body) <= limit:
+        return _clip(body, limit)
+    # 省略号也算字符预算：`SNIPPET_CHARS` 是"一条片段最多多长"，不是"正文内外加省略号"
+    inner = max(1, limit - 2)
+    start = max(0, min(at - inner // 3, len(body) - inner))
+    end = min(len(body), start + inner)
+    head, tail = ("…" if start else ""), ("…" if end < len(body) else "")
+    return (head + body[start:end] + tail)[:limit]
+
+
 def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
     """这一页「图号 → 图注行的行 id」：引用要带行锚点，点 `[n]` 才闪得到那一行。
 
@@ -247,7 +275,8 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
                 "page": cit.page,
                 "section": cit.section,
                 "type": raw.get("chunk_type"),
-                "snippet": _clip(raw.get("content") or raw.get("translation") or ""),
+                "snippet": _snippet_around(raw.get("content") or raw.get("translation") or "",
+                                           str(query or "")),
             })
         out = {
             "query": query, "page_total": total or None, "returned": len(items),
@@ -630,7 +659,7 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
                 "ref": cit.ref, "paper_id": paper_id, "paper_title": title,
                 "page": page, "section": section, "type": raw.get("chunk_type"),
                 "is_current_paper": paper_id == ctx.deps.paper_id,
-                "snippet": _clip(raw.get("content") or ""),
+                "snippet": _snippet_around(raw.get("content") or "", str(query or "")),
             })
         out = {"query": query, "returned": len(items), "items": items}
         if not items:
@@ -1191,10 +1220,17 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 "occurrence": int(occurrence or 1)})
             if data.get("ok"):
                 hl = data.get("highlight") or {}
-                return {"ok": True, "highlight_id": hl.get("id"), "page": data.get("page"),
-                        "scope": data.get("scope"), "text": hl.get("text"),
-                        "color": hl.get("color"),
-                        "note": "已建立高亮。要给它写笔记就用 note_manage op=create。"}
+                out = {"ok": True, "highlight_id": hl.get("id"), "page": data.get("page"),
+                       "scope": data.get("scope"), "text": hl.get("text"),
+                       "color": hl.get("color"),
+                       "note": "已建立高亮。要给它写笔记就用 note_manage op=create。"}
+                # 宿主的两条"别忽略我"的信号必须原样带出去：这里是白名单字典，新增字段
+                # 不显式搬一遍就会被丢掉（2026-12-07 实测：跨块落在 Markdown 面的高亮
+                # 明明带了 warning，模型侧一个字都没看到）。
+                for extra in ("warning", "side_note"):
+                    if data.get(extra):
+                        out[extra] = data[extra]
+                return out
             # 失败时把"最接近的原文"贴进 error：模型改对引文只能靠它（near_miss 也原样带上）
             near = [str(item) for item in (data.get("near_miss") or [])][:2]
             error = str(data.get("error") or "建立高亮失败")

@@ -147,6 +147,87 @@ def test_formula_falls_back_to_zh_with_a_note(capture, monkeypatch) -> None:
     assert "side_note" in out and "en" in out["side_note"]
 
 
+# --------------------------------------------------------------------------
+# 工具层：宿主的 warning / side_note 必须原样带出去
+# --------------------------------------------------------------------------
+
+
+class _Host:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    async def highlight_create(self, paper_id, payload):
+        self.calls += 1
+        return self.payload
+
+
+class _DepsStub:
+    def __init__(self, host) -> None:
+        self.host = host
+        self.paper_id = PAPER
+        self.edit_calls = 0
+
+    def count_edit(self) -> None:
+        self.edit_calls += 1
+
+    def note_tool(self, *args, **kwargs) -> None:   # `_guarded` 记账用
+        pass
+
+
+def _tool_ctx(host):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(deps=_DepsStub(host))
+
+
+def test_warning_reaches_the_model() -> None:
+    """宿主说"这条落在 Markdown 面、看不见"，工具不能把它吞掉（白名单字典丢过字段）。"""
+    import asyncio
+
+    from backend.agent.tools import highlight_manage
+
+    host = _Host({"ok": True, "scope": "markdown", "page": 5,
+                 "highlight": {"id": "h1", "text": "跨段落的句子", "color": "#0d9488", "side": "zh"},
+                 "warning": "这条标在 Markdown 视图 —— 阅读视图里看不到它。"})
+    out = asyncio.run(highlight_manage(_tool_ctx(host), op="create", anchor="md:p5",
+                                       text="跨段落的句子"))
+    assert out["ok"] is True and out["scope"] == "markdown"
+    assert "warning" in out and "看不到" in out["warning"]
+
+
+def test_side_note_reaches_the_model() -> None:
+    import asyncio
+
+    from backend.agent.tools import highlight_manage
+
+    host = _Host({"ok": True, "scope": "row", "page": 5,
+                 "highlight": {"id": "h1", "text": "$x$", "color": "yellow", "side": "zh"},
+                 "side_note": "你要的是 `en` 面，这条却落到了 `zh` 面"})
+    out = asyncio.run(highlight_manage(_tool_ctx(host), op="create", anchor="md:p5",
+                                       text="$x$", side="en"))
+    assert "side_note" in out and "en" in out["side_note"]
+
+
+
+def test_snippet_centers_on_the_match() -> None:
+    """块很长、命中在末尾时，片段要截到命中处（否则回执看着像"没搜到"）。"""
+    from backend.agent.tools import _snippet_around
+
+    body = "注意式 (3) 中的 $\\mathcal{C}(f_X, b)$ 给出了码本。 " * 8 + "伪代码见算法 1〔自检甲〕。"
+    out = _snippet_around(body, "〔自检甲〕")
+    assert "〔自检甲〕" in out
+    assert out.startswith("…"), "前面被截掉了就要有省略号"
+    assert len(out) <= 200
+
+def test_near_miss_drops_the_nested_short_candidate() -> None:
+    """长句与它的子串只会被切成两个候选 —— 只留长的那条（短的不提供新信息）。"""
+    block = "该上界可以表述为内积误差的上界，且与比特宽度无关。"
+    near = ann.near_misses(block, "该上界可以被看成内积误差的上界")
+    assert near
+    for one in near:
+        assert not any(one != other and one in other for other in near), near
+
 def test_near_miss_is_deduplicated() -> None:
     block = "我们证明，MSE 优化的量化器在内积估计上是有偏的。"
     near = ann.near_misses(block, "对估计内积是有偏的")
@@ -192,7 +273,8 @@ def test_message_says_the_text_spans_two_rows(capture, monkeypatch) -> None:
     out = ann.create(PAPER, anchor="md:p5", text="我们先做 QR 分解来生成所得旋转向量再逐坐标量化。")
     # 跨块的句子只能落在 Markdown 面（看不见），所以不报错、但必须**明说**为什么
     assert out["ok"] is True and out["scope"] == "markdown"
-    assert "跨了两行" in out["warning"], out.get("warning")
+    assert "跨了两个段落" in out["warning"], out.get("warning")
+    assert "Markdown 视图" in out["warning"] and "看不到" in out["warning"]
 
 def test_bad_anchor_says_the_format_not_a_missing_text(capture) -> None:
     """`anchor="row"` 是**参数格式错**，不能说成"这段文字找不到"（实测误导过一轮）。"""

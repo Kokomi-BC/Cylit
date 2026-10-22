@@ -276,18 +276,18 @@ def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 80) -> li
     if not scored:
         return []
     scored.sort(key=lambda one: (-one[0], -one[1]))
-    out: list[str] = []
+    pieces: list[str] = []
     seen: set[str] = set()
     for _cov, _ratio, cand in scored:
         piece = cand[:width]
-        # 同一条原文常被切成"整句"和"小句"两份 → 去重，别把同一个候选回两遍（实测 2026-12-07）
+        # 同一条原文常被切成"整句"和"小句"两份 → 去重（实测 2026-12-07）
         if piece in seen:
             continue
         seen.add(piece)
-        out.append(piece)
-        if len(out) >= limit:
-            break
-    return out
+        pieces.append(piece)
+    # 嵌套的短句只留长的：短的那条不提供任何新信息，只会让模型以为有两个候选
+    return [one for one in pieces
+            if not any(one != other and one in other for other in pieces)][:limit]
 
 
 #: 行锚点长什么样（`p004-06`）。认不出来的锚点要**当场报格式错**，不能当成"这一行没这段文字"。
@@ -594,6 +594,36 @@ def _miss_reason(paper_id: str, page: int, text: str) -> str:
                         "单个块内，请分成两次标注，或缩到其中一行里。")
     return ""
 
+def _span_row_hint(paper_id: str, page: int, text: str) -> str:
+    """这段文字**为什么挪不到单个正文行**：跨了两段 / 页内对不上。
+
+    用于"落在 Markdown 面"的回执（用户口径 2026-12-07：建成功但看不见，且没说是跨块导致）。
+    先看有没有单行装得下它；装不下就找"头在哪一行、尾在哪一行"。
+    """
+    probe = " ".join(str(text or "").split())
+    if len(probe) < 6:
+        return ""
+    head, tail = probe[:10], probe[-10:]
+    for payload in _page_payloads(paper_id):
+        if int(payload.get("page") or 0) != int(page or 0):
+            continue
+        rows = payload.get("rows") or []
+        bodies = [" ".join(str(r.get("translation") or r.get("original") or "").split())
+                  for r in rows]
+        if any(probe in body for body in bodies):
+            return ""                      # 单行装得下 → 不跨块（那就不该落在 Markdown 面）
+        for i, body in enumerate(bodies):
+            if not head or head not in body:
+                continue
+            for j, other in enumerate(bodies):
+                if i == j or not tail or tail not in other:
+                    continue
+                one, two = rows[i], rows[j]
+                return (f"这段跨了两个段落（{one.get('id')} 与 {two.get('id')}）：高亮只能落在"
+                        "单个块内，建议拆成两条分别标。")
+        return "这段在页面上对不到某个单独的正文行（多半是横跨了多段）。"
+    return ""
+
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
            side: str = "", occurrence: int = 1) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
@@ -758,9 +788,12 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     if kind == "markdown":
         # 落在 Markdown 面的高亮**阅读视图里看不见**（只有 Markdown 视图画它）。这本身是
         # "行里对不上"的兜底，但要说明白，否则用户以为"高亮没出现"（实测报过多次）。
-        why = _miss_reason(paper_id, anchor_page_no(anchor), text)
-        result["warning"] = ("这条落在 **Markdown 面** —— 阅读视图里看不到它（只在 Markdown 视图里显示）。"
-                             + (" " + why if why else ""))
+        # 用 `_span_row_hint` 而不是 `_miss_reason`：这里的文字确实在页面里，只是横跨了多段
+        # （2026-12-07 实测：跨段落那句回 ok=true 且没有任何警告，用户以为标上了）。
+        why = _span_row_hint(paper_id, anchor_page_no(anchor), text)
+        result["warning"] = ("这条标在 **Markdown 视图** —— 阅读视图（对照 / 译文）里**看不到它**。"
+                             + (" " + why if why else "")
+                             + " 要让它出现在正文里，就把范围缩到单个段落内再标。")
     return result
 
 
