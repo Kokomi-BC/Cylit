@@ -348,6 +348,56 @@ def test_delete_default_key_requires_handover(sandbox, secrets):
     assert key_store.get_key(second["id"])["is_default"] is True
 
 
+def test_delete_key_removes_its_own_secret_file(sandbox, secrets):
+    """删密钥要把**它独占的文件**一起删掉，否则下次迁移会把它当"未归属"捡回来。
+
+    这正是线上复测暴露的缺陷：删行返回 200，但文件还在 data/secrets/ 里 →
+    ``ensure_keys()`` 又建一条"待人工确认"的行，内容还是用户以为已删掉的那把 key。
+    """
+    from backend.services.model import key_store
+
+    pid = _pid("purge_p")
+    _provider(pid)
+    key = _key_with_file(pid, "purge", "sk-PURGE1234")
+    ref = _ref_of(key["id"])
+    assert (secrets / ref).is_file()
+
+    res = key_store.delete_key(key["id"])
+    assert res["file_removed"] == ref
+    assert not (secrets / ref).exists()          # 文件随行一起消失
+    assert key_store.list_keys(pid) == []
+
+    # 再跑迁移：不会凭空冒出一条未归属密钥
+    key_store.ensure_keys()
+    unassigned = [k for k in key_store.list_keys(unassigned=True)
+                  if k["label"] == ref or ref in repr(k)]
+    assert unassigned == []
+    assert "sk-PURGE1234" not in repr(key_store.list_keys())
+
+
+def test_delete_key_keeps_secret_file_still_referenced(sandbox, secrets):
+    """两家的密钥行指向同一个文件名 → 删其中一条，文件必须留下（另一条还在用）。"""
+    from backend.services.model import key_store
+
+    pid_a, pid_b = _pid("share_a"), _pid("share_b")
+    _provider(pid_a)
+    _provider(pid_b)
+    first = _key_with_file(pid_a, "share1", "sk-SHARE8888")
+    ref = _ref_of(first["id"])
+    second = key_store.create_key(pid_b, {"label": f"__test_share2_{U}", "secret_ref": ref})
+    assert _ref_of(second["id"]) == ref
+
+    res = key_store.delete_key(first["id"])
+    assert res["file_removed"] == ""             # 还有人在用，不删文件
+    assert (secrets / ref).is_file()
+    assert key_store.get_key(second["id"])["masked"] == "••••8888"
+
+    # 最后一条也删掉时文件才消失
+    res2 = key_store.delete_key(second["id"])
+    assert res2["file_removed"] == ref
+    assert not (secrets / ref).exists()
+
+
 def test_create_key_rejects_path_and_missing_file(sandbox, secrets):
     from backend.services.model import key_store
 

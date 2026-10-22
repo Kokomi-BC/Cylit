@@ -241,14 +241,63 @@ def update_key(key_id: str, payload: dict) -> dict:
         return _to_dict(row)
 
 
+def _secret_ref_in_use(sess, secret_ref: str) -> bool:
+    """还有别的行指着这个文件吗（密钥行 / 提供方 / 模型，含"模型 id 当文件名"的回落）。"""
+    if not secret_ref:
+        return True
+    if sess.query(ModelProviderKey).filter(
+            ModelProviderKey.secret_ref == secret_ref).count():
+        return True
+    if sess.query(ModelProvider).filter(
+            ModelProvider.secret_ref == secret_ref).count():
+        return True
+    if sess.query(ModelConfig).filter(
+            ModelConfig.secret_ref == secret_ref).count():
+        return True
+    # 历史回落把「模型 id」也当文件名读（见 secret_resolver），别把它正在用的文件删了
+    return bool(sess.query(ModelConfig).filter(ModelConfig.id == secret_ref).count())
+
+
+def _remove_secret_file(secret_ref: str) -> str:
+    """删掉 ``data/secrets/<secret_ref>``（连带 ``.txt` 变体），返回删掉的文件名。
+
+    删文件失败（占用 / 权限）只记 warning、**绝不影响删行** —— 行是权威记录，
+    文件是它的附属物；反过来让"删不掉文件"卡住"删不掉密钥"，用户只会更困惑。
+    """
+    name = str(secret_ref or "").strip()
+    if not name:
+        return ""
+    if "/" in name or "\\" in name or ".." in name:
+        log.warning("密钥文件名不合法，跳过删文件：%s", name)
+        return ""
+    s = secret_resolver.get_settings()
+    removed = ""
+    for candidate in (s.secrets_dir / name, s.secrets_dir / f"{name}.txt"):
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.unlink(missing_ok=True)
+            removed = name
+            log.info("已删除密钥文件 %s", name)      # 只记文件名，永远不记内容
+        except OSError as exc:  # noqa: BLE001 - 失败也要继续
+            log.warning("删除密钥文件失败（忽略，密钥行已删）：%s（%s）",
+                        name, type(exc).__name__)
+    return removed
+
+
 def delete_key(key_id: str, *, force_default: str | None = None) -> dict:
-    """删一把密钥。
+    """删一把密钥（**行 + 它独占的凭据文件**）。
 
     两条拒绝（都是为了不悄悄改变线上行为）：
 
     · 还被 ``model_config.provider_key_id`` 引用 → 409，报数量与模型名；
     · 删的是默认密钥且这家还有别的密钥 → **不自动指定**（默认一把换成另一把属于
       用户决策），要求先手选；确实想一次做完就传 ``force_default=<key_id>``。
+
+    删完行之后，若这个文件**没有任何其他引用**（别的密钥行 / 提供方 / 模型），
+    连文件一起删掉。为什么必须删：文件留在 ``data/secrets/`` 里，下一次
+    ``ensure_keys()`` 会把它当成"未归属待确认"重新捡回来 —— 用户以为删掉的密钥
+    又出现在界面上，而里面还是他以为已经删掉的那把 key（安全与体验双输）。
     """
     with session_scope() as sess:
         row = sess.get(ModelProviderKey, str(key_id or ""))
@@ -283,9 +332,15 @@ def delete_key(key_id: str, *, force_default: str | None = None) -> dict:
             new_default = target.id
         elif force_default and not row.is_default:
             raise ValidationError("只有删除默认密钥时才需要 force_default")
+        secret_ref = (row.secret_ref or "").strip()
         sess.delete(row)
         sess.flush()
-        return {"id": key_id, "deleted": True, "new_default": new_default}
+        # flush 之后这一行已经不在库里了，再问"还有谁用这个文件"才是准确的
+        orphaned = bool(secret_ref) and not _secret_ref_in_use(sess, secret_ref)
+    # 事务提交成功之后才动文件：回滚的话文件不该少
+    file_removed = _remove_secret_file(secret_ref) if orphaned else ""
+    return {"id": key_id, "deleted": True, "new_default": new_default,
+            "file_removed": file_removed}
 
 
 def assign_key(key_id: str, provider_id: str) -> dict:
