@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 设置页「论文问答」面板：**技能**占右列，**对话风格 + Cyli 解释**竖着叠在左列，**运行限额**整宽收尾；
- * <1100px 收成单列，技能排最前（它是这个面板的主内容）。
+ * 设置页「论文问答」面板：**技能**占右列，**对话风格 → 运行限额 → Cyli 解释**竖着叠在左列；
+ * <1100px 收成单列，顺序仍是技能排最前（它是这个面板的主内容）。
  *
  * 为什么单独一区：问答用的模型与翻译用的生成模型**是不同的配置项**（`agent` 类型，
  * 见 `services/agent/model_config.py`）—— 翻译要关思考、低温度、便宜；问答要开思考、
@@ -52,17 +52,20 @@ const STYLE_MAX = 2000;
  * 规则文本，摊在设置页上读起来像文档。这里按名字给一句用户视角的话；取不到条目（外部技能）
  * 就回落到它自己的 description，专业版仍挂在行内 title 上、悬停可见。 */
 const SKILL_BLURB: Record<string, string> = {
-  'figure-reading': '图里画了什么、曲线怎么走、结论是什么 —— 定位到具体那张图，结合图注与正文讲清楚。',
-  'formula-explain': '某个公式什么意思、符号各指什么、怎么推出来的；公式识别错了（乱码/缺项/上下标错位）也能改。',
-  'highlight-note': '把某段原文标出来、标成某个颜色，或在某处写一条笔记 —— 按你说的位置动手。',
-  'page-visual-check': '直接看页面原图核对：公式与表格结构、OCR 乱码、上下标有没有错位。',
-  'paper-overview': '先给你这篇的整体地图：一句话讲什么、章节怎么走、建议按什么顺序读。',
-  'paper-qa': '需要跨段落取证的问题：核心贡献、方法原理、实验结论、局限、和别的方法比。',
-  'term-glossary': '术语在这篇论文里的确切含义、怎么译、中英对照与全文译法是否统一。',
-  'text-fix': '解析或翻译结果里有错，按你说的一处一处改（识别错、译文不对、术语统一）。',
-  'translate-check': '核对译文对不对、有没有漏译；也能用中文把原文要点复述一遍。',
-  'web-search': '论文之外的事才上网查（官方文档、开源实现、是否已发表），答完必须带链接与站点名。',
+  'figure-reading': '解读单张图/表：图中画了什么、曲线走向、结论是什么，结合图注与正文给出一致解读。',
+  'formula-explain': '解释公式含义、符号定义与推导步骤；公式识别有误（乱码、缺项、上下标错位）时一并修正。',
+  'highlight-note': '按指定位置标注原文、设置高亮颜色，或在某处高亮上写一条笔记。',
+  'page-visual-check': '以页面原图核对公式与表格结构、OCR 乱码、上下标错位等解析问题。',
+  'paper-overview': '给出论文整体概览：一句话结论、章节脉络、建议阅读顺序。',
+  'paper-qa': '回答需要跨段落取证的问题：核心贡献、方法原理、实验结论、局限、与相关方法的关系。',
+  'term-glossary': '说明术语在本论文中的确切含义与译法，核对中英对照与全文译法是否统一。',
+  'text-fix': '按指定位置修正解析/翻译产物中的错误：识别错误、译文不当、术语不统一。',
+  'translate-check': '核对译文准确性与漏译情况；也可用中文复述原文要点。',
+  'web-search': '检索论文之外的公开信息（官方文档、开源实现、收录情况），引用需附链接与站点名。',
 };
+
+/** 技能名里的那一个"联网搜索"，齿轮与内嵌设置都挂在它身上。 */
+const WEB_SEARCH_SKILL = 'web-search';
 
 const skills = ref<AgentSkill[]>([]);
 const skillsLoading = ref(false);
@@ -71,6 +74,16 @@ const skillsReady = ref(false);
 /** 正在进行的技能操作：`upload` / `toggle:<name>` / `download:<name>` / `delete:<name>`。 */
 const skillBusy = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
+
+/** 渲染顺序：web-search 置顶，其余保持接口给的顺序（后端已按"启用在前 / 名字"排过）。
+ *  **只排副本**：开关的乐观更新、上传后的回填都直接动 `skills`，就地 sort 会打乱那份引用。 */
+const skillRows = computed<AgentSkill[]>(() => {
+  const i = skills.value.findIndex((s) => s.name === WEB_SEARCH_SKILL);
+  if (i <= 0) return skills.value;
+  const rest = skills.value.slice();
+  const [top] = rest.splice(i, 1);
+  return [top, ...rest];
+});
 
 async function loadSkills(): Promise<void> {
   skillsLoading.value = true;
@@ -561,9 +574,9 @@ onMounted(() => {
 <template>
   <div class="agent-panel">
     <!-- 版式：右列技能（主内容，DOM 里排第一 —— 窄屏单列时它就是第一屏），
-         左列竖着叠「对话风格 + Cyli 解释」两张短卡。
-         为什么这么分：十来个技能是一行一行读下来的，有实打实的高度；
-         对话风格与解释各自只有几行，跟技能并排才不至于在右下角留一大片空白。 -->
+         左列竖着叠「对话风格 → 运行限额 → Cyli 解释」三张卡。
+         为什么这么分：十来个技能是一行一行读下来的，有实打实的高度；左列三张各自只有几行，
+         跟技能并排才不至于在右下角留一大片空白（限额的六格在半宽里仍是两列，放得下）。 -->
     <div class="panel-grid">
       <!-- ① 技能：每行 = 名字 + 两行大白话说明 + 启用开关（下载 / 卸载只给外部技能） -->
       <section class="card">
@@ -582,7 +595,7 @@ onMounted(() => {
         </div>
         <div class="card-body">
           <div class="skill-list" v-if="skills.length">
-            <template v-for="s in skills" :key="s.name">
+            <template v-for="s in skillRows" :key="s.name">
               <div class="skill-row" :class="{ off: !s.enabled }">
                 <div class="skill-main">
                   <div class="skill-title">
@@ -597,10 +610,9 @@ onMounted(() => {
                     {{ SKILL_BLURB[s.name] || s.description || '（这个技能没写说明）' }}
                   </p>
                 </div>
+                <!-- 顺序：图标按钮在前、开关永远最后一个 —— 开关贴住右边缘，
+                     行里多一个齿轮（或少两个图标）都不会把别行的开关推歪 -->
                 <div class="skill-ops">
-                  <Switch :model-value="s.enabled" :disabled="skillBusy === `toggle:${s.name}`"
-                          :label="`启用技能 ${s.name}`"
-                          @update:model-value="toggleSkill(s, $event)" />
                   <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
                   <template v-if="!s.builtin">
                     <button class="btn icon sm" :title="`下载 ${s.name}.zip`"
@@ -613,15 +625,18 @@ onMounted(() => {
                     </button>
                   </template>
                   <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页 -->
-                  <button v-if="s.name === 'web-search'" class="btn icon sm"
+                  <button v-if="s.name === WEB_SEARCH_SKILL" class="btn icon sm"
                           :class="{ primary: wsOpen }" :title="wsOpen ? '收起联网搜索设置' : '联网搜索设置'"
                           :aria-expanded="wsOpen" @click="toggleWs()">
                     <AppIcon name="sliders" :size="14" />
                   </button>
+                  <Switch :model-value="s.enabled" :disabled="skillBusy === `toggle:${s.name}`"
+                          :label="`启用技能 ${s.name}`"
+                          @update:model-value="toggleSkill(s, $event)" />
                 </div>
               </div>
               <!-- ④ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
-              <div v-if="s.name === 'web-search' && wsOpen" class="ws-panel">
+              <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
                 <p class="ws-hint" v-if="wsLoading">正在读取联网搜索配置…</p>
                 <p class="ws-hint" v-else-if="!wsReady">联网搜索设置暂不可用（接口未就绪）。</p>
                 <template v-else>
@@ -723,6 +738,34 @@ onMounted(() => {
           </div>
         </section>
 
+        <!-- ③ 运行限额：六个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
+        <section class="card">
+          <div class="card-head">
+            <AppIcon name="sliders" :size="14" />运行限额
+            <span class="spacer"></span>
+            <button class="btn primary sm" :disabled="limitsBusy || !limits || !limitsDirty"
+                    @click="saveLimits">
+              <AppIcon name="check" :size="14" />{{ limitsBusy ? '保存中…' : '保存' }}
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="limit-grid" v-if="limits">
+              <label class="limit-field" v-for="f in LIMIT_FIELDS" :key="f.key">
+                <span class="limit-label">{{ f.label }}</span>
+                <span class="limit-control">
+                  <input type="number" :min="f.min" :max="f.max" :step="f.step"
+                         v-model.number="limitForm[f.key]" />
+                  <i class="limit-unit">{{ f.unit }}</i>
+                </span>
+              </label>
+            </div>
+            <p class="tiny faint" v-else>
+              {{ limitsLoading ? '正在读取运行限额…' : '运行限额暂不可用（agent 服务未就绪）。' }}
+            </p>
+            <p class="limit-hint tiny" v-if="limitsHint">{{ limitsHint }}</p>
+          </div>
+        </section>
+
         <!-- ②b Cyli 解释：单独一套模型 + 思考强度。留空 = 跟随默认（对话模型 / 模型自己的档）。 -->
         <section class="card">
           <div class="card-head">
@@ -760,49 +803,21 @@ onMounted(() => {
         </section>
       </div>
     </div>
-
-    <!-- ③ 运行限额：六个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="sliders" :size="14" />运行限额
-        <span class="spacer"></span>
-        <button class="btn primary sm" :disabled="limitsBusy || !limits || !limitsDirty"
-                @click="saveLimits">
-          <AppIcon name="check" :size="14" />{{ limitsBusy ? '保存中…' : '保存' }}
-        </button>
-      </div>
-      <div class="card-body">
-        <div class="limit-grid" v-if="limits">
-          <label class="limit-field" v-for="f in LIMIT_FIELDS" :key="f.key">
-            <span class="limit-label">{{ f.label }}</span>
-            <span class="limit-control">
-              <input type="number" :min="f.min" :max="f.max" :step="f.step"
-                     v-model.number="limitForm[f.key]" />
-              <i class="limit-unit">{{ f.unit }}</i>
-            </span>
-          </label>
-        </div>
-        <p class="tiny faint" v-else>
-          {{ limitsLoading ? '正在读取运行限额…' : '运行限额暂不可用（agent 服务未就绪）。' }}
-        </p>
-        <p class="limit-hint tiny" v-if="limitsHint">{{ limitsHint }}</p>
-      </div>
-    </section>
   </div>
 </template>
 
 <style scoped>
-/* 竖向卡片间距交给 base.css 的 `.card + .card`（12px），不再叠 gap —— 两处都管会变成 24px；
-   并排那张网格自带底边距，否则它后面那张卡（前一个兄弟不是 `.card`）会贴上来。 */
+/* 竖向卡片间距交给 base.css 的 `.card + .card`（12px），不再叠 gap —— 两处都管会变成 24px。
+   面板只剩一块网格，它下面没有兄弟卡，所以网格自己不再留底边距。 */
 .agent-panel { display: flex; flex-direction: column; }
 .spacer { flex: 1; }
-/* 右列技能 + 左列（对话风格 / Cyli 解释）。`align-items: start` 让每张卡按自己的内容高，
+/* 右列技能 + 左列（对话风格 / 运行限额 / Cyli 解释）。`align-items: start` 让每张卡按自己的内容高，
    底边不强行拉齐 —— 拉齐反而会在短卡里空出一大截。
    DOM 里技能排第一（它是这个面板的主内容），宽屏靠 order 把左列提到第一格；
    <1100px 单列时 order 归零，技能自然落回最前，窄屏第一屏就是它。 */
 .panel-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px; align-items: start; margin-bottom: 12px;
+  gap: 12px; align-items: start;
 }
 .panel-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; order: -1; }
 /* 左列内部靠 gap 排，别再叠一条 `.card + .card` 的上边距（会变成 24px） */
@@ -835,8 +850,9 @@ onMounted(() => {
 /* 禁用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
 .skill-row.off .skill-desc { opacity: .6; }
-/* 开关与齿轮 / 下载 / 卸载之间只隔 6px：一排小控件挨紧才像一组操作 */
-.skill-ops { display: flex; align-items: center; gap: 6px; flex: none; }
+/* 图标按钮在前、开关收尾，整组贴右边缘：开关永远落在同一个 x 上，
+   行里有没有齿轮 / 下载 / 卸载都不会把它推歪。 */
+.skill-ops { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: none; }
 
 /* ---------- ④ 联网搜索：挂在 web-search 那一行下方，用发丝描边盒与"行"区分开 ---------- */
 .ws-panel {
@@ -862,7 +878,7 @@ onMounted(() => {
 /* ②b Cyli 解释：一行说明 + 两个下拉，别让它看起来像又一段要读的正文 */
 .explain-hint { margin: 0 0 10px; line-height: 1.6; max-width: 62ch; }
 
-/* ---------- ③ 运行限额：两列网格，≥1200px 留白更松 ---------- */
+/* ---------- ③ 运行限额：两列网格；半宽卡里 40px 列间距会显得两列贴边，统一用默认的 24px ---------- */
 .limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
 .limit-field { display: grid; gap: 6px; min-width: 0; }
 .limit-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
@@ -875,9 +891,6 @@ onMounted(() => {
 /* 单位是输入框**右侧的后缀**，不是占位符也不是塞进框里 */
 .limit-unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .limit-hint { margin: 12px 0 0; color: var(--ok); }
-@media (min-width: 1200px) {
-  .limit-grid { gap: 24px 40px; }
-}
 @media (max-width: 720px) {
   .limit-grid { grid-template-columns: minmax(0, 1fr); }
 }
