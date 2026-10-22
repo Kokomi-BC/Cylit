@@ -1123,6 +1123,46 @@ export interface AgentLimits {
 /** `PUT /agent/limits` 的请求体：六个数字，**不带 `restart_required`**。 */
 export type AgentLimitsPatch = Omit<AgentLimits, 'restart_required'>;
 
+/** 联网搜索的提供方（`GET /agent/websearch/config` 的 `providers`）：目前只有 deepseek 一家。 */
+export interface WebsearchProvider {
+  id: string;
+  label: string;
+}
+
+/** `web-search` 技能的配置（`GET/PUT /agent/websearch/config`）。
+ *
+ * 密钥只落在服务端 `data/secrets/websearch.key`，这里**永远只回掩码** ——
+ * 前端拿不到明文，所以输入框的语义只能是"这次要换成什么"，清除要走 `clear_key`。
+ */
+export interface WebsearchConfig {
+  provider: string;
+  providers: WebsearchProvider[];
+  has_key: boolean;
+  /** 已保存密钥的掩码（形如 `sk-a…cd12`；`has_key=false` 时为空串） */
+  key_masked: string;
+  /** 每次搜索返回多少条（默认 8） */
+  count: number;
+  /** 是否顺带抓取网页正文（默认 false：正文贵，只有要读全文时才开） */
+  need_content: boolean;
+  /** 开启正文字后的抓取字数上限（默认 6000） */
+  fetch_chars: number;
+  /** 服务端认为这份配置能不能直接用（有密钥 + 提供方认得） */
+  ready: boolean;
+}
+
+/** `POST /agent/websearch/verify`：真跑一次搜索（count=1）。
+ *
+ * **HTTP 恒 200**，成败只看 `ok` —— 所以界面上必须把 `state`/`detail` 留在原地，
+ * 只弹一句 toast 等于把"卡在哪一步"丢掉了。
+ */
+export interface WebsearchVerifyResult {
+  ok: boolean;
+  /** 失败发生在哪一步（`no_key` / `auth` / `network` / `parse` …，后端给的原文） */
+  state: string;
+  detail: string;
+  ms: number;
+}
+
 /** 划词解释：选区 + 可选追问（`question` 为空时后端默认"解释这段内容"）。
  *
  * 锚点用 **`row_id`**（正文行 id，形如 `p004-02`）而不是 `block_id`：阅读器划词拿到的就是行 id，

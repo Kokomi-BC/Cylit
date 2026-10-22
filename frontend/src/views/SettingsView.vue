@@ -588,25 +588,31 @@ onMounted(async () => {
 .meta-line { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; }
 
 /**
- * 版式：左导航 + 右内容窗格（参照 retain-pdf 的设置弹窗）。
+ * 版式：**贴左的导航栏 + 居中的内容列**（一次只渲染一区）。
  *
- * 导航 208px 固定宽、**吸顶**：设置页很长，滚到索引表下面还要能换区；
- * 底色必须不透明（`--bg-elev`），否则正文会从卡片下面透出来。
- * 内容列最宽 840px（与 KnowledgeView 的 880 同档，长句不散），整块居中。
+ * 这里是整页而不是弹窗：导航栏从内容区最左边起、208px 固定宽，只用一条 1px 发丝线与内容
+ * 分隔 —— 圆角、边框、投影叠上去就是一张浮在页面里的卡片，与"整页设置"的定位不符。
+ *
+ * 分隔线画在容器上而不是导航栏上：导航栏是 sticky 的、自身只有几百像素高，边框会跟着它
+ * 滚成一根半截短线；容器的高度才是整页内容的高度。底色因此也不需要不透明。
  */
 .settings-layout {
-  display: grid; gap: 28px; align-items: start; justify-content: center;
-  grid-template-columns: 208px minmax(0, 840px);
-  max-width: 1120px; margin: 0 auto;
+  --rail-col: 208px;
+  position: relative;
+  display: grid; align-items: start;
+  grid-template-columns: var(--rail-col) minmax(0, 1fr);
+}
+.settings-layout::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: var(--rail-col);
+  width: 1px; background: var(--divider);
 }
 .settings-rail {
   position: sticky; top: calc(var(--header-h) + 12px);
   display: flex; flex-direction: column; gap: 10px;
   /* 分区多于视口高度时，吸顶的导航自己也得能滚，否则末尾几项点不到 */
   max-height: calc(100dvh - var(--header-h) - 28px); overflow-y: auto;
-  padding: 14px 8px 12px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow-1);
+  /* 左留白为 0：可点项的浅底一路顶到内容区最左边，贴左才看得出来 */
+  padding: 2px 12px 12px 0;
 }
 /* 导航抬头：一条分隔线把"设置"和下面四组分区断开 */
 .settings-rail-title {
@@ -646,7 +652,14 @@ onMounted(async () => {
 .settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.settings-pane { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.settings-pane {
+  min-width: 0; display: flex; flex-direction: column; gap: 18px;
+  /* 内容列在剩余空间里水平居中、宽度自适应：宽屏由 max() 算出的对称外边把内容压到
+     1040px（够放两列卡片），窄屏退到 28（离分隔线）/ 24（不贴右边缘）的下限。
+     不用 max-width + margin:auto —— 那样内容列就不贴着分隔线，居中会跟着一起漂。 */
+  padding-left: max(28px, calc((100% - 1040px) / 2));
+  padding-right: max(24px, calc((100% - 1040px) / 2));
+}
 /* 页头：图标底 + 标题 + 一句说明，底下一根细分隔线收尾 —— 「页头 / 内容」两段节奏。
    近-远：页头到第一张卡 ~34px，卡与卡之间 12px（base.css 的 `.card + .card`）。 */
 .pane-head {
@@ -668,12 +681,15 @@ onMounted(async () => {
    横向滚动交给 nav 自己 —— "设置"那一格始终留在左边；当前项由 revealActive 滚进可视区。 */
 @media (max-width: 860px) {
   .settings-layout {
-    grid-template-columns: minmax(0, 1fr); justify-content: stretch;
-    gap: 14px; max-width: none;
+    grid-template-columns: minmax(0, 1fr); row-gap: 14px;
   }
+  /* 竖线立不住：横排导航改由自己的下边框收尾，容器上那条整体撤掉 */
+  .settings-layout::before { display: none; }
+  .settings-pane { padding-left: 0; padding-right: 0; }
   .settings-rail {
     position: static; flex-direction: row; align-items: center;
-    gap: 10px; padding: 10px 12px; max-height: none; overflow: hidden;
+    gap: 10px; padding: 0 0 10px; max-height: none; overflow: hidden;
+    border-bottom: 1px solid var(--divider);
   }
   .settings-rail-title {
     flex: none; padding: 0 10px 0 0;

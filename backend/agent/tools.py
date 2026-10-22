@@ -1103,6 +1103,136 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
     }, _impl())
 
 
+# --------------------------------------------------------------------------
+# ⑤ 联网：搜索公开网页 / 抓网页正文（自带技能 `web-search` 的手脚）
+#
+# 这两个工具的返回值**仍然要瘦**：一次 8 条 × 上千字的 summary 就是上万字，
+# 模型会以为"我已经读过了"。所以摘要按下面两个上限收口，正文只给 web_fetch 要的那一篇。
+# --------------------------------------------------------------------------
+
+#: 一条搜索结果的摘要上限（官方 summary 通常 600~800 字，留一半够判断要不要读原文）
+WEB_SUMMARY_CHARS = 400
+#: 随搜索结果附带的正文上限：真要读全文请走 web_fetch，别一次拉 8 篇
+WEB_CONTENT_CHARS = 600
+
+
+def _need_content_slot(need_content: bool | None) -> int:
+    """`need_content` 的三态编码（0 = 不传，跟随主后端的设置）。
+
+    缓存键如果只有 (query, count)，"不传 / False / True"三种调用会互相命中：
+    它们的**返回字段并不一样**（带不带 content），串味之后模型会以为"这次也没正文"。
+    所以把三态编进键里 —— 反正 count 上限 50，`count * 3 + slot` 不会撞。
+    """
+    if need_content is None:
+        return 0
+    return 2 if need_content else 1
+
+
+async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None,
+                     need_content: bool | None = None, question: str = "") -> dict:
+    """联网搜索公开网页（DeepSeek 官方搜索），返回标题 / 链接 / 站点 / 摘要。
+
+    什么时候用：问题问的是**论文之外**的公开信息 —— 某个方法的官方文档或开源实现、
+    数据集在哪下载、这篇论文是否已发表、某个术语业界现在怎么说；或者用户直接让你
+    "上网查一下"。需要论文里的论断时**不要**用它：那是 paper_search / kb_search 的活，
+    网页不是论文原文。
+
+    参数：
+      query  —— 搜索词。支持 `site:arxiv.org`（限站）、`-site:csdn.net`（排除）、
+                `"精确短语"`、`after:2025-01-01`（限时间）这些语法；多个站点用 `OR` 连接。
+                一次只查一件事，别把好几个问题塞进一个 query。
+      count  —— 要几条，1~50。不传就用设置里的默认（现在是 8）。
+      need_content —— 是否让每条结果带上网页正文。不传就用设置里的默认（现在是只取摘要）：
+                正文动辄上万字，只想看某一篇时用 web_fetch 更省。
+      question —— 触发这次搜索的用户原话，帮搜索引擎理解意图；一般值得填。
+    """
+    async def _impl() -> dict:
+        key = int(count or 0) * 3 + _need_content_slot(need_content)
+        cached = _cached(ctx, "web_search", query, key)
+        if cached is not None:
+            return cached
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        data = await ctx.deps.host.web_search(
+            query, count=count, need_content=need_content, ori_question=question)
+        items = []
+        for raw in data.get("results") or []:
+            item = {
+                "title": raw.get("title") or "",
+                "url": raw.get("url") or "",
+                "site": raw.get("site_name") or "",
+                "date": raw.get("date"),
+                "snippet": _clip(raw.get("summary") or raw.get("snippet") or "",
+                                 WEB_SUMMARY_CHARS),
+            }
+            # 按"服务端给没给"收，而不是按我们传了什么：默认可能来自设置里的 True
+            if raw.get("content"):
+                item["content"] = _clip(raw["content"], WEB_CONTENT_CHARS)
+            items.append(item)
+        out = {"query": query, "provider": data.get("provider"),
+               "returned": len(items), "items": items}
+        if not items:
+            out["hint"] = ("没有搜到结果：换一组关键词（去掉 `site:` 限制、少用引号）再试一次；"
+                           "还是一条都没有，就如实跟用户说没查到，不要凭记忆编。")
+        else:
+            out["hint"] = ("这些是**外部网页**，不是论文里的材料：回答里引用它们必须写"
+                           "`[标题](链接)` 并带上站点名；要看某一篇的正文就说清是哪一条、"
+                           "用 web_fetch 读，不要拿摘要冒充读过全文。")
+        _remember(ctx, "web_search", query, key, out)
+        return out
+
+    return await _guarded(ctx, "web_search", {
+        "query": _clip(query, 60), "count": count,
+    }, _impl())
+
+
+async def web_fetch(ctx: RunContext[Deps], url: str, max_chars: int | None = None) -> dict:
+    """把一个网页抓成 Markdown 正文（DeepSeek 官方抓取），按需读全文。
+
+    什么时候用：web_search 的结果里有一条看起来正是你要的依据、摘要不够判断；
+    或者用户直接给了一个链接让你看内容。**一次只抓真正要看的那一两篇** —— 抓回来的
+    正文很占上下文，抓五篇等于把前面的材料全挤掉。
+
+    不要抓：搜索结果页、站点首页、要登录才能看的地址（会报抓不到）。
+
+    参数：
+      url       —— 完整的 http/https 地址（web_search 返回的 url 原样传即可）。
+      max_chars —— 正文最多保留多少字符。不传就用设置里的默认（现在是 6000）；
+                   超出部分会被丢掉，返回里 truncated=true。
+    """
+    async def _impl() -> dict:
+        key = int(max_chars or 0)
+        cached = _cached(ctx, "web_fetch", url, key)
+        if cached is not None:
+            return cached
+        if not _spend_search(ctx):
+            return dict(BUDGET_EXHAUSTED)
+        data = await ctx.deps.host.web_fetch(url, max_chars=max_chars)
+        content = str(data.get("content") or "")
+        out = {
+            "url": data.get("url") or url,
+            "title": data.get("title") or "",
+            "chars": len(content),
+            "truncated": bool(data.get("truncated")),
+            "content": content,
+        }
+        if not content:
+            out["hint"] = ("这一页没有取到正文（可能要登录、被站点拦下，或本来就不是文章页）："
+                           "换一条搜索结果，或如实说明打不开。")
+        elif out["truncated"]:
+            out["hint"] = (f"正文只保留了前 {len(content)} 个字符（truncated=true）："
+                           f"要看后面的部分，调大 max_chars 再抓一次。")
+        else:
+            out["hint"] = ("这是**外部网页**的内容，不是论文原文：引用时给 markdown 链接 + 站点名；"
+                           "论文里的论断仍然要引用论文里的材料。")
+        _remember(ctx, "web_fetch", url, key, out)
+        return out
+
+    return await _guarded(ctx, "web_fetch", {
+        "url": _clip(url, 120), "max_chars": max_chars,
+    }, _impl())
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
@@ -1118,8 +1248,13 @@ EDIT_TOOLS = [page_markdown_edit]
 #: 高亮 / 笔记（《修改计划》第六步）：两个 op 式工具，读写都在里面
 ANNOTATION_TOOLS = [highlight_manage, note_manage]
 
+#: 联网（自带技能 `web-search` 的手脚）：**永远挂载**，没配密钥时返回一句人话错误。
+#: 为什么不做成"有密钥才挂"：工具表一变，system 里那份工具说明与函数 schema 也跟着变，
+#: 一个设置项就能把整段提示词前缀打掉；而且模型不知道"现在能不能联网"只会少问一句。
+WEB_TOOLS = [web_search, web_fetch]
+
 #: 当前挂载的全部工具
-AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS]
+AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS, *WEB_TOOLS]
 
 #: **元数据填写**那一次会话用的工具：只读的读全文能力 + 一个写口。
 #: 为什么单独一份、不并进 `AGENT_TOOLS`：问答会话里模型顺手改元数据的场景并不存在，

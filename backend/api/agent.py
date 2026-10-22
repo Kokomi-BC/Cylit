@@ -23,7 +23,7 @@ from backend.core.config import get_settings, normalize_agent_limits
 from backend.core.errors import ProviderError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.agent import (attachments, bridge, conversations, model_config,
-                                    project, skills_store)
+                                    project, skills_store, websearch)
 from backend.services.paper import paper_service
 from backend.services.translation import page_edit
 
@@ -890,3 +890,76 @@ async def agent_persist_message(request: Request, payload: dict = Body(...),
         run=payload.get("run") or None,
         finish_reason=payload.get("finish_reason"),
     ), request=request)
+
+
+# --------------------------------------------------------------------------
+# 联网搜索（DeepSeek 官方 Search / Fetch；工具 `web_search` / `web_fetch` 的配置与后端）
+# --------------------------------------------------------------------------
+
+
+@router.get("/agent/websearch/config")
+async def get_websearch_config(request: Request):
+    """搜索配置：提供方 / 条数 / 是否取正文 / 正文上限 + 密钥的**掩码**（永不回显明文）。"""
+    return envelope(websearch.public_config(), request=request)
+
+
+@router.put("/agent/websearch/config")
+async def put_websearch_config(request: Request, payload: dict = Body(default={})):
+    """保存搜索配置（字段可选：只传要改的那些）。
+
+    ``{"api_key": "…"}`` 保存密钥（空串 = 本次不改）；``{"clear_key": true}`` 清除；
+    其余四个是普通设置项。响应只回掩码。
+    """
+    cfg = websearch.save_config(payload)
+    applied = cfg.pop("applied", {}) or {}
+    parts = []
+    if applied.get("api_key") == "saved":
+        parts.append("密钥已保存")
+    elif applied.get("api_key") == "cleared":
+        parts.append("密钥已清除")
+    if "websearch_provider" in applied:
+        label = websearch.PROVIDERS[applied["websearch_provider"]]["label"]
+        parts.append(f"提供方改为{label}")
+    if "websearch_count" in applied:
+        parts.append(f"每次搜索返回 {applied['websearch_count']} 条")
+    if "websearch_need_content" in applied:
+        parts.append("默认" + ("随结果带正文" if applied["websearch_need_content"] else "只取摘要"))
+    if "websearch_fetch_chars" in applied:
+        parts.append(f"抓取正文上限 {applied['websearch_fetch_chars']} 字符")
+    if applied.get("api_key") == "saved":
+        parts.append("建议点「验证」确认可用")
+    return envelope(cfg, message="；".join(parts) or "没有需要保存的字段", request=request)
+
+
+@router.post("/agent/websearch/verify")
+async def verify_websearch(request: Request):
+    """跑一次真实搜索（count=1）校验密钥。**HTTP 一律 200**，结论在 `data.ok`/`data.state`。
+
+    与 `/mineru/verify` 同一口径：密钥过期是**用户要去修的东西**，不是请求出错，
+    前端要能同时拿到"结论 + 原因 + 延迟"三样原样展示。
+    """
+    result = websearch.verify()
+    return envelope(result, message=str(result.get("detail") or ""), request=request)
+
+
+@router.post("/agent/websearch/search")
+async def websearch_search(request: Request, payload: dict = Body(default={}),
+                           x_internal_token: str | None = Header(None)):
+    """**联网**搜索（工具 `web_search` 的后端）。`count`/`need_content` 不传就用设置默认。"""
+    _require_internal(x_internal_token)
+    return envelope(websearch.search(
+        str(payload.get("query") or ""),
+        count=payload.get("count"),
+        need_content=payload.get("need_content"),
+        ori_question=str(payload.get("ori_question") or ""),
+        localization=str(payload.get("localization") or ""),
+    ), request=request)
+
+
+@router.post("/agent/websearch/fetch")
+async def websearch_fetch(request: Request, payload: dict = Body(default={}),
+                          x_internal_token: str | None = Header(None)):
+    """抓一篇网页正文（工具 `web_fetch` 的后端）；按 `fetch_chars` 截断并回 `truncated`。"""
+    _require_internal(x_internal_token)
+    return envelope(websearch.fetch(str(payload.get("url") or ""),
+                                    max_chars=payload.get("max_chars")), request=request)

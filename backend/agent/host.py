@@ -124,6 +124,27 @@ class HostClient:
         return dict(await self.post("/agent/kb/search",
                                     {"query": query, "top_k": top_k}) or {})
 
+    # ---------------- 联网搜索（密钥只在主后端，agent 不持有） ----------------
+    async def web_search(self, query: str, *, count: int | None = None,
+                         need_content: bool | None = None,
+                         ori_question: str = "") -> dict:
+        """**联网**搜索（`web_search` 工具的后端）。
+
+        `count` / `need_content` 只在模型显式给了才传 —— 默认值归主后端的设置，
+        这里填一个就是第二处默认值，"界面改了、行为没变"就是这么来的。
+        """
+        payload = {k: v for k, v in (("query", query), ("count", count),
+                                     ("need_content", need_content),
+                                     ("ori_question", ori_question))
+                   if v not in (None, "")}
+        return dict(await self.post("/agent/websearch/search", payload) or {})
+
+    async def web_fetch(self, url: str, *, max_chars: int | None = None) -> dict:
+        """抓一篇网页正文（`web_fetch` 工具的后端）；截断长度由主后端的设置决定。"""
+        payload = {k: v for k, v in (("url", url), ("max_chars", max_chars))
+                   if v not in (None, "")}
+        return dict(await self.post("/agent/websearch/fetch", payload) or {})
+
     async def library(self, *, q: str | None = None, status: str | None = None) -> dict:
         params = {k: v for k, v in (("q", q), ("status", status)) if v}
         return dict(await self.get("/agent/library", params or None) or {})
