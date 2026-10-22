@@ -566,6 +566,22 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         needle = str(query).strip().lower()
         items = [i for i in items if needle in " ".join(str(i.get(k) or "") for k in
                                                        ("latex", "context", "context_zh")).lower()]
+    # 读时抽公式是**按出现次数**给的：同一段正文里同一个 $x$ 常常出现两三遍
+    # （"$Pi cdot x$ 均匀分布…如引理 1 所示，$Pi cdot x$ 的每个坐标…"），
+    # 于是同一条公式在列表里重复出现、还各自占掉一个引用号（实测 p5 三次、p3 两次）。
+    # 位置与内容都相同的重复项对"读"和"引用"都没有价值 —— 同 (page, row_id, latex) 只留第一条，
+    # 顺序与其它条目保持原样。
+    seen: set[tuple[int, str, str]] = set()
+    unique: list[dict] = []
+    for item in items:
+        key = (int(item.get("page") or 0), str(item.get("row_id") or ""),
+               " ".join(str(item.get("latex") or "").split()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    items = unique
+
     out = [{
         "page": int(i.get("page") or 0) or None,
         "row_id": i.get("row_id"),
