@@ -179,12 +179,26 @@ def test_saved_count_out_of_range_is_rejected_and_not_written(fake_settings):
     assert "websearch_count" not in _store
 
 
-@pytest.mark.parametrize("value,want", [(500, 500), (20000, 20000), ("6000", 6000)])
+@pytest.mark.parametrize("value,want", [(500, 500), (200000, 200000), ("6000", 6000)])
 def test_fetch_chars_accepts_the_legal_range(value, want):
     assert ws.norm_fetch_chars(value) == want
 
 
-@pytest.mark.parametrize("value", [0, 499, 20001, "很多", None])
+def test_fetch_chars_top_of_range_is_a_context_budget_not_a_guess():
+    """上限是 200k 字符（≈50k tokens），够读一整篇官方文档；默认仍是 6000。
+
+    这两条一起钉住"默认小、按需调大"：默认值一旦被调大，每次抓网页都会吃满上下文。
+    """
+    assert ws.FETCH_CHARS_RANGE == (500, 200000)
+    assert ws.DEFAULT_FETCH_CHARS == 6000
+    assert ws.norm_fetch_chars(200000) == 200000
+    with pytest.raises(ValidationError) as err:
+        ws.norm_fetch_chars(200001)
+    # 报错文案的区间是从常量拼出来的，改了上界这里会一起变（不硬写数字的检查）
+    assert "500~200000" in err.value.message
+
+
+@pytest.mark.parametrize("value", [0, 499, 200001, "很多", None])
 def test_fetch_chars_rejects_out_of_range(value):
     with pytest.raises(ValidationError):
         ws.norm_fetch_chars(value)

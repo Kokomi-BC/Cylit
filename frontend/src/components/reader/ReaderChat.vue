@@ -148,6 +148,9 @@ const elapsedMs = ref(0);
 let tickTimer: number | null = null;
 /** 收起过程轨迹的消息 id（**默认收起**：从历史进来先看对话，想看过程再点开）。 */
 const openRuns = ref<string[]>([]);
+/** 用户**显式点过**哪几轮轨迹的展开/收起。只活在组件内存里（不落库、不进 localStorage）：
+    一轮跑完时，点过的沿用他的选择，没点过的才吃"结束后自动收起"这个默认。 */
+const runTouched = new Set<string>();
 /** 展开长思考的键（`${message_id}:${步骤序号}`）；默认只露 4 行 */
 const openSteps = ref<string[]>([]);
 const editing = ref<{ id: string; text: string; branch: boolean } | null>(null);
@@ -532,7 +535,10 @@ const TOOL_STEPS: Record<string, string> = {
   page_image_get: '看页面图', figure_list: '看插图清单', figure_image_get: '看插图',
   formula_get: '取公式', translate_get: '取译文',
   library_list: '翻书架', notes_search: '查笔记',
+  paper_archive_get: '看背景档案',
   page_markdown_edit: '修订产物',
+  // 联网：与 backend/agent/tools.py 的 WEB_TOOLS 同名（永远是挂载的，没配密钥才报错）
+  web_search: '联网搜索', web_fetch: '读网页',
 };
 
 /** 工具 → 图标（用站点已有的那套；没有对应项的退回 `bolt`）。 */
@@ -542,8 +548,10 @@ const TOOL_ICONS: Record<string, string> = {
   page_image_get: 'image', figure_list: 'list', figure_image_get: 'image',
   formula_get: 'formula', translate_get: 'translate',
   library_list: 'library', notes_search: 'note',
+  paper_archive_get: 'document',
   page_markdown_edit: 'edit',
   highlight_manage: 'formula', note_manage: 'note', paper_meta_write: 'check',
+  web_search: 'search', web_fetch: 'external',
 };
 
 /** 抬头右侧那句话的**分类**：与 DSH 的"已读取文件，已搜索代码"同一种写法。 */
@@ -555,7 +563,12 @@ const TOOL_SUMMARY: Array<[string[], string]> = [
   [['translate_get'], '看过译文'],
   [['library_list'], '翻过书架'],
   [['notes_search'], '查过笔记'],
+  [['paper_archive_get'], '看过背景档案'],
   [['page_markdown_edit'], '改过产物'],
+  [['highlight_manage'], '标过高亮'],
+  [['note_manage'], '记过笔记'],
+  [['web_search'], '已搜索网页'],
+  [['web_fetch'], '已读网页'],
 ];
 
 function stepLabel(tool?: string) {
@@ -640,9 +653,27 @@ function isRunOpen(id: string) {
 function toggleRun(id: string) {
   // ⚠️ 与 `isRunOpen` 同一套语义（**记"展开"而不是"收起"**）：默认收起后，
   // 这里写反过一次 —— 点抬头看见的是一动不动。
+  runTouched.add(id);
   openRuns.value = isRunOpen(id)
     ? openRuns.value.filter(x => x !== id)
     : [...openRuns.value, id];
+}
+
+/**
+ * 这一轮跑完（或失败 / 中止）时的收尾：轨迹**默认收起**，只留抬头一行。
+ * 但用户在这一轮里自己点过展开/收起的话，那不是默认能覆盖的东西 ——
+ * 占位消息的 id 与落库那条不同，所以把"开着"这个选择搬到落库那条的 id 上。
+ */
+function settleRun(placeholderId: string, replied: boolean) {
+  if (!placeholderId) return;
+  const wasOpen = openRuns.value.includes(placeholderId);
+  openRuns.value = openRuns.value.filter(x => x !== placeholderId);
+  const answerId = replied ? lastAnswerId() : '';
+  if (runTouched.has(placeholderId) && wasOpen && answerId) {
+    openRuns.value = [...openRuns.value, answerId];
+    runTouched.add(answerId);
+  }
+  runTouched.delete(placeholderId);
 }
 
 function stepKey(id: string, i: number) {
@@ -1266,7 +1297,10 @@ const TOOL_LABELS: Record<string, string> = {
   page_image_get: '正在看页面图', figure_list: '正在看插图清单',
   figure_image_get: '正在看插图', formula_get: '正在取公式',
   translate_get: '正在取译文', library_list: '正在翻书架', notes_search: '正在查你的笔记',
+  paper_archive_get: '正在看背景档案',
   page_markdown_edit: '正在修订产物',
+  highlight_manage: '正在标高亮', note_manage: '正在写笔记',
+  web_search: '正在联网搜索', web_fetch: '正在读网页',
 };
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? `正在调用 ${name}`;
 
@@ -1348,6 +1382,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   await scrollToBottom();
 
   controller = new AbortController();
+  let replied = false;                  // 这一轮真的拿到了落库结果（中止 / 失败时不算）
   try {
     /* 请求体**按需装配**：`mode: "explain"` 只有在 body 里**没有** `model_id` /
        `reasoning_effort` 这两个键时才会套用设置里那份解释配置（见 `backend/api/agent.py`）——
@@ -1374,6 +1409,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (convId) {
       await loadConversation(convId);            // `done` 是权威结果：重拉一次对齐
       await loadConversations();
+      replied = true;
     }
     /* 把色点钉到这一轮的回答上：新锚点那一轮钉新回答；被钉的那条没了（就地重答换了 id）
        或重答的正是它，就改钉新的那条。追问那一轮不会动它 —— 这正是"只留在第一轮"的意思。 */
@@ -1401,7 +1437,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     // 占位消息撤掉：成功后 `loadConversation` 已经把它换成了落库那条；
     // 失败/中止时它没有对应的库记录，留着会与刷新后的结果不一致。
     messages.value = messages.value.filter(m => m.message_id !== liveId.value);
-    openRuns.value = openRuns.value.filter(x => x !== liveId.value);
+    settleRun(liveId.value, replied);          // 跑完自动收起（点过的按用户的选择）
     liveId.value = '';
     controller = null;
     // 发完一轮输入框空了 → 高度收回去（不然它会一直停在上一次的多行高度）
@@ -2138,9 +2174,13 @@ defineExpose({ uploadFiles, ensureThread });
             <!-- 引用**不再在下面列一排 chunk 号**（用户口径 2026-10-03）：
                  正文里的 `[n]` 本身就是锚点，点它跳转。 -->
 
+            <!-- 收尾只有一份，按状态换：还在跑（`liveId` 那条）时是一根发丝线，
+                 把正文与下面的空白分开 —— 这时没有"复制 / 修改"可做，挂着那排按钮只会边生成边闪；
+                 跑完才换成正常那排（时间 · 复制 · 修改）。兄弟分支那排同理，一并藏在完成态。 -->
+            <div v-if="m.message_id === liveId" class="msg-live-rule" aria-hidden="true" />
             <!-- 消息操作条：**在气泡下面**（用户口径 2026-10-03 —— 上面的那排按钮全部移除）。
                  语义分三档：改写这条（就地）/ 重答这条（就地）/ **开新分支**（那枚 git 分支图标）。 -->
-            <div class="msg-tools" :class="{ show: (m.siblings?.length ?? 0) > 1 }">
+            <div v-else class="msg-tools" :class="{ show: (m.siblings?.length ?? 0) > 1 }">
               <template v-if="(m.siblings?.length ?? 0) > 1">
                 <button class="ico" title="上一个版本" @click="switchBranch(m, -1)"><AppIcon name="back" :size="11" /></button>
                 <span class="tiny faint mono">{{ m.sibling_index }}/{{ m.siblings?.length }}</span>
@@ -2570,6 +2610,9 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; align-items: center; gap: 4px; min-height: 20px; margin-top: 3px;
   opacity: 0; transition: opacity var(--dur) var(--ease);
 }
+/* 还在跑的那条消息的收尾：一根发丝线（高度 0，只占 1px 边框 + 上方 10px），
+   与完成态那排操作条**互斥渲染** —— 所以生成期间它不会带着一排按钮闪。 */
+.msg-live-rule { height: 0; margin-top: 10px; border-top: 1px solid var(--divider); }
 .msg.user .msg-tools { justify-content: flex-end; }
 .msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
 .msg-time { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums; }

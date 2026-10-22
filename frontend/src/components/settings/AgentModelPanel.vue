@@ -686,7 +686,7 @@ onMounted(() => {
                   <div class="grid cols-2">
                     <label class="field">
                       <span class="field-top">抓取字数上限</span>
-                      <input type="number" min="500" max="20000" step="500"
+                      <input type="number" min="500" max="200000" step="500"
                              v-model.number="wsForm.fetch_chars" />
                     </label>
                     <div class="field">
