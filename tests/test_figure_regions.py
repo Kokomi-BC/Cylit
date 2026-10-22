@@ -27,6 +27,27 @@ PAGE = Rect(0, 0, 612, 792)
 
 
 
+
+
+def test_algorithm_region_requires_a_caption_block(monkeypatch) -> None:
+    """正文里以 `Algorithm 2.` 开头的**引用句**不能变成可裁图区域（p19 那条假区域）。"""
+    from backend.parsing.models import Rect
+
+    def block(bid, kind, text, y0=100.0):
+        return {"id": bid, "type": kind, "text_clean": text, "text": text,
+                "page_no": 19, "x0": 108.0, "y0": y0, "x1": 504.0, "y1": y0 + 10.0}
+
+    made: list[dict] = []
+
+    def entry(page_no, kind, rect, raw, caption, number, caption_block_id, *args, **kwargs):
+        made.append({"kind": kind, "number": number, "caption": caption})
+        return made[-1]
+
+    blocks = [block("p19-x01", "para", "Algorithm 2. The third line above follows because …"),
+              block("p19-x02", "caption", "Algorithm 3: real caption", y0=200.0)]
+    got = fr._algorithm_regions(blocks, [], entry, Rect(0, 0, 612, 792))
+    assert [r["number"] for r in got] == ["3"], got
+
 def test_markdown_caption_matches_algorithm_lines(monkeypatch) -> None:
     """算法块与图/表共用序号（都有 1），图注补全要按 kind 选行首正则。"""
     from backend.services.paper import reader_service as rs

@@ -741,6 +741,11 @@ def _algorithm_regions(blocks: list[dict], existing: list[dict], entry, page: Re
     out: list[dict] = []
     ordered = sorted(blocks, key=lambda b: (_num(b.get("y0")), _num(b.get("x0"))))
     for i, block in enumerate(ordered):
+        # 必须是**真正的 caption 块**：正文里「Algorithm 2. The third line above follows…」这种
+        # 引用句也以 `Algorithm N` 开头（实测 2026-12-07 p19 就凭空多出一条假区域，
+        # 框住 500~680pt 的一大段正文）。
+        if str(block.get("type") or "") != "caption":
+            continue
         text = str(block.get("text_clean") or block.get("text") or "")
         hit = _ALGO_HEAD.match(text)
         if not hit:
