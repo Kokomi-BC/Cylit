@@ -151,3 +151,18 @@ def test_note_batch_reports_the_missing_highlight() -> None:
         {"highlight_id": "", "content": "没挂上任何高亮"},
     ]))
     assert out["ok"] is False and "高亮" in out["failed"][0]["error"]
+
+def test_single_edit_without_page_says_what_to_do() -> None:
+    """`page` 有了默认值（批量不需要它）：漏给时要说人话，别掉进「第 0 页」。"""
+    out = asyncio.run(page_markdown_edit(_ctx(_EditHost()), op="replace", side="original",
+                                         find="a", replace="b"))
+    assert out["ok"] is False and "page" in out["error"]
+
+
+def test_replace_all_does_not_need_page() -> None:
+    host = _EditHost()
+    ctx = _ctx(host)
+    _read(ctx, 4)
+    out = asyncio.run(page_markdown_edit(ctx, op="replace_all", side="original", pages="4",
+                                         find=FIND, replace=REPLACE))
+    assert out["ok"] is True and out["done"][0]["page"] == 4

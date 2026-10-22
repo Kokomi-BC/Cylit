@@ -1173,7 +1173,7 @@ def _side_key(side: str) -> str:
     return _SIDE_ALIASES.get(str(side or "").strip().lower(), str(side or "").strip().lower())
 
 
-async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: str,
+async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int = 0, side: str = "",
                              find: str = "", replace: str = "",
                              reason: str = "", pages: str = "") -> dict:
     """改**页级产物**（A 路英文转录 / B 路中文译文）里的**一处**文本 —— 修正 OCR 认错、
@@ -1208,7 +1208,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                 `side` 可以给 ``"both"``（两侧一起改）。最多 24 处（页 × 侧）一次。
     """
     async def _impl() -> dict:
-        page_no = int(page)
+        page_no = int(page or 0)
         key = _side_key(side)
         what = "view" if op in ("view", "read", "show") else str(op or "").strip().lower()
 
@@ -1279,6 +1279,13 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
 
         if what in ("replace_all", "replaceall", "replace-many", "bulk"):
             return await _replace_many()
+
+        #: `page` 给了默认值（批量不需要它）：单页操作没给页码时要说人话，
+        #: 而不是让它掉进「第 0 页没有产物」那种看不出是哪错了的提示里。
+        if page_no <= 0:
+            return {"ok": False,
+                    "error": "page 要给页码（单页操作用）；多页同串改写请用 "
+                             "op=\"replace_all\" + pages=\"4,7,19\"。"}
 
         if what == "view":
             data = await ctx.deps.host.page_product(ctx.deps.paper_id, page_no, side)
