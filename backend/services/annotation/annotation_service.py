@@ -158,9 +158,12 @@ def update_highlight(highlight_id: str, payload: dict) -> dict:
         color = payload.get("color")
         if color is not None:
             row.color = _norm_color(color)
-        if payload.get("selected_text") is not None:
-            row.selected_text = str(payload["selected_text"])
         moved = False
+        new_text = payload.get("selected_text")
+        #: 引文变了也算「动过」：挂在它上面的笔记要跟着换文字（笔记里是冗余副本）。
+        if new_text is not None and str(new_text) != str(row.selected_text or ""):
+            row.selected_text = str(new_text)
+            moved = True
         if str(payload.get("block_id") or "").strip():
             row.block_id = str(payload["block_id"]).strip()
             moved = True

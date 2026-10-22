@@ -724,6 +724,32 @@ def _index_map(old: str, new: str) -> list[int]:
     return [int(one) for one in mapping]
 
 
+def _refresh_formula_texts(paper_id: str, page: int, side: str, md: str,
+                          *, only_before: str = "") -> int:
+    r"""公式高亮存的是 **LaTeX**：正文里那条式子改了就换过来（换掉 `\sqrt{3\pi^2}` 那种笔误）。"""
+    positions: list[tuple[int, str]] = []
+    for start, _end, latex in math_spans(md):
+        positions.append((len(render_like_dom(md[:start])), latex))
+    if not positions:
+        return 0
+    changed = 0
+    for hl in svc.list_highlights(paper_id)["items"]:
+        if str(hl.get("side") or "") != side:
+            continue
+        if int(svc.anchor_page(str(hl.get("block_id") or "")) or 0) != int(page):
+            continue
+        if only_before and str(hl.get("created_at") or "") >= only_before:
+            continue
+        start, end = int(hl.get("start") or 0), int(hl.get("end") or 0)
+        hit = next((latex for pos, latex in positions if pos == start and end - start == 1),
+                   None)
+        if hit is None or str(hl.get("text") or "") == hit:
+            continue
+        svc.update_highlight(str(hl.get("id") or ""), {"selected_text": hit})
+        changed += 1
+    return changed
+
+
 def realign_after_edit(paper_id: str, page: int, side: str, prev_md: str, new_md: str,
                        *, only_before: str = "") -> dict:
     r"""正文改了以后，把这一页这一面的**高亮与笔记**重新对齐到新文本。
@@ -743,7 +769,12 @@ def realign_after_edit(paper_id: str, page: int, side: str, prev_md: str, new_md
         log.warning("高亮对齐：渲染失败，跳过 %s p%s：%s", paper_id, page, exc)
         return {"ok": False, "moved": 0}
     if old_r == new_r:
-        return {"ok": True, "moved": 0, "stale": 0}
+        # 公式**内部**的改动在渲染文字里看不见（整条公式只占一个 ATOM），可高亮存的是 LaTeX：
+        # 用户那个 `\sqrt{3\pi^2}` → `\sqrt{3}\,\pi^2` 就属于这种，偏移没变、引文变了。
+        want = "zh" if str(side or "").lower().startswith(("translation", "zh")) else "en"
+        return {"ok": True, "moved": 0, "stale": 0,
+                "formula": _refresh_formula_texts(paper_id, page, want, new_md,
+                                                only_before=only_before)}
     want_side = "zh" if str(side or "").lower().startswith(("translation", "zh")) else "en"
     mapping = _index_map(old_r, new_r)
     moved = stale = 0
