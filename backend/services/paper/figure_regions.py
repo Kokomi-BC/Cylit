@@ -1333,7 +1333,8 @@ def markdown_caption(paper_id: str, page_no: int, number: str, *,
         if not hit:
             continue
         if hit.group(1) == want:
-            return text
+            # 图注行有时**整块**是一行（算法块的 caption 行后面紧跟伪代码正文）→ 只取第一行
+            return text.split("\n")[0].strip()
     return ""
 
 def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> list[dict]:
@@ -1361,7 +1362,9 @@ def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> 
         caption = r["caption"]
         full = markdown_caption(paper_id, int(page_no), str(r["number"] or ""),
                                 kind=str(r["kind"] or "figure"))
-        if full and len(full) > len(caption) and full[:40].lower() == caption[:40].lower():
+        # 前缀比 15 个字符就够（图注开头固定是 `Figure 1: …` / `Algorithm 1 …`），比 40 会因
+        # 半句里第一个 `$` 的位置不同而判成"不是同一条"（实测 2026-12-07）。
+        if full and len(full) > len(caption) and full[:15].lower() == caption[:15].lower():
             caption = full
         out.append({
             "kind": r["kind"], "number": r["number"], "caption": caption,
