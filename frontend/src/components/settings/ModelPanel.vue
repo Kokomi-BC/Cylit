@@ -562,6 +562,9 @@ async function submitForm(payload: Record<string, any>) {
       formOpen.value = false;
       await refresh();
       const id = String(created?.id || created?.model?.id || payload.name || '');
+      /* 保存成功 ≠ 连接可用（用户口径：两个状态要分开报）。所以存完立刻用既有
+         `POST /models/{id}/test` 真打一次端点，结果单独 toast —— 不混进「已保存」里。 */
+      if (id) setTimeout(() => { void testModel(created as any); }, 300);
       if (id) flash(id);
       toast('已创建，建议点「测试」验证连通性', 'ok', 4800);
     }
