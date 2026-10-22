@@ -738,7 +738,11 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             items.append({
                 "ref": cit.ref, "page": page_no, "latex": latex,
                 "display": bool(raw.get("display")),
+                # grade / bbox / crop_url 都来自**版面提取卡**（没有对应卡时为 None）：
+                # 文本来自转录、定位与分级来自提取卡，两源合起来用（用户口径 2026-12-07）。
                 "grade": raw.get("grade"),
+                "bbox": raw.get("bbox"),
+                "crop_url": raw.get("crop_url"),
                 # LaTeX 只是公式的一段 → 要讲全貌就去看原版面
                 "partial": bool(raw.get("partial")),
                 "source": raw.get("source"),
@@ -1242,7 +1246,7 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 # 宿主的两条"别忽略我"的信号必须原样带出去：这里是白名单字典，新增字段
                 # 不显式搬一遍就会被丢掉（2026-12-07 实测：跨块落在 Markdown 面的高亮
                 # 明明带了 warning，模型侧一个字都没看到）。
-                for extra in ("warning", "side_note"):
+                for extra in ("warning", "side_note", "text_note"):
                     if data.get(extra):
                         out[extra] = data[extra]
                 return out

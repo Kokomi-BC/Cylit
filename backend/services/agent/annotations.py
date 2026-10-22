@@ -812,23 +812,29 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     start, end = span
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
     # （`markRanges`），所以不影响定位；而列表 / 笔记里显示一个隐形的 U+FFFC 毫无意义。
+    matched = rendered[start:end]
+    had_atom = ATOM in matched
     if is_formula:
         stored_text = formula_src or str(text or "").strip()
     else:
         # 文字高亮存坐标系里那一段，但**把公式占位符换成空**：`ATOM`（U+FFFC）在列表 / 笔记 /
         # 引用里显示成方块，用户看不懂；偏移量仍按渲染坐标给，前端画标记时"选区含 ATOM 就跳过
         # 文字校验"，所以不影响定位（实测 2026-12-07 用户报的"那个方块是什么"就是它）。
-            stored_text = rendered[start:end].replace(ATOM, "")
+        stored_text = matched.replace(ATOM, "")
     result = _write(anchor, side, kind, (start, end), stored_text, rendered)
+    if had_atom and not is_formula:
+        # 回执里的 text 会有"两个空格"：那里原本是公式。不说一句，用户会以为文字被吞了
+        # （2026-12-07 实测）。
+        result["text_note"] = "`text` 里公式那一处已留空（它原本是公式元素，不是文字被吞）"
     if kind == "markdown":
         # 落在 Markdown 面的高亮**阅读视图里看不见**（只有 Markdown 视图画它）。这本身是
         # "行里对不上"的兜底，但要说明白，否则用户以为"高亮没出现"（实测报过多次）。
         # 用 `_span_row_hint` 而不是 `_miss_reason`：这里的文字确实在页面里，只是横跨了多段
         # （2026-12-07 实测：跨段落那句回 ok=true 且没有任何警告，用户以为标上了）。
         why = _span_row_hint(paper_id, anchor_page_no(anchor), text)
+        # 中文句号后面不要再加空格（实测 2026-12-07 用户点名：「看不到它」。 这段」中间那个空格）。
         result["warning"] = ("这条标在 **Markdown 视图** —— 阅读视图（对照 / 译文）里**看不到它**。"
-                             + (" " + why if why else
-                                " 要让它出现在正文里，就把范围缩到单个段落内再标。"))
+                             + (why or "要让它出现在正文里，就把范围缩到单个段落内再标。"))
     return result
 
 

@@ -294,6 +294,22 @@ _REAL_OUTLINE = [
 ]
 
 
+
+
+def test_archive_explains_symbol_only_headings() -> None:
+    """中英逐字相同的符号标题只显示一次 → 档案里说明一句，别让人以为漏了中文（C.1 / C.2）。"""
+    outline = [{"text": "C.1 TURBOQUANT$_{\\text{mse}}$",
+                "text_zh": "C.1 TURBOQUANT$_{\\text{mse}}$", "level": 2},
+               {"text": "C.3 LOWER BOUNDS", "text_zh": "C.3 下界", "level": 2}]
+    text = _archive(outline=outline)
+    assert "C.1 TURBOQUANT" in text
+    assert "符号标题中英相同" in text
+
+
+def test_archive_has_no_symbol_note_when_nothing_is_a_symbol_title() -> None:
+    outline = [{"text": "1 EXPERIMENTS", "text_zh": "1 实验", "level": 1}]
+    assert "符号标题中英相同" not in _archive(outline=outline)
+
 def test_archive_renders_the_outline_from_the_real_shape() -> None:
     """**24 条真实形状**的 outline 必须整段出现：有条数、有层级缩进、没有空行与 None。
 

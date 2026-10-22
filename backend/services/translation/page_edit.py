@@ -341,9 +341,17 @@ def view(paper_id: str, page: int, side: str) -> dict:
                        page=page, side=key)
     lines, truncated = numbered(text)
     rows = _rows_of(paper_id, page) or []
+    all_lines = text.split("\n")
     return {
         "page": page, "side": key, "source": source,
-        "chars": len(text), "rows": len(rows), "truncated": truncated,
+        "chars": len(text),
+        #: `rows` = **读模型的行（块）数**，与 `replace` 回执里的「行数不变」同一口径；
+        #: 它**不是** Markdown 的行数（段落之间有空行，两者必然不同）。2026-12-07 用户被这两个
+        #: 数字搞混过（rows 15 / lines 29），所以把 Markdown 那一侧的计数单独给出来。
+        "rows": len(rows),
+        "lines_total": len(all_lines),
+        "lines_non_empty": sum(1 for ln in all_lines if ln.strip()),
+        "truncated": truncated,
         "lines": lines,
         "note": ("这是这一页产物的原始 Markdown（行号只是路标，`find` 里写行内容本身，"
                  "不要带 `|` 和行号）。改写用 op=\"replace\"：find 必须**逐字**取自这里、"

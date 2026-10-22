@@ -667,7 +667,12 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         "row_id": i.get("row_id"),
         "latex": str(i.get("latex") or ""),
         "display": bool(i.get("display")),
+        #: grade 来自**版面提取卡**（没有卡的公式是 None）；文本本身来自转录 —— 两源合起来用
         "grade": i.get("grade"),
+        #: 版面位置与裁图（同样来自提取卡）：模型要"核对原版面"时可以用它，比整页图准
+        "bbox": i.get("bbox"),
+        "crop_url": i.get("crop_url"),
+        "card_id": i.get("card_id"),
         # 这条 LaTeX 可能只是公式的一段（解析时 candidate 被切段、又没有 final）→ 去看裁图
         "partial": bool(i.get("partial")),
         "source": i.get("source") or "parse",

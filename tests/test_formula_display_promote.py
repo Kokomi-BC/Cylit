@@ -130,6 +130,37 @@ def test_page4_no_longer_falls_back_to_parse_cards(monkeypatch) -> None:
     assert all("\\sqrt{3}" not in i["latex"] for i in out["items"])
 
 
+
+
+# --------------------------------------------------------------------------
+# 列表项里的长公式（第 7 页那三条定义式）：文字 + 公式混排也要算块级
+# --------------------------------------------------------------------------
+
+P7_00 = ("- *Expected inner-product* $\\mathbb{E}_{\\tilde{x}}\\left[\\langle y, \\tilde{x}\\rangle\\right] = \\langle y, x\\rangle$")
+P7_01 = ("- *Inner-product distortion defined as* $D_{\\text{prod}} := \\mathbb{E}_{\\tilde{x}}\\left[\\left|\\langle y, x\\rangle - \\langle y, \\tilde{x}\\rangle\\right|^2\\right]$ *is bounded by* $D_{\\text{prod}} \\leq \\frac{\\sqrt{3\\pi^2}\\,\\|y\\|_2^2}{d} \\cdot \\frac{1}{4^b}$ *for any* $b \\geq 0$.")
+
+
+def test_list_item_with_a_label_and_long_formula_counts_as_block_level(page4) -> None:
+    """第 7 页那种「*标签* + 长公式」的列表项要算块级（以前整页 0 条，只能回落到解析碎片）。"""
+    from backend.services.paper import reader_service
+
+    page4([{"id": "p007-00", "original": P7_00, "translation": P7_00},
+           {"id": "p007-01", "original": P7_01, "translation": P7_01}], page=7)
+    data = reader_service.markdown_formulas("demo")
+    display = [i["latex"] for i in data["items"] if i["display"]]
+    assert len(display) == 3, display          # 00 一条 + 01 两条
+    assert any("3\\pi^2" in one for one in display), display
+
+
+def test_short_symbol_in_a_bullet_stays_inline(page4) -> None:
+    """列表项里的**短**符号（`$b \\geq 0$` 这种）不该被当成块级公式。"""
+    from backend.services.paper import reader_service
+
+    page4([{"id": "p007-05", "original": "- the bound holds for $b \\geq 0$ always",
+            "translation": "同上"}], page=7)
+    data = reader_service.markdown_formulas("demo")
+    assert data["display_count"] == 0
+
 def test_three_counts_share_one_denominator(monkeypatch) -> None:
     """`total == display_total + inline_total` 恒成立，且不随 include_inline 变。"""
     md = [{"id": f"f005-{i}", "page": 5, "row_id": f"p005-{i:02d}", "latex": t,

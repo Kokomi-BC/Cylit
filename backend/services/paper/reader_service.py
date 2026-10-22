@@ -845,10 +845,22 @@ DISPLAY_LINE_MAX_TAIL = 60
 DISPLAY_LINE_MIN_LATEX = 12
 DISPLAY_LINE_TAIL_RATIO = 3
 
+#: **列表项里的长公式**（2026-12-07 补的那条判据，见 `_promote_to_display`）：
+#: 论文的定理/命题写成「*Expected inner-product* $…$」「*…defined as* $A$ *is bounded by* $B$」——
+#: 行首有散文，所以只按"整行就是公式"判的话第 7 页三个定义式一条都不算块级（实测整页 0 条），
+#: 公式列表只能回落解析卡，拿到的是图里坐标轴的 `\times 10`。
+#: 判据：整行的散文（剔掉公式与 `*强调*`）不超过 LIST_ITEM_PROSE_MAX，公式本身不少于后者。
+LIST_ITEM_PROSE_MAX = 120
+LIST_ITEM_MIN_LATEX = 40
+
+
+
 #: 行首的列表标记 / 引用标记（剥掉之后还剩字就是"句首有散文"→ 只是句中公式，不提升）
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)]|>)\s*")
 #: 行尾那段文字里所有公式段（`$$` 优先，再 `$`）—— 判定前要先删干净再数长度
 _ANY_MATH_RE = re.compile(r"\$\$.+?\$\$|\$[^$]+\$")
+#: Markdown 强调标记：判"这一行还剩多少散文"时不算字
+_EMPHASIS_RE = re.compile(r"\*\*|__|\*|_")
 
 
 def _extract_math(text: str) -> list[tuple[int, int, str, bool]]:
@@ -904,20 +916,76 @@ def _promote_to_display(text: str, start: int, end: int, latex: str) -> bool:
        —— `for any $b \geq 0$.` 这种短尾巴仍算"整行是公式"，整句散文就不算；
     c) LaTeX 够长（>= `DISPLAY_LINE_MIN_LATEX`）、且 >= 尾巴长度的 `DISPLAY_LINE_TAIL_RATIO` 倍。
 
-    判据只有这三条：**不满足 (a) 一律不提升**（句中的 `\frac{\sqrt{3\pi}}{2}` 之类留在行内）。
+    再加一条**独立**的判据 B（2026-12-07）：行以列表标记开头、整行散文（剔掉公式与 `*强调*`）
+    不超过 `LIST_ITEM_PROSE_MAX`、公式不少于 `LIST_ITEM_MIN_LATEX` → 也算块级。论文把定理/命题
+    写成「*Expected inner-product* $…$」「*…defined as* $A$ *is bounded by* $B$」，只按 A 判的话
+    第 7 页整页 0 条块级公式，公式列表只能回落解析卡，拿到图里坐标轴的 `\times 10`（实测）。
+
+    句中的 `\frac{\sqrt{3\pi}}{2}` 之类（前面是整句散文、也不在列表项里）仍然留在行内。
 
     返回 True 表示"这条行内公式实际上占了整行"。
     """
+    if len(latex) < DISPLAY_LINE_MIN_LATEX or is_noise_formula(latex):
+        return False
     line_start, line_end = _line_bounds(text, start)
-    if _LIST_MARKER_RE.sub("", text[line_start:start]).strip():
-        return False                                    # (a) 句首有散文 → 句中公式
-    tail = _ANY_MATH_RE.sub("", text[end:line_end]).strip()   # (b) 先删掉尾巴里的公式
-    if len(tail) > DISPLAY_LINE_MAX_TAIL:
+    line = text[line_start:line_end]
+    head = text[line_start:start]
+    if not _LIST_MARKER_RE.sub("", head).strip():
+        # 判据 A（整行就是一条公式）：行尾只剩短接续词，且公式长到尾巴的若干倍
+        tail = _ANY_MATH_RE.sub("", text[end:line_end]).strip()
+        return (len(tail) <= DISPLAY_LINE_MAX_TAIL
+                and len(latex) >= DISPLAY_LINE_TAIL_RATIO * max(1, len(tail)))
+    # 判据 B（列表项里的长公式）：行首有散文，但整行散文很短、公式本身够长。
+    # 这是第 7 页那三条定义式的生存条件（`- *Expected inner-product* $…$`）。
+    if not _LIST_MARKER_RE.match(line):
         return False
-    if len(latex) < DISPLAY_LINE_MIN_LATEX:
-        return False
-    return len(latex) >= DISPLAY_LINE_TAIL_RATIO * max(1, len(tail))   # (c)
+    prose = _EMPHASIS_RE.sub("", _ANY_MATH_RE.sub("", line))
+    prose = _LIST_MARKER_RE.sub("", prose).strip()
+    return len(prose) <= LIST_ITEM_PROSE_MAX and len(latex) >= LIST_ITEM_MIN_LATEX
 
+
+def _latex_key(value: object) -> str:
+    """比对用的 LaTeX 键：去掉所有空白（`\\frac {a} {b}` 与 `\\frac{a}{b}` 是同一个式子）。"""
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _attach_cards(paper_id: str, items: list[dict]) -> None:
+    """给**转录那一路**的公式挂上版面提取卡的 ``bbox`` / ``crop_url`` / ``grade``（就地改）。
+
+    为什么两条数据要合起来用（用户口径 2026-12-07）：完整 LaTeX 只在转录那一路（模型重打过
+    一遍），而提取层的 `latex_final` 是**切片级**的 —— 分式会被拆成"分子一个框、分母一个框"
+    （第 4 页那条 `\\frac{\\sqrt{3\\pi^2}\\|y\\|_2^2}{d}` 在提取层就是 `3π·∥y∥` + `b·d` 两个框）。
+    但**定位与裁图只有提取卡有**。所以：文本取转录、bbox/裁图/分级取提取卡。
+
+    配对判据**只认"片段包含"**（卡的 LaTeX 至少 12 字符，且是整式的一段）：卡 ⊆ 公式 或
+    公式 ⊆ 卡，取覆盖最长的那张；一条都对不上就不挂 —— 宁可不给 bbox，也不能给错的裁图。
+    """
+    cards: dict[int, list[dict]] = {}
+    for card in _dedupe_parse_items(paper_id, _parse_formulas(paper_id)):
+        key = _latex_key(card.get("latex"))
+        if len(key) < 12:
+            continue
+        cards.setdefault(int(card.get("page") or 0), []).append({**card, "_key": key})
+    if not cards:
+        return
+    for item in items:
+        want = _latex_key(item.get("latex"))
+        if not want:
+            continue
+        best: tuple[int, dict] | None = None
+        for card in cards.get(int(item.get("page") or 0), []):
+            key = card["_key"]
+            if key in want or want in key:
+                if best is None or len(key) > best[0]:
+                    best = (len(key), card)
+        if best is None:
+            continue
+        card = best[1]
+        item["bbox"] = card.get("bbox")
+        item["crop_url"] = card.get("crop_url")
+        item["card_id"] = card.get("id")
+        #: grade 说的是"这条公式的提取卡分级"，不是"转录质量"——没有卡时保持 None
+        item["grade"] = card.get("grade")
 
 def markdown_formulas(paper_id: str) -> dict:
     r"""公式列表：**译文优先，未翻译的页用原文（解析产物）兜底**。
@@ -976,12 +1044,11 @@ def markdown_formulas(paper_id: str) -> dict:
 
     # 未翻译的页：原文兜底（正文在那几页显示的也是解析块）
     fallback_pages: set[int] = set()
-    for f in _parse_formulas(paper_id):
-        page = int(f.page_number or 0)
+    # 与 `parse_formulas_payload` 用同一条清洗（图内文字 / 重复条目），免得两个入口看到的
+    # 解析卡不是同一批（2026-12-07：第 7 页 8 条重复的 `\times 10` 就是这么漏出来的）。
+    for item in _dedupe_parse_items(paper_id, _parse_formulas(paper_id)):
+        page = int(item.get("page") or 0)
         if page <= 0 or page in covered:
-            continue
-        item = _parse_formula_item(f)
-        if item is None:
             continue
         fallback_pages.add(page)
         collected.append((page, seq, item))
@@ -989,6 +1056,8 @@ def markdown_formulas(paper_id: str) -> dict:
 
     collected.sort(key=lambda t: (t[0], t[1]))
     items = [it for _p, _s, it in collected]
+    # 文本来自转录、**定位/裁图/分级来自版面提取卡**（见 `_attach_cards`）
+    _attach_cards(paper_id, items)
     if not items:
         source = "markdown" if covered else "parse"
     elif fallback_pages:
@@ -1026,6 +1095,10 @@ def _parse_formula_item(f: Formula) -> dict | None:
         return None
     pieces = [one for one in candidates if str(one or "").strip()]
     partial = bool(len(pieces) > 1 and not (f.latex_final or f.latex_repaired))
+    # 曾经想按"极短就降级"处理图里的刻度（`\times 10`），但 `d \times d` 这种**真的**短式
+    # 会被一起误伤（两条既有用例立刻红）。图里文字改用**版面框过滤**（`_inside_figure`），
+    # `partial` 的语义保持"这条 LaTeX 只是公式的一段"，不拿长度冒充。
+    grade = f.grade
     crop_name = Path(f.image_path).name if f.image_path else None
     return {
         "id": f.id, "page": int(f.page_number or 0), "latex": latex,
@@ -1033,8 +1106,10 @@ def _parse_formula_item(f: Formula) -> dict | None:
         # 解析块的 id 就是正文里那一行的锚点：前端"定位"直接可用
         "row_id": f.id,
         "context": "", "context_zh": "",
-        "grade": f.grade,
+        "grade": grade,
         "partial": partial,
+        #: 版面里的位置（markdown 那一路没有 bbox，靠 `_attach_cards` 从提取卡挂上来）
+        "bbox": json_loads(f.bbox_json, None),
         "crop_url": (f"/papers/{f.paper_id}/formula_crops/{crop_name}"
                      if crop_name else None),
         "source": "parse",
@@ -1061,10 +1136,69 @@ def formulas_payload(paper_id: str, source: str = "markdown") -> dict:
     return markdown_formulas(paper_id)
 
 
+def _figure_boxes(paper_id: str, page: int) -> list[list[float]]:
+    """这一页**插图区域**的外接框（拿不到就当没有 —— 只是少一条过滤，不该让整页失败）。"""
+    from backend.services.paper import figure_regions
+
+    try:
+        return [list(map(float, it["bbox"]))
+                for it in figure_regions.media_of_page(paper_id, page, figures_only=True)
+                if it.get("bbox")]
+    except Exception as exc:  # noqa: BLE001
+        log.debug("取第 %s 页插图区域失败（跳过图内文字过滤）：%s", page, exc)
+        return []
+
+
+def _inside_figure(boxes: list[list[float]], bbox_json: str | None) -> bool:
+    r"""公式的**中心点**是否落在某个插图区域内。
+
+    为什么（实测 2026-12-07）：解析层把图里的刻度 `\times 10`、轴标签 `|\langle y, x\rangle - …|`
+    也当成了公式 —— 第 7 页因此一条真公式都没有、却回了 8 条重复的 `\times 10`；第 8 页本来
+    没有任何块级公式，却凭空多出一条 `\pi -b`。图里的文字不是公式，先按版面框掉。
+    """
+    coords = json_loads(bbox_json, None) if bbox_json else None
+    if not boxes or not isinstance(coords, list) or len(coords) < 4:
+        return False
+    try:
+        x0, y0, x1, y1 = (float(v) for v in coords[:4])
+    except (TypeError, ValueError):
+        return False
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    for bx0, by0, bx1, by1 in boxes:
+        if bx0 - 2.0 <= cx <= bx1 + 2.0 and by0 - 2.0 <= cy <= by1 + 2.0:
+            return True
+    return False
+
+
+def _dedupe_parse_items(paper_id: str, rows: list[Formula]) -> list[dict]:
+    """解析卡 → 去重、去掉图内文字的列表项（顺序保持页序）。
+
+    去重按 ``(页, LaTeX)``：图里的 `\times 10` 会连着出现八九次，markdown 那一路早就去重了，
+    解析这一路以前没有（2026-12-07 实测）。
+    """
+    items: list[dict] = []
+    seen: set[tuple[int, str]] = set()
+    boxes: dict[int, list[list[float]]] = {}
+    for f in rows:
+        it = _parse_formula_item(f)
+        if it is None:
+            continue
+        page = int(it["page"] or 0)
+        if page not in boxes:
+            boxes[page] = _figure_boxes(paper_id, page)
+        if _inside_figure(boxes[page], f.bbox_json):
+            continue
+        key = (page, " ".join(str(it["latex"]).split()))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(it)
+    return items
+
+
 def parse_formulas_payload(paper_id: str) -> dict:
     """只回解析阶段的公式（``?source=parse``；形状与 ``markdown_formulas`` 一致）。"""
-    items = [it for f in _parse_formulas(paper_id)
-             if (it := _parse_formula_item(f)) is not None]
+    items = _dedupe_parse_items(paper_id, _parse_formulas(paper_id))
     return {"items": items, "count": len(items), "source": "parse",
             "display_count": sum(1 for i in items if i["display"])}
 

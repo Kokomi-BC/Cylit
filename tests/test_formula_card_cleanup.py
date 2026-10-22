@@ -17,7 +17,7 @@ from backend.services.paper import reader_service as rs
 def _card(**kwargs) -> SimpleNamespace:
     base = dict(id="c01", page_number=5, paper_id="p", grade="A", is_inline=False,
                 image_path="/x/crop.png", latex_candidate=None,
-                latex_repaired="", latex_final="")
+                latex_repaired="", latex_final="", bbox_json=None)
     base.update(kwargs)
     return SimpleNamespace(**base)
 

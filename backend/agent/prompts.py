@@ -309,6 +309,16 @@ def _outline_label(node: dict, sep: str = "") -> str:
     return f"{en}{joiner}{zh}"
 
 
+def _same_symbol_title(node: dict) -> bool:
+    """这一条是不是「中英逐字相同的符号标题」（`C.1 TURBOQUANT$_{\\text{mse}}$`）。
+
+    这类标题本身没有可译的字，`_outline_label` 只显示一次（否则就是 `X｜X` 的废话）。
+    档案里要为此说明一句，免得读者以为漏了中文（2026-12-07 用户点名 C.1 / C.2）。
+    """
+    en = str((node or {}).get("text") or "").strip()
+    zh = str((node or {}).get("text_zh") or "").strip()
+    return bool(en) and en == zh and ("$" in en or "\\" in en)
+
 def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
                   title: str, page_total: int) -> str:
     """把论文档案渲染成**注入用**的稳定文本块。
@@ -336,10 +346,14 @@ def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
     nodes = [node for node in (outline or []) if _outline_label(node)]
     struct = ""
     if nodes:
+        shown = nodes[:40]
         struct = "\n".join(
             ["章节结构："]
             + [f"  {'  ' * (int(node.get('level', 1) or 1) - 1)}- {_outline_label(node, '｜')}"
-               for node in nodes[:40]])
+               for node in shown])
+        if any(_same_symbol_title(node) for node in shown):
+            struct += ("\n  …（含 `$…$` 的符号标题中英相同，只显示一次；"
+                       "那是标题本身没有可译的字，不是漏了译文）")
         if len(struct) > struct_chars:      # 大纲本身异常长：截在预算内，但明说是"结构被截"
             struct = struct[:struct_chars] + "\n  …（章节结构过长已截断）"
 
