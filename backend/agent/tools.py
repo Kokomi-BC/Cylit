@@ -1419,7 +1419,7 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                            color: str = "", side: str = "", occurrence: int = 1,
                            highlight_id: str = "", query: str = "", reason: str = "",
                            items: list[dict] | None = None) -> dict:
-    """给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
+    r"""给这篇论文的**高亮**做增删改查、以及"这条高亮在哪"。
 
     高亮是"用户在某一面上标出来的一段文字"，也是**笔记的锚点**（`Highlight └── Note`）。
     三面各有各的位置模型（正文行 / Markdown 视图 / 原 PDF 页图）—— 你只需要给
@@ -1482,6 +1482,9 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
 
     与"解释这段内容"的分工：解释是**读**（不需要动数据）；只有用户说"把这段标出来 / 加个高亮"
     才用本工具写。写完在回答里说清标在哪一页、哪一段文字。
+
+    ⚠️ 标的若是**含常数的公式**（`\sqrt{3}\,\pi^2` 这种），先 `page_image_get` 对原版面再动手：
+    转录里的根号覆盖范围与上下标不可靠，标错对象比没标更糟。
     """
     async def _impl() -> dict:
         what = str(op or "").strip().lower()
@@ -1642,7 +1645,7 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
 async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", note_id: str = "",
                       content: str = "", query: str = "", reason: str = "",
                       items: list[dict] | None = None) -> dict:
-    """给**高亮**写笔记 / 查笔记 / 改笔记 / 删笔记 / 看这条笔记对应的高亮。
+    r"""给**高亮**写笔记 / 查笔记 / 改笔记 / 删笔记 / 看这条笔记对应的高亮。
 
     关系是固定的：`Highlight └── Note` —— **笔记必须挂在一条高亮上**（高亮是它的位置锚点），
     所以 `op="create"` 一定要 `highlight_id`；没有高亮就先用 `highlight_manage op=create`
@@ -1657,6 +1660,10 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
       op="delete"  note_id + reason → 删笔记（**高亮不动**：笔记只是附注）。
 
     正文用 Markdown 写（支持 `$公式$`）。写完在回答里说清"挂在哪一处高亮上"。
+
+    ⚠️ **笔记里要写数值 / 常数 / 上下标时，先 `page_image_get` 对原版面**（用户口径 2026-12-07）：
+    转录里的 LaTeX **不可靠** —— `\sqrt{3}\,\pi^2` 与 `\sqrt{3\pi^2}` 会是同一串字符，
+    根号覆盖到哪儿的信息丢了，抄错一个常数就把结论写反。只做概念性说明时才可以直接依据转录。
     """
     async def _impl() -> dict:
         what = str(op or "").strip().lower()

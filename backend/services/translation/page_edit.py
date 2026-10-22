@@ -493,6 +493,7 @@ def replace(paper_id: str, page: int, side: str, find: str, replace_text: str, *
     reader_service.invalidate_cache(paper_id)
     _publish(paper_id, page, key)
     index = _reindex(paper_id, reindex)
+    _realign_annotations(paper_id, page, key, text, new_text)
     log.info("产物纠错：%s p%d %s 第 %d 行（%d → %d 字）", paper_id, page, key,
              line_no, len(find), len(replace_text))
     return {
@@ -561,6 +562,7 @@ def undo(paper_id: str, page: int, side: str, *, actor: str = "agent",
     reader_service.invalidate_cache(paper_id)
     _publish(paper_id, page, key)
     index = _reindex(paper_id, reindex)
+    _realign_annotations(paper_id, page, key, str(payload.get(field) or ""), restored)
     log.info("产物纠错：撤回 %s p%d %s（%s，by %s）", paper_id, page, key,
              entry.get("at"), actor)
     return {"ok": True, "page": page, "side": key, "source": source,
@@ -569,6 +571,23 @@ def undo(paper_id: str, page: int, side: str, *, actor: str = "agent",
                          "at": entry.get("at")},
             "rows": before_struct[1], "chars": len(restored), "index": index,
             "note": "已撤回上一次编辑，正文与索引都回到改动前。"}
+
+
+def _realign_annotations(paper_id: str, page: int, key: str, prev_md: str,
+                         new_md: str) -> None:
+    """正文改了 → 把这一页的高亮/笔记**跟着挪**（2026-12-07）。
+
+    以前改完产物，高亮里存的还是旧字符串与旧偏移：引文与正文对不上、阅读视图可能画不出
+    那个锚点、笔记里的 `selected_text` 也留着旧写法（用户实测发现）。
+    这一步**失败不算编辑失败**（正文已经落盘了），只记日志。
+    """
+    try:
+        from backend.services.agent import annotations as ann
+
+        ann.realign_after_edit(paper_id, page, key, prev_md, new_md)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("高亮对齐失败（正文已落盘，不影响）：%s p%d %s: %s",
+                    paper_id, page, key, exc)
 
 
 def _reindex(paper_id: str, enabled: bool) -> dict:

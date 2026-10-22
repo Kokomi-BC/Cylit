@@ -702,6 +702,78 @@ def _note(result: dict, msg: str) -> None:
     result["warning"] = f"{old}；{msg}" if old else msg
 
 
+def _index_map(old: str, new: str) -> list[int]:
+    """``old`` 里每个下标 → ``new`` 里对应的下标（编辑差异映射，猜的部分只有被替换段内部）。"""
+    sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    mapping: list[int | None] = [None] * (len(old) + 1)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i1, i2 + 1):
+                mapping[k] = j1 + (k - i1)
+        elif tag in ("replace", "delete"):
+            width = max(1, i2 - i1)
+            for k in range(i1, i2 + 1):
+                if mapping[k] is None:
+                    mapping[k] = j1 + int(round((j2 - j1) * (k - i1) / width))
+    last = 0
+    for k in range(len(mapping)):
+        if mapping[k] is None:
+            mapping[k] = last
+        else:
+            last = int(mapping[k])
+    return [int(one) for one in mapping]
+
+
+def realign_after_edit(paper_id: str, page: int, side: str, prev_md: str, new_md: str,
+                       *, only_before: str = "") -> dict:
+    r"""正文改了以后，把这一页这一面的**高亮与笔记**重新对齐到新文本。
+
+    为什么要有它（用户口径 2026-12-07 发现的真 bug）：改完产物，正文与检索索引都更新了，
+    可高亮里存的还是**旧字符串**与**旧偏移** —— 高亮 `…\sqrt{3\pi^2}…` 还留在库里，
+    阅读视图按旧偏移画，笔记里的 `selected_text` 也是旧写法。
+
+    做法：两边都渲染成坐标系文字（`render_like_dom`，公式各占一个 ATOM），按编辑差异把
+    旧区间映射到新区间，再写上新的引用文字。`only_before` 给 ISO 时间戳时只处理那之前的
+    高亮（补历史数据用：按改动日志从头重放，别把新建的高亮也一起挪）。
+    """
+    try:
+        old_r = render_like_dom(prev_md)
+        new_r = render_like_dom(new_md)
+    except Exception as exc:  # noqa: BLE001 —— 对齐失败不该影响正文改写
+        log.warning("高亮对齐：渲染失败，跳过 %s p%s：%s", paper_id, page, exc)
+        return {"ok": False, "moved": 0}
+    if old_r == new_r:
+        return {"ok": True, "moved": 0, "stale": 0}
+    want_side = "zh" if str(side or "").lower().startswith(("translation", "zh")) else "en"
+    mapping = _index_map(old_r, new_r)
+    moved = stale = 0
+    for hl in svc.list_highlights(paper_id)["items"]:
+        if str(hl.get("side") or "") != want_side:
+            continue
+        if int(svc.anchor_page(str(hl.get("block_id") or "")) or 0) != int(page):
+            continue
+        if only_before and str(hl.get("created_at") or "") >= only_before:
+            continue
+        start, end = int(hl.get("start") or 0), int(hl.get("end") or 0)
+        if end <= start or end >= len(mapping):
+            continue
+        new_start, new_end = mapping[start], mapping[end]
+        new_text = new_r[new_start:new_end].replace(ATOM, "")
+        if new_end <= new_start or not new_text.strip():
+            stale += 1               # 这段被整段删掉了：保留记录，不硬猜新位置
+            continue
+        if (new_start, new_end) == (start, end) and new_text == str(hl.get("text") or ""):
+            continue
+        svc.update_highlight(str(hl.get("id") or ""), {
+            "selected_text": new_text,
+            "start_offset": new_start, "end_offset": new_end})
+        moved += 1
+    if moved or stale:
+        log.info("高亮对齐 %s p%s %s：挪了 %d 条，%d 条找不到落点", paper_id, page, want_side,
+                 moved, stale)
+    return {"ok": True, "moved": moved, "stale": stale}
+
+
 def _overlaps(paper_id: str, block_id: str, side: str, start: int, end: int,
               *, exclude: str = "") -> list[dict]:
     """这条和已有的哪几条**区间重叠**（同一行、同一面）。只提醒，不拦（用户口径 2026-12-07）。"""
@@ -831,8 +903,19 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         created["page"] = svc.anchor_page(on)
         log.info("agent 建高亮 %s %s[%d:%d] %r", paper_id, on, span_[0], span_[1],
                  (rendered_ or "")[span_[0]:span_[1]][:30])
-        return _finish({"ok": True, "highlight": created, "page": created["page"],
-                        "scope": on_kind})
+        result = _finish({"ok": True, "highlight": created, "page": created["page"],
+                         "scope": on_kind})
+        # 重叠检查放在**这里**（两条路径共用）：2026-12-07 实测它原本只挂在常规路径末尾，
+        # 于是同一条公式可以叠两条一模一样的高亮、一句提示都没有（公式走的是整式快路）。
+        clash = _overlaps(paper_id, on, on_side, span_[0], span_[1],
+                          exclude=str(created.get("id") or ""))
+        if clash:
+            result["overlap"] = clash
+            first = clash[0]
+            _note(result, f"这段与你已有的 {len(clash)} 条高亮重叠（{first.get('id')}"
+
+                          f"「{first.get('text')}」…）：要合并就先 op=list 核对，必要时删掉旧的。")
+        return result
 
     def _finish(result: dict) -> dict:
         """落面与要求不符就**说出来**，不静默改（用户口径 2026-12-07）。
@@ -968,18 +1051,6 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 中文句号后面不要再加空格（实测 2026-12-07 用户点名：「看不到它」。 这段」中间那个空格）。
         result["warning"] = ("这条标在 **Markdown 视图** —— 阅读视图（对照 / 译文）里**看不到它**。"
                              + (why or "要让它出现在正文里，就把范围缩到单个段落内再标。"))
-    # 重叠检查（用户口径 2026-12-07）：标错位置最省事的补救是「先看见这里已经有了」。
-    # **只提醒不拒绝**：两个高亮压在一起有时就是用户要的（强调 + 术语）。
-    hl = result.get("highlight") or {}
-    clash = _overlaps(paper_id, str(hl.get("block_id") or ""), str(hl.get("side") or ""),
-                      int(hl.get("start") or 0), int(hl.get("end") or 0),
-                      exclude=str(hl.get("id") or ""))
-    if clash:
-        result["overlap"] = clash
-        first = clash[0]
-        _note(result, f"这段与你已有的 {len(clash)} 条高亮重叠（{first.get('id')}"
-
-                      f"「{first.get('text')}」…）：要合并就先 op=list 核对，必要时删掉旧的。")
     return result
 
 
