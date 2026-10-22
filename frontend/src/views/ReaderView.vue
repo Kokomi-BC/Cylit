@@ -8140,7 +8140,11 @@ function renderMarkdown(text?: string | null) {
 
     <!-- 论文解读浮窗（用户口径 2026-12-07：取代原来的「应用内新开一个标签页」）。
          内容就是左栏那份 `InsightPanel`（`floating` 让它去掉自带的标题行），
-         拖动 / 拉角 / 位置记忆 / 层级全跟笔记卡同一套；引用点击照旧走 `focusRow` 定位回正文。 -->
+         拖动 / 拉角 / 位置记忆 / 层级全跟笔记卡同一套；引用点击照旧走 `focusRow` 定位回正文。
+         `zoomable` = 标题栏那枚 ⋯ 里的**缩小 / 百分比 / 放大**（用户口径 2026-12-07 二轮：
+         这个功能只在浮层里给，侧栏那份不要）—— 倍数写成 `.fc-body` 上的 `--ts`，
+         而 `InsightDoc` 的正文字号本来就乘 `var(--ts)`（见它 `.doc` 那条），所以整篇一起缩放，
+         侧栏那份不受影响；倍数与位置同一份记录（`cylit:float:insight`），下次开还原。 -->
     <FloatingCard
       v-if="insightFloat"
       :open="insightFloat"
@@ -8150,6 +8154,7 @@ function renderMarkdown(text?: string | null) {
       :width="insightW"
       :max-height="insightMaxH"
       text-cat="side"
+      zoomable
       :style="{ zIndex: insightZ }"
       :focused="insightZ === layerZ"
       hide-anchor
