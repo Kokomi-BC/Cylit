@@ -25,6 +25,8 @@ const props = withDefaults(defineProps<{
   defaultPreset?: string;
   /** 从「自定义提供方」进来：跳过第一步的提供方卡片墙，直接开在第二步（名称 / Base URL / 密钥 / Model ID） */
   customEntry?: boolean;
+  /** 官方提供方卡片带进来的厂商（provider / base_url / 密钥名由它预填） */
+  seed?: { id: string; label?: string; base_url?: string; auth?: string } | null;
   types?: string[];
   typeLabels?: Record<string, string>;
   presets?: ModelPreset[];
@@ -35,6 +37,7 @@ const props = withDefaults(defineProps<{
   defaultType: 'agent',
   defaultPreset: '',
   customEntry: false,
+  seed: null,
   types: () => [],
   typeLabels: () => ({}),
   presets: () => [],
@@ -79,6 +82,7 @@ async function writeKey() {
     form.secret_ref = secretName.value;
     keyValue.value = '';            // 写完立刻清空：界面不留任何密钥内容
     toast(`密钥已写入本机${data?.bytes ? ` · ${data.bytes} 字节` : ''}`, 'ok');
+    void fetchRemoteModels();   // 写完直接去厂商拉模型：填 key → 选模型，两步到底
   } catch (err) {
     reportError(err, '写入密钥失败');
   } finally {
@@ -99,6 +103,7 @@ async function fetchRemoteModels() {
     const data = await api.post<{ items?: Array<{ id?: string }>; count?: number }>('/models/probe-models', {
       base_url: form.base_url,
       secret_ref: form.secret_ref || undefined,
+      api_key: keyValue.value.trim() || undefined,
     });
     const ids = (data?.items || []).map((x) => String(x?.id || '')).filter(Boolean);
     probeOptions.value = ids;
@@ -266,6 +271,17 @@ function init() {
   /* 从「+」里挑中的预设（用户口径 2026-12-07）：直接开在第二步。
      ⚠️ 必须只在 create 模式、且该预设**确实带这一类档位**时才用 —— 否则会拿别的类型的
      model_name / 参数填进来（比如给重排模型配上对话模型的模型名）。 */
+  if (props.seed) {
+    /* 用户口径（2026-12-07）：**不再从已有配置导入** —— 选厂商后自己填 API Key、
+       模型从厂商那里拉。所以这里只预填身份与端点，model_name 故意留空等「拉取列表」。 */
+    form.provider = props.seed.id;
+    form.base_url = props.seed.base_url || '';
+    form.secret_ref = `${props.seed.id}.key`;
+    form.model_type = entryType.value;
+    form.name = '';
+    step.value = 2;
+    return;
+  }
   if (props.customEntry) {
     step.value = 2;
     return;

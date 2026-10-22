@@ -189,8 +189,8 @@ function pickProviderCard(p: ProviderEntry) {
     openCreate(addType.value, '', true);
     return;
   }
-  pickProvider.value = p.id;
-  pickStage.value = 'preset';
+  addOpen.value = false;
+  openCreate(addType.value, '', false, p);
 }
 
 /** 当前这一步要做的是哪一家（给第二段的标题与「换一家」回退用） */
@@ -502,14 +502,17 @@ const formDefaultType = ref('agent');
 const formPreset = ref('');
 /** 从「自定义提供方」进来：表单直接开在第二步（四个字段），不再让用户过一遍提供方卡片墙 */
 const formCustom = ref(false);
+/** 官方卡片带进来的厂商身份与端点（表单据此预填 provider / base_url / 密钥名） */
+const formSeed = ref<ProviderEntry | null>(null);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
-function openCreate(type = 'agent', preset = '', custom = false) {
+function openCreate(type = 'agent', preset = '', custom = false, seed: ProviderEntry | null = null) {
   formMode.value = 'create';
   formTarget.value = null;
   formDefaultType.value = type;
   formPreset.value = preset;
   formCustom.value = custom;
+  formSeed.value = seed;
   formOpen.value = true;
 }
 
@@ -519,6 +522,7 @@ function openEdit(m: ModelConfig) {
   formDefaultType.value = m.model_type || 'agent';
   formPreset.value = '';
   formCustom.value = false;
+  formSeed.value = null;
   formOpen.value = true;
 }
 
@@ -781,7 +785,7 @@ onBeforeUnmount(() => {
 
     <ModelForm
       :open="formOpen" :mode="formMode" :target="formTarget"
-      :default-type="formDefaultType" :default-preset="formPreset" :custom-entry="formCustom"
+      :default-type="formDefaultType" :default-preset="formPreset" :custom-entry="formCustom" :seed="formSeed"
       :types="panelTypes" :type-labels="TYPE_LABEL"
       :presets="state.presets" :secrets="state.secrets" :busy="rowBusy('submit')"
       @close="formOpen = false" @submit="submitForm"
