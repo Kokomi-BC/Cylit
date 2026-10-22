@@ -26,7 +26,6 @@ import {
 import { roundMs, truncate } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
-import Menu from '@/components/Menu.vue';
 import Modal from '@/components/Modal.vue';
 import { categoryIcon, vendorColorIcon } from '@/assets/model-icons';
 import ModelForm from '@/components/settings/ModelForm.vue';
@@ -83,14 +82,6 @@ type ModelRow = ModelConfig & {
   provider_key_id?: string | null;
   key_source?: KeySource | null;
 };
-
-interface RowAction {
-  key: string;
-  label: string;
-  icon?: string;
-  danger?: boolean;
-  disabled?: boolean;
-}
 
 const loadError = ref('');
 const busyKey = ref('');
@@ -203,12 +194,6 @@ function providerCell(m: ModelRow): string {
   return m?.is_mock ? p + '（占位）' : p;
 }
 
-/** ⋯ 里那条信息行的文字：服务商 · 域名 */
-function infoLabel(m: ModelRow): string {
-  const host = hostOf(m.base_url);
-  return [providerCell(m), host].filter(Boolean).join(' · ') || '—';
-}
-
 function itemTitle(m: ModelRow): string {
   const host = hostOf(m.base_url);
   const extra = [m.model_name || '', providerCell(m), host].filter(Boolean).join(' · ');
@@ -223,26 +208,6 @@ function latencyOf(m: ModelRow): string {
 
 function rowBusy(key: string): boolean {
   return busyKey.value === key;
-}
-
-/** ⋯ 菜单：信息行（服务商·域名）→ 密钥来源（只读）→ 测试 / 设为默认 / 编辑 / 删除 */
-function rowMenu(m: ModelRow): RowAction[] {
-  return [
-    { key: 'info', label: infoLabel(m), icon: 'server', disabled: true },
-    { key: 'keysrc', label: keySourceInfo(m).text, icon: 'document', disabled: true },
-    { key: 'test', label: '测试连通性', icon: 'bolt', disabled: rowBusy('test:' + m.id) },
-    { key: 'default', label: '设为默认', icon: 'check_circle', disabled: !!m.is_default || rowBusy('def:' + m.id) },
-    { key: 'edit', label: '编辑配置', icon: 'edit' },
-    { key: 'delete', label: '删除模型', icon: 'trash', danger: true, disabled: rowBusy('del:' + m.id) },
-  ];
-}
-
-function onRowAction(m: ModelRow, key: string): void {
-  if (key === 'info' || key === 'keysrc') return;
-  if (key === 'test') { void testModel(m); return; }
-  if (key === 'default') { void setDefault(m); return; }
-  if (key === 'edit') { openEdit(m); return; }
-  if (key === 'delete') void removeModel(m);
 }
 
 /* ---------------------------- 数据加载 ---------------------------- */
@@ -302,6 +267,118 @@ async function loadProviders(): Promise<void> {
 
 /** 选择器里的候选 = 目录里的官方/自定义那几家 + 末尾的「自定义提供方」入口 */
 const providerOptions = computed<ProviderRow[]>(() => [...providers.value, customEntry.value]);
+
+/* ---------------------------- 「模型提供方」展示顺序 ----------------------------
+ * 默认顺序（没手动排过时）：DeepSeek → Claude(anthropic) → ChatGPT(openai) → Gemini，
+ * 其余按后端返回顺序（后端已按 `sort` 升序返回），自定义入口永远排最后。
+ * 手动排序走后端 `PUT /models/providers/order`（body `{ ids: [...] }` 是整个顺序）。
+ * **优雅降级**：行里没有 `sort` 字段（排序接口还没上线）就按默认顺序只读展示，
+ * 拖动与上移/下移禁用并在区块抬头给一行提示 —— 不伪造顺序、不发注定 404 的请求、不白屏。
+ * 这一块的顺序**只影响本区展示**：`providerOptions`（「+」里的选择器）不受影响。 */
+const PROVIDER_PINNED = ['deepseek', 'anthropic', 'openai', 'gemini'];
+
+/** 本地顺序覆盖（松手/上移下移后立刻生效，失败回滚）；空 = 跟着后端返回的顺序 */
+const orderOverride = ref<string[]>([]);
+const orderBusy = ref(false);
+
+type ProviderSorted = ProviderRow & { sort?: number };
+
+/** 后端有没有给出 `sort`：没有就说明排序接口还没上线，整块降级 */
+const canOrder = computed(() => (providers.value as ProviderSorted[])
+  .some((p) => typeof p.sort === 'number'));
+
+const providerList = computed<ProviderSorted[]>(() => {
+  const list = providers.value as ProviderSorted[];
+  if (orderOverride.value.length) {
+    const pos = (id: string) => { const i = orderOverride.value.indexOf(id); return i < 0 ? 1e9 : i; };
+    return [...list].sort((a, b) => pos(a.id) - pos(b.id));
+  }
+  if (canOrder.value) return list;   // 后端已按 sort 升序返回，原样展示
+  /* 没有 sort：四家常用的按产品口径排最前，其余保持后端顺序（sort 稳定） */
+  const rank = (id: string) => {
+    const i = PROVIDER_PINNED.indexOf(String(id).toLowerCase());
+    return i < 0 ? PROVIDER_PINNED.length : i;
+  };
+  return [...list].sort((a, b) => rank(a.id) - rank(b.id));
+});
+
+function providerIds(list: ProviderSorted[]): string[] { return list.map((p) => p.id); }
+
+/** 提交顺序：失败**回滚到 prev** 并把原因说出来（不静默吞掉） */
+async function submitOrder(ids: string[], prev: string[]): Promise<void> {
+  orderBusy.value = true;
+  orderOverride.value = ids;
+  try {
+    await api.put('/models/providers/order', { ids });
+    toast('提供方顺序已保存', 'ok', 2400);
+    await loadProviders();           // 用后端的新 sort 复核，成功后才放下本地覆盖
+    orderOverride.value = [];
+  } catch (err: any) {
+    orderOverride.value = prev;
+    if (Number(err?.status) === 404) {
+      toast('排序接口还没上线（后端是旧版本），顺序没保存', 'warn', 6000);
+    } else {
+      reportError(err, '保存提供方顺序失败');
+    }
+  } finally {
+    orderBusy.value = false;
+  }
+}
+
+/** 不用鼠标的兜底：上移 / 下移，与拖动同一条接口 */
+function moveProvider(id: string, dir: -1 | 1): void {
+  if (!canOrder.value || orderBusy.value) return;
+  const list = [...providerList.value];
+  const i = list.findIndex((p) => p.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  const prev = providerIds(list);
+  const [row] = list.splice(i, 1);
+  list.splice(j, 0, row);
+  void submitOrder(providerIds(list), prev);
+}
+
+/* 拖动：dragover 只记落点（不发请求），松手才提交一次 */
+const dragId = ref('');
+const dropId = ref('');
+
+function onRowDragStart(p: ProviderRow, ev: DragEvent): void {
+  if (!canOrder.value) { ev.preventDefault(); return; }
+  dragId.value = p.id;
+  ev.dataTransfer?.setData('text/plain', p.id);
+  if (ev.dataTransfer) ev.dataTransfer.effectAllowed = 'move';
+}
+
+function onRowDragOver(p: ProviderRow, ev: DragEvent): void {
+  if (!canOrder.value || !dragId.value) return;
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+  if (p.id !== dragId.value) dropId.value = p.id;
+}
+
+function onRowDragEnd(): void { dragId.value = ''; dropId.value = ''; }
+
+/** 行的键盘入口：焦点落在行内按钮上时交给按钮自己（不抢回车/空格） */
+function onRowKey(ev: KeyboardEvent, p: ProviderRow): void {
+  if (ev.target !== ev.currentTarget) return;
+  ev.preventDefault();
+  openDrawer(p, 'keys');
+}
+
+function onRowDrop(target: ProviderRow): void {
+  const from = dragId.value;
+  dragId.value = '';
+  dropId.value = '';
+  if (!canOrder.value || !from || from === target.id) return;
+  const list = [...providerList.value];
+  const fi = list.findIndex((p) => p.id === from);
+  const ti = list.findIndex((p) => p.id === target.id);
+  if (fi < 0 || ti < 0) return;
+  const prev = providerIds(list);
+  const [moved] = list.splice(fi, 1);
+  list.splice(ti, 0, moved);
+  void submitOrder(providerIds(list), prev);
+}
 
 /** 默认密钥那一格的文案。
  *  后端迁移时给默认密钥起的名字就是「默认密钥」，直接拼会读成「默认密钥：默认密钥」——
@@ -460,6 +537,60 @@ function openAdd(type: string): void {
   addProviderId.value = '';
   addOpen.value = true;
   if (!providers.value.length) void loadProviders();
+}
+
+/* ---------------------------- 类型配置弹窗（点卡片本体打开） ----------------------------
+ * 卡片上的 ⋯ 行内菜单已经**整套下线**：一类的测试 / 设默认 / 编辑 / 删除只有这一个入口，
+ * 卡片退化成只读（默认模型一块 + 其余紧凑列表），不留两套操作路径。
+ * 弹层的键盘与遮罩行为复用 Modal（Esc 关闭、点遮罩关闭、右上关闭）。 */
+const cfgOpen = ref(false);
+const cfgKey = ref('');
+
+/** 弹窗看的是**当前的**这一类：测试 / 设默认 / 删除后端刷新后这里跟着变（computed，不做快照） */
+const cfgGroup = computed<TypeGroup | null>(
+  () => typeGroups.value.find((g) => g.key === cfgKey.value) || null,
+);
+const cfgTitle = computed(() => (cfgGroup.value ? cfgGroup.value.title + ' 模型配置' : '模型配置'));
+
+function openConfig(type: string): void {
+  cfgKey.value = type;
+  cfgOpen.value = true;
+  if (!providers.value.length) void loadProviders();
+}
+
+/** 卡片的键盘入口：焦点在卡内按钮 / 改名框上时**不抢**（否则回车会同时开两个弹窗） */
+function onCardKey(ev: KeyboardEvent, type: string): void {
+  if (ev.target !== ev.currentTarget) return;
+  ev.preventDefault();
+  openConfig(type);
+}
+
+function closeConfig(): void {
+  cfgOpen.value = false;
+}
+
+/** 空态主按钮：关掉弹窗，直接进表单（用户口径：走原来的 openCreate(type)） */
+function createInType(type: string): void {
+  cfgOpen.value = false;
+  openCreate(type, false, null);
+}
+
+/** 底部次要按钮：和卡片右上角那枚 + 同一条路（先选提供方，再进表单） */
+function addInType(type: string): void {
+  cfgOpen.value = false;
+  openAdd(type);
+}
+
+/** 编辑 / 删除会再开一层弹窗（表单、二次确认）：先把本层关掉，
+ *  否则同 z-index 的两层叠在一起，Esc 会一次关掉两个、确认框还可能被压在下面。 */
+function editFromConfig(m: ModelRow): void {
+  cfgOpen.value = false;
+  openEdit(m);
+}
+
+function removeFromConfig(m: ModelRow): void {
+  cfgOpen.value = false;
+  void removeModel(m);
 }
 
 /** 给 ModelForm 的 seed：只用它认得的四个字段（provider / base_url / 密钥名预填） */
@@ -712,10 +843,19 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="types-row">
+        <!-- 整张卡可点：打开这一类的模型配置弹窗（操作只有弹窗这一个入口，卡上不再有 ⋯）。
+             卡内的 + 与改名按钮都 stop，别误触。 -->
         <section
           class="type-col" v-for="g in typeGroups" :key="g.key"
           :id="'type-card-' + g.key"
           :class="{ focus: focusKey === g.key }"
+          role="button" tabindex="0"
+          :data-type-card="g.key"
+          :aria-label="g.title + ' 模型配置'"
+          :title="'点击打开' + g.title + '的模型配置'"
+          @click="openConfig(g.key)"
+          @keydown.enter="onCardKey($event, g.key)"
+          @keydown.space="onCardKey($event, g.key)"
         >
           <header class="tc-head">
             <span class="tc-ico">
@@ -728,7 +868,7 @@ onBeforeUnmount(() => {
             <button
               type="button" class="card-add"
               :title="'添加' + g.title + '模型'" :aria-label="'添加' + g.title + '模型'"
-              :data-add-type="g.key" @click="openAdd(g.key)"
+              :data-add-type="g.key" @click.stop="openAdd(g.key)"
             >
               <AppIcon name="add" :size="14" />
             </button>
@@ -741,11 +881,6 @@ onBeforeUnmount(() => {
               <img v-if="vendorIco(g.current.provider)" class="pv-ico" :src="vendorIco(g.current.provider)" alt="">
               <span v-else class="pv-fallback" :title="providerCell(g.current)"><AppIcon name="model" :size="12" /></span>
               <span class="td-name" :title="g.current.name || g.current.id">{{ g.current.name || '（未命名）' }}</span>
-              <Menu
-                class="tc-more" :items="rowMenu(g.current)" up
-                :label="'更多操作：' + (g.current.name || g.current.id)"
-                @select="onRowAction(g.current, $event)"
-              />
             </div>
             <div class="td-meta">
               <span class="badge accent tiny">默认</span>
@@ -770,20 +905,15 @@ onBeforeUnmount(() => {
                 <input
                   v-if="renamingId === m.id"
                   class="rename" :ref="bindRename" v-model="renameText"
-                  spellcheck="false"
+                  spellcheck="false" @click.stop
                   @keydown.enter.prevent="commitRename(m)"
                   @keydown.esc.stop="cancelRename"
                   @blur="commitRename(m)"
                 >
                 <button
                   v-else type="button" class="tc-name truncate" :title="(m.name || m.id) + '（点击改名）'"
-                  @click="startRename(m)"
+                  @click.stop="startRename(m)"
                 >{{ m.name || '（未命名）' }}</button>
-                <Menu
-                  class="tc-more" :items="rowMenu(m)" up
-                  :label="'更多操作：' + (m.name || m.id)"
-                  @select="onRowAction(m, $event)"
-                />
               </div>
               <div class="tc-sub truncate" :title="itemTitle(m)">
                 <span class="mono truncate">{{ m.model_name || '—' }}</span>
@@ -808,7 +938,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="tc-empty" v-if="!g.rows.length">
               <span class="truncate">{{ g.empty }}</span>
-              <button class="btn sm" @click="openAdd(g.key)">
+              <button class="btn sm" @click.stop="openAdd(g.key)">
                 <AppIcon name="add" :size="13" />添加
               </button>
             </div>
@@ -821,7 +951,10 @@ onBeforeUnmount(() => {
     <section class="block providers-block">
       <header class="block-head">
         <h3 class="bh-title"><AppIcon name="server" :size="14" />模型提供方</h3>
-        <span class="bh-desc">连接配置与密钥都在这家的详情里；点整行打开</span>
+        <span class="bh-desc">连接配置与密钥都在这家的详情里；点整行打开，按住行可拖动排序</span>
+        <span class="prov-order-note" v-if="!canOrder" :title="'后端 /models/providers 没返回 sort 字段'">
+          <AppIcon name="warning" :size="12" />排序接口暂不可用
+        </span>
         <span class="spacer"></span>
         <button class="btn sm" data-provider-new @click="openNewProvider">
           <AppIcon name="add" :size="14" />新增提供方
@@ -844,12 +977,21 @@ onBeforeUnmount(() => {
 
       <div class="prov-rows" v-else>
         <div
-          class="prov-row" v-for="p in providers" :key="p.id"
+          class="prov-row" v-for="(p, i) in providerList" :key="p.id"
           role="button" tabindex="0" :data-provider-row="p.id"
+          :draggable="canOrder ? 'true' : 'false'"
+          :class="{ dragging: dragId === p.id, 'drop-target': dropId === p.id }"
           @click="openDrawer(p, 'keys')"
-          @keydown.enter.prevent="openDrawer(p, 'keys')"
-          @keydown.space.prevent="openDrawer(p, 'keys')"
+          @keydown.enter="onRowKey($event, p)"
+          @keydown.space="onRowKey($event, p)"
+          @dragstart="onRowDragStart(p, $event)"
+          @dragover="onRowDragOver(p, $event)"
+          @drop.prevent="onRowDrop(p)"
+          @dragend="onRowDragEnd"
         >
+          <span class="pr-grip" :class="{ off: !canOrder }" title="按住拖动排序" aria-hidden="true">
+            <AppIcon name="list" :size="14" />
+          </span>
           <img v-if="vendorIco(p.id)" class="pv-ico lg" :src="vendorIco(p.id)" alt="">
           <span v-else class="pv-fallback lg" :title="p.label || p.id"><AppIcon name="server" :size="15" /></span>
 
@@ -869,6 +1011,17 @@ onBeforeUnmount(() => {
               <span class="td-sep">·</span>
               <span :class="{ unset: !p.default_key_label }" :title="p.default_key_label || ''">{{ defaultKeyText(p) }}</span>
             </div>
+          </div>
+
+          <div class="pr-move" @click.stop>
+            <button
+              class="btn icon sm ghost" title="上移" aria-label="上移"
+              :disabled="!canOrder || orderBusy || i === 0" @click="moveProvider(p.id, -1)"
+            ><AppIcon name="chevron-up" :size="14" /></button>
+            <button
+              class="btn icon sm ghost" title="下移" aria-label="下移"
+              :disabled="!canOrder || orderBusy || i === providerList.length - 1" @click="moveProvider(p.id, 1)"
+            ><AppIcon name="chevron-down" :size="14" /></button>
           </div>
 
           <div class="pr-ops" @click.stop>
@@ -940,6 +1093,80 @@ onBeforeUnmount(() => {
       </template>
     </Modal>
 
+    <!-- 点卡片本体：这一类的模型配置（测试 / 设默认 / 编辑 / 删除都在这里） -->
+    <Modal :open="cfgOpen" :title="cfgTitle" @close="closeConfig">
+      <template #tools>
+        <span class="hd-count" v-if="cfgGroup">{{ cfgGroup.rows.length }} 个模型</span>
+      </template>
+      <div class="cfg" v-if="cfgGroup">
+        <p class="cfg-lead tiny faint">
+          <span class="tc-ico" aria-hidden="true">
+            <span v-if="categoryIcon(cfgGroup.key)" class="cat-mask" :style="catStyle(cfgGroup.key)" />
+            <AppIcon v-else :name="cfgGroup.icon" :size="12" />
+          </span>
+          <span class="truncate">{{ TYPE_DESC[cfgGroup.key] || '这一类还没登记用途' }}</span>
+        </p>
+
+        <div class="cfg-rows" v-if="cfgGroup.rows.length">
+          <div
+            class="cfg-row" v-for="m in cfgGroup.rows" :key="m.id"
+            :class="{ 'is-default': m.is_default }" :data-cfg-model="m.id"
+          >
+            <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
+            <span v-else class="pv-fallback" :title="providerCell(m)"><AppIcon name="model" :size="12" /></span>
+
+            <div class="cfg-main">
+              <div class="cfg-line">
+                <span class="cfg-name truncate" :title="itemTitle(m)">{{ m.name || '（未命名）' }}</span>
+                <span class="badge accent tiny" v-if="m.is_default">默认</span>
+              </div>
+              <div class="cfg-sub tiny">
+                <span class="mono" :title="m.model_name || ''">{{ m.model_name || '—' }}</span>
+                <span class="td-sep">·</span>
+                <span class="stat-dot" :class="statusInfo(m).cls" />
+                <span class="cfg-status" :class="statusInfo(m).cls">{{ statusInfo(m).label }}</span>
+                <span class="td-sep">·</span>
+                <span class="cfg-keysrc" :class="keySourceInfo(m).cls">{{ keySourceInfo(m).text }}</span>
+                <template v-if="testResults[m.id]">
+                  <span class="td-sep">·</span>
+                  <span v-if="testResults[m.id].ok" class="badge ok tiny">通过 {{ latencyOf(m) }}</span>
+                  <span v-else class="badge danger tiny" :title="testResults[m.id].detail || ''">失败</span>
+                </template>
+              </div>
+            </div>
+
+            <div class="cfg-ops">
+              <button class="btn sm" :disabled="rowBusy('test:' + m.id)" title="真的打一次这个端点" @click="testModel(m)">
+                <AppIcon name="bolt" :size="13" />{{ rowBusy('test:' + m.id) ? '测试中…' : '测试连通性' }}
+              </button>
+              <button class="btn sm" :disabled="!!m.is_default || rowBusy('def:' + m.id)" title="这一类的默认模型" @click="setDefault(m)">
+                <AppIcon name="check_circle" :size="13" />{{ m.is_default ? '已是默认' : '设为默认' }}
+              </button>
+              <button class="btn sm" @click="editFromConfig(m)">
+                <AppIcon name="edit" :size="13" />编辑配置
+              </button>
+              <button class="btn sm danger" :disabled="rowBusy('del:' + m.id)" @click="removeFromConfig(m)">
+                <AppIcon name="trash" :size="13" />删除模型
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cfg-empty" v-else>
+          <p>还没有模型</p>
+          <button class="btn primary sm" :data-cfg-new="cfgGroup.key" @click="createInType(cfgGroup.key)">
+            <AppIcon name="add" :size="14" />新增模型
+          </button>
+        </div>
+      </div>
+
+      <template #footer>
+        <button class="btn sm" :data-cfg-add="cfgKey" @click="addInType(cfgKey)">
+          <AppIcon name="add" :size="14" />新增模型
+        </button>
+      </template>
+    </Modal>
+
     <ProviderDrawer
       :provider="drawerProvider" :open="drawerOpen" :initial-tab="drawerTab"
       @close="closeDrawer" @changed="onDrawerChanged" @focus-type="onFocusType"
@@ -984,19 +1211,28 @@ onBeforeUnmount(() => {
 }
 .bh-desc { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 任务分类：列数跟着宽度走（桌面充分展开，窄屏 1~2 列），绝不靠缩字号 */
+/* 任务分类：列数跟着宽度走（桌面充分展开，窄屏 1~2 列），绝不靠缩字号。
+   stretch + 卡片 height:100% 让同一行的卡一样高；跨行靠统一的 min-height
+   （模型多的那一类在卡内滚动，见 .tc-list，绝不把整页拉长）。 */
 .types-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 10px; align-items: start;
+  gap: 10px; align-items: stretch;
 }
 .type-col {
   display: flex; flex-direction: column; min-width: 0;
+  /* 统一高度口径：按内容最多那一类定 —— 默认块按两行名字预留 + 列表封顶 156px，
+     实测「列表塞满」的那张卡在 1440/1100/430/390 都是 319.19px，所以这里取 322px
+     （跟着显示缩放走）。少于这个数的卡由 min-height 补齐，多于的由列表内部滚动吸收。 */
+  min-height: var(--type-card-h, calc(322px * var(--ts, 1)));
+  height: 100%;
   background: var(--bg-layer); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow-1);
-  overflow: hidden;
+  overflow: hidden; cursor: pointer;
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
+.type-col:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.type-col:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .type-col.focus { border-color: var(--accent); box-shadow: var(--ring); }
 
 .tc-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 9px 10px 7px; }
@@ -1039,12 +1275,14 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   display: flex; flex-direction: column; gap: 4px; min-width: 0;
 }
-.td-top { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding-right: 18px; }
-/* 默认模型的名字**不截断**：最多两行（宽列一行放得下，窄列换第二行也读得完） */
+.td-top { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+/* 默认模型的名字**不截断**：最多两行（宽列一行放得下，窄列换第二行也读得完）。
+   高度**按两行预留**（min-height 2.7em = 2 × line-height 1.35）：名字一行还是两行，
+   块的其余部分高度一样 —— 否则名字长短不同的两类卡会差一行，卡就不等高。 */
 .td-name {
   font-size: calc(13px * var(--ts, 1)); font-weight: 650; color: var(--text); min-width: 0;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  line-height: 1.35;
+  line-height: 1.35; min-height: 2.7em;
 }
 .td-meta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .td-status.ok { color: var(--ok); }
@@ -1061,13 +1299,22 @@ onBeforeUnmount(() => {
   color: var(--text-faint); font-size: calc(11.5px * var(--ts, 1));
 }
 
-/* 其它模型：紧凑三行（名称 / 模型名·状态 / 密钥来源） */
-.tc-list { display: flex; flex-direction: column; padding: 6px 0 6px; }
+/* 其它模型：紧凑三行（名称 / 模型名·状态 / 密钥来源），**只读** —— 操作在弹窗里。
+   列表是卡内唯一能伸缩的部分：多余的模型在卡内滚动（细滚动条），不撑高整张卡。 */
+.tc-list {
+  display: flex; flex-direction: column; flex: 1 1 auto;
+  min-height: 0; max-height: 156px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 6px 0 6px;
+  scrollbar-width: thin; scrollbar-color: var(--divider) transparent;
+}
+.tc-list::-webkit-scrollbar { width: 6px; }
+.tc-list::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 999px; }
+.tc-list::-webkit-scrollbar-track { background: transparent; }
 .tc-item { position: relative; padding: 6px 10px; min-width: 0; }
 .tc-item + .tc-item { border-top: 1px solid var(--divider); }
 .tc-item:hover { background: var(--bg-hover); }
 .tc-item.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
-.tc-line { display: flex; align-items: center; gap: 6px; min-width: 0; padding-right: 18px; }
+.tc-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tc-name {
   flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: transparent;
   color: var(--text); font: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 600;
@@ -1090,18 +1337,43 @@ onBeforeUnmount(() => {
 .stat-dot.ok { background: var(--ok); }
 .stat-dot.danger { background: var(--danger); }
 
-/* 列里的 ⋯：压在右上角，hover / 键盘聚焦才浮现（触摸设备常显） */
-.tc-more { position: absolute; top: 3px; right: 3px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
-.tc-default .tc-more { opacity: .7; }
-.tc-item:hover .tc-more, .tc-item:focus-within .tc-more { opacity: 1; }
-@media (hover: none) { .tc-more { opacity: 1; } }
-
 .tc-empty {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 4px 10px 2px; color: var(--text-faint);
   font-size: calc(11px * var(--ts, 1));
 }
 .tc-empty .btn { flex: none; }
+
+/* 类型配置弹窗：一行一个模型，四个操作都在行尾（窄屏折成两行） */
+.cfg { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cfg-lead { display: flex; align-items: center; gap: 7px; margin: 0; min-width: 0; line-height: 1.5; }
+.cfg-rows { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cfg-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; min-width: 0;
+  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--bg-layer);
+}
+.cfg-row.is-default {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--divider));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.cfg-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 190px; min-width: 0; }
+.cfg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cfg-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; color: var(--text); min-width: 0; }
+.cfg-sub { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; color: var(--text-faint); }
+.cfg-sub .mono { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-status.ok { color: var(--ok); }
+.cfg-status.warn { color: var(--warn); }
+.cfg-status.danger { color: var(--danger); }
+.cfg-keysrc.warn { color: var(--warn); }
+.cfg-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cfg-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 20px 12px; border: 1px dashed var(--divider); border-radius: var(--radius);
+  color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
+}
+.cfg-empty p { margin: 0; }
 
 /* 厂商图标：统一视觉框、保持比例；缺图标用占位方块（绝不渲染空 src） */
 .pv-ico { flex: none; object-fit: contain; border-radius: 3px; width: 15px; height: 15px; }
@@ -1141,6 +1413,16 @@ onBeforeUnmount(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pr-sub .unset { color: var(--text-faint); }
+/* 拖动排序：手柄、拖动中的行、目标位置的插入线，以及键盘兜底的上移/下移 */
+.pr-grip { flex: none; display: inline-flex; align-items: center; color: var(--text-faint); cursor: grab; }
+.pr-grip.off { opacity: .35; cursor: not-allowed; }
+.prov-row.dragging { opacity: .45; }
+.prov-row.drop-target { box-shadow: inset 0 2px 0 var(--accent); }
+.pr-move { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.prov-row:hover .pr-move, .prov-row:focus-within .pr-move { opacity: 1; }
+@media (hover: none) { .pr-move { opacity: 1; } }
+.prov-order-note { display: inline-flex; align-items: center; gap: 5px; font-size: calc(11.5px * var(--ts, 1)); color: var(--warn); }
+
 .pr-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .prov-skel { display: flex; flex-direction: column; gap: 8px; }
@@ -1160,5 +1442,7 @@ onBeforeUnmount(() => {
 @media (max-width: 520px) {
   .pr-ops { flex: 1 0 100%; }
   .pr-ops .btn { flex: 1 1 auto; justify-content: center; }
+  .cfg-ops { flex: 1 0 100%; }
+  .cfg-ops .btn { flex: 1 1 auto; justify-content: center; }
 }
 </style>
