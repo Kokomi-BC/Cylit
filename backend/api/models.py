@@ -43,6 +43,67 @@ async def get_presets(request: Request):
     return envelope({"presets": presets.list_presets()}, request=request)
 
 
+# ⚠️ 与 `/models/presets` 同样的理由：这两条也必须声明在 `/models/{model_id}` **之前**。
+
+@router.get("/models/providers")
+async def list_providers(request: Request):
+    """官方提供方目录 + 自定义入口（模型页「+」里的那排卡片）。
+
+    `kind` 由后端按 `presets.py` 里真实存在的厂商算出来 —— 前端无法把自定义端点伪装成官方。
+    """
+    from backend.services.model import providers_catalog
+
+    return envelope(providers_catalog.catalog(), request=request)
+
+
+@router.post("/models/probe-models")
+async def probe_models(request: Request, payload: dict = Body(default={})):
+    """拉取某个端点的模型列表（`GET {base}/models`）。
+
+    两种用法：
+    · 传 `model_id`：用**库里已存**的 base_url + 密钥（设置页对已有配置「刷新模型列表」）；
+    · 传 `base_url`（+ 可选 `api_key` / `secret_ref`）：自定义提供方**保存前**先探一次。
+
+    安全：两种用法都过 `endpoint_guard`（协议、元数据地址、内网、DNS 全部校验）；
+    现填地址默认不放行内网，需要 `CYLIT_ALLOW_PRIVATE_MODEL_ENDPOINT=1`。
+    响应里**永远不回显**密钥。
+    """
+    from backend.core.errors import ValidationError
+    from backend.services.model import endpoint_guard, model_service, remote_models
+
+    model_id = str(payload.get("model_id") or "").strip()
+    base_url = str(payload.get("base_url") or "").strip()
+    api_key = str(payload.get("api_key") or "").strip() or None
+    secret_ref = str(payload.get("secret_ref") or "").strip()
+    stored = bool(model_id)
+
+    if stored:
+        cfg = next((m for m in model_service.list_models() if str(m.get("id")) == model_id), None)
+        if not cfg:
+            raise ValidationError("模型配置不存在")
+        base_url = str(cfg.get("base_url") or "").strip()
+        if not api_key:
+            ref = str(cfg.get("secret_ref") or secret_ref or "").strip()
+            if ref:
+                from backend.core.config import get_settings
+
+                api_key = get_settings().read_secret(ref)
+    elif secret_ref and not api_key:
+        from backend.core.config import get_settings
+
+        api_key = get_settings().read_secret(secret_ref)
+
+    if not base_url:
+        raise ValidationError("请提供 Base URL（或传 model_id 用已保存的配置）")
+
+    data = await remote_models.list_models(
+        base_url,
+        api_key=api_key,
+        allow_private=endpoint_guard.allow_private_for(stored_config=stored),
+    )
+    # 只回列表与主机名；密钥、完整 URL、请求头都不出现
+    return envelope(data, request=request)
+
 @router.post("/models/import-presets")
 async def import_presets(request: Request, payload: dict = Body(default={})):
     """一键导入常见 Provider 预设（DeepSeek / 通义 / Ollama 等），只需填密钥。"""
