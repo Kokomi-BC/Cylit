@@ -436,7 +436,9 @@ def test_skill_name_is_legal_and_documented(project_root):
     name, description = parse_frontmatter(md.read_text(encoding="utf-8"))
     assert name == "web-search"
     assert SKILL_NAME_RE.match(name)
-    assert description.startswith("需要论文之外的公开信息")
+    # 不要断言具体措辞：description 是给模型看的一句话说明，措辞会被反复调，
+    # 这里只钉"有话说"（空 description 的技能在列表里等于不存在）
+    assert description and description == description.strip()
 
 # --------------------------------------------------------------------------
 # 7. 工具层：need_content 的三态必须原样透传（主后端的设置才有机会生效）

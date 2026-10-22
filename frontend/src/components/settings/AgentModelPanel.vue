@@ -46,22 +46,41 @@ const STYLE_MAX = 2000;
 
 /* ------------------------------- ① 技能 ------------------------------- */
 
-/** 技能说明的**人话版**（走查定稿，措辞别动）。
+/** 技能的中文名（走查定稿，别自己译）。
+ *
+ * 技能名是**工具名**（`paper-qa`、`text-fix`…），它既是模型调用时的标识、也是技能目录名，
+ * 但摆在设置页上给用户看的该是"这个技能叫什么"。所以主标题走这张表，工具名降级成名字
+ * 后面的小号弱色（对日志、翻技能目录时用得上）。**没收录的外部技能**（用户自己传的）
+ * 不瞎译，主标题仍用它自己的名字。 */
+const SKILL_NAME_ZH: Record<string, string> = {
+  'web-search': '联网搜索',
+  'figure-reading': '图表解读',
+  'formula-explain': '公式解释',
+  'highlight-note': '标注与笔记',
+  'page-visual-check': '原图核对',
+  'paper-overview': '论文概览',
+  'paper-qa': '论文问答',
+  'term-glossary': '术语与译法',
+  'text-fix': '文本修订',
+  'translate-check': '译文核对',
+};
+
+/** 技能说明的**人话版**（走查定稿，措辞别动），键与 SKILL_NAME_ZH 一一对应。
  *
  * 为什么不直接用后端的 description：SKILL.md 里那段是写给**模型**判断"该不该调这个技能"的
- * 规则文本，摊在设置页上读起来像文档。这里按名字给一句用户视角的话；取不到条目（外部技能）
- * 就回落到它自己的 description，专业版仍挂在行内 title 上、悬停可见。 */
+ * 规则文本，摊在设置页上读起来像文档。这里按名字给一句"这个技能能做什么"；
+ * 取不到条目（外部技能）就回落到它自己的 description，专业版仍挂在行内 title 上、悬停可见。 */
 const SKILL_BLURB: Record<string, string> = {
-  'figure-reading': '解读单张图/表：图中画了什么、曲线走向、结论是什么，结合图注与正文给出一致解读。',
-  'formula-explain': '解释公式含义、符号定义与推导步骤；公式识别有误（乱码、缺项、上下标错位）时一并修正。',
-  'highlight-note': '按指定位置标注原文、设置高亮颜色，或在某处高亮上写一条笔记。',
-  'page-visual-check': '以页面原图核对公式与表格结构、OCR 乱码、上下标错位等解析问题。',
-  'paper-overview': '给出论文整体概览：一句话结论、章节脉络、建议阅读顺序。',
-  'paper-qa': '回答需要跨段落取证的问题：核心贡献、方法原理、实验结论、局限、与相关方法的关系。',
-  'term-glossary': '说明术语在本论文中的确切含义与译法，核对中英对照与全文译法是否统一。',
-  'text-fix': '按指定位置修正解析/翻译产物中的错误：识别错误、译文不当、术语不统一。',
-  'translate-check': '核对译文准确性与漏译情况；也可用中文复述原文要点。',
-  'web-search': '检索论文之外的公开信息（官方文档、开源实现、收录情况），引用需附链接与站点名。',
+  'web-search': '查论文之外的公开信息（官方文档、开源实现、收录情况），答案附链接与站点名。',
+  'figure-reading': '讲清某张图或表画了什么、曲线怎么走、结论是什么。',
+  'formula-explain': '说明公式在算什么、符号定义与推导步骤。',
+  'highlight-note': '按你的要求标出原文、设成颜色，或在某处写一条笔记。',
+  'page-visual-check': '直接看页面原图，核对版式、公式排版与表格结构。',
+  'paper-overview': '一句话结论、章节脉络与建议阅读顺序。',
+  'paper-qa': '需要跨段落取证的问题：贡献、原理、实验、局限。',
+  'term-glossary': '术语在本论文中的含义与译法，以及全文译法是否统一。',
+  'text-fix': '按你的要求改写解析产物或译文、统一术语。',
+  'translate-check': '比对原文与译文是否等价、有无漏译，可用中文复述。',
 };
 
 /** 技能名里的那一个"联网搜索"，齿轮与内嵌设置都挂在它身上。 */
@@ -599,7 +618,10 @@ onMounted(() => {
               <div class="skill-row" :class="{ off: !s.enabled }">
                 <div class="skill-main">
                   <div class="skill-title">
-                    <span class="skill-name mono" :title="s.name">{{ s.name }}</span>
+                    <!-- 主标题是中文名；工具名降级成旁边的小号弱色（未收录的外部技能没有中文名，
+                         那它本身就是主标题，不再重复一遍） -->
+                    <span class="skill-name" :title="s.name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
+                    <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
                     <!-- 自带是默认态、不标；只有"外部"值得一眼看出，禁用仍要标 -->
                     <span class="badge dim" v-if="!s.builtin">外部</span>
                     <span class="badge warn" v-if="!s.enabled">已禁用</span>
@@ -838,6 +860,8 @@ onMounted(() => {
 .skill-row:last-child { padding-bottom: 0; }
 .skill-main { min-width: 0; flex: 1; }
 .skill-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 工具名（英文 id）跟在中文名后面，小号 + 弱色：只在"对日志 / 找目录"时才需要，不抢主标题。 */
+.skill-id { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); overflow-wrap: anywhere; }
 /* 三档灰阶之一：名字用正文色（禁用的降一档），说明用 fading 的 11.5px 两行。
    说明只给两行：半宽卡片里一长串说明会把行撑高，整张卡跟着变高、右边空一片；
    截掉的全文进 `title`（悬停可见），`anywhere` 兜住长技能名这类不带空格的串。 */
@@ -849,6 +873,7 @@ onMounted(() => {
 }
 /* 禁用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
+.skill-row.off .skill-id { opacity: .7; }
 .skill-row.off .skill-desc { opacity: .6; }
 /* 图标按钮在前、开关收尾，整组贴右边缘：开关永远落在同一个 x 上，
    行里有没有齿轮 / 下载 / 卸载都不会把它推歪。 */

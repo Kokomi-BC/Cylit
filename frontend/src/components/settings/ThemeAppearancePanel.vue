@@ -54,6 +54,19 @@ const shown = computed(() => (filter.value === 'all'
   ? themes.value
   : themes.value.filter((t) => themeFacets(t).includes(filter.value as ThemeFacet))));
 
+/** 当前这套皮肤的色板：只读，回答"现在用的是什么配色"。 */
+const activeSwatches = computed(() => {
+  const preview = themes.value.find((t) => t.id === active.value)?.preview;
+  if (!preview) return [];
+  return [
+    { label: '页面背景', color: preview.bg },
+    { label: '卡片', color: preview.paper },
+    { label: '主色', color: preview.accent },
+    { label: '文字', color: preview.ink },
+    { label: '提示', color: preview.danger },
+  ];
+});
+
 /** 每个筛选下有几套（筛选栏自己把话说清楚，不用另写说明）。 */
 function countOf(key: 'all' | ThemeFacet): number {
   return key === 'all' ? themes.value.length : themes.value.filter((t) => themeFacets(t).includes(key)).length;
@@ -209,72 +222,107 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 
 <template>
   <div id="theme-appearance-panel" class="theme-appearance">
-    <!-- 筛选栏：单选，只负责"快速缩小范围"，不制造新的分组层级 -->
-    <div class="seg theme-filter" role="group" aria-label="主题筛选">
-      <button
-        v-for="f in FILTERS"
-        :key="f.key"
-        type="button"
-        :class="{ active: filter === f.key }"
-        :aria-pressed="filter === f.key"
-        :data-theme-filter="f.key"
-        @click="filter = f.key"
-      >{{ f.label }}<span class="theme-filter-n">{{ countOf(f.key) }}</span></button>
-    </div>
+    <p class="panel-note">点一套皮肤就能换，也能自己做一套。</p>
 
-    <div class="theme-appearance-grid" role="radiogroup" aria-label="主题">
-      <div
-        v-for="t in shown"
-        :key="t.id"
-        :id="`theme-option-${t.id}`"
-        role="radio"
-        :aria-checked="active === t.id"
-        tabindex="0"
-        class="theme-option"
-        :class="{ 'is-selected': active === t.id }"
-        :data-theme-option="t.id"
-        :data-theme-group="t.group"
-        :data-theme-custom="t.custom ? '1' : '0'"
-        @click="choose(t.id)"
-        @keydown.enter.prevent="choose(t.id)"
-        @keydown.space.prevent="choose(t.id)"
-      >
-        <span class="theme-option-swatch" :style="{ background: t.preview.bg }" aria-hidden="true">
-          <span class="theme-option-swatch-paper" :style="{ background: t.preview.paper }">
-            <span class="theme-option-swatch-bar" :style="{ background: t.preview.accent }" />
-            <span class="theme-option-swatch-line" :style="{ background: t.preview.ink }" />
-            <span class="theme-option-swatch-line short" :style="{ background: t.preview.ink }" />
-          </span>
-          <span class="theme-option-swatch-dot" :style="{ background: t.preview.danger }" />
-        </span>
+    <div class="grid ta-grid">
+      <!-- 皮肤：筛选栏 + 图块墙，内容长，整宽 -->
+      <div class="card ta-card-wide">
+        <div class="card-head">皮肤</div>
+        <div class="card-body ta-wall">
+          <!-- 筛选栏：单选，只负责"快速缩小范围"，不制造新的分组层级 -->
+          <div class="seg theme-filter" role="group" aria-label="主题筛选">
+            <button
+              v-for="f in FILTERS"
+              :key="f.key"
+              type="button"
+              :class="{ active: filter === f.key }"
+              :aria-pressed="filter === f.key"
+              :data-theme-filter="f.key"
+              @click="filter = f.key"
+            >{{ f.label }}<span class="theme-filter-n">{{ countOf(f.key) }}</span></button>
+          </div>
 
-        <span class="theme-option-copy"><strong>{{ t.label }}</strong></span>
+          <div class="theme-appearance-grid" role="radiogroup" aria-label="主题">
+            <div
+              v-for="t in shown"
+              :key="t.id"
+              :id="`theme-option-${t.id}`"
+              role="radio"
+              :aria-checked="active === t.id"
+              tabindex="0"
+              class="theme-option"
+              :class="{ 'is-selected': active === t.id }"
+              :data-theme-option="t.id"
+              :data-theme-group="t.group"
+              :data-theme-custom="t.custom ? '1' : '0'"
+              @click="choose(t.id)"
+              @keydown.enter.prevent="choose(t.id)"
+              @keydown.space.prevent="choose(t.id)"
+            >
+              <span class="theme-option-swatch" :style="{ background: t.preview.bg }" aria-hidden="true">
+                <span class="theme-option-swatch-paper" :style="{ background: t.preview.paper }">
+                  <span class="theme-option-swatch-bar" :style="{ background: t.preview.accent }" />
+                  <span class="theme-option-swatch-line" :style="{ background: t.preview.ink }" />
+                  <span class="theme-option-swatch-line short" :style="{ background: t.preview.ink }" />
+                </span>
+                <span class="theme-option-swatch-dot" :style="{ background: t.preview.danger }" />
+              </span>
+      
+              <span class="theme-option-copy"><strong>{{ t.label }}</strong></span>
+      
+              <span v-if="t.custom" class="theme-option-tools">
+                <button type="button" class="theme-option-tool" title="编辑"
+                        @click.stop="openEditor(t)">
+                  <AppIcon name="edit" :size="14" />
+                </button>
+                <button type="button" class="theme-option-tool danger" title="删除"
+                        @click.stop="removeCustom(t.id, t.label)">
+                  <AppIcon name="trash" :size="14" />
+                </button>
+              </span>
+              <span v-if="active === t.id" class="theme-option-check" aria-hidden="true">
+                <AppIcon name="check" :size="13" />
+              </span>
+            </div>
 
-        <span v-if="t.custom" class="theme-option-tools">
-          <button type="button" class="theme-option-tool" title="编辑"
-                  @click.stop="openEditor(t)">
-            <AppIcon name="edit" :size="14" />
-          </button>
-          <button type="button" class="theme-option-tool danger" title="删除"
-                  @click.stop="removeCustom(t.id, t.label)">
-            <AppIcon name="trash" :size="14" />
-          </button>
-        </span>
-        <span v-if="active === t.id" class="theme-option-check" aria-hidden="true">
-          <AppIcon name="check" :size="13" />
-        </span>
+            <!-- 创建入口：永远排在网格最后（不是"另一个区域"，就是列表的下一格） -->
+            <button
+              type="button"
+              class="theme-option is-new"
+              data-theme-new
+              @click="openEditor()"
+            >
+              <span class="theme-option-new-icon"><AppIcon name="add" :size="20" /></span>
+              <span class="theme-option-copy"><strong>创建自定义主题</strong></span>
+            </button>
+          </div>
+        </div>
       </div>
 
-      <!-- 创建入口：永远排在网格最后（不是"另一个区域"，就是列表的下一格） -->
-      <button
-        type="button"
-        class="theme-option is-new"
-        data-theme-new
-        @click="openEditor()"
-      >
-        <span class="theme-option-new-icon"><AppIcon name="add" :size="20" /></span>
-        <span class="theme-option-copy"><strong>创建自定义主题</strong></span>
-      </button>
+      <!-- 当前配色：只读物色板，短卡并排 -->
+      <div class="card">
+        <div class="card-head">当前配色</div>
+        <div class="card-body">
+          <div class="ta-swatches" v-if="activeSwatches.length">
+            <span v-for="s in activeSwatches" :key="s.label" class="ta-swatch">
+              <i class="ta-swatch-dot" :style="{ background: s.color }" aria-hidden="true" />
+              <span class="ta-swatch-label">{{ s.label }}</span>
+            </span>
+          </div>
+          <p class="tiny faint" v-else>这套皮肤没留下色板。</p>
+        </div>
+      </div>
+
+      <!-- 自定义：入口放进一张短卡，和上面的色板并排 -->
+      <div class="card">
+        <div class="card-head">自定义</div>
+        <div class="card-body ta-custom">
+          <p class="ta-hint">自己做的皮肤也排在墙里，随时能改。</p>
+          <button type="button" class="btn sm primary" @click="openEditor()">
+            <AppIcon name="add" :size="15" />新建一套
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -366,7 +414,33 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 </template>
 
 <style scoped>
-.theme-appearance { display: grid; gap: 14px; }
+.theme-appearance { display: flex; flex-direction: column; gap: 12px; }
+
+/* 顶部一句话：一行说完这一块能干什么，不解释做法 */
+.panel-note {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
+/* 卡片网格：短卡两列并排，长内容整宽。间距只由 .grid 的 gap 负责（base.css 已把网格内的 .card + .card 清零），这里不再给卡片加 margin。 */
+.ta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.ta-card-wide { grid-column: 1 / -1; }
+.ta-wall { display: grid; gap: 12px; }
+
+/* 当前配色：一枚小色块 + 名称，只读 */
+.ta-swatches { display: grid; gap: 8px 12px; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
+.ta-swatch { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ta-swatch-dot {
+  flex: none; width: 16px; height: 16px; border-radius: 5px;
+  border: 1px solid var(--border-strong);
+}
+.ta-swatch-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
+}
+
+/* 自定义入口：一句说明 + 一枚按钮 */
+.ta-custom { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.ta-hint { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
 
 /* 筛选栏：全站分段控件语言（`.seg` 托盘 + 白色 pill），只加一个"有几套"的小计数 ——
    它比任何说明文字都更能说清这一档里有什么。 */
@@ -515,6 +589,11 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
   background: var(--bg-sunken); color: var(--text-dim); font-size: calc(12px * var(--ts, 1));
 }
 .ce-hex:focus { outline: none; border-color: var(--accent); color: var(--text); }
+
+/* 窄一档：卡片回落单列，短卡也竖着排 */
+@media (max-width: 1100px) {
+  .ta-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 @media (max-width: 620px) {
   .ce-fields { grid-template-columns: minmax(0, 1fr); }

@@ -284,6 +284,8 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 </template>
 
 <style scoped>
+/* 用量卡永远整宽：折线需要横向像素，落在两列网格里也必须独占一行。 */
+.usage { grid-column: 1 / -1; }
 .usage-head { font-weight: 600; }
 .hd-title { display: inline-flex; align-items: center; gap: 7px; }
 /* 14/30 天用全站那枚胶囊（.seg），高度跟着控件规范走 */

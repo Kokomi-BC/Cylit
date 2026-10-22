@@ -408,7 +408,9 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 </script>
 
 <template>
-  <div class="kb-panel">
+  <div class="kb-panel grid cards">
+    <p class="panel-note">查索引、对账、调检索条数，都在这里。</p>
+
     <!-- 检索规模：本面板唯一可写的一块（原「常规参数」区里真生效的那几项） -->
     <section class="card">
       <div class="card-head">
@@ -439,7 +441,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
         </label>
         <div class="rag-field rag-single">
           <Switch v-model="allowGeneral">允许通用知识</Switch>
-          <span class="rag-hint">检索结果不够时允许模型用自身知识回答（RAG 兜底）</span>
+          <span class="rag-hint">检索结果不够时，允许模型用自己的知识回答</span>
         </div>
       </div>
     </section>
@@ -455,7 +457,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
         </button>
       </div>
       <div class="card-body">
-        <div class="stats" v-if="overview">
+        <div class="stats stats-half" v-if="overview">
           <div class="stat cell">
             <div class="n">{{ overview.papers_total }}</div>
             <div class="k">论文总数</div>
@@ -484,8 +486,8 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       </div>
     </section>
 
-    <!-- 论文索引表 -->
-    <section class="card">
+    <!-- 论文索引表：数据表，整宽 -->
+    <section class="card wide">
       <div class="card-head">
         <AppIcon name="layers" :size="15" />论文索引
         <span class="spacer"></span>
@@ -529,8 +531,8 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       </div>
     </section>
 
-    <!-- 索引状态与对账 -->
-    <section class="card">
+    <!-- 索引状态与对账：数字 + 一串版本徽章 + 对账动作，整宽 -->
+    <section class="card wide">
       <div class="card-head">
         <AppIcon name="server" :size="15" />索引状态
         <span class="badge" :class="statusClass">{{ statusText }}</span>
@@ -589,8 +591,8 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       </div>
     </section>
 
-    <!-- chunk 元数据 -->
-    <section class="card">
+    <!-- chunk 元数据：数据表，整宽 -->
+    <section class="card wide">
       <div class="card-head">
         <AppIcon name="list" :size="15" />Chunk 元数据
         <span class="spacer"></span>
@@ -654,6 +656,25 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 </template>
 
 <style scoped>
+/* 卡片两列版式（与「模型」面板同一套口径）：短卡（检索规模、概览数字）并排，长内容
+   （论文索引表、索引状态、chunk 表）整宽；≤1100px 回落单列。
+   卡片间距只由这里的 gap 给 —— base.css 的 `.card + .card` 在 `.grid` 里已清零。 */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.cards > .card { min-width: 0; }
+.cards > .wide { grid-column: 1 / -1; }
+@media (max-width: 1100px) { .cards { grid-template-columns: minmax(0, 1fr); } }
+
+/* 顶部一句话：说清这块能干什么，不讲实现 */
+.panel-note {
+  grid-column: 1 / -1; margin: 0;
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
 /**
  * 统计行：**不嵌套卡片**（用户口径：卡片套卡片太吵）。
  * 一格 = 数字 + 说明，格与格之间用竖分隔线，整行都长在同一张卡的 body 里。
@@ -665,6 +686,10 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   min-width: 0;
 }
 .stats .cell:first-child { padding-left: 0; border-left: 0; }
+/* 半宽卡（概览）里的四格：两行两列。竖分隔线在这里不画 —— 折行处只剩半截线，
+   看起来像漏了一条边；行间距自己给。 */
+.stats.stats-half { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+.stats.stats-half .cell { padding-left: 0; border-left: 0; }
 .meta { margin-top: 12px; }
 
 /* 论文索引表：固定列宽，徽章不会被拆成两行 */

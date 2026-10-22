@@ -52,10 +52,10 @@ interface ReadonlyDef {
 /** 只读信息卡片。 */
 const READONLY_KEYS: ReadonlyDef[] = [
   { key: 'data_dir', label: '数据目录' },
-  { key: 'db_backend', label: '业务库后端' },
-  { key: 'api_prefix', label: 'API 前缀' },
+  { key: 'db_backend', label: '数据库' },
+  { key: 'api_prefix', label: '接口前缀' },
   { key: 'secrets_dir', label: '密钥目录' },
-  { key: 'user_id', label: '用户 ID' },
+  { key: 'user_id', label: '用户标识' },
 ];
 /* ---------------------------- 分区导航 ---------------------------- */
 
@@ -65,18 +65,47 @@ const READONLY_KEYS: ReadonlyDef[] = [
  * —— 深链只负责切区，滚动由窗格自己在切区时归零。
  */
 const SECTIONS = [
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '点一下立即换肤，也可以自建一套；字号大小也在这里调。' },
-  { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '问答与生成用的模型、密钥与预设。' },
-  { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '技能、对话风格与运行限额。' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '检索规模、知识库概览与论文索引。' },
-  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '只存在本机浏览器里的检索记录。' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色与字号，点一下立即生效' },
+  { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '选问答与生成用的模型，填密钥' },
+  { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '调问答的技能、说话风格与次数上限' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '看论文入库情况，调检索范围' },
+  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '看本机保存的搜索记录，可清空' },
   // 回收站并进「内容与索引」：它管的是论文数据本身（恢复 / 彻底删除），与索引管理同一档；
   // 放在组尾 —— 这是低频且不可逆的操作，不该排在日常入口前面。
-  { id: 'trash', label: '回收站', icon: 'trash', group: '内容与索引', desc: '软删的论文在这里恢复或彻底删除；批注 / 笔记 / 对话与解读不会带回来。' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: 'MinerU 的 token 与默认参数。' },
-  { id: 'tasks', label: '任务队列', icon: 'task', group: '服务与系统', desc: '任务进度、状态与重试。' },
-  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '只读信息与健康检查。' },
+  { id: 'trash', label: '回收站', icon: 'trash', group: '内容与索引', desc: '把删掉的论文恢复回来，或彻底删除' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: '接在线解析服务，填密钥并验证' },
+  { id: 'tasks', label: '任务队列', icon: 'task', group: '服务与系统', desc: '看导入、解析等后台任务的进度' },
+  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '看版本与环境，检查各服务是否正常' },
 ] as const;
+
+/** 搜索用的同义词表：用户按"想改什么"找，不会按分区名找（要深色不会去敲"显示主题"）。 */
+const SECTION_KEYWORDS: Record<string, string[]> = {
+  appearance: ['主题', '皮肤', '字号', '深色', '浅色', '换肤'],
+  models: ['模型', '密钥', '思考', '预设', '导入'],
+  agent: ['技能', '对话风格', '联网搜索', '限额', '问答'],
+  kb: ['索引', '向量', '分块', '检索', '论文'],
+  history: ['记录', '历史', '搜索'],
+  trash: ['回收站', '恢复', '删除'],
+  mineru: ['token', '解析', '在线'],
+  tasks: ['任务', '重试', '进度', '队列'],
+  about: ['版本', '健康', '系统', '只读'],
+};
+
+/** 搜索词只活在组件里，**不进 hash** —— hash 只表示分区，深链才不会被搜索状态污染。 */
+const query = ref('');
+const needle = computed(() => query.value.trim().toLowerCase());
+
+/**
+ * 按标签 / 一句话说明 / 同义词表过滤。命中口径就是"用户说出口的词"，
+ * 分组标题跟着剩下的项走，所以没命中的分组自然整段消失，不用另写一套过滤。
+ */
+const visibleSections = computed(() => {
+  const k = needle.value;
+  if (!k) return SECTIONS;
+  return SECTIONS.filter((s) => s.label.toLowerCase().includes(k)
+    || s.desc.toLowerCase().includes(k)
+    || (SECTION_KEYWORDS[s.id] ?? []).some((w) => w.toLowerCase().includes(k)));
+});
 
 const route = useRoute();
 const router = useRouter();
@@ -99,6 +128,17 @@ function go(id: string) {
   active.value = id;
   if (route.hash !== `#${id}`) void router.replace({ hash: `#${id}` });
   resetPaneScroll();
+}
+
+/** 回车跳到第一个命中：列表已被搜索词收窄，"第一个"就是最接近想要的那个。 */
+function jumpToFirst() {
+  const first = visibleSections.value[0];
+  if (first) go(first.id);
+}
+
+/** Esc 清空搜索、恢复全部分区；当前分区不动，选中态因此照样在。 */
+function clearQuery() {
+  query.value = '';
 }
 
 /** 深链与浏览器前进/后退：只切区（窗格归零由 resetPaneScroll 负责）。 */
@@ -352,9 +392,21 @@ onMounted(async () => {
   <div class="settings-layout">
     <aside class="settings-rail">
       <h1 class="settings-rail-title">设置</h1>
+      <!-- 搜索只筛左栏列表：窗格仍显示当前分区，回车才换区 -->
+      <label class="settings-search">
+        <AppIcon name="search" :size="14" />
+        <input
+          v-model="query"
+          type="search"
+          placeholder="搜索设置"
+          aria-label="搜索设置"
+          @keydown.enter.prevent="jumpToFirst"
+          @keydown.esc.prevent="clearQuery"
+        />
+      </label>
       <nav class="settings-nav" ref="navRef" aria-label="设置分类">
-        <template v-for="(s, i) in SECTIONS" :key="s.id">
-          <div v-if="i === 0 || SECTIONS[i - 1].group !== s.group" class="settings-nav-group">{{ s.group }}</div>
+        <template v-for="(s, i) in visibleSections" :key="s.id">
+          <div v-if="i === 0 || visibleSections[i - 1].group !== s.group" class="settings-nav-group">{{ s.group }}</div>
           <button
             type="button"
             class="settings-nav-item"
@@ -366,9 +418,10 @@ onMounted(async () => {
           </button>
         </template>
       </nav>
+      <p class="settings-empty" v-if="!visibleSections.length">没有匹配的设置</p>
     </aside>
     <div class="settings-pane" ref="paneRef">
-      <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 8 个分节共用同一份模板 -->
+      <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 9 个分节共用同一份模板 -->
       <header class="pane-head">
         <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
         <div class="pane-head-text">
@@ -430,84 +483,86 @@ onMounted(async () => {
           </button>
         </div>
 
-        <div class="card">
-          <div class="card-head">凭证</div>
-          <div class="card-body">
-            <label class="field">
-              <span class="field-top">API token</span>
-              <input
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                v-model="mineruForm.token"
-                :placeholder="mineruBase.has_token
-                  ? `已保存 ${mineruTokenText}（留空 = 不修改）`
-                  : '粘贴 mineru.net 申请到的 token'"
-              />
-            </label>
-            <div class="row row-gap">
-              <button
-                class="btn sm danger"
-                :disabled="!!mineruBusy || !mineruBase.has_token"
-                @click="clearMineruToken"
-              >
-                <AppIcon name="trash" :size="14" />{{ mineruBusy === 'clear' ? '清除中…' : '清除 token' }}
-              </button>
-              <span class="spacer"></span>
+        <div class="cards-2">
+          <div class="card">
+            <div class="card-head">凭证</div>
+            <div class="card-body">
+              <label class="field">
+                <span class="field-top">API token</span>
+                <input
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  v-model="mineruForm.token"
+                  :placeholder="mineruBase.has_token
+                    ? `已保存 ${mineruTokenText}（留空 = 不修改）`
+                    : '粘贴 mineru.net 申请到的 token'"
+                />
+              </label>
+              <div class="row row-gap">
+                <button
+                  class="btn sm danger"
+                  :disabled="!!mineruBusy || !mineruBase.has_token"
+                  @click="clearMineruToken"
+                >
+                  <AppIcon name="trash" :size="14" />{{ mineruBusy === 'clear' ? '清除中…' : '清除 token' }}
+                </button>
+                <span class="spacer"></span>
+              </div>
+              <!-- 验证结论：有效 / 无效 / 过期 / 连不上，各自给不同的语义色与可执行提示 -->
+              <div class="row row-gap" v-if="mineruVerify">
+                <span class="badge" :class="mineruVerify.ok ? 'ok' : 'danger'">
+                  <AppIcon :name="mineruVerify.ok ? 'check_circle' : 'error'" :size="13" />
+                  {{ mineruVerify.ok ? 'Token 有效' : 'Token 不可用' }}
+                </span>
+                <span class="tiny faint" v-if="mineruVerify.latency_ms !== null
+                  && mineruVerify.latency_ms !== undefined">
+                  延迟 {{ mineruVerify.latency_ms }} ms
+                </span>
+                <span class="tiny faint" v-if="mineruVerify.http_status">
+                  HTTP {{ mineruVerify.http_status }}<template v-if="mineruVerify.code !== null
+                    && mineruVerify.code !== undefined"> / code {{ mineruVerify.code }}</template>
+                </span>
+              </div>
+              <p
+                class="tiny verify-msg"
+                :class="mineruVerify?.ok ? 'ok' : 'bad'"
+                v-if="mineruVerify?.message"
+              >{{ mineruVerify.message }}</p>
+              <p class="tiny faint meta-line">
+                <span>token 文件 <span class="mono">{{ mineruBase.token_file || '—' }}</span></span>
+                <span v-if="mineruBase.base_url">服务地址 <span class="mono">{{ mineruBase.base_url }}</span></span>
+              </p>
+              <p class="load-error tiny" v-if="mineruError">{{ mineruError }}</p>
             </div>
-            <!-- 验证结论：有效 / 无效 / 过期 / 连不上，各自给不同的语义色与可执行提示 -->
-            <div class="row row-gap" v-if="mineruVerify">
-              <span class="badge" :class="mineruVerify.ok ? 'ok' : 'danger'">
-                <AppIcon :name="mineruVerify.ok ? 'check_circle' : 'error'" :size="13" />
-                {{ mineruVerify.ok ? 'Token 有效' : 'Token 不可用' }}
-              </span>
-              <span class="tiny faint" v-if="mineruVerify.latency_ms !== null
-                && mineruVerify.latency_ms !== undefined">
-                延迟 {{ mineruVerify.latency_ms }} ms
-              </span>
-              <span class="tiny faint" v-if="mineruVerify.http_status">
-                HTTP {{ mineruVerify.http_status }}<template v-if="mineruVerify.code !== null
-                  && mineruVerify.code !== undefined"> / code {{ mineruVerify.code }}</template>
-              </span>
-            </div>
-            <p
-              class="tiny verify-msg"
-              :class="mineruVerify?.ok ? 'ok' : 'bad'"
-              v-if="mineruVerify?.message"
-            >{{ mineruVerify.message }}</p>
-            <p class="tiny faint meta-line">
-              <span>token 文件 <span class="mono">{{ mineruBase.token_file || '—' }}</span></span>
-              <span v-if="mineruBase.base_url">服务地址 <span class="mono">{{ mineruBase.base_url }}</span></span>
-            </p>
-            <p class="load-error tiny" v-if="mineruError">{{ mineruError }}</p>
           </div>
-        </div>
 
-        <div class="card">
-          <div class="card-head">默认参数</div>
-          <div class="card-body">
-            <div class="grid cols-2">
-              <label class="field">
-                模型版本
-                <select v-model="mineruForm.model_version">
-                  <option v-for="m in MINERU_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
+          <div class="card">
+            <div class="card-head">默认参数</div>
+            <div class="card-body">
+              <div class="grid cols-2">
+                <label class="field">
+                  模型版本
+                  <select v-model="mineruForm.model_version">
+                    <option v-for="m in MINERU_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
+                  </select>
+                </label>
+                <label class="field">
+                  语言（影响 OCR）
+                  <select v-model="mineruForm.language">
+                    <option v-for="l in MINERU_LANGS" :key="l.value" :value="l.value">{{ l.label }}</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field field-block">
+                默认解析引擎
+                <select v-model="mineruForm.engine_default">
+                  <option value="local">本地解析（离线、快）</option>
+                  <option value="mineru">在线解析（MinerU 云端）</option>
                 </select>
               </label>
-              <label class="field">
-                语言（影响 OCR）
-                <select v-model="mineruForm.language">
-                  <option v-for="l in MINERU_LANGS" :key="l.value" :value="l.value">{{ l.label }}</option>
-                </select>
-              </label>
+              <p class="tiny faint hint">仅作导入弹窗初值，导入时仍可逐篇改。</p>
             </div>
-            <label class="field field-block">
-              默认解析引擎
-              <select v-model="mineruForm.engine_default">
-                <option value="local">本地解析（离线、快）</option>
-                <option value="mineru">在线解析（MinerU 云端）</option>
-              </select>
-            </label>
-            <p class="tiny faint hint">仅作导入弹窗初值，导入时仍可逐篇改。</p>
           </div>
         </div>
       </section>
@@ -529,7 +584,7 @@ onMounted(async () => {
 
       <!-- ⑨ 系统信息（只读） -->
       <section id="about" class="sec" v-if="active === 'about'">
-        <div class="grid cols-2">
+        <div class="cards-2">
           <div class="card">
             <div class="card-head">只读信息</div>
             <div class="card-body">
@@ -613,11 +668,14 @@ onMounted(async () => {
  * 左栏于是横向抖一下 —— 用户报的正是这个。算式与 base.css:269 的内边距（18 / 64）绑死，
  * 那边改了这里必须跟着改；861–1024 段的内边距是 14 / 56，见下面单独的媒体查询。
  *
- * 分隔线画在容器上：它要跟着**整屏**高度走，画在任一栏上都会随那栏的滚动一起动。
+ * 两栏之间**没有分隔线**：分层交给留白（左栏右留白 28、内容列左留白 28）与分组标题，
+ * 一根竖线反而把整页切成两个盒子。
  */
 .settings-layout {
   --rail-col: 208px;
-  position: relative;
+  /* 顶出去：.app-main 自带左右内边距（20px），左栏因此离内容区边缘还有一段；
+     只挪左边 —— 右边缘仍落在 .app-main 的内边距里，横向不会多出滚动条。 */
+  margin-left: -20px;
   display: grid;
   grid-template-columns: var(--rail-col) minmax(0, 1fr);
   /* 显式写行高：两栏都靠 height:100% 撑满，行若是 auto 就退回按内容算，窗格的滚动区会变矮 */
@@ -625,24 +683,39 @@ onMounted(async () => {
   height: calc(100dvh - var(--header-h) - 18px - 64px);
   overflow: hidden;
 }
-.settings-layout::before {
-  content: ''; position: absolute; top: 0; bottom: 0; left: var(--rail-col);
-  width: 1px; background: var(--divider);
-}
 .settings-rail {
   /* 不吸顶：容器已经钉住了，整栏跟着容器走即可（吸顶 + 定高反而会互相打架） */
   position: static;
   height: 100%; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 10px;
-  /* 左留白为 0：可点项的浅底一路顶到内容区最左边，贴左才看得出来 */
-  padding: 2px 12px 12px 0;
+  /* 栏内各块的间距由下面各自的 margin 给，不叠 flex gap（两处都管会变成加倍的缝） */
+  display: flex; flex-direction: column; gap: 0;
+  /* 左 6px：描边画在元素内也留点余量；右 28px 顶替被删掉的那条竖发丝线 */
+  padding: 2px 28px 12px 6px;
 }
-/* 导航抬头：一条分隔线把"设置"和下面四组分区断开 */
+/* 左栏抬头：整栏唯一的大字，比分区项高一档；下留 14px 交给搜索框 */
 .settings-rail-title {
-  margin: 0; padding: 0 12px 10px;
-  font-size: calc(14px * var(--ts, 1)); font-weight: 600; letter-spacing: .02em;
-  border-bottom: 1px solid var(--divider);
+  margin: 0 0 14px; padding: 0 12px;
+  font-size: calc(22px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
 }
+/* 搜索框：与论文库那条同构（图标 + 无边框输入），整行铺满 */
+.settings-search {
+  display: flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 10px; margin-bottom: 12px;
+  border-radius: var(--radius-ctl);
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.settings-search:focus-within {
+  border-color: var(--accent); box-shadow: var(--ring); background: var(--bg-elev);
+}
+.settings-search input {
+  width: 100%; min-width: 0; height: 100%; padding: 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  font-size: calc(13px * var(--ts, 1));
+}
+.settings-search input:hover,
+.settings-search input:focus { background: transparent; border: 0; box-shadow: none; }
+.settings-empty { margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; }
 /* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
    一眼能看出"要改的是行为、模型，还是数据"。大写 + 字距 + 降一档色 = 只当路标，
@@ -672,7 +745,8 @@ onMounted(async () => {
 .settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .settings-nav-item.active::before { opacity: 1; }
-.settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 描边必须画在元素内：左栏与横排的 nav 都是滚动容器，画在外面的那圈会被裁掉（用户截图里的黑边） */
+.settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .settings-pane {
@@ -708,7 +782,11 @@ onMounted(async () => {
 /* 861–1024：.app-main 的内边距收成 14 / 56（base.css），高度算式得换一档，
    否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。 */
 @media (max-width: 1024px) {
-  .settings-layout { height: calc(100dvh - var(--header-h) - 14px - 56px); }
+  .settings-layout {
+    height: calc(100dvh - var(--header-h) - 14px - 56px);
+    /* 这一档 .app-main 的内边距是 12px，负外边距跟着换，否则左栏反而缩回去 8px */
+    margin-left: -12px;
+  }
 }
 
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽）。
@@ -719,23 +797,22 @@ onMounted(async () => {
     grid-template-columns: minmax(0, 1fr); row-gap: 14px;
     height: auto; overflow: visible;
   }
-  /* 竖线立不住：横排导航改由自己的下边框收尾，容器上那条整体撤掉 */
-  .settings-layout::before { display: none; }
   .settings-pane {
     padding-left: 0; padding-right: 0;
     height: auto; overflow: visible;
   }
+  /* 折成两行："设置" + 搜索框一行，导航自己占满下一行（横排要整条宽度才滚得顺） */
   .settings-rail {
-    position: static; height: auto; flex-direction: row; align-items: center;
-    gap: 10px; padding: 0 0 10px; overflow: hidden;
+    position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+    gap: 10px; padding: 0 0 10px; overflow: visible;
     border-bottom: 1px solid var(--divider);
   }
-  .settings-rail-title {
-    flex: none; padding: 0 10px 0 0;
-    border-bottom: 0; border-right: 1px solid var(--divider);
-  }
+  /* 不画竖线：横排的「设置」与导航之间靠 rail 的 gap 10 分开，留白左右对称，别在右边空出 10px */
+  .settings-rail-title { flex: none; margin: 0; padding: 0; }
+  .settings-search { flex: 1 1 140px; min-width: 0; height: 30px; margin-bottom: 0; }
+  .settings-empty { flex: 1 0 100%; }
   .settings-nav {
-    flex: 1; min-width: 0; flex-direction: row; gap: 4px;
+    flex: 1 0 100%; min-width: 0; flex-direction: row; gap: 4px;
     overflow-x: auto; scrollbar-width: none;
   }
   .settings-nav::-webkit-scrollbar { display: none; }
@@ -754,6 +831,17 @@ onMounted(async () => {
    这里不叠 gap —— 两处都管会出现 22px 的"缝"，看着像两组内容。 */
 .sec { min-width: 0; scroll-margin-top: calc(var(--header-h) + 62px); }
 .sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+
+/* 卡片两列（短卡并排；长表要整宽就自己加 grid-column: 1 / -1）。
+   间距只由 gap 给 —— base.css 的 .card + .card 在这里会把第二张顶下去 12px，要抹掉。 */
+.cards-2 {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; align-items: start;
+}
+.cards-2 > .card + .card { margin-top: 0; }
+@media (max-width: 1100px) {
+  .cards-2 { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }

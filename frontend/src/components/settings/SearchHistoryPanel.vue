@@ -87,57 +87,102 @@ onUnmounted(() => {
 
 <template>
   <div class="sh">
-    <!-- 控制条：标题与"只存本机"都在窗格抬头，这里只放要动手的两样 -->
-    <div class="toolbar">
-      <span class="spacer"></span>
-      <label class="tiny faint row nowrap">
-        最多保留
-        <select v-model.number="limit" @change="onLimitChange">
-          <option v-for="n in LIMIT_CHOICES" :key="n" :value="n">{{ n }} 条</option>
-        </select>
-      </label>
-      <button class="btn sm" :disabled="!entries.length" @click="onClear">
-        <AppIcon name="trash" :size="14" />清空
-      </button>
-    </div>
+    <p class="panel-note">记着你搜过什么，想删就删。</p>
 
-    <div class="card" v-if="entries.length">
-      <table class="data fixed">
-        <thead>
-          <tr>
-            <th>搜索词</th>
-            <th v-if="hasOtherModes" class="w-mode">模式</th>
-            <th class="w-scope">范围</th>
-            <th class="num w-hits">命中</th>
-            <th class="w-time">时间</th>
-            <th class="w-ops">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="e in entries" :key="`${e.ts}-${e.q}`">
-            <td class="truncate" :title="e.q">{{ e.q }}</td>
-            <td v-if="hasOtherModes"><span class="badge">{{ modeText(e.mode) }}</span></td>
-            <td class="tiny truncate" :title="scopeText(e)">{{ scopeText(e) }}</td>
-            <td class="num">{{ e.hits === null ? '—' : e.hits }}</td>
-            <td class="tiny" :title="fmtDate(iso(e.ts))">{{ fmtRelative(iso(e.ts)) }}</td>
-            <td class="ops">
-              <button class="btn sm ghost" title="删除这条记录" @click="onRemove(e)">
-                <AppIcon name="trash" :size="14" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="grid sh-grid">
+      <!-- 保留条数：一张短卡 -->
+      <div class="card">
+        <div class="card-head">保留条数</div>
+        <div class="card-body">
+          <label class="field">
+            <span class="field-top">最多保留</span>
+            <select v-model.number="limit" @change="onLimitChange">
+              <option v-for="n in LIMIT_CHOICES" :key="n" :value="n">{{ n }} 条</option>
+            </select>
+          </label>
+          <p class="sh-hint">放满了就从最旧的一条开始丢。</p>
+        </div>
+      </div>
+
+      <!-- 清空：一张短卡 -->
+      <div class="card">
+        <div class="card-head">清空</div>
+        <div class="card-body sh-actions">
+          <p class="sh-hint">清掉的是本机这份记录，论文和笔记都不动。</p>
+          <button class="btn sm" :disabled="!entries.length" @click="onClear">
+            <AppIcon name="trash" :size="14" />清空全部
+          </button>
+        </div>
+      </div>
+
+      <!-- 记录表：长内容，整宽 -->
+      <div class="card sh-card-wide" v-if="entries.length">
+        <div class="card-head">
+          <span>搜索记录</span>
+          <span class="sh-count tnum">{{ entries.length }} 条</span>
+        </div>
+        <table class="data fixed">
+          <thead>
+            <tr>
+              <th>搜索词</th>
+              <th v-if="hasOtherModes" class="w-mode">模式</th>
+              <th class="w-scope">范围</th>
+              <th class="num w-hits">命中</th>
+              <th class="w-time">时间</th>
+              <th class="w-ops">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in entries" :key="`${e.ts}-${e.q}`">
+              <td class="truncate" :title="e.q">{{ e.q }}</td>
+              <td v-if="hasOtherModes"><span class="badge">{{ modeText(e.mode) }}</span></td>
+              <td class="tiny truncate" :title="scopeText(e)">{{ scopeText(e) }}</td>
+              <td class="num">{{ e.hits === null ? '—' : e.hits }}</td>
+              <td class="tiny" :title="fmtDate(iso(e.ts))">{{ fmtRelative(iso(e.ts)) }}</td>
+              <td class="ops">
+                <button class="btn sm ghost" title="删除这条记录" @click="onRemove(e)">
+                  <AppIcon name="trash" :size="14" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card sh-card-wide" v-else>
+        <p class="empty">还没有搜索记录。</p>
+      </div>
     </div>
-    <div class="empty" v-else>还没有搜索记录。</div>
   </div>
 </template>
 
 <style scoped>
+/* 顶部一句话：一行说完这一块能干什么，不解释做法 */
+.sh { display: flex; flex-direction: column; gap: 12px; }
+.panel-note {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
+/* 卡片网格：短卡两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+.sh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.sh-card-wide { grid-column: 1 / -1; }
+
+/* 短卡里的说明与按钮：一句一行，按钮跟在后面 */
+.sh-hint { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
+.field + .sh-hint { margin-top: 10px; }
+.sh-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+
+/* 记录数与标题同一行，靠右 */
+.sh-count { margin-left: auto; font-weight: 500; color: var(--text-faint); font-size: calc(11px * var(--ts, 1)); }
+
 .w-mode { width: 92px; }
 .w-scope { width: 220px; }
 .w-hits { width: 64px; }
 .w-time { width: 96px; }
 .w-ops { width: 56px; }
 select { max-width: 120px; }
+
+/* 窄一档：卡片回落单列，短卡也竖着排 */
+@media (max-width: 1100px) {
+  .sh-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

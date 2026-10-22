@@ -383,7 +383,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="model-panel">
+  <div class="model-panel grid cards">
+    <p class="panel-note">加模型、测连通、看用量，都在这一块。</p>
+
     <div class="sec-actions">
       <span class="cap">{{ state.models.length }} 个配置</span>
       <span class="spacer"></span>
@@ -399,7 +401,7 @@ onBeforeUnmount(() => {
     <UsageChart ref="usageRef" />
 
     <!-- 两张卡共用一套行版式：「其他模型」只是默认收起，不是另一套写法 -->
-    <section class="card" v-for="g in groups" :key="g.key">
+    <section class="card wide" v-for="g in groups" :key="g.key">
       <button
         v-if="g.key === 'other'"
         type="button" class="card-head fold" :aria-expanded="otherOpen"
@@ -484,6 +486,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <!-- 密钥 + 一键导入预设：两张都是"收起时只有一行抬头"的短卡，并排占同一行 -->
     <section class="card">
       <button type="button" class="card-head fold" :aria-expanded="secretOpen" @click="secretOpen = !secretOpen">
         <span class="hd-title"><AppIcon name="document" :size="14" />密钥</span>
@@ -545,12 +548,31 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.model-panel { display: flex; flex-direction: column; }
-.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+/* 卡片两列版式：短卡（密钥 / 预设这类表单、开关组）并排，长内容（用量图、模型列表）整宽。
+   ≤1100px 回落单列；卡片间距只由这里的 gap 给（base.css 的 `.card + .card` 在 `.grid` 里已清零，
+   不再叠第二份 margin，否则同排卡片会一高一低）。 */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.cards > .card { min-width: 0; }
+.cards > .wide { grid-column: 1 / -1; }
+@media (max-width: 1100px) { .cards { grid-template-columns: minmax(0, 1fr); } }
+
+/* 顶部一句话：说清这块能干什么，不讲实现 */
+.panel-note {
+  grid-column: 1 / -1; margin: 0;
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
+/* 面板工具条与失败条：不属于任何一张卡，永远整宽 */
+.sec-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* 加载失败时的可见提示（失败不静默） */
 .load-error {
-  margin-bottom: 12px;
+  grid-column: 1 / -1;
   padding: 8px 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
   border-radius: var(--radius-sm);

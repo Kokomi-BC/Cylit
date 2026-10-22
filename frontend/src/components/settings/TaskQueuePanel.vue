@@ -136,56 +136,74 @@ onMounted(() => { void refresh(); });
 
 <template>
   <div class="tq">
-    <div class="toolbar">
-      <div class="seg">
-        <button v-for="s in segments" :key="s.value || 'all'"
-                :class="{ active: status === s.value }" @click="status = s.value">
-          {{ s.label }} <span class="tq-n tnum">{{ s.count }}</span>
-        </button>
+    <p class="panel-note">看任务跑到哪儿，也能取消或重试。</p>
+
+    <div class="grid tq-grid">
+      <!-- 状态筛选：六枚分段，短卡 -->
+      <div class="card">
+        <div class="card-head">按状态看</div>
+        <div class="card-body">
+          <div class="seg tq-seg">
+            <button v-for="s in segments" :key="s.value || 'all'"
+                    :class="{ active: status === s.value }" @click="status = s.value">
+              {{ s.label }} <span class="tq-n tnum">{{ s.count }}</span>
+            </button>
+          </div>
+        </div>
       </div>
-      <span class="spacer"></span>
-      <span class="tq-live" :class="live" :title="liveText" :aria-label="liveText" />
-      <button class="btn icon" title="刷新任务列表" :disabled="state.loading.tasks" @click="refresh(false)">
-        <AppIcon name="refresh" :size="15" />
-      </button>
-    </div>
 
-    <div class="empty" v-if="firstLoad">正在加载任务…</div>
-    <div class="tq-empty" v-else-if="!shown.length">
-      {{ status ? '这个状态下没有任务。' : '暂无任务。' }}
-    </div>
+      <!-- 实时与刷新：短卡 -->
+      <div class="card">
+        <div class="card-head">实时</div>
+        <div class="card-body tq-live-card">
+          <p class="tq-hint">
+            <span class="tq-live" :class="live" :title="liveText" :aria-label="liveText" />
+            {{ liveText }}
+          </p>
+          <button class="btn sm" :disabled="state.loading.tasks" @click="refresh(false)">
+            <AppIcon name="refresh" :size="15" />刷新
+          </button>
+        </div>
+      </div>
 
-    <div class="card" v-else>
-      <table class="data fixed">
-        <thead>
-          <tr>
-            <th>任务</th>
-            <th class="w-type">类型</th>
-            <th class="w-progress">进度</th>
-            <th class="w-status">状态</th>
-            <th class="w-time">更新</th>
-            <th class="w-ops">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in shown" :key="t.id">
-            <td><span class="truncate" :title="titleOf(t)">{{ titleOf(t) }}</span></td>
-            <td class="tiny muted">{{ typeLabel(t.type) }}</td>
-            <td>
-              <div class="tq-prog">
-                <span class="tiny faint tnum">{{ t.done_items || 0 }} / {{ t.total_items || 0 }}</span>
-                <span class="spacer"></span>
-                <span class="tiny tnum">{{ progressOf(t) }}%</span>
-              </div>
-              <ProgressBar :value="progressOf(t)" :ok-at="100" />
-            </td>
-            <td>
-              <span class="badge" :class="taskStatus(t.status).cls">{{ taskStatus(t.status).label }}</span>
-            </td>
-            <td class="tiny faint nowrap">{{ fmtRelative(t.updated_at || t.created_at) }}</td>
-            <td class="ops">
-              <div class="row nowrap" style="gap: 4px">
-                <button class="btn icon sm" title="取消任务"
+      <!-- 任务列表：长内容，整宽 -->
+      <div class="card tq-card-wide" v-if="firstLoad">
+        <p class="empty">正在加载任务…</p>
+      </div>
+      <div class="card tq-card-wide" v-else-if="!shown.length">
+        <p class="empty">{{ status ? '这个状态下没有任务。' : '暂无任务。' }}</p>
+      </div>
+      <div class="card tq-card-wide" v-else>
+        <table class="data fixed">
+          <thead>
+            <tr>
+              <th>任务</th>
+              <th class="w-type">类型</th>
+              <th class="w-progress">进度</th>
+              <th class="w-status">状态</th>
+              <th class="w-time">更新</th>
+              <th class="w-ops">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in shown" :key="t.id">
+              <td><span class="truncate" :title="titleOf(t)">{{ titleOf(t) }}</span></td>
+              <td class="tiny muted">{{ typeLabel(t.type) }}</td>
+              <td>
+                <div class="tq-prog">
+                  <span class="tiny faint tnum">{{ t.done_items || 0 }} / {{ t.total_items || 0 }}</span>
+                  <span class="spacer"></span>
+                  <span class="tiny tnum">{{ progressOf(t) }}%</span>
+                </div>
+                <ProgressBar :value="progressOf(t)" :ok-at="100" />
+              </td>
+              <td>
+                <span class="badge" :class="taskStatus(t.status).cls">{{ taskStatus(t.status).label }}</span>
+              </td>
+              <td class="tiny faint nowrap">{{ fmtRelative(t.updated_at || t.created_at) }}</td>
+              <td class="ops">
+                <div class="row nowrap" style="gap: 4px">
+                  <button class="btn icon sm" title="取消任务"
                         v-if="CANCELLABLE.includes(t.status) && !t.cancel_requested"
                         :disabled="busyKey === 'cancel:' + t.id" @click="act(t, 'cancel', '已请求取消')">
                   <AppIcon name="stop" :size="14" />
@@ -205,16 +223,35 @@ onMounted(() => { void refresh(); });
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.tq { display: flex; flex-direction: column; gap: 8px; }
-.toolbar { margin: 0; }
+.tq { display: flex; flex-direction: column; gap: 12px; }
+
+/* 顶部一句话：一行说完这一块能干什么，不解释做法 */
+.panel-note {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
+/* 卡片网格：短卡两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+.tq-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.tq-card-wide { grid-column: 1 / -1; }
+
+/* 六枚分段放进半宽卡：允许换行，否则会被挤出卡片 */
+.tq-seg { width: 100%; flex-wrap: wrap; height: auto; }
 /* 分段里的计数：比按钮正文淡一档，不跟标签抢注意力 */
 .tq-n { color: var(--text-faint); font-weight: 500; }
 .seg button.active .tq-n { color: inherit; opacity: .65; }
+
+/* 实时卡：一盏灯 + 一句状态，下面一枚刷新 */
+.tq-live-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.tq-hint {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim);
+}
 /* 实时指示灯：三态只用颜色表达（--ok / --warn / 灰），文字进 title */
 .tq-live {
   flex: none; width: 7px; height: 7px; border-radius: 999px;
@@ -222,7 +259,7 @@ onMounted(() => { void refresh(); });
 }
 .tq-live.sse { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
 .tq-live.poll { background: var(--warn); }
-.tq-empty { padding: 16px 0; color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1)); }
+
 .tq-prog {
   display: flex; align-items: baseline; gap: 6px;
   margin-bottom: 4px; color: var(--text-dim);
@@ -234,4 +271,9 @@ onMounted(() => { void refresh(); });
 .w-ops { width: 108px; }
 /* 固定列宽的表里，单元格内容要能被截断才不顶破列 */
 td .truncate { display: block; }
+
+/* 窄一档：卡片回落单列，短卡也竖着排 */
+@media (max-width: 1100px) {
+  .tq-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

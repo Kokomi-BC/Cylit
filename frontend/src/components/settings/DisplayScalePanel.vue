@@ -55,91 +55,108 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
 </script>
 
 <template>
-  <div class="card display-scale">
-    <div class="card-head">
-      <span>显示大小</span>
-      <span class="ds-head-note">改完立即生效，只影响这台机器</span>
-    </div>
+  <div class="display-scale">
+    <p class="panel-note">字太小就整体调大，五类字号跟着一起变。</p>
 
-    <div class="card-body">
-      <!-- 整体缩放：一行控制 + 一行预览，先看见再决定 -->
-      <div class="ds-row ds-row-master">
-        <div class="ds-meta">
-          <span class="ds-name">整体缩放</span>
-          <span class="ds-desc">五类字号一起放大或缩小</span>
+    <div class="grid ds-grid">
+      <!-- 整体缩放：一个步进器 + 恢复默认，短卡 -->
+      <div class="card">
+        <div class="card-head">
+          <span>整体缩放</span>
+          <span class="ds-head-note">改完立即生效，只影响这台机器</span>
         </div>
-
-        <div class="ds-stepper" role="group" aria-label="整体缩放">
-          <button
-            type="button"
-            class="ds-step"
-            :disabled="!canDown(displayScale.master, MASTER_MIN)"
-            aria-label="整体缩放减小 5%"
-            @click="stepMaster(-1)"
-          >−</button>
-          <span class="ds-value">{{ pct(displayScale.master) }}</span>
-          <button
-            type="button"
-            class="ds-step"
-            :disabled="!canUp(displayScale.master, MASTER_MAX)"
-            aria-label="整体缩放增加 5%"
-            @click="stepMaster(1)"
-          >+</button>
+        <div class="card-body">
+          <p class="ds-desc">五类字号一起放大或缩小</p>
+          <div class="ds-master">
+            <div class="ds-stepper" role="group" aria-label="整体缩放">
+              <button
+                type="button"
+                class="ds-step"
+                :disabled="!canDown(displayScale.master, MASTER_MIN)"
+                aria-label="整体缩放减小 5%"
+                @click="stepMaster(-1)"
+              >−</button>
+              <span class="ds-value">{{ pct(displayScale.master) }}</span>
+              <button
+                type="button"
+                class="ds-step"
+                :disabled="!canUp(displayScale.master, MASTER_MAX)"
+                aria-label="整体缩放增加 5%"
+                @click="stepMaster(1)"
+              >+</button>
+            </div>
+            <button type="button" class="btn sm ds-reset" :disabled="isDefault" @click="resetScale">恢复默认</button>
+          </div>
         </div>
-
-        <button type="button" class="btn sm ds-reset" :disabled="isDefault" @click="resetScale">恢复默认</button>
       </div>
 
-      <div class="ds-preview">
-        <span class="ds-preview-tag">预览</span>
-        <p class="ds-preview-line" :style="previewStyle">
-          量子纠缠把两个粒子的状态绑成一个整体，测量其中一个，另一个会立刻响应。
-        </p>
+      <!-- 预览：先看见再决定，短卡 -->
+      <div class="card">
+        <div class="card-head">预览</div>
+        <div class="card-body">
+          <div class="ds-preview">
+            <p class="ds-preview-line" :style="previewStyle">
+              量子纠缠把两个粒子的状态绑成一个整体，测量其中一个，另一个会立刻响应。
+            </p>
+          </div>
+        </div>
       </div>
 
-      <!-- 五个分类：名称 + 说明 + 步进。（不再多一列「实际」：整体×本类是一句能算出来的话，
-           摆在行尾只是重复噪声，用户看得出滑块与整体是相乘的。） -->
-      <div class="ds-table">
-        <div class="ds-row ds-head" aria-hidden="true">
-          <span>分类</span>
-          <span class="ds-num">调节</span>
-        </div>
+      <!-- 五个分类：一条一条的列表，整宽 -->
+      <div class="card ds-card-wide">
+        <div class="card-head">分类字号</div>
+        <div class="card-body">
+          <div class="ds-table">
+            <div class="ds-row ds-head" aria-hidden="true">
+              <span>分类</span>
+              <span class="ds-num">调节</span>
+            </div>
 
-        <div v-for="c in categories" :key="c.key" class="ds-row">
-          <div class="ds-meta">
-            <span class="ds-name">{{ c.label }}</span>
-            <span class="ds-desc">{{ c.desc }}</span>
+            <div v-for="c in categories" :key="c.key" class="ds-row">
+              <div class="ds-meta">
+                <span class="ds-name">{{ c.label }}</span>
+                <span class="ds-desc">{{ c.desc }}</span>
+              </div>
+
+              <div class="ds-stepper" role="group" :aria-label="`${c.label}字号`">
+                <button
+                  type="button"
+                  class="ds-step"
+                  :disabled="!canDown(displayScale[c.key], CATEGORY_MIN)"
+                  :aria-label="`${c.label}字号减小 5%`"
+                  @click="stepCategory(c.key, -1)"
+                >−</button>
+                <span class="ds-value">{{ pct(displayScale[c.key]) }}</span>
+                <button
+                  type="button"
+                  class="ds-step"
+                  :disabled="!canUp(displayScale[c.key], CATEGORY_MAX)"
+                  :aria-label="`${c.label}字号增加 5%`"
+                  @click="stepCategory(c.key, 1)"
+                >+</button>
+              </div>
+            </div>
           </div>
 
-          <div class="ds-stepper" role="group" :aria-label="`${c.label}字号`">
-            <button
-              type="button"
-              class="ds-step"
-              :disabled="!canDown(displayScale[c.key], CATEGORY_MIN)"
-              :aria-label="`${c.label}字号减小 5%`"
-              @click="stepCategory(c.key, -1)"
-            >−</button>
-            <span class="ds-value">{{ pct(displayScale[c.key]) }}</span>
-            <button
-              type="button"
-              class="ds-step"
-              :disabled="!canUp(displayScale[c.key], CATEGORY_MAX)"
-              :aria-label="`${c.label}字号增加 5%`"
-              @click="stepCategory(c.key, 1)"
-            >+</button>
-          </div>
-
+          <p class="ds-foot">范围：整体 85%–125%，分类 85%–150%，步进 5%。</p>
         </div>
       </div>
-
-      <p class="ds-foot">范围：整体 85%–125%，分类 85%–150%，步进 5%。</p>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 主题网格与这张卡之间没有 `.card + .card` 可用（上一块不是卡片），自己留出同一档间距 */
-.display-scale { margin-top: 14px; }
+/* 换肤面板在上、这里在下：两块面板之间没有 `.card + .card` 可用，自己留出同一档间距 */
+.display-scale { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+
+/* 顶部一句话：一行说完这一块能干什么，不解释做法 */
+.panel-note {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+}
+
+/* 卡片网格：短卡两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+.ds-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.ds-card-wide { grid-column: 1 / -1; }
 
 /* 卡头右侧那句说明：弱于标题、独占一行时也不换字号（仍是同一套 --ts 级联） */
 .ds-head-note {
@@ -157,11 +174,13 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
   gap: 12px;
   padding: 11px 0;
 }
-.ds-row-master { grid-template-columns: minmax(0, 1fr) auto auto; }
+
+/* 整体缩放：步进器与「恢复默认」同一行，窄了就换行 */
+.ds-master { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 
 .ds-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ds-name { font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
-.ds-desc { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.ds-desc { margin: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
 /* 步进器：一个 pill 里放「− 值 +」，值用等宽数字，按下时不会左右抖 */
 .ds-stepper {
@@ -205,17 +224,9 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin: 4px 0 6px;
   padding: 10px 12px;
   border-radius: var(--r-sm);
   background: var(--bg-sunken);
-}
-.ds-preview-tag {
-  flex: none;
-  font-size: calc(10.5px * var(--ts, 1));
-  font-weight: 600;
-  letter-spacing: .08em;
-  color: var(--text-faint);
 }
 .ds-preview-line { margin: 0; line-height: 1.65; color: var(--text); }
 
@@ -240,10 +251,14 @@ const previewStyle = computed(() => ({ fontSize: `calc(15px * ${displayScale.mas
   color: var(--text-faint);
 }
 
-/* 窄屏：步进与数值掉到第二行，说明占满整行，避免数字被挤到换行 */
+/* 窄一档：卡片回落单列，短卡也竖着排 */
+@media (max-width: 1100px) {
+  .ds-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 更窄：步进与数值掉到第二行，说明占满整行，避免数字被挤到换行 */
 @media (max-width: 560px) {
-  .ds-row, .ds-row-master { grid-template-columns: minmax(0, 1fr) auto; }
-  .ds-row-master .ds-reset { grid-column: 1 / -1; justify-self: start; }
+  .ds-row { grid-template-columns: minmax(0, 1fr) auto; }
   .ds-head { display: none; }
 }
 </style>

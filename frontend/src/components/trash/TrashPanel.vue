@@ -126,81 +126,97 @@ onMounted(load);
 
 <template>
   <div class="trash-panel">
-    <!-- 工具行：计数 + 刷新 + 清空（标题由调用方的窗格抬头给，这里不重复画） -->
-    <div class="tr-toolbar">
-      <span class="tr-count tnum">{{ count }} 篇</span>
-      <span class="spacer" />
-      <button type="button" class="tr-tool square" title="刷新列表" :disabled="loading || clearing" @click="load">
-        <AppIcon name="refresh" :size="15" />
-      </button>
-      <button
-        type="button"
-        class="tr-tool danger"
-        :disabled="clearing || !items.length"
-        @click="clearAll"
-      >
-        <AppIcon name="trash" :size="14" />{{ clearing ? '清空中…' : '清空回收站' }}
-      </button>
-    </div>
-
-    <p class="tr-note">
-      回收站里的论文可以恢复；但批注、笔记、对话历史与解读产物在删除时就已清掉，恢复不会带回它们。
+    <p class="panel-note" title="回收站里的论文可以恢复；但批注、笔记、对话历史与解读产物在删除时就已清掉，恢复不会带回它们。">
+      只恢复论文本身，批注笔记不会带回来。
     </p>
 
-    <p v-if="loadError" class="tr-error">加载失败：{{ loadError }}（可以点右上角刷新重试）</p>
+    <div class="grid tr-grid">
+      <!-- 操作条：计数 + 刷新 + 清空，整宽 -->
+      <div class="card tr-card-wide">
+        <div class="card-body tr-bar">
+          <span class="tr-count tnum">{{ count }} 篇</span>
+          <span class="spacer" />
+          <button type="button" class="tr-tool square" title="刷新列表" :disabled="loading || clearing" @click="load">
+            <AppIcon name="refresh" :size="15" />
+          </button>
+          <button
+            type="button"
+            class="tr-tool danger"
+            :disabled="clearing || !items.length"
+            @click="clearAll"
+          >
+            <AppIcon name="trash" :size="14" />{{ clearing ? '清空中…' : '清空回收站' }}
+          </button>
+        </div>
+      </div>
 
-    <p v-if="loading" class="tr-loading">正在加载…</p>
+      <!-- 条目列表：长内容，整宽，卡片把内容包住 -->
+      <div class="card tr-card-wide">
+        <div class="card-body">
+          <p v-if="loadError" class="tr-error">加载失败：{{ loadError }}（可以点上面刷新重试）</p>
 
-    <div v-else-if="!items.length" class="empty-state">
-      <span class="es-icon"><AppIcon name="trash" :size="20" /></span>
-      <span class="es-title">回收站是空的</span>
-      <span class="es-hint">删除的论文会先放到这里。</span>
+          <p v-if="loading" class="tr-loading">正在加载…</p>
+
+          <div v-else-if="!items.length" class="empty-state">
+            <span class="es-icon"><AppIcon name="trash" :size="20" /></span>
+            <span class="es-title">回收站是空的</span>
+            <span class="es-hint">删除的论文会先放到这里。</span>
+          </div>
+
+        <ul v-else class="tr-list">
+          <li v-for="item in items" :key="item.id" class="tr-row">
+            <div class="tr-main">
+              <span class="tr-title">{{ item.title || item.id }}</span>
+              <span class="tr-meta">
+                <span>{{ deletedLabel(item) }}</span>
+                <span class="tr-dot" aria-hidden="true">·</span>
+                <span>{{ item.page_count ? `${item.page_count} 页` : '页数未知' }}</span>
+              </span>
+            </div>
+            <div class="tr-acts">
+              <span v-if="!item.has_files" class="tr-warn">文件已缺失，恢复后需重新导入 PDF</span>
+              <button
+                type="button"
+                class="tr-act"
+                :disabled="!!busyId || clearing"
+                @click="restore(item)"
+              >
+                <AppIcon name="undo" :size="13" />{{ busyId === `restore:${item.id}` ? '恢复中…' : '恢复' }}
+              </button>
+              <button
+                type="button"
+                class="tr-act danger"
+                :disabled="!!busyId || clearing"
+                @click="purge(item)"
+              >
+                <AppIcon name="trash" :size="13" />{{ busyId === `purge:${item.id}` ? '删除中…' : '彻底删除' }}
+              </button>
+            </div>
+          </li>
+        </ul>
+        </div>
+      </div>
     </div>
-
-    <ul v-else class="tr-list">
-      <li v-for="item in items" :key="item.id" class="tr-row">
-        <div class="tr-main">
-          <span class="tr-title">{{ item.title || item.id }}</span>
-          <span class="tr-meta">
-            <span>{{ deletedLabel(item) }}</span>
-            <span class="tr-dot" aria-hidden="true">·</span>
-            <span>{{ item.page_count ? `${item.page_count} 页` : '页数未知' }}</span>
-          </span>
-        </div>
-        <div class="tr-acts">
-          <span v-if="!item.has_files" class="tr-warn">文件已缺失，恢复后需重新导入 PDF</span>
-          <button
-            type="button"
-            class="tr-act"
-            :disabled="!!busyId || clearing"
-            @click="restore(item)"
-          >
-            <AppIcon name="undo" :size="13" />{{ busyId === `restore:${item.id}` ? '恢复中…' : '恢复' }}
-          </button>
-          <button
-            type="button"
-            class="tr-act danger"
-            :disabled="!!busyId || clearing"
-            @click="purge(item)"
-          >
-            <AppIcon name="trash" :size="13" />{{ busyId === `purge:${item.id}` ? '删除中…' : '彻底删除' }}
-          </button>
-        </div>
-      </li>
-    </ul>
   </div>
 </template>
 
 <style scoped>
 /* 面板宽度完全跟随容器（设置页窗格 / 任何嵌入处）：下面每一处都 min-width:0 + 可换行，
    所以窄到 900px 甚至更窄也不会出现横向滚动。 */
-.trash-panel { display: flex; flex-direction: column; min-width: 0; }
+.trash-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-.tr-toolbar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 12px; padding-bottom: 12px;
-  border-bottom: 1px solid var(--divider);
+/* 顶部一句话：一行说完这一块能干什么（整句解释留在 title 里） */
+.panel-note {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
 }
+
+/* 卡片网格：这一页都是长内容（操作条 / 条目列表），两张卡都整宽。
+   间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+.tr-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.tr-card-wide { grid-column: 1 / -1; }
+
+/* 操作条：计数在左，刷新 / 清空在右（卡内一行，不再画分隔线） */
+.tr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tr-count {
   flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
   border-radius: 999px; background: var(--bg-subtle); border: 1px solid var(--border);
@@ -222,18 +238,17 @@ onMounted(load);
 .tr-tool.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .tr-tool:disabled { opacity: .5; cursor: default; }
 
-.tr-note { margin: 0 0 14px; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
 .tr-error { margin: 0 0 12px; font-size: calc(12.5px * var(--ts, 1)); color: var(--danger); }
 .tr-loading { margin: 0; padding: 26px 4px; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); }
 
-.tr-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 12px; list-style: none; min-width: 0; }
+.tr-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; }
 
 /* 一行一条：左标题 + 元信息（可伸缩、可截断），右操作（可换行、可收缩）。
    两侧都 min-width: 0 且 flex-shrink 生效，长标题 / 长提示只会 ellipsis 或换行，永远不产生横向滚动。 */
 .tr-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0;
   padding: 10px 12px; border-radius: var(--radius-ctl);
-  border: 1px solid var(--border); background: var(--bg-elev);
+  border: 1px solid var(--border); background: transparent;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .tr-row:hover { border-color: var(--border-strong); background: var(--bg-hover); }
@@ -266,6 +281,11 @@ onMounted(load);
 .tr-act.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--border-strong)); }
 .tr-act.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .tr-act:disabled { opacity: .5; cursor: default; }
+
+/* 窄一档：卡片回落单列 */
+@media (max-width: 1100px) {
+  .tr-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* 窄窗格（含 1024 以下的设置页）：操作组整体落到标题下一行，不再和标题抢宽 */
 @media (max-width: 1024px) {
