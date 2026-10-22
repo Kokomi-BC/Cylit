@@ -708,8 +708,13 @@ def _merge(regions: list[dict], extra: dict) -> list[dict]:
     return out
 
 
-#: 算法块标题行：Algorithm 1 TURBOQUANT: optimized for MSE（可带 ** 与 $公式$）
-_ALGO_HEAD = re.compile(r"^\s*(?:\*\*)?\s*Algorithm\s*(\d{1,3})\b", re.IGNORECASE)
+#: 算法块标题行：Algorithm 1 TURBOQUANT: optimized for MSE（可带 ** 与 $公式$）。
+#: 排掉 `Algorithm 2. The third line…` 这种正文句子（数字后紧跟句号）。
+_ALGO_HEAD = re.compile(r"^\s*(?:\*\*)?\s*Algorithm\s*(\d{1,3})(?!\s*[.．])\b",
+                        re.IGNORECASE)
+#: 伪代码的步骤行：`1: input: …` / `11: output: …` —— 判"这块到底是不是算法"的结构证据
+#: （解析层会把正文句子也标成 caption，光看首行文字不够）。
+_ALGO_STEP = re.compile(r"^\s*\d{1,2}\s*[:：]")
 
 
 def _overlaps(one: list[float], two: list[float]) -> bool:
@@ -763,6 +768,16 @@ def _algorithm_regions(blocks: list[dict], existing: list[dict], entry, page: Re
             x1 = max(x1, _num(nxt.get("x1")))
             bottom = max(bottom, _num(nxt.get("y1")))
         box = [x0, y0, x1, bottom]
+        # 结构闸门：区域内必须有 **≥2 行"编号步骤"**，否则它只是正文里以 `Algorithm N` 开头的
+        # 一句话（解析层常把这种句子误判成 caption —— 实测 2026-12-07 p19：
+        # 「Algorithm 2. The third line above follows because …」框住了 160pt 正文）。
+        if not any(_ALGO_STEP.match(str(other.get("text_clean") or other.get("text") or ""))
+                   for other in ordered[i:i + 40] if _num(other.get("y0")) <= bottom) \
+                or sum(1 for other in ordered[i:i + 40]
+                       if _num(other.get("y0")) <= bottom
+                       and _ALGO_STEP.match(str(other.get("text_clean")
+                                              or other.get("text") or ""))) < 2:
+            continue
         if any(_overlaps(box, r.get("raw_bbox") or r["bbox"]) for r in existing):
             continue
         caption = re.sub(r"^\s*\*\*|\*\*\s*$", "", text).strip()

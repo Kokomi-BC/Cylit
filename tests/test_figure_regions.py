@@ -43,8 +43,16 @@ def test_algorithm_region_requires_a_caption_block(monkeypatch) -> None:
         made.append({"kind": kind, "number": number, "caption": caption})
         return made[-1]
 
-    blocks = [block("p19-x01", "para", "Algorithm 2. The third line above follows because …"),
-              block("p19-x02", "caption", "Algorithm 3: real caption", y0=200.0)]
+    blocks = [
+        block("p19-x01", "para", "Algorithm 2. The third line above follows because …"),
+        # 真算法：caption + 两条编号步骤
+        block("p19-x02", "caption", "Algorithm 3: real caption", y0=200.0),
+        block("p19-x03", "para", "1: input: dimension d", y0=210.0),
+        block("p19-x04", "para", "2: output: x", y0=220.0),
+        # caption 像标题但没有步骤行 → 也不是算法（正文里「Algorithm 4 …」那种引用）
+        block("p19-x05", "caption", "Algorithm 4 overview", y0=400.0),
+        block("p19-x06", "para", "the next paragraph of prose", y0=410.0),
+    ]
     got = fr._algorithm_regions(blocks, [], entry, Rect(0, 0, 612, 792))
     assert [r["number"] for r in got] == ["3"], got
 
