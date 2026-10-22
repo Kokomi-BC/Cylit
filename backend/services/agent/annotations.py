@@ -753,7 +753,10 @@ def realign_page(paper_id: str, page: int, side: str, *, only_before: str = "") 
             if index >= len(spans):
                 stale += 1
                 continue
-            latex = spans[index][2]
+            #: 存**原始 Markdown 片段**（含 `$` / `$$`），与 `create` 落库时的口径逐字一致：
+            #: 只取式子本体的话，笔记卡会少掉定界符，看起来像被改坏了（2026-12-07 实测）。
+            span_start, span_end, _inner = spans[index]
+            latex = md[span_start:span_end]
             if latex != stored:
                 svc.update_highlight(str(hl.get("id") or ""), {"selected_text": latex})
                 formula += 1

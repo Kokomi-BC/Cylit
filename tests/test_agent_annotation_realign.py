@@ -37,7 +37,7 @@ def test_formula_highlight_takes_the_current_latex(monkeypatch) -> None:
     saved = _install(monkeypatch, [old], {"p004-03": r"see $\sqrt{3}\,\pi^2$ here"})
     out = ann.realign_page(PAPER, 4, "translation")
     assert out["formula"] == 1 and out["moved"] == 0
-    assert saved["h-1"] == {"selected_text": r"\sqrt{3}\,\pi^2"}
+    assert saved["h-1"] == {"selected_text": r"$\sqrt{3}\,\pi^2$"}
 
 
 def test_text_highlight_moves_when_the_row_changed_in_front(monkeypatch) -> None:
