@@ -365,3 +365,47 @@ def test_short_probe_still_matches_a_longer_formula(monkeypatch) -> None:
 def test_long_probe_is_not_satisfied_by_a_fragment(monkeypatch) -> None:
     """长探针 vs 碎片：`find_formula_span` 自己就要拒（15/165 < 一半）。"""
     assert ann.find_formula_span(FRAGMENT, PROBE) is None
+
+CAPTION = "**图 1：TURBOQUANT$_{\\text{prod}}$ 与 TURBOQUANT$_{\\text{mse}}$ 的内积误差分布。**"
+
+
+def _caption_payload(page: int = 7) -> dict:
+    return {"page": page,
+            "rows": [{"id": "p007-06", "original": CAPTION, "translation": CAPTION}],
+            "original_md": CAPTION, "translation_md": CAPTION}
+
+
+def test_markdown_markers_are_ignored_on_both_sides() -> None:
+    """引文里的 `**` 不算字：模型连记号一起抄也要能定位（用户 2026-12-07「带 markdown 格式就挂不上」）。"""
+    md = "**图 3：评估结果**"
+    assert ann.locate_in_markdown(md, "**图 3：评估结果**") is not None
+    assert ann.locate_in_markdown(md, "图 3：评估结果") is not None
+    assert ann.locate_in_markdown("- 图 3：评估结果", "**图 3：评估结果**") is not None
+
+
+def test_caption_copied_verbatim_lands_on_the_caption_row(monkeypatch, capture) -> None:
+    """图注在行里就是 `**…**`：模型原样抄回来，必须落到那一行，而不是「找不到」。"""
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [_caption_payload()])
+    out = ann.create(PAPER, anchor="md:p7", text=CAPTION)
+    assert out["ok"] is True
+    assert capture["block_id"] == "p007-06"
+    assert capture["scope"] == "row" and capture["side"] == "zh"
+
+
+def test_receipt_always_says_where_it_landed(monkeypatch, capture) -> None:
+    """成功回执**常驻**「面 + 页 + 命中原文」（用户口径 2026-12-07 #5）。"""
+    payload = {"page": 2, "rows": [{"id": "p002-04", "original": "Random rotation ...",
+                                   "translation": P2_ROW}],
+               "original_md": "Random rotation ...", "translation_md": P2_ROW}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p2", text=ZH_TEXT)
+    assert out["landed"] == {"side": "zh", "page": 2, "anchor": "p002-04", "text": ZH_TEXT}
+    assert out["summary"].startswith("第 2 页 · 译文面 · 「")
+
+
+def test_formula_hole_is_named_in_the_receipt(monkeypatch, capture) -> None:
+    """公式处留空要说清**是哪几个公式**：否则模型以为文字被吞，会去改引文。"""
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [_caption_payload()])
+    out = ann.create(PAPER, anchor="md:p7", text=CAPTION)
+    note = str(out.get("text_note") or "")
+    assert "prod" in note and "mse" in note

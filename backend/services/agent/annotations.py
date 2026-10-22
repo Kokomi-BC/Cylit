@@ -93,6 +93,24 @@ def render_like_dom(md: str) -> str:
     return "\n".join(out)
 
 
+#: 探针里的 Markdown 记号：`**` / `__` / 反引号 / `*`。模型会**连同记号一起抄**
+#: （图注在行里就是 `**图 1：…**`），而渲染出来的那一侧没有这些字 —— 不洗掉，逐字匹配
+#: 永远差这两个字符。单下划线**不动**：它可能是 LaTeX 下标，公式那条路也不走这里。
+_PROBE_MARKS = re.compile(r"\*\*|__|`|\*")
+
+
+def _norm_probe_md(value: object) -> str:
+    """把引文按**渲染口径**洗一遍（Markdown 记号不算字）。
+
+    实测 2026-12-07：图注 `**图 1：TURBOQUANT$_{\\text{prod}}$ 与 …**` 被原样传进来，
+    而 `render_like_dom` 只洗了**行**那一侧 → 逐字匹配与「忽略公式」两条路都失配，
+    回执说「找不到这一段」；用户看到的就是「带 Markdown 格式就挂不上」。
+    """
+    text = _PROBE_MARKS.sub("", str(value or ""))
+    text = _LINK.sub(r"\1", text)
+    return _HTML_TAG.sub("", text)
+
+
 #: 公式探针：`$…$` / `$$…$$` 包裹，或者一段带反斜杠命令的 LaTeX（模型常常只给片段）
 _DOLLAR_WRAP = re.compile(r"^\s*\${1,2}(.*)\${1,2}\s*$", re.DOTALL)
 
@@ -230,7 +248,7 @@ def find_span_ignoring_atoms(rendered: str, probe: str, *,
             continue
         bare.append(ch)
         rmap.append(i)
-    needle = re.sub(r"\s+", "", _strip_probe_math(probe))
+    needle = re.sub(r"\s+", "", _strip_probe_math(_norm_probe_md(probe)))
     if not bare or not needle:
         return None
     hit = find_span("".join(bare), needle, occurrence=occurrence)
@@ -355,12 +373,15 @@ def locate_in_markdown(md: str, text: str, *, occurrence: int = 1
     （坐标系里的逐字匹配），公式走 `find_formula_span`（LaTeX → 那个占位符的位置）。
     公式那条的第三个值是**命中的完整公式**（不是探针片段），因为笔记卡显示的就是它。
     """
-    span = find_span(render_like_dom(md), text, occurrence=occurrence)
+    #: 引文先按渲染口径洗一遍：模型常把 `**…**` 一起抄（图注就是这种），行那一侧洗过了、
+    #: 探针没洗 → 两条路都会失配（实测 2026-12-07「带 markdown 格式就挂不上」）。
+    probe = _norm_probe_md(text)
+    span = find_span(render_like_dom(md), probe, occurrence=occurrence)
     if span is not None:
         return span, False, ""
     # 用户从界面复制那句话时，公式那一处是**空位**（前端把 KaTeX 元素复制成了空 / 干脆没有），
     # 逐字匹配必然失败 —— 允许"漏掉公式"再试一次（见 `find_span_ignoring_atoms`）。
-    relaxed = find_span_ignoring_atoms(render_like_dom(md), text, occurrence=occurrence)
+    relaxed = find_span_ignoring_atoms(render_like_dom(md), probe, occurrence=occurrence)
     if relaxed is not None:
         return relaxed, False, ""
     hit = find_formula_span(md, text)
@@ -601,7 +622,7 @@ def _norm_for_rows(value: object) -> str:
     界面复制），而行文本里是 LaTeX —— 只比原始字符串，含公式的句子（尤其英文侧）永远对不上，
     于是回执退回一句「多半是横跨了多段」，用户拿不到块号也拿不到拆分建议。
     """
-    return re.sub(r"\s+", "", _strip_probe_math(value))
+    return re.sub(r"\s+", "", _strip_probe_math(_norm_probe_md(value)))
 
 def _span_row_hint(paper_id: str, page: int, text: str) -> str:
     """这段文字**为什么挪不到单个正文行**：跨了两段 / 页内对不上。
@@ -658,6 +679,16 @@ def _span_row_hint(paper_id: str, page: int, text: str) -> str:
         # 头尾都对不上：**确定地说**它不在这一页的正文行里（不再写「多半是」这种猜测）
         return f"这一页的正文行里没有这一段（它只存在于 Markdown 面）：{advice}"
     return ""
+
+def _side_word(side: str) -> str:
+    """回执里的叫法：用户看到的是「原文面 / 译文面 / Markdown 面」。"""
+    return {"zh": "译文面", "en": "原文面"}.get(str(side or ""), "Markdown 面")
+
+
+def _brief(value: object, limit: int = 40) -> str:
+    body = re.sub(r"\s+", " ", str(value or "")).strip()
+    return body if len(body) <= limit else body[:limit] + "…"
+
 
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
            side: str = "", occurrence: int = 1) -> dict:
@@ -721,8 +752,19 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
                         "scope": on_kind})
 
     def _finish(result: dict) -> dict:
-        """落面与要求不符就**说出来**，不静默改（用户口径 2026-12-07）。"""
-        landed = str((result.get("highlight") or {}).get("side") or "")
+        """落面与要求不符就**说出来**，不静默改（用户口径 2026-12-07）。
+
+        另外**每次成功都带**「落在哪一面、第几页、命中原文」（用户口径 2026-12-07）：
+        以前只有失败或落面不符才有提示，模型只能自己推断「这条标在了译文面」，
+        也没法准确告诉用户位置。
+        """
+        hl = result.get("highlight") or {}
+        landed = str(hl.get("side") or "")
+        page_no = int(result.get("page") or 0)
+        quote = _brief(str(hl.get("text") or ""))
+        result["landed"] = {"side": landed, "page": page_no, "anchor": str(hl.get("block_id") or ""),
+                            "text": quote}
+        result["summary"] = f"第 {page_no} 页 · {_side_word(landed)} · 「{quote}」"
         if requested_side and landed and landed != requested_side:
             why = ("那一面没有这段文字（或公式默认落译文面）。要标在英文面，就把引用文字换成那一面的原文。")
             result["side_note"] = f"你要的是 `{requested_side}` 面，这条却落到了 `{landed}` 面：" + why
@@ -807,7 +849,8 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 已经查出"它在别的页 / 跨行"时不再补这句 —— 否则等于自己跟自己打脸（实测 2026-12-07）。
         tail = "" if (near or why) else "这一段里没有相近的句子，换一段更完整的原文再试。"
         message = " ".join(one for one in (
-            f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。", why, tail) if one)
+            f"这段文字在 {anchor} 里找不到（要逐字一致；`**` 这类记号会自动忽略，"
+            "公式处留空也认）。", why, tail) if one)
         return {"ok": False, "error": message, "near_miss": near}
     start, end = span
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
@@ -825,7 +868,12 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     if had_atom and not is_formula:
         # 回执里的 text 会有"两个空格"：那里原本是公式。不说一句，用户会以为文字被吞了
         # （2026-12-07 实测）。
-        result["text_note"] = "`text` 里公式那一处已留空（它原本是公式元素，不是文字被吞）"
+        holes = [m.group(1) for m in _INLINE_MATH.finditer(str(text or ""))]
+        holes += [m.group(1) for m in _DISPLAY_MATH.finditer(str(text or ""))]
+        shown = "、".join(f"${_brief(one, 16)}$" for one in holes[:3])
+        result["text_note"] = (f"`text` 里公式那一处已留空（原本是公式元素：{shown}），"
+                               "不是文字被吞" if shown else
+                               "`text` 里公式那一处已留空（它原本是公式元素，不是文字被吞）")
     if kind == "markdown":
         # 落在 Markdown 面的高亮**阅读视图里看不见**（只有 Markdown 视图画它）。这本身是
         # "行里对不上"的兜底，但要说明白，否则用户以为"高亮没出现"（实测报过多次）。

@@ -728,13 +728,17 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
                 "number": fig.get("number") or "",
                 "caption": _clip(fig.get("caption") or "", CAPTION_CHARS),
                 "image_url": url,
+                #: 图注所在的**正文行 id**：直接当 `anchor` 传给 highlight_manage /
+                #: note_manage，高亮才画在阅读视图里（不用拿 `md:pN` 去猜，猜空了就标不上）。
+                "anchor": rows.get(str(fig.get("number") or "")) or "",
             })
         out = {"page": int(page), "returned": len(items), "items": items}
         if not items:
             out["hint"] = "这一页没有插图或表格（或图注没被识别）。可以换一页，或直接用 page_image_get 看版面。"
         else:
             out["hint"] = ("看内容用 figure_image_get(page, index)；要在回答里配图，就把 image_url "
-                           "**逐字**写进 ![简短说明](image_url)，不要改写、拼接或换成别的地址。")
+                           "**逐字**写进 ![简短说明](image_url)，不要改写、拼接或换成别的地址。"
+                           "图注要标高亮/写笔记时，把它的 anchor 原样传给 highlight_manage。")
         return out
 
     return await _guarded(ctx, "figure_list", {"page": page}, _impl())
@@ -1402,6 +1406,9 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 out = {"ok": True, "highlight_id": hl.get("id"), "page": data.get("page"),
                        "scope": data.get("scope"), "text": hl.get("text"),
                        "color": hl.get("color"),
+                       #: 落面 / 页码 / 命中原文**每次都给**（用户口径 2026-12-07）：
+                       #: 以前只有失败才有提示，模型只能推断"这条标在了译文面"。
+                       "summary": data.get("summary"), "landed": data.get("landed"),
                        "note": "已建立高亮。要给它写笔记就用 note_manage op=create。"}
                 # 宿主的两条"别忽略我"的信号必须原样带出去：这里是白名单字典，新增字段
                 # 不显式搬一遍就会被丢掉（2026-12-07 实测：跨块落在 Markdown 面的高亮
