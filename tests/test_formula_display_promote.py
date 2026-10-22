@@ -161,6 +161,41 @@ def test_short_symbol_in_a_bullet_stays_inline(page4) -> None:
     data = reader_service.markdown_formulas("demo")
     assert data["display_count"] == 0
 
+
+
+# --------------------------------------------------------------------------
+# 两源合一：只有**覆盖得够多**的提取卡才挂 bbox/裁图
+# --------------------------------------------------------------------------
+
+
+def _card_item(pid: str, latex: str, page: int = 4, grade: str = "A") -> dict:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=f"card-{page}", page_number=page, paper_id=pid, grade=grade,
+                           is_inline=False, image_path="/x/crop.png",
+                           latex_candidate="[]", latex_repaired="", latex_final=latex,
+                           bbox_json="[1, 2, 3, 4]")
+
+
+def test_card_attached_only_when_it_covers_the_formula(monkeypatch) -> None:
+    """卡 ⊇ 整式 → 挂；卡只是整式的一小片（8%）→ **不挂**（宁可不给裁图）。"""
+    from backend.services.paper import reader_service as rs
+
+    whole = r"\mathbb{E}_{\tilde{x}}\left[\langle y, \tilde{x}\rangle\right] = \langle y, x\rangle"
+    monkeypatch.setattr(rs, "_parse_formulas", lambda pid: [
+        _card_item("p", whole),                       # 整式（卡比公式大 → 安全）
+        _card_item("p", "Q(x))\rangle", page=5),      # 碎片
+    ])
+    items = [
+        {"page": 4, "latex": whole + " \\cdot 1"},
+        {"page": 5, "latex": "D_{\\text{prod}}(Q) := \\mathbb{E}[|\\langle y, x\\rangle|^2]"},
+    ]
+    monkeypatch.setattr(rs, "_figure_boxes", lambda pid, page: [])
+    rs._attach_cards("p", items)
+    assert items[0]["bbox"] == [1, 2, 3, 4] and items[0]["grade"] == "A"
+    assert items[1].get("bbox") is None, "8% 的碎片不该挂裁图（会让模型看到残片）"
+    assert items[1].get("grade") is None
+
 def test_three_counts_share_one_denominator(monkeypatch) -> None:
     """`total == display_total + inline_total` 恒成立，且不随 include_inline 变。"""
     md = [{"id": f"f005-{i}", "page": 5, "row_id": f"p005-{i:02d}", "latex": t,

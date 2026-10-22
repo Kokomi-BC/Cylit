@@ -950,15 +950,18 @@ def _latex_key(value: object) -> str:
 
 
 def _attach_cards(paper_id: str, items: list[dict]) -> None:
-    """给**转录那一路**的公式挂上版面提取卡的 ``bbox`` / ``crop_url`` / ``grade``（就地改）。
+    r"""给**转录那一路**的公式挂上版面提取卡的 ``bbox`` / ``crop_url`` / ``grade``（就地改）。
 
     为什么两条数据要合起来用（用户口径 2026-12-07）：完整 LaTeX 只在转录那一路（模型重打过
     一遍），而提取层的 `latex_final` 是**切片级**的 —— 分式会被拆成"分子一个框、分母一个框"
     （第 4 页那条 `\\frac{\\sqrt{3\\pi^2}\\|y\\|_2^2}{d}` 在提取层就是 `3π·∥y∥` + `b·d` 两个框）。
     但**定位与裁图只有提取卡有**。所以：文本取转录、bbox/裁图/分级取提取卡。
 
-    配对判据**只认"片段包含"**（卡的 LaTeX 至少 12 字符，且是整式的一段）：卡 ⊆ 公式 或
-    公式 ⊆ 卡，取覆盖最长的那张；一条都对不上就不挂 —— 宁可不给 bbox，也不能给错的裁图。
+    配对判据**只认"片段包含"**，而且片段必须**覆盖得够多**：卡 ⊇ 整式（裁图把整式包住）才算；
+    卡 ⊂ 整式时要求卡至少占整式的 60%（且 ≥24 字符）。**达不到就不挂** —— 实测 2026-12-07：
+    按"任意片段"配对时 4 条"命中"其实是 8~16% 的碎片（`Q(x))\rangle`、`\Gamma ((d-1)/2)`），
+    模型若把那张裁图当成"这条公式的原版面"，看到的是残片，比不给更糟；还会让这 4 条多出一个
+    `grade` 徽章（阅读器按 grade 显示），看起来像"只有它们解析成功"。
     """
     cards: dict[int, list[dict]] = {}
     for card in _dedupe_parse_items(paper_id, _parse_formulas(paper_id)):
@@ -975,9 +978,14 @@ def _attach_cards(paper_id: str, items: list[dict]) -> None:
         best: tuple[int, dict] | None = None
         for card in cards.get(int(item.get("page") or 0), []):
             key = card["_key"]
-            if key in want or want in key:
-                if best is None or len(key) > best[0]:
-                    best = (len(key), card)
+            if want in key:                    # 卡比整式大：裁图把整式包住了 → 安全
+                covered = True
+            elif key in want:                   # 卡是整式的一段：**必须覆盖得够多**才算
+                covered = len(key) >= max(24, int(0.6 * len(want)))
+            else:
+                covered = False
+            if covered and (best is None or len(key) > best[0]):
+                best = (len(key), card)
         if best is None:
             continue
         card = best[1]
