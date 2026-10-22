@@ -602,7 +602,9 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     formula_src = ""
     for candidate in order:
         cand_rendered, cand_hit = _locate(candidate)
-        if cand_rendered is not None:
+        # 只认**第一面**的文字（= 首选面）：以前每面都覆盖一次，于是中文探针最后拿英文页
+        # 去做 `near_misses`，候选一句中文都不会有（实测 2026-12-07：错几个字的中文回了空数组）。
+        if cand_rendered is not None and any_text is None:
             any_text = cand_rendered
         if cand_hit is None:
             continue

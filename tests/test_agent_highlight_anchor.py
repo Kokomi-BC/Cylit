@@ -86,6 +86,21 @@ def test_formula_probe_without_a_whole_match_refuses_the_fragment(monkeypatch, c
     assert capture == {}                              # 没落库
 
 
+def test_near_miss_uses_the_preferred_face_not_the_last_one(capture, monkeypatch) -> None:
+    """中文探针找不到时，候选要从**译文面**里挑（以前拿最后那一面=英文页去挑，必然为空）。"""
+    payload = {"page": 4,
+               "rows": [{"id": "p004-04", "original": "As our lower bounds show, the MSE distortion ...",
+                         "translation": "如我们的下界所示，TURBOQUANT 的 MSE 失真可证明至多处于"
+                                        "信息论下界的因子 2.7 之内。"}],
+               "original_md": "As our lower bounds show, the MSE distortion is bounded ...",
+               "translation_md": "如我们的下界所示，TURBOQUANT 的 MSE 失真可证明至多处于"
+                                 "信息论下界的因子 2.7 之内。"}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p4", text="TURBOQUANT 的失真可证明处于信息论下界之内")
+    assert out["ok"] is False
+    assert out["near_miss"], "译文面里那句就在，必须给候选"
+    assert "下界" in out["near_miss"][0]
+
 def test_bad_anchor_says_the_format_not_a_missing_text(capture) -> None:
     """`anchor="row"` 是**参数格式错**，不能说成"这段文字找不到"（实测误导过一轮）。"""
     out = ann.create(PAPER, anchor="row", text="随便一句中文")
