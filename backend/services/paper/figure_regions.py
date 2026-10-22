@@ -866,8 +866,14 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 # 图注**绝不能**落在图体里（贴边/吸单行标签有时会把下边界推到图注第一行中间）。
                 # ⚠️ 认题注前要先判"它确实在图体下方"，否则解析层的**孤儿块**（rect = 图体本身、
                 # 文本 = 题注）会把图砍成 24pt 一条 —— 见 `_clamp_bottom_above_caption`。
-                if below and caption is not None:
-                    tight = _clamp_bottom_above_caption(tight, _num(caption.get("y0")))
+                if caption is not None:
+                    cap_top = _num(caption.get("y0"))
+                    # 图的题注一定在图体下方 → 一律夹；**表**的题注可能在上、也可能在下
+                    # （期刊两种排法都有）。只要它压在区域下沿里，就说明是「表体 + 底部表注」，
+                    # 同样要把下界收到题注上沿 —— 否则裁图会从表注第一行**中间**切过去
+                    # （实测 2026-12-07 p9 表 1：裁到「…compression methods on」，后半句没了）。
+                    if below or (cap_top > tight[1] + 1.0 and cap_top < tight[3]):
+                        tight = _clamp_bottom_above_caption(tight, cap_top)
                 inner = [b for b in structs
                          if (b.get("type") or "") == "caption" and b.get("id") != cap_id
                          and _num(b.get("y0")) > tight[1] + MIN_HEIGHT
