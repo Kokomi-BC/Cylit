@@ -944,57 +944,6 @@ def _promote_to_display(text: str, start: int, end: int, latex: str) -> bool:
     return len(prose) <= LIST_ITEM_PROSE_MAX and len(latex) >= LIST_ITEM_MIN_LATEX
 
 
-def _latex_key(value: object) -> str:
-    """比对用的 LaTeX 键：去掉所有空白（`\\frac {a} {b}` 与 `\\frac{a}{b}` 是同一个式子）。"""
-    return re.sub(r"\s+", "", str(value or ""))
-
-
-def _attach_cards(paper_id: str, items: list[dict]) -> None:
-    r"""给**转录那一路**的公式挂上版面提取卡的 ``bbox`` / ``crop_url`` / ``grade``（就地改）。
-
-    为什么两条数据要合起来用（用户口径 2026-12-07）：完整 LaTeX 只在转录那一路（模型重打过
-    一遍），而提取层的 `latex_final` 是**切片级**的 —— 分式会被拆成"分子一个框、分母一个框"
-    （第 4 页那条 `\\frac{\\sqrt{3\\pi^2}\\|y\\|_2^2}{d}` 在提取层就是 `3π·∥y∥` + `b·d` 两个框）。
-    但**定位与裁图只有提取卡有**。所以：文本取转录、bbox/裁图/分级取提取卡。
-
-    配对判据**只认"片段包含"**，而且片段必须**覆盖得够多**：卡 ⊇ 整式（裁图把整式包住）才算；
-    卡 ⊂ 整式时要求卡至少占整式的 60%（且 ≥24 字符）。**达不到就不挂** —— 实测 2026-12-07：
-    按"任意片段"配对时 4 条"命中"其实是 8~16% 的碎片（`Q(x))\rangle`、`\Gamma ((d-1)/2)`），
-    模型若把那张裁图当成"这条公式的原版面"，看到的是残片，比不给更糟；还会让这 4 条多出一个
-    `grade` 徽章（阅读器按 grade 显示），看起来像"只有它们解析成功"。
-    """
-    cards: dict[int, list[dict]] = {}
-    for card in _dedupe_parse_items(paper_id, _parse_formulas(paper_id)):
-        key = _latex_key(card.get("latex"))
-        if len(key) < 12:
-            continue
-        cards.setdefault(int(card.get("page") or 0), []).append({**card, "_key": key})
-    if not cards:
-        return
-    for item in items:
-        want = _latex_key(item.get("latex"))
-        if not want:
-            continue
-        best: tuple[int, dict] | None = None
-        for card in cards.get(int(item.get("page") or 0), []):
-            key = card["_key"]
-            if want in key:                    # 卡比整式大：裁图把整式包住了 → 安全
-                covered = True
-            elif key in want:                   # 卡是整式的一段：**必须覆盖得够多**才算
-                covered = len(key) >= max(24, int(0.6 * len(want)))
-            else:
-                covered = False
-            if covered and (best is None or len(key) > best[0]):
-                best = (len(key), card)
-        if best is None:
-            continue
-        card = best[1]
-        item["bbox"] = card.get("bbox")
-        item["crop_url"] = card.get("crop_url")
-        item["card_id"] = card.get("id")
-        #: grade 说的是"这条公式的提取卡分级"，不是"转录质量"——没有卡时保持 None
-        item["grade"] = card.get("grade")
-
 def markdown_formulas(paper_id: str) -> dict:
     r"""公式列表：**译文优先，未翻译的页用原文（解析产物）兜底**。
 
@@ -1064,8 +1013,6 @@ def markdown_formulas(paper_id: str) -> dict:
 
     collected.sort(key=lambda t: (t[0], t[1]))
     items = [it for _p, _s, it in collected]
-    # 文本来自转录、**定位/裁图/分级来自版面提取卡**（见 `_attach_cards`）
-    _attach_cards(paper_id, items)
     if not items:
         source = "markdown" if covered else "parse"
     elif fallback_pages:
@@ -1116,7 +1063,7 @@ def _parse_formula_item(f: Formula) -> dict | None:
         "context": "", "context_zh": "",
         "grade": grade,
         "partial": partial,
-        #: 版面里的位置（markdown 那一路没有 bbox，靠 `_attach_cards` 从提取卡挂上来）
+        #: 版面位置（解析卡自己的，排障视图 `?source=parse` 用）
         "bbox": json_loads(f.bbox_json, None),
         "crop_url": (f"/papers/{f.paper_id}/formula_crops/{crop_name}"
                      if crop_name else None),

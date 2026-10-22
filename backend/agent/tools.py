@@ -738,11 +738,7 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             items.append({
                 "ref": cit.ref, "page": page_no, "latex": latex,
                 "display": bool(raw.get("display")),
-                # grade / bbox / crop_url 都来自**版面提取卡**（没有对应卡时为 None）：
-                # 文本来自转录、定位与分级来自提取卡，两源合起来用（用户口径 2026-12-07）。
                 "grade": raw.get("grade"),
-                "bbox": raw.get("bbox"),
-                "crop_url": raw.get("crop_url"),
                 # LaTeX 只是公式的一段 → 要讲全貌就去看原版面
                 "partial": bool(raw.get("partial")),
                 "source": raw.get("source"),
