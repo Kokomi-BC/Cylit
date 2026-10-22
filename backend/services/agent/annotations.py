@@ -594,34 +594,69 @@ def _miss_reason(paper_id: str, page: int, text: str) -> str:
                         "单个块内，请分成两次标注，或缩到其中一行里。")
     return ""
 
+def _norm_for_rows(value: object) -> str:
+    """行比对用的归一化：去掉公式与占位符、压掉空白。
+
+    为什么要两边都归一（2026-12-07）：探针里的公式可能是 `$x$`、也可能是个空位（用户从
+    界面复制），而行文本里是 LaTeX —— 只比原始字符串，含公式的句子（尤其英文侧）永远对不上，
+    于是回执退回一句「多半是横跨了多段」，用户拿不到块号也拿不到拆分建议。
+    """
+    return re.sub(r"\s+", "", _strip_probe_math(value))
+
 def _span_row_hint(paper_id: str, page: int, text: str) -> str:
     """这段文字**为什么挪不到单个正文行**：跨了两段 / 页内对不上。
 
     用于"落在 Markdown 面"的回执（用户口径 2026-12-07：建成功但看不见，且没说是跨块导致）。
     先看有没有单行装得下它；装不下就找"头在哪一行、尾在哪一行"。
     """
-    probe = " ".join(str(text or "").split())
+    #: **两边都先归一**：探针里公式那处可能是 `$x$`、也可能只是个空位（用户从界面复制），
+    #: 而行文本里是 LaTeX —— 直接比字符串只会在英文侧 / 含公式的句子上失配，然后退回
+    #: 「多半是横跨了多段」这种没营养的话（2026-12-07 用户实测：中文侧给出块号、英文侧只给这句）。
+    probe = _norm_for_rows(text)
     if len(probe) < 6:
         return ""
-    head, tail = probe[:10], probe[-10:]
+    advice = "高亮只能落在单个块内，建议拆成两条分别标。"
+
+    def _holds(body: str, part: str) -> bool:
+        """`part` 是不是在这一行里（行本身很短时按行长的八成比，别拿长串去卡短行）。"""
+        if not part or not body:
+            return False
+        size = min(len(part), max(6, int(len(body) * 0.8)))
+        return size >= 6 and part[:size] in body
+
     for payload in _page_payloads(paper_id):
         if int(payload.get("page") or 0) != int(page or 0):
             continue
         rows = payload.get("rows") or []
-        bodies = [" ".join(str(r.get("translation") or r.get("original") or "").split())
+        #: **两面都看**：行是双语并排的，探针可能是中文也可能是英文 —— 只看译文会漏掉英文
+        #: 那一侧的跨块（2026-12-07 实测：英文句只回「多半是横跨了多段」，因为只比了中文行）。
+        bodies = [[_norm_for_rows(r.get(key)) for key in ("translation", "original")]
                   for r in rows]
-        if any(probe in body for body in bodies):
+        flat = [body for pair in bodies for body in pair if body]
+        if any(probe in body for body in flat):
             return ""                      # 单行装得下 → 不跨块（那就不该落在 Markdown 面）
-        for i, body in enumerate(bodies):
-            if not head or head not in body:
+        # ① 探针**包含**整整两行（"把两段拼成一句"就是这种）：直接指名道姓
+        inside = [i for i, pair in enumerate(bodies)
+                  if any(len(b) >= 8 and b in probe for b in pair)]
+        if len(inside) >= 2:
+            one, two = rows[inside[0]], rows[inside[-1]]
+            return f"这段跨了两个段落（{one.get('id')} 与 {two.get('id')}）：{advice}"
+        # ② 探针只覆盖每行的一部分：找"头在哪一行、尾在哪一行"
+        head, tail = probe[:12], probe[-12:]
+
+        def holds(row_index: int, part: str) -> bool:
+            return any(_holds(body, part) for body in bodies[row_index])
+
+        for i in range(len(rows)):
+            if not holds(i, head):
                 continue
-            for j, other in enumerate(bodies):
-                if i == j or not tail or tail not in other:
+            for j in range(len(rows)):
+                if i == j or not holds(j, tail):
                     continue
                 one, two = rows[i], rows[j]
-                return (f"这段跨了两个段落（{one.get('id')} 与 {two.get('id')}）：高亮只能落在"
-                        "单个块内，建议拆成两条分别标。")
-        return "这段在页面上对不到某个单独的正文行（多半是横跨了多段）。"
+                return f"这段跨了两个段落（{one.get('id')} 与 {two.get('id')}）：{advice}"
+        # 头尾都对不上：**确定地说**它不在这一页的正文行里（不再写「多半是」这种猜测）
+        return f"这一页的正文行里没有这一段（它只存在于 Markdown 面）：{advice}"
     return ""
 
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
@@ -792,8 +827,8 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # （2026-12-07 实测：跨段落那句回 ok=true 且没有任何警告，用户以为标上了）。
         why = _span_row_hint(paper_id, anchor_page_no(anchor), text)
         result["warning"] = ("这条标在 **Markdown 视图** —— 阅读视图（对照 / 译文）里**看不到它**。"
-                             + (" " + why if why else "")
-                             + " 要让它出现在正文里，就把范围缩到单个段落内再标。")
+                             + (" " + why if why else
+                                " 要让它出现在正文里，就把范围缩到单个段落内再标。"))
     return result
 
 

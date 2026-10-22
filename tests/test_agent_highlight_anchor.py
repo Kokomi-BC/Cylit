@@ -293,6 +293,28 @@ def test_no_contradictory_tail_when_the_text_is_on_another_page(capture, monkeyp
     assert "第 3 页" in out["error"]
     assert "没有相近的句子" not in out["error"]
 
+def test_english_cross_row_hint_names_both_blocks(capture, monkeypatch) -> None:
+    """英文侧 + 探针里带公式占位 → 也要给出两个块号与「拆成两条」建议（以前只有「多半是」）。"""
+    row_a = {"id": "p005-06", "original": "We can generate the rotation by applying QR decomposition "
+                                            "on a random matrix with i.i.d Normal entries.",
+             "translation": "我们可以通过对随机矩阵作 QR 分解来生成旋转。"}
+    row_b = {"id": "p005-07", "original": "The resulting rotated vector, $\\boldsymbol{\\Pi} \\cdot x$, "
+                                            "is uniformly distributed on the unit sphere.",
+             "translation": "所得旋转向量均匀分布在单位球面上。"}
+    payload = {"page": 5, "rows": [row_a, row_b],
+               "original_md": row_a["original"] + "\n\n" + row_b["original"],
+               "translation_md": row_a["translation"] + "\n\n" + row_b["translation"]}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    # 探针照「从界面复制」的样子：公式那处留一个占位符
+    probe = ("applying QR decomposition on a random matrix with i.i.d Normal entries. "
+             "The resulting rotated vector, " + ann.ATOM + " , is uniformly distributed on the unit sphere.")
+    out = ann.create(PAPER, anchor="md:p5", text=probe)
+    assert out["ok"] is True and out["scope"] == "markdown"
+    warning = out["warning"]
+    assert "p005-06" in warning and "p005-07" in warning, warning
+    assert "拆成两条" in warning
+    assert "多半" not in warning
+
 def test_message_says_the_text_spans_two_rows(capture, monkeypatch) -> None:
     """把两段拼成一句 → 报错要点明"跨了两行"。"""
     rows = [{"id": "p005-07", "original": "a", "translation": "我们先做 QR 分解来生成"},
