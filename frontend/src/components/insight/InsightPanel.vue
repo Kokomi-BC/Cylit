@@ -4,9 +4,10 @@
  *
  * 顶部**只有**「标题 + 一枚只有图标的按钮」（用户口径）：没有时间、没有模型名、没有
  * 引用核对提示、**也没有刷新/重新生成**（重跑入口只在论文库的「⋯」菜单里，面板里不再有）。
- * 那枚按钮是"到整页去读"：整页在本应用里**新开一个标签页**（TabBar），不是浏览器标签页 ——
- * 所以点击只 `emit('open-page')`，由 ReaderView 统一 `router.push(openTab(...))`
- * （`openTab` 会改响应式状态，必须在点击回调里调，渲染期调会死循环）。
+ * 那枚按钮是"放到浮窗里读"（用户口径 2026-12-07：原来开应用内新标签页，改成浮窗 ——
+ * 浮窗可拖动、可拉大、位置记得住，翻正文时还留在原处）：点击只 `emit('open-float')`，
+ * 由 ReaderView 弹一张 `FloatingCard`（层级 / 拖动 / 记忆全走那一套，这里不管）。
+ * `floating` 为真时本组件就是**浮窗里的内容**：不再画标题行（标题由 `FloatingCard` 给）。
  *
  * 标题下面是一份**紧凑目录**（用户口径：左栏这个页签"没有目录"）：同一份大纲数据，
  * 一行一条、缩进更小、点击**在左栏内**滚动（`scrollIntoView` 会落到最近的滚动祖先
@@ -26,13 +27,15 @@ const props = defineProps<{
   paperId: string;
   /** 这篇论文有解读任务在跑（ReaderView 按任务列表算）：解读据此决定要不要轮询 */
   running: boolean;
+  /** 作为浮窗内容渲染：去掉自带的标题行（含那枚入口按钮），标题交给 `FloatingCard` */
+  floating?: boolean;
 }>();
 
 const emit = defineEmits<{
   /** 本面板刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'started'): void;
-  /** 打开整页版：由 ReaderView 新开一个应用内标签页 */
-  (e: 'open-page'): void;
+  /** 在浮窗里打开：由 ReaderView 弹一张可拖动的 `FloatingCard` */
+  (e: 'open-float'): void;
   /** 正文里点了引用标号（`InsightDoc` 只上报，往哪跳由 ReaderView 决定） */
   (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
   /** 悬浮标号的速览请求（宿主在阅读器那侧弹卡；点击照旧走 cite） */
@@ -65,9 +68,11 @@ const refs = computed<UnderstandingRefItem[]>(() => [
   ...(payload.value?.refs_resolved ?? []),
 ]);
 
-/** anchor 前缀：与整页（`ins`）不同，即使两个视图同时在 DOM 里也不会撞 id */
-const prefix = 'pane-insight';
-const outline = computed(() => buildInsightOutline(markdown.value, { prefix }));
+/** anchor 前缀：与整页（`ins`）不同，即使两个视图同时在 DOM 里也不会撞 id。
+ *  ⚠️ 浮窗里那份必须**再换一个**：侧栏那份与解读浮窗会同时挂载，同一个前缀就成了两套重复 id，
+ *  浮窗里点目录会 `getElementById` 拿到侧栏那份（滚的是侧栏，浮窗纹丝不动）。 */
+const prefix = computed(() => (props.floating ? 'float-insight' : 'pane-insight'));
+const outline = computed(() => buildInsightOutline(markdown.value, { prefix: prefix.value }));
 const showToc = computed(() => hasContent.value && outline.value.length > 0);
 /** 默认**展开**（用户口径）：目录在这里就是"读之前先扫一眼要读什么" */
 const tocOpen = ref(true);
@@ -83,19 +88,21 @@ async function onStart() {
 </script>
 
 <template>
-  <div class="pane">
-    <div class="pane-head">
+  <div class="pane" :class="{ 'is-float': props.floating }">
+    <!-- 浮窗里不画这一行（标题由 FloatingCard 的标题栏给，再来一条就是重复的「论文解读」） -->
+    <div v-if="!props.floating" class="pane-head">
       <span class="pane-title">{{ title }}</span>
       <span class="spacer" />
-      <!-- 只有图标、没有可见文字（title / aria-label 供悬停与读屏） -->
+      <!-- 只有图标、没有可见文字（title / aria-label 供悬停与读屏）。
+           用 pip 而不是 external：这枚钮现在**不再离开本页**，是把解读弹成一张浮窗。 -->
       <button
         class="btn icon sm ghost"
         data-insight-open
-        :title="`在新标签页打开《${title}》`"
-        :aria-label="`在新标签页打开《${title}》`"
-        @click="emit('open-page')"
+        :title="`在浮窗中打开《${title}》`"
+        :aria-label="`在浮窗中打开《${title}》`"
+        @click="emit('open-float')"
       >
-        <AppIcon name="external" :size="13" />
+        <AppIcon name="pip" :size="13" />
       </button>
     </div>
 

@@ -65,6 +65,7 @@ import FloatingCard from '@/components/reader/FloatingCard.vue';
 import ReferenceList from '@/components/reader/ReferenceList.vue';
 import ImageViewer from '@/components/reader/ImageViewer.vue';
 import BlockOverlay from '@/components/reader/BlockOverlay.vue';
+import InsightPanel from '@/components/insight/InsightPanel.vue';
 import { keepPdfSelectionOnce } from '@/components/reader/PdfPage.vue';
 import M3Slider from '@/components/M3Slider.vue';
 import Menu from '@/components/Menu.vue';
@@ -793,18 +794,36 @@ async function openInsightTab() {
    想要宽一点就直接拖把手（上限已放大到 560 / 960）。 */
 
 /**
- * 左栏「论文解读」页签右上角那枚图标按钮：在**应用内**新开一个标签页
- * （TabBar 里多一个标签），不是浏览器标签页 —— 用户的"新标签页"指的是这个。
+ * 左栏「论文解读」页签右上角那枚图标按钮：把解读**弹成一张浮窗**（用户口径 2026-12-07 取代
+ * 原来的「在应用内新开一个标签页」）。
  *
- * ⚠️ 必须在**点击回调里**调 `openTab`：它会改响应式标签状态，渲染期调就是"渲染→改状态→再渲染"
- * 的死循环（`stores/tabs.ts` 里也写了这条）。
+ * 为什么要换：开标签页就是**离开阅读器**去看解读，看完还得再切回来；而解读最常见的用法
+ * 是「读一句、回正文核一眼」。浮窗就地可读 —— 能拖、能拉大、位置记在 `cylit:float:insight`，
+ * 引用照旧走 `focusRow` 定位回正文（与侧栏那一份同一口径），不必在标签之间来回。
+ *
+ * 层级走**全场那条共用序列**（`nextLayerZ`）：与笔记卡 / 对话浮窗 / 表格公式浮层互不占档位。
  */
-function openInsightPage() {
-  const target = openTab({
-    name: 'understand',
-    params: { paperId: instancePaperId },
-  });
-  void router.push(target as never);
+const insightFloat = ref(false);
+const insightZ = ref(60);
+/** 第一次开居中；之后开回到用户自己摆过的位置（`FloatingCard` 按 persistKey 记） */
+const insightCenter = ref(true);
+/** 初始宽高：560 是「读得下整段解读」的宽度，但窄窗口里得让开边距（不然一半在屏幕外） */
+const insightW = ref(560);
+const insightMaxH = ref(680);
+
+function openInsightFloat() {
+  let hasPos = false;
+  try { hasPos = Boolean(localStorage.getItem('cylit:float:insight')); } catch { /* 隐私模式忽略 */ }
+  insightCenter.value = !hasPos;
+  insightW.value = Math.round(Math.min(560, Math.max(320, window.innerWidth - 40)));
+  insightMaxH.value = Math.round(Math.min(680, Math.max(240, window.innerHeight - 80)));
+  insightZ.value = nextLayerZ();
+  insightFloat.value = true;
+}
+
+/** 点一下浮窗就抬到最上层（与其它几张浮层同一口径） */
+function takeInsightTop() {
+  insightZ.value = nextLayerZ();
 }
 
 /** 顶部工具条右端只剩两枚动作：下载打包 / 全屏。
@@ -6312,6 +6331,9 @@ watch(paperId, () => {
   activeNoteKey.value = '';
   blockOverlays.value = [];
   restoreBlockOverlays();       // 换论文：换成那篇自己的那一摞
+  /* 解读浮窗也收掉：它是**上一篇**的解读（虽然会自己重拉，但换论文那一刻留着
+     屏幕上的一整篇旧文更像缓存没刷）。想再看点页签上那枚钮重开。 */
+  insightFloat.value = false;
 });
 
 /* ------------------ 跨标签页 / 刷新记住「哪些笔记卡是开着的」 ------------------
@@ -7857,7 +7879,7 @@ function renderMarkdown(text?: string | null) {
           @delete-highlight="deleteHighlightIds"
           @cancel-task="cancelTranslate"
           @insight-queued="fetchTasks"
-          @open-insight-page="openInsightPage"
+          @open-insight-float="openInsightFloat"
         />
       </aside>
 
@@ -8114,6 +8136,35 @@ function renderMarkdown(text?: string | null) {
           这一段没有可显示的内容（可能是图片页或纯公式块）
         </div>
       </div>
+    </FloatingCard>
+
+    <!-- 论文解读浮窗（用户口径 2026-12-07：取代原来的「应用内新开一个标签页」）。
+         内容就是左栏那份 `InsightPanel`（`floating` 让它去掉自带的标题行），
+         拖动 / 拉角 / 位置记忆 / 层级全跟笔记卡同一套；引用点击照旧走 `focusRow` 定位回正文。 -->
+    <FloatingCard
+      v-if="insightFloat"
+      :open="insightFloat"
+      title="论文解读"
+      persist-key="insight"
+      :center-on-open="insightCenter"
+      :width="insightW"
+      :max-height="insightMaxH"
+      text-cat="side"
+      :style="{ zIndex: insightZ }"
+      :focused="insightZ === layerZ"
+      hide-anchor
+      @pointerdown.capture="takeInsightTop"
+      @close="insightFloat = false"
+    >
+      <InsightPanel
+        :paper-id="paperId"
+        :running="understandingRunning"
+        floating
+        @started="fetchTasks"
+        @cite="(c) => focusRow(c.block || '', { page: c.page, flash: true, latex: c.latex })"
+        @peek="onCitePeekAsk"
+        @peek-hide="onCitePeekHide"
+      />
     </FloatingCard>
 
     <FloatingCard

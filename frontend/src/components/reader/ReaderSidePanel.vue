@@ -122,7 +122,8 @@ const emit = defineEmits<{
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
   /** 解读页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
-  (e: 'open-insight-page'): void;
+  /** 解读面板右上角那枚钮：把解读弹成一张浮窗（原来是开应用内新标签页） */
+  (e: 'open-insight-float'): void;
   /** 笔记卡的「浮层打开 / 编辑」：让父组件弹**同一张**笔记浮层（mode 决定查看还是改） */
   (e: 'open-note', p: { note: Note | null; highlight: Highlight | null; mode?: 'view' | 'edit' }): void;
   /** 多选后的批量删除：一次交给父组件确认，再按类型分头删（笔记 / 整组高亮 / 批注） */
@@ -512,13 +513,13 @@ function onMore(key: string, r: FeedRow) {
 
 <template>
   <div class="panel-body">
-    <!-- 论文解读：顶部只有「标题 + 一枚只有图标的按钮」（打开整页 = 应用内新标签页）。 -->
+    <!-- 论文解读：顶部只有「标题 + 一枚只有图标的按钮」（现在是把解读弹成浮窗，见 ReaderView）。 -->
     <InsightPanel
       v-if="props.tab === 'insight'"
       :paper-id="props.paperId"
       :running="props.insightRunning"
       @started="emit('insight-queued')"
-      @open-page="emit('open-insight-page')"
+      @open-float="emit('open-insight-float')"
       @cite="(c) => locate(c.block, c.page || undefined, c.latex)"
       @peek="(p) => emit('cite-peek', p)"
       @peek-hide="emit('cite-peek-hide')"
