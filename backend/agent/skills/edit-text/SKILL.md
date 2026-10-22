@@ -25,7 +25,7 @@ description: 按用户要求改写解析产物或译文：改措辞、统一术�
    - `page_markdown_get(pages="5")` 一次拿到原文 + 译文，对照着看。
    - 怀疑 **OCR** 认错字 → `page_image_get(pages="5", dpi=300)` 看原版面：**以页面图为准**，
      不要用"这样读更通顺"来猜。
-   - 怀疑**译文**错 → 以原文为准；术语与档案 `glossary` 对齐（`check-translation` 那套判据）。
+   - 怀疑**译文**错 → 以原文为准；术语与档案里的『统一译法』那一段对齐（`check-translation` 那套判据）。
 2. **拿到逐字文本**：`page_markdown_edit(op="view", page=5, side="original")`
    （`side`：`original` = 英文转录 / `translation` = 中文译文）。返回的是带行号的产物原文 ——
    `find` 必须**逐字**取自它（行号只是路标，不要写进 `find`）。
