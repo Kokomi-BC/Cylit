@@ -181,18 +181,31 @@ const tipX = computed(() => {
 
 /* ---------------------------- 分模型排行 ---------------------------- */
 
-const rank = computed(() => {
+/** 排行口径没变：每行的占比 = 这一行总量 / 榜单里所有模型的总量。
+ *  只是**不再把第 6 名以后合并成「其他」**—— 用户要的是「默认 5 行 + 展开全部」，
+ *  合并成一条「其他」就永远看不到具体是哪个模型在烧 token。 */
+const rankAll = computed(() => {
   const rows = (stats.value?.by_model ?? [])
     .map((r) => ({ name: r.name || r.model_name || r.model_config_id || '未命名', total: Number(r.total) || 0 }))
     .filter((r) => r.total > 0)
     .sort((a, b) => b.total - a.total);
-  const top = rows.slice(0, 5);
-  const rest = rows.slice(5).reduce((s, r) => s + r.total, 0);
-  const sum = top.reduce((s, r) => s + r.total, 0) + rest;
-  const out = top.map((r) => ({ ...r, share: sum ? r.total / sum : 0 }));
-  if (rest > 0) out.push({ name: '其他', total: rest, share: sum ? rest / sum : 0 });
-  return out;
+  const sum = rows.reduce((s, r) => s + r.total, 0);
+  return rows.map((r) => ({ ...r, share: sum ? r.total / sum : 0 }));
 });
+
+/** 默认只露 5 行；多出来的收进「展开全部」。 */
+const RANK_LIMIT = 5;
+const rankExpanded = ref(false);
+const rankVisible = computed(() => (rankExpanded.value ? rankAll.value : rankAll.value.slice(0, RANK_LIMIT)));
+const rankHidden = computed(() => Math.max(0, rankAll.value.length - RANK_LIMIT));
+
+/** 数字拆成「数值 + 单位」两档：大数字一档、单位一档、标签一档（三个数字块共用同一套层级）。 */
+function splitN(v: number): { n: string; u: string } {
+  const n = Number(v) || 0;
+  if (n >= 1e8) return { n: trim1(n / 1e8), u: '亿' };
+  if (n >= 1e4) return { n: trim1(n / 1e4), u: '万' };
+  return { n: String(Math.round(n)), u: '' };
+}
 
 /** 渐变 id 必须全局唯一：同页两个实例共用 "u-grad" 会互相抢。 */
 const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
@@ -218,13 +231,16 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
       <div class="usage-main">
         <div class="nums">
           <div class="num-block">
-            <b class="n">{{ fmtN(totals.total) }}</b><span class="k">总消耗</span>
+            <span class="num-line"><b class="n">{{ splitN(totals.total).n }}</b><i class="u">{{ splitN(totals.total).u }}</i></span>
+            <span class="k">总消耗</span>
           </div>
           <div class="num-block">
-            <b class="n">{{ fmtN(totals.today) }}</b><span class="k">今日</span>
+            <span class="num-line"><b class="n">{{ splitN(totals.today).n }}</b><i class="u">{{ splitN(totals.today).u }}</i></span>
+            <span class="k">今日</span>
           </div>
           <div class="num-block">
-            <b class="n">{{ fmtN(totals.requests) }}</b><span class="k">请求数</span>
+            <span class="num-line"><b class="n">{{ splitN(totals.requests).n }}</b><i class="u">{{ splitN(totals.requests).u }}</i></span>
+            <span class="k">请求数</span>
           </div>
         </div>
 
@@ -268,14 +284,21 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
       </div>
 
       <div class="rank">
-        <div class="rank-title">分模型</div>
-        <template v-if="rank.length">
-          <div class="rank-row" v-for="r in rank" :key="r.name">
+        <div class="rank-title">分模型消耗</div>
+        <template v-if="rankVisible.length">
+          <div class="rank-row" v-for="r in rankVisible" :key="r.name">
             <span class="rk-name truncate" :title="r.name">{{ r.name }}</span>
             <span class="rk-n">{{ fmtN(r.total) }}</span>
             <span class="rk-bar"><i :style="{ width: Math.max(3, r.share * 100) + '%' }" /></span>
             <span class="rk-p">{{ Math.round(r.share * 100) }}%</span>
           </div>
+          <button
+            class="rank-more" v-if="rankHidden > 0 || rankExpanded" type="button"
+            :aria-expanded="rankExpanded" @click="rankExpanded = !rankExpanded"
+          >
+            <AppIcon :name="rankExpanded ? 'chevron-up' : 'chevron-down'" :size="12" />
+            {{ rankExpanded ? '收起' : `展开全部（还有 ${rankHidden} 个）` }}
+          </button>
         </template>
         <div class="rank-none" v-else>暂无消耗记录</div>
       </div>
@@ -286,7 +309,8 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 <style scoped>
 /* 用量卡永远整宽：折线需要横向像素，落在两列网格里也必须独占一行。 */
 .usage { grid-column: 1 / -1; }
-.usage-head { font-weight: 600; }
+.usage-head { font-weight: 600; padding: 9px 14px; }
+.usage .card-body { padding: 12px 14px; }
 .hd-title { display: inline-flex; align-items: center; gap: 7px; }
 /* 14/30 天用全站那枚胶囊（.seg），高度跟着控件规范走 */
 .win { height: var(--control-h-sm); }
@@ -297,18 +321,25 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
   color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
 }
 
-.usage-body { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) 248px; }
+/* 桌面横向：左边「三个数字 + 趋势图」，右边「分模型排行」；窄屏再上下叠（见文件末尾的媒体查询） */
+.usage-body { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 244px; }
 
-.nums { display: flex; align-items: flex-end; gap: 22px; }
-.num-block { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+/* 三个数字一行、三档层级：大数字（.n）/ 单位（.u）/ 标签（.k） */
+.nums { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+.num-block { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.num-line { display: inline-flex; align-items: baseline; gap: 2px; min-width: 0; }
 .num-block .n {
-  font-size: calc(23px * var(--ts, 1)); font-weight: 650; line-height: 1.1; letter-spacing: -.02em;
+  font-size: calc(22px * var(--ts, 1)); font-weight: 650; line-height: 1.15; letter-spacing: -.02em;
   font-variant-numeric: tabular-nums; color: var(--text);
 }
-.num-block .k { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.num-block .u {
+  font-style: normal; font-size: calc(12px * var(--ts, 1)); font-weight: 600;
+  color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.num-block .k { font-size: calc(11px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
 /* 图表：容器即坐标系（svg 的 CSS 像素 = 计算像素），hover 只需要减 left */
-.chart { position: relative; margin-top: 10px; max-width: 100%; }
+.chart { position: relative; margin-top: 8px; max-width: 100%; }
 .chart svg { display: block; max-width: 100%; }
 
 .axis { stroke: var(--divider); stroke-width: 1; }
@@ -336,8 +367,8 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 .tip b { font-size: calc(12.5px * var(--ts, 1)); font-variant-numeric: tabular-nums; color: var(--text); }
 .tip span { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); font-family: var(--mono); }
 
-/* 分模型排行：名字 + 总量一行，占比横条 + 百分数一行 */
-.rank { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+/* 分模型排行：名字 + 总量一行，占比横条 + 百分数一行（行距压紧，5 行不占屏） */
+.rank { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .rank-title { font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
 .rank-row {
   display: grid; gap: 2px 8px; min-width: 0;
@@ -356,9 +387,18 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
   font-variant-numeric: tabular-nums; min-width: 30px; text-align: right;
 }
 .rank-none { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
+/* 「展开全部 / 收起」：排行底部一行文字按钮，不占额外高度 */
+.rank-more {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  margin-top: 1px; padding: 2px 0; border: 0; background: transparent;
+  color: var(--accent-text); font: inherit; font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
+}
+.rank-more:hover { text-decoration: underline; }
+.rank-more:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 4px; }
 
-@media (max-width: 860px) {
-  .usage-body { grid-template-columns: minmax(0, 1fr); }
+/* 窄屏 / 中等宽度：趋势图与排行上下叠（排行跟着整宽后横条更长，反而更好读） */
+@media (max-width: 980px) {
+  .usage-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .nums { gap: 18px; }
 }
 </style>
