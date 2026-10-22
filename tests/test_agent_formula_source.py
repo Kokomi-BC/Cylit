@@ -196,3 +196,15 @@ def test_no_inline_hint_when_include_inline_is_on() -> None:
 
     out = asyncio.run(agent_tools.formula_get(_Ctx(_Deps(_FakeHost())), include_inline=True))
     assert "另有" not in (out.get("hint") or "")
+
+
+def test_include_inline_hint_points_at_the_complete_ones() -> None:
+    """④ 传了 include_inline 要提醒：完整那几条带 display=true，按文档顺序夹在碎片中间。"""
+    import asyncio
+
+    from backend.agent import tools as agent_tools
+
+    out = asyncio.run(agent_tools.formula_get(_Ctx(_Deps(_FakeHost())), include_inline=True))
+    hint = out.get("hint") or ""
+    assert "display: true" in hint
+    assert "另有" not in hint, "行内已经要来了，不该再说「还有 N 条没给」"

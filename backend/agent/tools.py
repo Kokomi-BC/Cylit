@@ -730,6 +730,11 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                              f"{out['omitted_inline']} 条行内公式（单符号 / 碎片那种）。"
                              f"查符号定义、单点表达式时用 `include_inline=True`，"
                              f"或者直接 `page_markdown_get` 读那一页看上下文。")
+            if include_inline and any(one["display"] for one in items):
+                # 用户实测的困惑：传了 include_inline 以后，完整那几条被几十条行内碎片包住，
+                # 看起来"块级公式跑到列表末尾去了"。它们确实是文档顺序，只是前面全是碎片。
+                hints.append("完整那几条就在这批里（`display: true`），按文档顺序夹在行内碎片"
+                             "中间 —— 只想看它们就别传 `include_inline`。")
             if out.get("source") != "markdown":
                 hints.append("本次列表含**版面解析兜底**的条目（source=parse/mixed）——"
                              "那几条的 LaTeX 可能只是公式的一段，讲全貌前先用 "
