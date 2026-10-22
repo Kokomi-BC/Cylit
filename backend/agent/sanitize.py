@@ -179,6 +179,8 @@ def sanitize_many(texts: Iterable[str], registry: RefRegistry) -> list[str]:
 _IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*<?(?P<url>[^)\s>]+)[^)]*\)")
 #: 允许的受控地址：**只能是本论文自己的 region 裁图**
 _ALLOWED_IMAGE = "/api/v1/papers/{paper_id}/figures/region/"
+#: 规整图片地址时用来削掉部署前缀的锚点（`/cylit/api/v1/papers/…` → `/api/v1/papers/…`）
+_API_PATH_MARK = "/api/v1/papers/"
 
 
 def _controlled_image_path(url: str) -> str:
@@ -199,6 +201,13 @@ def _controlled_image_path(url: str) -> str:
         raw = raw[1:]
     if not raw.startswith("/"):
         raw = "/" + raw
+    # 部署在子路径下时（本站是 `/cylit/`），模型抄来的绝对地址常常带那层前缀 ——
+    # `/cylit/api/v1/papers/…` 以前过不了白名单，一张合法裁图被删成「（配图已省略：…）」
+    # （用户 2026-12-07 报的正是这个）。域名已经在上面丢掉了，剩下的就是**本机路径**，
+    # 于是把 `/api/v1/papers/` 之前的那截前缀削掉是安全的。
+    mark = raw.find(_API_PATH_MARK)
+    if mark > 0:
+        raw = raw[mark:]
     return raw
 
 
