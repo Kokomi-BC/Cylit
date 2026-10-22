@@ -142,6 +142,15 @@ const customEntry = ref<ProviderEntry>({
   note: '填名称 / Base URL / API Key / Model ID',
 });
 const providersError = ref('');
+/** 提供方搜索词：只筛**厂商**，不掺模型名（用户口径 2026-12-07 三轮） */
+const provSearch = ref('');
+const filteredProviders = computed<ProviderEntry[]>(() => {
+  const kw = provSearch.value.trim().toLowerCase();
+  const hit = (p: ProviderEntry) => !kw
+    || String(p.label || '').toLowerCase().includes(kw)
+    || String(p.id || '').toLowerCase().includes(kw);
+  return [...providers.value.filter(hit), customEntry.value].filter(hit);
+});
 
 async function loadProviders() {
   try {
@@ -179,6 +188,7 @@ function openAdd(type: string) {
   pickStage.value = 'provider';
   pickProvider.value = '';
   addOpen.value = true;
+  provSearch.value = '';
   if (!providers.value.length) void loadProviders();
 }
 
@@ -717,38 +727,39 @@ onBeforeUnmount(() => {
              官方与自定义的区别由后端 `kind` 决定，前端只照着画。 -->
         <template v-if="pickStage === 'provider'">
           <p class="tiny faint add-note">
-            选一家官方提供方（base_url / 密钥文件名 / 参数自动填好），或者自己填一份。
+            先选厂商（官方提供方会自动填好 Base URL），再填自己的 API Key、从厂商拉模型。
           </p>
-          <!-- ⚠️ 目录拉不到时**照样渲染**（自定义那格永远在）：否则后端一抖，连手动新建都没入口 -->
+          <input
+            v-model="provSearch" class="prov-search" type="search" data-prov-search
+            placeholder="搜索厂商名称…" aria-label="搜索厂商"
+          >
           <p class="probe-err tiny" v-if="providersError">{{ providersError }}</p>
-          <div class="add-grid">
+          <!-- 定高 + 内部滚动：厂商再多也不撑大弹窗（旧版九宫格就是被这条要求替换掉的） -->
+          <div class="prov-list" role="listbox" aria-label="提供方">
             <button
-              class="add-card prov" v-for="p in providers" :key="p.id" type="button"
-              :data-add-provider="p.id" @click="pickProviderCard(p)"
+              v-for="p in filteredProviders" :key="p.id" class="prov-row" role="option"
+              :aria-selected="pickProvider === p.id" :data-add-provider="p.id"
+              @click="pickProviderCard(p)"
             >
-              <span class="prov-top">
-                <img v-if="vendorIco(p.id)" class="pv-ico" :src="vendorIco(p.id)" alt="">
-                <span v-else class="pv-fallback"><AppIcon name="server" :size="13" /></span>
-                <span class="add-name truncate">{{ p.label }}</span>
-                <span class="prov-badge">官方</span>
+              <img v-if="vendorIco(p.id)" class="pv-ico" :src="vendorIco(p.id)" alt="">
+              <span v-else class="pv-fallback">
+                <AppIcon :name="p.kind === 'custom' ? 'edit' : 'server'" :size="13" />
               </span>
-              <span class="add-host tiny truncate">{{ p.note || p.base_url || '' }}</span>
-              <span class="add-sub tiny truncate">
-                {{ (p.types || []).map(typeLabel).join(' · ') || '—' }}
-                <template v-if="p.configured"> · 已配 {{ p.configured }}</template>
+              <span class="prov-main">
+                <span class="prov-name truncate">
+                  {{ p.label }}
+                  <span class="prov-badge" v-if="p.kind === 'official'">官方</span>
+                </span>
+                <span class="prov-note truncate">
+                  {{ p.note || p.base_url || (p.types || []).map(typeLabel).join(' · ') }}
+                </span>
               </span>
+              <AppIcon name="chevron-right" :size="12" class="prov-go" />
             </button>
-            <button class="add-card prov custom" type="button"
-                    :data-add-provider="customEntry.id" @click="pickProviderCard(customEntry)">
-              <span class="prov-top">
-                <span class="pv-fallback"><AppIcon name="edit" :size="13" /></span>
-                <span class="add-name truncate">{{ customEntry.label }}</span>
-              </span>
-              <span class="add-host tiny truncate">{{ customEntry.note }}</span>
-              <span class="add-sub tiny truncate">Base URL · API Key · Model ID</span>
-            </button>
+            <div class="prov-empty" v-if="!filteredProviders.length">
+              没有匹配的提供方 —— 换个词，或用下面的「自定义提供方」。
+            </div>
           </div>
-          <div class="tiny faint" v-if="!providers.length && !providersError">正在读取官方提供方目录…</div>
         </template>
 
         <!-- 第二段：这一家有哪些现成预设（选一条就带着配置进表单） -->
@@ -872,7 +883,27 @@ onBeforeUnmount(() => {
   background: var(--bg-layer); color: var(--text); font: inherit;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-/* 提供方卡片（第一段）：一行图标 + 名称 + 「官方」标识，下面两行小字说明 */
+/* 提供方选择器：搜索框 + 定高列表（用户口径 2026-12-07 三轮：卡片网格改成可搜索下拉） */
+.prov-search {
+  width: 100%; height: 30px; padding: 0 10px;
+  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--bg-layer); color: var(--text); font: inherit; font-size: calc(12.5px * var(--ts, 1));
+}
+.prov-search:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset: 1px; }
+.prov-list { max-height: 44vh; overflow-y: auto; border: 1px solid var(--divider); border-radius: var(--radius-sm); }
+.prov-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border: 0; background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.prov-row + .prov-row { border-top: 1px solid var(--divider); }
+.prov-row:hover, .prov-row:focus-visible { background: var(--bg-hover); outline: none; }
+.prov-main { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.prov-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; }
+.prov-note { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
+.prov-go { color: var(--text-faint); flex: none; }
+.prov-empty { padding: 14px 12px; color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); }
+/* 旧版卡片网格的样式保留给「第二段」的预设卡（那段已在下轮删除，样式先留着不碍事） */
 .add-card.prov { gap: 4px; }
 .add-card.custom { border-style: dashed; }
 .prov-top { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }

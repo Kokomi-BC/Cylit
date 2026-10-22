@@ -245,6 +245,12 @@ watch(levels, writeReasoning, { deep: true });
 watch(defaultLevel, writeReasoning);
 
 function init() {
+  /* 一打开就清掉「上一家厂商的临时状态」（用户口径 2026-12-07：切换提供方不得混用密钥）。
+     keyValue / probeOptions / probeError 不在 form 里，init 不清就会带到下一家去。 */
+  keyValue.value = '';
+  probeOptions.value = [];
+  probeError.value = '';
+  probeBusy.value = false;
   presetId.value = '';
   advanced.value = false;
   entryType.value = props.defaultType || 'agent';
