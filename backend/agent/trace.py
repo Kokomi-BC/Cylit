@@ -20,8 +20,9 @@
    同一轮的相邻思考合并成一条（换轮或中间插了工具就另起一条）。
 2. **工具步骤"先出现、后补状态"**：`FunctionToolCallEvent` 建一条 `running`（此刻还不知道要跑多久），
    `FunctionToolResultEvent` 找到它补上 `done` + 毫秒数。找不到就补一条新的（宁可多一条，不要丢）。
-3. **不做展示文案**：`tool` 只存工具名与参数摘要，中文短语与图标在**前端**（`ReaderChat.vue`）——
-   存文案就等于把"以后想改叫法"变成一次数据迁移。
+3. **中文短语在前端，参数里的人话在工具层**：`修订产物` 这类叫法与图标在 `ReaderChat.vue`
+   （改叫法不动数据）；而 `digest` / `detail` 这两截是**工具自己**写的 —— 只有它知道
+   参数叫什么、截到哪儿才不像乱码（`tools.tool_brief`）。两截都落库，重开历史才和流式时一样。
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ STEP_CHARS = 6000
 MAX_STEPS = 80
 #: 工具参数摘要长度上限（与 SSE 的 `args_digest` 一致）
 DIGEST_CHARS = 120
+#: 工具结果一句话的上限（失败原因 / 「第 4 页 · 已替换」），与 `_tool_outcome` 一致
+DETAIL_CHARS = 120
 
 
 @dataclass
@@ -81,9 +84,19 @@ class StepLog:
                            # `payload()` 会把下划线开头的键全部剥掉，不落库
                            "_t0": time.perf_counter()})
 
-    def tool_done(self, tool: str, *, round: int, ms: int | None = None) -> dict:
-        """工具调用结束：补上状态与耗时；找不到对应的开始步骤就补一条。"""
+    def tool_done(self, tool: str, *, round: int, ms: int | None = None,
+                  ok: bool | None = None, detail: str = "") -> dict:
+        """工具调用结束：补上状态、耗时、成败与一句话结果；找不到开始步骤就补一条。
+
+        `ok` / `detail` **必须落库**：只走 SSE 的话，翻回历史就只剩一个工具名 + 毫秒数
+        （用户 2026-12-07 报「工具调用看不出在干什么」，历史里更是什么都看不出）。
+        """
         name = str(tool or "?")
+        extra = {}
+        if ok is not None:
+            extra["ok"] = bool(ok)
+        if detail:
+            extra["detail"] = str(detail)[:DETAIL_CHARS]
         for step in reversed(self.steps):
             if (step.get("kind") == "tool" and step.get("tool") == name
                     and step.get("status") == "running"):
@@ -92,9 +105,11 @@ class StepLog:
                 step["ms"] = (int(ms) if ms is not None
                               else (int((time.perf_counter() - started) * 1000)
                                     if started else None))
+                step.update(extra)
                 return step
         return self._push({"kind": "tool", "round": round, "tool": name, "digest": "",
-                           "status": "done", "ms": int(ms) if ms is not None else None})
+                           "status": "done", "ms": int(ms) if ms is not None else None,
+                           **extra})
 
     def text(self, text: str | None, *, round: int) -> dict | None:
         """正文增量：并进**当前这一轮的正文步骤**。

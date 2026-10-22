@@ -114,3 +114,14 @@ def test_stage_dedupes_consecutive_same_text() -> None:
     log.stage("正在这篇论文里检索…")
     log.stage("正在阅读并组织回答…")
     assert len(log.steps) == 2
+
+def test_tool_step_keeps_outcome_for_history() -> None:
+    """成败与一句话结果**必须落库**：只走 SSE 的话，翻回历史只剩工具名 + 毫秒数。"""
+    log = StepLog()
+    log.tool_start("page_markdown_edit", round=1, digest="第 4 页 · 「旧」→「新」")
+    log.tool_done("page_markdown_edit", round=1, ms=1800, ok=True,
+                  detail="第 4 页 · 第 4 行 → 「新」")
+    step = log.payload()["steps"][0]
+    assert step["ok"] is True
+    assert step["detail"] == "第 4 页 · 第 4 行 → 「新」"
+    assert step["digest"].startswith("第 4 页")

@@ -738,16 +738,23 @@ function stepMs(s: AgentStep): number {
  * 这一步要不要展示返回摘要：**失败一定展示**（原因比耗时有用），写操作也展示
  * （"改了什么"就是用户要的效果）；读工具的成功返回通常是一大段 JSON，展示它只是噪音。
  */
-function stepDetail(s: AgentStep): string {
-  const text = String(s.detail || '').trim();
-  if (!text) return '';
-  if (s.ok !== false && !WRITE_TOOL.test(String(s.tool || ''))) return '';
-  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+/**
+ * 过程行上 `·` 后面那一截：**后端给的人话优先** —— `detail` 是结果一句话（「第 4 页 · 第 4 行
+ * → 「…」」），`digest` 是参数一句话（「第 5 页」「「随机旋转」」）。
+ *
+ * 以前 `detail` 只在「失败 / 写操作」时显示、`digest` 只在 `running` 时显示，于是跑完之后每一行
+ * 都只剩「取公式 ✓ 0.6 秒」——用户 2026-12-07 报「工具调用看不出在干什么」。现在两段都常显：
+ * 跑着看参数，跑完看结果。
+ */
+function stepBrief(s: AgentStep): string {
+  const text = String(s.detail || '').trim() || fmtDigest(s.digest);
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
+/** 老数据兜底：`digest` 曾经是 `k=v、k=v`（剥掉键名）；**原始 JSON** 一律不显示。 */
 function fmtDigest(digest?: string) {
   const text = String(digest || '').trim();
-  if (!text) return '';
+  if (!text || text.startsWith('{') || text.startsWith('[')) return '';
   return text.split('、').map(part => part.replace(/^[a-z_]{2,12}=/, '')).join(' · ').slice(0, 60);
 }
 
@@ -2206,9 +2213,7 @@ defineExpose({ uploadFiles, ensureThread });
                        :class="{ running: s.status === 'running', bad: s.ok === false }">
                     <AppIcon :name="toolIcon(s.tool)" :size="11" />
                     <span class="step-tag">{{ stepLabel(s.tool) }}</span>
-                    <span v-if="stepDetail(s)" class="step-arg">· {{ stepDetail(s) }}</span>
-                    <span v-else-if="fmtDigest(s.digest) && s.status === 'running'"
-                          class="step-arg">· {{ fmtDigest(s.digest) }}</span>
+                    <span v-if="stepBrief(s)" class="step-arg" :title="stepBrief(s)">· {{ stepBrief(s) }}</span>
                     <AppIcon v-if="s.ok === false" class="step-flag bad" name="error" :size="11" />
                     <AppIcon v-else-if="s.ok === true" class="step-flag ok" name="check" :size="11" />
                     <span v-if="stepMs(s)" class="step-ms">{{ fmtMs(stepMs(s)) }}</span>

@@ -101,6 +101,11 @@ def normalize_side(side: str) -> str:
                           f"收到 {side!r}")
 
 
+def _side_name(key: str) -> str:
+    """过程行上的叫法：``original`` → 英文转录，``translation`` → 中文译文。"""
+    return "英文转录" if key == "original" else "中文译文"
+
+
 def _refuse(error: str, **extra) -> dict:
     """拒绝是**结果**不是异常：工具层把它原样回给模型，模型据此换一种改法。"""
     return {"ok": False, "error": error, **extra}
@@ -353,6 +358,9 @@ def view(paper_id: str, page: int, side: str) -> dict:
         "lines_non_empty": sum(1 for ln in all_lines if ln.strip()),
         "truncated": truncated,
         "lines": lines,
+        #: `summary` = 过程行上那一句人话（`_tool_outcome` 优先取它）。`note` 是给**模型**的
+        #: 长解释，用户不用看；两者分开，前端那一行才不会显示成半句说明书。
+        "summary": f"第 {page} 页 {_side_name(key)} · {len(text)} 字",
         "note": ("这是这一页产物的原始 Markdown（行号只是路标，`find` 里写行内容本身，"
                  "不要带 `|` 和行号）。改写用 op=\"replace\"：find 必须**逐字**取自这里、"
                  "且在整页里只出现一次。"),
@@ -494,6 +502,9 @@ def replace(paper_id: str, page: int, side: str, find: str, replace_text: str, *
         "rows": before_struct[1], "chars": len(new_text),
         "index": index,
         "blocks": ({"index": block_index} if new_blocks is not None else None),
+        "summary": (f"第 {page} 页 · 第 {line_no} 行 → "
+                    + (f"「{replace_text}」" if len(replace_text) <= 24
+                       else f"「{replace_text[:24]}…」") if replace_text else "（删除）"),
         "note": ("已落盘。这一页的阅读器内容与检索索引都已更新；"
                  "改动前的那一份留在 edit_log 里，op=\"undo\" 可以原样撤回。"
                  + ("\n⚠️ 这段文字只出现在整页 Markdown 里、不在逐块译文里："
@@ -553,6 +564,7 @@ def undo(paper_id: str, page: int, side: str, *, actor: str = "agent",
     log.info("产物纠错：撤回 %s p%d %s（%s，by %s）", paper_id, page, key,
              entry.get("at"), actor)
     return {"ok": True, "page": page, "side": key, "source": source,
+            "summary": f"第 {page} 页 · 已撤回上一处",
             "reverted": {"find": entry.get("find"), "replace": entry.get("replace"),
                          "at": entry.get("at")},
             "rows": before_struct[1], "chars": len(restored), "index": index,

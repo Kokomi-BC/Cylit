@@ -949,13 +949,13 @@ export interface AgentStep {
   truncated?: boolean;
   /** `tool` 的工具名（`paper_search` / `page_markdown_get` 这类，由模型自己调） */
   tool?: string;
-  /** 工具入参摘要（"query=随机旋转 量化"） */
+  /** 工具入参的**一句话人话**（后端 `tools.tool_brief` 写：「第 5 页」「「随机旋转」」） */
   digest?: string;
   status?: 'running' | 'done' | string;
   ms?: number | null;
   /** 工具调用**成败**（`ok=false` 时前端标红，并把 `detail` 当原因显示） */
   ok?: boolean;
-  /** 工具返回的一句话摘要（写操作 = 改了什么；失败 = 原因） */
+  /** 工具结果的一句话（写操作 = 改了什么；失败 = 原因；读工具成功时为空） */
   detail?: string;
   /** 前端本地字段：这一步开始的时刻（`running` 时用它走秒） */
   startedAt?: number;

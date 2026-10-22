@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 
@@ -118,6 +119,105 @@ def pages_error(spec: str, *, total: int) -> str:
         where = f"第 {lo} 页" if lo == hi else f"第 {lo}-{hi} 页"
         return f"没有{where}（这篇共 {total} 页）。"
     return f'页码没读懂：「{_clip(spec, 20) if spec else "空"}」。可以写 "5" / "3-8" / "4,7" / "all"。'
+
+
+#: 过程行里那一句人话最多多长（前端还会再截一次；这里保证不会把整段 find 塞进去）
+BRIEF_CHARS = 60
+
+
+def _as_args(args: object) -> dict:
+    """工具入参：框架给过 dict，也给过 **JSON 串** —— 两种都要认。
+
+    实测 2026-12-07：过程行显示成 ``{"find": "\\frac{\\sqrt{3\\pi^2}...``，就是因为参数
+    这时是 JSON **串**，老代码直接 `str(args)[:120]`。
+    """
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str) and args.strip().startswith("{"):
+        try:
+            got = json.loads(args)
+        except json.JSONDecodeError:
+            return {}
+        return got if isinstance(got, dict) else {}
+    return {}
+
+
+def _brief_text(value: object, limit: int = 18) -> str:
+    body = re.sub(r"\s+", " ", str(value or "")).strip()
+    return body if len(body) <= limit else body[:limit] + "…"
+
+
+def _anchor_label(anchor: object) -> str:
+    """``md:p5`` / ``p5-3`` → 「第 5 页」/「第 5 页第 3 行」（认不出就不带）。"""
+    m = re.match(r"^(?:md:)?p(\d{1,5})(?:-(\d+))?$", str(anchor or ""))
+    if not m:
+        return ""
+    row = f" 第 {int(m.group(2))} 行" if m.group(2) else ""
+    return f"第 {int(m.group(1))} 页{row}"
+
+
+def _page_label(value: object) -> str:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    if text.lower() in ("all", "*", "全部", "全文"):
+        return "整篇"
+    return f"第 {_brief_text(text, 20)} 页"
+
+
+def tool_brief(name: str, args: object) -> str:
+    """工具调用的**一句话人话** —— 过程行 `修订产物 · 第 4 页 · …` 里 `·` 后面那截。
+
+    为什么放在这一层而不是前端按工具名拼：只有工具自己知道参数叫什么、截到哪儿才不像乱码。
+    中文**短语**（`修订产物` 这类）仍然留在前端（`TOOL_STEPS`），这里只出参数里的人话。
+    用户口径 2026-12-07：「工具调用看不出在干什么」。
+    """
+    a = _as_args(args)
+    tool = str(name or "")
+    pages = _page_label(a.get("pages"))
+    page = _page_label(a.get("page"))
+    query = _brief_text(a.get("query"), 20)
+
+    if tool in ("page_markdown_get", "translate_get", "page_image_get"):
+        return pages
+    if tool in ("formula_get", "figure_list", "figure_image_get"):
+        bits = [page or pages]
+        if tool == "figure_image_get" and a.get("index") not in (None, ""):
+            bits.append(f"第 {a.get('index')} 张")
+        return " · ".join(b for b in bits if b)
+    if tool in ("paper_search", "kb_search", "library_list", "notes_search", "web_search"):
+        return f"「{query}」" if query else ""
+    if tool == "web_fetch":
+        return _brief_text(a.get("url"), 32)
+    if tool == "block_get":
+        ref = a.get("ref")
+        return f"引用 [{ref}]" if ref not in (None, "") else ""
+    if tool == "page_markdown_edit":
+        op = str(a.get("op") or "").strip().lower()
+        if op in ("undo", "revert"):
+            return " · ".join(b for b in (page, "撤回上一处") if b)
+        if op in ("view", "read", "show"):
+            return page
+        find, rep = _brief_text(a.get("find"), 16), _brief_text(a.get("replace"), 16)
+        tail = ""
+        if find and rep:
+            tail = f"「{find}」→「{rep}」"
+        elif find:
+            tail = f"删掉「{find}」"
+        return " · ".join(b for b in (page, tail) if b)
+    if tool in ("highlight_manage", "note_manage"):
+        op = str(a.get("op") or "").strip().lower()
+        where = _anchor_label(a.get("anchor"))
+        kind = "高亮" if tool == "highlight_manage" else "笔记"
+        if op in ("create", "add", "update"):
+            return " · ".join(b for b in (f"新增{kind}" if op != "update" else f"改{kind}",
+                                           where) if b)
+        if op in ("delete", "remove"):
+            return f"删掉一条{kind}"
+        return " · ".join(b for b in (f"看看有哪些{kind}", where) if b)
+    if tool == "paper_meta_write":
+        return _brief_text(a.get("venue"), 16)
+    return "、".join(f"{k}={_brief_text(v, 12)}" for k, v in list(a.items())[:3])[:BRIEF_CHARS]
 
 
 def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:

@@ -41,7 +41,7 @@ from backend.agent.host import HostClient, HostError
 from backend.agent.sanitize import (
     StreamingAnswerSanitizer, referenced_citations, strip_foreign_images,
 )
-from backend.agent.tools import AGENT_TOOLS, META_TOOLS
+from backend.agent.tools import AGENT_TOOLS, META_TOOLS, tool_brief
 from backend.agent.trace import StepLog
 from backend.agent.workspace import VIRTUAL_ROOT, ReadOnlyWorkspace
 from backend.core.logging import get_logger
@@ -704,14 +704,14 @@ class AgentRuntime:
                 sanitizer.reset()
                 pre.append({"type": "answer_reset"})
             tool = getattr(part, "tool_name", "?")
-            digest = _digest(getattr(part, "args", None))
+            digest = tool_brief(tool, getattr(part, "args", None))
             state.log.tool_start(tool, round=deps.model_calls, digest=digest)
             return pre + [{"type": "tool", "round": deps.model_calls,
                            "tool": tool, "status": "start", "args_digest": digest}]
         if name == "FunctionToolResultEvent":
             tool = getattr(getattr(event, "part", None), "tool_name", "?")
-            step = state.log.tool_done(tool, round=deps.model_calls)
             ok, detail = _tool_outcome(getattr(event, "part", None))
+            step = state.log.tool_done(tool, round=deps.model_calls, ok=ok, detail=detail)
             out: list[dict] = [{"type": "tool", "round": deps.model_calls,
                                 "tool": tool, "status": "done", "args_digest": "",
                                 "ms": step.get("ms"), "ok": ok, "detail": detail}]
@@ -949,27 +949,19 @@ def _tool_outcome(part: Any) -> tuple[bool, str]:
         ok = False
     detail = ""
     if isinstance(payload, dict):
-        for key in ("error", "message", "note", "hint"):
+        #: `summary` 优先：工具自己写的一句话（「第 4 页 · 已替换」），比 `note` 那类长解释
+        #: 更适合过程行。`note` 留给模型读（它在工具返回里仍然完整）。
+        for key in ("summary", "error", "message", "note", "hint"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 detail = value.strip()
                 break
-    if not detail:
+    #: 成功且返回体是 JSON（也就是绝大多数读工具）时**不显示**：那只是把一大段返回值压成
+    #: 120 字塞进过程行，读起来像乱码。纯文本返回（少数工具）仍然照旧显示。
+    if not detail and (not ok or payload is None):
         detail = " ".join(text.split())
-    return ok, detail[:120]
+    return ok, " ".join(detail.split())[:120]
 
-
-def _digest(args: Any) -> str:
-    """工具入参摘要：**不发原始 JSON**（参数里可能有整篇论文，前端过程行会爆）。"""
-    if args is None:
-        return ""
-    if isinstance(args, dict):
-        bits = []
-        for key, value in list(args.items())[:4]:
-            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-            bits.append(f"{key}={str(text)[:40]}")
-        return "、".join(bits)[:120]
-    return str(args)[:120]
 
 
 def format_sse(event: dict) -> str:
