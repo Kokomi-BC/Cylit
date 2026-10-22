@@ -215,6 +215,44 @@ function addFromPreset(id: string) {
   openCreate(addType.value, id);
 }
 
+/* ---------------------------- 提供方编辑 / 删除 ----------------------------
+ * 只对**自定义**那几家给（官方那几家的身份来自后端预设，不该在界面上改）。
+ * 删除直接打 `DELETE /models/providers/{id}`：后端在还有模型挂靠时返回 409，
+ * 这里把那条结构化错误原样显示出来 —— 不制造失效引用。 */
+const editId = ref('');
+const editForm = reactive({ label: '', base_url: '' });
+
+function startEditProvider(p: ProviderEntry) {
+  editId.value = p.id;
+  editForm.label = p.label || p.id;
+  editForm.base_url = p.base_url || '';
+}
+
+async function saveProvider() {
+  if (!editForm.label.trim()) { toast('提供方名称必填', 'warn'); return; }
+  try {
+    await api.post('/models/providers', {
+      id: editId.value, label: editForm.label.trim(), base_url: editForm.base_url.trim() || undefined,
+    });
+    toast('提供方已保存', 'ok');
+    editId.value = '';
+    await loadProviders();
+  } catch (err) { reportError(err, '保存提供方失败'); }
+}
+
+async function removeProvider(p: ProviderEntry) {
+  if (!(await askConfirm({
+    title: `删除提供方「${p.label || p.id}」？`,
+    body: '还有模型挂在它上面时会拒绝删除（会告诉你还剩几个）。', danger: true, confirmLabel: '删除',
+  }))) return;
+  try {
+    await api.del(`/models/providers/${p.id}`);
+    toast('提供方已删除', 'ok');
+    editId.value = '';
+    await loadProviders();
+  } catch (err) { reportError(err, '删除提供方失败'); }
+}
+
 function addManual() {
   addOpen.value = false;
   openCreate(addType.value);
@@ -778,8 +816,26 @@ onBeforeUnmount(() => {
                   {{ p.note || p.base_url || (p.types || []).map(typeLabel).join(' · ') }}
                 </span>
               </span>
+              <span class="prov-ops" v-if="p.kind === 'custom'">
+                <button type="button" class="prov-op" title="编辑这家提供方"
+                        :data-prov-edit="p.id" @click.stop="startEditProvider(p)">
+                  <AppIcon name="edit" :size="12" />
+                </button>
+                <button type="button" class="prov-op danger" title="删除这家提供方"
+                        :data-prov-del="p.id" @click.stop="removeProvider(p)">
+                  <AppIcon name="trash" :size="12" />
+                </button>
+              </span>
               <AppIcon name="chevron-right" :size="12" class="prov-go" />
             </button>
+            <div class="prov-edit" v-if="editId">
+              <label class="field">名称<input v-model="editForm.label" data-prov-edit-label /></label>
+              <label class="field">Base URL<input v-model="editForm.base_url" class="mono" placeholder="https://…/v1" /></label>
+              <div class="row">
+                <button class="btn primary sm" data-prov-save @click.stop="saveProvider">保存</button>
+                <button class="btn sm" @click.stop="editId = ''">取消</button>
+              </div>
+            </div>
             <div class="prov-empty" v-if="!filteredProviders.length">
               没有匹配的提供方 —— 换个词，或用下面的「自定义提供方」。
             </div>
@@ -937,6 +993,18 @@ onBeforeUnmount(() => {
 .prov-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; }
 .prov-note { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .prov-go { color: var(--text-faint); flex: none; }
+.prov-ops { display: inline-flex; gap: 2px; flex: none; opacity: 0; }
+.prov-row:hover .prov-ops, .prov-row:focus-within .prov-ops { opacity: 1; }
+@media (hover: none) { .prov-ops { opacity: 1; } }
+.prov-op {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+}
+.prov-op:hover { background: var(--bg-sunken); color: var(--text); }
+.prov-op.danger:hover { color: var(--danger); }
+.prov-edit { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--bg-sunken); }
+.prov-edit .row { display: flex; gap: 8px; }
 .prov-empty { padding: 14px 12px; color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); }
 /* 旧版卡片网格的样式保留给「第二段」的预设卡（那段已在下轮删除，样式先留着不碍事） */
 .add-card.prov { gap: 4px; }
