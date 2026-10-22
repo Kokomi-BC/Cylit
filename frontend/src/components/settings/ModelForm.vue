@@ -10,7 +10,8 @@
  */
 import { computed, reactive, ref, watch } from 'vue';
 import type { ModelConfig, ModelPreset, ModelPresetSpec } from '@/api/types';
-import { toast } from '@/stores/app';
+import { api } from '@/api/client';
+import { reportError, toast } from '@/stores/app';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 
@@ -22,6 +23,8 @@ const props = withDefaults(defineProps<{
   defaultType?: string;
   /** 从类型卡片的「+」里挑中的预设 id：直接开在第二步，provider / base_url / 密钥 / 参数已填好 */
   defaultPreset?: string;
+  /** 从「自定义提供方」进来：跳过第一步的提供方卡片墙，直接开在第二步（名称 / Base URL / 密钥 / Model ID） */
+  customEntry?: boolean;
   types?: string[];
   typeLabels?: Record<string, string>;
   presets?: ModelPreset[];
@@ -31,6 +34,7 @@ const props = withDefaults(defineProps<{
   target: null,
   defaultType: 'agent',
   defaultPreset: '',
+  customEntry: false,
   types: () => [],
   typeLabels: () => ({}),
   presets: () => [],
@@ -46,6 +50,37 @@ const emit = defineEmits<{
 const SPEC_KEYS = ['agent', 'generation', 'vision', 'embedding', 'reranker'] as const;
 
 const step = ref<1 | 2>(1);
+
+/* ---------------------------- 从服务端拉模型列表 ----------------------------
+ * 用户口径（改造计划 §2.1）：官方提供方要能「从服务端获取模型列表并选择 Model ID」；
+ * 拿不到就**自动退回手填**，并把原因写清楚 —— 三种状态必须分得开：
+ * 配置已保存（保存按钮）/ 连接成功（测试）/ 列表拉到了（这里）。
+ * 密钥走 `secret_ref`（文件名，后端自己读），**前端不碰密钥内容、也不回显**。 */
+const probeBusy = ref(false);
+const probeError = ref('');
+const probeOptions = ref<string[]>([]);
+
+async function fetchRemoteModels() {
+  probeError.value = '';
+  probeOptions.value = [];
+  if (!form.base_url) { probeError.value = '先填 Base URL'; return; }
+  probeBusy.value = true;
+  try {
+    const data = await api.post<{ items?: Array<{ id?: string }>; count?: number }>('/models/probe-models', {
+      base_url: form.base_url,
+      secret_ref: form.secret_ref || undefined,
+    });
+    const ids = (data?.items || []).map((x) => String(x?.id || '')).filter(Boolean);
+    probeOptions.value = ids;
+    if (!ids.length) probeError.value = '端点没有返回任何模型，请手填 Model ID';
+    else if (!ids.includes(form.model_name)) form.model_name = ids[0];
+  } catch (err) {
+    /* api 层已经把后端的结构化错误转成了人话（不含密钥/完整 URL） */
+    probeError.value = String((err as any)?.message || err || '拉取失败');
+  } finally {
+    probeBusy.value = false;
+  }
+}
 const advanced = ref(false);
 const presetId = ref('');
 const entryType = ref('agent');
@@ -201,6 +236,10 @@ function init() {
   /* 从「+」里挑中的预设（用户口径 2026-12-07）：直接开在第二步。
      ⚠️ 必须只在 create 模式、且该预设**确实带这一类档位**时才用 —— 否则会拿别的类型的
      model_name / 参数填进来（比如给重排模型配上对话模型的模型名）。 */
+  if (props.customEntry) {
+    step.value = 2;
+    return;
+  }
   const picked = props.defaultPreset
     ? props.presets.find((x) => x.id === props.defaultPreset) ?? null
     : null;
@@ -395,9 +434,28 @@ function labelOf(t: string): string {
           <input v-model="form.name" :placeholder="form.model_name || '界面显示用'" />
         </label>
         <label class="field">模型名
-          <input v-model="form.model_name" class="mono" placeholder="provider 侧的 model" />
+          <span class="mn-row">
+            <input v-model="form.model_name" class="mono" placeholder="provider 侧的 model" />
+            <!-- 从服务端拉列表（改造计划 §2.1）：拿不到就手填，原因写在下面一行 -->
+            <button
+              type="button" class="btn sm ghost mn-probe" data-probe-models
+              :disabled="probeBusy" :title="`从 ${form.base_url || '端点'} 拉取模型列表`"
+              @click="fetchRemoteModels"
+            >
+              <AppIcon name="refresh" :size="13" />{{ probeBusy ? '拉取中' : '拉取列表' }}
+            </button>
+          </span>
         </label>
       </div>
+
+      <!-- 拉到的候选：选一个就填回模型名（原样使用服务端返回的 id） -->
+      <label class="field gap-top" v-if="probeOptions.length">
+        服务端模型（{{ probeOptions.length }}）
+        <select :value="form.model_name" data-probe-select @change="form.model_name = ($event.target as HTMLSelectElement).value">
+          <option v-for="id in probeOptions" :key="id" :value="id">{{ id }}</option>
+        </select>
+      </label>
+      <p class="probe-err tiny" v-if="probeError" data-probe-error>{{ probeError }}</p>
 
       <div class="chips" v-if="modelChips.length">
         <button
@@ -532,6 +590,12 @@ function labelOf(t: string): string {
 /* 类型：全站那枚胶囊，一屏放得下六档 */
 .types { height: var(--control-h-sm); }
 .types button { height: calc(var(--control-h-sm) - 6px); font-size: calc(12px * var(--ts, 1)); padding: 0 11px; }
+
+/* 模型名那一格：输入框 + 「拉取列表」按钮同一行；拉取失败的红字在下一行 */
+.mn-row { display: flex; align-items: center; gap: 6px; }
+.mn-row input { flex: 1 1 auto; min-width: 0; }
+.mn-probe { flex: none; white-space: nowrap; }
+.probe-err { margin: 6px 0 0; color: var(--danger); }
 
 /* 模型名建议 chips：与「预设」同一套胶囊语言 */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }

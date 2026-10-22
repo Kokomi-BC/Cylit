@@ -126,6 +126,33 @@ const typeGroups = computed<TypeGroup[]>(() => {
  * base_url / 密钥文件名 / 参数一起填好，表单直接开在第二步；没有合适的预设就走「手动新建」。 */
 const addOpen = ref(false);
 const addType = ref('agent');
+/** 两段式：先挑「官方提供方 / 自定义」，再进那一家的预设（自定义直接开空白表单） */
+const pickStage = ref<'provider' | 'preset'>('provider');
+const pickProvider = ref('');
+
+/** 官方提供方目录（`kind` / `icon` 都是后端算的，前端只负责画） */
+interface ProviderEntry {
+  id: string; kind: 'official' | 'custom'; label: string; icon: string;
+  note?: string; auth?: string; base_url?: string;
+  types?: string[]; presets?: number; configured?: number;
+}
+const providers = ref<ProviderEntry[]>([]);
+const customEntry = ref<ProviderEntry>({
+  id: 'custom', kind: 'custom', label: '自定义提供方', icon: '',
+  note: '填名称 / Base URL / API Key / Model ID',
+});
+const providersError = ref('');
+
+async function loadProviders() {
+  try {
+    const data = await api.get<{ providers?: ProviderEntry[]; custom?: ProviderEntry }>('/models/providers');
+    providers.value = Array.isArray(data?.providers) ? data.providers : [];
+    if (data?.custom) customEntry.value = data.custom;
+    providersError.value = '';
+  } catch (err) {
+    providersError.value = `官方提供方目录读取失败：${(err as any)?.message ?? err}`;
+  }
+}
 
 interface AddCandidate { id: string; label: string; model: string; host: string }
 
@@ -133,6 +160,8 @@ const addCandidates = computed<AddCandidate[]>(() => {
   const t = addType.value;
   const out: AddCandidate[] = [];
   for (const pre of state.presets || []) {
+    /* 第二段只列**这一家**的预设（第一段已经选了厂商，别再把别人家的混进来） */
+    if (pickProvider.value && String(pre.provider || '') !== pickProvider.value) continue;
     const spec = (pre as any)[t];
     if (!spec || typeof spec !== 'object') continue;
     out.push({
@@ -147,8 +176,25 @@ const addCandidates = computed<AddCandidate[]>(() => {
 
 function openAdd(type: string) {
   addType.value = type;
+  pickStage.value = 'provider';
+  pickProvider.value = '';
   addOpen.value = true;
+  if (!providers.value.length) void loadProviders();
 }
+
+/** 点一张提供方卡片：官方 → 进它的预设列表；自定义 → 直接开空白表单 */
+function pickProviderCard(p: ProviderEntry) {
+  if (p.kind === 'custom') {
+    addOpen.value = false;
+    openCreate(addType.value, '', true);
+    return;
+  }
+  pickProvider.value = p.id;
+  pickStage.value = 'preset';
+}
+
+/** 当前这一步要做的是哪一家（给第二段的标题与「换一家」回退用） */
+const activeProvider = computed(() => providers.value.find((p) => p.id === pickProvider.value) ?? null);
 
 /** 选中一个预设：关掉选择器，表单带着预设直接开在第二步 */
 function addFromPreset(id: string) {
@@ -447,13 +493,16 @@ const formTarget = ref<ModelConfig | null>(null);
 const formDefaultType = ref('agent');
 /** 从「+」里选中了哪个预设：表单据此直接开在第二步并填好（空 = 从零填） */
 const formPreset = ref('');
+/** 从「自定义提供方」进来：表单直接开在第二步（四个字段），不再让用户过一遍提供方卡片墙 */
+const formCustom = ref(false);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
-function openCreate(type = 'agent', preset = '') {
+function openCreate(type = 'agent', preset = '', custom = false) {
   formMode.value = 'create';
   formTarget.value = null;
   formDefaultType.value = type;
   formPreset.value = preset;
+  formCustom.value = custom;
   formOpen.value = true;
 }
 
@@ -462,6 +511,7 @@ function openEdit(m: ModelConfig) {
   formTarget.value = m;
   formDefaultType.value = m.model_type || 'agent';
   formPreset.value = '';
+  formCustom.value = false;
   formOpen.value = true;
 }
 
@@ -676,22 +726,68 @@ onBeforeUnmount(() => {
       @close="addOpen = false"
     >
       <div class="add-picker">
-        <p class="tiny faint add-note">
-          选一家现成的（base_url / 密钥文件名 / 参数会一起填好），或自己填一份。
-        </p>
-        <div class="add-grid" v-if="addCandidates.length">
-          <button
-            class="add-card" v-for="c in addCandidates" :key="c.id" type="button"
-            :data-add-preset="c.id" @click="addFromPreset(c.id)"
-          >
-            <span class="add-name truncate">{{ c.label }}</span>
-            <span class="add-sub mono truncate">{{ c.model || '—' }}</span>
-            <span class="add-host tiny truncate">{{ c.host }}</span>
-          </button>
-        </div>
-        <div class="tiny faint" v-else>
-          没有适用于「{{ typeLabel(addType) }}」的现成预设，直接手动填一份。
-        </div>
+        <!-- 第一段：先挑**提供方**（用户口径 2026-12-07：官方提供方卡片 / 自定义入口）。
+             官方与自定义的区别由后端 `kind` 决定，前端只照着画。 -->
+        <template v-if="pickStage === 'provider'">
+          <p class="tiny faint add-note">
+            选一家官方提供方（base_url / 密钥文件名 / 参数自动填好），或者自己填一份。
+          </p>
+          <!-- ⚠️ 目录拉不到时**照样渲染**（自定义那格永远在）：否则后端一抖，连手动新建都没入口 -->
+          <p class="probe-err tiny" v-if="providersError">{{ providersError }}</p>
+          <div class="add-grid">
+            <button
+              class="add-card prov" v-for="p in providers" :key="p.id" type="button"
+              :data-add-provider="p.id" @click="pickProviderCard(p)"
+            >
+              <span class="prov-top">
+                <img v-if="vendorIco(p.id)" class="pv-ico" :src="vendorIco(p.id)" alt="">
+                <span v-else class="pv-fallback"><AppIcon name="server" :size="13" /></span>
+                <span class="add-name truncate">{{ p.label }}</span>
+                <span class="prov-badge">官方</span>
+              </span>
+              <span class="add-host tiny truncate">{{ p.note || p.base_url || '' }}</span>
+              <span class="add-sub tiny truncate">
+                {{ (p.types || []).map(typeLabel).join(' · ') || '—' }}
+                <template v-if="p.configured"> · 已配 {{ p.configured }}</template>
+              </span>
+            </button>
+            <button class="add-card prov custom" type="button"
+                    :data-add-provider="customEntry.id" @click="pickProviderCard(customEntry)">
+              <span class="prov-top">
+                <span class="pv-fallback"><AppIcon name="edit" :size="13" /></span>
+                <span class="add-name truncate">{{ customEntry.label }}</span>
+              </span>
+              <span class="add-host tiny truncate">{{ customEntry.note }}</span>
+              <span class="add-sub tiny truncate">Base URL · API Key · Model ID</span>
+            </button>
+          </div>
+          <div class="tiny faint" v-if="!providers.length && !providersError">正在读取官方提供方目录…</div>
+        </template>
+
+        <!-- 第二段：这一家有哪些现成预设（选一条就带着配置进表单） -->
+        <template v-else>
+          <p class="tiny faint add-note">
+            <button class="link-btn" type="button" data-add-back @click="pickStage = 'provider'">
+              ← 换一家
+            </button>
+            <span v-if="activeProvider"> · {{ activeProvider.label }}</span>
+            <span> 的「{{ typeLabel(addType) }}」配置</span>
+          </p>
+          <div class="add-grid" v-if="addCandidates.length">
+            <button
+              class="add-card" v-for="c in addCandidates" :key="c.id" type="button"
+              :data-add-preset="c.id" @click="addFromPreset(c.id)"
+            >
+              <span class="add-name truncate">{{ c.label }}</span>
+              <span class="add-sub mono truncate">{{ c.model || '—' }}</span>
+              <span class="add-host tiny truncate">{{ c.host }}</span>
+            </button>
+          </div>
+          <div class="tiny faint" v-else>
+            「{{ activeProvider?.label || pickProvider }}」没有适用于「{{ typeLabel(addType) }}」的现成预设，
+            用底下的「手动新建配置」自己填一份。
+          </div>
+        </template>
       </div>
       <template #footer>
         <button class="btn sm" @click="addManual">
@@ -702,7 +798,7 @@ onBeforeUnmount(() => {
 
     <ModelForm
       :open="formOpen" :mode="formMode" :target="formTarget"
-      :default-type="formDefaultType" :default-preset="formPreset"
+      :default-type="formDefaultType" :default-preset="formPreset" :custom-entry="formCustom"
       :types="panelTypes" :type-labels="TYPE_LABEL"
       :presets="state.presets" :secrets="state.secrets" :busy="rowBusy('submit')"
       @close="formOpen = false" @submit="submitForm"
@@ -789,6 +885,21 @@ onBeforeUnmount(() => {
   background: var(--bg-layer); color: var(--text); font: inherit;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
+/* 提供方卡片（第一段）：一行图标 + 名称 + 「官方」标识，下面两行小字说明 */
+.add-card.prov { gap: 4px; }
+.add-card.custom { border-style: dashed; }
+.prov-top { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.prov-badge {
+  flex: none; padding: 0 5px; height: 16px; display: inline-flex; align-items: center;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent-text);
+  font-size: calc(10px * var(--ts, 1)); font-weight: 600;
+}
+/* 「← 换一家」：一行淡字里的文字按钮，不占额外高度 */
+.link-btn {
+  padding: 0; border: 0; background: transparent; color: var(--accent-text);
+  font: inherit; cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
 .add-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); background: var(--bg-hover); }
 .add-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; max-width: 100%; }
 .add-sub { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); max-width: 100%; }
