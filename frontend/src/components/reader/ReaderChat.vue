@@ -293,6 +293,20 @@ const modelLabel = computed(() => activeModel.value?.name || activeModel.value?.
   || status.value?.model?.model_name || '—');
 /** 厂商图标：走 `assets/model-icons` 的**统一映射**（不在本组件里再维护一份别名表）。
  *  彩色原色图标用 `<img>`；认不出厂商就是空串，模板里那枚 `<img>` 直接不渲染。 */
+/** 模型候选**按提供方分组**（改造计划 §4：展开选择器后按提供方分组显示）。
+ *  分组只按 `provider` 归堆、组内保持后端给的顺序（默认/启用优先），
+ *  组标题直接写提供方 id —— 图标来自统一映射，这里不再维护第二份厂商表。 */
+const modelGroups = computed(() => {
+  const out: Array<{ provider: string; items: ModelConfig[] }> = [];
+  for (const m of modelOptions.value) {
+    const key = String(m.provider || '') || '其他';
+    const hit = out.find((g) => g.provider === key);
+    if (hit) hit.items.push(m);
+    else out.push({ provider: key, items: [m] });
+  }
+  return out;
+});
+
 function vendorIco(provider?: string | null): string {
   return vendorColorIcon(provider);
 }
@@ -2448,7 +2462,12 @@ defineExpose({ uploadFiles, ensureThread });
                 <span class="pick-item-sub truncate">{{ modelSub }}</span>
               </div>
               <template v-else>
-                <button v-for="m in modelOptions" :key="m.id" class="pick-item"
+                <template v-for="g in modelGroups" :key="g.provider">
+                  <div class="pick-group">
+                    <img v-if="vendorIco(g.provider)" class="pv-ico" :src="vendorIco(g.provider)" alt="">
+                    <span class="truncate">{{ g.provider }}</span>
+                  </div>
+                <button v-for="m in g.items" :key="m.id" class="pick-item"
                         :class="{ on: m.id === activeModel?.id }"
                         :disabled="savingPick || m.enabled === false"
                         @click="savePick({ model_config_id: m.id })">
@@ -2461,6 +2480,7 @@ defineExpose({ uploadFiles, ensureThread });
                   </span>
                   <AppIcon v-if="m.id === activeModel?.id" name="check" :size="13" />
                 </button>
+                </template>
               </template>
             </div>
 
@@ -3022,6 +3042,12 @@ defineExpose({ uploadFiles, ensureThread });
   position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
   padding: 3px; border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+}
+/* 提供方分组标题：一枚小图标 + 厂商 id，比正文小一档、不加底色（它只是分隔，不是条目） */
+.pick-group {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 6px 8px 3px; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 600; letter-spacing: .01em;
 }
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
