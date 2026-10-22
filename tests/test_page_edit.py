@@ -287,3 +287,87 @@ def test_tool_rejects_unknown_op() -> None:
     ctx, _ = _ctx(host)
     out = asyncio.run(page_markdown_edit(ctx, op="delete", page=1, side="original"))
     assert out["ok"] is False and host.calls == []
+
+# --------------------------------------------------------------------------
+# 块模式页（A 定块、B 照译）：改 *_md 必须**同步改 blocks[]**
+#
+# 读模型取译文行来自 blocks[i]（`reader_service._merge_page` → `pair_rows_by_blocks`，
+# 位置即锚点）。只重写 translation_md 会得到"工具回 ok、阅读器那一行还带着旧串"的半修状态。
+# --------------------------------------------------------------------------
+
+MD_A_BLOCKS = "# Attention\n\nThe scale is 1/sqrt(dk).\n\nThird paragraph stays.\n"
+BLOCKS_B = ["# 注意力", "缩放因子是 1/sqrt(dk) \tag{3}。", "第三段不动。"]
+
+
+def write_block_paths(paths, *, blocks=None) -> None:
+    """A 路正常写；B 路写成**块模式**（blocks_from_a + blocks[]）。"""
+    store_a = PageStore(PAPER, paths["path_a"], version=PATH_VERSION)
+    store_b = PageStore(PAPER, paths["path_b"], version=PATH_VERSION)
+    store_a.put(1, {"page": 1, "path": "a", "page_total": 2,
+                    "original_md": MD_A_BLOCKS, "breaks": [], "model": "m"})
+    use = BLOCKS_B if blocks is None else blocks
+    store_b.put(1, {"page": 1, "path": "b", "page_total": 2,
+                    "translation_md": "\n\n".join(use), "carry_md": "",
+                    "breaks": [], "model": "m",
+                    "blocks_from_a": True, "blocks": list(use)})
+
+
+def _merged_block_rows(page: int = 1) -> list[dict]:
+    """按读模型的口径取行（与 `_merge_page` 里那块模式分支同一个函数）。"""
+    rows, _quality = page_translate.pair_rows_by_blocks(
+        MD_A_BLOCKS, page_b_payload(page).get("blocks") or [], page)
+    return rows
+
+
+def page_b_payload(page: int = 1) -> dict:
+    from backend.services.paper import paper_service
+
+    store = PageStore(PAPER, paper_service.paper_paths(PAPER)["path_b"],
+                      version=PATH_VERSION)
+    return dict(store.page(page) or {})
+
+
+def test_block_mode_replace_updates_blocks_and_md(env) -> None:
+    """① translation_md 与 blocks[i] 都变了、② 返回 ok、③ 读模型那行已无旧串。"""
+    write_block_paths(env)
+    out = page_edit.replace(PAPER, 1, "translation",
+                            find=" \tag{3}", replace_text="", reason="去掉多余编号")
+    assert out["ok"] is True
+    assert out["blocks"] == {"index": 1}          # 回执里说清改了第几块
+
+    payload = page_b_payload()
+    assert "\tag{3}" not in payload["translation_md"]
+    assert "\tag{3}" not in payload["blocks"][1]
+    assert payload["blocks"][0] == BLOCKS_B[0]     # 其它块原样
+    assert payload["blocks"][2] == BLOCKS_B[2]
+
+    # 读模型（块模式配对）拿到的译文行也不该再有旧串
+    rows = _merged_block_rows()
+    assert all("\tag{3}" not in row["translation"] for row in rows)
+    assert any("1/sqrt(dk)" in row["translation"] for row in rows)
+
+
+def test_block_mode_replace_is_rejected_when_find_hits_two_blocks(env) -> None:
+    """⑤ find 在块里出现 2 次 → 与整页同一套唯一命中口径：拒绝，且一个字节都不改。"""
+    write_block_paths(env, blocks=["同样的句子", "同样的句子", "第三块"])
+    before = page_b_payload()
+    out = page_edit.replace(PAPER, 1, "translation",
+                            find="同样的句子", replace_text="改过的句子")
+    assert out["ok"] is False
+    assert out["occurrences"] == 2
+    assert page_b_payload() == before
+
+
+def test_block_mode_undo_restores_both_sides(env) -> None:
+    """④ undo 之后 translation_md 与 blocks 都回到原文（否则撤回也留半修状态）。"""
+    write_block_paths(env)
+    page_edit.replace(PAPER, 1, "translation", find=" \tag{3}", replace_text="")
+    assert "\tag{3}" not in page_b_payload()["blocks"][1]
+
+    out = page_edit.undo(PAPER, 1, "translation")
+    assert out["ok"] is True
+    payload = page_b_payload()
+    assert payload["translation_md"] == "\n\n".join(BLOCKS_B)
+    assert payload["blocks"] == BLOCKS_B
+    rows = _merged_block_rows()
+    assert any("\tag{3}" in row["translation"] for row in rows)   # 读模型也回来了

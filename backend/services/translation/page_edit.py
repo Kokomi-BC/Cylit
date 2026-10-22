@@ -264,6 +264,20 @@ def _rows_of(paper_id: str, page: int) -> list[dict] | None:
     return None if merged is None else list(merged.get("rows") or [])
 
 
+def _blocks_of(payload: dict) -> list[str] | None:
+    """块模式产物（A 定块、B 照译）的**逐块译文**；不是块模式返回 None。
+
+    为什么要单独认它：块模式页的读模型取译文行文本时用的是 `blocks[i]` 而不是
+    `translation_md`（`reader_service._merge_page` → `pair_rows_by_blocks`，位置即锚点）。
+    只重写 `translation_md` 会出现"工具返回 ok、阅读器那一行还带着旧串"的半修状态
+    （实测：`translation_md` 里已经没有 `\tag{3}`，`merged_page(3).rows[p003-03].zh` 还带着）。
+    """
+    blocks = payload.get("blocks")
+    if not payload.get("blocks_from_a") or not isinstance(blocks, list) or not blocks:
+        return None
+    return [str(one or "") for one in blocks]
+
+
 def _structure(store, page: int, field: str, paper_id: str) -> tuple[int, int]:
     """这一侧的**结构签名** ``(块数, 合并行数)``。
 
@@ -385,10 +399,42 @@ def replace(paper_id: str, page: int, side: str, find: str, replace_text: str, *
                 f"把它**连同前后文**一起写进 find（比如带上上一行或下一行），使它在整页里唯一。",
                 page=page, side=key, occurrences=hits)
 
+        # 块模式页（A 定块、B 照译）：读模型取**译文行**来自 `blocks[]`，只改 *_md 等于
+        # 改了一半 —— 阅读器那一行还是旧串，而工具已经回了 ok。这里同步改块，并且与整页
+        # 同一套"唯一命中"口径（0 命中 = 这段文字不在块里，跳过；>1 命中 = 拒绝并要求加前后文）。
+        blocks = _blocks_of(payload)
+        new_blocks: list[str] | None = None
+        block_index: int | None = None
+        blocks_skipped = False
+        if blocks is not None:
+            per_block = [count_occurrences(one, find) for one in blocks]
+            total = sum(per_block)
+            if total > 1:
+                return _refuse(
+                    f"find 在这一页的**逐块译文**里出现了 {total} 次，无法确定改哪一处。"
+                    f"把它连同前后文一起写进 find，使它在整页里唯一。",
+                    page=page, side=key, occurrences=total)
+            if total == 1:
+                block_index = per_block.index(1)
+                new_blocks = list(blocks)
+                new_blocks[block_index] = replace_once(blocks[block_index], find, replace_text)
+                # 结构校验照旧，只是这次连块一起看：块数与被改块的行数都不许变
+                if (len(new_blocks) != len(blocks)
+                        or new_blocks[block_index].count("\n") != blocks[block_index].count("\n")):
+                    return _refuse(
+                        f"这次修改会改变第 {page} 页的段落结构（逐块译文里多/少了换行），已拒绝。"
+                        f"行与块都是**位置编号**：一旦增删段落，已有高亮 / 笔记与历史引用会整体错位。"
+                        f"请改成**同一段内**改字 / 改词。",
+                        page=page, side=key)
+            else:
+                blocks_skipped = True
+
         before_struct = _structure(store, page, field, paper_id)
         new_text = replace_once(text, find, replace_text)
         updated = {**payload, field: new_text, "edited_at": now_iso(),
                    "edited_by": actor, "edit_count": int(payload.get("edit_count") or 0) + 1}
+        if new_blocks is not None:
+            updated["blocks"] = new_blocks
         if reason:
             updated["edit_reason"] = str(reason)[:200]
         store.put(page, updated)
@@ -412,14 +458,21 @@ def replace(paper_id: str, page: int, side: str, find: str, replace_text: str, *
         # 日志在**锁内**追加：并发编辑同一篇时，"读日志 → 改日志"这条链必须串行，
         # 否则两条记录会互相盖掉（撤回是照日志写回的，丢了记录就撤不回来了）。
         line_no = line_of(text, find)
-        _append_log(paper_id, {
+        entry = {
             "id": sha256_text(f"{paper_id}:{page}:{key}:{now_iso()}:{find}")[:16],
             "at": now_iso(), "page": page, "side": key, "source": source, "actor": actor,
             "reason": str(reason or "")[:200], "line": line_no,
             "find": find, "replace": replace_text, "prev_md": text, "next_md": new_text,
             # 编辑前的元信息：撤回时原样还原（否则"撤回"会留下"改过"的痕迹）
             "prev_meta": {k: payload[k] for k in EDIT_META if k in payload},
-        })
+        }
+        if new_blocks is not None:
+            # 块模式那一刀也必须进日志：否则 undo 只还原 *_md，又留下"磁盘对了、读模型还对
+            # —— 或者反过来"的半修状态（这正是这次要修的 bug 的回滚版）
+            entry["prev_blocks"] = blocks
+            entry["next_blocks"] = new_blocks
+            entry["block_index"] = block_index
+        _append_log(paper_id, entry)
 
     reader_service.invalidate_cache(paper_id)
     _publish(paper_id, page, key)
@@ -432,8 +485,12 @@ def replace(paper_id: str, page: int, side: str, find: str, replace_text: str, *
         "after": replace_text if len(replace_text) <= 400 else replace_text[:400] + "…",
         "rows": before_struct[1], "chars": len(new_text),
         "index": index,
+        "blocks": ({"index": block_index} if new_blocks is not None else None),
         "note": ("已落盘。这一页的阅读器内容与检索索引都已更新；"
-                 "改动前的那一份留在 edit_log 里，op=\"undo\" 可以原样撤回。"),
+                 "改动前的那一份留在 edit_log 里，op=\"undo\" 可以原样撤回。"
+                 + ("\n⚠️ 这段文字只出现在整页 Markdown 里、不在逐块译文里："
+                    "阅读器按块渲染的那一行可能仍是旧文本，必要时用 view 复核。"
+                    if blocks_skipped else "")),
     }
 
 
@@ -469,6 +526,11 @@ def undo(paper_id: str, page: int, side: str, *, actor: str = "agent",
         restored = str(entry.get("prev_md") or "")
         updated = _restore_meta({**payload, field: restored},
                                dict(entry.get("prev_meta") or {}))
+        prev_blocks = entry.get("prev_blocks")
+        if isinstance(prev_blocks, list) and isinstance(payload.get("blocks"), list):
+            # 块模式那一刀一起回滚：只还原 *_md 的话，读模型（按 blocks 取译文行）还是改后的
+            # 文本 —— "撤回成功"就又变成了半修状态
+            updated["blocks"] = [str(one or "") for one in prev_blocks]
         store.put(page, updated)
         after_struct = _structure(store, page, field, paper_id)
         if after_struct != before_struct:
