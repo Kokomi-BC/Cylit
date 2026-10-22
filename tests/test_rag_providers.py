@@ -230,20 +230,41 @@ def test_factory_routes_dashscope_models() -> None:
     assert build_reranker_provider({}).__class__.__name__ == "HeuristicReranker"
 
 
-def test_preset_declares_reranker_and_multimodal_embedding() -> None:
-    from backend.services.model.presets import PRESETS, list_presets
+def test_catalog_declares_reranker_on_dashscope_only() -> None:
+    """RAG 检索档的能力声明，现在由后端目录（PROVIDER_META）承载。
 
-    preset = PRESETS["dashscope_rag"]
-    assert preset["embedding"]["provider"] == "dashscope_multimodal"
-    assert preset["embedding"]["model_name"] == "qwen3-vl-embedding"
-    assert preset["embedding"]["parameters"]["dim"] == 2560
-    assert preset["reranker"]["model_name"] == "qwen3-vl-rerank"
-    assert preset["embedding"]["secret_ref"] == "dashscope.key"
-    assert "instruct" not in preset["embedding"]["parameters"]   # 查询侧参数，不入库
+    模板下线 + 「多模态向量家」折叠进百炼之后：一家 ``dashscope`` 同时能跑
+    生成 / 向量 / 重排，多模态向量则是**模型级协议**（protocol=dashscope_multimodal），
+    不再是一家提供方 —— 所以目录里既没有 dashscope_rag（模板归类名），
+    也没有 dashscope_multimodal（已折叠）。
+    """
+    from backend.services.model import providers_catalog
 
-    listed = {p["id"]: p for p in list_presets()}
-    assert "reranker" in listed["dashscope_rag"]
-    assert listed["deepseek"].get("reranker") is None
+    meta = providers_catalog.PROVIDER_META
+    assert {"embedding", "reranker"} <= set(meta["dashscope"]["types"])
+    assert "reranker" not in meta["deepseek"]["types"]
+    assert "dashscope_multimodal" not in meta
+
+    # 目录里的每一条都是"模型行的 provider 真可能取到的值"
+    assert providers_catalog.official_ids() == {
+        "anthropic", "dashscope", "deepseek", "doubao",
+        "gemini", "minimax", "moonshot", "openai", "zhipu",
+    }
+    assert "dashscope_rag" not in providers_catalog.official_ids()
+
+
+def test_multimodal_embedding_is_a_model_level_protocol() -> None:
+    """折叠后：模型自带 protocol，provider 一律是 dashscope（同一家不再拆两个厂商）。"""
+    from backend.providers.factory import build_embedding_provider
+
+    folded = {"provider": "dashscope", "model_name": "qwen3-vl-embedding",
+              "parameters": {"dim": 2560, "protocol": "dashscope_multimodal"}}
+    assert build_embedding_provider(folded).__class__.__name__ == \
+        "DashScopeMultimodalEmbedding"
+    # 同一家、同一 model_name，只要没有 protocol 就走 OpenAI 兼容端点
+    assert build_embedding_provider({"provider": "dashscope",
+                                     "model_name": "qwen3-vl-embedding"}
+                                    ).__class__.__name__ == "OpenAICompatibleEmbedding"
 
 
 # --------------------------------------------------------------------------

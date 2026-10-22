@@ -532,6 +532,67 @@ def test_ensure_keys_marks_unknown_files_unassigned_and_never_guesses(sandbox, s
     assert key_store.assign_key(row["id"], pid)["provider_id"] == pid
 
 
+def test_fold_multimodal_provider_into_dashscope(sandbox, secrets):
+    """「多模态向量家」折叠进百炼：模型改到 dashscope + 补 protocol、密钥并过来、原行删掉。
+
+    幂等是硬要求（启动路径会反复跑到）：第二次调用必须 0 改动。
+    **不动**模型的 base_url —— 多模态端点由协议自己解析，随手写 base_url 就换端口了。
+    """
+    from backend.core.utils import json_dumps, json_loads
+    from backend.repositories.mysql.models import (
+        ModelConfig, ModelProvider, ModelProviderKey,
+    )
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.model import provider_store
+
+    mid, key_id = _pid("fold_m"), _kid("fold_key")
+    with session_scope() as sess:
+        if sess.get(ModelProvider, "dashscope_multimodal") is None:
+            sess.add(ModelProvider(id="dashscope_multimodal", kind="official",
+                                   label="旧多模态家", base_url="", auth="bearer",
+                                   status="unknown"))
+        sess.add(ModelConfig(id=mid, name=mid, provider="dashscope_multimodal",
+                             model_type="embedding", model_name="qwen3-vl-embedding",
+                             base_url=None, enabled=True, is_default=False,
+                             status="unknown",
+                             parameters_json=json_dumps({"dim": 2560, "batch": 10})))
+        sess.add(ModelProviderKey(id=key_id, provider_id="dashscope_multimodal",
+                                  label=f"__test_fold_{U}", secret_ref="dashscope.key",
+                                  is_default=True, status="unknown"))
+        had_default = sess.query(ModelProviderKey).filter(
+            ModelProviderKey.provider_id == "dashscope",
+            ModelProviderKey.is_default.is_(True)).count() > 0
+
+    moved = provider_store.fold_multimodal_providers()
+    assert mid in moved["models"] and key_id in moved["keys"]
+    assert "dashscope_multimodal" in moved["providers"]
+
+    with session_scope() as sess:
+        cfg = sess.get(ModelConfig, mid)
+        assert cfg.provider == "dashscope"
+        assert cfg.base_url is None            # 端点交给协议解析
+        assert json_loads(cfg.parameters_json, {}) == {
+            "dim": 2560, "batch": 10, "protocol": "dashscope_multimodal"}
+        key = sess.get(ModelProviderKey, key_id)
+        assert key.provider_id == "dashscope"
+        # 那家本来就有默认密钥时，不让折叠变出第二个默认
+        assert key.is_default is (not had_default)
+        assert sess.get(ModelProvider, "dashscope_multimodal") is None
+
+    # 折叠后的模型走多模态实现（协议命中），不是 OpenAI 兼容端点
+    from backend.providers.embedding.providers import DashScopeMultimodalEmbedding
+    from backend.providers.factory import build_embedding_provider
+    from backend.services.model.model_manager import model_manager
+
+    assert isinstance(build_embedding_provider(model_manager.get_config(mid)),
+                      DashScopeMultimodalEmbedding)
+
+    # 幂等：再跑一次什么都不动
+    assert provider_store.fold_multimodal_providers() == {
+        "models": [], "keys": [], "providers": []}
+    assert provider_store.ensure_providers() == 0
+
+
 def test_ensure_keys_creates_provider_default_from_provider_secret_ref(sandbox, secrets):
     """规则 1：提供方自己记着 secret_ref、且这家还没有密钥行 → 建一条默认密钥。"""
     from backend.services.model import key_store, provider_store

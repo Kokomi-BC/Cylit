@@ -93,10 +93,33 @@ def build_generation_provider(config: dict, api_key: str | None = None,
     return cls(config, api_key)
 
 
+def embedding_protocol(config: dict) -> str:
+    """模型自己声明的向量「协议」（``parameters.protocol``），没有就是空串。
+
+    为什么要模型级协议：能力本来是挂在 ``provider`` 上的，于是"多模态向量"被迫变成
+    一家提供方（dashscope_multimodal）—— 同一家阿里云被拆成两个厂商，密钥、图标、
+    目录全是重复的。协议下沉到模型参数后，一家厂商可以同时有多种向量协议。
+    """
+    params = config.get("parameters") or {}
+    return str(params.get("protocol") or "").strip().lower()
+
+
 def build_embedding_provider(config: dict, api_key: str | None = None,
                              *, allow_mock_fallback: bool = True) -> EmbeddingProvider:
-    name = (config.get("provider") or "mock").lower()
+    """按 ``protocol``（优先）或 ``provider`` 选向量实现。
+
+    ``parameters.protocol`` 命中已知实现就用它（``dashscope_multimodal`` = qwen3-vl 原生
+    多模态端点，**不是** OpenAI 兼容的 /embeddings）；没写 protocol 或协议不认识时，
+    仍按 provider 查表 —— 老配置（provider=dashscope_multimodal）因此照样能用。
+    """
+    protocol = embedding_protocol(config)
+    name = protocol or (config.get("provider") or "mock").lower()
     cls = EMBEDDING_PROVIDERS.get(name)
+    if cls is None and protocol:
+        # 协议写了个不认识的：别静默降级成 mock，回落按 provider 查表（行为与改造前一致）
+        log.warning("未知 embedding protocol %r，按 provider 回落", protocol)
+        name = (config.get("provider") or "mock").lower()
+        cls = EMBEDDING_PROVIDERS.get(name)
     if cls is None:
         if not allow_mock_fallback:
             raise ModelNotConfiguredError("embedding")

@@ -47,27 +47,21 @@ async def model_usage_stats(request: Request, days: int = Query(14)):
     return envelope(usage_stats.stats(days), request=request)
 
 
-# 注意：`/models/presets` 必须**声明在** `/models/{model_id}` 之前，
-# 否则 "presets" 会被当成 model_id 捕获，接口不可达（返回"模型不存在：presets"）。
-@router.get("/models/presets")
-async def get_presets(request: Request):
-    from backend.services.model import presets
-
-    return envelope({"presets": presets.list_presets()}, request=request)
-
-
-# ⚠️ 与 `/models/presets` 同样的理由：这两条也必须声明在 `/models/{model_id}` **之前**。
+# ⚠️ `/models/providers`、`/models/{provider_id}/keys`、`/models/keys` 这些都必须声明在
+# `/models/{model_id}` **之前**，否则 "providers" / "keys" 会被当成 model_id 捕获
+# （接口不可达，返回"模型不存在：providers"）。
 
 @router.get("/models/providers")
 async def list_providers(request: Request):
     """官方提供方目录 + 自定义入口（模型页「+」里的那排卡片）。
 
-    `kind` 由后端按 `presets.py` 里真实存在的厂商算出来 —— 前端无法把自定义端点伪装成官方。
+    `kind` 由后端按 `providers_catalog.PROVIDER_META` 算出来 —— 前端无法把自定义端点
+    伪装成官方。官方目录是后端**写死的清单**（"一键导入预设"那套模板已整套下线）。
     """
     from backend.services.model import key_store, provider_store, providers_catalog
 
     data = providers_catalog.catalog()
-    # 官方目录来自 presets（后端唯一真源）；DB 里那些**自定义**家的记录补在后面，
+    # 官方目录 = 后端写死的 PROVIDER_META（唯一真源）；DB 里那些**自定义**家的记录补在后面，
     # 这样「+」既能挑官方厂商，也能看到/编辑自己建过的端点。
     official_ids = {p["id"] for p in data["providers"]}
     counts = provider_store.model_counts()
@@ -262,19 +256,6 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
     )
     # 只回列表与主机名；密钥、完整 URL、请求头都不出现
     return envelope(data, request=request)
-
-@router.post("/models/import-presets")
-async def import_presets(request: Request, payload: dict = Body(default={})):
-    """一键导入常见 Provider 预设（DeepSeek / 通义 / Ollama 等），只需填密钥。"""
-    from backend.services.model import presets
-
-    base_url = payload.get("base_url")
-    provider = payload.get("provider") or "deepseek"
-    created = presets.create_preset(provider, base_url=base_url,
-                                    model_name=payload.get("model_name"))
-    return envelope(created, message="预设已导入，请在 data/secrets/ 放入密钥后测试",
-                    request=request)
-
 
 @router.post("/models/secret")
 async def write_secret(request: Request, payload: dict = Body(...)):

@@ -4,8 +4,8 @@
 
 · **不重建数据**：历史库里 provider 只是 `model_config.provider` 一个字符串，所以这里做的是
   「按字符串回填 provider 行」（`ensure_providers`，幂等，重复跑不产生重复记录）；
-· **官方身份只由后端判定**：`kind=official` 只给 `presets.py` 里真有的 provider，
-  请求体传入的 kind 一律忽略；
+· **官方身份只由后端判定**：`kind=official` 只给 `providers_catalog.PROVIDER_META`
+  （去掉 hidden）里登记过的 provider，请求体传入的 kind 一律忽略；
 · **删除要检查引用**：还有模型挂在这家厂商上就拒绝删除（计划 §2.2 / §7.7）。
 """
 
@@ -13,34 +13,47 @@ from __future__ import annotations
 
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.core.logging import get_logger
-from backend.repositories.mysql.models import ModelConfig, ModelProvider
+from backend.core.utils import json_dumps, json_loads
+from backend.repositories.mysql.models import (
+    ModelConfig, ModelProvider, ModelProviderKey,
+)
 from backend.repositories.mysql.session import session_scope
 
 log = get_logger(__name__)
 
 DEFAULT_ICON = ""
 
+# ---------------------------------------------------------------- 折叠历史厂商
+# 「多模态向量」曾经被当成一家独立厂商（provider=dashscope_multimodal），于是同一家
+# 阿里云被拆成两个 provider：密钥、图标、目录全重复。现在能力下沉成**模型级协议**
+# （parameters.protocol，见 providers/factory.build_embedding_provider），这几个厂商 id
+# 一律折叠回 dashscope —— 幂等、可重跑，且**不动模型的 base_url / model_name / 密钥**。
+FOLD_TARGET = "dashscope"
+FOLD_SOURCES = ("dashscope_multimodal", "dashscope_vl", "qwen_vl")
+#: 折叠时写进模型 parameters 的协议名（= 原 provider 名，factory 里就是这个键）
+FOLD_PROTOCOL = "dashscope_multimodal"
+
 
 def _official_ids() -> set[str]:
-    from backend.services.model import presets
+    """官方提供方 id 的唯一出处 = ``providers_catalog.PROVIDER_META``（跳过 hidden）。
 
-    ids = set()
-    for preset in presets.list_presets():
-        prov = str(preset.get("provider") or "").strip().lower()
-        if prov:
-            ids.add(prov)
-    return ids
+    「一键导入预设」整套下线后目录不再从 presets 派生，这里必须跟着改 ——
+    否则"目录算官方、入库算自定义"两套口径会打架。
+    """
+    from backend.services.model import providers_catalog
+
+    return providers_catalog.official_ids()
 
 
 def _meta_for(provider: str) -> dict:
     from backend.services.model import providers_catalog
 
-    return providers_catalog.PROVIDER_META.get(provider, {})
+    return providers_catalog.meta_for(provider)
 
 
 def _to_dict(row: ModelProvider) -> dict:
-    # 图标回落：历史行的 icon 是空串（例如线上 dashscope_multimodal），
-    # 目录里已经给它登记了图标键 —— 读的时候补上，不必回头改数据。
+    # 图标回落：历史行的 icon 是空串，目录里已经给它登记了图标键 ——
+    # 读的时候补上，不必回头改数据。
     meta = _meta_for(row.id)
     return {
         "id": row.id,
@@ -56,35 +69,119 @@ def _to_dict(row: ModelProvider) -> dict:
 
 
 def ensure_providers() -> int:
-    """把「模型行上出现过的 provider 字符串」补成 provider 记录（幂等）。
+    """把**官方目录**与「模型行上出现过的 provider 字符串」补成 provider 记录（幂等）。
 
-    返回本次新建的条数。读目录或启动时都可调用；重复调用返回 0。
+    为什么官方目录要**全部**建行：以前只回填"模型行上出现过的"，于是还没配过模型的
+    官方家（moonshot 这种）新建密钥会被当成不存在的提供方 → 404；提供方级测试连接也
+    找不到行。返回本次新建的条数；重复调用返回 0。
     """
     official = _official_ids()
     created = 0
     with session_scope() as s:
-        known = {row.id for row in s.query(ModelProvider).all()}
+        known = {row.id: row for row in s.query(ModelProvider).all()}
         seen: set[str] = set()
         for cfg in s.query(ModelConfig).all():
             prov = str(cfg.provider or "").strip().lower()
             if prov:
                 seen.add(prov)
-        for prov in sorted(seen - known):
+        for prov in sorted(seen | official):
+            if prov in known:
+                continue
             meta = _meta_for(prov)
             s.add(ModelProvider(
                 id=prov,
                 kind="official" if prov in official else "custom",
                 label=meta.get("label") or prov,
                 icon=meta.get("icon", DEFAULT_ICON),
-                base_url="",
+                base_url=meta.get("base_url", ""),
                 auth=meta.get("auth", "bearer"),
                 note=meta.get("note", ""),
             ))
             created += 1
+        # 已存在的官方行顺手对齐（幂等）：官方身份只由后端判定；base_url / icon 空着就补
+        # 默认值 —— 但**绝不覆盖**用户改过的非空值（那是他的端点）。
+        for pid, row in known.items():
+            if pid not in official:
+                continue
+            meta = _meta_for(pid)
+            row.kind = "official"
+            if not (row.base_url or "").strip() and meta.get("base_url"):
+                row.base_url = str(meta["base_url"])
+            if not (row.icon or "").strip() and meta.get("icon"):
+                row.icon = str(meta["icon"])
+        # 多模态厂商折叠进百炼（幂等；启动时经 ensure_keys → 这里跑到）
+        folded = _fold_into_dashscope(s)
         s.commit()
+    if any(folded.values()):
+        log.info("折叠多模态厂商 → %s：模型 %s / 密钥 %s / 删行 %s",
+                 FOLD_TARGET, folded["models"], folded["keys"], folded["providers"])
     if created:
         log.info("provider 回填：新建 %s 条", created)
     return created
+
+
+def fold_multimodal_providers() -> dict:
+    """把「多模态向量家」折叠进 ``dashscope``（幂等；返回本次改了什么）。
+
+    三件事，同一个事务：
+
+    1. 模型：``provider in FOLD_SOURCES`` → ``dashscope``，并在 ``parameters`` 里**补**
+       ``protocol='dashscope_multimodal'``（已有 protocol 不覆盖，可重跑）；
+    2. 密钥行：``provider_id`` 改到 ``dashscope``；那家已有默认密钥就把这把的
+       ``is_default`` 置 False（**不制造两个默认**）；
+    3. 折叠后没有任何模型 / 密钥再指向原 id → 删掉那条 provider 行。
+
+    **不动**模型行上的 base_url / model_name / secret_ref：多模态向量端点由协议自己解析
+    （空 base_url → DashScope 原生 host），改了就换端口。
+    """
+    moved = {"models": [], "keys": [], "providers": []}
+    with session_scope() as s:
+        moved = _fold_into_dashscope(s)
+        s.commit()
+    if any(moved.values()):
+        log.info("折叠多模态厂商 → %s：模型 %s / 密钥 %s / 删行 %s",
+                 FOLD_TARGET, moved["models"], moved["keys"], moved["providers"])
+    return moved
+
+
+def _fold_into_dashscope(s) -> dict:
+    moved = {"models": [], "keys": [], "providers": []}
+    for cfg in s.query(ModelConfig).filter(ModelConfig.provider.in_(FOLD_SOURCES)).all():
+        cfg.provider = FOLD_TARGET
+        params = json_loads(cfg.parameters_json, {}) or {}
+        if not str(params.get("protocol") or "").strip():
+            params["protocol"] = FOLD_PROTOCOL
+            cfg.parameters_json = json_dumps(params)
+        moved["models"].append(cfg.id)
+    s.flush()
+
+    existing_defaults = {
+        k.id for k in s.query(ModelProviderKey).filter(
+            ModelProviderKey.provider_id == FOLD_TARGET,
+            ModelProviderKey.is_default.is_(True))
+    }
+    for key in s.query(ModelProviderKey).filter(
+            ModelProviderKey.provider_id.in_(FOLD_SOURCES)).all():
+        key.provider_id = FOLD_TARGET
+        if key.is_default:
+            if existing_defaults:
+                key.is_default = False
+            else:
+                existing_defaults.add(key.id)
+        moved["keys"].append(key.id)
+    s.flush()
+
+    for pid in FOLD_SOURCES:
+        still = (s.query(ModelConfig).filter(ModelConfig.provider == pid).count()
+                 + s.query(ModelProviderKey).filter(ModelProviderKey.provider_id == pid).count())
+        if still:
+            continue
+        row = s.get(ModelProvider, pid)
+        if row is not None:
+            s.delete(row)
+            moved["providers"].append(pid)
+    s.flush()
+    return moved
 
 
 def list_providers() -> list[dict]:

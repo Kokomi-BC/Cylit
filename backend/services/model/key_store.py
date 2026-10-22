@@ -36,8 +36,9 @@ log = get_logger(__name__)
 #: 未归属组的 provider_id：空串（迁移时用，见模块文档）
 UNASSIGNED = ""
 #: ``data/secrets/`` 里**不是模型密钥**的凭据：迁移时跳过，否则模型页会多出
-#: mineru.key / agent.token 这种别家子系统的凭据条目（用户会以为是模型密钥）。
-NON_MODEL_SECRETS = ("mineru.key", "agent.token")
+#: mineru.key / agent.token / websearch.key 这种别家子系统的凭据条目
+#: （用户会以为是模型密钥）。
+NON_MODEL_SECRETS = ("mineru.key", "agent.token", "websearch.key")
 #: 掩码前缀（只给末 4 位，永不回原文）
 MASK_PREFIX = "••••"
 _UNSAFE = re.compile(r"[^a-z0-9_.-]+")

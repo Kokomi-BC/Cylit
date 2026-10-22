@@ -427,7 +427,7 @@ class ModelProvider(Base):
 
     用户口径（改造计划 §5）：Provider 是**一级实体** —— 一家厂商一条记录，
     模型挂在这条记录上；官方 / 自定义由 `kind` 区分，`kind="official"` 只能由后端
-    按 `presets.py` 里真有的厂商写，前端字段管不到它。
+    按 `providers_catalog.PROVIDER_META` 里真有的厂商写，前端字段管不到它。
 
     ⚠️ 历史数据里「提供方」只是 `model_config.provider` 一个字符串，所以本表允许
     **先有模型、后有 provider 行**：读取时会把模型行上的字符串回填成 provider 记录
