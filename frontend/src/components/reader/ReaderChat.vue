@@ -2430,15 +2430,35 @@ defineExpose({ uploadFiles, ensureThread });
                所以不另起一枚按钮，避免同一行出现两个能点出同一动作的东西。 -->
           <span class="foot-stat foot-pct" :title="contextTitle">{{ contextText }}</span>
 
-          <!-- 模型 / 推理等级：根浮层**只有两行**，悬浮某一行向侧向飞出第二级候选。
-               候选不往根浮层里堆 —— 浮层模式最窄只有 320px，堆下去又高又乱。 -->
-          <div v-if="menuOpen" class="pick-pop" @mouseenter="hoverPick" @mouseleave="leavePick">
-            <button class="pick-row" :class="{ on: subStage === 'model' }"
-                    @mouseenter="openSub('model', $event)" @click="toggleSub('model', $event)">
-              <span class="pick-key">模型</span>
-              <span class="pick-val truncate">{{ modelLabel }}</span>
-              <AppIcon name="chevron-right" :size="11" />
-            </button>
+          <!-- 模型选择改成**一个下拉框**（用户口径 2026-12-07）：点一下直接把模型列出来，
+               按提供方分组、每组带厂商图标；不再先弹「模型 / 推理等级」两行的中转层。
+               推理等级降级为列表底部的一行（still 侧向飞出，不丢功能）。 -->
+          <div v-if="menuOpen" class="pick-pop pick-pop-model" @mouseenter="hoverPick" @mouseleave="leavePick">
+            <div class="pick-model-list">
+              <div v-if="modelReadonly" class="pick-empty">
+                <span class="pick-item-name">未单独配置</span>
+                <span class="pick-item-sub truncate">{{ modelSub }}</span>
+              </div>
+              <template v-else>
+                <template v-for="g in modelGroups" :key="g.provider">
+                  <div class="pick-group">
+                    <img v-if="vendorIco(g.provider)" class="pv-ico" :src="vendorIco(g.provider)" alt="">
+                    <span class="truncate">{{ g.provider }}</span>
+                  </div>
+                  <button v-for="m in g.items" :key="m.id" class="pick-item"
+                          :class="{ on: m.id === activeModel?.id }"
+                          :disabled="savingPick || m.enabled === false"
+                          @click="savePick({ model_config_id: m.id })">
+                    <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
+                    <span class="pick-item-main">
+                      <span class="pick-item-name truncate">{{ m.name || m.model_name || m.id }}</span>
+                      <span class="pick-item-sub truncate">{{ subLine(m) }}</span>
+                    </span>
+                    <AppIcon v-if="m.id === activeModel?.id" name="check" :size="13" />
+                  </button>
+                </template>
+              </template>
+            </div>
             <button class="pick-row" :class="{ on: subStage === 'effort' }"
                     @mouseenter="openSub('effort', $event)" @click="toggleSub('effort', $event)">
               <span class="pick-key">推理等级</span>
@@ -3049,6 +3069,9 @@ defineExpose({ uploadFiles, ensureThread });
   padding: 6px 8px 3px; color: var(--text-faint);
   font-size: calc(11px * var(--ts, 1)); font-weight: 600; letter-spacing: .01em;
 }
+/* 下拉框本体：定高 + 内部滚动（模型多了不能把浮层顶出屏幕） */
+.pick-pop-model { width: 280px; }
+.pick-model-list { max-height: 46vh; overflow-y: auto; padding: 4px 0; }
 .pick-sub-list {
   display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto;
 }
