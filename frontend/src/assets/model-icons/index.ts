@@ -103,6 +103,7 @@ import cClaude from './vendor-color/claude.svg';
 import cGemini from './vendor-color/gemini.svg';
 import cAlibaba from './vendor-color/alibaba.png';
 import cMinimax from './vendor-color/minimax.ico';
+import cDoubao from './vendor-color/doubao.png';
 
 /** 厂商**彩色**标记（原色，不跟主题走；适合做徽章/头像那种圆形小图标） */
 export const VENDOR_COLOR_ICON: Record<string, string> = {
@@ -115,6 +116,7 @@ export const VENDOR_COLOR_ICON: Record<string, string> = {
   gemini: cGemini,
   alibaba: cAlibaba,
   minimax: cMinimax,
+  doubao: cDoubao,
 };
 
 /** Qwen 的完整字标（75×20，横向）：做页头 / 介绍块时用，做 16px 图标请用 `vendorColorIcon('qwen')` */
@@ -148,4 +150,9 @@ const VENDOR_COLOR_ALIAS: Record<string, string> = {
   google: 'gemini',
   googlegemini: 'gemini',
   'gpt': 'openai',
+  /* 豆包 = 字节的模型，走的是火山方舟（Ark）的 OpenAI 兼容端点，两种写法都认到同一个标记 */
+  volcengine: 'doubao',
+  ark: 'doubao',
+  bytedance: 'doubao',
+  volc: 'doubao',
 };
