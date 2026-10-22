@@ -773,7 +773,6 @@ onBeforeUnmount(() => {
               <span class="prov-main">
                 <span class="prov-name truncate">
                   {{ p.label }}
-                  <span class="prov-badge" v-if="p.kind === 'official'">官方</span>
                 </span>
                 <span class="prov-note truncate">
                   {{ p.note || p.base_url || (p.types || []).map(typeLabel).join(' · ') }}

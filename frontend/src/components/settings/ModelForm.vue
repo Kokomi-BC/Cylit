@@ -463,7 +463,7 @@ function labelOf(t: string): string {
     @close="emit('close')"
   >
     <!-- Step 1：提供方卡片（点一张就进 Step 2） -->
-    <div class="providers" v-if="step === 1">
+    <div class="providers" v-if="step === 1 && !props.customEntry && !props.seed">
       <button
         type="button" class="prov"
         v-for="c in cards" :key="c.id"
@@ -630,7 +630,7 @@ function labelOf(t: string): string {
     </div>
 
     <template #footer>
-      <button class="btn" v-if="step === 2 && mode === 'create'" @click="step = 1">返回</button>
+      <button class="btn" v-if="step === 2 && mode === 'create' && !props.customEntry && !props.seed" @click="step = 1">返回</button>
       <button class="btn" @click="emit('close')">取消</button>
       <button class="btn primary" v-if="step === 2" :disabled="busy" @click="submit">
         {{ busy ? '保存中…' : '保存' }}
