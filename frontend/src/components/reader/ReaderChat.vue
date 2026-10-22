@@ -2141,6 +2141,10 @@ defineExpose({ uploadFiles, ensureThread });
               </div>
             </div>
 
+            <!-- 轨迹到头了、下面是答案：一条细线把抬头那行与正文分开（流式与完成态都靠这一条）。
+                 只有**带轨迹**（有 run/steps）的助手消息才画；普通回答不凭空多一条线。 -->
+            <div v-if="m.role === 'assistant' && stepsOf(m).length" class="run-rule" aria-hidden="true" />
+
             <div class="md body"
                  v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
                  @click="onCitationClick"
@@ -2174,13 +2178,12 @@ defineExpose({ uploadFiles, ensureThread });
             <!-- 引用**不再在下面列一排 chunk 号**（用户口径 2026-10-03）：
                  正文里的 `[n]` 本身就是锚点，点它跳转。 -->
 
-            <!-- 收尾只有一份，按状态换：还在跑（`liveId` 那条）时是一根发丝线，
-                 把正文与下面的空白分开 —— 这时没有"复制 / 修改"可做，挂着那排按钮只会边生成边闪；
-                 跑完才换成正常那排（时间 · 复制 · 修改）。兄弟分支那排同理，一并藏在完成态。 -->
-            <div v-if="m.message_id === liveId" class="msg-live-rule" aria-hidden="true" />
             <!-- 消息操作条：**在气泡下面**（用户口径 2026-10-03 —— 上面的那排按钮全部移除）。
-                 语义分三档：改写这条（就地）/ 重答这条（就地）/ **开新分支**（那枚 git 分支图标）。 -->
-            <div v-else class="msg-tools" :class="{ show: (m.siblings?.length ?? 0) > 1 }">
+                 语义分三档：改写这条（就地）/ 重答这条（就地）/ **开新分支**（那枚 git 分支图标）。
+                 还在跑（`liveId` 那条）时**整条不渲染**：这时没有"复制 / 修改"可做，
+                 挂着那排按钮只会边生成边闪。兄弟分支那排也在这个块里，一并藏到完成态。 -->
+            <div v-if="m.message_id !== liveId" class="msg-tools"
+                 :class="{ show: (m.siblings?.length ?? 0) > 1 }">
               <template v-if="(m.siblings?.length ?? 0) > 1">
                 <button class="ico" title="上一个版本" @click="switchBranch(m, -1)"><AppIcon name="back" :size="11" /></button>
                 <span class="tiny faint mono">{{ m.sibling_index }}/{{ m.siblings?.length }}</span>
@@ -2610,9 +2613,10 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; align-items: center; gap: 4px; min-height: 20px; margin-top: 3px;
   opacity: 0; transition: opacity var(--dur) var(--ease);
 }
-/* 还在跑的那条消息的收尾：一根发丝线（高度 0，只占 1px 边框 + 上方 10px），
-   与完成态那排操作条**互斥渲染** —— 所以生成期间它不会带着一排按钮闪。 */
-.msg-live-rule { height: 0; margin-top: 10px; border-top: 1px solid var(--divider); }
+/* 轨迹抬头与正文之间：**唯一**一条分界线 —— 「轨迹到此结束，下面是答案」。
+   流式与完成态都由它表达（"还在思考"由思考块自己表达，末尾不再另画一条）。
+   1px、上下各 10px，高度 0，不是粗线也不带阴影。 */
+.run-rule { height: 0; margin: 10px 0; border-top: 1px solid var(--divider); }
 .msg.user .msg-tools { justify-content: flex-end; }
 .msg:hover .msg-tools, .msg-tools.show { opacity: 1; }
 .msg-time { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums; }

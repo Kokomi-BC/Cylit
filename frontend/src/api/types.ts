@@ -1064,10 +1064,9 @@ export interface AgentStatus {
   running: boolean;
   endpoint: string;
   model: AgentModelInfo;
-  /** 运行限额（轮数 / 检索预算 / 上下文预算 / 自动压缩触发线…），设置页用它做说明 */
+  /** 运行限额（轮数 / 上下文预算 / 自动压缩触发线…），设置页用它做说明 */
   limits?: {
     max_rounds: number;
-    search_budget: number;
     context_budget: number;
     auto_compress_percent: number;
     deadline_seconds: number;
@@ -1106,8 +1105,6 @@ export interface AgentSkillsUploadResult extends AgentSkillsPayload {
 export interface AgentLimits {
   /** 单轮工具轮数上限 */
   max_rounds: number;
-  /** 单轮检索次数预算 */
-  search_budget: number;
   /** 单轮时限（秒） */
   deadline_seconds: number;
   /** 上下文预算（tokens） */
@@ -1120,7 +1117,7 @@ export interface AgentLimits {
   restart_required: boolean;
 }
 
-/** `PUT /agent/limits` 的请求体：六个数字，**不带 `restart_required`**。 */
+/** `PUT /agent/limits` 的请求体：五个数字，**不带 `restart_required`**。 */
 export type AgentLimitsPatch = Omit<AgentLimits, 'restart_required'>;
 
 /** 联网搜索的提供方（`GET /agent/websearch/config` 的 `providers`）：目前只有 deepseek 一家。 */

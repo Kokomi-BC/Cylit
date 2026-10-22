@@ -27,7 +27,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 
 
-#: 设置页可改的**六项问答运行限额**：契约键 → (Settings 字段, 类型, 下限, 上限)。
+#: 设置页可改的**五项问答运行限额**：契约键 → (Settings 字段, 类型, 下限, 上限)。
 #: 
 #: 为什么要两张名字：契约键是**前端已经按它写好**的那一套（`max_rounds` /
 #: `compact_threshold` …，见 `docs/agent-接入规划.md` 与本轮前端契约），而字段名是历史包袱
@@ -35,7 +35,6 @@ PROJECT_ROOT = BACKEND_DIR.parent
 #: 读取点、校验、落盘覆盖都从这张表走 —— 抄成三份就会各自漂。
 AGENT_LIMITS: dict[str, tuple[str, type, float, float]] = {
     "max_rounds": ("agent_max_rounds", int, 1, 200),
-    "search_budget": ("agent_search_budget", int, 0, 50),
     "deadline_seconds": ("agent_deadline_seconds", float, 30, 3600),
     "context_budget": ("agent_context_budget", int, 8000, 1000000),
     "compact_threshold": ("agent_auto_compress_percent", float, 50, 99),
@@ -209,8 +208,8 @@ class Settings(BaseSettings):
     #: 卡太紧的后果不是"少答一点"，而是**轮数用满、一个字都没输出**。
     #: 
     #: 2026-10-03 用户口径："工具调用轮数调大（50 轮以上）"—— 8 轮对"整篇对着讲 / 逐个公式核对 /
-    #: 库里横向比"这类要读十几处的问法确实太紧，于是放到 60。上限本身仍然保留（见下面
-    #: `agent_search_budget`：真正会被滥用的**检索**另有独立预算，轮数是防跑飞的兜底）。
+    #: 库里横向比"这类要读十几处的问法确实太紧，于是放到 60。上限本身仍然保留，
+    #: 它是唯一还在生效的"防跑飞"兜底（检索与改动预算 2026-11-26 起已取消）。
     agent_max_rounds: int = 60
     #: 单轮总时限（秒）。Cylit 的检索比 Rust FTS 慢，给得比参考实现宽。
     #: 600s 是与 60 轮配套的：每轮一次模型调用，卡在 120s 会让轮数上限形同虚设
@@ -220,18 +219,6 @@ class Settings(BaseSettings):
     agent_heartbeat_seconds: float = 5.0
     #: 一次检索返回的候选条数上限（进模型前还会再截一次）
     agent_search_top_k: int = 8
-    #: **检索预算**（与轮数预算分开扣，见规划 M7）。
-    #: 
-    #: 为什么必须单独设一个：实测"库里还有谁讲过 X"这类问题，模型会换着说法连发 10+ 次
-    #: `kb_search`（每次都确实能捞到几条新片段，所以"没有新依据"的提示也不拦它），
-    #: 最后把轮数用满、正文一个字没写。轮数上限管不住它，因为一次工具调用只占一轮。
-    #: 用尽后检索工具直接回"预算用尽，请基于已有材料作答"。
-    agent_search_budget: int = 5
-    #: **改动预算**：历史字段，2026-11-26 起**不再设闸**（它挡的是正常的批量写入，见 deps.spend_edit）。
-    #: 原设计是 12 处/轮，与检索预算、轮数三者互不顶替；实际挡住的是一次「把这些都写成笔记」的
-    #: 正常批量写入（笔记 / 高亮都可删可撤，风险由「可撤回」兜）。现在只记账，不再拒绝。
-    #: 
-    agent_edit_budget: int = 12      # 已不再生效，保留只为 /agent/status 上报
     #: 注入模型的证据条数 / 字符上限（百万上下文也不是无限免费，仍要设闸）
     agent_evidence_limit: int = 12
     agent_evidence_chars: int = 24000
@@ -447,7 +434,7 @@ class Settings(BaseSettings):
         return {**self.agent_limits_current(), **self.agent_limits_saved()}
 
     def save_agent_limits(self, values: dict[str, Any]) -> dict[str, Any]:
-        """合并写入覆盖值，返回写后的完整六项。"""
+        """合并写入覆盖值，返回写后的完整五项。"""
         merged = {**self.agent_limits_saved(), **normalize_agent_limits(values)}
         payload = {"values": merged,
                    "saved_at": datetime.now(timezone.utc).isoformat()}

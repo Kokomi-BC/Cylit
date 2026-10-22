@@ -18,6 +18,7 @@ import math
 import re
 from typing import Any
 
+from backend.core.errors import ValidationError
 from backend.core.logging import get_logger
 from backend.repositories.vector.lancedb_store import vector_store
 from backend.services.model.model_manager import model_manager
@@ -407,11 +408,44 @@ def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
 # --------------------------------------------------------------------------
 
 
+#: 可选的召回来源。不传 `sources` = 两路都跑（融合后重排，既有行为）
+SOURCES = ("vector", "lexical")
+
+
+def norm_sources(sources: Any) -> tuple[str, ...] | None:
+    """`sources` → 规范化的来源元组；None / 空列表 = 两路都跑。
+
+    非法取值**直接报错，不静默忽略**：拼错一个来源名却"照常返回结果"，
+    排查时只能看出"结果怎么不太对"，看不出是这个词根本没生效。
+    """
+    if sources is None:
+        return None
+    picked = [str(item).strip().lower() for item in sources if str(item).strip()]
+    if not picked:
+        return None
+    bad = [item for item in picked if item not in SOURCES]
+    if bad:
+        raise ValidationError(
+            f"sources 只能是 {' / '.join(SOURCES)} 的组合（收到 {bad!r}）")
+    return tuple(source for source in SOURCES if source in picked)
+
+
+def _rankings(use: tuple[str, ...], hits: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """只把**真跑过的那几路**喂给融合。
+
+    `rrf_fuse` 对"少一路"是安全的（它按 `rankings.items()` 遍历，缺的那路没有任何名次
+    贡献，单路时分数就是 1/(k+rank)）。但**不要**塞一个空列表充数：那会让结果的
+    `sources` 字段凭空多出一路，看不出这次其实只跑了一边。
+    """
+    return {source: hits.get(source, []) for source in SOURCES if source in use}
+
+
 def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            scope: str = "all", paper_id: str | None = None,
            chunk_types: list[str] | None = None, langs: list[str] | None = None,
            roads: list[str] | None = None,
            exclude_chunks: list[str] | None = None,
+           sources: list[str] | None = None,
            vector_k: int | None = None, lexical_k: int | None = None,
            fused_k: int | None = None) -> dict:
     """完整检索链路。``scope``：``all`` 全库 / ``cross`` 跨文献（排除来源论文）/
@@ -426,7 +460,14 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
     **`roads`**：``None``（默认）不按路过滤 —— 两路的单元各说各的语言，让**重排**去裁决
     与"中英各出一行"的既有做法一致，也是召回最稳的口径。传 ``["b"]`` 之类才会只在一路里找。
     共用块（图/表/公式，``road=""``）在任何过滤下都会带回来。
+
+    **`sources`**：只在**选中的那几路**里召回（``["vector"]`` 纯语义 / ``["lexical"]`` 纯词法 /
+    ``None`` 两路）。它跟 `mode` 不是一回事 —— `mode` 是**查询指令口径**（qa / similar），
+    `sources` 才是"用哪种召回"。融合与重排的产物形状不变，只是没跑的那一路命中数为 0。
     """
+    picked = norm_sources(sources)
+    use = picked or SOURCES
+    hits: dict[str, list[dict]] = {"vector": [], "lexical": []}
     query = (query or "").strip()
     if not query:
         return {"items": [], "retrieval": {"error": "空查询"}}
@@ -442,24 +483,28 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
 
     common_kwargs = dict(langs=langs, roads=roads, paper_ids=paper_ids,
                          exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
-    vec_hits = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
-                             chunk_types=types, **common_kwargs)
-    lex_hits = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
-                              chunk_types=types, **common_kwargs)
-    fused = rrf_fuse({"vector": vec_hits, "lexical": lex_hits},
-                     top_k=fused_k or rag_k("fused"))
+    if "vector" in use:
+        hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
+                                       chunk_types=types, **common_kwargs)
+    if "lexical" in use:
+        hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
+                                         chunk_types=types, **common_kwargs)
+    vec_hits, lex_hits = hits["vector"], hits["lexical"]
+    fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
     items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
                                      mode=mode)
     fell_back = False
     if not items and not explicit_types and types:
         # 兜底：候选集过滤后空手而归 → 放开类型限制重搜一次（保证"没建单元也检得到"）
         fell_back = True
-        vec_hits = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
-                                 **common_kwargs)
-        lex_hits = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
-                                  **common_kwargs)
-        fused = rrf_fuse({"vector": vec_hits, "lexical": lex_hits},
-                         top_k=fused_k or rag_k("fused"))
+        if "vector" in use:
+            hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"),
+                                           mode=mode, **common_kwargs)
+        if "lexical" in use:
+            hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
+                                             **common_kwargs)
+        vec_hits, lex_hits = hits["vector"], hits["lexical"]
+        fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
         items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
                                          mode=mode)
         notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")

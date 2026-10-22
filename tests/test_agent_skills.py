@@ -31,8 +31,8 @@ from backend.core.config import AGENT_LIMITS, Settings
 from backend.core.errors import PaperMindError, ProviderError, ValidationError
 from backend.services.agent import skills_store
 
-LIMITS = {"max_rounds": 60, "search_budget": 5, "deadline_seconds": 600,
-          "context_budget": 200000, "compact_threshold": 90, "attachment_inline_limit": 12}
+LIMITS = {"max_rounds": 60, "deadline_seconds": 600, "context_budget": 200000,
+          "compact_threshold": 90, "attachment_inline_limit": 12}
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -72,7 +72,7 @@ def test_builtin_skills_materialized_with_descriptions(tmp_path: Path) -> None:
 
     skills = skills_store.list_skills(cfg)
     # 自带技能是**逐个数**的：改名/拆分时这条会立刻红，提醒同步 list 与文档
-    assert len(skills) == 11
+    assert len(skills) == 12
     assert all(item["builtin"] and item["enabled"] for item in skills)
     assert all(item["description"] for item in skills), "自带技能的 description 应当都解析得出来"
     assert all(item["chars"] > 0 for item in skills)
@@ -338,7 +338,6 @@ def test_limit_keys_map_to_real_config_fields() -> None:
     """契约键与 `Settings` 字段的对应表就是这一份（前端按左边的名字写死）。"""
     assert {key: spec[0] for key, spec in AGENT_LIMITS.items()} == {
         "max_rounds": "agent_max_rounds",
-        "search_budget": "agent_search_budget",
         "deadline_seconds": "agent_deadline_seconds",
         "context_budget": "agent_context_budget",
         "compact_threshold": "agent_auto_compress_percent",
@@ -350,7 +349,6 @@ def test_limits_out_of_range_rejected(client) -> None:
     http, _cfg = client
     for patch, expect in (
         ({"max_rounds": 5000}, "1~200"),
-        ({"search_budget": -1}, "0~50"),
         ({"deadline_seconds": 10}, "30~3600"),
         ({"context_budget": 1000}, "8000~1000000"),
         ({"compact_threshold": 99.5}, "50~99"),

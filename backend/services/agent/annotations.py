@@ -471,11 +471,15 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 探针看上去就是公式 → **先试译文面**（哪怕调用方显式给了 en）
         order = ["zh"] + [one for one in order if one != "zh"]
     raw = rendered = None
+    #: 有没有哪一面**能取到文字**（与"这段文字在不在里面"是两件事，报错要分开）
+    any_text = None
     span = None
     is_formula = False
     formula_src = ""
     for candidate in order:
         cand_rendered, cand_hit = _locate(candidate)
+        if cand_rendered is not None:
+            any_text = cand_rendered
         if cand_hit is None:
             continue
         # 命中的是**公式**时，即便这一面是原文面也要再试译文面：侧别该跟着**匹配结果**走，
@@ -493,11 +497,18 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         span, is_formula, formula_src = cand_hit
         break
     if raw is None:
-        return {"ok": False, "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
+        if any_text is None:
+            # 锚点本身解析不出文字：行号可能在重译后变了（跟"引文抄错"是两种错）
+            return {"ok": False,
+                    "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
+        # 锚点在、这一段文字不在里面 —— 落下去走"找不到这段文字"，并给近似候选
+        rendered = any_text
     if span is None:
         near = near_misses(rendered, text)
+        # near_miss 为空时也要说人话：回一个空数组，模型只能猜"我到底差在哪"
+        tail = "" if near else "这一段里没有相近的句子，换一段更完整的原文再试。"
         return {"ok": False,
-                "error": f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。",
+                "error": f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。{tail}",
                 "near_miss": near}
     start, end = span
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"

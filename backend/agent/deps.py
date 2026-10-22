@@ -51,10 +51,9 @@ class Deps:
     #: 归一化检索词 → 上一次的返回。模型会把同一句话问两遍（实测跨库问题连发 9 次
     #: `kb_search`，最后把轮数用满），重复的查询不必再打一次后端。
     query_cache: dict[str, dict] = field(default_factory=dict)
-    #: 已用掉的检索预算（M7：与轮数预算**分开**扣，见 `Settings.agent_search_budget`）
+    #: 本轮检索次数（**纯记账**：检索预算 2026-11-26 已取消，只剩统计与自检在读它）
     search_calls: int = 0
-    #: 已用掉的改动次数（高亮 / 笔记 / 页级产物都算）。只记账，**不再设上限**（2026-11-26 移除那道闸）：
-    #: 那道 12 处/轮的闸挡的不是滥用，而是一次「把这些都写成笔记」的正常批量写入。
+    #: 本轮改动次数（高亮 / 笔记 / 页级产物都算，同样只是记账 —— 改动预算已取消）
     edit_calls: int = 0
     #: 本轮改过的产物（`done` 事件带给前端做提示，也是自检的断言口）
     edits: list[dict] = field(default_factory=list)
@@ -67,25 +66,17 @@ class Deps:
     #: `applied` 是空的 —— 那也是一次成功的会话，不该报"没有提交"）。
     meta_submitted: bool = False
 
-    def spend_search(self) -> bool:
-        """扣一次检索预算；返回 ``False`` 表示已用尽（调用方直接拒绝，不打后端）。"""
-        if False:  # 检索预算已移除（用户口径 2026-11-26：移除所有预算，长程任务需要）
-            return False
+    def count_search(self) -> None:
+        """记一次检索（**只记账，不拦截**）。
+
+        检索预算 2026-11-26 已取消（长程任务需要）：那道"用尽后不打后端"的闸早就成了
+        恒 False 的死分支，留着只会让人以为还有上限。`search_calls` 保留 —— 自检与统计在读它。
+        """
         self.search_calls += 1
-        return True
 
-    def spend_edit(self) -> bool:
-        """记一次改动并放行（**不再有上限**，用户口径 2026-11-26：移除改动预算）。"""
+    def count_edit(self) -> None:
+        """记一次改动（同样是纯记账，改动预算已取消）。"""
         self.edit_calls += 1
-        return True
-
-    @property
-    def edit_exhausted(self) -> bool:
-        return False        # 同上：永远不会「用尽」
-
-    @property
-    def search_exhausted(self) -> bool:
-        return False        # 同上：检索不再有次数上限
 
     # ------------------------------------------------------------------
     def note_tool(self, name: str, args: dict, status: str,

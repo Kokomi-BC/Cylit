@@ -21,7 +21,7 @@ description: 读页面上的公式：取出公式本体（LaTeX）与它的上�
 2. `formula_get(page=…)` 拿 LaTeX 与**上下文**（`context` 原文、`context_zh` 译文）——
    上下文往往已经解释了符号含义，先读它，别急着猜。
 3. 符号还是不清楚时，`page_markdown_get` 读那一页，找符号表 / 定义句。
-4. LaTeX 明显可疑（缺项、上下标错位、乱码）时，用 `page_image_get(page, dpi=300)`
+4. LaTeX 明显可疑（缺项、上下标错位、乱码）时，用 `page_image_get(pages="5", dpi=300)`
    看原版面再核对 —— 这一步不要省，OCR 出的公式错得很有规律。
 5. 讲解释时：**先说这个公式在算什么**，再逐符号说明，最后说它在整条推导里的作用。
 

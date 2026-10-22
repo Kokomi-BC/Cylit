@@ -496,14 +496,14 @@ class FakeHost:
 
 
 class FakeDeps:
-    """工具只碰到 deps 的这三样（host / query_cache / spend_search+note_tool）。"""
+    """工具只碰到 deps 的这三样（host / query_cache / count_search+note_tool）。"""
 
     def __init__(self, host) -> None:
         self.host = host
         self.query_cache: dict = {}
 
-    def spend_search(self) -> bool:
-        return True
+    def count_search(self) -> None:
+        return None
 
     def note_tool(self, *args, **kwargs) -> None:
         return None

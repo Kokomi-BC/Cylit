@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from backend.core.errors import NotFoundError
+from backend.core.errors import NotFoundError, ValidationError
 from backend.services.knowledge import retrieval
 from backend.services.paper import anchor_map, paper_service, reader_service
 
@@ -255,21 +255,44 @@ def row(paper_id: str, page: int, row_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 
+#: 检索方式（**对外的叫法**）→ 实际要跑的召回来源。
+#: 为什么另起名字：`retrieval.search` 的 `mode` 是**查询指令口径**（qa / similar），
+#: 拿它当"语义/关键词"开关会同时改掉查询编码，见那条 docstring 的警告。
+SEARCH_SELECTS: dict[str, list[str] | None] = {
+    "auto": None,               # 两路召回 → RRF 融合 → 重排（默认，既有行为）
+    "rag": ["vector"],          # 只跑向量：语义近似
+    "text": ["lexical"],        # 只跑 BM25：精确词
+}
+
+
+def norm_select(value: str | None) -> str:
+    text = str(value or "auto").strip().lower()
+    if text not in SEARCH_SELECTS:
+        raise ValidationError(
+            f"检索方式只能是 {' / '.join(SEARCH_SELECTS)}（收到 {value!r}）："
+            f"text = 词法（精确词），rag = 向量（语义近似），auto = 两路融合")
+    return text
+
+
 def search(paper_id: str, query: str, *, top_k: int = 8,
-           chunk_types: list[str] | None = None, scope: str = "paper") -> dict:
+           chunk_types: list[str] | None = None, scope: str = "paper",
+           select: str = "auto") -> dict:
     """**本论文内**检索，返回候选位置（chunk id / 页码 / 章节 / 片段）。
 
     ⚠️ `mode="qa"` 不能省：`retrieval.query_vector` 里只有 ``mode == "qa"`` 才用
     `QUERY_INSTRUCT`，否则用 `SIMILAR_INSTRUCT`（那是"找相似技术"那个用法的口径）。
     默认值 `similar` 用在问答上，查询编码口径不对，**白丢一截召回且看不出来**。
-    注意 `mode` **不是"语义/关键词"开关**，别把前端筛选 UI 的语义套过来。
+    注意 `mode` **不是"语义/关键词"开关**，别把前端筛选 UI 的语义套过来 ——
+    要选"用哪种召回"请传 `select`（`auto` / `rag` / `text`，见 `SEARCH_SELECTS`）。
     """
+    chosen = norm_select(select)
     paper = paper_service.get_paper(paper_id)
     total = int(paper.get("page_count") or 0)
     result = retrieval.search(query, mode="qa", scope=scope,
                              paper_id=paper_id if scope != "all" else None,
                              top_k=max(1, min(int(top_k or 8), 20)),
-                             chunk_types=chunk_types)
+                             chunk_types=chunk_types,
+                             sources=SEARCH_SELECTS[chosen])
     items = list(result.get("items") or [])
     zh_previews = _paired_zh_previews(items)
     out: list[dict] = []
@@ -293,8 +316,17 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
         if pids:
             hit["pids"] = pids
         out.append(hit)
+    retr = result.get("retrieval") or {}
     return {"paper_id": paper_id, "page_total": total, "query": query,
             "returned": len(out), "items": out,
+            # 这次实际用的检索方式：模型没传时也回显，省得它猜"到底跑的是哪种"
+            "select": chosen,
+            # 各路命中数：**只给端点与排查用**（工具不会把它塞进给模型的返回里，
+            # 见模块头"不发 retrieval 元数据"），但它能一眼看出"这次只跑了一边"
+            "retrieval": {"select": chosen,
+                          "vector_hits": int(retr.get("vector_hits") or 0),
+                          "lexical_hits": int(retr.get("lexical_hits") or 0),
+                          "fused": int(retr.get("fused") or 0)},
             # 证据闸用的元信息（**不发给模型**，见 §7.5）：向量检索永远返回 top-k，
             # "有没有命中"不带信息，只有重排分数才区分得开"有依据"和"胡说"。
             "top_score": max((float(i.get("rerank_score") or 0) for i in items), default=0.0),

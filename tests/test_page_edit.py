@@ -249,9 +249,9 @@ class _FakeHost:
         return {"ok": True, "page": page, "side": side}
 
 
-def _ctx(host: _FakeHost, *, budget: int = 2):
-    deps = Deps(cfg=SimpleNamespace(edit_budget=budget, search_budget=5),
-                host=host, paper_id="p", registry=None)
+def _ctx(host: _FakeHost):
+    # 检索与改动预算 2026-11-26 已取消，deps 只记账；cfg 只要是个对象即可
+    deps = Deps(cfg=SimpleNamespace(), host=host, paper_id="p", registry=None)
     return SimpleNamespace(deps=deps), deps
 
 
@@ -264,9 +264,9 @@ def test_tool_requires_reading_the_page_first() -> None:
     assert host.calls == [] and deps.edit_calls == 0
 
 
-def test_tool_view_then_edit_and_budget() -> None:
+def test_tool_view_then_edit_counts_each_edit() -> None:
     host = _FakeHost()
-    ctx, deps = _ctx(host, budget=2)
+    ctx, deps = _ctx(host)
     asyncio.run(page_markdown_edit(ctx, op="view", page=3, side="en"))
     first = asyncio.run(page_markdown_edit(ctx, op="replace", page=3, side="original",
                                           find="a", replace="b", reason="改个字"))
@@ -275,10 +275,11 @@ def test_tool_view_then_edit_and_budget() -> None:
     assert host.calls[1][2] == "original"
     asyncio.run(page_markdown_edit(ctx, op="replace", page=3, side="original",
                                    find="c", replace="d"))
-    over = asyncio.run(page_markdown_edit(ctx, op="replace", page=3, side="original",
-                                          find="e", replace="f"))
-    assert over["ok"] is False and "用尽" in over["error"]
-    assert deps.edit_calls == 2
+    third = asyncio.run(page_markdown_edit(ctx, op="replace", page=3, side="original",
+                                           find="e", replace="f"))
+    # 改动预算已取消：第 3 次照样放行，只记账（不再有"用尽"这回事）
+    assert third["ok"] is True
+    assert deps.edit_calls == 3
 
 
 def test_tool_rejects_unknown_op() -> None:

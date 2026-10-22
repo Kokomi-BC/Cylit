@@ -29,8 +29,6 @@ class AgentConfig:
     deadline_seconds: float
     heartbeat_seconds: float
     search_top_k: int
-    search_budget: int
-    edit_budget: int
     evidence_limit: int
     evidence_chars: int
     archive_chars: int
@@ -55,7 +53,7 @@ class AgentConfigError(RuntimeError):
 
 
 def load() -> AgentConfig:
-    #: **限额覆盖值**（设置页改的那六项）就在这一步被读进来：
+    #: **限额覆盖值**（设置页改的那五项）就在这一步被读进来：
     #: `get_settings()` 建好 `Settings` 之后会把 `<data_dir>/agent_limits.json` 里的
     #: 保存值贴到字段上（见 `Settings.apply_agent_limits`），下面逐项取的就是"覆盖后"的值。
     #: 所以改完限额必须**重启 agent 进程**才生效 —— 界面与 `PUT /agent/limits` 都这么说。
@@ -79,8 +77,6 @@ def load() -> AgentConfig:
         deadline_seconds=float(s.agent_deadline_seconds),
         heartbeat_seconds=float(s.agent_heartbeat_seconds),
         search_top_k=int(s.agent_search_top_k),
-        search_budget=int(s.agent_search_budget),
-        edit_budget=int(s.agent_edit_budget),
         evidence_limit=int(s.agent_evidence_limit),
         evidence_chars=int(s.agent_evidence_chars),
         archive_chars=int(s.agent_archive_chars),
@@ -92,7 +88,7 @@ def load() -> AgentConfig:
 
 
 def limits_payload(cfg: AgentConfig) -> dict[str, float]:
-    """本进程实际生效的六项限额（契约键，见 `core.config.AGENT_LIMITS`）。
+    """本进程实际生效的五项限额（契约键，见 `core.config.AGENT_LIMITS`）。
 
     写进 `data/agent_limits.applied.json`：`GET /agent/limits` 的 `restart_required`
     就是拿它的时间戳和保存时间比出来的 —— 没有它，"改完到底生效没有"谁都答不上来。
@@ -101,7 +97,6 @@ def limits_payload(cfg: AgentConfig) -> dict[str, float]:
 
     actual = {
         "agent_max_rounds": cfg.max_rounds,
-        "agent_search_budget": cfg.search_budget,
         "agent_deadline_seconds": cfg.deadline_seconds,
         "agent_context_budget": cfg.context_budget,
         "agent_auto_compress_percent": cfg.compact_threshold,

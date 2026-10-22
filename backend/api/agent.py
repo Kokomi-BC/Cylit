@@ -60,8 +60,6 @@ async def agent_status(request: Request):
         # 设置页「问答」卡片要把这些口径说清楚（都是配置项，不是临时值）
         "limits": {
             "max_rounds": s.agent_max_rounds,
-            "search_budget": s.agent_search_budget,
-            "edit_budget": s.agent_edit_budget,
             "context_budget": s.agent_context_budget,
             "auto_compress_percent": s.agent_auto_compress_percent,
             "deadline_seconds": s.agent_deadline_seconds,
@@ -165,12 +163,12 @@ async def agent_limits(request: Request):
 
 @router.put("/agent/limits")
 async def put_agent_limits(request: Request, payload: dict = Body(...)):
-    """改六项运行限额。越界 → 400（范围表见 `core/config.py` 的 `AGENT_LIMITS`）。"""
+    """改**五项**运行限额。越界 → 400（范围表见 `core/config.py` 的 `AGENT_LIMITS`）。"""
     s = get_settings()
     values = normalize_agent_limits(payload)
     if not values:
-        raise ValidationError("没有可保存的项（max_rounds / search_budget / "
-                              "deadline_seconds / context_budget / compact_threshold / "
+        raise ValidationError("没有可保存的项（max_rounds / deadline_seconds / "
+                              "context_budget / compact_threshold / "
                               "attachment_inline_limit 至少给一个）")
     s.save_agent_limits(values)
     return envelope({"ok": True, "restart_required": s.agent_limits_restart_required()},
@@ -835,12 +833,17 @@ async def agent_notes(request: Request, query: str | None = Query(None),
 @router.post("/agent/papers/{paper_id}/search")
 async def agent_search(paper_id: str, request: Request, payload: dict = Body(default={}),
                        x_internal_token: str | None = Header(None)):
-    """**本论文内**检索（固定 ``mode="qa"``；见 `project.search` 的 docstring）。"""
+    """**本论文内**检索（固定 ``mode="qa"``；见 `project.search` 的 docstring）。
+
+    对外字段是 ``mode``（``text`` / ``rag`` / ``auto``，不传 = auto），到服务层叫 ``select`` ——
+    服务层的 ``mode`` 已经占了"查询指令口径"这个含义，一个词两种语义最容易改错。
+    """
     _require_internal(x_internal_token)
     return envelope(project.search(
         paper_id, str(payload.get("query") or ""),
         top_k=int(payload.get("top_k") or 8),
         chunk_types=payload.get("chunk_types") or None,
+        select=str(payload.get("mode") or "auto"),
     ), request=request)
 
 

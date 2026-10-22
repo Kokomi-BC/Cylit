@@ -18,7 +18,7 @@
  * **留空保存 = 恢复默认**（后端删行，读取点回落到 `agent/prompts.DEFAULT_STYLE`），
  * **只对新对话生效**：风格在建会话那一刻冻结到会话行上（用户口径 2026-10-15）。
  * 版式沿用上一轮：非编辑态只读（点正文进编辑），按钮只在编辑态出现。
- * ③ **运行限额**：六个数字就地可改（`PUT /agent/limits`）。它们是 agent 服务的**启动参数**，
+ * ③ **运行限额**：五个数字就地可改（`PUT /agent/limits`）。它们是 agent 服务的**启动参数**，
  * 所以保存后只提示"重启 agent 服务后生效"，**绝不自动重启、也不写"立即生效"**
  * （要么骗人，要么悄悄打断正在跑的对话）。
  * ④ **联网搜索**：`web-search` 那一行右侧的齿轮，在该行下方展开内嵌设置（提供方 / 密钥 /
@@ -55,6 +55,7 @@ const STYLE_MAX = 2000;
 const SKILL_NAME_ZH: Record<string, string> = {
   'web-search': '联网搜索',
   'web-fetch': '网页阅读',
+  'read-text': '正文阅读',
   'read-figure': '图表解读',
   'read-formula': '公式解读',
   'annotate-text': '标注与笔记',
@@ -74,6 +75,7 @@ const SKILL_NAME_ZH: Record<string, string> = {
 const SKILL_BLURB: Record<string, string> = {
   'web-search': '查论文之外的公开信息（官方文档、开源实现、收录情况），给出候选与摘要。',
   'web-fetch': '按链接读一篇网页正文，摘要不够时读原文。',
+  'read-text': '按页读正文：英文原文或中文译文，你选读哪个。',
   'read-figure': '讲清某张图或表画了什么、曲线怎么走、结论是什么。',
   'read-formula': '取出页面上的公式，逐个符号讲清含义与作用。',
   'annotate-text': '按你的要求标出原文、设成颜色，或在某处写一条笔记。',
@@ -291,7 +293,6 @@ interface LimitFieldDef {
 
 const LIMIT_FIELDS: LimitFieldDef[] = [
   { key: 'max_rounds', label: '单轮轮数上限', unit: '轮', min: 1, step: 1 },
-  { key: 'search_budget', label: '检索预算', unit: '次', min: 0, step: 1 },
   { key: 'deadline_seconds', label: '单轮时限', unit: '秒', min: 1, step: 5 },
   { key: 'context_budget', label: '上下文预算', unit: 'tokens', min: 1000, step: 1000 },
   { key: 'compact_threshold', label: '自动压缩触发', unit: '%', min: 1, max: 100, step: 5 },
@@ -307,12 +308,12 @@ const limitsBusy = ref(false);
 const limitsHint = ref('');
 
 const limitForm = reactive<Record<LimitKey, number | ''>>({
-  max_rounds: '', search_budget: '', deadline_seconds: '',
+  max_rounds: '', deadline_seconds: '',
   context_budget: '', compact_threshold: '', attachment_inline_limit: '',
 });
 /** 服务端**当前生效**的那一份：用来算"改了没有"。 */
 const limitBase = reactive<Record<LimitKey, number>>({
-  max_rounds: 0, search_budget: 0, deadline_seconds: 0,
+  max_rounds: 0, deadline_seconds: 0,
   context_budget: 0, compact_threshold: 0, attachment_inline_limit: 0,
 });
 
@@ -344,7 +345,7 @@ async function loadLimits(): Promise<void> {
 async function saveLimits(): Promise<void> {
   if (!limits.value) return;
   const body: AgentLimitsPatch = {
-    max_rounds: 0, search_budget: 0, deadline_seconds: 0,
+    max_rounds: 0, deadline_seconds: 0,
     context_budget: 0, compact_threshold: 0, attachment_inline_limit: 0,
   };
   for (const f of LIMIT_FIELDS) {
@@ -597,7 +598,7 @@ onMounted(() => {
     <!-- 版式：右列技能（主内容，DOM 里排第一 —— 窄屏单列时它就是第一屏），
          左列竖着叠「对话风格 → 运行限额 → Cyli 解释」三张卡。
          为什么这么分：十来个技能是一行一行读下来的，有实打实的高度；左列三张各自只有几行，
-         跟技能并排才不至于在右下角留一大片空白（限额的六格在半宽里仍是两列，放得下）。 -->
+         跟技能并排才不至于在右下角留一大片空白（限额的五格在半宽里排两列，放得下）。 -->
     <div class="panel-grid">
       <!-- ① 技能：每行 = 名字 + 两行大白话说明 + 启用开关（下载 / 卸载只给外部技能） -->
       <section class="card">
@@ -762,7 +763,7 @@ onMounted(() => {
           </div>
         </section>
 
-        <!-- ③ 运行限额：六个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
+        <!-- ③ 运行限额：五个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
         <section class="card">
           <div class="card-head">
             <AppIcon name="sliders" :size="14" />运行限额
@@ -912,7 +913,7 @@ onMounted(() => {
 .limit-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .limit-control input {
   width: 100%; max-width: 160px; text-align: right;
-  /* 数字等宽：六个数并排时不会左右跳 */
+  /* 数字等宽：数值变长变短时不会左右跳 */
   font-variant-numeric: tabular-nums;
 }
 /* 单位是输入框**右侧的后缀**，不是占位符也不是塞进框里 */

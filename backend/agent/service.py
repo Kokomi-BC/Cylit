@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _record_limits() -> None:
-        """把本进程**实际生效**的六项限额记进 `data/agent_limits.applied.json`。
+        """把本进程**实际生效**的五项限额记进 `data/agent_limits.applied.json`。
 
         这是 `GET /agent/limits` 里 `restart_required` 的另一半：保存时间比这个
         时间戳新，就说明"设置页改完还没重启问答服务"。写失败只记日志 ——

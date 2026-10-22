@@ -156,11 +156,17 @@ class HostClient:
         return dict(await self.get("/agent/notes", params or None) or {})
 
     async def search(self, paper_id: str, query: str, *, top_k: int,
-                     chunk_types: list[str] | None = None) -> dict:
-        """**本论文内**检索（宿主固定 ``scope=paper``、``mode=qa``，见 §7.1）。"""
-        return dict(await self.post(f"/agent/papers/{paper_id}/search", {
-            "query": query, "top_k": top_k, "chunk_types": chunk_types,
-        }) or {})
+                     chunk_types: list[str] | None = None,
+                     mode: str | None = None) -> dict:
+        """**本论文内**检索（宿主固定 ``scope=paper``、``mode=qa``，见 §7.1）。
+
+        ``mode`` 是**对外**的检索方式（text / rag / auto），只在模型显式给了才进 payload：
+        不传就等于 auto（两路融合），默认值归服务层一处决定。
+        """
+        payload = {k: v for k, v in (("query", query), ("top_k", top_k),
+                                     ("chunk_types", chunk_types), ("mode", mode))
+                   if v not in (None, "")}
+        return dict(await self.post(f"/agent/papers/{paper_id}/search", payload) or {})
 
     async def figures(self, paper_id: str, page: int | None = None) -> dict:
         return dict(await self.get(f"/agent/papers/{paper_id}/figures",

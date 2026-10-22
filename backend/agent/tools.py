@@ -115,6 +115,16 @@ def _query_key(name: str, query: str, k: int) -> str:
     return f"{name}:{' '.join((query or '').lower().split())}:{k}"
 
 
+def _search_mode_slot(mode: str | None) -> int:
+    """`paper_search` 的检索方式三态编码（0 = 不传 → auto）。
+
+    缓存键如果只有 (query, top_k)，"auto / rag / text"三次调用会互相命中 ——
+    而它们的**命中集合本来就不一样**（词法命中精确词、向量命中近义说法）。串味之后
+    模型会以为"换个方式也没搜到"，恰好抹掉这次改动要解决的问题。
+    """
+    return {"rag": 1, "text": 2}.get(str(mode or "").strip().lower(), 0)
+
+
 def _cached(ctx: RunContext[Deps], name: str, query: str, k: int) -> dict | None:
     """同一条检索重复调用时直接回上一次的结果（省一次后端往返，也提醒模型别绕）。"""
     hit = ctx.deps.query_cache.get(_query_key(name, query, k))
@@ -132,19 +142,6 @@ def _stale_hint() -> str:
     """这一趟检索没有带来新依据 → 明确告诉模型"够了"，别把轮数耗在换词上。"""
     return ("这次检索没有带来**新的**依据（命中的都是已经拿到的那些片段）。"
             "请立刻基于已有材料作答；如果确实不够，就如实说材料不足。")
-
-
-#: 检索预算用尽时的拒绝话术（**不打后端**，直接回给模型）
-BUDGET_EXHAUSTED = {
-    "ok": False,
-    "error": "本轮的检索次数已经用尽。请立刻基于**已经拿到的材料**作答；"
-             "材料不足就如实说明不够，不要再换检索词了。",
-}
-
-
-def _spend_search(ctx: RunContext[Deps]) -> bool:
-    """扣一次检索预算（M7：检索预算与轮数预算分开扣）。"""
-    return ctx.deps.spend_search()
 
 
 def _chunk_key(paper_id: str, block_id: object, chunk_id: str, snippet: str) -> str:
@@ -186,26 +183,39 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
 # --------------------------------------------------------------------------
 
 
-async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
+async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
+                      mode: str | None = None) -> dict:
     """在本论文内检索，返回**候选位置**（页码、章节、短片段），不返回全文。
 
     什么时候用：任何"这篇论文里怎么说的 / 讲了什么 / 为什么这么做"的问题，
-    先用它定位；拿到结果里的 ref 与页码之后，再用 page_markdown_get 或 block_get
-    读原文，用 page_image_get 看版面。
+    先用它定位；拿到结果里的 ref 之后，**先用 `block_get(ref)` 展开最相关的那几块**
+    （那就是检索到的相似内容本体），块里上下文不够时再 page_markdown_get 读它所在的页，
+    要看版面才用 page_image_get。
+
+    检索方式怎么选（`mode`）：
+      - `text`  —— 词法（BM25）：**精确词**才靠它 —— 术语、指标名、引文编号、
+        `MSE` / `TurboQuant`、`Algorithm 2` 这种"必须字面出现"的东西；
+      - `rag`   —— 向量（语义）：用户用**同义说法或概念描述**时靠它，
+        例如"它是怎么避免梯度消失的"（论文里可能写的是"缓解深层退化"）；
+      - `auto`  —— 不传就是它：两路召回 → 融合 → 重排，覆盖最全。
+      一次没命中别只换词：可以**换一种方式**再试（精确词没中就换 `text`，
+      概念没中就换 `rag`）。
 
     参数：
       query  —— 检索词。用**论文里的说法**（术语、方法名）比用口语描述召回好。
       top_k  —— 最多几条，默认 8，上限 12。
+      mode   —— `text` / `rag` / `auto`；不传用服务端默认（auto，两路融合）。
     """
     async def _impl() -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
-        cached = _cached(ctx, "paper_search", query, k)
+        key = k * 3 + _search_mode_slot(mode)
+        cached = _cached(ctx, "paper_search", query, key)
         if cached is not None:
             return cached
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         before = len(ctx.deps.registry)
-        data = await ctx.deps.host.search(ctx.deps.paper_id, query, top_k=k)
+        data = await ctx.deps.host.search(ctx.deps.paper_id, query, top_k=k,
+                                          mode=mode)
         raw_items = list(data.get("items") or [])
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
         ctx.deps.page_total = ctx.deps.page_total or total
@@ -229,12 +239,14 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dic
         elif len(ctx.deps.registry) == before:
             out["hint"] = _stale_hint()
         else:
-            out["hint"] = "这些只是片段。要引用具体内容，请用 page_markdown_get 读对应页。"
-        _remember(ctx, "paper_search", query, k, out)
+            out["hint"] = ("这些只是片段：先用 `block_get(ref)` 展开最相关的 2~4 块；"
+                           "块里上下文不够时再 `page_markdown_get` 读它所在的页。")
+        _remember(ctx, "paper_search", query, key, out)
         return out
 
     return await _guarded(ctx, "paper_search",
-                          {"query": _clip(query, 60), "top_k": top_k}, _impl())
+                          {"query": _clip(query, 60), "top_k": top_k,
+                           "mode": mode or "auto"}, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -502,8 +514,7 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
         cached = _cached(ctx, "kb_search", query, k)
         if cached is not None:
             return cached
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         before = len(ctx.deps.registry)
         data = await ctx.deps.host.kb_search(query, top_k=k)
         items = []
@@ -672,8 +683,7 @@ async def library_list(ctx: RunContext[Deps], query: str | None = None) -> dict:
       query —— 关键词（标题或作者）。不传就按最近阅读顺序列前 30 篇。
     """
     async def _impl() -> dict:
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         data = await ctx.deps.host.library(q=query)
         items = []
         for raw in data.get("items") or []:
@@ -718,8 +728,7 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
     """
     async def _impl() -> dict:
         paper_id = None if scope == "all" else ctx.deps.paper_id
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         data = await ctx.deps.host.notes(query=query, paper_id=paper_id, kind=kind)
         items = []
         for raw in data.get("items") or []:
@@ -828,10 +837,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                 return {"ok": False,
                         "error": f"一次只改**一处**（find / replace 各不超过 {EDIT_MAX_FIND} 字），"
                                  f"不接受整页覆盖；多处修改请分多次调用。"}
-            if not ctx.deps.spend_edit():
-                return {"ok": False,
-                        "error": f"本轮修改次数已用尽（{ctx.deps.cfg.edit_budget} 处）。"
-                                 f"先把已经改好的告诉用户；确实还要改，就让用户再说一次。"}
+            ctx.deps.count_edit()
             data = await ctx.deps.host.page_edit(
                 ctx.deps.paper_id, page_no, side, str(find), str(replace or ""),
                 reason=str(reason or ""))
@@ -943,10 +949,11 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     三面各有各的位置模型（正文行 / Markdown 视图 / 原 PDF 页图）—— 你只需要给
     `anchor`（哪一面）+ `text`（要标的**原文**），偏移量由宿主算，不要自己编数字。
 
-    ⚠️ **默认标在"正文行"那一面**（锚点形如 `p009-08`，用 `block_get(ref)` 拿）：用户读的
-    对照 / 译文视图画的就是它。`md:pN` 那种锚点的高亮**只在 Markdown 视图里出现**，
-    用户在你面前看不到（实测被报过"高亮没出现"）；给 `md:pN` 时宿主会**尽量把它挪到这一页
-    对应的正文行**上，挪不动才留在 Markdown 面。原 PDF 那面服务端算不出偏移量（文字层在前端）。
+    ⚠️ **默认标在"正文行"那一面**：用户读的对照 / 译文视图画的就是它。**但行 id 你拿不到** ——
+    `page_markdown_get` / `block_get` 的返回里都没有 `row_id`，**不要自己编 `p009-08` 这种**。
+    给 `md:pN`：宿主会**尽量把它挪到这一页对应的正文行**上（见 `annotations.py` 的
+    `locate_in_rows`），挪不动才留在 Markdown 面；`md:pN` 的高亮只在 Markdown 视图里出现，
+    用户在你面前看不到（实测被报过"高亮没出现"）。原 PDF 那面服务端算不出偏移量（文字层在前端）。
 
       op="create"  anchor + text（+ color / side / occurrence）→ 建一条高亮。
                    **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
@@ -987,9 +994,8 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     async def _impl() -> dict:
         what = str(op or "").strip().lower()
         writes = {"create", "add", "new", "update", "delete", "remove"}
-        if what in writes and not ctx.deps.spend_edit():
-            return {"ok": False, "error": "改动预算用尽了（本轮已经改过太多次）。"
-                                         "剩下的请在回答里说明，让用户自己点一下。"}
+        if what in writes:
+            ctx.deps.count_edit()
         if what in ("create", "add", "new"):
             data = await ctx.deps.host.highlight_create(ctx.deps.paper_id, {
                 "anchor": str(anchor or ""), "text": str(text or ""),
@@ -1005,7 +1011,12 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                         "scope": data.get("scope"), "text": hl.get("text"),
                         "color": hl.get("color"),
                         "note": "已建立高亮。要给它写笔记就用 note_manage op=create。"}
-            return data
+            # 失败时把"最接近的原文"贴进 error：模型改对引文只能靠它（near_miss 也原样带上）
+            near = [str(item) for item in (data.get("near_miss") or [])][:2]
+            error = str(data.get("error") or "建立高亮失败")
+            if near:
+                error = f"{error}最接近的是：{' / '.join(near)}（照着它逐字改 text 再试一次）"
+            return {**data, "error": error}
         if what in ("list", "search"):
             return await ctx.deps.host.highlights(ctx.deps.paper_id, query=str(query or ""))
         if what in ("locate", "info", "show"):
@@ -1060,10 +1071,8 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
     """
     async def _impl() -> dict:
         what = str(op or "").strip().lower()
-        if what in {"create", "add", "new", "update", "delete", "remove"} \
-                and not ctx.deps.spend_edit():
-            return {"ok": False, "error": "改动预算用尽了（本轮已经改过太多次）。"
-                                         "剩下的请在回答里说明，让用户自己点一下。"}
+        if what in {"create", "add", "new", "update", "delete", "remove"}:
+            ctx.deps.count_edit()
         if what in ("create", "add", "new"):
             if not highlight_id:
                 return {"ok": False, "error": "create 要给 highlight_id：笔记必须挂在一处高亮上"
@@ -1151,8 +1160,7 @@ async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None
         cached = _cached(ctx, "web_search", query, key)
         if cached is not None:
             return cached
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         data = await ctx.deps.host.web_search(
             query, count=count, need_content=need_content, ori_question=question)
         items = []
@@ -1205,8 +1213,7 @@ async def web_fetch(ctx: RunContext[Deps], url: str, max_chars: int | None = Non
         cached = _cached(ctx, "web_fetch", url, key)
         if cached is not None:
             return cached
-        if not _spend_search(ctx):
-            return dict(BUDGET_EXHAUSTED)
+        ctx.deps.count_search()
         data = await ctx.deps.host.web_fetch(url, max_chars=max_chars)
         content = str(data.get("content") or "")
         out = {

@@ -26,7 +26,8 @@ description: 在原文上做标注：按要求标出某段并设成某个颜色�
 | `md:p<页号>` | Markdown 视图里那一页 | `md:p4` |
 | `pdf:p<页号>` | 原 PDF 的页图 | `pdf:p4` |
 
-行 id 从哪来：`page_markdown_get` / `block_get` 的返回里每条都带（`p{页}-{序号}`）。
+锚点用 `md:p<页号>`：宿主会把它挪到该页对应的正文行上（见 `annotations.py` 的 `locate_in_rows`），
+**不要自己编 `p009-08` 这种行 id** —— `page_markdown_get` / `block_get` 的返回里没有 `row_id`。
 **原 PDF 那一面只能查不能建**：它的文字层在阅读器的 pdf.js 里，服务端算不出偏移量 ——
 要标那儿就让用户在 PDF 页上自己划词，你负责解释与写笔记。
 
