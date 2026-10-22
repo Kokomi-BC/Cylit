@@ -303,6 +303,18 @@ async function loadProviders(): Promise<void> {
 /** 选择器里的候选 = 目录里的官方/自定义那几家 + 末尾的「自定义提供方」入口 */
 const providerOptions = computed<ProviderRow[]>(() => [...providers.value, customEntry.value]);
 
+/** 默认密钥那一格的文案。
+ *  后端迁移时给默认密钥起的名字就是「默认密钥」，直接拼会读成「默认密钥：默认密钥」——
+ *  所以名字与固定文案相同时只报「已设置」；没有默认密钥时仍报「未设置」。 */
+const DEFAULT_KEY_WORD = '默认密钥';
+
+function defaultKeyText(p: ProviderRow): string {
+  const label = String(p.default_key_label ?? '').trim();
+  if (!label) return `${DEFAULT_KEY_WORD}：未设置`;
+  if (label === DEFAULT_KEY_WORD) return `${DEFAULT_KEY_WORD} 已设置`;
+  return `${DEFAULT_KEY_WORD}：${label}`;
+}
+
 function providerStatusText(p: ProviderRow): string {
   const s = String(p.status || 'unknown');
   if (s === 'ok') return '连接正常';
@@ -855,7 +867,7 @@ onBeforeUnmount(() => {
               <span class="td-sep">·</span>
               <span>{{ p.key_count || 0 }} 条密钥</span>
               <span class="td-sep">·</span>
-              <span :class="{ unset: !p.default_key_label }">默认密钥：{{ p.default_key_label || '未设置' }}</span>
+              <span :class="{ unset: !p.default_key_label }" :title="p.default_key_label || ''">{{ defaultKeyText(p) }}</span>
             </div>
           </div>
 
@@ -1067,6 +1079,8 @@ onBeforeUnmount(() => {
 .tc-status.ok { color: var(--ok); }
 .tc-status.warn { color: var(--warn); }
 .tc-status.danger { color: var(--danger); }
+/* 任何 mono 片段都不许当"不可断的长词"把卡片撑宽 */
+.tc-sub .mono, .td-model { min-width: 0; max-width: 100%; }
 .tc-keysrc { padding-left: 12px; margin-top: 1px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tc-keysrc.warn { color: var(--warn); }
 .tc-test { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding-left: 12px; min-width: 0; }
@@ -1117,7 +1131,15 @@ onBeforeUnmount(() => {
 .pr-status.ok { color: var(--ok); }
 .pr-status.danger { color: var(--danger); }
 .pr-sub { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
-.pr-sub .mono { font-family: var(--mono); }
+/* Base URL 是最长的不可断词（例如 https://generativelanguage.googleapis.com/v1beta/openai）。
+   flex 子项默认 min-width:auto = min-content，会把 .pr-main 撑到 312px，
+   在 320/360 下直接把整页顶出 23px 的横向滚动条 —— 所以这里必须允许它收缩后省略，
+   完整地址看 title。 */
+.pr-sub .mono {
+  font-family: var(--mono);
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pr-sub .unset { color: var(--text-faint); }
 .pr-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
@@ -1128,7 +1150,7 @@ onBeforeUnmount(() => {
   color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); line-height: 1.5;
 }
 .prov-error { border-color: color-mix(in srgb, var(--danger) 40%, var(--divider)); color: var(--danger); }
-.prov-error p { margin: 0; flex: 1 1 200px; }
+.prov-error p { margin: 0; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 
 /* 「+」里只剩提供方选择器（预设卡那一套样式随功能一起下线） */
 .add-picker { display: flex; flex-direction: column; gap: 10px; }

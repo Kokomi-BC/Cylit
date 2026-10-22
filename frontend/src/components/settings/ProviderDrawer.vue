@@ -741,7 +741,8 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 }
 .pd {
   display: flex; flex-direction: column;
-  width: min(520px, calc(100vw - 0px));
+  /* 用 100% 而不是 100vw：vw 含滚动条宽度，窄屏下有滚动条时会比可视区宽出来 */
+  width: min(520px, 100%);
   max-width: 100%;
   height: 100dvh;
   background: var(--bg-elev);
@@ -762,9 +763,13 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 }
 .pd-x:hover { background: var(--bg-hover); color: var(--text); }
 
-.pd-tabs { display: flex; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--divider); }
+.pd-tabs {
+  display: flex; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--divider);
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+}
+.pd-tabs::-webkit-scrollbar { display: none; }
 .pd-tab {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
   padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
   background: transparent; color: var(--text-dim);
   font: inherit; font-size: calc(12.5px * var(--ts, 1)); cursor: pointer;
@@ -775,8 +780,14 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 
 .pd-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px 20px; }
 .pd-sec { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.pd-hint { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; color: var(--text-faint); }
-.pd-err { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.55; color: var(--danger); }
+.pd-hint {
+  margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.pd-err {
+  margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.55; color: var(--danger);
+  overflow-wrap: anywhere;
+}
 .pd-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pd-result .bad { color: var(--danger); }
 .pd-skel { display: flex; flex-direction: column; gap: 8px; }
@@ -807,7 +818,8 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 .name-btn {
   padding: 0; border: 0; background: transparent; color: var(--text);
   font: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600;
-  cursor: text; max-width: 180px;
+  cursor: text; min-width: 0; max-width: min(180px, 100%);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .name-btn:hover { color: var(--accent-text); }
 .key-rename { height: 24px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; max-width: 180px; }
@@ -820,7 +832,11 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 .key-status.ok { color: var(--ok); }
 .key-status.warn { color: var(--warn); }
 .key-status.danger { color: var(--danger); }
-.key-masked { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); }
+.key-masked {
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .key-refs {
   overflow: hidden; line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -835,7 +851,10 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 .blk-title { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--warn); }
-.blk-msg { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text); word-break: break-word; }
+.blk-msg {
+  margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text);
+  word-break: break-word; overflow-wrap: anywhere;
+}
 
 /* 新增密钥 */
 .key-add {
@@ -854,7 +873,10 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 }
 .ua-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .ua-name { min-width: 0; max-width: 160px; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
-.ua-masked { color: var(--text-dim); }
+.ua-masked {
+  color: var(--text-dim); min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* 关联模型 */
 .rel { display: flex; flex-direction: column; gap: 2px; }
@@ -864,8 +886,9 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 }
 .rel-row:hover { background: var(--bg-hover); }
 .rel-main { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
-.rel-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; }
-.rel-sub { min-width: 0; }
+.rel-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; min-width: 0; }
+.rel-sub { min-width: 0; overflow: hidden; }
+.rel-sub .mono { min-width: 0; }
 
 /* 危险区 */
 .pd-danger-zone {
@@ -884,7 +907,7 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 .pv-fallback.lg { width: 30px; height: 30px; }
 
 @media (max-width: 420px) {
-  .pd { width: 100vw; border-left: 0; }
+  .pd { width: 100%; border-left: 0; }
   .pd-head { padding: 10px 12px; }
   .pd-body { padding: 10px 12px 16px; }
 }
