@@ -836,6 +836,20 @@ def _anchor_page(block_id: str | None, row_pages: dict[str, int],
 
 _DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 
+#: 「列表项里整行就是一条公式」的判定阈值（判据见 `_promote_to_display`）。
+#: 论文把定理/命题里的**定义式**写成列表项里的**行内**公式（`- $D_{\text{mse}}(Q) := … \geq 4^{-b}$`），
+#: 第 4 页整页没有一条 `$$…$$` —— 不提升的话那页的公式只能回落到解析碎片。
+#: 三条阈值一起卡"公式独占这一行"：行尾只剩 `for any $b \geq 0$.` 这种短尾巴（<= 60 字符）、
+#: 公式本身够长（>= 12 字符）、且长到尾巴的 3 倍以上（散文夹在公式里时比例会翻转）。
+DISPLAY_LINE_MAX_TAIL = 60
+DISPLAY_LINE_MIN_LATEX = 12
+DISPLAY_LINE_TAIL_RATIO = 3
+
+#: 行首的列表标记 / 引用标记（剥掉之后还剩字就是"句首有散文"→ 只是句中公式，不提升）
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)]|>)\s*")
+#: 行尾那段文字里所有公式段（`$$` 优先，再 `$`）—— 判定前要先删干净再数长度
+_ANY_MATH_RE = re.compile(r"\$\$.+?\$\$|\$[^$]+\$")
+
 
 def _extract_math(text: str) -> list[tuple[int, int, str, bool]]:
     """从一段 Markdown 里抽出公式：``(start, end, latex, display)``。
@@ -873,8 +887,40 @@ def _extract_math(text: str) -> list[tuple[int, int, str, bool]]:
     return sorted(out, key=lambda x: x[0])
 
 
+def _line_bounds(text: str, start: int) -> tuple[int, int]:
+    """`start` 所在行的起止下标（**不跨行**：`\n` 是行界，行内公式本来也不跨行）。"""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", start)
+    return line_start, (len(text) if line_end < 0 else line_end)
+
+
+def _promote_to_display(text: str, start: int, end: int, latex: str) -> bool:
+    r"""一条**行内**公式是否该按**块级**公式算（论文的"列表项整行公式"）。
+
+    三条判据全满足才提升：
+    a) 行内只被**列表标记与空白**前置（`- ` / `1. ` / `> `）—— 句首还有散文就说明
+       公式夹在句中（`As shown in Theorem 3 … $Q : \mathbb{R}^d \to …$`），那是行内；
+    b) 公式**之后**的剩余文字先把所有 `$…$` 段删掉，strip 后 <= `DISPLAY_LINE_MAX_TAIL`
+       —— `for any $b \geq 0$.` 这种短尾巴仍算"整行是公式"，整句散文就不算；
+    c) LaTeX 够长（>= `DISPLAY_LINE_MIN_LATEX`）、且 >= 尾巴长度的 `DISPLAY_LINE_TAIL_RATIO` 倍。
+
+    判据只有这三条：**不满足 (a) 一律不提升**（句中的 `\frac{\sqrt{3\pi}}{2}` 之类留在行内）。
+
+    返回 True 表示"这条行内公式实际上占了整行"。
+    """
+    line_start, line_end = _line_bounds(text, start)
+    if _LIST_MARKER_RE.sub("", text[line_start:start]).strip():
+        return False                                    # (a) 句首有散文 → 句中公式
+    tail = _ANY_MATH_RE.sub("", text[end:line_end]).strip()   # (b) 先删掉尾巴里的公式
+    if len(tail) > DISPLAY_LINE_MAX_TAIL:
+        return False
+    if len(latex) < DISPLAY_LINE_MIN_LATEX:
+        return False
+    return len(latex) >= DISPLAY_LINE_TAIL_RATIO * max(1, len(tail))   # (c)
+
+
 def markdown_formulas(paper_id: str) -> dict:
-    """公式列表：**译文优先，未翻译的页用原文（解析产物）兜底**。
+    r"""公式列表：**译文优先，未翻译的页用原文（解析产物）兜底**。
 
     "优先且只取翻译"这一半：有页级产物（翻译/转录）的页**只**从它抽，不掺解析那一套 ——
     否则同一条公式会以两种 LaTeX 出现两次（模型给的 vs 解析器抽的，后者还常常更差）。
@@ -884,6 +930,15 @@ def markdown_formulas(paper_id: str) -> dict:
     的论文永远显示"这一篇还没有可提取的公式"，可正文里明明有（用户报的第一条就是这个）。
     兜底是**按页**的，不是整篇开关：半翻译的论文里，已译页走译文、未译页走原文，
     与用户在正文里看到的那一页完全一致。
+
+    页级 Markdown 里**块级公式有两种来源**：
+
+    1. `$$…$$` —— 模型把它写成了独立公式块；
+    2. **列表项里的整行行内公式**（`- $D_{\text{mse}}(Q) := … \geq 4^{-b}$`）—— 论文把定理/命题的
+       定义式写成列表项，**整行只有这条公式**。判据在 `_promote_to_display`（列表标记后无散文、
+       行尾只剩 <=60 字符的短尾巴、公式足够长）。不提升的后果是实测过的：第 4 页整页没有 `$$`，
+       公式列表只能回落到解析卡，给出来的是 `\pi \cdot \| y\| \sqrt{3}` / `: R\to \{0, 1\}'`
+       这类碎片 —— 定理的定义式反而看不见。
 
     单字符变量（``$b$``）这类噪声照旧不进列表。
     """
@@ -905,6 +960,9 @@ def markdown_formulas(paper_id: str) -> dict:
                 # 页脚脚注符号被模型写成了 `$$ * † $$` —— 没有任何数学内容，不进公式列表
                 if is_noise_formula(latex):
                     continue
+                # 列表项里"整行只有这条公式"的，按块级算（判据见 `_promote_to_display`）
+                if not display and _promote_to_display(text, _s, _e, latex):
+                    display = True
                 collected.append((page, seq, {
                     "id": f"f{page:03d}-{len(collected):04d}",
                     "page": page, "row_id": row.get("id"),

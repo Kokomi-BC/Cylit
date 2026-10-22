@@ -34,6 +34,13 @@ SEARCH_MAX = 12
 TEXT_PAGES_MAX = 20
 #: 片段长度上限：给全文就等于把"读哪页"的决定权收走
 SNIPPET_CHARS = 200
+#: **图注**的长度上限 —— 与 `backend/services/agent/project.py` 的 `CAPTION_CHARS` 同口径。
+#: 为什么不能沿用 `SNIPPET_CHARS`：图注天生是"一整句结论"（"Speedup is measured relative to
+#: the PyTorch einsum baseline."），200 字符必然截在半句 —— 实测第 8 页图 2（234 字符）被切成
+#: "…Speedup is measured relat…"、图 3（313 字符）被切成 "…While some methods struggle with
+#: recall, T…"，模型照着残缺图注描述图就丢了后半句。`SNIPPET_CHARS` 的默认值**不动**：
+#: 正文片段几十处都靠它把"读哪页"的决定权留给模型。
+CAPTION_CHARS = 800
 
 _PAGES_RE = re.compile(r"^\s*(?P<a>\d+)\s*(?:[-~–]\s*(?P<b>\d+))?\s*$")
 
@@ -505,14 +512,15 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
             label = ("表 " if kind == "table" else "图 ") + str(fig.get("number") or "?")
             cit = ctx.deps.registry.assign(
                 key=f"figure:{page}:{fig.get('index')}", kind=kind, page=int(page),
-                snippet=_clip(fig.get("caption") or ""),
+                snippet=_clip(fig.get("caption") or "", CAPTION_CHARS),
                 # 图注行的行 id：前端点 `[n]` 才能闪到那一行（模型侧看不到这个 id）
                 row_id=rows.get(str(fig.get("number") or "")),
                 image_urls=[url] if url else [],
                 label=f"第 {page} 页 · {label}")
             items.append({
                 "ref": cit.ref, "index": fig.get("index"), "kind": kind,
-                "number": fig.get("number") or "", "caption": _clip(fig.get("caption") or ""),
+                "number": fig.get("number") or "",
+                "caption": _clip(fig.get("caption") or "", CAPTION_CHARS),
                 "image_url": url,
             })
         out = {"page": int(page), "returned": len(items), "items": items}
@@ -644,27 +652,33 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
 async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                       query: str | None = None,
                       include_inline: bool = False) -> dict:
-    """取本论文的**公式卡**（解析阶段整理好的完整公式：LaTeX + 页码 + grade）。
+    """取本论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
 
     什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
     或者卷面里的公式被 OCR 认错、需要拿到 LaTeX 原文再核对。
 
-    **默认给的是解析阶段的完整公式**（`is_inline=0`，带 A/B/C 质量分级），不是从正文
-    正则抽的碎片 —— 按论文页面的文档顺序排好。只有某几页没有解析公式卡时，那几页才回落到
-    正文抽取（返回里 `source` 会说明这份列表来自哪：`parse` / `markdown` / `mixed`）。
+    **默认给的是页级 Markdown 里的块级公式**（`$$…$$` 那批，按论文文档顺序排好，
+    **完整、可引用**）。版面**解析卡只在这一页没有块级公式时兜底**，不是主体来源 ——
+    别把它当成"默认就是解析卡"。返回里的 `source` 说明这份列表整体来自哪：
+    `markdown`（页级正文）/ `parse`（解析卡兜底）/ `mixed`（两者都有）。
+
+    `grade`（A/B/C）是**解析卡的字段**：转录层来的条目 `grade=None` 是正常的，
+    不代表数据缺失，也不影响这条公式可用。
 
     参数：
       page  —— 只看某一页（不确定页码就先 paper_search）。
       query —— 关键词过滤。**公式没有可用的编号字段**：论文自己的 `(3)` 编号只出现在
                `context` 里（解析卡往往没有 context），所以按编号找请先
                `page_markdown_get` 定位那一页，再 `formula_get(page=…)`。
-      include_inline —— 默认 False：只要块级完整公式。要看**行内符号**（`$b-1$` 这种）
+      include_inline —— 默认 False：只要块级公式。要看**行内符号**（`$b-1$` 这种）
                或伪代码里的碎片时才传 True —— 它会把行内公式也列出来，条目更多也更碎。
-    回执里的 `display_total` / `inline_total` 是两个计数：默认给你的是块级那批（完整、
-    可引用），**行内那几百条默认不给**。超过 40 条时 `truncated: true` 且 `total` 是全量。
+    回执里的 `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围
+    内的全部条目」，`total == display_total + inline_total` 恒成立；`returned` 是本次给了几条，
+    `omitted_inline` 是这次按需过滤掉的行内条数（默认就等于 `inline_total`）。
+    本次要列的条目超过 40 条时 `truncated: true`。
 
-    ⚠️ `partial=True` 的条目**LaTeX 可能只是公式的一段**（解析阶段把一条公式切成了几段，
-    我们只拿到第一段）。要确认全文就用 `page_image_get(page)` 看那一页的原版面
+    ⚠️ `partial=True` 的条目**LaTeX 可能只是公式的一段**（一条公式被切成了几段，我们只拿到
+    第一段）。要确认全文就用 `page_image_get(page)` 看那一页的原版面
     （阅读器里这个位置本来也有公式裁图）——**不要照着半条 LaTeX 讲整条公式**。
     """
     async def _impl() -> dict:
@@ -689,25 +703,40 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 "context": raw.get("context") or "",
                 "context_zh": raw.get("context_zh") or "",
             })
+        display_total = int(data.get("display_total") or 0)
+        inline_total = int(data.get("inline_total") or 0)
+        #: 这次**按需过滤掉**的行内条数。上游没给（老回执 / 测试桩）时按"默认不列行内"
+        #: 兜底：否则回执里一边说"另有 N 条行内公式"、一边计数是 0，两个数自相矛盾。
+        omitted_inline = data.get("omitted_inline")
+        if omitted_inline is None:
+            omitted_inline = 0 if include_inline else inline_total
         out = {"total": data.get("total"), "returned": len(items),
                "source": data.get("source"),
                "truncated": bool(data.get("truncated")),
                # 默认只给块级（完整、可引用）；行内那批按需取
-               "display_total": int(data.get("display_total") or 0),
-               "inline_total": int(data.get("inline_total") or 0),
+               "display_total": display_total,
+               "inline_total": inline_total,
+               "omitted_inline": int(omitted_inline or 0),
                "items": items}
         if not items:
             out["hint"] = ("这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
                            "行内符号可以先用 page_markdown_get 看那一页的正文。")
         else:
-            # 三条提示可以**同时成立**（默认只给块级 + 有条目只是片段 + 超了上限），
-            # 拼在一起给，别用 elif 让后面的把前面的吞掉
+            # 五条提示可以**同时成立**（默认只给块级 + 来源含解析兜底 + 全是转录层没有 grade
+            # + 有条目只是片段 + 超了上限），拼在一起给，别用 elif 让后面的把前面的吞掉
             hints: list[str] = []
-            if not include_inline and out["inline_total"] > 0:
+            if not include_inline and out["omitted_inline"] > 0:
                 hints.append(f"这些是**块级公式**（完整，可引用）；另有 "
-                             f"{out['inline_total']} 条行内公式（单符号 / 碎片那种）。"
+                             f"{out['omitted_inline']} 条行内公式（单符号 / 碎片那种）。"
                              f"查符号定义、单点表达式时用 `include_inline=True`，"
                              f"或者直接 `page_markdown_get` 读那一页看上下文。")
+            if out.get("source") != "markdown":
+                hints.append("本次列表含**版面解析兜底**的条目（source=parse/mixed）——"
+                             "那几条的 LaTeX 可能只是公式的一段，讲全貌前先用 "
+                             "`page_image_get(page)` 核对原版面。")
+            if all(one["grade"] is None for one in items):
+                hints.append("这些公式来自**转录层**，没有 A/B/C 分级（`grade` 是解析卡的字段，"
+                             "不是缺数据）。")
             if any(one["partial"] for one in items):
                 hints.append("有条目 partial=true：那几条的 LaTeX 只是公式的一段 —— "
                              "要对着讲就把 `page_image_get(page)` 的原版面拿来核对。")
@@ -848,10 +877,17 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
     什么时候用：用户问"我之前记过什么 / 我标注过哪里 / 我的笔记里怎么说的"。
     **这些是用户写的，不是论文写的** —— 回答时必须说清哪是原文、哪是用户笔记。
 
+    **一条笔记挂在一条高亮上**（`Highlight └── Note`）：所以一条笔记天然同时带着
+    `selected_text`（用户**选中的原文**）与 `note`（用户**写的正文**）两个字段 ——
+    引用时别把 `selected_text` 当成用户说的话，那是论文的句子；用户说的话在 `note` 里。
+
     参数：
-      query —— 关键词（模糊匹配选中文本与笔记正文）。
+      query —— 关键词（**选中文本**与**笔记正文**都参与过滤，模糊匹配、大小写不敏感）。
+               `kind="all"` 时不该有"与关键词无关的高亮"混进结果里、把命中的笔记挤掉。
       scope —— ``paper``（默认，只看当前论文）｜``all``（整个库）。
-      kind  —— ``all``（默认）｜``notes``｜``highlights``｜``annotations``。
+      kind  —— ``all``（默认）｜``notes``（只要笔记正文）｜``highlights``（只要高亮）｜
+               ``annotations``（AI 批注）。`note` 为空 = 这条高亮上**没写过笔记**，
+               不是"笔记正文丢了"。
     """
     async def _impl() -> dict:
         paper_id = None if scope == "all" else ctx.deps.paper_id
@@ -875,11 +911,20 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
                 "ref": cit.ref, "paper_id": pid,
                 "paper_title": raw.get("paper_title") or "",
                 "kind": raw.get("kind"), "selected_text": raw.get("selected_text") or "",
-                "note": raw.get("note") or "", "tags": list(raw.get("tags") or []),
+                "note": raw.get("note") or "",
+                # 笔记自己的 id（上游肯给才给）：模型据此说清"我在讲哪一条笔记"
+                "note_id": str(raw.get("note_id") or raw.get("id") or ""),
+                "tags": list(raw.get("tags") or []),
             })
         out = {"scope": scope, "kind": kind, "returned": len(items), "items": items}
         if not items:
             out["hint"] = "没有找到匹配的笔记 / 高亮 / 批注。"
+        elif kind != "notes" and all(not one["note"] for one in items):
+            # "笔记正文永远拿不到"这条投诉就出在这一步：回执全是高亮、note 全空，
+            # 模型会以为**检索坏了**，而不是"这些高亮上本来就没写笔记"
+            out["hint"] = ("这些是高亮，没有附笔记 —— `note` 为空表示这条高亮上"
+                           "**没写过笔记**（不是查不到正文）。要看笔记正文用 "
+                           "kind='notes'；`query` 会同时过滤选中原文与笔记正文。")
         return out
 
     return await _guarded(ctx, "notes_search",

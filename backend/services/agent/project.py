@@ -561,8 +561,10 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
     r"""本论文的公式清单（LaTeX + 所在页 + 行锚点 + grade + 来源）。
 
     **默认读页级 Markdown 里的块级公式**（`display=true`）—— 那就是阅读器「公式」栏里
-    用户看到、也复制得到的那批**完整公式**（实测全篇 346 条抽取里只有 24 条是块级，
-    而这 24 条条条完整：`D_{\text{mse}} := \mathbb{E}_Q[…]`、含 `\begin{aligned}` 的多行推导）。
+    用户看到、也复制得到的那批**完整公式**（实测全篇 346 条抽取里有 29 条算块级：
+    `$$…$$` 的 24 条 + 列表项里"整行只有这条公式"的 5 条，后者见
+    `reader_service._promote_to_display`；这 29 条条条完整：`D_{\text{mse}} := \mathbb{E}_Q[…]`、
+    含 `\begin{aligned}` 的多行推导）。
 
     - `include_inline=True` 才把**行内**公式（`display=false`）也列出来；默认不要 ——
       伪代码里的 `\qquad` / `b-1` 碎片就是这一批；
@@ -570,7 +572,10 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
       补上（条目带 `source:"parse"`）。卡片的 LaTeX 常常只是公式的一段 ——
       `partial=True` 就是在说这件事，此时该去看 `page_image_get(page)` 的原版面；
     - `grade` 只有解析卡有，markdown 条目留空（不为一个评级去 join 表）；
-    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`。
+    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`；
+    - `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围内的
+      全部条目」，不随 `include_inline` 变 —— 不变式 `total == display_total + inline_total`
+      任何时候都成立；`returned` 才是「这次给了几条」，`omitted_inline` 是这次按需过滤掉的行内条数。
 
     ⚠️ **没有"编号"字段**：论文自己的 `(3)` 编号只在 `context` 里，按编号找请先
     `page_markdown_get` 定位那一页，别让模型以为有个 `number` 参数。
@@ -592,18 +597,13 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         return True
 
     scoped_md = [one for one in md_items if _in_scope(one)]
-    #: 默认只列块级公式（完整）；行内公式另计一个数，让模型知道"还有多少没给"
-    display_total = sum(1 for one in scoped_md if one.get("display"))
-    inline_total = sum(1 for one in scoped_md if not one.get("display"))
-    items = [one for one in scoped_md if one.get("display") or include_inline]
+    items = list(scoped_md)
     #: 这些页在 markdown 源里已经有块级公式了 → 不再用解析卡补
     pages_with_display = {int(one.get("page") or 0) for one in md_items if one.get("display")}
 
     for one in (reader_service.formulas_payload(paper_id, "parse") or {}).get("items") or []:
         one_page = int(one.get("page") or 0)
         if one_page in pages_with_display or not _in_scope(one):
-            continue
-        if not (one.get("display") or include_inline):
             continue
         items.append({**one, "source": "parse"})
     # markdown 那一路是**按出现次数**给的（同一段里同一个 $x$ 出现两三遍 → 两三条条目），
@@ -620,8 +620,19 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         unique.append(item)
     items = sorted(unique, key=_doc_key)
 
+    #: 三个计数**同一口径**：都数"去重后、在筛选范围内的全部条目"（cap 与
+    #: `include_inline` 之前）。以前 display/inline 数的是"去重前的 markdown 源"、total 数的
+    #: 是"去重后的合并列表"，于是回执里出现 `display_total=2, inline_total=46, total=46`
+    #: （第 18 页，2+46≠46）—— 模型没法据此判断到底还有多少条没给。
+    #: 不变式：**total == display_total + inline_total**，任何时候都成立。
+    display_total = sum(1 for one in items if one.get("display"))
+    inline_total = len(items) - display_total
+    #: 这一步只决定"这次列不列行内那批"，不影响上面三个计数（计数说的是"有多少"，
+    #: 不是"这次给了多少"——后者由 `returned` 说）。
+    listed = [one for one in items if one.get("display") or include_inline]
+
     cap = max(1, int(limit or FORMULA_LIMIT))
-    kept = items[:cap]
+    kept = listed[:cap]
     out = [{
         "page": int(i.get("page") or 0) or None,
         "row_id": i.get("row_id"),
@@ -640,10 +651,13 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
             # 两路混 = mixed。模型据此决定要不要再 page_markdown_get 复核
             "source": ("parse" if sources == {"parse"}
                        else "markdown" if sources == {"markdown"} else "mixed"),
-            "truncated": len(items) > len(out),
-            # 两个计数让模型一眼看清"默认给的只是块级那批"：
-            # 块级 = 完整公式（可引用），行内 = 碎片/单符号（按需取，不适合当引用来源）
+            # 只有"上限把这次要列的条目切掉了"才叫 truncated；`include_inline=False`
+            # 不算截断 —— 行内那批是**按需过滤**掉的，条数写在 `omitted_inline` 里。
+            "truncated": len(listed) > len(out),
+            # 三个计数同一口径（都数去重后的全部在范围条目），不变式 total = display + inline：
+            # 块级 = 完整公式（可引用），行内 = 碎片/单符号（不适合当引用来源）
             "display_total": display_total, "inline_total": inline_total,
+            "omitted_inline": 0 if include_inline else inline_total,
             "items": out}
 
 
@@ -697,21 +711,56 @@ def notes(*, query: str | None = None, paper_id: str | None = None,
     want = kind if kind in kinds else "all"
     out: list[dict] = []
 
+    def _note_row(n: dict, pid: str, title: str = "", hl_text: str = "") -> dict:
+        """一条笔记。`selected_text` 优先用笔记自己的，其次用它所挂高亮的原文 ——
+        用户眼里「标了这句 + 写了一条笔记」是**一条**东西，两个字段都得在。"""
+        row = {"kind": "note", "note_id": n.get("id"), "paper_id": pid,
+               "highlight_id": n.get("highlight_id"),
+               "block_id": n.get("block_id"),
+               "selected_text": _clip(n.get("selected_text") or hl_text or "", 200),
+               "note": _clip(n.get("content_md") or "", 600),
+               "tags": list(n.get("tags") or [])}
+        if title:
+            row["paper_title"] = title
+        return row
+
+    def _highlight_row(h: dict, pid: str, note: dict | None, title: str = "") -> dict:
+        """一条高亮。**挂着的笔记正文要带上**：`note` 为空只能意味着"这条高亮上没写过
+        笔记"，不能是"查不到正文" —— 用户报的「笔记正文拿不到」就是这两件事被混了。"""
+        row = {"kind": "highlight", "note_id": (note or {}).get("id"), "paper_id": pid,
+               "block_id": h.get("block_id"),
+               "selected_text": _clip(h.get("text") or "", 200),
+               "note": _clip((note or {}).get("content_md") or "", 600),
+               "tags": []}
+        if title:
+            row["paper_title"] = title
+        return row
+
+    def _listed(out_rows: list[dict]) -> set[str]:
+        return {one.get("note_id") for one in out_rows if one.get("kind") == "note"}
+
     if paper_id:
         paper_service.get_paper(paper_id)
+        #: 关键词要**同时**过滤笔记正文与高亮原文：以前 `list_highlights` 没有 `q`，查询在
+        #: 那一支被静默丢掉 → `kind=all` + 关键词回来一堆无关高亮、命中的笔记被挤到后面
+        #: （用户看到的就是"搜不到自己写的笔记"）。
+        attached = {n.get("highlight_id"): n
+                    for n in (svc.list_notes(paper_id).get("items") or [])
+                    if n.get("highlight_id")}
+        hl_text = {h.get("id"): h.get("text") or ""
+                   for h in (svc.list_highlights(paper_id).get("items") or [])}
         if want in ("all", "notes"):
             for n in (svc.list_notes(paper_id, q=query or None).get("items") or []):
-                out.append({"kind": "note", "paper_id": paper_id,
-                            "block_id": n.get("block_id"),
-                            "selected_text": _clip(n.get("selected_text") or "", 200),
-                            "note": _clip(n.get("content_md") or "", 600),
-                            "tags": list(n.get("tags") or [])})
+                out.append(_note_row(n, paper_id, "",
+                                     hl_text.get(n.get("highlight_id")) or ""))
         if want in ("all", "highlights"):
-            for h in (svc.list_highlights(paper_id).get("items") or []):
-                out.append({"kind": "highlight", "paper_id": paper_id,
-                            "block_id": h.get("block_id"),
-                            "selected_text": _clip(h.get("text") or "", 200),
-                            "note": "", "tags": []})
+            listed = _listed(out)
+            for h in (svc.list_highlights(paper_id, q=query or None).get("items") or []):
+                note = attached.get(h.get("id"))
+                # kind=all：这条高亮已经作为笔记行出现过了（同一条标注），别列两遍
+                if want == "all" and note is not None and note.get("id") in listed:
+                    continue
+                out.append(_highlight_row(h, paper_id, note))
         if want in ("all", "annotations"):
             for a in (svc.list_annotations(paper_id).get("items") or []):
                 out.append({"kind": "annotation", "paper_id": paper_id,
@@ -726,21 +775,22 @@ def notes(*, query: str | None = None, paper_id: str | None = None,
         def _title(row: dict) -> str:
             return str(row.get("paper_title") or row.get("paper_id") or "")
 
+        all_notes = overview.get("notes") or []
+        attached = {n.get("highlight_id"): n for n in all_notes if n.get("highlight_id")}
+        hl_text = {h.get("id"): h.get("text") or ""
+                   for h in (overview.get("highlights") or [])}
         if want in ("all", "notes"):
-            for n in (overview.get("notes") or []):
-                out.append({"kind": "note", "paper_id": n.get("paper_id"),
-                            "paper_title": _title(n),
-                            "block_id": n.get("block_id"),
-                            "selected_text": _clip(n.get("selected_text") or "", 200),
-                            "note": _clip(n.get("content_md") or "", 600),
-                            "tags": list(n.get("tags") or [])})
+            for n in all_notes:
+                out.append(_note_row(n, str(n.get("paper_id") or ""), _title(n),
+                                     hl_text.get(n.get("highlight_id")) or ""))
         if want in ("all", "highlights"):
+            listed = _listed(out)
             for h in (overview.get("highlights") or []):
-                out.append({"kind": "highlight", "paper_id": h.get("paper_id"),
-                            "paper_title": _title(h),
-                            "block_id": h.get("block_id"),
-                            "selected_text": _clip(h.get("text") or "", 200),
-                            "note": "", "tags": []})
+                note = attached.get(h.get("id"))
+                if want == "all" and note is not None and note.get("id") in listed:
+                    continue
+                out.append(_highlight_row(h, str(h.get("paper_id") or ""), note,
+                                          _title(h)))
         if want in ("all", "annotations"):
             for a in (overview.get("annotations") or []):
                 out.append({"kind": "annotation", "paper_id": a.get("paper_id"),

@@ -58,7 +58,11 @@ def test_default_returns_only_block_level_formulas(fake_sources) -> None:
     assert [i["latex"] for i in out["items"]] == [
         "D_{\\text{mse}} := \\mathbb{E}_Q[…]",
         "\\mathcal{C}(f_X, b) := \\min …"]
-    assert out["total"] == 2 and out["source"] == "markdown"
+    # `total` 是"去重后、筛选范围内的全部条目"（行内也算），`returned` 才是这次给了几条：
+    # 两个数一起看才知道"还有多少没给"，这是 2026-12 统一口径后定下的语义。
+    assert out["returned"] == 2 and out["total"] == 5
+    assert (out["display_total"], out["inline_total"]) == (2, 3)
+    assert out["omitted_inline"] == 3 and out["source"] == "markdown"
 
 
 def test_include_inline_lists_the_inline_ones_too(fake_sources) -> None:

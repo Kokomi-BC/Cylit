@@ -163,11 +163,21 @@ def update_highlight(highlight_id: str, payload: dict) -> dict:
         return _highlight_dict(row)
 
 
-def list_highlights(paper_id: str, user_id: int = 1) -> dict:
+def list_highlights(paper_id: str, user_id: int = 1,
+                    q: str | None = None) -> dict:
+    """某篇论文的高亮；`q` 按**选中文本**过滤（与 `list_notes` 的 `q` 同一写法）。
+
+    `q` 是 2026-12 补的：库级笔记检索（`project.notes`）带关键词时，高亮那一支以前
+    **没有**这个参数 —— 查询被静默丢掉，于是 `kind=all` + `query` 回来一批与关键词无关的
+    高亮、把真正命中的笔记挤到后面（用户看到的就是"笔记正文永远拿不到"）。
+    大小写不敏感靠列的排序规则（与 `list_notes` 对 `content_md` 的做法逐字一致）。
+    """
     with session_scope() as sess:
-        rows = (sess.query(Highlight)
-                .filter(Highlight.paper_id == paper_id, Highlight.user_id == user_id)
-                .order_by(Highlight.created_at.asc()).all())
+        query = (sess.query(Highlight)
+                 .filter(Highlight.paper_id == paper_id, Highlight.user_id == user_id))
+        if q:
+            query = query.filter(Highlight.selected_text.like(f"%{q}%"))
+        rows = query.order_by(Highlight.created_at.asc()).all()
         return {"items": [_highlight_dict(r) for r in rows], "count": len(rows)}
 
 
