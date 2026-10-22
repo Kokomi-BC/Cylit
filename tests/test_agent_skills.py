@@ -68,10 +68,11 @@ def test_parse_frontmatter() -> None:
 def test_builtin_skills_materialized_with_descriptions(tmp_path: Path) -> None:
     cfg = _settings(tmp_path)
     manifest = skills_store.ensure_builtin_skills(cfg)
-    assert "paper-qa" in manifest, "仓库里的自带技能没有被物化进技能库"
+    assert "answer-paper" in manifest, "仓库里的自带技能没有被物化进技能库"
 
     skills = skills_store.list_skills(cfg)
-    assert len(skills) >= 9
+    # 自带技能是**逐个数**的：改名/拆分时这条会立刻红，提醒同步 list 与文档
+    assert len(skills) == 11
     assert all(item["builtin"] and item["enabled"] for item in skills)
     assert all(item["description"] for item in skills), "自带技能的 description 应当都解析得出来"
     assert all(item["chars"] > 0 for item in skills)
@@ -138,12 +139,12 @@ def test_zip_too_many_entries_rejected(tmp_path: Path) -> None:
 def test_upload_with_builtin_name_rejected(tmp_path: Path) -> None:
     cfg = _settings(tmp_path)
     skills_store.ensure_builtin_skills(cfg)
-    data = _zip({"paper-qa/SKILL.md": _skill_md("paper-qa")})
+    data = _zip({"answer-paper/SKILL.md": _skill_md("answer-paper")})
     with pytest.raises(ValidationError) as excinfo:
-        skills_store.upload(cfg, data, filename="paper-qa.zip")
+        skills_store.upload(cfg, data, filename="answer-paper.zip")
     assert "自带技能" in excinfo.value.message
     # 自带的那份没被覆盖
-    text = (cfg.agent_skills_dir / "paper-qa" / "SKILL.md").read_text(encoding="utf-8")
+    text = (cfg.agent_skills_dir / "answer-paper" / "SKILL.md").read_text(encoding="utf-8")
     assert "演示用技能" not in text
 
 
@@ -157,16 +158,16 @@ def test_disable_and_enable_move_directory(tmp_path: Path) -> None:
     skills_store.ensure_builtin_skills(cfg)
     root = cfg.agent_skills_dir
 
-    disabled = skills_store.set_enabled(cfg, "paper-qa", False)
-    assert (root / ".disabled" / "paper-qa" / "SKILL.md").is_file()
-    assert not (root / "paper-qa").exists()
-    entry = next(item for item in disabled if item["name"] == "paper-qa")
+    disabled = skills_store.set_enabled(cfg, "answer-paper", False)
+    assert (root / ".disabled" / "answer-paper" / "SKILL.md").is_file()
+    assert not (root / "answer-paper").exists()
+    entry = next(item for item in disabled if item["name"] == "answer-paper")
     assert entry["enabled"] is False and entry["builtin"] is True
 
-    enabled = skills_store.set_enabled(cfg, "paper-qa", True)
-    assert (root / "paper-qa" / "SKILL.md").is_file()
-    assert not (root / ".disabled" / "paper-qa").exists()
-    assert next(i for i in enabled if i["name"] == "paper-qa")["enabled"] is True
+    enabled = skills_store.set_enabled(cfg, "answer-paper", True)
+    assert (root / "answer-paper" / "SKILL.md").is_file()
+    assert not (root / ".disabled" / "answer-paper").exists()
+    assert next(i for i in enabled if i["name"] == "answer-paper")["enabled"] is True
 
 
 # --------------------------------------------------------------------------
@@ -232,18 +233,100 @@ def test_upload_download_delete_roundtrip(client) -> None:
 def test_builtin_skill_cannot_be_deleted(client) -> None:
     http, cfg = client
     skills_store.ensure_builtin_skills(cfg)
-    response = http.delete("/api/v1/agent/skills/paper-qa")
+    response = http.delete("/api/v1/agent/skills/answer-paper")
     assert response.status_code == 403
     assert "自带技能" in response.json()["detail"]
-    assert (cfg.agent_skills_dir / "paper-qa" / "SKILL.md").is_file()
+    assert (cfg.agent_skills_dir / "answer-paper" / "SKILL.md").is_file()
 
 
 def test_put_requires_enabled_flag(client) -> None:
     http, cfg = client
     skills_store.ensure_builtin_skills(cfg)
-    response = http.put("/api/v1/agent/skills/paper-qa", json={})
+    response = http.put("/api/v1/agent/skills/answer-paper", json={})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# --------------------------------------------------------------------------
+# 5b. 自带技能改名后的自愈：仓库里已经没有的旧副本要自己消失
+# --------------------------------------------------------------------------
+
+
+def _builtin_repo(tmp_path: Path, names: list[str]) -> Path:
+    """一个只放指定技能的"仓库源目录"（不碰真正的那份，避免测到别人的内容）。"""
+    root = tmp_path / "repo-skills"
+    for name in names:
+        (root / name).mkdir(parents=True)
+        (root / name / "SKILL.md").write_text(_skill_md(name), encoding="utf-8")
+    return root
+
+
+def _cfg_with_repo(tmp_path: Path, repo: Path) -> Settings:
+    return Settings(data_dir=tmp_path / "data", agent_builtin_skills_dir=repo)
+
+
+@pytest.mark.parametrize("parked", [False, True])
+def test_ghost_builtin_is_pruned_after_a_rename(tmp_path: Path, parked: bool) -> None:
+    """仓库里把技能改名 → 老部署那份旧副本必须消失（用户没改过就该删）。
+
+    `parked` 覆盖两个区：启用区（`skills/<name>`）与禁用区（`skills/.disabled/<name>`）。
+    禁用区必须一起清 —— 否则用户"禁用过的旧技能"会永远躺在列表里。
+    """
+    repo = _builtin_repo(tmp_path, ["answer-paper"])
+    cfg = _cfg_with_repo(tmp_path, repo)
+    root = cfg.agent_skills_dir
+    skills_store.ensure_builtin_skills(cfg)
+
+    # 模拟上一版：技能当时叫 paper-qa，老部署已经物化了它
+    (repo / "answer-paper").rename(repo / "paper-qa")
+    skills_store.ensure_builtin_skills(cfg)
+    assert (root / "paper-qa" / "SKILL.md").is_file()
+    if parked:
+        skills_store.set_enabled(cfg, "paper-qa", False)
+
+    # 仓库里改名：旧名字的目录与 manifest 条目都得消失
+    (repo / "paper-qa").rename(repo / "answer-paper")
+    manifest = skills_store.ensure_builtin_skills(cfg)
+    assert "paper-qa" not in manifest
+    assert "answer-paper" in manifest
+    assert not (root / "paper-qa").exists()
+    assert not (root / ".disabled" / "paper-qa").exists()
+    assert [item["name"] for item in skills_store.list_skills(cfg)] == ["answer-paper"]
+
+
+def test_ghost_builtin_edited_by_the_user_is_kept_but_demoted(tmp_path: Path) -> None:
+    """用户手改过的副本**不能悄悄删**：留着，但摘掉登记（降级成普通技能，可以卸载）。"""
+    repo = _builtin_repo(tmp_path, ["answer-paper"])
+    cfg = _cfg_with_repo(tmp_path, repo)
+    root = cfg.agent_skills_dir
+    skills_store.ensure_builtin_skills(cfg)
+
+    md = root / "answer-paper" / "SKILL.md"
+    md.write_text(md.read_text(encoding="utf-8") + "\n<!-- 用户手改过 -->\n",
+                  encoding="utf-8")
+    (repo / "answer-paper").rename(repo / "another-skill")
+    manifest = skills_store.ensure_builtin_skills(cfg)
+
+    assert md.is_file(), "手改过的副本被删掉了"
+    assert "answer-paper" not in manifest
+    assert skills_store.is_builtin(cfg, "answer-paper") is False
+    # 降级之后"自带技能不能卸载"就不再拦它
+    assert "answer-paper" not in [i["name"] for i in skills_store.delete(cfg, "answer-paper")]
+
+
+def test_builtin_still_in_the_repo_is_left_alone(tmp_path: Path) -> None:
+    """仓库里还有这个名字 → prune 不参与，仍按"合并"的三条规则走（手改也不覆盖）。"""
+    repo = _builtin_repo(tmp_path, ["answer-paper"])
+    cfg = _cfg_with_repo(tmp_path, repo)
+    root = cfg.agent_skills_dir
+    skills_store.ensure_builtin_skills(cfg)
+
+    md = root / "answer-paper" / "SKILL.md"
+    md.write_text(md.read_text(encoding="utf-8") + "\n<!-- 本地一行 -->\n", encoding="utf-8")
+    manifest = skills_store.ensure_builtin_skills(cfg)
+
+    assert "answer-paper" in manifest
+    assert "本地一行" in md.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------

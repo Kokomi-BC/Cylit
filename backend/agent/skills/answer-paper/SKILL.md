@@ -1,5 +1,5 @@
 ---
-name: paper-qa
+name: answer-paper
 description: 回答需要跨段落取证的问题：核心贡献、方法原理、实验结论、局限、与相关方法的关系。
 ---
 

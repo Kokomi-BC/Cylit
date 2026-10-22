@@ -48,21 +48,22 @@ const STYLE_MAX = 2000;
 
 /** 技能的中文名（走查定稿，别自己译）。
  *
- * 技能名是**工具名**（`paper-qa`、`text-fix`…），它既是模型调用时的标识、也是技能目录名，
+ * 技能名是**工具名**（`answer-paper`、`edit-text`…），它既是模型调用时的标识、也是技能目录名，
  * 但摆在设置页上给用户看的该是"这个技能叫什么"。所以主标题走这张表，工具名降级成名字
  * 后面的小号弱色（对日志、翻技能目录时用得上）。**没收录的外部技能**（用户自己传的）
  * 不瞎译，主标题仍用它自己的名字。 */
 const SKILL_NAME_ZH: Record<string, string> = {
   'web-search': '联网搜索',
-  'figure-reading': '图表解读',
-  'formula-explain': '公式解释',
-  'highlight-note': '标注与笔记',
-  'page-visual-check': '原图核对',
-  'paper-overview': '论文概览',
-  'paper-qa': '论文问答',
-  'term-glossary': '术语与译法',
-  'text-fix': '文本修订',
-  'translate-check': '译文核对',
+  'web-fetch': '网页阅读',
+  'read-figure': '图表解读',
+  'read-formula': '公式解读',
+  'annotate-text': '标注与笔记',
+  'read-page-image': '原图核对',
+  'summarize-paper': '论文概览',
+  'answer-paper': '论文问答',
+  'explain-term': '术语与译法',
+  'edit-text': '文本修订',
+  'check-translation': '译文核对',
 };
 
 /** 技能说明的**人话版**（走查定稿，措辞别动），键与 SKILL_NAME_ZH 一一对应。
@@ -71,16 +72,17 @@ const SKILL_NAME_ZH: Record<string, string> = {
  * 规则文本，摊在设置页上读起来像文档。这里按名字给一句"这个技能能做什么"；
  * 取不到条目（外部技能）就回落到它自己的 description，专业版仍挂在行内 title 上、悬停可见。 */
 const SKILL_BLURB: Record<string, string> = {
-  'web-search': '查论文之外的公开信息（官方文档、开源实现、收录情况），答案附链接与站点名。',
-  'figure-reading': '讲清某张图或表画了什么、曲线怎么走、结论是什么。',
-  'formula-explain': '取出页面上的公式，逐个符号讲清含义与作用。',
-  'highlight-note': '按你的要求标出原文、设成颜色，或在某处写一条笔记。',
-  'page-visual-check': '直接看页面原图，核对版式、公式排版与表格结构。',
-  'paper-overview': '一句话结论、章节脉络与建议阅读顺序。',
-  'paper-qa': '需要跨段落取证的问题：贡献、原理、实验、局限。',
-  'term-glossary': '术语在本论文中的含义与译法，以及全文译法是否统一。',
-  'text-fix': '按你的要求改写解析产物或译文、统一术语。',
-  'translate-check': '比对原文与译文是否等价、有无漏译，可用中文复述。',
+  'web-search': '查论文之外的公开信息（官方文档、开源实现、收录情况），给出候选与摘要。',
+  'web-fetch': '按链接读一篇网页正文，摘要不够时读原文。',
+  'read-figure': '讲清某张图或表画了什么、曲线怎么走、结论是什么。',
+  'read-formula': '取出页面上的公式，逐个符号讲清含义与作用。',
+  'annotate-text': '按你的要求标出原文、设成颜色，或在某处写一条笔记。',
+  'read-page-image': '直接看页面原图，核对版式、公式排版与表格结构。',
+  'summarize-paper': '一句话结论、章节脉络与建议阅读顺序。',
+  'answer-paper': '需要跨段落取证的问题：贡献、原理、实验、局限。',
+  'explain-term': '术语在本论文中的含义与译法，以及全文译法是否统一。',
+  'edit-text': '按你的要求改写解析产物或译文、统一术语。',
+  'check-translation': '比对原文与译文是否等价、有无漏译，可用中文复述。',
 };
 
 /** 技能名里的那一个"联网搜索"，齿轮与内嵌设置都挂在它身上。 */

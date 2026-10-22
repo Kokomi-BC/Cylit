@@ -263,13 +263,13 @@ Cylit/
     tools/                  # 14 个工具（薄封装，回调主后端）
     runtime/                # 模型装配、预算、清洗
     skills/                 # ★ 加功能只动这里
-      paper-qa/SKILL.md
+      answer-paper/SKILL.md
       formula-fix/SKILL.md
 ```
 
 ```markdown
 ---
-name: paper-qa
+name: answer-paper
 description: 论文事实问答的默认流程。用户问某段内容、某个数字、某个方法怎么做的时用我。
 ---
 
@@ -307,14 +307,14 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 
 | skill | 用途 | 依赖工具 | 级 | 阶段 |
 |---|---|---|---|---|
-| `paper-qa` | 事实问答默认流程：先检索定位、再读那一页/块、只用 `[n]` | `paper_search` `page_markdown_get` `block_get` | P-a | P0 |
-| `paper-overview` | 回答"讲了什么 / 核心贡献 / 局限"——读预注入的档案 | 通常**不需要工具** | P-a | P0 |
-| `figure-reading` | 图表解读：看图注 + 看图本身，需要时引用图片 | `figure_list` `figure_image_get` | P-a | P0 |
-| `page-visual-check` | 页面级视觉复核：OCR/公式可疑时把整页渲染再看一遍 | `page_image_get`（高 dpi） | P-a | P0 |
-| `formula-explain` | 公式解释 | `formula_get` `block_get` | P-a | P1 ✅ |
-| `term-glossary` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 ✅ |
-| `translate-check` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 ✅ |
-| `text-fix` ✅ | 产物纠错（OCR 认错 / 译文译错）：先读、再改一处、改完逐条报告，可撤回 | `page_markdown_edit`（写） | P-写 | P2-a ✅ |
+| `answer-paper` | 事实问答默认流程：先检索定位、再读那一页/块、只用 `[n]` | `paper_search` `page_markdown_get` `block_get` | P-a | P0 |
+| `summarize-paper` | 回答"讲了什么 / 核心贡献 / 局限"——读预注入的档案 | 通常**不需要工具** | P-a | P0 |
+| `read-figure` | 图表解读：看图注 + 看图本身，需要时引用图片 | `figure_list` `figure_image_get` | P-a | P0 |
+| `read-page-image` | 页面级视觉复核：OCR/公式可疑时把整页渲染再看一遍 | `page_image_get`（高 dpi） | P-a | P0 |
+| `read-formula` | 公式解释 | `formula_get` `block_get` | P-a | P1 ✅ |
+| `explain-term` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 ✅ |
+| `check-translation` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 ✅ |
+| `edit-text` ✅ | 产物纠错（OCR 认错 / 译文译错）：先读、再改一处、改完逐条报告，可撤回 | `page_markdown_edit`（写） | P-写 | P2-a ✅ |
 | `formula-fix` ⚠️ | 公式纠错：先读、再提议、等用户确认 | `page_markdown_get` + `page_markdown_edit`（写） | P-写 | P2-b |
 
 **未来展望（最低优先级，本轮不纳入）**：`cross-paper-compare`（跨论文对比，会让 scope

@@ -1,5 +1,5 @@
 ---
-name: paper-overview
+name: summarize-paper
 description: 给出论文整体概览：一句话结论、章节脉络、各部分在做什么、建议阅读顺序。
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: highlight-note
+name: annotate-text
 description: 在原文上做标注：按要求标出某段并设成某个颜色，或在某处写一条笔记；也能列出这篇已有的高亮与笔记。
 ---
 

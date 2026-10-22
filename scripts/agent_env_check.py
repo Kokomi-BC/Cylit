@@ -46,13 +46,13 @@ def main() -> int:
           f"harness={md.version('pydantic-ai-harness')}")
 
     root = Path(tempfile.mkdtemp(prefix="cylit_agent_smoke_"))
-    (root / "paper-qa").mkdir(parents=True)
-    (root / "paper-qa" / "SKILL.md").write_text(
+    (root / "answer-paper").mkdir(parents=True)
+    (root / "answer-paper" / "SKILL.md").write_text(
         "---\ndescription: 证据式论文问答。\n---\n\n先检索后作答，只写 [n] 引用。\n",
         encoding="utf-8")
-    (root / "formula-explain").mkdir()
-    (root / "formula-explain" / "SKILL.md").write_text(
-        "---\nname: formula-explain\ndescription: 解释或复现当前论文里的公式。\n---\n\n先 formula_get。\n",
+    (root / "read-formula").mkdir()
+    (root / "read-formula" / "SKILL.md").write_text(
+        "---\nname: read-formula\ndescription: 解释或复现当前论文里的公式。\n---\n\n先 formula_get。\n",
         encoding="utf-8")
 
     workspace = ReadOnlyWorkspace(root)
@@ -66,13 +66,13 @@ def main() -> int:
         defs = await load_skill_libraries(Workspace(workspace), [str(root)],
                                           include=None, exclude=frozenset())
         names = sorted(d.name for d in defs)
-        ok("Skills 在 Windows 上完成发现", names == ["formula-explain", "paper-qa"],
+        ok("Skills 在 Windows 上完成发现", names == ["read-formula", "answer-paper"],
            str(names))
         ok("SKILL.md 正文被读入", all(d.body for d in defs),
            ", ".join(f"{d.name}:{len(d.body)}字" for d in defs))
         only = await load_skill_libraries(Workspace(workspace), [str(root)],
-                                         include=["paper-qa"], exclude=frozenset())
-        ok("include 过滤生效", [d.name for d in only] == ["paper-qa"])
+                                         include=["answer-paper"], exclude=frozenset())
+        ok("include 过滤生效", [d.name for d in only] == ["answer-paper"])
         # working_dir 必须是**虚拟 POSIX 根**（返回 C:/… 会被 posixpath.join 拼两次）
         wd = await workspace.working_dir()
         ok("workspace 的 working_dir 是虚拟 POSIX 根",

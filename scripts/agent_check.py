@@ -175,12 +175,12 @@ def check_service(base: str) -> bool:
         record("service", "skills 已加载（框架加载器，不是目录扫描）",
                len(skills) >= 6 and all((s.get("chars") or 0) > 0 for s in skills),
                f"{len(skills)} 个：{[s.get('name') for s in skills][:4]}…")
-        # 写能力的说明书（`text-fix`）必须在，否则模型不知道"改产物"这件事怎么做
+        # 写能力的说明书（`edit-text`）必须在，否则模型不知道"改产物"这件事怎么做
         names = {s.get("name") for s in skills}
-        record("service", "改了产物的 skill 已挂上（text-fix）", "text-fix" in names,
+        record("service", "改了产物的 skill 已挂上（edit-text）", "edit-text" in names,
                f"{sorted(names)}")
         # 高亮/笔记那套动作的说明书（第六步）同样必须在
-        record("service", "高亮 / 笔记的 skill 已挂上（highlight-note）", "highlight-note" in names,
+        record("service", "高亮 / 笔记的 skill 已挂上（annotate-text）", "annotate-text" in names,
                f"{sorted(names)}")
     except Exception as exc:  # noqa: BLE001
         record("service", "skills 已加载（框架加载器，不是目录扫描）", False, f"{exc}")

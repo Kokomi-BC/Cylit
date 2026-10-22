@@ -1,5 +1,5 @@
 ---
-name: term-glossary
+name: explain-term
 description: 术语与译法：某个术语在本论文中的确切含义、中文译法、中英对照与全文译法是否统一。
 ---
 

@@ -428,13 +428,18 @@ def test_both_tools_are_always_mounted():
     assert "web_search" in names and "web_fetch" in names
 
 
-def test_skill_name_is_legal_and_documented(project_root):
-    """自带技能是启动时物化的：名字必须过 `SKILL_NAME_RE`，frontmatter 必须只有两项。"""
+@pytest.mark.parametrize("skill", ["web-search", "web-fetch"])
+def test_skill_name_is_legal_and_documented(project_root, skill):
+    """自带技能是启动时物化的：名字必须过 `SKILL_NAME_RE`，frontmatter 与目录名一致。
+
+    联网这块是两个技能：`web-search`（搜）与 `web-fetch`（读某一篇的正文），
+    名字同时是目录名与前端常量，改一个都得三处一起动。
+    """
     from backend.services.agent.skills_store import SKILL_NAME_RE, parse_frontmatter
 
-    md = project_root / "backend" / "agent" / "skills" / "web-search" / "SKILL.md"
+    md = project_root / "backend" / "agent" / "skills" / skill / "SKILL.md"
     name, description = parse_frontmatter(md.read_text(encoding="utf-8"))
-    assert name == "web-search"
+    assert name == skill
     assert SKILL_NAME_RE.match(name)
     # 不要断言具体措辞：description 是给模型看的一句话说明，措辞会被反复调，
     # 这里只钉"有话说"（空 description 的技能在列表里等于不存在）

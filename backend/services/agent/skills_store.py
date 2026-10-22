@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -37,6 +38,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
+
+#: 用标准库的 logger 而不是 `core.logging.get_logger`：后者 import `core.config`，
+#: 而 `core.config.ensure_dirs` 又会 import 本模块 —— 这一层是模块级循环。
+#: 名字相同、根 handler 由 `setup_logging` 统一配置，输出格式没有区别。
+log = logging.getLogger(__name__)
 
 #: 技能名（也是目录名）。比框架的上限（64）保守一点，且强制"字母数字开头"：
 #: 名字会进 URL（`/agent/skills/{name}/download`），点号/斜杠开头的名字只会带来歧义。
@@ -197,6 +203,41 @@ def list_skills(settings) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
+def _prune_missing_builtins(settings, root: Path,
+                            manifest: dict[str, str]) -> dict[str, str]:
+    """清掉"仓库里已经没有、技能库里还留着"的自带技能副本（改名的自愈）。
+
+    为什么需要这一段：本函数（`ensure_builtin_skills`）只做**合并** —— 把
+    `paper-qa` 改名成 `answer-paper` 之后，老部署里那份陈旧的 `paper-qa` 会永远
+    留在 `data/skills/` 里：用户在列表里同时看到新旧两个技能，其中旧的那个再也不会
+    跟着版本更新，点开还是一份过时的说明。所以按 manifest 反向对一遍仓库：
+
+    - 磁盘上那份 SKILL.md 的哈希 == 登记值（用户没改过）→ 删目录（启用区与
+      `.disabled` 区都查）并摘掉条目；
+    - 哈希对不上（用户手改过）→ **保留目录**，只摘条目：手改的副本归用户，
+      从此按普通外部技能对待（可以卸载、不再随版本更新），我们不能替他删。
+    """
+    src = builtin_root(settings)
+    present = {p.name for p in src.iterdir()
+               if p.is_dir() and (p / "SKILL.md").is_file()}
+    for name in sorted(manifest):
+        if name in present:
+            continue
+        recorded = manifest[name]
+        for base in (root, root / DISABLED_DIR):
+            target = base / name
+            md = target / "SKILL.md"
+            if not md.is_file():
+                continue
+            if _sha256(md) == recorded:
+                shutil.rmtree(target, ignore_errors=True)
+                log.info("自带技能 %s 已不在仓库里（副本没被改过），删除它的物化副本", name)
+            else:
+                log.warning("自带技能 %s 已不在仓库里，但副本被改过：保留目录，降级为普通技能", name)
+        manifest.pop(name, None)
+    return manifest
+
+
 def ensure_builtin_skills(settings) -> dict[str, str]:
     """把仓库里的自带技能合并进技能库；返回 manifest 内容。
 
@@ -204,6 +245,9 @@ def ensure_builtin_skills(settings) -> dict[str, str]:
     - 目标里没有 → 整目录拷过去，登记哈希；
     - 目标里有一份、且**没被用户改过**（内容哈希与登记值一致）→ 随版本更新覆盖；
     - 目标里有一份、但用户改过 → **一律不动**（手改比版本更新重要）。
+
+    合并之前先清一遍"仓库里已经没有"的旧条目（`_prune_missing_builtins`）：
+    改名自带的技能时，老部署上那份旧名字的副本必须自己消失。
     """
     root = skills_root(settings)
     src_root = builtin_root(settings)
@@ -211,6 +255,7 @@ def ensure_builtin_skills(settings) -> dict[str, str]:
     manifest = _load_manifest(root)
     if not src_root.is_dir():
         return manifest
+    manifest = _prune_missing_builtins(settings, root, manifest)
 
     for src in sorted(src_root.iterdir()):
         src_md = src / "SKILL.md"

@@ -1,5 +1,5 @@
 ---
-name: figure-reading
+name: read-figure
 description: 解读论文里的图与表：图中画了什么、曲线怎么走、结构框图与实验对比说明什么；结合图注与正文给出一致解读。
 ---
 

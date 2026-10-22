@@ -1,5 +1,5 @@
 ---
-name: formula-explain
+name: read-formula
 description: 读页面上的公式：取出公式本体（LaTeX）与它的上下文，逐个符号讲清含义、说明它在推导里起什么作用；识别可疑时对照原版面核对。
 ---
 
