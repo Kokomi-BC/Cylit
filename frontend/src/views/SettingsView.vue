@@ -686,16 +686,27 @@ onMounted(async () => {
 .settings-rail {
   /* 不吸顶：容器已经钉住了，整栏跟着容器走即可（吸顶 + 定高反而会互相打架） */
   position: static;
-  height: 100%; overflow-y: auto;
+  /* 不撑满整列：height:100% 把整列高度都算成侧栏，最后一项下面那片空白于是也成了侧栏的。
+     改成只占内容高度、超过一屏才在栏内滚 —— 空白还给页面，末尾几项照样点得到。 */
+  align-self: start;
+  height: auto; max-height: 100%; overflow-y: auto;
   /* 栏内各块的间距由下面各自的 margin 给，不叠 flex gap（两处都管会变成加倍的缝） */
   display: flex; flex-direction: column; gap: 0;
-  /* 左 6px：描边画在元素内也留点余量；右 28px 顶替被删掉的那条竖发丝线 */
-  padding: 2px 28px 12px 6px;
+  /* 上留白 0：顶线靠标题自己的 margin-top 对齐（算式见 .settings-rail-title）；
+     左 6px 给描边余量；右 28px 顶替被删掉的那条竖发丝线 */
+  padding: 0 28px 12px 6px;
 }
-/* 左栏抬头：整栏唯一的大字，比分区项高一档；下留 14px 交给搜索框 */
+/* 左栏抬头：整栏唯一的大字，比分区项高一档；下留 14px 交给搜索框。
+ *
+ * 顶线要和右侧页头标题对齐 —— 两边都有半行距，字号不同就差出来了：
+ *   右：em 顶 = 2（.pane-head 上留白）+ (18 × 1.3 − 18) / 2 = 4.7px
+ *   左：em 顶 = 2（下面这行 margin-top）+ (22 × 1.25 − 22) / 2 = 2 + 2.75 = 4.75px
+ * 差 0.05px，肉眼即齐。line-height 不能沿用继承的 1.55：那是 6.05px 半行距，
+ * 比 4.7 还深，只有负留白才对得齐。 */
 .settings-rail-title {
-  margin: 0 0 14px; padding: 0 12px;
+  margin: 2px 0 14px; padding: 0 12px;
   font-size: calc(22px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
+  line-height: 1.25;
 }
 /* 搜索框：与论文库那条同构（图标 + 无边框输入），整行铺满 */
 .settings-search {
@@ -716,12 +727,12 @@ onMounted(async () => {
 .settings-search input:hover,
 .settings-search input:focus { background: transparent; border: 0; box-shadow: none; }
 .settings-empty { margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
-.settings-nav { display: flex; flex-direction: column; gap: 2px; }
+.settings-nav { display: flex; flex-direction: column; gap: 1px; }
 /* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
    一眼能看出"要改的是行为、模型，还是数据"。大写 + 字距 + 降一档色 = 只当路标，
    不跟可点项抢注意力。 */
 .settings-nav-group {
-  margin: 10px 0 2px; padding: 0 12px;
+  margin: 8px 0 2px; padding: 0 12px;
   font-size: calc(10.5px * var(--ts, 1)); font-weight: 600; letter-spacing: .08em;
   color: var(--text-faint); text-transform: uppercase;
 }
@@ -803,7 +814,7 @@ onMounted(async () => {
   }
   /* 折成两行："设置" + 搜索框一行，导航自己占满下一行（横排要整条宽度才滚得顺） */
   .settings-rail {
-    position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+    position: static; height: auto; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
     gap: 10px; padding: 0 0 10px; overflow: visible;
     border-bottom: 1px solid var(--divider);
   }
