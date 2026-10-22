@@ -106,15 +106,24 @@ const skillsReady = ref(false);
 const skillBusy = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
 
-/** 渲染顺序：web-search 置顶，其余保持接口给的顺序（后端已按"启用在前 / 名字"排过）。
+/** 展示顺序：按"一条阅读路径"排，**联网搜索与网页阅读挨着**（用户口径 2026-12-07）——
+ *  它们是同一件事的两步：先搜到候选、再按链接读正文；后端按名字排会把 `web-fetch` 甩到最后。
+ *
+ *  其余顺序 = 先看整体（全文导读）→ 取材料（正文 / 整页 / 图 / 公式）→ 核对（术语、译文）
+ *  → 答疑 → 动手改（标注、修订）。**没收录的外部技能**排在最后，并保持接口给的相对顺序。
+ *
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 `skills`，就地 sort 会打乱那份引用。 */
-const skillRows = computed<AgentSkill[]>(() => {
-  const i = skills.value.findIndex((s) => s.name === WEB_SEARCH_SKILL);
-  if (i <= 0) return skills.value;
-  const rest = skills.value.slice();
-  const [top] = rest.splice(i, 1);
-  return [top, ...rest];
-});
+const SKILL_ORDER = [
+  'web-search', 'web-fetch',
+  'summarize-paper', 'read-text', 'read-page-image', 'read-figure', 'read-formula',
+  'explain-term', 'check-translation', 'answer-paper', 'annotate-text', 'edit-text',
+];
+function skillRank(name: string): number {
+  const at = SKILL_ORDER.indexOf(name);
+  return at < 0 ? SKILL_ORDER.length : at;
+}
+const skillRows = computed<AgentSkill[]>(() =>
+  skills.value.slice().sort((a, b) => skillRank(a.name) - skillRank(b.name)));
 
 async function loadSkills(): Promise<void> {
   skillsLoading.value = true;
