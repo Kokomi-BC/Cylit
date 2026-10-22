@@ -20,6 +20,8 @@ const props = withDefaults(defineProps<{
   target?: ModelConfig | null;
   /** 从哪个分区点的新建（agent 区 → 类型默认停在 agent） */
   defaultType?: string;
+  /** 从类型卡片的「+」里挑中的预设 id：直接开在第二步，provider / base_url / 密钥 / 参数已填好 */
+  defaultPreset?: string;
   types?: string[];
   typeLabels?: Record<string, string>;
   presets?: ModelPreset[];
@@ -28,6 +30,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   target: null,
   defaultType: 'agent',
+  defaultPreset: '',
   types: () => [],
   typeLabels: () => ({}),
   presets: () => [],
@@ -195,6 +198,18 @@ function init() {
     name: '', model_type: entryType.value, provider: '', model_name: '',
     base_url: '', secret_ref: '', parametersText: '{}', enabled: true,
   });
+  /* 从「+」里挑中的预设（用户口径 2026-12-07）：直接开在第二步。
+     ⚠️ 必须只在 create 模式、且该预设**确实带这一类档位**时才用 —— 否则会拿别的类型的
+     model_name / 参数填进来（比如给重排模型配上对话模型的模型名）。 */
+  const picked = props.defaultPreset
+    ? props.presets.find((x) => x.id === props.defaultPreset) ?? null
+    : null;
+  const pickedSpec = picked ? specOf(picked, entryType.value) : null;
+  if (picked && pickedSpec) {
+    presetId.value = picked.id;
+    applySpec(pickedSpec, picked);
+    step.value = 2;
+  }
 }
 
 watch(() => props.open, (v) => { if (v) { init(); syncReasoning(); } }, { immediate: true });

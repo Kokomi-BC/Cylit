@@ -17,6 +17,7 @@ import { roundMs, truncate } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
+import Modal from '@/components/Modal.vue';
 import ModelForm from '@/components/settings/ModelForm.vue';
 import UsageChart from '@/components/settings/UsageChart.vue';
 
@@ -41,7 +42,6 @@ interface RowAction {
 const loadError = ref('');
 const busyKey = ref('');
 const testResults = ref<Record<string, any>>({});   // model_id -> 最近一次测试结果
-const otherOpen = ref(false);                       // 「其他模型」默认收起
 const secretOpen = ref(false);
 const presetOpen = ref(false);
 const highlightId = ref('');                         // 刚建好的那一行，短暂提亮
@@ -51,16 +51,92 @@ const importBaseUrl = ref('');
 
 const usageRef = ref<InstanceType<typeof UsageChart> | null>(null);
 
-/* ---------------------------- 列表分组 ---------------------------- */
+/* ---------------------------- 按类型分组 ----------------------------
+ * 用户口径 2026-12-07：列表改成**一种类型一张卡** —— 以前只有「问答模型 / 其他模型」两张，
+ * 后者还把向量化、重排、视觉、OCR 混在一张折叠卡里，既看不出在用什么、也没地方往这一类里加。
+ * 现在每张卡的抬头就是「类型图标 + 名字 + 当前在用的那一个 + 一枚加号」，行内是名称与配置。 */
 
-const agentRows = computed(() => (state.models || []).filter((m) => m.model_type === 'agent'));
-const otherRows = computed(() => (state.models || []).filter((m) => m.model_type !== 'agent'));
+/** 类型 → 图标（新类型没登记就用 model） */
+const TYPE_ICON: Record<string, string> = {
+  generation: 'sparkle',   // 文本生成：翻译 / 解读这些写作任务
+  agent: 'chat',           // 论文问答
+  embedding: 'layers',     // 向量化：一层层向量
+  reranker: 'list-check',  // 重排：按相关度重排名次
+  vision: 'image',         // 视觉读页
+  ocr: 'document',         // OCR：从扫描件里读字
+};
+/** 卡片顺序：问答放第二（最常换），生成第一（别处功能都靠它兜底），其余按离正文的远近排 */
+const TYPE_ORDER = ['generation', 'agent', 'embedding', 'reranker', 'vision', 'ocr'];
 
-/** 两张卡同一套行版式，只有抬头与折叠状态不同。 */
-const groups = computed(() => [
-  { key: 'agent', title: '问答模型', rows: agentRows.value, empty: '还没有问答模型，对话会回落到生成模型。' },
-  { key: 'other', title: '其他模型', rows: otherRows.value, empty: '暂无。' },
-]);
+function hostOf(url?: string | null): string {
+  if (!url) return '';
+  try { return new URL(url).host; } catch { return String(url); }
+}
+
+interface TypeGroup {
+  key: string; title: string; icon: string;
+  rows: ModelConfig[];
+  /** 这一类**当前在用**的那个（后端 `is_default`，每种类型各一个） */
+  current: ModelConfig | null;
+  empty: string;
+}
+
+const typeGroups = computed<TypeGroup[]>(() => {
+  const known = allTypes.value;
+  const order = [...TYPE_ORDER.filter((t) => known.includes(t)), ...known.filter((t) => !TYPE_ORDER.includes(t))];
+  return order.map((t) => {
+    const rows = (state.models || []).filter((m) => m.model_type === t);
+    return {
+      key: t,
+      title: typeLabel(t),
+      icon: TYPE_ICON[t] || 'model',
+      rows,
+      current: rows.find((m) => m.is_default) || null,
+      empty: `还没有${typeLabel(t)}模型`,
+    };
+  });
+});
+
+/* ---------------------------- 按类型添加（抬头那枚 +） ----------------------------
+ * 用户口径：每个类型的右上角一枚加号，点开**先选**、再进表单。
+ * 候选就是这套预设里**带这一类档位**的那几个（`presets[i][type]`）—— 选中即把 provider /
+ * base_url / 密钥文件名 / 参数一起填好，表单直接开在第二步；没有合适的预设就走「手动新建」。 */
+const addOpen = ref(false);
+const addType = ref('agent');
+
+interface AddCandidate { id: string; label: string; model: string; host: string }
+
+const addCandidates = computed<AddCandidate[]>(() => {
+  const t = addType.value;
+  const out: AddCandidate[] = [];
+  for (const pre of state.presets || []) {
+    const spec = (pre as any)[t];
+    if (!spec || typeof spec !== 'object') continue;
+    out.push({
+      id: pre.id,
+      label: pre.label || pre.id,
+      model: String(spec.model_name || ''),
+      host: hostOf(spec.base_url) || pre.provider || '',
+    });
+  }
+  return out;
+});
+
+function openAdd(type: string) {
+  addType.value = type;
+  addOpen.value = true;
+}
+
+/** 选中一个预设：关掉选择器，表单带着预设直接开在第二步 */
+function addFromPreset(id: string) {
+  addOpen.value = false;
+  openCreate(addType.value, id);
+}
+
+function addManual() {
+  addOpen.value = false;
+  openCreate(addType.value);
+}
 
 /** 类型胶囊：优先后端 `/models/types`（新类型不用改前端），回退到内置标签表。 */
 const allTypes = computed<string[]>(() => {
@@ -200,6 +276,8 @@ async function commitRename(m: ModelConfig) {
 
 function rowMenu(m: ModelConfig): RowAction[] {
   return [
+    /* 列很窄，行内只剩「名称 + 默认 + 状态」；测试挪到这里（一列放不下第二枚按钮） */
+    { key: 'test', label: '测试连通性', icon: 'bolt', disabled: rowBusy('test:' + m.id) },
     {
       key: 'default',
       label: '设为默认',
@@ -212,6 +290,7 @@ function rowMenu(m: ModelConfig): RowAction[] {
 }
 
 function onRowAction(m: ModelConfig, key: string) {
+  if (key === 'test') { void testModel(m); return; }
   if (key === 'default') { void setDefault(m); return; }
   if (key === 'edit') { openEdit(m); return; }
   if (key === 'delete') void removeModel(m);
@@ -327,12 +406,15 @@ const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
 const formDefaultType = ref('agent');
+/** 从「+」里选中了哪个预设：表单据此直接开在第二步并填好（空 = 从零填） */
+const formPreset = ref('');
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
-function openCreate(type = 'agent') {
+function openCreate(type = 'agent', preset = '') {
   formMode.value = 'create';
   formTarget.value = null;
   formDefaultType.value = type;
+  formPreset.value = preset;
   formOpen.value = true;
 }
 
@@ -340,6 +422,7 @@ function openEdit(m: ModelConfig) {
   formMode.value = 'edit';
   formTarget.value = m;
   formDefaultType.value = m.model_type || 'agent';
+  formPreset.value = '';
   formOpen.value = true;
 }
 
@@ -400,37 +483,39 @@ onBeforeUnmount(() => {
 
     <UsageChart ref="usageRef" />
 
-    <!-- 两张卡共用一套行版式：「其他模型」只是默认收起，不是另一套写法 -->
-    <section class="card wide" v-for="g in groups" :key="g.key">
-      <button
-        v-if="g.key === 'other'"
-        type="button" class="card-head fold" :aria-expanded="otherOpen"
-        @click="otherOpen = !otherOpen"
-      >
-        <span class="hd-title"><AppIcon name="layers" :size="14" />{{ g.title }}</span>
-        <span class="hd-count">{{ g.rows.length }}</span>
-        <span class="spacer"></span>
-        <AppIcon :name="otherOpen ? 'chevron-up' : 'chevron-down'" :size="15" />
-      </button>
-      <div class="card-head" v-else>
-        <span class="hd-title"><AppIcon name="chat" :size="14" />{{ g.title }}</span>
-        <span class="hd-count">{{ g.rows.length }}</span>
-      </div>
-
-      <!-- 空态：直接给"现在能做的事"，不留一整张空卡片 -->
-      <div class="card-body" v-if="!g.rows.length && (g.key === 'agent')">
-        <div class="mempty">
-          <AppIcon name="chat" :size="15" />
-          <span class="mempty-text">{{ g.empty }}</span>
-          <button class="btn sm" @click="openCreate('agent')">
-            <AppIcon name="add" :size="14" />新建
+    <!-- 六个类型并成一排、每类一列（用户口径 2026-12-07 二轮）：抬头是「图标 + 名字 + 个数 + 加号」，
+         下面先报**当前在用的那个**，再列这一类里的模型。列只有 ~180px，所以行内只留
+         「状态点 + 名称 + 默认」，其余动作全收进 ⋯（测试也在里面）。 -->
+    <div class="types-row">
+      <section class="type-col" v-for="g in typeGroups" :key="g.key">
+        <div class="tc-head">
+          <span class="tc-title"><AppIcon :name="g.icon" :size="13" />{{ g.title }}</span>
+          <span class="hd-count">{{ g.rows.length }}</span>
+          <span class="spacer"></span>
+          <button
+            type="button" class="card-add"
+            :title="`添加${g.title}模型`" :aria-label="`添加${g.title}模型`"
+            :data-add-type="g.key"
+            @click="openAdd(g.key)"
+          >
+            <AppIcon name="add" :size="14" />
           </button>
         </div>
-      </div>
-      <div class="card-body tight" v-else-if="g.key === 'agent' || otherOpen">
-        <div class="mlist">
-          <div class="mrow" v-for="m in g.rows" :key="m.id" :class="{ fresh: highlightId === m.id }">
-            <div class="mmain">
+
+        <!-- 当前使用的那个：一行胶囊，名字长了省略号（列宽固定，不能让它把列撑开） -->
+        <div
+          class="tc-cur" v-if="g.current"
+          :title="`当前使用的${g.title}模型：${g.current.name || g.current.id}`"
+        >
+          <AppIcon name="check" :size="11" />
+          <span class="truncate">{{ g.current.name || g.current.model_name || g.current.id }}</span>
+        </div>
+        <div class="tc-cur none" v-else>未设默认</div>
+
+        <div class="tc-list">
+          <div class="tc-item" v-for="m in g.rows" :key="m.id" :class="{ fresh: highlightId === m.id }">
+            <div class="tc-line">
+              <span class="stat-dot" :class="statusInfo(m).cls" :title="statusInfo(m).label" />
               <input
                 v-if="renamingId === m.id"
                 class="rename" :ref="bindRename" v-model="renameText"
@@ -440,51 +525,48 @@ onBeforeUnmount(() => {
                 @blur="commitRename(m)"
               />
               <button
-                v-else type="button" class="mname" :title="`${m.id}（点击改名）`"
+                v-else type="button" class="tc-name truncate" :title="`${m.id}（点击改名）`"
                 @click="startRename(m)"
               >{{ m.name || '（未命名）' }}</button>
-              <div class="msub">
-                <span class="mono truncate">{{ m.model_name || '—' }}</span>
-                <span class="msep">·</span>
-                <span class="truncate">{{ providerCell(m) }}</span>
-              </div>
+              <!-- 「默认」不写字：上面那枚胶囊已经报了「当前用的就是它」，
+                   这里只用一枚对勾示意 —— 狭列里 30px 的徽章会把模型名挤成三个字 -->
+              <span class="tc-default" v-if="m.is_default" title="当前使用">
+                <AppIcon name="check" :size="11" />
+              </span>
             </div>
-
-            <div class="mtags">
-              <span class="badge dim tiny">{{ tagOf(m).text }}</span>
-              <span class="badge ok tiny" v-if="m.is_default">默认</span>
-              <span class="stat" :class="statusInfo(m).cls"><i class="stat-dot" />{{ statusInfo(m).label }}</span>
+            <div class="tc-sub mono truncate">{{ m.model_name || '—' }}</div>
+            <div class="tc-sub truncate">
+              {{ providerCell(m) }}
+              <template v-if="hostOf(m.base_url)"> · {{ hostOf(m.base_url) }}</template>
+              <span class="miss" v-if="m.has_secret === false && !m.is_mock"> · 缺密钥</span>
             </div>
-
-            <!-- 行操作只有 hover / 键盘聚焦时才浮现：静止时一行只留"它是谁、能不能用" -->
-            <div class="m-ops">
-              <button class="btn sm" :disabled="rowBusy('test:' + m.id)" @click="testModel(m)">
-                <AppIcon name="bolt" :size="14" />{{ rowBusy('test:' + m.id) ? '测试中' : '测试' }}
-              </button>
-              <Menu
-                :items="rowMenu(m)" up :label="`更多操作：${m.name || m.id}`"
-                @select="onRowAction(m, $event)"
-              />
-            </div>
-
-            <!-- 测试结论就地一行：通过 / 失败 + 延迟或原因 -->
-            <div class="m-test tiny" v-if="testResults[m.id]">
+            <div class="tc-test tiny" v-if="testResults[m.id]">
               <template v-if="testResults[m.id].ok">
                 <span class="badge ok tiny">通过</span>
-                <span class="faint">延迟 {{ latencyOf(m) }}</span>
-                <span class="faint" v-if="testResults[m.id].dim">维度 {{ testResults[m.id].dim }}</span>
+                <span class="faint">{{ latencyOf(m) }}</span>
               </template>
               <template v-else>
                 <span class="badge danger tiny">失败</span>
-                <span class="faint truncate">{{ truncate(testResults[m.id].detail || '未知原因', 120) }}</span>
+                <span class="faint truncate">{{ truncate(testResults[m.id].detail || '未知原因', 60) }}</span>
               </template>
             </div>
+            <!-- 行操作压成右上角一枚 ⋯：hover / 键盘聚焦才浮现（触摸设备常显） -->
+            <Menu
+              class="tc-more" :items="rowMenu(m)" up
+              :label="`更多操作：${m.name || m.id}`"
+              @select="onRowAction(m, $event)"
+            />
           </div>
 
-          <div class="empty tiny faint" v-if="!g.rows.length">{{ g.empty }}</div>
+          <div class="tc-empty" v-if="!g.rows.length">
+            <span class="truncate">{{ g.empty }}</span>
+            <button class="btn sm" @click="openAdd(g.key)">
+              <AppIcon name="add" :size="13" />添加
+            </button>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+    </div>
 
     <!-- 密钥 + 一键导入预设：两张都是"收起时只有一行抬头"的短卡，并排占同一行 -->
     <section class="card">
@@ -538,9 +620,43 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <!-- 「+」的选择器（用户口径 2026-12-07）：先挑这一类的现成配置，挑中就带着预设进表单；
+         没有合适的再手动填。用一个窄弹窗而不是就地菜单 —— 候选可能七八个（每家一个），
+         就地弹层会把设置页顶长，而且这页本来就在滚动容器里。 -->
+    <Modal
+      :open="addOpen"
+      :title="`添加${typeLabel(addType)}模型`"
+      @close="addOpen = false"
+    >
+      <div class="add-picker">
+        <p class="tiny faint add-note">
+          选一家现成的（base_url / 密钥文件名 / 参数会一起填好），或自己填一份。
+        </p>
+        <div class="add-grid" v-if="addCandidates.length">
+          <button
+            class="add-card" v-for="c in addCandidates" :key="c.id" type="button"
+            :data-add-preset="c.id" @click="addFromPreset(c.id)"
+          >
+            <span class="add-name truncate">{{ c.label }}</span>
+            <span class="add-sub mono truncate">{{ c.model || '—' }}</span>
+            <span class="add-host tiny truncate">{{ c.host }}</span>
+          </button>
+        </div>
+        <div class="tiny faint" v-else>
+          没有适用于「{{ typeLabel(addType) }}」的现成预设，直接手动填一份。
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn sm" @click="addManual">
+          <AppIcon name="edit" :size="14" />手动新建配置
+        </button>
+      </template>
+    </Modal>
+
     <ModelForm
       :open="formOpen" :mode="formMode" :target="formTarget"
-      :default-type="formDefaultType" :types="allTypes" :type-labels="TYPE_LABEL"
+      :default-type="formDefaultType" :default-preset="formPreset"
+      :types="allTypes" :type-labels="TYPE_LABEL"
       :presets="state.presets" :secrets="state.secrets" :busy="rowBusy('submit')"
       @close="formOpen = false" @submit="submitForm"
     />
@@ -602,62 +718,116 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 行：左边「它是谁」、右边「能不能用」，操作收进 hover。
-   两段式而不是五列：名称长短不一时五列会把右边的徽章推得忽左忽右。 */
-.mlist { display: flex; flex-direction: column; }
-.mrow {
-  display: grid; align-items: center; gap: 4px 12px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--divider);
-  transition: background var(--dur-fast) var(--ease);
+/* 抬头那枚加号：与行内 .btn.icon.sm 同一档尺寸，但常显、带主题色的 hover */
+.card-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0;
+  border: 1px solid var(--divider); border-radius: 999px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.mrow:last-child { border-bottom: 0; }
-.mrow:hover { background: var(--bg-hover); }
-/* 刚建好 / 刚保存的那一行：提亮一下再退回去（用户不用自己找"哪个是我刚建的"） */
-.mrow.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.card-add:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--divider));
+  background: var(--bg-hover); color: var(--accent-text);
+}
 
-.mmain { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-/* 点名字就地改名：非编辑态是**文字按钮**（cursor: text 而不是 pointer：它就是"点进输入框"的手感） */
-.mname {
-  padding: 0; border: 0; background: transparent; color: var(--text);
-  font: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 600; text-align: left; cursor: text;
+/* 「+」的选择器：一格一家的卡片，两列自适应；太窄就一列 */
+.add-picker { display: flex; flex-direction: column; gap: 10px; }
+.add-note { margin: 0; line-height: 1.5; }
+.add-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.add-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+  padding: 9px 11px; text-align: left; cursor: pointer;
+  border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--bg-layer); color: var(--text); font: inherit;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.add-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); background: var(--bg-hover); }
+.add-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; max-width: 100%; }
+.add-sub { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); max-width: 100%; }
+.add-host { color: var(--text-faint); max-width: 100%; }
+
+/* ---------------------------- 六个类型并成一排 ----------------------------
+ * 用户口径 2026-12-07 二轮：「六张类型卡并成一排（每类一列）」。
+ * 每列只有 ~180px，所以列内版式是**竖着排的三小行**（名称 / 模型名 / 服务商·域名），
+ * 动作压到右上角一枚 ⋯（测试也进去）—— 行内再放按钮就会把名字挤成一个字。
+ * 窗口窄了依次降为 3 列 / 2 列 / 1 列：宁可换行，也不要 6 个 90px 的夹缝。 */
+.types-row {
+  grid-column: 1 / -1;
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px; align-items: start;
+}
+@media (max-width: 1239px) { .types-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 820px) { .types-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .types-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* 列的外框：与 .card 同一门语言（同圆角、同边框、同阴影），但不吃 `.card + .card` 的间距 */
+.type-col {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--bg-layer); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.tc-head {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 8px 8px 7px; border-bottom: 1px solid var(--divider);
+}
+.tc-title {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.mname:hover { color: var(--accent-text); }
-.rename { width: 100%; font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
-.msub {
-  display: flex; align-items: center; gap: 5px; min-width: 0;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+
+/* 当前在用的那个（用户口径「放置当前使用的模型名称」）：一枚淡色胶囊，名字长了省略 */
+.tc-cur {
+  display: flex; align-items: center; gap: 4px; min-width: 0;
+  margin: 7px 8px 0; padding: 0 7px; height: 20px;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent-text);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 500;
 }
-.msep { opacity: .55; }
+.tc-cur.none { background: var(--bg-sunken); color: var(--text-faint); }
 
-.mtags { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
-.m-ops { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
-.mrow:hover .m-ops, .mrow:focus-within .m-ops { opacity: 1; }
-/* 触摸设备没有 hover：常显，否则「测试 / ⋯」永远点不到 */
-@media (hover: none) { .m-ops { opacity: 1; } }
-
-/* 状态用"点 + 字"而不是彩底徽章：一行里三枚彩块会打架，只有一个点该有颜色 */
-.stat {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+.tc-list { display: flex; flex-direction: column; padding: 4px 0 6px; }
+/* 一条模型：三小行 + 右上角那枚 ⋯ */
+.tc-item { position: relative; padding: 6px 8px; min-width: 0; }
+.tc-item:hover { background: var(--bg-hover); }
+/* 刚建好 / 刚保存的那一条：提亮一下再退回去（不用自己找「哪个是我刚建的」） */
+.tc-item.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.tc-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+/* 点名字就地改名：文字按钮而不是普通按钮（cursor: text = 「点进输入框」的手感） */
+.tc-name {
+  flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: transparent;
+  color: var(--text); font: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 600;
+  text-align: left; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.stat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
-.stat.ok { color: var(--text-dim); }
-.stat.ok .stat-dot { background: var(--ok); }
-.stat.danger { color: var(--danger); }
-.stat.danger .stat-dot { background: var(--danger); }
-
-.m-test { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; }
-
-/* 空态：一行说明 + 一个"现在就能做"的按钮，不占一整张白卡 */
-.mempty {
-  display: flex; align-items: center; gap: 8px;
-  padding: 2px 0; color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
+.tc-name:hover { color: var(--accent-text); }
+.tc-line .rename { flex: 1 1 auto; min-width: 0; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
+.tc-default { flex: none; display: inline-flex; color: var(--ok); }
+.tc-sub {
+  margin-top: 1px; padding-left: 11px;
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
 }
-.mempty-text { flex: 1; min-width: 0; }
+.tc-sub.mono { font-family: var(--mono); }
+.tc-sub .miss { color: var(--warn); }
+.tc-test { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding-left: 11px; min-width: 0; }
 
+/* 状态点：只有一个点该有颜色（三种状态各自的色） */
+.stat-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.stat-dot.ok { background: var(--ok); }
+.stat-dot.danger { background: var(--danger); }
+
+/* 列里的 ⋯：压在这一条的右上角，hover / 键盘聚焦才浮现（触摸设备常显） */
+.tc-more { position: absolute; top: 2px; right: 2px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.tc-item:hover .tc-more, .tc-item:focus-within .tc-more { opacity: 1; }
+@media (hover: none) { .tc-more { opacity: 1; } }
+
+/* 空态：一行说明 + 「添加」按钮（抬头那枚加号之外的第二处入口） */
+.tc-empty {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px 2px; color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1));
+}
+.tc-empty .btn { flex: none; }
 /* 密钥文件：等宽小签，一眼看出"有没有、叫什么"，内容永远不回显 */
 .secrefs { display: flex; flex-wrap: wrap; gap: 6px; }
 .secref {
