@@ -1055,7 +1055,8 @@ def _parse_formula_item(f: Formula) -> dict | None:
 
     `partial` 说明这条 LaTeX **可能只是公式的一段**：`latex_candidate` 本来就是被切段的数组
     （`["C(f, b) :=min", "|x -c|·f(x) dx.", …]`），只有在 `latex_final` / `latex_repaired`
-    都空、我们只能拿第一段时才置 True —— 让下游用裁图（`crop_url`）核对，而不是猜着拼。
+    都空、我们只能拿第一段时才置 True —— 让下游去看那一页的原版面（`page_image_get`），
+    而不是猜着拼。
     """
     candidates = json_loads(f.latex_candidate, []) or []
     if not isinstance(candidates, list):
@@ -1070,7 +1071,6 @@ def _parse_formula_item(f: Formula) -> dict | None:
     # 会被一起误伤（两条既有用例立刻红）。图里文字改用**版面框过滤**（`_inside_figure`），
     # `partial` 的语义保持"这条 LaTeX 只是公式的一段"，不拿长度冒充。
     grade = f.grade
-    crop_name = Path(f.image_path).name if f.image_path else None
     return {
         "id": f.id, "page": int(f.page_number or 0), "latex": latex,
         "display": not bool(f.is_inline),
@@ -1081,8 +1081,6 @@ def _parse_formula_item(f: Formula) -> dict | None:
         "partial": partial,
         #: 版面位置（解析卡自己的，排障视图 `?source=parse` 用）
         "bbox": json_loads(f.bbox_json, None),
-        "crop_url": (f"/papers/{f.paper_id}/formula_crops/{crop_name}"
-                     if crop_name else None),
         "source": "parse",
     }
 
@@ -1562,10 +1560,12 @@ def _progress_payload(row: ReadingProgress | None) -> dict:
 
 
 def _formula_card(f: Formula) -> dict:
-    from backend.core.config import get_settings
+    """公式卡的**管理视图**（`block_detail` / 阅读器块 payload 里那一段）。
 
-    s = get_settings()
-    crop_name = Path(f.image_path).name if f.image_path else None
+    不发 `crop_url` / `crop_path`（2026-12-07 清理）：前者与 `knowledge_service.chunk_image_url`
+    重复且没人读，后者把服务器绝对路径漏给了客户端。要缩略图就走 `chunk_image_url`（知识库
+    那条路是真的在用），要原版面就让 agent 用 `page_image_get`。
+    """
     return {
         "id": f.id, "page": f.page_number,
         "bbox": json_loads(f.bbox_json, None),
@@ -1579,10 +1579,6 @@ def _formula_card(f: Formula) -> dict:
         "validation": json_loads(f.validation_json, {}) or {},
         "review_note": f.review_note,
         "is_inline": bool(f.is_inline),
-        "crop_url": f"/papers/{f.paper_id}/formula_crops/{crop_name}"
-        if crop_name else None,
-        "crop_path": str(Path(s.paper_dir(f.paper_id)) / "formula_crops" / crop_name)
-        if crop_name else None,
     }
 
 

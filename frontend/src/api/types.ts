@@ -123,8 +123,8 @@ export interface FormulaCard {
   validation: FormulaValidation;
   review_note: string | null;
   is_inline: boolean;
-  crop_url: string | null;
-  crop_path?: string | null;
+  // 2026-12-07 清理：后端不再下发 `crop_url` / `crop_path`（前者与 `chunk_image_url` 重复且
+  // 没人读，后者是服务器绝对路径）。要缩略图走 chunk 的 `image_url`。
 }
 
 export type BlockType =
