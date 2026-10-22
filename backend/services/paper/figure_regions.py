@@ -708,6 +708,64 @@ def _merge(regions: list[dict], extra: dict) -> list[dict]:
     return out
 
 
+#: 算法块标题行：Algorithm 1 TURBOQUANT: optimized for MSE（可带 ** 与 $公式$）
+_ALGO_HEAD = re.compile(r"^\s*(?:\*\*)?\s*Algorithm\s*(\d{1,3})\b", re.IGNORECASE)
+
+
+def _overlaps(one: list[float], two: list[float]) -> bool:
+    """两个框是否明显重叠（含一半以上）—— 判断这块地盘是不是已经归图/表了。"""
+    try:
+        ax0, ay0, ax1, ay1 = (float(v) for v in one[:4])
+        bx0, by0, bx1, by1 = (float(v) for v in two[:4])
+    except (TypeError, ValueError):
+        return False
+    ix = min(ax1, bx1) - max(ax0, bx0)
+    iy = min(ay1, by1) - max(ay0, by0)
+    if ix <= 0 or iy <= 0:
+        return False
+    inter = ix * iy
+    smaller = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+    return smaller > 0 and inter / smaller > 0.5
+
+
+def _algorithm_regions(blocks: list[dict], existing: list[dict], entry, page: Rect) -> list[dict]:
+    """算法块（伪代码）也当成可裁图的区域（用户口径 2026-12-07）。
+
+    背景：page_regions 只认解析阶段的插图 / 表格区域，而算法块是 caption + 一串 para/formula，
+    不在那份清单里 —— 于是 figure_list(5) 回空，想调算法 1 的裁图会落空。
+
+    做法：从 Algorithm N 标题块起往下收同栏、紧挨着的非结构块（heading / caption 即停、
+    间隔 > 40pt 即停、换栏即停），得到一条 kind=algorithm 的区域；裁图接口按索引取，
+    自动就能取到。与图/表区域重叠超过一半的不要（那是它们的地盘）。
+    """
+    out: list[dict] = []
+    ordered = sorted(blocks, key=lambda b: (_num(b.get("y0")), _num(b.get("x0"))))
+    for i, block in enumerate(ordered):
+        text = str(block.get("text_clean") or block.get("text") or "")
+        hit = _ALGO_HEAD.match(text)
+        if not hit:
+            continue
+        x0, y0 = _num(block.get("x0")), _num(block.get("y0"))
+        x1, bottom = _num(block.get("x1")), _num(block.get("y1"))
+        for nxt in ordered[i + 1:i + 40]:
+            if str(nxt.get("type") or "") in STRUCT_TYPES:
+                break
+            if _num(nxt.get("y0")) > bottom + 40:
+                break
+            if _num(nxt.get("x1")) <= x0 or _num(nxt.get("x0")) >= x1:
+                break
+            x0 = min(x0, _num(nxt.get("x0")))
+            x1 = max(x1, _num(nxt.get("x1")))
+            bottom = max(bottom, _num(nxt.get("y1")))
+        box = [x0, y0, x1, bottom]
+        if any(_overlaps(box, r.get("raw_bbox") or r["bbox"]) for r in existing):
+            continue
+        caption = re.sub(r"^\s*\*\*|\*\*\s*$", "", text).strip()
+        out.append(entry(int(block.get("page_no")), "algorithm", box, box,
+                         caption, hit.group(1), block.get("id"), source="text"))
+    return out
+
+
 def _compute_all(paper_id: str) -> dict[int, list[dict]]:
     """一次读库算完整篇（按页分组，顺序 = 文档顺序）。"""
     from backend.parsing.ir.ir_reader import IRReader
@@ -906,6 +964,8 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
             keep.append(items[0])
             log.info("同一%s号 %s 有 %d 条区域，只留离图体最近的那条（其余当成正文）",
                      "图" if kind == "figure" else "表", number, len(items))
+        keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
+        keep.extend(_algorithm_regions(blocks, keep, entry, rect))
         keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
         out[page_no] = keep
 

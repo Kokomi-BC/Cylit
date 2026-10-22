@@ -560,7 +560,9 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
         for fig in data.get("items") or []:
             url = fig.get("url") or ""
             kind = str(fig.get("kind") or "figure")
-            label = ("表 " if kind == "table" else "图 ") + str(fig.get("number") or "?")
+            # 算法块也算"可看的内容区"（2026-12-07）：标签别写成"图 1"，那是伪代码
+            label = ({"table": "表 ", "algorithm": "算法 "}.get(kind, "图 ")
+                     + str(fig.get("number") or "?"))
             cit = ctx.deps.registry.assign(
                 key=f"figure:{page}:{fig.get('index')}", kind=kind, page=int(page),
                 snippet=_clip(fig.get("caption") or "", CAPTION_CHARS),
