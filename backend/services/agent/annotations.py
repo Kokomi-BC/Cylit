@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Iterable
 
 from backend.core.errors import NotFoundError, ValidationError
@@ -195,30 +196,47 @@ def find_span(text: str, probe: str, *, occurrence: int = 1) -> tuple[int, int] 
     return start, start + len(probe)
 
 
-def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 60) -> list[str]:
-    """找不到时给模型几句"最像的原文"，让它照着改一版（与产物纠错工具同一套路）。"""
-    probe = (probe or "").strip()
+#: 「最像的原文」的候选切分：按句末标点 / 换行切，太长的再用逗号补切一刀。
+_SENTENCE_SPLIT = re.compile(r"(?<=[。！？；!?;])|\n")
+_CLAUSE_SPLIT = re.compile(r"(?<=[，,、])")
+
+
+def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 80) -> list[str]:
+    """找不到时给模型几句"最像的原文"，让它照着改一版（与产物纠错工具同一套路）。
+
+    为什么要按**相似度**挑，而不是"头 8 个字必须逐字相同"（实测 2026-12-07）：用户把
+    「内积估计上是有偏的」写成「对估计内积是有偏的」，头几个字就不一样了 —— 旧实现退回
+    "最长公共前缀"，公共前缀是 0，于是返回空数组、提示"这一段里没有相近的句子"，而那句
+    原文就在同一块里、只差几个字。现在用 `difflib.SequenceMatcher` 打分，**错几个字照样
+    能给出候选**。
+    """
+    probe = " ".join(str(probe or "").split())
     if not probe or not text:
         return []
-    head = probe[:8]
-    out: list[str] = []
-    at = text.find(head)
-    if at < 0:
-        # 头 8 个字也不在：退化成"按最长的公共片段找一行"
-        best: tuple[int, int] = (0, -1)
-        for line in text.split("\n"):
-            common = 0
-            for a, b in zip(line.strip(), probe):
-                if a != b:
-                    break
-                common += 1
-            if common > best[0]:
-                best = (common, text.find(line.strip()[:20]))
-        at = best[1] if best[1] >= 0 else -1
-    if at < 0:
+    cands: list[str] = []
+    for piece in _SENTENCE_SPLIT.split(str(text)):
+        piece = piece.strip()
+        if len(piece) >= 4:
+            cands.append(piece)
+        # 一句话几十个字时，再按逗号切成小句：候选越细，越容易对上"半句"
+        if len(piece) >= 24:
+            cands.extend(one.strip() for one in _CLAUSE_SPLIT.split(piece)
+                         if len(one.strip()) >= 4)
+    if not cands:
+        cands = [str(text).strip()]
+    scored: list[tuple[float, str]] = []
+    for cand in cands:
+        ratio = SequenceMatcher(None, probe, cand).ratio()
+        if ratio >= 0.3:                      # 低于这个比例给出来只会误导
+            scored.append((ratio, cand))
+    if not scored:
         return []
-    out.append(text[max(0, at - 10):at + width].strip())
-    return out[:limit]
+    scored.sort(key=lambda one: -one[0])
+    return [cand[:width] for _ratio, cand in scored[:limit]]
+
+
+#: 行锚点长什么样（`p004-06`）。认不出来的锚点要**当场报格式错**，不能当成"这一行没这段文字"。
+_ROW_ANCHOR_RE = re.compile(r"^p\d{1,5}-\d+$")
 
 
 def anchor_kind(anchor: str) -> str:
@@ -513,6 +531,17 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     if _CJK_RE.search(str(text or "")):
         side = "zh"
     kind = anchor_kind(anchor)
+    # 锚点格式错要**当场说清格式**（实测 2026-12-07：传 `anchor="row"` 回的是
+    # 「找不到这个锚点对应的文字：row（行号可能在重译后变了）」—— 像"内容找不到"，
+    # 其实是参数写错了，模型会照着这句去改文字，白折腾一轮）。
+    if kind == "row" and not _ROW_ANCHOR_RE.match(anchor):
+        return {"ok": False,
+                "error": f"anchor 格式不对：{anchor!r}。只有两种合法写法：`md:p<页号>`"
+                         "（例如 `md:p4`，宿主会自动挪到那一页的正文行）或行 id（例如 "
+                         "`p004-06`）。行 id 通常拿不到 —— 直接传 `md:pN`。"}
+    if kind == "markdown" and anchor_page_no(anchor) <= 0:
+        return {"ok": False,
+                "error": f"anchor 缺少页号：{anchor!r}（应写成 `md:p4` 这种）"}
     if kind == "pdf":
         return {"ok": False, "error": "原 PDF 那面的文字层只存在于阅读器里，服务端算不出偏移量："
                                       "请让用户在 PDF 页上自己划词高亮（或者改标正文行 / Markdown 视图）。"}
@@ -595,7 +624,8 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         if any_text is None:
             # 锚点本身解析不出文字：行号可能在重译后变了（跟"引文抄错"是两种错）
             return {"ok": False,
-                    "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了）"}
+                    "error": f"找不到这个锚点对应的文字：{anchor}（行号可能在重译后变了；"
+                             f"不确定行 id 就传 `md:p<页号>`）"}
         # 锚点在、这一段文字不在里面 —— 落下去走"找不到这段文字"，并给近似候选
         rendered = any_text
     if span is None:

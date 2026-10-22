@@ -86,6 +86,33 @@ def test_formula_probe_without_a_whole_match_refuses_the_fragment(monkeypatch, c
     assert capture == {}                              # 没落库
 
 
+def test_bad_anchor_says_the_format_not_a_missing_text(capture) -> None:
+    """`anchor="row"` 是**参数格式错**，不能说成"这段文字找不到"（实测误导过一轮）。"""
+    out = ann.create(PAPER, anchor="row", text="随便一句中文")
+    assert out["ok"] is False
+    err = out["error"]
+    assert "md:p4" in err and "格式" in err
+    assert "重译" not in err, "别让人以为是内容/行号变了"
+    assert capture == {}
+
+
+def test_markdown_anchor_without_page_number(capture) -> None:
+    out = ann.create(PAPER, anchor="md:p", text="随便一句中文")
+    assert out["ok"] is False and "页号" in out["error"]
+
+
+def test_near_miss_tolerates_a_few_wrong_characters() -> None:
+    """错几个字（连开头都不一样）也要给出候选，不能回空数组。"""
+    block = ("我们证明，MSE 优化的量化器在内积估计上是有偏的，因此需要另一种方案。"
+             "下一句是别的内容。")
+    near = ann.near_misses(block, "对估计内积是有偏的")
+    assert near, "同一块里只差几个字，必须给候选"
+    assert "内积" in near[0]
+
+
+def test_near_miss_empty_when_nothing_is_close() -> None:
+    assert ann.near_misses("完全无关的一句话。", "zzz unrelated english probe") == []
+
 def test_short_probe_still_matches_a_longer_formula(monkeypatch) -> None:
     """短板探针（用户只引了一段）仍要认：覆盖率按**探针长度**算，短探针天然 100%。"""
     hit = ann.find_formula_span(WHOLE, r"\|_2\right].")
