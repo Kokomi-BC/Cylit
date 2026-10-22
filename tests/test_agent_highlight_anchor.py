@@ -210,6 +210,21 @@ def test_side_note_reaches_the_model() -> None:
 
 
 
+
+
+def test_edit_and_undo_drop_cached_searches() -> None:
+    """改完正文后同一条检索必须**重新查**（缓存键不含内容版本，只能在写入时清）。"""
+    from backend.agent.tools import _forget_searches, _cached, _remember
+
+    from types import SimpleNamespace
+
+    deps = SimpleNamespace(query_cache={})
+    ctx = SimpleNamespace(deps=deps)
+    _remember(ctx, "paper_search", "自检标记", 24, {"returned": 1})
+    assert _cached(ctx, "paper_search", "自检标记", 24) is not None
+    _forget_searches(ctx, "测试")
+    assert _cached(ctx, "paper_search", "自检标记", 24) is None, "改完之后必须重新查"
+
 def test_snippet_centers_on_the_match() -> None:
     """块很长、命中在末尾时，片段要截到命中处（否则回执看着像"没搜到"）。"""
     from backend.agent.tools import _snippet_around

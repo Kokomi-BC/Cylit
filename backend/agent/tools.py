@@ -165,12 +165,25 @@ def _cached(ctx: RunContext[Deps], name: str, query: str, k: int) -> dict | None
     hit = ctx.deps.query_cache.get(_query_key(name, query, k))
     if hit is None:
         return None
-    return {**hit, "note": "这条检索与之前那条完全相同，结果没有变化；"
-                          "请基于已有材料作答，或换一个真正不同的检索词。"}
+    return {**hit, "note": "这条检索与上一次完全相同，宿主**没有重新请求后端**（直接复用了上次的"
+                          "结果）。要确认内容改动带来的变化，就换一个能区分新旧的词重搜；"
+                          "正文一改或撤回，这份缓存就会清空。"}
 
 
 def _remember(ctx: RunContext[Deps], name: str, query: str, k: int, payload: dict) -> None:
     ctx.deps.query_cache[_query_key(name, query, k)] = payload
+
+
+def _forget_searches(ctx: RunContext[Deps], why: str) -> None:
+    """正文一改，缓存里的检索结果就带着旧文字作废了。
+
+    缓存键只有 (工具名, query, k)，**不含内容版本**：同一轮里"搜一次 → 改正文 → 再搜同一个
+    词"会直接命中缓存，回的是改动前那份片段。索引本身是干净的（实测撤销后 LanceDB 里既没有
+    旧词也没有重复 id），所以只需要在写入时把缓存清掉。
+    """
+    if ctx.deps.query_cache:
+        log.debug("正文改动（%s）：清空 %d 条检索缓存", why, len(ctx.deps.query_cache))
+        ctx.deps.query_cache.clear()
 
 
 def _stale_hint() -> str:
@@ -1053,6 +1066,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                     "line": data.get("line"), "before": data.get("before"),
                     "after": data.get("after"), "reason": str(reason or "")[:120],
                 })
+                _forget_searches(ctx, f"p{page_no} 改写")
             return data
 
         if what in ("undo", "revert", "rollback"):
@@ -1062,6 +1076,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int, side: st
                 ctx.deps.edits = [e for e in ctx.deps.edits
                                   if not (e.get("page") == page_no
                                           and e.get("side") == key)]
+                _forget_searches(ctx, f"p{page_no} 撤回")
             return data
 
         return {"ok": False, "error": "op 只能是 view / replace / undo。"}
