@@ -56,6 +56,36 @@ const step = ref<1 | 2>(1);
  * 拿不到就**自动退回手填**，并把原因写清楚 —— 三种状态必须分得开：
  * 配置已保存（保存按钮）/ 连接成功（测试）/ 列表拉到了（这里）。
  * 密钥走 `secret_ref`（文件名，后端自己读），**前端不碰密钥内容、也不回显**。 */
+/* ---------------------------- 就地写密钥 ----------------------------
+ * 用户口径（改造计划 §2.1/§2.2）：API Key 由用户在这里填，**已存的密钥不得明文回传**。
+ * 所以这里只做一件事：把内容 `POST /models/secret` 落成 `data/secrets/<名>`（仅本机），
+ * 表单里留下的只有一个**文件名**引用；输入框写完立刻清空，任何时候都不回显内容。
+ * 名字默认取 `<provider>.key`，允许用户改（同一家多个 key 的部署）。 */
+const keyValue = ref('');
+const keyBusy = ref(false);
+const secretName = computed(() => {
+  const base = String(form.secret_ref || '').trim();
+  if (base) return base;
+  const prov = String(form.provider || '').trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+  return `${prov || 'custom'}.key`;
+});
+
+async function writeKey() {
+  const value = keyValue.value.trim();
+  if (!value) { toast('先粘贴密钥内容', 'warn'); return; }
+  keyBusy.value = true;
+  try {
+    const data = await api.post<{ bytes?: number }>('/models/secret', { name: secretName.value, value });
+    form.secret_ref = secretName.value;
+    keyValue.value = '';            // 写完立刻清空：界面不留任何密钥内容
+    toast(`密钥已写入本机${data?.bytes ? ` · ${data.bytes} 字节` : ''}`, 'ok');
+  } catch (err) {
+    reportError(err, '写入密钥失败');
+  } finally {
+    keyBusy.value = false;
+  }
+}
+
 const probeBusy = ref(false);
 const probeError = ref('');
 const probeOptions = ref<string[]>([]);
@@ -457,6 +487,22 @@ function labelOf(t: string): string {
       </label>
       <p class="probe-err tiny" v-if="probeError" data-probe-error>{{ probeError }}</p>
 
+      <!-- 就地写密钥：内容只往本机文件里写，写进表单的只有文件名（不回显） -->
+      <div class="key-row gap-top">
+        <label class="field key-field">API Key（只写本机，不回显）
+          <input
+            v-model="keyValue" type="password" autocomplete="off" spellcheck="false"
+            data-key-input placeholder="sk-…（留空表示延用已保存的密钥）"
+          />
+        </label>
+        <button type="button" class="btn sm key-write" :disabled="keyBusy" data-key-write @click="writeKey">
+          <AppIcon name="upload" :size="13" />{{ keyBusy ? '写入中' : '写入密钥' }}
+        </button>
+      </div>
+      <p class="tiny faint key-hint" v-if="form.secret_ref">
+        已引用密钥文件：<code class="mono">{{ form.secret_ref }}</code>（内容不回显，换密钥就在上面重写一次）
+      </p>
+
       <div class="chips" v-if="modelChips.length">
         <button
           type="button" class="chip mono" v-for="m in modelChips" :key="m"
@@ -596,6 +642,13 @@ function labelOf(t: string): string {
 .mn-row input { flex: 1 1 auto; min-width: 0; }
 .mn-probe { flex: none; white-space: nowrap; }
 .probe-err { margin: 6px 0 0; color: var(--danger); }
+
+/* 密钥那一行：输入框占满，按钮固定在右；提示行给的是**文件名**，不是内容 */
+.key-row { display: flex; align-items: flex-end; gap: 6px; }
+.key-field { flex: 1 1 auto; min-width: 0; }
+.key-write { flex: none; }
+.key-hint { margin: 4px 0 0; }
+.key-hint code { font-family: var(--mono); }
 
 /* 模型名建议 chips：与「预设」同一套胶囊语言 */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
