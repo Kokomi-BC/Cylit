@@ -51,6 +51,9 @@ class Deps:
     #: 归一化检索词 → 上一次的返回。模型会把同一句话问两遍（实测跨库问题连发 9 次
     #: `kb_search`，最后把轮数用满），重复的查询不必再打一次后端。
     query_cache: dict[str, dict] = field(default_factory=dict)
+    #: 检索命中的**行跨度**（首行 id → 这个 chunk 覆盖的整串行 id）：`block_get` 展开跨多行的
+    #: chunk 时要拼整段，而 `Citation` 里只存了首行（前端契约不动，别塞进引用表）。
+    row_spans: dict[str, list[str]] = field(default_factory=dict)
     #: 本轮检索次数（**纯记账**：检索预算 2026-11-26 已取消，只剩统计与自检在读它）
     search_calls: int = 0
     #: 本轮改动次数（高亮 / 笔记 / 页级产物都算，同样只是记账 —— 改动预算已取消）

@@ -149,8 +149,12 @@ class HostClient:
         params = {k: v for k, v in (("q", q), ("status", status)) if v}
         return dict(await self.get("/agent/library", params or None) or {})
 
+    # ⚠️ 本类里**不要再出现第二个叫 notes 的方法**：Python 的类体按顺序赋值，后来者会
+    # **静默覆盖**前者，"调用方传 kind 就 TypeError"这种错要到真机跑一遍才看得见
+    # （2026-12 实测：库级笔记检索整条不可用）。单篇笔记那条因此叫 `paper_notes`。
     async def notes(self, *, query: str | None = None, paper_id: str | None = None,
                     kind: str = "all") -> dict:
+        """**库级**笔记 / 高亮 / 批注检索（`notes_search` 的后端，带 `kind` 过滤）。"""
         params = {k: v for k, v in (("query", query), ("paper_id", paper_id),
                                     ("kind", kind)) if v}
         return dict(await self.get("/agent/notes", params or None) or {})
@@ -202,7 +206,11 @@ class HostClient:
         """删高亮（连带它挂着的笔记）。"""
         return dict(await self.delete(f"/agent/highlights/{highlight_id}") or {})
 
-    async def notes(self, paper_id: str, *, note_id: str = "", query: str = "") -> dict:
+    #: 名字带 paper_ 前缀是为了跟上面**库级**的 `notes` 区分：两者曾经同名，
+    #: 后定义的那条把前者覆盖掉，`notes_search` 从此必炸。改名不是洁癖，是修 bug。
+    async def paper_notes(self, paper_id: str, *, note_id: str = "",
+                          query: str = "") -> dict:
+        """**单篇**内查笔记（`note_manage` 的 list / locate 分支的后端）。"""
         params = {k: v for k, v in (("note_id", note_id), ("query", query)) if v}
         return dict(await self.get(f"/agent/papers/{paper_id}/notes", params or None) or {})
 

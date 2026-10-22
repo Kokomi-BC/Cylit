@@ -169,9 +169,22 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
     page = int(item.get("page_no") or item.get("page") or 0) or None
     # 片段优先用译文：给用户看的引用表是中文语境；原文留给模型去读
     snippet = _clip(item.get("translation") or item.get("content") or "")
+    #: 这条命中覆盖的正文行：写侧把行 id 也塞进了 block_id，所以行身份从这里来
+    row_ids = [str(rid) for rid in (item.get("row_ids") or []) if str(rid).strip()]
+    row_id = str(item.get("row_id") or "") or (row_ids[0] if row_ids else "")
+    # 兜底再判一次名字空间：即便上游把行 id 塞在 block_id 里（存量投影/别的调用方），
+    # 也绝不让它进引用表的 block_id —— 那等于给 block_get 一个必然 404 的入参。
+    raw_block = item.get("block_id")
+    block_id = None if _row_id_of(raw_block) else raw_block
+    if row_id and len(row_ids) > 1:
+        # Citation 只存首行（前端契约不动）；整段跨度留给 block_get 拼
+        ctx.deps.row_spans[row_id] = row_ids
     return ctx.deps.registry.assign(
-        key=_chunk_key(paper_id, item.get("block_id"), chunk_id, snippet), kind="chunk",
-        page=page, section=section, block_id=item.get("block_id"),
+        # 去重键用"落点"：block_id 可能是 None（行 id 形态已被剥掉），这时用行 id 顶上 ——
+        # 少了它，两个**片段一模一样但页码不同**的段落会并成一个引用号
+        key=_chunk_key(paper_id, block_id or row_id, chunk_id, snippet), kind="chunk",
+        page=page, section=section, block_id=block_id,
+        row_id=row_id or None,
         snippet=snippet, label=_locate(page, section, item.get("chunk_type") or ""),
         ids=(chunk_id,) if chunk_id else (),
         # 行身份（阶段 2b）：检索命中带过来的 pid，复用编号时由 assign 合并（不覆盖）。
@@ -322,6 +335,27 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
     return await _guarded(ctx, "page_markdown_get", {"pages": _clip(pages, 40)}, _impl())
 
 
+#: 一个 chunk 最多拼几行。段落型 chunk 通常 1~3 行；上限是防"一次展开 30 行"把
+#: 上下文与后端往返都撑爆（超出的那部分让 page_markdown_get 去读）。
+SPAN_ROWS_MAX = 8
+
+#: 页级**行 id**（`p017-02`）与公式锚点的 `row-` 前缀形态。与 `project.as_row_id` 同一条
+#: 规则，**故意各写一份**：agent 进程不能 import 主后端的服务层（见 `agent/config.py` 顶部）。
+_ROW_ID_RE = re.compile(r"^(?:row-)?p(?P<page>\d{3,})-(?P<idx>\d{2})$")
+
+
+def _row_id_of(raw: object) -> str:
+    """`p017-02` / `row-p017-02` → `p017-02`；不像行 id 就回空串（= 那是真的块 id）。"""
+    text = str(raw or "").strip()
+    match = _ROW_ID_RE.match(text)
+    return f"p{match.group('page')}-{match.group('idx')}" if match else ""
+
+
+def _row_page(row_id: str) -> int:
+    match = _ROW_ID_RE.match(str(row_id or ""))
+    return int(match.group("page")) if match else 0
+
+
 async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
     """按 ref 读**单个块/段**的完整原文（含译文与公式 LaTeX）。
 
@@ -330,26 +364,71 @@ async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
     参数：
       ref —— 检索或读页结果里给出的引用编号。
     """
+    async def _read_rows(cit, row_id: str) -> dict | None:
+        """按行读这一段（一个 chunk 可能跨好几行 → 拼成整段，而不是只给第一行）。"""
+        span = ctx.deps.row_spans.get(row_id) or [row_id]
+        texts: list[str] = []
+        zh: list[str] = []
+        page = cit.page
+        kind = None
+        for rid in span[:SPAN_ROWS_MAX]:
+            page_no = _row_page(rid) or cit.page
+            if not page_no:
+                continue
+            data = await ctx.deps.host.row(ctx.deps.paper_id, int(page_no), rid)
+            if not data:
+                continue
+            page = data.get("page") or page
+            kind = data.get("type") or kind
+            text = str(data.get("text") or "").strip()
+            if text:
+                texts.append(text)
+            translation = str(data.get("translation") or "").strip()
+            if translation:
+                zh.append(translation)
+        if not texts and not zh:
+            return None
+        return {"ref": cit.ref, "page": page, "type": kind,
+                "text": "\n\n".join(texts),
+                "translation": "\n\n".join(zh) or None}
+
+    def _row_fail(cit) -> dict:
+        """行路径也读不到。**不报内部 id**（模型拿它没用，还会学着复述给用户）。"""
+        where = f"第 {int(cit.page)} 页" if cit.page else "那一页"
+        return {"ok": False,
+                "error": f"这一条读不到（可能随重新转录变了号）。"
+                         f"用 page_markdown_get 读{where}，或重新检索一次。"}
+
     async def _impl() -> dict:
         cit = ctx.deps.registry.by_ref(ref)
         if cit is None:
             return {"ok": False,
                     "error": f"ref={ref} 不存在。只能用工具**实际返回过**的编号。"}
+        if cit.row_id:
+            # 行优先：写侧把行 id 也塞进了 block_id（见 project.anchor_ids），
+            # 拿它去查块表必然 404，所以有行身份就直接走行走廊。
+            got = await _read_rows(cit, cit.row_id)
+            if got:
+                return got
+            return _row_fail(cit)
         if not cit.block_id:
-            if cit.row_id and cit.page:
-                # 页级产物（转录/翻译）的一行：按行 id 展开（行 id 就是阅读器正文的行号）
-                data = await ctx.deps.host.row(ctx.deps.paper_id, int(cit.page),
-                                               str(cit.row_id))
-                if not data:
-                    return {"ok": False,
-                            "error": f"ref={ref} 展不开（这一行可能随重转录变了号）。"}
-                return {"ref": cit.ref, "page": data.get("page"), "type": data.get("type"),
-                        "text": str(data.get("text") or "").strip(),
-                        "translation": str(data.get("translation") or "").strip() or None}
+            where = f"第 {int(cit.page)} 页" if cit.page else "它所在的那一页"
             return {"ok": False,
-                    "error": f"ref={ref} 不是可单独展开的块。请先用 paper_search 或 "
-                             f"page_markdown_get 拿到带 ref 的块。"}
-        data = await ctx.deps.host.block(ctx.deps.paper_id, cit.block_id)
+                    "error": f"ref={ref} 这一条没有可展开的正文（只有定位信息）："
+                             f"用 page_markdown_get 读{where}。"}
+        try:
+            data = await ctx.deps.host.block(ctx.deps.paper_id, cit.block_id)
+        except HostError as exc:
+            # 兜底：这个 "block_id" 其实是行 id（存量索引 96.98% 都这样）→ 按行再试一次
+            row_id = _row_id_of(cit.block_id)
+            if row_id and (exc.status == 404
+                           or str(exc.code or "").upper() in ("NOT_FOUND", "404")):
+                got = await _read_rows(cit, row_id)
+                if got:
+                    got["note"] = "这一条是页级正文行，已按行展开。"
+                    return got
+                return _row_fail(cit)
+            raise
         return {
             "ref": cit.ref, "page": data.get("page"), "section": data.get("section"),
             "type": data.get("type"),
@@ -524,11 +603,17 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
             page = int(raw.get("page_no") or 0) or None
             section = raw.get("section")
             snippet = _clip(raw.get("translation") or raw.get("content") or "")
+            # 名字空间同 `_register_chunk`：行 id 不能进 block_id，去重键回落到行 id
+            kb_rows = [str(rid) for rid in (raw.get("row_ids") or []) if str(rid).strip()]
+            kb_row = str(raw.get("row_id") or "") or (kb_rows[0] if kb_rows else "")
+            kb_block = None if _row_id_of(raw.get("block_id")) else raw.get("block_id")
+            if kb_row and len(kb_rows) > 1:
+                ctx.deps.row_spans[kb_row] = kb_rows
             cit = ctx.deps.registry.assign(
-                key=_chunk_key(paper_id, raw.get("block_id"),
+                key=_chunk_key(paper_id, kb_block or kb_row,
                                str(raw.get("chunk_id") or ""), snippet), kind="chunk",
                 paper_id=paper_id, page=page, section=section,
-                block_id=raw.get("block_id"), snippet=snippet,
+                block_id=kb_block, row_id=kb_row or None, snippet=snippet,
                 label=" · ".join(x for x in (title, _locate(page, section)) if x),
                 ids=(str(raw.get("chunk_id") or ""),),
                 # 跨库命中同样带自己那条 chunk 的 pids（拿不到就是空，to_dict 里不出现）
@@ -1085,11 +1170,13 @@ async def note_manage(ctx: RunContext[Deps], op: str, highlight_id: str = "", no
             return {"ok": True, "note_id": note.get("id"), "page": note.get("page"),
                     "scope": note.get("scope"), "quote": note.get("selected_text")}
         if what in ("list", "search"):
-            return await ctx.deps.host.notes(ctx.deps.paper_id, query=str(query or ""))
+            return await ctx.deps.host.paper_notes(ctx.deps.paper_id,
+                                                   query=str(query or ""))
         if what in ("locate", "info", "show"):
             if not note_id:
                 return {"ok": False, "error": "locate 要给 note_id（先用 op=list 拿）。"}
-            return await ctx.deps.host.notes(ctx.deps.paper_id, note_id=str(note_id))
+            return await ctx.deps.host.paper_notes(ctx.deps.paper_id,
+                                                   note_id=str(note_id))
         if what in ("update", "edit"):
             if not note_id:
                 return {"ok": False, "error": "update 要给 note_id。"}

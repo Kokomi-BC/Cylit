@@ -161,9 +161,10 @@ const confirmBusy = ref(false);
 const msgsEl = ref<HTMLElement | null>(null);
 const chatEl = ref<HTMLElement | null>(null);
 /** 「贴着底部 / 跟随」：流式输出时决定要不要把视口拉着走。
- *  用户往上翻 = 退出跟随（不再被拽下去）；翻回底部或点「回到最新」= 恢复。 */
+ *  **只有这一份状态**（以前 `atBottom` 与 `follow` 各一半：圆钮只恢复其一、滚动事件又写另一个，
+ *  两份互相打架 —— 这正是"点了回到最新也追不上"的一半来源）。圆钮的显隐直接由它反推。
+ *  只有**用户的意图**能改它：往上翻 / 上翻键 = 退出；滚回底部、点圆钮、发消息、切会话 = 恢复。 */
 const BOTTOM_GAP = 56;
-const atBottom = ref(true);
 const follow = ref(true);
 
 /** 流式正文的**合帧**（用户口径 2026-12-03：流式输出感觉卡卡的）。
@@ -177,16 +178,32 @@ let deltaBuf = '';
 let deltaTarget: { content: string } | null = null;
 let deltaTimer = 0;
 
-/** 上一次的 scrollTop / 程序滚动的保护窗口 —— 见 `onMsgsScroll` 里"别把长高当成上翻"。 */
-let lastScrollTop = 0;
-let programmaticUntil = 0;
+/** 程序自己刚滚到的位置 —— 见 `onMsgsScroll` 里"别把自己的滚动当成上翻"。
+ *  以前用一个 600ms 的时间窗，两个方向都误伤：窗口内用户真上翻被吞掉（想翻翻不动），
+ *  窗口外程序滚动的中间帧又被当成上翻（跟随就此断掉）。现在改成**认落点**：
+ *  只有 scrollTop 正好落在我们刚设的那个值上，才算"这滚动是我自己干的"。 */
+let programTop = -1;
+let programAt = 0;
 
 function stickToBottom() {
   const el = msgsEl.value;
   if (!el) return;
-  programmaticUntil = performance.now() + 600;
   el.scrollTop = el.scrollHeight;
-  lastScrollTop = el.scrollTop;
+  programTop = el.scrollTop;          // 读回被浏览器夹紧之后的真值
+  programAt = performance.now();
+}
+
+/** 跟随状态下"把视口拉到底"，但**等这一帧的 DOM 落完**再拉。
+ *  增量落盘与 DOM 更新不在同一个任务里：直接滚读到的是还没渲染的旧 scrollHeight，
+ *  于是每一批增量都落后一截（越写越远，只能反复点「回到最新」）。
+ *  同一帧里多次请求只滚一次（增量、KaTeX 后渲染、折叠块会连着触发好几拨）。 */
+let stickRaf = 0;
+function followBottom() {
+  if (!follow.value || stickRaf) return;
+  stickRaf = requestAnimationFrame(() => {
+    stickRaf = 0;
+    if (follow.value) stickToBottom();
+  });
 }
 
 function flushDelta() {
@@ -198,7 +215,7 @@ function flushDelta() {
   if (!target || !buf) return;
   target.content += buf;
   appendLiveStep('text', buf);
-  if (follow.value) stickToBottom();
+  followBottom();                     // 下一帧（DOM 落完之后）再贴底，见 followBottom
 }
 
 function pushDelta(target: { content: string }, text: string) {
@@ -215,14 +232,11 @@ function dropDelta() {
   deltaTarget = null;
 }
 
-/** 回到最新：恢复跟随并滚到底（那枚圆形按钮） */
 /** 回到最新：**恢复跟随**并滚到底（那枚圆形按钮）。
- *  用户口径 2026-12-06：点了它之后要像真正的 AI 对话那样**一直贴着底部输出**，
- *  所以这里既恢复 follow，也把随后的滚动标成"程序滚动"，免得被 `onMsgsScroll` 判成上翻。 */
+ *  用户口径 2026-12-06：点了它之后要像真正的 AI 对话那样**一直贴着底部输出** ——
+ *  所以这里恢复的是 `follow` 本身（圆钮的显隐也由它反推），不是"只滚这一次"。 */
 async function backToLatest() {
   follow.value = true;
-  atBottom.value = true;
-  programmaticUntil = performance.now() + 900;
   await scrollToBottom();
 }
 /* 输入区**浮在消息之上**（见 `.composer` 的注释）：浮起来就不占布局高度了，消息区得自己
@@ -793,26 +807,65 @@ function threadScrollKey(id: string | null = currentId.value): string {
   return `cylit:chat-scroll:${id || `new:${props.paperId}`}`;
 }
 
+/** 离底部够近了吗（跟随与圆钮共用同一个尺子）。 */
+function isNearBottom() {
+  const box = msgsEl.value;
+  if (!box) return true;
+  return box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_GAP;
+}
+
+/** 用户自己想往上翻：**立刻**退出跟随。
+ *  比 scroll 事件更早也更准（scroll 只在"真的滚动了"之后才来，还得与程序滚动辨别）；
+ *  滚轮向上、手指往下拖都先命中这里。已经贴底、没得翻时不动 —— 免得多浮出一枚圆钮。 */
+function userScrollUp() {
+  const box = msgsEl.value;
+  if (box && box.scrollHeight - box.scrollTop - box.clientHeight <= 1) return;
+  follow.value = false;
+  programTop = -1;                 // 人动手了：之前那点程序滚动不再享有豁免
+  if (stickRaf) { cancelAnimationFrame(stickRaf); stickRaf = 0; }
+}
+function onMsgsWheel(e: WheelEvent) {
+  if (e.deltaY < 0) userScrollUp();
+}
+let touchY = 0;
+function onMsgsTouchStart(e: TouchEvent) {
+  touchY = e.touches[0]?.clientY ?? 0;
+}
+function onMsgsTouchMove(e: TouchEvent) {
+  const y = e.touches[0]?.clientY ?? 0;
+  if (y - touchY > 4) { userScrollUp(); touchY = y; }   // 手指往下 = 内容往上 = 上翻
+}
+
+/** 内容自己长高（增量落盘、思考 / 工具步骤、KaTeX 后渲染、折叠块展开）——
+ *  跟随时跟着贴底。以前只有"正文增量"这一路会滚，思考段 / 工具步骤 / 后渲染全程不动，
+ *  于是点了「回到最新」之后在思考阶段就等于没跟。 */
+let msgsMO: MutationObserver | null = null;
+watch(msgsEl, (el) => {
+  msgsMO?.disconnect();
+  msgsMO = null;
+  if (!el) return;
+  msgsMO = new MutationObserver(() => followBottom());
+  msgsMO.observe(el, { childList: true, subtree: true, characterData: true });
+});
+
 let msgsSaveTimer = 0;
 function onMsgsScroll() {
   const box = msgsEl.value;
   if (box) {
-    const near = box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_GAP;
-    atBottom.value = near;
-    /* 退出跟随的判据只有一条：**用户真的往上翻了**（scrollTop 变小）。
+    /* 只有**用户造成的**滚动才改跟随意愿，判据是"离底多远"。
      *
-     * 以前这里写的是 `follow = near`，于是有两种情况会误判成"人往上翻了"：
-     * ① 流式正文长高 → scrollHeight 变大、scrollTop 没动 → near 变 false → 立刻退出跟随，
-     *    回答还没写完就不跟了（用户口语："点了跳到底部，但只要它继续输出就又掉下去"）；
-     * ② `scrollToBottom()` 是多帧滚到底，中间那几帧还没到底就被判成"没贴底"。
-     * 现在：程序滚动的窗口内一律不改跟随状态；窗口外只有"往上翻"才退出，翻回底部则恢复。 */
-    const movedUp = box.scrollTop < lastScrollTop - 4;
-    const programmatic = performance.now() < programmaticUntil;
-    if (!programmatic) {
-      if (movedUp) follow.value = false;
-      else if (near) follow.value = true;
-    }
-    lastScrollTop = box.scrollTop;
+     * ① 程序自己滚的（贴底 / 回到最新 / 恢复位置）先被**落点**认出来并放过：
+     *    scrollTop 正好是我们刚设的那个值（±2px、300ms 内）。
+     *    以前用的是 600ms 时间窗，两头都误伤：窗口内用户真上翻被吞（想翻翻不动），
+     *    窗口外多帧滚动的中间帧却被当成上翻（跟随即断，圆钮反复浮出来）。
+     * ② 内容长高（scrollHeight 变大）本身**不产生滚动事件**；浏览器滚动锚定只会把
+     *    scrollTop 往上抬，"变高"不会把自己判成"上翻"。所以这里可以直接用距离：
+     *    离底 > BOTTOM_GAP = 用户翻走了（退出跟随）；回到阈值内 = 恢复跟随。 */
+    const self = programTop >= 0
+      && Math.abs(box.scrollTop - programTop) <= 2
+      && performance.now() - programAt < 300;
+    if (self) programTop = -1;
+    else follow.value = isNearBottom();
   }
   if (msgsSaveTimer) return;
   msgsSaveTimer = window.setTimeout(() => {
@@ -835,34 +888,40 @@ function restoreThreadScroll(id: string | null): boolean {
   if (!el || !Number.isFinite(y) || y <= 0) return false;
   /* 与 scrollToBottom 同一个理由：KaTeX / 图片 / 折叠块会在随后几帧继续把高度撑开，
      只滚一次会被后面的布局吃掉。 */
-  const apply = () => { const m = msgsEl.value; if (m) m.scrollTop = y; };
+  const apply = () => {
+    const m = msgsEl.value;
+    if (!m) return;
+    m.scrollTop = y;
+    programTop = m.scrollTop;      // 恢复位置也是"程序滚动"：别被当成用户上翻
+    programAt = performance.now();
+  };
   apply();
   void nextTick().then(() => { apply(); requestAnimationFrame(apply); });
   window.setTimeout(apply, 160);
   return true;
 }
 
+/**
+ * "回到最新"：**恢复跟随**并滚到底。发消息、开 / 切会话、切分支、点圆钮走的都是这里 ——
+ * 所以跟随的恢复只写在这一处，别处不再各维护一份状态。
+ * 每帧的赋值都由 `stickToBottom` 登记落点，`onMsgsScroll` 便不会把它当成用户上翻。
+ */
 async function scrollToBottom() {
-  /** 多帧滚动：整个过程中都算"程序滚动"，`onMsgsScroll` 不许因此改动跟随状态。 */
-  programmaticUntil = performance.now() + 900;
+  follow.value = true;
   await nextTick();
   const el = msgsEl.value;
   if (!el) return;
   /* 连滚几帧：正文里的 KaTeX、图片、折叠块都会在随后几帧继续把高度撑开，
      只滚一次会停在半路（用户报的"进来不是停在底部"）。 */
   for (let i = 0; i < 3; i += 1) {
-    el.scrollTop = el.scrollHeight;
+    if (!follow.value) return;          // 用户中途自己翻走了：别把人拽回来
+    stickToBottom();
     await new Promise((done) => requestAnimationFrame(() => done(null)));
   }
-  // 附件缩略图这类"加载完才知道高度"的，再补一次
+  // 附件缩略图这类"加载完才知道高度"的，再补一次；用户中途自己翻走了就别拽回来
   window.setTimeout(() => {
-    const m = msgsEl.value;
-    if (!m) return;
-    programmaticUntil = performance.now() + 400;
-    m.scrollTop = m.scrollHeight;
-    lastScrollTop = m.scrollTop;
+    if (follow.value) { stickToBottom(); }
   }, 160);
-  lastScrollTop = el.scrollTop;
 }
 
 async function loadStatus() {
@@ -980,6 +1039,9 @@ async function loadConversation(id: string) {
   /* ⚠️ 滚动必须在 `loading=false` **之后**：加载中列表里只有"读取会话…"那一行，
      这时 `scrollHeight` 约等于 0，滚了也白滚（进来停在顶部就是这么来的）。 */
   if (!restoreThreadScroll(id)) await scrollToBottom();
+  /* 跟随与否按**落点**算一次：落到底（或本来就没记录）＝继续跟随；
+     落在半截＝在读历史，别让下一批增量把人拽走（那是另一个老问题）。 */
+  else follow.value = isNearBottom();
 }
 
 async function openConversation(id: string) {
@@ -1836,6 +1898,8 @@ onActivated(() => {
 onUnmounted(() => {
   controller?.abort();
   composerRO?.disconnect();
+  msgsMO?.disconnect();
+  if (stickRaf) { cancelAnimationFrame(stickRaf); stickRaf = 0; }
   window.removeEventListener('keydown', onMenuKeydown);
   if (msgsSaveTimer) { window.clearTimeout(msgsSaveTimer); msgsSaveTimer = 0; }
 });
@@ -2067,7 +2131,9 @@ defineExpose({ uploadFiles, ensureThread });
         </span>
       </div>
 
-      <div ref="msgsEl" class="msgs" @scroll.passive="onMsgsScroll">
+      <div ref="msgsEl" class="msgs" @scroll.passive="onMsgsScroll"
+           @wheel.passive="onMsgsWheel"
+           @touchstart.passive="onMsgsTouchStart" @touchmove.passive="onMsgsTouchMove">
         <div v-if="loading" class="empty small">读取会话…</div>
 
         <div v-else-if="!messages.length && !sending" class="hello">
@@ -2214,7 +2280,7 @@ defineExpose({ uploadFiles, ensureThread });
       <!-- 回到最新：往上翻（尤其流式输出时）就浮出来。点它 = 回到最新一句 + **恢复跟随**，
            之后新内容继续自动往下走（用户口径 2026-12-03）。 -->
       <button
-        v-if="!atBottom"
+        v-if="!follow"
         class="to-bottom"
         type="button"
         data-to-bottom

@@ -173,6 +173,7 @@ class FakeDeps:
         self.paper_id = "p1"
         self.registry = RefRegistry("p1")
         self.query_cache: dict = {}
+        self.row_spans: dict = {}
         self.page_total = 0
 
     def count_search(self) -> None:

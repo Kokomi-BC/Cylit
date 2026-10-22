@@ -40,3 +40,5 @@ description: 读论文正文的 markdown：英文原文与中文译文都可以�
   系统性挑漏译是 `check-translation` 的活。
 - 引用要给 ref：`page_markdown_get` 与 `translate_get` 回来的都是带编号的块，复述里
   支撑论断的句子带上那个编号。
+- 若手上的 ref 来自检索（`paper_search`）而 `block_get(ref)` 展开失败 —— 附录页实测会失败，
+  当常见情况处理：改用 `page_markdown_get` 读**那一页**，从页级结果里取新的 ref 再引用。

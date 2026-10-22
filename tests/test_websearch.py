@@ -501,6 +501,7 @@ class FakeDeps:
     def __init__(self, host) -> None:
         self.host = host
         self.query_cache: dict = {}
+        self.row_spans: dict = {}
 
     def count_search(self) -> None:
         return None

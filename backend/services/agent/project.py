@@ -26,6 +26,48 @@ PAGES_MAX = 30
 SNIPPET_CHARS = 400
 
 _PAGES_RE = re.compile(r"^\s*(?P<a>\d+)\s*(?:[-~–]\s*(?P<b>\d+))?\s*$")
+
+#: 页级**行 id**（阅读器正文的一行）：`p017-00`；公式锚点还会带一个 `row-` 前缀
+#: （`row-p017-02`，见 `knowledge_service` 里造公式 chunk 那段）。
+#:
+#: 为什么需要判它：写侧把 `chunk.block_id` 填的是 `first["id"]`，而那是**行 id** ——
+#: 读侧拿它去 `sess.get(Block, …)` 必然 `NOT_FOUND`（实测 633 条 chunk 里 614 条中招，
+#: 正文页与附录页一视同仁）。所以下发时要分名字空间：**行 id 走 `row_id`，只有真 Block id
+#: 才进 `block_id`**，别让下游拿行 id 去查块表。
+_ROW_ID_RE = re.compile(r"^p\d{3,}-\d{2}$")
+_ROW_PREFIX = "row-"
+
+
+def as_row_id(raw: object) -> str:
+    """`p017-02` / `row-p017-02` → `p017-02`；不像行 id 就返回空串。"""
+    text = str(raw or "").strip()
+    if text.startswith(_ROW_PREFIX):
+        text = text[len(_ROW_PREFIX):]
+    return text if _ROW_ID_RE.match(text) else ""
+
+
+def anchor_ids(item: dict) -> dict:
+    """一条检索命中该下发哪些 id（行 / 块分开，见上面 `_ROW_ID_RE` 的说明）。
+
+    metadata 里本来就有 `row_ids` / `row_span` / `pages` —— 以前只下发 block_id，
+    等于把"这条命中到底覆盖了哪几行"这个信息丢了，模型只能拿到一个查不到的块 id。
+    """
+    meta = item.get("metadata") or {}
+    rows = [rid for rid in (as_row_id(x) for x in (meta.get("row_ids") or [])) if rid]
+    span = meta.get("row_span") or []
+    if not rows and span:
+        rows = [rid for rid in (as_row_id(x) for x in span) if rid]
+    #: 写侧塞在 block_id 里的那个值：是行 id 形态就不能当 Block id 用
+    row_form = as_row_id(item.get("block_id"))
+    page = int(item.get("page_no") or 0) or next(
+        (int(x) for x in (meta.get("pages") or []) if int(x or 0)), 0)
+    return {
+        # 真 Block id（不是行 id 形态）才下发，否则下游必然 NOT_FOUND
+        "block_id": None if row_form else (item.get("block_id") or None),
+        "row_id": rows[0] if rows else None,
+        "row_ids": rows or None,
+        "page_no": page or None,
+    }
 #: Markdown 图片。**必须过滤**：页级产物里的图片行写的是相对路径
 #: （``../figures/<paper>-p03-x01.png``），模型照着嵌进回答就是一个前端打不开的地址
 #: （实测模型确实在权衡要不要用它）。只保留受控的 ``/api/v1/papers/...`` 形式。
@@ -300,8 +342,8 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
         chunk_id = str(item.get("chunk_id") or "")
         hit = {
             "chunk_id": chunk_id,
-            "block_id": item.get("block_id"),
-            "page_no": int(item.get("page_no") or 0) or None,
+            # 行 / 块分开下发：写侧把行 id 塞进了 block_id，原样透传等于给下游一个查不到的 id
+            **anchor_ids(item),
             "section": item.get("section"),
             "chunk_type": item.get("chunk_type"),
             "lang": item.get("lang"),
@@ -355,8 +397,9 @@ def kb_search(query: str, *, top_k: int = 8) -> dict:
         chunk_id = str(item.get("chunk_id") or "")
         hit = {
             "paper_id": paper_id, "paper_title": titles.get(paper_id, ""),
-            "chunk_id": chunk_id, "block_id": item.get("block_id"),
-            "page_no": int(item.get("page_no") or 0) or None,
+            "chunk_id": chunk_id,
+            # 跨库命中同样按名字空间下发（行 id 不进 block_id）
+            **anchor_ids(item),
             "section": item.get("section"), "chunk_type": item.get("chunk_type"),
             "lang": item.get("lang"),
             "content": _clip(_neutralize_images(item.get("content"))),
