@@ -42,7 +42,18 @@ SNIPPET_CHARS = 200
 #: 正文片段几十处都靠它把"读哪页"的决定权留给模型。
 CAPTION_CHARS = 800
 
-_PAGES_RE = re.compile(r"^\s*(?P<a>\d+)\s*(?:[-~–]\s*(?P<b>\d+))?\s*$")
+#: 一页或一段区间（`4` / `4-7`）：分隔符与噪声词在 `_expand_pages` 里先洗掉。
+_PAGES_ITEM_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+#: 页码串里的前缀与词：`page 4` / `p4` / `pp. 4` / `第 4 页`
+_PAGES_LABEL_RE = re.compile(r"(?i)\b(?:pages?|pp?)(?=[\s.0-9]|$)|第|页")
+#: `4 to 7` → `4-7`；`4 and 7` → `4,7`
+_PAGES_RANGE_WORD_RE = re.compile(r"(?i)\b(?:to|through|thru)\b|到|至")
+_PAGES_LIST_WORD_RE = re.compile(r"(?i)\band\b|和|与|及")
+#: 各种长短破折号、波浪、全角都当连字符
+_PAGES_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d\uff5e\u301c~"
+_PAGES_FULLWIDTH = str.maketrans("０１２３４５６７８９，；、：～", "0123456789,;,:~")
+_PAGES_ALL = {"all", "whole", "entire", "everything", "全部", "全文", "整篇", "*"}
 
 
 # --------------------------------------------------------------------------
@@ -50,22 +61,63 @@ _PAGES_RE = re.compile(r"^\s*(?P<a>\d+)\s*(?:[-~–]\s*(?P<b>\d+))?\s*$")
 # --------------------------------------------------------------------------
 
 
-def parse_pages(spec: str, *, total: int, limit: int) -> tuple[list[int], bool]:
-    """``"3"`` / ``"3-8"`` / ``"all"`` → 页码列表。返回 ``(页码, 是否被截断)``。"""
+def _expand_pages(spec: str, *, total: int = 0) -> list[int]:
+    """把模型写出来的页码串摊成页码（**不判越界、不截断**）。
+
+    实测 2026-12-07：模型想读第 4、7 页，写的是 ``"4,7"`` —— 老解析器只认单页或单区间，
+    直接回「页码格式不对」，它只能再发一次，thinking 里能看见这一步白跑。模型顺手的
+    ``"p4"`` / ``"pages 4-7"`` / ``"第 4 页"`` / ``"4 to 7"`` 同样没人认。
+    所以这里先洗成 `数,数-数` 再摊平；认不出来才返回空，由调用方决定怎么报错。
+    """
     text = (spec or "").strip().lower()
-    if text in ("all", "*", "全部", "全文"):
-        pages = list(range(1, max(total, 1) + 1))
-    else:
-        m = _PAGES_RE.match(text)
+    if not text:
+        return []
+    text = text.translate(_PAGES_FULLWIDTH)
+    for ch in _PAGES_DASHES:
+        text = text.replace(ch, "-")
+    text = _PAGES_RANGE_WORD_RE.sub("-", text)
+    text = _PAGES_LIST_WORD_RE.sub(",", text)
+    text = _PAGES_LABEL_RE.sub(" ", text)
+    text = re.sub(r"\s*-\s*", "-", text)
+    stripped = text.strip(" .")
+    if stripped in _PAGES_ALL or (stripped and set(stripped) <= {"*"}):
+        return list(range(1, max(total, 1) + 1))
+    pages: list[int] = []
+    for part in re.split(r"[\s,;:~]+", text):
+        m = _PAGES_ITEM_RE.match(part.strip(" .*"))
         if not m:
-            return [], False
-        a = int(m.group("a"))
-        b = int(m.group("b")) if m.group("b") else a
-        lo, hi = min(a, b), max(a, b)
-        pages = list(range(max(1, lo), hi + 1))
-    if total:
-        pages = [p for p in pages if p <= total]
+            continue
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else a
+        pages.extend(range(min(a, b), max(a, b) + 1))
+    if not pages:  # 兜底：把串里剩下的整数当单页（`"4，7页"` 这种已经分好了，只捡残余）
+        pages = [int(n) for n in re.findall(r"\d+", text)]
+    seen: list[int] = []
+    for p in pages:
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
+def parse_pages(spec: str, *, total: int, limit: int) -> tuple[list[int], bool]:
+    """``"5"`` / ``"3-8"`` / ``"4,7"`` / ``"all"`` → 页码列表。返回 ``(页码, 是否被截断)``。"""
+    pages = [p for p in _expand_pages(spec, total=total)
+             if p >= 1 and (not total or p <= total)]
     return pages[:limit], len(pages) > limit
+
+
+def pages_error(spec: str, *, total: int) -> str:
+    """页码解析完是空时的**诊断**：区分「写法不认识」和「超出页码范围」。
+
+    以前两种都回「页码格式不对」：模型写了 ``"99"`` 而全文只有 22 页，它以为是自己写法错了，
+    换个写法再试一次 —— 白跑一步，错还在。
+    """
+    raw = _expand_pages(spec, total=total)
+    if raw and total:
+        lo, hi = min(raw), max(raw)
+        where = f"第 {lo} 页" if lo == hi else f"第 {lo}-{hi} 页"
+        return f"没有{where}（这篇共 {total} 页）。"
+    return f'页码没读懂：「{_clip(spec, 20) if spec else "空"}」。可以写 "5" / "3-8" / "4,7" / "all"。'
 
 
 def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:
@@ -336,14 +388,15 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
     （那里表格的单元格可能是粘连的）。
 
     参数：
-      pages —— 单页 ``"5"``、区间 ``"3-8"``、整篇 ``"all"``。整篇很长，
+      pages —— 单页 ``"5"``、区间 ``"3-8"``、多页 ``"4,7"``、整篇 ``"all"``。
                只有确实需要通读时才用；一次最多 20 页，超了会被截断（返回 truncated=true）。
+               页码写得随意也认：``"p4"`` / ``"pages 4-7"`` / ``"第 4 页"`` 都行。
     """
     async def _impl() -> dict:
         wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
                                       limit=TEXT_PAGES_MAX)
         if not wanted:
-            return {"ok": False, "error": "页码格式不对。写法示例：\"5\" / \"3-8\" / \"all\"。"}
+            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
         data = await ctx.deps.host.pages(ctx.deps.paper_id, ",".join(map(str, wanted)))
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
         ctx.deps.page_total = ctx.deps.page_total or total
@@ -510,7 +563,7 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
     图文混排的版面说不清时。**不要**用它代替读正文 —— 正文用 page_markdown_get。
 
     参数：
-      pages —— ``"5"`` / ``"3-4"``。一次最多 3 页。
+      pages —— ``"5"`` / ``"3-4"`` / ``"4,7"``。一次最多 3 页。
       dpi   —— 默认 200（阅读器页图是 150，公式密集的页建议 300~400）。
                注意：**不要**靠放大低 dpi 图来"看得更清"，放大只是插值，信息量没变。
     """
@@ -518,7 +571,7 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
         wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
                                       limit=ctx.deps.cfg.image_max_pages)
         if not wanted:
-            return {"ok": False, "error": "页码格式不对。写法示例：\"5\" / \"3-4\"。"}
+            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
         use_dpi = max(150, min(int(dpi or 200), ctx.deps.cfg.image_max_dpi))
         content: list = []
         got: list[int] = []
@@ -817,13 +870,13 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
     想确认某个术语在译文里的统一译法时。判断"译文是否忠实"时也要看它。
 
     参数：
-      pages —— ``"5"`` / ``"3-8"`` / ``"all"``，一次最多 20 页。
+      pages —— ``"5"`` / ``"3-8"`` / ``"4,7"`` / ``"all"``，一次最多 20 页。
     """
     async def _impl() -> dict:
         wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
                                       limit=TEXT_PAGES_MAX)
         if not wanted:
-            return {"ok": False, "error": "页码格式不对。写法示例：\"5\" / \"3-8\" / \"all\"。"}
+            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
         data = await ctx.deps.host.pages(ctx.deps.paper_id, ",".join(map(str, wanted)),
                                          lang="zh")
         ctx.deps.page_total = ctx.deps.page_total or int(data.get("page_total") or 0)

@@ -738,7 +738,7 @@ async def agent_note_delete(note_id: str, request: Request,
 
 @router.get("/agent/papers/{paper_id}/pages")
 async def agent_pages(paper_id: str, request: Request,
-                      pages: str = Query(..., description='"3" / "3-8" / "all"'),
+                      pages: str = Query(..., description='"3" / "3-8" / "3,5,7" / "all"'),
                       lang: str = Query("both", pattern="^(both|en|zh)$"),
                       x_internal_token: str | None = Header(None)):
     """按页返回块级正文 + 行锚点（工具 `page_markdown_get` / `translate_get` 的后端）。"""
