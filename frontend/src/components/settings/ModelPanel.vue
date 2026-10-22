@@ -144,6 +144,8 @@ const customEntry = ref<ProviderEntry>({
 const providersError = ref('');
 /** 提供方搜索词：只筛**厂商**，不掺模型名（用户口径 2026-12-07 三轮） */
 const provSearch = ref('');
+/** 下拉是否展开（默认收起：弹窗一打开就铺一整列列表太占高度） */
+const provOpen = ref(false);
 const filteredProviders = computed<ProviderEntry[]>(() => {
   const kw = provSearch.value.trim().toLowerCase();
   const hit = (p: ProviderEntry) => !kw
@@ -189,6 +191,7 @@ function openAdd(type: string) {
   pickProvider.value = '';
   addOpen.value = true;
   provSearch.value = '';
+  provOpen.value = false;
   if (!providers.value.length) void loadProviders();
 }
 
@@ -729,6 +732,25 @@ onBeforeUnmount(() => {
           <p class="tiny faint add-note">
             先选厂商（官方提供方会自动填好 Base URL），再填自己的 API Key、从厂商拉模型。
           </p>
+          <!-- 收缩态：一个占满宽度的选择框（图标 + 名称 + 辅助描述 + 箭头） -->
+          <button
+            type="button" class="prov-trigger" :class="{ open: provOpen }"
+            data-prov-trigger :aria-expanded="provOpen" aria-haspopup="listbox"
+            @click="provOpen = !provOpen"
+          >
+            <img v-if="vendorIco(pickProvider)" class="pv-ico" :src="vendorIco(pickProvider)" alt="">
+            <span v-else class="pv-fallback"><AppIcon name="model" :size="13" /></span>
+            <span class="prov-trigger-main">
+              <span class="prov-trigger-name truncate">
+                {{ activeProvider?.label || '选择模型提供方' }}
+              </span>
+              <span class="prov-trigger-sub truncate">
+                {{ activeProvider ? (activeProvider.note || activeProvider.base_url || '') : '官方提供方会自动填好 Base URL' }}
+              </span>
+            </span>
+            <AppIcon :name="provOpen ? 'chevron-up' : 'chevron-down'" :size="13" class="prov-go" />
+          </button>
+          <template v-if="provOpen">
           <input
             v-model="provSearch" class="prov-search" type="search" data-prov-search
             placeholder="搜索厂商名称…" aria-label="搜索厂商"
@@ -760,6 +782,7 @@ onBeforeUnmount(() => {
               没有匹配的提供方 —— 换个词，或用下面的「自定义提供方」。
             </div>
           </div>
+          </template>
         </template>
 
         <!-- 第二段：这一家有哪些现成预设（选一条就带着配置进表单） -->
@@ -884,6 +907,16 @@ onBeforeUnmount(() => {
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 /* 提供方选择器：搜索框 + 定高列表（用户口径 2026-12-07 三轮：卡片网格改成可搜索下拉） */
+.prov-trigger {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--bg-layer); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.prov-trigger:hover { background: var(--bg-hover); }
+.prov-trigger.open { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); }
+.prov-trigger-main { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.prov-trigger-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; }
+.prov-trigger-sub { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .prov-search {
   width: 100%; height: 30px; padding: 0 10px;
   border: 1px solid var(--divider); border-radius: var(--radius-sm);

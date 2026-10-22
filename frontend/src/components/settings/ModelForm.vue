@@ -64,6 +64,7 @@ const step = ref<1 | 2>(1);
  * 所以这里只做一件事：把内容 `POST /models/secret` 落成 `data/secrets/<名>`（仅本机），
  * 表单里留下的只有一个**文件名**引用；输入框写完立刻清空，任何时候都不回显内容。
  * 名字默认取 `<provider>.key`，允许用户改（同一家多个 key 的部署）。 */
+const formError = ref('');
 const keyValue = ref('');
 const keyBusy = ref(false);
 const secretName = computed(() => {
@@ -408,6 +409,15 @@ function parseParameters(text: string): Record<string, any> {
 }
 
 function submit() {
+  /* 逐字段校验（用户口径 2026-12-07 收尾）：错误就地挂在表单上，不只弹一条全局 toast。
+     官方提供方已经有预设端点，所以只强制「模型名」；自定义那家四个字段都要。 */
+  formError.value = '';
+  if (!form.model_name.trim()) formError.value = '请先填或从厂商拉取 Model ID';
+  else if (!form.base_url.trim()) formError.value = 'Base URL 不能为空';
+  else if (props.customEntry || props.mode === 'create') {
+    if (!form.provider.trim()) formError.value = '请填提供方名称（写进 provider 字段，如 my-vendor）';
+  }
+  if (formError.value) return;
   if (!form.name.trim()) { toast('请填写名称', 'warn'); return; }
   writeReasoning();                    // 档位编辑器的最后一次改动先落地
   let parameters: Record<string, any>;
@@ -508,6 +518,7 @@ function labelOf(t: string): string {
         </select>
       </label>
       <p class="probe-err tiny" v-if="probeError" data-probe-error>{{ probeError }}</p>
+      <p class="probe-err tiny" v-if="formError" data-form-error>{{ formError }}</p>
 
       <!-- 就地写密钥：内容只往本机文件里写，写进表单的只有文件名（不回显） -->
       <div class="key-row gap-top">
