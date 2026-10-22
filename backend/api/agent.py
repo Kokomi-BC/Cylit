@@ -794,10 +794,17 @@ async def agent_page_product_undo(paper_id: str, page: int, request: Request,
 async def agent_formulas(paper_id: str, request: Request,
                          page: int | None = Query(None),
                          query: str | None = Query(None),
+                         include_inline: bool = Query(False),
                          x_internal_token: str | None = Header(None)):
-    """公式清单（工具 `formula_get` 的后端）。"""
+    """公式清单（工具 `formula_get` 的后端）。
+
+    默认只给**解析阶段的完整公式卡**（`is_inline=0`）；`include_inline=true` 才把
+    markdown 抽取那一路（行内符号 / 伪代码碎片）并进来。
+    """
     _require_internal(x_internal_token)
-    return envelope(project.formulas(paper_id, page=page, query=query), request=request)
+    return envelope(project.formulas(paper_id, page=page, query=query,
+                                     include_inline=bool(include_inline)),
+                    request=request)
 
 
 @router.post("/agent/kb/search")

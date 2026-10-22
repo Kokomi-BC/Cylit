@@ -543,34 +543,72 @@ def figures(paper_id: str, page: int | None = None) -> dict:
 FORMULA_LIMIT = 40
 
 
+#: 公式卡的**文档顺序**：解析卡 id 形如 `turboquanton-p03-b05`（页 + 块序号），
+#: markdown 抽出来的 `row_id` 形如 `p005-03` —— 两者都能从尾部数字还原先后。
+#: bbox 在 formula 表里有，但 `_parse_formula_item` 没把它带进投影（改它就是动阅读器那份
+#: 契约），所以这里用 id 的顺序，视觉上等价。
+_DOC_SEQ_RE = re.compile(r"(\d{1,4})$")
+
+
+def _doc_key(item: dict) -> tuple[int, int, str]:
+    raw = str(item.get("row_id") or item.get("id") or "")
+    found = _DOC_SEQ_RE.search(raw)
+    return (int(item.get("page") or 0), int(found.group(1)) if found else 0, raw)
+
+
 def formulas(paper_id: str, *, page: int | None = None, query: str | None = None,
-             limit: int = FORMULA_LIMIT) -> dict:
-    """本论文的公式清单（LaTeX + 所在页 + 行锚点 + 上下文）。
+             limit: int = FORMULA_LIMIT, include_inline: bool = False) -> dict:
+    r"""本论文的公式清单（LaTeX + 所在页 + 行锚点 + grade + 来源）。
 
-    数据来自 `reader_service.formulas_payload(…, "markdown")` —— 与阅读器"公式"页签
-    **同一个口径**（译文优先、未翻译的页用解析产物兜底）。所以 agent 讲的公式和用户
-    在正文里看到的是同一条，不会出现"AI 引用的公式在页面上找不到"。
+    **默认读页级 Markdown 里的块级公式**（`display=true`）—— 那就是阅读器「公式」栏里
+    用户看到、也复制得到的那批**完整公式**（实测全篇 346 条抽取里只有 24 条是块级，
+    而这 24 条条条完整：`D_{\text{mse}} := \mathbb{E}_Q[…]`、含 `\begin{aligned}` 的多行推导）。
 
-    ⚠️ **没有"编号"字段**：抽取结果里只有 LaTeX 与上下文，论文自己的 `(3)` 编号在
-    `context` 里。所以按编号取公式只能靠关键词筛（`query="(3)"`），这一点写进工具描述里，
-    别让模型以为有个 `number` 参数。
+    - `include_inline=True` 才把**行内**公式（`display=false`）也列出来；默认不要 ——
+      伪代码里的 `\qquad` / `b-1` 碎片就是这一批；
+    - **解析卡只做兜底**：某页在 markdown 源里一条块级公式都没有时，才用该页的 `formula` 表
+      补上（条目带 `source:"parse"`）。卡片的 LaTeX 常常只是公式的一段 ——
+      `partial=True` 就是在说这件事，此时该去看 `page_image_get(page)` 的原版面；
+    - `grade` 只有解析卡有，markdown 条目留空（不为一个评级去 join 表）；
+    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`。
+
+    ⚠️ **没有"编号"字段**：论文自己的 `(3)` 编号只在 `context` 里，按编号找请先
+    `page_markdown_get` 定位那一页，别让模型以为有个 `number` 参数。
     """
     from backend.services.paper import reader_service
 
     paper_service.get_paper(paper_id)
-    data = reader_service.formulas_payload(paper_id, "markdown")
-    items = list(data.get("items") or [])
-    if page:
-        items = [i for i in items if int(i.get("page") or 0) == int(page)]
-    if query:
-        needle = str(query).strip().lower()
-        items = [i for i in items if needle in " ".join(str(i.get(k) or "") for k in
-                                                       ("latex", "context", "context_zh")).lower()]
-    # 读时抽公式是**按出现次数**给的：同一段正文里同一个 $x$ 常常出现两三遍
-    # （"$Pi cdot x$ 均匀分布…如引理 1 所示，$Pi cdot x$ 的每个坐标…"），
-    # 于是同一条公式在列表里重复出现、还各自占掉一个引用号（实测 p5 三次、p3 两次）。
-    # 位置与内容都相同的重复项对"读"和"引用"都没有价值 —— 同 (page, row_id, latex) 只留第一条，
-    # 顺序与其它条目保持原样。
+    md_items = [dict(one) for one in
+                (reader_service.formulas_payload(paper_id, "markdown") or {}).get("items") or []]
+
+    def _in_scope(one: dict) -> bool:
+        if page and int(one.get("page") or 0) != int(page):
+            return False
+        if query:
+            needle = str(query).strip().lower()
+            if needle not in " ".join(str(one.get(k) or "") for k in
+                                      ("latex", "context", "context_zh")).lower():
+                return False
+        return True
+
+    scoped_md = [one for one in md_items if _in_scope(one)]
+    #: 默认只列块级公式（完整）；行内公式另计一个数，让模型知道"还有多少没给"
+    display_total = sum(1 for one in scoped_md if one.get("display"))
+    inline_total = sum(1 for one in scoped_md if not one.get("display"))
+    items = [one for one in scoped_md if one.get("display") or include_inline]
+    #: 这些页在 markdown 源里已经有块级公式了 → 不再用解析卡补
+    pages_with_display = {int(one.get("page") or 0) for one in md_items if one.get("display")}
+
+    for one in (reader_service.formulas_payload(paper_id, "parse") or {}).get("items") or []:
+        one_page = int(one.get("page") or 0)
+        if one_page in pages_with_display or not _in_scope(one):
+            continue
+        if not (one.get("display") or include_inline):
+            continue
+        items.append({**one, "source": "parse"})
+    # markdown 那一路是**按出现次数**给的（同一段里同一个 $x$ 出现两三遍 → 两三条条目），
+    # 两路合并后也可能撞车。同 (page, row_id, latex) 只留第一条 —— 重复项对"读"与"引用"
+    # 都没有价值，还会占掉引用号。解析卡本身基本不会重复，这条主要是给 markdown 兜底用的。
     seen: set[tuple[int, str, str]] = set()
     unique: list[dict] = []
     for item in items:
@@ -580,18 +618,33 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
             continue
         seen.add(key)
         unique.append(item)
-    items = unique
+    items = sorted(unique, key=_doc_key)
 
+    cap = max(1, int(limit or FORMULA_LIMIT))
+    kept = items[:cap]
     out = [{
         "page": int(i.get("page") or 0) or None,
         "row_id": i.get("row_id"),
         "latex": str(i.get("latex") or ""),
         "display": bool(i.get("display")),
+        "grade": i.get("grade"),
+        # 这条 LaTeX 可能只是公式的一段（解析时 candidate 被切段、又没有 final）→ 去看裁图
+        "partial": bool(i.get("partial")),
+        "source": i.get("source") or "parse",
         "context": _clip(i.get("context") or "", 240),
         "context_zh": _clip(i.get("context_zh") or "", 240),
-    } for i in items[:max(1, int(limit or FORMULA_LIMIT))]]
+    } for i in kept]
+    sources = {one["source"] for one in out}
     return {"paper_id": paper_id, "total": len(items), "returned": len(out),
-            "source": data.get("source"), "items": out}
+            # 这一份列表**从哪来**：全解析卡 = parse（可信），全 markdown = markdown，
+            # 两路混 = mixed。模型据此决定要不要再 page_markdown_get 复核
+            "source": ("parse" if sources == {"parse"}
+                       else "markdown" if sources == {"markdown"} else "mixed"),
+            "truncated": len(items) > len(out),
+            # 两个计数让模型一眼看清"默认给的只是块级那批"：
+            # 块级 = 完整公式（可引用），行内 = 碎片/单符号（按需取，不适合当引用来源）
+            "display_total": display_total, "inline_total": inline_total,
+            "items": out}
 
 
 # --------------------------------------------------------------------------

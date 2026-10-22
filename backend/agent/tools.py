@@ -642,20 +642,34 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
 
 
 async def formula_get(ctx: RunContext[Deps], page: int | None = None,
-                      query: str | None = None) -> dict:
-    """取本论文的公式（LaTeX + 所在页 + 上下文）。
+                      query: str | None = None,
+                      include_inline: bool = False) -> dict:
+    """取本论文的**公式卡**（解析阶段整理好的完整公式：LaTeX + 页码 + grade）。
 
     什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
     或者卷面里的公式被 OCR 认错、需要拿到 LaTeX 原文再核对。
 
+    **默认给的是解析阶段的完整公式**（`is_inline=0`，带 A/B/C 质量分级），不是从正文
+    正则抽的碎片 —— 按论文页面的文档顺序排好。只有某几页没有解析公式卡时，那几页才回落到
+    正文抽取（返回里 `source` 会说明这份列表来自哪：`parse` / `markdown` / `mixed`）。
+
     参数：
       page  —— 只看某一页（不确定页码就先 paper_search）。
-      query —— 关键词过滤。**公式没有可用的编号字段**：论文自己的 `(3)` 编号在返回的
-               `context` 里，所以按编号取只能传 `query="(3)"` 这样筛。
-    两个都不传就返回全文公式（最多 40 条）。
+      query —— 关键词过滤。**公式没有可用的编号字段**：论文自己的 `(3)` 编号只出现在
+               `context` 里（解析卡往往没有 context），所以按编号找请先
+               `page_markdown_get` 定位那一页，再 `formula_get(page=…)`。
+      include_inline —— 默认 False：只要块级完整公式。要看**行内符号**（`$b-1$` 这种）
+               或伪代码里的碎片时才传 True —— 它会把行内公式也列出来，条目更多也更碎。
+    回执里的 `display_total` / `inline_total` 是两个计数：默认给你的是块级那批（完整、
+    可引用），**行内那几百条默认不给**。超过 40 条时 `truncated: true` 且 `total` 是全量。
+
+    ⚠️ `partial=True` 的条目**LaTeX 可能只是公式的一段**（解析阶段把一条公式切成了几段，
+    我们只拿到第一段）。要确认全文就用 `page_image_get(page)` 看那一页的原版面
+    （阅读器里这个位置本来也有公式裁图）——**不要照着半条 LaTeX 讲整条公式**。
     """
     async def _impl() -> dict:
-        data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query)
+        data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query,
+                                           include_inline=include_inline)
         items = []
         for raw in data.get("items") or []:
             latex = str(raw.get("latex") or "")
@@ -668,17 +682,45 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             items.append({
                 "ref": cit.ref, "page": page_no, "latex": latex,
                 "display": bool(raw.get("display")),
+                "grade": raw.get("grade"),
+                # LaTeX 只是公式的一段 → 要讲全貌就去看原版面
+                "partial": bool(raw.get("partial")),
+                "source": raw.get("source"),
                 "context": raw.get("context") or "",
                 "context_zh": raw.get("context_zh") or "",
             })
         out = {"total": data.get("total"), "returned": len(items),
-               "source": data.get("source"), "items": items}
+               "source": data.get("source"),
+               "truncated": bool(data.get("truncated")),
+               # 默认只给块级（完整、可引用）；行内那批按需取
+               "display_total": int(data.get("display_total") or 0),
+               "inline_total": int(data.get("inline_total") or 0),
+               "items": items}
         if not items:
-            out["hint"] = "这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
+            out["hint"] = ("这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
+                           "行内符号可以先用 page_markdown_get 看那一页的正文。")
+        else:
+            # 三条提示可以**同时成立**（默认只给块级 + 有条目只是片段 + 超了上限），
+            # 拼在一起给，别用 elif 让后面的把前面的吞掉
+            hints: list[str] = []
+            if not include_inline and out["inline_total"] > 0:
+                hints.append(f"这些是**块级公式**（完整，可引用）；另有 "
+                             f"{out['inline_total']} 条行内公式（单符号 / 碎片那种）。"
+                             f"查符号定义、单点表达式时用 `include_inline=True`，"
+                             f"或者直接 `page_markdown_get` 读那一页看上下文。")
+            if any(one["partial"] for one in items):
+                hints.append("有条目 partial=true：那几条的 LaTeX 只是公式的一段 —— "
+                             "要对着讲就把 `page_image_get(page)` 的原版面拿来核对。")
+            if out["truncated"]:
+                hints.append(f"全文共 {out['total']} 条，这里只给了前 {len(items)} 条（按文档顺序）；"
+                             f"要更全就**按页取**（传 page）。")
+            if hints:
+                out["hint"] = " ".join(hints)
         return out
 
     return await _guarded(ctx, "formula_get",
-                          {"page": page, "query": _clip(query or "", 40)}, _impl())
+                          {"page": page, "query": _clip(query or "", 40),
+                           "include_inline": include_inline}, _impl())
 
 
 async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:

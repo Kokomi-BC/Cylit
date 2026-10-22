@@ -111,12 +111,16 @@ class HostClient:
         return dict(await self.get(f"/agent/papers/{paper_id}/pages", params) or {})
 
     async def formulas(self, paper_id: str, *, page: int | None = None,
-                       query: str | None = None) -> dict:
+                       query: str | None = None,
+                       include_inline: bool = False) -> dict:
+        """公式清单（默认只给块级完整公式卡；`include_inline` 才要行内符号/碎片）。"""
         params: dict = {}
         if page:
             params["page"] = int(page)
         if query:
             params["query"] = query
+        if include_inline:
+            params["include_inline"] = "true"
         return dict(await self.get(f"/agent/papers/{paper_id}/formulas", params or None) or {})
 
     async def kb_search(self, query: str, *, top_k: int) -> dict:

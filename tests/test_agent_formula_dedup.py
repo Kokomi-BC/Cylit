@@ -16,16 +16,20 @@ from backend.services.agent import project
 
 
 def _item(page: int, row_id: str, latex: str, context: str = "上下文") -> dict:
-    return {"page": page, "row_id": row_id, "latex": latex, "display": False,
+    # display=True：默认口径只收块级公式（行内碎片不进列表），去重要在这批里验
+    return {"page": page, "row_id": row_id, "latex": latex, "display": True,
             "context": context, "context_zh": "", "model": "m", "source": "markdown"}
 
 
 @pytest.fixture
 def fake_payload(monkeypatch):
     def install(items: list[dict]) -> None:
+        # markdown 一侧返回被测条目；parse 一侧给空（这些页在 markdown 里已有块级公式，
+        # 本来就不会去动用解析卡兜底）—— 去重就发生在 markdown 这一路的拼装上。
         monkeypatch.setattr(project.reader_service, "formulas_payload",
-                            lambda paper_id, source="markdown": {"items": items,
-                                                                 "source": "markdown"})
+                            lambda paper_id, source="markdown": {
+                                "items": items if source == "markdown" else [],
+                                "source": source})
         monkeypatch.setattr(project.paper_service, "get_paper",
                             lambda paper_id: {"id": paper_id, "page_count": 22})
     return install

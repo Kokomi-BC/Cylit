@@ -942,12 +942,32 @@ def markdown_formulas(paper_id: str) -> dict:
             "fallback_pages": sorted(fallback_pages)}
 
 
+#: 正文行号混进 LaTeX 的前缀：`"5: y \leftarrow \Pi \cdot x"`。
+#: **只认带冒号/点号的**（`5:` / `12.`）：`"2 x"` 这种以数字开头的正常公式不能被削。
+_LATEX_LINE_NO_RE = re.compile(r"^\s*\d{1,3}\s*[:：.]\s*")
+
+
+def _strip_line_number(latex: str) -> str:
+    """去掉行首正文行号（只去前缀，不做任何"拼公式"的猜测）。"""
+    return _LATEX_LINE_NO_RE.sub("", str(latex or "")).strip()
+
+
 def _parse_formula_item(f: Formula) -> dict | None:
-    """一条解析阶段的公式 → **与 markdown 源同形状**的列表项（没有可用 LaTeX 就返回 None）。"""
-    latex = (f.latex_final or f.latex_repaired
-             or next(iter(json_loads(f.latex_candidate, []) or []), "") or "").strip()
+    """一条解析阶段的公式 → **与 markdown 源同形状**的列表项（没有可用 LaTeX 就返回 None）。
+
+    `partial` 说明这条 LaTeX **可能只是公式的一段**：`latex_candidate` 本来就是被切段的数组
+    （`["C(f, b) :=min", "|x -c|·f(x) dx.", …]`），只有在 `latex_final` / `latex_repaired`
+    都空、我们只能拿第一段时才置 True —— 让下游用裁图（`crop_url`）核对，而不是猜着拼。
+    """
+    candidates = json_loads(f.latex_candidate, []) or []
+    if not isinstance(candidates, list):
+        candidates = [candidates]
+    latex = _strip_line_number(f.latex_final or f.latex_repaired
+                              or next(iter(candidates), "") or "")
     if not latex or is_noise_formula(latex):
         return None
+    pieces = [one for one in candidates if str(one or "").strip()]
+    partial = bool(len(pieces) > 1 and not (f.latex_final or f.latex_repaired))
     crop_name = Path(f.image_path).name if f.image_path else None
     return {
         "id": f.id, "page": int(f.page_number or 0), "latex": latex,
@@ -956,6 +976,7 @@ def _parse_formula_item(f: Formula) -> dict | None:
         "row_id": f.id,
         "context": "", "context_zh": "",
         "grade": f.grade,
+        "partial": partial,
         "crop_url": (f"/papers/{f.paper_id}/formula_crops/{crop_name}"
                      if crop_name else None),
         "source": "parse",
