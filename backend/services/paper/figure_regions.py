@@ -1300,7 +1300,12 @@ def _plain_caption(text: str) -> str:
     return re.sub(r"^\s*\*\*|\*\*\s*$", "", str(text or "")).strip()
 
 
-def markdown_caption(paper_id: str, page_no: int, number: str) -> str:
+#: 算法图注行首：`**Algorithm 1 TURBOQUANT$_{\\text{mse}}$: optimized for MSE**`
+_MD_ALGO_HEAD = re.compile(r"^\s*(?:\*\*)?\s*Algorithm\s*(\d{1,3})\b", re.IGNORECASE)
+
+
+def markdown_caption(paper_id: str, page_no: int, number: str, *,
+                     kind: str = "figure") -> str:
     """这一页「图号 = number」在**译文那一面**的完整图注（含 `$…$`）。
 
     为什么需要（实测 2026-12-07）：IR 里 caption 块的 `preview` 在**第一个 `$` 处就断了**
@@ -1311,6 +1316,8 @@ def markdown_caption(paper_id: str, page_no: int, number: str) -> str:
     want = str(number or "").strip()
     if not want:
         return ""
+    # 算法块与图/表共用序号（都有 “1”），所以图注行首的正则要跟着 kind 走
+    head_re = _MD_ALGO_HEAD if kind == "algorithm" else _MD_CAPTION_HEAD
     from backend.services.paper import reader_service
 
     try:
@@ -1322,10 +1329,10 @@ def markdown_caption(paper_id: str, page_no: int, number: str) -> str:
         text = _plain_caption(row.get("original") or "")
         if not text:
             continue
-        hit = _MD_CAPTION_HEAD.match(text)
+        hit = head_re.match(text)
         if not hit:
             continue
-        if hit.group(1) == want or str(row.get("number") or "") == want:
+        if hit.group(1) == want:
             return text
     return ""
 
@@ -1352,7 +1359,8 @@ def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> 
         q = f"v={ver}" if ver else ""
         # 图注：IR 的 preview 会截在第一个 `$` 处，转录那一行才是完整的 —— 补回来（不改产物）。
         caption = r["caption"]
-        full = markdown_caption(paper_id, int(page_no), str(r["number"] or ""))
+        full = markdown_caption(paper_id, int(page_no), str(r["number"] or ""),
+                                kind=str(r["kind"] or "figure"))
         if full and len(full) > len(caption) and full[:40].lower() == caption[:40].lower():
             caption = full
         out.append({

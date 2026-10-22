@@ -25,6 +25,22 @@ PAGE = Rect(0, 0, 612, 792)
 
 
 
+
+
+def test_markdown_caption_matches_algorithm_lines(monkeypatch) -> None:
+    """算法块与图/表共用序号（都有 1），图注补全要按 kind 选行首正则。"""
+    from backend.services.paper import reader_service as rs
+
+    rows = [{"id": "p005-00", "type": "caption", "number": "",
+             "original": "**Algorithm 1 TURBOQUANT$_{\\text{mse}}$: optimized for MSE**"},
+            {"id": "p005-09", "type": "caption", "number": "",
+             "original": "**Figure 1: something else entirely.**"}]
+    monkeypatch.setattr(rs, "_rows_of_page", lambda pid, page: rows)
+    algo = fr.markdown_caption("p", 5, "1", kind="algorithm")
+    fig = fr.markdown_caption("p", 5, "1", kind="figure")
+    assert algo.startswith("Algorithm 1 TURBOQUANT$_{\\text{mse}}$")
+    assert fig.startswith("Figure 1: something else")
+
 def test_markdown_caption_completes_a_dollar_truncated_caption(monkeypatch) -> None:
     """IR 的 caption preview 截在第一个 `$` → 用转录那一行补全（含 `$…$`）。"""
     from backend.services.paper import reader_service as rs
