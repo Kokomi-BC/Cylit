@@ -2,8 +2,9 @@
 /**
  * 设置：**分区**的参数编辑 + 只读系统信息与健康检查。
  *
- * 版式（移植自参照项目 retain-pdf 的设置弹窗）：**左导航 + 右内容窗格**，一次只渲染一区；
- * 左侧导航吸顶，深链（`/app/settings#kb`）只负责切到对应窗格。
+ * 版式（模仿 Edge 设置页）：**贴左的导航栏 + 自己滚的内容窗格**，一次只渲染一区；
+ * 整页不滚窗口 —— 分区高度不等，交给窗口滚的话滚动条会随切区出现/消失、整页宽度跟着变，
+ * 左栏就横向抖一下。深链（`/app/settings#kb`）只负责切窗格。
  *
  * 分区按主题分成四组（左边栏顺序，组内即"改行为 → 改模型 → 改数据 → 改服务"的动线）：
  * · **通用**：1. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
@@ -60,8 +61,8 @@ const READONLY_KEYS: ReadonlyDef[] = [
 
 /** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落在「索引管理」）。
  *
- * 版式是**左导航 + 右内容窗格**（移植自参照项目 retain-pdf 的设置弹窗）：一次只渲染一区，
- * 于是不需要"滚到第几屏"的锚点对齐 —— 深链只负责切区，不再负责滚动。
+ * 版式是**贴左导航 + 自滚内容窗格**：一次只渲染一区，于是不需要"滚到第几屏"的锚点对齐
+ * —— 深链只负责切区，滚动由窗格自己在切区时归零。
  */
 const SECTIONS = [
   { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '点一下立即换肤，也可以自建一套；字号大小也在这里调。' },
@@ -84,19 +85,32 @@ const active = ref<string>(SECTIONS[0].id);
 /** 当前分区：窗格抬头用它，section 里不再重复写标题。 */
 const activeSection = computed(() => SECTIONS.find((s) => s.id === active.value) ?? SECTIONS[0]);
 
+/** 内容窗格：窗口不滚了，它自己就是滚动容器，切区后要把它归零。 */
+const paneRef = ref<HTMLElement | null>(null);
+/** 等 DOM 换完再归零 —— 新分区多高要到渲染后才定，早一步设会被旧内容的溢出量顶回去。 */
+function resetPaneScroll() {
+  void nextTick(() => {
+    if (paneRef.value) paneRef.value.scrollTop = 0;
+  });
+}
+
 /** 点分区：换窗格 + 把 hash 写进地址栏（用 replace，不堆历史，也不触发任何滚动）。 */
 function go(id: string) {
   active.value = id;
   if (route.hash !== `#${id}`) void router.replace({ hash: `#${id}` });
+  resetPaneScroll();
 }
 
-/** 深链与浏览器前进/后退：只切区（滚动交给浏览器自己的恢复策略）。 */
+/** 深链与浏览器前进/后退：只切区（窗格归零由 resetPaneScroll 负责）。 */
 watch(() => route.hash, (hash) => {
   const id = String(hash || '').replace('#', '');
-  if (SECTIONS.some((s) => s.id === id)) active.value = id;
+  if (SECTIONS.some((s) => s.id === id)) {
+    active.value = id;
+    resetPaneScroll();
+  }
 });
 
-/** 窄屏导航横排会超出宽度：切区后把当前项滚进可视区；宽屏 nav 本身不滚动，直接跳过。 */
+/** 导航会超出可视区（窄屏横排、或视口矮）：切区后把当前项滚进可视区；没溢出就直接跳过。 */
 const navRef = ref<HTMLElement | null>(null);
 function revealActive() {
   void nextTick(() => {
@@ -325,15 +339,16 @@ onMounted(async () => {
   await load();
   await loadHealthCard();
   await loadMineru();
-  // 深链（/app/settings#kb）：只切到对应窗格 —— 一次只渲染一区，没有"滚到第几屏"要纠偏。
+  // 深链（/app/settings#kb）：只切到对应窗格 —— 一次只渲染一区，窗格一律从顶部开始。
   const id = String(route.hash || '').replace('#', '');
   if (id && SECTIONS.some((s) => s.id === id)) active.value = id;
+  resetPaneScroll();
 });
 </script>
 
 <template>
-  <!-- 版式：左导航 + 右内容窗格（与参照项目 retain-pdf 的设置弹窗同构）。
-       一次只渲染一区：切区不滚动、不堆叠，深链只负责选窗格。 -->
+  <!-- 版式：贴左的导航栏 + 自己滚的内容窗格（模仿 Edge 设置页）。
+       一次只渲染一区：切区把窗格滚回顶部，深链只负责选窗格。 -->
   <div class="settings-layout">
     <aside class="settings-rail">
       <h1 class="settings-rail-title">设置</h1>
@@ -352,7 +367,7 @@ onMounted(async () => {
         </template>
       </nav>
     </aside>
-    <div class="settings-pane">
+    <div class="settings-pane" ref="paneRef">
       <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 8 个分节共用同一份模板 -->
       <header class="pane-head">
         <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
@@ -588,29 +603,37 @@ onMounted(async () => {
 .meta-line { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; }
 
 /**
- * 版式：**贴左的导航栏 + 居中的内容列**（一次只渲染一区）。
+ * 版式：**钉死的左栏 + 自己滚的内容列**（模仿 Edge 设置页，一次只渲染一区）。
  *
  * 这里是整页而不是弹窗：导航栏从内容区最左边起、208px 固定宽，只用一条 1px 发丝线与内容
  * 分隔 —— 圆角、边框、投影叠上去就是一张浮在页面里的卡片，与"整页设置"的定位不符。
  *
- * 分隔线画在容器上而不是导航栏上：导航栏是 sticky 的、自身只有几百像素高，边框会跟着它
- * 滚成一根半截短线；容器的高度才是整页内容的高度。底色因此也不需要不透明。
+ * 整页**不滚窗口**：高度钉成"视口 − 顶栏 − .app-main 上下内边距"，滚动只发生在两栏内部。
+ * 为什么必须钉：各分区高度不等，交给窗口滚就会随切区出现/消失一条滚动条，整页宽度跟着变，
+ * 左栏于是横向抖一下 —— 用户报的正是这个。算式与 base.css:269 的内边距（18 / 64）绑死，
+ * 那边改了这里必须跟着改；861–1024 段的内边距是 14 / 56，见下面单独的媒体查询。
+ *
+ * 分隔线画在容器上：它要跟着**整屏**高度走，画在任一栏上都会随那栏的滚动一起动。
  */
 .settings-layout {
   --rail-col: 208px;
   position: relative;
-  display: grid; align-items: start;
+  display: grid;
   grid-template-columns: var(--rail-col) minmax(0, 1fr);
+  /* 显式写行高：两栏都靠 height:100% 撑满，行若是 auto 就退回按内容算，窗格的滚动区会变矮 */
+  grid-template-rows: minmax(0, 1fr);
+  height: calc(100dvh - var(--header-h) - 18px - 64px);
+  overflow: hidden;
 }
 .settings-layout::before {
   content: ''; position: absolute; top: 0; bottom: 0; left: var(--rail-col);
   width: 1px; background: var(--divider);
 }
 .settings-rail {
-  position: sticky; top: calc(var(--header-h) + 12px);
+  /* 不吸顶：容器已经钉住了，整栏跟着容器走即可（吸顶 + 定高反而会互相打架） */
+  position: static;
+  height: 100%; overflow-y: auto;
   display: flex; flex-direction: column; gap: 10px;
-  /* 分区多于视口高度时，吸顶的导航自己也得能滚，否则末尾几项点不到 */
-  max-height: calc(100dvh - var(--header-h) - 28px); overflow-y: auto;
   /* 左留白为 0：可点项的浅底一路顶到内容区最左边，贴左才看得出来 */
   padding: 2px 12px 12px 0;
 }
@@ -654,12 +677,17 @@ onMounted(async () => {
 
 .settings-pane {
   min-width: 0; display: flex; flex-direction: column; gap: 18px;
-  /* 内容列在剩余空间里水平居中、宽度自适应：宽屏由 max() 算出的对称外边把内容压到
-     1040px（够放两列卡片），窄屏退到 28（离分隔线）/ 24（不贴右边缘）的下限。
-     不用 max-width + margin:auto —— 那样内容列就不贴着分隔线，居中会跟着一起漂。 */
-  padding-left: max(28px, calc((100% - 1040px) / 2));
-  padding-right: max(24px, calc((100% - 1040px) / 2));
+  /* 左栏钉死之后，滚动全部落在这里 */
+  height: 100%; overflow-y: auto; overscroll-behavior: contain;
+  /* 滚动条槽常驻：分区一高一矮，滚动条一会儿有、一会儿没有，不留槽内容宽度就会跟着跳 */
+  scrollbar-gutter: stable;
+  /* 两档留白是**下限**：离分隔线 28、右侧（含滚动条槽）不贴边 24 */
+  padding-left: 28px; padding-right: 24px;
 }
+/* 内容列在剩余空间里水平居中、宽度自适应：宽屏封顶 1040（够放两列卡片），窄屏铺满。
+   居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
+   也算进去了，那样内容会整体左偏半个滚动条宽。 */
+.settings-pane > * { width: 100%; max-width: 1040px; margin-inline: auto; }
 /* 页头：图标底 + 标题 + 一句说明，底下一根细分隔线收尾 —— 「页头 / 内容」两段节奏。
    近-远：页头到第一张卡 ~34px，卡与卡之间 12px（base.css 的 `.card + .card`）。 */
 .pane-head {
@@ -677,18 +705,29 @@ onMounted(async () => {
 .pane-head h2 { margin: 0; font-size: calc(18px * var(--ts, 1)); font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
 .pane-desc { margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 
+/* 861–1024：.app-main 的内边距收成 14 / 56（base.css），高度算式得换一档，
+   否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。 */
+@media (max-width: 1024px) {
+  .settings-layout { height: calc(100dvh - var(--header-h) - 14px - 56px); }
+}
+
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽）。
    横向滚动交给 nav 自己 —— "设置"那一格始终留在左边；当前项由 revealActive 滚进可视区。 */
 @media (max-width: 860px) {
+  /* 手机回到窗口滚动：一屏内的滚动区很难用 —— 手势总被内层吃掉，滚到底也换不了区 */
   .settings-layout {
     grid-template-columns: minmax(0, 1fr); row-gap: 14px;
+    height: auto; overflow: visible;
   }
   /* 竖线立不住：横排导航改由自己的下边框收尾，容器上那条整体撤掉 */
   .settings-layout::before { display: none; }
-  .settings-pane { padding-left: 0; padding-right: 0; }
+  .settings-pane {
+    padding-left: 0; padding-right: 0;
+    height: auto; overflow: visible;
+  }
   .settings-rail {
-    position: static; flex-direction: row; align-items: center;
-    gap: 10px; padding: 0 0 10px; max-height: none; overflow: hidden;
+    position: static; height: auto; flex-direction: row; align-items: center;
+    gap: 10px; padding: 0 0 10px; overflow: hidden;
     border-bottom: 1px solid var(--divider);
   }
   .settings-rail-title {

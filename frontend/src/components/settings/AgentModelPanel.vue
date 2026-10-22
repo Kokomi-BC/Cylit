@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * 设置页「论文问答」面板：**技能 + 对话风格**并排一行（窄屏回落单列），**Cyli 解释 / 运行限额**各自整宽。
+ * 设置页「论文问答」面板：**技能**占右列，**对话风格 + Cyli 解释**竖着叠在左列，**运行限额**整宽收尾；
+ * <1100px 收成单列，技能排最前（它是这个面板的主内容）。
  *
  * 为什么单独一区：问答用的模型与翻译用的生成模型**是不同的配置项**（`agent` 类型，
  * 见 `services/agent/model_config.py`）—— 翻译要关思考、低温度、便宜；问答要开思考、
@@ -11,7 +12,8 @@
  * ① **技能**：`GET /agent/skills` 列表 + 上传（`.zip`，内含 `<name>/SKILL.md`）/ 启用开关 /
  * 下载 / 卸载。**自带技能（builtin）可以禁用但删不掉**（`DELETE` 回 403）—— 下载与卸载只给
  * 外部技能，自带技能那行连灰掉的按钮都不摆：一个点不动的图标既不说明什么，还逼用户去读 title。
- * 禁用的行整体降一档亮度并挂「已禁用」签。
+ * 禁用的行整体降一档亮度并挂「已禁用」签。行内正文用 `SKILL_BLURB` 的大白话（后端 description
+ * 是写给模型判断"该不该调"的，不改它），专业版留在 title 上；「自带」是默认态、不标徽章。
  * ② **对话风格**：提示词里唯一可改的那一段，存 setting 表的 `agent_style`（`PUT /settings`），
  * **留空保存 = 恢复默认**（后端删行，读取点回落到 `agent/prompts.DEFAULT_STYLE`），
  * **只对新对话生效**：风格在建会话那一刻冻结到会话行上（用户口径 2026-10-15）。
@@ -43,6 +45,24 @@ import Switch from '@/components/Switch.vue';
 const STYLE_MAX = 2000;
 
 /* ------------------------------- ① 技能 ------------------------------- */
+
+/** 技能说明的**人话版**（走查定稿，措辞别动）。
+ *
+ * 为什么不直接用后端的 description：SKILL.md 里那段是写给**模型**判断"该不该调这个技能"的
+ * 规则文本，摊在设置页上读起来像文档。这里按名字给一句用户视角的话；取不到条目（外部技能）
+ * 就回落到它自己的 description，专业版仍挂在行内 title 上、悬停可见。 */
+const SKILL_BLURB: Record<string, string> = {
+  'figure-reading': '图里画了什么、曲线怎么走、结论是什么 —— 定位到具体那张图，结合图注与正文讲清楚。',
+  'formula-explain': '某个公式什么意思、符号各指什么、怎么推出来的；公式识别错了（乱码/缺项/上下标错位）也能改。',
+  'highlight-note': '把某段原文标出来、标成某个颜色，或在某处写一条笔记 —— 按你说的位置动手。',
+  'page-visual-check': '直接看页面原图核对：公式与表格结构、OCR 乱码、上下标有没有错位。',
+  'paper-overview': '先给你这篇的整体地图：一句话讲什么、章节怎么走、建议按什么顺序读。',
+  'paper-qa': '需要跨段落取证的问题：核心贡献、方法原理、实验结论、局限、和别的方法比。',
+  'term-glossary': '术语在这篇论文里的确切含义、怎么译、中英对照与全文译法是否统一。',
+  'text-fix': '解析或翻译结果里有错，按你说的一处一处改（识别错、译文不对、术语统一）。',
+  'translate-check': '核对译文对不对、有没有漏译；也能用中文把原文要点复述一遍。',
+  'web-search': '论文之外的事才上网查（官方文档、开源实现、是否已发表），答完必须带链接与站点名。',
+};
 
 const skills = ref<AgentSkill[]>([]);
 const skillsLoading = ref(false);
@@ -540,9 +560,12 @@ onMounted(() => {
 
 <template>
   <div class="agent-panel">
-    <!-- 技能与对话风格并排：两件事都是"读一行、改一下"，横着放一屏就看完；再窄就回落单列 -->
-    <div class="grid cols-2 panel-row">
-      <!-- ① 技能：每行 = 名字 + 两行说明 + 自带/外部签 + 启用开关（下载 / 卸载只给外部技能） -->
+    <!-- 版式：右列技能（主内容，DOM 里排第一 —— 窄屏单列时它就是第一屏），
+         左列竖着叠「对话风格 + Cyli 解释」两张短卡。
+         为什么这么分：十来个技能是一行一行读下来的，有实打实的高度；
+         对话风格与解释各自只有几行，跟技能并排才不至于在右下角留一大片空白。 -->
+    <div class="panel-grid">
+      <!-- ① 技能：每行 = 名字 + 两行大白话说明 + 启用开关（下载 / 卸载只给外部技能） -->
       <section class="card">
         <div class="card-head">
           <AppIcon name="sparkle" :size="14" />技能
@@ -564,11 +587,14 @@ onMounted(() => {
                 <div class="skill-main">
                   <div class="skill-title">
                     <span class="skill-name mono" :title="s.name">{{ s.name }}</span>
-                    <span class="badge dim">{{ s.builtin ? '自带' : '外部' }}</span>
+                    <!-- 自带是默认态、不标；只有"外部"值得一眼看出，禁用仍要标 -->
+                    <span class="badge dim" v-if="!s.builtin">外部</span>
                     <span class="badge warn" v-if="!s.enabled">已禁用</span>
                   </div>
+                  <!-- 正文用大白话（没条目的外部技能回落它自己的 description）；
+                       专业版仍挂在 title 上，悬停可见 -->
                   <p class="skill-desc" :title="s.description || '（这个技能没写说明）'">
-                    {{ s.description || '（这个技能没写说明）' }}
+                    {{ SKILL_BLURB[s.name] || s.description || '（这个技能没写说明）' }}
                   </p>
                 </div>
                 <div class="skill-ops">
@@ -660,77 +686,80 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- ② 对话风格：提示词里唯一可改的一段。非编辑态只读（点正文进编辑），按钮只在编辑态出现。 -->
-      <section class="card">
-        <div class="card-head">
-          <AppIcon name="chat" :size="14" />对话风格
-          <span class="spacer"></span>
-          <span class="tiny faint">只对新开的对话生效</span>
-          <span v-if="styleCustom" class="badge">已自定义</span>
-        </div>
-        <div class="card-body">
-          <p v-if="!styleEditing" class="style-view" title="点击编辑"
-             role="button" tabindex="0"
-             @click="startEditStyle"
-             @keydown.enter.prevent="startEditStyle"
-             @keydown.space.prevent="startEditStyle">{{ styleSaved }}</p>
-          <template v-else>
-            <textarea ref="styleEl" v-model="styleText" rows="4" :maxlength="STYLE_MAX"
-                      class="style-input" @keydown.esc="cancelStyle"
-                      placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
-            <div class="style-actions">
-              <button class="btn primary sm" :disabled="styleBusy || !styleDirty"
-                      @click="saveStyle(styleText)">
-                <AppIcon name="check" :size="15" />保存
-              </button>
-              <button class="btn sm" :disabled="styleBusy || (!styleCustom && !styleDirty)"
-                      @click="saveStyle('')">
-                <AppIcon name="refresh" :size="15" />恢复默认
-              </button>
-              <button class="btn sm" :disabled="styleBusy" @click="cancelStyle">取消</button>
-              <span class="spacer"></span>
-              <span class="tiny faint mono">{{ styleText.length }} / {{ STYLE_MAX }}</span>
-            </div>
-          </template>
-        </div>
-      </section>
-    </div>
+      <!-- 左列：两张"读几行、改一下"的短卡竖着叠，谁都不该独占整宽 -->
+      <div class="panel-col">
+        <!-- ② 对话风格：提示词里唯一可改的一段。非编辑态只读（点正文进编辑），按钮只在编辑态出现。 -->
+        <section class="card">
+          <div class="card-head">
+            <AppIcon name="chat" :size="14" />对话风格
+            <span class="spacer"></span>
+            <span class="tiny faint">只对新开的对话生效</span>
+            <span v-if="styleCustom" class="badge">已自定义</span>
+          </div>
+          <div class="card-body">
+            <p v-if="!styleEditing" class="style-view" title="点击编辑"
+               role="button" tabindex="0"
+               @click="startEditStyle"
+               @keydown.enter.prevent="startEditStyle"
+               @keydown.space.prevent="startEditStyle">{{ styleSaved }}</p>
+            <template v-else>
+              <textarea ref="styleEl" v-model="styleText" rows="4" :maxlength="STYLE_MAX"
+                        class="style-input" @keydown.esc="cancelStyle"
+                        placeholder="例如：你是猫娘助手，说话结尾带「喵」。" />
+              <div class="style-actions">
+                <button class="btn primary sm" :disabled="styleBusy || !styleDirty"
+                        @click="saveStyle(styleText)">
+                  <AppIcon name="check" :size="15" />保存
+                </button>
+                <button class="btn sm" :disabled="styleBusy || (!styleCustom && !styleDirty)"
+                        @click="saveStyle('')">
+                  <AppIcon name="refresh" :size="15" />恢复默认
+                </button>
+                <button class="btn sm" :disabled="styleBusy" @click="cancelStyle">取消</button>
+                <span class="spacer"></span>
+                <span class="tiny faint mono">{{ styleText.length }} / {{ STYLE_MAX }}</span>
+              </div>
+            </template>
+          </div>
+        </section>
 
-    <!-- ②b Cyli 解释：单独一套模型 + 思考强度。留空 = 跟随默认（对话模型 / 模型自己的档）。 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="sparkle" :size="14" />Cyli 解释
-        <span class="spacer"></span>
-        <span class="tiny faint">下一轮解释生效</span>
-        <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
-          <AppIcon name="check" :size="15" />{{ explainBusy ? '保存中…' : '保存' }}
-        </button>
+        <!-- ②b Cyli 解释：单独一套模型 + 思考强度。留空 = 跟随默认（对话模型 / 模型自己的档）。 -->
+        <section class="card">
+          <div class="card-head">
+            <AppIcon name="sparkle" :size="14" />Cyli 解释
+            <span class="spacer"></span>
+            <span class="tiny faint">下一轮解释生效</span>
+            <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
+              <AppIcon name="check" :size="15" />{{ explainBusy ? '保存中…' : '保存' }}
+            </button>
+          </div>
+          <div class="card-body">
+            <p class="tiny faint explain-hint">
+              划词解释 / 插图解释用的模型与思考强度。解释是"读一段、讲清楚"，
+              与侧栏对话的负载不同 —— 这里可以单独挑一个更快或更便宜的。
+            </p>
+            <div class="grid cols-2">
+              <label class="field">
+                <span class="field-top">模型</span>
+                <select v-model="explainModel" data-explain-model>
+                  <option value="">跟随对话默认</option>
+                  <option v-for="m in explainModels" :key="m.id" :value="m.id">
+                    {{ m.name || m.model_name || m.id }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-top">思考强度</span>
+                <select v-model="explainEffort" data-explain-effort>
+                  <option value="">跟随模型{{ explainModelDefaultEffort ? `（${explainModelDefaultEffort}）` : '' }}</option>
+                  <option v-for="e in explainEffortOptions" :key="e" :value="e">{{ e }}</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </section>
       </div>
-      <div class="card-body">
-        <p class="tiny faint explain-hint">
-          划词解释 / 插图解释用的模型与思考强度。解释是"读一段、讲清楚"，
-          与侧栏对话的负载不同 —— 这里可以单独挑一个更快或更便宜的。
-        </p>
-        <div class="grid cols-2">
-          <label class="field">
-            <span class="field-top">模型</span>
-            <select v-model="explainModel" data-explain-model>
-              <option value="">跟随对话默认</option>
-              <option v-for="m in explainModels" :key="m.id" :value="m.id">
-                {{ m.name || m.model_name || m.id }}
-              </option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-top">思考强度</span>
-            <select v-model="explainEffort" data-explain-effort>
-              <option value="">跟随模型{{ explainModelDefaultEffort ? `（${explainModelDefaultEffort}）` : '' }}</option>
-              <option v-for="e in explainEffortOptions" :key="e" :value="e">{{ e }}</option>
-            </select>
-          </label>
-        </div>
-      </div>
-    </section>
+    </div>
 
     <!-- ③ 运行限额：六个数字就地可改。它们是 agent 服务的启动参数 → 只提示"重启后生效" -->
     <section class="card">
@@ -767,11 +796,20 @@ onMounted(() => {
    并排那张网格自带底边距，否则它后面那张卡（前一个兄弟不是 `.card`）会贴上来。 */
 .agent-panel { display: flex; flex-direction: column; }
 .spacer { flex: 1; }
-/* 技能 + 对话风格并排。<1100px 回落单列：比这更窄时半宽只剩 480px 出头，
-   技能名与说明都要开始换行，横着摆不如直接叠起来。 */
-.panel-row { margin-bottom: 12px; }
+/* 右列技能 + 左列（对话风格 / Cyli 解释）。`align-items: start` 让每张卡按自己的内容高，
+   底边不强行拉齐 —— 拉齐反而会在短卡里空出一大截。
+   DOM 里技能排第一（它是这个面板的主内容），宽屏靠 order 把左列提到第一格；
+   <1100px 单列时 order 归零，技能自然落回最前，窄屏第一屏就是它。 */
+.panel-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; align-items: start; margin-bottom: 12px;
+}
+.panel-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; order: -1; }
+/* 左列内部靠 gap 排，别再叠一条 `.card + .card` 的上边距（会变成 24px） */
+.panel-col > .card + .card { margin-top: 0; }
 @media (max-width: 1100px) {
-  .panel-row.grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
+  .panel-grid { grid-template-columns: minmax(0, 1fr); }
+  .panel-col { order: 0; }
 }
 
 /* ---------- ① 技能 ---------- */
@@ -779,25 +817,26 @@ onMounted(() => {
 /* 行与行之间用发丝线分隔（不用卡片套卡片）：第一行不留上边、最后一行不留底 */
 .skill-row {
   display: flex; align-items: flex-start; gap: 12px;
-  padding: 10px 0; border-top: 1px solid var(--divider);
+  padding: 8px 0; border-top: 1px solid var(--divider);
 }
 .skill-row:first-child { padding-top: 0; border-top: 0; }
 .skill-row:last-child { padding-bottom: 0; }
 .skill-main { min-width: 0; flex: 1; }
 .skill-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-/* 三档灰阶之一：名字用正文色（禁用的降一档），说明用 fading 的 12px 两行。
+/* 三档灰阶之一：名字用正文色（禁用的降一档），说明用 fading 的 11.5px 两行。
    说明只给两行：半宽卡片里一长串说明会把行撑高，整张卡跟着变高、右边空一片；
    截掉的全文进 `title`（悬停可见），`anywhere` 兜住长技能名这类不带空格的串。 */
-.skill-name { font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.skill-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .skill-desc {
-  margin: 2px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
+  margin: 1px 0 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.45; color: var(--text-dim);
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   overflow: hidden; overflow-wrap: anywhere;
 }
 /* 禁用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
 .skill-row.off .skill-desc { opacity: .6; }
-.skill-ops { display: flex; align-items: center; gap: 6px; flex: none; padding-top: 1px; }
+/* 开关与齿轮 / 下载 / 卸载之间只隔 6px：一排小控件挨紧才像一组操作 */
+.skill-ops { display: flex; align-items: center; gap: 6px; flex: none; }
 
 /* ---------- ④ 联网搜索：挂在 web-search 那一行下方，用发丝描边盒与"行"区分开 ---------- */
 .ws-panel {
