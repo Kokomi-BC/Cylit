@@ -1334,7 +1334,7 @@ def markdown_caption(paper_id: str, page_no: int, number: str, *,
             continue
         if hit.group(1) == want:
             # 图注行有时**整块**是一行（算法块的 caption 行后面紧跟伪代码正文）→ 只取第一行
-            return text.split("\n")[0].strip()
+            return _plain_caption(text.split("\n")[0])
     return ""
 
 def media_of_page(paper_id: str, page_no: int, *, figures_only: bool = True) -> list[dict]:
