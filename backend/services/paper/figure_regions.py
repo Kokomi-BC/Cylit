@@ -891,6 +891,10 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 ))
             if below and not scan:
                 prev_bottom = max(_num(regions[-1]["bbox"][3]) - 3.0, 0.0)
+        # 算法块（伪代码）也算可裁图区域 —— 必须在这里加：`blocks` / `rect` 是**本页**的；
+        # 放到后面那个去重循环里会借到"最后一页"的 blocks/rect（实测 2026-12-07）。
+        regions.extend(_algorithm_regions(blocks, regions, entry, rect))
+        regions.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
         out[page_no] = regions
 
     # ---- 跨页续图：图体画到页脚、下一页页首接着它 → 下一页补一条"续图"条目 ----
@@ -964,8 +968,6 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
             keep.append(items[0])
             log.info("同一%s号 %s 有 %d 条区域，只留离图体最近的那条（其余当成正文）",
                      "图" if kind == "figure" else "表", number, len(items))
-        keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
-        keep.extend(_algorithm_regions(blocks, keep, entry, rect))
         keep.sort(key=lambda r: (_num(r["bbox"][1]), _num(r["bbox"][0])))
         out[page_no] = keep
 
