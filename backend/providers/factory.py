@@ -17,6 +17,7 @@ from backend.providers.embedding.providers import (
     LocalSentenceTransformerEmbedding, OpenAICompatibleEmbedding,
 )
 from backend.providers.generation.mock import MockEmbedding, MockGeneration
+from backend.providers.generation.anthropic import AnthropicGeneration
 from backend.providers.generation.openai_compatible import (
     OpenAICompatibleGeneration,
 )
@@ -39,8 +40,9 @@ GENERATION_PROVIDERS = {
     #   · Anthropic：官方 OpenAI SDK 兼容层（beta），model 名仍用 claude-*；
     #   · 豆包 = 火山方舟 Ark，model 填「推理接入点 ID」（ep-… 或 doubao-…）。
     # 别名多写几个：用户手填 provider 时写 anthropic / claude 都能落到同一条路。
-    "anthropic": OpenAICompatibleGeneration,
-    "claude": OpenAICompatibleGeneration,
+    # Claude 走**原生 Messages API**（OpenAI 兼容层只是 beta，字段语义不同）
+    "anthropic": AnthropicGeneration,
+    "claude": AnthropicGeneration,
     "gemini": OpenAICompatibleGeneration,
     "google": OpenAICompatibleGeneration,
     "doubao": OpenAICompatibleGeneration,

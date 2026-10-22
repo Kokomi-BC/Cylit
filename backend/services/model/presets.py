@@ -179,13 +179,13 @@ PRESETS: dict[str, dict] = {
         "provider": "anthropic",
         "generation": {
             "model_name": "claude-sonnet-4-5",
-            "base_url": "https://api.anthropic.com/v1",
+            "base_url": "https://api.anthropic.com",
             "secret_ref": "anthropic.key",
             "parameters": {"max_tokens": 8192},
         },
         "agent": {
             "model_name": "claude-sonnet-4-5",
-            "base_url": "https://api.anthropic.com/v1",
+            "base_url": "https://api.anthropic.com",
             "secret_ref": "anthropic.key",
             "parameters": {"max_tokens": 8192},
         },

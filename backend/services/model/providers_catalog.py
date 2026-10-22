@@ -41,7 +41,7 @@ PROVIDER_META: dict[str, dict] = {
     "openai": {"label": "OpenAI · GPT", "icon": "openai",
                "note": "官方 OpenAI 兼容端点", "auth": "bearer"},
     "anthropic": {"label": "Claude · Anthropic", "icon": "claude",
-                  "note": "官方 OpenAI SDK 兼容层（beta）", "auth": "bearer"},
+                  "note": "原生 Messages 协议（非 OpenAI 兼容）", "auth": "bearer"},
     "gemini": {"label": "Gemini · Google", "icon": "gemini",
                "note": "Google 的 OpenAI 兼容层", "auth": "bearer"},
     "doubao": {"label": "豆包 · 火山方舟（Ark）", "icon": "doubao",
