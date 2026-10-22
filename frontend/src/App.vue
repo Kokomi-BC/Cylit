@@ -52,7 +52,8 @@ const viewKey = computed(() => routeKey(route));
     <TabBar v-if="shellMode !== 'bare'" />
     <div class="shell-body">
       <AppSidebar v-if="shellMode === 'rail'" />
-      <main id="main" :class="['app-main', { wide, fill: shellMode === 'bare' }]">
+      <!-- settings：设置页要通栏（左栏贴主区左缘），单独放开 .app-main 的封顶与左内边距，见 base.css -->
+      <main id="main" :class="['app-main', { wide, fill: shellMode === 'bare', settings: route.name === 'settings' }]">
         <RouterView :key="viewKey" />
       </main>
     </div>

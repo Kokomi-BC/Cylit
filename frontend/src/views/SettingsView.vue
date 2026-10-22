@@ -673,9 +673,6 @@ onMounted(async () => {
  */
 .settings-layout {
   --rail-col: 208px;
-  /* 顶出去：.app-main 自带左右内边距（20px），左栏因此离内容区边缘还有一段；
-     只挪左边 —— 右边缘仍落在 .app-main 的内边距里，横向不会多出滚动条。 */
-  margin-left: -20px;
   display: grid;
   grid-template-columns: var(--rail-col) minmax(0, 1fr);
   /* 显式写行高：两栏都靠 height:100% 撑满，行若是 auto 就退回按内容算，窗格的滚动区会变矮 */
@@ -769,10 +766,10 @@ onMounted(async () => {
   /* 两档留白是**下限**：离分隔线 28、右侧（含滚动条槽）不贴边 24 */
   padding-left: 28px; padding-right: 24px;
 }
-/* 内容列在剩余空间里水平居中、宽度自适应：宽屏封顶 1040（够放两列卡片），窄屏铺满。
+/* 内容列在剩余空间里水平居中、宽度自适应：宽屏封顶 1280（两列卡片各约 634，再宽正文行就散了），窄屏铺满。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
    也算进去了，那样内容会整体左偏半个滚动条宽。 */
-.settings-pane > * { width: 100%; max-width: 1040px; margin-inline: auto; }
+.settings-pane > * { width: 100%; max-width: 1280px; margin-inline: auto; }
 /* 页头：图标底 + 标题 + 一句说明，底下一根细分隔线收尾 —— 「页头 / 内容」两段节奏。
    近-远：页头到第一张卡 ~34px，卡与卡之间 12px（base.css 的 `.card + .card`）。 */
 .pane-head {
@@ -795,8 +792,6 @@ onMounted(async () => {
 @media (max-width: 1024px) {
   .settings-layout {
     height: calc(100dvh - var(--header-h) - 14px - 56px);
-    /* 这一档 .app-main 的内边距是 12px，负外边距跟着换，否则左栏反而缩回去 8px */
-    margin-left: -12px;
   }
 }
 
@@ -807,6 +802,9 @@ onMounted(async () => {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr); row-gap: 14px;
     height: auto; overflow: visible;
+    /* 主区左内边距在设置页是 0：那是给桌面「左栏贴主区左缘」用的，窄屏单列会贴到视口边缘，
+       这里补回 12px，与主区右侧的 12/24 对称 */
+    padding-left: 12px;
   }
   .settings-pane {
     padding-left: 0; padding-right: 0;

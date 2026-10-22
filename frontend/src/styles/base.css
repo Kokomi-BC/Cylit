@@ -267,6 +267,10 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 :root { --rail-w: 216px; --rail-w-min: 64px; }
 
 .app-main { max-width: 1440px; margin: 0 auto; padding: 18px 20px 64px; }
+/* 设置页要通栏：左栏贴着主区左缘（左内边距归零），右侧留 24 免得卡片贴边。
+ * 封顶 1720 而不是 none —— 超宽屏上正文列仍该有自己的宽度极限，只是不该在 1440 就停车。
+ * 上下内边距**不动**：SettingsView 的整页高度算式（100dvh − 顶栏 − 18 − 64）就是按它写的。 */
+.app-main.settings { max-width: 1720px; padding-left: 0; padding-right: 24px; }
 /* 阅读器：整屏布局且**自身不滚动**（滚动都在栏内），避免"滚侧栏带动整页" */
 .app-main.wide {
   max-width: none; padding: 0;
@@ -747,6 +751,8 @@ table.data.fixed { table-layout: fixed; }
      所以这里改 `--rail-w` 就够了，组件不用再写第二套断点。 */
   :root { --rail-w: var(--rail-w-min); }
   .app-main { padding: 14px 12px 56px; }
+  /* 同理这一档的 12px：左边归零，右边留 12 */
+  .app-main.settings { padding-left: 0; padding-right: 12px; }
   .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
