@@ -74,12 +74,19 @@ def test_fragment_probe_still_stores_the_whole_formula(paper):
     assert payload["selected_text"].endswith("$$")
 
 
-def test_explicit_english_is_pulled_to_the_chinese_side_for_formulas(paper):
-    """agent 每次都显式传 side=en（实测 8 条公式高亮全落英文列）：公式必须无视它。"""
+def test_explicit_english_is_respected_for_formulas(paper):
+    """显式 `side=en` **照办**：用户可能在读英文原文那一列。
+
+    历史：2026-12-06 这里是"公式一律无视 side=en"（当时实测 agent 每次都乱传 en，8 条公式
+    全落英文列、在中文视图里画不出来）。2026-12-07 反例：模型真的想标英文面那条公式，
+    却被静默改成译文面，落到**另一条**公式上 —— 静默改面比标错面更难查。现在的规则：
+    没指定 → 默认译文面；显式指定 → 照办，落不成的话回执里带 `side_note` 说清。
+    """
     probe = "$$D := \\mathbb{E}\\langle y, x\\rangle$$"
     got = ann.create("p1", anchor="p001-00", text=probe, side="en")
     assert got["ok"] is True
-    assert paper[-1]["side"] == "zh"
+    assert paper[-1]["side"] == "en"
+    assert "side_note" not in got
 
 
 def test_a_one_letter_formula_is_not_matched_by_a_long_probe():

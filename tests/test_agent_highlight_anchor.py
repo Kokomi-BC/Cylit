@@ -101,6 +101,84 @@ def test_near_miss_uses_the_preferred_face_not_the_last_one(capture, monkeypatch
     assert out["near_miss"], "译文面里那句就在，必须给候选"
     assert "下界" in out["near_miss"][0]
 
+# --------------------------------------------------------------------------
+# 体验：公式占位符 / 显式面 / 跨块跨页
+# --------------------------------------------------------------------------
+
+
+def test_probe_may_omit_the_formula_space(capture, monkeypatch) -> None:
+    """用户从界面复制中文时，公式那一处是**空位** —— 这种情况也要能落上。"""
+    raw = "我们的目标是在将 $x$ 量化为每个坐标 $b$ 比特的同时，尽量减少失真。"
+    payload = {"page": 5, "rows": [{"id": "p005-01", "original": "We quantize x ...",
+                                   "translation": raw}],
+               "original_md": "We quantize x ...", "translation_md": raw}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p5", text="我们的目标是在将 量化为每个坐标 比特的同时，尽量减少失真。")
+    assert out["ok"] is True, out.get("error")
+    assert capture["block_id"] == "p005-01" and capture["scope"] == "row"
+    assert ann.ATOM not in capture["selected_text"], "存下来的引用里不能留方块占位符"
+    assert "量化为每个坐标" in capture["selected_text"]
+
+
+def test_explicit_en_side_is_respected_for_formulas(capture, monkeypatch) -> None:
+    """显式 `side="en"` + 英文面有这条公式 → **照办**（以前被静默改成译文面）。"""
+    en = "$$D_{\\text{prod}} \\leq \\frac{\\sqrt{3}}{2} \\cdot \\frac{1}{4^b}$$"
+    zh = "$$D_{\\text{prod}} \\leq \\frac{\\sqrt{3}}{2} \\cdot \\frac{1}{4^b}$$"
+    payload = {"page": 4, "rows": [{"id": "p004-09", "original": en, "translation": zh}],
+               "original_md": en, "translation_md": zh}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    probe = "D_{\\text{prod}} \\leq \\frac{\\sqrt{3}}{2} \\cdot \\frac{1}{4^b}"
+    out = ann.create(PAPER, anchor="md:p4", text=probe, side="en")
+    assert out["ok"] is True
+    assert capture["side"] == "en"
+    assert "side_note" not in out, "照办了就不该再解释"
+
+
+def test_formula_falls_back_to_zh_with_a_note(capture, monkeypatch) -> None:
+    """显式 `en` 但英文面没有这条 → 落到译文面，并**明说**（不静默）。"""
+    zh = "$$Q_{\\text{prod}}(x) = \\left[Q_{\\text{mse}}(x)\\right]$$"
+    payload = {"page": 6, "rows": [{"id": "p006-09", "original": "unrelated english",
+                                   "translation": zh}],
+               "original_md": "unrelated english", "translation_md": zh}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    probe = "Q_{\\text{prod}}(x) = \\left[Q_{\\text{mse}}(x)\\right]"
+    out = ann.create(PAPER, anchor="md:p6", text=probe, side="en")
+    assert out["ok"] is True and capture["side"] == "zh"
+    assert "side_note" in out and "en" in out["side_note"]
+
+
+def test_near_miss_is_deduplicated() -> None:
+    block = "我们证明，MSE 优化的量化器在内积估计上是有偏的。"
+    near = ann.near_misses(block, "对估计内积是有偏的")
+    assert len(near) == len(set(near))
+
+
+def test_message_says_the_text_is_on_another_page(capture, monkeypatch) -> None:
+    """把第 3 页的文字传到 md:p4 → 报错要点明"在第 3 页"，而不是"没有相近的句子"。"""
+    p3 = {"page": 3, "rows": [{"id": "p003-05", "original": "Proof of Theorem 2 ...",
+                               "translation": "定理 2 的证明如下：先做正交变换。"}],
+          "original_md": "Proof ...", "translation_md": "定理 2 的证明如下：先做正交变换。"}
+    p4 = {"page": 4, "rows": [{"id": "p004-04", "original": "Lower bound ...",
+                               "translation": "如我们的下界所示，失真至多处于下界附近。"}],
+          "original_md": "Lower bound ...", "translation_md": "如我们的下界所示，失真至多处于下界附近。"}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [p3, p4])
+    out = ann.create(PAPER, anchor="md:p4", text="定理 2 的证明如下：先做正交变换。")
+    assert out["ok"] is False
+    assert "第 3 页" in out["error"]
+
+
+def test_message_says_the_text_spans_two_rows(capture, monkeypatch) -> None:
+    """把两段拼成一句 → 报错要点明"跨了两行"。"""
+    rows = [{"id": "p005-07", "original": "a", "translation": "我们先做 QR 分解来生成"},
+            {"id": "p005-08", "original": "b", "translation": "所得旋转向量再逐坐标量化。"}]
+    payload = {"page": 5, "rows": rows,
+               "original_md": "a\nb", "translation_md": "我们先做 QR 分解来生成\n所得旋转向量再逐坐标量化。"}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p5", text="我们先做 QR 分解来生成所得旋转向量再逐坐标量化。")
+    # 跨块的句子只能落在 Markdown 面（看不见），所以不报错、但必须**明说**为什么
+    assert out["ok"] is True and out["scope"] == "markdown"
+    assert "跨了两行" in out["warning"], out.get("warning")
+
 def test_bad_anchor_says_the_format_not_a_missing_text(capture) -> None:
     """`anchor="row"` 是**参数格式错**，不能说成"这段文字找不到"（实测误导过一轮）。"""
     out = ann.create(PAPER, anchor="row", text="随便一句中文")

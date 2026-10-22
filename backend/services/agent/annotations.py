@@ -201,6 +201,44 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[。！？；!?;])|\n")
 _CLAUSE_SPLIT = re.compile(r"(?<=[，,、])")
 
 
+def _strip_probe_math(text: str) -> str:
+    """探针里的公式段与占位符都去掉（用户粘贴的中文里那一处是空的）。"""
+    out = _DISPLAY_MATH.sub("", str(text or ""))
+    out = _INLINE_MATH.sub("", out)
+    return out.replace(ATOM, "")
+
+
+def find_span_ignoring_atoms(rendered: str, probe: str, *,
+                            occurrence: int = 1) -> tuple[int, int] | None:
+    """允许探针**漏掉公式**的匹配（返回渲染坐标系里的 ``(start, end)``）。
+
+    为什么需要（实测 2026-12-07）：译文里的公式在前端是个 KaTeX 元素，用户从界面复制那句
+    中文时，公式那一处到手就是个**空位**（或者干脆没有）；而高亮坐标系里它是 `ATOM`，
+    于是"逐字一致"永远对不上 —— 用户手打必然失败，`near_miss` 里回显的也只是个方块
+    （看不出那里原本是 `$x \\in \\mathbb{S}^{d-1}$`）。
+
+    做法：把渲染文本里的 `ATOM` **全部摘掉**再匹配（记下每个字在渲染坐标里的位置），
+    探针里的 `$…$` 与占位符同样摘掉。这样「我们的目标是在将 量化为每个坐标 比特」里
+    那两个空位就能对上；命中后把下标映射回渲染坐标。
+    """
+    #: 空白也一起摘掉：占位符两侧的空格在"复制粘贴"里常常留一个、去掉一个，
+    #: `将 $x$ 量化` 与 `将 量 化`（中间带空格）都该能对上。
+    bare: list[str] = []
+    rmap: list[int] = []
+    for i, ch in enumerate(rendered or ""):
+        if ch == ATOM or ch.isspace():
+            continue
+        bare.append(ch)
+        rmap.append(i)
+    needle = re.sub(r"\s+", "", _strip_probe_math(probe))
+    if not bare or not needle:
+        return None
+    hit = find_span("".join(bare), needle, occurrence=occurrence)
+    if hit is None:
+        return None
+    start, end = hit
+    return rmap[start], rmap[end - 1] + 1
+
 def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 80) -> list[str]:
     """找不到时给模型几句"最像的原文"，让它照着改一版（与产物纠错工具同一套路）。
 
@@ -238,7 +276,18 @@ def near_misses(text: str, probe: str, *, limit: int = 3, width: int = 80) -> li
     if not scored:
         return []
     scored.sort(key=lambda one: (-one[0], -one[1]))
-    return [cand[:width] for _cov, _ratio, cand in scored[:limit]]
+    out: list[str] = []
+    seen: set[str] = set()
+    for _cov, _ratio, cand in scored:
+        piece = cand[:width]
+        # 同一条原文常被切成"整句"和"小句"两份 → 去重，别把同一个候选回两遍（实测 2026-12-07）
+        if piece in seen:
+            continue
+        seen.add(piece)
+        out.append(piece)
+        if len(out) >= limit:
+            break
+    return out
 
 
 #: 行锚点长什么样（`p004-06`）。认不出来的锚点要**当场报格式错**，不能当成"这一行没这段文字"。
@@ -309,6 +358,11 @@ def locate_in_markdown(md: str, text: str, *, occurrence: int = 1
     span = find_span(render_like_dom(md), text, occurrence=occurrence)
     if span is not None:
         return span, False, ""
+    # 用户从界面复制那句话时，公式那一处是**空位**（前端把 KaTeX 元素复制成了空 / 干脆没有），
+    # 逐字匹配必然失败 —— 允许"漏掉公式"再试一次（见 `find_span_ignoring_atoms`）。
+    relaxed = find_span_ignoring_atoms(render_like_dom(md), text, occurrence=occurrence)
+    if relaxed is not None:
+        return relaxed, False, ""
     hit = find_formula_span(md, text)
     if hit is not None:
         return (hit[0], hit[1]), True, hit[2]
@@ -505,6 +559,41 @@ def normalize_color(value: object) -> str:
     return ""
 
 
+def _miss_reason(paper_id: str, page: int, text: str) -> str:
+    """找不到时讲清**为什么**：在别的页 / 在别的行 / 跨了两行。
+
+    用户口径（2026-12-07）：「跨块/跨页失败时不说原因」——把第 5 页两段拼成一句、或把第 3 页
+    的文字传到 `md:p4`，以前只回「这一段里没有相近的句子」，看不出是**跨块**这个限制。
+    高亮只能落在单个块内，这条限制本身合理，但要说出来。
+    """
+    probe = " ".join(str(text or "").split())
+    if len(probe) < 6:
+        return ""
+    head, tail = probe[:10], probe[-10:]
+    pages = _page_payloads(paper_id)
+    for payload in pages:
+        pg = int(payload.get("page") or 0)
+        for row in payload.get("rows") or []:
+            for key in ("translation", "original"):
+                body = " ".join(str(row.get(key) or "").split())
+                if probe in body:
+                    where = f"第 {pg} 页的正文行 {row.get('id') or '?'}"
+                    if pg and int(page or 0) and pg != int(page):
+                        return f"这句其实在{where} —— 跨页标不了，请改传到那一页的锚点。"
+                    return f"这句在{where}，跟你给的锚点不是同一处。"
+    for payload in pages:
+        if int(payload.get("page") or 0) != int(page or 0):
+            continue
+        rows = payload.get("rows") or []
+        for i in range(len(rows) - 1):
+            one, two = rows[i], rows[i + 1]
+            a = " ".join(str(one.get("translation") or one.get("original") or "").split())
+            b = " ".join(str(two.get("translation") or two.get("original") or "").split())
+            if head and tail and head in a and tail in b and probe not in a and probe not in b:
+                return (f"这段文字跨了两行（{one.get('id')} 与 {two.get('id')}）：高亮只能落在"
+                        "单个块内，请分成两次标注，或缩到其中一行里。")
+    return ""
+
 def create(paper_id: str, *, anchor: str, text: str, color: str = "",
            side: str = "", occurrence: int = 1) -> dict:
     """按**文字**建一条高亮（agent 的入口）。返回创建结果或 ``{"ok": False, "error": ...}``。
@@ -522,14 +611,14 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     # 面没指定时：**公式优先落在译文面**（用户口径：平时看的是中文那一列，标在原文面
     # 根本画不出来）；正文句子按文字判（引中文 → 译文面）。
     is_formula_probe = looks_like_formula(text)
-    side = normalize_side(side)
-    if not side:
-        side = side_of_text(text)
-    # 公式**一律先落译文面**，即便调用方显式给了 `en`：用户读的是中文那一列，标在原文面的
-    # 高亮根本画不出来。实测（2026-12-06）agent 每次都显式传 `side=en`，8 条公式高亮全落在
-    # 英文列 —— 只做"没给时才优先中文"挡不住它。译文面确实没有这条公式时，下面的换面
-    # 兜底会退回原文面。
-    if is_formula_probe:
+    #: 调用方**显式**要的面（空 = 没指定，宿主按文字判）。公式要不要尊重它见下。
+    requested_side = normalize_side(side)
+    side = requested_side or side_of_text(text)
+    # 公式**没指定面时**默认落译文面：用户平时读的是中文那一列，标在英文面根本画不出来
+    # （2026-12-06 实测：agent 每次都显式传 `side=en`，8 条公式高亮全落在英文列）。
+    # 但**显式给了 `en` 就尊重**（2026-12-07 实测反例：传英文 LaTeX + `side=en`，却被静默
+    # 改成译文面，落到另一条公式上）。落面若与要求不符，回执里带 `side_note` 说清。
+    if is_formula_probe and not requested_side:
         side = "zh"
     # **中文引文只可能落在译文面**：调用方显式给 `en` 也不听（与上面公式那条同一个理由）。
     # 实测（2026-12-07）4 条中文高亮全被当 `en` 面 → `locate_in_rows` 在英文行里找不到中文
@@ -563,15 +652,23 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         created["page"] = svc.anchor_page(on)
         log.info("agent 建高亮 %s %s[%d:%d] %r", paper_id, on, span_[0], span_[1],
                  (rendered_ or "")[span_[0]:span_[1]][:30])
-        return {"ok": True, "highlight": created, "page": created["page"],
-                "scope": on_kind}
+        return _finish({"ok": True, "highlight": created, "page": created["page"],
+                        "scope": on_kind})
+
+    def _finish(result: dict) -> dict:
+        """落面与要求不符就**说出来**，不静默改（用户口径 2026-12-07）。"""
+        landed = str((result.get("highlight") or {}).get("side") or "")
+        if requested_side and landed and landed != requested_side:
+            why = ("那一面没有这段文字（或公式默认落译文面）。要标在英文面，就把引用文字换成那一面的原文。")
+            result["side_note"] = f"你要的是 `{requested_side}` 面，这条却落到了 `{landed}` 面：" + why
+        return result
 
     # 公式走**整式优先**的快路：就算调用方给的是某一行，只要这一页里有覆盖面更大的整式，
     # 就落到那条上（`locate_formula_in_rows`）。实测（2026-12-07）agent 给的是整条
     # `Q_prod(x) = \left[…]\right]`，却因为所在行只匹配到 `$_{\text{prod}}$` 碎片而挂错节点。
     page_no = svc.anchor_page(anchor)
     if is_formula_probe and page_no:
-        best = locate_formula_in_rows(paper_id, page_no, text)
+        best = locate_formula_in_rows(paper_id, page_no, text, prefer_side=side)
         if best is not None:
             row_id, f_span, f_src, f_rendered, f_side = best
             log.info("公式高亮整式对齐：%s → %s[%d:%d]", anchor, row_id, f_span[0], f_span[1])
@@ -637,17 +734,33 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
         # 锚点在、这一段文字不在里面 —— 落下去走"找不到这段文字"，并给近似候选
         rendered = any_text
     if span is None:
-        near = near_misses(rendered, text)
+        # 候选从**原始 Markdown** 里挑：公式会以 `$…$` 露出来（渲染态里它只是个方块，
+        # 用户看不出那里原本是什么，也就没法照着改）。
+        near = near_misses(raw if raw is not None else (rendered or ""), text)
+        why = _miss_reason(paper_id, svc.anchor_page(anchor) or anchor_page_no(anchor), text)
         # near_miss 为空时也要说人话：回一个空数组，模型只能猜"我到底差在哪"
         tail = "" if near else "这一段里没有相近的句子，换一段更完整的原文再试。"
-        return {"ok": False,
-                "error": f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。{tail}",
-                "near_miss": near}
+        message = " ".join(one for one in (
+            f"这段文字在 {anchor} 里找不到（要逐字一致，Markdown 记号不算字）。", why, tail) if one)
+        return {"ok": False, "error": message, "near_miss": near}
     start, end = span
     # 公式那条存 **LaTeX 原文**而不是占位符：前端画标记时"选区含 ATOM 就跳过文字校验"
     # （`markRanges`），所以不影响定位；而列表 / 笔记里显示一个隐形的 U+FFFC 毫无意义。
-    stored_text = (formula_src or str(text or "").strip()) if is_formula else rendered[start:end]
-    return _write(anchor, side, kind, (start, end), stored_text, rendered)
+    if is_formula:
+        stored_text = formula_src or str(text or "").strip()
+    else:
+        # 文字高亮存坐标系里那一段，但**把公式占位符换成空**：`ATOM`（U+FFFC）在列表 / 笔记 /
+        # 引用里显示成方块，用户看不懂；偏移量仍按渲染坐标给，前端画标记时"选区含 ATOM 就跳过
+        # 文字校验"，所以不影响定位（实测 2026-12-07 用户报的"那个方块是什么"就是它）。
+            stored_text = rendered[start:end].replace(ATOM, "")
+    result = _write(anchor, side, kind, (start, end), stored_text, rendered)
+    if kind == "markdown":
+        # 落在 Markdown 面的高亮**阅读视图里看不见**（只有 Markdown 视图画它）。这本身是
+        # "行里对不上"的兜底，但要说明白，否则用户以为"高亮没出现"（实测报过多次）。
+        why = _miss_reason(paper_id, anchor_page_no(anchor), text)
+        result["warning"] = ("这条落在 **Markdown 面** —— 阅读视图里看不到它（只在 Markdown 视图里显示）。"
+                             + (" " + why if why else ""))
+    return result
 
 
 def list_items(paper_id: str, *, kind: str = "highlight", query: str | None = None) -> dict:
