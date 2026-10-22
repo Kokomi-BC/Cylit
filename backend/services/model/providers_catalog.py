@@ -32,6 +32,14 @@ PROVIDER_META: dict[str, dict] = {
         "note": "向量化 + 重排一组（同一个百炼账号）",
         "auth": "bearer",
     },
+    # 多模态向量 / 重排（qwen3-vl 系列）与百炼是同一个账号，图标也必须一致：
+    # 缺这一条时 icon 是空串 —— 模型页那条「RAG 检索」向量化模型会显示成空白方块。
+    "dashscope_multimodal": {
+        "label": "阿里云百炼 · 多模态（Qwen3-VL）",
+        "icon": "qwen",
+        "note": "qwen3-vl-embedding / qwen3-vl-rerank，与百炼同一个账号",
+        "auth": "bearer",
+    },
     "zhipu": {
         "label": "智谱 GLM",
         "icon": "zhipu",
@@ -50,17 +58,28 @@ PROVIDER_META: dict[str, dict] = {
                  "note": "OpenAI 兼容端点", "auth": "bearer"},
     "minimax": {"label": "MiniMax", "icon": "minimax",
                 "note": "OpenAI 兼容端点", "auth": "bearer"},
+    # 没有品牌图标的本地推理档一律 hidden：图标画不出来就是一个空白方块，
+    # 用户口径是「模型列表里没有图标的就不要出现」。本机端点仍可用「自定义提供方」接入。
     "ollama": {
         "label": "Ollama（本机）",
         "icon": "",
         "note": "跑在自己机器上，不需要密钥",
         "auth": "none",
+        "hidden": True,
+    },
+    "local": {
+        "label": "本地推理（BGE / sentence-transformers）",
+        "icon": "",
+        "note": "本机推理，不需要密钥",
+        "auth": "none",
+        "hidden": True,
     },
     "local_bge": {
         "label": "本地 BGE（向量化）",
         "icon": "",
         "note": "本机推理，不需要密钥",
         "auth": "none",
+        "hidden": True,
     },
 }
 
@@ -102,6 +121,9 @@ def catalog() -> dict:
         if not provider:
             continue
         meta = PROVIDER_META.get(provider, {})
+        if meta.get('hidden'):
+            # 没有品牌图标的本地档不进目录（见 PROVIDER_META 里的说明）
+            continue
         entry = by_provider.setdefault(provider, {
             "id": provider,
             "kind": "official",

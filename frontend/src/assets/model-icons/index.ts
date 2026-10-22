@@ -46,6 +46,7 @@ export const CATEGORY_ICON: Record<string, string> = {
 const VENDOR_ALIAS: Record<string, string> = {
   dashscope: 'qwen',
   dashscope_rag: 'qwen',
+  dashscope_multimodal: 'qwen',
   aliyun: 'qwen',
   aliyun_dashscope: 'qwen',
   tongyi: 'qwen',
@@ -138,6 +139,7 @@ export function vendorColorIcon(provider?: string | null): string {
 const VENDOR_COLOR_ALIAS: Record<string, string> = {
   dashscope: 'qwen',
   dashscope_rag: 'qwen',
+  dashscope_multimodal: 'qwen',
   aliyun: 'qwen',
   tongyi: 'qwen',
   bailian: 'qwen',
