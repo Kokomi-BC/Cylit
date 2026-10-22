@@ -106,17 +106,22 @@ const skillsReady = ref(false);
 const skillBusy = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
 
-/** 展示顺序：按"一条阅读路径"排，**联网搜索与网页阅读挨着**（用户口径 2026-12-07）——
- *  它们是同一件事的两步：先搜到候选、再按链接读正文；后端按名字排会把 `web-fetch` 甩到最后。
+/** 展示顺序：按**三段**排（用户口径 2026-12-07）——
  *
- *  其余顺序 = 先看整体（全文导读）→ 取材料（正文 / 整页 / 图 / 公式）→ 核对（术语、译文）
- *  → 答疑 → 动手改（标注、修订）。**没收录的外部技能**排在最后，并保持接口给的相对顺序。
+ *  ① **联网**：搜索 + 阅读挨着，它们是同一件事的两步（先搜到候选、再按链接读正文）；后端按名字
+ *     排会把 `web-fetch` 甩到最后，看着像两件不相干的技能。
+ *  ② **方法论**：全文导读 + 论文问答挨着 —— 这两个不"取材料"，它们定的是**怎么读、怎么答**
+ *     （要不要通读、先读哪几节、答一个判断前要先取哪些证）。放在取材料之前，因为**先有方法，
+ *     才知道该去拿哪些材料**。
+ *  ③ **执行**：取材料（正文 / 整页 / 图 / 公式）→ 核对（术语、译文）→ 动手改（标注、修订）。
  *
+ *  没收录的外部技能排在最后，并保持接口给的相对顺序。
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 `skills`，就地 sort 会打乱那份引用。 */
 const SKILL_ORDER = [
   'web-search', 'web-fetch',
-  'summarize-paper', 'read-text', 'read-page-image', 'read-figure', 'read-formula',
-  'explain-term', 'check-translation', 'answer-paper', 'annotate-text', 'edit-text',
+  'summarize-paper', 'answer-paper',
+  'read-text', 'read-page-image', 'read-figure', 'read-formula',
+  'explain-term', 'check-translation', 'annotate-text', 'edit-text',
 ];
 function skillRank(name: string): number {
   const at = SKILL_ORDER.indexOf(name);
