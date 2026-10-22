@@ -409,3 +409,24 @@ def test_formula_hole_is_named_in_the_receipt(monkeypatch, capture) -> None:
     out = ann.create(PAPER, anchor="md:p7", text=CAPTION)
     note = str(out.get("text_note") or "")
     assert "prod" in note and "mse" in note
+
+EN_CAPTION = ("**Figure 1: Distribution of Inner Product error for TURBOQUANT"
+              "$_{\\text{prod}}$ and TURBOQUANT$_{\\text{mse}}$.**")
+
+
+def test_sentence_with_inline_math_is_not_a_formula_probe() -> None:
+    """英文图注里带 `$…$` 也只是**句子**：判成公式就会去整式匹配，然后永远找不到。"""
+    assert ann.looks_like_formula(EN_CAPTION) is False
+    assert ann.looks_like_formula("the $d$-dimensional vector rotates it") is False
+    assert ann.looks_like_formula("$x$") is True
+    assert ann.looks_like_formula(r"D_{\text{prod}}(Q) = \mathbb{E}[x]") is True
+
+
+def test_english_caption_lands_on_its_row(monkeypatch, capture) -> None:
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [
+        {"page": 7, "rows": [{"id": "p007-06", "original": EN_CAPTION,
+                             "translation": EN_CAPTION}],
+         "original_md": EN_CAPTION, "translation_md": EN_CAPTION}])
+    out = ann.create(PAPER, anchor="md:p7", text=EN_CAPTION, side="en")
+    assert out["ok"] is True
+    assert capture["block_id"] == "p007-06"

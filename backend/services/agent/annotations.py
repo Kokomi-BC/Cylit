@@ -121,11 +121,25 @@ def _norm_latex(value: str) -> str:
 
 
 def looks_like_formula(text: str) -> bool:
-    """这段探针是**公式**还是正文句子。"""
+    """这段探针是**公式**还是**夹着公式的句子**。
+
+    实测 2026-12-07：英文图注 `**Figure 1: … TURBOQUANT$_{\\text{prod}}$ …**` 里带 `$…$`，
+    整句被判成"公式" → 走整式匹配 → 覆盖不到一半 → 回执「这段文字找不到」，于是**英文图注
+    标不上**（中文那侧因为带汉字被排除，反而没事）。判据改成看**摘掉公式以后剩什么**：
+    还剩成片的自然语言就是句子，只剩余数几个词、或还带着反斜杠命令才是公式。
+    """
     probe = str(text or "").strip()
     if not probe or _CJK_RE.search(probe):
         return False
-    return "$" in probe or "\\" in probe
+    if "$" not in probe and "\\" not in probe:
+        return False
+    rest = _strip_probe_math(probe).strip()
+    if not rest:
+        return True                      # 整串就是一个（或几个）公式
+    if "\\" in rest:
+        return True                      # 还带着 LaTeX 命令 → 这就是公式
+    words = [w for w in re.split(r"\s+", rest) if len(w) > 1]
+    return len(words) < 4
 
 
 def math_spans(md: str) -> list[tuple[int, int, str]]:
