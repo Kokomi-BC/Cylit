@@ -15,7 +15,7 @@
  * 返回本机安装的字体族名（https 页面才有）；Firefox / Safari 没有这个 API，
  * 那里下拉里就只留三套预设，不假装能读。
  */
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import {
   DISPLAY_CATEGORIES,
   displayScale,
@@ -60,17 +60,21 @@ function sampleSize(key: DisplayCategory): string {
   return `calc(13px * var(--ts-${key}))`;
 }
 
-function onSizeChange(key: DisplayCategory, ev: Event): void {
-  const next = Number((ev.target as HTMLSelectElement).value);
-  if (Number.isFinite(next)) setCategory(key, next);
-}
 
-/* ------------------------- 一键替换 ------------------------- */
-const bulk = ref(1);
+/* ------------------------- 批量（胶囊，独占第一排） ------------------------- */
+/** 五类不一致时批量胶囊显示的「自定义」状态（只作状态，不参与比较） */
+const CUSTOM = 0;
 
-/** 五类一起设成同一档（用户口径 2026-12：底部一键替换） */
-function applyBulk(): void {
-  for (const key of DISPLAY_CATEGORIES) setCategory(key, bulk.value);
+/** 批量胶囊的当前状态：五类都落在同一档 → 那一档；否则 → 自定义 */
+const bulkState = computed<number>(() => {
+  const first = nearest(displayScale[DISPLAY_CATEGORIES[0]]);
+  const same = DISPLAY_CATEGORIES.every((key) => nearest(displayScale[key]) === first);
+  return same ? first : CUSTOM;
+});
+
+/** 五类一起设成同一档 */
+function applyBulk(value: number): void {
+  for (const key of DISPLAY_CATEGORIES) setCategory(key, value);
 }
 
 /* ------------------------- 本机字体 ------------------------- */
@@ -133,33 +137,43 @@ async function onFontChange(ev: Event): Promise<void> {
   <section class="cats-block" data-category-sizes>
     <div class="block-head">
       <h3>分类字号</h3>
-      <p>每类各挑一档，右边就是它真实的样子</p>
+    </div>
+
+    <!-- 批量：独占第一排、左对齐、无说明文字 —— 点哪一档，五类一起变成那一档；
+         五类不一致时这一排显示「自定义」（只作状态，不能点）。 -->
+    <div class="bulk-row">
+      <div class="pill" role="group" aria-label="全部字号" data-bulk-pill
+           title="一次改全部五类">
+        <button
+          v-for="s in STEPS"
+          :key="s.value"
+          type="button"
+          class="pill-btn"
+          :class="{ on: bulkState === s.value }"
+          :aria-pressed="bulkState === s.value"
+          :data-bulk-option="s.label"
+          @click="applyBulk(s.value)"
+        >{{ s.label }}</button>
+        <span class="pill-btn is-state" :class="{ on: bulkState === CUSTOM }" aria-hidden="true">自定义</span>
+      </div>
     </div>
 
     <div class="cats">
       <div v-for="c in categories" :key="c.key" class="cat">
         <span class="cat-name">{{ c.label }}</span>
         <span class="cat-sample" :style="{ fontSize: sampleSize(c.key) }">{{ c.sample }}</span>
-        <select
-          class="size-select"
-          :value="String(nearest(displayScale[c.key]))"
-          :aria-label="c.label + '字号'"
-          :data-size-select="c.key"
-          @change="onSizeChange(c.key, $event)"
-        >
-          <option v-for="s in STEPS" :key="s.value" :value="String(s.value)">{{ s.label }}</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="foot-row">
-      <span class="cat-name">批量</span>
-      <div class="foot-ctl">
-        <span class="foot-label">全部设为</span>
-        <select class="size-select" v-model.number="bulk" aria-label="全部字号" data-bulk-select>
-          <option v-for="s in STEPS" :key="s.value" :value="s.value">{{ s.label }}</option>
-        </select>
-        <button type="button" class="apply-btn" data-bulk-apply @click="applyBulk">应用到全部</button>
+        <div class="pill sm" role="group" :aria-label="c.label + '字号'" :data-size-pill="c.key">
+          <button
+            v-for="s in STEPS"
+            :key="s.value"
+            type="button"
+            class="pill-btn"
+            :class="{ on: nearest(displayScale[c.key]) === s.value }"
+            :aria-pressed="nearest(displayScale[c.key]) === s.value"
+            :data-size-option="c.key + ':' + s.label"
+            @click="setCategory(c.key, s.value)"
+          >{{ s.label }}</button>
+        </div>
       </div>
     </div>
 
@@ -192,14 +206,41 @@ async function onFontChange(ev: Event): Promise<void> {
   margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
   letter-spacing: -.01em; line-height: 1.3;
 }
-.block-head p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
-
 .cats-block { min-width: 0; }
+/* 批量：独占第一排、左对齐；没有说明文字，只有一枚胶囊 */
+.bulk-row { display: flex; margin-bottom: 6px; }
+
+/* 胶囊（分段控件）：底槽 + 选中的一格抬起成白底 —— 与阅读器「分段」那套一致 */
+.pill {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  border-radius: 999px; background: var(--bg-subtle, var(--bg-sunken));
+  border: 1px solid var(--divider);
+}
+.pill.sm { padding: 1px; }
+.pill-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 42px; height: 26px; padding: 0 10px;
+  border: 0; border-radius: 999px; background: transparent;
+  color: var(--text-dim); font-family: inherit; font-size: calc(12px * var(--ts, 1));
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.pill.sm .pill-btn { min-width: 36px; height: 24px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
+.pill-btn:hover { color: var(--text); }
+.pill-btn.on {
+  background: var(--bg-elev); color: var(--text); font-weight: 650;
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, .12));
+}
+.pill-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 「自定义」是个**状态**（五类不一致时亮起），不是可点的档位 */
+.pill-btn.is-state { cursor: default; color: var(--text-faint); }
+.pill-btn.is-state.on { color: var(--accent-text); }
+
 .cats { display: flex; flex-direction: column; gap: 2px; }
-/* 一行：名字（定宽）+ 样例（吃满）+ 下拉（定宽） */
+/* 一行：名字（定宽）+ 样例（吃满）+ 胶囊（定宽） */
 .cat {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) 68px;
-  align-items: center; gap: 8px; min-height: 30px;
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; min-height: 34px;
 }
 .cat-name { font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
 /* 样例：**吃该类的字号令牌**，行高按字号走，不会被裁 */
@@ -208,33 +249,19 @@ async function onFontChange(ev: Event): Promise<void> {
   line-height: 1.35; color: var(--text-dim);
 }
 
-/* 下拉：一行一个，宽度固定 —— 五行的下拉框在同一条竖线上 */
-.size-select, .font-select {
-  height: 26px; padding: 0 6px; min-width: 0; width: 100%;
-  border: 1px solid var(--border); border-radius: var(--radius-ctl);
-  background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: calc(11.5px * var(--ts, 1));
-}
-.size-select:focus, .font-select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-
-/* 底部两行（一键替换 / 字体）：左边名字与上面五行对齐，右边控件靠左排 */
+/* 字体那一行：名字与上面五行对齐，右边是下拉 */
 .foot-row {
   display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 8px;
   margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider);
 }
 .foot-ctl { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.foot-label { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.foot-ctl .size-select { width: 64px; flex: none; }
-.foot-ctl .font-select { width: auto; max-width: 220px; flex: 0 1 auto; }
-.apply-btn {
-  flex: none; height: 26px; padding: 0 10px;
+.font-select {
+  height: 26px; padding: 0 6px; min-width: 0; width: auto; max-width: 220px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
-  background: var(--bg-elev); color: var(--text-dim);
-  font-family: inherit; font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  background: var(--bg-elev); color: var(--text);
+  font-family: inherit; font-size: calc(11.5px * var(--ts, 1));
 }
-.apply-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
-.apply-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.font-select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .font-hint { font-size: calc(11px * var(--ts, 1)); color: var(--accent-text); }
 .font-msg { margin: 6px 0 0 48px; font-size: calc(11px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 </style>
