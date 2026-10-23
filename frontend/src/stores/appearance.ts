@@ -35,11 +35,18 @@ export const HIGHLIGHT_OPTIONS: ReadonlyArray<{ value: HighlightStyle; label: st
 
 export const APPEARANCE_STORAGE_KEY = 'cylit:appearance';
 
-export const appearance = reactive<{ typography: Typography; motion: boolean; highlight: HighlightStyle }>({
+export const appearance = reactive<{
+  typography: Typography;
+  motion: boolean;
+  highlight: HighlightStyle;
+  /** 本机字体族（用户在设置页从自己电脑里选的那一款）。空 = 用 typography 那三套预设栈。 */
+  fontFamily: string;
+}>({
   typography: 'system',
   motion: true,
   /* 旧配置里没有这个字段：默认荧光笔（用户口径 2026-12） */
   highlight: 'marker',
+  fontFamily: '',
 });
 
 function isTypography(value: unknown): value is Typography {
@@ -67,6 +74,10 @@ function load(): void {
       /* 老配置没这个字段 → 落在荧光笔（reactive 的初值）。**不整份覆盖**：只取认得的键，
          读的时候也不会把别的偏好抹掉。 */
       appearance.highlight = isHighlightStyle(raw.highlight) ? raw.highlight : 'marker';
+      /* 本机字体：只收合理长度的字符串（字体名不该带引号/换行），坏值当没设 */
+      appearance.fontFamily = typeof raw.fontFamily === 'string'
+        ? raw.fontFamily.replace(/[\r\n"';{}]/g, '').trim().slice(0, 64)
+        : '';
       /* 老版本存的是反过来的 reduceMotion：读得到就换算，别让老用户的选择被静默抹掉 */
       if (typeof raw.motion === 'boolean') appearance.motion = raw.motion;
       else if (typeof raw.reduceMotion === 'boolean') appearance.motion = !raw.reduceMotion;
@@ -84,6 +95,16 @@ export function applyAppearance(): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   root.dataset.typo = appearance.typography;
+  /* 本机字体：内联 --sans / --display 优先级高于 tokens.css 里 data-typo 那几条，
+     所以选了一款就盖住预设栈；清空（选回预设）时把内联值摘掉，预设栈自动接管。 */
+  if (appearance.fontFamily) {
+    const family = JSON.stringify(appearance.fontFamily);
+    root.style.setProperty('--sans', `${family}, var(--sans-fallback, ui-sans-serif)`);
+    root.style.setProperty('--display', `${family}, var(--sans-fallback, ui-sans-serif)`);
+  } else {
+    root.style.removeProperty('--sans');
+    root.style.removeProperty('--display');
+  }
   root.dataset.motion = appearance.motion ? 'on' : 'off';
   /* `data-hl-style`：base.css 用它切「荧光笔 / 下划线」两种画法 */
   root.dataset.hlStyle = appearance.highlight;
@@ -101,6 +122,19 @@ function commit(): void {
 export function setTypography(next: Typography): void {
   if (!isTypography(next)) return;
   appearance.typography = next;
+  /* 预设与本机字体互斥：点预设就等于放弃本机字体 */
+  appearance.fontFamily = '';
+  commit();
+}
+
+/**
+ * 换**本机字体**（设置页从 queryLocalFonts() 里选的那一款）；传空串 = 回到预设栈。
+ *
+ * 为什么单独一个字段而不是扩 Typography：预设栈是固定枚举（三选一），而本机字体有几百款、
+ * 名字由用户的系统决定，只能存字符串。两者互斥：选了本机字体，typography 只当兜底。
+ */
+export function setFontFamily(next: string): void {
+  appearance.fontFamily = String(next ?? '').replace(/[\r\n"';{}]/g, '').trim().slice(0, 64);
   commit();
 }
 

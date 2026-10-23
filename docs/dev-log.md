@@ -10962,3 +10962,36 @@ html[data-hl-style="underline"] mark.hl {
 - 点「大」：`--ts-body` 1.000 → 1.150，样例 13px → 14.95px，localStorage `{...\"body\":1.15...}`；刷新后仍是「大」。
 - 点「微软雅黑」：`data-typo=yahei`，`cylit:appearance` 里 `typography` 与 `motion` / `highlight` 并存（没互相覆盖）；刷新后保持。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**、控制台 0 error / 0 warning。
+
+### 101. 第一百零一轮：字号/字体改下拉、底部一键替换、本机字体、顺手修「调节无效」
+
+用户口径：① 用下拉框选择；② 每种文字能单独改，底部还要一键替换；③ 字体大小调节似乎无效。
+
+**改了哪些**
+
+- **每类一个下拉**（小 90% / 中 100% / 大 115%）：替换掉三枚按钮，五行下拉在右侧同一条竖线上。
+- **底部「批量 → 全部设为 [小|中|大] → 应用到全部」**：一键把五类设成同一档。
+- **字体也改成下拉**：三套预设（系统默认 / 微软雅黑 / 宋体衬线）+ **本机字体**。
+  下拉里常驻一项「读取本机字体…」：点它才触发 `queryLocalFonts()`（浏览器要求用户手势 + 授权），
+  读完把本机字体族追加进同一个下拉；选一款 → 存 `appearance.fontFamily`，落成内联 `--sans` / `--display`。
+  Firefox / Safari 没有这个 API：那一项**不显示**，只留三套预设，不假装能读。
+  选回预设会自动清掉 `fontFamily`（两者互斥）。
+
+**「调节无效」的真相（如实记）**
+
+不是没生效，是**调错了地方 + 别的标签页不跟着变**：
+
+- 五类字号各管一块：`--ts-ui` = 界面（设置页本身）、`--ts-body` = 阅读器正文 / Markdown、
+  `--ts-chat` = 对话、`--ts-side` = 阅读器侧栏、`--ts-note` = 笔记页。所以在设置页调「正文」，
+  这一页当然不动 —— 动的是阅读器。实测调「界面」：标题 14px → 16.1px。
+- 真 bug 是**跨标签页**：`localStorage` 变了，已开着的阅读器标签不会自动重算（浏览器不推送）。
+  已修：`bootDisplayScale()` 里挂 `storage` 监听，别的标签页改字号 → 这一页立刻重算并应用。
+
+**验证（真浏览器）**
+
+- 单类：正文 → 大，`--ts-body` 1.000 → 1.150，样例 13px → 14.95px，落盘 `{...body:1.15...}`。
+- 一键替换：批量选「大」→ 应用到全部 → 五类全部 1.150、五条样例全部 14.95px、设置页标题 14 → 16.1px。
+- 本机字体（把 `queryLocalFonts` 打桩返回两款）：下拉里多出「思源黑体 / HarmonyOS Sans」；
+  选中后 `document.documentElement.style.--sans` = `"思源黑体", …`，`cylit:appearance` 里
+  `fontFamily: "思源黑体"` 与 `typography` / `motion` / `highlight` 并存。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**、控制台 0 error / 0 warning。

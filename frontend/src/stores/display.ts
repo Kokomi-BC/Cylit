@@ -124,6 +124,18 @@ export function bootDisplayScale(): DisplayScale {
   if (!booted) {
     booted = true;
     applyDisplayScale();
+    /* 别的标签页改了字号 → 这一页跟着变。
+       没有这一条时的真实现象：在设置页把「正文」调大，另一个已经开着的阅读器标签没反应，
+       用户以为「调了没用」（浏览器不会自动把 localStorage 的变化喂给已开着的页面）。 */
+    window.addEventListener('storage', (ev: StorageEvent) => {
+      if (ev.key !== SCALE_STORAGE_KEY) return;
+      try {
+        Object.assign(displayScale, normalizeDisplayScale(JSON.parse(ev.newValue || 'null')));
+        applyDisplayScale();
+      } catch {
+        /* 坏值忽略：保持当前 */
+      }
+    });
   }
   return { ...displayScale };
 }
