@@ -1,14 +1,12 @@
 <script setup lang="ts">
-/** 设置 · 显示主题：**一个主题库** + 轻量筛选 + 自定义主题编辑器。
+/**
+ * 设置 · 显示主题 · **主题预设**：一墙皮肤 + 自定义主题编辑器。
  *
- * 信息架构只有两层：筛选栏（单选，默认「全部」）+ 统一网格。不再按开发来源 / 命名系列分区
- * —— 主题之间没有层级差别，用户只需要浏览、筛选、挑一个、或者自己做一个。
+ * 数据全部来自注册表（`@/theme/theme` → `registry.ts`）：内置皮肤、跟随系统、用户自建
+ * 走同一套 CSS 令牌，这里只负责"用户点了哪个 id"。
  *
- * 数据源全部来自注册表（`@/theme/theme` → `registry.ts`）：预设、用户自定义、老皮肤
- * 走**同一套 CSS 令牌**，面板只负责"用户点了哪个 id"。
- * 颜色编辑用的是原生 `<input type="color">`：不需要用户理解任何 CSS。
+ * 没做筛选栏：预设一共六套，一屏看完；筛选反而多一行、还得分组说明它为什么存在。
  */
-
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
@@ -28,58 +26,57 @@ import {
   refreshCustomThemes,
   saveCustomTheme,
   setTheme,
-  themeFacets,
   type ThemeDefinition,
-  type ThemeFacet,
   type ThemeSpec,
 } from '@/theme/theme';
 
-/* ------------------------------ 列表与筛选 ------------------------------ */
-
-/** 筛选栏：「全部」在最前，其余按"看得见的外观"分：浅色 / 深色 / 彩色 / 自定义。 */
-const FILTERS: ReadonlyArray<{ key: 'all' | ThemeFacet; label: string }> = [
-  { key: 'all', label: '全部' },
-  { key: 'light', label: '浅色' },
-  { key: 'dark', label: '深色' },
-  { key: 'color', label: '彩色' },
-  { key: 'custom', label: '自定义' },
-];
-
-const filter = ref<'all' | ThemeFacet>('all');
 const themes = ref<ThemeDefinition[]>(listThemes());
 const active = ref(getTheme());
 
-/** 当前筛选下要显示的主题（自定义主题也在同一个网格里，只是多两个按钮）。 */
-const shown = computed(() => (filter.value === 'all'
-  ? themes.value
-  : themes.value.filter((t) => themeFacets(t).includes(filter.value as ThemeFacet))));
+/**
+ * 注册表里有二十多套：**六套手写皮肤**（跟随系统 / 经典 / 素纸 / 墨家 / 雾青 / 黛瓦夜色）
+ * + 一批由调色板推出来的**配色**，还有用户自建的。
+ *
+ * 两类的读法不一样：前者是"风格"，一屏看全就好；后者是"颜色"，多到铺开会把这张卡撑到
+ * 五行以上，主题、配色、缩放、预览就一屏看不全 —— 所以走**一条横滚的色带**：
+ * 样式照旧（还是同一枚方卡），颜色左右滚着挑。
+ */
+const skins = computed(() => themes.value.filter((t) => !t.custom && t.order < 100));
 
-/** 当前这套皮肤的色板：只读，回答"现在用的是什么配色"。 */
-const activeSwatches = computed(() => {
-  const preview = themes.value.find((t) => t.id === active.value)?.preview;
-  if (!preview) return [];
-  return [
-    { label: '页面背景', color: preview.bg },
-    { label: '卡片', color: preview.paper },
-    { label: '主色', color: preview.accent },
-    { label: '文字', color: preview.ink },
-    { label: '提示', color: preview.danger },
-  ];
-});
+/** 色带：自己的排在前面（藏到后面等于找不到），其余按注册顺序 */
+const colorThemes = computed(() => [
+  ...themes.value.filter((t) => t.custom),
+  ...themes.value.filter((t) => !t.custom && t.order >= 100),
+]);
 
-/** 每个筛选下有几套（筛选栏自己把话说清楚，不用另写说明）。 */
-function countOf(key: 'all' | ThemeFacet): number {
-  return key === 'all' ? themes.value.length : themes.value.filter((t) => themeFacets(t).includes(key)).length;
+const stripRef = ref<HTMLElement | null>(null);
+
+/** 左右各滚一屏多一点：按"看得见的宽度"的 80% 走，别让人一格一格点 */
+function scrollStrip(dir: number) {
+  const el = stripRef.value;
+  if (!el) return;
+  el.scrollBy({ left: dir * Math.round(el.clientWidth * 0.8), behavior: 'smooth' });
+}
+
+/** 竖向滚轮在这个横条上转成横向 —— 否则鼠标停在色带上怎么滚都不动。
+ *  但滚到头就把滚轮还给页面：不然鼠标停在色带上，整页就再也滚不下去了。 */
+function onStripWheel(ev: WheelEvent) {
+  const el = stripRef.value;
+  if (!el) return;
+  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+  if (el.scrollWidth <= el.clientWidth + 1) return;
+  const atStart = el.scrollLeft <= 1;
+  const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+  if ((ev.deltaY < 0 && atStart) || (ev.deltaY > 0 && atEnd)) return;
+  el.scrollLeft += ev.deltaY;
+  ev.preventDefault();
 }
 
 function refresh() { themes.value = listThemes(); }
 
-function choose(id: string) {
-  active.value = setTheme(id);
-}
+function choose(id: string) { active.value = setTheme(id); }
 
-/** 另一个标签页改了皮肤时跟一下（storage 事件不保证有，自家事件总会有）。
- *  预览中的临时主题不参与"当前选中"，否则正在编辑的那套会从列表里"消失"。 */
+/** 另一个标签页改了皮肤时跟一下。预览中的临时主题不参与"选中"，否则正在编辑的那套会闪走。 */
 function onThemeEvent(ev: Event) {
   const detail = (ev as CustomEvent<{ theme?: string }>).detail;
   const id = detail?.theme || getTheme();
@@ -182,7 +179,7 @@ function save() {
 async function removeCustom(id: string, label: string) {
   if (!id.startsWith('custom-')) return;
   const ok = await askConfirm({
-    title: `删除主题「${label}」？`,
+    title: '删除主题「' + label + '」？',
     body: '删除后不能恢复。',
     danger: true,
     confirmLabel: '删除',
@@ -213,7 +210,6 @@ function swatchOf(key: ColorKey): string {
   return 'transparent';
 }
 
-/** 颜色行里"留空"的说明（只有强调色可留空）。 */
 function isAuto(key: ColorKey): boolean { return key === 'accentSoft' && !draft.accentSoft; }
 
 onMounted(() => window.addEventListener(THEME_CHANGE_EVENT, onThemeEvent));
@@ -221,110 +217,109 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 </script>
 
 <template>
-  <div id="theme-appearance-panel" class="theme-appearance">
-    <p class="panel-note">点一套皮肤就能换，也能自己做一套。</p>
-
-    <div class="grid ta-grid">
-      <!-- 皮肤：筛选栏 + 图块墙，内容长，整宽 -->
-      <div class="card ta-card-wide">
-        <div class="card-head">皮肤</div>
-        <div class="card-body ta-wall">
-          <!-- 筛选栏：单选，只负责"快速缩小范围"，不制造新的分组层级 -->
-          <div class="seg theme-filter" role="group" aria-label="主题筛选">
-            <button
-              v-for="f in FILTERS"
-              :key="f.key"
-              type="button"
-              :class="{ active: filter === f.key }"
-              :aria-pressed="filter === f.key"
-              :data-theme-filter="f.key"
-              @click="filter = f.key"
-            >{{ f.label }}<span class="theme-filter-n">{{ countOf(f.key) }}</span></button>
-          </div>
-
-          <div class="theme-appearance-grid" role="radiogroup" aria-label="主题">
-            <div
-              v-for="t in shown"
-              :key="t.id"
-              :id="`theme-option-${t.id}`"
-              role="radio"
-              :aria-checked="active === t.id"
-              tabindex="0"
-              class="theme-option"
-              :class="{ 'is-selected': active === t.id }"
-              :data-theme-option="t.id"
-              :data-theme-group="t.group"
-              :data-theme-custom="t.custom ? '1' : '0'"
-              @click="choose(t.id)"
-              @keydown.enter.prevent="choose(t.id)"
-              @keydown.space.prevent="choose(t.id)"
-            >
-              <span class="theme-option-swatch" :style="{ background: t.preview.bg }" aria-hidden="true">
-                <span class="theme-option-swatch-paper" :style="{ background: t.preview.paper }">
-                  <span class="theme-option-swatch-bar" :style="{ background: t.preview.accent }" />
-                  <span class="theme-option-swatch-line" :style="{ background: t.preview.ink }" />
-                  <span class="theme-option-swatch-line short" :style="{ background: t.preview.ink }" />
-                </span>
-                <span class="theme-option-swatch-dot" :style="{ background: t.preview.danger }" />
-              </span>
-      
-              <span class="theme-option-copy"><strong>{{ t.label }}</strong></span>
-      
-              <span v-if="t.custom" class="theme-option-tools">
-                <button type="button" class="theme-option-tool" title="编辑"
-                        @click.stop="openEditor(t)">
-                  <AppIcon name="edit" :size="14" />
-                </button>
-                <button type="button" class="theme-option-tool danger" title="删除"
-                        @click.stop="removeCustom(t.id, t.label)">
-                  <AppIcon name="trash" :size="14" />
-                </button>
-              </span>
-              <span v-if="active === t.id" class="theme-option-check" aria-hidden="true">
-                <AppIcon name="check" :size="13" />
-              </span>
-            </div>
-
-            <!-- 创建入口：永远排在网格最后（不是"另一个区域"，就是列表的下一格） -->
-            <button
-              type="button"
-              class="theme-option is-new"
-              data-theme-new
-              @click="openEditor()"
-            >
-              <span class="theme-option-new-icon"><AppIcon name="add" :size="20" /></span>
-              <span class="theme-option-copy"><strong>创建自定义主题</strong></span>
-            </button>
-          </div>
-        </div>
+  <section class="card preset">
+    <div class="card-head">
+      <div class="hd">
+        <h3>主题预设</h3>
+        <p>点一套就换，写进这台机器</p>
       </div>
+      <span class="spacer" />
+      <button type="button" class="add-btn" title="用取色器做一套自己的主题" data-theme-new @click="openEditor()">
+        <AppIcon name="add" :size="13" /><span>自定义</span>
+      </button>
+    </div>
 
-      <!-- 当前配色：只读物色板，短卡并排 -->
-      <div class="card">
-        <div class="card-head">当前配色</div>
-        <div class="card-body">
-          <div class="ta-swatches" v-if="activeSwatches.length">
-            <span v-for="s in activeSwatches" :key="s.label" class="ta-swatch">
-              <i class="ta-swatch-dot" :style="{ background: s.color }" aria-hidden="true" />
-              <span class="ta-swatch-label">{{ s.label }}</span>
+    <div class="card-body preset-body">
+      <div class="wall" role="radiogroup" aria-label="主题预设">
+        <div
+          v-for="t in skins"
+          :key="t.id"
+          class="tile"
+          :class="{ 'is-on': active === t.id }"
+          role="radio"
+          :aria-checked="active === t.id"
+          tabindex="0"
+          :title="t.label"
+          :data-theme-option="t.id"
+          @click="choose(t.id)"
+          @keydown.enter.prevent="choose(t.id)"
+          @keydown.space.prevent="choose(t.id)"
+        >
+          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+            <span class="sw-paper" :style="{ background: t.preview.paper }">
+              <span class="sw-bar" :style="{ background: t.preview.accent }" />
+              <span class="sw-line" :style="{ background: t.preview.ink }" />
+              <span class="sw-line short" :style="{ background: t.preview.ink }" />
             </span>
-          </div>
-          <p class="tiny faint" v-else>这套皮肤没留下色板。</p>
+          </span>
+          <span class="tile-label">{{ t.label }}</span>
+
+          <span v-if="t.custom" class="tile-tools">
+            <button type="button" class="tile-tool" title="编辑这套主题"
+                    @click.stop="openEditor(t)">
+              <AppIcon name="edit" :size="12" />
+            </button>
+            <button type="button" class="tile-tool danger" title="删除这套主题"
+                    @click.stop="removeCustom(t.id, t.label)">
+              <AppIcon name="trash" :size="12" />
+            </button>
+          </span>
+
+          <span v-if="active === t.id" class="tile-check" aria-hidden="true">
+            <AppIcon name="check" :size="11" />
+          </span>
         </div>
+
       </div>
 
-      <!-- 自定义：入口放进一张短卡，和上面的色板并排 -->
-      <div class="card">
-        <div class="card-head">自定义</div>
-        <div class="card-body ta-custom">
-          <p class="ta-hint">自己做的皮肤也排在墙里，随时能改。</p>
-          <button type="button" class="btn sm primary" @click="openEditor()">
-            <AppIcon name="add" :size="15" />新建一套
-          </button>
+      <!-- 色带：注册表里那些配色主题，一条横滚的带子 -->
+      <div class="strip-row">
+        <button type="button" class="strip-btn" aria-label="向前翻" title="更多配色" @click="scrollStrip(-1)">
+          <AppIcon name="back" :size="12" />
+        </button>
+        <div class="strip" ref="stripRef" role="radiogroup" aria-label="更多配色" @wheel="onStripWheel">
+        <div
+          v-for="t in colorThemes"
+          :key="t.id"
+          class="tile strip-tile"
+          :class="{ 'is-on': active === t.id }"
+          role="radio"
+          :aria-checked="active === t.id"
+          tabindex="0"
+          :title="t.label"
+          :data-theme-option="t.id"
+          @click="choose(t.id)"
+          @keydown.enter.prevent="choose(t.id)"
+          @keydown.space.prevent="choose(t.id)"
+        >
+          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+            <span class="sw-paper" :style="{ background: t.preview.paper }">
+              <span class="sw-bar" :style="{ background: t.preview.accent }" />
+            </span>
+          </span>
+          <span class="tile-label">{{ t.label }}</span>
+
+          <span v-if="t.custom" class="tile-tools">
+            <button type="button" class="tile-tool" title="编辑这套主题" @click.stop="openEditor(t)">
+              <AppIcon name="edit" :size="12" />
+            </button>
+            <button type="button" class="tile-tool danger" title="删除这套主题"
+                    @click.stop="removeCustom(t.id, t.label)">
+              <AppIcon name="trash" :size="12" />
+            </button>
+          </span>
+
+          <span v-if="active === t.id" class="tile-check" aria-hidden="true">
+            <AppIcon name="check" :size="11" />
+          </span>
         </div>
+        </div>
+        <button type="button" class="strip-btn" aria-label="向后翻" title="更多配色" @click="scrollStrip(1)">
+          <AppIcon name="forward" :size="12" />
+        </button>
       </div>
     </div>
-  </div>
+  </section>
 
   <!-- ---------------------------- 主题编辑器 ---------------------------- -->
   <Modal
@@ -414,124 +409,124 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 </template>
 
 <style scoped>
-.theme-appearance { display: flex; flex-direction: column; gap: 12px; }
+/* ---- 卡头：标题 14 / 说明 11.5，右侧"当前"，三样都在一行里 ---- */
+.card-head { padding: 11px 14px 9px; }
+.hd { display: grid; gap: 2px; min-width: 0; }
+.hd h3 {
+  margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
+  letter-spacing: -.01em; line-height: 1.3;
+}
+.hd p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
+/* 「＋ 自定义」：卡头里的小按钮。做主题是**动作**，不是第七套皮肤 ——
+   摆进墙里会占掉半行格子，摆进色带又得滚到最后才看得见。 */
+.add-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 3px;
+  height: 24px; padding: 0 8px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-elev); color: var(--text-dim);
+  font-family: inherit; font-size: calc(11px * var(--ts, 1));
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
+}
+.add-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
+.add-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 顶部一句话：一行说完这一块能干什么，不解释做法 */
-.panel-note {
-  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+.preset { display: flex; flex-direction: column; min-width: 0; }
+.preset-body { flex: 1; padding: 12px 14px 14px; }
+
+/* 墙：固定三列（每格 ~200 宽，色块与名字都放得下）。auto-fit 在 670 宽时会挤成四列，
+   格子变窄、名字开始省略 —— 三列才是这一格该有的密度。窄了退到两列。 */
+.wall { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@container (max-width: 640px) {
+  .wall { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* 卡片网格：短卡两列并排，长内容整宽。间距只由 .grid 的 gap 负责（base.css 已把网格内的 .card + .card 清零），这里不再给卡片加 margin。 */
-.ta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.ta-card-wide { grid-column: 1 / -1; }
-.ta-wall { display: grid; gap: 12px; }
-
-/* 当前配色：一枚小色块 + 名称，只读 */
-.ta-swatches { display: grid; gap: 8px 12px; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
-.ta-swatch { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ta-swatch-dot {
-  flex: none; width: 16px; height: 16px; border-radius: 5px;
-  border: 1px solid var(--border-strong);
-}
-.ta-swatch-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
-}
-
-/* 自定义入口：一句说明 + 一枚按钮 */
-.ta-custom { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-.ta-hint { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
-
-/* 筛选栏：全站分段控件语言（`.seg` 托盘 + 白色 pill），只加一个"有几套"的小计数 ——
-   它比任何说明文字都更能说清这一档里有什么。 */
-.theme-filter { width: fit-content; max-width: 100%; flex-wrap: wrap; height: auto; }
-.theme-filter :deep(button) { gap: 6px; }
-.theme-filter-n {
-  font-size: calc(11px * var(--ts, 1)); font-weight: 500; color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-.theme-filter :deep(button.active) .theme-filter-n { color: inherit; opacity: .7; }
-
-.theme-appearance-grid {
-  display: grid; gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
-}
-
-/* 一枚主题 = 色块 + 名称 + 选中勾（自定义的另有两枚小按钮）。
-   名称是唯一的文字：配色特征交给上面的色块，不再写"XX底 · YY强调"。 */
-.theme-option {
-  position: relative; display: flex; align-items: center; gap: 12px;
-  min-height: 76px; padding: 10px 12px; text-align: left; cursor: pointer;
+/* 一枚主题 = 色块 + 名称（+ 自定义的两枚小按钮）。名称是唯一文字：
+   配色特征交给色块，不写"XX 底 · YY 强调"那种说明。 */
+.tile {
+  position: relative; display: flex; align-items: center; gap: 9px;
+  min-height: 44px; padding: 6px 8px; text-align: left; cursor: pointer;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-elev); color: var(--text);
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
-              box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+              box-shadow var(--dur) var(--ease);
 }
-.theme-option:hover {
+.tile:hover {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-  box-shadow: var(--shadow-1);
+  background: var(--bg-hover);
 }
-.theme-option:active { transform: scale(.99); }
-.theme-option:focus-visible { outline: none; box-shadow: var(--ring); }
-.theme-option.is-selected {
+.tile:focus-visible { outline: none; box-shadow: var(--ring); }
+.tile.is-on {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   box-shadow: var(--ring);
 }
 
-/* 「＋ 自定义」：虚线卡片，与皮肤卡同高但一眼看出是"新增" */
-.theme-option.is-new {
-  justify-content: flex-start; border-style: dashed; background: transparent;
-  color: var(--text-dim); font-family: inherit;
-}
-.theme-option-new-icon {
-  flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 46px; height: 56px; border-radius: 10px;
-  border: 1px dashed var(--border-strong); color: var(--text-faint);
-}
-
-/* 色块：外框是 bg，内页是 paper，上面一根强调色条 + 两条墨线 + 一颗语义色点 */
-.theme-option-swatch {
-  position: relative; flex: none;
-  width: 46px; height: 56px; padding: 6px 7px;
-  border-radius: 10px; border: 1px solid var(--border);
+/* 色块：外框是 bg、内页是 paper，上面一根强调条 + 两条墨线（就是一套皮肤的样子） */
+.sw {
+  flex: none; width: 32px; height: 32px; padding: 4px 5px;
+  border-radius: 9px; border: 1px solid var(--border);
   display: flex; align-items: flex-start;
 }
-.theme-option-swatch-paper {
-  position: relative; width: 100%; height: 34px;
-  border-radius: 6px; padding: 5px 5px 0;
-  display: flex; flex-direction: column; gap: 3px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .10);
+.sw-paper {
+  width: 100%; height: 100%; border-radius: 5px; padding: 4px 4px 0;
+  display: flex; flex-direction: column; gap: 2px;
 }
-.theme-option-swatch-bar { display: block; height: 6px; width: 78%; border-radius: 3px; }
-.theme-option-swatch-line { display: block; height: 3px; width: 100%; border-radius: 2px; opacity: .55; }
-.theme-option-swatch-line.short { width: 62%; opacity: .35; }
-.theme-option-swatch-dot {
-  position: absolute; right: 6px; bottom: 6px;
-  width: 7px; height: 7px; border-radius: 999px;
+.sw-bar { display: block; height: 4px; width: 80%; border-radius: 2px; }
+.sw-line { display: block; height: 2px; width: 100%; border-radius: 2px; opacity: .5; }
+.sw-line.short { width: 58%; opacity: .3; }
+
+.tile-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em;
 }
 
-.theme-option-copy { display: grid; gap: 2px; min-width: 0; padding-right: 18px; }
-.theme-option-copy strong {
-  font-size: calc(13px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-.theme-option-check {
-  position: absolute; right: 9px; top: 9px;
+.tile-check {
+  position: absolute; right: 6px; top: 6px;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 999px;
+  width: 15px; height: 15px; border-radius: 999px;
   background: var(--accent); color: var(--text-on-accent);
 }
-.theme-option-tools { position: absolute; right: 6px; bottom: 6px; display: inline-flex; gap: 2px; }
-.theme-option-tool {
+
+/* 自定义的两枚按钮：默认淡出，鼠标进卡 / 键盘聚焦才现身（紧凑但可达） */
+.tile-tools {
+  position: absolute; right: 4px; bottom: 3px; display: inline-flex; gap: 1px;
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.tile:hover .tile-tools,
+.tile:focus-within .tile-tools { opacity: 1; }
+.tile-tool {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border: 0; border-radius: 8px;
+  width: 20px; height: 20px; border: 0; border-radius: 6px;
   background: transparent; color: var(--text-faint); cursor: pointer;
+}
+.tile-tool:hover { background: var(--bg-hover); color: var(--text); }
+.tile-tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* ---- 色带：多出来的配色横着排，左右两颗箭头就是"还能滚"的说明 ---- */
+.strip-row { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.strip-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-elev); color: var(--text-dim);
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.theme-option-tool:hover { background: var(--bg-hover); color: var(--text); }
-.theme-option-tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.strip-btn:hover { background: var(--bg-hover); color: var(--text); }
+.strip-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.strip {
+  flex: 1; min-width: 0;
+  display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 2px; scroll-snap-type: x proximity; overscroll-behavior-x: contain;
+}
+/* 滚动条不画：它和下面那排卡片挨太近，看着像一条多余的分隔线。
+   "还能往右滚"由右边露出的半格卡片 + 卡头那颗箭头说清楚。 */
+.strip { scrollbar-width: none; }
+.strip::-webkit-scrollbar { height: 0; }
+/* 色带里的一格比墙里窄一档：一行要多放几套才值得滚 */
+.strip-tile { flex: 0 0 auto; width: 142px; min-height: 38px; padding: 3px 8px; scroll-snap-align: start; }
+.strip-tile .sw { width: 28px; height: 28px; border-radius: 8px; padding: 3px 4px; }
 
 /* ---------------------------- 编辑器 ---------------------------- */
 .ce { display: grid; gap: 16px; }
@@ -589,11 +584,6 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
   background: var(--bg-sunken); color: var(--text-dim); font-size: calc(12px * var(--ts, 1));
 }
 .ce-hex:focus { outline: none; border-color: var(--accent); color: var(--text); }
-
-/* 窄一档：卡片回落单列，短卡也竖着排 */
-@media (max-width: 1100px) {
-  .ta-grid { grid-template-columns: minmax(0, 1fr); }
-}
 
 @media (max-width: 620px) {
   .ce-fields { grid-template-columns: minmax(0, 1fr); }

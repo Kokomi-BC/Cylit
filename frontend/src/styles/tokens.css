@@ -130,6 +130,27 @@
   --ts-ui: 1;
 }
 
+/* ---- 显示偏好（设置 · 显示主题）----
+ * 真值在 `stores/appearance.ts`，它只写 html 上的 data 属性；这里把属性翻成令牌。
+ * 放在 :root 之后、且带一个属性选择器 —— 特异性 (0,1,1) 高于 :root 的 (0,1,0)，
+ * 所以皮肤文件里不会、也不需要各自再覆盖一遍。
+ */
+html[data-typo="yahei"] {
+  --sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --display: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+html[data-typo="serif"] {
+  --sans: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, serif;
+  --display: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, serif;
+}
+/* 减少动画：三个时长令牌归零，全站 transition / animation 一起停（都读这几个令牌） */
+html[data-motion="off"] {
+  --dur-fast: 0s;
+  --dur: 0s;
+  --dur-slow: 0s;
+  scroll-behavior: auto;
+}
+
 /* 深色只属于"跟随系统"那一档：`html[data-theme]` 一旦被设成具体皮肤（见 themes/*.css），
  * 就不该再被系统的深色偏好改色 —— 否则在深色 Windows 上选「经典」会选不动。
  * 两处选择器都写上：挂载前还没写 data-theme（`bootTheme` 尚未跑），那时也该跟系统。 */

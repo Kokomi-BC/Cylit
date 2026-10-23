@@ -39,8 +39,7 @@ import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
 import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
 import ModelPanel from '@/components/settings/ModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
-import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
-import DisplayScalePanel from '@/components/settings/DisplayScalePanel.vue';
+import AppearancePanel from '@/components/settings/AppearancePanel.vue';
 import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
 import SystemInfoPanel from '@/components/settings/SystemInfoPanel.vue';
 import TrashPanel from '@/components/trash/TrashPanel.vue';
@@ -402,8 +401,7 @@ onMounted(async () => {
 
       <!-- ④ 显示主题 + 显示大小：换肤与字号都即时生效，不放"保存" -->
       <section id="appearance" class="sec" v-if="active === 'appearance'">
-        <ThemeAppearancePanel />
-        <DisplayScalePanel />
+        <AppearancePanel />
       </section>
 
       <!-- ⑤ 在线解析（MinerU）：token 与默认参数，即时保存（没有"保存设置"那一步） -->
