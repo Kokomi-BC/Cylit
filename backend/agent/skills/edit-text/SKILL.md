@@ -21,8 +21,15 @@ description: 按用户要求改写解析产物或译文：改措辞、统一术�
 
 ## 流程
 
+> 定位与核对阶段的**读**都可以一次给多条：`paper_search(queries=[…])` 一次查几个词、
+> `page_markdown_get(pages="4,7")` 一次读几页、`block_get(refs=[…])` 一次展开几块。
+> 写也一样：同一串文字用 `op="replace_all"` 一次改完，别一页一次。
+
+
 1. **先看清哪一侧错了**
    - `page_markdown_get(pages="5")` 一次拿到原文 + 译文，对照着看。
+   - 要改的地方散在好几页时**一次取回**：`page_markdown_get(pages="5,7,9")`；
+     手上有一批 ref 就 `block_get(refs=[…])` 一次展开 —— 别一页 / 一个 ref 一次调。
    - 怀疑 **OCR** 认错字 → `page_image_get(pages="5", dpi=300)` 看原版面：**以页面图为准**，
      不要用"这样读更通顺"来猜。
    - 怀疑**译文**错 → 以原文为准；术语与档案里的『统一译法』那一段对齐。

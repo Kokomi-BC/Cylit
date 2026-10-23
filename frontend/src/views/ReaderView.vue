@@ -32,6 +32,7 @@ import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
 import { highlightCss } from '@/utils/highlightColors';
+import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -5865,6 +5866,14 @@ function openSelectionInChat() {
     row_id: scope === 'row' ? (rowId || null) : null,
     page: page || null,
     where: whereOf(scope, page, anchored),
+    /* 锚点快照**必须一起带上**：回答下面那排色点靠它建高亮。少这几个字段，色点就会写出一条
+       `start_offset == end_offset` 的高亮 —— 库里有了，正文上永远画不出来（用户 2026-10-23
+       报的「高亮没有挂上去」就是这个）。与「解释」那条路（`openExplainInChat`）同一份口径。 */
+    quote: selection.anchorText || selection.text,
+    start: selection.start,
+    end: selection.end,
+    side: selection.side,
+    scope,
   };
   hideMenu();
   closeSelectionForPanel();
@@ -6202,8 +6211,11 @@ type NoteCard = {
   created: string;
   /** 高亮原文（这张卡挂着的那一段） */
   quote: string;
+  /** 正文（**已摘掉**末尾那行 `<!-- refs:[…] -->` 的显示版） */
   content: string;
   draft: string;
+  /** 这条笔记的标号跳转表：保存时按它把注释接回去，`[1]` 才不会因为编辑一次就点不动 */
+  refs: NoteRef[];
   anchor: { x: number; y: number; w?: number; h?: number } | null;
   /** 这一次打开要**居中**（只有侧栏「打开浮层」那个入口会置真） */
   center: boolean;
@@ -6423,8 +6435,10 @@ function openNotePopover(opts: {
     /* 这张卡还没有笔记、现在有了：把服务端那份接过来（否则会拿空 draft 去覆盖别人的笔记） */
     if (note && existing.noteId !== note.id) {
       existing.noteId = note.id;
-      existing.content = note.content_md ?? '';
-      if (mode !== 'edit') existing.draft = note.content_md ?? existing.draft;
+      // 卡里只放正文；跳转表随卡片存一份，保存时再接回去（见 utils/noteRefs）
+      existing.content = noteBodyText(note.content_md ?? '');
+      existing.refs = splitNoteRefs(note.content_md ?? '').refs;
+      if (mode !== 'edit') existing.draft = existing.content;
       existing.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
       existing.rowId = note.block_id ?? existing.rowId;
       existing.quote = note.selected_text ?? existing.quote;
@@ -6465,8 +6479,9 @@ function openNotePopover(opts: {
     created: String(rawTime?.created_at ?? rawTime?.updated_at ?? ''),
     quote: note?.selected_text ?? hl?.text
       ?? (selection.anchored ? (selection.anchorText || selection.text) : ''),
-    content: note?.content_md ?? '',
-    draft: note?.content_md ?? '',
+    content: noteBodyText(note?.content_md ?? ''),
+    draft: noteBodyText(note?.content_md ?? ''),
+    refs: splitNoteRefs(note?.content_md ?? '').refs,
     anchor,
     center,
     busy: false,
@@ -6880,8 +6895,12 @@ async function saveNotePopover(card: NoteCard) {
   card.busy = true;
   try {
     if (card.noteId) {
-      const updated = await api.put<Note>(`/notes/${card.noteId}`, { content_md: card.draft });
-      card.content = updated?.content_md ?? card.draft;
+      /* 存「改好的正文 + 这张卡带着的标号表」：只改正文，跳转信息不丢 */
+      const updated = await api.put<Note>(`/notes/${card.noteId}`, {
+        content_md: withNoteRefs(card.draft, card.refs),
+      });
+      card.content = updated ? noteBodyText(updated.content_md) : card.draft;
+      if (updated) card.refs = splitNoteRefs(updated.content_md).refs;
       toast('笔记已保存', 'ok', 1600);
     } else {
       const created = await api.post<Note>('/notes', {
@@ -6891,7 +6910,7 @@ async function saveNotePopover(card: NoteCard) {
         selected_text: card.quote,
         start_offset: selection.start,
         end_offset: selection.end,
-        content_md: card.draft,
+        content_md: withNoteRefs(card.draft, card.refs),
       });
       card.noteId = created?.id ?? '';
       card.content = card.draft;

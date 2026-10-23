@@ -17,11 +17,17 @@ description: 解读论文里的图与表：图中画了什么、曲线怎么走�
 1. **定位**：不知道图/表在第几页就先 `paper_search`（图注文字通常搜得到，比如
    "Figure 3:" / "Table 1:" 后面的描述）。图注是**最可靠的定位线索**。
 2. `figure_list(page)` 看这一页有哪些**图形区域**（插图与表格都在这里，看 `kind`），
-   拿到 `index`。
+   拿到 `index`。不确定图在哪几页就**一次给几页**：`figure_list(pages=[4, 7, 9])`
+   —— 回执按页分组（`pages`），别一页一次试。
 3. `figure_image_get(page, index)` 把这一区域交给视觉模型看 —— 曲线趋势、标注、图例
-   这些**只能看图**，正文里往往没写。
+   这些**只能看图**，正文里往往没写。要看的区域不止一个就**一次给一批**：
+   `figure_image_get(items=[{"page": 4, "index": 1}, {"page": 7, "index": 2}])`
+   （成对写 page + index；上限 6 个区域，超了会截断并说明还有几条没处理）。
 4. 需要文字佐证时再 `page_markdown_get` 读那一页（图注 + 正文对该图的讨论）。
 5. 回答里要配图就**逐字**用 `figure_list` 返回的 `image_url` 写 `![说明](url)`。
+6. 用户要把这张图的图注标高亮 / 写笔记时，用 `figure_list` 回执里那条的 `anchor`（= 图注所在
+   **正文行 id**）**原样**传给 `highlight_manage` / `note_manage` —— 这是唯一能拿到行 id 的地方，
+   别自己编 `p008-02`。没有 `anchor`（图注没被识别）时才退回 `md:p<页号>`。
 
 ## 表格（`kind="table"`）
 

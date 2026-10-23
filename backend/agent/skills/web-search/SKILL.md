@@ -29,7 +29,10 @@ description: 检索论文之外的公开信息：官方文档、开源实现、�
 - **排除站点**：`-site:csdn.net`（内容农场多，值得排掉），多个用空格分隔。
 - **精确短语**：`"random rotation"` 加引号；排除短语写 `-"release notes"`。
 - **时间**：`after:2025-01-01` / `before:2026`（查"最新进展"时很有用）。
-- 一次只查一件事。几个问题塞进一个 query，结果一定又稀又偏。
+- **一个 query 只查一件事**，但几件事可以**一次发出**：
+  `web_search(queries=["site:arxiv.org TurboQuant", "TurboQuant github"])` ——
+  回执按 query 分组（`groups`），不同事的结果不混成一锅，别一件事一来回。
+  一次最多 8 个词；超了会截断，并在回执里写明「还有 N 条没处理」。
 
 ## count 怎么填
 

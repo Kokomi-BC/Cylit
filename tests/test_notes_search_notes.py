@@ -179,3 +179,68 @@ def test_no_hint_when_a_note_body_is_present() -> None:
                                       "selected_text": "向量量化", "note": "我的正文",
                                       "block_id": "p008-03", "tags": []}], kind="all")
     assert out.get("hint") in (None, "")
+
+
+# --------------------------------------------------------------------------
+# ③ `list_annotations` 的 `q`（需要 MySQL；不可用时自动跳过）
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_annotations(db_ready):
+    """造两条 AI 批注：一条命中关键词、一条**不该命中**（跑完清干净）。"""
+    from backend.repositories.mysql import models
+    from backend.repositories.mysql.session import session_scope
+
+    def wipe() -> None:
+        with session_scope() as sess:
+            (sess.query(models.Annotation)
+             .filter(models.Annotation.paper_id == FAKE_PAPER)
+             .delete(synchronize_session=False))
+
+    wipe()
+    from backend.services.annotation import annotation_service as svc
+
+    hit = svc.create_annotation({"paper_id": FAKE_PAPER, "block_id": "p004-02",
+                                 "type": "explanation",
+                                 "content_md": "这条批注讲 KL 散度的近似"})
+    miss = svc.create_annotation({"paper_id": FAKE_PAPER, "block_id": "p004-03",
+                                  "type": "explanation",
+                                  "content_md": "这条批注讲位置编码"})
+    try:
+        yield {"hit": hit, "miss": miss}
+    finally:
+        wipe()
+
+
+def test_list_annotations_filters_by_content(two_annotations) -> None:
+    """P0-2 回归：`q` 必须过滤批注正文。
+
+    修前 `list_annotations` 没有 `q`，`project.notes(?, query="KL", kind="annotations")`
+    回的是**全部批注** —— 模型把无关条目当命中引用（"我关于 KL 的批注"答成别的内容）。
+    """
+    from backend.services.annotation import annotation_service as svc
+
+    data = two_annotations
+    items = svc.list_annotations(FAKE_PAPER, q="KL")["items"]
+    assert [row["id"] for row in items] == [data["hit"]["id"]]
+    assert svc.list_annotations(FAKE_PAPER, q="KL")["count"] == 1
+    # 不传 `q` 仍是全量（老调用方一个字不用改）
+    assert svc.list_annotations(FAKE_PAPER)["count"] == 2
+    assert svc.list_annotations(FAKE_PAPER, q=None)["count"] == 2
+    # 不匹配就不该有东西回来
+    assert svc.list_annotations(FAKE_PAPER, q="完全不相干的关键词")["items"] == []
+
+
+def test_project_notes_forwards_the_query_to_annotations(two_annotations, monkeypatch) -> None:
+    """关键词要**下传**到批注那一支：这是 P0-2 的接线点（`project.notes` 的批注分支）。"""
+    from backend.services.agent import project
+
+    # 伪论文只在批注表里有行（没有 paper 行）→ 让存在性检查放行，别为此造一篇真论文
+    monkeypatch.setattr(project.paper_service, "get_paper",
+                        lambda pid, include_deleted=False: {"id": pid, "page_count": 1})
+
+    data = two_annotations
+    out = project.notes(paper_id=FAKE_PAPER, query="KL", kind="annotations")
+    assert out["returned"] == 1, [row["note"] for row in out["items"]]
+    assert data["hit"]["content_md"] in out["items"][0]["note"]

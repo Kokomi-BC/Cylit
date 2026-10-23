@@ -313,7 +313,7 @@ defineExpose({ reload });
 </script>
 
 <template>
-  <div class="card chunk-card">
+  <div class="chunk-card">
     <!-- 单根节点，而且模板里**不能有兄弟注释**：Vue 的根节点就是这层 div，父组件给的 class
          （面板的 .kb-chunk = 单列 order:4）才能落下来。之前这里是 "section + Modal 的 Teleport"
          两根，class 继承不了，chunk 卡拿到默认 order 就跑到最前面去了。
@@ -503,10 +503,18 @@ defineExpose({ reload });
 </template>
 
 <style scoped>
-/* 常显卡：卡头就是一句标题 + 一句摘要（不再是可以点的按钮，所以没有 hover / focus 态）。
-   下面的 .card-body.tight 是全局类，这里只补"摘要不要撑破卡头"那一笔。 */
-.card.chunk-card { min-width: 0; }
+/* 常显卡：标题行就是一句标题 + 一句摘要（不再是可以点的按钮，所以没有 hover / focus 态）。
+   标题行在淡底**之外**：透明、不留发丝线 —— 分隔交给下面那条淡色圆角底。 */
+.chunk-card { min-width: 0; }
+.card-head.chunk-head { border-bottom: 0; }
 .card-head.chunk-head .icon { color: var(--text-faint); }
+/* 内容（筛选 + 表格 + 分页）才装进淡色圆角底：--bg-sunken + --r-sm、内距 10。
+   与同页图表三块、论文表同一口径 —— 不再有白底 + 四边描边 + 阴影。 */
+.chunk-card .card-body.tight {
+  padding: 10px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+}
 .head-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* 筛选行：能并排就并排，放不下就折行（每个控件自己给最小宽度，绝不撑破卡片） */

@@ -1703,7 +1703,8 @@ function canSaveAsNote(m: AgentMessage) {
 async function saveAnswerWithColor(color: string) {
   const anchor = lastAnchor.value;
   const answer = (anchorAnswerMsg.value ? finalAnswer(anchorAnswerMsg.value) : '').trim();
-  if (!anchor || !answer) { toast('还没有可保存的回答', 'warn'); return; }
+  // 回答为空就**明说**，绝不拿选区文字凑一条半截笔记（笔记正文必须是这条回答）
+  if (!anchor || !answer) { toast('这条回答还没有正文，没有可存的笔记', 'warn', 2800); return; }
   const scope = anchor.scope || 'row';
   const page = anchor.page ?? 0;
   const blockId = scope === 'markdown' ? `md:p${page}`
@@ -1715,6 +1716,19 @@ async function saveAnswerWithColor(color: string) {
     toast('这段文字定位不到（标不了高亮）', 'warn', 2600);
     return;
   }
+  /* 偏移量缺失（老入口 / 只带了原文）时**按整段标注**：`markRanges` 只画 `end > start` 的，
+     写一条 0/0 的高亮等于库里有了、正文上永远看不见（用户 2026-10-23 报的「没挂上去」）。
+     降级要在界面上说清，不许静默。 */
+  let start = anchor.start;
+  let end = anchor.end;
+  let degraded = false;
+  if (!(end > start)) {
+    const quoteText = String(anchor.quote || anchor.text || '');
+    if (!quoteText) { toast('这段文字定位不到（标不了高亮）', 'warn', 2600); return; }
+    start = 0;
+    end = quoteText.length;
+    degraded = true;
+  }
   try {
     let highlightId = anchor.highlightId;
     if (highlightId) {
@@ -1723,7 +1737,7 @@ async function saveAnswerWithColor(color: string) {
       const created = await api.post<Highlight>('/highlights', {
         paper_id: props.paperId, block_id: blockId,
         selected_text: anchor.quote || anchor.text,
-        start_offset: anchor.start, end_offset: anchor.end,
+        start_offset: start, end_offset: end,
         color, side: anchor.side, scope,
       });
       highlightId = created?.id ?? '';
@@ -1740,11 +1754,12 @@ async function saveAnswerWithColor(color: string) {
       await api.post('/notes', {
         paper_id: props.paperId, block_id: blockId, highlight_id: highlightId,
         selected_text: anchor.quote || anchor.text,
-        start_offset: anchor.start, end_offset: anchor.end,
+        start_offset: start, end_offset: end,
         content_md: noteMd,
       });
     }
     anchor.color = color;
+    if (degraded) toast('这处选区没有精确位置，已按整段标注', 'warn', 3200);
     toast(existing ? '已更新这处高亮的笔记' : '已标色并存为这处高亮的笔记', 'ok', 2400);
     emit('refresh-side');
   } catch (err) { reportError(err, '存为笔记失败'); }

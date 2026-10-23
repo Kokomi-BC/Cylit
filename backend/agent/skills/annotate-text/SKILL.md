@@ -1,6 +1,6 @@
 ---
 name: annotate-text
-description: 在原文上做标注：按要求标出某段并设成某个颜色，或在某处写一条笔记；也能列出这篇已有的高亮与笔记。
+description: 在原文上做标注：按要求标出某段并设成某个颜色，或在某处写一条笔记；也能列出、检索已有的高亮与笔记（按选中原文与笔记正文搜索，可跨论文）。
 ---
 
 # 高亮与笔记：`Highlight └── Note`
@@ -13,6 +13,8 @@ description: 在原文上做标注：按要求标出某段并设成某个颜色�
 - "把第 3 页那段 `Attention Is All You Need` 标成黄色" → `highlight_manage op=create`
 - "这段加个笔记：这里其实是……" → 先确认/建立高亮，再 `note_manage op=create`
 - "我标过哪些？""这篇的笔记都有什么？" → `op=list`
+- "我记过关于 X 的笔记吗？""哪条笔记里提到过 XX？" → `notes_search(query="XX")`（**选中原文与笔记正文都会命中**）
+- "别的论文里我记过这个吗？" → `notes_search(query="XX", scope="all")`
 - "这条笔记对应原文哪里？""跳到那处高亮" → `op=locate`
 - "把那处高亮删了""笔记内容改成……" → `op=delete` / `op=update`（**用户明确说了才做**）
 
@@ -26,8 +28,11 @@ description: 在原文上做标注：按要求标出某段并设成某个颜色�
 | `md:p<页号>` | Markdown 视图里那一页 | `md:p4` |
 | `pdf:p<页号>` | 原 PDF 的页图 | `pdf:p4` |
 
-锚点用 `md:p<页号>`：宿主会把它挪到该页对应的正文行上（见 `annotations.py` 的 `locate_in_rows`），
-**不要自己编 `p009-08` 这种行 id** —— `page_markdown_get` / `block_get` 的返回里没有 `row_id`。
+**行 id 只有一处拿得到**：`figure_list` 回执里每条图形的 `anchor`（= 图注所在那一行的行 id，
+如 `p008-02`）。要在图注上标高亮/写笔记，就把它**原样**传给 `highlight_manage` / `note_manage`。
+除此之外**没有**别的工具会给行 id（`page_markdown_get` / `block_get` 的返回里都没有 `row_id`）——
+拿不到时用 `md:p<页号>`：宿主会把它挪到该页对应的正文行上（见 `annotations.py` 的 `locate_in_rows`）。
+**不要自己编 `p009-08` 这种行 id**：编出来的行 id 定位不上，高亮就悄悄没了。
 **原 PDF 那一面只能查不能建**：它的文字层在阅读器的 pdf.js 里，服务端算不出偏移量 ——
 要标那儿就让用户在 PDF 页上自己划词，你负责解释与写笔记。
 
@@ -109,6 +114,40 @@ note_manage op=create items=[
 - 一次最多 24 条；要标更多就分批（每批之间可以先 `op=list` 核对一下）。
 - 笔记要挂在刚建好的高亮 id 上：先建高亮、**看回执拿到 id**，再建笔记（同一个回合里连着做）。
 
+## 检索笔记与高亮：`notes_search`
+
+`op=list` 是「这一篇现在有什么」（逐条列），**`notes_search` 是按关键词找**，两者别混：
+用户问「我记过关于…吗」「哪条笔记里提到…」，用 `notes_search`。
+
+```
+notes_search(query="量化误差", scope="paper")        # 本篇
+notes_search(query="量化误差", scope="all")          # 整个库（跨论文）
+notes_search(query="量化误差", kind="notes")         # 只要写过笔记的
+notes_search(scope="paper")                          # 不给关键词 = 看最近的那些
+```
+
+- **`query` 同时过滤两处**：用户**选中的原文**（`selected_text`）与**用户写的笔记正文**（`note`）。
+  所以「我记得笔记里提到过 KL」和「我标过讲 KL 的那句」都能命中。
+- `kind`：`all`（默认，笔记 + 高亮 + 批注）｜`notes`（只有写过正文的）｜`highlights`｜`annotations`。
+- `scope`：`paper`（默认，当前这篇）｜`all`（整个知识库，结果带 `paper_id`）。
+- **几个关键词一次给**：`notes_search(queries=["量化误差", "KL 散度"])` —— 回执按词分组（`groups`），
+  别一个词一来回。标图注前确认位置时同理：`figure_list(pages=[7, 9])`、
+  `figure_image_get(items=[{"page": 7, "index": 1}])` 都是一次给多条。
+
+### 回执里两个字段别读反
+
+| 字段 | 是谁说的 |
+|---|---|
+| `selected_text` | **论文的句子**（用户选中的原文） |
+| `note` | **用户自己写的话** |
+
+回答里必须分清：把 `selected_text` 当成「用户笔记」就是张冠李戴。
+
+**`note` 为空不是「正文丢了」**：它只表示「这条高亮上本来就没写过笔记」。要看写过笔记的那些，
+用 `kind="notes"`。工具回执里的 `hint` 说的就是这件事。
+
+跨库（`scope="all"`）命中的别的论文，**你并没有读过那篇**：只能按回执里的片段说「某篇里记过 X」，
+并给出论文标题与页码，不要复述细节、不要替它下结论。
 ## 三条硬规则
 
 1. **`text` 必须逐字一致**，但**记号不用你手工剥**：`**重点**` 与 `重点` 两种写法都认

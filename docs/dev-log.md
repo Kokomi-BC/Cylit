@@ -11517,3 +11517,39 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 
 **过程事故与教训（记下来）**：四路并发执行者同时在跑 `npm run build`，而 `prebuild` 会先清空 `frontend/dist` —— 我的探针两次撞在半个 dist 上，跑出「116 项 / 64 通过 / 52 失败」「120 / 107 / 13」这种假结果。
 另：Windows 上探针的 esbuild 子进程写 `%TEMP%` 会被拒，必须把 `TMPDIR` / `TMP` / `TEMP` **三个都**指向 workspace 内已存在的目录，只设 `TMPDIR` 不生效。
+
+### 120. 第一百二十轮：笔记/高亮两个「看起来成功」被修掉；索引三卡去壳；工具批量能力；评审挖出的 P0
+
+用户报：「对话尾部点高亮按钮后有笔记，但高亮没挂上去，笔记里还显示 ref 之类的内容」。顺着这条查下去，再加一次独立只读评审，这轮修掉三个真缺陷。
+
+- **高亮为什么不出现**：`ReaderView.openSelectionInChat()`（右键「添加到对话框」）没把 `start/end/side/scope/quote` 放进锚点快照（「解释」那条给了），
+  于是快照成 `start:0,end:0`、写库 `start_offset == end_offset`，而 `domMarks.markRanges` 只画 `end > start` —— **正文上永远不出现**，toast 却报「已标色并存为这处高亮的笔记」。
+  实测库行 `p001-05 start=0 end=0`；修后 `start=0 end=1304`，正文上真出现 2 枚 `mark.hl[data-hl=…]`。另加防线：锚点缺偏移量时按整段标注并在 toast 说明，不再静默建看不见的高亮。
+- **笔记里的 ref**：`withNoteRefs` 把标号表当 HTML 注释挂在 `content_md` 末尾**是对的**，错在**读的地方没拆**——`mdToHtml` 用 `escapeHtml` 把那行注释印成了文本。
+  `noteRefs.ts` 新增 `noteBodyText()`（显示/编辑）与 `withKeptNoteRefs()`（保存时接回标号表），NotesView / HomeView / notesFeed / ReaderSidePanel / ReaderView 五处全部改走它。
+  实测：笔记页、编辑框、首页摘要、阅读器浮层里 `refs:` 全部消失，而保存后 `content_md` 仍带 `<!-- refs:[…] -->`（**跳转没丢**）。
+- **索引管理剩三张卡**（`PaperIndexTable` / `ChunkMetaCard` / `RagConfigCard`）去壳：标题在外、内容进 `--bg-sunken` + `--r-sm`；`#kb .card` **3 → 0**。
+- **新增技能 `search-paper`（论文检索）**：`paper_search` / `kb_search` 一直是**工具**、没有自己的技能文档，所以列表里看不到。补 1081 字符 SKILL.md（范围 / `mode` 选法 / 拿 ref 后先 `block_get` / 跨库边界），技能数 11 → **12**。
+- **笔记技能补检索**：`notes_search` 早就在 `P1_TOOLS` 里且**真的同时过滤**选中原文与笔记正文，但 `annotate-text/SKILL.md` 一个字没提。补一节写清 `op=list` 与按词搜的分工、`scope/kind`、`selected_text`（论文的句子）与 `note`（用户写的）不许读反。
+- **工具批量能力**（用户：「技能要符合大模型的习惯，支持批量」）：18 个工具逐个审计，**新增 9 个批量入口** ——
+  `paper_search/kb_search/notes_search/web_search` 的 `queries=[…]`（≤8，按 query 分组）、`block_get(refs=[…])`（≤12，按入参顺序对齐）、
+  `figure_list(pages=…)`、`figure_image_get(items=[{page,index}])`、`web_fetch(urls=[…])`（≤6，并发 3、单篇 25s）、`library_list(limit≤50)`；
+  超限一律回「还有 N 条没处理」，逐条失败只挂那一条；12 个 SKILL.md 同步写清批量用法（`grep "一次只能"` → 0 命中）。
+
+**独立评审挖出的 P0（都已修 + 都有回归测试）**
+1. `backend/agent/host.py:235` 整行被吞成注释 → `HostClient.meta_write` **根本不存在**，而 `tools.py` 在调它、提示词还要求「最后调一次 paper_meta_write」——
+   **线上每次「AI 补论文元数据」都拿 AttributeError，一个字段也写不进去**，且 `grep meta_write tests/` = 0。修后真打 `/api/v1/agent/papers/{id}/metadata`：库里 `(venue, year, one_liner)` 从 `(None,None,None)` 变成 `('ICLR 2026', 2026, '证据：写口真的落库了')`（临时论文已删）。
+2. `notes_search(kind="annotations")` 的关键词被**静默丢弃**（`project.py:812` 调 `list_annotations` 没传 q）→ 问「我关于 KL 的批注」会拿回全部批注、模型当命中引用。修后同一查询 2 条 → 1 条。
+3. `scope` / `kind` 拼错**静默降级**（`scope="library"` 被当本篇）→ 模型以为查了全库。改入口闭集校验：非法值回 `ok=false` + 允许值 + `effective_scope/effective_kind`，**不打后端**；大小写归一仍放行。
+4. 新增护栏 `tests/test_agent_host_contract.py`：遍历 `tools.py` 全部 **27** 处 `ctx.deps.host.X`，断言 `HostClient` 有同名可调用属性，另加「以 `#` 开头的行里不许出现 `def`/`class`」——正是 P0-1 的故障形状。
+   **故意把 `meta_write` 改回坏的重跑，5 条用例变红**（契约 2 + 元数据真链路 2 + 批注过滤 1），恢复后全绿。
+5. P1 一并处理：元数据二次提交文案改成与实现一致（主后端 `overwrite=False` 只填空字段，放行重发只会 `ok=True` + `applied` 全空 = 骗模型）；
+   notes 回执补 `total/truncated`；批量上限文档统一到 **60**；`annotate-text` 与 `read-figure` 关于「行 id 从哪来」的矛盾统一成「只有 `figure_list` 的 `anchor` 给行 id」；
+   `prompts.py` 三处 `block_get(ref)` 改 `refs=[…]`（≤12）并同步 golden；`tool_brief` 改用 `fields`，过程行不再空白。
+
+**验证（我自己跑的）**：全量 `pytest tests/` → **1656 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；
+探针 **123 项 / 112 通过 / 11 失败**（首跑 111/12，多出的「点别处右键菜单自己收掉」复跑即回 11 —— 合成事件 flaky）；
+真浏览器：`#agent` 技能行 **12** 条且含「论文检索」、`#kb` 真 `.card` **0**、笔记页 `refs:` **0 处**且无 `&lt;!--` 泄漏。
+
+**下一轮要清理的（不再当基线糊过去）**：探针那 11 条长期红（阅读器右键玻璃/填充图标/动作清单与顺序/点别处收起、侧栏页签 URL、对话空态居中、胶囊托盘、新对话重复、PDF 划词、缩略显示、胶囊图标）——
+真实门禁其实只有 `--static` 那 21 条，这些面改坏了不会响。要么修到绿，要么显式标 `xfail` 并写清原因。

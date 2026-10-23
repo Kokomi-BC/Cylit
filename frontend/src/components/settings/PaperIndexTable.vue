@@ -219,7 +219,7 @@ function menuLabel(paper: KbPaper): string {
 </script>
 
 <template>
-  <div class="card pit">
+  <div class="pit">
     <div class="card-head pit-head">
       <span class="pit-title">论文索引管理</span>
       <span class="spacer"></span>
@@ -326,49 +326,58 @@ function menuLabel(paper: KbPaper): string {
           </tbody>
         </table>
       </div>
-    </div>
 
-    <div v-if="filtered.length" class="pit-foot">
-      <span class="pit-count tiny faint tnum">共 {{ filtered.length }} 条</span>
-      <span class="spacer"></span>
-      <nav v-if="pageCount > 1" class="seg sq pit-pages" aria-label="分页">
-        <template v-for="(n, i) in pageNumbers" :key="i">
-          <span v-if="n === 0" class="pit-gap" aria-hidden="true">…</span>
-          <button
-            v-else
-            type="button"
-            :class="{ active: n === page }"
-            :aria-current="n === page ? 'page' : undefined"
-            :title="`第 ${n} 页`"
-            @click="page = n"
-          >{{ n }}</button>
-        </template>
-      </nav>
-      <label class="pit-size tiny faint">
-        每页
-        <select v-model.number="pageSize" class="pit-size-sel" aria-label="每页条数">
-          <option v-for="n in PAGE_SIZES" :key="n" :value="n">{{ n }}</option>
-        </select>
-        条
-      </label>
+      <div v-if="filtered.length" class="pit-foot">
+        <span class="pit-count tiny faint tnum">共 {{ filtered.length }} 条</span>
+        <span class="spacer"></span>
+        <nav v-if="pageCount > 1" class="seg sq pit-pages" aria-label="分页">
+          <template v-for="(n, i) in pageNumbers" :key="i">
+            <span v-if="n === 0" class="pit-gap" aria-hidden="true">…</span>
+            <button
+              v-else
+              type="button"
+              :class="{ active: n === page }"
+              :aria-current="n === page ? 'page' : undefined"
+              :title="`第 ${n} 页`"
+              @click="page = n"
+            >{{ n }}</button>
+          </template>
+        </nav>
+        <label class="pit-size tiny faint">
+          每页
+          <select v-model.number="pageSize" class="pit-size-sel" aria-label="每页条数">
+            <option v-for="n in PAGE_SIZES" :key="n" :value="n">{{ n }}</option>
+          </select>
+          条
+        </label>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 这张卡自己做容器查询的锚点：列可见性按**卡片自身宽度**判断，与视口无关 ——
-   设置页右栏、侧栏收起、窗口大小都会让卡片宽度和视口对不上，用 @media 一定排错。
-   overflow: hidden 只负责裁圆角；表格溢出的部分交给 .tbl-wrap 横向滚动。 */
+/* 这一块自己做容器查询的锚点：列可见性按**块自身宽度**判断，与视口无关 ——
+   设置页右栏、侧栏收起、窗口大小都会让块宽和视口对不上，用 @media 一定排错。
+   overflow: hidden 只负责裁淡底的圆角；表格溢出的部分交给 .tbl-wrap 横向滚动。 */
 .pit { overflow: hidden; container-type: inline-size; min-width: 0; }
 
-/* 卡头：标题 + 弹性留白 + 检索控件；窄屏允许换行，绝不挤成一坨 */
-.pit-head { flex-wrap: wrap; row-gap: 8px; }
+/* 标题行（原卡头）在淡底**之外**：透明、不描边、不留发丝线 —— 分隔交给下面那条淡色圆角底。
+   标题 + 弹性留白 + 检索控件；窄屏允许换行，绝不挤成一坨。 */
+.pit-head { flex-wrap: wrap; row-gap: 8px; border-bottom: 0; }
 .pit-title { font-weight: 600; }
 
 /* 带图标的搜索框复用全局 .search-field，只把宽度按这一页的需求改到 240px 左右 */
 .pit-search { flex: 0 0 auto; }
 .pit-search input { width: 240px; }
 .pit-filter { width: 132px; flex: 0 0 auto; }
+
+/* 内容（表 + 页脚）才装进那条淡色圆角底：--bg-sunken + --r-sm、内距 10（行高已收到 6/10，
+   再大就白胖）。标题压在它上面、不进底内 —— 与图表行三块同一口径，不再是白底 + 四边描边 + 阴影。 */
+.pit .card-body.tight {
+  padding: 10px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+}
 
 .pit-hits { margin: 0 0 6px; padding: 0 4px; }
 
@@ -423,10 +432,10 @@ th.col-chunks { text-align: right; }
 td.ops { padding-right: 8px; padding-left: 6px; }
 .pit-ops :deep(.menu-root) { flex: 0 0 auto; display: inline-flex; }
 
-/* 底部：左计数、右页码与每页条数 */
+/* 底部：左计数、右页码与每页条数。它和表格同在那条淡底里，分隔只用一条 1px 发丝线。 */
 .pit-foot {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-  padding: 8px 14px; border-top: 1px solid var(--divider);
+  margin-top: 8px; padding: 8px 2px 0; border-top: 1px solid var(--divider);
 }
 .pit-count { white-space: nowrap; }
 .pit-gap { padding: 0 4px; color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); }

@@ -36,8 +36,15 @@ def svc(monkeypatch):
 
     monkeypatch.setattr(real, "list_notes", list_notes)
     monkeypatch.setattr(real, "list_highlights", list_highlights)
-    monkeypatch.setattr(real, "list_annotations", lambda paper_id=None, user_id=1:
-                        {"items": [], "count": 0})
+    def list_annotations(paper_id=None, user_id=1, q=None):
+        #: `q` 必须收下 —— P0-2 修的就是"批注那一支把关键词丢掉"
+        calls.append(("annotations", q))
+        rows = [{"id": "a-1", "paper_id": PAPER, "block_id": "p003-05",
+                 "type": "explanation", "content_md": f"批注：{q} 的说明"}] \
+            if q and "KL" in q else []
+        return {"items": [dict(r) for r in rows], "count": len(rows)}
+
+    monkeypatch.setattr(real, "list_annotations", list_annotations)
     monkeypatch.setattr(project.paper_service, "get_paper",
                         lambda pid: {"id": pid, "page_count": 22})
     return calls
@@ -75,3 +82,34 @@ def test_query_that_misses_everything_returns_nothing(svc) -> None:
     """不匹配就不该有东西回来（而不是回来一批无关高亮）。"""
     out = project.notes(paper_id=PAPER, query="完全不相干的关键词")
     assert out["returned"] == 0 and out["items"] == []
+
+
+def test_query_reaches_the_annotations_branch(svc) -> None:
+    """P0-2：关键词必须下传 `list_annotations` —— 以前那一支连 `q` 都没有。"""
+    project.notes(paper_id=PAPER, query="KL", kind="annotations")
+    assert ("annotations", "KL") in svc
+
+
+def test_annotation_rows_carry_the_filtered_content(svc) -> None:
+    """批注那一支的收入必须是"过滤后"的那几条，不是整份列表。"""
+    out = project.notes(paper_id=PAPER, query="KL", kind="annotations")
+    assert out["returned"] == 1
+    assert out["items"][0]["note"] == "批注：KL 的说明"
+
+
+def test_receipt_says_when_it_was_truncated(svc, monkeypatch) -> None:
+    """P1-2：上限 40 条，被截掉的那部分要写进 `total` / `truncated`。
+
+    以前只有 `returned`（= 给几条）—— 模型会照着 40 条说"你一共就记了这些"。
+    """
+    #: 上限是**默认参数**，monkeypatch 常量没用 —— 直接给 limit
+    from backend.services.annotation import annotation_service as real
+
+    monkeypatch.setattr(real, "list_notes",
+                        lambda paper_id=None, user_id=1, q=None: {
+                            "items": [dict(NOTE, id=f"n-{i}") for i in range(5)],
+                            "count": 5})
+    out = project.notes(paper_id=PAPER, kind="notes", limit=3)
+    assert out["returned"] == 3
+    assert out["total"] == 5
+    assert out["truncated"] is True

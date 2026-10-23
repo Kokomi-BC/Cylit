@@ -25,6 +25,7 @@ import {
 } from '@/utils/format';
 import { readerTarget } from '@/utils/navigation';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
+import { withKeptNoteRefs } from '@/utils/noteRefs';
 import { mdToHtml } from '@/composables/useMarkdown';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
@@ -261,7 +262,8 @@ onMounted(async () => {
 /** 打开编辑器：笔记改正文、**还没写正文的高亮**当场新建、批注改正文。 */
 function openEdit(row: FeedRow): void {
   editRow.value = row;
-  editForm.content_md = row.contentMd || '';
+  // 编辑框只放**正文**：refs 那行注释要是也塞进去，用户看到的就是一坨 JSON（见 utils/noteRefs）
+  editForm.content_md = row.contentText || '';
   editOpen.value = true;
 }
 
@@ -285,7 +287,10 @@ async function submitEdit(): Promise<void> {
       await api.put(`/annotations/${row.annotation?.id}`, { content_md: editForm.content_md });
       toast('批注已保存', 'ok');
     } else if (row.noteId) {
-      await api.put(`/notes/${row.noteId}`, { content_md: editForm.content_md });
+      /* 存的是「改好的正文 + 原来那份标号表」：只改正文，`[1]` 的跳转不丢 */
+      await api.put(`/notes/${row.noteId}`, {
+        content_md: withKeptNoteRefs(editForm.content_md, row.contentMd),
+      });
       toast('笔记已保存', 'ok');
     } else {
       /* 口径：**只有插入了高亮，才能在高亮的基础上加笔记** —— 这里的高亮就是列表里那一条 */
@@ -297,7 +302,7 @@ async function submitEdit(): Promise<void> {
         selected_text: hl?.text ?? '',
         start_offset: hl?.start,
         end_offset: hl?.end,
-        content_md: editForm.content_md,
+        content_md: withKeptNoteRefs(editForm.content_md, row.contentMd),
       });
       toast('笔记已保存', 'ok');
     }
@@ -315,7 +320,7 @@ async function submitEdit(): Promise<void> {
  * 其余（没挂高亮的老笔记）删笔记。
  */
 function removeRow(row: FeedRow): void {
-  const target = truncate(row.contentMd || row.quote || row.key, 120) || '（空）';
+  const target = truncate(row.contentText || row.quote || row.key, 120) || '（空）';
   if (row.kind === 'annotation') {
     askConfirm({
       title: '删除批注',
@@ -454,9 +459,9 @@ function onRowAction(row: FeedRow, key: string) {
         />
         <!-- 笔记正文：**用户自己写的** → `breaks: true`（回车就是回车，也不把软换行接回一行） -->
         <div
-          v-if="row.contentMd"
+          v-if="row.contentText"
           class="md small clamp2"
-          v-html="mdToHtml(row.contentMd, null, { breaks: true })"
+          v-html="mdToHtml(row.contentText, null, { breaks: true })"
         />
         <!-- 空态不另写一行：头部那枚「待写」徽章已经把状态说清楚了 -->
 

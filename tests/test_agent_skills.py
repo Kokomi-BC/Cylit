@@ -72,7 +72,7 @@ def test_builtin_skills_materialized_with_descriptions(tmp_path: Path) -> None:
 
     skills = skills_store.list_skills(cfg)
     # 自带技能是**逐个数**的：改名/拆分时这条会立刻红，提醒同步 list 与文档
-    assert len(skills) == 11
+    assert len(skills) == 12
     assert all(item["builtin"] and item["enabled"] for item in skills)
     assert all(item["description"] for item in skills), "自带技能的 description 应当都解析得出来"
     assert all(item["chars"] > 0 for item in skills)

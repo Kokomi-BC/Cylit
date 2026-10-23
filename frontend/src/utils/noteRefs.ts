@@ -39,6 +39,25 @@ export function withNoteRefs(
   }
 }
 
+/**
+ * **显示 / 编辑**用的正文：摘掉末尾那行 `<!-- refs:[…] -->`。
+ *
+ * 为什么到处都得走它：`mdToHtml` 把 HTML 当**文本**转义（`html: escapeHtml`），那行注释
+ * 于是被原样印出来（用户 2026-10-23 报的「笔记内显示 ref 之类的内容」就是它）；
+ * 编辑框 / 首页摘要更是直接吃原文。显示归显示，跳转表仍由 `splitNoteRefs` 单独拿走。
+ */
+export function noteBodyText(md?: string | null): string {
+  return splitNoteRefs(md).text;
+}
+
+/**
+ * 存回去：用户改完的正文 + **这条笔记原来那份标号表** → 落库用的 `content_md`。
+ * 只改正文、不动跳转，编辑一次不会把 `[1]` 的可点能力弄丢。
+ */
+export function withKeptNoteRefs(text: string, originalMd?: string | null): string {
+  return withNoteRefs(text, splitNoteRefs(originalMd).refs);
+}
+
 /** 反过来：把 `content_md` 拆成「可渲染的正文」+「标号跳转表」。 */
 export function splitNoteRefs(md?: string | null): { text: string; refs: NoteRef[] } {
   const raw = String(md ?? '');

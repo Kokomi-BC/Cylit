@@ -16,7 +16,7 @@ import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { groupPaperTasks } from '@/utils/tasks';
 import { highlightCss } from '@/utils/highlightColors';
-import { splitNoteRefs } from '@/utils/noteRefs';
+import { splitNoteRefs, withKeptNoteRefs } from '@/utils/noteRefs';
 import { decorateRefs } from '@/utils/citeRefs';
 import type {
   Annotation, FigureItem, GlossaryTerm, Highlight, MarkdownFormula, MarkdownTable, Note, OverlayAnchor,
@@ -331,7 +331,8 @@ const editKey = ref('');
 const draft = ref('');
 function startEditRow(r: FeedRow) {
   editKey.value = r.key;
-  draft.value = r.contentMd;
+  // 编辑框只放正文：refs 那行注释在框里就是一坨 JSON（保存时按 r.contentMd 把它接回去）
+  draft.value = r.contentText;
   // 编辑器是 `v-if` 出来的：等它真的挂上再量高度（同时让已有的长笔记先铺开）
   void nextTick(() => autoGrowNoteEdit());
 }
@@ -375,7 +376,8 @@ function autoGrowNoteEdit(ev?: Event) {
 }
 function saveRow(r: FeedRow) {
   emit('save-note', {
-    noteId: r.noteId, highlightId: r.highlightId, anchorId: r.anchorId, contentMd: draft.value,
+    noteId: r.noteId, highlightId: r.highlightId, anchorId: r.anchorId,
+    contentMd: withKeptNoteRefs(draft.value, r.contentMd),
   });
 }
 /**
@@ -385,7 +387,7 @@ function saveRow(r: FeedRow) {
 watch(() => [props.notes, props.annotations, props.highlights], () => {
   if (!editKey.value) return;
   const row = merged.value.find((r) => r.key === editKey.value);
-  if (!row || row.contentMd === draft.value) cancelEditRow();
+  if (!row || row.contentText === draft.value) cancelEditRow();
 });
 
 /** 「笔记」页签的一个条目：归并规则与笔记整页**共用一份**（`utils/notesFeed`）。 */

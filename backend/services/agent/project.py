@@ -809,7 +809,9 @@ def notes(*, query: str | None = None, paper_id: str | None = None,
                     continue
                 out.append(_highlight_row(h, paper_id, note))
         if want in ("all", "annotations"):
-            for a in (svc.list_annotations(paper_id).get("items") or []):
+            #: 批注那一支的 q 也是 2026-12 补的：以前只传 paper_id，关键词被静默丢掉 ——
+            #: 问「我关于 KL 的批注」回来的是全部批注，模型把无关条目当命中引用。
+            for a in (svc.list_annotations(paper_id, q=query or None).get("items") or []):
                 out.append({"kind": "annotation", "paper_id": paper_id,
                             "block_id": a.get("block_id"),
                             # AI 批注没有"选中文本"字段（只有 `content_md`），别硬凑
@@ -853,5 +855,9 @@ def notes(*, query: str | None = None, paper_id: str | None = None,
         out = [x for x in out
                if needle in " ".join(str(x.get(k) or "") for k in
                                      ("selected_text", "note", "paper_title")).lower()]
-    return {"paper_id": paper_id, "kind": want, "returned": len(out[:limit]),
-            "items": out[:limit]}
+    kept = out[:limit]
+    #: total / truncated 与 formula_get / page_markdown_get 同一口径：以前只给 returned
+    #: （上限 40），被截掉的那部分对模型等于不存在 —— 它会说“你只记过 40 条”。
+    return {"paper_id": paper_id, "kind": want, "returned": len(kept),
+            "total": len(out), "truncated": len(out) > len(kept),
+            "items": kept}

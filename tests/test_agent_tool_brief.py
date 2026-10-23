@@ -96,3 +96,11 @@ def test_success_without_summary_keeps_the_row_quiet() -> None:
 def test_failure_still_carries_the_reason() -> None:
     ok, detail = _tool_outcome(_Part(json.dumps({"ok": False, "error": "没有第 99 页（这篇共 22 页）。"})))
     assert ok is False and "第 99 页" in detail
+
+
+def test_paper_meta_write_brief_lists_the_fields() -> None:
+    """P1-6：`paper_meta_write` 的 digest 里只有 `fields`（没有 `venue`）——
+    以前这一行在轨迹里**永远是空的**，用户看不出这次工具调用干了什么。"""
+    brief = tool_brief("paper_meta_write", {"fields": ["venue", "year", "tags"]})
+    assert brief == "3 项 · venue、year、tags"
+    assert tool_brief("paper_meta_write", {"fields": []}) == ""

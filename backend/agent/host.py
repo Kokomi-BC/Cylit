@@ -232,7 +232,8 @@ class HostClient:
     async def note_delete(self, note_id: str) -> dict:
         return dict(await self.delete(f"/agent/notes/{note_id}") or {})
 
-    # ---------------- 写：论文元数据 ----------------    async def meta_write(self, paper_id: str, payload: dict) -> dict:
+    # ---------------- 写：论文元数据 ----------------
+    async def meta_write(self, paper_id: str, payload: dict) -> dict:
         """写论文元数据（`paper_meta_write` 工具的后端）。
 
         与页产物纠错同一口径：**拒绝也是正常返回**（``ok=false`` + 原因），不抛 HostError ——

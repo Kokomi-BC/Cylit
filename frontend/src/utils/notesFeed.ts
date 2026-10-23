@@ -15,6 +15,7 @@
  * 而且整页要带"哪篇论文"的徽章 —— 所以这里给的是中性行对象，标题/正文由各自渲染。
  */
 import type { Annotation, Highlight, Note } from '@/api/types';
+import { noteBodyText } from '@/utils/noteRefs';
 
 /**
  * 高亮原文的清洗：PDF 里选中**公式 / 图片块**时，浏览器给的不是文字，而是一个
@@ -66,7 +67,10 @@ export interface NotesFeedRow<H = Highlight, N = Note, A = Annotation> {
   noteId: string;
   /** 挂在哪条高亮上（批注为空） */
   highlightId: string;
+  /** 原文（含末尾那行 `<!-- refs:[…] -->`）：跳转表要从它来，**保存时原样带回** */
   contentMd: string;
+  /** 只给**显示 / 编辑**用：摘掉 refs 那行注释的正文（见 `noteBodyText`） */
+  contentText: string;
   /** 徽章文字：笔记 / 待写 / 划词解释 / 批注（类型） */
   label: string;
   /** 徽章配色（与 `.badge.*` 对应） */
@@ -110,6 +114,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
       scope: first.scope ?? 'row',
       noteId: note?.id ?? '', highlightId: ids[0] ?? '',
       contentMd: note?.content_md ?? '',
+      contentText: noteBodyText(note?.content_md ?? ''),
       label: note ? '笔记' : '待写',
       badge: note ? 'accent' : 'dim',
       at: note?.updated_at ?? note?.created_at ?? first.created_at ?? null,
@@ -127,7 +132,8 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
         : '',
       color: '',
       scope: n.scope, noteId: n.id, highlightId: n.highlight_id ?? '',
-      contentMd: n.content_md, label: '笔记', badge: 'accent',
+      contentMd: n.content_md, contentText: noteBodyText(n.content_md),
+      label: '笔记', badge: 'accent',
       at: n.updated_at ?? n.created_at ?? null,
       highlight: null, note: n, annotation: null,
     });
@@ -137,7 +143,7 @@ export function buildNotesFeed<H extends Highlight, N extends Note, A extends An
     rows.push({
       key: `a:${a.id}`, kind: 'annotation', anchorId: a.block_id, anchorIds: [],
       page: a.page ?? null, quote: '', quoteMd: '', color: '', noteId: '', highlightId: '',
-      contentMd: a.content_md,
+      contentMd: a.content_md, contentText: a.content_md,
       label: selection ? '划词解释' : (a.type || '批注'),
       badge: selection ? 'ok' : 'accent', at: a.created_at,
       highlight: null, note: null, annotation: a,

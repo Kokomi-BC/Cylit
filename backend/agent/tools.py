@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -37,6 +38,28 @@ EDIT_BATCH_MAX = 60
 
 #: 一次批量建高亮 / 笔记最多多少条
 ANNOTATE_BATCH_MAX = 24
+
+#: 一次 `block_get` 最多展开几个块（`refs=[…]`）
+BATCH_REF_MAX = 12
+#: 一次批量检索（paper_search / kb_search / notes_search / web_search）最多几个词（`queries=[…]`）
+BATCH_QUERY_MAX = 8
+#: 一次 `web_fetch` 最多抓几个网址（`urls=[…]`）
+BATCH_URL_MAX = 6
+#: 批量抓网页的并发数与单条超时（秒）：一次调用要抓 6 个，串行 + 无超时会把整个回合拖死
+BATCH_URL_CONCURRENCY = 3
+WEB_FETCH_TIMEOUT = 25.0
+#: 一次 `figure_list` 最多看几页（`pages=[…]`）
+BATCH_PAGE_MAX = 6
+#: 一次 `figure_image_get` 最多取几个区域（`items=[{page, index}, …]`）
+BATCH_FIGURE_MAX = 6
+#: `notes_search` 的两个**闭集**参数。以前拼错会**静默降级**（scope 不认就当 paper、
+#: kind 不认就当 all）：模型以为查了全库、其实只有本篇，然后自信地说"你库里没有别的论文讲过"。
+NOTES_SCOPES = ("paper", "all")
+NOTES_KINDS = ("all", "notes", "highlights", "annotations")
+
+#: `library_list` 一次最多列几条（主后端 /agent/library 自己也封顶 30 条）
+LIBRARY_LIST_MAX = 50
+LIBRARY_LIST_DEFAULT = 30
 
 #: 一次 `page_markdown_get` 最多读几页正文
 TEXT_PAGES_MAX = 20
@@ -132,6 +155,83 @@ def pages_error(spec: str, *, total: int) -> str:
 BRIEF_CHARS = 60
 
 
+def _cap_batch(rows: list, cap: int) -> tuple[list, int]:
+    """截到上限，返回 (留下的, 被砍掉的条数)。
+
+    **被砍的条数必须回给模型**：静默丢一半，它会以为那些条已经处理过了。
+    """
+    return rows[:cap], max(0, len(rows) - cap)
+
+
+def _left_note(left: int, cap: int, what: str) -> str:
+    """「还有 N 条没处理」那句话（没有截断就是空串，不占回执）。"""
+    return f"还有 {left} {what}没处理（一次最多 {cap} {what}）：分批再来。" if left else ""
+
+
+def _grouped_receipt(groups: list[dict], *, wanted: int, left: int, repeats: int,
+                     cap: int, hint: str) -> dict:
+    """把逐词的结果拼成**按 query 分组**的批量回执（一个词一组，绝不混成一锅）。
+
+    为什么要分组：一次给 4 个检索词，如果命中混在一个 `items` 数组里，模型没法说清
+    "哪几条是查 X 得到的"，引用也会张冠李戴。分组之后每组就是一次老调用的原样回执。
+    """
+    failed = [g for g in groups if g.get("ok") is False]
+    tips: list[str] = []
+    if left:
+        tips.append(_left_note(left, cap, "条"))
+    if repeats:
+        tips.append(f"重复的 {repeats} 条已合并。")
+    if failed:
+        tips.append("没查成的那几条单独带 ok=false 与原因，别的分组照常给出 —— 只补那几条，"
+                    "不要整批重来。")
+    out = {"requested": wanted,
+           "returned": sum(int(g.get("returned") or 0) for g in groups),
+           "failed": len(failed), "unprocessed": left, "groups": groups}
+    if tips:
+        out["note"] = " ".join(tips)
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+def _text_list(single: str, multi: list | None) -> tuple[list[str], int]:
+    """把「单条参数 + 批量参数」摊成一份待办清单：单条在前、批量在后，去重（大小写不敏感）。
+
+    返回 (清单, 因去重合并掉的条数)。两种都给的场景真实存在 —— 模型把老参数也顺手填了，
+    合并去重比报错有用（老写法因此一个字都不用改）。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    repeats = 0
+    for raw in ([single] if str(single or "").strip() else []) + list(multi or []):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = " ".join(text.lower().split())
+        if key in seen:
+            repeats += 1
+            continue
+        seen.add(key)
+        out.append(text)
+    return out, repeats
+
+
+def _int_list(single: object, multi: list | None) -> tuple[list[int], int]:
+    """同上，但元素是整数（ref / 页码）：认不出数字的那一条丢掉，不整批报错。"""
+    out: list[int] = []
+    repeats = 0
+    for raw in ([single] if single is not None else []) + list(multi or []):
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        if value in out:
+            repeats += 1
+            continue
+        out.append(value)
+    return out, repeats
+
+
 def _as_args(args: object) -> dict:
     """工具入参：框架给过 dict，也给过 **JSON 串** —— 两种都要认。
 
@@ -163,6 +263,18 @@ def _anchor_label(anchor: object) -> str:
     return f"第 {int(m.group(1))} 页{row}"
 
 
+def _many_label(value: object, limit: int = 3) -> str:
+    """一批整数（ref / 页码）压成一句人话：``[3, 5, 9]`` → 「3、5、9」，多的用 ``等 5 个`` 收尾。
+
+    过程行只有一行宽，逐个数列出来会挤掉后面那截；所以只给前几个，剩下用总数交代。
+    """
+    rows = [str(int(one)) for one in (value or []) if str(one).strip().lstrip("-").isdigit()]
+    if not rows:
+        return ""
+    head = "、".join(rows[:limit])
+    return head if len(rows) <= limit else f"{head} 等 {len(rows)} 个"
+
+
 def _page_label(value: object) -> str:
     text = str(value if value is not None else "").strip()
     if not text:
@@ -188,15 +300,35 @@ def tool_brief(name: str, args: object) -> str:
     if tool in ("page_markdown_get", "translate_get", "page_image_get"):
         return pages
     if tool in ("formula_get", "figure_list", "figure_image_get"):
-        bits = [page or pages]
-        if tool == "figure_image_get" and a.get("index") not in (None, ""):
-            bits.append(f"第 {a.get('index')} 张")
+        many = _many_label(a.get("pages"))
+        seen = _many_label([one.get("page") for one in a.get("items") or []
+                            if isinstance(one, dict)])
+        bits = [page or pages or (f"第 {seen} 页" if seen else "")]
+        if tool == "figure_image_get":
+            if a.get("index") not in (None, ""):
+                bits.append(f"第 {a.get('index')} 张")
+            elif a.get("items"):
+                bits.append(f"{len(a.get('items') or [])} 个区域")
+        elif many:
+            bits = [f"第 {many} 页"]
         return " · ".join(b for b in bits if b)
     if tool in ("paper_search", "kb_search", "library_list", "notes_search", "web_search"):
+        many = [str(one) for one in (a.get("queries") or []) if str(one).strip()]
+        if many:
+            head = "」「".join(_brief_text(one, 14) for one in many[:2])
+            more = f" 等 {len(many)} 个" if len(many) > 2 else ""
+            return f"「{head}」{more}"
         return f"「{query}」" if query else ""
     if tool == "web_fetch":
+        many = [str(one) for one in (a.get("urls") or []) if str(one).strip()]
+        if many:
+            head = _brief_text(many[0], 32)
+            return f"{head} 等 {len(many)} 篇" if len(many) > 1 else head
         return _brief_text(a.get("url"), 32)
     if tool == "block_get":
+        many = _many_label(a.get("refs"))
+        if many:
+            return f"引用 [{many}]"
         ref = a.get("ref")
         return f"引用 [{ref}]" if ref not in (None, "") else ""
     if tool == "page_markdown_edit":
@@ -223,6 +355,10 @@ def tool_brief(name: str, args: object) -> str:
             return f"删掉一条{kind}"
         return " · ".join(b for b in (f"看看有哪些{kind}", where) if b)
     if tool == "paper_meta_write":
+        # digest 里只有 fields（见 paper_meta_write 的 _guarded），没有 venue —— 以前这一行永远空白
+        fields = [str(one) for one in (a.get("fields") or []) if str(one).strip()]
+        if fields:
+            return f"{len(fields)} 项 · " + "、".join(fields[:3])
         return _brief_text(a.get("venue"), 16)
     return "、".join(f"{k}={_brief_text(v, 12)}" for k, v in list(a.items())[:3])[:BRIEF_CHARS]
 
@@ -412,12 +548,13 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
 # --------------------------------------------------------------------------
 
 
-async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
-                      mode: str | None = None) -> dict:
+async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
+                       mode: str | None = None,
+                       queries: list[str] | None = None) -> dict:
     """在本论文内检索，返回**候选位置**（页码、章节、短片段），不返回全文。
 
     什么时候用：任何"这篇论文里怎么说的 / 讲了什么 / 为什么这么做"的问题，
-    先用它定位；拿到结果里的 ref 之后，**先用 `block_get(ref)` 展开最相关的那几块**
+    先用它定位；拿到结果里的 ref 之后，**先用 `block_get(refs=[…])` 一次展开最相关的那几块**
     （那就是检索到的相似内容本体），块里上下文不够时再 page_markdown_get 读它所在的页，
     要看版面才用 page_image_get。
 
@@ -430,20 +567,30 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
       一次没命中别只换词：可以**换一种方式**再试（精确词没中就换 `text`，
       概念没中就换 `rag`）。
 
+    **一次可以查几个词**（别一个词一来回）：
+
+        paper_search(queries=["random rotation", "quantization error"])
+
+    回执**按 query 分组**（`groups: [{query, returned, items}, …]`），顺序与你给的词一致 ——
+    不同词的命中**不会**混成一个数组，所以引用时说得清"哪几条是查哪个词得到的"。
+    某一条查失败只在那一条上给 `ok=false` + 原因，别的照常返回。
+    一次最多 8 个词；超了会截断，回执里写明「还有 N 条没处理」。
+
     参数：
-      query  —— 检索词。用**论文里的说法**（术语、方法名）比用口语描述召回好。
-      top_k  —— 最多几条，默认 8，上限 12。
-      mode   —— `text` / `rag` / `auto`；不传用服务端默认（auto，两路融合）。
+      query   —— 单个检索词。用**论文里的说法**（术语、方法名）比用口语描述召回好。
+      queries —— 一批检索词。与 query 一起给时按「query 在前、queries 在后」合并去重。
+      top_k   —— 每个词最多几条，默认 8，上限 12。
+      mode    —— `text` / `rag` / `auto`；不传用服务端默认（auto，两路融合）。
     """
-    async def _impl() -> dict:
+    async def _one(q: str) -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
         key = k * 3 + _search_mode_slot(mode)
-        cached = _cached(ctx, "paper_search", query, key)
+        cached = _cached(ctx, "paper_search", q, key)
         if cached is not None:
             return cached
         ctx.deps.count_search()
         before = len(ctx.deps.registry)
-        data = await ctx.deps.host.search(ctx.deps.paper_id, query, top_k=k,
+        data = await ctx.deps.host.search(ctx.deps.paper_id, q, top_k=k,
                                           mode=mode)
         raw_items = list(data.get("items") or [])
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
@@ -457,10 +604,10 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
                 "section": cit.section,
                 "type": raw.get("chunk_type"),
                 "snippet": _snippet_around(raw.get("content") or raw.get("translation") or "",
-                                           str(query or "")),
+                                           str(q or "")),
             })
         out = {
-            "query": query, "page_total": total or None, "returned": len(items),
+            "query": q, "page_total": total or None, "returned": len(items),
             "items": items,
         }
         if not items:
@@ -469,14 +616,35 @@ async def paper_search(ctx: RunContext[Deps], query: str, top_k: int = 8,
         elif len(ctx.deps.registry) == before:
             out["hint"] = _stale_hint()
         else:
-            out["hint"] = ("这些只是片段：先用 `block_get(ref)` 展开最相关的 2~4 块；"
+            out["hint"] = ("这些只是片段：先用 `block_get(refs=[…])` 一次展开最相关的 2~4 块；"
                            "块里上下文不够时再 `page_markdown_get` 读它所在的页。")
-        _remember(ctx, "paper_search", query, key, out)
+        _remember(ctx, "paper_search", q, key, out)
         return out
 
+    async def _impl() -> dict:
+        wanted, repeats = _text_list(query, queries)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 query 或 queries：queries=[\"词一\", \"词二\"] 一次查多个。"}
+        kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
+        if queries is None and len(wanted) == 1:
+            return await _one(kept[0])      # 老用法：单个词的回执结构一个字都不变
+        groups: list[dict] = []
+        for q in kept:
+            try:
+                groups.append(await _one(q))
+            except HostError as exc:
+                groups.append({"query": q, "ok": False, "returned": 0, "items": [],
+                               "error": f"取数失败：{exc.message}"})
+        return _grouped_receipt(
+            groups, wanted=len(wanted), left=left, repeats=repeats,
+            cap=BATCH_QUERY_MAX,
+            hint=("每组各查自己的词：引用时按分组说清是哪个词的命中。展开片段仍用 "
+                  "block_get(refs=[…])，一次给一批。"))
+
     return await _guarded(ctx, "paper_search",
-                          {"query": _clip(query, 60), "top_k": top_k,
-                           "mode": mode or "auto"}, _impl())
+                          {"query": _clip(query, 60), "queries": list(queries or []),
+                           "top_k": top_k, "mode": mode or "auto"}, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -574,13 +742,24 @@ def _row_page(row_id: str) -> int:
     return int(match.group("page")) if match else 0
 
 
-async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
-    """按 ref 读**单个块/段**的完整原文（含译文与公式 LaTeX）。
+async def block_get(ctx: RunContext[Deps], ref: int | None = None,
+                    refs: list[int] | None = None) -> dict:
+    """按 ref 读块/段的完整原文（含译文与公式 LaTeX）。**一次可以给好几个 ref。**
 
     什么时候用：读页结果里某段被截断、或某条检索片段看起来关键，想把这一段完整看清。
 
+    **批量是默认姿势**：检索 / 读页拿到的 ref 常有好几个，别一个 ref 一次调 ——
+    一次给一批：
+
+        block_get(refs=[3, 5, 9])
+
+    回执按**你给的顺序逐条对应**（每条带自己的 `ref`）；某一条读不到只在那一条上给
+    `ok=false` + 原因，别的照常返回 —— 照着失败的那几条补读，**不要整批重来**。
+    一次最多 12 个；超了会截断，回执里写明「还有 N 条没处理」。
+
     参数：
-      ref —— 检索或读页结果里给出的引用编号。
+      ref  —— 单个引用编号（老用法，照旧）。
+      refs —— 一批引用编号。两种一起给时按「ref 在前、refs 在后」合并去重。
     """
     async def _read_rows(cit, row_id: str) -> dict | None:
         """按行读这一段（一个 chunk 可能跨好几行 → 拼成整段，而不是只给第一行）。"""
@@ -617,11 +796,12 @@ async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
                 "error": f"这一条读不到（可能随重新转录变了号）。"
                          f"用 page_markdown_get 读{where}，或重新检索一次。"}
 
-    async def _impl() -> dict:
-        cit = ctx.deps.registry.by_ref(ref)
+    async def _one(one_ref: int) -> dict:
+        """读一条（单条与批量共用同一条路径，省得两份逻辑慢慢走偏）。"""
+        cit = ctx.deps.registry.by_ref(one_ref)
         if cit is None:
             return {"ok": False,
-                    "error": f"ref={ref} 不存在。只能用工具**实际返回过**的编号。"}
+                    "error": f"ref={one_ref} 不存在。只能用工具**实际返回过**的编号。"}
         if cit.row_id:
             # 行优先：写侧把行 id 也塞进了 block_id（见 project.anchor_ids），
             # 拿它去查块表必然 404，所以有行身份就直接走行走廊。
@@ -632,7 +812,7 @@ async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
         if not cit.block_id:
             where = f"第 {int(cit.page)} 页" if cit.page else "它所在的那一页"
             return {"ok": False,
-                    "error": f"ref={ref} 这一条没有可展开的正文（只有定位信息）："
+                    "error": f"ref={one_ref} 这一条没有可展开的正文（只有定位信息）："
                              f"用 page_markdown_get 读{where}。"}
         try:
             data = await ctx.deps.host.block(ctx.deps.paper_id, cit.block_id)
@@ -655,7 +835,45 @@ async def block_get(ctx: RunContext[Deps], ref: int) -> dict:
             "formula": (data.get("formula") or {}).get("latex") or None,
         }
 
-    return await _guarded(ctx, "block_get", {"ref": ref}, _impl())
+    async def _impl() -> dict:
+        wanted, repeats = _int_list(ref, refs)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 ref 或 refs：refs=[3, 5, 9] 一次展开多个块。"}
+        kept, left = _cap_batch(wanted, BATCH_REF_MAX)
+        if refs is None and len(wanted) == 1:
+            # 老用法（只给 ref）的回执结构一个字都不变；给了 refs 就一律走批量形态，
+            # 免得模型按 `refs` 下注、拿到的却是另一种结构。
+            return await _one(kept[0])
+        rows: list[dict] = []
+        for one in kept:
+            try:
+                got = await _one(one)
+            except HostError as exc:
+                got = {"ok": False, "error": f"取数失败：{exc.message}"}
+            if got.get("ok") is False:
+                # 失败只挂在这一条上：整批失败会让模型以为"这批 ref 全废了"
+                rows.append({"ref": one, "ok": False,
+                             "error": got.get("error") or "这一条读不到"})
+            else:
+                rows.append(got)
+        failed = [row for row in rows if row.get("ok") is False]
+        tips = [_left_note(left, BATCH_REF_MAX, "条")] if left else []
+        if repeats:
+            tips.append(f"重复的 {repeats} 条已合并。")
+        if failed:
+            tips.append("失败的那几条在 items 里带 ok=false 与原因，别的照常返回 —— "
+                        "只补失败的那几条，不要整批重来。")
+        out = {"requested": len(wanted), "returned": len(rows) - len(failed),
+               "failed": len(failed), "unprocessed": left, "items": rows}
+        if tips:
+            out["note"] = " ".join(tips)
+        if out["returned"]:
+            out["hint"] = ("这些是逐条的完整原文；某条上下文还不够时，再用 "
+                           "page_markdown_get 读它所在的页。")
+        return out
+
+    return await _guarded(ctx, "block_get", {"ref": ref, "refs": list(refs or [])}, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -703,19 +921,25 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
                           {"pages": _clip(pages, 40), "dpi": dpi}, _impl())
 
 
-async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
-    """列出某一页的**插图与表格**（编号、图注、可嵌入的受控图片地址）。
+async def figure_list(ctx: RunContext[Deps], page: int | None = None,
+                      pages: list[int] | None = None) -> dict:
+    """列出某一页（或**一次列好几页**）的插图与表格（编号、图注、可嵌入的受控图片地址）。
 
     什么时候用：要回答"图 3 画了什么 / 表 1 的数字是多少"之前，先看这一页有哪些图形区域。
     **表格也在这里**：解析出的表格正文经常把单元格粘成一串（`1645.2945.16`），
     拿数字要用 kind="table" 那条的 index 去 figure_image_get 看表图。
 
+    **批量**：不确定图在哪一页时别一页一次试 —— 一次给几页：`figure_list(pages=[4, 7, 9])`。
+    回执按页分组（`pages: [{page, returned, items}]`），顺序与你给的页码一致；
+    这一页没有图形区域是正常情况（`returned=0`），不报错、不影响别的页。一次最多 6 页。
+
     参数：
-      page —— 页码。不知道图/表在哪一页就先 paper_search（图注文字通常搜得到）。
+      page  —— 单页页码（老用法，照旧）。
+      pages —— 一批页码。两种一起给时按「page 在前、pages 在后」合并去重。
     """
-    async def _impl() -> dict:
-        data = await ctx.deps.host.figures(ctx.deps.paper_id, int(page))
-        rows = _caption_rows(ctx.deps.paper_id, int(page))
+    async def _one(one_page: int) -> dict:
+        data = await ctx.deps.host.figures(ctx.deps.paper_id, int(one_page))
+        rows = _caption_rows(ctx.deps.paper_id, int(one_page))
         items = []
         for fig in data.get("items") or []:
             url = fig.get("url") or ""
@@ -724,12 +948,12 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
             label = ({"table": "表 ", "algorithm": "算法 "}.get(kind, "图 ")
                      + str(fig.get("number") or "?"))
             cit = ctx.deps.registry.assign(
-                key=f"figure:{page}:{fig.get('index')}", kind=kind, page=int(page),
+                key=f"figure:{one_page}:{fig.get('index')}", kind=kind, page=int(one_page),
                 snippet=_clip(fig.get("caption") or "", CAPTION_CHARS),
                 # 图注行的行 id：前端点 `[n]` 才能闪到那一行（模型侧看不到这个 id）
                 row_id=rows.get(str(fig.get("number") or "")),
                 image_urls=[url] if url else [],
-                label=f"第 {page} 页 · {label}")
+                label=f"第 {one_page} 页 · {label}")
             items.append({
                 "ref": cit.ref, "index": fig.get("index"), "kind": kind,
                 "number": fig.get("number") or "",
@@ -739,59 +963,161 @@ async def figure_list(ctx: RunContext[Deps], page: int) -> dict:
                 #: note_manage，高亮才画在阅读视图里（不用拿 `md:pN` 去猜，猜空了就标不上）。
                 "anchor": rows.get(str(fig.get("number") or "")) or "",
             })
-        out = {"page": int(page), "returned": len(items), "items": items}
+        out = {"page": int(one_page), "returned": len(items), "items": items}
         if not items:
             out["hint"] = "这一页没有插图或表格（或图注没被识别）。可以换一页，或直接用 page_image_get 看版面。"
         else:
-            out["hint"] = ("看内容用 figure_image_get(page, index)；要在回答里配图，就把 image_url "
-                           "**逐字**写进 ![简短说明](image_url)，不要改写、拼接或换成别的地址。"
+            out["hint"] = ("看内容用 figure_image_get(items=[{page, index}, …]) —— 一次可以看几个区域；"
+                           "要在回答里配图，就把 image_url **逐字**写进 ![简短说明](image_url)，"
+                           "不要改写、拼接或换成别的地址。"
                            "图注要标高亮/写笔记时，把它的 anchor 原样传给 highlight_manage。")
         return out
 
-    return await _guarded(ctx, "figure_list", {"page": page}, _impl())
+    async def _impl() -> dict:
+        wanted, repeats = _int_list(page, pages)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 page 或 pages：pages=[4, 7, 9] 一次看几页的图形区域。"}
+        kept, left = _cap_batch(wanted, BATCH_PAGE_MAX)
+        if pages is None and len(wanted) == 1:
+            return await _one(kept[0])      # 老用法：单页回执结构一个字都不变
+        groups: list[dict] = []
+        for one in kept:
+            try:
+                groups.append(await _one(one))
+            except HostError as exc:
+                groups.append({"page": one, "returned": 0, "items": [],
+                               "ok": False, "error": f"取数失败：{exc.message}"})
+        failed = [g for g in groups if g.get("ok") is False]
+        tips = [_left_note(left, BATCH_PAGE_MAX, "页")] if left else []
+        if repeats:
+            tips.append(f"重复的 {repeats} 页已合并。")
+        if failed:
+            tips.append("取数失败的那几页单独带 ok=false 与原因，别的页照常给出。")
+        out = {"requested": len(wanted), "pages": groups,
+               "returned": sum(int(g.get("returned") or 0) for g in groups),
+               "failed": len(failed), "unprocessed": left}
+        if tips:
+            out["note"] = " ".join(tips)
+        return out
+
+    return await _guarded(ctx, "figure_list", {"page": page, "pages": list(pages or [])}, _impl())
 
 
-async def figure_image_get(ctx: RunContext[Deps], page: int, index: int):
+async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
+                            index: int | None = None,
+                            items: list[dict] | None = None):
     """取一页里某个图形区域的裁图（插图或**表格**，按图注锚定 600dpi）交给视觉模型看。
 
     什么时候用：回答涉及图里的具体细节（曲线趋势、结构图）或**表格里的数字**时。
     表格的数字**不要**从 page_markdown_get 的正文里抄 —— 单元格常常粘在一起。
 
+    **一次可以看几个区域**（用户口径：能批量就别一次一条）：
+
+        figure_image_get(items=[{"page": 4, "index": 1}, {"page": 7, "index": 2}])
+
+    为什么是 `items=[{page, index}, …]` 而不是 `pages=[…] + indices=[…]` 两个平行数组：
+    平行数组一旦长度不等就没有确定语义（3 页配 2 个序号，谁对谁？），而且每条的失败/成功
+    没法单独挂。成对写进去，每一条自带 page + index，回执也能**按条对应**给结论。
+    回执里逐条列出「第 N 页 · 图 3（ref=…）」，取不到的那条单独给原因，别的照常附图。
+    一次最多 6 个区域；超了会截断，并在回执里写明「还有 N 条没处理」。
+
     参数：
-      page  —— 页码。
+      page  —— 页码（单条老用法）。
       index —— ``figure_list`` 返回的 index（**不是**图号/表号）。
+      items —— 一批区域：``[{"page": 4, "index": 1}, …]``。与 page/index 一起给时合并去重。
     """
-    async def _impl():
-        raw, media = await ctx.deps.host.figure_image(ctx.deps.paper_id, int(page),
-                                                      int(index))
+    async def _one(one_page: int, one_index: int) -> dict:
+        raw, media = await ctx.deps.host.figure_image(ctx.deps.paper_id, int(one_page),
+                                                      int(one_index))
         if not raw:
-            return {"ok": False, "error": "取不到这个区域的裁图。"}
+            return {"page": one_page, "index": one_index, "ok": False,
+                    "error": "取不到这个区域的裁图。"}
         kind, number = "figure", ""
         try:                                   # 顺手取编号，让 ref 的标题写成"表 1"而不是"插图 #0"
-            data = await ctx.deps.host.figures(ctx.deps.paper_id, int(page))
+            data = await ctx.deps.host.figures(ctx.deps.paper_id, int(one_page))
             hit = next((i for i in (data.get("items") or [])
                         # ⚠️ 别写 `i.get("index") or -1`：序号 0 是 falsy，会被吃成 -1，
                         # 于是第 0 个区域永远匹配不上（踩过：表 1 的 ref 标题退回"图 #0"）
                         if i.get("index") is not None
-                        and int(i["index"]) == int(index)), None)
+                        and int(i["index"]) == int(one_index)), None)
             if hit:
                 kind = str(hit.get("kind") or "figure")
                 number = str(hit.get("number") or "")
         except Exception as exc:  # noqa: BLE001 —— 拿不到编号不影响看图
             log.debug("取区域编号失败（不影响看图）：%s", exc)
-        what = ("表 " if kind == "table" else "图 ") + (number or f"#{index}")
-        cit = ctx.deps.registry.assign(key=f"figure_img:{page}:{index}", kind=kind,
-                                       page=int(page),
+        what = ("表 " if kind == "table" else "图 ") + (number or f"#{one_index}")
+        cit = ctx.deps.registry.assign(key=f"figure_img:{one_page}:{one_index}", kind=kind,
+                                       page=int(one_page),
                                        # 图注行的行 id：前端点 `[n]` 闪到那一行
                                        row_id=_caption_rows(ctx.deps.paper_id,
-                                                           int(page)).get(number),
-                                       snippet=_clip(f"第 {page} 页 · {what}"),
-                                       label=f"第 {page} 页 · {what}")
-        note = f"已附上第 {page} 页的{what}（ref={cit.ref}）。"
-        return ToolReturn(return_value=note, content=[note,
-                          BinaryContent(data=raw, media_type=media or "image/png")])
+                                                           int(one_page)).get(number),
+                                       snippet=_clip(f"第 {one_page} 页 · {what}"),
+                                       label=f"第 {one_page} 页 · {what}")
+        return {"page": one_page, "index": one_index, "ok": True, "ref": cit.ref,
+                "what": what, "raw": raw, "media": media or "image/png"}
 
-    return await _guarded(ctx, "figure_image_get", {"page": page, "index": index}, _impl())
+    def _asked() -> list[tuple[int, int]]:
+        """page/index 与 items 合并去重：(page, index) 成对，顺序就是回执顺序。"""
+        pairs: list[tuple[int, int]] = []
+        if page is not None and index is not None:
+            pairs.append((int(page), int(index)))
+        for one in (items or []):
+            if not isinstance(one, dict):
+                continue
+            try:
+                pair = (int(one.get("page")), int(one.get("index")))
+            except (TypeError, ValueError):
+                continue
+            if pair not in pairs:
+                pairs.append(pair)
+        return pairs
+
+    async def _impl():
+        wanted = _asked()
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 page + index，或 items=[{page, index}, …] 一次看几个区域。"}
+        kept, left = _cap_batch(wanted, BATCH_FIGURE_MAX)
+        if items is None and len(wanted) == 1:
+            one_page, one_index = kept[0]
+            got = await _one(one_page, one_index)
+            if got.get("ok") is not True:
+                return {"ok": False, "error": got.get("error") or "取不到这个区域的裁图。"}
+            note = f"已附上第 {one_page} 页的{got['what']}（ref={got['ref']}）。"
+            return ToolReturn(return_value=note,
+                              content=[note,
+                                       BinaryContent(data=got["raw"],
+                                                     media_type=got["media"])])
+        lines: list[str] = []
+        content: list = []
+        done = failed = 0
+        for i, (one_page, one_index) in enumerate(kept, start=1):
+            try:
+                got = await _one(one_page, one_index)
+            except HostError as exc:
+                got = {"page": one_page, "index": one_index, "ok": False,
+                       "error": f"取数失败：{exc.message}"}
+            if got.get("ok") is True:
+                done += 1
+                lines.append(f"{i}. 第 {one_page} 页 · {got['what']}（ref={got['ref']}）")
+                content.append(BinaryContent(data=got["raw"], media_type=got["media"]))
+            else:
+                failed += 1
+                lines.append(f"{i}. 第 {one_page} 页 · 区域 #{one_index} —— 没取到："
+                             f"{got.get('error') or '取不到这个区域的裁图。'}")
+        head = f"已附上 {done} 个区域的裁图（序号与你给的 items 顺序一一对应）"
+        if left:
+            head = f"{head} {_left_note(left, BATCH_FIGURE_MAX, '条')}"
+        if failed:
+            head = (f"{head} 有 {failed} 条没取到（原因见那一条），别的照常附上 —— "
+                    f"只补失败的那几条。")
+        note = "\n".join([head, *lines])
+        return ToolReturn(return_value=note, content=[note, *content])
+
+    return await _guarded(ctx, "figure_image_get",
+                          {"page": page, "index": index, "items": list(items or [])},
+                          _impl())
 
 
 # --------------------------------------------------------------------------
@@ -799,7 +1125,8 @@ async def figure_image_get(ctx: RunContext[Deps], page: int, index: int):
 # --------------------------------------------------------------------------
 
 
-async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
+async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
+                    queries: list[str] | None = None) -> dict:
     """在整个知识库里检索（**不限当前论文**），返回候选位置与它属于哪篇论文。
 
     什么时候用：用户问"我库里还有谁讲过这个 / 有没有别的论文提到 X"，
@@ -809,18 +1136,23 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
     拿到结果后如果要读内容，用 `paper_id` + `page` 判断；当前这一篇可以直接用
     page_markdown_get，别的论文只能靠返回的片段说明，不要假装读过。
 
+    **一次可以查几个词**：`kb_search(queries=["random rotation", "QJL"])`。
+    回执按 query 分组（`groups`），顺序与你给的词一致；某一条失败只挂在那一条上。
+    一次最多 8 个词；超了会截断并写明「还有 N 条没处理」。
+
     参数：
-      query  —— 检索词。
-      top_k  —— 最多几条，默认 8，上限 12。
+      query   —— 单个检索词。
+      queries —— 一批检索词。与 query 一起给时按「query 在前、queries 在后」合并去重。
+      top_k   —— 每个词最多几条，默认 8，上限 12。
     """
-    async def _impl() -> dict:
+    async def _one(q: str) -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
-        cached = _cached(ctx, "kb_search", query, k)
+        cached = _cached(ctx, "kb_search", q, k)
         if cached is not None:
             return cached
         ctx.deps.count_search()
         before = len(ctx.deps.registry)
-        data = await ctx.deps.host.kb_search(query, top_k=k)
+        data = await ctx.deps.host.kb_search(q, top_k=k)
         items = []
         for raw in list(data.get("items") or [])[:ctx.deps.cfg.evidence_limit]:
             paper_id = str(raw.get("paper_id") or "")
@@ -847,9 +1179,9 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
                 "ref": cit.ref, "paper_id": paper_id, "paper_title": title,
                 "page": page, "section": section, "type": raw.get("chunk_type"),
                 "is_current_paper": paper_id == ctx.deps.paper_id,
-                "snippet": _snippet_around(raw.get("content") or "", str(query or "")),
+                "snippet": _snippet_around(raw.get("content") or "", str(q or "")),
             })
-        out = {"query": query, "returned": len(items), "items": items}
+        out = {"query": q, "returned": len(items), "items": items}
         if not items:
             out["hint"] = "整个知识库里都没有检索到相关内容。"
         elif len(ctx.deps.registry) == before:
@@ -859,11 +1191,32 @@ async def kb_search(ctx: RunContext[Deps], query: str, top_k: int = 8) -> dict:
                            "只有 is_current_paper=true 的条目能用 page_markdown_get 展开。")
         else:
             out["hint"] = "命中都来自当前论文，可以直接 page_markdown_get 展开。"
-        _remember(ctx, "kb_search", query, k, out)
+        _remember(ctx, "kb_search", q, k, out)
         return out
 
+    async def _impl() -> dict:
+        wanted, repeats = _text_list(query, queries)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 query 或 queries：queries=[\"词一\", \"词二\"] 一次查多个。"}
+        kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
+        if queries is None and len(wanted) == 1:
+            return await _one(kept[0])      # 老用法：单个词的回执结构一个字都不变
+        groups: list[dict] = []
+        for q in kept:
+            try:
+                groups.append(await _one(q))
+            except HostError as exc:
+                groups.append({"query": q, "ok": False, "returned": 0, "items": [],
+                               "error": f"取数失败：{exc.message}"})
+        return _grouped_receipt(
+            groups, wanted=len(wanted), left=left, repeats=repeats,
+            cap=BATCH_QUERY_MAX,
+            hint="每组查自己的词；跨库命中只能当线索，别假装读过那篇论文。")
+
     return await _guarded(ctx, "kb_search",
-                          {"query": _clip(query, 60), "top_k": top_k}, _impl())
+                          {"query": _clip(query, 60), "queries": list(queries or []),
+                           "top_k": top_k}, _impl())
 
 
 async def formula_get(ctx: RunContext[Deps], page: int | None = None,
@@ -1051,20 +1404,33 @@ async def paper_archive_get(ctx: RunContext[Deps]) -> dict:
     return await _guarded(ctx, "paper_archive_get", {}, _impl())
 
 
-async def library_list(ctx: RunContext[Deps], query: str | None = None) -> dict:
+async def library_list(ctx: RunContext[Deps], query: str | None = None,
+                       limit: int = 0) -> dict:
     """列出书架上的论文（按标题 / 作者模糊匹配），返回元数据。
 
     什么时候用：用户问"我库里有哪些关于 X 的论文 / 有没有讲过 Y 的文章"。
     这是**找论文**，不是找内容；挑出候选之后用 kb_search 去找具体段落。
 
+    **条数是有上限的**（默认 30 条、最多 50 条）：书架大起来一次列全就会把上下文吃光。
+    被砍掉的条数写在回执的 `unprocessed` 与 `note` 里（「还有 N 篇没列」），
+    不是静默丢 —— 要更多就换关键词缩小范围，或显式调大 `limit`。
+
     参数：
-      query —— 关键词（标题或作者）。不传就按最近阅读顺序列前 30 篇。
+      query —— 关键词（标题或作者）。不传就按最近阅读顺序列。
+      limit —— 最多列几篇（0 = 默认 30，上限 50）。
     """
     async def _impl() -> dict:
         ctx.deps.count_search()
         data = await ctx.deps.host.library(q=query)
+        raw_items = list(data.get("items") or [])
+        total = int(data.get("total") or 0) or len(raw_items)
+        cap = LIBRARY_LIST_DEFAULT if not limit else max(1, min(int(limit), LIBRARY_LIST_MAX))
+        cap = min(cap, LIBRARY_LIST_MAX)
+        shown, left = _cap_batch(raw_items, cap)
+        # 服务端自己也封顶 30 条：它砍掉的那些同样要算进「没列出来的条数」
+        left = max(left, total - len(shown))
         items = []
-        for raw in data.get("items") or []:
+        for raw in shown:
             paper_id = str(raw.get("paper_id") or "")
             meta = "，".join(x for x in (
                 str(raw.get("authors") or ""),
@@ -1084,16 +1450,21 @@ async def library_list(ctx: RunContext[Deps], query: str | None = None) -> dict:
                 "tags": list(raw.get("tags") or []),
                 "is_current_paper": paper_id == ctx.deps.paper_id,
             })
-        out = {"total": data.get("total"), "returned": len(items), "items": items}
+        out = {"total": total or None, "returned": len(items), "limit": cap,
+               "unprocessed": left, "items": items}
+        if left:
+            out["note"] = (f"还有 {left} 篇没列（一次最多 {cap} 篇）：换更窄的关键词，或者显式调大 limit（上限 50）。")
         if not items:
             out["hint"] = "书架上没有匹配的论文。可以换个关键词，或不带关键词看看全部。"
         return out
 
-    return await _guarded(ctx, "library_list", {"query": _clip(query or "", 40)}, _impl())
+    return await _guarded(ctx, "library_list",
+                          {"query": _clip(query or "", 40), "limit": limit}, _impl())
 
 
 async def notes_search(ctx: RunContext[Deps], query: str | None = None,
-                       scope: str = "paper", kind: str = "all") -> dict:
+                       scope: str = "paper", kind: str = "all",
+                       queries: list[str] | None = None) -> dict:
     """检索用户自己的笔记 / 高亮 / 批注（第一人称证据）。
 
     什么时候用：用户问"我之前记过什么 / 我标注过哪里 / 我的笔记里怎么说的"。
@@ -1103,18 +1474,23 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
     `selected_text`（用户**选中的原文**）与 `note`（用户**写的正文**）两个字段 ——
     引用时别把 `selected_text` 当成用户说的话，那是论文的句子；用户说的话在 `note` 里。
 
+    **一次可以查几个关键词**：`notes_search(queries=["量化误差", "KL 散度"])`。
+    回执按 query 分组（`groups`），顺序与你给的词一致；某一条失败只挂在那一条上。
+    一次最多 8 个词；超了会截断并写明「还有 N 条没处理」。
+
     参数：
-      query —— 关键词（**选中文本**与**笔记正文**都参与过滤，模糊匹配、大小写不敏感）。
-               `kind="all"` 时不该有"与关键词无关的高亮"混进结果里、把命中的笔记挤掉。
+      query   —— 关键词（**选中文本**与**笔记正文**都参与过滤，模糊匹配、大小写不敏感）。
+                 `kind="all"` 时不该有"与关键词无关的高亮"混进结果里、把命中的笔记挤掉。
+      queries —— 一批关键词。与 query 一起给时按「query 在前、queries 在后」合并去重。
       scope —— ``paper``（默认，只看当前论文）｜``all``（整个库）。
       kind  —— ``all``（默认）｜``notes``（只要笔记正文）｜``highlights``（只要高亮）｜
                ``annotations``（AI 批注）。`note` 为空 = 这条高亮上**没写过笔记**，
                不是"笔记正文丢了"。
     """
-    async def _impl() -> dict:
+    async def _one(q: str) -> dict:
         paper_id = None if scope == "all" else ctx.deps.paper_id
         ctx.deps.count_search()
-        data = await ctx.deps.host.notes(query=query, paper_id=paper_id, kind=kind)
+        data = await ctx.deps.host.notes(query=q, paper_id=paper_id, kind=kind)
         items = []
         for raw in data.get("items") or []:
             pid = str(raw.get("paper_id") or "")
@@ -1138,7 +1514,8 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
                 "note_id": str(raw.get("note_id") or raw.get("id") or ""),
                 "tags": list(raw.get("tags") or []),
             })
-        out = {"scope": scope, "kind": kind, "returned": len(items), "items": items}
+        out = {"query": q, "scope": scope, "kind": kind, "returned": len(items),
+               "items": items}
         if not items:
             out["hint"] = "没有找到匹配的笔记 / 高亮 / 批注。"
         elif kind != "notes" and all(not one["note"] for one in items):
@@ -1149,9 +1526,49 @@ async def notes_search(ctx: RunContext[Deps], query: str | None = None,
                            "kind='notes'；`query` 会同时过滤选中原文与笔记正文。")
         return out
 
+    async def _impl() -> dict:
+        nonlocal scope, kind
+        scope = str(scope or "paper").strip().lower()
+        kind = str(kind or "all").strip().lower()
+        wrong = [f"{field}={value!r}" for field, value, allowed in
+                 (("scope", scope, NOTES_SCOPES), ("kind", kind, NOTES_KINDS))
+                 if value not in allowed]
+        if wrong:
+            # 闭集校验（2026-12）：以前拼错**静默降级**，模型以为查了全库、其实只有本篇，
+            # 接着就断言"你库里没有别的论文讲过" —— 比报错坏得多。
+            return {"ok": False,
+                    "error": (f"{'、'.join(wrong)} 不是合法取值。"
+                              f"scope 只能是 {'/'.join(NOTES_SCOPES)}；"
+                              f"kind 只能是 {'/'.join(NOTES_KINDS)}。"
+                              "按上面的写法重发一次，不要自己发明取值。"),
+                    # 回显"旧实现会当成什么"：模型据此看出自己那句自信的话从哪来
+                    "effective_scope": scope if scope in NOTES_SCOPES else "paper",
+                    "effective_kind": kind if kind in NOTES_KINDS else "all",
+                    "returned": 0, "items": []}
+        wanted, repeats = _text_list(query, queries)
+        if not wanted:
+            # 不给关键词是**合法**用法（看最近的那些）：批量模式下只允许空清单时给一句说明，
+            # 单条模式仍按老样子把 None 传给后端。
+            wanted = [""]
+        kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
+        if queries is None and len(wanted) == 1:
+            return await _one(kept[0] or None)      # 老用法：回执结构一个字都不变
+        groups: list[dict] = []
+        for q in kept:
+            try:
+                groups.append(await _one(q or None))
+            except HostError as exc:
+                groups.append({"query": q, "ok": False, "returned": 0, "items": [],
+                               "error": f"取数失败：{exc.message}"})
+        return _grouped_receipt(
+            groups, wanted=len(wanted), left=left, repeats=repeats,
+            cap=BATCH_QUERY_MAX,
+            hint=("每组查自己的关键词；`note` 是用户写的，`selected_text` 是论文的句子，"
+                  "别读反。"))
+
     return await _guarded(ctx, "notes_search",
                           {"query": _clip(query or "", 40), "scope": scope,
-                           "kind": kind}, _impl())
+                           "kind": kind, "queries": list(queries or [])}, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -1206,7 +1623,7 @@ async def page_markdown_edit(ctx: RunContext[Deps], op: str, page: int = 0, side
       replace —— 改成什么（空串 = 删除这一处）。
       reason —— 一句话说明为什么改（写进改动日志，便于用户回看）。
       pages  —— 只有 op="replace_all" 用：页码范围 ``"4,7"`` / ``"4-7"`` / ``"all"``。
-                `side` 可以给 ``"both"``（两侧一起改）。最多 24 处（页 × 侧）一次。
+                `side` 可以给 ``"both"``（两侧一起改）。最多 60 处（页 × 侧）一次 —— 与 `EDIT_BATCH_MAX` 同口径（一篇 30 页的论文两侧一起改刚好装得下，再多要分批）。
     """
     async def _impl() -> dict:
         page_no = int(page or 0)
@@ -1378,9 +1795,14 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
     """
     async def _impl() -> dict:
         if ctx.deps.meta_submitted:
-            return {"ok": False,
-                    "error": "元数据已经提交过一次了。要改哪一项就把它带上一起重发一次；"
-                             "不要分多次提交（那会让后面的判断和前面写下的互相矛盾）。"}
+            # 文案以前说"带上要改的一起重发" —— 而这一段就是拒掉重发的代码，重发必被拒。
+            # 真话是：主后端只**填空字段**（api/agent.py 的 overwrite=False），已有值的字段
+            # 重发也写不进去，所以这里明说"不能再改"，并把已经生效的字段回给模型，
+            # 让它据实向用户交代，而不是假装改了。
+            return {"ok": False, "applied": dict(ctx.deps.meta_applied),
+                    "error": "元数据本次会话已经提交并落库了，**不能再改**（主后端只填空字段，"
+                             "已有值的字段再提交一次也会被跳过）。下面 applied 里是真正写进去的字段；"
+                             "要改这些值，请让用户自己在论文设置里编辑。"}
         payload: dict = {}
         if str(venue or "").strip():
             payload["venue"] = str(venue).strip()
@@ -1429,8 +1851,11 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
     三面各有各的位置模型（正文行 / Markdown 视图 / 原 PDF 页图）—— 你只需要给
     `anchor`（哪一面）+ `text`（要标的**原文**），偏移量由宿主算，不要自己编数字。
 
-    ⚠️ **默认标在"正文行"那一面**：用户读的对照 / 译文视图画的就是它。**但行 id 你拿不到** ——
-    `page_markdown_get` / `block_get` 的返回里都没有 `row_id`，**不要自己编 `p009-08` 这种**。
+    ⚠️ **默认标在"正文行"那一面**：用户读的对照 / 译文视图画的就是它。
+    **行 id 只有一处拿得到**：`figure_list` 回执里每条图形的 `anchor`（= 图注所在行的
+    行 id，如 `p008-02`），把它**原样**传进来就是最准的锚点。
+    其它读页工具的返回里**没有**行 id（`page_markdown_get` / `block_get` 都没有 `row_id`）——
+    **不要自己编 `p009-08` 这种**；没有 `anchor` 时给 `md:pN`。
     给 `md:pN`：宿主会**尽量把它挪到这一页对应的正文行**上（见 `annotations.py` 的
     `locate_in_rows`），挪不动才留在 Markdown 面；`md:pN` 的高亮只在 Markdown 视图里出现，
     用户在你面前看不到（实测被报过"高亮没出现"）。原 PDF 那面服务端算不出偏移量（文字层在前端）。
@@ -1778,8 +2203,9 @@ def _need_content_slot(need_content: bool | None) -> int:
     return 2 if need_content else 1
 
 
-async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None,
-                     need_content: bool | None = None, question: str = "") -> dict:
+async def web_search(ctx: RunContext[Deps], query: str = "", count: int | None = None,
+                     need_content: bool | None = None, question: str = "",
+                     queries: list[str] | None = None) -> dict:
     """联网搜索公开网页（DeepSeek 官方搜索），返回标题 / 链接 / 站点 / 摘要。
 
     什么时候用：问题问的是**论文之外**的公开信息 —— 某个方法的官方文档或开源实现、
@@ -1787,23 +2213,31 @@ async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None
     "上网查一下"。需要论文里的论断时**不要**用它：那是 paper_search / kb_search 的活，
     网页不是论文原文。
 
+    **一次可以查几件事**（每个 query 仍只查一件事，只是不必来回几次）：
+
+        web_search(queries=['site:arxiv.org "TurboQuant"', "TurboQuant github"])
+
+    回执**按 query 分组**（`groups`），顺序与你给的词一致。一次最多 8 个词：超了会截断并
+    写明「还有 N 条没处理」。某一条失败只在那一条上给 `ok=false` + 原因，别的照常返回。
+
     参数：
-      query  —— 搜索词。支持 `site:arxiv.org`（限站）、`-site:csdn.net`（排除）、
-                `"精确短语"`、`after:2025-01-01`（限时间）这些语法；多个站点用 `OR` 连接。
-                一次只查一件事，别把好几个问题塞进一个 query。
-      count  —— 要几条，1~50。不传就用设置里的默认（现在是 8）。
+      query   —— 搜索词。支持 `site:arxiv.org`（限站）、`-site:csdn.net`（排除）、
+                 `"精确短语"`、`after:2025-01-01`（限时间）这些语法；多个站点用 `OR` 连接。
+                 **一个 query 只查一件事**，别把好几个问题塞进一个 query。
+      queries —— 一批搜索词（不同的事分开放这里）。与 query 一起给时合并去重。
+      count   —— 每个词要几条，1~50。不传就用设置里的默认（现在是 8）。
       need_content —— 是否让每条结果带上网页正文。不传就用设置里的默认（现在是只取摘要）：
                 正文动辄上万字，只想看某一篇时用 web_fetch 更省。
       question —— 触发这次搜索的用户原话，帮搜索引擎理解意图；一般值得填。
     """
-    async def _impl() -> dict:
+    async def _one(q: str) -> dict:
         key = int(count or 0) * 3 + _need_content_slot(need_content)
-        cached = _cached(ctx, "web_search", query, key)
+        cached = _cached(ctx, "web_search", q, key)
         if cached is not None:
             return cached
         ctx.deps.count_search()
         data = await ctx.deps.host.web_search(
-            query, count=count, need_content=need_content, ori_question=question)
+            q, count=count, need_content=need_content, ori_question=question)
         items = []
         for raw in data.get("results") or []:
             item = {
@@ -1818,7 +2252,7 @@ async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None
             if raw.get("content"):
                 item["content"] = _clip(raw["content"], WEB_CONTENT_CHARS)
             items.append(item)
-        out = {"query": query, "provider": data.get("provider"),
+        out = {"query": q, "provider": data.get("provider"),
                "returned": len(items), "items": items}
         if not items:
             out["hint"] = ("没有搜到结果：换一组关键词（去掉 `site:` 限制、少用引号）再试一次；"
@@ -1827,38 +2261,68 @@ async def web_search(ctx: RunContext[Deps], query: str, count: int | None = None
             out["hint"] = ("这些是**外部网页**，不是论文里的材料：回答里引用它们必须写"
                            "`[标题](链接)` 并带上站点名；要看某一篇的正文就说清是哪一条、"
                            "用 web_fetch 读，不要拿摘要冒充读过全文。")
-        _remember(ctx, "web_search", query, key, out)
+        _remember(ctx, "web_search", q, key, out)
         return out
 
+    async def _impl() -> dict:
+        wanted, repeats = _text_list(query, queries)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 query 或 queries：queries=[\"第一件事\", \"第二件事\"] 一次搜几件。"}
+        kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
+        if queries is None and len(wanted) == 1:
+            return await _one(kept[0])      # 老用法：单个词的回执结构一个字都不变
+        groups: list[dict] = []
+        for q in kept:
+            try:
+                groups.append(await _one(q))
+            except HostError as exc:
+                groups.append({"query": q, "ok": False, "returned": 0, "items": [],
+                               "error": f"取数失败：{exc.message}"})
+        return _grouped_receipt(
+            groups, wanted=len(wanted), left=left, repeats=repeats,
+            cap=BATCH_QUERY_MAX,
+            hint="每组是那个词的结果；引用时必须写 `[标题](链接)` + 站点名。")
+
     return await _guarded(ctx, "web_search", {
-        "query": _clip(query, 60), "count": count,
+        "query": _clip(query, 60), "queries": list(queries or []), "count": count,
     }, _impl())
 
 
-async def web_fetch(ctx: RunContext[Deps], url: str, max_chars: int | None = None) -> dict:
-    """把一个网页抓成 Markdown 正文（DeepSeek 官方抓取），按需读全文。
+async def web_fetch(ctx: RunContext[Deps], url: str = "", max_chars: int | None = None,
+                    urls: list[str] | None = None) -> dict:
+    """把一个网页（或**一批网页**）抓成 Markdown 正文（DeepSeek 官方抓取），按需读全文。
 
     什么时候用：web_search 的结果里有一条看起来正是你要的依据、摘要不够判断；
-    或者用户直接给了一个链接让你看内容。**一次只抓真正要看的那一两篇** —— 抓回来的
-    正文很占上下文，抓五篇等于把前面的材料全挤掉。
+    或者用户直接给了一个链接让你看内容。
+
+    **一次可以抓几篇**（抓回来的正文很占上下文，所以上限比别的批量工具更紧）：
+
+        web_fetch(urls=["https://a.example/x", "https://b.example/y"])
+
+    批量时是**并发**抓的（最多 3 篇同时、每篇 25 秒超时）—— 串行会让一次调用把整个回合
+    拖死。回执按你给的顺序逐条对应（每条带自己的 `url`）；某一条打不开只在那一条上给
+    `ok=false` + 原因，别的照常返回。一次最多 6 条；超了会截断并写明「还有 N 条没处理」。
+    `total_chars` 会告诉你这批一共抓回来多少字 —— 太多就该只留真正要看的那几篇。
 
     不要抓：搜索结果页、站点首页、要登录才能看的地址（会报抓不到）。
 
     参数：
-      url       —— 完整的 http/https 地址（web_search 返回的 url 原样传即可）。
-      max_chars —— 正文最多保留多少字符。不传就用设置里的默认（现在是 6000）；
+      url       —— 单个完整的 http/https 地址（web_search 返回的 url 原样传即可）。
+      urls      —— 一批地址。与 url 一起给时按「url 在前、urls 在后」合并去重。
+      max_chars —— 每篇正文最多保留多少字符。不传就用设置里的默认（现在是 6000）；
                    超出部分会被丢掉，返回里 truncated=true。
     """
-    async def _impl() -> dict:
+    async def _one(one_url: str) -> dict:
         key = int(max_chars or 0)
-        cached = _cached(ctx, "web_fetch", url, key)
+        cached = _cached(ctx, "web_fetch", one_url, key)
         if cached is not None:
             return cached
         ctx.deps.count_search()
-        data = await ctx.deps.host.web_fetch(url, max_chars=max_chars)
+        data = await ctx.deps.host.web_fetch(one_url, max_chars=max_chars)
         content = str(data.get("content") or "")
         out = {
-            "url": data.get("url") or url,
+            "url": data.get("url") or one_url,
             "title": data.get("title") or "",
             "chars": len(content),
             "truncated": bool(data.get("truncated")),
@@ -1873,11 +2337,63 @@ async def web_fetch(ctx: RunContext[Deps], url: str, max_chars: int | None = Non
         else:
             out["hint"] = ("这是**外部网页**的内容，不是论文原文：引用时给 markdown 链接 + 站点名；"
                            "论文里的论断仍然要引用论文里的材料。")
-        _remember(ctx, "web_fetch", url, key, out)
+        _remember(ctx, "web_fetch", one_url, key, out)
+        return out
+
+    async def _impl() -> dict:
+        wanted, repeats = _text_list(url, urls)
+        if not wanted:
+            return {"ok": False,
+                    "error": "要给 url 或 urls：urls=[\"https://a\", \"https://b\"] 一次抓几篇。"}
+        kept, left = _cap_batch(wanted, BATCH_URL_MAX)
+        if urls is None and len(wanted) == 1:
+            return await _one(kept[0])      # 老用法：单篇回执结构一个字都不变
+        #: 并发抓：上限 3 篇同时 + 每篇一个超时。串行 6 篇 × 后端几十秒 = 回合被拖死。
+        gate = asyncio.Semaphore(BATCH_URL_CONCURRENCY)
+
+        async def _guarded_one(one_url: str) -> dict:
+            async with gate:
+                try:
+                    return await asyncio.wait_for(_one(one_url), WEB_FETCH_TIMEOUT)
+                except asyncio.TimeoutError:
+                    return {"url": one_url, "ok": False, "returned": 0, "items": [],
+                            "error": f"抓取超时（超过 {int(WEB_FETCH_TIMEOUT)} 秒）："
+                                     "这一篇单独放弃，别的照常。"}
+                except HostError as exc:
+                    return {"url": one_url, "ok": False, "returned": 0, "items": [],
+                            "error": f"取数失败：{exc.message}"}
+                except Exception as exc:  # noqa: BLE001 —— 一条坏不能拖垮整批
+                    return {"url": one_url, "ok": False, "returned": 0, "items": [],
+                            "error": f"工具内部错误：{type(exc).__name__}: {exc}"[:200]}
+
+        rows = list(await asyncio.gather(*[_guarded_one(one) for one in kept]))
+        # 顺序与输入对齐：asyncio.gather 保序，这里只是把结构摆成「按条对应」
+        failed = [row for row in rows if row.get("ok") is False]
+        got = [row for row in rows if row.get("ok") is not False]
+        total_chars = sum(int(row.get("chars") or 0) for row in got)
+        tips: list[str] = []
+        if left:
+            tips.append(_left_note(left, BATCH_URL_MAX, "条"))
+        if repeats:
+            tips.append(f"重复的 {repeats} 条已合并。")
+        if total_chars > WEB_CONTENT_CHARS * BATCH_URL_MAX:
+            tips.append(f"这批一共 {total_chars} 字，很占上下文：只留真正要看的那几篇，"
+                        "其余按标题 + 链接引用即可。")
+        if failed:
+            tips.append("打不开的那几条在 items 里带 ok=false 与原因，别的照常返回 —— "
+                        "只补那几条，不要整批重来。")
+        out = {"requested": len(wanted), "urls": kept,
+               "returned": len(got), "failed": len(failed),
+               "unprocessed": left, "total_chars": total_chars, "items": rows}
+        if tips:
+            out["note"] = " ".join(tips)
+        out["hint"] = ("每一条都要按 `[标题](链接)` + 站点名引用；批量抓回来的正文很长，"
+                       "写回答时只挑支撑论断的那几句。")
         return out
 
     return await _guarded(ctx, "web_fetch", {
-        "url": _clip(url, 120), "max_chars": max_chars,
+        "url": _clip(url, 120), "urls": [_clip(u, 120) for u in list(urls or [])][:6],
+        "max_chars": max_chars,
     }, _impl())
 
 

@@ -296,7 +296,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="card">
+  <section class="rag-card">
     <div class="card-head">
       <AppIcon name="sliders" :size="15" />检索配置
       <span class="spacer"></span>
@@ -412,14 +412,21 @@ onMounted(() => {
 
 <style scoped>
 /* 只用 tokens.css 的变量：这里写死任何一个色值，深浅两套皮肤就会当场露馅。 */
-/* 卡体既是这张卡的宽度锚点（容器查询量的是"这块地方有多宽"，不是视口有多宽），
-   也是纵向节奏：上下 12 → 10、行距 10 → 8 —— 这张卡要压到 340 以内。 */
+.rag-card { min-width: 0; }
+/* 标题行在淡底**之外**：透明、不留发丝线，分隔交给下面那条淡色圆角底。 */
+.rag-card .card-head { border-bottom: 0; }
+
+/* 卡体既是这块的宽度锚点（容器查询量的是"这块地方有多宽"，不是视口有多宽），
+   也是纵向节奏：上下 12 → 10、行距 10 → 8 —— 这张卡要压到 340 以内。
+   它同时就是那条淡色圆角底本身（--bg-sunken + --r-sm）：标题在外，淡底只垫内容。 */
 .cfg-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 10px;
   container-type: inline-size;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
 }
 
 /* 两栏 / 单栏只由卡体宽度决定：≥820 并排，更窄就上下堆叠（组与组之间仍有一条 divider）。 */

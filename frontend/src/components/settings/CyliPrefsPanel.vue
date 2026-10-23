@@ -188,6 +188,7 @@ const SKILL_NAME_ZH: Record<string, string> = {
   'read-formula': '公式提取',
   'annotate-text': '标注与笔记',
   'read-page-image': '整页原图',
+  'search-paper': '论文检索',
   'summarize-paper': '全文导读',
   'answer-paper': '论文问答',
   'explain-term': '术语与译法',
@@ -216,7 +217,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 skills，就地 sort 会打乱那份引用。 */
 const SKILL_ORDER = [
   'web-search', 'web-fetch',
-  'summarize-paper', 'answer-paper',
+  'search-paper', 'summarize-paper', 'answer-paper',
   'read-text', 'read-page-image', 'read-figure', 'read-formula',
   'explain-term', 'annotate-text', 'edit-text',
 ];

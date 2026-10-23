@@ -33,6 +33,7 @@ import { api } from '@/api/client';
 import { loadPapers, paperTitle, state } from '@/stores/app';
 import { openTab } from '@/stores/tabs';
 import type { Note, Paper } from '@/api/types';
+import { noteBodyText } from '@/utils/noteRefs';
 
 const router = useRouter();
 
@@ -105,7 +106,8 @@ const paperRows = computed<ListRow[]>(() => recentRead.value.slice(0, 4).map((p)
 const noteRows = computed<ListRow[]>(() => notes.value.slice(0, 4).map((n) => ({
   id: n.id,
   title: n.paper_title || paperTitle(n.paper_id) || '（未知论文）',
-  sub: plain(n.content_md) || plain(n.selected_text) || '',
+  // 摘要只该是正文：末尾那行 `<!-- refs:[…] -->` 是跳转表，印出来就是一堆 JSON
+  sub: plain(noteBodyText(n.content_md)) || plain(n.selected_text) || '',
   time: relTime(n.created_at),
 })));
 

@@ -384,14 +384,22 @@ def _note_dict(row: Note) -> dict:
 
 
 def list_annotations(paper_id: str, *, type_: str | None = None,
-                     user_id: int = 1) -> dict:
+                     user_id: int = 1, q: str | None = None) -> dict:
+    """某篇论文的 AI 批注；`q` 按**批注正文**（`content_md`）过滤。
+
+    `q` 与 `list_notes` / `list_highlights` 的 `q` 同一写法（模糊匹配、大小写不敏感）。
+    为什么补：库级笔记检索（`project.notes`）带关键词时，批注那一支以前**没有**这个参数 ——
+    查询被静默丢掉，于是问「我关于 KL 的批注」回来的是**全部批注**，模型把无关条目当命中引用。
+    """
     with session_scope() as sess:
-        q = sess.query(Annotation).filter(Annotation.paper_id == paper_id,
-                                          Annotation.user_id == user_id,
-                                          Annotation.status == "active")
+        query = sess.query(Annotation).filter(Annotation.paper_id == paper_id,
+                                              Annotation.user_id == user_id,
+                                              Annotation.status == "active")
         if type_:
-            q = q.filter(Annotation.type == type_)
-        rows = q.order_by(Annotation.created_at.asc()).all()
+            query = query.filter(Annotation.type == type_)
+        if q:
+            query = query.filter(Annotation.content_md.like(f"%{q}%"))
+        rows = query.order_by(Annotation.created_at.asc()).all()
         return {"items": [_annotation_dict(r) for r in rows], "count": len(rows)}
 
 
