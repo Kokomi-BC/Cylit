@@ -24,6 +24,7 @@ import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
 import { BRAND_ICON } from '@/utils/brand';
+import { BUILTIN_EFFORTS } from '@/utils/reasoning';
 import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentModelPick,
@@ -281,9 +282,9 @@ const SUB_H = 250;
 /** 这条会话单独选的值（空串 = 跟随默认，后端存 NULL） */
 const pick = ref<AgentModelPick>({ model_config_id: '', reasoning_effort: '' });
 const savingPick = ref(false);
-/** 内置档位（模型没配 reasoning_levels 时用），**由低到高**排好：off < low < medium < high < max。
- *  两端是用户口径 2026-11-26 补的：关掉推理、以及比 high 更狠的一档。 */
-const EFFORT_PRESETS = ['off', 'low', 'medium', 'high', 'max'];
+/** 内置档位（模型没配 reasoning_levels 时用），**由低到高**排好；一份在 utils/reasoning，
+ *  模型表单「填入内置档位」与 Agent 设置里的解释档共用它，别在这里再抄一份。 */
+const EFFORT_PRESETS = [...BUILTIN_EFFORTS];
 
 const modelReadonly = computed(() => modelOptions.value.length === 0);
 /** 真正生效的模型：本会话选的那条 → 该类型默认那条；都没有就是 `/agent/status` 的回落 */

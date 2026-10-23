@@ -29,6 +29,7 @@ import { reportError, toast } from '@/stores/app';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
+import { BUILTIN_EFFORTS, EFFORT_VALUE_PLACEHOLDER } from '@/utils/reasoning';
 import type { KeyRow, ProviderRow } from './modelTypes';
 
 const props = withDefaults(defineProps<{
@@ -506,7 +507,6 @@ watch(() => props.busy, (now, before) => {
 /* ---------------------------- 高级配置（默认折叠） ---------------------------- */
 
 const advanced = ref(false);
-const BUILTIN_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
 const deviceValue = ref('');
 const timeoutValue = ref('');
 
@@ -602,7 +602,7 @@ function moveLevel(i: number, delta: number): void {
 }
 
 function fillBuiltinLevels(): void {
-  levels.value = BUILTIN_LEVELS.map((v) => ({ value: v, desc: '' }));
+  levels.value = BUILTIN_EFFORTS.map((v) => ({ value: v, desc: '' }));
 }
 
 const levelValues = computed<string[]>(() => {
@@ -620,8 +620,8 @@ function levelError(): string {
   const seen = new Set<string>();
   for (let i = 0; i < levels.value.length; i += 1) {
     const v = levels.value[i].value.trim();
-    if (!v) return '推理等级第 ' + String(i + 1) + ' 行还没填值';
-    if (seen.has(v)) return '推理等级「' + v + '」重复了，同一模型内的值要唯一';
+    if (!v) return '推理强度第 ' + String(i + 1) + ' 行还没填值';
+    if (seen.has(v)) return '推理强度「' + v + '」重复了，同一模型内的值要唯一';
     seen.add(v);
   }
   return '';
@@ -1262,10 +1262,13 @@ const advSummary = computed<string>(() => {
         </label>
         <p class="hint-line">{{ isDefaultHint }}</p>
 
-        <div class="reasoning" v-if="form.model_type === 'agent'">
+        <!-- 推理强度**每个走 chat/completions 的模型都该能自己定**（生成 / 问答 / 视觉读页）：
+             厂商档位名并不统一（minimal…high、off、甚至 xhigh），所以档位逐模型配 ——
+             embedding / reranker 没有推理这回事，不给它们这块。 -->
+        <div class="reasoning" v-if="['generation', 'agent', 'vision'].includes(form.model_type)">
           <button type="button" class="adv-toggle" @click="advanced = !advanced">
             <AppIcon :name="advanced ? 'chevron-up' : 'chevron-down'" :size="14" />
-            <span>推理等级（问答模型专属）</span>
+            <span>推理强度（该模型支持的档位）</span>
             <span class="spacer"></span>
             <span class="tiny faint">{{ levels.length ? levels.length + ' 档' : '未配置' }}</span>
           </button>
@@ -1273,7 +1276,7 @@ const advSummary = computed<string>(() => {
             <p class="err-line" v-if="paramsBroken">{{ paramsBroken }}</p>
             <template v-else>
               <div class="lv-row" v-for="(r, i) in levels" :key="i">
-                <input v-model="r.value" class="mono" placeholder="值，如 high" />
+                <input v-model="r.value" class="mono" :placeholder="EFFORT_VALUE_PLACEHOLDER" />
                 <input v-model="r.desc" placeholder="说明（可空）" />
                 <button type="button" class="btn icon sm ghost" title="上移" :disabled="i === 0" @click="moveLevel(i, -1)">
                   <AppIcon name="chevron-up" :size="14" />
@@ -1287,7 +1290,7 @@ const advSummary = computed<string>(() => {
               </div>
               <div class="lv-foot">
                 <button type="button" class="btn sm ghost" @click="addLevel"><AppIcon name="add" :size="14" />添加档位</button>
-                <button type="button" class="btn sm ghost" @click="fillBuiltinLevels">填入内置三档</button>
+                <button type="button" class="btn sm ghost" data-fill-levels @click="fillBuiltinLevels">填入内置档位</button>
               </div>
               <label class="field">默认档
                 <select v-model="defaultLevel">

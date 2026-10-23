@@ -11123,3 +11123,33 @@ html[data-hl-style="underline"] mark.hl {
 - 正文字体 → 宋体衬线：样例 `font-family` 变 `"Source Han Serif SC", "Noto Serif CJK SC", …`；
   「论文」标签、摘要/方法/实验、两枚按钮仍是 UI 无衬线（截图核对）。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+### 107. 第一百零七轮：推理强度改成「每个模型自己定」，内置档补上 xhigh
+
+用户口径：「每个模型支持自定义的模型推理强度（比如有些是 xhigh）」。
+
+底子其实已经有了：`parameters.reasoning_levels = [{value, desc}]` 是**逐模型**存的，
+阅读器聊天（`ReaderChat`）和 Agent 设置的解释档都按它出候选。缺的是三处：
+
+- 模型表单里那块**只对 `agent` 类型显示**（`v-if="form.model_type === 'agent'"`），
+  可 `providers/generation/openai_compatible.py` 对**生成模型**同样发 `reasoning_effort` ——
+  于是「文本生成」「视觉读页」这两个 4o/思考模式的模型根本没地方配档位。
+  现在放给 `generation / agent / vision`（embedding / reranker 没有推理这回事，仍然不给）。
+- 内置档位三处各抄一份 `['off','low','medium','high','max']`，加一档要改三处。
+  抽成 `utils/reasoning.ts` 的 `BUILTIN_EFFORTS`，并且补上 **`minimal`** 与 **`xhigh`**
+  （由低到高：off < minimal < low < medium < high < xhigh < max）—— 这正是用户说的那种档位。
+- 文案：「推理等级（问答模型专属）」→「推理强度（该模型支持的档位）」；按钮「填入内置三档」
+  （其实一直是五档）→「填入内置档位」；输入框占位符改成「值，如 xhigh」。
+
+口径没变：模型自己配了 `reasoning_levels` 就以它为准，没配才用内置那七档；
+会话里选的值仍然**原样透传**给厂商（不校验、不映射，各家档位名不统一）。
+
+**验证（真浏览器 + 真后端，1400×1000）**
+
+- 「文本生成」那条 DeepSeek 模型进编辑 → 第 4 步出现「推理强度（该模型支持的档位）」，
+  展开点「填入内置档位」→ 七行 `off / minimal / low / medium / high / xhigh / max`。
+- 走完向导点保存：`PUT /models/<id>` 200，`GET` 回读
+  `parameters.reasoning_levels` 正好那七条；**单价与币种没被这次保存清掉**（仍是 null）。
+- Agent 设置里「思考强度」下拉（该问答模型没有自带档位 → 走内置）出现
+  `跟随模型 / off / minimal / low / medium / high / xhigh / max`。
+- 测完把那条模型的 `parameters` **还原**成原来的四个键（回读确认）。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。

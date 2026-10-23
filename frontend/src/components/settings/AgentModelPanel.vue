@@ -35,6 +35,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { api, downloadBlob } from '@/api/client';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
+import { BUILTIN_EFFORTS } from '@/utils/reasoning';
 import type {
   AgentLimits, AgentLimitsPatch, AgentSkill, AgentSkillsPayload, AgentSkillsUploadResult,
   SettingsPayload, WebsearchConfig, WebsearchVerifyResult,
@@ -408,8 +409,7 @@ interface ExplainModelOption {
   parameters?: { reasoning_effort?: string; reasoning_levels?: unknown };
 }
 
-/** 内置思考档（与对话页那套同一份）；模型自带 reasoning_levels 时以它为准 */
-const BUILTIN_EFFORTS = ['off', 'low', 'medium', 'high', 'max'];
+/* 内置思考档与对话页、模型表单共用 utils/reasoning 那一份；模型自带 reasoning_levels 时以它为准。 */
 
 const explainModels = ref<ExplainModelOption[]>([]);
 const explainModel = ref('');
@@ -426,7 +426,7 @@ const explainEffortOptions = computed<string[]>(() => {
       .filter(Boolean);
     if (list.length) return list;
   }
-  return BUILTIN_EFFORTS;
+  return [...BUILTIN_EFFORTS];
 });
 /** 该模型自己配的那一档：选「跟随模型」时它说了算，界面上要写出来 */
 const explainModelDefaultEffort = computed(() => {
