@@ -161,9 +161,39 @@ const typeGroups = computed<TypeGroup[]>(() => {
 
 /* ---------------------------- 状态 / 密钥来源 ----------------------------
  * 一个模型的状态要能立刻分三种：正常 / 未配置密钥 / 连接异常（外加"还没测过"这个中性态）。
- * has_secret === false 来自后端，比 status 更早能看出"这把钥匙还没填"。 */
+ *
+ * 判定的**唯一真源是 `key_source`**（后端已经把「跟随提供方默认密钥 / 独立指定 / 无需密钥」
+ * 三种来源合并算完），不能再看老字段 `has_secret`：老字段只回答"有没有自己的 secret_ref"，
+ * 于是「跟随提供方默认密钥」（secret_ref=null）会被误判成"没配密钥" —— 同一张卡上就会
+ * 一边橙字「未配置密钥」一边写「密钥来源：提供方默认」，自相矛盾。
+ * `has_secret` 只在**后端没返回 key_source**（老接口）时兜底。 */
+
+/** 密钥状态：ok / missing / invalid；null = 后端没说（或占位模型，不该报密钥问题）。 */
+function keyStateOf(m: ModelRow): 'ok' | 'missing' | 'invalid' | null {
+  if (m?.is_mock) return null;                    // 占位模型一律不报密钥问题
+  const ks = m?.key_source;
+  if (ks && typeof ks === 'object') {
+    const s = String(ks.status || '').toLowerCase();
+    if (s === 'invalid') return 'invalid';        // 契约里只出现在 mode==='key'（独立指定的那把失效/被删）
+    if (s === 'missing') return 'missing';
+    if (s === 'ok') return 'ok';
+    return 'ok';                                  // key_source 在但状态缺省：不冤枉用户
+  }
+  /* 老接口：没有 key_source，只能回落到 has_secret 这个旧字段 */
+  return m?.has_secret === false ? 'missing' : null;
+}
+
+/** 密钥问题（没有就是 null）：优先级高于连接状态 —— 它更能解释"为什么这个模型用不了"。 */
+function keyProblem(m: ModelRow): { label: string; cls: string } | null {
+  const st = keyStateOf(m);
+  if (st === 'invalid') return { label: '密钥失效', cls: 'danger' };
+  if (st === 'missing') return { label: '未配置密钥', cls: 'warn' };
+  return null;
+}
+
 function statusInfo(m: ModelRow): { label: string; cls: string } {
-  if (m?.has_secret === false && !m?.is_mock) return { label: '未配置密钥', cls: 'warn' };
+  const key = keyProblem(m);
+  if (key) return key;
   const s = String(m?.status || '').toLowerCase();
   if (s === 'ok' || s === 'ready' || s === 'healthy') return { label: '正常', cls: 'ok' };
   if (s === 'error' || s === 'failed' || s === 'bad') return { label: '连接异常', cls: 'danger' };
@@ -197,7 +227,9 @@ function providerCell(m: ModelRow): string {
 function itemTitle(m: ModelRow): string {
   const host = hostOf(m.base_url);
   const extra = [m.model_name || '', providerCell(m), host].filter(Boolean).join(' · ');
-  return m.has_secret === false && !m.is_mock ? extra + '（缺密钥）' : extra;
+  /* 后缀走同一套判定：只有真的缺密钥/密钥失效才补一句，别再用 has_secret 误报 */
+  const key = keyProblem(m);
+  return key ? `${extra}（${key.label}）` : extra;
 }
 
 function latencyOf(m: ModelRow): string {

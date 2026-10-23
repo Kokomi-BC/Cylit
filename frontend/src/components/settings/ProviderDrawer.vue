@@ -122,8 +122,15 @@ async function loadKeys(): Promise<void> {
   keysLoading.value = true;
   keysError.value = '';
   try {
-    const data = await api.get<{ keys?: KeyRow[] }>(`/models/providers/${encodeURIComponent(p.id)}/keys`);
-    keys.value = Array.isArray(data?.keys) ? data.keys : [];
+    /* 后端实际回 `{items: [...], unassigned: [...]}`，冻结契约里写的是 `keys` —— 两种都认。 */
+    const data = await api.get<{ keys?: KeyRow[]; items?: KeyRow[]; unassigned?: KeyRow[] }>(
+      `/models/providers/${encodeURIComponent(p.id)}/keys`,
+    );
+    const list = data?.keys ?? data?.items ?? [];
+    keys.value = Array.isArray(list) ? list : [];
+    /* 同一响应里顺带给的「未归属」清单：有数组就直接用，省一次请求 */
+    const un = data?.unassigned;
+    if (Array.isArray(un)) unassigned.value = un;
     keysHint.value = '';
     keysWritable.value = true;
   } catch (err) {
@@ -340,8 +347,13 @@ const unassignedHint = ref('');
 
 async function loadUnassigned(): Promise<void> {
   try {
-    const data = await api.get<{ keys?: KeyRow[] }>('/models/keys', { unassigned: 1 });
-    unassigned.value = Array.isArray(data?.keys) ? data.keys : [];
+    /* 同上：`GET /models/keys?unassigned=1` 回的是 `{items: [...], unassigned: <计数>}`。
+       ⚠️ 这里的 `unassigned` 是**数字**，绝不能当数组渲染（`Array.isArray` 挡住）。 */
+    const data = await api.get<{ keys?: KeyRow[]; items?: KeyRow[]; unassigned?: unknown }>(
+      '/models/keys', { unassigned: 1 },
+    );
+    const list = data?.keys ?? data?.items ?? (Array.isArray(data?.unassigned) ? data.unassigned : []);
+    unassigned.value = Array.isArray(list) ? list : [];
     unassignedError.value = '';
     unassignedHint.value = '';
   } catch (err) {
