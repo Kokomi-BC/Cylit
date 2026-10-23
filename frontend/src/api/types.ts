@@ -627,6 +627,57 @@ export interface ModelUsageStats {
   totals: UsageTotals;
 }
 
+/* ------------------------------- 限额（/models/limits） -------------------------------
+ *
+ * 三级作用域 × 日 / 周 / 月。**金额相关的一切都是后端现算的**：
+ * spent（含未过期预留，与闸门同口径）/ remaining / percent 只拿来显示，
+ * 前端不许自己再算一遍 —— 两套算法迟早对不上，用户会以为限额坏了。
+ */
+
+export type ModelLimitScope = 'model' | 'key' | 'vendor';
+export type ModelLimitPeriod = 'day' | 'week' | 'month';
+
+/** 一条限额（GET /models/limits 的 items[]，也是 429 里 detail.limit 的形状）。 */
+export interface ModelLimitItem {
+  id: string;
+  scope: ModelLimitScope;
+  scope_id: string;
+  /** 后端解析的人话名字（模型名 / 密钥名 / 厂商名）；取不到时就是 id */
+  label: string;
+  enabled: boolean;
+  period: ModelLimitPeriod;
+  /** 限额金额（同币种）；只用于回填输入框 */
+  amount: number;
+  currency: string;
+  /** 本周期已用（**含未过期预留**）；unpriced_rows > 0 时这只是下限 */
+  spent: number;
+  remaining: number;
+  /** 后端算好的百分比（0~∞，可以超过 100） */
+  percent: number;
+  /** 本地 YYYY-MM-DD HH:MM */
+  period_start: string;
+  period_end: string;
+  /** = period_end（周期现算，翻篇即重置，没有"重置"这个动作） */
+  reset_at: string;
+  /** 窗口内没配单价、算不出钱的调用数 */
+  unpriced_rows: number;
+  /** 窗口内其它币种、未计入累计的行数 */
+  foreign_currency_rows: number;
+  /** 该作用域下所有启用模型都配了单价（false = 这条限额拦不准） */
+  usable: boolean;
+  note?: string;
+}
+
+/** GET /models/limits/summary（横幅三态；阈值 80% / 100%）。 */
+export interface ModelLimitsSummary {
+  level: 'none' | 'warn' | 'exceeded';
+  /** 百分比最高的那条（并列看重置更近）；没有启用的限额时是 null */
+  most_urgent: ModelLimitItem | null;
+  /** 全部限额（含停用的） */
+  items: ModelLimitItem[];
+  warning?: string;
+}
+
 export interface KnowledgeOverview {
   papers_total: number;
   papers_in_kb: number;

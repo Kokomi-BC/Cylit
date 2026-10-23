@@ -11225,3 +11225,54 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 - 预设组只剩 5 套：跟随系统 / 经典 / 素纸 / 雾青 / 黛瓦夜色；配色组 19 套不变。
 - 截图核对：选中卡四周环完整闭合、无缺口；底部半排仍被淡出。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+### 110. 第一百一十轮：限额引擎 + 80%/100% 横幅 + 分时段（峰谷）计费（阶段②/④后端）
+
+用户口径：限额要真拦（不限额/每日/每周/每月，模型/密钥/厂商三级）、80% 与 100% 在**模型页顶部**出圆角横幅、
+对话失败要说清服务端错误与限额状态；收费要能按**自定义时段**（不含周末）分开定价 —— 「比如 DeepSeek 就使用分时段收费」。
+
+**② 限额（后端 + 前端）**
+- 新表 model_limit（一行一作用域；scope=model|key|vendor；period=day|week|month；amount+currency）与
+  model_limit_reservation（并发闸门的预留行，10 分钟过期）。
+- limits.py 是唯一入口：check_and_reserve 在**一个事务**里对每条适用限额的 model_limit 行 SELECT … FOR UPDATE，
+  spent = 同币种已计费 + 未过期预留；任一条 spent+estimate >= amount 就回滚并抛 LimitExceededError（429，
+  code=LIMIT_EXCEEDED，明写「本地限额触发」，detail.limit 14 个字段）。**全部满足才放行，各按自己币种累计，绝不合成总额。**
+- 接入点：model_manager 的用量代理里「先检查 → 调 provider → 落账 → finally 释放」（翻译/理解/元数据/公式/视觉/探测全覆盖）；
+  /agent/ask 在转发前检查并落一行 status=blocked（cost NULL）。重试/换模型/换密钥天然要重新检查（每次现查，不缓存判定）。
+- **未配单价的模型不得设限额**：PUT 阶段 400 并点名模型（detail.unpriced_models）。
+- 接口：GET/PUT /models/limits、DELETE /models/limits/{id}、GET /models/limits/summary（none/warn/exceeded）。
+- 前端：LimitCard（模型页裸块，现状条 + 内联编辑行 + 已配置列表；percent/spent/remaining 全用后端值，前端不算额度）
+  与 LimitBanner（**只在模型页**；warn 黄 / exceeded 红，exceeded 覆盖 warn；关闭记录绑定 {限额id: reset_at}，
+  所以同周期关了就一直是关的、周期翻篇会再提醒；exceeded 时不提供任何「继续调用」式按钮）。后端 400 的 message 原样显示。
+
+**④ 分时段计费（本轮后端；编辑器下一轮）**
+- 新表 model_price_rule（label/start/end/四项单价，不存币种）+ model_usage.price_rule_id（这笔钱按哪一段算的）。
+- 口径（按 DeepSeek 官方价格页校正）：**模型上的四个单价 = 时段之外的价**（DeepSeek 口径里就是空闲价），
+  时段规则是**例外覆盖**（DeepSeek 填两段工作日高峰 09:00–12:00、14:00–18:00）；规则**只对工作日生效**，
+  周末直接落默认价；判定用**调用开始时刻**的本地 HH:MM（start <= t < end）；跨午夜 end<=start 拆成两段、
+  凌晨那截以「开始那天」是不是工作日为准（周五 23:30 跨到周六 00:30 仍命中，周日 23:30 不命中）。
+  同一模型内时段不许重叠（拆跨午夜后比较）。规则命中时四个价**整段替换**，缓存价不逐字段继承
+  （继承空闲缓存价会把高峰少算一半）。
+- billing.price_of(..., at=) / cost_of(..., at=) / usage_stats.record(..., at=)：按该时刻取价计费，
+  record 的 created_at/day/hour_key 也一并按 at 定（否则会出现"按高峰价计费、记在昨天"）。
+  **priced 语义一个字没动**（= 默认价齐不齐，限额引擎依赖它）；命中时段时另判 _billable（规则价齐就算得出钱）。
+- 新增 billing.wall_clock：naive 的 at 当**本地墙钟**（to_local 的约定是 UTC naive，直接用会把 09:00 判成 17:00）。
+- 接口：GET/PUT /models/{id}/price-rules（整批替换、重叠/格式/缺价 400 点名）、DELETE .../{rule_id}；
+  GET /models 每行补 price_rule_count，GET /models/{id} 带完整 price_rules。
+- 删除模型时同事务连带删它的时段（防 id 复用被旧规则静默改价）。
+
+**验证**
+- 后端：pytest 全量 1525 passed / 131 skipped（新增 33 限额 + 31 峰谷）；billing 42 / limits 33 / usage 5 / pricing 31 全绿。
+- 限额真链路：未配单价 PUT → 400 点名；配价后设 0.0001 CNY 日限额 → POST /models/{id}/test **429**
+  （message「…本次预估 1.57287，调用未发出」，detail.limit 14 键）；删限额、单价还原为 NULL。
+- 峰谷真链路：默认 1/4 + 两段高峰 2/8 → 工作日 10:00 记 6.0（price_rule_id 有值）、20:00 记 3.0（NULL）、
+  周六 10:00 记 3.0（NULL）；stats 归桶正确；重叠/HH:MM/缺价均 400 点名。
+- 前端：vue-tsc 0 error、build 通过、自检 21 PASS / 0 FAIL / 0 SKIP；横幅三态截图（70% 无、85% 黄、120.1% 红），
+  横幅数字与 summary 逐字对账；关闭→刷新不显示→换周期再出现；页面无「继续调用/忽略/强制发送」按钮。
+- 还原核对：model_usage 2 行（price_rule_id 全 NULL）、model_price_rule 0、model_limit 0、模型单价全 NULL。
+
+**已知限制（照实记）**
+- embedding / reranker 不在限额覆盖内（它们本来不落 model_usage、也没有花费记录）。
+- **中国法定节假日识别不了**：只能表达「仅工作日、周末不生效」，节假日会被当成工作日按高峰价算。
+- 基础设施异常（库连不上）时限额**放行**并记 warning；此时也没有一条能落账的用量行。
+- 「只配时段、不配默认价」的模型：时段内算得出钱（cost 有值），但 priced=False 所以仍然**不能给它设限额**。
+- 未知 model_id 沿用现有行为返回 400（不是 404）。

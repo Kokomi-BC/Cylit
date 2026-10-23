@@ -19,7 +19,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { api } from '@/api/client';
-import type { ModelConfig } from '@/api/types';
+import type { ModelConfig, ModelLimitsSummary } from '@/api/types';
 import {
   loadModelTypes, loadModels, reportError, state, toast, withLoading,
 } from '@/stores/app';
@@ -32,6 +32,8 @@ import { categoryIcon, vendorColorIcon } from '@/assets/model-icons';
 import ModelForm from '@/components/settings/ModelForm.vue';
 import ModelSwitcher from '@/components/settings/ModelSwitcher.vue';
 import UsageChart from '@/components/settings/UsageChart.vue';
+import LimitCard from '@/components/settings/LimitCard.vue';
+import LimitBanner from '@/components/settings/LimitBanner.vue';
 import ProviderDrawer from '@/components/settings/ProviderDrawer.vue';
 import type { ProviderRow } from '@/components/settings/modelTypes';
 
@@ -92,6 +94,27 @@ const highlightId = ref('');                        // 刚建好的那一行，�
 const focusKey = ref('');
 
 const usageRef = ref<InstanceType<typeof UsageChart> | null>(null);
+
+/* ---------------------------- 限额（/models/limits） ----------------------------
+ * 横幅与限额块**共用这一份** summary：横幅只读 most_urgent，限额块读 items。
+ * 一次请求出两处渲染，改完限额后各自不必再拉一遍（也就不会出现两处数字不一致）。 */
+const limitSummary = ref<ModelLimitsSummary | null>(null);
+const limitLoading = ref(false);
+let limitSeq = 0;
+
+async function loadLimits(): Promise<void> {
+  const token = ++limitSeq;
+  limitLoading.value = true;
+  try {
+    const data = await api.get<ModelLimitsSummary>('/models/limits/summary');
+    if (token === limitSeq) limitSummary.value = data ?? null;
+  } catch {
+    /* 限额是旁路：读不到就按"没有限额"渲染（横幅不出现、块里是空态），绝不挡住模型列表 */
+    if (token === limitSeq) limitSummary.value = null;
+  } finally {
+    if (token === limitSeq) limitLoading.value = false;
+  }
+}
 
 /* ---------------------------- 按类型分组 ----------------------------
  * 分类语义照旧（text generation / 论文问答 agent / 向量化 embedding / 重排 reranker /
@@ -841,13 +864,14 @@ async function refreshAll(): Promise<void> {
   await refresh();
   await loadProviders();
   usageRef.value?.reload();
+  void loadLimits();
 }
 
 onMounted(() => {
   narrowMq = window.matchMedia('(max-width: 560px)');
   onNarrow(narrowMq);
   narrowMq.addEventListener('change', onNarrow);
-  void refreshAll();
+  void refreshAll();          // 里面已经带上了 loadLimits()
   void loadSecretNames();
 });
 
@@ -873,10 +897,18 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <!-- 页头顶着「模型」二字，横幅就贴在它下面、第一个内容块之前；
+         只在「设置 · 模型」这一页出现（这个面板只在这一页挂载）。
+         warn / exceeded 三态由后端 summary.level 决定，这里不自算。 -->
+    <LimitBanner :summary="limitSummary" />
+
     <div class="load-error" v-if="loadError">{{ loadError }}</div>
 
     <!-- ② 用量统计（口径不变，只压缩留白与层级） -->
     <UsageChart ref="usageRef" />
+
+    <!-- ②' 限额：裸块（区块标题 + 留白），与「用量」同一观感，不套 .card -->
+    <LimitCard :summary="limitSummary" :loading="limitLoading" @refresh="loadLimits" />
 
     <!-- ③ 任务分类与模型配置：每类一张卡，卡上只有当前模型那一行 -->
     <section class="block types-block">
