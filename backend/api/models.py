@@ -244,12 +244,41 @@ async def assign_key(provider_id: str, key_id: str, request: Request):
                     request=request)
 
 
+def _stored_probe_base_url(cfg: dict) -> tuple[str, str]:
+    """已存配置的**探测端点**：模型自己的 base_url → 提供方行 → 官方目录默认端点。
+
+    为什么需要回落：官方提供方下不少模型是**故意**把 base_url 留空的（端点由 adapter
+    按厂商默认 host 解析，多模态向量那条尤其如此）。以前这里直接报
+    「请提供 Base URL」，于是这些模型在编辑弹窗里永远拉不到模型列表。
+
+    只用于**这一次探测**，绝不写回 model_config.base_url —— 写回去会把
+    “留空 = 用 adapter 默认端点”的语义破坏掉（多模态协议会被带到错误端点）。
+    返回 (端点, 来源)；来源仅用于调试/日志，不写库。
+    """
+    base = str(cfg.get("base_url") or "").strip()
+    if base:
+        return base, "model"
+    provider = str(cfg.get("provider") or "").strip().lower()
+    if not provider:
+        return "", ""
+    from backend.services.model import provider_store, providers_catalog
+
+    row = next((p for p in provider_store.list_providers() if p["id"] == provider), None)
+    if row is not None:
+        base = str(row.get("base_url") or "").strip()
+        if base:
+            return base, "provider"
+    base = providers_catalog.default_base_url(provider)
+    return (base, "catalog") if base else ("", "")
+
+
 @router.post("/models/probe-models")
 async def probe_models(request: Request, payload: dict = Body(default={})):
     """拉取某个端点的模型列表（`GET {base}/models`）。
 
     两种用法：
     · 传 `model_id`：用**库里已存**的 base_url + 密钥（设置页对已有配置「刷新模型列表」）；
+      该模型 base_url 留空时按「提供方行 → 官方目录默认端点」回落（只用于探测，不写库）；
     · 传 `base_url`（+ 可选 `api_key` / `secret_ref`）：自定义提供方**保存前**先探一次。
 
     安全：两种用法都过 `endpoint_guard`（协议、元数据地址、内网、DNS 全部校验）；
@@ -271,7 +300,9 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
         cfg = next((m for m in model_service.list_models() if str(m.get("id")) == model_id), None)
         if not cfg:
             raise ValidationError("模型配置不存在")
-        base_url = str(cfg.get("base_url") or "").strip()
+        # 模型 base_url 为空是**合法**的（端点交给 adapter / 官方默认值解析）：
+        # 探测时按 提供方行 → 官方目录默认端点 回落，但不写回这条模型
+        base_url, _source = _stored_probe_base_url(cfg)
         if not api_key:
             # **统一解析器**：密钥从哪来只有一处决定（改造前这里自己又读了一遍文件，
             # 于是"设置页测通了、调用链 401"这种事迟早发生）

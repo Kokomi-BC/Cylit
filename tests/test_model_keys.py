@@ -739,6 +739,53 @@ def test_has_secret_follows_key_source_on_auto_mode(sandbox, secrets, client):
     assert row["has_secret"] is False
 
 
+def test_probe_stored_model_falls_back_to_provider_endpoint(sandbox, secrets,
+                                                           client, monkeypatch):
+    """模型 base_url 留空时，probe-models 用「提供方端点」回落，且**不写回**模型。
+
+    线上 embedding-7036089f（provider=dashscope、base_url=NULL、
+    parameters.protocol=dashscope_multimodal）就是故意留空的（端点由 adapter 解析）；
+    以前这里直接 400，导致官方家下拉不出模型列表。
+    """
+    from backend.services.model import remote_models
+    from backend.services.model.model_manager import model_manager
+
+    calls: list[dict] = []
+
+    async def fake(base_url, *, api_key=None, allow_private=False, timeout=8.0):
+        calls.append({"base_url": base_url, "api_key": api_key,
+                      "allow_private": allow_private})
+        return {"items": [{"id": "m1"}], "count": 1, "host": "api.example.com"}
+
+    monkeypatch.setattr(remote_models, "list_models", fake)
+
+    pid, mid = _pid("probe_fb_p"), _pid("probe_fb_m")
+    _provider(pid)          # 这家有 base_url = https://api.example.com/v1
+    _key_with_file(pid, "probe_fb", "sk-PROBE7777")
+    _model(mid, pid, base_url=None)     # 模型自己的 base_url 故意留空（官方家常见）
+
+    res = client.post("/api/v1/models/probe-models", json={"model_id": mid})
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["count"] == 1
+    assert calls[-1]["base_url"] == "https://api.example.com/v1"   # 落在提供方端点
+    assert calls[-1]["api_key"] == "sk-PROBE7777"                  # 密钥仍走统一解析器
+    assert calls[-1]["allow_private"] is True
+    # 探测用的端点**不写回**模型（多模态那条必须保持空，否则端点会被带错）
+    assert not model_manager.get_config(mid)["base_url"]
+
+
+def test_probe_stored_model_without_any_endpoint_still_errors(sandbox, secrets, client):
+    """提供方也没端点、官方目录也没登记 → 仍然报原来那个错（不静默成功）。"""
+    from backend.services.model import provider_store
+
+    pid, mid = _pid("probe_noend_p"), _pid("probe_noend_m")
+    provider_store.upsert({"id": pid, "label": pid})   # 故意不给 base_url
+    _model(mid, pid, base_url=None)
+    res = client.post("/api/v1/models/probe-models", json={"model_id": mid})
+    assert res.status_code == 400
+    assert "Base URL" in res.text
+
+
 def test_keys_api_roundtrip(sandbox, secrets, client):
     from backend.services.model import key_store
 
