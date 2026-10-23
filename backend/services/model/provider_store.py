@@ -14,6 +14,7 @@ from __future__ import annotations
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads
+from backend.services.model import billing
 from backend.repositories.mysql.models import (
     ModelConfig, ModelProvider, ModelProviderKey,
 )
@@ -158,6 +159,8 @@ def _to_dict(row: ModelProvider) -> dict:
         "status": row.status or "unknown",
         # 展示顺序（小的在前）；前端照它排列，也可以用 PUT /models/providers/order 改
         "sort": int(row.sort or 0),
+        # 这家的**默认计费币种**（模型自己没写 currency 时用它）；币种永不换算
+        "currency": getattr(row, "currency", None) or billing.DEFAULT_CURRENCY,
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else None,
     }
 
@@ -317,6 +320,9 @@ def upsert(payload: dict) -> dict:
         base_url = endpoint_guard.normalize_base_url(base_url)
     official = pid in _official_ids()
     auth = "none" if str(payload.get("auth") or "").strip() == "none" else "bearer"
+    # 币种：只接受 CNY / USD；不传 = 保持原值（新建时落 'CNY'）
+    currency = (billing.normalize_currency(payload.get("currency")) or billing.DEFAULT_CURRENCY) \
+        if "currency" in payload else None
     with session_scope() as s:
         row = s.get(ModelProvider, pid)
         if row is None:
@@ -332,6 +338,7 @@ def upsert(payload: dict) -> dict:
                 note=str(payload.get("note") or meta.get("note", "")),
                 # 新建的家排到最后（0 = 没排过，给 0 会插队到第一位）
                 sort=_next_sort(s),
+                currency=currency or billing.DEFAULT_CURRENCY,
             )
             s.add(row)
         else:
@@ -345,6 +352,8 @@ def upsert(payload: dict) -> dict:
                 row.note = str(payload.get("note") or "")
             if payload.get("icon") is not None:
                 row.icon = str(payload.get("icon") or "")
+            if currency:
+                row.currency = currency
             row.kind = "official" if official else "custom"
         s.commit()
         s.refresh(row)

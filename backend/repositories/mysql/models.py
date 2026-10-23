@@ -451,6 +451,9 @@ class ModelProvider(Base):
     # 0 是"还没排过"的默认值 —— 第一次跑 ensure_providers 会按默认口径回填
     # （DeepSeek → Claude → ChatGPT → Gemini → 其他 → 自定义，见 provider_store）。
     sort: Mapped[int] = mapped_column(Integer, default=0)
+    # 这家厂商的**默认计费币种**（模型自己没写 currency 时用它），缺省 'CNY'。
+    # 币种**不做任何换算**：人民币与美元分币种统计、永不直接相加（见 services/model/billing.py）。
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
@@ -503,6 +506,17 @@ class ModelConfig(Base):
     # 只有 `auto` 才会走历史回落，老配置默认就是它 —— 行为与改造前一致。
     key_mode: Mapped[str] = mapped_column(String(8), default="auto")
     provider_key_id: Mapped[str | None] = mapped_column(String(64))
+    # 计费单价，单位**每百万 Token**（厂商报价就长这样，换算只在 billing.cost_of 里做一次）。
+    # 一律允许 NULL = **未配置**：未配置的调用 cost 存 NULL、billing='none'，
+    # 绝不写 0（0 会被读成「这次真的免费」，把「不知道」伪装成「知道」）。
+    price_in: Mapped[float | None] = mapped_column(Float)
+    price_out: Mapped[float | None] = mapped_column(Float)
+    #: 命中缓存的输入（读缓存通常便宜一个量级）
+    price_cache_read: Mapped[float | None] = mapped_column(Float)
+    #: 写缓存（部分厂商单独收费；没配就按普通输入算，见 billing.cost_of）
+    price_cache_write: Mapped[float | None] = mapped_column(Float)
+    #: 币种：NULL/'' = **跟随厂商**（model_provider.currency），两边都空才落到 'CNY'
+    currency: Mapped[str | None] = mapped_column(String(8))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), default="unknown")
@@ -680,11 +694,35 @@ class ModelUsage(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     #: 冗余存一份：厂商的 total 有时含缓存计费口径，不等于两项之和
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    #: 缓存命中的输入 token / 写缓存的 token（厂商不回传就是 0）。拆出来是为了按
+    #: 缓存价单独计费 —— 不拆就只能全按输入价算，缓存折扣永远看不见。
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    #: **幂等键**：同一次调用重试/重放只能记一行。NULL = 没给（老行与不需要去重的链路）。
+    #: 唯一索引允许多个 NULL，所以「一堆 NULL」是合法状态，不是数据缺陷。
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    #: 这次调用用的那把密钥（model_provider_key.id）：换密钥后能按密钥对账
+    provider_key_id: Mapped[str | None] = mapped_column(String(64))
+    #: 落库那一刻解析出的**生效币种**（CNY/USD）与金额：cost 为 NULL = 未计费
+    currency: Mapped[str | None] = mapped_column(String(8))
+    cost: Mapped[float | None] = mapped_column(Float)
+    #: 金额是哪来的：computed（按单价算出来）/ reported（厂商回传实际费用）/ none（无单价）
+    billing: Mapped[str] = mapped_column(String(16), default="none")
+    #: 这次调用的结局：ok / error（error 也记 —— 失败也要看得见花了多少 token）
+    status: Mapped[str] = mapped_column(String(16), default="ok")
+    error_code: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     #: 聚合键（DATE）。取**本地日** —— 用户看到的「今日消耗」才是他那一整天
     day: Mapped[date] = mapped_column(Date, default=lambda: datetime.now().date())
+    #: 小时聚合键（本地 YYYY-MM-DD HH）。24h 窗口按它分桶 —— created_at 是 UTC，
+    #: 直接拿它的小时数冒充本地小时会把整条折线错 8 小时。
+    hour_key: Mapped[str | None] = mapped_column(String(13))
 
-    __table_args__ = (Index("ix_model_usage_day", "day"),)
+    __table_args__ = (
+        Index("ix_model_usage_day", "day"),
+        # 唯一：同一个 request_id 只能有一行（NULL 不参与唯一性，老行不受影响）
+        Index("ix_model_usage_request_id", "request_id", unique=True),
+    )
 
 
 # ---------------------------------------------------------------- ⑰ 检索耗时流水

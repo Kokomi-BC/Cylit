@@ -487,6 +487,17 @@ export interface ModelConfig {
   is_mock?: boolean;
   /** 兼容旧接口：连通性测试结果可能直接挂在模型记录上 */
   latency_ms?: number | null;
+  /* ---- 计费（单价单位：**每百万 Token**；null = 未配置，不是 0 元） ---- */
+  price_in?: number | null;
+  price_out?: number | null;
+  price_cache_read?: number | null;
+  price_cache_write?: number | null;
+  /** 后端回 `''` 表示"跟随厂商"（不是 null，因为它是 NOT NULL 之外的字符串列） */
+  currency?: string | null;
+  /** 解析后的生效币种（模型 → 厂商 → CNY），后端算的，前端不再猜 */
+  currency_effective?: string | null;
+  /** 输入价与输出价都配了才算"能算钱" */
+  has_price?: boolean;
 }
 
 /** `POST /models/{id}/test` 的返回（字段随 provider 略有差异，故保留动态键）。 */
@@ -531,32 +542,89 @@ export interface ModelPreset {
   vision?: ModelPresetSpec | null;
 }
 
-/** `GET /models/usage/stats` 的一天（后端已按天零填充、旧→新）。 */
-export interface ModelUsageDay {
-  date: string;
-  prompt: number;
-  completion: number;
-  total: number;
+/* ---------------------- 模型用量统计（多系列契约） ----------------------
+ * `GET /models/usage/stats?window=24h|7d|14d|30d&vendor=…&model=a,b&group=model|vendor`
+ *
+ * 三条不变量（后端 usage_stats 保证，前端据此画图，不再自己拼日序列）：
+ * · `window.points` 连续、旧→新，长度正好 24 / 7 / 14 / 30；每条 `series.points` 与它**逐位对齐**；
+ * · `cost` 是**{币种: 金额} 字典** —— 人民币与美元永不相加，缺价的调用只进 `unpriced`（不是 0 元）；
+ * · `filters` 永远是窗口内**全量**（不受筛选影响），否则下拉框一选就把自己筛没。
+ */
+
+/** 窗口里的一个桶（`granularity=hour` 时 key 是 `YYYY-MM-DD HH`、label 是 `HH:00`；day 时是日期与 `MM/DD`）。 */
+export interface UsageBucketMeta {
+  key: string;
+  label: string;
 }
 
-/** 分模型消耗一行。 */
-export interface ModelUsageByModel {
-  /** 配置已被删掉时后端回 `null`（历史消耗仍要上榜） */
-  model_config_id: string | null;
-  name: string;
-  model_name: string | null;
-  prompt: number;
-  completion: number;
-  total: number;
+export interface UsageWindow {
+  kind: '24h' | '7d' | '14d' | '30d';
+  granularity: 'hour' | 'day';
+  from: string;
+  to: string;
+  points: UsageBucketMeta[];
 }
 
-/** 模型消耗统计（`GET /models/usage/stats?days=14`）。 */
+/** 一个桶里的一条记录。`cost` 为空字典 = 这段时间没有可计价金额（全部缺价）。 */
+export interface UsagePoint {
+  tokens_in: number;
+  tokens_out: number;
+  tokens_total: number;
+  requests: number;
+  cost: Record<string, number>;
+  /** 缺价（算不出钱）的调用次数：**不是 0 元**，是"不知道多少钱" */
+  unpriced: number;
+}
+
+export type UsageTotals = UsagePoint;
+
+/** 一条系列：`cfg:<id>` / `gone:<model_name>` / `vendor:<id>`——同名不同配置不合并。 */
+export interface UsageSeries {
+  key: string;
+  kind: 'model' | 'vendor';
+  label: string;
+  model_name?: string | null;
+  provider?: string | null;
+  provider_label?: string;
+  currency?: string;
+  /** 现在能算价，或历史上真的带过金额 */
+  has_price?: boolean;
+  /** 现在就能算出金额（模型配了输入价 + 输出价） */
+  priced_now?: boolean;
+  points: UsagePoint[];
+  totals: UsageTotals;
+}
+
+/** 模型下拉的一项（键就是查询参数 `model=` 接受的身份键）。 */
+export interface UsageFilterModel {
+  key: string;
+  label: string;
+  provider?: string | null;
+  provider_label?: string;
+  config_id?: string | null;
+  has_price?: boolean;
+  priced_now?: boolean;
+  currency?: string;
+}
+
+/** 厂商下拉的一项：`models` 是这家在窗口内出现过的模型身份键。 */
+export interface UsageFilterVendor {
+  id: string;
+  label: string;
+  models: string[];
+  has_price?: boolean;
+  priced_now?: boolean;
+}
+
+/** 模型用量统计（`GET /models/usage/stats`）。 */
 export interface ModelUsageStats {
-  days: ModelUsageDay[];
-  by_model: ModelUsageByModel[];
-  totals: { prompt: number; completion: number; total: number; requests: number };
-  today: { date: string; total: number };
-  range: { days: number; from: string; to: string };
+  window: UsageWindow;
+  group: 'model' | 'vendor';
+  /** 窗口内出现过的币种（费用的图例按它画线，绝不相加） */
+  currencies: string[];
+  series: UsageSeries[];
+  filters: { vendors: UsageFilterVendor[]; models: UsageFilterModel[] };
+  totals: UsageTotals;
 }
 
 export interface KnowledgeOverview {

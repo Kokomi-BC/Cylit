@@ -102,6 +102,26 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # `create_all` 不会补列 —— 不补这条，读提供方会报 Unknown column 'model_provider.sort'。
     # 默认 0 = "还没排过"，第一次启动由 provider_store 的默认回填写成正式顺序。
     ("model_provider", "sort", "`sort` INT NOT NULL DEFAULT 0"),
+    # 计费（2026-10-24）：厂商默认币种 + 模型级单价（每百万 Token）+ 每次调用的金额快照。
+    # 单价与金额列一律允许 NULL = **未配置 / 未计费**（绝不写 0：0 会被读成「这次免费」）。
+    # `model_usage` 的三列 NOT NULL 必须给默认值 —— 老库里的历史行要落到
+    # 'none' / 'ok' / 0，否则读出来是 None，聚合时混进"未计费"或把总数算成 NULL。
+    ("model_provider", "currency", "`currency` VARCHAR(8) NOT NULL DEFAULT 'CNY'"),
+    ("model_config", "price_in", "`price_in` FLOAT NULL"),
+    ("model_config", "price_out", "`price_out` FLOAT NULL"),
+    ("model_config", "price_cache_read", "`price_cache_read` FLOAT NULL"),
+    ("model_config", "price_cache_write", "`price_cache_write` FLOAT NULL"),
+    ("model_config", "currency", "`currency` VARCHAR(8) NULL"),
+    ("model_usage", "request_id", "`request_id` VARCHAR(64) NULL"),
+    ("model_usage", "provider_key_id", "`provider_key_id` VARCHAR(64) NULL"),
+    ("model_usage", "currency", "`currency` VARCHAR(8) NULL"),
+    ("model_usage", "cost", "`cost` FLOAT NULL"),
+    ("model_usage", "billing", "`billing` VARCHAR(16) NOT NULL DEFAULT 'none'"),
+    ("model_usage", "status", "`status` VARCHAR(16) NOT NULL DEFAULT 'ok'"),
+    ("model_usage", "error_code", "`error_code` VARCHAR(64) NULL"),
+    ("model_usage", "cache_read_tokens", "`cache_read_tokens` INT NOT NULL DEFAULT 0"),
+    ("model_usage", "cache_write_tokens", "`cache_write_tokens` INT NOT NULL DEFAULT 0"),
+    ("model_usage", "hour_key", "`hour_key` VARCHAR(13) NULL"),
 )
 
 
@@ -264,9 +284,14 @@ def ensure_columns(engine: Engine | None = None) -> list[str]:
 # `create_all` 只建**不存在的表** —— 加 index=True 只对**新库**生效，
 # 线上/开发机的老 `paper` / `chunk` 表一个字节都不会变，索引永远不存在。
 # 所以老库只能靠这里的 CREATE INDEX 补；新库由 metadata 负责，两条路径各自成立。
-_INDEXES: tuple[tuple[str, str, str], ...] = (
-    ("ix_paper_created_at", "paper", "created_at"),
-    ("ix_chunk_created_at", "chunk", "created_at"),
+#: (索引名, 表名, 列名, 是否唯一)
+_INDEXES: tuple[tuple[str, str, str, bool], ...] = (
+    ("ix_paper_created_at", "paper", "created_at", False),
+    ("ix_chunk_created_at", "chunk", "created_at", False),
+    # 用量幂等键（2026-10-24）：同一个 request_id 只允许一行 —— 重试 / 重放 / 双写
+    # 都不能把一次调用记成两笔账。**必须唯一索引**，普通索引挡不住并发重复插入；
+    # 而 MySQL 与 SQLite 的唯一索引都允许多个 NULL，所以历史行（request_id 为空）不受影响。
+    ("ix_model_usage_request_id", "model_usage", "request_id", True),
 )
 
 
@@ -301,10 +326,11 @@ def ensure_indexes(engine: Engine | None = None) -> list[str]:
     """
     engine = engine or get_engine()
     created: list[str] = []
-    for name, table, column in _INDEXES:
+    for name, table, column, unique in _INDEXES:
+        kind = "UNIQUE INDEX" if unique else "INDEX"
         try:
             with engine.begin() as conn:
-                conn.execute(text(f"CREATE INDEX `{name}` ON `{table}` (`{column}`)"))
+                conn.execute(text(f"CREATE {kind} `{name}` ON `{table}` (`{column}`)"))
         except Exception as exc:  # noqa: BLE001 —— 只吞"已存在"，其余照抛
             if _index_exists_error(exc):
                 log.debug("索引已存在，跳过：%s", name)

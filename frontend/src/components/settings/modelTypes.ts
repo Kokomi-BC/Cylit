@@ -31,6 +31,8 @@ export interface ProviderRow {
   default_key_label?: string | null;
   /** 连接状态点：ok / error / unknown */
   status?: 'ok' | 'error' | 'unknown' | string;
+  /** 这家的默认计费币种（模型自己没写 currency 时用它，再兜底 'CNY'） */
+  currency?: string | null;
 }
 
 /** 一条已存密钥。**永远没有明文**：`masked` 是 `••••a1b2` 这种掩码，可能为空串。 */

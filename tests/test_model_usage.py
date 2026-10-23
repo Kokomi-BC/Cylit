@@ -1,8 +1,7 @@
-"""模型 token 消耗统计（离线，临时 SQLite）：零填充 / 排序 / 空表 / days 夹取 / 写库失败不抛。
+"""模型用量：写入路径（旁路、来源标记、代理不改变 provider 身份）与查询契约。
 
-为什么不用真实库：这层是**纯聚合**，用真实 MySQL 跑只会让 CI 依赖外部服务；
-临时 SQLite 走的是同一套 ORM 映射（``Date`` 列在两边都存成 ``YYYY-MM-DD``），
-验的正是「天数连续、从旧到新、长度正好 days」这条契约。
+⚠️ 统计口径的细节用例已整体搬到 tests/test_model_billing.py（单价 / 缓存 / 币种 /
+周期 / 分桶 / 幂等），这里只保留**写入侧**的行为契约，避免两处各写一遍而互相漂移。
 """
 
 from __future__ import annotations
@@ -14,8 +13,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.repositories.mysql import session as db_session
-from backend.repositories.mysql.models import Base, ModelConfig, ModelUsage
-from backend.services.model import usage_stats
+from backend.repositories.mysql.models import Base, ModelUsage
+from backend.services.model import billing, usage_stats
 
 
 @pytest.fixture
@@ -33,10 +32,6 @@ def temp_db(tmp_path, monkeypatch):
         engine.dispose()
 
 
-def _today() -> date:
-    return datetime.now().date()
-
-
 def _add(day, *, config_id="gen-1", model_name="deepseek-flash",
          prompt=0, completion=0, total=None, source="translate") -> None:
     with db_session.session_scope() as sess:
@@ -49,78 +44,35 @@ def _add(day, *, config_id="gen-1", model_name="deepseek-flash",
         ))
 
 
-def test_days_are_continuous_zero_filled_old_to_new(temp_db):
-    today = _today()
+def test_window_points_are_continuous_zero_filled_old_to_new(temp_db):
+    """新契约：window.points 连续、从旧到新、长度正好桶数（旧 days/by_model 已下线）。"""
+    today = date.fromisoformat(billing.local_day())
+    old = today - timedelta(days=3)
     _add(today, prompt=10, completion=5)
-    _add(today - timedelta(days=3), prompt=7, completion=1)
+    _add(old, prompt=7, completion=1)
 
-    out = usage_stats.stats(7)
+    out = usage_stats.stats("7d")
 
-    expected = [(today - timedelta(days=6 - i)).isoformat() for i in range(7)]
-    assert [row["date"] for row in out["days"]] == expected
-    assert len(out["days"]) == 7
-    filled = {row["date"]: row for row in out["days"]}
-    assert filled[today.isoformat()] == {"date": today.isoformat(), "prompt": 10,
-                                         "completion": 5, "total": 15}
-    old = (today - timedelta(days=3)).isoformat()
-    assert filled[old]["total"] == 8
-    # 没数据的那几天必须是 0，而不是缺行（前端按定宽画折线）
-    zero_days = [d for d in expected if d not in (today.isoformat(), old)]
-    assert zero_days and all(filled[d]["total"] == 0 for d in zero_days)
-
-    assert out["totals"] == {"prompt": 17, "completion": 6, "total": 23, "requests": 2}
-    assert out["today"] == {"date": today.isoformat(), "total": 15}
-    assert out["range"] == {"days": 7, "from": expected[0], "to": today.isoformat()}
-
-
-def test_by_model_aggregates_and_sorts_by_total_desc(temp_db):
-    today = _today()
-    with db_session.session_scope() as sess:
-        sess.add(ModelConfig(id="gen-1", name="主力生成模型", provider="deepseek",
-                             model_type="generation", model_name="deepseek-chat"))
-    _add(today, config_id="gen-1", model_name="deepseek-chat", prompt=10, completion=10)
-    _add(today, config_id="gen-1", model_name="deepseek-chat", prompt=5, completion=5)
-    # 配置已被删掉的模型：反规范化字段还在，排行必须仍然显示它
-    _add(today, config_id="gen-gone", model_name="qwen-plus", prompt=100, completion=20)
-    _add(today - timedelta(days=1), config_id="gen-2", model_name="deepseek-flash",
-         prompt=1, completion=1)
-
-    out = usage_stats.stats(14)
-
-    totals = [row["total"] for row in out["by_model"]]
-    assert totals == sorted(totals, reverse=True)
-    first = out["by_model"][0]
-    assert first["model_config_id"] == "gen-gone"
-    assert first["total"] == 120
-    assert first["name"] == "qwen-plus"          # 配置没了 → 回落到 model_name
-
-    by_id = {row["model_config_id"]: row for row in out["by_model"]}
-    assert by_id["gen-1"]["name"] == "主力生成模型"   # 配置还在 → 用户起的显示名
-    assert by_id["gen-1"]["total"] == 30            # 两次调用累加
-    assert by_id["gen-2"]["total"] == 2
+    keys = [p["key"] for p in out["window"]["points"]]
+    assert keys == [(today - timedelta(days=6 - i)).isoformat() for i in range(7)]
+    assert "days" not in out and "by_model" not in out and "today" not in out
+    # points 不带自己的 key：它按位置与 window.points 对齐（前端只需一套横轴）
+    filled = dict(zip(keys, out["series"][0]["points"]))
+    assert filled[today.isoformat()]["tokens_total"] == 15
+    assert filled[old.isoformat()]["tokens_total"] == 8
+    zero_days = [k for k in keys if k not in (today.isoformat(), old.isoformat())]
+    assert zero_days and all(filled[k]["tokens_total"] == 0 for k in zero_days)
+    assert out["totals"] == {"tokens_in": 17, "tokens_out": 6, "tokens_total": 23,
+                             "requests": 2, "cost": {}, "unpriced": 2}
 
 
 def test_empty_table_returns_zero_structure(temp_db):
-    out = usage_stats.stats(14)
+    out = usage_stats.stats("14d")
 
-    assert len(out["days"]) == 14
-    assert all(row["total"] == 0 for row in out["days"])
-    assert out["by_model"] == []
-    assert out["totals"] == {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
-    assert out["today"] == {"date": _today().isoformat(), "total": 0}
-    assert out["range"]["days"] == 14
-
-
-@pytest.mark.parametrize("given,expected", [
-    (0, 1), (-5, 1), (1, 1), (30, 30), (90, 90), (1000, 90), ("abc", usage_stats.DEFAULT_DAYS),
-    (None, usage_stats.DEFAULT_DAYS),
-])
-def test_days_is_clamped(temp_db, given, expected):
-    out = usage_stats.stats(given)
-
-    assert len(out["days"]) == expected
-    assert out["range"]["days"] == expected
-    assert out["days"][-1]["date"] == _today().isoformat()
+    assert len(out["window"]["points"]) == 14
+    assert out["series"] == []
+    assert out["totals"]["requests"] == 0
+    assert out["window"]["to"] == billing.local_day()
 
 
 def test_record_swallows_db_failure(temp_db, monkeypatch):
@@ -148,6 +100,7 @@ def test_record_uses_scope_defaulting_to_generation(temp_db):
     with db_session.session_scope() as sess:
         sources = sorted(row.source for row in sess.query(ModelUsage).all())
     assert sources == ["generation", "translate"]
+
 
 def test_generation_proxy_records_each_call_without_changing_the_provider(temp_db, monkeypatch):
     """记录代理：每次调用落一条，且**不改变** provider 的身份与能力判定。"""

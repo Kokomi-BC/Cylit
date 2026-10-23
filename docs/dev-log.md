@@ -11153,3 +11153,51 @@ html[data-hl-style="underline"] mark.hl {
   `跟随模型 / off / minimal / low / medium / high / xhigh / max`。
 - 测完把那条模型的 `parameters` **还原**成原来的四个键（回读确认）。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+### 108. 第一百零八轮：模型计费数据层 + 用量多系列契约 + 图表重写（阶段①）
+
+用户口径（长计划）：模型页要能回答「用了哪个模型、消耗多少、花了多少钱、还剩多少额度」，并明确
+「折线图移除卡片样式」。本阶段只做前两问的**数据地基 + 图表**；限额与对话错误面分别是阶段②③。
+
+**冻结契约**（前后端一起按它写，键名不再改）：
+`GET /models/usage/stats?window=24h|7d|14d|30d&vendor=&model=&group=model|vendor` →
+`{window{kind,granularity,from,to,points[]}, group, currencies[], series[{key,kind,label,model_name,
+provider,provider_label,currency,has_price,priced_now,points[],totals}], filters{vendors[],models[]}, totals}`。
+系列身份：`cfg:<id>` / 删配置回落 `gone:<model_name>` / 厂商聚合 `vendor:<id>`；**同名不同配置绝不合并**。
+
+**后端**
+- `services/model/billing.py`（新，唯一计价真源）：单价单位=每百万 Token；`price_of`（币种链 模型→厂商→CNY，
+  单价只认模型级，必须输入价与输出价都有才算 `priced`）；`cost_of`（配了缓存读价才拆缓存，
+  没配就按普通输入算——宁可不少算；厂商回传实际费用用 `billing='reported'` 原样保留）；
+  `period_bounds` 周一起、按 Asia/Shanghai 固定 +08:00（不用 zoneinfo，Windows 缺 tzdata 会把旁路带崩）。
+- `model_usage` 扩列：`request_id`(唯一索引/幂等) / `provider_key_id` / `currency` / `cost` / `billing` /
+  `status` / `error_code` / `cache_read_tokens` / `cache_write_tokens` / `hour_key`；
+  `model_config` 加 4 个单价 + `currency`；`model_provider` 加 `currency`。全部走 `session._ADDED_COLUMNS`，
+  `_INDEXES` 升成四元组以支持 `CREATE UNIQUE INDEX`。老行 = 永久「未计费」（当时没有单价可回填）。
+- `record()` 向后兼容加参，内部同事务查价算钱；`stats()` 整块换新契约，24h 按 `created_at` 现算小时桶
+  （老行 `hour_key` 为 NULL 也不丢），天窗按本地 `day` 聚合。
+- 诚实口径：`cost` 是 `{币种: 金额}`，**CNY 与 USD 永不相加**；缺价只进 `unpriced`、`cost` 存 NULL（绝不写 0）；
+  `has_price`=现在能算价或历史真带过金额，`priced_now`=**现在**能不能算价（阶段②设限额只认它）。
+
+**前端**
+- `UsageChart.vue` 重写：**去掉 `.card` 卡片壳**（实测 className=`usage`、border 0px none、box-shadow none、
+  padding 0，保留 `grid-column:1/-1`）；五型切换 用量/Token/费用/请求/厂商对比（后者再带 用量|费用 子切换）；
+  厂商下拉 + 模型多选（走查询参数，选项随厂商收窄）；四档时间窗；配色按 `series.key` 哈希进固定调色板；
+  点图例隐藏系列并重算数字/排行；逐点 hover 列出每系列 请求/入/出/总/费用（分币种，缺价写「未计费」）。
+  三种诚实空态：无记录 / 全缺价（**不画 0 线**，只给一句 + 真能用的跳转）/ 部分缺价（角标 `n 次调用未计费`）。
+- `ModelForm.vue` 第 4 步加「计费」折叠块：币种三选（跟随厂商时显示解析结果）+ 四个单价（每百万 Token，允许小数）
+  + 实时算式预览 + 半配黄字 + 全空灰字 + 负数红字拦截；清空显式发 `null`（后端「不传=不动」）。
+
+**验证**
+- 后端：`tests/test_model_billing.py`（42 例）+ `test_model_usage.py`（5 例）→ 47 passed；全量 1461 passed / 131 skipped。
+- 接口：24h/7d/14d/30d 粒度与点数 24/7/30、`group=vendor` 折叠、非法 window 回落 7d、filters 保持全量。
+- 前端：`vue-tsc` 0 error、build 通过、自检 20 PASS / 0 FAIL / **1 SKIP**（④ 的「窗口滚动位置」那条：
+  静态产物下设置页文档高度 = 视口，`maxY=0`；**用改动前的前端重新构建跑同一套也是同一条 SKIP**，
+  不是这次引入的，探针脚本自己就把这种情况判为合法跳过）。
+- 真浏览器（1400×1000，本地库插 2 条带金额的测试行）：五型的纵轴单位分别 Token / Token / `CNY / USD` / 次请求 / Token，
+  刻度跟着换（费用 2.00…0.00，请求 4…0 整数）；费用图例 `CNY¥1.23` 与 `USD$0.05` 分列不相加；
+  点图例隐藏一条 → 系列 2→1、总量 31.1万→1.2万、请求数 4→1；插入行已删净（2 行真实数据复原）。
+
+**已知限制（照实记）**
+- 老 `model_usage` 行金额永久未知；`hour_key` 为 NULL 的老行走 `created_at` 兜底分桶。
+- 配了「缓存写」单价、而厂商把写缓存 token 已含在 prompt 里时会重复计一笔（`cost_of` docstring 已写明）。
+- 「厂商对比」模式下模型多选置灰：后端 `model=` 只认 `cfg:/gone:` 身份，vendor 系列键对不上，硬筛只会筛空。

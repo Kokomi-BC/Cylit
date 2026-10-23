@@ -135,6 +135,14 @@ class ModelManager:
             # 提供方默认密钥一变，跟随默认的模型下次调用就必须跟着变。
             "key_mode": getattr(row, "key_mode", None) or "auto",
             "provider_key_id": getattr(row, "provider_key_id", None),
+            # 计费单价（**每百万 Token**）与币种：NULL / '' = 未配置 / 跟随厂商
+            # （解析顺序见 services/model/billing.py）。agent 进程也拿这份配置，
+            # 将来自己算账、对账时不用再查库。
+            "price_in": getattr(row, "price_in", None),
+            "price_out": getattr(row, "price_out", None),
+            "price_cache_read": getattr(row, "price_cache_read", None),
+            "price_cache_write": getattr(row, "price_cache_write", None),
+            "currency": getattr(row, "currency", None) or "",
         }
 
     def list_configs(self, model_type: str | None = None) -> list[dict]:
@@ -396,6 +404,7 @@ class ModelManager:
                 secret_ref=payload.get("secret_ref"), enabled=True,
                 is_default=False, status="unknown",
                 key_mode=key_mode, provider_key_id=provider_key_id,
+                **_price_updates(payload),
             )
             sess.add(row)
             sess.flush()
@@ -417,6 +426,9 @@ class ModelManager:
                     setattr(row, field, payload[field])
             if "parameters" in payload and payload["parameters"] is not None:
                 row.parameters_json = _dumps(payload["parameters"])
+            # 单价 / 币种：显式传 null 就是"清空"（从此不计费），不传就是保持不动
+            for field, value in _price_updates(payload).items():
+                setattr(row, field, value)
             if "enabled" in payload and payload["enabled"] is not None:
                 row.enabled = bool(payload["enabled"])
             # provider 变了也要重新校验：不然改到 B 家、密钥还指着 A 家的行 = 跨家借密钥
@@ -544,6 +556,25 @@ def _key_selection(payload: dict, provider: str | None,
     if mode == "key" and not key_id:
         raise ValidationError("key_mode=key 必须同时指定 provider_key_id（否则不知道用哪把）")
     return mode, key_id
+
+
+def _price_updates(payload: dict) -> dict:
+    """校验并取出「单价 / 币种」这几个字段（**只返回请求里真的带了的**）。
+
+    为什么只取带了的：update 要能区分「没提这个字段」（保持不动）与
+    「显式传 null」（清空价格 = 从此不计费）。校验交给 billing 的 clean_price /
+    normalize_currency —— 那里是单价的唯一真源，非法值（负数 / 非数字 / 怪币种）一律
+    ValidationError，不静默改成 0（0 会变成"这次免费"，是错账不是默认值）。
+    """
+    from backend.services.model import billing
+
+    out: dict = {}
+    for name in billing.PRICE_FIELDS:
+        if name in payload:
+            out[name] = billing.clean_price(payload.get(name), name)
+    if "currency" in payload:
+        out["currency"] = billing.normalize_currency(payload.get("currency")) or None
+    return out
 
 
 def _dumps(obj) -> str:

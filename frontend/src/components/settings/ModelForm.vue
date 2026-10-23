@@ -118,6 +118,12 @@ const form = reactive({
   parametersText: '{}',
   enabled: true,
   is_default: false,
+  /* 计费：单价**每百万 Token**，币种空串 = 跟随厂商（'' / 'CNY' / 'USD'） */
+  currency: '',
+  price_in: '',
+  price_out: '',
+  price_cache_read: '',
+  price_cache_write: '',
 });
 
 const typesList = computed<string[]>(() => (props.types && props.types.length ? props.types : FORM_TYPES));
@@ -658,6 +664,100 @@ async function writeKey(): Promise<void> {
   }
 }
 
+/* ---------------------------- 计费（单价 / 币种） ----------------------------
+ * 单价**每百万 Token**，只认模型级（后端 billing.price_of 也不做厂商级继承：
+ * 猜出来的价会让账看起来对、其实错）；币种链是 模型 → 厂商 → CNY，所以"跟随厂商"
+ * 时要显示**解析出来的实际币种**，而不是让用户自己猜链子。
+ *
+ * 空的单价一律是 null（= 未计费），**绝不写成 0** —— 0 的含义是"这次免费"，
+ * 那是错账；未计费的含义是"不知道多少钱"，会单独进 unpriced 计数。
+ * 只配输入价或只配输出价时后端整体按未计费处理（priced 要求两个都有），
+ * 所以这里也不做"半算"，只给一句黄色提示。
+ */
+
+type PriceField = 'price_in' | 'price_out' | 'price_cache_read' | 'price_cache_write';
+const PRICE_FIELDS: PriceField[] = ['price_in', 'price_out', 'price_cache_read', 'price_cache_write'];
+const PRICE_LABEL: Record<PriceField, string> = {
+  price_in: '输入 Token 单价',
+  price_out: '输出 Token 单价',
+  price_cache_read: '缓存读单价',
+  price_cache_write: '缓存写单价',
+};
+
+const billingOpen = ref(false);
+
+const CURRENCY_SYMBOL: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€' };
+
+/** 厂商的默认币种：编辑时后端给的 currency_effective 最准（它已经把链子算完了） */
+const vendorCurrency = computed<string>(() => {
+  const providerCur = (selectedProvider.value as { currency?: string } | null)?.currency;
+  const target = props.mode === 'edit' ? (props.target as ModelConfig | null) : null;
+  return String(providerCur || target?.currency_effective || 'CNY').toUpperCase();
+});
+
+const effectiveCurrency = computed<string>(() => (form.currency || vendorCurrency.value).toUpperCase());
+const currencySymbol = computed<string>(() => CURRENCY_SYMBOL[effectiveCurrency.value] || effectiveCurrency.value + ' ');
+
+/** 单价字符串 → 数字：空 = 未配置（null），非法（非有限数 / 负数）= 报错。 */
+function parsePrice(raw: unknown): { ok: boolean; value: number | null } {
+  const s = String(raw ?? '').trim();
+  if (!s) return { ok: true, value: null };
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) return { ok: false, value: null };
+  return { ok: true, value: n };
+}
+
+function priceText(v: unknown): string {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : '';
+}
+
+const priceErrors = computed<string[]>(() =>
+  PRICE_FIELDS
+    .filter((key) => !parsePrice(form[key]).ok)
+    .map((key) => PRICE_LABEL[key] + '必须是非负数字（可以填小数，如 0.28）'));
+
+const priceError = computed<string>(() => priceErrors.value[0] || '');
+
+const priceIn = computed<number | null>(() => parsePrice(form.price_in).value);
+const priceOut = computed<number | null>(() => parsePrice(form.price_out).value);
+
+/** 只配了一半：后端 priced 要求输入价 + 输出价都在，缺一个整体算未计费。
+ *  非法输入（负数 / 非数字）先走红字报错，不再叠加这句"只配了一半"。 */
+const priceHalf = computed<boolean>(() => {
+  if (priceError.value) return false;
+  return (priceIn.value == null) !== (priceOut.value == null);
+});
+const priceConfigured = computed<boolean>(() => priceIn.value != null && priceOut.value != null);
+
+function moneyText(v: number): string {
+  return currencySymbol.value + Number(v || 0).toFixed(2);
+}
+
+/** 实时算式：输入 1M + 输出 0.5M 的样例调用，跟着输入框变。 */
+const priceCalc = computed<{ text: string; warn: boolean }>(() => {
+  if (priceConfigured.value) {
+    const pin = Number(priceIn.value || 0);
+    const pout = Number(priceOut.value || 0);
+    const cost = pin * 1 + pout * 0.5;   // （输入 1M × 输入价 + 输出 0.5M × 输出价）÷ 1M
+    const text = '（输入 1M × ' + moneyText(pin) + ' + 输出 0.5M × ' + moneyText(pout) + '）÷ 1M = ' + moneyText(cost);
+    return { text, warn: false };
+  }
+  if (priceHalf.value) return { text: '只配了一半 → 仍按未计费处理', warn: true };
+  return { text: '', warn: false };
+});
+
+/** 折叠状态下的一句话摘要 */
+const billingSummary = computed<string>(() => {
+  if (priceError.value) return '单价非法';
+  if (priceConfigured.value) {
+    return '入 ' + moneyText(priceIn.value || 0) + ' · 出 ' + moneyText(priceOut.value || 0) + ' / 1M';
+  }
+  if (priceHalf.value) return '只配了一半';
+  return '未配置单价';
+});
+
 /* ---------------------------- 初始化 / 切换提供方 ---------------------------- */
 
 function resetTransient(): void {
@@ -683,6 +783,7 @@ function resetTransient(): void {
   keyBusy.value = false;
   connEditing.value = false;
   advanced.value = false;
+  billingOpen.value = false;
   testState.value = 'idle';
   testMessage.value = '';
   saveState.value = 'idle';
@@ -719,6 +820,12 @@ async function init(): Promise<void> {
       parametersText: JSON.stringify(t.parameters || {}, null, 2),
       enabled: t.enabled !== false,
       is_default: t.is_default === true,
+      /* 后端回 '' = 跟随厂商；单价回 null = 没配过（显示成空框，绝不写成 0） */
+      currency: t.currency || '',
+      price_in: priceText(t.price_in),
+      price_out: priceText(t.price_out),
+      price_cache_read: priceText(t.price_cache_read),
+      price_cache_write: priceText(t.price_cache_write),
     });
     keyChoice.value = t.key_mode === 'none'
       ? 'none'
@@ -942,6 +1049,11 @@ function submit(): void {
     const bad = levelError();
     if (bad) { advanced.value = true; fail(bad); return; }
   }
+  if (priceError.value) {
+    billingOpen.value = true;
+    fail(priceError.value);
+    return;
+  }
   const payload: Record<string, unknown> = {
     name: form.name.trim(),
     provider: form.provider.trim(),
@@ -953,6 +1065,13 @@ function submit(): void {
     provider_key_id: keyMode.value === 'key' ? keyChoice.value : null,
     is_default: !!form.is_default,
     parameters,
+    /* 计费：五个键**每次都发**——后端"不传 = 不动"，显式 null 才代表"清空"。
+       空框在这里就是 null（未计费），不会变成 0（0 是"免费"，两回事）。 */
+    currency: form.currency || null,
+    price_in: parsePrice(form.price_in).value,
+    price_out: parsePrice(form.price_out).value,
+    price_cache_read: parsePrice(form.price_cache_read).value,
+    price_cache_write: parsePrice(form.price_cache_write).value,
   };
   if (props.mode === 'edit') payload.enabled = !!form.enabled;
   saveState.value = 'saving';
@@ -1302,6 +1421,55 @@ const advSummary = computed<string>(() => {
           </template>
         </div>
 
+
+        <!-- 计费：单价**每百万 Token**，默认折叠（大多数人第一次进来不配价）。
+             币种空串 = 跟随厂商，所以要把解析出来的实际币种写在选项里。 -->
+        <div class="billing">
+          <button
+            type="button" class="adv-toggle" data-billing-toggle
+            :aria-expanded="billingOpen" @click="billingOpen = !billingOpen"
+          >
+            <AppIcon :name="billingOpen ? 'chevron-up' : 'chevron-down'" :size="14" />
+            <span>计费（单价与币种）</span>
+            <span class="spacer"></span>
+            <span class="tiny faint" data-billing-summary>{{ billingSummary }}</span>
+          </button>
+          <template v-if="billingOpen">
+            <label class="field billing-cur">
+              <span>币种</span>
+              <select v-model="form.currency" data-billing-currency>
+                <option value="">跟随厂商（当前 {{ vendorCurrency }}）</option>
+                <option value="CNY">人民币 CNY</option>
+                <option value="USD">美元 USD</option>
+              </select>
+            </label>
+
+            <div class="billing-grid">
+              <label class="field">
+                <span>输入 Token 单价<em class="unit">每百万 Token</em></span>
+                <input v-model="form.price_in" inputmode="decimal" data-price="price_in" placeholder="如 2（算得出钱的前提）" />
+              </label>
+              <label class="field">
+                <span>输出 Token 单价<em class="unit">每百万 Token</em></span>
+                <input v-model="form.price_out" inputmode="decimal" data-price="price_out" placeholder="如 8（算得出钱的前提）" />
+              </label>
+              <label class="field">
+                <span>缓存读<em class="unit">每百万 Token · 可选</em></span>
+                <input v-model="form.price_cache_read" inputmode="decimal" data-price="price_cache_read" placeholder="可选，服务商提供该计价规则时填写" />
+              </label>
+              <label class="field">
+                <span>缓存写<em class="unit">每百万 Token · 可选</em></span>
+                <input v-model="form.price_cache_write" inputmode="decimal" data-price="price_cache_write" placeholder="可选，服务商提供该计价规则时填写" />
+              </label>
+            </div>
+
+            <p class="calc-line" :class="{ warn: priceCalc.warn }" v-if="priceCalc.text" data-billing-calc>{{ priceCalc.text }}</p>
+            <p class="err-line" v-if="priceError" data-billing-error>{{ priceError }}</p>
+            <p class="warn-line" v-else-if="priceHalf" data-billing-half>只配了一半 → 仍按未计费处理：费用统计里不会出现金额。</p>
+            <p class="hint-line" v-else-if="!priceConfigured" data-billing-none>未配置单价：该模型的调用会被记为未计费，费用统计为 0 条。</p>
+          </template>
+        </div>
+
         <p class="err-line" v-if="formError" data-form-error>{{ formError }}</p>
       </section>
 
@@ -1573,6 +1741,24 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .lv-row input { width: 100%; height: var(--control-h-sm); min-width: 0; font-size: calc(12.5px * var(--ts, 1)); }
 .lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
 .lv-foot { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ④-b 计费：与「推理强度」并列的一块，折叠时只占一行 */
+.billing { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.billing-cur { max-width: 320px; }
+.billing-cur select { max-width: none; }
+.billing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; min-width: 0; }
+.billing-grid .field { min-width: 0; }
+.billing-grid .field > span { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.billing-grid .unit {
+  font-style: normal; font-weight: 500; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
+}
+.billing-grid input { max-width: none; }
+.calc-line {
+  margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5;
+  color: var(--text-dim); font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.calc-line.warn { color: var(--warn); }
+
 
 /* ⑤ 测试并保存：两列紧凑小行（图标 + 名称 + 状态），不堆成一长条 */
 .check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }

@@ -46,15 +46,27 @@ async def model_types(request: Request):
 
 
 @router.get("/models/usage/stats")
-async def model_usage_stats(request: Request, days: int = Query(14)):
-    """模型 token 消耗：总消耗 / 今日 / 按天折线 / 分模型排行。
+async def model_usage_stats(request: Request,
+                            window: str = Query("7d"),
+                            vendor: str = Query("all"),
+                            model: str = Query("all"),
+                            group: str = Query("model")):
+    """模型用量统计：多维系列 + 按小时/按天分桶 + 可筛选（契约见 usage_stats.stats）。
 
-    days 夹到 1..90（契约见 ``services/model/usage_stats.stats``）：
-    days 连续零填充、从旧到新、长度正好 days；by_model 按 total 降序。
+    · window：24h | 7d | 14d | 30d（默认 7d）。24h 是**小时桶**，
+      不是把日数据摊成小时（那样折线会像"一整天的量全堆在某一小时"）；
+    · vendor：厂商 id 或 all；model：统计身份键（cfg:<id> / gone:<model_name>）
+      逗号分隔，或者 all；
+    · group：model | vendor（默认 model）。
+    · 筛选只影响 series / totals：filters 永远是窗口内全量（否则下拉框一选就把自己筛没）；
+      空库与查询异常都返回**合法空结构**（空 series、零 totals），不抛 500。
+
+    金额按币种分开返回（cost 是 {币种: 金额} 字典）—— **人民币与美元永不直接相加**。
     """
     from backend.services.model import usage_stats
 
-    return envelope(usage_stats.stats(days), request=request)
+    return envelope(usage_stats.stats(window=window, vendor=vendor, model=model,
+                                      group=group), request=request)
 
 
 # ⚠️ `/models/providers`、`/models/{provider_id}/keys`、`/models/keys` 这些都必须声明在
