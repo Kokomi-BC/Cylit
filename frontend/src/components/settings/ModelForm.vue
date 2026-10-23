@@ -82,13 +82,8 @@ const STEPS = [
 const step = ref<number>(1);
 /** 已走到过的最远一步：回退时不超过它（防止跳步绕过校验） */
 const reached = ref<number>(1);
-
-/** 标题下那一行说明：只交代这个弹窗在干什么，不重复步骤条上的文字。 */
-const flowSub = computed<string>(() => (
-  props.mode === 'edit'
-    ? '改的是已有配置：显示名称、Model ID、用途都能改，保存后立即生效。'
-    : '按五步填完就能用；每一步都能退回，已填内容不会丢。'
-));
+/** 用户亲手改过「显示名称」没有：没改过就跟着 Model ID 自动填（不沿用上一次的记忆） */
+const nameTouched = ref(false);
 
 function goStep(n: number): void {
   if (n < 1 || n > 5) return;
@@ -384,12 +379,18 @@ async function fetchRemoteModels(): Promise<void> {
   }
 }
 
-/** 选中一条时：model_name 只写 id；name 只在还空着时兜底，之后用户改 name 不动 model_name。 */
+/** 选中一条时：model_name 写 id；显示名称在用户没亲手改过时自动跟着这条 ID 走。 */
 function pickModelId(id: string): void {
   form.model_name = id;
-  if (!form.name.trim()) form.name = id;
+  syncNameFromModel(id);
   modelPopOpen.value = false;
   modelQuery.value = '';
+}
+
+/** 显示名称跟随 Model ID：没亲手改过、或者已经清空 → 自动填成 ID（换一条就跟着换）。 */
+function syncNameFromModel(id: string): void {
+  if (nameTouched.value && form.name.trim()) return;
+  form.name = String(id || '').trim();
 }
 
 function placeModelPop(): void {
@@ -690,6 +691,7 @@ async function init(): Promise<void> {
   reached.value = 1;
 
   const editing = props.mode === 'edit' && !!props.target;
+  nameTouched.value = editing;
   if (editing && props.target) {
     const t = props.target as ModelConfig & {
       key_mode?: string | null;
@@ -760,7 +762,6 @@ watch(() => props.open, (v) => {
 
 /** 选一家提供方：清掉跨提供方的选择（密钥 + 已填 Model ID），再进第二步。 */
 async function pickProvider(p: ProviderRow): Promise<void> {
-  const oldModel = form.model_name;
   customMode.value = false;
   selectedProviderId.value = p.id;
   form.provider = p.id;
@@ -770,7 +771,8 @@ async function pickProvider(p: ProviderRow): Promise<void> {
   form.provider_key_id = '';
   keyChoice.value = 'auto';
   form.model_name = '';
-  if (form.name.trim() === oldModel.trim()) form.name = '';
+  form.name = '';
+  nameTouched.value = false;
   probeOptions.value = [];
   probeError.value = '';
   probeHost.value = '';
@@ -968,8 +970,6 @@ const advSummary = computed<string>(() => {
     @close="emit('close')"
   >
     <div class="flow">
-      <p class="flow-sub">{{ flowSub }}</p>
-
       <!-- 步骤条：一行文字 + 18px 序号圆，只有走过的步骤能点回去 -->
       <nav class="steps" aria-label="步骤">
         <template v-for="(s, i) in STEPS" :key="s.id">
@@ -1122,7 +1122,6 @@ const advSummary = computed<string>(() => {
               <button type="button" class="btn sm ghost" data-key-new @click="newKeyOpen = !newKeyOpen">
                 <AppIcon name="add" :size="13" />新建密钥
               </button>
-              <span class="tiny faint">明文只写进本机密钥库，界面永不回显</span>
             </div>
 
             <div class="key-new" v-if="newKeyOpen">
@@ -1163,9 +1162,11 @@ const advSummary = computed<string>(() => {
         <div class="fields">
           <div class="fgroup">
             <label class="field">显示名称
-              <input v-model="form.name" placeholder="界面上显示的名字" data-model-name />
+              <input
+                v-model="form.name" placeholder="界面上显示的名字" data-model-name
+                @input="nameTouched = true"
+              />
             </label>
-            <p class="hint-line">显示名称可随便改，不会改变下面的 Model ID。</p>
           </div>
 
           <!-- .model-field 不是样式钩子：onDocPointer 靠它判断「点在字段里不算点外面」 -->
@@ -1183,6 +1184,7 @@ const advSummary = computed<string>(() => {
                 v-model="form.model_name" class="mono" spellcheck="false"
                 placeholder="点右侧箭头选，或直接手填" data-model-id-input
                 @focus="placeModelPop"
+                @input="syncNameFromModel(form.model_name)"
               />
               <button
                 type="button" class="mf-caret" :disabled="!probeOptions.length"
@@ -1195,6 +1197,7 @@ const advSummary = computed<string>(() => {
               <input
                 v-model="form.model_name" class="mono" spellcheck="false"
                 placeholder="如 deepseek-chat" data-model-id-manual
+                @input="syncNameFromModel(form.model_name)"
               />
             </div>
 
@@ -1413,7 +1416,7 @@ const advSummary = computed<string>(() => {
   display: flex; flex-direction: column;
   max-width: 560px; margin: 0 auto; min-width: 0;
 }
-.flow-sub { margin: 0 0 10px; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
+.flow > .steps { margin-top: 0; }
 
 /* 步骤条：序号圆 + 12px 文字 + 1px 连接线，整条 26px（远小于 36 的上限） */
 .steps { display: flex; align-items: center; flex: none; height: 26px; margin: 0 0 16px; min-width: 0; }
