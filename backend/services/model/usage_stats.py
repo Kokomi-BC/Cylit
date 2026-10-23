@@ -14,9 +14,11 @@ model_name / provider / model_type 反规范化存一份 —— 删掉一个模�
   也不能跟着变 —— 记账那一刻的金额是事实，事后按单价重算是估算；
 · 缺单价 = **未计费**（cost 为 NULL、billing='none'），绝不写 0。
 
-系列身份 = **模型的自定义名称**（model_config.name 去首尾空白）：名字相同就并成一条
-（token / 请求 / 费用相加，币种各算各的）；名字不同哪怕同一个上游 model_name 也是两条。
-model_name 只是展示字段；限制与限额仍按配置 id 走（不在这条链路上）。
+系列身份 = **(自定义名称, 厂商) 二元组**：名称与 provider 都相同才并成一条
+（token / 请求 / 费用相加，币种各算各的）；同名但厂商不同**必须分开成两条**
+（各自带自己的 provider / provider_label）—— 一条系列永远只属于一家厂商。
+名称不同哪怕同一个上游 model_name 也是两条。model_name 只是展示字段；
+限制与限额仍按配置 id 走（不在这条链路上）。
 
 查询契约见 GET /models/usage/stats（backend/api/models.py）：window / group /
 vendor / model 四个入参，返回 window + series + filters + totals。
@@ -47,16 +49,18 @@ WINDOWS: dict[str, tuple[str, int]] = {
     "30d": ("day", 30),
 }
 DEFAULT_WINDOW = "7d"
-#: 分组维度：按模型（name:<自定义名称>）或按厂商（vendor:<id>）
+#: 分组维度：按模型（name:<provider>/<自定义名称>）或按厂商（vendor:<id>）
 GROUPS = ("model", "vendor")
 ALL = "all"
 
-#: 模型级身份键前缀：**系列按用户起的自定义名称合并**（两条配置同名 = 一条线；
-#: 同一个上游 model_name 但名字不同 = 两条线）。出参里只会出现 name: 键，
-#: cfg: / gone: 仅作为筛选入参保留（老链接、老前端不能炸，见 _selector）。
+#: 模型级身份键前缀：**系列按 (自定义名称, 厂商) 合并** —— 键是 name:<provider>/<名称>。
+#: 用斜杠分隔是为了名称里带空格 / 中文时也不歧义；名称里的斜杠**不转义**
+#: （前端只把它当不透明键）。同名不同厂商 = 两个键 = 两条系列。
+#: 出参里只会出现 name: 键，cfg: / gone: 仅作为筛选入参保留（老链接、老前端不能炸，
+#: 见 _selector）。
 NAME_PREFIX = "name:"
-#: 合并系列横跨多个厂商时的落点：宁可说"多个厂商"，也不挑一个冒充
-MULTI_VENDOR_LABEL = "多个厂商"
+#: 没有厂商时键里的 provider 段（name:-/<名称>）：键必须始终有"斜杠前那一段"
+NO_PROVIDER = "-"
 UNKNOWN_MODEL_LABEL = "未知模型"
 
 #: 当前链路的来源标签。用 contextvar 而不是参数：record 是在 provider 代理里被调用的，
@@ -413,6 +417,15 @@ def _series_name(cfg, row_model_name: Any) -> str:
     return str(row_model_name or "").strip() or UNKNOWN_MODEL_LABEL
 
 
+def series_key(provider: Any, name: str) -> str:
+    """系列键 = name:<provider>/<自定义名称>（provider 为空时用 name:-/<名称>）。
+
+    斜杠只是分隔符，名称里的斜杠不转义 —— 前端把它当不透明键，别在这里解析回来。
+    """
+    pid = str(provider or "").strip() or NO_PROVIDER
+    return f"{NAME_PREFIX}{pid}/{name}"
+
+
 def _new_entry(key: str) -> dict:
     """一条合并系列的可累积状态（cells 最后由 by_provider 汇总得到）。"""
     return {"key": key, "label": None, "name": None, "cells": {}, "by_provider": {},
@@ -430,22 +443,19 @@ def _provider_has_price(entry: dict, pid: str) -> bool:
 def _derive(entry: dict, providers: dict) -> dict:
     """从 by_provider 推出对外字段（provider / provider_label / priced_now / currency / ...）。
 
-    单独成函数是因为**按厂商筛选**后要按"剩下的那些厂商"重算一遍
-    （合并系列里另一个厂商的贡献被去掉，钱自然要变小）。
+    单独成函数是因为**按厂商筛选**后要按"剩下的那一家"重算一遍
+    （by_provider 现在恒为一家 —— 键里已经带了 provider，见 series_key；
+    留着这层是为了 vendor= 筛选仍走同一条重建路径，group=vendor 折叠也不受影响）。
     """
     pids = list(entry["by_provider"])
     nonempty = [pid for pid in pids if pid]
-    entry["providers"] = nonempty
-    if len(nonempty) == 1:
-        entry["provider"] = nonempty[0]
-        entry["provider_label"] = _provider_label(nonempty[0], providers)
-    elif nonempty:
-        # 同名合并到多个厂商：不挑一个冒充，两个字段各自说清
-        entry["provider"] = None
-        entry["provider_label"] = MULTI_VENDOR_LABEL
-    else:
-        entry["provider"] = None
-        entry["provider_label"] = _provider_label(None, providers)
+    # providers 是**数组**（前端已按数组写），但键里带了 provider，所以恒为长度 1；
+    # 只有"整条行都没有厂商"这种退化情形才是空数组。
+    entry["providers"] = nonempty[:1]
+    pid = nonempty[0] if nonempty else None
+    # provider / provider_label 永远是非空的那**一家**：不再有"多个厂商"这种行
+    entry["provider"] = pid
+    entry["provider_label"] = _provider_label(pid, providers)
     # 两个字段**刻意并存**：
     # · priced_now = 现在就能算出金额（只认当前配了输入价与输出价）—— 限额引擎只认它，
     #   拿宽松的 has_price 去判会放行一个算不出钱的模型；同名合并时用 **AND**：
@@ -495,15 +505,15 @@ def _scope_to(entry: dict, keep: list[str]) -> dict:
 
 def _build_models(cells: dict[tuple, dict[str, dict]], configs: dict,
                   providers: dict, prices: dict) -> dict[str, dict]:
-    """把原始分组升成**模型级**统计身份，并按**自定义名称**把同名配置合并成一条。
+    """把原始分组升成**模型级**统计身份，并按 **(自定义名称, 厂商)** 合并同名同厂商的配置。
 
-    身份 = name:<model_config.name.strip()>（空名称回落行上的 model_name）。
-    同名就并成一条线：token / 请求 / 未计费相加，金额按币种**分别**相加（币种永不互加）。
-    同一个上游 model_name 但自定义名称不同 → 仍是两条线：model_name 只是展示字段，
-    用户起的名字才是"当着一条算"的那句承诺。
+    身份 = name:<provider>/<model_config.name.strip()>（空名称回落行上的 model_name）。
+    名称与 provider 都相同才并成一条线：token / 请求 / 未计费相加，金额按币种**分别**相加
+    （币种永不互加）。同名但**厂商不同 → 两条线**，各自带自己的 provider；
+    同一个上游 model_name 但自定义名称不同 → 也是两条线（model_name 只是展示字段）。
 
-    合并前的原始分组仍是 (config_id, model_name, provider)：provider 决定厂商维度
-    （group=vendor 与 vendor= 筛选要按厂商拆账，所以 by_provider 留着每个厂商的贡献），
+    合并前的原始分组仍是 (config_id, model_name, provider)：provider 现在**进了键**，
+    但 by_provider 这层留着（group=vendor 折叠与 vendor= 筛选都按它拆账），
     config_id 决定 cfg: 筛选与 model_config_ids 出参。
     """
     out: dict[str, dict] = {}
@@ -511,14 +521,14 @@ def _build_models(cells: dict[tuple, dict[str, dict]], configs: dict,
         cid = str(config_id) if config_id else ""
         cfg = configs.get(cid) if cid else None
         name = _series_name(cfg, model_name)
-        key = f"{NAME_PREFIX}{name}"
+        # 厂商身份：配置还在就以配置为准（用户可能改过 provider），否则用行上反规范化的值
+        pid = str((getattr(cfg, "provider", None) if cfg is not None else None)
+                  or provider or "")
+        key = series_key(pid, name)
         entry = out.get(key)
         if entry is None:
             entry = out[key] = _new_entry(key)
             entry["name"] = name
-        # 厂商身份：配置还在就以配置为准（用户可能改过 provider），否则用行上反规范化的值
-        pid = str((getattr(cfg, "provider", None) if cfg is not None else None)
-                  or provider or "")
         target = entry["by_provider"].setdefault(pid, {})
         for bucket_key, cell in bucket_cells.items():
             _merge(target.setdefault(bucket_key, _zero_totals()), cell)
@@ -552,8 +562,8 @@ def _build_models(cells: dict[tuple, dict[str, dict]], configs: dict,
 def _fold_vendors(models: dict[str, dict], providers: dict) -> dict[str, dict]:
     """模型级 → 厂商级（group=vendor）：同厂商的贡献合成一条，金额仍按币种分开。
 
-    合并系列可能横跨多个厂商（那条线的 provider 是 None），所以这里按 **by_provider 的贡献**
-    折叠，不能按 entry["provider"] 折 —— 否则多厂商那条会掉进一个空厂商桶里。
+    按 **by_provider 的贡献**折叠（不是按 entry["provider"]）：模型级条目恒为一家，
+    但这样折出来的厂商桶不依赖那条不变式，group=vendor 的折叠规则与改键前完全一致。
     """
     out: dict[str, dict] = {}
     for entry in models.values():
@@ -607,7 +617,8 @@ def _series_payload(entry: dict, buckets: list[dict], kind: str) -> dict:
         "label": entry.get("label") or UNKNOWN_MODEL_LABEL,
         "provider": entry.get("provider"),
         "provider_label": entry.get("provider_label") or "",
-        # 参与这条系列的厂商（去重、按出现顺序）；多厂商时 provider 是 None
+        # 参与这条系列的厂商：数组留在出参里（前端已按数组写），但键里带了 provider，
+        # 所以它恒为长度 1 —— provider / provider_label 说的就是那一家
         "providers": list(entry.get("providers") or []),
         "currency": entry.get("currency") or billing.DEFAULT_CURRENCY,
         "has_price": bool(entry.get("has_price")),
@@ -630,7 +641,8 @@ def _sort_key(payload: dict) -> tuple:
 def _filters(models: dict[str, dict], providers: dict) -> dict:
     """下拉框的数据源：**窗口内的全量**（不受 vendor/model 筛选影响）。
 
-    键与 series 同一套（name:<自定义名称>）：下拉里选中的那一条，就是图上的那一条。
+    键与 series 同一套（name:<provider>/<名称>）：下拉里选中的那一条，就是图上的那一条。
+    **一项 = 一个 (厂商, 名称) 组** —— 同名不同厂商是两项，各带自己的 provider。
     """
     models_out = []
     for entry in models.values():
@@ -654,7 +666,7 @@ def _filters(models: dict[str, dict], providers: dict) -> dict:
     vendors: dict[str, dict] = {}
     for row in models_out:
         entry = models[row["key"]]
-        # 合并系列可能横跨多个厂商：每个参与厂商的下拉里都要能挑到它
+        # 一条系列只属于一家厂商（键里带 provider），所以它只会进那一家的下拉
         for pid in (row["providers"] or [""]):
             vendor = vendors.setdefault(pid, {
                 "id": pid, "label": _provider_label(pid, providers),
@@ -669,19 +681,25 @@ def _filters(models: dict[str, dict], providers: dict) -> dict:
             "models": models_out}
 
 
-def _selector(model: Any) -> tuple[set[str], set[str]] | None:
-    """解析 model= → (要匹配的系列键, 要匹配的配置 id)。None = 不筛。
+def _selector(model: Any) -> tuple[set[str], set[str], set[str]] | None:
+    """解析 model= → (精确匹配的**系列键**, 按名称匹配的**系列名**, 要匹配的配置 id)。None = 不筛。
 
-    四种入参都认，老链接 / 老前端不会炸：
+    五种入参都认，老链接 / 老前端不会炸：
 
-    · name:<自定义名称> —— 现在的身份键；
+    · name:<provider>/<名称> —— 现在的身份键，**精确到一家**；
+    · name:<名称> —— 上一轮的写法（老链接 / 老前端）：返回**所有厂商**下叫这个名字的几条
+      （它们现在是各自独立的系列了）；
     · cfg:<config_id> —— 该配置**所在系列**（命中合并后的 name: 系列，而不是只留它自己那份）；
-    · gone:<model_name> —— 配置已删时的历史键（它的系列就是回落出的 name: 键）；
+    · gone:<model_name> —— 配置已删时的历史键（它的系列名就是回落出的 model_name）；
     · 裸值 —— 先当名称、再当 config id 试（老前端传的就是裸 config id）。
+
+    「系列名」单独拿出来的原因：键里现在带了 provider，老写法只给了名字，
+    只能拿名字去比（entry["name"]），不能拿键去比。
     """
     values = _parse_filter(model)
     if values is None:
         return None
+    keys: set[str] = set()
     names: set[str] = set()
     cfgs: set[str] = set()
     for value in values:
@@ -690,13 +708,18 @@ def _selector(model: Any) -> tuple[set[str], set[str]] | None:
         if prefix == "cfg":
             cfgs.add(rest.strip())
         elif prefix == "gone":
-            names.add(f"{NAME_PREFIX}{rest.strip()}")
+            names.add(rest.strip())
         elif prefix == "name":
-            names.add(f"{NAME_PREFIX}{rest.strip()}")
+            piece = rest.strip()
+            keys.add(f"{NAME_PREFIX}{piece}")
+            # 没有 "/" = 老写法（只给名字）：同名跨厂商的那几条**全都**要出来。
+            # 带 "/" 的是新键（name:<provider>/<名称>），只认上面那次精确匹配。
+            if "/" not in piece:
+                names.add(piece)
         else:
-            names.add(f"{NAME_PREFIX}{value}")
+            names.add(value)
             cfgs.add(value)
-    return names, cfgs
+    return keys, names, cfgs
 
 
 def _selected(entries: dict[str, dict], vendor: Any, model: Any,
@@ -715,8 +738,10 @@ def _selected(entries: dict[str, dict], vendor: Any, model: Any,
             # 但返回的仍然是**这条合并系列**（provider 归位成剩下那一个）
             picked = _derive(_scope_to(entry, keep), providers)
         if wanted is not None:
-            names, cfgs = wanted
-            if (picked["key"] not in names
+            keys, names, cfgs = wanted
+            # 三种命中任一即可：精确键（新写法）/ 系列名（老写法，跨厂商全出）/ 配置所在系列
+            if (picked["key"] not in keys
+                    and picked.get("name") not in names
                     and not (cfgs & set(picked.get("model_config_ids") or []))):
                 continue
         out.append(picked)
@@ -727,7 +752,8 @@ def stats(window: Any = DEFAULT_WINDOW, vendor: Any = ALL, model: Any = ALL,
           group: Any = "model") -> dict:
     """多系列 / 可筛选 / 按小时或按天分桶的用量统计（契约见 GET /models/usage/stats）。
 
-    三条不变量（身份 = name:<自定义名称>，同名即合并；cfg: / gone: 只作为入参兼容）：
+    三条不变量（身份 = name:<provider>/<自定义名称>，同名**且同厂商**才合并；
+    cfg: / gone: / 无 provider 段的 name: 只作为入参兼容）：
 
     · window.points 连续、从旧到新、长度正好是桶数；series[].points 与它**逐位对齐**；
     · 筛选只影响 series / totals，filters 永远是**窗口内的全量**

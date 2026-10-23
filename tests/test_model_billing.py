@@ -5,7 +5,7 @@
 · 单价 → 金额：每百万 Token 的公式、缓存拆分、半配价格、厂商回传费用；
 · 币种：人民币与美元各算各的，**永远不相加**（一个错账比缺一个功能严重得多）；
 · 周期边界：日 / 周（周一起）/ 月，跨月、跨年、周日与周一那两天；
-· 写入口径：幂等 request_id、小时桶落位、同名不同配置不合并、删配置后 gone: 仍在。
+· 写入口径：幂等 request_id、小时桶落位、同名但**不同厂商**不合并、删配置后 gone: 仍在。
 """
 
 from __future__ import annotations
@@ -436,7 +436,8 @@ def test_hour_window_buckets_a_three_hour_old_record(temp_db, monkeypatch):
     assert all(p["label"].endswith(":00") for p in points)
 
     series = out["series"][0]
-    assert series["key"] == "name:计时档"          # 身份 = 自定义名称，不是配置 id
+    # 身份 = (自定义名称, 厂商)：键 name:<provider>/<名称>，不是配置 id
+    assert series["key"] == "name:deepseek/计时档"
     landed = [p for p in series["points"] if p["requests"]]
     assert len(landed) == 1
     expected = billing.hour_key(stamp)
@@ -470,7 +471,7 @@ def test_series_identity_and_totals(temp_db):
     out = _stats(window="7d")
     series = out["series"][0]
 
-    assert series["key"] == "name:主力生成模型" and series["kind"] == "model"
+    assert series["key"] == "name:deepseek/主力生成模型" and series["kind"] == "model"
     assert series["label"] == "主力生成模型"
     assert series["model_name"] == "deepseek-chat"         # 展示字段，不参与身份
     assert series["provider"] == "deepseek"
@@ -504,8 +505,8 @@ def test_currencies_are_never_summed_together(temp_db):
     out = _stats(window="7d")
     by_key = {row["key"]: row for row in out["series"]}
 
-    assert by_key["name:人民币档"]["totals"]["cost"] == {"CNY": 2.0}
-    assert by_key["name:美元档"]["totals"]["cost"] == {"USD": 1.0}
+    assert by_key["name:deepseek/人民币档"]["totals"]["cost"] == {"CNY": 2.0}
+    assert by_key["name:openai/美元档"]["totals"]["cost"] == {"USD": 1.0}
     # 合计里两个币种各占一个键：3.0 这种数**不允许**出现
     assert out["totals"]["cost"] == {"CNY": 2.0, "USD": 1.0}
     assert out["currencies"] == ["CNY", "USD"]
@@ -527,7 +528,7 @@ def test_same_model_name_on_two_configs_is_not_merged(temp_db):
     out = _stats(window="7d")
     keys = sorted(row["key"] for row in out["series"])
 
-    assert keys == ["name:A", "name:B"]
+    assert keys == ["name:deepseek/A", "name:deepseek/B"]
     assert {row["label"] for row in out["series"]} == {"A", "B"}
     assert {tuple(row["model_config_ids"]) for row in out["series"]} == {("gen-a",), ("gen-b",)}
 
@@ -543,7 +544,7 @@ def test_deleted_config_falls_back_to_its_model_name(temp_db):
     out = _stats(window="7d")
 
     # 配置行没了就读不到自定义名称 → 身份回落到行上反规范化的 model_name
-    assert [row["key"] for row in out["series"]] == ["name:deepseek-chat"]
+    assert [row["key"] for row in out["series"]] == ["name:deepseek/deepseek-chat"]
     assert out["series"][0]["label"] == "deepseek-chat"
     assert out["series"][0]["totals"]["tokens_total"] == 11
     assert out["series"][0]["model_config_ids"] == []       # 已删除配置不在其中
@@ -568,8 +569,9 @@ def test_group_vendor_folds_models_and_keeps_filters_full(temp_db):
     assert vendor["totals"]["tokens_total"] == 33
     # filters 永远按模型级全量：按厂商看的时候也要能挑到具体模型
     assert sorted(row["key"] for row in out["filters"]["models"]) == \
-        ["name:A", "name:B"]
-    assert out["filters"]["vendors"][0]["models"] == ["name:A", "name:B"]
+        ["name:deepseek/A", "name:deepseek/B"]
+    assert out["filters"]["vendors"][0]["models"] == \
+        ["name:deepseek/A", "name:deepseek/B"]
 
 
 def test_filters_stay_full_when_a_filter_is_applied(temp_db):
@@ -584,7 +586,7 @@ def test_filters_stay_full_when_a_filter_is_applied(temp_db):
 
     out = _stats(window="7d", vendor="openai")
 
-    assert [row["key"] for row in out["series"]] == ["name:海外档"]
+    assert [row["key"] for row in out["series"]] == ["name:openai/海外档"]
     assert out["totals"]["tokens_total"] == 22
     # 下拉框数据源不受影响：否则选了 openai 就再也没法切回 deepseek
     assert len(out["filters"]["models"]) == 2
@@ -600,7 +602,7 @@ def test_model_filter_accepts_bare_config_id(temp_db):
     out = _stats(window="7d", model="gen-a")
 
     # 裸 config id 仍认 → 命中该配置所在的（合并后）系列
-    assert [row["key"] for row in out["series"]] == ["name:A"]
+    assert [row["key"] for row in out["series"]] == ["name:deepseek/A"]
 
 
 def test_priced_now_is_strict_while_has_price_keeps_the_history(temp_db):
@@ -636,21 +638,22 @@ def test_priced_now_is_strict_while_has_price_keeps_the_history(temp_db):
     filters = {row["key"]: row for row in out["filters"]["models"]}
 
     # ① 配了价
-    assert series["name:配了价"]["priced_now"] is True
-    assert series["name:配了价"]["has_price"] is True
+    assert series["name:deepseek/配了价"]["priced_now"] is True
+    assert series["name:deepseek/配了价"]["has_price"] is True
     # ② 单价清空、历史行带金额
-    assert series["name:改价前配过"]["priced_now"] is False
-    assert series["name:改价前配过"]["has_price"] is True
-    assert series["name:改价前配过"]["totals"]["cost"] == {"CNY": 6.0}
+    assert series["name:deepseek/改价前配过"]["priced_now"] is False
+    assert series["name:deepseek/改价前配过"]["has_price"] is True
+    assert series["name:deepseek/改价前配过"]["totals"]["cost"] == {"CNY": 6.0}
     # ③ 从没配价
-    assert series["name:从没配价"]["priced_now"] is False
-    assert series["name:从没配价"]["has_price"] is False
+    assert series["name:deepseek/从没配价"]["priced_now"] is False
+    assert series["name:deepseek/从没配价"]["has_price"] is False
     # ④ 配置已删：永远算不出价，历史账还在
-    assert series["name:deepseek-gone"]["priced_now"] is False
-    assert series["name:deepseek-gone"]["has_price"] is True
+    assert series["name:deepseek/deepseek-gone"]["priced_now"] is False
+    assert series["name:deepseek/deepseek-gone"]["has_price"] is True
 
     # filters.models 与 series 同口径
-    for key in ("name:配了价", "name:改价前配过", "name:从没配价", "name:deepseek-gone"):
+    for key in ("name:deepseek/配了价", "name:deepseek/改价前配过",
+                "name:deepseek/从没配价", "name:deepseek/deepseek-gone"):
         assert filters[key]["priced_now"] == series[key]["priced_now"]
         assert filters[key]["has_price"] == series[key]["has_price"]
 
@@ -673,7 +676,7 @@ def test_unknown_filter_selects_nothing_but_stays_valid(temp_db):
 
 
 # --------------------------------------------------------------------------
-# 查询：系列身份 = 自定义名称（同名合并）
+# 查询：系列身份 = (自定义名称, 厂商) 二元组（同名**且同厂商**才合并）
 # --------------------------------------------------------------------------
 
 
@@ -713,7 +716,7 @@ def test_two_configs_with_the_same_custom_name_are_merged(temp_db):
 
     assert len(out["series"]) == 1
     series = out["series"][0]
-    assert series["key"] == "name:DeepSeek 合并验证"        # 键 = strip 后的名称
+    assert series["key"] == "name:deepseek/DeepSeek 合并验证"   # 键 = provider + strip 后的名称
     assert series["label"] == "DeepSeek 合并验证"
     assert series["model_config_ids"] == ["gen-a", "gen-b"]  # 参与合并的两个配置
     assert series["providers"] == ["deepseek"]
@@ -751,10 +754,17 @@ def test_merged_series_keeps_currencies_apart(temp_db):
     assert series["totals"]["cost"] == {"CNY": 2.0, "USD": 1.0}
     assert 3.0 not in series["totals"]["cost"].values()      # 3.0 这种数不允许出现
     assert series["providers"] == ["deepseek"]               # 同一厂商，只是币种不同
+    # 同名同厂商但币种不同：仍是一条系列，cost 里两个币种各占一键（不相加）
+    assert series["provider"] == "deepseek" and series["providers"] == ["deepseek"]
+    assert series["priced_now"] is True                      # 两条都配了价 → AND 为 True
 
 
-def test_merged_series_across_vendors_says_multi_vendor(temp_db):
-    """同名但不同厂商：不挑一个冒充 —— provider=None、provider_label="多个厂商"。"""
+def test_same_name_across_vendors_stays_two_series(temp_db):
+    """同名但**不同厂商**：两条独立的系列，各自带自己的 provider（本轮核心断言）。
+
+    上一轮是"并成一条、provider=None、「多个厂商」"；现在身份是
+    (自定义名称, 厂商) 二元组 —— 同名同厂商才合并，同名不同厂商必须分开。
+    """
     _vendor("deepseek", label="DeepSeek", currency="CNY")
     _vendor("openai", label="OpenAI", currency="CNY")
     _config("ds-1", name="合并跨厂商", provider="deepseek", model_name="deepseek-chat",
@@ -769,38 +779,50 @@ def test_merged_series_across_vendors_says_multi_vendor(temp_db):
 
     out = _stats(window="7d")
 
-    assert len(out["series"]) == 1
-    series = out["series"][0]
-    assert series["providers"] == ["deepseek", "openai"]     # 去重 + 出现顺序
-    assert series["provider"] is None                        # 不挑一个冒充
-    assert series["provider_label"] == "多个厂商"
-    assert series["totals"]["cost"] == {"CNY": 5.0}
-    assert series["totals"]["tokens_total"] == 2_000_000
+    assert len(out["series"]) == 2
+    by_key = {row["key"]: row for row in out["series"]}
+    assert sorted(by_key) == ["name:deepseek/合并跨厂商", "name:openai/合并跨厂商"]
 
-    # 下拉框：两个厂商下都能挑到这一条（键就是同一个 name: 键）
-    filters = {row["key"]: row for row in out["filters"]["models"]}
-    assert filters["name:合并跨厂商"]["providers"] == ["deepseek", "openai"]
-    assert filters["name:合并跨厂商"]["model_config_ids"] == ["ds-1", "oa-1"]
-    assert filters["name:合并跨厂商"]["config_id"] is None    # 合并系列没有唯一配置
-    assert sorted(row["models"] for row in out["filters"]["vendors"]) == \
-        [["name:合并跨厂商"], ["name:合并跨厂商"]]
-
-    # vendor= 只保留该厂商的贡献：合并系列里另一厂商的贡献被真的去掉（金额随之变小）
-    only_ds = _stats(window="7d", vendor="deepseek")
-    assert len(only_ds["series"]) == 1
-    ds = only_ds["series"][0]
-    assert ds["key"] == "name:合并跨厂商"                     # 返回的仍是合并后的系列
-    assert ds["providers"] == ["deepseek"]
-    assert ds["provider"] == "deepseek"
-    assert ds["provider_label"] == "DeepSeek"
-    assert ds["totals"]["cost"] == {"CNY": 2.0}              # 5.0 → 2.0，少了另一家那份
+    ds = by_key["name:deepseek/合并跨厂商"]
+    oa = by_key["name:openai/合并跨厂商"]
+    # provider / provider_label 永远是非空的那一家 —— 不再有"多个厂商"这种行
+    assert ds["provider"] == "deepseek" and ds["provider_label"] == "DeepSeek"
+    assert oa["provider"] == "openai" and oa["provider_label"] == "OpenAI"
+    assert ds["providers"] == ["deepseek"]          # 数组仍是数组，但恒为长度 1
+    assert oa["providers"] == ["openai"]
+    assert ds["model_config_ids"] == ["ds-1"]       # 各自只含同一家的配置
+    assert oa["model_config_ids"] == ["oa-1"]
+    assert ds["label"] == oa["label"] == "合并跨厂商"
+    assert ds["totals"]["cost"] == {"CNY": 2.0}
+    assert oa["totals"]["cost"] == {"CNY": 3.0}
     assert ds["totals"]["tokens_total"] == 1_000_000
-    # filters 不受 vendor= 影响
-    assert len(only_ds["filters"]["models"]) == 1
+    assert oa["totals"]["tokens_total"] == 1_000_000
+    # 合计仍是全部相加（同一币种可以和）
+    assert out["totals"]["cost"] == {"CNY": 5.0}
+    assert out["totals"]["tokens_total"] == 2_000_000
+
+    # 下拉框：一项 = 一个 (厂商, 名称) 组 → 两项，各带自己的 provider
+    filters = {row["key"]: row for row in out["filters"]["models"]}
+    assert sorted(filters) == ["name:deepseek/合并跨厂商", "name:openai/合并跨厂商"]
+    assert filters["name:deepseek/合并跨厂商"]["provider"] == "deepseek"
+    assert filters["name:openai/合并跨厂商"]["provider"] == "openai"
+    assert filters["name:deepseek/合并跨厂商"]["model_config_ids"] == ["ds-1"]
+    assert filters["name:openai/合并跨厂商"]["model_config_ids"] == ["oa-1"]
+    assert filters["name:deepseek/合并跨厂商"]["config_id"] == "ds-1"
+    # 厂商下拉里各自只有自己那一条（不再两条都挂两个厂商）
+    assert sorted(row["models"] for row in out["filters"]["vendors"]) == \
+        [["name:deepseek/合并跨厂商"], ["name:openai/合并跨厂商"]]
+
+    # vendor= 现在就是"留下这家的系列"：不需要再扣掉别家的贡献
+    only_ds = _stats(window="7d", vendor="deepseek")
+    assert [row["key"] for row in only_ds["series"]] == ["name:deepseek/合并跨厂商"]
+    assert only_ds["series"][0]["totals"]["cost"] == {"CNY": 2.0}
+    # filters 不受 vendor= 影响（下拉框永远是窗口内全量）
+    assert len(only_ds["filters"]["models"]) == 2
 
 
 def test_model_filter_accepts_name_and_config_id(temp_db):
-    """model= 三种写法都认：name:<名称> / cfg:<id>（→ 该配置所在系列）/ 裸 id。"""
+    """model= 各种写法都认：name:<名称>（旧）/ cfg:<id>（→ 所在系列）/ 裸 id / gone:。"""
     _vendor("deepseek", label="DeepSeek")
     _config("gen-a", name="合并 A", model_name="deepseek-chat", price_in=1, price_out=2)
     _config("gen-b", name="合并 A", model_name="deepseek-reasoner", price_in=1, price_out=2)
@@ -813,25 +835,33 @@ def test_model_filter_accepts_name_and_config_id(temp_db):
     assert usage_stats.record(model_config_id="gen-c", provider="deepseek",
                               prompt_tokens=40, completion_tokens=4) is True
 
+    # 旧写法 name:<名称>（只给名字）：返回该名字下**所有厂商**的那几条（这里只有一家）
     by_name = _stats(window="7d", model="name:合并 A")
-    assert [row["key"] for row in by_name["series"]] == ["name:合并 A"]
+    assert [row["key"] for row in by_name["series"]] == ["name:deepseek/合并 A"]
     assert by_name["series"][0]["totals"]["tokens_total"] == 33
+
+    # 新写法 name:<provider>/<名称>：精确到一家
+    by_new = _stats(window="7d", model="name:deepseek/合并 A")
+    assert [row["key"] for row in by_new["series"]] == ["name:deepseek/合并 A"]
+    assert [row["key"] for row in
+            _stats(window="7d", model="name:openai/合并 A")["series"]] == []
 
     # cfg:<id> → 该配置**所在系列**（合并后返回的仍是 name: 系列，不是只剩它自己那份）
     by_cfg = _stats(window="7d", model="cfg:gen-gone-does-not-exist,cfg:gen-a")
-    assert [row["key"] for row in by_cfg["series"]] == ["name:合并 A"]
+    assert [row["key"] for row in by_cfg["series"]] == ["name:deepseek/合并 A"]
     assert by_cfg["series"][0]["model_config_ids"] == ["gen-a", "gen-b"]
 
     # 裸 id（老前端）等价于 cfg:
     assert [row["key"] for row in _stats(window="7d", model="gen-c")["series"]] == \
-        ["name:另一个"]
+        ["name:deepseek/另一个"]
 
-    # 老链接的 gone:<model_name>：它的系列就是回落出的 name: 键
+    # 老链接的 gone:<model_name>：它的系列名就是回落出的 model_name（跨厂商全出）
     assert [row["key"] for row in
-            _stats(window="7d", model="gone:合并 A")["series"]] == ["name:合并 A"]
+            _stats(window="7d", model="gone:合并 A")["series"]] == ["name:deepseek/合并 A"]
 
     assert _stats(window="7d", model="all")["series"] != []
     assert _stats(window="7d", model="name:没有人叫这个")["series"] == []
+    assert _stats(window="7d", model="name:deepseek/没有人叫这个")["series"] == []
 
 
 def test_deleted_config_row_merges_into_the_same_name_series(temp_db):
@@ -852,7 +882,7 @@ def test_deleted_config_row_merges_into_the_same_name_series(temp_db):
 
     assert len(out["series"]) == 1
     series = out["series"][0]
-    assert series["key"] == "name:deepseek-chat"
+    assert series["key"] == "name:deepseek/deepseek-chat"
     assert series["totals"]["tokens_total"] == 1_000_011
     assert series["totals"]["requests"] == 2
     # 6.0（历史行）+ 10*2/1e6 + 1*8/1e6 = 6.000028
@@ -862,6 +892,92 @@ def test_deleted_config_row_merges_into_the_same_name_series(temp_db):
     # 一条算不出价（已删）→ 整体 priced_now 为 False，历史金额仍是真账
     assert series["priced_now"] is False
     assert series["has_price"] is True
+
+
+def test_deleted_config_row_splits_by_provider(temp_db):
+    """已删配置的行：同名**同厂商**才并进去，**同名不同厂商**另起一条。
+
+    已删那侧读不到自定义名称，名字只能取行上留下的 model_name；厂商也一样取行上的
+    provider —— 身份是 (名称, 厂商) 二元组，所以这里必须分成两条。
+    """
+    _vendor("deepseek", label="DeepSeek")
+    _vendor("openai", label="OpenAI", currency="USD")
+    # 存活配置在 openai，名字与那行已删记录的 model_name 相同
+    _config("oa-live", name="历史同名", provider="openai", model_name="历史同名",
+            price_in=1, price_out=1, currency="USD")
+    assert usage_stats.record(model_config_id="oa-live", model_name="历史同名",
+                              provider="openai", prompt_tokens=10,
+                              completion_tokens=1) is True
+    _usage_row("ds-gone", "历史同名", provider="deepseek", cost=6.0, tokens_in=1_000_000)
+
+    out = _stats(window="7d")
+    by_key = {row["key"]: row for row in out["series"]}
+
+    assert sorted(by_key) == ["name:deepseek/历史同名", "name:openai/历史同名"]
+    gone = by_key["name:deepseek/历史同名"]
+    live = by_key["name:openai/历史同名"]
+    assert gone["provider"] == "deepseek" and gone["providers"] == ["deepseek"]
+    assert live["provider"] == "openai" and live["providers"] == ["openai"]
+    assert gone["model_config_ids"] == []              # 已删配置没有 id 可点
+    assert live["model_config_ids"] == ["oa-live"]
+    assert gone["totals"]["cost"] == {"CNY": 6.0}      # 历史金额仍是真账
+    assert gone["priced_now"] is False and gone["has_price"] is True
+    assert live["priced_now"] is True
+    # 合计按币种分开，永不相加
+    assert out["totals"]["cost"] == {"CNY": 6.0, "USD": 0.000011}
+    assert out["totals"]["tokens_total"] == 1_000_011
+
+
+def test_series_key_without_provider_keeps_the_dash_segment(temp_db):
+    """没有厂商的行：键里仍要有"斜杠前那一段" —— name:-/<名称>（前端只当不透明键）。
+
+    配置上的 provider 不可为空，但**行**上的 provider 可以是 NULL（老数据 / 旁路补录），
+    所以键格式不能假设它一定有值。
+    """
+    assert usage_stats.series_key("", "无厂商档") == "name:-/无厂商档"
+    assert usage_stats.series_key(None, "无厂商档") == "name:-/无厂商档"
+    assert usage_stats.series_key("deepseek", "无厂商档") == "name:deepseek/无厂商档"
+
+    _usage_row("no-config", "无厂商档", provider=None, cost=1.0)
+
+    out = _stats(window="7d")
+    series = out["series"][0]
+    assert series["key"] == "name:-/无厂商档"
+    assert series["providers"] == []               # 一家厂商都没有
+    assert series["provider"] is None
+    assert series["provider_label"] == "未知厂商"   # 但 label 永远不是空串
+
+
+def test_model_filter_separates_vendors_for_the_same_name(temp_db):
+    """model=：新键精确到一家；旧写法 name:<名称> 把该名字下所有厂商都交出来。"""
+    _vendor("deepseek", label="DeepSeek")
+    _vendor("openai", label="OpenAI")
+    _config("ds-1", name="筛选同名", provider="deepseek", model_name="deepseek-chat",
+            price_in=1, price_out=1)
+    _config("oa-1", name="筛选同名", provider="openai", model_name="gpt-x",
+            price_in=1, price_out=1)
+    _config("ds-2", name="筛选别的", provider="deepseek", model_name="deepseek-chat",
+            price_in=1, price_out=1)
+    for cid, provider in (("ds-1", "deepseek"), ("oa-1", "openai"), ("ds-2", "deepseek")):
+        assert usage_stats.record(model_config_id=cid, provider=provider,
+                                  prompt_tokens=10, completion_tokens=1) is True
+
+    # 新键：只那一条
+    one = _stats(window="7d", model="name:deepseek/筛选同名")
+    assert [row["key"] for row in one["series"]] == ["name:deepseek/筛选同名"]
+    assert one["series"][0]["provider"] == "deepseek"
+    # 旧写法（无 provider 段）：该名字下所有厂商的两条都出来
+    both = _stats(window="7d", model="name:筛选同名")
+    assert sorted(row["key"] for row in both["series"]) == \
+        ["name:deepseek/筛选同名", "name:openai/筛选同名"]
+    assert both["totals"]["tokens_total"] == 22
+    # cfg:<id> 仍选到它所在的那一条系列
+    by_cfg = _stats(window="7d", model="cfg:oa-1")
+    assert [row["key"] for row in by_cfg["series"]] == ["name:openai/筛选同名"]
+    # 逗号分隔也能混着给（新键 + cfg:）
+    mixed = _stats(window="7d", model="name:deepseek/筛选同名,cfg:ds-2")
+    assert sorted(row["key"] for row in mixed["series"]) == \
+        ["name:deepseek/筛选别的", "name:deepseek/筛选同名"]
 
 
 def test_priced_now_is_and_over_merged_configs(temp_db):
@@ -877,7 +993,7 @@ def test_priced_now_is_and_over_merged_configs(temp_db):
 
     out = _stats(window="7d")
     series = out["series"][0]
-    assert series["key"] == "name:半配价"
+    assert series["key"] == "name:deepseek/半配价"
     assert series["priced_now"] is False        # AND：gen-free 算不出钱
     assert series["has_price"] is True          # 但历史行真的带过金额
     assert series["totals"]["unpriced"] == 1

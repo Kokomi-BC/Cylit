@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.repositories.mysql import session as db_session
-from backend.repositories.mysql.models import Base, ModelUsage
+from backend.repositories.mysql.models import Base, ModelConfig, ModelUsage
 from backend.services.model import billing, usage_stats
 
 
@@ -106,7 +106,7 @@ def test_same_custom_name_merges_inside_hour_buckets(temp_db):
 
     assert len(out["series"]) == 1
     series = out["series"][0]
-    assert series["key"] == "name:同名小时档"
+    assert series["key"] == "name:deepseek/同名小时档"
     assert series["model_config_ids"] == ["gen-a", "gen-b"]
     assert series["totals"]["tokens_total"] == 15
     assert series["totals"]["unpriced"] == 2          # 两条都没配价，各自记一次
@@ -114,6 +114,42 @@ def test_same_custom_name_merges_inside_hour_buckets(temp_db):
     index = [p["key"] for p in out["window"]["points"]].index(hour_key)
     assert series["points"][index]["tokens_total"] == 15
     assert sum(p["requests"] for p in series["points"]) == 2
+
+
+def test_same_name_on_two_providers_stays_two_series_in_hour_window(temp_db):
+    """24h 小时桶里也一样：同名**同厂商**合并，同名**不同厂商**是两条系列。
+
+    分桶与合并不许互相干扰：同名不同厂商的两笔各自落在自己的桶里，
+    合并只发生在 (名称, 厂商) 相同的那些行之间。
+    """
+    stamp = billing.to_utc(billing.local_now() - timedelta(hours=2))
+    hour_key = billing.hour_key(stamp)
+    with db_session.session_scope() as sess:
+        for cid, name, pid, tokens in (("gen-a", "跨厂商小时档", "deepseek", 10),
+                                       ("gen-b", "跨厂商小时档", "deepseek", 5),
+                                       ("gen-c", "跨厂商小时档", "openai", 7)):
+            sess.add(ModelConfig(id=cid, name=name, provider=pid,
+                                 model_type="generation", model_name="same-upstream"))
+            sess.add(ModelUsage(
+                model_config_id=cid, model_name="same-upstream", provider=pid,
+                source="translate", prompt_tokens=tokens, completion_tokens=0,
+                total_tokens=tokens, currency="CNY", cost=None, billing="none",
+                created_at=stamp, day=date.fromisoformat(billing.local_day(stamp)),
+                hour_key=hour_key))
+
+    out = usage_stats.stats("24h")
+
+    by_key = {row["key"]: row for row in out["series"]}
+    assert sorted(by_key) == ["name:deepseek/跨厂商小时档", "name:openai/跨厂商小时档"]
+    ds, oa = by_key["name:deepseek/跨厂商小时档"], by_key["name:openai/跨厂商小时档"]
+    assert ds["model_config_ids"] == ["gen-a", "gen-b"]   # 同名同厂商 → 合并
+    assert ds["totals"]["tokens_total"] == 15
+    assert oa["provider"] == "openai" and oa["providers"] == ["openai"]
+    assert oa["model_config_ids"] == ["gen-c"]            # 同名不同厂商 → 分开
+    assert oa["totals"]["tokens_total"] == 7
+    index = [p["key"] for p in out["window"]["points"]].index(hour_key)
+    assert ds["points"][index]["tokens_total"] == 15      # 合并进同一个小时桶
+    assert oa["points"][index]["tokens_total"] == 7
 
 
 def test_record_swallows_db_failure(temp_db, monkeypatch):
