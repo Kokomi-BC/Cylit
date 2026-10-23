@@ -64,8 +64,10 @@ const SECTIONS = [
   { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '按任务分配模型，密钥收在各提供方里' },
   // 「论文问答」→「Agent 设置」：这一区管的是**对话 Agent 本身**（技能 / 风格 / 运行上限），
   // 与「模型」（提供方、密钥、任务分类映射）职责不同，两者各自独立、不合并。
-  { id: 'agent', label: 'Agent 设置', icon: 'chat', group: '智能与模型', desc: '调对话的技能、说话风格与运行上限' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '管理论文索引、向量检索及索引数据状态' },
+  // 图标换掉 `chat`：那枚是侧栏「AI 对话」的图标，两个入口长一样。改用专用的机器人头（见 AppIcon 的 agent）。
+  { id: 'agent', label: 'Agent 设置', icon: 'agent', group: '智能与模型', desc: '调对话的技能、说话风格与运行上限' },
+  // 图标同理：`knowledge`（知识图谱）是侧栏「知识库」的图标，索引管理改用数据库圆柱（AppIcon 的 index）。
+  { id: 'kb', label: '索引管理', icon: 'index', group: '内容与索引', desc: '管理论文索引、向量检索及索引数据状态' },
   // 任务队列归「内容与索引」：队列里跑的是导入 / 解析 / 建索引，改的是索引数据本身，
   // 归到「服务与系统」会让人以为它只管服务健康。只挪分类，页内排版与筛选一概不动。
   { id: 'tasks', label: '任务队列', icon: 'task', group: '内容与索引', desc: '看导入、解析等后台任务的进度' },
@@ -465,13 +467,12 @@ onMounted(async () => {
       <p class="settings-empty" v-if="!visibleSections.length">没有匹配的设置</p>
     </aside>
     <div class="settings-pane" ref="paneRef">
-      <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 9 个分节共用同一份模板 -->
+      <!-- 页头：图标 + 一个大标题（Windows 设置那种「一页一个大标题、不挂二级说明」）。
+           副标题整句去掉（用户口径 2026-12：移除二级说明）；desc 只留给左栏搜索的同义词匹配，
+           想知道这一区管什么，悬停标题即可（title 上挂着它）。 -->
       <header class="pane-head">
-        <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="15" /></span>
-        <div class="pane-head-text">
-          <h2>{{ activeSection.label }}</h2>
-          <p class="pane-desc">{{ activeSection.desc }}</p>
-        </div>
+        <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
+        <h2 :title="activeSection.desc">{{ activeSection.label }}</h2>
       </header>
 
     <!-- 首次加载 -->
@@ -680,16 +681,17 @@ onMounted(async () => {
      左 6 给焦点环留余量，右 24 顶替被删掉的那条竖发丝线（栏宽 208 因此留给可点项 178） */
   padding: 0 24px 12px 6px;
 }
-/* 左栏抬头：整页唯一的 h1，只比窗格标题（15）高一档，不抢内容。
+/* 左栏抬头：整页唯一的 h1，比右侧页头标题（22）小一档，不抢内容。
  *
  * 顶线要和右侧页头标题对齐 —— 两边都有半行距，字号不同就差出来了：
- *   右：em 顶 = 2（.pane-head 上留白）+ (15 × 1.35 − 15) / 2 ≈ 4.63px
- *   左：em 顶 = 2（下面这行 margin-top）+ (17 × 1.3 − 17) / 2 ≈ 2 + 2.55 = 4.55px
- * 差 0.08px，肉眼即齐。line-height 不能沿用继承的 1.55：那是 4.7px 半行距，
- * 比 4.6 还深，只有负留白才对得齐。 */
+ *   右：框顶 70（.pane-head 无上留白）+ 2.25（图标 32 撑起行高，27.5 的 h2 垂直居中）
+ *       + (22 × 1.25 − 22) / 2 = 72.25 + 2.75 ≈ 75
+ *   左：框顶 70 + 2（下面这行 margin-top）+ (18 × 1.3 − 18) / 2 = 72 + 2.7 ≈ 74.7
+ * 差 0.3px，肉眼即齐（实测 em 顶 75 / 74.7）。line-height 不能沿用继承的 1.55：
+ * 那是 4.5px 半行距，比 2.7 深，只有负留白才对得齐。 */
 .settings-rail-title {
   margin: 2px 0 12px; padding: 0 10px;
-  font-size: calc(17px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
+  font-size: calc(18px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
   line-height: 1.3;
 }
 /* 搜索框：与论文库那条同构（图标 + 无边框输入），整行铺满。
@@ -707,7 +709,7 @@ onMounted(async () => {
 .settings-search input {
   width: 100%; min-width: 0; height: 100%; padding: 0;
   border: 0; border-radius: 0; background: transparent; box-shadow: none;
-  font-size: calc(11.5px * var(--ts, 1));
+  font-size: calc(12px * var(--ts, 1));
 }
 .settings-search input:hover,
 .settings-search input:focus { background: transparent; border: 0; box-shadow: none; }
@@ -723,7 +725,7 @@ onMounted(async () => {
   display: flex; align-items: center; gap: 6px; width: 100%; height: 20px;
   margin: 14px 0 4px; padding: 0 10px;
   background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer;
-  font-family: inherit; font-size: calc(11px * var(--ts, 1)); font-weight: 650; letter-spacing: .02em;
+  font-family: inherit; font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; letter-spacing: .02em;
   color: var(--text-faint); text-align: left;
   transition: color var(--dur-fast) var(--ease);
 }
@@ -749,14 +751,14 @@ onMounted(async () => {
   display: flex; align-items: center; gap: 8px; width: 100%;
   height: var(--control-h); padding: 0 10px; border-radius: var(--r-sm);
   background: transparent; color: var(--text-dim);
-  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 /* 相邻项之间 2px：圆角 14 的行贴起来会连成一片。缝交给这条外边距而不是 nav 的 gap ——
    gap 会把分组标题上下那两条 16 / 6 也一起加宽。 */
 .settings-nav-item + .settings-nav-item { margin-top: 2px; }
 .settings-nav-item:hover { background: var(--bg-subtle); color: var(--text); }
-.settings-nav-item.active { background: var(--bg-hover); color: var(--text); font-size: calc(13px * var(--ts, 1)); font-weight: 650; }
+.settings-nav-item.active { background: var(--bg-hover); color: var(--text); font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; }
 /* 图标比文字暗一档：不选时是路标，选中时才升到强调色，视线跟着当前分区走 */
 .settings-nav-icon { flex: none; color: var(--text-faint); transition: color var(--dur-fast) var(--ease); }
 .settings-nav-item:hover .settings-nav-icon { color: var(--text-dim); }
@@ -785,21 +787,22 @@ onMounted(async () => {
    gap 办不到，负外边距那套算下来更难读。 */
 .settings-pane > * + * { margin-top: var(--sp-5); }
 .settings-pane > .pane-head + * { margin-top: var(--sp-4); }
-/* 页头：图标底 + 标题 + 一句说明。**不画分隔线** —— 抬头只是标签，
-   一根线会把它变成"表头"，还额外吃掉一档留白（首屏高度本来就紧）。 */
+/* 页头：图标底 + 大标题。**不画分隔线** —— 抬头只是标签，一根线会把它变成"表头"。
+   字号 22（原 15 + 一句副标题）：照 Windows 设置的做法，一页就一个大标题，下面直接进内容；
+   副标题那行删除后，首屏反而多出 18px 给内容。图标底也抬到 32，与大标题同一档重量。 */
 .pane-head {
   display: flex; align-items: center; gap: 10px;
-  padding: 2px 0 0;
+  padding: 0;
 }
 .pane-head-icon {
   display: grid; place-items: center; flex: none;
-  width: 28px; height: 28px; border-radius: var(--r-sm);
+  width: 32px; height: 32px; border-radius: var(--r-sm);
   background: var(--accent-soft); color: var(--accent-text);
 }
-/* 三档层次：标题（15 / 650）/ 一行副标题（11.5 / faint）/ 字段标签（dim 12，在分节里） */
-.pane-head-text { display: grid; gap: 2px; min-width: 0; }
-.pane-head h2 { margin: 0; font-size: calc(15px * var(--ts, 1)); font-weight: 650; line-height: 1.35; letter-spacing: -.01em; }
-.pane-desc { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
+.pane-head h2 {
+  margin: 0; min-width: 0;
+  font-size: calc(22px * var(--ts, 1)); font-weight: 650; line-height: 1.25; letter-spacing: -.02em;
+}
 
 /* 861–1024：.app-main 的内边距收成 14 / 56（base.css），高度算式得换一档，
    否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。

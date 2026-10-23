@@ -332,7 +332,9 @@ onMounted(() => {
               <h3 class="group-title">检索参数</h3>
               <div class="fields">
                 <div v-for="f in RAG_TOP" :key="f.key" class="field">
-                  <label class="field-label" :for="`rag-${f.key}`">{{ f.label }}</label>
+                  <!-- 逐行的说明整段去掉：这些字只是把标签再说一遍（用户口径 2026-12：
+                       「检索配置的冗余说明」）。有信息量的那半句留在 title 上，悬停仍可看。 -->
+                  <label class="field-label" :for="`rag-${f.key}`" :title="f.hint">{{ f.label }}</label>
                   <div class="ctl">
                     <input :id="`rag-${f.key}`" class="num-input" :class="{ invalid: !!errors[f.key] }"
                            type="number" step="1" inputmode="numeric" :min="f.min"
@@ -341,7 +343,6 @@ onMounted(() => {
                     <i class="unit">条</i>
                   </div>
                   <p v-if="errors[f.key]" class="field-hint err">{{ errors[f.key] }}</p>
-                  <p v-else class="field-hint" :title="f.hint">{{ f.hint }}</p>
                 </div>
               </div>
             </section>
@@ -352,15 +353,13 @@ onMounted(() => {
             <section class="group">
               <h3 class="group-title">重排参数</h3>
               <div class="fields">
-                <div class="field sw">
+                <div class="field sw" title="关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。">
                   <Switch v-model="rerankOn" :disabled="formDisabled">启用重排</Switch>
-                  <p class="field-hint" title="关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。">
-                    关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。
-                  </p>
                 </div>
 
                 <div class="field">
-                  <label class="field-label" :class="{ dimmed: !rerankOn }" for="rag-rerank">重排候选数量</label>
+                  <label class="field-label" :class="{ dimmed: !rerankOn }" for="rag-rerank"
+                         :title="rerankOn ? RAG_RERANK.hint : '关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。'">重排候选数量</label>
                   <div class="ctl">
                     <input id="rag-rerank" class="num-input" :class="{ invalid: !!errors.rag_top_n_rerank }"
                            type="number" step="1" inputmode="numeric" :min="RAG_RERANK.min"
@@ -369,10 +368,6 @@ onMounted(() => {
                     <i class="unit">条</i>
                   </div>
                   <p v-if="errors.rag_top_n_rerank" class="field-hint err">{{ errors.rag_top_n_rerank }}</p>
-                  <p v-else-if="!rerankOn" class="field-hint" title="关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。">
-                    关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。
-                  </p>
-                  <p v-else class="field-hint" :title="RAG_RERANK.hint">{{ RAG_RERANK.hint }}</p>
                 </div>
 
                 <!-- 重排模型：只读的一行字，不是输入框 —— 绑定的地方在「模型」页，这里再给个下拉就是两份绑定 -->
@@ -381,7 +376,8 @@ onMounted(() => {
                   <p class="model-name" :class="{ faint: !rerankerName }" :title="rerankerTitle">
                     {{ rerankerName || '未绑定' }}
                   </p>
-                  <p class="field-hint">在「模型」页的 reranker 类型里绑定</p>
+                  <!-- 只在未绑定时说"去哪绑"：绑好了还挂这行就是纯噪声 -->
+                  <p v-if="!rerankerName" class="field-hint">在「模型」页的 reranker 类型里绑定</p>
                   <p v-if="rerankerMock && reranker?.name" class="field-hint" :title="'当前是启发式占位：' + reranker.name">
                     当前是启发式占位（{{ reranker.name }}），不是真模型：只按词面重合度打分，检索结果会标注降级。
                   </p>
@@ -393,11 +389,8 @@ onMounted(() => {
             <section class="group">
               <h3 class="group-title">回答策略</h3>
               <div class="fields">
-                <div class="field sw">
+                <div class="field sw" title="检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。">
                   <Switch v-model="allowGeneral" :disabled="formDisabled">允许通用知识</Switch>
-                  <p class="field-hint" title="检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。">
-                    检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。
-                  </p>
                 </div>
               </div>
             </section>
@@ -405,7 +398,6 @@ onMounted(() => {
         </div>
 
         <div class="footer">
-          <p class="tiny faint note">改动需要点「保存」才生效；只影响新发起的检索，不改已有 chunk，不需要重建索引。</p>
           <div class="row actions">
             <button class="btn sm ghost" :disabled="!changed.length || formDisabled" @click="resetForm">撤销改动</button>
             <button class="btn primary sm" :disabled="!canSave" @click="save">
@@ -544,11 +536,10 @@ onMounted(() => {
   border-top: 1px solid var(--divider);
   padding-top: 8px;
 }
-.footer .note { flex: 1 1 auto; min-width: 0; text-align: left; }
 .actions { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; }
 
-/* 窄了：说明独占一行，按钮换到下一行仍靠右（margin-left: auto 在换行后同样生效）。 */
+/* 窄了：按钮换到下一行仍靠右（margin-left: auto 在换行后同样生效）。 */
 @container (max-width: 559px) {
-  .footer .note { flex: 1 1 100%; }
+  .actions { margin-left: auto; }
 }
 </style>
