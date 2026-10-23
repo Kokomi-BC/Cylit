@@ -528,8 +528,9 @@ async function testProvider(p: ProviderRow): Promise<void> {
 
 async function removeProvider(p: ProviderRow): Promise<void> {
   if (!(await askConfirm({
-    title: '删除提供方「' + (p.label || p.id) + '」？',
-    body: '还有模型挂在它上面时后端会拒绝删除，并把原因告诉你。',
+    title: '删除提供方',
+    target: p.label || p.id,
+    body: '还有模型挂在它上面时不能删',
     danger: true,
     confirmLabel: '删除',
   }))) return;
@@ -751,8 +752,9 @@ async function removeModel(m: ModelRow): Promise<void> {
       + (next?.name || next?.id || '（没有可用的了，该类型将不可用）') + '」。'
     : '';
   if (!(await askConfirm({
-    title: '删除模型配置「' + (m.name || m.id) + '」？',
-    body: [routeNote, '删除后这个配置就没了，不可撤销。'].filter(Boolean).join(' '),
+    title: '删除模型配置',
+    target: m.name || m.id,
+    body: [routeNote, '删除后不可恢复'].filter(Boolean).join(' '),
     danger: true,
     confirmLabel: '删除',
   }))) return;

@@ -59,7 +59,8 @@ function titleOf(kind?: string | null): string {
 .toast-host {
   position: fixed; top: calc(var(--header-h) + 16px + var(--toast-drop, 0px));
   right: 18px;
-  z-index: 200; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  /* 400：提示永远在最上层（弹窗 250 / 菜单 300 / 右键 360 都不会盖住它） */
+  z-index: 400; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   /* ⚠️ 宽度必须**给死**，不能用 max-width + 子项 width:100%：宿主是 fixed + right，
      宽度靠"收缩适应"，子项的 100% 就会算到错的基准上（实测卡片右边缘越出视口 2px）。 */
   width: min(420px, calc(100vw - 36px));

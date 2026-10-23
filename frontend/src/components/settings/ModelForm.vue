@@ -1522,7 +1522,7 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 
 /* 模型下拉：fixed 定位（见 placeModelPop），小屏也不出视口 */
 .model-pop {
-  position: fixed; z-index: 220; max-width: calc(100vw - 24px);
+  position: fixed; z-index: 260; max-width: calc(100vw - 24px);
   display: flex; flex-direction: column; min-height: 0; padding: 6px;
   border: 1px solid var(--border-strong); border-radius: var(--r-md);
   background: var(--bg-elev); box-shadow: var(--shadow-2);

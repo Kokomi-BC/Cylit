@@ -70,7 +70,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
 <style scoped>
 .modal-mask {
-  position: fixed; inset: 0; z-index: 150; display: flex; align-items: center; justify-content: center;
+  /* 250：必须高于提供方抽屉（180）与图片查看器（240）—— 否则从抽屉里点「删除密钥」，
+     确认框会落在抽屉**下面**，遮罩也压不住它（用户口径 2026-12-02）。
+     菜单（300）/右键（360）/选中菜单（340）仍在它之上，浮层不会被弹窗盖住。 */
+  position: fixed; inset: 0; z-index: 250; display: flex; align-items: center; justify-content: center;
   padding: 24px;
   background: color-mix(in srgb, var(--bg-sunken) 40%, rgba(12, 16, 24, .45));
   backdrop-filter: blur(3px);

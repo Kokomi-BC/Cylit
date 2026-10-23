@@ -1222,7 +1222,7 @@ async function submitRename() {
 function askDeleteOne(conv: AgentConversation) {
   confirming.value = {
     ids: [conv.conversation_id],
-    body: '删掉这个对话以及它的全部消息，不可恢复。',
+    body: '对话和它的全部消息都会删掉，不可恢复',
     target: conv.title || '未命名对话',
   };
 }
@@ -1231,7 +1231,7 @@ function askDeletePicked() {
   if (!picked.value.length) return;
   confirming.value = {
     ids: [...picked.value],
-    body: '删掉选中的这些对话以及它们的全部消息，不可恢复。',
+    body: '选中的对话和它们的全部消息都会删掉，不可恢复',
     target: picked.value
       .map(id => conversations.value.find(c => c.conversation_id === id)?.title || '未命名对话')
       .slice(0, 3).join('、') + (picked.value.length > 3 ? ` 等 ${picked.value.length} 个` : ''),

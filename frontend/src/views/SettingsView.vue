@@ -358,8 +358,8 @@ async function verifyMineru() {
 /** 清除 token：不可逆（要重新申请/粘贴），用原生 confirm 二次确认。 */
 async function clearMineruToken() {
   if (!(await askConfirm({
-    title: '清除已保存的 MinerU token？',
-    body: '清除后「在线解析」不可用，需要重新填入并验证。',
+    title: '清除 MinerU token',
+    body: '清除后「在线解析」不可用，需要重新填入',
     danger: true,
     confirmLabel: '清除',
   }))) return;

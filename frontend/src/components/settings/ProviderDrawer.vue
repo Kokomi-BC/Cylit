@@ -325,10 +325,11 @@ const block = ref<{ keyId: string; keyLabel: string; message: string; models: Mo
 async function removeKey(k: KeyRow): Promise<void> {
   const refs = refsOf(k.id);
   if (!(await askConfirm({
-    title: `删除密钥「${keyLabel(k)}」？`,
+    title: '删除密钥',
+    target: keyLabel(k),
     body: refs.length
-      ? `被 ${refs.length} 个模型引用：${refs.map((r) => r.name || r.id).join('、')}。被引用时后端会拒绝删除。`
-      : '删除后这条密钥就没了，不可撤销。',
+      ? `还被 ${refs.length} 个模型引用，需先解除引用`
+      : '删除后不可恢复',
     danger: true,
     confirmLabel: '删除',
   }))) return;
@@ -478,10 +479,9 @@ async function removeProvider(): Promise<void> {
   if (!p) return;
   const n = relatedModels.value.length;
   if (!(await askConfirm({
-    title: `删除提供方「${p.label || p.id}」？`,
-    body: n
-      ? `还有 ${n} 个模型挂在这家，后端会拒绝删除并告诉你还剩几个。`
-      : '删除后这条提供方记录就没了（已存的密钥不跟着删）。',
+    title: '删除提供方',
+    target: p.label || p.id,
+    body: n ? `还有 ${n} 个模型挂在它上面，需先改绑定` : '已存的密钥不跟着删',
     danger: true,
     confirmLabel: '删除',
   }))) return;

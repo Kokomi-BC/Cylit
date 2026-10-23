@@ -39,9 +39,10 @@ const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>();
 
 <template>
   <Modal :open="open" :title="title" narrow @close="emit('cancel')">
-    <p class="cf-text" v-if="body">{{ body }}</p>
-    <!-- 被操作对象单独一行、**不加底色块**：它是"哪个东西"的答案，一行加重字就够 -->
+    <!-- 顺序：先说「删哪个」（加重），再说「会发生什么」（弱化）。
+         反过来的话对象名落在最后一行，读起来像又一句补充说明（用户口径 2026-12-02）。 -->
     <p class="cf-target" v-if="target">{{ target }}</p>
+    <p class="cf-text" v-if="body">{{ body }}</p>
     <template #footer>
       <button class="btn" :disabled="busy" @click="emit('cancel')">{{ cancelLabel }}</button>
       <button class="btn" :class="danger ? 'danger solid' : 'primary'" :disabled="busy" @click="emit('confirm')">
@@ -52,14 +53,16 @@ const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>();
 </template>
 
 <style scoped>
-.cf-text {
-  margin: 0; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim);
-  line-height: 1.7; overflow-wrap: anywhere;
-}
 .cf-target {
-  margin: 10px 0 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 650;
-  color: var(--text); overflow-wrap: anywhere;
+  margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 650;
+  color: var(--text); line-height: 1.5; overflow-wrap: anywhere;
 }
+.cf-text {
+  margin: 6px 0 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim);
+  line-height: 1.6; overflow-wrap: anywhere;
+}
+/* 只有目标、没有说明时，也别把底部挤在一起 */
+.cf-target + .cf-text { margin-top: 6px; }
 /* 危险确认做成**实心红钮**：一个描边红字按钮在"确认删除"这一步太轻了 */
 .btn.danger.solid { background: var(--danger); border-color: transparent; color: #fff; box-shadow: none; }
 .btn.danger.solid:hover:not(:disabled) { background: var(--danger); filter: brightness(1.06); }
