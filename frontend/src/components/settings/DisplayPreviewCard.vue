@@ -4,6 +4,8 @@
  *
  * 这里的字号全部走 `calc(Npx * var(--ts, 1))`、字面走 `--display` / `--sans`，
  * 所以调上面的缩放、分类字号或字体族，这块当场跟着变 —— 不需要再写一套预览逻辑。
+ * 正文里那句 **真的 `mark.hl`** 同理：它就是阅读器里那枚标注本体（同一份 base.css 声明），
+ * 「高亮效果」一切换，这块立刻跟着换画法 —— 这是"预览"，不是画了一张像高亮的图。
  *
  * ⚠️ 整块 `aria-hidden` + `pointer-events: none`：它是**示例**，按钮点了不该真的发生什么。
  * 做一个点了有反应的假按钮，比不做预览更糟。
@@ -28,8 +30,10 @@
           <span class="pv-tag is-accent">论文</span>
         </div>
         <p class="sample-text">
-          这一段用来看字号与字体：正文按「分类字号 · 正文」渲染，标题走显示字体，
-          标签与按钮取主题的强调色。
+          这一段用来看字号与字体：正文按「分类字号 · 正文」渲染，
+          <mark class="hl yellow" data-preview-hl>标了黄的句子</mark>与
+          <mark class="hl" style="--hl-bg:#7ec8ff66;--hl-ink:#2f7fd4" data-preview-hl-custom>自定义色</mark>
+          都是阅读器里那枚标注本体 —— 换高亮效果会当场跟着变。
         </p>
         <div class="sample-tags">
           <span class="pv-tag is-accent">摘要</span>

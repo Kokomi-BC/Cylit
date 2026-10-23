@@ -10669,3 +10669,66 @@ attachments 至少要有一个`）。所以这一轮**后端一行都没改**，
 - `vue-tsc` 0 error、`npm run build` 通过、自检 `frontend_check.py --static` **21 PASS / 0 FAIL**。
 
 **测试数据已清**：任务统计回到 `cancelled 2 / completed 200 / failed 4`（total 206），与测试前逐项一致。
+
+### 94. 第九十四轮：「高亮效果」取代高级设置（荧光笔 / 下划线，全局 + 持久化）
+
+用户口径：右下角那块「高级设置」换掉，改成**真的有用**的东西 ——「高亮效果」二选一（荧光笔 / 下划线），
+要真的接上论文阅读器里已保存的标注，而不只是给设置页换张图。
+
+**一、偏好（本机，复用现有存储）**
+
+- `stores/appearance.ts` 新增 `highlight: 'marker' | 'underline'`，落成 `html[data-hl-style]`；
+  仍写同一个键 `cylit:appearance`（`{typography, motion, highlight}`），**只增字段不整份覆盖**；
+  老配置没有这个键 → 默认 `marker`（荧光笔）。`resetAppearance()` 一并回 marker。
+- 点一下即时生效并立刻落盘：没有「保存」按钮，所以也没有未保存态（与字体 / 动画同一套交互）。
+
+**二、画法只在一处定义（base.css）**
+
+- `mark.hl` 的底色改为**只从 `--hl-bg` 取**；10 个命名色各多一个 `--hl-ink`（同色实色）。
+  底色要透（不遮字形）、下划线要实（45% 的底色当线看不见），所以一个颜色两个值。
+- 新增两条规则：`html[data-hl-style="underline"] mark.hl` 撤底色、画 `text-decoration`（颜色取 `--hl-ink`，
+  粗细 `max(2px, .09em)`、`text-underline-offset: .2em`）；`html [data-hl-force="marker|underline"]`
+  让设置页那两张预览卡各自钉死一种画法 —— **预览与阅读器读同一份声明**，不是另画一套像的。
+- `text-decoration` 不进布局，`padding` 也没动：两种画法共用同一个行盒，切换时正文**不跳**。
+- `mark.hl` 加 `box-decoration-break: clone`：跨行时按行盒切开圆角与底色，不再是一块厚矩形。
+- 行间公式：公式不是文字，下划线模式改成 `box-shadow: inset 0 -2px 0 var(--hl-ink)` 压在色带底边 ——
+  `box-shadow` 不进布局，公式的行高与居中不因切换而变。
+
+**三、三个渲染处统一改成「设变量、不设 background」**
+
+内联 `background` 会压过 `html[data-hl-style="underline"]`，切换时只有命名色生效、任意色的标注还铺着底色。所以：
+`utils/domMarks.ts`（正文行 / PDF 文字层 / 公式，`makeMark`）、`composables/useMarkdown.ts`
+（Markdown 视图）、`views/NotesView.vue`（笔记页的引用原文）三处都改成写 `--hl-bg` / `--hl-ink`。
+
+**四、界面**
+
+- 新增 `components/settings/HighlightStyleCard.vue`：两张并排小卡（荧光笔 / 下划线），各带名字、一句说明、
+  **真的标注示例**（`<mark class="hl yellow">` + `data-hl-force`）。选中状态三件事一起说：
+  强调色描边 + 浅底 + 圆点里的勾 + 「已选中」—— 不只靠颜色。示例块 `margin-top: auto` 顶到底，两卡底边齐平。
+- `AppearancePanel`：第三行改 `1.1fr : 1fr` + `align-items: stretch`（两卡等高），`@container ≤820` 整行落单列。
+  原来 `align-items: start` 的「错落」正是右栏底部留白的来源。
+- `DisplayPreviewCard`：正文里加两枚**真标注**（命名色 + 自定义 hex 各一）作为联动预览，原有标题 / 标签 / 按钮一个没删。
+- 删除 `DisplayAdvancedCard.vue`（已无引用）。**没删的**：`stores/shellPrefs`（侧栏收展，另有入口）与
+  `appearance.motion` + `data-motion` 那套（细腻动画，默认开）。
+
+**五、验证（真浏览器 + 真标注）**
+
+- 设置页 1600×900（内容区 1122）：两卡 **246 / 246 等高**，两张示例卡各 244 宽、示例标注跨 **2 行**；
+  整页 `scrollH == clientH == 830`（仍是一屏）。1000 / 1200 宽：第三行落单列（690 / 722），示例卡仍并排（325 / 341），无横向溢出。
+- 点「下划线」→ `html[data-hl-style=underline]`；localStorage 写成
+  `{"typography":"system","motion":true,"highlight":"underline"}`（其它字段原样）；刷新后仍在。
+- 预览联动：预览里的命名色标注 `background → rgba(0,0,0,0)` + `underline`，自定义色标注 `--hl-ink: #2f7fd4` 保留。
+- 阅读器（`turboquant-online-vector-iclr-26`，2 条 orange 标注 / 24 个 mark 片段）：
+  荧光笔 `bg rgba(255,165,0,.26)`；下划线 `bg transparent` + `underline rgb(217,118,26)`、`2px`（= `--hl-ink` #d9761a，
+  **颜色语义保留**）。行高 23.14px、mark 高 17、整块高 116 —— 切换前后**逐项相同**（零布局位移）。
+- 公式色带：下划线模式下表现为色带底边的一条实线（截图确认）。
+- **PDF 文字层**：本库两条标注都是正文行锚点，PDF 层里没有真标注，所以用「真 base.css + PdfPage 那两条
+  层内覆盖（`color/-webkit-text-fill-color: transparent`）」在现场搭了个仿层验证：荧光笔 = 底色 0.26 且文字仍透明
+  （不会出现重影）；下划线 = 透明底 + `rgb(217,118,26)` / 2px 的线 —— `-webkit-text-fill-color: transparent`
+  **不影响装饰线**。这是本轮唯一用仿层验证而非真标注的一处，如实记于此。
+- **标注数据零变化**：切模式前后 `GET /highlights?paper_id=…` 的 id / color / start / end / block_id / page
+  完全一致（2 → 2，`same True`），没有新建、没有丢失。
+- `vue-tsc --noEmit` 0 error、`npm run build` 通过、自检 `frontend_check.py --static` **21 PASS / 0 FAIL**、控制台 0 error / 0 warning。
+
+**遗留**：「细腻动画」不再有设置入口（状态与 `data-motion` 逻辑保留，默认开）。若之后想要，可以并进
+「显示与排版」那张卡的第三列，而不是再开一张卡。

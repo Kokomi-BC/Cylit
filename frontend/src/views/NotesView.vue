@@ -177,9 +177,13 @@ function hlClass(color?: string | null): string {
   return color && COLOR_HEX[color] ? `hl ${color}` : 'hl yellow';
 }
 
-/** 自定义色的**内联底色**（class 只认名字）—— 与正文行 / PDF 文字层 / Markdown 三处同一口径。 */
+/** 自定义色的**内联变量**（class 只认名字）—— 与正文行 / PDF 文字层 / Markdown 三处同一口径：
+ *  `--hl-bg` 是荧光笔的 40% 底色，`--hl-ink` 是同色实线（下划线模式用它）。
+ *  写变量而不是 `background`：「高亮效果」切换靠 `html[data-hl-style]` 这条规则，内联 background 会盖住它。 */
 function hlStyle(color?: string | null): Record<string, string> {
-  return color && /^#[0-9a-fA-F]{6}$/.test(color) ? { background: `${color}66` } : {};
+  return color && /^#[0-9a-fA-F]{6}$/.test(color)
+    ? { '--hl-bg': `${color}66`, '--hl-ink': color }
+    : {};
 }
 
 /** 高亮挂在哪一面（三种锚点是三套位置模型，界面上要说清）。 */

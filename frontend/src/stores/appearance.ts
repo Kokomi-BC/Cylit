@@ -1,11 +1,14 @@
 /**
- * 显示偏好：**字体族 + 细腻动画**（本机偏好，只写 localStorage）。
+ * 显示偏好：**字体族 + 细腻动画 + 高亮画法**（本机偏好，只写 localStorage）。
  *
- * 两项都落成 `<html>` 上的 data 属性，再由 `styles/tokens.css` 里同名选择器接管：
+ * 三项都落成 `<html>` 上的 data 属性，再由样式层里同名选择器接管：
  * · `data-typo` 只换 `--sans` / `--display` 两个字面栈（`--mono` / `--serif` 不动 ——
  *   代码块与论文原文的字体是内容语义，不是阅读偏好）；
  * · `data-motion="off"` 把三个动效时长令牌归零。不逐处关 transition：新增组件总会漏一个，
- *   而归零令牌是一次性的、覆盖全站的。
+ *   而归零令牌是一次性的、覆盖全站的；
+ * · `data-hl-style="marker" | "underline"` 决定**已保存的文本标注**怎么画（`base.css` 的
+ *   `mark.hl` 一段）：荧光笔 = 半透明底色，下划线 = 只画一条线。标注数据一个字不动，
+ *   切的是渲染；`::selection`（浏览器里的临时选区）不归它管。
  *
  * ⚠️ 开关是**正向**的（「细腻动画」默认开），不是"减少动画"：用户来设置页是想让界面更好用，
  * 不该先看到一条"关掉 XX"的消极选项；关掉它只是给低配机器与晕动症留的退路。
@@ -21,15 +24,30 @@ export const TYPOGRAPHY_OPTIONS: ReadonlyArray<{ value: Typography; label: strin
   { value: 'serif', label: '宋体衬线' },
 ];
 
+/** 已保存标注的画法：`marker` = 荧光笔（半透明底色），`underline` = 下划线。 */
+export type HighlightStyle = 'marker' | 'underline';
+
+/** 设置页那两张并排的小卡就是照这份表渲染的（顺序 = 界面顺序）。 */
+export const HIGHLIGHT_OPTIONS: ReadonlyArray<{ value: HighlightStyle; label: string; desc: string }> = [
+  { value: 'marker', label: '荧光笔', desc: '半透明底色盖住文字，跨行也贴着行盒走' },
+  { value: 'underline', label: '下划线', desc: '只在文字下方画一条线，不铺底色' },
+];
+
 export const APPEARANCE_STORAGE_KEY = 'cylit:appearance';
 
-export const appearance = reactive<{ typography: Typography; motion: boolean }>({
+export const appearance = reactive<{ typography: Typography; motion: boolean; highlight: HighlightStyle }>({
   typography: 'system',
   motion: true,
+  /* 旧配置里没有这个字段：默认荧光笔（用户口径 2026-12） */
+  highlight: 'marker',
 });
 
 function isTypography(value: unknown): value is Typography {
   return value === 'system' || value === 'yahei' || value === 'serif';
+}
+
+function isHighlightStyle(value: unknown): value is HighlightStyle {
+  return value === 'marker' || value === 'underline';
 }
 
 /** 系统级「减少动态效果」是更强的意图：没存过偏好时按它给初值。 */
@@ -46,6 +64,9 @@ function load(): void {
     const raw = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) || 'null');
     if (raw && typeof raw === 'object') {
       appearance.typography = isTypography(raw.typography) ? raw.typography : 'system';
+      /* 老配置没这个字段 → 落在荧光笔（reactive 的初值）。**不整份覆盖**：只取认得的键，
+         读的时候也不会把别的偏好抹掉。 */
+      appearance.highlight = isHighlightStyle(raw.highlight) ? raw.highlight : 'marker';
       /* 老版本存的是反过来的 reduceMotion：读得到就换算，别让老用户的选择被静默抹掉 */
       if (typeof raw.motion === 'boolean') appearance.motion = raw.motion;
       else if (typeof raw.reduceMotion === 'boolean') appearance.motion = !raw.reduceMotion;
@@ -64,6 +85,8 @@ export function applyAppearance(): void {
   const root = document.documentElement;
   root.dataset.typo = appearance.typography;
   root.dataset.motion = appearance.motion ? 'on' : 'off';
+  /* `data-hl-style`：base.css 用它切「荧光笔 / 下划线」两种画法 */
+  root.dataset.hlStyle = appearance.highlight;
 }
 
 function commit(): void {
@@ -86,10 +109,18 @@ export function setMotion(next: boolean): void {
   commit();
 }
 
-/** 恢复默认：字体回系统栈、细腻动画回开。**不**重新跟随系统偏好 —— 用户点的是"恢复默认"。 */
+/** 换高亮画法：即时生效（写 `data-hl-style`），并立刻落盘 —— 标注数据一个字不动。 */
+export function setHighlight(next: HighlightStyle): void {
+  if (!isHighlightStyle(next) || next === appearance.highlight) return;
+  appearance.highlight = next;
+  commit();
+}
+
+/** 恢复默认：字体回系统栈、细腻动画回开、高亮回荧光笔。**不**重新跟随系统偏好 —— 用户点的是"恢复默认"。 */
 export function resetAppearance(): void {
   appearance.typography = 'system';
   appearance.motion = true;
+  appearance.highlight = 'marker';
   commit();
 }
 

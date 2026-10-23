@@ -209,10 +209,15 @@ function makeMark(color: string, id: string): HTMLElement {
   const c = String(color || '').trim();
   if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c)) {
     mark.className = 'hl';
-    mark.style.background = c.length === 7 ? `${c}66` : c;
+    /* 底色与线色都写成**自定义属性**（`base.css` 的 `mark.hl` 读它们）：
+       内联 `background` 会压过 `html[data-hl-style="underline"]` 那条规则，
+       「高亮效果」一切换就只剩命名色生效、任意色的标注还铺着底色。 */
+    mark.style.setProperty('--hl-bg', c.length === 7 ? `${c}66` : c);
+    mark.style.setProperty('--hl-ink', c);
   } else if (/^(?:rgba?|hsla?)\(/i.test(c)) {
     mark.className = 'hl';
-    mark.style.background = `color-mix(in srgb, ${c} 40%, transparent)`;
+    mark.style.setProperty('--hl-bg', `color-mix(in srgb, ${c} 40%, transparent)`);
+    mark.style.setProperty('--hl-ink', c);
   } else {
     mark.className = `hl ${c || 'yellow'}`;
   }

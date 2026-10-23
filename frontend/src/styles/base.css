@@ -83,22 +83,52 @@ a { color: var(--accent-text); text-decoration: none; }
  *     黑字却照画不误 → 叠加层把 DOM 文字也渲染出来，与画布字形叠成**重影**
  *     （用户报"pdf 添加高亮的叠加层显示文字的问题"）。
  * `inherit` 一改两治：正文里跟正文色、PDF 那一面跟 span 的透明。 */
-mark.hl { border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; color: inherit; }
+mark.hl {
+  border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; color: inherit;
+  /* 底色**只从变量取**：荧光笔 / 下划线两种画法都读 `--hl-bg` / `--hl-ink`，
+     渲染处（`domMarks` / `useMarkdown` / `NotesView`）于是只用设变量，不写死 background ——
+     内联 `background` 会压过下面 `html[data-hl-style="underline"]` 那条规则，切换就失效了。 */
+  background: var(--hl-bg, transparent);
+  /* 跨行时按**行盒**切开底色与圆角（`clone`）：一整块矩形会把行距一起糊上，
+     看着像贴了一张不干胶；切开后每一行各自带 padding 与圆角，才像真的荧光笔划过。 */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 /* 全站的 `mark`（高亮 / 搜索命中）都**只改底色、不改文字色**：UA 那句 `color: MarkText`
  * 是黑字，在深色主题下几乎看不见，在 PDF 文字层里还会把 DOM 文字画出来变成重影。
  * 这一条按"作者样式压过 UA 样式"生效，与上面 `mark.hl` 那句是同一件事的两道保险。 */
 mark { color: inherit; }
-mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); background: var(--hl-bg); }
-mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); background: var(--hl-bg); }
-mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); background: var(--hl-bg); }
-mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); background: var(--hl-bg); }
-mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); background: var(--hl-bg); }
+/* 每种颜色给**两个**值：`--hl-bg` 是荧光笔的底色（带 alpha，不遮字形），
+   `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。 */
+mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); --hl-ink: #d9a400; }
+mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); --hl-ink: #1f9e63; }
+mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); --hl-ink: #2f7fd4; }
+mark.hl.pink { --hl-bg: rgba(255, 150, 190, .38); --hl-ink: #d9558f; }
+mark.hl.purple { --hl-bg: rgba(140, 140, 140, .32); --hl-ink: #6b6b6b; }
 /* 色板扩到 alphaXiv 那 7 色（用户口径 2026-10-10）：旧名 pink/purple 保留 —— 存量高亮还在库里，
    渲染要认得；只是界面不再提供它们。 */
-mark.hl.red { --hl-bg: rgba(255, 0, 0, .22); background: var(--hl-bg); }
-mark.hl.orange { --hl-bg: rgba(255, 165, 0, .26); background: var(--hl-bg); }
-mark.hl.indigo { --hl-bg: rgba(75, 0, 130, .20); background: var(--hl-bg); }
-mark.hl.violet { --hl-bg: rgba(143, 0, 255, .22); background: var(--hl-bg); }
+mark.hl.red { --hl-bg: rgba(255, 0, 0, .22); --hl-ink: #d02b2b; }
+mark.hl.orange { --hl-bg: rgba(255, 165, 0, .26); --hl-ink: #d9761a; }
+mark.hl.indigo { --hl-bg: rgba(75, 0, 130, .20); --hl-ink: #4b0082; }
+mark.hl.violet { --hl-bg: rgba(143, 0, 255, .22); --hl-ink: #8f00ff; }
+/* 两种画法（用户口径 2026-12：「高亮效果」= 荧光笔 / 下划线，全局二选一）：
+ *   荧光笔 = 上面那条 `background: var(--hl-bg)`，默认；
+ *   下划线 = `<html data-hl-style="underline">` 时撤掉底色、只画一条线。
+ * `text-decoration` **不进布局**：行高、段距、断行位置一个都不变，所以切换时正文不会跳一下
+ * （为此连 `padding` 都不动 —— 两种画法共用同一个行盒）。
+ * 设置页那两张预览卡用 `data-hl-force="marker|underline"` 各自钉死一种画法，走的是**同一份声明**：
+ * 预览不能是"长得像"的另一套样式，否则用户切过去会看到不一样的观感。 */
+html[data-hl-style="underline"] mark.hl,
+html [data-hl-force="underline"] mark.hl {
+  background: transparent;
+  text-decoration: underline;
+  text-decoration-color: var(--hl-ink, var(--accent));
+  text-decoration-thickness: max(2px, .09em);
+  text-underline-offset: .2em;
+  text-decoration-skip-ink: auto;
+}
+/* 全局是下划线时，预览卡里那张「荧光笔」示例仍要画底色 → 这一条把它按回去 */
+html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); text-decoration: none; }
 /* 正文里的**引用标号**（`[2, 4, 10]`，`useMarkdown` 的 `cite` 行内扩展渲染的按钮）。
  *
  * 用户口径 2026-10-07：**长得要跟对话页那个跳转标号一样**（那是"这个方括号能点"的既有语言），
@@ -167,6 +197,13 @@ mark.hl.block { display: block; background: none; padding: 0; }
 mark.hl.block .katex > .katex-html {
   display: inline-block; background: var(--hl-bg);
   border-radius: var(--r-xs);
+}
+/* 下划线模式里的行间公式：公式不是文字，`text-decoration` 画不上去 —— 改成在色带底边压一条实线。
+ * 用 `box-shadow` 而不是 `border-bottom`：前者**不进布局**，公式的行高与居中不因切换而变。 */
+html[data-hl-style="underline"] mark.hl.block .katex > .katex-html {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 var(--hl-ink, var(--accent));
+  border-radius: 0;
 }
 mark.hl.block .katex > .tag { position: absolute; right: 0; }
 mark.hl.block .katex-display.leqno .katex > .tag { left: 0; right: auto; }

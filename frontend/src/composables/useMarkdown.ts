@@ -519,10 +519,11 @@ export function htmlWithHighlights(text: string, highlights: Highlight[], paperI
     /* 不加 `title`（用户口径 2026-10-08："移除浏览器悬浮 toast 内容"）：高亮是"悬浮就出笔记浮层"
        的那类元素，再叠一条浏览器原生提示只是噪音（编辑/删除入口在划词菜单与浮层里）。 */
     start: h.start, end: h.end,
-    /* 自定义色（`#rrggbb`）class 认不出来，得拼**内联底色**（与 `utils/domMarks` 同一口径，
-       `66` = 40%）；命名色照旧走 class。 */
+    /* 自定义色（`#rrggbb`）class 认不出来，得拼**内联变量**（与 `utils/domMarks` / `NotesView`
+       同一口径：`--hl-bg` = 40% 底色，`--hl-ink` = 实色线）；命名色照旧走 class。
+       不写内联 `background` —— 那样「高亮效果」切到下划线时，任意色的标注压不过内联样式。 */
     mark: /^#[0-9a-fA-F]{6}$/.test(String(h.color || ''))
-      ? `<mark class="hl" style="background:${h.color}66" data-hl="${h.id}">`
+      ? `<mark class="hl" style="--hl-bg:${h.color}66;--hl-ink:${h.color}" data-hl="${h.id}">`
       : `<mark class="hl ${h.color || 'yellow'}" data-hl="${h.id}">`,
   })), paperId);
   return html;
