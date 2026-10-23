@@ -232,7 +232,9 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
               <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
                 <span class="sw-paper" :style="{ background: t.preview.paper }">
                   <span class="sw-bar" :style="{ background: t.preview.accent }" />
+                  <span class="sw-line mid" :style="{ background: t.preview.ink }" />
                   <span class="sw-line" :style="{ background: t.preview.ink }" />
+                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
                   <span class="sw-line short" :style="{ background: t.preview.ink }" />
                 </span>
               </span>
@@ -273,7 +275,9 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
               <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
                 <span class="sw-paper" :style="{ background: t.preview.paper }">
                   <span class="sw-bar" :style="{ background: t.preview.accent }" />
+                  <span class="sw-line mid" :style="{ background: t.preview.ink }" />
                   <span class="sw-line" :style="{ background: t.preview.ink }" />
+                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
                   <span class="sw-line short" :style="{ background: t.preview.ink }" />
                 </span>
               </span>
@@ -431,11 +435,12 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
   padding-right: 4px;
   scrollbar-width: thin; scrollbar-gutter: stable;
 }
-/* 还原成原来的小卡：**色块在左、名字在右**，三列网格（用户口径 2026-12：
-   「还原为之前的卡片样式」）。三列是这一格该有的密度，窄了退两列。 */
+/* 竖卡：**色块在上、名字在下（左对齐）**，一排多个（用户口径 2026-12 第三次确认）。
+   轨道固定 88px —— 卡宽 ≈ 名字那么宽，不会拖成一条长条；auto-fill 自己决定一排几个
+   （760 宽排 8 个、440 排 4 个、328 排 3 个）。 */
 .pgroup {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px; align-content: start; min-width: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, 88px);
+  gap: 8px; align-content: start; justify-content: start; min-width: 0;
 }
 .group-label {
   grid-column: 1 / -1;
@@ -444,11 +449,11 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 }
 
 /* 一枚主题 = 色块 + 名字（+ 自定义的两枚小按钮，悬停才现身）。
-   名字是唯一文字：配色特征交给色块，不写「XX 底 · YY 强调」那种说明。 */
+   名字是唯一文字，**左对齐贴在色块下面**：配色特征交给色块，不写说明。 */
 .row {
   position: relative;
-  display: flex; align-items: center; gap: 9px;
-  min-width: 0; min-height: 44px; padding: 6px 8px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  min-width: 0; padding: 5px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-elev); color: var(--text); cursor: pointer;
   font-family: inherit; text-align: left;
@@ -468,47 +473,48 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 
 /* 色块：外框是 bg、内页是 paper，上面一根强调条（就是一套皮肤的样子） */
 .sw {
-  flex: none; width: 32px; height: 32px; padding: 4px 5px;
+  width: 100%; height: 96px; padding: 5px 5px;
   border-radius: 7px; border: 1px solid var(--border);
   display: flex; align-items: flex-start;
 }
 /* 内页那圈描边不能省：纸色与行的白底几乎同色，少了它色块读起来只是一个点 */
 .sw-paper {
-  width: 100%; height: 100%; border-radius: 5px; padding: 4px 4px 0;
+  width: 100%; height: 100%; border-radius: 5px; padding: 5px 4px 0;
   display: flex; flex-direction: column; gap: 2px;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent);
 }
-.sw-bar { display: block; height: 4px; width: 80%; border-radius: 2px; }
-.sw-line { display: block; height: 2px; width: 100%; border-radius: 2px; opacity: .5; }
-.sw-line.short { width: 58%; opacity: .3; }
+.sw-bar { display: block; height: 5px; width: 70%; border-radius: 2px; }
+.sw-line { display: block; height: 3px; width: 100%; border-radius: 2px; opacity: .45; }
+.sw-line.mid { width: 82%; opacity: .4; }
+.sw-line.short { width: 58%; opacity: .28; }
 
 .row-label {
-  min-width: 0; margin-right: auto; text-align: left;
+  min-width: 0; text-align: left;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em;
+  font-size: calc(11px * var(--ts, 1)); font-weight: 600; line-height: 1.3;
 }
 .row.is-on .row-label { color: var(--accent-text); }
 
 /* 选中勾：压在色块右上角（位置固定，切换时不跳） */
 .row-check {
-  position: absolute; top: 6px; right: 6px;
+  position: absolute; top: 9px; right: 9px;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 15px; height: 15px; border-radius: 999px;
+  width: 16px; height: 16px; border-radius: 999px;
   background: var(--accent); color: var(--text-on-accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-elev) 70%, transparent);
 }
 
 /* 自定义的两枚按钮：默认淡出，鼠标进这一格 / 键盘聚焦才现身（紧凑但可达） */
 .row-tools {
-  position: absolute; right: 5px; bottom: 4px;
-  display: inline-flex; gap: 1px;
+  position: absolute; top: 9px; left: 9px;
+  display: inline-flex; gap: 2px;
   opacity: 0; transition: opacity var(--dur) var(--ease);
 }
 .row:hover .row-tools,
 .row:focus-within .row-tools { opacity: 1; }
 .row-tool {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border: 0; border-radius: 6px;
+  width: 18px; height: 18px; border: 0; border-radius: 5px;
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   color: var(--text-faint); cursor: pointer;
 }
