@@ -19,8 +19,6 @@
         <h3>预览效果</h3>
         <p>标题、正文、标签与按钮跟着上面的设置实时变化</p>
       </div>
-      <span class="spacer" />
-      <span class="badge dim">示例</span>
     </div>
 
     <div class="card-body preview-body">

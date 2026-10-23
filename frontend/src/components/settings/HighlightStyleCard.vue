@@ -24,8 +24,6 @@ import { HIGHLIGHT_OPTIONS, appearance, setHighlight } from '@/stores/appearance
         <h3>高亮效果</h3>
         <p>调整论文阅读与文本标注的显示方式</p>
       </div>
-      <span class="spacer" />
-      <span class="badge dim">全部论文</span>
     </div>
 
     <div class="card-body hl-body">
@@ -53,7 +51,7 @@ import { HIGHLIGHT_OPTIONS, appearance, setHighlight } from '@/stores/appearance
           <!-- 示例：真的 mark.hl，画法由 data-hl-force 钉死（与阅读器共用 base.css 那份声明）。
                跨行才看得出差别 —— 荧光笔要贴着行盒铺开，下划线要跟着每一行各自画一条。 -->
           <span class="opt-demo" :data-hl-force="o.value" aria-hidden="true">
-            跨行才看得出差别：<mark class="hl yellow">外部知识接进上下文之后，模型的回答会更贴题。</mark>其余文字保持原样。
+            <mark class="hl yellow">外部知识接进上下文之后，模型的回答会更贴题。</mark>其余文字保持原样。
           </span>
         </button>
       </div>
