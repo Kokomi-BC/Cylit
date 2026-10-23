@@ -1184,7 +1184,9 @@ onBeforeUnmount(() => {
   /* 辅助行按卡宽决策（见 .tc-meta 的 @container） */
   container-type: inline-size;
   padding: 14px 16px;
-  background: var(--bg-layer); border: 1px solid var(--border);
+  /* 与上下两块（用量面板 / 提供方列表，都是 .card 的 --bg-elev）同一种底色：
+     原来用 --bg-layer，五张卡整体会比上下明显偏青一档（用户口径 2026-12-02）。 */
+  background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--r-md); box-shadow: var(--shadow-1);
   cursor: pointer;
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
