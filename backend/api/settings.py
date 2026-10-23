@@ -5,6 +5,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import platform
+import shutil
+import socket
+import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Request
@@ -232,11 +240,167 @@ async def put_settings(request: Request, payload: dict = Body(...)):
                      "values": _effective()}, request=request)
 
 
+# ---------- /settings/health 的两个新块：运行环境 / 磁盘占用 ----------
+#
+# 这个接口是**只读、无副作用**的，而且前端设置页会反复拉：所以磁盘统计必须既便宜
+# （目录求和带缓存）又**不可失败**（每块各自兜住异常，失败给 null 而不是 500）。
+
+_log = logging.getLogger(__name__)
+
+#: 进程起点。用单调钟（改系统时间不会把 uptime 弄成负数）。
+_PROCESS_START = time.monotonic()
+
+#: data 目录递归求和的缓存有效期（秒）：不缓存的话大目录每次刷新都扫盘。
+_DIR_USAGE_TTL_S = 60.0
+
+#: 单次扫描的时间上限（秒）：扫不完就放弃给 null，绝不把接口拖住。
+_DIR_SCAN_BUDGET_S = 5.0
+
+#: 缓存：路径字符串 → (记账时的 monotonic, 字节数)。
+_dir_usage_cache: dict[str, tuple[float, int]] = {}
+
+
+def _os_name() -> str:
+    """人能读的系统名。
+
+    Linux 取 /etc/os-release 的 PRETTY_NAME（如 Ubuntu 24.04.1 LTS），
+    读不到就回退 platform.system()；Windows 用「系统 + 版本」（如 Windows 11）；
+    其它系统原样返回 platform.system()。
+    """
+    system = platform.system()
+    if system == "Linux":
+        try:
+            with open("/etc/os-release", encoding="utf-8") as fh:
+                for line in fh:
+                    key, _, value = line.partition("=")
+                    if key.strip() == "PRETTY_NAME":
+                        name = value.strip().strip('"').strip("'")
+                        if name:
+                            return name
+        except OSError:  # 某些精简镜像没有这个文件
+            _log.debug("/etc/os-release 读不到，回退 platform.system()")
+        return system or "unknown"
+    if system == "Windows":
+        return f"{system} {platform.release()}"
+    return system or "unknown"
+
+
+def _system_block() -> dict:
+    """运行环境。只用标准库：platform / os / socket / time。"""
+    return {
+        "os": _os_name(),
+        "os_detail": platform.platform(terse=True)[:120],
+        "kernel": platform.release(),
+        "arch": platform.machine(),
+        "python": platform.python_version(),
+        "cpu_count": os.cpu_count() or 1,
+        "hostname": socket.gethostname(),
+        "uptime_s": round(time.monotonic() - _PROCESS_START, 1),
+    }
+
+
+def _scan_dir(root: Path, deadline: float) -> int:
+    """递归求和 root 下所有普通文件的字节数；超时抛 TimeoutError。
+
+    不跟随软链接（防环），单个文件出错只跳过它。
+    """
+    total = 0
+    stack = [root]
+    while stack:
+        if time.monotonic() > deadline:
+            raise TimeoutError("扫描 data 目录超时")
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("扫描 data 目录超时")
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:  # 权限不够 / 刚被删：跳过
+                    continue
+    return total
+
+
+def _dir_bytes(path: Path) -> int | None:
+    """path 的递归体积，60 秒内复用缓存；扫不动 / 超时 / 不存在一律 null。"""
+    key = str(path)
+    now = time.monotonic()
+    hit = _dir_usage_cache.get(key)
+    if hit is not None and now - hit[0] < _DIR_USAGE_TTL_S:
+        return hit[1]
+    if not path.is_dir():
+        return None
+    try:
+        size = _scan_dir(path, now + _DIR_SCAN_BUDGET_S)
+    except (OSError, TimeoutError) as exc:
+        _log.debug("data 目录体积统计失败 path=%s: %s", path, exc)
+        return None  # 失败不进缓存：下次还有机会算出来
+    _dir_usage_cache[key] = (time.monotonic(), size)
+    return size
+
+
+def _db_bytes() -> int | None:
+    """MySQL 库体积（表数据 + 索引）；非 MySQL 后端（SQLite）或查不到一律 null。"""
+    if (get_settings().db_backend or "").lower() != "mysql":
+        return None
+    try:
+        from sqlalchemy import text
+
+        from backend.repositories.mysql.session import get_engine
+
+        with get_engine().connect() as conn:
+            total = conn.execute(text(
+                "SELECT COALESCE(SUM(data_length + index_length), 0) "
+                "FROM information_schema.tables WHERE table_schema = DATABASE()"
+            )).scalar()
+        return int(total or 0)
+    except Exception as exc:  # noqa: BLE001 —— 统计失败不许影响 health
+        _log.debug("MySQL 库体积查询失败: %s", exc)
+        return None
+
+
+def _disk_block() -> dict | None:
+    """磁盘占用块。单位统一 bytes；percent 保留一位小数。"""
+    data_dir = Path(get_settings().data_dir).absolute()
+    anchor = data_dir
+    while not anchor.exists() and anchor.parent != anchor:
+        anchor = anchor.parent  # 目录不存在 → 用它最近的已存在父目录
+    if not anchor.exists():
+        return None
+    usage = shutil.disk_usage(anchor)
+    total, used, free = int(usage.total), int(usage.used), int(usage.free)
+    percent = round(used * 100.0 / total, 1) if total > 0 else 0.0
+    return {
+        "path": str(data_dir),
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "percent": min(max(percent, 0.0), 100.0),
+        "data_dir_bytes": _dir_bytes(data_dir),
+        "db_bytes": _db_bytes(),
+    }
+
+
 @router.get("/settings/health")
 async def settings_health(request: Request):
     from backend.repositories.mysql.session import healthcheck
     from backend.repositories.vector.lancedb_store import vector_store
     from backend.services.task.task_service import task_runner
+
+    # 新增的两块各自兜异常：任何一块统计不出来都不许让整个 health 500。
+    try:
+        system = _system_block()
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("运行环境统计失败: %s", exc)
+        system = None
+    try:
+        # 扫盘 / 连库都是阻塞活，丢到线程里跑，别卡住事件循环。
+        disk = await asyncio.to_thread(_disk_block)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("磁盘占用统计失败: %s", exc)
+        disk = None
 
     return envelope({
         "database": healthcheck(),
@@ -244,4 +408,6 @@ async def settings_health(request: Request):
         "task_runner": {"workers": task_runner.workers, "queues": task_runner.queues,
                         "running": task_runner.running_tasks},
         "data_dir": str(get_settings().data_dir),
+        "system": system,
+        "disk": disk,
     }, request=request)

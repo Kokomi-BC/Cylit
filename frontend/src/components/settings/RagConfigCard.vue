@@ -323,79 +323,86 @@ onMounted(() => {
           后端没有返回这几项在代码里的默认值，所以「恢复默认」暂不可用；仍可手动改任一项再保存。
         </p>
 
-        <!-- ① 检索参数：两路召回各多少条，以及融合之后留多少。
-             字段摆成网格（断点见 .field-grid 的容器查询）：宽卡三列并排，窄卡一列，中间不留空。 -->
-        <section class="group">
-          <h3 class="group-title">检索参数</h3>
-          <div class="fwrap">
-            <div class="field-grid">
-              <div v-for="f in RAG_TOP" :key="f.key" class="field">
-                <label class="field-label" :for="`rag-${f.key}`">{{ f.label }}</label>
-                <div class="ctl">
-                  <input :id="`rag-${f.key}`" class="num-input" :class="{ invalid: !!errors[f.key] }"
-                         type="number" step="1" inputmode="numeric" :min="f.min"
-                         :aria-invalid="!!errors[f.key]" :disabled="formDisabled"
-                         v-model.number="ragForm[f.key]" />
-                  <i class="unit">条</i>
+        <!-- 两栏（断点是卡体自己的宽度，不是视口）：≥820 左「检索参数」、右「重排参数 + 回答策略」；
+             620~820 落成单栏，字段仍是"标签左 / 数字右"的紧凑行；更窄就组与组上下堆叠。 -->
+        <div class="cfg-cols">
+          <!-- ① 检索参数：两路召回各多少条，以及融合之后留多少 -->
+          <div class="cfg-col col-main">
+            <section class="group">
+              <h3 class="group-title">检索参数</h3>
+              <div class="fields">
+                <div v-for="f in RAG_TOP" :key="f.key" class="field">
+                  <label class="field-label" :for="`rag-${f.key}`">{{ f.label }}</label>
+                  <div class="ctl">
+                    <input :id="`rag-${f.key}`" class="num-input" :class="{ invalid: !!errors[f.key] }"
+                           type="number" step="1" inputmode="numeric" :min="f.min"
+                           :aria-invalid="!!errors[f.key]" :disabled="formDisabled"
+                           v-model.number="ragForm[f.key]" />
+                    <i class="unit">条</i>
+                  </div>
+                  <p v-if="errors[f.key]" class="field-hint err">{{ errors[f.key] }}</p>
+                  <p v-else class="field-hint" :title="f.hint">{{ f.hint }}</p>
                 </div>
-                <p v-if="errors[f.key]" class="tiny error-text">{{ errors[f.key] }}</p>
-                <p v-else class="tiny faint hint">{{ f.hint }}</p>
               </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- ② 重排参数：开关是这一组的第一行（它和条数本来就是同一个键的两半），
-             下面「条数 + 当前绑定的模型」走同一个字段网格，于是和①的字段落在同一条竖线上。 -->
-        <section class="group">
-          <h3 class="group-title">重排参数</h3>
-
-          <div class="field">
-            <Switch v-model="rerankOn" :disabled="formDisabled">启用重排</Switch>
-            <p class="tiny faint hint">关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。</p>
+            </section>
           </div>
 
-          <div class="fwrap">
-            <div class="field-grid">
-              <div class="field">
-                <label class="field-label" :class="{ dimmed: !rerankOn }" for="rag-rerank">重排候选数量</label>
-                <div class="ctl">
-                  <input id="rag-rerank" class="num-input" :class="{ invalid: !!errors.rag_top_n_rerank }"
-                         type="number" step="1" inputmode="numeric" :min="RAG_RERANK.min"
-                         :aria-invalid="!!errors.rag_top_n_rerank" :disabled="formDisabled || !rerankOn"
-                         v-model.number="ragForm.rag_top_n_rerank" />
-                  <i class="unit">条</i>
+          <div class="cfg-col col-side">
+            <!-- ② 重排参数：开关是这一组的第一行（它和条数本来就是同一个键的两半） -->
+            <section class="group">
+              <h3 class="group-title">重排参数</h3>
+              <div class="fields">
+                <div class="field sw">
+                  <Switch v-model="rerankOn" :disabled="formDisabled">启用重排</Switch>
+                  <p class="field-hint" title="关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。">
+                    关闭 = 不调用重排模型，直接用 RRF 融合后的顺序。
+                  </p>
                 </div>
-                <p v-if="errors.rag_top_n_rerank" class="tiny error-text">{{ errors.rag_top_n_rerank }}</p>
-                <p v-else-if="!rerankOn" class="tiny faint hint">
-                  关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。
-                </p>
-                <p v-else class="tiny faint hint">{{ RAG_RERANK.hint }}</p>
-              </div>
 
-              <!-- 重排模型：只读的一行字，不是输入框 —— 绑定的地方在「模型」页，这里再给个下拉就是两份绑定 -->
-              <div class="field">
-                <span class="field-label">重排模型</span>
-                <p class="model-name" :class="{ faint: !rerankerName }" :title="rerankerTitle">
-                  {{ rerankerName || '未绑定' }}
-                </p>
-                <p class="tiny faint hint">在「模型」页的 reranker 类型里绑定</p>
-                <p v-if="rerankerMock && reranker?.name" class="tiny faint hint">
-                  当前是启发式占位（{{ reranker.name }}），不是真模型：只按词面重合度打分，检索结果会标注降级。
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
+                <div class="field">
+                  <label class="field-label" :class="{ dimmed: !rerankOn }" for="rag-rerank">重排候选数量</label>
+                  <div class="ctl">
+                    <input id="rag-rerank" class="num-input" :class="{ invalid: !!errors.rag_top_n_rerank }"
+                           type="number" step="1" inputmode="numeric" :min="RAG_RERANK.min"
+                           :aria-invalid="!!errors.rag_top_n_rerank" :disabled="formDisabled || !rerankOn"
+                           v-model.number="ragForm.rag_top_n_rerank" />
+                    <i class="unit">条</i>
+                  </div>
+                  <p v-if="errors.rag_top_n_rerank" class="field-hint err">{{ errors.rag_top_n_rerank }}</p>
+                  <p v-else-if="!rerankOn" class="field-hint" title="关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。">
+                    关闭后不生效：检索直接用 RRF 融合后的顺序，最多「融合后 top_k」条。
+                  </p>
+                  <p v-else class="field-hint" :title="RAG_RERANK.hint">{{ RAG_RERANK.hint }}</p>
+                </div>
 
-        <!-- ③ 回答策略：检索不够时允不允许用模型自己的知识 -->
-        <section class="group">
-          <h3 class="group-title">回答策略</h3>
-          <div class="field">
-            <Switch v-model="allowGeneral" :disabled="formDisabled">允许通用知识</Switch>
-            <p class="tiny faint hint">检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。</p>
+                <!-- 重排模型：只读的一行字，不是输入框 —— 绑定的地方在「模型」页，这里再给个下拉就是两份绑定 -->
+                <div class="field">
+                  <span class="field-label">重排模型</span>
+                  <p class="model-name" :class="{ faint: !rerankerName }" :title="rerankerTitle">
+                    {{ rerankerName || '未绑定' }}
+                  </p>
+                  <p class="field-hint">在「模型」页的 reranker 类型里绑定</p>
+                  <p v-if="rerankerMock && reranker?.name" class="field-hint" :title="'当前是启发式占位：' + reranker.name">
+                    当前是启发式占位（{{ reranker.name }}），不是真模型：只按词面重合度打分，检索结果会标注降级。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <!-- ③ 回答策略：检索不够时允不允许用模型自己的知识 -->
+            <section class="group">
+              <h3 class="group-title">回答策略</h3>
+              <div class="fields">
+                <div class="field sw">
+                  <Switch v-model="allowGeneral" :disabled="formDisabled">允许通用知识</Switch>
+                  <p class="field-hint" title="检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。">
+                    检索结果不够时，允许模型用自己的知识回答；关掉则只依据检索到的内容作答。
+                  </p>
+                </div>
+              </div>
+            </section>
           </div>
-        </section>
+        </div>
 
         <div class="footer">
           <p class="tiny faint note">改动需要点「保存」才生效；只影响新发起的检索，不改已有 chunk，不需要重建索引。</p>
@@ -413,71 +420,112 @@ onMounted(() => {
 
 <style scoped>
 /* 只用 tokens.css 的变量：这里写死任何一个色值，深浅两套皮肤就会当场露馅。 */
-/* 卡体就是这张卡的宽度锚点（卡底那行容器查询量的是它）：量"这块地方有多宽"，不是视口有多宽。 */
-/* 卡体留白 16 → 12，三组之间的 14 → 10：与面板里其它卡的 10px 节奏对齐 */
-.cfg-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; container-type: inline-size; }
+/* 卡体既是这张卡的宽度锚点（容器查询量的是"这块地方有多宽"，不是视口有多宽），
+   也是纵向节奏：上下 12 → 10、行距 10 → 8 —— 这张卡要压到 340 以内。 */
+.cfg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  container-type: inline-size;
+}
 
-.group { display: flex; flex-direction: column; gap: 8px; }
-/* 组之间一条 divider + 10px 呼吸：分组靠线与间距，不靠卡片套卡片（嵌套容器会脏） */
-.group + .group { border-top: 1px solid var(--divider); padding-top: 10px; }
+/* 两栏 / 单栏只由卡体宽度决定：≥820 并排，更窄就上下堆叠（组与组之间仍有一条 divider）。 */
+.cfg-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0; }
+.cfg-col { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+/* 单栏态：右栏（重排 + 回答策略）落成下一段，与左栏之间同样一条线 + 8px */
+.cfg-col + .cfg-col { border-top: 1px solid var(--divider); padding-top: 8px; }
+
+@container (min-width: 820px) {
+  .cfg-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
+  /* 两栏之间只留一条 --divider 竖线（竖线两侧各 24，不再额外叠加间距） */
+  .cfg-col + .cfg-col { border-top: 0; padding-top: 0; border-left: 1px solid var(--divider); padding-left: 24px; }
+  /* 左栏只有一组、右栏两组：让左栏那一组吃掉右栏的高度，三行均分，
+     而不是左栏在底部空出一截、右栏顶到线外（两栏由此等高）。 */
+  .col-main .group { flex: 1; }
+  .col-main .fields { flex: 1; justify-content: space-between; }
+}
+
+.group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* 组之间一条 divider + 8px 呼吸（原 10）：分组靠线与间距，不靠卡片套卡片（嵌套容器会脏） */
+.group + .group { border-top: 1px solid var(--divider); padding-top: 8px; }
 .group-title {
   margin: 0;
-  font-size: calc(13px * var(--ts, 1));
+  font-size: calc(12.5px * var(--ts, 1));
+  line-height: 1.2;
   font-weight: 600;
   color: var(--text);
 }
 
-/* 字段网格的父级：容器查询的锚点，断点只按"这一格有多宽"决策（三列 / 两列 / 一列），
-   与视口无关 —— 同一段 CSS 在宽单列的 956px 卡和三栏里的窄卡都成立。 */
-.fwrap { container-type: inline-size; }
-.field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 14px; min-width: 0; }
-@container (min-width: 480px) {
-  .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 字段：一行「标签左 / 控件右」，说明收到下一行（11px 单行省略，全量在 title）。
+   字段行 ≈ 32（控件）+ 4 + 15（说明）≈ 52 —— 原来是 label / 控件 / 说明上下堆叠的 77。 */
+.fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-width: 0;
 }
-@container (min-width: 720px) {
-  .field-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-/* 一个字段自上而下只有三件事：label → 控件 → 说明。字段自己决定内部宽度，不再靠 spacer 顶。 */
-.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label {
   font-size: calc(13px * var(--ts, 1));
   color: var(--text-dim);
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 关掉重排时这一行"存在但不生效"：降到弱色。不隐藏 —— 隐藏会让下面的行往上跳。 */
 .field-label.dimmed { color: var(--text-faint); }
+.field-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  min-width: 0;
+  font-size: calc(11px * var(--ts, 1));
+  line-height: 1.4;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.field-hint.err { color: var(--danger); }
+
+/* 开关行：开关 + 名称 + 一行说明，结构与原来一致（说明不删，只是收到下一行） */
+.field.sw { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
 
 .ctl { display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* 数字输入：撑满字段但不超过 120px，右对齐 + 等宽数字 → 三列并排时个位也对得上 */
-.num-input { flex: 0 1 auto; width: 100%; max-width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
+/* 数字输入：定宽 96、右对齐 + 等宽数字（几行并排时个位对得上），「条」跟在右外侧 */
+.num-input { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
 .num-input.invalid { border-color: var(--danger); }
 .num-input:disabled { background: var(--bg-sunken); color: var(--text-faint); cursor: not-allowed; }
 
 .unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 只读的模型名：占住和 input 一样的高度（同一行的说明才对得齐），长了省略，全量信息在 title */
+/* 只读的模型名：右对齐、长了省略，全量信息（类型 / model_name / provider）在 title */
 .model-name {
   margin: 0;
   min-width: 0;
-  max-width: 100%;
-  line-height: var(--control-h);
+  max-width: 220px;
   font-size: calc(13px * var(--ts, 1));
+  line-height: 1.5;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.model-name.faint { color: var(--text-faint); }
 
-.hint { margin: 0; line-height: 1.5; }
-.error-text { margin: 0; color: var(--danger); line-height: 1.5; }
 .note { margin: 0; line-height: 1.55; }
+.error-text { margin: 0; color: var(--danger); line-height: 1.5; }
 
 /* 读取失败态：一块说明 + 一个重试按钮，替掉半张空表单 */
 .load-fail {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -487,12 +535,14 @@ onMounted(() => {
 /* 失败原因里可能带一长串 URL / 英文 message：长词也必须断行，不许把卡片撑出横向滚动 */
 .load-fail .note { min-width: 0; overflow-wrap: anywhere; }
 
-/* 卡底：说明靠左、按钮靠右，同一行两端对齐。之前说明是贴着按钮的右对齐块，
-   读起来像按钮的注解，而不是给整张卡的说明。 */
+/* 卡底：说明靠左、按钮靠右，同一行两端对齐；padding-top 10 → 8（同样是为了压高） */
 .footer {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   border-top: 1px solid var(--divider);
-  padding-top: 10px;
+  padding-top: 8px;
 }
 .footer .note { flex: 1 1 auto; min-width: 0; text-align: left; }
 .actions { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; }

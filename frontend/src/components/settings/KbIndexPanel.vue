@@ -4,10 +4,11 @@
  *
  * 分工：
  * - 自己取两块**共享**数据 —— `GET /knowledge/overview`（论文 / chunk / 向量模型）与
- *   `GET /knowledge/index/status`（全库对账、维数）。这两份是上面指标行、论文表、存储卡
- *   共同的输入，取一次比三处各取一次更不可能出现"三张卡说三个数"。
- * - 三个写操作（建/重建索引、从知识库移除、对账）也留在这里：只有这一层同时拿得到
+ *   `GET /knowledge/index/status`（全库对账、维数）。这两份是上面指标行与论文表
+ *   共同的输入，取一次比两处各取一次更不可能出现"两张表说两个数"。
+ * - 两个写操作（建/重建索引、从知识库移除）也留在这里：只有这一层同时拿得到
  *   overview 与 status，改完能一次刷新两块；子组件只管把点击原样发上来，不发请求。
+ *   「索引存储状态」卡（含校验 / 清理差异）**已搬到「系统信息」**，这里不再有那份 UI。
  * - 趋势图、chunk 明细自己取数（各自的窗口参数 / 分页只有它们自己知道），检索配置
  *   自己读写 `/settings` —— 那三块与本层零耦合，所以这里连它们的字段都不声明。
  *
@@ -31,7 +32,6 @@ import AppIcon from '@/components/AppIcon.vue';
 import KbTrendCard from './KbTrendCard.vue';
 import KbChunkMixCard from './KbChunkMixCard.vue';
 import KbLatencyCard from './KbLatencyCard.vue';
-import KbStorageCard from './KbStorageCard.vue';
 import PaperIndexTable from './PaperIndexTable.vue';
 import ChunkMetaCard from './ChunkMetaCard.vue';
 import RagConfigCard from './RagConfigCard.vue';
@@ -72,21 +72,12 @@ interface IndexStatus {
   consistent?: boolean | null;
 }
 
-/** `POST /knowledge/reconcile` 的返回（backend knowledge_service.reconcile）。 */
-interface ReconcileResult {
-  orphans?: number;
-  missing?: number;
-  removed_metadata?: number;
-  removed_vectors?: number;
-  consistent?: boolean;
-}
-
 const router = useRouter();
 const overview = ref<KbOverview | null>(null);
 const indexStatus = ref<IndexStatus | null>(null);
-/** 最近一次**对账校验**的时间（本地时钟），存储卡展示用。 */
-const checkedAt = ref('');
-/** 行级动作键：`idx:<paperId>` / `remove:<paperId>` / `reconcile`。 */
+/** 最近一次**刷新**的时间（本地时钟），工具条展示用。 */
+const refreshedAt = ref('');
+/** 行级动作键：`idx:<paperId>` / `remove:<paperId>`。 */
 const busyKey = ref('');
 /** 整页刷新进行中（含两张自取数卡的重载，它们不占 state.loading）。 */
 const refreshing = ref(false);
@@ -189,7 +180,7 @@ async function loadStatus(): Promise<void> {
   try {
     await withLoading('setkb-status', async () => {
       indexStatus.value = await api.get<IndexStatus>('/knowledge/index/status');
-      checkedAt.value = clockNow();
+      refreshedAt.value = clockNow();
     });
   } catch { /* 同上 */ }
 }
@@ -272,44 +263,6 @@ async function removeFromKb(paper: KbPaper): Promise<void> {
   }
 }
 
-/**
- * 对账：`fix: false` 只报告，`fix: true` 才动手清（先确认）。
- * 只有 fix 会改数据 —— 清掉的元数据会让 overview 的 chunk 数变小，所以那一支顺带刷概览。
- */
-async function reconcileNow(fix: boolean): Promise<void> {
-  if (fix) {
-    const orphans = Number(indexStatus.value?.orphan_chunks || 0);
-    const missing = Number(indexStatus.value?.missing_vectors || 0);
-    if (!orphans && !missing) { toast('没有需要清理的孤儿数据', 'ok'); return; }
-    const ok = await askConfirm({
-      title: `清理 ${orphans} 条孤儿元数据？`,
-      body: `同时会清掉向量库里 ${missing} 条没有元数据的向量。清理后不可恢复，`
-        + '需要时对相关论文重建索引。',
-      confirmLabel: '清理',
-      danger: true,
-    });
-    if (!ok) return;
-  }
-  busyKey.value = 'reconcile';
-  try {
-    const res = await api.post<ReconcileResult>('/knowledge/reconcile', { fix });
-    if (fix) {
-      toast(`已清理 ${res?.removed_metadata ?? 0} 条孤儿元数据、${res?.removed_vectors ?? 0} 条孤儿向量`,
-        'ok', 3600);
-    } else {
-      const bad = Number(res?.orphans || 0) || Number(res?.missing || 0);
-      toast(`对账完成：孤儿元数据 ${res?.orphans ?? 0} 条、孤儿向量 ${res?.missing ?? 0} 条`,
-        bad ? 'warn' : 'ok', 4200);
-    }
-    await loadStatus();
-    if (fix) await loadOverview();
-  } catch (err) {
-    reportError(err, '对账失败');
-  } finally {
-    busyKey.value = '';
-  }
-}
-
 /* ------------------------------- 跳转 ------------------------------- */
 
 /**
@@ -330,7 +283,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   <div class="kb-panel">
     <!-- ① 工具条：只有一个刷新（业务入口不在这里，设置页不是内容页） -->
     <div class="kb-bar">
-      <span class="tiny faint nowrap">上次刷新 {{ checkedAt || '—' }}</span>
+      <span class="tiny faint nowrap">上次刷新 {{ refreshedAt || '—' }}</span>
       <button class="btn sm ghost" :disabled="refreshBusy" title="刷新概览、索引状态、趋势与 chunk 摘要"
               @click="refreshAll">
         <AppIcon name="refresh" :size="14" />刷新
@@ -394,7 +347,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       <KbLatencyCard ref="latencyCard" />
     </div>
 
-    <!-- ④ 主体：≥1040 两栏（右栏粘住），否则单列且顺序为 论文表 → 检索配置 → 存储 → chunk -->
+    <!-- ④ 主体：≥1040 两栏（右栏粘住），否则单列且顺序为 论文表 → 检索配置 → chunk -->
     <div class="kb-main">
       <div class="kb-col kb-left">
         <PaperIndexTable class="kb-paper" :items="papers" :versions="versions"
@@ -406,8 +359,6 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       </div>
       <div class="kb-col kb-right">
         <RagConfigCard class="kb-rag" />
-        <KbStorageCard class="kb-storage" :status="indexStatus" :loading="statusLoading"
-                       :busy="busyKey" :checked-at="checkedAt" @reconcile="reconcileNow" />
       </div>
     </div>
   </div>
@@ -519,7 +470,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 }
 .kb-charts > .card { min-width: 0; }
 
-/* ④ 主体：窄窗格单列，四个卡片用 order 排成 论文表 → 检索配置 → 存储 → chunk。
+/* ④ 主体：窄窗格单列，三个卡片用 order 排成 论文表 → 检索配置 → chunk。
    列容器在单列态用 display:contents 把自己的两张卡提上来，才能被 order 重排。 */
 .kb-main {
   display: grid;
@@ -531,8 +482,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 .kb-col { display: contents; }
 .kb-paper { order: 1; }
 .kb-rag { order: 2; }
-.kb-storage { order: 3; }
-.kb-chunk { order: 4; }
+.kb-chunk { order: 3; }
 
 /* ≥1040：左栏吃掉剩余宽度，右栏定宽 340 并粘在设置页滚动容器顶部。 */
 @container (min-width: 1040px) {

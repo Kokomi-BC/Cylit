@@ -14,7 +14,7 @@
  * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
  *   5. 搜索记录（本地搜索历史）、回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）。
  * · **服务与系统**：6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
- *   7. 系统信息（只读信息 + `GET /settings/health`）。
+ *   7. 系统信息（`SystemInfoPanel`：运行环境 / 存储空间 / 服务健康 / 索引存储状态）。
  *
  * 原来的「常规参数」整区**已拆掉**（用户口径）：真生效的检索参数搬进「索引管理」的检索规模小节，
  * 任务工作线程数 / 页面渲染 dpi / 公式裁图 dpi / 默认生成模型四项直接删除 —— 前两个的读取点
@@ -22,15 +22,16 @@
  * 老深链 `/settings#general` 由路由守卫改写到 `#kb`（见 `router/index.ts`）。
  *
  * 数据面：`GET /settings`（values + stored + editable 白名单）、`PUT /settings`、
- * `GET /settings/health`；MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
+ * MinerU 另走 `/mineru/config`（GET/PUT）与 `/mineru/verify`（POST）。
+ * 健康与索引状态由 `SystemInfoPanel` 自己取（`/settings/health`、`/knowledge/index/status`）。
  * 设置写入 setting 表，重启后仍生效。
  */
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { HealthPayload, MineruConfig, MineruVerifyResult, ParseEngine } from '@/api/types';
+import type { MineruConfig, MineruVerifyResult, ParseEngine } from '@/api/types';
 import {
-  loadHealth, loadSettings, reportError, state, toast, withLoading,
+  loadSettings, reportError, state, toast, withLoading,
 } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
@@ -41,23 +42,9 @@ import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import ThemeAppearancePanel from '@/components/settings/ThemeAppearancePanel.vue';
 import DisplayScalePanel from '@/components/settings/DisplayScalePanel.vue';
 import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
+import SystemInfoPanel from '@/components/settings/SystemInfoPanel.vue';
 import TrashPanel from '@/components/trash/TrashPanel.vue';
 
-/* ---------------------------- 只读信息 ---------------------------- */
-
-interface ReadonlyDef {
-  key: string;
-  label: string;
-}
-
-/** 只读信息卡片。 */
-const READONLY_KEYS: ReadonlyDef[] = [
-  { key: 'data_dir', label: '数据目录' },
-  { key: 'db_backend', label: '数据库' },
-  { key: 'api_prefix', label: '接口前缀' },
-  { key: 'secrets_dir', label: '密钥目录' },
-  { key: 'user_id', label: '用户标识' },
-];
 /* ---------------------------- 分区导航 ---------------------------- */
 
 /** 分区：`id` 同时是锚点（`/app/settings#kb` 直接落在「索引管理」）。
@@ -76,7 +63,7 @@ const SECTIONS = [
   { id: 'trash', label: '回收站', icon: 'trash', group: '内容与索引', desc: '把删掉的论文恢复回来，或彻底删除' },
   { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: '接在线解析服务，填密钥并验证' },
   { id: 'tasks', label: '任务队列', icon: 'task', group: '服务与系统', desc: '看导入、解析等后台任务的进度' },
-  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '看版本与环境，检查各服务是否正常' },
+  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '看运行环境、存储占用与各服务健康' },
 ] as const;
 
 /** 搜索用的同义词表：用户按"想改什么"找，不会按分区名找（要深色不会去敲"显示主题"）。 */
@@ -89,7 +76,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
   trash: ['回收站', '恢复', '删除'],
   mineru: ['token', '解析', '在线'],
   tasks: ['任务', '重试', '进度', '队列'],
-  about: ['版本', '健康', '系统', '只读'],
+  about: ['版本', '健康', '系统', '只读', '环境', '存储', '磁盘'],
 };
 
 /** 搜索词只活在组件里，**不进 hash** —— hash 只表示分区，深链才不会被搜索状态污染。 */
@@ -164,8 +151,6 @@ function revealActive() {
 watch(active, () => revealActive());
 
 const loadError = ref('');
-const health = ref<HealthPayload | null>(null);
-const healthError = ref('');
 
 /** 首次进入用骨架提示，加载失败给明确错误而不是空白页。 */
 const loading = computed(() => !!state.loading.settings && !state.settings && !loadError.value);
@@ -182,49 +167,6 @@ async function load() {
   }
 }
 
-async function loadHealthCard() {
-  healthError.value = '';
-  try {
-    health.value = await loadHealth();
-    if (health.value?.error) healthError.value = health.value.error;
-  } catch (err) {
-    healthError.value = (err as Error)?.message ?? String(err);
-  }
-}
-
-/* ---------------------------- 健康展示 ---------------------------- */
-
-/* 健康信息是后端动态 JSON，在边界处用 any 收敛 */
-const db = computed<Record<string, any>>(() => health.value?.database ?? {});
-const vector = computed<Record<string, any>>(() => health.value?.vector_store ?? {});
-const runner = computed<Record<string, any>>(() => health.value?.task_runner ?? {});
-
-const dbOk = computed(() => db.value.ok === true);
-const vectorOk = computed(() => vector.value.available === true);
-
-const queueText = computed(() => {
-  const q = runner.value.queues;
-  if (!q) return '—';
-  if (Array.isArray(q)) return q.length ? q.join(', ') : '—';
-  if (typeof q === 'object') {
-    const entries = Object.entries(q);
-    return entries.length ? entries.map(([k, v]) => `${k}:${v}`).join(', ') : '—';
-  }
-  return String(q);
-});
-
-const runningText = computed(() => {
-  const r = runner.value.running;
-  if (Array.isArray(r)) return `${r.length} 个`;
-  if (r === null || r === undefined) return '—';
-  return `${r} 个`;
-});
-
-/** 只读信息取值（values 是后端动态 JSON，这里在边界处收敛为展示字符串）。 */
-function valueOf(key: string): string {
-  const v = state.settings?.values?.[key];
-  return v === null || v === undefined || v === '' ? '—' : String(v);
-}
 
 /* ============================ 在线解析（MinerU） ============================
  * MinerU 是**联网的第三方解析服务**：导入时把 PDF 交给它，公式/表格比本地解析更强。
@@ -378,7 +320,6 @@ async function clearMineruToken() {
 
 onMounted(async () => {
   await load();
-  await loadHealthCard();
   await loadMineru();
   // 深链（/app/settings#kb）：只切到对应窗格 —— 一次只渲染一区，窗格一律从顶部开始。
   const id = String(route.hash || '').replace('#', '');
@@ -584,66 +525,9 @@ onMounted(async () => {
         <TrashPanel />
       </section>
 
-      <!-- ⑨ 系统信息（只读） -->
+      <!-- ⑨ 系统信息（只读）：运行环境 / 存储空间 / 服务健康 / 索引存储状态，四张卡纵向排 -->
       <section id="about" class="sec" v-if="active === 'about'">
-        <div class="cards-2">
-          <div class="card">
-            <div class="card-head">只读信息</div>
-            <div class="card-body">
-              <div class="row small" v-for="r in READONLY_KEYS" :key="r.key">
-                <span class="muted">{{ r.label }}</span>
-                <span class="spacer"></span>
-                <span class="mono tiny truncate ro-value" :title="valueOf(r.key)">{{ valueOf(r.key) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              健康检查
-              <span class="spacer"></span>
-              <button class="btn icon" title="重新检测" @click="loadHealthCard">
-                <AppIcon name="refresh" :size="15" />
-              </button>
-            </div>
-            <div class="card-body">
-              <div class="empty" v-if="!health">检测中…</div>
-              <div class="empty load-error" v-else-if="healthError">健康检查失败：{{ healthError }}</div>
-              <template v-else>
-                <div class="row small">
-                  <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '数据库正常' : '数据库异常' }}</span>
-                  <span class="mono tiny">{{ db.backend || '—' }}</span>
-                  <span class="spacer"></span>
-                  <span class="mono tiny truncate ro-value" :title="String(db.database ?? db.error ?? '')">
-                    {{ db.database || db.error || '' }}
-                  </span>
-                </div>
-                <div class="row small health-row">
-                  <span class="badge" :class="vectorOk ? 'ok' : 'danger'">
-                    {{ vectorOk ? '向量库可用' : '向量库不可用' }}
-                  </span>
-                  <span class="tiny faint">chunk {{ vector.chunks ?? '—' }}</span>
-                  <span class="spacer"></span>
-                  <span class="mono tiny truncate ro-value" :title="String(vector.path ?? vector.error ?? '')">
-                    {{ vector.path || vector.error || '' }}
-                  </span>
-                </div>
-                <div class="row small health-row">
-                  <span class="badge">任务池</span>
-                  <span class="tiny faint">workers {{ runner.workers ?? '—' }}</span>
-                  <span class="tiny faint">运行中 {{ runningText }}</span>
-                  <span class="spacer"></span>
-                  <span class="mono tiny truncate ro-value" :title="queueText">队列 {{ queueText }}</span>
-                </div>
-                <div class="row small health-row">
-                  <span class="badge">数据目录</span>
-                  <span class="spacer"></span>
-                  <span class="mono tiny truncate ro-value" :title="health.data_dir">{{ health.data_dir || '—' }}</span>
-                </div>
-              </template>
-            </div>
-          </div>
-        </div>
+        <SystemInfoPanel />
       </section>
       </template>
     </div>
@@ -655,7 +539,6 @@ onMounted(async () => {
 .load-error { color: var(--danger); }
 /* 字段下面那行提示：一行、小字、离字段 8px（不留段落式留白） */
 .hint { margin: 8px 0 0; }
-.health-row { margin-top: 8px; }
 /* token 文件 / 服务地址：并成一行，中间 16px 分隔 */
 .meta-line { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; }
 
@@ -870,9 +753,6 @@ onMounted(async () => {
 
 /* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
-
-/* 只读值 / 健康信息的长路径：占一半宽度并省略 */
-.ro-value { max-width: 56%; }
 
 /* 在线解析（MinerU）：卡片内的行间距与验证结论的语义色 */
 .row-gap { margin-top: 8px; }

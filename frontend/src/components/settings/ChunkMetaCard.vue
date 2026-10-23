@@ -10,12 +10,13 @@
  * 分页走后端 offset / limit，总数用 total；父组件刷新时调 expose 出去的 reload。
  *
  * 为什么这么排：
- * - **默认收起**：这是低频诊断区，索引管理的常用动作是建索引 / 重建 / 对账。摊开的表格会把
- *   它们挤到屏幕外，所以默认只留一行摘要（N 条 · K 类），需要时再展开。
+ * - **常显，不折叠**：这几行不是"翻出来才看"的东西 —— 进到索引管理就该看见这篇论文被切成了
+ *   什么。所以卡头只留标题与一句摘要（N 条 · K 类），卡体（筛选 / 表格 / 分页）直接摊开，
+ *   没有任何展开 / 收起的入口。
  * - 筛选一行 → 表格一片 → 分页一行：常用的顺序从上到下；表格里**不放正文**，一放正文行高
  *   就散，浏览就从"对比列"变成"读文章"了。
- * - 摘要必须和表格一致：收起状态下也要能看出这篇有多少 chunk，所以挂载就按预填的论文取一次
- *   列表（一次请求），而不是等展开才取。
+ * - 摘要必须和表格一致：卡头那句话就是"这次查询到底命中多少"的结论，所以它和表格是同一次
+ *   请求的结果（挂载即按预填的论文取一次），而不是另算一份。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
@@ -71,7 +72,6 @@ const CHUNK_TYPES = [
 /** 每页条数：默认 10（这页是诊断用的明细表，一屏看十行比看五行的翻页更省事）。 */
 const PAGE_SIZES = [10, 20, 50, 100];
 
-const open = ref(false);
 const paperId = ref('');
 const typeKey = ref('');
 const keyword = ref('');
@@ -220,10 +220,6 @@ function goPage(n: number): void {
   void load((n - 1) * pageSize.value);
 }
 
-function toggle(): void {
-  open.value = !open.value;
-}
-
 /** 单元格放不下完整 id：title 补上 id + hash + 索引版本（诊断用的三件套）。 */
 function idTitle(row: ChunkMeta): string {
   return row.id + '\n' + 'hash ' + (row.hash || '—') + '\n' + '索引版本 ' + (row.index_version ?? '—');
@@ -317,25 +313,21 @@ defineExpose({ reload });
 </script>
 
 <template>
-  <div class="card chunk-card" :class="{ open }">
+  <div class="card chunk-card">
     <!-- 单根节点，而且模板里**不能有兄弟注释**：Vue 的根节点就是这层 div，父组件给的 class
          （面板的 .kb-chunk = 单列 order:4）才能落下来。之前这里是 "section + Modal 的 Teleport"
          两根，class 继承不了，chunk 卡拿到默认 order 就跑到最前面去了。
          Modal 自己 Teleport 到 body，留在根内不影响它挂到哪 —— 但不要把它移到 div 外面。 -->
-    <!-- 卡头整行就是折叠开关：标题、摘要、chevron 都在同一个按钮里，键盘只需一次 Tab -->
-    <button
-      type="button" class="card-head chunk-head"
-      :aria-expanded="open" aria-controls="chunk-meta-body"
-      @click="toggle"
-    >
+    <!-- 卡头不是开关：这张卡常显，卡体（筛选 / 表格 / 分页）直接摊开，不提供展开 / 收起入口。
+         右侧那句摘要是这次查询的真实结论（N 条 · K 类），与下面的表格同源。 -->
+    <div class="card-head chunk-head">
       <AppIcon name="list" :size="15" />
       <span class="nowrap">Chunk 元数据</span>
       <span class="spacer"></span>
       <span class="tiny faint head-sum">{{ headSummary }}</span>
-      <AppIcon :name="open ? 'chevron-up' : 'chevron-down'" :size="15" />
-    </button>
+    </div>
 
-    <div v-show="open" id="chunk-meta-body" class="card-body tight">
+    <div class="card-body tight">
       <!-- 筛选行：论文 → 类型 → 关键词 → 每页条数，从粗到细 -->
       <div class="filters">
         <select v-model="paperId" class="f-paper" aria-label="论文" @change="onPaper">
@@ -511,22 +503,10 @@ defineExpose({ reload });
 </template>
 
 <style scoped>
-/* 折叠卡：卡头是整行按钮，所以这里只补"按钮长得像卡头"的那几笔。
-   hover 只改背景（不做位移 / 阴影跳变），收起时不画卡头下方的分隔线。 */
+/* 常显卡：卡头就是一句标题 + 一句摘要（不再是可以点的按钮，所以没有 hover / focus 态）。
+   下面的 .card-body.tight 是全局类，这里只补"摘要不要撑破卡头"那一笔。 */
 .card.chunk-card { min-width: 0; }
-.card-head.chunk-head {
-  width: 100%; min-width: 0; cursor: pointer;
-  border: 0; background: transparent; color: var(--text);
-  font-family: inherit; font-size: calc(14px * var(--ts, 1));
-  text-align: left;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-.card-head.chunk-head:hover { background: var(--bg-hover); }
-.card-head.chunk-head:focus-visible {
-  outline: none; box-shadow: var(--ring); border-radius: var(--r-sm);
-}
 .card-head.chunk-head .icon { color: var(--text-faint); }
-.card.chunk-card:not(.open) .card-head.chunk-head { border-bottom: 0; }
 .head-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* 筛选行：能并排就并排，放不下就折行（每个控件自己给最小宽度，绝不撑破卡片） */
