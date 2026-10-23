@@ -1,43 +1,58 @@
 <script setup lang="ts">
 /**
- * 设置 · 显示主题 · **分类字号**（**不套卡片**：右栏三块共用一条竖轴，只靠留白与细线分区）。
+ * 设置 · 显示主题 · **分类字号**（裸块，放在「预览效果」卡下面）：
+ *  - 每一类一行：名字 + **该类字号的真实样例** + 小 / 中 / 大 三档；
+ *  - 块底一行「字体」：系统默认 / 微软雅黑 / 宋体衬线（写 `data-typo`，全站生效）。
  *
- * 一行是「名字在左、窄步进器在右」—— 步进器**定宽**（116），不随栏宽拉长：
- * 五行的 − / + 因此落在同一对竖线上，也不会在 420 宽的右栏里拖成一条长条。
+ * 样例不是装饰：字号取自该类的 CSS 变量（`--ts-<类>` = 整体 × 该类），所以点「大」当场变大 ——
+ * 与阅读器里那类文字用的是同一个令牌，看到多少就是多少。
  *
- * 与原来一样**没有「保存」**：点一下就往 :root 落 CSS 变量并写 localStorage。
+ * 三档而不是 ±5% 步进（用户口径 2026-12）：调字号是"选一个大概"，不是微调刻度；
+ * 小 90% / 中 100% / 大 115% 已经覆盖常用区间。老用户存的 0.85/1.25 这类值仍生效，
+ * 只是三档高亮取最近的那一档。
  */
 import {
-  CATEGORY_MAX,
-  CATEGORY_MIN,
   DISPLAY_CATEGORIES,
-  SCALE_STEP,
   displayScale,
   setCategory,
   type DisplayCategory,
 } from '@/stores/display';
-import AppIcon from '@/components/AppIcon.vue';
+import {
+  TYPOGRAPHY_OPTIONS,
+  appearance,
+  setTypography,
+  type Typography,
+} from '@/stores/appearance';
 
-const CATEGORY_META: Record<DisplayCategory, { label: string }> = {
-  body: { label: '正文' },
-  chat: { label: '对话' },
-  note: { label: '笔记' },
-  side: { label: '侧栏' },
-  ui: { label: '界面' },
+/** 样例文字：每类一句自己的话，读起来就知道调的是哪一块 */
+const CATEGORY_META: Record<DisplayCategory, { label: string; sample: string }> = {
+  body: { label: '正文', sample: '论文正文与笔记的阅读字' },
+  chat: { label: '对话', sample: '问答气泡里的这句话' },
+  note: { label: '笔记', sample: '批注与高亮上的说明' },
+  side: { label: '侧栏', sample: '目录、插图与面板' },
+  ui: { label: '界面', sample: '按钮、表格与表单' },
 };
 
 const categories = DISPLAY_CATEGORIES.map((key) => ({ key, ...CATEGORY_META[key] }));
 
-/** 浮动值留一点余量，避免 0.85 被浮点误差判成还能再减。 */
-const canDown = (value: number, min: number) => value > min + 1e-6;
-const canUp = (value: number, max: number) => value < max - 1e-6;
+/** 三档 */
+const STEPS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0.9, label: '小' },
+  { value: 1, label: '中' },
+  { value: 1.15, label: '大' },
+];
 
-function pct(value: number): string {
-  return Math.round(value * 100) + '%';
+/** 当前值落在哪一档：取最近的（存量里的 0.85 / 1.25 也有高亮，不会一个都不亮） */
+function nearest(scale: number): number {
+  return STEPS.reduce(
+    (best, s) => (Math.abs(s.value - scale) < Math.abs(best - scale) ? s.value : best),
+    STEPS[1].value,
+  );
 }
 
-function stepCategory(key: DisplayCategory, dir: number) {
-  setCategory(key, displayScale[key] + dir * SCALE_STEP);
+/** 样例的实时字号：读该类的令牌（与阅读器同一份），三档一点就变 */
+function sampleSize(key: DisplayCategory): string {
+  return `calc(13px * var(--ts-${key}))`;
 }
 </script>
 
@@ -45,36 +60,48 @@ function stepCategory(key: DisplayCategory, dir: number) {
   <section class="cats-block" data-category-sizes>
     <div class="block-head">
       <h3>分类字号</h3>
-      <p>不同内容各调各的</p>
+      <p>每类各挑一档，右边就是它真实的样子</p>
     </div>
 
     <div class="cats">
       <div v-for="c in categories" :key="c.key" class="cat">
         <span class="cat-name">{{ c.label }}</span>
-        <div class="step" role="group" :aria-label="c.label + '字号'">
+        <span class="cat-sample" :style="{ fontSize: sampleSize(c.key) }">{{ c.sample }}</span>
+        <div class="steps" role="group" :aria-label="c.label + '字号'">
           <button
+            v-for="s in STEPS"
+            :key="s.value"
             type="button"
-            class="step-btn"
-            :disabled="!canDown(displayScale[c.key], CATEGORY_MIN)"
-            :aria-label="c.label + '字号减小 5%'"
-            @click="stepCategory(c.key, -1)"
-          ><AppIcon name="remove" :size="12" /></button>
-          <span class="step-val">{{ pct(displayScale[c.key]) }}</span>
-          <button
-            type="button"
-            class="step-btn"
-            :disabled="!canUp(displayScale[c.key], CATEGORY_MAX)"
-            :aria-label="c.label + '字号增加 5%'"
-            @click="stepCategory(c.key, 1)"
-          ><AppIcon name="add" :size="12" /></button>
+            class="step"
+            :class="{ on: nearest(displayScale[c.key]) === s.value }"
+            :aria-pressed="nearest(displayScale[c.key]) === s.value"
+            :data-size-option="c.key + ':' + s.label"
+            @click="setCategory(c.key, s.value)"
+          >{{ s.label }}</button>
         </div>
+      </div>
+    </div>
+
+    <div class="font-row">
+      <span class="cat-name">字体</span>
+      <div class="steps wide" role="group" aria-label="字体">
+        <button
+          v-for="o in TYPOGRAPHY_OPTIONS"
+          :key="o.value"
+          type="button"
+          class="step"
+          :class="{ on: appearance.typography === o.value }"
+          :aria-pressed="appearance.typography === o.value"
+          :data-font-option="o.value"
+          @click="setTypography(o.value as Typography)"
+        >{{ o.label }}</button>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* 块头：与「主题预设」「高亮效果」同一套（裸块，不加卡片） */
+/* 块头与其他裸块（主题预设 / 高亮效果）同一套 */
 .block-head { display: grid; gap: 1px; margin-bottom: 8px; min-width: 0; }
 .block-head h3 {
   margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
@@ -84,35 +111,40 @@ function stepCategory(key: DisplayCategory, dir: number) {
 
 .cats-block { min-width: 0; }
 .cats { display: flex; flex-direction: column; gap: 2px; }
-/* 一行：名字在左、步进器贴右；步进器定宽，五行才对齐 */
+/* 一行：名字（定宽）+ 样例（吃满）+ 三档（定宽） */
 .cat {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; min-height: 28px;
+  display: grid; grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; min-height: 30px;
 }
 .cat-name { font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
+/* 样例：**吃该类的字号令牌**，行高按字号走，不会被裁 */
+.cat-sample {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 1.35; color: var(--text-dim);
+}
 
-.step {
-  display: flex; align-items: center; flex: none; width: 116px; height: 26px;
+/* 三档分段控件：一个 pill，选中的那档抬高成白底 */
+.steps {
+  display: inline-flex; align-items: center; flex: none; gap: 2px; padding: 2px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
-  background: var(--bg-elev); overflow: hidden;
+  background: var(--bg-sunken);
 }
-/* 用图标而不是「−」「+」两个字：两个字形宽度不同、光学中心也不同，五行里总有一行看着歪。
-   图标是 24 网格里居中的对称图形，`grid` 居中后五行完全一致（用户口径 2026-12）。 */
-.step-btn {
-  flex: none; display: grid; place-items: center;
-  width: 26px; height: 100%; border: 0; background: transparent;
-  color: var(--text-dim); font-family: inherit;
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.step-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.step-btn:focus-visible { outline: none; box-shadow: var(--ring); }
-.step-btn:disabled { opacity: .35; cursor: not-allowed; }
-.step-val {
+.step {
   display: inline-flex; align-items: center; justify-content: center;
-  flex: 1; min-width: 0; align-self: stretch; padding: 0 2px;
-  border-left: 1px solid var(--divider); border-right: 1px solid var(--divider);
-  font-size: calc(11.5px * var(--ts, 1)); font-weight: 650;
-  font-variant-numeric: tabular-nums;
+  min-width: 34px; height: 22px; padding: 0 8px;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-dim); font-family: inherit; font-size: calc(11.5px * var(--ts, 1));
+  cursor: pointer; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
+.step:hover { background: var(--bg-hover); color: var(--text); }
+.step.on { background: var(--bg-elev); color: var(--accent-text); font-weight: 650; box-shadow: var(--shadow-1); }
+.step:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 字体一行：名字对齐上面的「正文/对话…」，右边三档更宽（三个中文字） */
+.font-row {
+  display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider);
+}
+.steps.wide { justify-self: start; }
+.steps.wide .step { padding: 0 10px; }
 </style>

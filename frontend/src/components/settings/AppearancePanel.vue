@@ -2,12 +2,12 @@
 /**
  * 设置 · 显示主题：**一整页三块**的编排层。
  *
- * 版式（2026-12 用户口径，最终）：**左一卡、右一栏**
- *   左：**预览效果**（样例 + 当前配色，唯一套卡片的东西 —— 它才是"看效果"的地方）
- *   右：一条窄而长的竖轴，三块**都不套卡片**，只用留白与 1px 细线分区：
- *       主题预设（竖卡网格 + 竖向滚动）→ 分类字号（窄步进器）→ 高亮效果。
- * 为什么右栏不套卡：三张卡摞起来就是三条卡缝 + 三个卡头，而它们本来就是同一件事
- * （"这一页怎么显示"）的三个旋钮；裸块 + 细线更像设置项列表，也更省高度。
+ * 版式（2026-12 用户口径，最新）：**两列，各两块**
+ *   左：**预览效果**（唯一的卡片：样例 + 当前配色）→ 分类字号（裸块：每类带样例 + 小/中/大 / 字体）
+ *   右：**主题预设**（裸块：竖卡网格 + 竖向滚动）→ 高亮效果（裸块：荧光笔 / 下划线）
+ * 为什么右两列都裸放：三张卡摞起来就是三条卡缝 + 三个卡头，而它们本来就是同一件事
+ * （"这一页怎么显示"）的旋钮；裸块 + 1px 细线更像设置项列表，也更省高度。
+ * 左卡**不再吸顶**：分类字号搬到它下面之后，左列本身就是一整段内容，吸顶只会挡住右列。
  *
  * 第三行原来是「预览效果 + 高级设置」：高级设置（细腻动画 / 收起左侧栏）低频、而且"收起左侧栏"
  * 在侧栏底部本来就有入口，右栏底部因此常年留白。2026-12 起整卡换成「高亮效果」——
@@ -31,16 +31,12 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
   <div class="appearance">
     <div class="ap-left">
       <DisplayPreviewCard />
+      <CategorySizeBlock />
     </div>
 
     <div class="ap-right">
       <ThemePresetCard />
-
-      <!-- 宽屏时这两块并排（各占一半）；右栏窄了就自动落成一列 -->
-      <div class="ap-pair">
-        <CategorySizeBlock />
-        <HighlightStyleCard />
-      </div>
+      <HighlightStyleCard />
     </div>
   </div>
   </div>
@@ -50,39 +46,28 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 /* 容器放在**外层**：容器查询只能改后代，不能改容器自己（以前那条「整页落单列」写在
    `.appearance` 上，永远不会生效）。 */
 .appearance-wrap { container-type: inline-size; min-width: 0; }
+/* 两列等宽：左边「看效果」（预览卡 + 分类字号），右边「挑东西」（主题 + 高亮）。
+   16 / 20 的缝：竖向 16、横向 20，左边是卡、右边是裸块，横向多一点才不显得贴在一起。 */
 .appearance {
   display: grid;
-  /* 左卡**收窄**到 520：它只是「看效果」，再宽也只剩留白；右栏因此拿到余下的宽度，
-     分类字号与高亮效果才并得开（用户口径 2026-12）。 */
-  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
   align-items: start;
   min-width: 0;
 }
-/* 左卡比右栏矮得多：让它在这一层里**吸顶**，往下滚右栏时预览一直看得到，
-   画面底下那片空白也不会跟着滚走变成"一块空卡"。 */
-.ap-left { min-width: 0; position: sticky; top: 12px; }
-
-/* 右栏：一条竖轴，几块裸内容（不套卡片），块与块之间一条 1px 细线 + 14px 呼吸 */
-.ap-right { min-width: 0; display: flex; flex-direction: column; }
-.ap-right > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
-
-/* 分类字号 + 高亮效果：只有**两半都够宽**（各 ≥270）才并排。
-   门槛按"内容区 ≥ 1080"算 —— 1440 宽时内容才 922，两半只剩 205，
-   步进器贴着标签、高亮示例挤成三行，看着就是错位（用户口径 2026-12）。 */
-.ap-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@container (max-width: 1080px) {
-  .ap-pair { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .ap-pair > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
+/* 两列都只做竖排容器；不吸顶（分类字号搬到左列之后，吸顶只会挡住右列） */
+.ap-left, .ap-right { min-width: 0; display: flex; flex-direction: column; }
+.ap-left > * + *,
+.ap-right > * + * {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider);
 }
 
 /* 网格里的兄弟卡不需要 base.css 那条 `.card + .card` 的 12px 上边距（缝已由 gap 给） */
 .appearance :deep(.card + .card) { margin-top: 0; }
 
-/* 内容区窄到 1000 以下：左卡 520 + 16 之后，右栏只剩 460 以下 —— 那一栏要同时装下
-   主题列表 / 步进器 / 高亮示例，太挤就落单列（先预览，再右栏那几块）。
-   实测 1400 宽时内容 922：单列反而更好读。 */
-@container (max-width: 1000px) {
+/* 内容区窄到 940 以下：两列各剩 460 不到 —— 左边样例、右边主题列表都会挤，落单列
+   （先「看效果」：预览 + 分类字号，再「挑东西」：主题 + 高亮）。 */
+@container (max-width: 940px) {
   .appearance { grid-template-columns: minmax(0, 1fr); }
 }
 
