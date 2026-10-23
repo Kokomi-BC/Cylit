@@ -5,8 +5,7 @@
  * 迁移期 / 老后端的字段可能缺席，所以能缺的一律可选，读的地方统一给空态兜底，
  * 绝不因为某个字段没返回就炸掉整块界面。
  *
- * 三个新组件（ProviderSelector / CredentialSelector / ProviderDrawer）共用这一份，
- * C 阶段的新增模型表单也直接 import 这里的类型。
+ * ProviderDrawer / ModelForm / ModelSwitcher 共用这一份。
  */
 
 /** 一家提供方（官方的身份由后端目录判定，自定义来自 provider 表）。 */

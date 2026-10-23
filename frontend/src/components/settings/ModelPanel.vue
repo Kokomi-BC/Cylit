@@ -32,7 +32,6 @@ import { categoryIcon, vendorColorIcon } from '@/assets/model-icons';
 import ModelForm from '@/components/settings/ModelForm.vue';
 import ModelSwitcher from '@/components/settings/ModelSwitcher.vue';
 import UsageChart from '@/components/settings/UsageChart.vue';
-import ProviderSelector from '@/components/settings/ProviderSelector.vue';
 import ProviderDrawer from '@/components/settings/ProviderDrawer.vue';
 import type { ProviderRow } from '@/components/settings/modelTypes';
 
@@ -278,17 +277,11 @@ async function loadSecretNames(): Promise<void> {
 const providers = ref<ProviderRow[]>([]);
 const providersLoading = ref(false);
 const providersError = ref('');
-const customEntry = ref<ProviderRow>({
-  id: 'custom', kind: 'custom', label: '自定义提供方', icon: '',
-  note: '填名称 / Base URL / API Key / Model ID',
-});
-
 async function loadProviders(): Promise<void> {
   providersLoading.value = true;
   try {
-    const data = await api.get<{ providers?: ProviderRow[]; custom?: ProviderRow }>('/models/providers');
+    const data = await api.get<{ providers?: ProviderRow[] }>('/models/providers');
     providers.value = Array.isArray(data?.providers) ? data.providers : [];
-    if (data?.custom && data.custom.id) customEntry.value = data.custom;
     providersError.value = '';
   } catch (err) {
     providers.value = [];
@@ -298,16 +291,13 @@ async function loadProviders(): Promise<void> {
   }
 }
 
-/** 选择器里的候选 = 目录里的官方/自定义那几家 + 末尾的「自定义提供方」入口 */
-const providerOptions = computed<ProviderRow[]>(() => [...providers.value, customEntry.value]);
-
 /* ---------------------------- 「模型提供方」展示顺序 ----------------------------
  * 默认顺序（没手动排过时）：DeepSeek → Claude(anthropic) → ChatGPT(openai) → Gemini，
  * 其余按后端返回顺序（后端已按 sort 升序返回），自定义入口永远排最后。
  * 手动排序走后端 PUT /models/providers/order（body { ids: [...] } 是整个顺序）。
  * **优雅降级**：行里没有 sort 字段（排序接口还没上线）就按默认顺序只读展示，
  * 拖动与上移/下移禁用并在区块抬头给一行提示 —— 不伪造顺序、不发注定 404 的请求、不白屏。
- * 这一块的顺序**只影响本区展示**：providerOptions（「+」里的选择器）不受影响。 */
+ * 这一块的顺序**只影响本区展示**：表单第 1 步的提供方列表按后端返回顺序，不受这里拖动影响。 */
 const PROVIDER_PINNED = ['deepseek', 'anthropic', 'openai', 'gemini'];
 
 /** 本地顺序覆盖（松手/上移下移后立刻生效，失败回滚）；空 = 跟着后端返回的顺序 */
@@ -597,18 +587,10 @@ async function submitNewProvider(): Promise<void> {
 }
 
 /* ---------------------------- 按类型添加（卡片右上那枚 +） ----------------------------
- * 只有一步：先选提供方（ProviderSelector，可搜索、不溢出视口），选中就直接开表单，
- * 表单按这家的 base_url / auth 预填。原先「先挑预设、再进表单」那一级已经**整套下线**
- * （用户口径第二轮：后端连 /models/presets 都不再提供），这里既不请求预设，也不再提"套预设"。 */
-const addOpen = ref(false);
-const addType = ref('agent');
-const addProviderId = ref('');
-
+ * 直接开表单：提供方列表是表单的第 1 步（可搜索、自带「自定义提供方」一行），
+ * 中间那层「先选提供方」的弹窗是**同一件事的第二套界面**，已删除（用户口径 2026-12-02）。 */
 function openAdd(type: string): void {
-  addType.value = type;
-  addProviderId.value = '';
-  addOpen.value = true;
-  if (!providers.value.length) void loadProviders();
+  openCreate(type);
 }
 
 /* ---------------------------- 切换模型浮层 ----------------------------
@@ -794,25 +776,14 @@ const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
 const formDefaultType = ref('agent');
-/** 恒为 false：customEntry 会让表单跳过第一步，而「手动新建 / 自定义」都要求先在第
- *  一步选提供方（自定义提供方本身就是第一步列表里的一行）。prop 保留给将来真需要跳步的场景。 */
-const formCustom = ref(false);
 /** 保存失败的文案：透给表单第五步的「保存结果」那一行（saveError），每次打开表单时清空 */
 const formError = ref('');
-/** 官方提供方带进来的厂商身份与端点 */
-const formSeed = ref<{ id: string; label?: string; base_url?: string; auth?: string } | null>(null);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
-function openCreate(
-  type = 'agent',
-  custom = false,
-  provider: ProviderRow | null = null,
-): void {
+function openCreate(type = 'agent'): void {
   formMode.value = 'create';
   formTarget.value = null;
   formDefaultType.value = type;
-  formCustom.value = custom;
-  formSeed.value = seedOf(provider);
   formError.value = '';
   formOpen.value = true;
 }
@@ -821,8 +792,6 @@ function openEdit(m: ModelRow): void {
   formMode.value = 'edit';
   formTarget.value = m;
   formDefaultType.value = m.model_type || 'agent';
-  formCustom.value = false;
-  formSeed.value = null;
   formError.value = '';
   formOpen.value = true;
 }
@@ -864,31 +833,6 @@ async function submitForm(payload: Record<string, any>): Promise<void> {
   } finally {
     busyKey.value = '';
   }
-}
-
-/** 给 ModelForm 的 seed：只用它认得的四个字段（provider / base_url / 密钥名预填） */
-function seedOf(p: ProviderRow | null): { id: string; label?: string; base_url?: string; auth?: string } | null {
-  if (!p) return null;
-  return { id: p.id, label: p.label, base_url: p.base_url || '', auth: p.auth };
-}
-
-/** 选中提供方：官方 → 带着这家的身份与端点进表单（开在第二步）；
- *  「自定义提供方」→ 不带 seed、不带 customEntry，**照样从第一步进**（自定义也在第一步的列表里）。 */
-watch(addProviderId, (id) => {
-  if (!id || !addOpen.value) return;
-  addOpen.value = false;
-  if (id === customEntry.value.id) {
-    openCreate(addType.value, false, null);
-    return;
-  }
-  const picked = providerOptions.value.find((x) => x.id === id) ?? null;
-  openCreate(addType.value, false, picked);
-});
-
-/** 底部的「手动新建配置」：第一步就是选提供方（自定义提供方也在那一步的列表里） */
-function addManual(): void {
-  addOpen.value = false;
-  openCreate(addType.value, false, null);
 }
 
 async function refreshAll(): Promise<void> {
@@ -1099,28 +1043,6 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <!-- 「+」的选择器：选一家提供方（可搜索）→ 直接进表单；不再有「预设」这一级 -->
-    <Modal :open="addOpen" :title="'添加' + typeLabel(addType) + '模型'" @close="addOpen = false">
-      <div class="add-picker">
-        <p class="add-note">
-          先选厂商（官方提供方会自动填好 Base URL），选中后填自己的 API Key、从厂商拉模型。
-        </p>
-        <ProviderSelector
-          v-model="addProviderId"
-          :providers="providerOptions"
-          :loading="providersLoading"
-          :error="providersError"
-        />
-      </div>
-      <template #footer>
-        <button type="button" class="btn sm ghost" @click="addManual">
-          <AppIcon name="edit" :size="14" />手动新建配置
-        </button>
-        <span class="spacer"></span>
-        <button type="button" class="btn sm" @click="addOpen = false">取消</button>
-      </template>
-    </Modal>
-
     <!-- 重命名：卡片上不再有行内输入框，改名从浮层「⋯」进来，提交的仍只有 name -->
     <Modal :open="renameOpen" title="重命名模型" narrow @close="closeRename">
       <label class="field">
@@ -1193,7 +1115,7 @@ onBeforeUnmount(() => {
 
     <ModelForm
       :open="formOpen" :mode="formMode" :target="formTarget"
-      :default-type="formDefaultType" :custom-entry="formCustom" :seed="formSeed"
+      :default-type="formDefaultType"
       :types="panelTypes" :type-labels="TYPE_LABEL"
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
       @close="formOpen = false" @submit="submitForm"
@@ -1418,12 +1340,8 @@ onBeforeUnmount(() => {
 .prov-error { border-color: color-mix(in srgb, var(--danger) 40%, var(--divider)); color: var(--danger); }
 .prov-error p { margin: 0; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 
-/* 「+」里只剩提供方选择器（预设卡那一套样式随功能一起下线） */
+/* 「新增提供方」弹窗里的字段竖排（原来「+」的提供方选择器已删，那套 .add-note 随之下线） */
 .add-picker { display: flex; flex-direction: column; gap: 14px; }
-.add-note {
-  margin: 0; line-height: 1.5;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
-}
 .err { color: var(--danger); margin: 0; line-height: 1.5; }
 
 /* 断点从宽到窄递减排列：同一元素命中的最后一条生效（列宽由 1fr 均分，绝不出现横向滚动） */

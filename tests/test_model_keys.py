@@ -786,6 +786,81 @@ def test_probe_stored_model_without_any_endpoint_still_errors(sandbox, secrets, 
     assert "Base URL" in res.text
 
 
+def test_probe_create_uses_provider_default_key(sandbox, secrets, client, monkeypatch):
+    """创建流程里「跟随提供方默认密钥」：探测请求必须带上这家的默认密钥。
+
+    不公开模型列表的端点（豆包/火山方舟 ark）匿名请求一律 401 —— 改造前前端只传
+    base_url，于是「测试连接」能过、向导第 3 步「拉取失败：401」。
+    """
+    from backend.services.model import remote_models
+
+    calls: list[dict] = []
+
+    async def fake(base_url, *, api_key=None, allow_private=False, timeout=8.0):
+        calls.append({"base_url": base_url, "api_key": api_key})
+        return {"items": [{"id": "ep-1"}], "count": 1, "host": "ark.example.com"}
+
+    monkeypatch.setattr(remote_models, "list_models", fake)
+
+    pid = _pid("probe_default_p")
+    _provider(pid)
+    _key_with_file(pid, "probe_default", "sk-DEF8888")
+
+    res = client.post("/api/v1/models/probe-models",
+                      json={"base_url": "https://api.example.com/v1", "provider": pid})
+    assert res.status_code == 200, res.text
+    assert calls[-1]["api_key"] == "sk-DEF8888"
+
+
+def test_probe_create_honours_none_mode_without_key(sandbox, secrets, client, monkeypatch):
+    """「无需密钥」明确不走默认密钥：本地推理 / 公开端点不能被别人的密钥顶上。"""
+    from backend.services.model import remote_models
+
+    calls: list[dict] = []
+
+    async def fake(base_url, *, api_key=None, allow_private=False, timeout=8.0):
+        calls.append({"base_url": base_url, "api_key": api_key})
+        return {"items": [{"id": "m1"}], "count": 1, "host": "api.example.com"}
+
+    monkeypatch.setattr(remote_models, "list_models", fake)
+
+    pid = _pid("probe_none_p")
+    _provider(pid)
+    _key_with_file(pid, "probe_none", "sk-NONE0000")
+
+    res = client.post("/api/v1/models/probe-models",
+                      json={"base_url": "https://api.example.com/v1",
+                            "provider": pid, "key_mode": "none"})
+    assert res.status_code == 200, res.text
+    assert calls[-1]["api_key"] is None
+
+
+def test_probe_create_uses_explicit_key_id(sandbox, secrets, client, monkeypatch):
+    """创建流程里「独立指定密钥」：按 key_id 解析（该行未必属于这家默认）。"""
+    from backend.services.model import remote_models
+
+    calls: list[dict] = []
+
+    async def fake(base_url, *, api_key=None, allow_private=False, timeout=8.0):
+        calls.append({"base_url": base_url, "api_key": api_key})
+        return {"items": [{"id": "m1"}], "count": 1, "host": "api.example.com"}
+
+    monkeypatch.setattr(remote_models, "list_models", fake)
+
+    pid = _pid("probe_keyid_p")
+    _provider(pid)
+    default_key = _key_with_file(pid, "probe_keyid_d", "sk-DEFAULT9")
+    other = _key_with_file(pid, "probe_keyid_o", "sk-OTHER22")
+
+    res = client.post("/api/v1/models/probe-models",
+                      json={"base_url": "https://api.example.com/v1",
+                            "provider": pid, "key_id": other["id"]})
+    assert res.status_code == 200, res.text
+    assert calls[-1]["api_key"] == "sk-OTHER22"
+    assert calls[-1]["api_key"] != "sk-DEFAULT9"
+    assert default_key["id"] != other["id"]
+
+
 def test_keys_api_roundtrip(sandbox, secrets, client):
     from backend.services.model import key_store
 

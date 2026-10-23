@@ -351,7 +351,11 @@ async function fetchRemoteModels(): Promise<void> {
       body.model_id = editId;
     } else {
       body.base_url = baseUrl;
+      /* 探测请求本身也要带对密钥，否则「跟随提供方默认密钥」的端点（豆包/火山方舟这类
+         不公开模型列表的）一律 401：后端按 provider 解析默认密钥、按 key_id 解析指定密钥。 */
+      if (form.provider.trim()) body.provider = form.provider.trim();
       if (keyMode.value === 'key' && keyChoice.value) body.key_id = keyChoice.value;
+      if (keyMode.value === 'none') body.key_mode = 'none';
       if (form.secret_ref.trim()) body.secret_ref = form.secret_ref.trim();
     }
     const data = await api.post<{ items?: Array<{ id?: string }>; count?: number; host?: string }>(

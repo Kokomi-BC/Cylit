@@ -279,7 +279,10 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
     两种用法：
     · 传 `model_id`：用**库里已存**的 base_url + 密钥（设置页对已有配置「刷新模型列表」）；
       该模型 base_url 留空时按「提供方行 → 官方目录默认端点」回落（只用于探测，不写库）；
-    · 传 `base_url`（+ 可选 `api_key` / `secret_ref`）：自定义提供方**保存前**先探一次。
+    · 传 `base_url`（+ 可选 `api_key` / `key_id` / `provider` / `secret_ref`）：保存前先探一次。
+      创建流程里前端还没落库，「跟随提供方默认密钥」时传 `provider`（后端走同一条
+      `secret_resolver` 解析这家默认密钥），「指定密钥」时传 `key_id`，`key_mode=none` 则不带密钥。
+      不带这些参数就是匿名探测（只对公开模型列表的端点有效）。
 
     安全：两种用法都过 `endpoint_guard`（协议、元数据地址、内网、DNS 全部校验）；
     现填地址默认不放行内网，需要 `CYLIT_ALLOW_PRIVATE_MODEL_ENDPOINT=1`。
@@ -294,6 +297,9 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
     base_url = str(payload.get("base_url") or "").strip()
     api_key = str(payload.get("api_key") or "").strip() or None
     secret_ref = str(payload.get("secret_ref") or "").strip()
+    key_id = str(payload.get("key_id") or "").strip()
+    provider = str(payload.get("provider") or "").strip()
+    key_mode = str(payload.get("key_mode") or "").strip().lower()
     stored = bool(model_id)
 
     if stored:
@@ -307,6 +313,17 @@ async def probe_models(request: Request, payload: dict = Body(default={})):
             # **统一解析器**：密钥从哪来只有一处决定（改造前这里自己又读了一遍文件，
             # 于是"设置页测通了、调用链 401"这种事迟早发生）
             api_key = secret_resolver.resolve_for_model(cfg)[0]
+    elif not api_key and key_mode == "none":
+        # 明确「无需密钥」：本地推理 / 公开端点，绝不回退去读别人的密钥
+        api_key = None
+    elif not api_key and key_id:
+        # 创建流程里选了「独立指定密钥」：行还没挂到模型上，按 id 走同一条解析链
+        api_key = secret_resolver.resolve_for_model(
+            {"key_mode": "key", "provider_key_id": key_id})[0]
+    elif not api_key and provider:
+        # 创建流程里「跟随提供方默认密钥」：这家有默认密钥就用它（没有则匿名探测）
+        api_key = secret_resolver.resolve_for_model(
+            {"provider": provider, "key_mode": "auto"})[0]
     elif secret_ref and not api_key:
         # 没落库的自定义端点：借同一条解析链的"历史回落"读这个文件（不另写一套）
         api_key = secret_resolver.resolve_for_model(
