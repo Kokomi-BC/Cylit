@@ -809,6 +809,10 @@ const formWarning = ref('');
 const formRulesError = ref('');
 /** 新建成功后拿到的模型 id：时段保存失败时重试走 PUT，不会 POST 出第二份 */
 const formSavedId = ref('');
+/** 打开时直接停在第几步（0 = 不指定）：只有「编辑高峰价」会传 4 */
+const formInitialStep = ref(0);
+/** 配合上一条：顺手展开「计费」折叠块，让分时段单价列表一眼可见 */
+const formFocusPrice = ref(false);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 function openCreate(type = 'agent'): void {
@@ -819,6 +823,8 @@ function openCreate(type = 'agent'): void {
   formWarning.value = '';
   formRulesError.value = '';
   formSavedId.value = '';
+  formInitialStep.value = 0;
+  formFocusPrice.value = false;
   formOpen.value = true;
 }
 
@@ -830,7 +836,21 @@ function openEdit(m: ModelRow): void {
   formWarning.value = '';
   formRulesError.value = '';
   formSavedId.value = '';
+  formInitialStep.value = 0;
+  formFocusPrice.value = false;
   formOpen.value = true;
+}
+
+/**
+ * 限额卡片上的「编辑高峰价」：直接打开这个配置的编辑表单，并停在放单价的那一步
+ * （第 4 步里就是「计费（单价与币种）」+ 分时段单价那一块）。
+ */
+function openEditPrice(id: string): void {
+  const m = ((state.models || []) as ModelRow[]).find((x) => x.id === id);
+  if (!m) return;
+  openEdit(m);
+  formInitialStep.value = 4;
+  formFocusPrice.value = true;
 }
 
 function flash(id: string): void {
@@ -965,7 +985,10 @@ onBeforeUnmount(() => {
     <UsageChart ref="usageRef" />
 
     <!-- ②' 限额：裸块（区块标题 + 留白），与「用量」同一观感，不套 .card -->
-    <LimitCard :summary="limitSummary" :loading="limitLoading" @refresh="loadLimits" />
+    <LimitCard
+      :summary="limitSummary" :loading="limitLoading"
+      @refresh="loadLimits" @edit-price="openEditPrice"
+    />
 
     <!-- ③ 任务分类与模型配置：每类一张卡，卡上只有当前模型那一行 -->
     <section class="block types-block">
@@ -1210,6 +1233,7 @@ onBeforeUnmount(() => {
       :types="panelTypes" :type-labels="TYPE_LABEL"
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
       :rules-warning="formWarning" :rules-error="formRulesError"
+      :initial-step="formInitialStep" :focus-price="formFocusPrice"
       @close="formOpen = false" @submit="submitForm"
     />
   </div>

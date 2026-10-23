@@ -189,7 +189,6 @@ const SKILL_NAME_ZH: Record<string, string> = {
   'answer-paper': '论文问答',
   'explain-term': '术语与译法',
   'edit-text': '文本修订',
-  'check-translation': '译文核对',
 };
 
 /** 技能名里的那一个"联网搜索"，齿轮与内嵌设置都挂在它身上。 */
@@ -216,7 +215,7 @@ const SKILL_ORDER = [
   'web-search', 'web-fetch',
   'summarize-paper', 'answer-paper',
   'read-text', 'read-page-image', 'read-figure', 'read-formula',
-  'explain-term', 'check-translation', 'annotate-text', 'edit-text',
+  'explain-term', 'annotate-text', 'edit-text',
 ];
 function skillRank(name: string): number {
   const at = SKILL_ORDER.indexOf(name);
@@ -230,6 +229,14 @@ const skillRows = computed<AgentSkill[]>(() =>
 function skillDesc(skill: AgentSkill): string {
   const text = (skill.description || '').trim();
   return text || '这个技能没写说明';
+}
+
+/** 技能行的展开态：默认只摆名字，点开才看说明原文（SKILL.md 的 description）。
+ *  为什么不一直摆着：说明是一行截断的长句，12 条拼起来既把列表撑高，又把右列挤到横向溢出
+ *  （用户口径 2026-12：点一下再展开，别让页面能左右滑）。纯展示状态，不落后端、不发请求。 */
+const expandedSkill = ref('');
+function toggleSkillDetail(skill: AgentSkill): void {
+  expandedSkill.value = expandedSkill.value === skill.name ? '' : skill.name;
 }
 
 async function loadSkills(): Promise<void> {
@@ -686,55 +693,41 @@ onMounted(() => {
 
 <template>
   <div class="cyli-prefs">
-    <!-- 页头（h2）由设置页导航项给出，这里只补一句副标题：同一行字摆两遍是最刺眼的重复 -->
     <p class="pref-intro">调整 Cyli 的回答方式，查看已接入的技能。</p>
 
-    <!-- ① 对话偏好：两行控件（风格 / 长度），选自定义时就地展开指令框 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="chat" :size="14" /><h3>对话偏好</h3>
-        <span class="spacer"></span>
-        <span class="tiny faint">只对新开的对话生效</span>
-        <button class="btn sm" :disabled="prefBusy || !prefCanReset" data-pref-reset
-                @click="resetPrefs">
-          <AppIcon name="refresh" :size="14" />恢复默认
-        </button>
-        <button class="btn primary sm" :disabled="prefBusy || !prefDirty" data-pref-save
-                @click="savePrefs">
-          <AppIcon name="check" :size="14" />{{ prefBusy ? '保存中…' : '保存' }}
-        </button>
-      </div>
-      <div class="card-body">
-        <div class="pref-rows">
-          <div class="pref-row">
-            <label class="pref-label" for="pref-style">对话风格</label>
-            <div class="pref-ctl">
+    <!-- 两列：左列「怎么说话 / 跑多大的活」（对话偏好、运行上限、Cyli 解释三组同一张卡，
+         组间一条发丝线），右列「会哪些技能」。容器够宽才并排，窄了按 DOM 顺序落单列
+         （对话偏好 → 运行上限 → Cyli 解释 → 技能能力）。 -->
+    <div class="pref-layout">
+      <section class="pref-main">
+        <!-- ① 对话偏好 -->
+        <div class="pref-group">
+          <header class="group-head">
+            <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
+            <span class="spacer"></span>
+            <span class="group-note">只对新开的对话生效</span>
+            <button class="btn sm" :disabled="prefBusy || !prefCanReset" data-pref-reset
+                    @click="resetPrefs">
+              <AppIcon name="refresh" :size="14" />恢复默认
+            </button>
+            <button class="btn primary sm" :disabled="prefBusy || !prefDirty" data-pref-save
+                    @click="savePrefs">
+              <AppIcon name="check" :size="14" />{{ prefBusy ? '保存中…' : '保存' }}
+            </button>
+          </header>
+
+          <!-- 风格与长度同一行两列；自定义指令框在下一行，与风格下拉同一条左缘、同一条右缘 -->
+          <div class="pref-form">
+            <label class="ctl">
+              <span class="ctl-label">对话风格</span>
               <select id="pref-style" v-model="pref.preset" data-pref-style>
                 <option v-for="opt in PREF_STYLE_OPTIONS" :key="opt.id" :value="opt.id">
                   {{ opt.label }}
                 </option>
               </select>
-              <!-- 预设由后端决定往系统提示词后面追加哪一段；前端只发枚举，不抄提示词正文 -->
-              <span v-if="pref.preset === 'default'" class="tiny faint">不追加任何风格指令</span>
-            </div>
-          </div>
-          <!-- 只有"自定义"才展开：选走别的预设时它必须收起，否则用户会以为框里那段还在生效 -->
-          <div class="pref-row" v-if="pref.preset === 'custom'">
-            <label class="pref-label" for="pref-style-custom">风格指令</label>
-            <div class="pref-ctl">
-              <textarea id="pref-style-custom" v-model="pref.style" rows="4" class="style-input"
-                        :maxlength="PREF_STYLE_MAX" data-pref-style-custom
-                        placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
-              <div class="pref-foot">
-                <span class="tiny faint">追加在系统提示词之后，不覆盖它</span>
-                <span class="spacer"></span>
-                <span class="tiny faint mono">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
-              </div>
-            </div>
-          </div>
-          <div class="pref-row">
-            <span class="pref-label">回复长度</span>
-            <div class="pref-ctl">
+            </label>
+            <div class="ctl ctl-side">
+              <span class="ctl-label">回复长度</span>
               <div class="seg" role="radiogroup" aria-label="回复长度" data-pref-length>
                 <button v-for="opt in PREF_LENGTH_OPTIONS" :key="opt.id" type="button"
                         role="radio" :aria-checked="pref.length === opt.id"
@@ -742,163 +735,42 @@ onMounted(() => {
                         @click="pref.length = opt.id">{{ opt.label }}</button>
               </div>
             </div>
+            <!-- 只有"自定义"才展开：选走别的预设时它必须收起，否则用户会以为框里那段还在生效 -->
+            <div class="ctl" v-if="pref.preset === 'custom'">
+              <label class="ctl-label" for="pref-style-custom">风格指令</label>
+              <textarea id="pref-style-custom" v-model="pref.style" rows="3" class="style-input"
+                        :maxlength="PREF_STYLE_MAX" data-pref-style-custom
+                        placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
+            </div>
+            <!-- 计数落在指令框那一行的右端（右侧空位处），既贴着眼看的那段文字，又不把正文拽开半屏 -->
+            <div class="pref-count tiny faint mono" v-if="pref.preset === 'custom'">
+              {{ pref.style.length }} / {{ PREF_STYLE_MAX }}
+            </div>
+            <p class="ctl-note tiny faint" v-if="pref.preset === 'custom'">
+              追加在系统提示词之后，不覆盖它
+            </p>
+            <p class="ctl-note tiny faint" v-else-if="pref.preset === 'default'">
+              不追加任何风格指令
+            </p>
           </div>
         </div>
-      </div>
-    </section>
 
-    <!-- ② 技能能力：一行一个技能 = 名字 + 定义原文一行 + 右侧操作 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="sparkle" :size="14" /><h3>技能能力</h3>
-        <span class="spacer"></span>
-        <button class="btn sm" :disabled="skillBusy === 'upload'" @click="pickSkillFile">
-          <AppIcon name="upload" :size="14" />{{ skillBusy === 'upload' ? '上传中…' : '上传技能' }}
-        </button>
-        <button class="btn sm" :disabled="skillsLoading" @click="reloadAll">
-          <AppIcon name="refresh" :size="14" />{{ skillsLoading ? '刷新中…' : '刷新' }}
-        </button>
-        <!-- 真正的文件入口：藏起来，由上面那个按钮代点（原生 file input 长得不像按钮） -->
-        <input ref="fileInput" class="sr-only" type="file" accept=".zip,application/zip"
-               tabindex="-1" @change="onSkillFile" />
-      </div>
-      <div class="card-body">
-        <div class="skill-list" v-if="skills.length">
-          <template v-for="s in skillRows" :key="s.name">
-            <div class="skill-row" :class="{ off: !s.enabled }" data-skill-row
-                 :data-skill-name="s.name">
-              <div class="skill-main">
-                <div class="skill-title">
-                  <!-- 主标题是中文名；工具名降级成旁边的小号弱色（未收录的外部技能没有中文名，
-                       那它本身就是主标题，不再重复一遍） -->
-                  <span class="skill-name" :title="s.name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
-                  <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
-                  <!-- 自带是默认态、不标；只有"外部"值得一眼看出。停用状态**只来自 enabled** -->
-                  <span class="badge dim" v-if="!s.builtin">外部</span>
-                  <span class="badge warn" v-if="!s.enabled">已停用</span>
-                </div>
-                <!-- 说明就是 SKILL.md 的 description（原文，不翻译不改写），一行截断、全文进 title，
-                     要看完整定义点右侧「说明」 -->
-                <p class="skill-desc" :title="skillDesc(s)">{{ skillDesc(s) }}</p>
-              </div>
-              <!-- 顺序：说明在前、图标按钮在中、开关永远最后一个 —— 开关贴住右边缘，
-                   行里多一个齿轮（或少两个图标）都不会把别行的开关推歪 -->
-              <div class="skill-ops">
-                <button class="btn sm" data-skill-view
-                        :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
-                        @click="openSkillDoc(s)">说明</button>
-                <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
-                <template v-if="!s.builtin">
-                  <button class="btn icon sm" :title="'下载 ' + s.name + '.zip'"
-                          :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
-                    <AppIcon name="download" :size="14" />
-                  </button>
-                  <button class="btn icon sm danger" :title="'卸载 ' + s.name"
-                          :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
-                    <AppIcon name="trash" :size="14" />
-                  </button>
-                </template>
-                <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页 -->
-                <button v-if="s.name === WEB_SEARCH_SKILL" class="btn icon sm"
-                        :class="{ primary: wsOpen }"
-                        :title="wsOpen ? '收起联网搜索设置' : '联网搜索设置'"
-                        :aria-expanded="wsOpen" @click="toggleWs()">
-                  <AppIcon name="sliders" :size="14" />
-                </button>
-                <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
-                        :label="'启用技能 ' + s.name"
-                        @update:model-value="toggleSkill(s, $event)" />
-              </div>
-            </div>
-            <!-- ⑤ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
-            <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
-              <p class="ws-hint" v-if="wsLoading">正在读取联网搜索配置…</p>
-              <p class="ws-hint" v-else-if="!wsReady">联网搜索设置暂不可用（接口未就绪）。</p>
-              <template v-else>
-                <div class="grid cols-2">
-                  <label class="field">
-                    <span class="field-top">提供方</span>
-                    <select v-model="wsForm.provider">
-                      <option v-for="p in wsProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
-                    </select>
-                  </label>
-                  <label class="field">
-                    <span class="field-top">返回条数</span>
-                    <input type="number" min="1" max="50" step="1" v-model.number="wsForm.count" />
-                  </label>
-                </div>
-                <label class="field">
-                  <span class="field-top">API Key</span>
-                  <input type="password" v-model="wsApiKey" autocomplete="off" spellcheck="false"
-                         :placeholder="wsHasKey
-                           ? '已保存 ' + (wsKeyMasked || '密钥') + '，留空不改'
-                           : '粘贴提供方控制台里的密钥'" />
-                </label>
-                <div class="grid cols-2">
-                  <label class="field">
-                    <span class="field-top">抓取字数上限</span>
-                    <input type="number" min="500" max="200000" step="500"
-                           v-model.number="wsForm.fetch_chars" />
-                  </label>
-                  <div class="field">
-                    <span class="field-top">需要返回正文</span>
-                    <Switch v-model="wsForm.need_content">抓取网页正文</Switch>
-                  </div>
-                </div>
-                <div class="row ws-actions">
-                  <button class="btn primary sm" :disabled="wsBusy || !wsDirty" @click="saveWs">
-                    <AppIcon name="check" :size="15" />{{ wsBusy ? '保存中…' : '保存' }}
-                  </button>
-                  <button class="btn sm" :disabled="wsTesting" @click="verifyWs">
-                    <AppIcon name="play" :size="15" />{{ wsTesting ? '测试中…' : '测试' }}
-                  </button>
-                  <button class="btn sm danger" :disabled="wsBusy || !wsHasKey" @click="clearWsKey">
-                    <AppIcon name="ban" :size="15" />清除密钥
-                  </button>
-                </div>
-                <!-- 测试结论留在原地：成败 + 卡在哪一步（state）+ 耗时 + 后端原话（detail）；
-                     只弹一条 toast 的话，用户回头想看成因就没了 -->
-                <p v-if="wsTest" class="ws-test" :class="wsTest.ok ? 'ok' : 'bad'">
-                  <AppIcon :name="wsTest.ok ? 'check' : 'ban'" :size="13" />
-                  <span>{{ wsTest.ok ? '验证通过' : '验证失败' }}</span>
-                  <span class="ws-test-meta">{{ wsTest.state }} · {{ wsTest.ms }}ms</span>
-                  <span v-if="wsTest.detail" class="ws-test-detail">{{ wsTest.detail }}</span>
-                </p>
-              </template>
-            </div>
-          </template>
-        </div>
-        <p class="tiny faint" v-else>
-          {{ skillsLoading ? '正在读取技能…'
-            : (skillsReady ? '技能目录是空的，上传一个 .zip 就有了。'
-              : '还没有读到技能目录（agent 服务未就绪）。') }}
-        </p>
-      </div>
-    </section>
-
-    <!-- ③④ 两张"看一眼、改一处"的短卡并排：谁都不该独占整宽 -->
-    <div class="pref-secondary">
-      <section class="card">
-        <div class="card-head">
-          <AppIcon name="sliders" :size="14" /><h3>运行上限</h3>
-          <span class="spacer"></span>
-          <button class="btn primary sm" :disabled="limitsBusy || !limits || !limitsDirty"
-                  @click="saveLimits">
-            <AppIcon name="check" :size="14" />{{ limitsBusy ? '保存中…' : '保存' }}
-          </button>
-        </div>
-        <div class="card-body">
-          <p class="limit-note tiny faint" v-if="limits">
-            agent 服务的启动参数，保存后要重启 agent 服务才生效。
-          </p>
+        <!-- ③ 运行上限 -->
+        <div class="pref-group">
+          <header class="group-head">
+            <AppIcon name="gauge" :size="14" /><h3>运行上限</h3>
+            <span class="spacer"></span>
+            <span class="group-note">启动参数，重启 agent 服务后生效</span>
+            <button class="btn primary sm" :disabled="limitsBusy || !limits || !limitsDirty"
+                    @click="saveLimits">
+              <AppIcon name="check" :size="14" />{{ limitsBusy ? '保存中…' : '保存' }}
+            </button>
+          </header>
           <div class="limit-grid" v-if="limits">
-            <label class="limit-field" v-for="f in LIMIT_FIELDS" :key="f.key">
-              <span class="limit-label">{{ f.label }}</span>
-              <span class="limit-control">
-                <input type="number" :min="f.min" :max="f.max" :step="f.step"
-                       v-model.number="limitForm[f.key]" />
-                <i class="limit-unit">{{ f.unit }}</i>
-              </span>
+            <label class="ctl" v-for="f in LIMIT_FIELDS" :key="f.key">
+              <span class="ctl-label">{{ f.label }}<i class="limit-unit">{{ f.unit }}</i></span>
+              <input type="number" :min="f.min" :max="f.max" :step="f.step"
+                     v-model.number="limitForm[f.key]" />
             </label>
           </div>
           <p class="tiny faint" v-else>
@@ -906,24 +778,20 @@ onMounted(() => {
           </p>
           <p class="limit-hint tiny" v-if="limitsHint">{{ limitsHint }}</p>
         </div>
-      </section>
 
-      <!-- ④ Cyli 解释：单独一套模型 + 思考强度。留空 = 跟随默认（对话模型 / 模型自己的档）。 -->
-      <section class="card">
-        <div class="card-head">
-          <AppIcon name="sparkle" :size="14" /><h3>Cyli 解释</h3>
-          <span class="spacer"></span>
-          <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
-            <AppIcon name="check" :size="15" />{{ explainBusy ? '保存中…' : '保存' }}
-          </button>
-        </div>
-        <div class="card-body">
-          <p class="tiny faint explain-hint">
-            划词解释 / 插图解释用的模型与思考强度，可与对话模型分开。
-          </p>
-          <div class="grid cols-2">
-            <label class="field">
-              <span class="field-top">模型</span>
+        <!-- ④ Cyli 解释 -->
+        <div class="pref-group">
+          <header class="group-head">
+            <AppIcon name="sparkle" :size="14" /><h3>Cyli 解释</h3>
+            <span class="spacer"></span>
+            <span class="group-note">可与对话模型分开</span>
+            <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
+              <AppIcon name="check" :size="14" />{{ explainBusy ? '保存中…' : '保存' }}
+            </button>
+          </header>
+          <div class="explain-grid">
+            <label class="ctl">
+              <span class="ctl-label">模型</span>
               <select v-model="explainModel" data-explain-model>
                 <option value="">跟随对话默认</option>
                 <option v-for="m in explainModels" :key="m.id" :value="m.id">
@@ -931,14 +799,148 @@ onMounted(() => {
                 </option>
               </select>
             </label>
-            <label class="field">
-              <span class="field-top">思考强度</span>
+            <label class="ctl">
+              <span class="ctl-label">思考强度</span>
               <select v-model="explainEffort" data-explain-effort>
                 <option value="">{{ explainFollowLabel }}</option>
                 <option v-for="e in explainEffortOptions" :key="e" :value="e">{{ e }}</option>
               </select>
             </label>
           </div>
+        </div>
+      </section>
+
+      <!-- ② 技能能力：右列一整张卡，一行一个技能 = 名字 + 定义原文一行 + 右侧操作 -->
+      <section class="card">
+        <div class="card-head">
+          <AppIcon name="grid" :size="14" /><h3>技能能力</h3>
+          <span class="spacer"></span>
+          <button class="btn sm" :disabled="skillBusy === 'upload'" @click="pickSkillFile">
+            <AppIcon name="upload" :size="14" />{{ skillBusy === 'upload' ? '上传中…' : '上传技能' }}
+          </button>
+          <button class="btn sm" :disabled="skillsLoading" @click="reloadAll">
+            <AppIcon name="refresh" :size="14" />{{ skillsLoading ? '刷新中…' : '刷新' }}
+          </button>
+          <!-- 真正的文件入口：藏起来，由上面那个按钮代点（原生 file input 长得不像按钮） -->
+          <input ref="fileInput" class="sr-only" type="file" accept=".zip,application/zip"
+                 tabindex="-1" @change="onSkillFile" />
+        </div>
+        <div class="card-body">
+          <div class="skill-list" v-if="skills.length">
+            <template v-for="s in skillRows" :key="s.name">
+              <div class="skill-row" :class="{ off: !s.enabled, open: expandedSkill === s.name }"
+                   data-skill-row :data-skill-name="s.name">
+                <!-- 名字就是展开开关：默认只摆名字（+ 工具名 + 徽章），点一下才把说明原文摊开。
+                     说明一直摆着的话，12 行截断的长句既撑高列表、又让整页能左右滑。 -->
+                <button class="skill-toggle" type="button"
+                        :aria-expanded="expandedSkill === s.name"
+                        :title="(expandedSkill === s.name ? '收起' : '展开') + ' ' + s.name + ' 的说明'"
+                        @click="toggleSkillDetail(s)">
+                  <span class="skill-name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
+                  <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
+                  <!-- 自带是默认态、不标；只有"外部"值得一眼看出。停用状态**只来自 enabled** -->
+                  <span class="badge dim" v-if="!s.builtin">外部</span>
+                  <span class="badge warn" v-if="!s.enabled">已停用</span>
+                </button>
+                <div class="skill-ops">
+                  <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页。
+                       顺序是「齿轮 → 编辑」，齿轮管这一行的**运行设置**，编辑管**定义原文**，
+                       两者都是图标按钮，摆在一起才不会把名字挤到换行。 -->
+                  <button v-if="s.name === WEB_SEARCH_SKILL" class="btn icon sm"
+                          :class="{ primary: wsOpen }"
+                          :title="wsOpen ? '收起联网搜索设置' : '联网搜索设置'"
+                          :aria-expanded="wsOpen" @click="toggleWs()">
+                    <AppIcon name="sliders" :size="14" />
+                  </button>
+                  <button class="btn icon sm" data-skill-view
+                          :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
+                          @click="openSkillDoc(s)">
+                    <AppIcon name="edit" :size="14" />
+                  </button>
+                  <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
+                  <template v-if="!s.builtin">
+                    <button class="btn icon sm" :title="'下载 ' + s.name + '.zip'"
+                            :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
+                      <AppIcon name="download" :size="14" />
+                    </button>
+                    <button class="btn icon sm danger" :title="'卸载 ' + s.name"
+                            :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
+                      <AppIcon name="trash" :size="14" />
+                    </button>
+                  </template>
+                  <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
+                          :label="'启用技能 ' + s.name"
+                          @update:model-value="toggleSkill(s, $event)" />
+                </div>
+              </div>
+              <!-- 展开的说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
+                   整段换行显示、不截断 —— 它在这一处不占列宽，所以再怎么长也不会把页面顶出横向滚动条。 -->
+              <div class="skill-detail" v-if="expandedSkill === s.name">
+                <p class="skill-desc">{{ skillDesc(s) }}</p>
+              </div>
+              <!-- ⑤ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
+              <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
+                <p class="ws-hint" v-if="wsLoading">正在读取联网搜索配置…</p>
+                <p class="ws-hint" v-else-if="!wsReady">联网搜索设置暂不可用（接口未就绪）。</p>
+                <template v-else>
+                  <div class="grid cols-2">
+                    <label class="field">
+                      <span class="field-top">提供方</span>
+                      <select v-model="wsForm.provider">
+                        <option v-for="p in wsProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span class="field-top">返回条数</span>
+                      <input type="number" min="1" max="50" step="1" v-model.number="wsForm.count" />
+                    </label>
+                  </div>
+                  <label class="field">
+                    <span class="field-top">API Key</span>
+                    <input type="password" v-model="wsApiKey" autocomplete="off" spellcheck="false"
+                           :placeholder="wsHasKey
+                             ? '已保存 ' + (wsKeyMasked || '密钥') + '，留空不改'
+                             : '粘贴提供方控制台里的密钥'" />
+                  </label>
+                  <div class="grid cols-2">
+                    <label class="field">
+                      <span class="field-top">抓取字数上限</span>
+                      <input type="number" min="500" max="200000" step="500"
+                             v-model.number="wsForm.fetch_chars" />
+                    </label>
+                    <div class="field">
+                      <span class="field-top">需要返回正文</span>
+                      <Switch v-model="wsForm.need_content">抓取网页正文</Switch>
+                    </div>
+                  </div>
+                  <div class="row ws-actions">
+                    <button class="btn primary sm" :disabled="wsBusy || !wsDirty" @click="saveWs">
+                      <AppIcon name="check" :size="15" />{{ wsBusy ? '保存中…' : '保存' }}
+                    </button>
+                    <button class="btn sm" :disabled="wsTesting" @click="verifyWs">
+                      <AppIcon name="play" :size="15" />{{ wsTesting ? '测试中…' : '测试' }}
+                    </button>
+                    <button class="btn sm danger" :disabled="wsBusy || !wsHasKey" @click="clearWsKey">
+                      <AppIcon name="ban" :size="15" />清除密钥
+                    </button>
+                  </div>
+                  <!-- 测试结论留在原地：成败 + 卡在哪一步（state）+ 耗时 + 后端原话（detail）；
+                       只弹一条 toast 的话，用户回头想看成因就没了 -->
+                  <p v-if="wsTest" class="ws-test" :class="wsTest.ok ? 'ok' : 'bad'">
+                    <AppIcon :name="wsTest.ok ? 'check' : 'ban'" :size="13" />
+                    <span>{{ wsTest.ok ? '验证通过' : '验证失败' }}</span>
+                    <span class="ws-test-meta">{{ wsTest.state }} · {{ wsTest.ms }}ms</span>
+                    <span v-if="wsTest.detail" class="ws-test-detail">{{ wsTest.detail }}</span>
+                  </p>
+                </template>
+              </div>
+            </template>
+          </div>
+          <p class="tiny faint" v-else>
+            {{ skillsLoading ? '正在读取技能…'
+              : (skillsReady ? '技能目录是空的，上传一个 .zip 就有了。'
+                : '还没有读到技能目录（agent 服务未就绪）。') }}
+          </p>
         </div>
       </section>
     </div>
@@ -955,85 +957,153 @@ onMounted(() => {
     </Modal>
   </div>
 </template>
-
 <style scoped>
-/* 卡片之间统一 12px（沿用 base.css 的 .card + .card，这里只为"并排的两张卡"补一条：
-   它们不在同一条竖向流里，.card + .card 管不到网格容器本身）。 */
-.cyli-prefs { display: flex; flex-direction: column; gap: 12px; }
+/* 版式：两列 —— 左列"怎么说话 / 跑多大的活"（对话偏好、运行上限、Cyli 解释三组同一张卡，
+   组间一条发丝线），右列"会哪些技能"。整页只有两张卡，不再四张白卡竖排。
+   --ctl-h 是本区私有的控件高度：select / 数字输入 / textarea 统一 36，圆角统一 --r-sm，
+   字号统一 12.5 —— 只有同高同宽，同一列的左右边缘才可能真正对齐（用户报的"显示问题"）。 */
+.cyli-prefs {
+  --ctl-h: 34px;
+  display: flex; flex-direction: column; gap: 10px;
+  /* 两列与否看**容器**宽度而不是窗口宽度：这个窗格右侧还有导航栏与内边距，
+     窗口 1440 时它只有 968（实测），拿窗口宽度当断点会永远对不上。 */
+  container-type: inline-size;
+}
 .spacer { flex: 1; }
-/* 副标题：一句就够（说明这一区管什么）。字号与色阶跟 .tiny.faint 同档，但不缩到 11px ——
-   它是一句话，不是标注。 */
 .pref-intro {
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
 }
 
-/* ---------- 卡片标题统一 h3 ---------- */
-/* h3 自带浏览器的字号与外边距，而 .card-head 只给了字重与内边距 —— 不重置的话
-   同一页会出现"标题比正文大三倍"的跳级。这里把它压回与 .card-head 一致的那一档。 */
-.card-head h3 {
-  margin: 0; font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text);
-  line-height: 1.4;
+/* ---------- 两列骨架 ---------- */
+.pref-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+/* 卡片的 min-width 必须归零：技能行里有 nowrap 的说明文字，默认 auto 会把栅格轨道
+   撑到 min-content，左列于是被挤成 390、整页还会横向溢出。 */
+.pref-layout > * { min-width: 0; }
+/* 全局 .card + .card 会给网格里第二张卡补 12px 上边距，这里必须清零（行内卡片自己由 gap 管） */
+.pref-layout > .card + .card { margin-top: 0; }
+/* 够宽才并排：55 / 45 —— 左列要放得下"风格指令"框，右列的技能行要放得下名字 + 说明 + 四个按钮 */
+@container (min-width: 800px) {
+  .pref-layout { grid-template-columns: 55fr 45fr; }
 }
 
-/* ---------- ① 对话偏好：几行"标签 + 控件"，标签列定宽才能上下对齐 ---------- */
-.pref-rows { display: flex; flex-direction: column; gap: 14px; }
-.pref-row {
-  display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: start;
+/* ---------- 控件：同高 / 同圆角 / 同字号 / 铺满所在列 ---------- */
+/* 宽度 100% 是对齐的前提：以前 select 卡在 300px、textarea 是整宽，两者右缘差出半屏，
+   一眼看过去就是"没对齐"。要让"窄控件更好看"就收窄整列，而不是单独掐一个控件。 */
+.cyli-prefs select,
+.cyli-prefs input:not([type="checkbox"]):not(.sr-only),
+.cyli-prefs textarea {
+  box-sizing: border-box; width: 100%; height: var(--ctl-h);
+  border-radius: var(--r-sm); font-size: calc(12.5px * var(--ts, 1));
 }
-/* 标签与输入框首行对齐：控件自带高度，标签不补一点上边距会显得浮在上方 */
-.pref-label {
-  padding-top: 7px; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim);
-  overflow-wrap: anywhere;
-}
-.pref-ctl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-/* 下拉不铺满整宽：选项只有两三个字的控件铺满，看起来像一条横着的空白 */
-.pref-ctl > select { width: 100%; max-width: 300px; }
-.pref-foot { display: flex; align-items: center; gap: 8px; }
+/* .seg 也跟到同一高度（全局是 --control-h 32），否则和同一行的 select 差 4px */
+.cyli-prefs .seg { height: var(--ctl-h); }
+.cyli-prefs .seg button { height: calc(var(--ctl-h) - 6px); border-radius: var(--r-sm); }
 
-/* 自定义指令框（沿用原对话风格卡那套语言，用户口径 2026-10-15："太丑了，不符合风格"）：
-   全局那条 input, select, textarea 是给**表单控件**写的（白底 + 深色描边 + 聚焦时一整圈 accent 光环），
-   而且**没给宽度** —— textarea 就按 cols=20 撑成一条 300px 的小白框，摆在整宽卡片里格外扎眼。
-   这里换成笔记编辑框（ReaderSidePanel）同一门语言：整宽 + 淡底 + 发丝描边，
-   聚焦只把描边点亮一档（不要 --ring 那圈光晕）；高度给足（风格本来就该写好几行）；
-   不要浏览器自带的右下角斜纹拖拽角标。 */
-.style-input {
-  display: block; width: 100%; box-sizing: border-box;
-  min-height: 104px; padding: 11px 13px;
+/* ---------- 左列：一张卡三组，组间只留一条发丝线 ---------- */
+/* 左列**不要卡片**：它只是一组设置项，套一层描边 + 底色除了多出一个盒子什么都换不来。
+   所以这里没有 .card 那份描边 / 底色 / 投影；padding-top 9 让第一组标题与右卡抬头同一水平线。 */
+.pref-main { padding: 6px 0 0; }
+.cyli-prefs .card-head { padding: 9px 14px; }
+.cyli-prefs .card-body { padding: 10px 14px; }
+.pref-group { min-width: 0; }
+.pref-group + .pref-group {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider);
+}
+
+/* 组标题：小号 h3 + 图标，右侧是说明与按钮（次级分组不描边、不铺底） */
+.group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--text-faint); }
+.group-head h3 {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
+  line-height: 1.4; white-space: nowrap;
+}
+/* 说明是一句话，不占一行：塞在标题与按钮之间，真的挤了才省略号 */
+.group-note {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(11px * var(--ts, 1)); color: var(--text-faint);
+}
+
+/* 一个控件 = 标签在上、控件在下（全篇统一这一种，不再有"标签在左/在上"混排） */
+.ctl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ctl-label { font-size: calc(11px * var(--ts, 1)); line-height: 1.3; color: var(--text-dim); }
+
+/* 对话偏好：第 1 行 = 风格 select（左，铺满） + 回复长度 seg（右，按内容宽）；
+   第 2 行 = 指令框（与 select 同一列 → 左右边缘完全一致） + 计数（贴右）；
+   第 3 行 = 一句说明（跨两列）。 */
+.pref-form {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px; align-items: start;
+}
+.ctl-side { grid-column: 2; grid-row: 1; }
+/* 计数与 seg 同处右列，底对齐到指令框那一行的下沿 */
+.pref-count { grid-column: 2; align-self: end; text-align: right; font-variant-numeric: tabular-nums; }
+.ctl-note { grid-column: 1 / -1; margin: 0; }
+
+/* 自定义指令框：笔记编辑框那门语言（整宽 + 淡底 + 发丝描边，聚焦只点亮描边）。
+   高度写死 80：rows=4 + line-height 1.75 + min-height 104 在 2x 屏上会撑到 200 出头，
+   整张卡就是这么被撑空的。 */
+.cyli-prefs .style-input {
+  display: block; width: 100%; height: 80px; padding: 8px 11px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer); color: var(--text);
-  font: inherit; font-size: calc(13px * var(--ts, 1)); line-height: 1.75; resize: none;
+  font: inherit; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.55; resize: none;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 /* 覆盖全局的 textarea:hover { background: var(--bg-hover) }（鼠标一过就闪一下灰） */
-.style-input:hover { background: var(--bg-layer); border-color: var(--border-strong); }
-.style-input:focus {
+.cyli-prefs .style-input:hover { background: var(--bg-layer); border-color: var(--border-strong); }
+.cyli-prefs .style-input:focus {
   outline: none; box-shadow: none; background: var(--bg-elev);
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
-.style-input::placeholder { color: var(--text-faint); }
+.cyli-prefs .style-input::placeholder { color: var(--text-faint); }
 
-/* ---------- ② 技能能力：一行 = 名字 + 一行说明 + 右侧操作 ---------- */
+/* ---------- 运行上限 / Cyli 解释 ---------- */
+/* 5 个数字项：左列 526 宽时 3 列（3+2 两行）；落成单列后整宽一行排完 5 个（见下方容器查询）。
+   不用 auto-fit：它会在中间宽度排成"4 个一排 + 1 个落单"，比两行更难看。 */
+.limit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; }
+/* 数字右对齐 + 等宽：数值长短变化时不会左右跳 */
+.limit-grid input { text-align: right; font-variant-numeric: tabular-nums; }
+/* 单位挂在标签后缀里，而不是跟在输入框右边：省下的宽度正好给"1000000"这种长数字 */
+.limit-unit { margin-left: 4px; font-style: normal; color: var(--text-faint); }
+.limit-hint { margin: 8px 0 0; color: var(--ok); }
+.explain-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+
+/* ---------- 右列：技能能力（12 行紧凑列表，点名字才展开说明） ---------- */
+.card-head h3 {
+  margin: 0; font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text);
+  line-height: 1.4; white-space: nowrap;
+}
 .skill-list { display: flex; flex-direction: column; }
 /* 行与行之间用发丝线分隔（不用卡片套卡片）：第一行不留上边、最后一行不留底 */
 .skill-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 7px 0; border-top: 1px solid var(--divider);
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; border-top: 1px solid var(--divider);
 }
 .skill-row:first-child { padding-top: 0; border-top: 0; }
 .skill-row:last-child { padding-bottom: 0; }
-.skill-main { min-width: 0; flex: 1; }
-.skill-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-/* 工具名（英文 id）跟在中文名后面，小号 + 弱色：只在"对日志 / 找目录"时才需要，不抢主标题。 */
-.skill-id { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); overflow-wrap: anywhere; }
-/* 说明**只给一行**：它现在是 SKILL.md 原文（可以很长），两行会把 12 条技能撑成一堵墙；
-   截掉的全文进 title，要看完整定义点「说明」。 */
+/* 名字那一整块是开关（是一枚按钮，不是文本）：键盘也能开合，aria-expanded 给出状态。
+   min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把整页顶出横向滚动条。 */
+.skill-toggle {
+  display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;
+  padding: 2px 0; border: 0; background: transparent; color: inherit;
+  font-family: inherit; text-align: left; cursor: pointer; overflow: hidden;
+}
+.skill-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+.skill-toggle:hover .skill-name { color: var(--accent-text); }
 .skill-name {
   font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
-  overflow-wrap: anywhere;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease);
 }
+/* 工具名（英文 id）跟在中文名后面，小号 + 弱色：只在"对日志 / 找目录"时才需要，不抢主标题。 */
+.skill-id {
+  flex: none; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint);
+  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 展开的说明：SKILL.md 的 description 原文，整段换行、不截断（它在行下方，不参与行宽） */
+.skill-detail { padding: 0 0 6px; }
 .skill-desc {
-  margin: 2px 0 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.45; color: var(--text-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; color: var(--text-dim);
+  overflow-wrap: anywhere;
 }
 /* 停用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
@@ -1041,11 +1111,13 @@ onMounted(() => {
 .skill-row.off .skill-desc { opacity: .6; }
 /* 「说明」与图标按钮在前、开关收尾，整组贴右边缘：开关永远落在同一个 x 上，
    行里有没有齿轮 / 下载 / 卸载都不会把它推歪。 */
-.skill-ops { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: none; }
+.skill-ops { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: none; }
+/* 右列里按钮比左列更值钱：文字按钮收一点内边距，把宽度让给技能名与说明 */
+.skill-ops .btn.sm { padding: 0 8px; }
 
 /* ---------- ⑤ 联网搜索：挂在 web-search 那一行下方，用发丝描边盒与"行"区分开 ---------- */
 .ws-panel {
-  margin: 2px 0 12px; padding: 12px;
+  margin: 2px 0 10px; padding: 12px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer);
 }
@@ -1053,6 +1125,8 @@ onMounted(() => {
 .ws-panel > * + * { margin-top: 10px; }
 .ws-hint { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
 .ws-actions { flex-wrap: wrap; }
+/* 内嵌面板在右列里是窄的：两列网格落成单列，标签与控件才不挤 */
+.ws-panel .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 /* 测试结论：成功绿、失败红；细节退回弱色 —— 一眼看到成败，细看才知道卡在哪一步 */
 .ws-test {
   display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap;
@@ -1064,35 +1138,20 @@ onMounted(() => {
 .ws-test-meta { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .ws-test-detail { color: var(--text-dim); }
 
-/* ---------- ③④ 运行上限 / Cyli 解释 ---------- */
-.pref-secondary {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px; align-items: start;
+/* 单列（窄容器）时左列拿到整宽：5 项排成一行，比"4 + 1 落单"整齐 */
+@container (max-width: 799px) {
+  .limit-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .ws-panel .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-.limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
-.limit-field { display: grid; gap: 6px; min-width: 0; }
-.limit-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.limit-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.limit-control input {
-  width: 100%; max-width: 160px; text-align: right;
-  /* 数字等宽：数值变长变短时不会左右跳 */
-  font-variant-numeric: tabular-nums;
+@container (max-width: 520px) {
+  .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-/* 单位是输入框**右侧的后缀**，不是占位符也不是塞进框里 */
-.limit-unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
-/* 顶上那句"要重启才生效"是说明（弱色）；保存后那句是结论（绿字）—— 两者不是一回事 */
-.limit-note { margin: 0 0 12px; line-height: 1.6; }
-.limit-hint { margin: 12px 0 0; color: var(--ok); }
-.explain-hint { margin: 0 0 10px; line-height: 1.6; max-width: 62ch; }
-
-@media (max-width: 1100px) {
-  .pref-secondary { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 720px) {
-  .limit-grid { grid-template-columns: minmax(0, 1fr); }
-  /* 窄屏下标签列收成一行标题（别让 72px 的标签列把控件挤成一条缝） */
-  .pref-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  .pref-label { padding-top: 0; }
+/* 极窄（手机）：这几种网格退回单列 */
+@container (max-width: 420px) {
+  .explain-grid { grid-template-columns: minmax(0, 1fr); }
+  .pref-form { grid-template-columns: minmax(0, 1fr); }
+  .ctl-side { grid-column: 1; grid-row: auto; }
+  .pref-count { grid-column: 1; text-align: left; }
 }
 
 /* ---------- 查看说明弹窗 ---------- */

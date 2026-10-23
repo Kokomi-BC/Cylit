@@ -313,7 +313,6 @@ description: 论文事实问答的默认流程。用户问某段内容、某个�
 | `read-page-image` | 页面级视觉复核：OCR/公式可疑时把整页渲染再看一遍 | `page_image_get`（高 dpi） | P-a | P0 |
 | `read-formula` | 公式解释 | `formula_get` `block_get` | P-a | P1 ✅ |
 | `explain-term` | 术语中英对照 + 本文用法 | `paper_search`（unit 型）+ 档案术语表 | P-a | P1 ✅ |
-| `check-translation` | 译文质检（原文/译文对齐） | `page_markdown_get` `translate_get` `block_get` | P-a | P1 ✅ |
 | `edit-text` ✅ | 产物纠错（OCR 认错 / 译文译错）：先读、再改一处、改完逐条报告，可撤回 | `page_markdown_edit`（写） | P-写 | P2-a ✅ |
 | `formula-fix` ⚠️ | 公式纠错：先读、再提议、等用户确认 | `page_markdown_get` + `page_markdown_edit`（写） | P-写 | P2-b |
 

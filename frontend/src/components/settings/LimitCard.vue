@@ -37,7 +37,7 @@ import Modal from '@/components/Modal.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
 
 const props = defineProps<{ summary: ModelLimitsSummary | null; loading?: boolean }>();
-const emit = defineEmits<{ (e: 'refresh'): void }>();
+const emit = defineEmits<{ (e: 'refresh'): void; (e: 'edit-price', id: string): void }>();
 
 const SCOPES: Array<{ id: ModelLimitScope; label: string; hint: string }> = [
   { id: 'model', label: '模型', hint: '这一条模型自己的累计' },
@@ -75,7 +75,63 @@ const levelSentence = computed<string>(() => {
 
 /* ---------------------------- 候选实体 ---------------------------- */
 
-interface ModelRow { id: string; name: string; provider: string; modelName: string; hasPrice: boolean | null }
+interface ModelRow {
+  id: string; name: string; provider: string; modelName: string; hasPrice: boolean | null;
+  /** 默认价 = **时段之外**的价（每百万 Token）；null = 没配 */
+  priceIn: number | null;
+  priceOut: number | null;
+  priceCacheRead: number | null;
+  priceCacheWrite: number | null;
+  /** 生效币种：后端解析好的（模型 → 厂商 → CNY），前端不再自己猜链子 */
+  currency: string;
+  /** 配了几段时段：列表接口只给条数，完整时段要按需去 /price-rules 取 */
+  ruleCount: number;
+}
+
+/** 一段分时段单价（GET /models/{id}/price-rules 的 items[]，只取展示要用的字段） */
+interface PriceSlot {
+  label: string; start: string; end: string;
+  price_in: number | null; price_out: number | null;
+  price_cache_read: number | null; price_cache_write: number | null;
+}
+
+/** 一行限额的单价摘要（只读视图；算钱口径全在后端 billing） */
+interface PriceSummary {
+  configId: string;
+  /** 组内同名的成员只能靠 Model ID / 名称区分，所以这里报的是"哪一个配置" */
+  configLabel: string;
+  currency: string;
+  hasDefault: boolean;
+  priceIn: number | null;
+  priceOut: number | null;
+  priceCacheRead: number | null;
+  priceCacheWrite: number | null;
+  slots: PriceSlot[];
+  slotsLoading: boolean;
+  slotsError: string;
+  /** 组内配了单价的配置之间价不一样（不编平均价，只如实说一句） */
+  mixed: boolean;
+  pricedCount: number;
+}
+
+/** 单价字段：接口可能给 null / ''/ 数字，统一成 number | null（null = 没配，不是 0 元） */
+function numOf(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function slotOf(row: Record<string, any>): PriceSlot {
+  return {
+    label: String(row?.label ?? ''),
+    start: String(row?.start ?? ''),
+    end: String(row?.end ?? ''),
+    price_in: numOf(row?.price_in),
+    price_out: numOf(row?.price_out),
+    price_cache_read: numOf(row?.price_cache_read),
+    price_cache_write: numOf(row?.price_cache_write),
+  };
+}
 /** 一组同 name + 同 provider 的配置（后端限额按**单个配置**存，所以这里只是显示层的一项） */
 interface ModelGroup { key: string; name: string; provider: string; providerLabel: string; ids: string[]; unpriced: boolean }
 
@@ -146,6 +202,12 @@ async function loadTargets(): Promise<void> {
         provider: String(m.provider || ''),
         modelName: String(m.model_name || ''),
         hasPrice: typeof m.has_price === 'boolean' ? m.has_price : null,
+        priceIn: numOf(m.price_in),
+        priceOut: numOf(m.price_out),
+        priceCacheRead: numOf(m.price_cache_read),
+        priceCacheWrite: numOf(m.price_cache_write),
+        currency: String(m.currency_effective || m.currency || ''),
+        ruleCount: Number(m.price_rule_count || 0),
       }));
     keyOptions.value = (keys?.items ?? [])
       .filter((k) => k && k.id)
@@ -449,6 +511,8 @@ interface LimitRowView {
   unusable: boolean;
   unpriced: number;
   foreign: number;
+  /** 模型级才有的单价摘要（密钥 / 厂商级没有任何单价可谈） */
+  price: PriceSummary | null;
 }
 
 const rows = computed<LimitRowView[]>(() => {
@@ -472,6 +536,7 @@ const rows = computed<LimitRowView[]>(() => {
         unusable: false,
         unpriced: 0,
         foreign: 0,
+        price: null,
       };
       index.set(key, row);
       out.push(row);
@@ -488,9 +553,100 @@ const rows = computed<LimitRowView[]>(() => {
     row.unusable = row.items.some((x) => x.enabled && !x.usable);
     row.unpriced = row.items.reduce((a, x) => a + Number(x.unpriced_rows || 0), 0);
     row.foreign = row.items.reduce((a, x) => a + Number(x.foreign_currency_rows || 0), 0);
+    row.price = priceSummaryOf(row);
   }
   return out;
 });
+
+/* ---------------------------- 单价摘要（只读） ---------------------------- */
+
+/** 组合并键 → 组：限额按**单个配置**存，单价摘要要按"一组配置"看 */
+const groupByKey = computed<Record<string, ModelGroup>>(() => {
+  const map: Record<string, ModelGroup> = {};
+  for (const g of modelGroups.value) map[g.key] = g;
+  return map;
+});
+
+/**
+ * 时段规则**按需**拉：GET /models 只给 price_rule_count，不带 price_rules。
+ * 给每个模型都预取一遍 = 每刷一次模型页就多 N 个请求，而绝大多数配置根本没配时段。
+ */
+const ruleState = reactive<Record<string, { loading: boolean; error: string; items: PriceSlot[] }>>({});
+
+async function loadRules(id: string): Promise<void> {
+  if (ruleState[id]?.loading) return;
+  ruleState[id] = { loading: true, error: '', items: [] };
+  try {
+    const data = await api.get<{ items?: Array<Record<string, any>> }>(
+      '/models/' + encodeURIComponent(id) + '/price-rules');
+    ruleState[id] = { loading: false, error: '', items: (data?.items ?? []).map(slotOf) };
+  } catch (err: any) {
+    ruleState[id] = { loading: false, error: '时段单价读取失败：' + String(err?.message ?? err), items: [] };
+  }
+}
+
+/** 真的配了时段的那几个配置 id（拼成串，避免每次重算都触发 watcher） */
+const needRuleIds = computed<string>(() => {
+  const ids: string[] = [];
+  for (const row of rows.value) {
+    if (row.scope !== 'model' || !row.price) continue;
+    const cfg = modelById.value[row.price.configId];
+    if (cfg && cfg.ruleCount > 0) ids.push(cfg.id);
+  }
+  return ids.join(',');
+});
+
+watch(needRuleIds, (joined) => {
+  for (const id of joined ? joined.split(',') : []) {
+    if (!ruleState[id]) void loadRules(id);
+  }
+}, { immediate: true });
+
+function samePrice(a: ModelRow, b: ModelRow): boolean {
+  return a.priceIn === b.priceIn && a.priceOut === b.priceOut
+    && a.priceCacheRead === b.priceCacheRead && a.priceCacheWrite === b.priceCacheWrite;
+}
+
+function priceSummaryOf(row: LimitRowView): PriceSummary | null {
+  if (row.scope !== 'model') return null;
+  const g = groupByKey.value[row.key];
+  if (!g) return null;
+  const cfgs = g.ids.map((id) => modelById.value[id]).filter((m): m is ModelRow => !!m);
+  if (!cfgs.length) return null;
+  const priced = cfgs.filter((m) => m.hasPrice === true);
+  /* 一组多个配置时取**第一个配了单价的**（并如实说一句组内不一致）——绝不编平均价 */
+  const primary = priced[0] ?? cfgs[0];
+  const state = ruleState[primary.id];
+  return {
+    configId: primary.id,
+    configLabel: primary.modelName || primary.name || primary.id,
+    currency: primary.currency || 'CNY',
+    hasDefault: priced.length > 0,
+    priceIn: primary.priceIn,
+    priceOut: primary.priceOut,
+    priceCacheRead: primary.priceCacheRead,
+    priceCacheWrite: primary.priceCacheWrite,
+    slots: state?.items ?? [],
+    slotsLoading: !!state?.loading,
+    slotsError: state?.error ?? '',
+    mixed: priced.length > 1 && priced.some((m) => !samePrice(m, priced[0])),
+    pricedCount: priced.length,
+  };
+}
+
+function editPrice(id: string): void {
+  emit('edit-price', id);
+}
+
+/** 一段时段的价格文案：只写这一段**实际配了**的字段（没配的字段不摆 0） */
+function slotPriceText(slot: PriceSlot, currency: string): string {
+  const parts: string[] = [];
+  if (slot.price_in !== null) parts.push('入 ' + money(slot.price_in, currency));
+  if (slot.price_out !== null) parts.push('出 ' + money(slot.price_out, currency));
+  if (slot.price_cache_read !== null) parts.push('缓存读 ' + money(slot.price_cache_read, currency));
+  if (slot.price_cache_write !== null) parts.push('缓存写 ' + money(slot.price_cache_write, currency));
+  return parts.length ? parts.join(' / ') : '这一段没配单价（按默认价）';
+}
 
 /* ---------------------------- 显示格式 ---------------------------- */
 
@@ -517,7 +673,7 @@ function tone(value: number): string {
 </script>
 
 <template>
-  <section class="limits" id="model-limits" data-limit-block>
+  <section class="limits" id="model-limits" data-limit-block data-limit-card>
     <header class="limits-head">
       <h3 class="limits-title"><AppIcon name="ban" :size="14" /><span>限额</span></h3>
       <p class="limits-desc">日 / 周 / 月 × 模型 / 密钥 / 厂商；用尽即拦（429，不是供应商的错误）</p>
@@ -628,6 +784,51 @@ function tone(value: number): string {
              :aria-label="row.label + ' 限额已用 ' + pct(row.items[0].percent)">
           <span class="bar-fill" :class="row.allOff ? 'off' : tone(row.items[0].percent)"
                 :style="{ width: barWidth(row.items[0].percent) }" />
+        </div>
+
+        <!-- 单价摘要（只读）：默认价 + 各时段价。价格的正源是 ModelForm 第 4 步那块，
+             这里只是把"这条限额按什么价记账"摆出来 —— 改价请走右上角的入口，不在卡片里编辑 -->
+        <div class="lr-price" v-if="row.price" data-limit-price>
+          <div class="lp-head">
+            <span class="lp-title">单价<em class="lp-unit">每百万 Token</em></span>
+            <span class="spacer"></span>
+            <button type="button" class="lnk" data-limit-price-edit @click="editPrice(row.price.configId)">
+              编辑高峰价
+            </button>
+          </div>
+
+          <div class="lp-default mono" v-if="row.price.hasDefault" data-limit-price-default>
+            <span class="lp-k">默认价</span>
+            <span class="sep">·</span>
+            <span>入 {{ money(row.price.priceIn ?? 0, row.price.currency) }}</span>
+            <span class="sep">/</span>
+            <span>出 {{ money(row.price.priceOut ?? 0, row.price.currency) }}</span>
+            <template v-if="row.price.priceCacheRead !== null">
+              <span class="sep">·</span>
+              <span>缓存读 {{ money(row.price.priceCacheRead, row.price.currency) }}</span>
+            </template>
+            <template v-if="row.price.priceCacheWrite !== null">
+              <span class="sep">·</span>
+              <span>缓存写 {{ money(row.price.priceCacheWrite, row.price.currency) }}</span>
+            </template>
+          </div>
+          <p class="lp-none" v-else data-limit-price-default>未配单价（该模型的调用不计费）</p>
+
+          <div class="lp-slot mono" v-for="(slot, i) in row.price.slots" :key="i" data-limit-price-slot>
+            <span class="lp-time">{{ slot.start }}–{{ slot.end }}</span>
+            <span class="sep">·</span>
+            <span>{{ slotPriceText(slot, row.price.currency) }}</span>
+            <span class="lp-tag" v-if="slot.label">· {{ slot.label }}</span>
+          </div>
+          <p class="lp-none" v-if="row.price.slotsLoading">时段单价读取中…</p>
+          <p class="lp-none warn" v-else-if="row.price.slotsError">{{ row.price.slotsError }}</p>
+          <p class="lp-none" v-else-if="!row.price.slots.length" data-limit-price-noslot>
+            未配置时段：全部时刻按默认单价
+          </p>
+
+          <p class="lp-mixed" v-if="row.price.mixed" data-limit-price-mixed>
+            组内 {{ row.price.pricedCount }} 个配置单价不一致，此处展示 {{ row.price.configLabel }}
+          </p>
         </div>
 
         <!-- 诚实提示：这几句都是"数字看起来比实际小"的原因，藏起来就等于骗人 -->
@@ -756,16 +957,16 @@ function tone(value: number): string {
 <style scoped>
 /* 裸块：不描边、不投影、不填底 —— 与「消耗统计 / 字体设置」同一观感 */
 .limits {
-  min-width: 0; display: flex; flex-direction: column; gap: 10px;
+  min-width: 0; display: flex; flex-direction: column; gap: 12px;
   padding: 0; border: 0; background: transparent; box-shadow: none;
 }
 .limits-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .limits-title {
   display: inline-flex; align-items: center; gap: 7px; margin: 0;
-  font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; color: var(--text); white-space: nowrap;
+  font-size: calc(14.5px * var(--ts, 1)); font-weight: 650; color: var(--text); white-space: nowrap;
 }
 .limits-desc {
-  margin: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+  margin: 0; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .icon { display: block; }
@@ -773,21 +974,21 @@ function tone(value: number): string {
 
 /* ---------------- 现状条 ---------------- */
 .lim-status {
-  display: flex; flex-direction: column; gap: 7px;
-  padding: 10px 12px; border-radius: var(--r-sm);
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 16px; border-radius: var(--r-sm);
   background: var(--bg-sunken);
 }
 .lim-status.is-empty { flex-direction: row; align-items: center; gap: 12px; }
-.ls-none { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
+.ls-none { font-size: calc(13px * var(--ts, 1)); color: var(--text-faint); }
 .ls-line { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .ls-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
 .ls-dot.warn { background: var(--warn); }
 .ls-dot.danger { background: var(--danger); }
-.ls-text { font-size: calc(12.5px * var(--ts, 1)); color: var(--text); font-weight: 600; }
-.ls-count { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.ls-text { font-size: calc(13.5px * var(--ts, 1)); color: var(--text); font-weight: 600; }
+.ls-count { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .ls-meta {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
+  font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim);
 }
 
 /* 百分比条：颜色跟档位走（ok / warn / danger），宽度就是后端给的 percent（封顶 100） */
@@ -799,7 +1000,12 @@ function tone(value: number): string {
 .bar-fill.off { background: var(--text-faint); opacity: .5; }
 
 /* ---------------- 卡片内容 ---------------- */
-.lim-editor { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* 编辑限额的弹窗放大一档（620×86vh → 760×92vh）：单价 / 时段这类信息一多就开始内部滚动。
+   Modal.vue 是公共组件，不为单个使用者改；它把内容 Teleport 到 body，scoped 属性传不过去
+   （实测 :deep() 不生效），所以用 :global() 写整条选择器，再用 :has() 只挑"装着限额编辑器"
+   的那一个弹窗 —— 别的弹窗尺寸一点不受影响。 */
+:global(.modal:has([data-limit-editor])) { width: min(760px, 100%); max-height: 92vh; }
+.lim-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .le-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .le-k {
   flex: none; width: 42px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
@@ -849,13 +1055,13 @@ function tone(value: number): string {
 /* ---------------- 列表 ---------------- */
 .lim-list { display: flex; flex-direction: column; }
 /* 新增入口跟在列表末尾（标题栏那个已按用户口径删掉）：留一点上间距，别和最后一行糊在一起 */
-.lim-add-row { display: flex; margin-top: 8px; }
+.lim-add-row { display: flex; margin-top: 12px; }
 .lim-list-err {
   margin: 0; font-size: calc(12px * var(--ts, 1)); color: var(--danger);
 }
 .lim-row {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 0; border-top: 1px solid var(--divider);
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 16px 0; border-top: 1px solid var(--divider);
   min-width: 0;
 }
 .lim-row.off { opacity: .6; }
@@ -863,27 +1069,53 @@ function tone(value: number): string {
 .lr-scope {
   flex: none; padding: 1px 6px; border-radius: var(--r-xs);
   background: var(--bg-sunken); color: var(--text-dim);
-  font-size: calc(11px * var(--ts, 1));
+  font-size: calc(11.5px * var(--ts, 1));
 }
 .lr-ico { flex: none; width: 14px; height: 14px; object-fit: contain; }
-.lr-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--text); min-width: 0; }
-.lr-prov { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); min-width: 0; }
+.lr-name { font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; color: var(--text); min-width: 0; }
+.lr-prov { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); min-width: 0; }
 .lr-meta {
-  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim);
 }
 .lr-member {
   display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
-  padding-left: 4px; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); min-width: 0;
+  padding-left: 4px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); min-width: 0;
 }
 .lm-name { max-width: 180px; color: var(--text-dim); }
 .lr-reset { color: var(--text-faint); }
 .lr-pct.warn { color: var(--warn); }
 .lr-pct.danger { color: var(--danger); }
 .lr-bar { max-width: 100%; }
+
+/* 单价摘要：与上面"用量"那一行同层级，但用左侧细线+内距把它划成一块独立信息 */
+.lr-price {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 10px 12px; border-radius: var(--r-sm); background: var(--bg-sunken);
+}
+.lp-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lp-title {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text);
+}
+.lp-unit { font-style: normal; font-size: calc(11px * var(--ts, 1)); font-weight: 400; color: var(--text-faint); }
+.lp-default, .lp-slot {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); line-height: 1.5;
+}
+.lp-k { color: var(--text); font-weight: 600; }
+.lp-time { color: var(--text); font-variant-numeric: tabular-nums; }
+.lp-tag { color: var(--text-faint); }
+.lp-none {
+  margin: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); line-height: 1.5;
+}
+.lp-none.warn { color: var(--warn); }
+.lp-mixed {
+  margin: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--warn); line-height: 1.5;
+}
 .lr-note {
   display: flex; align-items: flex-start; gap: 5px; margin: 0;
-  font-size: calc(11px * var(--ts, 1)); color: var(--warn); line-height: 1.5;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--warn); line-height: 1.5;
 }
 .lr-note .icon { flex: none; margin-top: 2px; }
 .sep { color: var(--text-faint); }

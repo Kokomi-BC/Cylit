@@ -62,6 +62,10 @@ const props = withDefaults(defineProps<{
   rulesWarning?: string;
   /** 时段保存失败时后端 400 的 message（原样展示在时段那块里，不当成"保存失败"） */
   rulesError?: string;
+  /** 打开时直接停在第几步（0 = 不指定，按原流程走）：只影响"打开那一刻"，之后翻页照旧 */
+  initialStep?: number;
+  /** 配合 initialStep：顺手把「计费」折叠块展开，让分时段单价列表一眼可见 */
+  focusPrice?: boolean;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -76,6 +80,8 @@ const props = withDefaults(defineProps<{
   saveError: '',
   rulesWarning: '',
   rulesError: '',
+  initialStep: 0,
+  focusPrice: false,
 });
 
 const emit = defineEmits<{
@@ -962,8 +968,21 @@ async function init(): Promise<void> {
 
 watch(() => props.open, (v) => {
   if (!v) return;
-  void init().then(() => syncReasoning());
+  void init().then(() => { syncReasoning(); applyInitialStep(); });
 }, { immediate: true });
+
+/**
+ * 「编辑高峰价」这类入口的落点：**只在打开那一刻**生效，之后用户自己翻页、折叠都不受影响。
+ */
+function applyInitialStep(): void {
+  const n = Number(props.initialStep) || 0;
+  if (n >= 1 && n <= STEPS.length) {
+    step.value = n;
+    /* 步骤条只允许点回走过的步；跳过去的那几步按"已到达"记，否则 goStep 会把人拦回来 */
+    reached.value = Math.max(reached.value, n);
+  }
+  if (props.focusPrice) billingOpen.value = true;
+}
 
 /** 选一家提供方：清掉跨提供方的选择（密钥 + 已填 Model ID），再进第二步。 */
 async function pickProvider(p: ProviderRow): Promise<void> {
