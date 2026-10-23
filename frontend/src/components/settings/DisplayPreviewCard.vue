@@ -23,15 +23,14 @@ import ThemePaletteCard from './ThemePaletteCard.vue';
 </script>
 
 <template>
-  <section class="card preview">
-    <div class="card-head">
-      <div class="hd">
-        <h3>预览效果</h3>
-        <p>字号、配色与标注画法改完，这里当场跟着变</p>
-      </div>
+  <!-- 标题在**区块外面**：这一页只有它一块内容，再套一层卡壳（描边 + 投影 + 圆角）
+       等于把标题也关进盒子里。这里只用区块标题 + 细线分界，和「字体设置」那些裸块同一套语言。 -->
+  <section class="preview">
+    <div class="preview-head">
+      <h3>预览效果</h3>
     </div>
 
-    <div class="card-body preview-body">
+    <div class="preview-body">
       <div class="sample" aria-hidden="true" data-preview>
           <div class="sample-top">
             <span class="sample-title">量子纠缠与局域性：一个可检验的视角</span>
@@ -62,17 +61,16 @@ import ThemePaletteCard from './ThemePaletteCard.vue';
 </template>
 
 <style scoped>
-.card-head { padding: 11px 14px 9px; }
-.hd { display: grid; gap: 2px; min-width: 0; }
-.hd h3 {
-  margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
-  letter-spacing: -.01em; line-height: 1.3;
+/* 区块标题与下面几个裸块（字体设置 / 分类字号）保持同一档字号与左缘 */
+.preview-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.preview-head h3 {
+  margin: 0; font-size: calc(15px * var(--ts, 1)); font-weight: 600;
+  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
 }
-.hd p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
 .preview { min-width: 0; }
 /* 样例在上、「当前配色」在下：两块之间那条细线由 ThemePaletteCard 自己画 */
-.preview-body { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px 14px; }
+.preview-body { display: flex; flex-direction: column; gap: 12px; }
 
 .sample {
   display: grid; gap: 7px; padding: 11px 14px;
