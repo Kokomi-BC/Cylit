@@ -103,13 +103,15 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 .palette-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
 /* bare：并进「预览效果」卡之后，上面一条细线与样例分开（不画第二个卡壳） */
 .palette-bare { padding: 0; }
-/* 两栏：左边四枚色值竖着排、右边一枚 300 宽的缩略图 —— 缩略图收窄之后，
-   右边那片空白由色值列接住，不再"左边一小块、右边一大片"（用户口径 2026-12）。 */
+/* 两栏：左边四枚色值、右边一枚 300 宽的缩略图。
+   色值列**封顶 620**：卡宽 922（单列）时四枚会并成一行（各 ~150），不再把十六进制推到
+   七百像素开外、跟标签拉成两根头（用户口径 2026-12）。 */
 .palette-bare .palette-body {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start;
+  display: grid; grid-template-columns: minmax(0, 620px) 300px;
+  justify-content: space-between; gap: 12px; align-items: start;
   padding: 12px 0 0; border-top: 1px solid var(--divider);
 }
-.palette-bare .chips { grid-template-columns: minmax(0, 1fr); }
+.palette-bare .chips { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 /* 缩略图：**宽度收窄**成一枚像样的缩略图（用户口径 2026-12：预览效果的宽度做小一点）。
    左卡 490 宽时它铺满会像一张拉伸的线框；限到 300 之后左右留白、比例也像真的界面。 */
 .palette-bare .mini { width: 300px; max-width: 100%; max-height: none; min-height: 104px; align-self: stretch; }

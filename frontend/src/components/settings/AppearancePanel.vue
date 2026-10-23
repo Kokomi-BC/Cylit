@@ -59,7 +59,7 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
   align-items: start;
   min-width: 0;
 }
-/* 左卡比右栏矮得多（436 vs 792）：让它在这一层里**吸顶**，往下滚右栏时预览一直看得到，
+/* 左卡比右栏矮得多：让它在这一层里**吸顶**，往下滚右栏时预览一直看得到，
    画面底下那片空白也不会跟着滚走变成"一块空卡"。 */
 .ap-left { min-width: 0; position: sticky; top: 12px; }
 
@@ -67,9 +67,11 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 .ap-right { min-width: 0; display: flex; flex-direction: column; }
 .ap-right > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
 
-/* 分类字号 + 高亮效果：宽了并排、窄了落一列（container 量的是这一栏的宽度） */
+/* 分类字号 + 高亮效果：只有**两半都够宽**（各 ≥270）才并排。
+   门槛按"内容区 ≥ 1080"算 —— 1440 宽时内容才 922，两半只剩 205，
+   步进器贴着标签、高亮示例挤成三行，看着就是错位（用户口径 2026-12）。 */
 .ap-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@container (max-width: 960px) {
+@container (max-width: 1080px) {
   .ap-pair { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .ap-pair > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
 }
@@ -77,9 +79,10 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 /* 网格里的兄弟卡不需要 base.css 那条 `.card + .card` 的 12px 上边距（缝已由 gap 给） */
 .appearance :deep(.card + .card) { margin-top: 0; }
 
-/* 内容区窄到 880 以下：左卡 520 + 16 + 右栏至少要 340 才排得下，再窄就只能落单列
-   （先预览，再右栏那几块）。 */
-@container (max-width: 880px) {
+/* 内容区窄到 1000 以下：左卡 520 + 16 之后，右栏只剩 460 以下 —— 那一栏要同时装下
+   主题列表 / 步进器 / 高亮示例，太挤就落单列（先预览，再右栏那几块）。
+   实测 1400 宽时内容 922：单列反而更好读。 */
+@container (max-width: 1000px) {
   .appearance { grid-template-columns: minmax(0, 1fr); }
 }
 

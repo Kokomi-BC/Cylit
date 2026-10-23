@@ -413,10 +413,15 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 /* 列表：一排多个主体小卡（名字在色块下面），**竖向滚动**。25 套铺开会把这一栏撑到
    十行以上；竖排的滚动条本身就是「还有更多」的说明。 */
 .preset-list {
-  min-width: 0; max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
+  /* 高度 460：每排几张随宽度变（1600 六张、1480 四张、1440 九张），任何定值都会切到某一排，
+     所以要保证**至少一整排配色 + 下一条排头**完整可见，剩下的交给 28px 淡出 ——
+     露个四五十像素像渲染坏了，露一整排才像「下面还有」（用户口径 2026-12：中等宽度像错位）。 */
+  min-width: 0; max-height: 460px; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 10px;
   padding-right: 4px;
   scrollbar-width: thin; scrollbar-gutter: stable;
+  /* 底边 28px 淡出：被裁的那半排是「下面还有」，不是「渲染坏了」 */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 /* 竖卡：**色块在上、名字在下（左对齐）**，一排多个（用户口径 2026-12 第三次确认）。
    轨道固定 88px —— 卡宽 ≈ 名字那么宽，不会拖成一条长条；auto-fill 自己决定一排几个
@@ -506,7 +511,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 
 /* 窄了：配色落到列表下面（右栏 316 一旦保不住，两列会一起挤成两条窄缝） */
 @container (max-width: 460px) {
-  .preset-list { max-height: 268px; }
+  .preset-list { max-height: 340px; }
 }
 
 /* ---------------------------- 编辑器 ---------------------------- */
