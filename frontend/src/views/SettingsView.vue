@@ -69,7 +69,7 @@ const SECTIONS = [
   { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色与字号，点一下立即生效' },
   { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '按任务分配模型，密钥收在各提供方里' },
   { id: 'agent', label: '论文问答', icon: 'chat', group: '智能与模型', desc: '调问答的技能、说话风格与次数上限' },
-  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '看论文入库情况，调检索范围' },
+  { id: 'kb', label: '索引管理', icon: 'knowledge', group: '内容与索引', desc: '管理论文索引、向量检索及索引数据状态' },
   { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '看本机保存的搜索记录，可清空' },
   // 回收站并进「内容与索引」：它管的是论文数据本身（恢复 / 彻底删除），与索引管理同一档；
   // 放在组尾 —— 这是低频且不可逆的操作，不该排在日常入口前面。

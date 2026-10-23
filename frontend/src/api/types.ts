@@ -570,7 +570,11 @@ export interface KnowledgeOverview {
   embedding_models: Array<{ id: string; label: string; model_name?: string | null }>;
   index_versions: Record<string, number>;
   vector_store: Record<string, any>;
-  items: Array<{ id: string; title: string; status: string; in_knowledge_base: boolean; chunks: number }>;
+  items: Array<{
+    id: string; title: string; status: string; in_knowledge_base: boolean; chunks: number;
+    /** 现存 chunk 的最晚创建时间（后端本地时间 ISO，如 `2025-10-21T13:38:58`）；无 chunk 时为 `null`。后端字段尚未上线，故可选。 */
+    indexed_at?: string | null;
+  }>;
 }
 
 export interface ChunkMeta {

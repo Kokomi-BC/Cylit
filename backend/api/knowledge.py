@@ -73,12 +73,28 @@ async def index_status(request: Request, paper_id: str | None = Query(None)):
     return envelope(knowledge_service.index_status(paper_id), request=request)
 
 
+@router.get("/knowledge/index/trend")
+async def index_trend(request: Request, days: int = Query(30)):
+    """索引增长趋势（设置页「索引管理」的趋势图）：每天新增 + 累计。
+
+    **现存记录口径，不是历史流水** —— 对表现有的行的 ``created_at`` 分桶，没有趋势表；
+    删掉的论文不进图、重建索引会把该篇 chunk 的创建时间重置成重建那一刻
+    （详见 ``knowledge_service.index_trend`` 的 docstring）。
+
+    ``days`` 夹取到 1..180，右端是服务器本地"今天"；每天一条、**连续不缺天**
+    （没有数据的日子是 0，前端不用自己补洞）。只读：不建表、不写库、不触发任务。
+    """
+    return envelope(knowledge_service.index_trend(days), request=request)
+
+
 @router.get("/knowledge/chunks")
 async def list_chunks(request: Request, paper_id: str = Query(...),
                       chunk_type: str | None = Query(None),
                       lang: str | None = Query(None),
                       road: str | None = Query(None, pattern="^(a|b|shared)$"),
-                      limit: int = Query(50, le=500)):
+                      q: str | None = Query(None),
+                      limit: int = Query(50, le=500),
+                      offset: int = Query(0, ge=0)):
     """列出 chunk 元数据（**不返回全文**：全文在 LanceDB，规划 §8 三条禁止）。
 
     `image_url` 是插图/表格/公式的裁图（浏览器可直接取，用于知识库页的缩略图 / 图库）；
@@ -88,53 +104,76 @@ async def list_chunks(request: Request, paper_id: str = Query(...),
     单元是检索用的更细粒度（同一批行的另一层划分），默认混进来只会让列表翻倍。
     要看单元就显式传 `chunk_type=unit`。
 
-    ``road``：``a`` 英文转录 / ``b`` 中文翻译 / ``shared`` 两路共用（图、表、公式）。
+    `road`：`a` 英文转录 / `b` 中文翻译 / `shared` 两路共用（图、表、公式）。
     路号在 id 与 `metadata_json` 里（不另加列），所以这里按 id 段过滤后再按元数据核对。
+
+    `q`：大小写不敏感的子串，命中 `id` 或 `content_preview` 任一即可。
+    MySQL 的排序规则本来就不敏感、SQLite 的 `LIKE` 也不敏感，但"各库默认"不是同一份
+    约定 —— 两边显式套 `func.lower`，行为由这一行保证，不靠数据库的默认值。
+
+    `offset` / `total`：`total` 是**过滤后、分页前**的条数（界面显示"共 N 条"）；
+    `count` 仍是本次返回的条数，老调用方（只读 items / count）语义一字不变。
+
+    ⚠️ `lang` / `road` 只能把行取回来按 `metadata_json` 核对，这条路径一次最多看
+    5000 行（`total` 也受这个上限约束）；不传这两个参数时过滤全在 SQL 里，`total` 精确。
     """
+    from sqlalchemy import func, or_
+
     from backend.core.utils import json_loads
     from backend.repositories.mysql.models import Chunk
     from backend.repositories.mysql.session import session_scope
 
+    def _item(c) -> dict:
+        meta = json_loads(c.metadata_json, {}) or {}
+        return {"id": c.id, "paper_id": c.paper_id, "block_id": c.block_id,
+                "chunk_type": c.chunk_type, "page": c.page_no,
+                "lang": meta.get("lang") or "en", "road": meta.get("road") or "shared",
+                "section": c.section, "preview": c.content_preview,
+                "caption": meta.get("caption"),
+                "hash": c.content_hash, "tokens": c.token_count,
+                "index_version": c.index_version,
+                "embedding_model_id": c.embedding_model_id,
+                "image_url": knowledge_service.chunk_image_url(
+                    c.paper_id, c.chunk_type, int(c.page_no or 0), meta)}
+
+    keyword = (q or "").strip().lower()
     with session_scope() as sess:
-        q = sess.query(Chunk).filter(Chunk.paper_id == paper_id)
+        query = sess.query(Chunk).filter(Chunk.paper_id == paper_id)
         if chunk_type:
-            q = q.filter(Chunk.chunk_type == chunk_type)
+            query = query.filter(Chunk.chunk_type == chunk_type)
         else:
-            q = q.filter(Chunk.chunk_type != "unit")
+            query = query.filter(Chunk.chunk_type != "unit")
         if road:
             # id 里带路号段（`{paper}:{A|B}:{type}:…`）；共用块的 id 没有这一段。
             # 用 SQL 先缩小范围，最终仍按元数据核对（id 只是投影）。
             if road == "shared":
-                q = q.filter(~Chunk.id.like("%:A:%"), ~Chunk.id.like("%:B:%"))
+                query = query.filter(~Chunk.id.like("%:A:%"), ~Chunk.id.like("%:B:%"))
             else:
-                q = q.filter(Chunk.id.like(f"%:{road.upper()}:%"))
-        rows = q.order_by(Chunk.order_global.asc()).limit(
-            limit if not (lang or road) else 5000).all()
-        items = []
-        for c in rows:
-            meta = json_loads(c.metadata_json, {}) or {}
-            row_lang = meta.get("lang") or "en"
-            row_road = meta.get("road") or "shared"
-            # `any` = 语言无关（公式原子行）：按中文、英文过滤时都要出现
-            if lang and row_lang not in (lang, "any"):
-                continue
-            if road and row_road != road:
-                continue
-            items.append({"id": c.id, "paper_id": c.paper_id, "block_id": c.block_id,
-                          "chunk_type": c.chunk_type, "page": c.page_no,
-                          "lang": row_lang, "road": row_road,
-                          "section": c.section, "preview": c.content_preview,
-                          "caption": meta.get("caption"),
-                          "hash": c.content_hash, "tokens": c.token_count,
-                          "index_version": c.index_version,
-                          "embedding_model_id": c.embedding_model_id,
-                          "image_url": knowledge_service.chunk_image_url(
-                              c.paper_id, c.chunk_type, int(c.page_no or 0), meta)})
-            if len(items) >= limit:
-                break
-    return envelope({"items": items, "count": len(items)}, request=request)
-
-
+                query = query.filter(Chunk.id.like(f"%:{road.upper()}:%"))
+        if keyword:
+            pattern = f"%{keyword}%"
+            query = query.filter(or_(func.lower(Chunk.id).like(pattern),
+                                     func.lower(Chunk.content_preview).like(pattern)))
+        query = query.order_by(Chunk.order_global.asc())
+        if lang or road:
+            # 语种 / 路号只活在 metadata_json 里：取回来再核对，分页也只能在内存里做。
+            rows = query.limit(5000).all()
+            matched = []
+            for c in rows:
+                meta = json_loads(c.metadata_json, {}) or {}
+                row_lang = meta.get("lang") or "en"
+                # `any` = 语言无关（公式原子行）：按中文、英文过滤时都要出现
+                if lang and row_lang not in (lang, "any"):
+                    continue
+                if road and (meta.get("road") or "shared") != road:
+                    continue
+                matched.append(c)
+            total = len(matched)
+            items = [_item(c) for c in matched[offset:offset + limit]]
+        else:
+            total = int(query.count())
+            items = [_item(c) for c in query.offset(offset).limit(limit).all()]
+    return envelope({"items": items, "count": len(items), "total": total}, request=request)
 @router.get("/knowledge/chunk")
 async def chunk_detail(request: Request, chunk_id: str = Query(...)):
     """**单个 chunk 的完整正文**（知识库页「展开全文」）。

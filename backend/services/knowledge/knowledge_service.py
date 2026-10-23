@@ -1388,15 +1388,51 @@ def _model_labels(model_ids: list[str]) -> list[dict]:
             for m in model_ids]
 
 
+def _local_iso(value) -> str | None:
+    """库里的时间 → **本地墙上时间**的 ISO 串 ``YYYY-MM-DDTHH:MM:SS``（``None`` 原样透传）。
+
+    为什么先按 UTC 认领再转本地：库里的 ``datetime`` 列全是 UTC naive
+    （`core.utils.now`），原样 ``isoformat()`` 贴给前端就是那条"差 8 小时"的老 bug。
+    也不用 `core.utils.iso_utc`（那个带 ``Z``）—— 这里的口径是"与 ``generated_at`` 同一种
+    本地写法"，前端直接显示，不再转。
+    """
+    from datetime import datetime, timezone
+
+    if value is None:
+        return None
+    if isinstance(value, str):   # SQLite 的 func.max() 可能直接给回字符串（同 trend 的 DATE()）
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    # 转本地之后**去掉 tzinfo**：口径是"与 generated_at 同样的朴素本地串"，
+    # 带 `+08:00` 就又是一种新写法了（前端只做展示，不需要偏移量）。
+    return value.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+
 def _overview_items(papers: list[Paper]) -> list[dict]:
+    """概览表格的每一行：论文 + chunk 数 + **最近索引时间**。
+
+    ``indexed_at`` = 该篇**现存 chunk 里最晚的** ``Chunk.created_at``。
+
+    它代表"上次建 / 更新索引的时间"（前端叫「最近索引时间」）：重建索引是"删掉旧 chunk
+    行 + 写新行"，所以这个时间自然跟着重建走；没有 chunk（没建过索引 / 已移出知识库）
+    就是 ``None``。它**不是**论文的修改时间（`Paper.updated_at`：改笔记、划线、改标题
+    都会动它，跟索引无关）。格式见 `_local_iso`（与 `index_status` / `trend` 的
+    `generated_at` 同一种本地 ISO 写法）。
+
+    计数与最晚时间都走一次分组查询（``GROUP BY paper_id``），不按论文逐篇查。
+    """
     from sqlalchemy import func
 
     with session_scope() as sess:
         counts = dict(sess.query(Chunk.paper_id, func.count(Chunk.id))
                       .group_by(Chunk.paper_id).all())
+        last_indexed = dict(sess.query(Chunk.paper_id, func.max(Chunk.created_at))
+                            .group_by(Chunk.paper_id).all())
     return [{"id": p.id, "title": p.title, "status": p.status,
              "in_knowledge_base": bool(p.in_knowledge_base),
-             "chunks": int(counts.get(p.id, 0))} for p in papers]
+             "chunks": int(counts.get(p.id, 0)),
+             "indexed_at": _local_iso(last_indexed.get(p.id))} for p in papers]
 
 
 def set_kb_membership(paper_id: str, include: bool) -> dict:
@@ -1530,6 +1566,86 @@ def index_status(paper_id: str | None = None) -> dict:
             # 只看**全库**对账（单篇视图下这两个数没意义，交给 /knowledge/reconcile）
             "orphan_chunks": orphans, "missing_vectors": missing,
             "consistent": None if paper_id else (not orphans and not missing)}
+
+
+def index_trend(days: int = 30) -> dict:
+    """索引增长趋势（设置页「索引管理」）：每天新增 + 累计。
+
+    **这是"现存记录口径"，不是历史流水。** 没有趋势表：直接对 ``paper`` / ``chunk``
+    表**现有行**的 ``created_at`` 分桶。所以有两个必然的偏差，写在这里免得后人当 bug 查：
+
+    - 删掉的论文不进图（``deleted_at IS NOT NULL`` 的行不算），移除知识库的 chunk 行
+      本来就已经删了；
+    - **重建索引会重置该篇 chunk 的创建时间** —— 曲线上会看到"某天突然掉下去/跳上来"，
+      那不是统计错，是这份数据本身没有留历史流水。
+
+    - 窗口：``days`` 夹取到 1..180，右端 = 服务器本地"今天"，左端 = 今天 -(days-1) 天；
+      每天一条、**连续不缺天**（没数据的日子补 0，前端画图不用自己补洞）。
+    - ``papers`` / ``chunks``：当天新增条数；``cum_*``：窗口开始**之前**的累计 + 当天为止
+      的累加，所以单调不减、最后一天等于 ``overview()`` 的 ``papers_total`` / ``chunks``。
+    - 分桶用 SQL 的 ``func.date(created_at)``：MySQL ``DATE()`` 与 SQLite ``date()`` 都认；
+      ``DATE_FORMAT`` 只有 MySQL 有，测试用 SQLite 会直接报错。
+
+    ⚠️ 库里的 ``created_at`` 是 **UTC naive**（全库约定），窗口边界取的是**本地日期**：
+    东八区下 UTC 的"今天"可能还是本地"昨天"，跨日附近的一两条会落在前一天的柱子上。
+    柱子口径是"记录写进库的那天"，不做时区折算 —— 折算反而会让累计数与 overview 对不上。
+    "未来"时间戳（时钟偏差）折进今天，保证最后一天的累计与总数严格相等。
+
+    只读：不建表、不写库、不触发任务。
+    """
+    from datetime import date, datetime, timedelta
+
+    from sqlalchemy import func
+
+    days = max(1, min(30 if days is None else int(days), 180))
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+    start_key = start.isoformat()
+    today_key = today.isoformat()
+
+    def _by_day(rows) -> dict[str, int]:
+        # MySQL 的 DATE() 回 datetime.date、SQLite 的 date() 回 'YYYY-MM-DD' 字符串
+        out: dict[str, int] = {}
+        for day, count in rows:
+            if day is None:
+                continue
+            key = str(day)[:10]
+            if key > today_key:  # 时钟偏差写进"未来"的行：折进今天，否则累计会漏
+                key = today_key
+            out[key] = out.get(key, 0) + int(count)
+        return out
+
+    with session_scope() as sess:
+        # 只取窗口内的分桶 + 窗口前的累计（整表按天分组在长库上会返回一堆用不上的日期）。
+        paper_rows = (sess.query(func.date(Paper.created_at), func.count(Paper.id))
+                      .filter(Paper.deleted_at.is_(None),
+                              func.date(Paper.created_at) >= start_key)
+                      .group_by(func.date(Paper.created_at)).all())
+        chunk_rows = (sess.query(func.date(Chunk.created_at), func.count(Chunk.id))
+                      .filter(func.date(Chunk.created_at) >= start_key)
+                      .group_by(func.date(Chunk.created_at)).all())
+        papers_before = int(sess.query(func.count(Paper.id))
+                            .filter(Paper.deleted_at.is_(None),
+                                    func.date(Paper.created_at) < start_key).scalar() or 0)
+        chunks_before = int(sess.query(func.count(Chunk.id))
+                            .filter(func.date(Chunk.created_at) < start_key).scalar() or 0)
+
+    papers_per_day = _by_day(paper_rows)
+    chunks_per_day = _by_day(chunk_rows)
+    series = []
+    cum_papers, cum_chunks = papers_before, chunks_before
+    for i in range(days):
+        day = (start + timedelta(days=i)).isoformat()
+        new_papers = papers_per_day.get(day, 0)
+        new_chunks = chunks_per_day.get(day, 0)
+        cum_papers += new_papers
+        cum_chunks += new_chunks
+        series.append({"date": day, "papers": new_papers, "chunks": new_chunks,
+                       "cum_papers": cum_papers, "cum_chunks": cum_chunks})
+    return {"days": days,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "series": series,
+            "note": "按现存记录的创建时间统计：重建索引会重置该篇 chunk 的创建时间"}
 
 
 def new_chunk_id(paper_id: str, chunk_type: str) -> str:

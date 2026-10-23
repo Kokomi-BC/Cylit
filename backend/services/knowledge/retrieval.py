@@ -109,8 +109,26 @@ def setting_flag(key: str, default: bool) -> bool:
 
 
 def rag_k(name: str) -> int:
-    return int(setting(f"rag_top_k_{name}" if name != "rerank" else "rag_top_n_rerank",
-                       DEFAULT_K[name]) or DEFAULT_K[name])
+    """读检索规模（``rag_top_k_*`` / ``rag_top_n_rerank``），返回**生效的整数**。
+
+    这里**不能**再写成 ``int(setting(...) or DEFAULT_K[name])``：``0`` 是假值，会被
+    ``or`` 悄悄抬回默认值 —— 于是界面写着「重排条数 0 = 不重排」，后端却照常重排
+    （静默失效：没有报错，只是用户关不掉这个开关）。
+
+    两个待遇不同，因为 ``0`` 的语义不同：
+
+    - ``rerank``：``0`` = **关闭重排**，是界面上真实存在的开关，必须原样返回 0；
+    - ``vector`` / ``lexical`` / ``fused``：``0`` 没有任何意义（召回 0 条 = 结果必然为空），
+      存了 0 只会让检索永远空手而归，所以夹到下限 1 —— 是"把无意义的坏值夹回可用区间"，
+      而不是"帮用户改设置"。
+
+    坏值（非数字 / 空串 / None）两者一视同仁：回落 ``DEFAULT_K[name]``（见 `setting_int`）。
+    """
+    key = "rag_top_n_rerank" if name == "rerank" else f"rag_top_k_{name}"
+    value = setting_int(key, DEFAULT_K[name])
+    if name == "rerank":
+        return max(0, value)
+    return max(1, value)
 
 
 # --------------------------------------------------------------------------
@@ -365,8 +383,22 @@ def _rerank_call(provider, query: str, documents: list[str], top_n: int,
 
 def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
                 mode: str = "similar") -> tuple[list[dict], dict]:
-    """重排候选并返回 ``(排序后的候选, 元信息)``；失败自动降级到词法启发式。"""
-    top_n = top_n or rag_k("rerank")
+    """重排候选并返回 ``(排序后的候选, 元信息)``；失败自动降级到词法启发式。
+
+    **"要不要重排"是用户的设置，不是调用方的参数**：判据取自 ``rag_top_n_rerank``
+    （`configured`），``top_n`` 只表示"本次最多要几条"。所以 ``configured <= 0``
+    （设置里写了 0）或调用方显式要 0 条 → **跳过重排**，把候选**原样**返回（顺序保持
+    RRF 融合序，不排序、不截断），并在 ``info`` 里标 ``skipped`` —— 界面承诺的
+    「0 = 不重排」在这里落地，而不是被 ``or`` 抬回默认值。
+    """
+    configured = rag_k("rerank")
+    limit = configured if top_n is None else int(top_n)
+    if configured <= 0 or limit <= 0:
+        return list(candidates), {
+            "model": None, "provider": None, "degraded": False,
+            "reason": "已关闭重排（重排条数 = 0）", "candidates": len(candidates),
+            "reranked": 0, "skipped": True,
+        }
     if not candidates:
         return [], {"model": None, "degraded": False, "reason": "", "candidates": 0}
     docs = [c.get("content") or "" for c in candidates]
@@ -378,7 +410,7 @@ def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
         provider = model_manager.get_reranker()
         info["model"] = provider.model_name
         info["provider"] = cfg.get("provider")
-        ranked = _rerank_call(provider, query, docs, top_n, instruct)
+        ranked = _rerank_call(provider, query, docs, limit, instruct)
         if (cfg.get("provider") or "") in ("mock", "heuristic"):
             # 根本没配模型 → 结果就是启发式的，必须标明，别让它看起来像模型打分
             info["degraded"] = True
@@ -389,7 +421,7 @@ def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
         log.warning("重排失败，降级词法启发式：%s", exc)
         info.update({"model": "heuristic-overlap", "provider": "heuristic",
                      "degraded": True, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"})
-        ranked = HeuristicReranker({}, None).rerank(query, docs, top_n=top_n)
+        ranked = HeuristicReranker({}, None).rerank(query, docs, top_n=limit)
 
     out: list[dict] = []
     for rank, (idx, score) in enumerate(ranked, start=1):
@@ -400,7 +432,7 @@ def rerank_hits(query: str, candidates: list[dict], *, top_n: int | None = None,
         node["rerank_rank"] = rank
         out.append(node)
     info["reranked"] = len(out)
-    return out[:top_n], info
+    return out[:limit], info
 
 
 # --------------------------------------------------------------------------
@@ -491,8 +523,8 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
                                          chunk_types=types, **common_kwargs)
     vec_hits, lex_hits = hits["vector"], hits["lexical"]
     fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
-    items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
-                                     mode=mode)
+    # 只传调用方的上限；"要不要重排"由 rerank_hits 自己读设置判（否则 0 会被 `or` 抬回默认）
+    items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
     fell_back = False
     if not items and not explicit_types and types:
         # 兜底：候选集过滤后空手而归 → 放开类型限制重搜一次（保证"没建单元也检得到"）
@@ -505,8 +537,7 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
                                              **common_kwargs)
         vec_hits, lex_hits = hits["vector"], hits["lexical"]
         fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
-        items, rerank_info = rerank_hits(query, fused, top_n=top_k or rag_k("rerank"),
-                                         mode=mode)
+        items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
         notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")
     if langs and not vector_store.has_lang():
         notes.append("索引还没有 lang 列（旧索引）：本次语言过滤未生效，重建索引后可用")

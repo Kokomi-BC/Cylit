@@ -88,6 +88,8 @@ def _live_default(key: str) -> Any:
             return ",".join(retrieval.default_search_types())
         # 检索规模：这几个键既没有 `Settings` 字段、也没有服务层常量，默认值就在
         # `retrieval.DEFAULT_K` 里 —— 照样问读取点要，不在这里抄。
+        # 注意这里要的是**当前生效值**（setting 表优先），只服务 `values`；
+        # `defaults` 要的是"没改过时会是什么"，它另走 `retrieval.DEFAULT_K`（见 `_defaults`）。
         if key == "rag_top_n_rerank":
             return retrieval.rag_k("rerank")
         if key.startswith("rag_top_k_"):
@@ -124,18 +126,59 @@ def _stored() -> dict:
         return {r.key: json_loads(r.value, r.value) for r in rows}
 
 
+#: `defaults` 里的"检索规模"键 → `retrieval.DEFAULT_K` 里的名字。
+#: 这四个键既没有 `Settings` 字段、也没有服务层常量，**默认值的唯一来源**就是那个字典。
+RAG_K_KEYS: dict[str, str] = {
+    "rag_top_k_vector": "vector",
+    "rag_top_k_lexical": "lexical",
+    "rag_top_k_fused": "fused",
+    "rag_top_n_rerank": "rerank",
+}
+
+
+def _defaults() -> dict:
+    """设置页要显示的**代码默认值**（值被改过之后，用户要能对比与恢复）。
+
+    ⚠️ 与 `values` 是**两种口径**，不能共用同一个来源：
+
+    - `values`（`_effective`）要**当前生效值** —— 存过就取存的那份，没存过才回落到默认；
+      所以那条路径向读取点要（`_live_default` / `get_settings()`）是对的；
+    - `defaults` 要**没改过时会是什么** —— 一律取代码里的默认，**不看 setting 表**。
+
+    检索规模那四项因此**不能**走 `_live_default`：它对这四个键返回 `retrieval.rag_k(...)`，
+    而 `rag_k` 读的正是 setting 表（含界面上的覆盖）。用户把 20 改成 30，`defaults` 会跟着
+    变成 30，「恢复默认」点下去只是把表单填回它现在的值 —— 一个空操作。
+    默认值取 `retrieval.DEFAULT_K`（数字与名字都在那一处，这里不复写数字）。
+    """
+    from backend.services.knowledge import retrieval
+
+    out = {key: int(retrieval.DEFAULT_K[name]) for key, name in RAG_K_KEYS.items()}
+    from backend.services.agent import style as style_service
+
+    out["agent_style"] = style_service.default()
+    # 这一项**有** `Settings` 字段（环境变量），默认值直接取设置对象
+    out["allow_general_knowledge"] = get_settings().allow_general_knowledge
+    return out
+
+
 @router.get("/settings")
 async def get_settings_api(request: Request):
     """设置页的读取口。
 
-    ``defaults`` 只给"默认值不在 `Settings` 字段上"的那些键（当前只有 `agent_style`）：
-    值被改过之后，设置页仍然要能显示"默认是哪一段"，用户才能对比与恢复。
-    """
-    from backend.services.agent import style as style_service
+    ``defaults`` 给"默认值不在 `Settings` 字段上"的那些键 —— 值被改过之后，设置页仍然要能
+    显示"默认是多少 / 默认是哪一段"，用户才能对比与恢复：
 
+    - ``agent_style``：代码里的默认风格（`services/agent/style.py`）；
+    - ``rag_top_k_vector`` / ``rag_top_k_lexical`` / ``rag_top_k_fused`` / ``rag_top_n_rerank``：
+      检索规模，取 `retrieval.DEFAULT_K`（**代码默认**，不是 `retrieval.rag_k` 的当前生效值）；
+    - ``allow_general_knowledge``：`Settings` 里的环境变量默认值。
+
+    `defaults` 与 `values` 口径**不同**：`values` 是当前生效值（存过就取存的那份），
+    `defaults` 是"没改过时会是什么"。后者必须取代码默认 —— 问读取点会得到当前值，
+    「恢复默认」就成了空操作。这个接口不放字面数字（前端也不抄一份，读这里）。
+    """
     return envelope({"values": _effective(), "stored": _stored(),
-                     "editable": list(EDITABLE),
-                     "defaults": {"agent_style": style_service.default()}},
+                     "editable": list(EDITABLE), "defaults": _defaults()},
                     request=request)
 
 

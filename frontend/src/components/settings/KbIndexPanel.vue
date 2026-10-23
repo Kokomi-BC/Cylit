@@ -1,38 +1,45 @@
 <script setup lang="ts">
 /**
- * 设置页「知识库与索引」面板。
+ * 设置页「索引管理」的**编排层**：只负责共享取数、跨卡片动作与版式，内容全部交给子组件。
  *
- * 这四块原本长在「知识库」页上（用户口径：那页第一眼全是设置）—— 从这一轮起搬到设置页：
- * **概览统计 / 论文索引表 / 索引状态与对账 / chunk 元数据**。它们都是"管理与诊断"，
- * 不属于读者要用的功能；知识库页正在按新规划重做成「搜索 + 浏览」工作台。
+ * 分工：
+ * - 自己取两块**共享**数据 —— `GET /knowledge/overview`（论文 / chunk / 向量模型）与
+ *   `GET /knowledge/index/status`（全库对账、维数）。这两份是上面指标行、论文表、存储卡
+ *   共同的输入，取一次比三处各取一次更不可能出现"三张卡说三个数"。
+ * - 三个写操作（建/重建索引、从知识库移除、对账）也留在这里：只有这一层同时拿得到
+ *   overview 与 status，改完能一次刷新两块；子组件只管把点击原样发上来，不发请求。
+ * - 趋势图、chunk 明细自己取数（各自的窗口参数 / 分页只有它们自己知道），检索配置
+ *   自己读写 `/settings` —— 那三块与本层零耦合，所以这里连它们的字段都不声明。
  *
- * 顶上多出的「检索规模」是**唯一可写**的一块：它原来长在设置页的「常规参数」区（整区已拆），
- * 那里真正生效的就是这几个检索数字，于是搬到"检索"这件事自己的地盘上，
- * 仍然写 setting 表、仍然走 `PUT /settings`（只提交变更项）。
+ * 一致性的判据只有 `status.consistent`（后端按 id 集合对账）。**绝不用 chunks === vector.count**
+ * 代替：换 embedding 模型时向量表会整体重建，旧元数据还留在 MySQL 里，两侧条数完全可能
+ * 相等却并不一致。`consistent` 为 null（还没取到）时只能说"未知"，不猜。
  *
- * 数据面完全复用既有接口：`/knowledge/overview`、`/knowledge/index/status`、
- * `/knowledge/chunks`、`/knowledge/index`、`/knowledge/remove`、`/knowledge/reconcile`。
- * 这里**只读 + 触发任务**，不碰论文与译文。
- *
- * ⚠️ 加载键统一加 `setkb-` 前缀：`state.loading` 是全页共享的，知识库页同时开着时
- * 不该互相点亮对方的"加载中"。
+ * 列数用 **container query** 而不是 media query：这块挂在设置页右栏里，窗格宽度 ≠ 视口宽度，
+ * 用视口判断会在侧栏收起时排错。断点只有 1040（主体两栏）、900 / 640（图表行三档）、
+ * 860 / 560（指标行）这几处。
  */
-import { computed, onMounted, reactive, ref } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
-import type { ChunkMeta, KnowledgeOverview, SettingsPayload } from '@/api/types';
-import {
-  loadPapers, paperTitle, reportError, state, toast, withLoading,
-} from '@/stores/app';
-import { openTab } from '@/stores/tabs';
-import { copyText, paperStatus, pct } from '@/utils/format';
+import type { KnowledgeOverview } from '@/api/types';
+import { isLoading, reportError, toast, withLoading } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
+import { openTab } from '@/stores/tabs';
 import { readerTarget } from '@/utils/navigation';
-import Menu from '@/components/Menu.vue';
-import Switch from '@/components/Switch.vue';
 import AppIcon from '@/components/AppIcon.vue';
+import KbTrendCard from './KbTrendCard.vue';
+import KbChunkMixCard from './KbChunkMixCard.vue';
+import KbLatencyCard from './KbLatencyCard.vue';
+import KbStorageCard from './KbStorageCard.vue';
+import PaperIndexTable from './PaperIndexTable.vue';
+import ChunkMetaCard from './ChunkMetaCard.vue';
+import RagConfigCard from './RagConfigCard.vue';
 
-/** 四类 chunk（与后端 knowledge_service.CHUNK_TYPES 一致）。 */
+/**
+ * 指标行副行（"chunk 总数"卡里那串）只列四类内容 chunk：这一格在 313px 宽里
+ * 连四类都是刚好塞满，加第五类会把它截成"表格 1…"。分布卡不靠这张表取数（见 typeCounts）。
+ */
 const CHUNK_TYPES = [
   { key: 'text', label: '正文' },
   { key: 'formula', label: '公式' },
@@ -42,346 +49,198 @@ const CHUNK_TYPES = [
 
 type KbPaper = KnowledgeOverview['items'][number];
 
-/** 向量库状态（`GET /knowledge/index/status` 的 vector 字段）。 */
-interface VectorStatus {
-  available: boolean;
-  count?: number;
-  error?: string;
-}
+/** `embedding_models` 的一条：后端 `_model_labels` 除 label 外还给了 model_name 与 dim。 */
+interface EmbeddingModel { id: string; label: string; model_name?: string | null; dim?: number | null }
 
-/** 索引状态响应的形状（后端动态 JSON，边界处按需声明）。 */
-interface KnowledgeIndexStatus {
-  paper_id?: string;
+/** 概览响应在本层的视角：只把 `embedding_models` 收窄成带 dim 的条目。 */
+interface KbOverview extends KnowledgeOverview { embedding_models: EmbeddingModel[] }
+
+/** 向量库状态（`index_status.vector`）。 */
+interface VectorStatus { available: boolean; count?: number | null; error?: string | null }
+
+/** `GET /knowledge/index/status`（不带 paper_id，即全库）里本层用到的字段。 */
+interface IndexStatus {
   chunks: number;
   chunks_with_hash: number;
   index_versions: Record<string, number>;
-  vector: VectorStatus;
-  /** 全库对账：MySQL 有、向量库没有的旧 chunk 元数据条数 */
+  vector: VectorStatus | null;
+  model_dim?: number | null;
+  store_dim?: number | null;
+  dim_match?: boolean | null;
   orphan_chunks?: number | null;
-  /** 全库对账：向量库有、MySQL 没有的条数 */
   missing_vectors?: number | null;
   consistent?: boolean | null;
 }
 
-/** 同 Menu 组件的 items 结构（结构类型，无需导出）。 */
-interface RowAction {
-  key: string;
-  label: string;
-  icon?: string;
-  danger?: boolean;
-  disabled?: boolean;
+/** `POST /knowledge/reconcile` 的返回（backend knowledge_service.reconcile）。 */
+interface ReconcileResult {
+  orphans?: number;
+  missing?: number;
+  removed_metadata?: number;
+  removed_vectors?: number;
+  consistent?: boolean;
 }
 
 const router = useRouter();
-const overview = ref<KnowledgeOverview | null>(null);
-const indexStatus = ref<KnowledgeIndexStatus | null>(null);
-const chunks = ref<ChunkMeta[]>([]);
+const overview = ref<KbOverview | null>(null);
+const indexStatus = ref<IndexStatus | null>(null);
+/** 最近一次**对账校验**的时间（本地时钟），存储卡展示用。 */
+const checkedAt = ref('');
+/** 行级动作键：`idx:<paperId>` / `remove:<paperId>` / `reconcile`。 */
 const busyKey = ref('');
+/** 整页刷新进行中（含两张自取数卡的重载，它们不占 state.loading）。 */
+const refreshing = ref(false);
 
-// chunk 元数据查询条件（后端要求 paper_id 必填）
-const chunkPaperId = ref('');
-const chunkType = ref('');
-const chunkLimit = ref(50);
+const trendCard = ref<InstanceType<typeof KbTrendCard> | null>(null);
+const chunkCard = ref<InstanceType<typeof ChunkMetaCard> | null>(null);
 
-// 索引状态：空字符串 = 全部知识库
-const statusPaperId = ref('');
+const overviewLoading = computed<boolean>(() => isLoading('setkb-overview'));
+const statusLoading = computed<boolean>(() => isLoading('setkb-status'));
+const refreshBusy = computed<boolean>(
+  () => refreshing.value || overviewLoading.value || statusLoading.value || !!busyKey.value,
+);
 
-/* --------------------------- 检索规模（RAG 参数） ---------------------------
- * 这五项原在设置页「常规参数」区（唯一带"保存设置"的一区）。该区已拆：真生效的那几项
- * 搬到这里，数据面仍是 `PUT /settings`（**只提交变更项**，写 setting 表，重启后仍生效）。
- *
- * 为什么搬这一块：它们是"检索规模"本身（召回多少条、重排多少条、允不允许兜底），
- * 与下面的 chunk 表 / 对账放一起，用户调参数时能当场看到 chunk 数变不变。
- * 同区删掉的那四项（任务线程数 / 页面渲染 dpi / 公式裁图 dpi / 默认生成模型）不在这里复活：
- * 前三个的读取点读的是环境变量、设置表里的值没人读，末一个已被模型系统的「默认模型」取代。
- * ------------------------------------------------------------------------- */
-
-/** 四个数字项（三项召回一行、重排条数单独一行）。 */
-interface RagNumField {
-  key: 'rag_top_k_vector' | 'rag_top_k_lexical' | 'rag_top_k_fused' | 'rag_top_n_rerank';
-  label: string;
-  hint: string;
-  min: number;
-}
-
-type RagKey = RagNumField['key'] | 'allow_general_knowledge';
-
-const RAG_NUM: RagNumField[] = [
-  { key: 'rag_top_k_vector', label: '向量召回 top_k', hint: '语义检索取回多少条', min: 1 },
-  { key: 'rag_top_k_lexical', label: '词法召回 top_k', hint: '关键词检索取回多少条', min: 1 },
-  { key: 'rag_top_k_fused', label: '融合后 top_k', hint: '两路合并后留给重排的条数', min: 1 },
-  { key: 'rag_top_n_rerank', label: '重排条数 n', hint: '重排后交给模型引用的条数，0 = 不重排', min: 0 },
-];
-/** 三项召回一行；重排条数自己一行。 */
-const RAG_TOP = RAG_NUM.slice(0, 3);
-const RAG_RERANK = RAG_NUM[3];
-const RAG_KEYS: RagKey[] = [...RAG_NUM.map((f) => f.key), 'allow_general_knowledge'];
-
-const ragForm = reactive<Record<RagKey, number | '' | boolean>>({
-  rag_top_k_vector: '', rag_top_k_lexical: '', rag_top_k_fused: '',
-  rag_top_n_rerank: '', allow_general_knowledge: false,
-});
-/** 服务端**当前生效**的那一份：用来算"改了没有"，以及保存成功后回填。 */
-const ragBase = reactive<Record<RagKey, number | '' | boolean>>({ ...ragForm });
-const ragBusy = ref(false);
-
-/** 后端 values 是动态 JSON：在边界处收敛成"数字 or 空串 / 布尔"。 */
-function fillRag(values: Record<string, any> | null | undefined): void {
-  const v = values || {};
-  for (const f of RAG_NUM) {
-    const raw = v[f.key];
-    ragForm[f.key] = raw === null || raw === undefined || raw === '' ? '' : Number(raw);
-    ragBase[f.key] = ragForm[f.key];
-  }
-  ragForm.allow_general_knowledge = v.allow_general_knowledge === true
-    || v.allow_general_knowledge === 'true' || v.allow_general_knowledge === 1;
-  ragBase.allow_general_knowledge = ragForm.allow_general_knowledge;
-}
-
-/** 开关单独取一个布尔模型：`ragForm` 的值类型是 `number | '' | boolean`，直接 v-model 给 Switch 会是三选一。 */
-const allowGeneral = computed<boolean>({
-  get: () => ragForm.allow_general_knowledge === true,
-  set: (v) => { ragForm.allow_general_knowledge = v; },
-});
-
-const ragChanged = computed<RagKey[]>(() => RAG_KEYS.filter((k) => ragForm[k] !== ragBase[k]));
-
-async function loadRag(): Promise<void> {
-  try {
-    const data = await api.get<SettingsPayload>('/settings');
-    fillRag(data?.values);
-  } catch (err) {
-    reportError(err, '取检索规模失败');
-  }
-}
-
-async function saveRag(): Promise<void> {
-  const keys = ragChanged.value;
-  if (!keys.length) { toast('没有需要保存的改动', 'warn'); return; }
-  const patch: Record<string, unknown> = {};
-  for (const k of keys) {
-    const v = ragForm[k];
-    if (v === '') {
-      const label = RAG_NUM.find((f) => f.key === k)?.label || k;
-      toast(`「${label}」不能为空，请填入数字`, 'warn');
-      return;
-    }
-    patch[k] = v;
-  }
-  ragBusy.value = true;
-  try {
-    const res = await api.put<{
-      applied?: Record<string, unknown>;
-      rejected?: Record<string, string>;
-      values?: Record<string, unknown>;
-    }>('/settings', patch);
-    if (res?.values) fillRag(res.values);          // 以服务端生效值为准（含被拒项回滚）
-    const applied = Object.keys(res?.applied || {});
-    const rejected = res?.rejected || {};
-    if (applied.length) toast(`已保存（重启后仍生效）：${applied.join('、')}`, 'ok', 4200);
-    for (const [k, reason] of Object.entries(rejected)) {
-      toast(`「${k}」未生效：${reason}`, 'warn', 5200);
-    }
-    if (!applied.length && !Object.keys(rejected).length) {
-      toast('服务端未返回任何生效项，请检查请求内容', 'warn');
-    }
-  } catch (err) {
-    reportError(err, '保存检索规模失败');
-  } finally {
-    ragBusy.value = false;
-  }
-}
-
-/* ------------------------------ 派生值 ------------------------------ */
+/* ------------------------------ 指标行派生 ------------------------------ */
 
 const papers = computed<KbPaper[]>(() => overview.value?.items || []);
-const chunksByType = computed<Record<string, number>>(() => overview.value?.chunks_by_type || {});
-const chunksByLang = computed<Record<string, number>>(() => overview.value?.chunks_by_lang || {});
-const vectorStore = computed<Record<string, any> | null>(() => overview.value?.vector_store || null);
-const embeddingModels = computed<Array<{ id: string; label: string }>>(
-  () => (overview.value?.embedding_models || []) as Array<{ id: string; label: string }>);
+const versions = computed<Record<string, number>>(() => overview.value?.index_versions || {});
+/** chunk 卡只要三列（它的下拉与摘要都只用这三项）。 */
+const chunkPapers = computed(() => papers.value.map((p) => ({ id: p.id, title: p.title, chunks: p.chunks })));
 
-const vectorAvailable = computed(() => !!vectorStore.value?.available);
-const vectorCount = computed<string | number>(() => {
+const chunkTypeText = computed<string>(() => CHUNK_TYPES
+  .map((t) => {
+    const n = overview.value?.chunks_by_type?.[t.key];
+    return `${t.label} ${Number(n) || 0}`;
+  })
+  .join(' · '));
+
+/**
+ * Chunk 类型分布卡要的是"按类型分开的条数"，不是拼成一句话的那串。
+ * **原样透传整份 chunks_by_type**：早先只挑四类，unit（检索单元）被丢掉，
+ * 于是卡上出现"中心 814、图例相加 428"的自相矛盾 —— 面板不再替它做减法，
+ * 顺序与配色交给卡片（未知键它会自己决定放哪）。
+ */
+const typeCounts = computed<Record<string, number>>(() => {
+  const src = overview.value?.chunks_by_type || {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(src)) out[k] = Math.max(0, Number(v) || 0);
+  return out;
+});
+
+/** 判定只用 status.consistent：没取到 → null（未知），取到布尔就照抄。 */
+const consistency = computed<boolean | null>(() => {
   const s = indexStatus.value;
-  if (!s) return '—';
-  const v = s.vector || { available: false };
-  return v.available ? (v.count ?? 0) : '不可用';
+  return s && typeof s.consistent === 'boolean' ? s.consistent : null;
+});
+const consistencyText = computed<string>(
+  () => (consistency.value === null ? '未知' : consistency.value ? '一致' : '不一致'),
+);
+const consistencyClass = computed<string>(
+  () => (consistency.value === null ? 'dim' : consistency.value ? 'ok' : 'danger'),
+);
+/** 只有真正"一致"才给对勾；未知与不一致都值得先看一眼。 */
+const consistencyIcon = computed<string>(() => (consistency.value === true ? 'check' : 'warning'));
+
+/** 后端 label 形如 `Qwen3-VL（2560 维）`：名字当主值、维数进副行，所以在这里拆开。 */
+function splitLabel(label?: string | null): { name: string; dim: number | null } {
+  const text = String(label ?? '').trim();
+  const m = text.match(/^(.+?)（\s*(\d+)\s*维\s*）$/);
+  return m ? { name: m[1].trim(), dim: Number(m[2]) } : { name: text, dim: null };
+}
+
+const embeddingModel = computed<EmbeddingModel | null>(
+  () => (overview.value?.embedding_models || [])[0] || null,
+);
+const embeddingName = computed<string>(() => {
+  const m = embeddingModel.value;
+  if (!m) return '未配置';
+  return splitLabel(m.label).name || m.id;
+});
+const embeddingDim = computed<number | null>(() => {
+  const m = embeddingModel.value;
+  if (!m) return null;
+  return m.dim || splitLabel(m.label).dim || null;
+});
+const embeddingSub = computed<string>(() => {
+  if (!embeddingModel.value) return '去「模型」页绑定';
+  return embeddingDim.value ? `${embeddingDim.value} 维 embedding` : '维数未声明';
 });
 
-/** 索引一致（判定依据是**对账**，不是"两个数字是否相等"：MySQL 里可能留着
- *  向量已被重建丢掉的旧元数据，那种情况直接比条数就会误报成"不一致"）。 */
-const statusMatch = computed<boolean | null>(() => {
-  const s = indexStatus.value;
-  if (!s) return null;
-  const v = s.vector || { available: false };
-  if (!v.available) return false;
-  if (typeof s.consistent === 'boolean') return s.consistent;
-  return Number(s.chunks || 0) === Number(v.count || 0);
-});
-const statusClass = computed(() => {
-  if (statusMatch.value === null) return '';
-  return statusMatch.value ? 'ok' : 'danger';
-});
-const statusText = computed(() => {
-  if (statusMatch.value === null) return '未知';
-  if (statusMatch.value) return '一致';
-  const orphans = indexStatus.value?.orphan_chunks || 0;
-  return orphans ? `有 ${orphans} 条旧元数据` : '不一致';
-});
-const orphanChunks = computed(() => Number(indexStatus.value?.orphan_chunks || 0));
+/* -------------------------------- 取数 -------------------------------- */
 
-/** 概览里的类型计数压成一行纯文本（四个徽章太吵）。 */
-const chunkTypeText = computed(() => CHUNK_TYPES
-  .map((t) => `${t.label} ${chunksByType.value[t.key] || 0}`).join(' · '));
-/** 语种构成同理：一行文本，不留徽章（`通用` = 语言无关的公式原子行）。 */
-const chunkLangText = computed(() => `中文 ${chunksByLang.value.zh || 0} · 原文 ${chunksByLang.value.en || 0}`
-  + ` · 通用 ${chunksByLang.value.any || 0}`);
-
-function titleOf(paperId?: string | null): string {
-  if (!paperId) return '（未知论文）';
-  const hit = papers.value.find((p) => p.id === paperId);
-  return hit?.title || paperTitle(paperId);
+/** 本地时钟 HH:MM:SS（不做时区换算：这是"刚才几点刷的"，不是服务端时间戳）。 */
+function clockNow(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function versionOf(paperId: string): string | number {
-  const map = (overview.value?.index_versions || {}) as Record<string, number | null | undefined>;
-  const v = map[paperId];
-  return v === undefined || v === null ? '—' : v;
-}
-
-function chunkTypeLabel(key?: string | null): string {
-  return CHUNK_TYPES.find((t) => t.key === key)?.label || key || '—';
-}
-
-/** 行内只留「建索引」；重建 / 移除这类低频且不可逆的操作收进「⋯」菜单。
- *  ⚠️ 不再有单独的「纳入知识库」开关：**建索引即纳入**（用户口径：合并两个说法），
- *  退出知识库 = 「移除」（连索引一起清掉，两侧不会长期不一致）。 */
-function rowMenu(p: KbPaper): RowAction[] {
-  return [
-    { key: 'rebuild', label: '重建索引', icon: 'refresh', disabled: busyKey.value === `idx:${p.id}` },
-    {
-      key: 'remove',
-      label: '从知识库移除',
-      icon: 'link-off',
-      danger: true,
-      disabled: busyKey.value === `remove:${p.id}` || !p.chunks,
-    },
-  ];
-}
-
-function onRowAction(p: KbPaper, key: string) {
-  if (key === 'rebuild') { void runIndex(p.id, true); return; }
-  if (key === 'remove') void removeFromKb(p);
-}
-
-/* ------------------------------ 加载 ------------------------------ */
-
-async function refreshOverview(): Promise<void> {
-  await withLoading('setkb-overview', async () => {
-    overview.value = await api.get<KnowledgeOverview>('/knowledge/overview');
-  });
+/** 两块共享数据各自 try/catch：一块失败不能把另一块连带打掉（withLoading 已 reportError）。 */
+async function loadOverview(): Promise<void> {
+  try {
+    await withLoading('setkb-overview', async () => {
+      overview.value = await api.get<KbOverview>('/knowledge/overview');
+    });
+  } catch { /* 已提示；status 与子组件照常展示 */ }
 }
 
 async function loadStatus(): Promise<void> {
-  await withLoading('setkb-status', async () => {
-    const query: Record<string, unknown> = statusPaperId.value ? { paper_id: statusPaperId.value } : {};
-    indexStatus.value = await api.get<KnowledgeIndexStatus>('/knowledge/index/status', query);
-  });
-}
-
-async function loadChunks(): Promise<void> {
-  if (!chunkPaperId.value) {
-    chunks.value = [];
-    toast('请先选择论文', 'warn');
-    return;
-  }
-  await withLoading('setkb-chunks', async () => {
-    const data = await api.get<{ items: ChunkMeta[]; count?: number }>('/knowledge/chunks', {
-      paper_id: chunkPaperId.value,
-      chunk_type: chunkType.value || undefined,
-      limit: chunkLimit.value,
-    });
-    chunks.value = data.items || [];
-  });
-}
-
-/** 首次进入时挑一篇「已纳入知识库且有 chunk」的论文预填 chunk 查询。 */
-async function bootstrapQueries(): Promise<void> {
-  const items = papers.value || [];
-  const preferred = items.find((p) => p.in_knowledge_base && p.chunks > 0)
-    || items.find((p) => p.chunks > 0);
-  if (preferred) {
-    chunkPaperId.value = preferred.id;
-    await loadChunks();
-  }
-  await loadStatus();
-}
-
-async function refreshAll(): Promise<void> {
   try {
-    await refreshOverview();
-    await bootstrapQueries();
-  } catch { /* withLoading 已提示 */ }
+    await withLoading('setkb-status', async () => {
+      indexStatus.value = await api.get<IndexStatus>('/knowledge/index/status');
+      checkedAt.value = clockNow();
+    });
+  } catch { /* 同上 */ }
 }
 
-onMounted(async () => {
-  void loadRag();                    // 检索参数与论文列表互不依赖，各走各的
-  try { await loadPapers(); } catch { /* 论文列表失败不阻塞本面板 */ }
-  await refreshAll();
+/** 刷新：两块共享数据 + 两张自取数卡（趋势 / chunk 摘要），互不阻塞，谁失败谁自己提示。 */
+async function refreshAll(): Promise<void> {
+  if (refreshBusy.value) return;
+  refreshing.value = true;
+  try {
+    await Promise.allSettled([
+      loadOverview(),
+      loadStatus(),
+      Promise.resolve(trendCard.value?.reload()),
+      Promise.resolve(chunkCard.value?.reload()),
+    ]);
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+onMounted(() => {
+  void Promise.allSettled([loadOverview(), loadStatus()]);
 });
 
-/* --------------------------- 移除 / 对账 / 索引 --------------------------- */
+/* ------------------------------- 写操作 ------------------------------- */
 
-/** 从知识库移除：清向量 + 清 chunk 元数据（论文与译文不动）。 */
-async function removeFromKb(paper: KbPaper): Promise<void> {
-  if (!(await askConfirm({
-    title: `从知识库移除《${paper.title}》？`,
-    body: `会清掉它的 ${paper.chunks} 条 chunk 与向量（论文、译文、笔记、高亮都不受影响）。`
-      + '需要时可以重新「建立索引」加回来。',
-    confirmLabel: '移除',
-  }))) return;
-  busyKey.value = `remove:${paper.id}`;
-  try {
-    const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
-    toast(`已从知识库移除（清 ${res?.removed_chunks ?? 0} 条 chunk）`, 'ok', 3200);
-    await refreshOverview();
-  } catch (err) {
-    reportError(err, '移除失败');
-  } finally {
-    busyKey.value = '';
+/**
+ * 建索引 / 重建索引：POST 一个任务，然后把两块共享数据刷新（任务排上了，数字可能已变）。
+ *
+ * 只有**重建**先确认（需求 5.6：重新索引 / 删除索引这类"会动掉已有东西"的操作要有确认）。
+ * 首次建索引是正常下一步，弹框只会白磨一次点击，所以 rebuild=false 直接执行。
+ * 确认框按"移除"那一支的做法走 askConfirm：取消就整支退出 —— 不发请求、不置 busyKey，
+ * 按钮不会闪一下 loading。
+ */
+async function runIndex(paper: KbPaper, rebuild: boolean): Promise<void> {
+  if (rebuild) {
+    const ok = await askConfirm({
+      title: `重建索引《${paper.title}》？`,
+      body: '会重新切块并重写它的向量（旧向量被替换），过程中这一篇可能检索不到。'
+        + '已经生成的中文译文与笔记不受影响。',
+      confirmLabel: '重建索引',
+      danger: false,
+    });
+    if (!ok) return;
   }
-}
-
-/** 对账：清掉 MySQL 里那些"向量已经不在了"的旧 chunk 元数据。 */
-async function reconcileNow(fix: boolean): Promise<void> {
-  busyKey.value = 'reconcile';
+  busyKey.value = `idx:${paper.id}`;
   try {
-    const res = await api.post<{ orphans?: number; missing?: number; removed_metadata?: number }>(
-      '/knowledge/reconcile', { fix });
-    if (fix) {
-      toast(`已清理 ${res?.removed_metadata ?? 0} 条孤儿元数据`
-        + (res?.missing ? `、${res.missing} 条孤儿向量` : ''), 'ok', 3600);
-    } else {
-      toast(`对账完成：孤儿元数据 ${res?.orphans ?? 0} 条、孤儿向量 ${res?.missing ?? 0} 条`,
-        res?.orphans || res?.missing ? 'warn' : 'ok', 4200);
-    }
-    await refreshOverview();
-  } catch (err) {
-    reportError(err, '对账失败');
-  } finally {
-    busyKey.value = '';
-  }
-}
-
-async function runIndex(paperId: string, rebuild: boolean): Promise<void> {
-  busyKey.value = `idx:${paperId}`;
-  try {
-    const task = await api.post<{ id?: string } | null>('/knowledge/index', { paper_id: paperId, rebuild });
-    toast(`已创建索引任务（${rebuild ? '重建' : '建索引'}）：${task?.id || paperId}`, 'ok');
-    await refreshOverview();
-    if (statusPaperId.value === paperId || !statusPaperId.value) await loadStatus();
-    if (chunkPaperId.value === paperId) await loadChunks();
+    const task = await api.post<{ id?: string } | null>('/knowledge/index', {
+      paper_id: paper.id, rebuild,
+    });
+    toast(`已创建索引任务（${rebuild ? '重建' : '建索引'}）：${task?.id || paper.id}`, 'ok');
+    await Promise.allSettled([loadOverview(), loadStatus()]);
   } catch (err) {
     reportError(err, rebuild ? '触发重建索引失败' : '触发建索引失败');
   } finally {
@@ -389,338 +248,293 @@ async function runIndex(paperId: string, rebuild: boolean): Promise<void> {
   }
 }
 
-/* ---------------------------- 行内小动作 ---------------------------- */
-
-function copyId(text: string): void {
-  copyText(text).then(() => toast('已复制', 'ok', 1600)).catch((err) => reportError(err, '复制失败'));
+/** 从知识库移除：只清 chunk 与向量，论文 / 译文 / 笔记 / 高亮都不动。 */
+async function removeFromKb(paper: KbPaper): Promise<void> {
+  const ok = await askConfirm({
+    title: `从知识库移除《${paper.title}》？`,
+    body: `会清掉它的 ${paper.chunks} 条 chunk 与向量（论文、译文、笔记、高亮都不受影响）。`
+      + '需要时可以重新「建索引」加回来。',
+    confirmLabel: '移除',
+    danger: true,
+  });
+  if (!ok) return;
+  busyKey.value = `remove:${paper.id}`;
+  try {
+    const res = await api.post<{ removed_chunks?: number }>('/knowledge/remove', { paper_id: paper.id });
+    toast(`已从知识库移除（清 ${res?.removed_chunks ?? 0} 条 chunk）`, 'ok', 3200);
+    await Promise.allSettled([loadOverview(), loadStatus()]);
+  } catch (err) {
+    reportError(err, '移除失败');
+  } finally {
+    busyKey.value = '';
+  }
 }
 
 /**
- * 跳回原文：带块锚点 + 页码，阅读器做三级解析（行 id → block_rows → 按页），
- * 见 `utils/navigation.ts`。
- *
- * ⚠️ 必须在点击回调里调（`openTab` 会改响应式状态）：`:to="fn()"` 那种写法会让
- * "渲染 → 改状态 → 再渲染"死循环，知识库页曾因此必定卡死。
+ * 对账：`fix: false` 只报告，`fix: true` 才动手清（先确认）。
+ * 只有 fix 会改数据 —— 清掉的元数据会让 overview 的 chunk 数变小，所以那一支顺带刷概览。
  */
-function openSource(item: { paper_id?: string | null; block_id?: string | null; page?: number | null }) {
-  void router.push(openTab(readerTarget(item.paper_id ?? '', item.block_id, item.page)) as never);
+async function reconcileNow(fix: boolean): Promise<void> {
+  if (fix) {
+    const orphans = Number(indexStatus.value?.orphan_chunks || 0);
+    const missing = Number(indexStatus.value?.missing_vectors || 0);
+    if (!orphans && !missing) { toast('没有需要清理的孤儿数据', 'ok'); return; }
+    const ok = await askConfirm({
+      title: `清理 ${orphans} 条孤儿元数据？`,
+      body: `同时会清掉向量库里 ${missing} 条没有元数据的向量。清理后不可恢复，`
+        + '需要时对相关论文重建索引。',
+      confirmLabel: '清理',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  busyKey.value = 'reconcile';
+  try {
+    const res = await api.post<ReconcileResult>('/knowledge/reconcile', { fix });
+    if (fix) {
+      toast(`已清理 ${res?.removed_metadata ?? 0} 条孤儿元数据、${res?.removed_vectors ?? 0} 条孤儿向量`,
+        'ok', 3600);
+    } else {
+      const bad = Number(res?.orphans || 0) || Number(res?.missing || 0);
+      toast(`对账完成：孤儿元数据 ${res?.orphans ?? 0} 条、孤儿向量 ${res?.missing ?? 0} 条`,
+        bad ? 'warn' : 'ok', 4200);
+    }
+    await loadStatus();
+    if (fix) await loadOverview();
+  } catch (err) {
+    reportError(err, '对账失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
+/* ------------------------------- 跳转 ------------------------------- */
+
+/**
+ * ⚠️ `openTab` 会改响应式状态，**只能在点击回调里调**；写成 `:to="fn()"` 就是
+ * "渲染 → 改状态 → 再渲染"的死循环（知识库页已经这么炸过一次）。
+ */
+function openPaper(paper: KbPaper): void {
+  void router.push(openTab(readerTarget(paper.id)));
+}
+
+/** chunk 卡发上来的最小信息与 readerTarget 的三参数一一对应（论文 + 块锚点 + 页码）。 */
+function openSource(item: { paper_id?: string | null; block_id?: string | null; page?: number | null }): void {
+  void router.push(openTab(readerTarget(item.paper_id ?? '', item.block_id, item.page)));
 }
 </script>
 
 <template>
-  <div class="kb-panel grid cards">
-    <p class="panel-note">查索引、对账、调检索条数，都在这里。</p>
+  <div class="kb-panel">
+    <!-- ① 工具条：只有一个刷新（业务入口不在这里，设置页不是内容页） -->
+    <div class="kb-bar">
+      <span class="tiny faint nowrap">上次刷新 {{ checkedAt || '—' }}</span>
+      <button class="btn sm ghost" :disabled="refreshBusy" title="刷新概览、索引状态、趋势与 chunk 摘要"
+              @click="refreshAll">
+        <AppIcon name="refresh" :size="14" />刷新
+      </button>
+    </div>
 
-    <!-- 检索规模：本面板唯一可写的一块（原「常规参数」区里真生效的那几项） -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="sliders" :size="15" />检索规模
-        <span class="spacer"></span>
-        <button class="btn primary sm" :disabled="ragBusy || !ragChanged.length" @click="saveRag">
-          <AppIcon name="check" :size="14" />{{ ragBusy ? '保存中…' : '保存' }}
-        </button>
-      </div>
-      <div class="card-body">
-        <div class="rag-grid">
-          <label class="rag-field" v-for="f in RAG_TOP" :key="f.key">
-            <span class="rag-label">{{ f.label }}</span>
-            <span class="rag-control">
-              <input type="number" :min="f.min" v-model.number="ragForm[f.key]" />
-              <i class="rag-unit">条</i>
-            </span>
-            <span class="rag-hint">{{ f.hint }}</span>
-          </label>
+    <!-- ② 指标行：四张平级卡（不套卡），列数交给 container query -->
+    <div class="kb-metrics">
+      <section class="card kb-metric">
+        <div class="card-body">
+          <div class="m-head">
+            <span class="m-icon"><AppIcon name="knowledge" :size="15" /></span>
+            <span class="m-label">论文总数</span>
+          </div>
+          <div class="m-value">{{ overview ? overview.papers_total : '—' }}</div>
+          <div class="m-sub truncate">已纳入知识库 {{ overview ? overview.papers_in_kb : 0 }} 篇</div>
         </div>
-        <label class="rag-field rag-single">
-          <span class="rag-label">{{ RAG_RERANK.label }}</span>
-          <span class="rag-control">
-            <input type="number" :min="RAG_RERANK.min" v-model.number="ragForm.rag_top_n_rerank" />
-            <i class="rag-unit">条</i>
-          </span>
-          <span class="rag-hint">{{ RAG_RERANK.hint }}</span>
-        </label>
-        <div class="rag-field rag-single">
-          <Switch v-model="allowGeneral">允许通用知识</Switch>
-          <span class="rag-hint">检索结果不够时，允许模型用自己的知识回答</span>
+      </section>
+
+      <section class="card kb-metric">
+        <div class="card-body">
+          <div class="m-head">
+            <span class="m-icon"><AppIcon name="layers" :size="15" /></span>
+            <span class="m-label">chunk 总数</span>
+          </div>
+          <div class="m-value">{{ overview ? overview.chunks : '—' }}</div>
+          <div class="m-sub truncate" :title="chunkTypeText">{{ chunkTypeText }}</div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 概览 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="knowledge" :size="15" />概览
-        <span class="spacer"></span>
-        <button class="btn icon" title="刷新概览与索引状态" @click="refreshAll"
-                :disabled="state.loading['setkb-overview']">
-          <AppIcon name="refresh" :size="15" />
-        </button>
-      </div>
-      <div class="card-body">
-        <div class="stats stats-half" v-if="overview">
-          <div class="stat cell">
-            <div class="n">{{ overview.papers_total }}</div>
-            <div class="k">论文总数</div>
+      <section class="card kb-metric">
+        <div class="card-body">
+          <div class="m-head">
+            <span class="m-icon"><AppIcon :name="consistencyIcon" :size="15" /></span>
+            <span class="m-label">索引一致性</span>
           </div>
-          <div class="stat cell">
-            <div class="n">{{ overview.papers_in_kb }}</div>
-            <div class="k">已纳入知识库（{{ pct(overview.papers_in_kb, overview.papers_total) }}%）</div>
+          <div class="m-value">
+            <span class="badge" :class="consistencyClass">{{ consistencyText }}</span>
           </div>
-          <div class="stat cell">
-            <div class="n">{{ overview.chunks }}</div>
-            <div class="k">chunk 总数</div>
-            <div class="tiny faint">{{ chunkTypeText }}</div>
-            <div class="tiny faint">{{ chunkLangText }}</div>
-          </div>
-          <div class="stat cell">
-            <div class="n" :style="vectorAvailable ? '' : 'color:var(--danger)'">
-              {{ vectorAvailable ? '可用' : '不可用' }}
-            </div>
-            <div class="k">向量库</div>
-            <div class="tiny faint truncate" :title="String(vectorStore?.error || '')">
-              {{ vectorAvailable ? `LanceDB ${vectorStore?.chunks ?? 0} 条` : (vectorStore?.error || '未检测') }}
-            </div>
-          </div>
+          <div class="m-sub truncate">MySQL 与 LanceDB 按 id 集合对账</div>
         </div>
-        <div class="empty" v-else>{{ state.loading['setkb-overview'] ? '正在读取知识库概览…' : '暂无概览数据。' }}</div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 论文索引表：数据表，整宽 -->
-    <section class="card wide">
-      <div class="card-head">
-        <AppIcon name="layers" :size="15" />论文索引
-        <span class="spacer"></span>
-      </div>
-      <div class="card-body tight">
-        <table class="data fixed" v-if="papers.length">
-          <thead>
-            <tr>
-              <th class="w-paper">论文</th><th class="w-status">状态</th><th class="w-kb">知识库</th>
-              <th class="num w-num">chunks</th><th class="w-ver">索引版本</th><th class="w-ops">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in papers" :key="p.id">
-              <td>
-                <RouterLink class="truncate" :to="{ name: 'reader', params: { paperId: p.id } }"
-                            :title="p.title">{{ p.title }}</RouterLink>
-                <div class="tiny faint mono truncate" :title="p.id">{{ p.id }}</div>
-              </td>
-              <td><span class="badge" :class="paperStatus(p.status).cls">{{ paperStatus(p.status).label }}</span></td>
-              <td>
-                <span class="badge" :class="p.in_knowledge_base ? 'accent' : ''">
-                  {{ p.in_knowledge_base ? '已纳入' : '未纳入' }}
-                </span>
-              </td>
-              <td class="num">{{ p.chunks }}</td>
-              <td class="mono tiny">{{ versionOf(p.id) }}</td>
-              <td class="ops">
-                <div class="row nowrap" style="gap: 6px">
-                  <button class="btn sm" :disabled="busyKey === 'idx:' + p.id" @click="runIndex(p.id, false)">
-                    <AppIcon name="layers" :size="14" />建索引
-                  </button>
-                  <Menu :items="rowMenu(p)" up :label="`更多操作：${p.title}`"
-                        @select="onRowAction(p, $event)" />
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="empty" v-else>还没有论文，先去「论文库」导入并解析。</div>
-      </div>
-    </section>
-
-    <!-- 索引状态与对账：数字 + 一串版本徽章 + 对账动作，整宽 -->
-    <section class="card wide">
-      <div class="card-head">
-        <AppIcon name="server" :size="15" />索引状态
-        <span class="badge" :class="statusClass">{{ statusText }}</span>
-        <span class="spacer"></span>
-        <select v-model="statusPaperId" @change="loadStatus" style="min-width:220px">
-          <option value="">全部知识库</option>
-          <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-        </select>
-      </div>
-      <div class="card-body">
-        <template v-if="indexStatus">
-          <div class="stats">
-            <div class="stat cell">
-              <div class="n">{{ indexStatus.chunks }}</div>
-              <div class="k">MySQL chunk 数</div>
-            </div>
-            <div class="stat cell">
-              <div class="n" :style="statusMatch ? '' : 'color:var(--danger)'">{{ vectorCount }}</div>
-              <div class="k">LanceDB 条数</div>
-            </div>
-            <div class="stat cell">
-              <div class="n"><span class="badge" :class="statusClass">{{ statusText }}</span></div>
-              <div class="k">
-                <template v-if="statusMatch">两侧一致</template>
-                <template v-else-if="orphanChunks">
-                  MySQL 多出 {{ orphanChunks }} 条旧元数据（向量已被重建丢弃）
-                  <button class="btn sm" :disabled="busyKey === 'reconcile'"
-                          @click="reconcileNow(true)">清理</button>
-                </template>
-                <template v-else>两侧不一致，需重建索引</template>
-              </div>
-            </div>
+      <section class="card kb-metric">
+        <div class="card-body">
+          <div class="m-head">
+            <span class="m-icon"><AppIcon name="model" :size="15" /></span>
+            <span class="m-label">向量模型</span>
           </div>
+          <div class="m-value txt truncate" :title="embeddingName">{{ embeddingName }}</div>
+          <div class="m-sub truncate">{{ embeddingSub }}</div>
+        </div>
+      </section>
+    </div>
 
-          <div class="row wrap tiny meta">
-            <span class="faint">索引版本</span>
-            <span class="badge" v-for="(v, pid) in (indexStatus.index_versions || {})" :key="pid">
-              {{ titleOf(pid) }} v{{ v }}
-            </span>
-            <span class="faint" v-if="!Object.keys(indexStatus.index_versions || {}).length">（无）</span>
-            <span class="faint" style="margin-left:10px">embedding</span>
-            <span class="badge" v-for="m in embeddingModels" :key="m.id" :title="m.id">{{ m.label }}</span>
-            <span class="faint" v-if="!embeddingModels.length">（未记录）</span>
-            <span class="spacer"></span>
-            <button class="btn sm ghost" :disabled="busyKey === 'reconcile'"
-                    title="只比对 MySQL chunk 元数据与向量库，报告差异，不改任何东西"
-                    @click="reconcileNow(false)">对账</button>
-          </div>
+    <!-- ③ 图表行：一排三张小图（趋势 → 类型分布 → 耗时），宽度不够就降到两列 / 一列 -->
+    <div class="kb-charts">
+      <KbTrendCard ref="trendCard" />
+      <KbChunkMixCard :type-counts="typeCounts" :total="overview ? overview.chunks : 0"
+                      :loading="overviewLoading" />
+      <KbLatencyCard />
+    </div>
 
-          <div class="small" style="margin-top:8px;color:var(--danger)"
-               v-if="indexStatus.vector && !indexStatus.vector.available">
-            向量库不可用：{{ indexStatus.vector.error || '未返回原因' }}
-          </div>
-        </template>
-        <div class="empty" v-else>{{ state.loading['setkb-status'] ? '正在读取索引状态…' : '暂无索引状态。' }}</div>
+    <!-- ④ 主体：≥1040 两栏（右栏粘住），否则单列且顺序为 论文表 → 检索配置 → 存储 → chunk -->
+    <div class="kb-main">
+      <div class="kb-col kb-left">
+        <PaperIndexTable class="kb-paper" :items="papers" :versions="versions"
+                         :loading="overviewLoading" :busy-key="busyKey"
+                         @index="runIndex($event, false)" @rebuild="runIndex($event, true)"
+                         @remove="removeFromKb" @open="openPaper" />
+        <ChunkMetaCard ref="chunkCard" class="kb-chunk" :papers="chunkPapers"
+                       @open-source="openSource" />
       </div>
-    </section>
-
-    <!-- chunk 元数据：数据表，整宽 -->
-    <section class="card wide">
-      <div class="card-head">
-        <AppIcon name="list" :size="15" />Chunk 元数据
-        <span class="spacer"></span>
-        <select v-model="chunkPaperId" @change="loadChunks" style="min-width:200px">
-          <option value="">选择论文…</option>
-          <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-        </select>
-        <select v-model="chunkType" @change="loadChunks">
-          <option value="">全部类型</option>
-          <option v-for="t in CHUNK_TYPES" :key="t.key" :value="t.key">{{ t.label }}</option>
-        </select>
-        <select v-model.number="chunkLimit" @change="loadChunks">
-          <option :value="20">20 条</option>
-          <option :value="50">50 条</option>
-          <option :value="100">100 条</option>
-          <option :value="200">200 条</option>
-        </select>
+      <div class="kb-col kb-right">
+        <RagConfigCard class="kb-rag" />
+        <KbStorageCard class="kb-storage" :status="indexStatus" :loading="statusLoading"
+                       :busy="busyKey" :checked-at="checkedAt" @reconcile="reconcileNow" />
       </div>
-      <div class="card-body tight">
-        <table class="data" v-if="chunks.length">
-          <thead>
-            <tr>
-              <th>chunk</th><th>类型</th><th class="num">页</th><th>章节</th>
-              <th>preview</th><th class="num">tokens</th><th class="w-ops">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in chunks" :key="c.id">
-              <td class="mono tiny truncate" style="max-width:240px"
-                  :title="`${c.id}\nhash ${c.hash || '—'}\n索引版本 ${c.index_version}`">{{ c.id }}</td>
-              <td>
-                <div class="row nowrap" style="gap:4px">
-                  <span class="badge accent">{{ chunkTypeLabel(c.chunk_type) }}</span>
-                  <span class="badge" :class="{ accent: c.lang === 'zh' }">{{
-                    c.lang === 'any' ? '通用' : c.lang === 'zh' ? '中' : '原' }}</span>
-                </div>
-              </td>
-              <td class="num">{{ c.page }}</td>
-              <td class="tiny truncate" style="max-width:140px" :title="c.section || ''">{{ c.section || '—' }}</td>
-              <td class="small clamp-2" style="max-width:320px" :title="c.preview || ''">{{ c.preview || '—' }}</td>
-              <td class="num">{{ c.tokens }}</td>
-              <td class="ops">
-                <div class="row nowrap">
-                  <button class="btn sm" title="跳到这一段原文" @click="openSource(c)">
-                    <AppIcon name="locate" :size="14" />原文
-                  </button>
-                  <button class="btn sm ghost" title="复制 chunk id" @click="copyId(c.id)">
-                    <AppIcon name="copy" :size="14" />
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="empty" v-else-if="state.loading['setkb-chunks']">正在读取 chunk…</div>
-        <div class="empty" v-else-if="!chunkPaperId">请选择论文。</div>
-        <div class="empty" v-else>没有符合条件的 chunk（该论文可能尚未建索引）。</div>
-      </div>
-    </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* 卡片两列版式（与「模型」面板同一套口径）：短卡（检索规模、概览数字）并排，长内容
-   （论文索引表、索引状态、chunk 表）整宽；≤1100px 回落单列。
-   卡片间距只由这里的 gap 给 —— base.css 的 `.card + .card` 在 `.grid` 里已清零。 */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+/* 容器查询的锚点：这块的可用宽度由父级右栏决定，和视口无关。 */
+.kb-panel {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-items: start;
-}
-.cards > .card { min-width: 0; }
-.cards > .wide { grid-column: 1 / -1; }
-@media (max-width: 1100px) { .cards { grid-template-columns: minmax(0, 1fr); } }
-
-/* 顶部一句话：说清这块能干什么，不讲实现 */
-.panel-note {
-  grid-column: 1 / -1; margin: 0;
-  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
-}
-
-/**
- * 统计行：**不嵌套卡片**（用户口径：卡片套卡片太吵）。
- * 一格 = 数字 + 说明，格与格之间用竖分隔线，整行都长在同一张卡的 body 里。
- */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-.stats .cell {
-  padding: 0 0 0 16px;
-  border-left: 1px solid var(--divider);
   min-width: 0;
 }
-.stats .cell:first-child { padding-left: 0; border-left: 0; }
-/* 半宽卡（概览）里的四格：两行两列。竖分隔线在这里不画 —— 折行处只剩半截线，
-   看起来像漏了一条边；行间距自己给。 */
-.stats.stats-half { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
-.stats.stats-half .cell { padding-left: 0; border-left: 0; }
-.meta { margin-top: 12px; }
 
-/* 论文索引表：固定列宽，徽章不会被拆成两行 */
-.w-paper { width: 300px; }
-.w-status { width: 92px; }
-.w-kb { width: 88px; }
-.w-num { width: 76px; }
-.w-ver { width: 84px; }
-.w-ops { width: 150px; }
-td a.truncate { display: block; }
+/* ① 工具条：右对齐，不占一整行高度 */
+.kb-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
 
-/* 卡头里的下拉不撑满整行（卡片头是 flex，select 容易被拉长） */
-.card-head select { max-width: 300px; }
+/* ② 指标行：默认四列，860 两列，560 一列 */
+.kb-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+@container (max-width: 860px) {
+  .kb-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 560px) {
+  .kb-metrics { grid-template-columns: minmax(0, 1fr); }
+}
 
-/* 检索规模：三项召回一行（窄屏折成两列/一列），重排与开关各占一行。
- * 单位跟在输入框**右侧**做后缀，不塞进输入框；数字用等宽数字，几行对齐才不跳。 */
-.rag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; }
-.rag-single { margin-top: 12px; display: grid; gap: 6px; max-width: 340px; }
-.rag-field { display: grid; gap: 6px; min-width: 0; }
-.rag-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.rag-control { display: flex; align-items: center; gap: 8px; }
-.rag-control input {
-  width: 100%; max-width: 120px; text-align: right;
+/* base.css 的 `.card + .card` 会在这里多顶 12px（网格 / 弹性列都自带 gap）。
+   选择器按 DOM 结构写，display:contents 的单列态同样命中。 */
+.kb-metrics > .card + .card,
+.kb-charts > .card + .card,
+.kb-col > .card + .card { margin-top: 0; }
+
+.kb-metric { min-width: 0; }
+.kb-metric .card-body { display: grid; gap: 6px; align-content: start; }
+
+.m-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.m-icon {
+  width: 28px; height: 28px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.m-label {
+  min-width: 0;
+  font-size: calc(12.5px * var(--ts, 1));
+  color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.m-value {
+  min-width: 0;
+  font-size: calc(22px * var(--ts, 1));
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.01em;
   font-variant-numeric: tabular-nums;
 }
-.rag-unit { flex: none; font-style: normal; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
-.rag-hint { font-size: calc(11px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
-@media (max-width: 900px) {
-  .rag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.m-value .badge { vertical-align: middle; }
+/* 字符串型主值（向量模型名 / 「未配置」）：22px 是给数字的档位，模型名放不下就会截成
+   "qwen3-vl-embed…"。降一档到 15px + 单行省略，全名交给 title —— 换行会把这一格撑高，
+   同排四格立刻不齐，所以宁可行尾省略也不折行。 */
+.m-value.txt {
+  font-size: calc(15px * var(--ts, 1));
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-@media (max-width: 560px) {
-  .rag-grid { grid-template-columns: minmax(0, 1fr); }
+.m-sub {
+  min-width: 0;
+  font-size: calc(11.5px * var(--ts, 1));
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* ③ 图表行：一排三张。≥900 三列；640~900 两列（第三张落到下一行）；<640 一列。
+   三张卡等高（align-items: stretch），降到两列时第三张单独一行也只是自己高。
+   三列时每张约 (956 - 24) / 3 ≈ 310，趋势图因此要跟着收成"小图"（见 KbTrendCard）。 */
+.kb-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+}
+@container (min-width: 640px) {
+  .kb-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 900px) {
+  .kb-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.kb-charts > .card { min-width: 0; }
+
+/* ④ 主体：窄窗格单列，四个卡片用 order 排成 论文表 → 检索配置 → 存储 → chunk。
+   列容器在单列态用 display:contents 把自己的两张卡提上来，才能被 order 重排。 */
+.kb-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+.kb-col { display: contents; }
+.kb-paper { order: 1; }
+.kb-rag { order: 2; }
+.kb-storage { order: 3; }
+.kb-chunk { order: 4; }
+
+/* ≥1040：左栏吃掉剩余宽度，右栏定宽 340 并粘在设置页滚动容器顶部。 */
+@container (min-width: 1040px) {
+  .kb-main { grid-template-columns: minmax(0, 1fr) 340px; }
+  .kb-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  .kb-right { position: sticky; top: 0; }
 }
 </style>
