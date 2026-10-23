@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 设置 · 显示主题 · **分类字号**（裸块，放在「预览效果」卡下面）：
+ * 设置 · 显示主题 · **字体设置**（裸块，放在「预览效果」卡下面）：
  *  - 每一类一行：名字 + **该类字号的真实样例** + 一个下拉（小 / 中 / 大）；
  *  - 块底两行：「一键替换」把五类一起设成同一档；「字体」一个下拉（三套预设 + 本机字体）。
  *
@@ -138,7 +138,7 @@ async function onRowFontChange(key: keyof CategoryFonts, ev: Event): Promise<voi
 <template>
   <section class="cats-block" data-category-sizes>
     <div class="block-head">
-      <h3>分类字号</h3>
+      <h3>字体设置</h3>
     </div>
 
     <!-- 批量：独占第一排、左对齐、无说明文字 —— 点哪一档，五类一起变成那一档；

@@ -60,7 +60,7 @@ import TrashPanel from '@/components/trash/TrashPanel.vue';
  * —— 深链只负责切区，滚动由窗格自己在切区时归零。
  */
 const SECTIONS = [
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色与字号，点一下立即生效' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色、字体与字号，点一下立即生效' },
   { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '按任务分配模型，密钥收在各提供方里' },
   // 「论文问答」→「Agent 设置」：这一区管的是**对话 Agent 本身**（技能 / 风格 / 运行上限），
   // 与「模型」（提供方、密钥、任务分类映射）职责不同，两者各自独立、不合并。
@@ -86,7 +86,7 @@ type GroupName = Section['group'];
 
 /** 搜索用的同义词表：用户按"想改什么"找，不会按分区名找（要深色不会去敲"显示主题"）。 */
 const SECTION_KEYWORDS: Record<string, string[]> = {
-  appearance: ['主题', '皮肤', '字号', '深色', '浅色', '换肤'],
+  appearance: ['主题', '皮肤', '字号', '字体', '深色', '浅色', '换肤'],
   models: ['模型', '密钥', '提供方', '厂商', '连接', '思考'],
   agent: ['技能', '对话风格', '联网搜索', '限额', '问答'],
   kb: ['索引', '向量', '分块', '检索', '论文'],

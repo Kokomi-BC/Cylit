@@ -107,7 +107,7 @@
     radial-gradient(900px 500px at 100% 0%, color-mix(in srgb, var(--text) 3%, transparent), transparent 65%);
 
   /* ---- 字体 ----
-   * 三套字面栈先各自命名，再被 `--sans` / `--display` 引用：分类级字体（设置页「分类字号」里
+   * 三套字面栈先各自命名，再被 `--sans` / `--display` 引用：分类级字体（设置页「字体设置」里
    * 每一类可选自己的字体）就是把这些栈接到 `--font-sans-<类>` 上，不用把字面表抄第二遍。 */
   --font-stack-system: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
                         "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;

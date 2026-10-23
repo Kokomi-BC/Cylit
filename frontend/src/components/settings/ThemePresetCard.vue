@@ -387,7 +387,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 
 <style scoped>
 /* ---- 块头：标题 14 / 说明 11.5 / 右侧「＋ 自定义」，三样一行。
-   这一栏（主题预设 / 分类字号 / 高亮效果）**不套卡片**，只用留白与细线分区（用户口径 2026-12）。 ---- */
+   这一栏（主题预设 / 字体设置 / 高亮效果）**不套卡片**，只用留白与细线分区（用户口径 2026-12）。 ---- */
 .block-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
 .hd { display: grid; gap: 2px; min-width: 0; }
 .hd h3 {

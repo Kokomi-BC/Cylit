@@ -2,8 +2,13 @@
 /**
  * 设置 · 显示主题 · **预览效果**：一块"界面里的样子"，标题 / 正文 / 标签 / 按钮各来一个。
  *
- * 这里的字号全部走 `calc(Npx * var(--ts, 1))`、字面走 `--display` / `--sans`，
- * 所以调上面的缩放、分类字号或字体族，这块当场跟着变 —— 不需要再写一套预览逻辑。
+ * 字号一律走 `calc(Npx * var(--ts, 1))`、字面走 `--display` / `--sans`，所以调分类字号或
+ * 字体族，这块当场跟着变 —— 不需要再写一套预览逻辑。
+ *
+ * ⚠️ **样例正文（标题 + 这一段）算「正文」类**，不吃设置页自己的 `--ts` / `--sans`
+ * （那两枚在这里等于 UI 类）：用户口径 2026-10「顶部预览文字要归类为正文文字」——
+ * 在「字体设置」里调正文那行时得有东西当场变，否则那一行等于没有预览。
+ * 标签 / 按钮 / 链接这些**界面件**仍按 UI 类走，它们本来就不是正文。
  * 正文里那句 **真的 `mark.hl`** 同理：它就是阅读器里那枚标注本体（同一份 base.css 声明），
  * 「高亮效果」一切换，这块立刻跟着换画法 —— 这是"预览"，不是画了一张像高亮的图。
  *
@@ -11,7 +16,7 @@
  * 做一个点了有反应的假按钮，比不做预览更糟。
  *
  * 2026-12 用户口径（最终版式）：这一栏只有它一张卡 —— 样例 + 「当前配色」都并进来，
- * 分类字号与高亮效果搬到右栏（裸块），所以这里只留「看」的部分。
+ * 字体设置与高亮效果搬到右栏（裸块），所以这里只留「看」的部分。
  * 含义没变：字号、主题色、标注画法一改，这块当场跟着变。
  */
 import ThemePaletteCard from './ThemePaletteCard.vue';
@@ -33,7 +38,7 @@ import ThemePaletteCard from './ThemePaletteCard.vue';
             <span class="pv-tag is-accent">论文</span>
           </div>
           <p class="sample-text">
-            这一段用来看字号：正文按「分类字号 · 正文」渲染，
+            这一段用来看字号：正文按「字体设置 · 正文」渲染，
             <mark class="hl yellow" data-preview-hl>标了黄的句子</mark>与
             <mark class="hl" style="--hl-bg:#7ec8ff66;--hl-ink:#2f7fd4" data-preview-hl-custom>自定义色</mark>
             就是阅读器里那枚标注本体 —— 换高亮效果会当场跟着变。
@@ -76,14 +81,17 @@ import ThemePaletteCard from './ThemePaletteCard.vue';
   pointer-events: none; user-select: none;
 }
 .sample-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+/* 字号 / 字面都吃**正文**那一类（见文件头）：调「字体设置 · 正文」时这里当场变。 */
 .sample-title {
-  min-width: 0; font-family: var(--display);
-  font-size: calc(16px * var(--ts, 1)); font-weight: 650;
+  min-width: 0; font-family: var(--font-sans-body);
+  font-size: calc(16px * var(--ts-body, 1)); font-weight: 650;
   letter-spacing: -.015em; line-height: 1.35;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sample-text {
-  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.65; color: var(--text-dim);
+  margin: 0; color: var(--text-dim);
+  font-family: var(--font-sans-body);
+  font-size: calc(12.5px * var(--ts-body, 1)); line-height: 1.65;
 }
 .sample-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .pv-tag {

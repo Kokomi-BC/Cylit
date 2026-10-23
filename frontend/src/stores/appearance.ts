@@ -38,7 +38,7 @@ export const APPEARANCE_STORAGE_KEY = 'cylit:appearance';
 /** 一类文字用的字体：三套预设之一，或本机字体（`local:<族名>`）。 */
 export type FontChoice = Typography | `local:${string}`;
 
-/** 五类文字各自的字体（设置页「分类字号」每一行最右边那个下拉）。 */
+/** 五类文字各自的字体（设置页「字体设置」每一行最右边那个下拉）。 */
 export type CategoryFonts = Record<'body' | 'chat' | 'note' | 'side' | 'ui', FontChoice>;
 
 export const FONT_CATEGORIES = ['body', 'chat', 'note', 'side', 'ui'] as const;
@@ -157,7 +157,7 @@ export function setTypography(next: Typography): void {
 }
 
 /**
- * 给**某一类**文字换字体（设置页「分类字号」每一行最右那个下拉）。
+ * 给**某一类**文字换字体（设置页「字体设置」每一行最右那个下拉）。
  *
  * 五类各存一份：`system` / `yahei` / `serif` 是预设栈，`local:<族名>` 是本机字体。
  * 以前是一个全局 `fontFamily`：用户口径 2026-12 改成「每类都能自己选」，于是拆成五份。
