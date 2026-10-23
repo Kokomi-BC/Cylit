@@ -114,18 +114,23 @@ mark.hl.violet { --hl-bg: rgba(143, 0, 255, .22); --hl-ink: #8f00ff; }
 /* 两种画法（用户口径 2026-12：「高亮效果」= 荧光笔 / 下划线，全局二选一）：
  *   荧光笔 = 上面那条 `background: var(--hl-bg)`，默认；
  *   下划线 = `<html data-hl-style="underline">` 时撤掉底色、只画一条线。
- * `text-decoration` **不进布局**：行高、段距、断行位置一个都不变，所以切换时正文不会跳一下
- * （为此连 `padding` 都不动 —— 两种画法共用同一个行盒）。
+ *
+ * 线用**背景条**画，不用 `text-decoration`（用户口径 2026-12：Markdown 里下划线断成一截截）。
+ * 原因：`text-decoration` 只在**一段连续的行内盒子**里连笔，遇到加粗 / 链接 / 行内公式就换一段
+ * 重新起笔 —— 而 Markdown 一段话里行内元素本来就多，一条标注常被切成 3~6 枚 `<mark>`，
+ * 于是下划线成了"一串短线"。背景条按盒子铺满（含 `padding: 0 1px`），相邻碎片正好接上；
+ * 跨行时由 `box-decoration-break: clone` 按行盒复制。两种画法都**不进布局**（行高、段距、
+ * 断行位置一个都不变），所以切换时正文不会跳。
  * 设置页那两张预览卡用 `data-hl-force="marker|underline"` 各自钉死一种画法，走的是**同一份声明**：
  * 预览不能是"长得像"的另一套样式，否则用户切过去会看到不一样的观感。 */
 html[data-hl-style="underline"] mark.hl,
 html [data-hl-force="underline"] mark.hl {
-  background: transparent;
-  text-decoration: underline;
-  text-decoration-color: var(--hl-ink, var(--accent));
-  text-decoration-thickness: max(2px, .09em);
-  text-underline-offset: .2em;
-  text-decoration-skip-ink: auto;
+  background-color: transparent;
+  background-image: linear-gradient(var(--hl-ink, var(--accent)), var(--hl-ink, var(--accent)));
+  background-repeat: no-repeat;
+  background-size: 100% max(2px, .09em);
+  background-position: 0 calc(100% - .1em);
+  text-decoration: none;
 }
 /* 全局是下划线时，预览卡里那张「荧光笔」示例仍要画底色 → 这一条把它按回去 */
 html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); text-decoration: none; }

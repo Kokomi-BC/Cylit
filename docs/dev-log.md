@@ -10826,3 +10826,50 @@ attachments 至少要有一个`）。所以这一轮**后端一行都没改**，
   页面 `scrollH == clientH == 930`（一屏）；无横向溢出；控制台 0 error / 0 warning。
 - 分类字号五行步进器实测同一区间（1600 下 `1454–1570`，1280 下 `1134–1250`）。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**。
+
+### 97. 第九十七轮：Markdown 区域的下划线断成一截截 —— 改成背景条画线
+
+用户口径：「解决下划线不支持 markdown 的问题，如果 markdown 区域最好和正文一样连起来」。
+
+**根因**
+
+`wrapRange` 是**逐段包** `<mark>` 的：一条标注被行内元素（`**加粗**`、链接、行内公式）切断时，
+同一处高亮会变成 3~6 枚 `<mark>`。荧光笔模式下看不出来（每片都有底色，挨着就像一整条），
+但 `text-decoration` 是**每枚各画各的线** —— Markdown 一段话里行内元素本来就多，于是下划线成了
+一串短线，看着就像「下划线在 markdown 里没生效」。实测同一段（page 3，878 字，含 STRONG 与
+四处行内公式）被切成 **6 枚** mark，每枚一条线。
+
+**试过但撤回的办法（如实记录）**：在 DOM 层用 `Range` + `extractContents` 把同段碎片并回一枚。
+实测会**丢字**（提取出来的碎片里带着旧 mark，`remove` 时把文字一起带走了；改成 unwrap 后仍只
+剩首片 50 字），风险太大，已整段删除，没留在代码里。
+
+**最终改法：下划线用「背景条」画，不用 text-decoration**（`styles/base.css` 一条规则）
+
+```css
+html[data-hl-style="underline"] mark.hl {
+  background-color: transparent;
+  background-image: linear-gradient(var(--hl-ink), var(--hl-ink));
+  background-size: 100% max(2px, .09em);
+  background-position: 0 calc(100% - .1em);
+  background-repeat: no-repeat; background-image 按盒子铺满（含 `padding: 0 1px`）
+  text-decoration: none;
+}
+```
+
+- 背景条按**盒子**铺满（含 1px padding），相邻碎片因此正好接上，段中不再有断笔；
+- 跨行由 `box-decoration-break: clone`（本来就开着）按行盒复制，每行都是一条整线；
+- 仍然**不进布局**：行高、段距、断行位置一个都不变；
+- **PDF 文字层**同样适用（那边只是 `-webkit-text-fill-color: transparent`，不影响背景）；
+- 行间公式那条色带保持 `inset box-shadow`，不受影响。
+
+**验证**（真浏览器，本地全栈）
+
+- Markdown 视图 page 3 那段：改前 6 枚 mark 各画一段线；改后同一位置是一条连续线（截图对比），
+  跨 `Inner Product TURBOQUANT.` 这种**加粗**片段也是连的。
+- 正文行模式（`turboquant-online-vector-iclr-26` 的两条 orange 标注）同样连续，颜色仍是 `#d9761a`。
+- 荧光笔模式渲染没变（同一段仍是整条底色带）。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 `frontend_check.py --static` **21 PASS / 0 FAIL**。
+- test highlights 已清：库里回到原来的 2 条（都是 `row` 锚点）。
+
+**遗留**：跨**段落**的标注仍会在段与段之间断开 —— 每个 `<p>` 是独立盒子，中间没有文字可以画线，
+这是 CSS 的物理限制；同一段内（含换行、加粗、链接、行内公式）现在是一整条。
