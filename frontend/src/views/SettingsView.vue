@@ -774,8 +774,10 @@ onMounted(async () => {
   min-width: 0; display: flex; flex-direction: column;
   /* 左栏钉死之后，滚动全部落在这里（全页只有这一层滚动） */
   height: 100%; overflow-y: auto; overscroll-behavior: contain;
-  /* 滚动条槽常驻：分区一高一矮，滚动条一会儿有、一会儿没有，不留槽内容宽度就会跟着跳 */
-  scrollbar-gutter: stable;
+  /* 设置页**自己那条滚动条不画**（用户口径 2026-10）：整页照旧能滚（滚轮 / 键盘 / 触控板），
+     只是不显示这条条子 —— 细圆条只出现在**容器内部**（主题预设列表、下拉、代码块…）。
+     因此也不再需要 scrollbar-gutter: stable（槽只是为了不跳宽，条都不画了就没有槽）。 */
+  scrollbar-width: none;
   /* 只补左边：右边那 24 由 base.css 的 `.app-main.settings` 给（左内边距那边是 0），
      这里再补一份就变成 48，内容会明显偏左 —— 两侧留白不等宽，比宽度本身更刺眼。 */
   padding-left: var(--sp-5); padding-right: 0;
@@ -784,6 +786,9 @@ onMounted(async () => {
      内容滚上去会被窗格上沿切平；放进来之后是滚走，内容直接钻到白色顶栏底下。 */
   padding-top: 18px; padding-bottom: var(--sp-5);
 }
+/* 双保险：Chromium 认上面那条 scrollbar-width:none 就会隐藏滚动条，
+   这条负责"哪怕那条被别处覆盖也仍然不画"（Firefox 只认上面那条）。 */
+.settings-pane::-webkit-scrollbar { width: 0; height: 0; }
 
 /* 内容列封顶 1200 并居中：再宽两列卡片之间就空得发慌，正文行也散。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽

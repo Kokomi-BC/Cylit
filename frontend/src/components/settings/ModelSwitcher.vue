@@ -329,7 +329,7 @@ onBeforeUnmount(() => {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 1px;
   padding: 6px;
-  scrollbar-width: thin; scrollbar-color: var(--divider) transparent;
+  /* 别写 scrollbar-width（Chromium 121+ 认了它，下面那组 ::-webkit-scrollbar 就整段失效） */
 }
 .ms-list::-webkit-scrollbar { width: 8px; }
 .ms-list::-webkit-scrollbar-thumb { background: var(--divider); border-radius: var(--r-pill); }

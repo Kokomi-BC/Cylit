@@ -423,7 +423,9 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
      左/上那两圈会被直接切掉（用户口径 2026-10：「侧边光效被裁切」——实测选中卡左间隙 = 0px）。
      底部 18 是给滚动到底时最后一排那圈环留的位置，配下面同宽的淡出。 */
   padding: 4px 4px 18px;
-  scrollbar-width: thin; scrollbar-gutter: stable;
+  /* 细圆条走 base.css 的全局 ::-webkit-scrollbar（6px 胶囊）；**不要**在这里写 scrollbar-width：
+     Chromium 一旦认了它，整段 webkit 规则就失效，条会退回系统默认的粗条。槽还是要留（不跳宽）。 */
+  scrollbar-gutter: stable;
   /* 底边 18px 淡出：被裁的那半排是「下面还有」，不是「渲染坏了」。
      淡出带与 padding-bottom 同宽 —— 两者不一样时，滚到底那一刻最后一排的环正好落在淡出里。 */
   mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);

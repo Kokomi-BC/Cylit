@@ -11317,3 +11317,21 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 - 已删除配置的「同名」只能靠行上的 model_name 判断（配置行没了就读不到自定义名称），所以「历史行 + 存活配置同名合并」
   实际要求存活配置把名字起成与那条历史行的 model_name 同一个字面量。
 - 新建模型那条保存路径（POST 拿 id 再 PUT 时段）只做了代码审查 + 类型检查，没有真机跑（会往库里多造一条模型）。
+### 112. 第一百一十二轮：设置页不画自己的滚动条，细圆条只留在容器内
+
+用户口径：「移除设置页的滚动条，只有在容器内使用自定义的细圆滚动条」。
+
+先量清楚现状（真浏览器 1400×1000 / 1000×700 / 1600×1200 三档）：**窗口本身零溢出**（`scrollHeight − innerHeight = 0`），
+设置页唯一的滚动容器就是 `.settings-pane`；它那条已经是 6px 胶囊条（`::-webkit-scrollbar` 6px、thumb 圆角 999px）。
+所以"设置页的滚动条"指的就是窗格自己那条 —— 按口径把它**整个不画**，细圆条只留给容器内部。
+
+- `.settings-pane`：`scrollbar-gutter: stable` → **`scrollbar-width: none`**（并加 `.settings-pane::-webkit-scrollbar { width:0 }` 双保险）。
+  于是 `clientWidth === offsetWidth`（不再为条预留 6px），**页面仍可滚**（实测 `scrollTop 0 → 120`）。
+- 顺手修掉一个真 bug：`.preset-list` / `.ms-list` 原来写着 `scrollbar-width: thin` —— **Chromium 121+ 一旦认了这个标准属性，
+  整段 ::-webkit-scrollbar 就失效**，条会退回系统默认的粗条（圆角也没了）。这正是"容器内不是细圆条"的原因。
+  两处都删掉，容器统一走 base.css 那组全局 6px 胶囊规则；Firefox 仍由全局 `@supports (-moz-appearance: none)` 兜。
+
+**验证（真浏览器）**
+- 窗格：`scrollbar-width: none`、`::-webkit-scrollbar` 宽 0px、`clientWidth 952 === offsetWidth 952`、滚动 `0 → 120` 正常。
+- 容器（主题预设列表）：`::-webkit-scrollbar` 6px、thumb 圆角 999px、`scrollbar-gutter: stable`、可滚。
+- 三档宽高窗口溢出均为 0；`vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
