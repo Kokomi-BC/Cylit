@@ -616,6 +616,12 @@ class Conversation(Base, TimestampMixin):
     #: `system + 全部历史` 缓存同时打掉（前缀缓存是从第 0 个 token 起比的）。
     #: NULL = 升级前建的老会话（还没有这一列），首次提问时按"谁更晚"判一次再冻结。
     agent_style: Mapped[str | None] = mapped_column(Text)
+    #: 同一条会话冻结的**口吻预设**与**回复长度**（「Cyli 偏好」页的两项，见 `services/agent/style.py`）。
+    #: 与 `agent_style` 一样必须冻结：它们都进 system（一个在最前、一个在最末），
+    #: 每轮按"当前设置"取一次就等于设置一改全库前缀缓存同时作废。
+    #: NULL = 升级前建的老会话（还没有这两列），首次提问时判一次再写回。
+    agent_style_preset: Mapped[str | None] = mapped_column(String(16))
+    agent_reply_length: Mapped[str | None] = mapped_column(String(16))
     #: 这一条会话选的问答模型（`model_config.id`，只认 agent 类型）与推理等级。
     #: **NULL = 跟随默认**（agent 默认 → generation 默认，见 services/agent/model_config.py）：
     #: 升级前的老会话与"没在对话里换过模型"的会话都落在这一档，不给默认值就等于替用户选。

@@ -84,7 +84,9 @@ def create_conversation(conversation_id: str, paper_id: str = "",
         if row is None:
             sess.add(Conversation(id=conversation_id, paper_id=paper_id or None,
                                   title=(title or "")[:255], head_id=None,
-                                  agent_style=style_service.effective()))
+                                  agent_style=style_service.effective(),
+                                  agent_style_preset=style_service.effective_preset(),
+                                  agent_reply_length=style_service.effective_length()))
         else:
             if paper_id and not row.paper_id:
                 row.paper_id = paper_id
@@ -94,10 +96,24 @@ def create_conversation(conversation_id: str, paper_id: str = "",
 
 
 def frozen_style(conversation_id: str) -> str:
-    """这条会话该用的风格（**冻结**语义：新建时就定下来，之后设置页怎么改都不动它）。
+    """这条会话该用的**自定义指令**（冻结语义，见 `frozen_preferences`）。
 
-    老会话（升级前建的、`agent_style` 还是 NULL）在这里判一次并**写回** —— 判一次就够了，
-    不写回的话每轮都要重判，而设置页一改重判结果就变，正是要避免的那种"历史会话被追着改"。
+    只是一个兼容外壳：三项现在必须**一起**判、一起写回 —— 单独判这一项会把老会话
+    写成一个"半判状态"（指令定了、预设还没定），下一次按设置重判时两边就会打架。
+    """
+    return frozen_preferences(conversation_id)["agent_style"]
+
+
+def frozen_preferences(conversation_id: str) -> dict:
+    """这条会话冻结的三项：**自定义指令 / 口吻预设 / 回复长度**（「Cyli 偏好」）。
+
+    为什么一次给三样、并且连同"判一次再写回"放在**同一次事务**里：
+    它们一起进 system（见 `agent/prompts.build_instructions`），分开取要开三次事务；
+    更要紧的是两个并发请求各判一次就会各写一次 —— 判据（"谁更晚"）读的正是会在
+    这两次之间变化的设置行，写回的值因此可能不一致。
+
+    老会话（升级前建的、这几列还是 NULL）在这里判一次并写回：判一次就够了，
+    不写回的话每轮都要重判，而设置页一改重判结果就变 —— 正是要避免的"历史会话被追着改"。
     """
     from backend.repositories.mysql.models import Conversation
     from backend.repositories.mysql.session import session_scope
@@ -106,13 +122,28 @@ def frozen_style(conversation_id: str) -> str:
     with session_scope() as sess:
         row = sess.get(Conversation, conversation_id)
         if row is None:                      # 正常到不了（调用方刚 ensure/建过）
-            return style_service.effective()
+            return {"agent_style": style_service.effective(),
+                    "agent_style_preset": style_service.effective_preset(),
+                    "agent_reply_length": style_service.effective_length()}
         text = style_service.pick(row.agent_style, style_service.stored(),
                                   created_at=row.created_at,
                                   changed_at=style_service.changed_at())
         if not (row.agent_style or "").strip():
             row.agent_style = text            # 冻结：这条会话从此只用这一份
-        return text
+        preset = style_service.pick_preset(
+            row.agent_style_preset, style_service.stored_preset(), style_text=text,
+            created_at=row.created_at,
+            changed_at=style_service.changed_at(style_service.KEY_PRESET))
+        if row.agent_style_preset != preset:
+            row.agent_style_preset = preset
+        length = style_service.pick_length(
+            row.agent_reply_length, style_service.stored_length(),
+            created_at=row.created_at,
+            changed_at=style_service.changed_at(style_service.KEY_LENGTH))
+        if row.agent_reply_length != length:
+            row.agent_reply_length = length
+        return {"agent_style": text, "agent_style_preset": preset,
+                "agent_reply_length": length}
 
 
 def ensure_conversation(conversation_id: str | None, paper_id: str,

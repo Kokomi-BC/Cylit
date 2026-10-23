@@ -154,6 +154,8 @@ def create_app() -> FastAPI:
             parent_id=payload.get("parent_id"),
             history=list(payload.get("history") or []),
             style=str(payload.get("agent_style") or ""),
+            style_preset=str(payload.get("agent_style_preset") or ""),
+            reply_length=str(payload.get("agent_reply_length") or ""),
             model_id=payload.get("model_id"),
             reasoning_effort=str(payload.get("reasoning_effort") or ""),
             selection=selection,

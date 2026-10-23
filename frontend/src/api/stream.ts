@@ -64,7 +64,24 @@ export async function postSse(path: string, body: unknown, opts: SseOptions): Pr
   let buffer = '';
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      /* 读流失败要**分类**（只改这一处，SSE 解析语义一个字没动）。
+         为什么：`reader.read()` 抛出来的东西以前会以裸 `TypeError: network error` 冒到界面上，
+         而这时**响应头早就 200 回来了**、正文也落了一半 —— 用户看到的却像"连不上后端"，
+         于是他能做的动作全错（重装 / 换网 / 再点一次）。
+         现在包成 `ApiError(STREAM_INTERRUPTED, status=200)`：错误卡据此说"回答流被截断了"。
+         **用户主动中止原样抛**（AbortError）：否则点"停止生成"会长出一张错误卡。 */
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || opts.signal?.aborted) throw err;
+        throw new ApiError(`回答流中断了：${err?.message ?? err}`, {
+          code: 'STREAM_INTERRUPTED',
+          status: 200,
+          detail: { reason: String(err?.message ?? err) },
+        });
+      }
+      const { done, value } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let cut = buffer.indexOf('\n\n');

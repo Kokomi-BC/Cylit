@@ -18,7 +18,20 @@ class PaperMindError(Exception):
         self.detail = detail or {}
 
     def to_dict(self) -> dict:
-        return {"code": self.code, "message": self.message, "detail": self.detail}
+        # detail 复制一份再往外给：错误信封是一次快照，调用方之后的补充（上游字段）
+        # 不该反写回异常对象，也不该让两个响应共享同一个 dict。
+        detail = dict(self.detail)
+        provider = provider_detail_of(self)
+        message = self.message
+        if provider is not None:
+            # 已经填过的（model_manager 在调用现场补的那份，带 model / provider_label）
+            # 优先：那里才知道"用的是哪个模型、哪把 key"，这里再算一次只会更少信息
+            detail.setdefault("provider", provider)
+            # 兜底的 message 里可能裹着上游原文（"...: str(exc)[:200]"），密钥一律抹掉
+            from backend.core import provider_errors
+
+            message = provider_errors.redact(message)
+        return {"code": self.code, "message": message, "detail": detail}
 
 
 class NotFoundError(PaperMindError):
@@ -47,16 +60,28 @@ class ParseError(PaperMindError):
 
 
 class ProviderError(PaperMindError):
-    """模型调用失败（可重试时由调度器捕获）。"""
+    """模型调用失败（可重试时由调度器捕获）。
+
+    信封里的结构化上游字段（HTTP 状态码 / 上游错误码 / 分类）由
+    provider_errors.classify 统一产出，落在 detail.provider；它与 SSE 的 error 帧
+    是**同一份**对象（契约见 backend/core/provider_errors.py）。
+    """
 
     code = "PROVIDER_ERROR"
     http_status = 502
 
     def __init__(self, message: str, *, retryable: bool = True,
-                 retry_after: float | None = None, detail: dict | None = None):
+                 retry_after: float | None = None, detail: dict | None = None,
+                 model: str = "", provider_label: str = "",
+                 secrets: tuple = ()):
         super().__init__(message, detail=detail)
         self.retryable = retryable
         self.retry_after = retry_after
+        #: 这一条错误属于哪个模型、哪个供应商（显示名），以及哪把密钥要参与脱敏。
+        #: 只影响 detail.provider 的填充，**不影响**重试判断与 HTTP 状态码。
+        self.model = model
+        self.provider_label = provider_label
+        self.secrets = secrets
 
 
 class RateLimitError(ProviderError):
@@ -103,6 +128,27 @@ class LimitExceededError(PaperMindError):
         #: 与 ProviderError 同名但语义相反：额度用尽重试无用。照旧放这个字段，
         #: 免得通用兜底代码 getattr(exc, "retryable", True) 取到默认值 True。
         self.retryable = False
+
+
+def provider_detail_of(exc: BaseException) -> dict | None:
+    """异常的 detail.provider 字段（唯一产出点，见 provider_errors）。
+
+    只给"上游失败"与"本地限额"两类：校验 / 找不到这类业务异常没有供应商语义，
+    多给一个 kind 只会让前端以为每条错误都能重试。
+
+    为什么不在两个调用点各拼一份：HTTP 信封与 SSE 帧必须说同一件事 ——
+    两处各拼一份就是两份随时会分叉的契约。
+    """
+    from backend.core import provider_errors
+
+    if isinstance(exc, ProviderError):
+        return provider_errors.classify(
+            exc, model=getattr(exc, "model", "") or "",
+            provider_label=getattr(exc, "provider_label", "") or "",
+            secrets=getattr(exc, "secrets", ()) or ())
+    if isinstance(exc, LimitExceededError):
+        return provider_errors.classify(exc)
+    return None
 
 
 class TaskError(PaperMindError):

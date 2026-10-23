@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Request
 
 from backend.api.response import envelope
 from backend.core.config import get_settings
+from backend.core.errors import ValidationError
 from backend.core.utils import json_dumps, json_loads
 from backend.repositories.mysql.models import Setting
 from backend.repositories.mysql.session import session_scope
@@ -40,10 +41,13 @@ router = APIRouter(tags=["settings"])
 # 改了一辈子不生效。留一个"能改但没用"的开关比没有更糟。
 EDITABLE: dict[str, type] = {
     "allow_general_knowledge": bool,
-    # ---- 问答（agent）：**可改的只有风格那一段**（用户口径 2026-10-15）----
+    # ---- 问答（agent）：「Cyli 偏好」那三项（用户口径 2026-10-15 / 2026-12）----
     # 护栏/工作方式在 `agent/prompts.py` 的常驻块里，不入设置表 —— 那是底线，不是配置。
-    # 读取点：`services/agent/style.py`（空 = 没设过，回落到 prompts.DEFAULT_STYLE）。
+    # 读取点：`services/agent/style.py`（空 = 没设过，回落到代码里的默认值）。
+    # `agent_style` 是**自定义指令**，只在 `agent_style_preset = custom` 时进提示词。
     "agent_style": str,
+    "agent_style_preset": str,
+    "agent_reply_length": str,
     # ---- Cyli 解释（划词 / 插图解释）单独一份模型配置 ----
     # 读取点：services/agent/explain.py，消费方是 POST /agent/ask（只在 mode=explain 时用）。
     # 空串 = 没设过 → 模型跟随对话默认、思考强度跟随模型自己的 parameters。
@@ -64,6 +68,27 @@ EDITABLE: dict[str, type] = {
 }
 
 
+def enum_values(key: str) -> tuple[str, ...] | None:
+    """取值是**有限枚举**的键 → 允许的取值（不是枚举键就返回 None）。
+
+    允许值**只有一处定义**：`agent/prompts.py` 的 `STYLE_PRESETS` / `REPLY_LENGTHS` ——
+    提示词渲染与写入校验共用同一份，否则"界面能存、模型不认"这种静默失效迟早出现。
+    懒导入：设置接口是主后端启动图的一部分，别为一串常量把 agent 包整个拉进来。
+
+    **非法值一律 400**：写进去只会被读取侧当成默认值，用户却以为设置生效了。
+    """
+    from backend.agent.prompts import REPLY_LENGTHS, STYLE_PRESETS
+
+    return {"agent_style_preset": STYLE_PRESETS,
+            "agent_reply_length": REPLY_LENGTHS}.get(key)
+
+#: 收到**空串就删行**（而不是存空值）的键：它们的空值 = "回落到代码里的默认"。
+#: 存一个空值会留下另一个状态（`agent_style` 存空串会让模型失去身份设定，
+#: 两个枚举键存空串会让设置页显示一个假的"已设置"），"删掉"才与"从没设过"同义。
+RESET_ON_EMPTY: frozenset[str] = frozenset(
+    {"agent_style", "agent_style_preset", "agent_reply_length"})
+
+
 def _live_default(key: str) -> Any:
     """没有 ``Settings`` 字段的键（分块/检索参数只活在 setting 表里）：问**读取点**要当前生效值。
 
@@ -75,6 +100,14 @@ def _live_default(key: str) -> Any:
             from backend.services.agent import style as style_service
 
             return style_service.default()
+        if key == "agent_style_preset":
+            from backend.services.agent import style as style_service
+
+            return style_service.default_preset()
+        if key == "agent_reply_length":
+            from backend.services.agent import style as style_service
+
+            return style_service.default_length()
         if key in ("explain_model_config_id", "explain_reasoning_effort"):
             # 默认值就是"没设过"：空串让设置页那两个下拉落在「跟随默认」那一项
             return ""
@@ -164,6 +197,9 @@ def _defaults() -> dict:
     from backend.services.agent import style as style_service
 
     out["agent_style"] = style_service.default()
+    # 这两项是**枚举**：默认值取提示词那一侧的常量，同样不在接口里复写一遍
+    out["agent_style_preset"] = style_service.default_preset()
+    out["agent_reply_length"] = style_service.default_length()
     # 这一项**有** `Settings` 字段（环境变量），默认值直接取设置对象
     out["allow_general_knowledge"] = get_settings().allow_general_knowledge
     return out
@@ -176,7 +212,8 @@ async def get_settings_api(request: Request):
     ``defaults`` 给"默认值不在 `Settings` 字段上"的那些键 —— 值被改过之后，设置页仍然要能
     显示"默认是多少 / 默认是哪一段"，用户才能对比与恢复：
 
-    - ``agent_style``：代码里的默认风格（`services/agent/style.py`）；
+    - ``agent_style`` / ``agent_style_preset`` / ``agent_reply_length``：
+      「Cyli 偏好」那三项的代码默认值（`services/agent/style.py`）；
     - ``rag_top_k_vector`` / ``rag_top_k_lexical`` / ``rag_top_k_fused`` / ``rag_top_n_rerank``：
       检索规模，取 `retrieval.DEFAULT_K`（**代码默认**，不是 `retrieval.rag_k` 的当前生效值）；
     - ``allow_general_knowledge``：`Settings` 里的环境变量默认值。
@@ -202,16 +239,28 @@ async def put_settings(request: Request, payload: dict = Body(...)):
     """
     applied: dict = {}
     rejected: dict = {}
+    # 枚举键先整体校验，**一个字节都不写库**：非法值要当场 400 并说清允许值，
+    # 而不是"200 了、值被静默忽略"（那种失效最难查）。
+    for key, value in (payload or {}).items():
+        allowed = enum_values(key)
+        if allowed is None:
+            continue
+        raw = str(value or "").strip().lower()
+        if raw and raw not in allowed:
+            raise ValidationError(
+                f"{key} 只能是 {' / '.join(allowed)}（或空串 = 恢复默认）；收到 {value!r}")
     with session_scope() as sess:
         for key, value in (payload or {}).items():
             caster = EDITABLE.get(key)
             if caster is None:
                 rejected[key] = "不允许修改"
                 continue
-            # **空 = 恢复默认**（只对"没设过就用代码里的默认值"的键，当前是风格）：
+            if enum_values(key) is not None:      # 存小写归一值（"Rigorous" 与 "rigorous" 同义）
+                value = str(value or "").strip().lower()
+            # **空 = 恢复默认**（"没设过就用代码里的默认值"的那几个键，见 `RESET_ON_EMPTY`）：
             # 删掉那一行而不是存一段空字符串 —— 存空串会让模型失去身份设定，
             # 而"删掉"才与"从没设过"是同一种状态（读取点自然回落到代码里的默认）。
-            if key == "agent_style" and not str(value or "").strip():
+            if key in RESET_ON_EMPTY and not str(value or "").strip():
                 for name in (key, f"kb.{key}"):
                     row = sess.get(Setting, name)
                     if row is not None:

@@ -56,6 +56,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 会话冻结的问答风格（2026-10-15）：**只对新对话生效**，老会话首次提问时判一次再写回。
     # 允许 NULL —— NULL 就是"升级前建的会话，还没判过"。
     ("conversation", "agent_style", "`agent_style` LONGTEXT NULL"),
+    # 「Cyli 偏好」的两项（口吻预设 / 回复长度）：各自独立存在会话行上，理由同上 ——
+    # 两项都进 system，冻结了才不会"设置一改、所有历史会话的前缀缓存一起作废"。
+    # 允许 NULL —— NULL 就是"升级前建的会话，还没判过"（判一次后写回具体值）。
+    ("conversation", "agent_style_preset", "`agent_style_preset` VARCHAR(16) NULL"),
+    ("conversation", "agent_reply_length", "`agent_reply_length` VARCHAR(16) NULL"),
     # 会话上选的问答模型与推理等级：**允许 NULL = 跟随默认**，所以不给默认值
     # （给了默认值就等于替用户选了一个模型，那个模型被删掉后全库会话一起失效）。
     ("conversation", "model_config_id", "`model_config_id` VARCHAR(36) NULL"),

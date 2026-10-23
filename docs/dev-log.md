@@ -11382,3 +11382,59 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 **已知限制**
 - 空 provider 的退化行（行上 provider 为 NULL 且配置已删）键为 `name:-/<名称>`，`provider=None`、`providers=[]`、label「未知厂商」。
 - 名称里含 `/` 的旧写法 `name:<名称>` 无法无歧义解析（会被当成新键）。
+
+### 115. 第一百一十五轮：对话页错误卡（阶段③）——「本地限额」与「上游 429」终于分得开
+
+用户原计划最后一块：对话页要把 HTTP 状态码、供应商错误码/类型、以及「本地限额触发」分开显示。
+
+- **统一解析层** `backend/core/provider_errors.py`（506 行，纯函数、无 IO、第三方包全在函数内 try-import）：
+  `classify()` 把 pydantic_ai `ModelHTTPError` / openai `APIStatusError|APITimeout|APIConnection` / httpx
+  `TimeoutException|RemoteProtocolError|HTTPStatusError` / `UnexpectedModelBehavior` / 内建 `TimeoutError|ConnectionError`
+  统一收敛成 10 个字段；`CODE_KINDS` 把 code↔kind **强制一一对应**（11 条），想加种类只能改那张表。
+- **两条路同一份对象**：SSE 帧走 `error_frame()`，HTTP 信封走 `errors.provider_detail_of()`（`to_dict` 里 setdefault 填
+  `detail.provider`，`model_manager` 现场补的那份优先），前端只读一种形状。
+- **本地限额 ≠ 上游 429**：`LimitExceededError` 是 `kind=limit`、`http_status=null`、`retryable=false`、带 `detail.limit` 快照；
+  上游 429 是 `PROVIDER_RATE_LIMIT` / `http_status=429` / 带真实 `provider_code`。脱敏覆盖 `sk-`、`Bearer`、`api_key=`、
+  `Authorization` 与配置里的真实 key 原文（有断言证明输出里搜不到原文）。
+- **前端**：新 `ChatErrorCard.vue`（206 行）——标题按 kind 出人话、徽标只放 HTTP 状态与上游错误码、`<details>` 默认收起放
+  code/type/上游原文/模型/供应商/建议等待/trace_id；**字段缺失就整行不渲染**；限额卡走琥珀色（`--warn`）且**没有任何按钮**
+  （重发会重复落库，机制没做就不给控件）。`ReaderChat.errorText:string` 换成 `ChatErrorView` 对象；`stream.ts` 只把
+  `reader.read()` 包一层：读到一半失败 → `STREAM_INTERRUPTED(200)`，主动中止仍抛 `AbortError`。
+- **验证（我自己跑的）**：`pytest tests/test_provider_errors.py` 34 passed；全量 **1586 passed / 131 skipped**；
+  真 HTTP 打 `/agent/ask`（agent 服务没起）拿到帧 `AGENT_DOWN / kind=network / http_status=null / provider_code=null / retryable=true`
+  —— 契约字段在真实请求路径上真的落地了，且没有编造任何供应商字段。
+
+**已知边界**：旧 provider 适配层（`providers/generation/anthropic.py` 等）把 HTTP 错误折成 `ProviderError` 时**丢掉了状态码**，
+那一路仍落 `kind=unknown`（要覆盖得改 `providers/**`，本次未扩边界）；`model_manager.test()` 不走 generate 包装器、不补 detail；
+`provider_label` 未知名回落 provider id。
+
+### 116. 第一百一十六轮：「Agent 设置」→「Cyli 偏好」，对话风格与回复长度做成**可组合片段**，技能说明改取 SKILL.md
+
+用户：改写原 Agent 设置页 → 两个区域（对话偏好 / 技能能力）；风格 5 档 + 长度 3 档；片段不许覆盖原系统提示词；
+技能说明必须客观（来自现有定义）；**不许**加「工作流 / 长期记忆 / 自动学习」这类没实现的开关。
+
+- **页面**：`AgentModelPanel.vue` → `CyliPrefsPanel.vue`（`git mv` 保历史），左栏与页头都显示「Cyli 偏好」（面板内不再叠同名 h3）；
+  `<h3>` 四个：对话偏好 / 技能能力 / 运行上限 / Cyli 解释。旧控件一个没丢（上传/下载/卸载/开关、web-search 齿轮内嵌配置、
+  运行上限 5 项、Cyli 解释两个下拉）。两处有意减法：删掉「编辑态 + 取消」（新交互没有编辑态）与「已自定义」徽章（下拉已写明）。
+- **提示词（唯一入口 `prompts.build_instructions`）**：`DEFAULT_STYLE` 拆成 `IDENTITY` + `DEFAULT_TONE`；
+  `TONE_FRAGMENTS` / `LENGTH_FRAGMENTS` 各是独立常量，`preset != default` 时接在 IDENTITY 之后、`length != normal` 时接在 system 末尾，
+  **normal = 空串**（默认情况一个字节都不多）；两段各配一行优先级声明：常驻规则永远压过口吻与篇幅。
+- **设置**：`agent_style_preset`（default/rigorous/concise/plain/custom）、`agent_style`（只在 custom 时进提示词）、
+  `agent_reply_length`（short/normal/detailed）；非法值 **400** 并列出允许值，空串删行。老库（只有自定义文本、没有 preset 行）读成 `custom`。
+- **冻结**：`conversation` 新增 `agent_style_preset` / `agent_reply_length`（走 `_ADDED_COLUMNS`），`frozen_preferences()` 一次事务判并写回
+  ——理由与 `agent_style` 同：这三项都进 system 前缀，不冻结就是「设置一改，全库前缀缓存作废」。
+- **验证（我自己跑的，不听自述）**：
+  - 逐字节：把 `git show HEAD:backend/agent/prompts.py`（改动前）单独加载，与新版各跑同一个 `Deps`：
+    `len 3498 / sha256 951768f7…` 三者（old / golden / new）完全相同；
+  - 片段：`preset=rigorous + length=detailed` 时 rigorous 片段 1 次、detailed 1 次、`DEFAULT_TONE` **0 次**、两行优先级各 1 次；
+  - 真实 HTTP：`PUT {rigorous, detailed}` → 200、GET 读回一致；`PUT {catgirl}` → 400（消息列出 5 个允许值）；
+    随后 `/agent/ask` 真建了一条会话，库里的行冻结成 `('rigorous', 'detailed')`；
+  - 真浏览器（headless Edge 打 `/cylit/settings#agent`）：「Cyli 偏好」出现 3 次、`data-skill-row` **12**、`data-skill-view` **12**、
+    风格下拉 5 个选项文案与需求逐字一致、技能说明命中 SKILL.md 原文（「给出论文整体概览…」）。
+- **前端自检**：`vue-tsc` 0 error、`npm run build` 通过；探针**改动前后各跑一遍**（同一后端、同一命令）：
+  **123 项 / 112 通过 / 11 失败，两次完全同数** —— 那 11 条是既有红（reader 右键玻璃与填充图标、侧栏页签 URL、chat 空态居中与胶囊托盘、
+  pdfhl 探针无产物、notes 缩略），与本次改动无关。
+
+**已知限制**：`--static` 模式只有 21 项（后端离线时 20 PASS + 1 SKIP，就是「阅读位置」那条）；full 模式 123 项。
+探针里那两条 bundle 用例要求 `TMPDIR` 指向 workspace 内**已存在**的目录，否则 esbuild 子进程写 `%TEMP%` 被拒 → 假 FAIL（本轮踩过）。
+本面板原本就没有独立「问答模型」控件（模型本体在「模型」区），故未凭空新增。

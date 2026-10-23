@@ -29,11 +29,13 @@ import { convCount } from '@/api/types';
 import type {
   AgentAttachment, AgentCitation, AgentConversation, AgentMessage, AgentModelPick,
   AgentSelection, AgentStatus, AgentStep, AgentUsage,
+  ChatErrorKind, ChatErrorView,
   Highlight, ModelConfig, Note,
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
 import ConfirmModal from '@/components/ConfirmModal.vue';
+import ChatErrorCard from '@/components/reader/ChatErrorCard.vue';
 
 const props = defineProps<{
   paperId: string;
@@ -136,7 +138,99 @@ const uploading = ref(false);
 const loading = ref(false);
 const compressing = ref(false);
 const sending = ref(false);
-const errorText = ref('');
+/**
+ * 本次失败的原因（`null` = 没有失败）。
+ *
+ * 为什么不再是一行字符串：一句 `message` 装不下"谁失败了" —— 本地限额 / 上游 429 / 上游欠费 /
+ * 鉴权 / 参数 / 5xx / 超时 / 断网 / 流被截断在界面上长得一模一样，用户唯一能做的动作就是再点一次。
+ * 现在整份对象（`kind` + HTTP 状态 + 上游错误码 + trace_id + 限额快照）都留着，交给 `ChatErrorCard`。
+ */
+const chatError = ref<ChatErrorView | null>(null);
+
+/** 只认真字符串：空串 / 缺键一律当"没给"（卡片据此**整行不渲染**，绝不写占位假值） */
+function errText(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+function errNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * 流内终态 `error` 帧 → 卡片视图。
+ *
+ * **字段直读，一个都不推断**：分类（`kind`）是后端给的，前端再算一遍必然出现两套口径
+ * ——那就等于又要把"限额"说成"故障"。前端唯一的兜底是 `kind` 缺失（老后端 / 半条帧）：落 `unknown`。
+ */
+function errorViewFromFrame(data: any): ChatErrorView {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, any>;
+  const rawLimit = d.limit ?? d.detail?.limit ?? null;
+  return {
+    code: errText(d.code) ?? '',
+    kind: (errText(d.kind) as ChatErrorKind) ?? 'unknown',
+    message: errText(d.message) ?? '问答失败',
+    http_status: errNum(d.http_status),
+    provider_code: errText(d.provider_code),
+    provider_type: errText(d.provider_type),
+    provider_message: errText(d.provider_message),
+    retryable: d.retryable === true,
+    retry_after: errNum(d.retry_after),
+    model: errText(d.model) ?? '',
+    provider_label: errText(d.provider_label) ?? '',
+    trace_id: errText(d.trace_id) ?? undefined,
+    limit: rawLimit && typeof rawLimit === 'object' ? rawLimit : null,
+  };
+}
+
+/**
+ * `postSse` 抛出来的 `ApiError` → 卡片视图。两种来路：
+ *
+ * 1. 后端已经给了 `detail.provider`（HTTP 错误信封，与流内 `error` 帧**同一份对象**）→ 直接用，
+ *    前端不碰；
+ * 2. 没有 `provider`（本地限额 429、请求没发出去的 `NETWORK_ERROR`、流读到一半的
+ *    `STREAM_INTERRUPTED`、以及裸 HTTP 码）→ 在**这里唯一地**按 `api/types.ts` 里那份 K 列表映射一次。
+ */
+function errorViewFromApiError(err: any): ChatErrorView {
+  const detail = err?.detail && typeof err.detail === 'object' ? err.detail : null;
+  const provider = detail?.provider && typeof detail.provider === 'object' ? detail.provider : null;
+  if (provider) {
+    const view = errorViewFromFrame(provider);
+    const limit = detail?.limit ?? view.limit ?? null;
+    return { ...view, trace_id: errText(err?.traceId) ?? view.trace_id, limit };
+  }
+  const code = errText(err?.code) ?? '';
+  // ApiError 的默认 status 是 0（= 没有 HTTP 响应），不能当状态码显示
+  const status = errNum(err?.status);
+  const httpStatus = status !== null && status > 0 ? status : null;
+  const kind: ChatErrorKind =
+    code === 'LIMIT_EXCEEDED' ? 'limit'
+      : code === 'MODEL_NOT_CONFIGURED' ? 'not_configured'
+        : code === 'NETWORK_ERROR' ? 'network'
+          : code === 'STREAM_INTERRUPTED' ? 'stream'
+            : httpStatus === 429 ? 'rate_limit'
+              : httpStatus === 402 ? 'quota'
+                : httpStatus === 401 || httpStatus === 403 ? 'auth'
+                  : httpStatus === 400 || httpStatus === 404 || httpStatus === 422 ? 'bad_request'
+                    : httpStatus !== null && httpStatus >= 500 ? 'server'
+                      : 'unknown';
+  return {
+    code,
+    kind,
+    message: errText(err?.message) ?? '问答失败',
+    /* 只有真·上游状态才写上去：本地限额的 429 是我们自己回的，流被截断时那个 200 是"响应头到了"
+       而不是错误码 —— 两者摆在卡片上都会把人指向错的地方。 */
+    http_status: kind === 'limit' || kind === 'stream' ? null : httpStatus,
+    provider_code: null,
+    provider_type: null,
+    provider_message: null,
+    retryable: !(kind === 'limit' || kind === 'auth' || kind === 'bad_request'
+      || kind === 'not_configured' || kind === 'unknown'),
+    retry_after: null,
+    model: '',
+    provider_label: '',
+    trace_id: errText(err?.traceId) ?? undefined,
+    limit: detail?.limit && typeof detail.limit === 'object' ? detail.limit : null,
+  };
+}
 /**
  * **正在生成的那条助手消息**（本地占位，`message_id` 以 `local-assistant-` 开头）。
  *
@@ -1101,7 +1195,7 @@ function startNew() {
   messages.value = [];
   usage.value = null;
   pick.value = { model_config_id: '', reasoning_effort: '' };
-  errorText.value = '';
+  chatError.value = null;
   editing.value = null;
   pending.value = [];
   draft.value = '';
@@ -1387,7 +1481,8 @@ function onEvent(name: string, data: any) {
     return;
   }
   if (name === 'error') {
-    errorText.value = data?.message || '问答失败';
+    // 终态帧：整份原因（kind / HTTP 状态 / 上游码 / 限额快照）都交给错误卡，不再只留一句 message
+    chatError.value = errorViewFromFrame(data);
     return;
   }
 }
@@ -1431,7 +1526,7 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (!currentId.value) return;
   }
 
-  errorText.value = '';
+  chatError.value = null;
   sending.value = true;
   runningId = currentId.value ?? '';    // 新会话此刻还没有 id，watch(currentId) 会补记
   markRunning(runningId);
@@ -1522,8 +1617,11 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     }
   } catch (err: any) {
     if (err?.name !== 'AbortError') {
-      errorText.value = err?.message ?? String(err);
-      reportError(err, '提问失败');
+      const view = errorViewFromApiError(err);
+      chatError.value = view;
+      /* 卡片已经把原因、状态码、上游原话都摆在对话里了；只有"没分类"那种（`unknown`）才再补一条
+         toast —— 其余种类两边都报一遍只会让人以为出了两个错。 */
+      if (view.kind === 'unknown') reportError(err, '提问失败');
     }
     // 失败时把乐观回显撤掉（后端没落库，留着会与刷新后的结果不一致）
     if (optimistic) messages.value = messages.value.filter(m => m.message_id !== optimistic.message_id);
@@ -2309,7 +2407,7 @@ defineExpose({ uploadFiles, ensureThread });
              思考/正文/工具夹杂的渲染因此与落库后完全同一套模板，不再有第二套"流式专用"样式。
              流式期间**不列 chunk 号**（用户口径 2026-10-03）：边写边多出来的编号只会刷屏。 -->
 
-        <div v-if="errorText" class="err small">{{ errorText }}</div>
+        <ChatErrorCard v-if="chatError" :error="chatError" />
       </div>
 
       <!-- 输入区 = **一块浮在消息上的圆角容器**：上面是 textarea，下面是操作条。
@@ -2873,7 +2971,6 @@ defineExpose({ uploadFiles, ensureThread });
 .run-step.think.open .step-text { display: block; -webkit-line-clamp: unset; }
 .run-text { margin: 2px 0; }
 .run-text :deep(p) { margin: 5px 0; }
-.err { color: var(--danger); line-height: 1.6; }
 .msg .md :deep(p) { margin: 5px 0; }
 .msg .md :deep(ul), .msg .md :deep(ol) { margin: 5px 0; padding-left: 18px; }
 

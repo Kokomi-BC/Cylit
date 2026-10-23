@@ -20,7 +20,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.api.response import envelope
 from backend.core.config import get_settings, normalize_agent_limits
-from backend.core.errors import ProviderError, ValidationError
+from backend.core import provider_errors
+from backend.core.errors import LimitExceededError, ProviderError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.agent import (attachments, bridge, conversations, model_config,
                                     project, skills_store, websearch)
@@ -274,10 +275,11 @@ async def agent_ask(payload: dict = Body(...)):
         "paper_id": paper_id, "question": question,
         "conversation_id": conversation_id, "parent_id": parent_id,
         "history": history,
-        # 这条会话**冻结**的风格（用户口径 2026-10-15："风格只对新对话生效"）：
-        # 在**主后端**取好随请求带走，agent 不再每轮去问一次设置 —— 既少一次往返，
-        # 也杜绝"设置页一改，所有历史会话的 system 前缀同时作废"（见 services/agent/style.py）。
-        "agent_style": conversations.frozen_style(conversation_id),
+        # 这条会话**冻结**的三项（用户口径 2026-10-15："风格只对新对话生效"）：
+        # 自定义指令 / 口吻预设 / 回复长度，都在**主后端**取好随请求带走 ——
+        # agent 不再每轮去问一次设置，也就杜绝了"设置页一改，所有历史会话的
+        # system 前缀同时作废"（见 services/agent/conversations.py 的 frozen_preferences）。
+        **conversations.frozen_preferences(conversation_id),
         "model_id": choice["model_config_id"],
         "reasoning_effort": choice["reasoning_effort"] or "",
         "selection": selection if selected_text else None,
@@ -446,14 +448,19 @@ async def _ask_stream(body: dict, conversation_id: str) -> AsyncIterator[bytes]:
                                    message="上下文接近预算，已自动压成要点，接着聊…"))
             async for chunk in bridge.stream_ask(body):
                 offer(chunk)
-        except ProviderError as exc:
-            offer(bridge.frame("error", code=exc.code or "PROVIDER_ERROR",
-                               message=exc.message, retryable=bool(exc.retryable)))
+        except (ProviderError, LimitExceededError) as exc:
+            # 字段由 provider_errors 统一产出（与 HTTP 信封的 detail.provider 是同一份）；
+            # 本层仍然不解析 agent 的事件，只负责把异常封成一帧能分类的 error
+            offer(bridge.frame("error", **provider_errors.classify(
+                exc,
+                model=str(getattr(exc, "model", "") or ""),
+                provider_label=str(getattr(exc, "provider_label", "") or ""),
+                secrets=getattr(exc, "secrets", ()) or ())))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 —— 兜底：别让后台任务把异常吞成静默
             log.warning("问答上游异常（这一轮可能没有落库）：%s", exc)
-            offer(bridge.frame("error", code="INTERNAL", message=str(exc)[:200]))
+            offer(bridge.frame("error", **provider_errors.classify(exc)))
         finally:
             if reading:
                 queue.put_nowait(None)

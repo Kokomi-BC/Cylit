@@ -22,7 +22,7 @@ from backend.api import (
 )
 from backend.api.folders import router as folders_router
 from backend.core.config import get_settings
-from backend.core.errors import NotFoundError, PaperMindError
+from backend.core.errors import NotFoundError, PaperMindError, provider_detail_of
 from backend.core.logging import get_logger, setup_logging
 from backend.core.utils import json_dumps
 
@@ -136,7 +136,9 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=422, content={
             "data": None,
             "error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败",
-                      "detail": {"errors": exc.errors()[:10]}},
+                      # provider 恒为 null：参数校验没有供应商语义，但字段要在 ——
+                      # 前端只按 error.detail.provider 一种读法取分类，缺键会掉进兜底
+                      "detail": {"errors": exc.errors()[:10], "provider": None}},
             "trace_id": getattr(request.state, "trace_id", ""),
         })
 
@@ -195,8 +197,20 @@ def create_app() -> FastAPI:
 
 
 def _error_response(exc: PaperMindError, trace_id: str) -> JSONResponse:
+    """统一错误信封 {data, error, trace_id}。
+
+    error.detail.provider 与 SSE error 帧共用 provider_errors 的同一份字段：
+    to_dict() 已经带上了，这里只兜住"子类覆写了 to_dict"的情况 —— 缺了它前端
+    就得回去猜 code，两套读法立刻分叉。
+    """
+    body = exc.to_dict()
+    detail = body.get("detail")
+    if isinstance(detail, dict) and "provider" not in detail:
+        provider = provider_detail_of(exc)
+        if provider is not None:
+            detail["provider"] = provider
     return JSONResponse(status_code=exc.http_status, content={
-        "data": None, "error": exc.to_dict(), "trace_id": trace_id,
+        "data": None, "error": body, "trace_id": trace_id,
     })
 
 

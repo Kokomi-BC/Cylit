@@ -44,6 +44,8 @@ from backend.agent.sanitize import (
 from backend.agent.tools import AGENT_TOOLS, META_TOOLS, tool_brief
 from backend.agent.trace import StepLog
 from backend.agent.workspace import VIRTUAL_ROOT, ReadOnlyWorkspace
+from backend.core import provider_errors
+from backend.core.errors import LimitExceededError, ProviderError
 from backend.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -74,6 +76,10 @@ class AskRequest:
     #: 它出生时那一份 —— 否则设置页一次改动会把所有历史会话的 system 前缀同时作废
     #: （前缀缓存从第 0 个 token 起比，见 `prompts.build_instructions`）。
     style: str = ""
+    #: 同一条会话冻结的**口吻预设**与**回复长度**（「Cyli 偏好」页那两项）。
+    #: 与 `style` 一样由主后端按会话行取好带过来 —— agent 不碰数据库、也不再每轮问设置。
+    style_preset: str = ""
+    reply_length: str = ""
     #: 用户上传/粘贴的图片（``[{attachment_id, name, mime, bytes}]``，主后端已落库）。
     #: **直接多模态喂给问答模型**（实测 deepseek-flash 吃图）：所以这里传的是元数据，
     #: 真正的字节在 `_user_prompt` 里按 id 取 —— agent 仍然不碰文件系统。
@@ -407,6 +413,10 @@ class AgentRuntime:
 
             # 这条会话冻结的风格（主后端按会话行带来）：设置页的改动只影响**新建**的会话。
             deps.style = req.style
+            # 「Cyli 偏好」的口吻预设与回复长度：同样是**冻结值**，各拼一段进 system
+            # （`prompts.style_block` / `prompts.length_block`），每轮只拼一次。
+            deps.style_preset = req.style_preset
+            deps.reply_length = req.reply_length
 
             # **首轮**附论文摘要（用户口径 2026-10-15）：判据就是"主后端这次给没给历史"，
             # 第一条消息天然没有历史。摘要走**用户消息**（`prompts.abstract_block`），
@@ -444,14 +454,18 @@ class AgentRuntime:
             async for ev in self._finalize(req, deps, state):
                 yield ev
         except HostError as exc:
-            yield {"type": "error", "code": exc.code or "HOST_ERROR",
-                   "message": exc.message, "retryable": True}
+            # 帧的形状统一由 provider_errors 产出（前端只认一种读法）；
+            # HOST_ERROR 是我们自己的 code，语义不变，只补 kind / http_status 等字段
+            yield provider_errors.frame(provider_errors.fields(
+                code=exc.code or "HOST_ERROR", kind="unknown",
+                message=exc.message, retryable=True))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             log.exception("问答失败：%s", exc)
-            yield {"type": "error", "code": "INTERNAL",
-                   "message": f"{type(exc).__name__}: {exc}"[:300], "retryable": False}
+            yield provider_errors.frame(provider_errors.fields(
+                code="INTERNAL", kind="unknown",
+                message=f"{type(exc).__name__}: {exc}", retryable=False))
 
     # ---------------- 划词选区 ----------------
     @staticmethod
@@ -567,13 +581,21 @@ class AgentRuntime:
         if not model_cfg.get("usable"):
             # 明确失败，不要让 mock 模型编一段像样的答案（那比报错更坏）
             which = "generation（回落）" if model_cfg.get("fallback_to_generation") else "agent"
-            yield {"type": "error", "code": "MODEL_NOT_CONFIGURED",
-                   "message": f"问答模型没有配好（当前用的是 {which}，provider="
-                              f"{model_cfg.get('provider')}）。请到「设置 · 模型」里给"
-                              f"「论文问答」（agent）类型配一个支持工具调用的模型并填好 API Key。",
-                   "retryable": False}
+            yield provider_errors.frame(provider_errors.fields(
+                code="MODEL_NOT_CONFIGURED",
+                message=f"问答模型没有配好（当前用的是 {which}，provider="
+                        f"{model_cfg.get('provider')}）。请到「设置 · 模型」里给"
+                        f"「论文问答」（agent）类型配一个支持工具调用的模型并填好 API Key。",
+                retryable=False,
+                model=str(model_cfg.get("model_name") or ""),
+                provider_label=provider_errors.label_of(model_cfg.get("provider"))))
             return
         state.model_cfg = model_cfg
+        # 出错时帧上要写清"是谁的错、哪个模型、哪把 key 要抹掉"：真实 key 也传进去，
+        # 上游回显自定义格式的密钥时靠它兜底（模式匹配只能认常见形状）
+        err_model = str(model_cfg.get("model_name") or "")
+        err_label = provider_errors.label_of(model_cfg.get("provider"))
+        err_secrets = (str(model_cfg.get("api_key") or ""),)
         agent = self._build_agent(model_cfg)
         settings = model_settings_from(model_cfg.get("parameters") or {},
                                        effort=req.reasoning_effort)
@@ -614,11 +636,38 @@ class AgentRuntime:
             log.info("轮数超限终止：%s", exc)
             state.incomplete_reason = "rounds_exhausted"
             state.rounds = self.cfg.max_rounds
+        except (ProviderError, LimitExceededError) as exc:
+            # 我们自己的包装异常照样走统一分类：限额外（ProviderError）按它的 code 补字段，
+            # 本地限额（LimitExceededError，**不是** ProviderError 的子类）分类成 kind=limit
+            state.incomplete_reason = "error"
+            state.error = exc.message
+            yield provider_errors.error_frame(exc, model=err_model,
+                                              provider_label=err_label,
+                                              secrets=err_secrets)
+            return
         except HostError as exc:
             state.incomplete_reason = "error"
             state.error = exc.message
-            yield {"type": "error", "code": exc.code or "HOST_ERROR",
-                   "message": exc.message, "retryable": True}
+            yield provider_errors.frame(provider_errors.fields(
+                code=exc.code or "HOST_ERROR", kind="unknown",
+                message=exc.message, retryable=True,
+                model=err_model, provider_label=err_label))
+            return
+        except Exception as exc:  # noqa: BLE001
+            # 模型调用抛出来的 pydantic_ai / openai / httpx 异常以前会一路冒到 ask() 的
+            # 兜底，变成 code=INTERNAL 的"我们自己的 bug"，状态码与上游错误码全丢。
+            # 先分类：认得出来就是上游错误；认不出来（kind=unknown）照旧上抛，
+            # 兜底行为一个字不变 —— 真 bug 不该在这里被吞掉。
+            failure = provider_errors.classify(exc, model=err_model,
+                                               provider_label=err_label,
+                                               secrets=err_secrets)
+            if failure["kind"] == "unknown":
+                raise
+            log.warning("上游模型调用失败（%s）：%s", failure["kind"],
+                        failure["message"])
+            state.incomplete_reason = "error"
+            state.error = failure["message"]
+            yield provider_errors.frame(failure)
             return
         finally:
             tail = sanitizer.flush()
@@ -863,9 +912,14 @@ class AgentRuntime:
             # 这一轮一个字的正文都没有，就把原因说清楚，别让用户以为是自己问错了。
             note = ("（这一轮模型只输出了思维链、没写正文，直接重试通常就有答案）"
                     if state.thinking else "（可以换一个更具体的问题）")
-            yield {"type": "error", "code": "EMPTY_ANSWER",
-                   "message": f"模型没有产出任何正文{note}。",
-                   "retryable": True}
+            yield provider_errors.frame(provider_errors.fields(
+                code="EMPTY_ANSWER",
+                message=f"模型没有产出任何正文{note}。",
+                retryable=True,
+                # 这里在 _finalize 里，_stream_model 的局部量拿不到：用本轮实际用的配置
+                model=str((state.model_cfg or {}).get("model_name") or ""),
+                provider_label=provider_errors.label_of(
+                    (state.model_cfg or {}).get("provider"))))
             return
         citations = referenced_citations(text, deps.registry)
         # 图片先过闸：只留本论文自己的受控裁图地址（§12 规则 5）

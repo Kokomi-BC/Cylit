@@ -10,7 +10,7 @@
  * · **通用**：1. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
  * · **智能与模型**：2. 模型（任务分类配置 + 提供方目录与密钥，密钥只在各提供方详情里管理，
  *   页面上原来那个独立的「密钥」折叠区已删除）、
- *   3. Agent 设置（原「论文问答」：技能、对话风格、运行限额；模型本体在「模型」区）。
+ *   3. Cyli 偏好（原「论文问答」：对话风格 / 回复长度 / 已接入的技能；模型本体在「模型」区）。
  * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
  *   5. 任务队列（后台任务进度；2026-12 从「服务与系统」挪过来 —— 它改的是索引数据本身）、
  *   6. 搜索记录（本地搜索历史）。
@@ -44,7 +44,7 @@ import {
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
-import AgentModelPanel from '@/components/settings/AgentModelPanel.vue';
+import CyliPrefsPanel from '@/components/settings/CyliPrefsPanel.vue';
 import ModelPanel from '@/components/settings/ModelPanel.vue';
 import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import AppearancePanel from '@/components/settings/AppearancePanel.vue';
@@ -62,10 +62,11 @@ import TrashPanel from '@/components/trash/TrashPanel.vue';
 const SECTIONS = [
   { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色、字体与字号，点一下立即生效' },
   { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '按任务分配模型，密钥收在各提供方里' },
-  // 「论文问答」→「Agent 设置」：这一区管的是**对话 Agent 本身**（技能 / 风格 / 运行上限），
-  // 与「模型」（提供方、密钥、任务分类映射）职责不同，两者各自独立、不合并。
+  // 「论文问答」→「Cyli 偏好」（2026-12 定名）：这一区管的是**Cyli 本身怎么说话、会做什么**
+  // （对话风格 / 回复长度 / 已接入的技能），与「模型」（提供方、密钥、任务分类映射）职责不同，
+  // 两者各自独立、不合并。
   // 图标换掉 `chat`：那枚是侧栏「AI 对话」的图标，两个入口长一样。改用专用的机器人头（见 AppIcon 的 agent）。
-  { id: 'agent', label: 'Agent 设置', icon: 'agent', group: '智能与模型', desc: '调对话的技能、说话风格与运行上限' },
+  { id: 'agent', label: 'Cyli 偏好', icon: 'agent', group: '智能与模型', desc: '调 Cyli 的回答风格、回复长度与已接入的技能' },
   // 图标同理：`knowledge`（知识图谱）是侧栏「知识库」的图标，索引管理改用数据库圆柱（AppIcon 的 index）。
   { id: 'kb', label: '索引管理', icon: 'index', group: '内容与索引', desc: '管理论文索引、向量检索及索引数据状态' },
   // 任务队列归「内容与索引」：队列里跑的是导入 / 解析 / 建索引，改的是索引数据本身，
@@ -88,7 +89,7 @@ type GroupName = Section['group'];
 const SECTION_KEYWORDS: Record<string, string[]> = {
   appearance: ['主题', '皮肤', '字号', '字体', '深色', '浅色', '换肤'],
   models: ['模型', '密钥', '提供方', '厂商', '连接', '思考'],
-  agent: ['技能', '对话风格', '联网搜索', '限额', '问答'],
+  agent: ['技能', '偏好', '对话风格', '风格', '回复长度', '联网搜索', '限额', '上限', '问答'],
   kb: ['索引', '向量', '分块', '检索', '论文'],
   history: ['记录', '历史', '搜索'],
   trash: ['回收站', '恢复', '删除'],
@@ -497,9 +498,10 @@ onMounted(async () => {
         <KbIndexPanel />
       </section>
 
-      <!-- ③ Agent 设置（原「论文问答」）：技能、对话风格与运行限额（模型本体在「模型」区） -->
+      <!-- ③ Cyli 偏好（原「论文问答」）：对话风格、回复长度与已接入的技能；
+           运行上限与 Cyli 解释也在这一区编辑，模型本体在「模型」区 -->
       <section id="agent" class="sec" v-if="active === 'agent'">
-        <AgentModelPanel />
+        <CyliPrefsPanel />
       </section>
 
       <!-- ④ 显示主题 + 显示大小：换肤与字号都即时生效，不放"保存" -->

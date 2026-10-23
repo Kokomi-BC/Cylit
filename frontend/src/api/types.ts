@@ -1364,3 +1364,82 @@ export interface HomeSummary {
   highlights: number;
   understandings: number;
 }
+
+/* ------------------------- 对话页错误卡（`ChatErrorCard`） -------------------------
+ *
+ * 契约的唯一真相是后端的终态 `error` 帧（`/agent/ask` 的流内）与 HTTP 错误信封里的
+ * `error.detail.provider` —— 两处由后端**同一个函数**产出，前端只读、不重新分类。
+ *
+ * 为什么值得把原因拆成这么多字段：以前前端只剩一句 `message`，于是"本地额度用完了"和
+ * "上游把我们限流了"长得一模一样，用户唯一能做的就是再点一次发送。`kind` 决定卡片长什么样
+ * （限额走琥珀色、不给重试暗示），`http_status` / `provider_*` 只在真拿到时才显示。
+ */
+
+/** 分类。与 `code` 一一对应（`PROVIDER_RATE_LIMIT` ↔ `rate_limit`），前端不再自己推断。 */
+export type ChatErrorKind =
+  | 'limit'            // 本地限额（我们自己的额度）
+  | 'rate_limit'       // 上游 429
+  | 'quota'            // 上游额度 / 欠费（402，或 code 含 insufficient_quota / quota / billing）
+  | 'auth'             // 401 / 403
+  | 'bad_request'      // 400 / 404 / 422
+  | 'server'           // 5xx / 529
+  | 'timeout'          // 连接或读超时
+  | 'network'          // 连接失败 / DNS / 断网
+  | 'stream'           // 流被截断（RemoteProtocolError / UnexpectedModelBehavior）
+  | 'not_configured'   // 没配模型（retryable = false）
+  | 'unknown';         // 其它
+
+/** 稳定机器码。`NETWORK_ERROR` / `STREAM_INTERRUPTED` 是**前端自己**的（见 `api/stream.ts`）：
+ *  请求没发出去、流读到一半断了，这两种后端根本没机会说话。 */
+export type ChatErrorCode =
+  | 'LIMIT_EXCEEDED' | 'PROVIDER_RATE_LIMIT' | 'PROVIDER_QUOTA' | 'PROVIDER_AUTH'
+  | 'PROVIDER_BAD_REQUEST' | 'PROVIDER_SERVER' | 'PROVIDER_TIMEOUT' | 'PROVIDER_NETWORK'
+  | 'PROVIDER_STREAM' | 'MODEL_NOT_CONFIGURED' | 'INTERNAL'
+  | 'NETWORK_ERROR' | 'STREAM_INTERRUPTED';
+
+/** 卡片吃的那份对象：`error` 帧的字段，或 HTTP 信封里 `error.detail.provider`（同一个形状）。 */
+export interface ChatErrorProvider {
+  code: ChatErrorCode | string;
+  kind: ChatErrorKind;
+  /** 中文整句（≤300），卡片正文就是它 */
+  message: string;
+  /** **上游** HTTP 状态；本地限额为 `null`（我们自己的闸门没有上游） */
+  http_status: number | null;
+  /** 上游 `error.code`；没给就是 `null` —— 前端绝不自己编一个 */
+  provider_code: string | null;
+  /** 上游 `error.type` */
+  provider_type: string | null;
+  /** 上游原文（后端已脱敏，≤500） */
+  provider_message: string | null;
+  retryable: boolean;
+  /** 上游要求的等待秒数（`Retry-After`），没有就是 `null` */
+  retry_after: number | null;
+  /** 本轮模型 `model_name`，可能是空串 */
+  model: string;
+  /** 供应商显示名，可能是空串 */
+  provider_label: string;
+}
+
+/** 本地限额快照（`error.detail.limit`）。字段以 `backend/services/model/limits.py` 的
+ *  `_snapshot_in` 为准：都是可选，缺哪个卡片就不显示哪一行（一个数都不重算）。 */
+export interface ChatErrorLimit {
+  label?: string;
+  scope?: string;
+  period?: string;
+  amount?: number;
+  currency?: string;
+  spent?: number;
+  remaining?: number;
+  percent?: number;
+  period_start?: string;
+  period_end?: string;
+  reset_at?: string;
+}
+
+/** 卡片实际渲染的形状：上面那份 + 两个只有本地才知道的东西。 */
+export interface ChatErrorView extends ChatErrorProvider {
+  /** 本轮 `trace_id`（有就显示，可选中复制；没有就整行不渲染） */
+  trace_id?: string;
+  /** 只有 `kind === 'limit'` 会有：命中哪一条限额 */
+  limit?: ChatErrorLimit | null;
+}

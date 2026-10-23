@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from backend.core import provider_errors
 from backend.core.config import get_settings
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps
@@ -65,13 +66,18 @@ async def stream_ask(payload: dict) -> AsyncIterator[bytes]:
     """转发一轮问答（SSE 逐块透传）。"""
     s = get_settings()
     token = s.agent_token()
+    # 本层自己合成的 error 帧也要带上 kind / http_status 等字段：前端只认一种形状，
+    # 少了字段就会在"agent 没起"这条最常见的失败上退回旧读法（code 里猜）。
+    # code 一律沿用旧值（AGENT_*），语义一个字不变。
     if not agent_enabled():
-        yield _frame("error", code="AGENT_DISABLED",
-                     message="问答功能已在设置里关闭。", retryable=False)
+        yield _frame("error", **provider_errors.fields(
+            code="AGENT_DISABLED", kind="unknown",
+            message="问答功能已在设置里关闭。", retryable=False))
         return
     if not token:
-        yield _frame("error", code="AGENT_NO_TOKEN",
-                     message="内部令牌缺失，请重启主后端以生成它。", retryable=False)
+        yield _frame("error", **provider_errors.fields(
+            code="AGENT_NO_TOKEN", kind="unknown",
+            message="内部令牌缺失，请重启主后端以生成它。", retryable=False))
         return
     try:
         async with httpx.AsyncClient(timeout=_timeout()) as client:
@@ -80,15 +86,20 @@ async def stream_ask(payload: dict) -> AsyncIterator[bytes]:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode("utf-8", "ignore")[:300]
                     log.warning("agent 拒绝了请求：HTTP %s %s", resp.status_code, body)
-                    yield _frame("error", code=f"AGENT_HTTP_{resp.status_code}",
-                                 message=f"问答服务报错：{body}", retryable=True)
+                    yield _frame("error", **provider_errors.fields(
+                        code=f"AGENT_HTTP_{resp.status_code}",
+                        kind=provider_errors.kind_of_status(resp.status_code),
+                        message=f"问答服务报错：{body}", retryable=True,
+                        http_status=resp.status_code))
                     return
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         yield chunk
     except httpx.HTTPError as exc:
         log.warning("连不上 agent 服务：%s", exc)
-        yield _frame("error", code="AGENT_DOWN", message=AGENT_DOWN, retryable=True)
+        # 连不上进程 = 本机网络层失败，与"上游断网"同一个 kind（frontend 只需一套文案）
+        yield _frame("error", **provider_errors.fields(
+            code="AGENT_DOWN", kind="network", message=AGENT_DOWN, retryable=True))
 
 
 async def agent_get(path: str) -> dict:

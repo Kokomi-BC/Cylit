@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 
+from backend.core import provider_errors
 from backend.core.errors import (
     LimitExceededError, ModelNotConfiguredError, ProviderError, ValidationError,
 )
@@ -98,7 +99,11 @@ def _usage_recorder(base: type) -> type:
     def generate(self, prompt, *args, **kwargs):
         reservation = _reserve(self, prompt)
         try:
-            result = base.generate(self, prompt, *args, **kwargs)
+            try:
+                result = base.generate(self, prompt, *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 —— 补字段，再原样上抛
+                _attach_provider_detail(exc, self)
+                raise
             # 先落账、再释放：反过来会留下一段「用量已记、预留已销」的空窗，
             # 那段时间里并发检查会看到一个偏小的 spent。
             _record(self, result)
@@ -111,7 +116,11 @@ def _usage_recorder(base: type) -> type:
         def generate_vision(self, prompt, images, *args, **kwargs):
             reservation = _reserve(self, prompt)
             try:
-                result = base.generate_vision(self, prompt, images, *args, **kwargs)
+                try:
+                    result = base.generate_vision(self, prompt, images, *args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 —— 同上：只补字段
+                    _attach_provider_detail(exc, self)
+                    raise
                 _record(self, result)
                 return result
             finally:
@@ -121,6 +130,23 @@ def _usage_recorder(base: type) -> type:
     cls = type(f"UsageRecording{base.__name__}", (base,), attrs)
     _usage_recorders[base] = cls
     return cls
+
+
+def _attach_provider_detail(exc: BaseException, provider) -> None:
+    """给上游失败补 detail.provider（信封里就是它，见 backend/core/provider_errors.py）。
+
+    **只补字段**：异常类型、retryable、状态码、重试策略一个字都不动 ——
+    这一层是记账，不是判定。已有的 provider 字段（调用方填过）不覆盖。
+    """
+    if not isinstance(exc, ProviderError) or exc.detail.get("provider"):
+        return
+    config = getattr(provider, "config", None) or {}
+    exc.detail["provider"] = provider_errors.classify(
+        exc,
+        model=str(getattr(provider, "model_name", "") or ""),
+        provider_label=provider_errors.label_of(
+            config.get("provider") if isinstance(config, dict) else ""),
+        secrets=(getattr(provider, "api_key", None),))
 
 
 def _with_usage(provider):

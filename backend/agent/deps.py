@@ -27,6 +27,11 @@ class Deps:
     #: 设置页的改动只对新对话生效 —— 已开着的会话继续用它出生时那一份，
     #: 免得一次改动把历史会话的 `system + 全部历史` 前缀缓存全打掉。空 = 用 `prompts.DEFAULT_STYLE`。
     style: str = ""
+    #: 这条会话冻结的**口吻预设**（default / rigorous / concise / plain / custom）
+    #: 与**回复长度**（short / normal / detailed）：和 `style` 一样由主后端按会话行取好带过来。
+    #: 三项一起进 system（见 `prompts.build_instructions`），所以都必须冻结在会话行上。
+    style_preset: str = ""
+    reply_length: str = ""
     #: 是否**本次对话的第一条消息**（判据 = 主后端没给历史）。只有首轮才附论文摘要。
     first_turn: bool = False
     #: 论文摘要原文 / 中文译文：**首轮**拼进用户消息当背景（`prompts.abstract_block`）。

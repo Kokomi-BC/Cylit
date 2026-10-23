@@ -67,9 +67,14 @@ def test_system_prompt_keeps_the_rules() -> None:
 
 
 def test_style_is_the_only_editable_part_of_the_prompt() -> None:
-    """设置页能改的只有**风格**那一段：改得掉口吻，改不掉护栏。"""
+    """设置页能改的只有**口吻**那一段：改得掉语气，改不掉身份与护栏。
+
+    ⚠️ 2026-12「Cyli 偏好」页起，自定义指令**不再替换身份段**：它变成追加在 IDENTITY
+    之后的口吻段（这次改动是有意的 —— 以前一句"你是猫娘"就能把「只管这一篇论文」的
+    身份顶掉）。它在默认配置下的字节没有任何变化，见 `test_cyli_preferences` 的 golden 用例。
+    """
     custom = prompts.build_instructions(_deps(style="你是猫娘助手，每句话结尾都要说喵。"))
-    assert custom.startswith("你是猫娘助手，每句话结尾都要说喵。")
+    assert custom.startswith(f"{prompts.IDENTITY}\n你是猫娘助手，每句话结尾都要说喵。")
     for name in ("BASE", "SCOPE", "OFF_TOPIC", "ABSTRACT_RULES", "CITING",
                  "NO_EVIDENCE", "EDIT_RULES"):
         assert getattr(prompts, name) in custom, f"风格改掉之后 {name} 也不许丢"
@@ -80,8 +85,8 @@ def test_style_is_the_only_editable_part_of_the_prompt() -> None:
 
     # 过长要截断：别让一段人设把规则挤出上下文
     persona = prompts.build_instructions(_deps(style="喵" * (prompts.STYLE_MAX_CHARS + 500)))
-    assert persona.startswith("喵" * prompts.STYLE_MAX_CHARS)
-    assert persona.split("\n")[0] == "喵" * prompts.STYLE_MAX_CHARS
+    assert persona.startswith(prompts.IDENTITY + "\n" + "喵" * prompts.STYLE_MAX_CHARS)
+    assert persona.split("\n")[1] == "喵" * prompts.STYLE_MAX_CHARS
 
 
 def test_abstract_rides_the_first_user_message_only() -> None:

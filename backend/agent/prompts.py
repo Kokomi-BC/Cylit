@@ -20,16 +20,62 @@ from __future__ import annotations
 
 from backend.agent.deps import Deps
 
-#: 默认**风格**（设置页「论文问答 → 对话风格」可改的那一段）。
-#:
-#: 这里只放"你是谁、什么语气"，**规则一律在下面那些常驻块里**：风格是用户能改的，
-#: 规则不是 —— 护栏不能跟着风格一起被改走（用户把风格写成猫娘，也照样要按引用规则办事）。
-DEFAULT_STYLE = """你是 Cylit 的论文阅读助手，帮用户读懂**当前这一篇**论文。
-语气专业、平实、克制：先给结论再给依据，不奉承、不寒暄、不写小作文。"""
+#: **身份**（"你是谁 + 只管当前这一篇"）。设置页「Cyli 偏好」能改的是口吻与篇幅，
+#: **改不动这一段** —— 所以它从原来那一整块风格里拆出来单独成常量：预设只替换「口吻」那半段，
+#: 身份必须逐字保留（否则一个「简洁直接」就把身份设定顶掉了）。
+IDENTITY = """你是 Cylit 的论文阅读助手，帮用户读懂**当前这一篇**论文。"""
+
+#: 默认**口吻**（= 拆分前那一块风格的第二行，逐字节不变）。它同时是
+#: 「对话风格 = 默认」时追加在 IDENTITY 之后的那一段，所以默认配置下的 system 一字未动。
+DEFAULT_TONE = """语气专业、平实、克制：先给结论再给依据，不奉承、不寒暄、不写小作文。"""
+
+#: 默认**风格** = 身份 + 默认口吻：与拆分前那一整块**逐字节相同**（golden 测试锁着）。
+#: 老设置（只有一段 `agent_style` 自定义文本）走 `style_of` 读它，所以这个名字不能删。
+DEFAULT_STYLE = f"{IDENTITY}\n{DEFAULT_TONE}"
 
 #: 风格长度上限（字符）：用户能改的是"风格"，不是"一份没有上限的提示词"。
 #: 太长了会挤掉规则，也会让每轮请求的固定前缀白白膨胀（`PUT /settings` 照同一个数挡）。
 STYLE_MAX_CHARS = 2000
+
+#: 「对话风格」预设（设置键 `agent_style_preset`）。`custom` 不在下面的片段表里：
+#: 它用的是用户自己写的那句指令（`agent_style`），空白则回落到默认口吻 ——
+#: 落到"没有口吻要求"会让模型失去语气设定，那比不给这个预设更糟。
+STYLE_PRESETS: tuple[str, ...] = ("default", "rigorous", "concise", "plain", "custom")
+DEFAULT_PRESET = "default"
+
+#: 预设 → 追加在 IDENTITY **之后**的那一段。每段都是独立常量：它们只讲口吻，
+#: 混进 IDENTITY 就等于让用户改到身份（护栏与"只管这一篇"必须改不掉）。
+TONE_FRAGMENTS: dict[str, str] = {
+    "default": DEFAULT_TONE,
+    "rigorous": "口吻：严谨专业 —— 用书面语，先界定概念与前提再论证；"
+                "每个判断都指明依据与适用条件，不确定就直说不确定，"
+                "不用口语化的比喻、不写感叹句。",
+    "concise": "口吻：简洁直接 —— 一句话能说清就不写两句：先给结论，再补最必要的依据；"
+               "不铺垫背景、不复述用户的问题、不写客套与收尾总结。",
+    "plain": "口吻：通俗易懂 —— 用日常说法解释术语（第一次出现时顺带给一句白话解释），"
+             "多打比方、少堆符号，宁可多一句解释，也不要让人卡在名词上。",
+}
+
+#: 「回复长度」预设（设置键 `agent_reply_length`）。`normal` 的片段是**空串**：
+#: 默认配置下 system 末尾一个字节都不多，前缀缓存与改动前完全一致。
+REPLY_LENGTHS: tuple[str, ...] = ("short", "normal", "detailed")
+DEFAULT_REPLY_LENGTH = "normal"
+
+#: 长度 → 追加在 system **末尾**的那一段。
+LENGTH_FRAGMENTS: dict[str, str] = {
+    "short": "【篇幅：简短】回答要更短：只给结论与最必要的依据，最多 3~5 条要点（一条一行）；"
+             "不铺陈背景、不举例、不复述问题、不写收尾总结。",
+    "normal": "",
+    "detailed": "【篇幅：详细】可以展开：把推理链条、前提与步骤写全，"
+                "必要时举例或给对照，篇幅可以更长；但**不得编造**材料里没有的东西 —— "
+                "没有依据的部分仍然要说没有依据。",
+}
+
+#: 口吻/篇幅这两段是**可组合片段**，加在常驻规则之外；这行声明让规则永远压过它们。
+#: 为什么各配一行而不是共用一行：两段分别落在 system 的**最前**与**最末**，
+#: 共用一行就得挑一头放，另一头的那段离自己的说明隔着几千字。
+TONE_PRECEDENCE = "（以上口吻要求从属于本提示词后面的规则；两者冲突时以规则为准。）"
+LENGTH_PRECEDENCE = "（以上篇幅要求从属于本提示词的规则；两者冲突时以规则为准。）"
 
 
 def style_of(value: str | None) -> str:
@@ -216,11 +262,75 @@ def abstract_block(deps: Deps) -> str:
     return "\n".join(lines)
 
 
+def normalize_preset(value: str | None) -> str:
+    """预设名归一化：不认识的值（含空）一律当默认。
+
+    为什么不抛错：这一层是**渲染**，读到脏值/老库里的 NULL 时最坏的结果必须是
+    "按默认口吻说话"，而不是让整轮问答起不来；非法值的拦截在写入侧（`PUT /settings`）。
+    """
+    name = str(value or "").strip().lower()
+    return name if name in STYLE_PRESETS else DEFAULT_PRESET
+
+
+def normalize_reply_length(value: str | None) -> str:
+    """长度归一化：同理，认不出就是 `normal`（= 不追加任何篇幅要求）。"""
+    name = str(value or "").strip().lower()
+    return name if name in REPLY_LENGTHS else DEFAULT_REPLY_LENGTH
+
+
+def preset_of(deps: Deps) -> str:
+    """这条会话的口吻预设。
+
+    `deps` 上没带这一项时（主后端还没把它随请求带过来 / 升级前的会话）按**老语义**读
+    `deps.style`：当年那是唯一的口吻来源，非空且不是默认那一块，就是用户自己写的指令。
+    """
+    raw = str(getattr(deps, "style_preset", "") or "").strip()
+    if raw:
+        return normalize_preset(raw)
+    text = str(getattr(deps, "style", "") or "").strip()
+    return "custom" if text and text != DEFAULT_STYLE else DEFAULT_PRESET
+
+
+def reply_length_of(deps: Deps) -> str:
+    """这条会话的回复长度（没带 = `normal`）。"""
+    return normalize_reply_length(getattr(deps, "reply_length", ""))
+
+
+def tone_of(preset: str | None, custom: str | None = None) -> str:
+    """口吻那一段：预设查表；`custom` 用用户写的文本（空白则回落到默认口吻）。"""
+    if normalize_preset(preset) == "custom":
+        text = str(custom or "").strip()[:STYLE_MAX_CHARS]
+        return text or DEFAULT_TONE
+    return TONE_FRAGMENTS.get(normalize_preset(preset)) or DEFAULT_TONE
+
+
+def style_block(deps: Deps) -> str:
+    """system **最前面**那一块：身份 + 口吻（非默认预设时再跟一行优先级声明）。
+
+    ⚠️ 默认配置下它 `== DEFAULT_STYLE`（逐字节）：预设=默认、没有自定义指令时，
+    system 与出这一页之前**完全一样**，前缀缓存一动不动。
+    """
+    preset = preset_of(deps)
+    lines = [IDENTITY, tone_of(preset, getattr(deps, "style", ""))]
+    if preset != DEFAULT_PRESET:
+        lines.append(TONE_PRECEDENCE)
+    return "\n".join(lines)
+
+
+def length_block(deps: Deps) -> str:
+    """system **最末尾**的那一段篇幅要求；`normal` → 空串（= 与改动前完全一致）。"""
+    fragment = LENGTH_FRAGMENTS.get(reply_length_of(deps), "")
+    return f"{fragment}\n{LENGTH_PRECEDENCE}" if fragment else ""
+
+
 def build_instructions(deps: Deps) -> str:
     """本轮的系统指令。
 
     ⚠️ **风格在最前**（设置页可改）：它只改"你是谁、什么语气"，护栏与工作方式全在
     后面那些常驻块里 —— 风格改得掉口吻，改不掉底线。
+    **「Cyli 偏好」那两段是拼出来的可组合片段**（`style_block` / `length_block`），
+    每次调用现拼、只拼一次：不写进任何会被累加的字段 —— 跨轮累加就是把同一段要求
+    叠第 N 遍，既费 token 又会让模型越来越看重它、压过规则。
 
     ⚠️ **不预注入论文档案**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
     档案（领域/主要论断/术语表/章节结构）以前每轮拼在 system 里当"背景材料"，现在改成
@@ -232,7 +342,7 @@ def build_instructions(deps: Deps) -> str:
     不变"的内容（风格、基础指令、通用规则）；选区的编号与原文、图片张数、检索相关度这些
     **每轮会变**的值一律走 `turn_notes()`（拼在最后的用户消息里）。
     """
-    parts = [style_of(deps.style)]
+    parts = [style_block(deps)]
     parts.append(BASE)
     parts.append(SCOPE)
     parts.append(OFF_TOPIC)
@@ -243,6 +353,9 @@ def build_instructions(deps: Deps) -> str:
     parts.append(NO_EVIDENCE)
     parts.append(EDIT_RULES)
     parts.append(NOTES_RULE)
+    tail = length_block(deps)
+    if tail:                     # normal = 空串：默认配置下这里一个字节都不加
+        parts.append(tail)
     return "\n\n".join(parts)
 
 
