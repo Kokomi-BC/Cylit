@@ -25,7 +25,7 @@ import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { KnowledgeOverview } from '@/api/types';
 import { isLoading, reportError, toast, withLoading } from '@/stores/app';
-import { askConfirm } from '@/stores/confirm';
+import { askConfirm, type ConfirmOptions } from '@/stores/confirm';
 import { openTab } from '@/stores/tabs';
 import { readerTarget } from '@/utils/navigation';
 import AppIcon from '@/components/AppIcon.vue';
@@ -209,24 +209,36 @@ onMounted(() => {
 /* ------------------------------- 写操作 ------------------------------- */
 
 /**
- * 建索引 / 重建索引：POST 一个任务，然后把两块共享数据刷新（任务排上了，数字可能已变）。
- *
- * 只有**重建**先确认（需求 5.6：重新索引 / 删除索引这类"会动掉已有东西"的操作要有确认）。
- * 首次建索引是正常下一步，弹框只会白磨一次点击，所以 rebuild=false 直接执行。
- * 确认框按"移除"那一支的做法走 askConfirm：取消就整支退出 —— 不发请求、不置 busyKey，
- * 按钮不会闪一下 loading。
+ * 写索引前要问的话：建索引 / 重建索引两支共用一份结构，只有文案不同 ——
+ * 两个动作最终都会 POST /knowledge/index 往向量库里写东西，所以都要过一次确认。
  */
-async function runIndex(paper: KbPaper, rebuild: boolean): Promise<void> {
-  if (rebuild) {
-    const ok = await askConfirm({
+function indexConfirmOptions(paper: KbPaper, rebuild: boolean): ConfirmOptions {
+  return rebuild
+    ? {
       title: `重建索引《${paper.title}》？`,
       body: '会重新切块并重写它的向量（旧向量被替换），过程中这一篇可能检索不到。'
         + '已经生成的中文译文与笔记不受影响。',
       confirmLabel: '重建索引',
       danger: false,
-    });
-    if (!ok) return;
-  }
+    }
+    : {
+      title: `为《${paper.title}》建索引？`,
+      body: '会切块并写入向量库，建完这篇就能被检索与问答引用。'
+        + '已有译文与笔记不受影响。',
+      confirmLabel: '建索引',
+      danger: false,
+    };
+}
+
+/**
+ * 建索引 / 重建索引：先确认，再 POST 一个任务，然后把两块共享数据刷新（任务排上了，数字可能已变）。
+ *
+ * 确认框按"移除"那一支的做法走 askConfirm：取消就整支退出 —— 不发请求、不置 busyKey，
+ * 按钮不会闪一下 loading。
+ */
+async function runIndex(paper: KbPaper, rebuild: boolean): Promise<void> {
+  const ok = await askConfirm(indexConfirmOptions(paper, rebuild));
+  if (!ok) return;
   busyKey.value = `idx:${paper.id}`;
   try {
     const task = await api.post<{ id?: string } | null>('/knowledge/index', {
