@@ -4,14 +4,14 @@
  *
  * 版式（用户口径）：**标题 + 说明** → **用量统计** → **任务分类与模型配置** → **模型提供方管理**。
  *
- * 相比上一版的三处结构性改动：
- * ① 页面底部那个独立的「密钥」折叠区**删掉了** —— 密钥天然属于某一家提供方，
- *    现在唯一的入口是提供方详情抽屉（新增 / 改名 / 换值 / 设为默认 / 测试 / 删除 / 看引用）。
- *    页面任何地方都不再出现密钥内容，连输入框都没有（写密钥只在抽屉里做）。
- * ② 任务分类卡不再是一条窄列：默认模型单独一块（比其它行高一档、带「默认」标签），
- *    其余模型是紧凑列表，列数用 auto-fit 跟着宽度走。
- * ③ 提供方管理成了独立一块：列表行有图标、官方/自定义、Base URL、模型数、密钥数、
- *    默认密钥、连接状态与四项操作，点整行进抽屉。
+ * 三处结构性约定（都是改版时踩过的坑，留着当护栏）：
+ * ① 页面上**不出现密钥内容**：密钥天然属于某一家提供方，唯一入口是提供方详情抽屉。
+ * ② 任务分类卡只放「当前模型」一行，换模型走 ModelSwitcher 浮层。原来那个
+ *    「这一类模型配置」弹窗是同一批操作的第二套路径，已整套下线：测试 / 设默认 /
+ *    编辑 / 重命名 / 删除收进浮层行尾的「⋯」。卡片高度因此由内容决定 ——
+ *    旧版靠 min-height + 卡内滚动对齐，模型少的那几张底部会留一大片空白。
+ * ③ 提供方管理用 1px 细分隔线组织成一张表：常用操作只留「管理密钥」，
+ *    测试 / 编辑 / 删除收进「⋯」，上移 / 下移只在 hover 或焦点进入时出现。
  *
  * 数据面全部走既有封装（api.get/post/put/del），后端契约见 modelTypes.ts 的注释。
  * 新接口（密钥 / 未归属 / 提供方测试）在后端还没上线时按 404 优雅降级：
@@ -27,8 +27,10 @@ import { roundMs, truncate } from '@/utils/format';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
+import Menu from '@/components/Menu.vue';
 import { categoryIcon, vendorColorIcon } from '@/assets/model-icons';
 import ModelForm from '@/components/settings/ModelForm.vue';
+import ModelSwitcher from '@/components/settings/ModelSwitcher.vue';
 import UsageChart from '@/components/settings/UsageChart.vue';
 import ProviderSelector from '@/components/settings/ProviderSelector.vue';
 import ProviderDrawer from '@/components/settings/ProviderDrawer.vue';
@@ -70,7 +72,7 @@ const TYPE_DESC: Record<string, string> = {
  *  只在「这一类一条模型都没有」时才隐藏：万一库里真有 ocr 配置，列出来才看得见、删得掉。 */
 const HIDDEN_TYPES = new Set(['ocr']);
 
-/** `GET /models` 每行新增的密钥来源字段（后端算，前端只画；老后端没有，全部可选）。 */
+/** GET /models 每行新增的密钥来源字段（后端算，前端只画；老后端没有，全部可选）。 */
 interface KeySource {
   mode: 'provider' | 'key' | 'none' | 'legacy';
   key_id?: string | null;
@@ -94,7 +96,7 @@ const usageRef = ref<InstanceType<typeof UsageChart> | null>(null);
 
 /* ---------------------------- 按类型分组 ----------------------------
  * 分类语义照旧（text generation / 论文问答 agent / 向量化 embedding / 重排 reranker /
- * 视觉 vision；ocr 保持隐藏规则），只是每张卡的版式换了（默认模型突出 + 其余紧凑）。 */
+ * 视觉 vision；ocr 保持隐藏规则），每组只取「当前模型」一行给卡片画。 */
 
 const allTypes = computed<string[]>(() => {
   const fromApi = state.modelTypes?.types;
@@ -135,9 +137,6 @@ interface TypeGroup {
   rows: ModelRow[];
   /** 这一类**当前在用**的那个（后端 is_default，每种类型各一个） */
   current: ModelRow | null;
-  /** 默认之外的那几条（紧凑列表） */
-  others: ModelRow[];
-  empty: string;
 }
 
 const typeGroups = computed<TypeGroup[]>(() => {
@@ -146,15 +145,12 @@ const typeGroups = computed<TypeGroup[]>(() => {
   const all = (state.models || []) as ModelRow[];
   return order.map((t) => {
     const rows = all.filter((m) => m.model_type === t);
-    const current = rows.find((m) => m.is_default) || null;
     return {
       key: t,
       title: typeLabel(t),
       icon: TYPE_ICON[t] || 'model',
       rows,
-      current,
-      others: current ? rows.filter((m) => m.id !== current.id) : rows,
-      empty: '还没有' + typeLabel(t) + '模型',
+      current: rows.find((m) => m.is_default) || null,
     };
   });
 });
@@ -162,11 +158,11 @@ const typeGroups = computed<TypeGroup[]>(() => {
 /* ---------------------------- 状态 / 密钥来源 ----------------------------
  * 一个模型的状态要能立刻分三种：正常 / 未配置密钥 / 连接异常（外加"还没测过"这个中性态）。
  *
- * 判定的**唯一真源是 `key_source`**（后端已经把「跟随提供方默认密钥 / 独立指定 / 无需密钥」
- * 三种来源合并算完），不能再看老字段 `has_secret`：老字段只回答"有没有自己的 secret_ref"，
+ * 判定的**唯一真源是 key_source**（后端已经把「跟随提供方默认密钥 / 独立指定 / 无需密钥」
+ * 三种来源合并算完），不能再看老字段 has_secret：老字段只回答"有没有自己的 secret_ref"，
  * 于是「跟随提供方默认密钥」（secret_ref=null）会被误判成"没配密钥" —— 同一张卡上就会
  * 一边橙字「未配置密钥」一边写「密钥来源：提供方默认」，自相矛盾。
- * `has_secret` 只在**后端没返回 key_source**（老接口）时兜底。 */
+ * has_secret 只在**后端没返回 key_source**（老接口）时兜底。 */
 
 /** 密钥状态：ok / missing / invalid；null = 后端没说（或占位模型，不该报密钥问题）。 */
 function keyStateOf(m: ModelRow): 'ok' | 'missing' | 'invalid' | null {
@@ -229,7 +225,12 @@ function itemTitle(m: ModelRow): string {
   const extra = [m.model_name || '', providerCell(m), host].filter(Boolean).join(' · ');
   /* 后缀走同一套判定：只有真的缺密钥/密钥失效才补一句，别再用 has_secret 误报 */
   const key = keyProblem(m);
-  return key ? `${extra}（${key.label}）` : extra;
+  return key ? extra + '（' + key.label + '）' : extra;
+}
+
+/** 卡片上那一行的 tooltip：完整展示名 + Model ID（名字本身在窄列里会被截断） */
+function rowTitle(m: ModelRow): string {
+  return (m.name || '（未命名）') + ' · ' + (m.model_name || '—');
 }
 
 function latencyOf(m: ModelRow): string {
@@ -302,11 +303,11 @@ const providerOptions = computed<ProviderRow[]>(() => [...providers.value, custo
 
 /* ---------------------------- 「模型提供方」展示顺序 ----------------------------
  * 默认顺序（没手动排过时）：DeepSeek → Claude(anthropic) → ChatGPT(openai) → Gemini，
- * 其余按后端返回顺序（后端已按 `sort` 升序返回），自定义入口永远排最后。
- * 手动排序走后端 `PUT /models/providers/order`（body `{ ids: [...] }` 是整个顺序）。
- * **优雅降级**：行里没有 `sort` 字段（排序接口还没上线）就按默认顺序只读展示，
+ * 其余按后端返回顺序（后端已按 sort 升序返回），自定义入口永远排最后。
+ * 手动排序走后端 PUT /models/providers/order（body { ids: [...] } 是整个顺序）。
+ * **优雅降级**：行里没有 sort 字段（排序接口还没上线）就按默认顺序只读展示，
  * 拖动与上移/下移禁用并在区块抬头给一行提示 —— 不伪造顺序、不发注定 404 的请求、不白屏。
- * 这一块的顺序**只影响本区展示**：`providerOptions`（「+」里的选择器）不受影响。 */
+ * 这一块的顺序**只影响本区展示**：providerOptions（「+」里的选择器）不受影响。 */
 const PROVIDER_PINNED = ['deepseek', 'anthropic', 'openai', 'gemini'];
 
 /** 本地顺序覆盖（松手/上移下移后立刻生效，失败回滚）；空 = 跟着后端返回的顺序 */
@@ -315,7 +316,7 @@ const orderBusy = ref(false);
 
 type ProviderSorted = ProviderRow & { sort?: number };
 
-/** 后端有没有给出 `sort`：没有就说明排序接口还没上线，整块降级 */
+/** 后端有没有给出 sort：没有就说明排序接口还没上线，整块降级 */
 const canOrder = computed(() => (providers.value as ProviderSorted[])
   .some((p) => typeof p.sort === 'number'));
 
@@ -419,9 +420,27 @@ const DEFAULT_KEY_WORD = '默认密钥';
 
 function defaultKeyText(p: ProviderRow): string {
   const label = String(p.default_key_label ?? '').trim();
-  if (!label) return `${DEFAULT_KEY_WORD}：未设置`;
-  if (label === DEFAULT_KEY_WORD) return `${DEFAULT_KEY_WORD} 已设置`;
-  return `${DEFAULT_KEY_WORD}：${label}`;
+  if (!label) return DEFAULT_KEY_WORD + '：未设置';
+  if (label === DEFAULT_KEY_WORD) return DEFAULT_KEY_WORD + ' 已设置';
+  return DEFAULT_KEY_WORD + '：' + label;
+}
+
+/** 窄屏那一档（≤560）与 CSS 断点同值：行内只留 ⋯，「管理密钥」进菜单、元信息让位给 title */
+const narrow = ref(false);
+let narrowMq: MediaQueryList | null = null;
+
+function onNarrow(ev: MediaQueryListEvent | MediaQueryList): void {
+  narrow.value = !!ev.matches;
+}
+
+/** 行第二行的完整文案（窄屏只画 base_url，其余靠这条 tooltip 兜住，不丢信息） */
+function providerSubTitle(p: ProviderRow): string {
+  return [
+    p.base_url || '未设置',
+    (p.configured || 0) + ' 个模型',
+    (p.key_count || 0) + ' 条密钥',
+    defaultKeyText(p),
+  ].join(' · ');
 }
 
 function providerStatusText(p: ProviderRow): string {
@@ -436,6 +455,27 @@ function providerStatusCls(p: ProviderRow): string {
   if (s === 'ok') return 'ok';
   if (s === 'error') return 'danger';
   return '';
+}
+
+/** 行尾「⋯」：常用只留「管理密钥」，其余三个次要动作收进这一层。
+ *  窄屏（≤560）行内放不下那颗按钮 —— 放进去整行会被撑成三行（实测 99px），
+ *  所以「管理密钥」在窄屏也收进菜单，桌面档仍是行内按钮 + 三个次要项。 */
+function providerMenuItems(p: ProviderRow) {
+  const testing = rowBusy('ptest:' + p.id);
+  const keys = { key: 'keys', label: '管理密钥', icon: 'document' };
+  const rest = [
+    { key: 'test', label: testing ? '测试中…' : '测试连接', icon: 'bolt', disabled: testing },
+    { key: 'edit', label: '编辑配置', icon: 'edit' },
+    { key: 'delete', label: '删除', icon: 'trash', danger: true, disabled: rowBusy('pdel:' + p.id) },
+  ];
+  return narrow.value ? [keys, ...rest] : rest;
+}
+
+function onProviderAction(key: string, p: ProviderRow): void {
+  if (key === 'keys') openDrawer(p, 'keys');
+  else if (key === 'test') void testProvider(p);
+  else if (key === 'edit') openDrawer(p, 'connect');
+  else if (key === 'delete') void removeProvider(p);
 }
 
 /* ---------------------------- 提供方抽屉 ---------------------------- */
@@ -472,7 +512,7 @@ async function onFocusType(type: string): Promise<void> {
   focusTimer = setTimeout(() => { focusKey.value = ''; focusTimer = null; }, 1800);
 }
 
-/* ---------------------------- 提供方操作（列表行上的四个动作） ---------------------------- */
+/* ---------------------------- 提供方操作 ---------------------------- */
 
 async function testProvider(p: ProviderRow): Promise<void> {
   busyKey.value = 'ptest:' + p.id;
@@ -556,7 +596,7 @@ async function submitNewProvider(): Promise<void> {
   }
 }
 
-/* ---------------------------- 按类型添加（卡片抬头那枚 +） ----------------------------
+/* ---------------------------- 按类型添加（卡片右上那枚 +） ----------------------------
  * 只有一步：先选提供方（ProviderSelector，可搜索、不溢出视口），选中就直接开表单，
  * 表单按这家的 base_url / auth 预填。原先「先挑预设、再进表单」那一级已经**整套下线**
  * （用户口径第二轮：后端连 /models/presets 都不再提供），这里既不请求预设，也不再提"套预设"。 */
@@ -571,113 +611,108 @@ function openAdd(type: string): void {
   if (!providers.value.length) void loadProviders();
 }
 
-/* ---------------------------- 类型配置弹窗（点卡片本体打开） ----------------------------
- * 卡片上的 ⋯ 行内菜单已经**整套下线**：一类的测试 / 设默认 / 编辑 / 删除只有这一个入口，
- * 卡片退化成只读（默认模型一块 + 其余紧凑列表），不留两套操作路径。
- * 弹层的键盘与遮罩行为复用 Modal（Esc 关闭、点遮罩关闭、右上关闭）。 */
-const cfgOpen = ref(false);
-const cfgKey = ref('');
+/* ---------------------------- 切换模型浮层 ----------------------------
+ * 卡片只有一颗按钮（整张卡），点 / 回车就把这张卡当锚点开浮层 —— 锚点同时是
+ * 「关掉后焦点还给谁」，所以必须是卡本身（卡内那一行不可聚焦）。
+ * 浮层自己负责定位、键盘与点外关闭，这里只管状态与动作分发。 */
+const swOpen = ref(false);
+const swType = ref('');
+const swAnchor = ref<HTMLElement | null>(null);
 
-/** 弹窗看的是**当前的**这一类：测试 / 设默认 / 删除后端刷新后这里跟着变（computed，不做快照） */
-const cfgGroup = computed<TypeGroup | null>(
-  () => typeGroups.value.find((g) => g.key === cfgKey.value) || null,
+/** 浮层看的是**当前的**这一类：测试 / 设默认 / 删除刷新后这里跟着变（computed，不做快照） */
+const swGroup = computed<TypeGroup | null>(
+  () => typeGroups.value.find((g) => g.key === swType.value) || null,
 );
-const cfgTitle = computed(() => (cfgGroup.value ? cfgGroup.value.title + ' 模型配置' : '模型配置'));
+const swTitle = computed(() => (swGroup.value ? swGroup.value.title : '选择模型'));
 
-function openConfig(type: string): void {
-  cfgKey.value = type;
-  cfgOpen.value = true;
-  if (!providers.value.length) void loadProviders();
+/** 正在被测试/删除/改名的那个模型交给浮层置灰（busyKey 是 "kind:id" 的形状） */
+const swBusyIds = computed<string[]>(() => {
+  const raw = String(busyKey.value || '');
+  const i = raw.indexOf(':');
+  if (i < 0) return [];
+  const kind = raw.slice(0, i);
+  return ['test', 'def', 'del', 'name'].includes(kind) ? [raw.slice(i + 1)] : [];
+});
+
+function openSwitcher(type: string, anchor: HTMLElement | null): void {
+  swType.value = type;
+  swAnchor.value = anchor;
+  swOpen.value = true;
 }
 
-/** 卡片的键盘入口：焦点在卡内按钮 / 改名框上时**不抢**（否则回车会同时开两个弹窗） */
+function closeSwitcher(): void {
+  swOpen.value = false;
+}
+
+function onCardClick(type: string, ev: MouseEvent): void {
+  /* 同一个分类再点一次 = 收起；换一个分类就直接换内容 */
+  if (swOpen.value && swType.value === type) { closeSwitcher(); return; }
+  openSwitcher(type, ev.currentTarget as HTMLElement | null);
+}
+
+/** 卡片的键盘入口：焦点在卡内按钮上时**不抢**（否则回车会同时开浮层和点按钮） */
 function onCardKey(ev: KeyboardEvent, type: string): void {
   if (ev.target !== ev.currentTarget) return;
   ev.preventDefault();
-  openConfig(type);
+  openSwitcher(type, ev.currentTarget as HTMLElement);
 }
 
-function closeConfig(): void {
-  cfgOpen.value = false;
+function onSwitchSelect(m: ModelRow): void {
+  const current = swGroup.value?.current;
+  closeSwitcher();
+  if (current && current.id === m.id) return;   // 选的就是当前这个：只收浮层
+  void setDefault(m);                           // 「切换」= 把这一类的默认指过去
 }
 
-/** 空态主按钮：关掉弹窗，直接进表单（用户口径：走原来的 openCreate(type)） */
-function createInType(type: string): void {
-  cfgOpen.value = false;
-  openCreate(type, false, null);
+/** 「⋯」的五个动作：接口调用全用下面已有的函数，浮层只负责转发。
+ *  编辑 / 重命名 / 删除都会再开一层弹窗，先把浮层收掉，免得两层叠着、Esc 一次关两个。 */
+function onSwitchAction(payload: { key: string; row: ModelRow }): void {
+  const m = payload.row;
+  if (payload.key === 'test') { void testModel(m); return; }
+  if (payload.key === 'default') { if (!m.is_default) void setDefault(m); return; }
+  closeSwitcher();
+  if (payload.key === 'edit') openEdit(m);
+  else if (payload.key === 'rename') void openRename(m);
+  else if (payload.key === 'delete') void removeModel(m);
 }
 
-/** 底部次要按钮：和卡片右上角那枚 + 同一条路（先选提供方，再进表单） */
-function addInType(type: string): void {
-  cfgOpen.value = false;
+/** 浮层底部的「+ 添加模型」：和卡片右上那枚 + 同一条路（先选提供方，再进表单） */
+function onSwitchAdd(): void {
+  const type = swType.value;
+  closeSwitcher();
   openAdd(type);
 }
 
-/** 编辑 / 删除会再开一层弹窗（表单、二次确认）：先把本层关掉，
- *  否则同 z-index 的两层叠在一起，Esc 会一次关掉两个、确认框还可能被压在下面。 */
-function editFromConfig(m: ModelRow): void {
-  cfgOpen.value = false;
-  openEdit(m);
-}
+/* ---------------------------- 重命名 ----------------------------
+ * 原来在卡片里做行内 input（卡片一收就没了）。现在卡片只显示当前模型，
+ * 改名收进浮层「⋯」→ 一个窄弹窗，提交的仍是同一个 PUT /models/{id}（只发 name）。 */
 
-function removeFromConfig(m: ModelRow): void {
-  cfgOpen.value = false;
-  void removeModel(m);
-}
-
-/** 给 ModelForm 的 seed：只用它认得的四个字段（provider / base_url / 密钥名预填） */
-function seedOf(p: ProviderRow | null): { id: string; label?: string; base_url?: string; auth?: string } | null {
-  if (!p) return null;
-  return { id: p.id, label: p.label, base_url: p.base_url || '', auth: p.auth };
-}
-
-/** 选中提供方：官方 → 带着这家的身份与端点进表单（开在第二步）；
- *  「自定义提供方」→ 不带 seed、不带 customEntry，**照样从第一步进**（自定义也在第一步的列表里）。 */
-watch(addProviderId, (id) => {
-  if (!id || !addOpen.value) return;
-  addOpen.value = false;
-  if (id === customEntry.value.id) {
-    openCreate(addType.value, false, null);
-    return;
-  }
-  const picked = providerOptions.value.find((x) => x.id === id) ?? null;
-  openCreate(addType.value, false, picked);
-});
-
-/** 底部的「手动新建配置」：第一步就是选提供方（自定义提供方也在那一步的列表里） */
-function addManual(): void {
-  addOpen.value = false;
-  openCreate(addType.value, false, null);
-}
-
-/* ---------------------------- 行内改名 ---------------------------- */
-
-const renamingId = ref('');
+const renameOpen = ref(false);
+const renameTarget = ref<ModelRow | null>(null);
 const renameText = ref('');
-let renameInput: HTMLInputElement | null = null;
+const renameInput = ref<HTMLInputElement | null>(null);
 
-function bindRename(el: any): void {
-  if (el) renameInput = el as HTMLInputElement;
-}
-
-async function startRename(m: ModelRow): Promise<void> {
-  renamingId.value = m.id;
+async function openRename(m: ModelRow): Promise<void> {
+  renameTarget.value = m;
   renameText.value = m.name || '';
+  renameOpen.value = true;
   await nextTick();
-  renameInput?.focus();
-  renameInput?.select();
+  renameInput.value?.focus();
+  renameInput.value?.select();
 }
 
-function cancelRename(): void {
-  renamingId.value = '';
+function closeRename(): void {
+  renameOpen.value = false;
+  renameTarget.value = null;
 }
 
-/** 回车 / 失焦保存：只提交 name 一个字段，别的一律不动。 */
-async function commitRename(m: ModelRow): Promise<void> {
-  if (renamingId.value !== m.id) return;   // Esc 已取消，卸载触发的 blur 不算保存
+async function submitRename(): Promise<void> {
+  const m = renameTarget.value;
+  if (!m) return;
   const next = renameText.value.trim();
-  renamingId.value = '';
-  if (!next || next === (m.name || '')) return;
+  const prev = m.name || '';
+  closeRename();
+  if (!next || next === prev) return;
   busyKey.value = 'name:' + m.id;
   try {
     await api.put('/models/' + m.id, { name: next });
@@ -759,10 +794,10 @@ const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
 const formDefaultType = ref('agent');
-/** 恒为 false：`customEntry` 会让表单跳过第一步，而「手动新建 / 自定义」都要求先在第
+/** 恒为 false：customEntry 会让表单跳过第一步，而「手动新建 / 自定义」都要求先在第
  *  一步选提供方（自定义提供方本身就是第一步列表里的一行）。prop 保留给将来真需要跳步的场景。 */
 const formCustom = ref(false);
-/** 保存失败的文案：透给表单第五步的「保存结果」那一行（`saveError`），每次打开表单时清空 */
+/** 保存失败的文案：透给表单第五步的「保存结果」那一行（saveError），每次打开表单时清空 */
 const formError = ref('');
 /** 官方提供方带进来的厂商身份与端点 */
 const formSeed = ref<{ id: string; label?: string; base_url?: string; auth?: string } | null>(null);
@@ -831,6 +866,31 @@ async function submitForm(payload: Record<string, any>): Promise<void> {
   }
 }
 
+/** 给 ModelForm 的 seed：只用它认得的四个字段（provider / base_url / 密钥名预填） */
+function seedOf(p: ProviderRow | null): { id: string; label?: string; base_url?: string; auth?: string } | null {
+  if (!p) return null;
+  return { id: p.id, label: p.label, base_url: p.base_url || '', auth: p.auth };
+}
+
+/** 选中提供方：官方 → 带着这家的身份与端点进表单（开在第二步）；
+ *  「自定义提供方」→ 不带 seed、不带 customEntry，**照样从第一步进**（自定义也在第一步的列表里）。 */
+watch(addProviderId, (id) => {
+  if (!id || !addOpen.value) return;
+  addOpen.value = false;
+  if (id === customEntry.value.id) {
+    openCreate(addType.value, false, null);
+    return;
+  }
+  const picked = providerOptions.value.find((x) => x.id === id) ?? null;
+  openCreate(addType.value, false, picked);
+});
+
+/** 底部的「手动新建配置」：第一步就是选提供方（自定义提供方也在那一步的列表里） */
+function addManual(): void {
+  addOpen.value = false;
+  openCreate(addType.value, false, null);
+}
+
 async function refreshAll(): Promise<void> {
   await refresh();
   await loadProviders();
@@ -838,11 +898,16 @@ async function refreshAll(): Promise<void> {
 }
 
 onMounted(() => {
+  narrowMq = window.matchMedia('(max-width: 560px)');
+  onNarrow(narrowMq);
+  narrowMq.addEventListener('change', onNarrow);
   void refreshAll();
   void loadSecretNames();
 });
 
 onBeforeUnmount(() => {
+  narrowMq?.removeEventListener('change', onNarrow);
+  narrowMq = null;
   if (highlightTimer) clearTimeout(highlightTimer);
   highlightTimer = null;
   if (focusTimer) clearTimeout(focusTimer);
@@ -855,7 +920,7 @@ onBeforeUnmount(() => {
     <!-- ① 顶部工具行：页面标题与一句说明在窗格抬头（那里已经有了），这里只放计数与刷新，
            不再重复第二个「模型」标题 —— 两行同名字在 390px 上会白占一屏。 -->
     <div class="panel-bar">
-      <span class="cap">{{ state.models.length }} 个配置 · 加模型、测连通、看用量都在这；密钥在各提供方详情里</span>
+      <span class="cap">{{ state.models.length }} 个配置</span>
       <span class="spacer"></span>
       <button class="btn icon sm" :disabled="state.loading.models" title="重新读取模型 / 提供方" @click="refreshAll">
         <AppIcon name="refresh" :size="15" />
@@ -867,113 +932,74 @@ onBeforeUnmount(() => {
     <!-- ② 用量统计（口径不变，只压缩留白与层级） -->
     <UsageChart ref="usageRef" />
 
-    <!-- ③ 任务分类与模型配置：每类一张卡，默认模型单独一块 -->
+    <!-- ③ 任务分类与模型配置：每类一张卡，卡上只有当前模型那一行 -->
     <section class="block types-block">
       <header class="block-head">
         <h3 class="bh-title"><AppIcon name="grid" :size="14" />任务分类与模型配置</h3>
-        <span class="bh-desc">每类一个默认模型 + 若干备选；点卡片右上角的 + 往这一类里加</span>
+        <span class="bh-desc">点卡片换这一类的模型；右上角的 + 往这一类里加</span>
       </header>
 
       <div class="types-row">
-        <!-- 整张卡可点：打开这一类的模型配置弹窗（操作只有弹窗这一个入口，卡上不再有 ⋯）。
-             卡内的 + 与改名按钮都 stop，别误触。 -->
+        <!-- 整张卡是一颗按钮：点 / 回车开这一类的模型浮层，浮层里再做测试、设默认、编辑、删除。
+             卡内的 + 与空态的添加按钮都 stop，别误触。 -->
         <section
           class="type-col" v-for="g in typeGroups" :key="g.key"
           :id="'type-card-' + g.key"
           :class="{ focus: focusKey === g.key }"
           role="button" tabindex="0"
           :data-type-card="g.key"
-          :aria-label="g.title + ' 模型配置'"
-          :title="'点击打开' + g.title + '的模型配置'"
-          @click="openConfig(g.key)"
+          :aria-expanded="swOpen && swType === g.key"
+          :aria-label="g.title + '：' + (g.current ? (g.current.name || '未命名') : '未配置') + '，点击换模型'"
+          :title="g.title + '：' + (TYPE_DESC[g.key] || '—')"
+          @click="onCardClick(g.key, $event)"
           @keydown.enter="onCardKey($event, g.key)"
           @keydown.space="onCardKey($event, g.key)"
+          @keydown.esc="closeSwitcher"
         >
           <header class="tc-head">
             <span class="tc-ico">
               <span v-if="categoryIcon(g.key)" class="cat-mask" :style="catStyle(g.key)" />
               <AppIcon v-else :name="g.icon" :size="12" />
             </span>
-            <span class="tc-title truncate" :title="g.title + '：' + (TYPE_DESC[g.key] || '—')">{{ g.title }}</span>
-            <span class="hd-count">{{ g.rows.length }}</span>
+            <span class="tc-title truncate">{{ g.title }}</span>
+            <span class="tc-count" v-if="g.rows.length > 1">{{ g.rows.length }}</span>
             <span class="spacer"></span>
             <button
-              type="button" class="card-add"
+              type="button" class="tc-add"
               :title="'添加' + g.title + '模型'" :aria-label="'添加' + g.title + '模型'"
               :data-add-type="g.key" @click.stop="openAdd(g.key)"
             >
               <AppIcon name="add" :size="14" />
             </button>
           </header>
-          <p class="tc-desc">{{ TYPE_DESC[g.key] || '这一类还没登记用途' }}</p>
 
-          <!-- 默认模型：比其它行高一档（底色 + 描边 + 徽章 + 状态文字） -->
-          <div class="tc-default" v-if="g.current" :title="itemTitle(g.current)">
-            <div class="td-top">
-              <img v-if="vendorIco(g.current.provider)" class="pv-ico" :src="vendorIco(g.current.provider)" alt="">
-              <span v-else class="pv-fallback" :title="providerCell(g.current)"><AppIcon name="model" :size="12" /></span>
-              <span class="td-name" :title="g.current.name || g.current.id">{{ g.current.name || '（未命名）' }}</span>
-            </div>
-            <div class="td-meta">
-              <span class="badge accent tiny">默认</span>
-              <span class="stat-dot" :class="statusInfo(g.current).cls" />
-              <span class="td-status" :class="statusInfo(g.current).cls">{{ statusInfo(g.current).label }}</span>
-              <span class="td-sep">·</span>
-              <span class="mono td-model truncate" :title="g.current.model_name || ''">{{ g.current.model_name || '—' }}</span>
-            </div>
-            <div class="td-keysrc tiny" :class="keySourceInfo(g.current).cls">{{ keySourceInfo(g.current).text }}</div>
+          <!-- 当前模型行：整行就是卡片的可点区域，右侧箭头指示"能展开" -->
+          <div
+            class="tc-cur" v-if="g.current"
+            :class="{ fresh: highlightId === g.current.id }"
+            :title="rowTitle(g.current)"
+          >
+            <img v-if="vendorIco(g.current.provider)" class="pv-ico" :src="vendorIco(g.current.provider)" alt="">
+            <span v-else class="pv-fallback" :title="providerCell(g.current)"><AppIcon name="model" :size="12" /></span>
+            <span class="tc-name truncate">{{ g.current.name || '（未命名）' }}</span>
+            <AppIcon class="tc-chev" name="chevron-down" :size="14" />
           </div>
-          <div class="tc-nodefault" v-else>
-            <AppIcon name="warning" :size="12" />还没设这一类默认模型
+          <!-- 未配置态：不放空行 —— 一行引导文字 + 一枚小按钮，卡不会塌下去也不留空 -->
+          <div class="tc-cur is-empty" v-else>
+            <span class="tc-hint truncate">这一类还没有模型</span>
+            <button type="button" class="btn sm" @click.stop="openAdd(g.key)">
+              <AppIcon name="add" :size="13" />添加模型
+            </button>
           </div>
 
-          <!-- 其它模型：紧凑列表（状态点 + 厂商图标 + 展示名） -->
-          <div class="tc-list">
-            <div class="tc-item" v-for="m in g.others" :key="m.id" :class="{ fresh: highlightId === m.id }">
-              <div class="tc-line">
-                <span class="stat-dot" :class="statusInfo(m).cls" :title="statusInfo(m).label" />
-                <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
-                <span v-else class="pv-fallback" :title="providerCell(m)"><AppIcon name="model" :size="11" /></span>
-                <input
-                  v-if="renamingId === m.id"
-                  class="rename" :ref="bindRename" v-model="renameText"
-                  spellcheck="false" @click.stop
-                  @keydown.enter.prevent="commitRename(m)"
-                  @keydown.esc.stop="cancelRename"
-                  @blur="commitRename(m)"
-                >
-                <button
-                  v-else type="button" class="tc-name truncate" :title="(m.name || m.id) + '（点击改名）'"
-                  @click.stop="startRename(m)"
-                >{{ m.name || '（未命名）' }}</button>
-              </div>
-              <div class="tc-sub truncate" :title="itemTitle(m)">
-                <span class="mono truncate">{{ m.model_name || '—' }}</span>
-                <span class="td-sep">·</span>
-                <span class="tc-status" :class="statusInfo(m).cls">{{ statusInfo(m).label }}</span>
-              </div>
-              <div class="tc-keysrc tiny" :class="keySourceInfo(m).cls">{{ keySourceInfo(m).text }}</div>
-              <div class="tc-test tiny" v-if="testResults[m.id]">
-                <template v-if="testResults[m.id].ok">
-                  <span class="badge ok tiny">通过</span>
-                  <span class="faint">{{ latencyOf(m) }}</span>
-                </template>
-                <template v-else>
-                  <span class="badge danger tiny">失败</span>
-                  <span class="faint truncate">{{ truncate(testResults[m.id].detail || '未知原因', 60) }}</span>
-                </template>
-              </div>
-            </div>
-
-            <div class="tc-empty" v-if="!g.others.length && g.current">
-              <span class="truncate">这一类只有默认这一个</span>
-            </div>
-            <div class="tc-empty" v-if="!g.rows.length">
-              <span class="truncate">{{ g.empty }}</span>
-              <button class="btn sm" @click.stop="openAdd(g.key)">
-                <AppIcon name="add" :size="13" />添加
-              </button>
-            </div>
+          <div class="tc-meta is-status" v-if="g.current">
+            <span class="stat-dot" :class="statusInfo(g.current).cls" />
+            <span class="tc-status" :class="statusInfo(g.current).cls">{{ statusInfo(g.current).label }}</span>
+            <span class="sep">·</span>
+            <span class="tc-keysrc truncate" :class="keySourceInfo(g.current).cls" :title="keySourceInfo(g.current).text">{{ keySourceInfo(g.current).text }}</span>
+          </div>
+          <div class="tc-meta" v-else>
+            <span class="tc-keysrc truncate">{{ TYPE_DESC[g.key] || '这一类还没登记用途' }}</span>
           </div>
         </section>
       </div>
@@ -1007,7 +1033,7 @@ onBeforeUnmount(() => {
         <span>还没有可用的提供方目录 —— 后端目录接口没返回内容，或还没配置任何一家。</span>
       </div>
 
-      <div class="prov-rows" v-else>
+      <div class="card prov-card" v-else>
         <div
           class="prov-row" v-for="(p, i) in providerList" :key="p.id"
           role="button" tabindex="0" :data-provider-row="p.id"
@@ -1032,43 +1058,42 @@ onBeforeUnmount(() => {
               <span class="pr-name truncate" :title="p.label || p.id">{{ p.label || p.id }}</span>
               <span class="badge tiny dim">{{ p.kind === 'custom' ? '自定义' : '官方' }}</span>
               <span class="stat-dot" :class="providerStatusCls(p)" :title="providerStatusText(p)" />
-              <span class="pr-status tiny" :class="providerStatusCls(p)">{{ providerStatusText(p) }}</span>
+              <span class="pr-status" :class="providerStatusCls(p)">{{ providerStatusText(p) }}</span>
             </div>
-            <div class="pr-sub tiny faint" :title="p.base_url || '未设置'">
-              <span class="mono" :class="{ unset: !p.base_url }">{{ p.base_url || '未设置' }}</span>
-              <span class="td-sep">·</span>
-              <span>{{ p.configured || 0 }} 个模型</span>
-              <span class="td-sep">·</span>
-              <span>{{ p.key_count || 0 }} 条密钥</span>
-              <span class="td-sep">·</span>
-              <span :class="{ unset: !p.default_key_label }" :title="p.default_key_label || ''">{{ defaultKeyText(p) }}</span>
+            <div class="pr-sub" :title="providerSubTitle(p)">
+              <span class="mono truncate" :class="{ unset: !p.base_url }">{{ p.base_url || '未设置' }}</span>
+              <!-- 窄屏把这一段藏掉（只留 base_url），否则行会被撑成三行 -->
+              <span class="pr-extra">
+                <span class="sep">·</span>
+                <span>{{ p.configured || 0 }} 个模型</span>
+                <span class="sep">·</span>
+                <span>{{ p.key_count || 0 }} 条密钥</span>
+                <span class="sep">·</span>
+                <span class="truncate" :class="{ unset: !p.default_key_label }" :title="p.default_key_label || ''">{{ defaultKeyText(p) }}</span>
+              </span>
             </div>
           </div>
 
+          <!-- 上移/下移：不用鼠标时的兜底，平时藏起来，hover 或焦点进来才显形 -->
           <div class="pr-move" @click.stop>
             <button
-              class="btn icon sm ghost" title="上移" aria-label="上移"
+              type="button" class="btn icon sm ghost" title="上移" aria-label="上移"
               :disabled="!canOrder || orderBusy || i === 0" @click="moveProvider(p.id, -1)"
             ><AppIcon name="chevron-up" :size="14" /></button>
             <button
-              class="btn icon sm ghost" title="下移" aria-label="下移"
+              type="button" class="btn icon sm ghost" title="下移" aria-label="下移"
               :disabled="!canOrder || orderBusy || i === providerList.length - 1" @click="moveProvider(p.id, 1)"
             ><AppIcon name="chevron-down" :size="14" /></button>
           </div>
 
           <div class="pr-ops" @click.stop>
-            <button class="btn sm" title="打开密钥列表" @click="openDrawer(p, 'keys')">
+            <button v-if="!narrow" type="button" class="btn sm" title="打开密钥列表" @click="openDrawer(p, 'keys')">
               <AppIcon name="document" :size="13" />管理密钥
             </button>
-            <button class="btn sm" :disabled="rowBusy('ptest:' + p.id)" title="真的打一次这家端点" @click="testProvider(p)">
-              <AppIcon name="bolt" :size="13" />{{ rowBusy('ptest:' + p.id) ? '测试中…' : '测试连接' }}
-            </button>
-            <button class="btn sm" @click="openDrawer(p, 'connect')">
-              <AppIcon name="edit" :size="13" />编辑
-            </button>
-            <button class="btn sm danger" :disabled="rowBusy('pdel:' + p.id)" @click="removeProvider(p)">
-              <AppIcon name="trash" :size="13" />删除
-            </button>
+            <Menu
+              :items="providerMenuItems(p)" :label="(p.label || p.id) + ' 的更多操作'" size="sm"
+              @select="(key: string) => onProviderAction(key, p)"
+            />
           </div>
         </div>
       </div>
@@ -1077,7 +1102,7 @@ onBeforeUnmount(() => {
     <!-- 「+」的选择器：选一家提供方（可搜索）→ 直接进表单；不再有「预设」这一级 -->
     <Modal :open="addOpen" :title="'添加' + typeLabel(addType) + '模型'" @close="addOpen = false">
       <div class="add-picker">
-        <p class="tiny faint add-note">
+        <p class="add-note">
           先选厂商（官方提供方会自动填好 Base URL），选中后填自己的 API Key、从厂商拉模型。
         </p>
         <ProviderSelector
@@ -1088,9 +1113,29 @@ onBeforeUnmount(() => {
         />
       </div>
       <template #footer>
-        <button class="btn sm" @click="addManual">
+        <button type="button" class="btn sm ghost" @click="addManual">
           <AppIcon name="edit" :size="14" />手动新建配置
         </button>
+        <span class="spacer"></span>
+        <button type="button" class="btn sm" @click="addOpen = false">取消</button>
+      </template>
+    </Modal>
+
+    <!-- 重命名：卡片上不再有行内输入框，改名从浮层「⋯」进来，提交的仍只有 name -->
+    <Modal :open="renameOpen" title="重命名模型" narrow @close="closeRename">
+      <label class="field">
+        展示名
+        <input
+          ref="renameInput" v-model="renameText" spellcheck="false"
+          placeholder="给这个配置起个名字" @keydown.enter.prevent="submitRename"
+        >
+      </label>
+      <template #footer>
+        <button type="button" class="btn sm" @click="closeRename">取消</button>
+        <button
+          type="button" class="btn primary sm"
+          :disabled="rowBusy('name:' + (renameTarget?.id || ''))" @click="submitRename"
+        >{{ rowBusy('name:' + (renameTarget?.id || '')) ? '保存中…' : '保存' }}</button>
       </template>
     </Modal>
 
@@ -1115,89 +1160,31 @@ onBeforeUnmount(() => {
         <label class="field">备注
           <input v-model="newProv.note" placeholder="选填" />
         </label>
-        <p class="tiny err" v-if="newProvError">{{ newProvError }}</p>
+        <p class="err" v-if="newProvError">{{ newProvError }}</p>
       </div>
       <template #footer>
-        <button class="btn sm" @click="newProvOpen = false">取消</button>
-        <button class="btn primary sm" :disabled="rowBusy('newprov')" @click="submitNewProvider">
+        <button type="button" class="btn sm" @click="newProvOpen = false">取消</button>
+        <button type="button" class="btn primary sm" :disabled="rowBusy('newprov')" @click="submitNewProvider">
           {{ rowBusy('newprov') ? '保存中…' : '保存' }}
         </button>
       </template>
     </Modal>
 
-    <!-- 点卡片本体：这一类的模型配置（测试 / 设默认 / 编辑 / 删除都在这里） -->
-    <Modal :open="cfgOpen" :title="cfgTitle" @close="closeConfig">
-      <template #tools>
-        <span class="hd-count" v-if="cfgGroup">{{ cfgGroup.rows.length }} 个模型</span>
+    <!-- 换模型浮层（Teleport + fixed，锚点是整张卡：关闭后焦点也回到这张卡） -->
+    <ModelSwitcher
+      :open="swOpen" :anchor="swAnchor" :title="swTitle"
+      :rows="swGroup?.rows ?? []" :current-id="swGroup?.current?.id ?? ''"
+      :loading="state.loading.models" :busy-ids="swBusyIds"
+      @close="closeSwitcher" @select="onSwitchSelect" @action="onSwitchAction" @add="onSwitchAdd"
+    >
+      <template #meta="{ model }">
+        <span class="sw-meta" :title="itemTitle(model)">
+          <span class="stat-dot" :class="statusInfo(model).cls" />
+          <span class="tc-status" :class="statusInfo(model).cls">{{ statusInfo(model).label }}</span>
+          <span class="faint" v-if="testResults[model.id]">{{ testResults[model.id].ok ? latencyOf(model) : '失败' }}</span>
+        </span>
       </template>
-      <div class="cfg" v-if="cfgGroup">
-        <p class="cfg-lead tiny faint">
-          <span class="tc-ico" aria-hidden="true">
-            <span v-if="categoryIcon(cfgGroup.key)" class="cat-mask" :style="catStyle(cfgGroup.key)" />
-            <AppIcon v-else :name="cfgGroup.icon" :size="12" />
-          </span>
-          <span class="truncate">{{ TYPE_DESC[cfgGroup.key] || '这一类还没登记用途' }}</span>
-        </p>
-
-        <div class="cfg-rows" v-if="cfgGroup.rows.length">
-          <div
-            class="cfg-row" v-for="m in cfgGroup.rows" :key="m.id"
-            :class="{ 'is-default': m.is_default }" :data-cfg-model="m.id"
-          >
-            <img v-if="vendorIco(m.provider)" class="pv-ico" :src="vendorIco(m.provider)" alt="">
-            <span v-else class="pv-fallback" :title="providerCell(m)"><AppIcon name="model" :size="12" /></span>
-
-            <div class="cfg-main">
-              <div class="cfg-line">
-                <span class="cfg-name truncate" :title="itemTitle(m)">{{ m.name || '（未命名）' }}</span>
-                <span class="badge accent tiny" v-if="m.is_default">默认</span>
-              </div>
-              <div class="cfg-sub tiny">
-                <span class="mono" :title="m.model_name || ''">{{ m.model_name || '—' }}</span>
-                <span class="td-sep">·</span>
-                <span class="stat-dot" :class="statusInfo(m).cls" />
-                <span class="cfg-status" :class="statusInfo(m).cls">{{ statusInfo(m).label }}</span>
-                <span class="td-sep">·</span>
-                <span class="cfg-keysrc" :class="keySourceInfo(m).cls">{{ keySourceInfo(m).text }}</span>
-                <template v-if="testResults[m.id]">
-                  <span class="td-sep">·</span>
-                  <span v-if="testResults[m.id].ok" class="badge ok tiny">通过 {{ latencyOf(m) }}</span>
-                  <span v-else class="badge danger tiny" :title="testResults[m.id].detail || ''">失败</span>
-                </template>
-              </div>
-            </div>
-
-            <div class="cfg-ops">
-              <button class="btn sm" :disabled="rowBusy('test:' + m.id)" title="真的打一次这个端点" @click="testModel(m)">
-                <AppIcon name="bolt" :size="13" />{{ rowBusy('test:' + m.id) ? '测试中…' : '测试连通性' }}
-              </button>
-              <button class="btn sm" :disabled="!!m.is_default || rowBusy('def:' + m.id)" title="这一类的默认模型" @click="setDefault(m)">
-                <AppIcon name="check_circle" :size="13" />{{ m.is_default ? '已是默认' : '设为默认' }}
-              </button>
-              <button class="btn sm" @click="editFromConfig(m)">
-                <AppIcon name="edit" :size="13" />编辑配置
-              </button>
-              <button class="btn sm danger" :disabled="rowBusy('del:' + m.id)" @click="removeFromConfig(m)">
-                <AppIcon name="trash" :size="13" />删除模型
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="cfg-empty" v-else>
-          <p>还没有模型</p>
-          <button class="btn primary sm" :data-cfg-new="cfgGroup.key" @click="createInType(cfgGroup.key)">
-            <AppIcon name="add" :size="14" />新增模型
-          </button>
-        </div>
-      </div>
-
-      <template #footer>
-        <button class="btn sm" :data-cfg-add="cfgKey" @click="addInType(cfgKey)">
-          <AppIcon name="add" :size="14" />新增模型
-        </button>
-      </template>
-    </Modal>
+    </ModelSwitcher>
 
     <ProviderDrawer
       :provider="drawerProvider" :open="drawerOpen" :initial-tab="drawerTab"
@@ -1215,11 +1202,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 面板本身是一列「块」，块间距 16px —— 比卡片间距大一点，四段结构一眼分得开 */
-.model-panel { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* 面板本身是一列「块」，块间距 24px —— 四段结构一眼分得开 */
+.model-panel { display: flex; flex-direction: column; gap: var(--sp-5); min-width: 0; }
 
 /* ① 顶部工具行 */
-.panel-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.panel-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .cap {
   font-size: calc(12px * var(--ts, 1)); color: var(--text-faint);
   letter-spacing: .01em; line-height: 1.5; min-width: 0;
@@ -1228,7 +1215,7 @@ onBeforeUnmount(() => {
 .load-error {
   padding: 8px 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   background: var(--danger-soft);
   color: var(--danger);
   font-size: calc(12.5px * var(--ts, 1));
@@ -1236,38 +1223,55 @@ onBeforeUnmount(() => {
 
 /* ③④ 两个「块」：抬头一行 + 内容；不再用卡片包一层，免得和内部卡片抢边框 */
 .block { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.block-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.block-head { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
 .bh-title {
   display: inline-flex; align-items: center; gap: 7px; margin: 0;
   font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; color: var(--text);
 }
 .bh-desc { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 任务分类：列数跟着宽度走（桌面充分展开，窄屏 1~2 列），绝不靠缩字号。
-   stretch + 卡片 height:100% 让同一行的卡一样高；跨行靠统一的 min-height
-   （模型多的那一类在卡内滚动，见 .tc-list，绝不把整页拉长）。 */
+/* ---------------- 任务分类卡 ----------------
+ * 列数**只看承载块自己的宽度**，不挂视口媒体查询：视口与可用宽之间隔着应用侧栏 +
+ * 设置二级导航 + 内边距（实测差 478px，窄档还会变），拿视口去猜已经翻过两次车
+ * （auto-fit 在 962 排 4 列留洞；视口断点在 1280 排出 151px 的窄卡）。
+ * 阈值按 .types-block 的内联宽度：≥920 → 5 列（1440 的容器 962 → 卡 183）；
+ * 620~919 → 3 列（1280 容器 802 → 260，1200 容器 722 → 233）；400~619 → 2 列；<400 → 1 列。
+ * 列再窄也只截断模型名（truncate + title 看全名），不换行、不撑破卡片。
+ * 同一行等高靠 grid 的 stretch + 卡片自身 flex 列，高度完全由内容决定：
+ * 模型少的卡不留空，模型多的卡也不会把整页拉长（卡上只有一行当前模型）。 */
+.types-block { container-type: inline-size; }
 .types-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 10px; align-items: stretch;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--sp-3);
+  align-items: stretch;
+}
+@container (max-width: 919px) {
+  .types-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 619px) {
+  .types-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 399px) {
+  .types-row { grid-template-columns: minmax(0, 1fr); }
 }
 .type-col {
-  display: flex; flex-direction: column; min-width: 0;
-  /* 统一高度口径：按内容最多那一类定 —— 默认块按两行名字预留 + 列表封顶 156px，
-     实测「列表塞满」的那张卡在 1440/1100/430/390 都是 319.19px，所以这里取 322px
-     （跟着显示缩放走）。少于这个数的卡由 min-height 补齐，多于的由列表内部滚动吸收。 */
-  min-height: var(--type-card-h, calc(322px * var(--ts, 1)));
-  height: 100%;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  /* 辅助行按卡宽决策（见 .tc-meta 的 @container） */
+  container-type: inline-size;
+  padding: 14px 16px;
   background: var(--bg-layer); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow-1);
-  overflow: hidden; cursor: pointer;
+  border-radius: var(--r-md); box-shadow: var(--shadow-1);
+  cursor: pointer;
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.type-col:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.type-col:hover { border-color: var(--border-strong); }
 .type-col:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.type-col.focus { border-color: var(--accent); box-shadow: var(--ring); }
+/* 「去配置」跳过来的那一类，和浮层打开时同一套描边 */
+.type-col.focus,
+.type-col[aria-expanded='true'] { border-color: var(--accent); }
 
-.tc-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 9px 10px 7px; }
+.tc-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .tc-ico {
   display: inline-grid; place-items: center; flex: none;
   width: 22px; height: 22px; border-radius: 6px;
@@ -1281,200 +1285,161 @@ onBeforeUnmount(() => {
   -webkit-mask-position: center; mask-position: center;
 }
 .tc-title { font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; color: var(--text); min-width: 0; }
-.hd-count {
-  min-width: 18px; padding: 0 5px; height: 16px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 999px; background: var(--bg-sunken); color: var(--text-faint);
-  font-size: calc(10.5px * var(--ts, 1)); font-weight: 600; font-variant-numeric: tabular-nums;
+/* 模型条数从徽章降成次要文字：卡上已经有「当前模型」，数字只是补充 */
+.tc-count {
+  flex: none; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
-.card-add {
+/* 「+」：幽灵图标钮，平时不抢眼，hover 才显色 */
+.tc-add {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
   width: 22px; height: 22px; padding: 0;
-  border: 1px solid var(--divider); border-radius: 999px;
-  background: transparent; color: var(--text-dim); cursor: pointer;
-  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  border: 0; border-radius: var(--r-pill);
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.card-add:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--divider)); background: var(--bg-hover); color: var(--accent-text); }
-.card-add:focus-visible { outline: none; box-shadow: var(--ring); }
-.tc-desc { margin: -2px 10px 0; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
+.tc-add:hover, .type-col:hover .tc-add { background: var(--bg-hover); color: var(--accent-text); }
+.tc-add:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 默认模型：比其它行高一档（浅底 + 描边 + 更大的名字 + 状态文字） */
-.tc-default {
-  position: relative;
-  margin: 8px 8px 0; padding: 8px 9px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--divider));
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+/* 当前模型行：整行固定 40px，模型名必须单行截断（名字再长也不许撑破卡片） */
+.tc-cur {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  height: 40px; padding: 0 6px; margin: 0 -6px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease);
 }
-.td-top { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-/* 默认模型的名字**不截断**：最多两行（宽列一行放得下，窄列换第二行也读得完）。
-   高度**按两行预留**（min-height 2.7em = 2 × line-height 1.35）：名字一行还是两行，
-   块的其余部分高度一样 —— 否则名字长短不同的两类卡会差一行，卡就不等高。 */
-.td-name {
-  font-size: calc(13px * var(--ts, 1)); font-weight: 650; color: var(--text); min-width: 0;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  line-height: 1.35; min-height: 2.7em;
-}
-.td-meta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
-.td-status.ok { color: var(--ok); }
-.td-status.warn { color: var(--warn); }
-.td-status.danger { color: var(--danger); }
-.td-sep { color: var(--text-faint); opacity: .7; }
-.td-model { min-width: 0; font-size: calc(11px * var(--ts, 1)); }
-.td-keysrc { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.td-keysrc.warn { color: var(--warn); }
-.tc-nodefault {
-  display: flex; align-items: center; gap: 6px;
-  margin: 8px 8px 0; padding: 7px 9px;
-  border: 1px dashed var(--divider); border-radius: var(--radius-sm);
-  color: var(--text-faint); font-size: calc(11.5px * var(--ts, 1));
-}
-
-/* 其它模型：紧凑三行（名称 / 模型名·状态 / 密钥来源），**只读** —— 操作在弹窗里。
-   列表是卡内唯一能伸缩的部分：多余的模型在卡内滚动（细滚动条），不撑高整张卡。 */
-.tc-list {
-  display: flex; flex-direction: column; flex: 1 1 auto;
-  min-height: 0; max-height: 156px; overflow-y: auto; overscroll-behavior: contain;
-  padding: 6px 0 6px;
-  scrollbar-width: thin; scrollbar-color: var(--divider) transparent;
-}
-.tc-list::-webkit-scrollbar { width: 6px; }
-.tc-list::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 999px; }
-.tc-list::-webkit-scrollbar-track { background: transparent; }
-.tc-item { position: relative; padding: 6px 10px; min-width: 0; }
-.tc-item + .tc-item { border-top: 1px solid var(--divider); }
-.tc-item:hover { background: var(--bg-hover); }
-.tc-item.fresh { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
-.tc-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.type-col:hover .tc-cur { background: var(--bg-hover); }
+/* 刚建好的那条：极轻底色标一下，不闪不跳 */
+.tc-cur.fresh { background: var(--accent-soft); }
 .tc-name {
-  flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: transparent;
-  color: var(--text); font: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 600;
-  text-align: left; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0;
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; color: var(--text);
 }
-.tc-name:hover { color: var(--accent-text); }
-.rename { flex: 1 1 auto; min-width: 0; height: 22px; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
-.tc-sub { display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 1px; padding-left: 12px; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); }
+.tc-chev { flex: none; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
+.type-col[aria-expanded='true'] .tc-chev { transform: rotate(180deg); }
+/* 未配置态：一行引导文字 + 一枚小按钮，占同样的行高，卡不会塌下去也不留空 */
+.tc-cur.is-empty { gap: 8px; }
+.tc-hint { flex: 1 1 auto; min-width: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
+.tc-cur .btn { flex: none; }
+
+/* 辅助行：状态点 + 状态文字 + · + 密钥来源。这一行**必须恒为一行** —— 卡高不齐就是从
+ * 这里开始的（实测 232px 卡里「正常」被折成上下两个字）。所以状态点 / 状态文字 / 分隔点
+ * 一律 nowrap 且不参与收缩，宽度不够只让密钥来源截断；再窄（卡 < 210px）密钥来源整段让位，
+ * 只留状态 + 一个 ·。全文都在 title 里。 */
+.tc-meta {
+  display: flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: nowrap;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+}
+.tc-meta > .stat-dot,
+.tc-meta > .tc-status,
+.tc-meta > .sep { flex: none; white-space: nowrap; }
+.tc-meta > .tc-keysrc { flex: 0 1 auto; min-width: 0; }
+/* 容器查询按**卡自身**的宽度判断（五列时每张卡只有 180 上下，不能拿视口宽度猜）。
+   密钥来源连同它前面那枚分隔点一起收起 —— 否则卡底会悬着一个孤零零的「·」。 */
+@container (max-width: 209px) {
+  .tc-meta.is-status > .sep,
+  .tc-meta.is-status > .tc-keysrc { display: none; }
+}
 .tc-status.ok { color: var(--ok); }
 .tc-status.warn { color: var(--warn); }
 .tc-status.danger { color: var(--danger); }
-/* 任何 mono 片段都不许当"不可断的长词"把卡片撑宽 */
-.tc-sub .mono, .td-model { min-width: 0; max-width: 100%; }
-.tc-keysrc { padding-left: 12px; margin-top: 1px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-keysrc { min-width: 0; color: var(--text-faint); }
 .tc-keysrc.warn { color: var(--warn); }
-.tc-test { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding-left: 12px; min-width: 0; }
+/* 浮层行尾那组状态由调用方的插槽渲染，样式跟着插槽留在本文件 */
+.sw-meta { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.sep { flex: none; color: var(--text-faint); opacity: .7; }
 
 /* 状态点：只有一个点该有颜色 */
 .stat-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
 .stat-dot.ok { background: var(--ok); }
+.stat-dot.warn { background: var(--warn); }
 .stat-dot.danger { background: var(--danger); }
 
-.tc-empty {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 4px 10px 2px; color: var(--text-faint);
-  font-size: calc(11px * var(--ts, 1));
-}
-.tc-empty .btn { flex: none; }
-
-/* 类型配置弹窗：一行一个模型，四个操作都在行尾（窄屏折成两行） */
-.cfg { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.cfg-lead { display: flex; align-items: center; gap: 7px; margin: 0; min-width: 0; line-height: 1.5; }
-.cfg-rows { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.cfg-row {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 10px; min-width: 0;
-  border: 1px solid var(--divider); border-radius: var(--radius-sm);
-  background: var(--bg-layer);
-}
-.cfg-row.is-default {
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--divider));
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-}
-.cfg-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 190px; min-width: 0; }
-.cfg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.cfg-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; color: var(--text); min-width: 0; }
-.cfg-sub { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; color: var(--text-faint); }
-.cfg-sub .mono { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cfg-status.ok { color: var(--ok); }
-.cfg-status.warn { color: var(--warn); }
-.cfg-status.danger { color: var(--danger); }
-.cfg-keysrc.warn { color: var(--warn); }
-.cfg-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.cfg-empty {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  padding: 20px 12px; border: 1px dashed var(--divider); border-radius: var(--radius);
-  color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
-}
-.cfg-empty p { margin: 0; }
-
-/* 厂商图标：统一视觉框、保持比例；缺图标用占位方块（绝不渲染空 src） */
-.pv-ico { flex: none; object-fit: contain; border-radius: 3px; width: 15px; height: 15px; }
-.pv-ico.lg { width: 30px; height: 30px; border-radius: 5px; }
-.pv-fallback {
-  flex: none; display: inline-grid; place-items: center;
-  width: 15px; height: 15px; border-radius: 3px;
-  background: var(--bg-sunken); color: var(--text-faint);
-}
-.pv-fallback.lg { width: 30px; height: 30px; border-radius: 5px; }
-
-/* ④ 提供方列表：一行一家（窄屏折成两行，绝不横向溢出） */
-.prov-rows { display: flex; flex-direction: column; gap: 8px; }
+/* ---------------- 提供方列表 ----------------
+ * 一整块 .card 外壳，内部用 1px 细分隔线分行：行本身不再有描边、不再有行间空隙，
+ * 一屏读得完，也不会看起来像"一叠卡片"。 */
+.prov-card { padding: 2px 14px; overflow: hidden; }
 .prov-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 10px 12px; min-width: 0;
-  background: var(--bg-layer); border: 1px solid var(--border); border-radius: var(--radius);
+  min-height: 58px; padding: 10px 4px; min-width: 0;
   cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease);
 }
-.prov-row:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: var(--bg-hover); }
-.prov-row:focus-visible { outline: none; box-shadow: var(--ring); }
+.prov-row + .prov-row { border-top: 1px solid var(--divider); }
+.prov-row:hover { background: var(--bg-hover); }
+/* 行在 .prov-card 的 overflow:hidden 里，外扩的 focus 环会被裁掉一半 —— 用内侧 outline */
+.prov-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pr-main { display: flex; flex-direction: column; gap: 3px; flex: 1 1 240px; min-width: 0; }
 .pr-top { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
-.pr-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; min-width: 0; }
-.pr-status { color: var(--text-faint); }
+.pr-name { font-size: calc(13px * var(--ts, 1)); font-weight: 600; min-width: 0; }
+.pr-status { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 .pr-status.ok { color: var(--ok); }
 .pr-status.danger { color: var(--danger); }
-.pr-sub { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
-/* Base URL 是最长的不可断词（例如 https://generativelanguage.googleapis.com/v1beta/openai）。
-   flex 子项默认 min-width:auto = min-content，会把 .pr-main 撑到 312px，
-   在 320/360 下直接把整页顶出 23px 的横向滚动条 —— 所以这里必须允许它收缩后省略，
-   完整地址看 title。 */
-.pr-sub .mono {
-  font-family: var(--mono);
-  flex: 0 1 auto; min-width: 0; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.pr-sub {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+  white-space: nowrap; overflow: hidden;
 }
+/* base_url 是最长的不可断词（例如 https://generativelanguage.googleapis.com/v1beta/openai）。
+   flex 子项默认 min-width:auto = min-content，会把它撑出容器、顶出横向滚动条，
+   所以这里必须允许收缩后省略，完整地址看 title。 */
+.pr-sub .mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pr-sub .unset { color: var(--text-faint); }
+/* 「N 个模型 · N 条密钥 · 默认密钥…」整段可整体收起（窄屏那行留给 base_url） */
+.pr-extra { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.pr-ops { display: flex; align-items: center; gap: 6px; flex: none; }
+
 /* 拖动排序：手柄、拖动中的行、目标位置的插入线，以及键盘兜底的上移/下移 */
 .pr-grip { flex: none; display: inline-flex; align-items: center; color: var(--text-faint); cursor: grab; }
 .pr-grip.off { opacity: .35; cursor: not-allowed; }
-.prov-row.dragging { opacity: .45; }
+.prov-row.dragging { opacity: .6; }
 .prov-row.drop-target { box-shadow: inset 0 2px 0 var(--accent); }
 .pr-move { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
 .prov-row:hover .pr-move, .prov-row:focus-within .pr-move { opacity: 1; }
 @media (hover: none) { .pr-move { opacity: 1; } }
 .prov-order-note { display: inline-flex; align-items: center; gap: 5px; font-size: calc(11.5px * var(--ts, 1)); color: var(--warn); }
 
-.pr-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 厂商图标：统一视觉框、保持比例；缺图标用占位方块（绝不渲染空 src） */
+.pv-ico { flex: none; object-fit: contain; border-radius: 3px; width: 20px; height: 20px; }
+.pv-ico.lg { width: 24px; height: 24px; border-radius: 5px; }
+.pv-fallback {
+  flex: none; display: inline-grid; place-items: center;
+  width: 20px; height: 20px; border-radius: 3px;
+  background: var(--bg-sunken); color: var(--text-faint);
+}
+.pv-fallback.lg { width: 24px; height: 24px; border-radius: 5px; }
 
-.prov-skel { display: flex; flex-direction: column; gap: 8px; }
+.prov-skel { display: flex; flex-direction: column; gap: 10px; }
 .prov-error, .prov-empty {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 12px; border: 1px dashed var(--divider); border-radius: var(--radius);
+  padding: 12px; border: 1px dashed var(--divider); border-radius: var(--r-md);
   color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); line-height: 1.5;
 }
 .prov-error { border-color: color-mix(in srgb, var(--danger) 40%, var(--divider)); color: var(--danger); }
 .prov-error p { margin: 0; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 
 /* 「+」里只剩提供方选择器（预设卡那一套样式随功能一起下线） */
-.add-picker { display: flex; flex-direction: column; gap: 10px; }
-.add-note { margin: 0; line-height: 1.5; }
+.add-picker { display: flex; flex-direction: column; gap: 14px; }
+.add-note {
+  margin: 0; line-height: 1.5;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+}
 .err { color: var(--danger); margin: 0; line-height: 1.5; }
 
-@media (max-width: 520px) {
-  .pr-ops { flex: 1 0 100%; }
-  .pr-ops .btn { flex: 1 1 auto; justify-content: center; }
-  .cfg-ops { flex: 1 0 100%; }
-  .cfg-ops .btn { flex: 1 1 auto; justify-content: center; }
+/* 断点从宽到窄递减排列：同一元素命中的最后一条生效（列宽由 1fr 均分，绝不出现横向滚动） */
+/* 下面两条是容器查询不被支持时的兜底：写在容器查询之后，窄档同时命中时由它们定稿
+   （860 → 2×377、560 → 1×530，与实测一致；容器查询更强时按容器宽度算） */
+@media (max-width: 860px) {
+  .types-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .types-row { grid-template-columns: minmax(0, 1fr); }
+  /* 这一档行内只留「⋯」：元信息收进 title、管理密钥进菜单，
+     否则「管理密钥」会被挤到第三行，一行 99px（实测）九家铺出去近 900px */
+  .pr-extra { display: none; }
+  .pr-ops { flex: none; margin-left: auto; }
+  /* 名称那一行也不许折：折了同样会变成第三行 —— 名字截断，徽章/状态保持原宽 */
+  .pr-top { flex-wrap: nowrap; }
+  .pr-top > .badge, .pr-top > .stat-dot, .pr-top > .pr-status { flex: none; }
 }
 </style>

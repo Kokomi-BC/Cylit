@@ -8,7 +8,7 @@
  * 3 选择模型    → 先拉 POST /models/probe-models 再搜索选 Model ID；拉不到就手填。
  *                 **显示名称 name 与 Model ID model_name 是两个字段**，不互相猜
  * 4 任务用途    → model_type 单选；「设为该任务默认模型」单独勾选、**默认不勾**
- * 5 测试并保存  → 配置填写 / 连接测试 / 保存结果 三行各自独立；保存失败保留全部输入
+ * 5 测试并保存  → 配置填写 / 连接测试 / 保存结果 三块各自独立；保存失败保留全部输入
  *
  * 后端降级：新接口（/models/providers、/models/providers/{id}/keys）在老进程上可能
  * 404 / 被 /models/{model_id} 捕获 —— 那时第一步只留「自定义提供方」、密钥只留
@@ -83,6 +83,13 @@ const step = ref<number>(1);
 /** 已走到过的最远一步：回退时不超过它（防止跳步绕过校验） */
 const reached = ref<number>(1);
 
+/** 标题下那一行说明：只交代这个弹窗在干什么，不重复步骤条上的文字。 */
+const flowSub = computed<string>(() => (
+  props.mode === 'edit'
+    ? '改的是已有配置：显示名称、Model ID、用途都能改，保存后立即生效。'
+    : '按五步填完就能用；每一步都能退回，已填内容不会丢。'
+));
+
 function goStep(n: number): void {
   if (n < 1 || n > 5) return;
   if (n > reached.value) return;
@@ -132,7 +139,6 @@ const providersLoading = ref(false);
 /** 提供方目录接口不可用 → 退回预设目录（老后端的正常路径，不是错误） */
 const providersFallback = ref(false);
 const providerQuery = ref('');
-const providerListOpen = ref(true);
 const selectedProviderId = ref('');
 const customMode = ref(false);
 
@@ -667,7 +673,6 @@ function resetTransient(): void {
   saveState.value = 'idle';
   saveMessage.value = '';
   providerQuery.value = '';
-  providerListOpen.value = true;
   customMode.value = false;
   selectedProviderId.value = '';
   writtenText = '';
@@ -954,23 +959,32 @@ const advSummary = computed<string>(() => {
 
 <template>
   <Modal
-    :open="open" wide
+    :open="open"
     :title="mode === 'edit' ? '编辑模型' : '新建模型'"
     @close="emit('close')"
   >
     <div class="flow">
-      <!-- 步骤条：小圆点 + 文字；已完成的步骤可点回退 -->
+      <p class="flow-sub">{{ flowSub }}</p>
+
+      <!-- 步骤条：一行文字 + 18px 序号圆，只有走过的步骤能点回去 -->
       <nav class="steps" aria-label="步骤">
-        <button
-          v-for="s in STEPS" :key="s.id" type="button" class="step-pill"
-          :class="{ on: step === s.id, done: step > s.id }"
-          :disabled="s.id > reached"
-          :data-step-pill="s.id"
-          @click="goStep(s.id)"
-        >
-          <span class="dot"></span>
-          <span class="txt">{{ s.id }}. {{ s.label }}</span>
-        </button>
+        <template v-for="(s, i) in STEPS" :key="s.id">
+          <span v-if="i > 0" class="st-line" aria-hidden="true"></span>
+          <button
+            type="button" class="st-step"
+            :class="{ on: step === s.id, done: step > s.id }"
+            :disabled="s.id > reached"
+            :aria-current="step === s.id ? 'step' : undefined"
+            :data-step-pill="s.id"
+            @click="goStep(s.id)"
+          >
+            <span class="st-num">
+              <AppIcon v-if="step > s.id" name="check" :size="11" />
+              <template v-else>{{ s.id }}</template>
+            </span>
+            <span class="st-txt">{{ s.label }}</span>
+          </button>
+        </template>
       </nav>
 
       <!-- ① 选择提供方 -->
@@ -981,11 +995,7 @@ const advSummary = computed<string>(() => {
             v-model="providerQuery" type="text" spellcheck="false"
             placeholder="搜索提供方（名称 / id / 说明）"
             data-provider-search
-            @focus="providerListOpen = true"
           />
-          <button type="button" class="prov-toggle" title="展开 / 收起" @click="providerListOpen = !providerListOpen">
-            <AppIcon :name="providerListOpen ? 'chevron-up' : 'chevron-down'" :size="14" />
-          </button>
         </div>
 
         <p class="hint-line warn" v-if="providersFallback" data-providers-unavailable>
@@ -993,7 +1003,7 @@ const advSummary = computed<string>(() => {
         </p>
         <p class="hint-line" v-if="providersLoading">正在读取提供方…</p>
 
-        <div class="prov-pop" v-if="providerListOpen">
+        <div class="prov-list">
           <button
             v-for="p in filteredProviders" :key="p.id"
             type="button" class="prov-item"
@@ -1037,91 +1047,100 @@ const advSummary = computed<string>(() => {
           <button type="button" class="lnk" @click="goStep(1)">换提供方</button>
         </div>
 
-        <!-- 已配置：只读描述 + 「改连接」 -->
-        <div class="conn-read" v-if="connReadonly">
-          <div class="cr-row">
-            <span class="cr-k">Base URL</span>
-            <span v-if="form.base_url.trim()" class="cr-v mono truncate" :title="form.base_url">{{ form.base_url }}</span>
-            <span
-              v-else-if="providerBaseUrl" class="cr-v truncate" data-baseurl-auto
-              :title="'留空 = 跟随提供方端点；多模态向量等特殊协议由后端适配器解析'"
-            >自动（跟随提供方：{{ hostOf(providerBaseUrl) }}）</span>
-            <span v-else class="cr-v warn" data-baseurl-missing>未设置</span>
-          </div>
-          <p class="hint-line warn" v-if="!form.base_url.trim() && !providerBaseUrl" data-baseurl-required>
-            需要填 Base URL（这家提供方没有默认端点）
-          </p>
-          <div class="cr-row">
-            <span class="cr-k">认证方式</span>
-            <span class="cr-v">{{ authKind === 'none' ? '无需密钥' : 'Bearer（API Key）' }}</span>
-          </div>
-          <button type="button" class="btn sm ghost cr-edit" data-conn-edit @click="connEditing = true">改连接</button>
-        </div>
-
-        <!-- 自定义 / 改连接：可编辑 -->
-        <div class="conn-edit" v-if="showConnFields">
-          <label class="field">提供方名称
-            <input v-model="form.provider" class="mono" spellcheck="false" placeholder="my-endpoint" data-conn-provider />
-          </label>
-          <label class="field gap-top">Base URL
-            <input v-model="form.base_url" class="mono" spellcheck="false" placeholder="https://api.example.com/v1" data-conn-baseurl />
-          </label>
-          <label class="field gap-top">认证方式
-            <select v-model="authKind" data-conn-auth>
-              <option value="bearer">Bearer（需要 API Key）</option>
-              <option value="none">无需密钥</option>
-            </select>
-          </label>
-        </div>
-
-        <!-- 密钥：默认跟随提供方默认密钥 -->
-        <template v-if="!customMode">
-          <label class="field gap-top">密钥
-            <select v-model="keyChoice" :disabled="keysLoading" data-key-select>
-              <option value="auto">{{ autoKeyLabel }}</option>
-              <option v-for="k in keys" :key="k.id" :value="k.id">{{ keyOptionLabel(k) }}</option>
-              <option v-if="authKind === 'none'" value="none">无需密钥</option>
-            </select>
-          </label>
-          <p class="hint-line" v-if="keysLoading">正在读取密钥…</p>
-          <p class="hint-line warn" v-else-if="keysUnavailable" data-keys-unavailable>
-            密钥管理接口暂不可用 —— 先「跟随提供方默认密钥」或「无需密钥」即可继续。
-          </p>
-          <p class="hint-line" v-else-if="authKind === 'none'">
-            这家不需要密钥（本机推理 / 免密端点）。
-          </p>
-
-          <div class="key-actions" v-if="canCreateKey">
-            <button type="button" class="btn sm ghost" data-key-new @click="newKeyOpen = !newKeyOpen">
-              <AppIcon name="add" :size="13" />新建密钥
-            </button>
-            <span class="tiny faint">明文只写进本机密钥库，界面永不回显</span>
-          </div>
-
-          <div class="key-new" v-if="newKeyOpen">
-            <label class="field">密钥名称
-              <input v-model="newKeyLabel" placeholder="如 主账号 / 测试用" data-key-label />
-            </label>
-            <label class="field gap-top">密钥内容
-              <input
-                v-model="newKeyValue" type="password" autocomplete="off" spellcheck="false"
-                placeholder="sk-…（提交后立即清空）" data-key-value
-              />
-            </label>
-            <p class="err-line" v-if="newKeyError" data-key-new-error>{{ newKeyError }}</p>
-            <div class="key-new-foot">
-              <button type="button" class="btn sm" @click="newKeyOpen = false; newKeyError = ''">取消</button>
-              <button type="button" class="btn sm primary" :disabled="newKeyBusy" data-key-submit @click="createKey">
-                {{ newKeyBusy ? '写入中…' : '保存并选中' }}
-              </button>
+        <div class="fields">
+          <!-- 已配置：连接信息只读（Base URL 留空 = 跟随提供方端点），点「改连接」才变成输入框 -->
+          <template v-if="connReadonly">
+            <div class="fgroup">
+              <div class="field-row">
+                <span class="fr-k">Base URL</span>
+                <span v-if="form.base_url.trim()" class="fr-v mono truncate" :title="form.base_url">{{ form.base_url }}</span>
+                <span
+                  v-else-if="providerBaseUrl" class="fr-v truncate" data-baseurl-auto
+                  :title="'留空 = 跟随提供方端点；多模态向量等特殊协议由后端适配器解析'"
+                >自动（跟随提供方：{{ hostOf(providerBaseUrl) }}）</span>
+                <span v-else class="fr-v warn" data-baseurl-missing>未设置</span>
+                <span class="spacer"></span>
+                <button type="button" class="lnk" data-conn-edit @click="connEditing = true">改连接</button>
+              </div>
+              <p class="err-line" v-if="!form.base_url.trim() && !providerBaseUrl" data-baseurl-required>
+                需要填 Base URL（这家提供方没有默认端点）
+              </p>
             </div>
-          </div>
-        </template>
-        <p class="hint-line" v-else>
-          自定义提供方还没有密钥库：密钥可在「高级配置」里用密钥文件引用，或先保存提供方后再管密钥。
-        </p>
+            <div class="field-row">
+              <span class="fr-k">认证方式</span>
+              <span class="fr-v">{{ authKind === 'none' ? '无需密钥' : 'Bearer（API Key）' }}</span>
+            </div>
+          </template>
 
-        <p class="err-line" v-if="formError" data-form-error>{{ formError }}</p>
+          <template v-if="showConnFields">
+            <label class="field">提供方名称
+              <input v-model="form.provider" class="mono" spellcheck="false" placeholder="my-endpoint" data-conn-provider />
+            </label>
+            <div class="fgroup">
+              <label class="field">Base URL
+                <input v-model="form.base_url" class="mono" spellcheck="false" placeholder="https://api.example.com/v1" data-conn-baseurl />
+              </label>
+              <p class="hint-line" v-if="providerBaseUrl">留空 = 跟随提供方端点（{{ hostOf(providerBaseUrl) }}）</p>
+              <p class="err-line" v-if="form.base_url.trim() && !baseUrlOk">Base URL 要以 http:// 或 https:// 开头</p>
+            </div>
+            <label class="field">认证方式
+              <select v-model="authKind" data-conn-auth>
+                <option value="bearer">Bearer（需要 API Key）</option>
+                <option value="none">无需密钥</option>
+              </select>
+            </label>
+          </template>
+
+          <template v-if="!customMode">
+            <div class="fgroup">
+              <label class="field">API Key
+                <select v-model="keyChoice" :disabled="keysLoading" data-key-select>
+                  <option value="auto">{{ autoKeyLabel }}</option>
+                  <option v-for="k in keys" :key="k.id" :value="k.id">{{ keyOptionLabel(k) }}</option>
+                  <option v-if="authKind === 'none'" value="none">无需密钥</option>
+                </select>
+              </label>
+              <p class="hint-line" v-if="keysLoading">正在读取密钥…</p>
+              <p class="hint-line warn" v-else-if="keysUnavailable" data-keys-unavailable>
+                密钥管理接口暂不可用 —— 先「跟随提供方默认密钥」或「无需密钥」即可继续。
+              </p>
+              <p class="hint-line" v-else-if="authKind === 'none'">
+                这家不需要密钥（本机推理 / 免密端点）。
+              </p>
+            </div>
+
+            <div class="inline-act" v-if="canCreateKey">
+              <button type="button" class="btn sm ghost" data-key-new @click="newKeyOpen = !newKeyOpen">
+                <AppIcon name="add" :size="13" />新建密钥
+              </button>
+              <span class="tiny faint">明文只写进本机密钥库，界面永不回显</span>
+            </div>
+
+            <div class="key-new" v-if="newKeyOpen">
+              <label class="field">密钥名称
+                <input v-model="newKeyLabel" placeholder="如 主账号 / 测试用" data-key-label />
+              </label>
+              <label class="field">密钥内容
+                <input
+                  v-model="newKeyValue" type="password" autocomplete="off" spellcheck="false"
+                  placeholder="sk-…（提交后立即清空）" data-key-value
+                />
+              </label>
+              <p class="err-line" v-if="newKeyError" data-key-new-error>{{ newKeyError }}</p>
+              <div class="key-new-foot">
+                <button type="button" class="btn sm" @click="newKeyOpen = false; newKeyError = ''">取消</button>
+                <button type="button" class="btn sm primary" :disabled="newKeyBusy" data-key-submit @click="createKey">
+                  {{ newKeyBusy ? '写入中…' : '保存并选中' }}
+                </button>
+              </div>
+            </div>
+          </template>
+          <p class="hint-line" v-else>
+            自定义提供方还没有密钥库：密钥可在「高级配置」里用密钥文件引用，或先保存提供方后再管密钥。
+          </p>
+
+          <p class="err-line" v-if="formError" data-form-error>{{ formError }}</p>
+        </div>
       </section>
 
       <!-- ③ 选择模型 -->
@@ -1131,46 +1150,66 @@ const advSummary = computed<string>(() => {
           {{ activeProvider?.label || form.provider || '自定义提供方' }} /
           {{ form.model_name || target.model_name || '未填 Model ID' }}
         </p>
-        <label class="field">显示名称
-          <input v-model="form.name" placeholder="界面上显示的名字" data-model-name />
-        </label>
-        <p class="hint-line">显示名称可随便改，不会改变下面的 Model ID。</p>
 
-        <div class="model-field" ref="modelFieldEl">
-          <div class="row wrap">
-            <span class="mf-label">Model ID</span>
-            <span class="spacer"></span>
-            <button type="button" class="btn sm ghost" :disabled="probeBusy" data-probe-models @click="fetchRemoteModels">
-              <AppIcon name="refresh" :size="13" />{{ probeBusy ? '拉取中…' : '获取模型列表' }}
-            </button>
+        <div class="fields">
+          <div class="fgroup">
+            <label class="field">显示名称
+              <input v-model="form.name" placeholder="界面上显示的名字" data-model-name />
+            </label>
+            <p class="hint-line">显示名称可随便改，不会改变下面的 Model ID。</p>
           </div>
 
-          <div class="mf-input" v-if="!manualModel">
-            <input
-              v-model="form.model_name" class="mono" spellcheck="false"
-              placeholder="点右侧箭头选，或直接手填" data-model-id-input
-              @focus="placeModelPop"
-            />
-            <button
-              type="button" class="mf-caret" :disabled="!probeOptions.length"
-              title="选择模型" data-model-pop-toggle @click="toggleModelPop"
-            >
-              <AppIcon name="chevron-down" :size="14" />
-            </button>
+          <!-- .model-field 不是样式钩子：onDocPointer 靠它判断「点在字段里不算点外面」 -->
+          <div class="fgroup model-field">
+            <div class="mf-head">
+              <span class="mf-label">Model ID</span>
+              <span class="spacer"></span>
+              <button type="button" class="btn sm ghost" :disabled="probeBusy" data-probe-models @click="fetchRemoteModels">
+                <AppIcon name="refresh" :size="13" />{{ probeBusy ? '拉取中…' : '获取模型列表' }}
+              </button>
+            </div>
+
+            <div class="mf-input" v-if="!manualModel" ref="modelFieldEl">
+              <input
+                v-model="form.model_name" class="mono" spellcheck="false"
+                placeholder="点右侧箭头选，或直接手填" data-model-id-input
+                @focus="placeModelPop"
+              />
+              <button
+                type="button" class="mf-caret" :disabled="!probeOptions.length"
+                title="选择模型" data-model-pop-toggle @click="toggleModelPop"
+              >
+                <AppIcon name="chevron-down" :size="14" />
+              </button>
+            </div>
+            <div class="mf-input" v-else>
+              <input
+                v-model="form.model_name" class="mono" spellcheck="false"
+                placeholder="如 deepseek-chat" data-model-id-manual
+              />
+            </div>
+
+            <p class="hint-line" v-if="probeHost">列表来自 {{ probeHost }}（{{ probeOptions.length }} 个）</p>
+            <p class="hint-line" v-if="manualModel && !probeError">手填模式：直接写模型 ID 也能保存。</p>
+
+            <div class="mf-foot">
+              <button type="button" class="lnk" v-if="!manualModel" data-model-manual @click="manualModel = true">
+                手动输入 Model ID
+              </button>
+              <button type="button" class="lnk" v-else-if="probeOptions.length" @click="manualModel = false">
+                从列表选择
+              </button>
+            </div>
           </div>
-          <input
-            v-else v-model="form.model_name" class="mono mf-manual" spellcheck="false"
-            placeholder="如 deepseek-chat" data-model-id-manual
-          />
         </div>
 
-        <p class="hint-line" v-if="probeHost">列表来自 {{ probeHost }}（{{ probeOptions.length }} 个）</p>
-        <p class="hint-line warn" v-if="probeError" data-probe-error>{{ probeError }}</p>
-        <p class="hint-line" v-if="manualModel && !probeError">手填模式：直接写模型 ID 也能保存。</p>
-
-        <button type="button" class="lnk" v-if="probeOptions.length" @click="manualModel = !manualModel">
-          {{ manualModel ? '回到列表选择' : '改成手填' }}
-        </button>
+        <p class="warn-line" v-if="probeError" data-probe-error>
+          <AppIcon name="warning" :size="12" />
+          <span class="wl-txt">{{ probeError }}</span>
+          <button type="button" class="btn sm ghost" :disabled="probeBusy" data-probe-retry @click="fetchRemoteModels">
+            重试
+          </button>
+        </p>
 
         <p class="tiny faint" v-if="form.model_name">当前 Model ID：<code class="mono">{{ form.model_name }}</code></p>
         <p class="err-line" v-if="formError" data-form-error>{{ formError }}</p>
@@ -1179,14 +1218,23 @@ const advSummary = computed<string>(() => {
         <Teleport to="body">
           <div v-if="modelPopOpen" class="model-pop" :style="modelPopStyle" data-model-pop>
             <div class="mp-search">
+              <AppIcon name="search" :size="13" />
               <input v-model="modelQuery" placeholder="搜索 Model ID" spellcheck="false" data-model-search />
             </div>
-            <button
-              v-for="id in modelCandidates" :key="id" type="button"
-              class="mp-opt mono" :class="{ on: form.model_name === id }"
-              @click="pickModelId(id)"
-            >{{ id }}</button>
-            <p class="mp-empty" v-if="!modelCandidates.length">没有匹配的模型 ID</p>
+            <div class="mp-list">
+              <button
+                v-for="id in modelCandidates" :key="id" type="button"
+                class="mp-opt" :class="{ on: form.model_name === id }"
+                @click="pickModelId(id)"
+              >
+                <span class="mp-radio" aria-hidden="true"></span>
+                <span class="mp-id mono truncate">{{ id }}</span>
+              </button>
+              <p class="mp-empty" v-if="!modelCandidates.length">没有匹配的模型 ID</p>
+            </div>
+            <button type="button" class="mp-manual" @click="manualModel = true; modelPopOpen = false">
+              <AppIcon name="edit" :size="13" />手动输入 Model ID
+            </button>
           </div>
         </Teleport>
       </section>
@@ -1236,7 +1284,7 @@ const advSummary = computed<string>(() => {
                 <button type="button" class="btn sm ghost" @click="addLevel"><AppIcon name="add" :size="14" />添加档位</button>
                 <button type="button" class="btn sm ghost" @click="fillBuiltinLevels">填入内置三档</button>
               </div>
-              <label class="field lv-default">默认档
+              <label class="field">默认档
                 <select v-model="defaultLevel">
                   <option value="">不设置</option>
                   <option v-for="v in levelValues" :key="v" :value="v">{{ v }}</option>
@@ -1251,37 +1299,40 @@ const advSummary = computed<string>(() => {
 
       <!-- ⑤ 测试并保存 -->
       <section v-else class="step-body" data-step="5">
-        <div class="status-list">
-          <div class="status-row">
-            <span class="st-dot" :class="configFilled ? 'ok' : 'warn'">
+        <div class="check-grid">
+          <div class="check-cell">
+            <span class="cc-ico" :class="configFilled ? 'ok' : 'warn'">
               <AppIcon :name="configFilled ? 'check' : 'warning'" :size="11" />
             </span>
-            <span class="st-k">配置填写</span>
-            <span class="st-v" data-status-config>{{ configText }}</span>
+            <span class="cc-k">配置填写</span>
+            <span class="cc-v clamp-2" :title="configText" data-status-config>{{ configText }}</span>
           </div>
-          <div class="status-row">
-            <span class="st-dot" :class="testState === 'ok' ? 'ok' : (testState === 'fail' ? 'bad' : 'idle')">
+          <div class="check-cell">
+            <span class="cc-ico" :class="testState === 'ok' ? 'ok' : (testState === 'fail' ? 'bad' : 'idle')">
               <AppIcon :name="testState === 'ok' ? 'check' : (testState === 'fail' ? 'error' : 'info')" :size="11" />
             </span>
-            <span class="st-k">连接测试</span>
-            <span class="st-v" data-status-test>
-              {{ testState === 'running' ? '测试中…' : (testMessage || '未测试') }}
-            </span>
+            <span class="cc-k">连接测试</span>
+            <span
+              class="cc-v clamp-2" :class="{ bad: testState === 'fail' }" :title="testMessage || '未测试'"
+              data-status-test
+            >{{ testState === 'running' ? '测试中…' : (testMessage || '未测试') }}</span>
             <button type="button" class="btn sm ghost" :disabled="testState === 'running'" data-test-conn @click="testConnection">
               {{ testState === 'running' ? '测试中…' : '测试连接' }}
             </button>
           </div>
-          <div class="status-row">
+          <div class="check-cell">
             <span
-              class="st-dot"
+              class="cc-ico"
               :class="saveState === 'failed' ? 'bad' : (saveState === 'saved' ? 'ok' : 'idle')"
             >
               <AppIcon :name="saveState === 'failed' ? 'error' : (saveState === 'saved' ? 'check' : 'info')" :size="11" />
             </span>
-            <span class="st-k">保存结果</span>
-            <span class="st-v" data-status-save>
-              {{ saveState === 'saved' ? '已保存' : (saveMessage || '还没保存') }}
-            </span>
+            <span class="cc-k">保存结果</span>
+            <span
+              class="cc-v clamp-2" :class="{ bad: saveState === 'failed' }"
+              :title="saveState === 'saved' ? '已保存' : (saveMessage || '还没保存')"
+              data-status-save
+            >{{ saveState === 'saved' ? '已保存' : (saveMessage || '还没保存') }}</span>
           </div>
         </div>
 
@@ -1303,20 +1354,20 @@ const advSummary = computed<string>(() => {
               <input v-model="timeoutValue" class="mono" placeholder="30" @change="writeExtras" />
             </label>
           </div>
-          <label class="field gap-top">parameters（JSON）
+          <label class="field">parameters（JSON）
             <textarea v-model="form.parametersText" rows="5" class="mono" placeholder="{}"></textarea>
           </label>
-          <label class="field gap-top">密钥文件（老接口，可空）
+          <label class="field">密钥文件（老接口，可空）
             <input v-model="form.secret_ref" class="mono" placeholder="provider.key" />
           </label>
           <div class="chips" v-if="secrets.length">
             <button
-              type="button" class="chip mono" v-for="s in secrets" :key="s"
+              type="button" class="btn sm" v-for="s in secrets" :key="s"
               :class="{ on: form.secret_ref === s }"
               @click="form.secret_ref = s"
-            >{{ s }}</button>
+            ><span class="mono tiny truncate">{{ s }}</span></button>
           </div>
-          <div class="key-row gap-top">
+          <div class="key-row">
             <label class="field key-field">写入密钥文件
               <input v-model="keyValue" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…（写完即清空）" />
             </label>
@@ -1324,73 +1375,77 @@ const advSummary = computed<string>(() => {
               <AppIcon name="upload" :size="13" />{{ keyBusy ? '写入中' : '写入' }}
             </button>
           </div>
-          <label class="row small gap-top" v-if="mode === 'edit'">
+          <label class="row small" v-if="mode === 'edit'">
             <input type="checkbox" v-model="form.enabled" /> 启用
           </label>
         </div>
       </section>
     </div>
 
+    <!-- 固定操作区：Modal 的 #footer 不参与主体滚动，所以按钮位置与步骤无关 -->
     <template #footer>
-      <button class="btn" @click="emit('close')">取消</button>
-      <button class="btn" v-if="step > 1" data-prev @click="prevStep">上一步</button>
-      <button class="btn primary" v-if="step < 5" :disabled="!canNext" data-next @click="nextStep">下一步</button>
-      <button class="btn primary" v-else :disabled="busy" data-save @click="submit">
-        {{ busy ? '保存中…' : '保存' }}
-      </button>
+      <div class="flow-foot">
+        <button class="btn" @click="emit('close')">取消</button>
+        <button class="btn" v-if="step > 1" data-prev @click="prevStep">上一步</button>
+        <button class="btn primary" v-if="step < 5" :disabled="!canNext" data-next @click="nextStep">下一步</button>
+        <button class="btn primary" v-else :disabled="busy" data-save @click="submit">
+          {{ busy ? '保存中…' : '保存' }}
+        </button>
+      </div>
     </template>
   </Modal>
 </template>
 
 <style scoped>
-/* 纵向单列：最宽 560px 居中，不横跨整个宽弹窗 */
-.flow { display: block; max-width: 560px; margin: 0 auto; min-width: 0; }
-
-/* 步骤条：小圆点 + 文字，一行放不下就换行（390px 下两行） */
-.steps { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.step-pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 26px; padding: 0 10px; max-width: 100%;
-  border: 1px solid var(--divider); border-radius: 999px;
-  background: transparent; color: var(--text-faint);
-  font-size: calc(11.5px * var(--ts, 1)); cursor: default;
-  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+/* 单列流：宽 560。**不给 min-height** —— 弹窗高度 = min(86vh, 内容高)，底栏跟着内容走；
+   硬撑高只会让短步骤在底部摊出一片死区（用户口径：主体内容少、周围留白过大）。
+   内容超过 86vh 时由 .modal-body 收缩滚动，整窗不滚。 */
+.flow {
+  display: flex; flex-direction: column;
+  max-width: 560px; margin: 0 auto; min-width: 0;
 }
-.step-pill .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; opacity: .45; }
-.step-pill .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.step-pill.done { cursor: pointer; color: var(--text-dim); }
-.step-pill.done .dot { opacity: .8; }
-.step-pill.done:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); color: var(--text); }
-.step-pill.on {
-  border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); font-weight: 600;
-}
-.step-pill.on .dot { opacity: 1; }
-.step-pill:disabled { opacity: .75; }
+.flow-sub { margin: 0 0 10px; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 
-.step-body { display: flex; flex-direction: column; min-width: 0; }
-
-/* ① 提供方搜索 + 下拉列表 */
-.prov-search { position: relative; width: 100%; max-width: 100%; }
-.prov-search input { width: 100%; }
-.prov-toggle {
-  flex: none; display: grid; place-items: center; width: 22px; height: 22px;
-  border: 0; background: transparent; color: var(--text-faint); cursor: pointer;
+/* 步骤条：序号圆 + 12px 文字 + 1px 连接线，整条 26px（远小于 36 的上限） */
+.steps { display: flex; align-items: center; flex: none; height: 26px; margin: 0 0 16px; min-width: 0; }
+.st-line { flex: 1 1 auto; min-width: 6px; max-width: 24px; height: 1px; background: var(--divider); }
+.st-step {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto;
+  min-width: 0; height: 26px; padding: 0; border: 0; background: transparent;
+  color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); cursor: default;
+  transition: color var(--dur-fast) var(--ease);
 }
-.prov-toggle:hover { color: var(--text); }
-
-.prov-pop {
-  margin-top: 6px; max-height: 320px; overflow-y: auto; overscroll-behavior: contain;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-elev); padding: 4px; min-width: 0;
+.st-num {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--text-faint);
+  font-size: calc(10.5px * var(--ts, 1)); font-weight: 650; font-variant-numeric: tabular-nums;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
+.st-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-step.done { cursor: pointer; color: var(--text-dim); }
+.st-step.done .st-num { border-color: transparent; background: var(--accent); color: var(--text-on-accent); }
+.st-step.done:hover { color: var(--text); }
+.st-step.on { color: var(--text); font-weight: 650; }
+.st-step.on .st-num { border-color: var(--accent); color: var(--accent-text); font-weight: 650; }
+.st-step:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-pill); }
+
+.step-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* ① 提供方：搜索框 + 平铺列表（列表本身不滚动，避免弹窗里出现第二根滚动条） */
+.prov-search { width: 100%; border-radius: var(--r-sm); }
+.prov-search input { width: 100%; font-size: calc(13px * var(--ts, 1)); }
+.prov-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .prov-item {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  padding: 8px 9px; border: 0; border-radius: 10px;
-  background: transparent; color: var(--text); cursor: pointer; text-align: left;
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .prov-item:hover { background: var(--bg-hover); }
-.prov-item.on { background: var(--accent-soft); }
-.prov-item.custom { border-top: 1px dashed var(--divider); border-radius: 0 0 10px 10px; margin-top: 4px; }
+.prov-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.prov-item:focus-visible { outline: none; box-shadow: var(--ring); }
+.prov-item.custom { margin-top: 4px; border-top-color: var(--divider); border-radius: 0 0 var(--r-sm) var(--r-sm); }
 .pv-icon { width: 20px; height: 20px; flex: none; object-fit: contain; border-radius: 5px; }
 .pv-icon-ph { display: block; background: var(--bg-sunken); border: 1px solid var(--divider); }
 .pv-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
@@ -1398,142 +1453,171 @@ const advSummary = computed<string>(() => {
 .pv-note { font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
 .pv-go { flex: none; color: var(--text-faint); }
 
-/* ② 连接与认证 */
+/* ② 连接与认证：所有项平铺成一列，只有字段本身有描边 */
 .step-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sh-title {
-  display: flex; align-items: center; gap: 8px; margin: 0;
-  font-size: calc(14px * var(--ts, 1)); font-weight: 650; min-width: 0;
+  display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0;
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 650;
 }
-.sh-icon { width: 20px; height: 20px; object-fit: contain; flex: none; }
-.sh-icon-ph { display: block; border-radius: 5px; background: var(--bg-sunken); border: 1px solid var(--divider); }
-.sh-sub { margin: 0 0 10px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
+.sh-icon { width: 20px; height: 20px; object-fit: contain; flex: none; border-radius: 5px; }
+.sh-icon-ph { display: block; background: var(--bg-sunken); border: 1px solid var(--divider); }
+.sh-sub { margin: 0; font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .lnk {
-  border: 0; background: transparent; padding: 0;
+  border: 0; background: transparent; padding: 0; white-space: nowrap;
   color: var(--accent-text); font-size: calc(12px * var(--ts, 1)); cursor: pointer;
 }
 .lnk:hover { text-decoration: underline; }
+.lnk:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
 
-.conn-read {
-  position: relative; margin-top: 10px; padding: 10px 12px;
-  border: 1px solid var(--divider); border-radius: var(--r-sm); background: var(--bg-sunken);
-  display: flex; flex-direction: column; gap: 6px; min-width: 0;
-}
-.cr-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.cr-k { flex: none; width: 68px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.cr-v { font-size: calc(12.5px * var(--ts, 1)); min-width: 0; }
-.cr-edit { align-self: flex-start; }
+.fields { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.fgroup { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fr-k { flex: none; width: 64px; font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--text-dim); }
+.fr-v { min-width: 0; font-size: calc(13px * var(--ts, 1)); }
+.fr-v.warn { color: var(--warn); }
 
-.conn-edit { margin-top: 10px; }
-.key-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.key-new {
-  margin-top: 10px; padding: 10px 12px;
-  border: 1px solid var(--divider); border-radius: var(--r-sm); background: var(--bg-sunken);
-}
-.key-new-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+/* 字段：label 12/650，输入框吃满整列（全局 .field 把宽压到 340，这里放开） */
+label.field { gap: 6px; font-weight: 650; }
+label.field > input, label.field > select, label.field > textarea { max-width: none; }
 
-.hint-line { margin: 8px 0 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
+.inline-act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.key-new { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--divider); }
+.key-new-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+.hint-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 .hint-line.warn { color: var(--warn); }
-.hint-line.empty { padding: 8px 9px; }
-.err-line { margin: 8px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
+.hint-line.empty { padding: 2px 0; }
+.err-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
+.warn-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0;
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--warn);
+}
+.wl-txt { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 
 /* ③ 模型 */
-/* 编辑模式顶部：明确「改的是哪一条」 */
 .edit-target {
-  margin: 0 0 10px; padding: 6px 9px;
-  border: 1px solid var(--divider); border-radius: var(--r-sm);
-  background: var(--bg-sunken); color: var(--text-dim);
-  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6;
-  overflow-wrap: anywhere;
+  margin: 0; padding: 4px 10px; border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; background: var(--bg-subtle); color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; overflow-wrap: anywhere;
 }
-.model-field { margin-top: 12px; min-width: 0; }
-.mf-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.mf-input { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.mf-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mf-label { font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--text-dim); }
+.mf-input { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .mf-input input { flex: 1 1 auto; min-width: 0; }
 .mf-caret {
-  flex: none; display: grid; place-items: center; width: 28px; height: 28px;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev);
-  color: var(--text-dim); cursor: pointer;
+  flex: none; display: grid; place-items: center;
+  width: var(--control-h); height: var(--control-h);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--bg-elev); color: var(--text-dim); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.mf-caret:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.mf-caret:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.mf-caret:focus-visible { outline: none; box-shadow: var(--ring); }
 .mf-caret:disabled { opacity: .5; cursor: default; }
-.mf-manual { width: 100%; margin-top: 6px; }
+.mf-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
+/* 模型下拉：fixed 定位（见 placeModelPop），小屏也不出视口 */
 .model-pop {
   position: fixed; z-index: 220; max-width: calc(100vw - 24px);
-  max-height: 260px; overflow-y: auto; overscroll-behavior: contain;
-  padding: 4px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-elev); box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, .16));
+  display: flex; flex-direction: column; min-height: 0; padding: 6px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  background: var(--bg-elev); box-shadow: var(--shadow-2);
 }
-.mp-search { padding: 4px 4px 6px; }
-.mp-search input { width: 100%; }
-.mp-opt {
-  display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 8px;
-  background: transparent; color: var(--text); cursor: pointer; text-align: left;
+.mp-search {
+  display: flex; align-items: center; gap: 7px; flex: none;
+  height: var(--control-h); padding: 0 9px; margin-bottom: 4px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-sunken); color: var(--text-faint);
+}
+.mp-search:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+.mp-search input {
+  width: 100%; min-width: 0; height: 100%; padding: 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
   font-size: calc(12.5px * var(--ts, 1));
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mp-search input:hover, .mp-search input:focus { background: transparent; border: 0; box-shadow: none; }
+.mp-list { flex: 1 1 auto; min-height: 0; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.mp-opt {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 8px;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text);
+  font-size: calc(13px * var(--ts, 1)); text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .mp-opt:hover { background: var(--bg-hover); }
 .mp-opt.on { background: var(--accent-soft); color: var(--accent-text); }
-.mp-empty { margin: 0; padding: 8px 9px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.mp-opt:focus-visible { outline: none; box-shadow: var(--ring); }
+.mp-radio { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border-strong); }
+.mp-opt.on .mp-radio { border-color: var(--accent); border-width: 4px; }
+.mp-id { flex: 1 1 auto; min-width: 0; }
+.mp-empty { margin: 0; padding: 8px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.mp-manual {
+  display: flex; align-items: center; gap: 6px; flex: none; width: 100%; height: 30px;
+  margin-top: 4px; padding: 0 8px;
+  border: 0; border-top: 1px solid var(--divider); border-radius: 0;
+  background: transparent; color: var(--text-dim);
+  font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer;
+}
+.mp-manual:hover { color: var(--text); }
+.mp-manual:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
 
 /* ④ 任务用途 */
-.types { height: auto; flex-wrap: wrap; gap: 4px; }
-.types button { height: calc(var(--control-h-sm) - 4px); font-size: calc(12px * var(--ts, 1)); padding: 0 11px; }
-.check-row {
-  display: flex; align-items: center; gap: 8px; margin-top: 14px;
-  font-size: calc(12.5px * var(--ts, 1)); color: var(--text); cursor: pointer;
-}
-.reasoning { margin-top: 12px; }
-.lv-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto auto auto; gap: 6px; align-items: center; margin-top: 8px; }
-.lv-row input { width: 100%; height: var(--control-h-sm); font-size: calc(12.5px * var(--ts, 1)); min-width: 0; }
-.lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
-.lv-foot { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.lv-default { margin-top: 10px; }
-
-/* ⑤ 三行状态 */
-.status-list { display: flex; flex-direction: column; gap: 8px; }
-.status-row {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 9px 11px; border: 1px solid var(--divider); border-radius: var(--r-sm);
-  background: var(--bg-sunken); min-width: 0;
-}
-.st-dot { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; flex: none; color: #fff; }
-.st-dot.ok { background: var(--ok); }
-.st-dot.warn { background: var(--warn); }
-.st-dot.bad { background: var(--danger); }
-.st-dot.idle { background: var(--bg-hover); color: var(--text-faint); border: 1px solid var(--divider); }
-.st-k { flex: none; font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.st-v { flex: 1 1 140px; min-width: 0; font-size: calc(12px * var(--ts, 1)); color: var(--text); word-break: break-word; }
-
-/* 高级折页 */
+.types { height: auto; flex-wrap: wrap; gap: 2px; }
+.types button { height: calc(var(--control-h) - 6px); padding: 0 11px; font-size: calc(12.5px * var(--ts, 1)); }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); cursor: pointer; }
+.reasoning { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .adv-toggle {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  margin-top: 12px; padding: 7px 2px;
-  border: 0; border-top: 1px solid var(--divider);
-  background: transparent; color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1)); cursor: pointer;
+  padding: 8px 0; border: 0; border-top: 1px solid var(--divider);
+  background: transparent; color: var(--text-dim); font-size: calc(12px * var(--ts, 1)); cursor: pointer;
 }
 .adv-toggle:hover { color: var(--text); }
-.adv { padding-top: 10px; }
-.gap-top { margin-top: 10px; }
-.key-row { display: flex; align-items: flex-end; gap: 6px; }
-.key-field { flex: 1 1 auto; min-width: 0; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.chip {
-  height: 26px; padding: 0 10px;
-  border: 1px solid var(--divider); border-radius: 999px;
-  background: transparent; color: var(--text-dim);
-  font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
-}
-.chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--divider)); background: var(--bg-hover); color: var(--text); }
-.chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.adv-toggle:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
+.lv-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto auto auto; gap: 6px; align-items: center; }
+.lv-row input { width: 100%; height: var(--control-h-sm); min-width: 0; font-size: calc(12.5px * var(--ts, 1)); }
+.lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
+.lv-foot { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* 小屏：整列吃满可用宽度，别让任何一行把视口顶出去 */
+/* ⑤ 测试并保存：两列紧凑小行（图标 + 名称 + 状态），不堆成一长条 */
+.check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.check-cell {
+  display: grid; grid-template-columns: 16px auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  min-width: 0; font-size: calc(12px * var(--ts, 1));
+}
+.cc-ico { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: var(--text-on-accent); }
+.cc-ico.ok { background: var(--ok); }
+.cc-ico.warn { background: var(--warn); }
+.cc-ico.bad { background: var(--danger); }
+.cc-ico.idle { background: var(--bg-hover); color: var(--text-faint); border: 1px solid var(--divider); }
+.cc-k { color: var(--text-dim); font-weight: 650; white-space: nowrap; }
+.cc-v { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.cc-v.bad { color: var(--danger); }
+
+.adv { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.key-row { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
+.key-field { flex: 1 1 auto; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+
+/* 底部操作区：一根 1px 分隔线 + 10px 内边距（与主体 20px 下内边距相加 = 31px 到按钮）；宽度铺满 Modal 的 footer */
+.flow-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  width: 100%; padding-top: 10px; border-top: 1px solid var(--divider);
+}
+
+@media (max-width: 860px) {
+  .flow { max-width: 100%; }
+}
+
 @media (max-width: 560px) {
   .flow { max-width: 100%; }
-  .steps { gap: 5px; }
-  .step-pill { height: 24px; padding: 0 8px; font-size: calc(11px * var(--ts, 1)); }
+  /* 窄屏只留序号 + 当前步文字：换行与横向滚动都别出现 */
+  .steps .st-step:not(.on) .st-txt { display: none; }
+  .check-grid { grid-template-columns: minmax(0, 1fr); }
   .lv-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
   .lv-row input:nth-child(2) { grid-column: 1 / -1; }
-  .cr-k { width: 60px; }
+  .fr-k { width: 56px; }
+  /* 操作区两行：其余按钮一行，主按钮（DOM 里最后一个）独占一行 */
+  .flow-foot { flex-wrap: wrap; }
+  .flow-foot .btn { height: 34px; }
+  .flow-foot .btn.primary { flex: 1 1 100%; }
 }
 </style>

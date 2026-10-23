@@ -395,7 +395,7 @@ onMounted(async () => {
       <h1 class="settings-rail-title">设置</h1>
       <!-- 搜索只筛左栏列表：窗格仍显示当前分区，回车才换区 -->
       <label class="settings-search">
-        <AppIcon name="search" :size="14" />
+        <AppIcon name="search" :size="13" />
         <input
           v-model="query"
           type="search"
@@ -413,9 +413,10 @@ onMounted(async () => {
             class="settings-nav-item"
             :class="{ active: active === s.id }"
             :aria-current="active === s.id ? 'page' : undefined"
+            :title="s.label"
             @click="go(s.id)"
           >
-            <AppIcon :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
+            <AppIcon class="settings-nav-icon" :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
           </button>
         </template>
       </nav>
@@ -424,7 +425,7 @@ onMounted(async () => {
     <div class="settings-pane" ref="paneRef">
       <!-- 页头：图标 + 标题 + 一句说明，三样都由 SECTIONS 里当前那条驱动 —— 9 个分节共用同一份模板 -->
       <header class="pane-head">
-        <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
+        <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="15" /></span>
         <div class="pane-head-text">
           <h2>{{ activeSection.label }}</h2>
           <p class="pane-desc">{{ activeSection.desc }}</p>
@@ -661,15 +662,15 @@ onMounted(async () => {
 /**
  * 版式：**钉死的左栏 + 自己滚的内容列**（模仿 Edge 设置页，一次只渲染一区）。
  *
- * 这里是整页而不是弹窗：导航栏从内容区最左边起、208px 固定宽，只用一条 1px 发丝线与内容
- * 分隔 —— 圆角、边框、投影叠上去就是一张浮在页面里的卡片，与"整页设置"的定位不符。
+ * 这里是整页而不是弹窗：导航栏从内容区最左边起、208px 固定宽，**不画边框也不画投影** ——
+ * 圆角、边框、投影叠上去就是一张浮在页面里的卡片，与"整页设置"的定位不符。
  *
  * 整页**不滚窗口**：高度钉成"视口 − 顶栏 − .app-main 上下内边距"，滚动只发生在两栏内部。
  * 为什么必须钉：各分区高度不等，交给窗口滚就会随切区出现/消失一条滚动条，整页宽度跟着变，
  * 左栏于是横向抖一下 —— 用户报的正是这个。算式与 base.css:269 的内边距（18 / 64）绑死，
  * 那边改了这里必须跟着改；861–1024 段的内边距是 14 / 56，见下面单独的媒体查询。
  *
- * 两栏之间**没有分隔线**：分层交给留白（左栏右留白 28、内容列左留白 28）与分组标题，
+ * 两栏之间**没有分隔线**：分层交给留白（左栏右留白 24、内容列左留白 24）与分组标题，
  * 一根竖线反而把整页切成两个盒子。
  */
 .settings-layout {
@@ -691,26 +692,27 @@ onMounted(async () => {
   /* 栏内各块的间距由下面各自的 margin 给，不叠 flex gap（两处都管会变成加倍的缝） */
   display: flex; flex-direction: column; gap: 0;
   /* 上留白 0：顶线靠标题自己的 margin-top 对齐（算式见 .settings-rail-title）；
-     左 6px 给描边余量；右 28px 顶替被删掉的那条竖发丝线 */
-  padding: 0 28px 12px 6px;
+     左 6 给焦点环留余量，右 24 顶替被删掉的那条竖发丝线（栏宽 208 因此留给可点项 178） */
+  padding: 0 24px 12px 6px;
 }
-/* 左栏抬头：整栏唯一的大字，比分区项高一档；下留 14px 交给搜索框。
+/* 左栏抬头：整页唯一的 h1，只比窗格标题（15）高一档，不抢内容。
  *
  * 顶线要和右侧页头标题对齐 —— 两边都有半行距，字号不同就差出来了：
- *   右：em 顶 = 2（.pane-head 上留白）+ (18 × 1.3 − 18) / 2 = 4.7px
- *   左：em 顶 = 2（下面这行 margin-top）+ (22 × 1.25 − 22) / 2 = 2 + 2.75 = 4.75px
- * 差 0.05px，肉眼即齐。line-height 不能沿用继承的 1.55：那是 6.05px 半行距，
- * 比 4.7 还深，只有负留白才对得齐。 */
+ *   右：em 顶 = 2（.pane-head 上留白）+ (15 × 1.35 − 15) / 2 ≈ 4.63px
+ *   左：em 顶 = 2（下面这行 margin-top）+ (17 × 1.3 − 17) / 2 ≈ 2 + 2.55 = 4.55px
+ * 差 0.08px，肉眼即齐。line-height 不能沿用继承的 1.55：那是 4.7px 半行距，
+ * 比 4.6 还深，只有负留白才对得齐。 */
 .settings-rail-title {
-  margin: 2px 0 14px; padding: 0 12px;
-  font-size: calc(22px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
-  line-height: 1.25;
+  margin: 2px 0 12px; padding: 0 10px;
+  font-size: calc(17px * var(--ts, 1)); font-weight: 650; letter-spacing: -.01em;
+  line-height: 1.3;
 }
-/* 搜索框：与论文库那条同构（图标 + 无边框输入），整行铺满 */
+/* 搜索框：与论文库那条同构（图标 + 无边框输入），整行铺满。
+   高 30 比导航项（32）矮一档，圆角收到 --r-sm，读起来是"栏内工具"而不是一枚按钮。 */
 .settings-search {
   display: flex; align-items: center; gap: 8px;
-  height: 32px; padding: 0 10px; margin-bottom: 12px;
-  border-radius: var(--radius-ctl);
+  height: 30px; padding: 0 10px; margin-bottom: 12px;
+  border-radius: var(--r-sm);
   background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-faint);
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
@@ -720,80 +722,87 @@ onMounted(async () => {
 .settings-search input {
   width: 100%; min-width: 0; height: 100%; padding: 0;
   border: 0; border-radius: 0; background: transparent; box-shadow: none;
-  font-size: calc(13px * var(--ts, 1));
+  font-size: calc(11.5px * var(--ts, 1));
 }
 .settings-search input:hover,
 .settings-search input:focus { background: transparent; border: 0; box-shadow: none; }
 .settings-empty { margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
-.settings-nav { display: flex; flex-direction: column; gap: 1px; }
-/* 分组小标题：把 8 个分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段，
-   一眼能看出"要改的是行为、模型，还是数据"。大写 + 字距 + 降一档色 = 只当路标，
-   不跟可点项抢注意力。 */
+.settings-nav { display: flex; flex-direction: column; gap: 0; }
+/* 分组小标题：把分区切成「通用 / 智能与模型 / 内容与索引 / 服务与系统」四段。
+   只当路标，所以降一档色、不抢可点项；**不做大写转换** —— 中文没有大小写，
+   uppercase 只会在混排的英文（API、MinerU）上突然变形。 */
 .settings-nav-group {
-  margin: 8px 0 2px; padding: 0 12px;
-  font-size: calc(10.5px * var(--ts, 1)); font-weight: 600; letter-spacing: .08em;
-  color: var(--text-faint); text-transform: uppercase;
+  margin: 16px 0 6px; padding: 0 10px;
+  font-size: calc(11px * var(--ts, 1)); font-weight: 650; letter-spacing: .02em;
+  color: var(--text-faint);
 }
 .settings-nav-group:first-child { margin-top: 0; }
-/* 可点项：高与圆角走既有控制变量（--control-h / --radius-ctl）；
-   当前项 = 强调色浅底 + 左侧 3px 竖条（::before，不占布局），hover 走统一的 --bg-hover。 */
+/* 可点项：32 高（--control-h）、14 圆角（--r-sm）、左右 10 内边距 —— 比按钮松、比卡片紧。
+   当前项 = --bg-hover 底 + 正文色 + 图标转 --accent，不做整行彩色胶囊；
+   hover 走更浅一档的 --bg-subtle：两档必须分得开，否则"鼠标停着的"和"正看着的"长得一样。 */
 .settings-nav-item {
-  position: relative;
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  height: var(--control-h); padding: 0 12px; border-radius: var(--radius-ctl);
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  height: var(--control-h); padding: 0 10px; border-radius: var(--r-sm);
   background: transparent; color: var(--text-dim);
-  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.settings-nav-item::before {
-  content: ''; position: absolute; left: 4px; top: 50%;
-  width: 3px; height: 14px; border-radius: var(--radius-ctl);
-  background: var(--accent); opacity: 0; transform: translateY(-50%);
-  transition: opacity var(--dur) var(--ease);
-}
-.settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
-.settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
-.settings-nav-item.active::before { opacity: 1; }
+/* 相邻项之间 2px：圆角 14 的行贴起来会连成一片。缝交给这条外边距而不是 nav 的 gap ——
+   gap 会把分组标题上下那两条 16 / 6 也一起加宽。 */
+.settings-nav-item + .settings-nav-item { margin-top: 2px; }
+.settings-nav-item:hover { background: var(--bg-subtle); color: var(--text); }
+.settings-nav-item.active { background: var(--bg-hover); color: var(--text); font-size: calc(13px * var(--ts, 1)); font-weight: 650; }
+/* 图标比文字暗一档：不选时是路标，选中时才升到强调色，视线跟着当前分区走 */
+.settings-nav-icon { flex: none; color: var(--text-faint); transition: color var(--dur-fast) var(--ease); }
+.settings-nav-item:hover .settings-nav-icon { color: var(--text-dim); }
+.settings-nav-item.active .settings-nav-icon { color: var(--accent); }
 /* 描边必须画在元素内：左栏与横排的 nav 都是滚动容器，画在外面的那圈会被裁掉（用户截图里的黑边） */
 .settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .settings-pane {
-  min-width: 0; display: flex; flex-direction: column; gap: 18px;
-  /* 左栏钉死之后，滚动全部落在这里 */
+  min-width: 0; display: flex; flex-direction: column;
+  /* 左栏钉死之后，滚动全部落在这里（全页只有这一层滚动） */
   height: 100%; overflow-y: auto; overscroll-behavior: contain;
   /* 滚动条槽常驻：分区一高一矮，滚动条一会儿有、一会儿没有，不留槽内容宽度就会跟着跳 */
   scrollbar-gutter: stable;
-  /* 两档留白是**下限**：离分隔线 28、右侧（含滚动条槽）不贴边 24 */
-  padding-left: 28px; padding-right: 24px;
+  /* 只补左边：右边那 24 由 base.css 的 `.app-main.settings` 给（左内边距那边是 0），
+     这里再补一份就变成 48，内容会明显偏左 —— 两侧留白不等宽，比宽度本身更刺眼。 */
+  padding-left: var(--sp-5); padding-right: 0;
 }
-/* 内容列在剩余空间里水平居中、宽度自适应：宽屏封顶 1280（两列卡片各约 634，再宽正文行就散了），窄屏铺满。
+/* 内容列封顶 1200 并居中：再宽两列卡片之间就空得发慌，正文行也散。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
    也算进去了，那样内容会整体左偏半个滚动条宽。 */
-.settings-pane > * { width: 100%; max-width: 1280px; margin-inline: auto; }
-/* 页头：图标底 + 标题 + 一句说明，底下一根细分隔线收尾 —— 「页头 / 内容」两段节奏。
-   近-远：页头到第一张卡 ~34px，卡与卡之间 12px（base.css 的 `.card + .card`）。 */
+.settings-pane > * { width: 100%; max-width: 1200px; margin-inline: auto; }
+/* 纵向节奏：抬头到第一块 16，块与块 24。写外边距而不是 flex gap —— 两种间距只有一处能覆盖，
+   gap 办不到，负外边距那套算下来更难读。 */
+.settings-pane > * + * { margin-top: var(--sp-5); }
+.settings-pane > .pane-head + * { margin-top: var(--sp-4); }
+/* 页头：图标底 + 标题 + 一句说明。**不画分隔线** —— 抬头只是标签，
+   一根线会把它变成"表头"，还额外吃掉一档留白（首屏高度本来就紧）。 */
 .pane-head {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 2px 0 16px; border-bottom: 1px solid var(--divider);
+  display: flex; align-items: center; gap: 10px;
+  padding: 2px 0 0;
 }
 .pane-head-icon {
   display: grid; place-items: center; flex: none;
-  width: 34px; height: 34px; border-radius: var(--radius-ctl);
+  width: 28px; height: 28px; border-radius: var(--r-sm);
   background: var(--accent-soft); color: var(--accent-text);
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-/* 三档层次：标题（600）/ 一行副标题（faint）/ 字段标签（dim 12px，在分节里） */
-.pane-head-text { display: grid; gap: 3px; min-width: 0; }
-.pane-head h2 { margin: 0; font-size: calc(18px * var(--ts, 1)); font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
-.pane-desc { margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
+/* 三档层次：标题（15 / 650）/ 一行副标题（11.5 / faint）/ 字段标签（dim 12，在分节里） */
+.pane-head-text { display: grid; gap: 2px; min-width: 0; }
+.pane-head h2 { margin: 0; font-size: calc(15px * var(--ts, 1)); font-weight: 650; line-height: 1.35; letter-spacing: -.01em; }
+.pane-desc { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 
 /* 861–1024：.app-main 的内边距收成 14 / 56（base.css），高度算式得换一档，
-   否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。 */
+   否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。
+   右侧同样是"补差"：这一档 .app-main.settings 给的是 12，补 4 才够 16。 */
 @media (max-width: 1024px) {
   .settings-layout {
     height: calc(100dvh - var(--header-h) - 14px - 56px);
   }
+  .settings-pane { padding-left: var(--sp-4); padding-right: 4px; }
+  .cards-2 { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 窄屏：导航折到内容上方、横排可滚（不挤成两列，也不把内容压到 200px 宽）。
@@ -804,9 +813,10 @@ onMounted(async () => {
     grid-template-columns: minmax(0, 1fr); row-gap: 14px;
     height: auto; overflow: visible;
     /* 主区左内边距在设置页是 0：那是给桌面「左栏贴主区左缘」用的，窄屏单列会贴到视口边缘，
-       这里补回 12px，与主区右侧的 12/24 对称 */
-    padding-left: 12px;
+       这里补回 12px，与主区右侧的 12 对称 */
+    padding-left: var(--sp-3);
   }
+  /* 这一档起留白由 .settings-layout 统一给：窗格自己再补就成了双层 */
   .settings-pane {
     padding-left: 0; padding-right: 0;
     height: auto; overflow: visible;
@@ -817,9 +827,8 @@ onMounted(async () => {
     gap: 10px; padding: 0 0 10px; overflow: visible;
     border-bottom: 1px solid var(--divider);
   }
-  /* 不画竖线：横排的「设置」与导航之间靠 rail 的 gap 10 分开，留白左右对称，别在右边空出 10px */
   .settings-rail-title { flex: none; margin: 0; padding: 0; }
-  .settings-search { flex: 1 1 140px; min-width: 0; height: 30px; margin-bottom: 0; }
+  .settings-search { flex: 1 1 140px; min-width: 0; margin-bottom: 0; }
   .settings-empty { flex: 1 0 100%; }
   .settings-nav {
     flex: 1 0 100%; min-width: 0; flex-direction: row; gap: 4px;
@@ -828,19 +837,24 @@ onMounted(async () => {
   .settings-nav::-webkit-scrollbar { display: none; }
   /* flex: none 是关键：不然项会被挤扁，横排就变成"每项都省略号" */
   .settings-nav-item { width: auto; flex: none; white-space: nowrap; }
-  /* 横排时左侧竖条会顶到文字：当前项由浅底 + 强调色表达，竖条关掉 */
-  .settings-nav-item::before { display: none; }
+  /* 横排时相邻项之间的缝交给 nav 的 gap 4，竖排那条 2px 要撤掉 */
+  .settings-nav-item + .settings-nav-item { margin-top: 0; }
   /* 横排时分组标题只剩噪声（一段一段断开反而更难扫），直接不显示 */
   .settings-nav-group { display: none; }
-  /* 页头收紧留白，但不贴边（左右留白由 .app-main 的 12px 兜着） */
-  .pane-head { padding: 0 0 12px; }
-  .pane-head h2 { font-size: calc(17px * var(--ts, 1)); }
+  .pane-head { padding-top: 0; }
 }
 
-/* 分区：只放内容（标题在窗格抬头）。卡片间距交给 base.css 的 `.card + .card`，
-   这里不叠 gap —— 两处都管会出现 22px 的"缝"，看着像两组内容。 */
-.sec { min-width: 0; scroll-margin-top: calc(var(--header-h) + 62px); }
-.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+/* ≤560：内边距收到 12（主区这一档本来就是 12，窗格不再补），
+   搜索框独占一行 —— 与「设置」挤在同一行时只剩 80px 可用，等于写了看不见。 */
+@media (max-width: 560px) {
+  .settings-rail { gap: 8px; padding-bottom: 8px; }
+  .settings-search { flex: 1 0 100%; }
+}
+
+/* 分区：只放内容（标题在窗格抬头）。区内再叠一层块间距 24 —— 「显示主题」区里就是两个面板，
+   间距得和页面其它块同一个数，否则同一页出现两种节奏。 */
+.sec { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-5); scroll-margin-top: calc(var(--header-h) + var(--sp-5)); }
+.sec-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* 卡片两列（短卡并排；长表要整宽就自己加 grid-column: 1 / -1）。
    间距只由 gap 给 —— base.css 的 .card + .card 在这里会把第二张顶下去 12px，要抹掉。 */
@@ -849,13 +863,9 @@ onMounted(async () => {
   gap: 12px; align-items: start;
 }
 .cards-2 > .card + .card { margin-top: 0; }
-@media (max-width: 1100px) {
-  .cards-2 { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }
-.field-top.inline { align-items: center; }
 
 /* 只读值 / 健康信息的长路径：占一半宽度并省略 */
 .ro-value { max-width: 56%; }

@@ -15,6 +15,9 @@
  * 另有两个可选扩展位（契约之外、都有默认值，不影响 C 阶段复用）：
  *   · `initialTab`：从「编辑」进来时直接落在连接配置；
  *   · `focus-type` 事件：关联模型里点「去配置」→ 父级滚到对应的任务分类卡。
+ *
+ * 版面口径：单列、只有一个滚动容器（`.pd-body`）。所有区块**默认展开**，
+ * 不折叠成手风琴 —— 抽屉本身就是"按需出现的浮层"，再藏一层只会让人多点两下。
  */
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { api } from '@/api/client';
@@ -22,6 +25,7 @@ import type { ModelConfig } from '@/api/types';
 import { loadModels, reportError, state, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import AppIcon from '@/components/AppIcon.vue';
+import Menu from '@/components/Menu.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
 import type { KeyRow, ProviderRow, ProviderTestResult } from './modelTypes';
 
@@ -146,14 +150,6 @@ async function loadKeys(): Promise<void> {
   }
 }
 
-/** 这家有没有默认密钥：以后端算的 `default_key_id` 为准，回退到列表里的 `is_default`。 */
-const defaultKeyLabel = computed(() => {
-  const p = props.provider;
-  if (p?.default_key_label) return p.default_key_label;
-  const k = keys.value.find((x) => x.id === p?.default_key_id) ?? keys.value.find((x) => x.is_default);
-  return k?.label ?? '';
-});
-
 /** 密钥的展示名：后端允许 label 是空串（迁移出来的老密钥就是这样），界面不能因此留一片空白
  *  —— 列表、title、toast、确认框、409 现场统一兜底成「未命名密钥」。 */
 function keyLabel(k: KeyRow | null | undefined): string {
@@ -171,6 +167,22 @@ function statusOf(k: KeyRow): { label: string; cls: string } {
 /** 引用这条密钥的模型（后端 `provider_key_id` / `key_source.key_id` 两种字段都认）。 */
 function refsOf(keyId: string): ModelConfig[] {
   return (state.models || []).filter((m: any) => String(m?.provider_key_id || m?.key_source?.key_id || '') === keyId);
+}
+
+/** 引用的一句话说法：列表正文与 title 共用，避免两处措辞走散。 */
+function refsText(k: KeyRow): string {
+  const refs = refsOf(k.id);
+  if (!refs.length) return '还没有模型引用它';
+  return `被 ${refs.length} 个模型引用：${refs.map((r) => r.name || r.id).join('、')}`;
+}
+
+/** `last_tested_at` 是 ISO 串；原样铺在行里会撑宽，统一压成 MM-DD HH:mm（解析不了就不显示）。 */
+function timeText(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /* 新增密钥：只写不读，保存后立刻清空输入 */
@@ -279,6 +291,32 @@ async function testKey(k: KeyRow): Promise<void> {
   } finally {
     busy.value = '';
   }
+}
+
+/** 行内「更多操作」：原来一排三个按钮，收进溢出菜单行高才压得下来。 */
+function keyMenuItems(k: KeyRow): { key: string; label: string; icon?: string; danger?: boolean; disabled?: boolean }[] {
+  return [
+    {
+      key: 'test', label: rowBusy(`test-key:${k.id}`) ? '测试中…' : '测试',
+      icon: 'bolt', disabled: rowBusy(`test-key:${k.id}`),
+    },
+    {
+      key: 'default', label: '设为默认', icon: 'check_circle',
+      disabled: k.is_default || rowBusy(`default:${k.id}`),
+    },
+    { key: 'rename', label: '重命名', icon: 'edit' },
+    {
+      key: 'delete', label: '删除', icon: 'trash', danger: true,
+      disabled: rowBusy(`del-key:${k.id}`),
+    },
+  ];
+}
+
+function onKeyMenu(k: KeyRow, action: string): void {
+  if (action === 'test') void testKey(k);
+  else if (action === 'default') void setDefaultKey(k);
+  else if (action === 'rename') startRename(k);
+  else if (action === 'delete') void removeKey(k);
 }
 
 /** 删除被拒绝（409）时的现场：后端消息原样 + 一条"改成跟随默认密钥"的一键动作 */
@@ -397,6 +435,16 @@ function keySourceOf(m: ModelConfig): string {
   return '密钥来源：未配置密钥';
 }
 
+/** 关联模型行的状态点：缺密钥是硬错误，其次是后端连通性结果。 */
+function modelDot(m: ModelConfig): string {
+  if (m.has_secret === false && !m.is_mock) return 'danger';
+  return m.status === 'ok' ? 'ok' : '';
+}
+
+function modelIcon(m: ModelConfig): string {
+  return vendorColorIcon(m.provider);
+}
+
 const provTest = ref<ProviderTestResult | null>(null);
 const provError = ref('');
 
@@ -510,24 +558,21 @@ const statusText = computed(() => {
 const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
   : (props.provider?.status === 'error' ? 'danger' : '')));
 </script>
-
 <template>
   <Teleport to="body">
     <div v-if="open && provider" class="pd-mask" @click.self="emit('close')">
-      <aside class="pd" role="dialog" aria-modal="true" :aria-label="`提供方：${provider.label || provider.id}`">
+      <aside class="pd" role="dialog" aria-modal="true" :aria-label="'提供方：' + (provider.label || provider.id)">
         <header class="pd-head">
-          <img v-if="ico" class="pv-ico lg" :src="ico" alt="">
-          <span v-else class="pv-fallback lg"><AppIcon name="model" :size="16" /></span>
+          <img v-if="ico" class="pd-logo" :src="ico" alt="">
+          <span v-else class="pd-logo-fallback"><AppIcon name="model" :size="15" /></span>
           <div class="pd-head-text">
             <div class="pd-title truncate" :title="provider.label || provider.id">{{ provider.label || provider.id }}</div>
-            <div class="pd-sub">
-              <span class="badge tiny dim">{{ provider.kind === 'custom' ? '自定义' : '官方' }}</span>
-              <span class="stat-dot" :class="statusCls" />
-              <span class="tiny faint">{{ statusText }}</span>
-            </div>
           </div>
+          <span class="badge dim">{{ provider.kind === 'custom' ? '自定义' : '官方' }}</span>
+          <span class="pd-dot" :class="statusCls" />
+          <span class="pd-state">{{ statusText }}</span>
           <span class="spacer"></span>
-          <button type="button" class="pd-x" title="关闭" @click="emit('close')">
+          <button type="button" class="btn ghost icon sm" title="关闭" aria-label="关闭" @click="emit('close')">
             <AppIcon name="close" :size="15" />
           </button>
         </header>
@@ -540,62 +585,75 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
           <button
             type="button" role="tab" class="pd-tab" :class="{ on: tab === 'keys' }"
             :aria-selected="tab === 'keys'" @click="tab = 'keys'"
-          >密钥<span class="hd-count">{{ keys.length }}</span></button>
+          >密钥<span class="pd-tab-n">{{ keys.length }}</span></button>
           <button
             type="button" role="tab" class="pd-tab" :class="{ on: tab === 'models' }"
             :aria-selected="tab === 'models'" @click="tab = 'models'"
-          >关联模型<span class="hd-count">{{ relatedModels.length }}</span></button>
+          >关联模型<span class="pd-tab-n">{{ relatedModels.length }}</span></button>
         </div>
 
+        <!-- 唯一的滚动容器 -->
         <div class="pd-body">
           <!-- ① 连接配置 -->
           <section class="pd-sec" v-if="tab === 'connect'">
-            <label class="field">名称
-              <input v-model="conn.label" placeholder="例如：我的 DeepSeek 账号" />
-            </label>
-            <label class="field">Base URL
-              <input v-model="conn.base_url" class="mono" spellcheck="false" placeholder="https://api.example.com/v1" />
-            </label>
-            <label class="field">认证方式
-              <select v-model="conn.auth">
-                <option value="bearer">Bearer（需要 API Key）</option>
-                <option value="none">无需密钥（本机推理 / 公开端点）</option>
-              </select>
-            </label>
-            <label class="field">备注
-              <input v-model="conn.note" placeholder="一句话说明这家是干什么的" />
-            </label>
-            <p class="pd-err" v-if="connError">{{ connError }}</p>
-            <div class="row">
-              <button class="btn primary sm" :disabled="rowBusy('save') || !connChanged" data-provider-save @click="saveConn">
-                <AppIcon name="check" :size="14" />{{ rowBusy('save') ? '保存中…' : '保存' }}
-              </button>
-              <button class="btn sm" :disabled="rowBusy('save') || !connChanged" @click="fillConn(provider)">
-                撤销
-              </button>
-              <span class="spacer"></span>
-              <button class="btn sm" :disabled="rowBusy('test-provider')" @click="testProvider">
-                <AppIcon name="bolt" :size="14" />{{ rowBusy('test-provider') ? '测试中…' : '测试连接' }}
-              </button>
-            </div>
-            <div class="pd-result" v-if="provTest">
-              <span class="badge" :class="provTest.ok ? 'ok' : 'danger'">
-                <AppIcon :name="provTest.ok ? 'check_circle' : 'error'" :size="12" />
-                {{ provTest.ok ? '连接正常' : '连接失败' }}
-              </span>
-              <span class="tiny faint" v-if="provTest.count !== undefined">{{ provTest.count }} 个模型</span>
-              <span class="tiny" :class="provTest.ok ? 'faint' : 'bad'">{{ provTest.message }}</span>
-            </div>
-            <div class="pd-danger-zone">
-              <div class="dz-text">
-                <b>删除这家提供方</b>
-                <span class="tiny faint">还有模型挂在它上面时后端会拒绝删除，并把原因告诉你。</span>
+            <div class="sec">
+              <div class="sec-head">
+                <h3>连接配置</h3>
+                <span class="spacer"></span>
+                <button type="button" class="link-btn" :disabled="rowBusy('test-provider')" @click="testProvider">
+                  {{ rowBusy('test-provider') ? '测试中…' : '测试连接' }}
+                </button>
               </div>
-              <button class="btn sm danger" :disabled="rowBusy('del-provider')" @click="removeProvider">
-                <AppIcon name="trash" :size="14" />删除
-              </button>
+              <div class="conn-fields">
+                <label class="field">名称
+                  <input v-model="conn.label" placeholder="例如：我的 DeepSeek 账号" />
+                </label>
+                <label class="field">Base URL
+                  <input v-model="conn.base_url" class="mono" spellcheck="false" placeholder="https://api.example.com/v1" />
+                </label>
+                <label class="field">认证方式
+                  <select v-model="conn.auth">
+                    <option value="bearer">Bearer（需要 API Key）</option>
+                    <option value="none">无需密钥（本机推理 / 公开端点）</option>
+                  </select>
+                </label>
+                <label class="field">备注
+                  <input v-model="conn.note" placeholder="一句话说明这家是干什么的" />
+                </label>
+              </div>
+              <p class="pd-err" v-if="connError">{{ connError }}</p>
+              <div class="pd-result" v-if="provTest">
+                <span class="badge" :class="provTest.ok ? 'ok' : 'danger'">
+                  <AppIcon :name="provTest.ok ? 'check_circle' : 'error'" :size="12" />
+                  {{ provTest.ok ? '连接正常' : '连接失败' }}
+                </span>
+                <span class="tiny faint" v-if="provTest.count !== undefined">{{ provTest.count }} 个模型</span>
+                <span class="pd-result-msg" :class="{ bad: !provTest.ok }">{{ provTest.message }}</span>
+              </div>
+              <div class="sec-foot">
+                <button class="btn sm" :disabled="rowBusy('save') || !connChanged" @click="fillConn(provider)">撤销</button>
+                <button
+                  class="btn primary sm" :disabled="rowBusy('save') || !connChanged"
+                  data-provider-save @click="saveConn"
+                >
+                  <AppIcon name="check" :size="14" />{{ rowBusy('save') ? '保存中…' : '保存' }}
+                </button>
+              </div>
             </div>
-            <p class="pd-err" v-if="provError">{{ provError }}</p>
+
+            <div class="sec">
+              <div class="sec-head"><h3>危险操作</h3></div>
+              <div class="danger-row">
+                <div class="dz-text">
+                  <b>删除这家提供方</b>
+                  <span class="tiny faint">还有模型挂在它上面时后端会拒绝删除，并把原因告诉你。</span>
+                </div>
+                <button class="btn sm danger" :disabled="rowBusy('del-provider')" @click="removeProvider">
+                  <AppIcon name="trash" :size="14" />删除
+                </button>
+              </div>
+              <p class="pd-err" v-if="provError">{{ provError }}</p>
+            </div>
           </section>
 
           <!-- ② 密钥 -->
@@ -607,149 +665,163 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
               <span class="sk sk-line" v-for="i in 3" :key="i" />
             </div>
 
-            <div class="key-list" v-else-if="keys.length">
-              <div class="key-row" v-for="k in keys" :key="k.id">
-                <div class="key-top">
-                  <span class="key-name" v-if="renamingId !== k.id" :title="`${keyLabel(k)}（点名字可改名）`">
-                    <button type="button" class="name-btn truncate" @click="startRename(k)">{{ keyLabel(k) }}</button>
-                  </span>
-                  <input
-                    v-else class="key-rename" v-model="renameText" spellcheck="false"
-                    @keydown.enter.prevent="commitRename(k)" @keydown.esc.stop="cancelRename"
-                    @blur="commitRename(k)"
-                  >
-                  <span class="key-flag" v-if="k.is_default || k.id === provider.default_key_id">默认</span>
-                  <span class="key-status" :class="statusOf(k).cls">{{ statusOf(k).label }}</span>
+            <template v-else>
+              <div class="sec">
+                <div class="sec-head">
+                  <h3>密钥</h3>
                   <span class="spacer"></span>
-                  <span class="key-masked mono">{{ k.masked || '（无掩码）' }}</span>
+                  <span class="tiny faint">{{ keys.length }} 条</span>
                 </div>
-                <div class="key-refs tiny faint" :title="refsOf(k.id).map((r) => r.name || r.id).join('、')">
-                  <template v-if="refsOf(k.id).length">
-                    被 {{ refsOf(k.id).length }} 个模型引用：{{ refsOf(k.id).map((r) => r.name || r.id).join('、') }}
-                  </template>
-                  <template v-else>还没有模型引用它</template>
-                </div>
-                <div class="key-ops">
-                  <button class="btn sm" :disabled="rowBusy(`test-key:${k.id}`)" @click="testKey(k)">
-                    <AppIcon name="bolt" :size="13" />{{ rowBusy(`test-key:${k.id}`) ? '测试中…' : '测试' }}
-                  </button>
-                  <button
-                    class="btn sm" :disabled="k.is_default || rowBusy(`default:${k.id}`)"
-                    :title="k.is_default ? '已经是默认密钥' : '设为这家提供方的默认密钥'"
-                    @click="setDefaultKey(k)"
-                  >
-                    <AppIcon name="check_circle" :size="13" />设为默认
-                  </button>
-                  <button class="btn sm danger" :disabled="rowBusy(`del-key:${k.id}`)" @click="removeKey(k)">
-                    <AppIcon name="trash" :size="13" />删除
-                  </button>
-                  <span class="tiny faint" v-if="testMsg[k.id]">
-                    {{ testMsg[k.id].ok ? '上次测试：可用' : '上次测试：不可用' }}
-                    <template v-if="testMsg[k.id].message"> · {{ testMsg[k.id].message }}</template>
-                  </span>
+
+                <ul class="key-list" v-if="keys.length">
+                  <li class="key-row" v-for="k in keys" :key="k.id" :data-key-id="k.id">
+                    <div class="kr-lines">
+                      <div class="kr-top">
+                        <input
+                          v-if="renamingId === k.id" class="kr-rename" v-model="renameText" spellcheck="false"
+                          @keydown.enter.prevent="commitRename(k)" @keydown.esc.stop="cancelRename"
+                          @blur="commitRename(k)"
+                        >
+                        <button
+                          v-else type="button" class="kr-name truncate"
+                          :title="keyLabel(k) + '（点名字可改名）'" @click="startRename(k)"
+                        >{{ keyLabel(k) }}</button>
+                        <span
+                          class="badge accent kr-def"
+                          v-if="k.is_default || k.id === provider.default_key_id"
+                        >默认</span>
+                        <span class="spacer"></span>
+                        <span class="kr-masked mono truncate">{{ k.masked || '（无掩码）' }}</span>
+                      </div>
+                      <div class="kr-sub">
+                        <span class="kr-refs truncate" :title="refsText(k)">{{ refsText(k) }}</span>
+                        <span class="kr-status" :class="statusOf(k).cls">{{ statusOf(k).label }}</span>
+                        <span
+                          v-if="testMsg[k.id]" class="kr-test truncate"
+                          :class="testMsg[k.id].ok ? 'ok' : 'bad'"
+                          :title="testMsg[k.id].message || ''"
+                        >上次测试：{{ testMsg[k.id].ok ? '可用' : '不可用' }}<template v-if="testMsg[k.id].message"> · {{ testMsg[k.id].message }}</template></span>
+                        <span v-if="timeText(k.last_tested_at)" class="kr-time">最近测试 {{ timeText(k.last_tested_at) }}</span>
+                      </div>
+                    </div>
+                    <Menu :items="keyMenuItems(k)" label="密钥操作" align="end" @select="onKeyMenu(k, $event)" />
+                  </li>
+                </ul>
+
+                <div class="pd-empty" v-else-if="keysWritable">
+                  <AppIcon name="document" :size="14" />
+                  <span>这家还没有密钥。新增一条后，模型就能「跟随默认密钥」或单独指定它。</span>
                 </div>
               </div>
-            </div>
 
-            <div class="pd-empty" v-else-if="!keysLoading && keysWritable">
-              <AppIcon name="document" :size="14" />
-              <span>这家还没有密钥。新增一条后，模型就能「跟随默认密钥」或单独指定它。</span>
-            </div>
-
-            <!-- 删除被 409 拒绝：后端消息原样 + 一键改成跟随默认密钥 -->
-            <div class="pd-block" v-if="block">
-              <div class="blk-title">
-                <AppIcon name="warning" :size="14" />「{{ block.keyLabel }}」还在被引用
+              <!-- 删除被 409 拒绝：后端消息原样 + 一键改成跟随默认密钥 -->
+              <div class="sec" v-if="block">
+                <div class="pd-block">
+                  <div class="blk-head">
+                    <AppIcon name="warning" :size="14" />「{{ block.keyLabel }}」还在被引用
+                  </div>
+                  <p class="blk-msg">{{ block.message }}</p>
+                  <div class="blk-models" v-if="block.models.length">
+                    <span class="blk-model truncate" v-for="m in block.models" :key="m.id">{{ m.name || m.id }}</span>
+                  </div>
+                  <div class="blk-ops">
+                    <button class="btn sm" :disabled="rowBusy('detach')" data-detach-refs @click="detachRefs">
+                      <AppIcon name="link" :size="13" />{{ rowBusy('detach') ? '处理中…' : '把这些模型改成跟随默认密钥' }}
+                    </button>
+                    <button class="btn sm ghost" @click="block = null">知道了</button>
+                  </div>
+                </div>
               </div>
-              <p class="blk-msg">{{ block.message }}</p>
-              <div class="row">
-                <button class="btn sm" :disabled="rowBusy('detach')" data-detach-refs @click="detachRefs">
-                  <AppIcon name="link" :size="13" />{{ rowBusy('detach') ? '处理中…' : '把这些模型改成跟随默认密钥' }}
-                </button>
-                <button class="btn sm ghost" @click="block = null">知道了</button>
-              </div>
-            </div>
 
-            <!-- 新增密钥：只写不读 -->
-            <div class="key-add">
-              <div class="ka-title">新增密钥</div>
-              <div class="ka-grid">
-                <label class="field">名称
-                  <input v-model="newKey.label" placeholder="主账号 / 备用 key" :disabled="!keysWritable" />
-                </label>
-                <label class="field">API Key
+              <!-- 新增密钥：一行输入 + 按钮（只写不读） -->
+              <div class="sec">
+                <div class="sec-head"><h3>新增密钥</h3></div>
+                <div class="ka-row">
+                  <input
+                    v-model="newKey.label"
+                    placeholder="名称，如 主账号 / 备用 key" :disabled="!keysWritable"
+                  />
                   <input
                     v-model="newKey.api_key" type="password" autocomplete="off" spellcheck="false"
-                    :placeholder="provider.auth === 'none' ? '这家不需要密钥，可留空' : '只写不回显，保存后只显示掩码'"
+                    :placeholder="provider.auth === 'none' ? '这家不需要密钥，可留空' : 'API Key（只写不回显）'"
                     :disabled="!keysWritable"
                   />
-                </label>
+                  <label class="ka-def tiny">
+                    <input type="checkbox" v-model="newKey.is_default" :disabled="!keysWritable" />设为默认
+                  </label>
+                  <button class="btn primary sm" :disabled="adding || !keysWritable" data-key-add @click="addKey">
+                    <AppIcon name="add" :size="14" />{{ adding ? '保存中…' : '添加' }}
+                  </button>
+                </div>
+                <p class="pd-err" v-if="newKeyError">{{ newKeyError }}</p>
+                <p class="pd-hint" v-if="provider.auth === 'none' && keysWritable">这家是「无需密钥」的提供方，密钥字段可以留空。</p>
               </div>
-              <div class="row">
-                <label class="check-line tiny">
-                  <input type="checkbox" v-model="newKey.is_default" :disabled="!keysWritable" />
-                  设为默认密钥
-                </label>
-                <span class="spacer"></span>
-                <button class="btn primary sm" :disabled="adding || !keysWritable" data-key-add @click="addKey">
-                  <AppIcon name="add" :size="14" />{{ adding ? '保存中…' : '添加密钥' }}
-                </button>
-              </div>
-              <p class="pd-err" v-if="newKeyError">{{ newKeyError }}</p>
-              <p class="pd-hint" v-if="provider.auth === 'none' && keysWritable">这家是「无需密钥」的提供方，密钥字段可以留空。</p>
-            </div>
 
-            <!-- 未归属密钥（迁移出来、等人确认归属） -->
-            <div class="unassigned" v-if="unassigned.length || unassignedError">
-              <div class="ka-title">未归属密钥 <span class="badge warn tiny">待人工确认</span></div>
-              <p class="pd-err" v-if="unassignedError">{{ unassignedError }}</p>
-              <div class="ua-row" v-for="k in unassigned" :key="k.id">
-                <span class="ua-name truncate" :title="keyLabel(k)">{{ keyLabel(k) }}</span>
-                <span class="ua-masked mono tiny">{{ k.masked || '（无掩码）' }}</span>
-                <span class="spacer"></span>
-                <button class="btn sm" :disabled="rowBusy(`claim:${k.id}`)" @click="claim(k)">
-                  <AppIcon name="check" :size="13" />{{ rowBusy(`claim:${k.id}`) ? '认领中…' : '认领到本提供方' }}
-                </button>
+              <!-- 未归属密钥（迁移出来、等人确认归属） -->
+              <div class="sec" v-if="unassigned.length || unassignedError">
+                <div class="sec-head">
+                  <h3>未归属密钥</h3>
+                  <span class="spacer"></span>
+                  <span class="badge warn">待人工确认</span>
+                </div>
+                <p class="pd-err" v-if="unassignedError">{{ unassignedError }}</p>
+                <ul class="key-list">
+                  <li class="key-row" v-for="k in unassigned" :key="k.id">
+                    <div class="kr-lines">
+                      <div class="kr-top">
+                        <span class="kr-name truncate" :title="keyLabel(k)">{{ keyLabel(k) }}</span>
+                        <span class="spacer"></span>
+                        <span class="kr-masked mono truncate">{{ k.masked || '（无掩码）' }}</span>
+                      </div>
+                    </div>
+                    <button class="btn sm" :disabled="rowBusy('claim:' + k.id)" @click="claim(k)">
+                      <AppIcon name="check" :size="13" />{{ rowBusy('claim:' + k.id) ? '认领中…' : '分配' }}
+                    </button>
+                  </li>
+                </ul>
               </div>
-            </div>
-            <p class="pd-hint" v-else-if="unassignedHint">{{ unassignedHint }}</p>
+              <p class="pd-hint" v-else-if="unassignedHint">{{ unassignedHint }}</p>
+            </template>
           </section>
 
           <!-- ③ 关联模型 -->
           <section class="pd-sec" v-else>
-            <div class="rel" v-if="relatedModels.length">
-              <div class="rel-row" v-for="m in relatedModels" :key="m.id">
-                <span class="stat-dot" :class="m.has_secret === false && !m.is_mock ? 'danger' : (m.status === 'ok' ? 'ok' : '')" />
-                <div class="rel-main">
-                  <span class="rel-name truncate" :title="m.name || m.id">{{ m.name || '（未命名）' }}</span>
-                  <span class="rel-sub tiny faint truncate" :title="m.model_name || ''">
-                    <span class="mono">{{ m.model_name || '—' }}</span> · {{ keySourceOf(m) }}
-                  </span>
-                </div>
-                <button class="btn sm" @click="goConfigure(m)">
-                  <AppIcon name="edit" :size="13" />去配置
-                </button>
+            <div class="sec">
+              <div class="sec-head">
+                <h3>关联模型</h3>
+                <span class="spacer"></span>
+                <span class="tiny faint">{{ relatedModels.length }} 个</span>
               </div>
-            </div>
-            <div class="pd-empty" v-else>
-              <AppIcon name="model" :size="14" />
-              <span>这家还没有配置任何模型 —— 到任务分类卡片里点「+」加一个。</span>
+              <ul class="rel" v-if="relatedModels.length">
+                <li class="rel-row" v-for="m in relatedModels" :key="m.id">
+                  <span class="pd-dot" :class="modelDot(m)" />
+                  <img v-if="modelIcon(m)" class="rel-ico" :src="modelIcon(m)" alt="">
+                  <span v-else class="rel-ico-fallback"><AppIcon name="model" :size="13" /></span>
+                  <span class="rel-name truncate" :title="m.name || m.id">{{ m.name || '（未命名）' }}</span>
+                  <span class="rel-id mono truncate" :title="m.model_name || ''">{{ m.model_name || '—' }}</span>
+                  <span class="rel-src truncate" :title="keySourceOf(m)">{{ keySourceOf(m) }}</span>
+                  <span class="spacer"></span>
+                  <button class="btn sm ghost" @click="goConfigure(m)">
+                    <AppIcon name="edit" :size="13" />去配置
+                  </button>
+                </li>
+              </ul>
+              <div class="pd-empty" v-else>
+                <AppIcon name="model" :size="14" />
+                <span>这家还没有配置任何模型 —— 到任务分类卡片里点「+」加一个。</span>
+              </div>
             </div>
           </section>
         </div>
       </aside>
     </div>
   </Teleport>
-</template>
-
-<style scoped>
-/* 遮罩 + 右侧抽屉：360px 宽时抽屉铺满可视宽度（不溢出、不横向滚） */
+</template><style scoped>
+/* 遮罩只压暗：模糊留给真正的浮层菜单，抽屉本身不该"玻璃化" */
 .pd-mask {
   position: fixed; inset: 0; z-index: 180;
   display: flex; justify-content: flex-end;
-  background: color-mix(in srgb, var(--bg-sunken) 40%, rgba(12, 16, 24, .45));
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: var(--smoke);
 }
 .pd {
   display: flex; flex-direction: column;
@@ -761,37 +833,74 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-2);
 }
-.pd-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px 14px; border-bottom: 1px solid var(--divider);
-}
-.pd-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.pd-title { font-size: calc(14px * var(--ts, 1)); font-weight: 650; }
-.pd-sub { display: flex; align-items: center; gap: 6px; }
-.pd-x {
-  flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px;
-  padding: 0; border: 0; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-faint); cursor: pointer;
-}
-.pd-x:hover { background: var(--bg-hover); color: var(--text); }
 
+/* ---- 头部 ---- */
+.pd-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  height: 56px; padding: 0 20px;
+  border-bottom: 1px solid var(--divider);
+}
+.pd-logo { flex: none; width: 24px; height: 24px; object-fit: contain; border-radius: var(--r-xs); }
+.pd-logo-fallback {
+  flex: none; display: inline-grid; place-items: center;
+  width: 24px; height: 24px; border-radius: var(--r-xs);
+  background: var(--bg-sunken); color: var(--text-faint);
+}
+.pd-head-text { min-width: 0; display: flex; }
+.pd-title { min-width: 0; font-size: calc(15px * var(--ts, 1)); font-weight: 650; line-height: 1.3; }
+.pd-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.pd-dot.ok { background: var(--ok); }
+.pd-dot.danger { background: var(--danger); }
+.pd-state { flex: none; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
+
+/* ---- tabs：下划线式，没有底色块 ---- */
 .pd-tabs {
-  display: flex; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--divider);
-  min-width: 0; overflow-x: auto; scrollbar-width: none;
+  flex: none; display: flex; align-items: flex-end; gap: 16px;
+  padding: 0 20px; border-bottom: 1px solid var(--divider);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .pd-tabs::-webkit-scrollbar { display: none; }
 .pd-tab {
-  display: inline-flex; align-items: center; gap: 5px; flex: none;
-  padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  height: 36px; padding: 0; border: 0; border-bottom: 2px solid transparent;
   background: transparent; color: var(--text-dim);
-  font: inherit; font-size: calc(12.5px * var(--ts, 1)); cursor: pointer;
+  font-family: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 500; line-height: 1;
+  white-space: nowrap; cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .pd-tab:hover { color: var(--text); }
 .pd-tab.on { color: var(--accent-text); border-bottom-color: var(--accent); font-weight: 600; }
-.pd-tab:focus-visible { outline: none; box-shadow: var(--ring); }
+.pd-tab:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+.pd-tab-n {
+  font-size: calc(11px * var(--ts, 1)); font-weight: 600;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
+.pd-tab.on .pd-tab-n { color: var(--accent-text); }
 
-.pd-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px 20px; }
-.pd-sec { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* ---- 主体：整块只有一个滚动容器 ---- */
+.pd-body {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 16px 20px 24px;
+}
+.pd-sec { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.sec { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sec + .sec { border-top: 1px solid var(--divider); padding-top: 20px; }
+.sec-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sec-head h3 {
+  margin: 0; font-size: calc(12px * var(--ts, 1)); font-weight: 650;
+  color: var(--text-dim); letter-spacing: .01em;
+}
+.link-btn {
+  flex: none; padding: 0; border: 0; background: transparent;
+  color: var(--accent-text); font-family: inherit;
+  font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; line-height: 1.6; cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.link-btn:hover:not(:disabled) { color: var(--accent-hover); }
+.link-btn:disabled { color: var(--text-faint); cursor: default; }
+.link-btn:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+
 .pd-hint {
   margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55; color: var(--text-faint);
   overflow-wrap: anywhere;
@@ -800,127 +909,132 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
   margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.55; color: var(--danger);
   overflow-wrap: anywhere;
 }
-.pd-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.pd-result .bad { color: var(--danger); }
 .pd-skel { display: flex; flex-direction: column; gap: 8px; }
 .pd-empty {
   display: flex; align-items: flex-start; gap: 8px; padding: 12px;
-  border: 1px dashed var(--divider); border-radius: var(--radius-sm);
+  border: 1px dashed var(--divider); border-radius: var(--r-sm);
   color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); line-height: 1.6;
 }
-.hd-count {
-  min-width: 18px; padding: 0 5px; height: 16px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 999px; background: var(--bg-sunken); color: var(--text-faint);
-  font-size: calc(10px * var(--ts, 1)); font-weight: 600; font-variant-numeric: tabular-nums;
-}
-.stat-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
-.stat-dot.ok { background: var(--ok); }
-.stat-dot.danger { background: var(--danger); }
 
-/* 密钥行：名称 + 默认/状态 + 掩码，第二行引用，第三行动作（窄屏自动折行） */
-.key-list { display: flex; flex-direction: column; gap: 8px; }
-.key-row {
-  display: flex; flex-direction: column; gap: 5px;
-  padding: 9px 10px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
-  background: var(--bg-layer); min-width: 0;
+/* ---- 连接配置 ---- */
+.conn-fields { display: flex; flex-direction: column; gap: 14px; }
+label.field { font-weight: 650; }
+.field > input, .field > select { width: 100%; max-width: 100%; }
+.pd-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pd-result-msg {
+  min-width: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55;
+  color: var(--text-faint); overflow-wrap: anywhere;
 }
-.key-top { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
-.key-name { min-width: 0; display: inline-flex; }
-.name-btn {
+.pd-result-msg.bad { color: var(--danger); }
+.sec-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.danger-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dz-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 180px; min-width: 0; }
+.dz-text b { font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; }
+
+/* ---- 密钥行：行间只用 1px 分隔线，不套卡片 ---- */
+.key-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.key-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 0; }
+.key-row + .key-row { border-top: 1px solid var(--divider); }
+.kr-lines { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.kr-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kr-name {
+  flex: 0 1 auto; min-width: 0; max-width: 62%; text-align: left;
   padding: 0; border: 0; background: transparent; color: var(--text);
-  font: inherit; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600;
-  cursor: text; min-width: 0; max-width: min(180px, 100%);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: inherit; font-size: calc(13px * var(--ts, 1)); font-weight: 650; line-height: 1.45;
+  cursor: text;
+  transition: color var(--dur-fast) var(--ease);
 }
-.name-btn:hover { color: var(--accent-text); }
-.key-rename { height: 24px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; max-width: 180px; }
-.key-flag {
-  flex: none; padding: 0 5px; height: 16px; display: inline-flex; align-items: center;
-  border-radius: 999px; background: var(--accent-soft); color: var(--accent-text);
-  font-size: calc(10px * var(--ts, 1)); font-weight: 600;
+button.kr-name:hover { color: var(--accent-text); }
+.kr-name:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+.kr-rename {
+  flex: 0 1 auto; min-width: 0; max-width: 62%; height: 26px;
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 650;
 }
-.key-status { flex: none; font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); }
-.key-status.ok { color: var(--ok); }
-.key-status.warn { color: var(--warn); }
-.key-status.danger { color: var(--danger); }
-.key-masked {
-  flex: 0 1 auto; min-width: 0; max-width: 100%;
-  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.key-row .kr-def {
+  flex: none; height: 17px; padding: 0 6px;
+  font-size: calc(10.5px * var(--ts, 1)); font-weight: 600;
 }
-.key-refs {
-  overflow: hidden; line-height: 1.45;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+.kr-masked {
+  flex: 0 1 auto; min-width: 0; max-width: 46%;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-faint);
 }
-.key-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kr-sub {
+  display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden;
+  white-space: nowrap; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5;
+  color: var(--text-faint);
+}
+.kr-sub > span { flex: none; min-width: 0; }
+.kr-sub > span + span::before { content: '·'; margin-right: 6px; color: var(--text-faint); }
+.kr-sub > .kr-refs { flex: 0 1 auto; }
+.kr-status.ok { color: var(--ok); }
+.kr-status.warn { color: var(--warn); }
+.kr-status.danger { color: var(--danger); }
+.kr-test.ok { color: var(--ok); }
+.kr-test.bad { color: var(--danger); }
+.kr-time { font-variant-numeric: tabular-nums; }
 
-/* 409 现场 */
+/* ---- 409 现场 ---- */
 .pd-block {
-  display: flex; flex-direction: column; gap: 7px;
-  padding: 10px; border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--divider));
-  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-radius: var(--r-sm); background: var(--warn-soft);
 }
-.blk-title { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; color: var(--warn); }
+.blk-head {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; color: var(--warn);
+}
 .blk-msg {
   margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text);
-  word-break: break-word; overflow-wrap: anywhere;
+  overflow-wrap: anywhere;
+}
+.blk-models { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.blk-model {
+  max-width: 100%; padding: 1px 8px; border-radius: var(--r-pill);
+  background: var(--bg-elev); color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1));
+}
+.blk-ops { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---- 新增密钥：一行输入 + 按钮 ---- */
+.ka-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ka-row > input:not([type="checkbox"]) { flex: 1 1 130px; min-width: 0; }
+.ka-def {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-dim); cursor: pointer;
 }
 
-/* 新增密钥 */
-.key-add {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 10px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-}
-.ka-title { display: flex; align-items: center; gap: 6px; font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text-dim); }
-.ka-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.check-line { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
-
-/* 未归属密钥 */
-.unassigned {
-  display: flex; flex-direction: column; gap: 7px;
-  padding: 10px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
-}
-.ua-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-.ua-name { min-width: 0; max-width: 160px; font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
-.ua-masked {
-  color: var(--text-dim); min-width: 0; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* 关联模型 */
-.rel { display: flex; flex-direction: column; gap: 2px; }
+/* ---- 关联模型 ---- */
+.rel { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .rel-row {
   display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 7px 6px; border-radius: var(--radius-sm);
+  height: 40px; padding: 0 6px; border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease);
 }
+.rel-row + .rel-row { border-top: 1px solid var(--divider); }
 .rel-row:hover { background: var(--bg-hover); }
-.rel-main { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
-.rel-name { font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; min-width: 0; }
-.rel-sub { min-width: 0; overflow: hidden; }
-.rel-sub .mono { min-width: 0; }
-
-/* 危险区 */
-.pd-danger-zone {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--divider);
-}
-.dz-text { display: flex; flex-direction: column; gap: 1px; flex: 1 1 160px; min-width: 0; }
-.dz-text b { font-size: calc(12.5px * var(--ts, 1)); }
-
-.pv-ico { flex: none; object-fit: contain; border-radius: 4px; }
-.pv-ico.lg { width: 30px; height: 30px; }
-.pv-fallback {
+.rel-ico { flex: none; width: 16px; height: 16px; object-fit: contain; border-radius: var(--r-xs); }
+.rel-ico-fallback {
   flex: none; display: inline-grid; place-items: center;
-  border-radius: 4px; background: var(--bg-sunken); color: var(--text-faint);
+  width: 16px; height: 16px; border-radius: var(--r-xs);
+  background: var(--bg-sunken); color: var(--text-faint);
 }
-.pv-fallback.lg { width: 30px; height: 30px; }
+.rel-name {
+  flex: 0 1 auto; min-width: 0; max-width: 40%;
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 600;
+}
+.rel-id, .rel-src {
+  flex: 0 1 auto; min-width: 0;
+  font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+}
+.rel-src { max-width: 42%; }
 
-@media (max-width: 420px) {
+/* ---- 窄屏：抽屉铺满，头部压一档；操作菜单始终在行内可达 ---- */
+@media (max-width: 560px) {
   .pd { width: 100%; border-left: 0; }
-  .pd-head { padding: 10px 12px; }
-  .pd-body { padding: 10px 12px 16px; }
+  .pd-head { height: 52px; padding: 0 16px; }
+  .pd-tabs { padding: 0 16px; gap: 14px; }
+  .pd-body { padding: 14px 16px 20px; }
+  .sec + .sec { padding-top: 16px; }
+  .kr-name, .kr-rename { max-width: 52%; }
+  .rel-src { max-width: 34%; }
 }
 </style>

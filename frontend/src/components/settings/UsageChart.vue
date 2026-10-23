@@ -68,10 +68,11 @@ const totals = computed(() => ({
 
 /* ---------------------------- 折线几何 ---------------------------- */
 
-const H = 132;
+/** 100px：整卡要压到 150~170，折线不能比右侧排行高，否则图表反过来决定卡片高度。 */
+const H = 100;
 const padL = 0;    // 折线两端与上方数字左/右对齐（只给末端点留 3px，免得圆点被裁）
 const padR = 3;
-const padT = 16;
+const padT = 10;
 const padB = 16;
 const innerH = H - padT - padB;
 const baseY = padT + innerH;
@@ -182,7 +183,7 @@ const tipX = computed(() => {
 /* ---------------------------- 分模型排行 ---------------------------- */
 
 /** 排行口径没变：每行的占比 = 这一行总量 / 榜单里所有模型的总量。
- *  只是**不再把第 6 名以后合并成「其他」**—— 用户要的是「默认 5 行 + 展开全部」，
+ *  只是**不再把第 6 名以后合并成「其他」**—— 用户要的是「默认 4 行 + 展开全部」，
  *  合并成一条「其他」就永远看不到具体是哪个模型在烧 token。 */
 const rankAll = computed(() => {
   const rows = (stats.value?.by_model ?? [])
@@ -193,8 +194,8 @@ const rankAll = computed(() => {
   return rows.map((r) => ({ ...r, share: sum ? r.total / sum : 0 }));
 });
 
-/** 默认只露 5 行；多出来的收进「展开全部」。 */
-const RANK_LIMIT = 5;
+/** 默认只露 4 行（上方面板要压在一屏里）；多出来的收进标题行右侧的「展开全部」。 */
+const RANK_LIMIT = 4;
 const rankExpanded = ref(false);
 const rankVisible = computed(() => (rankExpanded.value ? rankAll.value : rankAll.value.slice(0, RANK_LIMIT)));
 const rankHidden = computed(() => Math.max(0, rankAll.value.length - RANK_LIMIT));
@@ -212,9 +213,10 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 </script>
 
 <template>
-  <section class="card usage">
-    <div class="card-head usage-head">
-      <span class="hd-title"><AppIcon name="gauge" :size="14" />消耗</span>
+  <section class="card usage" :class="{ 'is-empty': !days.length }">
+    <div class="usage-head">
+      <span class="usage-title"><AppIcon name="gauge" :size="14" /><span>消耗</span></span>
+      <span class="usage-sub">近 {{ win }} 天</span>
       <span class="spacer"></span>
       <div class="seg win" role="group" aria-label="统计窗口">
         <button type="button" :class="{ active: win === 14 }" @click="setWin(14)">14 天</button>
@@ -223,82 +225,85 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
     </div>
 
     <!-- 接口未就绪 / 无任何记录：一行，不占屏 -->
-    <div class="card-body usage-none" v-if="!days.length">
-      <AppIcon name="gauge" :size="14" /><span>暂无消耗记录</span>
+    <div class="usage-empty" v-if="!days.length">
+      <AppIcon name="gauge" :size="13" /><span>暂无消耗记录</span>
     </div>
 
-    <div class="card-body usage-body" v-else>
-      <div class="usage-main">
-        <div class="nums">
-          <div class="num-block">
-            <span class="num-line"><b class="n">{{ splitN(totals.total).n }}</b><i class="u">{{ splitN(totals.total).u }}</i></span>
-            <span class="k">总消耗</span>
-          </div>
-          <div class="num-block">
-            <span class="num-line"><b class="n">{{ splitN(totals.today).n }}</b><i class="u">{{ splitN(totals.today).u }}</i></span>
-            <span class="k">今日</span>
-          </div>
-          <div class="num-block">
-            <span class="num-line"><b class="n">{{ splitN(totals.requests).n }}</b><i class="u">{{ splitN(totals.requests).u }}</i></span>
-            <span class="k">请求数</span>
-          </div>
+    <div class="usage-body" v-else>
+      <div class="nums">
+        <div class="num-block">
+          <span class="num-line"><b class="n">{{ splitN(totals.total).n }}</b><i class="u">{{ splitN(totals.total).u }}</i></span>
+          <span class="k">总消耗</span>
         </div>
+        <div class="num-block">
+          <span class="num-line"><b class="n">{{ splitN(totals.today).n }}</b><i class="u">{{ splitN(totals.today).u }}</i></span>
+          <span class="k">今日</span>
+        </div>
+        <div class="num-block">
+          <span class="num-line"><b class="n">{{ splitN(totals.requests).n }}</b><i class="u">{{ splitN(totals.requests).u }}</i></span>
+          <span class="k">请求数</span>
+        </div>
+      </div>
+
+      <div
+        class="chart" ref="box" @mousemove="onMove" @mouseleave="onLeave"
+        :aria-label="`近 ${win} 天每日 token 消耗`"
+      >
+        <svg :width="boxW" :height="H" :viewBox="`0 0 ${boxW} ${H}`" role="img">
+          <defs>
+            <linearGradient :id="gradId" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" class="g-a" />
+              <stop offset="100%" class="g-b" />
+            </linearGradient>
+          </defs>
+
+          <line class="axis" :x1="padL" :y1="baseY" :x2="boxW - padR" :y2="baseY" />
+          <path class="area" :d="areaPath" :fill="`url(#${gradId})`" />
+          <path class="ln" :d="linePath" />
+
+          <circle class="end" v-if="lastPt" :cx="lastPt.x" :cy="lastPt.y" r="3" />
+
+          <g v-if="hoverPt">
+            <line class="guide" :x1="hoverPt.x" :y1="padT" :x2="hoverPt.x" :y2="baseY" />
+            <circle class="hp" :cx="hoverPt.x" :cy="hoverPt.y" r="3.6" />
+          </g>
+
+          <text
+            class="tick" v-for="t in ticks" :key="t.i"
+            :x="t.x" :y="H - 2" :text-anchor="t.anchor"
+          >{{ t.label }}</text>
+        </svg>
 
         <div
-          class="chart" ref="box" @mousemove="onMove" @mouseleave="onLeave"
-          :aria-label="`近 ${win} 天每日 token 消耗`"
+          class="tip" :class="{ below: tipBelow }" v-if="hoverPt"
+          :style="{ left: tipX + 'px', top: hoverPt.y + 'px' }"
         >
-          <svg :width="boxW" :height="H" :viewBox="`0 0 ${boxW} ${H}`" role="img">
-            <defs>
-              <linearGradient :id="gradId" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" class="g-a" />
-                <stop offset="100%" class="g-b" />
-              </linearGradient>
-            </defs>
-
-            <line class="axis" :x1="padL" :y1="baseY" :x2="boxW - padR" :y2="baseY" />
-            <path class="area" :d="areaPath" :fill="`url(#${gradId})`" />
-            <path class="ln" :d="linePath" />
-
-            <circle class="end" v-if="lastPt" :cx="lastPt.x" :cy="lastPt.y" r="3" />
-
-            <g v-if="hoverPt">
-              <line class="guide" :x1="hoverPt.x" :y1="padT" :x2="hoverPt.x" :y2="baseY" />
-              <circle class="hp" :cx="hoverPt.x" :cy="hoverPt.y" r="3.6" />
-            </g>
-
-            <text
-              class="tick" v-for="t in ticks" :key="t.i"
-              :x="t.x" :y="H - 2" :text-anchor="t.anchor"
-            >{{ t.label }}</text>
-          </svg>
-
-          <div
-            class="tip" :class="{ below: tipBelow }" v-if="hoverPt"
-            :style="{ left: tipX + 'px', top: hoverPt.y + 'px' }"
-          >
-            <b>{{ fmtN(hoverPt.v) }}</b>
-            <span>{{ days[hoverPt.i]?.date }}</span>
-          </div>
+          <b>{{ fmtN(hoverPt.v) }}</b>
+          <span>{{ days[hoverPt.i]?.date }}</span>
         </div>
       </div>
 
       <div class="rank">
-        <div class="rank-title">分模型消耗</div>
-        <template v-if="rankVisible.length">
-          <div class="rank-row" v-for="r in rankVisible" :key="r.name">
-            <span class="rk-name truncate" :title="r.name">{{ r.name }}</span>
-            <span class="rk-n">{{ fmtN(r.total) }}</span>
-            <span class="rk-bar"><i :style="{ width: Math.max(3, r.share * 100) + '%' }" /></span>
-            <span class="rk-p">{{ Math.round(r.share * 100) }}%</span>
-          </div>
+        <div class="rank-head">
+          <span class="rank-title">分模型消耗</span>
+          <span class="spacer"></span>
+          <!-- 展开/收起挂在标题行右侧：底部再单起一行会把整卡顶高 14px -->
           <button
             class="rank-more" v-if="rankHidden > 0 || rankExpanded" type="button"
             :aria-expanded="rankExpanded" @click="rankExpanded = !rankExpanded"
           >
             <AppIcon :name="rankExpanded ? 'chevron-up' : 'chevron-down'" :size="12" />
-            {{ rankExpanded ? '收起' : `展开全部（还有 ${rankHidden} 个）` }}
+            <span>{{ rankExpanded ? '收起' : '展开全部' }}</span>
+            <span class="rm-count" v-if="!rankExpanded">（还有 {{ rankHidden }} 个）</span>
           </button>
+        </div>
+        <template v-if="rankVisible.length">
+          <div class="rank-row" v-for="r in rankVisible" :key="r.name">
+            <span class="rk-name truncate" :title="r.name">{{ r.name }}</span>
+            <span class="rk-n">{{ fmtN(r.total) }}</span>
+            <span class="rk-p">{{ Math.round(r.share * 100) }}%</span>
+            <span class="rk-bar"><i :style="{ width: Math.max(3, r.share * 100) + '%' }" /></span>
+          </div>
         </template>
         <div class="rank-none" v-else>暂无消耗记录</div>
       </div>
@@ -307,98 +312,168 @@ const gradId = `u-grad-${Math.random().toString(36).slice(2, 8)}`;
 </template>
 
 <style scoped>
-/* 用量卡永远整宽：折线需要横向像素，落在两列网格里也必须独占一行。 */
-.usage { grid-column: 1 / -1; }
-.usage-head { font-weight: 600; padding: 9px 14px; }
-.usage .card-body { padding: 12px 14px; }
-.hd-title { display: inline-flex; align-items: center; gap: 7px; }
-/* 14/30 天用全站那枚胶囊（.seg），高度跟着控件规范走 */
-.win { height: var(--control-h-sm); }
-.win button { height: calc(var(--control-h-sm) - 6px); font-size: calc(12px * var(--ts, 1)); padding: 0 10px; }
-
-.usage-none {
-  display: flex; align-items: center; gap: 8px;
-  color: var(--text-faint); font-size: calc(12.5px * var(--ts, 1));
+/* 用量卡永远整宽：折线需要横向像素，落在两列网格里也必须独占一行。
+   整卡是一张 .card，内部不再套卡片、不再用 .card-head 那条带分隔线的 11px 行。 */
+.usage {
+  grid-column: 1 / -1;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 15px;
 }
+/* 空态只剩一行字：整块塌到 ~66px，别留大空白 */
+.usage.is-empty { padding: 11px 15px; gap: 6px; }
 
-/* 桌面横向：左边「三个数字 + 趋势图」，右边「分模型排行」；窄屏再上下叠（见文件末尾的媒体查询） */
-.usage-body { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 244px; }
+/* 顶部一行（22px）：标题 + 窗口说明 + 14/30 天分段，不留分隔线 */
+.usage-head { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.usage-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text);
+}
+.icon { display: block; }
+.usage-sub {
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 14/30 天用全站那枚胶囊（.seg），但整行要压进 22px：托盘与选项各收一档 */
+.win { height: 22px; }
+.win button { height: 16px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
+.win button:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 三个数字一行、三档层级：大数字（.n）/ 单位（.u）/ 标签（.k） */
-.nums { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
-.num-block { display: flex; flex-direction: column; gap: 0; min-width: 0; }
-.num-line { display: inline-flex; align-items: baseline; gap: 2px; min-width: 0; }
+.usage-empty {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); line-height: 1.2;
+}
+/* 桌面三栏：三指标（自然宽度）| 趋势图（自适应，最小 220）| 分模型排行（定宽） */
+.usage-body { display: flex; align-items: stretch; gap: 16px; min-width: 0; }
+
+/* 三指标横排，只用一条 1px 竖线分隔，不做每块一个描边框 */
+.nums { display: flex; flex: none; align-items: stretch; }
+.num-block {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  padding: 0 16px; min-width: 0;
+}
+.num-block:first-child { padding-left: 0; }
+.num-block + .num-block { border-left: 1px solid var(--divider); }
+.num-line { display: inline-flex; align-items: baseline; gap: 2px; white-space: nowrap; }
 .num-block .n {
-  font-size: calc(22px * var(--ts, 1)); font-weight: 650; line-height: 1.15; letter-spacing: -.02em;
-  font-variant-numeric: tabular-nums; color: var(--text);
+  font-family: var(--display);
+  font-size: calc(23px * var(--ts, 1)); font-weight: 650; line-height: 1.15;
+  letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text);
 }
 .num-block .u {
   font-style: normal; font-size: calc(12px * var(--ts, 1)); font-weight: 600;
   color: var(--text-dim); font-variant-numeric: tabular-nums;
 }
-.num-block .k { font-size: calc(11px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
+.num-block .k {
+  font-size: calc(11px * var(--ts, 1)); line-height: 1.3;
+  color: var(--text-faint); white-space: nowrap;
+}
 
-/* 图表：容器即坐标系（svg 的 CSS 像素 = 计算像素），hover 只需要减 left */
-.chart { position: relative; margin-top: 8px; max-width: 100%; }
+/* 图表：容器即坐标系（svg 的 CSS 像素 = 计算像素），hover 只需要减 left。
+   盒子高度一律由 svg 自己撑（svg display:block 没有行盒缝隙）—— 容器一旦居中或拉伸，
+   盒子就会比 svg 高一截，竖排档那截就是死空白。 */
+.chart {
+  position: relative; align-self: center;
+  flex: 1 1 220px; min-width: 220px; max-width: 100%;
+}
 .chart svg { display: block; max-width: 100%; }
 
 .axis { stroke: var(--divider); stroke-width: 1; }
 .area { stroke: none; }
-.g-a { stop-color: var(--accent); stop-opacity: .26; }
+/* 面积只是让折线有落脚点，压到 .16，不要做成色块 */
+.g-a { stop-color: var(--accent); stop-opacity: .16; }
 .g-b { stop-color: var(--accent); stop-opacity: 0; }
-.ln { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ln { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .end { fill: var(--accent); }
-.guide { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55; }
-.hp { fill: var(--bg-elev); stroke: var(--accent); stroke-width: 1.8; }
+.guide { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: .5; }
+.hp { fill: var(--bg-elev); stroke: var(--accent); stroke-width: 1.6; }
 .tick { font-size: calc(10px * var(--ts, 1)); fill: var(--text-faint); font-family: var(--mono); }
 
-/* hover 小签：贴在游标点上方的玻璃片，永远不挡折线 */
+/* hover 小签：浮层用 --bg-elev + 描边 + --shadow-2，不用玻璃拟态 */
 .tip {
   position: absolute; z-index: 2; pointer-events: none;
   transform: translate(-50%, -140%);
   display: flex; flex-direction: column; gap: 1px;
-  padding: 4px 9px; border-radius: var(--r-sm);
-  background: var(--glass-flyout-bg); backdrop-filter: var(--glass-flyout-blur);
-  -webkit-backdrop-filter: var(--glass-flyout-blur);
-  border: 1px solid var(--border-strong); box-shadow: var(--shadow-1);
+  padding: 4px 8px; border-radius: var(--r-sm);
+  background: var(--bg-elev); border: 1px solid var(--border); box-shadow: var(--shadow-2);
   white-space: nowrap;
 }
 .tip.below { transform: translate(-50%, 10px); }
-.tip b { font-size: calc(12.5px * var(--ts, 1)); font-variant-numeric: tabular-nums; color: var(--text); }
+.tip b { font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
 .tip span { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); font-family: var(--mono); }
 
-/* 分模型排行：名字 + 总量一行，占比横条 + 百分数一行（行距压紧，5 行不占屏） */
-.rank { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.rank-title { font-size: calc(11.5px * var(--ts, 1)); font-weight: 600; color: var(--text-faint); letter-spacing: .02em; }
+/* 分模型排行：名字 / 数值 / 百分比一行，占比条是贴行底的一条 3px 细轨，
+   不再占第二行——4 行 + 标题正好压进 112px。
+   允许收缩：1024 附近三栏同时在场时，排行宁可截断标题也不把整行顶出卡片 */
+.rank { flex: 0 1 280px; min-width: 0; display: flex; flex-direction: column; }
+.rank-head { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 14px; margin-bottom: 4px; }
+.rank-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(11px * var(--ts, 1)); font-weight: 650; color: var(--text-dim);
+  letter-spacing: .02em;
+}
 .rank-row {
-  display: grid; gap: 2px 8px; min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "name n" "bar p";
+  position: relative; display: grid; min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 8px;
+  height: 22px; padding-bottom: 3px;
 }
-.rk-name { grid-area: name; font-size: calc(12px * var(--ts, 1)); color: var(--text); }
-.rk-n { grid-area: n; font-size: calc(12px * var(--ts, 1)); font-variant-numeric: tabular-nums; color: var(--text-dim); }
-.rk-bar {
-  grid-area: bar; height: 4px; border-radius: 999px; overflow: hidden;
-  background: color-mix(in srgb, var(--text) 10%, transparent); align-self: center;
+.rank-row + .rank-row { margin-top: 2px; }
+.rk-name { font-size: calc(12px * var(--ts, 1)); line-height: 1.2; color: var(--text); }
+.rk-n {
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.2;
+  color: var(--text-dim); font-variant-numeric: tabular-nums;
 }
-.rk-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--accent); opacity: .75; }
 .rk-p {
-  grid-area: p; font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint);
-  font-variant-numeric: tabular-nums; min-width: 30px; text-align: right;
+  font-size: calc(11px * var(--ts, 1)); line-height: 1.2; min-width: 26px; text-align: right;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
+.rk-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px; overflow: hidden;
+  border-radius: var(--r-pill); background: var(--bg-subtle);
+}
+.rk-bar > i { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); }
+
 .rank-none { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
-/* 「展开全部 / 收起」：排行底部一行文字按钮，不占额外高度 */
 .rank-more {
-  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
-  margin-top: 1px; padding: 2px 0; border: 0; background: transparent;
-  color: var(--accent-text); font: inherit; font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
+  display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px;
+  padding: 0; border: 0; border-radius: 4px; background: transparent;
+  color: var(--accent-text); font: inherit;
+  font-size: calc(11px * var(--ts, 1)); line-height: 1.2; cursor: pointer; white-space: nowrap;
+  transition: color var(--dur) var(--ease);
 }
 .rank-more:hover { text-decoration: underline; }
-.rank-more:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 4px; }
+.rank-more:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 窄屏 / 中等宽度：趋势图与排行上下叠（排行跟着整宽后横条更长，反而更好读） */
-@media (max-width: 980px) {
-  .usage-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .nums { gap: 18px; }
+/* 中等宽度：排行收窄，图表让出空间 */
+@media (max-width: 1024px) {
+  .rank { flex-basis: 220px; }
+  .rm-count { display: none; }
+}
+
+/* 窄屏：三指标 → 图表 → 排行 纵向堆叠。竖排里 flex-basis 算的是**高度**，
+   所以图表必须换成 flex:0 0 auto —— 否则它会按 220 撑出一个 220px 高的空盒子。 */
+@media (max-width: 860px) {
+  .usage { padding: 8px 14px; gap: 4px; }
+  .usage-head { min-height: 20px; }
+  .win { height: 20px; }
+  .win button { height: 14px; padding: 0 8px; font-size: calc(11px * var(--ts, 1)); }
+  .usage-body { flex-direction: column; align-items: stretch; gap: 6px; }
+  .chart { flex: 0 0 auto; align-self: stretch; min-width: 0; }
+  /* 排行铺满整宽后一行能放两条：4 个模型只占两行高度 */
+  .rank {
+    flex: 0 0 auto; display: grid; row-gap: 4px; column-gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .rank-head { grid-column: 1 / -1; min-height: 0; margin-bottom: 0; }
+  .rank-row { height: 20px; }
+  .rank-row + .rank-row { margin-top: 0; }
+  .rank-none { grid-column: 1 / -1; }
+  .num-block .n { font-size: calc(20px * var(--ts, 1)); }
+}
+
+/* 更窄：三指标等分三列，字号降一档 */
+@media (max-width: 560px) {
+  .num-block { flex: 1 1 0; padding: 0 10px; }
+  .num-block .u { font-size: calc(11px * var(--ts, 1)); }
+  .num-block .k { font-size: calc(10px * var(--ts, 1)); }
 }
 </style>
