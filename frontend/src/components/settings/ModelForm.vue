@@ -314,7 +314,6 @@ const probeOptions = ref<string[]>([]);
 const probeBusy = ref(false);
 const probeError = ref('');
 const probeHost = ref('');
-const manualModel = ref(false);
 const modelQuery = ref('');
 const modelPopOpen = ref(false);
 const modelFieldEl = ref<HTMLElement | null>(null);
@@ -335,7 +334,6 @@ async function fetchRemoteModels(): Promise<void> {
   const baseUrl = form.base_url.trim() || providerBaseUrl.value;
   if (!editId && !baseUrl) {
     probeError.value = '这家提供方没有默认端点：先填 Base URL，再拉模型列表';
-    manualModel.value = true;
     return;
   }
   probeBusy.value = true;
@@ -360,10 +358,8 @@ async function fetchRemoteModels(): Promise<void> {
     probeOptions.value = ids;
     probeHost.value = String(data?.host || '');
     if (!ids.length) {
-      probeError.value = '端点没有返回任何模型，请手填 Model ID';
-      manualModel.value = true;
+      probeError.value = '端点没有返回任何模型，直接手填 Model ID';
     } else {
-      manualModel.value = false;
       placeModelPop();
     }
   } catch (err) {
@@ -371,13 +367,23 @@ async function fetchRemoteModels(): Promise<void> {
     if (editId && !form.base_url.trim() && providerBaseUrl.value && /base url/i.test(msg)) {
       probeError.value = '这条模型没存 Base URL（跟随提供方端点），列表接口用不上 —— 直接手填 Model ID 也能保存';
     } else {
-      probeError.value = '拉取失败：' + msg + ' —— 可以手填 Model ID 继续';
+      probeError.value = '拉取失败：' + msg;
     }
-    manualModel.value = true;
   } finally {
     probeBusy.value = false;
   }
 }
+
+/** 进第 3 步自动拉一次列表（同一家/同一端点只自动试一次，失败后交给「重试」）。 */
+const autoProbeKey = ref('');
+watch([step, () => form.provider, () => form.base_url], () => {
+  if (step.value !== 3) { modelPopOpen.value = false; return; }
+  if (probeBusy.value || probeOptions.value.length) return;
+  const key = [props.mode, form.provider, form.base_url].join('|');
+  if (autoProbeKey.value === key) return;
+  autoProbeKey.value = key;
+  void fetchRemoteModels();
+}, { flush: 'post' });
 
 /** 选中一条时：model_name 写 id；显示名称在用户没亲手改过时自动跟着这条 ID 走。 */
 function pickModelId(id: string): void {
@@ -420,8 +426,12 @@ function onDocPointer(ev: MouseEvent): void {
   modelPopOpen.value = false;
 }
 
-function onViewport(): void {
-  if (modelPopOpen.value) modelPopOpen.value = false;
+/** 视口变化/滚动时收起下拉；但**在列表内部滚动**不算（否则一滚就没了）。 */
+function onViewport(ev?: Event): void {
+  if (!modelPopOpen.value) return;
+  const t = ev?.target as HTMLElement | null;
+  if (t && typeof t.closest === 'function' && t.closest('.model-pop')) return;
+  modelPopOpen.value = false;
 }
 
 onMounted(() => {
@@ -656,7 +666,7 @@ function resetTransient(): void {
   probeError.value = '';
   probeHost.value = '';
   probeBusy.value = false;
-  manualModel.value = false;
+  autoProbeKey.value = '';
   modelQuery.value = '';
   modelPopOpen.value = false;
   keys.value = [];
@@ -776,7 +786,6 @@ async function pickProvider(p: ProviderRow): Promise<void> {
   probeOptions.value = [];
   probeError.value = '';
   probeHost.value = '';
-  manualModel.value = false;
   modelQuery.value = '';
   newKeyOpen.value = false;
   newKeyLabel.value = '';
@@ -1179,39 +1188,26 @@ const advSummary = computed<string>(() => {
               </button>
             </div>
 
-            <div class="mf-input" v-if="!manualModel" ref="modelFieldEl">
+            <!-- 一个输入框两用：进第 3 步自动拉列表，也从这里直接手打 Model ID -->
+            <div class="mf-input" ref="modelFieldEl">
               <input
                 v-model="form.model_name" class="mono" spellcheck="false"
-                placeholder="点右侧箭头选，或直接手填" data-model-id-input
+                placeholder="点右侧箭头从列表选，或直接手填" data-model-id-input
                 @focus="placeModelPop"
                 @input="syncNameFromModel(form.model_name)"
+                @keydown.esc="modelPopOpen = false"
               />
               <button
-                type="button" class="mf-caret" :disabled="!probeOptions.length"
+                type="button" class="mf-caret"
+                :class="{ busy: probeBusy }"
+                :disabled="probeBusy"
                 title="选择模型" data-model-pop-toggle @click="toggleModelPop"
               >
                 <AppIcon name="chevron-down" :size="14" />
               </button>
             </div>
-            <div class="mf-input" v-else>
-              <input
-                v-model="form.model_name" class="mono" spellcheck="false"
-                placeholder="如 deepseek-chat" data-model-id-manual
-                @input="syncNameFromModel(form.model_name)"
-              />
-            </div>
 
             <p class="hint-line" v-if="probeHost">列表来自 {{ probeHost }}（{{ probeOptions.length }} 个）</p>
-            <p class="hint-line" v-if="manualModel && !probeError">手填模式：直接写模型 ID 也能保存。</p>
-
-            <div class="mf-foot">
-              <button type="button" class="lnk" v-if="!manualModel" data-model-manual @click="manualModel = true">
-                手动输入 Model ID
-              </button>
-              <button type="button" class="lnk" v-else-if="probeOptions.length" @click="manualModel = false">
-                从列表选择
-              </button>
-            </div>
           </div>
         </div>
 
@@ -1244,9 +1240,6 @@ const advSummary = computed<string>(() => {
               </button>
               <p class="mp-empty" v-if="!modelCandidates.length">没有匹配的模型 ID</p>
             </div>
-            <button type="button" class="mp-manual" @click="manualModel = true; modelPopOpen = false">
-              <AppIcon name="edit" :size="13" />手动输入 Model ID
-            </button>
           </div>
         </Teleport>
       </section>
@@ -1526,7 +1519,6 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .mf-caret:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .mf-caret:focus-visible { outline: none; box-shadow: var(--ring); }
 .mf-caret:disabled { opacity: .5; cursor: default; }
-.mf-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* 模型下拉：fixed 定位（见 placeModelPop），小屏也不出视口 */
 .model-pop {
@@ -1562,16 +1554,6 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .mp-opt.on .mp-radio { border-color: var(--accent); border-width: 4px; }
 .mp-id { flex: 1 1 auto; min-width: 0; }
 .mp-empty { margin: 0; padding: 8px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.mp-manual {
-  display: flex; align-items: center; gap: 6px; flex: none; width: 100%; height: 30px;
-  margin-top: 4px; padding: 0 8px;
-  border: 0; border-top: 1px solid var(--divider); border-radius: 0;
-  background: transparent; color: var(--text-dim);
-  font-size: calc(12px * var(--ts, 1)); text-align: left; cursor: pointer;
-}
-.mp-manual:hover { color: var(--text); }
-.mp-manual:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
-
 /* ④ 任务用途 */
 .types { height: auto; flex-wrap: wrap; gap: 2px; }
 .types button { height: calc(var(--control-h) - 6px); padding: 0 11px; font-size: calc(12.5px * var(--ts, 1)); }

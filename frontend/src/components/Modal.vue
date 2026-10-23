@@ -28,7 +28,17 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 function close() { emit('close'); }
-function onMask() { if (props.closeOnMask) close(); }
+/** 遮罩按下过没有：只有「按在遮罩上、也在遮罩上松开」才算点遮罩。
+ *  否则在弹窗里拖选文字、手滑松到遮罩上时，浏览器把 click 派发到两者共同祖先（就是遮罩），
+ *  @click.self 判定成立 → 弹窗被误关（用户口径 2026-12-02）。 */
+let downOnMask = false;
+function onMaskDown(ev: PointerEvent) {
+  downOnMask = ev.target === ev.currentTarget;
+}
+function onMask() {
+  if (!props.closeOnMask || !downOnMask) return;
+  close();
+}
 function onKey(ev: KeyboardEvent) { if (ev.key === 'Escape' && props.open) close(); }
 
 onMounted(() => document.addEventListener('keydown', onKey));
@@ -37,7 +47,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="modal-mask" :class="{ full }" @click.self="onMask">
+    <div
+      v-if="open" class="modal-mask" :class="{ full }"
+      @pointerdown="onMaskDown" @click.self="onMask"
+    >
       <div class="modal" :class="{ wide, full, narrow }" role="dialog" aria-modal="true">
         <div class="modal-head">
           <span class="modal-title" :title="title">{{ title }}</span>
