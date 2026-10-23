@@ -313,7 +313,14 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
  * 封顶 1720 而不是 none —— 超宽屏上正文列仍该有自己的宽度极限，只是不该在 1440 就停车。
  * **底部不留内边距**：设置页的滚动在窗格内部（.settings-pane），留 64 会在窗口底部
  * 长出一条空白带，同时把列表提前裁断（用户口径 2026-12-02）。呼吸空间改由窗格自己给。 */
-.app-main.settings { max-width: 1720px; padding-left: 0; padding-right: 24px; padding-bottom: 0; }
+.app-main.settings {
+  max-width: 1720px; padding-left: 0; padding-right: 24px; padding-bottom: 0;
+  /* 顶部也归零：这一页的滚动在窗格内部，顶部那 18px 一旦留在**滚动区之外**，滚起来
+     就是在窗格上沿被一刀切平，还会露出一条近乎白的带子（用户口径 2026-10：只有设置页被裁）。
+     归零之后窗格从顶栏底下就开始，内容滚上去是**钻到白色顶栏底下**，与其它页滚窗口时一模一样；
+     那 18px 的呼吸空间改由窗格自己的 padding-top 给（滚动时它会跟着滚走）。 */
+  padding-top: 0;
+}
 /* 阅读器：整屏布局且**自身不滚动**（滚动都在栏内），避免"滚侧栏带动整页" */
 .app-main.wide {
   max-width: none; padding: 0;
@@ -832,7 +839,7 @@ table.data.fixed { table-layout: fixed; }
   :root { --rail-w: var(--rail-w-min); }
   .app-main { padding: 14px 12px 56px; }
   /* 同理这一档的 12px：左边归零，右边留 12 */
-  .app-main.settings { padding-left: 0; padding-right: 12px; padding-bottom: 0; }
+  .app-main.settings { padding-left: 0; padding-right: 12px; padding-bottom: 0; padding-top: 0; }
   .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {

@@ -185,18 +185,10 @@ const activeSection = computed(() => SECTIONS.find((s) => s.id === active.value)
 
 /** 内容窗格：窗口不滚了，它自己就是滚动容器，切区后要把它归零。 */
 const paneRef = ref<HTMLElement | null>(null);
-/** 窗格滚过一点点了（>4px）：顶部那条白色渐变只在这时出现。
- *  它存在的唯一理由是**别让内容被窗格上沿一刀切平** —— 没滚的时候必须干净，
- *  否则页头标题上会凭空压一层白。 */
-const paneScrolled = ref(false);
-function onPaneScroll() {
-  paneScrolled.value = (paneRef.value?.scrollTop ?? 0) > 4;
-}
 /** 等 DOM 换完再归零 —— 新分区多高要到渲染后才定，早一步设会被旧内容的溢出量顶回去。 */
 function resetPaneScroll() {
   void nextTick(() => {
     if (paneRef.value) paneRef.value.scrollTop = 0;
-    paneScrolled.value = false;
   });
 }
 
@@ -474,7 +466,7 @@ onMounted(async () => {
       </nav>
       <p class="settings-empty" v-if="!visibleSections.length">没有匹配的设置</p>
     </aside>
-    <div class="settings-pane" :class="{ 'is-scrolled': paneScrolled }" ref="paneRef" @scroll.passive="onPaneScroll">
+    <div class="settings-pane" ref="paneRef">
       <!-- 页头：图标 + 一个大标题（Windows 设置那种「一页一个大标题、不挂二级说明」）。
            副标题整句去掉（用户口径 2026-12：移除二级说明）；desc 只留给左栏搜索的同义词匹配，
            想知道这一区管什么，悬停标题即可（title 上挂着它）。 -->
@@ -671,9 +663,11 @@ onMounted(async () => {
   grid-template-columns: var(--rail-col) minmax(0, 1fr);
   /* 显式写行高：两栏都靠 height:100% 撑满，行若是 auto 就退回按内容算，窗格的滚动区会变矮 */
   grid-template-rows: minmax(0, 1fr);
-  /* 只扣「顶栏 + 主区顶部内边距」：设置页的底部内边距是 0（见 base.css 的 .app-main.settings），
-     再扣 64 就会在窗口底部长出一条空白带、并把列表提前裁断（用户口径 2026-12-02）。 */
-  height: calc(100dvh - var(--header-h) - 18px);
+  /* 只扣「顶栏」：设置页的上下内边距都是 0（见 base.css 的 .app-main.settings），
+     再扣 64 就会在窗口底部长出一条空白带、并把列表提前裁断（用户口径 2026-12-02）。
+     顶部那 18px 也不再扣 —— 那正是"只有设置页被裁"的来源：它留在滚动区外面，
+     窗格上沿于是比别页高出一截、还露一条浅色带（用户口径 2026-10）。 */
+  height: calc(100dvh - var(--header-h));
   overflow: hidden;
 }
 .settings-rail {
@@ -685,9 +679,10 @@ onMounted(async () => {
   height: auto; max-height: 100%; overflow-y: auto;
   /* 栏内各块的间距由下面各自的 margin 给，不叠 flex gap（两处都管会变成加倍的缝） */
   display: flex; flex-direction: column; gap: 0;
-  /* 上留白 0：顶线靠标题自己的 margin-top 对齐（算式见 .settings-rail-title）；
+  /* 上留白 18：与窗格的 padding-top 同一个数（那 18px 从 .app-main 挪到了两栏自己身上，
+     见 base.css 的 .app-main.settings），所以标题的顶线位置一点没动；
      左 6 给焦点环留余量，右 24 顶替被删掉的那条竖发丝线（栏宽 208 因此留给可点项 178） */
-  padding: 0 24px 12px 6px;
+  padding: 18px 24px 12px 6px;
 }
 /* 左栏抬头：整页唯一的 h1，比右侧页头标题（22）小一档，不抢内容。
  *
@@ -784,19 +779,12 @@ onMounted(async () => {
   /* 只补左边：右边那 24 由 base.css 的 `.app-main.settings` 给（左内边距那边是 0），
      这里再补一份就变成 48，内容会明显偏左 —— 两侧留白不等宽，比宽度本身更刺眼。 */
   padding-left: var(--sp-5); padding-right: 0;
-  /* 底部呼吸空间跟着内容一起滚（主区那边已经是 0，见 base.css） */
-  padding-bottom: var(--sp-5);
+  /* 顶 18 / 底 24：上下呼吸空间都跟着内容一起滚（主区那边已经是 0，见 base.css）。
+     顶部这 18px 必须在这里给、不能留在 .app-main 上 —— 那样它就在滚动区外面，
+     内容滚上去会被窗格上沿切平；放进来之后是滚走，内容直接钻到白色顶栏底下。 */
+  padding-top: 18px; padding-bottom: var(--sp-5);
 }
-/* 窗格上沿的柔化：内容滚上去时**淡出**，而不是被容器边缘一刀切平（用户口径 2026-10：
-   「去除设置页顶部白色裁切」——滚到一半时那排类型卡被切掉上半截，看着像页面坏了）。
-   · 用 mask 而不是盖一层渐变：盖一层要 position:absolute，那会把绝对定位的子孙改成
-     相对这一层定位，再叠上 overflow:hidden 就被裁掉了 —— 实测探针 ④ 立刻少一条
-     （页面可滚高度从 >200 掉到 0）。mask 只影响绘制，不改任何布局与定位祖先。
-   · 只在真滚过（is-scrolled）时加：没滚时页头标题上不能有任何淡化 —— 那才是原来那个「白」。 */
-.settings-pane.is-scrolled {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
-}
+
 /* 内容列封顶 1200 并居中：再宽两列卡片之间就空得发慌，正文行也散。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
    也算进去了，那样内容会整体左偏半个滚动条宽。 */
@@ -822,14 +810,12 @@ onMounted(async () => {
   font-size: calc(22px * var(--ts, 1)); font-weight: 650; line-height: 1.25; letter-spacing: -.02em;
 }
 
-/* 861–1024：.app-main 的内边距收成 14 / 56（base.css），高度算式得换一档，
-   否则差 16px 就又在窗口上长出一条滚动条 —— 那正是要消灭的东西。
-   右侧同样是"补差"：这一档 .app-main.settings 给的是 12，补 4 才够 16。 */
+/* 861–1024：.app-main 的左右内边距收成 12 / 56（base.css），高度算式不用再换档 ——
+   顶部在设置页已经被归零（base.css 的 .app-main.settings），只有「视口 − 顶栏」。
+   右侧是"补差"：这一档 .app-main.settings 给的是 12，补 4 才够 16。 */
 @media (max-width: 1024px) {
-  .settings-layout {
-    height: calc(100dvh - var(--header-h) - 14px);
-  }
-  .settings-pane { padding-left: var(--sp-4); padding-right: 4px; }
+  .settings-pane { padding-left: var(--sp-4); padding-right: 4px; padding-top: 14px; }
+  .settings-rail { padding-top: 14px; }
   .cards-2 { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -849,8 +835,6 @@ onMounted(async () => {
     padding-left: 0; padding-right: 0;
     height: auto; overflow: visible;
   }
-  /* 这一档窗格不再自己滚动（改由窗口滚），柔化没有意义 */
-  .settings-pane.is-scrolled { -webkit-mask-image: none; mask-image: none; }
   /* 折成两行："设置" + 搜索框一行，导航自己占满下一行（横排要整条宽度才滚得顺） */
   .settings-rail {
     position: static; height: auto; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
