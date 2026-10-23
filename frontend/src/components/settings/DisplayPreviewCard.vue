@@ -10,11 +10,11 @@
  * ⚠️ 整块 `aria-hidden` + `pointer-events: none`：它是**示例**，按钮点了不该真的发生什么。
  * 做一个点了有反应的假按钮，比不做预览更糟。
  *
- * 2026-12 用户口径：「显示与排版」那张卡撤掉（整体缩放、字体两项都不要了），只剩分类字号，
- * 于是把它**并进这张卡**：左列是五类字号的步进器，右列是原来那套样例 —— 调完当场看到，
- * 不必在两张卡之间上下对照。外壳仍由这张卡提供，CategorySizeBlock 只出控件。
+ * 2026-12 用户口径（最终版式）：这一栏只有它一张卡 —— 样例 + 「当前配色」都并进来，
+ * 分类字号与高亮效果搬到右栏（裸块），所以这里只留「看」的部分。
+ * 含义没变：字号、主题色、标注画法一改，这块当场跟着变。
  */
-import CategorySizeBlock from './CategorySizeBlock.vue';
+import ThemePaletteCard from './ThemePaletteCard.vue';
 </script>
 
 <template>
@@ -22,13 +22,12 @@ import CategorySizeBlock from './CategorySizeBlock.vue';
     <div class="card-head">
       <div class="hd">
         <h3>预览效果</h3>
-        <p>右边调分类字号，左边当场看效果</p>
+        <p>字号、配色与标注画法改完，这里当场跟着变</p>
       </div>
     </div>
 
     <div class="card-body preview-body">
-      <div class="pv-cols">
-        <div class="sample" aria-hidden="true" data-preview>
+      <div class="sample" aria-hidden="true" data-preview>
           <div class="sample-top">
             <span class="sample-title">量子纠缠与局域性：一个可检验的视角</span>
             <span class="pv-tag is-accent">论文</span>
@@ -50,10 +49,9 @@ import CategorySizeBlock from './CategorySizeBlock.vue';
             <span class="pv-btn">加入收藏</span>
             <span class="pv-link">查看详情 ›</span>
           </div>
-        </div>
-
-        <CategorySizeBlock />
       </div>
+
+      <ThemePaletteCard bare />
     </div>
   </section>
 </template>
@@ -68,13 +66,8 @@ import CategorySizeBlock from './CategorySizeBlock.vue';
 .hd p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
 .preview { min-width: 0; }
-.preview-body { padding: 10px 14px 10px; }
-/* 左列控件定宽 226：五类字号一列排刚好，再窄步进器就塞不下两个按钮 */
-.pv-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 216px); gap: 14px; align-items: start; }
-/* 窄了：控件落到样例下面（先看字，再调） */
-@container (max-width: 560px) {
-  .pv-cols { grid-template-columns: minmax(0, 1fr); }
-}
+/* 样例在上、「当前配色」在下：两块之间那条细线由 ThemePaletteCard 自己画 */
+.preview-body { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px 14px; }
 
 .sample {
   display: grid; gap: 7px; padding: 11px 14px;

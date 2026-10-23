@@ -101,14 +101,13 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 /* 卡片拉满整行高度（与左侧预设列表等高），缩略图吃掉剩下的空间 */
 .palette { display: flex; flex-direction: column; min-width: 0; }
 .palette-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
-/* bare：并进「主题预设」卡之后，右栏靠一条竖线与左侧列表分开（不画第二个卡壳） */
-.palette-bare {
-  height: 100%; padding: 0 0 0 16px;
-  border-left: 1px solid var(--divider);
-}
-.palette-bare .palette-body { padding: 0; }
-/* 并进预设卡之后这块有 268 高：缩略图跟着长，别在下面留一片白 */
-.palette-bare .mini { max-height: none; }
+/* bare：并进「预览效果」卡之后，上面一条细线与样例分开（不画第二个卡壳） */
+.palette-bare { padding: 0; }
+.palette-bare .palette-body { padding: 12px 0 0; border-top: 1px solid var(--divider); }
+/* 卡宽 660 左右：四枚色块铺一行；窄了自动落回两列 */
+.palette-bare .chips { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+/* 缩略图跟着长满剩余高度，别在下面留一片白 */
+.palette-bare .mini { max-height: none; min-height: 104px; }
 .bare-label {
   margin: 0 0 8px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 650;
 }

@@ -1,12 +1,11 @@
 <script setup lang="ts">
 /**
- * 设置 · 显示主题 · **分类字号**：五类字号各调各的。
+ * 设置 · 显示主题 · **分类字号**（**不套卡片**：右栏三块共用一条竖轴，只靠留白与细线分区）。
  *
- * 2026-12 用户口径：撤掉「整体缩放」与「字体」两段，只留分类字号，并**并进「预览效果」卡**
- * （左侧调、右侧当场看，不必上下对照）。所以这里只出控件，不带卡片外壳与卡头 ——
- * 外壳由 DisplayPreviewCard 统一提供，避免"卡里套卡"。
+ * 一行是「名字在左、窄步进器在右」—— 步进器**定宽**（116），不随栏宽拉长：
+ * 五行的 − / + 因此落在同一对竖线上，也不会在 420 宽的右栏里拖成一条长条。
  *
- * 与原来一样**没有「保存」**：点一下就往 :root 落 CSS 变量并写 localStorage，页面当场重排。
+ * 与原来一样**没有「保存」**：点一下就往 :root 落 CSS 变量并写 localStorage。
  */
 import {
   CATEGORY_MAX,
@@ -18,18 +17,17 @@ import {
   type DisplayCategory,
 } from '@/stores/display';
 
-/** 分类的说明要短到能跟在名字后面：这一屏是"调数值"，不是读文档。 */
-const CATEGORY_META: Record<DisplayCategory, { label: string; hint: string }> = {
-  body: { label: '正文', hint: '论文与笔记' },
-  chat: { label: '对话', hint: '问答气泡' },
-  note: { label: '笔记', hint: '批注与高亮' },
-  side: { label: '侧栏', hint: '目录与面板' },
-  ui: { label: '界面', hint: '按钮与表格' },
+const CATEGORY_META: Record<DisplayCategory, { label: string }> = {
+  body: { label: '正文' },
+  chat: { label: '对话' },
+  note: { label: '笔记' },
+  side: { label: '侧栏' },
+  ui: { label: '界面' },
 };
 
 const categories = DISPLAY_CATEGORIES.map((key) => ({ key, ...CATEGORY_META[key] }));
 
-/** 浮动值留一点余量，避免 0.85 被浮点误差判成"还能再减"。 */
+/** 浮动值留一点余量，避免 0.85 被浮点误差判成还能再减。 */
 const canDown = (value: number, min: number) => value > min + 1e-6;
 const canUp = (value: number, max: number) => value < max - 1e-6;
 
@@ -43,10 +41,10 @@ function stepCategory(key: DisplayCategory, dir: number) {
 </script>
 
 <template>
-  <div class="cats-block" data-category-sizes>
-    <div class="cats-head">
-      <span class="cats-title">分类字号</span>
-      <span class="cats-desc">不同内容各调各的</span>
+  <section class="cats-block" data-category-sizes>
+    <div class="block-head">
+      <h3>分类字号</h3>
+      <p>不同内容各调各的</p>
     </div>
 
     <div class="cats">
@@ -71,37 +69,34 @@ function stepCategory(key: DisplayCategory, dir: number) {
         </div>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.cats-block { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.cats-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.cats-title { flex: none; font-size: calc(12.5px * var(--ts, 1)); font-weight: 650; }
-.cats-desc {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(11px * var(--ts, 1)); color: var(--text-faint);
+/* 块头：与「主题预设」「高亮效果」同一套（裸块，不加卡片） */
+.block-head { display: grid; gap: 1px; margin-bottom: 8px; min-width: 0; }
+.block-head h3 {
+  margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
+  letter-spacing: -.01em; line-height: 1.3;
 }
+.block-head p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
-/* 五类：一列排（预览卡左栏本来就窄，两列会把步进器挤到 100px 以下） */
+.cats-block { min-width: 0; }
 .cats { display: flex; flex-direction: column; gap: 2px; }
-/* 两列：名字 30 + 步进器吃掉剩下的宽度。步进器**铺满整列**（不是 auto 宽），
-   五行的「−」与「+」才落在同一对竖线上 —— 之前按内容定宽 + 空着一列 auto，
-   每行宽度各不相同，看着就是"按钮错位"。 */
+/* 一行：名字在左、步进器贴右；步进器定宽，五行才对齐 */
 .cat {
-  display: grid; grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center; gap: 8px; min-height: 26px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; min-height: 28px;
 }
 .cat-name { font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
 
-/* 步进器：一个 pill 里「− 值 +」，值用等宽数字，按下时不会左右抖 */
 .step {
-  display: flex; align-items: center; width: 100%; height: 26px;
+  display: flex; align-items: center; flex: none; width: 116px; height: 26px;
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
   background: var(--bg-elev); overflow: hidden;
 }
 .step-btn {
-  flex: none; width: 24px; height: 100%; border: 0; background: transparent;
+  flex: none; width: 26px; height: 100%; border: 0; background: transparent;
   color: var(--text-dim); font-family: inherit; font-size: calc(13px * var(--ts, 1));
   line-height: 1; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -116,5 +111,4 @@ function stepCategory(key: DisplayCategory, dir: number) {
   font-size: calc(11.5px * var(--ts, 1)); font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
-
 </style>

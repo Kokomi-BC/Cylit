@@ -9,7 +9,6 @@
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
-import ThemePaletteCard from './ThemePaletteCard.vue';
 import Modal from '@/components/Modal.vue';
 import { askConfirm } from '@/stores/confirm';
 import { toast } from '@/stores/app';
@@ -196,8 +195,8 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 </script>
 
 <template>
-  <section class="card preset">
-    <div class="card-head">
+  <section class="preset">
+    <div class="block-head">
       <div class="hd">
         <h3>主题预设</h3>
         <p>点一套就换，写进这台机器</p>
@@ -208,101 +207,93 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
       </button>
     </div>
 
-    <div class="card-body preset-body">
-      <div class="preset-cols">
-        <!-- 左：竖向列表（竖着滚）。25 套一次性铺开会把这张卡撑到五行以上，
-             主题一栏就再也看不全 —— 滚动条本身就是"还有更多"的说明。 -->
-        <div class="preset-list" data-preset-list>
-          <div class="pgroup" role="radiogroup" aria-label="外观预设">
-            <div class="group-label">预设</div>
-            <div
-              v-for="t in skins"
-              :key="t.id"
-              class="row"
-              :class="{ 'is-on': active === t.id }"
-              role="radio"
-              :aria-checked="active === t.id"
-              tabindex="0"
-              :title="t.label"
-              :data-theme-option="t.id"
-              @click="choose(t.id)"
-              @keydown.enter.prevent="choose(t.id)"
-              @keydown.space.prevent="choose(t.id)"
-            >
-              <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
-                <span class="sw-paper" :style="{ background: t.preview.paper }">
-                  <span class="sw-bar" :style="{ background: t.preview.accent }" />
-                  <span class="sw-line mid" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
-                </span>
-              </span>
-              <span class="row-label">{{ t.label }}</span>
+    <!-- 一排多个主体小卡（名字在色块下面），竖向滚动：25 套铺开会把这一栏撑到十行以上，
+         滚动条本身就是「还有更多」的说明。 -->
+    <div class="preset-list" data-preset-list>
+      <div class="pgroup" role="radiogroup" aria-label="外观预设">
+        <div class="group-label">预设</div>
+        <div
+          v-for="t in skins"
+          :key="t.id"
+          class="row"
+          :class="{ 'is-on': active === t.id }"
+          role="radio"
+          :aria-checked="active === t.id"
+          tabindex="0"
+          :title="t.label"
+          :data-theme-option="t.id"
+          @click="choose(t.id)"
+          @keydown.enter.prevent="choose(t.id)"
+          @keydown.space.prevent="choose(t.id)"
+        >
+          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+            <span class="sw-paper" :style="{ background: t.preview.paper }">
+              <span class="sw-bar" :style="{ background: t.preview.accent }" />
+              <span class="sw-line mid" :style="{ background: t.preview.ink }" />
+              <span class="sw-line" :style="{ background: t.preview.ink }" />
+              <span class="sw-line short" :style="{ background: t.preview.ink }" />
+              <span class="sw-line short" :style="{ background: t.preview.ink }" />
+            </span>
+          </span>
+          <span class="row-label">{{ t.label }}</span>
 
-              <span v-if="t.custom" class="row-tools">
-                <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
-                  <AppIcon name="edit" :size="11" />
-                </button>
-                <button type="button" class="row-tool danger" title="删除这套主题"
-                        @click.stop="removeCustom(t.id, t.label)">
-                  <AppIcon name="trash" :size="11" />
-                </button>
-              </span>
+          <span v-if="t.custom" class="row-tools">
+            <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
+              <AppIcon name="edit" :size="11" />
+            </button>
+            <button type="button" class="row-tool danger" title="删除这套主题"
+                    @click.stop="removeCustom(t.id, t.label)">
+              <AppIcon name="trash" :size="11" />
+            </button>
+          </span>
 
-              <span v-if="active === t.id" class="row-check" aria-hidden="true">
-                <AppIcon name="check" :size="10" />
-              </span>
-            </div>
-          </div>
-
-          <div class="pgroup" role="radiogroup" aria-label="配色">
-            <div class="group-label">配色</div>
-            <div
-              v-for="t in colorThemes"
-              :key="t.id"
-              class="row"
-              :class="{ 'is-on': active === t.id }"
-              role="radio"
-              :aria-checked="active === t.id"
-              tabindex="0"
-              :title="t.label"
-              :data-theme-option="t.id"
-              @click="choose(t.id)"
-              @keydown.enter.prevent="choose(t.id)"
-              @keydown.space.prevent="choose(t.id)"
-            >
-              <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
-                <span class="sw-paper" :style="{ background: t.preview.paper }">
-                  <span class="sw-bar" :style="{ background: t.preview.accent }" />
-                  <span class="sw-line mid" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
-                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
-                </span>
-              </span>
-              <span class="row-label">{{ t.label }}</span>
-
-              <span v-if="t.custom" class="row-tools">
-                <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
-                  <AppIcon name="edit" :size="11" />
-                </button>
-                <button type="button" class="row-tool danger" title="删除这套主题"
-                        @click.stop="removeCustom(t.id, t.label)">
-                  <AppIcon name="trash" :size="11" />
-                </button>
-              </span>
-
-              <span v-if="active === t.id" class="row-check" aria-hidden="true">
-                <AppIcon name="check" :size="10" />
-              </span>
-            </div>
-          </div>
+          <span v-if="active === t.id" class="row-check" aria-hidden="true">
+            <AppIcon name="check" :size="10" />
+          </span>
         </div>
+      </div>
 
-        <!-- 右：当前配色（四枚语义色 + 迷你界面）。卡片外壳由这张卡统一提供，
-             所以它用 bare 模式，只出内容不套第二层卡壳。 -->
-        <ThemePaletteCard bare />
+      <div class="pgroup" role="radiogroup" aria-label="配色">
+        <div class="group-label">配色</div>
+        <div
+          v-for="t in colorThemes"
+          :key="t.id"
+          class="row"
+          :class="{ 'is-on': active === t.id }"
+          role="radio"
+          :aria-checked="active === t.id"
+          tabindex="0"
+          :title="t.label"
+          :data-theme-option="t.id"
+          @click="choose(t.id)"
+          @keydown.enter.prevent="choose(t.id)"
+          @keydown.space.prevent="choose(t.id)"
+        >
+          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+            <span class="sw-paper" :style="{ background: t.preview.paper }">
+              <span class="sw-bar" :style="{ background: t.preview.accent }" />
+              <span class="sw-line mid" :style="{ background: t.preview.ink }" />
+              <span class="sw-line" :style="{ background: t.preview.ink }" />
+              <span class="sw-line short" :style="{ background: t.preview.ink }" />
+              <span class="sw-line short" :style="{ background: t.preview.ink }" />
+            </span>
+          </span>
+          <span class="row-label">{{ t.label }}</span>
+
+          <span v-if="t.custom" class="row-tools">
+            <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
+              <AppIcon name="edit" :size="11" />
+            </button>
+            <button type="button" class="row-tool danger" title="删除这套主题"
+                    @click.stop="removeCustom(t.id, t.label)">
+              <AppIcon name="trash" :size="11" />
+            </button>
+          </span>
+
+          <span v-if="active === t.id" class="row-check" aria-hidden="true">
+            <AppIcon name="check" :size="10" />
+          </span>
+        </div>
       </div>
     </div>
   </section>
@@ -395,8 +386,9 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 </template>
 
 <style scoped>
-/* ---- 卡头：标题 14 / 说明 11.5，右侧"当前"，三样都在一行里 ---- */
-.card-head { padding: 11px 14px 9px; }
+/* ---- 块头：标题 14 / 说明 11.5 / 右侧「＋ 自定义」，三样一行。
+   这一栏（主题预设 / 分类字号 / 高亮效果）**不套卡片**，只用留白与细线分区（用户口径 2026-12）。 ---- */
+.block-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
 .hd { display: grid; gap: 2px; min-width: 0; }
 .hd h3 {
   margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
@@ -417,20 +409,11 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .add-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
 .add-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 
-.preset { display: flex; flex-direction: column; min-width: 0; }
-.preset-body { flex: 1; padding: 12px 14px 14px; }
-
-/* 左：一排多个主题（名字在色块下面），**竖向滚动**。25 套一次铺开会把这张卡撑到
-   十行以上，主题这栏就再也看不全；竖排的滚动条本身就是「还有更多」的说明。 */
-.preset-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 316px);
-  gap: 16px;
-  align-items: stretch;
-  min-width: 0;
-}
+.preset { min-width: 0; }
+/* 列表：一排多个主体小卡（名字在色块下面），**竖向滚动**。25 套铺开会把这一栏撑到
+   十行以上；竖排的滚动条本身就是「还有更多」的说明。 */
 .preset-list {
-  min-width: 0; max-height: 268px; overflow-y: auto; overscroll-behavior: contain;
+  min-width: 0; max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 10px;
   padding-right: 4px;
   scrollbar-width: thin; scrollbar-gutter: stable;
@@ -522,10 +505,8 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .row-tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* 窄了：配色落到列表下面（右栏 316 一旦保不住，两列会一起挤成两条窄缝） */
-@container (max-width: 640px) {
-  .preset-cols { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .preset-list { max-height: 232px; }
-  .palette-bare { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--divider); }
+@container (max-width: 460px) {
+  .preset-list { max-height: 268px; }
 }
 
 /* ---------------------------- 编辑器 ---------------------------- */

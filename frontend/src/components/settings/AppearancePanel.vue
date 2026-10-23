@@ -2,11 +2,12 @@
 /**
  * 设置 · 显示主题：**一整页三块**的编排层。
  *
- * 版式（自上而下，2026-12 用户口径重排）：
- *   ① **主题预设**（一张卡：左侧竖向列表 + 竖滚，右侧「当前配色」四枚语义色与迷你界面）
- *   ② **预览效果**（左列分类字号步进器 + 右侧样例）｜**高亮效果**（荧光笔 / 下划线）
- * 「显示与排版」那张卡已拆：整体缩放与字体两项删除，只剩分类字号 → 并进预览卡。
- * 两块之间的间距统一 12：这一区是"看效果"的地方，间距一大视线就断。
+ * 版式（2026-12 用户口径，最终）：**左一卡、右一栏**
+ *   左：**预览效果**（样例 + 当前配色，唯一套卡片的东西 —— 它才是"看效果"的地方）
+ *   右：一条窄而长的竖轴，三块**都不套卡片**，只用留白与 1px 细线分区：
+ *       主题预设（竖卡网格 + 竖向滚动）→ 分类字号（窄步进器）→ 高亮效果。
+ * 为什么右栏不套卡：三张卡摞起来就是三条卡缝 + 三个卡头，而它们本来就是同一件事
+ * （"这一页怎么显示"）的三个旋钮；裸块 + 细线更像设置项列表，也更省高度。
  *
  * 第三行原来是「预览效果 + 高级设置」：高级设置（细腻动画 / 收起左侧栏）低频、而且"收起左侧栏"
  * 在侧栏底部本来就有入口，右栏底部因此常年留白。2026-12 起整卡换成「高亮效果」——
@@ -19,16 +20,19 @@
 import ThemePresetCard from './ThemePresetCard.vue';
 
 import DisplayPreviewCard from './DisplayPreviewCard.vue';
+import CategorySizeBlock from './CategorySizeBlock.vue';
 import HighlightStyleCard from './HighlightStyleCard.vue';
 </script>
 
 <template>
   <div class="appearance" data-appearance>
-    <div class="ap-top">
-      <ThemePresetCard />
-    </div>
-    <div class="ap-bottom">
+    <div class="ap-left">
       <DisplayPreviewCard />
+    </div>
+
+    <div class="ap-right">
+      <ThemePresetCard />
+      <CategorySizeBlock />
       <HighlightStyleCard />
     </div>
   </div>
@@ -39,37 +43,27 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 .appearance {
   container-type: inline-size;
   display: grid;
-  gap: 12px;
+  /* 左宽右窄：左卡是"看效果"的主力（样例 + 配色），右栏是三个旋钮，420 够用又不抢视线 */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  gap: 16px;
+  align-items: start;
   min-width: 0;
 }
+/* 左卡比右栏矮得多（436 vs 792）：让它在这一层里**吸顶**，往下滚右栏时预览一直看得到，
+   画面底下那片空白也不会跟着滚走变成"一块空卡"。 */
+.ap-left { min-width: 0; position: sticky; top: 12px; }
 
-/* 第一行：只有一张卡（主题预设 + 当前配色已合成一张，两栏在卡的内部） */
-.ap-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  min-width: 0;
-}
-
-/* 第三行：预览 + 高亮，两块大致等宽（1.1 : 1）并**等高**。
-   高亮卡里是两张并排的示例小卡，窄了就只能叠成一列、右栏又回到"下面一大片空白"；
-   用 stretch 让两卡同高，示例块再用 margin-top:auto 顶到底 —— 底边因此齐平。 */
-.ap-bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: stretch;
-  min-width: 0;
-}
+/* 右栏：一条竖轴，三块裸内容（不套卡片），块与块之间一条 1px 细线 + 14px 呼吸 */
+.ap-right { min-width: 0; display: flex; flex-direction: column; }
+.ap-right > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
 
 /* 网格里的兄弟卡不需要 base.css 那条 `.card + .card` 的 12px 上边距（缝已由 gap 给） */
 .appearance :deep(.card + .card) { margin-top: 0; }
 
-/* 第三行的门槛比第一行高：高亮卡里是两张并排的小卡，内容区窄到 820 左右时
-   右栏只剩 330 出头 —— 两张示例卡要么挤成一条、要么自己叠起来把卡撑高，两种都不好看。
-   这一档起整行落单列（两张卡各占整宽，示例卡反而更宽敞）。 */
-@container (max-width: 820px) {
-  .ap-bottom { grid-template-columns: minmax(0, 1fr); }
+/* 内容区窄到 940 以下：右栏 420 + 16 的缝之后，左卡只剩 500 以下 —— 样例里的标题会被截成
+   半行（实测 1280 宽时左卡只剩 366）。这一档起落单列：先预览，再三个旋钮。 */
+@container (max-width: 940px) {
+  .appearance { grid-template-columns: minmax(0, 1fr); }
 }
 
 </style>
