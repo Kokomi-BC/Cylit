@@ -722,26 +722,18 @@ function onMore(key: string, r: FeedRow) {
       />
     </template>
 
-    <!-- 插图：**图注（卡片标题）一行 + 图 + 页码/图号一行**（论文自己就是这么排的）。
-         「定位到图注」跟着**图注标题**走、落在它的右侧：它是"回到正文里这张图的图注"这个动作，
-         属于标题行的一部分，比浮在图片右上角更好找，也不会挡住图。
+    <!-- 插图：**页码/图号一行 + 图 + 图注一行**（用户口径：图注放底部，页码和图号提到顶部）。
+         顶部那行里页码、图号与右侧两枚操作键**同高**（`--control-h-sm` = 26px），
+         扫一列图卡时这条线是齐的；图注压在图下面，正好是论文自己「图在上、说明在下」的排法。
          图与"点开看大图"都用后端的「图 + 图注」卡片（`?card=1`）—— 与正文里的图同源，
          点开就是它的放大版（范围完全一致，用户口径）。 -->
     <template v-if="props.tab === 'figures'">
       <div v-for="fig in props.figures" :key="fig.block_id" class="item fig-card">
         <div class="fig-head">
-          <!-- 图注按 **Markdown** 渲染：图注里大量出现 `$\text{TurboQuant}_{\text{mse}}$` 这类公式，
-               纯文本会把 LaTeX 原样显示出来（用户口径：侧栏要有 Markdown 支持） -->
-          <!-- 图注优先用**中文译文**（用户口径）；英文原文留在 title 里，鼠标停一下能对照 -->
-          <div
-            v-if="fig.caption_zh || fig.caption"
-            class="fig-caption md"
-            :title="fig.caption || ''"
-            v-html="mdToHtml(fig.caption_zh || fig.caption || '')"
-          />
-          <span v-else class="spacer" />
-          <!-- 浮层打开（用户口径）：图注标题右侧一枚，与「定位」并排 ——
-               点图本身也能开，但按钮是「看得见」的那个入口。 -->
+          <span class="badge">p{{ fig.page }}</span>
+          <span v-if="fig.part_label" class="badge dim">{{ fig.part_label }}</span>
+          <span v-if="fig.number" class="badge accent">图 {{ fig.number }}</span>
+          <span class="spacer" />
           <!-- 浮层打开（用户口径）：走**新的那个浮层**（FloatingCard 里显示这张图），
                不是图片查看器 —— 查看器是「点图片本身」那一手（要缩放 / 旋转 / 切图才用它）。 -->
           <button
@@ -774,12 +766,15 @@ function onMore(key: string, r: FeedRow) {
             })"
           >
         </div>
-        <div class="row tiny fig-meta">
-          <span class="badge">p{{ fig.page }}</span>
-          <span v-if="fig.part_label" class="badge dim">{{ fig.part_label }}</span>
-          <span class="spacer" />
-          <span v-if="fig.number" class="badge accent">图 {{ fig.number }}</span>
-        </div>
+        <!-- 图注按 **Markdown** 渲染：图注里大量出现 `$\text{TurboQuant}_{\text{mse}}$` 这类公式，
+             纯文本会把 LaTeX 原样显示出来（用户口径：侧栏要有 Markdown 支持） -->
+        <!-- 图注优先用**中文译文**（用户口径）；英文原文留在 title 里，鼠标停一下能对照 -->
+        <div
+          v-if="fig.caption_zh || fig.caption"
+          class="fig-caption md"
+          :title="fig.caption || ''"
+          v-html="mdToHtml(fig.caption_zh || fig.caption || '')"
+        />
       </div>
       <div v-if="!props.figures.length" class="empty small">没有插图</div>
     </template>
@@ -1121,13 +1116,15 @@ function onMore(key: string, r: FeedRow) {
   max-width: 100%; background: #fff; border-radius: var(--radius-sm);
   margin: 6px 0 2px; cursor: zoom-in;
 }
-/* 插图卡片：图注（=卡片标题）在图上方、页码/图号在图下方一行。
- * 「定位到图注」在图注**标题行的最右侧**（用户口径；以前浮在图片右上角，会压住图）。
- * 图注可能换行，所以按钮 `flex:none` 顶部对齐，只跟**首行**同高。 */
+/* 插图卡片：页码/图号在**图上方**一行，图注在**图下方**一行（用户口径：图注放底部）。
+ * 顶部这行是个等高条：页码/图号用 .badge 抬到 `--control-h-sm`（26px），
+ * 与右侧两枚 26px 的方形操作键**同一条基线、同一个高度** —— 一列图卡扫下来是齐的。 */
 .fig-card { display: flex; flex-direction: column; }
-.fig-head { display: flex; align-items: flex-start; gap: 6px; margin: 0 0 2px; }
+.fig-head { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.fig-head .badge { height: var(--control-h-sm); padding: 0 9px; }
 .fig-caption {
-  flex: 1; min-width: 0;
+  flex: none; min-width: 0;
+  margin-top: 6px;
   font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
@@ -1137,15 +1134,12 @@ function onMore(key: string, r: FeedRow) {
 .fig-caption :deep(.katex-display) { margin: 0; overflow-x: auto; overflow-y: hidden; }
 .quote :deep(p) { margin: 0; display: inline; }
 .fig-head .spacer { flex: 1; }
-/* 光学对齐：按钮 26px、图注行盒 18px，上移 4px 后两者的**中心线**才对得上（图标不会看起来偏低）。 */
-/* 图注右侧那两枚按钮（浮层打开 / 定位）**共用一套几何**：
-   以前只给「定位」写了 margin-top: -4px（让它跟图注首行对齐），新加的浮层按钮没写，
-   于是两枚钮一高一低（用户口径：没有与旁边按钮对齐）。 */
-.fig-locate, .fig-overlay { flex: none; margin-top: -4px; color: var(--text-dim); }
+/* 两枚操作键（浮层打开 / 定位）与旁边的徽章同高，行内居中即可 ——
+   以前图注在顶部、要跟图注首行光学对齐才写 `margin-top: -4px`，图注移到下面后就不需要了。 */
+.fig-locate, .fig-overlay { flex: none; color: var(--text-dim); }
 .fig-locate:hover, .fig-overlay:hover { color: var(--accent-text); }
 .fig-body { display: flex; }
 .fig-body .figure { width: 100%; }
-.fig-meta { margin-top: 2px; gap: 6px; }
 /* 简报：只读态是「小标题 + 正文」的排版（跟侧栏其它内容一致），不是一组表单框。
    编辑态的输入框由 `.field` 提供样式，两者互斥出现。
    用户口径（本轮）：**去掉侧边那条竖线**（`.item.manual/.auto` 会画一条彩色左边框），
