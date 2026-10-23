@@ -122,6 +122,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("model_usage", "cache_read_tokens", "`cache_read_tokens` INT NOT NULL DEFAULT 0"),
     ("model_usage", "cache_write_tokens", "`cache_write_tokens` INT NOT NULL DEFAULT 0"),
     ("model_usage", "hour_key", "`hour_key` VARCHAR(13) NULL"),
+    # 分时段（峰谷）收费（2026-11）：这一笔按**哪一段时段规则**算的（model_price_rule.id）。
+    # 允许 NULL = 用的默认价（老行本来就都是默认价），所以不给默认值。
+    # 新表 model_price_rule 由 `create_all` 建，只有这个后加的列要走这里。
+    ("model_usage", "price_rule_id", "`price_rule_id` VARCHAR(64) NULL"),
 )
 
 

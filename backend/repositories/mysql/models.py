@@ -717,11 +717,140 @@ class ModelUsage(Base):
     #: 小时聚合键（本地 YYYY-MM-DD HH）。24h 窗口按它分桶 —— created_at 是 UTC，
     #: 直接拿它的小时数冒充本地小时会把整条折线错 8 小时。
     hour_key: Mapped[str | None] = mapped_column(String(13))
+    #: 这笔钱是按**哪一段时段规则**算的（``model_price_rule.id``）；NULL = 用的默认价。
+    #: 只留指针、不存规则快照：金额已经冻结在 ``cost`` 上，这一列回答的是
+    #: "这一笔为什么贵"，而规则日后调价不该让人以为历史金额也跟着变了。
+    price_rule_id: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         Index("ix_model_usage_day", "day"),
         # 唯一：同一个 request_id 只能有一行（NULL 不参与唯一性，老行不受影响）
         Index("ix_model_usage_request_id", "request_id", unique=True),
+    )
+
+
+# ---------------------------------------------------------------- ⑯¼ 时段单价
+class ModelPriceRule(Base):
+    """**一段**时段（峰谷）单价：一行 = 一个时段，同一模型可以有多条。
+
+    口径（与 ``services/model/billing.py`` 的 ``price_of`` / ``match_rule`` 一致）：
+
+    · ``model_config`` 上的四个单价 = **时段之外**的价（DeepSeek 口径里就是空闲价），
+      这张表里的行是**例外覆盖** —— 命中哪一段就用哪一段的价；
+    · 规则**只对工作日（周一至周五）生效**：周末与节假日一律落到默认价，
+      所以"周末走空闲价"不需要额外配置，是"没命中规则"的自然结果；
+    · ``start``/``end`` 是本地（Asia/Shanghai）的 ``HH:MM``，区间**左闭右开**
+      （``start <= t < end``：09:00 命中、12:00 不命中）；``end <= start`` = **跨午夜**
+      （``23:00–01:00`` = ``[23:00,24:00) ∪ [00:00,01:00)``，凌晨那截以**前一天**
+      是不是工作日为准）；``start == end`` 是零长度，写入时直接拒；
+    · **不存币种**：一个模型不可能人民币时段、美元时段并存，币种永远只认
+      ``model_config.currency`` → ``model_provider.currency`` → ``CNY`` 这条链；
+    · 同一模型内**时段不许重叠**（跨午夜先拆两段再比）：两条都命中时"按哪段算"
+      不该是实现细节 —— 校验在写入侧做（``billing.rules_overlap``）。
+
+    为什么不做成 ``model_config`` 上的一段 JSON：时段要能被"点名"（错误信息说清是
+    哪两段重叠、这一笔按哪一段算的），而 ``model_usage.price_rule_id`` 得有个真外键
+    意义的 id 可指 —— 塞进一个 JSON 数组就只能按下标指，删一段全乱。
+    """
+
+    __tablename__ = "model_price_rule"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: 所属模型配置（``model_config.id``）。删模型时在同一事务里连这些行一起删
+    #: （见 model_manager.delete：id 被复用会让老规则静默接管新模型的价格）
+    model_config_id: Mapped[str] = mapped_column(String(64))
+    #: 给人看的名字（"高峰"）；可以为空，空时界面按 start–end 显示
+    label: Mapped[str] = mapped_column(String(64), default="")
+    #: 本地 HH:MM（``09:00``）。刻意用字符串：这是**墙上的时间**，不是时间点
+    start: Mapped[str] = mapped_column(String(5))
+    end: Mapped[str] = mapped_column(String(5))
+    #: 这一段的单价（每百万 Token）。输入价与输出价必填（时段内算不出钱就没有意义），
+    #: 缓存价可空（NULL = 未配置，沿用 cost_of 的"没配缓存价就按普通输入算"）。
+    price_in: Mapped[float] = mapped_column(Float)
+    price_out: Mapped[float] = mapped_column(Float)
+    price_cache_read: Mapped[float | None] = mapped_column(Float)
+    price_cache_write: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+    __table_args__ = (
+        Index("ix_model_price_rule_model", "model_config_id"),
+    )
+
+
+# ---------------------------------------------------------------- ⑯½ 限额
+class ModelLimit(Base):
+    """**一条**限额：一个作用域（scope）一个周期（period）一个金额。
+
+    作用域只有三级（`scope`）：
+
+    · `model`  —— `model_config.id`：这条模型自己花掉的钱；
+    · `key`    —— `model_provider_key.id`：这把密钥花掉的钱（换密钥 = 换额度）；
+    · `vendor` —— `model_provider.id`（即 `model_config.provider` 那个字符串）：
+      这一家花掉的钱。
+
+    **唯一索引 (scope, scope_id)**：同一作用域同一时刻只允许一条限额 —— 两条并存时
+    「到底按哪条判」就成了实现细节，而额度这种事不该有实现细节。
+    「不限额」的表达方式是**没有这一行**或 `enabled=0`，不是金额 0
+    （金额 0 会被算成「永远超出」，与「不限额」刚好相反）。
+
+    周期**不做手动重置**：每次判定都用 `billing.period_bounds(period)` 现算当前
+    `[start, end)`，所以翻篇是时间自己带来的，不依赖任何定时任务
+    （定时任务漏跑一次，就会白送一个整周期）。
+    """
+
+    __tablename__ = "model_limit"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: vendor | key | model
+    scope: Mapped[str] = mapped_column(String(16), default="model")
+    #: 作用域里的实体 id（见类文档）
+    scope_id: Mapped[str] = mapped_column(String(64), default="")
+    #: 停用 = 留痕但不拦（真正「删掉」是删这行）
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: day | week | month（周一起算，见 billing.period_bounds）
+    period: Mapped[str] = mapped_column(String(8), default="day")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    #: CNY | USD —— **只累计同币种的行，绝不换算**（见 billing 的三条铁律）
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    note: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", name="uq_model_limit_scope"),
+        Index("ix_model_limit_scope", "scope"),
+    )
+
+
+class ModelLimitReservation(Base):
+    """调用前的**预留**（并发闸门）：一次「检查通过」占住一部分额度，调用结束就释放。
+
+    为什么必须有它：限额要在**发请求之前**判定，而一笔账是调用**之后**才落库的。
+    中间这段时间里，10 个并发请求会同时读到「还没超」，然后一起把钱花出去 ——
+    那不是限额，是事后通知。所以判定与发请求之间需要一份「账已经算过、钱还没花」
+    的占位。
+
+    `expires_at` 是**必须**的：进程被 kill / 机器断电时没人能执行 `release`，
+    没有过期时间的占位会永久吃掉额度（用户看到的是一条永远还不清的额度）。
+    过期行在每次检查时顺手清理，并在累计时按 `expires_at > now` 过滤 —— 两处都做，
+    是因为清理只是省空间，判定不能依赖「清理已经跑过了」。
+    """
+
+    __tablename__ = "model_limit_reservation"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    limit_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: 一次检查的句柄（同一批多条限额共用一个 token；唯一约束防重复插入）
+    token: Mapped[str] = mapped_column(String(32))
+    #: 这次预留占住的金额（估算值，**绝不写进 model_usage.cost**）
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    #: 过期时刻（UTC naive）：过了就当作不存在
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_model_limit_reservation_token"),
     )
 
 

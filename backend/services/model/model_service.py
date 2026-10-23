@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.services.model import billing
+from backend.services.model import billing, price_rules
 from backend.services.model.model_manager import MODEL_TYPES, model_manager
 
 
@@ -19,8 +19,11 @@ def _with_price(cfg: dict) -> dict:
 
 
 def list_models(model_type: str | None = None) -> list[dict]:
+    rows = model_manager.list_configs(model_type)
+    # 时段条数一次查完（一行一次会把列表页变成 N+1 次查询，而模型页每次刷新都调它）
+    rule_counts = price_rules.counts([cfg.get("id") for cfg in rows])
     out = []
-    for cfg in model_manager.list_configs(model_type):
+    for cfg in rows:
         cfg = _with_price(dict(cfg))
         # ⚠️ 仅供参考：这里只认"模型行自己写了 secret_ref"（老口径），不认识
         # "跟随提供方默认密钥 / key_mode=none"。**界面的权威口径是 API 层**
@@ -28,12 +31,17 @@ def list_models(model_type: str | None = None) -> list[dict]:
         # 别拿这里的值去判"未配置密钥"，否则会误报（实测 vision 那行）。
         cfg["has_secret"] = bool(cfg.get("secret_ref"))
         cfg["is_mock"] = cfg.get("provider") in ("mock", "hash", "heuristic")
+        # 配了几段时段（列表只给条数：完整时段是详情那一份的事）
+        cfg["price_rule_count"] = int(rule_counts.get(str(cfg.get("id")), 0))
         out.append(cfg)
     return out
 
 
 def get_model(model_id: str) -> dict:
-    return _with_price(model_manager.get_config(model_id))
+    cfg = _with_price(model_manager.get_config(model_id))
+    # 详情带完整时段：编辑弹窗要一次拿全，不能再去请求一次 price-rules
+    cfg["price_rules"] = price_rules.list_rules(str(cfg.get("id")))
+    return cfg
 
 
 def create_model(payload: dict) -> dict:

@@ -10,7 +10,7 @@ import threading
 from collections import OrderedDict
 
 from backend.core.errors import (
-    ModelNotConfiguredError, ProviderError, ValidationError,
+    LimitExceededError, ModelNotConfiguredError, ProviderError, ValidationError,
 )
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, new_id, now
@@ -77,17 +77,45 @@ def _usage_recorder(base: type) -> type:
 
         record_result(getattr(self, "config", None) or {}, result)
 
+    def _reserve(self, prompt):
+        """**发请求之前**过三级限额（模型 / 密钥 / 厂商），返回预留句柄。
+
+        检查点放在这里 = 翻译 / 理解 / 元数据 / 公式 / 视觉读页 / 设置页探测
+        **全部一次覆盖**（它们都从这里出发），而且天然满足「重试 / 换模型 / 换密钥
+        都要重新检查」—— 每次调用都现查一遍，任何地方都没有缓存判定结果。
+        """
+        from backend.services.model import limits
+
+        return limits.check_and_reserve(getattr(self, "config", None) or {},
+                                        prompt=prompt)
+
+    def _release(reservation) -> None:
+        """释放预留：成功、失败、抛异常都要走到（漏了就是额度泄漏）。"""
+        from backend.services.model import limits
+
+        limits.release(reservation)
+
     def generate(self, prompt, *args, **kwargs):
-        result = base.generate(self, prompt, *args, **kwargs)
-        _record(self, result)
-        return result
+        reservation = _reserve(self, prompt)
+        try:
+            result = base.generate(self, prompt, *args, **kwargs)
+            # 先落账、再释放：反过来会留下一段「用量已记、预留已销」的空窗，
+            # 那段时间里并发检查会看到一个偏小的 spent。
+            _record(self, result)
+            return result
+        finally:
+            _release(reservation)
 
     attrs: dict = {"generate": generate, "__module__": base.__module__}
     if getattr(base, "generate_vision", None) is not GenerationProvider.generate_vision:
         def generate_vision(self, prompt, images, *args, **kwargs):
-            result = base.generate_vision(self, prompt, images, *args, **kwargs)
-            _record(self, result)
-            return result
+            reservation = _reserve(self, prompt)
+            try:
+                result = base.generate_vision(self, prompt, images, *args, **kwargs)
+                _record(self, result)
+                return result
+            finally:
+                _release(reservation)
 
         attrs["generate_vision"] = generate_vision
     cls = type(f"UsageRecording{base.__name__}", (base,), attrs)
@@ -326,6 +354,10 @@ class ModelManager:
             # 探测也是一次真调用（真花钱），同样落一条用量
             provider = _with_usage(self._get(probe))
             info: ModelInfo = provider.test()  # type: ignore[attr-defined]
+        except LimitExceededError:
+            # 本地限额不是「这个模型连不上」：折成 ok=False 会把 429 伪装成
+            # 「端点是坏的」，用户就会去改 base_url —— 这里必须原样上抛。
+            raise
         except ProviderError as exc:
             info = ModelInfo(ok=False, detail=exc.message[:300])
         except Exception as exc:  # noqa: BLE001
@@ -451,6 +483,13 @@ class ModelManager:
             row = sess.get(ModelConfig, model_id)
             if row is None:
                 return
+            # 时段规则随模型一起删：id 若被新模型复用，老规则会**静默接管**它的计价
+            # （用户会看到"新模型按旧模型的高峰价收费"这种无从解释的账）。
+            from backend.repositories.mysql.models import ModelPriceRule
+
+            sess.query(ModelPriceRule).filter(
+                ModelPriceRule.model_config_id == str(model_id)
+            ).delete(synchronize_session=False)
             was_default = row.is_default
             mtype = row.model_type
             sess.delete(row)

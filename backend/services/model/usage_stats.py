@@ -98,7 +98,9 @@ def record(*,
            status: str = "ok",
            error_code: str | None = None,
            reported_cost: float | None = None,
-           reported_currency: str | None = None) -> bool:
+           reported_currency: str | None = None,
+           no_charge: bool = False,
+           at: datetime | None = None) -> bool:
     """落一行用量；返回是否**真的写入**（去重命中 / 出错都返回 False）。
 
     调用方**不用传钱**：单价按 model_config_id 现查（billing.price_of），
@@ -108,6 +110,14 @@ def record(*,
     （反例就是「任务跑完了、结果也在，但账单查询把整个请求带崩」）。
 
     幂等：给了 request_id 就只认第一行（重试 / 重放 / 双写都不会记成两笔账）。
+
+    `no_charge=True` 是给「被限额拦下」那类行用的：那次调用**根本没发出去**，
+    没有 token、没有钱，所以 `cost` 必须是 NULL、`billing='none'`。
+    这条路上**不能**调 `cost_of` —— 它会按 token 算出一个金额，而那笔钱没花。
+
+    `at` 是**这次调用的时刻**（默认"现在"）：钱按**那一刻**的时段算（峰谷），
+    `created_at` / `day` / `hour_key` 也一起按它定 —— 否则一行会"按今天的高峰价计费、
+    记在昨天的桶里"，回看折线就永远对不上。测试与补录历史都靠它。
     """
     try:
         prompt = _int(prompt_tokens)
@@ -123,19 +133,34 @@ def record(*,
         from backend.repositories.mysql.models import ModelUsage
         from backend.repositories.mysql.session import session_scope
 
-        stamp = utc_now()               # created_at：全库约定 UTC naive
+        # created_at：全库约定 UTC naive。给了 at 就用它（补录 / 测试），否则"现在"。
+        stamp = utc_now() if at is None else billing.to_utc(at)
         rid = str(request_id).strip()[:64] if request_id else None
         with session_scope() as sess:
             if rid and sess.query(ModelUsage.id).filter(
                     ModelUsage.request_id == rid).first() is not None:
                 log.debug("用量已记过（request_id 去重）：%s", rid)
                 return False
-            # 同一事务里取单价：只多一次主键查询，换来"金额与落库永远一致"
-            prices = billing.price_of(model_config_id, sess=sess)
-            money = billing.cost_of(prices, prompt, completion,
-                                    cache_read=cache_read, cache_write=cache_write,
-                                    reported=reported_cost,
-                                    reported_currency=reported_currency)
+            # 同一事务里取单价（**按这次调用的时刻**取，峰谷才对得上）：只多一次主键查询，
+            # 换来"金额与落库永远一致"
+            # at 原样透传：naive 就是**本地墙钟**（见 billing.wall_clock），
+            # 而 stamp 是已换算好的 UTC —— 拿 stamp 去判时段会整体偏 8 小时。
+            prices = billing.price_of(model_config_id, sess=sess, at=at)
+            if no_charge:
+                # 被限额拦下 / 其它「没真花出去」的行：金额存 NULL，绝不写 0
+                money = {
+                    "cost": None,
+                    "currency": (billing.normalize_currency(prices.get("currency"))
+                                 or billing.DEFAULT_CURRENCY),
+                    "billing": billing.BILLING_NONE,
+                }
+            else:
+                money = billing.cost_of(prices, prompt, completion,
+                                        cache_read=cache_read,
+                                        cache_write=cache_write,
+                                        reported=reported_cost,
+                                        reported_currency=reported_currency,
+                                        at=at)
             sess.add(ModelUsage(
                 model_config_id=str(model_config_id) if model_config_id else None,
                 model_name=str(model_name)[:128] if model_name else None,
@@ -152,6 +177,8 @@ def record(*,
                 currency=money["currency"],
                 cost=money["cost"],
                 billing=money["billing"],
+                # 「这笔钱按哪一段时段算的」必须可追溯：没命中时段（含周末）= NULL
+                price_rule_id=(None if no_charge else prices.get("rule_id")),
                 status=(str(status or "ok")[:16] or "ok"),
                 error_code=(str(error_code)[:64] if error_code else None),
                 created_at=stamp,

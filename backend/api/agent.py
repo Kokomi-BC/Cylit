@@ -283,6 +283,10 @@ async def agent_ask(payload: dict = Body(...)):
         "selection": selection if selected_text else None,
         "attachments": attachment_meta,
     }
+    # 本地限额闸门：**在把请求转给 agent 之前**（被拦就不发请求）
+    _limit_gate(conversation_id, parent_id, question or selected_text,
+                choice["model_config_id"])
+
     return StreamingResponse(_ask_stream(body, conversation_id),
                              media_type="text/event-stream", headers=SSE_HEADERS)
 
@@ -343,6 +347,70 @@ def _branch_edit(conversation_id: str, user_id: str, question: str,
     history = conversations.history_from_chain(
         conversations.branch_history(conversation_id, user_message["message_id"]))
     return user_message["message_id"], history
+
+
+# ---------------------------------------------------------------------------
+# 问答链路的**本地限额闸门**
+#
+# 问答不经过 model_manager（它在 agent 进程里直连厂商端点），所以限额不会顺带被
+# 覆盖 —— 必须在**转发之前**在这里单独检查一次。被拦就不发请求、返回结构化限额
+# 错误（429 + code=LIMIT_EXCEEDED），并落一行 `status='blocked'` 的用量
+# （cost 为 NULL：这次调用根本没发出去，记钱就是错账）。
+#
+# 这里的预留**当场释放**：真正的用量由 agent 侧那次调用去记，跨进程把预留持有到
+# SSE 结束既拿不到结果，还会在没有 finally 的路径上泄漏。所以这里是一次
+# 「闸门检查」，不是「全程占额」（同一瞬间的并发窗口由真实用量行补上）。
+# ---------------------------------------------------------------------------
+
+
+def _limit_gate(conversation_id: str, user_message_id: str, prompt: str,
+                model_id: str | None) -> None:
+    """转发给 agent 之前检查三级限额；被拦就记账并抛 429。"""
+    from backend.core.errors import LimitExceededError
+    from backend.services.agent import model_config as agent_model_config
+    from backend.services.model import limits
+
+    try:
+        # 与 agent 真正用的模型**同一条**解析链（见 model_config.resolve_config）：
+        # 另写一套 = 检了一个模型、用了另一个模型，限额等于没设。
+        cfg = agent_model_config.resolve_config(model_id)
+    except Exception as exc:  # noqa: BLE001 —— 解析不出模型就别拦，让 agent 自己报
+        log.debug("限额检查跳过（模型配置解析失败）：%s", str(exc)[:160])
+        return
+
+    reservation = None
+    try:
+        reservation = limits.check_and_reserve(cfg, prompt=prompt)
+    except LimitExceededError:
+        _record_blocked(cfg, conversation_id, user_message_id)
+        raise
+    finally:
+        limits.release(reservation)
+
+
+def _record_blocked(cfg: dict, conversation_id: str, user_message_id: str) -> None:
+    """被限额拦下的那次问答落一行账：status=blocked、cost 为 NULL、request_id 幂等。
+
+    request_id 用 `ask-blocked:<conversation_id>:<user_message_id>`：同一条提问被
+    重放（重试 / 双击 / 前端重发）不会记成两笔，也不会让「被拦了几次」这个数随
+    重试膨胀。
+    """
+    from backend.services.model import usage_stats
+
+    try:
+        usage_stats.record(
+            model_config_id=cfg.get("id"),
+            model_name=cfg.get("model_name"),
+            provider=cfg.get("provider"),
+            model_type=cfg.get("model_type") or "agent",
+            source="ask",
+            request_id=f"ask-blocked:{conversation_id}:{user_message_id}",
+            status="blocked",
+            error_code="LIMIT_EXCEEDED",
+            no_charge=True,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 记账失败不能把 429 变成 500
+        log.debug("被限额拦下的问答记账失败（已忽略）：%s", str(exc)[:160])
 
 
 #: 后台还在跑的问答泵（**唯一目的**：别让它们被 GC 掉）。

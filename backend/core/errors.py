@@ -78,6 +78,33 @@ class ModelNotConfiguredError(ProviderError):
         )
 
 
+class LimitExceededError(PaperMindError):
+    """**本地**限额触发（模型 / 密钥 / 厂商三级，按日 / 周 / 月）。
+
+    三条理由说明它为什么**不继承** `ProviderError`：
+
+    1. `code` 必须是 `LIMIT_EXCEEDED`，**绝不能伪装成供应商 429**
+       （`RateLimitError` 是「人家不让你调了，等一会儿再来」，这里是「你自己设的
+       额度用完了，等一会儿也没用」—— 两者混在一起，用户会去找厂商理论）；
+    2. `ProviderError` 默认 `retryable=True`，调度器会把它当临时故障重试；
+       可限额在下一个周期到来之前**永远不会自己松开**，重试只是把配额表刷满日志；
+    3. 被拦的那次调用**根本没发出去**：没有 token、没有钱、也没有厂商响应，
+       按「调用失败」记一笔账就是错账（所以落 `status='blocked'` + `cost IS NULL`）。
+
+    `detail["limit"]` 是固定形状（见 `services/model/limits.py` 的
+    `SNAPSHOT_FIELDS`），前端横幅只认这一份数。
+    """
+
+    code = "LIMIT_EXCEEDED"
+    http_status = 429
+
+    def __init__(self, message: str, *, detail: dict | None = None):
+        super().__init__(message, detail=detail)
+        #: 与 ProviderError 同名但语义相反：额度用尽重试无用。照旧放这个字段，
+        #: 免得通用兜底代码 getattr(exc, "retryable", True) 取到默认值 True。
+        self.retryable = False
+
+
 class TaskError(PaperMindError):
     code = "TASK_ERROR"
     http_status = 500

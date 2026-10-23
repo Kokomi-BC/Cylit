@@ -379,6 +379,143 @@ async def list_secrets(request: Request):
     return envelope({"secrets": files, "dir": str(s.secrets_dir)}, request=request)
 
 
+# ---------------------------------------------------------------------------
+# 限额（模型级 / 密钥级 / 厂商级 × 日 / 周 / 月）
+#
+# 判定口径、并发闸门与「未配价不许设限额」全在 `services/model/limits.py`；
+# 这一层只做入参校验、错误包装与「空库不 500」。
+#
+# ⚠️ 与 /models/providers、/models/keys 同理：这些都必须声明在 /models/{model_id}
+# **之前**，否则 "limits" 会被当成 model_id 捕获（返回「模型不存在：limits」）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/models/limits")
+async def list_limits(request: Request):
+    """全部限额 + 每条**现算**的 spent / remaining / percent / reset_at。
+
+    · 周期每次现算（`billing.period_bounds`），没有「重置」这个动作；
+    · `spent` 只累计**同币种**的已计费行；`unpriced_rows` > 0 时 spent 是下限
+      （界面必须说「统计不完整」）；`foreign_currency_rows` 是其它币种的行数 ——
+      它们不参与累计，但也不能装作不存在；
+    · `usable` = `enabled` 且该作用域下全部启用模型都配了单价；
+    · 空库 / 查询失败 → `{"items": [], "warning": ...}`，绝不 500。
+    """
+    from backend.core.logging import get_logger
+    from backend.services.model import limits
+
+    try:
+        items = limits.list_limits()
+    except Exception as exc:  # noqa: BLE001 —— 与 usage_stats.stats 同口径
+        get_logger(__name__).warning("限额查询失败（返回空结构）：%s", str(exc)[:200])
+        return envelope({"items": [], "warning": "限额查询失败，已返回空列表"},
+                        request=request)
+    return envelope({"items": items}, request=request)
+
+
+@router.get("/models/limits/summary")
+async def limits_summary(request: Request):
+    """横幅三态：`none` / `warn`（任一 >=80%）/ `exceeded`（任一 >=100%）。
+
+    `most_urgent` = 百分比最高的那条（并列看 reset_at 更近）；
+    没有限额配置 → `{"level": "none", "most_urgent": null, "items": []}`，不报错。
+    """
+    from backend.core.logging import get_logger
+    from backend.services.model import limits
+
+    try:
+        return envelope(limits.summary(), request=request)
+    except Exception as exc:  # noqa: BLE001
+        get_logger(__name__).warning("限额统计失败（按无限额处理）：%s", str(exc)[:200])
+        return envelope({"level": "none", "most_urgent": None, "items": [],
+                         "warning": "限额统计失败，已按「无限额」处理"},
+                        request=request)
+
+
+@router.put("/models/limits")
+async def upsert_limit(request: Request, payload: dict = Body(...)):
+    """保存一条限额（作用域内至多一条，有则更新）。
+
+    body：`{scope, scope_id, enabled, period, amount, currency, note}`。
+
+    · `period='none'` = **删掉**这条限额（唯一能表达「从此不限额」的写法）；
+      `enabled=false` = 停用但留痕；
+    · 校验：amount 必须是 >0 的有限数、currency ∈ CNY/USD、period ∈ day/week/month、
+      scope/scope_id 必须是真实存在的实体（否则 400 点名）；
+    · **未配单价的作用域一律拒**（400 + `detail.unpriced_models` 名单）：
+      一个算不出钱的模型永远花不到限额，那条限额就是安慰剂。
+    """
+    from backend.services.model import limits
+
+    return envelope(limits.upsert(payload), message="限额已保存", request=request)
+
+
+@router.delete("/models/limits/{limit_id}")
+async def delete_limit(limit_id: str, request: Request):
+    """删掉一条限额（不存在 → 404）。"""
+    from backend.services.model import limits
+
+    removed = limits.delete(limit_id)
+    return envelope({"removed": removed}, message="限额已删除", request=request)
+
+
+# ---------------------------------------------------------------------------
+# 分时段（峰谷）单价：一个模型可以配一段或多段时段，每段一套单价
+#
+# 口径（**只看这一段**，计算全在 billing.price_of / match_rule）：
+#   · 模型上的四个单价 = **时段之外**的价（DeepSeek 口径里就是空闲价）；
+#   · 时段规则 = **例外覆盖**，且**只在工作日（周一至周五）生效** ——
+#     周末一律落到默认价，所以"周末走空闲价"不需要额外配置；
+#   · 时段不带币种：币种永远只认模型 → 厂商 → CNY 这条链。
+#
+# ⚠️ 与 /models/providers、/models/keys、/models/limits 同理：都声明在
+# /models/{model_id} **之前**（"price-rules" 不能被当成 model_id 捕获）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/models/{model_id}/price-rules")
+async def list_price_rules(model_id: str, request: Request):
+    """这个模型的默认价 + 全部时段规则。
+
+    `default` 是"时段之外"那套价（`currency` = 模型行自己写的，空串表示跟随厂商；
+    `currency_effective` = 解析后的结果）；`has_price` / `priced_now` 都是
+    `billing.price_of(...)['priced']`，即"**默认价**齐不齐"，与此刻是否命中时段无关。
+    未知 model_id 沿用 `GET /models/{id}` 的同一个错误（不另造一套）。
+    """
+    from backend.services.model import price_rules
+
+    return envelope(price_rules.describe(model_id), request=request)
+
+
+@router.put("/models/{model_id}/price-rules")
+async def replace_price_rules(model_id: str, request: Request,
+                              payload: dict = Body(default={})):
+    """整批替换时段规则：body `{items: [{label, start, end, price_in, price_out,
+    price_cache_read, price_cache_write}, ...]}`（空数组 = 清空）。
+
+    · 整批而不是逐条：时段是一个**集合**，"同一模型内不能重叠"是集合级约束，
+      逐条新增会让"加到第 N 条才发现撞了"变成常态；同一事务里先整体校验再先删后插；
+    · 校验失败一律 400，并**点名**：哪一条的 HH:MM 非法 / 哪一条缺输入价或输出价 /
+      哪两段重叠（跨午夜的段先拆成两段再比）；
+    · 默认价没配（`priced=False` / `has_price=False`）**也允许保存**，但响应里带
+      `warning` 说明"默认价未配置，时段之外的调用仍按未计费处理"——
+      静默保存会让人以为配了时段就等于配了价。
+    """
+    from backend.services.model import price_rules
+
+    return envelope(price_rules.replace(model_id, payload),
+                    message="时段单价已保存", request=request)
+
+
+@router.delete("/models/{model_id}/price-rules/{rule_id}")
+async def delete_price_rule(model_id: str, rule_id: str, request: Request):
+    """删掉一段时段（不存在 / 不属于这个模型 → 404，与限额删除同一口径）。"""
+    from backend.services.model import price_rules
+
+    return envelope(price_rules.delete(model_id, rule_id),
+                    message="时段已删除", request=request)
+
+
 @router.post("/models")
 async def create_model(request: Request, payload: dict = Body(...)):
     return envelope(model_service.create_model(payload), message="已创建",

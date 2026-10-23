@@ -31,6 +31,27 @@ def _snapshot(cfg: dict, *, include_key: bool) -> dict:
     return data
 
 
+def resolve_config(config_id: str | None = None) -> dict:
+    """解析「这一轮问答实际用哪条模型配置」——**唯一一套**解析链（返回原始配置）。
+
+    会话选的 `agent` 配置 → `agent` 默认 → 回落 `generation` 默认。
+    单独抽出来是因为主后端的**限额检查**也要这条配置（问的是"这条模型实不实用"），
+    再写一遍就会与 agent 真正用的模型分叉 —— 那种分叉在限额上等于「检了一个
+    模型、用了另一个模型」，限额就白设了。
+    """
+    if config_id:
+        try:
+            hit = model_manager.get_config(config_id)
+        except (ValidationError, ModelNotConfiguredError):
+            hit = None
+        if hit and hit.get("model_type") == "agent":
+            return hit
+    try:
+        return model_manager.get_config(None, "agent")
+    except ModelNotConfiguredError:
+        return model_manager.get_config(None, "generation")
+
+
 def resolve(config_id: str | None = None, effort: str | None = None) -> dict:
     """问答模型（会话选的 ``agent`` 配置 → ``agent`` 默认 → 回落 ``generation``）。
 
@@ -41,22 +62,9 @@ def resolve(config_id: str | None = None, effort: str | None = None) -> dict:
     ``effort`` 是会话里选的推理等级，**原样**带出去：厂商各叫各的档位名，校验、映射、
     改大小写都会把用户填的 high 变成厂商不认识的东西；没选才用该模型配置里的那一档。
     """
-    cfg = None
-    if config_id:
-        try:
-            hit = model_manager.get_config(config_id)
-        except (ValidationError, ModelNotConfiguredError):
-            hit = None
-        if hit and hit.get("model_type") == "agent":
-            cfg = hit
-
-    fallback = False
-    if cfg is None:
-        try:
-            cfg = model_manager.get_config(None, "agent")
-        except ModelNotConfiguredError:
-            cfg = model_manager.get_config(None, "generation")
-            fallback = True
+    cfg = resolve_config(config_id)
+    # 「回落」= 实际用的不是 agent 类型（那只能是从 generation 默认兜来的）
+    fallback = cfg.get("model_type") != "agent"
     out = _snapshot(cfg, include_key=True)
     out["fallback_to_generation"] = fallback
     out["requested_config_id"] = str(config_id or "") or None
