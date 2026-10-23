@@ -35,22 +35,49 @@ export const HIGHLIGHT_OPTIONS: ReadonlyArray<{ value: HighlightStyle; label: st
 
 export const APPEARANCE_STORAGE_KEY = 'cylit:appearance';
 
+/** 一类文字用的字体：三套预设之一，或本机字体（`local:<族名>`）。 */
+export type FontChoice = Typography | `local:${string}`;
+
+/** 五类文字各自的字体（设置页「分类字号」每一行最右边那个下拉）。 */
+export type CategoryFonts = Record<'body' | 'chat' | 'note' | 'side' | 'ui', FontChoice>;
+
+export const FONT_CATEGORIES = ['body', 'chat', 'note', 'side', 'ui'] as const;
+
 export const appearance = reactive<{
   typography: Typography;
   motion: boolean;
   highlight: HighlightStyle;
-  /** 本机字体族（用户在设置页从自己电脑里选的那一款）。空 = 用 typography 那三套预设栈。 */
-  fontFamily: string;
+  /** 分类级字体。默认全是系统栈；`typography` 只当旧配置的兜底。 */
+  fonts: CategoryFonts;
 }>({
   typography: 'system',
   motion: true,
   /* 旧配置里没有这个字段：默认荧光笔（用户口径 2026-12） */
   highlight: 'marker',
-  fontFamily: '',
+  fonts: { body: 'system', chat: 'system', note: 'system', side: 'system', ui: 'system' },
 });
 
 function isTypography(value: unknown): value is Typography {
   return value === 'system' || value === 'yahei' || value === 'serif';
+}
+
+/** 把存盘值收成一个合法的 FontChoice：只认三套预设或 `local:<名字>`。 */
+function normalizeFont(value: unknown, fallback: FontChoice): FontChoice {
+  if (isTypography(value)) return value;
+  if (typeof value === 'string' && value.startsWith('local:')) {
+    const name = value.slice(6).replace(/[\r\n"';{}]/g, '').trim().slice(0, 64);
+    if (name) return `local:${name}`;
+  }
+  return fallback;
+}
+
+/** 字体选择 → CSS 字面栈。选「系统默认」返回空串（让 tokens.css 的默认栈接手）。 */
+function fontStackOf(choice: FontChoice): string {
+  if (choice === 'system') return '';
+  if (choice === 'yahei') return 'var(--font-stack-yahei)';
+  if (choice === 'serif') return 'var(--font-stack-serif)';
+  const name = choice.slice(6);
+  return `${JSON.stringify(name)}, var(--font-stack-system)`;
 }
 
 function isHighlightStyle(value: unknown): value is HighlightStyle {
@@ -74,10 +101,15 @@ function load(): void {
       /* 老配置没这个字段 → 落在荧光笔（reactive 的初值）。**不整份覆盖**：只取认得的键，
          读的时候也不会把别的偏好抹掉。 */
       appearance.highlight = isHighlightStyle(raw.highlight) ? raw.highlight : 'marker';
-      /* 本机字体：只收合理长度的字符串（字体名不该带引号/换行），坏值当没设 */
-      appearance.fontFamily = typeof raw.fontFamily === 'string'
+      /* 分类字体：只收认得的预设名或 local:<合理长度>；老配置没有就跟随旧的字面预设 */
+      const legacy = isTypography(raw.typography) ? raw.typography : 'system';
+      const legacyLocal = typeof raw.fontFamily === 'string'
         ? raw.fontFamily.replace(/[\r\n"';{}]/g, '').trim().slice(0, 64)
         : '';
+      const stored = (raw.fonts && typeof raw.fonts === 'object' ? raw.fonts : {}) as Record<string, unknown>;
+      for (const key of FONT_CATEGORIES) {
+        appearance.fonts[key] = normalizeFont(stored[key], legacyLocal ? `local:${legacyLocal}` : legacy);
+      }
       /* 老版本存的是反过来的 reduceMotion：读得到就换算，别让老用户的选择被静默抹掉 */
       if (typeof raw.motion === 'boolean') appearance.motion = raw.motion;
       else if (typeof raw.reduceMotion === 'boolean') appearance.motion = !raw.reduceMotion;
@@ -95,15 +127,12 @@ export function applyAppearance(): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   root.dataset.typo = appearance.typography;
-  /* 本机字体：内联 --sans / --display 优先级高于 tokens.css 里 data-typo 那几条，
-     所以选了一款就盖住预设栈；清空（选回预设）时把内联值摘掉，预设栈自动接管。 */
-  if (appearance.fontFamily) {
-    const family = JSON.stringify(appearance.fontFamily);
-    root.style.setProperty('--sans', `${family}, var(--sans-fallback, ui-sans-serif)`);
-    root.style.setProperty('--display', `${family}, var(--sans-fallback, ui-sans-serif)`);
-  } else {
-    root.style.removeProperty('--sans');
-    root.style.removeProperty('--display');
+  /* 分类字体：每类把内联 `--font-sans-<类>` 写到 :root 上，base.css 的分类根再读它 ——
+     选「系统默认」就把内联值摘掉，交回 tokens.css 里的默认栈。 */
+  for (const key of FONT_CATEGORIES) {
+    const stack = fontStackOf(appearance.fonts[key]);
+    if (stack) root.style.setProperty(`--font-sans-${key}`, stack);
+    else root.style.removeProperty(`--font-sans-${key}`);
   }
   root.dataset.motion = appearance.motion ? 'on' : 'off';
   /* `data-hl-style`：base.css 用它切「荧光笔 / 下划线」两种画法 */
@@ -119,22 +148,23 @@ function commit(): void {
   }
 }
 
+/** 旧的全局入口：把五类一起设成这个预设（现在设置页改用 `setCategoryFont` 逐类选）。 */
 export function setTypography(next: Typography): void {
   if (!isTypography(next)) return;
   appearance.typography = next;
-  /* 预设与本机字体互斥：点预设就等于放弃本机字体 */
-  appearance.fontFamily = '';
+  for (const key of FONT_CATEGORIES) appearance.fonts[key] = next;
   commit();
 }
 
 /**
- * 换**本机字体**（设置页从 queryLocalFonts() 里选的那一款）；传空串 = 回到预设栈。
+ * 给**某一类**文字换字体（设置页「分类字号」每一行最右那个下拉）。
  *
- * 为什么单独一个字段而不是扩 Typography：预设栈是固定枚举（三选一），而本机字体有几百款、
- * 名字由用户的系统决定，只能存字符串。两者互斥：选了本机字体，typography 只当兜底。
+ * 五类各存一份：`system` / `yahei` / `serif` 是预设栈，`local:<族名>` 是本机字体。
+ * 以前是一个全局 `fontFamily`：用户口径 2026-12 改成「每类都能自己选」，于是拆成五份。
  */
-export function setFontFamily(next: string): void {
-  appearance.fontFamily = String(next ?? '').replace(/[\r\n"';{}]/g, '').trim().slice(0, 64);
+export function setCategoryFont(key: keyof CategoryFonts, next: FontChoice): void {
+  if (!FONT_CATEGORIES.includes(key)) return;
+  appearance.fonts[key] = normalizeFont(next, 'system');
   commit();
 }
 

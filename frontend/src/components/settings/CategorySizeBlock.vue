@@ -25,8 +25,9 @@ import {
 import {
   TYPOGRAPHY_OPTIONS,
   appearance,
-  setFontFamily,
-  setTypography,
+  setCategoryFont,
+  type CategoryFonts,
+  type FontChoice,
 } from '@/stores/appearance';
 
 /** 样例文字：每类一句自己的话，读起来就知道调的是哪一块 */
@@ -59,6 +60,8 @@ function nearest(scale: number): number {
 function sampleSize(key: DisplayCategory): string {
   return `calc(13px * var(--ts-${key}))`;
 }
+
+/** 样例同时吃该类的**字体**令牌：换字体时这句样例当场换字面，不必去阅读器里对照 */
 
 
 /* ------------------------- 批量（胶囊，独占第一排） ------------------------- */
@@ -113,23 +116,22 @@ async function loadLocalFonts(): Promise<void> {
 /** 下拉里「读取本机字体…」这一项（点了先读，读完再选具体字体） */
 const LOAD_ACTION = '__load__';
 
-/** 字体下拉的当前值：本机字体优先，否则是预设 */
-const fontValue = ref('');
-function syncFontValue(): void {
-  fontValue.value = appearance.fontFamily ? `local:${appearance.fontFamily}` : `preset:${appearance.typography}`;
+/** 某一类当前字体在下拉里的值：`local:<族名>` 或 `preset:<预设>` */
+function fontValueOf(key: keyof CategoryFonts): string {
+  const choice: FontChoice = appearance.fonts[key] ?? 'system';
+  return choice.startsWith('local:') ? choice : `preset:${choice}`;
 }
-syncFontValue();
 
-async function onFontChange(ev: Event): Promise<void> {
-  const value = (ev.target as HTMLSelectElement).value;
+async function onRowFontChange(key: keyof CategoryFonts, ev: Event): Promise<void> {
+  const el = ev.target as HTMLSelectElement;
+  const value = el.value;
   if (value === LOAD_ACTION) {
-    syncFontValue();            // 把下拉拨回当前值：它是个动作，不是一个选项
+    el.value = fontValueOf(key);      // 它是个动作，不是一个选项：拨回当前值
     await loadLocalFonts();
     return;
   }
-  if (value.startsWith('local:')) setFontFamily(value.slice(6));
-  else if (value.startsWith('preset:')) setTypography(value.slice(7) as typeof appearance.typography);
-  syncFontValue();
+  if (value.startsWith('local:')) setCategoryFont(key, value as FontChoice);
+  else if (value.startsWith('preset:')) setCategoryFont(key, value.slice(7) as FontChoice);
 }
 </script>
 
@@ -161,7 +163,7 @@ async function onFontChange(ev: Event): Promise<void> {
     <div class="cats">
       <div v-for="c in categories" :key="c.key" class="cat">
         <span class="cat-name">{{ c.label }}</span>
-        <span class="cat-sample" :style="{ fontSize: sampleSize(c.key) }">{{ c.sample }}</span>
+        <span class="cat-sample" :style="{ fontSize: sampleSize(c.key), fontFamily: `var(--font-sans-${c.key})` }">{{ c.sample }}</span>
         <div class="pill sm" role="group" :aria-label="c.label + '字号'" :data-size-pill="c.key">
           <button
             v-for="s in STEPS"
@@ -174,29 +176,21 @@ async function onFontChange(ev: Event): Promise<void> {
             @click="setCategory(c.key, s.value)"
           >{{ s.label }}</button>
         </div>
-      </div>
-    </div>
-
-    <div class="foot-row">
-      <span class="cat-name">字体</span>
-      <div class="foot-ctl">
         <select
           class="font-select"
-          :value="fontValue"
-          aria-label="字体"
-          data-font-select
-          @change="onFontChange"
+          :value="fontValueOf(c.key)"
+          :aria-label="c.label + '字体'"
+          :data-font-select="c.key"
+          @change="onRowFontChange(c.key, $event)"
         >
           <option v-for="o in TYPOGRAPHY_OPTIONS" :key="o.value" :value="`preset:${o.value}`">{{ o.label }}</option>
           <option v-if="fontsApiAvailable" :value="LOAD_ACTION">{{ fontsBusy ? '读取中…' : '读取本机字体…' }}</option>
           <option v-for="name in localFonts" :key="name" :value="`local:${name}`">{{ name }}</option>
         </select>
-        <span v-if="appearance.fontFamily" class="font-hint">本机字体</span>
-        <span v-if="fontsBusy" class="font-hint">正在读取…</span>
       </div>
     </div>
+
     <p v-if="fontsError" class="font-msg">{{ fontsError }}</p>
-  <p v-else-if="appearance.fontFamily" class="font-msg">正在使用本机字体：{{ appearance.fontFamily }}</p>
   </section>
 </template>
 
@@ -237,9 +231,9 @@ async function onFontChange(ev: Event): Promise<void> {
 .pill-btn.is-state.on { color: var(--accent-text); }
 
 .cats { display: flex; flex-direction: column; gap: 2px; }
-/* 一行：名字（定宽）+ 样例（吃满）+ 胶囊（定宽） */
+/* 一行：名字（定宽）+ 样例（吃满）+ 字号胶囊 + 字体下拉（都定宽） */
 .cat {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto;
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 104px;
   align-items: center; gap: 8px; min-height: 34px;
 }
 .cat-name { font-size: calc(12px * var(--ts, 1)); font-weight: 600; }
@@ -249,19 +243,13 @@ async function onFontChange(ev: Event): Promise<void> {
   line-height: 1.35; color: var(--text-dim);
 }
 
-/* 字体那一行：名字与上面五行对齐，右边是下拉 */
-.foot-row {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 8px;
-  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider);
-}
-.foot-ctl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 每行的字体下拉：定宽 104，五行在同一条竖线上 */
 .font-select {
-  height: 26px; padding: 0 6px; min-width: 0; width: auto; max-width: 220px;
+  height: 26px; padding: 0 4px; min-width: 0; width: 100%;
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
   background: var(--bg-elev); color: var(--text);
-  font-family: inherit; font-size: calc(11.5px * var(--ts, 1));
+  font-family: inherit; font-size: calc(11px * var(--ts, 1));
 }
 .font-select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.font-hint { font-size: calc(11px * var(--ts, 1)); color: var(--accent-text); }
 .font-msg { margin: 6px 0 0 48px; font-size: calc(11px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 </style>

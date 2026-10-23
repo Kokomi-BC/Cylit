@@ -11026,3 +11026,39 @@ html[data-hl-style="underline"] mark.hl {
 - 点批量「大」→ 五类全部 1.150、五条样例全 14.95px，批量回到 `大*`。
 - 再点批量「中」→ 回到 1.000。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**、控制台 0 error。
+
+### 103. 第一百零三轮：五类文字各选各的字体（分类级字体）
+
+用户口径：上一轮只做了全局字体，而「每种都能自定义字体」没实现；实现之后底部那行字体选择就不必留了。
+
+**数据模型：一份字体 → 五份**
+
+- `stores/appearance`：`fontFamily` / 全局 `typography` 退成**兜底**，新增
+  `fonts: { body, chat, note, side, ui }`，每个值是 `system | yahei | serif | local:<族名>`。
+  读盘时老配置（`typography` + `fontFamily`）会按「五类都用它」迁过来，不会丢。
+- 落值：每类写内联 `--font-sans-<类>`（选「系统默认」就摘掉，交回 tokens 的默认栈）。
+
+**令牌链：字面栈只写一遍**
+
+- `tokens.css` 新增 `--font-stack-system / -yahei / -serif` 三套栈，`--sans` / `--display` 指向 system；
+  五类默认 `--font-sans-<类>: var(--font-stack-system)`。旧 `data-typo` 规则改成引用这三套栈（兜底用）。
+- `base.css` 的分类根**同时**管字号与字体：
+  `.reader-content { --ts: var(--ts-body); --sans: var(--font-sans-body); … }`，
+  `.chat*` / `.reader-aside` / `.notes-page` 同理，`:root` 用 `--font-sans-ui`（所以调「界面」连设置页本身都换字面）。
+
+**界面**
+
+- 每行右侧多一个**字体下拉**（系统默认 / 微软雅黑 / 宋体衬线 / 读取本机字体… / 已读到的本机字体），
+  与字号胶囊并排；底部的全局字体行**删掉**（每类各选之后它是多余的）。
+- 样例句 `font-size` 吃 `--ts-<类>`、`font-family` 吃 `--font-sans-<类>` —— 换字号和换字体都在同一句上看得出来。
+  「读取本机字体…」仍在每个下拉里：点一次（用户手势）→ 浏览器授权 → 五个下拉一起多出本机字体。
+
+**验证（真浏览器）**
+
+- 初始：五个下拉都是 `preset:system`。
+- 正文选「宋体衬线」：`style.--font-sans-body = var(--font-stack-serif)`，界面那格内联值不变；
+  落盘 `fonts:{body:\"serif\", 其余 system}`。样例当场变衬线。
+- 打桩 `queryLocalFonts` 返回两款：笔记那行下拉多出「方正书宋 / HarmonyOS Sans」；
+  选中后 `--font-sans-note = \"方正书宋\", var(--font-stack-system)`，样例计算值 `方正书宋, …`，落盘
+  `fonts.note = \"local:方正书宋\"`。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**、控制台 0 error。

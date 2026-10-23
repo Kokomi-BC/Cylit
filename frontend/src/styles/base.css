@@ -29,7 +29,7 @@
 .reader-aside { --ts: var(--ts-side); }
 /* 笔记整页（跨论文汇总）：它没有别的归属，给「笔记」这一档单独一个根，
    否则设置里那条滑块只影响阅读器的笔记浮层，用户会觉得它失灵。 */
-.notes-page { --ts: var(--ts-note); }
+.notes-page { --ts: var(--ts-note); --sans: var(--font-sans-note); --display: var(--font-sans-note); }
 
 * { box-sizing: border-box; }
 

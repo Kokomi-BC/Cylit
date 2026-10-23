@@ -106,11 +106,23 @@
     radial-gradient(1200px 600px at 12% -8%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
     radial-gradient(900px 500px at 100% 0%, color-mix(in srgb, var(--text) 3%, transparent), transparent 65%);
 
-  /* ---- 字体 ---- */
-  --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
-          "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-  --display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI",
-             system-ui, sans-serif;
+  /* ---- 字体 ----
+   * 三套字面栈先各自命名，再被 `--sans` / `--display` 引用：分类级字体（设置页「分类字号」里
+   * 每一类可选自己的字体）就是把这些栈接到 `--font-sans-<类>` 上，不用把字面表抄第二遍。 */
+  --font-stack-system: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+                        "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-stack-yahei: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-stack-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, serif;
+
+  /* 每类字体：默认都跟随系统栈；`stores/appearance` 选过就把内联值写在 :root 上 */
+  --font-sans-body: var(--font-stack-system);
+  --font-sans-chat: var(--font-stack-system);
+  --font-sans-note: var(--font-stack-system);
+  --font-sans-side: var(--font-stack-system);
+  --font-sans-ui: var(--font-stack-system);
+
+  --sans: var(--font-stack-system);
+  --display: var(--font-stack-system);
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
   /* 论文原文（英文）用衬线，与中文译文观感一致（阅读对照用） */
   --serif: Cambria, "Source Serif Pro", Georgia, "Times New Roman", serif;
@@ -135,13 +147,15 @@
  * 放在 :root 之后、且带一个属性选择器 —— 特异性 (0,1,1) 高于 :root 的 (0,1,0)，
  * 所以皮肤文件里不会、也不需要各自再覆盖一遍。
  */
+/* 旧口径的全局字面（分类级字体上线前的 data-typo）：只当**兜底**用 ——
+ * 它是「所有分类都用这套」的意思，分类级选择会以内联 --font-sans-<类> 盖过它。 */
 html[data-typo="yahei"] {
-  --sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-  --display: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --sans: var(--font-stack-yahei);
+  --display: var(--font-stack-yahei);
 }
 html[data-typo="serif"] {
-  --sans: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, serif;
-  --display: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, serif;
+  --sans: var(--font-stack-serif);
+  --display: var(--font-stack-serif);
 }
 /* 减少动画：三个时长令牌归零，全站 transition / animation 一起停（都读这几个令牌） */
 html[data-motion="off"] {
