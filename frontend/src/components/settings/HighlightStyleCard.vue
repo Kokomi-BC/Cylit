@@ -56,7 +56,8 @@ import { HIGHLIGHT_OPTIONS, appearance, setHighlight } from '@/stores/appearance
 }
 .block-head p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
-.hl-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* 两张选项卡：宽了并排，窄了（并排到右栏一半时约 260）自动竖排 —— 否则示例只剩百来像素 */
+.hl-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
 
 /* 一张可选样式：名字 + 一句说明 + 真示例。选中靠三件事一起说（描边 / 浅底 / 勾） */
 .opt {

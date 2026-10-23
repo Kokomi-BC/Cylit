@@ -16,6 +16,7 @@ import {
   setCategory,
   type DisplayCategory,
 } from '@/stores/display';
+import AppIcon from '@/components/AppIcon.vue';
 
 const CATEGORY_META: Record<DisplayCategory, { label: string }> = {
   body: { label: '正文' },
@@ -57,7 +58,7 @@ function stepCategory(key: DisplayCategory, dir: number) {
             :disabled="!canDown(displayScale[c.key], CATEGORY_MIN)"
             :aria-label="c.label + '字号减小 5%'"
             @click="stepCategory(c.key, -1)"
-          >−</button>
+          ><AppIcon name="remove" :size="12" /></button>
           <span class="step-val">{{ pct(displayScale[c.key]) }}</span>
           <button
             type="button"
@@ -65,7 +66,7 @@ function stepCategory(key: DisplayCategory, dir: number) {
             :disabled="!canUp(displayScale[c.key], CATEGORY_MAX)"
             :aria-label="c.label + '字号增加 5%'"
             @click="stepCategory(c.key, 1)"
-          >+</button>
+          ><AppIcon name="add" :size="12" /></button>
         </div>
       </div>
     </div>
@@ -95,10 +96,13 @@ function stepCategory(key: DisplayCategory, dir: number) {
   border: 1px solid var(--border); border-radius: var(--radius-ctl);
   background: var(--bg-elev); overflow: hidden;
 }
+/* 用图标而不是「−」「+」两个字：两个字形宽度不同、光学中心也不同，五行里总有一行看着歪。
+   图标是 24 网格里居中的对称图形，`grid` 居中后五行完全一致（用户口径 2026-12）。 */
 .step-btn {
-  flex: none; width: 26px; height: 100%; border: 0; background: transparent;
-  color: var(--text-dim); font-family: inherit; font-size: calc(13px * var(--ts, 1));
-  line-height: 1; cursor: pointer;
+  flex: none; display: grid; place-items: center;
+  width: 26px; height: 100%; border: 0; background: transparent;
+  color: var(--text-dim); font-family: inherit;
+  cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .step-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }

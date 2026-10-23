@@ -103,11 +103,16 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 .palette-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
 /* bare：并进「预览效果」卡之后，上面一条细线与样例分开（不画第二个卡壳） */
 .palette-bare { padding: 0; }
-.palette-bare .palette-body { padding: 12px 0 0; border-top: 1px solid var(--divider); }
-/* 卡宽 660 左右：四枚色块铺一行；窄了自动落回两列 */
-.palette-bare .chips { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-/* 缩略图跟着长满剩余高度，别在下面留一片白 */
-.palette-bare .mini { max-height: none; min-height: 104px; }
+/* 两栏：左边四枚色值竖着排、右边一枚 300 宽的缩略图 —— 缩略图收窄之后，
+   右边那片空白由色值列接住，不再"左边一小块、右边一大片"（用户口径 2026-12）。 */
+.palette-bare .palette-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start;
+  padding: 12px 0 0; border-top: 1px solid var(--divider);
+}
+.palette-bare .chips { grid-template-columns: minmax(0, 1fr); }
+/* 缩略图：**宽度收窄**成一枚像样的缩略图（用户口径 2026-12：预览效果的宽度做小一点）。
+   左卡 490 宽时它铺满会像一张拉伸的线框；限到 300 之后左右留白、比例也像真的界面。 */
+.palette-bare .mini { width: 300px; max-width: 100%; max-height: none; min-height: 104px; align-self: stretch; }
 .bare-label {
   margin: 0 0 8px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 650;
 }

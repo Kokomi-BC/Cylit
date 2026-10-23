@@ -25,26 +25,36 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 </script>
 
 <template>
-  <div class="appearance" data-appearance>
+  <!-- 外层只当容器（`container-type: inline-size`）：**容器查询不能改容器自己**，
+       所以「整页落单列」这条必须查一个外层、改里面的 `.appearance`。 -->
+  <div class="appearance-wrap" data-appearance>
+  <div class="appearance">
     <div class="ap-left">
       <DisplayPreviewCard />
     </div>
 
     <div class="ap-right">
       <ThemePresetCard />
-      <CategorySizeBlock />
-      <HighlightStyleCard />
+
+      <!-- 宽屏时这两块并排（各占一半）；右栏窄了就自动落成一列 -->
+      <div class="ap-pair">
+        <CategorySizeBlock />
+        <HighlightStyleCard />
+      </div>
     </div>
+  </div>
   </div>
 </template>
 
 <style scoped>
-/* 容器：子组件里的 @container 都对着它量 */
+/* 容器放在**外层**：容器查询只能改后代，不能改容器自己（以前那条「整页落单列」写在
+   `.appearance` 上，永远不会生效）。 */
+.appearance-wrap { container-type: inline-size; min-width: 0; }
 .appearance {
-  container-type: inline-size;
   display: grid;
-  /* 左宽右窄：左卡是"看效果"的主力（样例 + 配色），右栏是三个旋钮，420 够用又不抢视线 */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  /* 左卡**收窄**到 520：它只是「看效果」，再宽也只剩留白；右栏因此拿到余下的宽度，
+     分类字号与高亮效果才并得开（用户口径 2026-12）。 */
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   min-width: 0;
@@ -53,16 +63,23 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
    画面底下那片空白也不会跟着滚走变成"一块空卡"。 */
 .ap-left { min-width: 0; position: sticky; top: 12px; }
 
-/* 右栏：一条竖轴，三块裸内容（不套卡片），块与块之间一条 1px 细线 + 14px 呼吸 */
+/* 右栏：一条竖轴，几块裸内容（不套卡片），块与块之间一条 1px 细线 + 14px 呼吸 */
 .ap-right { min-width: 0; display: flex; flex-direction: column; }
 .ap-right > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
+
+/* 分类字号 + 高亮效果：宽了并排、窄了落一列（container 量的是这一栏的宽度） */
+.ap-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@container (max-width: 960px) {
+  .ap-pair { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ap-pair > * + * { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider); }
+}
 
 /* 网格里的兄弟卡不需要 base.css 那条 `.card + .card` 的 12px 上边距（缝已由 gap 给） */
 .appearance :deep(.card + .card) { margin-top: 0; }
 
-/* 内容区窄到 940 以下：右栏 420 + 16 的缝之后，左卡只剩 500 以下 —— 样例里的标题会被截成
-   半行（实测 1280 宽时左卡只剩 366）。这一档起落单列：先预览，再三个旋钮。 */
-@container (max-width: 940px) {
+/* 内容区窄到 880 以下：左卡 520 + 16 + 右栏至少要 340 才排得下，再窄就只能落单列
+   （先预览，再右栏那几块）。 */
+@container (max-width: 880px) {
   .appearance { grid-template-columns: minmax(0, 1fr); }
 }
 
