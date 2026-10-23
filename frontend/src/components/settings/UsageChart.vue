@@ -288,15 +288,6 @@ const vendorModels = computed<UsageFilterModel[]>(() => {
   return allModels.value.filter((m) => keys.has(m.key));
 });
 
-/** 窗口里有没有「跨厂商的同名合并」：只有这种系列才会被厂商筛选削掉一部分贡献 ——
- *  这句提示只在真的存在那种系列、且用户确实按厂商筛了的时候出现，避免无意义的噪声。 */
-const mergedAcrossVendors = computed<boolean>(() =>
-  allModels.value.some((m) => (m.providers?.length ?? 0) > 1));
-const vendorFilterLabel = computed<string>(() => {
-  const id = vendorSel.value;
-  return vendors.value.find((v) => v.id === id)?.label || id;
-});
-
 const modelOpen = ref(false);
 const modelBtnText = computed<string>(() => {
   const n = modelSel.value.length;
@@ -592,7 +583,7 @@ const legendItems = computed<LegendItem[]>(() => {
   }
   for (const s of allSeries.value) {
     out.push({
-      id: s.key, label: s.label, color: seriesColor(s.key),
+      id: s.key, label: displayName(s), color: seriesColor(s.key),
       hidden: hiddenSeries.value.includes(s.key), kind: 'series', text: '',
       merged: (s.model_config_ids?.length ?? 0),
     });
@@ -670,6 +661,21 @@ const blocks = computed<NumBlock[]>(() => {
 
 interface RankRow { key: string; name: string; text: string; share: number; unpriced: number }
 
+/** 系列身份是「自定义名称 + 供应商」，所以**同名不同供应商会并存两条**。
+ *  出现重名时把供应商缀在名字后面（只在真的重名时缀，避免每条都拖一截尾巴）；
+ *  图例与排行共用这一套，两边看到的叫法必须一致。 */
+const labelCounts = computed<Record<string, number>>(() => {
+  const out: Record<string, number> = {};
+  for (const s of allSeries.value) out[s.label] = (out[s.label] || 0) + 1;
+  return out;
+});
+function displayName(s: { label: string; provider_label?: string; provider?: string | null }): string {
+  const dup = (labelCounts.value[s.label] || 0) > 1;
+  if (!dup) return s.label;
+  const prov = s.provider_label || s.provider || '';
+  return prov ? s.label + ' · ' + prov : s.label;
+}
+
 const rankAll = computed<RankRow[]>(() => {
   const rows = visibleSeries.value.map((s) => {
     let value = 0;
@@ -688,7 +694,7 @@ const rankAll = computed<RankRow[]>(() => {
       text = fmtN(value);
     }
     return {
-      key: s.key, name: s.label, text, value,
+      key: s.key, name: displayName(s), text, value,
       unpriced: costMode.value ? (Number(s.totals?.unpriced) || 0) : 0,
     };
   }).filter((r) => r.value > 0 || r.unpriced > 0);
@@ -810,9 +816,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p class="usage-note" data-merge-note v-if="vendorSel !== 'all' && mergedAcrossVendors">
-      已按「{{ vendorFilterLabel }}」筛选：同名合并里其它厂商那部分不计入这些数字。
-    </p>
     <p class="usage-note" v-if="loading && !stats">载入中…</p>
 
     <!-- 窗口内一条记录都没有：一行字，不占屏 -->

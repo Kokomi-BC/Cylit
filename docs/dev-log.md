@@ -11351,3 +11351,34 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
   点行内「编辑」弹出「编辑限额」卡片（两次都实测 `.modal-mask` 出现、标题正确）。
 - 测完把限额删掉、模型单价还原为 null（`GET /models/limits` 回 `items: []`、summary `none`）。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+### 114. 第一百一十四轮：系列身份改成「自定义名称 + 供应商」（同名跨厂商不再合并）
+
+用户口径（在上一轮「同名即合并」之后）：算用量时「每个模型后面跟着对应的供应商，**合并同名称同供应商的模型**」；
+确认「图也改」之后，后端把身份键从「只看名称」收紧成 **(名称, 供应商) 二元组**。
+
+- `usage_stats.series_key(provider, name)` → **`name:<provider>/<名称>`**；provider 为空（行上 provider 为 NULL 且配置已删）
+  退化用 `name:-/<名称>`。同名不同厂商因此天然是两个键 = 两条系列。
+- `provider` / `provider_label` **恒为那一家**；`providers` 恒为长度 1；`MULTI_VENDOR_LABEL` 与「多个厂商」分支整段删除
+  （出参不可能再出现那个字符串）。`model_config_ids` 仍只含存活配置，`priced_now` 仍是组内 AND。
+- `model=` 三种写法：`name:<provider>/<名称>` 精确一条；**旧写法 `name:<名称>` 仍认**（返回该名字下所有厂商的那几条，
+  老链接不炸）；`cfg:<id>` / 裸 id / `gone:<model_name>` 照旧。名称里含 `/` 的旧写法无法无歧义解析（记为已知限制）。
+- `vendor=` / `group=vendor` / 24h 小时桶 / 日桶 / 排序键 / 空库降级 / limits.py 全部未动。
+
+**前端（折线图）**
+- 删掉上一轮那句「已按「XX」筛选：同名合并里其它厂商那部分不计入」——身份带厂商之后它失去前提。
+- **重名消歧**：窗口里出现重名（同名不同厂商）时，图例与「分模型消耗」排行把厂商缀在名字后面（`联验同名档 · DeepSeek`）；
+  只有真的重名才缀。`×N` 角标含义变成「同一名称 + 同一供应商下合并了几个配置」。
+
+**验证**
+- 后端：两份文件 58 passed（+4）；全量 **1536 passed / 131 skipped**。
+- 真后端造 3 条配置（2 条 deepseek 同名 + 1 条 openai 同名）+ 3 行 usage：
+  3 条系列，`name:deepseek/联验同名档`（model_config_ids 2 个、cost 3.0）与 `name:openai/联验同名档`（1 个、cost 3.0）分开；
+  `model=name:联验同名档` 返回两条、`model=name:deepseek/联验同名档` 只一条、`cfg:` / `vendor=` / `group=vendor` 正常。
+- 真浏览器：图例两条并列 `联验同名档 · DeepSeek ×2` 与 `联验同名档 · OpenAI · GPT`；排行同样消歧；hover 每行各带自己的厂商、
+  只有合并那条写「合并 2 个配置」；跨厂商提示节点已不存在。
+- 数据还原：临时 3 条配置 + 3 行 usage 删净（usage 2 行、configs 5 条、series 回 1 条）。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+
+**已知限制**
+- 空 provider 的退化行（行上 provider 为 NULL 且配置已删）键为 `name:-/<名称>`，`provider=None`、`providers=[]`、label「未知厂商」。
+- 名称里含 `/` 的旧写法 `name:<名称>` 无法无歧义解析（会被当成新键）。
