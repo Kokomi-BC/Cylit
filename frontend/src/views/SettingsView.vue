@@ -185,10 +185,18 @@ const activeSection = computed(() => SECTIONS.find((s) => s.id === active.value)
 
 /** 内容窗格：窗口不滚了，它自己就是滚动容器，切区后要把它归零。 */
 const paneRef = ref<HTMLElement | null>(null);
+/** 窗格滚过一点点了（>4px）：顶部那条白色渐变只在这时出现。
+ *  它存在的唯一理由是**别让内容被窗格上沿一刀切平** —— 没滚的时候必须干净，
+ *  否则页头标题上会凭空压一层白。 */
+const paneScrolled = ref(false);
+function onPaneScroll() {
+  paneScrolled.value = (paneRef.value?.scrollTop ?? 0) > 4;
+}
 /** 等 DOM 换完再归零 —— 新分区多高要到渲染后才定，早一步设会被旧内容的溢出量顶回去。 */
 function resetPaneScroll() {
   void nextTick(() => {
     if (paneRef.value) paneRef.value.scrollTop = 0;
+    paneScrolled.value = false;
   });
 }
 
@@ -466,7 +474,7 @@ onMounted(async () => {
       </nav>
       <p class="settings-empty" v-if="!visibleSections.length">没有匹配的设置</p>
     </aside>
-    <div class="settings-pane" ref="paneRef">
+    <div class="settings-pane" :class="{ 'is-scrolled': paneScrolled }" ref="paneRef" @scroll.passive="onPaneScroll">
       <!-- 页头：图标 + 一个大标题（Windows 设置那种「一页一个大标题、不挂二级说明」）。
            副标题整句去掉（用户口径 2026-12：移除二级说明）；desc 只留给左栏搜索的同义词匹配，
            想知道这一区管什么，悬停标题即可（title 上挂着它）。 -->
@@ -779,6 +787,16 @@ onMounted(async () => {
   /* 底部呼吸空间跟着内容一起滚（主区那边已经是 0，见 base.css） */
   padding-bottom: var(--sp-5);
 }
+/* 窗格上沿的柔化：内容滚上去时**淡出**，而不是被容器边缘一刀切平（用户口径 2026-10：
+   「去除设置页顶部白色裁切」——滚到一半时那排类型卡被切掉上半截，看着像页面坏了）。
+   · 用 mask 而不是盖一层渐变：盖一层要 position:absolute，那会把绝对定位的子孙改成
+     相对这一层定位，再叠上 overflow:hidden 就被裁掉了 —— 实测探针 ④ 立刻少一条
+     （页面可滚高度从 >200 掉到 0）。mask 只影响绘制，不改任何布局与定位祖先。
+   · 只在真滚过（is-scrolled）时加：没滚时页头标题上不能有任何淡化 —— 那才是原来那个「白」。 */
+.settings-pane.is-scrolled {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
+}
 /* 内容列封顶 1200 并居中：再宽两列卡片之间就空得发慌，正文行也散。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
    也算进去了，那样内容会整体左偏半个滚动条宽。 */
@@ -831,6 +849,8 @@ onMounted(async () => {
     padding-left: 0; padding-right: 0;
     height: auto; overflow: visible;
   }
+  /* 这一档窗格不再自己滚动（改由窗口滚），柔化没有意义 */
+  .settings-pane.is-scrolled { -webkit-mask-image: none; mask-image: none; }
   /* 折成两行："设置" + 搜索框一行，导航自己占满下一行（横排要整条宽度才滚得顺） */
   .settings-rail {
     position: static; height: auto; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
