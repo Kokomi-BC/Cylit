@@ -107,13 +107,25 @@ async function remove(t: TaskInfo) {
 
 /* ------------------------------ 实时 ------------------------------ */
 
+/** SSE 帧：正常进度是**一整行** `TaskInfo`；删除时后端只推一枚「墓碑」
+ *  —— `{ id, deleted: true }`（见 `backend/services/task/task_service.py` 的 `delete()`）。 */
+type TaskEvent = Partial<TaskInfo> & { id?: string; deleted?: boolean };
+
 function onTaskEvent(_name: string, frame: any) {
-  const task: TaskInfo | null = frame?.payload ?? frame;
+  const task: TaskEvent | null = frame?.payload ?? frame;
   if (!task || typeof task !== 'object' || !task.id) return;
   const list = state.tasks;
   const i = list.findIndex((x) => x.id === task.id);
-  if (i >= 0) list.splice(i, 1, { ...list[i], ...task });
-  else list.unshift(task);
+  // ① 墓碑 = 这条记录被删了：在列表里就移除，不在就什么都不做。
+  //    ⚠️ 绝不能当新任务 unshift 进去 —— 墓碑只有 id，插进去渲染出来就是一行
+  //    「任务 — / 类型 — / 0 / 0 / 未知」的空任务（用户报的 bug 正是这个）。
+  if (task.deleted) {
+    if (i >= 0) list.splice(i, 1);
+    return;
+  }
+  // ② 只有**整行**（带 type 与 status）才允许插到最前面：残缺帧插进去同样是空白行。
+  if (i >= 0) list.splice(i, 1, { ...list[i], ...task } as TaskInfo);
+  else if (task.type && task.status) list.unshift(task as TaskInfo);
 }
 
 function onStreamStatus(s: StreamStatus) {

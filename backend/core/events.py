@@ -82,11 +82,18 @@ class EventBus:
         heartbeat: float = 15.0,
         wanted: set[str] | None = None,
     ) -> AsyncIterator[str]:
-        """产出 SSE 文本帧（``event:`` / ``data:``）。"""
-        for e in self.history(topic, since_seq):
-            if wanted and e["type"] not in wanted:
-                continue
-            yield _frame(e)
+        """产出 SSE 文本帧（``event:`` / ``data:``）。
+
+        补发只对**显式续传**生效：``since_seq > 0`` 才重放环形历史，默认 0 = 从此刻开始。
+        原来是"0 也把历史整段重放"，于是每开一次页面就先收到最近 200 条旧事件 —— 任务队列
+        把删除墓碑（``{id, deleted: true}``）当成新任务插进列表，删掉的任务会以「未知」空行
+        复活（用户报的 bug）。要续传的客户端传自己最后收到的 seq 即可。
+        """
+        if since_seq > 0:
+            for e in self.history(topic, since_seq):
+                if wanted and e["type"] not in wanted:
+                    continue
+                yield _frame(e)
 
         q = self.subscribe(topic)
         try:
