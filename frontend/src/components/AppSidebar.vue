@@ -216,8 +216,10 @@ async function go(item: RailItem): Promise<void> {
 .rail.collapsed .rail-label { display: none; }
 .rail.collapsed .rail-item { justify-content: center; gap: 0; padding: 0; }
 .rail.collapsed .rail-sep { margin: 8px 8px; }
-/* 64px 里"设置 + 圆钮"一行放不下：改成上下两行、各自居中 */
+/* 64px 里"设置 + 圆钮"一行放不下：改成上下两行、各自居中。
+   竖排时「设置」不再占 40px 高的整行，收成 32×32 的方块钮（点击区仍够大，也不挤收起钮）。 */
 .rail.collapsed .rail-foot { flex-direction: column; gap: 6px; }
+.rail.collapsed .rail-foot .rail-item { flex: none; width: 32px; height: 32px; }
 
 /* ---- 窄屏：<1024px **强制**图标轨（手动展开也不管用，见 `stores/shellPrefs` 的注释） ----
  * 这几条与上面 `.rail.collapsed` 那份必须保持一致；宽度不用管：base.css 的同档媒体查询
@@ -227,6 +229,10 @@ async function go(item: RailItem): Promise<void> {
   .rail-label { display: none; }
   .rail-item { justify-content: center; gap: 0; padding: 0; }
   .rail-sep { margin: 8px 8px; }
+  /* 与 .rail.collapsed 同款：64px 的图标轨里「设置 + 收起钮」并排放不下，
+     并排会把「设置」挤到 20px（图标溢出、按钮变形）。改成上下两行、各自居中。 */
+  .rail-foot { flex-direction: column; gap: 6px; }
+  .rail-foot .rail-item { flex: none; width: 32px; height: 32px; }
 }
 
 /* <720px：整体隐藏（本轮不做汉堡抽屉，标签条仍可用；App.vue 同时把那一列收掉） */

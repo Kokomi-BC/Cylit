@@ -679,7 +679,9 @@ onMounted(async () => {
   grid-template-columns: var(--rail-col) minmax(0, 1fr);
   /* 显式写行高：两栏都靠 height:100% 撑满，行若是 auto 就退回按内容算，窗格的滚动区会变矮 */
   grid-template-rows: minmax(0, 1fr);
-  height: calc(100dvh - var(--header-h) - 18px - 64px);
+  /* 只扣「顶栏 + 主区顶部内边距」：设置页的底部内边距是 0（见 base.css 的 .app-main.settings），
+     再扣 64 就会在窗口底部长出一条空白带、并把列表提前裁断（用户口径 2026-12-02）。 */
+  height: calc(100dvh - var(--header-h) - 18px);
   overflow: hidden;
 }
 .settings-rail {
@@ -769,6 +771,8 @@ onMounted(async () => {
   /* 只补左边：右边那 24 由 base.css 的 `.app-main.settings` 给（左内边距那边是 0），
      这里再补一份就变成 48，内容会明显偏左 —— 两侧留白不等宽，比宽度本身更刺眼。 */
   padding-left: var(--sp-5); padding-right: 0;
+  /* 底部呼吸空间跟着内容一起滚（主区那边已经是 0，见 base.css） */
+  padding-bottom: var(--sp-5);
 }
 /* 内容列封顶 1200 并居中：再宽两列卡片之间就空得发慌，正文行也散。
    居中只能交给子项的 auto 外边 —— padding 的百分比算的是栅格区宽度，把常驻的滚动条槽
@@ -799,7 +803,7 @@ onMounted(async () => {
    右侧同样是"补差"：这一档 .app-main.settings 给的是 12，补 4 才够 16。 */
 @media (max-width: 1024px) {
   .settings-layout {
-    height: calc(100dvh - var(--header-h) - 14px - 56px);
+    height: calc(100dvh - var(--header-h) - 14px);
   }
   .settings-pane { padding-left: var(--sp-4); padding-right: 4px; }
   .cards-2 { grid-template-columns: minmax(0, 1fr); }
