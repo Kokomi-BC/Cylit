@@ -3,7 +3,7 @@
  * 新建 / 编辑模型的**纵向五步流**（弹窗内，单列、最多 560px 宽）。
  *
  * 1 选择提供方  → 可搜索下拉（图标 + 名称 + 一句说明），取代原来的厂商卡片墙
- * 2 连接与认证  → 已配置的提供方只读展示 Base URL / 认证方式（「改连接」才可编辑）；
+ * 2 连接与认证  → 已配置的提供方只读展示 Base URL / 认证方式（点右上角「连接设置」才可编辑）；
  *                 默认密钥自动选中（key_mode=auto），可换某一把或「+ 新建密钥」
  * 3 选择模型    → 先拉 POST /models/probe-models 再搜索选 Model ID；拉不到就手填。
  *                 **显示名称 name 与 Model ID model_name 是两个字段**，不互相猜
@@ -1044,11 +1044,18 @@ const advSummary = computed<string>(() => {
             {{ selectedProvider?.label || form.provider || '自定义提供方' }}
           </h3>
           <span class="spacer"></span>
-          <button type="button" class="lnk" @click="goStep(1)">换提供方</button>
+          <!-- 连接信息默认只读（Base URL 留空 = 跟随提供方端点）；「连接设置」这一枚按钮就地展开成输入框。
+               原来这里还有一枚「换提供方」，和底部「上一步」是同一件事（都回第 1 步），合并掉了。 -->
+          <button
+            v-if="!customMode && selectedProvider"
+            type="button" class="lnk" data-conn-edit
+            :aria-pressed="connEditing"
+            @click="connEditing = !connEditing"
+          >{{ connEditing ? '完成' : '连接设置' }}</button>
         </div>
 
         <div class="fields">
-          <!-- 已配置：连接信息只读（Base URL 留空 = 跟随提供方端点），点「改连接」才变成输入框 -->
+          <!-- 已配置：连接信息只读（Base URL 留空 = 跟随提供方端点），点右上角「连接设置」才变成输入框 -->
           <template v-if="connReadonly">
             <div class="fgroup">
               <div class="field-row">
@@ -1059,8 +1066,6 @@ const advSummary = computed<string>(() => {
                   :title="'留空 = 跟随提供方端点；多模态向量等特殊协议由后端适配器解析'"
                 >自动（跟随提供方：{{ hostOf(providerBaseUrl) }}）</span>
                 <span v-else class="fr-v warn" data-baseurl-missing>未设置</span>
-                <span class="spacer"></span>
-                <button type="button" class="lnk" data-conn-edit @click="connEditing = true">改连接</button>
               </div>
               <p class="err-line" v-if="!form.base_url.trim() && !providerBaseUrl" data-baseurl-required>
                 需要填 Base URL（这家提供方没有默认端点）
