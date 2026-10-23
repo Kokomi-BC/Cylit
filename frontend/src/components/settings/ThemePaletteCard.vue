@@ -2,13 +2,18 @@
 /**
  * 设置 · 显示主题 · **当前配色**：四枚语义色令牌 + 一张迷你界面缩略图。
  *
- * 色值不是写死的：挂载后读 `getComputedStyle(document.documentElement)` 上的令牌，
+ * 色值不是写死的：挂载后读 getComputedStyle(document.documentElement) 上的令牌，
  * 换主题时再读一遍（自定义主题编辑过程中也会跟着变）。所以小字里的十六进制**就是**
- * 现在的值，不是示意。令牌被写成 `color-mix()` 一类表达式时读不到十六进制，那一行就
+ * 现在的值，不是示意。令牌被写成 color-mix() 一类表达式时读不到十六进制，那一行就
  * 只留色块，不编一个数字出来。
+ *
+ * 2026-12 用户口径：这块与「主题预设」**并成一张卡**（预设竖向列表在左、配色在右），
+ * 所以给一个 `bare` 开关 —— 开着只出内容，卡片外壳与卡头由 ThemePresetCard 统一提供。
  */
 import { onMounted, onUnmounted, ref } from 'vue';
 import { THEME_CHANGE_EVENT } from '@/theme/theme';
+
+const props = defineProps<{ bare?: boolean }>();
 
 const TOKENS = [
   { key: 'accent', label: '主色', cls: 'is-accent' },
@@ -41,15 +46,17 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 </script>
 
 <template>
-  <section class="card palette">
-    <div class="card-head">
+  <component :is="props.bare ? 'div' : 'section'" class="palette" :class="props.bare ? 'palette-bare' : 'card'">
+    <!-- 不带外壳时只留一行小字当列名：并进「主题预设」那张卡之后，右栏没有名字会读不出是什么 -->
+    <div v-if="props.bare" class="bare-label">当前配色</div>
+    <div v-else class="card-head">
       <div class="hd">
         <h3>当前配色</h3>
         <p>四枚语义色令牌的实时取值</p>
       </div>
     </div>
 
-    <div class="card-body palette-body">
+    <div class="palette-body">
       <div class="chips">
         <span v-for="t in TOKENS" :key="t.key" class="chip" :data-token="t.key">
           <i class="dot" :class="t.cls" aria-hidden="true" />
@@ -79,7 +86,7 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
         </div>
       </div>
     </div>
-  </section>
+  </component>
 </template>
 
 <style scoped>
@@ -91,9 +98,20 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 }
 .hd p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
-/* 卡片拉满整行高度（第一行两卡等高），缩略图吃掉剩下的空间 */
+/* 卡片拉满整行高度（与左侧预设列表等高），缩略图吃掉剩下的空间 */
 .palette { display: flex; flex-direction: column; min-width: 0; }
 .palette-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
+/* bare：并进「主题预设」卡之后，右栏靠一条竖线与左侧列表分开（不画第二个卡壳） */
+.palette-bare {
+  height: 100%; padding: 0 0 0 16px;
+  border-left: 1px solid var(--divider);
+}
+.palette-bare .palette-body { padding: 0; }
+/* 并进预设卡之后这块有 268 高：缩略图跟着长，别在下面留一片白 */
+.palette-bare .mini { max-height: none; }
+.bare-label {
+  margin: 0 0 8px; font-size: calc(12.5px * var(--ts, 1)); font-weight: 650;
+}
 
 /* 令牌：2×2 —— 一行四个的话"主色 + 十六进制"会挤到必须省略 */
 .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }

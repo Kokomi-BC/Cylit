@@ -9,7 +9,12 @@
  *
  * ⚠️ 整块 `aria-hidden` + `pointer-events: none`：它是**示例**，按钮点了不该真的发生什么。
  * 做一个点了有反应的假按钮，比不做预览更糟。
+ *
+ * 2026-12 用户口径：「显示与排版」那张卡撤掉（整体缩放、字体两项都不要了），只剩分类字号，
+ * 于是把它**并进这张卡**：左列是五类字号的步进器，右列是原来那套样例 —— 调完当场看到，
+ * 不必在两张卡之间上下对照。外壳仍由这张卡提供，CategorySizeBlock 只出控件。
  */
+import CategorySizeBlock from './CategorySizeBlock.vue';
 </script>
 
 <template>
@@ -17,33 +22,37 @@
     <div class="card-head">
       <div class="hd">
         <h3>预览效果</h3>
-        <p>标题、正文、标签与按钮跟着上面的设置实时变化</p>
+        <p>右边调分类字号，左边当场看效果</p>
       </div>
     </div>
 
     <div class="card-body preview-body">
-      <div class="sample" aria-hidden="true" data-preview>
-        <div class="sample-top">
-          <span class="sample-title">量子纠缠与局域性：一个可检验的视角</span>
-          <span class="pv-tag is-accent">论文</span>
+      <div class="pv-cols">
+        <div class="sample" aria-hidden="true" data-preview>
+          <div class="sample-top">
+            <span class="sample-title">量子纠缠与局域性：一个可检验的视角</span>
+            <span class="pv-tag is-accent">论文</span>
+          </div>
+          <p class="sample-text">
+            这一段用来看字号：正文按「分类字号 · 正文」渲染，
+            <mark class="hl yellow" data-preview-hl>标了黄的句子</mark>与
+            <mark class="hl" style="--hl-bg:#7ec8ff66;--hl-ink:#2f7fd4" data-preview-hl-custom>自定义色</mark>
+            就是阅读器里那枚标注本体 —— 换高亮效果会当场跟着变。
+          </p>
+          <div class="sample-tags">
+            <span class="pv-tag is-accent">摘要</span>
+            <span class="pv-tag is-ok">已索引</span>
+            <span class="pv-tag">方法</span>
+            <span class="pv-tag">实验</span>
+          </div>
+          <div class="sample-actions">
+            <span class="pv-btn is-primary">开始阅读</span>
+            <span class="pv-btn">加入收藏</span>
+            <span class="pv-link">查看详情 ›</span>
+          </div>
         </div>
-        <p class="sample-text">
-          这一段用来看字号与字体：正文按「分类字号 · 正文」渲染，
-          <mark class="hl yellow" data-preview-hl>标了黄的句子</mark>与
-          <mark class="hl" style="--hl-bg:#7ec8ff66;--hl-ink:#2f7fd4" data-preview-hl-custom>自定义色</mark>
-          都是阅读器里那枚标注本体 —— 换高亮效果会当场跟着变。
-        </p>
-        <div class="sample-tags">
-          <span class="pv-tag is-accent">摘要</span>
-          <span class="pv-tag is-ok">已索引</span>
-          <span class="pv-tag">方法</span>
-          <span class="pv-tag">实验</span>
-        </div>
-        <div class="sample-actions">
-          <span class="pv-btn is-primary">开始阅读</span>
-          <span class="pv-btn">加入收藏</span>
-          <span class="pv-link">查看详情 ›</span>
-        </div>
+
+        <CategorySizeBlock />
       </div>
     </div>
   </section>
@@ -60,6 +69,12 @@
 
 .preview { min-width: 0; }
 .preview-body { padding: 10px 14px 10px; }
+/* 左列控件定宽 226：五类字号一列排刚好，再窄步进器就塞不下两个按钮 */
+.pv-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 216px); gap: 14px; align-items: start; }
+/* 窄了：控件落到样例下面（先看字，再调） */
+@container (max-width: 560px) {
+  .pv-cols { grid-template-columns: minmax(0, 1fr); }
+}
 
 .sample {
   display: grid; gap: 7px; padding: 11px 14px;
@@ -79,7 +94,7 @@
 }
 .sample-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .pv-tag {
-  padding: 2px 7px; border-radius: 5px;
+  padding: 2px 7px; border-radius: 5px; white-space: nowrap;
   background: var(--bg-elev); color: var(--text-dim);
   border: 1px solid var(--border);
   font-size: calc(10.5px * var(--ts, 1)); line-height: 1.5;

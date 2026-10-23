@@ -9,6 +9,7 @@
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
+import ThemePaletteCard from './ThemePaletteCard.vue';
 import Modal from '@/components/Modal.vue';
 import { askConfirm } from '@/stores/confirm';
 import { toast } from '@/stores/app';
@@ -37,9 +38,9 @@ const active = ref(getTheme());
  * 注册表里有二十多套：**六套手写皮肤**（跟随系统 / 经典 / 素纸 / 墨家 / 雾青 / 黛瓦夜色）
  * + 一批由调色板推出来的**配色**，还有用户自建的。
  *
- * 两类的读法不一样：前者是"风格"，一屏看全就好；后者是"颜色"，多到铺开会把这张卡撑到
- * 五行以上，主题、配色、缩放、预览就一屏看不全 —— 所以走**一条横滚的色带**：
- * 样式照旧（还是同一枚方卡），颜色左右滚着挑。
+ * 2026-12 用户口径：改成**竖向矩形列表 + 竖向滚动**，并与「当前配色」并成一张卡
+ * （列表在左、配色在右）—— 横滚色带在宽屏上要来回拨箭头，竖排一眼能扫完、滚一格就是一行。
+ * 两类仍分两组（「预设」是风格、「配色」是颜色），组间只隔一行 11px 小字，不再分两张卡。
  */
 const skins = computed(() => themes.value.filter((t) => !t.custom && t.order < 100));
 
@@ -49,28 +50,6 @@ const colorThemes = computed(() => [
   ...themes.value.filter((t) => !t.custom && t.order >= 100),
 ]);
 
-const stripRef = ref<HTMLElement | null>(null);
-
-/** 左右各滚一屏多一点：按"看得见的宽度"的 80% 走，别让人一格一格点 */
-function scrollStrip(dir: number) {
-  const el = stripRef.value;
-  if (!el) return;
-  el.scrollBy({ left: dir * Math.round(el.clientWidth * 0.8), behavior: 'smooth' });
-}
-
-/** 竖向滚轮在这个横条上转成横向 —— 否则鼠标停在色带上怎么滚都不动。
- *  但滚到头就把滚轮还给页面：不然鼠标停在色带上，整页就再也滚不下去了。 */
-function onStripWheel(ev: WheelEvent) {
-  const el = stripRef.value;
-  if (!el) return;
-  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
-  if (el.scrollWidth <= el.clientWidth + 1) return;
-  const atStart = el.scrollLeft <= 1;
-  const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-  if ((ev.deltaY < 0 && atStart) || (ev.deltaY > 0 && atEnd)) return;
-  el.scrollLeft += ev.deltaY;
-  ev.preventDefault();
-}
 
 function refresh() { themes.value = listThemes(); }
 
@@ -230,93 +209,96 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
     </div>
 
     <div class="card-body preset-body">
-      <div class="wall" role="radiogroup" aria-label="主题预设">
-        <div
-          v-for="t in skins"
-          :key="t.id"
-          class="tile"
-          :class="{ 'is-on': active === t.id }"
-          role="radio"
-          :aria-checked="active === t.id"
-          tabindex="0"
-          :title="t.label"
-          :data-theme-option="t.id"
-          @click="choose(t.id)"
-          @keydown.enter.prevent="choose(t.id)"
-          @keydown.space.prevent="choose(t.id)"
-        >
-          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
-            <span class="sw-paper" :style="{ background: t.preview.paper }">
-              <span class="sw-bar" :style="{ background: t.preview.accent }" />
-              <span class="sw-line" :style="{ background: t.preview.ink }" />
-              <span class="sw-line short" :style="{ background: t.preview.ink }" />
-            </span>
-          </span>
-          <span class="tile-label">{{ t.label }}</span>
+      <div class="preset-cols">
+        <!-- 左：竖向列表（竖着滚）。25 套一次性铺开会把这张卡撑到五行以上，
+             主题一栏就再也看不全 —— 滚动条本身就是"还有更多"的说明。 -->
+        <div class="preset-list" data-preset-list>
+          <div class="pgroup" role="radiogroup" aria-label="外观预设">
+            <div class="group-label">预设</div>
+            <div
+              v-for="t in skins"
+              :key="t.id"
+              class="row"
+              :class="{ 'is-on': active === t.id }"
+              role="radio"
+              :aria-checked="active === t.id"
+              tabindex="0"
+              :title="t.label"
+              :data-theme-option="t.id"
+              @click="choose(t.id)"
+              @keydown.enter.prevent="choose(t.id)"
+              @keydown.space.prevent="choose(t.id)"
+            >
+              <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+                <span class="sw-paper" :style="{ background: t.preview.paper }">
+                  <span class="sw-bar" :style="{ background: t.preview.accent }" />
+                  <span class="sw-line" :style="{ background: t.preview.ink }" />
+                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
+                </span>
+              </span>
+              <span class="row-label">{{ t.label }}</span>
 
-          <span v-if="t.custom" class="tile-tools">
-            <button type="button" class="tile-tool" title="编辑这套主题"
-                    @click.stop="openEditor(t)">
-              <AppIcon name="edit" :size="12" />
-            </button>
-            <button type="button" class="tile-tool danger" title="删除这套主题"
-                    @click.stop="removeCustom(t.id, t.label)">
-              <AppIcon name="trash" :size="12" />
-            </button>
-          </span>
+              <span v-if="t.custom" class="row-tools">
+                <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
+                  <AppIcon name="edit" :size="11" />
+                </button>
+                <button type="button" class="row-tool danger" title="删除这套主题"
+                        @click.stop="removeCustom(t.id, t.label)">
+                  <AppIcon name="trash" :size="11" />
+                </button>
+              </span>
 
-          <span v-if="active === t.id" class="tile-check" aria-hidden="true">
-            <AppIcon name="check" :size="11" />
-          </span>
+              <span v-if="active === t.id" class="row-check" aria-hidden="true">
+                <AppIcon name="check" :size="10" />
+              </span>
+            </div>
+          </div>
+
+          <div class="pgroup" role="radiogroup" aria-label="配色">
+            <div class="group-label">配色</div>
+            <div
+              v-for="t in colorThemes"
+              :key="t.id"
+              class="row"
+              :class="{ 'is-on': active === t.id }"
+              role="radio"
+              :aria-checked="active === t.id"
+              tabindex="0"
+              :title="t.label"
+              :data-theme-option="t.id"
+              @click="choose(t.id)"
+              @keydown.enter.prevent="choose(t.id)"
+              @keydown.space.prevent="choose(t.id)"
+            >
+              <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
+                <span class="sw-paper" :style="{ background: t.preview.paper }">
+                  <span class="sw-bar" :style="{ background: t.preview.accent }" />
+                  <span class="sw-line" :style="{ background: t.preview.ink }" />
+                  <span class="sw-line short" :style="{ background: t.preview.ink }" />
+                </span>
+              </span>
+              <span class="row-label">{{ t.label }}</span>
+
+              <span v-if="t.custom" class="row-tools">
+                <button type="button" class="row-tool" title="编辑这套主题" @click.stop="openEditor(t)">
+                  <AppIcon name="edit" :size="11" />
+                </button>
+                <button type="button" class="row-tool danger" title="删除这套主题"
+                        @click.stop="removeCustom(t.id, t.label)">
+                  <AppIcon name="trash" :size="11" />
+                </button>
+              </span>
+
+              <span v-if="active === t.id" class="row-check" aria-hidden="true">
+                <AppIcon name="check" :size="10" />
+              </span>
+            </div>
+          </div>
         </div>
 
-      </div>
-
-      <!-- 色带：注册表里那些配色主题，一条横滚的带子 -->
-      <div class="strip-row">
-        <button type="button" class="strip-btn" aria-label="向前翻" title="更多配色" @click="scrollStrip(-1)">
-          <AppIcon name="back" :size="12" />
-        </button>
-        <div class="strip" ref="stripRef" role="radiogroup" aria-label="更多配色" @wheel="onStripWheel">
-        <div
-          v-for="t in colorThemes"
-          :key="t.id"
-          class="tile strip-tile"
-          :class="{ 'is-on': active === t.id }"
-          role="radio"
-          :aria-checked="active === t.id"
-          tabindex="0"
-          :title="t.label"
-          :data-theme-option="t.id"
-          @click="choose(t.id)"
-          @keydown.enter.prevent="choose(t.id)"
-          @keydown.space.prevent="choose(t.id)"
-        >
-          <span class="sw" :style="{ background: t.preview.bg }" aria-hidden="true">
-            <span class="sw-paper" :style="{ background: t.preview.paper }">
-              <span class="sw-bar" :style="{ background: t.preview.accent }" />
-            </span>
-          </span>
-          <span class="tile-label">{{ t.label }}</span>
-
-          <span v-if="t.custom" class="tile-tools">
-            <button type="button" class="tile-tool" title="编辑这套主题" @click.stop="openEditor(t)">
-              <AppIcon name="edit" :size="12" />
-            </button>
-            <button type="button" class="tile-tool danger" title="删除这套主题"
-                    @click.stop="removeCustom(t.id, t.label)">
-              <AppIcon name="trash" :size="12" />
-            </button>
-          </span>
-
-          <span v-if="active === t.id" class="tile-check" aria-hidden="true">
-            <AppIcon name="check" :size="11" />
-          </span>
-        </div>
-        </div>
-        <button type="button" class="strip-btn" aria-label="向后翻" title="更多配色" @click="scrollStrip(1)">
-          <AppIcon name="forward" :size="12" />
-        </button>
+        <!-- 右：当前配色（四枚语义色 + 迷你界面）。卡片外壳由这张卡统一提供，
+             所以它用 bare 模式，只出内容不套第二层卡壳。 -->
+        <ThemePaletteCard bare />
       </div>
     </div>
   </section>
@@ -434,99 +416,111 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
 .preset { display: flex; flex-direction: column; min-width: 0; }
 .preset-body { flex: 1; padding: 12px 14px 14px; }
 
-/* 墙：固定三列（每格 ~200 宽，色块与名字都放得下）。auto-fit 在 670 宽时会挤成四列，
-   格子变窄、名字开始省略 —— 三列才是这一格该有的密度。窄了退到两列。 */
-.wall { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@container (max-width: 640px) {
-  .wall { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 左：一排多个主题（名字在色块下面），**竖向滚动**。25 套一次铺开会把这张卡撑到
+   十行以上，主题这栏就再也看不全；竖排的滚动条本身就是「还有更多」的说明。 */
+.preset-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 316px);
+  gap: 16px;
+  align-items: stretch;
+  min-width: 0;
+}
+.preset-list {
+  min-width: 0; max-height: 268px; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px;
+  padding-right: 4px;
+  scrollbar-width: thin; scrollbar-gutter: stable;
+}
+/* 还原成原来的小卡：**色块在左、名字在右**，三列网格（用户口径 2026-12：
+   「还原为之前的卡片样式」）。三列是这一格该有的密度，窄了退两列。 */
+.pgroup {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px; align-content: start; min-width: 0;
+}
+.group-label {
+  grid-column: 1 / -1;
+  padding: 0 2px; font-size: calc(11px * var(--ts, 1)); font-weight: 650;
+  letter-spacing: .02em; color: var(--text-faint);
 }
 
-/* 一枚主题 = 色块 + 名称（+ 自定义的两枚小按钮）。名称是唯一文字：
-   配色特征交给色块，不写"XX 底 · YY 强调"那种说明。 */
-.tile {
-  position: relative; display: flex; align-items: center; gap: 9px;
-  min-height: 44px; padding: 6px 8px; text-align: left; cursor: pointer;
+/* 一枚主题 = 色块 + 名字（+ 自定义的两枚小按钮，悬停才现身）。
+   名字是唯一文字：配色特征交给色块，不写「XX 底 · YY 强调」那种说明。 */
+.row {
+  position: relative;
+  display: flex; align-items: center; gap: 9px;
+  min-width: 0; min-height: 44px; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-elev); color: var(--text);
+  background: var(--bg-elev); color: var(--text); cursor: pointer;
+  font-family: inherit; text-align: left;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease);
 }
-.tile:hover {
+.row:hover {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
   background: var(--bg-hover);
 }
-.tile:focus-visible { outline: none; box-shadow: var(--ring); }
-.tile.is-on {
+.row:focus-visible { outline: none; box-shadow: var(--ring); }
+.row.is-on {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   box-shadow: var(--ring);
 }
 
-/* 色块：外框是 bg、内页是 paper，上面一根强调条 + 两条墨线（就是一套皮肤的样子） */
+/* 色块：外框是 bg、内页是 paper，上面一根强调条（就是一套皮肤的样子） */
 .sw {
   flex: none; width: 32px; height: 32px; padding: 4px 5px;
-  border-radius: 9px; border: 1px solid var(--border);
+  border-radius: 7px; border: 1px solid var(--border);
   display: flex; align-items: flex-start;
 }
+/* 内页那圈描边不能省：纸色与行的白底几乎同色，少了它色块读起来只是一个点 */
 .sw-paper {
   width: 100%; height: 100%; border-radius: 5px; padding: 4px 4px 0;
   display: flex; flex-direction: column; gap: 2px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent);
 }
 .sw-bar { display: block; height: 4px; width: 80%; border-radius: 2px; }
 .sw-line { display: block; height: 2px; width: 100%; border-radius: 2px; opacity: .5; }
 .sw-line.short { width: 58%; opacity: .3; }
 
-.tile-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.row-label {
+  min-width: 0; margin-right: auto; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: calc(12.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em;
 }
+.row.is-on .row-label { color: var(--accent-text); }
 
-.tile-check {
-  position: absolute; right: 6px; top: 6px;
+/* 选中勾：压在色块右上角（位置固定，切换时不跳） */
+.row-check {
+  position: absolute; top: 6px; right: 6px;
   display: inline-flex; align-items: center; justify-content: center;
   width: 15px; height: 15px; border-radius: 999px;
   background: var(--accent); color: var(--text-on-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-elev) 70%, transparent);
 }
 
-/* 自定义的两枚按钮：默认淡出，鼠标进卡 / 键盘聚焦才现身（紧凑但可达） */
-.tile-tools {
-  position: absolute; right: 4px; bottom: 3px; display: inline-flex; gap: 1px;
+/* 自定义的两枚按钮：默认淡出，鼠标进这一格 / 键盘聚焦才现身（紧凑但可达） */
+.row-tools {
+  position: absolute; right: 5px; bottom: 4px;
+  display: inline-flex; gap: 1px;
   opacity: 0; transition: opacity var(--dur) var(--ease);
 }
-.tile:hover .tile-tools,
-.tile:focus-within .tile-tools { opacity: 1; }
-.tile-tool {
+.row:hover .row-tools,
+.row:focus-within .row-tools { opacity: 1; }
+.row-tool {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--text-faint); cursor: pointer;
+  width: 18px; height: 18px; border: 0; border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  color: var(--text-faint); cursor: pointer;
 }
-.tile-tool:hover { background: var(--bg-hover); color: var(--text); }
-.tile-tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.row-tool:hover { background: var(--bg-hover); color: var(--text); }
+.row-tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
 
-/* ---- 色带：多出来的配色横着排，左右两颗箭头就是"还能滚"的说明 ---- */
-.strip-row { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
-.strip-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--bg-elev); color: var(--text-dim);
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+/* 窄了：配色落到列表下面（右栏 316 一旦保不住，两列会一起挤成两条窄缝） */
+@container (max-width: 640px) {
+  .preset-cols { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .preset-list { max-height: 232px; }
+  .palette-bare { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--divider); }
 }
-.strip-btn:hover { background: var(--bg-hover); color: var(--text); }
-.strip-btn:focus-visible { outline: none; box-shadow: var(--ring); }
-
-.strip {
-  flex: 1; min-width: 0;
-  display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden;
-  padding-bottom: 2px; scroll-snap-type: x proximity; overscroll-behavior-x: contain;
-}
-/* 滚动条不画：它和下面那排卡片挨太近，看着像一条多余的分隔线。
-   "还能往右滚"由右边露出的半格卡片 + 卡头那颗箭头说清楚。 */
-.strip { scrollbar-width: none; }
-.strip::-webkit-scrollbar { height: 0; }
-/* 色带里的一格比墙里窄一档：一行要多放几套才值得滚 */
-.strip-tile { flex: 0 0 auto; width: 142px; min-height: 38px; padding: 3px 8px; scroll-snap-align: start; }
-.strip-tile .sw { width: 28px; height: 28px; border-radius: 8px; padding: 3px 4px; }
 
 /* ---------------------------- 编辑器 ---------------------------- */
 .ce { display: grid; gap: 16px; }

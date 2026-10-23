@@ -2,9 +2,11 @@
 /**
  * 设置 · 显示主题：**一整页三块**的编排层。
  *
- * 版式（自上而下）：主题预设 + 当前配色（左右并排）→ 显示与排版（一张卡里三段）→
- * 预览效果 + 高亮效果（两块等宽，高度对齐）。三块的内部间距统一 12，行与行之间也是 12 ——
- * 这一区是"看效果"的地方，间距一大视线就断，用户得来回滚才能对上一个改动。
+ * 版式（自上而下，2026-12 用户口径重排）：
+ *   ① **主题预设**（一张卡：左侧竖向列表 + 竖滚，右侧「当前配色」四枚语义色与迷你界面）
+ *   ② **预览效果**（左列分类字号步进器 + 右侧样例）｜**高亮效果**（荧光笔 / 下划线）
+ * 「显示与排版」那张卡已拆：整体缩放与字体两项删除，只剩分类字号 → 并进预览卡。
+ * 两块之间的间距统一 12：这一区是"看效果"的地方，间距一大视线就断。
  *
  * 第三行原来是「预览效果 + 高级设置」：高级设置（细腻动画 / 收起左侧栏）低频、而且"收起左侧栏"
  * 在侧栏底部本来就有入口，右栏底部因此常年留白。2026-12 起整卡换成「高亮效果」——
@@ -15,8 +17,7 @@
  * （窗口 1600 时 1128，侧栏收起后更宽），媒体查询看的是窗口，量不到这个宽度。
  */
 import ThemePresetCard from './ThemePresetCard.vue';
-import ThemePaletteCard from './ThemePaletteCard.vue';
-import DisplayTuningCard from './DisplayTuningCard.vue';
+
 import DisplayPreviewCard from './DisplayPreviewCard.vue';
 import HighlightStyleCard from './HighlightStyleCard.vue';
 </script>
@@ -25,9 +26,7 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
   <div class="appearance" data-appearance>
     <div class="ap-top">
       <ThemePresetCard />
-      <ThemePaletteCard />
     </div>
-    <DisplayTuningCard />
     <div class="ap-bottom">
       <DisplayPreviewCard />
       <HighlightStyleCard />
@@ -44,12 +43,11 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
   min-width: 0;
 }
 
-/* 第一行：预设占主空间（1.55 : 1），配色是它的注释，不该一样大 */
+/* 第一行：只有一张卡（主题预设 + 当前配色已合成一张，两栏在卡的内部） */
 .ap-top {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-  align-items: stretch;
   min-width: 0;
 }
 
@@ -73,8 +71,5 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
 @container (max-width: 820px) {
   .ap-bottom { grid-template-columns: minmax(0, 1fr); }
 }
-/* 700 以下（内容区窄于这个数）：第一行也落单列，配色跟到预设下面 */
-@container (max-width: 700px) {
-  .ap-top { grid-template-columns: minmax(0, 1fr); }
-}
+
 </style>
