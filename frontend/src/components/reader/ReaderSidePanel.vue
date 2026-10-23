@@ -722,17 +722,18 @@ function onMore(key: string, r: FeedRow) {
       />
     </template>
 
-    <!-- 插图：**页码/图号一行 + 图 + 图注一行**（用户口径：图注放底部，页码和图号提到顶部）。
-         顶部那行里页码、图号与右侧两枚操作键**同高**（`--control-h-sm` = 26px），
-         扫一列图卡时这条线是齐的；图注压在图下面，正好是论文自己「图在上、说明在下」的排法。
+    <!-- 插图：**图号/页码一行 + 图 + 图注一行**（用户口径：编号在最前、页码紧随其后，说明在底部）。
+         卡头与「表格」页签共用 base.css 的 `.rvc*` 一套类 —— 同一栏里两种卡长得一样，
+         扫的时候不用重新找"编号在哪、页码在哪"。卡头高 `--control-h-sm`（26px），
+         与右侧两枚操作键同高，一列扫下来是齐的。
          图与"点开看大图"都用后端的「图 + 图注」卡片（`?card=1`）—— 与正文里的图同源，
          点开就是它的放大版（范围完全一致，用户口径）。 -->
     <template v-if="props.tab === 'figures'">
-      <div v-for="fig in props.figures" :key="fig.block_id" class="item fig-card">
-        <div class="fig-head">
-          <span class="badge">p{{ fig.page }}</span>
-          <span v-if="fig.part_label" class="badge dim">{{ fig.part_label }}</span>
-          <span v-if="fig.number" class="badge accent">图 {{ fig.number }}</span>
+      <div v-for="fig in props.figures" :key="fig.block_id" class="rvc fig-card">
+        <div class="rvc-head">
+          <span v-if="fig.number" class="rvc-num">图 {{ fig.number }}</span>
+          <span v-if="fig.page" class="rvc-page">p{{ fig.page }}</span>
+          <span v-if="fig.part_label" class="badge dim" :title="'原文里这一栏标的是 ' + fig.part_label">{{ fig.part_label }}</span>
           <span class="spacer" />
           <!-- 浮层打开（用户口径）：走**新的那个浮层**（FloatingCard 里显示这张图），
                不是图片查看器 —— 查看器是「点图片本身」那一手（要缩放 / 旋转 / 切图才用它）。 -->
@@ -753,7 +754,7 @@ function onMore(key: string, r: FeedRow) {
             <AppIcon name="locate" :size="13" />
           </button>
         </div>
-        <div class="fig-body">
+        <div class="rvc-body fig-body">
           <img
             v-if="fig.image_url"
             :src="fig.image_url"
@@ -771,7 +772,7 @@ function onMore(key: string, r: FeedRow) {
         <!-- 图注优先用**中文译文**（用户口径）；英文原文留在 title 里，鼠标停一下能对照 -->
         <div
           v-if="fig.caption_zh || fig.caption"
-          class="fig-caption md"
+          class="rvc-cap md"
           :title="fig.caption || ''"
           v-html="mdToHtml(fig.caption_zh || fig.caption || '')"
         />
@@ -1112,28 +1113,16 @@ function onMore(key: string, r: FeedRow) {
   0%, 100% { background: var(--bg-layer); }
   25% { background: color-mix(in srgb, var(--accent) 16%, var(--bg-layer)); }
 }
-.item .figure {
+.fig-body .figure {
   max-width: 100%; background: #fff; border-radius: var(--radius-sm);
-  margin: 6px 0 2px; cursor: zoom-in;
+  margin: 3px 0 1px; cursor: zoom-in;
 }
 /* 插图卡片：页码/图号在**图上方**一行，图注在**图下方**一行（用户口径：图注放底部）。
  * 顶部这行是个等高条：页码/图号用 .badge 抬到 `--control-h-sm`（26px），
  * 与右侧两枚 26px 的方形操作键**同一条基线、同一个高度** —— 一列图卡扫下来是齐的。 */
+/* 插图卡：卡片壳、卡头、图注都走 base.css 的 `.rvc*`（与「表格」页签同一份） */
 .fig-card { display: flex; flex-direction: column; }
-.fig-head { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
-.fig-head .badge { height: var(--control-h-sm); padding: 0 9px; }
-.fig-caption {
-  flex: none; min-width: 0;
-  margin-top: 6px;
-  font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-dim);
-  overflow-wrap: anywhere;
-}
-/* 图注/引用是**渲染过的 Markdown**（外层已经定了字号与行高，这里只把块级元素的间距压掉，
-   免得一行短图注被 `<p>` 的默认外边距撑成两行） */
-.fig-caption :deep(p) { margin: 0; }
-.fig-caption :deep(.katex-display) { margin: 0; overflow-x: auto; overflow-y: hidden; }
 .quote :deep(p) { margin: 0; display: inline; }
-.fig-head .spacer { flex: 1; }
 /* 两枚操作键（浮层打开 / 定位）与旁边的徽章同高，行内居中即可 ——
    以前图注在顶部、要跟图注首行光学对齐才写 `margin-top: -4px`，图注移到下面后就不需要了。 */
 .fig-locate, .fig-overlay { flex: none; color: var(--text-dim); }

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /**
- * 表格列表（侧栏「表格」页签）：与「公式」页签**同一门语言** ——
- * 一行"页码 + 表号 + 尺寸 + 操作"，下面是表本体。
+ * 表格列表（侧栏「表格」页签）：与「插图」页签**同一张脸** ——
+ * 卡头一行"表号 → 页码 → 尺寸 → 操作"，中间是表本体，最后一行是表格说明。
+ *
+ * ⚠️ 顺序是用户口径：**编号在最前、页码紧随其后**（表格与插图都按这一套），
+ * 说明从"表体上方"挪到"表体下方"，与插图「图在上、说明在下」对齐。
+ * 卡片壳、卡头、说明用的都是 base.css 里的 `.rvc*`（与插图共用，别再各写一套）。
  *
  * 为什么表体按 Markdown 渲染：页级产物里表格本来就是 GFM 表（`| a | b |`），
  * 译文那一半是模型**逐格翻过的中文表** —— 所以"中文表格"不需要另做一份数据。
@@ -75,10 +79,10 @@ const rows = computed(() => props.items.map((t) => ({
       这一篇还没有可提取的表格 —— 表格来自页级译文，先把那几页翻译了才会有
     </div>
 
-    <div v-for="t in rows" :key="t.id" class="titem">
-      <div class="row tiny">
-        <span class="faint tpage">p{{ t.page }}</span>
-        <span v-if="t.number" class="badge dim" :title="`论文里这张表的编号：表 ${t.number}`">表 {{ t.number }}</span>
+    <div v-for="t in rows" :key="t.id" class="rvc">
+      <div class="rvc-head">
+        <span v-if="t.number" class="rvc-num" :title="`论文里这张表的编号：表 ${t.number}`">表 {{ t.number }}</span>
+        <span v-if="t.page" class="rvc-page">p{{ t.page }}</span>
         <span class="badge dim tnum" title="表体行数 × 列数">{{ t.cols }} 列 × {{ t.rows }} 行</span>
         <span
           v-if="t.source === 'original'"
@@ -101,43 +105,31 @@ const rows = computed(() => props.items.map((t) => ({
           <AppIcon name="locate" :size="13" />
         </button>
       </div>
-      <!-- 表格说明：中文优先，英文原文留在 title 里（鼠标停一下能对照） -->
+      <!-- ⚠️ 这里必须带 md 类：表体的观感只由 base.css 的 .md table 决定，这一层不再自己画 -->
+      <div class="rvc-body tbody md" v-html="t.html" />
+      <!-- 表格说明：放在表体**之后**（与插图"图在上、说明在下"同一顺序）；
+           中文优先，英文原文留在 title 里（鼠标停一下能对照） -->
       <div
         v-if="t.captionHtml"
-        class="tcap md"
+        class="rvc-cap md"
         :title="t.caption_original || ''"
         v-html="t.captionHtml"
       />
-      <!-- ⚠️ 这里必须带 md 类：表体的观感只由 base.css 的 .md table 决定，这一层不再自己画 -->
-      <div class="tbody md" v-html="t.html" />
     </div>
   </div>
 </template>
 
 <style scoped>
-.tl { display: flex; flex-direction: column; gap: 6px; }
-.titem {
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg-layer); padding: 6px 8px;
-}
-/* 页码不许折行（窄栏里 "p3" 曾被拆成两行）；徽章过长则省略，别把按钮挤出去 */
-.tpage { white-space: nowrap; }
-.titem .badge.dim { max-width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 卡片壳 / 卡头 / 说明统一走 base.css 的 .rvc*（与「插图」页签同一份），这里只剩表体自己 */
+.tl { display: flex; flex-direction: column; }
 .tnum { font-variant-numeric: tabular-nums; }
-.tcap {
-  margin: 4px 0 2px; color: var(--text-dim);
-  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55;
-}
-.tcap :deep(p) { margin: 0; }
-.tcap :deep(strong) { color: var(--text); }
-.tcap :deep(.katex) { font-size: 1.02em; }
 /* 表体：以前这里另画了一套「1px 方格 + 表头灰底 + 数字灰字」，跟站内别处的论文式三线表
    不是一张脸（用户口径 2026-12-06："表格显示与 Markdown 的渲染风格一致"）。现在观感全部交给
    base.css 的 .md table（顶线 2px / 表头线 1px / 底线 2px、无竖线、数字列右对齐、分组细线），
    这一层只剩两条窄栏自己的约束：
    ① 字号跟着侧栏的 --ts 走（三线表本身是 .93em，所以这里给 12.5px 的基准）；
    ② 单元格不折行 —— 窄栏里折过之后"第几列"就对不上号了，横向滚（.tbl-wrap）比折行好读。 */
-.tbody { margin: 4px 0 2px; font-size: calc(12.5px * var(--ts, 1)); }
+.tbody { margin: 2px 0 0; font-size: calc(12.5px * var(--ts, 1)); }
 .tbody :deep(th), .tbody :deep(td) { white-space: nowrap; }
 .tbody :deep(.katex) { font-size: 1.02em; }
 </style>

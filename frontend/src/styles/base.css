@@ -496,6 +496,43 @@ label.field > input, label.field > select, label.field > textarea { width: 100%;
 /* 中性/弱化徽章：用来放"论文给公式起的名字"这类附属信息，不抢强调色。 */
 .badge.dim { background: var(--bg-sunken); color: var(--text-dim); border-color: transparent; }
 
+/* ---- 侧栏条目卡（插图 / 表格共用一张脸）----
+ * 两条列表原来各画一套：插图是徽章排序、图注在下；表格是淡字页码、说明在上。
+ * 同一栏里两种卡长得不一样，扫一眼就得重新找"编号在哪、页码在哪"。
+ * 现在统一成：**编号（图 1 / 表 1）在最前 → 页码紧随 → 操作键在右 → 预览在中间 → 说明在最后一行**。
+ */
+.rvc {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-layer); padding: 6px 8px;
+}
+.rvc + .rvc { margin-top: 6px; }
+.rvc-head {
+  display: flex; align-items: center; gap: 6px;
+  height: var(--control-h-sm);
+}
+.rvc-num {
+  flex: none; display: inline-flex; align-items: center;
+  height: 20px; padding: 0 7px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent-text);
+  font-size: calc(11px * var(--ts, 1)); font-weight: 650; line-height: 1;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.rvc-page {
+  flex: none; font-size: calc(11px * var(--ts, 1)); line-height: 1;
+  color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 卡头里的次级徽章（栏标 / 尺寸 / "原文"）与编号同高，且不许把按钮挤出去 */
+.rvc-head .badge { height: 20px; padding: 0 7px; font-size: calc(10.5px * var(--ts, 1)); max-width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rvc-body { margin-top: 4px; min-width: 0; }
+/* 说明/图注：Markdown 渲染过的内容，块级间距压平，免得一行短说明被 <p> 撑成两行 */
+.rvc-cap {
+  margin: 6px 0 0; color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.rvc-cap p { margin: 0; }
+.rvc-cap .katex-display { margin: 0; overflow-x: auto; overflow-y: hidden; }
+
 /* 进度条：细轨 + 圆头；完成态用极浅强调色，不做满格色带 */
 .bar { height: 5px; border-radius: var(--radius-ctl); background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--accent); border-radius: var(--radius-ctl); transition: width var(--dur-slow) var(--ease); }
