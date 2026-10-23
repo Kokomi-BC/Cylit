@@ -254,10 +254,12 @@ async function loadKeys(providerId: string): Promise<void> {
   if (!providerId) return;
   keysLoading.value = true;
   try {
-    const data = await api.get<{ items?: KeyRow[]; unassigned?: KeyRow[] }>(
+    /* 真实后端回 {items, unassigned}（信封 data 里）；老写法 / 别处契约用过 keys，两种都认 */
+    const data = await api.get<{ items?: KeyRow[]; keys?: KeyRow[]; unassigned?: KeyRow[] }>(
       '/models/providers/' + encodeURIComponent(providerId) + '/keys',
     );
-    keys.value = Array.isArray(data?.items) ? data.items : [];
+    const list = data?.keys ?? data?.items;
+    keys.value = Array.isArray(list) ? list : [];
     unassignedKeys.value = Array.isArray(data?.unassigned) ? data.unassigned : [];
   } catch {
     /* 接口没上线（404）→ 降级：只给两档，别把整个表单卡死 */
@@ -327,17 +329,25 @@ async function fetchRemoteModels(): Promise<void> {
   probeError.value = '';
   probeOptions.value = [];
   probeHost.value = '';
-  if (!form.base_url.trim()) {
-    probeError.value = '先填 Base URL，再拉模型列表';
+  const editId = props.mode === 'edit' && props.target ? String(props.target.id || '') : '';
+  /* 表单填的优先；空则跟随提供方默认端点（官方提供方不需要用户手填） */
+  const baseUrl = form.base_url.trim() || providerBaseUrl.value;
+  if (!editId && !baseUrl) {
+    probeError.value = '这家提供方没有默认端点：先填 Base URL，再拉模型列表';
     manualModel.value = true;
     return;
   }
   probeBusy.value = true;
   try {
-    const body: Record<string, unknown> = { base_url: form.base_url.trim() };
-    if (keyMode.value === 'key' && keyChoice.value) body.key_id = keyChoice.value;
-    if (form.secret_ref.trim()) body.secret_ref = form.secret_ref.trim();
-    if (form.model_name.trim()) body.model_id = form.model_name.trim();
+    const body: Record<string, unknown> = {};
+    if (editId) {
+      /* 已存配置：后端用库里那行的 base_url + 密钥去拉（空 base_url 由它自己判定） */
+      body.model_id = editId;
+    } else {
+      body.base_url = baseUrl;
+      if (keyMode.value === 'key' && keyChoice.value) body.key_id = keyChoice.value;
+      if (form.secret_ref.trim()) body.secret_ref = form.secret_ref.trim();
+    }
     const data = await api.post<{ items?: Array<{ id?: string }>; count?: number; host?: string }>(
       '/models/probe-models', body,
     );
@@ -352,8 +362,12 @@ async function fetchRemoteModels(): Promise<void> {
       placeModelPop();
     }
   } catch (err) {
-    probeError.value = '拉取失败：' + String((err as any)?.message || err || '未知错误')
-      + ' —— 可以手填 Model ID 继续';
+    const msg = String((err as any)?.message || err || '未知错误');
+    if (editId && !form.base_url.trim() && providerBaseUrl.value && /base url/i.test(msg)) {
+      probeError.value = '这条模型没存 Base URL（跟随提供方端点），列表接口用不上 —— 直接手填 Model ID 也能保存';
+    } else {
+      probeError.value = '拉取失败：' + msg + ' —— 可以手填 Model ID 继续';
+    }
     manualModel.value = true;
   } finally {
     probeBusy.value = false;
@@ -695,8 +709,10 @@ async function init(): Promise<void> {
   if (editing) {
     selectedProviderId.value = form.provider;
     authKind.value = selectedProvider.value?.auth === 'none' ? 'none' : 'bearer';
-    step.value = 2;
-    reached.value = 2;
+    /* 编辑一条已存在的模型：连接信息早已在库里，直接落在「选择模型」；
+       步骤条仍可点回 1 / 2（reached 记到 3，别把回退拦掉）。 */
+    step.value = 3;
+    reached.value = 3;
     await loadKeys(form.provider);
     return;
   }
@@ -782,22 +798,51 @@ function pickCustom(): void {
 
 const baseUrlOk = computed<boolean>(() => /^https?:\/\/\S+/i.test(form.base_url.trim()));
 
+/** 以 form.provider 为准找目录行（改过「提供方名称」后 selectedProviderId 会过期）。 */
+const activeProvider = computed<ProviderRow | null>(() => {
+  const id = form.provider.trim();
+  if (!id) return null;
+  return providers.value.find((p) => p.id === id) ?? null;
+});
+
+/** 这家提供方的默认端点；空 = 目录 / provider 表里没有可跟随的端点。 */
+const providerBaseUrl = computed<string>(() => String(activeProvider.value?.base_url || '').trim());
+
+/**
+ * Base URL 空 = 合法：官方提供方由后端按提供方 / 协议解析默认端点（多模态向量走
+ * DashScope 原生 host，写死兼容层路径反而会打到错端点）。只有查不到默认端点的
+ * 自定义提供方才必填。
+ */
+const baseUrlRequired = computed<boolean>(() => {
+  if (customMode.value) return true;
+  const id = form.provider.trim();
+  if (!id || id === 'custom') return true;
+  const p = activeProvider.value;
+  if (!p) return true;                       // 目录里没有这家 → 没有可跟随的端点
+  return !providerBaseUrl.value && !p.has_base_url;
+});
+
+/** 真的缺 Base URL：必填且没填，或填了但不是 http(s) */
+const baseUrlMissing = computed<boolean>(() => !baseUrlOk.value && baseUrlRequired.value);
+
 const configFilled = computed<boolean>(() => (
-  !!form.provider.trim() && baseUrlOk.value && !!form.model_name.trim() && !!form.name.trim()
+  !!form.provider.trim() && !baseUrlMissing.value && !!form.model_name.trim() && !!form.name.trim()
 ));
 
 const configText = computed<string>(() => {
   const missing: string[] = [];
   if (!form.provider.trim()) missing.push('提供方名称');
-  if (!baseUrlOk.value) missing.push('Base URL');
+  if (baseUrlMissing.value) missing.push('Base URL');
   if (!form.model_name.trim()) missing.push('Model ID');
   if (!form.name.trim()) missing.push('显示名称');
-  return missing.length ? '还差：' + missing.join(' / ') : '提供方 / Base URL / Model ID / 显示名称都齐了';
+  if (missing.length) return '还差：' + missing.join(' / ');
+  const base = form.base_url.trim() ? 'Base URL' : 'Base URL（跟随提供方）';
+  return '提供方 / ' + base + ' / Model ID / 显示名称都齐了';
 });
 
 const canNext = computed<boolean>(() => {
   if (step.value === 1) return !!selectedProviderId.value || customMode.value;
-  if (step.value === 2) return !!form.provider.trim() && baseUrlOk.value;
+  if (step.value === 2) return !!form.provider.trim() && !baseUrlMissing.value;
   if (step.value === 3) return !!form.model_name.trim();
   return true;
 });
@@ -811,8 +856,12 @@ function nextStep(): void {
   }
   if (step.value === 2) {
     if (!form.provider.trim()) { formError.value = '提供方名称必填（写进 provider 字段，如 my-vendor）'; return; }
-    if (!form.base_url.trim()) { formError.value = 'Base URL 必填'; return; }
-    if (!baseUrlOk.value) { formError.value = 'Base URL 要以 http:// 或 https:// 开头'; return; }
+    if (baseUrlMissing.value) {
+      formError.value = form.base_url.trim()
+        ? 'Base URL 要以 http:// 或 https:// 开头'
+        : 'Base URL 必填（这家提供方没有默认端点）';
+      return;
+    }
     advance();
     return;
   }
@@ -853,7 +902,12 @@ function submit(): void {
   if (!form.name.trim()) { fail('显示名称必填'); return; }
   if (!form.model_name.trim()) { fail('Model ID 必填（先拉列表或手填）'); return; }
   if (!form.provider.trim()) { fail('提供方名称必填'); return; }
-  if (!baseUrlOk.value) { fail('Base URL 要以 http:// 或 https:// 开头'); return; }
+  if (baseUrlMissing.value) {
+    fail(form.base_url.trim()
+      ? 'Base URL 要以 http:// 或 https:// 开头'
+      : 'Base URL 必填（这家提供方没有默认端点）');
+    return;
+  }
   writeReasoning();
   writeExtras();
   let parameters: Record<string, any>;
@@ -887,7 +941,10 @@ function submit(): void {
 }
 
 const advSummary = computed<string>(() => {
-  const parts = [hostOf(form.base_url) || form.base_url || '未填 base_url'];
+  const manual = form.base_url.trim();
+  const parts = [manual
+    ? (hostOf(manual) || manual)
+    : (providerBaseUrl.value ? hostOf(providerBaseUrl.value) + '（跟随提供方）' : '未填 base_url')];
   if (keyMode.value === 'none') parts.push('无密钥');
   else if (keyMode.value === 'key') parts.push('指定密钥');
   else parts.push(form.secret_ref ? '密钥文件 ' + form.secret_ref : '跟随提供方默认密钥');
@@ -984,8 +1041,16 @@ const advSummary = computed<string>(() => {
         <div class="conn-read" v-if="connReadonly">
           <div class="cr-row">
             <span class="cr-k">Base URL</span>
-            <span class="cr-v mono truncate" :title="form.base_url">{{ form.base_url || '未设置' }}</span>
+            <span v-if="form.base_url.trim()" class="cr-v mono truncate" :title="form.base_url">{{ form.base_url }}</span>
+            <span
+              v-else-if="providerBaseUrl" class="cr-v truncate" data-baseurl-auto
+              :title="'留空 = 跟随提供方端点；多模态向量等特殊协议由后端适配器解析'"
+            >自动（跟随提供方：{{ hostOf(providerBaseUrl) }}）</span>
+            <span v-else class="cr-v warn" data-baseurl-missing>未设置</span>
           </div>
+          <p class="hint-line warn" v-if="!form.base_url.trim() && !providerBaseUrl" data-baseurl-required>
+            需要填 Base URL（这家提供方没有默认端点）
+          </p>
           <div class="cr-row">
             <span class="cr-k">认证方式</span>
             <span class="cr-v">{{ authKind === 'none' ? '无需密钥' : 'Bearer（API Key）' }}</span>
@@ -1061,6 +1126,11 @@ const advSummary = computed<string>(() => {
 
       <!-- ③ 选择模型 -->
       <section v-else-if="step === 3" class="step-body" data-step="3">
+        <p class="edit-target" v-if="mode === 'edit' && target" data-edit-target>
+          正在编辑：{{ form.name || target.name || '未命名模型' }} ·
+          {{ activeProvider?.label || form.provider || '自定义提供方' }} /
+          {{ form.model_name || target.model_name || '未填 Model ID' }}
+        </p>
         <label class="field">显示名称
           <input v-model="form.name" placeholder="界面上显示的名字" data-model-name />
         </label>
@@ -1367,6 +1437,14 @@ const advSummary = computed<string>(() => {
 .err-line { margin: 8px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
 
 /* ③ 模型 */
+/* 编辑模式顶部：明确「改的是哪一条」 */
+.edit-target {
+  margin: 0 0 10px; padding: 6px 9px;
+  border: 1px solid var(--divider); border-radius: var(--r-sm);
+  background: var(--bg-sunken); color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .model-field { margin-top: 12px; min-width: 0; }
 .mf-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .mf-input { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
