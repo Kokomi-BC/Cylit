@@ -92,8 +92,8 @@ defineExpose({ reload: load });
 /**
  * 一排三张卡之后，图表区实测宽可能只剩 300 上下（956 的内容区三等分 ≈ 310，再扣卡内留白），
  * 所以尺寸分两档，跟着**实测容器宽**走（量的是 .chart 的 clientWidth，不是视口）：
- *   宽档：H 144 / 轴留白 38 —— 图例行 + 轴 + 曲线压进 150~170，卡片不被一张图撑高；
- *   窄档（< 380）：H 110 / 轴留白 28 / 日期刻度 4 个，图区收到 120~135。
+ *   宽档：H 118 / 轴留白 38 —— 图例行 + 轴 + 曲线压进 130~150，卡片不被一张图撑高；
+ *   窄档（< 380）：H 98 / 轴留白 28 / 日期刻度 4 个，图区收到 108~125。
  * 这是"图可以画小"：刻度字号仍是 11px（再小就成了糊在一起的灰点），只减少刻度个数。
  */
 const padT = 10;
@@ -101,20 +101,30 @@ const padB = 20;
 const COMPACT_W = 380;
 
 const box = ref<HTMLDivElement | null>(null);
+/** 卡体：**四态都在**，量宽度的兜底锚点（加载/失败/空三态没有 .chart 可量）。 */
+const shell = ref<HTMLDivElement | null>(null);
 const boxW = ref(640);
 let ro: ResizeObserver | null = null;
 let rafId = 0;
 
 const compact = computed(() => boxW.value < COMPACT_W);
-const H = computed(() => (compact.value ? 110 : 144));
+const H = computed(() => (compact.value ? 98 : 118));
 const padL = computed(() => (compact.value ? 28 : 38));   // 左轴（chunk）刻度文字的落脚位
 const padR = computed(() => (compact.value ? 28 : 38));   // 右轴（论文）刻度文字
 const innerH = computed(() => H.value - padT - padB);
 
+/**
+ * 量宽度：有数据时量 .chart（它自己就是坐标系，没有内边距），其余三态退到 .card-body 并
+ * 扣掉左右内边距。**不能只量 .chart**：那三态里它不存在，boxW 会停在上一次的值 / 默认 640，
+ * 于是 H 落到宽档（118）而卡体那块 min-height 又按窄档算 —— 切态时卡片会跳 20px。
+ */
 function measure(): void {
-  const el = box.value;
+  const el = box.value || shell.value;
   if (!el) return;
-  const w = Math.max(220, Math.round(el.clientWidth) || 640);
+  const gut = el === box.value
+    ? 0
+    : (parseFloat(getComputedStyle(el).paddingLeft) || 0) + (parseFloat(getComputedStyle(el).paddingRight) || 0);
+  const w = Math.max(220, Math.round(el.clientWidth - gut) || 640);
   // 等值就退出：svg 的 width 回写会再排一次版，同一个宽度反复写进 ref 仍会触发通知，
   // 浏览器于是报 "ResizeObserver loop completed with undelivered notifications"。
   if (w === boxW.value) return;
@@ -131,14 +141,14 @@ function onResize(): void {
   rafId = requestAnimationFrame(() => { rafId = 0; measure(); });
 }
 
-/** 图表只在有数据时才挂载，所以观察器要跟着数据出现再绑（首帧容器还不存在）。 */
+/** 观察卡体（四态都在）：切态时容器宽度不变，但 H 必须一直是同一个档位。 */
 function bind(): void {
   measure();
   ro?.disconnect();
   ro = null;
-  if (typeof ResizeObserver === 'undefined' || !box.value) return;
+  if (typeof ResizeObserver === 'undefined' || !shell.value) return;
   ro = new ResizeObserver(onResize);
-  ro.observe(box.value);
+  ro.observe(shell.value);
 }
 
 onBeforeUnmount(() => {
@@ -300,7 +310,7 @@ const tipX = computed(() => {
 </script>
 
 <template>
-  <section class="card trend">
+  <section class="card trend" :style="{ '--ch': H + 'px' }">
     <div class="card-head">
       <AppIcon name="insight" :size="15" /><span class="ttl">索引数据增长趋势</span>
       <span class="spacer"></span>
@@ -315,7 +325,7 @@ const tipX = computed(() => {
       </div>
     </div>
 
-    <div class="card-body tight">
+    <div class="card-body tight" ref="shell">
       <div class="state" v-if="loading">正在读取…</div>
 
       <div class="state" v-else-if="error">
@@ -393,22 +403,27 @@ const tipX = computed(() => {
 .days button, .scope button { height: 18px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
 .days button:focus-visible, .scope button:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 三态与图表共用一块固定高度：切换状态时卡片不跳。 */
+/* 三态与图表共用一块固定高度：切换状态时卡片不跳。
+   min-height 由 svg 的实际高度推出来（--ch 是 H，另加图例行 18 + 口径行两行 31），
+   于是加载 / 失败 / 空 / 有数据四态的卡高完全一致，收图高也不会留下一截空白。 */
 .state {
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: 168px;
+  min-height: calc(var(--ch, 98px) + 49px);
   font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint);
 }
 .state .err {
   max-width: 42ch; text-align: center;
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger);
 }
-.plot-empty { min-height: 168px; justify-content: center; padding: 12px 16px; }
+.plot-empty { min-height: calc(var(--ch, 98px) + 49px); justify-content: center; padding: 12px 16px; }
 
-/* 图表区总高 ≈ 图例 14 + svg 144 + 口径一行，稳在 150~170 一档 */
+/* 卡体留白 8 → 6：一排三张时这 4px 换来的是图区更宽，而不是更松的边 */
+.trend .card-body.tight { padding: 6px; }
+
+/* 图表区总高 ≈ 图例 14 + svg 118 + 口径一行，稳在 130~150 一档 */
 .plot-head {
   display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
-  gap: 4px 14px; min-height: 14px; margin: 2px 4px 4px;
+  gap: 4px 14px; min-height: 14px; margin: 2px 4px;
 }
 .lg {
   display: inline-flex; align-items: center; gap: 5px;
@@ -458,7 +473,9 @@ const tipX = computed(() => {
 /* 口径一行：后端说了算，只做弱化，不加自己的解释。
    原来单行 nowrap + 省略号会把后半句吃掉（用户只看得到"按现存记录的创建时间统计："），
    现在允许换到第二行（.clamp-2），完整文案再看 title。 */
-.note { margin: 2px 4px 0; line-height: 1.4; text-wrap: pretty; }
+/* 口径行固定按两行占位：它长短随容器变（宽一点就只剩一行），而四态共用的那块高度是常量 ——
+   不锁行数的话，宽卡上"有数据"会比"加载中"矮 15px，切态时整行还是会跳。 */
+.note { margin: 0 4px; min-height: calc(30.8px * var(--ts, 1)); line-height: 1.4; text-wrap: pretty; }
 
 @media (max-width: 860px) {
   .days button, .scope button { padding: 0 8px; font-size: calc(11px * var(--ts, 1)); }

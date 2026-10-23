@@ -230,10 +230,12 @@ function clean(): void { emit('reconcile', true); }
 
 <style scoped>
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
+/* 卡体留白 16 → 12，与面板里其它卡对齐 */
+.storage .card-body { padding: 12px; }
 .storage .card-head { flex-wrap: wrap; row-gap: 6px; }
 .storage .card-head .btn { flex: none; }
 
-.state-line { margin: 0; padding: 10px 0; line-height: 1.5; }
+.state-line { margin: 0; padding: 8px 0; line-height: 1.5; }
 
 /* 两行存储 + 维数行共用同一套列：1fr 留白 | 值列定宽 88px | 徽章列。
    徽章列给下限 72px，两行的条目数才落在同一个 x 上（不是各自 margin-left:auto 飘过去的）。 */
@@ -246,7 +248,7 @@ function clean(): void { emit('reconcile', true); }
 
 /* 两行存储连成一段：行间距 5px，行间一条 --divider */
 .stores { display: flex; flex-direction: column; }
-.store { padding: 5px 0; }
+.store { padding: 4px 0; }
 .store + .store { border-top: 1px solid var(--divider); }
 
 .store-l { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
@@ -275,7 +277,7 @@ function clean(): void { emit('reconcile', true); }
 
 /* 维数一行：左边"维数"，读数右对齐到同一个值列，徽章落进同一个徽章列 */
 .dim-row {
-  padding: 6px 0 0; margin-top: 5px; border-top: 1px solid var(--divider);
+  padding: 5px 0 0; margin-top: 4px; border-top: 1px solid var(--divider);
 }
 .dim-text {
   grid-column: 1 / span 2;
@@ -290,17 +292,17 @@ function clean(): void { emit('reconcile', true); }
 }
 .arrow { color: var(--text-faint); margin: 0 3px; }
 
-.check-line { margin: 6px 0 0; }
+.check-line { margin: 4px 0 0; }
 
 .diff-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 .diff-row .small { min-width: 0; color: var(--danger); }
 .diff-row .btn { flex: none; }
 
 .danger-line {
-  margin: 8px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5;
+  margin: 6px 0 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.5;
   color: var(--danger); overflow-wrap: anywhere;
 }
 

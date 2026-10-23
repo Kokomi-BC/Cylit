@@ -256,6 +256,66 @@ def ensure_columns(engine: Engine | None = None) -> list[str]:
     return added
 
 
+# ---------------------------------------------------------------- 索引补建
+# 趋势 / 分桶类查询按 `created_at` 过滤（`knowledge_service.index_trend` 与
+# `api/knowledge.latency_report` 的时间窗口都是），而这两列在模型里**没有** index=True。
+#
+# 为什么必须走这里、而不是"给模型那两列加 index=True 就完事"：
+# `create_all` 只建**不存在的表** —— 加 index=True 只对**新库**生效，
+# 线上/开发机的老 `paper` / `chunk` 表一个字节都不会变，索引永远不存在。
+# 所以老库只能靠这里的 CREATE INDEX 补；新库由 metadata 负责，两条路径各自成立。
+_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_paper_created_at", "paper", "created_at"),
+    ("ix_chunk_created_at", "chunk", "created_at"),
+)
+
+
+def _index_exists_error(exc: Exception) -> bool:
+    """这个异常是不是"索引已经存在"（幂等的正常路径，不是错误）。
+
+    MySQL 抛 1061 `Duplicate key name`；SQLite 抛
+    `OperationalError: index ix_xxx already exists`。
+    SQLAlchemy 把驱动的原始异常包在 `.orig` 里，所以两处都要看：
+
+    - MySQL：错误码在 `orig.args[0]` 上（pymysql 的 `OperationalError`）；
+    - SQLite：只有消息串，靠 "already exists" 认。
+    """
+    orig = getattr(exc, "orig", exc)
+    args = getattr(orig, "args", ()) or ()
+    if args and args[0] == 1061:          # MySQL: ER_DUP_KEYNAME
+        return True
+    message = str(orig).lower()
+    return "already exist" in message or "duplicate key name" in message
+
+
+def ensure_indexes(engine: Engine | None = None) -> list[str]:
+    """补建 `created_at` 索引（**幂等**），返回这次真的新建出来的索引名。
+
+    只服务**已有部署**：新库的这两张表由 `create_all` 按模型建，本函数对它们
+    只会撞上"已存在"（见 `_index_exists_error`，捕获后忽略、并返回空列表）。
+
+    为什么只捕获而不先 `inspect().get_indexes()` 查一遍再建：
+    "已存在"本来就是幂等的正常路径，多一次往返换不到正确性；而**其它**错误
+    （列不存在、没权限、库连不上）照旧上抛 —— 那是真的坏了，静默忽略只会让人
+    在"索引到底建没建"上再猜一轮。
+    """
+    engine = engine or get_engine()
+    created: list[str] = []
+    for name, table, column in _INDEXES:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"CREATE INDEX `{name}` ON `{table}` (`{column}`)"))
+        except Exception as exc:  # noqa: BLE001 —— 只吞"已存在"，其余照抛
+            if _index_exists_error(exc):
+                log.debug("索引已存在，跳过：%s", name)
+                continue
+            raise
+        created.append(name)
+    if created:
+        log.info("已补建索引：%s", "；".join(created))
+    return created
+
+
 def init_db(drop: bool = False) -> dict:
     """建库建表，可重复执行（规划阶段 05 验收）。"""
     s = get_settings()
@@ -266,10 +326,13 @@ def init_db(drop: bool = False) -> dict:
     Base.metadata.create_all(engine)
     repaired = repair_column_widths(engine)
     added = ensure_columns(engine)
+    # 建索引必须在 create_all 之后：表得先存在（新库是这一步建的，老库早已存在）
+    indexed = ensure_indexes(engine)
     tables = sorted(inspect(engine).get_table_names())
     log.info("数据库就绪：%s（%d 张表）", s.db_name if s.db_backend == "mysql"
              else s.database_url, len(tables))
-    return {"backend": s.db_backend, "tables": tables, "repaired": repaired, "added": added}
+    return {"backend": s.db_backend, "tables": tables, "repaired": repaired,
+            "added": added, "indexed": indexed}
 
 
 def healthcheck() -> dict:

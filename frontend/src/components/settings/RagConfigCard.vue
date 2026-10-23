@@ -414,11 +414,12 @@ onMounted(() => {
 <style scoped>
 /* 只用 tokens.css 的变量：这里写死任何一个色值，深浅两套皮肤就会当场露馅。 */
 /* 卡体就是这张卡的宽度锚点（卡底那行容器查询量的是它）：量"这块地方有多宽"，不是视口有多宽。 */
-.cfg-body { display: flex; flex-direction: column; gap: 14px; container-type: inline-size; }
+/* 卡体留白 16 → 12，三组之间的 14 → 10：与面板里其它卡的 10px 节奏对齐 */
+.cfg-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; container-type: inline-size; }
 
-.group { display: flex; flex-direction: column; gap: 10px; }
-/* 组之间一条 divider + 14px 呼吸：分组靠线与间距，不靠卡片套卡片（嵌套容器会脏） */
-.group + .group { border-top: 1px solid var(--divider); padding-top: 14px; }
+.group { display: flex; flex-direction: column; gap: 8px; }
+/* 组之间一条 divider + 10px 呼吸：分组靠线与间距，不靠卡片套卡片（嵌套容器会脏） */
+.group + .group { border-top: 1px solid var(--divider); padding-top: 10px; }
 .group-title {
   margin: 0;
   font-size: calc(13px * var(--ts, 1));
@@ -429,7 +430,7 @@ onMounted(() => {
 /* 字段网格的父级：容器查询的锚点，断点只按"这一格有多宽"决策（三列 / 两列 / 一列），
    与视口无关 —— 同一段 CSS 在宽单列的 956px 卡和三栏里的窄卡都成立。 */
 .fwrap { container-type: inline-size; }
-.field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px 16px; min-width: 0; }
+.field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 14px; min-width: 0; }
 @container (min-width: 480px) {
   .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -491,7 +492,7 @@ onMounted(() => {
 .footer {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
   border-top: 1px solid var(--divider);
-  padding-top: 12px;
+  padding-top: 10px;
 }
 .footer .note { flex: 1 1 auto; min-width: 0; text-align: left; }
 .actions { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; }

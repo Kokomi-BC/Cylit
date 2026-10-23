@@ -685,3 +685,40 @@ class ModelUsage(Base):
     day: Mapped[date] = mapped_column(Date, default=lambda: datetime.now().date())
 
     __table_args__ = (Index("ix_model_usage_day", "day"),)
+
+
+# ---------------------------------------------------------------- ⑰ 检索耗时流水
+class RetrievalLog(Base):
+    """**检索耗时流水**：`retrieval.search()` 每跑一次落一行，只服务「检索耗时趋势」。
+
+    ⚠️ 它**不是业务事实表**。删掉这张表里的行不会让任何一篇论文、任何一条索引变得
+    不完整 —— 它是遥测（保留 90 天后由 `retrieval.prune_logs` 自动清掉），
+    没有外键、也不参与"重建索引 / 对账"那套口径。真要记"谁在什么时候检索了什么"，
+    那是另一张表（还要连带考虑隐私与查询串脱敏），不能拿这张顶。
+
+    为什么每个阶段单独一列、而不是只给一个总耗时：看到一条 800ms 的记录，
+    光看总数分不清该换 embedding 还是该关重排；分列之后能直接定位到瓶颈环节。
+    """
+
+    __tablename__ = "retrieval_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: 写入时刻，全库约定 UTC naive（`core.utils.now`）；趋势接口按**本地日**分桶
+    ts: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    #: 查询指令口径：`similar`（/rag/similar）/ `qa`（RAG 问答）
+    mode: Mapped[str] = mapped_column(String(16), default="similar")
+    #: `search(scope=...)` 的原样入参：all / cross / paper
+    scope: Mapped[str] = mapped_column(String(16), default="all")
+    #: 总耗时（毫秒）：整条 `search()` 链路
+    total_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 各阶段耗时（毫秒）。**这次没跑就是 0**（如 `sources=["lexical"]` 时 vector_ms = 0）
+    vector_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    lexical_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    fused_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    rerank_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 最终返回条数（融合去重、重排截断之后）
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    #: 这次要几条的**上限**（调用方传了 `top_k` 就是它，否则取生效的重排条数）
+    top_k: Mapped[int] = mapped_column(Integer, default=0)
+    #: 重排是否被跳过（设置里重排条数 = 0，或根本没有候选）：据此区分"快是因为没重排"
+    rerank_skipped: Mapped[bool] = mapped_column(Boolean, default=False)

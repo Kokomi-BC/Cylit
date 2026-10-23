@@ -93,6 +93,7 @@ const refreshing = ref(false);
 
 const trendCard = ref<InstanceType<typeof KbTrendCard> | null>(null);
 const chunkCard = ref<InstanceType<typeof ChunkMetaCard> | null>(null);
+const latencyCard = ref<InstanceType<typeof KbLatencyCard> | null>(null);
 
 const overviewLoading = computed<boolean>(() => isLoading('setkb-overview'));
 const statusLoading = computed<boolean>(() => isLoading('setkb-status'));
@@ -193,7 +194,7 @@ async function loadStatus(): Promise<void> {
   } catch { /* 同上 */ }
 }
 
-/** 刷新：两块共享数据 + 两张自取数卡（趋势 / chunk 摘要），互不阻塞，谁失败谁自己提示。 */
+/** 刷新：两块共享数据 + 三张自取数卡（趋势 / chunk 摘要 / 检索耗时），互不阻塞，谁失败谁自己提示。 */
 async function refreshAll(): Promise<void> {
   if (refreshBusy.value) return;
   refreshing.value = true;
@@ -203,6 +204,7 @@ async function refreshAll(): Promise<void> {
       loadStatus(),
       Promise.resolve(trendCard.value?.reload()),
       Promise.resolve(chunkCard.value?.reload()),
+      Promise.resolve(latencyCard.value?.reload()),
     ]);
   } finally {
     refreshing.value = false;
@@ -389,7 +391,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       <KbTrendCard ref="trendCard" />
       <KbChunkMixCard :type-counts="typeCounts" :total="overview ? overview.chunks : 0"
                       :loading="overviewLoading" />
-      <KbLatencyCard />
+      <KbLatencyCard ref="latencyCard" />
     </div>
 
     <!-- ④ 主体：≥1040 两栏（右栏粘住），否则单列且顺序为 论文表 → 检索配置 → 存储 → chunk -->
@@ -417,9 +419,13 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
+
+/* 整块面板只认一个纵向节奏（10px）：卡间距、指标行、图卡行、主体两栏、右栏堆叠全用同一个数。
+   子组件的卡头内边距也在这里统一收一档 —— 用 :deep 限定在 .kb-panel 以内，不动全局 .card-head。 */
+.kb-panel :deep(.card-head) { padding: 9px 14px; }
 
 /* ① 工具条：右对齐，不占一整行高度 */
 .kb-bar {
@@ -434,7 +440,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 .kb-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
   align-items: stretch;
 }
 @container (max-width: 860px) {
@@ -451,13 +457,15 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 .kb-col > .card + .card { margin-top: 0; }
 
 .kb-metric { min-width: 0; }
-.kb-metric .card-body { display: grid; gap: 6px; align-content: start; }
+/* 指标块按"图标 24 + 主值 20 + 副行 11"三行定高，块内上下留白取 10（全局 .card-body 是 16），
+   整块稳定在 ≈100px：24 + 6 + 24 + 6 + 16.5 + 20 + 2(边框) = 98.5（实测 100.5，含行盒取整）。 */
+.kb-metric .card-body { display: grid; gap: 6px; align-content: start; padding: 10px 14px; }
 
 .m-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .m-icon {
-  width: 28px; height: 28px; flex: none;
+  width: 24px; height: 24px; flex: none;
   display: grid; place-items: center;
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent-text);
 }
@@ -469,7 +477,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 }
 .m-value {
   min-width: 0;
-  font-size: calc(22px * var(--ts, 1));
+  font-size: calc(20px * var(--ts, 1));
   font-weight: 600;
   line-height: 1.2;
   letter-spacing: -.01em;
@@ -488,7 +496,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 }
 .m-sub {
   min-width: 0;
-  font-size: calc(11.5px * var(--ts, 1));
+  font-size: calc(11px * var(--ts, 1));
   line-height: 1.5;
   color: var(--text-faint);
 }
@@ -499,7 +507,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 .kb-charts {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
   align-items: stretch;
   min-width: 0;
 }
@@ -516,7 +524,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 .kb-main {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
   align-items: start;
   min-width: 0;
 }
@@ -532,7 +540,7 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   .kb-col {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     min-width: 0;
   }
   .kb-right { position: sticky; top: 0; }

@@ -68,13 +68,14 @@ const CHUNK_TYPES = [
   { key: 'figure', label: '插图' },
   { key: 'table', label: '表格' },
 ];
-const PAGE_SIZES = [20, 50, 100, 200];
+/** 每页条数：默认 10（这页是诊断用的明细表，一屏看十行比看五行的翻页更省事）。 */
+const PAGE_SIZES = [10, 20, 50, 100];
 
 const open = ref(false);
 const paperId = ref('');
 const typeKey = ref('');
 const keyword = ref('');
-const pageSize = ref(50);
+const pageSize = ref(PAGE_SIZES[0]);
 const offset = ref(0);
 
 const items = ref<ChunkMeta[]>([]);
@@ -531,7 +532,7 @@ defineExpose({ reload });
 /* 筛选行：能并排就并排，放不下就折行（每个控件自己给最小宽度，绝不撑破卡片） */
 .filters {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2);
-  padding: 4px 4px 10px;
+  padding: 0 4px 10px;
 }
 .filters > select { max-width: 200px; min-width: 0; }
 .filters > select.f-paper { max-width: 300px; }
@@ -542,6 +543,11 @@ defineExpose({ reload });
 .tbl-wrap { overflow-x: auto; border-radius: var(--r-sm); }
 .chunk-table { min-width: 680px; }
 .chunk-table th { white-space: nowrap; }
+/* 与论文表同一档行高：全局 8/11 → 6/10（表头同一套），字号仍走全局 13px / 12px */
+.chunk-table th,
+.chunk-table td { padding: 6px 10px; }
+/* 徽章高度收一档（22 → 20），文字仍是 11.5px */
+.chunk-table .badge { height: 20px; padding: 0 9px; }
 .w-id { width: 292px; }
 .w-type { width: 132px; }
 .w-page { width: 60px; }
@@ -552,10 +558,10 @@ defineExpose({ reload });
 .cell-prev { max-width: 340px; }
 td.ops { vertical-align: middle; }
 
-.note { padding: 8px 4px 2px; line-height: 1.5; }
+.note { padding: 6px 4px 2px; line-height: 1.5; }
 
 /* 分页：数字等宽，页码用 pill（选中态借 .btn.on 的强调浅底） */
-.pager { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 10px 4px 2px; }
+.pager { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 8px 4px 2px; }
 .pager-num {
   min-width: 30px; padding: 0 8px;
   font-variant-numeric: tabular-nums; color: var(--text-dim);

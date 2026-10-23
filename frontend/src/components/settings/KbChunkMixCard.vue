@@ -19,7 +19,7 @@
  * 但图例里照样列着、写 0 ——"没有公式 chunk"本身是诊断信息；
  * 全 0 时画一圈 --divider 的空环、中心写 0，不留空白。
  *
- * 高度按一排三张卡来定：环 96 + 图例五行（约 100），卡整体仍压在趋势卡（≈239）以内。
+ * 高度按一排三张卡来定：环 84 + 图例五行（约 100），卡整体仍压在趋势卡（≈232）以内。
  */
 import { computed } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -149,17 +149,19 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 .mix { min-width: 0; }
 .mix .card-head { flex-wrap: wrap; row-gap: 4px; }
 
-/* 三态与图表共用一块高度：切换时卡片不跳 */
+/* 三态与图表共用一块高度：切换时卡片不跳。这个数取"有数据那态"的高度 ——
+   环 84 与图例五行（5×16.2 + 4×3 ≈ 93）里图例更高，所以取 93。 */
 .state {
   display: flex; align-items: center; justify-content: center;
-  min-height: 96px;
+  min-height: 93px;
   font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint);
 }
 
 /* 环在左、图例在右；窄到放不下时图例整体落到下一行（不夹成两列挤字） */
-.mix-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+.mix-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 
-.donut { position: relative; flex: none; width: 96px; height: 96px; }
+/* 环直径 96 → 84（约 -12%）：整卡仍由趋势卡定高，但环不那么抢眼，图例行也还能并排 */
+.donut { position: relative; flex: none; width: 84px; height: 84px; }
 .donut svg { display: block; width: 100%; height: 100%; }
 .track { fill: none; stroke: var(--divider); stroke-width: 13; }
 .arc { fill: none; stroke-width: 13; stroke-linecap: butt; transition: stroke-dasharray var(--dur) var(--ease); }

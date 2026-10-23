@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import math
 import re
+import time
+from datetime import timedelta
 from typing import Any
 
 from backend.core.errors import ValidationError
@@ -472,6 +474,93 @@ def _rankings(use: tuple[str, ...], hits: dict[str, list[dict]]) -> dict[str, li
     return {source: hits.get(source, []) for source in SOURCES if source in use}
 
 
+# --------------------------------------------------------------------------
+# 6) 耗时流水（retrieval_log）
+#
+# **为什么只埋在这里**：`search()` 是检索的**唯一出口** —— /rag/similar 与 RAG 问答
+# （`rag_service`）都从它出去，其他地方都只是它的调用方。埋到调用方就得埋两遍
+# （现在 rag_service 是直接调 `search` 的），迟早漏掉第三条链路；埋在这里一份代码
+# 覆盖全部，也不会出现"某条链路忘了记"的静默空洞。
+#
+# **为什么写库是尽力而为**：这是遥测，不是业务事实 —— 老库还没 init_db 建出这张表、
+# 磁盘满、库被锁住，都**不该**让用户的检索失败。所以：
+#   · try/except 全包住，失败只 log.debug（不用 warning：库连不上时每次检索都刷一行，
+#     会把真正的错误挤出日志）；
+#   · **独立会话、写完即提交**，不并进调用方的事务 —— 调用方回滚时不该把"确实发生过"
+#     的耗时记录一起抹掉，反过来日志插入失败也不能拖累主事务。
+#
+# 聚合与格式化**不在这里**做：这里只量时间、落一行，怎么分桶、算什么分位数属于
+# 出参口径（见 api/knowledge.latency_report）。
+#
+# 空查询在参数校验阶段就返回了，**不落流水**：那次没有发生检索，记一条 0ms 只会
+# 把趋势图的平均值往下拉。
+# --------------------------------------------------------------------------
+
+#: 流水保留天数。90 天 ≈ 一个季度：够做"这个月和上个月比，是不是越检越慢"，
+#: 又不至于让这张只增不删的表无限长 —— 单用户每次问答/相似检索都是一行，
+#: 一年轻松几十万行，而没人会去查半年前某一次检索的耗时。
+RETENTION_DAYS = 90
+#: 清理节流：**每小时最多一次**。检索是热路径，每次检索都跑一遍 DELETE 是纯浪费。
+PRUNE_INTERVAL_S = 3600.0
+#: 上次清理的时刻（`time.monotonic()`，不受系统时间被改影响）
+_last_prune_at: float = 0.0
+
+
+def _ms(since: float) -> float:
+    """从 `since`（perf_counter 读数）到现在的毫秒数，保留 3 位小数。
+
+    用 `perf_counter` 而不是 `time.time()`：后者在系统对时 / NTP 校正时会跳，
+    量出来的耗时可能是负数。趋势图也只需要毫秒量级，微秒以下的抖动没有意义。
+    """
+    return round((time.perf_counter() - since) * 1000.0, 3)
+
+
+def prune_logs(force: bool = False) -> int:
+    """删掉超过保留期的流水，返回删掉的条数。
+
+    默认按 `PRUNE_INTERVAL_S` 节流（每小时最多扫一次），由 `_write_log` 顺带调用；
+    `force=True` 跳过节流（测试 / 运维手动清）。异常**不吞**：调用方
+    （`_write_log`）自己包了 try/except，这里保持"能报错就报错"，
+    免得清理一直失败却没人知道。
+    """
+    global _last_prune_at
+    mono = time.monotonic()
+    if not force and (mono - _last_prune_at) < PRUNE_INTERVAL_S:
+        return 0
+    _last_prune_at = mono
+
+    from backend.core.utils import now as utc_now
+    from backend.repositories.mysql.models import RetrievalLog
+    from backend.repositories.mysql.session import session_scope
+
+    cutoff = utc_now() - timedelta(days=RETENTION_DAYS)
+    with session_scope() as sess:
+        return int(sess.query(RetrievalLog)
+                   .filter(RetrievalLog.ts < cutoff)
+                   .delete(synchronize_session=False))
+
+
+def _write_log(**entry: Any) -> None:
+    """尽力而为地写一行检索流水：**任何失败都只 log.debug，绝不上抛**。"""
+    try:
+        from backend.core.utils import new_id
+        from backend.core.utils import now as utc_now
+        from backend.repositories.mysql.models import RetrievalLog
+        from backend.repositories.mysql.session import session_scope
+
+        with session_scope() as sess:      # 独立会话：写完即提交，不并进调用方事务
+            sess.add(RetrievalLog(id=new_id("rl"), ts=utc_now(), **entry))
+    except Exception as exc:  # noqa: BLE001 —— 遥测失败不该让检索失败
+        log.debug("检索耗时流水写入失败（忽略）：%s", exc)
+        return
+    try:
+        # 清理放在**另一个会话**里、且在这条记录提交之后：SQLite 下嵌套写事务会互相锁
+        # （"database is locked"），而清理失败也不该连累这条已经写好的记录。
+        prune_logs()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("检索耗时流水清理失败（忽略）：%s", exc)
+
+
 def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            scope: str = "all", paper_id: str | None = None,
            chunk_types: list[str] | None = None, langs: list[str] | None = None,
@@ -503,6 +592,13 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
     query = (query or "").strip()
     if not query:
         return {"items": [], "retrieval": {"error": "空查询"}}
+
+    # ---- 埋点（只在这一处，理由见上面「6) 耗时流水」）----
+    # 总耗时从参数校验之后起算：type 探针（_has_chunk_type）与召回都算"这次检索的成本"。
+    t_start = time.perf_counter()
+    vector_ms = lexical_ms = fused_ms = rerank_ms = 0.0
+    rerank_skipped = False
+
     paper_ids = [paper_id] if (scope == "paper" and paper_id) else None
     exclude_paper = paper_id if scope == "cross" else None
     explicit_types = chunk_types is not None
@@ -516,28 +612,46 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
     common_kwargs = dict(langs=langs, roads=roads, paper_ids=paper_ids,
                          exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
     if "vector" in use:
+        _t = time.perf_counter()
         hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
                                        chunk_types=types, **common_kwargs)
+        vector_ms += _ms(_t)
     if "lexical" in use:
+        _t = time.perf_counter()
         hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
                                          chunk_types=types, **common_kwargs)
+        lexical_ms += _ms(_t)
     vec_hits, lex_hits = hits["vector"], hits["lexical"]
+    _t = time.perf_counter()
     fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
+    fused_ms += _ms(_t)
     # 只传调用方的上限；"要不要重排"由 rerank_hits 自己读设置判（否则 0 会被 `or` 抬回默认）
+    _t = time.perf_counter()
     items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
+    rerank_ms += _ms(_t)
+    rerank_skipped = bool(rerank_info.get("skipped"))
     fell_back = False
     if not items and not explicit_types and types:
         # 兜底：候选集过滤后空手而归 → 放开类型限制重搜一次（保证"没建单元也检得到"）
         fell_back = True
         if "vector" in use:
+            _t = time.perf_counter()
             hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"),
                                            mode=mode, **common_kwargs)
+            vector_ms += _ms(_t)          # 累加：兜底重搜是**额外**花掉的时间
         if "lexical" in use:
+            _t = time.perf_counter()
             hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
                                              **common_kwargs)
+            lexical_ms += _ms(_t)
         vec_hits, lex_hits = hits["vector"], hits["lexical"]
+        _t = time.perf_counter()
         fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
+        fused_ms += _ms(_t)
+        _t = time.perf_counter()
         items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
+        rerank_ms += _ms(_t)
+        rerank_skipped = bool(rerank_info.get("skipped"))
         notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")
     if langs and not vector_store.has_lang():
         notes.append("索引还没有 lang 列（旧索引）：本次语言过滤未生效，重建索引后可用")
@@ -545,6 +659,20 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         notes.append("索引还没有 road 列（旧索引）：本次路过滤未生效，重建索引后可用")
     if rerank_info.get("degraded") and rerank_info.get("reason"):
         notes.append(str(rerank_info["reason"]))
+    # 落一行耗时流水（尽力而为，见上面「6) 耗时流水」）。写在这里而不是调用方：
+    # 这是唯一出口；写库失败不影响本次返回。
+    _write_log(
+        mode=mode, scope=scope,
+        total_ms=_ms(t_start),
+        vector_ms=vector_ms, lexical_ms=lexical_ms,
+        fused_ms=fused_ms, rerank_ms=rerank_ms,
+        hits=len(items),
+        # 这次要几条的上限：调用方传了就是它，否则取生效的重排条数；重排关掉（0）
+        # 时退回融合条数 —— 与 `rerank_hits` 的 limit 口径一致，不是另发明一套。
+        top_k=int(top_k or rag_k("rerank") or rag_k("fused")),
+        # 融合候选为空时压根没进重排（`rerank_hits` 直接返回），同样算"跳过"
+        rerank_skipped=rerank_skipped or not fused,
+    )
     return {
         "items": items,
         "retrieval": {

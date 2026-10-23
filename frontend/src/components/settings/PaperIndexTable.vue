@@ -255,74 +255,77 @@ function menuLabel(paper: KbPaper): string {
       <p v-else-if="!items.length" class="empty">还没有论文，先去论文库导入并解析。</p>
       <p v-else-if="!filtered.length" class="empty">没有匹配的论文。</p>
 
-      <table v-else class="data fixed" aria-label="论文索引管理">
-        <thead>
-          <tr>
-            <th scope="col">论文</th>
-            <th scope="col" class="col-status">状态</th>
-            <th scope="col" class="col-chunks num">chunks</th>
-            <th scope="col" class="col-ver">索引版本</th>
-            <th scope="col" class="col-indexed">最近索引</th>
-            <th scope="col" class="col-ops">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="paper in rows" :key="paper.id">
-            <td class="pit-cell-title">
-              <button
-                type="button"
-                class="pit-open truncate"
-                :title="paper.title"
-                @click="emit('open', paper)"
-              >{{ paper.title }}</button>
-              <span class="pit-id tiny faint mono truncate" :title="paper.id">{{ paper.id }}</span>
-            </td>
-            <td>
-              <div class="pit-status">
-                <span
-                  v-for="b in statusBadges(paper)"
-                  :key="b.key"
-                  class="badge"
-                  :class="b.cls"
-                >{{ b.label }}</span>
-              </div>
-            </td>
-            <td class="num">
-              <span :class="{ faint: !paper.chunks }">{{ paper.chunks }}</span>
-            </td>
-            <td class="col-ver">
-              <span class="tnum" :class="{ faint: versionText(paper) === '—' }">{{ versionText(paper) }}</span>
-            </td>
-            <td class="col-indexed">
-              <span
-                class="tnum"
-                :class="{ faint: !paper.indexed_at }"
-                :title="paper.indexed_at || undefined"
-              >{{ indexedText(paper.indexed_at) }}</span>
-            </td>
-            <td class="ops">
-              <div class="pit-ops">
+      <div v-else class="tbl-wrap">
+        <!-- 兜底横向滚动：列再多也只是**卡内**滚，绝不把列硬裁掉（.pit 的 overflow:hidden 只裁圆角） -->
+        <table class="data fixed" aria-label="论文索引管理">
+          <thead>
+            <tr>
+              <th scope="col">论文</th>
+              <th scope="col" class="col-status">状态</th>
+              <th scope="col" class="col-chunks num">chunks</th>
+              <th scope="col" class="col-ver">索引版本</th>
+              <th scope="col" class="col-indexed">最近索引</th>
+              <th scope="col" class="col-ops">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="paper in rows" :key="paper.id">
+              <td class="pit-cell-title">
                 <button
                   type="button"
-                  class="btn sm pit-main"
-                  :disabled="isIdxBusy(paper)"
-                  :title="`为《${paper.title}》${mainLabel(paper)}`"
-                  @click="onMain(paper)"
-                >
-                  {{ isIdxBusy(paper) ? '排队中…' : mainLabel(paper) }}
-                </button>
-                <Menu
-                  v-if="paper.chunks > 0"
-                  :items="rowMenu()"
-                  :label="menuLabel(paper)"
-                  size="sm"
-                  @select="(key) => onMenu(key, paper)"
-                />
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+                  class="pit-open truncate"
+                  :title="paper.title"
+                  @click="emit('open', paper)"
+                >{{ paper.title }}</button>
+                <span class="pit-id tiny faint mono truncate" :title="paper.id">{{ paper.id }}</span>
+              </td>
+              <td>
+                <div class="pit-status">
+                  <span
+                    v-for="b in statusBadges(paper)"
+                    :key="b.key"
+                    class="badge"
+                    :class="b.cls"
+                  >{{ b.label }}</span>
+                </div>
+              </td>
+              <td class="num">
+                <span :class="{ faint: !paper.chunks }">{{ paper.chunks }}</span>
+              </td>
+              <td class="col-ver">
+                <span class="tnum" :class="{ faint: versionText(paper) === '—' }">{{ versionText(paper) }}</span>
+              </td>
+              <td class="col-indexed">
+                <span
+                  class="tnum"
+                  :class="{ faint: !paper.indexed_at }"
+                  :title="paper.indexed_at || undefined"
+                >{{ indexedText(paper.indexed_at) }}</span>
+              </td>
+              <td class="ops">
+                <div class="pit-ops">
+                  <button
+                    type="button"
+                    class="btn sm pit-main"
+                    :disabled="isIdxBusy(paper)"
+                    :title="`为《${paper.title}》${mainLabel(paper)}`"
+                    @click="onMain(paper)"
+                  >
+                    {{ isIdxBusy(paper) ? '排队中…' : mainLabel(paper) }}
+                  </button>
+                  <Menu
+                    v-if="paper.chunks > 0"
+                    :items="rowMenu()"
+                    :label="menuLabel(paper)"
+                    size="sm"
+                    @select="(key) => onMenu(key, paper)"
+                  />
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div v-if="filtered.length" class="pit-foot">
@@ -353,7 +356,10 @@ function menuLabel(paper: KbPaper): string {
 </template>
 
 <style scoped>
-.pit { overflow: hidden; }
+/* 这张卡自己做容器查询的锚点：列可见性按**卡片自身宽度**判断，与视口无关 ——
+   设置页右栏、侧栏收起、窗口大小都会让卡片宽度和视口对不上，用 @media 一定排错。
+   overflow: hidden 只负责裁圆角；表格溢出的部分交给 .tbl-wrap 横向滚动。 */
+.pit { overflow: hidden; container-type: inline-size; min-width: 0; }
 
 /* 卡头：标题 + 弹性留白 + 检索控件；窄屏允许换行，绝不挤成一坨 */
 .pit-head { flex-wrap: wrap; row-gap: 8px; }
@@ -364,9 +370,23 @@ function menuLabel(paper: KbPaper): string {
 .pit-search input { width: 240px; }
 .pit-filter { width: 132px; flex: 0 0 auto; }
 
-.pit-hits { margin: 2px 0 6px; padding: 0 4px; }
+.pit-hits { margin: 0 0 6px; padding: 0 4px; }
 
-/* 表格：列宽写死（除论文列自适应），文本一律按单元格裁切，任何宽度都不横向溢出 */
+/* 行高中收紧一档：全局 8/11 → 6/10（表头同一套）。字号仍是全局 13px / 表头 12px。
+   选择器带 .pit 前缀并落在本组件的 scoped 上，只作用于这张表。 */
+.pit table.data th,
+.pit table.data td { padding: 6px 10px; }
+
+/* 状态徽章收一档高度（22 → 20），文字仍是 11.5px，不低于 11px 的下限 */
+.pit-status .badge { height: 20px; padding: 0 9px; }
+
+/* 卡内横向滚动兜底（与 ChunkMetaCard 的 .tbl-wrap 同一做法）：任何极端宽度下都是滚，
+   不会出现"列被切掉、按钮点不到"。overscroll-behavior-x 防滚到头时把整页一起带走。 */
+.tbl-wrap { overflow-x: auto; overscroll-behavior-x: contain; border-radius: var(--r-sm); }
+.pit table.data { min-width: 480px; }
+
+/* 表格：列可见性按容器宽度分三档（见文件末尾 @container）；列宽写死保持不变，
+   宁可整列让位，也不把状态徽章 / 论文标题压到一起。 */
 .col-status { width: 168px; }
 .col-chunks { width: 76px; }
 .col-ver { width: 84px; }
@@ -406,19 +426,27 @@ td.ops { padding-right: 8px; padding-left: 6px; }
 /* 底部：左计数、右页码与每页条数 */
 .pit-foot {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-  padding: 10px 16px; border-top: 1px solid var(--divider);
+  padding: 8px 14px; border-top: 1px solid var(--divider);
 }
 .pit-count { white-space: nowrap; }
 .pit-gap { padding: 0 4px; color: var(--text-faint); font-size: calc(12px * var(--ts, 1)); }
 .pit-size { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .pit-size-sel { width: 70px; height: var(--control-h-sm); font-size: calc(12px * var(--ts, 1)); }
 
-/* 860：检索控件与页码区不再强行同排 */
+/* 列可见性全部按**卡片宽度**分档（容器查询，锚点是 .pit 的 container-type）：
+   ≥780 全列；620~780 让位「最近索引」；520~620 再让位「索引版本」；<520 只留
+   论文 / 状态 / chunks / 操作，再窄就由 .tbl-wrap 横向滚动兜底。
+   th 与 td 共用同一批类名，所以一条规则同时命中表头与表体。 */
+@container (max-width: 779px) {
+  .col-indexed { display: none; }
+}
+@container (max-width: 619px) {
+  .col-ver { display: none; }
+}
+
+/* 窄视口：检索控件与页码区不再强行同排 */
 @media (max-width: 860px) {
   .pit-foot { gap: 6px; }
-  /* 列多了就整列让位：th 与 td 共用 .col-indexed，其余列宽度一个像素都不动
-     （压缩只会让状态徽章和论文标题挤成一团，隐藏才是干净的取舍）。 */
-  th.col-indexed, td.col-indexed { display: none; }
 }
 
 /* 560：搜索框独占整行（排在最后），其它按钮各自可换行 */

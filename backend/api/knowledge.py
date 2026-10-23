@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 from fastapi import APIRouter, Body, Query, Request
 
 from backend.api.response import envelope
@@ -85,6 +87,132 @@ async def index_trend(request: Request, days: int = Query(30)):
     （没有数据的日子是 0，前端不用自己补洞）。只读：不建表、不写库、不触发任务。
     """
     return envelope(knowledge_service.index_trend(days), request=request)
+
+
+# ---------------- 检索耗时趋势（设置页「检索耗时趋势」）----------------
+
+#: 窗口内最多统计多少行（多出来的只取**最近**的）。**不能无上限**：一次问答 / 一次
+#: 相似检索就是一行流水，180 天重度使用是几十万行 —— 全捞进内存算分位数会把这条只读
+#: 接口拖成几秒。20000 行足够画出稳定的 p50/p95，被截断时 `note` 里明说。
+LATENCY_ROW_CAP = 20000
+
+
+def _percentile(ordered: list[float], q: float) -> float:
+    """**nearest-rank** 分位数：升序第 `ceil(q·n)` 项（q ∈ (0,1]，n ≥ 1）。
+
+    为什么是 nearest-rank 而不是线性插值：
+    - 它是"真实存在的那一条的耗时" —— p95 = 190.0ms 可以直接去库里找回那条记录，
+      插值出来的 190.3ms 谁都没经历过；
+    - 天然满足 p50 ≤ p95、且必然落在 [min, max] 内（插值与分桶聚合混用时这两个性质
+      不自动成立，而前端画的是同一条平均线）。
+    代价是样本少时不够平滑（p50 会贴着某一条跳），趋势图看的是量级，够用。
+
+    为什么在 Python 里算而不是 SQL：分位数没有可移植写法 —— MySQL 的
+    `PERCENTILE_CONT` 要 8.0+（项目兼容更老的版本，而且 `DATE_FORMAT` 一类的语法
+    已经吃过"SQLite 上直接报错"的亏，见 `index_trend`），SQLite 根本没有。
+    """
+    n = len(ordered)
+    if n == 0:
+        return 0.0
+    index = min(n - 1, max(0, math.ceil(q * n) - 1))
+    return ordered[index]
+
+
+def latency_report(days: int = 30) -> dict:
+    """检索耗时趋势：每（**本地**）日 count / avg / p50 / p95，外加全窗口 totals。
+
+    数据源是 `retrieval_log` 流水（在 `retrieval.search` 这唯一出口埋的点，保留 90 天）。
+
+    **series 只返回有数据的那几天**，不补 0 —— 跟 `index_trend` 的"每天一条、连续不缺天"
+    刚好相反，因为两边问的不是同一件事：那边"那天没新增论文"是事实（0 是对的，累计曲线
+    要连续）；这边"那天没人检索"不等于"那天耗时 0" —— 补 0 会把平均线拽到底，
+    看上去像检索突然变快了，其实是根本没跑。日期升序，前端按 series 自己的点画。
+
+    口径：
+    - 窗口 = 最近 `days` 个本地日（含今天），`days` 夹到 1..180；
+    - 库里 `ts` 是 **UTC naive**（全库约定），这里**转成本地时间再分桶**：直接
+      `func.date(ts)` 分的是 UTC 日，东八区下 08:00 之前的检索会落到前一天的柱子上；
+    - 分位数用 nearest-rank（见 `_percentile`）；avg 保留 1 位小数；
+    - `totals`（count / avg_ms / p50_ms / p95_ms）是**整窗口一次算**的：分母是窗口内
+      全部行，不是"各天数值的平均"（按天平均会被只有一两行的小日子带偏）；
+    - 窗口内行数上限 `LATENCY_ROW_CAP`，超出只取**最近**的那些，并在 `note` 里说明；
+    - 全窗口没有数据：`series = []`、`totals.count = 0`、`avg_ms / p50_ms / p95_ms = None`
+      （不是 0：0 会被前端当成"非常快"画出来）。
+
+    只读：不建表、不写库、不触发任务。
+    """
+    from datetime import date, datetime, time as dtime, timedelta, timezone
+
+    from backend.repositories.mysql.models import RetrievalLog
+    from backend.repositories.mysql.session import session_scope
+
+    days = max(1, min(30 if days is None else int(days), 180))
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+    # 窗口左端 = 本地 start 日 00:00，换成库里那一列的口径（UTC naive）。
+    # naive 的 astimezone() 会按本地时区解释，正是这里要的。
+    lower = datetime.combine(start, dtime.min).astimezone(timezone.utc).replace(tzinfo=None)
+
+    with session_scope() as sess:
+        rows = (sess.query(RetrievalLog.ts, RetrievalLog.total_ms)
+                .filter(RetrievalLog.ts >= lower)
+                .order_by(RetrievalLog.ts.desc())
+                .limit(LATENCY_ROW_CAP + 1)      # +1 只为判断"是否超上限"
+                .all())
+
+    truncated = len(rows) > LATENCY_ROW_CAP
+    if truncated:
+        rows = rows[:LATENCY_ROW_CAP]
+
+    buckets: dict[str, list[float]] = {}
+    for ts, total_ms in rows:
+        if ts is None:
+            continue
+        day = ts.replace(tzinfo=timezone.utc).astimezone().date().isoformat()
+        buckets.setdefault(day, []).append(float(total_ms or 0.0))
+
+    series: list[dict] = []
+    window: list[float] = []
+    for day in sorted(buckets):
+        values = sorted(buckets[day])
+        window.extend(values)
+        series.append({
+            "date": day,
+            "count": len(values),
+            "avg_ms": round(sum(values) / len(values), 1),
+            "p50_ms": round(_percentile(values, 0.50), 1),
+            "p95_ms": round(_percentile(values, 0.95), 1),
+        })
+
+    window.sort()
+    # totals 一律是**整窗口一次算**（分母 = 窗口内全部行），不是"各天数值的平均" ——
+    # 后者会被只有一两行的小日子带偏：某天 1 条 4000ms、另一天 500 条 100ms，
+    # 按天平均得 2050ms，而用户实际感受到的是后者。
+    totals = {
+        "count": len(window),
+        "avg_ms": round(sum(window) / len(window), 1) if window else None,
+        # p50 与 series[].p50_ms 同一算法、同一 nearest-rank 口径，只是分母换成整窗口行数
+        "p50_ms": round(_percentile(window, 0.50), 1) if window else None,
+        "p95_ms": round(_percentile(window, 0.95), 1) if window else None,
+    }
+    note = ("检索耗时流水（retrieval_log，保留 90 天）：按本地日分桶、只列出有检索的日子，"
+            "分位数为 nearest-rank（升序第 ceil(q·n) 项），avg/p50/p95 都取总耗时 total_ms；"
+            "totals 为整窗口一次计算（不是各天 avg/p50/p95 的平均）")
+    if truncated:
+        note += f"；窗口内超过 {LATENCY_ROW_CAP} 条，只统计最近 {LATENCY_ROW_CAP} 条"
+    return {"days": days,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "series": series, "totals": totals, "note": note}
+
+
+@router.get("/knowledge/index/latency")
+async def index_latency(request: Request, days: int = Query(30)):
+    """检索耗时趋势（窗口夹到 1..180，右端是服务器本地"今天"）。
+
+    **只返回有数据的日子**（不补 0，理由见 `latency_report`）；全窗口没有数据时
+    `series = []` 且 `totals.count = 0` —— 前端据此显示空状态。
+    """
+    return envelope(latency_report(days), request=request)
 
 
 @router.get("/knowledge/chunks")
