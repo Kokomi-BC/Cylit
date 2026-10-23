@@ -6946,6 +6946,30 @@ const annotatedFormulas = computed(() => {
   return out;
 });
 
+/** 兜底索引：**行 id → 那条公式高亮**（同一行有多条时取最新那条）。
+ *
+ *  为什么需要它：公式清单是**从 A 路原文**抽的（canonical），而高亮往往照着**译文**标 ——
+ *  两边只在 `\text{…}` 里的标签文字上不同（`(\text{内积误差})` vs `(\text{inner-prod error})`），
+ *  严格按 LaTeX 比就是一个都对不上：按钮不亮、点开只有公式没有笔记（2026-12-07 实测第 3 页）。
+ *  索引到行之后，`ReaderFormulaList` 只在"这一行只有一枚公式"时才用它认领，不会一灯亮一片。 */
+const annotatedFormulasByRow = computed(() => {
+  const noteOf = new Map<string, Note>();
+  for (const n of notes.value) {
+    if (n.highlight_id) noteOf.set(String(n.highlight_id), n);
+  }
+  const out = new Map<string, { color: string; highlight: Highlight; note: Note | null }>();
+  for (const h of highlights.value) {
+    const row = String(h.block_id || '');
+    if (!row || !String(h.text || '').includes('$')) continue;
+    out.set(row, {
+      color: String(h.color || ''),
+      highlight: h,
+      note: noteOf.get(String(h.id)) ?? null,
+    });
+  }
+  return out;
+});
+
 /** agent 在这一轮里写了笔记 / 高亮 / 批注：**就地**重拉这三份列表。
  *  用户口径 2026-11-26：agent 加的笔记必须实时出现，不能靠刷新页面。
  *
@@ -7853,6 +7877,7 @@ function renderMarkdown(text?: string | null) {
           :formulas="formulas"
           :formulas-loading="formulasLoading"
           :marked-formulas="annotatedFormulas"
+          :marked-formulas-by-row="annotatedFormulasByRow"
           :tables="tables"
           :tables-loading="tablesLoading"
           :figures="figures"

@@ -68,6 +68,8 @@ const props = withDefaults(defineProps<{
   formulas: MarkdownFormula[];
   /** 已被标注的公式：LaTeX 规范化 → 那条高亮（带颜色）与它的笔记（见 `ReaderFormulaList.marked`） */
   markedFormulas?: Map<string, { color: string; highlight: any; note: any | null }>;
+  /** 行 id → 那条高亮：LaTeX 键对不上时的兜底（公式清单取 A 路原文，高亮可能标在译文侧） */
+  markedFormulasByRow?: Map<string, { color: string; highlight: any; note: any | null }>;
   formulasLoading?: boolean;
   /** 「表格」页签：从页级译文抽出来的 Markdown 表（含中文表格说明） */
   tables?: MarkdownTable[];
@@ -703,6 +705,7 @@ function onMore(key: string, r: FeedRow) {
         :items="props.formulas"
         :loading="props.formulasLoading"
         :marked="props.markedFormulas"
+        :marked-by-row="props.markedFormulasByRow"
         @open-note="emit('open-note', $event)"
         @focus="(id: string, page?: number) => emit('focus', id, page)"
         @copy="emit('copy', $event)"

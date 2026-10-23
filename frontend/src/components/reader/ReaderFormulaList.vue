@@ -25,16 +25,35 @@ const props = withDefaults(defineProps<{
    *  2026-12-06：从"集合"升级成"带色与笔记的映射" —— 圆点要显示**高亮自己的颜色**，
    *  点它要能**打开那条笔记**（用户口径）。 */
   marked?: Map<string, { color: string; highlight: any; note: any | null }>;
-}>(), { loading: false, marked: () => new Map() });
+  /** 兜底索引：**行 id → 那条高亮**。公式清单是**从 A 路（原文）抽的**（canonical），
+   *  而高亮可能是照着译文标的 —— 两边只在 `\text{…}` 里的中文标签上不同（`(\text{内积误差})`
+   *  vs `(\text{inner-prod error})`），LaTeX 键永远对不上。这一行**只有一枚公式**时，
+   *  按行认领就足够准（用户口径 2026-12-07：公式有高亮，按钮却不亮、点开没有笔记）。 */
+  markedByRow?: Map<string, { color: string; highlight: any; note: any | null }>;
+}>(), { loading: false, marked: () => new Map(), markedByRow: () => new Map() });
 
 /** 与后端同一套规范化：空白一律去掉，`$` 包裹也去掉（`\\frac {a} {b}` = `\\frac{a}{b}`）。 */
 function normLatex(value?: string): string {
   return String(value || '').replace(/\$/g, '').replace(/\s+/g, '');
 }
 
-/** 这条公式的标注信息（没有就是 undefined）。 */
+/** 这一行一共有几枚公式（用于判断"按行认领"是否无歧义）。 */
+const perRow = computed(() => {
+  const out = new Map<string, number>();
+  for (const f of props.items) {
+    const key = String(f.row_id || '');
+    if (key) out.set(key, (out.get(key) || 0) + 1);
+  }
+  return out;
+});
+
+/** 这条公式的标注信息（没有就是 undefined）：先按 LaTeX 认，认不出再按行兜底。 */
 function markOf(f: MarkdownFormula) {
-  return props.marked.get(normLatex(f.latex));
+  const hit = props.marked.get(normLatex(f.latex));
+  if (hit) return hit;
+  const row = String(f.row_id || '');
+  if (!row || perRow.value.get(row) !== 1) return undefined;   // 一行多枚时不猜
+  return props.markedByRow.get(row);
 }
 
 const emit = defineEmits<{

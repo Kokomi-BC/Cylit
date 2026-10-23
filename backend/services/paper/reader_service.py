@@ -997,9 +997,15 @@ def markdown_formulas(paper_id: str) -> dict:
     for payload in products:
         page = int(payload["page"])
         for row in payload.get("rows") or []:
+            #: **公式一律从 A 路（原文转录）抽**：译文那侧的 LaTeX 是模型翻译时写的，`\text{…}` 里
+            #: 会是中文标签（`(\text{内积误差})`），与 A 路对不上 —— 但那是**清单**的口径问题，
+            #: 不是错：清单要的是 canonical 的那一版。译文侧标出来的高亮由前端按"同一行的公式"兜底
+            #: 认领（`ReaderFormulaList` 的 `markedByRow`），不靠两边 LaTeX 逐字相同。
             text = row.get("original") or ""
             if "$" not in text:
                 continue
+            zh = row.get("translation") or ""
+            en = text
             for _s, _e, latex, display in _extract_math(text):
                 if not display and len(latex) < 4 and "\\" not in latex:
                     continue
@@ -1013,8 +1019,8 @@ def markdown_formulas(paper_id: str) -> dict:
                     "id": f"f{page:03d}-{len(collected):04d}",
                     "page": page, "row_id": row.get("id"),
                     "latex": latex, "display": display,
-                    "context": _snippet(text, latex),
-                    "context_zh": _snippet(row.get("translation") or "", latex),
+                    "context": _snippet(en or text, latex),
+                    "context_zh": _snippet(zh, latex),
                     "model": payload.get("model"),
                     "source": "markdown",
                 }))
