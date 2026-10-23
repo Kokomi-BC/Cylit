@@ -83,13 +83,6 @@ export const THEME_REGISTRY: readonly ThemeDefinition[] = [
     preview: { bg: '#f1f0ed', paper: '#fbfaf8', accent: '#2a5f57', ink: '#1b1b1d', danger: '#c23b32' },
   },
   {
-    id: 'mojia',
-    label: '墨家',
-    group: 'accent',
-    order: 25,
-    preview: { bg: '#f2efe8', paper: '#faf8f1', accent: '#4c6658', ink: '#26221b', danger: '#b23b32' },
-  },
-  {
     id: 'seacliff',
     label: '雾青',
     group: 'accent',

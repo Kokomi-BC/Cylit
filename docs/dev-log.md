@@ -11201,3 +11201,27 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 - 老 `model_usage` 行金额永久未知；`hour_key` 为 NULL 的老行走 `created_at` 兜底分桶。
 - 配了「缓存写」单价、而厂商把写缓存 token 已含在 prompt 里时会重复计一笔（`cost_of` docstring 已写明）。
 - 「厂商对比」模式下模型多选置灰：后端 `model=` 只认 `cfg:/gone:` 身份，vendor 系列键对不上，硬筛只会筛空。
+### 109. 第一百零九轮：下线「墨家」皮肤 + 修掉选中卡的外发光被裁
+
+用户口径：「显示设置那里移除墨家这个配置，解决侧边光效被裁切的问题」。
+
+**① 墨家下线**：`theme/registry.ts` 删掉那条（`id:'mojia'`，order 25），`styles/themes/mojia.css` 整份删除、
+`styles/themes/index.css` 去掉对应 `@import`。存过它的用户不用手动处理：`getStoredTheme()` 走
+`isThemeId()` 校验，认不出的 id 一律回落 `DEFAULT_THEME_ID`。实测：把 `cylit.theme` 写成 `mojia` 再刷新，
+`documentElement.dataset.theme` = `auto`，列表里也没有「墨家」了（storage 里那个旧值不再被采信）。
+
+**② 外发光被裁**：选中态是 `box-shadow: var(--ring)`（`0 0 0 3px`），画在元素框**外**；
+而 `.preset-list` 原来的内边距是 `0 4px 0 0` —— 左侧与上侧一点余量都没有，位移服务商实测
+**选中卡左间隙 = 0px**，那圈光就被滚动容器直接切掉（截图里只剩右/下两边的弧）。
+底部那 28px 淡出（`mask-image`）也会把滚到底时最后一排的环一起淡掉。
+
+- `.preset-list` 内边距改成 `4px 4px 18px`：左/上/右各留 4（3px 光 + 1px 余量），底部 18 给"滚到底时最后一排的环"。
+- `mask-image` 的淡出带 28 → **18px**，与 `padding-bottom` 同宽：两者不一样时，滚到底那一刻最后一排的环正好落在淡出里。
+  滚动中途的半排仍会被淡出（"下面还有"的提示保留，这是它本来的用途）。
+
+**验证（真浏览器 1400×1000、DPR2）**
+
+- 选中卡与滚动容器内边界的间隙：左 `0 → 4`、上 `4`；滚到底时最后一排（曜石）底间隙 `18`。
+- 预设组只剩 5 套：跟随系统 / 经典 / 素纸 / 雾青 / 黛瓦夜色；配色组 19 套不变。
+- 截图核对：选中卡四周环完整闭合、无缺口；底部半排仍被淡出。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。

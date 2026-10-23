@@ -34,7 +34,8 @@ const themes = ref<ThemeDefinition[]>(listThemes());
 const active = ref(getTheme());
 
 /**
- * 注册表里有二十多套：**六套手写皮肤**（跟随系统 / 经典 / 素纸 / 墨家 / 雾青 / 黛瓦夜色）
+ * 注册表里有二十多套：**五套手写皮肤**（跟随系统 / 经典 / 素纸 / 雾青 / 黛瓦夜色；「墨家」已按用户口径下线，
+ * 连同 `styles/themes/mojia.css` 一起删掉 —— 存过它的用户由 `getStoredTheme()` 的 `isThemeId()` 校验兜回默认值）
  * + 一批由调色板推出来的**配色**，还有用户自建的。
  *
  * 2026-12 用户口径：改成**竖向矩形列表 + 竖向滚动**，并与「当前配色」并成一张卡
@@ -418,10 +419,14 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, onThemeEvent));
      露个四五十像素像渲染坏了，露一整排才像「下面还有」（用户口径 2026-12：中等宽度像错位）。 */
   min-width: 0; max-height: 460px; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 10px;
-  padding-right: 4px;
+  /* 四边留 4：选中态那圈 3px 外发光（--ring）画在**元素框外**，容器一条内边距都没有时
+     左/上那两圈会被直接切掉（用户口径 2026-10：「侧边光效被裁切」——实测选中卡左间隙 = 0px）。
+     底部 18 是给滚动到底时最后一排那圈环留的位置，配下面同宽的淡出。 */
+  padding: 4px 4px 18px;
   scrollbar-width: thin; scrollbar-gutter: stable;
-  /* 底边 28px 淡出：被裁的那半排是「下面还有」，不是「渲染坏了」 */
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  /* 底边 18px 淡出：被裁的那半排是「下面还有」，不是「渲染坏了」。
+     淡出带与 padding-bottom 同宽 —— 两者不一样时，滚到底那一刻最后一排的环正好落在淡出里。 */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
 }
 /* 竖卡：**色块在上、名字在下（左对齐）**，一排多个（用户口径 2026-12 第三次确认）。
    轨道固定 88px —— 卡宽 ≈ 名字那么宽，不会拖成一条长条；auto-fill 自己决定一排几个
