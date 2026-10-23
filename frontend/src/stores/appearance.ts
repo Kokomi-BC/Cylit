@@ -19,7 +19,7 @@ export type Typography = 'system' | 'yahei' | 'serif';
 
 /** 三档都只用系统里**真的有**的字面（Windows / macOS 各有一个命中，缺了自动落下一档）。 */
 export const TYPOGRAPHY_OPTIONS: ReadonlyArray<{ value: Typography; label: string }> = [
-  { value: 'system', label: '系统默认' },
+  { value: 'system', label: '系统默认字体' },
   { value: 'yahei', label: '微软雅黑' },
   { value: 'serif', label: '宋体衬线' },
 ];
@@ -71,7 +71,7 @@ function normalizeFont(value: unknown, fallback: FontChoice): FontChoice {
   return fallback;
 }
 
-/** 字体选择 → CSS 字面栈。选「系统默认」返回空串（让 tokens.css 的默认栈接手）。 */
+/** 字体选择 → CSS 字面栈。选「系统默认字体」返回空串（让 tokens.css 的默认栈接手）。 */
 function fontStackOf(choice: FontChoice): string {
   if (choice === 'system') return '';
   if (choice === 'yahei') return 'var(--font-stack-yahei)';
@@ -128,7 +128,7 @@ export function applyAppearance(): void {
   const root = document.documentElement;
   root.dataset.typo = appearance.typography;
   /* 分类字体：每类把内联 `--font-sans-<类>` 写到 :root 上，base.css 的分类根再读它 ——
-     选「系统默认」就把内联值摘掉，交回 tokens.css 里的默认栈。 */
+     选「系统默认字体」就把内联值摘掉，交回 tokens.css 里的默认栈。 */
   for (const key of FONT_CATEGORIES) {
     const stack = fontStackOf(appearance.fonts[key]);
     if (stack) root.style.setProperty(`--font-sans-${key}`, stack);

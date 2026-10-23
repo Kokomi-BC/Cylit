@@ -233,7 +233,7 @@ async function onRowFontChange(key: keyof CategoryFonts, ev: Event): Promise<voi
 .cats { display: flex; flex-direction: column; gap: 2px; }
 /* 一行：名字（定宽）+ 样例（吃满）+ 字号胶囊 + 字体下拉（都定宽） */
 .cat {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 104px;
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 124px;
   align-items: center; gap: 8px; min-height: 34px;
 }
 .cat-name { font-size: calc(12px * var(--ts, 1)); font-weight: 600; }

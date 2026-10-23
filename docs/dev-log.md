@@ -11062,3 +11062,12 @@ html[data-hl-style="underline"] mark.hl {
   选中后 `--font-sans-note = \"方正书宋\", var(--font-stack-system)`，样例计算值 `方正书宋, …`，落盘
   `fonts.note = \"local:方正书宋\"`。
 - `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**、控制台 0 error。
+
+### 104. 第一百零四轮：「系统默认」→「系统默认字体」
+
+用户口径：换表述。字体下拉里那一项从「系统默认」改成「系统默认字体」（与旁边「微软雅黑 / 宋体衬线」
+都是「字体」，原来那项读起来像在说字号）。
+
+- `TYPOGRAPHY_OPTIONS` 的 label 改掉；注释里两处「选系统默认」一并改口。
+- 六个字比四个字长，字体下拉列 104 → **124**（实测内容宽 122，不截断、不出现滚动条，五行仍同一条竖线）。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL**。
