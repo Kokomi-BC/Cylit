@@ -302,53 +302,46 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
       </button>
     </div>
 
-    <!-- ② 指标行：四张平级卡（不套卡），列数交给 container query -->
+    <!-- ② 指标带：四格并排、格间一条竖发丝线；整条是垫在内容下面的淡色圆角卡（--bg-sunken + --r-sm），
+         不是白卡 —— 无描边、无阴影、无 --bg-elev 白底 -->
     <div class="kb-metrics">
-      <section class="card kb-metric">
-        <div class="card-body">
-          <div class="m-head">
-            <span class="m-icon"><AppIcon name="knowledge" :size="15" /></span>
-            <span class="m-label">论文总数</span>
-          </div>
-          <div class="m-value">{{ overview ? overview.papers_total : '—' }}</div>
-          <div class="m-sub truncate">已纳入知识库 {{ overview ? overview.papers_in_kb : 0 }} 篇</div>
+      <div class="kb-metric">
+        <div class="m-head">
+          <span class="m-icon"><AppIcon name="knowledge" :size="15" /></span>
+          <span class="m-label">论文总数</span>
         </div>
-      </section>
+        <div class="m-value">{{ overview ? overview.papers_total : '—' }}</div>
+        <div class="m-sub truncate">已纳入知识库 {{ overview ? overview.papers_in_kb : 0 }} 篇</div>
+      </div>
 
-      <section class="card kb-metric">
-        <div class="card-body">
-          <div class="m-head">
-            <span class="m-icon"><AppIcon name="layers" :size="15" /></span>
-            <span class="m-label">chunk 总数</span>
-          </div>
-          <div class="m-value">{{ overview ? overview.chunks : '—' }}</div>
-          <div class="m-sub truncate" :title="chunkTypeText">{{ chunkTypeText }}</div>
+      <div class="kb-metric">
+        <div class="m-head">
+          <span class="m-icon"><AppIcon name="layers" :size="15" /></span>
+          <span class="m-label">chunk 总数</span>
         </div>
-      </section>
+        <div class="m-value">{{ overview ? overview.chunks : '—' }}</div>
+        <div class="m-sub truncate" :title="chunkTypeText">{{ chunkTypeText }}</div>
+      </div>
 
-      <section class="card kb-metric">
-        <div class="card-body">
-          <div class="m-head">
-            <span class="m-icon"><AppIcon :name="consistencyIcon" :size="15" /></span>
-            <span class="m-label">索引一致性</span>
-          </div>
-          <div class="m-value">
-            <span class="badge" :class="consistencyClass">{{ consistencyText }}</span>
-          </div>
-          <div class="m-sub truncate">MySQL 与 LanceDB 按 id 集合对账</div>
+      <div class="kb-metric">
+        <div class="m-head">
+          <span class="m-icon"><AppIcon :name="consistencyIcon" :size="15" /></span>
+          <span class="m-label">索引一致性</span>
         </div>
-      </section>
+        <div class="m-value">
+          <span class="badge" :class="consistencyClass">{{ consistencyText }}</span>
+        </div>
+        <div class="m-sub truncate">MySQL 与 LanceDB 按 id 集合对账</div>
+      </div>
 
-      <section class="card kb-metric">
-        <div class="card-body">
-          <div class="m-head">
-            <span class="m-icon"><AppIcon name="model" :size="15" /></span>
-            <span class="m-label">向量模型</span>
-          </div>
-          <div class="m-value txt truncate" :title="embeddingName">{{ embeddingName }}</div>
-          <div class="m-sub truncate">{{ embeddingSub }}</div>
+      <div class="kb-metric">
+        <div class="m-head">
+          <span class="m-icon"><AppIcon name="model" :size="15" /></span>
+          <span class="m-label">向量模型</span>
         </div>
-      </section>
+        <div class="m-value txt truncate" :title="embeddingName">{{ embeddingName }}</div>
+        <div class="m-sub truncate">{{ embeddingSub }}</div>
+      </div>
     </div>
 
     <!-- ③ 图表行：一排三张小图（趋势 → 类型分布 → 耗时），宽度不够就降到两列 / 一列 -->
@@ -399,30 +392,50 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   min-width: 0;
 }
 
-/* ② 指标行：默认四列，860 两列，560 一列 */
+/* ② 指标带 = 一条淡色圆角卡（--bg-sunken + --r-sm），四格的数值都在这条卡**里面**。
+   它只是"垫在内容下面的淡底"，不是白卡：没有描边、没有阴影、没有 --bg-elev 白底 ——
+   设置页的层级口径是标题在卡外透明、淡底只包内容，这里没有标题行，所以只有这一条底。
+   gap 必须是 0：有 gap 时相邻格的左边线会被劈成两半，看着像断开的刻度。 */
 .kb-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 0;
   align-items: stretch;
+  min-width: 0;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
 }
+/* 竖发丝线只给"前面还有格子"的那几格，第一格不加（否则整条最左会多出一条竖线）。 */
+.kb-metrics > .kb-metric + .kb-metric { border-left: 1px solid var(--divider); }
+
+/* 860 两列、560 一列：换行后每行第一格不能带左边线，第二行起补一条横线，
+   否则上下两行会连成一片，四格的读序也断了。 */
 @container (max-width: 860px) {
   .kb-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kb-metrics > .kb-metric + .kb-metric { border-left: 0; }
+  .kb-metrics > .kb-metric:nth-child(even) { border-left: 1px solid var(--divider); }
+  .kb-metrics > .kb-metric:nth-child(n + 3) { border-top: 1px solid var(--divider); }
 }
 @container (max-width: 560px) {
   .kb-metrics { grid-template-columns: minmax(0, 1fr); }
+  .kb-metrics > .kb-metric + .kb-metric { border-left: 0; }
+  .kb-metrics > .kb-metric:nth-child(n + 2) { border-top: 1px solid var(--divider); }
 }
 
-/* base.css 的 `.card + .card` 会在这里多顶 12px（网格 / 弹性列都自带 gap）。
+/* base.css 的 `.card + .card` 会在竖向堆叠时多顶 12px（弹性列自带 gap）。
+   指标带与图表行已经不含 .card，这条只剩主体里那几张卡要清。
    选择器按 DOM 结构写，display:contents 的单列态同样命中。 */
-.kb-metrics > .card + .card,
-.kb-charts > .card + .card,
 .kb-col > .card + .card { margin-top: 0; }
 
-.kb-metric { min-width: 0; }
-/* 指标块按"图标 24 + 主值 20 + 副行 11"三行定高，块内上下留白取 10（全局 .card-body 是 16），
-   整块稳定在 ≈100px：24 + 6 + 24 + 6 + 16.5 + 20 + 2(边框) = 98.5（实测 100.5，含行盒取整）。 */
-.kb-metric .card-body { display: grid; gap: 6px; align-content: start; padding: 10px 14px; }
+/* 一格：图标 24 + 主值 20 + 副行 11 三行，格内上下留白取 10（全局 .card-body 是 16）。
+   整条稳定在 ≈96：10 + 24 + 6 + 24 + 6 + 16.5 + 10 ≈ 96.5。 */
+.kb-metric {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 10px 14px;
+}
 
 .m-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .m-icon {
@@ -464,8 +477,8 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   color: var(--text-faint);
 }
 
-/* ③ 图表行：一排三张。≥900 三列；640~900 两列（第三张落到下一行）；<640 一列。
-   三张卡等高（align-items: stretch），降到两列时第三张单独一行也只是自己高。
+/* ③ 图表行：一排三块（都不再是卡片）。≥900 三列；640~900 两列（第三张落到下一行）；<640 一列。
+   三块等高（align-items: stretch），降到两列时第三块单独一行也只是自己高。
    三列时每张约 (956 - 24) / 3 ≈ 310，趋势图因此要跟着收成"小图"（见 KbTrendCard）。 */
 .kb-charts {
   display: grid;
@@ -476,11 +489,14 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
 }
 @container (min-width: 640px) {
   .kb-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 并排时三块的标题行高度不一样：趋势卡与耗时卡各带一枚 7/30/90 的 seg，310 宽里要折成两行，
+     分布卡只有标题一行 —— 不锁同高的话，下面三条淡底就会一条高一条低。按折行那一档取齐。 */
+  .kb-charts :deep(.card-head) { min-height: calc(70px * var(--ts, 1)); }
 }
 @container (min-width: 900px) {
   .kb-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-.kb-charts > .card { min-width: 0; }
+.kb-charts > * { min-width: 0; }
 
 /* ④ 主体：窄窗格单列，三个卡片用 order 排成 论文表 → 检索配置 → chunk。
    列容器在单列态用 display:contents 把自己的两张卡提上来，才能被 order 重排。 */

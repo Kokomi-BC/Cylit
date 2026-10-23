@@ -151,10 +151,10 @@ onMounted(() => { void refresh(); });
     <p class="panel-note">看任务跑到哪儿，也能取消或重试。</p>
 
     <div class="grid tq-grid">
-      <!-- 状态筛选：六枚分段，短卡 -->
-      <div class="card">
-        <div class="card-head">按状态看</div>
-        <div class="card-body">
+      <!-- 状态筛选：六枚分段，短块（标题在区块外、不铺底，淡色圆角底只垫控件） -->
+      <section class="tq-block">
+        <h3 class="tq-title">按状态看</h3>
+        <div class="tq-body">
           <div class="seg tq-seg">
             <button v-for="s in segments" :key="s.value || 'all'"
                     :class="{ active: status === s.value }" @click="status = s.value">
@@ -162,12 +162,12 @@ onMounted(() => { void refresh(); });
             </button>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- 实时与刷新：短卡 -->
-      <div class="card">
-        <div class="card-head">实时</div>
-        <div class="card-body tq-live-card">
+      <!-- 实时与刷新：短块 -->
+      <section class="tq-block">
+        <h3 class="tq-title">实时</h3>
+        <div class="tq-body tq-live-body">
           <p class="tq-hint">
             <span class="tq-live" :class="live" :title="liveText" :aria-label="liveText" />
             {{ liveText }}
@@ -176,16 +176,16 @@ onMounted(() => { void refresh(); });
             <AppIcon name="refresh" :size="15" />刷新
           </button>
         </div>
-      </div>
+      </section>
 
-      <!-- 任务列表：长内容，整宽 -->
-      <div class="card tq-card-wide" v-if="firstLoad">
+      <!-- 任务列表：长内容，整宽。这一块本身就是列表，不再补一个与窗格抬头重名的标题 -->
+      <section class="tq-block tq-block-wide tq-body" v-if="firstLoad">
         <p class="empty">正在加载任务…</p>
-      </div>
-      <div class="card tq-card-wide" v-else-if="!shown.length">
+      </section>
+      <section class="tq-block tq-block-wide tq-body" v-else-if="!shown.length">
         <p class="empty">{{ status ? '这个状态下没有任务。' : '暂无任务。' }}</p>
-      </div>
-      <div class="card tq-card-wide" v-else>
+      </section>
+      <section class="tq-block tq-block-wide tq-body" v-else>
         <table class="data fixed">
           <thead>
             <tr>
@@ -235,7 +235,7 @@ onMounted(() => { void refresh(); });
           </tr>
         </tbody>
       </table>
-      </div>
+      </section>
     </div>
   </div>
 </template>
@@ -248,9 +248,17 @@ onMounted(() => { void refresh(); });
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
 }
 
-/* 卡片网格：短卡两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+/* 块网格：短块两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责。 */
 .tq-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.tq-card-wide { grid-column: 1 / -1; }
+.tq-block { min-width: 0; }
+.tq-block-wide { grid-column: 1 / -1; }
+/* 标题只是标题：**不铺底**，留在淡色块外面 */
+.tq-title {
+  margin: 0 0 8px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
+  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
+}
+/* 内容底：淡色圆角矩形（与「Cyli 偏好」的 .group-body 同一套），只包控件与列表，不包标题 */
+.tq-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
 /* 六枚分段放进半宽卡：允许换行，否则会被挤出卡片 */
 .tq-seg { width: 100%; flex-wrap: wrap; height: auto; }
@@ -258,8 +266,8 @@ onMounted(() => { void refresh(); });
 .tq-n { color: var(--text-faint); font-weight: 500; }
 .seg button.active .tq-n { color: inherit; opacity: .65; }
 
-/* 实时卡：一盏灯 + 一句状态，下面一枚刷新 */
-.tq-live-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+/* 实时块：一盏灯 + 一句状态，下面一枚刷新 */
+.tq-live-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 .tq-hint {
   display: flex; align-items: center; gap: 7px; margin: 0;
   font-size: calc(12px * var(--ts, 1)); color: var(--text-dim);
@@ -284,7 +292,7 @@ onMounted(() => { void refresh(); });
 /* 固定列宽的表里，单元格内容要能被截断才不顶破列 */
 td .truncate { display: block; }
 
-/* 窄一档：卡片回落单列，短卡也竖着排 */
+/* 窄一档：块回落单列，短块也竖着排 */
 @media (max-width: 1100px) {
   .tq-grid { grid-template-columns: minmax(0, 1fr); }
 }

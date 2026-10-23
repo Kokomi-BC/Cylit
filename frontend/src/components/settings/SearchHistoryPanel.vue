@@ -90,10 +90,10 @@ onUnmounted(() => {
     <p class="panel-note">记着你搜过什么，想删就删。</p>
 
     <div class="grid sh-grid">
-      <!-- 保留条数：一张短卡 -->
-      <div class="card">
-        <div class="card-head">保留条数</div>
-        <div class="card-body">
+      <!-- 保留条数：一个短块（标题在区块外、不铺底，淡色圆角底只垫控件） -->
+      <section class="sh-block">
+        <h3 class="sh-title">保留条数</h3>
+        <div class="sh-body">
           <label class="field">
             <span class="field-top">最多保留</span>
             <select v-model.number="limit" @change="onLimitChange">
@@ -102,25 +102,26 @@ onUnmounted(() => {
           </label>
           <p class="sh-hint">放满了就从最旧的一条开始丢。</p>
         </div>
-      </div>
+      </section>
 
-      <!-- 清空：一张短卡 -->
-      <div class="card">
-        <div class="card-head">清空</div>
-        <div class="card-body sh-actions">
+      <!-- 清空：一个短块 -->
+      <section class="sh-block">
+        <h3 class="sh-title">清空</h3>
+        <div class="sh-body sh-actions">
           <p class="sh-hint">清掉的是本机这份记录，论文和笔记都不动。</p>
           <button class="btn sm" :disabled="!entries.length" @click="onClear">
             <AppIcon name="trash" :size="14" />清空全部
           </button>
         </div>
-      </div>
+      </section>
 
       <!-- 记录表：长内容，整宽 -->
-      <div class="card sh-card-wide" v-if="entries.length">
-        <div class="card-head">
-          <span>搜索记录</span>
+      <section class="sh-block sh-block-wide" v-if="entries.length">
+        <div class="sh-title-row">
+          <h3 class="sh-title">搜索记录</h3>
           <span class="sh-count tnum">{{ entries.length }} 条</span>
         </div>
+        <div class="sh-body">
         <table class="data fixed">
           <thead>
             <tr>
@@ -147,10 +148,11 @@ onUnmounted(() => {
             </tr>
           </tbody>
         </table>
-      </div>
-      <div class="card sh-card-wide" v-else>
+        </div>
+      </section>
+      <section class="sh-block sh-block-wide sh-body" v-else>
         <p class="empty">还没有搜索记录。</p>
-      </div>
+      </section>
     </div>
   </div>
 </template>
@@ -162,9 +164,18 @@ onUnmounted(() => {
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
 }
 
-/* 卡片网格：短卡两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+/* 块网格：短块两列并排，长内容整宽。间距只由 `.grid` 的 gap 负责。 */
 .sh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.sh-card-wide { grid-column: 1 / -1; }
+.sh-block { min-width: 0; }
+.sh-block-wide { grid-column: 1 / -1; }
+/* 标题只是标题：**不铺底**，留在淡色块外面（记录数跟在标题后面同一行） */
+.sh-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
+.sh-title {
+  margin: 0; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
+  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
+}
+/* 内容底：淡色圆角矩形（与「Cyli 偏好」的 .group-body 同一套），只包控件与列表，不包标题 */
+.sh-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
 /* 短卡里的说明与按钮：一句一行，按钮跟在后面 */
 .sh-hint { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
@@ -181,7 +192,7 @@ onUnmounted(() => {
 .w-ops { width: 56px; }
 select { max-width: 120px; }
 
-/* 窄一档：卡片回落单列，短卡也竖着排 */
+/* 窄一档：块回落单列，短块也竖着排 */
 @media (max-width: 1100px) {
   .sh-grid { grid-template-columns: minmax(0, 1fr); }
 }

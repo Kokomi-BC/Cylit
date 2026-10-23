@@ -446,6 +446,103 @@ function modelIcon(m: ModelConfig): string {
   return vendorColorIcon(m.provider);
 }
 
+/* ---- 同一提供方 + 同一自定义名称 → 合成一行 ----
+ * 用户口径：「同一个厂商、同一个名称的模型能不能合并，而不是显示多个同名模型」。
+ * 后端本来就允许同名不同用（同一底层模型既挂 generation 又挂 vision），
+ * 于是抽屉里会出现两行一模一样的名字 —— 那不是在展示配置，是在制造重复。 */
+
+/** 类型中文名：与 ModelPanel 的 TYPE_LABEL 同一套叫法，别自创第二套。 */
+const REL_TYPE_LABEL: Record<string, string> = {
+  generation: '文本生成',
+  agent: '论文问答',
+  embedding: '向量化',
+  reranker: '重排',
+  vision: '视觉读页',
+  ocr: 'OCR',
+};
+
+function relTypeLabel(m: ModelConfig): string {
+  const t = String(m.model_type || '');
+  return REL_TYPE_LABEL[t] || (t || '未知');
+}
+
+interface RelGroup {
+  /** 分组键：同名共用 n:<name>，空名各自 i:<id>（不合并） */
+  key: string;
+  name: string;
+  models: ModelConfig[];
+}
+
+const relGroups = computed<RelGroup[]>(() => {
+  const groups: RelGroup[] = [];
+  const byKey = new Map<string, RelGroup>();
+  for (const m of relatedModels.value) {
+    const name = String(m.name || '').trim();
+    /* 名称为空之间没有可比性：硬合会把不相干的配置绑成一行，所以各自独立 */
+    const key = name ? `n:${name}` : `i:${m.id}`;
+    const hit = byKey.get(key);
+    if (hit) { hit.models.push(m); continue; }
+    const g: RelGroup = { key, name, models: [m] };
+    byKey.set(key, g);
+    groups.push(g);
+  }
+  return groups;
+});
+
+/** 合并行的状态点取组内**最差**：任一条缺密钥/异常就 danger，全 ok 才 ok。 */
+function groupDot(g: RelGroup): string {
+  const dots = g.models.map(modelDot);
+  if (dots.includes('danger')) return 'danger';
+  return dots.every((d) => d === 'ok') ? 'ok' : '';
+}
+
+/** 组内密钥来源一致就照旧写那句；不一致只说「多个」，别挑一条冒充全体。 */
+function groupKeySource(g: RelGroup): string {
+  const first = keySourceOf(g.models[0]);
+  return g.models.every((m) => keySourceOf(m) === first) ? first : '密钥来源：多个';
+}
+
+/** 组内类型中文名（去重、按出现顺序）：它是这一组"用在哪"的唯一线索。 */
+function groupTypes(g: RelGroup): string[] {
+  const out: string[] = [];
+  for (const m of g.models) {
+    const t = relTypeLabel(m);
+    if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** 组内真实 model_name（去重）：同一字段不重复写多次，类型由标签另列。 */
+function groupModelIds(g: RelGroup): string {
+  const out: string[] = [];
+  for (const m of g.models) {
+    const id = String(m.model_name || '').trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out.join(' · ');
+}
+
+/** 多配置组就地展开（按组键记，收起再点一次） */
+const relExpanded = reactive(new Set<string>());
+
+function toggleGroup(g: RelGroup): void {
+  if (relExpanded.has(g.key)) relExpanded.delete(g.key);
+  else relExpanded.add(g.key);
+}
+
+/** 右侧只有一枚「去配置」：单配置组直接跳它那一条，多配置组先展开再看。 */
+function groupGo(g: RelGroup): void {
+  if (g.models.length === 1) goConfigure(g.models[0]);
+  else toggleGroup(g);
+}
+
+/** 标题栏：M 个模型（N 个配置）—— 只有一个配置时括号没有信息量，省掉。 */
+const relCountText = computed(() => {
+  const total = relatedModels.value.length;
+  const rows = relGroups.value.length;
+  return total > 1 ? `${rows} 个模型（${total} 个配置）` : `${rows} 个模型`;
+});
+
 const provTest = ref<ProviderTestResult | null>(null);
 const provError = ref('');
 
@@ -790,20 +887,70 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
               <div class="sec-head">
                 <h3>关联模型</h3>
                 <span class="spacer"></span>
-                <span class="tiny faint">{{ relatedModels.length }} 个</span>
+                <span class="tiny faint">{{ relCountText }}</span>
               </div>
-              <ul class="rel" v-if="relatedModels.length">
-                <li class="rel-row" v-for="m in relatedModels" :key="m.id">
-                  <span class="pd-dot" :class="modelDot(m)" />
-                  <img v-if="modelIcon(m)" class="rel-ico" :src="modelIcon(m)" alt="">
-                  <span v-else class="rel-ico-fallback"><AppIcon name="model" :size="13" /></span>
-                  <span class="rel-name truncate" :title="m.name || m.id">{{ m.name || '（未命名）' }}</span>
-                  <span class="rel-id mono truncate" :title="m.model_name || ''">{{ m.model_name || '—' }}</span>
-                  <span class="rel-src truncate" :title="keySourceOf(m)">{{ keySourceOf(m) }}</span>
-                  <span class="spacer"></span>
-                  <button class="btn sm ghost" @click="goConfigure(m)">
-                    <AppIcon name="edit" :size="13" />去配置
-                  </button>
+              <ul class="rel" v-if="relGroups.length">
+                <li
+                  class="rel-row"
+                  :class="{ merged: g.models.length > 1 }"
+                  v-for="g in relGroups"
+                  :key="g.key"
+                  :data-rel-group="g.name || g.models[0].id"
+                  :data-rel-group-count="g.models.length > 1 ? String(g.models.length) : null"
+                >
+                  <!-- 单配置：与合并前**一模一样**的一行（不为了统一而改掉已有的样子） -->
+                  <template v-if="g.models.length === 1">
+                    <span class="pd-dot" :class="modelDot(g.models[0])" />
+                    <img v-if="modelIcon(g.models[0])" class="rel-ico" :src="modelIcon(g.models[0])" alt="">
+                    <span v-else class="rel-ico-fallback"><AppIcon name="model" :size="13" /></span>
+                    <span class="rel-name truncate" :title="g.name || g.models[0].id">{{ g.name || '（未命名）' }}</span>
+                    <span class="rel-id mono truncate" :title="g.models[0].model_name || ''">{{ g.models[0].model_name || '—' }}</span>
+                    <span class="rel-src truncate" :title="keySourceOf(g.models[0])">{{ keySourceOf(g.models[0]) }}</span>
+                    <span class="spacer"></span>
+                    <button class="btn sm ghost" data-rel-go @click="groupGo(g)">
+                      <AppIcon name="edit" :size="13" />去配置
+                    </button>
+                  </template>
+
+                  <!-- 多配置合并：一行说清「同一个名字被几处用着」，展开才逐条给详情 -->
+                  <template v-else>
+                    <div class="rel-main">
+                      <span class="pd-dot" :class="groupDot(g)" />
+                      <img v-if="modelIcon(g.models[0])" class="rel-ico" :src="modelIcon(g.models[0])" alt="">
+                      <span v-else class="rel-ico-fallback"><AppIcon name="model" :size="13" /></span>
+                      <span class="rel-name truncate" :title="g.name || g.models[0].id">{{ g.name || '（未命名）' }}</span>
+                      <span class="rel-count">{{ g.models.length }} 个配置</span>
+                      <span class="spacer"></span>
+                      <button
+                        class="btn sm ghost"
+                        data-rel-go
+                        :aria-expanded="relExpanded.has(g.key)"
+                        :title="relExpanded.has(g.key) ? '收起这组配置' : '展开这组配置'"
+                        @click="groupGo(g)"
+                      >
+                        <AppIcon name="edit" :size="13" />去配置
+                      </button>
+                    </div>
+                    <div class="rel-meta">
+                      <span class="rel-types">
+                        <span class="rel-type" v-for="t in groupTypes(g)" :key="t">{{ t }}</span>
+                      </span>
+                      <span class="rel-id mono truncate" :title="groupModelIds(g)">{{ groupModelIds(g) || '—' }}</span>
+                      <span class="rel-src truncate" :title="groupKeySource(g)">{{ groupKeySource(g) }}</span>
+                    </div>
+                    <ul class="rel-sub" v-if="relExpanded.has(g.key)">
+                      <li class="rel-sub-row" v-for="m in g.models" :key="m.id" data-rel-config>
+                        <span class="pd-dot" :class="modelDot(m)" />
+                        <span class="rel-type">{{ relTypeLabel(m) }}</span>
+                        <span class="rel-id mono truncate" :title="m.model_name || ''">{{ m.model_name || '—' }}</span>
+                        <span class="rel-src truncate" :title="keySourceOf(m)">{{ keySourceOf(m) }}</span>
+                        <span class="spacer"></span>
+                        <button class="btn sm ghost" data-rel-go data-rel-config-go @click="goConfigure(m)">
+                          <AppIcon name="edit" :size="13" />去配置
+                        </button>
+                      </li>
+                    </ul>
+                  </template>
                 </li>
               </ul>
               <div class="pd-empty" v-else>
@@ -1002,8 +1149,14 @@ button.kr-name:hover { color: var(--accent-text); }
   color: var(--text-dim); cursor: pointer;
 }
 
-/* ---- 关联模型 ---- */
-.rel { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+/* ---- 关联模型 ----
+   淡色圆角底只垫**列表内容**：「关联模型」标题（h3 + 右侧计数）留在卡外、透明底上；
+   行本身无描边无底色，行间只有 1px 发丝线。 */
+.rel {
+  display: flex; flex-direction: column; margin: 0; padding: 3px 10px;
+  list-style: none;
+  background: var(--bg-sunken); border-radius: var(--r-sm);
+}
 .rel-row {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   height: 40px; padding: 0 6px; border-radius: var(--r-sm);
@@ -1011,11 +1164,42 @@ button.kr-name:hover { color: var(--accent-text); }
 }
 .rel-row + .rel-row { border-top: 1px solid var(--divider); }
 .rel-row:hover { background: var(--bg-hover); }
+
+/* ---- 合并行（同名多配置）：两行 —— 上面是"谁/几个/去哪"，下面是"什么类型/哪个真模型/密钥从哪来"。
+   一条横排塞不下这些（520px 抽屉里必然挤到一起），所以合并行明确分两行，类型标签永远不换行。 */
+.rel-row.merged { display: block; height: auto; padding: 5px 6px; }
+.rel-main { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; }
+/* 合并行上面只有"名称 + 几个配置"，没有真实 id 抢地方 —— 名称可以吃满，别为了 40% 早早截断 */
+.rel-row.merged .rel-main .rel-name { flex: 1 1 auto; max-width: none; }
+.rel-meta {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 0 0 2px 14px; /* 14 = 点 + 间距：与上面名称左对齐 */
+}
+.rel-count {
+  flex: none; white-space: nowrap; padding: 1px 6px; border-radius: 999px;
+  background: var(--bg-elev); color: var(--text-faint);
+  font-size: calc(11px * var(--ts, 1)); line-height: 1.5;
+}
+.rel-types { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.rel-type {
+  flex: none; white-space: nowrap; padding: 1px 6px; border-radius: 999px;
+  background: var(--bg-elev); color: var(--text-dim);
+  font-size: calc(11px * var(--ts, 1)); line-height: 1.5;
+}
+.rel-sub {
+  display: flex; flex-direction: column; margin: 3px 0 0; padding: 0; list-style: none;
+  border-top: 1px dashed var(--divider);
+}
+.rel-sub-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  height: 32px; padding: 0 0 0 14px; border-radius: var(--r-sm);
+}
+.rel-sub-row:hover { background: var(--bg-hover); }
 .rel-ico { flex: none; width: 16px; height: 16px; object-fit: contain; border-radius: var(--r-xs); }
 .rel-ico-fallback {
   flex: none; display: inline-grid; place-items: center;
   width: 16px; height: 16px; border-radius: var(--r-xs);
-  background: var(--bg-sunken); color: var(--text-faint);
+  background: var(--bg-elev); color: var(--text-faint);
 }
 .rel-name {
   flex: 0 1 auto; min-width: 0; max-width: 40%;

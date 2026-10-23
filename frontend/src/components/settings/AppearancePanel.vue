@@ -62,9 +62,6 @@ import HighlightStyleCard from './HighlightStyleCard.vue';
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider);
 }
 
-/* 网格里的兄弟卡不需要 base.css 那条 `.card + .card` 的 12px 上边距（缝已由 gap 给） */
-.appearance :deep(.card + .card) { margin-top: 0; }
-
 /* 内容区窄到 940 以下：两列各剩 460 不到 —— 左边样例、右边主题列表都会挤，落单列
    （先「看效果」：预览 + 字体设置，再「挑东西」：主题 + 高亮）。 */
 @container (max-width: 940px) {

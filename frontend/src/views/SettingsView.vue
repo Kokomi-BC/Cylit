@@ -531,9 +531,10 @@ onMounted(async () => {
         </div>
 
         <div class="cards-2">
-          <div class="card">
-            <div class="card-head">凭证</div>
-            <div class="card-body">
+          <!-- 两块内容：标题在区块外（透明底）、控件进淡色圆角底 -->
+          <section class="min-block">
+            <h3 class="min-title">凭证</h3>
+            <div class="min-body">
               <label class="field">
                 <span class="field-top">API token</span>
                 <input
@@ -582,11 +583,11 @@ onMounted(async () => {
               </p>
               <p class="load-error tiny" v-if="mineruError">{{ mineruError }}</p>
             </div>
-          </div>
+          </section>
 
-          <div class="card">
-            <div class="card-head">默认参数</div>
-            <div class="card-body">
+          <section class="min-block">
+            <h3 class="min-title">默认参数</h3>
+            <div class="min-body">
               <div class="grid cols-2">
                 <label class="field">
                   模型版本
@@ -610,7 +611,7 @@ onMounted(async () => {
               </label>
               <p class="tiny faint hint">仅作导入弹窗初值，导入时仍可逐篇改。</p>
             </div>
-          </div>
+          </section>
         </div>
       </section>
 
@@ -889,7 +890,13 @@ onMounted(async () => {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px; align-items: start;
 }
-.cards-2 > .card + .card { margin-top: 0; }
+/* 块 = 标题（不铺底）+ 淡色圆角内容底；块与块的缝归 .cards-2 的 gap。 */
+.min-block { min-width: 0; }
+.min-title {
+  margin: 0 0 8px; font-size: calc(13px * var(--ts, 1)); font-weight: 600;
+  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
+}
+.min-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
 /* 表单项：标签一行 */
 .field-top { display: flex; align-items: baseline; gap: 8px; width: 100%; }

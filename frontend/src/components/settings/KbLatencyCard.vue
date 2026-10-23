@@ -19,7 +19,7 @@
  * X 轴是**分类轴**：按"有数据的那几天"等距排布，不是日期比例轴 —— 中间空着的日子
  * 不该在图上占宽度（后端也只返回有数据的天）。
  *
- * 高度按"一排三张卡"定档：宽档 H 118 / 窄档（< 380）H 98，与趋势卡同档；
+ * 高度按"一排三块"定档：宽档 H 118 / 窄档（< 380）H 98，与趋势块同档；
  * 四个状态共用同一个 min-height（由 H 算出），切换时不跳。
  *
  * 两条"别自作聪明"的规矩：
@@ -103,7 +103,7 @@ const avgVals = computed<number[]>(() => points.value.map((p) => num(p.avg_ms)))
 const p95Vals = computed<number[]>(() => points.value.map((p) => num(p.p95_ms)));
 /** 空态判据：总量为 0 或一条点都没有（后端只给"有数据的那几天"，两种写法都得认）。 */
 const empty = computed<boolean>(() => totalCount.value === 0 || !points.value.length);
-/** 只有"成功 + 有数据"才画图；卡头摘要也跟着这个开关走。 */
+/** 只有"成功 + 有数据"才画图；标题行摘要也跟着这个开关走。 */
 const ready = computed<boolean>(() => !loading.value && !error.value && !empty.value);
 
 /**
@@ -118,7 +118,7 @@ const noteText = computed<string>(() => (data.value?.note || '').trim() || NOTE_
  * 中位耗时：优先用 totals.p50_ms；后端这一版 totals 里只有 count/avg_ms/p95_ms，
  * 就退回"各天 p50 按次数加权平均"。两者在单日窗口里完全相同（真实数据都是 579 ms），
  * 多日时前者是近似 —— 所以只取整显示，不给小数。
- * 为什么卡头要它：一次冷启动就能把 p95 拉到 4s，只有中位能说明"常态其实还好"。
+ * 为什么标题行要它：一次冷启动就能把 p95 拉到 4s，只有中位能说明"常态其实还好"。
  */
 const medianMs = computed<number | null>(() => {
   const t = Number(data.value?.totals?.p50_ms);
@@ -182,7 +182,7 @@ function fmtMs(v: number): string {
 
 /**
  * 左轴留白按顶端那枚刻度**量**出来：ms 后缀只标在顶端一次（轴数字本身不重复写），
- * 于是顶端是 "240 ms" 而下面只有 "240" —— 写死 28 会把它顶出卡片的左边界。
+ * 于是顶端是 "240 ms" 而下面只有 "240" —— 写死 28 会把它顶出整块的左边界。
  * 11px 等宽字每字约 6.6px（0.6em），再加 10px 的呼吸。
  */
 const padL = computed<number>(() => {
@@ -229,7 +229,7 @@ function mmdd(s: string): string {
   return s.length >= 10 ? `${s.slice(5, 7)}-${s.slice(8, 10)}` : s;
 }
 
-/** 窄档只标 4 个日期（一排三张卡时每张约 310px，再多就糊成一片）；宽档最多 6 个。 */
+/** 窄档只标 4 个日期（一排三块时每张约 310px，再多就糊成一片）；宽档最多 6 个。 */
 const xTicks = computed<Array<{ i: number; x: number; label: string; anchor: string }>>(() => {
   const n = points.value.length;
   if (!n) return [];
@@ -251,9 +251,12 @@ const ariaLabel = computed<string>(() => `近 ${win.value} 天检索耗时趋势
 function measure(): void {
   const el = box.value;
   if (!el) return;
-  // 量 .card-body 的内容宽（扣掉 .card-body.tight 的 8px 左右内边距），而不是量 .chart：
+  // 量 .card-body 的内容宽（扣掉它自己的左右内距），而不是量 .chart：
   // 空态 / 失败态根本没有 .chart，量不到就会退回"宽档"，四个状态的高度就对不上。
-  const w = Math.max(220, Math.round(el.clientWidth) - 16 || 640);
+  // 内距改成 12 之后不再写死 16，按实算值扣，改版式时这里不用跟着改数。
+  const gut = (parseFloat(getComputedStyle(el).paddingLeft) || 0)
+    + (parseFloat(getComputedStyle(el).paddingRight) || 0);
+  const w = Math.max(220, Math.round(el.clientWidth - gut) || 640);
   // 等值就退出：同一个宽度反复写回 ref 仍会通知观察者，svg 的 width 回写再排一次版，
   // 浏览器于是报 "ResizeObserver loop completed with undelivered notifications"。
   if (w === boxW.value) return;
@@ -284,12 +287,12 @@ onBeforeUnmount(() => {
 });
 
 onMounted(() => { void load(); bind(); });
-/* flush: 'post' = DOM 打完补丁再量（卡头折行会改变宽度，量晚不量早）。 */
+/* flush: 'post' = DOM 打完补丁再量（标题行折行会改变宽度，量晚不量早）。 */
 watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
 </script>
 
 <template>
-  <section class="card latency">
+  <section class="latency">
     <div class="card-head">
       <AppIcon name="gauge" :size="15" /><span class="ttl">检索耗时趋势</span>
       <span class="spacer"></span>
@@ -310,7 +313,7 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
         <button class="btn sm" type="button" @click="load()">重试</button>
       </div>
 
-      <!-- 空态只留两句：不带 42px 的图标块 —— 一排三张卡时它会把这态顶得比旁边画着曲线的卡还高，
+      <!-- 空态只留两句：不带 42px 的图标块 —— 一排三块时它会把这态顶得比旁边画着曲线的块还高，
            而"没有数据"用一句人话说清楚就够了，不需要图。 -->
       <div class="empty-state lat-empty" v-else-if="empty">
         <span class="es-title">还没有检索记录</span>
@@ -360,17 +363,18 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
 </template>
 
 <style scoped>
-/* 卡头：标题 + 摘要 + 一枚 seg，与趋势卡同款同档（13.5px 标题、18px 选项、24px 托盘）。
-   窄卡里允许折行 —— 不折就会把整行推出卡片。 */
-.latency { min-width: 0; }
+/* 标题行（原卡头）：标题 + 摘要 + 一枚 seg，与趋势块同款同档（13.5px 标题、18px 选项、24px 托盘）。
+   窄块里允许折行 —— 不折就会把整行推出整块。 */
+.latency { min-width: 0; display: flex; flex-direction: column; }
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
-.latency .card-head { flex-wrap: wrap; row-gap: 6px; }
+/* 标题行在淡底之外：透明、不描边、不留发丝线。 */
+.latency .card-head { flex-wrap: wrap; row-gap: 6px; border-bottom: 0; }
 .days { flex: none; height: 24px; }
 .days button { height: 18px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
 .days button:focus-visible { outline: none; box-shadow: var(--ring); }
-/* 卡头右侧那枚"摘要 / 暂无数据"固定 22px、单行不折：两态的盒子一样高，
-   卡头折行方式才一样，切到"有数据"时卡片不会因为这一枚矮了 1px 而抖一下。
-   摘要本身 nowrap + 省略号（全量在 title 里），长窗口也不把卡头挤成三行。 */
+/* 标题行右侧那枚"摘要 / 暂无数据"固定 22px、单行不折：两态的盒子一样高，
+   标题行的折行方式才一样，切到"有数据"时整块不会因为这一枚矮了 1px 而抖一下。
+   摘要本身 nowrap + 省略号（全量在 title 里），长窗口也不把标题行挤成三行。 */
 .latency .card-head .sum,
 .latency .card-head .badge { height: 22px; display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
 .sum {
@@ -380,8 +384,15 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
 }
 
 /* 四态共用同一块高度：min-height 由 H 算出来写在 style 上，state 用 flex: 1 撑满，
-   于是"加载中 → 空 → 有数据"切换时卡片既不长高也不塌下去。 */
-.card-body.tight { display: flex; flex-direction: column; padding: 6px; }
+   于是"加载中 → 空 → 有数据"切换时整块既不长高也不塌下去。 */
+/* 图区才是那条淡色圆角卡（--bg-sunken + --r-sm，内距 12）：四态都在它里面，等高不跳。 */
+.card-body.tight {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  padding: 12px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+}
 /* 有数据那态也撑满 min-height：图固定高、口径行贴底，于是它和另外三态占同一块地方 */
 .plot { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .state {

@@ -46,14 +46,13 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 </script>
 
 <template>
-  <component :is="props.bare ? 'div' : 'section'" class="palette" :class="props.bare ? 'palette-bare' : 'card'">
-    <!-- 不带外壳时只留一行小字当列名：并进「主题预设」那张卡之后，右栏没有名字会读不出是什么 -->
+  <component :is="props.bare ? 'div' : 'section'" class="palette" :class="{ 'palette-bare': props.bare }">
+    <!-- 不带外壳时只留一行小字当列名：并进「预览效果」之后，右栏没有名字会读不出是什么 -->
     <div v-if="props.bare" class="bare-label">当前配色</div>
-    <div v-else class="card-head">
-      <div class="hd">
-        <h3>当前配色</h3>
-        <p>四枚语义色令牌的实时取值</p>
-      </div>
+    <!-- 标题在区块外、不铺底：淡色圆角底只垫下面的色块与缩略图 -->
+    <div v-else class="palette-head">
+      <h3>当前配色</h3>
+      <p>四枚语义色令牌的实时取值</p>
     </div>
 
     <div class="palette-body">
@@ -90,19 +89,24 @@ onUnmounted(() => window.removeEventListener(THEME_CHANGE_EVENT, refresh));
 </template>
 
 <style scoped>
-.card-head { padding: 11px 14px 9px; }
-.hd { display: grid; gap: 2px; min-width: 0; }
-.hd h3 {
+/* 标题条：透明底，只负责"标题 + 一句说明"的竖向节奏 */
+.palette-head { display: grid; gap: 2px; min-width: 0; margin-bottom: 8px; }
+.palette-head h3 {
   margin: 0; font-size: calc(14px * var(--ts, 1)); font-weight: 650;
   letter-spacing: -.01em; line-height: 1.3;
 }
-.hd p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
+.palette-head p { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.4; color: var(--text-faint); }
 
 /* 卡片拉满整行高度（与左侧预设列表等高），缩略图吃掉剩下的空间 */
 .palette { display: flex; flex-direction: column; min-width: 0; }
-.palette-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
-/* bare：并进「预览效果」卡之后，上面一条细线与样例分开（不画第二个卡壳） */
+/* 内容底：淡色圆角矩形（与设置页其它块同一套），只包色值与缩略图，不包标题 */
+.palette-body {
+  flex: 1; display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken);
+}
+/* bare：并进「预览效果」之后，上面一条细线与样例分开（不画第二个淡色块） */
 .palette-bare { padding: 0; }
+.palette-bare .palette-body { background: transparent; border-radius: 0; }
 /* 两栏：左边四枚色值、右边一枚 300 宽的缩略图。
    色值列**封顶 620**：卡宽 922（单列）时四枚会并成一行（各 ~150），不再把十六进制推到
    七百像素开外、跟标签拉成两根头（用户口径 2026-12）。 */

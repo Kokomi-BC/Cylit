@@ -2,7 +2,7 @@
 /**
  * 设置页「模型」面板。
  *
- * 版式（用户口径）：**标题 + 说明** → **用量统计** → **任务分类与模型配置** → **模型提供方管理**。
+ * 版式（用户口径）：**标题 + 说明** → **限额** → **用量统计** → **任务分类与模型配置** → **模型提供方管理**。
  *
  * 三处结构性约定（都是改版时踩过的坑，留着当护栏）：
  * ① 页面上**不出现密钥内容**：密钥天然属于某一家提供方，唯一入口是提供方详情抽屉。
@@ -981,14 +981,15 @@ onBeforeUnmount(() => {
 
     <div class="load-error" v-if="loadError">{{ loadError }}</div>
 
-    <!-- ② 用量统计（口径不变，只压缩留白与层级） -->
-    <UsageChart ref="usageRef" />
-
-    <!-- ②' 限额：裸块（区块标题 + 留白），与「用量」同一观感，不套 .card -->
+    <!-- ② 限额：裸块（区块标题 + 留白），与「用量」同一观感，不套 .card。
+         「新增限额」那一行也在这块里，所以整块一起上移：先读"会不会被拦住"，再看花掉多少 -->
     <LimitCard
       :summary="limitSummary" :loading="limitLoading"
       @refresh="loadLimits" @edit-price="openEditPrice"
     />
+
+    <!-- ②' 用量统计（口径不变，只压缩留白与层级） -->
+    <UsageChart ref="usageRef" />
 
     <!-- ③ 任务分类与模型配置：每类一张卡，卡上只有当前模型那一行 -->
     <section class="block types-block">
@@ -1297,19 +1298,22 @@ onBeforeUnmount(() => {
   display: flex; flex-direction: column; gap: 6px; min-width: 0;
   /* 辅助行按卡宽决策（见 .tc-meta 的 @container） */
   container-type: inline-size;
-  padding: 14px 16px;
-  /* 与上下两块（用量面板 / 提供方列表，都是 .card 的 --bg-elev）同一种底色：
-     原来用 --bg-layer，五张卡整体会比上下明显偏青一档（用户口径 2026-12-02）。 */
-  background: var(--bg-elev); border: 1px solid var(--border);
-  border-radius: var(--r-md); box-shadow: var(--shadow-1);
+  padding: 12px 14px;
+  /* 淡色圆角底是全站统一口径（--bg-sunken + --r-sm，标题留在卡外透明）：
+     原来这里是 --bg-elev 白底 + 1px 四边描边 + --r-md + --shadow-1，五个白盒子压在
+     「限额 / 用量」两块裸块上，同一页不是一套语言 —— 所以去壳，只留淡底 */
+  background: var(--bg-sunken);
+  border: 0; box-shadow: none;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  /* 没有描边可换了，悬停只让底色略深一点（深色主题下同样是"变一点"，不闪） */
+  transition: background-color var(--dur) var(--ease);
 }
-.type-col:hover { border-color: var(--border-strong); }
-.type-col:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-/* 「去配置」跳过来的那一类，和浮层打开时同一套描边 */
+.type-col:hover { background-color: color-mix(in srgb, var(--bg-sunken) 93%, var(--text) 7%); }
+.type-col:focus-visible { outline: none; box-shadow: var(--ring); }
+/* 「去配置」跳过来的那一类、以及浮层打开时：描边没了，同一种提示改成底色偏主题色 */
 .type-col.focus,
-.type-col[aria-expanded='true'] { border-color: var(--accent); }
+.type-col[aria-expanded='true'] { background-color: color-mix(in srgb, var(--accent) 10%, var(--bg-sunken)); }
 
 .tc-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .tc-ico {

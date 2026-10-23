@@ -3,7 +3,7 @@
  * 「Chunk 类型分布」：知识库里的 chunk 按类型切成一圈环。
  *
  * 数据**由面板传进来**（GET /knowledge/overview 的 chunks_by_type 与 chunks），这里不发请求 ——
- * 同一份数字三处各取一次，早晚会出现"三张卡说三个数"。
+ * 同一份数字三处各取一次，早晚会出现"三块说三个数"。
  *
  * 为什么是环而不是堆叠条：各类之和就是总数，环形天生表达"部分占整体"，
  * 而且中心那块正好放总数，不用再单独做一行合计。
@@ -19,7 +19,7 @@
  * 但图例里照样列着、写 0 ——"没有公式 chunk"本身是诊断信息；
  * 全 0 时画一圈 --divider 的空环、中心写 0，不留空白。
  *
- * 高度按一排三张卡来定：环 84 + 图例五行（约 100），卡整体仍压在趋势卡（≈232）以内。
+ * 高度按一排三块来定：环 84 + 图例五行（约 100），整块仍压在趋势块（≈232）以内。
  */
 import { computed } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -105,7 +105,7 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 </script>
 
 <template>
-  <section class="card mix">
+  <section class="mix">
     <div class="card-head">
       <AppIcon name="layers" :size="15" /><span class="ttl">Chunk 类型分布</span>
     </div>
@@ -146,10 +146,19 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 
 <style scoped>
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
-.mix { min-width: 0; }
-.mix .card-head { flex-wrap: wrap; row-gap: 4px; }
+.mix { min-width: 0; display: flex; flex-direction: column; }
+/* 标题行在淡底之外（透明、无发丝线）；分隔交给下面那条淡色圆角底。 */
+.mix .card-head { flex-wrap: wrap; row-gap: 4px; border-bottom: 0; }
 
-/* 三态与图表共用一块高度：切换时卡片不跳。这个数取"有数据那态"的高度 ——
+/* 图区（环 + 图例）整块装进淡色圆角卡：淡底只垫内容，不包标题。 */
+.mix .card-body.tight {
+  flex: 1 1 auto;
+  padding: 12px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+}
+
+/* 三态与图表共用一块高度：切换时整块不跳。这个数取"有数据那态"的高度 ——
    环 84 与图例五行（5×16.2 + 4×3 ≈ 93）里图例更高，所以取 93。 */
 .state {
   display: flex; align-items: center; justify-content: center;

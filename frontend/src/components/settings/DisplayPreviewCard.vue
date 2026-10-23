@@ -72,9 +72,10 @@ import ThemePaletteCard from './ThemePaletteCard.vue';
 /* 样例在上、「当前配色」在下：两块之间那条细线由 ThemePaletteCard 自己画 */
 .preview-body { display: flex; flex-direction: column; gap: 12px; }
 
+/* 内容底：淡色圆角矩形，**不描边、不投影**（用户口径：不要白底 + 四边 1px 描边的卡壳） */
 .sample {
   display: grid; gap: 7px; padding: 11px 14px;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
+  border-radius: var(--r-sm);
   background: var(--bg-sunken);
   pointer-events: none; user-select: none;
 }

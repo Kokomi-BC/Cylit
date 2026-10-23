@@ -289,11 +289,11 @@ async function reconcileNow(fix: boolean): Promise<void> {
     <p class="tiny faint intro">只读信息：环境、存储与各服务的当前状态</p>
 
     <!-- ① 运行环境：两列键值网格（label 12 / 值 13），窄屏一列 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="server" :size="15" /><span class="ttl">运行环境</span>
+    <section class="si-block">
+      <div class="si-head">
+        <AppIcon name="server" :size="15" /><h3 class="si-title">运行环境</h3>
       </div>
-      <div class="card-body">
+      <div class="si-body">
         <p class="tiny faint state-line" v-if="!system">后端未返回运行环境信息</p>
         <div class="env-grid" v-else>
           <div class="env-item">
@@ -325,11 +325,11 @@ async function reconcileNow(fix: boolean): Promise<void> {
     </section>
 
     <!-- ② 存储空间：一行用量 + 占用条 + 三行小字 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="layers" :size="15" /><span class="ttl">存储空间</span>
+    <section class="si-block">
+      <div class="si-head">
+        <AppIcon name="layers" :size="15" /><h3 class="si-title">存储空间</h3>
       </div>
-      <div class="card-body">
+      <div class="si-body">
         <p class="tiny faint state-line" v-if="!disk">后端未返回磁盘信息</p>
         <template v-else>
           <p class="small usage-line">
@@ -356,16 +356,16 @@ async function reconcileNow(fix: boolean): Promise<void> {
     </section>
 
     <!-- ③ 服务健康：数据库 / 向量库 / 任务池 + 数据目录，各带一枚状态徽章 -->
-    <section class="card">
-      <div class="card-head">
-        <AppIcon name="gauge" :size="15" /><span class="ttl">服务健康</span>
+    <section class="si-block">
+      <div class="si-head">
+        <AppIcon name="gauge" :size="15" /><h3 class="si-title">服务健康</h3>
         <span class="spacer"></span>
         <button class="btn sm ghost" type="button" :disabled="healthLoading" title="重新检测各服务"
                 @click="refreshAll">
           <AppIcon name="refresh" :size="14" />{{ healthLoading ? '检测中…' : '重新检测' }}
         </button>
       </div>
-      <div class="card-body">
+      <div class="si-body">
         <p class="tiny faint state-line" v-if="healthError">健康检查失败：{{ healthError }}</p>
         <p class="tiny faint state-line" v-else-if="!health">检测中…</p>
         <template v-else>
@@ -420,14 +420,21 @@ async function reconcileNow(fix: boolean): Promise<void> {
   gap: 10px;
   min-width: 0;
 }
-/* base.css 的 `.card + .card` 会在这里多顶 12px（列间距已由 gap 给） */
-.sysinfo > .card + .card { margin-top: 0; }
+/* 块：标题条（透明底）+ 淡色圆角内容底。块与块之间的缝归 .sysinfo 的 gap。 */
+.si-block { min-width: 0; }
+/* 标题只是标题：**不铺底**，留在淡色块外面（图标跟标题同一行） */
+.si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-faint); }
+.si-title {
+  margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600;
+  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
+}
+/* 内容底：淡色圆角矩形（与「Cyli 偏好」的 .group-body 同一套），只包信息行，不包标题 */
+.si-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 /* 卡头 / 卡体在设置页统一收一档（与「索引管理」那块同一个数） */
 .sysinfo :deep(.card-head) { padding: 9px 14px; }
 .sysinfo :deep(.card-body) { padding: 12px 14px; }
 
 .intro { margin: 0; }
-.ttl { font-size: calc(13.5px * var(--ts, 1)); }
 .state-line { margin: 0; padding: 2px 0; line-height: 1.6; }
 
 /* ① 运行环境：两列键值网格；<560 一列（值本来就单行省略，不会把卡撑宽） */
@@ -447,11 +454,12 @@ async function reconcileNow(fix: boolean): Promise<void> {
 
 /* ② 存储空间：用量行 → 占用条 → 小字行 */
 .usage-line { margin: 0; font-variant-numeric: tabular-nums; }
+/* 轨道抬一档到底色之上：内容底本身就是 --bg-sunken，同色轨道会整条消失 */
 .bar {
   height: 6px;
   margin: 8px 0;
   border-radius: var(--r-pill);
-  background: var(--bg-sunken);
+  background: var(--bg-elev);
   overflow: hidden;
 }
 .bar-fill {

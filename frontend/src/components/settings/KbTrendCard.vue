@@ -15,7 +15,7 @@
  * 手写 path，水平网格线用 --divider，坐标轴文字 11px。
  * 天数切换要重新请求（后端按窗口聚合）；累计/每日只是同一份数据换一对字段，不发请求。
  *
- * 图例放在图表区顶行右侧、而不是卡头里：卡头已经有两枚 seg，
+ * 图例放在图表区顶行右侧、而不是标题行里：标题行已经有两枚 seg，
  * 窄屏时再塞一组图例会折成两行；而"图例跟曲线同处一个 150~170px 的图表区"更好读。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -90,9 +90,9 @@ defineExpose({ reload: load });
 /* ---------------------------- 折线几何 ---------------------------- */
 
 /**
- * 一排三张卡之后，图表区实测宽可能只剩 300 上下（956 的内容区三等分 ≈ 310，再扣卡内留白），
+ * 一排三块之后，图表区实测宽可能只剩 300 上下（956 的内容区三等分 ≈ 310，再扣卡内留白），
  * 所以尺寸分两档，跟着**实测容器宽**走（量的是 .chart 的 clientWidth，不是视口）：
- *   宽档：H 118 / 轴留白 38 —— 图例行 + 轴 + 曲线压进 130~150，卡片不被一张图撑高；
+ *   宽档：H 118 / 轴留白 38 —— 图例行 + 轴 + 曲线压进 130~150，整块不被一张图撑高；
  *   窄档（< 380）：H 98 / 轴留白 28 / 日期刻度 4 个，图区收到 108~125。
  * 这是"图可以画小"：刻度字号仍是 11px（再小就成了糊在一起的灰点），只减少刻度个数。
  */
@@ -101,7 +101,7 @@ const padB = 20;
 const COMPACT_W = 380;
 
 const box = ref<HTMLDivElement | null>(null);
-/** 卡体：**四态都在**，量宽度的兜底锚点（加载/失败/空三态没有 .chart 可量）。 */
+/** 卡体（原 .card-body）：**四态都在**，量宽度的兜底锚点（加载/失败/空三态没有 .chart 可量）。 */
 const shell = ref<HTMLDivElement | null>(null);
 const boxW = ref(640);
 let ro: ResizeObserver | null = null;
@@ -116,7 +116,7 @@ const innerH = computed(() => H.value - padT - padB);
 /**
  * 量宽度：有数据时量 .chart（它自己就是坐标系，没有内边距），其余三态退到 .card-body 并
  * 扣掉左右内边距。**不能只量 .chart**：那三态里它不存在，boxW 会停在上一次的值 / 默认 640，
- * 于是 H 落到宽档（118）而卡体那块 min-height 又按窄档算 —— 切态时卡片会跳 20px。
+ * 于是 H 落到宽档（118）而卡体那块 min-height 又按窄档算 —— 切态时整块会跳 20px。
  */
 function measure(): void {
   const el = box.value || shell.value;
@@ -254,7 +254,7 @@ function mmdd(d: string): string {
 const xTicks = computed(() => {
   const n = points.value.length;
   if (!n) return [] as Array<{ i: number; x: number; label: string; anchor: string }>;
-  // 窄档只标 4 个日期（三张卡并排时 6 个会挤成一串）；宽档维持 5~7 个
+  // 窄档只标 4 个日期（三块并排时 6 个会挤成一串）；宽档维持 5~7 个
   const want = compact.value ? Math.min(n, 4) : (n <= 7 ? n : 6);
   const idx: number[] = [];
   for (let k = 0; k < want; k += 1) idx.push(n === 1 ? 0 : Math.round(((n - 1) * k) / (want - 1)));
@@ -299,7 +299,7 @@ function onMove(ev: MouseEvent): void {
 
 function onLeave(): void { hoverIdx.value = -1; }
 
-/** 点太靠上时读数改挂下方，否则会顶出卡片。 */
+/** 点太靠上时读数改挂下方，否则会顶出整块。 */
 const tipBelow = computed(() => (hoverPt.value ? hoverPt.value.cy < padT + 34 : false));
 const tipX = computed(() => {
   const p = hoverPt.value;
@@ -310,7 +310,7 @@ const tipX = computed(() => {
 </script>
 
 <template>
-  <section class="card trend" :style="{ '--ch': H + 'px' }">
+  <section class="trend" :style="{ '--ch': H + 'px' }">
     <div class="card-head">
       <AppIcon name="insight" :size="15" /><span class="ttl">索引数据增长趋势</span>
       <span class="spacer"></span>
@@ -395,15 +395,17 @@ const tipX = computed(() => {
 </template>
 
 <style scoped>
-/* 卡头：标题 + 两枚 seg。窄屏允许折行——不折就会把整行推出卡片（横向溢出）。
-   两枚 seg 比全站默认小一档，卡头才不会因为 32px 的胶囊长高。 */
-.trend .card-head { flex-wrap: wrap; row-gap: 6px; }
+/* 标题行（原卡头）：标题 + 两枚 seg。窄屏允许折行 —— 不折就会把整行推出整块（横向溢出）。
+   两枚 seg 比全站默认小一档，行高才不会被 32px 的胶囊顶高。 */
+.trend { min-width: 0; display: flex; flex-direction: column; }
+/* 标题行在淡底**之外**：透明、不描边、不留发丝线 —— 分隔交给下面那条淡色圆角底。 */
+.trend .card-head { flex-wrap: wrap; row-gap: 6px; border-bottom: 0; }
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
 .days, .scope { flex: none; height: 24px; }
 .days button, .scope button { height: 18px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
 .days button:focus-visible, .scope button:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 三态与图表共用一块固定高度：切换状态时卡片不跳。
+/* 三态与图表共用一块固定高度：切换状态时整块不跳。
    min-height 由 svg 的实际高度推出来（--ch 是 H，另加图例行 18 + 口径行两行 31），
    于是加载 / 失败 / 空 / 有数据四态的卡高完全一致，收图高也不会留下一截空白。 */
 .state {
@@ -417,8 +419,14 @@ const tipX = computed(() => {
 }
 .plot-empty { min-height: calc(var(--ch, 98px) + 49px); justify-content: center; padding: 12px 16px; }
 
-/* 卡体留白 8 → 6：一排三张时这 4px 换来的是图区更宽，而不是更松的边 */
-.trend .card-body.tight { padding: 6px; }
+/* 图区才是那条淡色圆角卡（--bg-sunken + --r-sm，内距 12）：设置页的淡底只垫内容，
+   标题压在它上面。flex: 1 让三块并排时淡底等高，不会一块高一款矮。 */
+.trend .card-body.tight {
+  flex: 1 1 auto;
+  padding: 12px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+}
 
 /* 图表区总高 ≈ 图例 14 + svg 118 + 口径一行，稳在 130~150 一档 */
 .plot-head {

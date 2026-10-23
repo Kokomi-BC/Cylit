@@ -159,8 +159,9 @@ function clean(): void { emit('reconcile', true); }
 </script>
 
 <template>
-  <section class="card storage">
-    <div class="card-head">
+  <!-- 标题在块外（透明），淡色圆角底只垫内容 —— 与设置页其余区块同一套语言 -->
+  <section class="storage">
+    <div class="storage-head">
       <AppIcon name="server" :size="15" /><span class="ttl">索引存储状态</span>
       <span class="badge" :class="badge.cls">{{ badge.text }}</span>
       <span class="spacer"></span>
@@ -169,7 +170,7 @@ function clean(): void { emit('reconcile', true); }
       </button>
     </div>
 
-    <div class="card-body">
+    <div class="storage-body">
       <p class="state-line tiny faint" v-if="loading && !st">正在读取索引状态…</p>
       <p class="state-line tiny faint" v-else-if="!st">暂无索引状态，请先在上方刷新或校验一次。</p>
 
@@ -230,10 +231,10 @@ function clean(): void { emit('reconcile', true); }
 
 <style scoped>
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
-/* 卡体留白 16 → 12，与面板里其它卡对齐 */
-.storage .card-body { padding: 12px; }
-.storage .card-head { flex-wrap: wrap; row-gap: 6px; }
-.storage .card-head .btn { flex: none; }
+/* 标题行：透明、在块外；内容底：淡色圆角（--bg-sunken + --r-sm），与设置页其它区块一致 */
+.storage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; margin-bottom: 8px; }
+.storage-head .btn { flex: none; }
+.storage-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
 .state-line { margin: 0; padding: 8px 0; line-height: 1.5; }
 

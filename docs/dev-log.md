@@ -11492,3 +11492,28 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 
 **两处口径记录**：① 页面主标题仍是 22px —— 由 `SettingsView .pane-head h2` 提供、7 个设置区共用，**模型页同一行也是 22px**，保持不动才叫一致；要放大得改全局。
 ② 控件高 32px（第一轮草拟的 38–42 作废），理由是与模型页主表单对齐。
+
+### 119. 第一百一十九轮：设置页「淡色圆角底只垫内容」铺开全站；关联模型同名合并；模型页限额上移
+
+用户这轮连着给了四条口径，合起来是**一次视觉语言统一**：① 淡色圆角卡片要垫在**内容**下面、文字在卡片之上（不是垫标题）；
+② 设置页里除模型页之外的旧卡片样式批量替换；③ 关联模型里同一厂商同名模型要合并；④ 模型页把限额挪到图表上面、任务分类卡也去壳。
+
+- **口径落点**：`标题行透明 + 内容进 --bg-sunken / --r-sm 的淡色圆角底`，行间只用 1px 发丝线；不再有白底 + 四边 1px 描边 + 阴影的卡壳。
+  偏好页 118 轮已经把卡垫在标题上，本轮按新口径反过来（`.group-head` / `.skills-head` 去底，`.group-body` / `.skill-body` 承接淡底）。
+- **批量替换（8 个文件）**：AppearancePanel / DisplayPreviewCard / ThemePaletteCard / TaskQueuePanel / SearchHistoryPanel / SystemInfoPanel / trash/TrashPanel / SettingsView（mineru 两区）；
+  另外 `KbStorageCard`（系统信息第④块「索引存储状态」）是我接手改的 —— 它不在任何人的清单里，`#about` 因此还剩一张白卡，索性一并按同一口径拆掉。
+  各页 `#<id> .card` 数量：appearance 0→0、tasks 3→0、history 3→0、mineru 2→0、about 4→**0**、trash 2→0；`#models` 保持 1（提供方那张，未动）。
+- **索引管理**：顶部四卡合成一条淡底（格间 1px 竖线，860 两列 / 560 一列），三张图表改成「标题在卡外 + 图区进淡底」；`#kb .card` 10 → 3（剩索引表格 / chunk 卡 / 检索配置，按范围没动）。
+  并排时给标题行锁了最小高度（69/39/70 → 70/70/70），`KbLatencyCard` 的写死 `-16` 改成按实算 padding 扣宽。
+- **关联模型同名合并**（ProviderDrawer）：按 name（trim 后相同）分组，空名不合并；合并行 = 组内最差状态点 + `N 个配置` 徽章 + 类型 chip（沿用 ModelPanel 的 TYPE_LABEL：文本生成 / 论文问答 / 向量化 / 重排 / 视觉读页）+ 真实 model_name 只写一次 + 密钥来源（不一致写「多个」）；
+  右侧一枚「去配置」，多配置就地展开逐条配置。标题栏改成「M 个模型（N 个配置）」。
+  ⚠️ 我 brief 里写的「4 条配置、两条同名」是旧数据；库里现在是 3 条且名称带 ` · <type>` 后缀，执行者临时建了一条同名配置度量（4 行 → 3 行），量完删除，库回到 5 条配置。
+- **模型页**：`LimitCard`（含「新增限额」）移到 `UsageChart` 之前（`top` 168 < 276.84）；`.type-col` 从白底 + 1px 描边 + `--r-md` + `--shadow-1` 改成 `--bg-sunken` + `--r-sm`，
+  悬停/focus 不再换描边（改成底色略深 / 偏主题色），`:focus-visible` 仍留 `--ring`。
+  ⚠️ 我原来写的验收指标「`#models .card` 数量要减少」不成立：分类卡从来不是 `.card`，是 `.type-col` 里硬写的同一套白底描边 —— 按卡壳计是 **6 → 1**（只剩 `.prov-card`）。
+
+**验证**：`vue-tsc` 0 error、`npm run build` 通过；探针 **123 项 / 112 通过 / 11 失败**（= 基线，11 条全在阅读器与对话页）；
+真浏览器逐页截图看过（agent / models / kb / appearance / about …），标题在页面上、内容在淡底里；交互抽查（刷新、清空确认、保存 disabled、换主题、回收站空态、限额弹窗、分类卡浮层、「+」新建）全部照常。
+
+**过程事故与教训（记下来）**：四路并发执行者同时在跑 `npm run build`，而 `prebuild` 会先清空 `frontend/dist` —— 我的探针两次撞在半个 dist 上，跑出「116 项 / 64 通过 / 52 失败」「120 / 107 / 13」这种假结果。
+另：Windows 上探针的 esbuild 子进程写 `%TEMP%` 会被拒，必须把 `TMPDIR` / `TMP` / `TEMP` **三个都**指向 workspace 内已存在的目录，只设 `TMPDIR` 不生效。

@@ -131,9 +131,8 @@ onMounted(load);
     </p>
 
     <div class="grid tr-grid">
-      <!-- 操作条：计数 + 刷新 + 清空，整宽 -->
-      <div class="card tr-card-wide">
-        <div class="card-body tr-bar">
+      <!-- 操作条：计数 + 刷新 + 清空，整宽（一块淡色圆角底，没有标题行） -->
+      <section class="tr-block tr-block-wide tr-body tr-bar">
           <span class="tr-count tnum">{{ count }} 篇</span>
           <span class="spacer" />
           <button type="button" class="tr-tool square" title="刷新列表" :disabled="loading || clearing" @click="load">
@@ -147,12 +146,10 @@ onMounted(load);
           >
             <AppIcon name="trash" :size="14" />{{ clearing ? '清空中…' : '清空回收站' }}
           </button>
-        </div>
-      </div>
+      </section>
 
-      <!-- 条目列表：长内容，整宽，卡片把内容包住 -->
-      <div class="card tr-card-wide">
-        <div class="card-body">
+      <!-- 条目列表：长内容，整宽，淡色圆角底把内容包住 -->
+      <section class="tr-block tr-block-wide tr-body">
           <p v-if="loadError" class="tr-error">加载失败：{{ loadError }}（可以点上面刷新重试）</p>
 
           <p v-if="loading" class="tr-loading">正在加载…</p>
@@ -194,8 +191,7 @@ onMounted(load);
             </div>
           </li>
         </ul>
-        </div>
-      </div>
+      </section>
     </div>
   </div>
 </template>
@@ -210,10 +206,12 @@ onMounted(load);
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
 }
 
-/* 卡片网格：这一页都是长内容（操作条 / 条目列表），两张卡都整宽。
-   间距只由 `.grid` 的 gap 负责，卡片不再加 margin。 */
+/* 块网格：这一页都是长内容（操作条 / 条目列表），两块都整宽；间距只由 `.grid` 的 gap 负责。 */
 .tr-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.tr-card-wide { grid-column: 1 / -1; }
+.tr-block { min-width: 0; }
+.tr-block-wide { grid-column: 1 / -1; }
+/* 内容底：淡色圆角矩形（与设置页其它块同一套），只包工具行与条目，不包标题 */
+.tr-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
 /* 操作条：计数在左，刷新 / 清空在右（卡内一行，不再画分隔线） */
 .tr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -241,17 +239,19 @@ onMounted(load);
 .tr-error { margin: 0 0 12px; font-size: calc(12.5px * var(--ts, 1)); color: var(--danger); }
 .tr-loading { margin: 0; padding: 26px 4px; font-size: calc(13px * var(--ts, 1)); color: var(--text-dim); }
 
-.tr-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.tr-list { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; min-width: 0; }
 
 /* 一行一条：左标题 + 元信息（可伸缩、可截断），右操作（可换行、可收缩）。
-   两侧都 min-width: 0 且 flex-shrink 生效，长标题 / 长提示只会 ellipsis 或换行，永远不产生横向滚动。 */
+   两侧都 min-width: 0 且 flex-shrink 生效，长标题 / 长提示只会 ellipsis 或换行，永远不产生横向滚动。
+   行**不描边、不填底**：行与行之间只有一条 1px 发丝线（用户口径）。 */
 .tr-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0;
-  padding: 10px 12px; border-radius: var(--radius-ctl);
-  border: 1px solid var(--border); background: transparent;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  padding: 10px 2px;
+  border: 0; background: transparent;
+  transition: background var(--dur) var(--ease);
 }
-.tr-row:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.tr-row + .tr-row { border-top: 1px solid var(--divider); }
+.tr-row:hover { background: var(--bg-hover); }
 .tr-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .tr-title {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
