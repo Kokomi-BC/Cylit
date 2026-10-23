@@ -12,14 +12,24 @@ router = APIRouter(tags=["models"])
 
 
 def _with_key_source(items: list[dict]) -> list[dict]:
-    """给每行补「密钥来源」（``ok`` / ``missing`` / ``invalid``，前端据此标红）。
+    """给每行补「密钥来源」（``ok`` / ``missing`` / ``invalid``），并据此定 ``has_secret``。
+
+    为什么 ``has_secret`` 要在这里重算：``model_service`` 的老口径是
+    "模型行自己写了 secret_ref 才算有密钥"，它不认识"跟随提供方默认密钥"和
+    "key_mode=none 不需要密钥"这两种新形态 —— 于是能正常调用的模型被前端标成
+    「未配置密钥」（实测 vision 那行：has_secret=False 而 key_source=provider/ok）。
+    现在**唯一真源就是 key_source**：解析到密钥（status=ok）才算有。
+    ``is_mock`` 的模型（mock/hash/heuristic）本来就不需要密钥，保持原值不动。
 
     只有来源与状态，**没有明文、也没有 secret_ref** —— 密钥内容是后端的事。
     """
     from backend.services.model import secret_resolver
 
     for item in items:
-        item["key_source"] = secret_resolver.describe(item)
+        source = secret_resolver.describe(item)
+        item["key_source"] = source
+        if not item.get("is_mock"):
+            item["has_secret"] = source["status"] == "ok"
     return items
 
 

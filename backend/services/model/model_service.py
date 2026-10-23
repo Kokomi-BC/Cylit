@@ -9,6 +9,10 @@ def list_models(model_type: str | None = None) -> list[dict]:
     out = []
     for cfg in model_manager.list_configs(model_type):
         cfg = dict(cfg)
+        # ⚠️ 仅供参考：这里只认"模型行自己写了 secret_ref"（老口径），不认识
+        # "跟随提供方默认密钥 / key_mode=none"。**界面的权威口径是 API 层**
+        # （``api/models.py::_with_key_source`` 按 key_source 覆盖后的 has_secret）——
+        # 别拿这里的值去判"未配置密钥"，否则会误报（实测 vision 那行）。
         cfg["has_secret"] = bool(cfg.get("secret_ref"))
         cfg["is_mock"] = cfg.get("provider") in ("mock", "hash", "heuristic")
         out.append(cfg)

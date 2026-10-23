@@ -702,6 +702,43 @@ def test_models_api_exposes_key_source_and_hides_secret(sandbox, secrets, client
     assert "secret_ref" not in repr(row["key_source"])
 
 
+def test_has_secret_follows_key_source_on_auto_mode(sandbox, secrets, client):
+    """auto 模式跟提供方默认密钥时，has_secret 必须为 True（别再误报"未配置密钥"）。
+
+    线上实测过这个误报：vision 那行 has_secret=False，但 key_source=provider/ok，
+    前端拿 has_secret 判橙标 → 和同一行的「密钥来源：提供方默认」自相矛盾。
+    删掉提供方默认密钥后，两边要一起掉回"没有密钥"。
+    """
+    from backend.repositories.mysql.models import ModelProviderKey
+    from backend.repositories.mysql.session import session_scope
+    from backend.services.model import key_store
+
+    pid, mid = _pid("hs_p"), _pid("hs_m")
+    _provider(pid)
+    key = _key_with_file(pid, "hs", "sk-HASSECRET1")
+    _model(mid, pid)          # secret_ref=None + key_mode=auto（跟随提供方默认密钥）
+
+    def _row() -> dict:
+        items = client.get("/api/v1/models").json()["data"]["items"]
+        return next(i for i in items if i["id"] == mid)
+
+    row = _row()
+    assert row["secret_ref"] is None
+    assert row["key_mode"] == "auto"
+    assert row["key_source"]["mode"] == "provider"
+    assert row["key_source"]["status"] == "ok"
+    assert row["has_secret"] is True           # 权威口径 = key_source
+
+    # 删掉提供方默认密钥 → has_secret 与 key_source 一起变成"没有密钥"
+    with session_scope() as sess:
+        sess.query(ModelProviderKey).filter(
+            ModelProviderKey.id == key["id"]).delete(synchronize_session=False)
+    assert key_store.list_keys(pid) == []
+    row = _row()
+    assert row["key_source"]["status"] == "missing"
+    assert row["has_secret"] is False
+
+
 def test_keys_api_roundtrip(sandbox, secrets, client):
     from backend.services.model import key_store
 
