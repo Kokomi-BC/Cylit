@@ -75,6 +75,47 @@ def test_empty_table_returns_zero_structure(temp_db):
     assert out["window"]["to"] == billing.local_day()
 
 
+def _config(config_id, name, *, price_in=None, price_out=None) -> None:
+    from backend.repositories.mysql.models import ModelConfig
+
+    with db_session.session_scope() as sess:
+        sess.add(ModelConfig(id=config_id, name=name, provider="deepseek",
+                             model_type="generation", model_name="deepseek-flash",
+                             price_in=price_in, price_out=price_out))
+
+
+def test_same_custom_name_merges_inside_hour_buckets(temp_db):
+    """24h 仍是小时桶，且同名合并发生在装配阶段：两条配置的那笔落进**同一个桶**。
+
+    这条是"分桶不许变"的护栏的另一半：合并既要加总，又不能把点挪到别的桶里。
+    """
+    stamp = billing.to_utc(billing.local_now() - timedelta(hours=2))
+    hour_key = billing.hour_key(stamp)
+    _config("gen-a", "同名小时档")
+    _config("gen-b", "同名小时档")
+    with db_session.session_scope() as sess:
+        for cid, tokens in (("gen-a", 10), ("gen-b", 5)):
+            sess.add(ModelUsage(
+                model_config_id=cid, model_name="deepseek-flash", provider="deepseek",
+                source="translate", prompt_tokens=tokens, completion_tokens=0,
+                total_tokens=tokens, currency="CNY", cost=None, billing="none",
+                created_at=stamp, day=date.fromisoformat(billing.local_day(stamp)),
+                hour_key=hour_key))
+
+    out = usage_stats.stats("24h")
+
+    assert len(out["series"]) == 1
+    series = out["series"][0]
+    assert series["key"] == "name:同名小时档"
+    assert series["model_config_ids"] == ["gen-a", "gen-b"]
+    assert series["totals"]["tokens_total"] == 15
+    assert series["totals"]["unpriced"] == 2          # 两条都没配价，各自记一次
+    assert len(series["points"]) == 24
+    index = [p["key"] for p in out["window"]["points"]].index(hour_key)
+    assert series["points"][index]["tokens_total"] == 15
+    assert sum(p["requests"] for p in series["points"]) == 2
+
+
 def test_record_swallows_db_failure(temp_db, monkeypatch):
     """写库炸了也只能记日志：统计是旁路，绝不能让一次 LLM 调用失败。"""
 

@@ -14,6 +14,10 @@ model_name / provider / model_type 反规范化存一份 —— 删掉一个模�
   也不能跟着变 —— 记账那一刻的金额是事实，事后按单价重算是估算；
 · 缺单价 = **未计费**（cost 为 NULL、billing='none'），绝不写 0。
 
+系列身份 = **模型的自定义名称**（model_config.name 去首尾空白）：名字相同就并成一条
+（token / 请求 / 费用相加，币种各算各的）；名字不同哪怕同一个上游 model_name 也是两条。
+model_name 只是展示字段；限制与限额仍按配置 id 走（不在这条链路上）。
+
 查询契约见 GET /models/usage/stats（backend/api/models.py）：window / group /
 vendor / model 四个入参，返回 window + series + filters + totals。
 """
@@ -43,9 +47,17 @@ WINDOWS: dict[str, tuple[str, int]] = {
     "30d": ("day", 30),
 }
 DEFAULT_WINDOW = "7d"
-#: 分组维度：按模型（cfg:<id> / gone:<model_name>）或按厂商（vendor:<id>）
+#: 分组维度：按模型（name:<自定义名称>）或按厂商（vendor:<id>）
 GROUPS = ("model", "vendor")
 ALL = "all"
+
+#: 模型级身份键前缀：**系列按用户起的自定义名称合并**（两条配置同名 = 一条线；
+#: 同一个上游 model_name 但名字不同 = 两条线）。出参里只会出现 name: 键，
+#: cfg: / gone: 仅作为筛选入参保留（老链接、老前端不能炸，见 _selector）。
+NAME_PREFIX = "name:"
+#: 合并系列横跨多个厂商时的落点：宁可说"多个厂商"，也不挑一个冒充
+MULTI_VENDOR_LABEL = "多个厂商"
+UNKNOWN_MODEL_LABEL = "未知模型"
 
 #: 当前链路的来源标签。用 contextvar 而不是参数：record 是在 provider 代理里被调用的，
 #: 那里拿不到业务上下文；而「标一次、整条链路都算对」只需要一个隐式变量。
@@ -289,8 +301,8 @@ def _buckets(granularity: str, count: int) -> list[dict]:
 def _load_cells(sess, granularity: str, buckets: list[dict]) -> dict[tuple, dict[str, dict]]:
     """把窗口内的行聚成 {(config_id, model_name, provider): {bucket_key: cell}}。
 
-    身份（cfg: / gone: / vendor:）**不在这里定** —— 那要先知道配置还在不在，
-    所以这里只按行上的原始字段分组，身份留给 _build_models。
+    身份（name: / vendor:）**不在这里定** —— 那要先知道配置叫什么名字、还在不在，
+    所以这里只按行上的原始字段分组，身份与同名合并都留给 _build_models。
 
     小时窗按 created_at 现算：hour_key 是后加的列，老行是 NULL，
     不能因为"升级前那 24 小时"就静默少一段；天窗按 day 交给 SQL 聚合（30 天量级更大）。
@@ -388,69 +400,192 @@ def _provider_currency(provider_id: Any, providers: dict) -> str:
             or billing.DEFAULT_CURRENCY)
 
 
+def _series_name(cfg, row_model_name: Any) -> str:
+    """系列身份 = 模型的自定义名称（model_config.name 去掉首尾空白后的字面量）。
+
+    空名称回落到行上**反规范化**的 model_name（配置被删也只剩它可读），再空回落到「未知模型」。
+    上游 model_name（如 deepseek-chat）只在这里兜底，绝不是身份：用户把两条配成同一个名字，
+    就是在说"当着一条算"；名字不同哪怕同一个上游模型也必须分开。
+    """
+    name = str(getattr(cfg, "name", None) or "").strip() if cfg is not None else ""
+    if name:
+        return name
+    return str(row_model_name or "").strip() or UNKNOWN_MODEL_LABEL
+
+
+def _new_entry(key: str) -> dict:
+    """一条合并系列的可累积状态（cells 最后由 by_provider 汇总得到）。"""
+    return {"key": key, "label": None, "name": None, "cells": {}, "by_provider": {},
+            "priced_by_provider": {}, "currency_by_provider": {},
+            "config_ids_by_provider": {}, "row_currencies": set(), "model_name": None}
+
+
+def _provider_has_price(entry: dict, pid: str) -> bool:
+    """该厂商的贡献"有钱可算"：现在配了价，或历史行的金额真的带过币种。"""
+    if entry["priced_by_provider"].get(pid):
+        return True
+    return any(cell["cost"] for cell in entry["by_provider"].get(pid, {}).values())
+
+
+def _derive(entry: dict, providers: dict) -> dict:
+    """从 by_provider 推出对外字段（provider / provider_label / priced_now / currency / ...）。
+
+    单独成函数是因为**按厂商筛选**后要按"剩下的那些厂商"重算一遍
+    （合并系列里另一个厂商的贡献被去掉，钱自然要变小）。
+    """
+    pids = list(entry["by_provider"])
+    nonempty = [pid for pid in pids if pid]
+    entry["providers"] = nonempty
+    if len(nonempty) == 1:
+        entry["provider"] = nonempty[0]
+        entry["provider_label"] = _provider_label(nonempty[0], providers)
+    elif nonempty:
+        # 同名合并到多个厂商：不挑一个冒充，两个字段各自说清
+        entry["provider"] = None
+        entry["provider_label"] = MULTI_VENDOR_LABEL
+    else:
+        entry["provider"] = None
+        entry["provider_label"] = _provider_label(None, providers)
+    # 两个字段**刻意并存**：
+    # · priced_now = 现在就能算出金额（只认当前配了输入价与输出价）—— 限额引擎只认它，
+    #   拿宽松的 has_price 去判会放行一个算不出钱的模型；同名合并时用 **AND**：
+    #   参与合并的配置里只要有一条没配价，这条线现在就"算不出钱"（与 vendor 级同口径）；
+    # · has_price = "现在能算价" 或 "历史行真的带过金额"：后者说明它曾经配过单价，
+    #   前端据此区分"从没配过价"（要提示去配）与"改价前的账"（别去动它）。
+    # 已删配置的贡献 priced 恒为 False：没有配置行就没有单价，但它的历史金额仍是真账。
+    entry["priced_now"] = all(bool(entry["priced_by_provider"].get(pid)) for pid in pids)
+    priced_currencies = [str(c) for c in
+                         (entry["currency_by_provider"].get(pid) for pid in pids) if c]
+    if entry["priced_now"] and priced_currencies:
+        entry["currency"] = priced_currencies[0]
+    elif entry["row_currencies"]:
+        entry["currency"] = sorted(entry["row_currencies"])[0]
+    else:
+        entry["currency"] = (priced_currencies[0] if priced_currencies
+                             else billing.DEFAULT_CURRENCY)
+    entry["has_price"] = bool(entry["priced_now"]) or bool(entry["row_currencies"])
+    ids: list[str] = []
+    for pid in pids:
+        for cid in entry["config_ids_by_provider"].get(pid) or []:
+            if cid not in ids:
+                ids.append(cid)
+    entry["model_config_ids"] = ids
+    return entry
+
+
+def _scope_to(entry: dict, keep: list[str]) -> dict:
+    """同一条系列的"只看这些厂商"视图：cells 只由这些厂商的贡献重建。"""
+    clone = _new_entry(entry["key"])
+    clone["label"] = entry.get("label")
+    clone["name"] = entry.get("name")
+    clone["model_name"] = entry.get("model_name")
+    for pid in keep:
+        if pid not in entry["by_provider"]:
+            continue
+        clone["by_provider"][pid] = entry["by_provider"][pid]
+        clone["priced_by_provider"][pid] = bool(entry["priced_by_provider"].get(pid))
+        clone["currency_by_provider"][pid] = entry["currency_by_provider"].get(pid) or ""
+        clone["config_ids_by_provider"][pid] = list(
+            entry["config_ids_by_provider"].get(pid) or [])
+        for bucket_key, cell in entry["by_provider"][pid].items():
+            _merge(clone["cells"].setdefault(bucket_key, _zero_totals()), cell)
+            clone["row_currencies"] |= set(cell["cost"].keys())
+    return clone
+
+
 def _build_models(cells: dict[tuple, dict[str, dict]], configs: dict,
                   providers: dict, prices: dict) -> dict[str, dict]:
-    """把原始分组升成**模型级**统计身份：cfg:<id> / gone:<model_name>。
+    """把原始分组升成**模型级**统计身份，并按**自定义名称**把同名配置合并成一条。
 
-    两条**同名的不同配置**是两个 cfg: 键，绝不合并（合并就等于替用户把两笔账并成一笔）；
-    配置删掉之后历史行落成 gone:<model_name>，仍然单独一条线，不会凭空消失。
+    身份 = name:<model_config.name.strip()>（空名称回落行上的 model_name）。
+    同名就并成一条线：token / 请求 / 未计费相加，金额按币种**分别**相加（币种永不互加）。
+    同一个上游 model_name 但自定义名称不同 → 仍是两条线：model_name 只是展示字段，
+    用户起的名字才是"当着一条算"的那句承诺。
+
+    合并前的原始分组仍是 (config_id, model_name, provider)：provider 决定厂商维度
+    （group=vendor 与 vendor= 筛选要按厂商拆账，所以 by_provider 留着每个厂商的贡献），
+    config_id 决定 cfg: 筛选与 model_config_ids 出参。
     """
     out: dict[str, dict] = {}
     for (config_id, model_name, provider), bucket_cells in cells.items():
         cid = str(config_id) if config_id else ""
         cfg = configs.get(cid) if cid else None
-        key = f"cfg:{cid}" if cfg is not None else f"gone:{model_name or ''}"
-        entry = out.setdefault(key, {"key": key, "cells": {}, "config_id": cid or None,
-                                     "model_name": model_name, "provider": provider,
-                                     "row_currencies": set()})
+        name = _series_name(cfg, model_name)
+        key = f"{NAME_PREFIX}{name}"
+        entry = out.get(key)
+        if entry is None:
+            entry = out[key] = _new_entry(key)
+            entry["name"] = name
+        # 厂商身份：配置还在就以配置为准（用户可能改过 provider），否则用行上反规范化的值
+        pid = str((getattr(cfg, "provider", None) if cfg is not None else None)
+                  or provider or "")
+        target = entry["by_provider"].setdefault(pid, {})
         for bucket_key, cell in bucket_cells.items():
-            _merge(entry["cells"].setdefault(bucket_key, _zero_totals()), cell)
+            _merge(target.setdefault(bucket_key, _zero_totals()), cell)
             entry["row_currencies"] |= set(cell["cost"].keys())
-        if cfg is not None:
-            entry["provider"] = getattr(cfg, "provider", None) or provider
-            entry["model_name"] = getattr(cfg, "model_name", None) or model_name
+        price = (prices.get(cid) or {}) if (cfg is not None and cid) else {}
+        priced = bool(price.get("priced"))
+        entry["priced_by_provider"][pid] = (
+            entry["priced_by_provider"].get(pid, True) and priced)
+        if priced:
+            entry["currency_by_provider"].setdefault(pid, price.get("currency") or "")
+        if cid and cfg is not None:
+            ids = entry["config_ids_by_provider"].setdefault(pid, [])
+            if cid not in ids:
+                ids.append(cid)
+        if not entry["model_name"]:
+            # 展示字段：同名合并后取**第一个非空值**，不拼接、不去重
+            entry["model_name"] = (
+                (getattr(cfg, "model_name", None) if cfg is not None else None)
+                or model_name)
 
     for entry in out.values():
-        cid = str(entry["config_id"]) if entry["config_id"] else ""
-        price = (prices.get(cid) or {}) if cid else {}
-        priced_now = bool(price.get("priced"))
-        # 两个字段**刻意并存**：
-        # · priced_now = 现在就能算出金额（只认当前配了输入价与输出价）—— 限额引擎只认它，
-        #   拿宽松的 has_price 去判会放行一个算不出钱的模型；
-        # · has_price = "现在能算价" 或 "历史行真的带过金额"：后者说明它曾经配过单价，
-        #   前端据此区分"从没配过价"（要提示去配）与"改价前的账"（别去动它）。
-        # gone: 系列（配置已删）永远 priced_now=False：没有配置行就没有单价，
-        # 它的历史金额仍然是真账（has_price 可以为 true）。
-        entry["priced_now"] = priced_now
-        entry["has_price"] = priced_now or bool(entry["row_currencies"])
-        entry["currency"] = price.get("currency") if priced_now else (
-            sorted(entry["row_currencies"])[0] if entry["row_currencies"]
-            else billing.DEFAULT_CURRENCY)
-        cfg = configs.get(cid) if cid else None
-        entry["label"] = getattr(cfg, "name", None) or entry["model_name"] or "未知模型"
-        entry["provider_label"] = _provider_label(entry["provider"], providers)
+        # 对外只认合并后的 cells；by_provider 是为了按厂商拆账才留的中间态
+        for bucket_cells in entry["by_provider"].values():
+            for bucket_key, cell in bucket_cells.items():
+                _merge(entry["cells"].setdefault(bucket_key, _zero_totals()), cell)
+        _derive(entry, providers)
+        entry["label"] = entry["name"] or entry["model_name"] or UNKNOWN_MODEL_LABEL
     return out
 
 
 def _fold_vendors(models: dict[str, dict], providers: dict) -> dict[str, dict]:
-    """模型级 → 厂商级（group=vendor）：同厂商的模型合成一条，金额仍按币种分开。"""
+    """模型级 → 厂商级（group=vendor）：同厂商的贡献合成一条，金额仍按币种分开。
+
+    合并系列可能横跨多个厂商（那条线的 provider 是 None），所以这里按 **by_provider 的贡献**
+    折叠，不能按 entry["provider"] 折 —— 否则多厂商那条会掉进一个空厂商桶里。
+    """
     out: dict[str, dict] = {}
     for entry in models.values():
-        provider = str(entry.get("provider") or "")
-        key = f"vendor:{provider}"
-        target = out.setdefault(key, {"key": key, "cells": {}, "has_price": False,
-                                      "priced_now": True,
-                                      "currency": _provider_currency(provider, providers),
-                                      "provider": provider,
-                                      "provider_label": _provider_label(provider, providers)})
-        target["has_price"] = target["has_price"] or entry["has_price"]
-        # 厂商级 priced_now 用 **AND**：旗下只要有一个算不出钱的模型就不能当"已配价"
-        # （限额要卡的是这家真的花得起钱，一条线算不出来就得先去配）
-        target["priced_now"] = target["priced_now"] and bool(entry.get("priced_now"))
-        for bucket_key, cell in entry["cells"].items():
-            _merge(target["cells"].setdefault(bucket_key, _zero_totals()), cell)
+        for pid, bucket_cells in entry["by_provider"].items():
+            key = f"vendor:{pid}"
+            target = out.get(key)
+            if target is None:
+                target = out[key] = _new_entry(key)
+                target["provider"] = pid or None
+                target["provider_label"] = _provider_label(pid, providers)
+                target["currency"] = _provider_currency(pid, providers)
+                target["has_price"] = False
+                target["priced_now"] = True
+                target["by_provider"][pid] = {}
+            target["has_price"] = target["has_price"] or _provider_has_price(entry, pid)
+            # 厂商级 priced_now 用 **AND**：旗下只要有一个算不出钱的模型就不能当"已配价"
+            # （限额要卡的是这家真的花得起钱，一条线算不出来就得先去配）
+            target["priced_now"] = target["priced_now"] and bool(
+                entry["priced_by_provider"].get(pid))
+            for bucket_key, cell in bucket_cells.items():
+                _merge(target["cells"].setdefault(bucket_key, _zero_totals()), cell)
+                _merge(target["by_provider"][pid].setdefault(bucket_key, _zero_totals()), cell)
     for entry in out.values():
+        pid = str(entry["provider"] or "")
         entry["label"] = entry["provider_label"]
+        entry["priced_by_provider"] = {pid: bool(entry["priced_now"])}
+        entry["currency_by_provider"] = {pid: entry["currency"]}
+        entry["config_ids_by_provider"] = {pid: []}
+        entry["row_currencies"] = set()
+        for cell in entry["cells"].values():
+            entry["row_currencies"] |= set(cell["cost"].keys())
+        entry["providers"] = [pid] if pid else []
     return out
 
 
@@ -469,9 +604,11 @@ def _series_payload(entry: dict, buckets: list[dict], kind: str) -> dict:
         _merge(totals, point)
     payload = {
         "key": entry["key"], "kind": kind,
-        "label": entry.get("label") or "未知模型",
+        "label": entry.get("label") or UNKNOWN_MODEL_LABEL,
         "provider": entry.get("provider"),
         "provider_label": entry.get("provider_label") or "",
+        # 参与这条系列的厂商（去重、按出现顺序）；多厂商时 provider 是 None
+        "providers": list(entry.get("providers") or []),
         "currency": entry.get("currency") or billing.DEFAULT_CURRENCY,
         "has_price": bool(entry.get("has_price")),
         "priced_now": bool(entry.get("priced_now")),
@@ -479,7 +616,10 @@ def _series_payload(entry: dict, buckets: list[dict], kind: str) -> dict:
         "totals": totals,
     }
     if kind == "model":
+        # model_name 只是展示字段（同名合并后取第一个非空值），**不是**身份
         payload["model_name"] = entry.get("model_name") or ""
+        # 参与合并的配置（已删除配置不在其中：删了就没有 id 可以点过去）
+        payload["model_config_ids"] = list(entry.get("model_config_ids") or [])
     return payload
 
 
@@ -487,54 +627,99 @@ def _sort_key(payload: dict) -> tuple:
     return (-payload["totals"]["tokens_total"], str(payload["label"]), payload["key"])
 
 
-def _filters(models: dict[str, dict]) -> dict:
-    """下拉框的数据源：**窗口内的全量**（不受 vendor/model 筛选影响）。"""
-    models_out = [{
-        "key": entry["key"],
-        "label": entry.get("label") or "未知模型",
-        "provider": entry.get("provider"),
-        "provider_label": entry.get("provider_label") or "",
-        "config_id": entry.get("config_id"),
-        "has_price": bool(entry.get("has_price")),
-        "priced_now": bool(entry.get("priced_now")),
-        "currency": entry.get("currency") or billing.DEFAULT_CURRENCY,
-    } for entry in models.values()]
+def _filters(models: dict[str, dict], providers: dict) -> dict:
+    """下拉框的数据源：**窗口内的全量**（不受 vendor/model 筛选影响）。
+
+    键与 series 同一套（name:<自定义名称>）：下拉里选中的那一条，就是图上的那一条。
+    """
+    models_out = []
+    for entry in models.values():
+        ids = list(entry.get("model_config_ids") or [])
+        models_out.append({
+            "key": entry["key"],
+            "label": entry.get("label") or UNKNOWN_MODEL_LABEL,
+            "provider": entry.get("provider"),
+            "provider_label": entry.get("provider_label") or "",
+            "providers": list(entry.get("providers") or []),
+            # 只有唯一一条配置时才给 config_id（合并系列没有唯一的配置可点，
+            # 前端要跳配置请用 model_config_ids）
+            "config_id": ids[0] if len(ids) == 1 else None,
+            "model_config_ids": ids,
+            "has_price": bool(entry.get("has_price")),
+            "priced_now": bool(entry.get("priced_now")),
+            "currency": entry.get("currency") or billing.DEFAULT_CURRENCY,
+        })
     models_out.sort(key=lambda row: (str(row["label"]), row["key"]))
 
     vendors: dict[str, dict] = {}
     for row in models_out:
-        provider = str(row.get("provider") or "")
-        vendor = vendors.setdefault(provider, {
-            "id": provider, "label": row.get("provider_label") or provider or "未知厂商",
-            "models": [], "has_price": False, "priced_now": True,
-        })
-        vendor["models"].append(row["key"])
-        vendor["has_price"] = vendor["has_price"] or bool(row["has_price"])
-        # 与 series 同口径：厂商"现在全部能算价"才 True（AND）
-        vendor["priced_now"] = vendor["priced_now"] and bool(row["priced_now"])
+        entry = models[row["key"]]
+        # 合并系列可能横跨多个厂商：每个参与厂商的下拉里都要能挑到它
+        for pid in (row["providers"] or [""]):
+            vendor = vendors.setdefault(pid, {
+                "id": pid, "label": _provider_label(pid, providers),
+                "models": [], "has_price": False, "priced_now": True,
+            })
+            vendor["models"].append(row["key"])
+            vendor["has_price"] = vendor["has_price"] or _provider_has_price(entry, pid)
+            # 与 series 同口径：厂商"现在全部能算价"才 True（AND）
+            vendor["priced_now"] = vendor["priced_now"] and bool(
+                entry["priced_by_provider"].get(pid))
     return {"vendors": sorted(vendors.values(), key=lambda v: (v["label"], v["id"])),
             "models": models_out}
 
 
-def _selected(entries: dict[str, dict], vendor: Any, model: Any) -> list[dict]:
-    vendors = {v.lower() for v in _parse_filter(vendor) or []}
-    ids = _parse_filter(model)
-    # 裸 id / 裸 model_name 都认：前端与 curl 各自方便，解析时补成完整身份键
-    wanted = None
-    if ids is not None:
-        wanted = set()
-        for value in ids:
-            wanted.add(value)
-            if ":" not in value:
-                wanted.add(f"cfg:{value}")
-                wanted.add(f"gone:{value}")
+def _selector(model: Any) -> tuple[set[str], set[str]] | None:
+    """解析 model= → (要匹配的系列键, 要匹配的配置 id)。None = 不筛。
+
+    四种入参都认，老链接 / 老前端不会炸：
+
+    · name:<自定义名称> —— 现在的身份键；
+    · cfg:<config_id> —— 该配置**所在系列**（命中合并后的 name: 系列，而不是只留它自己那份）；
+    · gone:<model_name> —— 配置已删时的历史键（它的系列就是回落出的 name: 键）；
+    · 裸值 —— 先当名称、再当 config id 试（老前端传的就是裸 config id）。
+    """
+    values = _parse_filter(model)
+    if values is None:
+        return None
+    names: set[str] = set()
+    cfgs: set[str] = set()
+    for value in values:
+        head, _, rest = value.partition(":")
+        prefix = head.strip().lower() if rest else ""
+        if prefix == "cfg":
+            cfgs.add(rest.strip())
+        elif prefix == "gone":
+            names.add(f"{NAME_PREFIX}{rest.strip()}")
+        elif prefix == "name":
+            names.add(f"{NAME_PREFIX}{rest.strip()}")
+        else:
+            names.add(f"{NAME_PREFIX}{value}")
+            cfgs.add(value)
+    return names, cfgs
+
+
+def _selected(entries: dict[str, dict], vendor: Any, model: Any,
+              providers: dict) -> list[dict]:
+    vendor_ids = {v.lower() for v in _parse_filter(vendor) or []}
+    wanted = _selector(model)
     out = []
     for entry in entries.values():
-        if vendors and str(entry.get("provider") or "").lower() not in vendors:
-            continue
-        if wanted is not None and entry["key"] not in wanted:
-            continue
-        out.append(entry)
+        picked = entry
+        if vendor_ids:
+            keep = [pid for pid in entry.get("by_provider") or {}
+                    if pid and pid.lower() in vendor_ids]
+            if not keep:
+                continue
+            # 厂商筛选 = 只算这家的账：合并系列里另一个厂商的贡献被真的去掉（金额随之变小），
+            # 但返回的仍然是**这条合并系列**（provider 归位成剩下那一个）
+            picked = _derive(_scope_to(entry, keep), providers)
+        if wanted is not None:
+            names, cfgs = wanted
+            if (picked["key"] not in names
+                    and not (cfgs & set(picked.get("model_config_ids") or []))):
+                continue
+        out.append(picked)
     return out
 
 
@@ -542,7 +727,7 @@ def stats(window: Any = DEFAULT_WINDOW, vendor: Any = ALL, model: Any = ALL,
           group: Any = "model") -> dict:
     """多系列 / 可筛选 / 按小时或按天分桶的用量统计（契约见 GET /models/usage/stats）。
 
-    三条不变量：
+    三条不变量（身份 = name:<自定义名称>，同名即合并；cfg: / gone: 只作为入参兼容）：
 
     · window.points 连续、从旧到新、长度正好是桶数；series[].points 与它**逐位对齐**；
     · 筛选只影响 series / totals，filters 永远是**窗口内的全量**
@@ -574,9 +759,9 @@ def stats(window: Any = DEFAULT_WINDOW, vendor: Any = ALL, model: Any = ALL,
             configs, providers, prices = _load_meta(sess, config_ids)
             models = _build_models(cells, configs, providers, prices)
             # filters 永远按**模型级**全量出（group=vendor 时下拉框仍要能挑到具体模型）
-            out["filters"] = _filters(models)
+            out["filters"] = _filters(models, providers)
             entries = models if grp == "model" else _fold_vendors(models, providers)
-            chosen = _selected(entries, vendor, model)
+            chosen = _selected(entries, vendor, model, providers)
     except Exception as exc:  # noqa: BLE001 —— 查询失败降级成空结构，不让设置页 500
         log.warning("模型用量统计查询失败（返回空统计）：%s", str(exc)[:200])
         return out

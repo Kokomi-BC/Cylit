@@ -55,8 +55,9 @@ async def model_usage_stats(request: Request,
 
     · window：24h | 7d | 14d | 30d（默认 7d）。24h 是**小时桶**，
       不是把日数据摊成小时（那样折线会像"一整天的量全堆在某一小时"）；
-    · vendor：厂商 id 或 all；model：统计身份键（cfg:<id> / gone:<model_name>）
-      逗号分隔，或者 all；
+    · vendor：厂商 id 或 all；model：统计身份键（name:<自定义名称>，单个或逗号分隔）
+      或者 all；老写法 cfg:<id> / gone:<model_name> 仍然接受，含义是"该配置所在的系列"
+      （合并后的 name: 系列）；
     · group：model | vendor（默认 model）。
     · 筛选只影响 series / totals：filters 永远是窗口内全量（否则下拉框一选就把自己筛没）；
       空库与查询异常都返回**合法空结构**（空 series、零 totals），不抛 500。
