@@ -754,7 +754,7 @@ onMounted(() => {
         <header class="group-head">
           <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
         </header>
-        <div class="pref-fields">
+        <div class="group-body pref-fields">
           <label class="ctl">
             <span class="ctl-label">对话风格</span>
             <select id="pref-style" v-model="pref.preset" data-pref-style>
@@ -788,6 +788,7 @@ onMounted(() => {
         <header class="group-head">
           <AppIcon name="gauge" :size="14" /><h3>运行上限</h3>
         </header>
+        <div class="group-body">
         <div class="limit-grid" v-if="limits">
           <label class="ctl" v-for="f in LIMIT_FIELDS" :key="f.key">
             <span class="ctl-label">{{ f.label }}<i class="limit-unit">{{ f.unit }}</i></span>
@@ -799,6 +800,7 @@ onMounted(() => {
           {{ limitsLoading ? '正在读取运行上限…' : '运行上限暂不可用（agent 服务未就绪）。' }}
         </p>
         <p class="pref-hint ok" v-if="limitsHint">{{ limitsHint }}</p>
+        </div>
       </div>
 
       <!-- ③ Cyli 解释 -->
@@ -806,7 +808,7 @@ onMounted(() => {
         <header class="group-head">
           <AppIcon name="sparkle" :size="14" /><h3>Cyli 解释</h3>
         </header>
-        <div class="explain-grid">
+        <div class="group-body explain-grid">
           <label class="ctl">
             <span class="ctl-label">模型</span>
             <select v-model="explainModel" data-explain-model>
@@ -847,7 +849,7 @@ onMounted(() => {
 
         <!-- 搜索 + 列表装进模型页那张卡的同一套外壳（.prov-card 的写法：一整块 .card，
              行间只留发丝线，行本身不描边、不填底、不留行距） -->
-        <div class="card skill-card">
+        <div class="skill-body">
 
         <!-- 搜索：纯客户端过滤（中文名 / 英文 ID / 说明），技能表已整份在手，不再打接口 -->
         <label class="skill-search">
@@ -1042,13 +1044,17 @@ onMounted(() => {
   gap: 0 24px; align-items: start;
 }
 .pref-group { min-width: 0; }
-/* 组标题条：**圆角淡色矩形底**（照 LimitCard 的 .lim-status 写法）。
-   它只是把"这一组的名字"从控件里拎出来，不是给整组套卡：控件仍然直接躺在页面上。 */
+/* 标题只是标题：**不铺底**。淡色圆角卡在它下面（.group-body）——用户口径：
+   "淡淡的圆角卡片要放在内容下面，文字在卡片之上"。 */
 .group-head {
   display: flex; align-items: center; gap: 6px;
-  margin-bottom: 12px; padding: 8px 12px;
-  border-radius: var(--r-sm); background: var(--bg-sunken);
+  margin-bottom: 8px;
   color: var(--text-faint);
+}
+/* 内容底：淡色圆角矩形（照 LimitCard 的 .lim-status），只包控件、不包标题 */
+.group-body {
+  padding: 12px 14px;
+  border-radius: var(--r-sm); background: var(--bg-sunken);
 }
 .group-head h3 {
   margin: 0; font-size: calc(14.5px * var(--ts, 1)); font-weight: 650;
@@ -1103,10 +1109,10 @@ onMounted(() => {
   min-width: 0; display: flex; flex-direction: column; gap: 12px;
   padding: 0; border: 0; background: transparent; box-shadow: none;
 }
-/* 标题条：圆角淡色矩形底（照 LimitCard .lim-status：14px 16px / --r-sm / --bg-sunken） */
+/* 标题只是标题（不铺底）；淡色圆角卡挪到下面的 .skill-body */
 .skills-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 14px 16px; border-radius: var(--r-sm); background: var(--bg-sunken);
+  margin-bottom: 8px;
   color: var(--text-faint);
 }
 .skills-title {
@@ -1116,11 +1122,11 @@ onMounted(() => {
 /* 数量是一句注脚，不是徽章：不铺底、不加边框，跟在标题后面 */
 .skills-count { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 列表卡：与模型页「提供方」那张 .prov-card 同一套（外描边 + 圆角 + 抬起的白底，
-   内部只靠 1px 发丝线分行，行自己不带边框、不带底色、不带行距） */
-.skill-card { padding: 2px 14px; overflow: hidden; }
-/* 卡里的空态/提示行要自己留出上下呼吸（卡只给左右内边距，行与行之间的节奏归行自己管） */
-.skill-card > .pref-hint { margin: 10px 0 14px; }
+/* 内容底：淡色圆角矩形（与 .group-body 同一套），只包搜索框与技能行；
+   行与行之间只靠 1px 发丝线，行自己不带边框、不带底色、不带行距 */
+.skill-body { padding: 10px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
+/* 卡里的空态/提示行要自己留出上下呼吸（底只给左右内边距，行与行之间的节奏归行自己管） */
+.skill-body > .pref-hint { margin: 10px 0 14px; }
 
 /* 搜索框：整宽的输入语义，但只占一个可读的行宽 —— 铺满整张卡的空白框看着像一块空洞。
    左缘与技能行同一条竖线（卡片内边距 14 + --row-pad）。 */
