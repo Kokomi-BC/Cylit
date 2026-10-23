@@ -120,6 +120,7 @@ async function loadPrefs(): Promise<void> {
     const values = data?.values ?? {};
     explainModel.value = String(values.explain_model_config_id ?? '');
     explainEffort.value = String(values.explain_reasoning_effort ?? '');
+    explainBase.value = { model: explainModel.value, effort: explainEffort.value };
   } catch (err) {
     reportError(err, '取 Cyli 偏好失败');
   }
@@ -489,6 +490,20 @@ const explainModels = ref<ExplainModelOption[]>([]);
 const explainModel = ref('');
 const explainEffort = ref('');
 const explainBusy = ref(false);
+/** 解释配置的基线（读到的那一份）：三组合并成一个「保存」之后，没有基线就只能永远可点 */
+const explainBase = ref({ model: '', effort: '' });
+const explainDirty = computed(() => (
+  explainModel.value !== explainBase.value.model || explainEffort.value !== explainBase.value.effort
+));
+
+/* 一个「保存」管三组：每组只在**自己改过**的时候才发请求（未改动不发，是这一页的铁律）。 */
+const anyBusy = computed(() => prefBusy.value || limitsBusy.value || explainBusy.value);
+const anyDirty = computed(() => prefDirty.value || limitsDirty.value || explainDirty.value);
+async function saveAll(): Promise<void> {
+  if (prefDirty.value) await savePrefs();
+  if (limitsDirty.value) await saveLimits();
+  if (explainDirty.value) await saveExplain();
+}
 
 const explainModelChoice = computed(() =>
   explainModels.value.find((m) => m.id === explainModel.value) ?? null);
@@ -531,6 +546,7 @@ async function saveExplain(): Promise<void> {
     const values = data?.values ?? {};
     explainModel.value = String(values.explain_model_config_id ?? explainModel.value);
     explainEffort.value = String(values.explain_reasoning_effort ?? explainEffort.value);
+    explainBase.value = { model: explainModel.value, effort: explainEffort.value };
     toast('已保存：之后的 Cyli 解释按这份配置运行', 'ok', 2600);
   } catch (err) {
     toast((err as Error)?.message ?? String(err), 'error', 5000);
@@ -700,20 +716,25 @@ onMounted(() => {
          （对话偏好 → 运行上限 → Cyli 解释 → 技能能力）。 -->
     <div class="pref-layout">
       <section class="pref-main">
+        <!-- 一个工具栏管三组：每组各自的「保存」并排三枚，等于让人在三处做同一个动作；
+             合并后只在**某组真的改过**时才发请求（saveAll 里逐组判断 dirty）。 -->
+        <div class="pref-toolbar">
+          <span class="tiny faint">改动只对新开的对话生效</span>
+          <span class="spacer"></span>
+          <button class="btn sm" :disabled="anyBusy || !prefCanReset" data-pref-reset
+                  @click="resetPrefs">
+            <AppIcon name="refresh" :size="14" />恢复默认
+          </button>
+          <button class="btn primary sm" :disabled="anyBusy || !anyDirty" data-pref-save
+                  @click="saveAll">
+            <AppIcon name="check" :size="14" />{{ anyBusy ? '保存中…' : '保存' }}
+          </button>
+        </div>
+
         <!-- ① 对话偏好 -->
         <div class="pref-group">
           <header class="group-head">
             <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
-            <span class="spacer"></span>
-            <span class="group-note">只对新开的对话生效</span>
-            <button class="btn sm" :disabled="prefBusy || !prefCanReset" data-pref-reset
-                    @click="resetPrefs">
-              <AppIcon name="refresh" :size="14" />恢复默认
-            </button>
-            <button class="btn primary sm" :disabled="prefBusy || !prefDirty" data-pref-save
-                    @click="savePrefs">
-              <AppIcon name="check" :size="14" />{{ prefBusy ? '保存中…' : '保存' }}
-            </button>
           </header>
 
           <!-- 风格与长度同一行两列；自定义指令框在下一行，与风格下拉同一条左缘、同一条右缘 -->
@@ -746,12 +767,7 @@ onMounted(() => {
             <div class="pref-count tiny faint mono" v-if="pref.preset === 'custom'">
               {{ pref.style.length }} / {{ PREF_STYLE_MAX }}
             </div>
-            <p class="ctl-note tiny faint" v-if="pref.preset === 'custom'">
-              追加在系统提示词之后，不覆盖它
-            </p>
-            <p class="ctl-note tiny faint" v-else-if="pref.preset === 'default'">
-              不追加任何风格指令
-            </p>
+
           </div>
         </div>
 
@@ -759,12 +775,6 @@ onMounted(() => {
         <div class="pref-group">
           <header class="group-head">
             <AppIcon name="gauge" :size="14" /><h3>运行上限</h3>
-            <span class="spacer"></span>
-            <span class="group-note">启动参数，重启 agent 服务后生效</span>
-            <button class="btn primary sm" :disabled="limitsBusy || !limits || !limitsDirty"
-                    @click="saveLimits">
-              <AppIcon name="check" :size="14" />{{ limitsBusy ? '保存中…' : '保存' }}
-            </button>
           </header>
           <div class="limit-grid" v-if="limits">
             <label class="ctl" v-for="f in LIMIT_FIELDS" :key="f.key">
@@ -783,11 +793,6 @@ onMounted(() => {
         <div class="pref-group">
           <header class="group-head">
             <AppIcon name="sparkle" :size="14" /><h3>Cyli 解释</h3>
-            <span class="spacer"></span>
-            <span class="group-note">可与对话模型分开</span>
-            <button class="btn primary sm" :disabled="explainBusy" @click="saveExplain">
-              <AppIcon name="check" :size="14" />{{ explainBusy ? '保存中…' : '保存' }}
-            </button>
           </header>
           <div class="explain-grid">
             <label class="ctl">
@@ -983,7 +988,7 @@ onMounted(() => {
 .pref-layout > .card + .card { margin-top: 0; }
 /* 够宽才并排：55 / 45 —— 左列要放得下"风格指令"框，右列的技能行要放得下名字 + 说明 + 四个按钮 */
 @container (min-width: 800px) {
-  .pref-layout { grid-template-columns: 55fr 45fr; }
+  .pref-layout { grid-template-columns: 46fr 54fr; }
 }
 
 /* ---------- 控件：同高 / 同圆角 / 同字号 / 铺满所在列 ---------- */
@@ -1003,6 +1008,8 @@ onMounted(() => {
 /* 左列**不要卡片**：它只是一组设置项，套一层描边 + 底色除了多出一个盒子什么都换不来。
    所以这里没有 .card 那份描边 / 底色 / 投影；padding-top 9 让第一组标题与右卡抬头同一水平线。 */
 .pref-main { padding: 6px 0 0; }
+/* 一条工具栏管三组：与右卡抬头同一水平线，右缘与控件列对齐 */
+.pref-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cyli-prefs .card-head { padding: 9px 14px; }
 .cyli-prefs .card-body { padding: 10px 14px; }
 .pref-group { min-width: 0; }
