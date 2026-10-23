@@ -803,6 +803,12 @@ const formTarget = ref<ModelConfig | null>(null);
 const formDefaultType = ref('agent');
 /** 保存失败的文案：透给表单第五步的「保存结果」那一行（saveError），每次打开表单时清空 */
 const formError = ref('');
+/** 时段保存成功但后端带了 warning（"默认价未配置…"）：表单里原样黄字提示 */
+const formWarning = ref('');
+/** 时段保存失败时后端 400 的 message：**原样**贴在时段那块里（前端校验只是省一次往返） */
+const formRulesError = ref('');
+/** 新建成功后拿到的模型 id：时段保存失败时重试走 PUT，不会 POST 出第二份 */
+const formSavedId = ref('');
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 function openCreate(type = 'agent'): void {
@@ -810,6 +816,9 @@ function openCreate(type = 'agent'): void {
   formTarget.value = null;
   formDefaultType.value = type;
   formError.value = '';
+  formWarning.value = '';
+  formRulesError.value = '';
+  formSavedId.value = '';
   formOpen.value = true;
 }
 
@@ -818,6 +827,9 @@ function openEdit(m: ModelRow): void {
   formTarget.value = m;
   formDefaultType.value = m.model_type || 'agent';
   formError.value = '';
+  formWarning.value = '';
+  formRulesError.value = '';
+  formSavedId.value = '';
   formOpen.value = true;
 }
 
@@ -830,31 +842,76 @@ function flash(id: string): void {
   }, 2800);
 }
 
-async function submitForm(payload: Record<string, any>): Promise<void> {
+/**
+ * 保存模型：**两个请求，顺序固定**。
+ *
+ * 1. PUT /models/{id}（或 POST /models）—— 默认价 / 币种 / 配置，逻辑与以前一致；
+ * 2. PUT /models/{id}/price-rules —— 分时段单价，**整批替换**（空数组 = 清空全部时段）。
+ *
+ * 为什么第二个失败不回滚、也不关表单：模型已经真的在库里了，回滚只是骗自己；
+ * 界面上留一句「模型已保存，时段保存失败：<后端 message>」，把已经填好的时段留在屏幕上，
+ * 用户改完直接再点保存即可（新建时记住拿到的 id，重试走 PUT，不会 POST 出第二份）。
+ */
+async function submitForm(
+  payload: Record<string, any>,
+  rules: { items: Record<string, any>[] } | null,
+): Promise<void> {
   busyKey.value = 'submit';
   formError.value = '';
+  formWarning.value = '';
+  formRulesError.value = '';
   try {
-    if (formMode.value === 'edit' && formTarget.value) {
-      await api.put('/models/' + formTarget.value.id, payload);
-      toast('模型配置已更新', 'ok');
-      formOpen.value = false;
-      await refresh();
-      flash(formTarget.value.id);
-    } else {
-      const created = await api.post<any>('/models', payload);
-      formOpen.value = false;
-      await refresh();
+    const editId = formMode.value === 'edit' && formTarget.value ? String(formTarget.value.id) : '';
+    let modelId = editId || formSavedId.value;
+    let created: any = null;
+    try {
+      if (!modelId) {
+        created = await api.post<any>('/models', payload);
+        modelId = String(created?.id || created?.model?.id || '');
+        if (modelId) formSavedId.value = modelId;
+      } else {
+        await api.put('/models/' + modelId, payload);
+      }
+    } catch (err) {
+      /* 两条路都留着：toast 给人即时反馈，formError 让表单第五步自己留一行原因（关掉弹窗就没了） */
+      formError.value = '保存失败：' + String((err as any)?.message ?? err);
+      reportError(err, '保存失败');
+      return;
+    }
+
+    if (rules && modelId) {
+      try {
+        const saved = await api.put<any>('/models/' + modelId + '/price-rules', rules);
+        /* 没配默认价也允许存时段：后端用 warning 说清"时段之外仍不计费"，原样转达 */
+        const warning = String(saved?.warning || '');
+        if (warning) {
+          formWarning.value = warning;
+          toast(warning, 'warn', 6000);
+          await refresh();
+          return;                       /* 表单留着：这条 warning 要能被看见 */
+        }
+      } catch (err) {
+        /* 后端 message **原样**放两处：时段那块里（改完就地重试）+ 保存结果那一行（不吞错） */
+        formRulesError.value = String((err as any)?.message ?? err);
+        formError.value = '模型已保存，时段保存失败：' + String((err as any)?.message ?? err);
+        reportError(err, '时段单价保存失败');
+        await refresh();
+        return;                         /* 表单不关：时段还在，改完可直接重试 */
+      }
+    }
+
+    formOpen.value = false;
+    await refresh();
+    if (created) {
       await loadProviders();
-      const id = String(created?.id || created?.model?.id || payload.name || '');
+      const id = modelId || String(payload.name || '');
       /* 保存成功 ≠ 连接可用：存完立刻用既有 POST /models/{id}/test 真打一次端点。 */
       if (id) setTimeout(() => { void testModel(created as ModelRow); }, 300);
-      if (id) flash(id);
       toast('已创建，建议点「测试」验证连通性', 'ok', 4800);
+    } else {
+      toast('模型配置已更新', 'ok');
     }
-  } catch (err) {
-    /* 两条路都留着：toast 给人即时反馈，formError 让表单第五步自己留一行原因（关掉弹窗就没了） */
-    formError.value = '保存失败：' + String((err as any)?.message ?? err);
-    reportError(err, '保存失败');
+    if (modelId) flash(modelId);
   } finally {
     busyKey.value = '';
   }
@@ -1152,6 +1209,7 @@ onBeforeUnmount(() => {
       :default-type="formDefaultType"
       :types="panelTypes" :type-labels="TYPE_LABEL"
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
+      :rules-warning="formWarning" :rules-error="formRulesError"
       @close="formOpen = false" @submit="submitForm"
     />
   </div>

@@ -288,6 +288,15 @@ const vendorModels = computed<UsageFilterModel[]>(() => {
   return allModels.value.filter((m) => keys.has(m.key));
 });
 
+/** 窗口里有没有「跨厂商的同名合并」：只有这种系列才会被厂商筛选削掉一部分贡献 ——
+ *  这句提示只在真的存在那种系列、且用户确实按厂商筛了的时候出现，避免无意义的噪声。 */
+const mergedAcrossVendors = computed<boolean>(() =>
+  allModels.value.some((m) => (m.providers?.length ?? 0) > 1));
+const vendorFilterLabel = computed<string>(() => {
+  const id = vendorSel.value;
+  return vendors.value.find((v) => v.id === id)?.label || id;
+});
+
 const modelOpen = ref(false);
 const modelBtnText = computed<string>(() => {
   const n = modelSel.value.length;
@@ -514,6 +523,8 @@ interface HoverRow {
   key: string;
   label: string;
   sub: string;
+  /** 这一条背后合并了几个模型配置（>1 才在浮层里点出来，见文件头「同名即合并」） */
+  merged: number;
   color: string;
   req: string;
   tin: string;
@@ -543,6 +554,7 @@ const hoverRows = computed<HoverRow[]>(() => {
       sub: group.value === 'vendor'
         ? (s.kind === 'vendor' ? '厂商合计' : '厂商')
         : (s.provider_label || s.provider || ''),
+      merged: (s.model_config_ids?.length ?? 0),
       color: seriesColor(s.key),
       req: fmtN(Number(cell?.requests) || 0),
       tin: fmtN(Number(cell?.tokens_in) || 0),
@@ -564,6 +576,8 @@ interface LegendItem {
   hidden: boolean;
   kind: 'series' | 'currency';
   text: string;
+  /** 合并了几个配置（>1 时图标后面缀一个 ×N，见文件头「同名即合并」） */
+  merged?: number;
 }
 
 const legendItems = computed<LegendItem[]>(() => {
@@ -580,6 +594,7 @@ const legendItems = computed<LegendItem[]>(() => {
     out.push({
       id: s.key, label: s.label, color: seriesColor(s.key),
       hidden: hiddenSeries.value.includes(s.key), kind: 'series', text: '',
+      merged: (s.model_config_ids?.length ?? 0),
     });
   }
   return out;
@@ -795,6 +810,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <p class="usage-note" data-merge-note v-if="vendorSel !== 'all' && mergedAcrossVendors">
+      已按「{{ vendorFilterLabel }}」筛选：同名合并里其它厂商那部分不计入这些数字。
+    </p>
     <p class="usage-note" v-if="loading && !stats">载入中…</p>
 
     <!-- 窗口内一条记录都没有：一行字，不占屏 -->
@@ -883,6 +901,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="tp-line2">
                     <span class="tp-prov">{{ r.sub }}</span>
+                    <span class="tp-merged" v-if="r.merged > 1" data-hover-merged>合并 {{ r.merged }} 个配置</span>
                     <span>请求 {{ r.req }}</span>
                     <span>入 {{ r.tin }}</span>
                     <span>出 {{ r.tout }}</span>
@@ -902,6 +921,7 @@ onBeforeUnmount(() => {
             >
               <span class="lg-dot" :style="{ background: it.color }"></span>
               <span class="lg-label truncate">{{ it.label }}</span>
+              <span class="lg-merged" v-if="it.merged && it.merged > 1" data-legend-merged>×{{ it.merged }}</span>
               <span class="lg-val" v-if="it.text">{{ it.text }}</span>
             </button>
             <button type="button" class="lnk lg-reset" v-if="hiddenSeries.length || hiddenCur.length" @click="showAll">全部显示</button>
@@ -923,7 +943,8 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <template v-if="rankVisible.length">
-          <!-- 键用 series.key：同名不同配置（cfg:<id>）是两条，**不许合并** -->
+          <!-- 键用 series.key（= 自定义名称）：**同名即合并**成一条，所以排行榜里不会出现两行一样的名字；
+               想分开就改名（上游 model_name 不参与合并） -->
           <div class="rank-row" v-for="r in rankVisible" :key="r.key">
             <span class="rk-name truncate" :title="r.name">{{ r.name }}</span>
             <span class="rk-n">{{ r.text }}</span>
@@ -1097,6 +1118,8 @@ onBeforeUnmount(() => {
   font-size: calc(10.5px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums;
 }
 .tp-prov { color: var(--text-faint); }
+/* 合并提示：说明这条线背后是几个配置加成的一条（用户口径：同名即合并） */
+.tp-merged { color: var(--accent-text); }
 
 /* 图例：可换行，绝不出现横向滚动条 */
 .legend { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; overflow: hidden; min-width: 0; }
@@ -1112,6 +1135,12 @@ onBeforeUnmount(() => {
 .lg-label { font-size: calc(11px * var(--ts, 1)); min-width: 0; }
 .lg-item.off .lg-label { text-decoration: line-through; }
 .lg-val { font-size: calc(10.5px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 图例上的合并角标：×2 表示这条线由两个同名配置合并而来 */
+.lg-merged {
+  flex: none; font-size: calc(10px * var(--ts, 1)); line-height: 1.2;
+  padding: 0 3px; border-radius: 4px; color: var(--accent-text);
+  background: var(--accent-soft); font-variant-numeric: tabular-nums;
+}
 .lg-reset { margin-left: 2px; }
 
 /* 缺价空态：一句话 + 一个真能滚过去的链接，不是假按钮 */

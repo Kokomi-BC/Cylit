@@ -11276,3 +11276,44 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 - 基础设施异常（库连不上）时限额**放行**并记 warning；此时也没有一条能落账的用量行。
 - 「只配时段、不配默认价」的模型：时段内算得出钱（cost 有值），但 priced=False 所以仍然**不能给它设限额**。
 - 未知 model_id 沿用现有行为返回 400（不是 404）。
+### 111. 第一百一十一轮：用量按「自定义名称」合并 + 分时段单价编辑器 + 折线图适配
+
+用户口径：①「模型用量合并，按模型自定义名称区分，自定义名称一样则合并」；②「折线图要改一下适配这个改动」；
+③ 模型表单里要能配分时段单价（阶段④的前端）。
+
+**① 用量系列身份改成自定义名称（覆盖一条旧不变量）**
+- 系列键 cfg:<id> → **name:<model_config.name.strip()>**；名称为空回落行上反规范化的 model_name，再空回落「未知模型」。
+  同名即合并：tokens / requests / unpriced 相加；**cost 同币种相加、不同币种各占一键，永不互加**。
+- 出参新增 model_config_ids（参与合并的**存活**配置；已删配置只按行上 model_name 参与合并不进清单）与 providers；
+  同名跨厂商时 provider=null、provider_label=「多个厂商」，不挑一个冒充。priced_now 用 **AND**（一条没配价 → 整体 false）。
+- 内部按厂商留了一列贡献（by_provider）：group=vendor 折叠、vendor= 筛选**真的扣掉**另一家那份（金额随之变小），
+  返回的仍是同一条 name: 系列。
+- 筛选入参：model=name:<名称> / cfg:<id>（→ 它所在的合并系列）/ gone:<model_name> / 裸 id 都认。
+- 边界（写进测试）：**同一个上游 model_name 但自定义名不同 → 仍是两条**（旧护栏保留）；上游名只是展示字段。
+- limits.py 一行未动：限额仍按 model_config.id 走，钱不会被这次合并影响。
+
+**② 折线图适配**（UsageChart.vue）
+- 图例合并系列挂 ×N 角标；hover 里写「合并 N 个配置」，厂商名直接用 provider_label（跨厂商就是「多个厂商」）；
+- 按厂商筛选且窗口里存在跨厂商同名合并时，图上方一句「已按「XX」筛选：同名合并里其它厂商那部分不计入这些数字」
+  （不解释的话金额变小会被当成算错）；没有这种系列时不出现；
+- 排行榜那行旧注释「同名不同配置是两条，**不许合并**」正好与新口径相反，一并改掉。
+
+**③ 分时段单价编辑器**（PriceRuleEditor.vue + utils/priceRule.ts）
+- 计费块里加「分时段单价 · N 个时段」：每段一张小卡（时间一行 + 四个价一行）；口径提示 + DeepSeek 用法示例（只写关系、不写死厂商价）。
+- 本地先判（HH:MM、开始≠结束、输入/输出必填、非负、跨午夜拆两段后两两判重叠），**后端 400 的 message 仍原样显示**（行内 + 保存结果各一处）。
+- 保存顺序：先 PUT /models/{id}（新建走 POST 拿 id）→ 成功后 PUT /models/{id}/price-rules（整批替换）。
+  时段那步失败**不回滚、不关表单**，记下拿到的 id，重试走 PUT（不会 POST 出第二份）；未配默认价时把 warning 原样转达。
+
+**验证**
+- 后端：pytest 全量 1532 passed / 131 skipped（billing 48、usage 6、limits 33、pricing 31）；
+  真后端：两条同名配置（CNY / USD）→ **1 条** series、cost {"CNY":2.0,"USD":1.0}、model_config_ids 2 个；
+  再加一条同名的 openai 配置 → provider=null、「多个厂商」、providers 2 个。
+- 前端：vue-tsc 0 error、build 通过、自检 21 PASS / 0 FAIL / 0 SKIP；真浏览器核对：图例「合并验证模型 ×3」角标、
+  hover「合并 3 个配置 · 多个厂商 · ¥2.50 / $1.00」、按 DeepSeek 筛选后角标降为 ×2 且出现那句提示；
+  时段编辑器保存两段后回读逐字段一致、重叠被本地拦下、临时关掉本地判定验证过后端 400 原文逐字显示。
+- 数据还原：临时同名配置 3 条 + 用量 3 行全部删净（model_usage 2 行、model_config 5 条、series 回到 1 条）。
+
+**已知限制**
+- 已删除配置的「同名」只能靠行上的 model_name 判断（配置行没了就读不到自定义名称），所以「历史行 + 存活配置同名合并」
+  实际要求存活配置把名字起成与那条历史行的 model_name 同一个字面量。
+- 新建模型那条保存路径（POST 拿 id 再 PUT 时段）只做了代码审查 + 类型检查，没有真机跑（会往库里多造一条模型）。

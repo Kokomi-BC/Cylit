@@ -30,6 +30,13 @@ import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
 import { BUILTIN_EFFORTS, EFFORT_VALUE_PLACEHOLDER } from '@/utils/reasoning';
+import PriceRuleEditor from '@/components/settings/PriceRuleEditor.vue';
+import {
+  draftOf as draftOfRule,
+  ruleDraftError,
+  toRuleItem,
+  type PriceRuleDraft,
+} from '@/utils/priceRule';
 import type { KeyRow, ProviderRow } from './modelTypes';
 
 const props = withDefaults(defineProps<{
@@ -51,6 +58,10 @@ const props = withDefaults(defineProps<{
   busy?: boolean;
   /** 可选：父组件拿到的保存错误文案（不传也能跑） */
   saveError?: string;
+  /** 后端 PUT 分时段单价返回的 warning（"默认价未配置…"），原样展示 */
+  rulesWarning?: string;
+  /** 时段保存失败时后端 400 的 message（原样展示在时段那块里，不当成"保存失败"） */
+  rulesError?: string;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -63,11 +74,17 @@ const props = withDefaults(defineProps<{
   secrets: () => [],
   busy: false,
   saveError: '',
+  rulesWarning: '',
+  rulesError: '',
 });
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'submit', payload: Record<string, unknown>): void;
+  /**
+   * 第二个参数是分时段单价（PUT /models/{id}/price-rules 的 body）：
+   * `null` = 这次不提交时段（新建且没填 / 后端没有这个接口），父组件据此并发请求的时机。
+   */
+  (e: 'submit', payload: Record<string, unknown>, rules: { items: Record<string, unknown>[] } | null): void;
 }>();
 
 /* ---------------------------- 步骤 ---------------------------- */
@@ -748,15 +765,81 @@ const priceCalc = computed<{ text: string; warn: boolean }>(() => {
   return { text: '', warn: false };
 });
 
-/** 折叠状态下的一句话摘要 */
+/** 折叠状态下的一句话摘要（时段条数也挂在这一行上：折叠着也要看得出"这个模型有峰谷价"） */
 const billingSummary = computed<string>(() => {
-  if (priceError.value) return '单价非法';
+  const rules = ruleCount.value ? ruleCount.value + ' 个时段' : '无时段';
+  if (priceError.value) return '单价非法 · ' + rules;
   if (priceConfigured.value) {
-    return '入 ' + moneyText(priceIn.value || 0) + ' · 出 ' + moneyText(priceOut.value || 0) + ' / 1M';
+    return '入 ' + moneyText(priceIn.value || 0) + ' · 出 ' + moneyText(priceOut.value || 0) + ' / 1M · ' + rules;
   }
-  if (priceHalf.value) return '只配了一半';
-  return '未配置单价';
+  if (priceHalf.value) return '只配了一半 · ' + rules;
+  return '未配置单价 · ' + rules;
 });
+
+/* ---------------------------- 分时段单价（时段规则） ----------------------------
+ * 口径（别写反）：模型上的四个默认单价 = **时段之外**的价（DeepSeek 口径里就是空闲价）；
+ * 时段规则是**例外覆盖**，且**只对工作日（周一–周五）生效**，周末一律落到默认价。
+ * 同一模型的时段之间不许重叠 —— 这条集合级约束只有后端能最终判定（整批替换），
+ * 本地先算一遍只是为了省一次往返；后端 400 的 message 一律原样展示。
+ *
+ * ⚠️ 读取失败时**绝不提交空数组**：PUT 是整批替换，发 [] 会把已有规则清空。
+ */
+const priceRules = ref<PriceRuleDraft[]>([]);
+/** 既有规则读到了没有：没读到就不发 PUT（否则等于把已有规则清空） */
+const priceRulesLoaded = ref(false);
+/** 后端没有这个接口（404）：老后端也能存默认价 —— 整块降级，别把整个表单卡死 */
+const priceRulesUnsupported = ref(false);
+const priceRulesError = ref('');
+
+/** 条数：读回来之前先用列表行带的 price_rule_count（GET /models 每行都有） */
+const ruleCount = computed<number>(() => (
+  priceRulesLoaded.value
+    ? priceRules.value.length
+    : Number((props.target as ModelConfig | null)?.price_rule_count || 0)
+));
+
+const rulesSectionTitle = computed<string>(() => (
+  '分时段单价 · ' + (ruleCount.value ? ruleCount.value + ' 个时段' : '未配置（全部时刻按默认单价）')
+));
+
+/** 没配默认价却配了时段：不是错误（允许保存），但得说清"时段之外仍不计费" */
+const rulesWithoutDefault = computed<boolean>(() => priceRules.value.length > 0 && !priceConfigured.value);
+
+async function loadPriceRules(modelId: string): Promise<void> {
+  priceRules.value = [];
+  priceRulesLoaded.value = false;
+  priceRulesUnsupported.value = false;
+  priceRulesError.value = '';
+  if (!modelId) return;
+  try {
+    const data = await api.get<{ items?: Record<string, any>[] }>(
+      '/models/' + encodeURIComponent(modelId) + '/price-rules',
+    );
+    const items = Array.isArray(data?.items) ? data.items : [];
+    priceRules.value = items.map((row) => draftOfRule(row));
+    priceRulesLoaded.value = true;
+  } catch (err: any) {
+    if (Number(err?.status) === 404) {
+      priceRulesUnsupported.value = true;
+      return;
+    }
+    priceRulesError.value = '时段单价读取失败：' + String(err?.message ?? err);
+  }
+}
+
+function retryPriceRules(): void {
+  const id = String((props.target as ModelConfig | null)?.id || '');
+  if (id) void loadPriceRules(id);
+}
+
+/** 提交给父组件的时段 body；null = 这次不碰时段 */
+function composeRules(): { items: Record<string, unknown>[] } | null {
+  if (priceRulesUnsupported.value) return null;
+  if (props.mode === 'edit' && !priceRulesLoaded.value) return null;
+  /* 编辑时**空数组也要发**：那正是"清空全部时段"的唯一写法（PUT 是整批替换） */
+  if (!priceRules.value.length) return props.mode === 'edit' ? { items: [] } : null;
+  return { items: priceRules.value.map((row) => toRuleItem(row)) };
+}
 
 /* ---------------------------- 初始化 / 切换提供方 ---------------------------- */
 
@@ -781,6 +864,10 @@ function resetTransient(): void {
   newKeyBusy.value = false;
   keyValue.value = '';
   keyBusy.value = false;
+  priceRules.value = [];
+  priceRulesLoaded.value = false;
+  priceRulesUnsupported.value = false;
+  priceRulesError.value = '';
   connEditing.value = false;
   advanced.value = false;
   billingOpen.value = false;
@@ -842,6 +929,7 @@ async function init(): Promise<void> {
     step.value = 3;
     reached.value = 3;
     await loadKeys(form.provider);
+    await loadPriceRules(String((props.target as ModelConfig).id || ''));
     return;
   }
 
@@ -1054,6 +1142,18 @@ function submit(): void {
     fail(priceError.value);
     return;
   }
+  /* 时段规则读不到就别发 PUT：整批替换，空数组 = 清空已有规则 */
+  if (props.mode === 'edit' && !priceRulesLoaded.value && !priceRulesUnsupported.value) {
+    billingOpen.value = true;
+    fail(priceRulesError.value || '时段单价还没读到，先点「重新读取」再保存（时段是整批替换，发空数组会清空已有规则）');
+    return;
+  }
+  const ruleError = ruleDraftError(priceRules.value);
+  if (ruleError) {
+    billingOpen.value = true;
+    fail(ruleError);
+    return;
+  }
   const payload: Record<string, unknown> = {
     name: form.name.trim(),
     provider: form.provider.trim(),
@@ -1076,7 +1176,8 @@ function submit(): void {
   if (props.mode === 'edit') payload.enabled = !!form.enabled;
   saveState.value = 'saving';
   saveMessage.value = '提交中…';
-  emit('submit', payload);
+  /* 默认价（上面的 payload）与时段（第二个参数）分两个请求：先 PUT /models/{id} 再 PUT price-rules */
+  emit('submit', payload, composeRules());
 }
 
 const advSummary = computed<string>(() => {
@@ -1467,6 +1568,34 @@ const advSummary = computed<string>(() => {
             <p class="err-line" v-if="priceError" data-billing-error>{{ priceError }}</p>
             <p class="warn-line" v-else-if="priceHalf" data-billing-half>只配了一半 → 仍按未计费处理：费用统计里不会出现金额。</p>
             <p class="hint-line" v-else-if="!priceConfigured" data-billing-none>未配置单价：该模型的调用会被记为未计费，费用统计为 0 条。</p>
+
+            <!-- 分时段单价：上面四个价是**时段之外**的价，这里配的是例外覆盖（只对工作日生效） -->
+            <div class="price-rules">
+              <div class="pr-head">
+                <span class="pr-title" data-price-rules-title>{{ rulesSectionTitle }}</span>
+                <span class="spacer"></span>
+                <button
+                  type="button" class="lnk" v-if="priceRulesError"
+                  data-price-rules-retry @click="retryPriceRules"
+                >重新读取</button>
+              </div>
+              <p class="hint-line" data-price-rules-note>
+                默认单价用于时段之外的时刻（含周末）；时段规则只在工作日（周一–周五）生效，周末一律按默认单价。
+              </p>
+              <p class="hint-line" data-price-rules-example>
+                DeepSeek 的用法：默认价填空闲价，再把工作日高峰 09:00–12:00、14:00–18:00 添成两段。
+              </p>
+              <p class="err-line" v-if="priceRulesError" data-price-rules-error>{{ priceRulesError }}</p>
+              <p class="err-line" v-else-if="rulesError" data-price-rules-save-error>{{ rulesError }}</p>
+              <p class="hint-line" v-else-if="priceRulesUnsupported" data-price-rules-unsupported>
+                后端没有分时段单价接口（404）：这次保存只写默认价，已有时段保持原样。
+              </p>
+              <PriceRuleEditor v-model:rows="priceRules" :symbol="currencySymbol" />
+              <p class="warn-line" v-if="rulesWithoutDefault" data-price-rules-nodefault>
+                默认价未配置：时段内会按规则价计费，时段之外仍记为未计费（也因此不能给这个模型设限额）
+              </p>
+              <p class="warn-line" v-if="rulesWarning" data-price-rules-warning>{{ rulesWarning }}</p>
+            </div>
           </template>
         </div>
 
@@ -1513,6 +1642,8 @@ const advSummary = computed<string>(() => {
         </div>
 
         <p class="err-line" v-if="formError" data-form-error>{{ formError }}</p>
+        <!-- 时段保存成功但后端带了 warning：保存完就停在这一步，提示得在这儿，不能藏在第 4 步里 -->
+        <p class="warn-line" v-if="rulesWarning" data-rules-warning>{{ rulesWarning }}</p>
 
         <!-- 高级配置（默认折叠） -->
         <button type="button" class="adv-toggle" @click="advanced = !advanced">
@@ -1758,6 +1889,14 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
   color: var(--text-dim); font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
 }
 .calc-line.warn { color: var(--warn); }
+
+/* ④-c 分时段单价：与默认价同一块，用一条分隔线切开（默认价 = 时段之外的价） */
+.price-rules { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--divider); }
+.pr-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.pr-title {
+  font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
 
 
 /* ⑤ 测试并保存：两列紧凑小行（图标 + 名称 + 状态），不堆成一长条 */

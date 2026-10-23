@@ -498,6 +498,30 @@ export interface ModelConfig {
   currency_effective?: string | null;
   /** 输入价与输出价都配了才算"能算钱" */
   has_price?: boolean;
+  /** 这个模型有几段分时段单价（GET /models 每行都有，折叠标题上用） */
+  price_rule_count?: number;
+  /** 只有 GET /models/{id} 才带：完整时段规则（编辑弹窗一次拿全） */
+  price_rules?: PriceRule[];
+}
+
+/**
+ * 一段分时段单价（`/models/{id}/price-rules` 里的 items[]）。
+ *
+ * 口径：模型上的四个默认单价 = **时段之外**的价；这一行是**例外覆盖**，
+ * 只对工作日（周一–周五）生效，周末一律落到默认价；时段之间不许重叠（跨午夜拆两段再比）。
+ * 价格单位是**每百万 Token**，null = 这一段不单独计价（缓存读 / 写）。
+ */
+export interface PriceRule {
+  id?: string;
+  label?: string;
+  /** 'HH:MM'（24 小时制） */
+  start: string;
+  /** 'HH:MM'；比 start 小 = 跨午夜 */
+  end: string;
+  price_in: number | null;
+  price_out: number | null;
+  price_cache_read?: number | null;
+  price_cache_write?: number | null;
 }
 
 /** `POST /models/{id}/test` 的返回（字段随 provider 略有差异，故保留动态键）。 */
@@ -578,14 +602,23 @@ export interface UsagePoint {
 
 export type UsageTotals = UsagePoint;
 
-/** 一条系列：`cfg:<id>` / `gone:<model_name>` / `vendor:<id>`——同名不同配置不合并。 */
+/** 一条系列：`name:<自定义名称>` / `vendor:<id>`。
+ *
+ * **同名即合并**（用户口径 2026-10）：系列身份是模型的自定义名称，不认 `model_config.id` ——
+ * 两条配置配成同一个名字就是"当着一条算"，token / 请求 / 费用相加（币种仍各占一键）。
+ * 想分开就改名；上游 `model_name` 只是展示字段，**不参与合并**。 */
 export interface UsageSeries {
   key: string;
   kind: 'model' | 'vendor';
   label: string;
   model_name?: string | null;
   provider?: string | null;
+  /** 同名跨厂商合并时后端给 null，provider_label 写「多个厂商」——别在这里挑一个冒充 */
   provider_label?: string;
+  /** 参与合并的配置 id（已删除的配置不在其中）；>1 就是合并出来的系列 */
+  model_config_ids?: string[];
+  /** 参与合并的厂商 id（去重）；按厂商筛过之后只会剩一个 */
+  providers?: string[];
   currency?: string;
   /** 现在能算价，或历史上真的带过金额 */
   has_price?: boolean;
@@ -602,6 +635,8 @@ export interface UsageFilterModel {
   provider?: string | null;
   provider_label?: string;
   config_id?: string | null;
+  model_config_ids?: string[];
+  providers?: string[];
   has_price?: boolean;
   priced_now?: boolean;
   currency?: string;
