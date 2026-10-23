@@ -11335,3 +11335,19 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 - 窗格：`scrollbar-width: none`、`::-webkit-scrollbar` 宽 0px、`clientWidth 952 === offsetWidth 952`、滚动 `0 → 120` 正常。
 - 容器（主题预设列表）：`::-webkit-scrollbar` 6px、thumb 圆角 999px、`scrollbar-gutter: stable`、可滚。
 - 三档宽高窗口溢出均为 0；`vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
+### 113. 第一百一十三轮：限额的「新增」入口只留一个（跟在列表末尾）
+
+用户口径：「有两个新增限额按钮，移除上面那个按钮，编辑和新增限额在弹出式卡片修改」。
+
+原来标题栏一枚「新增限额」、空态里又一枚，功能完全一样，看着像两件事。现在：
+- **删掉标题栏那枚**；空态那枚保留（还没配任何限额时它就够用）。
+- 已有的限额列表**末尾**加一条「新增限额」——否则配了第一条之后就没有入口再加第二条了。
+- 两个入口、以及每行的「编辑」都走同一个 Modal（新增 / 编辑标题分别是「新增限额」「编辑限额」），
+  Esc 与点遮罩都是取消，这一点上一轮已经做好，这次只收敛入口。
+
+**验证（真浏览器，本地后端）**
+- 0 条限额：`[data-limit-add]` 只有 1 个，在空态块里，标题栏没有。
+- 1 条限额：`[data-limit-add]` 只有 1 个，位于 `.lim-list` **之后**的新增行里；点它弹出「新增限额」卡片，
+  点行内「编辑」弹出「编辑限额」卡片（两次都实测 `.modal-mask` 出现、标题正确）。
+- 测完把限额删掉、模型单价还原为 null（`GET /models/limits` 回 `items: []`、summary `none`）。
+- `vue-tsc` 0 error、`npm run build` 通过、自检 **21 PASS / 0 FAIL / 0 SKIP**。
