@@ -1493,6 +1493,9 @@ async function doDelete() {
   /* 关键词换到第二行（窄屏一行放不下四块） */
   .pd-kw { flex: 1 1 100%; padding-top: 10px; }
   .pd-right { padding: 10px 12px 12px; }
+  /* 页签在窄屏**换行**：五个页签的 nowrap 宽度会顶穿弹窗（弹窗宽度是 `100dvw - 20px`，
+     但子元素的 min-content 比它宽时整张纸会被撑出去，标题栏和关闭键跟着跑出屏幕）。 */
+  .pd-tabs { flex-wrap: wrap; width: 100%; max-width: 100%; }
   .pd-arch-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
