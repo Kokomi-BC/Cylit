@@ -16,7 +16,9 @@
 <link rel="icon" type="image/png" href="/cylit/icon.png" />
 <link rel="apple-touch-icon" href="/cylit/icon.png" />
 <style>
-  /* 首屏内联样式：JS 还没跑起来之前也要和成品观感一致（圆角 + 青绿 + 骨架） */
+  /* 首屏内联样式：JS 还没跑起来之前也要和成品观感一致。
+     颜色刻意与 src/styles/tokens.css 的第一套皮肤对齐（--bg / --text / --accent），
+     深色用同一组令牌的深色值 —— 首屏因此不会"白闪一下再变黑"。 */
   :root { color-scheme: light dark; }
   html, body { margin: 0; height: 100%; }
   body {
@@ -25,45 +27,60 @@
           "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .boot { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 12px; }
-  .boot-mark {
-    width: 40px; height: 40px; border-radius: 14px; background: #0f7b8a;
-    display: flex; align-items: center; justify-content: center;
+  .boot {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100vh; gap: 18px;
   }
-  .boot-mark i { display: block; width: 16px; height: 16px; border-radius: 5px; background: #fff; opacity: .9; }
-  .boot-title { font-size: 15px; font-weight: 600; letter-spacing: -.015em; }
-  .boot-hint { max-width: 42ch; text-align: center; font-size: 12.5px; color: #5b6469; }
+  /* 品牌图 PNG 自带连续圆角 + 透明四角：不要再叠 CSS 圆角（会切掉曲率）。
+     尺寸给到 72：那张插画是浅色线稿，缩到 40 出头就只剩一团白雾，认不出是谁。 */
+  .boot-logo { display: block; width: 72px; height: 72px; }
+  /* 标题反而可以收：品牌已经在上面那张图上，这里只是把名字念出来 */
+  .boot-title {
+    margin: -6px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.015em;
+  }
+  /* 加载动画：六段圆弧、圆头、无圆心，匀速快转（与 src/styles/base.css 的 .spinner 同一套参数）。
+     dasharray 是按 r=9 的周长算的：每对 9.42（40° 弧 + 20° 缺口），
+     弧段扣掉线宽（圆头会各外扩半个线宽）才留得住这道缺口。 */
+  .boot-spin { width: 30px; height: 30px; animation: boot-spin .8s linear infinite; }
+  .boot-spin > circle {
+    fill: none; stroke: #0f7b8a; stroke-width: 2.6; stroke-linecap: round;
+    stroke-dasharray: 3.68 5.74 3.68 5.74 3.68 5.74 3.68 5.74 3.68 5.74 3.68 5.74;
+  }
+  @keyframes boot-spin { to { transform: rotate(360deg); } }
+  .boot-hint { margin: 0; max-width: 42ch; text-align: center; font-size: 12.5px; color: #5b6469; }
   .boot-hint code {
     font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px;
     background: rgba(13, 32, 38, .06); padding: 1px 5px; border-radius: 6px;
   }
-  .sk-line { position: relative; overflow: hidden; width: 180px; height: 5px; border-radius: 999px; background: rgba(13, 32, 38, .10); }
-  .sk-line::after {
-    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .85), transparent);
-    animation: boot-sweep 1.5s cubic-bezier(.2, .8, .2, 1) infinite;
-  }
-  @keyframes boot-sweep { to { transform: translateX(100%); } }
+  .boot-noscript { margin: 0; max-width: 46ch; text-align: center; font-size: 13px; line-height: 1.7; }
   @media (prefers-color-scheme: dark) {
     body { background: #1a1e20; color: #f1f5f6; }
+    .boot-spin > circle { stroke: #4fb6c4; }   /* 深底上把强调色提亮一档，弧段才看得清 */
     .boot-hint { color: #b6c1c4; }
     .boot-hint code { background: rgba(255, 255, 255, .08); }
-    .sk-line { background: rgba(255, 255, 255, .14); }
   }
-  @media (prefers-reduced-motion: reduce) { .sk-line::after { animation: none; } }
+  /* 减少动效：不转，但六段弧的形状留着（清空 dasharray 会变回一个整圈，反而看不出是"在载入"） */
+  @media (prefers-reduced-motion: reduce) { .boot-spin { animation: none; } }
 </style>
 </head>
 <body>
 <div id="app">
   <div class="boot">
-    <div class="boot-mark"><i></i></div>
-    <div class="boot-title">Cylit</div>
-    <div class="sk-line"></div>
-    <p class="boot-hint">
-      若长时间停留在此页：确认后端已启动
-      （<code>python cli/pr.py serve --port 8710</code>）且前端已构建（<code>cd frontend &amp;&amp; npm run build</code>）。
-    </p>
+    <img class="boot-logo" src="/cylit/icon.png" alt="" width="72" height="72" />
+    <p class="boot-title">Cylit</p>
+    <svg class="boot-spin" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+    <p class="boot-hint">正在载入工作区…</p>
   </div>
+  <noscript>
+    <div class="boot">
+      <p class="boot-noscript">
+        Cylit 需要 JavaScript 才能运行。<br />
+        请在这个浏览器里启用脚本后刷新一次。
+      </p>
+    </div>
+  </noscript>
 </div>
 <script type="module" src="/src/main.ts"></script>
 </body>

@@ -307,31 +307,30 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
 }
 
 /* ---------------- 加载指示器 ----------------
- * 圆环 + 缺口，**不是匀速转**：外圈按 linear 稳速旋转，弧长本身再用 ease-in-out 一伸一缩
- * （Material 那套循环进度）。只让圈匀速转的话，每一圈都一样快慢，看着像秒针/计时器；
- * 弧长伸缩才让"在转"有呼吸感。所以这里是两层动画叠加，调的时候别把 spin-arc 删了。
- * 用法：<svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /></svg>
+ * **六段圆弧 + 圆头 + 无圆心**，匀速快转（用户口径 2026-12：照那张六段弧的图来，
+ * 中间的实心圆不要，弧段两端要圆角不要直角）。
+ *
+ * 为什么一个 <circle> 就够了：`stroke-dasharray` 可以写 **12 个值**（6 段弧 + 6 个缺口），
+ * 于是同一个圆被切成六段均匀的圆弧，再靠 `stroke-linecap: round` 把两端磨圆 ——
+ * 不用六条 <path>，模板里那十来个既有的
+ * `<svg class="spinner"><circle cx="12" cy="12" r="9" /></svg>` 一行都不用改。
+ *
+ * 数字怎么来的：半径 9 → 周长 ≈ 56.55，六等分每对 9.42 =
+ * 40° 的弧（6.28）+ 20° 的缺口（3.14）。圆头会从弧段两端各外扩半个线宽（共 2.4），
+ * 所以弧段本身要**扣掉线宽**（6.28 − 2.4 ≈ 3.88），缺口补回来（5.54），
+ * 这样看上去才是"弧 40° / 空 20°"，而不是六段几乎连成一圈的胖环。
+ *
  * `flex: none`：放在 flex 行里不被压扁（否则圈会被挤成椭圆，甚至看不见）。
  */
-.spinner { flex: none; width: 22px; height: 22px; animation: spin 1.6s linear infinite; }
+.spinner { flex: none; width: 22px; height: 22px; animation: spin .8s linear infinite; }
 .spinner > circle {
   fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round;
-  /* 视口 24、半径 9 → 周长 ≈ 56.5；dasharray 第二项给足余量，只留一段弧可见 */
-  stroke-dasharray: 1 150;
-  animation: spin-arc 1.4s ease-in-out infinite;
+  stroke-dasharray: 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-/* 弧长 1 → 42 → 42，偏移在末帧正好退一整圈（≈56.5），收尾接回起点不跳 */
-@keyframes spin-arc {
-  0%   { stroke-dasharray: 1 150;  stroke-dashoffset: 0; }
-  50%  { stroke-dasharray: 42 150; stroke-dashoffset: -16; }
-  100% { stroke-dasharray: 42 150; stroke-dashoffset: -56; }
-}
-/* 减少动效：全局规则只是把时长压到 0，弧长会**停在最短那一帧**（几乎看不见）。
-   所以这里自己收干净，静态也留一个完整的环。 */
+/* 减少动效：不转，但六段弧留着 —— 清空 dasharray 会变回一个整圈，看不出"在载入" */
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }
-  .spinner > circle { stroke-dasharray: none; animation: none; }
 }
 
 /* ---------------- 页面容器 ---------------- */

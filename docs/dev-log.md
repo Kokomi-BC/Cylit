@@ -12526,3 +12526,36 @@ KeepAlive 是把整棵 DOM **摘下来**（脱离文档）再插回去。实测�
 ```
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。
+
+### 145. 第一百四十五轮：首屏（index.html）按现在的页面风格重做，加载动画换成六段圆头圆弧
+
+用户口径（2026-12）：「优化 index.html（符合现在的页面风格）」+「加载动画换成那张图的样子：
+**只要六段圆弧、不要中间实心圆、弧与弧之间圆角不要直角、快速旋转**」。
+
+**首屏**（`index.html`）
+
+- 颜色对齐 `tokens.css` 第一套皮肤（`--bg #f2f4f5` / `--text #171b1d` / `--accent #0f7b8a`），
+  深色用同一组令牌的深色值（`#1a1e20` / `#f1f5f6`），首屏不再"白闪一下再变黑"；
+- 品牌图换成 `/cylit/icon.png` 那张裁好的 PNG（52 → **72px**：它是浅色线稿，缩到 40 出头只剩一团白雾），
+  下面跟一行 `Cylit`、一枚加载指示器、一句「正在载入工作区…」；
+- **删掉**原来给开发者看的那段提示（`python cli/pr.py serve --port 8710` + `npm run build`）——
+  线上跑的是 pm2，用户看到这行只会更困惑；
+- 补 `<noscript>`：禁用脚本时说清楚"需要 JavaScript 才能运行"；
+- 修掉一处旧笔误：`og:title` 那个 meta 同时写了 `name` 与 `property`。
+
+**加载动画**（`index.html` 的 `.boot-spin` 与 `src/styles/base.css` 的 `.spinner` 同一套参数）
+
+- 一个 `<circle>` 就够：`stroke-dasharray` 写 **12 个值**（6 段弧 + 6 个缺口），
+  配上 `stroke-linecap: round` —— 六段圆头圆弧，没有圆心；模板里既有的十几处
+  `<svg class="spinner"><circle .../></svg>` 一行都不用改；
+- 数字：半径 9 → 周长 56.55，六等分每对 9.42 = 40° 弧 + 20° 缺口。圆头会各外扩半个线宽，
+  所以弧段要扣掉线宽（6.28 − 2.4 = **3.88**）、缺口补回来（**5.54**），看上去才是"弧 40° / 空 20°"；
+  首屏那枚线宽 2.6，对应 3.68 / 5.74；
+- 转速：原来的"外圈匀速 + 弧长伸缩"两层动画整套删掉，改成 **0.8s 一圈匀速快转**；
+- `prefers-reduced-motion`：只停旋转，**不清 dasharray**（清了会变回一个整圈，看不出在载入）。
+
+**实测（CDP）**：首屏（拦掉应用 JS）`.boot-spin` 是 `svg`、40px、`dasharray 3.68/5.74 ×6`、
+`linecap round`、`stroke rgb(15,123,138)`、`0.8s`；应用内 `.spinner` 三档尺寸（22/30/44）
+都渲染成六段圆头弧；间隔 140ms 取两次 `transform` 不同 → 确实在转。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。
