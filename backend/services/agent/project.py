@@ -571,6 +571,11 @@ def figures(paper_id: str, page: int | None = None) -> dict:
 #: 一次最多回几条公式（Attention 这类论文全篇 10~30 条，够用；超长论文要筛）
 FORMULA_LIMIT = 40
 
+#: `limit` 的天花板（路由 `Query(le=500)` 用的是同一个数）：窗口再大也只是把整份列表一次
+#: 搬过 HTTP，调大只会变成一次几十 MB 的响应。**服务层自己也要夹**——直接调
+#: `formulas()` 的地方（工具、脚本、测试）不经过 FastAPI 的 Query 校验。
+FORMULA_LIMIT_MAX = 500
+
 #: LaTeX **归一化**：只削掉"不影响语义"的排版差异，用来判定"这是不是同一条公式"。
 #:
 #: 为什么需要它：同一条公式会被**重复陈述**（实测：失真上界在第 6 页与第 18 页各排一遍、
@@ -620,7 +625,8 @@ def _doc_key(item: dict) -> tuple[int, int, str]:
 
 
 def formulas(paper_id: str, *, page: int | None = None, query: str | None = None,
-             limit: int = FORMULA_LIMIT, include_inline: bool = False) -> dict:
+             limit: int = FORMULA_LIMIT, include_inline: bool = False,
+             offset: int = 0) -> dict:
     r"""本论文的公式清单（LaTeX + 所在页 + 行锚点 + grade + 来源）。
 
     **默认读页级 Markdown 里的块级公式**（`display=true`）—— 那就是阅读器「公式」栏里
@@ -635,8 +641,10 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
       补上（条目带 `source:"parse"`）。卡片的 LaTeX 常常只是公式的一段 ——
       `partial=True` 就是在说这件事，此时该去看 `page_image_get(page)` 的原版面；
     - `grade` 只有解析卡有，markdown 条目留空（不为一个评级去 join 表）；
-    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`，
-      并用 `missing_pages` 说明**还差哪几页**（不传 page 时以前只给"漏了 7 条"，得自己数页）；
+    - 排序是**文档顺序**（页 → 块序号）；**真分页**：`offset` / `limit` 切同一条列表，
+      回执带 `offset` / `limit`（clamp 后的实际口径）/ `next_offset`（没有下一页为 None）/
+      `has_more`；`truncated` 就是 `has_more`（窗口后面还有东西），
+      并用 `missing_pages` 说明**窗口之后那几条落在哪几页**；
     - 同一条块级公式在**不同页重复陈述**（第 6/18 页的失真上界那种）按归一化后的 LaTeX
       合并成一条，其余页码进 `also_on`；行内条目不参与跨页合并（页码就是它的价值）。
     - `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围内的
@@ -735,13 +743,22 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
     #: 不是"这次给了多少"——后者由 `returned` 说）。
     listed = [one for one in items if one.get("display") or include_inline]
 
-    cap = max(1, int(limit or FORMULA_LIMIT))
-    kept = listed[:cap]
-    #: **这次没给出来的那几条落在哪几页**：以前只回一个 `truncated: true` + 条数，
-    #: 用户/模型得自己把 40 条按页数一遍才知道还差第 20、21 页（实测：47 条只回 40 条，
-    #: 覆盖到第 19 页为止）。它取代不了"放宽上限"的全部好处，但它是**一次调用就能照做**的
+    # 真分页：`offset` / `limit` 切的是**同一条** `listed`（去重、筛选之后、文档顺序），
+    # 所以翻页只换窗口、不换内容；cap 仍是"一条都不给也要给 1 条"的老口径，只是多了天花板。
+    cap = min(max(1, int(limit or FORMULA_LIMIT)), FORMULA_LIMIT_MAX)
+    start = max(0, int(offset or 0))
+    end = start + cap
+    kept = listed[start:end]
+    #: 这次窗口**后面还有没有东西**：`truncated` / `missing_pages` / `next_offset` 都只看它。
+    #: 以前 `truncated` 比的是"这次给了几条"，于是翻到最后一页也会报截断（窗口空了却还有
+    #: `has_more`），模型没法判断到底翻完没有。
+    has_more = len(listed) > end
+    next_offset = end if has_more else None
+    #: **这次窗口之后的那几条落在哪几页**（没截断就是空列表）：以前只回一个 `truncated: true`
+    #: + 条数，用户/模型得自己把 40 条按页数一遍才知道还差第 20、21 页（实测：47 条只回 40 条，
+    #: 覆盖到第 19 页为止）。它取代不了翻页的全部好处，但它是**一次调用就能照做**的
     #: 下一步，而且不随论文规模变长；直接把上限放宽只是把悬崖往后挪，行内那批几千条时照样截断。
-    missing_pages = sorted({int(one.get("page") or 0) for one in listed[cap:]
+    missing_pages = sorted({int(one.get("page") or 0) for one in listed[end:]
                             if one.get("page")})
     out = [{
         "page": int(i.get("page") or 0) or None,
@@ -768,9 +785,13 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
             # 两路混 = mixed。模型据此决定要不要再 page_markdown_get 复核
             "source": ("parse" if sources == {"parse"}
                        else "markdown" if sources == {"markdown"} else "mixed"),
-            # 只有"上限把这次要列的条目切掉了"才叫 truncated；`include_inline=False`
-            # 不算截断 —— 行内那批是**按需过滤**掉的，条数写在 `omitted_inline` 里。
-            "truncated": len(listed) > len(out),
+            # 分页口径：`offset` / `limit` 是这次真正用的那一份（clamp 之后的），
+            # `next_offset` 没有下一页就是 None，`has_more` 说窗口后面还有没有东西。
+            "offset": start, "limit": cap,
+            "next_offset": next_offset, "has_more": has_more,
+            # 只有"窗口后面还有条目"才叫 truncated；`include_inline=False` 不算截断 ——
+            # 行内那批是**按需过滤**掉的，条数写在 `omitted_inline` 里。
+            "truncated": has_more,
             # 三个计数同一口径（都数去重后的全部在范围条目），不变式 total = display + inline：
             # 块级 = 完整公式（可引用），行内 = 碎片/单符号（不适合当引用来源）
             "display_total": display_total, "inline_total": inline_total,

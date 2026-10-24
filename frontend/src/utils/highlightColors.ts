@@ -1,32 +1,55 @@
 /** 高亮色板：**与后端 `backend/services/annotation_service.py::HIGHLIGHT_PALETTE` 同一份**。
  *
- * 9 个色名 → hex，逐字一致（顺序也一致）：red / orange / yellow / green / blue / indigo /
- * violet / pink / purple。
+ * 「多巴胺」8 色（2026-12 用户口径：所有菜单的色板都换成这一套），逐字一致（顺序也一致）：
+ * strawberry / tangerine / lemon / mint / lagoon / vega / grape / sakura。
  *
- * 为什么前端也要有这一份：库里现在**只存 hex**（后端 `_norm_color` 把色名映射成 hex 落库），
+ * 历史那 9 个色名（red / orange / … / purple）**已经删干净**：库里存量高亮已全部重刷成这 8 个
+ * hex，所以不需要再"认回老色名"——`paletteNameOf` 只认下面这 8 条，认不出的一律算自定义色。
+ * 后端 `HIGHLIGHT_PALETTE` 现在也是这 8 条，两边键集合必须**完全相同**（少一条会红在
+ * `tests/test_highlight_color.py::test_palette_matches_the_frontend_palette`）。
+ *
+ * hex 这里用大写写，后端 `_norm_color` 落库时统一转小写 —— 渲染一律大小写不敏感
+ * （`paletteNameOf` 反查就是这么做的）。
+ *
+ * 为什么前端也要有这一份：库里**只存 hex**（后端 `_norm_color` 把色名映射成 hex 落库），
  * 而前端要在"落库之前"就把颜色画出来（取色点、"选的色"、笔记卡标题条）。名字表各存一份就会走散 ——
  * **改一处必须改两处**：后端那个 `HIGHLIGHT_PALETTE` 和这里，缺一条就会出现
  * "点这个色 → 落库是另一个色"。
- *
- * `pink` / `purple` 是**历史色名**（界面不再提供，存量高亮还认）：后端色板里同样保留着，
- * 所以这里也留 —— 两边条目必须一字不差。
  */
 export const HL_PALETTE: Record<string, string> = {
-  red: '#ff0000',
-  orange: '#ffa500',
-  yellow: '#e6b414',
-  green: '#3ccd82',
-  blue: '#55a5ff',
-  indigo: '#4b0082',
-  violet: '#8f00ff',
-  pink: '#ff64a5',
-  purple: '#965adc',
+  strawberry: '#FF4D6D',
+  tangerine: '#FF8A3D',
+  lemon: '#FFC93C',
+  mint: '#3DDC84',
+  lagoon: '#22D3EE',
+  vega: '#4D7CFF',
+  grape: '#A855F7',
+  sakura: '#FF5CC8',
 };
+
+/** 菜单里列这 8 个（**顺序即菜单顺序**）= 色板全量。
+ *
+ * 为什么还要单独一条列表：菜单的**顺序**由它定（`HL_PALETTE` 是 Record，顺序只是书写顺序）；
+ * 色点是数据驱动（行内 `--hl-sw`），所以加减色只改 `HL_PALETTE` + 这里两处，CSS 一行都不用动。 */
+export const HL_SWATCHES: string[] = [
+  'strawberry', 'tangerine', 'lemon', 'mint', 'lagoon', 'vega', 'grape', 'sakura',
+];
+
+/** 色 id → 中文色名（色点 `title` 用）。 */
+export const HL_SWATCH_LABELS: Record<string, string> = {
+  strawberry: '草莓红', tangerine: '橘子橙', lemon: '柠檬黄', mint: '薄荷绿',
+  lagoon: '湖蓝', vega: '电光蓝', grape: '葡萄紫', sakura: '樱花粉',
+};
+
+/** `[色 id, hex]` 按 `HL_SWATCHES` 的顺序 —— 菜单渲染只吃这一份（不用再去查 `HL_PALETTE`）。 */
+export const HL_SWATCH_HEX: Array<[string, string]> = HL_SWATCHES.map(
+  (id) => [id, HL_PALETTE[id]] as [string, string],
+);
 
 /** 荧光笔底色的浓度：正文（`domMarks` / `useMarkdown` / `NotesView`）统一写成 `<hex>66` = 40%。
  *
  * 取色点也必须用**同一档**：色点比正文浓一档，"选的色"和"看到的色"就又不一样了
- * （见 `ReaderView` 里把 `HL_PALETTE` 摊成 `--hl-sw-*` 的那段注释）。
+ * （色点由 `hlSwatchCss` 写进行内 `--hl-sw`，见 `base.css` 的 `.hl-swatch`）。
  */
 export const HL_BG_ALPHA_HEX = '66';
 
@@ -60,4 +83,56 @@ export function highlightCss(color: string, fallback = 'var(--accent)'): string 
   if (!color) return fallback;
   if (color.startsWith('#') || /^(?:rgb|hsl|color)\s*\(/.test(color)) return color;
   return HL_COLOR_CSS[color] ?? fallback;
+}
+
+/** 存下来的高亮色 → **色 id**（这 8 个之一）；自定义色 / 认不出的一律 `null`。
+ *
+ * 为什么需要它：库里**只存 hex**（后端 `_norm_color` 落库前把色名换成 hex，且 hex 是大写写进来、
+ * 落库转小写），而"当前是这个色"的判定以前写成 `stored === 'red'` —— hex 永远不等于色名，
+ * 那圈"当前色"的环从来没亮过。所以统一**按归一化 hex 反查**：大小写不敏感，色 id 也原样认
+ * （前端拿 id 画点、发给后端时更要认）。
+ */
+export function paletteNameOf(color?: string | null): string | null {
+  const c = String(color ?? '').trim().toLowerCase();
+  if (!c) return null;
+  for (const [name, hex] of Object.entries(HL_PALETTE)) {
+    if (name === c || hex.toLowerCase() === c) return name;
+  }
+  return null;
+}
+
+
+/** 色点该带哪个 class：色 id 原样（**只是钩子**，配色已不再走 CSS 类 —— 见 `base.css` 的
+ *  `.hl-swatch`），自定义色一律 `custom-hex`。 */
+export function swatchClassOf(color?: string | null): string {
+  return paletteNameOf(color) ?? 'custom-hex';
+}
+
+/** 色 id / 任意色 → 中文色名（色点 `title` 用）：排不上号的老色回它自己的 id。 */
+export function swatchLabel(color?: string | null): string {
+  const id = paletteNameOf(color) ?? String(color ?? '').trim();
+  return HL_SWATCH_LABELS[id] ?? id;
+}
+
+/** 色点里那层"色"的 CSS 值 —— **与 `mark.hl` 的 `--hl-bg` 同一口径**（见 `utils/domMarks.ts`
+ *  的 `makeMark`）：色 id / `#rrggbb` 一律补 `66`（40%），`rgb()` / `hsl()` 交给 `color-mix` 取
+ *  40%，3/8 位 hex 原样 —— 逐条与 `makeMark` 对齐，色点才不会比正文浓一档。
+ *  ⚠️ 这里只给"色"，底色（不透明 `var(--bg)`）由 `base.css` 的 `.hl-swatch` 垫 —— 两者叠起来
+ *  才与"正文 mark 压在阅读面上的 40%"是同一个合成结果。 */
+export function hlSwatchCss(color?: string | null): string {
+  const raw = String(color ?? '').trim();
+  const id = paletteNameOf(raw);
+  const c = id ? HL_PALETTE[id] : raw;
+  if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c)) {
+    return c.length === 7 ? c + HL_BG_ALPHA_HEX : c;
+  }
+  if (/^(?:rgba?|hsla?)\(/i.test(c)) return 'color-mix(in srgb, ' + c + ' 40%, transparent)';
+  return c;
+}
+
+/** 色点的行内样式：**只写变量 `--hl-sw`**（不写 `background`）—— 底色与合成只有
+ *  `base.css` 的 `.hl-swatch` 那一条，菜单只负责说"这是哪个色"。 */
+export function swatchStyleOf(color?: string | null): Record<string, string> | undefined {
+  const css = hlSwatchCss(color);
+  return css ? { '--hl-sw': css } : undefined;
 }

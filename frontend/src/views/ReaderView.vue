@@ -31,7 +31,8 @@ import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
-import { HL_BG_ALPHA_HEX, HL_PALETTE, highlightCss } from '@/utils/highlightColors';
+import { HL_SWATCHES, highlightCss, paletteNameOf, swatchClassOf, swatchLabel,
+  swatchStyleOf } from '@/utils/highlightColors';
 import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
@@ -73,22 +74,12 @@ import Menu from '@/components/Menu.vue';
 import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
-const HIGHLIGHT_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
-
-/* 取色点（划词胶囊 / 右键触摸条 / 换色菜单 / 笔记卡圆点）的颜色写在 `base.css` 的
- * `.hl-swatch.<色名>` 里，而那几处模板分在 `SelectionMenu` / `ContextMenu` / `ReaderChat`
- * 三个组件里 —— 能同时见到它们的地方只有 `base.css` 这一份样式。
- * 所以色板只从 `HL_PALETTE`（前端唯一色板，= 后端 `HIGHLIGHT_PALETTE`）取一次，摊成
- * `--hl-sw-<色名>` 挂到**根上**（这些浮层全都 Teleport 到 body，挂阅读器节点上取不到）。
+/* 菜单里的色板 = `HL_SWATCHES`（「多巴胺」8 色，**顺序即菜单顺序**）：右键触摸条与换色菜单都吃它。
  *
- * 值写成 `<hex>66`（40%）：与正文 mark 的行内 `--hl-bg`（`domMarks` 拼的也是 `<hex>66`）
- * 逐字同一个字符串 —— "点的色"与"正文里看到的色"因此必定是同一个 hex、同一档浓度，
- * 顺带深浅两套主题都自动一致（正文也没按主题分色，只有文字跟上下文走）。 */
-if (typeof document !== 'undefined') {
-  for (const [name, hex] of Object.entries(HL_PALETTE)) {
-    document.documentElement.style.setProperty(`--hl-sw-${name}`, `${hex}${HL_BG_ALPHA_HEX}`);
-  }
-}
+ * 色点是**数据驱动**的：每个点行内写 `--hl-sw: <hex>66`（`swatchStyleOf`，40% 与 mark 的
+ * `--hl-bg` 同一口径），配色只有 `base.css` 里那一条 `.hl-swatch`。以前按色名写 9 条 CSS 类、
+ * 再往 `:root` 挂 `--hl-sw-<色名>`，加一个色要动三处 —— 现在只改色板那两行列表。 */
+const HIGHLIGHT_COLORS = HL_SWATCHES;
 
 const route = useRoute();
 const router = useRouter();
@@ -6705,14 +6696,16 @@ function openNoteDelMenu(_ev: MouseEvent, card: NoteCard) {
 
 /* ---------------------- 笔记卡的高亮颜色（用户口径 2026-11-28） ----------------------
  * 原来头部把 8 枚色点一字排开（而且只有编辑态给），又挤、查看态还改不了色。
- * 现在合并成**一枚圆形按钮**：里面就是当前高亮色，点开是一块贴着它的二级菜单（7 色 + 自定义）。
+ * 现在合并成**一枚圆形按钮**：里面就是当前高亮色，点开是一块贴着它的二级菜单（色板 + 自定义）。
  * 查看态 / 编辑态都有；菜单带"从按钮那一角张开"的弹出动画。
  * 状态与删除菜单同一个写法（局部 ref + Teleport + 打开期间才挂全局监听）。 */
 const noteColorMenu = ref({ open: false, top: 0, left: 0, key: '', origin: 'top left' });
-/// 菜单尺寸：色块 21px + 6px 内边距 + 2px 间距 → 外高 35px，与查看态「⋯」菜单完全等高
-/// 8 × 21 + 7 × 2 + 2 × 6 + 2 描边 = 196 宽、21 + 12 + 2 = 35 高
-const NOTE_COLOR_MENU_W = 196;
-const NOTE_COLOR_MENU_H = 35;
+/* 菜单尺寸（用来夹在视口里）：色块 21px、间距 2px、内边距 6px、1px 描边各一道 ——
+ * **由色板长度算出来**，加减一颗色时弹出位置仍然是准的（以前手写 196 = 7 色 + 自定义，
+ * 色板一换就偏了一颗的宽度）。 */
+const SWATCH_DOTS = HL_SWATCHES.length + 1;        // + 那颗「自定义」
+const NOTE_COLOR_MENU_W = SWATCH_DOTS * 21 + (SWATCH_DOTS - 1) * 2 + 6 * 2 + 1 * 2;
+const NOTE_COLOR_MENU_H = 21 + 6 * 2 + 1 * 2;      // = 35，与查看态「⋯」菜单等高
 /** 菜单正对着的那张卡（菜单里高亮"当前色"、点色时改的都是它） */
 const colorMenuCard = computed(() => (noteColorMenu.value.open
   ? noteCards.find((c) => c.key === noteColorMenu.value.key) ?? null : null));
@@ -6728,9 +6721,13 @@ function noteLeadStyle(card: NoteCard) {
   const css = noteAccentColor(card);
   return css ? { color: css } : undefined;
 }
-/** 自定义色不是那 7 个类名之一，只能行内给（否则圆点会是空的） */
+/** 那枚圆点的**行内样式**：只写变量 `--hl-sw`（`swatchStyleOf`），任何色都走同一条路。
+ *
+ * 以前这里对 hex 直接给 `background: <hex>` —— 全不透明，比正文 mark 的 40% 浓一档
+ * （用户 2026-12：「笔记浮窗里那枚色点比正文深」）。现在写 `--hl-sw = <hex>66`，
+ * 底色（`var(--bg)`）与 40% 的合成全交给 `base.css` 的 `.hl-swatch` —— 与 mark 同一条链。 */
 function colorDotStyle(color: string) {
-  return isHexColor(color) ? { background: color } : undefined;
+  return swatchStyleOf(color);
 }
 
 function closeNoteColorMenu() {
@@ -8409,7 +8406,7 @@ function renderMarkdown(text?: string | null) {
           :aria-expanded="noteColorMenu.open && noteColorMenu.key === card.key"
           @click.stop="openNoteColorMenu($event, card)"
         >
-          <span class="np-color-dot hl-swatch" :class="card.color"
+          <span class="np-color-dot hl-swatch" :class="swatchClassOf(card.color)"
                 :style="colorDotStyle(card.color)" />
         </button>
         <button v-if="card.mode !== 'view'" class="np-head-save" type="button"
@@ -8493,13 +8490,17 @@ function renderMarkdown(text?: string | null) {
             :key="c"
             type="button"
             class="hl-swatch"
-            :class="[c, { on: colorMenuCard?.color === c }]"
-            :title="`换成 ${c} 色`"
+            :class="[c, { on: paletteNameOf(colorMenuCard?.color) === c }]"
+            :style="swatchStyleOf(c)"
+            :title="'换成' + swatchLabel(c) + '色'"
             data-note-color-pick
             @click="pickNoteColor(c)"
           />
           <!-- 自定义色（用户口径 2026-10-10："少了自定义色彩"）—— 与胶囊上那枚同一做法 -->
-          <label class="hl-swatch custom" title="自定义颜色">
+          <!-- 当前色**不在这 8 颗里**（任意自定义 hex）时，把这枚标成"当前" —— 它就是
+               "上面那些都不是"的那一颗。判定同走 `paletteNameOf`（按归一化 hex 反查）。 -->
+          <label class="hl-swatch custom" title="自定义颜色"
+                 :class="{ on: !!colorMenuCard && !paletteNameOf(colorMenuCard.color) }">
             <input
               type="color"
               :value="colorMenuCard && isHexColor(colorMenuCard.color) ? colorMenuCard.color : '#ffd700'"

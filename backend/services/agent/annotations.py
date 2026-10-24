@@ -28,7 +28,7 @@ from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.annotation import annotation_service as svc
 from backend.services.annotation.annotation_service import (
-    HIGHLIGHT_COLORS, HIGHLIGHT_PALETTE,
+    HIGHLIGHT_COLORS, HIGHLIGHT_PALETTE, RETIRED_COLOR_ALIASES,
 )
 
 log = get_logger(__name__)
@@ -561,9 +561,11 @@ def anchor_text(paper_id: str, anchor: str, *, side: str = "en") -> str | None:
     return None
 
 
-#: 配色建议（与 `annotation_service.HIGHLIGHT_COLORS` 里"新界面会提供"的那七个一致）。
-#: 用户口径（2026-12-06）：**多彩、尽量不一样** —— 一片同色等于没有颜色，标注就看不出层次。
-PALETTE = ("blue", "violet", "green", "orange", "red", "indigo", "yellow")
+#: 配色建议 = **多巴胺色板**（与 `annotation_service.HIGHLIGHT_COLORS` 同一组、同一顺序）。
+#: 用户口径（2026-12-06）：**多彩、尽量不一样** —— 一片同色等于没有颜色，标注就看不出层次；
+#: 2026-12 又把整份色板换成多巴胺那八个：宿主自动分配的颜色必须和菜单上能点的颜色是同一套，
+#: 否则用户点开换色菜单会发现「当前这个色根本不在里面」。
+PALETTE = HIGHLIGHT_COLORS
 
 #: 落库色值（hex）→ 色名：库里只存 hex（见 `annotation_service.HIGHLIGHT_PALETTE`），
 #: 数"哪个颜色用得最少"时得先认回名字。
@@ -625,10 +627,13 @@ def normalize_color(value: object) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
         return ""
-    # **色板优先**：`pink` 在 `CSS_COLOR_NAMES` 里也有一条（`#ec4899`），那与前端 `HL_COLOR_CSS`
-    # 画的粉不是一个颜色；色板的 pink 才是存量高亮迁移后要落的那条。
+    # **色板优先**：同一个词在 `CSS_COLOR_NAMES` 里往往还有一条（`pink` → `#ec4899`），那与色板
+    # 画的不是同一个颜色；色板/别名才是界面上真能点到的那个。
     if raw in HIGHLIGHT_PALETTE:
         return HIGHLIGHT_PALETTE[raw]
+    alias = RETIRED_COLOR_ALIASES.get(raw)
+    if alias:
+        return HIGHLIGHT_PALETTE[alias]
     if raw in CSS_COLOR_NAMES:
         return CSS_COLOR_NAMES[raw]
     if re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", raw):

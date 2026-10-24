@@ -901,15 +901,20 @@ async def agent_formulas(paper_id: str, request: Request,
                          page: int | None = Query(None),
                          query: str | None = Query(None),
                          include_inline: bool = Query(False),
+                         offset: int = Query(0, ge=0),
+                         limit: int = Query(project.FORMULA_LIMIT, ge=1, le=500),
                          x_internal_token: str | None = Header(None)):
-    """公式清单（工具 `formula_get` 的后端）。
+    """公式清单（工具 `formula_get` 的后端）—— **真分页**：`offset` / `limit` 切同一条列表。
 
     默认只给**解析阶段的完整公式卡**（`is_inline=0`）；`include_inline=true` 才把
-    markdown 抽取那一路（行内符号 / 伪代码碎片）并进来。
+    markdown 抽取那一路（行内符号 / 伪代码碎片）并进来。`limit` 的天花板是 500
+    （`project.FORMULA_LIMIT_MAX`）：窗口再大就是一次几十 MB 的响应。
     """
     _require_internal(x_internal_token)
     return envelope(project.formulas(paper_id, page=page, query=query,
-                                     include_inline=bool(include_inline)),
+                                     include_inline=bool(include_inline),
+                                     offset=max(0, int(offset)),
+                                     limit=min(max(int(limit), 1), 500)),
                     request=request)
 
 

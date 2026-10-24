@@ -81,8 +81,10 @@ def test_side_and_scope_round_trip() -> None:
         "side": "zh", "scope": "markdown",
     })
     assert created["side"] == "zh" and created["scope"] == "markdown"
-    # 色名落库成 hex（库里只存 hex，见 `annotation_service.HIGHLIGHT_PALETTE`）
-    assert created["start"] == 5 and created["end"] == 9 and created["color"] == "#3ccd82"
+    # 色名落库成 hex（库里只存 hex，见 `annotation_service.HIGHLIGHT_PALETTE`）。
+    # 写断言时**查色板**而不是抄死值：色板换过一次（2026-12 多巴胺八个），抄死值就得跟着改一次。
+    assert created["start"] == 5 and created["end"] == 9
+    assert created["color"] == svc._norm_color("green") == svc.HIGHLIGHT_PALETTE["mint"]
 
     items = svc.list_highlights(FAKE_PAPER)["items"]
     assert len(items) == 1

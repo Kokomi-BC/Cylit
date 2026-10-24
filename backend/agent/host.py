@@ -112,8 +112,13 @@ class HostClient:
 
     async def formulas(self, paper_id: str, *, page: int | None = None,
                        query: str | None = None,
-                       include_inline: bool = False) -> dict:
-        """公式清单（默认只给块级完整公式卡；`include_inline` 才要行内符号/碎片）。"""
+                       include_inline: bool = False,
+                       offset: int | None = None, limit: int | None = None) -> dict:
+        """公式清单（默认只给块级完整公式卡；`include_inline` 才要行内符号/碎片）。
+
+        `offset` / `limit` 是宿主的**真分页**口径，`None` 就不传（默认值归后端，
+        这里填一个就是第二处默认值）。工具靠它按窗口把整份列表一次拿回来。
+        """
         params: dict = {}
         if page:
             params["page"] = int(page)
@@ -121,6 +126,11 @@ class HostClient:
             params["query"] = query
         if include_inline:
             params["include_inline"] = "true"
+        # 字符串化交给 httpx 的 params dict：别在这里自己 int→str，两处格式就会漂
+        if offset is not None:
+            params["offset"] = int(offset)
+        if limit is not None:
+            params["limit"] = int(limit)
         return dict(await self.get(f"/agent/papers/{paper_id}/formulas", params or None) or {})
 
     async def kb_search(self, query: str, *, top_k: int) -> dict:

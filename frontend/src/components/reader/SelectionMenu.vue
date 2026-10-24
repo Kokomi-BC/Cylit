@@ -14,6 +14,7 @@
  */
 import AppIcon from '@/components/AppIcon.vue';
 import { computed, nextTick, ref, watch } from 'vue';
+import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 
 const props = withDefaults(defineProps<{
   visible: boolean;
@@ -98,10 +99,7 @@ function pickCustom(ev: Event): void {
   emit('highlight', (ev.target as HTMLInputElement).value);
 }
 
-const COLOR_TITLE: Record<string, string> = {
-  red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝',
-  indigo: '靖蓝', violet: '紫', pink: '粉', purple: '中性',
-};
+
 </script>
 
 <template>
@@ -138,7 +136,8 @@ const COLOR_TITLE: Record<string, string> = {
         v-for="c in props.colors"
         :key="c"
         :class="['hl-swatch', c]"
-        :title="`标成${COLOR_TITLE[c] ?? c}`"
+        :style="swatchStyleOf(c)"
+        :title="'标成' + swatchLabel(c)"
         @click="emit('highlight', c)"
       />
       <!-- 自定义颜色（用户口径 2026-10-10）：一个**原生取色器**盖在七彩圆点上（与目标站同做法），

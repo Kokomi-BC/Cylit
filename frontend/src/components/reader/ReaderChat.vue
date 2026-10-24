@@ -24,6 +24,7 @@ import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
+import { HL_SWATCHES, paletteNameOf, swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 import { BRAND_ICON } from '@/utils/brand';
 import { BUILTIN_EFFORTS } from '@/utils/reasoning';
 import { convCount } from '@/api/types';
@@ -1826,9 +1827,9 @@ function stop() {
 
 /* --------------------------- 存为笔记（解释那一轮的回答） --------------------------- */
 
-/** 那排色点用哪几色：色块本身沿用 `base.css` 的 `.hl-swatch`（与划词胶囊同一份颜色）。 */
-const NOTE_COLORS = ['yellow', 'green', 'blue', 'pink'];
-const NOTE_COLOR_NAMES: Record<string, string> = { yellow: '黄', green: '绿', blue: '蓝', pink: '粉' };
+/** 那排色点用哪几色：**与划词胶囊/右键菜单同一份色板**（`HL_SWATCHES`，「多巴胺」8 色），
+ *  色块本身沿用 `base.css` 的 `.hl-swatch`，颜色由行内 `--hl-sw` 给。 */
+const NOTE_COLORS = HL_SWATCHES;
 
 /** 最后一条助手消息的 id（不经过 `sending` 判断：锚点要在这一轮刚落库时钉上去）。 */
 function lastAnswerId() {
@@ -2569,8 +2570,9 @@ defineExpose({ uploadFiles, ensureThread });
             <div v-if="canSaveAsNote(m)" class="note-swatches">
               <span class="ns-hint">存为笔记</span>
               <button v-for="c in NOTE_COLORS" :key="c" type="button"
-                      class="hl-swatch" :class="[c, { on: lastAnchor?.color === c }]"
-                      :title="`标成${NOTE_COLOR_NAMES[c]}色，并把这条回答存成它的笔记`"
+                      class="hl-swatch" :class="[c, { on: paletteNameOf(lastAnchor?.color) === c }]"
+                      :style="swatchStyleOf(c)"
+                      :title="'标成' + swatchLabel(c) + '色，并把这条回答存成它的笔记'"
                       @click="saveAnswerWithColor(c)" />
             </div>
 

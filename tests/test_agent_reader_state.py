@@ -104,6 +104,22 @@ def test_contrast_view_gives_no_default_side() -> None:
     assert "对照" in out["hint"], "要给模型一句话解释为什么 note_side 是 null"
 
 
+def test_view_hint_does_not_contradict_itself() -> None:
+    """视图那句提示不能自相矛盾（用户口径 2026-12）。
+
+    老写法是「rows = 正文行，高亮才画得出来；markdown / pdf 面上的高亮在阅读视图里看不到」——
+    读者正看 pdf 时，前半句说"当前视图 pdf"、后半句说"pdf 面上的高亮看不到"，读起来像 bug 描述
+    串进了提示语。现在按**锚点**说清各自在哪看得到，并且不再出现"阅读视图"这个会被当前视图顶掉的词。
+    """
+    for view, anchor_tip in (("pdf", "落 pdf:pN"), ("markdown", "落 md:pN"),
+                             ("rows", "正文行")):
+        out = _call({"page": 4, "page_side": "zh", "view": view})
+        hint = str(out["hint"])
+        assert f"当前视图：{view}" in hint
+        assert anchor_tip in hint, f"{view} 的提示里要说清 {anchor_tip} 落在哪看得到"
+        assert "阅读视图里看不到" not in hint, "别再用那句会与当前视图打架的说法"
+
+
 def test_page_unknown_stays_available() -> None:
     """`page == 0`：仍然"带了状态"（视图/页签是知道的），但页码要标明未知。"""
     out = _call({"page": 0, "page_side": "zh", "view": "markdown"})

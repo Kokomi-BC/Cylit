@@ -32,8 +32,12 @@ class _FakeHost:
         self.items = list(items)
         self.calls: list[dict] = []
 
-    async def formulas(self, paper_id, *, page=None, query=None, include_inline=False):
-        self.calls.append({"page": page, "include_inline": include_inline})
+    # offset / limit 是宿主 `project.formulas` 的分页口径（契约变了就跟着改）；
+    # 这里永远一次给全，所以回执照旧是"没有下一页"的那一份。
+    async def formulas(self, paper_id, *, page=None, query=None, include_inline=False,
+                       offset=None, limit=None):
+        self.calls.append({"page": page, "include_inline": include_inline,
+                           "offset": offset, "limit": limit})
         kept = [one for one in self.items
                 if not page or int(one["page"]) == int(page)]
         display = sum(1 for one in self.items if one["display"])

@@ -84,8 +84,9 @@ def test_create_computes_offsets_over_the_rendered_text(monkeypatch) -> None:
     # 偏移量算在**渲染文字**上（`**` 不算字）→ 2..6；存下来的也是那一段
     assert (captured["start_offset"], captured["end_offset"]) == (2, 6)
     assert captured["selected_text"] == "重点内容"
-    # 色名是**输入别名**，落库值统一是 hex（`annotation_service.HIGHLIGHT_PALETTE`）
-    assert captured["color"] == "#3ccd82" and captured["scope"] == "row"
+    # 色名是**输入别名**，落库值统一是 hex（`annotation_service.HIGHLIGHT_PALETTE`）；
+    # 断言查色板、不抄死值 —— 色板换过（2026-12 换成多巴胺八个），抄死值就得跟着改一遍。
+    assert captured["color"] == ann.normalize_color("green") and captured["scope"] == "row"
     assert got["highlight"]["id"] == "h1"
 
 

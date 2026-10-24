@@ -136,8 +136,12 @@ class _FakeHost:
         #: 想换一份回执就设它（默认是下面那份"两来源"的固定数据）
         self.payload: dict | None = None
 
-    async def formulas(self, paper_id, *, page=None, query=None, include_inline=False):
-        self.calls.append({"page": page, "include_inline": include_inline})
+    # offset / limit 是宿主 `project.formulas` 的分页口径（契约变了就跟着改）：
+    # 本文件的回执是**老形状**（没有 next_offset / has_more），正好钉住工具的老宿主兼容路径。
+    async def formulas(self, paper_id, *, page=None, query=None, include_inline=False,
+                       offset=None, limit=None):
+        self.calls.append({"page": page, "include_inline": include_inline,
+                           "offset": offset, "limit": limit})
         if self.payload is not None:
             return self.payload
         return {"total": 2, "returned": 2, "source": "mixed", "truncated": False,

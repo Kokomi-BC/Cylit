@@ -1607,14 +1607,16 @@ async function run() {
     /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
     res.menuBeforeHl = [...menu.querySelectorAll('button')]
       .map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim()).filter(Boolean);
-    /* 色点写在 `.hl-swatch.<色名>` 上（与右键菜单共用 base.css 那一份），
-       标题文案 2026-10-10 起改成「标成黄」——按**类名**找，别再追文案。 */
-    const yellow = menu.querySelector('.hl-swatch.yellow')
+    /* 色点：**2026-12 起配色是数据驱动的** —— 色板只有多巴胺那 8 个，颜色写在行内 `--hl-sw`，
+       `.hl-swatch.<色名>` 这类按色名的类已经没有了（改一次色板就删一批类，本来就不该有）。
+       所以按**结构**找第一颗色点，标题只认「标成…」这个前缀，别再写死某个颜色。 */
+    const swatch = menu.querySelector('.hl-swatch')
       || [...menu.querySelectorAll('[title]')]
-        .find((e) => /标成黄|黄色高亮/.test(e.getAttribute('title') || ''));
-    res.hasColors = !!yellow;
-    if (!yellow) { out(res); return; }
-    yellow.click();
+        .find((e) => /标成/.test(e.getAttribute('title') || ''));
+    res.hasColors = !!swatch;
+    res.swatchTitle = swatch ? (swatch.getAttribute('title') || '') : '';
+    if (!swatch) { out(res); return; }
+    swatch.click();
     await sleep(1000); spin(BURN); await sleep(300);
     /* 用户口径（2026-10-07）：**选中并高亮之后，浮层要显示「添加笔记」** ——
        标完那一下就该有这么一枚按钮，不必再划一次词、再进一次菜单。
@@ -1679,7 +1681,10 @@ async function run() {
     f.contentWindow.location.reload();
     await sleep(1500);
     let afterSpans = 0;
-    for (let i = 0; i < 20; i += 1) {
+    /* 等**刷新后的文字层**：pdf.js 要重新下载 + 光栅化，机器一本正经忙（别的构建/测试在跑）时
+       5 秒根本不够 —— 实测整轮 15 条红就是从这一条倒下来的（`afterSpans=0` 之后侧栏、笔记、
+       定位全都读不到东西）。给到 ~24 秒，并顺手把阅读位置按回页首。 */
+    for (let i = 0; i < 60; i += 1) {
       const sc = sc0();
       if (sc) sc.scrollTop = 0;
       await sleep(250); spin(BURN);
@@ -2012,8 +2017,10 @@ async function run() {
                 || (b.textContent || '').indexOf('历史') >= 0);
           const swatches = [...D().querySelectorAll('[data-ex-color]')];
           res.aiSwatches = swatches.length;
-          const blue = D().querySelector('[data-ex-color="blue"]');
-          if (blue) { blue.click(); await sleep(1800); spin(BURN); await sleep(500); }
+          /* 第一颗色块（配色是数据驱动的，别再写死某个色名） */
+          const anySwatch = D().querySelector('[data-ex-color]');
+          res.aiSwatchTitle = anySwatch ? (anySwatch.getAttribute('title') || '') : '';
+          if (anySwatch) { anySwatch.click(); await sleep(1800); spin(BURN); await sleep(500); }
         }
       }
       const hdata = await jget(api + '/highlights?paper_id=__PAPER__');
@@ -2331,7 +2338,7 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
                res.get("aiNoOldButtons") is True and (res.get("aiSwatches") or 0) == 4,
                f"旧按钮/历史还在={not res.get('aiNoOldButtons')}，色块 {res.get('aiSwatches')} 枚")
         record("explain", "点色块 = **标出这段 + 把解释存成它的笔记**（同一处高亮）",
-               res.get("aiHlColor") == "blue" and res.get("aiNoteSaved") == 1
+               str(res.get("aiHlColor") or "").startswith("#") and res.get("aiNoteSaved") == 1
                and res.get("aiNoteHl") is True and res.get("aiNoteOnSame") is True
                and len(str(res.get("aiNoteText") or "")) > 20,
                f"高亮颜色={res.get('aiHlColor')!r}，笔记={str(res.get('aiNoteText'))[:20]!r} "

@@ -1549,11 +1549,19 @@ async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                            "top_k": top_k}, _impl())
 
 
-#: 宿主单次最多回 40 条公式（`project.FORMULA_LIMIT`），截断时它会点名「还差哪几页」。
-#: `formula_get` 自己把这几页补回来 —— 一次调用就能翻到第 41 条，而不是让模型一页页
-#: `formula_get(page=…)` 试（用户口径：要**真分页**，不是「只给 40 条、剩下自己补」）。
-#: 8 是个请求预算：块级公式通常只差一两页；行内那几千条的批次补不完就照旧走 missing_pages。
-_FORMULA_BACKFILL_MAX = 8
+#: 向宿主一次要多少条公式（宿主 `limit` 的天花板是 500）。取 200 而不是宿主的默认 40：
+#: 块级公式全篇通常 10~30 条，**一个窗口就够**，分页只在 `include_inline` 那种几千条的
+#: 批次里才真正翻页 —— 上一版按 `missing_pages` 逐页补，一页一个请求，行内那批补不完。
+_FORMULA_FETCH_LIMIT = 200
+
+#: 最多取几个窗口（5 × 200 = 1000 条）：块级公式的论文永远够用，行内那几千条时才停，
+#: 停下来的那批照旧由 `truncated` + `missing_pages` 说清「还差哪几页」。
+_FORMULA_FETCH_WINDOWS = 5
+
+
+def _host_missing_pages(data: dict) -> list[int]:
+    """宿主回执里「窗口之后那几条落在哪几页」（没给就是空列表）。"""
+    return [int(one) for one in (data.get("missing_pages") or []) if one]
 
 
 def _formula_doc_key(item: dict) -> tuple[int, int, str]:
@@ -1563,81 +1571,68 @@ def _formula_doc_key(item: dict) -> tuple[int, int, str]:
     return (int(item.get("page") or 0), int(found.group(1)) if found else 0, raw)
 
 
-async def _backfill_formulas(ctx: RunContext[Deps], items: list[dict], *,
-                             pages: list[int], total: int,
-                             query: str | None,
-                             include_inline: bool) -> tuple[list[dict], bool, list[dict]]:
-    """宿主截断时按它点名的页把剩下的公式取回来。
-
-    返回（原列表, 是否已收齐整份列表, 新补进来的条目）：收齐的判据是**条数对得上宿主的
-    `total`**，不是「没报错」—— `total` / `next_offset` / `missing_pages` 都建立在这份
-    列表上，差一条就全错；补进来的条目要单独回，计数才不会把同一批加两遍。
-    """
-    def _identity(one: dict) -> tuple[int, str, str]:
-        return (int(one.get("page") or 0), str(one.get("row_id") or ""),
-                _latex_norm_key(one.get("latex")))
-
-    if total and len(items) >= total:
-        return items, True, []
-    appended: list[dict] = []
-    have = {_identity(one) for one in items}
-    for page_no in pages[:_FORMULA_BACKFILL_MAX]:
-        try:
-            more = await ctx.deps.host.formulas(ctx.deps.paper_id, page=int(page_no),
-                                                query=query, include_inline=include_inline)
-        except HostError as exc:   # 补不齐不算失败：老提示里还有 missing_pages 兜着
-            log.debug("补公式页 %s 失败：%s", page_no, exc.message)
-            break
-        for one in more.get("items") or []:
-            key = _identity(one)
-            if key in have:
-                continue
-            have.add(key)
-            items.append(dict(one))
-            appended.append(one)
-        if total and len(items) >= total:
-            return items, True, appended
-    return items, bool(total) and len(items) >= total, appended
-
-
 async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: str | None,
                            include_inline: bool) -> tuple[list[dict], dict]:
-    """整份公式列表 + 计数：先补齐宿主的截断，再按归一化 LaTeX 做跨页合并。
+    """整份公式列表 + 计数：按 offset 窗口把列表拿全，再按归一化 LaTeX 做跨页合并。
 
-    分页要的是**整份列表**（`total` / `missing_pages` 都按全量算），所以这一步收成一个
-    函数，`formula_get` 只负责切页。
+    分页要的是**整份列表**（`total` / `missing_pages` / `also_on` 都按全量算），所以这一步
+    收成一个函数：**先用窗口拼出整份列表、再去重、最后才由 `formula_get` 切页**。
+
+    宿主的老/新两种回执都在这里收口（见下方注释）：新宿主有 `offset`/`next_offset`/`has_more`，
+    老宿主只有 `truncated` + `missing_pages`，后者退回「提示按页补」而不是抛异常。
     """
     data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query,
-                                        include_inline=include_inline)
+                                        include_inline=include_inline,
+                                        offset=0, limit=_FORMULA_FETCH_LIMIT)
     raw_items = [dict(one) for one in (data.get("items") or [])]
-    complete = not bool(data.get("truncated"))
-    appended: list[dict] = []
-    if not complete and not page:
-        # 宿主自己也截断（一次 40 条）→ 先把它点名的页补回来，否则 offset 一过 40 就只有空页
-        raw_items, complete, appended = await _backfill_formulas(
-            ctx, raw_items, pages=[int(p) for p in (data.get("missing_pages") or []) if p],
-            total=int(data.get("total") or 0), query=query, include_inline=include_inline)
+    if "next_offset" in data or "has_more" in data:
+        # **新宿主**（`project.formulas` 有真 offset 分页）：顺着 next_offset 把整份列表
+        # 一次拿回来 —— 一次调用就够，不让模型自己按页试。窗口数用尽（行内那几千条）时
+        # 就停在 1000 条，剩下的由最后一个窗口的 missing_pages 说清还差哪几页。
+        trailing = data
+        windows = 1
+        while trailing.get("has_more") and windows < _FORMULA_FETCH_WINDOWS:
+            next_offset = trailing.get("next_offset")
+            if next_offset is None:
+                break
+            try:
+                # `page` 必须跟着带上：否则 `page=22` 这种窄查询的第二个窗口会跑到全文去取
+                trailing = await ctx.deps.host.formulas(
+                    ctx.deps.paper_id, page=page, query=query,
+                    include_inline=include_inline,
+                    offset=int(next_offset), limit=_FORMULA_FETCH_LIMIT)
+            except HostError as exc:   # 取不满不算失败：照 missing_pages 说清还差哪几页
+                log.debug("取公式窗口 offset=%s 失败：%s", next_offset, exc.message)
+                break
+            windows += 1
+            raw_items.extend(dict(one) for one in (trailing.get("items") or []))
+        complete = not bool(trailing.get("has_more"))
+        host_pages = [] if complete else _host_missing_pages(trailing)
+    else:
+        # **老宿主**（回执里没有 next_offset / has_more）：它没有 offset 可翻，只有自己的
+        # truncated + missing_pages。这时**不抛异常、也不多发请求**，退回上一轮的做法：
+        # 照它的 truncated 判完整度，剩下的靠 missing_pages 提示 `formula_get(page=…)` 补。
+        complete = not bool(data.get("truncated"))
+        host_pages = [] if complete else _host_missing_pages(data)
     merged_items, merges = _merge_formula_dups(raw_items)
     held_display = sum(1 for one in merged_items if one.get("display"))
     held_inline = len(merged_items) - held_display
     #: 宿主的三个计数**不随 include_inline 变**（说的是"有多少"，不是"这次给多少"），
-    #: 所以拿它当基数、只减掉我们自己合并掉的、加上补页补进来的 —— 不能直接数手里的条目：
+    #: 所以拿它当基数、只减掉我们自己合并掉的 —— 不能直接数手里的条目：
     #: 默认（不要行内）时手里只有块级那批，数出来 inline 永远是 0。
     host_display = int(data.get("display_total") or 0)
     host_inline = int(data.get("inline_total") or 0)
     if not (host_display or host_inline):   # 老回执只有 total：按条数兜底，别当成 0 条
         host_display = len(raw_items)
-    added_display = sum(1 for one in appended if one.get("display"))
-    added_inline = len(appended) - added_display
     if complete:
         # 整份列表在手 → 块级条数就是合并后的条数（42 → 40 这种事在这里落地）
         merged_items.sort(key=_formula_doc_key)
         display_total = held_display
-        inline_total = held_inline if include_inline else max(0, host_inline + added_inline)
+        inline_total = held_inline if include_inline else max(0, host_inline)
     else:
-        # 宿主还压着一批没给到 → 用它给的数，减掉我们合并掉的、加上补页补进来的
-        display_total = max(0, host_display + added_display - merges)
-        inline_total = max(0, host_inline + added_inline)
+        # 窗口预算用尽 / 老宿主还压着一批没给到 → 用宿主的全量数，减掉我们合并掉的
+        display_total = max(0, host_display - merges)
+        inline_total = max(0, host_inline)
     total = display_total + inline_total
     omitted_inline = data.get("omitted_inline")
     if omitted_inline is None:
@@ -1648,9 +1643,9 @@ async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: st
         "total": total, "display_total": display_total, "inline_total": inline_total,
         "omitted_inline": int(omitted_inline or 0), "complete": complete,
         "source": data.get("source"),
-        # 宿主压根没给到的那几页（没收齐时才算进 missing_pages）
-        "host_pages": [] if complete else [int(one) for one in
-                                          (data.get("missing_pages") or []) if one],
+        # 宿主压根没给到的那几页（没收齐时才算进 missing_pages）：
+        # 停在窗口预算上的那一批，用**最后一个窗口**的 missing_pages —— 它说的正是"还差哪几页"
+        "host_pages": host_pages,
     }
 
 
@@ -1790,7 +1785,7 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 pages = "、".join(str(one) for one in out["missing_pages"])
                 tail = (f" 还差这几页：{pages} —— 照它们 `formula_get(page=…)` 补，"
                         f"不要凭条数猜。" if pages else "")
-                hints.append(f"全文共 {out['total']} 条，宿主这次只给到 {len(page_items)} 条"
+                hints.append(f"全文共 {out['total']} 条，这次从宿主拿到 {len(listed)} 条"
                              f"（按文档顺序）。{tail}")
             if hints:
                 out["hint"] = " ".join(hints)
@@ -1898,8 +1893,11 @@ async def reader_state(ctx: RunContext[Deps]) -> dict:
         else:
             tips.append("不知道读者在看哪一面：按文字语言判面（含中文 → zh），或问用户。")
         if reader.view:
-            tips.append(f"当前视图：{reader.view}（rows = 正文行，高亮才画得出来；"
-                        "markdown / pdf 面上的高亮在阅读视图里看不到）。")
+            #: 这句以前写成「rows = 正文行，高亮才画得出来；markdown / pdf 面上的高亮在阅读视图里看不到」——
+            #: 读者正看 pdf 时就成了自相矛盾（"当前视图 pdf" 紧接"pdf 面上的高亮看不到"）。改成
+            #: **按锚点说清各自在哪看得到**，不提"阅读视图"这个会被当前视图顶掉的词。
+            tips.append(f"当前视图：{reader.view}。高亮请锚在**正文行**上（rows 面哪个视图都画得出来）；"
+                        "落 md:pN 的高亮只在 Markdown 视图可见，落 pdf:pN 的高亮只在原 PDF 页图视图可见。")
         out["hint"] = " ".join(tips)
         return out
 
@@ -2395,8 +2393,11 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    **批量**：改传 `items`（数组，每条 `{anchor, text, color?, side?}`，最多 24 条），
                    一次建一批；回执逐条给 `created` / `failed`（含原因与最像的原文），
                    一条失败不影响别的。
-                   **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：色名 red/orange/yellow/
-                   green/blue/indigo/violet 之外，直接给 `#rrggbb`（或 #rgb / rgb() / hsl()）也行。
+                   **color 可以是你想要的任何颜色**（用户口径 2026-11-26）：直接给 `#rrggbb`
+                   （或 #rgb / rgb() / hsl()）即可。界面上那排色点现在是**多巴胺色板**这八个：
+                   strawberry `#ff4d6d` / tangerine `#ff8a3d` / lemon `#ffc93c` / mint `#3ddc84` /
+                   lagoon `#22d3ee` / vega `#4d7cff` / grape `#a855f7` / sakura `#ff5cc8` ——
+                   用户说"标成黄的/蓝的"时就近取这几个，报上来的是色名也照收。
                    ⚠️ **配色分两级**（用户口径 2026-12-07 修正）：先按**类别**定色系，再在同一
                    色系里用深浅区分条目 —— 颜色表达语义，不是「每条都不一样」。
                    公式 = indigo（`#6366f1`/`#4f46e5`）、定理/结论 = emerald（`#10b981`/`#059669`）、
@@ -2407,7 +2408,7 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    ✅ **颜色代码可以由你自己给**（2026-12-06 明确）：`#0d9488` / `#f59e0b` /
                    `rgb(20,120,140)` / `hsl(180 60% 40%)` 都能如实存下并原样画出 —— 想按语义
                    自己设计一套配色（这套论文用 teal 系、那套用 indigo 系）就直给 hex，不必迁就
-                   那七个色名。常见颜色词（teal / cyan / amber / rose / slate …）也会被认成 hex，
+                   菜单上那八个色点。常见颜色词（teal / cyan / amber / rose / slate …）也会被认成 hex，
                    不再静默变成黄色；只有**完全没给**时才由宿主挑当前用得最少的。
                    `text` 必须与那一面的文字**逐字一致**（Markdown 记号不算字：`**重点**` 就写
                    `重点`，照抄 `page_markdown_get` / `translate_get` 里的原文即可）。

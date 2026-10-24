@@ -52,11 +52,17 @@ def test_create_without_color_picks_the_spare_one(monkeypatch):
 
 
 def test_names_are_stored_as_hex() -> None:
-    """色名进门就换成 hex —— 同一个颜色在库里只有一种写法。"""
+    """色名进门就换成 hex —— 同一个颜色在库里只有一种写法。
+
+    2026-12 起色板只有多巴胺那八个；历史色名（yellow / red …）已从色板删除，
+    但仍**收**：它们走 `RETIRED_COLOR_ALIASES` 翻译成新 id 的 hex（yellow → lemon），
+    落库依然是 hex —— 「删掉老名字」不等于「用户说黄的听不见」。
+    """
     for name, value in svc.HIGHLIGHT_PALETTE.items():
         assert svc._norm_color(name) == value
-    assert svc._norm_color("yellow") == "#e6b414"
-    assert svc._norm_color("  RED ") == "#ff0000"          # 大小写/空白不影响
+    assert svc._norm_color("yellow") == svc.HIGHLIGHT_PALETTE["lemon"] == "#ffc93c"
+    assert svc._norm_color("  RED ") == svc.HIGHLIGHT_PALETTE["strawberry"]   # 大小写/空白不影响
+    assert svc._norm_color("黄") == svc.HIGHLIGHT_PALETTE["lemon"]            # 中文色词
 
 
 def test_custom_hex_passes_through_unchanged() -> None:
@@ -65,17 +71,23 @@ def test_custom_hex_passes_through_unchanged() -> None:
     assert svc._norm_color("rgb(124, 58, 237)") == "rgb(124, 58, 237)"
 
 
-def test_unknown_value_falls_back_to_the_yellow_hex() -> None:
-    """非法值仍按既有逻辑兜底成"黄"，只是落库形态跟着统一成 hex。"""
+def test_unknown_value_falls_back_to_the_first_palette_hex() -> None:
+    """认不出的写法兜底成**色板第一个**（以前是写死的黄，那个色已经不在色板里了）。
+
+    兜底前会打一条 warning（带着原始取值）—— 静默改色最坑，至少日志里查得到是谁传了什么。
+    """
+    first = svc.HIGHLIGHT_PALETTE[svc.HIGHLIGHT_COLORS[0]]
     for bad in ("", None, "not-a-color", "chartreuse", "#12345"):
-        assert svc._norm_color(bad) == svc.HIGHLIGHT_PALETTE["yellow"] == "#e6b414"
+        assert svc._norm_color(bad) == first
 
 
 def test_name_and_its_hex_give_the_same_output() -> None:
     """同一个颜色的两种输入 → **同一个**落库值（迁移与写入不会分叉）。"""
     for name, value in svc.HIGHLIGHT_PALETTE.items():
         assert svc._norm_color(name) == svc._norm_color(value)
-    assert svc._norm_color("red") == svc._norm_color("#ff0000")
+    # 旧名 → 新 id 的 hex；与新 id 自己输进去完全一致
+    assert svc._norm_color("red") == svc._norm_color("strawberry")
+    assert svc._norm_color("pink") == svc._norm_color("#FF5CC8")
 
 
 def test_norm_color_is_idempotent() -> None:
@@ -110,16 +122,28 @@ def test_palette_matches_the_frontend_palette() -> None:
 
 
 def test_normalize_color_returns_hex_for_names() -> None:
-    """agent 那条路（`annotations.normalize_color`）同样换成 hex，且**色板优先**。"""
-    assert ann.normalize_color("green") == svc.HIGHLIGHT_PALETTE["green"]
-    # `pink` 在 `CSS_COLOR_NAMES` 里还有一条 `#ec4899`：色板的才是前端画的那个粉
-    assert ann.normalize_color("pink") == svc.HIGHLIGHT_PALETTE["pink"] == "#ff64a5"
+    """agent 那条路（`annotations.normalize_color`）同样换成 hex，且**色板 / 旧名翻译优先**。
+
+    2026-12 历史色名已从色板删除，但用户嘴上还会说「标成黄的」、模型也会照说 `yellow`：
+    这类词不进色板、不进菜单，只做**翻译**（yellow → lemon 的 hex），落库仍然是 hex。
+    """
+    assert ann.normalize_color("lemon") == svc.HIGHLIGHT_PALETTE["lemon"] == "#ffc93c"
+    assert ann.normalize_color("yellow") == svc.HIGHLIGHT_PALETTE["lemon"]    # 旧名翻译
+    assert ann.normalize_color("黄色") == svc.HIGHLIGHT_PALETTE["lemon"]      # 中文色词
+    assert ann.normalize_color("pink") == svc.HIGHLIGHT_PALETTE["sakura"]     # 别名优先于 CSS 词
     assert ann.normalize_color("teal") == ann.CSS_COLOR_NAMES["teal"]
     assert ann.normalize_color("nope") == ""
 
 
 def test_spare_color_counts_migrated_hex_values() -> None:
-    """库里的色值迁移成 hex 之后，"用得最少"的统计不能失灵。"""
-    blue = svc.HIGHLIGHT_PALETTE["blue"]
-    assert ann.spare_color([blue, blue]) == ann.PALETTE[1]      # blue 两次 → 下一个
-    assert ann.spare_color([blue, "blue"]) == ann.PALETTE[1]    # hex 与色名一起数
+    """库里的色值迁移成 hex 之后，"用得最少"的统计不能失灵。
+
+    2026-12 色板整体换成多巴胺那八个之后，**只数字板里的颜色**：库里的历史 hex
+    （`#55a5ff` 这类旧色名对应的值）不再参与计数 —— 否则「最少用过的颜色」会被一批
+    用户早就改掉的旧色占位，分配出来的新色永远偏向第一个。
+    """
+    first, second = ann.PALETTE[0], ann.PALETTE[1]
+    hex_first = svc.HIGHLIGHT_PALETTE[first]
+    assert ann.spare_color([hex_first, hex_first]) == second        # 同一个色两次 → 下一个
+    assert ann.spare_color([hex_first, first]) == second            # hex 与色名一起数
+    assert ann.spare_color(["#55a5ff"] * 3) == first                # 历史 hex（老蓝）不计入

@@ -23,6 +23,7 @@ import { openTab } from '@/stores/tabs';
 import {
   debounce, fmtRelative, truncate,
 } from '@/utils/format';
+import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 import { readerTarget } from '@/utils/navigation';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { withKeptNoteRefs } from '@/utils/noteRefs';
@@ -167,12 +168,7 @@ function openReader(paperId?: string | null, blockId?: string | null, page?: num
   void router.push(openTab(readerTarget(paperId ?? '', blockId, page)) as never);
 }
 
-function colorHex(color?: string | null): string {
-  /* 自定义色（`#rrggbb`）直通：以前会落到 `COLOR_HEX.yellow` 的兑底，色点就变成黄色了 */
-  if (color && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
-  return (color && COLOR_HEX[color]) || COLOR_HEX.yellow;
-}
-
+/* 供上面的色点用：`--hl-sw` + 中文色名（配色唯一来源在 utils/highlightColors）。 */
 function hlClass(color?: string | null): string {
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) return 'hl';
   return color && COLOR_HEX[color] ? `hl ${color}` : 'hl yellow';
@@ -426,8 +422,10 @@ function onRowAction(row: FeedRow, key: string) {
       :data-item-key="row.key"
     >
       <div class="card-head">
-        <span v-if="row.color" class="swatch" :style="{ background: colorHex(row.color) }"
-              :title="'高亮颜色：' + row.color"></span>
+        <!-- 色点与正文 mark 同色：走全站那条 `.hl-swatch`（垫 var(--bg) 再叠 <hex>66），
+             不再自己涂一层不透明的实色（用户 2026-12 报：菜单与浮窗的颜色比正文深一档）。 -->
+        <span v-if="row.color" class="swatch hl-swatch" :style="swatchStyleOf(row.color)"
+              :title="'高亮颜色：' + swatchLabel(row.color)"></span>
         <span class="badge accent">{{ paperOf(row).title }}</span>
         <!-- 这一条是"笔记"还是"还没写正文的高亮"还是批注（类型） -->
         <span class="badge" :class="row.badge">{{ row.label }}</span>
@@ -542,8 +540,9 @@ function onRowAction(row: FeedRow, key: string) {
 </template>
 
 <style scoped>
-/* 高亮色点；**高亮文本的配色在 base.css**（全站唯一来源，正文/Markdown 视图/这里共用）。 */
-.swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); border: 1px solid var(--border-strong); }
+/* 高亮色点：**底色由 base.css 的 .hl-swatch 给**（垫 var(--bg) 再叠 <hex>66，与正文 mark 同一条合成链），
+   这里只说尺寸与圆角。自己再涂一层 background 就会比正文深一档（2026-12 用户报过）。 */
+.swatch { width: 15px; height: 15px; border-radius: var(--radius-ctl); }
 
 /* 卡片底部操作行：主操作（回原文 / 改正文）在左，⋯ 在右，形成一条基线 */
 .note-actions { margin-top: 10px; }

@@ -30,7 +30,7 @@ log = get_logger(__name__)
 #: 口径（2026-12-10）：库里**只存 hex**。色名只是"输入别名"，进门由 `_norm_color` 换成 hex ——
 #: 于是"同一个颜色"在库里不会再出现两种写法（前端还在传色名，所以两种都得收）。
 #:
-#: 这九条与 `frontend/src/utils/highlightColors.ts` 的 `HL_COLOR_CSS` 是**同一组色值**
+#: 这一份与 `frontend/src/utils/highlightColors.ts` 的 `HL_PALETTE` 是**同一组色值**
 #: （那边写 `rgba(...)`，这边落成 `#rrggbb`；`tests/test_highlight_color.py` 会比对两边）。
 #: **这份是唯一真相，前端那份要与它一致**。
 #:
@@ -38,19 +38,46 @@ log = get_logger(__name__)
 #: 不是颜色本身，所以 hex 不带 alpha（前端 hex 分支自己按 40% 铺 `--hl-bg`）。
 #: `pink` / `purple` 是历史名，留着是为了**存量高亮**仍能通过校验、仍能渲染；新界面不再提供它们。
 HIGHLIGHT_PALETTE: dict[str, str] = {
-    "red": "#ff0000",     # rgba(255, 0, 0, .9)
-    "orange": "#ffa500",  # rgba(255, 165, 0, .95)
-    "yellow": "#e6b414",  # rgba(230, 180, 20, .95)
-    "green": "#3ccd82",   # rgba(60, 205, 130, .95)
-    "blue": "#55a5ff",    # rgba(85, 165, 255, .95)
-    "indigo": "#4b0082",  # rgba(75, 0, 130, .95)
-    "violet": "#8f00ff",  # rgba(143, 0, 255, .9)
-    "pink": "#ff64a5",    # rgba(255, 100, 165, .95)
-    "purple": "#965adc",  # rgba(150, 90, 220, .95)
+    # —— 多巴胺色板（2026-12 用户口径：**所有菜单的色板都换成这一套**）——
+    #
+    # ⚠️ 历史那九个色名（red / orange / yellow / green / blue / indigo / violet / pink /
+    # purple）已从色板里删掉（用户口径 2026-12）：界面不再提供、没人再往里存，留着只会让
+    # 「哪个颜色算合法」永远多一档。它们的落库值本来就是 hex，库里的存量高亮一个字节都不用改；
+    # 只有「用户嘴上说黄的却被当成没听见」这件事不能接受，所以旧名与中文色词另外走一张
+    # RETIRED_COLOR_ALIASES 翻译成新 id（见下），既不进色板也不进菜单。
+    # 八个高饱和色，铺 40% 在纸面上正好是「亮而不糊」那档：以前那批色名混着低饱和的
+    # 靛/紫，一片标下来容易显脏。id 用英文是为了进 URL / 日志 / 模型入参时不带转义。
+    "strawberry": "#ff4d6d",  # 草莓红
+    "tangerine": "#ff8a3d",   # 橘子橙
+    "lemon": "#ffc93c",       # 柠檬黄
+    "mint": "#3ddc84",        # 薄荷绿
+    "lagoon": "#22d3ee",      # 湖蓝
+    "vega": "#4d7cff",        # 电光蓝
+    "grape": "#a855f7",       # 葡萄紫
+    "sakura": "#ff5cc8",      # 樱花粉
 }
 
-#: 色名（前七个是新界面提供的，后两个是历史名）—— 只做"哪些名字算合法输入"。
+#: 色板顺序（= 菜单上色点的顺序）。
 HIGHLIGHT_COLORS = tuple(HIGHLIGHT_PALETTE)
+
+#: **旧色名 / 中文色词 → 新色板 id** 的兜底（不是色板，不进菜单）。
+#: 为什么还留着：用户会说「标成黄的」、模型会照着说 `yellow`；把这类词当「没指定」会变成
+#: 随机配色，比多一档别名更让人意外。这里只做**翻译**，落库仍然是 hex。
+RETIRED_COLOR_ALIASES: dict[str, str] = {
+    # 英文旧名（2026-12 之前界面上那九个）
+    "red": "strawberry", "orange": "tangerine", "yellow": "lemon",
+    "green": "mint", "blue": "lagoon", "indigo": "vega",
+    "violet": "grape", "purple": "grape", "pink": "sakura",
+    # 中文色词（用户原话怎么说的就怎么认）
+    "红": "strawberry", "红色": "strawberry",
+    "橙": "tangerine", "橙色": "tangerine", "橘": "tangerine", "橘色": "tangerine",
+    "黄": "lemon", "黄色": "lemon", "金": "lemon", "金色": "lemon",
+    "绿": "mint", "绿色": "mint",
+    "青": "lagoon", "青色": "lagoon", "蓝": "lagoon", "蓝色": "lagoon",
+    "靛": "vega", "靛蓝": "vega", "电光蓝": "vega",
+    "紫": "grape", "紫色": "grape", "葡萄紫": "grape",
+    "粉": "sakura", "粉色": "sakura", "樱花粉": "sakura",
+}
 
 
 # --------------------------------------------------------------------------
@@ -66,18 +93,26 @@ def _norm_color(raw: object) -> str:
     `_norm_color("yellow") == _norm_color("#e6b414")`。
 
     为什么后端必须放行自定义色（用户口径 2026-10-10「添加自定义颜色」）：以前未知色会被
-    **静默退回黄色** —— 取色器选的颜色存进去变成黄色，用户只会当成"取色器坏了"。
+    **静默退回一个固定色** —— 取色器选的颜色存进去变成别的色，用户只会当成"取色器坏了"。
     """
     c = str(raw or "").strip().lower()
     if c in HIGHLIGHT_PALETTE:
         return HIGHLIGHT_PALETTE[c]
+    # 旧色名 / 中文色词：翻译成新 id 再取 hex（`yellow` → lemon、`黄` → lemon）——
+    # 删掉老名字不等于「用户说黄的就当没听见」，这一步只翻译、不落名字。
+    alias = RETIRED_COLOR_ALIASES.get(c)
+    if alias:
+        return HIGHLIGHT_PALETTE[alias]
     # 任意色（用户口径 2026-11-26「允许 agent 自定义任意颜色」）：hex 3/6/8 位、rgb()/hsl() 一律放行，
-    # 只有真的认不出来的写法才退回黄色（静默改色最坑，见上面的说明）。
+    # 只有真的认不出来的写法才退回**色板第一个**（静默改色最坑，见上面的说明；退回前打一条 warning，
+    # 至少日志里查得到是谁传了个什么）。
     if re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", c):
         return c
     if re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", c):
         return c
-    return HIGHLIGHT_PALETTE["yellow"]
+    fallback = HIGHLIGHT_PALETTE[HIGHLIGHT_COLORS[0]]
+    log.warning("认不出的颜色写法 %r：退回色板第一个 %s", raw, fallback)
+    return fallback
 
 
 #: 正文行 id（行 id = 位置编号，``p015-06``）：只有这种锚点才可能有行身份 pid

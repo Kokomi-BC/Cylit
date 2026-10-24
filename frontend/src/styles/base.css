@@ -105,7 +105,7 @@ mark { color: inherit; }
  * 后端 `_norm_color` 落库前就把色名映射成 hex）走的都是**行内变量分支** ——
  * `mark.hl style="--hl-bg:<hex>66;--hl-ink:<hex>"`（见 `utils/domMarks.ts` / `useMarkdown.ts`），
  * 一个 class 都不带。所以：
- *   - 这些值**不要再用来做"配色"**（取色点已经是 hex 了，见下面 `.hl-swatch.*`）；
+ *   - 这些值**不要再用来做"配色"**（取色点已改成行内 `--hl-sw`，见下面 `.hl-swatch`）；
  *   - 也别因为"某个色名不好看"就改这里 —— 改它对眼前的高亮没有任何影响，
  *     真正决定颜色的是 `utils/highlightColors.ts` 的 `HL_PALETTE`（= 后端 `HIGHLIGHT_PALETTE`）。 */
 mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); --hl-ink: #d9a400; }
@@ -167,29 +167,35 @@ html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); t
 .cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
 /* **高亮色块**（划词菜单、右键触摸条、换色菜单、笔记卡那枚圆点、AI 解释浮层的"标出这段"共用一份）。
  *
- * 颜色**一个都不写在这里**：只吃 `--hl-sw-<色名>`，由 `utils/highlightColors.ts` 的
- * `HL_PALETTE`（= 后端 `HIGHLIGHT_PALETTE` 同一份 hex）在 `ReaderView` 挂载时写到 `:root`。
- * 变量值就是 `<hex>66`（40%）—— 与正文 mark 的行内 `--hl-bg` **逐字同一个字符串**，
- * 所以"点的这个色"和"正文里看到的这个色"必然是同一个 hex、同一档浓度。
+ * 颜色**一个都不写在这里**：只吃行内 `--hl-sw`（`utils/highlightColors.ts::swatchStyleOf` 写，
+ * 值就是 `<hex>66` = 40% —— 与正文 mark 的行内 `--hl-bg` **逐字同一个字符串**），
+ * 色板列表本身只有 `HL_PALETTE` / `HL_SWATCHES` 一份。
  *
  * 以前这里 9 个点各自手写 rgba（20%~45% 不等）、正文却画 hex+40%，于是选色与观感不一致：
  * 红 / 橙 / 靛 / 紫选下去明显变浓，purple 甚至从灰变成紫（用户 2026-12 报的）。
- * 也**别再**在这里补色值：补一份就是第三套色，色板迟早再走散一次。 */
+ * 也**别再**在这里补色值：补一份就是第三套色，色板迟早再走散一次。
+ *
+ * ⚠️ 只有"同一个 hex、同一档 alpha"还不够：**底不一样，合成结果就不一样**。正文 mark 的 40%
+ * 压在 `.reader-content`（`background: var(--bg)`）上，而色点以前直接压在玻璃菜单
+ * （`backdrop-filter: blur() saturate()`）/ 卡片 `--bg-elev` / 侧栏上 —— 同一条 40% 在
+ * 更亮更饱和的底上显浓，用户看到的就是"弹出的菜单和右键里的颜色比正文深"。所以色点
+ * **自己垫一层不透明的 `--bg`**，把"底"也变成与正文同一块。 */
 .hl-swatch {
   width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto;
   border: 1px solid var(--border-strong); cursor: pointer;
   transition: transform var(--dur-fast) var(--ease), border-color var(--dur) var(--ease);
+  /* 底：**不透明的 `--bg`** —— 与正文 mark 脚下那块阅读面同一个 token（见上面那段注释） */
+  background-color: var(--bg);
+  /* 色：那层 40% 的 `<hex>66` 铺成满屏渐变，只与下面这层 `--bg` 合成一次 ——
+     与 mark 的「`--hl-bg` 压在 `--bg` 上」同一条合成链，逐像素一致。
+     认不出色（`--hl-sw` 没声明）时 fallback 透明：只剩那层底，不会画出错的色。 */
+  background-image: linear-gradient(var(--hl-sw, transparent), var(--hl-sw, transparent));
 }
 .hl-swatch:hover { transform: scale(1.15); border-color: var(--text-dim); }
-.hl-swatch.red { background: var(--hl-sw-red); }
-.hl-swatch.orange { background: var(--hl-sw-orange); }
-.hl-swatch.yellow { background: var(--hl-sw-yellow); }
-.hl-swatch.green { background: var(--hl-sw-green); }
-.hl-swatch.blue { background: var(--hl-sw-blue); }
-.hl-swatch.indigo { background: var(--hl-sw-indigo); }
-.hl-swatch.violet { background: var(--hl-sw-violet); }
-.hl-swatch.pink { background: var(--hl-sw-pink); }
-.hl-swatch.purple { background: var(--hl-sw-purple); }
+/* 颜色**一条 CSS 都不写**：每个色点行内给 `--hl-sw`（值 = `<hex>66`，由
+   `utils/highlightColors.ts::swatchStyleOf` 生成，与 mark 的 `--hl-bg` 同一口径）。
+   以前是 9 条 `.hl-swatch.<色名>` 各写一份颜色 —— 换个色板就要动 CSS，
+   现在**加色 / 换色只改 `HL_PALETTE` + `HL_SWATCHES` 两处列表**，菜单自己就变了。 */
 /* 已经是这个颜色的那枚（AI 解释浮层里标出当前高亮的颜色） */
 .hl-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，

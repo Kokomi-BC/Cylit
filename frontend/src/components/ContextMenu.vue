@@ -21,6 +21,7 @@
  */
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
+import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 
 // 注意：`<script setup>` 里不能写模块导出，调用方用同构的字面量类型即可（结构类型）
 interface CtxItem {
@@ -213,15 +214,17 @@ onBeforeUnmount(() => {
           >
             <AppIcon v-if="it.icon" :name="it.icon" :size="14" />
             <span class="ctx-label">{{ it.label }}</span>
-            <!-- 色板：与划词胶囊/AI 解释浮层**共用** `.hl-swatch` 那份颜色（base.css），
-                 不另起一套色值。`@click.stop` —— 点色点只按那个色，不再走行本身的默认色。 -->
+            <!-- 色板：与划词胶囊/换色菜单**共用** `.hl-swatch`（base.css 那一条），
+                 颜色由行内 `--hl-sw` 给，不另起一套色值。`@click.stop` ——
+                 点色点只按那个色，不再走行本身的默认色。 -->
             <span v-if="it.swatches?.length" class="ctx-colors">
               <span
                 v-for="c in it.swatches"
                 :key="c"
                 class="hl-swatch"
                 :class="c"
-                :title="`标成${c}色高亮`"
+                :style="swatchStyleOf(c)"
+                :title="'标成' + swatchLabel(c) + '色高亮'"
                 @click.stop="pickColor(c)"
               />
             </span>
