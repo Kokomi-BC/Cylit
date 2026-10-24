@@ -808,12 +808,18 @@ interface RowAction {
   disabled?: boolean;
 }
 
-/** 卡片「⋯」菜单只剩三项：移到分类 / 编辑元数据 / 删除（移入回收站）。
- *  重新翻译、重新生成解读、从知识库移除、彻底删除都已下线 —— 重译在卡片主按钮与批量条上，
- *  彻底删除搬进了回收站；留着点不到实现的分支只会让人以为菜单还能做别的事。
+/** 卡片「⋯」菜单：阅读 / 翻译（按当前流水线换文案）/ 移到分类 / 编辑元数据 / 删除。
+ *
+ *  阅读与翻译这两项原来是**悬停遮罩上的两枚圆钮**（用户口径 2026-12：遮罩撤掉，
+ *  「点击进入、菜单即可」）—— 遮罩会把论文首页整块糊掉，而动作放进菜单既不影响看封面，
+ *  也不会在触屏上丢失（原来触屏只能靠一条 hover:none 的兜底规则把它常显着）。
+ *  重新生成解读、从知识库移除、彻底删除仍然不在菜单里（已下线或搬去别处）。
  */
-function rowMenu(): RowAction[] {
+function rowMenu(p: Paper): RowAction[] {
   return [
+    { key: 'read', label: '阅读', icon: 'document' },
+    // 已译完的那篇，菜单里给的是「重新翻译」（pipelineLabel 自己就写了这一档，不用再拼）
+    { key: 'pipeline', label: pipelineLabel(p), icon: 'translate' },
     { key: 'move', label: '移到分类', icon: 'tag' },
     { key: 'edit', label: '编辑元数据', icon: 'edit' },
     { key: 'delete', label: '删除（移入回收站）', icon: 'trash', danger: true },
@@ -821,6 +827,8 @@ function rowMenu(): RowAction[] {
 }
 
 function onRowAction(p: Paper, key: string) {
+  if (key === 'read') { openPaper(p.id); return; }
+  if (key === 'pipeline') { runPipeline(p); return; }
   if (key === 'move') { openMove([p.id]); return; }
   if (key === 'edit') { openEdit(p); return; }
   if (key === 'delete') { askRemove(p); }
@@ -1381,7 +1389,7 @@ async function submitEdit() {
               :action-label="pipelineLabel(p)"
               :show-action="stage(p) !== 'translated'"
               :busy="busyKey === 'tr:' + p.id || busyKey === 'parse:' + p.id"
-              :menu="rowMenu()"
+              :menu="rowMenu(p)"
               :batch="batchMode"
               :selected="selectedIds.includes(p.id)"
               @open="detailId = p.id"

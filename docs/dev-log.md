@@ -12559,3 +12559,33 @@ KeepAlive 是把整棵 DOM **摘下来**（脱离文档）再插回去。实测�
 都渲染成六段圆头弧；间隔 140ms 取两次 `transform` 不同 → 确实在转。
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。
+
+### 146. 第一百四十六轮：论文卡撤掉悬停遮罩，「阅读 / 翻译」搬进 ⋯ 菜单
+
+用户口径（2026-12，附论文库截图）：「移除鼠标悬浮论文的遮罩，改为点击进入菜单即可」。
+
+原来的行为：格子里鼠标一过，封面整块压一层 `--text 32%` 的深色遮罩，中间浮出两枚圆钮
+（阅读 / 翻译）。论文首页本身就是内容，被这层遮罩盖住等于"悬停先把东西糊掉"。
+另外触屏永远触发不了 hover，之前还专门写了条 `@media (hover: none)` 把遮罩常显着当兜底。
+
+改动：
+
+- `PaperCard.vue`：删掉 `.pc-hover` 那一块模板与整段 CSS（含 `.pc-act` 五个规则、
+  `.batch` 例外、以及那条 `hover: none` 兜底）。悬停只剩两件事：封面轻抬 2px
+  （`.paper-card:hover .pc-cover`）、标题与 ⋯ 菜单提一档颜色（原样保留）。
+- `LibraryView.vue`：`rowMenu()` → **`rowMenu(p)`**，菜单项变成
+  阅读 / 翻译（按流水线换文案：翻译 · 继续翻译 · 暂停翻译 · 重新翻译）/ 移到分类 / 编辑元数据 / 删除；
+  `onRowAction` 接上 `read`（直接进阅读器）与 `pipeline`（跑/暂停逐页翻译）。
+  这样撤掉遮罩**没有丢任何动作**，而且触屏上也能用。
+- 卡片本体语义不变：点卡片 = 打开详情（批量模式下 = 勾选），`@read` / `@action` 事件与
+  列表形态的 `.pc-inline-actions` 都保留（列表一行一条，本来就没有遮罩）。
+
+实测（CDP，论文库 1440×980，真实鼠标 `Input.dispatchMouseEvent`）：
+
+```
+卡片 11 张；文档里 .pc-hover 元素 0 个；悬停时封面内绝对定位且带底色的浮层 = 0
+悬停效果只剩：cover transform translateY(-2px)、.pc-name 颜色 → rgb(10,90,102)
+⋯ 菜单项 = [阅读, 重新翻译, 移到分类, 编辑元数据, 删除（移入回收站）]
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。

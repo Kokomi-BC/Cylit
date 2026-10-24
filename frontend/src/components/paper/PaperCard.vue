@@ -1,5 +1,8 @@
 <script setup lang="ts">
-/** 论文卡「壳」：封面 + 分类徽章 + 进度 + 标题/元信息 + hover 操作（移植自参照项目 retain-pdf 的 BookCard）。
+/** 论文卡「壳」：封面 + 分类徽章 + 进度 + 标题/元信息 + ⋯ 菜单（移植自参照项目 retain-pdf 的 BookCard）。
+ *
+ * 封面上**没有悬停遮罩**（用户口径 2026-12）：悬停只让封面轻抬 2px、标题与菜单提一档颜色。
+ * 动作都在 ⋯ 菜单里（阅读 / 翻译 / 移到分类 / 编辑元数据 / 删除），所以鼠标划过不会糊住论文首页。
  *
  * 纯展示：**不决定有哪些操作、也不发请求** —— 按钮语义与菜单项由父级注入（一句话的 label + 事件）。
  * 两种形态共用一套 DOM：`grid`（封面卡，默认）与 `list`（一行一条，缩略图 + 标题 + 元信息）。
@@ -118,22 +121,9 @@ function onCard() {
         <i :style="{ width: pct + '%' }" />
       </div>
 
-      <!-- hover / 键盘聚焦时浮出的操作：阅读（主）+ 翻译类（次） -->
-      <div v-if="variant === 'grid'" class="pc-hover">
-        <button type="button" class="pc-act primary" :title="readLabel" @click.stop="emit('read')">
-          <AppIcon name="document" :size="16" />
-        </button>
-        <button
-          v-if="showAction"
-          type="button"
-          class="pc-act"
-          :disabled="busy"
-          :title="actionLabel"
-          @click.stop="emit('action')"
-        >
-          <AppIcon name="translate" :size="15" />
-        </button>
-      </div>
+      <!-- 封面上**不再盖悬停遮罩**（用户口径 2026-12）：鼠标一过就压一层深色 + 两枚圆钮，
+           会把论文首页整块糊掉，而"点卡片进详情、⋯ 菜单里选动作"本来就够用。
+           阅读 / 翻译也跟着进了 ⋯ 菜单（见 LibraryView 的 rowMenu）。 -->
 
       <!-- 批量勾选：只在批量模式出现（点卡片任意处都能勾） -->
       <span v-if="batch" class="pc-check" :class="{ on: selected }" aria-hidden="true">
@@ -268,30 +258,10 @@ function onCard() {
 }
 .pc-track > i { display: block; height: 100%; background: var(--accent); transition: width var(--dur-slow) var(--ease); }
 
-/* ---------------- hover 操作 ---------------- */
-.pc-hover {
-  position: absolute; inset: 0; z-index: 3;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  background: color-mix(in srgb, var(--text) 32%, transparent);
-  opacity: 0; pointer-events: none;
-  transition: opacity var(--dur) var(--ease);
-}
-.paper-card:hover .pc-hover,
-.paper-card:focus-within .pc-hover { opacity: 1; }
-.paper-card.batch .pc-hover { display: none; }
-.pc-act {
-  pointer-events: auto; cursor: pointer;
-  width: 40px; height: 40px; border-radius: 999px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--bg-elev) 95%, transparent); color: var(--text);
-  box-shadow: var(--shadow-2);
-  transition: transform var(--dur-fast) var(--ease), background var(--dur) var(--ease), opacity var(--dur) var(--ease);
-}
-.pc-act:hover:not(:disabled) { background: var(--bg-elev); }
-.pc-act:active:not(:disabled) { transform: scale(.92); }
-.pc-act:disabled { opacity: .5; cursor: default; }
-.pc-act.primary { background: var(--accent); color: var(--text-on-accent); }
-.pc-act.primary:hover { background: var(--accent-hover); }
+/* ---------------- 悬停反馈（不盖遮罩） ----------------
+ * 鼠标经过时只做两件事：封面轻轻抬起 2px（上面那条 .pc-cover 的 hover 规则）、
+ * 标题与 ⋯ 菜单提一档颜色（下面 .pc-name / .pc-menu 的 hover 规则）。
+ * 封面上的深色遮罩与两枚圆钮已整块撤掉 —— 论文首页本身就是内容，不该被糊住。 */
 
 /* 批量勾选圈：底色要比封面深（封面本身是白纸，浅色圈会"看不见"） */
 .pc-check {
@@ -352,8 +322,4 @@ function onCard() {
 .paper-card.list .pc-meta { font-size: calc(11px * var(--ts, 1)); }
 .pc-inline-actions { display: flex; align-items: center; gap: 6px; flex: none; align-self: center; }
 
-/* 窄屏：hover 操作在触屏上永远不会出现，改成常显（否则手机上进不了阅读器） */
-@media (hover: none) {
-  .paper-card:not(.batch) .pc-hover { opacity: 1; background: color-mix(in srgb, var(--text) 22%, transparent); }
-}
 </style>
