@@ -11771,3 +11771,44 @@ has_more False、missing_pages []**，一个请求就拿全了；`limit=40` → 
 **验证（我自己跑的）**：`pytest tests/` → **1785 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；
 探针 **155 / 155**；生产 `5983b50`、`git status` 干净、`/health` 200、`ReaderView-BFJsNEp1.js` sha256
 本地/服务器/HTTP 三处一致（`1b7cbd690ecea97280fcf184`）。
+
+### 126. 第一百二十六轮：技能页去掉「点名字收起」；paper_search 页码只留一个入口（附「未能复现」的如实记录）
+
+**① 技能能力去掉点击收起详情的逻辑**（用户口径）：删掉 `collapsedSkills / isSkillOpen / toggleSkillDetail`，
+名字从 `<button class=skill-toggle>`（带 aria-expanded 与「收起/展开 … 的说明」tooltip）改回纯文本 `<div class=skill-title>`，
+`.skill-detail` 的 `v-if` 去掉 —— 每条技能的 SKILL.md description 一直摆着，嫌长就用搜索框过滤。
+
+**② paper_search 的页码只留一个入口 `_hit_page`（tools.py:698）**
+
+诊断时看到的真问题不是「两个 bug」而是「同一份逻辑有三份副本」：`_chunk_identity` 读索引 `page_no`、
+`_same_text_row` 自己又读一遍 `page_no` 比同页、`kb_search` 再读一遍。三处各自演化，迟早分叉。
+现在统一走 `_hit_page`：`row_id` → `row_ids` → `block_id`（行 id 形态才解析，复用已有的 `_row_page`）→
+拿不到行 id 才退回索引 `page_no`。`_same_text_row` 改成吃调用方解析好的页码；合并策略本身不动
+（只认同页、不放开到相邻页、少于 12 字不并 —— 三条都有实测依据）。
+
+hint 也从「这 N 条是 N 个**不同位置**」改成「合并后这 N 条各是一处位置，不再把同一块数两遍」——
+同一块被数两遍时，旧文案等于替错误背书。
+
+顺带两处摩擦（只加字段/只改文档，不动行为）：每组补 `group_returned`（顶层 `returned` 仍是各组之和）；
+`highlight_manage op=list` 每条加 `rendered_length = end - start`，并写明 `start/end` 是**渲染坐标**
+（整条公式只占 1 个字符）、`text` 是 LaTeX 原文，长度天生不同、别拿 `len(text)` 切偏移。
+
+**③ 必须如实记一笔：报告里的两条症状我没能在生产上复现**
+
+- 「索引页码 20 vs block_get 21」：拉真实检索回执看了 6 条命中的 `row_id` 与 `page_no`，**两者一致**
+  （`p020-13 → 20`、`p021-03 → 21`…），并在服务器上直接跑 `_row_page('p020-13') = 20` 复核；
+- 「同一块中英两路没合并」：`implementation algorithm` 在 auto / rag / text 三种 mode 下各取 top-12，
+  按「去掉 markdown 记号后逐字相同」算指纹，**重复组为 0**。
+
+所以这次的改动是「把三份页码逻辑收成一份 + 把吹牛的文案改掉」，它解掉的是一个**真实存在的分叉风险**
+（7 条新用例里就有一条专门构造「索引 page_no 与行 id 不一致」并要求按行 id 报页），但用户看到的那一对
+（ref 43/44、20 vs 21）大概率来自另一条链路或更早的快照 —— 等他复跑给出 chunk_id 再追。
+这一条记在这里，是为了不把「改了代码」当成「修好了症状」。
+
+**验证（我自己跑的）**：`pytest tests/` → **1792 passed / 131 skipped**（+7 新用例；子代理做过反证：
+stash 源码后单跑新文件 6 failed / 1 passed，唯一过的是「无行 id 退回索引」那条）；生产 `3b9e5a5`、
+`git status` 干净、`/health` 200、技能 13 条。
+
+**探针附带修的一处基建**：esbuild / node 那两条「真代码」检查的临时目录从系统 %TEMP% 挪到仓库内
+`data/logs` —— 系统临时目录里偶发写不出 `md.mjs`（Access is denied，安全软件对新目录的瞬时占用），
+会假红两条并各带走一批子项（155 → 152）。改完 155 项全过。
