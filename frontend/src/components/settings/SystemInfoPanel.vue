@@ -313,7 +313,7 @@ const healthCheckedAt = ref('');
 
 <template>
   <div class="sysinfo">
-    <!-- 顶部工具行：一句只读说明 + 上次检测时间 + 两枚动作（重新检测 / 刷新全部） -->
+    <!-- 顶部工具行：只读说明 + 上次检测时间 + 重新检测 -->
     <div class="si-bar">
       <span class="si-bar-note">只读信息 · 环境 / 存储 / 服务状态</span>
       <span class="si-bar-time tnum" v-if="healthCheckedAt">上次检测 {{ healthCheckedAt }}</span>
@@ -323,149 +323,133 @@ const healthCheckedAt = ref('');
       </button>
     </div>
 
-    <!-- ① 运行环境：两列对齐的键值（标签定宽，值一列；窄屏一列） -->
-    <section class="si-block">
-      <div class="si-head">
-        <AppIcon name="server" :size="15" /><h3 class="si-title">运行环境</h3>
-      </div>
-      <div class="si-body">
-        <p class="si-empty" v-if="!system">后端未返回运行环境信息</p>
-        <dl class="kv" v-else>
-          <div class="kv-row">
-            <dt>操作系统</dt>
-            <dd :title="system.os_detail || system.os || ''">{{ system.os || '—' }}</dd>
-          </div>
-          <div class="kv-row">
-            <dt>内核</dt>
-            <dd :title="kernelText">{{ kernelText }}</dd>
-          </div>
-          <div class="kv-row">
-            <dt>Python</dt>
-            <dd>{{ system.python || '—' }}</dd>
-          </div>
-          <div class="kv-row">
-            <dt>CPU</dt>
-            <dd>{{ cpuText }}</dd>
-          </div>
-          <div class="kv-row">
-            <dt>主机名</dt>
-            <dd :title="system.hostname || ''">{{ system.hostname || '—' }}</dd>
-          </div>
-          <div class="kv-row">
-            <dt>已运行</dt>
-            <dd>{{ uptimeText }}</dd>
-          </div>
-        </dl>
-      </div>
-    </section>
+    <!-- 四张卡：2×2 排布（窄屏一列）。每张都是同一套 .card + .card-head + .card-body -->
+    <div class="si-cards">
+      <!-- ① 运行环境 -->
+      <section class="card si-card">
+        <header class="card-head">
+          <AppIcon name="server" :size="15" />
+          <h3 class="si-title">运行环境</h3>
+        </header>
+        <div class="card-body">
+          <p class="si-empty" v-if="!system">后端未返回运行环境信息</p>
+          <dl class="kv" v-else>
+            <div class="kv-row"><dt>操作系统</dt>
+              <dd :title="system.os_detail || system.os || ''">{{ system.os || '—' }}</dd></div>
+            <div class="kv-row"><dt>内核</dt><dd :title="kernelText">{{ kernelText }}</dd></div>
+            <div class="kv-row"><dt>Python</dt><dd>{{ system.python || '—' }}</dd></div>
+            <div class="kv-row"><dt>CPU</dt><dd>{{ cpuText }}</dd></div>
+            <div class="kv-row"><dt>主机名</dt><dd :title="system.hostname || ''">{{ system.hostname || '—' }}</dd></div>
+            <div class="kv-row"><dt>已运行</dt><dd>{{ uptimeText }}</dd></div>
+          </dl>
+        </div>
+      </section>
 
-    <!-- ② 存储空间：一行用量（右带百分比）+ 占用条 + 三行细目 + 卷路径（可复制） -->
-    <section class="si-block">
-      <div class="si-head">
-        <AppIcon name="layers" :size="15" /><h3 class="si-title">存储空间</h3>
-      </div>
-      <div class="si-body">
-        <p class="si-empty" v-if="!disk">后端未返回磁盘信息</p>
-        <template v-else>
-          <div class="disk-head">
-            <span class="disk-usage">
-              已用 <b>{{ formatBytes(disk.used_bytes) }}</b> / 共 {{ formatBytes(disk.total_bytes) }}
-            </span>
-            <span class="spacer"></span>
-            <span class="disk-pct tnum" :class="diskTone">{{ diskPct.toFixed(1) }}%</span>
-          </div>
-          <div
-            class="bar"
-            role="progressbar"
-            aria-label="磁盘占用"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :aria-valuenow="Math.round(diskPct)"
-          >
-            <span class="bar-fill" :class="diskTone" :style="{ width: diskPct + '%' }"></span>
-          </div>
-          <p class="disk-line">可用 {{ formatBytes(disk.free_bytes) }} · data 目录 {{ formatBytes(disk.data_dir_bytes) }}<template v-if="dbBytes !== null"> · MySQL {{ formatBytes(dbBytes) }}</template></p>
-          <div class="path-line" v-if="disk.path">
-            <span class="path-k">卷</span>
-            <span class="mono path-v" :title="disk.path">{{ disk.path }}</span>
-            <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(disk.path)">
-              <AppIcon name="copy" :size="13" />
-            </button>
-          </div>
-        </template>
+      <!-- ② 存储空间 -->
+      <section class="card si-card">
+        <header class="card-head">
+          <AppIcon name="layers" :size="15" />
+          <h3 class="si-title">存储空间</h3>
+          <span class="spacer"></span>
+          <span class="disk-pct tnum" :class="diskTone" v-if="disk">{{ diskPct.toFixed(1) }}%</span>
+        </header>
+        <div class="card-body">
+          <p class="si-empty" v-if="!disk">后端未返回磁盘信息</p>
+          <template v-else>
+            <div class="disk-head">
+              <span class="disk-usage">已用 <b>{{ formatBytes(disk.used_bytes) }}</b> / 共 {{ formatBytes(disk.total_bytes) }}</span>
+            </div>
+            <div
+              class="bar"
+              role="progressbar"
+              aria-label="磁盘占用"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-valuenow="Math.round(diskPct)"
+            >
+              <span class="bar-fill" :class="diskTone" :style="{ width: diskPct + '%' }"></span>
+            </div>
+            <p class="disk-line">可用 {{ formatBytes(disk.free_bytes) }} · data 目录 {{ formatBytes(disk.data_dir_bytes) }}<template v-if="dbBytes !== null"> · MySQL {{ formatBytes(dbBytes) }}</template></p>
+            <div class="path-line" v-if="disk.path">
+              <span class="path-k">卷</span>
+              <span class="mono path-v" :title="disk.path">{{ disk.path }}</span>
+              <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(disk.path)">
+                <AppIcon name="copy" :size="13" />
+              </button>
+            </div>
+          </template>
+        </div>
+      </section>
 
-      </div>
-    </section>
+      <!-- ③ 服务与任务池 -->
+      <section class="card si-card">
+        <header class="card-head">
+          <AppIcon name="gauge" :size="15" />
+          <h3 class="si-title">服务与任务池</h3>
+        </header>
+        <div class="card-body">
+          <p class="si-empty" v-if="healthError">健康检查失败：{{ healthError }}</p>
+          <p class="si-empty" v-else-if="!health">检测中…</p>
+          <ul class="srv" v-else>
+            <li class="srv-row">
+              <span class="srv-name">MySQL</span>
+              <span class="srv-detail mono truncate" :title="String(db.database ?? '')">{{ db.backend || '—' }} · {{ db.database || '—' }}</span>
+              <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '正常' : (db.error ? '异常' : '未探测') }}</span>
+            </li>
+            <li class="srv-row">
+              <span class="srv-name">LanceDB</span>
+              <span class="srv-detail mono truncate" :title="String(vector.path ?? vector.error ?? '')">
+                {{ vector.path || vector.error || '—' }}<template v-if="vector.chunks !== undefined && vector.chunks !== null"> · {{ vector.chunks }} 条向量</template>
+              </span>
+              <span class="badge" :class="vectorOk ? 'ok' : 'danger'">{{ vectorOk ? '可用' : '不可用' }}</span>
+            </li>
+            <li class="srv-row">
+              <span class="srv-name">任务池</span>
+              <span class="srv-detail">workers {{ runner.workers ?? '—' }} · 运行中 {{ runningText }} · 队列 {{ queueText }}</span>
+              <span class="badge" :class="runningCount > 0 ? 'ok' : 'dim'">{{ runningCount > 0 ? `运行中 ${runningCount}` : '空闲' }}</span>
+            </li>
+            <li class="srv-row">
+              <span class="srv-name">数据目录</span>
+              <span class="srv-detail mono truncate" :title="health.data_dir || ''">{{ health.data_dir || '—' }}</span>
+              <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(health.data_dir)">
+                <AppIcon name="copy" :size="13" />
+              </button>
+            </li>
+          </ul>
+        </div>
+      </section>
 
-    <!-- ③ 服务与任务池：紧凑分组列表（一行一个服务：名称 / 细目 / 右侧轻量状态） -->
-    <section class="si-block">
-      <div class="si-head">
-        <AppIcon name="gauge" :size="15" /><h3 class="si-title">服务与任务池</h3>
-      </div>
-      <div class="si-body">
-        <p class="si-empty" v-if="healthError">健康检查失败：{{ healthError }}</p>
-        <p class="si-empty" v-else-if="!health">检测中…</p>
-        <ul class="srv" v-else>
-          <li class="srv-row">
-            <span class="srv-name">MySQL</span>
-            <span class="srv-detail mono truncate" :title="String(db.database ?? '')">{{ db.backend || '—' }} · {{ db.database || '—' }}</span>
-            <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '正常' : (db.error ? '异常' : '未探测') }}</span>
-          </li>
-          <li class="srv-row">
-            <span class="srv-name">LanceDB</span>
-            <span class="srv-detail mono truncate" :title="String(vector.path ?? vector.error ?? '')">
-              {{ vector.path || vector.error || '—' }}<template v-if="vector.chunks !== undefined && vector.chunks !== null"> · {{ vector.chunks }} 条向量</template>
-            </span>
-            <span class="badge" :class="vectorOk ? 'ok' : 'danger'">{{ vectorOk ? '可用' : '不可用' }}</span>
-          </li>
-          <li class="srv-row">
-            <span class="srv-name">任务池</span>
-            <span class="srv-detail">workers {{ runner.workers ?? '—' }} · 运行中 {{ runningText }} · 队列 {{ queueText }}</span>
-            <span class="badge" :class="runningCount > 0 ? 'ok' : 'dim'">{{ runningCount > 0 ? `运行中 ${runningCount}` : '空闲' }}</span>
-          </li>
-          <li class="srv-row">
-            <span class="srv-name">数据目录</span>
-            <span class="srv-detail mono truncate" :title="health.data_dir || ''">{{ health.data_dir || '—' }}</span>
-            <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(health.data_dir)">
-              <AppIcon name="copy" :size="13" />
-            </button>
-          </li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- ④ 索引存储：原样复用索引管理页那张卡（记录数 / 维度 / 一致性 / 校验与清理都在这层） -->
-    <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
-                   :checked-at="checkedAt" @reconcile="reconcileNow" />
+      <!-- ④ 索引存储：复用索引管理那张卡，外壳对齐到同一套 .card（头/体在原组件里覆盖成卡片版式） -->
+      <section class="card si-card si-card--kb">
+        <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
+                       :checked-at="checkedAt" @reconcile="reconcileNow" />
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* 只读面板：一条工具行 + 三组信息 + 索引存储卡。组与组之间只用留白，不套外层卡片 */
+/* 只读面板：一条工具行 + 2×2 的卡片。卡片用全站同一套 .card / .card-head / .card-body，
+   不另立一套「标题在块外」的写法（用户口径 2026-12：系统信息用多卡片布局）。 */
 .sysinfo { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 .si-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 30px; }
 .si-bar-note { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .si-bar-time { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 组：标题（不铺底）+ 淡色圆角内容底；缝归 .sysinfo 的 gap */
-.si-block { min-width: 0; }
-.si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-faint); }
-.si-title {
-  margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600;
-  letter-spacing: -.01em; line-height: 1.35; color: var(--text);
-}
-.si-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
-.si-empty { margin: 0; padding: 2px 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
-/* 设置页里那张卡的头部/内容与全页同一档内边距 */
-.sysinfo :deep(.card-head) { padding: 9px 14px; }
-.sysinfo :deep(.card-body) { padding: 12px 14px; }
+/* 卡片网格：两列等宽、按行顶对齐；窄屏一列。
+   .card + .card 的上边距在这里清零 —— 间距只由 gap 给，否则同排两张卡会差 12px。 */
+.si-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.si-cards > .card + .card { margin-top: 0; }
+.si-card { min-width: 0; }
+.si-card .card-head { gap: 8px; }
+.si-card .card-head :deep(svg) { color: var(--text-faint); }
+.si-title { margin: 0; font-size: calc(13px * var(--ts, 1)); font-weight: 650; line-height: 1.35; color: var(--text); }
+.si-empty { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
 
-/* ① 键值：两列 { 定宽标签 | 值 }，标签右对齐到一条竖线，值再长也只在值格里省略 */
-.kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin: 0; }
-.kv-row {
-  display: grid; grid-template-columns: 74px minmax(0, 1fr); align-items: baseline; gap: 10px; min-width: 0;
-}
+/* ① 运行环境：定宽标签 + 值，标签右对齐成一条竖线 */
+.kv { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin: 0; }
+.kv-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: baseline; gap: 10px; min-width: 0; }
 .kv dt { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .kv dd {
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); font-variant-numeric: tabular-nums;
@@ -476,33 +460,35 @@ const healthCheckedAt = ref('');
 .disk-head { display: flex; align-items: baseline; gap: 8px; }
 .disk-usage { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .disk-usage b { font-weight: 600; color: var(--text); }
-.disk-pct { font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--accent); }
+.disk-pct { font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--accent); }
 .disk-pct.warn { color: var(--warn); }
 .disk-pct.danger { color: var(--danger); }
-/* 轨道抬一档到底色之上：内容底本身就是 --bg-sunken，同色轨道会整条消失 */
-.bar { height: 6px; margin: 8px 0; border-radius: var(--r-pill); background: var(--bg-elev); overflow: hidden; }
+.bar { height: 6px; margin: 8px 0; border-radius: var(--r-pill); background: var(--bg-sunken); overflow: hidden; }
 .bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur) var(--ease); }
 .bar-fill.warn { background: var(--warn); }
 .bar-fill.danger { background: var(--danger); }
 .disk-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.7; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-/* 路径行：整行可换行（长路径不撑破布局），复制按钮贴在文字后面 */
 .path-line { display: flex; align-items: center; gap: 6px; margin-top: 6px; min-width: 0; }
 .path-k { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.path-v {
-  min-width: 0; overflow-wrap: anywhere; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
-}
+.path-v { min-width: 0; overflow-wrap: anywhere; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); }
 
-/* ③ 服务与任务池：一行一个服务 —— 名称定宽、细目可省略、右侧一枚轻量状态 */
+/* ③ 服务与任务池：一行一个服务，发丝线分隔 */
 .srv { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .srv-row { display: flex; align-items: center; gap: 10px; min-height: 30px; min-width: 0; }
 .srv-row + .srv-row { border-top: 1px solid var(--divider); }
-.srv-name { flex: none; width: 72px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); }
-.srv-detail {
-  flex: 1 1 auto; min-width: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
-}
+.srv-name { flex: none; width: 68px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); }
+.srv-detail { flex: 1 1 auto; min-width: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 .srv-row .badge { flex: none; }
 
-@media (max-width: 720px) {
-  .kv { grid-template-columns: minmax(0, 1fr); }
+/* ④ 索引存储：复用组件自带的 head/body，把它覆盖成同一张卡的版式 */
+.si-card--kb { overflow: hidden; }
+.si-card--kb :deep(.storage-head) {
+  margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--divider);
+}
+.si-card--kb :deep(.ttl) { font-size: calc(13px * var(--ts, 1)); font-weight: 650; }
+.si-card--kb :deep(.storage-body) { padding: 16px; border-radius: 0; background: transparent; }
+
+@media (max-width: 900px) {
+  .si-cards { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
