@@ -12163,3 +12163,36 @@ PUT /parse/config {is_ocr:true, page_ranges:"1-5", figure_caption:true}
 PUT /parse/config {page_ranges:""} → 返回 "mineru_page_ranges": ""（能清回去了）
 恢复默认：is_ocr=false / page_ranges="" / figure_caption=false 后重新读仍是默认值
 ```
+
+### 136. 第一百三十六轮：阅读器补一个「重新解析」（初值同样来自设置）
+
+用户口径（2026-12）：「可以加上」—— 上一轮把导入弹窗的初值接到了设置页，
+但同一篇论文**后面对它重跑**时没有任何入口：引擎、OCR、公式、表格、页码范围只落在
+那一次导入的 PARSE 任务参数上，想换只能删掉重导。
+
+- 新组件 `frontend/src/components/paper/ReparseDialog.vue`：打开时并取 `GET /parse/config`
+  与 `GET /mineru/config`，把引擎（默认取设置里的默认引擎）、模型版本、OCR 语言、
+  强制 OCR / 识别公式 / 识别表格 / 页码范围、图片带图注 / 深度图片搜索、解析完接着翻译
+  全部预填；两个接口都失败就退回内置默认值。
+- 阅读器胶囊里加一枚 `data-cap-reparse` 按钮（「重新解析：换引擎或改这一篇的解析参数」），
+  弹窗提交走 `POST /papers/{id}/parse`（**只带这一篇要覆盖的键**）：
+  · 本地引擎 → `figure_caption` / `deep_figure_search`
+  · 在线引擎 → `mineru_model_version` / `mineru_language` / `mineru_is_ocr` /
+    `mineru_enable_formula` / `mineru_enable_table` / `mineru_page_ranges`（空则不发）
+- 未配 token 选在线解析时，弹窗里直接给「去哪配」的提示并拦下提交，不让它走到后端才报错。
+
+实测（CDP，拦 fetch 只记录不发，避免真的排一个重解析任务）：
+
+```
+按钮存在：title「重新解析：换引擎或改这一篇的解析参数」
+打开：标题带论文名；引擎 = local（设置里的默认引擎）
+设置里先存 is_ocr=true / ranges=1-5 / figure_caption=true，再打开：
+  本地：switch = [figure_caption true, deep_figure_search false, then_translate false]
+  切在线：页码范围 1-5、switch = [OCR true, 公式 true, 表格 true, 翻译 false]、语言 16 选项
+提交（本地）：/papers/…/parse?force=true&then_translate=false&engine=local&figure_caption=false…
+提交（在线）：…parse?force=true&then_translate=false&engine=mineru&mineru_model_version=pipeline
+              &mineru_language=en&mineru_is_ocr=true&mineru_enable_formula=true
+              &mineru_enable_table=true&mineru_page_ranges=1-5
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **155/155**。
