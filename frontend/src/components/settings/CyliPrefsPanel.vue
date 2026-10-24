@@ -531,9 +531,11 @@ onMounted(() => {
       </div>
     </Teleport>
 
-    <!-- 一张卡管两块（用户口径 2026-12：对话偏好与运行上限「合并为一个」）：
-         上半是两个对话控件（两列等宽），一条带小标题的发丝线之后是五个运行上限数字。
-         合成一张卡之后，两半不再各自撑高度，"左边空一大片"的问题从根上没了。 -->
+    <!-- 两张卡并排（用户口径 2026-12）：**左 = 对话偏好（含运行上限），右 = 自定义指令**。
+         左卡本身就是"两半合一"（对话的两个控件 + 一条带小标题的发丝线 + 五个运行上限数字），
+         自定义指令单独占右列，文本框跟着右卡拉到同高；不选「自定义」时右列不存在，
+         左卡自动独占整行（.pref-cols--solo）。 -->
+    <div class="pref-cols" :class="{ 'pref-cols--solo': pref.preset !== 'custom' }">
     <section class="pref-group">
       <header class="group-head">
         <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
@@ -575,10 +577,8 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- ③ 自定义指令：从「对话偏好」独立出来，占满一行（用户口径 2026-12）：
-         它是**一段文本**，与上面两个短控件不是一类东西。
-         仍然只在风格选「自定义」时出现 —— 选走别的预设必须收起，否则会以为框里那段还在生效。
-         标题在卡外、文本框占满内容宽、字数贴框的右下。 -->
+    <!-- ③ 自定义指令（右列）：只在风格选「自定义」时出现 —— 选走别的预设必须收起，
+         否则会以为框里那段还在生效。标题在卡外、文本框随卡长高、字数贴框的右下。 -->
     <section class="pref-group pref-custom" v-if="pref.preset === 'custom'">
       <header class="group-head">
         <AppIcon name="edit" :size="14" /><h3>自定义指令</h3>
@@ -590,6 +590,7 @@ onMounted(() => {
         <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
       </div>
     </section>
+    </div>
 
     <!-- ② 技能能力：横跨整个主内容区，单列纵向一行一个技能。
          **不给列表建固定高度的内嵌滚动容器**：整页只有 .settings-pane 那一层滚动。 -->
@@ -750,6 +751,17 @@ onMounted(() => {
 }
 
 /* ---------- 卡片（一区一张，卡内再分小段用发丝线） ---------- */
+/* 两张卡并排：左（对话偏好 + 运行上限）拿宽一点，右（自定义指令）跟着拉平 */
+.pref-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: var(--card-gap);
+  align-items: stretch;
+}
+/* 没选「自定义」时右列不渲染：左卡独占整行，不留一个空轨道 */
+.pref-cols--solo { grid-template-columns: minmax(0, 1fr); }
+/* 左卡只占半幅时，五个数字回到两列（三列会窄到看不清 1000000） */
+.pref-cols .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pref-group { min-width: 0; display: flex; flex-direction: column; }
 /* 标题只是标题：**不铺底**，淡色圆角卡在它下面（与系统信息 / 索引管理的块同一套）。
    min-height 让带图标与不带图标的标题一样高，两张卡的正文起点因此对齐。 */
@@ -782,8 +794,9 @@ onMounted(() => {
 .ctl { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ctl-label { font-size: calc(12px * var(--ts, 1)); line-height: 1.35; color: var(--text-dim); }
 
-/* 自定义指令卡：标题在卡外，框占满内容宽，字数贴在框的右下 */
+/* 自定义指令卡（右列）：标题在卡外，框占满内容宽并与左卡同高，字数贴在框的右下 */
 .pref-custom .group-body { display: flex; flex-direction: column; gap: 6px; }
+.pref-custom .style-input { flex: 1 1 auto; height: auto; min-height: clamp(140px, 20vh, 220px); }
 /* 自定义指令框：**独占一行卡片**，宽度就是整幅内容宽。
    clamp 让它在高一点的视口里再长一档（140–220），不会顶掉半屏；
    字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。 */
@@ -830,6 +843,7 @@ onMounted(() => {
 }
 /* 标题 / 数量 / 上传 / 刷新**同一条水平线**：数量跟在标题后，两枚动作被 .spacer 推到右端 */
 .skills-head {
+  position: relative;          /* 同理：藏起来的那枚 file input 是绝对定位的，得有个定位祖先把它的溢出圈住 */
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   min-height: 20px;
   color: var(--text-faint);
@@ -946,7 +960,8 @@ onMounted(() => {
 /* ---------- 窄容器：两列 → 单列（卡片自己的内边距也跟着收一档） ---------- */
 @container (max-width: 899px) {
   .cyli-prefs { --card-pad: 18px; }
-  /* 卡内的两列（对话风格 / 回复长度）与运行上限的三列都退一档 */
+  /* 并排 → 上下叠；卡内的两列（对话风格 / 回复长度）也收成一列 */
+  .pref-cols, .pref-cols--solo { grid-template-columns: minmax(0, 1fr); }
   .pref-pair { grid-template-columns: minmax(0, 1fr); }
   .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

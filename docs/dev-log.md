@@ -12437,3 +12437,45 @@ Cyli 偏好：合并卡 = (448,146,968,259)；卡内 pair = (468,166,928,53)
           窄屏 620 → 单列 596、overflowX 0
 ```
 
+
+### 143. 第一百四十三轮：Cyli 偏好页多出来的那条浏览器滚动条（真因是 `.sr-only` 逃出了滚动容器），自定义指令挪到右列
+
+用户口径（2026-12）：「Cyli 偏好页移除浏览器自带滚动条」，随后「自定义指令放右侧」。
+
+**① 那条滚动条不是窗格的，是文档的**
+
+`.settings-pane` 早就写了 `scrollbar-width: none` + `::-webkit-scrollbar { width: 0 }`，
+所以它自己那条条子根本不画。实测发现真正在滚的是**文档**：
+
+```
+document.scrollingElement.scrollHeight = 1683 （视口 980）→ window.scrollTo(0,400) 真的滚到 400
+#app / .app-main / .settings-layout / .settings-pane 的高度都正好 928、bottom 都 980
+把 .skills 隐藏 → scrollHeight 立刻回到 980
+```
+
+真因：`.sr-only`（`base.css`）是 `position: absolute`，而它所在的 `.switch-row`（Switch 组件）
+与 `.skills-head`（藏起来那枚 file input）都**没有定位祖先** —— 于是它的包含块是**初始包含块**，
+既不受父级 `overflow` 裁剪，又把自己的位置算进文档的滚动区。技能列表 13 条 = 13 个开关，
+足够把文档顶到 1683。
+
+修法两行：`Switch.vue` 的 `.switch-row` 与 `CyliPrefsPanel` 的 `.skills-head` 各加
+`position: relative`。实测 `#agent` 与 `#online` 两页的 `scrollingElement.scrollHeight` 都变成 980
+（= 视口高），窗格右侧那条浏览器滚动条随之消失，页面照旧能滚（滚轮落在窗格上）。
+
+**② 自定义指令放到右列**
+
+`.pref-cols` 两列（`1.1fr / 0.9fr`）：左 = 对话偏好卡（含运行上限），右 = 自定义指令卡；
+`align-items: stretch` + 右卡 `.style-input { flex: 1 }` —— 两张卡同起同高，文本框跟着右卡拉满。
+没选「自定义」时右卡不渲染，`.pref-cols--solo` 让左卡独占整行（不留空轨道）。
+左卡只占半幅，所以运行上限回到**两列**数字网格（三列会把 `1000000` 挤没）；≤899 两列 → 上下叠。
+
+实测（CDP，1440×980）：
+
+```
+非自定义：docSH 980 = 视口；.pref-cols 单列 968；卡高 324
+自定义：  docSH 980；两列 519 / 425；两张卡 body 均 (146, 324) —— 同起同高
+          textarea 385×261（撑满右卡）；limit 两列 232×2；overflowX 0
+窄屏 760：单列 672、overflowX 0
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。

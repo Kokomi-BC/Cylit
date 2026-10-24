@@ -53,7 +53,12 @@ function onChange(ev: Event) {
 </template>
 
 <style scoped>
+/* position: relative 是必需的：里面那枚 .sr-only checkbox 是 position: absolute，
+   没有定位祖先时它的包含块是**初始包含块**（视口），于是它既不会被父级的 overflow 裁掉，
+   又会把自己的位置算进文档的滚动区 —— 页面因此凭空多出一条浏览器滚动条（Cyli 偏好页实测
+   文档高度 1683 vs 视口 980）。定位祖先前移到这一行，它就老老实实待在自己那格里。 */
 .switch-row {
+  position: relative;
   display: flex; align-items: flex-start; gap: 8px;
   /* 整行都是 label：点文案也能切换（原生行为，无需 JS） */
   cursor: pointer; user-select: none;
