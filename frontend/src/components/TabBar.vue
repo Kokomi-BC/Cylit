@@ -7,9 +7,10 @@
  * 它们的入口是左侧栏（`components/AppSidebar.vue`）—— 所以这里既没有品牌词，也没有
  * 常驻的「首页」胶囊：两者都在侧栏里，重复一遍只是占地方。
  *
- * 版面（用户口径）：**只有**胶囊托盘（横向可滚、两端浮动圆钮、滚轮横滑）。
- * 没有品牌（在左侧栏）、没有固定的「首页」胶囊（在左侧栏）、没有「+」新建入口、没有「AI 对话」胶囊
- * —— 顶栏只回答"我开着哪几篇论文"，其余入口一律在左侧栏。一枚标签都没有时它就是一条空条。
+ * 版面（用户口径 2026-12）：品牌 + **圆角**托盘（横向可滚、两端浮动圆钮、滚轮横滑）+ 最右一枚「+」。
+ * 标签与托盘都是圆角矩形（不再是全圆胶囊——圆到头的形状在顶栏里像一排按钮，读起来散）。
+ * 「+」是打开论文库的固定入口（导入论文在那边），常驻最右：一枚标签都没有时，它是这一行唯一的动作。
+ * 仍然没有固定的「首页」胶囊、没有「AI 对话」胶囊 —— 其余入口一律在左侧栏。
  * 交互沿用原有实现：点标签切换、× 关闭、双击重命名、右键菜单（关闭其它 / 关闭标签）、拖拽换序。
  *
  * ⚠️ 「一个都不剩」必须显式处理：改造前首页是**不可关闭**的兜底标签，现在没有兜底了 ——
@@ -189,7 +190,8 @@ function onContextMenu(key: string, ev: MouseEvent) {
     </RouterLink>
     <!-- 滚动按钮 + 标签托盘（两枚圆钮**浮在托盘两端**，哪一侧还藏着内容就只在那侧出现，
          不是两枚并排堆在同一侧）。滚轮在这一整块里都是横向滑动。 -->
-    <!-- 一枚论文标签都没有时不渲染托盘（并排的空胶囊只会让人以为坏了）；顶栏就只是一条空条。 -->
+    <!-- 一枚论文标签都没有时不渲染托盘（并排的空胶囊只会让人以为坏了）；
+         但「+」不参与这个 v-if：空标签条下它是唯一可点的东西。 -->
     <div v-if="tabs.length" class="tabbar-nav" @wheel="onWheel">
       <button
         v-if="canLeft"
@@ -244,6 +246,17 @@ function onContextMenu(key: string, ev: MouseEvent) {
         @click="scrollStep(1)"
       ><AppIcon name="chevron-right" :size="13" /></button>
     </div>
+
+    <!-- 「+」= 打开论文库（导入论文的入口在那边）。常驻最右：托盘先收缩自己，它不会被挤掉。 -->
+    <RouterLink
+      class="tabbar-new" :to="{ name: 'library' }" data-tabbar-new
+      title="打开论文库（导入论文）" aria-label="打开论文库"
+    >
+      <svg class="tabbar-plus" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round" />
+      </svg>
+    </RouterLink>
   </header>
 </template>
 
@@ -272,7 +285,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
 
 /* 滚动按钮 + 托盘这一整块：滚轮在这里就是横向滑动。`position: relative` 是给两枚浮动圆钮
    当定位基准的；`flex: 0 1 auto` + `min-width: 0` 让它在标签变多时**先收缩**（托盘横向滚），
-   于是「+」永远被挤不出去。整行靠左，右侧留白 —— 右侧没有别的东西了。 */
+   紧跟其后的「+」是 `flex: none`，因此永远不会被标签挤掉。 */
 .tabbar-nav { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 0; }
 
 /* 两枚「翻页」圆钮：**浮在托盘两端**、不占布局（哪一侧还有内容才在那一侧出现，
@@ -280,7 +293,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
    同样不画描边** —— 半透明 + 模糊，标签滚到它底下时文字照样透出来。 */
 .nav-scroll {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
-  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 8px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-dim); cursor: pointer;
   background: linear-gradient(180deg,
@@ -295,14 +308,15 @@ function onContextMenu(key: string, ev: MouseEvent) {
 .nav-scroll.left { left: 4px; }
 .nav-scroll.right { right: 4px; }
 
-/* 标签托盘 = **一枚自撑的胶囊**：① 托盘（--bg-sunken）② 抬起的白 pill（--bg-elev + --shadow-1）
- * ③ 文字。与 base.css 的 `.seg`、阅读器侧栏那枚页签胶囊**同一门语言、同一组颜色**。
+/* 标签托盘 = **一枚圆角托盘**（用户口径 2026-12：圆形胶囊改圆角胶囊）：
+ * ① 托盘（--bg-sunken）② 抬起的白块（--bg-elev + --shadow-1）③ 文字。
+ * 与 base.css 的 `.seg`、设置页的分段控件**同一门语言、同一组颜色**，只是圆角一档（10 / 7）。
  * 宽度跟着内容走（标签少时不会拉成一根长条），放不下就横向滚；
- * `3px + 32px` 让托盘正好 38px —— 与阅读器里那枚页签胶囊、那枚圆形开关同高。 */
+ * `3px + 32px` 让托盘正好 38px —— 与阅读器里那枚页签开关同高。 */
 .tab-strip {
   display: flex; align-items: center; gap: 3px;
   flex: 0 1 auto; width: fit-content; max-width: 100%; min-width: 0;
-  padding: 3px; border: 0; border-radius: 999px;
+  padding: 3px; border: 0; border-radius: 10px;
   background: var(--bg-sunken);
   overflow-x: auto; scrollbar-width: none;
   /* 两端各让出一枚浮动圆钮的位置：滚进视野的标签不会被压在按钮底下 */
@@ -315,9 +329,10 @@ function onContextMenu(key: string, ev: MouseEvent) {
   /* 右内边距 8px：关闭按钮自己还有 3.5px 的余量（18px 盒子装 11px 图标），
    * 于是「图标左边缘」和「× 字形右边缘」到胶囊边缘的距离都是 ~12px —— 肉眼看才是居中的。 */
   height: 32px; padding: 0 8px 0 12px; max-width: 200px; flex: none;
-  /* 圆到底的**胶囊**；标题那枚 span 带 .truncate（overflow: hidden），行高只给 1em 时字体的
+  /* 圆角**胶囊**（7px，比 10px 的托盘小一档 —— 嵌在里面才是"同心的两层"）；
+     标题那枚 span 带 .truncate（overflow: hidden），行高只给 1em 时字体的
      ascent + descent 高出内容盒，上下缘被切掉，就是用户报的「胶囊把字裁了」。 */
-  border-radius: 999px; color: var(--text-dim);
+  border-radius: 7px; color: var(--text-dim);
   font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1.45; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -331,10 +346,22 @@ function onContextMenu(key: string, ev: MouseEvent) {
 }
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 999px;
+  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px;
   background: transparent; color: var(--text-faint); cursor: pointer; flex: none;
 }
 .tab-close:hover { background: var(--bg-pressed); color: var(--text); }
+
+/* 最右的「+」：打开论文库。与托盘同一门语言（圆角方块），但**不铺底**——
+   它是动作不是状态，压在浅底托盘旁边再叠一层浅底只会显得像第二枚标签。 */
+.tabbar-new {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; margin-left: 2px;
+  border-radius: 8px; color: var(--text-dim); text-decoration: none;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.tabbar-new:hover { background: var(--bg-hover); color: var(--accent-text); text-decoration: none; }
+.tabbar-new:focus-visible { outline: none; box-shadow: var(--ring); }
+.tabbar-plus { display: block; }
 
 
 /* 标签右键菜单：挂在标签内绝对定位，点空白处由标签条的 click 收起 */

@@ -630,7 +630,7 @@ onMounted(() => {
         <div class="skill-list" v-if="filteredSkills.length">
           <template v-for="s in filteredSkills" :key="s.name">
             <!-- 一条技能 = 标题行 + 说明，两样包在同一个 .skill-item 里：
-                 悬停时整块浮起，说明才不会被读成下一条的副标题。 -->
+                 说明紧贴自己的标题、不悬停浮起，才不会读成下一条的副标题。 -->
             <div class="skill-item">
               <div class="skill-row" :class="{ off: !s.enabled }"
                    data-skill-row :data-skill-name="s.name">
@@ -722,8 +722,7 @@ onMounted(() => {
    · 三组之间仍然不套白卡：标题条 + 留白 + 控件自己的边就是全部层级。 */
 .cyli-prefs {
   --ctl-h: var(--control-h);   /* 32：模型页主表单的控件高，本页不再另立一套 */
-  /* 技能行 / 搜索框共用的额外内边距（卡片自己给 14px）：文字离卡片边 8px，
-     悬停底色因此比文字宽出一圈，而名字与搜索框左缘仍落在同一条竖线上 */
+  /* 技能行 / 搜索框共用的额外内边距（卡片自己给 14px）：名字与搜索框的左缘落在同一条竖线上 */
   --row-pad: 8px;
   display: flex; flex-direction: column; gap: 24px;
   container-type: inline-size;
@@ -855,7 +854,7 @@ onMounted(() => {
 
 /* 内容底：淡色圆角矩形（与 .group-body 同一套），只包搜索框与技能行；
    行与行之间只靠 1px 发丝线，行自己不带边框、不带底色、不带行距 */
-.skill-body { padding: 10px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
+.skill-body { padding: 12px 14px 6px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 /* 卡里的空态/提示行要自己留出上下呼吸（底只给左右内边距，行与行之间的节奏归行自己管） */
 .skill-body > .pref-hint { margin: 10px 0 14px; }
 
@@ -864,7 +863,7 @@ onMounted(() => {
 .skill-search {
   display: flex; align-items: center; gap: 8px;
   box-sizing: border-box; width: 100%; max-width: 360px; height: var(--ctl-h);
-  margin: 10px var(--row-pad) 8px; padding: 0 10px;
+  margin: 0 var(--row-pad) 10px; padding: 0 10px;
   border: 1px solid var(--border-strong); border-radius: var(--r-sm);
   background: var(--bg-elev); color: var(--text-faint);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
@@ -879,38 +878,25 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
-/* 一条技能 = 标题行 + 说明（内嵌设置面板跟在后面）。**悬停的单位是整条**：
-   鼠标停在名字上或停在说明上，浮起来的都是同一条 —— 之前只有 52px 的标题行跟着亮，
-   长说明悬在两条之间，读起来像属于下一条。 */
-.skill-item {
-  position: relative; border-radius: var(--r-sm);
-  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
+/* 一条技能 = 标题行 + 说明（内嵌设置面板跟在后面）。条本身不描边、不填底、
+   **也不响应悬停**（用户口径 2026-12：技能列表去掉鼠标悬浮效果）——
+   逐条浮起会让人以为整条可点，实际可点的只有右侧那几枚图标。 */
+.skill-item { display: block; }
 /* 行与行之间只留一条发丝线，线挂在**整条**上（不是标题行上）：
    否则会出现"说明上方无线、下方有线"的错觉，把说明推给下一条。 */
 .skill-item + .skill-item { border-top: 1px solid var(--divider); }
-/* 悬停：整条浮起 —— 一档更亮的底 + 一层投影（每套色板各自算好深浅两版）。
-   底色落在这一条的盒内，阴影只从边界外扩一档，都不会伸到卡片内边距外面去。
-   自己那条上边线在浮起时收掉：1px 发丝线会横切过圆角，看着像"这块被切了一刀"。 */
-.skill-item:hover {
-  z-index: 1;                        /* 阴影要压过下一条的发丝线 */
-  background: var(--bg-elev);
-  /* --shadow-2 而不是 -1：-1 的扩散只有 16px/-10px，压在淡底卡上几乎看不出来，
-     「浮起来」还是得靠一层能看见的投影（阴影颜色由各色板自己给，深色主题另算一套）。 */
-  box-shadow: var(--shadow-2);
-  border-top-color: transparent;
-}
-/* 标题行：只负责"名字 + 操作"这一条（不描边、不填底、不留行距）。
-   名字那侧与操作那侧由同一条 padding 决定，相邻两行的左内边距因此一模一样。 */
+/* 标题行：只负责"名字 + 操作"这一条（不描边、不填底）。
+   竖向节奏只有一处：这里留 10 顶距、说明再压 3、最后留 10 底距 ——
+   一条技能的呼吸上下对称，两条之间的发丝线因此正落在中间。 */
 .skill-row {
   display: flex; align-items: center; gap: 10px;
-  min-height: 52px; padding: 0 var(--row-pad);
+  padding: 10px var(--row-pad) 0;
 }
 /* 名字那一整块**只是标题**（2026-12 起不再是开合按钮：说明一直摆着）。
    min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把整页顶出横向滚动条。 */
 .skill-title {
   display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;
-  padding: 6px 0; overflow: hidden;
+  overflow: hidden;
 }
 .skill-name {
   font-size: calc(13px * var(--ts, 1)); font-weight: 600; color: var(--text);
@@ -925,7 +911,7 @@ onMounted(() => {
 /* 说明块：SKILL.md 的 description 原文，整段换行、不截断（它在标题行下方，不参与行宽）。
    左内边距与标题行一致（--row-pad），说明的第一行字因此与上面的技能名落在同一条竖线上；
    缩进或加符号都会让"这句说明属于哪一条"变得要靠猜。 */
-.skill-detail { padding: 0 var(--row-pad) 12px; }
+.skill-detail { padding: 3px var(--row-pad) 10px; }
 /* 收在一个可读的行宽里（96 个西文字符 ≈ 三分之二栏宽）：这一栏在宽屏上有一千多像素，
    整段铺满会读成"一整条横线"，眼睛每读完一行都要横掠很远才找下一行的开头；
    再窄（70 字上下）右侧就空出一大片，跟"两行就到底"的说明不成比例。 */

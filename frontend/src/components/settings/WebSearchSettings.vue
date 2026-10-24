@@ -173,12 +173,10 @@ defineExpose({ reload, save, verify, clearKey, ready, loading, busy, testing, di
         <label class="field">
           <span class="field-top">返回条数</span>
           <input type="number" min="1" max="50" step="1" v-model.number="form.count" />
-          <span class="field-hint">每次返回的结果数量，建议 1–20</span>
         </label>
         <label class="field">
           <span class="field-top">抓取字数上限</span>
           <input type="number" min="500" max="200000" step="500" v-model.number="form.fetch_chars" />
-          <span class="field-hint">单个网页最多抓取的字符数，建议 1000–10000</span>
         </label>
       </div>
 
@@ -194,7 +192,6 @@ defineExpose({ reload, save, verify, clearKey, ready, loading, busy, testing, di
               ? (keyMasked ? '已保存 ' + keyMasked + '，留空不改' : '已保存密钥，留空不改')
               : '粘贴提供方控制台里的密钥'"
           />
-          <span class="field-hint">{{ hasKey ? '如需更换密钥，请先清除当前密钥后重新输入' : '密钥只存在服务端，接口只回掩码' }}</span>
         </label>
       </div>
 
@@ -202,7 +199,7 @@ defineExpose({ reload, save, verify, clearKey, ready, loading, busy, testing, di
         <div class="field">
           <span class="field-top">网页抓取</span>
           <Switch v-model="form.need_content">抓取网页正文</Switch>
-          <span class="field-hint">开启后将在搜索结果中抓取并解析网页正文内容</span>
+          <span class="field-hint">每页最多抓上方设定的字数</span>
         </div>
       </div>
 
