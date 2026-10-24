@@ -895,7 +895,10 @@ const selection = reactive({
    * 都必须用它，否则画高亮时的文本校验会判成错位。
    */
   anchorText: '',
-  rowId: '', start: 0, end: 0, side: 'en' as 'en' | 'zh',
+  /* `side` 先留**空**：空 = "还不知道"，写高亮时交给后端按文字语言判（见
+     `backend/services/annotation/annotation_service.side_for_text`）。兜底成 `'en'`
+     等于替用户选了原文面 —— 中文引文存进原文面，译文上看不见（用户 2026-12 复报）。 */
+  rowId: '', start: 0, end: 0, side: '' as '' | 'en' | 'zh',
   /** 选区是否有块锚点（原 PDF 划词只有文字）—— 决定能不能写高亮/笔记 */
   anchored: true,
   /** 在哪个视图里划的：正文行 row / Markdown 视图 markdown / **原 PDF 页图 pdf**
@@ -932,7 +935,7 @@ const selection = reactive({
  */
 type SelectionSnapshot = {
   text: string; fullText: string; anchorText: string;
-  rowId: string; start: number; end: number; side: 'en' | 'zh';
+  rowId: string; start: number; end: number; side: '' | 'en' | 'zh';
   scope: 'row' | 'markdown' | 'pdf'; mdPage: number; page: number;
   segments: typeof selection.segments; x: number; y: number;
 };
@@ -4256,7 +4259,9 @@ function onMouseUp(ev?: MouseEvent) {
     Object.assign(selection, {
       show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
       anchorText,
-      rowId: offs ? pdfAnchor(page) : '', side: 'en' as const,
+      /* 同理留空：PDF 文字层**不一定是英文**（中文论文扫描件就是中文），
+         让后端按文字判面，别在这里预设 `en`。 */
+      rowId: offs ? pdfAnchor(page) : '', side: '' as const,
       start: offs?.start ?? 0, end: offs?.end ?? 0,
       anchored: !!offs, scope: 'pdf' as const, mdPage: 0,
       // 原 PDF 划词的位置就是**页号**（带进对话要写进消息里）；有锚点时按页高亮
@@ -6002,8 +6007,10 @@ async function addHighlight(color: string): Promise<Highlight[]> {
         group_id: group,
       });
       created.push({
+        /* `side` 取**后端回执**那一面（空 side 是我们请它按文字判的，本地猜的会与它不一致 ——
+          猜错了这条高亮当下就画不出来） */
         ...data, block_id: blockId, start: data.start, end: data.end,
-        side: selection.side, scope, group_id: group,
+        side: data.side, scope, group_id: group,
       });
     }
     highlights.value.push(...created);
@@ -6146,7 +6153,7 @@ function onContentClick(ev: MouseEvent) {
   }
   Object.assign(selection, {
     show: true, ...menuPos(rect), text: truncate(mark.textContent ?? '', 600),
-    rowId: '', side: 'en' as const, start: 0, end: 0, anchored: false,
+    rowId: '', side: '' as const, start: 0, end: 0, anchored: false,
     scope: 'row' as const, mdPage: 0, allowNote: false, segments: [], hlIds: ids,
   });
 }

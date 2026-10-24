@@ -19,7 +19,7 @@ from backend.core.utils import (
     iso_utc, json_dumps, json_loads, new_id, sha256_text,
 )
 from backend.repositories.mysql.models import (
-    HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Highlight, Note, Paper,
+    HIGHLIGHT_SCOPES, HIGHLIGHT_SIDES, Annotation, Block, Highlight, Note, Paper,
 )
 from backend.repositories.mysql.session import session_scope
 
@@ -105,6 +105,107 @@ def anchor_hash(selected_text: object, block_id: str, side: str,
     return sha256_text(str(selected_text or "") + str(block_id) + side)[:64]
 
 
+#: 定位不到时给用户看的那句话：要能直接显示（不出现 0/0、不出现栈帧）
+_SPAN_NOT_FOUND = ("这段文字在当前页找不到，可能换了译本或跨了行 —— "
+                   "请在正文里重新划一次")
+
+
+def _quote_hint(text: object) -> str:
+    """错误回执里的引文（截断：一条超长选区不该把消息撑满）。"""
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    return f"「{body[:24]}{'…' if len(body) > 24 else ''}」"
+
+
+def _offset(value: object) -> int:
+    """偏移量：非数字 / 负数一律当 0（脏值交给定位去纠正，不许变成 500）。"""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def side_for_text(raw: object, text: object = "") -> str:
+    """这条高亮该落**哪一面**（`en` / `zh`）。
+
+    与 agent 那条路同一口径（`agent.annotations.create`）：
+
+    - 请求里给了面就尊重它（`original` / `translation` 这类别名也认）；
+    - 没给、或给了个认不出的写法 → 按**引用的文字**判；
+    - **文字里有中文就只能是译文面**：中文引文存进 `en` 面，用户切到译文时那条高亮
+      根本画不出来（agent 路径 2026-12-07 实测过同一个坑，用户 2026-12 又复报一次）。
+    """
+    from backend.services.agent.annotations import normalize_side, side_of_text
+
+    detected = side_of_text(str(text or ""))
+    if detected == "zh":
+        return "zh"
+    return normalize_side(raw) or detected
+
+
+def _block_page_no(block_id: str) -> int:
+    """行锚点 → 页码：**先问 block 表**（`page_no` 是解析时定的），解不出才从行 id 里读。"""
+    text = str(block_id or "").strip()
+    try:
+        with session_scope() as sess:
+            row = sess.get(Block, text)
+            if row is not None and int(row.page_no or 0) > 0:
+                return int(row.page_no)
+    except Exception as exc:  # noqa: BLE001 —— 只是"去哪一页找"，取不到退回行 id
+        log.warning("取块页码失败（按行 id 解页号）：%s: %s", text, exc)
+    return int(anchor_page(text) or 0)
+
+
+def _row_side_text(paper_id: str, block_id: str, side: str) -> str | None:
+    """这一行在 `side` 那一面的**渲染文字**（与存库的偏移量同一坐标系）；取不到给 None。"""
+    from backend.services.agent.annotations import anchor_text, render_like_dom
+
+    try:
+        raw = anchor_text(paper_id, block_id, side=side)
+    except Exception as exc:  # noqa: BLE001 —— 核对不了偏移量就别挡住"存高亮"
+        log.warning("取行文本失败（这条高亮的偏移量无法核对）：%s/%s: %s",
+                    paper_id, block_id, exc)
+        return None
+    return None if raw is None else render_like_dom(raw)
+
+
+def _same_span_text(left: object, right: object) -> bool:
+    """两段文字是不是同一段（**空白不算差异**：浏览器/模型抄回来的空白常不一样）。"""
+    return re.sub(r"\s+", "", str(left or "")) == re.sub(r"\s+", "", str(right or ""))
+
+
+def _located_span(paper_id: str, block_id: str, text: str, side: str,
+                  start: int, end: int) -> tuple[int, int]:
+    """**按文字定位**偏移量（正文行那一面）；定位不到就是 `ValidationError`。
+
+    只在两处动：`end <= start`（0/0 的死高亮）或"给定区间上取出来的字与 `selected_text`
+    对不上"（换了译本 / 换了坐标系）。两者都**不许原样落库**：0/0 在 `markRanges` 里永远
+    画不出来（它只画 `end > start`），用户看到的就是"高亮没挂上"，比一句报错更糟。
+    """
+    from backend.services.agent.annotations import locate_in_rows, looks_like_formula
+
+    rendered = _row_side_text(paper_id, block_id, side)
+    if end > start:
+        # 区间是真的就先认：公式那一路存的是 **LaTeX**（不是坐标系里那一段），按文字比必然
+        # 对不上，重新定位还可能挪到别的行上（见 `annotations.create` 的整式快路）。
+        if (rendered is None or looks_like_formula(text)
+                or _same_span_text(rendered[start:end], text)):
+            return start, end
+    elif rendered is None:
+        # 0/0 又没有页产物可查：核不了也不许存（存下去就是一条永远画不出来的高亮）
+        raise ValidationError(f"{_SPAN_NOT_FOUND}（{_quote_hint(text)}）")
+    page = _block_page_no(block_id)
+    hit = locate_in_rows(paper_id, page, text, side=side) if page else None
+    if hit is None:
+        raise ValidationError(f"{_SPAN_NOT_FOUND}（{_quote_hint(text)}）")
+    row_id, (found_start, found_end) = str(hit[0] or ""), hit[1]
+    if row_id and row_id != str(block_id):
+        # 找到了、但在**别的行**上：硬写下去就是把高亮挂错地方（宁可让调用方换锚点）
+        raise ValidationError(
+            f"这段文字不在 {block_id} 这一行里（它在同一页的 {row_id} 上）："
+            f"请把锚点换成那一行再标，或者重新划一次")
+    return int(found_start), int(found_end)
+
+
 def create_highlight(payload: dict, user_id: int = 1) -> dict:
     """存一条高亮。
 
@@ -112,21 +213,32 @@ def create_highlight(payload: dict, user_id: int = 1) -> dict:
     只存偏移量的话原文的高亮会按同样的偏移量画到译文上。
     `scope` 区分在哪标的：正文行（`block_id` = 行 id）还是 Markdown 视图（`md:p<页号>`）。
     `group_id`：一次划词跨了多行时，每行一条记录共用同一个分组 id（删除时整组一起删）。
+
+    **面与偏移量都不再原样照抄请求**（用户 2026-12 复报"高亮没挂上"就是这两条叠加）：
+
+    - 面按**文字语言**判（`side_for_text`）—— 以前漏带 `side` 一律当 `en`，中文引文
+      于是落在原文面，用户看译文时那条高亮永远画不出来；
+    - 偏移量按**文字**在当前页的行文本里定位（`_located_span`）—— 以前 0/0 也照存，
+      `markRanges` 只画 `end > start`，库里有一条、正文上永远看不见。
+
+    `scope="markdown"`（`md:pN`）那一支的偏移量语义不动：它的坐标系是那一面渲染出来的
+    Markdown，与行文本无关，前端算得很准。
     """
     paper_id = payload.get("paper_id")
     block_id = payload.get("block_id")
     if not paper_id or not block_id:
         raise ValidationError("paper_id 与 block_id 必填")
     color = _norm_color(payload.get("color"))
-    side = str(payload.get("side") or "en").lower()
-    if side not in HIGHLIGHT_SIDES:
-        side = "en"
     scope = str(payload.get("scope") or "row").lower()
     if scope not in HIGHLIGHT_SCOPES:
         scope = "row"
+    text = str(payload.get("selected_text") or "")
+    side = side_for_text(payload.get("side"), text)
     group_id = str(payload.get("group_id") or "").strip()[:32] or None
-    start = int(payload.get("start_offset") or 0)
-    end = int(payload.get("end_offset") or 0)
+    start = _offset(payload.get("start_offset"))
+    end = _offset(payload.get("end_offset"))
+    if scope == "row" and str(block_id).strip() and text.strip():
+        start, end = _located_span(str(paper_id), str(block_id), text, side, start, end)
     # 行身份**先**算：它在页产物那边（reader_service）有自己的 session，不在这个 DB 会话里开
     pid = row_pid(paper_id, block_id)
     with session_scope() as sess:

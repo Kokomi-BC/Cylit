@@ -11574,3 +11574,30 @@ provider,provider_label,currency,has_price,priced_now,points[],totals}], filters
 
 **结论**：11 条里只有 **#6 基本可定是产品侧**；#3/#4/#5/#10/#11 需真浏览器逐条实测；#1/#2/#7/#8/#9 疑似探针侧（选择器/期望过期/环境）。
 下一轮的做法不是继续记成「旧红 11 条」，而是：先按上表逐条定性，产品侧修、探针侧改探针（或显式 `xfail` 写原因），让 full 模式也能当门禁用。
+
+### 121. 第一百二十一轮：高亮「挂不上」的真凶是**写入口不判面、不定位**（中文被记成 `en` 面 + 零长度偏移）
+
+121 轮之前修了「锚点快照缺 start/end」，用户复报**还是看不到高亮**。查库才看清是两件事叠加：
+
+```
+highlight h-2878c1c24700e4fb · p020-00 · selected_text="Yao 极小极大原理"
+  start_offset=0  end_offset=0   ← 零长度：domMarks 只画 end > start，永远不出现
+  side=en                        ← 中文却记在原文面：用户读译文时更不可能看到
+```
+
+- **根因**：`annotation_service.create_highlight()`（REST 写入口）里 `side` 缺省/非法**一律当 `en`**，`start/end` 原样 `int(... or 0)` 存下去 ——
+  既不按文字判面、也不做定位。而 **agent 那条路早就做对了**：`services/agent/annotations.py` 有 `locate_in_rows()`，:879 还留着「4 条中文高亮全被当 en 面」的注释。
+  也就是说「对话里点色点存笔记」这条 REST 路径，绕过了 agent 路径已有的纠错逻辑。
+- **修法**（与 agent 路径同一口径，不另写一套）：
+  · `side_for_text()`：认别名就尊重，没给/认不出按文字判，**含 CJK 一律 `zh`**（请求写 `en` 也不听）；
+  · `_located_span()`：`end<=start` 或「给定区间取出的字与 `selected_text` 对不上」→ 用 `locate_in_rows` 在目标 block 的目标面里重定位；命中即写真实偏移；
+    **命中同一页的别的行 / 找不到 → 400 并给可读消息**（不偷偷搬锚点、绝不落 0/0）；页号取 `block.page_no`；
+  · `scope="markdown"`（`md:pN`）的偏移语义未动；公式那一路（存 LaTeX）不参与区间比对。
+  · 前端 `ReaderChat` / `ReaderView` 三处硬编码 `'en'` 改成留空让后端判，本地列表改用**后端回执**的 `side`。
+- **修库**：生产零长高亮 **1 → 0**（那条 `en→zh`、`0/0→10/20`，挂在它上面的笔记冗余偏移同步；`anchor_hash` 按既有行为重算）。本地零长 0 条。
+
+**验证（执行者真跑，我复核了库行与页面）**：REST 直打三条 —— 中文 → `start=10 end=20 side=zh`；英文 → `side=en`；编造文本 → **400** 且消息可读（测试行已删，生产 31 条不变）；
+真浏览器（headless Edge + SSH 隧道）在**译文面**拿到 `<mark class="hl green" data-hl="h-2878c1c24700e4fb">Yao 极小极大原理</mark>`，落在 `.rrow.side-zh`、可见 104×17、背景 `rgba(90,220,150,.38)`；
+`pytest tests/` **1665 passed / 131 skipped**（基线 1656 + 新增 9 例）、`vue-tsc` 0 error、`npm run build` 通过。
+
+**两个有意选择**：① 定位到「同一页的别一行」时报 400 而不是自动把锚点搬过去（自动搬会悄悄改用户笔记的位置）；② 修好的那条 `anchor_hash` 随 side/偏移重算，属 `update_highlight` 既有行为。

@@ -1564,7 +1564,9 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
         row_id: anchor.row_id ?? null, page: anchor.page ?? null,
         where: anchor.where || '',
         start: anchor.start ?? 0, end: anchor.end ?? 0,
-        side: anchor.side || 'en', scope: anchor.scope || 'row',
+        /* 面**缺失就留空**（交给后端按文字语言判）：这里以前兜底成 `'en'`，等于替用户
+           选了原文面 —— 中文引文于是存进 `en`，译文面上永远画不出来（用户 2026-12 复报）。 */
+        side: anchor.side || '', scope: anchor.scope || 'row',
         highlightId: '', color: '',
       };
       anchorAnswerId.value = '';        // 新锚点：等这一轮的回答落库再钉上去

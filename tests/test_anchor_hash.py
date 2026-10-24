@@ -94,12 +94,18 @@ def _create(monkeypatch, payload: dict, pid: str | None):
 
 
 def test_create_highlight_uses_pid_hash(monkeypatch):
-    """能取到 pid → anchor_hash 用 pid 形式（block_id 换号不影响它）。"""
+    """能取到 pid → anchor_hash 用 pid 形式（block_id 换号不影响它）。
+
+    哈希里的 `side` 取**行上真正存下来的那一面**：中文引文只可能落译文面（见
+    `annotation_service.side_for_text`），请求里写的 `en` 会被纠正成 `zh` —— 所以这里
+    断言的是"哈希与库里那一面一致"，而不是再抄一遍请求参数。
+    """
     payload = {"paper_id": "p", "block_id": "p015-06", "selected_text": "向量量化",
                "start_offset": 4, "end_offset": 9, "side": "en"}
     row = _create(monkeypatch, payload, pid="r-abc123")
 
-    assert row.anchor_hash == ann.anchor_hash("向量量化", "p015-06", "en", 4, 9,
+    assert row.side == "zh", "中文引文落译文面（用户 2026-12 复报的正是这条）"
+    assert row.anchor_hash == ann.anchor_hash("向量量化", "p015-06", row.side, 4, 9,
                                               pid="r-abc123")
 
 

@@ -104,8 +104,11 @@ def test_invalid_side_and_scope_fall_back() -> None:
     """脏值一律落到 en/row；但 `pdf` **不是**脏值（《修改计划》第三步起它是一面）。"""
     from backend.services.annotation import annotation_service as svc
 
+    # 偏移量要给**真区间**：0/0 现在一律按文字重新定位，定位不到就 400（见
+    # `test_highlight_span_localize`）—— 伪论文没有页产物可查，给真区间才存得下。
     created = svc.create_highlight({
         "paper_id": FAKE_PAPER, "block_id": "p001-03", "selected_text": "x",
+        "start_offset": 0, "end_offset": 1,
         "side": "jp", "scope": "weird",
     })
     assert created["side"] == "en" and created["scope"] == "row"
@@ -154,9 +157,11 @@ def test_delete_single_highlight_keeps_others() -> None:
     from backend.services.annotation import annotation_service as svc
 
     a = svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p002-00",
-                              "selected_text": "x", "color": "yellow"})
+                              "selected_text": "x", "start_offset": 0, "end_offset": 1,
+                              "color": "yellow"})
     svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p002-01",
-                          "selected_text": "y", "color": "green"})
+                          "selected_text": "y", "start_offset": 0, "end_offset": 1,
+                          "color": "green"})
     out = svc.delete_highlight(a["id"])
     assert out["count"] == 1
     assert svc.list_highlights(FAKE_PAPER)["count"] == 1
@@ -170,7 +175,8 @@ def test_delete_highlight_is_idempotent() -> None:
     from backend.services.annotation import annotation_service as svc
 
     a = svc.create_highlight({"paper_id": FAKE_PAPER, "block_id": "p003-00",
-                              "selected_text": "x", "color": "yellow"})
+                              "selected_text": "x", "start_offset": 0, "end_offset": 1,
+                              "color": "yellow"})
     assert svc.delete_highlight(a["id"])["count"] == 1
     again = svc.delete_highlight(a["id"])
     assert again["count"] == 0
