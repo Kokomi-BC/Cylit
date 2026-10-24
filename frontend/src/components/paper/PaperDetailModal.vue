@@ -1,21 +1,22 @@
 <script setup lang="ts">
 /** 论文详情弹窗（**Paper Brief**：论文快速理解入口）。
  *
- * 两栏：**左封面栏**（封面 / 身份 / 阅读 + 导出）+ **右内容栏**（概览 · 参考文献 · 进度 · 文件）。
+ * 两栏：**左封面栏**（封面 / 身份 / 阅读 + 导出）+ **右内容栏**（概览 · 阅读习惯 · 参考文献 · 进度 · 文件）。
  *
  * 「概览」的职责是"快速回答这篇论文是什么"：**论文速览 → 核心创新 → 阅读画像 / 关键词 /
  * 前置知识 → 推荐阅读路径 → 论文档案**。除了速览那一张主卡，其余都是"分组标题 + 内容"
  * 的轻分组 —— 不再一个字段一张大卡片。
  *
- * 边界（用户口径 2026-10-08）：概览只放**论文本身**。系统信息（大小 / 入库 / 知识库 / 标识）
- * 压到最下面的「论文档案」；阅读行为数据（阅读次数 / 时长 / 最近打开 / 最近活动）搬到「进度」；
+ * 边界（用户口径 2026-10-08 / 2026-11）：概览只放**论文本身**。系统信息（大小 / 入库 / 知识库 / 标识）
+ * 压到最下面的「论文档案」；阅读行为数据（每日时长折线 + 阅读次数 / 总时长 / 最近打开）单独一个
+ * 「阅读习惯」页（用户口径：紧挨概览右侧），任务流水线留在「进度」；
  * 文件产物（PDF / Markdown / ZIP）在「文件」页与左下角的「导出」菜单里。
  *
  * 数据都在打开时现拉（`GET /papers/{id}` + `/progress` + `/outline` + `/tasks` + 一次 Range 取文件大小）：
  * 详情是"看一眼就走"的浮层，不该为了它把整份 reader payload 拉下来；
  * 论文列表里的那一行可能已经旧了（后台任务在跑），所以以这里拉到的那份为准。
  *
- * 四个页签的面板**全都挂载**（用 `v-show`），切页签不丢滚动位置与下载中的状态。
+ * 五个页签的面板**全都挂载**（用 `v-show`），切页签不丢滚动位置与下载中的状态。
  */
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
@@ -29,16 +30,19 @@ import { openTab } from '@/stores/tabs';
 import { reportError, toast } from '@/stores/app';
 import { TASK_TYPE_LABEL, fmtRelative, taskStatus } from '@/utils/format';
 import { readerTarget } from '@/utils/navigation';
-import { fmtReadDuration, readReaderStats, type ReaderStats } from '@/utils/readerStats';
+import {
+  fmtReadDuration, readDailySeries, readReaderStats, type DailyRead, type ReaderStats,
+} from '@/utils/readerStats';
 
 const props = defineProps<{ paperId: string }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
 
 const router = useRouter();
 
-type TabKey = 'overview' | 'refs' | 'progress' | 'files';
+type TabKey = 'overview' | 'habit' | 'refs' | 'progress' | 'files';
 const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: string }> = [
   { key: 'overview', label: '概览', icon: 'document' },
+  { key: 'habit', label: '阅读习惯', icon: 'clock' },
   { key: 'refs', label: '参考文献', icon: 'list' },
   { key: 'progress', label: '进度', icon: 'task' },
   { key: 'files', label: '文件', icon: 'layers' },
@@ -333,12 +337,74 @@ async function fillMeta(model: boolean) {
  */
 
 const localStats = ref<ReaderStats>(readReaderStats(props.paperId));
-const readOpens = computed(() => localStats.value.opens);
 const readDuration = computed(() => fmtReadDuration(localStats.value.seconds));
 const lastOpenText = computed(() => (localStats.value.lastOpen
   ? fmtRelative(localStats.value.lastOpen)
   : '—'));
 const hasLocalStats = computed(() => localStats.value.opens > 0 || localStats.value.seconds > 0);
+
+/* --------------------------- 阅读习惯（本机） ---------------------------
+ * 「阅读习惯」页签：上面一条**每日阅读时长**折线，下面是总时长与打开信息。
+ *
+ * 数据只有一个来源 —— `pm.reader.daily`（`utils/readerStats.ts` 每次落盘时顺手记一笔，
+ * 最多留 200 天）。后端没有这条时间序列（`paper.last_read_at` 只有一个时间戳，
+ * `read_time_min` 是元数据里**估**的建议时长），所以这里如实写"本机记录"：
+ * 换设备 / 清缓存就没了，但它是这个浏览器里真实计时出来的。
+ *
+ * 7 / 30 天两档都能给：那本账是真的按天存的，不是把一周的量摊到 30 个格子里。
+ */
+type HabitRange = 7 | 30;
+const habitRange = ref<HabitRange>(7);
+const habitSeries = computed<DailyRead[]>(() => readDailySeries(habitRange.value));
+const habitSum = computed(() => habitSeries.value.reduce((n, d) => n + d.seconds, 0));
+const habitPeak = computed(() => habitSeries.value.reduce((n, d) => Math.max(n, d.seconds), 0));
+
+/* 固定 viewBox 600×150、横向拉满 + `preserveAspectRatio="none"` + `non-scaling-stroke`：
+ * 跟工作区那张「阅读统计」同一套画法（那张是 300×88，卡窄）。这里取 600 宽是因为详情弹窗
+ * 右栏约 700px —— 相近的宽高比让横纵缩放接近 1，圆点不会被拉成椭圆。
+ * 纵向按区间峰值归一，全 0 时按 1 分钟铺满（免得除零，也免得几分钟就画成顶到天花板）。 */
+const HABIT_W = 600;
+const HABIT_H = 150;
+const HABIT_PAD = 10;
+
+const habitPoints = computed(() => {
+  const list = habitSeries.value;
+  const max = Math.max(habitPeak.value, 60);
+  const stepX = HABIT_W / Math.max(1, list.length - 1);
+  return list.map((d, i) => ({
+    date: d.date,
+    seconds: d.seconds,
+    x: i * stepX,
+    y: HABIT_H - HABIT_PAD - (d.seconds / max) * (HABIT_H - HABIT_PAD * 2),
+  }));
+});
+const habitLine = computed(() => habitPoints.value
+  .map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' '));
+const habitArea = computed(() => {
+  const ps = habitPoints.value;
+  if (!ps.length) return '';
+  const base = HABIT_H - HABIT_PAD;
+  return `M${ps[0].x.toFixed(1)} ${base} ${ps.map((p) => `L${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')}`
+    + ` L${ps[ps.length - 1].x.toFixed(1)} ${base} Z`;
+});
+
+/** 横轴刻度按**百分比**定位（不用 `space-between`）：30 天里两端对齐要贴边，中间又要压在折线点上 */
+const habitTicks = computed(() => {
+  const ps = habitPoints.value;
+  const n = ps.length;
+  if (!n) return [];
+  const step = habitRange.value === 7 ? 1 : 7;
+  const out: Array<{ key: string; text: string; left: string; shift: string }> = [];
+  for (let i = 0; i < n; i += step) {
+    out.push({
+      key: ps[i].date,
+      text: ps[i].date.slice(5).replace('-', '/'),
+      left: `${(i / Math.max(1, n - 1)) * 100}%`,
+      shift: i === 0 ? 'translateX(0)' : i >= n - 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+    });
+  }
+  return out;
+});
 
 /* --------------------------- 处理流程 --------------------------- */
 
@@ -813,6 +879,77 @@ async function doDelete() {
                 </section>
               </div>
 
+              <!-- 阅读习惯：**每天的阅读时长**（本机那本按天的账）+ 总时长与打开信息。
+                   阅读信息（次数 / 时长 / 最近打开）原先挂在「进度」里，用户口径 2026-11 搬到本页签 ——
+                   「进度」讲的是处理流程与任务，阅读行为不属于它。 -->
+              <div v-show="tab === 'habit'" class="pd-habit">
+                <div class="pd-card">
+                  <div class="pd-card-head">
+                    <h3 class="pd-h3"><AppIcon name="clock" :size="18" />每日阅读时长</h3>
+                    <div class="seg" role="group" aria-label="时间范围">
+                      <button type="button" :class="{ active: habitRange === 7 }"
+                              :aria-pressed="habitRange === 7" @click="habitRange = 7">7 天</button>
+                      <button type="button" :class="{ active: habitRange === 30 }"
+                              :aria-pressed="habitRange === 30" @click="habitRange = 30">30 天</button>
+                    </div>
+                  </div>
+
+                  <template v-if="habitSum > 0">
+                    <svg
+                      class="pd-habit-spark"
+                      :viewBox="'0 0 ' + HABIT_W + ' ' + HABIT_H"
+                      preserveAspectRatio="none"
+                      role="img"
+                      :aria-label="'最近 ' + habitRange + ' 天每日阅读时长，峰值 ' + fmtReadDuration(habitPeak)"
+                    >
+                      <path class="pd-habit-area" :d="habitArea" />
+                      <path class="pd-habit-line" :d="habitLine" />
+                      <circle
+                        v-for="pt in habitPoints"
+                        :key="pt.date"
+                        class="pd-habit-dot"
+                        :cx="pt.x"
+                        :cy="pt.y"
+                        r="2.2"
+                      >
+                        <title>{{ pt.date }} · {{ fmtReadDuration(pt.seconds) }}</title>
+                      </circle>
+                    </svg>
+                    <div class="pd-habit-x" aria-hidden="true">
+                      <span
+                        v-for="tk in habitTicks"
+                        :key="tk.key"
+                        :style="{ left: tk.left, transform: tk.shift }"
+                      >{{ tk.text }}</span>
+                    </div>
+                  </template>
+                  <p v-else class="pd-abstract-empty">
+                    最近 {{ habitRange }} 天还没有阅读记录 —— 在阅读器里读一会儿，这里会画出每天读了多久。
+                  </p>
+
+                  <div class="pd-habit-foot">
+                    <span>峰值 {{ fmtReadDuration(habitPeak) }}</span>
+                    <span>{{ habitRange }} 天合计 {{ fmtReadDuration(habitSum) }}</span>
+                    <span class="spacer" />
+                    <span class="pd-hint">本机记录</span>
+                  </div>
+                </div>
+
+                <div class="pd-card">
+                  <div class="pd-card-head">
+                    <h3 class="pd-h3"><AppIcon name="gauge" :size="18" />阅读总览</h3>
+                    <span class="pd-hint">本机统计</span>
+                  </div>
+                  <div class="pd-kv"><span>总阅读时长</span><strong>{{ readDuration }}</strong></div>
+                  <div class="pd-kv">
+                    <span>阅读次数</span>
+                    <strong>{{ localStats.opens ? `${localStats.opens} 次` : '—' }}</strong>
+                  </div>
+                  <div class="pd-kv"><span>最近打开</span><strong>{{ lastOpenText }}</strong></div>
+                  <p v-if="!hasLocalStats" class="pd-hint">这台机器上还没有打开过这篇论文。</p>
+                </div>
+              </div>
+
               <!-- 参考文献：离线从页产物的 `ref` 行（或 Markdown 的 References 节）抽出来，
                    原文条目原样保留。卡片与跳转**与阅读器侧栏用的是同一个组件**
                    （`ReferenceList`）：点一条去发表网站（DOI / arXiv / 原文链接，兜底学术搜索）。 -->
@@ -872,19 +1009,6 @@ async function doDelete() {
                     <span class="spacer" />
                     <span class="tiny faint nowrap">{{ taskStatus(String(t.status)).label }} · {{ fmtTime(t.updated_at || t.created_at) }}</span>
                   </div>
-                </div>
-
-                <!-- 阅读记录：用户自己的阅读行为数据（**从「概览」搬到这里**）。
-                     后端没有这两个字段（只有"读到哪"），所以是本机统计，标出来别让人误会。 -->
-                <div class="pd-card pd-read-stats">
-                  <div class="pd-card-head">
-                    <h3 class="pd-h3">阅读记录</h3>
-                    <span class="pd-hint">本机统计</span>
-                  </div>
-                  <div class="pd-kv"><span>阅读次数</span><strong>{{ readOpens ? `${readOpens} 次` : '—' }}</strong></div>
-                  <div class="pd-kv"><span>阅读时长</span><strong>{{ readDuration }}</strong></div>
-                  <div class="pd-kv"><span>最近打开</span><strong>{{ lastOpenText }}</strong></div>
-                  <p v-if="!hasLocalStats" class="pd-hint">这台机器上还没有打开过这篇论文。</p>
                 </div>
 
                 <div class="pd-card pd-activity">
@@ -1245,6 +1369,28 @@ async function doDelete() {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pd-hint { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
+
+/* ---------------- 阅读习惯页签 ----------------
+ * 上：每日阅读时长折线（画法同工作区「阅读统计」—— 拉满 + non-scaling-stroke 顶住线宽）；
+ * 下：总量与打开信息。横轴刻度**按百分比定位**：30 天里两端要贴边、中间要压在折线点上，
+ * `justify-content: space-between` 做不到这件事。 */
+.pd-habit { display: grid; gap: 12px; }
+.pd-habit-spark { display: block; width: 100%; height: 150px; overflow: visible; }
+.pd-habit-line {
+  fill: none; stroke: var(--accent); stroke-width: 1.8;
+  stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke;
+}
+.pd-habit-area { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: none; }
+.pd-habit-dot { fill: var(--accent); }
+.pd-habit-x {
+  position: relative; height: 15px;
+  font-size: calc(11px * var(--ts, 1)); color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
+.pd-habit-x > span { position: absolute; top: 0; white-space: nowrap; }
+.pd-habit-foot {
+  display: flex; align-items: baseline; gap: 14px;
+  font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
 
 .pd-manage-row { display: flex; align-items: center; gap: 8px; }
 .pd-ghost-btn {
