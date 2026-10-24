@@ -12699,3 +12699,45 @@ radius 12（其它浮层）：pill 34.0px / arc 11.9px
 ```
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 154/154。
+
+
+### 151. 第一百五十一轮：触摸选择把公式当「原子」；右键 / 触摸工具条的图标按墨迹高度归一
+
+用户口径：「通过触摸难以选中公式，并且容易选中公式上一行或者下一行，触摸手柄位置在公式上时有时候不对，
+触摸菜单的几个 svg 按钮大小不太一致」。
+
+**公式那三条是同一个根因**：触摸长按走的是 `wordRangeAt`（按「词」扩），而公式在 DOM 里是 KaTeX 的
+两层结构 —— `.katex-html`（看得见的字形，内部盒子靠 `position: relative` 逐层抬降画上标/下标）
+和 `.katex-mathml`（1×1 隐藏副本，给读屏与 `<annotation>` 的 LaTeX 源码）。于是：
+
+- `caretRangeFromPoint` 落在公式上时给的是**某个字形**的文本节点（有时是隐藏那份），按词扩只有半个公式宽 → 「难选中」；
+- `.katex-html` 内部那些盒子的 `getClientRects()` 与那一行**行盒**不重合（实测顶边 88.8 对行顶 90.8、底边 115.6 对 112.8）
+  → 手柄按矩形摆，就落到相邻行上 → 「手柄位置不对 / 像选中了上一行」。
+
+改法（`views/ReaderView.vue`，四处都读同一个判据 `katexAtomAt`）：
+
+1. `wordRangeAt`：落点在 `.katex` 内 → **整条公式选中**，且只选看得见的那一份
+   （`selectNodeContents(.katex-html)`）。整节点选中会把隐藏 MathML 的布局盒一起框进来 ——
+   实测那一条是 85.8~99.8，比行顶高 5px，高亮直接探到上一行；只选可见部分后顶边回到 88.8。
+   复制不受影响：`domMarks.rangeOffsets` 本来就把「端点落在公式内部」吸附到公式边界，LaTeX 照样拿得到。
+2. 新增 `anchorRectOf`：某一端的端点落在公式里时，**用 `.katex` 自己的盒子**摆手柄（inline-block＝行盒，22px，与文字严丝合缝）。
+   两条路径（正常刷新 / 选区被重绘后的恢复）都走它。
+3. `collectCands`：候选矩形在公式上同样取 `.katex` 盒 —— 判行用它，手指压在哪一行就落到哪一行。
+4. `caretAtLine` 收尾新增 `finish()`：插入点若落在公式内部，**吸附到公式左缘或右缘**（按 x 与公式中线比较），
+   拖手柄经过公式时选区不会再切进字形盒子。
+
+**图标大小不一致**（`components/ContextMenu.vue`）：所有项原来都是 `:size="14"`，但同一盒子里**墨迹高度**差得远 ——
+headless Chromium 用 `getBBox()` 量 24 网格口径：`select-all-fill` / `save-alt-fill` / `open-new-fill` / `sparkle` / `note` 都是 18，
+`search-fill` 17.5，`download` 15.5，`chat` 15.1，`copy-fill` **22**。14px 盒子里折算下来是 8.8px（chat）~12.8px（copy-fill）。
+改成按「墨迹高 ≈ 11.25px」反算每个图标的盒子：`size = 11.25 × 24 / inkH`（只列实测过的名字，其余按 18 走）。
+
+```
+图标              墨迹高(24)  改前 14px 的墨迹   改后盒子   改后墨迹
+chat                 15.1        8.8px           18px     11.3px
+download             15.5        9.0px           17.5px   11.3px
+search-fill          17.5       10.2px           15.5px   11.3px
+sparkle/note/…18     18         10.5px           15px     11.25px
+copy-fill            22         12.8px           12.5px   11.5px
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。

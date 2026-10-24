@@ -4895,11 +4895,50 @@ function cancelLongPress(): void {
   longPressFrom = null;
 }
 
-/** 落点处那个『词』的范围：西文按字母/数字，中文按连续汉字（长按一下就想选一个词） */
+/** 触摸选择里的**公式原子**：`.katex` 那一块（行内公式就是它自己，行间公式是 `.katex-display > .katex`）。
+ *
+ * 为什么触摸必须把它当一个整体（用户口径 2026-12-05：公式难选、手柄位置不对）：
+ * `caretRangeFromPoint` 落在公式上时，返回的是 `.katex-html` 里某个**字形**的 text node
+ * （或者更糟 —— `.katex-mathml` 那份 1×1 隐藏副本），按「词」去扩只有半个公式宽；
+ * 而公式内部的盒子是靠 `position: relative` 逐层抬降画的（上标 / 下标 / vlist），
+ * 它们的 `getClientRects()` 与那一行**行盒**根本不是一条线 —— 手柄因此会落到上一行/下一行。 */
+function katexAtomAt(node: Node | null | undefined): HTMLElement | null {
+  if (!node) return null;
+  const el = node.nodeType === 1 ? (node as HTMLElement) : node.parentElement;
+  return (el?.closest?.('.katex') as HTMLElement | null) ?? null;
+}
+
+/** 公式原子的插入点：贴在公式**左缘或右缘**（按 x 与公式中线比较）——
+ *  选区因此永远不会切进公式内部，也不会把光标甩到公式里面某个隐藏文字上。 */
+function caretBesideFormula(el: HTMLElement, x: number): { node: Node; offset: number } | null {
+  const parent = el.parentNode;
+  if (!parent) return null;
+  const b = el.getBoundingClientRect();
+  if (b.height <= 0) return null;
+  let index = 0;
+  for (let n = parent.firstChild; n && n !== el; n = n.nextSibling) index += 1;
+  return { node: parent, offset: index + (x > (b.left + b.right) / 2 ? 1 : 0) };
+}
+
+/** 落点处那个『词』的范围：西文按字母/数字，中文按连续汉字（长按一下就想选一个词）；
+ *  落点在公式上则整条选中（见上）。 */
 function wordRangeAt(x: number, y: number): Range | null {
   const caret = caretAt(x, y);
   if (!caret) return null;
   const node = caret.node;
+  /* 公式：整条选中，不再按「词」切（见 katexAtomAt） */
+  const atom = katexAtomAt(node);
+  if (atom) {
+    const range = document.createRange();
+    /* 只选**看得见的那一份**（`.katex-html`）：`.katex` 里还挂着一份 1px 隐藏的 MathML，
+       它的布局盒比行盒高出一截（实测顶边 85.8 vs 行顶 90.8）——整节点选中时
+       高亮会往上一行探出去 5px，看起来就是「选中了上一行」。
+       复制那条路不受影响：`domMarks.rangeOffsets` 会把落在公式内部的端点吸附回公式边界。 */
+    const visible = atom.querySelector('.katex-html');
+    if (visible) range.selectNodeContents(visible);
+    else range.selectNode(atom);
+    return range;
+  }
   if (node.nodeType !== 3) return null;
   const text = node.textContent || '';
   const offset = Math.min(caret.offset, text.length);
@@ -5033,6 +5072,19 @@ function placeSelHandles(start: { x: number; y: number }, end: { x: number; y: n
   selHandles.value = { start: clamp(start), end: clamp(end) };
 }
 
+/** 某一端的定位矩形：**选区端点落在公式里时，改用 `.katex` 自己那一块**。
+ *
+ * 公式内部的字形盒子带 `position: relative` 的上下位移（上标 / 下标 / vlist），
+ * `getClientRects()` 给的那一条比行盒高出一截、还可能整个偏到上一行 ——
+ * 手柄压在公式上时就贴着别人的行了（用户口径 2026-12-05：手柄位置在公式上时不对）。
+ * `.katex` 是 inline-block，它的盒子就是那一行的行盒，与文字严丝合缝。 */
+function anchorRectOf(node: Node, fallback: DOMRect): DOMRect {
+  const atom = katexAtomAt(node);
+  if (!atom) return fallback;
+  const b = atom.getBoundingClientRect();
+  return b.height > 0 ? b : fallback;
+}
+
 /** 从当前 DOM 选区刷新两个手柄的位置（也刷新 a/b 两端点） */
 function refreshSelHandles(): void {
   if (!touchSelActive.value) { selHandles.value = null; return; }
@@ -5060,9 +5112,11 @@ function refreshSelHandles(): void {
       const r2 = sel.getRangeAt(0);
       const rects2 = Array.from(r2.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
       if (rects2.length) {
+        const s2 = anchorRectOf(r2.startContainer, rects2[0]);
+        const e2 = anchorRectOf(r2.endContainer, rects2[rects2.length - 1]);
         placeSelHandles(
-          { x: rects2[0].left, y: rects2[0].top },
-          { x: rects2[rects2.length - 1].right, y: rects2[rects2.length - 1].bottom },
+          { x: s2.left, y: s2.top },
+          { x: e2.right, y: e2.bottom },
         );
         selEndA = { node: r2.startContainer, offset: r2.startOffset };
         selEndB = { node: r2.endContainer, offset: r2.endOffset };
@@ -5090,9 +5144,11 @@ function refreshSelHandles(): void {
   const usable = inBand.length ? inBand : rects;
   const first = usable[0];
   const last = usable[usable.length - 1];
+  const startRect = anchorRectOf(range.startContainer, first);
+  const endRect = anchorRectOf(range.endContainer, last);
   placeSelHandles(
-    { x: first.left, y: first.top },
-    { x: last.right, y: last.bottom },
+    { x: startRect.left, y: startRect.top },
+    { x: endRect.right, y: endRect.bottom },
   );
   selEndA = { node: range.startContainer, offset: range.startOffset };
   selEndB = { node: range.endContainer, offset: range.endOffset };
@@ -5165,7 +5221,16 @@ function pickCaretLine(cands: CaretCand[], y: number, side: 'start' | 'end'): Ca
 function collectCands(x: number, y: number, steps: number[], into: CaretCand[]): void {
   for (const dy of steps) {
     const c = caretAt(x, y + dy);
-    if (!c || c.node.nodeType !== Node.TEXT_NODE) continue;
+    if (!c) continue;
+    /* 公式：候选矩形取 `.katex` 自己那一块（= 那一行的行盒）。
+       公式内部的字形盒子带上下位移，用它判行会把手指判到上一行/下一行（用户口径 2026-12-05）。 */
+    const atom = katexAtomAt(c.node);
+    if (atom) {
+      const ab = atom.getBoundingClientRect();
+      if (ab.height > 0) into.push({ node: c.node, offset: c.offset, rect: ab });
+      continue;
+    }
+    if (c.node.nodeType !== Node.TEXT_NODE) continue;
     const rect = caretCharRect(c);
     if (rect) into.push({ node: c.node, offset: c.offset, rect });
   }
@@ -5188,14 +5253,20 @@ function caretAtLine(x: number, y: number, side: 'start' | 'end' = 'end'): { nod
       : cands.reduce((a, b) => (a.rect.top <= b.rect.top ? a : b));
   }
 
+  /* 落在公式上：插入点**贴到公式左/右缘**，不留在公式内部 ——
+     否则拖着手柄经过公式时，选区末端会切进字形盒子里。 */
+  const finish = (node: Node, offset: number) => {
+    const atom = katexAtomAt(node);
+    return (atom && caretBesideFormula(atom, x)) || { node, offset };
+  };
   /* 行内精修：同一个 x 打在这一行的中线上，横坐标才跟手（换行不换行由上面的行判定负责） */
   const cy = (pick.rect.top + pick.rect.bottom) / 2;
   const better = caretAt(x, cy);
   if (better && better.node.nodeType === Node.TEXT_NODE) {
     const r2 = caretCharRect(better);
-    if (r2 && Math.abs(r2.top - pick.rect.top) < 2) return { node: better.node, offset: better.offset };
+    if (r2 && Math.abs(r2.top - pick.rect.top) < 2) return finish(better.node, better.offset);
   }
-  return { node: pick.node, offset: pick.offset };
+  return finish(pick.node, pick.offset);
 }
 
 /** 选区变了 / 页面滚了：手柄要跟着文字走（否则"选区还在、手柄跑掉/消失"） */
