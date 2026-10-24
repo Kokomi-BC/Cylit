@@ -11959,3 +11959,35 @@ items 13 / rows 13   card x=448 w=1098   row0 x=462 w=1070 h=52   search x=470 (
 ```
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **155/155**。
+
+### 131. 第一百三十一轮：撤掉设置页「搜索记录」一区，本机固定留最近 20 条
+
+用户口径（2026-12）：「移除设置页的搜索记录（清除历史数据迁移到知识库，只保留 20 条内容）」。
+
+改法：
+
+- **设置页整区撤掉**：`SECTIONS` 里的 `history` 一项、同义词表里的 `history`、模板里那段
+  `<section id="history">`、`SearchHistoryPanel.vue` 整份文件一起删。左侧栏因此 8 项
+（显示主题 / 模型 / Cyli 偏好 / 索引管理 / 任务队列 / 在线解析 / 系统信息 / 回收站）。
+- **清空入口本来就在知识库页**（搜索框下拉：点一条重跑、单条删、页脚「清空记录」），没有再搬一遍；
+  本轮只在下拉页脚补一句「本机最多留 20 条」——设置页那一区撤掉后，这里是唯一的说明处。
+- **上限固定 20 条**：`HISTORY_LIMIT = 20` 取代原来那套可调上限
+  （`DEFAULT_LIMIT = 50` / `LIMIT_CHOICES` / `historyLimit()` / `setHistoryLimit()` 全删）。
+  老口径存过 50–200 条的，`loadHistory()` 读到就裁到 20 并**就地落盘**；
+  模块加载时顺手清掉废弃的 `papermind.kb.searchHistoryLimit.v1` 键。
+- **老深链有条去处**：`/settings#history` 由路由 `beforeEnter` 重定向到 `/knowledge`
+  （`#general → #kb` 那条照旧）。
+
+真浏览器实测（headless Edge + CDP）：
+
+```
+设置页导航 nav.n = 8，labels = [显示主题, 模型, Cyli 偏好, 索引管理, 任务队列, 在线解析, 系统信息, 回收站]
+整页不含「搜索记录」字样（hasHist = false）
+整页加载 /settings#history  → path=/cylit/knowledge（守卫生效）
+塞 50 条 + 老上限键 "100" → 重载后 stored = 20（q0…q19），legacyKey = null
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **155/155**。
+
+> 同一轮里的第二条「移除设置页的页面分类」在设置页找不到同名区块（问了用户，选项里没有对得上的），
+> 等用户说明具体指哪一块再动。
