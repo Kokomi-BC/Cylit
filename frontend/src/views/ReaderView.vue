@@ -7975,7 +7975,7 @@ function renderMarkdown(text?: string | null) {
             <span class="cap-row-label">原文栏呈现</span>
             <div class="seg" title="原文栏呈现">
               <button :class="{ active: originalMode === 'text' }" @click="setOriginalMode('text')">
-                <AppIcon name="document" :size="14" />原文文本
+                <AppIcon name="doc" :size="14" />原文文本
               </button>
               <button :class="{ active: originalMode === 'page' }" @click="setOriginalMode('page')">
                 <AppIcon name="document-pdf" :size="14" />原 PDF

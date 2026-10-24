@@ -21,7 +21,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
 import { BRAND_ICON } from '@/utils/brand';
 import {
-  closeOtherTabs, closeTab, routeKey, setTabTitle, tabLocation, tabs, tabsState,
+  closeOtherTabs, closeTab, routeKey, tabLocation, tabs, tabsState,
 } from '@/stores/tabs';
 
 const route = useRoute();
@@ -29,8 +29,7 @@ const router = useRouter();
 
 
 const strip = ref<HTMLElement | null>(null);
-const renaming = ref('');
-const renameText = ref('');
+
 const menuFor = ref('');
 const dragKey = ref('');
 
@@ -139,22 +138,6 @@ async function onClose(key: string, ev: MouseEvent) {
   else await router.push({ name: 'home' });
 }
 
-function startRename(key: string) {
-  const tab = tabs.value.find((t) => t.key === key);
-  if (!tab) return;
-  renaming.value = key;
-  renameText.value = tab.title;
-  nextTick(() => {
-    const el = strip.value?.querySelector<HTMLInputElement>('input.tab-rename');
-    el?.focus();
-    el?.select();
-  });
-}
-
-function commitRename() {
-  if (renaming.value) setTabTitle(renaming.value, renameText.value);
-  renaming.value = '';
-}
 
 function onDragStart(key: string, ev: DragEvent) {
   dragKey.value = key;
@@ -214,20 +197,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
           @contextmenu="onContextMenu(t.key, $event)"
         >
           <AppIcon :name="t.icon" :size="13" />
-          <input
-            v-if="renaming === t.key"
-            v-model="renameText"
-            class="tab-rename"
-            @keyup.enter="commitRename"
-            @keyup.esc="renaming = ''"
-            @blur="commitRename"
-            @click.stop.prevent
-          >
-          <span
-            v-else
-            class="tab-title truncate"
-            @dblclick.stop.prevent="startRename(t.key)"
-          >{{ t.title }}</span>
+          <span class="tab-title truncate">{{ t.title }}</span>
           <button class="tab-close" title="关闭标签页" @click="onClose(t.key, $event)">
             <AppIcon name="close" :size="11" />
           </button>
@@ -340,10 +310,7 @@ function onContextMenu(key: string, ev: MouseEvent) {
 .tab:hover { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); text-decoration: none; }
 .tab.active { background: var(--bg-elev); color: var(--accent-text); font-weight: 600; box-shadow: var(--shadow-1); }
 .tab-title { max-width: 130px; cursor: default; }
-.tab-rename {
-  width: 120px; height: 20px; padding: 0 4px; font-size: calc(12.5px * var(--ts, 1));
-  border-radius: var(--r-xs); border-color: var(--accent);
-}
+
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px;

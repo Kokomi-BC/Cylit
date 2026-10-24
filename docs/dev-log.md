@@ -12845,3 +12845,28 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；把四处恢复的图标 + `document-pdf` 按真实尺寸渲染成图逐枚比对
 （PDF 图标 = 文档轮廓 + 底部 PDF 字样，与原站一致）。`scripts/frontend_check.py` 第一次跑出 1 项红
 （浮层拖动 0,0），**复跑 154/154** —— 那一项是浮层落位时序的抖动，与图标无关。
+
+
+### 155. 第一百五十五轮：标签页不再双击重命名；原文文本 / 原 PDF 换成官方 pdf、doc 图标
+
+用户口径：「解决点击两次多标签页会出现重命名标签页的行为」「pdf … doc …」（给了两枚 Fluent 的 24 网格路径）。
+
+**1. 标签页双击重命名整条删掉**（`components/TabBar.vue`）：
+标题上的 `@dblclick.stop.prevent="startRename"` 去掉；连着那一整套都拆了 ——
+`renaming` / `renameText` 两个 ref、`startRename` / `commitRename`、模板里的 `<input class="tab-rename">`、
+以及 `.tab-rename` 那条样式和多余的 `setTabTitle` 导入。标签标题现在就是一段纯文本：
+双击＝再点一次标签（切换 / 重新进入），不会冒出输入框。重命名标签页这条能力本来也只在这个双击入口上有。
+⚠️ 删 `<input>` 时留下过一个孤儿 `v-else`（编译期报 `processIf` 错），已改成普通 `<span>`。
+
+**2. 两枚图标用用户给的官方路径**（`components/fluentIcons.ts`）：
+
+- `document-pdf`：**替换**上一轮那个「20 网格 atom 路径 + scale(1.2)」的临时做法，改用官方 24 网格路径
+  （文档轮廓 + 底部 PDF 铭牌）；
+- `doc`：新增（文档轮廓 + 三行文字）；
+- 档位按钮：「原文文本」`document` → `doc`，「原 PDF」继续保持 `document-pdf`。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；两枚图标按 14px（档位按钮里的真实尺寸）与 48px
+各渲一遍比对过（`doc` 是三行文字、`document-pdf` 是 PDF 铭牌，与给的 SVG 一致）。
+`scripts/frontend_check.py` **154/154**。
+
+（本轮第一次跑探针时本地 uvicorn 已经掉了 —— `HTTP -1`、整份探针退化成 SKIP；重启本地服务后复跑才拿到 154/154。）
