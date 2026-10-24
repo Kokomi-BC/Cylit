@@ -12928,3 +12928,16 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 详情五个页签依次 `doc / clock（阅读习惯）/ list（参考文献）/ task（进度）/ layers（文件）`；两处截图像素级看过。
 `scripts/frontend_check.py` **154/154**。
 
+
+### 158. 第一百五十八轮：文件页签的「PDF」行换成 `document-pdf`
+
+用户口径：「一起换掉」。文件页签那五行产物里，只有「PDF」还是旧折角纸（`document`），
+其余四行本来就是语义对得上的图标 —— 所以只动这一行：`artifacts` 里的 `source.icon` 改成 **`document-pdf`**
+（文档轮廓 + PDF 铭牌，与阅读器「原 PDF」档位同一枚）。左下角「导出」菜单共用同一份 `artifacts`，随之一起变。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；真实浏览器（headless Edge + CDP，2x）
+打开 MMDFND 的「文件」页签，五行图标渲染出来的 `path d` 首段依次是
+`M7.50269…`（PDF = `document-pdf`）、`M2 7.25…`（对照 = `panel`）、`M3.39 6…`（翻译 = `translate`）、
+`M15.05 1.5…`（原文 = `code`）、`M20.03 12.2…`（打包 = `layers`）；截图放大比过，PDF 那枚是"文档 + PDF 铭牌"。
+`scripts/frontend_check.py` **154/154**。
+

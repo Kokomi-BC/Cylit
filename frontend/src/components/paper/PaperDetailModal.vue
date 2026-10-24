@@ -565,7 +565,7 @@ interface ArtifactDef {
 /** 五块产物：与后端**实际有**的导出接口一一对应（没有的不摆，摆了就是骗人）。
  *  入口只有一个 —— 「文件」页签（概览不重复摆一遍下载）。 */
 const artifacts = computed<ArtifactDef[]>(() => [
-  { key: 'source', label: 'PDF', icon: 'document', path: `/papers/${props.paperId}/file`, filename: `${props.paperId}.pdf` },
+  { key: 'source', label: 'PDF', icon: 'document-pdf', path: `/papers/${props.paperId}/file`, filename: `${props.paperId}.pdf` },
   { key: 'bilingual', label: '对照 Markdown', icon: 'panel', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-bilingual.md`, query: { mode: 'bilingual' } },
   { key: 'translation', label: '翻译 Markdown', icon: 'translate', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-translation.md`, query: { mode: 'translation' } },
   { key: 'original', label: '原文 Markdown', icon: 'code', path: `/papers/${props.paperId}/markdown/export`, filename: `${props.paperId}-original.md`, query: { mode: 'original' } },
