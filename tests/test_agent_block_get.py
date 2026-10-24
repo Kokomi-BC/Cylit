@@ -132,17 +132,21 @@ def test_real_block_id_still_uses_the_block_path() -> None:
 
 
 def test_block_404_falls_back_to_the_row_path_and_joins_the_span() -> None:
-    """存量索引里 block_id 就是行 id：404 之后按行展开，**整段拼起来**（不是只给首行）。"""
+    """存量索引里 block_id 就是行 id：404 之后按行展开，**整段拼起来**（不是只给首行）。
+
+    拼接按**续行规则**（用户口径 2026-12-08）：上一行有句末标点 = 这一段结束 → 空行分段；
+    没有 = 这句话还没说完 → 接着排（中文不加空格）。所以两条都以句号结尾时是 `\\n\\n`。
+    """
     host = FakeHost(block_raises=HostError("主后端 HTTP 404", status=404, code="NOT_FOUND"),
-                    rows={"p017-00": {"page": 17, "type": "text", "text": "第一行"},
-                          "p017-01": {"page": 17, "type": "text", "text": "第二行"}})
+                    rows={"p017-00": {"page": 17, "type": "text", "text": "第一行。"},
+                          "p017-01": {"page": 17, "type": "text", "text": "第二行。"}})
     deps = FakeDeps(host)
     deps.row_spans["p017-00"] = ["p017-00", "p017-01"]
     cit = _cite(deps, block_id="p017-00", page=17)
     out = _call_block_get(deps, cit.ref)
     assert host.block_calls == ["p017-00"]
     assert host.row_calls == [(17, "p017-00"), (17, "p017-01")]
-    assert out["text"] == "第一行\n\n第二行"
+    assert out["text"] == "第一行。\n\n第二行。"
     assert "已按行展开" in out["note"]
 
 

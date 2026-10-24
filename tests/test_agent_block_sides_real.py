@@ -192,7 +192,12 @@ def test_block_get_reports_the_anchor_page_of_a_cross_page_span() -> None:
     deps.row_spans["p020-13"] = ["p020-13", "p020-14", "p021-01"]
     block = asyncio.run(agent_tools.block_get(ctx, ref=ref))
     assert block["page"] == search["items"][0]["page"] == 20, (block, search)
-    assert block["text"].count("\n\n") == 2, "整段照样拼起来（跨页那半句不能丢）"
+    text = block["text"]
+    assert text.rstrip().endswith("input embedding vectors…"), "跨页那半句不能丢"
+    assert "The TURBOQUANT algorithm… input embedding" in text, (
+        "续行不能断成两段：上一行以 `…` 结尾说明这句还没完，拼的时候只留一个空格",
+    )
+    assert text.startswith("# E IMPLEMENTATION\n\n"), "标题后面还是换段（标题不是续句）"
 
 
 def test_widen_rows_unions_both_sides_so_block_get_reads_the_whole_sentence() -> None:

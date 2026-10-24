@@ -204,10 +204,20 @@ def _grouped_receipt(groups: list[dict], *, wanted: int, left: int, repeats: int
                     "不要整批重来。")
     # 每组另给一个 `group_returned`：顶层那个 returned 是各组之和，组内这个才是该组
     # 条数 —— 同名不同义最容易读错。拷一份再改，别动缓存里存着的那份。
-    rows = [{**g, "group_returned": int(g.get("returned") or 0)} for g in groups]
+    # `page_total`（全篇页数）**不进组**：它跟组内 returned 挨着时会被读成「这组有 N 页」
+    # （用户 2026-12-08 报）。论文级的事实放顶层一次就够。
+    rows = []
+    page_total = None
+    for g in groups:
+        one = {k: v for k, v in g.items() if k != "page_total"}
+        one["group_returned"] = int(g.get("returned") or 0)
+        page_total = page_total or g.get("page_total")
+        rows.append(one)
     out = {"requested": wanted,
            "returned": sum(int(g.get("returned") or 0) for g in groups),
            "failed": len(failed), "unprocessed": left, "groups": rows}
+    if page_total:
+        out["page_total"] = page_total
     if tips:
         out["note"] = " ".join(tips)
     if hint:
@@ -675,6 +685,35 @@ def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
     _tidy_also(kept)
     return kept, merged
 
+#: 句末标点：上一行以它结尾 = 这一段说完了，续行时换段（`\n\n`）。
+#: **`…` 不算**：行尾的省略号往往正是「这句还没完、被行边界/截断切了」的信号（用户 2026-12-08 报的那个空行）。
+_TERMINAL_PUNCT = "。！？：；.!?:;\"”』」)"
+
+
+def _join_rows(pieces: list[str], kinds: list[str] | None = None) -> str:
+    """把**同一块的多行**拼成一段：**续行不换段**（用户口径 2026-12-08）。
+
+    为什么不能一律 `\\n\\n` 拼：中英两路切 chunk 的边界不同，合并之后英文侧常在行边界处
+    **把一句话切成两段**（实测 `…applied to the` + 空行 + `input embedding vectors during…`），
+    读起来像排版坏了；译文侧因为整段在一行内反而正常。判据就看**上一行结尾有没有句末标点**：
+    有 → 这是新段落，用空行隔开；没有 → 这句还没说完，接着排（中文续行不加空格，拉丁文加一个）。
+    """
+    out = ""
+    for idx, piece in enumerate(pieces):
+        if not out:
+            out = piece
+            continue
+        prev, head = out[-1], piece[:1]
+        #: 上一行是**标题**（`type == "heading"`）时一律换段：标题后面接正文，不是续句。
+        last_kind = (kinds[idx - 1] if kinds and idx - 1 < len(kinds) else "") or ""
+        if last_kind == "heading" or prev in _TERMINAL_PUNCT or prev.isspace():
+            out += "\n\n" + piece
+        elif "\u4e00" <= prev <= "\u9fff" and "\u4e00" <= head <= "\u9fff":
+            out += piece
+        else:
+            out += " " + piece
+    return out
+
 def _widen_rows(kept: dict, other: dict) -> None:
     """把被并进来那条命中的**行跨度并到保留那条上**（`paper_search` 合并时用）。
 
@@ -1130,6 +1169,9 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                 item["also_sides"] = row["also_sides"]
             items.append(item)
         out = {
+            # `page_total` 是**全篇页数**（不是这一组的页数）：单查询时它就是顶层字段；
+            # 多查询时 `_grouped_receipt` 会把它从每组里摘掉、只在顶层留一份 ——
+            # 否则它跟组内 `returned` 挨着时会被读成「这组有 22 页」（用户 2026-12-08 报）。
             "query": q, "page_total": total or None, "returned": len(items),
             "items": items,
         }
@@ -1321,6 +1363,7 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
         #: 同一块的 paper_search 说第 20 页（用户复测的那一分歧就是这么来的）。
         page = _row_page(span[0]) or cit.page
         kind = None
+        kinds: list[str] = []
         for rid in span[:SPAN_ROWS_MAX]:
             page_no = _row_page(rid) or cit.page
             if not page_no:
@@ -1334,14 +1377,15 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             text = str(data.get("text") or "").strip()
             if text:
                 texts.append(text)
+                kinds.append(str(data.get("type") or ""))
             translation = str(data.get("translation") or "").strip()
             if translation:
                 zh.append(translation)
         if not texts and not zh:
             return None
         return {"ref": cit.ref, "page": page, "type": kind,
-                "text": "\n\n".join(texts),
-                "translation": "\n\n".join(zh) or None}
+                "text": _join_rows(texts, kinds),
+                "translation": _join_rows(zh) or None}
 
     def _row_fail(cit) -> dict:
         """行路径也读不到。**不报内部 id**（模型拿它没用，还会学着复述给用户）。"""
