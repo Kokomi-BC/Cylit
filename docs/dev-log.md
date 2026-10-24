@@ -11867,3 +11867,31 @@ formula_get(limit=200): display_total=37 returned=37
 
 **验证**：`pytest tests/` → **1812 passed / 131 skipped**（+19 新用例；子代理做过负向验证：换回旧代码 8 条失败）；
 生产 `a7dfbd7`、`git status` 干净、`/health` 200、技能 13 条。
+
+### 128. 第一百二十八轮：合并时行跨度取并集（`block_get` 的英文侧不再断在半句处）
+
+用户自检（2026-12-08）扫出上一轮 A 修复的副作用：`ref38` 的 `text` 停在「…random rotation matrices applied to the」，
+**没有省略号、就是断了**；同一块的 `translation` 是完整的。缺的那半句（「input embeddings during both quantization
+and dequantization stages.」）正好落在 zh 多出来的那一行（`p021-01`）里 —— 因为合并时只保留了**先到那条**的行跨度，
+而中英两路切 chunk 的边界本来就不同（en 到 `p020-14`、zh 到 `p021-01`）。
+
+修法：新增 `_widen_rows(kept, other)`，合并时把被并进来那条的 `row_ids` **并到保留那条上**。
+只动行 id，不动文本 / 片段 / 页码来源，锚点仍是第一行（跨页那半句不会把页号拽到下一页）。
+`block_get` 本来就是按行 id 去读行表，行跨度完整之后 `text` 与 `translation` 会按**同一批行**各自拼齐。
+
+生产实测（同一份数据、同一段代码路径，脚本直接调工具层）：
+
+```
+修前：ref1 text_len=206  tail '…applied to the'            english_full=False
+修后：ref1 text_len=816  tail '…beneficial for both CPU and GPU architectures.'  english_full=True
+      search 仍是 returned=4 deduped=2，页号 20/6/5/22 与 block_get 逐条一致
+```
+
+一个如实的取舍：并集之后英文侧读到的是**整段**（816 字），比 en 原本的 chunk 边界多出那一行 ——
+而那一行正是 zh 侧认为属于同一块的内容。宁可多读一行、也不能交半句话给用户。
+
+**验证**：`pytest tests/` → **1813 passed / 131 skipped**（+1 用例：并集/顺序/锚点行/不覆盖另一面文本）；
+生产 `d9e6be7`、`git status` 干净、`/health` 200。
+
+**仍未修（用户明确不做或待定）**：高亮配色的语义重映射（用户口径是「随机多巴胺」，不做）；
+`page_total` 是全篇页数、与组内 `returned` 并列时容易误读（docstring 已说明，字段名未改）。
