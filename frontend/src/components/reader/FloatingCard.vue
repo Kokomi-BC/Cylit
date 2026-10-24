@@ -818,8 +818,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
      谁赢只看样式注入顺序 —— 那等于把"笔记卡圆角悄悄回到 12px"做成一个偶发 bug。
      默认值改为写在使用处：var(--fc-radius, 12px)，两头都不必跟谁抢优先级。 */
   --fc-handle: color-mix(in srgb, var(--text) 22%, transparent);
-  /* 底角弧离卡片边缘的距离。**提到外壳上**是为了让顶部那枚药丸也能读到同一个数
-     （药丸与弧要走同一个长度公式，见 .fc-grab-pill）。 */
+  /* 底角弧离卡片边缘的距离（提到外壳上是为了让 .fc-resize 与 .fc-grip 都读到同一个数；
+     顶部那枚药丸的长度**不再**读它 —— 药丸有自己的 34px，见 .fc-grab-pill）。 */
   --fc-gap: 5px;
 }
 .float-card {
@@ -849,12 +849,10 @@ watchEffect(applyShellDom, { flush: 'sync' });
    只动 width 与背景色，**不动 transform**：本项目踩过「缩放 + 半透明描边 → 边缘反复重采样 → 闪」的坑，
    这一条同样不引入合成层位移。220ms 带轻微过冲，松手自然回落（状态一撤就是反向过渡）。 */
 .fc-grab-pill {
-  /* 长度与底角那两道弧**同一个数**（用户口径 2026-12：顶部拖动条要和左右下角的拖动条一样长，
-     而且指示器整体要短 —— 跟以前差不多的那一档）。
-     弧的半径 = 圆角 + gap、跨 40.08° → 弧长 = 46 × 0.6995 / 100 × 弧盒
-     = (圆角 + gap) × 2.1739 × 0.3218 ≈ (圆角 + gap) × 0.6995。
-     笔记卡圆角 16 + gap 5 → 14.7px；圆角一改两边一起变，不会再分叉。 */
-  width: calc((var(--fc-radius, 12px) + var(--fc-gap, 5px)) * 0.6995);
+  /* **自己的长度**（用户口径 2026-12 三轮：药丸单独一条，改回原来的 34px）——
+     不再跟底角那两道弧联动：弧是"贴着圆角的短提示"（约 40°、14.7px），
+     药丸是"抓得住的把手"，太短反而不好按。两处各按各的读，别再把它们绑在一起。 */
+  width: 34px;
   height: 4px; border-radius: 2px;
   background: color-mix(in srgb, var(--text) 19%, transparent);
   /* 变长走 **transform: scaleX**，不补间 width（与对话浮窗同一套，2026-12-03）：
@@ -870,8 +868,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    两边若各用一套（这边 transition、那边关键帧），观感就会"明显不一致"——这是上一轮的教训。 */
 .fc-grab.dragging .fc-grab-pill,
 .fc-grab:active .fc-grab-pill {
-  /* 纯 transition（长度 ×1.3529 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。
-     弹丸居中，从中间往两边长，与改 width 的观感一致。 */
+  /* 纯 transition（34→46 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。
+     46/34 = 1.3529；弹丸居中，从中间往两边长，与改 width 的观感一致。 */
   transform: scaleX(1.3529);
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
@@ -1009,7 +1007,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
    只描外两条边，不填充、不带底色/阴影。
    ⚠️ 颜色不走 --border-strong / --line：token 表里**没有 --line**，写了等于整条声明被丢掉。 */
 .fc-resize {
-  /* --fc-gap 现在挂在 .float-shell 上（顶部那枚药丸要按同一个数算长度，见 .fc-grab-pill）。
+  /* --fc-gap 挂在 .float-shell 上（本文件里两处弧都读它）。
      ⚠️ 对话浮窗那两枚把手不读这个变量（坐标由 ReaderView 的 FLOAT_GRIP_GAP 在 JS 里算），
      改它必须同步改那个常量。 */
   /* 外沿离卡片 `--fc-gap`；弧半径**不再**跟着 gap 涨（否则圆角越大那道弧越夸张）——
