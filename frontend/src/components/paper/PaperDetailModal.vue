@@ -41,7 +41,7 @@ const router = useRouter();
 
 type TabKey = 'overview' | 'habit' | 'refs' | 'progress' | 'files';
 const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: string }> = [
-  { key: 'overview', label: '概览', icon: 'document' },
+  { key: 'overview', label: '概览', icon: 'doc' },
   { key: 'habit', label: '阅读习惯', icon: 'clock' },
   { key: 'refs', label: '参考文献', icon: 'list' },
   { key: 'progress', label: '进度', icon: 'task' },

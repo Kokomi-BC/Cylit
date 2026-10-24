@@ -12910,3 +12910,21 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 （`document.scrollWidth` 479 / `clientW` 430），弹窗于是按 479 居中、整体右移 —— 那是论文库工具栏的事，
 没有在本轮顺手改。
 
+
+### 157. 第一百五十七轮：论文标签页 / 详情「概览」页签的图标换成 `doc`
+
+用户口径：「标签页的图标没有更换为新的图标的问题（应该换为文字原文文本旁的图标）」——
+上一轮把「原文文本」档位换成官方 `doc`（文档轮廓 + 三行字）之后，还有两处同一语义的图标留着旧的
+`document`（折角纸），一眼就能看出不是同一枚。
+
+- `stores/tabs.ts` 的 `TAB_META.reader`：`document` → `doc`（顶栏"论文"标签页的 13px 图标）；
+- `components/paper/PaperDetailModal.vue` 的「概览」页签：`document` → `doc`。
+
+现在 **论文标签页 / 详情「概览」/ 阅读器「原文文本」** 三处是同一枚 `doc`。
+`TAB_META` 上写了这条口径（"论文的图标就该是这三处同一个"），免得下次又只改一边。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；真实浏览器（headless Edge + CDP，2x）
+读出渲染后的路径做比对 —— 顶栏论文标签与「原文文本」按钮的 `path d` 都是 `M8.75 11.5C8.33579…`（`doc`），
+详情五个页签依次 `doc / clock（阅读习惯）/ list（参考文献）/ task（进度）/ layers（文件）`；两处截图像素级看过。
+`scripts/frontend_check.py` **154/154**。
+

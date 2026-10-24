@@ -48,7 +48,9 @@ export function isPaperRoute(name: string): boolean {
 
 /** 论文路由 → 默认标签标题 / 图标（视图加载后可用 setTabTitle 覆盖标题）。 */
 const TAB_META: Record<string, { title: string; icon: string }> = {
-  reader: { title: '论文', icon: 'document' },
+  // 论文标签用 `doc`（官方 doc 图标：文档轮廓 + 三行字），与阅读器「原文文本」档位、论文详情「概览」
+  // 页签同一枚 —— 用户口径 2026-11：论文的图标就该是这三处同一个，别一处 `doc` 一处 `document`。
+  reader: { title: '论文', icon: 'doc' },
   // 解读整页（`/understand/:paperId`）。图标与首页那张卡同一枚（`insight`：正文 + 放大镜），
   // 别只改一边。
   understand: { title: '论文解读', icon: 'insight' },
