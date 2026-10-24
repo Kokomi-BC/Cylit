@@ -257,3 +257,40 @@ def test_include_inline_hint_points_at_the_complete_ones() -> None:
     hint = out.get("hint") or ""
     assert "display: true" in hint
     assert "另有" not in hint, "行内已经要来了，不该再说「还有 N 条没给」"
+
+
+
+def test_truncated_receipt_names_the_pages_that_did_not_fit() -> None:
+    """截断时回执直接给「还差哪几页」（p1-1：以前只有 truncated + 条数，得自己按页数）。"""
+    import asyncio
+
+    from backend.agent import tools as agent_tools
+
+    host = _FakeHost()
+    host.payload = {"total": 319, "returned": 1, "source": "markdown", "truncated": True,
+                    "display_total": 47, "inline_total": 272, "omitted_inline": 272,
+                    "missing_pages": [20, 21],
+                    "items": [{"page": 3, "row_id": "p003-01", "latex": "x",
+                               "display": True, "grade": None, "partial": False,
+                               "source": "markdown", "context": "", "context_zh": ""}]}
+    out = asyncio.run(agent_tools.formula_get(_Ctx(_Deps(host))))
+    assert out["missing_pages"] == [20, 21]
+    hint = out.get("hint") or ""
+    assert "20、21" in hint, hint
+    assert "formula_get(page=" in hint
+
+
+def test_also_on_reaches_the_model() -> None:
+    """跨页合并的那条要把别的页码带出来（第 6 页那条 also_on=[18]）。"""
+    import asyncio
+
+    from backend.agent import tools as agent_tools
+
+    host = _FakeHost()
+    host.payload = {"total": 1, "returned": 1, "source": "markdown", "truncated": False,
+                    "display_total": 1, "inline_total": 0, "omitted_inline": 0,
+                    "items": [{"page": 6, "row_id": "p006-02", "latex": "x", "display": True,
+                               "grade": None, "partial": False, "source": "markdown",
+                               "also_on": [18], "context": "", "context_zh": ""}]}
+    out = asyncio.run(agent_tools.formula_get(_Ctx(_Deps(host))))
+    assert out["items"][0]["also_on"] == [18]

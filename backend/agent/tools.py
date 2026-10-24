@@ -32,6 +32,16 @@ log = get_logger(__name__)
 
 #: 一次 `paper_search` 最多返回几条（模型爱传 top_k=10，宿主必须自己封顶）
 SEARCH_MAX = 12
+#: `paper_search(top_k)` 数的是**不同块**：同一条命中的中英两路会撞成同一个 ref，
+#: 所以向后端要原始命中时多要几倍（同一块最多也就两条：原文 + 译文）。
+SEARCH_FETCH_FACTOR = 3
+#: 服务层 `project.search` 自己的封顶：多要也不能超过它
+SEARCH_FETCH_MAX = 20
+
+#: `paper_search` 每条命中的"面"：`en` 原文 / `zh` 译文 / `formula` 公式。
+#: 默认 `both` —— 跨语言召回本身有价值（英文论文里用中文概念问、译文里术语对不上原文都得看），
+#: 把默认设成 `zh` 会**悄悄收窄**召回，用户还以为"论文里就这些"。
+SEARCH_SIDES = ("both", "en", "zh", "formula")
 #: 一次批量改写最多多少处（页 × 侧）。定在 60：一篇 30 页的论文「全文两侧」正好装得下，
 #: 再多就要求分批（每次改动都会写进改动日志，几十页连改没人看得住）。
 EDIT_BATCH_MAX = 60
@@ -464,6 +474,30 @@ def _search_mode_slot(mode: str | None) -> int:
     return {"rag": 1, "text": 2}.get(str(mode or "").strip().lower(), 0)
 
 
+def _search_side_slot(side: str) -> int:
+    """`paper_search` 的 `side` 缓存分槽：`both`（默认）占 0，其余各占一格。
+
+    缓存键里不带这一位，"先查 both、再查 zh"会直接命中前者，模型拿到的仍是全集 ——
+    而它以为自己按面过滤过了，接着就会说"译文里没有这句"。
+    """
+    return SEARCH_SIDES.index(side) if side in SEARCH_SIDES else 0
+
+
+def _hit_side(raw: dict) -> str:
+    r"""一条检索命中落在哪一面：`en` 原文 / `zh` 译文 / `formula` 公式。
+
+    以前回执里**没有**这个字段，模型只能靠"片段里有没有汉字"反推；纯公式片段
+    （`$D_{\text{mse}} \leq …$`）里一个汉字都没有，于是被当成原文引了出去。而
+    "这条是译文还是原文"决定它能不能当**原话**引用，所以必须显式给。
+
+    公式先判：块级公式两侧的 LaTeX 是同一串（译文不改公式），`lang` 对它没有意义；
+    图/表的 `lang` 是 `any`，按**原文面**算（它们没有译文孪生）。
+    """
+    if str(raw.get("chunk_type") or "") == "formula":
+        return "formula"
+    return "zh" if str(raw.get("lang") or "").strip().lower() == "zh" else "en"
+
+
 def _cached(ctx: RunContext[Deps], name: str, query: str, k: int) -> dict | None:
     """同一条检索重复调用时直接回上一次的结果（省一次后端往返，也提醒模型别绕）。"""
     hit = ctx.deps.query_cache.get(_query_key(name, query, k))
@@ -513,12 +547,15 @@ def _chunk_key(paper_id: str, block_id: object, chunk_id: str, snippet: str) -> 
     return f"chunk:{paper_id}:{loc}:{sig}"
 
 
-def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
-    """把一条检索命中登记进引用表，返回 citation。"""
+def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
+    """一条检索命中的**引用身份**：去重键 + 落点 + 片段（不碰引用表）。
+
+    `paper_search` 要按这个键**先去重再截断**（top_k 数的是不同块），`_register_chunk`
+    要按同一个键登记引用号 —— 两处必须用同一份算法：各写一遍就会出现
+    "去重说这是两个块、登记却说这是同一个号"的错配。
+    """
     chunk_id = str(item.get("chunk_id") or "")
     paper_id = str(item.get("paper_id") or ctx.deps.paper_id)
-    section = item.get("section") or None
-    page = int(item.get("page_no") or item.get("page") or 0) or None
     # 片段优先用译文：给用户看的引用表是中文语境；原文留给模型去读
     snippet = _clip(item.get("translation") or item.get("content") or "")
     #: 这条命中覆盖的正文行：写侧把行 id 也塞进了 block_id，所以行身份从这里来
@@ -528,17 +565,49 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
     # 也绝不让它进引用表的 block_id —— 那等于给 block_get 一个必然 404 的入参。
     raw_block = item.get("block_id")
     block_id = None if _row_id_of(raw_block) else raw_block
-    if row_id and len(row_ids) > 1:
-        # Citation 只存首行（前端契约不动）；整段跨度留给 block_get 拼
-        ctx.deps.row_spans[row_id] = row_ids
-    return ctx.deps.registry.assign(
+    return {
         # 去重键用"落点"：block_id 可能是 None（行 id 形态已被剥掉），这时用行 id 顶上 ——
         # 少了它，两个**片段一模一样但页码不同**的段落会并成一个引用号
-        key=_chunk_key(paper_id, block_id or row_id, chunk_id, snippet), kind="chunk",
-        page=page, section=section, block_id=block_id,
-        row_id=row_id or None,
-        snippet=snippet, label=_locate(page, section, item.get("chunk_type") or ""),
-        ids=(chunk_id,) if chunk_id else (),
+        "key": _chunk_key(paper_id, block_id or row_id, chunk_id, snippet),
+        "chunk_id": chunk_id, "paper_id": paper_id,
+        "page": int(item.get("page_no") or item.get("page") or 0) or None,
+        "section": item.get("section") or None,
+        "block_id": block_id, "row_id": row_id, "row_ids": row_ids,
+        "snippet": snippet,
+    }
+
+
+def _block_key(ctx: RunContext[Deps], item: dict) -> str:
+    """**同一个块**的键：落点 + chunk 类型 + 它覆盖的行（`paper_search` 去重用）。
+
+    为什么不能拿引用的去重键 `_chunk_key` 直接去重：那里面带了**展示片段**，而同一块的
+    两路命中拿到的片段不一定逐字相同 —— 英文那条的"译文预览"来自 chunk 的
+    content_preview，中文那条给的是它自己的 content。实测（2026-12-07）同一块
+    `p003-13…15` 的两条因此拿到**两个** ref：`top_k=4` 还是只覆盖 3 个不同位置。
+    块的身份只看落点与覆盖面，与"哪一面、片段截哪儿"无关。
+
+    反过来，同一行里指向**两条不同证据**的命中（`_chunk_key` 的注释里那个 12/13 的例子）
+    行覆盖面或 chunk 类型不同 → 仍然分开，不会被并成一条。
+    """
+    ident = _chunk_identity(ctx, item)
+    return "block:{}:{}:{}:{}".format(
+        ident["paper_id"], item.get("chunk_type") or "",
+        ident["block_id"] or ident["row_id"] or ident["chunk_id"],
+        ",".join(ident["row_ids"]))
+
+def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
+    """把一条检索命中登记进引用表，返回 citation。"""
+    ident = _chunk_identity(ctx, item)
+    if ident["row_id"] and len(ident["row_ids"]) > 1:
+        # Citation 只存首行（前端契约不动）；整段跨度留给 block_get 拼
+        ctx.deps.row_spans[ident["row_id"]] = ident["row_ids"]
+    return ctx.deps.registry.assign(
+        key=ident["key"], kind="chunk",
+        page=ident["page"], section=ident["section"], block_id=ident["block_id"],
+        row_id=ident["row_id"] or None,
+        snippet=ident["snippet"],
+        label=_locate(ident["page"], ident["section"], item.get("chunk_type") or ""),
+        ids=(ident["chunk_id"],) if ident["chunk_id"] else (),
         # 行身份（阶段 2b）：检索命中带过来的 pid，复用编号时由 assign 合并（不覆盖）。
         pids=list(item.get("pids") or []))
 
@@ -550,7 +619,8 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
 
 async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                        mode: str | None = None,
-                       queries: list[str] | None = None) -> dict:
+                       queries: list[str] | None = None,
+                       side: str = "both") -> dict:
     """在本论文内检索，返回**候选位置**（页码、章节、短片段），不返回全文。
 
     什么时候用：任何"这篇论文里怎么说的 / 讲了什么 / 为什么这么做"的问题，
@@ -579,60 +649,118 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
     参数：
       query   —— 单个检索词。用**论文里的说法**（术语、方法名）比用口语描述召回好。
       queries —— 一批检索词。与 query 一起给时按「query 在前、queries 在后」合并去重。
-      top_k   —— 每个词最多几条，默认 8，上限 12。
+      top_k   —— 每个词最多几条**不同块**，默认 8，上限 12。同一条命中的中英两路算**一块**
+                 （合并，只占一个名额），另一面记在该条的 `also_sides` 里。
       mode    —— `text` / `rag` / `auto`；不传用服务端默认（auto，两路融合）。
+      side    —— 只看哪一面：`both`（**默认**，原文 + 译文 + 公式都收）/ `en` 原文 /
+                 `zh` 译文 / `formula` 公式。每条命中都带 `side`，所以拿不准就别传 ——
+                 英文论文用中文问时，译文行的术语往往和原文对不上，只查一面会少一半素材。
     """
-    async def _one(q: str) -> dict:
+    async def _one(q: str, want: str) -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
-        key = k * 3 + _search_mode_slot(mode)
+        # 向后端**多要一点**原始命中：去重之后条数会少于 k（同一块的中英两条撞成一个 ref），
+        # 实测 top_k=4 只回来 3 个不同位置。多要的这部分只在去重前用，回执仍按 k 截。
+        fetch = min(k * SEARCH_FETCH_FACTOR, SEARCH_FETCH_MAX)
+        key = (k * 3 + _search_mode_slot(mode)) * 4 + _search_side_slot(want)
         cached = _cached(ctx, "paper_search", q, key)
         if cached is not None:
             return cached
         ctx.deps.count_search()
         before = len(ctx.deps.registry)
-        data = await ctx.deps.host.search(ctx.deps.paper_id, q, top_k=k,
+        data = await ctx.deps.host.search(ctx.deps.paper_id, q, top_k=fetch,
                                           mode=mode)
         raw_items = list(data.get("items") or [])
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
         ctx.deps.page_total = ctx.deps.page_total or total
-        items = []
+        # ① 按**块身份**（落点 + chunk 类型 + 覆盖的行，见 `_block_key`）去重：同一块的中英
+        #    两路会各占一行 —— top_k 的预算被同一处位置吃掉，用户还看不出它们是同一条
+        #    （实测：top_k=4 回 4 条，实际只有 3 个不同位置）。
+        #    只留先到的那条（相关度更高），另一条的**面**记进 `also_sides`（信息不丢）。
+        merged = 0
+        uniq: list[dict] = []
+        by_key: dict[str, dict] = {}
         for raw in raw_items:
+            block = _block_key(ctx, raw)
+            hit_side = _hit_side(raw)
+            prev = by_key.get(block)
+            if prev is not None:
+                merged += 1
+                if hit_side != prev["side"] and hit_side not in prev["also_sides"]:
+                    prev["also_sides"].append(hit_side)
+                continue
+            row = {"raw": raw, "side": hit_side, "also_sides": []}
+            by_key[block] = row
+            uniq.append(row)
+        # ② `side` 是**召回口径**（不改变排序）：先在去重后的集合上筛，再截断 ——
+        #    否则"筛完只剩 2 条"和"筛之前那 4 条"会混成一个数，模型没法判断是不是搜窄了。
+        if want != "both":
+            uniq = [row for row in uniq
+                    if row["side"] == want or want in row["also_sides"]]
+        # ③ 截到 k **个不同块**（老语义不动：returned 是条数，顺序仍是相关度）
+        items = []
+        for row in uniq[:k]:
+            raw = row["raw"]
             cit = _register_chunk(ctx, raw)
-            items.append({
+            item = {
                 "ref": cit.ref,
                 "page": cit.page,
                 "section": cit.section,
                 "type": raw.get("chunk_type"),
+                "side": row["side"],
                 "snippet": _snippet_around(raw.get("content") or raw.get("translation") or "",
                                            str(q or "")),
-            })
+            }
+            if row["also_sides"]:
+                item["also_sides"] = row["also_sides"]
+            items.append(item)
         out = {
             "query": q, "page_total": total or None, "returned": len(items),
             "items": items,
         }
+        if merged:
+            out["deduped"] = merged
+        notes = []
+        if merged:
+            notes.append(f"同一块的中英两路命中已按 ref 合并 {merged} 条"
+                         f"（另一面记在该条的 also_sides 里）；这 {len(items)} 条是 "
+                         f"{len(items)} 个**不同位置**。")
         if not items:
-            out["hint"] = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
-                           "仍无结果就如实说明这篇论文里找不到依据。")
+            base = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
+                    "仍无结果就如实说明这篇论文里找不到依据。")
+            if want != "both" and raw_items:
+                base = (f"`side={want}` 一条都没留下（命中都在另一面）。"
+                        f"改回 `side='both'`（默认）再查一次。")
+            out["hint"] = " ".join([base] + notes)
         elif len(ctx.deps.registry) == before:
-            out["hint"] = _stale_hint()
+            out["hint"] = " ".join([_stale_hint()] + notes)
         else:
-            out["hint"] = ("这些只是片段：先用 `block_get(refs=[…])` 一次展开最相关的 2~4 块；"
-                           "块里上下文不够时再 `page_markdown_get` 读它所在的页。")
+            out["hint"] = " ".join(
+                ["这些只是片段：先用 `block_get(refs=[…])` 一次展开最相关的 2~4 块；"
+                 "块里上下文不够时再 `page_markdown_get` 读它所在的页。"] + notes)
         _remember(ctx, "paper_search", q, key, out)
         return out
 
     async def _impl() -> dict:
+        want = str(side or "both").strip().lower()
+        if want not in SEARCH_SIDES:
+            # 闭集校验：拼错就静默降级成 both（或 en）会让模型以为"按面筛过了"，
+            # 接着断言"译文里没这句" —— 比直接报错坏得多（notes_search 同一教训）。
+            return {"ok": False,
+                    "error": (f"side={side!r} 不是合法取值：只能是 "
+                              f"{' / '.join(SEARCH_SIDES)}。"
+                              "不传就是 both（原文 + 译文 + 公式都收）。"),
+                    "effective_side": "both", "returned": 0, "items": []}
         wanted, repeats = _text_list(query, queries)
         if not wanted:
             return {"ok": False,
                     "error": "要给 query 或 queries：queries=[\"词一\", \"词二\"] 一次查多个。"}
         kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
         if queries is None and len(wanted) == 1:
-            return await _one(kept[0])      # 老用法：单个词的回执结构一个字都不变
+            return await _one(kept[0], want)   # 老用法：单个词的回执结构一个字都不变
         groups: list[dict] = []
         for q in kept:
             try:
-                groups.append(await _one(q))
+                groups.append(await _one(q, want))
             except HostError as exc:
                 groups.append({"query": q, "ok": False, "returned": 0, "items": [],
                                "error": f"取数失败：{exc.message}"})
@@ -644,7 +772,8 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
 
     return await _guarded(ctx, "paper_search",
                           {"query": _clip(query, 60), "queries": list(queries or []),
-                           "top_k": top_k, "mode": mode or "auto"}, _impl())
+                           "top_k": top_k, "mode": mode or "auto",
+                           "side": side or "both"}, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -1245,7 +1374,12 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
     回执里的 `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围
     内的全部条目」，`total == display_total + inline_total` 恒成立；`returned` 是本次给了几条，
     `omitted_inline` 是这次按需过滤掉的行内条数（默认就等于 `inline_total`）。
-    本次要列的条目超过 40 条时 `truncated: true`。
+    本次要列的条目超过 40 条时 `truncated: true`，**并且** `missing_pages` 直接告诉你还差哪几页
+    （以前只给"漏了几条"，得自己把 40 条按页数一遍才知道缺第 20、21 页）——
+    照着它 `formula_get(page=…)` 补，不要凭条数猜。
+
+    **同一条公式在不同页重复陈述**（第 6 页与第 18 页各排了一遍的失真上界那种）只出现**一条**，
+    其余页码在该条的 `also_on` 里（归一化后相同才算一条；不同的式子绝不合并）。
 
     ⚠️ `partial=True` 的条目**LaTeX 可能只是公式的一段**（一条公式被切成了几段，我们只拿到
     第一段）。要确认全文就用 `page_image_get(page)` 看那一页的原版面
@@ -1270,6 +1404,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 # LaTeX 只是公式的一段 → 要讲全貌就去看原版面
                 "partial": bool(raw.get("partial")),
                 "source": raw.get("source"),
+                # 同一条公式在**别的页**也排了一遍时才有内容（跨页重复陈述被合并掉的那些）
+                "also_on": [int(p) for p in (raw.get("also_on") or [])],
                 "context": raw.get("context") or "",
                 "context_zh": raw.get("context_zh") or "",
             })
@@ -1287,6 +1423,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                "display_total": display_total,
                "inline_total": inline_total,
                "omitted_inline": int(omitted_inline or 0),
+               # 「还差哪几页」：没截断就是空列表。有了它就不用自己按页数"漏了哪几条"
+               "missing_pages": [int(p) for p in (data.get("missing_pages") or [])],
                "items": items}
         if not items:
             out["hint"] = ("这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
@@ -1316,8 +1454,11 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 hints.append("有条目 partial=true：那几条的 LaTeX 只是公式的一段 —— "
                              "要对着讲就把 `page_image_get(page)` 的原版面拿来核对。")
             if out["truncated"]:
-                hints.append(f"全文共 {out['total']} 条，这里只给了前 {len(items)} 条（按文档顺序）；"
-                             f"要更全就**按页取**（传 page）。")
+                pages = "、".join(str(p) for p in out["missing_pages"])
+                tail = (f" 还差这几页：{pages} —— 照它们 `formula_get(page=…)` 补，"
+                        f"不要凭条数猜。" if pages else "")
+                hints.append(f"全文共 {out['total']} 条，这里只给了前 {len(items)} 条"
+                             f"（按文档顺序）。{tail}")
             if hints:
                 out["hint"] = " ".join(hints)
         return out
@@ -1373,6 +1514,62 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
                 "note": f"另有 {missing} 个块没有译文（未翻译），已跳过。" if missing else ""}
 
     return await _guarded(ctx, "translate_get", {"pages": _clip(pages, 40)}, _impl())
+
+
+async def reader_state(ctx: RunContext[Deps]) -> dict:
+    r"""读**读者此刻在阅读器里的状态**：读到第几页、看的是哪一面（原文 / 译文 / 对照）、
+    什么视图、左栏停在哪个页签。
+
+    什么时候用：要给"这一段 / 这一页"加高亮或笔记、要判断该标**原文面**还是**译文面**、
+    要引用"读者正在看的那一页"时 —— 先读一次，再决定 `highlight_manage` / `note_manage`
+    的 `side` 与页码。它**只读**，不改阅读器的任何状态（不翻页、不换视图、不切页签）。
+
+    `available=false` = 这次请求**没带**阅读状态（老前端 / 非阅读器入口）：
+    那时所有字段都是空值，**绝不要猜**当前页 —— 用文字语言判断该标哪一面（含中文 → 译文面），
+    或者直接问用户"你现在看的是哪一面 / 哪一页"。
+
+    `page_side="both"`（读者在对照视图）= 眼前同时有两侧：`note_side` 因此给 null，
+    要标的那段文字属于哪一面就传哪一面，**不要**两面对半标、也不要一律标译文面。
+    """
+    async def _impl() -> dict:
+        reader = ctx.deps.reader
+        out: dict = {
+            "available": reader.available,
+            "page": reader.page or None,
+            "page_side": reader.page_side or None,
+            "order": reader.order or None,
+            "view": reader.view or None,
+            "side_tab": reader.side_tab or None,
+            "visible_pages": list(reader.visible_pages) or None,
+            "note_side": reader.note_side,
+            "page_known": reader.page_known,
+        }
+        if not reader.available:
+            out["hint"] = ("不知道读者在哪：这次请求没有带阅读状态。不要猜当前页或当前面 —— "
+                           "需要位置就用 page_markdown_get 定位，或直接问用户"
+                           "（\"你现在看的是第几页、原文还是译文？\"）。"
+                           "标高亮时按文字语言判面（含中文 → zh），别编页码。")
+            return out
+        tips: list[str] = []
+        if not reader.page_known:
+            tips.append("页未知（读者没报或报的值认不出来）：不要引用「第 X 页」，"
+                        "要位置就先问用户或 page_markdown_get 定位。")
+        if reader.page_side == "both":
+            tips.append("读者在**对照视图**：两侧都看得见，标哪一面取决于要标的那段文字"
+                        "本身属于哪一面（原文 → en，译文 → zh）；两面对半标只会让用户"
+                        "多删一半。")
+        elif reader.note_side:
+            tips.append(f"读者正在看 {reader.note_side} 面：要标注的就是这一面，"
+                        f"直接传 side=\"{reader.note_side}\"（读者眼前只画得出这一面）。")
+        else:
+            tips.append("不知道读者在看哪一面：按文字语言判面（含中文 → zh），或问用户。")
+        if reader.view:
+            tips.append(f"当前视图：{reader.view}（rows = 正文行，高亮才画得出来；"
+                        "markdown / pdf 面上的高亮在阅读视图里看不到）。")
+        out["hint"] = " ".join(tips)
+        return out
+
+    return await _guarded(ctx, "reader_state", {}, _impl())
 
 
 async def paper_archive_get(ctx: RunContext[Deps]) -> dict:
@@ -2412,13 +2609,19 @@ EDIT_TOOLS = [page_markdown_edit]
 #: 高亮 / 笔记（《修改计划》第六步）：两个 op 式工具，读写都在里面
 ANNOTATION_TOOLS = [highlight_manage, note_manage]
 
+#: 阅读状态（自带技能 `reader-state` 的手脚）：**只读**的一块旁证 ——
+#: "读者此刻在第几页、看哪一面"。不打后端、不占上下文，只有在要**落笔标注**时才有意义，
+#: 所以挨着标注工具摆：模型翻到标注那一段就能看见答案从哪来。
+READER_TOOLS = [reader_state]
+
 #: 联网（自带技能 `web-search` 的手脚）：**永远挂载**，没配密钥时返回一句人话错误。
 #: 为什么不做成"有密钥才挂"：工具表一变，system 里那份工具说明与函数 schema 也跟着变，
 #: 一个设置项就能把整段提示词前缀打掉；而且模型不知道"现在能不能联网"只会少问一句。
 WEB_TOOLS = [web_search, web_fetch]
 
 #: 当前挂载的全部工具
-AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS, *WEB_TOOLS]
+AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS,
+               *READER_TOOLS, *WEB_TOOLS]
 
 #: **元数据填写**那一次会话用的工具：只读的读全文能力 + 一个写口。
 #: 为什么单独一份、不并进 `AGENT_TOOLS`：问答会话里模型顺手改元数据的场景并不存在，

@@ -22,6 +22,10 @@
  * 高度按"一排三块"定档：宽档 H 118 / 窄档（< 380）H 98，与趋势块同档；
  * 四个状态共用同一个 min-height（由 H 算出），切换时不跳。
  *
+ * 版式与趋势块对齐：标题行只许一行（图标 + 标题 + 时间窗 seg），摘要在
+ * 图例同一行的右端 —— 三块并排时每张只有 316px（内容宽 288），标题 + 摘要 + 时间窗
+ * 挤不进一行，硬压标题只会换来一条省略号。
+ *
  * 两条"别自作聪明"的规矩：
  * - Y 轴只按数据取整齐上界，**不截断、不剔异常点**：真实数据里一次冷启动就能把 P95 拉到
  *   4.2s，于是上界跟着到 4500、平均线贴底。那正是要看的现象（尾延迟爆炸），
@@ -153,11 +157,12 @@ const compact = computed<boolean>(() => boxW.value < COMPACT_W);
 const H = computed<number>(() => (compact.value ? 98 : 118));
 const innerH = computed<number>(() => H.value - padT - padB);
 /**
- * 四态共用的那块高度（border-box，含 .card-body.tight 的 6px 上下内边距）：
- * 图例行（14 + 4 外边距）= 18 + 图区 H + 底行 11px × 1.45 ≈ 16。底行是固定一句话、
+ * 四态共用的那块高度（border-box，含 .card-body.tight 的 12px 上下内边距）：
+ * 图例行（22 + 下边距 4）= 26 + 图区 H + 底行 11px × 1.45 ≈ 16。底行是固定一句话、
  * 不折行，所以这里按一行算，四个状态量出来一模一样。
+ * 加数 55 = 26 + 16 + 13（图例行塞进摘要后长到 22px，原先的 47 按 18 算的）。
  */
-const bodyH = computed<number>(() => H.value + 47);
+const bodyH = computed<number>(() => H.value + 55);
 
 /** 刻度步长取整到 1 / 1.2 / 1.5 / 2 / 2.5 / 3 / 4 / 5 / 6 / 8 × 10^k，
  *  于是刻度线落在整齐的数字上，不会出现 83.4 这种读数。 */
@@ -295,13 +300,13 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
   <section class="latency">
     <div class="card-head">
       <AppIcon name="gauge" :size="15" /><span class="ttl">检索耗时趋势</span>
-      <span class="spacer"></span>
-      <span v-if="ready" class="tiny faint sum" :title="summaryText">{{ summaryText }}</span>
-      <span v-else class="badge dim">暂无数据</span>
-      <div class="seg days" role="group" aria-label="统计窗口">
-        <button v-for="d in DAYS" :key="d" type="button" :class="{ active: win === d }" @click="setWin(d)">
-          {{ d }} 天
-        </button>
+      <div class="ctl">
+        <div class="seg days" role="group" aria-label="统计窗口" title="统计窗口：最近 7 / 30 / 90 天">
+          <button
+            v-for="d in DAYS" :key="d" type="button" :class="{ active: win === d }"
+            :aria-pressed="win === d" @click="setWin(d)"
+          >{{ d }} 天</button>
+        </div>
       </div>
     </div>
 
@@ -328,6 +333,7 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
           <div class="plot-head">
             <span class="lg"><i class="lg-dot avg"></i>平均</span>
             <span class="lg"><i class="lg-dot p95"></i>P95</span>
+            <span class="tiny faint sum" :title="summaryText">{{ summaryText }}</span>
           </div>
 
           <div class="chart">
@@ -363,23 +369,28 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
 </template>
 
 <style scoped>
-/* 标题行（原卡头）：标题 + 摘要 + 一枚 seg，与趋势块同款同档（13.5px 标题、18px 选项、24px 托盘）。
-   窄块里允许折行 —— 不折就会把整行推出整块。 */
+/* 标题行（原卡头）**只许一行**：图标 + 标题 + 一枚时间窗 seg，与趋势块同款同档
+   （13.5px 标题、18px 选项、24px 托盘）。一行是三块等高的前提，标题长了就省略，绝不折行。
+   摘要（近 N 天 N 次 · 中位 …）挪到图表区顶行：三块并排时每张只剩 316px（内容宽 288），
+   标题 81 + 摘要 151 + 时间窗 140 + 图标间距 31 ≈ 403，硬塞进来只能靠压标题。 */
 .latency { min-width: 0; display: flex; flex-direction: column; }
-.ttl { font-size: calc(13.5px * var(--ts, 1)); }
+.ttl {
+  min-width: 0; flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13.5px * var(--ts, 1));
+}
 /* 标题行在淡底之外：透明、不描边、不留发丝线。 */
-.latency .card-head { flex-wrap: wrap; row-gap: 6px; border-bottom: 0; }
+.latency .card-head { flex-wrap: nowrap; column-gap: 8px; border-bottom: 0; }
+.ctl { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
 .days { flex: none; height: 24px; }
-.days button { height: 18px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
+.days button { height: 18px; padding: 0 8px; font-size: calc(11.5px * var(--ts, 1)); }
 .days button:focus-visible { outline: none; box-shadow: var(--ring); }
-/* 标题行右侧那枚"摘要 / 暂无数据"固定 22px、单行不折：两态的盒子一样高，
-   标题行的折行方式才一样，切到"有数据"时整块不会因为这一枚矮了 1px 而抖一下。
-   摘要本身 nowrap + 省略号（全量在 title 里），长窗口也不把标题行挤成三行。 */
-.latency .card-head .sum,
-.latency .card-head .badge { height: 22px; display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
-.sum {
+/* 图例行右边的摘要：单行 + 省略号（全量在 title），数字用 tabular-nums，
+   于是切窗口时"49 次 → 96 次"不左右跳，也不会把图例挤成两行。 */
+.plot-head .sum {
+  flex: 0 1 auto; min-width: 0;
+  display: inline-flex; align-items: center;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  /* 摘要是数字：tabular-nums 让切窗口时"49 次 → 96 次"不左右跳 */
   font-variant-numeric: tabular-nums;
 }
 
@@ -418,11 +429,16 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
   text-wrap: pretty;
 }
 
+/* 图例行：左图例、右摘要（margin-left: auto 贴右），一行到底；
+   行高定死 22，图区起点才和三块里的另外两张对齐。
+   wrap 只是兜底：界面字号拉到最大时图例 + 摘要会超出一行，宁可换行也不许横向溢出。 */
 .plot-head {
-  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
-  gap: 4px 14px; min-height: 14px; margin: 2px 4px;
+  display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap;
+  gap: 2px 14px; min-height: 22px; margin: 0 4px 4px;
 }
+.plot-head .sum { margin-left: auto; }
 .lg {
+  flex: none;
   display: inline-flex; align-items: center; gap: 5px;
   font-size: calc(11px * var(--ts, 1)); line-height: 1; color: var(--text-faint);
   white-space: nowrap;
@@ -451,10 +467,10 @@ watch([ready, () => points.value.length], () => { bind(); }, { flush: 'post' });
 }
 
 @media (max-width: 860px) {
-  .days button { padding: 0 8px; font-size: calc(11px * var(--ts, 1)); }
+  .days button { padding: 0 7px; font-size: calc(11px * var(--ts, 1)); }
 }
 @media (max-width: 560px) {
-  .latency .card-head { gap: 6px; }
+  .latency .card-head { column-gap: 6px; }
   .plot-head { gap: 10px; }
 }
 </style>

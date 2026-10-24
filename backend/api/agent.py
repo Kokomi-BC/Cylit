@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from backend.api.response import envelope
 from backend.core.config import get_settings, normalize_agent_limits
 from backend.core import provider_errors
+from backend.agent.deps import normalize_reader
 from backend.core.errors import LimitExceededError, ProviderError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.agent import (attachments, bridge, conversations, model_config,
@@ -271,6 +272,7 @@ async def agent_ask(payload: dict = Body(...)):
         history = conversations.history_for_agent(conversation_id)[:-1]
         parent_id = user_message["message_id"]
 
+    reader_body = normalize_reader(payload.get("reader")).as_body()
     body = {
         "paper_id": paper_id, "question": question,
         "conversation_id": conversation_id, "parent_id": parent_id,
@@ -285,6 +287,12 @@ async def agent_ask(payload: dict = Body(...)):
         "selection": selection if selected_text else None,
         "attachments": attachment_meta,
     }
+    # 读者的阅读状态（前端随请求带来）：**只在这里按白名单洗一次**，
+    # 非法值丢弃而不是报错 —— 它只是"该标哪一面"的旁证，一个拼错的页签 id
+    # 不该让整轮问答 422/500。**一个字段都认不出来时干脆不带这个 key**：
+    # 老前端发的请求因此与从前逐字节一样（agent 侧据此 available=false，不许猜当前页）。
+    if reader_body:
+        body["reader"] = reader_body
     # 本地限额闸门：**在把请求转给 agent 之前**（被拦就不发请求）
     _limit_gate(conversation_id, parent_id, question or selected_text,
                 choice["model_config_id"])

@@ -19,6 +19,7 @@ import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } f
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import { withNoteRefs } from '@/utils/noteRefs';
+import { renderedLength } from '@/utils/latexText';
 import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
@@ -39,6 +40,16 @@ import ChatErrorCard from '@/components/reader/ChatErrorCard.vue';
 
 const props = defineProps<{
   paperId: string;
+  /** 阅读器**这一刻**的状态（页号 / 对照方式 / 左右顺序 / 视图 / 左栏页签），只随提问发给后端。
+   *  空对象或没给 = 没有状态可报 —— 请求体里**不出现** `reader` 这个键（老请求逐字节不变）。 */
+  readerState?: {
+    page?: number;
+    page_side?: string;
+    order?: string;
+    view?: string;
+    side_tab?: string;
+    visible_pages?: number[];
+  } | null;
   /** 从正文划词带过来的选区（可空）；发出去之后由父组件清掉 */
   selection?: AgentSelection | null;
   /** 能不能「浮层打开」（窄屏是抽屉，拎成浮窗没有意义 —— 由父组件判） */
@@ -1501,6 +1512,23 @@ const TOOL_LABELS: Record<string, string> = {
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? `正在调用 ${name}`;
 
 /**
+ * 把阅读器状态并进请求体 —— **只在它非空时**。
+ *
+ * 为什么空就不塞：后端把"没带 `reader`"和"带了却一个字段都认不出来"同等看待
+ * （`ReaderState.available=False`），但不带这个 key 时整条请求必须与从前逐字节一致，
+ * 所以空对象不能发出去（`{"reader":{}}` 也是一个 key）。
+ */
+function withReaderState(
+  body: Record<string, unknown>, state: typeof props.readerState,
+): Record<string, unknown> {
+  if (!state) return body;
+  const reader = Object.fromEntries(Object.entries(state)
+    .filter(([, v]) => v !== undefined && v !== null && v !== ''));
+  if (!Object.keys(reader).length) return body;
+  return { ...body, reader };
+}
+
+/**
  * 一轮问答。三种入口共用一条流：
  * - `send`：正常提问（可带选区 / 图片）；
  * - `regen`：重新生成某条回答（**默认就地**：替换这条回答；`branch=true` 才挂兄弟）；
@@ -1602,7 +1630,10 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
     if (explain) body.mode = 'explain';
     if (pick.value.model_config_id) body.model_id = pick.value.model_config_id;
     if (pick.value.reasoning_effort) body.reasoning_effort = pick.value.reasoning_effort;
-    await postSse('/agent/ask', body, { signal: controller.signal, onEvent });
+    /* 阅读状态**只在这一刻并进去**：它随每页/每面变，而请求体是一次性的。
+       空（页数据还没到）时这块原样返回，老请求逐字节不变。 */
+    const finalBody = withReaderState(body, props.readerState);
+    await postSse('/agent/ask', finalBody, { signal: controller.signal, onEvent });
     const convId = currentId.value;
     if (convId) {
       await loadConversation(convId);            // `done` 是权威结果：重拉一次对齐
@@ -1728,7 +1759,10 @@ async function saveAnswerWithColor(color: string) {
     const quoteText = String(anchor.quote || anchor.text || '');
     if (!quoteText) { toast('这段文字定位不到（标不了高亮）', 'warn', 2600); return; }
     start = 0;
-    end = quoteText.length;
+    /* 长度要按**渲染坐标系**算（公式 1 个字符）：`quote` 里是 LaTeX（`$…$` / `$$…$$`），
+       直接取 `.length` 会比 DOM 里那一段长出一大截 —— 高亮会顺延到后面几句上。
+       与划词那边（`ReaderView` 的 `sliceWithLatex`）同一个口径。 */
+    end = renderedLength(quoteText);
     degraded = true;
   }
   try {

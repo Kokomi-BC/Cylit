@@ -217,6 +217,37 @@ def find_formula_span(md: str, probe: str) -> tuple[int, int, str] | None:
     return None
 
 
+def _atoms_to_latex(rendered: str, md: str, *, skip: int = 0) -> str:
+    r"""把渲染文本里的每个 `ATOM` 换成**那段公式的原始 Markdown**（含 `$` / `$$` 定界符）。
+
+    为什么不能像以前那样把占位符删成空：`selected_text` 是这条高亮在列表 / 笔记 / 检索里
+    **唯一的文字**。删成空就在句子里留下一个空位（页 4 的「压缩超过 。」、页 7 图注的两个
+    下标都变成一样），与页面文字、`page_markdown_get` 的 `$…$` 口径都对不上 ——
+    锚点重定位会偏、"搜 5×"也命不中。用 LaTeX 顶替之后，库里的文字就是**能把公式读出来的**
+    那句话（口径与前端 `sliceWithLatex` / 本模块高亮对齐那一路一致：行内 `$…$`、行显 `$$…$$`）。
+
+    逐字取 `md[start:end]`（与 `realign_highlights` 存公式引文的口径完全一致），
+    不自己拼定界符 —— 行显块跨行时原样保留，前端与笔记卡都按 Markdown 渲染。
+    """
+    if ATOM not in rendered:
+        return rendered
+    spans = math_spans(md)
+    out: list[str] = []
+    # 传进来的可能只是渲染文本的**一段**（高亮选中的那段）：公式序号要接着整段数下去，
+    # 所以由调用方把"前面已经有多少个 ATOM"告诉这里。
+    index = max(0, int(skip or 0))
+    for ch in rendered:
+        if ch != ATOM:
+            out.append(ch)
+            continue
+        # 公式条数比占位符少时（渲染与解析不同步）宁可留空，也不乱顶一条到错的句子上
+        if index < len(spans):
+            start, end, _inner = spans[index]
+            out.append(md[start:end])
+        index += 1
+    return "".join(out)
+
+
 def find_span(text: str, probe: str, *, occurrence: int = 1) -> tuple[int, int] | None:
     """``probe`` 在 ``text`` 里的第 ``occurrence`` 次出现 → ``(start, end)``；找不到返回 None。"""
     probe = (probe or "").strip()
@@ -761,7 +792,8 @@ def realign_page(paper_id: str, page: int, side: str, *, only_before: str = "") 
                 svc.update_highlight(str(hl.get("id") or ""), {"selected_text": latex})
                 formula += 1
             continue
-        current = rendered[start:end].replace(ATOM, "")
+        #: 与 `create` 落库同一口径：公式用 LaTeX 顶替，不要删成空位（见 `_atoms_to_latex`）
+        current = _atoms_to_latex(rendered[start:end], md, skip=rendered.count(ATOM, 0, start))
         if current.strip() and current == stored:
             continue
         hit = find_span_ignoring_atoms(rendered, stored, occurrence=1) if stored.strip() else None
@@ -769,7 +801,8 @@ def realign_page(paper_id: str, page: int, side: str, *, only_before: str = "") 
             stale += 1                       # 引文自己也变了：不硬猜，留着让 op=list 看得见
             continue
         new_start, new_end = hit
-        new_text = rendered[new_start:new_end].replace(ATOM, "")
+        new_text = _atoms_to_latex(rendered[new_start:new_end], md,
+                                   skip=rendered.count(ATOM, 0, new_start))
         if new_end <= new_start or not new_text.strip():
             stale += 1
             continue
@@ -1034,22 +1067,27 @@ def create(paper_id: str, *, anchor: str, text: str, color: str = "",
     if is_formula:
         stored_text = formula_src or str(text or "").strip()
     else:
-        # 文字高亮存坐标系里那一段，但**把公式占位符换成空**：`ATOM`（U+FFFC）在列表 / 笔记 /
-        # 引用里显示成方块，用户看不懂；偏移量仍按渲染坐标给，前端画标记时"选区含 ATOM 就跳过
-        # 文字校验"，所以不影响定位（实测 2026-12-07 用户报的"那个方块是什么"就是它）。
-        stored_text = matched.replace(ATOM, "")
+        # 文字高亮存坐标系里那一段，公式占位符换成**它的 LaTeX**（行内 `$…$` / 行显 `$$…$$`）。
+        # 以前换成空串：方块是没了，句子却在公式处留了个空位，库里的文字与页面 /
+        # `page_markdown_get` 的口径全都对不上（实测 2026-12-07：页 4「压缩超过 。」、
+        # 页 7 图注的两个下标变成同一句）。偏移量仍按渲染坐标给 —— 一个公式仍占 1 个字符，
+        # 前端画标记时"选区含 ATOM 就跳过文字校验"，所以定位不受影响。
+        stored_text = _atoms_to_latex(matched, raw or "",
+                                      skip=rendered.count(ATOM, 0, start))
     result = _write(anchor, side, kind, (start, end), stored_text, rendered)
     if dry_run:
         return result
     if had_atom and not is_formula:
-        # 回执里的 text 会有"两个空格"：那里原本是公式。不说一句，用户会以为文字被吞了
-        # （2026-12-07 实测）。
+        # 存下来的 text 里现在是 **LaTeX**，不再是空位：不说一句，模型会以为公式没存住、
+        # 或者拿 `text` 再改一遍引文（2026-12-07 实测的下一手就是这样）。
         holes = [m.group(1) for m in _INLINE_MATH.finditer(str(text or ""))]
         holes += [m.group(1) for m in _DISPLAY_MATH.finditer(str(text or ""))]
         shown = "、".join(f"${_brief(one, 16)}$" for one in holes[:3])
-        result["text_note"] = (f"`text` 里公式那一处已留空（原本是公式元素：{shown}），"
-                               "不是文字被吞" if shown else
-                               "`text` 里公式那一处已留空（它原本是公式元素，不是文字被吞）")
+        result["text_note"] = (
+            f"`text` 里公式那一处存的是**它的 LaTeX**（行内 `$…$`、行显 `$$…$$`；{shown}），"
+            "与前端划词的口径一致 —— 不是文字被吞" if shown else
+            "`text` 里公式那一处存的是**它的 LaTeX**（行内 `$…$`、行显 `$$…$$`），"
+            "与前端划词的口径一致 —— 不是文字被吞")
     if kind == "markdown":
         # 落在 Markdown 面的高亮**阅读视图里看不见**（只有 Markdown 视图画它）。这本身是
         # "行里对不上"的兜底，但要说明白，否则用户以为"高亮没出现"（实测报过多次）。

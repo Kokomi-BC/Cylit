@@ -487,11 +487,14 @@ function openSource(item: { paper_id?: string | null; block_id?: string | null; 
   align-items: stretch;
   min-width: 0;
 }
+/* 三块标题行同高：趋势 / 耗时各带一枚 24px 的 seg，加上卡头内距 9 + 9 正好 42；
+   分布卡没有右侧控件，自身只有标题那一行（≈39）—— 差的就是这 3px。锁同一个 min-height，
+   三块标题行与下面三条淡底就一起齐平，**任何宽度下都成立**（所以不再挂在容器查询里）。
+   原值是 70：那是"标题行会折成两行"时的预留；现在标题行被约束成一行（见各卡的 .card-head），
+   两行预留反而会把三块一起顶高一整行，所以降到 42。 */
+.kb-charts :deep(.card-head) { min-height: 42px; }
 @container (min-width: 640px) {
   .kb-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* 并排时三块的标题行高度不一样：趋势卡与耗时卡各带一枚 7/30/90 的 seg，310 宽里要折成两行，
-     分布卡只有标题一行 —— 不锁同高的话，下面三条淡底就会一条高一条低。按折行那一档取齐。 */
-  .kb-charts :deep(.card-head) { min-height: calc(70px * var(--ts, 1)); }
 }
 @container (min-width: 900px) {
   .kb-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }

@@ -189,6 +189,7 @@ const SKILL_NAME_ZH: Record<string, string> = {
   'annotate-text': '标注与笔记',
   'read-page-image': '整页原图',
   'search-paper': '论文检索',
+  'reader-state': '阅读状态',
   'summarize-paper': '全文导读',
   'answer-paper': '论文问答',
   'explain-term': '术语与译法',
@@ -217,7 +218,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 skills，就地 sort 会打乱那份引用。 */
 const SKILL_ORDER = [
   'web-search', 'web-fetch',
-  'search-paper', 'summarize-paper', 'answer-paper',
+  'search-paper', 'reader-state', 'summarize-paper', 'answer-paper',
   'read-text', 'read-page-image', 'read-figure', 'read-formula',
   'explain-term', 'annotate-text', 'edit-text',
 ];
@@ -249,12 +250,20 @@ function skillDesc(skill: AgentSkill): string {
   return text || '这个技能没写说明';
 }
 
-/** 技能行的展开态：默认只摆名字，点开才看说明原文（SKILL.md 的 description）。
- *  为什么不一直摆着：说明是长句，十几条拼起来把列表撑出一屏灰字，还让人找不到行的边界
- *  （用户口径 2026-12：点一下再展开）。纯展示状态，不落后端、不发请求。 */
-const expandedSkill = ref('');
+/** 技能行的**收起**集合：默认空集合 = 每条技能的说明都摆着（用户口径 2026-12：进页面就要读到）。
+ *  为什么反过来记"收起的"而不是"展开的"：默认态是"没有例外"，例外才需要存 —— 记展开集合的话，
+ *  每条默认值都得靠"名字不在集合里"去推，新加载出来的技能反而容易漏掉。
+ *  纯展示状态：不落后端、不发请求，刷新回到全展开（用户口径：同一页内记住即可）。 */
+const collapsedSkills = ref<Set<string>>(new Set());
+function isSkillOpen(name: string): boolean {
+  return !collapsedSkills.value.has(name);
+}
 function toggleSkillDetail(skill: AgentSkill): void {
-  expandedSkill.value = expandedSkill.value === skill.name ? '' : skill.name;
+  // 换一个新 Set 再赋值：原地 mutate 不会触发 ref 的依赖
+  const next = new Set(collapsedSkills.value);
+  if (next.has(skill.name)) next.delete(skill.name);
+  else next.add(skill.name);
+  collapsedSkills.value = next;
 }
 
 async function loadSkills(): Promise<void> {
@@ -861,13 +870,14 @@ onMounted(() => {
 
         <div class="skill-list" v-if="filteredSkills.length">
           <template v-for="s in filteredSkills" :key="s.name">
-            <div class="skill-row" :class="{ off: !s.enabled, open: expandedSkill === s.name }"
+            <div class="skill-row" :class="{ off: !s.enabled, open: isSkillOpen(s.name) }"
                  data-skill-row :data-skill-name="s.name">
-              <!-- 名字就是展开开关：默认只摆名字（+ 工具名 + 徽章），点一下才把说明原文摊开。
-                   说明一直摆着的话，十来个技能拼出十几行长句，整页能翻两屏都是灰字。 -->
+              <!-- 名字就是开合开关：默认每条都把说明原文（SKILL.md 的 description）摆出来，
+                   点名字可以就地收起 —— 十几条长句同屏确实要翻，但"这一页到底有哪些能力"
+                   比"列表短"重要，所以默认给全（用户口径 2026-12）。 -->
               <button class="skill-toggle" type="button"
-                      :aria-expanded="expandedSkill === s.name"
-                      :title="(expandedSkill === s.name ? '收起' : '展开') + ' ' + s.name + ' 的说明'"
+                      :aria-expanded="isSkillOpen(s.name)"
+                      :title="(isSkillOpen(s.name) ? '收起' : '展开') + ' ' + s.name + ' 的说明'"
                       @click="toggleSkillDetail(s)">
                 <span class="skill-name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
                 <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
@@ -906,9 +916,10 @@ onMounted(() => {
                         @update:model-value="toggleSkill(s, $event)" />
               </div>
             </div>
-            <!-- 展开的说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
-                 整段换行显示、不截断 —— 它撑开的是行下方的留白，不参与行宽。 -->
-            <div class="skill-detail" v-if="expandedSkill === s.name">
+            <!-- 说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
+                 整段换行、不截断 —— 它撑开的是行下方的留白，不参与行宽，所以行高不会被它拽歪。
+                 摆成行的**兄弟**而不是塞进行里：行高恒为 52，展开后只有内容变长，行本身不变形。 -->
+            <div class="skill-detail" v-if="isSkillOpen(s.name)">
               <p class="skill-desc">{{ skillDesc(s) }}</p>
             </div>
             <!-- ⑤ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
@@ -1155,10 +1166,14 @@ onMounted(() => {
   display: flex; align-items: center; gap: 10px;
   min-height: 52px; padding: 0 var(--row-pad);
   border-top: 1px solid var(--divider);
+  /* 圆角必须落在行自己身上，不能只写在 hover 里：底色是一整块矩形，
+     而它躺的是一张 --r-sm 的淡色圆角卡 —— 不带圆角鼠标一过就是一块方角底压在圆角卡上。 */
+  border-radius: var(--r-sm);
   transition: background var(--dur) var(--ease);
 }
 .skill-list > .skill-row:first-child { border-top: 0; }
-/* 与模型页的 .prov-row 一样：悬停整行浮一层浅底，明确"这一行是连续的" */
+/* 与模型页的 .prov-row 一样：悬停整行浮一层浅底，明确"这一行是连续的"。
+   底色只在行的盒内（左右内边距由 --row-pad 决定），不会伸到卡片内边距外面去。 */
 .skill-row:hover { background: var(--bg-hover); }
 /* 名字那一整块是开关（是一枚按钮，不是文本）：键盘也能开合，aria-expanded 给出状态。
    min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把整页顶出横向滚动条。 */
@@ -1179,7 +1194,9 @@ onMounted(() => {
   flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
-/* 展开的说明：SKILL.md 的 description 原文，整段换行、不截断（它在行下方，不参与行宽） */
+/* 说明块：SKILL.md 的 description 原文，整段换行、不截断（它在行下方，不参与行宽）。
+   左内边距与行一致（--row-pad），说明的第一行字因此与上面的技能名落在同一条竖线上；
+   缩进或加符号都会让"这句说明属于哪一条"变得要靠猜。 */
 .skill-detail { padding: 0 var(--row-pad) 10px; }
 .skill-desc {
   margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);

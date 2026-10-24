@@ -8,11 +8,125 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from backend.agent.citations import RefRegistry
 from backend.agent.config import AgentConfig
 from backend.agent.host import HostClient
+
+#: 阅读器「看哪一面」/「左右顺序」/「视图」三组**闭集**值：认不出来的一律当没传。
+#: 为什么不猜一个最像的：落错面会让高亮在读者的视图里**根本画不出来**，
+#: 而"不知道"至少还能退回去问用户。
+READER_PAGE_SIDES = ("en", "zh", "both")
+READER_ORDERS = ("en-first", "zh-first")
+READER_VIEWS = ("rows", "markdown", "pdf")
+#: `visible_pages` 最多记几页（读者眼前就那么几页，给多了只是撑长上下文）
+READER_VISIBLE_MAX = 16
+#: `side_tab` 的长度上限（页签 id 是 insight / highlight 这种短词）
+READER_TAB_CHARS = 40
+
+
+@dataclass(frozen=True)
+class ReaderState:
+    """读者**这一刻**在阅读器里的位置与版面（`/agent/ask` 请求体里的 `reader`）。
+
+    为什么需要它：`highlight_manage` 的 `side` 以前按**文字语言**猜（含 CJK → zh），
+    于是"中文读者高亮一段英文"会被标到 `en` 面 —— 而读者在译文视图里看不到那一面。
+    知道"读者正在看哪一面"才能按**实际在看的那一面**落笔。
+
+    **未知就是未知**：没带 `reader` 时 `available=False`，其余字段全空。编一个
+    "大概在第 1 页"比不回答更糟 —— 模型会照着它去标高亮，用户却看不到。
+    """
+
+    available: bool = False
+    #: 当前页（0 = 读者没报 / 报的值认不出来）
+    page: int = 0
+    #: 对照方式：`en` 只看原文 / `zh` 只看译文 / `both` 两侧对照（空 = 不知道）
+    page_side: str = ""
+    #: 左右顺序：`en-first` 原文在左 / `zh-first` 译文在左
+    order: str = ""
+    #: 视图：`rows` 正文行 / `markdown` / `pdf`
+    view: str = ""
+    #: 左栏当前页签 id（不认识的 id 也照收：那份列表归前端所有）
+    side_tab: str = ""
+    #: 读者眼前能看到的页（可选；`page` 认不出来时的旁证）
+    visible_pages: tuple[int, ...] = ()
+
+    @property
+    def page_known(self) -> bool:
+        return self.page > 0
+
+    @property
+    def note_side(self) -> str | None:
+        """默认落笔的那一面。
+
+        `both`（对照）时**不给**建议：读者眼前同时有两侧，标哪一面取决于要标的
+        那段文字属于哪一面 —— 这个判断只能由模型（或用户）做，宿主不替它选。
+        """
+        return self.page_side if self.page_side in ("en", "zh") else None
+
+    def as_body(self) -> dict:
+        """回写成请求体的形状（只含**认得的**字段；全空时返回 `{}`）。"""
+        out: dict = {}
+        if self.page_known:
+            out["page"] = self.page
+        for key in ("page_side", "order", "view", "side_tab"):
+            value = getattr(self, key)
+            if value:
+                out[key] = value
+        if self.visible_pages:
+            out["visible_pages"] = list(self.visible_pages)
+        return out
+
+
+def _reader_choice(raw: dict, key: str, allowed: tuple[str, ...]) -> str:
+    value = raw.get(key)
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if value in allowed else ""
+
+
+def _reader_pages(raw: object) -> tuple[int, ...]:
+    """`visible_pages`：只留正整数页码（`True` 这种 bool 不算数）。"""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    pages = [one for one in raw
+             if isinstance(one, int) and not isinstance(one, bool) and one > 0]
+    return tuple(pages[:READER_VISIBLE_MAX])
+
+
+def normalize_reader(raw: object) -> ReaderState:
+    """把请求体里的 `reader` 洗成 `ReaderState`（**全仓唯一的解析口**）。
+
+    非法字段**丢弃而不是报错**：阅读状态只是"读者在哪"的旁证，一个拼错的页签 id
+    不该让整轮问答 500 —— 认不出来就当没传，剩下的字段照常用。
+
+    全都认不出来时 `available=False`（与"这次请求没带"等价）：否则工具会拿着一个
+    空壳状态告诉模型"读者在第 0 页、看空的一面"，那正是要禁掉的"编造阅读状态"。
+
+    幂等：传进来已经是 `ReaderState` 就原样返回，所以上层可以放心多处调用。
+    """
+    if isinstance(raw, ReaderState):
+        return raw
+    if not isinstance(raw, dict):
+        return ReaderState()
+
+    page = raw.get("page")
+    page_no = page if isinstance(page, int) and not isinstance(page, bool) and page > 0 else 0
+    tab = raw.get("side_tab")
+    side_tab = tab.strip()[:READER_TAB_CHARS] if isinstance(tab, str) else ""
+    reader = ReaderState(
+        page=page_no,
+        page_side=_reader_choice(raw, "page_side", READER_PAGE_SIDES),
+        order=_reader_choice(raw, "order", READER_ORDERS),
+        view=_reader_choice(raw, "view", READER_VIEWS),
+        side_tab=side_tab,
+        visible_pages=_reader_pages(raw.get("visible_pages")),
+    )
+    known = bool(page_no or reader.page_side or reader.order or reader.view
+                 or reader.side_tab or reader.visible_pages)
+    return replace(reader, available=known)
 
 
 @dataclass
@@ -47,6 +161,11 @@ class Deps:
     selection_page: int | None = None
     #: 用户对选区的提问（划词追问）；为空时是"解释这段内容"
     selection_question: str = ""
+    #: 读者**此刻**在阅读器里的位置与版面（`normalize_reader` 洗好的那一份）。
+    #: 为什么放 deps 而不是每轮拼进 system：它每翻一页就变，混进 system 会把
+    #: "system + 全部历史"的前缀缓存整段打掉；而"没带就是不知道"的口径由
+    #: `reader_state` 工具当场说明，也比一句常驻的提示词更省。
+    reader: ReaderState = field(default_factory=ReaderState)
     #: 工具轨迹（审计 + 自检 A5/A13/A14 读它）
     trace: list[dict] = field(default_factory=list)
     #: 模型轮次（含工具轮）：超上限就停，见 §11 的 `rounds_exhausted`

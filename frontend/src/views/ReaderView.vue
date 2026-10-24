@@ -1575,6 +1575,48 @@ const originalIsPage = computed(() => originalVisible.value && originalMode.valu
 /** 对照 + 原 PDF：一边是页图、一边是文字行 —— 只有这时"文字列放译文还是原文"才是个选择 */
 const pageLeft = computed(() => viewMode.value === 'bilingual' && originalMode.value === 'page');
 const leftIsOriginal = computed(() => pairOrder.value !== 'zh_left' && pairOrder.value !== 'zh_top');
+
+/** `/agent/ask` 请求体里那段 `reader`（字段与后端 `agent/deps.py::ReaderState` 同名） */
+type ReaderStateBody = {
+  page?: number;
+  page_side?: 'en' | 'zh' | 'both';
+  order?: 'en-first' | 'zh-first';
+  view?: 'rows' | 'markdown' | 'pdf';
+  side_tab?: string;
+  visible_pages?: number[];
+};
+
+/**
+ * 阅读器**这一刻**的状态（页号 / 对照方式 / 左右顺序 / 视图 / 左栏页签）。
+ *
+ * 为什么带它：后端 `reader_state()` 工具只读请求体里这一段 —— 不带就只能回答
+ * "不知道读者在哪一页、看哪一面"，高亮于是会落到读者眼前看不见的那一面。
+ * 字段全部来自已有状态（`currentRow` / `pageSide` / `pairOrder` / `originalMode` /
+ * `mdView` / `railTab`），这里只做改名与映射，不新增状态。
+ *
+ * 为什么可能是空对象：页数据还没到（首屏加载中 / 加载失败）时阅读器**没有状态**可言。
+ * 空 = `ReaderChat` 不往请求体里塞 `reader`，老请求逐字节不变 —— 而编一个
+ * "大概在第 1 页"正是后端 `ReaderState` 注释里点名要禁掉的那种事。
+ */
+const readerState = computed<ReaderStateBody>(() => {
+  const out: ReaderStateBody = {};
+  if (loading.value || fatal.value) return out;
+  const page = currentRow.value?.page ?? 0;
+  if (page > 0) {
+    out.page = page;
+    /* 当前页 + 下一页：滚动跟踪给的是"阅读线上的那一页"，多一页是页号认错时的旁证。
+       不为此另装观测器 —— 后端拿它当旁证用，不是当精度用。越界就截掉。 */
+    const total = stats.value.pages ?? 0;
+    out.visible_pages = [page, page + 1].filter((p) => !total || p <= total);
+  }
+  out.page_side = pageSide.value;
+  out.order = pairOrder.value === 'zh_left' || pairOrder.value === 'zh_top' ? 'zh-first' : 'en-first';
+  /* 三个视图各自对应哪一个：Markdown 整页看的是 md 产物，对照 + 原 PDF 看的是页图，
+     其余都是正文行（后端 `view` 只认 rows / markdown / pdf）。 */
+  out.view = mdView.open ? 'markdown' : (originalIsPage.value ? 'pdf' : 'rows');
+  out.side_tab = railTab.value;
+  return out;
+});
 const tocRows = computed(() => flattenOutline(outline.value.tree, new Set(collapsed.value)));
 const activeTask = computed(() => liveTask.value
   ?? tasks.value.find((t) => t.type === 'TRANSLATE_MD'
@@ -4255,7 +4297,13 @@ function onMouseUp(ev?: MouseEvent) {
      * 而偏移量那套坐标系是**把这些文本节点直接拼起来**的 —— 两者长度与空白都不一样。
      * 存了不一致的文字，画高亮时的"先对一次文本"就会判定错位、整条高亮画不出来
      * （实测：跨 span 选一段，只画出前半截）。 */
-    const anchorText = offs && layer ? renderedText(layer).slice(offs.start, offs.end) : '';
+    const withTex = offs && layer ? sliceWithLatex(layer, offs.start, offs.end) : null;
+    /* 文字层里有公式（KaTeX 节点）时，与正文行/Markdown 走**同一个** `sliceWithLatex`
+       —— 落库的 `selected_text` 一律是 `$…$` 的 LaTeX，与 `page_markdown_get` 同一写法；
+       没有公式时仍用 `renderedText` 的切片：那是纯字符拼接，空白口径与以前一字不差。 */
+    const anchorText = offs && layer
+      ? (withTex?.atoms ? withTex.text.trim() : renderedText(layer).slice(offs.start, offs.end))
+      : '';
     Object.assign(selection, {
       show: true, ...menuPos(rect), text: truncate(text, 600), fullText: text,
       anchorText,
@@ -7975,6 +8023,7 @@ function renderMarkdown(text?: string | null) {
           v-if="chatWarm"
           ref="chatRef"
           :paper-id="paperId"
+          :reader-state="readerState"
           :selection="chatSelection"
           :can-float="!isNarrow"
           :floating="chatFloat"

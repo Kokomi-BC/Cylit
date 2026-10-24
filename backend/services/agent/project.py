@@ -571,6 +571,40 @@ def figures(paper_id: str, page: int | None = None) -> dict:
 #: 一次最多回几条公式（Attention 这类论文全篇 10~30 条，够用；超长论文要筛）
 FORMULA_LIMIT = 40
 
+#: LaTeX **归一化**：只削掉"不影响语义"的排版差异，用来判定"这是不是同一条公式"。
+#:
+#: 为什么需要它：同一条公式会被**重复陈述**（实测：失真上界在第 6 页与第 18 页各排一遍、
+#: `D_{\text{mse}} \approx 0.36, 0.117, 0.03, 0.009` 出现三次、内积上界在第 7 页与第 19 页各一遍），
+#: 而两处抄写常常差一个 `\left(`、一个 `\,`、末尾一个句号 —— 按原样比就是两条。
+#:
+#: 规则（逐条都有测试钉着）：
+#:   1. `\tag{…}` / `\label{…}` / `\nonumber` / `\notag` —— 编号与交叉引用不是公式内容；
+#:   2. `\left` / `\right` —— 只调括号尺寸；
+#:   3. 纯间距：`\,` `\;` `\:` `\!` `\>` `\ `（转义空格）`\quad` `\qquad` `\thinspace` 等，以及 `~`；
+#:   4. 所有空白（`\begin{aligned}` 里的换行也算）；
+#:   5. `\mathrm` / `\textrm` / `\operatorname` → `\text`（渲染的是同一件事）；
+#:   6. 末尾的 `.` `,` `;`（同一条公式在正文里带不带句号都有）。
+#:
+#: **不**削：`\text{…}` 里的字、上下标与 `\frac`/`\sum` 这类结构。
+#: 反例（第 4 页 vs 第 20 页的下界）：`… \geq \frac{\|y\|_2^2}{d} \cdot \frac{1}{4^b}`
+#: 与 `… \geq \frac{1}{d} \cdot \frac{1}{4^b}` 是**两条不同的式子**（后者把 `\|y\|_2` 取成了 1），
+#: 归一化后仍然不同 —— 合并不同公式比留一条重复更糟。
+_LATEX_NOISE_RE = re.compile(
+    r"\\tag{[^{}]*}|\\label{[^{}]*}|\\nonumber(?![a-zA-Z])|\\notag(?![a-zA-Z])"
+    r"|\\left(?![a-zA-Z])|\\right(?![a-zA-Z])"
+    r"|\\[,;:!>]|\\quad(?![a-zA-Z])|\\qquad(?![a-zA-Z])"
+    r"|\\(?:thinspace|medspace|thickspace|enspace)(?![a-zA-Z])"
+    r"|~|\\\s|\s+")
+_TEXT_MACRO_RE = re.compile(r"\\(?:mathrm|textrm|operatorname\*?)(?![a-zA-Z])")
+
+
+def _latex_norm(latex: object) -> str:
+    """归一化后的 LaTeX（去重键）。空串 = 这条没 latex，调用方按"各自独立"处理。"""
+    text = _LATEX_NOISE_RE.sub("", str(latex or ""))
+    # 替换串里的反斜杠要再转义一层：`r"\text"` 会被 re 当成 TAB + "ext"（实测踩过）
+    text = _TEXT_MACRO_RE.sub(r"\\text", text)
+    return text.rstrip(".,;")
+
 
 #: 公式卡的**文档顺序**：解析卡 id 形如 `turboquanton-p03-b05`（页 + 块序号），
 #: markdown 抽出来的 `row_id` 形如 `p005-03` —— 两者都能从尾部数字还原先后。
@@ -601,7 +635,10 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
       补上（条目带 `source:"parse"`）。卡片的 LaTeX 常常只是公式的一段 ——
       `partial=True` 就是在说这件事，此时该去看 `page_image_get(page)` 的原版面；
     - `grade` 只有解析卡有，markdown 条目留空（不为一个评级去 join 表）；
-    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`；
+    - 排序是**文档顺序**（页 → 块序号）；超 `limit` 返回 `truncated`，
+      并用 `missing_pages` 说明**还差哪几页**（不传 page 时以前只给"漏了 7 条"，得自己数页）；
+    - 同一条块级公式在**不同页重复陈述**（第 6/18 页的失真上界那种）按归一化后的 LaTeX
+      合并成一条，其余页码进 `also_on`；行内条目不参与跨页合并（页码就是它的价值）。
     - `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围内的
       全部条目」，不随 `include_inline` 变 —— 不变式 `total == display_total + inline_total`
       任何时候都成立；`returned` 才是「这次给了几条」，`omitted_inline` 是这次按需过滤掉的行内条数。
@@ -655,12 +692,37 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
     unique: list[dict] = []
     for item in items:
         key = (int(item.get("page") or 0), str(item.get("row_id") or ""),
-               " ".join(str(item.get("latex") or "").split()))
+               _latex_norm(item.get("latex")))
         if key in seen:
             continue
         seen.add(key)
         unique.append(item)
     items = sorted(unique, key=_doc_key)
+
+    # **跨页重复陈述**：同一条公式在第 6 页与第 18 页各排了一遍（失真上界、内积上界、
+    # `D_{\text{mse}} \approx 0.36, …` 三次），归一化后相同 → 只留**首次出现**那条，
+    # 其余页码记进 `also_on`。以前用户得自己认出"清单里这两条其实是同一条"。
+    #
+    # 只合并 `display` 条目：行内（`display=false`）的 `$b-1$` / `$x$` 在几十页上各有一份，
+    # 那不是"重复陈述"——**页码本身就是它的价值**（`formula_get(page=…)` 靠它定位），
+    # 合并掉等于把"哪个符号在哪页"这件事删了。
+    by_latex: dict[str, dict] = {}
+    across: list[dict] = []
+    for item in items:
+        norm = _latex_norm(item.get("latex")) if item.get("display") else ""
+        first = by_latex.get(norm) if norm else None
+        # 只在**跨页**时合并：同一页上的两行同名公式是这一页的两个排版位置
+        # （`also_on` 记页码给不出区分度），各自的引用要分别给号 —— 老行为不动。
+        if first is not None and int(first.get("page") or 0) != int(item.get("page") or 0):
+            page_no = int(item.get("page") or 0)
+            also = first.setdefault("also_on", [])
+            if page_no and page_no not in also:
+                also.append(page_no)
+            continue
+        if norm:
+            by_latex.setdefault(norm, item)
+        across.append(item)
+    items = across
 
     #: 三个计数**同一口径**：都数"去重后、在筛选范围内的全部条目"（cap 与
     #: `include_inline` 之前）。以前 display/inline 数的是"去重前的 markdown 源"、total 数的
@@ -675,6 +737,12 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
 
     cap = max(1, int(limit or FORMULA_LIMIT))
     kept = listed[:cap]
+    #: **这次没给出来的那几条落在哪几页**：以前只回一个 `truncated: true` + 条数，
+    #: 用户/模型得自己把 40 条按页数一遍才知道还差第 20、21 页（实测：47 条只回 40 条，
+    #: 覆盖到第 19 页为止）。它取代不了"放宽上限"的全部好处，但它是**一次调用就能照做**的
+    #: 下一步，而且不随论文规模变长；直接把上限放宽只是把悬崖往后挪，行内那批几千条时照样截断。
+    missing_pages = sorted({int(one.get("page") or 0) for one in listed[cap:]
+                            if one.get("page")})
     out = [{
         "page": int(i.get("page") or 0) or None,
         "row_id": i.get("row_id"),
@@ -684,6 +752,8 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         # 这条 LaTeX 可能只是公式的一段（解析时 candidate 被切段、又没有 final）→ 去看裁图
         "partial": bool(i.get("partial")),
         "source": i.get("source") or "parse",
+        # 同一条公式**别的出现页**（跨页重复陈述被合并时才有东西）
+        "also_on": sorted({int(p) for p in (i.get("also_on") or []) if p}),
         "context": _clip(i.get("context") or "", 240),
         "context_zh": _clip(i.get("context_zh") or "", 240),
     } for i in kept]
@@ -705,6 +775,8 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
             # 块级 = 完整公式（可引用），行内 = 碎片/单符号（不适合当引用来源）
             "display_total": display_total, "inline_total": inline_total,
             "omitted_inline": 0 if include_inline else inline_total,
+            # 「还差哪几页」（没截断就是空列表）—— 模型据此直接 formula_get(page=…)
+            "missing_pages": missing_pages,
             "items": out}
 
 

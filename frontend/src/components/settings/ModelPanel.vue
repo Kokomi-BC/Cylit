@@ -1407,6 +1407,9 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   min-height: 58px; padding: 10px 4px; min-width: 0;
   cursor: pointer;
+  /* 圆角写在行自己身上、不写在 :hover 里：hover 底色是一整块矩形，圆角只挂在悬停态上
+     会让"悬停时才变圆"；与抽屉里 .rel-row 同一处口径，两处才不会一圆一方。 */
+  border-radius: var(--r-sm);
   transition: background var(--dur) var(--ease);
 }
 .prov-row + .prov-row { border-top: 1px solid var(--divider); }

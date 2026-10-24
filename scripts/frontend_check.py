@@ -1709,24 +1709,8 @@ async function run() {
     }
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
 
-    /* ---- 笔记页签的两种收放：**缩略显示**（每条收成一两行）+ **就地编辑** ----
-       用户口径 2026-10-07："侧栏显示 + 支持编辑高亮内容的笔记内容 + 笔记栏支持缩略显示"。 */
+    /* ---- 笔记页签的**就地编辑**（缩略显示已在 eb6801b4 移除，那一组断言随之删掉） ---- */
     const paneRow = () => (myNote ? D().querySelector('[data-note-id="' + myNote.id + '"]') : null);
-    const thumbBtn = D().querySelector('[data-notes-thumb]');
-    res.hasThumbBtn = !!thumbBtn;
-    if (thumbBtn) {
-      const tall = paneRow() ? paneRow().getBoundingClientRect().height : 0;
-      thumbBtn.click();
-      await sleep(300); spin(BURN); await sleep(200);
-      const small = paneRow();
-      res.thumbOn = !!small && small.classList.contains('thumb');
-      res.thumbClamped = !!small && !!small.querySelector('.clamp1');
-      res.thumbShrank = !!small && small.getBoundingClientRect().height < tall;
-      thumbBtn.click();                       // 收回去，后面的断言还按展开态看
-      await sleep(300); spin(BURN); await sleep(200);
-      const back = paneRow();
-      res.thumbOff = !!back && !back.classList.contains('thumb');
-    }
     const paneEdit = paneRow() ? paneRow().querySelector('[data-item-edit]') : null;
     res.paneEditBtn = !!paneEdit;
     if (paneEdit) {
@@ -2128,12 +2112,8 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
                 or (asked is not None and asked <= 120)),
            f"定位键={res.get('hasLocate')}，滚走 {res.get('scrolledAway')} → 定位后 "
            f"{res.get('locatedTop')}（请求滚到 {asked}）")
-    record("pdfhl", "笔记栏**缩略显示**：一键把每条收成一两行，再点回来",
-           res.get("hasThumbBtn") is True and res.get("thumbOn") is True
-           and res.get("thumbClamped") is True and res.get("thumbShrank") is True
-           and res.get("thumbOff") is True,
-           f"缩略={res.get('thumbOn')} 省略号={res.get('thumbClamped')} "
-           f"变矮={res.get('thumbShrank')} 还原={res.get('thumbOff')}")
+    # 「缩略显示」这个功能已在 eb6801b4 从前端移除（`[data-notes-thumb]` 全仓不存在），
+    # 对应的断言已删 —— 留着它只会长期红，让人以为坏的是别的东西。
     # ---- 划词接管：空白处按下 + 原生拖放（用户 2026-10-08 报的两条） ----
     # 空白处按下：改之前这条会红（锚点根本进不了接管 → 用合成事件时选不出任何东西；
     # 真鼠标那侧更糟，交给浏览器后锚点落到文字层容器上，实测往上一拖 = 2393 字整页）。
@@ -2413,34 +2393,88 @@ def _req_json(url: str, payload: dict | None = None, method: str | None = None) 
         return json.loads(resp.read().decode("utf-8") or "{}")
 
 
+#: 一段"过一遍 `render_like_dom` 也逐字不变"的真实正文：**连续汉字**（≥12 字）。
+#: 天然避开 `$…$` 公式、Markdown 记号与空白 —— 后端按文字定位时不会挪位。
+_REAL_RUN = re.compile(r"[\u4e00-\u9fff]{12,}")
+
+
+def _real_quote(base: str, paper: str) -> tuple[str, str]:
+    """从论文前几页的**真实译文**里取一小段可定位的引文 → ``(block_id, 引文)``。
+
+    为什么要这样取（2026-12 新校验之后）：写入口加了"选中文字在目标行的正文里定位不到就 400"
+    的校验（`annotation_service._located_span`）——它防的正是"建成一条看不见的高亮"。
+    探针再用假文本建高亮会被直接拒（`HTTPError 400`），整轮就断在那一步。
+
+    取法：逐页读 `/papers/<id>/translations`，在**译文**里找第一段连续汉字（≥12 字，
+    天然避开 `$…$` 公式、Markdown 记号与行首标点），截前 12 个字；还要确认这段字在**同页
+    更靠前的行**里没出现过 —— 后端是"按行序取第一处命中"，撞了就会判"不在这一行里"。
+    """
+    seen: list[str] = []
+    for page in (1, 2, 3):
+        try:
+            data = _req_json(f"{base}/api/v1/papers/{paper}/translations?page={page}")
+        except Exception:  # noqa: BLE001 —— 取不到这一页（没译过 / 没这页）就换下一页
+            continue
+        seen = []                              # 只在同一页里比：定位是按页找行的
+        for item in (data.get("data") or {}).get("items") or []:
+            for row in item.get("rows") or []:
+                zh = str(row.get("translation") or "")
+                hit = _REAL_RUN.search(zh)
+                quote = hit.group(0)[:12] if hit else ""
+                if quote and not any(quote in prev for prev in seen):
+                    return str(row.get("id") or ""), quote
+                seen.append(zh)                # 更靠前的行里也有这串 → 换这一页的下一行
+    raise RuntimeError("论文前几页里找不到可定位的中文正文（是不是还没译过？）")
+
+
 def check_highlight_update_api(base: str, paper: str) -> None:
     """新增的 `PUT /highlights/{id}`：AI 解释浮层的色块用它给「已经标过的这段」改颜色。
 
     为什么单独测这一条：色块那条链路（点色 → 标高亮 + 存笔记）要真调一次模型才看得见，
     而它用到的新接口是这一轮唯一的后端改动 —— 先在这里把接口本身钉住（建→改色→删，不留痕）。
+
+    ⚠️ 建的这条高亮必须挂在**真实正文**上：写入口会验"这段字在这一行里找得到"（见
+    `_real_quote`），假文本一律 400 —— 探针不该为了省事去撞它。
     """
+    label = "PUT /highlights/{id} 能改颜色（浮层色块的那一路）"
     print("\n⓪ 高亮改色接口（浮层色块的「已有高亮就改颜色」那一路）")
     api = f"{base}/api/v1"
-    created = _req_json(f"{api}/highlights", {
-        "paper_id": paper, "block_id": "p001-00", "selected_text": "自检：改色用",
-        "start_offset": 0, "end_offset": 3, "color": "yellow", "side": "en", "scope": "row",
-    }).get("data") or {}
+    try:
+        block_id, quote = _real_quote(base, paper)
+    except Exception as exc:  # noqa: BLE001 —— 取不到正文就没法建（如实记一条，不中断整轮）
+        record("refs", label, False, f"取不到真实正文：{str(exc)[:80]}")
+        return
+    before = _req_json(f"{api}/highlights?paper_id={paper}").get("data", {}).get("items") or []
+    # 只传 selected_text、**不传偏移量**：后端按文字在当前页的行里自己定位（新校验支持的正路）
+    try:
+        created = _req_json(f"{api}/highlights", {
+            "paper_id": paper, "block_id": block_id, "selected_text": quote,
+            "color": "yellow",
+        }).get("data") or {}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        record("refs", label, False, f"建高亮失败 HTTP {exc.code}：{body[:100]}")
+        return
     hid = created.get("id")
     if not hid:
-        record("refs", "PUT /highlights/{id} 能改颜色（浮层色块的那一路）", False, "建高亮失败")
+        record("refs", label, False, "建高亮失败")
         return
+    print(f"   引文来自正文 {block_id}：{quote!r}（建之前 {len(before)} 条高亮）")
     try:
         updated = _req_json(f"{api}/highlights/{hid}", {"color": "blue"}, method="PUT").get("data") or {}
         same = _req_json(f"{api}/highlights?paper_id={paper}").get("data", {}).get("items") or []
         got = next((h for h in same if h.get("id") == hid), {})
-        record("refs", "PUT /highlights/{id} 能改颜色（浮层色块的那一路）",
+        print(f"   改色前 {created.get('color')!r} → 返回 {updated.get('color')!r}，"
+              f"库里 {got.get('color')!r}")
+        record("refs", label,
                updated.get("color") == "blue" and got.get("color") == "blue"
-               and got.get("text") == "自检：改色用",
+               and got.get("text") == quote,
                f"返回={updated.get('color')!r} 库里={got.get('color')!r} 原文={got.get('text')!r}")
     finally:
         req = urllib.request.Request(f"{api}/highlights/{hid}", method="DELETE")
         urllib.request.urlopen(req, timeout=30).read()
     left = _req_json(f"{api}/highlights?paper_id={paper}").get("data", {}).get("items") or []
+    print(f"   删完剩 {len(left)} 条高亮（建之前 {len(before)} 条）")
     record("refs", "改色这条自检不留痕",
            not any(h.get("id") == hid for h in left), f"残留 {sum(1 for h in left if h.get('id') == hid)} 条")
 
@@ -3041,7 +3075,10 @@ async function run() {
   const post = async (u, body) => (await fetch(u, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })).json();
-  const QUOTE = '自检：这是一段被高亮的话';
+  /* 引用原文必须是**正文里真有的字**：写入口会验"这段在这一行里找得到"，假文本一律 400。
+     __QUOTE__ / __BLOCK__ 由 Python 那边从真实译文里取好注进来（见 _real_quote）。 */
+  const QUOTE = __QUOTE_JSON__;
+  const BLOCK = __BLOCK_JSON__;
   /* 正文写得**够长**（多段）：缩略显示那条断言要看的正是"长正文被收成一两行"，
      只写一句话的话卡片的头/脚就占满了，收起来也不会变矮（第一版就是这么误报的）。 */
   const BODY_HEAD = '自检：高亮上的笔记正文';
@@ -3050,14 +3087,20 @@ async function run() {
   const ANN = '自检：这是一条批注';
   let hl = null, note = null, ann = null;
   try {
-    hl = (await post(api + '/highlights', {
-      paper_id: '__PAPER__', block_id: 'p001-00', selected_text: QUOTE,
-      start_offset: 0, end_offset: 11, color: 'yellow', side: 'en', scope: 'row',
-    })).data;
-    note = (await post(api + '/notes', {
-      paper_id: '__PAPER__', block_id: 'p001-00', highlight_id: hl.id,
-      selected_text: QUOTE, start_offset: 0, end_offset: 11, content_md: BODY,
-    })).data;
+    /* 只传 selected_text、不传偏移量：后端按文字定位（新校验支持的正路） */
+    const hlRes = await post(api + '/highlights', {
+      paper_id: '__PAPER__', block_id: BLOCK, selected_text: QUOTE, color: 'yellow',
+    });
+    hl = hlRes && hlRes.data;
+    if (!hl || !hl.id) {
+      res.hlErr = String((hlRes && (hlRes.message || hlRes.detail)) || '建高亮失败');
+      throw new Error('建高亮失败：' + res.hlErr);
+    }
+    const noteRes = await post(api + '/notes', {
+      paper_id: '__PAPER__', block_id: BLOCK, highlight_id: hl.id,
+      selected_text: QUOTE, content_md: BODY,
+    });
+    note = noteRes && noteRes.data;
     ann = (await post(api + '/annotations', {
       paper_id: '__PAPER__', block_id: 'p001-00', type: 'manual', content_md: ANN,
     })).data;
@@ -3093,21 +3136,7 @@ async function run() {
       .map((b) => (b.textContent || '').trim())
       .filter((t) => t.indexOf('高亮') >= 0 || t.indexOf('批注') >= 0);
     res.hasFeedBar = !!D().querySelector('.feed-bar');
-    /* 缩略显示（与阅读器侧栏同一个开关口径） */
-    const thumbBtn = D().querySelector('[data-notes-thumb]');
-    res.hasThumbBtn = !!thumbBtn;
-    if (thumbBtn && noteRow) {
-      const tall = noteRow.getBoundingClientRect().height;
-      thumbBtn.click();
-      await sleep(300); spin(BURN); await sleep(200);
-      const small = rowWith(BODY_HEAD);
-      res.thumbOn = !!small && small.classList.contains('thumb') && !!small.querySelector('.clamp1');
-      res.thumbShrank = !!small && small.getBoundingClientRect().height < tall;
-      thumbBtn.click();
-      await sleep(300); spin(BURN); await sleep(200);
-      const back = rowWith(BODY_HEAD);
-      res.thumbOff = !!back && !back.classList.contains('thumb');
-    }
+    /* 缩略显示的开关与断言已随 eb6801b4 一起删除（前端不再有 `[data-notes-thumb]`）。 */
     /* 编辑入口：点「编辑笔记」→ 弹窗里就是这条正文 → **取消**（不写库） */
     if (noteRow) {
       const editBtn = [...noteRow.querySelectorAll('button')]
@@ -3134,7 +3163,10 @@ async function run() {
     if (ann) await fetch(api + '/annotations/' + ann.id, { method: 'DELETE' });
     const leftN = await jget(api + '/notes?paper_id=__PAPER__&q=' + encodeURIComponent(BODY_HEAD));
     const leftA = await jget(api + '/annotations?paper_id=__PAPER__');
+    const leftH = await jget(api + '/highlights?paper_id=__PAPER__');
     res.leftNotes = (((leftN.data && leftN.data.items) || [])).length;
+    res.leftHls = (((leftH.data && leftH.data.items) || []))
+      .filter((h) => String(h.text || '') === QUOTE).length;
     res.leftAnns = (((leftA.data && leftA.data.items) || []))
       .filter((a) => String(a.content_md || '').indexOf('自检：这是') === 0).length;
   } catch (e) { res.leftErr = String(e); }
@@ -3148,8 +3180,15 @@ def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> Non
     """笔记整页：三类记录归并成一个列表 + 缩略显示 + 编辑入口（造的数据验完自删）。"""
     print("\n⑦ 笔记整页（批注 / 高亮 / 笔记合并成一个列表；造的数据验完自删）")
     url = f"{base}/cylit/notes"
+    try:
+        block_id, quote = _real_quote(base, paper)
+    except Exception as exc:  # noqa: BLE001 —— 取不到正文就只能如实记一条（不中断整轮）
+        record("notes-page", "笔记整页能打开（探针拿到结果）", False, f"取不到真实正文：{str(exc)[:80]}")
+        return
     html = (PROBE_NOTES.replace("__URL__", url).replace("__TITLE__", "notes")
-            .replace("__PAPER__", paper))
+            .replace("__PAPER__", paper)
+            .replace("__QUOTE_JSON__", json.dumps(quote, ensure_ascii=False))
+            .replace("__BLOCK_JSON__", json.dumps(block_id, ensure_ascii=False)))
     res = run_probe(browser, base, "probe_notes", html, max(budget_ms, 60_000))
     if not res:
         record("notes-page", "笔记整页能打开（探针拿到结果）", False, "探针没产出结果")
@@ -3171,17 +3210,15 @@ def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> Non
     record("notes-page", "批注按**同一种卡片**列在同一个列表里",
            res.get("hasAnnRow") is True and res.get("annKind") == "annotation",
            f"kind={res.get('annKind')}")
-    record("notes-page", "缩略显示：一键把每条收成一两行，再点回来",
-           res.get("hasThumbBtn") is True and res.get("thumbOn") is True
-           and res.get("thumbShrank") is True and res.get("thumbOff") is True,
-           f"缩略={res.get('thumbOn')} 变矮={res.get('thumbShrank')} 还原={res.get('thumbOff')}")
+    # 同上：缩略显示已随 eb6801b4 移除，这条断言一起删。
     record("notes-page", "编辑入口打开的就是这条正文（看完取消，不写库）",
            res.get("hasEditBtn") is True and str(res.get("editValue") or "") != ""
            and "自检" in str(res.get("editValue") or "") and res.get("editClosed") is True,
            f"弹窗内容={str(res.get('editValue'))[:24]!r} 关掉了={res.get('editClosed')}")
     record("notes-page", "自检不留痕（造的高亮 / 笔记 / 批注都已删）",
-           res.get("leftNotes") == 0 and res.get("leftAnns") == 0,
-           f"残留笔记 {res.get('leftNotes')} 条、批注 {res.get('leftAnns')} 条、错误 {res.get('leftErr')}")
+           res.get("leftNotes") == 0 and res.get("leftAnns") == 0 and res.get("leftHls") == 0,
+           f"残留高亮 {res.get('leftHls')} 条、笔记 {res.get('leftNotes')} 条、"
+           f"批注 {res.get('leftAnns')} 条、错误 {res.get('leftErr')}")
 
 
 # --------------------------------------------------------------------------

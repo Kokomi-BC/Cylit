@@ -36,7 +36,7 @@ from pydantic_ai_harness import Skills
 from backend.agent import prompts
 from backend.agent.citations import RefRegistry
 from backend.agent.config import AgentConfig
-from backend.agent.deps import Deps
+from backend.agent.deps import Deps, ReaderState, normalize_reader
 from backend.agent.host import HostClient, HostError
 from backend.agent.sanitize import (
     StreamingAnswerSanitizer, referenced_citations, strip_foreign_images,
@@ -84,6 +84,10 @@ class AskRequest:
     #: **直接多模态喂给问答模型**（实测 deepseek-flash 吃图）：所以这里传的是元数据，
     #: 真正的字节在 `_user_prompt` 里按 id 取 —— agent 仍然不碰文件系统。
     attachments: list[dict] = field(default_factory=list)
+    #: 读者此刻在阅读器里的位置与版面（已由 `deps.normalize_reader` 洗过）。
+    #: 为什么随**每一轮**都带、而不是开场问一次：读者的翻页与切面随时在变，
+    #: 一轮问答里"该标哪一面"要按**这一轮**他眼前看到的那一面算。
+    reader: ReaderState = field(default_factory=ReaderState)
 
 
 @dataclass
@@ -389,6 +393,9 @@ class AgentRuntime:
         deadline = float('inf')   # 不设总时限（2026-11-26：长程任务）；心跳照旧发，前端不会以为卡死
         deps = Deps(cfg=self.cfg, host=self.host, paper_id=req.paper_id,
                     registry=RefRegistry(req.paper_id))
+        # 读者的阅读状态（只影响"该标哪一面"，不进 system —— 每翻一页就变的东西
+        # 拼进 system 会把前缀缓存整段打掉）。`normalize_reader` 幂等：传 dict 也认。
+        deps.reader = normalize_reader(req.reader)
         # 图片张数写进 deps：`prompts.image_block` 把它渲染进**本轮备注**（拼在用户消息里）。
         # 为什么不能只写进 system：这一轮的张数每轮都可能变，混进 system 会把
         # "system + 全部历史"整段前缀缓存打掉（见 `prompts.build_instructions`）；

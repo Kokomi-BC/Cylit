@@ -430,3 +430,71 @@ def test_english_caption_lands_on_its_row(monkeypatch, capture) -> None:
     out = ann.create(PAPER, anchor="md:p7", text=EN_CAPTION, side="en")
     assert out["ok"] is True
     assert capture["block_id"] == "p007-06"
+
+
+
+# --------------------------------------------------------------------------
+# 落库的文字：公式那一处要顶成 LaTeX，不是留一个空位
+# --------------------------------------------------------------------------
+
+#: 页 5 那句（行内两条公式）
+INLINE_RAW = "我们的目标是在将 $x$ 量化为每个坐标 $b$ 比特的同时，尽量减少失真。"
+#: 同句被"从界面复制"后的样子：公式处是一个空位（用户实测的形状）
+INLINE_HOLE = "我们的目标是在将 量化为每个坐标 比特的同时，尽量减少失真。"
+
+#: 页 4 的句子 + 行显公式
+DISPLAY_RAW = r"压缩超过 $$D_{\text{mse}} \leq \frac{\sqrt{3}\pi}{2}$$ 就该换方案。"
+DISPLAY_HOLE = "压缩超过 就该换方案。"
+
+
+def test_inline_formula_is_stored_as_its_latex(monkeypatch, capture) -> None:
+    r"""落库的 `selected_text` 里要有 `$…$`（不是空位、不是 U+FFFC）。"""
+    payload = {"page": 5, "rows": [{"id": "p005-01", "original": "We quantize x ...",
+                                    "translation": INLINE_RAW}],
+               "original_md": "We quantize x ...", "translation_md": INLINE_RAW}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p5", text=INLINE_HOLE)
+    assert out["ok"] is True, out.get("error")
+    stored = capture["selected_text"]
+    assert ann.ATOM not in stored, "库里不能留方块占位符"
+    assert "$x$" in stored and "$b$" in stored
+    assert stored == INLINE_RAW, "与页面 / page_markdown_get 的口径要逐字一致"
+    assert "LaTeX" in (out.get("text_note") or "")
+
+
+def test_display_formula_keeps_its_double_dollars(monkeypatch, capture) -> None:
+    r"""行显公式存 `$$…$$`（前端 sliceWithLatex 同一口径）。"""
+    payload = {"page": 4, "rows": [{"id": "p004-04", "original": "Beyond ...",
+                                    "translation": DISPLAY_RAW}],
+               "original_md": "Beyond ...", "translation_md": DISPLAY_RAW}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p4", text=DISPLAY_HOLE)
+    assert out["ok"] is True, out.get("error")
+    stored = capture["selected_text"]
+    assert ann.ATOM not in stored
+    assert r"$$D_{\text{mse}} \leq \frac{\sqrt{3}\pi}{2}$$" in stored, stored
+
+
+def test_two_formulas_do_not_both_become_the_first_one(monkeypatch, capture) -> None:
+    r"""两条公式各顶各的 —— 以前都删成空串，页 7 图注的两个下标才会"一模一样"。"""
+    caption = ("**图 1：TURBOQUANT$_{\text{prod}}$ 与 TURBOQUANT$_{\text{mse}}$ "
+               "的内积误差分布。**")
+    payload = {"page": 7, "rows": [{"id": "p007-06", "original": caption,
+                                    "translation": caption}],
+               "original_md": caption, "translation_md": caption}
+    monkeypatch.setattr(ann, "_page_payloads", lambda pid: [payload])
+    out = ann.create(PAPER, anchor="md:p7", text="图 1：TURBOQUANT 与 TURBOQUANT 的内积误差分布。")
+    assert out["ok"] is True, out.get("error")
+    stored = capture["selected_text"]
+    assert "prod" in stored and "mse" in stored
+    assert stored.count("TURBOQUANT") == 2
+
+
+def test_atom_substitution_leaves_text_without_formulas_alone() -> None:
+    """没有公式的句子原样返回（这条快路不该被新逻辑碰到）。"""
+    assert ann._atoms_to_latex("一句普通中文", "一句普通中文") == "一句普通中文"
+
+
+def test_atom_substitution_never_borrows_a_formula_from_elsewhere() -> None:
+    r"""占位符比公式多时不乱顶（宁可留空，也不把别的公式塞进这句话）。"""
+    assert ann._atoms_to_latex(ann.ATOM + "尾巴", "这里没有公式") == "尾巴"

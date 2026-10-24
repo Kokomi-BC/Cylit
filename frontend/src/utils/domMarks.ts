@@ -242,8 +242,12 @@ const MOVED_TAG = 'data-hl-moved';
  *
  * `.katex-html` 自己就是那个外接框（宽 = 各单元之和，高 = 行盒），但它里面挂着编号 `.tag`
  * （`position: absolute; right: 0`）—— 盒子一收窄，编号就被拽到公式右端、压在公式上。
- * 所以**带编号时把 `.tag` 挪到 `.katex` 下**：`.katex` 是整行宽的块级盒子，
- * `right: 0` 仍然是"整行最右"，与论文里的位置一致，也不会被色带压住。
+ * 所以**带编号时把 `.tag` 挪到 `.katex` 下**：`right: 0` 于是贴 `.katex` 的右边缘
+ * （与"论文里编号在最右"一致）。
+ *
+ * 公式比一栏还宽时怎么让开那枚编号（**横向滚动，而不是把编号挤到下一行**）全在 CSS 里：
+ * `base.css` 的 `mark.hl.block` 那几条把 `.katex` 撑成内容宽、并给色带留出编号的位置。
+ * 这里**不测量、不写内联样式** —— 删掉高亮要能靠 CSS 自己复原。
  */
 function bandFormula(displayEl: HTMLElement): void {
   const html = displayEl.querySelector<HTMLElement>('.katex-html');
@@ -280,12 +284,21 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
       // 块级公式（`.katex-display`）：`mark` 自己得是块级，否则底色只有一条行高（见 `formulaOf`）；
       // 但底色**不画在这个块级外壳上**（那是整行宽），而是画在 `bandFormula` 收出来的
       // `.katex-html` 上（它的大小 = 公式外接框）。
-      if (el.classList?.contains('katex-display')) {
-        mark.classList.add('block');
-        bandFormula(el);
-      }
+      const display = !!el.classList?.contains('katex-display');
+      /* 行内公式：右内边距换成**等宽外边距**（`mark.hl` 的 `padding: 0 1px` 在 base.css，动不得）。
+         为什么：公式后面紧跟右括号/中文标点时，那 1px 内边距是**涂了色**的 —— 色块正好压在
+         括号的盒子上（实测 `mark.right` 与 "）" 的 `left` 完全相等，一点缝都不剩）。
+         换成 margin 之后排版**一个像素都不变**（后面那个字的位置照旧），但色块停在公式边界，
+         括号前面留出 1px 空白。左内边距留着：与前一段文字的高亮接得住。 */
+      if (!display) {
+        mark.style.paddingRight = '0px';
+        mark.style.marginRight = '1px';
+      } else mark.classList.add('block');
       el.parentNode.replaceChild(mark, el);
       mark.appendChild(el);
+      /* `bandFormula` 必须在**插进 DOM 之后**跑：`mark.hl.block .katex > .katex-html` 那条
+         `inline-block` 靠 mark 这个祖先命中 —— 插进去之前它还是块级整行宽。 */
+      if (display) bandFormula(el);
       wrapped = true;
       continue;
     }

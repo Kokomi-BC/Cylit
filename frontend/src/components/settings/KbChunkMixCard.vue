@@ -19,7 +19,9 @@
  * 但图例里照样列着、写 0 ——"没有公式 chunk"本身是诊断信息；
  * 全 0 时画一圈 --divider 的空环、中心写 0，不留空白。
  *
- * 高度按一排三块来定：环 84 + 图例五行（约 100），整块仍压在趋势块（≈232）以内。
+ * 高度按一排三块来定：环 84 + 图例五行（约 100），整块仍压在趋势块以内。
+ * 这块是三块里唯一没有右侧控件的：标题行只放图标 + 标题（一行），高度与旁边两块
+ * 由 .kb-charts 那条共用 min-height 拉齐，不靠自己凑。
  */
 import { computed } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -145,14 +147,22 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 </template>
 
 <style scoped>
-.ttl { font-size: calc(13.5px * var(--ts, 1)); }
+.ttl {
+  min-width: 0; flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13.5px * var(--ts, 1));
+}
 .mix { min-width: 0; display: flex; flex-direction: column; }
-/* 标题行在淡底之外（透明、无发丝线）；分隔交给下面那条淡色圆角底。 */
-.mix .card-head { flex-wrap: wrap; row-gap: 4px; border-bottom: 0; }
+/* 标题行在淡底之外（透明、无发丝线）；分隔交给下面那条淡色圆角底。
+   与旁边两块同一套规矩：**不折行** —— 这块右侧没有控件，标题行天然比它们矮一档，
+   同高由 .kb-charts 里那条共用 min-height 拉齐（见 KbIndexPanel）。 */
+.mix .card-head { flex-wrap: nowrap; column-gap: 8px; border-bottom: 0; }
 
 /* 图区（环 + 图例）整块装进淡色圆角卡：淡底只垫内容，不包标题。 */
+/* 内容在淡底里纵向居中：三块等高时这块会比内容高出一截，贴着顶会显得上面挤、下面空。 */
 .mix .card-body.tight {
   flex: 1 1 auto;
+  display: flex; flex-direction: column; justify-content: center;
   padding: 12px;
   background: var(--bg-sunken);
   border-radius: var(--r-sm);
@@ -161,13 +171,14 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 /* 三态与图表共用一块高度：切换时整块不跳。这个数取"有数据那态"的高度 ——
    环 84 与图例五行（5×16.2 + 4×3 ≈ 93）里图例更高，所以取 93。 */
 .state {
+  flex: 1 1 auto;
   display: flex; align-items: center; justify-content: center;
   min-height: 93px;
   font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint);
 }
 
 /* 环在左、图例在右；窄到放不下时图例整体落到下一行（不夹成两列挤字） */
-.mix-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.mix-wrap { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 
 /* 环直径 96 → 84（约 -12%）：整卡仍由趋势卡定高，但环不那么抢眼，图例行也还能并排 */
 .donut { position: relative; flex: none; width: 84px; height: 84px; }
@@ -188,7 +199,11 @@ const totalText = computed(() => (props.loading ? '—' : fmt(props.total)));
 .hub .tiny { line-height: 1.2; }
 
 .legend {
-  flex: 1 1 132px; min-width: 0;
+  /* 上限 340：单列时淡底有 600+ 宽，让图例一路拉满会把"正文"和"250"拽到屏幕两头，
+     中间空出一大片；封顶之后整块居中，"没有大片空白"这件事才算真的成立。
+     ⚠️ 封顶只能用 max-width，不能写成 flex-basis: 340px —— 换行是按 flex-basis 算的，
+     那样一行放不下（84 + 340 > 淡底内容宽）就直接把图例甩到环下面去。 */
+  flex: 1 1 132px; min-width: 0; max-width: 340px;
   display: flex; flex-direction: column; gap: 3px;
   margin: 0; padding: 0; list-style: none;
 }

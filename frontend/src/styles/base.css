@@ -193,15 +193,31 @@ html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); t
  *
  * 所以底色画在 `.katex-html` 上，并把它收成**贴着公式的 inline-block**（`domMarks.ts` 的
  * `bandFormula` 负责；它的宽 = 各"不可断行单元"之和、高 = 行盒 = 公式外接框）。
- * 带编号 `(1)`/`(2)` 的公式，`bandFormula` 会把 `.tag` 挪到 `.katex` 下 —— `.katex` 是整行宽
- * 的块级盒子，`right: 0` 仍是整行最右（与论文一致），也就不会被收窄的色带压住。 */
+ * 带编号 `(1)`/`(2)` 的公式，`bandFormula` 会把 `.tag` 挪到 `.katex` 下。 */
 mark.hl.block { display: block; background: none; padding: 0; }
+/* **公式比一栏还宽**时（用户口径 2026-12-07："修法不应该是支持横向滚动吗"）编号不能被挤到
+ * 下一行，公式得自己横向滚。两条规则合起来才有解：
+ *
+ * 1. `.katex` 撑到**内容宽**（`min-width:100%` 保住"放得下时"的整行宽与居中）。编号
+ *    `right: 0` 于是落在内容右缘 = 公式尾巴右侧，而不是栏宽右缘 —— 后者正是公式尾巴所在
+ *    （实测 p017-13 的 `(4)`：色带 natural 474px、栏宽 392px，编号就骑在公式上）。
+ * 2. 色带的左右**外边距**替那枚编号占位：`.tag` 是 `position: absolute`，不占流内空间，
+ *    `.katex` 的内容宽不会自己让开。左右**对称**所以"放得下"的公式一个像素都不动；
+ *    也不会像内边距那样把色块自己撑宽（底色只画在色带的 border-box 上）。
+ *    2em ≈ 39px 足够 `(4)`（≈20px）这种两三位数编号。
+ *
+ * 溢出部分交给 `.katex-display` 现成的 `overflow-x: auto`（见下面 `.md .katex-display`）。
+ * 代价：色带的名义宽度多了 4em —— 公式宽落在"栏宽 − 4em ~ 栏宽"这一段时本来放得下，
+ * 也会多出一条滚动条（几像素的空滚）。用这点余量换超宽公式里编号永不与公式重叠。 */
+mark.hl.block .katex-display > .katex { width: max-content; min-width: 100%; }
 /* ⚠️ 色带**不加左右内边距**：`display:inline-block` 的宽度 = 内容 + padding，给 1px 就可能让
  * "正好占满整栏"的公式溢出 2px —— `.katex-display` 上有 `overflow-x:auto`，于是多出一条
  * 横向滚动条（实测：色带 37px vs 公式块 47px，那 10px 就是滚动条）。色块贴住公式本身即可。 */
 mark.hl.block .katex > .katex-html {
   display: inline-block; background: var(--hl-bg);
   border-radius: var(--r-xs);
+  /* 留白只能用外边距（见上条）：内边距会撑宽色块自己 */
+  margin: 0 2em;
 }
 /* 下划线模式里的行间公式：公式不是文字，`text-decoration` 画不上去 —— 改成在色带底边压一条实线。
  * 用 `box-shadow` 而不是 `border-bottom`：前者**不进布局**，公式的行高与居中不因切换而变。 */

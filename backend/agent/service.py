@@ -17,6 +17,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.agent.config import AgentConfigError, limits_payload, load
+from backend.agent.deps import normalize_reader
 from backend.agent.host import HostClient
 from backend.agent.runtime import AgentRuntime, AskRequest, format_sse
 from backend.core.config import get_settings
@@ -160,6 +161,10 @@ def create_app() -> FastAPI:
             reasoning_effort=str(payload.get("reasoning_effort") or ""),
             selection=selection,
             attachments=list(attachments),
+            # 读者的阅读状态：**唯一解析口**是 `deps.normalize_reader`（主后端已按白名单
+            # 洗过一遍，这里再洗一次是幂等的 —— 直接打这个端口的调用方也能得救）。
+            # 非法字段丢弃、不报错：一个拼错的页签 id 不该让整轮问答 500。
+            reader=normalize_reader(payload.get("reader")),
         )
 
         async def _sse():

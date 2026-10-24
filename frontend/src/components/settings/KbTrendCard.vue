@@ -13,10 +13,13 @@
  * 画法沿用 settings/UsageChart.vue（项目没有图表库，也不该为一张卡引一个）：
  * 像素坐标系（ResizeObserver 实测容器宽 → viewBox 与 CSS 像素 1:1，描边不会被拉伸），
  * 手写 path，水平网格线用 --divider，坐标轴文字 11px。
- * 天数切换要重新请求（后端按窗口聚合）；累计/每日只是同一份数据换一对字段，不发请求。
+ * 天数切换要重新请求（后端按窗口聚合）；累计总量/每日新增只是同一份数据换一对字段，不发请求。
  *
- * 图例放在图表区顶行右侧、而不是标题行里：标题行已经有两枚 seg，
- * 窄屏时再塞一组图例会折成两行；而"图例跟曲线同处一个 150~170px 的图表区"更好读。
+ * 版式两条硬规矩（三块并排时每张只剩 316px，内容宽 288，容不得折行）：
+ * - 标题行只许一行：图标 + 标题 + 一枚时间窗 seg。标题窄了省略，不折行 ——
+ *   三块标题行同高，下面三条淡底才同高；
+ * - 图例与口径开关同处图表区顶行（左图例 / 右开关）：开关塞进标题行会挤掉标题，
+ *   而"这条线画的是累计总量还是每日新增"本来就属于图自己那行。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
@@ -42,6 +45,15 @@ interface TrendResp {
 type Scope = 'cum' | 'daily';
 
 const DAYS = [7, 30, 90];
+
+/**
+ * 「累计 / 每日」两词单独摆着有歧义：一边可能是"累计到这一天"，另一边可能是"这一天的累计"。
+ * 所以按钮文字改成人话，完整定义挂 aria-label 与 title（鼠标停一下就读到口径）。
+ * **只改说法，不动口径**：累计仍是 cum_chunks / cum_papers，每日仍是当天的 chunks / papers。
+ */
+const SCOPE_TIP = '口径开关：累计总量 = 截至该日的存量；每日新增 = 那一天新增的数量';
+const SCOPE_CUM_TIP = '累计总量：截至该日的存量，曲线只会涨、不会回落';
+const SCOPE_DAILY_TIP = '每日新增：那一天新增了多少（单日入库量，会回落）';
 
 const win = ref(30);
 const scope = ref<Scope>('cum');
@@ -266,7 +278,7 @@ const xTicks = computed(() => {
   }));
 });
 
-const ariaLabel = computed(() => `近 ${win.value} 天 chunk 与论文数量${scope.value === 'cum' ? '累计' : '每日新增'}趋势`);
+const ariaLabel = computed(() => `近 ${win.value} 天 chunk 与论文数量的${scope.value === 'cum' ? '累计总量' : '每日新增'}`);
 
 /* ---------------------------- hover 读数 ---------------------------- */
 
@@ -313,15 +325,13 @@ const tipX = computed(() => {
   <section class="trend" :style="{ '--ch': H + 'px' }">
     <div class="card-head">
       <AppIcon name="insight" :size="15" /><span class="ttl">索引数据增长趋势</span>
-      <span class="spacer"></span>
-      <div class="seg days" role="group" aria-label="统计窗口">
-        <button v-for="d in DAYS" :key="d" type="button" :class="{ active: win === d }" @click="setWin(d)">
-          {{ d }} 天
-        </button>
-      </div>
-      <div class="seg scope" role="group" aria-label="曲线口径">
-        <button type="button" :class="{ active: scope === 'cum' }" @click="scope = 'cum'">累计</button>
-        <button type="button" :class="{ active: scope === 'daily' }" @click="scope = 'daily'">每日</button>
+      <div class="ctl">
+        <div class="seg days" role="group" aria-label="统计窗口" title="统计窗口：最近 7 / 30 / 90 天">
+          <button
+            v-for="d in DAYS" :key="d" type="button" :class="{ active: win === d }"
+            :aria-pressed="win === d" @click="setWin(d)"
+          >{{ d }} 天</button>
+        </div>
       </div>
     </div>
 
@@ -344,6 +354,16 @@ const tipX = computed(() => {
         <div class="plot-head">
           <span class="lg"><i class="lg-dot chunk"></i>chunk 数</span>
           <span class="lg"><i class="lg-dot paper"></i>论文数</span>
+          <div class="seg scope" role="group" aria-label="曲线口径" :title="SCOPE_TIP">
+            <button
+              type="button" :class="{ active: scope === 'cum' }" :aria-pressed="scope === 'cum'"
+              :title="SCOPE_CUM_TIP" :aria-label="SCOPE_CUM_TIP" @click="scope = 'cum'"
+            >累计总量</button>
+            <button
+              type="button" :class="{ active: scope === 'daily' }" :aria-pressed="scope === 'daily'"
+              :title="SCOPE_DAILY_TIP" :aria-label="SCOPE_DAILY_TIP" @click="scope = 'daily'"
+            >每日新增</button>
+          </div>
         </div>
 
         <div class="chart" ref="box" @mousemove="onMove" @mouseleave="onLeave">
@@ -395,29 +415,37 @@ const tipX = computed(() => {
 </template>
 
 <style scoped>
-/* 标题行（原卡头）：标题 + 两枚 seg。窄屏允许折行 —— 不折就会把整行推出整块（横向溢出）。
+/* 标题行（原卡头）**只许一行**：左边图标 + 标题，右边控件靠 .ctl 的 margin-left: auto 贴右。
+   一行是"三块等高"的前提 —— 一旦折行，标题行就比旁边那块高一行，下面三条淡底也一条高一条低。
+   标题在窄卡里省略（全名不丢，全文就在眼皮上），绝不折行；控件保持原尺寸不被压扁。
    两枚 seg 比全站默认小一档，行高才不会被 32px 的胶囊顶高。 */
 .trend { min-width: 0; display: flex; flex-direction: column; }
 /* 标题行在淡底**之外**：透明、不描边、不留发丝线 —— 分隔交给下面那条淡色圆角底。 */
-.trend .card-head { flex-wrap: wrap; row-gap: 6px; border-bottom: 0; }
-.ttl { font-size: calc(13.5px * var(--ts, 1)); }
-.days, .scope { flex: none; height: 24px; }
-.days button, .scope button { height: 18px; padding: 0 9px; font-size: calc(11.5px * var(--ts, 1)); }
-.days button:focus-visible, .scope button:focus-visible { outline: none; box-shadow: var(--ring); }
+.trend .card-head { flex-wrap: nowrap; column-gap: 8px; border-bottom: 0; }
+.ttl {
+  min-width: 0; flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13.5px * var(--ts, 1));
+}
+.ctl { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+.days { flex: none; height: 24px; }
+.days button { height: 18px; padding: 0 8px; font-size: calc(11.5px * var(--ts, 1)); }
+.days button:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* 三态与图表共用一块固定高度：切换状态时整块不跳。
-   min-height 由 svg 的实际高度推出来（--ch 是 H，另加图例行 18 + 口径行两行 31），
-   于是加载 / 失败 / 空 / 有数据四态的卡高完全一致，收图高也不会留下一截空白。 */
+   min-height 由 svg 的实际高度推出来（--ch 是 H，另加图例行 26 + 口径行两行 31），
+   于是加载 / 失败 / 空 / 有数据四态的卡高完全一致，收图高也不会留下一截空白。
+   加数 57 是"图例行 26（22 + 下边距 4）+ 口径行 30.8"，图例行那枚口径开关长到 22px 之后从 49 涨上来的。 */
 .state {
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: calc(var(--ch, 98px) + 49px);
+  min-height: calc(var(--ch, 98px) + 57px);
   font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint);
 }
 .state .err {
   max-width: 42ch; text-align: center;
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger);
 }
-.plot-empty { min-height: calc(var(--ch, 98px) + 49px); justify-content: center; padding: 12px 16px; }
+.plot-empty { min-height: calc(var(--ch, 98px) + 57px); justify-content: center; padding: 12px 16px; }
 
 /* 图区才是那条淡色圆角卡（--bg-sunken + --r-sm，内距 12）：设置页的淡底只垫内容，
    标题压在它上面。flex: 1 让三块并排时淡底等高，不会一块高一款矮。 */
@@ -428,12 +456,22 @@ const tipX = computed(() => {
   border-radius: var(--r-sm);
 }
 
-/* 图表区总高 ≈ 图例 14 + svg 118 + 口径一行，稳在 130~150 一档 */
+/* 图例行：左边图例、右边口径开关（margin-left: auto 贴右），一行排到底不折行。
+   为什么口径开关在这儿而不是标题行：三块并排时每张只剩 316px（内容宽 288），
+   标题 108 + 时间窗 140 + 口径 133 + 图标间距 39 ≈ 420 —— 硬塞进标题行只能靠压标题，
+   所以把"这条线画的是哪个口径"放回图自己那一行（它描述的正是这张图）。
+   行高定死 22（里面那枚开关 22），四态共用的常量才不会随它跳。
+   wrap 只是兜底：界面字号拉到最大时图例 + 开关会超出一行，宁可换行也不许横向溢出
+   （换行会让这行变高，但三块的高度由网格 stretch 拉齐，不会一块高一块低）。 */
 .plot-head {
-  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
-  gap: 4px 14px; min-height: 14px; margin: 2px 4px;
+  display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap;
+  gap: 2px 14px; min-height: 22px; margin: 0 4px 4px;
 }
+.plot-head .scope { margin-left: auto; flex: none; height: 22px; }
+.plot-head .scope button { height: 16px; padding: 0 7px; font-size: calc(11px * var(--ts, 1)); }
+.plot-head .scope button:focus-visible { outline: none; box-shadow: var(--ring); }
 .lg {
+  flex: none;
   display: inline-flex; align-items: center; gap: 5px;
   font-size: calc(11px * var(--ts, 1)); line-height: 1; color: var(--text-faint);
   white-space: nowrap;
@@ -486,10 +524,11 @@ const tipX = computed(() => {
 .note { margin: 0 4px; min-height: calc(30.8px * var(--ts, 1)); line-height: 1.4; text-wrap: pretty; }
 
 @media (max-width: 860px) {
-  .days button, .scope button { padding: 0 8px; font-size: calc(11px * var(--ts, 1)); }
+  .days button { padding: 0 7px; font-size: calc(11px * var(--ts, 1)); }
+  .plot-head .scope button { padding: 0 6px; }
 }
 @media (max-width: 560px) {
-  .trend .card-head { gap: 6px; }
+  .trend .card-head { column-gap: 6px; }
   .plot-head { gap: 10px; }
 }
 </style>

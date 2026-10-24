@@ -69,10 +69,11 @@ def test_builtin_skills_materialized_with_descriptions(tmp_path: Path) -> None:
     cfg = _settings(tmp_path)
     manifest = skills_store.ensure_builtin_skills(cfg)
     assert "answer-paper" in manifest, "仓库里的自带技能没有被物化进技能库"
+    assert "reader-state" in manifest, "阅读状态技能没被物化（reader_state 的手册）"
 
     skills = skills_store.list_skills(cfg)
     # 自带技能是**逐个数**的：改名/拆分时这条会立刻红，提醒同步 list 与文档
-    assert len(skills) == 12
+    assert len(skills) == 13
     assert all(item["builtin"] and item["enabled"] for item in skills)
     assert all(item["description"] for item in skills), "自带技能的 description 应当都解析得出来"
     assert all(item["chars"] > 0 for item in skills)

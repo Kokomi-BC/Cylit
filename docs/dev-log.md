@@ -11601,3 +11601,23 @@ highlight h-2878c1c24700e4fb · p020-00 · selected_text="Yao 极小极大原理
 `pytest tests/` **1665 passed / 131 skipped**（基线 1656 + 新增 9 例）、`vue-tsc` 0 error、`npm run build` 通过。
 
 **两个有意选择**：① 定位到「同一页的别一行」时报 400 而不是自动把锚点搬过去（自动搬会悄悄改用户笔记的位置）；② 修好的那条 `anchor_hash` 随 side/偏移重算，属 `update_highlight` 既有行为。
+
+### 122. 第一百二十二轮：检索去重与 `side`、公式层两张网、高亮拉回 LaTeX、阅读状态技能、技能文案与版式收口
+
+用户这轮报了 6 条（自己复跑出来的）+ 三条 UI：高亮吞公式、公式压编号、技能页默认展开/悬浮方角、技能文案要像「指导模型怎么读」、检索重复与 `side`、公式缺条与重复。逐条落地：
+
+- **检索层**（`paper_search`）：同源重复的真因**比报告更隐蔽** —— 去重键里含展示片段，而同一块的英文命中带 `content_preview`、中文那条带自己的 `content`，两串不逐字相同 ⇒ 同一块拿到**两个不同 ref**，只按 ref 去重根本不生效。改成**按块身份**去重（paper+chunk_type+落点+行覆盖），多取 `min(k*3,20)` 条原始命中再去重截断；另一面记 `also_sides`。真实数据：`returned 4 / pages [20,3,3,18]`（3 个位置）→ `refs 1-4 不重复 / pages 20,3,18,4`。
+- **`side` 字段**：每条命中带 `en|zh|formula`，新参数默认 `both`、闭集校验（拼错直接报错不再静默降级）、进缓存分槽；过滤在去重之后、截断之前，并认 `also_sides`。
+- **公式层**：`formula_get()` 47 条只回 40 ⇒ 选「把缺的页写进回执」（`missing_pages: [4,5,…]`），理由是把上限从 40 挪到 60 只是把悬崖往后移（数学论文 `include_inline=True` 可上千条）；重复陈述按**归一化 LaTeX** 去重（`\tag/\label`、`\left/\right`、间距宏、空白、`\mathrm→\text`、末尾标点），**只合并跨页 display**（行内页码本身就是信息），留首次出现的页、其余进 `also_on`。47 → 39，你给的三例里两个精确合并、第三个（第 3 页写法多了 `(Q_{\text{mse}})`）**故意不合并**。
+- **高亮吞行内公式**：前端全程没问题（`sliceWithLatex` 落库就是 `$…$`），真凶是后端 `annotations.py` 的 `replace(ATOM, "")`（agent 建高亮那条路把公式换成空串）。改成 `_atoms_to_latex()`（换回那段公式的原始 Markdown，行内 `$…$`、行显 `$$…$$`），偏移不动、**不回填历史 31 条**。`realign_highlights` 里同类的一处（正文改过→高亮挪位）我也一并修了。
+- **高亮压编号**：上一版把编号挤到下一行，用户否掉，改成**横向滚动** —— 删掉全部内联改写（零内联样式，删高亮纯 CSS 复原），`base.css` 在 `mark.hl.block` 族里加 `.katex { width:max-content; min-width:100% }` 让编号落到内容右缘、溢出交给现成的 `overflow-x:auto`，色带给对称 `margin: 0 2em` 给编号占位。实测 1200×1100：`scrollWidth/clientWidth = 537/392`、`scrollLeft 0→145`、`tag.left ≥ band.right` 两个极点都 +11.33、编号仍 `absolute` 且与色带 top 差 0.00；放得下那组逐像素不变（`scrollWidth == clientWidth == 572`）。已知代价：色带名义宽多 4em，公式宽落在「栏宽−4em ~ 栏宽」那段会多一条几像素的滚动条。
+- **阅读状态技能**（新）：`reader_state()` 工具 + `ReaderState`/`normalize_reader()` 唯一解析口 + `/agent/ask` 的 `reader` 白名单透传 + `skills/reader-state/SKILL.md`；前端 `ReaderView` 算 `readerState`（page/visible_pages/page_side/order/view/side_tab，`loading||fatal` 返回 `{}`）→ `ReaderChat` 只在非空时并入 body。**`available=false` 时全字段 null 且 hint 明说「不要猜当前页」**；`page_side="both"` 时 `note_side=null` 并提示按文字归属分面。CDP 实测 `page 17→10`、`view rows→pdf`、`page_side zh→en` 都跟着变；空态 body 里**没有 `reader` 键**。
+- **13 份技能 description 重写**：从「文件里有什么」改成「给模型的指令」——读什么/怎么读/允许写什么/边界在哪（例：`read-text` 写清「一次不超过 5 页、不连续的页一次给完、只读不改、连续复述不逐块罗列」；`annotate-text` 写清「默认标译文面、锚点不许自己编、删除与改笔记须用户明确要求」）。全部单行、`parse_frontmatter` 与 PyYAML 双路一致，长度 68–87 字符；并核实**消费侧不截断**（列表只做客户端过滤、`runtime.py:268` 无裁剪）。
+- **设置页**：技能**默认全部展开**（`expandedSkill` 单值 → `collapsedSkills: Set`，13/13 可见，点名字仍可收起）；`.skill-row` 与 **`ModelPanel` 的 `.prov-row`** 补 `border-radius: var(--r-sm)`（真凶手是后者，`0px → 14px`；`ProviderDrawer` 的 `.rel-row` 本来就有 14px，未动）——写在行本身而不是只写 `:hover`。
+- **索引管理三张图表卡**：标题行统一成一行（时间窗留标题行、口径开关与耗时摘要下移到图区顶行——316px 卡宽放不下 420px 内容，硬塞只能截标题），三块 `top/height` 全等、标题行 42px、`.card-body` 顶边一致；文案歧义解决：**累计总量**（截至该日存量）/ **每日新增**（当天增量），带 `aria-label` + `title` + `aria-pressed`，数据口径未动。
+- **探针**：`create_highlight` 的新校验让探针用假文本建高亮变成 400 并**中断整轮**（只剩 95 项）。改探针而不是放宽生产校验：从 `GET /papers/{id}/translations` 取真实译文、挑一段连续汉字（天然不含 `$…$` 与 Markdown 记号）截 12 字、**只传 `selected_text` 不传偏移**让后端自己定位；笔记页探针同样注入真实引文，并把清理断言扩到「高亮/笔记/批注都为 0」。顺带删掉一条**陈旧断言**（缩略显示 `[data-notes-thumb]` 已在 eb6801b4 被移除），它以前被 400 挡住没显形。
+
+**验证（我自己跑的）**：全量 `pytest tests/` **1717 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；探针 **122 项 / 112 通过 / 10 失败**（比上轮少 2 条：陈旧断言删掉、假文本那步改真实引文；剩下 10 条是阅读器右键菜单组、侧栏页签 URL、对话空态、胶囊托盘、新对话文字、PDF 划词、胶囊图标这些既有红）；
+真浏览器截图确认：`#agent` 技能 **13** 条全展开且文案是新版、`#kb` 三卡齐平。
+
+**仍待下一轮**：① 探针那 10 条长期红要逐条定性（产品侧修 / 探针侧改，别继续当基线）；② `page_side` 在双语行视图是否该报 `both`（现在报用户选的那一面，后端 `both` 会把 `note_side` 设为 null，反而弱化信息）；③ `view` 的 markdown 分支未在 UI 实跑；④ 高亮配色两套并存（9 条色名 + 22 条 hex）尚未统一。
