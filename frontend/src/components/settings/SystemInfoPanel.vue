@@ -324,14 +324,14 @@ const healthCheckedAt = ref('');
     </div>
 
     <!-- 四张卡：2×2 排布（窄屏一列）。每张都是同一套 .card + .card-head + .card-body -->
-    <div class="si-cards">
+    <div class="si-blocks">
       <!-- ① 运行环境 -->
-      <section class="card si-card">
-        <header class="card-head">
+      <section class="si-block">
+        <div class="si-head">
           <AppIcon name="server" :size="15" />
           <h3 class="si-title">运行环境</h3>
-        </header>
-        <div class="card-body">
+        </div>
+        <div class="si-body">
           <p class="si-empty" v-if="!system">后端未返回运行环境信息</p>
           <dl class="kv" v-else>
             <div class="kv-row"><dt>操作系统</dt>
@@ -346,14 +346,14 @@ const healthCheckedAt = ref('');
       </section>
 
       <!-- ② 存储空间 -->
-      <section class="card si-card">
-        <header class="card-head">
+      <section class="si-block">
+        <div class="si-head">
           <AppIcon name="layers" :size="15" />
           <h3 class="si-title">存储空间</h3>
           <span class="spacer"></span>
           <span class="disk-pct tnum" :class="diskTone" v-if="disk">{{ diskPct.toFixed(1) }}%</span>
-        </header>
-        <div class="card-body">
+        </div>
+        <div class="si-body">
           <p class="si-empty" v-if="!disk">后端未返回磁盘信息</p>
           <template v-else>
             <div class="disk-head">
@@ -369,7 +369,12 @@ const healthCheckedAt = ref('');
             >
               <span class="bar-fill" :class="diskTone" :style="{ width: diskPct + '%' }"></span>
             </div>
-            <p class="disk-line">可用 {{ formatBytes(disk.free_bytes) }} · data 目录 {{ formatBytes(disk.data_dir_bytes) }}<template v-if="dbBytes !== null"> · MySQL {{ formatBytes(dbBytes) }}</template></p>
+            <dl class="kv kv-grow">
+              <div class="kv-row"><dt>可用</dt><dd>{{ formatBytes(disk.free_bytes) }}</dd></div>
+              <div class="kv-row"><dt>data 目录</dt><dd>{{ formatBytes(disk.data_dir_bytes) }}</dd></div>
+              <div class="kv-row" v-if="dbBytes !== null"><dt>MySQL 库</dt><dd>{{ formatBytes(dbBytes) }}</dd></div>
+              <div class="kv-row"><dt>占用率</dt><dd>{{ diskPct.toFixed(1) }}%（{{ diskPct >= 70 ? (diskPct > 90 ? '偏高' : '注意') : '正常' }}）</dd></div>
+            </dl>
             <div class="path-line" v-if="disk.path">
               <span class="path-k">卷</span>
               <span class="mono path-v" :title="disk.path">{{ disk.path }}</span>
@@ -382,12 +387,12 @@ const healthCheckedAt = ref('');
       </section>
 
       <!-- ③ 服务与任务池 -->
-      <section class="card si-card">
-        <header class="card-head">
+      <section class="si-block">
+        <div class="si-head">
           <AppIcon name="gauge" :size="15" />
           <h3 class="si-title">服务与任务池</h3>
-        </header>
-        <div class="card-body">
+        </div>
+        <div class="si-body">
           <p class="si-empty" v-if="healthError">健康检查失败：{{ healthError }}</p>
           <p class="si-empty" v-else-if="!health">检测中…</p>
           <ul class="srv" v-else>
@@ -419,8 +424,9 @@ const healthCheckedAt = ref('');
         </div>
       </section>
 
-      <!-- ④ 索引存储：复用索引管理那张卡，外壳对齐到同一套 .card（头/体在原组件里覆盖成卡片版式） -->
-      <section class="card si-card si-card--kb">
+      <!-- ④ 索引存储：组件自己就是「标题在块外 + 淡底内容」的写法（与本页其余三块同一套）；
+           卡头的「校验数据」按钮由 actions=false 关掉。 -->
+      <section class="si-block si-block--kb">
         <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
                        :checked-at="checkedAt" :actions="false" @reconcile="reconcileNow" />
       </section>
@@ -429,26 +435,29 @@ const healthCheckedAt = ref('');
 </template>
 
 <style scoped>
-/* 只读面板：一条工具行 + 2×2 的卡片。卡片用全站同一套 .card / .card-head / .card-body，
-   不另立一套「标题在块外」的写法（用户口径 2026-12：系统信息用多卡片布局）。 */
+/* 只读面板：一条工具行 + 两列四块。块的写法与「Cyli 偏好」「索引管理」完全相同 ——
+   标题在块外（不铺底、不描边），淡色圆角底只垫内容（--bg-sunken）。这里不引入 .card。 */
 .sysinfo { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 .si-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 30px; }
 .si-bar-note { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 .si-bar-time { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 卡片网格：两列等宽、按行顶对齐；窄屏一列。
-   .card + .card 的上边距在这里清零 —— 间距只由 gap 给，否则同排两张卡会差 12px。 */
-.si-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
-.si-cards > .card + .card { margin-top: 0; }
-.si-card { min-width: 0; }
-.si-card .card-head { gap: 8px; }
-.si-card .card-head :deep(svg) { color: var(--text-faint); }
-.si-title { margin: 0; font-size: calc(13px * var(--ts, 1)); font-weight: 650; line-height: 1.35; color: var(--text); }
-.si-empty { margin: 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
+/* 两列网格：行内两块**等高**（stretch），同一行的下边缘因此对齐；窄屏一列 */
+.si-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.si-block { min-width: 0; display: flex; flex-direction: column; }
+.si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-faint); }
+.si-title { margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em; line-height: 1.35; color: var(--text); }
+/* 内容底：淡色圆角矩形，吃掉块内剩余高度（等高靠它） */
+.si-body {
+  flex: 1 1 auto; padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.si-empty { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
 
-/* ① 运行环境：定宽标签 + 值，标签右对齐成一条竖线 */
+/* 键值：定宽标签 + 值（两块共用同一节奏，行数接近 → 高度天然接近） */
 .kv { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin: 0; }
+.kv-grow { flex: 1 1 auto; align-content: start; }
 .kv-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: baseline; gap: 10px; min-width: 0; }
 .kv dt { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
 .kv dd {
@@ -456,39 +465,36 @@ const healthCheckedAt = ref('');
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* ② 存储：用量行 + 占用条 + 细目 + 路径（可复制） */
+/* 存储：用量行 + 占用条（轨道抬一档，否则同色消失） */
 .disk-head { display: flex; align-items: baseline; gap: 8px; }
 .disk-usage { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .disk-usage b { font-weight: 600; color: var(--text); }
 .disk-pct { font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--accent); }
 .disk-pct.warn { color: var(--warn); }
 .disk-pct.danger { color: var(--danger); }
-.bar { height: 6px; margin: 8px 0; border-radius: var(--r-pill); background: var(--bg-sunken); overflow: hidden; }
+.bar { height: 6px; border-radius: var(--r-pill); background: var(--bg-elev); overflow: hidden; }
 .bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur) var(--ease); }
 .bar-fill.warn { background: var(--warn); }
 .bar-fill.danger { background: var(--danger); }
-.disk-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.7; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.path-line { display: flex; align-items: center; gap: 6px; margin-top: 6px; min-width: 0; }
+
+/* 路径行：贴在块底当脚注，长路径可换行 + 复制 */
+.path-line { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: auto; }
 .path-k { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 .path-v { min-width: 0; overflow-wrap: anywhere; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim); }
 
-/* ③ 服务与任务池：一行一个服务，发丝线分隔 */
-.srv { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+/* 服务与任务池：一行一条，发丝线分隔 */
+.srv { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; flex: 1 1 auto; }
 .srv-row { display: flex; align-items: center; gap: 10px; min-height: 30px; min-width: 0; }
 .srv-row + .srv-row { border-top: 1px solid var(--divider); }
 .srv-name { flex: none; width: 68px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); }
 .srv-detail { flex: 1 1 auto; min-width: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 .srv-row .badge { flex: none; }
 
-/* ④ 索引存储：复用组件自带的 head/body，把它覆盖成同一张卡的版式 */
-.si-card--kb { overflow: hidden; }
-.si-card--kb :deep(.storage-head) {
-  margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--divider);
-}
-.si-card--kb :deep(.ttl) { font-size: calc(13px * var(--ts, 1)); font-weight: 650; }
-.si-card--kb :deep(.storage-body) { padding: 16px; border-radius: 0; background: transparent; }
+/* 索引存储：复用组件自带的「标题 + 淡底」结构，只让它撑满块高 */
+.si-block--kb :deep(.storage) { flex: 1 1 auto; display: flex; flex-direction: column; }
+.si-block--kb :deep(.storage-body) { flex: 1 1 auto; }
 
 @media (max-width: 900px) {
-  .si-cards { grid-template-columns: minmax(0, 1fr); }
+  .si-blocks { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
