@@ -11708,3 +11708,66 @@ Transition；`v-if/v-else-if` 多兄弟分支会编译成 keyed Fragment，分�
 
 **下一轮**：① `formula_get` 分页的真正天花板在宿主三处（要不要开）；② 高亮浓度仍是 40%，红/橙/靛/紫比 class 时代浓，
 要不要降到 30% 或按色分档；③ `web_search` 的 `site` 偶发错年份仍未复现，维持「以 URL 为准」。
+
+### 125. 第一百二十五轮：色板整体换多巴胺八个、色点与正文同色；formula_get 分页打通到宿主；reader_state 提示语去矛盾
+
+**① 色板（用户口径：所有菜单的色板都换成多巴胺那八个；历史色名可以删；落库只存 hex）**
+
+`HIGHLIGHT_PALETTE` 只剩 8 个（strawberry / tangerine / lemon / mint / lagoon / vega / grape / sakura），
+历史那九个色名**从色板删干净**（没有留成注释、没有兼容条目）。库里存量高亮本来就是 hex，一个字节不用改。
+
+但「删名字」不等于「用户说黄的就当没听见」——旧名与中文色词另走一张 `RETIRED_COLOR_ALIASES` 翻译表
+（`yellow`→lemon、`黄`→lemon、`pink`→sakura…），**只翻译、不落名字**，不进色板也不进菜单；
+认不出的写法退回色板第一个并打一条 warning（带原始取值）。这样 agent 侧三件事同时成立：
+菜单里点得到的颜色 = 宿主自动分配能挑到的颜色 = 它说出口能被认下来的颜色。
+
+前端 `HL_PALETTE` 与后端逐条一致（`tests/test_highlight_color.py` 直接读 TS 字面量比 dict），
+新增 `HL_SWATCHES`（顺序即菜单顺序）/ `HL_SWATCH_LABELS`（中文色名）/ `paletteNameOf`（只认这 8 条、
+大小写不敏感）。5 个菜单（划词选单、右键、换色菜单、笔记侧栏、AI 解释浮层）与笔记页色点全部数据驱动：
+每颗行内 `--hl-sw: <hex>66`，CSS 只留一条 `.hl-swatch`（垫 `var(--bg)` 再叠 40%）——
+**base.css 里那 9 条按色名的规则删干净**，以后加色只改一处列表。
+
+**② 色点与正文「同色」这件事，原来是三处不同的错**（用户报：笔记浮窗、弹出菜单、右键上的颜色比正文深）
+
+1. 笔记浮窗那枚色点对 hex 直接 `{ background: <hex> }` —— **全不透明**，而正文 mark 是 `<hex>66`；
+2. 「当前是这个色」的环判定写的是「存的 hex === 色名」，库里全是 hex → **永远不亮**；
+3. 命名色点虽然也是 40%，但压在右键菜单那块**玻璃**上（`linear-gradient(rgba(255,255,255,.8))` +
+   `backdrop-filter blur(48px) saturate(2.6)`），而 mark 压在阅读面 `--bg` 上 —— 同 alpha、不同底，观感偏深。
+
+现在色点 = 垫 `var(--bg)` + 叠 `<hex>66`，与 mark 的 `0.4·hex + 0.6·--bg` 是**同一条合成链**；
+`--bg` 只在 tokens/themes 里定义（组件层零覆盖），所以深色皮肤两边同时跟着变，等式不破。
+「当前色」改成 `paletteNameOf(hex) === id`，认不出的自定义 hex 落在「自定义」那颗上。
+顺带：`NotesView` 笔记流那枚色点也是不透明实色（同一个毛病），一并改到同一套。
+
+实际数据：生产库 31 条高亮按 8 色重刷（去重约束：同一色不连排两次），落库 hex 被服务层统一转小写，
+结果 `31 条 / 8 种色`：湖蓝 7、樱花粉 7、薄荷绿 5、电光蓝 4、橘子橙 4、草莓红 2、柠檬黄 1、葡萄紫 1。
+
+**③ formula_get 分页打通到宿主（用户拍板：该后端解决）**
+
+以前天花板在 `project.FORMULA_LIMIT = 40`（且没有 offset），工具只能用「按 missing_pages 逐页补」绕，
+行内几千条那种补不完。四层一次打通：
+  `project.formulas` 加 `offset`，回执加 `offset/limit/next_offset/has_more`，`truncated` 收紧成 `has_more`
+  （`include_inline=False` 过滤掉的行内不再算截断），`missing_pages` 改按「窗口之后」算；
+  路由加 `offset`/`limit`（夹 [1,500]）；`HostClient.formulas` 透传；
+  工具层改成按 offset 窗口取数（每窗 200、最多 5 窗 = 1000 条），删掉 `_backfill_formulas`。
+老宿主靠「回执里有没有 next_offset / has_more 这两个键」判定：都没有 → 只发那一个请求、退回逐页提示、不抛异常。
+
+生产实测（turboquant 那篇，共 327 条含 285 条行内）：`limit=200` → **returned 42、next_offset None、
+has_more False、missing_pages []**，一个请求就拿全了；`limit=40` → next_offset 40、missing_pages [20]；
+`offset=40` → 剩 2 条、next_offset None。
+
+**④ `reader_state` 的视图提示语自相矛盾（用户报）**
+
+原句是「rows = 正文行，高亮才画得出来；markdown / pdf 面上的高亮在阅读视图里看不到」—— 读者正看 pdf 时，
+前半句说「当前视图 pdf」、后半句说「pdf 面上的高亮看不到」，读起来像 bug 描述串进了提示语。
+改成按**锚点**说清各自在哪看得到：高亮请锚正文行（rows 面哪个视图都画得出来）；`md:pN` 只在 Markdown 视图可见，
+`pdf:pN` 只在原 PDF 页图视图可见。并加了一条回归用例：三种视图各断言一遍，且不许再出现那句话。
+
+**探针**：149 → 155 项（上一轮加的 6 条动效接线断言），本轮把按色名写死的选择器与断言改成数据驱动
+（`.hl-swatch` 第一颗、颜色只要求是 hex），并把「PDF 刷新后等文字层」的预算从 5s 提到 ~24s ——
+机器上有别的构建/测试在跑时 5s 不够，实测整轮 15 条红全是从这一条倒下来的（`afterSpans=0` 之后侧栏、
+笔记、定位都读不到东西）。这类「一红倒一片」要先看是不是环境被拖慢，而不是逐条去改断言。
+
+**验证（我自己跑的）**：`pytest tests/` → **1785 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；
+探针 **155 / 155**；生产 `5983b50`、`git status` 干净、`/health` 200、`ReaderView-BFJsNEp1.js` sha256
+本地/服务器/HTTP 三处一致（`1b7cbd690ecea97280fcf184`）。
