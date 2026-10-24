@@ -12138,3 +12138,28 @@ PUT  parse_vision_dpi=9999 → VALIDATION_ERROR「读页 dpi 要在 72–600 之
         OCR 语言 16 个选项、模型版本 2 个选项（都来自后端）
   改读页 dpi 200 → 180 → 状态变「有未保存的改动」→ 点保存 → 重载后仍是 180（落库成功）
 ```
+
+### 135. 第一百三十五轮：导入弹窗的初值来自设置（默认值可调也可清空）
+
+用户口径（2026-12）：「加上，然后可以调节默认值」—— 上一轮只在设置页加了键，
+导入弹窗自己还写着硬编码的 false / true / 空串，两处各说一套。
+
+- `LibraryView` 打开导入弹窗时多拉一次 `GET /parse/config`，把六个键灌进 `importDefaults`：
+  强制 OCR / 识别公式 / 识别表格 / 页码范围（在线解析），图片带图注 / 深度图片搜索（本地解析）。
+  `resetImportForm()` 用这份默认值复位 —— 换文件、导入成功、重新打开弹窗都跟随设置页。
+  接口不可用时静默退回与后端一致的官方默认值，不拦导入。
+- 弹窗里两处各补一句来源说明（初值来自「设置 → 在线服务 → 解析参数 / 本地解析」），
+  避免被当成这一篇的固定参数。
+- **修一个自己挖的坑**：`parse_prefs.save()` 原来按"值非空才写"处理，于是页码范围设过一次
+  `1-5` 就再也回不到"全篇"。改成判"键在不在"：显式空串 = 清空（回到全篇）。
+
+实测（CDP + 直接打接口）：
+
+```
+PUT /parse/config {is_ocr:true, page_ranges:"1-5", figure_caption:true}
+打开导入弹窗 → 本地：checkbox = [立即解析 true, 图片含图注 true, 深度找图 false]
+              切在线 → [强制 OCR true, 公式 true, 表格 true]，页码范围 = "1-5"
+              两处来源说明都在
+PUT /parse/config {page_ranges:""} → 返回 "mineru_page_ranges": ""（能清回去了）
+恢复默认：is_ocr=false / page_ranges="" / figure_caption=false 后重新读仍是默认值
+```

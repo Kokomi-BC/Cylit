@@ -14,7 +14,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, assetUrl } from '@/api/client';
-import type { MineruConfig, MineruModelVersion, Paper, ParseEngine, TaskInfo } from '@/api/types';
+import type {
+  MineruConfig, MineruModelVersion, Paper, ParseConfig, ParseEngine, TaskInfo,
+} from '@/api/types';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 import Switch from '@/components/Switch.vue';
@@ -587,6 +589,34 @@ const mineruLanguageOptions = ref<Array<{ value: string; label: string }>>([
   { value: 'ch', label: '中文' },
 ]);
 
+/**
+ * 设置页存的「导入默认值」（`GET /parse/config`）：弹窗里这些控件的**初值**。
+ * 拿不到就用与后端一致的官方默认值 —— 一个可选接口不该把导入流程卡住。
+ */
+const importDefaults = reactive({
+  mineru_is_ocr: MINERU_DEFAULTS.is_ocr,
+  mineru_enable_formula: MINERU_DEFAULTS.enable_formula,
+  mineru_enable_table: MINERU_DEFAULTS.enable_table,
+  mineru_page_ranges: MINERU_DEFAULTS.page_ranges,
+  figure_caption: false,
+  deep_figure_search: false,
+});
+
+/** 拉一次设置页的默认值（打开弹窗时调，失败静默）。 */
+async function loadParseDefaults() {
+  try {
+    const cfg = await api.get<ParseConfig>('/parse/config');
+    importDefaults.mineru_is_ocr = cfg?.mineru_is_ocr === true;
+    importDefaults.mineru_enable_formula = cfg?.mineru_enable_formula !== false;
+    importDefaults.mineru_enable_table = cfg?.mineru_enable_table !== false;
+    importDefaults.mineru_page_ranges = String(cfg?.mineru_page_ranges ?? '');
+    importDefaults.figure_caption = cfg?.parse_figure_caption === true;
+    importDefaults.deep_figure_search = cfg?.parse_deep_figure_search === true;
+  } catch {
+    // 静默：接口没上时按内置默认（= 后端官方默认）走
+  }
+}
+
 /** 选了 MinerU 但没配 token：引擎选择下方给一句**可执行**的提示（去哪里配、要做什么）。 */
 const mineruNeedsToken = computed(
   () => importForm.parse_engine === 'mineru' && !mineruHasToken.value,
@@ -633,15 +663,16 @@ function resetImportForm() {
   for (const k of UPLOAD_FIELDS) importForm[k] = '';
   importForm.file = null;
   importForm.auto_parse = true;
-  importForm.figure_caption = false;
-  importForm.deep_figure_search = false;
+  // 插图两个开关的初值现在是设置页存的那一份（在线服务 → 本地解析），不是硬编码关
+  importForm.figure_caption = importDefaults.figure_caption;
+  importForm.deep_figure_search = importDefaults.deep_figure_search;
   importForm.parse_engine = mineruDefaultEngine.value;
   importForm.mineru_model_version = mineruDefaultModel.value;
   importForm.mineru_language = mineruDefaultLanguage.value;
-  importForm.mineru_is_ocr = MINERU_DEFAULTS.is_ocr;
-  importForm.mineru_enable_formula = MINERU_DEFAULTS.enable_formula;
-  importForm.mineru_enable_table = MINERU_DEFAULTS.enable_table;
-  importForm.mineru_page_ranges = MINERU_DEFAULTS.page_ranges;
+  importForm.mineru_is_ocr = importDefaults.mineru_is_ocr;
+  importForm.mineru_enable_formula = importDefaults.mineru_enable_formula;
+  importForm.mineru_enable_table = importDefaults.mineru_enable_table;
+  importForm.mineru_page_ranges = importDefaults.mineru_page_ranges;
   if (fileInput.value) fileInput.value.value = '';   // 同一个文件连选两次也要能触发 change
 }
 
@@ -671,6 +702,8 @@ function openImport() {
   resetImportForm();
   importOpen.value = true;
   void loadMineruConfig().then(resetImportForm);
+  // 默认值与引擎配置是两个接口：分开拉，回来各自复位一次（都是本机请求，几十毫秒）
+  void loadParseDefaults().then(resetImportForm);
 }
 
 function onFileChange(ev: Event) {
@@ -1503,7 +1536,10 @@ async function submitEdit() {
            它们天然是"每篇不同"的：扫描件才要开强制 OCR、没有公式的论文可以关掉公式识别省时间、
            超长文档用页码范围分段。模型与语言的初值来自设置页，这里可以只对**这一篇**改。 -->
       <div class="online-params" v-if="importForm.parse_engine === 'mineru'">
-        <div class="op-head">在线解析参数<span class="op-hint">（只对这篇论文生效）</span></div>
+        <div class="op-head">
+          在线解析参数
+          <span class="op-hint">（只对这篇论文生效；初值来自「设置 → 在线服务 → 解析参数」）</span>
+        </div>
         <div class="op-grid">
           <label class="field">模型
             <select v-model="importForm.mineru_model_version" data-mineru-model>
@@ -1550,6 +1586,7 @@ async function submitEdit() {
       <!-- 下面三个开关**只在本地解析时出现**（用户口径 2026-09-28）：在线解析的版面、插图、
            图注全由 MinerU 决定，这三个开关在那里没有对应物，摆着只是噪声。 -->
       <template v-if="importForm.parse_engine === 'local'">
+        <p class="op-note">插图两项的初值来自「设置 → 在线服务 → 本地解析」，可对这篇单独改。</p>
         <Switch v-model="importForm.auto_parse">
           <span class="opt"><span class="opt-text">导入后立即解析</span></span>
         </Switch>
@@ -1922,6 +1959,8 @@ async function submitEdit() {
 }
 .op-head { font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .op-hint { font-weight: 400; color: var(--text-faint); }
+/* 一行说明：初值来自设置页，免得被当成这篇的固定参数 */
+.op-note { margin: 2px 0 6px; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 .op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .op-grid .field { margin-top: 0; }
 /* 参数区里的开关行比外面那些挨得紧一点（区块本身已经把范围框出来了） */

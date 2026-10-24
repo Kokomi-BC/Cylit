@@ -129,8 +129,11 @@ def save(payload: dict | None) -> dict[str, Any]:
         if key in payload and payload[key] is not None and payload[key] != "":
             applied[key] = as_bool(payload[key], field=_LABELS[key])
 
-    if payload.get("mineru_page_ranges") not in (None, ""):
-        applied["mineru_page_ranges"] = norm_page_ranges(payload["mineru_page_ranges"])
+    # 页码范围**允许显式清空**（空串 = 全篇）。所以这里判的是"键在不在"，不是"值非空"：
+    # 否则设过一次 1-5 就再也回不到全篇（用户口径 2026-12：默认值要能调回去）。
+    if "mineru_page_ranges" in payload and payload["mineru_page_ranges"] is not None:
+        raw = str(payload["mineru_page_ranges"]).strip()
+        applied["mineru_page_ranges"] = norm_page_ranges(raw) if raw else ""
 
     if payload.get("parse_vision_dpi") not in (None, ""):
         try:
