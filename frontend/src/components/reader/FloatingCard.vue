@@ -731,11 +731,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointerup="onResizeUp"
         @pointercancel="onResizeUp"
       >
-        <!-- 45° 的一段弧，**两端是圆头**（`stroke-linecap: round`）—— CSS 边框只能画 90° 直角端点，
-             所以从"整圈描边 + 扇形裁剪"换成一条 SVG path（用户口径 2026-11-28 十轮）。
+        <!-- **整 90° 的一段弧**（贴着卡片圆角那一段自然弧长），两端是圆头（`stroke-linecap: round`）——
+             以前只画了 40°，长度约 15px，比顶部那枚 34px 的药丸短一大截（用户口径 2026-12：
+             两处拖动条要一样长；以笔记卡为准）。
              `vector-effect="non-scaling-stroke"`：描边宽度永远按 CSS 像素算，不随 viewBox 缩放。 -->
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M91.7 69.4 A46 46 0 0 1 69.4 91.7" vector-effect="non-scaling-stroke" />
+          <path d="M96 50 A46 46 0 0 1 50 96" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
       <div
@@ -749,7 +750,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointercancel="onResizeUp"
       >
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M30.6 91.7 A46 46 0 0 1 8.3 69.4" vector-effect="non-scaling-stroke" />
+          <!-- 左下角是镜像：x 关于 50 翻面，sweep 方向跟着反过来，弧才是"贴着左下角" -->
+          <path d="M4 50 A46 46 0 0 0 50 96" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
     </div>
@@ -816,6 +818,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
      谁赢只看样式注入顺序 —— 那等于把"笔记卡圆角悄悄回到 12px"做成一个偶发 bug。
      默认值改为写在使用处：var(--fc-radius, 12px)，两头都不必跟谁抢优先级。 */
   --fc-handle: color-mix(in srgb, var(--text) 22%, transparent);
+  /* 底角弧离卡片边缘的距离。**提到外壳上**是为了让顶部那枚药丸也能读到同一个数
+     （药丸与弧要走同一个长度公式，见 .fc-grab-pill）。 */
+  --fc-gap: 5px;
 }
 .float-card {
   /* 吃满外壳：拉过高度外壳才有确定高度，卡片跟着长；没拉过时由内容撑 */
@@ -844,7 +849,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
    只动 width 与背景色，**不动 transform**：本项目踩过「缩放 + 半透明描边 → 边缘反复重采样 → 闪」的坑，
    这一条同样不引入合成层位移。220ms 带轻微过冲，松手自然回落（状态一撤就是反向过渡）。 */
 .fc-grab-pill {
-  width: 34px; height: 4px; border-radius: 2px;
+  /* 长度与底角那两道弧**同一个数**（用户口径 2026-12：顶部拖动条要和左右下角的拖动条一样长）。
+     弧的半径 = 圆角 + gap、跨 90° → 弧长 = (圆角 + gap) × 2.1739 × π/4 ≈ (圆角 + gap) × 1.571。
+     笔记卡圆角 16 + gap 5 → 33px（改之前药丸写死 34、弧只有 40° ≈ 15px，一条顶两道）；
+     圆角一改两边一起变，不会再分叉。 */
+  width: calc((var(--fc-radius, 12px) + var(--fc-gap, 5px)) * 1.571);
+  height: 4px; border-radius: 2px;
   background: color-mix(in srgb, var(--text) 19%, transparent);
   /* 变长走 **transform: scaleX**，不补间 width（与对话浮窗同一套，2026-12-03）：
      width 是布局属性，每帧重排这条药丸；它就压在正在被拖的合成层上，一帧重排就吃掉
@@ -998,9 +1008,9 @@ watchEffect(applyShellDom, { flush: 'sync' });
    只描外两条边，不填充、不带底色/阴影。
    ⚠️ 颜色不走 --border-strong / --line：token 表里**没有 --line**，写了等于整条声明被丢掉。 */
 .fc-resize {
-  --fc-gap: 5px;   /* 用户口径：7px 还嫌远，再收到 5px（弧贴着卡片外侧）。
-                      ⚠️ 对话浮窗那两枚把手不读这个变量（坐标由 ReaderView 的
-                      FLOAT_GRIP_GAP 在 JS 里算），改这里必须同步改那个常量。 */
+  /* --fc-gap 现在挂在 .float-shell 上（顶部那枚药丸要按同一个数算长度，见 .fc-grab-pill）。
+     ⚠️ 对话浮窗那两枚把手不读这个变量（坐标由 ReaderView 的 FLOAT_GRIP_GAP 在 JS 里算），
+     改它必须同步改那个常量。 */
   /* 外沿离卡片 `--fc-gap`；弧半径**不再**跟着 gap 涨（否则圆角越大那道弧越夸张）——
      半径恒等于卡片自己的圆角，弧是贴着圆角往外平移出来的平行弧。 */
   position: absolute; bottom: calc(-1 * var(--fc-gap));
