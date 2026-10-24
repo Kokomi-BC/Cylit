@@ -46,15 +46,16 @@ const routes: RouteRecordRaw[] = [
     path: '/settings', name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
     meta: { title: '设置' },
-    // 设置页的「常规参数」整区已拆（检索参数并进「索引管理」，其余四项直接删除），
-    // 老深链 / 老标签里的 /settings#general 落到「索引管理」，不给一屏空白。
-    // 写法与上面 /models → /settings#models 同一思路，差别只在**锚点落在同一路径上**：
-    // 那种情形用不了 route-level `redirect`（重定向目标还是自己，会自指死循环，
-    // 而 vue-router 的 redirect 函数类型也不接受 "undefined = 不改写"），
-    // 所以改用进入前的守卫：hash 是旧分区名就地换成新锚点，其余原样放行。
-    beforeEnter: (to) => (to.hash === '#general'
-      ? { path: '/settings', hash: '#kb', replace: true }
-      : true),
+    // 两个已撤掉的分区各给一条去处，老深链 / 老标签因此不会落到一屏空白：
+    // · `#general`（原「常规参数」，检索参数并进「索引管理」）→ 同一路径换锚点；
+    // · `#history`（原「搜索记录」，2026-12 整区撤掉，清空历史归知识库页的搜索下拉）→ `/knowledge`。
+    // 同路径换锚点用不了 route-level `redirect`（重定向目标还是自己，会自指死循环，
+    // 而 vue-router 的 redirect 函数类型也不接受 "undefined = 不改写"），所以走进入前的守卫。
+    beforeEnter: (to) => {
+      if (to.hash === '#general') return { path: '/settings', hash: '#kb', replace: true };
+      if (to.hash === '#history') return { path: '/knowledge', replace: true };
+      return true;
+    },
   },
   { path: '/:pathMatch(.*)*', redirect: '/home' },
 ];

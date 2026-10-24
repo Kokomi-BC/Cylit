@@ -1,11 +1,13 @@
 /** 知识库「搜索记录」：**只存本机浏览器**（localStorage），不进数据库、不上传。
  *
  * 口径（用户口径）："像浏览器那样的搜索记录" —— 最近搜过什么、点一下就重搜；
- * 管理入口在「设置 → 搜索记录」（列表 / 删单条 / 清空 / 改保留条数）。
+ * 管理入口在**知识库页的搜索框下拉**（点一条重搜 / 单条删除 / 清空记录）——
+ * 设置页原来那一区 2026-12 撤掉了（用户口径：清空历史归知识库，别在设置里再摊一份）。
  *
  * 几个刻意的选择：
  * - **同词去重置顶**：同一个词反复搜只留最新一条（浏览器的行为），否则列表会被一个词刷满；
- * - **上限可调**（默认 50）：超出的从尾部丢，避免本地存储无限长；
+ * - **固定只留最近 20 条**（用户口径 2026-12，原来那档"可调上限"一起撤掉）：
+ *   超出的从尾部丢；老口径存下来的更长的列表，读取时就被裁到 20 条并落盘；
  * - **读写全部 try/catch**：隐私模式 / 配额用尽时 localStorage 会直接抛异常，
  *   记录失败不该让整个页面报错（浏览器的记录也不是关键数据）；
  * - **坏数据当没有**：JSON 解析失败或结构不对就当空列表，不弹错、不阻塞页面。
@@ -31,13 +33,13 @@ export interface SearchEntry {
 }
 
 const KEY = 'papermind.kb.searchHistory.v1';
-const LIMIT_KEY = 'papermind.kb.searchHistoryLimit.v1';
+/** 老版本「保留条数」的键：口径改成固定 20 条后没人读了，读到就清掉（见文件末 `dropLegacyLimitKey`）。 */
+const LEGACY_LIMIT_KEY = 'papermind.kb.searchHistoryLimit.v1';
 /** 同页/其它标签页之间同步用的自定义事件名（`storage` 事件只在**其它**标签页触发）。 */
 const EVENT = 'papermind:search-history';
 
-export const DEFAULT_LIMIT = 50;
-export const LIMIT_CHOICES = [10, 20, 50, 100, 200];
-const MAX_LIMIT = 500;
+/** 本机最多留多少条：固定值，不再给用户调（设置页那一档已随「搜索记录」一区一起撤掉）。 */
+export const HISTORY_LIMIT = 20;
 
 const MODES: SearchMode[] = ['search', 'qa', 'browse'];
 const SCOPES: SearchScope[] = ['all', 'cross', 'paper'];
@@ -83,7 +85,7 @@ function isEntry(v: unknown): v is SearchEntry {
     && (e.hits === null || typeof e.hits === 'number');
 }
 
-/** 读全部记录（新的在前）。坏数据 / 无法访问时返回空列表。 */
+/** 读全部记录（新的在前，最多 `HISTORY_LIMIT` 条）。坏数据 / 无法访问时返回空列表。 */
 export function loadHistory(): SearchEntry[] {
   const raw = readRaw();
   if (!raw) return [];
@@ -94,7 +96,11 @@ export function loadHistory(): SearchEntry[] {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  return parsed.filter(isEntry);
+  const all = parsed.filter(isEntry);
+  const kept = all.slice(0, HISTORY_LIMIT);
+  // 老口径能调到 200 条：读到这一份时就地裁到 20，别让 localStorage 一直挂着长列表
+  if (kept.length < all.length) writeRaw(JSON.stringify(kept));
+  return kept;
 }
 
 function normalize(q: string): string {
@@ -125,7 +131,7 @@ export function addSearch(input: {
     hits: input.hits ?? null,
   };
   const rest = loadHistory().filter((e) => !sameQuery(e.q, q));
-  const next = [entry, ...rest].slice(0, historyLimit());
+  const next = [entry, ...rest].slice(0, HISTORY_LIMIT);
   writeRaw(JSON.stringify(next));
   return next;
 }
@@ -137,47 +143,16 @@ export function removeSearch(target: SearchEntry): SearchEntry[] {
   return next;
 }
 
-/** 清空全部记录（保留上限设置）。 */
+/** 清空全部记录。 */
 export function clearHistory(): void {
   writeRaw(null);
-}
-
-/** 当前保留上限（默认 50；非法值回退默认）。 */
-export function historyLimit(): number {
-  const s = storage();
-  if (!s) return DEFAULT_LIMIT;
-  let raw: string | null = null;
-  try {
-    raw = s.getItem(LIMIT_KEY);
-  } catch {
-    return DEFAULT_LIMIT;
-  }
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(Math.floor(n), MAX_LIMIT);
-}
-
-/** 改保留上限：顺手把超出的旧记录裁掉。 */
-export function setHistoryLimit(n: number): SearchEntry[] {
-  const value = Math.max(1, Math.min(Math.floor(Number(n) || DEFAULT_LIMIT), MAX_LIMIT));
-  const s = storage();
-  if (s) {
-    try {
-      s.setItem(LIMIT_KEY, String(value));
-    } catch {
-      /* 同上：写不进去就用默认值 */
-    }
-  }
-  const next = loadHistory().slice(0, value);
-  writeRaw(JSON.stringify(next));
-  return next;
 }
 
 /** 订阅变化（本页写入 + 其它标签页写入），返回取消订阅函数。 */
 export function subscribeHistory(cb: () => void): () => void {
   const onLocal = () => cb();
   const onStorage = (ev: StorageEvent) => {
-    if (ev.key === null || ev.key === KEY || ev.key === LIMIT_KEY) cb();
+    if (ev.key === null || ev.key === KEY) cb();
   };
   window.addEventListener(EVENT, onLocal);
   window.addEventListener('storage', onStorage);
@@ -186,3 +161,15 @@ export function subscribeHistory(cb: () => void): () => void {
     window.removeEventListener('storage', onStorage);
   };
 }
+
+/** 清掉老版本那个"保留条数"键（模块加载时跑一次；清不掉也不影响任何行为）。 */
+function dropLegacyLimitKey(): void {
+  const s = storage();
+  if (!s) return;
+  try {
+    s.removeItem(LEGACY_LIMIT_KEY);
+  } catch {
+    /* 隐私模式 / 配额：读不到 localStorage 时本来就没有这个键 */
+  }
+}
+dropLegacyLimitKey();

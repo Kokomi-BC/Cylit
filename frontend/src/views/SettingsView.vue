@@ -12,11 +12,12 @@
  *   页面上原来那个独立的「密钥」折叠区已删除）、
  *   3. Cyli 偏好（原「论文问答」：对话风格 / 回复长度 / 已接入的技能；模型本体在「模型」区）。
  * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
- *   5. 任务队列（后台任务进度；2026-12 从「服务与系统」挪过来 —— 它改的是索引数据本身）、
- *   6. 搜索记录（本地搜索历史）。
- * · **服务与系统**：7. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
- *   8. 系统信息（`SystemInfoPanel`：运行环境 / 存储空间 / 服务健康 / 索引存储状态）。
- * · **独立入口**：9. 回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）——
+ *   5. 任务队列（后台任务进度；2026-12 从「服务与系统」挪过来 —— 它改的是索引数据本身）。
+ *   原来第 6 项「搜索记录」2026-12 **整区撤掉**（用户口径：清空历史归知识库页的搜索下拉，
+ *   本机固定只留最近 20 条）—— 设置里不再单列一区。
+ * · **服务与系统**：6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
+ *   7. 系统信息（`SystemInfoPanel`：运行环境 / 存储空间 / 服务健康 / 索引存储状态）。
+ * · **独立入口**：8. 回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）——
  *   它是"对论文数据做不可逆操作"的兜底，与索引管理的日常入口不是一路，所以单列一组、不与
  *   内容与索引同组（用户口径 2026-12）。
  *
@@ -46,7 +47,6 @@ import AppIcon from '@/components/AppIcon.vue';
 import KbIndexPanel from '@/components/settings/KbIndexPanel.vue';
 import CyliPrefsPanel from '@/components/settings/CyliPrefsPanel.vue';
 import ModelPanel from '@/components/settings/ModelPanel.vue';
-import SearchHistoryPanel from '@/components/settings/SearchHistoryPanel.vue';
 import AppearancePanel from '@/components/settings/AppearancePanel.vue';
 import TaskQueuePanel from '@/components/settings/TaskQueuePanel.vue';
 import SystemInfoPanel from '@/components/settings/SystemInfoPanel.vue';
@@ -73,7 +73,6 @@ const SECTIONS = [
   // 任务队列归「内容与索引」：队列里跑的是导入 / 解析 / 建索引，改的是索引数据本身，
   // 归到「服务与系统」会让人以为它只管服务健康。只挪分类，页内排版与筛选一概不动。
   { id: 'tasks', label: '任务队列', icon: 'task', group: '内容与索引', desc: '看导入、解析等后台任务的进度' },
-  { id: 'history', label: '搜索记录', icon: 'search', group: '内容与索引', desc: '看本机保存的搜索记录，可清空' },
   { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: '接在线解析服务，填密钥并验证' },
   // 系统信息保持独立：四张卡（运行环境 / 存储空间 / 服务健康 / 索引存储状态）是同一份只读
   // 健康视角，且与「在线解析」的凭证、参数毫无交集 —— 塞进同一页只会让两边都得滚。
@@ -92,7 +91,6 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
   models: ['模型', '密钥', '提供方', '厂商', '连接', '思考'],
   agent: ['技能', '偏好', '对话风格', '风格', '回复长度', '联网搜索', '限额', '上限', '问答'],
   kb: ['索引', '向量', '分块', '检索', '论文'],
-  history: ['记录', '历史', '搜索'],
   trash: ['回收站', '恢复', '删除'],
   mineru: ['token', '解析', '在线'],
   tasks: ['任务', '重试', '进度', '队列'],
@@ -620,17 +618,12 @@ onMounted(async () => {
         <TaskQueuePanel />
       </section>
 
-      <!-- ⑦ 搜索记录（本机 localStorage） -->
-      <section id="history" class="sec" v-if="active === 'history'">
-        <SearchHistoryPanel />
-      </section>
-
-      <!-- ⑧ 回收站：原独立页 /trash，老链接与老标签由路由重定向落到这一区 -->
+      <!-- ⑦ 回收站：原独立页 /trash，老链接与老标签由路由重定向落到这一区 -->
       <section id="trash" class="sec" v-if="active === 'trash'">
         <TrashPanel />
       </section>
 
-      <!-- ⑨ 系统信息（只读）：运行环境 / 存储空间 / 服务健康 / 索引存储状态，四张卡纵向排 -->
+      <!-- ⑧ 系统信息（只读）：运行环境 / 存储空间 / 服务健康 / 索引存储状态，四张卡纵向排 -->
       <section id="about" class="sec" v-if="active === 'about'">
         <SystemInfoPanel />
       </section>

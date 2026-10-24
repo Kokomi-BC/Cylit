@@ -19,7 +19,8 @@
  *   ② chunk 数量 / 内容类型 / 筛选条件 —— 弱化（小字、低对比）；
  *   ③ score / topK / reranker / 检索漏斗 —— 全在「检索详情」里，默认不出现。
  *
- * 搜索记录是浏览器式的（`utils/searchHistory`，本机 localStorage，管理入口在设置页 `#history`）。
+ * 搜索记录是浏览器式的（`utils/searchHistory`，本机 localStorage，固定留最近 20 条）：
+ * 管理入口就在搜索框的下拉里（点一条重搜 / 单条删 / 清空记录），设置页那一区 2026-12 已撤掉。
  */
 
 import { computed, nextTick, onMounted, onUnmounted, ref, toRefs, watch } from 'vue';
@@ -36,7 +37,7 @@ import { readerTarget } from '@/utils/navigation';
 import { latexToHtml, mdToHtml } from '@/composables/useMarkdown';
 import { searchMarksHtml } from '@/utils/searchMarks';
 import {
-  addSearch, clearHistory, loadHistory, removeSearch, subscribeHistory, type SearchEntry,
+  HISTORY_LIMIT, addSearch, clearHistory, loadHistory, removeSearch, subscribeHistory, type SearchEntry,
 } from '@/utils/searchHistory';
 import AppIcon from '@/components/AppIcon.vue';
 
@@ -937,7 +938,9 @@ onUnmounted(() => {
                 @mousedown.prevent.stop="dropHistory(e)"
               ><AppIcon name="close" :size="12" /></span>
             </button>
+            <!-- 页脚把"本机只留 20 条"写出来：设置页那一区撤掉之后，这里是唯一的说明处 -->
             <div class="hist-foot">
+              <span class="tiny faint nowrap">本机最多留 {{ HISTORY_LIMIT }} 条</span>
               <span class="spacer"></span>
               <button type="button" class="btn sm ghost" @mousedown.prevent="clearAllHistory">清空记录</button>
             </div>
@@ -1289,6 +1292,7 @@ onUnmounted(() => {
                 ><AppIcon name="close" :size="12" /></span>
               </button>
               <div class="hist-foot">
+                <span class="tiny faint nowrap">本机最多留 {{ HISTORY_LIMIT }} 条</span>
                 <span class="spacer"></span>
                 <button type="button" class="btn sm ghost" @mousedown.prevent="clearAllHistory">清空记录</button>
               </div>
