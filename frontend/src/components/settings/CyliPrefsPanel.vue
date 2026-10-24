@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
  * 设置页「Cyli 偏好」（原「论文问答」，2026-12 定名并与面板内部一起重做）：
- * **对话偏好**（风格预设 + 自定义指令 + 回复长度）与**技能能力**（已接入技能的列表）两块主内容，
- * 后面跟两张只动一处的小卡：运行上限、Cyli 解释。
+ * **对话偏好**（风格预设 + 回复长度）与**技能能力**（已接入技能的列表）两块主内容，
+ * 中间跟一张只动一处的小卡：运行上限。
  *
- * 版式（2026-12 重做）：一条头部（简介 + 恢复默认 / 保存）→ 上方三组**横向**并排
- * （对话偏好 / 运行上限 / Cyli 解释）→ 下方「技能能力」横跨整幅、单列纵向一行一个技能。
- * 为什么三组横排而技能竖排：三组各自只有 2–5 个短控件，竖着排三屏才轮到技能；
+ * 版式（2026-12 重做）：一条头部（简介 + 恢复默认 / 保存）→ 上方**横向**并排
+ * （对话偏好 / 运行上限；风格选「自定义」时右侧再多一列「自定义指令」）→
+ * 下方「技能能力」横跨整幅、单列纵向一行一个技能。
+ * 为什么横排而技能竖排：两三个短控件横着排一排就够，竖着排三屏才轮到技能；
  * 技能是十几行等结构的清单，只有整幅单列才读得下来（多列网格会让每行都窄到放不下操作）。
  * 为什么不再给每组每行套白卡：十来个技能叠出十几层白盒，底色与投影把"分组"这件事
  * 表达成了一堆盒子；分组靠标题 + 留白 + 一条发丝线就够了。
@@ -23,8 +24,9 @@
  *    以前这里是手写的大白话，等于前端替后端吹能力，还比真实行为乐观。
  * ③ **运行上限**：五个数字就地可改（PUT /agent/limits）。它们是 agent 服务的**启动参数**，
  *    所以保存后只提示"重启 agent 服务后生效"，**绝不自动重启、也不写"立即生效"**。
- * ④ **Cyli 解释**：划词解释 / 插图解释单独一套模型与思考强度（explain_model_config_id /
- *    explain_reasoning_effort，空串 = 跟随默认）。解释是"读一段、讲清楚"，负载与侧栏对话不同。
+ * ④ **解释已并入对话**：划词解释由对话本身承担，设置里不再单独配模型与思考强度 ——
+ *    原来那组 UI（两个下拉）已撤。后端 explain_model_config_id / explain_reasoning_effort
+ *    两个键、backend/services/agent/explain.py、POST /agent/ask 的 mode=explain 都保留。
  * ⑤ **联网搜索**：web-search 那一行右侧的齿轮，在该行下方展开内嵌设置。密钥落盘在服务端
  *    data/secrets/websearch.key，接口只回掩码 —— 输入框**留空 = 本次不改**，清除是单独动作 + 二次确认。
  *
@@ -39,7 +41,6 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { api, downloadBlob } from '@/api/client';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
-import { BUILTIN_EFFORTS } from '@/utils/reasoning';
 import type {
   AgentLimits, AgentLimitsPatch, AgentSkill, AgentSkillsPayload, AgentSkillsUploadResult,
   SettingsPayload, WebsearchConfig, WebsearchVerifyResult,
@@ -118,11 +119,6 @@ async function loadPrefs(): Promise<void> {
   try {
     const data = await api.get<SettingsPayload>('/settings');
     fillPrefs(data);
-    // 顺手回填 Cyli 解释那两个下拉 —— 同一份 GET /settings，不必再打一次
-    const values = data?.values ?? {};
-    explainModel.value = String(values.explain_model_config_id ?? '');
-    explainEffort.value = String(values.explain_reasoning_effort ?? '');
-    explainBase.value = { model: explainModel.value, effort: explainEffort.value };
   } catch (err) {
     reportError(err, '取 Cyli 偏好失败');
   }
@@ -494,91 +490,15 @@ async function saveLimits(): Promise<void> {
   }
 }
 
-/* ---------------------------- ④ Cyli 解释的模型 ----------------------------
-   划词解释 / 插图解释是"一锤子买卖"（读一段、讲清楚），与侧栏对话的负载不同：
-   对话要长上下文与工具编排，解释可以更便宜更快。所以这里让它单独一份。
-   两个值都存 setting 表（空串 = 跟随默认），读取点在 backend/services/agent/explain.py，
-   消费方是 POST /agent/ask 的 mode=explain（只在调用方没显式指定模型时才套用）。 */
+/* ---------------------------- 一个「保存」管两组 ----------------------------
+   每组只在**自己改过**的时候才发请求（未改动不发，是这一页的铁律）。
+   explain 那一组已随「解释并入对话」撤掉，这一页只剩对话偏好与运行上限。 */
 
-interface ExplainModelOption {
-  id: string;
-  name?: string;
-  model_name?: string | null;
-  provider?: string;
-  enabled?: boolean;
-  is_default?: boolean;
-  parameters?: { reasoning_effort?: string; reasoning_levels?: unknown };
-}
-
-/* 内置思考档与对话页、模型表单共用 utils/reasoning 那一份；模型自带 reasoning_levels 时以它为准。 */
-
-const explainModels = ref<ExplainModelOption[]>([]);
-const explainModel = ref('');
-const explainEffort = ref('');
-const explainBusy = ref(false);
-/** 解释配置的基线（读到的那一份）：三组合并成一个「保存」之后，没有基线就只能永远可点 */
-const explainBase = ref({ model: '', effort: '' });
-const explainDirty = computed(() => (
-  explainModel.value !== explainBase.value.model || explainEffort.value !== explainBase.value.effort
-));
-
-/* 一个「保存」管三组：每组只在**自己改过**的时候才发请求（未改动不发，是这一页的铁律）。 */
-const anyBusy = computed(() => prefBusy.value || limitsBusy.value || explainBusy.value);
-const anyDirty = computed(() => prefDirty.value || limitsDirty.value || explainDirty.value);
+const anyBusy = computed(() => prefBusy.value || limitsBusy.value);
+const anyDirty = computed(() => prefDirty.value || limitsDirty.value);
 async function saveAll(): Promise<void> {
   if (prefDirty.value) await savePrefs();
   if (limitsDirty.value) await saveLimits();
-  if (explainDirty.value) await saveExplain();
-}
-
-const explainModelChoice = computed(() =>
-  explainModels.value.find((m) => m.id === explainModel.value) ?? null);
-const explainEffortOptions = computed<string[]>(() => {
-  const raw = explainModelChoice.value?.parameters?.reasoning_levels;
-  if (Array.isArray(raw) && raw.length) {
-    const list = raw
-      .map((item) => (typeof item === 'string' ? item : String((item as { value?: unknown })?.value ?? '')))
-      .filter(Boolean);
-    if (list.length) return list;
-  }
-  return [...BUILTIN_EFFORTS];
-});
-/** 该模型自己配的那一档：选「跟随模型」时它说了算，界面上要写出来 */
-const explainModelDefaultEffort = computed(() => {
-  const v = explainModelChoice.value?.parameters?.reasoning_effort;
-  return typeof v === 'string' ? v : '';
-});
-/** "跟随模型（档位）"那一条的文字：括号里是该模型自己的档，没配就只写"跟随模型" */
-const explainFollowLabel = computed(() => (explainModelDefaultEffort.value
-  ? '跟随模型（' + explainModelDefaultEffort.value + '）'
-  : '跟随模型'));
-
-async function loadExplainModels(): Promise<void> {
-  try {
-    const data = await api.get<{ items?: ExplainModelOption[] }>('/models', { model_type: 'agent' });
-    explainModels.value = (data?.items ?? []).filter((m) => m.enabled !== false);
-  } catch {
-    explainModels.value = [];            // 模型目录读不到就只留"跟随对话默认"，不报错
-  }
-}
-
-async function saveExplain(): Promise<void> {
-  explainBusy.value = true;
-  try {
-    const data = await api.put<SettingsPayload>('/settings', {
-      explain_model_config_id: explainModel.value,
-      explain_reasoning_effort: explainEffort.value,
-    });
-    const values = data?.values ?? {};
-    explainModel.value = String(values.explain_model_config_id ?? explainModel.value);
-    explainEffort.value = String(values.explain_reasoning_effort ?? explainEffort.value);
-    explainBase.value = { model: explainModel.value, effort: explainEffort.value };
-    toast('已保存：之后的 Cyli 解释按这份配置运行', 'ok', 2600);
-  } catch (err) {
-    toast((err as Error)?.message ?? String(err), 'error', 5000);
-  } finally {
-    explainBusy.value = false;
-  }
 }
 
 /* ---------------------------- ⑤ 联网搜索（web-search 技能） ----------------------------
@@ -729,7 +649,6 @@ async function reloadAll(): Promise<void> {
 onMounted(() => {
   void reloadAll();
   void loadPrefs();
-  void loadExplainModels();
 });
 </script>
 
@@ -743,7 +662,7 @@ onMounted(() => {
       <!-- 两枚动作同组：窄屏时整组一起贴右，不会被 flex-wrap 拆成"一个在上一行右侧、
            一个掉到下一行左侧"（那样看着像两个不相干的按钮）。 -->
       <div class="head-actions">
-        <!-- 一个头部管三组：每组各摆一枚「保存」等于让人在三处做同一个动作；
+        <!-- 一个头部管两组：每组各摆一枚「保存」等于让人在两处做同一个动作；
              合并后只在**某组真的改过**时才发请求（saveAll 里逐组判断 dirty）。 -->
         <button class="btn ghost sm" :disabled="anyBusy || !prefCanReset" data-pref-reset
                 @click="resetPrefs">
@@ -756,10 +675,12 @@ onMounted(() => {
       </div>
     </header>
 
-    <!-- 上方设置区：三组横向并排（对话偏好 / 运行上限 / Cyli 解释）。
+    <!-- 上方设置区：**两列**并排（对话偏好 / 运行上限）；风格选「自定义」时右侧多出
+         第三列「自定义指令」（轨道数由 .pref-top.with-custom 决定，见样式）。
          够宽才三列，窄了先两列再单列 —— 断点看**容器**宽度，不看窗口宽度（见样式）。 -->
-    <section class="pref-top">
-      <!-- ① 对话偏好 -->
+    <section class="pref-top" :class="{ 'with-custom': pref.preset === 'custom' }">
+      <!-- ① 对话偏好：只剩两件短控件（风格预设 / 回复长度）。
+           自定义指令框已从这个组里挪出去独立成组（见 ③）。 -->
       <div class="pref-group">
         <header class="group-head">
           <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
@@ -773,14 +694,6 @@ onMounted(() => {
               </option>
             </select>
           </label>
-          <!-- 只有"自定义"才展开：选走别的预设时它必须收起，否则用户会以为框里那段还在生效 -->
-          <div class="ctl" v-if="pref.preset === 'custom'">
-            <label class="ctl-label" for="pref-style-custom">风格指令</label>
-            <textarea id="pref-style-custom" v-model="pref.style" rows="3" class="style-input"
-                      :maxlength="PREF_STYLE_MAX" data-pref-style-custom
-                      placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
-            <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
-          </div>
           <div class="ctl">
             <span class="ctl-label">回复长度</span>
             <div class="seg" role="radiogroup" aria-label="回复长度" data-pref-length>
@@ -813,28 +726,21 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ③ Cyli 解释 -->
-      <div class="pref-group">
+      <!-- ③ 自定义指令：只有风格选「自定义」才出现，选走别的预设就收起
+           （否则用户会以为框里那段还在生效）。它从「对话偏好」里挪出来独立成组：
+           一个 clamp(140–220) 的大框跟两个短控件挤在一列，会把左边那组拽成一长条。 -->
+      <div class="pref-group pref-group-custom" v-if="pref.preset === 'custom'">
         <header class="group-head">
-          <AppIcon name="sparkle" :size="14" /><h3>Cyli 解释</h3>
+          <AppIcon name="edit" :size="14" /><h3>自定义指令</h3>
         </header>
-        <div class="group-body explain-grid">
-          <label class="ctl">
-            <span class="ctl-label">模型</span>
-            <select v-model="explainModel" data-explain-model>
-              <option value="">跟随对话默认</option>
-              <option v-for="m in explainModels" :key="m.id" :value="m.id">
-                {{ m.name || m.model_name || m.id }}
-              </option>
-            </select>
-          </label>
-          <label class="ctl">
-            <span class="ctl-label">思考强度</span>
-            <select v-model="explainEffort" data-explain-effort>
-              <option value="">{{ explainFollowLabel }}</option>
-              <option v-for="e in explainEffortOptions" :key="e" :value="e">{{ e }}</option>
-            </select>
-          </label>
+        <div class="group-body pref-fields">
+          <div class="ctl">
+            <label class="ctl-label" for="pref-style-custom">风格指令</label>
+            <textarea id="pref-style-custom" v-model="pref.style" class="style-input"
+                      :maxlength="PREF_STYLE_MAX" data-pref-style-custom
+                      placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
+            <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
+          </div>
         </div>
       </div>
     </section>
@@ -1004,7 +910,7 @@ onMounted(() => {
 </template>
 <style scoped>
 /* 版式（2026-12 第二轮，口径：**与模型页对齐**，用户原话「每页风格一致」）：
-   一条头部 → 上方三组横向并排（对话偏好 / 运行上限 / Cyli 解释）→ 下方「技能能力」横跨整幅。
+   一条头部 → 上方横向并排（对话偏好 / 运行上限；自定义时多一列「自定义指令」）→ 下方「技能能力」横跨整幅。
    这一轮换掉的是**尺子**，不是结构：
    · 字号取模型页那一档（ModelPanel / LimitCard 实量）：分组标题 14.5/650、行标题 13/600、
      标签 12、辅助 11.5；正文控件内文 13。
@@ -1048,14 +954,21 @@ onMounted(() => {
   font-size: calc(12.5px * var(--ts, 1));
 }
 
-/* ---------- 上方三组：横向并排 ---------- */
-/* 1.1 / 1.1 / 0.9：左边两组要放两个并排的数字框、或一个整宽的指令框，
-   Cyli 解释只有两个下拉，窄一点正好。 */
+/* ---------- 上方并排：两列，自定义时三列 ---------- */
+/* 轨道永远是 3 条，第三列只在「自定义」时张开到 .9fr（收起时 0fr，既看不见也不可点）：
+   于是两列↔三列是**列在变宽**，不是整行重排 —— 内容不会在动画中途跨列错位，
+   文字只在变宽的过程中自然重排。不支持轨道动画的浏览器只是少一段过渡，不塌版。 */
 .pref-top {
-  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, .9fr);
-  gap: 0 24px; align-items: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0fr);
+  align-items: stretch;                 /* 各组淡色卡上下对齐成一条带子 */
+  transition: grid-template-columns 220ms var(--ease);
 }
-.pref-group { min-width: 0; }
+.pref-top.with-custom { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, .9fr); }
+/* 列间距不用 gap：收起的那一列仍算一条轨道，gap 会在最右侧留一道 24px 的空档。
+   组自己带左外边距，等于把间距算在组身上。 */
+.pref-group { min-width: 0; display: flex; flex-direction: column; }
+.pref-group + .pref-group { margin-left: 24px; }
 /* 标题只是标题：**不铺底**。淡色圆角卡在它下面（.group-body）——用户口径：
    "淡淡的圆角卡片要放在内容下面，文字在卡片之上"。 */
 .group-head {
@@ -1067,6 +980,7 @@ onMounted(() => {
 .group-body {
   padding: 12px 14px;
   border-radius: var(--r-sm); background: var(--bg-sunken);
+  flex: 1;                              /* 撑到这一行最高的那组：几张卡底边齐平 */
 }
 .group-head h3 {
   margin: 0; font-size: calc(14.5px * var(--ts, 1)); font-weight: 650;
@@ -1078,10 +992,11 @@ onMounted(() => {
 .ctl { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ctl-label { font-size: calc(12px * var(--ts, 1)); line-height: 1.35; color: var(--text-dim); }
 
-/* 自定义指令框：笔记编辑框那门语言（整宽 + 淡底 + 发丝描边，聚焦只点亮描边）。
-   高度写死 78：rows=3 + line-height 1.6 在 2x 屏上会自己长到 130 出头，整组就被拖长了。 */
+/* 自定义指令框：一整列宽的大框。clamp 让它在高一点的视口里再长一档（140–220），
+   但不会顶掉半屏；字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。 */
 .cyli-prefs .ctl > .style-input {
-  display: block; height: 78px; padding: 7px 10px;
+  display: block; width: 100%;
+  height: clamp(140px, 20vh, 220px); padding: 8px 10px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer); color: var(--text);
   font-size: calc(13px * var(--ts, 1)); line-height: 1.6; resize: none;
@@ -1100,7 +1015,7 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- 运行上限 / Cyli 解释 ---------- */
+/* ---------- 运行上限 ---------- */
 /* 5 个数字项排两列（2+2+1）：一列要排五行，整组会比旁边两组高出一大截。
    不用 auto-fit：它在中间宽度会排成"3 + 1 + 1"，比整齐的两列更难看。 */
 .limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -1108,7 +1023,6 @@ onMounted(() => {
 .limit-grid input { text-align: right; font-variant-numeric: tabular-nums; }
 /* 单位挂在标签后缀里，而不是跟在输入框右边：省下的宽度正好给"1000000"这种长数字 */
 .limit-unit { margin-left: 4px; font-style: normal; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.explain-grid { display: flex; flex-direction: column; gap: 12px; }
 .pref-hint {
   margin: 10px 0 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
 }
@@ -1246,13 +1160,19 @@ onMounted(() => {
 .ws-test-meta { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .ws-test-detail { color: var(--text-dim); }
 
-/* ---------- 窄容器：三组换行 / 减列 ---------- */
+/* ---------- 窄容器：三列 → 两列（大框铺满两列）→ 单列 ---------- */
 @container (max-width: 899px) {
-  .pref-top { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 24px; }
+  /* 轨道回到两条：自定义那一组不再占一条轨道，而是整行铺满两列 */
+  .pref-top,
+  .pref-top.with-custom { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 24px; }
+  .pref-top .pref-group + .pref-group-custom { grid-column: 1 / -1; margin-left: 0; }
   .ws-panel .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container (max-width: 559px) {
-  .pref-top { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .pref-top,
+  .pref-top.with-custom { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  /* 单列时不再有"第二列"，组与组之间的左外边距必须收掉 */
+  .pref-top .pref-group + .pref-group { margin-left: 0; }
   .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 窄到头时行里的操作按钮先保住名字：名字允许省略号，按钮组不换行、不压字号 */
   .skill-row { gap: 8px; }

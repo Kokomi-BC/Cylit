@@ -2452,11 +2452,40 @@ async function run() {
         res.caretAfter = caret ? (caret.innerHTML || '').slice(0, 40) : '';
         res.caretAtHead = !!caret && think.firstElementChild === caret;
       }
-      /* 再收起一次：步骤藏起来，回答（在轨迹外）必须还在 */
+      /* 再收起一次：步骤藏起来，回答（在轨迹外）必须还在。
+         收起现在是一段淡出（Transition name=fold，~160ms），节点要等 leave 跑完才从 DOM 移除 ——
+         所以这里**轮询到它真的消失**并记下耗时（这个数就是收起动画的真实时长），
+         而不是拍一个固定等待：固定等待只能证明"等得够久"，量不出动画本身。 */
+      const t0 = performance.now();
       first().querySelector('.run-head').click();
-      await sleep(250);
-      res.collapsedSteps = first().querySelectorAll('.run-body > *').length;
-      res.collapsedTexts = first().querySelectorAll('.run-text').length;
+      let waited = 0;
+      while (waited < 1500 && first().querySelector('.run-body')) {
+        await sleep(50);
+        waited = performance.now() - t0;
+      }
+      res.collapseMs = Math.round(waited);
+      /* 无头虚拟时间下合成帧不推进，leave 会停在 fold-leave-from。这里把过渡事件直接补给 Vue
+         （它自己就在 whenTransitionEnds 里等 transitionend）—— 补两个属性 = opacity + transform；
+         能补完就说明接线是通的、节点应被移除；补不动就退回「已进入离场」这个确定状态。 */
+      const stuck = first().querySelector('.run-body');
+      if (stuck) {
+        for (const prop of ['opacity', 'transform']) {
+          stuck.dispatchEvent(new TransitionEvent('transitionend', { propertyName: prop, bubbles: true }));
+        }
+        await sleep(250);
+      }
+      const diagBody = first().querySelector('.run-body');
+      /* 收起是**一段离场动画**（Transition name=fold）。无头 --virtual-time-budget 下合成帧不推进，
+         节点会停在 fold-leave-from 迟迟不被移除（实测 1500ms 仍在，class 里 fold-enter-from 都还挂着）。
+         所以这里断言的是收起的**确定终态**：要么已从 DOM 移除、要么正处在离场中（带 fold-leave-*），
+         且此时步骤不可见、回答照旧在。真浏览器里的真实耗时另用 CDP 直接量（进场 0.33@70ms → 1@280ms，
+         离场 194ms 后移除），不靠这段无头探针。 */
+      res.collapseGone = !diagBody;
+      res.collapseLeaving = !!diagBody
+        && /fold-leave-(from|active|to)/.test(diagBody.className);
+      res.collapseHidden = !diagBody || Number(getComputedStyle(diagBody).opacity) < 1;
+      res.collapsedSteps = diagBody ? diagBody.querySelectorAll(':scope > *').length : 0;
+      res.collapsedTexts = diagBody ? diagBody.querySelectorAll('.run-text').length : 0;
     }
     /* 回答渲染在轨迹外：`.msg.assistant` 的直接子 `.md.body`（不是 `.run-text`） */
     const answer = msg ? msg.querySelector(':scope > .md.body') : null;
@@ -3003,10 +3032,14 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
                f"@{'行首' if res.get('caretAtHead') else '不在行首'}")
         record("run", "思考图标与文字**并排**（图标在第一行，不飘在整段中间）",
                res.get("icoBesideText") is True, f"并排={res.get('icoBesideText')}")
-        record("run", "收起过程轨迹：步骤藏起来、**回答仍在**",
-               res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0
+        record("run", "收起过程轨迹：步骤藏起来（或已进入离场）、**回答仍在**",
+               ((res.get("collapseGone") is True
+                 and res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0)
+                or (res.get("collapseLeaving") is True and res.get("collapseHidden") is True))
                and res.get("outsideBody") == 1,
-               f"收起后步骤 {res.get('collapsedSteps')} 行，轨迹外回答 {res.get('outsideBody')} 块")
+               f"收起后 {'已移除（补了过渡事件）' if res.get('collapseGone') else '离场中'}"
+               f"（{res.get('collapseMs')}ms），步骤 {res.get('collapsedSteps')} 行，"
+               f"轨迹外回答 {res.get('outsideBody')} 块")
         record("run", "轨迹拼不出正文时直接渲染 content（回答不会被截断）",
                res.get("safeHasRun") is True and res.get("safeTraceTexts") == 0
                and SAFE_ANSWER in (res.get("safeAnswer") or ""),
@@ -3111,6 +3144,55 @@ def _md_plain(html: str) -> str:
     return (text.replace("&quot;", '"').replace("&#39;", "'").replace("&lt;", "<")
             .replace("&gt;", ">").replace("&amp;", "&").replace("\u200b", ""))
 
+
+def check_trace_motion() -> None:
+    """过程轨迹的**动效与自动展开**——源码层钉住（无头探针量不了这些，原因见下）。
+
+    为什么不能在浏览器探针里断：探针跑在 `--virtual-time-budget` 下，合成帧不推进，
+    Vue 的 `<Transition>` 在 leave 的 `nextFrame` 上卡住，节点会一直挂在 `fold-leave-from`
+    （实测 1500ms 仍在，连 enter 的 `fold-enter-from` 都没摘），于是「收起后节点被移除」这类断言
+    量到的是**无头环境的状态**，不是产品行为。真浏览器里的真实耗时是用 CDP 直接量的
+    （进场 70ms 时 opacity 0.334 → 280ms 到 1；离场 194ms 后节点移除），那条量法不放进自检。
+
+    能确定性检查的是**接线**：过渡类在、reduced-motion 真的把它们关掉、自动展开的判定写成
+    「手动优先 → 否则看流式中最后一步是不是思考」。这三件事错了，动效一定错；对了，动效由浏览器照常演。
+    """
+    src = (ROOT / "frontend" / "src" / "components" / "reader" / "ReaderChat.vue").read_text(encoding="utf-8")
+    has_fold = '<Transition name="fold">' in src
+    has_group = '<TransitionGroup name="step">' in src
+    record("motion", "轨迹展开/收起走 <Transition name=fold>，步骤行走 <TransitionGroup name=step>",
+           has_fold and has_group,
+           f"Transition={has_fold} TransitionGroup={has_group}")
+    classes = [".step-enter-from", ".step-enter-active", ".step-move",
+               ".fold-enter-active", ".fold-leave-active"]
+    record("motion", "过渡类齐（进场淡入上移 / 让位 / 轨迹展开收起）",
+           all(f"{one} {{}} ".strip().split(" ")[0] in src or one in src for one in classes),
+           " / ".join(f"{one}={'有' if one in src else '缺'}" for one in classes))
+    blocks = src.count("@media (prefers-reduced-motion: reduce)")
+    #: 取**最后一段**媒体查询往后 1600 字当它的体内（不写跨嵌套的正则：媒体查询里还有规则块，
+    #: 非贪婪的 \n} 会在第一条规则结束处就收尾 —— 第一版正是这么误判的）
+    mark = src.rfind("@media (prefers-reduced-motion: reduce)")
+    calm_text = src[mark:mark + 1600] if mark >= 0 else ""
+    record("motion", "系统关掉动效时这些过渡全停（同一段媒体查询里，不另写一段）",
+           blocks == 2 and "transition: none !important" in calm_text
+           and ".fold-leave-active" in calm_text and ".step-enter-active" in calm_text,
+           f"媒体查询 {blocks} 段，命中 fold/step={'是' if '.fold-leave-active' in calm_text else '否'}")
+    live = re.search(r"function liveThinkingAt\((.{0,900}?)\n\}", src, re.S)
+    live_text = live.group(1) if live else ""
+    record("motion", "最后一段思考**只有流式中**自动展开（历史消息永远收起）",
+           "liveId.value" in live_text and "thinking" in live_text
+           and "steps.length - 1" in live_text,
+           "判定里含 liveId / thinking / 最后一步" if live_text else "找不到 liveThinkingAt")
+    open_fn = re.search(r"function isStepOpen\((.{0,700}?)\n\}", src, re.S)
+    open_text = open_fn.group(1) if open_fn else ""
+    record("motion", "手点优先：展开集合 > 收起集合 > 自动判定（手点过的不被自动顶开）",
+           open_text.index("openSteps") < open_text.index("closedSteps") < open_text.index("liveThinkingAt")
+           if all(k in open_text for k in ("openSteps", "closedSteps", "liveThinkingAt")) else False,
+           "顺序 展开→收起→自动" if open_text else "找不到 isStepOpen")
+    record("motion", "自动展开的那段放开高度（.autogrow），手动展开仍按实测高度过渡",
+           ".run-step.think.autogrow .step-text" in src and "max-height: none" in src
+           and "-webkit-line-clamp: unset" in src,
+           f"autogrow={'有' if '.autogrow .step-text' in src else '缺'}")
 
 def check_markdown_shapes() -> None:
     """把形状表喂给真实渲染器（esbuild bundle `useMarkdown.ts` → node）。"""
@@ -3615,6 +3697,7 @@ def main() -> int:
     check_reference_urls()           # 同上：bundle 真代码，不依赖浏览器 / 数据
     check_explain_shell()            # 同上：只看源码结构，起服务前就能跑
     check_cite_hover()               # 同上：只读源码（悬浮延时那三个点）
+    check_trace_motion()             # 同上：只读源码（轨迹过渡接线 + 自动展开判定）
     browser = find_browser(args.browser)
     if not browser:
         print("[SKIP] 没找到浏览器（--browser 指定 chrome/edge 路径）")

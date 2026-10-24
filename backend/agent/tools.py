@@ -25,6 +25,7 @@ from pydantic_ai.messages import BinaryContent, ToolReturn
 from backend.agent.citations import Citation
 from backend.agent.deps import Deps
 from backend.agent.host import HostError
+from backend.agent.trace import DIGEST_CHARS
 from backend.agent import prompts
 from backend.core.logging import get_logger
 
@@ -42,6 +43,14 @@ SEARCH_FETCH_MAX = 20
 #: 默认 `both` —— 跨语言召回本身有价值（英文论文里用中文概念问、译文里术语对不上原文都得看），
 #: 把默认设成 `zh` 会**悄悄收窄**召回，用户还以为"论文里就这些"。
 SEARCH_SIDES = ("both", "en", "zh", "formula")
+#: 文本指纹兜底合并的**最短片段长度**：少于这么多字（「见图 3」「如上所述」这种）不凭指纹合并
+#: —— 短模板句满篇都是，按指纹并会把**真的不同位置**合成一条。
+TEXT_FP_MIN = 12
+#: `formula_get` 一页给几条：默认 40 就是以前那个上限（向后兼容），上限 200。
+#: 条目多时按 `offset` / `next_offset` 翻页 —— 以前只给「前 40 条 + 还差哪几页」，
+#: 模型只能一页页 `formula_get(page=…)` 去补。
+FORMULA_PAGE_DEFAULT = 40
+FORMULA_PAGE_MAX = 200
 #: 一次批量改写最多多少处（页 × 侧）。定在 60：一篇 30 页的论文「全文两侧」正好装得下，
 #: 再多就要求分批（每次改动都会写进改动日志，几十页连改没人看得住）。
 EDIT_BATCH_MAX = 60
@@ -161,10 +170,6 @@ def pages_error(spec: str, *, total: int) -> str:
     return f'页码没读懂：「{_clip(spec, 20) if spec else "空"}」。可以写 "5" / "3-8" / "4,7" / "all"。'
 
 
-#: 过程行里那一句人话最多多长（前端还会再截一次；这里保证不会把整段 find 塞进去）
-BRIEF_CHARS = 60
-
-
 def _cap_batch(rows: list, cap: int) -> tuple[list, int]:
     """截到上限，返回 (留下的, 被砍掉的条数)。
 
@@ -264,12 +269,27 @@ def _brief_text(value: object, limit: int = 18) -> str:
     return body if len(body) <= limit else body[:limit] + "…"
 
 
+def _quote(value: object, limit: int = 18) -> str:
+    """把原文 / 关键词包成「…」；空的**不出空括号**（过程行里那就是一对空的「」）。"""
+    body = _brief_text(value, limit)
+    return f"「{body}」" if body else ""
+
+
+def _line(*bits: object) -> str:
+    """人话片段接成一行；空片段直接丢（否则会出现「第 5 页 ·  · 」这种空洞）。"""
+    return " · ".join(str(one) for one in bits if str(one or "").strip())
+
+
 def _anchor_label(anchor: object) -> str:
-    """``md:p5`` / ``p5-3`` → 「第 5 页」/「第 5 页第 3 行」（认不出就不带）。"""
-    m = re.match(r"^(?:md:)?p(\d{1,5})(?:-(\d+))?$", str(anchor or ""))
+    """``md:p5`` / ``p5-3`` / ``p008-02`` → 「第 5 页」/「第 5 页第 3 行」（认不出就不带）。
+
+    ``p008-02`` 是 `figure_list` 回执里那种**行 id**（页码-行号），行号常带前导零，
+    所以按整数解一次；认不出的锚点宁可不写 —— 编一个上去只会让用户找不到高亮。
+    """
+    m = re.match(r"^(?:md:)?p(\d{1,5})(?:-0*(\d+))?$", str(anchor or "").strip())
     if not m:
         return ""
-    row = f" 第 {int(m.group(2))} 行" if m.group(2) else ""
+    row = f"第 {int(m.group(2))} 行" if m.group(2) else ""
     return f"第 {int(m.group(1))} 页{row}"
 
 
@@ -286,11 +306,30 @@ def _many_label(value: object, limit: int = 3) -> str:
 
 
 def _page_label(value: object) -> str:
+    """页码人话：单页、区间、一串、列表都收，多页只在**连着**时压成区间。
+
+    [3, 4, 5] 是「第 3-5 页」，[4, 7] 仍写「第 4、7 页」—— 两页不相邻，写成区间
+    等于说 4-7 页都读过。以前列表进来只会变成「第 [3, 4, 5] 页」这种原始 repr。
+    """
+    if isinstance(value, (list, tuple)):
+        rows = [str(one).strip() for one in value if str(one).strip().lstrip("-").isdigit()]
+        value = "、".join(rows)
     text = str(value if value is not None else "").strip()
-    if not text:
+    if text in ("", "0"):
         return ""
     if text.lower() in ("all", "*", "全部", "全文"):
         return "整篇"
+    core = re.sub(r"^\s*(?:pages?|p)\.?\s*", "", text, flags=re.I)
+    core = re.sub(r"^\s*第\s*", "", core)
+    core = re.sub(r"\s*页\s*$", "", core)
+    core = re.sub(r"\s+", "", core)
+    if core and re.fullmatch(r"[\d,\-、]+", core):
+        nums = [int(one) for one in re.findall(r"\d+", core)]
+        if len(nums) >= 3 and nums == list(range(nums[0], nums[0] + len(nums))):
+            return f"第 {nums[0]}-{nums[-1]} 页"
+        if len(nums) == 1:
+            return f"第 {nums[0]} 页"
+        return f"第 {core} 页"
     return f"第 {_brief_text(text, 20)} 页"
 
 
@@ -299,78 +338,118 @@ def tool_brief(name: str, args: object) -> str:
 
     为什么放在这一层而不是前端按工具名拼：只有工具自己知道参数叫什么、截到哪儿才不像乱码。
     中文**短语**（`修订产物` 这类）仍然留在前端（`TOOL_STEPS`），这里只出参数里的人话。
-    用户口径 2026-12-07：「工具调用看不出在干什么」。
+    用户口径 2026-12-07：「工具调用看不出在干什么」。2026-12-08 补齐 19 个工具的入参 ——
+    以前 `note_manage` 只写「新增笔记」、`highlight_manage` 丢掉被标的原文、
+    `paper_meta_write` 只写 venue，用户从那一行看不出这次到底动了什么。
     """
     a = _as_args(args)
     tool = str(name or "")
-    pages = _page_label(a.get("pages"))
-    page = _page_label(a.get("page"))
-    query = _brief_text(a.get("query"), 20)
-
+    if tool in ("reader_state", "paper_archive_get"):
+        # 无入参：给空串让前端短语自己兜底；「None」「、」都只是噪音
+        return ""
+    pages, page = _page_label(a.get("pages")), _page_label(a.get("page"))
+    where = page or pages
+    query = _quote(a.get("query"), 20)
+    brief = ""
     if tool in ("page_markdown_get", "translate_get", "page_image_get"):
-        return pages
-    if tool in ("formula_get", "figure_list", "figure_image_get"):
-        many = _many_label(a.get("pages"))
-        seen = _many_label([one.get("page") for one in a.get("items") or []
+        brief = pages or page
+    elif tool == "block_get":
+        many = _many_label(a.get("refs"))
+        ref = a.get("ref")
+        brief = f"引用 [{many}]" if many else (f"引用 [{ref}]" if ref not in (None, "") else "")
+    elif tool in ("figure_list", "figure_image_get"):
+        seen = _page_label([one.get("page") for one in a.get("items") or []
                             if isinstance(one, dict)])
-        bits = [page or pages or (f"第 {seen} 页" if seen else "")]
+        bits = [where or seen]
         if tool == "figure_image_get":
-            if a.get("index") not in (None, ""):
-                bits.append(f"第 {a.get('index')} 张")
+            index = a.get("index")
+            if index not in (None, ""):
+                bits.append(f"第 {_brief_text(index, 8)} 张")
             elif a.get("items"):
                 bits.append(f"{len(a.get('items') or [])} 个区域")
-        elif many:
-            bits = [f"第 {many} 页"]
-        return " · ".join(b for b in bits if b)
-    if tool in ("paper_search", "kb_search", "library_list", "notes_search", "web_search"):
-        many = [str(one) for one in (a.get("queries") or []) if str(one).strip()]
-        if many:
-            head = "」「".join(_brief_text(one, 14) for one in many[:2])
-            more = f" 等 {len(many)} 个" if len(many) > 2 else ""
-            return f"「{head}」{more}"
-        return f"「{query}」" if query else ""
-    if tool == "web_fetch":
-        many = [str(one) for one in (a.get("urls") or []) if str(one).strip()]
-        if many:
-            head = _brief_text(many[0], 32)
-            return f"{head} 等 {len(many)} 篇" if len(many) > 1 else head
-        return _brief_text(a.get("url"), 32)
-    if tool == "block_get":
-        many = _many_label(a.get("refs"))
-        if many:
-            return f"引用 [{many}]"
-        ref = a.get("ref")
-        return f"引用 [{ref}]" if ref not in (None, "") else ""
-    if tool == "page_markdown_edit":
+        brief = _line(*bits)
+    elif tool == "formula_get":
+        # 只写页码等于说"取了公式"；用户要的是"在找哪个式子、要不要行内的"
+        brief = _line(where, "找" + query if query else "",
+                      "含行内" if a.get("include_inline") else "")
+    elif tool in ("highlight_manage", "note_manage"):
+        op = str(a.get("op") or "").strip().lower()
+        is_hl = tool == "highlight_manage"
+        kind = "高亮" if is_hl else "笔记"
+        items = [one for one in a.get("items") or [] if isinstance(one, dict)]
+        body = _quote(a.get("text") if is_hl else a.get("content"), 20)
+        on = _anchor_label(a.get("anchor")) or where
+        hang = _brief_text(a.get("highlight_id"), 12)
+        if not on and not is_hl and hang:
+            on = f"挂在 {hang}"
+        if op in ("create", "add", "new"):
+            brief = (f"新增 {len(items)} {'处' if is_hl else '条'}{kind}" if items
+                     else _line(f"新增{kind}", on, body))
+        elif op in ("update", "edit"):
+            moved = is_hl and bool(_anchor_label(a.get("anchor")))
+            brief = _line(f"挪{kind}" if moved else f"改{kind}", on, body)
+        elif op in ("delete", "remove"):
+            brief = f"删掉一条{kind}"
+        elif op == "locate":
+            brief = f"查这条{kind}"
+        else:
+            brief = _line(f"查{kind}", query)
+    elif tool == "paper_meta_write":
+        fields = [str(one).strip() for one in (a.get("fields") or []) if str(one).strip()]
+        if not fields:
+            # 入参也可能是各字段本身（模型直接给 venue=… / year=…）：照样数得出写了几项
+            fields = sorted(k for k, v in a.items()
+                            if k != "fields" and v not in (None, "", [], 0))
+        head = f"{len(fields)} 项 · " + "、".join(fields[:3]) if fields else ""
+        venue = _brief_text(a.get("venue"), 16)
+        year = str(a.get("year") if a.get("year") is not None else "").strip()
+        brief = _line(head, venue, f"{year} 年" if year not in ("", "0") else "")
+    elif tool == "page_markdown_edit":
         op = str(a.get("op") or "").strip().lower()
         if op in ("undo", "revert"):
-            return " · ".join(b for b in (page, "撤回上一处") if b)
-        if op in ("view", "read", "show"):
-            return page
-        find, rep = _brief_text(a.get("find"), 16), _brief_text(a.get("replace"), 16)
+            brief = _line(where, "撤回上一处")
+        elif op in ("view", "read", "show"):
+            brief = where
+        else:
+            find, rep = _quote(a.get("find"), 16), _quote(a.get("replace"), 16)
+            tail = f"{find}→{rep}" if find and rep else (f"删掉{find}" if find else "")
+            brief = _line(where, tail)
+    elif tool in ("paper_search", "kb_search", "library_list", "notes_search", "web_search"):
+        batch = [str(one).strip() for one in (a.get("queries") or []) if str(one).strip()]
+        if batch:
+            head = "」「".join(_brief_text(one, 14) for one in batch[:2])
+            base = f"「{head}」" + (f" 等 {len(batch)} 个" if len(batch) > 2 else "")
+        else:
+            base = query
         tail = ""
-        if find and rep:
-            tail = f"「{find}」→「{rep}」"
-        elif find:
-            tail = f"删掉「{find}」"
-        return " · ".join(b for b in (page, tail) if b)
-    if tool in ("highlight_manage", "note_manage"):
-        op = str(a.get("op") or "").strip().lower()
-        where = _anchor_label(a.get("anchor"))
-        kind = "高亮" if tool == "highlight_manage" else "笔记"
-        if op in ("create", "add", "update"):
-            return " · ".join(b for b in (f"新增{kind}" if op != "update" else f"改{kind}",
-                                           where) if b)
-        if op in ("delete", "remove"):
-            return f"删掉一条{kind}"
-        return " · ".join(b for b in (f"看看有哪些{kind}", where) if b)
-    if tool == "paper_meta_write":
-        # digest 里只有 fields（见 paper_meta_write 的 _guarded），没有 venue —— 以前这一行永远空白
-        fields = [str(one) for one in (a.get("fields") or []) if str(one).strip()]
-        if fields:
-            return f"{len(fields)} 项 · " + "、".join(fields[:3])
-        return _brief_text(a.get("venue"), 16)
-    return "、".join(f"{k}={_brief_text(v, 12)}" for k, v in list(a.items())[:3])[:BRIEF_CHARS]
+        if tool in ("paper_search", "kb_search"):
+            # 8 是签名里的默认值，写上去只是噪音；改过才看得出"这次要多要几条"
+            top_k = str(a.get("top_k") if a.get("top_k") is not None else 8).strip()
+            tail = "" if top_k in ("", "0", "8") else f"{top_k} 条"
+        elif tool == "web_search":
+            count = str(a.get("count") if a.get("count") is not None else "").strip()
+            tail = "" if count in ("", "0") else f"{count} 条"
+        elif tool == "library_list":
+            limit = str(a.get("limit") if a.get("limit") is not None else "").strip()
+            tail = "" if limit in ("", "0") else f"{limit} 条"
+        else:
+            # scope / kind 是默认值（这一篇、全都要）时不写：写了等于没写
+            scope = str(a.get("scope") or "").strip().lower()
+            kind = {"notes": "笔记", "highlights": "高亮", "annotations": "批注"}.get(
+                str(a.get("kind") or "").strip().lower(), "")
+            tail = _line("全库" if scope in ("all", "library", "全库") else "", kind)
+        brief = _line(base, tail)
+    elif tool == "web_fetch":
+        urls = [str(one).strip() for one in (a.get("urls") or []) if str(one).strip()]
+        if urls:
+            head = _brief_text(urls[0], 32)
+            brief = f"{head} 等 {len(urls)} 篇" if len(urls) > 1 else head
+        else:
+            brief = _brief_text(a.get("url"), 32)
+    else:
+        # 没登记的新工具退回 k=v：总比整行空白强。登记过的工具不会走到这里
+        brief = "、".join(f"{k}={_brief_text(v, 12)}" for k, v in list(a.items())[:3])
+    return brief[:DIGEST_CHARS]
 
 
 def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:
@@ -414,6 +493,69 @@ def _latex_key(latex: str) -> str:
     于是回执里出现两个 ``[7]``：一条是上界、一条是数值收紧，模型引用时分不清指哪条。
     """
     return hashlib.sha1(" ".join(str(latex or "").split()).encode("utf-8")).hexdigest()[:12]
+
+
+#: 公式**去重键**归一化时要剥掉的「只改字形」的包装宏：`\boldsymbol{y}` / `\mathbf{y}` /
+#: `\bm{y}` —— 还有不带花括号的 `\boldsymbol y`（`_LATEX_WRAP_BARE_RE`）。
+_LATEX_WRAP_RE = re.compile(r"\\(?:mathbf|boldsymbol|bm)(?![a-zA-Z])\s*\{([^{}]*)\}")
+_LATEX_WRAP_BARE_RE = re.compile(r"\\(?:mathbf|boldsymbol|bm)(?![a-zA-Z])")
+#: 只影响排版、不影响语义的东西：`\left` / `\right`、细间距、`\quad` 一类、`~`、所有空白
+_LATEX_SHRINK_RE = re.compile(
+    r"\\left(?![a-zA-Z])|\\right(?![a-zA-Z])|\\[,;:!>]"
+    r"|\\(?:quad|qquad|thinspace|medspace)(?![a-zA-Z])|~|\s+")
+
+
+def _latex_norm_key(latex: object) -> str:
+    r"""公式去重键用的**归一化** LaTeX：剥掉只改字形的包装，**留下内容本体**。
+
+    为什么：同一条式子会被重复陈述，而两处抄写常常差一层字重包装 —— 实测 TurboQuant
+    正文第 7 页写 `\|y\|_2^2`、附录第 19 页写 `\|\boldsymbol{y}\|_2^2`（期望内积式同理），
+    按原样比就是两条：`also_on` 一直是空的，"4 个不同位置"里同一处被数了两遍。
+    所以剥 `\boldsymbol{…}` / `\mathbf{…}` / `\bm{…}`（含不带花括号的写法）、
+    `\left` / `\right`、细间距与空白之后才比 —— 但**必须留下花括号里的本体**
+    （`\boldsymbol{y}` → `y`），否则 `y` 与 `\boldsymbol{y}` 仍然不等，等于没剥。
+
+    不剥：上下标、`\frac` / `\sum` 这类结构，以及 `\text{…}` 里的字 —— 那是**语义**；
+    合并两条不同的式子比留一条重复糟得多。
+    """
+    text = str(latex or "")
+    for _ in range(3):    # 手抄会出现 `\boldsymbol{\mathbf{y}}` 这种套娃，一轮只剥一层
+        inner = _LATEX_WRAP_RE.sub(r"\1", text)
+        if inner == text:
+            break
+        text = inner
+    text = _LATEX_WRAP_BARE_RE.sub("", text)
+    text = _LATEX_SHRINK_RE.sub("", text)
+    return text.rstrip(".,;")
+
+
+def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
+    """同一条公式在**不同页**重复陈述 → 只留首次出现那条，其余页码进 `also_on`。
+
+    只在**跨页**时合并：同一页上的两行同名公式是这一页的两个排版位置（`also_on` 只记页码，
+    给不出区分度），各自的引用要分别给号 —— 老行为不动。行内条目不参与：`$x$` 在几十页
+    各有一份，那正是它的价值（`formula_get(page=…)` 靠它定位）。
+
+    返回（合并后的列表, 合并掉的条数）：条数要用来把 `display_total` / `total` 一起减下去，
+    否则回执里「列表 40 条、总数 42」自相矛盾。
+    """
+    by_key: dict[str, dict] = {}
+    kept: list[dict] = []
+    merged = 0
+    for item in items:
+        key = _latex_norm_key(item.get("latex")) if item.get("display") else ""
+        first = by_key.get(key) if key else None
+        here, there = int(item.get("page") or 0), int((first or {}).get("page") or 0)
+        if first is not None and here and there and here != there:
+            also = first.setdefault("also_on", [])
+            if here not in also:
+                also.append(here)
+            merged += 1
+            continue
+        if key:
+            by_key.setdefault(key, item)
+        kept.append(item)
+    return kept, merged
 
 def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
     """这一页「图号 → 图注行的行 id」：引用要带行锚点，点 `[n]` 才闪得到那一行。
@@ -595,6 +737,57 @@ def _block_key(ctx: RunContext[Deps], item: dict) -> str:
         ident["block_id"] or ident["row_id"] or ident["chunk_id"],
         ",".join(ident["row_ids"]))
 
+
+def _md_plain(text: object) -> str:
+    """片段文本的**指纹式**归一化：去掉 Markdown 记号、空白与大小写差异。
+
+    为什么不能直接比原文：同一处证据的中英两路常常落到**两个不同的 block**
+    （`block_id` 不同，落点去重兜不住），文本只差排版记号 —— 实测 ref 3 / ref 4 的块文本
+    逐字相同，却各占一个位置，于是"4 个不同位置"实际只有 3 处。
+    """
+    body = re.sub(r"[#*_`>\[\]]+", "", str(text or ""))
+    return re.sub(r"\s+", "", body).lower()
+
+
+def _text_fp(text: object) -> str:
+    """片段文本的指纹（`""` = 太短，不凭指纹合并，交给落点去重就行）。
+
+    少于 `TEXT_FP_MIN` 字的命中（「见图 3」「如上所述」）满篇都是，按指纹并会把**真的
+    不同位置**合成一条 —— 用户宁可多看一条重复，也不愿少一个位置。
+    """
+    plain = _md_plain(text)
+    if len(plain) < TEXT_FP_MIN:
+        return ""
+    return hashlib.sha1(plain.encode("utf-8")).hexdigest()[:12]
+
+
+def _hit_text_fps(raw: dict) -> list[str]:
+    """一条命中的文本指纹：原文与译文**各算一个**（另一面拿到的可能正是这一面）。"""
+    return [fp for fp in {_text_fp(raw.get("content")), _text_fp(raw.get("translation"))} if fp]
+
+
+def _same_text_row(index: dict[str, dict], raw: dict) -> dict | None:
+    """按**文本指纹**找回已经收下的那条命中（**只认同页**）。
+
+    为什么把页码带进来：论文里"模板句"（页眉、每节开头那句固定说法）会隔几页重复一次，
+    只按指纹合并会把**真的不同位置**并掉，所以指纹里带了页码。为什么不放宽到相邻页：
+    相邻页文本完全相同的两条实测就是**两处不同位置**（第 5 页与第 6 页那对中英命中），
+    而真正的跨页续排是"后半句接前半句"、文本本来就不同（落点去重照样兜得住）。
+    页码拿不到时不合并 —— 没法证明是同处证据。
+    """
+    page = int(raw.get("page_no") or raw.get("page") or 0)
+    if not page:
+        return None
+    for fp in _hit_text_fps(raw):
+        row = index.get(fp)
+        if row is None:
+            continue
+        other = int(row["raw"].get("page_no") or row["raw"].get("page") or 0)
+        if other == page:
+            return row
+    return None
+
+
 def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
     """把一条检索命中登记进引用表，返回 citation。"""
     ident = _chunk_identity(ctx, item)
@@ -679,17 +872,24 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         merged = 0
         uniq: list[dict] = []
         by_key: dict[str, dict] = {}
+        #: 文本指纹兜底：中英两路落到**两个不同 block**（落点去重兜不住）但文本逐字相同时，
+        #: 仍然算同一处证据。见 `_same_text_row`（只认同页，且至少 `TEXT_FP_MIN` 字）。
+        by_text: dict[str, dict] = {}
         for raw in raw_items:
             block = _block_key(ctx, raw)
             hit_side = _hit_side(raw)
-            prev = by_key.get(block)
+            prev = by_key.get(block) or _same_text_row(by_text, raw)
             if prev is not None:
                 merged += 1
                 if hit_side != prev["side"] and hit_side not in prev["also_sides"]:
                     prev["also_sides"].append(hit_side)
+                # 同一处的后续命中也要把落点登记上：后面再来一条同块的，别又开一个新位置
+                by_key.setdefault(block, prev)
                 continue
             row = {"raw": raw, "side": hit_side, "also_sides": []}
             by_key[block] = row
+            for fp in _hit_text_fps(raw):
+                by_text.setdefault(fp, row)
             uniq.append(row)
         # ② `side` 是**召回口径**（不改变排序）：先在去重后的集合上筛，再截断 ——
         #    否则"筛完只剩 2 条"和"筛之前那 4 条"会混成一个数，模型没法判断是不是搜窄了。
@@ -721,7 +921,8 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
             out["deduped"] = merged
         notes = []
         if merged:
-            notes.append(f"同一块的中英两路命中已按 ref 合并 {merged} 条"
+            notes.append(f"同一处的多路命中（同一块，或去掉 markdown 记号后逐字相同的片段）"
+                         f"已按 ref 合并 {merged} 条"
                          f"（另一面记在该条的 also_sides 里）；这 {len(items)} 条是 "
                          f"{len(items)} 个**不同位置**。")
         if not items:
@@ -1348,10 +1549,117 @@ async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                            "top_k": top_k}, _impl())
 
 
+#: 宿主单次最多回 40 条公式（`project.FORMULA_LIMIT`），截断时它会点名「还差哪几页」。
+#: `formula_get` 自己把这几页补回来 —— 一次调用就能翻到第 41 条，而不是让模型一页页
+#: `formula_get(page=…)` 试（用户口径：要**真分页**，不是「只给 40 条、剩下自己补」）。
+#: 8 是个请求预算：块级公式通常只差一两页；行内那几千条的批次补不完就照旧走 missing_pages。
+_FORMULA_BACKFILL_MAX = 8
+
+
+def _formula_doc_key(item: dict) -> tuple[int, int, str]:
+    """公式条的**文档顺序**：页 → 行 id 尾部序号（补页拼起来的列表要按它重排）。"""
+    raw = str(item.get("row_id") or "")
+    found = re.search(r"(\d{1,4})$", raw)
+    return (int(item.get("page") or 0), int(found.group(1)) if found else 0, raw)
+
+
+async def _backfill_formulas(ctx: RunContext[Deps], items: list[dict], *,
+                             pages: list[int], total: int,
+                             query: str | None,
+                             include_inline: bool) -> tuple[list[dict], bool, list[dict]]:
+    """宿主截断时按它点名的页把剩下的公式取回来。
+
+    返回（原列表, 是否已收齐整份列表, 新补进来的条目）：收齐的判据是**条数对得上宿主的
+    `total`**，不是「没报错」—— `total` / `next_offset` / `missing_pages` 都建立在这份
+    列表上，差一条就全错；补进来的条目要单独回，计数才不会把同一批加两遍。
+    """
+    def _identity(one: dict) -> tuple[int, str, str]:
+        return (int(one.get("page") or 0), str(one.get("row_id") or ""),
+                _latex_norm_key(one.get("latex")))
+
+    if total and len(items) >= total:
+        return items, True, []
+    appended: list[dict] = []
+    have = {_identity(one) for one in items}
+    for page_no in pages[:_FORMULA_BACKFILL_MAX]:
+        try:
+            more = await ctx.deps.host.formulas(ctx.deps.paper_id, page=int(page_no),
+                                                query=query, include_inline=include_inline)
+        except HostError as exc:   # 补不齐不算失败：老提示里还有 missing_pages 兜着
+            log.debug("补公式页 %s 失败：%s", page_no, exc.message)
+            break
+        for one in more.get("items") or []:
+            key = _identity(one)
+            if key in have:
+                continue
+            have.add(key)
+            items.append(dict(one))
+            appended.append(one)
+        if total and len(items) >= total:
+            return items, True, appended
+    return items, bool(total) and len(items) >= total, appended
+
+
+async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: str | None,
+                           include_inline: bool) -> tuple[list[dict], dict]:
+    """整份公式列表 + 计数：先补齐宿主的截断，再按归一化 LaTeX 做跨页合并。
+
+    分页要的是**整份列表**（`total` / `missing_pages` 都按全量算），所以这一步收成一个
+    函数，`formula_get` 只负责切页。
+    """
+    data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query,
+                                        include_inline=include_inline)
+    raw_items = [dict(one) for one in (data.get("items") or [])]
+    complete = not bool(data.get("truncated"))
+    appended: list[dict] = []
+    if not complete and not page:
+        # 宿主自己也截断（一次 40 条）→ 先把它点名的页补回来，否则 offset 一过 40 就只有空页
+        raw_items, complete, appended = await _backfill_formulas(
+            ctx, raw_items, pages=[int(p) for p in (data.get("missing_pages") or []) if p],
+            total=int(data.get("total") or 0), query=query, include_inline=include_inline)
+    merged_items, merges = _merge_formula_dups(raw_items)
+    held_display = sum(1 for one in merged_items if one.get("display"))
+    held_inline = len(merged_items) - held_display
+    #: 宿主的三个计数**不随 include_inline 变**（说的是"有多少"，不是"这次给多少"），
+    #: 所以拿它当基数、只减掉我们自己合并掉的、加上补页补进来的 —— 不能直接数手里的条目：
+    #: 默认（不要行内）时手里只有块级那批，数出来 inline 永远是 0。
+    host_display = int(data.get("display_total") or 0)
+    host_inline = int(data.get("inline_total") or 0)
+    if not (host_display or host_inline):   # 老回执只有 total：按条数兜底，别当成 0 条
+        host_display = len(raw_items)
+    added_display = sum(1 for one in appended if one.get("display"))
+    added_inline = len(appended) - added_display
+    if complete:
+        # 整份列表在手 → 块级条数就是合并后的条数（42 → 40 这种事在这里落地）
+        merged_items.sort(key=_formula_doc_key)
+        display_total = held_display
+        inline_total = held_inline if include_inline else max(0, host_inline + added_inline)
+    else:
+        # 宿主还压着一批没给到 → 用它给的数，减掉我们合并掉的、加上补页补进来的
+        display_total = max(0, host_display + added_display - merges)
+        inline_total = max(0, host_inline + added_inline)
+    total = display_total + inline_total
+    omitted_inline = data.get("omitted_inline")
+    if omitted_inline is None:
+        # 上游没给（老回执 / 测试桩）时按「默认不列行内」兜底：否则回执一边说「另有 N 条」、
+        # 一边计数是 0，两个数自相矛盾
+        omitted_inline = 0 if include_inline else inline_total
+    return merged_items, {
+        "total": total, "display_total": display_total, "inline_total": inline_total,
+        "omitted_inline": int(omitted_inline or 0), "complete": complete,
+        "source": data.get("source"),
+        # 宿主压根没给到的那几页（没收齐时才算进 missing_pages）
+        "host_pages": [] if complete else [int(one) for one in
+                                          (data.get("missing_pages") or []) if one],
+    }
+
+
 async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                       query: str | None = None,
-                      include_inline: bool = False) -> dict:
-    """取本论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
+                      include_inline: bool = False,
+                      offset: int = 0,
+                      limit: int = FORMULA_PAGE_DEFAULT) -> dict:
+    r"""取本论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
 
     什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
     或者卷面里的公式被 OCR 认错、需要拿到 LaTeX 原文再核对。
@@ -1371,25 +1679,46 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                `page_markdown_get` 定位那一页，再 `formula_get(page=…)`。
       include_inline —— 默认 False：只要块级公式。要看**行内符号**（`$b-1$` 这种）
                或伪代码里的碎片时才传 True —— 它会把行内公式也列出来，条目更多也更碎。
+      offset —— 从第几条开始给（默认 0）；负数按 0 算。
+      limit  —— 这一页给几条（默认 40，等于以前那个上限；超出 [1, 200] 会被夹回来）。
+
+    **分页**：`total` 是未分页前的条目总数，`offset` / `limit` 是这次的口径，
+    `next_offset` 是下一页的起点（没有下一页就是 None），`has_more` 说还有没有。
+    **条目多时先看 `total` / `next_offset`，按它翻页，别一页页试。**
+
     回执里的 `display_total` / `inline_total` / `total` **同一口径**：都数「去重后、在筛选范围
-    内的全部条目」，`total == display_total + inline_total` 恒成立；`returned` 是本次给了几条，
-    `omitted_inline` 是这次按需过滤掉的行内条数（默认就等于 `inline_total`）。
-    本次要列的条目超过 40 条时 `truncated: true`，**并且** `missing_pages` 直接告诉你还差哪几页
-    （以前只给"漏了几条"，得自己把 40 条按页数一遍才知道缺第 20、21 页）——
-    照着它 `formula_get(page=…)` 补，不要凭条数猜。
+    内的全部条目」（**不随 offset / limit 变**），`total == display_total + inline_total`
+    恒成立；`returned` 是这一页给了几条，`omitted_inline` 是这次按需过滤掉的行内条数
+    （默认就等于 `inline_total`）。
+    `missing_pages` 按**整份列表**算（不是只算这一页）：它说「这次还没给到」的条目落在哪几页 ——
+    还有下一页就先看 `next_offset`；`truncated` 为真而 `next_offset` 为空，才轮到
+    `formula_get(page=…)` 按页补。
 
     **同一条公式在不同页重复陈述**（第 6 页与第 18 页各排了一遍的失真上界那种）只出现**一条**，
-    其余页码在该条的 `also_on` 里（归一化后相同才算一条；不同的式子绝不合并）。
+    其余页码在该条的 `also_on` 里。判等前会**归一化**：`\boldsymbol{y}` / `\mathbf{y}` / `\bm{y}`
+    / `\left` / `\right` / 细间距 / 空白都剥掉、只留内容本体 —— 所以正文第 7 页的 `\|y\|_2^2`
+    与附录第 19 页的 `\|\boldsymbol{y}\|_2^2` 是同一条。不同的式子绝不合并。
 
     ⚠️ `partial=True` 的条目**LaTeX 可能只是公式的一段**（一条公式被切成了几段，我们只拿到
     第一段）。要确认全文就用 `page_image_get(page)` 看那一页的原版面
     （阅读器里这个位置本来也有公式裁图）——**不要照着半条 LaTeX 讲整条公式**。
     """
     async def _impl() -> dict:
-        data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query,
-                                           include_inline=include_inline)
-        items = []
-        for raw in data.get("items") or []:
+        items, meta = await _formula_listing(ctx, page=page, query=query,
+                                             include_inline=include_inline)
+        # 默认只给块级（完整、可引用）；行内那批按需取
+        listed = [one for one in items if one.get("display") or include_inline]
+        # 参数校验：offset < 0 当 0；limit 夹到 [1, 200]（`limit=0` 也夹成 1，不是"回默认"）
+        start = 0 if offset is None else max(0, int(offset))
+        size = FORMULA_PAGE_DEFAULT if limit is None else int(limit)
+        size = min(max(size, 1), FORMULA_PAGE_MAX)
+        window = listed[start:start + size]
+        end = start + len(window)
+        has_more = end < len(listed)
+        # 「还差哪几页」按**整份列表**算（不是只算这一页）：这一页之后的条目 + 宿主没给到的页
+        lost = {int(one.get("page") or 0) for one in listed[end:] if one.get("page")}
+        page_items = []
+        for raw in window:
             latex = str(raw.get("latex") or "")
             page_no = int(raw.get("page") or 0) or None
             cit = ctx.deps.registry.assign(
@@ -1397,7 +1726,7 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 page=page_no, row_id=raw.get("row_id"), snippet=_clip(latex, 160),
                 label=_locate(page_no, None, "formula"),
                 ids=(f"f{page_no:03d}",) if page_no else ())
-            items.append({
+            page_items.append({
                 "ref": cit.ref, "page": page_no, "latex": latex,
                 "display": bool(raw.get("display")),
                 "grade": raw.get("grade"),
@@ -1409,37 +1738,37 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 "context": raw.get("context") or "",
                 "context_zh": raw.get("context_zh") or "",
             })
-        display_total = int(data.get("display_total") or 0)
-        inline_total = int(data.get("inline_total") or 0)
-        #: 这次**按需过滤掉**的行内条数。上游没给（老回执 / 测试桩）时按"默认不列行内"
-        #: 兜底：否则回执里一边说"另有 N 条行内公式"、一边计数是 0，两个数自相矛盾。
-        omitted_inline = data.get("omitted_inline")
-        if omitted_inline is None:
-            omitted_inline = 0 if include_inline else inline_total
-        out = {"total": data.get("total"), "returned": len(items),
-               "source": data.get("source"),
-               "truncated": bool(data.get("truncated")),
-               # 默认只给块级（完整、可引用）；行内那批按需取
-               "display_total": display_total,
-               "inline_total": inline_total,
-               "omitted_inline": int(omitted_inline or 0),
-               # 「还差哪几页」：没截断就是空列表。有了它就不用自己按页数"漏了哪几条"
-               "missing_pages": [int(p) for p in (data.get("missing_pages") or [])],
-               "items": items}
-        if not items:
-            out["hint"] = ("这篇论文里没有提取到符合条件的公式（可能整篇没有公式，或筛选太窄）。"
-                           "行内符号可以先用 page_markdown_get 看那一页的正文。")
+        out = {"total": meta["total"], "returned": len(page_items),
+               # 分页口径：条目多时先看 total / next_offset，别一页页试
+               "offset": start, "limit": size,
+               "next_offset": end if has_more else None, "has_more": has_more,
+               "source": meta["source"],
+               # 没给完：还有下一页，或者宿主那里还压着一批拿不到的
+               "truncated": has_more or not meta["complete"],
+               # 三个计数同一口径：都数去重后的**全部**条目，不随 offset / limit 变
+               "display_total": meta["display_total"], "inline_total": meta["inline_total"],
+               "omitted_inline": meta["omitted_inline"],
+               # 「还差哪几页」：按整份列表算，没有下一页也没有宿主遗留时就是空列表
+               "missing_pages": sorted(lost | set(meta["host_pages"])),
+               "items": page_items}
+        if not page_items:
+            if listed:   # 有公式、只是 offset 翻过头了：说清总数，别让模型以为"这篇没有公式"
+                out["hint"] = (f"这一页是空的：offset={start} 已经越过 {len(listed)} 条，"
+                               f"总条目见 total={meta['total']}（`limit` 最大 {FORMULA_PAGE_MAX}）。")
+            else:
+                out["hint"] = ("这篇论文里没有提取到符合条件的公式（可能整篇没有公式，"
+                               "或筛选太窄）。行内符号可以先用 page_markdown_get 看那一页的正文。")
         else:
-            # 五条提示可以**同时成立**（默认只给块级 + 来源含解析兜底 + 全是转录层没有 grade
-            # + 有条目只是片段 + 超了上限），拼在一起给，别用 elif 让后面的把前面的吞掉
+            # 几条提示可以**同时成立**（默认只给块级 + 来源含解析兜底 + 全是转录层没有 grade
+            # + 有条目只是片段 + 还有下一页 / 宿主没给完），拼在一起给，别用 elif 让后面的吞掉
             hints: list[str] = []
             if not include_inline and out["omitted_inline"] > 0:
                 hints.append(f"这些是**块级公式**（完整，可引用）；另有 "
                              f"{out['omitted_inline']} 条行内公式（单符号 / 碎片那种）。"
                              f"查符号定义、单点表达式时用 `include_inline=True`，"
                              f"或者直接 `page_markdown_get` 读那一页看上下文。")
-            if include_inline and any(one["display"] for one in items):
-                # 用户实测的困惑：传了 include_inline 以后，完整那几条被几十条行内碎片包住，
+            if include_inline and any(one["display"] for one in page_items):
+                # 用户实测的困惑：传了 include_inline 以后完整那几条被几十条行内碎片包住，
                 # 看起来"块级公式跑到列表末尾去了"。它们确实是文档顺序，只是前面全是碎片。
                 hints.append("完整那几条就在这批里（`display: true`），按文档顺序夹在行内碎片"
                              "中间 —— 只想看它们就别传 `include_inline`。")
@@ -1447,17 +1776,21 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 hints.append("本次列表含**版面解析兜底**的条目（source=parse/mixed）——"
                              "那几条的 LaTeX 可能只是公式的一段，讲全貌前先用 "
                              "`page_image_get(page)` 核对原版面。")
-            if all(one["grade"] is None for one in items):
+            if all(one["grade"] is None for one in page_items):
                 hints.append("这些公式来自**转录层**，没有 A/B/C 分级（`grade` 是解析卡的字段，"
                              "不是缺数据）。")
-            if any(one["partial"] for one in items):
+            if any(one["partial"] for one in page_items):
                 hints.append("有条目 partial=true：那几条的 LaTeX 只是公式的一段 —— "
                              "要对着讲就把 `page_image_get(page)` 的原版面拿来核对。")
-            if out["truncated"]:
-                pages = "、".join(str(p) for p in out["missing_pages"])
+            if has_more:
+                hints.append(f"全文共 {out['total']} 条，这次给的是第 {start + 1}–{end} 条"
+                             f"（按文档顺序）；下一页用 `offset={end}`（`limit` 最大 "
+                             f"{FORMULA_PAGE_MAX}）—— 先看 total / next_offset，别一页页试。")
+            if not meta["complete"]:
+                pages = "、".join(str(one) for one in out["missing_pages"])
                 tail = (f" 还差这几页：{pages} —— 照它们 `formula_get(page=…)` 补，"
                         f"不要凭条数猜。" if pages else "")
-                hints.append(f"全文共 {out['total']} 条，这里只给了前 {len(items)} 条"
+                hints.append(f"全文共 {out['total']} 条，宿主这次只给到 {len(page_items)} 条"
                              f"（按文档顺序）。{tail}")
             if hints:
                 out["hint"] = " ".join(hints)
@@ -1465,7 +1798,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
 
     return await _guarded(ctx, "formula_get",
                           {"page": page, "query": _clip(query or "", 40),
-                           "include_inline": include_inline}, _impl())
+                           "include_inline": include_inline,
+                           "offset": offset, "limit": limit}, _impl())
 
 
 async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:

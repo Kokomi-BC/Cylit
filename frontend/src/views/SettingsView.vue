@@ -500,7 +500,7 @@ onMounted(async () => {
       </section>
 
       <!-- ③ Cyli 偏好（原「论文问答」）：对话风格、回复长度与已接入的技能；
-           运行上限与 Cyli 解释也在这一区编辑，模型本体在「模型」区 -->
+           运行上限也在这一区编辑（解释已并入对话，不再单独配模型）；模型本体在「模型」区 -->
       <section id="agent" class="sec" v-if="active === 'agent'">
         <CyliPrefsPanel />
       </section>

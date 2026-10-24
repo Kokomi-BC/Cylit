@@ -11643,3 +11643,68 @@ highlight h-2878c1c24700e4fb · p020-00 · selected_text="Yao 极小极大原理
 **验证（我自己跑的）**：全量 `pytest tests/` **1725 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；探针 **149 项 / 149 通过 / 0 失败**；`dist` 里确认 `.hl-swatch` 已改用 `--hl-sw-*`、`ReaderView` 的 JS 里确实写了这批变量。
 
 **仍待下一轮**：① 红/橙/靛/紫变浓这件事要不要回调（把统一浓度降到 30%，或给每色留一档 alpha）；② 引用浮层「候选标号要与文献表对号」这类**取数正确性**问题值得在别的探针组也扫一遍；③ `web_search` 的 `site` 字段偶发错年份（上一轮只记了一笔，未复现）。
+
+### 124. 第一百二十四轮：对话轨迹说人话 + 末段思考自动展开 + 丝滑过渡；偏好页撤「Cyli 解释」改三列；工具层三条残留；31 条老高亮补回公式
+
+用户这一轮给了四件事（对话轨迹三条 + 偏好页一条），外加一份「上一轮自检」的遗留清单。逐条落地：
+
+**① 工具行要说参数，不是套话。** 根因有两层：`TOOL_STEPS / TOOL_ICONS / TOOL_SUMMARY` 三张表里 `reader_state`
+（2026-12 新加的阅读状态工具）从来没登记，那一行渲染成「调用工具」且没有参数；而 `stepBrief` 的取值顺序是
+「有结果就把参数盖掉」，于是跑完只剩一句结果。现在：三表补齐 19 个后端工具名（顺手发现 `paper_meta_write` 也漏在
+抬头摘要表里，所以「填过元数据」从来不出现）；`stepBrief` 改成**参数在前、结果在后**（相同不重复），72 字截断、
+整串进 title。后端 `tool_brief` 同步逐个工具改成真参数：`formula_get` 从只给页码变成「第 3 页 · 找「softmax」 · 含行内」，
+`highlight_manage create` 带上被标原文，`page_markdown_get 3,4,5` 从「第 [3, 4, 5] 页」变成「第 3-5 页」。
+
+**② 最后一段思考自动展开、被取代即收起。** `isStepOpen` = 手动优先（`openSteps` 展开 / 新增的 `closedSteps` 收起）、
+否则「流式中且**当前最新一步**就是 thinking」→ 展开；一旦后面出现工具/正文、或整轮结束，自动塌回去；历史消息永不自动展开。
+`.open`（解除 4 行夹，探针认这个）与 `.autogrow`（放开高度、边写边长不裁字）分开。顺手补了 `settleRun`：
+注释一直写着「把手动状态搬到落库 id」，实际只搬了轨迹抬头那一层，思考段的键（id:序号）换了 id 就失联。
+
+**③ 过渡。** 外层 `<Transition name=fold>` 管整条轨迹的展开/收起，`<TransitionGroup name=step>` 管行进场（fade + 4px）
+与让位（move）；思考段用「同帧实测高度 → max-height」做双向过渡（关闭态仍是 6.6em = 4 行，量不到就回落 none，绝不裁字）。
+两个有意为之的取舍：TransitionGroup 自己不能既当 `.run-body` 又给自己做 leave（整条收起时它只会被卸载），所以外面套一层
+Transition；`v-if/v-else-if` 多兄弟分支会编译成 keyed Fragment，分支 key 全是 0/1/2，所有行撞同一个 key（move 失效），
+所以一行收敛成单根 div、类名在 `rowClass` 里合成。reduced-motion 合并进文件里**原有那段**媒体查询，全文件仍是 2 段。
+
+**④ 偏好页。** 撤掉「Cyli 解释」整组（模板 / 两个 select / 全部 explain 状态与保存分支 / 样式 / 文件头注释 ④，grep 计数 0）；
+**后端不动**：`explain_model_config_id`、`explain_reasoning_effort`、`explain.py`、`POST /agent/ask` 的 `mode=explain` 都保留
+（生产库里这两个键本来就是空值，删 UI 不改变行为）。顶部按用户选的三列：轨道永远 3 条，第三列「自定义指令」只在
+选「自定义」时从 0fr 张到 .9fr —— 两列↔三列是**列在变宽**，不是整行重排，文字不会动画中途跨列错位。
+大框 `clamp(140px, 20vh, 220px)`，三组淡色圆角卡 `align-items: stretch` + `flex: 1` 成一条齐平的带子。
+
+**⑤ 工具层三条残留（上一轮自检报告的剩余项）。** 公式去重先归一化再比：剥 `\\boldsymbol{}` / `\\mathbf{}` / `\\bm{}` /
+不带花括号的 `\\boldsymbol y` / `\\left` `\\right` / 细间距 / 空白，**保留内容本体**，于是正文第 7 页的 `\\|y\\|_2^2` 与附录
+第 19 页的 `\\|\\boldsymbol{y}\\|_2^2` 并成一条、`also_on` 带页；`paper_search` 加**同页文本指纹**兜底（去掉 markdown 记号/空白/
+大小写后 sha1，跨 block 逐字相同的中英两条并成一条、另一面进 `also_sides`，少于 12 字与隔页不并 —— 实测第 5/6 页
+文本相同的那对是两处不同位置）；`formula_get` 改**真分页**：`offset/limit/total/next_offset/has_more`，默认仍是 40（向后兼容），
+`display_total / inline_total / total` 三者恒满足 total = display + inline 且不随切片变，`missing_pages` 按整份列表算。
+还有一处必须说清：宿主 `project.FORMULA_LIMIT = 40` 会自己截断，工具只能按它点名的 `missing_pages` 补页（预算 8 个请求），
+否则 offset 一过 40 全是空页、分页等于假的。要彻底解决得三处后端都透传 offset/limit（`project.formulas` → 路由 → `HostClient`），
+本轮没开。
+
+**⑥ 31 条老高亮补回公式（用户清单里最要紧那条）。** 结论要纠正：**写入路径早就修好了**（`_atoms_to_latex`，de363ec），
+库里那 31 条全是 2026-10-21 12:04 ~ 10-23 17:38 落库的老数据，修复上线后没被重写过；`realign_page` 全仓唯一调用点是
+「人工改正文之后」，所以老行永远等不到重算。dry-run 逐条算过：**改 6 / 不用改 25 / 找不到落点 0**，6 条偏移全不变、只换
+`selected_text`（「压缩超过 。」→「压缩超过 `$5\times$`。」、图注的两个下标、`$b=4$` + `$\\{p_i\\}_{i\\in[2^b]}$` 那三处空位等）。
+写库走 `realign_page` 不拼 UPDATE：`moved=6 / formula=0 / stale=0`，全字段 diff 只有那 6 行的 text 变，total 31 前后一致。
+随后按用户拍板「文本含 $ 的统一刷成一种色」：25 条 → `#55a5ff`（实测变更 23 条，另 2 条本来就是蓝），双向交叉验证
+「含 $ 且非蓝」与「不含 $ 且蓝」都是空集；色值分布从 25 种 hex 收敛到 7 种。剩下 4 种 hex（`#4d7c0f` / `#9f1239` /
+`#a6a3ff` / `#f09ece`）是当时存的自定义色、都不含公式，渲染照旧（`highlightCss` 对 `#rrggbb` 原样放过），只是取色器不再列出。
+
+**验证（我自己跑的）**：`pytest tests/` → **1778 passed / 131 skipped**（+27 新增，无老测试被改动）；`vue-tsc` 0 error；
+`npm run build` 通过；探针 **155 项 / 155 通过 / 0 失败**（149 → 155：新增 6 条动效接线的源码断言）；
+真浏览器 CDP 量动效：进场 70ms 时 opacity 0.334 → 280ms 到 1，离场 **194ms** 后节点移除；偏好页实量两列
+`466 466 0`px / 三列 `330.7 330.7 270.6`px、大框 219×181、淡色卡上下沿 196→400（两列）与 196→445（三列）都齐平、
+页面上搜不到「Cyli 解释」；生产 `e148275`、两个进程 online、`/health` 200、`ReaderView-B6exzzUb.js` 与
+`SettingsView-eUB3ACAo.js` 的 sha256 本地/服务器/HTTP 三处一致、技能 13 条、服务器上实测
+`_latex_norm_key(\\|y\\|_2^2) == _latex_norm_key(\\|\\boldsymbol{y}\\|_2^2)` 为 True。
+
+**探针为什么改了那条断言（不是放宽，是量不了）**：无头跑在 `--virtual-time-budget` 下合成帧不推进，Vue 的 leave 停在
+`nextFrame`，节点会一直挂在 `fold-leave-from`（实测 1500ms 仍在，连进场的 `fold-enter-from` 都没摘）。所以「收起后节点被移除」
+这条改成「**已移除 或 已进入离场且不可见** + 回答仍在」，动效本身另用 CDP 在真浏览器里量（上面那两个数）。
+这一轮还顺手修了自己两条错断言：媒体查询用非贪婪正则只截到第一条规则（误判 reduced-motion 没关动效）、详情串漏写引号
+把自己印成 False。另有一次 15 项红是**我自己造成的**：首跑超过工具的 120s 上限被掐断，留下一批无头浏览器进程，
+第二遍大面积超时；杀掉泄漏进程、清掉临时产物后一次干净全绿 —— 这类「探针红了」要先看环境有没有被上一轮污染。
+
+**下一轮**：① `formula_get` 分页的真正天花板在宿主三处（要不要开）；② 高亮浓度仍是 40%，红/橙/靛/紫比 class 时代浓，
+要不要降到 30% 或按色分档；③ `web_search` 的 `site` 偶发错年份仍未复现，维持「以 URL 为准」。
