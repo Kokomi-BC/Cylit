@@ -6,24 +6,18 @@
  * 整页不滚窗口 —— 分区高度不等，交给窗口滚的话滚动条会随切区出现/消失、整页宽度跟着变，
  * 左栏就横向抖一下。深链（`/app/settings#kb`）只负责切窗格。
  *
- * 分区按职责分成五组（左边栏顺序，组内即"改行为 → 改模型 → 改数据 → 改服务"的动线）：
- * · **通用**：1. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）。
- * · **智能与模型**：2. 模型（任务分类配置 + 提供方目录与密钥，密钥只在各提供方详情里管理，
- *   页面上原来那个独立的「密钥」折叠区已删除）、
- *   3. Cyli 偏好（原「论文问答」：对话风格 / 回复长度 / 已接入的技能；模型本体在「模型」区）。
- * · **内容与索引**：4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
- *   5. 任务队列（后台任务进度；2026-12 从「服务与系统」挪过来 —— 它改的是索引数据本身）。
- *   原来第 6 项「搜索记录」2026-12 **整区撤掉**（用户口径：清空历史归知识库页的搜索下拉，
- *   本机固定只留最近 20 条）—— 设置里不再单列一区。
- * · **服务与系统**：6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
- *   7. 系统信息（`SystemInfoPanel`：运行环境 / 存储空间 / 服务健康 / 索引存储状态）。
- * · **独立入口**：8. 回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）——
- *   它是"对论文数据做不可逆操作"的兜底，与索引管理的日常入口不是一路，所以单列一组、不与
- *   内容与索引同组（用户口径 2026-12）。
- *
- * 分组标题本身是**折叠开关**：只收放左栏列表这一列，路由、当前分区、窗格内容一概不动；
- * 换到被收起的那一组时自动展开（见 `watch(active)`），所以深链 / 老标签永远不会落到
- * "入口看不见"的状态。折叠偏好只记本机（`cylit:settings-groups`），不进 hash、不进设置表。
+ * 八个分区**一列平铺，不再分组**（用户口径 2026-12「这里不再分类」：撤掉「通用 / 智能与模型 /
+ * 内容与索引 / 服务与系统 / 独立入口」五层组标题，连同组标题上那个折叠开关一起）。
+ * 顺序就是 SECTIONS 的先后，动线仍是"改行为 → 改模型 → 改数据 → 改服务 → 兜底"：
+ *   1. 显示主题（皮肤注册表驱动，写 localStorage 立即生效）、
+ *   2. 模型（任务分类配置 + 提供方目录与密钥，密钥只在各提供方详情里管理）、
+ *   3. Cyli 偏好（原「论文问答」：对话风格 / 回复长度 / 已接入的技能）、
+ *   4. 索引管理（检索规模 / 概览 / 论文索引表 / 对账 / chunk 元数据）、
+ *   5. 任务队列（后台任务进度）、
+ *   6. 在线解析（MinerU token 与默认参数，token **只写不回显**，可就地验证）、
+ *   7. 系统信息（`SystemInfoPanel`：运行环境 / 存储空间 / 服务健康 / 索引存储状态）、
+ *   8. 回收站（软删论文的恢复 / 彻底删除；原来的独立页 /trash 已并到这里）。
+ * 2026-12 另撤掉一项「搜索记录」：清空历史归知识库页的搜索下拉，本机固定只留 20 条。
  *
  * 原来的「常规参数」整区**已拆掉**（用户口径）：真生效的检索参数搬进「索引管理」的检索规模小节，
  * 任务工作线程数 / 页面渲染 dpi / 公式裁图 dpi / 默认生成模型四项直接删除 —— 前两个的读取点
@@ -60,30 +54,28 @@ import TrashPanel from '@/components/trash/TrashPanel.vue';
  * —— 深链只负责切区，滚动由窗格自己在切区时归零。
  */
 const SECTIONS = [
-  { id: 'appearance', label: '显示主题', icon: 'sparkle', group: '通用', desc: '换深浅配色、字体与字号，点一下立即生效' },
-  { id: 'models', label: '模型', icon: 'model', group: '智能与模型', desc: '按任务分配模型，密钥收在各提供方里' },
+  { id: 'appearance', label: '显示主题', icon: 'sparkle', desc: '换深浅配色、字体与字号，点一下立即生效' },
+  { id: 'models', label: '模型', icon: 'model', desc: '按任务分配模型，密钥收在各提供方里' },
   // 「论文问答」→「Cyli 偏好」（2026-12 定名）：这一区管的是**Cyli 本身怎么说话、会做什么**
   // （对话风格 / 回复长度 / 已接入的技能），与「模型」（提供方、密钥、任务分类映射）职责不同，
   // 两者各自独立、不合并。
   // 图标用 `sliders`（两颗滑钮 = 调偏好）：`chat` 是侧栏「AI 对话」的、`agent` 那枚机器人头
   // 看着像「智能体」而不是「偏好」，这一区要调的本来就是几个滑钮。
-  { id: 'agent', label: 'Cyli 偏好', icon: 'sliders', group: '智能与模型', desc: '调 Cyli 的回答风格、回复长度与已接入的技能' },
+  { id: 'agent', label: 'Cyli 偏好', icon: 'sliders', desc: '调 Cyli 的回答风格、回复长度与已接入的技能' },
   // 图标同理：`knowledge`（知识图谱）是侧栏「知识库」的图标，索引管理改用数据库圆柱（AppIcon 的 index）。
-  { id: 'kb', label: '索引管理', icon: 'index', group: '内容与索引', desc: '管理论文索引、向量检索及索引数据状态' },
+  { id: 'kb', label: '索引管理', icon: 'index', desc: '管理论文索引、向量检索及索引数据状态' },
   // 任务队列归「内容与索引」：队列里跑的是导入 / 解析 / 建索引，改的是索引数据本身，
   // 归到「服务与系统」会让人以为它只管服务健康。只挪分类，页内排版与筛选一概不动。
-  { id: 'tasks', label: '任务队列', icon: 'task', group: '内容与索引', desc: '看导入、解析等后台任务的进度' },
-  { id: 'mineru', label: '在线解析', icon: 'bolt', group: '服务与系统', desc: '接在线解析服务，填密钥并验证' },
+  { id: 'tasks', label: '任务队列', icon: 'task', desc: '看导入、解析等后台任务的进度' },
+  { id: 'mineru', label: '在线解析', icon: 'bolt', desc: '接在线解析服务，填密钥并验证' },
   // 系统信息保持独立：四张卡（运行环境 / 存储空间 / 服务健康 / 索引存储状态）是同一份只读
   // 健康视角，且与「在线解析」的凭证、参数毫无交集 —— 塞进同一页只会让两边都得滚。
-  { id: 'about', label: '系统信息', icon: 'server', group: '服务与系统', desc: '看运行环境、存储占用与各服务健康' },
+  { id: 'about', label: '系统信息', icon: 'server', desc: '看运行环境、存储占用与各服务健康' },
   // 回收站单列一组「独立入口」：低频、不可逆，不该排在日常入口中间，也不归「内容与索引」。
-  { id: 'trash', label: '回收站', icon: 'trash', group: '独立入口', desc: '把删掉的论文恢复回来，或彻底删除' },
+  { id: 'trash', label: '回收站', icon: 'trash', desc: '把删掉的论文恢复回来，或彻底删除' },
 ] as const;
 
 type Section = typeof SECTIONS[number];
-/** 分组名（'通用' | '智能与模型' | '内容与索引' | '服务与系统' | '独立入口'）。 */
-type GroupName = Section['group'];
 
 /** 搜索用的同义词表：用户按"想改什么"找，不会按分区名找（要深色不会去敲"显示主题"）。 */
 const SECTION_KEYWORDS: Record<string, string[]> = {
@@ -101,10 +93,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
 const query = ref('');
 const needle = computed(() => query.value.trim().toLowerCase());
 
-/**
- * 按标签 / 一句话说明 / 同义词表过滤。命中口径就是"用户说出口的词"，
- * 分组标题跟着剩下的项走，所以没命中的分组自然整段消失，不用另写一套过滤。
- */
+/** 按标签 / 一句话说明 / 同义词表过滤。命中口径就是"用户说出口的词"。 */
 const visibleSections = computed(() => {
   const k = needle.value;
   if (!k) return SECTIONS;
@@ -112,69 +101,6 @@ const visibleSections = computed(() => {
     || s.desc.toLowerCase().includes(k)
     || (SECTION_KEYWORDS[s.id] ?? []).some((w) => w.toLowerCase().includes(k)));
 });
-
-/** 左栏分组：(已过滤的) 分区按 group 归纳，顺序就是 SECTIONS 里的先后。
- *  SECTIONS 里同一组的分区必须连着写 —— 这里只做"相邻同名归并"，不做重排。 */
-interface NavGroup { name: GroupName; items: Section[] }
-const navGroups = computed<NavGroup[]>(() => {
-  const out: NavGroup[] = [];
-  for (const s of visibleSections.value) {
-    const last = out[out.length - 1];
-    if (last && last.name === s.group) last.items.push(s);
-    else out.push({ name: s.group, items: [s] });
-  }
-  return out;
-});
-
-/* ------------------------- 分组折叠（纯本机偏好） -------------------------
- * 只收放左栏列表这一列：路由不动、当前分区不动、窗格内容不动。
- * 三条硬约束：
- *   ① 搜索时一律展开 —— 否则"搜到了却看不见"；
- *   ② 切到被收起的那一组时自动展开（ensureGroupOpen），深链 / 老标签 / 前进后退都不会
- *      落到"当前页的入口藏起来了"；
- *   ③ 收起的是当前页所在的那一组时，标题提一档色（.has-active），左栏仍看得出"我在哪"。
- */
-const GROUP_KEY = 'cylit:settings-groups';
-/** 只认已知的分组名：改版删掉的分组名留在 localStorage 里也不该把新分组一起收起来。 */
-const GROUP_NAMES: readonly GroupName[] = [...new Set(SECTIONS.map((s) => s.group))];
-
-function readCollapsed(): Set<GroupName> {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(GROUP_KEY) || '[]');
-    if (!Array.isArray(raw)) return new Set();
-    return new Set(raw.filter((n): n is GroupName => GROUP_NAMES.includes(n as GroupName)));
-  } catch {
-    return new Set();                 // 隐私模式 / 内容被改坏：当作全展开
-  }
-}
-
-const collapsed = ref<Set<GroupName>>(readCollapsed());
-
-/** 是否收起：搜索命中时不收（约束 ①）。 */
-function isCollapsed(name: GroupName): boolean {
-  return !needle.value && collapsed.value.has(name);
-}
-
-function writeCollapsed(next: Set<GroupName>) {
-  try {
-    localStorage.setItem(GROUP_KEY, JSON.stringify([...next]));
-  } catch {
-    // 写不进去就只是"下次不记得"，不影响本次交互
-  }
-}
-
-function toggleGroup(name: GroupName) {
-  const next = new Set(collapsed.value);
-  if (next.has(name)) next.delete(name); else next.add(name);
-  collapsed.value = next;
-  writeCollapsed(next);
-}
-
-/** 当前分区所在的组必须是展开的（约束 ②）。已是展开状态时不做任何事。 */
-function ensureGroupOpen(id: string) {
-  const g = SECTIONS.find((s) => s.id === id)?.group;
-  if (g && collapsed.value.has(g)) toggleGroup(g);
-}
 
 const route = useRoute();
 const router = useRouter();
@@ -229,9 +155,8 @@ function revealActive() {
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
 }
-// 换区先把那一组展开（折叠只影响列表，但当前页的入口必须在场），再做横排的滚动兜底
+// 换区后把当前项滚进可视区（窄屏横排才会溢出，竖排时这函数自己跳过）
 watch(active, () => {
-  ensureGroupOpen(active.value);
   revealActive();
 });
 
@@ -409,8 +334,8 @@ onMounted(async () => {
   // 深链（/app/settings#kb）：只切到对应窗格 —— 一次只渲染一区，窗格一律从顶部开始。
   const id = String(route.hash || '').replace('#', '');
   if (id && SECTIONS.some((s) => s.id === id)) active.value = id;
-  // 首次进来 active 可能压根没变过（默认区），watch 就不会触发 —— 这里补一次展开
-  ensureGroupOpen(active.value);
+  // 首次进来 active 可能压根没变过（默认区），watch 就不会触发 —— 这里补一次横排的滚动兜底
+  revealActive();
   resetPaneScroll();
 });
 </script>
@@ -433,36 +358,22 @@ onMounted(async () => {
           @keydown.esc.prevent="clearQuery"
         />
       </label>
-      <nav class="settings-nav" ref="navRef" aria-label="设置分类">
-        <div v-for="g in navGroups" :key="g.name" class="nav-group">
-          <!-- 分组标题就是折叠开关：aria-expanded 跟着实际状态走；
-               收起时若当前页就在这一组里，标题提一档色（has-active），仍看得出"我在哪"。 -->
-          <button
-            type="button"
-            class="settings-nav-group"
-            :class="{ 'has-active': g.items.some((s) => s.id === active) }"
-            :aria-expanded="!isCollapsed(g.name)"
-            :title="(isCollapsed(g.name) ? '展开「' : '收起「') + g.name + '」'"
-            @click="toggleGroup(g.name)"
-          >
-            <span class="settings-nav-group-label">{{ g.name }}</span>
-            <span class="nav-caret" :class="{ open: !isCollapsed(g.name) }" aria-hidden="true"></span>
-          </button>
-          <div class="nav-group-items" :class="{ collapsed: isCollapsed(g.name) }">
-            <button
-              v-for="s in g.items"
-              :key="s.id"
-              type="button"
-              class="settings-nav-item"
-              :class="{ active: active === s.id }"
-              :aria-current="active === s.id ? 'page' : undefined"
-              :title="s.label"
-              @click="go(s.id)"
-            >
-              <AppIcon class="settings-nav-icon" :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
-            </button>
-          </div>
-        </div>
+      <!-- 一列平铺的分区，**不再分组**（用户口径 2026-12：这里不再分类）：
+           分组标题那层「通用 / 智能与模型 / 内容与索引 / 服务与系统 / 独立入口」连同折叠开关一起撤掉，
+           八个入口按 SECTIONS 的顺序一列排下来，搜索就是在这一列里过滤。 -->
+      <nav class="settings-nav" ref="navRef" aria-label="设置分区">
+        <button
+          v-for="s in visibleSections"
+          :key="s.id"
+          type="button"
+          class="settings-nav-item"
+          :class="{ active: active === s.id }"
+          :aria-current="active === s.id ? 'page' : undefined"
+          :title="s.label"
+          @click="go(s.id)"
+        >
+          <AppIcon class="settings-nav-icon" :name="s.icon" :size="15" /><span class="settings-nav-label">{{ s.label }}</span>
+        </button>
       </nav>
       <p class="settings-empty" v-if="!visibleSections.length">没有匹配的设置</p>
     </aside>
@@ -715,35 +626,8 @@ onMounted(async () => {
 .settings-search input:focus { background: transparent; border: 0; box-shadow: none; }
 .settings-empty { margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text-faint); }
 .settings-nav { display: flex; flex-direction: column; gap: 0; }
-/* 分组 = 标题（折叠开关）+ 可点项。标题把左栏切成「通用 / 智能与模型 / 内容与索引 /
-   服务与系统 / 独立入口」五段，只当路标，所以降一档色、不抢可点项；**不做大写转换** ——
-   中文没有大小写，uppercase 只会在混排的英文（API、MinerU）上突然变形。
-   收起只把 .nav-group-items 藏掉：组标题留在原处，随时点得开。 */
-.nav-group { display: block; }
-.nav-group-items.collapsed { display: none; }
-.settings-nav-group {
-  display: flex; align-items: center; gap: 6px; width: 100%; height: 20px;
-  margin: 14px 0 4px; padding: 0 10px;
-  background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer;
-  font-family: inherit; font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; letter-spacing: .02em;
-  color: var(--text-faint); text-align: left;
-  transition: color var(--dur-fast) var(--ease);
-}
-/* 首组不吃 14px：顶线交给搜索框的 margin-bottom，与整页其余留白对齐 */
-.nav-group:first-child .settings-nav-group { margin-top: 0; }
-.settings-nav-group:hover { color: var(--text-dim); }
-/* 收起时当前页就在这一组里：标题提一档色 —— 不然左栏看不出"我现在在哪" */
-.settings-nav-group.has-active { color: var(--text-dim); }
-.settings-nav-group:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.settings-nav-group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 折叠箭头：两条描边拼一个 V（展开朝下、收起朝右），不引新图标。
-   rotate(45deg) 时"┘"的尖朝下、rotate(-45deg) 朝右 —— 中间只差 90°，转起来干净。 */
-.nav-caret {
-  flex: none; width: 5px; height: 5px; margin-left: auto;
-  border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor;
-  transform: rotate(-45deg); transition: transform var(--dur-fast) var(--ease);
-}
-.nav-caret.open { transform: rotate(45deg); }
+/* 一列平铺的分区（2026-12 起**不再分组**）：没有组标题、没有折叠开关，
+   八个入口一条竖线排下来，间距只由 2px 外边距给。 */
 /* 可点项：32 高（--control-h）、14 圆角（--r-sm）、左右 10 内边距 —— 比按钮松、比卡片紧。
    当前项 = --bg-hover 底 + 正文色 + 图标转 --accent，不做整行彩色胶囊；
    hover 走更浅一档的 --bg-subtle：两档必须分得开，否则"鼠标停着的"和"正看着的"长得一样。 */
@@ -755,7 +639,7 @@ onMounted(async () => {
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 /* 相邻项之间 2px：圆角 14 的行贴起来会连成一片。缝交给这条外边距而不是 nav 的 gap ——
-   gap 会把分组标题上下那两条 16 / 6 也一起加宽。 */
+   gap 会连"列表与搜索框之间"那一段也一起加宽。 */
 .settings-nav-item + .settings-nav-item { margin-top: 2px; }
 .settings-nav-item:hover { background: var(--bg-subtle); color: var(--text); }
 .settings-nav-item.active { background: var(--bg-hover); color: var(--text); font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; }
@@ -855,13 +739,6 @@ onMounted(async () => {
   .settings-nav-item { width: auto; flex: none; white-space: nowrap; }
   /* 横排时相邻项之间的缝交给 nav 的 gap 4，竖排那条 2px 要撤掉 */
   .settings-nav-item + .settings-nav-item { margin-top: 0; }
-  /* 横排时分组标题只剩噪声（一段一段断开反而更难扫），直接不显示；
-     组容器与组内容都摊平成 display:contents，项才铺得进这一条横排。
-     ⚠️ 收起态在这里必须让位：标题已经藏了，再藏项就等于凭空少几个入口。 */
-  .settings-nav-group { display: none; }
-  .settings-nav > .nav-group,
-  .settings-nav .nav-group-items,
-  .settings-nav .nav-group-items.collapsed { display: contents; }
   .pane-head { padding-top: 0; }
 }
 
