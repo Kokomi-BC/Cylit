@@ -11991,3 +11991,30 @@ items 13 / rows 13   card x=448 w=1098   row0 x=462 w=1070 h=52   search x=470 (
 
 > 同一轮里的第二条「移除设置页的页面分类」在设置页找不到同名区块（问了用户，选项里没有对得上的），
 > 等用户说明具体指哪一块再动。
+
+### 132. 第一百三十二轮：设置页左栏不再分组（一列平铺）
+
+用户口径（2026-12，指着左栏截图）：「我指的是这里不再分类」—— 说的是设置页左栏那五层组标题
+（通用 / 智能与模型 / 内容与索引 / 服务与系统 / 独立入口），不是别处的分类。
+
+改法（`SettingsView.vue`）：
+
+- `SECTIONS` 去掉 `group` 字段，`GroupName` 类型、`navGroups` 归并计算一起删；
+  左栏直接 `v-for="s in visibleSections"` 平铺，顺序就是 SECTIONS 的先后。
+- **整块折叠机制撤掉**：`GROUP_KEY`（`cylit:settings-groups`）/ `readCollapsed` / `collapsed` /
+  `isCollapsed` / `writeCollapsed` / `toggleGroup` / `ensureGroupOpen` 全删，
+  `watch(active)` 只剩横排的 `revealActive()`；`onMounted` 里那次"补展开"换成补滚动兜底。
+- 样式删掉 `.nav-group` / `.nav-group-items.collapsed` / `.settings-nav-group*` / `.nav-caret`（含窄屏
+  那三条"标题隐身、组容器摊平成 display:contents"的补丁 —— 现在结构本来就是平的）。
+- `aria-label` 从「设置分类」改成「设置分区」（它标的是这块导航，不是分类）。
+
+真浏览器实测（headless Edge + CDP，1440×940）：
+
+```
+.settings-nav-item n=8   .settings-nav-group n=0   nav 高 270
+相邻项间距 gaps = [2,2,2,2,2,2,2]（一致，不再有组标题那 14/4 的两档节奏）
+各项 y = 149,183,217,251,285,319,353,387（每项 32 高 + 2 缝）
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **155/155**
+（其中「设置页分区记进 URL」「切走再回来还是那一区」两条照旧过 —— 平铺不影响深链）。
