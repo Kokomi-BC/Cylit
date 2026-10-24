@@ -53,7 +53,6 @@ import {
 } from '@/utils/format';
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
-import ReparseDialog from '@/components/paper/ReparseDialog.vue';
 import ReaderPageRows from '@/components/reader/ReaderPageRows.vue';
 import AsideToggle from '@/components/reader/AsideToggle.vue';
 import CapPanel from '@/components/reader/CapPanel.vue';
@@ -3343,9 +3342,6 @@ async function regenerateInsight() {
     console.warn('重新生成解读失败', err);
   }
 }
-
-/** 「重新解析」对话框：初值来自设置页，参数只对这一篇生效。 */
-const reparseOpen = ref(false);
 
 async function triggerParse() {
   try {
@@ -7698,16 +7694,6 @@ function renderMarkdown(text?: string | null) {
             >
               <AppIcon name="sliders" :size="15" />
             </button>
-            <!-- 重新解析：换引擎 / 开关 OCR 与公式 / 分段重跑。参数只对这一篇生效，
-                 初值来自「设置 → 在线服务」（见 ReparseDialog）。 -->
-            <button
-              class="btn icon"
-              data-cap-reparse
-              title="重新解析：换引擎或改这一篇的解析参数"
-              @click="reparseOpen = true"
-            >
-              <AppIcon name="refresh" :size="15" />
-            </button>
           </div>
 
           <!-- 翻译状态与主操作：翻译完成时**整组消失**（用户口径：不要那个常驻的绿色对勾） -->
@@ -8672,15 +8658,6 @@ function renderMarkdown(text?: string | null) {
       @locate="locateBlockOverlay(o)"
       @zoom-image="o.imageUrl && (zoomImage = { url: o.imageUrl, caption: o.title })"
       @close="closeBlockOverlay(o.id)"
-    />
-
-    <!-- 重新解析：参数只对这一篇生效（初值来自设置页） -->
-    <ReparseDialog
-      :open="reparseOpen"
-      :paper-id="paperId"
-      :title="reader?.paper?.title || ''"
-      @close="reparseOpen = false"
-      @done="fetchTasks()"
     />
 
     <Modal
