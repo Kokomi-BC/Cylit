@@ -149,3 +149,30 @@ def test_two_different_formulas_on_the_same_page_stay_two() -> None:
     out = _call(host)
     assert len(out["items"]) == 2 and out["total"] == 2
     assert len({one["ref"] for one in out["items"]}) == 2
+
+
+def test_also_on_detail_carries_the_other_pages_latex() -> None:
+    r"""跨页重复陈述被合并时，另一版自己的 LaTeX 也要带上（用户口径 2026-12「可以加入」）。
+
+    只给页码的话，想引用附录版还得自己 page_markdown_get 去翻；而两版**逐字可能不同**
+    （`\|y\|_2^2` 与 `\|\boldsymbol{y}\|_2^2` 归一化后才相等），所以两版都得留着。
+    """
+    items = [
+        {"page": 7, "row_id": "p007-02", "latex": r"\|y\|_2^2", "display": True},
+        {"page": 19, "row_id": "p019-02", "latex": r"\|\boldsymbol{y}\|_2^2", "display": True},
+    ]
+    kept, merged = agent_tools._merge_formula_dups(items)
+
+    assert merged == 1 and len(kept) == 1
+    only = kept[0]
+    assert only["page"] == 7, "保留首次出现那一页"
+    assert only["also_on"] == [19]
+    assert only["also_on_detail"] == [{"page": 19, "latex": r"\|\boldsymbol{y}\|_2^2"}], \
+        "另一版要有自己的 LaTeX，不能只给页码"
+    assert only["also_on_detail"][0]["latex"] != only["latex"], "两版逐字不同，正是要一起给的理由"
+    # 同一页的两行同名公式不合并（老行为），也就不会产生 also_on_detail
+    same_page, none_merged = agent_tools._merge_formula_dups([
+        {"page": 5, "row_id": "a", "latex": r"x^2", "display": True},
+        {"page": 5, "row_id": "b", "latex": r"x^2", "display": True},
+    ])
+    assert none_merged == 0 and len(same_page) == 2

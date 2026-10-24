@@ -556,6 +556,11 @@ def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
             also = first.setdefault("also_on", [])
             if here not in also:
                 also.append(here)
+                # 另一版**也记下来**（用户口径 2026-12：「可以加入」）：只给页码的话，
+                # 想引用附录版还得自己 page_markdown_get 去翻；这里把它的 LaTeX 摘要一起带上。
+                # 归一化后相等不代表**逐字**相等（`\\boldsymbol{y}` 与 `y`），所以两版都留着。
+                detail = first.setdefault("also_on_detail", [])
+                detail.append({"page": here, "latex": _clip(str(item.get("latex") or ""), 160)})
             merged += 1
             continue
         if key:
@@ -1730,7 +1735,9 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
     `formula_get(page=…)` 按页补。
 
     **同一条公式在不同页重复陈述**（第 6 页与第 18 页各排了一遍的失真上界那种）只出现**一条**，
-    其余页码在该条的 `also_on` 里。判等前会**归一化**：`\boldsymbol{y}` / `\mathbf{y}` / `\bm{y}`
+    其余页码在该条的 `also_on` 里，**那一版自己的 LaTeX 摘要**在 `also_on_detail`（`[{page, latex}]`）——
+    归一化后才相等不代表逐字相等（`\boldsymbol{y}` vs `y`），想引用另一版不必再 page_markdown_get 翻一遍。
+    判等前会**归一化**：`\boldsymbol{y}` / `\mathbf{y}` / `\bm{y}`
     / `\left` / `\right` / 细间距 / 空白都剥掉、只留内容本体 —— 所以正文第 7 页的 `\|y\|_2^2`
     与附录第 19 页的 `\|\boldsymbol{y}\|_2^2` 是同一条。不同的式子绝不合并。
 
@@ -1768,8 +1775,13 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 # LaTeX 只是公式的一段 → 要讲全貌就去看原版面
                 "partial": bool(raw.get("partial")),
                 "source": raw.get("source"),
-                # 同一条公式在**别的页**也排了一遍时才有内容（跨页重复陈述被合并掉的那些）
+                # 同一条公式在**别的页**也排了一遍时才有内容（跨页重复陈述被合并掉的那些）。
+                # `also_on` 是页码；`also_on_detail` 给出那一版自己的 LaTeX 摘要（归一化后才相等，
+                # 逐字可能不同：`\\boldsymbol{y}` vs `y`），想引用附录版不用再翻一遍。
                 "also_on": [int(p) for p in (raw.get("also_on") or [])],
+                "also_on_detail": [{"page": int(one.get("page") or 0),
+                                   "latex": str(one.get("latex") or "")}
+                                  for one in (raw.get("also_on_detail") or [])],
                 "context": raw.get("context") or "",
                 "context_zh": raw.get("context_zh") or "",
             })
