@@ -23,29 +23,9 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 
-/* 图标**墨迹高度**实测（24 网格口径，headless Chromium 的 getBBox 量的）：
- * 填充型多数占 18 个网格单位，`copy-fill`/`sparkle-fill` 更胖（22），`chat-fill` 20，而线性型只有 15~16。
- * 同一个 14px 的盒子，墨迹高从 8.8px 到 12.8px 不等 —— 一排图标并排就是「大小不一」
- * （用户口径 2026-12-05，触摸工具条上最明显）。
- *
- * 于是按「墨迹高 ≈ 11.25px」反算每个图标该给的盒子：size = 11.25 × 24 / inkH。
- * 只列实测过的名字，其余按填充型的主力值 18 走。这样一排下来视觉高度一致，
- * 不再靠「看着调」那样改一个图标就得重调一遍。 */
-const ICON_INK_H: Record<string, number> = {
-  'search-fill': 17.5,
-  'copy-fill': 22,
-  'chat-fill': 20,
-  'sparkle-fill': 22,
-  chat: 15.1,
-  download: 15.5,
-};
-const ICON_INK_DEFAULT = 18;
-const ICON_TARGET_INK = 11.25;
-function iconSizeOf(name: string): number {
-  const ink = ICON_INK_H[name] ?? ICON_INK_DEFAULT;
-  return Math.round(((ICON_TARGET_INK * 24) / ink) * 2) / 2;
-}
-
+/* 图标尺寸：Fluent 整套画在同一个 24 网格上（墨迹高中位数 18/24），所以这里**只给一个尺寸**，
+ * 不再按名字逐个校正墨迹高度 —— 旧的 `ICON_INK_H` / `iconSizeOf` 那套是为了弥合手绘线性/填充混用，
+ * 换 Fluent 之后已经不需要（用户口径 2026-12-05）。触摸工具条给 16，下拉菜单给 15。 */
 // 注意：`<script setup>` 里不能写模块导出，调用方用同构的字面量类型即可（结构类型）
 interface CtxItem {
   key: string;
@@ -235,7 +215,7 @@ onBeforeUnmount(() => {
             :data-ctx-key="it.key"
             @click="pick(it)"
           >
-            <AppIcon v-if="it.icon" :name="it.icon" :size="iconSizeOf(it.icon)" />
+            <AppIcon v-if="it.icon" :name="it.icon" :size="props.compact ? 16 : 15" />
             <span class="ctx-label">{{ it.label }}</span>
             <!-- 色板：与划词胶囊/换色菜单**共用** `.hl-swatch`（base.css 那一条），
                  颜色由行内 `--hl-sw` 给，不另起一套色值。`@click.stop` ——

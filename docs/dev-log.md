@@ -12785,3 +12785,35 @@ copy-fill            22         12.8px           12.5px   11.5px
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**；
 另用 headless Edge 把触摸工具条按真实尺寸渲染成图逐枚比对（三枚新图标的笔画与 `search/copy` 一致）。
+
+
+### 153. 第一百五十三轮：整站图标换成 Microsoft Fluent System Icons（Fluent 2，MIT）
+
+用户口径：「图标能否统一使用微软 fluentsvg 图标」。
+
+**为什么值得整站换**：原先 103 枚图标是手绘的，**线性（1.6 描边）与填充（Material 形）混用**，
+同一个盒子里墨迹高度从 8.8px 到 12.8px（上一轮只能靠一张「墨迹高 ≈ 11.25px」的换算表去凑）。
+Fluent 整套画在同一张 24 网格上 —— 实测这批 100 枚的墨迹高度：中位数 **18/24**、p10 13.5、p90 20
+（13.5 以下是本来就该小的 chevron / 减号 / 链条），regular 与 filled 只差填法，因此只要给同一个
+`size`，视觉重量自然一致。那张换算表连同 `iconSizeOf` 一起删掉了。
+
+**做法**：
+
+- 新增 `components/fluentIcons.ts`（生成物，勿手改）：100 条，键是**去掉 `-fill` 的基名**，
+  `r` = regular、`f` = filled（10 条有填充版：search / copy / note / download / delete / save /
+  select-all / open-new / sort-time / sort-doc）。文件头写着完整的 name → Fluent 名对照表。
+- `AppIcon.vue` 重写：只走 `fill: currentColor`（Fluent 没有描边），`-fill` 结尾取 filled 变体；
+  `weight` 参数保留但不再影响渲染（全站只有一处还在传）。
+- `ContextMenu`：图标尺寸固定 15（下拉）/ 16（触摸工具条）；`note`、`download` 两项改用填充版，
+  于是右键菜单那一排在**同一档重量**里。
+- 少数**品牌标记** Fluent 不收（`github`），保留手绘路径，放在 `AppIcon` 的 `EXTRA` 里。
+
+**几个不那么直观的对照**：`index → database`、`knowledge → flowchart`、`insight → document_bullet_list`、
+`model → board`、`study → book_compass`、`locate → target`、`popout/popin → arrow_maximize/arrow_minimize`、
+`external → open`、`ban → prohibited`、`trash → delete`、`layout-original-left/right → layout_column_two_split_left/right`。
+
+**代价**：`fluentIcons.ts` 源文件 42KB、10 条带填充版；主 chunk（index）68.8KB → 96KB（raw），gzip 约 +9KB。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**；
+另把 100 枚图标按 16px 渲染成网格逐枚看过（左侧第一版把 `select-all-fill` / `save-alt-fill` 落成了 info，
+原因是数据键当时带 `-fill`、而组件按基名查 —— 已改成基名+双档并复验）。

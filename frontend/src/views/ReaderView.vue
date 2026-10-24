@@ -5844,7 +5844,7 @@ function onContentContextMenu(ev: MouseEvent) {
      菜单里就只剩「删除」，想改笔记反而没有入口（用户 2026-10-10 复查报的正是这个）。
      它只跟 `hlIds` 走，与有没有选区无关。 */
   if (ctxCtx.hlIds.length) {
-    items.push({ key: 'note', label: '编辑笔记', icon: 'note' });
+    items.push({ key: 'note', label: '编辑笔记', icon: 'note-fill' });
   }
   if (withSel) {
     /* 「加入对话」已经在上面（高亮左侧）排好了，这里只补「询问 Cyli」，让它落在最右 */
@@ -5867,7 +5867,7 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'copyimg', label: '复制图像', icon: 'copy-fill' });
     items.push({ key: 'zoomimg', label: '放大', icon: 'open-new-fill' });
   }
-  if (onBlank) items.push({ key: 'export', label: '导出', icon: 'download', sep: true });
+  if (onBlank) items.push({ key: 'export', label: '导出', icon: 'download-fill', sep: true });
   if (ctxCtx.hlIds.length) {
     items.push({ key: 'delhl', label: '删除', icon: 'delete-fill', danger: true, sep: true });
   }
