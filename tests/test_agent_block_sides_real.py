@@ -193,3 +193,26 @@ def test_block_get_reports_the_anchor_page_of_a_cross_page_span() -> None:
     block = asyncio.run(agent_tools.block_get(ctx, ref=ref))
     assert block["page"] == search["items"][0]["page"] == 20, (block, search)
     assert block["text"].count("\n\n") == 2, "整段照样拼起来（跨页那半句不能丢）"
+
+
+def test_widen_rows_unions_both_sides_so_block_get_reads_the_whole_sentence() -> None:
+    """合并时行跨度取**并集**（用户口径 2026-12-08）。
+
+    中英两路切 chunk 的边界不一样（en 到 `p020-14`、zh 到 `p021-01`）。并成一个 ref 之后如果只留
+    先到那条的行跨度，`block_get` 按它拼出来的英文侧会**在半句处断掉**（实测 `…applied to the`
+    后面没了，缺的那半句正好在 zh 多出来的那一行里）。
+    """
+    kept = {"row_id": "p020-13", "row_ids": ["p020-13", "p020-14"], "content": "en",
+            "page_no": 20}
+    other = {"row_id": "p020-13", "row_ids": ["p020-13", "p020-14", "p021-01"],
+             "translation": "zh", "page_no": 20}
+
+    agent_tools._widen_rows(kept, other)
+
+    assert kept["row_ids"] == ["p020-13", "p020-14", "p021-01"], "行跨度要是并集、顺序按先到那条"
+    assert kept["row_id"] == "p020-13", "锚点行仍是先到那条的第一行（页码不会被拽到下一页）"
+    assert kept["content"] == "en", "只动行 id，不拿另一面的文本去覆盖"
+    # 另一条只有 row_id 没有 row_ids 时也要能被并进来
+    kept2 = {"row_ids": ["p003-01"]}
+    agent_tools._widen_rows(kept2, {"row_id": "p003-02"})
+    assert kept2["row_ids"] == ["p003-01", "p003-02"]

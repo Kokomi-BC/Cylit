@@ -675,6 +675,34 @@ def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
     _tidy_also(kept)
     return kept, merged
 
+def _widen_rows(kept: dict, other: dict) -> None:
+    """把被并进来那条命中的**行跨度并到保留那条上**（`paper_search` 合并时用）。
+
+    为什么必须这么做（用户口径 2026-12-08）：中英两路切 chunk 的边界不一样（en 到 `p020-14`、
+    zh 到 `p021-01`），并成一个 ref 之后如果只留先到那条的行跨度，`block_get` 按它拼出来的
+    英文侧就会**在半句处断掉** —— 实测 `…applied to the` 后面没了，缺的那半句正好落在 zh 多出来的那一行里。
+    补的是**行 id 列表**（不是文本）：`block_get` 本来就是按行 id 去读行表的，行跨度完整了，
+    `text` 与 `translation` 会各自按同一批行拼出来，两侧自然对齐。
+
+    只动 `row_ids` / `row_id`，其余字段（片段、页码来源）保持先到那条：片段只给预览，谁先到不影响；
+    页码由 `_hit_page` 按行 id 解析，并集之后仍取第一行所在页（跨页那半句不会把锚点页拽到下一页）。
+    """
+    def ids(raw: dict) -> list[str]:
+        out = [str(rid) for rid in (raw.get("row_ids") or []) if str(rid).strip()]
+        one = str(raw.get("row_id") or "").strip()
+        if one and one not in out:
+            out.insert(0, one)
+        return out
+
+    merged_ids = ids(kept)
+    for rid in ids(other):
+        if rid not in merged_ids:
+            merged_ids.append(rid)
+    if not merged_ids:
+        return
+    kept["row_ids"] = merged_ids
+    kept["row_id"] = merged_ids[0]
+
 def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
     """这一页「图号 → 图注行的行 id」：引用要带行锚点，点 `[n]` 才闪得到那一行。
 
@@ -1063,6 +1091,12 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                 merged += 1
                 if hit_side != prev["side"] and hit_side not in prev["also_sides"]:
                     prev["also_sides"].append(hit_side)
+                # **把两路的行覆盖面并起来**（用户口径 2026-12-08）：中英两路切 chunk 的边界不同
+                # （en 到 p020-14、zh 到 p021-01），并成一个 ref 之后如果只用先到那条的行跨度，
+                # `block_get` 读出来的英文侧会**在半句处断掉**（没有省略号，就是断了）——
+                # 实测 ref38 的 text 停在 "…applied to the"，缺的那半句正好在 zh 多出来的那一行里。
+                # 行跨度取并集之后，两侧都按完整的行集合拼，`original` 与 `translation` 一起补齐。
+                _widen_rows(prev["raw"], raw)
                 # 同一处的后续命中也要把落点登记上：后面再来一条同块的，别又开一个新位置
                 by_key.setdefault(block, prev)
                 continue
