@@ -535,37 +535,129 @@ def _latex_norm_key(latex: object) -> str:
     return text.rstrip(".,;")
 
 
+#: 公式里的**关系符**：结构等价只在"左端符号"上放宽，这之后的一切必须逐字相同。
+_REL_RE = re.compile(r":=|\\leq|\\geq|\\approx|\\sim|\\neq|\\le|\\ge|=|<|>")
+#: 左端里的**参数表**：`D_{\text{mse}}(Q_{\text{mse}})` 的 `(Q_{\text{mse}})`。
+_ARG_RE = re.compile(r"\([^()]*\)")
+
+
+def _latex_struct_key(latex: object) -> tuple[str, str]:
+    r"""公式的**结构等价**键：`(左端剥掉参数表 + 关系符之后的一切, 参数表内容)`。
+
+    为什么逐字相等不够：同一条陈述在正文里带参数、在别处省掉 —— 实测第 3 页
+    `D_{\text{mse}}(Q_{\text{mse}}) \approx 0.36, 0.117, 0.03, 0.009` 与第 6 / 18 页
+    `D_{\text{mse}} \approx 0.36, 0.117, 0.03, 0.009`，逐字比就是两条（用户 2026-12 复测的
+    C：三页各出现一次却剩两条，第 3 页那条的 `also_on` 还是空的）。
+
+    但"逐字相等"**不能**当判据：那会直接把 `\boldsymbol{y}` 与 `y` 的合并破掉（上一轮用户
+    明确要它合）。所以放宽点只取一个、且收得很窄：
+      1. 只摘**第一个关系符之前**（左端）的参数表，右端逐字比 —— 右端不同就是不同的式子
+         （第 4 页的单行下界 vs 第 20 页的 aligned 推导，绝不合并）；
+      2. 两边的参数表要么相同、要么**有一边根本没有**参数（`(Q)` vs 空）；
+         两边都有参数却不同（`f(x)` vs `f(y)`）不算等价 —— 那是两个不同的式子。
+    """
+    text = _latex_norm_key(latex)
+    found = _REL_RE.search(text)
+    head, tail = (text[:found.start()], text[found.start():]) if found else (text, "")
+    return _ARG_RE.sub("", head) + tail, ",".join(_ARG_RE.findall(head))
+
+
+def _struct_mergeable(args_a: str, args_b: str) -> bool:
+    r"""两份结构键的参数表算不算"同一个左端"（只有**一方省略了参数**才算）。"""
+    return args_a == args_b or not args_a or not args_b
+
+
+def _record_also(first: dict, page_no: int, item: dict) -> None:
+    """把"这一页也排了一遍"记到保留那条上：页码去重，另一版自己的 LaTeX 一起带上。
+
+    被并进来那条**自己也可能是被宿主合并过的**（第 6 页那条带着第 18 页）—— 它带的页码
+    必须一起并上去，否则合并后反而**丢页**：实测 C 三个页各出现一次，合并完只剩两页。
+    """
+    own = int(first.get("page") or 0)
+    pages = [int(p) for p in (first.get("also_on") or []) if p]
+    detail = {int(one.get("page") or 0): str(one.get("latex") or "")
+              for one in (first.get("also_on_detail") or []) if one.get("page")}
+    pages.append(int(page_no or 0))
+    detail[int(page_no or 0)] = _clip(str(item.get("latex") or ""), 160)
+    pages.extend(int(one) for one in (item.get("also_on") or []) if one)
+    for one in (item.get("also_on_detail") or []):
+        page = int(one.get("page") or 0)
+        if page and page not in detail:
+            detail[page] = str(one.get("latex") or "")
+    first["also_on"] = [one for one in pages if one and one != own]
+    first["also_on_detail"] = [{"page": one, "latex": detail[one]}
+                               for one in sorted(detail) if one and one != own]
+
+
+def _tidy_also(items: list[dict]) -> None:
+    r"""收尾：`also_on` 升序去重、**绝不包含条目自己那一页**；`also_on_detail` 与它一一对应。
+
+    C 的两条要求在这里落地（用户实测：第 6 页那条 `also_on` 里出现了它自己所在的页、
+    且没提第 3 页）。宿主那一路也会带 `also_on` 过来（它先合并过一次），这里一并归一化 ——
+    两层各写一份规则时，"合并了却说不清合的是哪一页"就是这么来的。
+    """
+    for item in items:
+        if "also_on" not in item and "also_on_detail" not in item:
+            continue
+        own = int(item.get("page") or 0)
+        pages = sorted({int(p) for p in (item.get("also_on") or [])
+                        if p and int(p) != own})
+        known = set(pages)
+        detail: list[dict] = []
+        seen: set[int] = set()
+        for one in (item.get("also_on_detail") or []):
+            page_no = int(one.get("page") or 0)
+            # 与 also_on **一一对应**：页码不在 also_on 里的详情一律不留 —— 两层各写一份
+            # 规则时，"页码说三页、详情说两页"就是这么来的
+            if page_no not in known or page_no in seen:
+                continue
+            seen.add(page_no)
+            detail.append({"page": page_no, "latex": str(one.get("latex") or "")})
+        item["also_on"] = pages
+        item["also_on_detail"] = sorted(detail, key=lambda one: one["page"])
+
+
 def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
-    """同一条公式在**不同页**重复陈述 → 只留首次出现那条，其余页码进 `also_on`。
+    r"""同一条公式在**不同页**重复陈述 → 只留首次出现那条，其余页码进 `also_on`。
 
     只在**跨页**时合并：同一页上的两行同名公式是这一页的两个排版位置（`also_on` 只记页码，
     给不出区分度），各自的引用要分别给号 —— 老行为不动。行内条目不参与：`$x$` 在几十页
     各有一份，那正是它的价值（`formula_get(page=…)` 靠它定位）。
 
+    "同一条"按两档判：归一化后逐字相等（`\boldsymbol{y}` / `y`、`\left(\right)`、细间距），
+    或者**结构等价**（见 `_latex_struct_key`：左端带不带参数，其余逐字相同）。
+
     返回（合并后的列表, 合并掉的条数）：条数要用来把 `display_total` / `total` 一起减下去，
     否则回执里「列表 40 条、总数 42」自相矛盾。
     """
     by_key: dict[str, dict] = {}
+    #: 结构等价那一档：同一个"左端 + 右端"下挂若干条（参数表各不相同，见 `_struct_mergeable`）
+    by_struct: dict[str, list[dict]] = {}
     kept: list[dict] = []
     merged = 0
     for item in items:
         key = _latex_norm_key(item.get("latex")) if item.get("display") else ""
+        core, args = _latex_struct_key(item.get("latex")) if key else ("", "")
+        page = int(item.get("page") or 0)
         first = by_key.get(key) if key else None
-        here, there = int(item.get("page") or 0), int((first or {}).get("page") or 0)
-        if first is not None and here and there and here != there:
-            also = first.setdefault("also_on", [])
-            if here not in also:
-                also.append(here)
-                # 另一版**也记下来**（用户口径 2026-12：「可以加入」）：只给页码的话，
-                # 想引用附录版还得自己 page_markdown_get 去翻；这里把它的 LaTeX 摘要一起带上。
-                # 归一化后相等不代表**逐字**相等（`\\boldsymbol{y}` 与 `y`），所以两版都留着。
-                detail = first.setdefault("also_on_detail", [])
-                detail.append({"page": here, "latex": _clip(str(item.get("latex") or ""), 160)})
+        if first is None and core:
+            for cand in by_struct.get(core, []):
+                if _struct_mergeable(cand["args"], args):
+                    first = cand["row"]
+                    break
+        there = int((first or {}).get("page") or 0)
+        if first is not None and page and there and page != there:
+            # 另一版**也记下来**（用户口径 2026-12「可以加入」）：只给页码的话，想引用附录版
+            # 还得自己 page_markdown_get 去翻；归一化后相等不代表**逐字**相等，两版都留着。
+            _record_also(first, page, item)
             merged += 1
             continue
         if key:
             by_key.setdefault(key, item)
+        if core:
+            by_struct.setdefault(core, []).append({"row": item, "args": args})
         kept.append(item)
+    _tidy_also(kept)
     return kept, merged
 
 def _caption_rows(paper_id: str, page: int) -> dict[str, str]:
@@ -784,41 +876,73 @@ def _md_plain(text: object) -> str:
     return re.sub(r"\s+", "", body).lower()
 
 
-def _text_fp(text: object) -> str:
-    """片段文本的指纹（`""` = 太短，不凭指纹合并，交给落点去重就行）。
+#: 预览截断的尾巴：写侧把长文本截成 N 字时会补一个省略号（实测第 20 页那条中文预览正好
+#: 200 字 + `…`）。比"是不是同一段话"时它不算内容。
+_PREVIEW_TAIL_RE = re.compile(r"(?:…|\.{2,})+$")
 
-    少于 `TEXT_FP_MIN` 字的命中（「见图 3」「如上所述」）满篇都是，按指纹并会把**真的
-    不同位置**合成一条 —— 用户宁可多看一条重复，也不愿少一个位置。
+
+def _text_plain(text: object) -> str:
+    """片段的**裸文本**：`_md_plain` 之后再剥掉预览截断的省略号。
+
+    为什么要剥：写侧给的中文预览是**截断**过的，另一面的 `content` 是完整那段 —— 逐字比
+    永远不等（实测第 20 页那对：预览 178 字、正文 254 字，前 177 字逐字相同），于是同一块的
+    中英两路各占一个位置，hint 还说"4 条各是一处位置"（用户 2026-12-07 复测仍在）。
+    剥掉尾巴之后它正好是完整文本的**前缀**，按"前缀即可"比才合得上。
     """
-    plain = _md_plain(text)
-    if len(plain) < TEXT_FP_MIN:
-        return ""
-    return hashlib.sha1(plain.encode("utf-8")).hexdigest()[:12]
+    return _PREVIEW_TAIL_RE.sub("", _md_plain(text))
 
 
-def _hit_text_fps(raw: dict) -> list[str]:
-    """一条命中的文本指纹：原文与译文**各算一个**（另一面拿到的可能正是这一面）。"""
-    return [fp for fp in {_text_fp(raw.get("content")), _text_fp(raw.get("translation"))} if fp]
+def _text_same(a: str, b: str) -> bool:
+    """两段裸文本是不是**同一段话**：逐字相等，或一边是另一边的**截断预览**（前缀）。
+
+    少于 `TEXT_FP_MIN` 字的（「见图 3」「如上所述」）一律不算 —— 那满篇都是，按它合并会把
+    真的不同位置并掉；用户宁可多看一条重复，也不愿少一个位置。
+    """
+    if not a or not b:
+        return False
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < TEXT_FP_MIN:
+        return False
+    return long.startswith(short)
 
 
-def _same_text_row(index: dict[str, dict], raw: dict, page: int | None) -> dict | None:
-    """按**文本指纹**找回已经收下的那条命中（**只认同页**）。
+def _hit_texts(raw: dict) -> list[str]:
+    """一条命中的裸文本：原文与译文**各算一个**（另一面拿到的可能正是这一面）。"""
+    return [one for one in {_text_plain(raw.get("content")),
+                            _text_plain(raw.get("translation"))} if one]
+
+
+def _same_text_row(seen: list[dict], raw: dict, page: int | None) -> dict | None:
+    """按**文本**找回已经收下的那条命中（**只认同页**）。
 
     为什么把页码带进来：论文里"模板句"（页眉、每节开头那句固定说法）会隔几页重复一次，
-    只按指纹合并会把**真的不同位置**并掉，所以指纹里带了页码。为什么不放宽到相邻页：
+    只按文本合并会把**真的不同位置**并掉，所以比较里带了页码。为什么不放宽到相邻页：
     相邻页文本完全相同的两条实测就是**两处不同位置**（第 5 页与第 6 页那对中英命中），
     而真正的跨页续排是"后半句接前半句"、文本本来就不同（落点去重照样兜得住）。
     页码拿不到时不合并 —— 没法证明是同处证据。
 
     页码**由调用方按 `_hit_page` 解析好传进来**，这里绝不自己再读一遍 `page_no`：
     同一份"这是第几页"的逻辑写两遍，正是中英两路被拆成两处位置的那次不一致的温床。
+
+    比的是"逐字相等**或**一边是另一边的截断预览"（`_text_same`），不是指纹相等：写侧的中文
+    预览是截断的，指纹永远对不上（实测 A）。chunk 类型不同的不算同一处（保护③：同一块里
+    指向两条不同证据的命中各自保留）—— 行覆盖面不同**不**构成拆分理由：中英两路的 chunk
+    边界本来就不一样（实测 en 覆盖 `p020-13…14`、zh 多一行 `p021-01`），那种成对命中
+    是同一块的同一段话，正是要合起来的那一类。
     """
     if not page:
         return None
-    for fp in _hit_text_fps(raw):
-        row = index.get(fp)
-        if row is not None and row.get("page") == page:
-            return row
+    texts = _hit_texts(raw)
+    if not texts:
+        return None
+    kind = raw.get("chunk_type") or ""
+    for cand in seen:
+        if cand["page"] != page:
+            continue
+        if kind and cand["kind"] and kind != cand["kind"]:
+            continue
+        if any(_text_same(one, other) for one in texts for other in cand["texts"]):
+            return cand["row"]
     return None
 
 
@@ -910,16 +1034,16 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         merged = 0
         uniq: list[dict] = []
         by_key: dict[str, dict] = {}
-        #: 文本指纹兜底：中英两路落到**两个不同 block**（落点去重兜不住）但文本逐字相同时，
+        #: 文本兜底：中英两路落到**两个不同 block**（落点去重兜不住）但文本是同一段话时，
         #: 仍然算同一处证据。见 `_same_text_row`（只认同页，且至少 `TEXT_FP_MIN` 字）。
-        by_text: dict[str, dict] = {}
+        seen_text: list[dict] = []
         for raw in raw_items:
             block = _block_key(ctx, raw)
             hit_side = _hit_side(raw)
             #: 页码只解析一次（`_hit_page` = 行 id 优先），兜底去重拿它比 —— 索引那条
             #: `page_no` 与行 id 差一页时，同一块的中英两路会被当成两处（实测 A/B）。
             page = _hit_page(raw)
-            prev = by_key.get(block) or _same_text_row(by_text, raw, page)
+            prev = by_key.get(block) or _same_text_row(seen_text, raw, page)
             if prev is not None:
                 merged += 1
                 if hit_side != prev["side"] and hit_side not in prev["also_sides"]:
@@ -929,8 +1053,10 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                 continue
             row = {"raw": raw, "side": hit_side, "also_sides": [], "page": page}
             by_key[block] = row
-            for fp in _hit_text_fps(raw):
-                by_text.setdefault(fp, row)
+            texts = _hit_texts(raw)
+            if texts:   # 太短的（「见图 3」）不进兜底索引 —— 不凭它合并
+                seen_text.append({"texts": texts, "page": page, "row": row,
+                                  "kind": raw.get("chunk_type") or ""})
             uniq.append(row)
         # ② `side` 是**召回口径**（不改变排序）：先在去重后的集合上筛，再截断 ——
         #    否则"筛完只剩 2 条"和"筛之前那 4 条"会混成一个数，模型没法判断是不是搜窄了。
@@ -1140,7 +1266,11 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
         span = ctx.deps.row_spans.get(row_id) or [row_id]
         texts: list[str] = []
         zh: list[str] = []
-        page = cit.page
+        #: 对外报的页 = **锚点行**那一页（行 id 是唯一真相源，与 `_hit_page` 同一口径）。
+        #: 一整段可能跨到下一页（实测 `p020-13…p020-15` + `p021-01`），以前循环里
+        #: `page = data.get("page")` 一路被**最后一行**覆盖 → block_get 说第 21 页、
+        #: 同一块的 paper_search 说第 20 页（用户复测的那一分歧就是这么来的）。
+        page = _row_page(span[0]) or cit.page
         kind = None
         for rid in span[:SPAN_ROWS_MAX]:
             page_no = _row_page(rid) or cit.page
@@ -1149,7 +1279,8 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             data = await ctx.deps.host.row(ctx.deps.paper_id, int(page_no), rid)
             if not data:
                 continue
-            page = data.get("page") or page
+            # 行 id 解析不出页（老投影）时才拿行表自己的页兜底 —— 且只兜底一次
+            page = page or int(data.get("page") or 0) or None
             kind = data.get("type") or kind
             text = str(data.get("text") or "").strip()
             if text:
@@ -2476,13 +2607,12 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    strawberry `#ff4d6d` / tangerine `#ff8a3d` / lemon `#ffc93c` / mint `#3ddc84` /
                    lagoon `#22d3ee` / vega `#4d7cff` / grape `#a855f7` / sakura `#ff5cc8` ——
                    用户说"标成黄的/蓝的"时就近取这几个，报上来的是色名也照收。
-                   ⚠️ **配色分两级**（用户口径 2026-12-07 修正）：先按**类别**定色系，再在同一
-                   色系里用深浅区分条目 —— 颜色表达语义，不是「每条都不一样」。
-                   公式 = indigo（`#6366f1`/`#4f46e5`）、定理/结论 = emerald（`#10b981`/`#059669`）、
-                   术语/定义 = violet（`#8b5cf6`/`#7c3aed`）、存疑 = amber（`#f59e0b`/`#d97706`）、
-                   错误/待办 = rose（`#f43f5e`/`#e11d48`）。**同类别允许同色**，跨类别才必须不同；
-                   同色系条目多了就换深浅（indigo-400/500/600），不要跳到别的色系去。
-                   动手前先 `op=list` 看这篇已经用过哪几套色系，跟着已有的走。
+                   ⚠️ **色系与语义没有必然联系**（用户口径 2026-12）：以前这里写过「公式=indigo、
+                   结论=emerald、存疑=amber…」那张表，那是某一轮对话里的临时约定，不是通用语义，已删。
+                   现在的规矩只有三条：① 用户当轮说了怎么配色就照做（那是颜色带上语义的唯一来源，
+                   他改口以后面那句为准）；② 用户没说就别替颜色编含义，也别在回答里解读「紫色代表术语」；
+                   ③ 不传 color 时由宿主挑这篇当前用得最少的那个兜底（只是别一片同色，不带语义）。
+                   要跟已有标注保持一致就先 `op=list` 看这篇用过哪些颜色。
                    ✅ **颜色代码可以由你自己给**（2026-12-06 明确）：`#0d9488` / `#f59e0b` /
                    `rgb(20,120,140)` / `hsl(180 60% 40%)` 都能如实存下并原样画出 —— 想按语义
                    自己设计一套配色（这套论文用 teal 系、那套用 indigo 系）就直给 hex，不必迁就

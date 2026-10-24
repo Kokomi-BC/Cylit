@@ -618,6 +618,28 @@ def _latex_norm(latex: object) -> str:
 _DOC_SEQ_RE = re.compile(r"(\d{1,4})$")
 
 
+def _also_pages(item: dict) -> list[int]:
+    """别的出现页：升序去重，**不含条目自己那一页**（自指页码对读的人毫无意义）。"""
+    own = int(item.get("page") or 0)
+    return sorted({int(p) for p in (item.get("also_on") or []) if p and int(p) != own})
+
+
+def _also_detail(item: dict) -> list[dict]:
+    """与 `also_on` 一一对应：那一版**自己的** LaTeX（归一化后相等，逐字可能不同）。
+
+    宿主是**先**合并的那一层：被合并掉的那条从这里起就不在列表里了，工具层再也拿不到它的
+    LaTeX。所以"另一版长什么样"只能在这里带出去，否则 `formula_get` 回执会出现
+    `also_on=[18]` 而 `also_on_detail=[]`（用户 2026-12 复测的 C）。
+    """
+    pages = set(_also_pages(item))
+    by_page: dict[int, dict] = {}
+    for one in (item.get("also_on_detail") or []):
+        page_no = int(one.get("page") or 0)
+        if page_no in pages and page_no not in by_page:
+            by_page[page_no] = {"page": page_no, "latex": str(one.get("latex") or "")}
+    return [by_page[key] for key in sorted(by_page)]
+
+
 def _doc_key(item: dict) -> tuple[int, int, str]:
     raw = str(item.get("row_id") or item.get("id") or "")
     found = _DOC_SEQ_RE.search(raw)
@@ -726,6 +748,11 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
             also = first.setdefault("also_on", [])
             if page_no and page_no not in also:
                 also.append(page_no)
+                # 另一版**自己的 LaTeX** 一起带上：这一条马上就要从列表里消失，工具层再也
+                # 拿不到它 —— 不带出去，formula_get 就只能给页码（实测 C 的
+                # also_on=[18] + also_on_detail=[] 就是这么来的）。
+                detail = first.setdefault("also_on_detail", [])
+                detail.append({"page": page_no, "latex": str(item.get("latex") or "")})
             continue
         if norm:
             by_latex.setdefault(norm, item)
@@ -769,8 +796,10 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
         # 这条 LaTeX 可能只是公式的一段（解析时 candidate 被切段、又没有 final）→ 去看裁图
         "partial": bool(i.get("partial")),
         "source": i.get("source") or "parse",
-        # 同一条公式**别的出现页**（跨页重复陈述被合并时才有东西）
-        "also_on": sorted({int(p) for p in (i.get("also_on") or []) if p}),
+        # 同一条公式**别的出现页**（跨页重复陈述被合并时才有东西）；升序、去重、不含自己那页
+        "also_on": _also_pages(i),
+        # 那几页上**各自那一版**的 LaTeX（与 also_on 一一对应）
+        "also_on_detail": _also_detail(i),
         "context": _clip(i.get("context") or "", 240),
         "context_zh": _clip(i.get("context_zh") or "", 240),
     } for i in kept]
