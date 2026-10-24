@@ -189,6 +189,9 @@ def _grouped_receipt(groups: list[dict], *, wanted: int, left: int, repeats: int
 
     为什么要分组：一次给 4 个检索词，如果命中混在一个 `items` 数组里，模型没法说清
     "哪几条是查 X 得到的"，引用也会张冠李戴。分组之后每组就是一次老调用的原样回执。
+
+    顶层 `returned` 与组内 `returned` **同名不同义**（前者各组之和、后者该组条数）：
+    组内再补一个 `group_returned` 把"这是本组的条数"写明。老字段名一个都不动。
     """
     failed = [g for g in groups if g.get("ok") is False]
     tips: list[str] = []
@@ -199,9 +202,12 @@ def _grouped_receipt(groups: list[dict], *, wanted: int, left: int, repeats: int
     if failed:
         tips.append("没查成的那几条单独带 ok=false 与原因，别的分组照常给出 —— 只补那几条，"
                     "不要整批重来。")
+    # 每组另给一个 `group_returned`：顶层那个 returned 是各组之和，组内这个才是该组
+    # 条数 —— 同名不同义最容易读错。拷一份再改，别动缓存里存着的那份。
+    rows = [{**g, "group_returned": int(g.get("returned") or 0)} for g in groups]
     out = {"requested": wanted,
            "returned": sum(int(g.get("returned") or 0) for g in groups),
-           "failed": len(failed), "unprocessed": left, "groups": groups}
+           "failed": len(failed), "unprocessed": left, "groups": rows}
     if tips:
         out["note"] = " ".join(tips)
     if hint:
@@ -689,12 +695,36 @@ def _chunk_key(paper_id: str, block_id: object, chunk_id: str, snippet: str) -> 
     return f"chunk:{paper_id}:{loc}:{sig}"
 
 
+def _hit_page(raw: dict) -> int | None:
+    """一条检索命中**对外报的页码** —— 全篇只有一个入口，谁都别再自己读一遍字段。
+
+    真相源是**行 id**（`p021-06` → 第 21 页）：那是阅读器正文的行号，`block_get`、
+    高亮锚点、跳页全按它算。检索索引另带一条 `page_no`，实测会与行 id 差一页 ——
+    两处各读各的，于是同一轮里 `paper_search` 说第 20 页、`block_get` 说第 21 页
+    （用户 2026-12-07 实测）；连带把"同一块的中英两路"判成两页、拒绝合并。
+    只有**拿不到行 id**（老投影只给块 id 与页码）时才退回索引的 `page_no` / `page`。
+
+    `block_id` 也看一眼：写侧把行 id 塞进了这个字段（见 `project.anchor_ids`），
+    老投影里它是**唯一**的行身份来源。解析复用 `_row_page`，不另写一套正则。
+    """
+    for cand in ([raw.get("row_id")]
+                 + [rid for rid in (raw.get("row_ids") or [])]
+                 + [raw.get("block_id")]):
+        page = _row_page(cand)
+        if page:
+            return page
+    return int(raw.get("page_no") or raw.get("page") or 0) or None
+
+
 def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
     """一条检索命中的**引用身份**：去重键 + 落点 + 片段（不碰引用表）。
 
     `paper_search` 要按这个键**先去重再截断**（top_k 数的是不同块），`_register_chunk`
     要按同一个键登记引用号 —— 两处必须用同一份算法：各写一遍就会出现
     "去重说这是两个块、登记却说这是同一个号"的错配。
+
+    页码一律走 `_hit_page`（行 id 优先），绝不在这里读索引的 `page_no`：对外报的页
+    必须与 `block_get` 一致，去重比较的也必须是**这同一个数**。
     """
     chunk_id = str(item.get("chunk_id") or "")
     paper_id = str(item.get("paper_id") or ctx.deps.paper_id)
@@ -712,7 +742,7 @@ def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
         # 少了它，两个**片段一模一样但页码不同**的段落会并成一个引用号
         "key": _chunk_key(paper_id, block_id or row_id, chunk_id, snippet),
         "chunk_id": chunk_id, "paper_id": paper_id,
-        "page": int(item.get("page_no") or item.get("page") or 0) or None,
+        "page": _hit_page(item),
         "section": item.get("section") or None,
         "block_id": block_id, "row_id": row_id, "row_ids": row_ids,
         "snippet": snippet,
@@ -766,7 +796,7 @@ def _hit_text_fps(raw: dict) -> list[str]:
     return [fp for fp in {_text_fp(raw.get("content")), _text_fp(raw.get("translation"))} if fp]
 
 
-def _same_text_row(index: dict[str, dict], raw: dict) -> dict | None:
+def _same_text_row(index: dict[str, dict], raw: dict, page: int | None) -> dict | None:
     """按**文本指纹**找回已经收下的那条命中（**只认同页**）。
 
     为什么把页码带进来：论文里"模板句"（页眉、每节开头那句固定说法）会隔几页重复一次，
@@ -774,16 +804,15 @@ def _same_text_row(index: dict[str, dict], raw: dict) -> dict | None:
     相邻页文本完全相同的两条实测就是**两处不同位置**（第 5 页与第 6 页那对中英命中），
     而真正的跨页续排是"后半句接前半句"、文本本来就不同（落点去重照样兜得住）。
     页码拿不到时不合并 —— 没法证明是同处证据。
+
+    页码**由调用方按 `_hit_page` 解析好传进来**，这里绝不自己再读一遍 `page_no`：
+    同一份"这是第几页"的逻辑写两遍，正是中英两路被拆成两处位置的那次不一致的温床。
     """
-    page = int(raw.get("page_no") or raw.get("page") or 0)
     if not page:
         return None
     for fp in _hit_text_fps(raw):
         row = index.get(fp)
-        if row is None:
-            continue
-        other = int(row["raw"].get("page_no") or row["raw"].get("page") or 0)
-        if other == page:
+        if row is not None and row.get("page") == page:
             return row
     return None
 
@@ -834,8 +863,12 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
 
         paper_search(queries=["random rotation", "quantization error"])
 
-    回执**按 query 分组**（`groups: [{query, returned, items}, …]`），顺序与你给的词一致 ——
-    不同词的命中**不会**混成一个数组，所以引用时说得清"哪几条是查哪个词得到的"。
+    回执**按 query 分组**（`groups: [{query, returned, group_returned, items}, …]`），
+    顺序与你给的词一致 —— 不同词的命中**不会**混成一个数组，所以引用时说得清
+    "哪几条是查哪个词得到的"。
+    ⚠️ `returned` 在这个回执里**同名不同义**：顶层那个是各组之和（这一趟一共给了几条），
+    组内那个是**该组**的条数。要看某一组几条就读组内的 `group_returned`（与那组的
+    `returned` 同值，名字不带歧义）；要总数就读顶层的 `returned`。
     某一条查失败只在那一条上给 `ok=false` + 原因，别的照常返回。
     一次最多 8 个词；超了会截断，回执里写明「还有 N 条没处理」。
 
@@ -878,7 +911,10 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         for raw in raw_items:
             block = _block_key(ctx, raw)
             hit_side = _hit_side(raw)
-            prev = by_key.get(block) or _same_text_row(by_text, raw)
+            #: 页码只解析一次（`_hit_page` = 行 id 优先），兜底去重拿它比 —— 索引那条
+            #: `page_no` 与行 id 差一页时，同一块的中英两路会被当成两处（实测 A/B）。
+            page = _hit_page(raw)
+            prev = by_key.get(block) or _same_text_row(by_text, raw, page)
             if prev is not None:
                 merged += 1
                 if hit_side != prev["side"] and hit_side not in prev["also_sides"]:
@@ -886,7 +922,7 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                 # 同一处的后续命中也要把落点登记上：后面再来一条同块的，别又开一个新位置
                 by_key.setdefault(block, prev)
                 continue
-            row = {"raw": raw, "side": hit_side, "also_sides": []}
+            row = {"raw": raw, "side": hit_side, "also_sides": [], "page": page}
             by_key[block] = row
             for fp in _hit_text_fps(raw):
                 by_text.setdefault(fp, row)
@@ -921,10 +957,13 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
             out["deduped"] = merged
         notes = []
         if merged:
-            notes.append(f"同一处的多路命中（同一块，或去掉 markdown 记号后逐字相同的片段）"
-                         f"已按 ref 合并 {merged} 条"
-                         f"（另一面记在该条的 also_sides 里）；这 {len(items)} 条是 "
-                         f"{len(items)} 个**不同位置**。")
+            # 措辞只说**数得出来**的事实：并掉的是同一块的中英两路，剩下每条各是一处位置。
+            # 以前写"这 N 条是 N 个不同位置"—— 同一块被数两遍时它就是在替错误背书
+            # （用户 2026-12-07 实测：说 4 个位置，实际只有 3 处）。
+            notes.append(f"同一处的多路命中（同一块的中英两路，或去掉 markdown 记号后逐字"
+                         f"相同的片段）已按 ref 合并 {merged} 条"
+                         f"（另一面记在那条的 also_sides 里）；合并后这 {len(items)} 条"
+                         f"各是一处位置，不再把同一块数两遍。")
         if not items:
             base = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
                     "仍无结果就如实说明这篇论文里找不到依据。")
@@ -1487,7 +1526,8 @@ async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         for raw in list(data.get("items") or [])[:ctx.deps.cfg.evidence_limit]:
             paper_id = str(raw.get("paper_id") or "")
             title = str(raw.get("paper_title") or "") or paper_id
-            page = int(raw.get("page_no") or 0) or None
+            # 页码与 paper_search 同一个入口（行 id 优先），跨库命中的页才不会自成一套口径
+            page = _hit_page(raw)
             section = raw.get("section")
             snippet = _clip(raw.get("translation") or raw.get("content") or "")
             # 名字空间同 `_register_chunk`：行 id 不能进 block_id，去重键回落到行 id
@@ -2370,6 +2410,32 @@ async def paper_meta_write(ctx: RunContext[Deps], venue: str = "", year: int = 0
                           _impl())
 
 
+def _with_rendered_length(receipt: dict) -> dict:
+    """给高亮回执逐条补上 `rendered_length`（= end - start，**渲染坐标**下的长度）。
+
+    为什么需要它：`start` / `end` 是渲染坐标下的偏移（公式在那一套里只占
+    1 个字符），而 `text` 里露出来的是 LaTeX 原文 —— 两者长度天生不同，模型拿
+    `len(text)` 去推偏移必然错位（用户自检报的摩擦点）。这里只**加**一个字段，
+    老的 `start` / `end` 一个都不动。
+    """
+    def one(row: object) -> None:
+        if not isinstance(row, dict) or "start" not in row or "end" not in row:
+            return
+        try:
+            start, end = int(row.get("start") or 0), int(row.get("end") or 0)
+        except (TypeError, ValueError):
+            return
+        if end >= start:
+            row["rendered_length"] = end - start
+
+    if not isinstance(receipt, dict):
+        return receipt
+    for row in receipt.get("items") or []:
+        one(row)
+    one(receipt.get("highlight"))
+    return receipt
+
+
 async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", text: str = "",
                            color: str = "", side: str = "", occurrence: int = 1,
                            highlight_id: str = "", query: str = "", reason: str = "",
@@ -2432,6 +2498,12 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                    - 回执里出现 `warning` = 这条落在 **Markdown 面**（阅读视图里看不到它），
                      后面写着原因（跨行 / 页内对不上）—— 请如实转述给用户。
       op="list"    query（可选）→ 列这篇的高亮（带页码与"在哪一面"）。
+                   ⚠️ 每条的 `start` / `end` 是**渲染坐标**下的偏移，不是
+                   `text` 里的字符下标：那个坐标系里**一整条公式只占 1 个字符**
+                   （前端把公式节点当单个占位符画），而 `text` 里露出来的是 LaTeX 原文
+                   （`\frac{a}{b}` 有十几个字符）。所以拿 `len(text)` 去切偏移、
+                   或者把 `end - start` 当成"引文多长"，一定对不上 —— 两者长度本来就不是一回事。
+                   要知道引文在坐标系里多长，读 `rendered_length`（= end - start）。
       op="locate"  highlight_id → 这条高亮挂在哪一面、第几页、原文是什么（还能顺带看它有没有笔记）。
       op="update"  highlight_id + color（改颜色）/ text（改引用文字）/ **anchor（挪位置）**。
                    改锚点：`anchor="md:p6"`（+ 可选 `text`）→ 宿主在新锚点重新定位这段文字，
@@ -2528,7 +2600,8 @@ async def highlight_manage(ctx: RunContext[Deps], op: str, anchor: str = "", tex
                 return out
             return await _create_one(anchor, text, color, side, occurrence)
         if what in ("list", "search"):
-            return await ctx.deps.host.highlights(ctx.deps.paper_id, query=str(query or ""))
+            return _with_rendered_length(
+                await ctx.deps.host.highlights(ctx.deps.paper_id, query=str(query or "")))
         if what in ("locate", "info", "show"):
             if not highlight_id:
                 return {"ok": False, "error": "locate 要给 highlight_id（先用 op=list 拿）。"}
