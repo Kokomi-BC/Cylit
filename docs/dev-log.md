@@ -11895,3 +11895,31 @@ and dequantization stages.」）正好落在 zh 多出来的那一行（`p021-01
 
 **仍未修（用户明确不做或待定）**：高亮配色的语义重映射（用户口径是「随机多巴胺」，不做）；
 `page_total` 是全篇页数、与组内 `returned` 并列时容易误读（docstring 已说明，字段名未改）。
+
+### 129. 第一百二十九轮：块内续行不再断段；`page_total` 只留在顶层
+
+用户自检（2026-12-08）两条小瑕疵：
+
+① `block_get` 的英文侧在句子中间断成两段（`…applied to the` + 空行 + `input embedding vectors during…`），
+   译文却是一整段 —— 是上一轮「行跨度取并集」之后按**一律 `\n\n`** 拼接留下的痕迹。
+② 多查询回执里**每组都带** `page_total`（全篇页数），跟组内 `returned` 并排时会被读成「这组有 22 页」。
+
+改法：
+
+- 新增 `_join_rows(pieces, kinds)`：按**续行规则**拼同一块的多行 —— 上一行以句末标点结尾才换段（空行），
+  否则当同一句话接着排（中文不加空格、拉丁文补一个空格）。两个细节都是为了这两条实测：
+  · **`…` 不算句末标点**：行尾的省略号往往正是「这句被行边界切了」的信号，算成句末就会凭空多一个空行；
+  · **上一行是 heading 时一律换段**：标题后面接正文，不是续句（否则 `# E IMPLEMENTATION` 会和正文黏成一行）。
+- `page_total` 只出现一次：单查询时它本来就是顶层字段；多查询由 `_grouped_receipt` 从每组摘掉、提升到顶层。
+
+生产实测（脚本直接调工具层）：
+
+```
+single-query keys: [deduped, hint, items, page_total, query, returned]  page_total=22 returned=4
+  ref1 text: 空行 1 处（那是真的段落分隔），'applied to the input embedding' 已连上，尾部整句完整
+multi-query keys:  [failed, groups, hint, page_total, requested, returned, unprocessed]
+  per-group keys:  [deduped, group_returned, hint, items, query, returned]     ← 组里没有 page_total 了
+```
+
+**验证**：`pytest tests/` → **1813 passed / 131 skipped**（两条既有断言改到新契约：标题换段、续行不断段）；
+生产 `630ccaf`、`git status` 干净、`/health` 200。
