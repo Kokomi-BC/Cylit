@@ -1045,6 +1045,26 @@ export interface MineruConfigPatch {
   clear_token?: boolean;
 }
 
+/**
+ * `GET/PUT /parse/config`：解析引擎的**导入默认值**（本地与 MinerU 共用一套键）。
+ * 取值优先级永远是：本次任务参数 > 这里存的默认值 > 代码/官方默认值。
+ */
+export interface ParseConfig {
+  /** MinerU：三项开关 + 页码范围（导入时仍可逐篇改） */
+  mineru_is_ocr: boolean;
+  mineru_enable_formula: boolean;
+  mineru_enable_table: boolean;
+  mineru_page_ranges: string;
+  /** 本地：扫描页是否调视觉模型、读页 dpi、插图两个开关 */
+  parse_vision_enabled: boolean;
+  parse_vision_dpi: number;
+  parse_figure_caption: boolean;
+  parse_deep_figure_search: boolean;
+  /** 读页 dpi 的合法区间（后端给，前端不再写死） */
+  vision_dpi_min?: number;
+  vision_dpi_max?: number;
+}
+
 /** `POST /mineru/verify`：**HTTP 恒为 200**，成败看 `ok` / `state`（失败也要能读到 message）。 */
 export interface MineruVerifyResult {
   ok: boolean;

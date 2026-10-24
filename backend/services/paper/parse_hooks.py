@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-from backend.core.config import get_settings
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps
 from backend.services.model.usage_stats import usage_scope
@@ -45,8 +44,14 @@ def build_vision_fn(params: dict | None = None, *, page_total: int = 0):
     ``params["vision"] = False``）。mock 视觉也能兜底：离线跑一遍即可验证
     "扫描页 → 块 → 翻译"整条链路，只是识别结果是占位文本。
     """
+    from backend.services.paper import parse_prefs
+
     params = params or {}
-    if params.get("vision") is False or not get_settings().parse_vision_enabled:
+    # 开关的优先级：本次任务的 params["vision"] > 设置页存的值 > core/config 的默认
+    vision_on = params.get("vision")
+    if vision_on is None:
+        vision_on = parse_prefs.defaults()["parse_vision_enabled"]
+    if vision_on is False:
         return None
     from backend.parsing.ocr.vision_reader import read_page_markdown
     from backend.services.model.model_manager import model_manager

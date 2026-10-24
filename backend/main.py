@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api import (
     agent_router, annotations_router, home_router, knowledge_router, mineru_router,
-    models_router, papers_router, reader_router, settings_router, tasks_router,
+    models_router, papers_router, parse_config_router, reader_router, settings_router,
+    tasks_router,
 )
 from backend.api.folders import router as folders_router
 from backend.core.config import get_settings
@@ -170,6 +171,8 @@ def create_app() -> FastAPI:
     # 在线解析（MinerU）的配置/校验：只挂带前缀的那一份 —— 它没有"直接打开的资源链接"，
     # 不像 /papers 那样需要无前缀别名
     app.include_router(mineru_router, prefix=s.api_prefix)
+    # 解析引擎的导入默认值（本地 / MinerU 共用一套键）：/parse/config
+    app.include_router(parse_config_router, prefix=s.api_prefix)
 
     # 兼容：同时挂一份到 /papers 等无前缀路径（便于直接打开资源链接）
     app.include_router(reader_router)

@@ -49,8 +49,10 @@ async def upload_paper(
     tags: str | None = Form(None),
     paper_id: str | None = Form(None),
     auto_parse: bool = Form(True),
-    figure_caption: bool = Form(False),
-    deep_figure_search: bool = Form(False),
+    # 这两个开关都是 None 哨兵：没传 = 用设置里存的默认值（在线服务 → 本地解析），
+    # 显式 true/false 仍然覆盖它。
+    figure_caption: bool | None = Form(None),
+    deep_figure_search: bool | None = Form(None),
     parse_engine: str | None = Form(None),
     mineru_model_version: str | None = Form(None),
     mineru_language: str | None = Form(None),

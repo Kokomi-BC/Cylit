@@ -39,8 +39,8 @@ def import_pdf(temp_path: str | Path, original_name: str,
                venue: str | None = None, year: int | None = None,
                tags: str | None = None, paper_id: str | None = None,
                auto_parse: bool = True, reuse_existing: bool = True,
-               figure_caption: bool = False,
-               deep_figure_search: bool = False,
+               figure_caption: bool | None = None,
+               deep_figure_search: bool | None = None,
                parse_engine: str | None = None,
                parse_params: dict | None = None) -> dict:
     """上传 → 校验 → 落盘 source.pdf + source_hash → 建 paper 行 → 建 IMPORT/PARSE 任务。
@@ -61,10 +61,13 @@ def import_pdf(temp_path: str | Path, original_name: str,
     """
     from backend.services.paper import mineru_service
 
-    opts = {"figure_caption": bool(figure_caption),
-            "deep_figure_search": bool(deep_figure_search),
-            "engine": (mineru_service.effective()["engine_default"]
-                       if parse_engine is None else _check_engine(parse_engine))}
+    # 两个插图开关：None = 不写进任务参数，交给解析处理器用设置里存的默认值
+    opts: dict = {"engine": (mineru_service.effective()["engine_default"]
+                           if parse_engine is None else _check_engine(parse_engine))}
+    if figure_caption is not None:
+        opts["figure_caption"] = bool(figure_caption)
+    if deep_figure_search is not None:
+        opts["deep_figure_search"] = bool(deep_figure_search)
     if parse_params:
         opts.update(parse_params)
     s = get_settings()

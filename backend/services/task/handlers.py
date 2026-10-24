@@ -9,7 +9,6 @@ TRANSLATE_PDF / ANALYZE / AI_READING 属产线 B/C，下一轮接入（注册时
 
 from __future__ import annotations
 
-from backend.core.config import get_settings
 from backend.core.logging import get_logger
 from backend.core.utils import json_dumps, json_loads, now
 from backend.repositories.mysql.models import Paper
@@ -96,16 +95,21 @@ def _handle_parse_local(ctx: TaskContext) -> dict:
         if ctrl:
             control["value"] = ctrl
 
+    from backend.services.paper import parse_prefs
+
+    # 默认值来自「设置 → 在线服务 → 本地解析」（parse_prefs），任务参数显式给了就以它为准
+    prefs = parse_prefs.local_defaults()
     repair_fn = parse_hooks.build_repair_fn()
     builder = PaperBuilder(
         pdf, paper_id, paths["root"], progress=on_progress,
         repair_fn=repair_fn, use_llm_repair=bool(ctx.params.get("llm_repair")),
         vision_fn=parse_hooks.build_vision_fn(ctx.params),
-        vision_dpi=int(ctx.params.get("vision_dpi")
-                       or get_settings().parse_vision_dpi),
-        # 导入弹窗的两个插图开关（均默认关，解析时生效；见 PaperBuilder）
-        figure_caption=bool(ctx.params.get("figure_caption")),
-        deep_figure_search=bool(ctx.params.get("deep_figure_search")),
+        vision_dpi=int(ctx.params.get("vision_dpi") or prefs["parse_vision_dpi"]),
+        # 导入弹窗的两个插图开关（默认值可在设置里改；见 PaperBuilder）
+        figure_caption=bool(ctx.params.get("figure_caption",
+                                       prefs["parse_figure_caption"])),
+        deep_figure_search=bool(ctx.params.get("deep_figure_search",
+                                            prefs["parse_deep_figure_search"])),
     )
     result = builder.build()
     if result.stats.get("scanned_pages"):

@@ -12087,3 +12087,54 @@ scripts/frontend_check.py  155 / 155
 `GET/PUT /agent/websearch/config`、`POST /agent/websearch/verify`、`GET /tasks` 及 `POST /tasks/{id}/*`、
 `DELETE /tasks/{id}`、`GET /tasks/stream`（SSE）、`GET /settings/health`、`GET /knowledge/index/status`、
 `POST /knowledge/reconcile`。
+
+### 134. 第一百三十四轮：本地解析也能调 + 在线解析补齐可调项 + 页面空间利用率
+
+用户口径（2026-12）：「在线服务的 MinerU 那里感觉可调项不多，另外本地没有解析引擎」
+「着重优化在线解析页面，感觉空间利用率不高」。
+
+#### 一、后端：新增"解析默认值"（一个键一套，两个引擎共用）
+
+- 新模块 `backend/services/paper/parse_prefs.py`：8 个键存在 setting 表，
+  读写复用 `mineru_service._stored()/_write_setting()`（同一张表、同一个测试注入口）。
+  · MinerU：`mineru_is_ocr` / `mineru_enable_formula` / `mineru_enable_table` / `mineru_page_ranges`
+  · 本地：`parse_vision_enabled` / `parse_vision_dpi` / `parse_figure_caption` / `parse_deep_figure_search`
+- 新接口 `GET/PUT /parse/config`（`backend/api/parse_config.py`），校验复用 `as_bool` / `norm_page_ranges`，
+  读页 dpi 限 72–600。不并进 `/mineru/config`：那个形状是"MinerU 一个服务"（token/掩码/验证），
+  而这些键是**两个引擎共用的导入默认值**，合成一个响应前端就得猜字段归属。
+- 取值优先级统一成：**本次任务参数 > 存的默认值 > 代码/官方默认值**
+  （`mineru_service.effective_params`、`handlers._handle_parse_local`、`mineru_service.parse_online`、
+  `parse_hooks.build_vision_fn` 四处分派点都改成这个顺序）。
+- `import_pdf` / `POST /papers` 的两个插图开关改成 **None 哨兵**：没传 = 用存的默认值，
+  显式 true/false 仍然覆盖（原来 `Form(False)` 永远把默认值盖成"关"）。
+
+#### 二、前端：在线服务从两个服务变三个
+
+- 新增第三枚服务卡「本地解析」（PyMuPDF，全离线）：视觉读页开关、读页 dpi（区间后端给）、
+  插图带图注、深度找图 —— 这四个以前只能写死在 env 里。
+- 「在线解析」补齐 4 项导入默认值：强制 OCR / 识别公式 / 识别表格 / 页码范围；
+  模型版本与 OCR 语言改用**后端给的列表**（语言 16 项，原来前端写死 en/ch 两项）。
+- 一个「保存设置」管两处：凭据与引擎走 `/mineru/config`，四项导入默认值走 `/parse/config`，
+  只提交真的改过的字段（两个接口都是字段可选的）。
+- 底部只留一排动作（测试服务 / 清除密钥 / 保存设置）；本地解析没有远程凭据，那两个按钮禁用。
+
+#### 三、空间利用率
+
+- 顶部两个分组从"上下堆"改成**两栏并排**（凭证 | 参数），≥1000px 两栏、更窄一栏；
+- 新增一条只读摘要「导入时会发生什么」（默认引擎 / 读页 / 插图 / MinerU 三项 + 页码范围），
+  改参数时不用来回切服务核对；
+- 新增「最近的解析」5 行（复用 `loadTasks` 的 `state.tasks` 里 PARSE 任务）：
+  论文名 / 引擎 / 状态 / 相对时间 —— 页面下半截因此不是空白，而是"上次到底怎么解析的"。
+
+#### 四、验证
+
+```
+GET  /api/v1/parse/config  → 8 个键 + vision_dpi_min/max
+PUT  改 parse_vision_dpi=160 + parse_figure_caption=true → 落库，message 列出改过的键
+PUT  parse_vision_dpi=9999 → VALIDATION_ERROR「读页 dpi 要在 72–600 之间」
+真浏览器（CDP）：三枚服务卡 = [本地解析, 在线解析, 网联搜索]
+  本地：4 个可调项，底部 [测试服务(禁用), 清除密钥(禁用), 保存设置(禁用)]，状态「离线解析 + 视觉读页」
+  在线：8 个可调项（API token / 模型版本 / OCR 语言 / 默认引擎 / 强制 OCR / 识别公式 / 识别表格 / 页码范围）
+        OCR 语言 16 个选项、模型版本 2 个选项（都来自后端）
+  改读页 dpi 200 → 180 → 状态变「有未保存的改动」→ 点保存 → 重载后仍是 180（落库成功）
+```

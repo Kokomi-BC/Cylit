@@ -269,25 +269,40 @@ def normalize_params(payload: dict | None) -> dict:
     return out
 
 
+def _import_defaults() -> dict:
+    """导入时的两个插图开关默认值（设置页存的那一份）。"""
+    from backend.services.paper import parse_prefs
+
+    return parse_prefs.local_defaults()
+
+
 def effective_params(params: dict | None = None) -> dict:
     """本次解析**真正要用**的 MinerU 参数（任务参数 > 设置默认值 > 官方默认值）。
 
     官方默认值：`model_version=pipeline`、`language=ch`（本系统面向英文论文，设置里给 `en`）、
     `enable_formula` / `enable_table` 都开、`is_ocr` 关。
     """
+    from backend.services.paper import parse_prefs
+
     params = params or {}
     cfg = effective()
+    # 中间那一层是「设置 → 在线服务 → 解析参数」里存的导入默认值（parse_prefs）
+    defaults = parse_prefs.mineru_defaults()
     model = str(params.get("mineru_model_version") or cfg["model_version"] or "pipeline")
     lang = str(params.get("mineru_language") or cfg["language"] or "en")
     return {
         "model_version": norm_model_version(model),
         "language": norm_language(lang),
-        "enable_formula": as_bool(params.get("mineru_enable_formula", True),
-                                  field="识别公式"),
-        "enable_table": as_bool(params.get("mineru_enable_table", True),
-                                field="识别表格"),
-        "is_ocr": as_bool(params.get("mineru_is_ocr", False), field="强制 OCR"),
-        "page_ranges": norm_page_ranges(params.get("mineru_page_ranges") or ""),
+        "enable_formula": as_bool(
+            params.get("mineru_enable_formula", defaults["mineru_enable_formula"]),
+            field="识别公式"),
+        "enable_table": as_bool(
+            params.get("mineru_enable_table", defaults["mineru_enable_table"]),
+            field="识别表格"),
+        "is_ocr": as_bool(params.get("mineru_is_ocr", defaults["mineru_is_ocr"]),
+                          field="强制 OCR"),
+        "page_ranges": norm_page_ranges(
+            params.get("mineru_page_ranges") or defaults["mineru_page_ranges"] or ""),
     }
 
 
@@ -400,8 +415,10 @@ def parse_online(
     result = build_from_bundle(
         pdf, paper_id, paths["root"], bundle,
         dpi=int(s.render_dpi), crop_dpi=int(s.crop_dpi),
-        figure_caption=bool(params.get("figure_caption")),
-        deep_figure_search=bool(params.get("deep_figure_search")),
+        # 任务参数没给才落到「设置 → 在线服务」里存的导入默认值（两处引擎共用同一套）
+        figure_caption=bool(params.get("figure_caption", _import_defaults()["parse_figure_caption"])),
+        deep_figure_search=bool(params.get("deep_figure_search",
+                                       _import_defaults()["parse_deep_figure_search"])),
         model_version=mp["model_version"],
         mineru_params=mp,
         progress=progress,
