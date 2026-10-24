@@ -3201,6 +3201,13 @@ def check_trace_motion() -> None:
            and "-webkit-line-clamp: unset" in src,
            f"autogrow={'有' if '.autogrow .step-text' in src else '缺'}")
 
+def _bundle_tmp_root() -> Path:
+    """esbuild / node 那两条真代码检查的**临时目录根**（见下面各调用点的说明）。"""
+    root = ROOT / "data" / "logs"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def check_markdown_shapes() -> None:
     """把形状表喂给真实渲染器（esbuild bundle `useMarkdown.ts` → node）。"""
     print("\n⓪ Markdown 加粗：`**` 紧贴标点（不用浏览器 / 不打模型）")
@@ -3210,7 +3217,10 @@ def check_markdown_shapes() -> None:
         skip("markdown 加粗形状表", "没有 node / esbuild（先在 frontend 里 npm i）")
         return
     src = [c[1] for c in MD_SHAPES]
-    with tempfile.TemporaryDirectory(prefix="cyl_md_") as tmp:
+    #: 临时目录放**仓库内**（`data/logs`），不放系统 %TEMP%：实测在系统临时目录里 esbuild
+    #: 偶发写不出 `md.mjs`（`Failed to write to output file … Access is denied`，同一个文件手写
+    #: 却没问题 —— 安全软件对新目录/新文件的瞬时占用）。仓库内的目录稳定，用完即删。
+    with tempfile.TemporaryDirectory(prefix="cyl_md_", dir=_bundle_tmp_root()) as tmp:
         tmpdir = Path(tmp)
         bundle, driver, cases = tmpdir / "md.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
         cases.write_text(json.dumps({"shapes": src, "breaks": [c[1] for c in MD_BREAKS],
@@ -3644,7 +3654,7 @@ def check_reference_urls() -> None:
     if not node or not (frontend / "node_modules" / "esbuild").exists():
         skip("参考文献地址三级回退", "没有 node / esbuild（先在 frontend 里 npm i）")
         return
-    with tempfile.TemporaryDirectory(prefix="cyl_ref_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="cyl_ref_", dir=_bundle_tmp_root()) as tmp:
         tmpdir = Path(tmp)
         bundle, driver, cases = tmpdir / "refs.mjs", tmpdir / "run.mjs", tmpdir / "cases.json"
         cases.write_text(json.dumps([c[1] for c in REF_CASES], ensure_ascii=False),
