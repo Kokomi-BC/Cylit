@@ -731,12 +731,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointerup="onResizeUp"
         @pointercancel="onResizeUp"
       >
-        <!-- **整 90° 的一段弧**（贴着卡片圆角那一段自然弧长），两端是圆头（`stroke-linecap: round`）——
-             以前只画了 40°，长度约 15px，比顶部那枚 34px 的药丸短一大截（用户口径 2026-12：
-             两处拖动条要一样长；以笔记卡为准）。
+        <!-- **约 40° 的一段弧**（用户口径 2026-12 二轮：指示器要短，跟以前差不多；两处长度仍相等——
+             顶端药丸按同一条公式跟着变短），两端是圆头（`stroke-linecap: round`）—— CSS 边框只能画
+             90° 直角端点，所以从"整圈描边 + 扇形裁剪"换成一条 SVG path。
              `vector-effect="non-scaling-stroke"`：描边宽度永远按 CSS 像素算，不随 viewBox 缩放。 -->
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <path d="M96 50 A46 46 0 0 1 50 96" vector-effect="non-scaling-stroke" />
+          <path d="M91.7 69.4 A46 46 0 0 1 69.4 91.7" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
       <div
@@ -750,8 +750,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
         @pointercancel="onResizeUp"
       >
         <svg class="fc-grip" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-          <!-- 左下角是镜像：x 关于 50 翻面，sweep 方向跟着反过来，弧才是"贴着左下角" -->
-          <path d="M4 50 A46 46 0 0 0 50 96" vector-effect="non-scaling-stroke" />
+          <!-- 左下角是镜像（x 关于 50 翻面），弧贴着左下角 -->
+          <path d="M30.6 91.7 A46 46 0 0 1 8.3 69.4" vector-effect="non-scaling-stroke" />
         </svg>
       </div>
     </div>
@@ -849,11 +849,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
    只动 width 与背景色，**不动 transform**：本项目踩过「缩放 + 半透明描边 → 边缘反复重采样 → 闪」的坑，
    这一条同样不引入合成层位移。220ms 带轻微过冲，松手自然回落（状态一撤就是反向过渡）。 */
 .fc-grab-pill {
-  /* 长度与底角那两道弧**同一个数**（用户口径 2026-12：顶部拖动条要和左右下角的拖动条一样长）。
-     弧的半径 = 圆角 + gap、跨 90° → 弧长 = (圆角 + gap) × 2.1739 × π/4 ≈ (圆角 + gap) × 1.571。
-     笔记卡圆角 16 + gap 5 → 33px（改之前药丸写死 34、弧只有 40° ≈ 15px，一条顶两道）；
-     圆角一改两边一起变，不会再分叉。 */
-  width: calc((var(--fc-radius, 12px) + var(--fc-gap, 5px)) * 1.571);
+  /* 长度与底角那两道弧**同一个数**（用户口径 2026-12：顶部拖动条要和左右下角的拖动条一样长，
+     而且指示器整体要短 —— 跟以前差不多的那一档）。
+     弧的半径 = 圆角 + gap、跨 40.08° → 弧长 = 46 × 0.6995 / 100 × 弧盒
+     = (圆角 + gap) × 2.1739 × 0.3218 ≈ (圆角 + gap) × 0.6995。
+     笔记卡圆角 16 + gap 5 → 14.7px；圆角一改两边一起变，不会再分叉。 */
+  width: calc((var(--fc-radius, 12px) + var(--fc-gap, 5px)) * 0.6995);
   height: 4px; border-radius: 2px;
   background: color-mix(in srgb, var(--text) 19%, transparent);
   /* 变长走 **transform: scaleX**，不补间 width（与对话浮窗同一套，2026-12-03）：
@@ -869,8 +870,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
    两边若各用一套（这边 transition、那边关键帧），观感就会"明显不一致"——这是上一轮的教训。 */
 .fc-grab.dragging .fc-grab-pill,
 .fc-grab:active .fc-grab-pill {
-  /* 纯 transition（34→46 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。
-     46/34 = 1.3529；弹丸居中，从中间往两边长，与改 width 的观感一致。 */
+  /* 纯 transition（长度 ×1.3529 / 220ms / 回弹曲线过冲一次），与对话浮窗完全同一套。
+     弹丸居中，从中间往两边长，与改 width 的观感一致。 */
   transform: scaleX(1.3529);
   background: color-mix(in srgb, var(--text) 34%, transparent);
 }
