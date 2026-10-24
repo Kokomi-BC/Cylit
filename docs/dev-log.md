@@ -12741,3 +12741,47 @@ copy-fill            22         12.8px           12.5px   11.5px
 ```
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
+
+
+### 152. 第一百五十二轮：修回「拖手柄选不中公式」（上一轮的元素边界插入点被拒），并把三枚菜单图标换成同一档笔画
+
+用户口径：「现在完全没法使用触摸手柄选中公式了，另外添加到对话、解释、全选换一个图标，感觉粗细不一致」。
+
+**回归原因**（我上一轮引入的）：`caretBesideFormula` 直接返回**元素节点上的边界**
+`{ node: parent, offset: index±1 }`，而 `moveHandleTo` 有一条老判据 ——
+「只认文字节点上的插入点，落在元素上说明这附近没文字」→ 每次拖动都被 `return` 掉，
+于是长按选中公式之后再拖手柄**一点反应都没有**。
+
+改法（`views/ReaderView.vue`）：
+
+1. 新增 `scanTextBeside` / `textCaretBesideFormula`：优先把插入点表达成**文字节点**上的边界
+   （公式左侧取前一段字的末尾、右侧取后一段字的开头）；
+2. 要能**往上爬**：`.katex` 常被包在 `<span>`（行内公式的壳、`.katex-display`）里，那一层左右没有字，
+   只扫一层就退化成元素边界 —— 白改。现在按 `display` 判：`inline` 继续往上、到块级就停，
+   免得把隔壁段落的字算成本段的；
+3. 真的左右都没字（公式独占一行）才退回元素边界，并把 `moveHandleTo` 那条判据换成 `caretIsUsable`：
+   文字节点一律通过，元素节点要求「在 `.reader-content` 里且不在 `.katex` 内」。
+
+**实测**（headless Edge + 真实 KaTeX 渲染，四个位置逐一跑改后的算法，再拿返回值 `setStart` 一次验边界合法）：
+
+```
+公式位置                     左侧插入点      右侧插入点     可用 / 边界合法
+段落中间（前后都有字）        文字节点        文字节点        是 / 是
+段首（前面没字）              元素边界(段落)  文字节点        是 / 是
+段尾（后面没字）              文字节点        元素边界(段落)  是 / 是
+独占一段                      元素边界        元素边界        是 / 是
+```
+
+**图标**（用户口径：添加到对话 / 解释 / 全选换一个图标，粗细要一致）：
+
+- 原来「加入对话」「询问 Cyli」用的是**线性**的 `chat` / `sparkle`（1.6 笔画），
+- 而这一排其余都是填充型，且填充型自己也分两档：`search/copy/save-alt/open-new` 是**2 单位壁厚**的空心轮廓，
+  `delete-fill` 才是实心块。实心块摆在一排细轮廓里，看起来就是「这几枚突然粗一档」。
+- 于是新增 / 重画三枚，全部落在**2 单位壁厚**那一档：
+  `chat-fill` = Material 空心气泡（外框 + 内挖）；`sparkle-fill` = auto_awesome 的**空心**主星 + 两枚实心小星（`fill-rule=evenodd` 挖洞）；
+  `select-all-fill` 原来是 Material `select_all` 的**虚线框**（缩到 12~15px 时虚线碎成点），改成四枚实心圆角括号。
+- 尺寸仍按「墨迹高 ≈ 11.25px」反算（见 `ContextMenu` 的 `ICON_INK_H`）：chat-fill 20 → 13.5px、
+  sparkle-fill 22 → 12.5px、select-all-fill 18 → 15px；改完一排的墨迹高落在 11.25~11.5px。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**；
+另用 headless Edge 把触摸工具条按真实尺寸渲染成图逐枚比对（三枚新图标的笔画与 `search/copy` 一致）。

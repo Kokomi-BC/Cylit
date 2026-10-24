@@ -4908,16 +4908,68 @@ function katexAtomAt(node: Node | null | undefined): HTMLElement | null {
   return (el?.closest?.('.katex') as HTMLElement | null) ?? null;
 }
 
+/** 在 `parent` 里找 `ref` 之前 / 之后第一段有字的文字节点（跳过 `skip` 子树里的文字）。 */
+function scanTextBeside(parent: Node, ref: Node, skip: Node, after: boolean): { node: Node; offset: number } | null {
+  const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT);
+  let before: { node: Node; offset: number } | null = null;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (skip.contains(n)) continue;
+    const value = n.nodeValue ?? '';
+    if (!value.trim()) continue;
+    /* DOCUMENT_POSITION_PRECEDING = 公式排在这个文字节点前面（即这段字在公式之后） */
+    const isAfter = (n.compareDocumentPosition(ref) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+    if (after && isAfter) return { node: n, offset: 0 };
+    if (!after && !isAfter) before = { node: n, offset: value.length };
+  }
+  return after ? null : before;
+}
+
+/** 公式一侧最近的**文字**插入点（拖手柄那条路只认文字节点，见 moveHandleTo 的判据）：
+ *  `after` 为真取公式之后第一段文字的起点，否则取公式之前最后一段文字的末尾。
+ *
+ *  ⚠️ 要能**往上爬**：公式常被包在 `<span>`（行内公式的壳、`.katex-display`）里，
+ *  那一层自己左右没有字，字在**段落**那一层。只扫一层的话就退化成元素边界 —— 
+ *  手柄拖到手柄等于没反应。爬到块级就停，免得把隔壁段落的字当成本段的。 */
+function textCaretBesideFormula(el: HTMLElement, after: boolean): { node: Node; offset: number } | null {
+  let ref: Node = el;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const parent = ref.parentNode;
+    if (!parent) return null;
+    const found = scanTextBeside(parent, ref, el, after);
+    if (found) return found;
+    const pEl = parent.nodeType === 1 ? (parent as HTMLElement) : null;
+    if (!pEl || !/^inline/.test(getComputedStyle(pEl).display)) return null;
+    ref = parent;
+  }
+  return null;
+}
+
 /** 公式原子的插入点：贴在公式**左缘或右缘**（按 x 与公式中线比较）——
- *  选区因此永远不会切进公式内部，也不会把光标甩到公式里面某个隐藏文字上。 */
+ *  选区因此永远不会切进公式内部，也不会把光标甩到公式里面某个隐藏文字上。
+ *
+ *  ⚠️ 优先返回**文字节点**：手柄拖拽那条路（moveHandleTo）只把文字插入点交给
+ *  `setBaseAndExtent`。上一版这里直接给元素边界，于是长按选中公式后再拖手柄**完全没反应**
+ *  （用户口径 2026-12-05 第 1 条）。左右都没字（公式独占一行）才退回元素边界。 */
 function caretBesideFormula(el: HTMLElement, x: number): { node: Node; offset: number } | null {
-  const parent = el.parentNode;
-  if (!parent) return null;
   const b = el.getBoundingClientRect();
   if (b.height <= 0) return null;
+  const after = x > (b.left + b.right) / 2;
+  const text = textCaretBesideFormula(el, after);
+  if (text) return text;
+  const parent = el.parentNode;
+  if (!parent) return null;
   let index = 0;
   for (let n = parent.firstChild; n && n !== el; n = n.nextSibling) index += 1;
-  return { node: parent, offset: index + (x > (b.left + b.right) / 2 ? 1 : 0) };
+  return { node: parent, offset: index + (after ? 1 : 0) };
+}
+
+/** 这个插入点能不能直接交给 `setBaseAndExtent`：文字节点一律可以；
+ *  元素节点只认正文里的、且不在公式内部的（公式边缘那种边界由 caretBesideFormula 构造）。 */
+function caretIsUsable(caret: { node: Node; offset: number }): boolean {
+  if (caret.node.nodeType === Node.TEXT_NODE) return true;
+  if (caret.node.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = caret.node as HTMLElement;
+  return !!el.closest?.('.reader-content') && !el.closest?.('.katex');
 }
 
 /** 落点处那个『词』的范围：西文按字母/数字，中文按连续汉字（长按一下就想选一个词）；
@@ -5452,8 +5504,8 @@ function moveHandleTo(x: number, y: number, light = false): void {
   /* 起点手柄在行上沿、终点手柄在行下沿：插入点按**手柄那一侧**偏一点取，见 HANDLE_CARET_BIAS */
   const caret = caretAtLine(x, y, draggingHandle === 'start' ? 'start' : 'end');
   if (!caret) return;
-  // 只认文字节点上的插入点（落在元素上说明这附近没文字，等下一次移动）
-  if (caret.node.nodeType !== Node.TEXT_NODE) return;
+  // 插入点必须能当 range 边界：文字节点，或按公式边缘算出来的元素边界（见 caretIsUsable）
+  if (!caretIsUsable(caret)) return;
   // 出了锚点那一列就整帧忽略（用户口径 2026-11-19：还没进下一页，手柄不许跳到左边的页面）
   if (!caretInDragColumn(caret)) return;
   const sel = window.getSelection();
@@ -5781,7 +5833,7 @@ function onContentContextMenu(ev: MouseEvent) {
     items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
     /* 顺序（用户口径 2026-11-19 第三轮）：「加入对话」排在「高亮」**左侧**，「询问 Cyli」仍在它右侧 ——
        也就是 搜索 → 复制 → 加入对话 → 高亮 → 询问 Cyli：先"把这段带走"，再"就地标一下 / 问一下"。 */
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat-fill' });
     /* 触摸条：色板排在「加入对话」后面（用户口径 2026-10-18：常用功能靠左）。
        不再带铅笔图标 —— 一排色点自己就说明是上色，多一个笔反而占宽。 */
     if (fromTouch) items.push({ key: 'hl-color', label: '高亮', swatches: HIGHLIGHT_COLORS });
@@ -5796,18 +5848,18 @@ function onContentContextMenu(ev: MouseEvent) {
   }
   if (withSel) {
     /* 「加入对话」已经在上面（高亮左侧）排好了，这里只补「询问 Cyli」，让它落在最右 */
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle-fill' });
   } else if (ctxCtx.isFigure) {
     /* 插图同理：先「加入对话」（带这张图），再「询问 Cyli」（解释这张图） */
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat-fill' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle-fill' });
   }
   /* 「空白处」= 没划词、没点在图上、没点在已有高亮上，也不是公式/表格/插图这种「实体块」。
      用户口径：**导出只在空白处保留**，同时空白处多一项「召唤 Cyli」（就地开对话浮层）。 */
   const onBlank = !withSel && !ctxCtx.isFigure && !ctxCtx.hlIds.length
     && !target?.closest?.('.katex, table, .fig-card, mjx-container, .cite-inline');
   if (onBlank) {
-    items.push({ key: 'summon', label: '召唤 Cyli', icon: 'sparkle', sep: items.length > 0 });
+    items.push({ key: 'summon', label: '召唤 Cyli', icon: 'sparkle-fill', sep: items.length > 0 });
   }
   items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {

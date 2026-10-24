@@ -24,7 +24,7 @@ import AppIcon from '@/components/AppIcon.vue';
 import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 
 /* 图标**墨迹高度**实测（24 网格口径，headless Chromium 的 getBBox 量的）：
- * 填充型多数占 18 个网格单位，`copy-fill` 更胖（22），而线性型只有 15~16，`sparkle`/`note` 18。
+ * 填充型多数占 18 个网格单位，`copy-fill`/`sparkle-fill` 更胖（22），`chat-fill` 20，而线性型只有 15~16。
  * 同一个 14px 的盒子，墨迹高从 8.8px 到 12.8px 不等 —— 一排图标并排就是「大小不一」
  * （用户口径 2026-12-05，触摸工具条上最明显）。
  *
@@ -34,6 +34,8 @@ import { swatchLabel, swatchStyleOf } from '@/utils/highlightColors';
 const ICON_INK_H: Record<string, number> = {
   'search-fill': 17.5,
   'copy-fill': 22,
+  'chat-fill': 20,
+  'sparkle-fill': 22,
   chat: 15.1,
   download: 15.5,
 };
