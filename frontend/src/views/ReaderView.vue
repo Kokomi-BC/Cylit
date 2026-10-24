@@ -12,6 +12,7 @@
  * 快捷键：1/2/3 切视图 · o 换左右 · p 切原文文本/原 PDF · j/k 上下段 · / 搜索 · Esc 关浮层。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
+import { useTabActive } from '@/stores/tabHost';
 import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
 import type { CSSProperties } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
@@ -3697,10 +3698,14 @@ function onInkKey(ev: KeyboardEvent) {
 // 胶囊收起只影响胶囊：手柄跟着**DOM 选区**走（选区还在就一直显示，滚动时跟着重新定位）
 watch(() => selection.show, () => { refreshSelHandles(); });
 
-onMounted(async () => {
-  mq = window.matchMedia('(max-width: 1100px)');
-  isNarrow.value = mq.matches;
-  mq.addEventListener('change', onMqChange);
+/* ------------------------- 页面级监听：成对挂 / 摘 -------------------------
+ * 外壳（`components/TabHost.vue`）把每个论文标签都**留在 DOM 里**，切标签只切 display ——
+ * 实例永不卸载，所以"下班"这件事必须由宿主告诉我们（`useTabActive()` 那个通道）。
+ * 隐藏的阅读器若还挂着这些监听，就会和可见的那份一起响应键盘 / 复制 / 右键 / 滚动。
+ */
+const tabActive = useTabActive();
+
+function bindPageGlobals(): void {
   window.addEventListener('resize', onWindowResize);
   document.addEventListener('mousedown', onDragStart);
   document.addEventListener('copy', onCopy);
@@ -3713,8 +3718,6 @@ onMounted(async () => {
   document.addEventListener('pointerdown', onDocPointerDown, true);
   // 放大查看器的飞回原位：capture 阶段抢在 @zoom（冒泡）之前记下被点那张图的矩形
   window.addEventListener('pointerdown', onZoomOriginDown, true);
-  // 本机阅读统计：这次算一次"打开"，并在页面可见期间累加时长
-  startReadStats();
   document.addEventListener('visibilitychange', onReadVisibility);
   document.addEventListener('keydown', onInkKey);
   document.addEventListener('selectionchange', scheduleSelSync);
@@ -3726,6 +3729,86 @@ onMounted(async () => {
   window.addEventListener('pointermove', onCapsuleMove);
   window.addEventListener('pointerup', onCapsuleUp);
   window.addEventListener('pointercancel', onCapsuleUp);
+  // Ctrl/⌘ + 滚轮缩放：必须非 passive 才拦得住浏览器自己的页面缩放（见 onContentWheel）
+  scroller.value?.addEventListener('wheel', onContentWheel, { passive: false });
+}
+
+function unbindPageGlobals(): void {
+  window.removeEventListener('resize', onWindowResize);
+  document.removeEventListener('mousedown', onDragStart);
+  document.removeEventListener('copy', onCopy);
+  document.removeEventListener('mouseup', onMouseUp);
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('selectionchange', onSelectionChange);
+  window.removeEventListener('scroll', onAnyScroll, { capture: true });
+  window.removeEventListener('blur', hideMenu);
+  document.removeEventListener('pointerdown', onDocPointerDown, true);
+  window.removeEventListener('pointerdown', onZoomOriginDown, true);
+  document.removeEventListener('visibilitychange', onReadVisibility);
+  document.removeEventListener('keydown', onInkKey);
+  document.removeEventListener('selectionchange', scheduleSelSync);
+  document.removeEventListener('contextmenu', onDocContextMenu, true);
+  window.removeEventListener('scroll', scheduleSelSync, { capture: true } as EventListenerOptions);
+  window.removeEventListener('resize', scheduleSelSync);
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
+  document.removeEventListener('dragstart', onReaderDragStart, true);
+  window.removeEventListener('pointermove', onCapsuleMove);
+  window.removeEventListener('pointerup', onCapsuleUp);
+  window.removeEventListener('pointercancel', onCapsuleUp);
+  scroller.value?.removeEventListener('wheel', onContentWheel);
+}
+
+/** 隐藏 / 销毁共用：监听全摘、计时停表、沉浸态退出、选区列标记清干净 */
+function teardownPage(): void {
+  unbindPageGlobals();
+  stopReadStats();
+  if (immersive.value) setImmersive(false);
+  setColSide('');
+  try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
+}
+
+/** 隐藏那一刻的阅读位置：display:none 会丢掉布局，回来时浏览器可能把 scrollTop 归零 */
+let scrollTopAtHide = 0;
+
+/** 重新变成可见：监听挂回、计时接着走、阅读位置放回去 */
+function resumePage(): void {
+  bindPageGlobals();
+  armReadClock();
+  if (!readFlushTimer) readFlushTimer = window.setInterval(flushReadSeconds, 30000);
+  setInkNotesListener(() => { void refreshNotes(); });
+  syncToastDrop();
+  void nextTick(() => {
+    const el = scroller.value;
+    if (el && scrollTopAtHide > 0 && Math.abs(el.scrollTop - scrollTopAtHide) > 2) el.scrollTop = scrollTopAtHide;
+    syncPaneWidth();
+    enforceCapsuleBounds();
+    requestAnimationFrame(() => {
+      const box = scroller.value;
+      if (box && scrollTopAtHide > 0 && Math.abs(box.scrollTop - scrollTopAtHide) > 2) box.scrollTop = scrollTopAtHide;
+    });
+  });
+}
+
+// 宿主切换可见性：切走 = 摘监听 + 停表 + 存位置；切回 = 全挂回来（实例与 DOM 一直在）
+watch(
+  () => tabActive?.value,
+  (on, was) => {
+    if (on === undefined || was === undefined) return;      // 不在宿主里（没有这个通道）
+    if (on) { resumePage(); return; }
+    scrollTopAtHide = scroller.value?.scrollTop ?? 0;
+    void flushInk();
+    void saveProgressNow();
+    teardownPage();
+  },
+);
+
+onMounted(async () => {
+  mq = window.matchMedia('(max-width: 1100px)');
+  isNarrow.value = mq.matches;
+  mq.addEventListener('change', onMqChange);
+  // 本机阅读统计：这次算一次"打开"，并在页面可见期间累加时长
+  startReadStats();
+  if (tabActive?.value !== false) bindPageGlobals();
   restoreCapsulePos();
   enforceCapsuleBounds();
   syncToastDrop();
@@ -3770,40 +3853,15 @@ onMounted(async () => {
  * 那样会把 scroll_ratio 写成 0（比不存更糟）。 */
 onBeforeUnmount(() => {
   void saveProgressNow();
-  window.removeEventListener('pointerdown', onZoomOriginDown, true);
 });
 
 onUnmounted(() => {
   void flushInk();
   setInkNotesListener(null);
-  // 离开阅读器就把提示条的位置放回去（别的页面没有悬浮胶囊）
-  try { document.documentElement.style.removeProperty('--toast-drop'); } catch { /* 忽略 */ }
-  if (immersive.value) setImmersive(false);
-  document.removeEventListener('keydown', onInkKey);
-  document.removeEventListener('selectionchange', scheduleSelSync);
-  document.removeEventListener('contextmenu', onDocContextMenu, true);
-  window.removeEventListener('scroll', scheduleSelSync, { capture: true } as EventListenerOptions);
-  window.removeEventListener('resize', scheduleSelSync);
-  document.removeEventListener('fullscreenchange', onFullscreenChange);
-  document.removeEventListener('dragstart', onReaderDragStart, true);
-  window.removeEventListener('pointermove', onCapsuleMove);
-  window.removeEventListener('pointerup', onCapsuleUp);
-  window.removeEventListener('pointercancel', onCapsuleUp);
   mq?.removeEventListener('change', onMqChange);
-  document.removeEventListener('visibilitychange', onReadVisibility);
-  stopReadStats();
+  // 监听 / 计时 / 沉浸态 / CSS 标记都在 teardownPage 里一起收（与"隐藏"用的是同一份）
+  teardownPage();
   if (anchorPinTimer) { window.clearTimeout(anchorPinTimer); anchorPinTimer = null; }
-  scroller.value?.removeEventListener('wheel', onContentWheel);
-  window.removeEventListener('resize', onWindowResize);
-  document.removeEventListener('mousedown', onDragStart);
-  document.removeEventListener('copy', onCopy);
-  document.removeEventListener('mouseup', onMouseUp);
-  document.removeEventListener('mousemove', onDragMove);
-  document.removeEventListener('selectionchange', onSelectionChange);
-  window.removeEventListener('scroll', onAnyScroll, { capture: true });
-  window.removeEventListener('blur', hideMenu);
-  document.removeEventListener('pointerdown', onDocPointerDown, true);
-  setColSide('');               // 离开阅读器时别把 `<html>` 上的标记留在页面上
   contentRo?.disconnect();
   scroller.value?.removeEventListener('scrollend', onScrollEnd);
   if (taskTimer) clearInterval(taskTimer);

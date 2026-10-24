@@ -15,10 +15,11 @@
 import { computed } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
 import AppSidebar from '@/components/AppSidebar.vue';
+import TabHost from '@/components/TabHost.vue';
 import ConfirmHost from '@/components/ConfirmHost.vue';
 import TabBar from '@/components/TabBar.vue';
 import ToastHost from '@/components/ToastHost.vue';
-import { routeKey } from '@/stores/tabs';
+import { isPaperRoute, routeKey } from '@/stores/tabs';
 import { railCollapsed } from '@/stores/shellPrefs';
 
 const route = useRoute();
@@ -44,6 +45,16 @@ const wide = computed(() => route.name === 'reader');
  * 不该重建整个阅读器。
  */
 const viewKey = computed(() => routeKey(route));
+
+/**
+ * 当前是不是"论文标签"（阅读器 / 解读整页）。
+ *
+ * 论文标签走 `TabHost`：它把打开过的标签**全部留在 DOM 里**，切标签只切显示。
+ * 为什么不用 `KeepAlive`：它是把整棵 DOM 摘下来再插回去，插回时浏览器把滚动位置归零、
+ * 页图按新视口重排一遍 —— 实测接口请求是省掉了，正文出现仍然要 1.9 s（详见 TabHost 注释）。
+ * 导航页照旧走 `RouterView`：它们本来就该"每次进来都是最新的"，没必要占着内存。
+ */
+const isPaperView = computed(() => isPaperRoute(String(route.name ?? '')));
 </script>
 
 <template>
@@ -54,7 +65,10 @@ const viewKey = computed(() => routeKey(route));
       <AppSidebar v-if="shellMode === 'rail'" />
       <!-- settings：设置页要通栏（左栏贴主区左缘），单独放开 .app-main 的封顶与左内边距，见 base.css -->
       <main id="main" :class="['app-main', { wide, fill: shellMode === 'bare', settings: route.name === 'settings' }]">
-        <RouterView :key="viewKey" />
+        <!-- 导航页：一次一份，照旧按标签键重建 -->
+        <RouterView v-if="!isPaperView" :key="viewKey" />
+        <!-- 论文标签：常驻 DOM，只切显示（`v-show` 而非 `v-if` —— 卸载就白留了） -->
+        <TabHost v-show="isPaperView" />
       </main>
     </div>
   </div>
