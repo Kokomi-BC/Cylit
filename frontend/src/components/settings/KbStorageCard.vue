@@ -44,7 +44,9 @@ const props = withDefaults(defineProps<{
   busy: string;
   /** 最近一次校验（对账）的时间，父组件给；没有就显示 —。 */
   checkedAt?: string;
-}>(), { checkedAt: '' });
+  /** 卡头右上角要不要「校验数据」：索引管理页要（默认），系统信息页不要（那页有全局面板动作）。 */
+  actions?: boolean;
+}>(), { checkedAt: '', actions: true });
 
 const emit = defineEmits<{ (e: 'reconcile', fix: boolean): void }>();
 
@@ -165,7 +167,7 @@ function clean(): void { emit('reconcile', true); }
       <AppIcon name="server" :size="15" /><span class="ttl">索引存储状态</span>
       <span class="badge" :class="badge.cls">{{ badge.text }}</span>
       <span class="spacer"></span>
-      <button class="btn sm ghost" type="button" :disabled="busyReconcile" @click="check">
+      <button v-if="actions" class="btn sm ghost" type="button" :disabled="busyReconcile" @click="check">
         <AppIcon name="refresh" :size="14" />{{ busyReconcile ? '校验中…' : '校验数据' }}
       </button>
     </div>

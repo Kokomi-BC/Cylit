@@ -422,7 +422,7 @@ const healthCheckedAt = ref('');
       <!-- ④ 索引存储：复用索引管理那张卡，外壳对齐到同一套 .card（头/体在原组件里覆盖成卡片版式） -->
       <section class="card si-card si-card--kb">
         <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
-                       :checked-at="checkedAt" @reconcile="reconcileNow" />
+                       :checked-at="checkedAt" :actions="false" @reconcile="reconcileNow" />
       </section>
     </div>
   </div>
