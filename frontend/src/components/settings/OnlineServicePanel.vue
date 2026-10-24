@@ -1,18 +1,16 @@
 <script setup lang="ts">
 /**
- * 设置页「在线服务」：三个解析 / 检索服务共用一页。
+ * 设置页「在线服务」：一页管两件事 —— **解析**（本地 / MinerU）与**搜索**（DeepSeek）。
  *
- * · **本地解析**（PyMuPDF，离线）：读页开关 / 读页 dpi / 插图两个开关；
- * · **在线解析**（MinerU）：token + 模型版本 + OCR 语言 + 三项开关 + 页码范围；
- * · **网联搜索**（DeepSeek）：表单与读写都在 WebSearchSettings（与 Cyli 偏好的技能行同一份）。
+ * 版式口径（用户 2026-12）：分为解析和搜索两个块；解析里本地与在线解析各自可配；
+ * 默认引擎在同一个页面里统一设置。于是：
+ * · 顶层只有两枚分段：解析 / 搜索（不再"一次只显示一个服务"那样切来切去）；
+ * · 解析页**两栏并排**：左本地、右 MinerU，两边的参数同屏可见、同屏可改；
+ * · 「默认引擎」只在解析页顶部一处（导入弹窗与重新解析的初值都读它）；
+ * · 底部只有一排动作（测试服务 / 清除密钥 / 保存设置），跟着当前分段换目标。
  *
- * 两个原则：
- * ① 页头只有状态，**动作只有底部一排**（测试服务 / 清除密钥 / 保存设置）——不出现两处同样的按钮；
- * ② 每个服务的配置与验证状态**各存一份**，互不覆盖；保存时只提交真的改过的字段。
- *
- * 数据面：本地与 MinerU 的"导入默认值"都在 /parse/config（一个键一套，见 parse_prefs），
- * MinerU 的 token / 引擎 / 模型 / 语言在 /mineru/config；验证走 POST /mineru/verify。
- * 两个 verify 接口失败时 HTTP 仍是 200，成败只看返回体的 ok。
+ * 数据面：引擎与 MinerU 凭据在 `/mineru/config`；两个引擎的导入默认值在 `/parse/config`
+ * （一个键一套，见 `parse_prefs`）；搜索在 `WebSearchSettings` 里读写同一份配置。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '@/api/client';
@@ -24,19 +22,10 @@ import AppIcon from '@/components/AppIcon.vue';
 import Switch from '@/components/Switch.vue';
 import WebSearchSettings from './WebSearchSettings.vue';
 
-type ServiceKey = 'local' | 'mineru' | 'websearch';
+type TabKey = 'parse' | 'search';
+const tab = ref<TabKey>('parse');
 
-const services: ReadonlyArray<{ id: ServiceKey; label: string; sub: string; icon: string }> = [
-  { id: 'local', label: '本地解析', sub: 'PyMuPDF · 离线提取', icon: 'document' },
-  { id: 'mineru', label: '在线解析', sub: 'MinerU · 云端提取', icon: 'bolt' },
-  { id: 'websearch', label: '网联搜索', sub: 'DeepSeek · 联网检索', icon: 'search' },
-];
-
-const service = ref<ServiceKey>('local');
-/** 只有在线服务有远程凭据要验 / 要清。 */
-const isOnline = computed(() => service.value !== 'local');
-
-/* ---------------- 解析默认值（本地 + MinerU 共用一套键：/parse/config） ---------------- */
+/* ---------------- 解析默认值（两个引擎共用一套键：/parse/config） ---------------- */
 
 const prefs = reactive<ParseConfig>({
   mineru_is_ocr: false,
@@ -105,8 +94,8 @@ const MINERU_PREF_KEYS = [
 ] as const;
 
 function anyDirty(keys: readonly string[]): boolean {
-  const body = prefsPatch();
-  return keys.some((k) => k in body);
+  const patch = prefsPatch();
+  return keys.some((k) => k in patch);
 }
 
 const localDirty = computed(() => anyDirty(LOCAL_KEYS));
@@ -118,7 +107,7 @@ async function savePrefs(): Promise<void> {
   fillPrefs(await api.put<ParseConfig>('/parse/config', body));
 }
 
-/* ---------------- MinerU 凭证与引擎（/mineru/config） ---------------- */
+/* ---------------- MinerU 凭据与引擎（/mineru/config） ---------------- */
 
 interface MineruForm {
   token: string;
@@ -139,15 +128,15 @@ const mineruError = ref('');
 const mineruVerify = ref<MineruVerifyResult | null>(null);
 const mineruLoading = ref(false);
 
-const ENGINE_OPTIONS = [
-  { value: 'local', label: '本地解析（离线、快、不花额度）' },
-  { value: 'mineru', label: '在线解析（MinerU 云端，公式/表格更强）' },
+const ENGINE_OPTIONS: ReadonlyArray<{ value: ParseEngine; label: string; note: string }> = [
+  { value: 'local', label: '本地解析', note: '离线、快、不花额度；公式与复杂表格偏弱' },
+  { value: 'mineru', label: '在线解析', note: 'MinerU 云端；公式 / 表格更强，要 token 且必须联网' },
 ];
 
 const mineruTokenText = computed(
   () => mineruBase.token_masked || (mineruBase.has_token ? '已保存（掩码不可用）' : ''),
 );
-/** 模型版本与 OCR 语言都用**后端给的列表**：官方加语言/模型时前端不用跟着改。 */
+/** 模型版本与 OCR 语言都用后端给的列表：官方加语言/模型时前端不用跟着改。 */
 const modelOptions = computed(() => (mineruBase.model_version_options?.length
   ? mineruBase.model_version_options
   : [{ value: 'pipeline', label: 'pipeline（默认）' }, { value: 'vlm', label: 'vlm' }]));
@@ -238,7 +227,7 @@ async function verifyMineru(): Promise<void> {
 async function clearMineruToken(): Promise<void> {
   if (!(await askConfirm({
     title: '清除 MinerU token',
-    body: '清除后「在线解析」不可用，需要重新填入',
+    body: '清除后在线解析不可用，需要重新填入',
     danger: true,
     confirmLabel: '清除',
   }))) return;
@@ -259,97 +248,7 @@ async function clearMineruToken(): Promise<void> {
 
 const ws = ref<InstanceType<typeof WebSearchSettings> | null>(null);
 
-/* ---------------- 页头状态与底部动作 ---------------- */
-
-const statusBadge = computed<{ text: string; cls: string; title: string }>(() => {
-  if (service.value === 'local') {
-    if (prefsLoading.value) return { text: '读取中…', cls: 'dim', title: '' };
-    if (prefsError.value) return { text: '读取失败', cls: 'warn', title: prefsError.value };
-    if (localDirty.value) return { text: '有未保存的改动', cls: 'warn', title: '点底部「保存设置」生效' };
-    return {
-      text: prefs.parse_vision_enabled ? '离线解析 + 视觉读页' : '离线解析（不读扫描页）',
-      cls: 'ok',
-      title: '本地 PyMuPDF 解析，全程不走网络',
-    };
-  }
-  if (service.value === 'mineru') {
-    if (mineruLoading.value) return { text: '读取中…', cls: 'dim', title: '' };
-    if (mineruDirty.value || mineruPrefsDirty.value) {
-      return { text: '有未保存的改动', cls: 'warn', title: '改了参数或填了新 token，点底部「保存设置」生效' };
-    }
-    if (mineruBase.online_ready) return { text: '配置已就绪', cls: 'ok', title: '有可用 token' };
-    if (mineruBase.has_token) return { text: '已存 token（未验证）', cls: 'dim', title: '还没验证或最近一次没通过' };
-    return { text: '未配置 token', cls: 'dim', title: '在线解析需要 mineru.net 的 token' };
-  }
-  const c = ws.value;
-  if (!c) return { text: '读取中…', cls: 'dim', title: '' };
-  if (!c.ready) return { text: '接口未就绪', cls: 'warn', title: '后端没有返回联网搜索配置' };
-  if (c.dirty) return { text: '有未保存的改动', cls: 'warn', title: '点底部「保存设置」生效' };
-  if (c.test?.ok) return { text: '验证通过', cls: 'ok', title: c.test.state + ' · ' + c.test.ms + 'ms' };
-  if (c.hasKey) return { text: '已存 API Key（未验证）', cls: 'dim', title: '还没点过「测试服务」' };
-  return { text: '未配置 API Key', cls: 'dim', title: '网联搜索需要提供方的 API Key' };
-});
-
-const busy = computed(() => {
-  if (service.value === 'local') return prefsLoading.value;
-  if (service.value === 'mineru') return !!mineruBusy.value;
-  return !!(ws.value && (ws.value.busy || ws.value.testing));
-});
-
-const canSave = computed(() => {
-  if (service.value === 'local') return localDirty.value && !prefsLoading.value;
-  if (service.value === 'mineru') return (mineruDirty.value || mineruPrefsDirty.value) && !mineruBusy.value;
-  return !!ws.value?.dirty && !ws.value?.busy;
-});
-
-const canVerify = computed(() => {
-  if (service.value === 'local') return false;          // 本地解析没有远程凭据可验
-  if (service.value === 'mineru') return !!mineruBase.has_token && !mineruBusy.value;
-  return !!ws.value?.ready && !ws.value?.testing;
-});
-
-const canClear = computed(() => {
-  if (service.value === 'local') return false;
-  if (service.value === 'mineru') return !!mineruBase.has_token && !mineruBusy.value;
-  return !!ws.value?.hasKey && !ws.value?.busy;
-});
-
-async function saveCurrent(): Promise<void> {
-  try {
-    if (service.value === 'local') {
-      await savePrefs();
-      toast('本地解析设置已保存', 'ok', 2600);
-      return;
-    }
-    if (service.value === 'mineru') {
-      // 一个按钮管两处：凭据/引擎走 /mineru/config，四项导入默认值走 /parse/config
-      if (mineruDirty.value) await saveMineru();
-      if (mineruPrefsDirty.value) await savePrefs();
-      return;
-    }
-    await ws.value?.save();
-  } catch (err) {
-    toast((err as Error)?.message ?? String(err), 'error', 5000);
-  }
-}
-
-async function verifyCurrent(): Promise<void> {
-  if (service.value === 'mineru') { await verifyMineru(); return; }
-  if (service.value === 'websearch') await ws.value?.verify();
-}
-
-async function clearCurrent(): Promise<void> {
-  if (service.value === 'mineru') { await clearMineruToken(); return; }
-  if (service.value === 'websearch') await ws.value?.clearKey();
-}
-
-/** 底部那条「导入时会发生什么」的取值：改参数时不用来回切服务核对。 */
-const engineLabel = computed(
-  () => (mineruForm.engine_default === 'mineru' ? '在线解析（MinerU）' : '本地解析'),
-);
-const engineIsMineru = computed(() => mineruForm.engine_default === 'mineru');
-
-/* ---------------- 最近的解析任务（只读：上次到底是怎么解析的） ---------------- */
+/* ---------------- 最近的解析（只读：上次是怎么解析的） ---------------- */
 
 const recentParses = computed(() => state.tasks
   .filter((t) => String(t.type ?? '') === 'PARSE')
@@ -363,6 +262,81 @@ function taskEngine(t: { params?: Record<string, any> }): string {
   return '默认引擎';
 }
 
+/* ---------------- 页头状态与底部动作 ---------------- */
+
+const parseDirty = computed(() => mineruDirty.value || localDirty.value || mineruPrefsDirty.value);
+
+const statusBadge = computed<{ text: string; cls: string; title: string }>(() => {
+  if (tab.value === 'parse') {
+    if (mineruLoading.value || prefsLoading.value) return { text: '读取中…', cls: 'dim', title: '' };
+    if (prefsError.value || mineruError.value) {
+      return { text: '读取失败', cls: 'warn', title: prefsError.value || mineruError.value };
+    }
+    if (parseDirty.value) return { text: '有未保存的改动', cls: 'warn', title: '点底部「保存设置」生效' };
+    const engine = mineruBase.engine_default === 'mineru' ? '在线解析' : '本地解析';
+    return {
+      text: '默认引擎：' + engine,
+      cls: mineruBase.engine_default === 'mineru'
+        ? (mineruBase.online_ready ? 'ok' : 'warn')
+        : 'ok',
+      title: mineruBase.has_token ? '已保存 MinerU token' : '还没配置 MinerU token',
+    };
+  }
+  const c = ws.value;
+  if (!c) return { text: '读取中…', cls: 'dim', title: '' };
+  if (!c.ready) return { text: '接口未就绪', cls: 'warn', title: '后端没有返回联网搜索配置' };
+  if (c.dirty) return { text: '有未保存的改动', cls: 'warn', title: '点底部「保存设置」生效' };
+  if (c.test?.ok) return { text: '验证通过', cls: 'ok', title: c.test.state + ' · ' + c.test.ms + 'ms' };
+  if (c.hasKey) return { text: '已存 API Key（未验证）', cls: 'dim', title: '还没点过「测试服务」' };
+  return { text: '未配置 API Key', cls: 'dim', title: '网联搜索需要提供方的 API Key' };
+});
+
+const busy = computed(() => {
+  if (tab.value === 'parse') return !!mineruBusy.value || prefsLoading.value;
+  return !!(ws.value && (ws.value.busy || ws.value.testing));
+});
+
+const canSave = computed(() => {
+  if (tab.value === 'parse') return parseDirty.value && !busy.value;
+  return !!ws.value?.dirty && !ws.value?.busy;
+});
+
+const canVerify = computed(() => {
+  // 解析页的测试验的是 MinerU token（本地解析没有远程凭据，无事可做）
+  if (tab.value === 'parse') return !!mineruBase.has_token && !mineruBusy.value;
+  return !!ws.value?.ready && !ws.value?.testing;
+});
+
+const canClear = computed(() => {
+  if (tab.value === 'parse') return !!mineruBase.has_token && !mineruBusy.value;
+  return !!ws.value?.hasKey && !ws.value?.busy;
+});
+
+const clearLabel = computed(() => (tab.value === 'parse' ? '清除 token' : '清除密钥'));
+
+async function saveCurrent(): Promise<void> {
+  try {
+    if (tab.value === 'parse') {
+      if (mineruDirty.value) await saveMineru();
+      if (mineruPrefsDirty.value || localDirty.value) await savePrefs();
+      return;
+    }
+    await ws.value?.save();
+  } catch (err) {
+    toast((err as Error)?.message ?? String(err), 'error', 5000);
+  }
+}
+
+async function verifyCurrent(): Promise<void> {
+  if (tab.value === 'parse') { await verifyMineru(); return; }
+  await ws.value?.verify();
+}
+
+async function clearCurrent(): Promise<void> {
+  if (tab.value === 'parse') { await clearMineruToken(); return; }
+  await ws.value?.clearKey();
+}
+
 onMounted(() => {
   void loadPrefs();
   void loadMineru();
@@ -372,41 +346,59 @@ onMounted(() => {
 
 <template>
   <div class="ons">
-    <!-- 页头：说明 + 状态（标题由窗格抬头给，不重复） -->
+    <!-- 页头：说明 + 状态（标题由窗格抬头给） -->
     <header class="ons-head">
-      <p class="ons-sub">本地解析、MinerU 在线解析与网联搜索的凭据与参数</p>
-      <div class="ons-actions">
-        <span class="badge" :class="statusBadge.cls" :title="statusBadge.title">{{ statusBadge.text }}</span>
-      </div>
+      <p class="ons-sub">解析（本地 / MinerU）与网联搜索的凭据、参数与默认值</p>
+      <span class="badge" :class="statusBadge.cls" :title="statusBadge.title">{{ statusBadge.text }}</span>
     </header>
 
-    <!-- 服务切换：三块等宽，选中 = 强调色描边 + 对勾（不只用颜色表达） -->
-    <div class="ons-switch" role="tablist" aria-label="在线服务">
-      <button
-        v-for="s in services"
-        :key="s.id"
-        type="button"
-        role="tab"
-        class="ons-tile"
-        :class="{ on: service === s.id }"
-        :aria-selected="service === s.id"
-        @click="service = s.id"
-      >
-        <span class="ons-tile-icon"><AppIcon :name="s.icon" :size="17" /></span>
-        <span class="ons-tile-text">
-          <span class="ons-tile-label">{{ s.label }}</span>
-          <span class="ons-tile-sub">{{ s.sub }}</span>
-        </span>
-        <AppIcon v-if="service === s.id" class="ons-tile-check" name="check_circle" :size="16" />
+    <!-- 顶层只分两块：解析 / 搜索 -->
+    <div class="seg ons-tabs" role="tablist" aria-label="在线服务">
+      <button :class="{ active: tab === 'parse' }" role="tab" :aria-selected="tab === 'parse'"
+              data-ons-tab="parse" @click="tab = 'parse'">
+        <AppIcon name="document" :size="14" />解析
+      </button>
+      <button :class="{ active: tab === 'search' }" role="tab" :aria-selected="tab === 'search'"
+              data-ons-tab="search" @click="tab = 'search'">
+        <AppIcon name="search" :size="14" />搜索
       </button>
     </div>
 
-    <!-- ① 本地解析：全离线，参数只影响"怎么读 PDF" -->
-    <section class="ons-panel" v-if="service === 'local'">
-      <p class="ons-error" v-if="prefsError">{{ prefsError }}</p>
+    <!-- ==================== ① 解析 ==================== -->
+    <section class="ons-panel" v-if="tab === 'parse'">
+      <p class="ons-error" v-if="prefsError || mineruError">{{ prefsError || mineruError }}</p>
+
+      <!-- 默认引擎：整页唯一一处（导入弹窗 / 重新解析的初值都读它） -->
+      <div class="ons-sec">
+        <h3 class="ons-sec-title"><AppIcon name="bolt" :size="14" />默认引擎</h3>
+        <div class="ons-sec-body">
+          <div class="ons-engines" role="radiogroup" aria-label="默认解析引擎">
+            <button
+              v-for="opt in ENGINE_OPTIONS"
+              :key="opt.value"
+              type="button"
+              class="ons-engine"
+              :class="{ on: mineruForm.engine_default === opt.value }"
+              role="radio"
+              :aria-checked="mineruForm.engine_default === opt.value"
+              :data-ons-engine="opt.value"
+              @click="mineruForm.engine_default = opt.value"
+            >
+              <span class="ons-engine-name">{{ opt.label }}</span>
+              <span class="ons-engine-note">{{ opt.note }}</span>
+            </button>
+          </div>
+          <p class="field-hint">
+            导入弹窗与「重新解析」的初值；单篇仍可临时改用另一个引擎
+            <template v-if="!mineruBase.has_token">（在线解析还没配 token）</template>
+          </p>
+        </div>
+      </div>
+
+      <!-- 两个引擎并排：本地 / 在线，同屏可见同屏可改 -->
       <div class="ons-cols">
         <div class="ons-sec">
-          <h3 class="ons-sec-title"><AppIcon name="document" :size="14" />扫描页与读页</h3>
+          <h3 class="ons-sec-title"><AppIcon name="document" :size="14" />本地解析</h3>
           <div class="ons-sec-body">
             <div class="ons-field">
               <span class="field-top">视觉读页</span>
@@ -422,36 +414,21 @@ onMounted(() => {
                 step="10"
                 v-model.number="prefs.parse_vision_dpi"
               />
-              <span class="field-hint">
-                取读页渲染分辨率（{{ prefs.vision_dpi_min }}–{{ prefs.vision_dpi_max }}）：越高上下标越准，也越慢
-              </span>
+              <span class="field-hint">取读页渲染分辨率（{{ prefs.vision_dpi_min }}–{{ prefs.vision_dpi_max }}）：越高上下标越准，也越慢</span>
             </label>
-          </div>
-        </div>
-
-        <div class="ons-sec">
-          <h3 class="ons-sec-title"><AppIcon name="layers" :size="14" />插图</h3>
-          <div class="ons-sec-body">
             <div class="ons-field">
-              <span class="field-top">插图带图注</span>
+              <span class="field-top">图片是否包含图注</span>
               <Switch v-model="prefs.parse_figure_caption">裁出的插图带上它的图注</Switch>
-              <span class="field-hint">导入时仍可逐篇改；开 = 现成的「图 + 图注」卡片</span>
             </div>
             <div class="ons-field">
-              <span class="field-top">深度找图</span>
+              <span class="field-top">深度图片搜索</span>
               <Switch v-model="prefs.parse_deep_figure_search">整页没有图注时按图块再找一遍</Switch>
-              <span class="field-hint">更全，但会多花一些时间</span>
             </div>
           </div>
         </div>
-      </div>
-    </section>
 
-    <!-- ② 在线解析（MinerU） -->
-    <section class="ons-panel" v-else-if="service === 'mineru'">
-      <div class="ons-cols">
         <div class="ons-sec">
-          <h3 class="ons-sec-title"><AppIcon name="key" :size="14" />凭证</h3>
+          <h3 class="ons-sec-title"><AppIcon name="key" :size="14" />在线解析（MinerU）</h3>
           <div class="ons-sec-body">
             <label class="field">
               <span class="field-top">API token</span>
@@ -480,13 +457,6 @@ onMounted(() => {
             <p class="tiny verify-msg" :class="mineruVerify?.ok ? 'ok' : 'bad'" v-if="mineruVerify?.message">
               {{ mineruVerify.message }}
             </p>
-            <p class="ons-error" v-if="mineruError">{{ mineruError }}</p>
-          </div>
-        </div>
-
-        <div class="ons-sec">
-          <h3 class="ons-sec-title"><AppIcon name="sliders" :size="14" />解析参数</h3>
-          <div class="ons-sec-body">
             <div class="ons-grid">
               <label class="field">
                 <span class="field-top">模型版本</span>
@@ -501,86 +471,66 @@ onMounted(() => {
                 </select>
               </label>
             </div>
+            <div class="ons-switch-row">
+              <div class="ons-field">
+                <span class="field-top">强制 OCR</span>
+                <Switch v-model="prefs.mineru_is_ocr">整页走 OCR</Switch>
+              </div>
+              <div class="ons-field">
+                <span class="field-top">识别公式</span>
+                <Switch v-model="prefs.mineru_enable_formula">单独解出公式</Switch>
+              </div>
+              <div class="ons-field">
+                <span class="field-top">识别表格</span>
+                <Switch v-model="prefs.mineru_enable_table">解成结构化表格</Switch>
+              </div>
+            </div>
             <label class="field">
-              <span class="field-top">默认解析引擎</span>
-              <select v-model="mineruForm.engine_default">
-                <option v-for="e in ENGINE_OPTIONS" :key="e.value" :value="e.value">{{ e.label }}</option>
-              </select>
-              <span class="field-hint">导入弹窗的初值，导入时仍可逐篇改</span>
+              <span class="field-top">页码范围</span>
+              <input type="text" v-model="prefs.mineru_page_ranges" placeholder="留空 = 全篇；例如 1-3,5,8-" />
+              <span class="field-hint">官方写法：1-3,5,8-；超长论文分段解析更稳</span>
             </label>
           </div>
         </div>
       </div>
 
-      <!-- 与本地解析同属"导入默认值"：一个按钮保存时会同时写 /parse/config -->
-      <div class="ons-sec">
-        <h3 class="ons-sec-title"><AppIcon name="document" :size="14" />在线解析的导入默认值</h3>
-        <div class="ons-sec-body">
-          <div class="ons-switch-row">
-            <div class="ons-field">
-              <span class="field-top">强制 OCR</span>
-              <Switch v-model="prefs.mineru_is_ocr">忽略文本层，整页走 OCR</Switch>
-            </div>
-            <div class="ons-field">
-              <span class="field-top">识别公式</span>
-              <Switch v-model="prefs.mineru_enable_formula">把公式单独解出来</Switch>
-            </div>
-            <div class="ons-field">
-              <span class="field-top">识别表格</span>
-              <Switch v-model="prefs.mineru_enable_table">把表格解成结构</Switch>
-            </div>
-          </div>
-          <label class="field">
-            <span class="field-top">页码范围</span>
-            <input type="text" v-model="prefs.mineru_page_ranges" placeholder="留空 = 全篇；例如 1-3,5,8-" />
-            <span class="field-hint">官方写法：1-3,5,8-；超长论文分段解析更稳</span>
-          </label>
-        </div>
+      <!-- 最近的解析：改参数时能对上"上次是怎么跑的" -->
+      <div class="ons-sec" v-if="recentParses.length">
+        <h3 class="ons-sec-title"><AppIcon name="clock" :size="14" />最近的解析</h3>
+        <ul class="ons-recent-list">
+          <li class="ons-recent-row" v-for="t in recentParses" :key="t.id">
+            <span class="ons-recent-name truncate" :title="t.paper_id || t.id">
+              {{ t.paper_id ? paperTitle(t.paper_id) : t.id }}
+            </span>
+            <span class="ons-recent-engine">{{ taskEngine(t) }}</span>
+            <span class="badge" :class="taskStatus(t.status).cls">{{ taskStatus(t.status).label }}</span>
+            <span class="ons-recent-time">{{ fmtRelative(t.updated_at || t.created_at) }}</span>
+          </li>
+        </ul>
       </div>
     </section>
 
-    <!-- ③ 网联搜索（DeepSeek）：表单与读写都在共用组件里 -->
+    <!-- ==================== ② 搜索 ==================== -->
     <section class="ons-panel" v-else>
       <div class="ons-sec">
-        <h3 class="ons-sec-title"><AppIcon name="search" :size="14" />搜索服务配置</h3>
+        <h3 class="ons-sec-title"><AppIcon name="search" :size="14" />网联搜索（DeepSeek）</h3>
         <div class="ons-sec-body">
           <WebSearchSettings ref="ws" :actions="false" />
         </div>
       </div>
+      <p class="ons-hint">
+        这份配置与「Cyli 偏好 → 联网搜索技能」共用同一份数据与同一个密钥文件，改一处两边都变。
+      </p>
     </section>
 
-    <!-- 最近的解析任务：只说"上次怎么解析的"，改参数时能对上号 -->
-    <section class="ons-recent" v-if="recentParses.length">
-      <h3 class="ons-sec-title"><AppIcon name="clock" :size="14" />最近的解析</h3>
-      <ul class="ons-recent-list">
-        <li class="ons-recent-row" v-for="t in recentParses" :key="t.id">
-          <span class="ons-recent-name truncate" :title="t.paper_id || t.id">
-            {{ t.paper_id ? paperTitle(t.paper_id) : t.id }}
-          </span>
-          <span class="ons-recent-engine">{{ taskEngine(t) }}</span>
-          <span class="badge" :class="taskStatus(t.status).cls">{{ taskStatus(t.status).label }}</span>
-          <span class="ons-recent-time">{{ fmtRelative(t.updated_at || t.created_at) }}</span>
-        </li>
-      </ul>
-    </section>
-
-    <!-- 导入时会按这套取值（只读摘要）：改参数时不用来回切服务核对 -->
-    <section class="ons-summary-bar" aria-label="导入时的默认取值">
-      <span class="ons-sum"><b>默认引擎</b>{{ engineLabel }}</span>
-      <span class="ons-sum"><b>读页</b>{{ prefs.parse_vision_enabled ? "视觉模型" : "不读正文" }} · {{ prefs.parse_vision_dpi }} dpi</span>
-      <span class="ons-sum"><b>插图</b>{{ prefs.parse_figure_caption ? "带图注" : "不带图注" }} · {{ prefs.parse_deep_figure_search ? "深度找图" : "常规找图" }}</span>
-      <span class="ons-sum" v-if="engineIsMineru"><b>MinerU</b>{{ mineruForm.model_version }} · {{ mineruForm.language }} · {{ prefs.mineru_is_ocr ? "强制 OCR" : "按文本层" }} · 公式{{ prefs.mineru_enable_formula ? "开" : "关" }} · 表格{{ prefs.mineru_enable_table ? "开" : "关" }} · {{ prefs.mineru_page_ranges || "全篇" }}</span>
-    </section>
-
-    <!-- 动作只有这一处：右对齐贴在页底，换服务时三个按钮位置不动 -->
     <footer class="ons-foot">
-      <span class="ons-foot-hint">{{ isOnline ? '凭据只存在服务端，接口只回掩码' : '本地解析全离线，不产生任何请求' }}</span>
+      <span class="ons-foot-hint">{{ tab === 'parse' ? '本地解析全离线；MinerU 凭据只存在服务端' : '密钥只存在服务端，接口只回掩码' }}</span>
       <button class="btn sm" :disabled="!canVerify" title="真的打一次服务接口，确认凭据还能用"
               @click="verifyCurrent">
         <AppIcon name="play" :size="15" />{{ busy ? '处理中…' : '测试服务' }}
       </button>
       <button class="btn sm" :disabled="!canClear" @click="clearCurrent">
-        <AppIcon name="ban" :size="15" />清除密钥
+        <AppIcon name="ban" :size="15" />{{ clearLabel }}
       </button>
       <button class="btn primary sm" :disabled="!canSave" @click="saveCurrent">
         <AppIcon name="check" :size="15" />{{ busy ? '处理中…' : '保存设置' }}
@@ -590,46 +540,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.ons { display: flex; flex-direction: column; gap: 16px; }
+.ons { display: flex; flex-direction: column; gap: 14px; }
 
 .ons-head { display: flex; align-items: flex-start; gap: 16px; }
 .ons-sub {
   flex: 1 1 auto; min-width: 0; margin: 0;
   font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
 }
-.ons-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 
-/* 服务切换：三块等宽（窄屏折成两列 / 一列），选中 = 一档更亮的底 + 强调色描边 + 对勾 */
-.ons-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.ons-tile {
-  display: flex; align-items: center; gap: 10px; min-width: 0;
-  padding: 10px 12px; text-align: left;
-  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elev);
-  color: var(--text-dim); cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-.ons-tile:hover { border-color: var(--border-strong); background: var(--bg-hover); }
-.ons-tile.on {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: var(--bg-elev);
-}
-.ons-tile-icon {
-  display: grid; place-items: center; flex: none;
-  width: 28px; height: 28px; border-radius: var(--r-sm);
-  background: var(--bg-sunken); color: var(--text-faint);
-}
-.ons-tile.on .ons-tile-icon { color: var(--accent); }
-.ons-tile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.ons-tile-label { font-size: calc(13px * var(--ts, 1)); font-weight: 650; color: var(--text); }
-.ons-tile-sub {
-  font-size: calc(11px * var(--ts, 1)); color: var(--text-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ons-tile-check { flex: none; color: var(--accent); }
+/* 顶层分段：解析 / 搜索（与全站的 .seg 同一套，只是不铺满整行） */
+.ons-tabs { align-self: flex-start; height: var(--control-h); }
+.ons-tabs button { gap: 6px; padding: 0 14px; }
 
-/* 面板：宽屏两栏并排（凭证 | 参数），窄屏一栏 —— 空间利用率靠这个，不靠多套卡片 */
-.ons-panel { display: flex; flex-direction: column; gap: 16px; }
-.ons-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.ons-panel { display: flex; flex-direction: column; gap: 14px; }
+.ons-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+
 .ons-sec { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .ons-sec-title {
   display: flex; align-items: center; gap: 6px; margin: 0;
@@ -640,12 +565,27 @@ onMounted(() => {
   display: flex; flex-direction: column; gap: 12px;
   padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken);
 }
-/* 全局 .field > input 带 340px 上限（窄表单的尺子）：这里要整行 */
+/* 全局 .field > input 有 340px 上限（窄表单的尺子）：这里要整行 */
 .ons-sec-body .field > input,
 .ons-sec-body .field > select { box-sizing: border-box; width: 100%; max-width: none; }
+
+/* 默认引擎：两枚卡片式单选（选中 = 强调色描边，不只靠颜色也有位置感） */
+.ons-engines { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ons-engine {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px;
+  text-align: left; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-elev); cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.ons-engine:hover { border-color: var(--border-strong); }
+.ons-engine.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.ons-engine-name { font-size: calc(13px * var(--ts, 1)); font-weight: 650; color: var(--text); }
+.ons-engine-note { font-size: calc(11px * var(--ts, 1)); line-height: 1.45; color: var(--text-faint); }
+
 .ons-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-/* 三个开关并排：每个都是「标题 + 开关」，不给它们各自套卡片 */
 .ons-switch-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+/* 右栏只有半屏宽：三个开关横排会把文案挤断行，落成一列更好读 */
+.ons-cols .ons-switch-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .ons-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ons-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .field-hint { font-size: calc(11px * var(--ts, 1)); line-height: 1.45; color: var(--text-faint); }
@@ -653,9 +593,9 @@ onMounted(() => {
 .verify-msg.ok { color: var(--ok); }
 .verify-msg.bad { color: var(--danger); }
 .ons-error { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
+.ons-hint { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
 
-/* 最近的解析：一行一条，发丝线分隔（与系统信息里的服务列表同一套密度） */
-.ons-recent { display: flex; flex-direction: column; gap: 8px; }
+/* 最近的解析：一行一条，发丝线分隔 */
 .ons-recent-list { margin: 0; padding: 0; list-style: none; }
 .ons-recent-row {
   display: flex; align-items: center; gap: 10px; min-height: 30px; min-width: 0;
@@ -665,19 +605,6 @@ onMounted(() => {
 .ons-recent-name { flex: 1 1 auto; min-width: 0; color: var(--text); }
 .ons-recent-engine { flex: none; color: var(--text-faint); }
 .ons-recent-time { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-
-/* 只读摘要条：一行 key→value，窄屏自动换行；它不是表单，所以不铺字段底 */
-.ons-summary-bar {
-  display: flex; align-items: baseline; gap: 6px 18px; flex-wrap: wrap;
-  padding: 10px 14px; border-radius: var(--r-sm); background: var(--bg-sunken);
-}
-.ons-sum {
-  min-width: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
-  overflow-wrap: anywhere;
-}
-.ons-sum b {
-  margin-right: 6px; font-weight: 600; color: var(--text-faint);
-}
 
 /* 底部动作排：一条发丝线与内容分开，按钮贴右缘 */
 .ons-foot {
@@ -694,10 +621,8 @@ onMounted(() => {
 }
 @media (max-width: 900px) {
   .ons-head { flex-direction: column; gap: 8px; }
-  .ons-actions { justify-content: flex-start; }
-  .ons-switch { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
-  .ons-switch, .ons-grid, .ons-switch-row { grid-template-columns: minmax(0, 1fr); }
+  .ons-engines, .ons-grid, .ons-switch-row { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
