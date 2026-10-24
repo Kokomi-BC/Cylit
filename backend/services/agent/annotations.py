@@ -27,7 +27,9 @@ from typing import Iterable
 from backend.core.errors import NotFoundError, ValidationError
 from backend.core.logging import get_logger
 from backend.services.annotation import annotation_service as svc
-from backend.services.annotation.annotation_service import HIGHLIGHT_COLORS
+from backend.services.annotation.annotation_service import (
+    HIGHLIGHT_COLORS, HIGHLIGHT_PALETTE,
+)
 
 log = get_logger(__name__)
 
@@ -563,6 +565,10 @@ def anchor_text(paper_id: str, anchor: str, *, side: str = "en") -> str | None:
 #: 用户口径（2026-12-06）：**多彩、尽量不一样** —— 一片同色等于没有颜色，标注就看不出层次。
 PALETTE = ("blue", "violet", "green", "orange", "red", "indigo", "yellow")
 
+#: 落库色值（hex）→ 色名：库里只存 hex（见 `annotation_service.HIGHLIGHT_PALETTE`），
+#: 数"哪个颜色用得最少"时得先认回名字。
+_COLOR_NAME_OF = {value: name for name, value in HIGHLIGHT_PALETTE.items()}
+
 
 def spare_color(used: Iterable[str]) -> str:
     """在调色板里挑一个**最少被用过**的颜色（全都没用过就是第一个）。
@@ -573,7 +579,10 @@ def spare_color(used: Iterable[str]) -> str:
     """
     counts = {name: 0 for name in PALETTE}
     for raw in used or []:
-        name = str(raw or "").strip().lower()
+        value = str(raw or "").strip().lower()
+        # 库里的色值现在是 hex（`_norm_color` 会把色名换成 hex）：先认回色名再数，
+        # 否则统计永远全是 0，`spare_color` 就退化成"总给第一个" —— 多彩直接没了。
+        name = _COLOR_NAME_OF.get(value, value)
         if name in counts:
             counts[name] += 1
     # sorted 稳定：同票时按 PALETTE 顺序取，结果可预期（不会每次挑到不同的颜色）
@@ -616,10 +625,12 @@ def normalize_color(value: object) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
         return ""
+    # **色板优先**：`pink` 在 `CSS_COLOR_NAMES` 里也有一条（`#ec4899`），那与前端 `HL_COLOR_CSS`
+    # 画的粉不是一个颜色；色板的 pink 才是存量高亮迁移后要落的那条。
+    if raw in HIGHLIGHT_PALETTE:
+        return HIGHLIGHT_PALETTE[raw]
     if raw in CSS_COLOR_NAMES:
         return CSS_COLOR_NAMES[raw]
-    if raw in HIGHLIGHT_COLORS:
-        return raw
     if re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", raw):
         return raw
     if re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", raw):

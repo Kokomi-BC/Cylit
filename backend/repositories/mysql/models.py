@@ -282,7 +282,9 @@ class Highlight(Base):
     selected_text: Mapped[str | None] = mapped_column(Text)
     start_offset: Mapped[int] = mapped_column(Integer, default=0)
     end_offset: Mapped[int] = mapped_column(Integer, default=0)
-    color: Mapped[str] = mapped_column(String(16), default="yellow")
+    # 默认值跟着「色板统一成 hex」走：与 `annotation_service.HIGHLIGHT_PALETTE["yellow"]` 一致。
+    # `create_highlight` 总会显式传 color，这一行只是不让 ORM 再造出旧的色名口径。
+    color: Mapped[str] = mapped_column(String(16), default="#e6b414")
     # 偏移量是相对**哪一侧**的文本：原文 en / 译文 zh。
     # 为什么必须存：一行对照里两侧共用同一个 `block_id`，光有偏移量根本分不清
     # 标的是原文还是译文 —— 原文的高亮会按同样的偏移量画到译文上（实测就是这个 bug）。

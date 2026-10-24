@@ -99,7 +99,15 @@ mark.hl {
  * 这一条按"作者样式压过 UA 样式"生效，与上面 `mark.hl` 那句是同一件事的两道保险。 */
 mark { color: inherit; }
 /* 每种颜色给**两个**值：`--hl-bg` 是荧光笔的底色（带 alpha，不遮字形），
-   `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。 */
+   `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。
+ *
+ * ⚠️ **下面这一族 class 只剩"认老数据"一个用途**：新数据（库里现在**只存 hex**，
+ * 后端 `_norm_color` 落库前就把色名映射成 hex）走的都是**行内变量分支** ——
+ * `mark.hl style="--hl-bg:<hex>66;--hl-ink:<hex>"`（见 `utils/domMarks.ts` / `useMarkdown.ts`），
+ * 一个 class 都不带。所以：
+ *   - 这些值**不要再用来做"配色"**（取色点已经是 hex 了，见下面 `.hl-swatch.*`）；
+ *   - 也别因为"某个色名不好看"就改这里 —— 改它对眼前的高亮没有任何影响，
+ *     真正决定颜色的是 `utils/highlightColors.ts` 的 `HL_PALETTE`（= 后端 `HIGHLIGHT_PALETTE`）。 */
 mark.hl.yellow { --hl-bg: rgba(255, 214, 64, .45); --hl-ink: #d9a400; }
 mark.hl.green { --hl-bg: rgba(90, 220, 150, .38); --hl-ink: #1f9e63; }
 mark.hl.blue { --hl-bg: rgba(110, 180, 255, .38); --hl-ink: #2f7fd4; }
@@ -157,27 +165,31 @@ html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); t
   text-decoration-color: currentColor;
 }
 .cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
-/* **高亮色块**（划词菜单、AI 解释浮层的"标出这段并存为笔记"共用一份）。
- * 颜色与正文里的 `mark.hl.*` 是同一组色值，只是不透明度略高（小圆点上要看得清）。
- * 以前这套只写在 `SelectionMenu` 的 scoped 样式里 —— 第二处要用时又得抄一遍，
- * 那就成了"两个地方各自维护一组颜色"（2026-10-03 的胶囊就是这么走散的）。 */
+/* **高亮色块**（划词菜单、右键触摸条、换色菜单、笔记卡那枚圆点、AI 解释浮层的"标出这段"共用一份）。
+ *
+ * 颜色**一个都不写在这里**：只吃 `--hl-sw-<色名>`，由 `utils/highlightColors.ts` 的
+ * `HL_PALETTE`（= 后端 `HIGHLIGHT_PALETTE` 同一份 hex）在 `ReaderView` 挂载时写到 `:root`。
+ * 变量值就是 `<hex>66`（40%）—— 与正文 mark 的行内 `--hl-bg` **逐字同一个字符串**，
+ * 所以"点的这个色"和"正文里看到的这个色"必然是同一个 hex、同一档浓度。
+ *
+ * 以前这里 9 个点各自手写 rgba（20%~45% 不等）、正文却画 hex+40%，于是选色与观感不一致：
+ * 红 / 橙 / 靛 / 紫选下去明显变浓，purple 甚至从灰变成紫（用户 2026-12 报的）。
+ * 也**别再**在这里补色值：补一份就是第三套色，色板迟早再走散一次。 */
 .hl-swatch {
   width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto;
   border: 1px solid var(--border-strong); cursor: pointer;
   transition: transform var(--dur-fast) var(--ease), border-color var(--dur) var(--ease);
 }
 .hl-swatch:hover { transform: scale(1.15); border-color: var(--text-dim); }
-.hl-swatch.yellow { background: rgba(255, 214, 64, .6); }
-.hl-swatch.green { background: rgba(90, 220, 150, .55); }
-.hl-swatch.blue { background: rgba(110, 180, 255, .55); }
-.hl-swatch.pink { background: rgba(255, 150, 190, .55); }
-.hl-swatch.purple { background: rgba(140, 140, 140, .45); }
-/* 与目标站同色（用户口径 2026-10-10）：它们的色点就是 `rgb(from rgba(R,G,B,.25) … / 60%)`
-   = 实体色 60% 不透明。黄/绿/蓝沿用原有色值（观感已经一致）。 */
-.hl-swatch.red { background: rgba(255, 0, 0, .6); }
-.hl-swatch.orange { background: rgba(255, 165, 0, .6); }
-.hl-swatch.indigo { background: rgba(75, 0, 130, .6); }
-.hl-swatch.violet { background: rgba(143, 0, 255, .6); }
+.hl-swatch.red { background: var(--hl-sw-red); }
+.hl-swatch.orange { background: var(--hl-sw-orange); }
+.hl-swatch.yellow { background: var(--hl-sw-yellow); }
+.hl-swatch.green { background: var(--hl-sw-green); }
+.hl-swatch.blue { background: var(--hl-sw-blue); }
+.hl-swatch.indigo { background: var(--hl-sw-indigo); }
+.hl-swatch.violet { background: var(--hl-sw-violet); }
+.hl-swatch.pink { background: var(--hl-sw-pink); }
+.hl-swatch.purple { background: var(--hl-sw-purple); }
 /* 已经是这个颜色的那枚（AI 解释浮层里标出当前高亮的颜色） */
 .hl-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 /* 整块**显示公式**（`\begin{aligned}` 那种多行的）：`mark` 自己也得是块级盒子，

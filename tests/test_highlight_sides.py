@@ -81,7 +81,8 @@ def test_side_and_scope_round_trip() -> None:
         "side": "zh", "scope": "markdown",
     })
     assert created["side"] == "zh" and created["scope"] == "markdown"
-    assert created["start"] == 5 and created["end"] == 9 and created["color"] == "green"
+    # 色名落库成 hex（库里只存 hex，见 `annotation_service.HIGHLIGHT_PALETTE`）
+    assert created["start"] == 5 and created["end"] == 9 and created["color"] == "#3ccd82"
 
     items = svc.list_highlights(FAKE_PAPER)["items"]
     assert len(items) == 1

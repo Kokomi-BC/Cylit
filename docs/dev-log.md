@@ -11621,3 +11621,25 @@ highlight h-2878c1c24700e4fb · p020-00 · selected_text="Yao 极小极大原理
 真浏览器截图确认：`#agent` 技能 **13** 条全展开且文案是新版、`#kb` 三卡齐平。
 
 **仍待下一轮**：① 探针那 10 条长期红要逐条定性（产品侧修 / 探针侧改，别继续当基线）；② `page_side` 在双语行视图是否该报 `both`（现在报用户选的那一面，后端 `both` 会把 `note_side` 设为 null，反而弱化信息）；③ `view` 的 markdown 分支未在 UI 实跑；④ 高亮配色两套并存（9 条色名 + 22 条 hex）尚未统一。
+
+### 123. 第一百二十三轮：探针从「11 条旧红」修到 **149/149 全绿**；高亮颜色统一成一份 hex 色板
+
+两件事，都是上一轮列进「下一轮」的：探针的长期红、高亮配色两套并存。
+
+**探针：10 条红全部定性，一条都不是产品问题**
+- 最重的一条：`pdfhl` 那套探针**从 2026-10-09（`fb3e7c78`）起就没执行过** —— 脚本里三处 `${b.getAttribute(...)}` 写成了普通 JS（本该是字符串拼接）→ `SyntaxError` → 那 1500 行永远停在 `<pre>waiting`。
+  修好语法后探针从 122 项涨到 **149 项**（多活 27 条）；也反向否掉了「无头渲染不出 PDF」的环境说：单独量无头 `?left=page`，15 页、页 1 有 71 个 span + canvas，3.5s 就绪。
+- 其余九条的定性：右键「玻璃」是**底色藏在 `linear-gradient(...)` 里**（`backgroundColor` 本就透明）+ `6d7ba1ad` 明确「不画描边」；填充图标是探针**从没算过** `fill`/`radius`；缺「高亮」+ 顺序是 `dev-log:10505` 的菜单重组（桌面只在触摸路径才有「高亮」）；侧栏 URL 是回工作区的节点变成 `.tabbar-logo`；空态「未居中」是**基准错**（输入区自 `e6a008b0` 起悬浮，真可见区中心 520 vs 组中心 515）；两枚托盘是 `5b2b4d32` 把「管理」拆成圆钮；三个空串是枚数变了（2026-11-19 拆出「浮层打开」）；胶囊按钮名是 `menuIconOnly` 在 selchat 探针里从没算过。
+- 顺带修掉 4 类取数/时序问题（改色口径改 hex、引用浮层候选标号要与实际文献表对号、右键收起的轮询、跳页后等高亮落位），并按现行设计重写 pdfhl 链上 12 条（色点文案「标成黄」、`[data-note-edit]` 编辑态、侧栏不再有 `SCOPE_LABEL`、就地改入口改成浮层编辑…）。
+- **结果：`共 149 项：通过 149，失败 0`，连跑两遍一致，未加 `xfail`、未改任何前端源码。** 这把门禁从「21 条 static + 11 条旧红」变成「149 条全绿」。
+
+**高亮颜色：一份 hex 色板，取色器与正文同色同浓度**
+- 后端：`HIGHLIGHT_PALETTE`（9 条 name→hex）成唯一真相，`_norm_color` 只输出 hex（色名当输入别名），本地 3 条 + 生产 **12 条**色名行迁成 hex（`Rows matched: 12 Changed: 12`，可重入，hex 行一字未改）；`models.py` 的 `Highlight.color` 默认值也从 `yellow` 改成 `#e6b414`。
+- 前端：`HL_PALETTE` 与后端逐字一致（`tests/test_highlight_color.py` 直接读它的字面量块比对，**色值只有一份**）；`HL_COLOR_CSS` 改成从色板派生（不再手抄 9 条 rgba）；`base.css` 的 `.hl-swatch.*` 9 条手写 rgba 删掉，改用 `--hl-sw-<name>`，由 `ReaderView` 把色板摊成 `--hl-sw-* = <hex>66` 挂到 `:root`（色点模板分散在 SelectionMenu / ContextMenu / ReaderChat 且都 Teleport 到 body，只有根变量能同时喂到三处）。
+- 实测 9 色对照：取色点 computed 与正文 `--hl-bg`(hex+66)/`--hl-ink`(hex) **逐条同 hex、alpha 均 0.4**；同屏截图（黄）深浅两套都看过。**代价**：红/橙/靛/紫由 class 时代的 20–26% 抬到 40%（更浓），purple 从灰变紫、黄略淡（45%→40%）——统一浓度的必然结果，已记在此。
+
+**另外两条顺手做的**：`readerState.page_side` 在**双语行同时显示**时改报 `both`（只看一侧仍报那一侧，原 PDF 对照时按文字列报单侧），实测 `bilingualText/translation/original/pdf/markdown` 五档都对；`readerState.view` 的 **markdown 分支**用真实 `?md=1` 入口实跑过（`rows/markdown/rows/pdf` 四个值），临时 window 钩子已删。
+
+**验证（我自己跑的）**：全量 `pytest tests/` **1725 passed / 131 skipped**；`vue-tsc` 0 error；`npm run build` 通过；探针 **149 项 / 149 通过 / 0 失败**；`dist` 里确认 `.hl-swatch` 已改用 `--hl-sw-*`、`ReaderView` 的 JS 里确实写了这批变量。
+
+**仍待下一轮**：① 红/橙/靛/紫变浓这件事要不要回调（把统一浓度降到 30%，或给每色留一档 alpha）；② 引用浮层「候选标号要与文献表对号」这类**取数正确性**问题值得在别的探针组也扫一遍；③ `web_search` 的 `site` 字段偶发错年份（上一轮只记了一笔，未复现）。

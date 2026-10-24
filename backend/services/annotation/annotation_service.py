@@ -25,12 +25,32 @@ from backend.repositories.mysql.session import session_scope
 
 log = get_logger(__name__)
 
-#: 高亮色名（用户口径 2026-10-10：色板对齐 alphaXiv 的 7 色）。
-#: ⚠️ 这里是**名字**不是色值 —— 色值在 `frontend/src/styles/base.css` 的 `mark.hl.*` /
-#: `.hl-swatch.*`（两处必须同时加）。`pink` / `purple` 是历史名，留着是为了**存量高亮**
-#: 仍能通过校验、仍能渲染；新界面不再提供它们。
-HIGHLIGHT_COLORS = ("red", "orange", "yellow", "green", "blue", "indigo", "violet",
-                    "pink", "purple")
+#: 高亮色板：**色名 → 落库色值**（唯一真相）。
+#:
+#: 口径（2026-12-10）：库里**只存 hex**。色名只是"输入别名"，进门由 `_norm_color` 换成 hex ——
+#: 于是"同一个颜色"在库里不会再出现两种写法（前端还在传色名，所以两种都得收）。
+#:
+#: 这九条与 `frontend/src/utils/highlightColors.ts` 的 `HL_COLOR_CSS` 是**同一组色值**
+#: （那边写 `rgba(...)`，这边落成 `#rrggbb`；`tests/test_highlight_color.py` 会比对两边）。
+#: **这份是唯一真相，前端那份要与它一致**。
+#:
+#: **alpha 只影响渲染浓度，不进口径**：`rgba(230, 180, 20, .95)` 里的 `.95` 说的是"画多浓"，
+#: 不是颜色本身，所以 hex 不带 alpha（前端 hex 分支自己按 40% 铺 `--hl-bg`）。
+#: `pink` / `purple` 是历史名，留着是为了**存量高亮**仍能通过校验、仍能渲染；新界面不再提供它们。
+HIGHLIGHT_PALETTE: dict[str, str] = {
+    "red": "#ff0000",     # rgba(255, 0, 0, .9)
+    "orange": "#ffa500",  # rgba(255, 165, 0, .95)
+    "yellow": "#e6b414",  # rgba(230, 180, 20, .95)
+    "green": "#3ccd82",   # rgba(60, 205, 130, .95)
+    "blue": "#55a5ff",    # rgba(85, 165, 255, .95)
+    "indigo": "#4b0082",  # rgba(75, 0, 130, .95)
+    "violet": "#8f00ff",  # rgba(143, 0, 255, .9)
+    "pink": "#ff64a5",    # rgba(255, 100, 165, .95)
+    "purple": "#965adc",  # rgba(150, 90, 220, .95)
+}
+
+#: 色名（前七个是新界面提供的，后两个是历史名）—— 只做"哪些名字算合法输入"。
+HIGHLIGHT_COLORS = tuple(HIGHLIGHT_PALETTE)
 
 
 # --------------------------------------------------------------------------
@@ -39,22 +59,25 @@ HIGHLIGHT_COLORS = ("red", "orange", "yellow", "green", "blue", "indigo", "viole
 
 
 def _norm_color(raw: object) -> str:
-    """色名，或**自定义 `#rrggbb`**（用户口径 2026-10-10："添加自定义颜色"）。
+    """色名 / 任意色 → **落库色值**（色名一律换成 `HIGHLIGHT_PALETTE` 里的 hex）。
 
-    为什么后端必须放行自定义色：以前未知色会被**静默退回 yellow** ——
-    取色器选的颜色存进去变成黄色，用户只会当成"取色器坏了"。
+    为什么要把色名换成 hex：同一个颜色以前能存成 `yellow` 或 `#e6b414` 两种写法，
+    统计、去重、前端比较都得判两遍。色名仍然**接受**（前端还在传），但输出只有 hex 一种 ——
+    `_norm_color("yellow") == _norm_color("#e6b414")`。
+
+    为什么后端必须放行自定义色（用户口径 2026-10-10「添加自定义颜色」）：以前未知色会被
+    **静默退回黄色** —— 取色器选的颜色存进去变成黄色，用户只会当成"取色器坏了"。
     """
     c = str(raw or "").strip().lower()
-    if c in HIGHLIGHT_COLORS:
-        return c
+    if c in HIGHLIGHT_PALETTE:
+        return HIGHLIGHT_PALETTE[c]
     # 任意色（用户口径 2026-11-26「允许 agent 自定义任意颜色」）：hex 3/6/8 位、rgb()/hsl() 一律放行，
-    # 只有真的认不出来的写法才退回 yellow（静默改色最坑，见上面的说明）。
-    import re as _re
-    if _re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", c):
+    # 只有真的认不出来的写法才退回黄色（静默改色最坑，见上面的说明）。
+    if re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})", c):
         return c
-    if _re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", c):
+    if re.fullmatch(r"(?:rgb|rgba|hsl|hsla)\([0-9a-f.,%\s/]+\)", c):
         return c
-    return "yellow"
+    return HIGHLIGHT_PALETTE["yellow"]
 
 
 #: 正文行 id（行 id = 位置编号，``p015-06``）：只有这种锚点才可能有行身份 pid

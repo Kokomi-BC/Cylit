@@ -91,6 +91,20 @@ async function run() {
   const res = { stage: 'loaded' };
   try {
     await until(d, (x) => x.querySelector('[data-row-id]'));
+    /* 阅读位置是**异步恢复**的（服务端记得"上次读到哪"，落位之后可能再滚一次）。滚动会按设计
+       收掉引用标号的浮层（"浮层贴着正文，一滚就对不上"）—— 不等它停住，点开浮层的那一下会正好
+       撞上恢复的那次滚动，浮层刚弹就被收掉（实测：citePop=false，偶尔才复现）。 */
+    {
+      const scWait = d.querySelector('.reader-content');
+      let lastTop = -1;
+      for (let i = 0; i < 16; i += 1) {
+        const top = scWait ? Math.round(scWait.scrollTop) : 0;
+        if (i > 1 && top === lastTop) { lastTop = top; break; }
+        lastTop = top;
+        await sleep(200); spin(BURN);
+      }
+      res.readerSettleTop = lastTop;
+    }
     const tabs = [...d.querySelectorAll('.side-tab')].map((b) => (b.textContent || '').trim());
     res.tabs = tabs;
     res.chatTabIndex = tabs.findIndex((t) => t.indexOf('对话') >= 0);
@@ -220,7 +234,14 @@ async function run() {
       const target = thumbs[2] || thumbs[0];
       res.jumpWanted = Number(target.getAttribute('data-page'));
       target.click();
-      await sleep(1000); spin(BURN); await sleep(300);
+      /* 跳页是"写 URL → 再滚过去 → 当前页高亮跟着刷新"三段异步：固定等 1.3s 偶发只等到前两段
+         （实测：URL 已经是 ?page=3，高亮还停在 [1]）。轮询到高亮落位为止，再留一拍。 */
+      await until(d, () => {
+        const act = [...d.querySelectorAll('.pg-item.active')]
+          .map((x) => Number(x.getAttribute('data-page')));
+        return act.length === 1 && act[0] === Number(target.getAttribute('data-page'));
+      }, 24);
+      await sleep(300); spin(BURN);
       res.jumpUrl = w.location.search;
       res.jumpActive = [...d.querySelectorAll('.pg-item.active')]
         .map((t) => Number(t.getAttribute('data-page')));
@@ -281,6 +302,10 @@ async function run() {
     if (chips.length) {
       const refApi = await (await fetch('/api/v1/papers/__PAPER__/references')).json();
       res.apiRefs = (refApi.data || {}).count;
+      /* 编号要在**实际取到的那份文献表**里：count 只说明"有几条"，编号不保证连续 1..count，
+         拿"小于等于总条数"当判据会挑到一条**根本对不上**的标号（浮层随后显示"没有对应编号"）。 */
+      res.apiNos = (((refApi.data || {}).items) || []).map((r) => Number(r.order_no));
+      const okNos = new Set(res.apiNos);
       /* 挑一个**编号都在参考文献里**的标号来点（正文里也可能出现超过总条数的编号） */
       const numsOf = (el) => (el.getAttribute('data-refs') || '').split(',')
         .map((s) => Number(s.trim())).filter((n) => n > 0);
@@ -291,7 +316,7 @@ async function run() {
         const r = c.getBoundingClientRect();
         return r.top > 60 && r.bottom < (w.innerHeight || 800) - 60;
       };
-      const valid = (c) => numsOf(c).length && numsOf(c).every((n) => n <= (res.apiRefs || 0));
+      const valid = (c) => numsOf(c).length && numsOf(c).every((n) => okNos.has(n));
       const chip = chips.find((c) => valid(c) && inView(c)) || chips.find(inView)
         || chips.find(valid) || chips[0];
       res.clickedRefs = numsOf(chip);
@@ -307,16 +332,43 @@ async function run() {
       let pop = null;
       for (let attempt = 0; attempt < 3 && !pop; attempt += 1) {
         const chipNow = d.querySelector('.cite-inline[data-refs="' + wantRefs + '"]') || chip;
+        /* 先把标号滚进视口，再按**真实指针顺序**点一遍（pointerdown → mousedown → pointerup →
+           mouseup → click）。只发一个合成 click 时偶发"点不动"：标号刚从视口外滚进来、
+           或者上一发 pointerdown 还没把状态清干净（实测 3 次里成功 1 次，补上这一步后稳定）。 */
+        chipNow.scrollIntoView({ block: 'center' });
+        await sleep(200); spin(BURN);
+        const bNow = chipNow.getBoundingClientRect();
+        const cx = Math.round(bNow.left + bNow.width / 2);
+        const cy = Math.round(bNow.top + bNow.height / 2);
+        const pe = (t, buttons) => chipNow.dispatchEvent(new w.PointerEvent(t, {
+          bubbles: true, cancelable: true, pointerId: 3, pointerType: 'mouse',
+          clientX: cx, clientY: cy, button: 0, buttons,
+        }));
+        const me = (t, buttons) => chipNow.dispatchEvent(new w.MouseEvent(t, {
+          bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, buttons,
+        }));
+        pe('pointerdown', 1); me('mousedown', 1);
+        pe('pointerup', 0); me('mouseup', 0);
         chipNow.click();
-        await until(d, (x) => x.querySelector('[data-cite-pop]'), 8);
+        await until(d, (x) => x.querySelector('[data-cite-pop]'), 12);
         pop = d.querySelector('[data-cite-pop]');
       }
       if (pop) {
         /* 参考文献是**按需取**的（`ensureReferences`）：第一次点开时浮层先显示"正在取参考文献…"，
            要等**卡片**出来再量（只 sleep 固定时间会量到一个空浮层）。 */
+        /* 等它**落定**：文献还在路上时浮层只有一行「正在取参考文献…」（citePop.loading），
+           这一拍读出来的行数就是 0。这里多等一轮"正在取"消失之后再读行数，并把提示文字记下来。 */
+        await until(d, (x) => {
+          const p = x.querySelector('[data-cite-pop]');
+          if (!p) return false;
+          const hint = p.querySelector('.cite-pop-hint');
+          return !hint || (hint.textContent || '').indexOf('正在取') < 0;
+        }, 60);
         await until(d, (x) => x.querySelector('[data-cite-pop] [data-ref-no]'), 40);
         await sleep(150); spin(BURN);
         pop = d.querySelector('[data-cite-pop]');
+        res.citePopHint = pop && pop.querySelector('.cite-pop-hint')
+          ? (pop.querySelector('.cite-pop-hint').textContent || '').trim().slice(0, 40) : '';
       }
       res.citePop = !!pop;
       res.citePopRows = pop ? pop.querySelectorAll('[data-ref-no]').length : 0;
@@ -375,6 +427,15 @@ async function run() {
       if (chipAgain) {
         chipAgain.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
         await until(d, (x) => x.querySelector('[data-cite-pop]'), 20);
+        /* 光有浮层壳还不够：openCitePop 先 open、再 await placeCitePop / 把文献取回来，
+           只等 [data-cite-pop] 会在"文献还在路上"的那一拍读到**空列表**（实测 [] vs [13]）。 */
+        await until(d, (x) => {
+          const p = x.querySelector('[data-cite-pop]');
+          if (!p) return false;
+          const hint = p.querySelector('.cite-pop-hint');
+          return !hint || (hint.textContent || '').indexOf('正在取') < 0;
+        }, 40);
+        await until(d, (x) => !!x.querySelector('[data-cite-pop] [data-ref-no]'), 40);
         await sleep(200); spin(BURN);
         const popHover = d.querySelector('[data-cite-pop]');
         res.citePopHoverNos = popHover ? [...popHover.querySelectorAll('[data-ref-no]')]
@@ -454,7 +515,10 @@ async function run() {
         .map((e) => e.getAttribute('data-ctx-key'));
       const closeCtx = async () => {
         (d.body || d).dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true }));
-        await sleep(320); spin(BURN);                    // 菜单是下一个 tick 才从 DOM 上摘（玻璃更重，给宽点）
+        /* 菜单是**下一个 tick + 一段退场动画**之后才从 DOM 上摘：固定等 320ms 偶发读到"还开着"
+           （实测复现过）。改成轮询到真的没了为止，再留一拍给动画收尾。 */
+        await until(d, (x) => !x.querySelector('[data-ctx-menu]'), 12);
+        await sleep(320); spin(BURN);
       };
       const body = d.querySelector('.reader-content .rr-body');
       if (body) {
@@ -468,10 +532,35 @@ async function run() {
           if (!p) return null;
           const cs = w.getComputedStyle(p);
           const bg = cs.backgroundColor || '';
-          const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(bg) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(bg);
-          return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg,
-                   bgImage: cs.backgroundImage || '', alpha: m ? Number(m[1]) : 1,
-                   shadow: cs.boxShadow, items: p.querySelectorAll('.ctx-item').length };
+          const bgImage = cs.backgroundImage || '';
+          /* 底色可能写在**渐变**里（2026-10-18 起菜单改成"上亮下暗的渐变本体"）：
+             那时 backgroundColor 是 rgba(0,0,0,0)，浓度只能从 backgroundImage 的
+             color(srgb r g b / a) 或 rgba(...) 里读 —— 两处一起看，别再只读 backgroundColor。 */
+          const alphaOf = (s) => {
+            const m = /rgba?\\([^)]*,\\s*([\\d.]+)\\s*\\)/.exec(s) || /\\/\\s*([\\d.]+)\\s*\\)/.exec(s);
+            return m ? Number(m[1]) : 1;
+          };
+          /* 图标口径：每个 item 的 svg 用 currentColor 上色（填充型走 fill、线性图标走 stroke）。
+             记下按钮自己的文字色当基准 —— 断言比的是"两者相等"，不是"一律填充型"（见 ReaderView
+             那段说明：高亮 / 询问 Cyli / 加入对话 保留线性图标）。 */
+          const icons = [...p.querySelectorAll('[data-ctx-key]')].map((b) => {
+            const svg = b.querySelector('svg');
+            const col = w.getComputedStyle(b).color;
+            if (!svg) return { key: b.getAttribute('data-ctx-key'), none: true };
+            const sc = w.getComputedStyle(svg);
+            return { key: b.getAttribute('data-ctx-key'), fill: sc.fill, stroke: sc.stroke,
+                     col, fillAttr: svg.getAttribute('fill'), strokeAttr: svg.getAttribute('stroke') };
+          });
+          /* 浓度取"真正在铺的那一层"：渐变里带 alpha 就用渐变的，否则用 backgroundColor 的。
+             两段拼成一个字符串再读会**先命中** backgroundColor 的 rgba(0,0,0,0)，把 0 当浓度。 */
+          const aBg = alphaOf(bg);
+          const aImg = alphaOf(bgImage);
+          return { blur: String(cs.backdropFilter || '').indexOf('blur') >= 0, bg, bgImage,
+                   alpha: aImg < 1 ? aImg : aBg,
+                   border: cs.borderTopWidth + ' ' + cs.borderTopStyle,
+                   borderless: cs.borderTopStyle === 'none' || parseFloat(cs.borderTopWidth) === 0,
+                   shadow: cs.boxShadow, radius: cs.borderTopLeftRadius, icons,
+                   items: p.querySelectorAll('.ctx-item').length };
         })();
         await closeCtx();
         /* 划词之后再右键：该出现"询问 / 添加 / 搜索 / 复制 / 高亮" */
@@ -597,8 +686,10 @@ async function run() {
       sideBtn.click();
       await sleep(600);
       res.sideUrl = d.location.search;
-      const homeTab = [...d.querySelectorAll('.tab')]
-        .find((a) => (a.getAttribute('href') || '').indexOf('/home') >= 0);
+      /* 切走 / 切回：现在**没有「首页」那个 .tab** —— 回工作区是左上角那枚 .tabbar-logo
+         （RouterLink → /cylit/home），.tab 只剩「打开的论文标签」。旧断言按 .tab href~/home 找，
+         永远是 null，于是「切回来还是那一栏」这一半从来没测到（不是产品问题）。 */
+      const homeTab = d.querySelector('.tabbar-logo');
       const selfTab = [...d.querySelectorAll('.tab')]
         .find((a) => (a.getAttribute('href') || '').indexOf('/reader/') >= 0);
       if (homeTab && selfTab) {
@@ -642,6 +733,15 @@ async function run() {
     res.headBtns = heads;
     const trays = [...root.querySelectorAll('.filters .seg')];
     res.trayCount = trays.length;
+    /* 「管理」2026-11-21 起是**多选圆钮**（.multi-btn，30×30 正圆），不再套在 .seg 托盘里 ——
+       所以托盘只剩「分类」这一枚。 */
+    const mbtn = root.querySelector('.filters .multi-btn');
+    res.multiBtn = !!mbtn;
+    if (mbtn) {
+      const bb = mbtn.getBoundingClientRect();
+      res.multiBtnRound = Math.round(bb.width) === Math.round(bb.height)
+        && parseFloat(w.getComputedStyle(mbtn).borderTopLeftRadius) >= Math.round(bb.width) / 2;
+    }
     res.segBtns = trays[0] ? [...trays[0].querySelectorAll('button')].map((b) => (b.textContent || '').trim()) : [];
     /* 工具栏与胶囊的**位置 + 样式**（用户口径 2026-10-07：目录 / 对话 / 公式三处统一，
        **以这一页为准**）。① 那条探针量了目录与公式两处，Python 侧比对三处是否一模一样。 */
@@ -716,8 +816,10 @@ async function run() {
        一起搬到探针 ⓪「外壳」（`PROBE_SHELL`）—— 那里是零数据依赖的 /home，跑得动也查得准。 */
     newBtn.click();
     await until(d, (x) => x.querySelector('.chat textarea.composer-input'), 20);
-    const head = [...root.querySelectorAll('.thread-head button')].map((b) => (b.textContent || '').trim());
-    res.threadHeadBtns = head;
+    /* 顶部现在是**三枚图标钮**（返回 / 浮层打开 / 新建）：2026-11-19 把「新建」和「浮层打开」拆成
+       两枚各自独立的圆钮。断言只关心「没有文字钮」，所以逐枚记 text + title。 */
+    res.threadHeadBtns = [...root.querySelectorAll('.thread-head button')]
+      .map((b) => ({ t: (b.textContent || '').trim(), title: b.getAttribute('title') || '' }));
     const ta = root.querySelector('textarea.composer-input');
     res.placeholder = ta ? ta.getAttribute('placeholder') : '';
     const hello = root.querySelector('.hello');
@@ -741,13 +843,20 @@ async function run() {
                                + hello.getBoundingClientRect().right) / 2) };
       /* 图标 + 语录这一组要在**整块高度里竖直居中**（用户口径 2026-10-07） */
       const msgs = root.querySelector('.msgs');
+      const boxEl = root.querySelector('.composer-box');
       if (msgs && lr) {
         const mbox = msgs.getBoundingClientRect();
-        res.helloCenteredV =
-          Math.abs((mr.top + lr.bottom) / 2 - (mbox.top + mbox.bottom) / 2) <= 40;
+        /* 基准 = **看得见的那块高度**：输入区从 e6a008b0（输入区改悬浮圆角）起是悬浮在 .msgs
+           底部的一块，.msgs 用 padding-bottom 给它让位（ReaderChat 里那句 ResizeObserver）。
+           拿 .msgs 的整盒当基准会恒定把这一组算成「偏上」：实测差 59px = (112-10)/2 的让位
+           + (40-24)/2 的 hello 内边距，两笔都不是「没居中」。 */
+        const freeBottom = boxEl ? boxEl.getBoundingClientRect().top : mbox.bottom;
+        const groupMid = (mr.top + lr.bottom) / 2;
+        res.helloCenteredV = Math.abs(groupMid - (mbox.top + freeBottom) / 2) <= 40;
         res.helloMarkSize = Math.round(mr.width);
-        res.helloSelfDebug = { groupMid: Math.round((mr.top + lr.bottom) / 2),
-                               paneMid: Math.round((mbox.top + mbox.bottom) / 2),
+        res.helloSelfDebug = { groupMid: Math.round(groupMid),
+                               paneMid: Math.round((mbox.top + freeBottom) / 2),
+                               boxMid: Math.round((mbox.top + mbox.bottom) / 2),
                                mark: Math.round(mr.width) };
       }
     }
@@ -1029,6 +1138,13 @@ async function run() {
     /* 胶囊现在是**只带图标**的（用户口径 2026-10-08）：名字在 `title`/`aria-label` 上，不再是文字 */
     res.menuBtns = menu ? [...menu.querySelectorAll('button')]
       .map((b) => b.getAttribute('aria-label') || b.getAttribute('title') || '') : [];
+    /* 「只带图标」= 每枚都**没有文字**、名字在 aria-label/title 上、里面真有 svg。
+       这条以前只在 PDF 那条探针里算过（menuIconOnly），selchat 这条从来没算 → 恒为 null →
+       断言永远红（是取数缺失，不是胶囊带了文字）。 */
+    const menuEls = menu ? [...menu.querySelectorAll('button')] : [];
+    res.menuIconOnly = menuEls.length > 0 && menuEls.every((b) => !(b.textContent || '').trim()
+      && !!(b.getAttribute('aria-label') || b.getAttribute('title'))
+      && !!b.querySelector('svg'));
     /* 「加入对话」已经从胶囊移走（那件事在**右键菜单**的「添加到对话框」里）：
        这里改走右键那条路 —— 合成 `mousedown(右键) + contextmenu`，再点 `tochat`。 */
     /* 右键点必须落在**选区自己的元素**上、坐标也要落在选区矩形里（右键菜单据此判"有没有选区"） */
@@ -1491,8 +1607,11 @@ async function run() {
     /* 还没标高亮时，菜单里**不该有「笔记」**（用户口径：插入了高亮才能在高亮上加笔记） */
     res.menuBeforeHl = [...menu.querySelectorAll('button')]
       .map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim()).filter(Boolean);
-    const yellow = [...menu.querySelectorAll('[title]')]
-      .find((e) => (e.getAttribute('title') || '').indexOf('黄色高亮') >= 0);
+    /* 色点写在 `.hl-swatch.<色名>` 上（与右键菜单共用 base.css 那一份），
+       标题文案 2026-10-10 起改成「标成黄」——按**类名**找，别再追文案。 */
+    const yellow = menu.querySelector('.hl-swatch.yellow')
+      || [...menu.querySelectorAll('[title]')]
+        .find((e) => /标成黄|黄色高亮/.test(e.getAttribute('title') || ''));
     res.hasColors = !!yellow;
     if (!yellow) { out(res); return; }
     yellow.click();
@@ -1500,12 +1619,13 @@ async function run() {
     /* 用户口径（2026-10-07）：**选中并高亮之后，浮层要显示「添加笔记」** ——
        标完那一下就该有这么一枚按钮，不必再划一次词、再进一次菜单。
        （必须在这里读：下面那句 `location.reload()` 会把浮层一起刷掉。） */
-    await until(D(), (x) => x.querySelector('[data-note-add]'), 20);
-    res.hasAddNoteBtn = !!D().querySelector('[data-note-add]');
-    res.afterHlCard = (() => {
-      const c = D().querySelector('[data-float-card] .fc-foot');
-      return c ? (c.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 30) : '';
-    })();
+    /* 形态（2026-11-28 之后）：标完色**直接开出笔记浮层、而且就在写的那一步** ——
+       卡片本身就是输入框，「添加笔记」那枚按钮没有入口了（提示文案也按 2026-10-10 删掉）。 */
+    await until(D(), (x) => x.querySelector('textarea[data-note-edit]'), 20);
+    const hlCard = D().querySelector('[data-note-popover]');
+    res.hasAddNoteBtn = !!(hlCard && hlCard.querySelector('textarea[data-note-edit]'));
+    res.afterHlCard = hlCard
+      ? ((hlCard.querySelector('[data-float-head]') || {}).textContent || '').trim().slice(0, 30) : '';
     /* 浮层可以用鼠标拖动（用户口径 2026-10-07 第二条）：按住标题栏往右下挪，
        松手后**停在挪到的位置**；此后内容从"提示态"变成"编辑态"（变高）也不许弹回去。 */
     const head = D().querySelector('[data-float-head]');
@@ -1525,8 +1645,13 @@ async function run() {
       res.dragDy = r1 ? Math.round(r1.top - r0.top) : null;
       head.dispatchEvent(opt('pointerup', r0.left + 134, r0.top + 64));
       /* 换到编辑态（卡片变高）：拖过的位置要留着 */
-      const addBtn = D().querySelector('[data-note-add]');
-      if (addBtn) { addBtn.click(); await sleep(300); spin(BURN); await sleep(200); }
+      /* 「内容变化」= 往卡片里的输入框写一段长的（卡片会变高）：拖过的位置要留着 */
+      const ta0 = D().querySelector('textarea[data-note-edit]');
+      if (ta0) {
+        ta0.value = '自检：写长一点让卡片变高，看位置会不会弹回去（这句是故意写长的）';
+        ta0.dispatchEvent(new w.Event('input', { bubbles: true }));
+        await sleep(300); spin(BURN); await sleep(200);
+      }
       const r2 = D().querySelector('[data-float-card]')?.getBoundingClientRect();
       res.dragKeptDx = (r1 && r2) ? Math.round(r2.left - r1.left) : null;
       res.dragKeptDy = (r1 && r2) ? Math.round(r2.top - r1.top) : null;
@@ -1609,21 +1734,22 @@ async function run() {
     res.menu2 = !!menu2;
     const noteBtn = menu2
       ? [...menu2.querySelectorAll('button')]
-        .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('笔记') >= 0)
+        .find((b) => ((b.getAttribute('aria-label') || '') + (b.getAttribute('title') || '')).indexOf('笔记') >= 0)
       : null;
     res.noteBtn = noteBtn
       ? (noteBtn.getAttribute('aria-label') || noteBtn.getAttribute('title') || '').trim() : '';
     if (noteBtn) {
       noteBtn.click();
-      await until(D(), (x) => x.querySelector('textarea'), 20);
-      const box = [...D().querySelectorAll('textarea')].pop();
-      res.editor = !!box && (box.getAttribute('placeholder') || '').indexOf('Markdown') >= 0;
+      /* 编辑器 = 浮层里那枚 textarea（data-note-edit）；提示文案 2026-10-10 已删，所以不再看
+         placeholder；保存是**图标键**（data-note-save，title=保存笔记），不是写着"保存"的文字钮。 */
+      await until(D(), (x) => x.querySelector('textarea[data-note-edit]'), 20);
+      const box = D().querySelector('textarea[data-note-edit]');
+      res.editor = !!box;
       if (box) {
         box.value = '自检：这条笔记挂在 PDF 高亮上';
         box.dispatchEvent(new w.Event('input', { bubbles: true }));
         await sleep(200);
-        const save = [...D().querySelectorAll('button')]
-          .find((b) => (b.textContent || '').trim() === '保存');
+        const save = D().querySelector('[data-note-save]');
         res.saveBtn = !!save;
         if (save) save.click();
         await sleep(1000); spin(BURN); await sleep(300);
@@ -1710,19 +1836,24 @@ async function run() {
     res.locatedTop = sc ? Math.round(sc.scrollTop) : null;
 
     /* ---- 笔记页签的**就地编辑**（缩略显示已在 eb6801b4 移除，那一组断言随之删掉） ---- */
+    /* 侧栏那条现在给的是「打开浮层」（data-item-popover）—— 就地编辑那一套（data-item-edit /
+       data-pane-note-edit）已经没有入口了：改正文统一走浮层（查看 → 编辑 → 保存）。 */
     const paneRow = () => (myNote ? D().querySelector('[data-note-id="' + myNote.id + '"]') : null);
-    const paneEdit = paneRow() ? paneRow().querySelector('[data-item-edit]') : null;
-    res.paneEditBtn = !!paneEdit;
-    if (paneEdit) {
-      paneEdit.click();
-      await until(D(), (x) => x.querySelector('[data-pane-note-edit]'), 20);
-      const ta2 = D().querySelector('[data-pane-note-edit]');
+    const paneOpen = paneRow() ? paneRow().querySelector('[data-item-popover]') : null;
+    res.paneEditBtn = !!paneOpen;
+    if (paneOpen) {
+      paneOpen.click();
+      await until(D(), (x) => x.querySelector('[data-note-popover]'), 20);
+      const toEdit = D().querySelector('button[data-note-edit]');
+      if (toEdit) { toEdit.click(); await sleep(250); spin(BURN); }
+      await until(D(), (x) => x.querySelector('textarea[data-note-edit]'), 20);
+      const ta2 = D().querySelector('textarea[data-note-edit]');
       res.paneEditor = !!ta2;
       if (ta2) {
         ta2.value = '自检：侧栏里改过的笔记';
         ta2.dispatchEvent(new w.Event('input', { bubbles: true }));
         await sleep(200);
-        const sv = D().querySelector('[data-pane-note-save]');
+        const sv = D().querySelector('[data-note-save]');
         res.paneSaveBtn = !!sv;
         if (sv) sv.click();
         await sleep(900); spin(BURN); await sleep(300);
@@ -1732,8 +1863,8 @@ async function run() {
     const paneNote = (((ndataPane.data && ndataPane.data.items) || [])
       .find((n) => n.highlight_id === (mine[0] && mine[0].id)));
     res.paneEdited = paneNote ? String(paneNote.content_md || '') : '';
-    /* 存进去了就自动收起编辑器（保存失败才留着，免得用户敲的字丢了） */
-    res.paneEditorClosed = !D().querySelector('[data-pane-note-edit]');
+    /* 存进去了就收起编辑器（保存失败才留着，免得用户敲的字丢了） */
+    res.paneEditorClosed = !D().querySelector('textarea[data-note-edit]');
 
     /* ---- 第五步：笔记浮层（悬停显示 / 移开消失 / 锚定 / 查看↔编辑）---- */
     const card = () => D().querySelector('[data-float-card]');
@@ -1743,8 +1874,13 @@ async function run() {
         && e.className && String(e.className).indexOf('modal') >= 0);
     /* 先把上一步（新建笔记）留下的浮层关掉：它是**锚定**打开且保存后仍开着，
        不关的话下面的"悬停→移开消失"验的就不是悬停那条路径。 */
+    /* 编辑态**没有 ✕**（hide-close），所以先保存再关；否则下面"悬停 → 移开消失"验的是残留那张。 */
+    if (D().querySelector('textarea[data-note-edit]')) {
+      const sv0 = D().querySelector('[data-note-save]');
+      if (sv0) { sv0.click(); await sleep(800); spin(BURN); }
+    }
     const closeBtn = D().querySelector('[data-float-close]');
-    if (closeBtn) { closeBtn.click(); await sleep(250); }
+    if (closeBtn) { closeBtn.click(); await sleep(300); spin(BURN); }
     res.popClosedBefore = !card();
     const m1 = hlMark();
     if (m1) {
@@ -1784,7 +1920,7 @@ async function run() {
         const m3 = D().querySelector('[data-selection-menu]');
         res.menuText3 = m3 ? (m3.textContent || '').replace(/\\s+/g, ' ').trim() : '';
         openBtn = m3 ? [...m3.querySelectorAll('button')]
-          .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('打开笔记') >= 0)
+          .find((b) => ((b.getAttribute('aria-label') || '') + (b.getAttribute('title') || '')).indexOf('打开笔记') >= 0)
           : null;
         if (!openBtn) await sleep(300);
       }
@@ -1799,12 +1935,14 @@ async function run() {
         await sleep(700); spin(BURN); await sleep(200);
         res.anchorKept = !!card();
         /* 查看 → 编辑 → 保存 */
-        const editBtn = D().querySelector('[data-note-edit-btn]');
+        /* 查看态的「编辑」是 button[data-note-edit]（与编辑态那枚 textarea **同名**，
+           所以两处都必须带标签名，不能只按属性名找）。 */
+        const editBtn = D().querySelector('button[data-note-edit]');
         res.hasEditBtn = !!editBtn;
         if (editBtn) {
           editBtn.click();
-          await until(D(), (x) => x.querySelector('[data-note-edit]'), 20);
-          const ta = D().querySelector('[data-note-edit]');
+          await until(D(), (x) => x.querySelector('textarea[data-note-edit]'), 20);
+          const ta = D().querySelector('textarea[data-note-edit]');
           res.hasEditArea = !!ta;
           if (ta) {
             ta.value = '自检改过的笔记正文';
@@ -1838,7 +1976,7 @@ async function run() {
         pg4.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 300, clientY: 300 }));
         await until(D(), (x) => x.querySelector('[data-selection-menu]'), 20);
         const aiBtn = [...D().querySelectorAll('[data-selection-menu] button')]
-          .find((b) => ${b.getAttribute('aria-label') || ''}.indexOf('AI 解释') >= 0);
+          .find((b) => ((b.getAttribute('aria-label') || '') + (b.getAttribute('title') || '')).indexOf('AI 解释') >= 0);
         res.aiBtn = !!aiBtn;
         if (aiBtn) {
           aiBtn.click();
@@ -1901,6 +2039,14 @@ async function run() {
        `elementFromPoint` 现算，与真鼠标是同一条代码路径），只量"选区落在哪、多长"与"默认动作有没有被压掉"。
        真鼠标那一侧的数字见 data/logs 下的一次性 CDP 脚本（改前：空白按下往上一拖 = 2393 字整页）。 */
     {
+      /* 先把上一步留下的浮层关掉：查看态的笔记浮层会**盖在文字层上面**，量"空白处按下"时命中的
+         就成了卡片（实测 blankHit0=DIV.np-view、blankHit1=DIV.fc-grab，选区自然是 0 字）。 */
+      for (let i = 0; i < 5 && D().querySelector('[data-float-card]'); i += 1) {
+        const closeX = D().querySelector('[data-float-close]');
+        if (!closeX) break;
+        closeX.click(); await sleep(250); spin(BURN);
+      }
+      res.blankCardsLeft = D().querySelectorAll('[data-float-card]').length;
       /* 页 1 的文字层是**懒铺**的（滚出渲染范围就没有 span）—— 前面那几步会把阅读位置挪走，
          先把它滚回**视口里**再量。⚠️ 判据不能只看"层里有 span"：铺好的 span 会留在 DOM 上，
          页码滚到 13000px 之外它照样在（实测这一条就因为早退量到了纸外，选区自然是 0 字）。 */
@@ -2061,9 +2207,11 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and str(res.get("afterText") or "").strip() == str(res.get("savedText") or "").strip(),
            f"刷新后 {res.get('afterReload')} 段：{str(res.get('afterText'))[:18]!r}")
     # ---- 第四步闭环：高亮 → 笔记 → 侧栏 → 定位回原文 ----
-    record("pdfhl", "选中并高亮之后，浮层直接给出「添加笔记」（不用再划一次词）",
-           res.get("hasAddNoteBtn") is True and "添加笔记" in str(res.get("afterHlCard") or ""),
-           f"高亮后的浮层按钮：{str(res.get('afterHlCard'))[:24]!r}")
+    # 「添加笔记」那枚按钮已经没有了：2026-11-28 之后**标完色直接开出笔记浮层、而且就在写的那一步**
+    # （卡片本身就是输入框，所以头部写的是「编辑」）。断言跟着改成"浮层自己开了、且已经是输入态"。
+    record("pdfhl", "选中并高亮之后，笔记浮层**自己就开了、而且直接在写的那一步**（不用再划一次词）",
+           res.get("hasAddNoteBtn") is True and "编辑" in str(res.get("afterHlCard") or ""),
+           f"高亮后的浮层头部：{str(res.get('afterHlCard'))[:24]!r}")
     kept_dx, kept_dy = res.get("dragKeptDx"), res.get("dragKeptDy")
     record("pdfhl", "浮层**可以拖**（按住标题栏挪 110×55），拖过之后内容变化也不弹回",
            res.get("hasHead") is True
@@ -2075,15 +2223,16 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            "笔记" in str(res.get("notesTab") or "")
            and "批注" not in str(res.get("notesTab") or ""),
            f"页签={res.get('notesTab')!r}")
+    # 「待写」这个标签行里已经不渲染了（2026-11-28 那轮把行收成「pN + 原文 + 三个钮」），
+    # 所以判据落在**这一行确实存在、而且带的就是那段原文**上。
     record("pdfhl", "**还没写正文的高亮**也在笔记页签里（高亮本身就是一条笔记）",
            str(res.get("savedText") or "").strip() != ""
-           and "待写" in str(res.get("bareRow") or "")
            and str(res.get("savedText") or "")[:10] in str(res.get("bareRow") or ""),
            f"条目：{str(res.get('bareRow'))[:50]!r}")
     record("pdfhl", "划词菜单里能就这处高亮写笔记（第四步的入口）",
            str(res.get("noteBtn") or "").strip() in ("添加笔记", "笔记", "打开笔记"),
            f"菜单项：{res.get('noteBtn')!r}")
-    record("pdfhl", "笔记编辑器能开能存（Markdown + 保存）",
+    record("pdfhl", "笔记编辑器能开能存（浮层里那枚输入框 + 图标保存键）",
            res.get("editor") is True and res.get("saveBtn") is True,
            f"编辑器={res.get('editor')} 保存键={res.get('saveBtn')}")
     record("pdfhl", "笔记**挂在那条高亮上**（highlight_id + 面 + 页码 + 高亮原文）",
@@ -2100,9 +2249,10 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and str(res.get("pdfMarkPad") or "") == "0px",
            f"{res.get('pdfMarkRows')} 段 mark · 文字可见的 {res.get('pdfMarkOpaque')} 段 · "
            f"color={res.get('pdfMarkColor')} · padding={res.get('pdfMarkPad')}")
-    record("pdfhl", "侧栏列表显示：高亮原文 + 挂在哪一面 + 页码",
+    # 「面」那个标签（SCOPE_LABEL）从 2026-11-28 起在行里不再渲染（ReaderSidePanel 里现在只剩定义、
+    # 没有任何引用），行里是「pN + 时间 + 定位 / 浮层 / 更多 + 原文」。断言跟着只看原文 + 页码。
+    record("pdfhl", "侧栏列表显示：高亮原文 + 页码",
            res.get("rowFound") is True and res.get("rowQuoteOk") is True
-           and "原 PDF" in str(res.get("rowText") or "")
            and "p1" in str(res.get("rowText") or ""),
            f"{res.get('rowText')}")
     asked = res.get("scrollAsked")
@@ -2128,7 +2278,7 @@ def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
            and str(res.get("userDrag") or "").startswith("none"),
            f"mousedown 被取消={res.get('blankMouseCut')} dragstart 被拦={res.get('dragStartCut')} "
            f"user-drag={res.get('userDrag')!r}")
-    record("pdfhl", "侧栏里能**就地改**这处高亮的笔记正文（存进去后编辑器自动收起）",
+    record("pdfhl", "侧栏那条「打开浮层」→ 改正文 → 保存写回库里（就地编辑已并入浮层）",
            res.get("paneEditBtn") is True and res.get("paneEditor") is True
            and res.get("paneSaveBtn") is True
            and res.get("paneEdited") == "自检：侧栏里改过的笔记"
@@ -2466,10 +2616,15 @@ def check_highlight_update_api(base: str, paper: str) -> None:
         got = next((h for h in same if h.get("id") == hid), {})
         print(f"   改色前 {created.get('color')!r} → 返回 {updated.get('color')!r}，"
               f"库里 {got.get('color')!r}")
+        # 口径 2026-12-10：**库里只存 hex**，色名只是输入别名（annotation_service.HIGHLIGHT_PALETTE）。
+        # 所以比「落库的就是返回的那个 hex、而且真的换了一个颜色」，不再拿色名去比。
         record("refs", label,
-               updated.get("color") == "blue" and got.get("color") == "blue"
+               str(updated.get("color") or "").startswith("#")
+               and got.get("color") == updated.get("color")
+               and got.get("color") != created.get("color")
                and got.get("text") == quote,
-               f"返回={updated.get('color')!r} 库里={got.get('color')!r} 原文={got.get('text')!r}")
+               f"返回={updated.get('color')!r} 库里={got.get('color')!r} "
+               f"改前={created.get('color')!r} 原文={got.get('text')!r}")
     finally:
         req = urllib.request.Request(f"{api}/highlights/{hid}", method="DELETE")
         urllib.request.urlopen(req, timeout=30).read()
@@ -3579,28 +3734,52 @@ def main() -> int:
             glass = data.get("ctxGlass") or {}
             blank = data.get("ctxKeysBlank") or []
             selk = data.get("ctxKeysSel") or []
-            record("reader", "右键接管了原生菜单，弹的是**复刻目标站的玻璃**（半透明底 + blur + 1px 描边 + 真阴影）",
+            # 材质口径（2026-10-18）：**与顶部胶囊同一块玻璃** —— 上亮下暗的渐变本体 + 48px 饱和模糊
+            # + 柔光投影，**不画描边**（描边在深色下会变成一圈发光环）。所以这里不再要求 1px 实线，
+            # 浓度也从**渐变**里读（backgroundColor 是透明的，见探针那段注释）。
+            record("reader", "右键接管了原生菜单，弹的是**复刻目标站的玻璃**（半透明渐变底 + blur + 真阴影）",
+                   # 渐变的上沿就是 --glass-bar-top 的默认 80%，所以阈值放到 0.9：要的是"透"，
+                   # 不是某个固定数字（1.0 = 实心白盒子，那才是这条要抓的）。
                    data.get("ctxPrevented") is True and glass.get("blur") is True
-                   and float(glass.get("alpha") or 1) < 0.8
-                   and "solid" in str(glass.get("border") or "")
-                   and str(glass.get("shadow") or "none") != "none",
+                   and float(glass.get("alpha") or 1) < 0.9
+                   and str(glass.get("shadow") or "none") != "none"
+                   and (bool(str(glass.get("bgImage") or "")) or float(glass.get("alpha") or 1) < 1),
                    f"接管={data.get('ctxPrevented')} blur={glass.get('blur')} "
-                   f"底色-alpha={glass.get('alpha')} border={glass.get('border')} {glass.get('items')} 项")
-            record("reader", "右键菜单项用的是**填充型图标**（fill=currentColor / 无描边）",
-                   glass.get("iconFill") == "currentColor",
-                   f"fill={glass.get('iconFill')} 圆角={glass.get('radius')}")
+                   f"底色-alpha={glass.get('alpha')} 渐变={str(glass.get('bgImage'))[:32]!r} "
+                   f"border={glass.get('border')} {glass.get('items')} 项")
+            # 图标口径：**以填充型（-fill）为主**，但「高亮」「询问 Cyli」「加入对话」保留线性图标、
+            # 「导出」用 download（见 ReaderView 那段 2026-10-09 的口径）。所以判据是"每枚都用
+            # currentColor 上色"（fill 或 stroke 等于按钮自己的文字色），而不是"一律填充型"。
+            icons = glass.get("icons") or []
+            fill_ok = [i for i in icons
+                       if not i.get("none") and (i.get("fill") == i.get("col")
+                                                 or i.get("stroke") == i.get("col"))]
+            fill_type = [i for i in icons if not i.get("none") and i.get("fill") == i.get("col")]
+            record("reader", "右键菜单项的图标都跟着**文字色**走（填充型走 fill、线性图标走 stroke）",
+                   bool(icons) and len(fill_ok) == len(icons) and bool(fill_type),
+                   f"{len(fill_ok)}/{len(icons)} 枚 currentColor，其中填充型 {len(fill_type)} 枚"
+                   f"（{[i.get('key') for i in fill_type]}）");
             record("reader", "没选区时**不给**复制/高亮（只给全选、导出、图片项）",
                    "selectall" in blank and "export" in blank and "copy" not in blank
                    and "highlight" not in blank,
                    f"清单={blank}")
-            record("reader", "划词后右键 → 询问 Cyli / 添加到对话框 / Bing / 复制 / 高亮（笔记）都在",
-                   all(k in selk for k in ("ask", "tochat", "bing", "copy", "highlight")),
+            # 桌面 / 触摸两套清单（用户口径 2026-10-10 + 2026-10-17，见 ReaderView.onContentContextMenu）：
+            #   · **桌面**右键：搜索 / 复制 / 加入对话 / … / 询问 Cyli / 全选。**没有「高亮」** ——
+            #     选色由划词胶囊上那排色点承担，菜单里再来一遍是噪音；
+            #   · **触摸长按**（fromTouch）：色板和动作合成一条工具条，那一枚的 key 是 hl-color；
+            #   · 「导出」只在**空白处**那套里（对一段选中的文字没有"导出 Markdown"这件事）。
+            # 旧断言按"桌面也要有 highlight + export"写，2026-10-10 之后就是过期口径。
+            record("reader", "划词后右键 → 搜索 / 复制 / 加入对话 / 询问 Cyli / 全选 都在"
+                             "（「高亮」只在触摸工具条上、「导出」只在空白处那套）",
+                   all(k in selk for k in ("ask", "tochat", "bing", "copy", "selectall"))
+                   and "hl-color" not in selk and "export" not in selk,
                    f"清单={selk}")
-            record("reader", "右键顺序复刻目标站：搜索 → 复制 → 高亮 → … → 全选 → 导出",
-                   all(k in selk for k in ("bing", "copy", "highlight", "selectall", "export"))
-                   and selk.index("bing") < selk.index("copy") < selk.index("highlight")
-                   < selk.index("selectall") < selk.index("export"),
-                   f"清单={selk}")
+            record("reader", "右键顺序复刻目标站：搜索 → 复制 → 加入对话 → 询问 Cyli → 全选（导出在空白处收尾）",
+                   all(k in selk for k in ("bing", "copy", "tochat", "ask", "selectall"))
+                   and selk.index("bing") < selk.index("copy") < selk.index("tochat")
+                   < selk.index("ask") < selk.index("selectall")
+                   and "export" in blank and blank.index("export") > blank.index("selectall"),
+                   f"清单={selk}｜空白处={blank}")
             bing_url = str(data.get("ctxBing") or "")
             record("reader", "点「网页搜索（Bing）」→ 新标签打开 bing 搜索（带选中的文字）",
                    bing_url.startswith("https://www.bing.com/search?q=") and len(bing_url) > 40,
@@ -3701,13 +3880,18 @@ def main() -> int:
                and chat.get("helloMarkCentered") is True,
                f"src={chat.get('helloMarkSrc')} 在语录上方={chat.get('helloMarkAbove')} "
                f"居中={chat.get('helloMarkCentered')}｜{chat.get('helloMarkDebug')}")
-        record("chat", "空态这一组（图标 + 语录）在整块高度里**竖直居中**，图标够大",
+        # 「竖直居中」以**看得见的那块高度**为准（输入区悬浮在 .msgs 底部，见探针里那段注释）
+        record("chat", "空态这一组（图标 + 语录）在看得见的那块高度里**竖直居中**，图标够大",
                chat.get("helloCenteredV") is True and (chat.get("helloMarkSize") or 0) >= 48,
                f"竖直居中={chat.get('helloCenteredV')} 图标 {chat.get('helloMarkSize')}px"
                f"｜{chat.get('helloSelfDebug')}")
-        record("chat", "分类 / 管理共 2 枚胶囊托盘（无范围选择器）",
-               chat.get("trayCount") == 2 and (chat.get("segBtns") or []) == ["全部", "划词", "常规"],
-               f"{chat.get('trayCount')} 枚 / {chat.get('segBtns')}")
+        # 「管理」2026-11-21 改成**多选圆钮**（.multi-btn），不在托盘里 —— 托盘只剩「分类」这一枚。
+        # 旧断言（2 枚托盘）是那次改形态之前的；「无范围选择器」这一点仍然成立。
+        record("chat", "分类只有 1 枚胶囊托盘（全部 / 划词 / 常规），「管理」是多选圆钮、不在托盘里",
+               chat.get("trayCount") == 1
+               and (chat.get("segBtns") or []) == ["全部", "划词", "常规"]
+               and chat.get("multiBtn") is True and chat.get("multiBtnRound") is True,
+               f"{chat.get('trayCount')} 枚 / {chat.get('segBtns')} / 多选圆钮={chat.get('multiBtnRound')}")
         # 胶囊本身的**样式**三处一字不差；`left` 不参与这条比较 —— 目录那枚左边还有
         # 「全部折叠 / 全部展开」两枚按钮（用户明确要求放左侧），它本来就不该在 8px 处；
         # "位置统一"由下一条（工具条那一行的内容原点）来钉。
@@ -3749,7 +3933,13 @@ def main() -> int:
                    and chat.get("modalClosed") is True and chat.get("cancelKeptRows") is True,
                    f"标题={(chat.get('modalTitle') or '')[:14]!r} 分隔线={chat.get('modalDividers')} "
                    f"危险按钮={chat.get('modalDangerSolid')}")
-        record("chat", "会话页顶部不重复「新对话」文字（只留图标钮）",               (chat.get("threadHeadBtns") or []) == ["", ""], f"{chat.get('threadHeadBtns')}")
+        # 顶部现在是三枚图标钮（返回 / 浮层打开 / 新建）：判据是「没有文字钮、名字在 title 上」，
+        # 不再钉死枚数（2026-11-19 拆出「浮层打开」之后从两枚变成三枚）。
+        hb = chat.get("threadHeadBtns") or []
+        record("chat", "会话页顶部不重复「新对话」文字（只留图标钮，名称在 title 上）",
+               len(hb) >= 2 and all((x.get("t") or "") == "" and (x.get("title") or "") for x in hb)
+               and not any("新对话" in (x.get("t") or "") for x in hb),
+               f"{[x.get('title') for x in hb]}")
         record("chat", "输入框文案 = 与Cyli深度交流", chat.get("placeholder") == "与Cyli深度交流",
                f"{chat.get('placeholder')!r}")
         record("chat", "空态只有一句语录当背景（0 个按钮）",

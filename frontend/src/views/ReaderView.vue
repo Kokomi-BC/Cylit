@@ -31,7 +31,7 @@ import { loadUnderstanding } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
 import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
-import { highlightCss } from '@/utils/highlightColors';
+import { HL_BG_ALPHA_HEX, HL_PALETTE, highlightCss } from '@/utils/highlightColors';
 import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
@@ -74,6 +74,22 @@ import SelectionMenu from '@/components/reader/SelectionMenu.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 
 const HIGHLIGHT_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
+
+/* 取色点（划词胶囊 / 右键触摸条 / 换色菜单 / 笔记卡圆点）的颜色写在 `base.css` 的
+ * `.hl-swatch.<色名>` 里，而那几处模板分在 `SelectionMenu` / `ContextMenu` / `ReaderChat`
+ * 三个组件里 —— 能同时见到它们的地方只有 `base.css` 这一份样式。
+ * 所以色板只从 `HL_PALETTE`（前端唯一色板，= 后端 `HIGHLIGHT_PALETTE`）取一次，摊成
+ * `--hl-sw-<色名>` 挂到**根上**（这些浮层全都 Teleport 到 body，挂阅读器节点上取不到）。
+ *
+ * 值写成 `<hex>66`（40%）：与正文 mark 的行内 `--hl-bg`（`domMarks` 拼的也是 `<hex>66`）
+ * 逐字同一个字符串 —— "点的色"与"正文里看到的色"因此必定是同一个 hex、同一档浓度，
+ * 顺带深浅两套主题都自动一致（正文也没按主题分色，只有文字跟上下文走）。 */
+if (typeof document !== 'undefined') {
+  for (const [name, hex] of Object.entries(HL_PALETTE)) {
+    document.documentElement.style.setProperty(`--hl-sw-${name}`, `${hex}${HL_BG_ALPHA_HEX}`);
+  }
+}
+
 const route = useRoute();
 const router = useRouter();
 const paperId = computed(() => String(route.params.paperId ?? ''));
@@ -1587,12 +1603,36 @@ type ReaderStateBody = {
 };
 
 /**
+ * 读者**眼前这一刻**屏上有哪几侧：`both` = en 与 zh 同时都看得见。
+ *
+ * 为什么值得单独算：后端拿到 `both` 会把 `note_side` 留空、改成"按文字归属分面"——
+ * 它不知道这条笔记落在哪一侧，因为两侧都在屏上。反过来只报 `zh` 就变成"认定读者在看译文"，
+ * 于是给原文打的笔记会被记到译文那一面（用户 2026-12 报的"双语时报错面"）。
+ *
+ * 判据全是已有状态，不新增：
+ *   - 对照 + 原 PDF：另一栏是**页图**，文字只有 `pageSide` 那一侧 → 报那一侧，不是 both；
+ *   - 对照 + 原文文本：`ReaderPageRows` 的 `textCompare` 两列同时渲染（`sides` 给 `['en','zh']`）→ both；
+ *   - 原文 / 译文单栏：那一侧；
+ *   - Markdown 视图开着时整屏都是它，且它自己有一套 `mdView.mode`（上下对照 / 原文 / 译文），
+ *     与正文的 `viewMode` 不是一个开关，所以先按它判。
+ */
+const shownSides = computed<'en' | 'zh' | 'both'>(() => {
+  if (mdView.open) {
+    if (mdView.mode === 'bilingual') return 'both';
+    return mdView.mode === 'translation' ? 'zh' : 'en';
+  }
+  if (viewMode.value === 'translation') return 'zh';
+  if (viewMode.value === 'original') return 'en';
+  return originalMode.value === 'page' ? pageSide.value : 'both';
+});
+
+/**
  * 阅读器**这一刻**的状态（页号 / 对照方式 / 左右顺序 / 视图 / 左栏页签）。
  *
  * 为什么带它：后端 `reader_state()` 工具只读请求体里这一段 —— 不带就只能回答
  * "不知道读者在哪一页、看哪一面"，高亮于是会落到读者眼前看不见的那一面。
  * 字段全部来自已有状态（`currentRow` / `pageSide` / `pairOrder` / `originalMode` /
- * `mdView` / `railTab`），这里只做改名与映射，不新增状态。
+ * `viewMode` / `mdView` / `railTab`），这里只做改名与映射，不新增状态。
  *
  * 为什么可能是空对象：页数据还没到（首屏加载中 / 加载失败）时阅读器**没有状态**可言。
  * 空 = `ReaderChat` 不往请求体里塞 `reader`，老请求逐字节不变 —— 而编一个
@@ -1609,7 +1649,7 @@ const readerState = computed<ReaderStateBody>(() => {
     const total = stats.value.pages ?? 0;
     out.visible_pages = [page, page + 1].filter((p) => !total || p <= total);
   }
-  out.page_side = pageSide.value;
+  out.page_side = shownSides.value;
   out.order = pairOrder.value === 'zh_left' || pairOrder.value === 'zh_top' ? 'zh-first' : 'en-first';
   /* 三个视图各自对应哪一个：Markdown 整页看的是 md 产物，对照 + 原 PDF 看的是页图，
      其余都是正文行（后端 `view` 只认 rows / markdown / pdf）。 */
