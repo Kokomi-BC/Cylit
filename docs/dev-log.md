@@ -12661,3 +12661,41 @@ radius 12（其它浮层）：pill 34.0px / arc 11.9px
 ```
 
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 155/155。
+
+
+### 150. 第一百五十轮：四张浮层统一一个圆角（12/16 混用 → 全部 16px）
+
+用户口径：「看出来为什么阅读器这些浮窗的大小不一致了，解决浮窗的圆角不一致的问题」。
+
+**根因**：浮窗圆角从来没有统一来源，是两套值各写各的 ——
+笔记卡在 `ReaderView` 里被 `[data-note-popover] { --fc-radius: 16px }` 覆盖成 16px，
+而解释卡（BlockOverlay）、引用速览卡用的都是 `FloatingCard` 的默认值 12px，
+对话浮窗 `.chat-host.float` 又自己写死 `border-radius: 16px`，并把 `--fc-radius: 16px` 抄给
+`.reader > .float-grip` —— 同一次阅读里 16 / 12 并存，圆角与底角那两道弧自然也对不上。
+
+**改法**（三处，收成一个令牌）：
+
+- `styles/tokens.css`：新增 `--r-float: 16px`，并给 `--fc-radius: var(--r-float)` —— 放在 `:root`，
+  因为对话浮窗与它的角把手分别住在 `ReaderView` 和 `.reader > .float-grip`，够不到组件作用域；
+- `components/reader/FloatingCard.vue`：`.float-card` 的 `border-radius` 与底角弧的
+  `--fc-grip-box` / `right` / `bottom` 全部改成 `var(--fc-radius)`，去掉 12px 兜底
+  （兜底正是「某张卡悄悄回到 12px」的后门）；
+- `views/ReaderView.vue`：删掉 `[data-note-popover] { --fc-radius: 16px }` 这条覆盖、
+  `.chat-host.float` 的 `border-radius: 16px` 改读令牌、`.reader > .float-grip` 里那行
+  `--fc-radius: 16px` 删除（改为继承 `:root`）。
+
+于是「卡片圆角 / 底角弧半径 / 弧盒偏移」三者仍然同源（弧半径 = 圆角 + gap，上一轮定下的几何），
+而「哪张卡」不再影响圆角：改 `--r-float` 一行，四张浮层与三处指示器一起变。
+
+**实测**（headless Edge + CDP：同源静态页加载 index/ReaderView 两份产物 CSS 后注入标记，量 computed style）：
+
+```
+--fc-radius = 16px / --r-float = 16px
+对话浮窗  .chat-host.float   16px | 16px
+笔记卡    .float-card        16px | 16px
+引用卡    .float-card        16px | 16px
+解释卡    .float-card        16px | 16px   ← 改前是 12px
+底角弧盒  45.64px = (16 + 5) × 2.1739，right/bottom −1.83px，stroke 2.6px（与改前逐项一致）
+```
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` 154/154。

@@ -813,10 +813,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
   position: fixed; z-index: 60;
   display: flex; flex-direction: column;
   /* 把手静止时的描边色（两张浮层共用同一套，用户口径 2026-11-21）。
-     ⚠️ 圆角变量 --fc-radius 在这里**故意不给默认值**：笔记卡要在 ReaderView 里覆盖成 16px，
-     而 [data-note-popover] 与 .float-shell 是**同权重**的选择器（类/属性 + 作用域属性各一），
-     谁赢只看样式注入顺序 —— 那等于把"笔记卡圆角悄悄回到 12px"做成一个偶发 bug。
-     默认值改为写在使用处：var(--fc-radius, 12px)，两头都不必跟谁抢优先级。 */
+     圆角只有 tokens.css 里 --fc-radius（= --r-float 16px）这一个来源：这里不给默认值、
+     也不按卡片覆盖 —— 卡片的圆角与底角那两道弧算的是同一个数，不可能各自跑偏。 */
   --fc-handle: color-mix(in srgb, var(--text) 22%, transparent);
   /* 底角弧离卡片边缘的距离（提到外壳上是为了让 .fc-resize 与 .fc-grip 都读到同一个数；
      顶部那枚药丸的长度**不再**读它 —— 药丸有自己的 34px，见 .fc-grab-pill）。 */
@@ -827,9 +825,8 @@ watchEffect(applyShellDom, { flush: 'sync' });
   position: relative;   /* 卡片顶端那条浮起的拖动条（.fc-grab）的定位上下文 */
   flex: 1 1 auto; min-height: 0;
   display: flex; flex-direction: column;
-  /* 圆角读外壳上的 --fc-radius（默认 12、笔记卡 16）；底角那两道弧读的是**同一个值**，
-     所以"卡片圆角改了、弧没跟着改"这件事从结构上就不可能再发生。 */
-  border: 1px solid var(--border-strong); border-radius: var(--fc-radius, 12px);
+  /* 圆角与底角那两道弧读同一个 --fc-radius（tokens.css），改一处两处一起变。 */
+  border: 1px solid var(--border-strong); border-radius: var(--fc-radius);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   overflow: hidden;
 }
@@ -1021,12 +1018,12 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-resize .fc-grip {
   position: absolute;
   /* SVG：viewBox 100，弧半径 46（留出圆头的余量）→ 元素边长 = 半径 / 0.46 = 半径 × 2.174 */
-  --fc-grip-box: calc((var(--fc-radius, 12px) + var(--fc-gap)) * 2.1739);
+  --fc-grip-box: calc((var(--fc-radius) + var(--fc-gap)) * 2.1739);
   width: var(--fc-grip-box);
   height: var(--fc-grip-box);
   /* 弧心落在卡片圆角的圆心上：把手盒右下角 = 卡片角 + gap，往回退 gap + 圆角 - 半边 */
-  right: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
-  bottom: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
+  right: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
+  bottom: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
   overflow: visible;
   pointer-events: none;
   opacity: 1;
@@ -1052,7 +1049,7 @@ watchEffect(applyShellDom, { flush: 'sync' });
 .fc-resize.bl { left: calc(-1 * var(--fc-gap)); cursor: nesw-resize; }
 .fc-resize.bl .fc-grip {
   right: auto;
-  left: calc(var(--fc-gap) + var(--fc-radius, 12px) - var(--fc-grip-box) / 2);
+  left: calc(var(--fc-gap) + var(--fc-radius) - var(--fc-grip-box) / 2);
 }
 /* 不是焦点卡时底角指示器**大幅减淡**（用户口径 2026-11-28）：只剩常态的四分之一，
    小到"知道它在，但不抢注意力"；鼠标真移到角上（要拉了）或正在拖，立刻回到常态。 */

@@ -9305,7 +9305,7 @@ function renderMarkdown(text?: string | null) {
    手按着的把手与真正跟手的卡片边缘因此错开 4px（「拖了 4px，它才动 0px」），已整条删除。
    这几枚把手**只在浮窗态渲染**（模板上的 v-if chatFloat），负偏移不影响贴栏形态。 */
 .reader > .float-grip {
-  --fc-radius: 16px;   /* = .reader > .chat-host.float 的 border-radius */
+  /* 圆角不在这里定义：与四张浮层一起读 tokens.css 的 --fc-radius（--r-float 16px）。 */
   --fc-handle: color-mix(in srgb, var(--text) 22%, transparent);
   /* **挂在 aside 外面**（用户口径 2026-11-21「搬」）：aside 是 overflow:hidden，
      把手留在里面就只能画在圆角内侧。现在它是 .reader 的子节点 + fixed，
@@ -9618,7 +9618,7 @@ function renderMarkdown(text?: string | null) {
    transform/opacity/pointer-events 顶回来（浮窗时侧栏是**开着**的，原位置留给 `.aside-pip`）。 */
 .reader > .chat-host.float {
   transform: none; opacity: 1; pointer-events: auto;
-  border: 1px solid var(--border); border-radius: 16px;
+  border: 1px solid var(--border); border-radius: var(--fc-radius);
   box-shadow: var(--shadow-flyout);
   overflow: hidden;      /* 圆角裁内容（原来那条给 aside 的 overflow 放行，现在归这里） */
 }
@@ -9996,13 +9996,11 @@ function renderMarkdown(text?: string | null) {
    水平内收 **16px**（与标题同一个缩进："文字位置不能像那样靠边"）。
    ⚠️ 选择器**带 `[data-note-popover]` 前缀**：权重高于组件里原有的 `.np-edit`，
    不管两条规则谁前谁后都能盖住（不靠文件里的先后顺序）。*/
-/* 笔记卡的圆角比解释卡大（16 vs 12）：**只把 --fc-radius 交给外壳**，圆角与底角指示器都读它 ——
-   组件里 .float-card 用 var(--fc-radius, 12px)，角上那两道弧用 calc(var(--fc-radius) + 4px)，
-   于是两张浮层的指示器是同一条曲线，不再一张淡灰圆环、一张深色弧。
-   ⚠️ 这个属性落在 FloatingCard 的**根节点（外壳 .float-shell）**上，不是卡片本体：
-   所以这里**不能写 border-radius / background** —— 外壳是方的，给它底色会在卡片四个圆角
-   外面画出四块方块（用户口径的「卡片外面多一块灰」）；圆角与不透明底都已归 .float-card 自己。 */
-[data-note-popover] { --fc-radius: 16px; }
+/* 笔记卡不再自己定圆角：四张浮层（笔记 / 解释 / 引用 / 对话浮窗）统一读 tokens.css 的
+   --fc-radius（= --r-float 16px）。这里原来那条 16px 覆盖正是「浮窗圆角不一致」的来源 ——
+   它盖住了组件默认的 12px，于是同一次阅读里笔记卡 16、解释卡与引用卡 12。
+   ⚠️ 圆角长在 FloatingCard 的内层 .float-card 上，不是外壳 .float-shell：外壳是方的，
+   给它 border-radius / background 会在卡片四个圆角外面画出四块方块（「卡片外面多一块灰」）。 */
 /* 笔记卡的正文区（色点在标题行里，正文自己内收 12px 左对齐标题） */
 [data-note-popover] :deep(.fc-body) { padding: 0; }
 [data-note-popover] .np-edit {

@@ -59,11 +59,18 @@
   --r-md: 22px;                /* 卡片、面板、下拉浮层 */
   --r-lg: 24px;                /* 弹窗、大面积容器 */
   --r-pill: 999px;             /* 按钮、徽章、分段控件、标签 */
+  --r-float: 16px;             /* 阅读器浮窗：笔记 / 解释 / 引用 / 对话 四张共用一个圆角 */
 
   --radius-sm: var(--r-sm);
   --radius: var(--r-md);
   --radius-lg: var(--r-lg);
   --radius-ctl: var(--r-pill);
+  /* 浮窗圆角**只有这一个来源**（用户口径：四张浮层圆角必须一致）。
+   * 组件里一律写 var(--fc-radius)、不写 px 兜底，也不再按卡片覆盖：
+   * 底角那两道指示弧的半径就是拿这个值算的，改这一行 = 圆角与弧一起变。
+   * 放在 :root 而不是 .float-shell 上，是因为对话浮窗与它的两枚角把手分别住在
+   * ReaderView 和 .reader > .float-grip 里，够不到组件作用域。 */
+  --fc-radius: var(--r-float);
 
   --control-h: 32px;
   --control-h-sm: 26px;
