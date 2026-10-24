@@ -541,8 +541,22 @@ _REL_RE = re.compile(r":=|\\leq|\\geq|\\approx|\\sim|\\neq|\\le|\\ge|=|<|>")
 _ARG_RE = re.compile(r"\([^()]*\)")
 
 
-def _latex_struct_key(latex: object) -> tuple[str, str]:
-    r"""公式的**结构等价**键：`(左端剥掉参数表 + 关系符之后的一切, 参数表内容)`。
+def _latex_head_args(latex: object) -> str:
+    r"""公式**左端**（第一个关系符之前）的参数表内容；没有参数就是空串。
+
+    与 `_latex_struct_key` 成对使用：`D_{\text{mse}}(Q) \geq \frac{1}{4^b}` 的键里没有参数，
+    参数单独放在这里 —— 两边都有参数却不同（`f(x)` / `f(y)`）时**不能**当成同一条。
+    """
+    text = _latex_norm_key(latex)
+    found = _REL_RE.search(text)
+    head = text[:found.start()] if found else text
+    return ",".join(_ARG_RE.findall(head))
+
+
+def _latex_struct_key(latex: object) -> str:
+    r"""公式的**结构等价**键：**左端剥掉参数表**，关系符之后的一切原样保留。
+
+    参数表不参与这个键（它由 `_latex_head_args` 单独管），所以 `(Q)` 与省略参数是同一个键。
 
     为什么逐字相等不够：同一条陈述在正文里带参数、在别处省掉 —— 实测第 3 页
     `D_{\text{mse}}(Q_{\text{mse}}) \approx 0.36, 0.117, 0.03, 0.009` 与第 6 / 18 页
@@ -559,7 +573,7 @@ def _latex_struct_key(latex: object) -> tuple[str, str]:
     text = _latex_norm_key(latex)
     found = _REL_RE.search(text)
     head, tail = (text[:found.start()], text[found.start():]) if found else (text, "")
-    return _ARG_RE.sub("", head) + tail, ",".join(_ARG_RE.findall(head))
+    return _ARG_RE.sub("", head) + tail
 
 
 def _struct_mergeable(args_a: str, args_b: str) -> bool:
@@ -637,7 +651,8 @@ def _merge_formula_dups(items: list[dict]) -> tuple[list[dict], int]:
     merged = 0
     for item in items:
         key = _latex_norm_key(item.get("latex")) if item.get("display") else ""
-        core, args = _latex_struct_key(item.get("latex")) if key else ("", "")
+        core = _latex_struct_key(item.get("latex")) if key else ""
+        args = _latex_head_args(item.get("latex")) if key else ""
         page = int(item.get("page") or 0)
         first = by_key.get(key) if key else None
         if first is None and core:
