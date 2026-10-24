@@ -744,7 +744,7 @@ onMounted(() => {
       </header>
 
         <!-- 搜索 + 列表装进模型页那张卡的同一套外壳（.prov-card 的写法：一整块 .card，
-             行间只留发丝线，行本身不描边、不填底、不留行距） -->
+             条与条之间只留发丝线，条本身不描边、不填底；悬停整条浮起（底色 + 阴影）） -->
         <div class="skill-body">
 
         <!-- 搜索：纯客户端过滤（中文名 / 英文 ID / 说明），技能表已整份在手，不再打接口 -->
@@ -756,52 +756,56 @@ onMounted(() => {
 
         <div class="skill-list" v-if="filteredSkills.length">
           <template v-for="s in filteredSkills" :key="s.name">
-            <div class="skill-row" :class="{ off: !s.enabled }"
-                 data-skill-row :data-skill-name="s.name">
-              <!-- 名字是**纯文本**（2026-12 起不再是一枚开合按钮）：说明一直摆着，不用点。 -->
-              <div class="skill-title">
-                <span class="skill-name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
-                <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
-                <!-- 自带是默认态、不标；只有"外部"值得一眼看出。停用状态**只来自 enabled** -->
-                <span class="badge dim" v-if="!s.builtin">外部</span>
-                <span class="badge warn" v-if="!s.enabled">已停用</span>
-              </div>
-              <div class="skill-ops">
-                <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页。
-                     顺序是「齿轮 → 编辑」，齿轮管这一行的**运行设置**，编辑管**定义原文**。
-                     都是幽灵按钮：行里只有图标、没有底色块（用户口径：别给每个按钮套方块）。 -->
-                <button v-if="s.name === WEB_SEARCH_SKILL" class="btn ghost icon sm"
-                        :class="{ on: wsOpen }"
-                        :title="wsOpen ? '收起联网搜索设置' : '联网搜索配置'"
-                        :aria-expanded="wsOpen" @click="toggleWs()">
-                  <AppIcon name="sliders" :size="14" />
-                </button>
-                <button class="btn ghost icon sm" data-skill-view
-                        :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
-                        @click="openSkillDoc(s)">
-                  <AppIcon name="edit" :size="14" />
-                </button>
-                <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
-                <template v-if="!s.builtin">
-                  <button class="btn ghost icon sm" :title="'下载 ' + s.name + '.zip'"
-                          :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
-                    <AppIcon name="download" :size="14" />
+            <!-- 一条技能 = 标题行 + 说明，两样包在同一个 .skill-item 里：
+                 悬停时整块浮起，说明才不会被读成下一条的副标题。 -->
+            <div class="skill-item">
+              <div class="skill-row" :class="{ off: !s.enabled }"
+                   data-skill-row :data-skill-name="s.name">
+                <!-- 名字是**纯文本**（2026-12 起不再是一枚开合按钮）：说明一直摆着，不用点。 -->
+                <div class="skill-title">
+                  <span class="skill-name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
+                  <span v-if="SKILL_NAME_ZH[s.name]" class="skill-id mono">{{ s.name }}</span>
+                  <!-- 自带是默认态、不标；只有"外部"值得一眼看出。停用状态**只来自 enabled** -->
+                  <span class="badge dim" v-if="!s.builtin">外部</span>
+                  <span class="badge warn" v-if="!s.enabled">已停用</span>
+                </div>
+                <div class="skill-ops">
+                  <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页。
+                       顺序是「齿轮 → 编辑」，齿轮管这一行的**运行设置**，编辑管**定义原文**。
+                       都是幽灵按钮：行里只有图标、没有底色块（用户口径：别给每个按钮套方块）。 -->
+                  <button v-if="s.name === WEB_SEARCH_SKILL" class="btn ghost icon sm"
+                          :class="{ on: wsOpen }"
+                          :title="wsOpen ? '收起联网搜索设置' : '联网搜索配置'"
+                          :aria-expanded="wsOpen" @click="toggleWs()">
+                    <AppIcon name="sliders" :size="14" />
                   </button>
-                  <button class="btn ghost icon sm danger" :title="'卸载 ' + s.name"
-                          :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
-                    <AppIcon name="trash" :size="14" />
+                  <button class="btn ghost icon sm" data-skill-view
+                          :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
+                          @click="openSkillDoc(s)">
+                    <AppIcon name="edit" :size="14" />
                   </button>
-                </template>
-                <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
-                        :label="'启用技能 ' + s.name"
-                        @update:model-value="toggleSkill(s, $event)" />
+                  <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
+                  <template v-if="!s.builtin">
+                    <button class="btn ghost icon sm" :title="'下载 ' + s.name + '.zip'"
+                            :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
+                      <AppIcon name="download" :size="14" />
+                    </button>
+                    <button class="btn ghost icon sm danger" :title="'卸载 ' + s.name"
+                            :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
+                      <AppIcon name="trash" :size="14" />
+                    </button>
+                  </template>
+                  <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
+                          :label="'启用技能 ' + s.name"
+                          @update:model-value="toggleSkill(s, $event)" />
+                </div>
               </div>
-            </div>
-            <!-- 说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
-                 整段换行、不截断 —— 它撑开的是行下方的留白，不参与行宽，所以行高不会被它拽歪。
-                 摆成行的**兄弟**而不是塞进行里：行高恒为 52，展开后只有内容变长，行本身不变形。 -->
-            <div class="skill-detail">
-              <p class="skill-desc">{{ skillDesc(s) }}</p>
+              <!-- 说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
+                   整段换行、不截断 —— 它撑开的是标题行下方的留白，不参与行宽，行高因此不会被它拽歪。
+                   与标题行同属一条 .skill-item：悬停浮起的是整条，说明不会被读成下一条的副标题。 -->
+              <div class="skill-detail">
+                <p class="skill-desc">{{ skillDesc(s) }}</p>
+              </div>
             </div>
             <!-- ⑤ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
             <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
@@ -896,7 +900,9 @@ onMounted(() => {
    · 三组之间仍然不套白卡：标题条 + 留白 + 控件自己的边就是全部层级。 */
 .cyli-prefs {
   --ctl-h: var(--control-h);   /* 32：模型页主表单的控件高，本页不再另立一套 */
-  --row-pad: 0;                /* 技能行 / 搜索框共用的额外内边距（卡片自己给 14px） */
+  /* 技能行 / 搜索框共用的额外内边距（卡片自己给 14px）：文字离卡片边 8px，
+     悬停底色因此比文字宽出一圈，而名字与搜索框左缘仍落在同一条竖线上 */
+  --row-pad: 8px;
   display: flex; flex-direction: column; gap: 24px;
   container-type: inline-size;
 }
@@ -1051,21 +1057,33 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
-/* 行与行之间只留一条发丝线（行不描边、不填底、不留行距）：行高 52 落在 48–56 之间，
+/* 一条技能 = 标题行 + 说明（内嵌设置面板跟在后面）。**悬停的单位是整条**：
+   鼠标停在名字上或停在说明上，浮起来的都是同一条 —— 之前只有 52px 的标题行跟着亮，
+   长说明悬在两条之间，读起来像属于下一条。 */
+.skill-item {
+  position: relative; border-radius: var(--r-sm);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+/* 行与行之间只留一条发丝线，线挂在**整条**上（不是标题行上）：
+   否则会出现"说明上方无线、下方有线"的错觉，把说明推给下一条。 */
+.skill-item + .skill-item { border-top: 1px solid var(--divider); }
+/* 悬停：整条浮起 —— 一档更亮的底 + 一层投影（每套色板各自算好深浅两版）。
+   底色落在这一条的盒内，阴影只从边界外扩一档，都不会伸到卡片内边距外面去。
+   自己那条上边线在浮起时收掉：1px 发丝线会横切过圆角，看着像"这块被切了一刀"。 */
+.skill-item:hover {
+  z-index: 1;                        /* 阴影要压过下一条的发丝线 */
+  background: var(--bg-elev);
+  /* --shadow-2 而不是 -1：-1 的扩散只有 16px/-10px，压在淡底卡上几乎看不出来，
+     「浮起来」还是得靠一层能看见的投影（阴影颜色由各色板自己给，深色主题另算一套）。 */
+  box-shadow: var(--shadow-2);
+  border-top-color: transparent;
+}
+/* 标题行：只负责"名字 + 操作"这一条（不描边、不填底、不留行距）。
    名字那侧与操作那侧由同一条 padding 决定，相邻两行的左内边距因此一模一样。 */
 .skill-row {
   display: flex; align-items: center; gap: 10px;
   min-height: 52px; padding: 0 var(--row-pad);
-  border-top: 1px solid var(--divider);
-  /* 圆角必须落在行自己身上，不能只写在 hover 里：底色是一整块矩形，
-     而它躺的是一张 --r-sm 的淡色圆角卡 —— 不带圆角鼠标一过就是一块方角底压在圆角卡上。 */
-  border-radius: var(--r-sm);
-  transition: background var(--dur) var(--ease);
 }
-.skill-list > .skill-row:first-child { border-top: 0; }
-/* 与模型页的 .prov-row 一样：悬停整行浮一层浅底，明确"这一行是连续的"。
-   底色只在行的盒内（左右内边距由 --row-pad 决定），不会伸到卡片内边距外面去。 */
-.skill-row:hover { background: var(--bg-hover); }
 /* 名字那一整块**只是标题**（2026-12 起不再是开合按钮：说明一直摆着）。
    min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把整页顶出横向滚动条。 */
 .skill-title {
@@ -1082,14 +1100,20 @@ onMounted(() => {
   flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
-/* 说明块：SKILL.md 的 description 原文，整段换行、不截断（它在行下方，不参与行宽）。
-   左内边距与行一致（--row-pad），说明的第一行字因此与上面的技能名落在同一条竖线上；
+/* 说明块：SKILL.md 的 description 原文，整段换行、不截断（它在标题行下方，不参与行宽）。
+   左内边距与标题行一致（--row-pad），说明的第一行字因此与上面的技能名落在同一条竖线上；
    缩进或加符号都会让"这句说明属于哪一条"变得要靠猜。 */
-.skill-detail { padding: 0 var(--row-pad) 10px; }
+.skill-detail { padding: 0 var(--row-pad) 12px; }
+/* 收在一个可读的行宽里（96 个西文字符 ≈ 三分之二栏宽）：这一栏在宽屏上有一千多像素，
+   整段铺满会读成"一整条横线"，眼睛每读完一行都要横掠很远才找下一行的开头；
+   再窄（70 字上下）右侧就空出一大片，跟"两行就到底"的说明不成比例。 */
 .skill-desc {
-  margin: 0; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
+  margin: 0; max-width: min(100%, 96ch);
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
+/* 停用的那条连说明一起降一档：整条读起来是"关掉的"，但仍能看清写的是什么 */
+.skill-row.off + .skill-detail .skill-desc { color: var(--text-faint); }
 /* 停用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
 .skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
 .skill-row.off .skill-id { opacity: .7; }
