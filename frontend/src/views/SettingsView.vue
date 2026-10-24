@@ -232,6 +232,10 @@ onMounted(async () => {
       <header class="pane-head">
         <span class="pane-head-icon"><AppIcon :name="activeSection.icon" :size="17" /></span>
         <h2 :title="activeSection.desc">{{ activeSection.label }}</h2>
+        <!-- 分区自带的动作挂在标题这一行右端（例如 Cyli 偏好的「恢复默认 / 保存」）：
+             分区面板用 Teleport 往这里送节点，于是"标题 + 动作"永远同一条水平线，
+             面板里也不必再自己造一行标题。没有面板送东西时它不占位（:empty）。 -->
+        <div id="pane-head-actions" class="pane-head-actions"></div>
       </header>
 
     <!-- 首次加载 -->
@@ -440,6 +444,9 @@ onMounted(async () => {
   margin: 0; min-width: 0;
   font-size: calc(22px * var(--ts, 1)); font-weight: 650; line-height: 1.25; letter-spacing: -.02em;
 }
+/* 标题右侧的动作槽：只有面板真的送来按钮时才存在 */
+.pane-head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+.pane-head-actions:empty { display: none; }
 
 /* 861–1024：.app-main 的左右内边距收成 12 / 56（base.css），高度算式不用再换档 ——
    顶部在设置页已经被归零（base.css 的 .app-main.settings），只有「视口 − 顶栏」。

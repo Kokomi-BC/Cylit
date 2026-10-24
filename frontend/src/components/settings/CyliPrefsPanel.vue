@@ -4,9 +4,9 @@
  * **对话偏好**（风格预设 + 回复长度）与**技能能力**（已接入技能的列表）两块主内容，
  * 中间跟一张只动一处的小卡：运行上限。
  *
- * 版式（2026-12 重做）：一条头部（简介 + 恢复默认 / 保存）→ 上方**横向**并排
- * （对话偏好 / 运行上限；风格选「自定义」时右侧再多一列「自定义指令」）→
- * 下方「技能能力」横跨整幅、单列纵向一行一个技能。
+ * 版式（2026-12 第三轮）：**标题与两枚动作在窗格抬头那一行**（Teleport 到 #pane-head-actions）→
+ * 上方两列等宽淡色圆角卡（对话偏好 / 运行上限，stretch 拉平）→ 一张满宽的「自定义指令」
+ * （风格选「自定义」才出现）→ 下方「技能能力」横跨整幅，一行一个技能（左内容 / 右五格操作区）。
  * 为什么横排而技能竖排：两三个短控件横着排一排就够，竖着排三屏才轮到技能；
  * 技能是十几行等结构的清单，只有整幅单列才读得下来（多列网格会让每行都窄到放不下操作）。
  * 为什么不再给每组每行套白卡：十来个技能叠出十几层白盒，底色与投影把"分组"这件事
@@ -515,16 +515,11 @@ onMounted(() => {
 
 <template>
   <div class="cyli-prefs">
-    <!-- 一条头部：简介在左、两个动作贴右，同一行对齐。
-         页面标题不写在这里 —— 设置页的 pane-head 已经给了「Cyli 偏好」（全区共用那一行），
-         面板里再写一遍就是同屏两个标题。 -->
-    <header class="pref-head">
-      <p class="pref-intro">调整 Cyli 的回答方式与已接入的技能；改动只对新开的对话生效。</p>
-      <!-- 两枚动作同组：窄屏时整组一起贴右，不会被 flex-wrap 拆成"一个在上一行右侧、
-           一个掉到下一行左侧"（那样看着像两个不相干的按钮）。 -->
+    <!-- 两枚动作挂到窗格抬头那一行的右端（「Cyli 偏好」标题 + 恢复默认 + 保存 同一条水平线）。
+         面板里不再自己造一行标题或简介：标题归 pane-head，简介归左栏 desc。
+         逻辑没动 —— 仍然一个头部管两组，只在**某组真的改过**时才发请求（saveAll 逐组判断 dirty）。 -->
+    <Teleport to="#pane-head-actions" defer>
       <div class="head-actions">
-        <!-- 一个头部管两组：每组各摆一枚「保存」等于让人在两处做同一个动作；
-             合并后只在**某组真的改过**时才发请求（saveAll 里逐组判断 dirty）。 -->
         <button class="btn ghost sm" :disabled="anyBusy || !prefCanReset" data-pref-reset
                 @click="resetPrefs">
           <AppIcon name="refresh" :size="14" />恢复默认
@@ -534,19 +529,17 @@ onMounted(() => {
           <AppIcon name="check" :size="14" />{{ anyBusy ? '保存中…' : '保存' }}
         </button>
       </div>
-    </header>
+    </Teleport>
 
-    <!-- 上方设置区：**两列**并排（对话偏好 / 运行上限）。
-         自定义指令框放在「对话偏好」**这一组里**（风格选自定义才出现）：用户口径 2026-12 ——
-         它本来就是这个偏好的下一级，单开一列会让左边那半只剩两个短控件、底下空出一大片。
-         两列按**内容高度**排（不拉平）：拉平会把「运行上限」也拽出一块空白底。 -->
-    <section class="pref-top">
-      <!-- ① 对话偏好：风格预设 / 回复长度 / 自定义指令（后者按需展开） -->
-      <div class="pref-group">
-        <header class="group-head">
-          <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
-        </header>
-        <div class="group-body pref-fields">
+    <!-- 一张卡管两块（用户口径 2026-12：对话偏好与运行上限「合并为一个」）：
+         上半是两个对话控件（两列等宽），一条带小标题的发丝线之后是五个运行上限数字。
+         合成一张卡之后，两半不再各自撑高度，"左边空一大片"的问题从根上没了。 -->
+    <section class="pref-group">
+      <header class="group-head">
+        <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
+      </header>
+      <div class="group-body pref-stack">
+        <div class="pref-pair">
           <label class="ctl">
             <span class="ctl-label">对话风格</span>
             <select id="pref-style" v-model="pref.preset" data-pref-style>
@@ -564,24 +557,10 @@ onMounted(() => {
                       @click="pref.length = opt.id">{{ opt.label }}</button>
             </div>
           </div>
-          <!-- 自定义指令：只有风格选「自定义」才展开（选走别的预设必须收起，
-               否则用户会以为框里那段还在生效）。高度用 clamp，跟着卡片一起长。 -->
-          <div class="ctl ctl-custom" v-if="pref.preset === 'custom'">
-            <label class="ctl-label" for="pref-style-custom">自定义指令</label>
-            <textarea id="pref-style-custom" v-model="pref.style" class="style-input"
-                      :maxlength="PREF_STYLE_MAX" data-pref-style-custom
-                      placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
-            <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
-          </div>
         </div>
-      </div>
 
-      <!-- ② 运行上限 -->
-      <div class="pref-group">
-        <header class="group-head">
-          <AppIcon name="gauge" :size="14" /><h3>运行上限</h3>
-        </header>
-        <div class="group-body">
+        <!-- 运行上限：3 列数值网格（窄了自动 2 列 / 1 列）；标签在上、输入框在下，宽度与高度全一致 -->
+        <div class="pref-sep"><span class="pref-sep-label">运行上限</span></div>
         <div class="limit-grid" v-if="limits">
           <label class="ctl" v-for="f in LIMIT_FIELDS" :key="f.key">
             <span class="ctl-label">{{ f.label }}<i class="limit-unit">{{ f.unit }}</i></span>
@@ -593,9 +572,23 @@ onMounted(() => {
           {{ limitsLoading ? '正在读取运行上限…' : '运行上限暂不可用（agent 服务未就绪）。' }}
         </p>
         <p class="pref-hint ok" v-if="limitsHint">{{ limitsHint }}</p>
-        </div>
       </div>
+    </section>
 
+    <!-- ③ 自定义指令：从「对话偏好」独立出来，占满一行（用户口径 2026-12）：
+         它是**一段文本**，与上面两个短控件不是一类东西。
+         仍然只在风格选「自定义」时出现 —— 选走别的预设必须收起，否则会以为框里那段还在生效。
+         标题在卡外、文本框占满内容宽、字数贴框的右下。 -->
+    <section class="pref-group pref-custom" v-if="pref.preset === 'custom'">
+      <header class="group-head">
+        <AppIcon name="edit" :size="14" /><h3>自定义指令</h3>
+      </header>
+      <div class="group-body">
+        <textarea id="pref-style-custom" v-model="pref.style" class="style-input"
+                  :maxlength="PREF_STYLE_MAX" data-pref-style-custom aria-label="自定义指令"
+                  placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
+        <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
+      </div>
     </section>
 
     <!-- ② 技能能力：横跨整个主内容区，单列纵向一行一个技能。
@@ -629,11 +622,11 @@ onMounted(() => {
 
         <div class="skill-list" v-if="filteredSkills.length">
           <template v-for="s in filteredSkills" :key="s.name">
-            <!-- 一条技能 = 标题行 + 说明，两样包在同一个 .skill-item 里：
-                 说明紧贴自己的标题、不悬停浮起，才不会读成下一条的副标题。 -->
-            <div class="skill-item">
-              <div class="skill-row" :class="{ off: !s.enabled }"
-                   data-skill-row :data-skill-name="s.name">
+            <!-- 一条技能 = **横向两块**（用户口径 2026-12）：左边名字 / 英文 ID / 说明竖着排，
+                 右边是操作区。说明因此不会把名字挤歪，操作区也不会被长说明顶走。 -->
+            <div class="skill-item" :class="{ off: !s.enabled }"
+                 data-skill-row :data-skill-name="s.name">
+              <div class="skill-main">
                 <!-- 名字是**纯文本**（2026-12 起不再是一枚开合按钮）：说明一直摆着，不用点。 -->
                 <div class="skill-title">
                   <span class="skill-name">{{ SKILL_NAME_ZH[s.name] || s.name }}</span>
@@ -642,42 +635,39 @@ onMounted(() => {
                   <span class="badge dim" v-if="!s.builtin">外部</span>
                   <span class="badge warn" v-if="!s.enabled">已停用</span>
                 </div>
-                <div class="skill-ops">
-                  <!-- web-search 自带联网搜索配置入口：齿轮就地展开，不另开一页。
-                       顺序是「齿轮 → 编辑」，齿轮管这一行的**运行设置**，编辑管**定义原文**。
-                       都是幽灵按钮：行里只有图标、没有底色块（用户口径：别给每个按钮套方块）。 -->
-                  <button v-if="s.name === WEB_SEARCH_SKILL" class="btn ghost icon sm"
-                          :class="{ on: wsOpen }"
-                          :title="wsOpen ? '收起联网搜索设置' : '联网搜索配置'"
-                          :aria-expanded="wsOpen" @click="toggleWs()">
-                    <AppIcon name="sliders" :size="14" />
-                  </button>
-                  <button class="btn ghost icon sm" data-skill-view
-                          :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
-                          @click="openSkillDoc(s)">
-                    <AppIcon name="edit" :size="14" />
-                  </button>
-                  <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
-                  <template v-if="!s.builtin">
-                    <button class="btn ghost icon sm" :title="'下载 ' + s.name + '.zip'"
-                            :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
-                      <AppIcon name="download" :size="14" />
-                    </button>
-                    <button class="btn ghost icon sm danger" :title="'卸载 ' + s.name"
-                            :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
-                      <AppIcon name="trash" :size="14" />
-                    </button>
-                  </template>
-                  <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
-                          :label="'启用技能 ' + s.name"
-                          @update:model-value="toggleSkill(s, $event)" />
-                </div>
-              </div>
-              <!-- 说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写）。
-                   整段换行、不截断 —— 它撑开的是标题行下方的留白，不参与行宽，行高因此不会被它拽歪。
-                   与标题行同属一条 .skill-item：悬停浮起的是整条，说明不会被读成下一条的副标题。 -->
-              <div class="skill-detail">
                 <p class="skill-desc">{{ skillDesc(s) }}</p>
+              </div>
+              <!-- 操作区是**五格固定网格**：齿轮（配置）→ 编辑 → 下载 → 卸载 → 开关。
+                   缺哪一格就留一个空占位，于是每一条里的「编辑」和开关都落在同一个 x 上
+                   （用户口径 2026-12：技能行内操作控件要有统一对齐基准）。
+                   都是幽灵按钮：行里只有图标、没有底色块。 -->
+              <div class="skill-ops">
+                <button v-if="s.name === WEB_SEARCH_SKILL" class="btn ghost icon sm"
+                        :class="{ on: wsOpen }"
+                        :title="wsOpen ? '收起联网搜索设置' : '联网搜索配置'"
+                        :aria-expanded="wsOpen" @click="toggleWs()">
+                  <AppIcon name="sliders" :size="14" />
+                </button>
+                <span v-else class="ops-slot" aria-hidden="true"></span>
+                <button class="btn ghost icon sm" data-skill-view
+                        :title="'查看 ' + s.name + ' 的 SKILL.md 定义原文'"
+                        @click="openSkillDoc(s)">
+                  <AppIcon name="edit" :size="14" />
+                </button>
+                <!-- 下载 / 卸载只属于外部技能：自带技能的 DELETE 回 403，灰按钮只是噪音 -->
+                <button v-if="!s.builtin" class="btn ghost icon sm" :title="'下载 ' + s.name + '.zip'"
+                        :disabled="skillBusy === 'download:' + s.name" @click="downloadSkill(s)">
+                  <AppIcon name="download" :size="14" />
+                </button>
+                <span v-else class="ops-slot" aria-hidden="true"></span>
+                <button v-if="!s.builtin" class="btn ghost icon sm danger" :title="'卸载 ' + s.name"
+                        :disabled="skillBusy === 'delete:' + s.name" @click="removeSkill(s)">
+                  <AppIcon name="trash" :size="14" />
+                </button>
+                <span v-else class="ops-slot" aria-hidden="true"></span>
+                <Switch :model-value="s.enabled" :disabled="skillBusy === 'toggle:' + s.name"
+                        :label="'启用技能 ' + s.name"
+                        @update:model-value="toggleSkill(s, $event)" />
               </div>
             </div>
             <!-- ⑤ 内嵌设置：挂在 web-search 这一行下方展开，跟着技能一起滚动。
@@ -710,9 +700,15 @@ onMounted(() => {
   </div>
 </template>
 <style scoped>
-/* 版式（2026-12 第二轮，口径：**与模型页对齐**，用户原话「每页风格一致」）：
-   一条头部 → 上方横向并排（对话偏好 / 运行上限；自定义时多一列「自定义指令」）→ 下方「技能能力」横跨整幅。
-   这一轮换掉的是**尺子**，不是结构：
+/* 版式（2026-12 第三轮，口径：**统一对齐基准 + 两卡等高**）：
+   抬头一行（标题 + 恢复默认 + 保存）→ 上方两列等宽卡（对话偏好 / 运行上限）→
+   满宽「自定义指令」→「技能能力」横跨整幅。这一轮换掉的是**网格与基准**，不是功能：
+   · 三个间距数收在变量里（--card-pad 20 / --card-gap 24 / --field-gap 14），
+     所有卡片、字段、标题都从同一个左缘起步；
+   · 两张卡 stretch 拉平：同起点、同内边距、同标题高度、同下边缘；
+   · 技能行改成"左内容 / 右操作"两列，右列是五格固定网格（缺格留占位），
+     于是每一条的图标与开关都落在同一个 x 上。
+   尺子沿用第二轮（与模型页对齐）：
    · 字号取模型页那一档（ModelPanel / LimitCard 实量）：分组标题 14.5/650、行标题 13/600、
      标签 12、辅助 11.5；正文控件内文 13。
    · 控件高取模型页主表单的 --control-h（32）—— 实测模型提供方表单里的 input 就是 32，
@@ -722,21 +718,18 @@ onMounted(() => {
    · 三组之间仍然不套白卡：标题条 + 留白 + 控件自己的边就是全部层级。 */
 .cyli-prefs {
   --ctl-h: var(--control-h);   /* 32：模型页主表单的控件高，本页不再另立一套 */
-  /* 技能行 / 搜索框共用的额外内边距（卡片自己给 14px）：名字与搜索框的左缘落在同一条竖线上 */
-  --row-pad: 8px;
-  display: flex; flex-direction: column; gap: 24px;
+  /* 全页只有这三个间距数：卡片内边距 / 卡片之间 / 卡内字段之间。
+     卡片内边距同时也是"文字左缘"的唯一基准 —— 标题、字段、搜索框、技能名都从这一条线起。 */
+  --card-pad: 20px;
+  --card-gap: 24px;
+  --field-gap: 14px;
+  display: flex; flex-direction: column; gap: var(--card-gap);
   container-type: inline-size;
 }
 .spacer { flex: 1; }
 
-/* ---------- 头部：一句简介 + 右侧两枚动作 ---------- */
-.pref-head { display: flex; align-items: center; gap: 16px; }
-/* 简介是说明文字（12 / faint），与模型页 .limits-desc 同一档；
-   flex:1 + min-width:0 让它自己换行，动作组因此不会被挤到下一行。 */
-.pref-intro {
-  flex: 1 1 auto; min-width: 0; margin: 0;
-  font-size: calc(12px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
-}
+/* 动作组：由 Teleport 挂进窗格抬头那一行（标题 + 恢复默认 + 保存 同一条水平线），
+   这里只管两条并排的间距 */
 .head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 
 /* ---------- 控件：与模型页同一档高度 / 圆角 / 字号 ---------- */
@@ -756,51 +749,47 @@ onMounted(() => {
   font-size: calc(12.5px * var(--ts, 1));
 }
 
-/* ---------- 上方并排：两列，自定义时三列 ---------- */
-/* 轨道永远是 3 条，第三列只在「自定义」时张开到 .9fr（收起时 0fr，既看不见也不可点）：
-   于是两列↔三列是**列在变宽**，不是整行重排 —— 内容不会在动画中途跨列错位，
-   文字只在变宽的过程中自然重排。不支持轨道动画的浏览器只是少一段过渡，不塌版。 */
-.pref-top {
-  display: grid;
-  /* 两列等分。自定义指令挪进「对话偏好」之后不再有第三列，也不需要列宽过渡。 */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  /* **按内容高度排，不拉平**（用户口径 2026-12「避免大片空白」）：拉平会把短的那一列
-     拽出一块空白底 —— 之前「对话偏好」只有两个短控件却和「运行上限」等高，底下空一大片。 */
-  align-items: start;
-}
-/* 列间距不用 gap：收起的那一列仍算一条轨道，gap 会在最右侧留一道 24px 的空档。
-   组自己带左外边距，等于把间距算在组身上。 */
+/* ---------- 卡片（一区一张，卡内再分小段用发丝线） ---------- */
 .pref-group { min-width: 0; display: flex; flex-direction: column; }
-.pref-group + .pref-group { margin-left: 24px; }
-/* 标题只是标题：**不铺底**。淡色圆角卡在它下面（.group-body）——用户口径：
-   "淡淡的圆角卡片要放在内容下面，文字在卡片之上"。 */
+/* 标题只是标题：**不铺底**，淡色圆角卡在它下面（与系统信息 / 索引管理的块同一套）。
+   min-height 让带图标与不带图标的标题一样高，两张卡的正文起点因此对齐。 */
 .group-head {
   display: flex; align-items: center; gap: 6px;
-  margin-bottom: 8px;
+  min-height: 20px; margin-bottom: 8px;
   color: var(--text-faint);
 }
-/* 内容底：淡色圆角矩形（照 LimitCard 的 .lim-status），只包控件、不包标题 */
+/* 内容底：淡色圆角矩形，只包控件、不包标题；flex:1 才撑得出"两张卡等高" */
 .group-body {
-  padding: 12px 14px;
+  flex: 1;
+  padding: var(--card-pad);
   border-radius: var(--r-sm); background: var(--bg-sunken);
-  /* 不再 `flex: 1` 拉平：两列按内容高度排，卡里不留空白底（用户口径 2026-12）。 */
 }
 .group-head h3 {
   margin: 0; font-size: calc(14.5px * var(--ts, 1)); font-weight: 650;
   color: var(--text); line-height: 1.35; white-space: nowrap;
 }
 
+/* 卡内竖向节奏：小段之间 14，小段内部也 14 */
+.pref-stack { display: flex; flex-direction: column; gap: var(--field-gap); }
+/* 一张卡里的两列（对话风格 / 回复长度）：等宽，同一行 */
+.pref-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-gap); }
+/* 小段分隔：一枚小标题 + 一条发丝线，用来在卡内分出「运行上限」这半 */
+.pref-sep { display: flex; align-items: center; gap: 10px; }
+.pref-sep-label { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); white-space: nowrap; }
+.pref-sep::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--divider); }
+
 /* 一个控件 = 标签在上、控件在下（全篇只这一种，不再有"标签在左/在上"混排） */
-.pref-fields { display: flex; flex-direction: column; gap: 12px; }
 .ctl { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ctl-label { font-size: calc(12px * var(--ts, 1)); line-height: 1.35; color: var(--text-dim); }
 
-/* 自定义指令框：**在「对话偏好」这一组里整列宽**。clamp 让它在高一点的视口里再长一档（140–220），
-   但不会顶掉半屏；字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。
-   宽度就是这一列的宽（≈49%），比原来单开第三列时（≈27%）宽了近一倍。 */
-.cyli-prefs .ctl > .style-input {
+/* 自定义指令卡：标题在卡外，框占满内容宽，字数贴在框的右下 */
+.pref-custom .group-body { display: flex; flex-direction: column; gap: 6px; }
+/* 自定义指令框：**独占一行卡片**，宽度就是整幅内容宽。
+   clamp 让它在高一点的视口里再长一档（140–220），不会顶掉半屏；
+   字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。 */
+.cyli-prefs .style-input {
   display: block; width: 100%;
-  height: clamp(140px, 20vh, 220px); padding: 8px 10px;
+  height: clamp(140px, 20vh, 220px); padding: 10px 12px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer); color: var(--text);
   font-size: calc(13px * var(--ts, 1)); line-height: 1.6; resize: none;
@@ -822,7 +811,7 @@ onMounted(() => {
 /* ---------- 运行上限 ---------- */
 /* 5 个数字项排两列（2+2+1）：一列要排五行，整组会比旁边两组高出一大截。
    不用 auto-fit：它在中间宽度会排成"3 + 1 + 1"，比整齐的两列更难看。 */
-.limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.limit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px var(--field-gap); }
 /* 数字右对齐 + 等宽：数值长短变化时不会左右跳 */
 .limit-grid input { text-align: right; font-variant-numeric: tabular-nums; }
 /* 单位挂在标签后缀里，而不是跟在输入框右边：省下的宽度正好给"1000000"这种长数字 */
@@ -832,17 +821,17 @@ onMounted(() => {
 }
 .pref-hint.ok { color: var(--ok); }
 
-/* ---------- 下方：技能能力（横跨整幅，一行一个） ---------- */
-/* 块本身是**裸块**（与模型页的 .block / .limits 完全一致：无描边、无圆角、无底色）：
-   描边和底色交给里面那张 .card，块只负责"标题条 + 卡片"的竖向节奏。 */
+/* ---------- 下方：技能能力（横跨整幅） ---------- */
+/* 块本身是**裸块**（与模型页的 .block / .limits 一致：无描边、无圆角、无底色）：
+   描边和底色交给里面那张淡色圆角卡，块只负责"标题条 + 卡片"的竖向节奏。 */
 .skills {
-  min-width: 0; display: flex; flex-direction: column; gap: 12px;
+  min-width: 0; display: flex; flex-direction: column; gap: 8px;
   padding: 0; border: 0; background: transparent; box-shadow: none;
 }
-/* 标题只是标题（不铺底）；淡色圆角卡挪到下面的 .skill-body */
+/* 标题 / 数量 / 上传 / 刷新**同一条水平线**：数量跟在标题后，两枚动作被 .spacer 推到右端 */
 .skills-head {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  min-height: 20px;
   color: var(--text-faint);
 }
 .skills-title {
@@ -852,18 +841,17 @@ onMounted(() => {
 /* 数量是一句注脚，不是徽章：不铺底、不加边框，跟在标题后面 */
 .skills-count { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 内容底：淡色圆角矩形（与 .group-body 同一套），只包搜索框与技能行；
-   行与行之间只靠 1px 发丝线，行自己不带边框、不带底色、不带行距 */
-.skill-body { padding: 12px 14px 6px; border-radius: var(--r-sm); background: var(--bg-sunken); }
-/* 卡里的空态/提示行要自己留出上下呼吸（底只给左右内边距，行与行之间的节奏归行自己管） */
-.skill-body > .pref-hint { margin: 10px 0 14px; }
+/* 内容底：与 .group-body 同一套淡色圆角卡、同一个内边距 */
+.skill-body { padding: var(--card-pad); border-radius: var(--r-sm); background: var(--bg-sunken); }
+/* 卡里的空态/提示行跟着卡片内边距走 */
+.skill-body > .pref-hint { margin: 12px 0 0; }
 
-/* 搜索框：整宽的输入语义，但只占一个可读的行宽 —— 铺满整张卡的空白框看着像一块空洞。
-   左缘与技能行同一条竖线（卡片内边距 14 + --row-pad）。 */
+/* 搜索框：独立一行，左缘与技能名 / 说明的左缘同一条竖线（都是卡片内边距 20）。
+   只占一个可读的行宽 —— 铺满整张卡的空白框看着像一块空洞。 */
 .skill-search {
   display: flex; align-items: center; gap: 8px;
   box-sizing: border-box; width: 100%; max-width: 360px; height: var(--ctl-h);
-  margin: 0 var(--row-pad) 10px; padding: 0 10px;
+  margin: 0 0 4px; padding: 0 10px;
   border: 1px solid var(--border-strong); border-radius: var(--r-sm);
   background: var(--bg-elev); color: var(--text-faint);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
@@ -878,24 +866,23 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
-/* 一条技能 = 标题行 + 说明（内嵌设置面板跟在后面）。条本身不描边、不填底、
-   **也不响应悬停**（用户口径 2026-12：技能列表去掉鼠标悬浮效果）——
-   逐条浮起会让人以为整条可点，实际可点的只有右侧那几枚图标。 */
-.skill-item { display: block; }
-/* 行与行之间只留一条发丝线，线挂在**整条**上（不是标题行上）：
-   否则会出现"说明上方无线、下方有线"的错觉，把说明推给下一条。 */
-.skill-item + .skill-item { border-top: 1px solid var(--divider); }
-/* 标题行：只负责"名字 + 操作"这一条（不描边、不填底）。
-   竖向节奏只有一处：这里留 10 顶距、说明再压 3、最后留 10 底距 ——
-   一条技能的呼吸上下对称，两条之间的发丝线因此正落在中间。 */
-.skill-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px var(--row-pad) 0;
+/* 一条技能 = **横向两块**（用户口径 2026-12）：
+   左 = 名字 / 英文 ID / 说明（竖着排、可换行），右 = 固定五格操作区。
+   条本身不描边、不填底、不响应悬停；条与条之间只留一条发丝线。 */
+.skill-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  /* center：操作区在**整条**里垂直居中（说明折成两行时，图标与开关也不会吊在第一行上） */
+  align-items: center;
+  column-gap: 16px;
+  padding: 14px 0;
 }
+.skill-item + .skill-item { border-top: 1px solid var(--divider); }
+.skill-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 /* 名字那一整块**只是标题**（2026-12 起不再是开合按钮：说明一直摆着）。
-   min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把整页顶出横向滚动条。 */
+   min-width: 0 + 溢出裁剪是关键 —— 名字再长也只是省略号，绝不会把操作区顶走。 */
 .skill-title {
-  display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
   overflow: hidden;
 }
 .skill-name {
@@ -908,26 +895,30 @@ onMounted(() => {
   flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
 }
-/* 说明块：SKILL.md 的 description 原文，整段换行、不截断（它在标题行下方，不参与行宽）。
-   左内边距与标题行一致（--row-pad），说明的第一行字因此与上面的技能名落在同一条竖线上；
-   缩进或加符号都会让"这句说明属于哪一条"变得要靠猜。 */
-.skill-detail { padding: 3px var(--row-pad) 10px; }
-/* 收在一个可读的行宽里（96 个西文字符 ≈ 三分之二栏宽）：这一栏在宽屏上有一千多像素，
-   整段铺满会读成"一整条横线"，眼睛每读完一行都要横掠很远才找下一行的开头；
-   再窄（70 字上下）右侧就空出一大片，跟"两行就到底"的说明不成比例。 */
+/* 说明：SKILL.md 的 description 原文（英文就照英文，不翻译不改写），**左列整宽、自然换行**。
+   左列宽度已经由右列操作区让出来了，不需要再收一个行宽。 */
 .skill-desc {
-  margin: 0; max-width: min(100%, 96ch);
+  margin: 0;
   font-size: calc(12.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
 /* 停用的那条连说明一起降一档：整条读起来是"关掉的"，但仍能看清写的是什么 */
-.skill-row.off + .skill-detail .skill-desc { color: var(--text-faint); }
-/* 停用的行整体降一档亮度（开关与按钮仍保持可读，不然会像"整个坏掉了"） */
-.skill-row.off .skill-name { color: var(--text-dim); font-weight: 500; }
-.skill-row.off .skill-id { opacity: .7; }
-/* 右侧顺序固定：齿轮（配置入口）→ 编辑 → 下载/卸载 → 开关，整组贴右边缘。
-   开关永远落在同一个 x 上，行里有没有齿轮 / 下载都不会把它推歪。 */
-.skill-ops { display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex: none; }
+.skill-item.off .skill-desc { color: var(--text-faint); }
+.skill-item.off .skill-name { color: var(--text-dim); font-weight: 500; }
+.skill-item.off .skill-id { opacity: .7; }
+/* 操作区 = **五格固定网格**（齿轮 / 编辑 / 下载 / 卸载 / 开关）：缺哪一格就留一个
+   .ops-slot 占位，于是「编辑」图标与开关在每一条里都落在同一个 x 上、垂直也对齐
+   （用户口径 2026-12：技能行内操作控件要有统一对齐基准）。 */
+.skill-ops {
+  display: grid;
+  grid-template-columns: repeat(4, 26px) auto;
+  align-items: center; justify-items: center;
+  gap: 2px; flex: none;
+}
+.ops-slot { display: block; width: 26px; height: 26px; }
+/* 开关在这里没有文字：把 Switch 内部的空文案槽收掉 ——
+   否则它会占掉 8px 的列间距，轨道右缘就比卡片内容右缘缩进 8px（看着"没贴齐"）。 */
+.skill-ops :deep(.switch-text) { display: none; }
 /* 行里的图标按钮是**幽灵按钮**：不铺底、不描边、不投影、不是圆 —— 悬停才浮出一层浅底。
    尺寸走全局 .btn.icon.sm（26×26，与模型页行内动作同档），这里只把圆角收到 8。 */
 .skill-ops .btn.icon.sm { border-radius: 8px; }
@@ -939,7 +930,7 @@ onMounted(() => {
 /* 一段能改运行参数的表单，用淡底 + 发丝描边与上下的"行"区分开，
    否则与技能行同底色会像下一行的成员。 */
 .ws-panel {
-  margin: 0 var(--row-pad) 12px; padding: 12px;
+  margin: 0 0 16px; padding: 14px;
   border: 1px solid var(--divider); border-radius: var(--r-sm);
   background: var(--bg-layer);
 }
@@ -952,21 +943,18 @@ onMounted(() => {
   border-radius: var(--r-sm); font-size: calc(13px * var(--ts, 1));
 }
 
-/* ---------- 窄容器：三列 → 两列（大框铺满两列）→ 单列 ---------- */
+/* ---------- 窄容器：两列 → 单列（卡片自己的内边距也跟着收一档） ---------- */
 @container (max-width: 899px) {
-  /* 轨道回到两条：自定义那一组不再占一条轨道，而是整行铺满两列 */
-  .pref-top,
-  .pref-top.with-custom { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 24px; }
-  .pref-top .pref-group + .pref-group-custom { grid-column: 1 / -1; margin-left: 0; }
+  .cyli-prefs { --card-pad: 18px; }
+  /* 卡内的两列（对话风格 / 回复长度）与运行上限的三列都退一档 */
+  .pref-pair { grid-template-columns: minmax(0, 1fr); }
+  .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container (max-width: 559px) {
-  .pref-top,
-  .pref-top.with-custom { grid-template-columns: minmax(0, 1fr); gap: 20px; }
-  /* 单列时不再有"第二列"，组与组之间的左外边距必须收掉 */
-  .pref-top .pref-group + .pref-group { margin-left: 0; }
-  .limit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* 窄到头时行里的操作按钮先保住名字：名字允许省略号，按钮组不换行、不压字号 */
-  .skill-row { gap: 8px; }
+  .cyli-prefs { --card-pad: 16px; --card-gap: 20px; }
+  .limit-grid { grid-template-columns: minmax(0, 1fr); }
+  /* 窄到头时先保住名字：名字允许省略号，操作区不换行、不压字号 */
+  .skill-item { column-gap: 10px; }
   .skill-id { max-width: 34%; }
 }
 

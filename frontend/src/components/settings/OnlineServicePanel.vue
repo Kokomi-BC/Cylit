@@ -2,12 +2,12 @@
 /**
  * 设置页「在线服务」：一页管两件事 —— **解析**（本地 / MinerU）与**搜索**（DeepSeek）。
  *
- * 版式口径（用户 2026-12 第二次收紧）：**不套容器**。分组只有标题 + 一条发丝线，
- * 字段直接排在页面底上（之前的淡底大块把两列糊成了两块背景，一眼看不出"这栏有几项"）。
- *   · 顶部一行：服务切换（解析 / 搜索）在左，保存状态在右 —— 状态全页只有这一处；
- *   · 解析页两栏：左本地、右 MinerU，同屏可见同屏可改；默认引擎是一枚轻量分段，不占一行说明；
+ * 版式口径（用户 2026-12 第三次）：**一页到底**，页内不再有"解析 / 搜索"切换胶囊 ——
+ * 两件事本来就是同一页的两半，切来切去反而看不到全貌。
+ *   · 自上而下：默认引擎（一枚轻量分段）→ 两栏（左本地 / 右 MinerU）→ 网联搜索 → 最近的解析；
+ *   · 每个分组都与设置页其它面板同一套：**标题在块外 + 淡色圆角内容底**；
  *   · MinerU 的低频项（模型版本 / OCR 语言 / 强制 OCR / 页码范围）折进「高级选项」，默认值不变；
- *   · 动作只有一排在右下：清除密钥（低强调，左侧）+ 测试服务 + 保存设置。
+ *   · 动作只有页脚这一条：保存状态 + 清除 token / 清除密钥（低强调、危险色）+ 测试服务 + 保存设置。
  *
  * 数据面：引擎与 MinerU 凭据在 `/mineru/config`；两个引擎的导入默认值在 `/parse/config`
  * （一个键一套，见 `parse_prefs`）；搜索在 `WebSearchSettings` 里读写同一份配置。
@@ -22,9 +22,6 @@ import type { MineruConfig, MineruVerifyResult, ParseConfig, ParseEngine } from 
 import AppIcon from '@/components/AppIcon.vue';
 import Switch from '@/components/Switch.vue';
 import WebSearchSettings from './WebSearchSettings.vue';
-
-type TabKey = 'parse' | 'search';
-const tab = ref<TabKey>('parse');
 
 /* ---------------- 解析默认值（两个引擎共用一套键：/parse/config） ---------------- */
 
@@ -264,80 +261,71 @@ function taskEngine(t: { params?: Record<string, any> }): string {
   return '默认引擎';
 }
 
-/* ---------------- 页头状态与底部动作 ---------------- */
+/* ---------------- 保存状态与底部动作（解析 + 搜索共用一条） ---------------- */
 
 const parseDirty = computed(() => mineruDirty.value || localDirty.value || mineruPrefsDirty.value);
 
-/** 全页唯一的保存/验证状态：已保存 / 未保存 / 读取失败 / 验证通过 / 验证失败。
- *  默认引擎不在这里报（页内那枚分段自己就是状态），否则同一件事说两遍。 */
-const statusBadge = computed<{ text: string; cls: string; title: string }>(() => {
-  if (tab.value === 'parse') {
-    if (mineruLoading.value || prefsLoading.value) return { text: '读取中…', cls: 'dim', title: '' };
-    if (prefsError.value || mineruError.value) {
-      return { text: '读取失败', cls: 'warn', title: prefsError.value || mineruError.value };
-    }
-    if (parseDirty.value) return { text: '未保存', cls: 'warn', title: '点右下「保存设置」生效' };
-    return { text: '已保存', cls: 'ok', title: '与服务端一致' };
+/** 整页的保存状态（页脚左侧那一枚）：已保存 / 有未保存的改动 / 读取失败。
+ *  两个服务的**验证**结论各自挂在自己的卡头上（MinerU token、网联搜索密钥），页脚不重复。 */
+const saveState = computed<{ text: string; cls: string; title: string }>(() => {
+  if (mineruLoading.value || prefsLoading.value) return { text: '读取中…', cls: 'dim', title: '' };
+  if (prefsError.value || mineruError.value) {
+    return { text: '读取失败', cls: 'warn', title: prefsError.value || mineruError.value };
   }
+  if (parseDirty.value || ws.value?.dirty) {
+    return { text: '有未保存的改动', cls: 'warn', title: '点右下「保存设置」生效' };
+  }
+  return { text: '已保存', cls: 'ok', title: '与服务端一致' };
+});
+
+/** 网联搜索的凭据状态（挂在它自己那张卡的标题右端） */
+const wsBadge = computed<{ text: string; cls: string; title: string }>(() => {
   const c = ws.value;
   if (!c) return { text: '读取中…', cls: 'dim', title: '' };
-  if (!c.ready) return { text: '读取失败', cls: 'warn', title: '后端没有返回联网搜索配置' };
-  if (c.dirty) return { text: '未保存', cls: 'warn', title: '点右下「保存设置」生效' };
+  if (!c.ready) return { text: '接口未就绪', cls: 'warn', title: '后端没有返回联网搜索配置' };
   if (c.test) {
     return c.test.ok
       ? { text: '验证通过', cls: 'ok', title: c.test.state + ' · ' + c.test.ms + 'ms' }
       : { text: '验证失败', cls: 'danger', title: c.test.detail || c.test.state };
   }
-  return {
-    text: '已保存', cls: 'ok',
-    title: c.hasKey ? '已存 API Key，尚未验证' : '还没配置 API Key',
-  };
+  return c.hasKey
+    ? { text: '已存 API Key', cls: 'dim', title: '还没点过「测试服务」' }
+    : { text: '未配置 API Key', cls: 'dim', title: '' };
 });
 
-const busy = computed(() => {
-  if (tab.value === 'parse') return !!mineruBusy.value || prefsLoading.value;
-  return !!(ws.value && (ws.value.busy || ws.value.testing));
-});
+const busy = computed(() => !!mineruBusy.value || prefsLoading.value
+  || !!(ws.value && (ws.value.busy || ws.value.testing)));
 
-const canSave = computed(() => {
-  if (tab.value === 'parse') return parseDirty.value && !busy.value;
-  return !!ws.value?.dirty && !ws.value?.busy;
-});
+const canSave = computed(() => (parseDirty.value || !!ws.value?.dirty) && !busy.value);
 
-const canVerify = computed(() => {
-  // 解析页的测试验的是 MinerU token（本地解析没有远程凭据，无事可做）
-  if (tab.value === 'parse') return !!mineruBase.has_token && !mineruBusy.value;
-  return !!ws.value?.ready && !ws.value?.testing;
-});
+/** 测试服务：把**已经配了凭据**的服务都打一次（没配的跳过，不拿"缺 key"当失败报红） */
+const canVerify = computed(() => (!!mineruBase.has_token || !!ws.value?.hasKey) && !busy.value);
 
-const canClear = computed(() => {
-  if (tab.value === 'parse') return !!mineruBase.has_token && !mineruBusy.value;
-  return !!ws.value?.hasKey && !ws.value?.busy;
-});
+const canClearToken = computed(() => !!mineruBase.has_token && !mineruBusy.value);
+const canClearKey = computed(() => !!ws.value?.hasKey && !ws.value?.busy);
 
-const clearLabel = computed(() => (tab.value === 'parse' ? '清除 token' : '清除密钥'));
+async function clearKey(): Promise<void> {
+  await ws.value?.clearKey();
+}
 
-async function saveCurrent(): Promise<void> {
+/** 保存：三组各自只在**改过**的时候发请求（未改动不发，是这一页的铁律）。 */
+async function saveAll(): Promise<void> {
   try {
-    if (tab.value === 'parse') {
-      if (mineruDirty.value) await saveMineru();
-      if (mineruPrefsDirty.value || localDirty.value) await savePrefs();
-      return;
-    }
-    await ws.value?.save();
+    if (mineruDirty.value) await saveMineru();
+    if (mineruPrefsDirty.value || localDirty.value) await savePrefs();
+    if (ws.value?.dirty) await ws.value.save();
   } catch (err) {
     toast((err as Error)?.message ?? String(err), 'error', 5000);
   }
 }
 
-async function verifyCurrent(): Promise<void> {
-  if (tab.value === 'parse') { await verifyMineru(); return; }
-  await ws.value?.verify();
-}
-
-async function clearCurrent(): Promise<void> {
-  if (tab.value === 'parse') { await clearMineruToken(); return; }
-  await ws.value?.clearKey();
+async function verifyAll(): Promise<void> {
+  if (!mineruBase.has_token && !ws.value?.hasKey) {
+    toast('先填一个 MinerU token 或联网搜索密钥，再来测试', 'warn');
+    return;
+  }
+  if (mineruBase.has_token) await verifyMineru();
+  if (ws.value?.hasKey) await ws.value.verify();
 }
 
 onMounted(() => {
@@ -349,25 +337,9 @@ onMounted(() => {
 
 <template>
   <div class="ons">
-    <!-- 一行：服务切换在左、保存状态在右。状态全页只有这一处 -->
-    <div class="ons-bar">
-      <div class="seg ons-tabs" role="tablist" aria-label="在线服务">
-        <button :class="{ active: tab === 'parse' }" role="tab" :aria-selected="tab === 'parse'"
-                data-ons-tab="parse" @click="tab = 'parse'">
-          <AppIcon name="document" :size="14" />解析
-        </button>
-        <button :class="{ active: tab === 'search' }" role="tab" :aria-selected="tab === 'search'"
-                data-ons-tab="search" @click="tab = 'search'">
-          <AppIcon name="search" :size="14" />搜索
-        </button>
-      </div>
-      <span class="badge ons-state" :class="statusBadge.cls" :title="statusBadge.title" data-ons-state>
-        {{ statusBadge.text }}
-      </span>
-    </div>
-
-    <!-- ==================== ① 解析 ==================== -->
-    <section class="ons-panel" v-if="tab === 'parse'">
+    <!-- 页内**没有服务切换**（用户口径 2026-12）：解析（本地 / MinerU）与网联搜索在同一页，
+         从上往下读一遍就配完了；保存状态与动作只有页脚那一条。 -->
+    <section class="ons-panel">
       <p class="ons-error" v-if="prefsError || mineruError">{{ prefsError || mineruError }}</p>
 
       <!-- 默认引擎：一枚轻量分段，导入弹窗与「重新解析」的初值都读它 -->
@@ -476,6 +448,21 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- ==================== ② 网联搜索（原「搜索」子页） ==================== -->
+      <div class="ons-group">
+        <h3 class="ons-h">
+          <AppIcon name="search" :size="14" />网联搜索
+          <span class="ons-h-right">
+            <span class="badge" :class="wsBadge.cls" :title="wsBadge.title" data-ons-ws-state>
+              {{ wsBadge.text }}
+            </span>
+          </span>
+        </h3>
+        <div class="ons-fields">
+          <WebSearchSettings ref="ws" :actions="false" />
+        </div>
+      </div>
+
       <!-- 最近的解析：改参数时能对上"上次是怎么跑"的 -->
       <div class="ons-group" v-if="recentParses.length">
         <h3 class="ons-h"><AppIcon name="clock" :size="14" />最近的解析</h3>
@@ -492,27 +479,23 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- ==================== ② 搜索 ==================== -->
-    <section class="ons-panel" v-else>
-      <div class="ons-group">
-        <h3 class="ons-h"><AppIcon name="search" :size="14" />网联搜索</h3>
-        <div class="ons-fields">
-          <WebSearchSettings ref="ws" :actions="false" />
-        </div>
-      </div>
-    </section>
-
-    <!-- 全页唯一的动作区：清除密钥（低强调）贴左，测试 / 保存贴右 -->
+    <!-- 全页唯一的动作区：保存状态 + 两枚「清除」（低强调、危险色）贴左，测试 / 保存贴右 -->
     <footer class="ons-foot">
-      <button class="btn ghost sm danger" :disabled="!canClear" @click="clearCurrent">
-        <AppIcon name="ban" :size="15" />{{ clearLabel }}
+      <span class="badge" :class="saveState.cls" :title="saveState.title" data-ons-state>
+        {{ saveState.text }}
+      </span>
+      <button class="btn ghost sm danger" :disabled="!canClearToken" @click="clearMineruToken">
+        <AppIcon name="ban" :size="15" />清除 token
+      </button>
+      <button class="btn ghost sm danger" :disabled="!canClearKey" @click="clearKey">
+        <AppIcon name="ban" :size="15" />清除密钥
       </button>
       <span class="ons-foot-gap" />
       <button class="btn sm" :disabled="!canVerify" title="真的打一次服务接口，确认凭据还能用"
-              @click="verifyCurrent">
+              @click="verifyAll">
         <AppIcon name="play" :size="15" />{{ busy ? '处理中…' : '测试服务' }}
       </button>
-      <button class="btn primary sm" :disabled="!canSave" @click="saveCurrent">
+      <button class="btn primary sm" :disabled="!canSave" @click="saveAll">
         <AppIcon name="check" :size="15" />{{ busy ? '处理中…' : '保存设置' }}
       </button>
     </footer>
@@ -520,20 +503,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 一页只有一条竖排：状态行 → 分组 → 动作区。
+/* 一页只有一条竖排：分组 → 动作区（页内没有服务切换，解析与搜索都在这一页）。
    分组的样式与设置页其它面板完全一致：**标题在块外、内容装淡色圆角底**（--bg-sunken + --r-sm）。
-   不给每个字段再套一层容器 —— 一页只有这两级。 */
-.ons { display: flex; flex-direction: column; gap: 16px; container-type: inline-size; }
+   卡片内边距 / 卡片间距与「Cyli 偏好」同一套数，两页读起来是一个尺子。 */
+.ons {
+  --card-pad: 20px;
+  --card-gap: 24px;
+  display: flex; flex-direction: column; gap: var(--card-gap);
+  container-type: inline-size;
+}
 
-/* 顶部一行：服务切换在左、保存状态在右 */
-.ons-bar { display: flex; align-items: center; gap: 12px; }
-.ons-tabs { flex: none; }
-.ons-state { flex: none; margin-left: auto; }
-
-.ons-panel { display: flex; flex-direction: column; gap: 16px; }
+.ons-panel { display: flex; flex-direction: column; gap: var(--card-gap); }
 .ons-cols {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px 28px; align-items: start;
+  /* stretch：两栏的内容底等高（起跳点本来就一样，下边缘也拉齐 —— 差个几像素最扎眼） */
+  gap: var(--card-gap); align-items: stretch;
 }
 .ons-group { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 /* 分组标题只是标题（不铺底）：字号与系统信息 / 索引管理的块头同一档 */
@@ -549,7 +533,8 @@ onMounted(() => {
 /* 内容底：淡色圆角块，只包字段、不包标题 */
 .ons-fields {
   display: flex; flex-direction: column; gap: 10px; min-width: 0;
-  padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken);
+  flex: 1;                     /* 两栏等高：短的那张把高度撑到自己那栏的底 */
+  padding: var(--card-pad); border-radius: var(--r-sm); background: var(--bg-sunken);
 }
 /* 全局 label.field > input 有 340px 上限（窄表单的尺子）：这里要整列宽 */
 .ons-fields .field > input,
@@ -563,7 +548,7 @@ onMounted(() => {
   font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim);
 }
 
-/* 默认引擎：与服务切换同一枚分段控件，只是窄一档 */
+/* 默认引擎：一枚轻量分段（不另设说明卡） */
 .ons-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ons-line-label { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
 .ons-engine-seg { flex: none; height: 30px; }
@@ -592,7 +577,7 @@ onMounted(() => {
 
 /* 最近的解析：同样装进淡色圆角块，一行一条、发丝线分隔 */
 .ons-recent-list {
-  margin: 0; padding: 4px 14px; list-style: none;
+  margin: 0; padding: 6px var(--card-pad); list-style: none;
   border-radius: var(--r-sm); background: var(--bg-sunken);
 }
 .ons-recent-row {
@@ -621,8 +606,7 @@ onMounted(() => {
   .ons-cols { grid-template-columns: minmax(0, 1fr); }
   .ons-grid { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 560px) {
-  .ons-bar { flex-wrap: wrap; }
-  .ons-state { margin-left: 0; }
+@container (max-width: 560px) {
+  .ons { --card-pad: 16px; --card-gap: 20px; }
 }
 </style>
