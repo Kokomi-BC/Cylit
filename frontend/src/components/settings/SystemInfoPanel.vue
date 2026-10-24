@@ -105,6 +105,7 @@ async function loadHealth(): Promise<void> {
     await withLoading('sysinfo-health', async () => {
       const res = await api.get<HealthFull>('/settings/health');
       health.value = res;
+      healthCheckedAt.value = clockNow();
       if (res?.error) healthError.value = String(res.error);
     }, { silent: true });
   } catch (err) {
@@ -150,6 +151,14 @@ const queueText = computed(() => {
     return entries.length ? entries.map(([k, v]) => `${k}:${v}`).join(', ') : '—';
   }
   return String(q);
+});
+
+/** 任务池里正在跑的任务数（数组给长度，数字直接用，缺失给 0）。 */
+const runningCount = computed<number>(() => {
+  const r = runner.value.running;
+  if (Array.isArray(r)) return r.length;
+  const n = Number(r);
+  return Number.isFinite(n) ? n : 0;
 });
 
 const runningText = computed(() => {
@@ -282,59 +291,89 @@ async function reconcileNow(fix: boolean): Promise<void> {
     busyKey.value = '';
   }
 }
+
+/* ------------------------------ 小动作 ------------------------------ */
+
+/** 复制一段长文本（路径为主）。WebView / 非安全上下文里 clipboard 可能不可用，失败就说清楚。 */
+async function copyText(text?: string | null): Promise<void> {
+  const value = String(text ?? '').trim();
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast('已复制', 'ok', 1600);
+  } catch {
+    toast('这个环境不允许复制，手动选中文本即可', 'warn', 2600);
+  }
+}
+
+/** 最近一次健康检测的本地时间；没测过就是空串。 */
+const healthCheckedAt = ref('');
+
 </script>
 
 <template>
   <div class="sysinfo">
-    <p class="tiny faint intro">只读信息：环境、存储与各服务的当前状态</p>
+    <!-- 顶部工具行：一句只读说明 + 上次检测时间 + 两枚动作（重新检测 / 刷新全部） -->
+    <div class="si-bar">
+      <span class="si-bar-note">只读信息 · 环境 / 存储 / 服务状态</span>
+      <span class="si-bar-time tnum" v-if="healthCheckedAt">上次检测 {{ healthCheckedAt }}</span>
+      <span class="spacer"></span>
+      <button class="btn sm" type="button" :disabled="healthLoading" title="重新检测各服务" @click="refreshAll">
+        <AppIcon name="refresh" :size="14" />{{ healthLoading ? '检测中…' : '重新检测' }}
+      </button>
+    </div>
 
-    <!-- ① 运行环境：两列键值网格（label 12 / 值 13），窄屏一列 -->
+    <!-- ① 运行环境：两列对齐的键值（标签定宽，值一列；窄屏一列） -->
     <section class="si-block">
       <div class="si-head">
         <AppIcon name="server" :size="15" /><h3 class="si-title">运行环境</h3>
       </div>
       <div class="si-body">
-        <p class="tiny faint state-line" v-if="!system">后端未返回运行环境信息</p>
-        <div class="env-grid" v-else>
-          <div class="env-item">
-            <span class="k">操作系统</span>
-            <span class="v" :title="system.os_detail || system.os || ''">{{ system.os || '—' }}</span>
+        <p class="si-empty" v-if="!system">后端未返回运行环境信息</p>
+        <dl class="kv" v-else>
+          <div class="kv-row">
+            <dt>操作系统</dt>
+            <dd :title="system.os_detail || system.os || ''">{{ system.os || '—' }}</dd>
           </div>
-          <div class="env-item">
-            <span class="k">内核</span>
-            <span class="v" :title="kernelText">{{ kernelText }}</span>
+          <div class="kv-row">
+            <dt>内核</dt>
+            <dd :title="kernelText">{{ kernelText }}</dd>
           </div>
-          <div class="env-item">
-            <span class="k">Python 版本</span>
-            <span class="v">{{ system.python || '—' }}</span>
+          <div class="kv-row">
+            <dt>Python</dt>
+            <dd>{{ system.python || '—' }}</dd>
           </div>
-          <div class="env-item">
-            <span class="k">CPU 核数</span>
-            <span class="v">{{ cpuText }}</span>
+          <div class="kv-row">
+            <dt>CPU</dt>
+            <dd>{{ cpuText }}</dd>
           </div>
-          <div class="env-item">
-            <span class="k">主机名</span>
-            <span class="v" :title="system.hostname || ''">{{ system.hostname || '—' }}</span>
+          <div class="kv-row">
+            <dt>主机名</dt>
+            <dd :title="system.hostname || ''">{{ system.hostname || '—' }}</dd>
           </div>
-          <div class="env-item">
-            <span class="k">本进程已运行</span>
-            <span class="v">{{ uptimeText }}</span>
+          <div class="kv-row">
+            <dt>已运行</dt>
+            <dd>{{ uptimeText }}</dd>
           </div>
-        </div>
+        </dl>
       </div>
     </section>
 
-    <!-- ② 存储空间：一行用量 + 占用条 + 三行小字 -->
+    <!-- ② 存储空间：一行用量（右带百分比）+ 占用条 + 三行细目 + 卷路径（可复制） -->
     <section class="si-block">
       <div class="si-head">
         <AppIcon name="layers" :size="15" /><h3 class="si-title">存储空间</h3>
       </div>
       <div class="si-body">
-        <p class="tiny faint state-line" v-if="!disk">后端未返回磁盘信息</p>
+        <p class="si-empty" v-if="!disk">后端未返回磁盘信息</p>
         <template v-else>
-          <p class="small usage-line">
-            已用 {{ formatBytes(disk.used_bytes) }} / 共 {{ formatBytes(disk.total_bytes) }}
-          </p>
+          <div class="disk-head">
+            <span class="disk-usage">
+              已用 <b>{{ formatBytes(disk.used_bytes) }}</b> / 共 {{ formatBytes(disk.total_bytes) }}
+            </span>
+            <span class="spacer"></span>
+            <span class="disk-pct tnum" :class="diskTone">{{ diskPct.toFixed(1) }}%</span>
+          </div>
           <div
             class="bar"
             role="progressbar"
@@ -345,143 +384,125 @@ async function reconcileNow(fix: boolean): Promise<void> {
           >
             <span class="bar-fill" :class="diskTone" :style="{ width: diskPct + '%' }"></span>
           </div>
-          <p class="tiny faint disk-line">可用 {{ formatBytes(disk.free_bytes) }}</p>
-          <p class="tiny faint disk-line">data 目录占用 {{ formatBytes(disk.data_dir_bytes) }}</p>
-          <p class="tiny faint disk-line" v-if="dbBytes !== null">MySQL 库 {{ formatBytes(dbBytes) }}</p>
-          <p class="tiny faint disk-line path-line" v-if="disk.path">
-            卷 <span class="mono truncate" :title="disk.path">{{ disk.path }}</span>
-          </p>
+          <p class="disk-line">可用 {{ formatBytes(disk.free_bytes) }} · data 目录 {{ formatBytes(disk.data_dir_bytes) }}<template v-if="dbBytes !== null"> · MySQL {{ formatBytes(dbBytes) }}</template></p>
+          <div class="path-line" v-if="disk.path">
+            <span class="path-k">卷</span>
+            <span class="mono path-v" :title="disk.path">{{ disk.path }}</span>
+            <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(disk.path)">
+              <AppIcon name="copy" :size="13" />
+            </button>
+          </div>
         </template>
+
       </div>
     </section>
 
-    <!-- ③ 服务健康：数据库 / 向量库 / 任务池 + 数据目录，各带一枚状态徽章 -->
+    <!-- ③ 服务与任务池：紧凑分组列表（一行一个服务：名称 / 细目 / 右侧轻量状态） -->
     <section class="si-block">
       <div class="si-head">
-        <AppIcon name="gauge" :size="15" /><h3 class="si-title">服务健康</h3>
-        <span class="spacer"></span>
-        <button class="btn sm ghost" type="button" :disabled="healthLoading" title="重新检测各服务"
-                @click="refreshAll">
-          <AppIcon name="refresh" :size="14" />{{ healthLoading ? '检测中…' : '重新检测' }}
-        </button>
+        <AppIcon name="gauge" :size="15" /><h3 class="si-title">服务与任务池</h3>
       </div>
       <div class="si-body">
-        <p class="tiny faint state-line" v-if="healthError">健康检查失败：{{ healthError }}</p>
-        <p class="tiny faint state-line" v-else-if="!health">检测中…</p>
-        <template v-else>
-          <div class="row small h-row">
-            <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '数据库正常' : '数据库异常' }}</span>
-            <span class="mono tiny">{{ db.backend || '—' }}</span>
-            <span class="spacer"></span>
-            <span class="mono tiny truncate h-val" :title="String(db.database ?? db.error ?? '')">
-              {{ db.database || db.error || '' }}
+        <p class="si-empty" v-if="healthError">健康检查失败：{{ healthError }}</p>
+        <p class="si-empty" v-else-if="!health">检测中…</p>
+        <ul class="srv" v-else>
+          <li class="srv-row">
+            <span class="srv-name">MySQL</span>
+            <span class="srv-detail mono truncate" :title="String(db.database ?? '')">{{ db.backend || '—' }} · {{ db.database || '—' }}</span>
+            <span class="badge" :class="dbOk ? 'ok' : 'danger'">{{ dbOk ? '正常' : (db.error ? '异常' : '未探测') }}</span>
+          </li>
+          <li class="srv-row">
+            <span class="srv-name">LanceDB</span>
+            <span class="srv-detail mono truncate" :title="String(vector.path ?? vector.error ?? '')">
+              {{ vector.path || vector.error || '—' }}<template v-if="vector.chunks !== undefined && vector.chunks !== null"> · {{ vector.chunks }} 条向量</template>
             </span>
-          </div>
-          <div class="row small h-row">
-            <span class="badge" :class="vectorOk ? 'ok' : 'danger'">
-              {{ vectorOk ? '向量库可用' : '向量库不可用' }}
-            </span>
-            <span class="tiny faint">chunk {{ vector.chunks ?? '—' }}</span>
-            <span class="spacer"></span>
-            <span class="mono tiny truncate h-val" :title="String(vector.path ?? vector.error ?? '')">
-              {{ vector.path || vector.error || '' }}
-            </span>
-          </div>
-          <div class="row small h-row">
-            <span class="badge dim">任务池</span>
-            <span class="tiny faint">workers {{ runner.workers ?? '—' }}</span>
-            <span class="tiny faint">运行中 {{ runningText }}</span>
-            <span class="spacer"></span>
-            <span class="mono tiny truncate h-val" :title="queueText">队列 {{ queueText }}</span>
-          </div>
-          <div class="row small h-row">
-            <span class="badge dim">数据目录</span>
-            <span class="spacer"></span>
-            <span class="mono tiny truncate h-val" :title="health.data_dir || ''">
-              {{ health.data_dir || '—' }}
-            </span>
-          </div>
-        </template>
+            <span class="badge" :class="vectorOk ? 'ok' : 'danger'">{{ vectorOk ? '可用' : '不可用' }}</span>
+          </li>
+          <li class="srv-row">
+            <span class="srv-name">任务池</span>
+            <span class="srv-detail">workers {{ runner.workers ?? '—' }} · 运行中 {{ runningText }} · 队列 {{ queueText }}</span>
+            <span class="badge" :class="runningCount > 0 ? 'ok' : 'dim'">{{ runningCount > 0 ? `运行中 ${runningCount}` : '空闲' }}</span>
+          </li>
+          <li class="srv-row">
+            <span class="srv-name">数据目录</span>
+            <span class="srv-detail mono truncate" :title="health.data_dir || ''">{{ health.data_dir || '—' }}</span>
+            <button class="btn icon sm ghost" type="button" title="复制路径" @click="copyText(health.data_dir)">
+              <AppIcon name="copy" :size="13" />
+            </button>
+          </li>
+        </ul>
       </div>
     </section>
 
-    <!-- ④ 索引存储状态：原样复用索引管理页那张卡（数据与动作都留在这层） -->
+    <!-- ④ 索引存储：原样复用索引管理页那张卡（记录数 / 维度 / 一致性 / 校验与清理都在这层） -->
     <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
                    :checked-at="checkedAt" @reconcile="reconcileNow" />
   </div>
 </template>
 
 <style scoped>
-/* 一块面板只认一个纵向节奏（10px）：说明行与四张卡同一个缝。
-   面板宽度由设置页窗格决定、与视口无关，所以四张卡恒为一列。 */
-.sysinfo {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-/* 块：标题条（透明底）+ 淡色圆角内容底。块与块之间的缝归 .sysinfo 的 gap。 */
+/* 只读面板：一条工具行 + 三组信息 + 索引存储卡。组与组之间只用留白，不套外层卡片 */
+.sysinfo { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.si-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 30px; }
+.si-bar-note { font-size: calc(12px * var(--ts, 1)); color: var(--text-faint); }
+.si-bar-time { font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+
+/* 组：标题（不铺底）+ 淡色圆角内容底；缝归 .sysinfo 的 gap */
 .si-block { min-width: 0; }
-/* 标题只是标题：**不铺底**，留在淡色块外面（图标跟标题同一行） */
 .si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-faint); }
 .si-title {
   margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600;
   letter-spacing: -.01em; line-height: 1.35; color: var(--text);
 }
-/* 内容底：淡色圆角矩形（与「Cyli 偏好」的 .group-body 同一套），只包信息行，不包标题 */
 .si-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
-/* 卡头 / 卡体在设置页统一收一档（与「索引管理」那块同一个数） */
+.si-empty { margin: 0; padding: 2px 0; font-size: calc(12px * var(--ts, 1)); line-height: 1.6; color: var(--text-faint); }
+/* 设置页里那张卡的头部/内容与全页同一档内边距 */
 .sysinfo :deep(.card-head) { padding: 9px 14px; }
 .sysinfo :deep(.card-body) { padding: 12px 14px; }
 
-.intro { margin: 0; }
-.state-line { margin: 0; padding: 2px 0; line-height: 1.6; }
-
-/* ① 运行环境：两列键值网格；<560 一列（值本来就单行省略，不会把卡撑宽） */
-.env-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 16px;
+/* ① 键值：两列 { 定宽标签 | 值 }，标签右对齐到一条竖线，值再长也只在值格里省略 */
+.kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin: 0; }
+.kv-row {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr); align-items: baseline; gap: 10px; min-width: 0;
 }
-.env-item { display: grid; gap: 2px; min-width: 0; }
-.env-item .k { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
-.env-item .v {
-  font-size: calc(13px * var(--ts, 1));
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
+.kv dt { font-size: calc(12px * var(--ts, 1)); color: var(--text-dim); }
+.kv dd {
+  margin: 0; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); font-variant-numeric: tabular-nums;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* ② 存储空间：用量行 → 占用条 → 小字行 */
-.usage-line { margin: 0; font-variant-numeric: tabular-nums; }
+/* ② 存储：用量行 + 占用条 + 细目 + 路径（可复制） */
+.disk-head { display: flex; align-items: baseline; gap: 8px; }
+.disk-usage { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.disk-usage b { font-weight: 600; color: var(--text); }
+.disk-pct { font-size: calc(12px * var(--ts, 1)); font-weight: 600; color: var(--accent); }
+.disk-pct.warn { color: var(--warn); }
+.disk-pct.danger { color: var(--danger); }
 /* 轨道抬一档到底色之上：内容底本身就是 --bg-sunken，同色轨道会整条消失 */
-.bar {
-  height: 6px;
-  margin: 8px 0;
-  border-radius: var(--r-pill);
-  background: var(--bg-elev);
-  overflow: hidden;
-}
-.bar-fill {
-  display: block; height: 100%;
-  border-radius: var(--r-pill);
-  background: var(--accent);
-  transition: width var(--dur) var(--ease);
-}
+.bar { height: 6px; margin: 8px 0; border-radius: var(--r-pill); background: var(--bg-elev); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur) var(--ease); }
 .bar-fill.warn { background: var(--warn); }
 .bar-fill.danger { background: var(--danger); }
-.disk-line { margin: 0; line-height: 1.7; font-variant-numeric: tabular-nums; }
-/* 卷路径：定宽省略，全路径交给 title（Windows 路径很长，换行会把卡撑高） */
-.path-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
-.path-line .mono { min-width: 0; }
+.disk-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.7; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 路径行：整行可换行（长路径不撑破布局），复制按钮贴在文字后面 */
+.path-line { display: flex; align-items: center; gap: 6px; margin-top: 6px; min-width: 0; }
+.path-k { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.path-v {
+  min-width: 0; overflow-wrap: anywhere; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-dim);
+}
 
-/* ③ 服务健康：四行，值列封顶 46% —— 原路径再长也只在自己的格里省略 */
-.h-row { min-width: 0; }
-.h-row + .h-row { margin-top: 8px; }
-.h-val { max-width: 46%; }
+/* ③ 服务与任务池：一行一个服务 —— 名称定宽、细目可省略、右侧一枚轻量状态 */
+.srv { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.srv-row { display: flex; align-items: center; gap: 10px; min-height: 30px; min-width: 0; }
+.srv-row + .srv-row { border-top: 1px solid var(--divider); }
+.srv-name { flex: none; width: 72px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); }
+.srv-detail {
+  flex: 1 1 auto; min-width: 0; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint);
+}
+.srv-row .badge { flex: none; }
 
-@media (max-width: 560px) {
-  .env-grid { grid-template-columns: minmax(0, 1fr); }
-  .h-val { max-width: 52%; }
+@media (max-width: 720px) {
+  .kv { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

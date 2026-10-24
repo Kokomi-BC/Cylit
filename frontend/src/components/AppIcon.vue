@@ -218,6 +218,8 @@ const ICONS: Record<string, string> = {
   check_circle: '<circle cx="12" cy="12" r="8.5"/><path d="M8.2 12.3l2.6 2.6 5-5.2"/>',
   server: '<rect x="3" y="4.5" width="18" height="6" rx="2"/><rect x="3" y="13.5" width="18" height="6" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
   bolt: '<path d="M13.5 3 5.5 13.5H11L10.5 21l8-10.5H13z"/>',
+  key: '<circle cx="8.2" cy="15.8" r="3.9"/><path d="M11 13 19.4 4.6"/><path d="M16.4 7.6l2.3 2.3M13.9 10.1l2.3 2.3"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.4V12l3.2 1.9"/>',
 };
 
 const markup = computed(() => ICONS[props.name] ?? ICONS.info);

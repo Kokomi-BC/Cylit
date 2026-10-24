@@ -43,7 +43,7 @@ import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import type {
   AgentLimits, AgentLimitsPatch, AgentSkill, AgentSkillsPayload, AgentSkillsUploadResult,
-  SettingsPayload, WebsearchConfig, WebsearchVerifyResult,
+  SettingsPayload,
 } from '@/api/types';
 import {
   PREF_DEFAULT_STATE, PREF_LENGTH_OPTIONS, PREF_STYLE_MAX, PREF_STYLE_OPTIONS,
@@ -53,6 +53,7 @@ import type { CyliPrefsPatch, CyliPrefsState } from '@/components/settings/cyliP
 import AppIcon from '@/components/AppIcon.vue';
 import Modal from '@/components/Modal.vue';
 import Switch from '@/components/Switch.vue';
+import WebSearchSettings from '@/components/settings/WebSearchSettings.vue';
 
 /* ------------------------------- ① 对话偏好 ------------------------------- */
 
@@ -490,142 +491,14 @@ async function saveAll(): Promise<void> {
 }
 
 /* ---------------------------- ⑤ 联网搜索（web-search 技能） ----------------------------
-   这几个值属于**技能自己**（agent 进程搜网页时才用它们），与问答模型无关，
-   所以摆在技能行里，而不是再开一张卡片。
-   密钥只存在服务端 data/secrets/websearch.key，接口只回掩码 —— 前端拿不到明文，
-   于是输入框的语义只能是"这次要换成什么"：留空 = 不动那份，清除要单独一次显式动作。 */
-
-interface WsForm {
-  provider: string;
-  count: number | '';
-  need_content: boolean;
-  fetch_chars: number | '';
-}
-
-/** 与后端默认值同一套（deepseek / 8 条 / 不取正文 / 抓 6000 字）。 */
-const WS_DEFAULT: WsForm = { provider: 'deepseek', count: 8, need_content: false, fetch_chars: 6000 };
-
+   这一行只负责「展开 / 收起」：字段与读写都在共用组件 `WebSearchSettings` 里 ——
+   它同时被「在线服务 → 网联搜索」使用，两边读写的**是同一份配置与同一个服务端密钥文件**
+   （`data/secrets/websearch.key`），所以这里绝不能再写一套。
+   密钥语义：接口只回掩码，输入框留空 = 本次不改，清除是单独一次带二次确认的动作。 */
+/** 齿轮只切展开态；配置由 WebSearchSettings 自己拉（没展开就不该多一次请求）。 */
 const wsOpen = ref(false);
-/** 配置读到过（false = 接口未就绪，面板只给一句空态，不给能写坏东西的控件）。 */
-const wsReady = ref(false);
-const wsLoading = ref(false);
-const wsBusy = ref(false);
-const wsTesting = ref(false);
-const wsProviders = ref<{ id: string; label: string }[]>([]);
-const wsHasKey = ref(false);
-const wsKeyMasked = ref('');
-/** 本次要写进去的新密钥；空串 = 不改（后端把空串当"没提供"）。 */
-const wsApiKey = ref('');
-/** 服务端那一份：用来算"改了没有"。 */
-const wsBase = reactive<WsForm>({ ...WS_DEFAULT });
-const wsForm = reactive<WsForm>({ ...WS_DEFAULT });
-/** 测试结论：HTTP 一律 200，成败只看这个对象，所以它必须留在页面上，不能只弹一条 toast。 */
-const wsTest = ref<WebsearchVerifyResult | null>(null);
-
-function num(v: unknown, fallback: number): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-/** 一次填两处：base 只跟随服务端，form 是用户正在编辑的那份。 */
-function fillWs(cfg: WebsearchConfig | null | undefined): void {
-  wsProviders.value = Array.isArray(cfg?.providers) ? cfg.providers : [];
-  wsHasKey.value = cfg?.has_key === true;
-  wsKeyMasked.value = String(cfg?.key_masked ?? '');
-  const next: WsForm = {
-    provider: String(cfg?.provider || WS_DEFAULT.provider),
-    count: num(cfg?.count, 8),
-    need_content: cfg?.need_content === true,
-    fetch_chars: num(cfg?.fetch_chars, 6000),
-  };
-  Object.assign(wsBase, next);
-  Object.assign(wsForm, next);
-  wsApiKey.value = '';
-  wsReady.value = true;
-}
-
-async function loadWs(): Promise<void> {
-  wsLoading.value = true;
-  try {
-    fillWs(await api.get<WebsearchConfig>('/agent/websearch/config'));
-  } catch {
-    wsReady.value = false;               // 接口没上线就只读空态（见文件头）
-  } finally {
-    wsLoading.value = false;
-  }
-}
-
-/** 齿轮只切展开态；第一次展开才去拉配置 —— 没点开就不该多一次请求。 */
 function toggleWs(): void {
   wsOpen.value = !wsOpen.value;
-  if (wsOpen.value && !wsReady.value) void loadWs();
-}
-
-const wsDirty = computed(() =>
-  wsApiKey.value.trim() !== ''
-  || wsForm.provider !== wsBase.provider
-  || wsForm.count !== wsBase.count
-  || wsForm.need_content !== wsBase.need_content
-  || wsForm.fetch_chars !== wsBase.fetch_chars);
-
-async function saveWs(): Promise<void> {
-  if (wsForm.count === '' || wsForm.fetch_chars === '') {
-    toast('「返回条数」与「抓取字数上限」都要一个数字', 'warn');
-    return;
-  }
-  wsBusy.value = true;
-  wsTest.value = null;                   // 改了配置，上一次的测试结论就不作数了
-  try {
-    // 只提交**改动过的**字段：后端每个字段都是可选的，把没动过的条数也跟着写一遍
-    // 等于替我重新拍一次板，将来默认值变了也不会被旧页面覆盖回去。
-    const body: Record<string, unknown> = {};
-    if (wsForm.provider !== wsBase.provider) body.provider = wsForm.provider;
-    if (wsForm.count !== wsBase.count) body.count = Number(wsForm.count);
-    if (wsForm.need_content !== wsBase.need_content) body.need_content = wsForm.need_content;
-    if (wsForm.fetch_chars !== wsBase.fetch_chars) body.fetch_chars = Number(wsForm.fetch_chars);
-    const fresh = wsApiKey.value.trim();
-    if (fresh) body.api_key = fresh;     // 空串 = 本次不改，所以干脆不放进 body
-    fillWs(await api.put<WebsearchConfig>('/agent/websearch/config', body));
-    toast('联网搜索设置已保存', 'ok', 2600);
-  } catch (err) {
-    toast((err as Error)?.message ?? String(err), 'error', 5000);
-  } finally {
-    wsBusy.value = false;
-  }
-}
-
-/** 清除密钥：不可逆（服务端那份文件真被删掉），二次确认。 */
-async function clearWsKey(): Promise<void> {
-  if (!(await askConfirm({
-    title: '清除联网搜索的 API Key？',
-    body: '清掉之后 web-search 技能就搜不了东西，要重新填一把才能用。',
-    danger: true,
-    confirmLabel: '清除',
-  }))) return;
-  wsBusy.value = true;
-  wsTest.value = null;
-  try {
-    fillWs(await api.put<WebsearchConfig>('/agent/websearch/config', { clear_key: true }));
-    toast('已清除联网搜索密钥', 'ok', 3200);
-  } catch (err) {
-    toast((err as Error)?.message ?? String(err), 'error', 5000);
-  } finally {
-    wsBusy.value = false;
-  }
-}
-
-/** 测试：后端真跑一次 count=1 的搜索。失败也得**原地**说清楚是哪一步坏了，所以结论进 wsTest。 */
-async function verifyWs(): Promise<void> {
-  wsTesting.value = true;
-  wsTest.value = null;
-  try {
-    wsTest.value = await api.post<WebsearchVerifyResult>('/agent/websearch/verify');
-  } catch (err) {
-    // 走到这儿是连"跑测试"都没发出去（接口未上线 / 网络），一样留在原地，不弹完就没了
-    wsTest.value = { ok: false, state: 'error', detail: (err as Error)?.message ?? String(err), ms: 0 };
-  } finally {
-    wsTesting.value = false;
-  }
 }
 
 /* ------------------------------- 载入 ------------------------------- */
@@ -807,61 +680,10 @@ onMounted(() => {
                 <p class="skill-desc">{{ skillDesc(s) }}</p>
               </div>
             </div>
-            <!-- ⑤ 内嵌设置：挂在这一行下方展开，跟着技能一起滚动 -->
+            <!-- ⑤ 内嵌设置：挂在 web-search 这一行下方展开，跟着技能一起滚动。
+                 字段与读写都在共用组件里（与「在线服务 → 网联搜索」是同一份配置） -->
             <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
-              <p class="ws-hint" v-if="wsLoading">正在读取联网搜索配置…</p>
-              <p class="ws-hint" v-else-if="!wsReady">联网搜索设置暂不可用（接口未就绪）。</p>
-              <template v-else>
-                <div class="grid cols-2">
-                  <label class="field">
-                    <span class="field-top">提供方</span>
-                    <select v-model="wsForm.provider">
-                      <option v-for="p in wsProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
-                    </select>
-                  </label>
-                  <label class="field">
-                    <span class="field-top">返回条数</span>
-                    <input type="number" min="1" max="50" step="1" v-model.number="wsForm.count" />
-                  </label>
-                </div>
-                <label class="field">
-                  <span class="field-top">API Key</span>
-                  <input type="password" v-model="wsApiKey" autocomplete="off" spellcheck="false"
-                         :placeholder="wsHasKey
-                           ? '已保存 ' + (wsKeyMasked || '密钥') + '，留空不改'
-                           : '粘贴提供方控制台里的密钥'" />
-                </label>
-                <div class="grid cols-2">
-                  <label class="field">
-                    <span class="field-top">抓取字数上限</span>
-                    <input type="number" min="500" max="200000" step="500"
-                           v-model.number="wsForm.fetch_chars" />
-                  </label>
-                  <div class="field">
-                    <span class="field-top">需要返回正文</span>
-                    <Switch v-model="wsForm.need_content">抓取网页正文</Switch>
-                  </div>
-                </div>
-                <div class="row ws-actions">
-                  <button class="btn primary sm" :disabled="wsBusy || !wsDirty" @click="saveWs">
-                    <AppIcon name="check" :size="15" />{{ wsBusy ? '保存中…' : '保存' }}
-                  </button>
-                  <button class="btn sm" :disabled="wsTesting" @click="verifyWs">
-                    <AppIcon name="play" :size="15" />{{ wsTesting ? '测试中…' : '测试' }}
-                  </button>
-                  <button class="btn sm danger" :disabled="wsBusy || !wsHasKey" @click="clearWsKey">
-                    <AppIcon name="ban" :size="15" />清除密钥
-                  </button>
-                </div>
-                <!-- 测试结论留在原地：成败 + 卡在哪一步（state）+ 耗时 + 后端原话（detail）；
-                     只弹一条 toast 的话，用户回头想看成因就没了 -->
-                <p v-if="wsTest" class="ws-test" :class="wsTest.ok ? 'ok' : 'bad'">
-                  <AppIcon :name="wsTest.ok ? 'check' : 'ban'" :size="13" />
-                  <span>{{ wsTest.ok ? '验证通过' : '验证失败' }}</span>
-                  <span class="ws-test-meta">{{ wsTest.state }} · {{ wsTest.ms }}ms</span>
-                  <span v-if="wsTest.detail" class="ws-test-detail">{{ wsTest.detail }}</span>
-                </p>
-              </template>
+              <WebSearchSettings />
             </div>
           </template>
         </div>
@@ -1143,20 +965,6 @@ onMounted(() => {
   box-sizing: border-box; width: 100%; max-width: none; height: var(--ctl-h);
   border-radius: var(--r-sm); font-size: calc(13px * var(--ts, 1));
 }
-.ws-hint { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.6; color: var(--text-dim); }
-.ws-actions { flex-wrap: wrap; }
-/* 内嵌面板在窄容器里两列会挤：落成单列，标签与控件才不打架 */
-.ws-panel .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
-/* 测试结论：成功绿、失败红；细节退回弱色 —— 一眼看到成败，细看才知道卡在哪一步 */
-.ws-test {
-  display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap;
-  margin: 10px 0 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.ws-test.ok { color: var(--ok); }
-.ws-test.bad { color: var(--danger); }
-.ws-test-meta { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.ws-test-detail { color: var(--text-dim); }
 
 /* ---------- 窄容器：三列 → 两列（大框铺满两列）→ 单列 ---------- */
 @container (max-width: 899px) {
@@ -1164,7 +972,6 @@ onMounted(() => {
   .pref-top,
   .pref-top.with-custom { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 24px; }
   .pref-top .pref-group + .pref-group-custom { grid-column: 1 / -1; margin-left: 0; }
-  .ws-panel .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container (max-width: 559px) {
   .pref-top,

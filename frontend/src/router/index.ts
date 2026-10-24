@@ -54,6 +54,8 @@ const routes: RouteRecordRaw[] = [
     beforeEnter: (to) => {
       if (to.hash === '#general') return { path: '/settings', hash: '#kb', replace: true };
       if (to.hash === '#history') return { path: '/knowledge', replace: true };
+      // 「在线解析」2026-12 改名「在线服务」（并入网联搜索），老锚点就地换过去
+      if (to.hash === '#mineru') return { path: '/settings', hash: '#online', replace: true };
       return true;
     },
   },
