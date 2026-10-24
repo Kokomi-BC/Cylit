@@ -675,12 +675,12 @@ onMounted(() => {
       </div>
     </header>
 
-    <!-- 上方设置区：**两列**并排（对话偏好 / 运行上限）；风格选「自定义」时右侧多出
-         第三列「自定义指令」（轨道数由 .pref-top.with-custom 决定，见样式）。
-         够宽才三列，窄了先两列再单列 —— 断点看**容器**宽度，不看窗口宽度（见样式）。 -->
-    <section class="pref-top" :class="{ 'with-custom': pref.preset === 'custom' }">
-      <!-- ① 对话偏好：只剩两件短控件（风格预设 / 回复长度）。
-           自定义指令框已从这个组里挪出去独立成组（见 ③）。 -->
+    <!-- 上方设置区：**两列**并排（对话偏好 / 运行上限）。
+         自定义指令框放在「对话偏好」**这一组里**（风格选自定义才出现）：用户口径 2026-12 ——
+         它本来就是这个偏好的下一级，单开一列会让左边那半只剩两个短控件、底下空出一大片。
+         两列按**内容高度**排（不拉平）：拉平会把「运行上限」也拽出一块空白底。 -->
+    <section class="pref-top">
+      <!-- ① 对话偏好：风格预设 / 回复长度 / 自定义指令（后者按需展开） -->
       <div class="pref-group">
         <header class="group-head">
           <AppIcon name="sliders" :size="14" /><h3>对话偏好</h3>
@@ -702,6 +702,15 @@ onMounted(() => {
                       :class="{ active: pref.length === opt.id }"
                       @click="pref.length = opt.id">{{ opt.label }}</button>
             </div>
+          </div>
+          <!-- 自定义指令：只有风格选「自定义」才展开（选走别的预设必须收起，
+               否则用户会以为框里那段还在生效）。高度用 clamp，跟着卡片一起长。 -->
+          <div class="ctl ctl-custom" v-if="pref.preset === 'custom'">
+            <label class="ctl-label" for="pref-style-custom">自定义指令</label>
+            <textarea id="pref-style-custom" v-model="pref.style" class="style-input"
+                      :maxlength="PREF_STYLE_MAX" data-pref-style-custom
+                      placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
+            <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
           </div>
         </div>
       </div>
@@ -726,23 +735,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ③ 自定义指令：只有风格选「自定义」才出现，选走别的预设就收起
-           （否则用户会以为框里那段还在生效）。它从「对话偏好」里挪出来独立成组：
-           一个 clamp(140–220) 的大框跟两个短控件挤在一列，会把左边那组拽成一长条。 -->
-      <div class="pref-group pref-group-custom" v-if="pref.preset === 'custom'">
-        <header class="group-head">
-          <AppIcon name="edit" :size="14" /><h3>自定义指令</h3>
-        </header>
-        <div class="group-body pref-fields">
-          <div class="ctl">
-            <label class="ctl-label" for="pref-style-custom">风格指令</label>
-            <textarea id="pref-style-custom" v-model="pref.style" class="style-input"
-                      :maxlength="PREF_STYLE_MAX" data-pref-style-custom
-                      placeholder="例如：用中文回答，先给结论再展开理由；不确定时直说不确定。" />
-            <span class="pref-count">{{ pref.style.length }} / {{ PREF_STYLE_MAX }}</span>
-          </div>
-        </div>
-      </div>
     </section>
 
     <!-- ② 技能能力：横跨整个主内容区，单列纵向一行一个技能。
@@ -960,11 +952,12 @@ onMounted(() => {
    文字只在变宽的过程中自然重排。不支持轨道动画的浏览器只是少一段过渡，不塌版。 */
 .pref-top {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0fr);
-  align-items: stretch;                 /* 各组淡色卡上下对齐成一条带子 */
-  transition: grid-template-columns 220ms var(--ease);
+  /* 两列等分。自定义指令挪进「对话偏好」之后不再有第三列，也不需要列宽过渡。 */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* **按内容高度排，不拉平**（用户口径 2026-12「避免大片空白」）：拉平会把短的那一列
+     拽出一块空白底 —— 之前「对话偏好」只有两个短控件却和「运行上限」等高，底下空一大片。 */
+  align-items: start;
 }
-.pref-top.with-custom { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, .9fr); }
 /* 列间距不用 gap：收起的那一列仍算一条轨道，gap 会在最右侧留一道 24px 的空档。
    组自己带左外边距，等于把间距算在组身上。 */
 .pref-group { min-width: 0; display: flex; flex-direction: column; }
@@ -980,7 +973,7 @@ onMounted(() => {
 .group-body {
   padding: 12px 14px;
   border-radius: var(--r-sm); background: var(--bg-sunken);
-  flex: 1;                              /* 撑到这一行最高的那组：几张卡底边齐平 */
+  /* 不再 `flex: 1` 拉平：两列按内容高度排，卡里不留空白底（用户口径 2026-12）。 */
 }
 .group-head h3 {
   margin: 0; font-size: calc(14.5px * var(--ts, 1)); font-weight: 650;
@@ -992,8 +985,9 @@ onMounted(() => {
 .ctl { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ctl-label { font-size: calc(12px * var(--ts, 1)); line-height: 1.35; color: var(--text-dim); }
 
-/* 自定义指令框：一整列宽的大框。clamp 让它在高一点的视口里再长一档（140–220），
-   但不会顶掉半屏；字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。 */
+/* 自定义指令框：**在「对话偏好」这一组里整列宽**。clamp 让它在高一点的视口里再长一档（140–220），
+   但不会顶掉半屏；字号 13 / 行高 1.6 是正文的读数，行数由高度说了算（不再跟 rows 走）。
+   宽度就是这一列的宽（≈49%），比原来单开第三列时（≈27%）宽了近一倍。 */
 .cyli-prefs .ctl > .style-input {
   display: block; width: 100%;
   height: clamp(140px, 20vh, 220px); padding: 8px 10px;
