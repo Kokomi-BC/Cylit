@@ -12817,3 +12817,31 @@ Fluent 整套画在同一张 24 网格上 —— 实测这批 100 枚的墨迹�
 **验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**；
 另把 100 枚图标按 16px 渲染成网格逐枚看过（左侧第一版把 `select-all-fill` / `save-alt-fill` 落成了 info，
 原因是数据键当时带 `-fill`、而组件按基名查 —— 已改成基名+双档并复验）。
+
+
+### 154. 第一百五十四轮：图标按位置微调（右键菜单改回线稿、全屏/侧栏/定位/模型用回旧图标、原 PDF 用 PDF 图标）
+
+用户口径（2026-12-05，连着四条）：「右键菜单有些图标是实心的问题」「全屏按钮和展开关闭侧栏按钮使用之前的」
+「定位按钮找一个类似之前样式的」「原 PDF 有专门的 PDF 图标（fluent）」「模型图标使用类似处理器的图标」。
+
+**1. 右键菜单改回线稿**：上一轮为了让触摸条一排等重，把菜单项全换成了 Fluent 的 **filled** 变体；
+实心块放在文字菜单里显得太重。现在全部换回 regular（`search / copy / chat / note / sparkle / select-all /
+save-alt / open-new / download / delete`），与下拉菜单的字重一致。
+
+**2. 四处用回换 Fluent 之前的手绘图标**（`AppIcon` 的 `EXTRA`）：全屏 `expand-diag` / `collapse-diag`、
+侧栏开合 `sidebar` / `sidebar-off`、定位 `locate`、模型 `model`。
+⚠️ 这几枚是 **1.6 描边的线稿**，而 Fluent 是实心路径 —— 直接换回来会被填成一坨。
+所以 `EXTRA` 的条目带 `stroke: true`，渲染时把 svg 切成 `fill: none; stroke: currentColor; stroke-width: 1.6`。
+（`sidebar` 里那道竖条本来就自带 `fill="currentColor" stroke="none"`，仍按行内属性走。）
+
+**3. 原 PDF 用 PDF 图标**：Fluent 有 `document_pdf`，但**不在** npm 的 `@fluentui/svg-icons` 里（那版拉了
+20822 个 SVG，`grep -i pdf` = 0），改从 `@fluentui/react-icons` 的 atom 里取路径 —— 那是 **20 网格**，
+所以包一层 `transform="scale(1.2)"` 对齐到本站的 24 网格（`components/fluentIcons.ts` 的 `document-pdf`）。
+档位按钮「原 PDF」由 `image` 换成它。
+
+**4. 模型 = 处理器**：Fluent 这一版**没有 cpu / chip**（只有 `memory`，那是内存条），
+所以 `model` 沿用旧手绘的芯片（方框 + 八根引脚，1.6 描边）。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；把四处恢复的图标 + `document-pdf` 按真实尺寸渲染成图逐枚比对
+（PDF 图标 = 文档轮廓 + 底部 PDF 字样，与原站一致）。`scripts/frontend_check.py` 第一次跑出 1 项红
+（浮层拖动 0,0），**复跑 154/154** —— 那一项是浮层落位时序的抖动，与图标无关。

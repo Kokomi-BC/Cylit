@@ -5827,13 +5827,13 @@ function onContentContextMenu(ev: MouseEvent) {
      桌面仍然只有下拉里的文字项 —— 那边划词胶囊已经把颜色摆出来了，不必重复。 */
   if (withSel) {
     items.push({
-      key: 'bing', icon: 'search-fill',
+      key: 'bing', icon: 'search',
       label: quoted ? `搜索 “${quoted}${ctxCtx.text.length > 14 ? '…' : ''}”` : '搜索',
     });
-    items.push({ key: 'copy', label: '复制', icon: 'copy-fill', shortcut: 'Ctrl+C' });
+    items.push({ key: 'copy', label: '复制', icon: 'copy', shortcut: 'Ctrl+C' });
     /* 顺序（用户口径 2026-11-19 第三轮）：「加入对话」排在「高亮」**左侧**，「询问 Cyli」仍在它右侧 ——
        也就是 搜索 → 复制 → 加入对话 → 高亮 → 询问 Cyli：先"把这段带走"，再"就地标一下 / 问一下"。 */
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat-fill' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
     /* 触摸条：色板排在「加入对话」后面（用户口径 2026-10-18：常用功能靠左）。
        不再带铅笔图标 —— 一排色点自己就说明是上色，多一个笔反而占宽。 */
     if (fromTouch) items.push({ key: 'hl-color', label: '高亮', swatches: HIGHLIGHT_COLORS });
@@ -5844,32 +5844,32 @@ function onContentContextMenu(ev: MouseEvent) {
      菜单里就只剩「删除」，想改笔记反而没有入口（用户 2026-10-10 复查报的正是这个）。
      它只跟 `hlIds` 走，与有没有选区无关。 */
   if (ctxCtx.hlIds.length) {
-    items.push({ key: 'note', label: '编辑笔记', icon: 'note-fill' });
+    items.push({ key: 'note', label: '编辑笔记', icon: 'note' });
   }
   if (withSel) {
     /* 「加入对话」已经在上面（高亮左侧）排好了，这里只补「询问 Cyli」，让它落在最右 */
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle-fill' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   } else if (ctxCtx.isFigure) {
     /* 插图同理：先「加入对话」（带这张图），再「询问 Cyli」（解释这张图） */
-    items.push({ key: 'tochat', label: '加入对话', icon: 'chat-fill' });
-    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle-fill' });
+    items.push({ key: 'tochat', label: '加入对话', icon: 'chat' });
+    items.push({ key: 'ask', label: '询问 Cyli', icon: 'sparkle' });
   }
   /* 「空白处」= 没划词、没点在图上、没点在已有高亮上，也不是公式/表格/插图这种「实体块」。
      用户口径：**导出只在空白处保留**，同时空白处多一项「召唤 Cyli」（就地开对话浮层）。 */
   const onBlank = !withSel && !ctxCtx.isFigure && !ctxCtx.hlIds.length
     && !target?.closest?.('.katex, table, .fig-card, mjx-container, .cite-inline');
   if (onBlank) {
-    items.push({ key: 'summon', label: '召唤 Cyli', icon: 'sparkle-fill', sep: items.length > 0 });
+    items.push({ key: 'summon', label: '召唤 Cyli', icon: 'sparkle', sep: items.length > 0 });
   }
-  items.push({ key: 'selectall', label: '全选', icon: 'select-all-fill', sep: items.length > 0 });
+  items.push({ key: 'selectall', label: '全选', icon: 'select-all', sep: items.length > 0 });
   if (ctxCtx.imgUrl) {
-    items.push({ key: 'saveimg', label: '另存为', icon: 'save-alt-fill', sep: true });
-    items.push({ key: 'copyimg', label: '复制图像', icon: 'copy-fill' });
-    items.push({ key: 'zoomimg', label: '放大', icon: 'open-new-fill' });
+    items.push({ key: 'saveimg', label: '另存为', icon: 'save-alt', sep: true });
+    items.push({ key: 'copyimg', label: '复制图像', icon: 'copy' });
+    items.push({ key: 'zoomimg', label: '放大', icon: 'open-new' });
   }
-  if (onBlank) items.push({ key: 'export', label: '导出', icon: 'download-fill', sep: true });
+  if (onBlank) items.push({ key: 'export', label: '导出', icon: 'download', sep: true });
   if (ctxCtx.hlIds.length) {
-    items.push({ key: 'delhl', label: '删除', icon: 'delete-fill', danger: true, sep: true });
+    items.push({ key: 'delhl', label: '删除', icon: 'delete', danger: true, sep: true });
   }
   ctxMenu.items = items;
   if (fromTouch) {
@@ -7978,7 +7978,7 @@ function renderMarkdown(text?: string | null) {
                 <AppIcon name="document" :size="14" />原文文本
               </button>
               <button :class="{ active: originalMode === 'page' }" @click="setOriginalMode('page')">
-                <AppIcon name="image" :size="14" />原 PDF
+                <AppIcon name="document-pdf" :size="14" />原 PDF
               </button>
             </div>
           </div>
