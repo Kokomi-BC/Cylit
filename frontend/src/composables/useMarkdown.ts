@@ -489,10 +489,29 @@ export function inlineHtml(text?: string | null): string {
   }
 }
 
+/**
+ * 去掉公式里的**编号**（`\tag{1}`、`\qquad(1)`、行尾裸 `(1)`）。
+ *
+ * 为什么行内公式必须去掉：KaTeX 把 `\tag` 渲染成 `.tag`，绝对定位在 `.katex-html` 的
+ * `right: 0`；行内盒子又被收成"内容宽"，于是那个 `(1)` 直接压在公式尾巴上
+ * （用户口径 2026-12-05 的截图：`\left(\frac{QK^T}{\sqrt{d_k}}\right)(V)` 中间夹了个 (1)）。
+ * 整块公式（display）保留编号，那里 right:0 落在公式右侧的留白上，是对的。
+ */
+export function stripEqNumber(tex: string): string {
+  return String(tex ?? '')
+    .replace(/\s*\\tag\*?\{[^{}]*\}/g, '')
+    .replace(/\s*\\(?:qquad|quad)\s*\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    .replace(/\s*\\(?:hfill|hspace\{[^{}]*\})\s*\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    .replace(/\s{2,}\(\s*\d{1,3}[a-z]?\s*\)\s*$/i, '')
+    .trim();
+}
+
 /** 裸 LaTeX（公式卡的 latex_final）→ HTML。 */
 export function latexToHtml(latex?: string | null, display = true): string {
-  const src = String(latex ?? '').trim();
-  if (!src) return '<span class="faint">（无 LaTeX）</span>';
+  const raw = String(latex ?? '').trim();
+  if (!raw) return '<span class="faint">（无 LaTeX）</span>';
+  /* 行内公式一律不带编号，见 stripEqNumber 的注释 */
+  const src = display ? raw : stripEqNumber(raw);
   try {
     return katex.renderToString(src, { displayMode: display, throwOnError: false, errorColor: '#d8453f' });
   } catch (err) {

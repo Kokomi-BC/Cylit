@@ -817,6 +817,12 @@ table.data.fixed { table-layout: fixed; }
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .md .katex-display { margin: .4em 0; overflow-x: auto; overflow-y: hidden; }
+/* 行内公式不该有编号：KaTeX 把 tag 渲染成绝对定位在 .katex-html right:0 的 .tag，
+   而行内盒子被收成内容宽 —— (1) 于是直接压在公式尾巴上（用户口径 2026-12-05 的
+   "（QK^T/√d_k)(V) 中间夹了个 (1)"）。文本层已经在 latexToHtml 里删过一遍，这条是兜底：
+   万一有别的入口绕开 latexToHtml 直接渲染行内公式，编号也不会再压上去。 */
+.katex:not(.katex-display) .katex-html > .tag,
+.katex:not(.katex-display) > .tag { display: none; }
 
 /* ---------------- KaTeX 渲染失败时的兜底（安全网） ----------------
  * `throwOnError: false` 会渲染出一个 `.katex-error` 节点（文字就是那条原始 LaTeX），并把

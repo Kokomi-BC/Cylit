@@ -14035,3 +14035,26 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`205-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 194. 第一百九十四轮：行内公式里夹着的编号 (1) 去掉
+
+用户口径 2026-12-05：截图中 `(QK^T/√d_k)(V)` 中间夹了一个 `(1)`，压在公式尾巴上。
+
+根因：模型给的行内公式（`$…$`）里带着论文的公式编号 `\tag{1}`。KaTeX 把 `\tag` 渲染成 `.tag`，
+**绝对定位在 `.katex-html` 的 `right: 0`**；整块公式（display）时那一侧是留白，编号正好落在右边，
+而行内盒子被收成"内容宽"，`right: 0` 就落在公式自己的尾巴上 —— 看起来就是"(1) 夹在公式里"。
+
+两层改法：
+
+1. **文本层**：`useMarkdown.latexToHtml()` 在 `display === false` 时先过 `stripEqNumber()`
+   （`\tag{1}` / `\qquad(1)` / `\hfill (2)` / 行尾裸 `(1)` 四种写法），整块公式保留编号 ——
+   正文里 `(1)(2)` 与论文一致这件事不受影响。
+2. **兜底层**：`.katex:not(.katex-display) .tag { display: none }`（`.tag` 可能在 `.katex-html` 里，
+   也可能直接在 `.katex` 下，两种位置都写了一条），防止别的入口绕开 `latexToHtml` 直接渲染行内公式。
+
+实测（turboquant 解读页）：487 条行内公式里 4 条带编号，改动后**可见编号 0 条**（4 条全被隐藏/剥掉）。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`206-dist.tgz`），`pm2 restart cylit-api`。
+
