@@ -8950,6 +8950,18 @@ function renderMarkdown(text?: string | null) {
 }
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
+/* 速览卡里渲染的是**原文/译文的一段**，其中可能带章节标题：卡片宽 360、正文 12px，
+   而浏览器默认 h1 = 2em / h2 = 1.5em —— 实测 h1 会顶成 **24px**，一段引用里突然一行大字
+   （用户口径 2026-12-05：压一下浮窗内的标题大小）。这里压到与解读正文同一档，
+   并按卡片高度收紧上下留白（卡本来就只有 190px 的可视高度）。 */
+.cite-peek-md :deep(h1) { font-size: 1.25em; }
+.cite-peek-md :deep(h2) { font-size: 1.15em; }
+.cite-peek-md :deep(h3), .cite-peek-md :deep(h4),
+.cite-peek-md :deep(h5), .cite-peek-md :deep(h6) { font-size: 1em; }
+.cite-peek-md :deep(h1), .cite-peek-md :deep(h2),
+.cite-peek-md :deep(h3), .cite-peek-md :deep(h4) {
+  margin: 0 0 .3em; line-height: 1.35; font-weight: 600;
+}
 /* 引用片段：左竖条 + 淡底，与正文分开 —— 它回答的是这条引用指向哪一句，不是这一段讲了什么。 */
 .cite-peek-quote {
   border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
