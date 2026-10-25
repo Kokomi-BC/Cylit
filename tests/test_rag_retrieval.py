@@ -13,7 +13,7 @@ import pytest
 from backend.core.errors import ValidationError
 from backend.services.knowledge import knowledge_service, retrieval
 from backend.services.knowledge.retrieval import (
-    RRF_K, lexical_search, rerank_hits, rrf_fuse, search, tokenize,
+    RRF_K, fused_size, lexical_search, rerank_hits, rrf_fuse, search, tokenize,
 )
 
 
@@ -321,3 +321,21 @@ def test_rag_similar_endpoint_contract(monkeypatch) -> None:
     res = asyncio.run(api_knowledge.rag_similar(None, {"query": "量化"}))
     assert res["data"]["implemented"] is True
     assert res["data"]["query"] == "量化" and res["error"] is None
+
+
+# --------------------------------------------------------------------------
+# 融合池大小：top_k 要的条数不许被池子上限静默截掉
+# --------------------------------------------------------------------------
+
+
+def test_fused_pool_never_smaller_than_requested_top_k() -> None:
+    """线上默认池 12，工具传 top_k=20 只回 12 条 —— 于是「多要几条」完全无效。
+
+    实测（turboquant 篇，`TURBOQUANT_mse`）：池 12 时回 12 条、p6/p18 一条都不在；
+    池 ≥20 时回 19 条，p6（1.2 INNER-PRODUCT）与 p18（C.1）才进得来。
+    """
+    assert fused_size(12, 20) == 20        # 要得比池子多 → 池子跟着放大
+    assert fused_size(12, 5) == 12         # 要得比池子少 → 池子仍是下限（多留候选给重排）
+    assert fused_size(8, 30) == 30
+    assert fused_size(None, 20) == max(retrieval.rag_k("fused"), 20)
+    assert fused_size(0, 0) >= 1           # 坏值不许把池子变成 0（否则必然空手）

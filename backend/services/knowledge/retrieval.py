@@ -576,6 +576,18 @@ def _write_log(**entry: Any) -> None:
         log.debug("检索耗时流水清理失败（忽略）：%s", exc)
 
 
+def fused_size(fused_k: int | None, top_k: int | None) -> int:
+    """融合池大小 = ``max(kb.rag_top_k_fused, 调用方要的条数)``。
+
+    ``kb.rag_top_k_fused`` 是**下限**而不是上限：池子比调用方要的条数还小时，
+    ``top_k`` 会静默停在上限上（实测线上默认池 12，工具传 ``top_k=20`` 只回来 12 条 ——
+    于是"多要几条"这个动作完全无效，而回执里看不出被谁截了）。
+    """
+    base = max(1, int(fused_k or rag_k("fused")))
+    want = int(top_k or 0)
+    return max(base, want)
+
+
 def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            scope: str = "all", paper_id: str | None = None,
            chunk_types: list[str] | None = None, langs: list[str] | None = None,
@@ -638,7 +650,7 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         lexical_ms += _ms(_t)
     vec_hits, lex_hits = hits["vector"], hits["lexical"]
     _t = time.perf_counter()
-    fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
+    fused = rrf_fuse(_rankings(use, hits), top_k=fused_size(fused_k, top_k))
     fused_ms += _ms(_t)
     # 只传调用方的上限；"要不要重排"由 rerank_hits 自己读设置判（否则 0 会被 `or` 抬回默认）
     _t = time.perf_counter()
@@ -661,7 +673,7 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
             lexical_ms += _ms(_t)
         vec_hits, lex_hits = hits["vector"], hits["lexical"]
         _t = time.perf_counter()
-        fused = rrf_fuse(_rankings(use, hits), top_k=fused_k or rag_k("fused"))
+        fused = rrf_fuse(_rankings(use, hits), top_k=fused_size(fused_k, top_k))
         fused_ms += _ms(_t)
         _t = time.perf_counter()
         items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)

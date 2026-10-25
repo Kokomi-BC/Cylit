@@ -13231,3 +13231,29 @@ alt 属性的前 200 字符就是 `图 2：… &lt;span class=&quot;katex&quot;&
 校验：`vue-tsc --noEmit` 0 错、`npm run build` 通过、浏览器探针 **154/154** 通过。
 
 部署：前端产物 + 源码（`171-dist.tgz`），`pm2 restart cylit-api`。
+### 168. 第一百六十八轮：融合池不再把 top_k 静默截到 12（「多要几条」以前是空动作）
+
+**病因**：`retrieval.search` 里 `fused = rrf_fuse(..., top_k=fused_k or rag_k(fused))`，
+默认 `kb.rag_top_k_fused = 12`。调用方要 20 条时，候选池只有 12 条 —— 重排再怎么排也只能回 12 条，
+而回执里只写 `returned: 12`，看不出是被谁截的。**于是「把 top_k 抬到 20」这个动作一直是无效的。**
+
+**做法**：新增 `fused_size(fused_k, top_k) = max(池设置, 调用方要的条数)`，两处 `rrf_fuse` 都改用它。
+`kb.rag_top_k_fused` 从此是**下限**：要得比它多，池子跟着放大；要得比它少，池子仍按设置多留候选给重排。
+
+**验证（本地 A/B，同一份代码只差这一行；线上同现象也在改前测过）**：
+
+| 查询（text 模式，top_k=20） | 改前 | 改后 |
+| --- | --- | --- |
+| `TURBOQUANT_mse` | 12 条 | **19 条**（p18、p6 才进得来） |
+| `MSE optimal TurboQuant` | 12 条 | **20 条** |
+| `random rotation` | 12 条 | 19 条 |
+| 延迟（同一条查询，热） | 368`397ms | 419`424ms |
+
+**同轮的一个反证**（留着给下一步用）：池子放大后 `TURBOQUANT_mse` 拿到了 p6（1.2）与 p18（C.1），
+但 **p5 的「定理 1（性能保证）」仍然 0** —— 它不是被 p7 挤掉的：用「性能保证」或「定理 1」查，
+p5 就是**第 1 条**。也就是说 p5 是**词法排名掉在 20 名之后**（池子根本没见过它），
+单靠「输出侧按章节限名额」救不回来；要救得让池子更深或改打分。
+
+校验：`pytest tests` 全量绿（新增 `test_fused_pool_never_smaller_than_requested_top_k`）。
+
+部署：后端（`172.bundle`），`pm2 restart cylit-api`。
