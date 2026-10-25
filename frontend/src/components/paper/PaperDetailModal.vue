@@ -1441,7 +1441,7 @@ async function doDelete() {
   display: flex; align-items: center; gap: 12px; padding: 12px 14px;
   border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text);
 }
-.pd-live .spinner { width: 20px; height: 20px; }
+.pd-live .spinner { width: 28px; height: 28px; }
 .pd-live > div { display: grid; gap: 1px; min-width: 0; }
 .pd-live strong { font-size: calc(13px * var(--ts, 1)); font-weight: 600; }
 .pd-live span { font-size: calc(12.5px * var(--ts, 1)); opacity: .9; }

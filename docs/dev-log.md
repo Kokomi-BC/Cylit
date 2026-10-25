@@ -13942,3 +13942,26 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`200-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 189. 第一百八十九轮：速览卡里"正文被当成公式" + 加载动画放大
+
+**① 正文被当成公式**（用户口径 2026-12-05，偶发）：截图里那段引用成了 `$$\text{MultiHead}(Q, …`。
+根因是**截断**：`content_preview` 按 200 字切，正好切在一条 `$$…$$` 中间 —— 剩下那段没了收尾的
+`$$`，Markdown 便把它整块当 display 公式，KaTeX 也不会去解析，于是原样显示成一坨 LaTeX。
+同一个原因还让这段片段与正文"看着不一样"（截断尾巴带着省略号），`zh.includes(quoteRaw)` 判定失败，
+于是同一段画了两遍（截图里那两块内容一样）。
+
+改法（都在 `peekViewOf` 里，只动显示层）：新增 `trimUnclosedMath()`，把最后那个**没配对的**
+`$$` / `$` 连同它后面切掉；片段尾部再剥掉 `...` / `…`；去重判定补一条"片段是正文前缀也算覆盖"。
+实测：attention 那篇连开 30 张卡，**没有一张再出现 `$$` 原文**，也没有一段被画两遍。
+
+**② 加载动画**（用户口径：圆圈再大一些、说明文字粗大一点）：`.spinner` 22 → **40px**，
+线宽按 viewBox 折算 2.4 → 2.2（40px 下 2.4 会画成 4px 的胖环）；
+`.pd-live` 里那枚小号的 20 → 28px；转圈旁边那行说明用相邻选择器统一抬到
+`14px / 600`（`\.spinner + span|div|p`）—— 全站十几处"转圈 + 一句话"都吃这一条，不用逐处改调用点。
+实测计算样式：圈 **40px**，说明文字 **14px / weight 600**。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`201-dist.tgz`），`pm2 restart cylit-api`。
+

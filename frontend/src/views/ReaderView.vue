@@ -237,6 +237,26 @@ const CITE_KIND: Record<string, string> = {
   caption: '图注', code: '代码', ref: '参考文献', figure: '插图',
 };
 
+/**
+ * 片段里可能有**没闭合的数学定界符**：content_preview 按 200 字切，正好切在
+ * $$\text{MultiHead}(Q, … 中间，于是剩下的文字被当成一条 display 公式，卡片里就是一坨
+ * LaTeX 原文（用户口径 2026-12-05 报的"正文全部被当成公式"；同一个原因还让这段片段与正文
+ * "看着不一样"，去重失效，于是同一段显示两遍）。
+ * 这里只做一件事：把最后那个**没配对的** $$ / $ 连同它后面切掉。
+ */
+function trimUnclosedMath(text: string): string {
+  let out = String(text || '');
+  if ((out.match(/\$\$/g) ?? []).length % 2 === 1) {
+    const i = out.lastIndexOf('$$');
+    if (i >= 0) out = out.slice(0, i);
+  }
+  if ((out.replace(/\$\$/g, '').match(/\$/g) ?? []).length % 2 === 1) {
+    const i = out.lastIndexOf('$');
+    if (i >= 0) out = out.slice(0, i);
+  }
+  return out.trim();
+}
+
 /** 一张卡要显示什么：整篇的行 / 表格 / 插图三选一（引用自带的 snippet 不参与） */
 function peekViewOf(card: PeekCard) {
   const ask = card.ask;
@@ -321,10 +341,13 @@ function peekViewOf(card: PeekCard) {
    * 显出完全一样的内容（用户口径 2026-12-04）。引用自带的那一段正好能区分它们：
    * 公式类 chunk 的片段就是那条公式本身，段落类 chunk 的片段则是正文开头 —— 后者已经被
    * 正文覆盖，归一化后包含就不必再画一遍。 */
-  const quoteRaw = String(ask.snippet || '').trim()
+  const quoteRaw = trimUnclosedMath(String(ask.snippet || '').trim()
     /* 公式 chunk 的片段是我们自己拼的「公式 p018-01：$$…$$」—— 那个抬头是给检索看的，
        卡片里只需要公式本身。 */
-    .replace(/^公式\s*\S*?\s*[:：]\s*/, '');
+    .replace(/^公式\s*\S*?\s*[:：]\s*/, '')
+    /* 截断留下的省略号必须去掉：留着它，正文的 includes 判定永远不成立，
+       同一段于是"引用一块 + 正文一块"画两遍（截图里那次就是这样） */
+    .replace(/(?:\.\.\.|…)\s*$/, ''));
   /*
    * 片段与正文的比对**要穿过 LaTeX**（用户口径 2026-12-04：卡片里内容显示了两遍）。
    *
@@ -342,6 +365,8 @@ function peekViewOf(card: PeekCard) {
   /* 骨架太短（「1/4」这种）容易被正文误中，只让够长的片段走这条判定 */
   const quoteCovered = Boolean(quoteRaw) && (
     norm(zh).includes(norm(quoteRaw)) || norm(en).includes(norm(quoteRaw))
+    /* 片段是正文的**前缀**（截断的常见形态）也算覆盖：只差尾巴那几个字不该再画一块 */
+    || norm(zh).startsWith(norm(quoteRaw)) || norm(en).startsWith(norm(quoteRaw))
     || (quoteCore.length >= 8 && (core(zh).includes(quoteCore) || core(en).includes(quoteCore)))
   );
   /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 —— 有了它片段就是重复的第三份 */
