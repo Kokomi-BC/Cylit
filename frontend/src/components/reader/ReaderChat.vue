@@ -1703,6 +1703,9 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   if (optimistic) {
     messages.value = [...messages.value, optimistic];
     draft.value = '';
+    /* 发出去就**立刻**收回一行：`finally` 那次复位要等整轮回答结束（长问答可能几十秒），
+       在那之前输入框一直停在上一次的多行高度，看着像没发出去（用户 2026-12 报的）。 */
+    void nextTick(resetInputHeight);
   }
   // 这一轮助手消息的本地占位：**必须排在提问之后**（先建它会挂在用户气泡上面 ——
   // 用户 2026-10-03 报过"思考的抬头跑到我问的问题上面去了"）。
