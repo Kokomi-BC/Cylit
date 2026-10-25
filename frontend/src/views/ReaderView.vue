@@ -192,7 +192,7 @@ function onCitePeekAsk(ask: CitePeekAsk): void {
     if (peekCards.some((c) => !c.pinned)) return;
     peekSeq += 1;
     peekCards.push({ key: 'peek-' + peekSeq, ask, open: true, pinned: false, lang: 'zh',
-                     z: PEEK_BASE_Z });
+                     z: newPeekZ() });
   }, PEEK_SHOW_MS);
 }
 
@@ -221,8 +221,9 @@ function holdCitePeek(): void {
 function pinCitePeek(card: PeekCard): void {
   holdCitePeek();
   card.pinned = true;
-  /* 锚定只表示"别自动收"，**不动层号**（用户口径 2026-12-05：降级为正常的层级就行）。
-     速览卡永远待在 `PEEK_BASE_Z` 这一档，浮窗那一段（60 起）它进不去。 */
+  /* 锚定 = 这张卡**从此当浮窗用**（用户口径 2026-12-05）：再取一个新层号压到最上面，
+     之后它跟论文解读 / 对话 / 笔记同一套规矩 —— 谁刚被动过谁在上面。 */
+  card.z = newPeekZ();
 }
 
 function closePeekCard(card: PeekCard): void {
@@ -577,15 +578,17 @@ const topLayer = ref<'note' | 'chat'>('note');
 const layerZ = ref(60);
 function nextLayerZ() { layerZ.value += 1; return layerZ.value; }
 /**
- * 引用速览卡（悬浮标号弹出的那张）的层号：**固定 55，锚定也不变**。
+ * 引用速览卡（悬浮标号弹出的那张）的层号规则（用户口径 2026-12-05 最终版）：
  *
- * 为什么压到浮窗下面：它是"顺手看一眼"的东西 —— 论文解读 / 对话那种浮窗是用户主动开的、
- * 可能正在拖动或读长文，被一张路过的速览卡盖住就不讲道理
- * （用户口径 2026-12-05：**未锚定的浮窗永远压住一切速览卡，锚定也压不过去**）。
- * 锚定（在卡上按下）只表示"别自动收"，层级上不做任何提升。
- * 55 这个值：正文 30 / 侧栏 31 / 工具栏 40 / 选中菜单那几档都在它下面，浮窗那档从 60 起。
+ * **速览卡先压在浮窗上面，直到用户在卡上按下 —— 那一下就"锚定"，它从此按浮窗的规矩排队。**
+ *
+ * 所以它不再有自己的固定档：弹出时取 `nextLayerZ()`（比此刻所有浮窗都高一档），
+ * 锚定（`pinCitePeek`）时再取一次 —— 之后谁被点、谁新开，谁就拿更大的号盖过来，
+ * 与论文解读 / 对话 / 笔记那三块浮窗同一条序列，不再有"越不上去"的死档。
+ * ⚠️ 不要改回固定数值：固定档要么永远压在浮窗上（盖住用户正在读的长文），
+ * 要么永远压不过去（锚定了也抬不起来），两种都被用户否过。
  */
-const PEEK_BASE_Z = 55;
+function newPeekZ(): number { return nextLayerZ(); }
 /** 对话浮窗自己的 z（开浮窗 / 点它时抬一档） */
 const chatZ = ref(60);
 
