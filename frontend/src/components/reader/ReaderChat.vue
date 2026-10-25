@@ -16,6 +16,7 @@
  *    （后端 `set_head`），一个字节都不删。
  */
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
+import { flyMessage } from '@/composables/useComposerFlight';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import { withNoteRefs } from '@/utils/noteRefs';
@@ -261,8 +262,14 @@ const openRuns = ref<string[]>([]);
 const runTouched = new Set<string>();
 /** 展开长思考的键（`${message_id}:${步骤序号}`）；默认只露 4 行 */
 const openSteps = ref<string[]>([]);
-/** 用户**手动收起**过的思考段（键同 `openSteps`）：手点过就以手点为准，自动展开不再顶掉它。 */
+/** 用户**手动收起**过的段（键同 `openSteps`）：最后一段默认展开，手点过就以手点为准。 */
 const closedSteps = ref<string[]>([]);
+/** **已经写完**的思考段（键同 `openSteps`）。
+ *  后端在正文首字到来前会推一条 `thinking`（`status: done`）—— 收到它就把这段从
+ *  "自动展开的最后一段"里摘掉（用户口径 2026-12-08：「思考完成时立即折叠思维链」）。
+ *  不等下一个步骤出现再折：清洗器扣着尾巴时，"思考写完 → 正文首字"之间能有几百毫秒，
+ *  那段时间思维链还摊在那儿，看着就是"想完了也不收"。 */
+const endedSteps = ref<string[]>([]);
 /** 展开后的实测高度（px）：`max-height: none` 不参与过渡，钉成实测值才能展开/收起两头都平滑、又不裁字。 */
 const thinkMax = ref<Record<string, number>>({});
 const editing = ref<{ id: string; text: string; branch: boolean } | null>(null);
@@ -279,13 +286,30 @@ const chatEl = ref<HTMLElement | null>(null);
 const BOTTOM_GAP = 56;
 const follow = ref(true);
 
+/** 刚进消息流的那一两条：只给它们播进场动画。
+ *  消息是整份数组替换的（`messages.value = [...]`），没有 TransitionGroup 可用；
+ *  不标记的话，切会话时历史消息会一起"长出来"一遍。 */
+const freshIds = ref<Set<string>>(new Set());
+function markFresh(...ids: string[]): void {
+  const next = new Set(freshIds.value);
+  ids.forEach((id) => next.add(id));
+  freshIds.value = next;
+  window.setTimeout(() => {
+    const after = new Set(freshIds.value);
+    ids.forEach((id) => after.delete(id));
+    freshIds.value = after;
+  }, 600);
+}
+
 /** 流式正文的**合帧**（用户口径 2026-12-03：流式输出感觉卡卡的）。
  *
  *  以前每来一条 delta 就 msg.content += text 一次，紧接着 scrollToBottom() 一次 ——
  *  那个函数是个**三帧 rAF 循环**，每帧读 scrollHeight、写 scrollTop。一条回答几千个 delta，
- *  等于把整段 markdown 重排几百遍 + 几百次强制布局。现在：delta 先进缓冲，最多每 90ms
- *  落一次盘；滚动只在落盘那一帧做**一次赋值**，而且只在跟随状态下做。 */
-const DELTA_FLUSH_MS = 90;
+ *  等于把整段 markdown 重排几百遍 + 几百次强制布局。现在：delta 先进缓冲，最多每 66ms
+ *  落一次盘（正文按块渲染以后，一批只重画"最后一块"，比原来整段重排便宜得多，所以这里
+ *  可以比原来的 90ms 更密一点，字浮现得更连续）；滚动只在落盘那一帧做**一次赋值**，
+ *  而且只在跟随状态下做。 */
+const DELTA_FLUSH_MS = 66;
 let deltaBuf = '';
 let deltaTarget: { content: string } | null = null;
 let deltaTimer = 0;
@@ -327,7 +351,67 @@ function flushDelta() {
   if (!target || !buf) return;
   target.content += buf;
   appendLiveStep('text', buf);
+  /* DSH 的正文是"边写边一个字一个字浮现"：每批增量落盘后，把**这一帧新长出来的部分**做一次
+     淡入（它自己的 `reveal-piece`：opacity .2 → 1、ease-out）。已经显示过的不重播。 */
+  pendingReveal += buf.length;
+  void nextTick(() => revealFreshBlocks());
   followBottom();                     // 下一帧（DOM 落完之后）再贴底，见 followBottom
+}
+
+/** 已播过载入动画的块数（按当前这条在写的消息计）。 */
+let revealedBlocks = 0;
+/** 这一批还没落盘的字符数（给"同一块里继续长"的那一截做淡入）。 */
+let pendingReveal = 0;
+
+/**
+ * 正文载入动画：给**这一批新出现的块**整块淡入；如果这批只是把**最后一块**写长了，
+ * 就把新长出来的那一截包一层（同样淡入）。
+ *
+ * 正文按块渲染（见 `splitAnswerParts`）以后，这里只需要伺候"最后那一块" —— 前面
+ * 已封口的块连 DOM 都没动过，不用管它们会不会重播动画。
+ */
+function revealFreshBlocks(): void {
+  const msg = msgsEl.value?.querySelector('.msg[data-live="1"]') as HTMLElement | null;
+  const parts = msg ? Array.from(msg.querySelectorAll<HTMLElement>(':scope > .md-part')) : [];
+  if (!parts.length) { revealedBlocks = 0; pendingReveal = 0; return; }
+  if (parts.length < revealedBlocks) revealedBlocks = 0;   // 换了内容（新消息 / 重置）
+  const last = parts.length - 1;
+  if (parts.length > revealedBlocks) {
+    for (let i = revealedBlocks; i <= last; i += 1) {
+      // `display: contents` 的块自己没有盒子，opacity 得挂在它的内容上
+      for (const kid of Array.from(parts[i].children)) kid.classList.add('reveal-piece');
+    }
+  } else {
+    wrapTail(parts[last], pendingReveal);
+  }
+  revealedBlocks = parts.length;
+  pendingReveal = 0;
+}
+
+/** 把最后一块里**新长出来的那一截**包成一层淡入（只动纯文本尾巴，不碰公式 / 代码 / 引用锚）。 */
+function wrapTail(part: HTMLElement, chars: number): void {
+  let node: Text | null = null;
+  const walker = document.createTreeWalker(part, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if ((n.textContent ?? '').trim()) node = n as Text;
+  }
+  if (!node) return;
+  const host = node.parentElement;
+  if (!host || host.closest('.katex, pre, code')) return;
+  const text = node.textContent ?? '';
+  const take = Math.max(1, Math.min(chars || 1, text.length));
+  const cut = text.length - take;
+  const span = document.createElement('span');
+  span.className = 'reveal-piece';
+  span.textContent = text.slice(cut);
+  node.textContent = text.slice(0, cut);
+  host.insertBefore(span, node.nextSibling);
+}
+
+/** 换了在写的消息 / 新一轮开始：计数清零（下一块的载入动画才播）。 */
+function resetReveal(): void {
+  revealedBlocks = 0;
+  pendingReveal = 0;
 }
 
 function pushDelta(target: { content: string }, text: string) {
@@ -553,6 +637,92 @@ function renderAnswer(text: string | null | undefined, cites?: AgentCitation[]) 
 }
 
 /**
+ * 正文切成**稳定的块**（只给正在流式的那条助手消息用，见 `answerParts`）。
+ *
+ * 为什么切：`v-html` 是"值一变就把这个元素的 DOM 整个重建"。流式时正文每落一批增量，
+ * 前面**已经写完**的段落、公式、引用锚、图片也统统被销毁重建 —— 长回答越写越卡，
+ * 光标每 90ms 闪一下，读的时候还能看到整段在轻微抖。切成块以后每块各自 `v-html`：
+ * 已封口的块字符串不变 → Vue 跳过 `innerHTML` 赋值 → 那一块 DOM 原样留着，
+ * 只有"还在长的那一块"重画。
+ *
+ * 切分**必须稳定**（同样的前缀切出同样的块序），否则前面又会被重建。所以规则只有一条：
+ * 在**顶层空行**处切；代码围栏里不切；列表 / 引用 / 表格之间的空行是"松列表"，也不切。
+ */
+function splitAnswerParts(text: string): string[] {
+  const src = String(text ?? '').replace(/\r\n?/g, '\n');
+  if (!src.trim()) return [];
+  const lines = src.split('\n');
+  const parts: string[] = [];
+  let buf: string[] = [];
+  let fenceCh = '';                       // 围栏打开时记着「`」/「~」
+  let fenceLen = 0;
+  let lead = '';                          // 当前块的首行类别（松列表要跟着它走）
+  const flush = () => {
+    const raw = buf.join('\n');
+    if (raw.trim()) parts.push(raw);
+    buf = [];
+    lead = '';
+  };
+  const kindOf = (line: string): string => {
+    const t = line.trimStart();
+    if (/^(?:[-*+]|\d{1,9}[.)])(?:\s|$)/.test(t)) return 'list';
+    if (t.startsWith('>')) return 'quote';
+    if (t.startsWith('|')) return 'table';
+    return 'plain';
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const tick = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(line);
+    if (fenceCh) {
+      buf.push(line);
+      if (tick && tick[1][0] === fenceCh && tick[1].length >= fenceLen) { fenceCh = ''; fenceLen = 0; }
+      continue;
+    }
+    if (tick) {
+      // 围栏前面没隔空行时也自成一块（否则前一段会被裹进代码块）
+      if (buf.length && !lead) flush();
+      fenceCh = tick[1][0];
+      fenceLen = tick[1].length;
+      buf.push(line);
+      continue;
+    }
+    buf.push(line);
+    if (line.trim()) { if (!lead) lead = kindOf(line); continue; }
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j += 1;
+    if (j >= lines.length) continue;                          // 末尾的空行
+    const cur = lead || 'plain';
+    if (cur === kindOf(lines[j]) && cur !== 'plain') continue; // 松列表 / 多段引用 / 带空行的表格
+    flush();
+  }
+  flush();
+  return parts;
+}
+
+/** 已渲染块的 HTML 复用池（key：引用签名 + 原始块）。流式期间同一块每批都要取值，
+ *  拿到的字符串必须**一模一样**，Vue 才会跳过 `innerHTML` 赋值（这才是"不重建"的关键）。 */
+const partHtmlCache = new Map<string, string>();
+
+/** 正文 → 分块 HTML。`tail` 标记"还在长的那一块"：光标与渐显都只作用在它上面。 */
+function answerParts(m: AgentMessage): { html: string; tail: boolean }[] {
+  const raw = m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m);
+  const raws = splitAnswerParts(raw);
+  if (!raws.length) return [];
+  const sig = m.citations?.map(c => c.ref).join(',') ?? '';
+  const out = raws.map((part) => {
+    const key = `${sig}\u0000${part}`;
+    let html = partHtmlCache.get(key);
+    if (html === undefined) {
+      html = renderAnswer(part, m.citations);
+      if (partHtmlCache.size > 600) partHtmlCache.clear();
+      partHtmlCache.set(key, html);
+    }
+    return html;
+  });
+  return out.map((html, i) => ({ html, tail: i === out.length - 1 }));
+}
+
+/**
  * 点正文里的 `[n]`：跳到那条引用（阅读器会滚到对应行）。
  * 顺带接管**图片**：回答里自带的 `![](...)` 也走阅读器那套图片查看器（用户口径 2026-11-19），
  * 而不是点了没反应、或被浏览器当成链接开新页。
@@ -767,10 +937,52 @@ type TraceRow = { s: AgentStep; i: number };
 function traceRows(m: AgentMessage) {
   const rows: TraceRow[] = [];
   stepsOf(m).forEach((s, i) => {
+    /* 阶段旁白（`stage`）不渲染：这类"正在准备…""正在阅读并组织回答…"在 2026-12-09 之后
+       已经不发了，但**老会话的 `run.steps` 里还留着**，这里兜一层，免得翻旧消息又冒出来。 */
+    if (s.kind === 'stage') return;
     if (s.kind === 'text' && !showInTrace(m, s)) return;
     rows.push({ s, i });
   });
   return rows;
+}
+
+/**
+ * 轨迹的**渲染项**：连续的 `tool` 步骤并成一组（`rows`），其余一步一项（`lead`）。
+ *
+ * 为什么分组：参考实现里工具调用是"一个抬头 + 下面缩进的若干子行 + 一条竖引导线"，
+ * 读起来是"这一段在干活"；一条条平铺会把过程与正文混成一片（用户口径 2026-10-25）。
+ */
+type TraceItem = { key: string; lead?: TraceRow; rows?: TraceRow[]; last?: boolean };
+
+function traceItems(m: AgentMessage): TraceItem[] {
+  const out: TraceItem[] = [];
+  for (const r of traceRows(m)) {
+    if (r.s.kind === 'tool') {
+      const last = out[out.length - 1];
+      if (last?.rows) last.rows.push(r);
+      else out.push({ key: `g${r.i}`, rows: [r] });
+    } else {
+      out.push({ key: `r${r.i}`, lead: r });
+    }
+  }
+  if (out.length) out[out.length - 1].last = true;
+  return out;
+}
+
+/** 这一轮有没有**真的可以展开看**的东西（只有旁白的一轮：抬头照旧，但没有可展的正文）。 */
+function hasTrace(m: AgentMessage): boolean {
+  return traceItems(m).length > 0;
+}
+
+/**
+ * 抬头那行要不要出现。
+ *
+ * 有步骤就出现；**还在跑的那一轮，一步都没有也出现** —— 起手那句"正在准备…"删掉之后，
+ * 从发出去到第一段思考之间（几百毫秒到两三秒）就只剩这行"正在思考… · 0.4 秒"能说明
+ * "它收到了、在跑"，不然那几秒里屏幕上什么都没有。历史消息没有步骤就不出现。
+ */
+function showRun(m: AgentMessage): boolean {
+  return stepsOf(m).length > 0 || (m.role === 'assistant' && m.message_id === liveId.value);
 }
 
 /** 轨迹里的正文段（只算 assistant：用户消息没有轨迹）。 */
@@ -793,11 +1005,16 @@ function finalAnswer(m: AgentMessage): string {
   return joined === (m.content ?? '') ? (texts[texts.length - 1].text ?? '') : m.content;
 }
 
-/** 轨迹里要显示的正文段 = 除最后一段（那段是回答本体，已经在外面了）。 */
+/**
+ * 轨迹里要显示的正文段 = 除**最后一段**（那段是回答本体，已经渲染在外面）之外的全部。
+ *
+ * 以前这里还要求"各段拼起来逐字等于 content"，否则整段正文都不进轨迹 ——
+ * 结果是**过程里说过的话整段消失**（用户口径 2026-10-25：思考过程中的正文要留在思维链里）。
+ * 只把最后一段摘出去就够了：最后一段要么就是回答本体，要么是它的前缀，摘掉都不会少字。
+ */
 function showInTrace(m: AgentMessage, step: AgentStep) {
   const texts = textStepsOf(m);
   if (texts.length < 2) return false;
-  if (texts.map(s => s.text ?? '').join('') !== (m.content ?? '')) return false;
   return step !== texts[texts.length - 1];
 }
 
@@ -809,7 +1026,12 @@ function runSummary(steps: AgentStep[]) {
   return bits.length ? `${bits.join(' · ')}${bits.length > 1 ? ' 等' : ''}` : '';
 }
 
-/** 抬头左侧：跑着的时候说"现在在干什么"，跑完说"用时多少"。 */
+/**
+ * 抬头左侧：跑着的时候说"现在在干什么"，跑完说"用时多少"。
+ *
+ * 旁白（`stage`）这类"正在准备…""正在阅读并组织回答…"整句删掉了（用户口径 2026-12-09）：
+ * 起手那句不再由前端塞、后端那条也不再发，抬头只用一句"正在思考…"（有工具在跑时说工具）。
+ */
 function runTitle(m: AgentMessage) {
   if (m.message_id === liveId.value) {
     const steps = stepsOf(m);
@@ -827,13 +1049,33 @@ function isRunOpen(id: string) {
   return openRuns.value.includes(id);
 }
 
+/** 展开 / 收起一整条轨迹（自动与手点共用，免得两处语义跑偏）。 */
+function openRun(id: string): void {
+  if (openRuns.value.includes(id)) return;
+  openRuns.value = [...openRuns.value, id];
+}
+
+function closeRun(id: string): void {
+  if (!openRuns.value.includes(id)) return;
+  openRuns.value = openRuns.value.filter(x => x !== id);
+  /* 收起整条轨迹 = 连内部的展开状态一起清掉：再点开时**内部全部折叠**
+     （用户口径 2026-10-25「折叠再展开折叠内部的所有内容」）。
+     清在**收起**这一刻而不是展开那一刻：收起时里面若还开着几段，它们会跟着一起播收起动画，
+     两套高度动画叠在同一个盒子里，观感就是"突然塌一下"。 */
+  const prefix = `${id}:`;
+  openSteps.value = openSteps.value.filter(k => !k.startsWith(prefix));
+  closedSteps.value = closedSteps.value.filter(k => !k.startsWith(prefix));
+  thinkMax.value = Object.fromEntries(Object.entries(thinkMax.value).filter(([k]) => !k.startsWith(prefix)));
+}
+
 function toggleRun(id: string) {
   // ⚠️ 与 `isRunOpen` 同一套语义（**记"展开"而不是"收起"**）：默认收起后，
   // 这里写反过一次 —— 点抬头看见的是一动不动。
   runTouched.add(id);
-  openRuns.value = isRunOpen(id)
-    ? openRuns.value.filter(x => x !== id)
-    : [...openRuns.value, id];
+  if (foldRunTimer) { clearTimeout(foldRunTimer); foldRunTimer = 0; }   // 人动手了，别再自动收
+  pendingFold = '';
+  if (isRunOpen(id)) closeRun(id);
+  else openRun(id);
 }
 
 /**
@@ -843,6 +1085,8 @@ function toggleRun(id: string) {
  */
 function settleRun(placeholderId: string, replied: boolean) {
   if (!placeholderId) return;
+  if (pendingFold === placeholderId) pendingFold = '';      // 这一轮已经结束，别再等自动收起
+  if (foldRunTimer) { clearTimeout(foldRunTimer); foldRunTimer = 0; }
   const wasOpen = openRuns.value.includes(placeholderId);
   openRuns.value = openRuns.value.filter(x => x !== placeholderId);
   const answerId = replied ? lastAnswerId() : '';
@@ -861,15 +1105,19 @@ function settleRun(placeholderId: string, replied: boolean) {
     thinkMax.value = Object.fromEntries(Object.entries(thinkMax.value)
       .map(([k, v]) => [k.startsWith(`${placeholderId}:`) ? `${answerId}${k.slice(placeholderId.length)}` : k, v]));
   }
+  /* "这一段思考写完了"那份标记只对流式中那条有意义（键换 id 就失效），落库后清掉，别越攒越多 */
+  endedSteps.value = endedSteps.value.filter(k => !k.startsWith(`${placeholderId}:`));
 }
 
 function stepKey(id: string, i: number) {
   return `${id}:${i}`;
 }
 
-/** 这一轮**最新的一步**就是"还在写的思考"（流式中才算；历史消息永远不自动展开）。 */
+/** 这一轮**最新的一步**就是"还在写的思考"（流式中才算；历史消息永远不自动展开）。
+ *  已经收到 `thinking`（done）的那一段不算 —— 它写完了，就该收起来（见 `endedSteps`）。 */
 function liveThinkingAt(id: string, i: number) {
   if (!id || id !== liveId.value) return false;
+  if (endedSteps.value.includes(stepKey(id, i))) return false;
   const m = messages.value.find(x => x.message_id === id);
   if (!m) return false;
   const steps = stepsOf(m);
@@ -878,52 +1126,302 @@ function liveThinkingAt(id: string, i: number) {
 
 /** 自动展开的那一段（流式中最新一步 = 思考）。它一出现工具/正文、或整轮结束就自己塌回去。 */
 function autoGrowStep(id: string, i: number) {
-  return isStepOpen(id, i) && liveThinkingAt(id, i);
+  return liveThinkingAt(id, i);
 }
 
 /**
- * 展开与否 = **手动优先，否则按"还在写的最后一段思考"自动判定**。
- * 手动展开在 `openSteps`，手动收起在 `closedSteps`（否则自动展开会把手点过的收起又顶开）。
+ * 展开与否：**默认折叠，但最后一段展开**（用户口径 2026-10-25：展开思维链时默认折叠所有内容、
+ * 最后一段内容默认展开 —— 那一段就是"它刚在做什么"，最值得先看）。
+ * 手点过的以手点为准：开进 `openSteps`、关进 `closedSteps`。
  */
 function isStepOpen(id: string, i: number) {
-  const key = stepKey(id, i);
+  return openSteps.value.includes(stepKey(id, i));
+}
+
+/** 工具组的开合键：用组里第一条的原始序号（结算时随消息 id 一起搬）。 */
+function groupKey(id: string, first: number) {
+  return `${id}:t${first}`;
+}
+
+function itemOpenKey(id: string, item: TraceItem) {
+  if (item.rows) return groupKey(id, item.rows[0].i);
+  return item.lead ? stepKey(id, item.lead.i) : '';
+}
+
+function isItemOpen(m: AgentMessage, item: TraceItem) {
+  const key = itemOpenKey(m.message_id, item);
   if (openSteps.value.includes(key)) return true;
   if (closedSteps.value.includes(key)) return false;
-  return liveThinkingAt(id, i);
+  /* **对话期间**（正在跑的这轮）自动展开"正在进行的最后一段"；那一段一结束就自动收起 ——
+     就是 DSH 那种跟着模型看的效果。历史消息展开思维链后内部一律折叠（用户口径 2026-10-25）。 */
+  return m.message_id === liveId.value && item.last === true && itemRunning(m, item);
+}
+
+/** 这一段还在进行中吗（决定要不要替用户自动展开）。 */
+function itemRunning(m: AgentMessage, item: TraceItem) {
+  if (item.rows) return item.rows.some(r => r.s.status === 'running');
+  const lead = item.lead;
+  if (!lead) return false;
+  if (lead.s.status === 'running') return true;
+  /* 思考段没有自己的 status：它在"还在写"的时候就是这一轮的最后一步 */
+  return lead.s.kind === 'thinking' && liveThinkingAt(m.message_id, lead.i);
+}
+
+/** 点一下某一项：开 / 关（最后一段的"默认展开"也一并被这次点击覆盖）。 */
+function toggleItem(m: AgentMessage, item: TraceItem, ev?: Event) {
+  const key = itemOpenKey(m.message_id, item);
+  if (!key) return;
+  const open = isItemOpen(m, item);
+  openSteps.value = open
+    ? openSteps.value.filter(x => x !== key)
+    : [...openSteps.value, key];
+  closedSteps.value = open
+    ? [...new Set([...closedSteps.value, key])]
+    : closedSteps.value.filter(x => x !== key);
+  const rest = { ...thinkMax.value };
+  delete rest[key];
+  thinkMax.value = rest;
+  /* 展开一段思考：先量它展开后有多高，好让 `max-height` 有真实起点（`none → 长度` 不过渡） */
+  if (!open && item.lead?.s.kind === 'thinking') {
+    const text = ((ev?.currentTarget as HTMLElement | null) ?? null)?.querySelector('.step-text') as HTMLElement | null;
+    const h = text ? measureOpenHeight(text) : 0;
+    if (h) thinkMax.value = { ...thinkMax.value, [key]: h };
+  }
+}
+
+/** 收起时那一行摘要：这一次都调了哪些工具（去重、按出现顺序，最多三样）。 */
+function toolSummary(rows: TraceRow[]) {
+  const seen: string[] = [];
+  for (const r of rows) {
+    const label = stepLabel(r.s.tool);
+    if (!seen.includes(label)) seen.push(label);
+  }
+  const head = seen.slice(0, 3).join(' · ');
+  return seen.length > 3 ? `${head} 等` : head;
+}
+
+/** 收起时那一行摘要：取思考正文的第一行（去掉 markdown 的 `**`）。 */
+function thinkSummary(text?: string) {
+  const line = (text ?? '').split('\n').map(s => s.trim()).find(Boolean) ?? '';
+  return line.replace(/\*\*/g, '');
 }
 
 /** 展开时的高度上限：钉实测值（可过渡、不裁字）；量不到就先放开，绝不把一段长思考裁掉。 */
 function stepMaxStyle(id: string, i: number) {
   const h = thinkMax.value[stepKey(id, i)];
   /* 还在写的那段不钉高度：文字每来一截都要长，钉死了就会被裁掉。 */
-  if (h && !autoGrowStep(id, i)) return { maxHeight: `${h}px` };
-  return isStepOpen(id, i) ? { maxHeight: 'none' } : undefined;
+  if (h && !liveThinkingAt(id, i)) return { maxHeight: `${h}px` };
+  return { maxHeight: 'none' };
 }
 
 /**
- * 一行轨迹的类名。
+ * 一行轨迹的类名（工具子行用）。
  *
  * `TransitionGroup` 要求**每一项只有一个根元素**（拿 `v-if/v-else-if` 多个兄弟分支写，
  * 编译出来每个 key 会变成一个 Fragment，里面的分支 key 是 0/1/2 —— 所有行都撞在一起，
  * 让位动画就失效了）。所以这里合成类名，模板里一行只有一个根 div。
  */
-function rowClass(m: AgentMessage, r: TraceRow) {
+function rowClass(_m: AgentMessage, r: TraceRow) {
+  const s = r.s;
+  if (s.kind === 'text') return 'md run-text';
+  if (s.kind === 'stage') return 'run-step stage';
+  if (s.kind === 'thinking') return ['run-step', 'think'];
+  return ['run-step', 'tool', { running: s.status === 'running', bad: s.ok === false }];
+}
+
+/**
+ * 轨迹容器的边缘渐隐：能往上/往下滚就给那一侧加一层遮罩（照 DSH 的过程块）。
+ * 用 ResizeObserver + MutationObserver 跟着内容长高一起同步 —— 流式里每 90ms 都在长。
+ *
+ * 同时负责**贴底跟随**：跑着的那一轮内容长高时把容器滚到底（不然新长出来的思考在视野外，
+ * 折叠态的摘要越来越长、框里却停在开头）。读者自己往上翻就松开跟随，翻回底部（≤25px）再接上。
+ */
+const RUN_FOLLOW_GAP = 25;
+const runBodies = new Map<string, { ro: ResizeObserver; mo: MutationObserver }>();
+/** 是否跟随（`false` = 读者主动往上翻了，别再抢滚动条；没记过 = 跟随） */
+const runStick = new WeakMap<HTMLElement, boolean>();
+/** 上一次由程序钉住的 scrollTop：用来把「程序滚动触发的 scroll 事件」和「读者滚动」分开 */
+const runPin = new WeakMap<HTMLElement, number>();
+
+function runAtBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.clientHeight - el.scrollTop <= RUN_FOLLOW_GAP;
+}
+
+function pinRunBottom(el: HTMLElement): void {
+  if (runStick.get(el) === false) return;
+  /* 容器被压成 0 高（整条轨迹的收起/展开动画里就会这样）时算不出真落点，
+     硬钉会把 scrollTop 顶到内容最底再弹回来 —— 这一帧跳过。 */
+  if (!el.clientHeight) return;
+  const target = el.scrollHeight - el.clientHeight;
+  if (target <= 0) return;
+  if (target - el.scrollTop >= 1) el.scrollTop = target;   // 流式里用 instant，别 smooth 追不上
+  runPin.set(el, el.scrollTop);
+}
+
+function syncEdges(el: HTMLElement | null): void {
+  if (!el) return;
+  el.classList.toggle('can-up', el.scrollTop > 1);
+  el.classList.toggle('can-down', el.scrollTop < el.scrollHeight - el.clientHeight - 1);
+}
+
+/** 容器自己的 scroll 事件：读者翻到离底 >25px 就松开跟随，回到 ≤25px 再接上 */
+function onRunScroll(el: HTMLElement): void {
+  const pinned = runPin.get(el);
+  const atBottom = runAtBottom(el);
+  /* 钉底之后布局又长高时，那次 scroll 事件回放的位置仍等于 `pinned` —— 那不是读者干的，
+     别据此松开跟随（否则流式里会「跟一下停一下」）。 */
+  if (pinned === undefined || Math.abs(el.scrollTop - pinned) > 1.5) runStick.set(el, atBottom);
+  syncEdges(el);
+}
+
+function setRunBody(id: string, el: unknown): void {
+  const prev = runBodies.get(id);
+  if (prev) {
+    prev.ro.disconnect();
+    prev.mo.disconnect();
+    runBodies.delete(id);
+  }
+  if (!(el instanceof HTMLElement)) return;
+  if (id !== liveId.value) runStick.set(el, false);   // 历史消息点开的轨迹：从头顶开始读，别钉底
+  syncEdges(el);
+  pinRunBottom(el);
+  requestAnimationFrame(() => pinRunBottom(el));       // 首次挂载时布局可能还没算完
+  /* ⚠️ 只盯容器本身不够：`.run-body` 有 `max-height`，段内展开/收起是**子项的高度动画**
+     （`foldEnter`/`foldLeave` 逐帧改 height），容器自己的盒子一帧都不变 —— 它不触发 RO，
+     也没有 DOM 变更可听。所以把**直接子项**也一起 observe：子项长高的每一帧都能跟上，
+     这正是"思考在长、容器却停在开头"的成因。 */
+  const pin = (): void => {
+    /* 轨迹容器自己正在展开 / 收起（`runEnter`/`runLeave`）：高度是动画在写的，这会儿钉底
+       会把内容一帧一帧往下拽，看着像"边收边滑"。等它收完再接着钉。 */
+    if (el.dataset.foldAnim === '1') return;
+    syncEdges(el);
+    pinRunBottom(el);
+  };
+  const ro = new ResizeObserver(pin);
+  const watchKids = (): void => {
+    ro.observe(el);
+    for (const kid of Array.from(el.children)) ro.observe(kid);
+  };
+  watchKids();
+  const mo = new MutationObserver(() => {
+    watchKids();
+    pin();
+  });
+  mo.observe(el, { childList: true, subtree: true, characterData: true });
+  runBodies.set(id, { ro, mo });
+}
+
+onUnmounted(() => {
+  runBodies.forEach(x => { x.ro.disconnect(); x.mo.disconnect(); });
+  runBodies.clear();
+});
+
+/**
+ * 段内 / 整条轨迹的开合（`:css="false"` 的 JS 钩子，见模板里的 `<Transition name="fold">`）。
+ *
+ * 为什么不用 CSS：`height: auto` 没法过渡，而 `max-height` 的插值是"上限"，内容越长动画越快 ——
+ * 两头都生硬。这里按实测高度走 Web Animations：
+ *   · **时长跟着距离走**（`foldMs`）—— 一行字和一个 420px 的过程块用同一个 200ms，
+ *     矮的显拖、高的显急，这就是"折叠不够丝滑"的一半来源；
+ *   · 高度与透明度**不是同一条直线**：收起时先掉前 55% 的高度、透明度更早就掉到 .3，
+ *     收尾只剩一条空盒子在缩（不然文字被压扁着消失，很脏）；展开反过来，高度先出来、
+ *     字稍后才全亮；
+ *   · 动画期间外层对话**每帧贴底**（`followThroughFold`），否则正文先被顶走一截、
+ *     动画结束再弹回来。
+ */
+const FOLD_IN = 'cubic-bezier(.22, .61, .36, 1)';    // 展开：滑出来，尾巴收得慢
+const FOLD_OUT = 'cubic-bezier(.4, 0, .2, 1)';       // 收起：起手带点劲，落地轻
+
+function foldMs(dist: number, open: boolean): number {
+  return Math.round(Math.min(open ? 300 : 280, (open ? 170 : 160) + dist * 0.42));
+}
+
+/** 动画跑着的那几帧里每帧补一次贴底（`followBottom` 自己合帧，多调无妨）。 */
+let foldFollowRaf = 0;
+let foldFollowUntil = 0;
+function followThroughFold(ms: number): void {
+  foldFollowUntil = Math.max(foldFollowUntil, performance.now() + ms);
+  if (foldFollowRaf) return;
+  const tick = (): void => {
+    if (!follow.value || performance.now() > foldFollowUntil) { foldFollowRaf = 0; return; }
+    followBottom();
+    foldFollowRaf = requestAnimationFrame(tick);
+  };
+  foldFollowRaf = requestAnimationFrame(tick);
+}
+
+function fold(el: Element, open: boolean, done: () => void, pinPause = false): void {
+  const node = el as HTMLElement;
+  const dist = node.getBoundingClientRect().height;
+  if (reduceMotion() || dist < 1) { done(); return; }
+  const ms = foldMs(dist, open);
+  if (pinPause) node.dataset.foldAnim = '1';      // 轨迹容器自己在折叠：别钉底（见 setRunBody）
+  node.style.overflow = 'hidden';
+  const anim = open
+    ? node.animate(
+      [
+        { height: '0px', opacity: 0, offset: 0 },
+        { height: `${dist * 0.78}px`, opacity: 1, offset: 0.72 },
+        { height: `${dist}px`, opacity: 1, offset: 1 },
+      ],
+      { duration: ms, easing: FOLD_IN },
+    )
+    : node.animate(
+      [
+        { height: `${dist}px`, opacity: 1, offset: 0 },
+        { height: `${dist * 0.42}px`, opacity: 0.3, offset: 0.62 },
+        { height: '0px', opacity: 0, offset: 1 },
+      ],
+      { duration: ms, easing: FOLD_OUT },
+    );
+  followThroughFold(ms + 32);
+  let settled = false;
+  const settle = (): void => {
+    if (settled) return;
+    settled = true;
+    node.style.overflow = '';
+    if (pinPause) delete node.dataset.foldAnim;
+    done();
+  };
+  anim.onfinish = settle;
+  anim.oncancel = settle;
+  /* `:css="false"` 的钩子没人兜底：浏览器把动画掐掉（切页、节点被替换）时 onfinish 未必来，
+     这里再挂一道，免得残留 `overflow:hidden`。 */
+  anim.onremove = settle;
+}
+
+function foldEnter(el: Element, done: () => void): void { fold(el, true, done); }
+function foldLeave(el: Element, done: () => void): void { fold(el, false, done); }
+function runEnter(el: Element, done: () => void): void { fold(el, true, done, true); }
+function runLeave(el: Element, done: () => void): void { fold(el, false, done, true); }
+
+function reduceMotion(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function itemClass(m: AgentMessage, item: TraceItem) {
+  if (item.rows) return 'tool-group';
+  const r = item.lead;
+  if (!r) return '';
   const s = r.s;
   if (s.kind === 'text') return 'md run-text';
   if (s.kind === 'stage') return 'run-step stage';
   if (s.kind === 'thinking') {
     return ['run-step', 'think', {
-      open: isStepOpen(m.message_id, r.i),
-      autogrow: autoGrowStep(m.message_id, r.i),
+      open: isItemOpen(m, item),
+      autogrow: isItemOpen(m, item) && liveThinkingAt(m.message_id, r.i),
     }];
   }
   return ['run-step', 'tool', { running: s.status === 'running', bad: s.ok === false }];
 }
 
-/** 行内点击：思考段＝展开/收起，正文段＝引用锚（与轨迹外的正文同一套）。 */
-function onRowClick(m: AgentMessage, r: TraceRow, ev: MouseEvent) {
-  if (r.s.kind === 'thinking') toggleStep(m.message_id, r.i, ev);
-  else if (r.s.kind === 'text') onCitationClick(ev);
+/** 行内点击：整项开合（思考 / 工具组），正文段＝引用锚（与轨迹外的正文同一套）。 */
+function onItemClick(m: AgentMessage, item: TraceItem, ev: MouseEvent) {
+  if (item.rows) { toggleItem(m, item, ev); return; }
+  const s = item.lead?.s;
+  if (!s) return;
+  if (s.kind === 'thinking') toggleItem(m, item, ev);
+  else if (s.kind === 'text') onCitationClick(ev);
 }
 
 /**
@@ -939,25 +1437,6 @@ function measureOpenHeight(el: HTMLElement) {
   if (prev === null) el.removeAttribute('style');
   else el.setAttribute('style', prev);
   return h;
-}
-
-function toggleStep(id: string, i: number, ev?: Event) {
-  const key = stepKey(id, i);
-  if (isStepOpen(id, i)) {
-    closedSteps.value = [...closedSteps.value.filter(x => x !== key), key];
-    openSteps.value = openSteps.value.filter(x => x !== key);
-    const rest = { ...thinkMax.value };
-    delete rest[key];           // 退回 4 行那条 max-height，收起才有过渡（`none → 长度` 不过渡）
-    thinkMax.value = rest;
-    return;
-  }
-  /* 先量后开，且**同一个 tick 里**把类名与高度一起改掉：中间不插一次「none」，
-     展开才会从 4 行的高度平滑长出来（先改成 none 再改成 px，浏览器就没得过渡了）。 */
-  const text = ((ev?.currentTarget as HTMLElement | null) ?? null)?.querySelector('.step-text') as HTMLElement | null;
-  const h = text ? measureOpenHeight(text) : 0;
-  closedSteps.value = closedSteps.value.filter(x => x !== key);
-  openSteps.value = [...openSteps.value, key];
-  if (h) thinkMax.value = { ...thinkMax.value, [key]: h };
 }
 
 /** 步骤行右侧的参数摘要：`query=随机旋转` → `随机旋转`（键名对用户没意义）。 */
@@ -1026,13 +1505,27 @@ function ensureLive(): AgentMessage {
   return msg;
 }
 
-/** 往当前这一段追加（同类相邻的合并；换类另起一段——这就是"夹杂"的来源）。 */
+/** 往当前这一段追加（同类相邻的合并；换类另起一段——这就是"夹杂"的来源）。
+ *
+ *  ⚠️ **旁白（`stage`）不合并**：每一句是那一刻的状态，抬头只显示最新那条；合并了就变成
+ *  "正在准备…正在阅读并组织回答…" 串成一句（实测过）。 */
 function appendLiveStep(kind: AgentStep['kind'], text: string) {
   if (!text) return;
   const steps = ensureLive().run!.steps!;
   const last = steps[steps.length - 1];
-  if (last && last.kind === kind) last.text = (last.text ?? '') + text;
+  if (kind !== 'stage' && last && last.kind === kind) last.text = (last.text ?? '') + text;
   else steps.push({ kind, text, round: 0 });
+}
+
+/** 记下"这一段思考已经写完了"：把它从"自动展开的最后一段"里摘掉（键与手点共用一套）。 */
+function markThinkingDone(m: AgentMessage) {
+  const steps = stepsOf(m);
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    if (steps[i].kind !== 'thinking') continue;
+    const key = stepKey(m.message_id, i);
+    if (!endedSteps.value.includes(key)) endedSteps.value = [...endedSteps.value, key];
+    return;
+  }
 }
 
 /* ------------------------------ 空态文案 ------------------------------ */
@@ -1550,14 +2043,63 @@ function dropPending(index: number) {
 
 /* ------------------------------ 发送 ------------------------------ */
 
+/** 这一轮**最近一次过程事件**（思考续写 / 调工具 / 半句被收回）的时刻 —— 见 `foldRunSoon`。 */
+let lastProcessAt = 0;
+/** 正等着自动收起的那条轨迹（空 = 没在等）。 */
+let pendingFold = '';
+let foldRunTimer = 0;
+
+/** 轨迹跟着"过程"展开（用户手点过这一轮就不再自动改）。 */
+function keepRunOpen(m: AgentMessage) {
+  lastProcessAt = performance.now();
+  if (runTouched.has(m.message_id)) return;
+  openRun(m.message_id);
+}
+
+/**
+ * **思维链写完就收起**（用户口径 2026-12-08：「思维链结束时自动折叠，而不是等正文输出完成」）。
+ *
+ * 判定很朴素：正文开始写 = 过程结束。但不能立刻收 ——「说半句 → 又调工具 → 再说」是常见形态
+ * （后端此时会推 `answer_reset` 把半句清掉），所以压 320ms：
+ *   · 这段时间里只要又冒出过程事件（`keepRunOpen` 记下 `lastProcessAt`），就再等一轮；
+ *   · 一收到下一段正文（`answer_delta` 还在来）就照样收 —— 所以**不要**在每次 delta 上重置计时，
+ *     否则字一直在出、轨道就永远不收（这里只认第一次）。
+ * 阶段提示（`stage`，比如"正在阅读并组织回答…"）**不算**过程事件：它是旁白，正文一起来就
+ * 不该再把轨迹重新摊开 —— 上一版正是被这条旁白卡住、收不下去。
+ */
+function foldRunSoon(m: AgentMessage) {
+  if (runTouched.has(m.message_id)) return;
+  if (pendingFold === m.message_id) return;
+  pendingFold = m.message_id;
+  armFold();
+}
+
+function armFold(): void {
+  if (foldRunTimer) clearTimeout(foldRunTimer);
+  foldRunTimer = window.setTimeout(() => {
+    foldRunTimer = 0;
+    const id = pendingFold;
+    if (!id) return;
+    if (runTouched.has(id)) { pendingFold = ''; return; }        // 人接手了，别自作主张
+    if (performance.now() - lastProcessAt < 400) { armFold(); return; }
+    pendingFold = '';
+    closeRun(id);
+  }, 320);
+}
+
 function onEvent(name: string, data: any) {
   if (name === 'session') {
     if (data?.conversation_id) currentId.value = data.conversation_id;
     return;
   }
-  if (name === 'stage') { appendLiveStep('stage', data?.message || ''); return; }
+  if (name === 'stage') {
+    appendLiveStep('stage', data?.message || '');
+    return;                       // 旁白：不动轨迹的开合（见 foldRunSoon 的说明）
+  }
   if (name === 'tool') {
-    const steps = ensureLive().run!.steps!;
+    const live = ensureLive();
+    keepRunOpen(live);
+    const steps = live.run!.steps!;
     if (data?.status === 'start') {
       steps.push({ kind: 'tool', round: Number(data?.round || 0), tool: data?.tool ?? '',
                    digest: String(data?.args_digest || ''), status: 'running',
@@ -1580,18 +2122,34 @@ function onEvent(name: string, data: any) {
     }
     return;
   }
-  if (name === 'thinking_delta') { appendLiveStep('thinking', data?.text ?? ''); return; }
-  if (name === 'thinking') return;   // 思考段的边界由步骤自己的"换类另起一段"表达
+  if (name === 'thinking_delta') {
+    appendLiveStep('thinking', data?.text ?? '');
+    keepRunOpen(ensureLive());
+    return;
+  }
+  /* 思考段**写完了**：后端在正文首字到来前推一条 `status: done`。收到就立刻把这段折叠起来
+     （用户口径 2026-12-08）—— 以前这里直接 return、靠"下一步骤出现"顺带收，
+     而清洗器扣着尾巴时"思考写完 → 正文首字"之间能有几百毫秒，那段时间思维链还摊着。 */
+  if (name === 'thinking') {
+    if (liveId.value) markThinkingDone(ensureLive());
+    return;
+  }
   /* 调工具了：之前那几句是过程（『我先看一下…』），不算正文 —— 清掉已显示的那一段，
      与后端 `state.text` 同一口径（用户口径 2026-11-26）。过程轨迹里仍然留着。 */
   if (name === 'answer_reset') {
     dropDelta();
-    ensureLive().content = '';
+    const live = ensureLive();
+    live.content = '';
+    keepRunOpen(live);          // 半句话被收回去了 = 又要接着干过程，轨迹留着别收
     return;
   }
   if (name === 'answer_delta') {
-    /* 进缓冲，最多每 90ms 落一次盘（见 DELTA_FLUSH_MS 的说明） */
-    pushDelta(ensureLive(), data?.text ?? '');
+    /* 进缓冲，最多每 66ms 落一次盘（见 DELTA_FLUSH_MS 的说明） */
+    const live = ensureLive();
+    pushDelta(live, data?.text ?? '');
+    /* 开始写正文 = 过程结束了 → 把整条思维链收起来（用户口径 2026-12-08：
+       **思维链结束时折叠，不是等正文输出完**）。 */
+    if (String(data?.text ?? '').trim()) foldRunSoon(live);
     return;
   }
   if (name === 'citation' && data?.ref) {
@@ -1702,6 +2260,14 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   } : null;
   if (optimistic) {
     messages.value = [...messages.value, optimistic];
+    markFresh(optimistic.message_id);
+    /* 输入框 → 气泡：整块飞过去（400ms glide）。量的是发送瞬间的输入框，
+       落点是刚插进来的那条用户消息；draft 还没清，量到的是用户看到的那个高度。 */
+    void flyMessage(
+      composerEl.value?.querySelector('.composer-box') as HTMLElement | null,
+      optimistic.content,
+      () => msgsEl.value?.querySelector('.msg[data-fresh="user"] .body'),
+    );
     draft.value = '';
     /* 发出去就**立刻**收回一行：`finally` 那次复位要等整轮回答结束（长问答可能几十秒），
        在那之前输入框一直停在上一次的多行高度，看着像没发出去（用户 2026-12 报的）。 */
@@ -1711,9 +2277,11 @@ async function ask(mode: 'send' | 'regen' | 'edit' = 'send', target?: AgentMessa
   // 用户 2026-10-03 报过"思考的抬头跑到我问的问题上面去了"）。
   liveId.value = `local-assistant-${Date.now()}`;
   ensureLive();
+  markFresh(liveId.value);
+  resetReveal();                                        // 新一轮：正文载入动画从头播
   openRuns.value = [...openRuns.value, liveId.value];   // 跑着的那一轮默认展开（可点收起）
-  appendLiveStep('stage', mode === 'send' ? '正在准备…'
-    : (mode === 'regen' ? '正在重新生成…' : '正在重新提问…'));
+  /* 起手不再塞一句"正在准备…"（用户口径 2026-12-09：这类旁白整句删掉）。
+     抬头那句"正在思考… · 0.3 秒"由 `runTitle` 自己给，见 `showRun`：一步都没有时抬头照样在。 */
   if (mode === 'send') {
     /* 这一轮带过选区就把锚点存下来：回答下面那排色点要用它建高亮 / 存笔记。
        **同一对话里的追问（这一轮不带选区）不动它** —— 色点钉在第一轮那条回答下面，
@@ -2474,7 +3042,8 @@ defineExpose({ uploadFiles, ensureThread });
         </div>
 
         <div v-for="m in messages" :key="m.message_id" class="msg" :class="m.role"
-             :data-live="m.message_id === liveId ? '1' : null">
+             :data-live="m.message_id === liveId ? '1' : null"
+             :data-fresh="freshIds.has(m.message_id) ? m.role : undefined">
           <!-- 压缩留痕：对话里多出来的一轮 -->
           <div v-if="m.role === 'summary'" class="sum-card">
             <div class="sum-head"><AppIcon name="layers" :size="12" />已压缩 · 前面的内容在这里</div>
@@ -2490,51 +3059,93 @@ defineExpose({ uploadFiles, ensureThread });
             <!-- 过程轨迹：**思考 / 正文 / 工具按发生顺序混排**（正常 agent 就长这样）。
                  正文段直接就是回答本体（`run.steps` 里有 text 段时不再另渲染 `content`，
                  否则同一段话会出现两遍）；没有 `run` 的老消息由 `stepsOf` 兜底拼一份。 -->
-            <div v-if="stepsOf(m).length" class="run" :class="{ live: m.message_id === liveId }">
-              <button class="run-head" @click="toggleRun(m.message_id)">
-                <AppIcon :name="isRunOpen(m.message_id) ? 'chevron-down' : 'chevron-right'" :size="12" />
+            <div v-if="showRun(m)" class="run" :class="{ live: m.message_id === liveId }"
+                 :data-open="isRunOpen(m.message_id) ? '1' : null">
+              <button class="run-head" :class="{ openable: hasTrace(m) }"
+                      :aria-expanded="hasTrace(m) ? isRunOpen(m.message_id) : undefined"
+                      @click="hasTrace(m) && toggleRun(m.message_id)">
+                <!-- 只有旁白的一轮（还没开始想、也没调工具）：不给箭头，留一个同宽的占位，
+                     免得抬头文字比别的轮往左挪 12px。 -->
+                <AppIcon v-if="hasTrace(m)" class="caret" :class="{ shut: !isRunOpen(m.message_id) }"
+                         name="chevron-down" :size="12" />
+                <span v-else class="caret-gap" aria-hidden="true" />
                 <span v-if="m.message_id === liveId" class="dot" />
                 <span class="run-title">{{ runTitle(m) }}</span>
                 <span class="run-sum truncate">{{ runSummary(stepsOf(m)) }}</span>
               </button>
               <!-- 轨迹正文：**展开/收起也走过渡**（不瞬间弹出）。里面的步骤行由
                    `TransitionGroup` 管进场与"让位"（新行淡入 + 后面的行平滑下移）。 -->
-              <Transition name="fold">
-                <div v-if="isRunOpen(m.message_id)" class="run-body">
+              <Transition name="fold" :css="false" @enter="runEnter" @leave="runLeave">
+                <div v-if="isRunOpen(m.message_id) && hasTrace(m)" class="run-body"
+                     :ref="(el) => setRunBody(m.message_id, el)"
+                     @scroll.passive="onRunScroll($event.target as HTMLElement)">
                   <TransitionGroup name="step">
-                    <!-- **一行只有一个根元素**（类名在 rowClass 里合成）：拆成 v-if/v-else-if
+                    <!-- **一项只有一个根元素**（类名在 itemClass 里合成）：拆成 v-if/v-else-if
                          多个兄弟分支，编译出来每个 key 会变成 Fragment、分支 key 全是 0/1/2，
                          TransitionGroup 就认不出「哪一行是谁」，让位动画随之失效。 -->
-                    <div v-for="r in traceRows(m)" :key="`${m.message_id}-${r.i}`"
-                         :class="rowClass(m, r)"
-                         :title="r.s.kind === 'thinking'
-                           ? (isStepOpen(m.message_id, r.i) ? '收起这段思考' : '展开这段思考') : undefined"
-                         @click="onRowClick(m, r, $event)"
-                         @pointerover="r.s.kind === 'text' && onCitePeek($event)"
-                         @pointerout="r.s.kind === 'text' && onCitePeekOut()">
-                      <!-- 过程里说的半句（调工具之前那句）：留在轨迹里，最终回答在外面 -->
-                      <div v-if="r.s.kind === 'text'" v-html="renderAnswer(r.s.text || '', m.citations)" />
-                      <!-- 思考段：默认只露 4 行，点一下展开（长思考不占满整屏）。
-                           流式里**最新那一步**就是思考时自动展开（`.autogrow`），一旦后面出现
-                           工具/正文、或整轮结束，就自己塌回去（历史消息永远按收起渲染）。 -->
-                      <template v-else-if="r.s.kind === 'thinking'">
-                        <AppIcon class="step-caret"
-                                 :name="isStepOpen(m.message_id, r.i) ? 'chevron-down' : 'chevron-right'"
-                                 :size="11" />
-                        <AppIcon class="step-ico" name="sparkle" :size="11" />
-                        <span class="step-tag">思考</span>
-                        <span class="step-text" :style="stepMaxStyle(m.message_id, r.i)">{{ r.s.text }}</span>
+                    <div v-for="item in traceItems(m)" :key="`${m.message_id}-${item.key}`"
+                         :class="itemClass(m, item)"
+                         :title="item.lead?.s.kind === 'thinking'
+                           ? (isItemOpen(m, item) ? '收起这段思考' : '展开这段思考') : undefined"
+                         @click="onItemClick(m, item, $event)"
+                         @pointerover="item.lead?.s.kind === 'text' && onCitePeek($event)"
+                         @pointerout="item.lead?.s.kind === 'text' && onCitePeekOut()">
+                      <!-- 一组连续的工具调用：抬头 + 左侧竖引导线 + 缩进的子行
+                           （照参考实现「代码 / 工具调用」那套：一行一次调用，参数跟在短语后面） -->
+                      <template v-if="item.rows">
+                        <div class="tool-head">
+                          <AppIcon class="group-caret caret" :class="{ shut: !isItemOpen(m, item) }"
+                                   name="chevron-down" :size="11" />
+                          <AppIcon name="code" :size="11" />
+                          <span class="step-tag">工具</span>
+                          <span class="tool-count">{{ item.rows.length }} 次调用</span>
+                          <template v-if="!isItemOpen(m, item)">
+                            <span class="think-sep" aria-hidden="true" />
+                            <span class="tool-sum">{{ toolSummary(item.rows) }}</span>
+                          </template>
+                        </div>
+                        <Transition name="fold" :css="false" @enter="foldEnter" @leave="foldLeave">
+                          <div v-if="isItemOpen(m, item)" class="tool-lines">
+                            <div v-for="r in item.rows" :key="r.i" :class="rowClass(m, r)">
+                              <svg v-if="r.s.status === 'running'" class="step-spin" viewBox="0 0 16 16" aria-hidden="true">
+                                <circle cx="8" cy="8" r="6.2" />
+                              </svg>
+                              <AppIcon v-else :name="toolIcon(r.s.tool)" :size="11" />
+                              <span class="step-tag">{{ stepLabel(r.s.tool) }}</span>
+                              <span v-if="stepBrief(r.s)" class="step-arg" :title="stepText(r.s)">· {{ stepBrief(r.s) }}</span>
+                              <AppIcon v-if="r.s.ok === false" class="step-flag bad" name="error" :size="11" />
+                              <AppIcon v-else-if="r.s.ok === true" class="step-flag ok" name="check" :size="11" />
+                              <span v-if="stepMs(r.s)" class="step-ms">{{ fmtMs(stepMs(r.s)) }}</span>
+                            </div>
+                          </div>
+                        </Transition>
                       </template>
-                      <!-- 宿主自己的动作（准备档案 / 检索 / 开始组织回答）：一行淡字，不是工具调用 -->
-                      <span v-else-if="r.s.kind === 'stage'" class="step-text">{{ r.s.text }}</span>
-                      <!-- 工具段：短语 + **这次调用的参数**（TOOL_STEPS 同源）+ 结果一句话 -->
-                      <template v-else>
-                        <AppIcon :name="toolIcon(r.s.tool)" :size="11" />
-                        <span class="step-tag">{{ stepLabel(r.s.tool) }}</span>
-                        <span v-if="stepBrief(r.s)" class="step-arg" :title="stepText(r.s)">· {{ stepBrief(r.s) }}</span>
-                        <AppIcon v-if="r.s.ok === false" class="step-flag bad" name="error" :size="11" />
-                        <AppIcon v-else-if="r.s.ok === true" class="step-flag ok" name="check" :size="11" />
-                        <span v-if="stepMs(r.s)" class="step-ms">{{ fmtMs(stepMs(r.s)) }}</span>
+
+                      <template v-else-if="item.lead">
+                        <template v-if="item.lead.s.kind === 'text'">
+                          <div v-html="renderAnswer(item.lead.s.text || '', m.citations)" />
+                        </template>
+                        <!-- 思考段：第一行是「⌄ ✦ 思考 · 一行摘要」，正文在下面**从最左边起**，
+                             不缩进、不用等宽字体（思考是一段中文正文，不是代码）。
+                             历史消息默认折叠；对话期间最后一段自动展开（新的来了上一段自动收起）。 -->
+                        <template v-else-if="item.lead.s.kind === 'thinking'">
+                          <span class="think-lead">
+                            <AppIcon class="step-caret caret" :class="{ shut: !isItemOpen(m, item) }"
+                                     name="chevron-down" :size="11" />
+                            <AppIcon class="step-ico" name="sparkle" :size="11" />
+                            <span class="step-tag">思考</span>
+                            <template v-if="!isItemOpen(m, item)">
+                              <span class="think-sep" aria-hidden="true" />
+                              <span class="think-sum">{{ thinkSummary(item.lead.s.text) }}</span>
+                            </template>
+                          </span>
+                          <Transition name="fold" :css="false" @enter="foldEnter" @leave="foldLeave">
+                            <span v-if="isItemOpen(m, item)"
+                                  class="step-text" :style="stepMaxStyle(m.message_id, item.lead.i)">{{ item.lead.s.text }}</span>
+                          </Transition>
+                        </template>
+                        <!-- 宿主自己的动作（准备档案 / 检索 / 开始组织回答）：一行淡字，不是工具调用 -->
+                        <span v-else class="step-text">{{ item.lead.s.text }}</span>
                       </template>
                     </div>
                   </TransitionGroup>
@@ -2548,7 +3159,16 @@ defineExpose({ uploadFiles, ensureThread });
 
             <!-- 只发了图片的提问没有正文：后端为给模型留上下文会存一句「（图片 ×N）」，
                  那不该渲染成一个空消息泡（用户口径 2026-12-07）—— 图在下面单独显示就够了。 -->
-            <div v-if="hasBody(m)" class="md body"
+            <!-- 正在写的那条助手消息：正文**按块**渲染（`splitAnswerParts`），已封口块的
+                 `v-html` 值不变 → DOM 不被重建，只有最后一块跟着增量重画。 -->
+            <template v-if="m.role === 'assistant' && m.message_id === liveId && hasBody(m)">
+              <div v-for="(part, pi) in answerParts(m)" :key="pi"
+                   class="md body md-part" :class="{ 'md-part-tail': part.tail }"
+                   v-html="part.html"
+                   @click="onCitationClick"
+                   @pointerover="onCitePeek" @pointerout="onCitePeekOut" />
+            </template>
+            <div v-else-if="hasBody(m)" class="md body"
                  v-html="renderAnswer(m.role === 'user' ? splitQuote(m.content).rest : finalAnswer(m), m.citations)"
                  @click="onCitationClick"
                  @pointerover="onCitePeek" @pointerout="onCitePeekOut" />
@@ -3031,15 +3651,35 @@ defineExpose({ uploadFiles, ensureThread });
      消息自己还是从上往下排（块级子项在列向 flex 里本来就是撑满宽度、顺序堆叠）。 */
   display: flex; flex-direction: column;
 }
-.msg { margin-bottom: 14px; }
+.msg { margin-bottom: 14px; flex: none; }
+/* 刚发出的那一条：用户气泡从右下角长出来（320ms、回弹到 1.3），助手那条 12px 上浮 + 240ms glide。
+   和「输入框飞过去」的 400ms 幽灵接在同一个节拍上 —— 幽灵最后 30% 淡出，气泡正好接住。 */
+.msg[data-fresh="user"] .body {
+  transform-origin: 100% 100%;
+  animation: msg-grow .32s cubic-bezier(.34, 1.3, .64, 1) both;
+}
+.msg[data-fresh="assistant"] { animation: row-rise .24s cubic-bezier(.22, .61, .36, 1) both; }
+@keyframes msg-grow {
+  from { opacity: 0; transform: scale(.2); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes row-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
 .msg.assistant .body { font-size: calc(12.5px * var(--ts, 1)); line-height: 1.72; color: var(--text); }
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
-/* 用户气泡：**圆角矩形**（用户口径 2026-11-19：照 DeepSeek 那种），无描边、用强调色的淡底，
-   右边两个角略小一点，读起来像"我发出去的一块"。 */
+/* 用户气泡：和 /chat 的 Cylit Agent 同一个口径 —— 强调色淡底、14px 圆角、无描边，
+   右下角收一个小角（"我发出去的这一块"朝发送键那侧收紧）。 */
 .msg.user .body {
-  background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
-  border-radius: 16px 16px 4px 16px;
-  padding: 8px 12px; font-size: calc(12.5px * var(--ts, 1)); line-height: 1.65; max-width: 88%;
+  background: var(--accent-soft);
+  color: var(--text);
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px;
+  font-size: calc(13px * var(--ts, 1));
+  line-height: 1.68;
+  max-width: 88%;
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--text) 4%, transparent);
 }
 .msg.user .sel-quote, .msg.user .atts { align-self: flex-end; }
 /* 气泡下面那条（时间 / 复制 / 修改）：**鼠标移到这条消息上才出现**（用户口径 2026-11-19），
@@ -3078,14 +3718,23 @@ defineExpose({ uploadFiles, ensureThread });
 
 /* 过程轨迹：抬头一行（用时 + 干了什么），正文里**思考 / 正文 / 工具按发生顺序混排**。
    抬头不是胶囊按钮而是一行文字 —— 它每轮都在，做成白胶囊会把整屏切成一条条横带。
-   正文段（`.run-text`）与轨迹外的正文同款排版；思考段用等宽灰字（草稿不是答案）。 */
+   正文段（`.run-text`）与轨迹外的正文同款排版。
+   **字号统一（用户口径 2026-10-25「字体大小不一致」）**：整条轨迹（抬头 / 阶段 / 思考 / 工具 /
+   参数 / 秒数）都用正文那一档 `12.5px`，只靠颜色与字重分层次，不再这里 11.5、那里 12.5。 */
 .run { margin: 2px 0 6px; }
 .run-head {
   display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
   padding: 2px 0; border: 0; background: none; cursor: pointer;
-  color: var(--text-dim); font-size: calc(11.5px * var(--ts, 1));
+  color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1));
 }
 .run-head:hover { color: var(--text); }
+/* 折叠箭头：**一枚图标转过去**，不是"右箭头换成下箭头" —— 换字形是硬切，转是连续的
+   （轨迹抬头、工具组、思考段三处共用；时长与段内开合一个节奏）。 */
+.caret { flex: none; transition: transform .22s cubic-bezier(.22, .61, .36, 1); }
+.caret.shut { transform: rotate(-90deg); }
+/* 没有可展开内容的一轮（只攒了旁白）：箭头位置留白，抬头文字不跟着往左挪。 */
+.caret-gap { width: 12px; flex: none; }
+.run-head:not(.openable) { cursor: default; }
 .run-title { font-weight: 600; white-space: nowrap; }
 .run-sum { color: var(--text-faint); margin-left: 2px; min-width: 0; }
 .run .dot {
@@ -3121,74 +3770,192 @@ defineExpose({ uploadFiles, ensureThread });
     animation: live-sheen 2.1s linear infinite;
   }
 }
-/* 光标跟在**这一轮最后落下的那段话**后面（正文段或轨迹里的半句都算）。 */
+/* 光标跟在**这一轮最后落下的那段话**后面（正文段或轨迹里的半句都算）。
+   节拍照 DSH 的 `caret-blink`：1s、steps(1)、中点为灭。
+   正文按块渲染（`.md-part`）后要认准"最后一块"，否则每个块后面都会挂一枚光标。 */
 @keyframes caret { 50% { opacity: 0; } }
-.msg[data-live="1"] .body :deep(> *:last-child)::after,
+.msg[data-live="1"] .md-part-tail :deep(> *:last-child)::after,
 .msg[data-live="1"] .run-text :deep(> *:last-child)::after {
   content: ""; display: inline-block; width: 6px; height: 12px; margin-left: 3px;
   vertical-align: -2px; border-radius: 1.5px; background: var(--accent);
-  animation: caret 1.1s step-end infinite;
+  animation: caret 1s steps(1) infinite;
 }
+/* ── 正文的载入动画（照 DSH 的 `reveal-piece`）──
+   流式正文按块渲染（`splitAnswerParts`）：已封口的块 DOM 不动，只有最后一块每批重画，
+   日志里"整段每 90ms 闪一下"就是这么没的。这里只负责把**新出现的块**与**新长出来的
+   那一截**从 .2 淡到 1 —— 160ms、方向柔和的 ease-out，比原来的 120ms `ease-out` 少一点顿挫。 */
+/* `display: contents`：块容器自己不生成盒子 —— 排版与"整段 v-html"逐像素一致，
+   段落之间的 margin 照常折叠，也不需要在这里重写一套行距。 */
+.md-part { display: contents; }
+@keyframes reveal-piece { from { opacity: .2; } to { opacity: 1; } }
+.msg .body :deep(.reveal-piece),
+.msg .run-text :deep(.reveal-piece) { animation: reveal-piece .16s cubic-bezier(.16, .84, .44, 1); }
 /* 纯装饰：系统里关掉动效就都不动。**不动的强调还在**（主题色的点、主题色的停止钮）。 */
 @media (prefers-reduced-motion: reduce) {
   .run.live .run-body, .run .dot::after,
-  .msg[data-live="1"] .body :deep(> *:last-child)::after,
+  .run-step.tool.running::after,
+  .run-step .step-spin,
+  .msg[data-fresh],
+  .msg[data-fresh="user"] .body,
+  .msg .body :deep(.reveal-piece),
+  .msg .run-text :deep(.reveal-piece),
+  .msg[data-live="1"] .md-part-tail :deep(> *:last-child)::after,
   .msg[data-live="1"] .run-text :deep(> *:last-child)::after { animation: none; }
   .run.live .run-title { animation: none; background-position: 50% 0; }
   /* 步骤行的进场 / 让位、轨迹展开收起、思考段的高度过渡：系统里关了动效就都是瞬时的
      （信息一个都不少，只是不再动）。 */
   .run-body, .run-body > *, .run-step, .run-text, .run-step.think .step-text,
+  .caret,
   .step-enter-active, .step-leave-active, .step-move,
   .fold-enter-active, .fold-leave-active { animation: none !important; transition: none !important; }
 }
 .run-body {
   /* 用户口径 2026-12-06：**去掉那条竖线**。它原本是"轨迹是一个整体"的视觉分组，
-     但思考段一多就变成一条贴满整屏的线，和正文抢注意力；现在靠缩进 + 更淡的字色分组就够了。 */
+     但思考段一多就变成一条贴满整屏的线，和正文抢注意力；现在靠缩进 + 更淡的字色分组就够了。
+     2026-10-25：**左侧缩进也去掉** —— 轨迹贴着消息列最左边起排，不再往里收 6px。
+
+     2026-10-25（照 DSH 的"过程块"）：轨迹有自己的**限高滚动容器**。一轮里思考/工具可能有几十行，
+     全铺开会把正文顶出屏幕；这里给它一个 44vh / 420px 的上限，超了就在块内滚，
+     上下边缘按能否滚动渐隐（`can-up` / `can-down` 由 JS 同步，见 `setRunBody`）。
+     `overscroll-behavior` **不设 contain**：块内滚到底（/顶）要继续带动外层对话滚动 ——
+     用户口径 2026-10-25「滚到思维链底部就该滚整个对话」，链条式滚动是默认行为，别拦它。 */
   display: flex; flex-direction: column; gap: 3px;
-  margin: 4px 0 0 6px;
+  margin: 4px 0 0;
+  max-height: min(44vh, 420px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+  transition: mask-image .12s linear;
+}
+.run-body.can-up { mask-image: linear-gradient(transparent 0, #000 14px, #000 100%); }
+.run-body.can-down { mask-image: linear-gradient(#000 0, #000 calc(100% - 14px), transparent 100%); }
+.run-body.can-up.can-down {
+  mask-image: linear-gradient(transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
 }
 /* ── 丝滑过渡（Claude Code 那种：行是一条条长出来的，后面的行让位而不是瞬移）──
-   步骤列表是 TransitionGroup：新行 fade + 轻移 4px，move 管插入新行时后面行的让位；
-   整条轨迹的展开/收起由模板外层 `<Transition name="fold">` 负责，不会瞬间弹出。 */
-.step-enter-from { opacity: 0; transform: translateY(4px); }
-.step-enter-active { transition: opacity .2s var(--ease), transform .2s var(--ease); }
+   步骤列表是 TransitionGroup：新行 fade + 轻移 12px，move 管插入新行时后面行的让位；
+   时长/缓动对齐参考实现（240ms / cubic-bezier(.22,.61,.36,1)）。 */
+.step-enter-from { opacity: 0; transform: translateY(12px); }
+.step-enter-active { transition: opacity .24s cubic-bezier(.22, .61, .36, 1), transform .24s cubic-bezier(.22, .61, .36, 1); }
 .step-leave-to { opacity: 0; transform: translateY(-2px); }
 .step-leave-active { transition: opacity .16s var(--ease), transform .16s var(--ease); }
-.step-move { transition: transform .18s var(--ease); }
+.step-move { transition: transform .24s cubic-bezier(.22, .61, .36, 1); }
+/* 段内开合（思考正文 / 工具子行）：进场淡入 + 轻移，离场淡出。
+   参数对齐参考实现：进场 200ms ease-out、离场 160ms —— 这就是 DSH 那种"展开长出来、
+   收起缩回去"的节奏（高度用 max-height 过渡，见 `.run-step.think .step-text`）。 */
 .fold-enter-from, .fold-leave-to { opacity: 0; transform: translateY(-3px); }
-.fold-enter-active { transition: opacity .2s var(--ease), transform .2s var(--ease); }
-.fold-leave-active { transition: opacity .16s var(--ease), transform .16s var(--ease); }
+.fold-enter-active { transition: opacity .2s ease-out, transform .2s ease-out; }
+.fold-leave-active { transition: opacity .16s ease-out, transform .16s ease-out; }
+/* ── 工具调用组（照参考实现「代码 / 工具调用」那套）──
+   抬头一行 `⌗ 工具 3 次调用`，下面一条**竖引导线**把每次调用串起来；每行一次调用，
+   短语 + `·` + 本次参数（截成一行）。整组贴在轨迹左边起排，不额外留白。 */
+.tool-group { display: flex; flex-direction: column; gap: 2px; }
+.tool-head {
+  display: flex; align-items: center; gap: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tool-head:hover .step-tag { color: var(--text); }
+.tool-head svg { flex: none; }
+.tool-head .group-caret { color: var(--text-faint); }
+.tool-count { color: var(--text-faint); flex: none; }
+/* 收起时的摘要：这一次都调了哪些工具，一行，超出省略（中性灰，不染主题色） */
+.tool-sum {
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1));
+}
+.tool-lines {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-left: 5px; padding-left: 9px;
+  border-left: .5px solid var(--divider);
+}
+.tool-lines .run-step { padding: 0 2px; border-radius: 3px; }
 .run-step {
   /* `flex-start`：图标/标签钉在**第一行**上（用 baseline/center 时，多行思考的图标会飘到
      整段中间，看着不像"图标与文字并排"，用户 2026-10-03 报过） */
   display: flex; align-items: flex-start; gap: 5px;
-  font-size: calc(11.5px * var(--ts, 1)); line-height: 1.65; color: var(--text-faint);
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.65; color: var(--text-faint);
 }
 .run-step :deep(svg), .run-step svg { flex: none; margin-top: 2px; }
 .run-step .step-tag { color: var(--text-dim); flex: none; }
-.run-step .step-arg { color: var(--text-faint); overflow-wrap: anywhere; }
-.run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: calc(10.5px * var(--ts, 1)); }
+.run-step .step-arg {
+  color: var(--text-faint); overflow-wrap: anywhere;
+  /* 参数摘要**截成一行**（参考实现也是一行 + 省略号）：一次调用占一行，
+     否则一条工具行能把整屏吃掉，轨迹就不成"轨迹"了。完整内容在 title 里。 */
+  min-width: 0; flex: 1 1 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.run-step .step-ms { margin-left: auto; padding-left: 8px; flex: none; font-family: var(--mono); font-size: calc(11px * var(--ts, 1)); }
 .run-step.tool.running .step-tag { color: var(--accent-text); }
+/* 运行中的工具行：一条 1.5s / 延迟 .3s 的高光扫过（前 2/3 走完，后 1/3 停住）——
+   参数照抄参考实现的 row-shimmer。只在「正在跑」的那一行出现，跑完立刻消失。 */
+.run-step.tool.running { position: relative; overflow: hidden; }
+.run-step.tool.running::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%,
+    color-mix(in srgb, var(--text) 9%, transparent) 45%, transparent 100%);
+  transform: translateX(-100%);
+  animation: step-sweep 1.5s linear .3s infinite;
+}
+@keyframes step-sweep {
+  0% { transform: translateX(-100%); }
+  66.667%, 100% { transform: translateX(100%); }
+}
+/* 工具行的加载环：850ms 一圈（与 /chat 的思维链同速）。跑着时替掉工具图标，
+   比"只把字染成主题色"更明确地表达"这一步在干活"。 */
+.run-step .step-spin {
+  width: 11px; height: 11px; flex: none; margin-top: 2px;
+  color: var(--accent);
+  animation: step-spin .85s linear infinite;
+}
+.run-step .step-spin circle {
+  fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
+  stroke-dasharray: 3.2 6.1 3.2 6.1 3.2 6.1 3.2 6.1 3.2 6.1;
+}
+@keyframes step-spin { to { transform: rotate(360deg); } }
 /* 成败标记：跑完给一个淡勾，失败换成红色的感叹（原因直接写在 `step-arg` 里） */
 .run-step .step-flag { flex: none; margin-left: 4px; opacity: .55; }
 .run-step .step-flag.ok { color: var(--ok-text, var(--accent-text)); }
 .run-step .step-flag.bad { opacity: 1; color: var(--danger-text, #c0392b); }
 .run-step.tool.bad .step-tag, .run-step.tool.bad .step-arg { color: var(--danger-text, #c0392b); }
-/* 阶段提示（准备档案 / 检索 / 组织回答）：比步骤再淡一档，它只是过程的背景 */
+/* 阶段旁白不进轨迹（见 `traceRows`），这条样式只留给"万一"：比步骤再淡一档。 */
 .run-step.stage .step-text { color: var(--text-faint); font-style: italic; }
-/* 思考段：默认只露 4 行（一轮思考可能上万字），点一下展开全文。
-   最前面那枚箭头就是"能展开"的提示（与轨迹抬头同一套箭头语汇）。 */
-.run-step.think { cursor: pointer; }
-.run-step.think:hover .step-tag { color: var(--accent-text); }
+/* 思考段：**第一行只有「⌄ ✦ 思考」**（收起时后面跟一行摘要），正文换行落在最左边
+   （不缩进到标签下面，用户口径 2026-10-25：思考和工具内容左对齐、左侧不留白）。
+   默认展开（过程正文要留着）；点一下收成摘要那一行。 */
+.run-step.think {
+  cursor: pointer;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+}
+.run-step.think .think-lead {
+  display: flex; align-items: center; gap: 5px;
+  flex: none;
+}
+.run-step.think .think-lead svg { margin-top: 0; }
+.run-step.think:hover .step-tag { color: var(--text); }
 .run-step.think .step-caret { color: var(--text-faint); }
+.run-step.think .think-sep {
+  width: 2px; height: 2px; margin: 0 1px 0 3px; border-radius: 1px;
+  background: var(--text-faint); flex: none;
+}
+/* 收起时那一行摘要：**中性灰**（用户口径 2026-10-25「移除折叠后的颜色」：
+   折叠态不染主题色、不留底色，只靠"淡一档"表达它是过程） */
+.run-step.think .think-sum {
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text-dim); font-size: calc(12.5px * var(--ts, 1));
+}
+/* 思考正文是**一段中文正文**，不是代码：不用等宽字体（等宽在这里会退化成宋体观感），
+   与正文同一套字形，只比正文淡一档、小一档。 */
 .run-step.think .step-text {
-  font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
-  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
-  /* 关闭态的高度**正好是这 4 行**（4 × line-height 1.65）——它同时是收起动画的目标值：
-     展开时模板把实测高度顶成 inline max-height，收起时退回这里，两头都能过渡、且不裁字。
-     注意：-webkit-line-clamp 必须留着 4（自检探针量的是 computed 值）。 */
-  max-height: 6.6em;
-  transition: max-height .24s var(--ease);
+  display: block;
+  font-family: inherit;
+  font-size: calc(12.5px * var(--ts, 1));
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  transition: max-height .2s ease-out;
 }
 .run-step.think.open .step-text { display: block; -webkit-line-clamp: unset; }
 /* 流式里「还在写的最后一段思考」：高度完全放开（边写边长，不跟过渡抢） */

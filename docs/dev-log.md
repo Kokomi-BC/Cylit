@@ -14151,3 +14151,259 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`210-dist.tgz`），`pm2 restart cylit-api`。
 
+
+
+### 199. 第一百九十九轮：复刻 dsh web 的三段动效（发送 / 思维工具链 / 滚动）
+
+用户口径 2026-10-25：要复刻 `127.0.0.1:3080`（dsh web + Claude 皮肤）的「消息发送」「思维工具链展开」
+「滚动」三段动效，并且**真实对话页（阅读器右侧 ReaderChat）也要**。
+
+做法是想尽办法拿到**实测参数**而不是估：读它构建产物里的 CSS 变量表与 `@keyframes`，再用 Web Animations API
+的 `document.getAnimations()` 在真机上逐帧采样一次完整发送。关键数值（全部进代码，不靠手感）：
+
+```
+--dur-enter .32s  cubic-bezier(.34,1.3,.64,1)   用户气泡从右下角长出来（transform-origin 100% 100%）
+--dur-glide .24s  cubic-bezier(.22,.61,.36,1)   新行插入的让位 / 步骤行进场
+--dur-swap  .15s  ease-in-out + 8px + blur(2px) 状态字换行（"思考"→"已完成，用时 …"）
+--dur-roll  .16s  cubic-bezier(.4,0,.2,1)       计数数字滚动
+--dur-open  .25s  cubic-bezier(.22,1,.36,1)     浮层/引用卡进场
+spin .85s linear | sweep 1.5s linear, delay .3s（前 2/3 走完，后 1/3 停）
+wait-dots 1.25s linear（三颗 4px 点，位置 0/7/14，错峰 1/4、7/12、11/12 周期）
+滚动：距底 ≤25px 算跟随；跟随时新内容用 **instant**（smooth 只给"读者自己拖回底部"那一次）
+```
+
+**新增（可复用，两个对话页共用）**
+
+- `components/chat/ThinkingChain.vue`：思维 + 工具链块。收起态锁 24px 只露一行摘要（右端 48px 渐隐），
+  展开/收起是 **height 200ms ease-out**（不是 max-height：它的插值单位是上限，内容越长动画越快）；
+  跑着时自动展开、一轮结束延迟 700ms 自己塌回去；运行行叠 spinner（850ms）+ 高光扫过。
+- `components/chat/WaitDots.vue`：三颗点的几何按参考实现的 `is-line` 变体算出来（每颗的 translate 端点写死，
+  不受 CSS 变量求值差异影响）。
+- `composables/useFollowTail.ts`：贴底跟随。程序滚动与读者滚动的区分用**落点**（±2px）+ smooth 时间窗，
+  不再用时间窗硬猜（上一版真实对话页踩过这个坑）。
+- `composables/useComposerFlight.ts`：**输入框 → 气泡的交接**。量输入框矩形 → 造一枚只活这一趟的幽灵，
+  400ms 内平移 + 缩到气泡矩形、底色从输入框色过渡到气泡色、85% 处淡完；气泡自己 320ms 从右下角长出来接住。
+  量气泡时先把它的进场动画临时关掉（`style.animation='none'` 再复原），否则量到的是缩到 0.2 的中间态。
+
+**ChatView（/chat 原型）**：假回复换成脚本化的一轮（思考 → 检索 → 对齐 → 成文），
+`pendingBy` 那套计数被"每条消息自带 running"取代；新增"回到最新"浮钮（读者上翻才出现）。
+**ReaderChat（真实对话页）**：步骤进场/让位、轨迹展开、思考段高度过渡全部对齐上面的令牌；新消息按
+`data-fresh` 播进场（历史消息重放不播）；运行中的工具行加高光扫过；发送时走同一套输入框→气泡交接。
+它原本就有的 `follow` / `to-bottom` 圆钮 / 恢复阅读位置**一行没动**。
+
+实测（本地 dev）：发送瞬间抓到 `msg-grow 320ms`、`row-rise 240ms`、`dot-line 1250ms`、幽灵 `400ms
+cubic-bezier(.22,.61,.36,1)`；幽灵落点与气泡布局盒误差 ≤1px（缩放前）。上翻 → 圆钮出现（`following=false`），
+点它 → 滚回 `scrollHeight-clientHeight` 且跟随恢复；思维链手点展开时抓到 `height 200ms ease-out`。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿（本机需把 `TEMP/TMP` 指到仓库内目录 ——
+系统 Temp 的 ACL 会让 esbuild 删不掉自己的临时文件，与本轮改动无关）；`scripts/frontend_check.py` 144 项全过。
+
+未做：ChatView 的真实后端（用户口径：后端以后再做，这一轮先把动效与结构定下来）。
+
+
+### 200. 第二百轮：思维链按 DSH 的形态重排（组化工具 / 一行摘要 / 统一字号 / 正文载入动画）
+
+用户口径 2026-10-25（连续四条，逐条落实）：
+
+1. **不再用宋体**：思考正文原来吃的是 `--mono`（Cascadia→Consolas→…），中文落到宋体观感上。
+   改成 `font-family: inherit`，字号与正文同档，只靠颜色分层次。
+2. **保留思考过程中的正文**：`showInTrace` 以前要求"轨迹里各段正文拼起来逐字等于 content"
+   才把过程正文放进轨迹，否则**整段丢弃**；现在只摘掉最后一段（那是回答本体），其余留在轨迹里。
+3. **不要头像**：`/chat` 的圆形头像没有搬过来，助手消息回到"没有头像、贴着左边缘"的形态。
+4. **思考和工具内容左对齐、左侧不要留白**：思考正文从**标签下一行、最左起排**（以前与「思考」
+   同一行，换行后缩进 ~55px）；`.run-body` 的 6px 左边距也去掉。
+
+随后按参考实现补两处结构：
+
+- **工具调用组化**（照 3080 的「代码 / 工具调用」）：连续 tool 步骤合成一组，抬头一行
+  `⌄ ⌗ 工具 N 次调用 · 检索论文 · 看背景档案`，展开后是一条**竖引导线** + 每次调用一行
+  （图标 + 短语 + `·` 参数 + 结果勾 + 秒数），参数摘要截成一行（完整值在 title 里）。
+- **开合语义**：历史消息展开思维链后**内部全部折叠**；**只有对话期间**（`liveId` 那一轮）
+  最后一段自动展开、新的一段进来上一段自动收起 —— 就是 DSH 那种"跟着模型看"的效果。
+  收起整条轨迹会**清空内部展开状态**，再点开又全是折叠的（用户口径明确要求）。
+  段内开合全部走 `<Transition name="fold">`（进场 200ms ease-out、离场 160ms）。
+
+最后是**正文输出动画**：照 DSH 的 `reveal-piece`（opacity .2→1、120ms ease-out）。
+正文是 `v-html` 整段重渲染的，纯 CSS 会让每 90ms 全部块重播一遍（看着像闪），
+所以用 JS 记住"已经出现过几块"，只给**这一批新长出来的块**挂类名、跑完即摘
+（`revealFreshBlocks`，随 `flushDelta` 走）。光标节奏也对齐了 `caret-blink`：1s、steps(1)。
+字号统一：整条轨迹（抬头 / 阶段 / 思考 / 工具 / 参数 / 秒数）都用正文那一档 12.5px。
+
+自检（`scripts/frontend_check.py`）：147 项 **147 通过**。轨迹那几条断言按新口径重写
+（工具组默认折叠、点开有子行；思考默认一行摘要、点开全文且正文与标签行左齐；
+历史消息内部全折叠；正文载入动画与 fold 过渡在源码层钉住）。
+无头探针踩过一个坑：`fold-enter-from` 的 `translateY(-3px)` 在虚拟时间下停在中途，
+`getBoundingClientRect` 会把"左齐"量成不齐 —— 改用 `offsetLeft/offsetTop`。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 147/147。
+
+
+### 201. 第二百零一轮：思维链的限高滚动容器 / 滚动链 / 折叠去色 / 正文渐显
+
+用户的四条口径（本轮全部落地在阅读器右侧的 `ReaderChat.vue`）：
+
+1. **移除折叠后的颜色**。折叠态的抬头不再染主题色、也不留悬停底色：`hover` 用中性 `--text`，
+   `.think-sum` / `.tool-sum` 摘要用 `--text-dim`，`.tool-lines .run-step:hover` 的背景直接删掉。
+   这样"折叠"只表达层级，不表达"可点击的热区"。
+2. **思维链自带较大的滚动容器**（照 DSH）。`.run-body` 变成限高滚动区：
+   `max-height: min(44vh, 420px)` + `overflow-y: auto` + `scrollbar-gutter: stable`。
+   同时 `.msg { flex: none; }` —— 消息在 flex 列里不再被压缩（实测链高从被压到 319px → 420px）。
+   边缘渐隐用 `mask-image`：`setRunBody()` 挂 `ResizeObserver` + `MutationObserver`，
+   同步 `.can-up` / `.can-down`（14px 渐隐），滚到底/顶时对侧遮罩自动撤掉。
+3. **滚动链**：滚到容器底部/顶部继续滚，应该带动整个对话页。第一版给了
+   `overscroll-behavior: contain`（会把链掐断），去掉后回到默认 `auto` 即原生滚动链。
+   Playwright 用 `page.mouse.wheel()`（必须可信事件，`page.evaluate` 里合成的 WheelEvent 不真滚）
+   实测：链在底部（1537/1538）向下滚 → 外层 `.msgs` 0→227；链在顶部（0）向上滚 → 外层 70→0。
+4. **正文"渐渐出现"**：`reveal-piece` 只给"新块"挂类名还是不够 —— 同一块在**长**的时候，
+   整块重放会闪。所以 `wrapTail()` 把最后一块里**新长出来的那一截纯文本尾巴**包成
+   `<span class="reveal-piece">`，只让尾巴淡入。选择器也从 `:deep(> .reveal-piece)` 改成
+   `:deep(.reveal-piece)`（注入的 span 是块的子元素，不是 body 的直接子元素）。
+   `pendingReveal` 累计本批字符数，新一轮 `resetReveal()` 清零。
+
+另外把**开合动画做软**（上一条口径"不要那么生硬"的收尾）：`auto` 高度没法过渡，
+`max-height` 插值又是"上限越大内容越长"，所以 `foldEnter` / `foldLeave` 走 `:css="false"`
+的 JS 钩子，用 Web Animations 逐帧改 `height`：展开 0→h 260ms `cubic-bezier(.22,.61,.36,1)`、
+收起 h→0 200ms `cubic-bezier(.4,0,.2,1)`。实测展开高度 0→6.9→20.2→…→71.9 逐帧增长。
+既然收起要 200ms，`.run` 上加了 `:data-open` 表达"已提交的开合状态"。
+
+自检：`scripts/frontend_check.py` **148 项 148 通过**。这一轮新加的最后一条断言原本钉在
+"收起后 `.run-body` 已从 DOM 移除"，在无头 `--virtual-time-budget` 下必挂 —— 虚拟时间里 rAF
+被冻住，Vue 的 leave 钩子（`:css="false"`）根本没被调用，节点自然一直挂着（真浏览器里 200ms
+后正常移除）。改成断言 `data-open` 已清 + 轨迹外回答仍在，探针不再依赖合成帧。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 148/148。
+未验证：真实 SSE 流式下"最新一段结束后自动折叠"的端到端表现（后端 agent 未起，只有源码级断言
++ 模拟 DOM 验证）。
+
+### 202. 第二百零二轮：思维链"写正文就收起" + 折叠动画做丝滑
+
+用户口径：「思维链结束时，自动折叠而不是等待正文输出完成」「折叠要有丝滑动画」。
+
+**一、什么时候收**
+
+判定很朴素：正文开始写 = 过程结束。`answer_delta`（有实字）→ `foldRunSoon`；`thinking_delta` /
+`tool` / `answer_reset` → `keepRunOpen`（过程还在继续，轨迹留着）。用户**手点过**这一轮
+（`runTouched`）就一律不自动改。
+
+防抖 320ms，但不按"每个 delta 重置计时"来写 —— 那样字一直出、轨道永远不收。改成一个
+**只认第一次**的 `pendingFold` + 一个 `lastProcessAt` 时间戳：定时器到点时若最近 400ms 内
+又冒出过程事件，就再等一轮；否则收。
+
+第一版把 `stage`（"正在阅读并组织回答…"这类旁白）也算过程事件，于是它**在正文开始之后**到，
+一句旁白就把待收状态取消了 —— 真实 SSE 实测（`/api/v1/agent/ask`，2.3 秒那一轮）轨迹跑完还
+摊着。现在旁白不碰开合，只追加一行字。
+
+**二、怎么收**
+
+开合从两个各写一份的钩子合并成 `fold(el, open, done, pinPause)`：
+
+* **时长跟着距离走**（`foldMs`）：一行字和一个 420px 的过程块用同一个 200ms，矮的显拖、高的显急。
+  实测 237px → 展开 270ms / 收起 260ms。
+* **高度与透明度不同步**：收起时 `.62` 处高度只剩 42%、透明度已到 .3，收尾只剩空盒子在缩
+  （不然文字被压扁着消失，很脏）；展开反过来，高度先出来、字稍后才全亮。
+* 轨迹容器自己折叠时置 `data-fold-anim="1"`，`setRunBody` 的 RO/MO 里**暂停钉底** ——
+  高度是动画在写的，这会儿钉底会把内容一帧一帧往下拽（"边收边滑"）。
+* `followThroughFold` 在动画那几帧里每帧补一次 `followBottom()`：这一段占的地方在变，
+  不跟就是"正文先被顶走一截、动画结束再弹回来"。
+* 折叠箭头**转过去**而不是换字形：`.caret` 一枚 `chevron-down` + `transform: rotate(-90deg)`，
+  220ms 与段内开合同一节奏（换 `chevron-right` 是硬切）。轨迹抬头 / 工具组 / 思考段三处同用。
+* `closeRun` 里的"清空内部展开状态"留在**收起**这一刻（不是展开那一刻）：收起时里面若还开着
+  几段，两套高度动画叠在同一个盒子里，观感是"突然塌一下"。
+
+**三、实测（真实浏览器 + 真实 SSE，阅读器 8710）**
+
+单段开合（.run 高 238px）：进入 `dur=270 easing=cubic-bezier(.22,.61,.36,1)`，
+关键帧 `0px/0 → 185.3px/1@.72 → 237.5px/1`；收起 `dur=260 easing=cubic-bezier(.4,0,.2,1)`，
+`237.5px/1 → 99.8px/.3@.62 → 0px/0`；期间 `data-fold-anim=1`、外层 `.msgs` 距底始终 0px（没弹）。
+
+自动收起（问一句、等一轮真流式）：
+
+```
+ 6201ms  live=1 open=2 h=69  parts=1      ← 正文第一块出现
+ 6461ms  live=1 open=1 h=64F parts=1      ← 320ms 后轨迹开始收（F = data-fold-anim）
+ 6503ms  live=1 open=1 h=31F
+ 6546ms  live=1 open=1 h=9F
+ 6597ms  live=1 open=1 h=1F  parts=2
+ finalRun=shut                            ← 落库那条也是收起的
+```
+
+另外两轮上游把整段答案一次性给过来（`answer_delta` 之后 25ms 内就 `done`），
+320ms 的防抖来不及跑，由 `settleRun` 在轮末收起 —— 收尾状态同样正确（`final=shut`）。
+
+自检：`scripts/frontend_check.py` **155 项 155 通过**（新增：折叠时长按距离走 / 折叠期间每帧贴底 /
+箭头是转过去的 / 写正文就收起 / 不被旁白卡住）。探针里"箭头跟着翻"原本量 `svg` 的 `innerHTML`，
+现在图标不换字形了，改量 class（`caret` ↔ `caret shut`）。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 155/155。
+
+### 203. 第二百零三轮：旁白不进思维链，改由抬头那一行报
+
+用户问「旁白也记入到思维链了吗」——是的，`stage` 是一种正式步骤（`kind: "stage"`），
+在链条里渲染成 `.run-step.stage`（斜体淡字），实测第一行就是"正在阅读并组织回答…"。
+来源两处：后端 `runtime.py` 进模型前 `state.log.stage(...)`，前端 `ask()` 起手塞的"正在准备…"。
+
+口径：**数据留在 `run.steps`，但不渲染成一行**（用户选「前端不渲染」）。
+
+* `traceRows()` 跳过 `kind === 'stage'`：轨迹里只剩思考 / 工具 / 过程正文。序号仍按原始下标，
+  `openSteps` 的键（`${id}:序号`）不受影响。
+* 顺手解决"只有旁白的一轮"：`hasTrace()` = 渲染项非空。空的时候抬头**不给箭头**（点它没内容），
+  但留一个 12px 的 `.caret-gap` 占位 —— 否则那一轮的抬头文字会比别的轮左移 12px。
+  `:data-open` 与折叠动画的语义不变。
+* **旁白改落在抬头**（`runTitle`）：跑着的时候，若最新一步是 `stage` 就显示它，否则"正在思考…"；
+  有工具在跑时仍是工具短语。抬头本来就是状态行，宿主说"我在干什么"比笼统的"正在思考…"有用。
+* 旁白**不并段**：`appendLiveStep` 原本对同类相邻步骤做字符串拼接，于是两句旁白连成
+  "正在准备…正在阅读并组织回答…"（实测到了）。现在 `kind !== 'stage'` 才合并。
+
+实测（真实浏览器 + 真实 SSE，抬头文字随时间）：
+
+```
+ 628ms 正在准备… · 1.0 秒
+3606ms 正在阅读并组织回答… · 3.0 秒
+4608ms 正在这篇论文里检索… · 4.0 秒     ← 工具在跑
+5615ms 正在思考… · 5.0 秒
+      已完成，用时 3.8 秒              ← 落库后用服务端的权威值
+maxStageRows=0（链条里一条旁白都没有），finalOpen=false（正文一开始就收起了）
+```
+
+历史消息同样：展开后第一行就是思考，`stages=0`，回答正文里也不含任何旁白。
+
+自检：`scripts/frontend_check.py` **157 项 157 通过**。④ 轨迹那条断言的口径从
+`stage→thinking→…` 改成 `thinking→…`（造的数据里那步旁白还在，正好证明它被剔掉了）。
+`--model` 那条"有步骤行"放宽成只要求抬头 —— 只攒了旁白的一轮现在本来就没有步骤行。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 157/157。
+
+### 204. 第二百零四轮：把「正在准备…」「正在阅读并组织回答…」整句删掉
+
+上一轮只是"不渲染"，抬头还在报这两句。用户口径：「删除 正在准备… 和 正在阅读并组织回答…」。
+
+* **前端**：`ask()` 起手那句 `appendLiveStep('stage', '正在准备…' | '正在重新生成…' | '正在重新提问…')`
+  直接去掉；`runTitle` 里那个"最新一条 stage 当状态字"的分支也去掉，跑着就只说「正在思考…」
+  （有工具在跑时说工具短语）。
+* **后端**：`runtime.py` 进模型前那两行（`yield {"type": "stage", "stage": "reading", ...}` +
+  `state.log.stage(...)`）删掉 —— 库里 `run.steps` 也不再留这一行。`StepLog.stage` 这个接口
+  保留（压缩上下文那条还在用，`tests/test_agent_trace.py` 也还在测它）。
+* **空窗**：起手那句原本是"发出去 → 第一段思考"之间唯一的存在感。现在由 `showRun()` 兜住：
+  抬头这行不止看 `stepsOf(m).length`，**还在跑的那一轮一步都没有也出现**，
+  于是 0.5 秒内就有「正在思考… · 0.9 秒」，屏幕上不会空着。
+* 老会话里 `run.steps` 仍带着那两行（落过库），`traceRows` 继续跳过 `kind === 'stage'`，
+  翻旧消息不会再冒出来。
+
+实测（真实浏览器 + 真实 SSE）：
+
+```
+ 543ms 正在思考… · 0.9 秒       ← 起手就有（不再有"正在准备…"）
+2533ms 正在思考… · 2.0 秒
+4529ms 正在这篇论文里检索… · 4.0 秒
+6520ms 正在思考… · 5.9 秒
+      已完成，用时 5.8 秒        ← 落库后的权威值
+maxStageRows=0   narrationSeen=0（整个 live 消息的文本里都搜不到那两句）  finalOpen=false
+```
+
+自检：`scripts/frontend_check.py` **158 项 158 通过**（新增「旁白整句删掉」「一步都没有的那一轮
+也照样有抬头」）；`scripts/agent_check.py` 的 SSE 骨架断言从"必须含 stage 帧"改成
+"session + 单终态"（那条帧没了）。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 158/158；
+`backend/agent/runtime.py` 语法检查通过。**注意**：后端是 `cli/pr.py serve`（无 --reload），
+要重启一次才会停止往 `run.steps` 里写那行 stage；界面不重启也已经不带它了。

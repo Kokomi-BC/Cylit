@@ -11,10 +11,26 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
+import ThinkingChain from '@/components/chat/ThinkingChain.vue';
+import WaitDots from '@/components/chat/WaitDots.vue';
+import type { ChainStep } from '@/components/chat/types';
+import { useFollowTail } from '@/composables/useFollowTail';
+import { flyMessage } from '@/composables/useComposerFlight';
 import { BRAND_ICON } from '@/utils/brand';
 
 type Source = { title: string; id?: string };
-type Message = { id: string; role: 'user' | 'assistant'; text: string; sources?: Source[] };
+type Message = {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  sources?: Source[];
+  /** 这一轮的过程（思考 / 工具）。有它就是「思维工具链」块，空数组不渲染。 */
+  steps?: ChainStep[];
+  running?: boolean;
+  /** 刚发出去的那一条：只在它身上播「从右下角长出来」的进场动画。 */
+  fresh?: boolean;
+  startedAt?: number;
+};
 type Conversation = { id: string; title: string; updatedAt: number; messages: Message[] };
 
 const router = useRouter();
@@ -105,27 +121,21 @@ const conversations = ref<Conversation[]>([
 
 const activeId = ref(conversations.value[0].id);
 const draft = ref('');
-/** 在飞的回复条数，按会话分桶（>0 才在**这个会话**里显示「正在检索论文…」）：
-    用计数而不是布尔 —— 连发两句时，第一条的回复不能把第二条的状态一起清掉；
-    按会话记 —— 等回复时切走，转圈不该跟到别的会话里去。 */
-const pendingBy = ref<Record<string, number>>({});
 const listOpen = ref(false);
+/** 发送瞬间给输入区挂一下：工具栏/提示行收掉再回来（参考实现是 400ms 的折叠）。 */
+const sending = ref(false);
+/** 只为了让「用时 8s」这行秒数自己走：每秒 +1，读它的计算属性随之重算。 */
+const clockTick = ref(0);
 
 const threadRef = ref<HTMLElement | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+const inputBoxRef = ref<HTMLElement | null>(null);
+const { following, follow, pin, onScroll, returnToBottom } = useFollowTail(threadRef);
 
 const active = computed(() => conversations.value.find((c) => c.id === activeId.value) ?? null);
 const messages = computed<Message[]>(() => active.value?.messages ?? []);
 const canSend = computed(() => draft.value.trim().length > 0);
-const typingCount = computed(() => (active.value ? pendingBy.value[active.value.id] ?? 0 : 0));
-
-function bumpPending(id: string, delta: number): void {
-  const next = (pendingBy.value[id] ?? 0) + delta;
-  const copy = { ...pendingBy.value };
-  if (next > 0) copy[id] = next;
-  else delete copy[id];
-  pendingBy.value = copy;
-}
+const busy = computed(() => messages.value.some((m) => m.running));
 
 const SUGGESTS: { icon: string; text: string }[] = [
   { icon: 'library', text: '比较多篇论文的方法差异' },
@@ -140,7 +150,7 @@ const FALLBACK_TEXT = [
   'Cylit Agent 现在已经能拿到你的整个论文库 —— 已导入论文的标题、作者与年份、摘要、标签与阅读进度，'
     + '以及你在阅读器里记下的笔记和划词高亮；左边那几个示例会话就是按这些数据的样子做出来的。',
   '真正的回答要等后端接入检索与生成之后才会出现：到那时同一句话会先去检索整个论文库，'
-    + '再把带来源的答案贴回这里。你现在看到的消息流、自动滚动与「正在检索论文…」状态，'
+    + '再把带来源的答案贴回这里。你现在看到的消息流、思维工具链与贴底滚动，'
     + '都是在验证这条链路的前端部分。',
   '下面是这次（示意性的）检索结果：',
 ].join('\n\n');
@@ -156,11 +166,36 @@ function paragraphs(text: string): string[] {
   return text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 }
 
+/** 收起态摘要 = 最新一段思考的首行（参考实现就是这么取「还在想什么」的那一句）。 */
+function chainPreview(m: Message): string {
+  const think = [...(m.steps ?? [])].reverse().find((s) => s.kind === 'think');
+  if (!think?.text) return '';
+  const paras = think.text.split(/\n{2,}/).filter((p) => p.trim());
+  const last = paras[paras.length - 1] ?? think.text;
+  return (last.split('\n')[0] ?? '').trim();
+}
+
+function waitSeconds(m: Message): number {
+  void clockTick.value;                       // 订阅秒针：否则这一行不会自己走
+  if (!m.startedAt) return 0;
+  return Math.max(0, Math.floor((Date.now() - m.startedAt) / 1000));
+}
+
+/** 有回复在跑时才转的秒针；停下就关掉，不让定时器常驻。 */
+let clockTimer = 0;
+watch(busy, (on) => {
+  if (clockTimer) { window.clearInterval(clockTimer); clockTimer = 0; }
+  clockTick.value = 0;
+  if (on) clockTimer = window.setInterval(() => { clockTick.value += 1; }, 1000);
+});
+
 function scrollToBottom(): void {
-  nextTick(() => {
-    const el = threadRef.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  });
+  nextTick(() => pin());
+}
+
+/** 内容落地后跟一下尾巴（读者已经翻走了就不动，见 useFollowTail）。 */
+function keepTail(): void {
+  nextTick(() => follow());
 }
 
 /** 组件内统一登记定时器：卸载时一次清干净，避免回复落到已销毁的实例上。 */
@@ -176,6 +211,7 @@ function later(fn: () => void, ms: number): void {
 onBeforeUnmount(() => {
   timers.forEach((id) => window.clearTimeout(id));
   timers.clear();
+  if (clockTimer) window.clearInterval(clockTimer);
 });
 
 function autoGrow(): void {
@@ -208,28 +244,87 @@ function send(): void {
   if (!conv) return;
 
   const isFirst = conv.messages.length === 0;
-  conv.messages.push({ id: uid('m'), role: 'user', text });
+  conv.messages.push({ id: uid('m'), role: 'user', text, fresh: true });
+  const user = conv.messages[conv.messages.length - 1];
+  // 助手占位先落地：等待态、思维链、正文都长在这同一条消息上（切走再回来状态还在）
+  conv.messages.push({
+    id: uid('m'),
+    role: 'assistant',
+    text: '',
+    steps: [],
+    running: true,
+    startedAt: Date.now(),
+    fresh: true,
+  });
+  const reply = conv.messages[conv.messages.length - 1];
   conv.updatedAt = Date.now();
   if (isFirst) conv.title = text.slice(0, 18);
+
+  // 交接动画：从输入框飞进刚落地的那枚气泡（必须在清空 draft 之前量）
+  void flyMessage(inputBoxRef.value, text, () => threadRef.value?.querySelector(`.msg[data-mid="${user.id}"] .bubble`));
 
   draft.value = '';
   nextTick(autoGrow);
   scrollToBottom();
   focusInput();
 
-  bumpPending(conv.id, 1);
-  // 600~900ms：够看出「检索中」的动效，又不至于让人以为卡住了
+  // 输入区那一行提示在发送瞬间收掉再回来（参考实现是同一拍 400ms）
+  sending.value = true;
+  later(() => { sending.value = false; }, 420);
+  later(() => { user.fresh = false; }, 520);
+  later(() => { reply.fresh = false; }, 420);
+
+  runDemo(reply, conv);
+}
+
+/** 脚本化的「一轮 agent」：思考 → 检索 → 比对 → 成文。真接后端时这段换成 SSE 落盘。 */
+const THINK_LINES = [
+  '用户问的是「多篇论文的方法差异」，先定比对口径。',
+  '按任务、模型结构、训练数据、评测四栏对齐，避免只比标题。',
+  '库里这几篇都是视觉 Transformer，差异集中在骨干改法上。',
+];
+
+function runDemo(reply: Message, conv: Conversation): void {
+  const steps = reply.steps as ChainStep[];     // 代理数组：push / 改字段都能触发重渲染
+  const mark = () => { conv.updatedAt = Date.now(); keepTail(); };
+
   later(() => {
-    conv.messages.push({
-      id: uid('m'),
-      role: 'assistant',
-      text: FALLBACK_TEXT,
-      sources: FALLBACK_SOURCES,
+    steps.push({ id: uid('s'), kind: 'think', label: '思考', text: THINK_LINES[0], status: 'running' });
+    mark();
+  }, 380);
+  THINK_LINES.slice(1).forEach((line, i) => {
+    later(() => {
+      steps[0].text = `${steps[0].text}\n${line}`;
+      mark();
+    }, 380 + (i + 1) * 220);
+  });
+  const thinkDone = 380 + THINK_LINES.length * 220;
+  later(() => { steps[0].status = 'ok'; steps[0].ms = 1.3; mark(); }, thinkDone);
+
+  later(() => {
+    steps.push({
+      id: uid('s'), kind: 'tool', label: '检索论文库',
+      text: '「多篇论文的方法差异」· top 8', status: 'running',
     });
-    conv.updatedAt = Date.now();
-    bumpPending(conv.id, -1);
-    scrollToBottom();
-  }, 620 + Math.round(Math.random() * 260));
+    mark();
+  }, thinkDone + 120);
+  later(() => { steps[1].status = 'ok'; steps[1].ms = 0.7; mark(); }, thinkDone + 900);
+
+  later(() => {
+    steps.push({
+      id: uid('s'), kind: 'tool', label: '对齐方法差异',
+      text: '任务 / 结构 / 数据 / 评测', status: 'running',
+    });
+    mark();
+  }, thinkDone + 980);
+  later(() => { steps[2].status = 'ok'; steps[2].ms = 0.8; mark(); }, thinkDone + 1800);
+
+  later(() => {
+    reply.running = false;
+    reply.text = FALLBACK_TEXT;
+    reply.sources = FALLBACK_SOURCES;
+    mark();
+  }, thinkDone + 2150);
 }
 
 function newConversation(): void {
@@ -322,7 +417,7 @@ function backToWorkspace(): void {
         </span>
       </header>
 
-      <div ref="threadRef" class="thread">
+      <div ref="threadRef" class="thread" :class="{ 'tail-anchor': following }" @scroll.passive="onScroll">
         <div v-if="!messages.length" class="hollow">
           <img class="hollow-mark" :src="BRAND_ICON" alt="" />
           <h1 class="hollow-title">问点什么？</h1>
@@ -342,12 +437,24 @@ function backToWorkspace(): void {
         </div>
 
         <template v-else>
-          <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+          <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { fresh: m.fresh }]" :data-mid="m.id">
             <span v-if="m.role === 'assistant'" class="avatar">
               <img :src="BRAND_ICON" alt="" />
             </span>
             <div v-if="m.role === 'user'" class="bubble">{{ m.text }}</div>
             <div v-else class="msg-content">
+              <!-- 思维工具链：收起 / 展开 / 运行中的高光都在这个组件里 -->
+              <ThinkingChain
+                v-if="m.steps?.length"
+                :steps="m.steps"
+                :running="!!m.running"
+                :preview="chainPreview(m)"
+              />
+              <div v-if="m.running" class="wait-row">
+                <WaitDots />
+                <span class="wait-text">正在深度求索</span>
+                <span class="wait-clock">{{ waitSeconds(m) }}s</span>
+              </div>
               <p v-for="(p, i) in paragraphs(m.text)" :key="i" class="para">{{ p }}</p>
               <div v-if="m.sources?.length" class="sources">
                 <div class="src-head">
@@ -364,18 +471,24 @@ function backToWorkspace(): void {
             </div>
           </div>
         </template>
-
-        <div v-if="typingCount > 0" class="msg assistant typing-row">
-          <span class="avatar"><img :src="BRAND_ICON" alt="" /></span>
-          <span class="typing">
-            <span class="typing-text">正在检索论文…</span>
-            <span class="dots" aria-hidden="true"><i /><i /><i /></span>
-          </span>
-        </div>
       </div>
 
-      <div class="composer">
-        <div class="input-box">
+      <!-- 读者上翻之后才出现：一按就平滑落回最新（这一次才用 smooth） -->
+      <Transition name="jump">
+        <button
+          v-if="!following"
+          class="jump-btn"
+          type="button"
+          title="回到底部"
+          aria-label="回到底部"
+          @click="returnToBottom"
+        >
+          <AppIcon name="chevron-down" :size="15" />
+        </button>
+      </Transition>
+
+      <div class="composer" :class="{ sending }">
+        <div ref="inputBoxRef" class="input-box">
           <textarea
             ref="inputRef"
             v-model="draft"
@@ -479,7 +592,7 @@ function backToWorkspace(): void {
 .conv-foot { padding: 0 4px 2px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
 /* ---------------- 右：对话区 ---------------- */
-.main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative; }
 
 .top-bar {
   flex: none; height: 56px;
@@ -526,11 +639,29 @@ function backToWorkspace(): void {
   scrollbar-width: none;
 }
 .thread::-webkit-scrollbar { display: none; }
+/* 跟随时关掉滚动锚定：浏览器锚定会和自动滚动抢同一个位置，表现为滚到底又弹回一点 */
+.thread.tail-anchor { overflow-anchor: none; }
 
 /* 用户消息：右侧实底气泡。文字色用 --text 而不是 --text-on-accent ——
    --accent-soft 是浅底，深色模式下它又翻成深底，只有 --text 两种模式都读得清。 */
 .msg { display: flex; gap: 10px; min-width: 0; }
 .msg.user { justify-content: flex-end; }
+/* 新发的那条用户消息：从右下角「长出来」（320ms，回弹到 1.3）——
+   起点就是发送按钮的位置，读起来像"从输入框飞进消息流" */
+.msg.fresh.user .bubble {
+  transform-origin: 100% 100%;
+  animation: msg-grow .32s cubic-bezier(.34, 1.3, .64, 1) both;
+}
+@keyframes msg-grow {
+  from { opacity: 0; transform: scale(.2); }
+  to { opacity: 1; transform: none; }
+}
+/* 助手这一条是「插入到流里」：12px 上浮 + 240ms 的 glide，而不是整块弹出 */
+.msg.fresh.assistant { animation: row-rise .24s cubic-bezier(.22, .61, .36, 1) both; }
+@keyframes row-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
 .bubble {
   max-width: 72%;
   padding: 9px 14px;
@@ -553,6 +684,8 @@ function backToWorkspace(): void {
 }
 .avatar img { width: 18px; height: 18px; border-radius: 5px; display: block; }
 .msg-content { flex: 1; min-width: 0; max-width: 74ch; }
+/* 思维链与正文之间留一口气（链自带 24px 抬头，再紧贴正文就挤了） */
+.msg-content > .chain { margin-bottom: 6px; }
 .para {
   margin: 0 0 .7em;
   font-size: calc(14px * var(--ts, 1));
@@ -580,22 +713,36 @@ function backToWorkspace(): void {
 }
 .src-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 检索中：三点动效交给 CSS，组件里不为它排 JS 定时器 */
-.typing-row { align-items: center; }
-.typing { display: inline-flex; align-items: center; gap: 10px; }
-.typing-text { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); }
-.dots { display: inline-flex; align-items: center; gap: 4px; }
-.dots i {
-  display: block; width: 5px; height: 5px; border-radius: 50%;
-  background: var(--text-faint);
-  animation: typing-bounce 1.15s var(--ease) infinite;
+/* 等回复：三颗点 + 秒表。点动效在 WaitDots 里，这里只管基线对齐 */
+.wait-row {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0 10px;
+  color: var(--text-faint);
+  font-size: calc(12.5px * var(--ts, 1));
 }
-.dots i:nth-child(2) { animation-delay: .16s; }
-.dots i:nth-child(3) { animation-delay: .32s; }
-@keyframes typing-bounce {
-  0%, 60%, 100% { opacity: .3; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-2px); }
+.wait-text { color: var(--text-dim); }
+.wait-clock { margin-left: 2px; font-variant-numeric: tabular-nums; }
+
+/* 回到底部：读者一上翻才出现。150ms 的透明度 + 轻微缩放，别做成弹窗 */
+.jump-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 88px;
+  z-index: 6;
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
+.jump-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.jump-enter-active, .jump-leave-active { transition: opacity .15s var(--ease), transform .15s var(--ease); }
+.jump-enter-from, .jump-leave-to { opacity: 0; transform: translateX(-50%) scale(.88); }
 
 /* 空态：垂直居中；建议卡收在 520px 内（大屏上摊太开就散了） */
 .hollow {
@@ -677,7 +824,10 @@ function backToWorkspace(): void {
   text-align: center;
   font-size: calc(11px * var(--ts, 1));
   color: var(--text-faint);
+  transition: opacity .12s var(--ease), transform .12s var(--ease);
 }
+/* 发送瞬间把这一行收掉再放回来：输入区看起来"弹了一下"，但不改变输入框高度 */
+.composer.sending .hint { opacity: 0; transform: translateY(-4px); }
 
 /* ---------------- 窄屏 ---------------- */
 .scrim { display: none; }

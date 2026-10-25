@@ -1044,10 +1044,14 @@ async function run() {
       res.runSteps = run.querySelectorAll('.run-body > *').length;
       const think = run.querySelector('.run-step.think');
       if (think) {
-        res.thinkClamped = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
+        /* 默认折叠：只留「⌄ ✦ 思考 · 一行摘要」，正文不渲染（用户口径 2026-10-25：
+           展开思维链时默认折叠所有内容）。点一下才出正文。 */
+        res.thinkCollapsed = !think.classList.contains('open')
+          && !!think.querySelector('.think-sum') && !think.querySelector('.step-text');
         think.click();
         await sleep(250);
         res.thinkOpen = think.classList.contains('open');
+        res.thinkBodyLen = (think.querySelector('.step-text')?.textContent || '').length;
       }
     }
     res.chatErr = (root().querySelector('.err') || {}).textContent || '';
@@ -2457,29 +2461,55 @@ async function run() {
           size: cs.fontSize, weight: cs.fontWeight,
         };
       })() : null;
-      res.toolLines = kids.filter((el) => el.classList.contains('tool'))
+      res.toolGroups = body ? body.querySelectorAll('.tool-group').length : 0;
+      res.toolStates = body
+        ? [...body.querySelectorAll('.tool-group')].map((g) => !!g.querySelector('.tool-lines'))
+        : [];
+      /* 最后一段默认展开（用户口径 2026-10-25）：它是"刚在做什么"，其余默认折叠 */
+      res.lastItemOpen = (() => {
+        if (!body) return null;
+        const items = [...body.children];
+        const last = items[items.length - 1];
+        if (!last) return null;
+        return !!last.querySelector('.step-text') || !!last.querySelector('.tool-lines');
+      })();
+      const toolHeads = body ? [...body.querySelectorAll('.tool-head')] : [];
+      /* 每一组都点开再收行：参数摘要分散在各组里，只看第一组会漏（自检探针自己用） */
+      for (const h of toolHeads) {
+        const group = h.parentElement;
+        if (group && !group.querySelector('.tool-lines')) { h.click(); await sleep(180); }
+      }
+      res.toolLines = [...(body ? body.querySelectorAll('.tool-lines .run-step') : [])]
         .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim());
       const think = body ? body.querySelector('.run-step.think') : null;
       if (think) {
-        res.clamp = getComputedStyle(think.querySelector('.step-text')).webkitLineClamp;
-        res.thinkText = (think.querySelector('.step-text').textContent || '').length;
+        /* 默认折叠（只留一行摘要），点一下才出正文；正文**从最左起排**、用正文字体 */
+        res.thinkCollapsed = !think.classList.contains('open')
+          && !!think.querySelector('.think-sum') && !think.querySelector('.step-text');
+        res.thinkSum = (think.querySelector('.think-sum')?.textContent || '').trim().slice(0, 24);
         /* ⚠️ `AppIcon` 的根就是 `<svg class="icon">`：传进去的 class 会**并到这一个元素上**，
             所以选 `svg.step-caret`，不要写 `.step-caret svg`（那是"再往里找一层"，找不到）。 */
         const caret = think.querySelector('svg.step-caret');
-        const ico = think.querySelector('svg.step-ico');
-        const text = think.querySelector('.step-text');
-        res.caretBefore = caret ? (caret.innerHTML || '').slice(0, 40) : '';
-        /* 图标与文字**并排**：图标在第一行（顶对齐），不是飘在整段中间 */
-        if (ico && text) {
-          const a = ico.getBoundingClientRect(), b = text.getBoundingClientRect();
-          res.icoBesideText = Math.abs(a.top - b.top) < 6 && a.bottom <= b.bottom + 2
-            && a.right <= b.left + 2;
-        }
+        /* 箭头现在**不换字形**，靠 `transform: rotate(-90deg)`（`.caret.shut`）转过去 ——
+           量的是这个类，不是 svg 的内容（内容永远是 chevron-down）。 */
+        res.caretBefore = caret ? String(caret.getAttribute('class') || '') : '';
         think.click();
-        await sleep(200);
+        await sleep(220);
         res.thinkOpen = think.classList.contains('open');
-        res.caretAfter = caret ? (caret.innerHTML || '').slice(0, 40) : '';
-        res.caretAtHead = !!caret && think.firstElementChild === caret;
+        const text = think.querySelector('.step-text');
+        const lead = think.querySelector('.think-lead');
+        res.thinkText = (text?.textContent || '').length;
+        res.caretAfter = caret ? String(caret.getAttribute('class') || '') : '';
+        /* 正文在标签行的**下一行**、且左边缘与标签行齐平（不缩进到「思考」下面）。
+           用 offset* 而不是 getBoundingClientRect：进场过渡（fold-enter-from 的 translateY）
+           在无头虚拟时间下停在中途，rect 会带上那 -3px，量不准"排在哪"。 */
+        if (lead && text) {
+          res.textAtLeft = Math.abs(lead.offsetLeft - text.offsetLeft) < 1
+            && text.offsetTop >= lead.offsetTop + lead.offsetHeight - 1;
+          res.thinkFont = getComputedStyle(text).fontFamily;
+        }
+        think.click();            // 收回折叠态：后面的"收起整条轨迹"断言不依赖它
+        await sleep(120);
       }
       /* 再收起一次：步骤藏起来，回答（在轨迹外）必须还在。
          收起现在是一段淡出（Transition name=fold，~160ms），节点要等 leave 跑完才从 DOM 移除 ——
@@ -2489,29 +2519,25 @@ async function run() {
       first().querySelector('.run-head').click();
       let waited = 0;
       while (waited < 1500 && first().querySelector('.run-body')) {
+        /* 收起是 JS 钩子驱动的 Web Animations；无头 `--virtual-time-budget` 下合成帧不推进，
+           动画不会自己结束。这里把它**推到最后**（finish 会触发 onfinish → Vue 的 done → 移除），
+           这样量到的是"接线是否通"，不是"虚拟时钟跑了多久"。 */
+        const animating = first().querySelector('.run-body');
+        if (animating && animating.getAnimations().length) {
+          animating.getAnimations().forEach((a) => a.finish());
+        }
         await sleep(50);
         waited = performance.now() - t0;
       }
       res.collapseMs = Math.round(waited);
-      /* 无头虚拟时间下合成帧不推进，leave 会停在 fold-leave-from。这里把过渡事件直接补给 Vue
-         （它自己就在 whenTransitionEnds 里等 transitionend）—— 补两个属性 = opacity + transform；
-         能补完就说明接线是通的、节点应被移除；补不动就退回「已进入离场」这个确定状态。 */
-      const stuck = first().querySelector('.run-body');
-      if (stuck) {
-        for (const prop of ['opacity', 'transform']) {
-          stuck.dispatchEvent(new TransitionEvent('transitionend', { propertyName: prop, bubbles: true }));
-        }
-        await sleep(250);
-      }
       const diagBody = first().querySelector('.run-body');
-      /* 收起是**一段离场动画**（Transition name=fold）。无头 --virtual-time-budget 下合成帧不推进，
-         节点会停在 fold-leave-from 迟迟不被移除（实测 1500ms 仍在，class 里 fold-enter-from 都还挂着）。
-         所以这里断言的是收起的**确定终态**：要么已从 DOM 移除、要么正处在离场中（带 fold-leave-*），
-         且此时步骤不可见、回答照旧在。真浏览器里的真实耗时另用 CDP 直接量（进场 0.33@70ms → 1@280ms，
-         离场 194ms 后移除），不靠这段无头探针。 */
+      /* 收起走的是一段 JS 高度动画（`:css="false"`）。无头 `--virtual-time-budget` 下 rAF 被冻住，
+         leave 动画根本不会被创建，节点也就一直挂着 —— 所以这里判**已提交的状态**：
+         `.run` 上的 `data-open` 没了 = 已经收起（真浏览器里 200ms 后节点会被移除）。 */
+      const runEl = first().querySelector('.run');
+      res.runClosed = !!runEl && !runEl.hasAttribute('data-open');
       res.collapseGone = !diagBody;
-      res.collapseLeaving = !!diagBody
-        && /fold-leave-(from|active|to)/.test(diagBody.className);
+      res.collapseLeaving = !!diagBody && diagBody.getAnimations().length > 0;
       res.collapseHidden = !diagBody || Number(getComputedStyle(diagBody).opacity) < 1;
       res.collapsedSteps = diagBody ? diagBody.querySelectorAll(':scope > *').length : 0;
       res.collapsedTexts = diagBody ? diagBody.querySelectorAll('.run-text').length : 0;
@@ -3027,8 +3053,8 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
         record("run", "进来就停在对话底部（列表→会话）",
                res.get("atBottom") is True,
                f"距底 {res.get('bottomGap')}px（可滚 {res.get('scrollHeight')}）")
-        want = ["stage", "thinking", "tool", "thinking", "tool", "text", "tool"]
-        record("run", "思考 / 正文 / 工具**按发生顺序夹杂**",
+        want = ["thinking", "tool", "thinking", "tool", "text", "tool"]
+        record("run", "思考 / 正文 / 工具**按发生顺序夹杂**（旁白那步不出现）",
                (res.get("kinds") or []) == want, "→".join(res.get("kinds") or []))
         record("run", "抬头：已完成 + 用时 + 干了什么的摘要",
                "已完成" in (res.get("head") or "") and "19分" in (res.get("head") or "")
@@ -3048,31 +3074,49 @@ def check_run_trace(browser: str, base: str, paper: str, budget_ms: int) -> None
         record("run", "过程里那半句留在轨迹里（夹杂的另一半）",
                res.get("traceTexts") == ["我先说一句。"],
                f"轨迹内正文段 {res.get('traceTexts')}")
-        record("run", "工具段：短语 + 参数摘要（翻书架 · attention）",
-               any("翻书架" in t and "attention" in t for t in (res.get("toolLines") or []))
+        record("run", "工具段：收成一组「工具 · N 次调用」，非最后一段默认折叠，点开才列子行",
+               (res.get("toolGroups") or 0) >= 1
+               and (res.get("toolStates") or [None])[0] is False
+               and any("翻书架" in t and "attention" in t for t in (res.get("toolLines") or []))
                and any("读正文" in t for t in (res.get("toolLines") or [])),
-               " / ".join((res.get("toolLines") or [])[:3]))
-        record("run", "思考段：默认收成 4 行、点一下展开（箭头跟着翻）",
-               str(res.get("clamp")) == "4" and res.get("thinkOpen") is True
-               and bool(res.get("caretBefore")) and res.get("caretBefore") != res.get("caretAfter")
-               and res.get("caretAtHead") is True,
-               f"line-clamp={res.get('clamp')}，{res.get('thinkText')} 字，"
-               f"箭头 {'变了' if res.get('caretBefore') != res.get('caretAfter') else '没变'}"
-               f"@{'行首' if res.get('caretAtHead') else '不在行首'}")
-        record("run", "思考图标与文字**并排**（图标在第一行，不飘在整段中间）",
-               res.get("icoBesideText") is True, f"并排={res.get('icoBesideText')}")
-        record("run", "收起过程轨迹：步骤藏起来（或已进入离场）、**回答仍在**",
-               ((res.get("collapseGone") is True
-                 and res.get("collapsedSteps") == 0 and res.get("collapsedTexts") == 0)
-                or (res.get("collapseLeaving") is True and res.get("collapseHidden") is True))
+               f"{res.get('toolGroups')} 组，展开状态={res.get('toolStates')}；"
+               + " / ".join((res.get("toolLines") or [])[:3]))
+        record("run", "历史消息：展开思维链后**内部全部折叠**（不会默认摊开最后一段）",
+               res.get("thinkCollapsed") is True and res.get("lastItemOpen") is False
+               and all(v is False for v in (res.get("toolStates") or [False]))
+               and (res.get("toolGroups") or 0) >= 1,
+               f"最后一段展开={res.get('lastItemOpen')}，思考折叠={res.get('thinkCollapsed')}，"
+               f"工具组={res.get('toolStates')}")
+        record("run", "思考段：默认收成一行摘要、点一下展开全文（箭头跟着翻）",
+               res.get("thinkCollapsed") is True and res.get("thinkOpen") is True
+               and (res.get("thinkText") or 0) > 0
+               and bool(res.get("caretBefore")) and res.get("caretBefore") != res.get("caretAfter"),
+               f"摘要 {res.get('thinkSum')!r}，展开 {res.get('thinkText')} 字，"
+               f"箭头 {'变了' if res.get('caretBefore') != res.get('caretAfter') else '没变'}")
+        record("run", "思考正文**从最左起排**（不缩进到标签下面）且不用等宽字体",
+               res.get("textAtLeft") is True
+               and "mono" not in str(res.get("thinkFont") or "").lower()
+               and "Consolas" not in str(res.get("thinkFont") or ""),
+               f"齐平={res.get('textAtLeft')}，字体={res.get('thinkFont')}")
+        record("run", "收起过程轨迹：轨迹收起、**回答仍在**",
+               (res.get("collapseGone") is True or res.get("runClosed") is True)
                and res.get("outsideBody") == 1,
-               f"收起后 {'已移除（补了过渡事件）' if res.get('collapseGone') else '离场中'}"
-               f"（{res.get('collapseMs')}ms），步骤 {res.get('collapsedSteps')} 行，"
-               f"轨迹外回答 {res.get('outsideBody')} 块")
+               f"收起后 {'已移除' if res.get('collapseGone') else ('data-open 已清' if res.get('runClosed') else '仍在展开')}"
+               f"（{res.get('collapseMs')}ms），轨迹外回答 {res.get('outsideBody')} 块")
         record("run", "轨迹拼不出正文时直接渲染 content（回答不会被截断）",
                res.get("safeHasRun") is True and res.get("safeTraceTexts") == 0
                and SAFE_ANSWER in (res.get("safeAnswer") or ""),
                f"轨迹内正文 {res.get('safeTraceTexts')} 段，回答 {(res.get('safeAnswer') or '')[:22]!r}")
+        # 对话期间（流式那一轮）才自动展开最后一段；历史消息一律全折叠 —— **源码层**钉住：
+        # 这个默认值住在 `isItemOpen` 里，浏览器探针造的是历史消息，量不到"正在跑"的那一支。
+        src_chat = (ROOT / "frontend" / "src" / "components" / "reader" / "ReaderChat.vue"
+                    ).read_text(encoding="utf-8")
+        live_default = ("m.message_id === liveId.value && item.last === true" in src_chat)
+        reset_on_fold = ("openSteps.value = openSteps.value.filter(k => !k.startsWith(prefix))"
+                         in src_chat)
+        record("run", "对话期间最后一段**自动展开**（历史消息全折叠）+ 收起整条后内部状态清空",
+               live_default and reset_on_fold,
+               f"live 默认展开={live_default}，收起清空内部状态={reset_on_fold}")
     except Exception as exc:  # noqa: BLE001
         record("run", "过程轨迹能渲染出来", False, f"{exc}")
     finally:
@@ -3187,9 +3231,9 @@ def check_trace_motion() -> None:
     「手动优先 → 否则看流式中最后一步是不是思考」。这三件事错了，动效一定错；对了，动效由浏览器照常演。
     """
     src = (ROOT / "frontend" / "src" / "components" / "reader" / "ReaderChat.vue").read_text(encoding="utf-8")
-    has_fold = '<Transition name="fold">' in src
+    has_fold = '<Transition name="fold"' in src
     has_group = '<TransitionGroup name="step">' in src
-    record("motion", "轨迹展开/收起走 <Transition name=fold>，步骤行走 <TransitionGroup name=step>",
+    record("motion", "轨迹展开/收起走 <Transition name=fold>（高度由 JS 钩子驱动），步骤行走 <TransitionGroup name=step>",
            has_fold and has_group,
            f"Transition={has_fold} TransitionGroup={has_group}")
     classes = [".step-enter-from", ".step-enter-active", ".step-move",
@@ -3212,16 +3256,87 @@ def check_trace_motion() -> None:
            "liveId.value" in live_text and "thinking" in live_text
            and "steps.length - 1" in live_text,
            "判定里含 liveId / thinking / 最后一步" if live_text else "找不到 liveThinkingAt")
-    open_fn = re.search(r"function isStepOpen\((.{0,700}?)\n\}", src, re.S)
+    open_fn = re.search(r"function isItemOpen\((.{0,900}?)\n\}", src, re.S)
     open_text = open_fn.group(1) if open_fn else ""
-    record("motion", "手点优先：展开集合 > 收起集合 > 自动判定（手点过的不被自动顶开）",
-           open_text.index("openSteps") < open_text.index("closedSteps") < open_text.index("liveThinkingAt")
-           if all(k in open_text for k in ("openSteps", "closedSteps", "liveThinkingAt")) else False,
-           "顺序 展开→收起→自动" if open_text else "找不到 isStepOpen")
-    record("motion", "自动展开的那段放开高度（.autogrow），手动展开仍按实测高度过渡",
-           ".run-step.think.autogrow .step-text" in src and "max-height: none" in src
-           and "-webkit-line-clamp: unset" in src,
-           f"autogrow={'有' if '.autogrow .step-text' in src else '缺'}")
+    record("motion", "手点优先：展开集合 > 收起集合 > 对话期间自动展开/结束自动收起",
+           open_text.index("openSteps") < open_text.index("closedSteps") < open_text.index("liveId.value")
+           and "itemRunning" in open_text
+           if all(k in open_text for k in ("openSteps", "closedSteps", "liveId.value")) else False,
+           "顺序 展开→收起→（live 且还在跑）" if open_text else "找不到 isItemOpen")
+    record("motion", "段内开合按**实测高度**过渡（Web Animations，不是 max-height 猜）",
+           src.count('<Transition name="fold" :css="false"') >= 3
+           and "function foldEnter" in src and "function foldLeave" in src
+           and "function fold(" in src
+           and "height: '0px'" in src,
+           f":css=false 的 fold 共 {src.count('<Transition name=\"fold\" :css=\"false\"')} 处")
+    record("motion", "折叠动画：时长跟着高度走 + 高度与透明度不同步（收起时字先淡）",
+           "function foldMs(" in src and "const FOLD_IN = 'cubic-bezier(.22, .61, .36, 1)'" in src
+           and "const FOLD_OUT = 'cubic-bezier(.4, 0, .2, 1)'" in src
+           and "offset: 0.62" in src and "offset: 0.72" in src,
+           "foldMs 按距离给时长，收起时 .62 处只剩 .3 不透明")
+    record("motion", "折叠动画期间外层对话**每帧贴底**（不然正文先被顶走再弹回来）",
+           "function followThroughFold" in src and "followThroughFold(ms + 32)" in src
+           and "if (el.dataset.foldAnim === '1') return;" in src,
+           "followThroughFold 每帧 followBottom；轨迹容器折叠时暂停钉底")
+    record("motion", "折叠箭头是**转过去的**（一枚图标 + transform，不是右/下箭头换字形）",
+           ".caret.shut { transform: rotate(-90deg); }" in src
+           and 'class="caret" :class="{ shut: !isRunOpen(' in src
+           and 'name="chevron-down" :size="12"' in src,
+           "caret 旋转 220ms，与段内开合同一节奏")
+    record("motion", "思维链**写正文就收起**（过程事件展开 / answer_delta 防抖折叠，手点优先）",
+           "function keepRunOpen" in src and "function foldRunSoon" in src
+           and "keepRunOpen(ensureLive());" in src
+           and "foldRunSoon(live);" in src
+           and "if (runTouched.has(m.message_id)) return;" in src
+           and "}, 320);" in src,
+           "thinking_delta/tool/answer_reset → keepRunOpen；answer_delta → foldRunSoon(320ms)")
+    record("motion", "自动收起不被旁白卡住（阶段提示不算过程事件；正文一直来也不重置计时）",
+           "lastProcessAt = performance.now();" in src
+           and "if (pendingFold === m.message_id) return;" in src
+           and "performance.now() - lastProcessAt < 400" in src
+           and "// 旁白：不动轨迹的开合" in src,
+           "pendingFold 只认第一次 + lastProcessAt 400ms 窗口 + stage 不重开")
+    record("motion", "旁白**不进思维链**（`stage` 步骤数据还在，只是不渲染成一行）",
+           "if (s.kind === 'stage') return;" in src
+           and "function hasTrace(" in src
+           and ':aria-expanded="hasTrace(m) ? isRunOpen(m.message_id) : undefined"' in src
+           and 'v-if="isRunOpen(m.message_id) && hasTrace(m)"' in src
+           and ".caret-gap {" in src,
+           "traceRows 跳过 stage + 只有旁白的一轮不给箭头（留 12px 占位）")
+    title_fn = re.search(r"function runTitle\((.{0,1200}?)\n\}", src, re.S)
+    title_text = title_fn.group(1) if title_fn else ""
+    record("motion", "旁白整句删掉（抬头只说「正在思考…」，不再报「正在准备…」）",
+           "last?.kind === 'stage'" not in title_text and "'正在思考…'" in title_text
+           and "appendLiveStep('stage', mode ===" not in src,
+           "runTitle 里没有 stage 分支；ask() 起手不再塞旁白步骤（SSE 的 stage 帧仍可收）")
+    record("motion", "一步都没有的那一轮也照样有抬头（起手旁白删掉后的空窗）",
+           "function showRun(" in src and 'v-if="showRun(m)"' in src
+           and "m.role === 'assistant' && m.message_id === liveId.value" in src,
+           "showRun：有步骤 || 还在跑的那一轮")
+    record("motion", "正文按块渲染：已封口的块不重建，只有正在长的最后一块跟着增量重画",
+           "function splitAnswerParts" in src and "function answerParts" in src
+           and ".md-part { display: contents; }" in src
+           and 'class="md body md-part"' in src
+           and ':scope > .md-part' in src
+           and ".md-part-tail :deep(> *:last-child)::after" in src,
+           "splitAnswerParts + answerParts + display:contents + 光标只挂最后一块")
+    record("motion", "正文载入动画：新块 / 末尾新长的一截淡入（照 DSH 的 reveal-piece）",
+           "function revealFreshBlocks" in src and "function wrapTail" in src
+           and "@keyframes reveal-piece" in src
+           and "animation: reveal-piece .16s cubic-bezier(.16, .84, .44, 1)" in src
+           and "revealFreshBlocks()" in src,
+           "revealFreshBlocks + wrapTail + reveal-piece .16s 柔缓 ease-out")
+    record("motion", "思考写完就**立刻**折叠（不等下一个步骤出现，`thinking`(done) → `endedSteps`）",
+           "const endedSteps = ref<string[]>([])" in src
+           and "function markThinkingDone" in src
+           and "markThinkingDone(ensureLive())" in src
+           and 'name === \'thinking\'' in src
+           and "endedSteps.value.includes(stepKey(id, i))" in src,
+           "thinking(done) → markThinkingDone → liveThinkingAt 里排除已写完的那段")
+    record("motion", "思维链有自己的限高滚动容器（44vh / 420px，边缘渐隐，滚到底继续带动外层）",
+           "max-height: min(44vh, 420px)" in src and "overscroll-behavior: contain" not in src
+           and "function setRunBody" in src and ".run-body.can-up" in src,
+           "限高 + can-up/can-down 渐隐 + 允许滚动链")
 
 def _bundle_tmp_root() -> Path:
     """esbuild / node 那两条真代码检查的**临时目录根**（见下面各调用点的说明）。"""
@@ -4235,17 +4350,20 @@ def main() -> int:
                    f"锚点 {stream.get('inlineCites')} 个")
             record("model", "消息操作条在气泡下面", bool(stream.get("toolTitles")))
             if stream.get("runHead"):
-                record("model", "过程轨迹：抬头写「已完成，用时 …」+ 有步骤行",
-                       "已完成" in (stream.get("runHead") or "")
-                       and (stream.get("runSteps") or 0) > 0,
+                #: 只攒了旁白的一轮（模型没思考也没调工具）现在**没有**步骤行 —— 那一步不进轨迹了，
+                #: 所以这里只要求抬头，步骤数只当读数。
+                record("model", "过程轨迹：抬头写「已完成，用时 …」（旁白不进轨迹，可能一步都没有）",
+                       "已完成" in (stream.get("runHead") or ""),
                        f"{(stream.get('runHead') or '').strip()[:40]!r}，"
                        f"{stream.get('runSteps')} 步")
             else:
                 skip("过程轨迹", "这一轮没有轨迹（模型没调工具也没有思考模式）")
-            if stream.get("thinkClamped"):
-                record("model", "思考段：默认收成几行、点一下展开",
-                       str(stream.get("thinkClamped")) == "4" and stream.get("thinkOpen") is True,
-                       f"line-clamp={stream.get('thinkClamped')} → open={stream.get('thinkOpen')}")
+            if stream.get("thinkCollapsed") is not None:
+                record("model", "思考段：默认收成一行摘要、点一下展开全文",
+                       stream.get("thinkCollapsed") is True and stream.get("thinkOpen") is True
+                       and (stream.get("thinkBodyLen") or 0) > 0,
+                       f"默认折叠={stream.get('thinkCollapsed')} → open={stream.get('thinkOpen')}"
+                       f"，正文 {stream.get('thinkBodyLen')} 字")
             else:
                 skip("思考段折叠", "这一轮没有思考段（模型没开思考模式）")
             if stream.get("sawRowToDelete"):

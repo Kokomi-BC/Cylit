@@ -812,8 +812,8 @@ def check_model_chain(base: str, paper: str, *, deep: bool, image_id: str | None
     kinds = [e["type"] for e in run["events"]]
     sources = [e["data"].get("content_source") for e in run["events"] if e["type"] == "session"]
     answer = done.get("answer") or ""
-    record("model", "SSE 有完整骨架（stage → session → … → 单终态）",
-           "stage" in kinds and "session" in kinds
+    record("model", "SSE 有完整骨架（session → … → 单终态；旁白 stage 帧已删）",
+           "session" in kinds
            and len([k for k in kinds if k in ("done", "error", "cancelled")]) == 1,
            f"事件 {sorted(set(kinds))}，{run['elapsed']}s")
     record("model", "拿到带引用的回答", len(answer) > 60 and bool(done.get("citations")),

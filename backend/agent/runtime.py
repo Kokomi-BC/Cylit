@@ -453,8 +453,9 @@ class AgentRuntime:
             # 一并删除：**每一轮都进模型**，由模型自己检索、自己按提示词里的证据规则判断
             # "材料里到底有没有依据"（问不相关的问题就直说没有，这与护栏文案同一个效果，
             # 只是多花一次模型调用）。
-            yield {"type": "stage", "stage": "reading", "message": "正在阅读并组织回答…"}
-            state.log.stage("正在阅读并组织回答…")
+            # 进模型前那句"正在阅读并组织回答…"（`stage` 帧 + 落进 `run.steps`）**已删**
+            # （用户口径 2026-12-09：这类旁白整句不要）。前端的抬头自己说"正在思考… · N 秒"，
+            # 不依赖这一帧；`StepLog.stage` 这个接口留着，别处（压缩上下文那条）还在用。
             async for ev in self._stream_model(req, deps, state, deadline, t0):
                 yield ev
             state.elapsed_ms = int((time.perf_counter() - t0) * 1000)
