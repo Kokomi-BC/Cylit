@@ -152,6 +152,8 @@ type PeekCard = {
   pinned: boolean;
   /** 显示哪一侧：zh = 译文 / en = 原文（用户口径 2026-12-04：两侧同时铺太挤，给个中/EN 切换） */
   lang: 'zh' | 'en';
+  /** 这一张的层号：没被锚定（随手飘出来看的那种）压在浮窗下，锚定之后才抢到上面去 */
+  z: number;
 };
 
 const peekCards = reactive<PeekCard[]>([]);
@@ -189,7 +191,8 @@ function onCitePeekAsk(ask: CitePeekAsk): void {
     peekShowTimer = 0;
     if (peekCards.some((c) => !c.pinned)) return;
     peekSeq += 1;
-    peekCards.push({ key: 'peek-' + peekSeq, ask, open: true, pinned: false, lang: 'zh' });
+    peekCards.push({ key: 'peek-' + peekSeq, ask, open: true, pinned: false, lang: 'zh',
+                     z: PEEK_BASE_Z });
   }, PEEK_SHOW_MS);
 }
 
@@ -218,6 +221,9 @@ function holdCitePeek(): void {
 function pinCitePeek(card: PeekCard): void {
   holdCitePeek();
   card.pinned = true;
+  /* 锚定 = 用户想留住它：这时才抬到浮窗之上（见 `PEEK_BASE_Z` 的注释）。
+     之后若有人去点浮窗，浮窗会拿一个更大的层号再盖回来 —— 谁刚被动过谁在上面。 */
+  card.z = nextLayerZ();
 }
 
 function closePeekCard(card: PeekCard): void {
@@ -571,6 +577,17 @@ const topLayer = ref<'note' | 'chat'>('note');
  */
 const layerZ = ref(60);
 function nextLayerZ() { layerZ.value += 1; return layerZ.value; }
+/**
+ * 引用速览卡（悬浮标号弹出的那张）的层号。
+ *
+ * 为什么给它一条**低于浮窗**的固定档：它是"顺手看一眼"的东西 —— 论文解读 / 对话那种浮窗
+ * 是用户主动开的、可能正在拖动或读长文，被一张路过的速览卡盖住就不讲道理了
+ * （用户口径 2026-12-05：浮窗在未锚定状态时应在最上层）。
+ * 一旦用户在卡上按下（= 锚定，见 `pinCitePeek`）就是想留住它，那时才拿 `nextLayerZ()`
+ * 顶到浮窗之上 —— 否则"锚定"只意味着不收，却永远抬不起头。
+ * 55 这个值：正文 30 / 侧栏 31 / 工具栏 40 / 选中菜单那几档都在它下面，浮窗那档从 60 起。
+ */
+const PEEK_BASE_Z = 55;
 /** 对话浮窗自己的 z（开浮窗 / 点它时抬一档） */
 const chatZ = ref(60);
 
@@ -8471,6 +8488,7 @@ function renderMarkdown(text?: string | null) {
       :anchor="peekViewOf(card).anchor"
       :title="peekViewOf(card).title || '引用'"
       :anchored="card.pinned"
+      :style="{ zIndex: card.z }"
       hide-anchor
       :width="360"
       :max-height="420"
