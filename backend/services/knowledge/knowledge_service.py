@@ -1848,6 +1848,8 @@ def similar(payload: dict) -> dict:
         chunk_types=chunk_types, langs=langs, roads=roads,
         exclude_chunks=exclude_chunks,
         top_k=int(top_k) if top_k else None,
+        # 列表型结果（知识库检索页）：同一节至多 2 条，别让一节占满整页
+        section_cap=retrieval.SECTION_CAP,
     )
     items = [public_item(i) for i in _decorate_items(result["items"])]
     return {

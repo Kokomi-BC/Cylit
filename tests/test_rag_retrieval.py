@@ -13,7 +13,8 @@ import pytest
 from backend.core.errors import ValidationError
 from backend.services.knowledge import knowledge_service, retrieval
 from backend.services.knowledge.retrieval import (
-    RRF_K, fused_size, lexical_search, rerank_hits, rrf_fuse, search, tokenize,
+    RRF_K, cap_sections, fused_size, lexical_search, recall_depth, rerank_hits,
+    rerank_top_n, rrf_fuse, search, tokenize,
 )
 
 
@@ -339,3 +340,47 @@ def test_fused_pool_never_smaller_than_requested_top_k() -> None:
     assert fused_size(8, 30) == 30
     assert fused_size(None, 20) == max(retrieval.rag_k("fused"), 20)
     assert fused_size(0, 0) >= 1           # 坏值不许把池子变成 0（否则必然空手）
+
+
+# --------------------------------------------------------------------------
+# 节内名额上限：同一节不许把 top_k 占满
+# --------------------------------------------------------------------------
+
+
+def test_section_cap_keeps_at_most_per_items() -> None:
+    items = [
+        {"paper_id": "p1", "section": "S1", "page_no": 3, "chunk_id": "a"},
+        {"paper_id": "p1", "section": "S1", "page_no": 3, "chunk_id": "b"},
+        {"paper_id": "p1", "section": "S1", "page_no": 4, "chunk_id": "c"},
+        {"paper_id": "p1", "section": "S2", "page_no": 5, "chunk_id": "d"},
+    ]
+    assert [i["chunk_id"] for i in cap_sections(items)] == ["a", "b", "d"]
+
+
+def test_section_cap_does_not_group_sectionless_blocks_together() -> None:
+    items = [
+        {"paper_id": "p1", "section": "", "page_no": 3, "chunk_id": "fig"},
+        {"paper_id": "p1", "section": "", "page_no": 4, "chunk_id": "tbl"},
+        {"paper_id": "p1", "section": "", "page_no": 5, "chunk_id": "eq"},
+    ]
+    assert len(cap_sections(items)) == 3
+
+
+def test_section_cap_is_per_paper() -> None:
+    items = [
+        {"paper_id": "p1", "section": "ABSTRACT", "page_no": 1, "chunk_id": "x1"},
+        {"paper_id": "p2", "section": "ABSTRACT", "page_no": 1, "chunk_id": "x2"},
+    ]
+    assert len(cap_sections(items)) == 2
+
+
+def test_recall_depth_doubles_only_when_top_k_is_given() -> None:
+    assert recall_depth(None) == 0
+    assert recall_depth(20) == 40
+    assert recall_depth(8) == 16
+
+
+def test_rerank_sees_whole_pool_only_when_section_cap_is_on() -> None:
+    assert rerank_top_n(40, 20, None) == 20        # 不限名额：排这么多就够了（老口径）
+    assert rerank_top_n(40, None, None) is None    # 没要条数：交给 rag_top_n_rerank 的设置值
+    assert rerank_top_n(40, 20, 2) == 40           # 限名额：整池排一次，砍掉的名额才有替补

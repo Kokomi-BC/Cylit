@@ -365,7 +365,9 @@ def search(paper_id: str, query: str, *, top_k: int = 8,
                              paper_id=paper_id if scope != "all" else None,
                              top_k=max(1, min(int(top_k or 8), 20)),
                              chunk_types=chunk_types,
-                             sources=SEARCH_SELECTS[chosen])
+                             sources=SEARCH_SELECTS[chosen],
+                             # 名额稀缺：同一节至多占 2 个（实测池 12 时 9/12 是重复页）
+                             section_cap=retrieval.SECTION_CAP)
     items = list(result.get("items") or [])
     zh_previews = _paired_zh_previews(items)
     out: list[dict] = []
@@ -418,7 +420,8 @@ def kb_search(query: str, *, top_k: int = 8) -> dict:
     （否则前端会跳到当前论文的同一页 —— 一个完全不相干的段落）。
     """
     result = retrieval.search(query, mode="qa", scope="all",
-                              top_k=max(1, min(int(top_k or 8), 20)))
+                              top_k=max(1, min(int(top_k or 8), 20)),
+                              section_cap=retrieval.SECTION_CAP)
     items = list(result.get("items") or [])
     titles = _paper_titles({str(i.get("paper_id") or "") for i in items})
     zh_previews = _paired_zh_previews(items)

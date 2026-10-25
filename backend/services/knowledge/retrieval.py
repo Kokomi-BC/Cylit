@@ -576,6 +576,68 @@ def _write_log(**entry: Any) -> None:
         log.debug("检索耗时流水清理失败（忽略）：%s", exc)
 
 
+#: 召回深度 = 调用方要的条数 × 这个系数。重排要在**更大的池子**里挑，
+#: 才留得出余量做「同一节至多几条」的名额约束。
+POOL_FACTOR = 2
+#: 最终结果里同一 section 至多占几个名额（实测 `TURBOQUANT_mse` 改前 12 条里 9 条是重复页）。
+SECTION_CAP = 2
+
+
+def cap_sections(items: list[dict], per: int = SECTION_CAP) -> list[dict]:
+    """同一节（同一篇 + 同一 section）最多 ``per`` 条，多出来的丢掉。
+
+    为什么要有它：融合/重排都只看**单块分数**，同一节里相似度高的块会成串占满名额。
+    实测（turboquant 篇，``TURBOQUANT_mse``，池子上限 12 时）：p7×3、p1×2、p2×2、p21×2 ——
+    12 条里 9 条是重复页，而 1.1（定理 1）、1.2、C.1 一条都没有。
+
+    没有 section 的块（图 / 表 / 公式这些共用块）按「篇 + 页码」分组：它们本来就不属于某一节，
+    不能因为 section 是空的就被当成同一节互相挤掉。
+    """
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for item in items:
+        section = str(item.get("section") or "").strip()
+        key = f"{item.get('paper_id') or ''}|{section or ('p' + str(item.get('page_no') or ''))}"
+        used = seen.get(key, 0)
+        if used >= per:
+            continue
+        seen[key] = used + 1
+        out.append(item)
+    return out
+
+
+def rerank_top_n(fused_len: int, top_k: int | None, section_cap: int | None) -> int | None:
+    """这次让重排看多少条候选。
+
+    要做节内名额约束时**必须整池排一次**：截断发生在限名额之前的话，被砍掉的名额没有替补，
+    ``top_k`` 就白少了。不做约束时保持老口径 —— 调用方要几条就排几条，没要就返回 None
+    让 ``rerank_hits`` 用 ``rag_top_n_rerank`` 的设置值（这条是既有契约，别改）。
+    """
+    if section_cap:
+        return max(1, int(fused_len))
+    return int(top_k) if top_k else None
+
+
+def _pick(items: list[dict], top_k: int | None, section_cap: int | None) -> list[dict]:
+    """按节限名额（给了 ``section_cap`` 才做），再截到 ``top_k``。
+
+    **为什么由调用方决定要不要限**：这一层同时服务"给我一串位置"（agent 的 paper_search、
+    知识库检索）和"给我一段能读的上下文"（RAG 问答按 ±1 单元扩写）。前者名额是稀缺资源、
+    同一节占满就没别的位置了；后者同一节多块反而是连贯的上下文，不该被砍。
+    """
+    if not items:
+        return items
+    kept = cap_sections(items, section_cap) if section_cap else items
+    want = int(top_k or 0)
+    return kept[:want] if want > 0 else kept
+
+
+def recall_depth(top_k: int | None) -> int:
+    """召回 / 融合池的深度 = ``要的条数 × POOL_FACTOR``（调用方没要就是不额外放大）。"""
+    want = int(top_k or 0)
+    return max(1, want) * POOL_FACTOR if want > 0 else 0
+
+
 def fused_size(fused_k: int | None, top_k: int | None) -> int:
     """融合池大小 = ``max(kb.rag_top_k_fused, 调用方要的条数)``。
 
@@ -595,7 +657,8 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
            exclude_chunks: list[str] | None = None,
            sources: list[str] | None = None,
            vector_k: int | None = None, lexical_k: int | None = None,
-           fused_k: int | None = None) -> dict:
+           fused_k: int | None = None,
+           section_cap: int | None = None) -> dict:
     """完整检索链路。``scope``：``all`` 全库 / ``cross`` 跨文献（排除来源论文）/
     ``paper`` 只在本篇内找。
 
@@ -638,23 +701,29 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
 
     common_kwargs = dict(langs=langs, roads=roads, paper_ids=paper_ids,
                          exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
+    # 召回/融合的深度：比"要的条数"更深，重排才有余量做节内名额约束（见 `cap_sections`）
+    deep = recall_depth(top_k)
     if "vector" in use:
         _t = time.perf_counter()
-        hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"), mode=mode,
-                                       chunk_types=types, **common_kwargs)
+        hits["vector"] = vector_search(query, top_k=max(vector_k or rag_k("vector"), deep),
+                                       mode=mode, chunk_types=types, **common_kwargs)
         vector_ms += _ms(_t)
     if "lexical" in use:
         _t = time.perf_counter()
-        hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
-                                         chunk_types=types, **common_kwargs)
+        hits["lexical"] = lexical_search(
+            query, top_k=max(lexical_k or rag_k("lexical"), deep),
+            chunk_types=types, **common_kwargs)
         lexical_ms += _ms(_t)
     vec_hits, lex_hits = hits["vector"], hits["lexical"]
     _t = time.perf_counter()
-    fused = rrf_fuse(_rankings(use, hits), top_k=fused_size(fused_k, top_k))
+    fused = rrf_fuse(_rankings(use, hits), top_k=max(fused_size(fused_k, top_k), deep))
     fused_ms += _ms(_t)
-    # 只传调用方的上限；"要不要重排"由 rerank_hits 自己读设置判（否则 0 会被 `or` 抬回默认）
+    # 重排整池（顺序要完整，才能按节挑），最后再由 `cap_sections` + `top_k` 定名额；
+    # "要不要重排"仍由 rerank_hits 自己读设置判（设置了 0 就整池不排序、不截断）。
     _t = time.perf_counter()
-    items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
+    items, rerank_info = rerank_hits(
+        query, fused, top_n=rerank_top_n(len(fused), top_k, section_cap), mode=mode)
+    items = _pick(items, top_k, section_cap)
     rerank_ms += _ms(_t)
     rerank_skipped = bool(rerank_info.get("skipped"))
     fell_back = False
@@ -663,20 +732,23 @@ def search(query: str, *, mode: str = "similar", top_k: int | None = None,
         fell_back = True
         if "vector" in use:
             _t = time.perf_counter()
-            hits["vector"] = vector_search(query, top_k=vector_k or rag_k("vector"),
+            hits["vector"] = vector_search(query, top_k=max(vector_k or rag_k("vector"), deep),
                                            mode=mode, **common_kwargs)
             vector_ms += _ms(_t)          # 累加：兜底重搜是**额外**花掉的时间
         if "lexical" in use:
             _t = time.perf_counter()
-            hits["lexical"] = lexical_search(query, top_k=lexical_k or rag_k("lexical"),
-                                             **common_kwargs)
+            hits["lexical"] = lexical_search(
+                query, top_k=max(lexical_k or rag_k("lexical"), deep),
+                **common_kwargs)
             lexical_ms += _ms(_t)
         vec_hits, lex_hits = hits["vector"], hits["lexical"]
         _t = time.perf_counter()
-        fused = rrf_fuse(_rankings(use, hits), top_k=fused_size(fused_k, top_k))
+        fused = rrf_fuse(_rankings(use, hits), top_k=max(fused_size(fused_k, top_k), deep))
         fused_ms += _ms(_t)
         _t = time.perf_counter()
-        items, rerank_info = rerank_hits(query, fused, top_n=top_k, mode=mode)
+        items, rerank_info = rerank_hits(
+            query, fused, top_n=rerank_top_n(len(fused), top_k, section_cap), mode=mode)
+        items = _pick(items, top_k, section_cap)
         rerank_ms += _ms(_t)
         rerank_skipped = bool(rerank_info.get("skipped"))
         notes.append("默认候选集（unit/formula/figure/table）空结果 → 已放开全部类型重搜")
