@@ -84,8 +84,19 @@ CROP_DPI = 600
 #:      存量论文（本地解析：source 为空；扫描件：`scan`）的区域与哈希一字不变 ——
 #:      bump 只会让全库插图在下次访问时重裁一遍 600dpi，纯属浪费。
 
-REGION_CACHE_VERSION = 13
+#: 16 = 表格下边界按"续块"补到表体真正结束（attention p8 的 Table 2 原来只裁到表头）。
+#:      只对**表格**生效，图的区域与哈希不变；表在 IR 里登记成"表头那一块"的才会变色。
+#:      15 是第一版（只看间距，实测 dammfnd p6 会把下面整段正文吞进来）→ 16 加了"正文行"闸门，
+#:      17 把闸门改成"跳过那一行"（上一版直接 break，双栏表旁边的正文一挡就停，表体补不全）；
+#:      18 改为"按表头那条横向带"判归属（跳过会把表体里合成长块的行也跳掉，表照样补不全）；
+#:      19 改用**页面矢量横线**定表体下边界（间距/对齐都靠猜，实测会把表后的正文吞进来）；
+#:      20 试过把上沿也贴表框 —— 那条线常是表头下面的分隔线，会把表头整块切掉，已撤回。
+REGION_CACHE_VERSION = 21
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
+#: 表格横线之间允许的最大断档（pt）：超过就认为"那是页脚 / 别处的线"，不再往下补
+RULE_GAP = 60.0
+#: 一次最多把表体往下补多长（pt）：防止一路补到页脚
+TABLE_GROW_MAX = 420.0
 
 _lock = threading.Lock()
 # {paper_id: (ir_mtime, {page: [regions]})}
@@ -655,6 +666,44 @@ def _parts_of(rect: list[float], inner: list[dict], page_rect: Rect
     return pieces
 
 
+def _extend_table_body(rect: list[float], rules: list[tuple[float, float, float]],
+                       page: Rect, struct_tops: list[float] | None = None) -> list[float]:
+    """表格下边界补到**表体真正结束的那条横线**。
+
+    为什么需要（用户口径 2026-11：「attention 那一篇表格的图片裁得比较破碎」）：解析层经常
+    只把**表头那一块**登记成 table（实测 attention p8 的 Table 2：记录 y1=128.5，而表体一直
+    排到 240），照着记录 bbox 裁，出来的就是「只有表头 + 第一行半截」的一张残表。
+
+    判据用**页面上的矢量横线**（表格自己的分隔线 / 表框），不用文字块的间距去猜：
+    实测 attention p8 表下方依次有 181.4 / 216.1 / 243.2 三条横线（表体到 240，底框 243.2），
+    再往下一千多点的位置才是页脚那条 —— 而 mmdfnd p8 的横线落在 206 / 272（按间距猜会补到 383，
+    把表后面的正文整段吞进来）。同页没有横线、或横线离得太远（RULE_GAP 之外）就**不动**，
+    宁可保持原样，也不靠猜。
+    """
+    x0, y0, x1, y1 = (_num(v) for v in rect)
+    if x1 <= x0 or page.y1 <= y0:
+        return rect
+    # ⚠️ 上沿**不要**贴表框：60pt 内那条线常常是表内分隔线（表头下面那条），
+    # 一贴就把表头和头几行整块切掉（实测 sniffer p6 表 1 从 452pt 变 20pt）。
+    # 顶上偶尔挂一行题注残句是小事，切掉表头是大事。
+    # 表体绝不可能跨过一个 caption / heading 继续往下：先把它当成硬上界
+    limit = min([y for y in (struct_tops or []) if y > y1 + TOL] or [page.y1])
+    candidates = sorted(y for y, rx0, rx1 in rules
+                        if y > y1 - TOL and y < limit and rx0 >= x0 - 6.0 and rx1 <= x1 + 6.0)
+    if not candidates:
+        return rect
+    bottom, cursor = y1, y1
+    for y in candidates:
+        if y - cursor > RULE_GAP:       # 断档：那不是这张表的横线了
+            break
+        if y - y1 > TABLE_GROW_MAX:
+            break
+        cursor = bottom = y
+    if bottom <= y1 + TOL:
+        return rect
+    return [x0, y0, x1, min(bottom, page.y1)]
+
+
 def _looks_like_continuation(fig: dict, page_h: float) -> bool:
     """上一页那张图的 bbox 是否"被页脚切开"（图体一直画到页面下沿）。"""
     bottom = _num(fig.get("y1"))
@@ -808,6 +857,30 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
     text_cache: dict[int, list[Rect]] = {}
     out: dict[int, list[dict]] = {}
 
+    #: 每页的**矢量横线**（表格自己的分隔线 / 表框）：(y, x0, x1)。
+    #: 只给「表格下边界」用（见 `_extend_table_body`）；读一次 PDF、按页缓存，
+    #: 打不开 PDF 就当没有线 —— 那样表格区域保持原样，绝不靠猜。
+    rules_cache: dict[int, list[tuple[float, float, float]]] = {}
+
+    def page_rules(page_no: int) -> list[tuple[float, float, float]]:
+        if page_no in rules_cache:
+            return rules_cache[page_no]
+        rows: list[tuple[float, float, float]] = []
+        try:
+            import pymupdf as fitz
+
+            from backend.parsing.extract.vector_layer import extract_drawings, horizontal_bars
+
+            with fitz.open(str(paper_service.resolve_pdf(paper_id))) as doc:
+                if 1 <= page_no <= doc.page_count:
+                    for d in horizontal_bars(extract_drawings(doc[page_no - 1])):
+                        r = d.rect
+                        rows.append((_num(r.y0), _num(r.x0), _num(r.x1)))
+        except Exception as exc:  # noqa: BLE001 —— 没有 PDF / 读失败都不该让区域计算失败
+            log.debug("读矢量横线失败（%s p%s）：%s", paper_id, page_no, exc)
+        rules_cache[page_no] = rows
+        return rows
+
     def page_rect(page_no: int) -> Rect:
         p = pages.get(page_no) or {}
         return Rect(0.0, 0.0, _num(p.get("width")) or 612.0,
@@ -875,6 +948,12 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 tight = [round(v, 2) for v in _normalise(raw, rect)]
                 pieces: list[tuple[list[float], dict | None]] = [(tight, None)]
             else:
+                # 表格：IR 常常只登记了**表头那一块**（attention p8 的 Table 2 记到 y1=128.5，
+                # 表体一直到 240）→ 先把下边界补到表体真正结束，再走收紧/贴边那两段。
+                # 只对表做：图的 bbox 是"整张图的并集"，多半不短，补边界反而会吃进下方正文。
+                if not below:
+                    raw = _extend_table_body(raw, page_rules(page_no), rect,
+                                             [_num(s.get("y0")) for s in structs])
                 seps = list(structs)
                 if below and prev_bottom is not None:
                     seps = seps + [{"y0": prev_bottom, "y1": prev_bottom}]

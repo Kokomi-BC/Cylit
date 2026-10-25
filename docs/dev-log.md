@@ -13075,3 +13075,37 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 - 点第一张图打开查看器（标题 `图 1：The Transformer - model architecture.`，读数 100%）；
 - `vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
 
+
+### 164. 第一百六十四轮：表格裁图按页面矢量横线补到表体结束（attention 的表格不再只剩表头）
+
+用户口径：「解决表格在 attention 那一篇的图片裁切的比较破碎的问题」。
+
+**病因**（实测，不是猜）：解析层常把整张表**只登记成"表头那一块"**。attention p8 的 Table 2 记录
+`y1=128.5`，而表体一直排到 240 —— 照着记录 bbox 裁，出来就是"表头 + 第一行半截"的残表
+（p9 的 Table 4 同样是两段式残表）。
+
+**做法**（`services/paper/figure_regions.py`）：新增 `_extend_table_body()`，在收紧/贴边之前把表格的
+下边界补到**表体真正结束的那条矢量横线**上。横线取 PDF 自己的线条（`vector_layer.horizontal_bars`），
+按页读一次并缓存；判据是：
+
+- 只认落在**表格 x 范围内**（±6pt）的横线；
+- 从登记的下边界往下依次吃，断档 > `RULE_GAP`(60pt) 就停（页脚那条线因此进不来）；
+- 遇到 caption / heading 一律不跨（`struct_tops` 是硬上界）；
+- 累计增长不超过 `TABLE_GROW_MAX`(420pt)。
+
+为什么不用"文字块间距 / 对齐"去猜（先后试过三版，全部否掉，写在这里免得再走一遍）：
+只按间距补 → dammfnd p6 把右栏整段正文吞进来；按"同 y 多块 = 表格行" → 表体里合成长块的行被跳过，
+表照样补不全；按"块必须落在表头带内" → mmdfnd p8 表 3 从 38pt 涨到 383pt（整段正文）。
+横线是表格**自己的**边界，实测三条线 181/216/243 正好把 attention p8 表 2 框住。
+
+⚠️ 也试过把**上沿**贴到表框 —— 60pt 内那条线常是表头下面的分隔线，一贴就把表头切掉
+（sniffer p6 表 1：452pt → 20pt），已撤回，注释留在原地。
+
+**影响面**（全库 10 篇、逐表对比"有/无这个函数"的 tight 高度）：只有 4 张表变了，且都是变大
+（补回表体）：attention p8/T2 35.3→149.9、p9/T4 47.1→154.2，mmdfnd p7/T2 25.9→65.4，
+2409 p49/T6 30.1→46.4，12382 p15/T6 57.9→108.8；其余一字不变（没有横线的表保持原样）。
+`REGION_CACHE_VERSION` 13 → 21（哈希进 URL，浏览器不会拿旧裁图）。
+
+**验证**：attention p8 的裁图从「表头 + 第一行」变成完整 Table 2（ByteNet → Transformer (big) 全在），
+p9 的 Table 4 也补全（Vinyals → Dyer 93.3）；dammfnd p6 表 2 与改动前**逐字节一致**（没被误伤）。
+
