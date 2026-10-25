@@ -551,10 +551,12 @@ def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
             # 只有标题的单元**不写进库**：命中了也只有一个章节名（内容在 `section` 字段里）。
             # 分区阶段一个字节都不动 ——「单元恰好覆盖每个正文行一次」是校验层与测试钉着的不变量，
             # 这里只是让「写库」这一步不产出这种行（线上实测 37 条 < 60 字符的 unit 全是这种）。
-            from backend.services.knowledge.chunking import is_heading_like as _heading_like
-            row_by_id = {r["id"]: r for r in rows}
+            # 判据用**整批行**算一次（不是逐行判）：排版把标题切成两块时（`## 2.2 …` + 后半截），
+            # 单看第二行是正文，合起来仍然只有一个章节名 —— 线上残余的两条就是这么漏过去的。
+            from backend.services.knowledge.chunking import heading_like_ids
+            heading_ids = heading_like_ids(rows)
             kept = [u for u in units
-                    if not all(_heading_like(row_by_id.get(rid, {})) for rid in u["row_ids"])]
+                    if not all(rid in heading_ids for rid in u["row_ids"])]
             if len(kept) != len(units):
                 log.info("跳过只有标题的单元（%s，%s 路）：%d 条",
                          paper_id, road, len(units) - len(kept))

@@ -743,6 +743,59 @@ def is_heading_like(row: dict) -> bool:
     return rest[-1] not in ".!?！？:：;…"
 
 
+
+#: 「标题续行」允许出现在哪些行类型上：只有正文类行才可能是标题被切开的后半截。
+#: 表格 / 公式 / 图注**绝不能**因为"短"被当成标题吞掉。
+_HEADING_CONT_TYPES = ("para", "text", "list", "title", "heading")
+
+
+def _same_page(a: dict, b: dict) -> bool:
+    try:
+        return int(a.get("page") or 0) == int(b.get("page") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def _heading_tail(text: str) -> bool:
+    """这行文字像不像**标题的后半截**：没有句号、没有句间空格、不以句末标点收尾。"""
+    rest = text.lstrip("#").strip()
+    if not rest or "。" in rest or ". " in rest:
+        return False
+    return rest[-1] not in ".!?！？:：;…"
+
+
+def heading_like_ids(rows: list[dict]) -> set[str]:
+    """这批行里哪些**只有标题** —— 含"标题被排版切成两块"的**续行**。
+
+    为什么要有这一层：`is_heading_like` 只看一行，判不出这种 ——
+    `## 2.2 NEEDLE-IN-A-HAYSTACK` 是一行、后面半截 `（Needle-in-a-Haystack）` 是另一行，
+    第二行不带 `#`、也短，单看它是正文；但两条合起来仍然只有一个章节名。
+    实测这两条正是线上"点开引用只有一行标题"的残余（用户口径 2026-12-05）。
+
+    判据只加一条：**紧挨着一个标题行**、同一页、**短**、**不像句子**，且行类型是正文类
+    （公式 / 表格 / 图注不参与，见 `_HEADING_CONT_TYPES`）。
+    行序按传入顺序（调用方给的就是阅读顺序），因此只看前一行。
+    """
+    out: set[str] = set()
+    prev: dict | None = None
+    for row in rows or []:
+        rid = str(row.get("id") or "")
+        if not rid:
+            prev = row
+            continue
+        if is_heading_like(row):
+            out.add(rid)
+            prev = row
+            continue
+        prev_head = prev is not None and str(prev.get("id") or "") in out
+        if (prev_head and _same_page(prev, row)
+                and str(row.get("type") or "") in _HEADING_CONT_TYPES):
+            text = road_text(row, None).strip()
+            if text and len(text) <= HEADING_TEXT_MAX and _heading_tail(text):
+                out.add(rid)
+        prev = row
+    return out
+
 def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = True,
                  unit_max_chars: int = UNIT_MAX_CHARS,
                  road: str | None = None) -> list[dict]:

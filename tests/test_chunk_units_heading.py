@@ -21,9 +21,10 @@ def _row(idx: int, kind: str, text: str, section: str = "S") -> dict:
 
 
 def _kept(rows: list[dict], candidates: list[dict]) -> list[dict]:
-    row_by_id = {r["id"]: r for r in rows}
+    # 与生产同一条判据：**整批行**算一次标题集合（标题被排版切成两块时要一起算）
+    heading_ids = chunking.heading_like_ids(rows)
     return [u for u in candidates
-            if not all(chunking.is_heading_like(row_by_id.get(rid, {})) for rid in u["row_ids"])]
+            if not all(rid in heading_ids for rid in u["row_ids"])]
 
 
 def test_heading_like_detection_covers_para_typed_markdown_headings() -> None:
@@ -32,6 +33,27 @@ def test_heading_like_detection_covers_para_typed_markdown_headings() -> None:
     assert not chunking.is_heading_like(
         _row(1, "para", "## 0.1 PROBLEM DEFINITION  Formally, our goal is to … ."))
     assert not chunking.is_heading_like(_row(1, "para", "普通正文，没有井号"))
+
+
+def test_title_split_across_two_blocks_is_one_heading() -> None:
+    """标题被排版切成两块时（第二块不带 #），整条单元仍然只算标题 —— 用户口径 2026-12-05。
+
+    线上实测的两条：`## 2.2 NEEDLE-IN-A-HAYSTACK` 与后半截 `（Needle-in-a-Haystack）`；
+    单看第二行它是正文（没有井号、也不长），于是这个单元照样写进了库，点开引用只有一行章节名。
+    """
+    rows = [_row(1, "heading", "## 2.2 NEEDLE-IN-A-HAYSTACK"),
+            _row(2, "para", "（Needle-in-a-Haystack）")]
+    assert {"r1", "r2"} <= chunking.heading_like_ids(rows)
+    assert _kept(rows, [{"row_ids": ["r1", "r2"]}]) == []
+    # 续行必须**紧挨**着标题：隔了正文就不再算（否则会把正文里的短句一起吞掉）
+    rows2 = [_row(1, "heading", "## 2.2 NEEDLE-IN-A-HAYSTACK"),
+             _row(2, "para", "We evaluated TURBOQUANT on Llama-3.1."),
+             _row(3, "para", "（Needle-in-a-Haystack）")]
+    assert chunking.heading_like_ids(rows2) == {"r1"}
+    # 公式 / 表格行不许因为"短"被当成标题续行
+    rows3 = [_row(1, "heading", "## 2.3 END-TO-END"),
+             _row(2, "formula", "$$D_{\text{mse}}$$")]
+    assert chunking.heading_like_ids(rows3) == {"r1"}
 
 
 def test_only_heading_units_are_dropped_before_writing() -> None:
