@@ -14511,3 +14511,19 @@ y1 239.4 → 384.2（高 124 → 269pt），其余 45 张一字不变（没有�
 **验证**：Table 3 裁图从 base/(A)/(B) 变成 base → big 全在（页面级目视）；新增 3 个单测
 （跨空白 / 撞正文停 / 超 120pt 放弃）；`pytest tests` 全绿；`scripts/frontend_check.py` 168/168；
 两侧同一份后端代码，线上重启后 `region/9/0` 由 136255 字节变成 296690 字节（内容变全）。
+
+**补记（存量解读的图片地址是快照，不会自己更新）**：`understanding.inventory` 里的 `image`
+在生成解读那一刻就把 `?v=<区域版本>` 写死了，而 `get_understanding` 是直接回这行 —— 所以
+区域一改，接口吐的图是新的、**URL 却还是旧的**，浏览器按 `max-age=604800` 继续摆旧图 7 天。
+线上实测：`region/9/0?v=c60140a3c0`（旧）→ 需要 `917d794fc0`（新，注意新版缓存文件已经换了
+名字，`v` 只是给浏览器的开关）。已就地改过线上这一行：
+
+```sql
+UPDATE understanding SET inventory = REPLACE(inventory,
+  'region/9/0?v=c60140a3c0', 'region/9/0?v=917d794fc0')
+ WHERE paper_id='attention-cleanroom';
+```
+
+改完 `/understanding` 吐的就是新地址（`region/9/0?v=917d794fc0`），裁图 296690 字节与前缀一致。
+⚠️ 以后再动裁图算法，要么顺手改这条 URL，要么让用户**重新生成解读**（重生成会重算整份 inventory）——
+只改 `REGION_CACHE_VERSION` 挡不住解读里那张图。
