@@ -535,8 +535,13 @@ def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
     # ------------------------------------------------------------------
     out: list[dict] = []
     road_summary: dict[str, dict] = {}
+    _, _, chunk_hard = chunk_params()
     for road in ROADS:
         chunks, units, stats, report = build_road(road)
+        # 只有标题的正文块：并进行序上紧邻的下一个块（见 `_merge_heading_only`）
+        merged = _merge_heading_only(chunks, road, limit=chunk_hard)
+        if merged:
+            log.info("标题块并入相邻正文块（%s，%s 路）：%d 块", paper_id, road, merged)
         key_to_id: dict[str, str] = {}
         for chunk in chunks:
             made = _row_text_chunk(paper_id, chunk["rows"], chunk.get("node"), road=road)
@@ -668,6 +673,47 @@ def _row_unit_chunks(paper_id: str, units: list[dict], key_to_id: dict[str, str]
             chunk["_zh"] = unit["zh"] or None
         out.append(chunk)
     return out
+
+
+def _merge_heading_only(chunks: list[dict], road: str | None, *, limit: int) -> int:
+    """把「只有标题」的正文块（``rows`` 全是 heading）并进行序上**紧邻的下一个**块。
+
+    为什么需要：分块器在「节点自己的行只有标题、且下一块的首行正好是语义断点」时，
+    会按纪律把引言单独成块（``assemble`` 里的 ``intro_alone``）—— 于是索引里多出一条
+    ``## 0.2 PRIOR WORK`` 这种 17 字符的块，检索命中它等于交白卷（线上 430 块里有 8 块）。
+
+    **为什么不靠改模型提示词**：断点提示词里早就写了「不要标标题行的下一行」，
+    但这 8 块的元数据里 ``anchor_used`` 是空的、类型是 ``text`` —— 它们来自**打包层**，
+    与模型标不标断点无关。打包层的纪律是"宁可引言单独成块"，这里给它补一条反向约束：
+    **标题块必须带上它下面的正文**（合并后仍须 ≤ ``hard``，否则不动）。
+
+    只动 ``text`` 层（上下文单位）：``unit`` 层（检索单位）的边界不动，break 纪律不受影响。
+    """
+    from backend.services.knowledge.chunking import road_text
+
+    def size(items: list[dict]) -> int:
+        """与分块器同一个长度口径（按路取文本、去空白后累加）—— `chunking` 里的
+        `chars` / `hard_len` 是 `assemble` 的内部函数，这里按同一口径自己算，避免复制语义。"""
+        return sum(len(road_text(row, road).strip()) for row in items)
+
+    merged = 0
+    index = 0
+    while index < len(chunks) - 1:
+        chunk = chunks[index]
+        rows = chunk.get("rows") or []
+        if not rows or any(r.get("type") != "heading" for r in rows):
+            index += 1
+            continue
+        nxt = chunks[index + 1]
+        nxt_rows = nxt.get("rows") or []
+        if not nxt_rows or size(rows + nxt_rows) > limit:
+            index += 1                      # 合不下就保持原样：宁可多一条小标题块，也不造超长块
+            continue
+        nxt["rows"] = rows + nxt_rows       # 标题跟在正文前面，行序不变
+        nxt["node"] = chunk.get("node") or nxt.get("node")
+        chunks.pop(index)
+        merged += 1
+    return merged
 
 
 def _row_text_chunk(paper_id: str, items: list[dict], node: dict | None,
