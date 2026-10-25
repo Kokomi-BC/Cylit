@@ -68,6 +68,18 @@ const refs = computed<UnderstandingRefItem[]>(() => [
   ...(payload.value?.refs_resolved ?? []),
 ]);
 
+
+/** 编号 → 图地址（后端材料清单的 `image` 栏）：正文里 `![图注](img:A012)` 靠它换成真实裁图 */
+const images = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const it of payload.value?.inventory ?? []) {
+    const code = String(it?.code ?? '').toUpperCase();
+    const url = String(it?.image ?? '');
+    if (code && url) map[code] = url;
+  }
+  return map;
+});
+
 /** anchor 前缀：与整页（`ins`）不同，即使两个视图同时在 DOM 里也不会撞 id。
  *  ⚠️ 浮窗里那份必须**再换一个**：侧栏那份与解读浮窗会同时挂载，同一个前缀就成了两套重复 id，
  *  浮窗里点目录会 `getElementById` 拿到侧栏那份（滚的是侧栏，浮窗纹丝不动）。 */
@@ -130,6 +142,7 @@ async function onStart() {
       :anchor-prefix="prefix"
       :paper-id="props.paperId"
       :refs="refs"
+      :images="images"
       @start="onStart"
       @cite="(c) => emit('cite', c)"
       @peek="(p) => emit('peek', p)"

@@ -13034,3 +13034,44 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 "笔记本 + 装订点"；与相邻的目录（list）、对话（chat）、搜索（search）、笔记（note）并排不撞。
 `vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
 
+
+### 163. 第一百六十三轮：论文解读能引用并显示插图；提示词给出可贴的图
+
+用户口径：「修改论文解读页以及对应提示词，可以（像对话页一样引用并显示图片），并使用 agent 重跑服务器上的
+两篇论文解读」。
+
+**1. 后端：材料清单带"这张能不能贴"**（`services/understanding/understanding_service.py`）
+
+- 新增 `_item_image()`：插图 / 表格 → 按图注锚定的**区域裁图**、公式 → 解析产物裁图，直接复用
+  `knowledge_service.chunk_image_url()`。**不另算一套** —— 否则解读里的图和知识库、语义搜索里的缩略图
+  迟早互相打脸（同一张表一处裁到表头、一处裁到整页）。
+- `_inventory_items()` 给每一条带图的材料加 `image`（`chunk_inventory` 把 `paper_id` 传下去）；
+  `build_understanding` 落库时把 `image` 一起写进 `inventory` 列 —— 前端要拿它把短码换成地址。
+- 新增 `clean_image_refs()`：正文里指向"这条材料没有图"的 `![图注](img:A0xx)` **连图注一起删掉**
+  （模型偶尔会把正文段落的编号也写成图片，前端只能画裂图标）。
+
+**2. 提示词**（`services/understanding/prompts.py`）
+
+- 清单里"能贴图"的条目多一行 `〔可插入的图：img:A015〕`；
+- `_SHARED` 新增【插图】四条：只认清单里标了的短码、**单独起一行**写 `![图注](img:A012)`、
+  方括号里写图注本身、只在图确实支撑论点时插（一篇 3~6 张、不重复）、除短码外的地址一律不写。
+
+**3. 前端：短码 → 真图，点开能放大**（`components/insight/InsightDoc.vue`）
+
+- 新 prop `images`（编号 → 地址），由 `InsightPanel` / `InsightPage` 从 `payload.inventory` 建；
+- `decorateFigures()` 在渲染后的 HTML 上把 `<img src="img:A012">` 换成
+  `<figure class="ins-fig"><img class="ins-fig-img" …><figcaption>图注</figcaption></figure>`
+  （与 `decorateCites` 同一层：代码块里的 `img:` 不动；查不到地址的整块不渲染）；
+- 点图 → 复用阅读器那套 `ImageViewer`（缩放 / 拖拽 / 左右切图），图集 = 正文里实际渲染出来的那几张；
+- 样式：与正文同宽、圆角描边、图注居中 12.5px 淡色（宽图自己缩、窄图不放大）。
+
+**验证**（本地真后端 + headless Edge + CDP，2x）
+
+- 本地对 `attention-is-all-you-need` 跑了一次真任务（51s，`refs_ok=true`，62 条引用）：清单 82 条里 9 条带图，
+  模型自己插了 **7 张**（图 1 架构、图 2 注意力、表 1 复杂度、表 2 BLEU、表 3 变体、表 4 泛化、图 3 注意力示例），
+  图注都写在方括号里；
+- `/understand/attention-is-all-you-need` 页面：`.ins-fig` 7 个、`.ins-fig-img` 无一裂图、
+  HTML 里没有残留的 `img:A0xx`；截图确认图 1（Transformer 架构）内嵌在「5.1 总体骨架」下方、图注居中；
+- 点第一张图打开查看器（标题 `图 1：The Transformer - model architecture.`，读数 100%）；
+- `vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
+

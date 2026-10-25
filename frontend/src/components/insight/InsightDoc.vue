@@ -12,7 +12,8 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
-import type { UnderstandingRefItem } from '@/api/types';
+import ImageViewer from '@/components/reader/ImageViewer.vue';
+import type { UnderstandingRefItem, ZoomTarget } from '@/api/types';
 import { buildInsightOutline } from '@/utils/insightOutline';
 
 const props = withDefaults(defineProps<{
@@ -52,9 +53,16 @@ const props = withDefaults(defineProps<{
    * 没有它，正文里的 `[A023]` 也能渲染成标号，只是点了跳不动 —— 所以是可选 prop。
    */
   refs?: UnderstandingRefItem[];
+  /**
+   * 编号 → 图地址（后端材料清单里 `image` 那一栏，形如 `{A012: '/api/v1/papers/…/figures/region/6/2?v=…'}`）。
+   *
+   * 解读正文里模型写的是 `![图注](img:A012)` —— 短码只有后端认得，这里换成真实裁图地址；
+   * 查不到地址的（该条材料没有图）整块不渲染，不留裂图标。
+   */
+  images?: Record<string, string>;
 }>(), {
   markdown: '', empty: false, loading: false, starting: false, running: false,
-  error: '', timedOut: false, narrow: false, anchorPrefix: 'ins', paperId: '',
+  error: '', timedOut: false, narrow: false, anchorPrefix: 'ins', paperId: '', images: () => ({}),
 });
 
 const emit = defineEmits<{
@@ -197,11 +205,97 @@ function onCiteClick(ev: MouseEvent) {
  * 引用标记在这之后换成一枚枚标号（decorateCites）—— 顺序不能反：先换会把 HTML 弄脏，
  * marked 再把按钮当文本转义一次就全废了。
  */
+/** 编号 → 图地址（键统一大写，模型写成小写也能对上） */
+const imageMap = computed(() => {
+  const map = new Map<string, string>();
+  for (const [code, url] of Object.entries(props.images ?? {})) {
+    const key = String(code || '').toUpperCase();
+    const href = String(url || '');
+    if (key && href) map.set(key, href);
+  }
+  return map;
+});
+
+/** `<img src="img:A012" alt="图注">`：marked 对 `![alt](img:A012)` 的产物 */
+const FIG_IMG = /<img\b([^>]*?)\bsrc="img:([A-Za-z]\d{2,4})"([^>]*?)>/g;
+
+function attrOf(attrs: string, name: string): string {
+  const m = new RegExp(name + '="([^"]*)"').exec(attrs);
+  return m ? m[1] : '';
+}
+
+/**
+ * 正文里的「`![图注](img:A012)`」→ **真正的裁图 + 图注**（用户口径 2026-11：解读要能引用并显示图片，
+ * 像对话页那样）。
+ *
+ * 为什么在渲染后的 HTML 上换、而不是给 marked 加一条图片扩展：短码 → 地址的映射只有后端有
+ * （区域裁图要图注锚定 + 版本号），marked 那条链路拿不到；而且代码块里的 `img:` 不该被换。
+ * 所以跟 `decorateCites` 同一层处理。
+ *
+ * 换不到的（清单里那一条没有图）**整块删掉**：宁可少一张图，也不要一个裂图标 ——
+ * 后端 `clean_image_refs` 已经先删过一遍，这里是兜底（老解读、旧清单）。
+ */
+function decorateFigures(html: string): string {
+  if (!html || !html.includes('img:')) return html;
+  const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;              // 代码块原样返回
+    return part.replace(FIG_IMG, (whole: string, before: string, rawCode: string, after: string) => {
+      const code = rawCode.toUpperCase();
+      const url = imageMap.value.get(code);
+      if (!url) return '';
+      const attrs = before + ' ' + after;
+      const alt = attrOf(attrs, 'alt');
+      const cap = alt ? '<figcaption>' + alt + '</figcaption>' : '';
+      return '<figure class="ins-fig"><img class="ins-fig-img" src="' + escapeAttr(url)
+        + '" alt="' + escapeAttr(alt) + '" data-code="' + code + '" loading="lazy">' + cap + '</figure>';
+    });
+  }).join('');
+}
+
 function render(md?: string | null): string {
-  return decorateCites(mdToHtml(normalizeMarks(String(md ?? '')), props.paperId));
+  return decorateCites(decorateFigures(mdToHtml(normalizeMarks(String(md ?? '')), props.paperId)));
 }
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));
+
+/* ------------------------------ 点图放大 ------------------------------
+ * 复用阅读器那套大图查看器（缩放 / 双指 / 拖动 / 左右切图都在里面，见 `reader/ImageViewer`）：
+ * 解读里的插图在整页视图下可能比正文窄一半，不放大看不清数字与坐标轴。
+ * 图集 = 正文里**实际渲染出来**的那几张（按出现顺序），左右切的就是"这份解读里的图"。
+ */
+const zoom = ref<ZoomTarget | null>(null);
+const zoomOrigin = ref<{ left: number; top: number; width: number; height: number } | null>(null);
+
+function decodeAttr(text: string): string {
+  return text.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+const docFigures = computed<ZoomTarget[]>(() => {
+  const out: ZoomTarget[] = [];
+  const re = /<img class="ins-fig-img" src="([^"]*)" alt="([^"]*)"/g;
+  let m = re.exec(html.value);
+  while (m) {
+    out.push({ url: decodeAttr(m[1]), caption: decodeAttr(m[2]) });
+    m = re.exec(html.value);
+  }
+  return out;
+});
+
+function onFigureClick(ev: MouseEvent): void {
+  const img = (ev.target as HTMLElement | null)?.closest?.('.ins-fig-img') as HTMLImageElement | null;
+  if (!img) return;
+  const r = img.getBoundingClientRect();
+  zoomOrigin.value = { left: r.left, top: r.top, width: r.width, height: r.height };
+  zoom.value = { url: img.getAttribute('src') || '', caption: img.getAttribute('alt') || '' };
+}
+
+/** 正文点击：标号跳原文 + 点图放大（一个 @click 里分派，两者互不干扰） */
+function onDocClick(ev: MouseEvent): void {
+  onCiteClick(ev);
+  onFigureClick(ev);
+}
 
 /**
  * 给渲染出来的标题**按序贴 id**（id 由 `buildInsightOutline` 生成）。
@@ -228,7 +322,7 @@ onMounted(() => { void nextTick(assignAnchors); });
 </script>
 
 <template>
-  <div ref="root" class="doc" :class="{ narrow }" @click="onCiteClick"
+  <div ref="root" class="doc" :class="{ narrow }" @click="onDocClick"
      @pointerover="onCitePeek" @pointerout="onCitePeekOut">
     <div v-if="error" class="item err">
       <div class="tiny">{{ error }}</div>
@@ -262,6 +356,17 @@ onMounted(() => { void nextTick(assignAnchors); });
       <div v-if="!html" class="hint">还没有生成「论文解读」。</div>
       <div v-if="html" class="body md" v-html="html" />
     </template>
+
+    <!-- 点插图放大：与阅读器同一套查看器（胶囊里有放大 / 百分比 / 缩小 / 重置 / 关闭） -->
+    <ImageViewer
+      v-if="zoom"
+      :target="zoom"
+      :gallery="docFigures"
+      :origin="zoomOrigin"
+      icon="image"
+      :title="zoom.caption || '插图'"
+      @close="zoom = null"
+    />
   </div>
 </template>
 
@@ -283,6 +388,19 @@ onMounted(() => { void nextTick(assignAnchors); });
 
 /* 正文排版：数值与阅读器 ReaderRow 的 `.rr-body` 一一对应（见文件头注释）。 */
 .body { line-height: 1.78; overflow-wrap: anywhere; line-break: strict; text-autospace: normal; }
+/* 解读里的插图（正文 `![图注](img:A012)`）：与正文同宽、圆角描边，图注在下面居中。
+   图来自后端「按图注锚定的区域裁图」，尺寸不定，所以只限宽不限高（宽图自己缩、窄图别被拉大）。 */
+.body :deep(.ins-fig) { display: grid; justify-items: center; gap: 6px; margin: 14px 0 16px; }
+.body :deep(.ins-fig-img) {
+  display: block; max-width: 100%; width: auto; height: auto;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev);
+  cursor: zoom-in;
+}
+.body :deep(.ins-fig-img:hover) { border-color: var(--border-strong); }
+.body :deep(.ins-fig figcaption) {
+  font-size: calc(12.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint);
+  text-align: center; max-width: 46em;
+}
 .body :deep(p) { margin: 0 0 .55em; }
 .body :deep(h1) { font-size: 1.4em; }
 .body :deep(h2) { font-size: 1.24em; }

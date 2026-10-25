@@ -80,7 +80,25 @@ def normalize_path(value) -> str:
 # --------------------------------------------------------------------------
 
 
-def _inventory_items(rows, road: str, langs: tuple[str, ...]) -> list[dict]:
+def _item_image(paper_id: str, chunk_type: str, page_no: int, meta: dict) -> str:
+    """这条材料**能不能显示成图** → 图的 URL（不能就是空串）。
+
+    读的就是知识库缩略图那一套（`knowledge_service.chunk_image_url`）：插图 / 表格给"按图注锚定的
+    区域裁图"，公式给解析阶段的裁图。**不另算一套** —— 两套算法各算一次，解读里的图和知识库 /
+    语义搜索里的缩略图迟早会互相打脸（同一张表，一处裁到表头、一处裁到整页）。
+    """
+    if not paper_id or chunk_type not in ("figure", "table", "formula"):
+        return ""
+    try:
+        from backend.services.knowledge.knowledge_service import chunk_image_url
+        return chunk_image_url(paper_id, chunk_type, int(page_no), meta) or ""
+    except Exception as exc:  # noqa: BLE001 —— 缺 IR / 读盘失败都不该让整篇解读失败
+        log.debug("取材料图失败（%s p%s）：%s", chunk_type, page_no, exc)
+        return ""
+
+
+def _inventory_items(rows, road: str, langs: tuple[str, ...],
+                     paper_id: str = "") -> list[dict]:
     """chunk 行 → 材料清单条目：只留**本路 + 共用**、且**本路语言**的行（保持论文顺序）。
 
     单独拎出来是为了能单测"先过滤、后截断"这件事（截断发生在调用方，见 chunk_inventory）。
@@ -92,10 +110,15 @@ def _inventory_items(rows, road: str, langs: tuple[str, ...]) -> list[dict]:
             continue
         if (meta.get("lang") or "en") not in langs:
             continue
+        image = _item_image(paper_id or str(getattr(row, "paper_id", "") or ""),
+                            row.chunk_type, int(row.page_no or 0), meta)
         items.append({"chunk_id": row.id, "chunk_type": row.chunk_type,
                       "page": int(row.page_no or 0),
                       "section": row.section or "",
                       "preview": row.content_preview or "",
+                      #: 能贴出来的图（用户口径 2026-11：解读正文里要能引用并显示图片）。
+                      #: 有值 = 模型可以写 `![图注](img:A012)`；没这个键 = 这一条贴不出来。
+                      **({"image": image} if image else {}),
                       #: 这条 chunk 记住的**行身份**（与 row_ids 同序等长）。留在清单条目上
                       #: 只为一件事：落库时写进 refs_json.pids —— 重建索引后 chunk id 全变，
                       #: 它是唯一能认回同一行的桥（读路径首选它，见 split_refs_by_pids）。
@@ -122,7 +145,7 @@ def chunk_inventory(paper_id: str, path: str) -> list[dict]:
         rows = (sess.query(Chunk)
                 .filter(Chunk.paper_id == paper_id, Chunk.chunk_type.in_(TYPES))
                 .order_by(Chunk.order_global.asc(), Chunk.id.asc()).all())
-        items = _inventory_items(rows, road, langs)
+        items = _inventory_items(rows, road, langs, paper_id)
     # 短码按论文顺序编号（A 路 A001… / B 路 B001…）
     prefix = path.upper()
     for i, item in enumerate(items, 1):
@@ -252,6 +275,24 @@ def _scan_refs(text: str) -> list[str]:
         if code not in out:
             out.append(code)
     return out
+
+
+#: 正文里的图片引用：`![图注](img:A012)`
+IMAGE_REF_RE = re.compile(r"!\[([^\]\n]*)\]\(\s*img:([A-Za-z]\d{2,4})\s*\)")
+
+
+def clean_image_refs(markdown: str, inventory: list[dict]) -> str:
+    """删掉**贴不出来**的图片引用（清单里那一条没有图）。
+
+    为什么在后端删、而不是让前端渲染成空：模型偶尔会把正文段落 / 公式的编号也写成图片，
+    前端只能画一个裂图标；连图注一起删掉更干净。有效的那几条**原样保留** ——
+    `img:A012` 换成真实裁图地址是渲染侧的活（见 `InsightDoc.decorateFigures`）。
+    """
+    if not markdown:
+        return markdown or ""
+    has_image = {str(it.get("code") or "").upper() for it in inventory or [] if it.get("image")}
+    return IMAGE_REF_RE.sub(
+        lambda m: m.group(0) if m.group(2).upper() in has_image else "", markdown)
 
 
 def merge_ref_codes(refs: list[str], markdown: str) -> list[str]:
@@ -447,6 +488,8 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
         res = _generate(provider, prompt, system=system, path=path,
                         min_tokens=MAX_TOKENS)
         parsed = parse_result(res.text or "")
+    #: 贴不出来的图（那条材料没有图）就地删掉，别让前端画裂图标
+    parsed["markdown"] = clean_image_refs(parsed["markdown"], inventory)
     valid = code_map(inventory)
     codes = merge_ref_codes(parsed["refs"], parsed["markdown"])
     check = validate_refs(codes, valid, path=path)
@@ -462,7 +505,9 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
         "completion_tokens": int(getattr(res, "completion_tokens", 0) or 0),
         "inventory": json_dumps([
             {"code": it["code"], "chunk_id": it["chunk_id"],
-             "chunk_type": it["chunk_type"], "page": it["page"]}
+             "chunk_type": it["chunk_type"], "page": it["page"],
+             #: 图像地址跟着清单落库：前端把正文里的 `img:A012` 换成真实地址只需要这一份
+             **({"image": it["image"]} if it.get("image") else {})}
             for it in inventory]),
         "refs_ok": check["ok"],
         "updated_at": now_iso(),

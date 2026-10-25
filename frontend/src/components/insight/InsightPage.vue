@@ -42,6 +42,18 @@ const refs = computed<UnderstandingRefItem[]>(() => [
   ...(payload.value?.refs_resolved ?? []),
 ]);
 
+
+/** 编号 → 图地址（后端材料清单的 `image` 栏）：正文里 `![图注](img:A012)` 靠它换成真实裁图 */
+const images = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const it of payload.value?.inventory ?? []) {
+    const code = String(it?.code ?? '').toUpperCase();
+    const url = String(it?.image ?? '');
+    if (code && url) map[code] = url;
+  }
+  return map;
+});
+
 const router = useRouter();
 
 /**
@@ -147,6 +159,7 @@ watch(outline, () => { void nextTick(syncActive); });
           :anchor-prefix="prefix"
           :paper-id="paperId"
           :refs="refs"
+          :images="images"
           @start="start"
           @cite="onCite"
           @anchors-ready="syncActive"

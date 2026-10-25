@@ -961,6 +961,19 @@ export interface UnderstandingPayload {
   model?: string;
   updated_at?: string;
   inventory_size?: number;
+  /**
+   * 这次解读的**材料清单**（编号 → 段落 / 图 / 表）。
+   *
+   * `image` 有值 = 这一条能贴图（插图与表格的区域裁图、公式裁图）：正文里的
+   * `![图注](img:A012)` 就靠它换成真实地址；没有这个键的条目贴不出来。
+   */
+  inventory?: Array<{
+    code: string;
+    chunk_id: string;
+    chunk_type?: string;
+    page?: number | null;
+    image?: string | null;
+  }>;
 }
 
 /**
