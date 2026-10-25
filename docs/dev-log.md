@@ -13700,3 +13700,45 @@ attention 那 2 块（「# Attention Visualizations」的 en/zh）第一轮没�
 校验：pytest tests 全量绿；线上两篇 heading_only = 0。
 
 部署：后端（186.bundle），pm2 restart cylit-api。
+
+### 181. 第一百八十一轮：只有标题的单元在写库这一步被挡掉（试了两条更上游的路，都被不变量否掉）
+
+用户要的是「重建云端两篇 + 去掉兼容代码」。重建之后才发现：撤掉检索侧过滤，单元层的标题块立刻又露出来
+（线上两篇仍有 37 条 content 小于 60 字符的 unit，全是「## 0.2 PRIOR WORK」这类）。
+
+**走过两条更上游的路，都不成立**：
+
+| 尝试 | 结果 |
+| --- | --- |
+| 在 semantic_units 里「断点若只留下标题行则不切」 | 切点契约被 test_semantic_units_split_at_anchor_and_section / test_kb_row_chunking 钉着，直接红 |
+| 把标题行从单元分区里剔掉 | 破了「单元恰好覆盖每个正文行一次」（4 条测试红） |
+| 把标题单元并进下一个单元 | 被 unit_max_chars 挡回去 —— 后面那条单元往往已经顶到上限，线上因此一条都没并掉 |
+
+**最后落在写库这一步**：过滤掉「所有行都是标题样」的单元，不产出 unit chunk。
+分区阶段一个字节不动（覆盖 / 顺序 / 长度三条不变量全部保持），标题在 text 块里照样有（那里早就是「并进相邻正文」）。
+
+判据单独立了 chunking.is_heading_like()：**同时看类型和文字** ——
+线上有一批「## 0.2 PRIOR WORK」在解析侧是 para，只按 type == "heading" 会漏掉一半；
+文字的判据也不能用「整段没有句号」（章节号自带的点会把「## 0.2」判成正文）。
+
+**实测（线上，两篇重建后）**：
+
+| 查询 | 改前最短 content | 改后最短 content |
+| --- | --- | --- |
+| 相关工作（turboquant） | 17 | **201** |
+| 摘要（turboquant） | 10 | **201** |
+| A EXTENDED PRIOR WORK | 17 | **224** |
+| 相关工作（attention） | 27 | **132** |
+
+两篇 597 块里仍有 28 条 content 小于 60 字符：22 字符那条是「标题 + 一句话」的正常小块，
+另外是公式块，都不再是「只有标题」。
+
+**要认的账**：golden 页级平均 recall@10 在线上是 **0.73**（本地 0.84）。逐条看：
+TURBOQUANT_mse 0.70、SLB 0.50、Shannon lower bound 0.75、QJL 0.50，其余 1.00。
+比上一版线上（0.74）基本持平，TURBOQUANT_mse 掉了 0.10 —— 单元集合变小后名额重新分配的结果。
+这条留着当**已知偏差**：下一步要么按新索引重建 golden 期望（页级真值不变，变的是排序），要么接受它。
+没有偷偷改数字。
+
+校验：pytest 全量绿；线上两篇都重建完成（turboquant 408 块 / attention 189 块）。
+
+部署：后端（189.bundle），pm2 restart cylit-api。
