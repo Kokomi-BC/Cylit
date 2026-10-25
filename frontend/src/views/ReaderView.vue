@@ -9879,10 +9879,13 @@ function renderMarkdown(text?: string | null) {
 
 /* 「就是这**一条公式**」：点解读里的公式标号时精确标到这里（同一正文行里可能有好几条公式，
    行级落点分不开 —— 用户 2026-12-03 的「56、57 为什么是同一块地方」）。
-   语言与行闪一致：淡底 + 左侧竖条，1.6s 淡出；`:deep` 是因为 KaTeX 在子组件里渲染。 */
+   语言与行闪一致：**只有一层淡底**，1.6s 淡出；`:deep` 是因为 KaTeX 在子组件里渲染。
+
+   ⚠️ 这里曾经还有一根 `box-shadow: inset 3px 0 0 0`（左侧竖条）。行闪那根已经去掉了，
+   而段落里的公式闪是**另一套**（`flash-target`）—— 于是用户看到的是"段落内公式仍然有竖线"
+   （2026-12 报）。两处必须同一口径：闪烁只许用色，不许加边框/竖条。 */
 .reader-content :deep(.flash-target) {
   background-color: color-mix(in srgb, var(--accent) 16%, transparent);
-  box-shadow: inset 3px 0 0 0 color-mix(in srgb, var(--accent) 62%, transparent);
   border-radius: 6px;
   animation: katex-flash 1.6s ease-out forwards;
 }

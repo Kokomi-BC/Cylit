@@ -213,16 +213,50 @@ const fileInput = ref<HTMLInputElement | null>(null);
  *
  *  没收录的外部技能排在最后，并保持接口给的相对顺序。
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 skills，就地 sort 会打乱那份引用。 */
-const SKILL_ORDER = [
-  'web-search', 'web-fetch',
-  'search-paper', 'reader-state', 'summarize-paper', 'answer-paper',
-  'read-text', 'read-page-image', 'read-figure', 'read-formula',
-  'explain-term', 'annotate-text', 'edit-text',
+/** 三段分组：顺序与上面那句注释一一对应。
+ *
+ * 为什么把分组从注释搬进界面（用户口径 2026-12「补齐技能开关及说明」）：13 行平铺时，
+ * 「联网搜索」和「标注与笔记」看起来是同一类东西 —— 分组小标题 + 一句「这一段在干什么」
+ * 才说得清每个开关管的是哪一类能力。**只写分组在干什么，不写单个技能的能力**：
+ * 单个技能的说明只能来自 SKILL.md（见下面那条警告）。 */
+const SKILL_GROUPS: { title: string; note: string; names: string[] }[] = [
+  {
+    title: '联网取外援',
+    note: '论文之外的公开信息：先搜到候选，再按链接读正文。',
+    names: ['web-search', 'web-fetch'],
+  },
+  {
+    title: '怎么读、怎么答',
+    note: '先定位再取证：检索候选位置 → 看读者停在哪 → 给整篇概览 → 跨段回答。',
+    names: ['search-paper', 'reader-state', 'summarize-paper', 'answer-paper'],
+  },
+  {
+    title: '取材料与动手',
+    note: '把正文 / 原图 / 图表 / 公式取出来核对，需要时标注，或改页级产物。',
+    names: ['read-text', 'read-page-image', 'read-figure', 'read-formula',
+            'explain-term', 'annotate-text', 'edit-text'],
+  },
 ];
+const SKILL_ORDER = SKILL_GROUPS.flatMap((g) => g.names);
 function skillRank(name: string): number {
   const at = SKILL_ORDER.indexOf(name);
   return at < 0 ? SKILL_ORDER.length : at;
 }
+
+/** 过滤后的行按分组切开（没收录的外部技能自成一组，排在最后）。
+ *  空组不渲染 —— 搜索「术语」时不该还挂着「联网取外援」这个空标题。 */
+const skillGroups = computed(() => {
+  const rows = filteredSkills.value;
+  const groups = SKILL_GROUPS.map((g) => ({
+    title: g.title, note: g.note,
+    rows: rows.filter((s) => g.names.includes(s.name)),
+  }));
+  const rest = rows.filter((s) => !SKILL_ORDER.includes(s.name));
+  if (rest.length) {
+    groups.push({ title: '外部技能', note: '你自己上传的：可下载、可卸载。', rows: rest });
+  }
+  return groups.filter((g) => g.rows.length);
+});
 const skillRows = computed<AgentSkill[]>(() =>
   skills.value.slice().sort((a, b) => skillRank(a.name) - skillRank(b.name)));
 
@@ -622,7 +656,13 @@ onMounted(() => {
         </label>
 
         <div class="skill-list" v-if="filteredSkills.length">
-          <template v-for="s in filteredSkills" :key="s.name">
+          <!-- 按三段分组：每组一个标题 + 一句「这一段在干什么」，行本身结构不变 -->
+          <template v-for="g in skillGroups" :key="g.title">
+          <div class="skill-group" data-skill-group>
+            <span class="skill-group-title">{{ g.title }}</span>
+            <span class="skill-group-note">{{ g.note }}</span>
+          </div>
+          <template v-for="s in g.rows" :key="s.name">
             <!-- 一条技能 = **横向两块**（用户口径 2026-12）：左边名字 / 英文 ID / 说明竖着排，
                  右边是操作区。说明因此不会把名字挤歪，操作区也不会被长说明顶走。 -->
             <div class="skill-item" :class="{ off: !s.enabled }"
@@ -676,6 +716,7 @@ onMounted(() => {
             <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
               <WebSearchSettings />
             </div>
+          </template>
           </template>
         </div>
         <!-- 有技能但被搜索过滤光了：只说这件事，不谎称"目录是空的" -->
@@ -880,6 +921,15 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
+/* 分组小标题：三段之间靠它分界（不是装饰线 —— 用户要的是「这一段管什么」）。
+   第一组不留上边距，免得标题和搜索框贴出一段空档。 */
+.skill-group {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 14px 2px 2px;
+}
+.skill-group:first-child { padding-top: 2px; }
+.skill-group-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.skill-group-note { font-size: 12px; color: var(--text-faint); }
 /* 一条技能 = **横向两块**（用户口径 2026-12）：
    左 = 名字 / 英文 ID / 说明（竖着排、可换行），右 = 固定五格操作区。
    条本身不描边、不填底、不响应悬停；条与条之间只留一条发丝线。 */

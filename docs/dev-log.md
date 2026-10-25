@@ -13298,3 +13298,39 @@ p5 就是**第 1 条**。也就是说 p5 是**词法排名掉在 20 名之后**�
 校验：`pytest tests` 全量绿（新增 4 条：节内上限 / 无 section 不并组 / 按篇分组 / 深度只随 top_k 放大）。
 
 部署：后端（`173.bundle`），`pm2 restart cylit-api`。
+### 170. 第一百七十轮：技能能力按三段分组；公式闪烁那根侧边竖线撤掉
+
+**① 技能能力分组**（设置 → Cyli 偏好）
+
+先说明测到的现状：线上 `/agent/skills` 与页面都是 **13 个技能、13 个开关**，每个都有中文名 +
+英文 ID + SKILL.md 说明（68`87 字），没有一个是空的 —— 所以这一条不是「缺行」，是**缺层次**：
+13 行平铺时「联网搜索」和「标注与笔记」看起来是同一类东西。
+
+现在按代码注释里本来就是三段的分法，把分组搬到界面上（每组一个标题 + 一句「这一段在干什么」）：
+
+- **联网取外援**：先搜到候选，再按链接读正文（web-search / web-fetch）；
+- **怎么读、怎么答**：检索候选位置 → 看读者停在哪 → 整篇概览 → 跨段回答（search-paper /
+  reader-state / summarize-paper / answer-paper）；
+- **取材料与动手**：正文 / 原图 / 图表 / 公式取出来核对，需要时标注或改产物（read-text /
+  read-page-image / read-figure / read-formula / explain-term / annotate-text / edit-text）；
+- 外部技能自成一组（可下载 / 可卸载），排最后。
+
+`SKILL_ORDER` 改成由 `SKILL_GROUPS` 摊平得出（一份定义，排序与分组不会再打架）；搜索过滤后**空组不渲染**
+（搜「术语」时不该还挂着「联网取外援」这个空标题）。**单个技能的说明仍然只来自 SKILL.md**：
+前端不加一句「这个技能能干什么」的手写说明 —— 那会在技能改行为后变成假话（这条警告还在原地）。
+
+实测（真浏览器）：`[data-skill-group]` 3 组、`[data-skill-row]` 13 行、行内 `input[role=switch]` 13 个。
+
+**② 段落内公式闪烁的侧边竖线**
+
+上一轮撤掉的是**行闪**那根（`.row-pair.flash-*::before` 的 `box-shadow: inset 3px 0 0 0`）。
+但公式闪是**另一套**：`.flash-target`（点解读里的公式标号时精确标到那一条公式），它自己也带着同一根竖条，
+于是用户看到的仍然是「段落里的公式一闪就有根竖线」。
+
+现在 `.flash-target` 只留 16% 淡底 + 6px 圆角 + 1.6s 淡出，竖条删掉，并把「两处必须同一口径：
+闪烁只许用色，不许加边框/竖条」写进注释。实测计算样式：`boxShadow: none`、
+`backgroundColor: oklab(… / 0.16)`；行闪 `::before` 也是 `border: 0px` + 11% 淡底。
+
+校验：`vue-tsc --noEmit` 0 错、`npm run build` 通过、浏览器探针 **154/154** 通过。
+
+部署：前端产物 + 源码（`175-dist.tgz`），`pm2 restart cylit-api`。
