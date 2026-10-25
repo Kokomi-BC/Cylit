@@ -14463,3 +14463,7 @@ pack      3 个 / 131.81 MiB            1 个 / 12.99 MiB
 `dist/index.html` 两侧一致（`8016c998…`）、`/health` 200。
 外网 `https://fakenewsdetect.art/cylit/` 现在回 302 到 `/Login`——那是 nginx 的登录门，
 不是发布问题：后端 `127.0.0.1:8710/cylit/` 是 200。
+
+**推 GitHub**。`origin/main` 之前停在 `07e9767`（本地那个跟踪引用是更旧的 `249d921`，所以
+「落后 525」这个数是拿旧引用算的，实际一次推了 515 个提交）。`git push origin main`
+`07e9767..5ec782a`，远端 `refs/heads/main` = `5ec782a` = 本地 HEAD，`origin/main..main` 为 0。
