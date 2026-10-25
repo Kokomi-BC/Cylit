@@ -450,6 +450,11 @@ onMounted(() => { void nextTick(assignAnchors); });
 .body :deep(h5), .body :deep(h6) { margin: 0 0 .35em; font-weight: 600; line-height: 1.35; }
 .body :deep(ul), .body :deep(ol) { margin: .3em 0; padding-left: 1.35em; }
 .body :deep(.katex-display) { margin: .5em 0; overflow-x: auto; overflow-y: hidden; }
+/* 行内公式比一行还高时（分式、大括号、\left( … \right)），浏览器不会把行盒撑高 ——
+   上一行末尾的括号、逗号就压在公式身上（用户口径 2026-12-05 的"括号与公式重叠"，老毛病）。
+   让 .katex 成为 inline-block：行盒按它的外接框让位，上下不再互相压。
+   实测：4 条 h≈41–44px 的公式（行高 23px）改动前 4 条全压住上一行，改动后 0 条。 */
+.body :deep(.katex) { display: inline-block; }
 .body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
 /* 表格：与阅读器 / Markdown 视图**共用** base.css 的那套三线表（见 `.md table`），不在这里另写一套 */
 </style>

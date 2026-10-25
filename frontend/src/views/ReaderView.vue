@@ -8975,6 +8975,8 @@ function renderMarkdown(text?: string | null) {
 }
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
+/* 同一条规则也用在速览卡里：卡片更窄，行内公式压住上一行的括号只会更明显 */
+.cite-peek-md :deep(.katex) { display: inline-block; }
 /* 速览卡里渲染的是**原文/译文的一段**，其中可能带章节标题：卡片宽 360、正文 12px，
    而浏览器默认 h1 = 2em / h2 = 1.5em —— 实测 h1 会顶成 **24px**，一段引用里突然一行大字
    （用户口径 2026-12-05：压一下浮窗内的标题大小）。这里压到与解读正文同一档，
