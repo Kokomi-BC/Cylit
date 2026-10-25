@@ -14112,3 +14112,26 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`208-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 197. 第一百九十七轮：公式下面那条滚动条别画出来
+
+196 那版把编号从公式上挪开了，但**每条整块公式下面都挂了一条横向滚动条**（用户口径 2026-12-05）。
+原因：给编号留的 `padding-right: 2.2em` 让容器恒比一栏宽 35px，于是"能滚"的判定条条成立。
+
+试过把编号改成 `position: static`（回到流内、宽度自然包含编号）：窄栏里它会换行/溢出到盒外，
+比原来的毛病更糟 —— 已撤回。
+
+最终口径与设置页一致：**滚动能力留着，条子不画**。
+
+```css
+.md .katex-display { scrollbar-width: none; }
+.md .katex-display::-webkit-scrollbar { height: 0; width: 0; }
+```
+
+实测（attention 解读页）：10 条整块公式 **10 条都不画条**，6 条带编号的**0 条压住公式**
+（编号与公式内容之间留 15px）；滚轮 / 触控板 / 手指拖动照样能横移。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`209-dist.tgz`），`pm2 restart cylit-api`。
+

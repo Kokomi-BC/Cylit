@@ -826,6 +826,11 @@ table.data.fixed { table-layout: fixed; }
    这三条与 `mark.hl.block` 那段是**同一个解法**（那边 2026-12-07 就修过一遍），只是这里覆盖面更广。 */
 .md .katex-display > .katex { width: max-content; min-width: 100%; }
 .md .katex-display > .katex:has(.tag) > .katex-html { padding-right: 2.2em; }
+/* 但是**别把滚动条画出来**（用户口径 2026-12-05：每条公式下面都挂一条滚动条太吵）：
+   留出的 2.2em 让容器恒比一栏宽 35px，于是条子条条都有；滚动能力留着（滚轮 / 触控板 /
+   触摸拖动都能横移），只是不画 —— 与设置页那条"能滚但不画条"同一个口径。 */
+.md .katex-display { scrollbar-width: none; }
+.md .katex-display::-webkit-scrollbar { height: 0; width: 0; }
 /* 行内公式带编号（`\tag{1}`）时：**编号留着，公式自己横向滚**（用户口径 2026-12-05）。
    两条缺一不可：
    ① 变成 inline-block 并限宽 —— 比一栏还宽时自己滚，不撑破正文；
