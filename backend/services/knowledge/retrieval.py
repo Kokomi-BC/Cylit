@@ -589,11 +589,15 @@ def _write_log(**entry: Any) -> None:
 POOL_FACTOR = 2
 #: 最终结果里同一 section 至多占几个名额（实测 `TURBOQUANT_mse` 改前 12 条里 9 条是重复页）。
 SECTION_CAP = 2
-#: ⚠️ 试过给「结构密集」的小节（定理/引理/定义/算法扎堆）追加名额，**量下来没用**，已撤：
-#: `SLB` 在 k=8 与 k=20 下 B.1 都只回 2 块（定义的中英两行）—— 引理 2 / 引理 3 根本**没进候选池**，
-#: 而不是被名额挡在门外；直接查「引理 2」「引理 3」它们都排第 1~2。
-#: 原因是词法打分：那两块很短、`slb` 的出现次数也少，排名掉在 20 名之外。
-#: 所以「节内补齐」得在**召回**那一层做（把这一节的结构块直接取回来），不是在输出侧加名额。
+#: **块多的节给更多名额**：一节的**候选池里**有多少块，决定它最多能占几个名额。
+#: 实测（turboquant 篇，`SLB`）：B.1 这一节在池子里有 **6 块**（定义中英两行、引理 2 的公式体、
+#: 「This is a classic result…」、引理 3、证明），而 `SECTION_CAP=2` 只放 2 块进来 ——
+#: 于是"定义/引理/引理/证明"这种必须一起看的链被砍成只剩开头。
+#: 注意**不是**"块很短所以排不进来"：关掉查询扩展后那 6 块在词法前 10 名里占了 5 个。
+#: 也不能全放开：`cap=4` 平铺时结构块合计 8→7、最大单节 4/8（碎片挤掉了别的页）。
+#: 所以按**密度**给：池里 ≥`DENSE_MIN` 块的节拿到 `DENSE_BONUS` 个额外名额，其余仍是 2。
+DENSE_MIN = 4
+DENSE_BONUS = 2
 
 
 def _section_key(item: dict) -> str:
@@ -612,12 +616,19 @@ def cap_sections(items: list[dict], per: int | None = None) -> list[dict]:
     不能因为 section 是空的就被当成同一节互相挤掉。
     """
     base = SECTION_CAP if per is None else int(per)
+    # 先数一遍「每节在池子里有多少块」，再按密度定上限（见 DENSE_MIN 那段注释）。
+    pool: dict[str, int] = {}
+    for item in items:
+        key = _section_key(item)
+        pool[key] = pool.get(key, 0) + 1
+    limits = {key: (base + DENSE_BONUS if count >= DENSE_MIN else base)
+              for key, count in pool.items()}
     seen: dict[str, int] = {}
     out: list[dict] = []
     for item in items:
         key = _section_key(item)
         used = seen.get(key, 0)
-        if used >= base:
+        if used >= limits.get(key, base):
             continue
         seen[key] = used + 1
         out.append(item)

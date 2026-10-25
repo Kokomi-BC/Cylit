@@ -58,13 +58,26 @@ def check(spec: dict, base: str, token: str, *, k: int, verbose: bool) -> int:
             page = int(want.get("page") or 0)
             prefix = str(want.get("section_prefix") or "")
             need = int(want.get("expect") or 0)
-            seen = {str(item.get("chunk_id") or "") for item in items
-                    if int(item.get("page_no") or 0) == page
-                    and str(item.get("section") or "").startswith(prefix)}
+            # 按「位置」数，不按行数：同一段的中英两行（`…:en` / `…:zh`）算**一个位置**，
+            # 否则 p16 只回来定义一行也被数成 2 块，分母与分子一起虚高（外面指出过这一点）。
+            # 位置键 = 页 + 这条 chunk 覆盖的**起始行**（`p016-08-p016-16` → `p016-08`）。
+            seen = set()
+            for item in items:
+                if int(item.get("page_no") or 0) != page:
+                    continue
+                if not str(item.get("section") or "").startswith(prefix):
+                    continue
+                parts = str(item.get("chunk_id") or "").split(":")
+                span = parts[3] if len(parts) > 3 else ""
+                first = "-".join(span.split("-")[:2])   # `p016-08-p016-14` → `p016-08`
+                seen.add(first or str(item.get("chunk_id") or ""))
             groups.append({"page": page, "section_prefix": prefix, "expect": need,
                            "got": len(seen)})
         rows.append({"query": case["query"], "expect": sorted(expect), "got": got,
                      "recall": recall, "noise": noise, "groups": groups,
+                     # 目标值只打印、不判失败：现状未达标的护栏先别变红，
+                     # 否则所有人学会"看见红就调低门槛"。
+                     "target_blocks": case.get("target_block_recall"),
                      "returned": int(data.get("returned") or 0)})
         if recall + 1e-9 < floor:
             failed += 1
@@ -81,9 +94,11 @@ def check(spec: dict, base: str, token: str, *, k: int, verbose: bool) -> int:
               % (row["query"], row["returned"], row["recall"], row["noise"],
                  row["got"], mark))
         for group in row["groups"]:
-            print("    %s p%d %s：应有 %d 块，回来 %d 块"
+            print("    %s p%d %s：应有 %d 块，回来 %d 块%s"
                   % (row["query"], group["page"], group["section_prefix"],
-                     group["expect"], group["got"]))
+                     group["expect"], group["got"],
+                     "（目标 %.2f）" % row.get("target_blocks", 0)
+                     if row.get("target_blocks") else ""))
         if verbose:
             print("    期望页：%s  命中：%s" % (row["expect"], sorted(set(row["got"]) & set(row["expect"]))))
     total = sum(r["recall"] for r in rows) / len(rows) if rows else 0.0

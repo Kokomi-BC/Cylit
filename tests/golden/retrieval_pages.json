@@ -53,7 +53,7 @@
     {
       "query": "SLB",
       "mode": "text",
-      "why": "缩写：正文以「Shannon 下界（SLB）」定义过一次，后面大量用缩写；块级：B.1 一节应有 4 块（定义 / 引理 2 / 引理 3 / 代入后的下界），现在只回 2 块 —— 下限先钉在 0.25，补齐后再抬。",
+      "why": "缩写：正文以「Shannon 下界（SLB）」定义过一次，后面大量用缩写；块级：B.1 应有 4 个位置（定义 / 引理 2 / 引理 3 / 代入后的下界），按「页 + 起始行」去重（同一段中英两行算一个位置）。按密度给名额之后回来 3 个 → 下限 0.75、目标 1.0。",
       "needle": {
         "substring": "slb"
       },
@@ -68,7 +68,8 @@
           "expect": 4
         }
       ],
-      "min_block_recall": 0.25
+      "min_block_recall": 0.75,
+      "target_block_recall": 1.0
     },
     {
       "query": "Shannon lower bound",
