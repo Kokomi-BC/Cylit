@@ -2954,7 +2954,13 @@ async function gotoPage(page: number) {
   await router.replace({ path: route.path, query: q });
   // 路由串没变化时 `applyDeepLink` 不会被触发（那个 watch 只看 query 的快照），自己滚一次；
   // 真变了就交给它 —— 它带"闪一下"的提示，这里再滚一次反而会跟它抢落点。
-  if (samePage && !hadAnchor) await focusPage(target);
+  if (samePage && !hadAnchor) {
+    await focusPage(target);
+    /* 这条支路以前**什么都不闪**：`applyDeepLink` 没跑，那一条上的 `flashRow` 也就没发生。
+     * 于是"连点同一条命中 / 同页的另一条"看起来完全没反应（用户 2026-11 报的语义搜索不闪）。
+     * 整页闪是这条支路的正确粒度 —— 它只拿得到页码，说不了"是哪一行"。 */
+    flashRow(`page:${target}`);
+  }
 }
 
 async function stepRow(delta: number) {

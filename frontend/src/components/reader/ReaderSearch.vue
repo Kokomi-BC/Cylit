@@ -260,6 +260,23 @@ function onEnter() {
   emit('search');
 }
 
+/**
+ * 点一条语义命中：**落到那一段再闪**（用户 2026-11 口径「语义化模式点击没有页面闪烁」）。
+ *
+ * 以前这里只 `emit('goto-page', hit.page)` —— 那条路是"跳到第 N 页"：页码变了才由
+ * `applyDeepLink` 顺手闪一下第一行，页码没变（连点同一条 / 同页的另一条）就什么都不发生；
+ * 而且闪的也只是**这一页的第一行**，不是命中的那一段。而命中的 `block_id` 后端一直有给
+ * （`chunk.block_id`），走 `focus` 这条已经是"按锚点落行 + 闪那一行"的路：
+ * `focusRow` 里还有 `block_rows` 映射与 `row-` 前缀归一，公式 / 插图 / 表格块也落得回正文。
+ * 只有真没有 `block_id` 的老命中才退回整页跳转。
+ */
+function openSemantic(hit: SemanticHit) {
+  const blockId = String(hit.block_id ?? '').trim();
+  const page = Number(hit.page) || 0;
+  if (blockId) { emit('focus', blockId, page || undefined); return; }
+  if (page) emit('goto-page', page);
+}
+
 /** Esc / 清空按钮：两边一起清（只清一边会留下"上次搜了一半"的错觉） */
 function onClear() {
   seq += 1;                                          // 让在途请求的结果作废
@@ -279,10 +296,10 @@ function onClear() {
         <input
           ref="box"
           :value="props.query"
-          :placeholder="props.mode === 'semantic' ? '描述你要找的内容' : '搜索'"
+          :placeholder="props.mode === 'semantic' ? '查找意思相近的内容' : '在全文进行关键字匹配'"
           :title="props.mode === 'semantic'
-            ? '用一句话描述你想找的内容，打字即在本文内做语义检索（回车立即）'
-            : '边打边搜原文 + 译文（回车立即搜；Esc 清空）'"
+            ? '用一句话描述你想找的内容：按意思在本文里找最相近的段落（打字即检索，回车立即）'
+            : '在全文按关键字匹配原文 + 译文（打字即搜，回车立即；Esc 清空）'"
           @input="onInput"
           @keyup.enter="onEnter"
           @keyup.esc="onClear"
@@ -351,9 +368,11 @@ function onClear() {
             v-for="hit in semantic.items"
             :key="hit.chunk_id"
             class="ss-hit"
-            :disabled="!hit.page"
-            :title="hit.page ? `跳到第 ${hit.page} 页` : '这条命中没有页码，无法跳转'"
-            @click="emit('goto-page', hit.page as number)"
+            :disabled="!hit.page && !hit.block_id"
+            :title="hit.block_id
+              ? `定位到第 ${hit.page || '?'} 页这一段`
+              : (hit.page ? `跳到第 ${hit.page} 页` : '这条命中没有页码，无法跳转')"
+            @click="openSemantic(hit)"
           >
             <span class="tiny faint nowrap">
               {{ typeLabel(hit) }}<template v-if="hit.page"> · p{{ hit.page }}</template>

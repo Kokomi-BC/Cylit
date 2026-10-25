@@ -12961,3 +12961,35 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 `box-shadow: none`、`border-top-width: 0px`、`background: color(srgb 0.0588 0.4824 0.5412 / 0.11)`
 （即只剩淡底），截图放大确认行左侧没有竖线。`scripts/frontend_check.py` **154/154**。
 
+
+### 160. 第一百六十轮：语义搜索点击落到那一段并闪；两种模式的输入提示改成"在做什么"
+
+用户口径：「在搜索侧栏（语义化模式）点击没有页面闪烁的问题，打字即在本文里检索改为查找意思相近的内容，
+普通搜索为在全文进行关键字匹配」。
+
+**1. 语义命中点了不闪 —— 两个原因，都在 `components/reader/ReaderSearch.vue` 与 `views/ReaderView.vue`**：
+
+- 语义命中只 `emit('goto-page', hit.page)`，走的是"跳到第 N 页"。那条路要**页码真的变了**才由
+  `applyDeepLink` 顺手闪一下；页码没变（连点同一条 / 同页的另一条）时 `gotoPage` 落进
+  `samePage && !hadAnchor` 那支，只 `focusPage()` 滚一下，**一次 `flashRow` 都没有** —— 表现就是"点了没反应"。
+- 就算闪，闪的也是**这一页的第一行**，而不是命中的那一段。
+
+改法：新增 `openSemantic(hit)`，命中带 `block_id`（后端 `chunk.block_id` 一直有给）就走
+`emit('focus', block_id, page)` —— 那是"按锚点落行 + 闪那一行"的现成路径，`focusRow` 里还有
+`block_rows` 映射与 `row-` 前缀归一，公式 / 插图 / 表格块也落得回正文；只有真没有 `block_id` 的老命中
+才退回整页跳转。另外给 `gotoPage` 那条"路由串没变"的支路补一次**整页闪**（`flashRow('page:N')`）——
+它只拿得到页码，说不了是哪一行，但至少不会再"点了什么都不亮"。
+
+**2. 输入提示按模式分开写**（`ReaderSearch.vue` 的 placeholder / title）：
+
+- 语义：`查找意思相近的内容`（title：用一句话描述你想找的内容：按意思在本文里找最相近的段落）；
+- 关键词：`在全文进行关键字匹配`（title：在全文按关键字匹配原文 + 译文）。
+  原来那句"打字即在本文里检索"作为标题里的行为说明保留（打字即搜、回车立即是真实行为）。
+
+**验证**（headless Edge + CDP，本地真后端）：在 `attention-is-all-you-need`（已入库）里切到语义模式，
+输入「自注意力机制的计算复杂度」拿到 8 条命中。点第 1 条 → 被闪的是 `data-row-id="p005…" / "p006-00"`
+那一行，且行文本正是命中里的「表 1：不同层类型的最大路径长度…」（以前闪的是第 6 页第一行）；
+**连点同一条仍然再闪一次**（`flash-a/flash-b` 交替，非 0）；点第 4 条落到 `p005-02` 那一行。
+两种模式的 placeholder 读出为 `在全文进行关键字匹配` / `查找意思相近的内容`。
+`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
+
