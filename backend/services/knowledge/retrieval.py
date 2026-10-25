@@ -256,37 +256,13 @@ def vector_search(query: str, *, top_k: int | None = None, mode: str = "similar"
     if exclude_chunks:
         skip = set(exclude_chunks)
         hits = [h for h in hits if h.get("chunk_id") not in skip]
-    # 只有标题的块不进候选（见 `is_heading_only`）：拿它当引用等于交白卷
-    return [h for h in hits if not is_heading_only(h.get("content"))]
+    return hits
 
 
 # --------------------------------------------------------------------------
 # 2) 词法召回（BM25；整表在内存里打分，本库规模几千条）
 # --------------------------------------------------------------------------
 
-
-#: 「只有标题」的块：以 `#` 开头、很短、且没有任何句末标点 —— 索引里它和它的正文是两块，
-#: 于是标题那块可以单独被召回。实测（线上 430 块里有 8 块是这种）：搜「相关工作」时回来的
-#: 是一条 `# A EXTENDED PRIOR WORK`（23 个字符），`content` 里一个字的信息都没有。
-#: 这种块**永远不能当引用**（章节名在每条命中的 `section` 字段里已经有了），直接不进候选。
-HEADING_ONLY_MAX = 120
-
-
-def is_heading_only(content: str | None) -> bool:
-    """只有标题、没有正文的那种块。
-
-    ⚠️ 判据不能用"整段没有句号"：章节号本身带点（`## 0.2 PRIOR WORK` 里的 `0.2`）会把它判成正文。
-    这里看的是**去掉 # 之后的尾巴**：不能以句末标点收尾，也不能出现句号加空格（`… end. Next`）。
-    """
-    body = str(content or "").strip()
-    if not body.startswith("#") or len(body) > HEADING_ONLY_MAX:
-        return False
-    rest = body.lstrip("#").strip()
-    if not rest:
-        return True
-    if "。" in rest or ". " in rest:
-        return False
-    return rest[-1] not in ".!?！？:：;…"
 
 
 def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
@@ -341,8 +317,6 @@ def lexical_search(query: str, *, top_k: int | None = None,
     rows = _filter_rows(vector_store.all_rows(), paper_ids=paper_ids,
                         chunk_types=chunk_types, langs=langs, roads=roads,
                         exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
-    # 只有标题的块不进候选（见 `is_heading_only`）
-    rows = [r for r in rows if not is_heading_only(r.get("content"))]
     if not rows:
         return []
     # 查询扩展（见 `expand` 模块头）：下标已由 tokenize 归一，这里补「缩写 ↔ 全称」。

@@ -13675,3 +13675,28 @@ p7（2.1 实验节）只在词法侧出现，p15（A 扩展相关工作）只在
 超 hard 不动 / 普通块不动）。整轮跑时 `test_page_edit` 那条老毛病又偶发了一次，单跑必过（记录在 165 轮）。
 
 部署：后端（`184.bundle`），`pm2 restart cylit-api`（新索引才吃到这条）。
+
+### 180. 第一百八十轮：两篇都重建索引；撤掉检索侧的「标题块」兼容过滤
+
+**用户口径**：重建云端两篇，然后把兼容代码去掉。
+
+**重建**（POST /knowledge/index + rebuild=true，轮询到 completed）：
+
+| 论文 | 重建前 | 重建后 | heading_only |
+| --- | --- | --- | --- |
+| turboquant-online-vector-iclr-26 | 430 块 | **423 块** | 8 → **0** |
+| attention-cleanroom | 200 块 | **198 块** | 2 → **0** |
+
+attention 那 2 块（「# Attention Visualizations」的 en/zh）第一轮没并掉：它们在**末尾**，
+后面没有可并的块。补了一条「末尾的标题块往前并」（追加到前一块尾部，行序仍连续），重建后归零。
+
+**撤掉的兼容代码**（retrieval.py）：HEADING_ONLY_MAX、is_heading_only()、
+以及两路召回里的过滤（vector_search 命中 / lexical_search 行）。理由：源头已经不出这种块了，
+留着它等于给「以后又出错」留一条**掩体** —— 问题会被悄悄吞掉而不是被发现。相应两条测试也删了。
+
+**留着的**：_row_text_chunk 里的 metadata.heading_only（无害的遥测字段，真出问题时靠它一眼看出来）
+与 _merge_heading_only() 本身（源头修复）。
+
+校验：pytest tests 全量绿；线上两篇 heading_only = 0。
+
+部署：后端（186.bundle），pm2 restart cylit-api。
