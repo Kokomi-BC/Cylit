@@ -312,16 +312,22 @@ function peekViewOf(card: PeekCard) {
     : headingLead ? '标题与正文' : CITE_KIND[String(row?.type ?? '')] || '正文';
   /* 中/EN 各一份 Markdown：**两侧都走 mdToHtml**（原文里的 LaTeX 也得渲染，
      否则一整段 `$...$` 原样铺出来，就是用户说的「部分没有适配 markdown」） */
-  const snippet = String(ask.snippet || '').trim();
   /* 行 / 表 / 图都取不到时用**引用自带的那一两句**兜底：
      老引用（重译前生成的）往往既没有行 id、块 id 也映射不出来，
-     只显示一句「没有可显示的内容」等于这张卡白弹（用户口径 2026-12-04：标号 7 就是这种）。 */
+     只显示一句「没有可显示的内容」等于这张卡白弹（用户口径 2026-12-04：标号 7 就是这种）。
+     先去掉**没闭合的数学定界符**：200 字截断切在 $$ 中间时，剩下的文字会被当成一条
+     display 公式，卡片里就是一坨 LaTeX 原文（用户口径 2026-12-05）。 */
+  const snippetRaw = trimUnclosedMath(String(ask.snippet || '').trim()
+    /* 公式 chunk 的片段是我们自己拼的「公式 p018-01：$$…$$」—— 那个抬头是给检索看的 */
+    .replace(/^公式\s*\S*?\s*[:：]\s*/, ''));
   /* 整段一起画时不要把某一行的空串拼进去：`join` 出多余的空白行，卡片里就是一段空档 */
   const spanJoin = (pick: (r: PageRow) => string | null | undefined) => (spanRows.length > 1
     ? spanRows.map((r) => String(pick(r) ?? '').trim()).filter(Boolean).join('\n\n')
     : '');
-  const zh = (tbl?.markdown || spanJoin((r) => r.translation) || row?.translation || snippet).trim();
-  const en = (tbl?.markdown || spanJoin((r) => r.original) || row?.original || '').trim();
+  /* 兜底那段片段要**先去掉没闭合的数学定界符**：否则 200 字截断切在 $$ 中间时，
+     剩下的文字会被当成一条 display 公式，卡片里就是一坨 LaTeX 原文 */
+  const zh = (tbl?.markdown || spanJoin((r) => r.translation) || row?.translation || snippetRaw).trim();
+  const en = (tbl?.markdown || spanJoin((r) => r.original) || row?.original || snippetRaw).trim();
   const caption = (fig?.caption_zh || fig?.caption || '').trim();
   /*
    * 插图：**图注只出现一次**（用户口径 2026-12-04：图注显示了两遍）。
@@ -341,14 +347,10 @@ function peekViewOf(card: PeekCard) {
    * 显出完全一样的内容（用户口径 2026-12-04）。引用自带的那一段正好能区分它们：
    * 公式类 chunk 的片段就是那条公式本身，段落类 chunk 的片段则是正文开头 —— 后者已经被
    * 正文覆盖，归一化后包含就不必再画一遍。 */
-  const quoteRaw = trimUnclosedMath(String(ask.snippet || '').trim()
-    /* 公式 chunk 的片段是我们自己拼的「公式 p018-01：$$…$$」—— 那个抬头是给检索看的，
-       卡片里只需要公式本身。 */
-    .replace(/^公式\s*\S*?\s*[:：]\s*/, '')
-    /* 截断留下的省略号必须去掉：留着它，正文的 includes 判定永远不成立，
-       同一段于是"引用一块 + 正文一块"画两遍（截图里那次就是这样） */
-    .replace(/(?:\.\.\.|…)\s*$/, ''));
   /*
+   * 注：卡片上半那一条现在是**公式专区**，不放正文（用户口径 2026-12-05：那个区域应该显示公式，
+   * 没有公式就不显示该区域）—— 所以这里不再需要"片段 vs 正文"的比对。
+   *
    * 片段与正文的比对**要穿过 LaTeX**（用户口径 2026-12-04：卡片里内容显示了两遍）。
    *
    * 片段是 LaTeX 源码（「$$D_{\text{prod}}(Q) = \mathbb{E}\left[…」），正文里那条公式被渲染成
@@ -371,7 +373,7 @@ function peekViewOf(card: PeekCard) {
    * 整段（标题 + 正文）画出来了，片段最多只是同一段的另一种截断，画它没有增量信息。
    * 只在**正文彻底取不到内容**时用它兜底 —— 那种情况下卡片里不能空着。
    */
-  const quote = quoteRaw && !latex && !zh && !en ? quoteRaw : '';
+
   /*
    * **正文就是这条公式本身**时不要再画一遍（用户口径 2026-12-05：连续使用相同公式的问题）。
    *
@@ -399,7 +401,6 @@ function peekViewOf(card: PeekCard) {
     body: card.lang === 'en' ? showEn : showZh,
     imageUrl: fig?.image_url || '',
     caption,
-    quote,
     latex,
     page, rowId,
     anchor: ask.anchor,
@@ -8557,8 +8558,7 @@ function renderMarkdown(text?: string | null) {
         <!-- 这条引用具体指向哪一句 / 哪条公式：同一行里的两条引用靠它区分 -->
         <div v-if="peekViewOf(card).latex" class="cite-peek-quote cite-peek-formula md small"
              v-html="mdToHtml('$$' + peekViewOf(card).latex + '$$', paperId)" />
-        <div v-else-if="peekViewOf(card).quote" class="cite-peek-quote md small"
-             v-html="mdToHtml(peekViewOf(card).quote, paperId)" />
+
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
              v-html="mdToHtml(peekViewOf(card).body, paperId)" />
         <!-- 有 latex（精确公式）时也算"有内容"：正文被上面那条公式去重清空后，不该再落一句"没有内容" -->

@@ -13997,3 +13997,20 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`203-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 192. 第一百九十二轮：速览卡上半区改成"公式专区"（没有公式就不出现）
+
+用户口径 2026-12-05：那块区域**应该显示公式而不是正文**，没有公式就别占位。
+
+于是把"引用片段"整条路径删掉：`quoteRaw` / `quote` / `quoteCovered` 以及模板里那个
+`v-else-if="…quote"` 分支全部移除，上半区只剩 `latex` 这一支（`.cite-peek-formula`，KaTeX 渲染）。
+引用自带的 `snippet` 不再当正文的"上半块"，只在正文彻底取不到内容时给 `zh` / `en` 兜底，
+并且兜底前先过 `trimUnclosedMath()`（截断切在 `$$` 中间时不会又把整段变成一条未闭合公式）。
+
+实测：turboquant 连开 60 张卡 —— 上半区**纯文字块 0 个**、**公式块 21 个**（都渲染成 KaTeX，
+样例 A115 `x_j ~ f_X(x) := …`），正文块照常。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`204-dist.tgz`），`pm2 restart cylit-api`。
+
