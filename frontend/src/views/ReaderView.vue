@@ -265,6 +265,9 @@ function peekViewOf(card: PeekCard) {
   /* 兜底：整段只认出一行、而那一行正好是标题时，把**同一页里紧跟着的那几行**补上 ——
      标题的正文就在它下面。实测有些 chunk 的第二行在 `block_rows` 里查不到（p005-02 这种），
      只靠引用自己带的行身份，卡片就只剩一行章节名（用户 2026-12-05 报的正是这种）。 */
+  /* 整段一条都没认出来时，退到锚点那一行再做同款兜底 —— 实测有些引用的两个行身份
+     在 `block_rows` 里都查不到（重建索引后换过身份），卡片于是只剩锚点（标题行）。 */
+  if (!spanRows.length && row) spanRows.push(row);
   if (spanRows.length === 1 && String(spanRows[0]?.type ?? '') === 'heading') {
     const all = allRows.value;
     const i0 = all.findIndex((r) => r.id === spanRows[0].id);
