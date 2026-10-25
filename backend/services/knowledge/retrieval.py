@@ -589,9 +589,19 @@ def _write_log(**entry: Any) -> None:
 POOL_FACTOR = 2
 #: 最终结果里同一 section 至多占几个名额（实测 `TURBOQUANT_mse` 改前 12 条里 9 条是重复页）。
 SECTION_CAP = 2
+#: ⚠️ 试过给「结构密集」的小节（定理/引理/定义/算法扎堆）追加名额，**量下来没用**，已撤：
+#: `SLB` 在 k=8 与 k=20 下 B.1 都只回 2 块（定义的中英两行）—— 引理 2 / 引理 3 根本**没进候选池**，
+#: 而不是被名额挡在门外；直接查「引理 2」「引理 3」它们都排第 1~2。
+#: 原因是词法打分：那两块很短、`slb` 的出现次数也少，排名掉在 20 名之外。
+#: 所以「节内补齐」得在**召回**那一层做（把这一节的结构块直接取回来），不是在输出侧加名额。
 
 
-def cap_sections(items: list[dict], per: int = SECTION_CAP) -> list[dict]:
+def _section_key(item: dict) -> str:
+    section = str(item.get("section") or "").strip()
+    return f"{item.get('paper_id') or ''}|{section or ('p' + str(item.get('page_no') or ''))}"
+
+
+def cap_sections(items: list[dict], per: int | None = None) -> list[dict]:
     """同一节（同一篇 + 同一 section）最多 ``per`` 条，多出来的丢掉。
 
     为什么要有它：融合/重排都只看**单块分数**，同一节里相似度高的块会成串占满名额。
@@ -601,13 +611,13 @@ def cap_sections(items: list[dict], per: int = SECTION_CAP) -> list[dict]:
     没有 section 的块（图 / 表 / 公式这些共用块）按「篇 + 页码」分组：它们本来就不属于某一节，
     不能因为 section 是空的就被当成同一节互相挤掉。
     """
+    base = SECTION_CAP if per is None else int(per)
     seen: dict[str, int] = {}
     out: list[dict] = []
     for item in items:
-        section = str(item.get("section") or "").strip()
-        key = f"{item.get('paper_id') or ''}|{section or ('p' + str(item.get('page_no') or ''))}"
+        key = _section_key(item)
         used = seen.get(key, 0)
-        if used >= per:
+        if used >= base:
             continue
         seen[key] = used + 1
         out.append(item)

@@ -46,21 +46,44 @@ def check(spec: dict, base: str, token: str, *, k: int, verbose: bool) -> int:
     for case in spec["cases"]:
         expect = {int(p) for p in case.get("expect_pages") or []}
         data = _search(base, token, paper_id, case["query"], case.get("mode") or "text", k)
-        got = [int(item.get("page_no") or 0) for item in data.get("items") or []]
+        items = list(data.get("items") or [])
+        got = [int(item.get("page_no") or 0) for item in items]
         hit = {p for p in got if p in expect}
         recall = len(hit) / len(expect) if expect else 1.0
         noise = len([p for p in got if p not in expect])
+        # 块级：某页某节**应有几块**（定理/引理链这类小节天然有 3~4 块）。
+        # 页级 recall 抓不到这件事：p16 只要回来一块，页就算命中了。
+        groups: list[dict] = []
+        for want in case.get("expect_groups") or []:
+            page = int(want.get("page") or 0)
+            prefix = str(want.get("section_prefix") or "")
+            need = int(want.get("expect") or 0)
+            seen = {str(item.get("chunk_id") or "") for item in items
+                    if int(item.get("page_no") or 0) == page
+                    and str(item.get("section") or "").startswith(prefix)}
+            groups.append({"page": page, "section_prefix": prefix, "expect": need,
+                           "got": len(seen)})
         rows.append({"query": case["query"], "expect": sorted(expect), "got": got,
-                     "recall": recall, "noise": noise,
+                     "recall": recall, "noise": noise, "groups": groups,
                      "returned": int(data.get("returned") or 0)})
         if recall + 1e-9 < floor:
             failed += 1
+        for group in groups:
+            floor_blocks = case.get("min_block_recall")
+            if floor_blocks is None or not group["expect"]:
+                continue
+            if group["got"] / group["expect"] + 1e-9 < float(floor_blocks):
+                failed += 1
     print("%-26s %-6s %-8s %-6s %s" % ("query", "ret", "recall", "noise", "页（前 k 条）"))
     for row in rows:
         mark = "" if row["recall"] + 1e-9 >= floor else "  ← 低于 %.2f" % floor
         print("%-26s %-6d %-8.2f %-6d %s%s"
               % (row["query"], row["returned"], row["recall"], row["noise"],
                  row["got"], mark))
+        for group in row["groups"]:
+            print("    %s p%d %s：应有 %d 块，回来 %d 块"
+                  % (row["query"], group["page"], group["section_prefix"],
+                     group["expect"], group["got"]))
         if verbose:
             print("    期望页：%s  命中：%s" % (row["expect"], sorted(set(row["got"]) & set(row["expect"]))))
     total = sum(r["recall"] for r in rows) / len(rows) if rows else 0.0
