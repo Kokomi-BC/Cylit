@@ -2,7 +2,7 @@
 /**
  * 阅读器侧栏的内容区（**与目录合并成同一栏**，由 ReaderView 的页签切换）。
  *
- * 页签：笔记（批注 / 高亮 / 笔记已合并成这一个）/ 引用文献 / 公式 / 插图 / 术语 / 任务 / **论文解读**
+ * 页签：笔记（批注 / 高亮 / 笔记已合并成这一个）/ 引用文献 / 公式 / 插图 / 术语 / 设置 / **论文解读**
  * （目录由 ReaderToc 负责）。公式**只读**：来自 Markdown 提取，不做复核、不分级、不比对裁图。
  *
  * 解读是一个页签：「论文解读」（`a.markdown`）。内容由 `InsightPanel` → `InsightDoc` 渲染；
@@ -26,6 +26,7 @@ import AppIcon from '@/components/AppIcon.vue';
 import Menu from '@/components/Menu.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import InsightPanel from '@/components/insight/InsightPanel.vue';
+import ReaderSettingsPanel from './ReaderSettingsPanel.vue';
 import ReferenceList from './ReferenceList.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
 import ReaderTableList from './ReaderTableList.vue';
@@ -45,8 +46,11 @@ export interface BriefDraft {
  * 用户口径 2026-10-07：**批注 / 高亮 / 笔记合并成一种东西 = 笔记**，所以那三个页签并成 `notes` 一个；
  * 图标也对调过一次（用户口径）：**笔记用 `note`（文稿）、引用文献用 `library`（书架）** ——
  * 都是现成的 svg，跟我自己画的那枚"高亮笔"不同，跟全站同一套描边风格。
+ *
+ * 2026-12 用户口径：「任务」换成「设置」并**留在最后一位** —— 阅读时想改字号/高亮是常事，
+ * 为此跑一趟设置页太远；任务清单作为那一页的最后一段留着（能力一个不少）。
  */
-export type SideTab = 'notes' | 'references' | 'formulas' | 'tables' | 'figures' | 'terms' | 'tasks' | 'insight';
+export type SideTab = 'notes' | 'references' | 'formulas' | 'tables' | 'figures' | 'terms' | 'settings' | 'insight';
 
 /** 笔记页签里「保存」要交给父组件的东西（新建还是更新由 `noteId` 决定）。 */
 export interface NoteDraftPayload {
@@ -121,6 +125,8 @@ const emit = defineEmits<{
   /** 删掉一处高亮（整组一起；挂在它上面的笔记由后端级联删掉） */
   (e: 'delete-highlight', ids: string[]): void;
   (e: 'cancel-task', task: TaskInfo): void;
+  /** 「设置」页签里点了「重新生成解读」：确认与请求都在 ReaderView（那里才有 paperId / toast） */
+  (e: 'regenerate-insight'): void;
   /** 解读页签里刚发起过解读任务：让 ReaderView 立刻刷一次任务列表（轮询据此启动） */
   (e: 'insight-queued'): void;
   /** 解读页签右上角那枚图标按钮：让 ReaderView 在**应用内**新开一个标签页 */
@@ -867,7 +873,13 @@ function onMore(key: string, r: FeedRow) {
       <div v-if="!termRows.length" class="empty small">没有术语</div>
     </template>
 
-    <!-- 任务：**按类型一行**的清单（翻译 / 转录 / 解读 / 索引 / 解析）。
+    <!-- 设置：常用三样（字号 / 高亮效果 / 重新生成解读）搬进阅读器，最后一段是任务清单。
+         为什么任务留在这里而不是搬进 ReaderSettingsPanel：它直接吃本组件已经拿到的
+         `tasks` 与 `cancel-task`，搬过去只会复制一份状态、两处都要跟着改。 -->
+    <template v-if="props.tab === 'settings'">
+      <ReaderSettingsPanel @regenerate-insight="emit('regenerate-insight')" />
+
+      <!-- 任务：**按类型一行**的清单（翻译 / 转录 / 解读 / 索引 / 解析）。
          口径（用户第二轮返工）：状态徽章之外，**能算进度的地方把进度条加上** ——
          有总数的（翻译 22 页 / 索引 203 块 / 解析 900 块）画条，未完成时还给 `done/total`；
          没有总数的（解读 `total=1`）只留徽章，一条永远满格或永远 0 的条只是噪声。
@@ -876,7 +888,7 @@ function onMore(key: string, r: FeedRow) {
          `转录 已完成 1/3 + 满格条` 看起来就像出错了（口径集中在 utils/tasks.ts）。
          一个类型跑过多次也只占一行（历史任务全列出来是一面墙，见 utils/tasks.ts）。
          在跑的行给一个「取消」：这是页签里原来的能力，不能因为改版就丢掉。 -->
-    <template v-if="props.tab === 'tasks'">
+      <div class="sec-title">任务</div>
       <div v-if="!taskRows.length" class="empty small">
         这篇论文还没有任务（解析 / 翻译 / 转录 / 解读 / 索引）。
       </div>
@@ -914,6 +926,12 @@ function onMore(key: string, r: FeedRow) {
 .panel-body {
   overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 8px 8px 24px;
   overflow-wrap: anywhere; word-break: break-word;
+}
+/* 「设置」页签里的小节标题：只有一行字，用来把任务清单与上面三样设置分开 */
+.sec-title {
+  margin: 16px 0 6px; padding-top: 12px;
+  border-top: 1px solid var(--divider);
+  font-size: calc(13.5px * var(--ts, 1)); font-weight: 650; color: var(--text);
 }
 .item {
   border: 1px solid var(--border); border-left: 2px solid var(--border-strong);

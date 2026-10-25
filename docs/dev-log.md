@@ -13742,3 +13742,73 @@ TURBOQUANT_mse 0.70、SLB 0.50、Shannon lower bound 0.75、QJL 0.50，其余 1.
 校验：pytest 全量绿；线上两篇都重建完成（turboquant 408 块 / attention 189 块）。
 
 部署：后端（189.bundle），pm2 restart cylit-api。
+
+### 182. 第一百八十二轮：阅读器左栏的「任务」页签改成「设置」（字号 / 高亮 / 重新生成解读 / 任务）
+
+用户口径：字号和高亮是**读的时候随时想改**的东西，为此跑一趟设置页再回来翻页，阅读节奏就断了。
+所以左栏最后那个页签从「任务」换成「设置」，内容自上而下四段：字号 → 高亮效果 → 重新生成解读 → 任务。
+
+**搬的是用法，不是代码**：
+
+| 这一段 | 做法 | 为什么不另写一份 |
+| --- | --- | --- |
+| 高亮效果 | 直接挂 `settings/HighlightStyleCard.vue` | 它只读写 `stores/appearance` 的 localStorage，无 props、无后端依赖；复制一份必然分叉 |
+| 字号 | 走 `stores/display`（DISPLAY_CATEGORIES / displayScale / setCategory），**版式重做** | `settings/CategorySizeBlock.vue` 一行是"名称 + 样例 + 胶囊 + 字体下拉"四列网格，塞进 300 余像素的侧栏会挤爆 |
+| 重新生成解读 | `emit('regenerate-insight')` 一路传到 ReaderView 的 `regenerateInsight()` | 二次确认（askConfirm）与失败原样展示后端 message 都在那儿，「⋯」菜单里那项也照旧 |
+
+字号页签的紧凑版式：一行 = 类别名 + 小/中/大三档分段，类别名自己用该类令牌
+（`calc(13px * var(--ts-KEY))`）渲染 —— **看到多少就是多少**，不必再多一行样例；顶上一排「全部」一次改五类。
+字体族下拉这一轮**没有**跟着进来（那仍是设置页的事）：那是"换字体"，不是"改多大"。
+
+**任务清单原样留在 ReaderSidePanel 末尾**（模板 / 样式 / groupPaperTasks / statusClass 一个字节没动），
+只在它上面加了一行小节标题「任务」。不搬进新组件的理由很实在：它直接吃本组件已经拿到的
+`tasks` 与 `cancel-task`，搬过去就是复制一份状态、两处都要跟着改 —— 取消按钮 / 进度条 / 失败原因这三样能力一条都不能丢。
+
+页签 key：`tasks` → `settings`（`SideTab` 联合类型、`SIDE_TAB_KEYS`、`SIDE_TABS` 各一处），位置**仍是最后一个**，图标用现成的 `settings`。
+**兼容旧值**：`?side=tasks`（以及标签条里存下的旧 query）在读取处映射成 `settings` ——
+不映射的话 `includes` 判不过，这类链接会退回「目录」，看起来像"页签没了"。
+
+校验：`vue-tsc --noEmit` 与 `npm run build` 都绿；`scripts/frontend_check.py` 154 项 0 失败。
+浏览器实测：最后那个页签是「设置」，四段 DOM 位置依次 8 / 306 / 622 / 683（任务在最后）；
+正文字号点「大」「小」当场 13 → 14.95 → 11.7px；「重新生成解读」弹出的确认框只点了「取消」，没有真跑任务。
+
+### 183. 第一百八十三轮：精读方法论并进「论文解读」提示词；技能库 summarize-paper → deep-read-paper
+
+起点是用户给的一份外部精读 skill（「杨师兄 SCI 文献精读」），要求：**浓缩成只指导怎么读论文、不要命令行环境**，
+并且「替换原有的论文解读 skill」。查了一件事才发现分叉：**论文解读页根本不吃技能库** ——
+`grep -rn skill backend/services/understanding/*.py` 零命中，那段"很会带人读论文的老师"是 `prompts.py:69` 写死的
+`UNDERSTAND_A_SYSTEM`；技能库只由 `backend/agent/runtime.py:211` 的 `Skills(cfg.skills_dir)` 加载，服务的是 AI 对话。
+所以两处分别改，同一套口径。
+
+**① 提示词（`UNDERSTAND_A_SYSTEM`）**：外部稿里"三份文件交付 / 首次欢迎语 / scripts/validate_output.py"全部不要，
+只把判断规则搬进来 —— 新增【先判类型，再决定看什么】（实验 / 计算与模拟 / 生信 / 临床与观察 / 方法学 / 综述
+各看什么）与【硬规则】6 条（数值只能来自材料、分区与影响因子这类外部指标不许凭记忆填、
+论文没说的地方别讲得跟原文一样、结论强度跟证据走、每条关键结论写清能证明什么不能证明什么、方法要绑定目的），
+并把「实验」「结论与局限」两节扩成：关键图**只深读支撑核心结论的那几张**、收尾回答"只能留三张图留哪三张"与
+"如果我来审这篇稿最希望作者补的三项"。原有的「是顺序建议、不是固定模板」与 `_SHARED` 的引用 / 贴图 / 输出格式**一字未动**。
+
+**② 技能库**：新增 `deep-read-paper`（九步流程 + 硬规则 + 类型路线 + "输出写在回答里，不写文件"），删掉 `summarize-paper`。
+外部稿里的 `[Codex推断]` 改成 `[模型推断]`、交付物路径与 Python 校验脚本一并去掉 —— 那些是命令行环境的痕迹，
+这里既没有文件系统、也不该让模型去跑脚本。
+
+**口径上的一处让步**：`tests/test_understanding.py` 钉着用户冻结的口径"理解阶段允许用通用知识、不必区分来源"，
+新加的硬规则本来写的是"推出来的话要认得出是推的"，第一版把「不必区分来源」删掉了，测试立刻红。
+改法是两边都留：允许用通用知识、**不必区分来源**，但推出来的话要让人看得出是推的 —— 不区分来源不等于可以把推断写成事实。
+
+**自带技能的改名由系统自己收尾**：`backend/agent/skills/` 是自带源，启动时 `ensure_builtin_skills()` 幂等物化到 `data/skills`，
+`_prune_missing_builtins()` 会把仓库里已经没有的旧名字副本（连同 manifest 那条哈希）删掉 —— 不需要手工去线上删目录。
+实测：本地起服务后 `data/skills` 里是 `deep-read-paper`，manifest 里 `summarize-paper` 出现 0 次。
+
+连带改的引用点：`search-paper` 的分工表、`agent/prompts.py` 与 `tests/test_agent_prompts.py` 里提到旧名的注释、
+`CyliPrefsPanel` 的技能中文名（全文导读 → 论文精读）与三段分组的顺序表。
+
+校验：pytest 全量绿；`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：后端 + 前端产物（`190-dist.tgz`），`pm2 restart cylit-api`。
+
+- **用新提示词重跑后实测**（TurboQuant，`t-e5d2ad53adcae6a5`，18:20 完成）：`refs_ok=1`、`refs_json` 8294 字节、
+  正文里 `[A0xx]` 出现 **100 次 / 69 个唯一编号**、`img:A0xx` 插图 **4 处**（图 2 / 图 3 / 表 1 / 图 4），
+  「实验与证据」一节逐图写了"支撑什么 + 不能支持什么"，「结论、局限与我的判断」里那段明确标了"以下为我的推断，非原文陈述"，
+  公式也随上次正文修正变成 $\frac{\sqrt{3}\pi}{2}$（π 在根号外）；解读长度 15684，prompt 43732 / completion 7969 tokens。
+  注意：Attention 那一篇的解读仍是旧口径，要统一得再跑一次。
+

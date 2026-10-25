@@ -80,5 +80,5 @@ description: 在本文或整个知识库里检索，只回候选位置（页码�
 - 要读全文 / 读整页 → `read-text`；
 - 要解释图、表、公式 → `read-figure` / `read-formula`；
 - 要查公开网页（不是本地库）→ `web-search`；
-- 要一次性给出整篇概览 → `summarize-paper`；
+- 要给整篇概览、或按精读流程带你读一遍 → `deep-read-paper`；
 - 术语"怎么译" → `explain-term`。

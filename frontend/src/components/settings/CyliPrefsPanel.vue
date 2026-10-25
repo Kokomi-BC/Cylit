@@ -187,7 +187,7 @@ const SKILL_NAME_ZH: Record<string, string> = {
   'read-page-image': '整页原图',
   'search-paper': '论文检索',
   'reader-state': '阅读状态',
-  'summarize-paper': '全文导读',
+  'deep-read-paper': '论文精读',
   'answer-paper': '论文问答',
   'explain-term': '术语与译法',
   'edit-text': '文本修订',
@@ -208,14 +208,14 @@ const fileInput = ref<HTMLInputElement | null>(null);
  *
  *  ① **联网**：搜索 + 阅读挨着，它们是同一件事的两步（先搜到候选、再按链接读正文）；后端按名字
  *     排会把 web-fetch 甩到最后，看着像两件不相干的技能。
- *  ② **方法论**：全文导读 + 论文问答挨着 —— 这两个不"取材料"，它们定的是**怎么读、怎么答**。
+ *  ② **方法论**：论文精读 + 论文问答挨着 —— 这两个不"取材料"，它们定的是**怎么读、怎么答**。
  *  ③ **执行**：取材料（正文 / 整页 / 图 / 公式）→ 核对（术语、译文）→ 动手改（标注、修订）。
  *
  *  没收录的外部技能排在最后，并保持接口给的相对顺序。
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 skills，就地 sort 会打乱那份引用。 */
 /** 三段分组：顺序与上面那句注释一一对应。
  *
- * 为什么把分组从注释搬进界面（用户口径 2026-12「补齐技能开关及说明」）：13 行平铺时，
+ * 为什么把分组从注释搬进界面（用户口径 2026-12「补齐技能开关及说明」）：十几行平铺时，
  * 「联网搜索」和「标注与笔记」看起来是同一类东西 —— 分组小标题 + 一句「这一段在干什么」
  * 才说得清每个开关管的是哪一类能力。**只写分组在干什么，不写单个技能的能力**：
  * 单个技能的说明只能来自 SKILL.md（见下面那条警告）。 */
@@ -227,8 +227,8 @@ const SKILL_GROUPS: { title: string; note: string; names: string[] }[] = [
   },
   {
     title: '怎么读、怎么答',
-    note: '先定位再取证：检索候选位置 → 看读者停在哪 → 给整篇概览 → 跨段回答。',
-    names: ['search-paper', 'reader-state', 'summarize-paper', 'answer-paper'],
+    note: '先定位再取证：检索候选位置 → 看读者停在哪 → 整篇精读 → 跨段回答。',
+    names: ['search-paper', 'reader-state', 'deep-read-paper', 'answer-paper'],
   },
   {
     title: '取材料与动手',

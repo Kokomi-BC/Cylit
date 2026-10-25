@@ -225,7 +225,7 @@ def test_user_prompt_puts_notes_before_the_question() -> None:
 #
 # 线上实测（2026-12）：archive 接口的 outline 有 24 条，agent 读到的档案里「章节结构」
 # 却是空的 —— 它当时渲染在最后，brief 的「主要论断 / 统一译法（16 条）」把 6000 字预算
-# 吃光，整段被 \`text[:cfg_chars]\` 一刀切掉。而 summarize-paper 第 1 步恰恰依赖它。
+# 吃光，整段被 \`text[:cfg_chars]\` 一刀切掉。而 deep-read-paper 第 0 步恰恰依赖它。
 # --------------------------------------------------------------------------
 
 _FAT_BRIEF = {

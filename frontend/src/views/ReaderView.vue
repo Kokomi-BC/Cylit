@@ -1177,7 +1177,7 @@ const railTab = ref<RailTabKey>('toc');
 const tocMode = ref<'outline' | 'pages'>('outline');
 const SIDE_TAB_KEYS = [
   'toc', 'chat', 'insight', 'search', 'references', 'notes', 'formulas', 'tables', 'figures', 'terms',
-  'tasks',
+  'settings',
 ];
 /* 切页签只做"进这个页签才需要的事"（例如参考文献首次拉取）；**不再改侧栏宽度**（见上一条注释）。 */
 watch(railTab, (k) => {
@@ -1264,13 +1264,19 @@ const SIDE_TABS = computed<Array<{
   { k: 'figures', icon: 'image', label: '插图', title: '插图', count: figures.value.length },
   { k: 'terms', icon: 'layers', label: '术语', title: '术语与文档简报', count: termCount.value },
   {
-    /* 用户口径 2026-10-07：**放在倒数第二个**（任务之前），图标用**双引号**那枚 `quote` ——
+    /* 用户口径 2026-10-07：**放在倒数第二个**（设置之前），图标用**双引号**那枚 `quote` ——
        参考文献本来就是"别人说过的话"，引号比书架更贴题；笔记那枚 `note`（文稿）也一并定下来。 */
     k: 'references', icon: 'quote', label: '文献',
     title: '引用文献（正文里的 [2, 4, 10] 点开就是这里；点条目跳发表网站）',
     count: paperReferences.value.length || undefined,
   },
-  { k: 'tasks', icon: 'task', label: '任务', title: '任务（翻译 / 转录 / 解读 / 索引 / 解析，按类型）' },
+  {
+    /* 2026-12 用户口径：「任务」换成「设置」并**保持最后一位** —— 字号 / 高亮是阅读时常改的东西，
+       放在页签条最末（滚到底就是它）不抢目录、解读这些高频页签的位置；
+       任务清单作为那一页的最后一段留着，能力（取消 / 进度 / 失败原因）一个不少。 */
+    k: 'settings', icon: 'settings', label: '设置',
+    title: '设置（字号 / 高亮效果 / 重新生成解读 / 任务）',
+  },
 ]);
 
 /* 侧栏页签**一行到底、不换行**（用户口径）：放不下就左右滚，见 `.side-tabs` 的样式。
@@ -1819,9 +1825,12 @@ async function loadAll() {
     if (q.scope === 'all' || q.scope === 'en' || q.scope === 'zh') searchScope.value = q.scope;
     if (q.q) { searchQuery.value = String(q.q); runSearch(); }
     const sideParam = String(q.side ?? '');
-    if (SIDE_TAB_KEYS.includes(sideParam) || sideParam === 'annotations') {
+    /* 兼容旧页签 key：`?side=tasks`（以及旧标签里存下的那份 query）指向的那个页签现在叫「设置」，
+       任务清单是它最后一段 —— 直接判 includes 会让这类链接落到"无效页签"、左栏退回目录。 */
+    const sideKey = sideParam === 'tasks' ? 'settings' : sideParam;
+    if (SIDE_TAB_KEYS.includes(sideKey) || sideParam === 'annotations') {
       // 兼容旧的 ?side=annotations：批注与笔记已合并进「笔记」这一个页签
-      railTab.value = (sideParam === 'annotations' ? 'notes' : sideParam) as RailTabKey;
+      railTab.value = (sideParam === 'annotations' ? 'notes' : sideKey) as RailTabKey;
       /* `?side=insight` / `?side=chat` 还要**把左栏打开**：回到左栏之后，"选中页签"本身
        * 看不见就等于没反应（用户把左栏收起过 / 窄屏是抽屉）。宽度由 `watch(railTab)` 统一负责。 */
       if (sideParam === 'insight' || sideParam === 'chat') await ensureAsideVisible();
@@ -8197,6 +8206,7 @@ function renderMarkdown(text?: string | null) {
           @overlay="openBlockOverlay($event)"
           @save-brief="saveBrief"
           @regenerate-brief="regenerateBrief"
+          @regenerate-insight="regenerateInsight"
           @reload-brief="syncBriefDraft()"
           @delete-annotation="deleteAnnotation"
           @delete-note="deleteNote"
