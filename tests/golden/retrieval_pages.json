@@ -112,7 +112,7 @@
     {
       "query": "QJL",
       "mode": "text",
-      "why": "缩写 + 附录整节都是它",
+      "why": "缩写 + 附录整节都是它；块级：B.2 的 4 个结构单元（导言 / Definition 1 / 引理 4 / 证明）在索引里是 1:1 的 4 个 en 块，按「页 + 起始行」计数；池子加下限之前 k=8 只回 2 个，现在是 4 个。",
       "needle": {
         "substring": "qjl"
       },
@@ -127,7 +127,16 @@
         18,
         19,
         21
-      ]
+      ],
+      "expect_groups": [
+        {
+          "page": 17,
+          "section_prefix": "B.2",
+          "expect": 4
+        }
+      ],
+      "min_block_recall": 0.75,
+      "target_block_recall": 1.0
     },
     {
       "query": "定理 1",

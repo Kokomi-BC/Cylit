@@ -587,6 +587,11 @@ def _write_log(**entry: Any) -> None:
 #: 召回深度 = 调用方要的条数 × 这个系数。重排要在**更大的池子**里挑，
 #: 才留得出余量做「同一节至多几条」的名额约束。
 POOL_FACTOR = 2
+#: 池子**下限**。实测（turboquant 篇，`QJL` 查 B.2）：`top_k=8` 时池子 16 条，
+#: 「Definition 1 (QJL)」那一块**根本不在池里**（它排在 16 名之后），于是 B.2 的 4 个位置只回来 2 个；
+#: 池子放到 24 条它就进来，B.2 四个位置全在。而 k=20 时 2×20=40 本来就够 —— 缺的只是**小 k**。
+#: 注意 `3×k` 反而更差（fetch=16 时 B.2 掉到 3/4：池子越大，重排里别的页挤得越凶）。
+POOL_MIN = 24
 #: 最终结果里同一 section 至多占几个名额（实测 `TURBOQUANT_mse` 改前 12 条里 9 条是重复页）。
 SECTION_CAP = 2
 #: **块多的节给更多名额**：一节的**候选池里**有多少块，决定它最多能占几个名额。
@@ -662,9 +667,15 @@ def _pick(items: list[dict], top_k: int | None, section_cap: int | None) -> list
 
 
 def recall_depth(top_k: int | None) -> int:
-    """召回 / 融合池的深度 = ``要的条数 × POOL_FACTOR``（调用方没要就是不额外放大）。"""
+    """召回 / 融合池的深度 = ``max(要的条数 × POOL_FACTOR, POOL_MIN)``。
+
+    调用方没给 ``top_k`` 时返回 0（不额外放大，保持老口径）。
+    ``POOL_MIN`` 只兜小 k：k=8 时 2×8=16 装不下 B.2 那四个位置（见常量注释）。
+    """
     want = int(top_k or 0)
-    return max(1, want) * POOL_FACTOR if want > 0 else 0
+    if want <= 0:
+        return 0
+    return max(max(1, want) * POOL_FACTOR, POOL_MIN)
 
 
 def fused_size(fused_k: int | None, top_k: int | None) -> int:

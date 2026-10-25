@@ -377,10 +377,18 @@ def test_section_cap_is_per_paper() -> None:
 def test_recall_depth_doubles_only_when_top_k_is_given() -> None:
     assert recall_depth(None) == 0
     assert recall_depth(20) == 40
-    assert recall_depth(8) == 16
+    assert recall_depth(16) == 32          # 2×16 已在下限之上，按下限算是错的口径
 
 
 def test_rerank_sees_whole_pool_only_when_section_cap_is_on() -> None:
     assert rerank_top_n(40, 20, None) == 20        # 不限名额：排这么多就够了（老口径）
     assert rerank_top_n(40, None, None) is None    # 没要条数：交给 rag_top_n_rerank 的设置值
     assert rerank_top_n(40, 20, 2) == 40           # 限名额：整池排一次，砍掉的名额才有替补
+
+
+def test_recall_depth_has_a_floor_for_small_k() -> None:
+    """k=8 时 2×8=16 装不下 B.2 的四个位置（Definition 1 那块排在 16 名外）：池子要有下限。"""
+    assert recall_depth(8) == retrieval.POOL_MIN
+    assert recall_depth(12) == retrieval.POOL_MIN
+    assert recall_depth(20) == 40          # 大 k 仍按 2×k
+    assert recall_depth(None) == 0         # 没要条数就不放大（RAG 问答那条链路）
