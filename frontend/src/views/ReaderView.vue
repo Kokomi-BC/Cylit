@@ -139,6 +139,8 @@ type CitePeekAsk = {
   snippet?: string | null;
   /** 公式类引用的 LaTeX（解读页的标号自带；对话那侧没有） */
   latex?: string | null;
+  /** 引用覆盖的整段行 id（逗号分隔）：有它才能把「标题 + 下面的正文」一起画出来 */
+  rows?: string | null;
 };
 
 /** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
@@ -238,15 +240,33 @@ function peekViewOf(card: PeekCard) {
   const fig = rowId ? figures.value.find((f) => f.row_id === rowId) : undefined;
   const tbl = rowId ? tables.value.find((t) => t.row_id === rowId) : undefined;
   const page = row?.page ?? ask.page ?? fig?.page ?? tbl?.page ?? 0;
-  const kind = tbl ? '表格' : fig ? '插图' : CITE_KIND[String(row?.type ?? '')] || '正文';
+  /* 这一条引用覆盖的**整段行**（后端的 `pids`，按论文顺序）。
+   *
+   * 为什么不能只用锚点那一行：以章节标题开头的条目，锚点就是标题行 —— 卡里只剩一行
+   * 光秃秃的章节名，读者会以为"这条引用指的是一个标题"（用户口径 2026-12-05：
+   * 标题本来就带着它下面的正文，那就该一起显示出来）。
+   * 拿不到整段（老引用没有 pids）时才退回原来的单行口径。 */
+  const spanRows = String(ask.rows || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => rowById.value.get(rowAnchorId(id) || id) ?? rowById.value.get(id))
+    .filter((r): r is PageRow => Boolean(r));
+  const headingLead = spanRows.length > 1 && String(spanRows[0]?.type ?? '') === 'heading';
+  const kind = tbl ? '表格' : fig ? '插图'
+    : headingLead ? '标题与正文' : CITE_KIND[String(row?.type ?? '')] || '正文';
   /* 中/EN 各一份 Markdown：**两侧都走 mdToHtml**（原文里的 LaTeX 也得渲染，
      否则一整段 `$...$` 原样铺出来，就是用户说的「部分没有适配 markdown」） */
   const snippet = String(ask.snippet || '').trim();
   /* 行 / 表 / 图都取不到时用**引用自带的那一两句**兜底：
      老引用（重译前生成的）往往既没有行 id、块 id 也映射不出来，
      只显示一句「没有可显示的内容」等于这张卡白弹（用户口径 2026-12-04：标号 7 就是这种）。 */
-  const zh = (tbl?.markdown || row?.translation || snippet).trim();
-  const en = (tbl?.markdown || row?.original || '').trim();
+  /* 整段一起画时不要把某一行的空串拼进去：`join` 出多余的空白行，卡片里就是一段空档 */
+  const spanJoin = (pick: (r: PageRow) => string | null | undefined) => (spanRows.length > 1
+    ? spanRows.map((r) => String(pick(r) ?? '').trim()).filter(Boolean).join('\n\n')
+    : '');
+  const zh = (tbl?.markdown || spanJoin((r) => r.translation) || row?.translation || snippet).trim();
+  const en = (tbl?.markdown || spanJoin((r) => r.original) || row?.original || '').trim();
   const caption = (fig?.caption_zh || fig?.caption || '').trim();
   /*
    * 插图：**图注只出现一次**（用户口径 2026-12-04：图注显示了两遍）。

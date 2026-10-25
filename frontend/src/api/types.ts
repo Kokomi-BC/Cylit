@@ -943,6 +943,13 @@ export interface UnderstandingRefItem {
    * 行级落点必然重合，所以额外带上这条公式，标号才能落在那**一枚 KaTeX** 上。
    */
   latex?: string | null;
+  /**
+   * 这一条 chunk 覆盖的**全部正文行 id**（按论文顺序）。
+   *
+   * 只为一件事：速览卡要把「标题 **和它下面的正文**」一起显示出来。锚点只取第一行时，
+   * 点开一条以章节标题开头的引用，卡里就只剩一行光秃秃的章节名 —— 用户口径 2026-12-05。
+   */
+  pids?: string[] | null;
 }
 
 /** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */

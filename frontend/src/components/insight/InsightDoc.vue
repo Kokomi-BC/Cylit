@@ -80,6 +80,8 @@ const emit = defineEmits<{
     label?: string | null;
     /** 公式类引用带 LaTeX：卡片里直接画那条公式（同行两条引用才分得开） */
     latex?: string | null;
+    /** 这条引用覆盖的整段行 id（逗号分隔）：卡片据此把标题和它下面的正文一起显示 */
+    rows?: string | null;
   }): void;
   (e: 'peek-hide'): void;
 }>();
@@ -161,7 +163,8 @@ function decorateCites(html: string): string {
         + ' data-code="' + code + '"'
         + ' data-block="' + escapeAttr(anchor) + '"'
         + ' data-page="' + (ref?.page ?? '') + '"'
-        + ' data-latex="' + escapeAttr(String(ref?.latex ?? '')) + '">[' + n + ']</button>';
+        + ' data-latex="' + escapeAttr(String(ref?.latex ?? '')) + '"'
+        + ' data-rows="' + escapeAttr((ref?.pids ?? []).join(',')) + '">[' + n + ']</button>';
     });
   }).join('');
 }
@@ -179,6 +182,7 @@ function onCitePeek(ev: PointerEvent) {
     blockId: btn.dataset.code || null,
     label: btn.getAttribute('aria-label') || '',
     latex: btn.dataset.latex || '',
+    rows: btn.dataset.rows || '',
   });
 }
 
