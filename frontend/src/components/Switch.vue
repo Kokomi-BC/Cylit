@@ -59,7 +59,9 @@ function onChange(ev: Event) {
    文档高度 1683 vs 视口 980）。定位祖先前移到这一行，它就老老实实待在自己那格里。 */
 .switch-row {
   position: relative;
-  display: flex; align-items: flex-start; gap: 8px;
+  /* 竖直**居中**对齐：索引管理里那种「标题 + 两行说明」的标签，用 flex-start 会把开关顶在
+     第一行，比行中线高 10~11px（实测 cy 1320 vs 行中线 1331）—— 一排开关就歪了。 */
+  display: flex; align-items: center; gap: 8px;
   /* 整行都是 label：点文案也能切换（原生行为，无需 JS） */
   cursor: pointer; user-select: none;
 }
@@ -70,7 +72,7 @@ function onChange(ev: Event) {
 
 .switch-track {
   flex: none; position: relative;
-  width: 36px; height: 20px; margin-top: 1px;
+  width: 36px; height: 20px;
   border-radius: var(--radius-ctl);
   background: var(--bg-sunken); border: 1px solid var(--border-strong);
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);

@@ -350,14 +350,16 @@ const healthCheckedAt = ref('');
         <div class="si-head">
           <AppIcon name="layers" :size="15" />
           <h3 class="si-title">存储空间</h3>
-          <span class="spacer"></span>
-          <span class="disk-pct tnum" :class="diskTone" v-if="disk">{{ diskPct.toFixed(1) }}%</span>
         </div>
         <div class="si-body">
           <p class="si-empty" v-if="!disk">后端未返回磁盘信息</p>
           <template v-else>
+            <!-- 占用率放在**卡片里**（用量行右端）：以前它挂在标题行，标题行不铺底，
+                 于是这个数字看起来"飘在卡片外面"（用户 2026-12 连续报两次）。 -->
             <div class="disk-head">
               <span class="disk-usage">已用 <b>{{ formatBytes(disk.used_bytes) }}</b> / 共 {{ formatBytes(disk.total_bytes) }}</span>
+              <span class="spacer"></span>
+              <span class="disk-pct tnum" :class="diskTone">{{ diskPct.toFixed(1) }}%</span>
             </div>
             <div
               class="bar"
@@ -428,7 +430,8 @@ const healthCheckedAt = ref('');
            卡头的「校验数据」按钮由 actions=false 关掉。 -->
       <section class="si-block si-block--kb">
         <KbStorageCard :status="indexStatus" :loading="statusLoading" :busy="busyKey"
-                       :checked-at="checkedAt" :actions="false" @reconcile="reconcileNow" />
+                       :checked-at="checkedAt" :actions="false" :head-status="false"
+                       @reconcile="reconcileNow" />
       </section>
     </div>
   </div>
@@ -446,7 +449,10 @@ const healthCheckedAt = ref('');
 /* 两列网格：行内两块**等高**（stretch），同一行的下边缘因此对齐；窄屏一列 */
 .si-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .si-block { min-width: 0; display: flex; flex-direction: column; }
-.si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-faint); }
+/* 标题行与内容底**同一条左右内边距**（内容底用 12px 14px）：
+   以前标题行没有内边距，于是右端的数值（磁盘占用 %）贴着卡片外沿、与下面那些值差 14px ——
+   看起来就是「数值跑到卡片外面去了」（用户 2026-12 报的）。 */
+.si-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 0 14px; color: var(--text-faint); }
 .si-title { margin: 0; font-size: calc(13.5px * var(--ts, 1)); font-weight: 600; letter-spacing: -.01em; line-height: 1.35; color: var(--text); }
 /* 内容底：淡色圆角矩形，吃掉块内剩余高度（等高靠它） */
 .si-body {
@@ -466,7 +472,8 @@ const healthCheckedAt = ref('');
 }
 
 /* 存储：用量行 + 占用条（轨道抬一档，否则同色消失） */
-.disk-head { display: flex; align-items: baseline; gap: 8px; }
+.disk-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.disk-head .spacer { flex: 1 1 auto; min-width: 0; }
 .disk-usage { font-size: calc(12.5px * var(--ts, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .disk-usage b { font-weight: 600; color: var(--text); }
 .disk-pct { font-size: calc(12px * var(--ts, 1)); font-weight: 650; color: var(--accent); }

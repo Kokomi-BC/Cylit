@@ -223,7 +223,9 @@ onMounted(load);
 .spacer { flex: 1 1 auto; min-width: 0; }
 .tr-tool {
   display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 12px; border-radius: var(--radius-ctl);
+  /* 尺寸跟共享按钮 `--control-h-sm` 走：以前这里写死 30px，比设置页其它动作钮高 4px，
+     一排并排（回收站 vs 其它页）时就显得没对齐。 */
+  height: var(--control-h-sm); padding: 0 11px; border-radius: var(--radius-ctl);
   border: 1px solid var(--border); background: transparent; color: var(--text);
   font-family: inherit; font-size: calc(12px * var(--ts, 1)); font-weight: 500; cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
@@ -231,7 +233,7 @@ onMounted(load);
 }
 .tr-tool:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
 .tr-tool:active:not(:disabled) { transform: scale(.97); }
-.tr-tool.square { width: 30px; padding: 0; justify-content: center; }
+.tr-tool.square { width: var(--control-h-sm); padding: 0; justify-content: center; }
 .tr-tool.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--border-strong)); }
 .tr-tool.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .tr-tool:disabled { opacity: .5; cursor: default; }

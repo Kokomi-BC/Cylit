@@ -46,7 +46,10 @@ const props = withDefaults(defineProps<{
   checkedAt?: string;
   /** 卡头右上角要不要「校验数据」：索引管理页要（默认），系统信息页不要（那页有全局面板动作）。 */
   actions?: boolean;
-}>(), { checkedAt: '', actions: true });
+  /** 卡头那枚**总状态徽章**要不要：系统信息页不要 —— 标题行不铺底，徽章会"飘在卡片外面"；
+   *  而且卡内三行本来就各带一枚（一致 / 可用 / 维度一致），标题那枚是重复的。 */
+  headStatus?: boolean;
+}>(), { checkedAt: '', actions: true, headStatus: true });
 
 const emit = defineEmits<{ (e: 'reconcile', fix: boolean): void }>();
 
@@ -165,7 +168,7 @@ function clean(): void { emit('reconcile', true); }
   <section class="storage">
     <div class="storage-head">
       <AppIcon name="server" :size="15" /><span class="ttl">索引存储状态</span>
-      <span class="badge" :class="badge.cls">{{ badge.text }}</span>
+      <span v-if="headStatus" class="badge" :class="badge.cls">{{ badge.text }}</span>
       <span class="spacer"></span>
       <button v-if="actions" class="btn sm ghost" type="button" :disabled="busyReconcile" @click="check">
         <AppIcon name="refresh" :size="14" />{{ busyReconcile ? '校验中…' : '校验数据' }}
@@ -234,7 +237,8 @@ function clean(): void { emit('reconcile', true); }
 <style scoped>
 .ttl { font-size: calc(13.5px * var(--ts, 1)); }
 /* 标题行：透明、在块外；内容底：淡色圆角（--bg-sunken + --r-sm），与设置页其它区块一致 */
-.storage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; margin-bottom: 8px; }
+/* 与 .storage-body 的 12px 14px 对齐（标题行的徽章不再贴到卡片外沿） */
+.storage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; margin-bottom: 8px; padding: 0 14px; }
 .storage-head .btn { flex: none; }
 .storage-body { padding: 12px 14px; border-radius: var(--r-sm); background: var(--bg-sunken); }
 
