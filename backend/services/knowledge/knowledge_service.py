@@ -698,21 +698,31 @@ def _merge_heading_only(chunks: list[dict], road: str | None, *, limit: int) -> 
 
     merged = 0
     index = 0
-    while index < len(chunks) - 1:
+    while index < len(chunks):
         chunk = chunks[index]
         rows = chunk.get("rows") or []
         if not rows or any(r.get("type") != "heading" for r in rows):
             index += 1
             continue
-        nxt = chunks[index + 1]
-        nxt_rows = nxt.get("rows") or []
-        if not nxt_rows or size(rows + nxt_rows) > limit:
-            index += 1                      # 合不下就保持原样：宁可多一条小标题块，也不造超长块
+        nxt = chunks[index + 1] if index + 1 < len(chunks) else None
+        nxt_rows = (nxt or {}).get("rows") or []
+        if nxt is not None and nxt_rows and size(rows + nxt_rows) <= limit:
+            nxt["rows"] = rows + nxt_rows   # 标题跟在正文前面，行序不变
+            nxt["node"] = chunk.get("node") or nxt.get("node")
+            chunks.pop(index)
+            merged += 1
             continue
-        nxt["rows"] = rows + nxt_rows       # 标题跟在正文前面，行序不变
-        nxt["node"] = chunk.get("node") or nxt.get("node")
-        chunks.pop(index)
-        merged += 1
+        # 末尾那种「只有标题、后面没有块」的（实测 attention 篇的 `# Attention Visualizations`）：
+        # 往前并 —— 追加到前一块的尾部，行序仍然连续；合不下就保持原样。
+        prev = chunks[index - 1] if index else None
+        prev_rows = (prev or {}).get("rows") or []
+        if prev is not None and prev_rows and size(prev_rows + rows) <= limit:
+            prev["rows"] = prev_rows + rows
+            chunks.pop(index)
+            merged += 1
+            index = max(0, index - 1)
+            continue
+        index += 1                          # 合不下就保持原样：宁可多一条小标题块，也不造超长块
     return merged
 
 

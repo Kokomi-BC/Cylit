@@ -52,3 +52,17 @@ def test_normal_chunk_is_untouched() -> None:
     ]
     assert _merge_heading_only(chunks, "a", limit=4000) == 0
     assert len(chunks) == 2
+
+
+def test_trailing_heading_is_merged_backwards() -> None:
+    """末块只有标题时没有"下一块"可并 —— 追加到前一块尾部（行序仍然连续）。
+
+    实测 attention 篇末尾就有一块 `# Attention Visualizations`（en/zh 各一条）。
+    """
+    chunks = [
+        _chunk([_row(1, "para", "body before heading")], "a"),
+        _chunk([_row(2, "heading", "# Attention Visualizations")], "b"),
+    ]
+    assert _merge_heading_only(chunks, "a", limit=4000) == 1
+    assert len(chunks) == 1
+    assert [r["index"] for r in chunks[0]["rows"]] == [1, 2]
