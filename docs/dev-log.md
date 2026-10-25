@@ -13012,3 +13012,25 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 下面那行居中提示是「查找意思相近的内容」。`vue-tsc --noEmit` 0 error、`npm run build` 通过、
 `scripts/frontend_check.py` **154/154**。
 
+
+### 162. 第一百六十二轮：「解读」换成 Fluent 的 Notebook
+
+用户口径：「侧栏解读的图标换一个更为合适的」+ 给了 Fluent 里那枚 **Notebook**（0xf570，笔记本 + 装订点）。
+两处「解读」原本不是同一枚，这次一起归到 Notebook：
+
+- 阅读器左栏的「解读」页签（`views/ReaderView.vue` 的 `SIDE_TABS`）原来是 `sparkle` ——
+  那是"AI 魔法"的意思，跟"这篇论文讲什么"无关，还和搜索里语义档那枚胶囊撞脸；
+- 左侧导航「论文解读」、首页那张卡、标签页的解读图标走的是 `insight`（原来 = `document_bullet_list`，
+  带项目符号的文档，16px 下和邻居「文献」那枚 `quote`/`list` 太像）。
+
+做法：把 `insight` 这一条从 `document_bullet_list` 换成 **`notebook`**（`components/fluentIcons.ts`，
+`r` = `notebook_24_regular`、`f` = `notebook_24_filled`，路径取自 `@fluentui/svg-icons@1.1.344` 包），
+左栏页签的 icon 从 `sparkle` 改成 `insight` —— 现在这五处是同一枚笔记本。
+顺带把那句"数据是生成出来的、不要手改"改成**真话**：那次生成脚本没有入库，改图标要同时改对照表与该条目的
+`r`/`f` 路径（只改对照表不生效）。
+
+**验证**（headless Edge + CDP，2x）：左侧导航「论文解读」与阅读器左栏「解读」页签读出同一条
+`path d = "M16.75 2C17.99 2 19 3 19 4.25…"`（= notebook_24_regular），截图放大确认 30px / 20px 下都读得出
+"笔记本 + 装订点"；与相邻的目录（list）、对话（chat）、搜索（search）、笔记（note）并排不撞。
+`vue-tsc --noEmit` 0 error、`npm run build` 通过、`scripts/frontend_check.py` **154/154**。
+
