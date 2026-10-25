@@ -50,3 +50,11 @@ def test_normal_units_stay_untouched() -> None:
     parts = _units([_row(1, "para", "a")], [_row(2, "para", "b")])
     out = chunking._merge_heading_units(parts, road=None, limit=4000)
     assert [len(u["rows"]) for u in out] == [1, 1]
+
+
+def test_para_row_that_is_really_a_heading_counts_too() -> None:
+    """实测线上有一批 `## 0.2 PRIOR WORK` 的行在解析侧被标成 ``para``：只按 type 判会漏掉一半。"""
+    assert chunking.is_heading_like(_row(1, "para", "## 0.2 PRIOR WORK"))
+    assert chunking.is_heading_like(_row(1, "heading", "Some Title"))
+    assert not chunking.is_heading_like(_row(1, "para", "## 0.1 PROBLEM DEFINITION  Formally, our goal ."))
+    assert not chunking.is_heading_like(_row(1, "para", "普通正文，没有井号"))

@@ -717,6 +717,32 @@ def _is_descendant(node: dict, ancestor: dict) -> bool:
 # --------------------------------------------------------------------------
 
 
+#: 「标题样」文本的长度上限（只有标题、没有正文的那种块）。
+HEADING_TEXT_MAX = 120
+
+
+def is_heading_like(row: dict) -> bool:
+    """这一行是不是「标题样」—— 只有标题、没有正文。
+
+    ⚠️ **不能只看 `type == "heading"`**：实测线上还有一批 `## 0.2 PRIOR WORK` 这种行，
+    解析侧标的是 ``para``（它们确实是 Markdown 标题，但行类型没跟上），只按类型判会漏掉一半。
+
+    文字的判据同样要小心：**不能用「整段没有句号」**——章节号自带点（`## 0.2`）会被判成正文。
+    这里看的是去掉 ``#`` 之后的尾巴：不以句末标点收尾，也不含句号加空格（`… end. Next`）。
+    """
+    if row.get("type") == "heading":
+        return True
+    text = road_text(row, None).strip()
+    if not text.startswith("#") or len(text) > HEADING_TEXT_MAX:
+        return False
+    rest = text.lstrip("#").strip()
+    if not rest:
+        return True
+    if "。" in rest or ". " in rest:
+        return False
+    return rest[-1] not in ".!?！？:：;…"
+
+
 def _merge_heading_units(partition: list[dict], *, road: str | None,
                          limit: int) -> list[dict]:
     """把「只有标题」的单元并进**行序上紧邻的下一个**单元（末尾的往前并）。
@@ -732,7 +758,7 @@ def _merge_heading_units(partition: list[dict], *, road: str | None,
     合并后仍须 ≤ `limit`：超了就保持原样（校验层对多行单元的 `unit_over_max` 会报错）。
     """
     def heading_only(items: list[dict]) -> bool:
-        return bool(items) and all(r.get("type") == "heading" for r in items)
+        return bool(items) and all(is_heading_like(r) for r in items)
 
     def size(items: list[dict]) -> int:
         return sum(len(road_text(r, road)) for r in items)

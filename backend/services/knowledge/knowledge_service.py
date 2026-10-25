@@ -689,7 +689,7 @@ def _merge_heading_only(chunks: list[dict], road: str | None, *, limit: int) -> 
 
     只动 ``text`` 层（上下文单位）：``unit`` 层（检索单位）的边界不动，break 纪律不受影响。
     """
-    from backend.services.knowledge.chunking import road_text
+    from backend.services.knowledge.chunking import is_heading_like, road_text
 
     def size(items: list[dict]) -> int:
         """与分块器同一个长度口径（按路取文本、去空白后累加）—— `chunking` 里的
@@ -701,7 +701,7 @@ def _merge_heading_only(chunks: list[dict], road: str | None, *, limit: int) -> 
     while index < len(chunks):
         chunk = chunks[index]
         rows = chunk.get("rows") or []
-        if not rows or any(r.get("type") != "heading" for r in rows):
+        if not rows or any(not is_heading_like(r) for r in rows):
             index += 1
             continue
         nxt = chunks[index + 1] if index + 1 < len(chunks) else None
