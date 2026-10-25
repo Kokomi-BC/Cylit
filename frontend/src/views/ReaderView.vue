@@ -361,17 +361,17 @@ function peekViewOf(card: PeekCard) {
     .replace(/\\[a-zA-Z]+/g, ' ')
     .replace(/[^0-9a-zA-Z\u4e00-\u9fff]+/g, '')
     .toLowerCase();
-  const quoteCore = core(quoteRaw);
-  /* 骨架太短（「1/4」这种）容易被正文误中，只让够长的片段走这条判定 */
-  const quoteCovered = Boolean(quoteRaw) && (
-    norm(zh).includes(norm(quoteRaw)) || norm(en).includes(norm(quoteRaw))
-    /* 片段是正文的**前缀**（截断的常见形态）也算覆盖：只差尾巴那几个字不该再画一块 */
-    || norm(zh).startsWith(norm(quoteRaw)) || norm(en).startsWith(norm(quoteRaw))
-    || (quoteCore.length >= 8 && (core(zh).includes(quoteCore) || core(en).includes(quoteCore)))
-  );
   /* 解读页的标号直接带 LaTeX：比片段更准，优先用它 —— 有了它片段就是重复的第三份 */
   const latex = String(ask.latex || '').trim();
-  const quote = quoteRaw && !quoteCovered && !latex ? quoteRaw : '';
+  /*
+   * **卡片里不再画"引用片段"那一块**（用户口径 2026-12-05 连续两轮反馈都是"同一段显示两遍"）。
+   *
+   * 为什么不再靠比对去重：片段是模型给的摘录 / 后端 200 字截断的预览，截断位置、标点、空白
+   * 与正文永远对不齐（这一轮实测：补齐前缀判定之后，对话那边仍然漏了一例）。正文既然已经把
+   * 整段（标题 + 正文）画出来了，片段最多只是同一段的另一种截断，画它没有增量信息。
+   * 只在**正文彻底取不到内容**时用它兜底 —— 那种情况下卡片里不能空着。
+   */
+  const quote = quoteRaw && !latex && !zh && !en ? quoteRaw : '';
   /*
    * **正文就是这条公式本身**时不要再画一遍（用户口径 2026-12-05：连续使用相同公式的问题）。
    *
