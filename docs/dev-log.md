@@ -12941,3 +12941,23 @@ save-alt / open-new / download / delete`），与下拉菜单的字重一致。
 `M15.05 1.5…`（原文 = `code`）、`M20.03 12.2…`（打包 = `layers`）；截图放大比过，PDF 那枚是"文档 + PDF 铭牌"。
 `scripts/frontend_check.py` **154/154**。
 
+
+### 159. 第一百五十九轮：定位闪烁去掉左侧那根竖线
+
+用户口径：「移除点击定位时，页面闪烁的侧边的竖线」。
+
+来源是 `components/reader/ReaderPageRows.vue` 里那层定位高亮（`.row-pair.flash-*::before`）的
+`box-shadow: inset 3px 0 0 0 color-mix(in srgb, var(--accent) 62%, transparent)` —— 一根贴左边缘、
+3px 宽的强调色竖条。它是 2026-12-03 那轮为了"从这里开始"的定位感加的（当时淡底被压到 11%，
+怕不够显眼），现在用户明确不要这根线：**整条删掉**，这层只剩 11% 的淡底亮一下再淡出。
+
+为什么不拿别的东西替代：这一层的唯一职责是"亮一下"（下面的注释已写死这条口径）——
+描边、竖条、分隔线都会在正文里多出一道一闪而过的线，正是用户报的那个现象。
+整页闪（`.pg.flash-*`，引用没有行锚点时用）保持原样：它是一整圈 1.5px 描边 + 淡底，
+不是"侧边一根竖线"，本轮不动。
+
+**验证**：`vue-tsc --noEmit` 0 error、`npm run build` 通过；真实浏览器（headless Edge + CDP，2x）
+在 MMDFND 阅读器点第 4 条目录触发定位，读出被闪那一行的 `::before` 计算样式 ——
+`box-shadow: none`、`border-top-width: 0px`、`background: color(srgb 0.0588 0.4824 0.5412 / 0.11)`
+（即只剩淡底），截图放大确认行左侧没有竖线。`scripts/frontend_check.py` **154/154**。
+
