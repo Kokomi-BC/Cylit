@@ -817,6 +817,15 @@ table.data.fixed { table-layout: fixed; }
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .md .katex-display { margin: .4em 0; overflow-x: auto; overflow-y: hidden; }
+/* **整块公式比一栏还宽**时：编号是绝对定位到 `.katex-html` 的 `right: 0`，而 `.katex` 默认跟着
+   栏宽走 —— 编号于是骑在公式尾巴上（用户口径 2026-12-05 的
+   `Attention = softmax(QK^T/√d_k)V \tag{1}`：那个 (1) 就压在 `V` 上）。
+   ① `.katex` 撑到**内容宽**（`min-width:100%` 保住"放得下"时的整行宽与居中）；
+   ② 有编号时给它右侧留 2.2em（`.tag` 不占流内空间，不留位置就还会压上去）；
+   ③ 溢出交给上面那条现成的 `overflow-x: auto` —— 于是"编号保留 + 横向滑动"两件事同时成立。
+   这三条与 `mark.hl.block` 那段是**同一个解法**（那边 2026-12-07 就修过一遍），只是这里覆盖面更广。 */
+.md .katex-display > .katex { width: max-content; min-width: 100%; }
+.md .katex-display > .katex:has(.tag) > .katex-html { padding-right: 2.2em; }
 /* 行内公式带编号（`\tag{1}`）时：**编号留着，公式自己横向滚**（用户口径 2026-12-05）。
    两条缺一不可：
    ① 变成 inline-block 并限宽 —— 比一栏还宽时自己滚，不撑破正文；

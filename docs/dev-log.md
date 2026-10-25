@@ -14085,3 +14085,30 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`207-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 196. 第一百九十六轮：整块公式的编号不再压在公式上（沿用 highlight 那套解法）
+
+用户口径 2026-12-05：还是压。这次把范围收窄到**整块公式**才找到真正的原因 ——
+那条是 `$$\text{Attention}(Q,K,V)=\text{softmax}\!\left(\frac{QK^{T}}{\sqrt{d_k}}\right)V \tag{1}$$`，
+`\tag` 落在 `.katex-html` 的 `right: 0`，而 `.katex` 默认**跟着栏宽走**：栏宽 278、公式内容更宽，
+编号于是骑在公式尾巴（`V`）上。行内那两条 CSS 治不了它 —— 它不是行内公式。
+
+改法就是把 `mark.hl.block` 那段早就验证过的三条**推广到所有整块公式**：
+
+```css
+.md .katex-display > .katex { width: max-content; min-width: 100%; }
+.md .katex-display > .katex:has(.tag) > .katex-html { padding-right: 2.2em; }
+.md .katex-display { overflow-x: auto; }   /* 本来就有 */
+```
+
+① `.katex` 撑到内容宽（放得下时 `min-width:100%` 仍保住整行宽与居中）→ 编号落在**内容**右缘；
+② 有编号时给右侧留 2.2em（`.tag` 不占流内空间）；③ 溢出由 `.katex-display` 的横向滚动承接。
+于是"编号保留 + 横向滑动"同时成立。
+
+实测（attention 的解读页）：10 条整块公式、6 条带编号 → **0 条压住公式**
+（编号左缘 258 vs 公式内容右缘 243，留 15px），其中 3 条比栏宽、`scrollWidth > clientWidth`（可横向滑动）。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`208-dist.tgz`），`pm2 restart cylit-api`。
+
