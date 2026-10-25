@@ -180,3 +180,34 @@ def test_validate_refs_never_raises() -> None:
     got = us.validate_refs(["ZZZ"], {}, path="a")
     assert got["ok"] is False and got["resolved"] == {}
     assert got["invalid"] == ["ZZZ"]
+
+
+def test_refresh_image_urls_recomputes_the_region_version(monkeypatch) -> None:
+    """解读里存的 `?v=` 是快照：读的时候要按**当前**区域重算，否则浏览器 7 天都看旧图。"""
+    from backend.services.understanding import understanding_service as us
+
+    class _FR:
+        @staticmethod
+        def page_regions(paper_id, page):
+            assert paper_id == 'p1' and page == 9
+            return [{'hash': 'newhash1'}, {'hash': 'newhash2'}]
+
+        @staticmethod
+        def region_version(reg, paper_id):
+            return reg['hash'] + 'c0'
+
+    monkeypatch.setattr('backend.services.paper.figure_regions', _FR, raising=False)
+    monkeypatch.setitem(__import__('sys').modules, 'backend.services.paper.figure_regions', _FR)
+    inventory = [
+        {'code': 'A067', 'image': '/api/v1/papers/p1/figures/region/9/0?v=oldhashc0'},
+        {'code': 'A068', 'image': '/api/v1/papers/p1/figures/region/9/1?v=oldhashc0'},
+        {'code': 'A069', 'image': '/api/v1/papers/p1/figures/region/9/7?v=oldhashc0'},  # 越界
+        {'code': 'A070', 'image': '/api/v1/papers/p2/figures/region/9/0?v=other'},       # 别的论文
+        {'code': 'A071'},                                                             # 没有图
+    ]
+    us._refresh_image_urls('p1', inventory)
+    assert inventory[0]['image'] == '/api/v1/papers/p1/figures/region/9/0?v=newhash1c0'
+    assert inventory[1]['image'] == '/api/v1/papers/p1/figures/region/9/1?v=newhash2c0'
+    assert inventory[2]['image'].endswith('?v=oldhashc0')      # 越界 → 不动
+    assert inventory[3]['image'].endswith('?v=other')          # 别的论文 → 不动
+    assert 'image' not in inventory[4]

@@ -924,6 +924,39 @@ def split_refs_by_pids(paper_id: str, resolved: dict[str, str], by_code: dict,
     return out_live, out_stale
 
 
+#: 清单里插图/表格的裁图地址（`/api/v1/papers/<id>/figures/region/<page>/<index>?v=…`）
+_REGION_URL = re.compile(r"/papers/(?P<paper>[^/]+)/figures/region/(?P<page>\d+)/(?P<idx>\d+)")
+
+
+def _refresh_image_urls(paper_id: str, inventory: list[dict]) -> None:
+    """把清单里的图片地址**按当前裁图区域**重算 `?v=`（就地改）。
+
+    `inventory` 是生成解读那一刻的快照，`?v=<区域版本>` 也一起冻住了。裁图算法/边界一变
+    （`REGION_CACHE_VERSION` 一加），接口吐的图是新的、**URL 还是旧的** —— 浏览器按
+    `Cache-Control: max-age=604800` 继续摆旧图 7 天（实测 attention 的 Table 3：裁图修好之后
+    解读里还是半张表，因为地址没变）。这里按 page / index 回查当前区域，重新拼版本号；
+    区域已经不在了（重切过、序号越界）就保持原样，绝不改出坏地址。
+    """
+    from backend.services.paper import figure_regions
+
+    for it in inventory or []:
+        if not isinstance(it, dict):
+            continue
+        url = str(it.get("image") or "")
+        m = _REGION_URL.search(url)
+        if not m or m.group("paper") != paper_id:
+            continue
+        try:
+            regs = figure_regions.page_regions(paper_id, int(m.group("page")))
+            reg = regs[int(m.group("idx"))]
+        except Exception as exc:  # noqa: BLE001 —— 地址刷不动是小事，解读本身不能挂
+            log.debug("刷新图片版本号失败（%s）：%s", url, exc)
+            continue
+        ver = figure_regions.region_version(reg, paper_id)
+        if ver:
+            it["image"] = url.split("?", 1)[0] + f"?v={ver}"
+
+
 def to_dict(row: Understanding) -> dict:
     """库里那一行 → 接口形状。引用走三级回落（见 split_refs_by_pids）：
 
@@ -936,6 +969,7 @@ def to_dict(row: Understanding) -> dict:
     """
     refs = json_loads(row.refs_json, {}) or {}
     inventory = json_loads(row.inventory, []) or []
+    _refresh_image_urls(str(getattr(row, "paper_id", "") or ""), inventory)
     by_code = {it["code"]: it for it in inventory if isinstance(it, dict)}
     resolved = dict(refs.get("resolved") or {})
     # 老解读里"正文写了、refs_json 却没登记"的标号就地补齐：只要材料清单里还有它，

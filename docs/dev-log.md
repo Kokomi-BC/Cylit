@@ -14527,3 +14527,8 @@ UPDATE understanding SET inventory = REPLACE(inventory,
 改完 `/understanding` 吐的就是新地址（`region/9/0?v=917d794fc0`），裁图 296690 字节与前缀一致。
 ⚠️ 以后再动裁图算法，要么顺手改这条 URL，要么让用户**重新生成解读**（重生成会重算整份 inventory）——
 只改 `REGION_CACHE_VERSION` 挡不住解读里那张图。
+
+**改成正解**：上那条 SQL 只是补一次，下一回动裁图又会踩同一个坑。所以把刷新做进读路径 ——
+`understanding_service._refresh_image_urls()` 在 `to_dict()` 里按 `page/index` 回查当前区域、
+重拼 `?v=<region_version>`（越界 / 别的论文 / 没有图一律不动）。本地实测：解读 payload 的四张
+表图地址由快照值变成当前值（`9/0: …?v=917d794fc0`、`9/1: …?v=95db1e12c0` 等），不用重生成解读。
