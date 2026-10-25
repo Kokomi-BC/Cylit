@@ -23,6 +23,7 @@ from typing import Any
 from backend.core.errors import ValidationError
 from backend.core.logging import get_logger
 from backend.repositories.vector.lancedb_store import vector_store
+from backend.services.knowledge import term_variants
 from backend.services.knowledge.expand import aliases_for, expand_terms
 from backend.services.model.model_manager import model_manager
 
@@ -270,6 +271,7 @@ def lexical_search(query: str, *, top_k: int | None = None,
                    roads: list[str] | None = None,
                    exclude_paper: str | None = None,
                    exclude_chunks: list[str] | None = None,
+                   manual_aliases: bool = True,
                    k1: float = 1.5, b: float = 0.75) -> list[dict]:
     """BM25 词法召回。库小 → 每次整表打分（永远是最新的，没有索引不一致问题）。"""
     top_k = top_k or rag_k("lexical")
@@ -283,8 +285,14 @@ def lexical_search(query: str, *, top_k: int | None = None,
         return []
     # 查询扩展（见 `expand` 模块头）：下标已由 tokenize 归一，这里补「缩写 ↔ 全称」。
     # 只用**过滤后**的行学别名：作用域外的论文不该影响这次检索的写法。
-    wide = expand_terms(q_tokens, query,
-                        aliases_for(rows, key=tuple(paper_ids) if paper_ids else None))
+    learned = aliases_for(rows, key=tuple(paper_ids) if paper_ids else None)
+    if manual_aliases and paper_ids and len(paper_ids) == 1:
+        # 人/模型显式登记过的变体（`term_manage` 写的）：只在单篇作用域里生效 ——
+        # 跨库检索时同一串写法在 A 篇是一个概念、在 B 篇是另一个，混起来就是噪声。
+        manual = term_variants.aliases(paper_ids[0])
+        if manual:
+            learned = {**learned, **manual}
+    wide = expand_terms(q_tokens, query, learned)
     if len(wide) != len(q_tokens):
         log.debug("词法查询扩展：%s → %s", q_tokens, wide)
     q_tokens = wide

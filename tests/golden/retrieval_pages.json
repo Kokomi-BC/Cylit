@@ -1,0 +1,154 @@
+{
+  "//": "page 级 golden set：每条 = 一个查询 + 它**应当**命中的页集合（由 scripts/golden_build.py 按字面出现算出，可复算）。改检索后跑 scripts/golden_retrieval.py 验收：recall@k 掉下来或噪声涨上去就是要回头看。",
+  "paper_id": "turboquant-online-vector-iclr-26",
+  "k": 10,
+  "min_recall": 0.6,
+  "cases": [
+    {
+      "query": "TURBOQUANT_mse",
+      "mode": "text",
+      "why": "下标写法：正文写作 TURBOQUANT$_{\\text{mse}}$。以前整 token 匹配 → 0 条",
+      "needle": {
+        "all_tokens": [
+          "turboquant",
+          "mse"
+        ]
+      },
+      "expect_pages": [
+        1,
+        3,
+        4,
+        5,
+        6,
+        7,
+        18,
+        19,
+        20,
+        21
+      ]
+    },
+    {
+      "query": "TURBOQUANT_prod",
+      "mode": "text",
+      "why": "同上，另一条算法（prod）",
+      "needle": {
+        "all_tokens": [
+          "turboquant",
+          "prod"
+        ]
+      },
+      "expect_pages": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        9,
+        18,
+        19,
+        21
+      ]
+    },
+    {
+      "query": "SLB",
+      "mode": "text",
+      "why": "缩写：正文以「Shannon 下界（SLB）」定义过一次，后面大量用缩写",
+      "needle": {
+        "substring": "slb"
+      },
+      "expect_pages": [
+        16,
+        20
+      ]
+    },
+    {
+      "query": "Shannon lower bound",
+      "mode": "text",
+      "why": "全称：与 SLB 是同一概念，两组结果该收敛到同一批页",
+      "needle": {
+        "all_tokens": [
+          "shannon",
+          "lower",
+          "bound"
+        ]
+      },
+      "expect_pages": [
+        1,
+        4,
+        16,
+        20
+      ]
+    },
+    {
+      "query": "random rotation",
+      "mode": "text",
+      "why": "核心手法（正文里还有 random orthogonal rotation 的变体说法）",
+      "needle": {
+        "all_tokens": [
+          "random",
+          "rotation"
+        ]
+      },
+      "expect_pages": [
+        2,
+        3,
+        5,
+        15,
+        16,
+        20,
+        21
+      ]
+    },
+    {
+      "query": "QJL",
+      "mode": "text",
+      "why": "缩写 + 附录整节都是它",
+      "needle": {
+        "substring": "qjl"
+      },
+      "expect_pages": [
+        1,
+        2,
+        4,
+        6,
+        14,
+        15,
+        17,
+        18,
+        19,
+        21
+      ]
+    },
+    {
+      "query": "定理 1",
+      "mode": "text",
+      "why": "带编号的物件：定理 1 在 1.1 节（p5），另有多处复述",
+      "needle": {
+        "substring": "定理 1"
+      },
+      "expect_pages": [
+        3,
+        5,
+        18,
+        19,
+        20
+      ]
+    },
+    {
+      "query": "性能保证",
+      "mode": "text",
+      "why": "定理 1 的标题词：中文译文里只有那几页写它",
+      "needle": {
+        "substring": "性能保证"
+      },
+      "expect_pages": [
+        5,
+        6,
+        17,
+        18
+      ]
+    }
+  ],
+  "built_with": "scripts/golden_build.py（字面出现 + 按次数取前 N 页，不是相关性标注）"
+}

@@ -13334,3 +13334,54 @@ p5 就是**第 1 条**。也就是说 p5 是**词法排名掉在 20 名之后**�
 校验：`vue-tsc --noEmit` 0 错、`npm run build` 通过、浏览器探针 **154/154** 通过。
 
 部署：前端产物 + 源码（`175-dist.tgz`），`pm2 restart cylit-api`。
+### 171. 第一百七十一轮：术语「检索变体」写工具（批量）+ 模式由模型自选 + page 级 golden set
+
+**① `term_manage`（新工具，只写检索变体）**
+
+先说清边界：它写的是**检索变体**（同一概念的另一种写法），只影响检索排序，**译文一个字都不动**；
+术语表的 `zh` 仍然只读（用户口径）。存储是新表 `term_variant`（`paper_id + term + variant` 唯一，
+`create_all` 自己建），与 IR 那张「英文 → 中文」的术语表**分家** —— 混在一起就会出现
+「给 online 加个 data-oblivious 的变体，译文也跟着变」。
+
+按大模型习惯做成 **op 式 + 批量**：
+
+    term_manage(op="add", items=[{"term": "TurboQuant_mse", "variants": ["TurboQuant MSE"]},
+                                 {"term": "SLB", "variants": ["香农下界"]}])
+
+- `op=list`（带 id）/ `op=add` / `op=remove`（给 `ids` 或 `terms`，撤销就用它）；
+- 回执**按 term 分组**，每组带**证据**：加上变体前后分别带回哪些页、新增哪几页（`gained`）——
+  判好坏看页集合变化，不看条数（实测条数 0→8 很好看，但定理 1 那条仍然没回来）；
+- 一次最多 40 组；已存在的、空串、与 term 相同的都进 `skipped` 并写明原因，不静默丢；
+- 证据在**后端**算（agent 进程不能 import 服务层）：新接口 `GET/POST/DELETE /agent/papers/{id}/term-variants`。
+
+词法检索侧：`lexical_search(manual_aliases=True)` 在单篇作用域里把变体表并进别名表；
+跨库（`kb_search`）**不吃**单篇变体 —— 同一串写法在不同篇是不同概念。
+
+实测（本地，turboquant 篇）：`SLB` 加「香农下界 / Shannon 下界」→ 证据 `gained: [17]`；
+再查 `SLB`（text）页码从 `[16,16,19,4,1,17,4,20,4,5]` 变成 `[16,16,19,19,8,1,17,19,7,4]`（p8 进来）；
+`op=remove` + terms 撤掉后回到原样（`count: 0`）。
+
+**② 模式选择：不做自动切换，改成写明「由模型自选」**
+
+用户口径：不按语法自动切 `text`/`rag`，而是把判据写清楚，让模型自己选。`search-paper` 技能里那张表：
+带编号的物件 / `$…$` 公式 / 指标名 / 下标写法 / 引号原文 → `text`；整句自然语言、同义说法、
+跨语言 → `rag`；判断不了 → `auto`。并明确「`auto` 只是两路都跑，不是替你想好了」，
+选完看回执的 `select` 核对实际跑了哪一路。
+
+**③ page 级 golden set**
+
+`tests/golden/retrieval_pages.json`（8 条查询，含期望页）+ 两个脚本：
+
+- `scripts/golden_build.py`：按**字面出现**算期望页（可复算，不靠人肉标注），并按出现次数取前 N 页 ——
+  `turboquant` 这种词全篇 14 页都有，若 14 页都当期望，`recall@10` 上限只有 10/14，那是标尺错了；
+  接口一次最多 20 页（`PAGES_MAX`），所以一页一页取。
+- `scripts/golden_retrieval.py`：跑一遍给 `recall@k` 与 `noise`（前 k 条里落在期望页之外的页数），
+  任一条低于 `min_recall` → 退出码 1，可以直接挂进发布前检查。
+
+本地基线（k=10，min_recall=0.60）：平均 recall **0.82**；`TURBOQUANT_prod` 只有 **0.40**
+（期望 10 页只命中 4 页，且 p6 占了 4 个名额）—— 这就是下一步要动的客观依据。
+
+校验：`pytest tests` 全量绿（新增 `tests/test_term_variants.py` 9 条：批量容错、双向别名、
+`manual_aliases` 开关真的改结果、跨库不串味、回执分组与证据、撤销）。
+
+部署：后端 + 技能文案（`176.bundle`），重启后 `term_variant` 表自动建。

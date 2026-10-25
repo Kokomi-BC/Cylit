@@ -79,6 +79,11 @@ class HostClient:
         resp = await self._ensure().delete(path)
         return self._unwrap(resp)
 
+    async def delete_json(self, path: str, payload: dict | None = None) -> object:
+        """带 body 的 DELETE（批量删要有选择条件；`delete` 那个不带 body）。"""
+        resp = await self._ensure().request("DELETE", path, json=payload or {})
+        return self._unwrap(resp)
+
     async def get_bytes(self, path: str, params: dict | None = None
                         ) -> tuple[bytes, str]:
         """取二进制（页图 / 插图裁图）。**不拆封**：这些接口直接返回图片流。"""
@@ -185,6 +190,21 @@ class HostClient:
                                      ("chunk_types", chunk_types), ("mode", mode))
                    if v not in (None, "")}
         return dict(await self.post(f"/agent/papers/{paper_id}/search", payload) or {})
+
+    async def term_variants(self, paper_id: str) -> dict:
+        """这篇登记过的检索变体（`term_manage(op="list")` 的后端）。"""
+        return dict(await self.get(f"/agent/papers/{paper_id}/term-variants") or {})
+
+    async def term_variants_add(self, paper_id: str, items: list[dict]) -> dict:
+        """批量加检索变体；回执里带「多带回了哪些页」的证据（后端算，agent 侧不算）。"""
+        return dict(await self.post(f"/agent/papers/{paper_id}/term-variants",
+                                    {"items": items}) or {})
+
+    async def term_variants_remove(self, paper_id: str, *, ids: list[str] | None = None,
+                                   terms: list[str] | None = None) -> dict:
+        return dict(await self.delete_json(
+            f"/agent/papers/{paper_id}/term-variants",
+            {"ids": ids or [], "terms": terms or []}) or {})
 
     async def figures(self, paper_id: str, page: int | None = None) -> dict:
         return dict(await self.get(f"/agent/papers/{paper_id}/figures",

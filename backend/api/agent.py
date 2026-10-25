@@ -965,6 +965,73 @@ async def agent_search(paper_id: str, request: Request, payload: dict = Body(def
     ), request=request)
 
 
+def _variant_evidence(paper_id: str, terms: list[str]) -> list[dict]:
+    """每个术语：登记变体前后，词法检索分别带回哪些**页**（只看页集合的变化）。
+
+    为什么只认页集合、不认条数：实测 `TURBOQUANT_mse` 一加变体，条数 0→8 看着很漂亮，
+    但定理 1、算法 2 仍然一条没有 —— 条数根本判不出这条变体好不好，只有「多了哪些页」能。
+    """
+    from backend.services.knowledge import retrieval
+
+    out: list[dict] = []
+    for term in dict.fromkeys(t for t in terms if t):
+        before = retrieval.lexical_search(term, paper_ids=[paper_id], top_k=12,
+                                         manual_aliases=False)
+        after = retrieval.lexical_search(term, paper_ids=[paper_id], top_k=12,
+                                        manual_aliases=True)
+        pages_before = sorted({int(h.get("page_no") or 0) for h in before})
+        pages_after = sorted({int(h.get("page_no") or 0) for h in after})
+        out.append({
+            "term": term, "pages_before": pages_before, "pages_after": pages_after,
+            "gained": [p for p in pages_after if p not in pages_before],
+        })
+    return out
+
+
+@router.get("/agent/papers/{paper_id}/term-variants")
+async def agent_term_variants(paper_id: str, request: Request,
+                              x_internal_token: str | None = Header(None)):
+    """这篇论文登记过的**检索变体**（`term_manage(op="list")` 的后端）。"""
+    _require_internal(x_internal_token)
+    from backend.services.knowledge import term_variants
+
+    rows = term_variants.list_variants(paper_id)
+    return envelope({"paper_id": paper_id, "items": rows, "count": len(rows)},
+                    request=request)
+
+
+@router.post("/agent/papers/{paper_id}/term-variants")
+async def agent_term_variants_add(paper_id: str, request: Request,
+                                  payload: dict = Body(default={}),
+                                  x_internal_token: str | None = Header(None)):
+    """**批量**加检索变体；回执带证据（每个术语多带回了哪些页）。
+
+    只写「写法 → 同一批块」这一层，**不碰译法**（见 `models.TermVariant` 的 docstring）。
+    """
+    _require_internal(x_internal_token)
+    from backend.services.knowledge import term_variants
+
+    out = term_variants.add(paper_id, payload.get("items") or [],
+                            source=str(payload.get("source") or "agent"))
+    out["evidence"] = _variant_evidence(
+        paper_id, [i["term"] for i in out.get("added") or []])
+    out["count"] = len(term_variants.list_variants(paper_id))
+    return envelope(out, request=request)
+
+
+@router.delete("/agent/papers/{paper_id}/term-variants")
+async def agent_term_variants_remove(paper_id: str, request: Request,
+                                     payload: dict = Body(default={}),
+                                     x_internal_token: str | None = Header(None)):
+    """批量删变体（给 `ids` 删那几条，给 `terms` 删这些术语的全部变体）。"""
+    _require_internal(x_internal_token)
+    from backend.services.knowledge import term_variants
+
+    out = term_variants.remove(paper_id, payload.get("ids"), payload.get("terms"))
+    out["count"] = len(term_variants.list_variants(paper_id))
+    return envelope(out, request=request)
+
+
 @router.get("/agent/papers/{paper_id}/figures")
 async def agent_figures(paper_id: str, request: Request,
                         page: int | None = Query(None),

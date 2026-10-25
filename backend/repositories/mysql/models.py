@@ -897,3 +897,30 @@ class RetrievalLog(Base):
     top_k: Mapped[int] = mapped_column(Integer, default=0)
     #: 重排是否被跳过（设置里重排条数 = 0，或根本没有候选）：据此区分"快是因为没重排"
     rerank_skipped: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ---------------------------------------------------------------- ⑱ 检索变体（术语写法）
+class TermVariant(Base):
+    """术语的**检索变体**：同一个概念在这篇论文里的另一种写法。
+
+    为什么单独一张表、而不是塞进 IR 的术语表：IR 那张是「英文 → 中文译法」，服务**翻译**，
+    一对一；这张是「写法 → 同一批块」，只服务**检索**，多对一。混在一起就会出现
+    「给 online 加一个 data-oblivious 的变体，结果译文也跟着变」—— 检索可以用宽松变体，
+    译法不行（用户口径 2026-12）。所以这张表的写入**永远不碰译法**，删掉它也只是少几条召回。
+    """
+
+    __tablename__ = "term_variant"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: 规范写法（通常是正文里的英文原词）
+    term: Mapped[str] = mapped_column(String(160))
+    #: 另一种写法：下标写法 / 全称 / 缩写 / 中文
+    variant: Mapped[str] = mapped_column(String(160))
+    #: 谁写的：`agent`（问答里加的）/ `manual`（界面加的）
+    source: Mapped[str] = mapped_column(String(16), default="agent")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    __table_args__ = (
+        UniqueConstraint("paper_id", "term", "variant", name="uq_term_variant"),
+    )

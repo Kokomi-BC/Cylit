@@ -3237,6 +3237,104 @@ async def web_fetch(ctx: RunContext[Deps], url: str = "", max_chars: int | None 
     }, _impl())
 
 
+async def term_manage(ctx: RunContext[Deps], op: str = "list",
+                      items: list[dict] | None = None,
+                      ids: list[str] | None = None,
+                      terms: list[str] | None = None) -> dict:
+    """维护**检索变体**：同一个概念在这篇论文里的另一种写法（只影响检索，不改译法、不动产物）。
+
+    什么时候用：
+
+    - 发现「换个写法就搜不到」：`TurboQuant_mse` 在正文里写作 `TURBOQUANT$_{\\text{mse}}$`，
+      `SLB` 与 `Shannon lower bound` 各搜到一半 —— 登记一条变体后，两种写法查到的是**同一批块**；
+    - 用户说「这篇里 X 和 Y 是一个东西，检索时一起找」。
+
+    什么时候**不要**用：想改**译法 / 术语统一** —— 那是 `page_markdown_edit` 逐页精准改；
+    这里写的东西一个字都不会进译文。
+
+    **批量**（一次给几组，别一组一来回）：
+
+        term_manage(op="add", items=[
+            {"term": "TurboQuant_mse", "variants": ["TurboQuant MSE", "TURBOQUANT mse"]},
+            {"term": "SLB", "variants": ["Shannon lower bound"]},
+        ])
+
+    回执**按 term 分组**（`groups`），每组带**证据**：加上变体前后，用这个术语查分别带回哪些页、
+    新增了哪几页（`gained`）。判好坏看**页集合的变化**，不要看条数 —— 实测条数 0→8 很好看，
+    但定理 1 那条仍然没被带回。
+
+    `op`：
+      - `list`（默认）—— 列出这篇已经登记的变体（带 id，删的时候用）；
+      - `add` —— 加变体（只加不改；已存在的会在 `skipped` 里说明原因）；
+      - `remove` —— 删：给 `ids` 删那几条，给 `terms` 删这些术语的全部变体（**撤销就用它**）。
+
+    参数：
+      items —— 只给 `add`：`[{"term": "规范写法", "variants": ["另一种写法", …]}]`，一次最多 40 组。
+      ids   —— 只给 `remove`：要删的记录 id（`add` / `list` 的回执里有）。
+      terms —— 只给 `remove`：按术语名整体删。
+    """
+    async def _impl() -> dict:
+        paper_id = ctx.deps.paper_id
+        chosen = (op or "list").strip().lower()
+        if chosen == "list":
+            data = await ctx.deps.host.term_variants(paper_id)
+            rows = list(data.get("items") or [])
+            return {"ok": True, "op": "list", "count": len(rows), "items": rows,
+                    "hint": ("还没有登记过检索变体 —— 「换个写法就搜不到」的时候用 "
+                             "op=\"add\" 记一条（只影响检索，不改译法）。" if not rows else
+                             "不想要了就用 op=\"remove\" + ids；回执里每条都有 id。")}
+        if chosen in ("add", "set", "upsert"):
+            wanted = list(items or [])
+            got = await ctx.deps.host.term_variants_add(paper_id, wanted)
+            evidence = {str(e.get("term") or ""): e
+                        for e in (got.get("evidence") or [])}
+            groups: dict[str, dict] = {}
+            for row in got.get("added") or []:
+                term = str(row.get("term") or "")
+                group = groups.setdefault(term, {"term": term, "added": [], "skipped": []})
+                group["added"].append({"id": row.get("id"), "variant": row.get("variant")})
+            for skip in got.get("skipped") or []:
+                term = str(skip.get("term") or "")
+                group = groups.setdefault(term, {"term": term, "added": [], "skipped": []})
+                group["skipped"].append({"variant": skip.get("variant"),
+                                         "reason": skip.get("reason")})
+            for term, group in groups.items():
+                proof = evidence.get(term) or {}
+                group["pages_before"] = proof.get("pages_before") or []
+                group["pages_after"] = proof.get("pages_after") or []
+                group["gained"] = proof.get("gained") or []
+            added_n = sum(len(g["added"]) for g in groups.values())
+            hint = "变体只改检索：译文一个字都没动。"
+            if len(wanted) > 40:
+                hint += " 一次最多 40 组，这次只处理了前 40 组 —— 剩下的再来一次。"
+            if not added_n:
+                hint += " 一条都没加进去：看 skipped 里的原因（多半是已经有了）。"
+            return {"ok": bool(added_n), "op": "add", "added": added_n,
+                    "count": int(got.get("count") or 0),
+                    "groups": list(groups.values()), "hint": hint}
+        if chosen in ("remove", "delete", "del", "undo"):
+            got = await ctx.deps.host.term_variants_remove(
+                paper_id, ids=list(ids or []), terms=list(terms or []))
+            gone = list(got.get("removed") or [])
+            return {"ok": bool(gone), "op": "remove", "removed": len(gone),
+                    "count": int(got.get("count") or 0), "items": gone,
+                    "hint": ("已经删掉了：这几条变体不再参与检索（产物与译文本来就没被它们改过）。"
+                             if gone else
+                             "没删掉任何一条：ids / terms 一个都没对上（先 op=\"list\" 看一眼）。")}
+        return {"ok": False,
+                "error": f"op 只能是 list / add / remove（收到 {op!r}）"}
+
+    return await _guarded(ctx, "term_manage",
+                          {"op": _clip(op or "", 12), "items": len(items or []),
+                           "ids": len(ids or []), "terms": list(terms or [])[:6]},
+                          _impl())
+
+
+#: 检索变体（`term_manage`）：**只写变体表**，不碰论文产物、不碰译文 ——
+#: 与 `EDIT_TOOLS`（改页级产物）不是一回事，所以单独一组，也别混进那份"唯一写口"的注释里。
+TERM_TOOLS = [term_manage]
+
+
 #: `Agent(tools=...)` 用这一份；顺序即提示词里的出现顺序
 P0_TOOLS = [paper_search, page_markdown_get, block_get, page_image_get,
             figure_list, figure_image_get]
@@ -3264,7 +3362,7 @@ WEB_TOOLS = [web_search, web_fetch]
 
 #: 当前挂载的全部工具
 AGENT_TOOLS = [*P0_TOOLS, *P1_TOOLS, *EDIT_TOOLS, *ANNOTATION_TOOLS,
-               *READER_TOOLS, *WEB_TOOLS]
+               *READER_TOOLS, *TERM_TOOLS, *WEB_TOOLS]
 
 #: **元数据填写**那一次会话用的工具：只读的读全文能力 + 一个写口。
 #: 为什么单独一份、不并进 `AGENT_TOOLS`：问答会话里模型顺手改元数据的场景并不存在，
