@@ -13965,3 +13965,16 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`201-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 190. 第一百九十轮：加载文案改俏皮 + 转圈再放大到 48px
+
+用户口径：
+
+- 阅读器那句"正在加载阅读器数据…"改成 **"正在知识的海洋里遨游…"**（`ReaderView` 的加载占位；
+  旁边那条注释里引用的旧文案一并更新，免得下一个人按旧名搜不到）。
+- 转圈再大一点：`.spinner` 40 → **48px**，线宽按 viewBox 折算 2.2 → 2.1（48px 下 2.4 会画成 4.8px 的胖环）。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；产物里已能 grep 到新文案；`frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`202-dist.tgz`），`pm2 restart cylit-api`。
+

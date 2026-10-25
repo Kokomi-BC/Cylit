@@ -322,7 +322,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
  *
  * `flex: none`：放在 flex 行里不被压扁（否则圈会被挤成椭圆，甚至看不见）。
  */
-.spinner { flex: none; width: 40px; height: 40px; animation: spin .8s linear infinite; }
+.spinner { flex: none; width: 48px; height: 48px; animation: spin .8s linear infinite; }
 /* 转圈旁边那行说明文字：跟着一起放大加粗（用户口径 2026-12-05：圆圈大一点、说明文字粗大一点）。
    为什么挂在相邻选择器上而不是给每个调用点加类：全站十几处"转圈 + 一句说明"的写法都是
    svg 后面直接跟一个 span / div / p，按结构选比一个个改调用点稳，也不会漏掉以后新加的。 */
@@ -332,9 +332,9 @@ code, pre, .mono { font-family: var(--mono); font-size: .88em; }
   color: var(--text-dim);
   line-height: 1.4;
 }
-/* 线宽是 viewBox 单位：40px 时 2.4 会画成 4px 的胖环，压到 2.2（视觉 ≈3.7px）才还是"细笔画" */
+/* 线宽是 viewBox 单位：48px 时 2.4 会画成 4.8px 的胖环，压到 2.1（视觉 ≈4.2px）才还是"细笔画" */
 .spinner > circle {
-  fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round;
+  fill: none; stroke: var(--accent); stroke-width: 2.1; stroke-linecap: round;
   stroke-dasharray: 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54 3.88 5.54;
 }
 @keyframes spin { to { transform: rotate(360deg); } }

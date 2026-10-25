@@ -7760,7 +7760,7 @@ function renderMarkdown(text?: string | null) {
       <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <circle cx="12" cy="12" r="9" />
       </svg>
-      <span>正在加载阅读器数据…</span>
+      <span>正在知识的海洋里遨游…</span>
     </div>
 
     <div v-else-if="fatal" class="card">
@@ -7773,7 +7773,7 @@ function renderMarkdown(text?: string | null) {
       </div>
     </div>
 
-    <!-- 正在解析：与"正在加载阅读器数据"同一套居中占位（转圈 + 一行字 + 进度条），
+    <!-- 正在解析：与"正在知识的海洋里遨游"同一套居中占位（转圈 + 一行字 + 进度条），
          不再用卡片堆三行文案（用户口径：冗余表述去掉，页面整体居中） -->
     <div v-else-if="isEmpty && parseTask" class="reader-loading" role="status" aria-live="polite">
       <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
