@@ -14407,3 +14407,59 @@ maxStageRows=0   narrationSeen=0（整个 live 消息的文本里都搜不到那
 校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿；`scripts/frontend_check.py` 158/158；
 `backend/agent/runtime.py` 语法检查通过。**注意**：后端是 `cli/pr.py serve`（无 --reload），
 要重启一次才会停止往 `run.steps` 里写那行 stage；界面不重启也已经不带它了。
+
+### 205. 第二百零五轮：把对话流动效发上线 + 本地仓库从 182 MiB 瘦到 14 MiB
+
+**发布**（`aba9e367` → `5982311`）。这一趟上线的是上一轮做的三段动效（发送飞入气泡 / 思维链 /
+贴底跟随）和「旁白 stage 帧整句删掉」。后端那 5 行是 `AgentRuntime` 里删掉进模型前那句
+`stage` 帧，**要重启进程才生效**，所以 pm2 照旧 `restart cylit-api --update-env`。
+
+发布链路这次踩了个小坑：bundle 是用 `git bundle create ../211.bundle bc5c2ed..HEAD HEAD` 造的，
+里面只有一个 `HEAD` 引用，远端 `git fetch /tmp/211.bundle deploy211` 会报
+`couldn't find remote ref deploy211` —— 写成 `HEAD:deploy211` 才对。`&&` 串起来的命令里
+`git reset --hard` 接了 `| tail -2`，失败也算通过，于是那一趟「dist 更新了、代码没更新」，
+`/health` 还是 200 看不出任何异常。以后 reset 那步不要把 stderr 吞进管道。
+
+**仓库瘦身**。动因是 `du -sh .git` 报 182 MiB，而 `git count-objects -vH` 显示
+`size-pack 131.81 MiB` + `count 993 / size 46.51 MiB`（993 个松散对象居然占了 46 MiB）。
+两头都有垃圾：
+
+* **`frontend/.tmp-probe/` 被误入库**——探针跑 Chrome 时 Node 落的编译缓存，198 个文件、工作区 5 MiB，
+  里面单个 blob 最大 2.5 MiB。它既不该进版本库，也已经不在 `.gitignore` 里，于是跟着提交一起长。
+* **2 万个不可达对象**。`git fsck --unreachable` 数出 20542 个（reflog 已经盖不住了），
+  来源是历史上反复 `reset --hard` / 重做提交留下的悬空提交树；它们全在 pack 里，
+  所以那个 119.8 MiB 的 `pack-ac0285ba…` 里有大半个是死的。
+
+处理（先止损，再回收）：
+
+```bash
+git rm -r --cached frontend/.tmp-probe   # 不再跟踪，工作区文件留着（缓存还有用）
+echo 'frontend/.tmp-probe/' >> .gitignore
+git commit -m '构建缓存不入库…'          # 5982311
+git gc --prune=now --aggressive          # 16.5s，3 个 pack 合成 1 个
+```
+
+`--prune=now` 是关键：`git prune` 默认只回收两周以前的不可达对象，而这批是今晚才 reset 出来的，
+按默认行为一个都不会走。它只动不可达对象，reflog 里还盖着的提交不受影响（`git fsck` 之后无输出）。
+
+结果：
+
+```
+          改前                          改后
+.git      182 MiB                       14 MiB
+松散对象   993 个 / 46.51 MiB          0 个 / 0
+pack      3 个 / 131.81 MiB            1 个 / 12.99 MiB
+对象数     in-pack 31064               11314
+```
+
+剩下的 14 MiB 是干净的：可达 blob 合计 10.1 MiB（`docs/diagrams` 2.54 MiB 的 12 张图、
+`frontend/src` 1.89 MiB、`docs/dev-log.md` 287 个版本压完只要 0.47 MiB——文本 delta 压得很好，
+这个文件大不必动它）。也就是说 182 MiB 里只有 10 MiB 是真内容。
+
+校验：`vue-tsc --noEmit` 0 错；`npm run build` 绿（`ReaderView-CFwJLYBz.js`）；后端 `pytest` 全绿；
+`scripts/frontend_check.py --base http://127.0.0.1:8710` **168 项 168 通过**；
+`git fsck --full` 无输出、`main` 860 个提交、根提交可读、两侧工作区干净；
+线上 HEAD `5982311`、`ReaderView-CFwJLYBz.js` 两侧 `sha256` 一致（`512f8463…`）、
+`dist/index.html` 两侧一致（`8016c998…`）、`/health` 200。
+外网 `https://fakenewsdetect.art/cylit/` 现在回 302 到 `/Login`——那是 nginx 的登录门，
+不是发布问题：后端 `127.0.0.1:8710/cylit/` 是 200。
