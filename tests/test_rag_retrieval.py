@@ -392,3 +392,59 @@ def test_recall_depth_has_a_floor_for_small_k() -> None:
     assert recall_depth(12) == retrieval.POOL_MIN
     assert recall_depth(20) == 40          # 大 k 仍按 2×k
     assert recall_depth(None) == 0         # 没要条数就不放大（RAG 问答那条链路）
+
+
+# --------------------------------------------------------------------------
+# 编码截止时间：卡住就快速失败，不陪 provider 等满 60s
+# --------------------------------------------------------------------------
+
+
+def test_query_vector_gives_up_at_the_deadline(monkeypatch) -> None:
+    """线上实测一条 total 60860ms / vector 60372ms：provider 自己的超时也是 60s，双撞。
+
+    这里只钉「到点就抛 EmbedTimeout」——检索侧**不做兜底**（用户口径：直接返回调用结果）。
+    """
+    import time as _time
+
+    class _Slow:
+        def embed(self, texts, **kwargs):
+            _time.sleep(0.5)
+            return [[0.0] * 4]
+
+    monkeypatch.setattr(retrieval, "EMBED_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(retrieval.model_manager, "get_embedding", lambda model_id=None: _Slow())
+    started = _time.perf_counter()
+    with pytest.raises(retrieval.EmbedTimeout):
+        retrieval.query_vector("SLB", mode="qa")
+    assert _time.perf_counter() - started < 0.5      # 没等 provider 睡完
+
+
+# --------------------------------------------------------------------------
+# 只有标题的块：不进候选（`content` 只有一个章节名，拿去引用等于交白卷）
+# --------------------------------------------------------------------------
+
+
+def test_heading_only_detection() -> None:
+    # 章节号里的点不算「正文」：以前用「整段没有句号」判，`## 0.2 PRIOR WORK` 会漏掉
+    assert retrieval.is_heading_only("## 0.2 PRIOR WORK")
+    assert retrieval.is_heading_only("# ABSTRACT")
+    assert retrieval.is_heading_only("# A EXTENDED PRIOR WORK")
+    assert not retrieval.is_heading_only(
+        "# ABSTRACT  Vector quantization, a problem rooted in Shannon source coding, aims to "
+        "quantize high-dimensional Euclidean vectors while minimizing their geometric structure.")
+    assert not retrieval.is_heading_only("## 0.1 PROBLEM DEFINITION  Formally, our goal is … .")
+    assert not retrieval.is_heading_only("普通正文，没有井号")
+
+
+def test_heading_only_rows_are_dropped_from_lexical(monkeypatch) -> None:
+    rows = [
+        {"chunk_id": "h1", "paper_id": "p1", "chunk_type": "unit", "lang": "en",
+         "content": "## 0.2 PRIOR WORK", "page_no": 3, "block_id": "b1",
+         "section": "0.2 PRIOR WORK", "order_global": 1, "metadata": {}},
+        {"chunk_id": "b1", "paper_id": "p1", "chunk_type": "unit", "lang": "en",
+         "content": "prior work body about rotation quantization", "page_no": 3,
+         "block_id": "b2", "section": "0.2 PRIOR WORK", "order_global": 2, "metadata": {}},
+    ]
+    monkeypatch.setattr(retrieval.vector_store, "all_rows", lambda **kw: list(rows))
+    hits = retrieval.lexical_search("PRIOR WORK", paper_ids=["p1"], top_k=5)
+    assert [h["chunk_id"] for h in hits] == ["b1"]

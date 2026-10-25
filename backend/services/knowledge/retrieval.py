@@ -196,14 +196,42 @@ def _tokens_cached(content: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 
+#: 检索侧编码查询的**截止时间**（秒）。
+#:
+#: 为什么需要：embedding provider 自己的 httpx 超时是 60s（`config["timeout"] or 60`），而 agent 的
+#: `host_timeout` 也是 60s —— 两边撞在同一个点上，于是「向量编码卡住」会以 **ReadTimeout** 的形式
+#: 糊到用户脸上。实测（线上 `retrieval_log`）：一条 `total 60860ms / vector 60372ms` 的记录，
+#: 其余十几条都在 4s 以内；同一时刻没有索引任务在跑，所以不是"库在重建"，就是**那一次编码卡了**。
+#: 检索不该陪它等 60 秒：超了就降级成词法（词法在这篇上 30~400ms）。
+EMBED_TIMEOUT_S = 12.0
+
+
+class EmbedTimeout(RuntimeError):
+    """编码查询超过 `EMBED_TIMEOUT_S` —— search 捕获它并退回词法（不要当致命错误往上抛）。"""
+
+
 def query_vector(query: str, *, mode: str = "similar") -> list[float]:
-    """把查询编码成向量；查询侧带 instruct（模型不支持就退回普通调用）。"""
+    """把查询编码成向量；查询侧带 instruct（模型不支持就退回普通调用），**带截止时间**。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FutureTimeout
+
     provider = model_manager.get_embedding()
     instruct = QUERY_INSTRUCT if mode == "qa" else SIMILAR_INSTRUCT
+
+    def call() -> list[list[float]]:
+        try:
+            return provider.embed([query], instruct=instruct)
+        except TypeError:
+            return provider.embed([query])
+
+    box = ThreadPoolExecutor(max_workers=1)
     try:
-        vectors = provider.embed([query], instruct=instruct)
-    except TypeError:
-        vectors = provider.embed([query])
+        vectors = box.submit(call).result(timeout=EMBED_TIMEOUT_S)
+    except FutureTimeout as exc:
+        raise EmbedTimeout(f"编码查询超过 {EMBED_TIMEOUT_S:.0f}s") from exc
+    finally:
+        # 不等工作线程：它自己会在 provider 的 60s 超时处结束，挡着请求只会更糟
+        box.shutdown(wait=False)
     return vectors[0] if vectors else []
 
 
@@ -228,12 +256,37 @@ def vector_search(query: str, *, top_k: int | None = None, mode: str = "similar"
     if exclude_chunks:
         skip = set(exclude_chunks)
         hits = [h for h in hits if h.get("chunk_id") not in skip]
-    return hits
+    # 只有标题的块不进候选（见 `is_heading_only`）：拿它当引用等于交白卷
+    return [h for h in hits if not is_heading_only(h.get("content"))]
 
 
 # --------------------------------------------------------------------------
 # 2) 词法召回（BM25；整表在内存里打分，本库规模几千条）
 # --------------------------------------------------------------------------
+
+
+#: 「只有标题」的块：以 `#` 开头、很短、且没有任何句末标点 —— 索引里它和它的正文是两块，
+#: 于是标题那块可以单独被召回。实测（线上 430 块里有 8 块是这种）：搜「相关工作」时回来的
+#: 是一条 `# A EXTENDED PRIOR WORK`（23 个字符），`content` 里一个字的信息都没有。
+#: 这种块**永远不能当引用**（章节名在每条命中的 `section` 字段里已经有了），直接不进候选。
+HEADING_ONLY_MAX = 120
+
+
+def is_heading_only(content: str | None) -> bool:
+    """只有标题、没有正文的那种块。
+
+    ⚠️ 判据不能用"整段没有句号"：章节号本身带点（`## 0.2 PRIOR WORK` 里的 `0.2`）会把它判成正文。
+    这里看的是**去掉 # 之后的尾巴**：不能以句末标点收尾，也不能出现句号加空格（`… end. Next`）。
+    """
+    body = str(content or "").strip()
+    if not body.startswith("#") or len(body) > HEADING_ONLY_MAX:
+        return False
+    rest = body.lstrip("#").strip()
+    if not rest:
+        return True
+    if "。" in rest or ". " in rest:
+        return False
+    return rest[-1] not in ".!?！？:：;…"
 
 
 def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
@@ -288,6 +341,8 @@ def lexical_search(query: str, *, top_k: int | None = None,
     rows = _filter_rows(vector_store.all_rows(), paper_ids=paper_ids,
                         chunk_types=chunk_types, langs=langs, roads=roads,
                         exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
+    # 只有标题的块不进候选（见 `is_heading_only`）
+    rows = [r for r in rows if not is_heading_only(r.get("content"))]
     if not rows:
         return []
     # 查询扩展（见 `expand` 模块头）：下标已由 tokenize 归一，这里补「缩写 ↔ 全称」。
