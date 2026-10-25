@@ -296,7 +296,7 @@ function onClear() {
         <input
           ref="box"
           :value="props.query"
-          :placeholder="props.mode === 'semantic' ? '查找意思相近的内容' : '在全文进行关键字匹配'"
+          placeholder="输入搜索内容"
           :title="props.mode === 'semantic'
             ? '用一句话描述你想找的内容：按意思在本文里找最相近的段落（打字即检索，回车立即）'
             : '在全文按关键字匹配原文 + 译文（打字即搜，回车立即；Esc 清空）'"
@@ -351,7 +351,9 @@ function onClear() {
           <span class="tiny faint nowrap">p{{ hit.page }} · {{ hit.side === 'en' ? '原文' : '译文' }}</span>
           <span class="tiny ss-snippet" v-html="snippetHtml(hit.snippet)" />
         </button>
-        <div v-if="props.query.trim() && !props.hits.length" class="empty small">没有匹配</div>
+        <!-- 还没输入时，把"这一档在做什么"写在空白处（用户口径 2026-11：输入框里只留"输入搜索内容"） -->
+        <div v-if="!props.query.trim()" class="empty small">在全文进行关键字匹配</div>
+        <div v-else-if="!props.hits.length" class="empty small">没有匹配</div>
       </template>
 
       <!-- 语义命中：类型 + 页码 + 摘要片段；点一条跳到那一页 -->
@@ -388,7 +390,7 @@ function onClear() {
             <span class="tiny ss-snippet" v-html="previewHtml(hit)" />
           </button>
           <div v-if="semantic.ran && !semantic.items.length" class="empty small">没有相近的段落</div>
-          <div v-else-if="!semantic.ran" class="empty small">打字即在本文里检索</div>
+          <div v-else-if="!semantic.ran" class="empty small">查找意思相近的内容</div>
         </template>
       </template>
     </div>
