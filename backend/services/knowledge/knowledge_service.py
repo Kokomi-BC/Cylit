@@ -548,7 +548,17 @@ def _base_chunks(paper_id: str) -> tuple[list[dict], dict]:
             key_to_id[str(chunk.get("key"))] = made["id"]
             out.append(made)
         if unit_index_enabled():
-            out.extend(_row_unit_chunks(paper_id, units, key_to_id,
+            # 只有标题的单元**不写进库**：命中了也只有一个章节名（内容在 `section` 字段里）。
+            # 分区阶段一个字节都不动 ——「单元恰好覆盖每个正文行一次」是校验层与测试钉着的不变量，
+            # 这里只是让「写库」这一步不产出这种行（线上实测 37 条 < 60 字符的 unit 全是这种）。
+            from backend.services.knowledge.chunking import is_heading_like as _heading_like
+            row_by_id = {r["id"]: r for r in rows}
+            kept = [u for u in units
+                    if not all(_heading_like(row_by_id.get(rid, {})) for rid in u["row_ids"])]
+            if len(kept) != len(units):
+                log.info("跳过只有标题的单元（%s，%s 路）：%d 条",
+                         paper_id, road, len(units) - len(kept))
+            out.extend(_row_unit_chunks(paper_id, kept, key_to_id,
                                         use_breaks=report["use_breaks"], road=road))
         road_summary[road] = {"chunks": len(chunks), "units": len(units),
                               "stats": stats, "ok": report["ok"],
