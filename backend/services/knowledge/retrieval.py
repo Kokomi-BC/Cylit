@@ -264,6 +264,13 @@ def _filter_rows(rows: list[dict], *, paper_ids: list[str] | None,
     return out
 
 
+#: ⚠️ 试过「泛词降权」（df/N 超过阈值就乘个系数），**量下来不成立、已撤**：
+#: 这篇里真正高频的是 `mse`（df/N=0.46）与 `turboquant`（0.35）—— 它们是查询的**核心词**；
+#: 而当初怀疑成泛词的 `shannon` 只有 0.060、`lower` 0.079、`bound` 0.086。
+#: 按 df 惩罚会先打掉核心词，噪声页（p9 实验 / p15 相关工作）一个都不会少。
+#: 噪声来自"那些页确实包含这些词"，不是来自词的普遍性 —— 换个手段才谈得上解决。
+
+
 def lexical_search(query: str, *, top_k: int | None = None,
                    paper_ids: list[str] | None = None,
                    chunk_types: list[str] | None = None,
