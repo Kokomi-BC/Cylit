@@ -23,6 +23,7 @@ from typing import Any
 from backend.core.errors import ValidationError
 from backend.core.logging import get_logger
 from backend.repositories.vector.lancedb_store import vector_store
+from backend.services.knowledge.expand import aliases_for, expand_terms
 from backend.services.model.model_manager import model_manager
 
 log = get_logger(__name__)
@@ -37,7 +38,11 @@ DEFAULT_K = {"vector": 20, "lexical": 20, "fused": 12, "rerank": 6}
 QUERY_INSTRUCT = "Given a web search query, retrieve relevant passages that answer the query."
 SIMILAR_INSTRUCT = "Retrieve semantically similar text."
 
-_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+#: 英文 / 数字 token。**不含下划线**：正文里的下标写作 TURBOQUANT$_{\text{mse}}$，
+#: 查询却常写成 `TURBOQUANT_mse` —— 把 `_` 当词内字符时查询成了整 token
+#: `turboquant_mse`，词法**一条也命中不了**（实测线上 turboquant 篇：0 条；
+#: 拆开后同样是 `turboquant` + `mse`，`TurboQuant MSE` 回 20 条）。
+_WORD_RE = re.compile(r"[a-zA-Z0-9]+")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
@@ -147,6 +152,9 @@ def tokenize(text: str) -> list[str]:
     为什么要补单字：jieba 会把"向量量化"切成一个词，于是查询"量化"在词级永远匹配不上
     含"向量量化"的段落（实测 jieba 就是这么切的）。单字兜底解决这一类包含关系，
     高频字（的 / 在 / 是）的噪声由 idf 自然压下去。
+
+    英文侧把下划线当分隔符（见 `_WORD_RE`）：查询里的 `X_mse` 与正文里的
+    `X$_{\text{mse}}$` 因此归一到同一对词上。
     """
     if not text:
         return []
@@ -273,6 +281,13 @@ def lexical_search(query: str, *, top_k: int | None = None,
                         exclude_paper=exclude_paper, exclude_chunks=exclude_chunks)
     if not rows:
         return []
+    # 查询扩展（见 `expand` 模块头）：下标已由 tokenize 归一，这里补「缩写 ↔ 全称」。
+    # 只用**过滤后**的行学别名：作用域外的论文不该影响这次检索的写法。
+    wide = expand_terms(q_tokens, query,
+                        aliases_for(rows, key=tuple(paper_ids) if paper_ids else None))
+    if len(wide) != len(q_tokens):
+        log.debug("词法查询扩展：%s → %s", q_tokens, wide)
+    q_tokens = wide
     docs: list[list[str]] = []
     df: dict[str, int] = {}
     for r in rows:
