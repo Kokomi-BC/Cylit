@@ -14058,3 +14058,30 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`206-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 195. 第一百九十五轮：行内公式**保留编号**，改成给编号留位 + 横向滑动
+
+用户口径 2026-12-05：上一轮把行内公式的 `(1)` 删掉了，但**编号要留着**，用横向滑动解决遮挡。
+
+于是撤回"删编号"，改成两条 CSS（`base.css`，只作用于行内公式）：
+
+```css
+.katex:not(.katex-display) {
+  display: inline-block; max-width: 100%;
+  overflow-x: auto; overflow-y: hidden; vertical-align: middle;
+}
+.katex:not(.katex-display):has(.tag) .katex-html { padding-right: 2.2em; }
+```
+
+为什么两条缺一不可：① `inline-block` + 限宽让超宽公式**自己横向滚**，不再撑破正文；
+② `.tag` 是绝对定位到 `.katex-html` 的 `right: 0`、**不占流内空间** —— 不留位置它就仍会压在
+公式尾巴上（截图里 `(1)` 夹在 `\right)` 与 `(V)` 之间）。`2.2em ≈ 40px` 够两三位数编号，
+没编号的公式不吃这条，一个像素都不动。`useMarkdown.latexToHtml()` 也不再剥 `\tag`。
+
+实测（turboquant 解读页，487 条行内公式）：带编号 4 条 → **4 条编号都可见、0 条压住公式**
+（编号左缘距公式内容右缘 15px），其中 1 条超宽、`scrollWidth > clientWidth`（可横向滑动）。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`207-dist.tgz`），`pm2 restart cylit-api`。
+

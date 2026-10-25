@@ -817,12 +817,17 @@ table.data.fixed { table-layout: fixed; }
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .md .katex-display { margin: .4em 0; overflow-x: auto; overflow-y: hidden; }
-/* 行内公式不该有编号：KaTeX 把 tag 渲染成绝对定位在 .katex-html right:0 的 .tag，
-   而行内盒子被收成内容宽 —— (1) 于是直接压在公式尾巴上（用户口径 2026-12-05 的
-   "（QK^T/√d_k)(V) 中间夹了个 (1)"）。文本层已经在 latexToHtml 里删过一遍，这条是兜底：
-   万一有别的入口绕开 latexToHtml 直接渲染行内公式，编号也不会再压上去。 */
-.katex:not(.katex-display) .katex-html > .tag,
-.katex:not(.katex-display) > .tag { display: none; }
+/* 行内公式带编号（`\tag{1}`）时：**编号留着，公式自己横向滚**（用户口径 2026-12-05）。
+   两条缺一不可：
+   ① 变成 inline-block 并限宽 —— 比一栏还宽时自己滚，不撑破正文；
+   ② 有编号时给 `.katex-html` 右侧留 2.2em —— `.tag` 是绝对定位到 `right: 0` 的，
+      不留位置它就直接压在公式尾巴上（截图里 "(1)" 夹在 `\right)` 与 `(V)` 之间就是这样）。
+   2.2em ≈ 40px，够两三位数的编号；没编号的公式不吃这条，一个像素都不动。 */
+.katex:not(.katex-display) {
+  display: inline-block; max-width: 100%;
+  overflow-x: auto; overflow-y: hidden; vertical-align: middle;
+}
+.katex:not(.katex-display):has(.tag) .katex-html { padding-right: 2.2em; }
 
 /* ---------------- KaTeX 渲染失败时的兜底（安全网） ----------------
  * `throwOnError: false` 会渲染出一个 `.katex-error` 节点（文字就是那条原始 LaTeX），并把

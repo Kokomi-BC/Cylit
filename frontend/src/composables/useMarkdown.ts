@@ -510,8 +510,9 @@ export function stripEqNumber(tex: string): string {
 export function latexToHtml(latex?: string | null, display = true): string {
   const raw = String(latex ?? '').trim();
   if (!raw) return '<span class="faint">（无 LaTeX）</span>';
-  /* 行内公式一律不带编号，见 stripEqNumber 的注释 */
-  const src = display ? raw : stripEqNumber(raw);
+  /* 行内公式也**保留编号**（用户口径 2026-12-05：编号要留着，用横向滑动解决遮挡）——
+     留位置与横向滚动的 CSS 在 base.css 的 .katex:not(.katex-display) 那一段。 */
+  const src = raw;
   try {
     return katex.renderToString(src, { displayMode: display, throwOnError: false, errorColor: '#d8453f' });
   } catch (err) {
