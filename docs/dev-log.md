@@ -14135,3 +14135,19 @@ pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量�
 
 部署：前端产物（`209-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 198. 第一百九十八轮：行内公式的横向滚动条也一并去掉
+
+用户口径 2026-12-05：每个 markdown 块下面都有一条横向滚动条。量出来是 **`span.katex`**：
+210 条行内公式里 48 条"能滚"（`scrollWidth` 比 `clientWidth` 大 2px）—— KaTeX 内部有 1~2px
+的负间距（`\!`、`\mkern` 这类），几乎每条都会微量溢出；接着上一轮给行内公式加的
+`overflow-x: auto` 就把这 2px 变成了一条条可见的滚动条。
+
+改法与整块公式同口径：**能滚，但条子不画**（`scrollbar-width: none` + `::-webkit-scrollbar`）。
+
+实测（attention 解读页）：行内公式 **210 条、可见滚动条 0 条**；整块公式 10 条同样 0 条。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败。
+
+部署：前端产物（`210-dist.tgz`），`pm2 restart cylit-api`。
+

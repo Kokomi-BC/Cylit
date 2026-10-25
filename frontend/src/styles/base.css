@@ -842,6 +842,11 @@ table.data.fixed { table-layout: fixed; }
   overflow-x: auto; overflow-y: hidden; vertical-align: middle;
 }
 .katex:not(.katex-display):has(.tag) .katex-html { padding-right: 2.2em; }
+/* 行内公式同样**不画条**：KaTeX 内部有 1~2px 的负间距，几乎每条行内公式都"能滚 2px"，
+   条子于是密密麻麻挂在正文里（用户口径 2026-12-05：每个 markdown 块下面都有一条）。
+   滚轮 / 触控板照样能横移，条子不画 —— 与整块公式、设置页同一个口径。 */
+.katex:not(.katex-display) { scrollbar-width: none; }
+.katex:not(.katex-display)::-webkit-scrollbar { height: 0; width: 0; }
 
 /* ---------------- KaTeX 渲染失败时的兜底（安全网） ----------------
  * `throwOnError: false` 会渲染出一个 `.katex-error` 节点（文字就是那条原始 LaTeX），并把
