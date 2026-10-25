@@ -13838,3 +13838,29 @@ TURBOQUANT_mse 0.70、SLB 0.50、Shannon lower bound 0.75、QJL 0.50，其余 1.
 
 部署：前端产物（`193-dist.tgz`），`pm2 restart cylit-api`。
 
+
+### 185. 第一百八十五轮：速览卡按整段显示（收尾）——行 id 三层映射 + 标题行兜底
+
+184 那版把 `pids` 直接当行 id 用，实测只有一部分生效：`pids`（`r-…`）是**解析侧**的行身份，
+阅读器的行编号是 `p005-01` 那一套，两者不是一回事。这一轮按证据逐层修正：
+
+1. **后端先给"读者那套行 id"**：`_healed_item` 从 pid 判定表里把每条 pid 解析出的行收拢成 `row_ids`
+   （>1 条才发）；`_chunk_anchors` / `split_live_refs` 那条老路同样补上 `row_ids`（来自 `metadata.row_ids`）。
+2. **前端三层映射**：`rowById[id]` → `block_rows[id]` → 去掉 `row-` 前缀，三种都认不出才丢掉这一行
+   —— 别把"认不出"当成"没有正文"。
+3. **兜底**：整段只认出一行、而那一行正好是标题时，把同一页里紧跟着的 1–2 行补上（标题的正文就在下面）。
+
+实测（无头 Chrome，`?nosse=1&side=insight`，13 条带整段的引用）：11 条卡片显示出正文
+（A028 281 字 / A057 326 字 / A160 435 字 / A185 244 字 / A192 141 字 / A116 86 字…）。
+
+**仍剩 2 条只显示一行标题**（`A050` 1.1 MSE 最优 TURBOQUANT、`A094` 2.2 大海捞针）：这两条 chunk 的
+两个 pid 里只有第一个还能认回活行，第二个在重建索引后**已认不回来**（判定表里没有行 id）；
+而这两条本身是"标题在排版上被切成两块、第二块不带 `#`"，所以 181 那轮的单块判据也没把它挡掉。
+根治要么在索引层把"连续标题块"整体判成标题单元（要重建索引 + 重跑解读），
+要么让卡片退回显示 chunk 预览（只有英文，中文侧会不齐）—— 留给用户定。
+
+校验：`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` 154 项 0 失败；
+pytest 全量绿（`test_page_edit::test_restructure_is_rolled_back` 在全量跑里偶发失败、单跑必过，是既有 flake，与本次无关）。
+
+部署：后端 + 前端产物（`194-dist.tgz`），`pm2 restart cylit-api`。
+

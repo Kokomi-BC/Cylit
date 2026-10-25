@@ -950,6 +950,13 @@ export interface UnderstandingRefItem {
    * 点开一条以章节标题开头的引用，卡里就只剩一行光秃秃的章节名 —— 用户口径 2026-12-05。
    */
   pids?: string[] | null;
+  /**
+   * 这一条 chunk 覆盖的**块 id 列表**（`p016-05` 这一套，与阅读器的行编号同源）。
+   *
+   * `pids` 是解析侧的行身份，阅读器翻不成行；速览卡要「标题 + 正文一起显示」，
+   * 用的是这一份（再经 `block_rows` 落到具体行）。
+   */
+  row_ids?: string[] | null;
 }
 
 /** 解读结果（`GET /papers/{id}/understanding`，与 `understanding_service.to_dict` 对齐）。 */

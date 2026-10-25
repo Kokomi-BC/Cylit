@@ -164,7 +164,7 @@ function decorateCites(html: string): string {
         + ' data-block="' + escapeAttr(anchor) + '"'
         + ' data-page="' + (ref?.page ?? '') + '"'
         + ' data-latex="' + escapeAttr(String(ref?.latex ?? '')) + '"'
-        + ' data-rows="' + escapeAttr((ref?.pids ?? []).join(',')) + '">[' + n + ']</button>';
+        + ' data-rows="' + escapeAttr((ref?.row_ids ?? ref?.pids ?? []).join(',')) + '">[' + n + ']</button>';
     });
   }).join('');
 }

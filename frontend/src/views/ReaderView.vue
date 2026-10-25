@@ -246,12 +246,38 @@ function peekViewOf(card: PeekCard) {
    * 光秃秃的章节名，读者会以为"这条引用指的是一个标题"（用户口径 2026-12-05：
    * 标题本来就带着它下面的正文，那就该一起显示出来）。
    * 拿不到整段（老引用没有 pids）时才退回原来的单行口径。 */
+  /* 引用里那几个 id 是**解析侧的行身份**（`r-…`），与阅读器自己那套行 id 不是同一套编号：
+     要先过一遍 `block_rows` 才落到真正的行上（与上面 `ask.blockId` 那条路同一套映射）。
+     三种写法都试一次，认不出就丢掉这一行 —— 别把"认不出"当成"没有正文"。 */
+  const mapSpanId = (id: string): string => {
+    if (rowById.value.has(id)) return id;
+    const byBlock = String(reader.value?.block_rows?.[rowAnchorId(id)] ?? '');
+    if (byBlock && rowById.value.has(byBlock)) return byBlock;
+    const stripped = rowAnchorId(id);
+    return rowById.value.has(stripped) ? stripped : '';
+  };
   const spanRows = String(ask.rows || '')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean)
-    .map((id) => rowById.value.get(rowAnchorId(id) || id) ?? rowById.value.get(id))
+    .map((id) => rowById.value.get(mapSpanId(id)))
     .filter((r): r is PageRow => Boolean(r));
+  /* 兜底：整段只认出一行、而那一行正好是标题时，把**同一页里紧跟着的那几行**补上 ——
+     标题的正文就在它下面。实测有些 chunk 的第二行在 `block_rows` 里查不到（p005-02 这种），
+     只靠引用自己带的行身份，卡片就只剩一行章节名（用户 2026-12-05 报的正是这种）。 */
+  if (spanRows.length === 1 && String(spanRows[0]?.type ?? '') === 'heading') {
+    const all = allRows.value;
+    const i0 = all.findIndex((r) => r.id === spanRows[0].id);
+    if (i0 >= 0) {
+      for (let k = i0 + 1; k < all.length && spanRows.length < 3; k += 1) {
+        const nx = all[k];
+        if (!nx || nx.page !== spanRows[0].page) break;
+        if (String(nx.type ?? '') === 'heading') break;
+        if (!String(nx.translation ?? '').trim() && !String(nx.original ?? '').trim()) continue;
+        spanRows.push(nx);
+      }
+    }
+  }
   const headingLead = spanRows.length > 1 && String(spanRows[0]?.type ?? '') === 'heading';
   const kind = tbl ? '表格' : fig ? '插图'
     : headingLead ? '标题与正文' : CITE_KIND[String(row?.type ?? '')] || '正文';

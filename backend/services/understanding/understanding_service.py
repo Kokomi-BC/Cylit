@@ -577,6 +577,10 @@ def _chunk_anchors(ids: list[str]) -> dict[str, dict]:
         meta = json_loads(meta_json, {}) or {}
         row_id = meta.get("row_id") or (meta.get("row_ids") or [None])[0]
         out[cid] = {"block_id": block_id, "row_id": row_id,
+                    #: 这条 chunk 覆盖的**块 id 列表**（`p016-05` 这一套，与阅读器的行编号同源）。
+                    #: `pids` 是解析侧的行身份，阅读器翻不成行；速览卡要"标题 + 正文一起显示"，
+                    #: 靠的是这一份（前端再经 `block_rows` 落到具体行）。
+                    "row_ids": meta.get("row_ids"),
                     #: 公式条目带上 LaTeX：前端据此在**同一行里**认出是哪一枚公式（见下）
                     "latex": meta.get("latex"),
                     #: 这个 chunk 记住的**行身份**（与 ``row_ids`` 同序等长）。存量 chunk 还没有
@@ -627,6 +631,10 @@ def split_live_refs(resolved: dict[str, str], by_code: dict, *,
         pids = [str(p) for p in (anchor.get("pids") or []) if p]
         if pids:
             item["pids"] = pids
+        # 块 id 那一份：速览卡拿它把整段（标题 + 正文）画出来，见 `_chunk_anchors`
+        row_ids = [str(r) for r in (anchor.get("row_ids") or []) if r]
+        if row_ids:
+            item["row_ids"] = row_ids
         # 公式的 LaTeX：一条公式与它所在的**同一个正文行**本来是两条引用（用户 2026-12-03 的
         # 「56、57 为什么是同一块地方」）—— 行级落点必然重合，只有精确到公式元素才分得开，
         # 所以正文行 id 之外再带上这条公式本身。
@@ -834,6 +842,14 @@ def _healed_item(code: str, chunk_id: str, by_code: dict, anchors: dict,
         item["latex"] = hit["latex"]
     if pids:
         item["pids"] = list(pids)
+    #: **整段的行 id**（读者那套编号：p005-01 这种），一条 pid 一个。
+    #: 只为一件事：速览卡把「标题 + 它下面的正文」一起画出来 —— 只给第一行的 `row_id` 时，
+    #: 以章节标题开头的引用点开就只剩一行章节名（用户口径 2026-12-05）。
+    #: verdict 里本来就有每条 pid 解析出的行，这里只是把它们收拢起来，不多查一次库。
+    span = [str((verdict.get(pid) or {}).get("row_id") or "") for pid in pids]
+    span = [r for r in span if r]
+    if len(span) > 1:
+        item["row_ids"] = span
     #: 前端不认识也无害：它说的是"这一条的位置是 pid 认回来的，不是当年那个 chunk id"
     item["healed"] = True
     return item
