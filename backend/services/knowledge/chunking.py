@@ -717,6 +717,43 @@ def _is_descendant(node: dict, ancestor: dict) -> bool:
 # --------------------------------------------------------------------------
 
 
+def _merge_heading_units(partition: list[dict], *, road: str | None,
+                         limit: int) -> list[dict]:
+    """把「只有标题」的单元并进**行序上紧邻的下一个**单元（末尾的往前并）。
+
+    为什么需要：断点标在「标题的下一行」时，`semantic_units` 会把标题切成一个只有标题的单元 ——
+    线上实测命中过 `## 0.2 PRIOR WORK`（17 字符）与 `# A 扩展的先前工作`（11 字符）：
+    这种单元被检索到等于交白卷，而章节名在每条命中的 `section` 字段里本来就有。
+
+    **为什么不改 `semantic_units` 本身**：那个函数的契约是「严格按节点边界 ∪ 断点 ∪ 长度上限切」，
+    `test_semantic_units*` / `test_kb_row_chunking` 一批测试钉着它的切点；
+    「标题必须带正文」是**语义后处理**，放在单元记录生成之前最干净（id / 邻居 / chars 都还没算）。
+
+    合并后仍须 ≤ `limit`：超了就保持原样（校验层对多行单元的 `unit_over_max` 会报错）。
+    """
+    def heading_only(items: list[dict]) -> bool:
+        return bool(items) and all(r.get("type") == "heading" for r in items)
+
+    def size(items: list[dict]) -> int:
+        return sum(len(road_text(r, road)) for r in items)
+
+    out: list[dict] = []
+    for unit in partition:
+        rows = unit.get("rows") or []
+        if (out and heading_only(out[-1].get("rows") or [])
+                and size(out[-1]["rows"] + rows) <= limit):
+            out[-1]["rows"] = out[-1]["rows"] + rows      # 标题仍在前，行序不变
+            continue
+        out.append(unit)
+    if len(out) > 1 and heading_only(out[-1].get("rows") or []):
+        last = out.pop()                       # 先摘下来再判断，避免 pop 之后下标错位
+        if size(out[-1]["rows"] + last["rows"]) <= limit:
+            out[-1]["rows"] = out[-1]["rows"] + last["rows"]
+        else:
+            out.append(last)
+    return out
+
+
 def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = True,
                  unit_max_chars: int = UNIT_MAX_CHARS,
                  road: str | None = None) -> list[dict]:
@@ -735,6 +772,7 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
     text_rows = [r for r in rows if not r.get("skip_reason") and not _is_structural(r)]
     partition = semantic_units(text_rows, use_breaks=use_breaks, max_chars=unit_max_chars,
                                road=road)
+    partition = _merge_heading_units(partition, road=road, limit=unit_max_chars)
     owner: dict[int, dict] = {}
     for chunk in chunks:
         for row in chunk["rows"]:
