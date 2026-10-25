@@ -324,7 +324,7 @@ const tipX = computed(() => {
 <template>
   <section class="trend" :style="{ '--ch': H + 'px' }">
     <div class="card-head">
-      <AppIcon name="insight" :size="15" /><span class="ttl">索引数据增长趋势</span>
+      <AppIcon name="index" :size="15" /><span class="ttl">索引数据增长趋势</span>
       <div class="ctl">
         <div class="seg days" role="group" aria-label="统计窗口" title="统计窗口：最近 7 / 30 / 90 天">
           <button
@@ -344,7 +344,7 @@ const tipX = computed(() => {
       </div>
 
       <div class="empty-state plot-empty" v-else-if="!points.length">
-        <span class="es-icon"><AppIcon name="insight" :size="18" /></span>
+        <span class="es-icon"><AppIcon name="index" :size="18" /></span>
         <span class="es-title">还没有可统计的记录</span>
         <span class="es-hint">索引建好之后，这里会按天显示 chunk 与论文的数量。</span>
       </div>

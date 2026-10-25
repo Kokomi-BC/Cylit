@@ -224,6 +224,36 @@ function attrOf(attrs: string, name: string): string {
   return m ? m[1] : '';
 }
 
+/** `![图注](img:A012)` 的图注**原文**（含公式的 `$…$`）。
+ *
+ * 为什么从 markdown 原文取、而不是读渲染后的 `alt`：marked 的 katex 扩展会在**图注里**
+ * 也接管 `$…$`，于是 `alt` 属性里躺着的是一整段转义过的 KaTeX HTML ——
+ * 实测「图 2：… KV cache 中 `$QK^\top$` 计算…」的 alt 里就是 `<span class="katex">…<annotation`，
+ * 原样塞进 `<figcaption>` 后浏览器把它当**文字**显示出来（用户 2026-12 的截图）。
+ * 图注只认原文，公式再单独走一遍 `mdToHtml` 渲染成真正的公式。 */
+function collectCaptions(md: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const re = /!\[([^\]\n]*)\]\(img:([A-Za-z]\d{2,4})\)/g;
+  let m = re.exec(md);
+  while (m) {
+    out.set(m[2].toUpperCase(), m[1]);
+    m = re.exec(md);
+  }
+  return out;
+}
+
+/** 图注 → `<figcaption>` 里的 HTML：公式渲染成 KaTeX，文字仍是文字（`<p>` 壳去掉）。 */
+function captionHtml(raw: string): string {
+  const html = mdToHtml(raw, props.paperId);
+  const one = /^<p>([\s\S]*)<\/p>\s*$/.exec(html);
+  return one ? one[1] : html;
+}
+
+/** 图注的纯文本版（`alt` 属性 / 大图标题用）：KaTeX 的 HTML 一律不要，只留公式源码。 */
+function captionText(raw: string): string {
+  return raw.replace(/\$([^$]+)\$/g, '$1').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * 正文里的「`![图注](img:A012)`」→ **真正的裁图 + 图注**（用户口径 2026-11：解读要能引用并显示图片，
  * 像对话页那样）。
@@ -235,7 +265,7 @@ function attrOf(attrs: string, name: string): string {
  * 换不到的（清单里那一条没有图）**整块删掉**：宁可少一张图，也不要一个裂图标 ——
  * 后端 `clean_image_refs` 已经先删过一遍，这里是兜底（老解读、旧清单）。
  */
-function decorateFigures(html: string): string {
+function decorateFigures(html: string, captions: Map<string, string>): string {
   if (!html || !html.includes('img:')) return html;
   const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
   return parts.map((part, index) => {
@@ -245,8 +275,11 @@ function decorateFigures(html: string): string {
       const url = imageMap.value.get(code);
       if (!url) return '';
       const attrs = before + ' ' + after;
-      const alt = attrOf(attrs, 'alt');
-      const cap = alt ? '<figcaption>' + alt + '</figcaption>' : '';
+      const raw = captions.get(code);
+      /* 图注有两份用处：`<figcaption>` 要**渲染过的**（公式才是公式），
+         `alt` / 大图标题要**纯文本**（读屏与浮层标题里不能有 HTML）。 */
+      const cap = raw ? '<figcaption>' + captionHtml(raw) + '</figcaption>' : '';
+      const alt = raw ? captionText(raw) : decodeAttr(attrOf(attrs, 'alt'));
       return '<figure class="ins-fig"><img class="ins-fig-img" src="' + escapeAttr(url)
         + '" alt="' + escapeAttr(alt) + '" data-code="' + code + '" loading="lazy">' + cap + '</figure>';
     });
@@ -254,7 +287,10 @@ function decorateFigures(html: string): string {
 }
 
 function render(md?: string | null): string {
-  return decorateCites(decorateFigures(mdToHtml(normalizeMarks(String(md ?? '')), props.paperId)));
+  const src = String(md ?? '');
+  return decorateCites(
+    decorateFigures(mdToHtml(normalizeMarks(src), props.paperId), collectCaptions(src)),
+  );
 }
 
 const html = computed(() => (String(props.markdown ?? '').trim() ? render(props.markdown) : ''));

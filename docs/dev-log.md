@@ -13171,3 +13171,35 @@ p9 的 Table 4 也补全（Vinyals → Dyer 93.3）；dammfnd p6 表 2 与改动
 
 **部署**：`04ea75c4`（后端 + 技能文案，无前端产物）。`data/skills/` 里的自带技能副本随
 `ensure_builtin_skills` 一起更新（哈希与仓库一致，重启后 agent 读到的就是新文案）。
+
+### 166. 第一百六十六轮：解读里的图注不再漏出 KaTeX HTML；「论文解读」换成书 + 问号
+
+**病因**（用户截图 + 复现）：图注里的公式被 marked 的 katex 扩展**在图注里也接管了**，
+于是 `![图 2：… KV cache 中 $QK^\top$ 计算…](img:A096)` 渲染出来的 `<img>` 的 `alt` 属性里
+躺着一整段**转义过的 KaTeX HTML**（`<span class="katex">…<math><semantics>…<annotation`）。
+`decorateFigures` 之前直接 `attrOf(attrs, 'alt')` 当图注塞进 `<figcaption>`，浏览器就把它当文字显示出来。
+
+实测（在 frontend 里直接跑 marked + marked-katex-extension，不用浏览器）：
+alt 属性的前 200 字符就是 `图 2：… &lt;span class=&quot;katex&quot;&gt;&lt;span class=&quot;katex-mathml&quot;…`。
+
+**做法**：图注一律从 **markdown 原文**取（`collectCaptions` 先把 `![…](img:CODE)` 扫成 map），
+再分两份用：
+
+- `<figcaption>` 里放**渲染过**的图注（`mdToHtml(图注)` 去掉 `<p>` 壳）→ 公式是真公式；
+- `alt` / 大图浮层标题放**纯文本**（`captionText` 把 `$…$` 还原成公式源码）→ 读屏与标题里不能有 HTML。
+
+**验证**：本地把一条真实图注（`$QK^\top$`）注入 turboquant 的解读后跑真浏览器 ——
+`figcaption` 里 `.katex` 计数 = 1、页面 `innerText` 里再没有 `katex-mathml` 字样，
+截图里图注显示为「… KV cache 中 𝑄𝐾⊤ 计算在不同比特宽下的加速比」。验证完把那一行还原（备份在测完即删）。
+
+**同轮：图标**。用户给的 Fluent 图标是 **book_question_mark（0xf90c）**：
+
+- `insight` 条目整体换成 `book_question_mark` 的 24_regular / 24_filled 路径（对照表同步改成
+  `insight=book_question_mark`）。它是「论文解读」的身份：左导航、标签页、首页那张卡、阅读器左栏「解读」
+  与浮窗、对话页那两枚建议 chip 全部跟着换；
+- 顺手把**设置页「索引数据增长趋势」**的两枚图标从 `insight` 换成 `index`（database）——
+  它本来借的是 notebook，换成"书 + 问号"会变成"数据增长不明"，语义反而更远。
+
+校验：`vue-tsc --noEmit` 0 错、`npm run build` 通过、浏览器探针 **154/154** 通过。
+
+部署：前端产物 + 源码一起上（`170-dist.tgz`），`pm2 restart cylit-api`。
