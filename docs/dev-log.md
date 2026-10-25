@@ -14467,3 +14467,47 @@ pack      3 个 / 131.81 MiB            1 个 / 12.99 MiB
 **推 GitHub**。`origin/main` 之前停在 `07e9767`（本地那个跟踪引用是更旧的 `249d921`，所以
 「落后 525」这个数是拿旧引用算的，实际一次推了 515 个提交）。`git push origin main`
 `07e9767..5ec782a`，远端 `refs/heads/main` = `5ec782a` = 本地 HEAD，`origin/main..main` 为 0。
+
+### 206. 第二百零六轮：表格裁图跨过"分组之间的空白"（attention 的 Table 3 不再只有前三组）
+
+用户口径：「解决 attention is all you need 表格图片问题（服务器和本地）」。
+
+**先量清楚到底是哪一处**（不是猜）：
+
+* 正文里的表格**是好的**：页级译文把表格产成了 GFM 表（`| Layer Type | … |`），中英各一份，
+  `page_translations[].rows` 里 `type=table` 那两行就是；所以正文不缺表、不需要贴图。
+* 四张表的区域裁图接口在本地和线上都 200，字节数一致（120230 / 271704 / 136255 / 339075）。
+* **坏的是 Table 3 这张图**：裁到 y=235.4 就断了，只剩 base、(A)、(B) 三组，
+  (C)、(D)、(E)、big 四组全丢 —— 这正是用户说的"表格图片"。
+
+**病因**（`figure_regions._extend_table_body`）：表体下边界靠**页面矢量横线**往下补，
+断档超过 `RULE_GAP=60pt` 就判定"那已经不是这张表的线"。而 p9 的 Table 3 是分组表：
+横线在 129.9 / 153.9 / 235.4，**235.4 → 313.5 之间空了 78pt**（组与组之间的排版空白），
+于是补到 235.4 就 break。60pt 这个阈值当初是为"别吃到页脚那条线"定的。
+
+**做法**：断档放宽到 `RULE_GAP_WIDE=120pt`，但**只有断档里没有多行正文**时才允许跨：
+
+```python
+gap = y - cursor
+if gap > RULE_GAP:
+    if gap > RULE_GAP_WIDE or _paragraph_between(texts, cursor, y, x0, x1):
+        break
+```
+
+`_paragraph_between` 用高度判：表格行都是单行（≤ `ROW_MAX_H=20pt`），表后面的正文段落是多行，
+有它就停。`struct_tops`（下面遇到 caption / heading 一律不跨）和 `TABLE_GROW_MAX=420` 原样保留 ——
+p9 的硬上界正好是 Table 4 的表注 403.1，所以补到表框底线 384.2 就停。
+
+`REGION_CACHE_VERSION` 21 → 22：URL 里的 `v=<hash>` 跟着变，浏览器不会拿 7 天缓存里的旧图；
+解读 payload 的图片地址是**按需现算**的（实测 v 从 `c60140a3c0` 变成 `296d7b4dc0`），不用重跑解读。
+
+**影响面**（本地 10 篇、46 张表逐个对比"新旧规则"）：只有 attention p9 的 Table 3 变了 ——
+y1 239.4 → 384.2（高 124 → 269pt），其余 45 张一字不变（没有大断档的表根本走不到新分支）。
+
+**试过又撤回的**：先把表格图塞进正文（`reader_service` 放开 `figures_only`、前端在表注行下面挂
+`.row-figure.below`）。做完截图一看，正文里本来就有译文那份 GFM 表，图一加就是**同一张表显示两遍**
+（英文图 + 中文表），已全部回滚。结论记在这儿：正文走表、裁图只给侧栏与解读用，别两边都画。
+
+**验证**：Table 3 裁图从 base/(A)/(B) 变成 base → big 全在（页面级目视）；新增 3 个单测
+（跨空白 / 撞正文停 / 超 120pt 放弃）；`pytest tests` 全绿；`scripts/frontend_check.py` 168/168；
+两侧同一份后端代码，线上重启后 `region/9/0` 由 136255 字节变成 296690 字节（内容变全）。

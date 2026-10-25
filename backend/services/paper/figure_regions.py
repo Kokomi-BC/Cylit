@@ -91,10 +91,16 @@ CROP_DPI = 600
 #:      18 改为"按表头那条横向带"判归属（跳过会把表体里合成长块的行也跳掉，表照样补不全）；
 #:      19 改用**页面矢量横线**定表体下边界（间距/对齐都靠猜，实测会把表后的正文吞进来）；
 #:      20 试过把上沿也贴表框 —— 那条线常是表头下面的分隔线，会把表头整块切掉，已撤回。
-REGION_CACHE_VERSION = 21
+REGION_CACHE_VERSION = 22
 INK_PAD = 1.5        # 墨迹裁白后四周留的呼吸位（pt）
 #: 表格横线之间允许的最大断档（pt）：超过就认为"那是页脚 / 别处的线"，不再往下补
 RULE_GAP = 60.0
+#: 断档里**一个正文块都没有**时放宽到这个值（pt）。表格分组之间常留大块空白：
+#: 实测 attention p9 的 Table 3，(A)(B) 组与下一组之间空了 78pt，按 60 截断就裁成半张表。
+RULE_GAP_WIDE = 120.0
+#: 判断"断档里那块文字是不是正文"用的高度门槛（pt）：表格行是单行（≤18pt），
+#: 表后面的正文段落是多行（>20pt）。
+ROW_MAX_H = 20.0
 #: 一次最多把表体往下补多长（pt）：防止一路补到页脚
 TABLE_GROW_MAX = 420.0
 
@@ -666,8 +672,26 @@ def _parts_of(rect: list[float], inner: list[dict], page_rect: Rect
     return pieces
 
 
+def _paragraph_between(texts: list[Rect] | None, y_from: float, y_to: float,
+                       x0: float, x1: float) -> bool:
+    """断档 (y_from, y_to) 里是否落着一块**多行正文**（表格行都是单行，见 ROW_MAX_H）。
+
+    只用来给"大断档还能不能接着补"投否决票：表格分组之间的空白里什么都没有，正文段落有。
+    """
+    for t in texts or []:
+        if _num(t.y1) - _num(t.y0) <= ROW_MAX_H:
+            continue
+        if _num(t.y1) <= y_from + TOL or _num(t.y0) >= y_to - TOL:
+            continue
+        if _num(t.x1) <= x0 - 6.0 or _num(t.x0) >= x1 + 6.0:
+            continue
+        return True
+    return False
+
+
 def _extend_table_body(rect: list[float], rules: list[tuple[float, float, float]],
-                       page: Rect, struct_tops: list[float] | None = None) -> list[float]:
+                       page: Rect, struct_tops: list[float] | None = None,
+                       texts: list[Rect] | None = None) -> list[float]:
     """表格下边界补到**表体真正结束的那条横线**。
 
     为什么需要（用户口径 2026-11：「attention 那一篇表格的图片裁得比较破碎」）：解析层经常
@@ -694,8 +718,12 @@ def _extend_table_body(rect: list[float], rules: list[tuple[float, float, float]
         return rect
     bottom, cursor = y1, y1
     for y in candidates:
-        if y - cursor > RULE_GAP:       # 断档：那不是这张表的横线了
-            break
+        gap = y - cursor
+        if gap > RULE_GAP:
+            # 大断档：表格**分组之间**的空白（实测 attention p9 的 Table 3，(A)(B) 与下一组
+            # 之间 78pt）里一个正文块都没有，可以接着补；表后面的正文段落会挡住。
+            if gap > RULE_GAP_WIDE or _paragraph_between(texts, cursor, y, x0, x1):
+                break
         if y - y1 > TABLE_GROW_MAX:
             break
         cursor = bottom = y
@@ -953,7 +981,8 @@ def _compute_all(paper_id: str) -> dict[int, list[dict]]:
                 # 只对表做：图的 bbox 是"整张图的并集"，多半不短，补边界反而会吃进下方正文。
                 if not below:
                     raw = _extend_table_body(raw, page_rules(page_no), rect,
-                                             [_num(s.get("y0")) for s in structs])
+                                             [_num(s.get("y0")) for s in structs],
+                                             texts)
                 seps = list(structs)
                 if below and prev_bottom is not None:
                     seps = seps + [{"y0": prev_bottom, "y1": prev_bottom}]

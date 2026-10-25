@@ -13,8 +13,8 @@ import pytest
 
 from backend.services.paper import figure_regions as fr
 from backend.services.paper.figure_regions import (
-    SEP_PAD, _caption_text, _clamp_bottom_above_caption, _number_of, _parts_of, _snap_edges,
-    _tighten, inject_images,
+    SEP_PAD, _caption_text, _clamp_bottom_above_caption, _extend_table_body, _number_of,
+    _parts_of, _snap_edges, _tighten, inject_images,
 )
 from backend.parsing.extract.render import ink_bbox
 from backend.parsing.models import Rect
@@ -590,3 +590,43 @@ def test_markdown_refs_skips_tables_and_unnumbered_regions(monkeypatch):
         {"kind": "figure", "number": "", "caption": "没有图号"},
     ])
     assert fr.markdown_refs("p1", 8, prefix="../figures") == {}
+
+
+# --------------------------------------------------------------------------
+# 表格下边界：能不能跨过「分组之间的空白」（attention p9 的 Table 3）
+# --------------------------------------------------------------------------
+
+#: attention p9 的真实几何：表注底 113.9；横线依次 129.9 / 153.9 / 235.4（(A)(B) 组之后）
+#: / 313.5（下一组）/ 384.2（表框底线）；再往下 403.1 是 Table 4 的表注（硬上界）。
+_T3_RECT = [103.7, 71.3, 504.0, 113.9]
+_T3_RULES = [
+    (129.9, 108.0, 508.7),
+    (153.9, 108.0, 508.7),
+    (235.4, 108.0, 508.7),
+    (313.5, 108.0, 508.7),
+    (384.2, 108.0, 508.7),
+]
+
+
+def test_extend_table_body_crosses_a_blank_gap_between_row_groups() -> None:
+    """断档 78pt（> RULE_GAP 60）但里面没有正文 → 那是同一张表的分组空白，接着补。
+
+    按 60pt 截断时表体停在 235.4（只有前三组），裁出来就是半张表 —— 用户报的就是这个。
+    """
+    rows = [Rect(107.7, 120.0, 504.0, 128.0)]        # 表里的单行：高 8pt ≤ ROW_MAX_H
+    out = _extend_table_body(_T3_RECT, _T3_RULES, PAGE, [403.1], rows)
+    assert out[3] == pytest.approx(384.2)
+
+
+def test_extend_table_body_stops_at_a_paragraph_in_the_gap() -> None:
+    """断档里落着一块多行正文（高 50pt）→ 表格已经结束，停在最后那条线。"""
+    para = Rect(108.0, 250.0, 504.0, 300.0)
+    out = _extend_table_body(_T3_RECT, _T3_RULES, PAGE, [403.1], [para])
+    assert out[3] == pytest.approx(235.4)
+
+
+def test_extend_table_body_gives_up_beyond_the_wide_gap() -> None:
+    """断档超过 RULE_GAP_WIDE（120pt）→ 不再往下补，宁可保持原样。"""
+    rules = [(129.9, 108.0, 508.7), (400.0, 108.0, 508.7)]
+    out = _extend_table_body(_T3_RECT, rules, PAGE, [500.0], [])
+    assert out[3] == pytest.approx(129.9)
