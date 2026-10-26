@@ -2807,7 +2807,9 @@ function endFloatGesture() {
     host.style.width = floatLive.w + 'px';
     host.style.height = floatLive.h + 'px';
     host.style.transform = '';
-    void host.offsetWidth;
+    /* **不要**在这里 `void host.offsetWidth` 强制回流：实验里带不带它，落定后 4 帧都是同一个位置
+       （transition 已经关了，几何变化本身就是瞬时的），而它每次都实打实花 ~30ms
+       （用户那份「自下而上」里 `get offsetWidth` 30.7ms 就是这一下）。 */
     requestAnimationFrame(() => { host.style.transition = prevTransition; });
   }
   writeFloatGrips(floatLive);
@@ -3798,7 +3800,7 @@ function onCapsuleDown(ev: PointerEvent): void {
      与浮层那一套是**同一份实现**（utils/floatDrag）：给 <html> 挂一个类，只关 PDF 文字层，
      不动我们自己界面里的可选文字 —— 不需要第二套做法。 */
   lockFloatSelection(true);
-  clearDocSelection();
+  clearDocSelection(true);   // 手势开始：不信任缓存，强制清一次
   /* 再加一道全局闸：拖动期间整个文档**不许选字、不许被触摸滚走**（见 base.css 的 `html.cy-cap-drag`）。
      只锁 PDF 文字层不够 —— 译文行、侧栏、目录都还能被拖出一段选区，浏览器随之自动滚动。 */
   document.documentElement.classList.add('cy-cap-drag');
@@ -7275,7 +7277,7 @@ function onFloatPress(ev: PointerEvent, which: 'note' | 'chat', key?: string) {
   /* 只在**鼠标**按下时清文档选区：这条是为「拖浮层时正文 / PDF 文字层跟着长出一条选区」设的。
      触摸按进输入框也走这里（button 同样是 0），清一次文档选区会让移动端把输入框的焦点一起
      丢掉 —— 键盘弹不出来（用户口径 2026-11-26）。 */
-  if (ev.button === 0 && ev.pointerType === 'mouse') clearDocSelection();
+  if (ev.button === 0 && ev.pointerType === 'mouse') clearDocSelection(true);
 }
 
 /**

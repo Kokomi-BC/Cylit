@@ -25,12 +25,27 @@ export function releaseFloatSelection(): void {
   document.documentElement.classList.remove('cy-float-gesture');
 }
 
-/** 清掉已有的选区：手势期间不该在正文里留着一段"看起来像待操作"的选中文字 */
-export function clearDocSelection(): void {
+/* 选区"脏了没有"：手势里每帧都问一次 `window.getSelection().isCollapsed` 太贵 ——
+   实测（用户给的 Performance「自下而上」）那一句独占 **136.6ms**，是拖动脚本开销里最大的一项。
+   浏览器只在选区**真的变了**时发 selectionchange，所以常驻挂一个监听记一个布尔就够：
+   没脏过直接返回，脏过才去碰 getSelection()。 */
+let dirty = true;
+if (typeof document !== 'undefined') {
+  document.addEventListener('selectionchange', () => { dirty = true; }, true);
+}
+
+/**
+ * 清掉已有的选区：手势期间不该在正文里留着一段"看起来像待操作"的选中文字。
+ *
+ * `force` 给一次性收尾（手势开始 / 结束 / 卸载兜底）用：那几处不信任缓存，直接清一遍。
+ */
+export function clearDocSelection(force = false): void {
+  if (!force && !dirty) return;
   /* 焦点在输入框里（笔记编辑态 / 对话输入框）：那是用户自己框的一段，准备右键复制或改写，
      `removeAllRanges()` 会把它收掉 —— 手势期间要清的只是正文/PDF 那条原生选区。 */
   const active = document.activeElement as HTMLElement | null;
-  if (active?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  if (active?.closest?.('input, textarea, [contenteditable="true"]')) { dirty = false; return; }
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) sel.removeAllRanges();
+  dirty = false;
 }

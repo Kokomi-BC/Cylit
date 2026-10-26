@@ -14707,3 +14707,29 @@ up+1..up+4 / settled  全部 (1206, 536)   ← 一动没动
 手势期间卡内所有 `transition` 一并停掉。
 
 校验：`vue-tsc` 0 错、`npm run build` 绿、`frontend_check.py` 168/168。
+
+### 211. 第二百一十一轮：按 Performance 剖面继续削拖动开销（选区缓存 + 去掉强制回流）
+
+用户给了 DevTools 的「自下而上」表。抓到的两条确定的浪费：
+
+| 条目 | 总时间 | 占比 | 是什么 |
+|---|---|---|---|
+| `get isCollapsed` | 136.6ms | 2.6% | `clearDocSelection()` 每帧调 `window.getSelection()` 问一次 |
+| `get offsetWidth` | 30.7ms | 0.6% | 上一轮落定时那句 `void host.offsetWidth` 强制回流 |
+
+其余大头（`重新计算样式` 3.4s / `提交` 929ms / `分层` 698ms）是渲染管线的统计，
+而那份录屏是**从页面加载开始**录的（0–6.5s 里混着阅读器首次渲染），所以还不能当成拖动的净值 ——
+这一点要在下一轮用「只录拖动那 2 秒」的剖面对齐，别再靠猜。
+
+**做法**：
+
+* `utils/floatDrag.clearDocSelection(force = false)`：挂一个常驻 `selectionchange` 监听记 `dirty`，
+  没脏过就直接返回 —— 手势里每帧那一问从「`getSelection()` 遍历一次文档」变成读一个布尔。
+  手势开始 / 按下 / 卸载兜底用 `clearDocSelection(true)` 强制清一遍（不信任缓存）。
+* 落定时**删掉强制回流**：合成实验里带不带它，落定后 4 帧都是同一个位置（transition 已经关了，
+  几何变化本来就是瞬时的），所以那 30ms 纯属白花。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-CHBZdwy4.js`）、`frontend_check.py` 168/168。
+
+**下一轮要的输入**：只覆盖拖动那两秒（按下录制 → 拖 2 秒 → 松手停）的剖面，
+并且看「摘要」里的 渲染 / 脚本 两行 —— 现在这份混着加载，权重不可比。
