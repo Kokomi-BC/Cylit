@@ -2439,6 +2439,38 @@ const floatDrag = {
  * 整个手势零次重渲染。
  */
 const floatLive = { left: 0, top: 0, w: 0, h: 0 };
+
+/**
+ * 拖头时那张卡的**合成层位移动画**（Web Animations API）。
+ *
+ * 为什么不用 `host.style.transform = …`（用户口径 2026-12-12，Edge 实测有头浏览器）：
+ * 每帧写行内样式就是一次 **DOM 变更**，装了广告拦截扩展的浏览器里，扩展的 MutationObserver
+ * 会被唤起、并顺手改写它自己的全局样式表 —— 于是浏览器每帧重算一遍整棵树。实测（同一个页面、
+ * 同一个手势、同一台机器，用 3 行 MutationObserver 模拟扩展）：
+ *
+ *   行内 style.transform：平均帧 23.6 / 42.6ms（p95 33ms）—— 卡
+ *   WAAPI setKeyframes  ：平均帧 6.1ms（p95 6.3ms）      —— 顺
+ *
+ * 道理是：改动画的关键帧**不产生 DOM 变更**（style 属性一个字都不动），变异观察者看不见，
+ * 而且 transform 动画本来就走合成器。所以手势里只更新这条动画，松手再 `cancel()`。
+ */
+let floatDragAnim: Animation | null = null;
+
+/** 手势里取（必要时创建）那条位移动画 */
+function floatDragAnimOf(host: HTMLElement): Animation {
+  if (!floatDragAnim || floatDragAnim.playState === 'idle') {
+    floatDragAnim = host.animate(
+      [{ transform: 'translate3d(0px,0px,0)' }, { transform: 'translate3d(0px,0px,0)' }],
+      { duration: 600000, fill: 'both', easing: 'linear' },
+    );
+  }
+  return floatDragAnim;
+}
+
+/** 手势结束：把动画撤掉（几何已经在 left/top 上，撤掉不会位移） */
+function stopFloatDragAnim(): void {
+  if (floatDragAnim) { floatDragAnim.cancel(); floatDragAnim = null; }
+}
 /** 手势期间直接操作的那三个节点（ref 只在浮窗态存在） */
 const chatHostEl = ref<HTMLElement | null>(null);
 const gripBlEl = ref<HTMLElement | null>(null);
@@ -2456,23 +2488,6 @@ function writeFloatGrips(b: { left: number; top: number; w: number; h: number })
   if (bl) { bl.style.transform = ''; bl.style.left = (b.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
   const br = gripBrEl.value;
   if (br) { br.style.transform = ''; br.style.left = left + 'px'; br.style.top = top + 'px'; }
-}
-
-/**
- * 拖头（纯移动）时两枚角把手跟着位移 —— **只写 transform**，不再逐帧写 left/top。
- *
- * 为什么（用户口径 2026-12-12「拖动对话浮窗卡顿，其他浮窗正常」）：角把手是 `position: fixed`
- * 的独立节点，挂在 `.reader` 这棵**整篇论文**（几百块正文 + PDF 文本层）的子树里；每帧给它们
- * 写 left/top 会让浏览器**每帧重排一次这棵子树**，而卡片本身早就在合成层上零成本平移 ——
- * 一次手势 60 帧就是 60 次大重排，看起来正是"跟手但一顿一顿"。把把手也搬到 transform 上，
- * 一帧只剩三次合成层赋值，主线程一帧都不占。松手时 `writeFloatGrips` 会先撤掉这份位移
- * 再写 left/top，坐标与数值两套不打架。
- */
-function paintFloatGripsByDelta(dx: number, dy: number) {
-  const t = dx === 0 && dy === 0 ? '' : 'translate3d(' + dx + 'px,' + dy + 'px,0)';
-  for (const el of [gripBlEl.value, gripBrEl.value]) {
-    if (el && el.style.transform !== t) el.style.transform = t;
-  }
 }
 
 /** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
@@ -2505,10 +2520,13 @@ function paintFloatLive() {
     const dx = Math.round(floatLive.left - floatDrag.ox);
     const dy = Math.round(floatLive.top - floatDrag.oy);
     const next = 'translate3d(' + dx + 'px,' + dy + 'px,0)';
-    if (host.style.transform !== next) host.style.transform = next;
-    /* 角把手走同一份位移（transform，见 paintFloatGripsByDelta）—— 不再每帧写 left/top，
-       那会让整篇论文的子树每帧重排一次。 */
-    paintFloatGripsByDelta(dx, dy);
+    /* 只更新动画关键帧，**不写行内样式**（见 floatDragAnim 的说明：行内写会被扩展放大成整树重算） */
+    const eff = floatDragAnimOf(host).effect as KeyframeEffect | null;
+    eff?.setKeyframes([{ transform: next }, { transform: next }]);
+    /* 拖头期间**只写这一个节点**（用户口径 2026-12-12：Edge/Chrome 实测"每帧三次 style 写入"
+       在有广告拦截扩展的环境里会被放大成整棵树的重新计算样式 —— 扩展挂 MutationObserver，
+       我们每多写一个节点就多喂它一次变更）。两枚角把手在手势期间直接隐藏（见 CSS
+       `.reader.float-dragging > .float-grip`），松手那一刻由 writeFloatGrips 一次落位。 */
     return;
   }
   if (host) {
@@ -2790,6 +2808,7 @@ function endFloatGesture() {
      两件事在同一个任务里做，浏览器只算一次样式 —— 中间那个「既没位移又没 transform」的
      瞬间永远不会被画出来，所以不会「拖完闪一下」（2026-11-24 那条口径仍然成立）。 */
   const host = chatHostEl.value;
+  stopFloatDragAnim();          // 先撤动画：位移动画与 left/top 不能同时存在
   if (host) {
     /* ⚠️ 落定这一帧**必须先关掉卡片自己的 transition**（用户口径 2026-12-12：
        「拖动最后一帧还有向着别处瞬移再瞬移回来的动画」）。
@@ -9742,6 +9761,11 @@ function renderMarkdown(text?: string | null) {
    整块滑出去"用的；手势里每帧改 transform 会让它**每帧重新起一次 260ms 补间**
    （跟手变成拖拽感），松手把 transform 撤回 `none` 时更要补间着滑回起点 —— 那就是抖动。
    手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
+/* 拖头期间角把手**隐藏**：它们只在改尺寸时有用，而每帧给它们写位移会多喂两次 DOM 变更 ——
+   在装了广告拦截扩展的环境里，那些变更会被 MutationObserver 放大成整棵树的样式重算
+   （实测：模拟扩展后拖动平均帧 6ms → 25.6ms；把每帧三次写入砍到一次是唯一能自保的一招）。
+   用 visibility 不用 display：不触发重排，松手那一刻 writeFloatGrips 一次落位。 */
+.reader.float-dragging > .float-grip { visibility: hidden; }
 .reader.float-dragging > .chat-host.float {
   will-change: transform; transition: none;
   /* 拖动期间三处降负载（用户口径 2026-12-12：「拖动对话浮窗卡顿，其他浮窗正常」）。
