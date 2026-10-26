@@ -14670,3 +14670,40 @@ Vue 重排 class 时是整条 `className` 覆写，手工挂的类会被抹掉�
 渲染即四个独立段落。另加两条单测（相邻字段行补空行 / 已经空行分隔的一字不改）。
 
 校验：`pytest tests/test_understanding.py` 20 passed；线上重启后 payload 如上；`health=200`。
+
+### 210. 第二百一十轮：松手那一下「瞬移再瞬移回来」—— 落定时 transition 还活着
+
+用户口径：「拖动最后一帧还有向着别处瞬移再瞬移回来的动画」。
+
+**逐帧量出来**（在真页面上合成一次 150×120 的拖动，松手后每帧读 `getBoundingClientRect`）：
+
+```
+pre-up   (1206, 536)  transform=translate3d(150px,120px,0)  left=1056px   ← 手势中，位置 = left+transform
+up+1     (1356, 656)  transform=''                          left=1206px   ← 跳出去 (+150,+120)
+up+2     (1356, 656)  ...                                                 ← 还在外面
+up+3     (1206, 536)  ...                                                 ← 滑回来
+```
+
+**病因**：落定要把手势里的 transform 位移「换成」left/top。而 `.reader > .chat-host` 有一条常驻的
+`transition: transform .26s`（给侧栏开合用的），手势期间靠 `.float-dragging` 里的 `transition: none` 压住。
+松手那一下 transform 从 +150 改回 `''`，**浏览器把这次变化当成一次过渡补间画了出来** ——
+而 left/top 已经是终点，于是先看到「跳出去 +150」再顺着 260ms 补间滑回来。
+
+**做法**：`endFloatGesture()` 里落定前**先写行内 `transition: none`**，写完 left/top/宽高、清 transform，
+再 `void host.offsetWidth` 强制一次回流把几何提交出去，下一帧才把行内 transition 撤掉。
+
+**验证**（同一套逐帧采样）：
+
+```
+pre-up   (1206, 536)
+up+1..up+4 / settled  全部 (1206, 536)   ← 一动没动
+```
+
+另做了一个最小合成实验（不经过应用代码）确认因果：同一个 div，`plain` 落定时 4 帧读到
+`476 / 444 / 406 / 382`（正在补间）；先关 transition 再落定，4 帧都是 `350`。
+
+同轮还收紧了两条拖动的降负载（配合上一条的 Performance 截图：5.1s 里「渲染」2.8s）：
+浮窗态**常驻**合成层（`will-change` 常开，贴图只在打开时栅一次）、`contain: strict`、
+手势期间卡内所有 `transition` 一并停掉。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿、`frontend_check.py` 168/168。

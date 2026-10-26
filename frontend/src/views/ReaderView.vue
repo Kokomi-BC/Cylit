@@ -2791,11 +2791,24 @@ function endFloatGesture() {
      瞬间永远不会被画出来，所以不会「拖完闪一下」（2026-11-24 那条口径仍然成立）。 */
   const host = chatHostEl.value;
   if (host) {
+    /* ⚠️ 落定这一帧**必须先关掉卡片自己的 transition**（用户口径 2026-12-12：
+       「拖动最后一帧还有向着别处瞬移再瞬移回来的动画」）。
+       原因：手势期间 transform 上是整段位移（比如 +150/+120），落定要把这份位移**换成** left/top；
+       `.reader > .chat-host` 那条常驻的 `transition: transform .26s` 一旦在手势刚结束的这一帧
+       还生效，浏览器就会把「transform 从 +150 补间到 0」**画出来** —— 而 left/top 已经是终点了，
+       于是先看到"跳出去 +150"、再顺着补间滑回来，正是那一下瞬移。
+       （合成实验逐帧量过：不禁用 transition 时 4 帧读到 476/444/406/382；先写 transition:none
+       再落定，4 帧都是 350，一动不动。见 dev-log 第 210 轮。）
+       落定后强制一次回流，把这次几何提交出去，下一帧再把行内 transition 撤掉。 */
+    const prevTransition = host.style.transition;
+    host.style.transition = 'none';
     host.style.left = floatLive.left + 'px';
     host.style.top = floatLive.top + 'px';
     host.style.width = floatLive.w + 'px';
     host.style.height = floatLive.h + 'px';
     host.style.transform = '';
+    void host.offsetWidth;
+    requestAnimationFrame(() => { host.style.transition = prevTransition; });
   }
   writeFloatGrips(floatLive);
   floatBox.value = { left: floatLive.left, top: floatLive.top, w: floatLive.w, h: floatLive.h };
@@ -9736,9 +9749,18 @@ function renderMarkdown(text?: string | null) {
      ② `backface-visibility: hidden`：明说这是纯 2D 合成层，省掉背面剔除那条分支；
      ③ 影子换小一档：`--shadow-flyout` 是 48px 大范围柔光，跟着合成层一起每帧重采样一次很贵，
         拖动中换成 `--shadow-2`；松手后规则失效，影子自己回到原样（0.18s 过渡，看不出跳）。 */
-  contain: paint;
+  /* 从 paint 收紧到 strict（layout paint style size）：卡片宽高是行内写死的，
+     size 包含不会把它压塌；换来的是**卡内任何变化都不再往阅读区冒**。
+     用户给的 Performance 截图里「渲染」占 2808ms / 5116ms，主线程任务都是碎的 ——
+     这类形状就是重绘/栅格化在每帧重来，先把"脏区"钉死在这张卡里。 */
+  contain: strict;
   backface-visibility: hidden;
   box-shadow: var(--shadow-2);
+}
+/* 手势期间卡内**一切过渡**也停掉：hover / 焦点 / 抓手药丸的补间每次重启都会把这张卡
+   的贴图标记为脏，合成层跟着重新栅格化 —— 而那正是 500×560 这一块最贵的动作。 */
+.reader.float-dragging > .chat-host.float :deep(*) {
+  transition: none !important;
 }
 /* 卡里正在跑的动画（思考链的呼吸、等待点、流式光标）每帧都会把这张卡的贴图标记为脏 ——
    合成层跟着重新栅格化，拖动就一顿一顿。手势期间一律暂停：拖完继续跑，画面不差一帧。 */
@@ -10140,6 +10162,14 @@ function renderMarkdown(text?: string | null) {
   border: 1px solid var(--border); border-radius: var(--fc-radius);
   box-shadow: var(--shadow-flyout);
   overflow: hidden;      /* 圆角裁内容（原来那条给 aside 的 overflow 放行，现在归这里） */
+  /* 浮窗态**常驻**合成层（用户给的 Performance 截图：拖动 5.1s 里「渲染」占 2.8s）。
+     手势里才加 will-change 的话，每一趟拖动都要重新栅格化一次 1000×1120 的贴图，
+     之后卡里任何一点变化（抓手药丸补间、hover、光标）都会让它再脏一次 ——
+     常驻之后贴图只在打开浮窗时栅一次，拖动纯合成。
+     代价是这张卡长期占一块显存（浮窗本来就是临时态，可接受）。 */
+  will-change: transform;
+  /* 绘制/布局的边界钉在这张卡里：卡内怎么变都不惊动阅读区（它下面是整篇 PDF 文本层）。 */
+  contain: layout paint;
 }
 
 /* 浮窗里没有「贴边那条竖把手」可拖（换成了右/左下角手柄），规则见 `.reader > .aside-resizer` */
