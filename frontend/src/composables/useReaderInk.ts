@@ -317,10 +317,12 @@ export function clearPageInk(key: string | null): void {
  * 永远看不到它，Ctrl+Z 也不会"撤销掉激光笔"）。
  *
  * 计时**全局一份**（不是每笔各一个）：用户口径"整体统一计时"—— 后一笔落笔会把
- * 所有页面的激光笔迹一起拉回不透明、并重新数 2 秒。
+ * 所有页面的激光笔迹一起拉回不透明、并重新数 1.5 秒。
  */
-const LASER_HOLD_MS = 2000;
-const LASER_FADE_MS = 2000;
+/** 停笔多久开始淡出（用户口径 2026-12-14：2s → 1.5s） */
+const LASER_HOLD_MS = 1500;
+/** 淡出本身也走 1.5s 线性（同上） */
+const LASER_FADE_MS = 1500;
 /** 按 pageKey 分开存：一页一份，切页/切视图各清各的 */
 const laserPages = new Map<string, InkStroke[]>();
 /** 激光层的整体不透明度（0..1）：所有页共用一份，画布只把它写到 style.opacity 上 */
@@ -351,14 +353,14 @@ function laserFadeTick(): void {
     clearLaser();
     return;
   }
-  // 只在 2000..4000 这一段算比例（前面恒 1，由 hold 定时器挡住，不烧帧）
+  // 只在 1.5–3.0 秒这一段算比例（前面恒 1，由 hold 定时器挡住，不烧帧）
   laserAlpha.value = Math.max(0, Math.min(1, 1 - (elapsed - LASER_HOLD_MS) / LASER_FADE_MS));
   laserRaf = requestAnimationFrame(laserFadeTick);
 }
 
 /**
  * 续命的最小间隔：pointermove 能有 120Hz，每来一次就 clearTimeout+setTimeout 纯属浪费；
- * 200ms 的粒度对"手在动就不该淡"够用（淡出本身是 2000ms 起步的）。
+ * 200ms 的粒度对"手在动就不该淡"够用（淡出本身是 1500ms 起步的）。
  */
 const LASER_TOUCH_GAP_MS = 200;
 let laserTouchAt = 0;
@@ -383,7 +385,7 @@ export function touchLaser(force = false): void {
 export function addLaserStroke(key: string, stroke: InkStroke): void {
   laserStrokesOf(key).push(stroke);
   laserVersion.value += 1;
-  touchLaser(true);      // 抬手：倒计时从"这一笔结束"重新数满 2 秒
+  touchLaser(true);      // 抬手：倒计时从"这一笔结束"重新数满 1.5 秒
 }
 
 /** 全部页清掉（4 秒到点 / 换论文）：alpha 回 1、时钟停掉 */

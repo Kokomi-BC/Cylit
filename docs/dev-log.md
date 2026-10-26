@@ -14900,3 +14900,42 @@ WAAPI setKeyframes     平均帧 6.1~6.3ms  p95 6.2~6.3ms   ← 扩展还在跑�
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-YBUcYQc9.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 216. 第二百一十六轮：时钟改回线稿、激光笔换 target_edit 图标、1.5s 淡出、激光笔迹改成白心彩边
+
+用户口径（四条）：
+1. 笔记侧栏的 clock 图标**实心**了，要改；
+2. 激光笔用 **target edit** 图标；
+3. 激光笔改成**停笔 1.5 秒**、然后**1.5 秒**线性消失；
+4. 激光笔迹要**中间白、两端彩色**。
+
+**① 时钟**：上一轮把"按时间"那侧换成了 `clock-fill`（Fluent 填充变体），用户嫌重。改回
+`clock`（regular 线稿），路径 `M3.5 12a8.5…` —— 实心那版是 `M15.25 13.5h-4a.75…`，一眼能分辨。
+
+**② 图标**：`bolt`（闪电）语义不对。拉 Fluent 官方 `@fluentui/svg-icons@1.1.344/icons/target_edit_24_regular.svg`
+（以及 `_filled`）原样入库，键名 `target-edit`（十字靶 + 一支笔）。没有手绘、没有近似。
+
+**③ 计时**：`LASER_HOLD_MS` / `LASER_FADE_MS` 都是 2000 → **1500**。两段各自 1.5s，所以
+从落笔算 1.5s 后才开始淡、3.0s 整清空。
+
+**④ 白心彩边**：`paintLaserStroke` 改成**两遍同一笔** —— 先彩色（`shadowBlur` 柔光），再把同一条
+带子缩到 `LASER_CORE_RATIO = 0.42` 宽、纯白盖一层。为什么不改成描边：`paintStroke` 是自己算轮廓
+填充的（粗细随落笔轻重收放），描边只能画在恒宽折线上，会把笔锋的手感抹掉；同一笔两个宽度叠画，
+收放完全一致。
+
+### 实测（有头 Chrome + CDP）
+
+```
+笔记侧栏 [data-notes-order] 的 path d → "M3.5 12a8.5 8.5 0 1 1 17 0 …"（regular 线稿，不是实心）
+激光笔钮   path d → "M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4m-6-2a6 6 0 1 1 11.99.37 …"（target_edit）
+            title = 激光笔（停笔 1.5 秒后淡出）
+时间轴     1.0s → opacity 1｜2.0s → 0.6625（理论 1-0.5/1.5=0.667）
+           2.6s → 0.2599（理论 0.267）｜3.4s → 已清空（1.5+1.5=3.0s）
+白心       同一帧像素统计：white 1232 / colored 7514（白心在、彩边在）
+```
+
+近景截图（3× 放大）另有存档：`data/logs/laser_white_core.png` —— 白心细、两侧红边、外面一圈红色辉光。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-D5fgbMjI.js`）、`frontend_check.py` 168/168。
+
+---

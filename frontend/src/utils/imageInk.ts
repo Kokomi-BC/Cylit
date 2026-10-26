@@ -194,11 +194,15 @@ export function paintStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke,
   ctx.restore();
 }
 
+/** 激光笔的"白心"占整笔宽度的比例（用户口径 2026-12-14：中间白、两端彩色，像照在纸上的一束光） */
+const LASER_CORE_RATIO = 0.42;
+
 /**
- * 画一笔激光：走笔逻辑完全复用画笔（带轻重的带子），只在外面加一圈柔光。
+ * 画一笔激光：**两遍**画同一条带子 —— 先彩色（带一圈柔光），再缩到 42% 宽盖一层白心。
  *
- * 为什么用 shadowBlur 而不是另做一套发光贴图：激光要像"照在纸上的一束光"——
- * 本体亮、四周一圈同色的辉光，正好就是 0 偏移 + shadowBlur 的效果。
+ * 为什么是两遍而不是描边：paintStroke 是自己算轮廓填充的（粗细随落笔轻重收放），
+ * 描边只能在恒宽折线上做，会把这层手感抹掉。同一笔用两个宽度叠画，收放完全一致。
+ * 柔光仍走 shadowBlur（0 偏移）：激光要像"照在纸上的一束光"，本体亮、四周一圈同色辉光。
  */
 export function paintLaserStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke,
                                  widthPx: number, heightPx: number): void {
@@ -209,6 +213,10 @@ export function paintLaserStroke(ctx: CanvasRenderingContext2D, stroke: InkStrok
   ctx.shadowOffsetY = 0;
   paintStroke(ctx, stroke, widthPx, heightPx);
   ctx.shadowBlur = 0;      /* shadow 是画布状态：留着会把后面画的一切一起糊掉 */
+  ctx.restore();
+  /* 白心：不发光、纯白、窄一圈 —— 两侧留下的就是那 42% 的彩色边 */
+  ctx.save();
+  paintStroke(ctx, { ...stroke, w: stroke.w * LASER_CORE_RATIO, color: '#ffffff' }, widthPx, heightPx);
   ctx.restore();
 }
 

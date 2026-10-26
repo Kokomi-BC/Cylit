@@ -555,8 +555,9 @@ function onMore(key: string, r: FeedRow) {
             @click="toggleOrder"
           >
             <!-- 按时间 = **时钟**（用户口径 2026-12-11）：原来的 `sort-time` 是上下双箭头，
-                 看着像"排序"，不像"时间"。按文章顺序那侧仍用 sort-doc。 -->
-            <AppIcon :name="order === 'time' ? 'clock-fill' : 'sort-doc-fill'" :size="15" />
+                 看着像"排序"，不像"时间"。按文章顺序那侧仍用 sort-doc。
+                 2026-12-14 用户口径：时钟要**线稿**，实心那版太重（`clock-fill` → `clock`）。 -->
+            <AppIcon :name="order === 'time' ? 'clock' : 'sort-doc-fill'" :size="15" />
           </button>
           <span class="spacer" />
           <!-- 多选（用户口径 2026-11-20；2026-11-21 换形态）：与对话页**同一枚圆钮、同一个图标键、同一段交互**

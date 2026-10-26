@@ -3650,7 +3650,7 @@ const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'laser' | 'eraser'; ic
   { key: 'pen', icon: 'pen', label: '画笔' },
   { key: 'marker', icon: 'marker', label: '荧光笔' },
   // 激光笔：临时笔迹（不落盘、不进撤销栈）。图标复用现成的 bolt，不新增图标
-  { key: 'laser', icon: 'bolt', label: '激光笔（停笔 2 秒后淡出）' },
+  { key: 'laser', icon: 'target-edit', label: '激光笔（停笔 1.5 秒后淡出）' },
   { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
 ];
 /** 当前工具该用哪一排色（荧光笔 = 荧光色；画笔与激光笔共用墨色那排） */
