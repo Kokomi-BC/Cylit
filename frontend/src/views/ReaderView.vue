@@ -43,8 +43,8 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, inkLaserColor,
-  lastDrawTool, flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
+  INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, customColors,
+  inkLaserColor, lastDrawTool, flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
   redoInk, resetInk, persistInkPrefs, setInkColor, setInkNotesListener, setInkWidth, undoInk,
 } from '@/composables/useReaderInk';
 import { WIDTH_STEPS } from '@/utils/imageInk';
@@ -803,7 +803,110 @@ function openInkColorPicker(): void {
 /** input / change 都走这里：有的系统取色器只在关闭时补一个 change */
 function onInkColorPicked(ev: Event): void {
   const v = (ev.target as HTMLInputElement).value;
-  if (v) setInkColor(v);
+  if (v) setInkColor(v, true);
+}
+
+/** 当前这支笔"上一次自选的颜色"：那枚空心圆里的填充就取它（没选过则留空） */
+function activeCustomColor(): string {
+  if (inkTool.value === 'pen' || inkTool.value === 'marker' || inkTool.value === 'laser') {
+    return customColors[inkTool.value] || '';
+  }
+  return '';
+}
+
+/* ------------------------------ 自定义颜色面板 ------------------------------
+ * 用户口径 2026-12-14「彩色的颜色选择图标点击不了」：原生 <input type="color"> 的取色窗口
+ * 在有些浏览器/系统上根本不弹（我们这边能确认点击落到了元素上、却看不到那个窗口），
+ * 所以**不再指望它**：点彩虹点直接弹一块自家面板 —— 色相 + 明度两根滑条 + 十六进制输入框。
+ * 原生取色器降级成面板里那枚「系统取色器」，能弹就弹，弹不出来也不影响用。
+ */
+const colorPopOpen = ref(false);
+const colorPopStyle = ref<Record<string, string>>({});
+const colorHue = ref(0);
+const colorLight = ref(50);
+
+/** #rrggbb → {h: 0..360, l: 0..100}（只做面板回填用，s 固定 78%） */
+function hexToHueLight(hex: string): { h: number; l: number } {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return { h: 0, l: 50 };
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 255) / 255;
+  const g = ((n >> 8) & 255) / 255;
+  const b = (n & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, l: Math.round(l * 100) };
+  const d = max - min;
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h = Math.round(h * 60);
+  if (h < 0) h += 360;
+  return { h, l: Math.round(l * 100) };
+}
+
+/** hsl → #rrggbb */
+function hslToHex(h: number, s: number, l: number): string {
+  const sat = Math.max(0, Math.min(100, s)) / 100;
+  const lig = Math.max(0, Math.min(100, l)) / 100;
+  const c = (1 - Math.abs(2 * lig - 1)) * sat;
+  const hh = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hh % 2) - 1));
+  const m = lig - c / 2;
+  const [r, g, b] = hh < 1 ? [c, x, 0] : hh < 2 ? [x, c, 0] : hh < 3 ? [0, c, x]
+    : hh < 4 ? [0, x, c] : hh < 5 ? [x, 0, c] : [c, 0, x];
+  const to = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return '#' + to(r) + to(g) + to(b);
+}
+
+function seedColorSliders(): void {
+  const { h, l } = hexToHueLight(activeInkColor());
+  colorHue.value = h;
+  colorLight.value = Math.max(12, Math.min(88, l));
+}
+
+function placeColorPop(): void {
+  const dot = document.querySelector('[data-ink-color-open]') as HTMLElement | null;
+  if (!dot) return;
+  const pop = document.querySelector('[data-ink-color-pop]') as HTMLElement | null;
+  const r = dot.getBoundingClientRect();
+  const w = pop?.offsetWidth ?? 0;
+  const h = pop?.offsetHeight ?? 0;
+  let center = r.left + r.width / 2;
+  if (w) center = Math.max(8 + w / 2, Math.min(innerWidth - 8 - w / 2, center));
+  const top = (h && innerHeight - r.bottom < h + 16) ? r.top - h - 8 : r.bottom + 8;
+  colorPopStyle.value = { left: Math.round(center) + 'px', top: Math.round(top) + 'px' };
+}
+
+function openColorPop(): void {
+  colorPopOpen.value = !colorPopOpen.value;
+  if (!colorPopOpen.value) return;
+  seedColorSliders();
+  void nextTick().then(placeColorPop);
+}
+
+/** 两根滑条都走这里：饱和固定 78%（墨色够彩、又不会糊在纸面上） */
+function applyColorSliders(): void {
+  setInkColor(hslToHex(colorHue.value, 78, colorLight.value), true);
+}
+
+function onColorHue(ev: Event): void {
+  colorHue.value = Number((ev.target as HTMLInputElement).value) || 0;
+  applyColorSliders();
+}
+
+function onColorLight(ev: Event): void {
+  colorLight.value = Number((ev.target as HTMLInputElement).value) || 50;
+  applyColorSliders();
+}
+
+function onColorHex(ev: Event): void {
+  const v = (ev.target as HTMLInputElement).value.trim();
+  if (!/^#[0-9a-f]{6}$/i.test(v)) return;
+  setInkColor(v.toLowerCase(), true);
+  seedColorSliders();
 }
 
 function placeInkOptions(): void {
@@ -858,6 +961,7 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'laser' | 'eraser') {
   inkTool.value = key;
   inkOptionsOpen.value = false;   // 点未选中的工具：只切工具，菜单收着
   eraserClearOpen.value = false;
+  colorPopOpen.value = false;
   persistInkPrefs();          // 记住这次拿的是哪支笔 / 荧光笔 / 激光笔
   void nextTick().then(syncToastDrop);
 }
@@ -3934,6 +4038,7 @@ async function refreshNotes(): Promise<void> {
 function toggleInk() {
   inkOn.value = !inkOn.value;
   inkOptionsOpen.value = false;
+  colorPopOpen.value = false;
   void nextTick().then(syncToastDrop);
   // 进入批注**不弹提示**（用户口径 2026-10-17）：胶囊本身已经明确切成了工具，
   // 再横一条提示反而挡住刚展开的二级菜单。
@@ -3945,6 +4050,7 @@ function toggleInk() {
 function closeInk() {
   inkOn.value = false;
   inkOptionsOpen.value = false;
+  colorPopOpen.value = false;
   eraserClearOpen.value = false;
   clearProgress.value = 0;
   void flushInk();
@@ -4964,7 +5070,12 @@ function onDocPointerDown(ev: PointerEvent) {
      所以菜单自己那条 `@pointerdown.stop` **挡不住它** —— 上一版就是在这里把菜单收掉，
      色块在 click 到达之前就被卸载，表现是「点颜色 / 点粗细没反应」。
      现在显式排掉落在菜单里的那一下（`[data-ink-options]` 范围内一律不动）。 */
-  const inInkMenu = !!target?.closest?.('[data-ink-options]');
+  /* 自定义颜色面板算"菜单的一部分"：点它的滑条 / 输入框 / 按钮都不能把它自己关掉，
+     也不能顺手把画笔菜单收掉（那枚彩虹点是它的锚，菜单一收就找不回来了）。
+     再点一次彩虹点由 openColorPop 自己 toggle（它在 [data-ink-color-open] 里）。 */
+  const inColorUi = !!target?.closest?.('[data-ink-color-pop], [data-ink-color-open]');
+  if (!inColorUi && colorPopOpen.value) colorPopOpen.value = false;
+  const inInkMenu = !!target?.closest?.('[data-ink-options]') || inColorUi;
   if (!inInkMenu) {
     if (inkOptionsOpen.value) inkOptionsOpen.value = false;
     if (eraserClearOpen.value) eraserClearOpen.value = false;
@@ -8299,11 +8410,15 @@ function renderMarkdown(text?: string | null) {
               type="button"
               class="ink-color-custom"
               :class="{ active: isCustomInkColor() }"
-              title="自定义颜色（浏览器取色器）"
+              title="自定义颜色"
               data-ink-color-open
-              @click="openInkColorPicker"
+              @click="openColorPop"
             >
-              <span class="ink-color-custom-dot" />
+              <!-- 空心圆：外圈是描边，内部填「自选色」（没选过就是空的，露出底色） -->
+              <span
+                class="ink-color-custom-dot"
+                :style="{ '--dot-fill': activeCustomColor() || 'transparent' }"
+              />
             </button>
             <button
               v-for="c in inkPalette()"
@@ -8329,6 +8444,40 @@ function renderMarkdown(text?: string | null) {
               <i class="ink-dot" :style="inkDotStyle(step.key)" />
             </button>
           </div>
+        </div>
+
+
+        <!-- 自定义颜色面板：**自家实现**（色相 + 明度 + 十六进制），不依赖浏览器取色窗口。
+             用户口径 2026-12-14：那枚彩色图标点了没反应 —— 原生窗口在他们机器上就是不弹。 -->
+        <div
+          v-if="colorPopOpen"
+          class="ink-color-pop"
+          data-ink-color-pop
+          :style="colorPopStyle"
+          @pointerdown.stop
+        >
+          <div class="ink-color-pop-head">
+            <span class="ink-color-preview" :style="{ background: activeInkColor() }" />
+            <input
+              class="ink-color-hex"
+              type="text"
+              spellcheck="false"
+              maxlength="7"
+              :value="activeInkColor()"
+              data-ink-hex
+              @input="onColorHex"
+              @change="onColorHex"
+            >
+          </div>
+          <label class="ink-color-rail" title="色相">
+            <input type="range" min="0" max="360" step="1" :value="colorHue" data-ink-hue @input="onColorHue">
+          </label>
+          <label class="ink-color-rail rail-light" title="明度" :style="{ '--rail-hue': colorHue }">
+            <input type="range" min="12" max="88" step="1" :value="colorLight" data-ink-light @input="onColorLight">
+          </label>
+          <button type="button" class="ink-color-sys" data-ink-color-sys @click="openInkColorPicker">
+            系统取色器
+          </button>
         </div>
 
         <!-- 橡皮的二级菜单：滑到底 = 清空本页笔迹 -->
@@ -9614,12 +9763,92 @@ function renderMarkdown(text?: string | null) {
   border: 0; padding: 0; background: transparent; color: inherit;
 }
 /* 「当前色是自选色」时，这枚彩虹点也带一圈**同色点同款的选中环**（用户口径：自选色放第一，也要看得出选中） */
-.ink-color-custom.active { box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px color-mix(in srgb, var(--text) 72%, transparent); }
+.ink-color-custom.active { box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px var(--accent); }
+/* 空心圆（用户口径 2026-12-14）：一圈描边 + 内部就是"浏览器取色器取到的颜色"。
+   原来是七彩锥形渐变，看着像"调色盘"，但看不出当前自选的是什么色。 */
 .ink-color-custom-dot {
+  box-sizing: border-box;
   display: block; width: 24px; height: 24px; border-radius: 999px;
-  background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
+  background: var(--dot-fill, transparent);
+  border: 2px solid color-mix(in srgb, var(--text) 40%, transparent);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
+.ink-color-custom:hover .ink-color-custom-dot {
+  border-color: color-mix(in srgb, var(--text) 70%, transparent);
+}
+/* 选择效果：当前这笔用的就是自选色时，外圈换成主题色 + 一圈同款选中环（与色板圆点同一套口径） */
+.ink-color-custom.active .ink-color-custom-dot { border-color: var(--accent); }
+/* 自定义颜色面板：彩虹点下面那一小条（自家实现，见脚本里 colorPopOpen 那段说明） */
+.ink-color-pop {
+  position: fixed; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 8px;
+  width: 212px; padding: 10px; border-radius: 14px; z-index: 46;
+  /* ⚠️ 必须显式 auto：整条 .reader-toolbar 是 pointer-events: none 的浮层，
+     子元素各自放开（.reader-capsule / .cap-solo / .ink-options 都写了这一条）。
+     漏了这一行，面板画得出来、但**点不到** —— 实测 elementFromPoint 全落在下面的正文上。 */
+  pointer-events: auto;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  box-shadow: var(--shadow-flyout);
+}
+.ink-color-pop-head { display: flex; align-items: center; gap: 8px; }
+.ink-color-preview {
+  flex: none; width: 24px; height: 24px; border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent);
+}
+.ink-color-hex {
+  flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text);
+  font-size: calc(12px * var(--ts, 1)); letter-spacing: .5px; font-variant-numeric: tabular-nums;
+}
+.ink-color-hex:focus { outline: none; border-color: var(--accent); }
+/* 两根滑条：外形自己画（原生 range 的轨道跟这块玻璃不是一套设计）。
+   色相那条铺满彩虹，明度那条从黑到当前色相再到白 —— 一眼看得出往哪边拖。 */
+.ink-color-rail { display: block; }
+.ink-color-rail input {
+  -webkit-appearance: none; appearance: none;
+  display: block; width: 100%; height: 12px; border: 0; border-radius: 999px; cursor: pointer;
+  background: linear-gradient(90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+}
+.ink-color-rail.rail-light input {
+  background: linear-gradient(90deg, #000, hsl(var(--rail-hue, 0) 78% 50%), #fff);
+}
+.ink-color-rail input::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 999px;
+  background: #fff; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .3);
+}
+.ink-color-rail input::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent);
+  background: #fff;
+}
+.ink-color-sys {
+  align-self: flex-start; height: 24px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  font-size: calc(11.5px * var(--ts, 1)); cursor: pointer;
+}
+.ink-color-sys:hover { background: var(--bg-hover); color: var(--text); }
+.ink-color-sys:active { transform: scale(.94); }
+
+/* 点击反馈：这一排小控件以前按下去**一点变化都没有**，看起来像"点了没反应"（用户口径 2026-12-14）。
+   统一给一条 0.94 的按下缩放 + 背景闪一下，与 .cite-peek-jump / .float-act 那一套同值。 */
+.ink-color-custom:active,
+.ink-palette-dot:active,
+.ink-width-icon:active { transform: scale(.94); }
+.ink-color-custom:active .ink-color-custom-dot { filter: brightness(1.15); }
+.ink-palette-dot:active { box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px var(--accent); }
+.reader-capsule .cap-group .btn.icon:active { transform: scale(.94); }
+@media (prefers-reduced-motion: reduce) {
+  .ink-color-custom:active,
+  .ink-palette-dot:active,
+  .ink-width-icon:active,
+  .reader-capsule .cap-group .btn.icon:active { transform: none; }
+}
+
 /* 取色器本体：常驻、不可见、不可点（真正入口是上面那枚彩虹点）。
    不写 display:none / visibility:hidden —— Chrome 要求 showPicker() 的宿主还在渲染树上。 */
 .ink-color-proxy {

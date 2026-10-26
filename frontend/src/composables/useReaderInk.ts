@@ -25,7 +25,11 @@ import {
  * 打开菜单时选中态就落在上次那个颜色 / 粗细上（见 `activeInkColor`）。
  */
 const INK_PREFS_KEY = 'pm.ink.prefs';
-interface InkPrefs { pen?: string; marker?: string; laser?: string; width?: WidthKey; tool?: InkTool }
+interface InkPrefs {
+  pen?: string; marker?: string; laser?: string; width?: WidthKey; tool?: InkTool;
+  /** 每支笔"上一次自选的颜色"：只用来画那枚空心圆里的填充，不参与笔色判定 */
+  custom?: Partial<Record<'pen' | 'marker' | 'laser', string>>;
+}
 function loadInkPrefs(): InkPrefs {
   try {
     const raw = localStorage.getItem(INK_PREFS_KEY);
@@ -41,6 +45,7 @@ function saveInkPrefs(): void {
     localStorage.setItem(INK_PREFS_KEY, JSON.stringify({
       pen: inkColor.value, marker: inkMarkerColor.value, laser: inkLaserColor.value,
       width: inkWidth.value,
+      custom: { pen: customColors.pen, marker: customColors.marker, laser: customColors.laser },
       /* 连上次拿的是哪支笔一起记：下次打开工具栏就停在它上面（橡皮不记，退回画笔那档） */
       tool: inkTool.value === 'eraser' ? lastDrawTool.value : inkTool.value,
     }));
@@ -87,6 +92,16 @@ export const inkColor = ref(inkPrefs.pen === '#1b1b1f' || !inkPrefs.pen ? INK_CO
 export const inkMarkerColor = ref(migrateMarkerColor(inkPrefs.marker || MARKER_COLORS[0]));
 /** 激光笔的颜色：与画笔/荧光笔一样各记各的（换工具时颜色不会串） */
 export const inkLaserColor = ref(inkPrefs.laser || LASER_DEFAULT_COLOR);
+/**
+ * 每支笔"上一次自选的颜色"（用户口径 2026-12-14：那枚图标要成**空心圆**，圆内填自选色）。
+ * 只用来画图标，不参与笔色判定 —— 笔色还是 inkColor / inkMarkerColor / inkLaserColor 那三个。
+ */
+export const customColors = reactive<Record<'pen' | 'marker' | 'laser', string>>({
+  pen: inkPrefs.custom?.pen || '',
+  marker: inkPrefs.custom?.marker || '',
+  laser: inkPrefs.custom?.laser || '',
+});
+
 /** 进橡皮之前拿的是哪支笔（橡皮清空本页之后切回它，用户口径第 3 条） */
 export const lastDrawTool = ref<'pen' | 'marker' | 'laser'>('pen');
 /** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
@@ -292,10 +307,21 @@ export function activeInkColor(): string {
   return inkColor.value;
 }
 
-export function setInkColor(value: string): void {
-  if (inkTool.value === 'marker') inkMarkerColor.value = value;
-  else if (inkTool.value === 'laser') inkLaserColor.value = value;
-  else inkColor.value = value;
+/**
+ * 换颜色。`fromCustom` = 这一次是「自选色」（取色面板 / 系统取色器）来的：
+ * 顺手把它记进 customColors，那枚空心圆里就填它；点色板上的圆点则不覆盖。
+ */
+export function setInkColor(value: string, fromCustom = false): void {
+  if (inkTool.value === 'marker') {
+    inkMarkerColor.value = value;
+    if (fromCustom) customColors.marker = value;
+  } else if (inkTool.value === 'laser') {
+    inkLaserColor.value = value;
+    if (fromCustom) customColors.laser = value;
+  } else {
+    inkColor.value = value;
+    if (fromCustom) customColors.pen = value;
+  }
   saveInkPrefs();          /* 每换一次色就落盘：下次打开菜单直接选中它 */
 }
 

@@ -14984,3 +14984,61 @@ WAAPI setKeyframes     平均帧 6.1~6.3ms  p95 6.2~6.3ms   ← 扩展还在跑�
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DZv0EqFB.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 218. 第二百一十八轮：自选色改成「自家取色面板」+ 空心圆图标 + 按下/选中效果
+
+用户口径（连着三条）：
+1. 「彩色的颜色选择图标**点击不了**」；
+2. 「增加点击效果」；
+3. 「还有选择效果，将彩色图标改成**空心圆**，内部颜色为从浏览器取色器获取的颜色」。
+
+### ① 点击不了 → 自家取色面板
+
+上一轮已经把原生 `input[type=color]` 移出 `v-if` 菜单并改成显式 `showPicker()`，但用户仍然点不动。
+**不再赌那个原生窗口**：点彩虹点直接弹一块自家面板 —— 色相滑条 + 明度滑条 + 十六进制输入框，
+原生取色器降级成面板里那枚「系统取色器」按钮（能弹就弹，弹不出来不影响用）。
+
+排查里踩到两个真坑（都是"画得出来、点不到"）：
+1. **`pointer-events`**：整条 `.reader-toolbar` 是 `pointer-events: none` 的浮层，子元素各自放开
+   （`.reader-capsule` / `.cap-solo` / `.ink-options` 都写了）。面板漏了这一行，实测
+   `elementFromPoint` 全部落在下面的正文 / `.ink-capture` 上 —— 面板看着在那儿，但点不到。
+2. **收起逻辑把自己也收掉**：文档级 `pointerdown`（capture）里那句"不在 `[data-ink-options]` 就收"
+   把面板里的滑条也算成"外面"，一按滑条面板就没。现在把 `[data-ink-color-pop]` / `[data-ink-color-open]`
+   一并算作菜单的一部分（点它不收盘、也不收画笔菜单 —— 那枚彩虹点是面板的锚）。
+
+### ② 点击效果
+
+这一排小控件以前按下去**一点变化都没有**，看起来就像"点了没反应"。统一给一条 0.94 的按下缩放
+（与 `.cite-peek-jump` / `.float-act` 同值），色板圆点按下时再加一圈主题色描边：
+`.ink-color-custom / .ink-palette-dot / .ink-width-icon / .reader-capsule .btn.icon`。
+
+### ③ 空心圆 + 选中效果
+
+- 图标不再是七彩锥形渐变，改成**空心圆**：2px 描边（默认 40% 文字色，hover 70%），内部填充 =
+  **从取色面板/系统取色器取到的那个颜色**（没选过就是透明，露出底色）。
+- 每支笔各记一份自选色（`customColors` 落 localStorage 的 `pm.ink.prefs.custom`，只用来画这枚图标，
+  不参与笔色判定）；点色板上的圆点不会覆盖它。
+- **选中效果**：当前这笔用的就是自选色时，描边换成主题色，外面再加一圈 `0 0 0 3px var(--accent)` 选中环
+  （与色板圆点同一套口径）。
+
+### 实测（有头 Chrome + CDP，真鼠标事件）
+
+```
+面板命中测试（elementFromPoint）
+  头部 14px  → input.ink-color-hex   inside=true
+  色相轨道   → input                 inside=true
+  明度轨道   → input                 inside=true
+  「系统取色器」→ button.ink-color-sys inside=true
+
+真鼠标点色相轨道 60% → value 224，--pen-color #e8384f → #3766e6
+                     空心圆内填充 rgb(55,102,230)，描边 accent，选中环 "0 0 0 1px #fff, 0 0 0 3px accent"
+真鼠标点明度轨道 25% → value 26，--pen-color → #0f2a76，圆内填充同步
+按下缩放          点彩虹点时 computed transform = matrix(0.94, 0, 0, 0.94, 0, 0)
+未选过自选色时     圆内 background-color = rgba(0,0,0,0)（真·空心），描边 2px / 40% 文字色
+点一个色板颜色后   圆内仍留着上次自选色，选中环消失（active=false）
+localStorage      {"custom":{"pen":"#0f2a76","marker":"","laser":""}, …}
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-85NcnVQr.js`）、`frontend_check.py` 168/168。
+
+---
