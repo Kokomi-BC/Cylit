@@ -14603,3 +14603,43 @@ Vue 重排 class 时是整条 `className` 覆写，手工挂的类会被抹掉�
   从对话「存为笔记」过来的那条链本来就带 refs 表，已经能用。
 * 短码编号（按本篇出现顺序编 `[1] [2]…`）与对话那套 ref 号可能撞号：两套编号约定本身的碰撞，
   每枚 chip 各自带 `data-ref`，点了不会串。
+
+### 208. 第二百零八轮：拖动对话浮窗卡顿 —— 两枚角把手每帧让整篇论文重排一次
+
+用户口径：「拖动对话浮窗卡顿（拖动其他浮窗就正常）」。
+
+**先排除掉两件已经做过的**：模板不再绑几何（上一轮已改成手势里直写 DOM，零次重渲染），
+所以不是 Vue 的锅；也不是卡里有动画在跑 —— 实测浮窗态 `host.getAnimations({subtree:true})` 返回 **0** 条，
+里面 1556 个节点 / 38 枚 KaTeX / 3 张图，静止时没有任何补间。
+
+**真凶**：`writeFloatGrips()` —— 拖头时卡片走 `transform`（合成层平移，零成本），但**两枚角把手**
+仍然每帧被写 `left` / `top`。它们是 `position: fixed` 的独立节点，DOM 上挂在 `.reader` 里 ——
+也就是**整篇论文**（几百块正文 + PDF 文本层 + 每页页图）那棵子树。写一次 left/top 就让这棵树重排一次，
+一次手势 60 帧 = 60 次大重排；而笔记本体（`FloatingCard`）把把手长在自己身上，重排范围只有那张小卡，
+所以「其他浮窗正常」。这个差别正好对上用户描述。
+
+**改法**：
+
+* 拖头（纯移动）时，两枚把手也走 `transform`：新增 `paintFloatGripsByDelta(dx, dy)`，与卡片同一份位移；
+  `paintFloatLive()` 的 move 分支直接 return，不再调 `writeFloatGrips`；
+* 落定（松手 / 改尺寸）时 `writeFloatGrips` **先撤掉把手的 transform** 再写 left/top，两套坐标不打架；
+* 顺手三条降负载（都不改观感）：拖动中给卡片 `contain: paint`（重绘别溢出到下面的 PDF 文本层）、
+  `backface-visibility: hidden`、影子从 `--shadow-flyout`（48px 大范围柔光）换成 `--shadow-2`；
+  卡内动画（思考链呼吸 / 等待点 / 流式光标）在手势期间 `animation-play-state: paused`，松手继续 ——
+  静止时没有动画，这条只在**流式输出时拖**才用得上。
+
+**实测**（合成 20 帧拖动，`pointerdown/move/up` 打在 `.chat-grab` 上）：
+
+```
+拖动中  host.style.transform = translate3d(80px, 60px, 0px)   卡片位移 (+80, +60)
+        两枚把手 transform     = translate3d(80px, 60px, 0px)   与卡片逐像素同步
+        把手的 left/top         全程未被写过（重排 0 次）
+松手后  host.style.transform = ''（清空）  两枚把手 transform = ''
+        host.style.left = 1136px = 旧值 1056 + 80                落定位置正确
+```
+
+⚠️ 这台机器上的无头浏览器跑在虚拟时间里（`--virtual-time-budget`），量出来的帧间隔是 0/4010ms 这种
+假数据，所以**没有**给出修复前后的帧率对比；本轮证据是「每帧的 DOM 写入量」这条结构性指标（2 次重排 → 0 次）。
+如果用户那边仍然卡，下一步该拿 DevTools Performance 的轨道，而不是继续猜。
+
+校验：`vue-tsc --noEmit` 0 错、`npm run build` 绿（`ReaderView-0kU78523.js`）、`frontend_check.py` 168/168。

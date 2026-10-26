@@ -2448,14 +2448,31 @@ const gripBrEl = ref<HTMLElement | null>(null);
 /** 浮层模式下那块"画中画"占位面板（拖侧栏宽度时要跟预览值同宽） */
 const asidePipEl = ref<HTMLElement | null>(null);
 
-/** 两枚角把手的几何（跟着卡片走；拖头时卡片走 transform，它们只能逐帧写 left/top） */
+/** 两枚角把手的几何（跟着卡片走；**改尺寸**时逐帧写 left/top，因为宽高本来就没法合成） */
 function writeFloatGrips(b: { left: number; top: number; w: number; h: number }) {
   const top = b.top + b.h - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
   const left = b.left + b.w - FLOAT_GRIP_SIZE + FLOAT_GRIP_GAP;
   const bl = gripBlEl.value;
-  if (bl) { bl.style.left = (b.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
+  if (bl) { bl.style.transform = ''; bl.style.left = (b.left - FLOAT_GRIP_GAP) + 'px'; bl.style.top = top + 'px'; }
   const br = gripBrEl.value;
-  if (br) { br.style.left = left + 'px'; br.style.top = top + 'px'; }
+  if (br) { br.style.transform = ''; br.style.left = left + 'px'; br.style.top = top + 'px'; }
+}
+
+/**
+ * 拖头（纯移动）时两枚角把手跟着位移 —— **只写 transform**，不再逐帧写 left/top。
+ *
+ * 为什么（用户口径 2026-12-12「拖动对话浮窗卡顿，其他浮窗正常」）：角把手是 `position: fixed`
+ * 的独立节点，挂在 `.reader` 这棵**整篇论文**（几百块正文 + PDF 文本层）的子树里；每帧给它们
+ * 写 left/top 会让浏览器**每帧重排一次这棵子树**，而卡片本身早就在合成层上零成本平移 ——
+ * 一次手势 60 帧就是 60 次大重排，看起来正是"跟手但一顿一顿"。把把手也搬到 transform 上，
+ * 一帧只剩三次合成层赋值，主线程一帧都不占。松手时 `writeFloatGrips` 会先撤掉这份位移
+ * 再写 left/top，坐标与数值两套不打架。
+ */
+function paintFloatGripsByDelta(dx: number, dy: number) {
+  const t = dx === 0 && dy === 0 ? '' : 'translate3d(' + dx + 'px,' + dy + 'px,0)';
+  for (const el of [gripBlEl.value, gripBrEl.value]) {
+    if (el && el.style.transform !== t) el.style.transform = t;
+  }
 }
 
 /** 把一份几何写进 DOM（宿主 + 两枚角把手）：手势里写 floatLive，其余时候写 floatBox */
@@ -2489,7 +2506,12 @@ function paintFloatLive() {
     const dy = Math.round(floatLive.top - floatDrag.oy);
     const next = 'translate3d(' + dx + 'px,' + dy + 'px,0)';
     if (host.style.transform !== next) host.style.transform = next;
-  } else if (host) {
+    /* 角把手走同一份位移（transform，见 paintFloatGripsByDelta）—— 不再每帧写 left/top，
+       那会让整篇论文的子树每帧重排一次。 */
+    paintFloatGripsByDelta(dx, dy);
+    return;
+  }
+  if (host) {
     if (host.style.transform) host.style.transform = '';
     host.style.left = floatLive.left + 'px';
     host.style.top = floatLive.top + 'px';
@@ -9705,7 +9727,26 @@ function renderMarkdown(text?: string | null) {
    整块滑出去"用的；手势里每帧改 transform 会让它**每帧重新起一次 260ms 补间**
    （跟手变成拖拽感），松手把 transform 撤回 `none` 时更要补间着滑回起点 —— 那就是抖动。
    手势期间关掉它，松手那一下就是纯 left/top 的瞬移落定。 */
-.reader.float-dragging > .chat-host.float { will-change: transform; transition: none; }
+.reader.float-dragging > .chat-host.float {
+  will-change: transform; transition: none;
+  /* 拖动期间三处降负载（用户口径 2026-12-12：「拖动对话浮窗卡顿，其他浮窗正常」）。
+     对话浮窗是全场最重的一张卡（500×560，里面是整段会话：Markdown + KaTeX + 图片），
+     笔记本体只有一小段文字，所以同一个手势只有它掉帧。三条都不改观感：
+     ① `contain: paint`：把重绘范围钉在这张卡里，别顺着阅读区往上冒（它下面就是整篇 PDF 文本层）；
+     ② `backface-visibility: hidden`：明说这是纯 2D 合成层，省掉背面剔除那条分支；
+     ③ 影子换小一档：`--shadow-flyout` 是 48px 大范围柔光，跟着合成层一起每帧重采样一次很贵，
+        拖动中换成 `--shadow-2`；松手后规则失效，影子自己回到原样（0.18s 过渡，看不出跳）。 */
+  contain: paint;
+  backface-visibility: hidden;
+  box-shadow: var(--shadow-2);
+}
+/* 卡里正在跑的动画（思考链的呼吸、等待点、流式光标）每帧都会把这张卡的贴图标记为脏 ——
+   合成层跟着重新栅格化，拖动就一顿一顿。手势期间一律暂停：拖完继续跑，画面不差一帧。 */
+.reader.float-dragging > .chat-host.float :deep(*),
+.reader.float-dragging > .chat-host.float :deep(*)::before,
+.reader.float-dragging > .chat-host.float :deep(*)::after {
+  animation-play-state: paused !important;
+}
 /* 拖动中变宽变亮：**与笔记浮层（`.fc-grab.dragging .fc-grab-pill`）逐字同一套** ——
    类挂在抓手条自己身上，另加 `:active` 兜底（按下即反馈，不必等手势判定）。
    ⚠️ 触发源**只有** `.chat-grab` 一个：以前是 `.reader.float-dragging`（挂在根元素上），
