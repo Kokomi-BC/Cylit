@@ -7,6 +7,7 @@
  *
  * 三种工具共用同一块画布：
  *   - 画笔 / 荧光笔：按落笔轻重收放的带子（见 utils/imageInk.ts），荧光笔走 multiply；
+ *   - 激光笔：同上，但只画进 laserCv 且**不落盘**（停笔 2s 后开始淡出，见 useReaderInk）；
  *   - 橡皮：整笔删除（撤销栈按整笔记）；
  *   - 自动选择：点一下正文，**框住那一行**，再问"要不要加笔记"。
  *
@@ -15,21 +16,21 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@/components/AppIcon.vue';
 import {
-  clamp01, hitStroke, paintDoc, paintStroke, pressureOf,
+  clamp01, hitStroke, paintDoc, paintLaserStroke, paintStroke, pressureOf,
   type InkNote, type InkStroke,
 } from '@/utils/imageInk';
 import {
-  colorFor, commitInk, createSideNote, deleteSideNote, ensureInkLoaded, inkKey,
-  inkState, inkTool, inkView, pageKey, updateSideNote, widthFor,
+  addLaserStroke, colorFor, commitInk, createSideNote, deleteSideNote, dropLaserPage,
+  ensureInkLoaded, inkKey, inkLaserColor, inkState, inkTool, inkView, laserAlpha,
+  laserStrokesOf, laserVersion, pageKey, touchLaser, updateSideNote, widthFor, widthForLaser,
 } from '@/composables/useReaderInk';
 
 const props = defineProps<{ page: number; enabled: boolean }>();
-/** `erased`：这一笔橡皮**真的擦掉了东西**（父组件据此把工具切回橡皮之前那支笔） */
-const emit = defineEmits<{ (e: 'erased'): void }>();
 
 const root = ref<HTMLElement | null>(null);
 const baseCv = ref<HTMLCanvasElement | null>(null);
 const markerCv = ref<HTMLCanvasElement | null>(null);
+const laserCv = ref<HTMLCanvasElement | null>(null);
 const liveCv = ref<HTMLCanvasElement | null>(null);
 const capture = ref<HTMLElement | null>(null);
 
@@ -62,23 +63,47 @@ function repaint() {
   const w = size.value.w;
   const h = size.value.h;
   if (!w || !h) return;
-  // 荧光笔只在真用过时才占一块整页画布
+  // 荧光笔 / 激光笔只在真用过时才占一块整页画布
   if (hasMarkerStrokes()) ensureSize(markerCv.value, w, h, dpr());
+  if (hasLaserStrokes()) ensureSize(laserCv.value, w, h, dpr());
   const pen = clearCv(baseCv.value);
   const marker = clearCv(markerCv.value);
   clearCv(liveCv.value);
   if (pen) paintDoc(pen, { ...state.value.doc, strokes: state.value.doc.strokes.filter((s) => s.tool === 'pen') }, w, h);
   if (marker) paintDoc(marker, { ...state.value.doc, strokes: state.value.doc.strokes.filter((s) => s.tool === 'highlighter') }, w, h);
+  paintLaser();
 }
 
-function paintLive(stroke: InkStroke | null) {
+function paintLive(stroke: InkStroke | null, laser = false) {
   const ctx = clearCv(liveCv.value);
   if (!ctx || !stroke) return;
-  paintStroke(ctx, stroke, size.value.w, size.value.h);
+  if (laser) paintLaserStroke(ctx, stroke, size.value.w, size.value.h);
+  else paintStroke(ctx, stroke, size.value.w, size.value.h);
 }
 
 function hasMarkerStrokes(): boolean {
   return inkState(docKey.value).doc.strokes.some((s) => s.tool === 'highlighter');
+}
+
+function hasLaserStrokes(): boolean {
+  return laserStrokesOf(docKey.value).length > 0;
+}
+
+/**
+ * 重画激光层：**只在笔迹变化 / 尺寸变化时**调。
+ * 淡出只写 style.opacity（见下面的 watch），绝不每帧重画 —— 一把带 shadowBlur 的
+ * 笔画每帧重铺一遍，平板上直接掉帧。
+ */
+function paintLaser(): void {
+  const cv = laserCv.value;
+  if (!cv) return;
+  cv.style.opacity = String(laserAlpha.value);
+  if (!size.value.w || !size.value.h) return;
+  const ctx = clearCv(cv);
+  if (!ctx) return;
+  for (const s of laserStrokesOf(docKey.value)) {
+    paintLaserStroke(ctx, s, size.value.w, size.value.h);
+  }
 }
 
 /**
@@ -99,7 +124,7 @@ function ensureSize(cv: HTMLCanvasElement | null, w: number, h: number, ratio: n
 
 /** 退出批注模式：把三块画布缩到 1×1，立刻把几十 MB 还给系统 */
 function releaseCanvases(): void {
-  for (const cv of [baseCv.value, markerCv.value, liveCv.value]) {
+  for (const cv of [baseCv.value, markerCv.value, laserCv.value, liveCv.value]) {
     if (!cv) continue;
     cv.width = 1;
     cv.height = 1;
@@ -120,12 +145,13 @@ function sizeCanvases() {
   ensureSize(baseCv.value, w, h, ratio);
   ensureSize(liveCv.value, w, h, ratio);
   if (hasMarkerStrokes()) ensureSize(markerCv.value, w, h, ratio);
+  if (hasLaserStrokes()) ensureSize(laserCv.value, w, h, ratio);
   repaint();
 }
 
 /* ------------------------------ 指针 ------------------------------ */
 
-let drawing: { stroke: InkStroke; lastAt: number; lastX: number; lastY: number } | null = null;
+let drawing: { stroke: InkStroke; lastAt: number; lastX: number; lastY: number; laser: boolean } | null = null;
 let erasing = false;
 
 function toLocal(clientX: number, clientY: number): { x: number; y: number } {
@@ -138,22 +164,37 @@ function toLocal(clientX: number, clientY: number): { x: number; y: number } {
   };
 }
 
-function beginStroke(ev: PointerEvent, kind: 'pen' | 'highlighter') {
+function beginStroke(ev: PointerEvent, kind: 'pen' | 'highlighter' | 'laser') {
   const pt = toLocal(ev.clientX, ev.clientY);
+  const laser = kind === 'laser';
   const stroke: InkStroke = {
     id: Math.random().toString(36).slice(2, 10),
-    tool: kind,
-    color: colorFor(kind),
-    w: widthFor(kind),
+    /* 激光笔不进文档，所以记成 'pen'（InkKind 里没有 laser）；观感由 paintLaserStroke 负责 */
+    tool: laser ? 'pen' : kind,
+    color: laser ? inkLaserColor.value : colorFor(kind),
+    w: laser ? widthForLaser() : widthFor(kind),
     pts: [[pt.x, pt.y, pressureOf(ev.pressure, 0.9, ev.pointerType === 'pen')]],
   };
-  drawing = { stroke, lastAt: ev.timeStamp || performance.now(), lastX: ev.clientX, lastY: ev.clientY };
+  drawing = {
+    stroke, lastAt: ev.timeStamp || performance.now(),
+    lastX: ev.clientX, lastY: ev.clientY, laser,
+  };
   inkKey.value = docKey.value;
-  paintLive(stroke);
+  if (laser) {
+    // 正在淡出的激光笔迹：落笔即恢复满不透明并重新计时（用户口径第 3 条）
+    touchLaser(true);
+    ensureSize(laserCv.value, size.value.w, size.value.h, dpr());
+    paintLaser();
+  }
+  paintLive(stroke, laser);
 }
 
 function extendStroke(ev: PointerEvent) {
   if (!drawing) return;
+  /* 激光笔：手还在动就不该淡（用户口径"两秒钟没有书写才会消失"）。
+     放在抖动过滤**之前**：慢慢写时每次位移都不到 1.1px，那也算"还在写"。
+     120Hz 的续命频率由 touchLaser 自己的 200ms 节流兜住，这里不再算时间。 */
+  if (drawing.laser) touchLaser();
   const dx = ev.clientX - drawing.lastX;
   const dy = ev.clientY - drawing.lastY;
   // 1.1px 以内当抖动丢掉：触摸屏"静止手抖"会攒出几百个重复点，白白变粗
@@ -165,7 +206,7 @@ function extendStroke(ev: PointerEvent) {
   drawing.lastAt = now;
   drawing.lastX = ev.clientX;
   drawing.lastY = ev.clientY;
-  paintLive(drawing.stroke);
+  paintLive(drawing.stroke, drawing.laser);
 }
 
 function endStroke() {
@@ -173,6 +214,12 @@ function endStroke() {
   drawing = null;
   paintLive(null);
   if (!active || active.stroke.pts.length < 2) return;
+  if (active.laser) {
+    /* 激光笔**不落盘、不进撤销栈**：只丢进内存里那份临时笔迹，抬手重画激光层就完事 */
+    addLaserStroke(docKey.value, active.stroke);
+    paintLaser();
+    return;
+  }
   commitInk(docKey.value, { ...state.value.doc, strokes: [...state.value.doc.strokes, active.stroke] });
 }
 
@@ -180,7 +227,6 @@ function eraseAt(ev: PointerEvent) {
   const pt = toLocal(ev.clientX, ev.clientY);
   const idx = hitStroke(state.value.doc, pt.x, pt.y, 12, size.value.w, size.value.h);
   if (idx < 0) return;
-  eraseTouched = true;
   commitInk(docKey.value, {
     ...state.value.doc,
     strokes: state.value.doc.strokes.filter((_, i) => i !== idx),
@@ -194,8 +240,6 @@ function eraseAt(ev: PointerEvent) {
  * 现在记一个 `activePointer`：落下时没有它才接管，抬起 / 取消时清掉。
  */
 let activePointer: number | null = null;
-/** 这一笔橡皮有没有真的擦掉过东西（决定抬起时要不要 emit 'erased'） */
-let eraseTouched = false;
 
 function onPointerDown(ev: PointerEvent) {
   if (!props.enabled) return;
@@ -204,13 +248,13 @@ function onPointerDown(ev: PointerEvent) {
   activePointer = ev.pointerId;
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
   const tool = inkTool.value;
-  if (tool === 'pen' || tool === 'marker') {
-    beginStroke(ev, tool === 'marker' ? 'highlighter' : 'pen');
+  if (tool === 'pen' || tool === 'marker' || tool === 'laser') {
+    // 多点触控那条"只认第一根指针"的闸在上面：激光笔与画笔走同一道
+    beginStroke(ev, tool === 'marker' ? 'highlighter' : tool === 'laser' ? 'laser' : 'pen');
     return;
   }
   if (tool === 'eraser') {
     erasing = true;
-    eraseTouched = false;
     eraseAt(ev);
     return;
   }
@@ -235,9 +279,6 @@ function onPointerUp(ev?: PointerEvent) {
   if (drawing) endStroke();
   erasing = false;
   activePointer = null;
-  /* 橡皮擦掉过东西 → 告诉父组件（它会把工具切回橡皮之前那支笔，用户口径第 3 条）。
-     只擦了个寂寞（没命中任何笔迹）就不切：用户可能还想继续擦。 */
-  if (eraseTouched) { eraseTouched = false; emit('erased'); }
 }
 
 /* ------------------------------ 自动选择 → 加笔记 ------------------------------ */
@@ -391,6 +432,7 @@ onMounted(async () => {
         // 离视口远了就把画布还回去：一页两块 2× dpr 画布 ≈ 40MB，翻十几页就吃掉几百 MB
         if (near.value && !drawing && !erasing) {
           near.value = false;
+          dropLaserPage(docKey.value);   // 激光笔迹是临时的：这页都回收了就别留着
           releaseCanvases();
         }
       }
@@ -402,6 +444,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  dropLaserPage(docKey.value);
   ro?.disconnect();
   io?.disconnect();
   ro = null;
@@ -421,8 +464,14 @@ watch(() => props.enabled, (on) => {
   void ensureInkLoaded(docKey.value);
   sizeCanvases();
 });
+/* 激光层：笔迹一变就重画；淡出**只写不透明度**，绝不每帧重画画布 */
+watch(laserVersion, () => { paintLaser(); });
+watch(laserAlpha, (a) => { if (laserCv.value) laserCv.value.style.opacity = String(a); });
+
 // 切视图（原文/译文/对照）= 换一份批注：重新拉那一份并重画
-watch(inkView, () => {
+watch(inkView, (_next, prev) => {
+  // 激光笔迹属于"这一页 × 这个视图"，换了视图就别带过去（键的拼法与 pageKey 一致）
+  dropLaserPage('page:' + props.page + '-' + (prev || 'original'));
   if (!near.value) return;
   void ensureInkLoaded(docKey.value);
   sizeCanvases();
@@ -440,12 +489,14 @@ watch(drafting, async (on) => {
     <canvas ref="baseCv" class="ink" />
     <!-- 荧光笔走正片叠底：像马克笔一样"叠加变暗"，不会把正文抹白 -->
     <canvas ref="markerCv" class="ink ink-marker" />
+    <!-- 激光笔：临时的发光笔迹，淡出靠整块画布的 opacity（见 paintLaser） -->
+    <canvas ref="laserCv" class="ink ink-laser" />
     <canvas ref="liveCv" class="ink ink-live" :class="{ 'ink-marker': inkTool === 'marker' }" />
     <div
       v-if="enabled"
       ref="capture"
       class="ink-capture"
-      :class="{ draw: inkTool === 'pen' || inkTool === 'marker', erase: inkTool === 'eraser', passthrough: inkTool === 'hand' }"
+      :class="{ draw: inkTool === 'pen' || inkTool === 'marker' || inkTool === 'laser', erase: inkTool === 'eraser', passthrough: inkTool === 'hand' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"

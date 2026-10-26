@@ -43,8 +43,8 @@ import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
 import { reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
-  INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, lastDrawTool,
-  flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
+  INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, inkLaserColor,
+  lastDrawTool, flushInk, inkKey, inkOn, inkTool, inkView, inkWidth, pageKey,
   redoInk, resetInk, persistInkPrefs, setInkColor, setInkNotesListener, setInkWidth, undoInk,
 } from '@/composables/useReaderInk';
 import { WIDTH_STEPS } from '@/utils/imageInk';
@@ -799,9 +799,12 @@ function placeInkOptions(): void {
   inkOptionsStyle.value = { left, top: Math.round(r.bottom + 8) + 'px' };
 }
 
-/** 选工具：点"已经在用的"画笔/荧光笔 = 展开/收起它的二级菜单（用户口径） */
-function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
-  if (key === inkTool.value && (key === 'pen' || key === 'marker')) {
+/**
+ * 选工具：**只有再点一次"当前已选中的"那支笔**才展开/收起它的二级菜单（用户口径第 1 条）。
+ * 点未选中的工具只是换工具 —— 以前换工具时顺手把菜单弹出来，看着像"点一下就开"。
+ */
+function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'laser' | 'eraser') {
+  if (key === inkTool.value && (key === 'pen' || key === 'marker' || key === 'laser')) {
     inkOptionsOpen.value = !inkOptionsOpen.value;
     void nextTick().then(() => {
       if (inkOptionsOpen.value) placeInkOptions();
@@ -819,19 +822,16 @@ function pickInkTool(key: 'hand' | 'pen' | 'marker' | 'eraser') {
     });
     return;
   }
-  /* 进橡皮之前记一下拿的是哪支笔 —— 擦完一笔自动切回它（用户口径第 3 条） */
-  if (key === 'eraser' && (inkTool.value === 'pen' || inkTool.value === 'marker')) {
+  /* 进橡皮之前记一下拿的是哪支笔 —— 清空本页之后切回它（用户口径第 3 条） */
+  if (key === 'eraser'
+    && (inkTool.value === 'pen' || inkTool.value === 'marker' || inkTool.value === 'laser')) {
     lastDrawTool.value = inkTool.value;
   }
   inkTool.value = key;
-  inkOptionsOpen.value = key === 'pen' || key === 'marker';
+  inkOptionsOpen.value = false;   // 点未选中的工具：只切工具，菜单收着
   eraserClearOpen.value = false;
-  persistInkPrefs();          // 记住这次拿的是哪支笔 / 荧光笔
-  // 二级菜单跟着胶囊走：展开/收起后重新摆位，并让提示条再让一层
-  void nextTick().then(() => {
-    if (inkOptionsOpen.value) placeInkOptions();
-    syncToastDrop();
-  });
+  persistInkPrefs();          // 记住这次拿的是哪支笔 / 荧光笔 / 激光笔
+  void nextTick().then(syncToastDrop);
 }
 
 
@@ -3645,13 +3645,15 @@ function onMqChange() {
 }
 
 /** 批注工具（工具栏里不再有「文字选择」：框注改成在画笔/荧光笔/橡皮下**双击**正文，见 InkSurface） */
-const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'eraser'; icon: string; label: string }> = [
+const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'laser' | 'eraser'; icon: string; label: string }> = [
   { key: 'hand', icon: 'hand', label: '手：只读，可以正常划词' },
   { key: 'pen', icon: 'pen', label: '画笔' },
   { key: 'marker', icon: 'marker', label: '荧光笔' },
+  // 激光笔：临时笔迹（不落盘、不进撤销栈）。图标复用现成的 bolt，不新增图标
+  { key: 'laser', icon: 'bolt', label: '激光笔（停笔 2 秒后淡出）' },
   { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
 ];
-/** 当前工具该用哪一排色（画笔 = 红橙黄绿青蓝紫；荧光笔 = 荧光色） */
+/** 当前工具该用哪一排色（荧光笔 = 荧光色；画笔与激光笔共用墨色那排） */
 function inkPalette(): string[] {
   return inkTool.value === 'marker' ? MARKER_COLORS : INK_COLORS;
 }
@@ -8139,9 +8141,10 @@ function renderMarkdown(text?: string | null) {
                 :title="item.label"
                 :aria-pressed="inkTool === item.key"
                 :data-ink-tool="item.key"
-                :aria-expanded="inkOptionsOpen && (item.key === 'pen' || item.key === 'marker')"
+                :aria-expanded="inkOptionsOpen && inkTool === item.key"
                 :style="item.key === 'pen' ? { '--pen-color': colorFor('pen') }
-                  : item.key === 'marker' ? { '--marker-color': colorFor('highlighter') } : undefined"
+                  : item.key === 'marker' ? { '--marker-color': colorFor('highlighter') }
+                  : item.key === 'laser' ? { '--laser-color': inkLaserColor } : undefined"
                 @click="pickInkTool(item.key)"
               >
                 <AppIcon :name="item.icon" :size="15" />
@@ -8238,7 +8241,7 @@ function renderMarkdown(text?: string | null) {
         <!-- 画笔的二级菜单（颜色 / 粗细）：挂在胶囊**外面** —— 胶囊自己 overflow:auto，
              放在里面的绝对定位会被裁掉（实测：DOM 有、屏幕上看不见）。 -->
         <div
-          v-if="inkOptionsOpen && (inkTool === 'pen' || inkTool === 'marker')"
+          v-if="inkOptionsOpen && (inkTool === 'pen' || inkTool === 'marker' || inkTool === 'laser')"
           class="ink-options"
           data-ink-options
           :style="inkOptionsStyle"
@@ -9674,6 +9677,8 @@ function renderMarkdown(text?: string | null) {
 .reader-capsule .cap-group .btn[data-ink-tool='marker'] {
   color: color-mix(in srgb, var(--marker-color, currentColor) 62%, var(--text)) !important;
 }
+/* 激光笔那枚也点亮当前颜色：它的色和画笔完全独立，不染就分不清现在是哪支在画 */
+.reader-capsule .cap-group .btn[data-ink-tool='laser'] { color: var(--laser-color, currentColor) !important; }
 .reader-capsule .cap-group .seg {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);

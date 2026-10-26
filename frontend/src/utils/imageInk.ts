@@ -12,8 +12,9 @@
  * 画笔观感照 Apple 便签：粗细随轻重收放、圆头圆角、荧光笔是**叠加变暗**（multiply）。
  */
 
-export type InkTool = 'hand' | 'pen' | 'marker' | 'select' | 'eraser';
-/** 笔迹种类：普通笔 / 荧光笔（与后端 `TOOLS` 一致，别改字面量） */
+export type InkTool = 'hand' | 'pen' | 'marker' | 'laser' | 'select' | 'eraser';
+/** 笔迹种类：普通笔 / 荧光笔（与后端 `TOOLS` 一致，别改字面量）。
+ * 激光笔**故意不在这里**：它只活在内存里，永远不进批注文档（也就不必让后端认识它）。 */
 export type InkKind = 'pen' | 'highlighter';
 export type InkPoint = [number, number, number?];
 
@@ -55,6 +56,8 @@ export type WidthKey = (typeof WIDTH_STEPS)[number]['key'];
 
 export const PEN_COLOR = '#1b1b1f';
 export const MARKER_COLOR = '#ffd60a';
+/** 激光笔默认色：色板第一个（红）—— 激光的用处是"指给人看"，默认就该最扎眼 */
+export const LASER_DEFAULT_COLOR = '#e8384f';
 
 /** 与后端一致的上下限（脏数据在两边都截断，谁也别信） */
 export const W_MIN = 0.0005;
@@ -188,6 +191,24 @@ export function paintStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke,
       ctx.fill();
     }
   }
+  ctx.restore();
+}
+
+/**
+ * 画一笔激光：走笔逻辑完全复用画笔（带轻重的带子），只在外面加一圈柔光。
+ *
+ * 为什么用 shadowBlur 而不是另做一套发光贴图：激光要像"照在纸上的一束光"——
+ * 本体亮、四周一圈同色的辉光，正好就是 0 偏移 + shadowBlur 的效果。
+ */
+export function paintLaserStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke,
+                                 widthPx: number, heightPx: number): void {
+  ctx.save();
+  ctx.shadowColor = stroke.color;
+  ctx.shadowBlur = Math.max(2, strokeWidthPx(stroke, widthPx) * 2.5);
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  paintStroke(ctx, stroke, widthPx, heightPx);
+  ctx.shadowBlur = 0;      /* shadow 是画布状态：留着会把后面画的一切一起糊掉 */
   ctx.restore();
 }
 

@@ -14841,3 +14841,62 @@ WAAPI setKeyframes     平均帧 6.1~6.3ms  p95 6.2~6.3ms   ← 扩展还在跑�
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-IraOs0-I.js`）、`frontend_check.py` 146/146。
 
 ---
+
+### 215. 第二百一十五轮：胶囊二级菜单改成「二次点击才展开」+ 删掉橡皮那条死通路 + 新增激光笔
+
+用户口径（一次给三件）：
+1. 胶囊的画笔菜单**仅在选中状态下点击**才显示二级菜单；
+2. 橡皮**一键清空本页**之后回到橡皮之前用的那支笔；
+3. 新增激光笔：书写后 2 秒没有书写就缓缓消失（2 秒淡完），消失期间再写会恢复。
+
+### 菜单门控
+
+以前切工具那条分支末尾是 `inkOptionsOpen = key === 'pen' || key === 'marker'` —— **点一支没选中的笔就顺手弹菜单**，
+看着像"一点就开"。现在只有「再点一次当前已选中的那支」才 toggle，切工具一律收起；
+`aria-expanded` 同步改成 `inkOptionsOpen && inkTool === item.key`（旧写法跟 inkTool 无关，橡皮永远读 false）。
+
+### 橡皮：那条自动切回从来没接上
+
+`InkSurface.vue` 里会 `emit('erased')`，但 `ReaderPageRows.vue` 的 `<InkSurface>` 根本没监听 ——
+全仓搜 `erased` / `eraseTouched` 只有 4 处命中、零处接线，等于死码。按用户口径（只有一键清空后切回）
+**整条删掉**，`lastDrawTool` 的类型同时扩到 pen / marker / laser，滑块拖到底（`onClearSlide`）才切回它。
+
+### 激光笔
+
+- **不落盘**：笔迹只进 `useReaderInk` 里的内存 Map（按 `pageKey` 分），一行也不调 `commitInk` /
+  `scheduleInkSave`，所以 image_marks 里看不到它，Ctrl+Z 也撤不到它。文档里 `InkKind` 故意不加 `laser`
+  （后端不必认识它），笔迹的 `tool` 记成 `'pen'`，观感由 `paintLaserStroke()` 的 `shadowBlur` 柔光负责。
+- **计时全局一份**（用户口径"整体统一计时"）：`laserAlpha` + 一个 hold 定时器（2s）+ 一条 rAF（线性 2s），
+  有笔迹才起、清空就停。**手在动就不该淡** —— `extendStroke` 里给激光笔续命（`touchLaser` 自带 200ms 节流，
+  120Hz 的 pointermove 不会反复 `clearTimeout` + `setTimeout`），落笔 / 抬手走 `touchLaser(true)` 不受节流影响。
+- 淡出只写 `laserCv.style.opacity`，**绝不每帧重画画布**（带 shadowBlur 的整页重铺会掉帧）；
+  画布内容只在笔迹变化 / 尺寸变化时重画。切视图、卸载、滚远回收时按页清（`dropLaserPage`）。
+
+### 实测（有头 Chrome + CDP，真鼠标事件，真时钟）
+
+```
+菜单（每步读 DOM + aria-expanded）
+  进入批注          menu:false  选中 pen      expanded:(无)
+  点已选中的 pen     menu:true   expanded:pen
+  再点 pen          menu:false
+  点未选中的 marker  menu:false  选中 marker   ← 只切工具，不弹菜单
+  再点 marker       menu:true
+  点未选中的 laser   menu:false  选中 laser
+  再点 laser        menu:true
+  点 eraser / 再点    menu:false → menu:true（弹出的是清空滑块 data-ink-clear，不是画笔菜单）
+
+淡出时间轴（读 .ink-laser 的 opacity 与非透明像素采样）
+  1.0s → 1（652 px）｜3.0s → 0.49445｜3.9s → 0.04995｜5.2s → opacity 1、像素 0（已清空）
+  淡出中途落笔：0.5937 → 立刻 1
+
+长笔画（按住连续书写 3.5s，每 250ms 一动）
+  1.0s → 1｜2.0s → 1｜3.0s → 1｜松手后 → 1
+  ⚠️ 第一版这里是 1 → 0.942 → 0.41425（手还在写，旧笔迹已经开始淡）：touchLaser() 当时只在落笔调过一次，
+  时钟是从落笔开始数的。补上 extendStroke 的续命后才对上用户口径。
+
+不落盘：只画激光笔时无 [data-ink-undo]；localStorage 里 ink 相关只有 pm.ink.prefs（tool:"laser"）。
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-YBUcYQc9.js`）、`frontend_check.py` 168/168。
+
+---

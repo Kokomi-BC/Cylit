@@ -15,8 +15,8 @@ import { reactive, ref } from 'vue';
 import { api } from '@/api/client';
 import { reportError } from '@/stores/app';
 import {
-  WIDTH_STEPS, clamp01, cloneDoc, emptyDoc,
-  type InkDoc, type InkNote, type InkTool, type WidthKey,
+  LASER_DEFAULT_COLOR, WIDTH_STEPS, clamp01, cloneDoc, emptyDoc,
+  type InkDoc, type InkNote, type InkStroke, type InkTool, type WidthKey,
 } from '@/utils/imageInk';
 
 /**
@@ -25,7 +25,7 @@ import {
  * 打开菜单时选中态就落在上次那个颜色 / 粗细上（见 `activeInkColor`）。
  */
 const INK_PREFS_KEY = 'pm.ink.prefs';
-interface InkPrefs { pen?: string; marker?: string; width?: WidthKey; tool?: InkTool }
+interface InkPrefs { pen?: string; marker?: string; laser?: string; width?: WidthKey; tool?: InkTool }
 function loadInkPrefs(): InkPrefs {
   try {
     const raw = localStorage.getItem(INK_PREFS_KEY);
@@ -39,7 +39,8 @@ export function persistInkPrefs(): void { saveInkPrefs(); }
 function saveInkPrefs(): void {
   try {
     localStorage.setItem(INK_PREFS_KEY, JSON.stringify({
-      pen: inkColor.value, marker: inkMarkerColor.value, width: inkWidth.value,
+      pen: inkColor.value, marker: inkMarkerColor.value, laser: inkLaserColor.value,
+      width: inkWidth.value,
       /* 连上次拿的是哪支笔一起记：下次打开工具栏就停在它上面（橡皮不记，退回画笔那档） */
       tool: inkTool.value === 'eraser' ? lastDrawTool.value : inkTool.value,
     }));
@@ -72,7 +73,9 @@ function migrateMarkerColor(value: string): string {
 
 /** 批注模式开关：开着时正文上盖一层可画的画布（关掉就完全回到普通阅读） */
 export const inkOn = ref(false);
-export const inkTool = ref<InkTool>(inkPrefs.tool === 'marker' ? 'marker' : 'pen');
+export const inkTool = ref<InkTool>(
+  inkPrefs.tool === 'marker' ? 'marker' : inkPrefs.tool === 'laser' ? 'laser' : 'pen',
+);
 export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
 /**
  * 普通笔的颜色。
@@ -82,8 +85,10 @@ export const inkWidth = ref<WidthKey>(inkPrefs.width ?? 'mid');
 export const inkColor = ref(inkPrefs.pen === '#1b1b1f' || !inkPrefs.pen ? INK_COLORS[0] : inkPrefs.pen);
 /** 荧光笔的颜色（用户口径：荧光笔也要能换色） */
 export const inkMarkerColor = ref(migrateMarkerColor(inkPrefs.marker || MARKER_COLORS[0]));
-/** 进橡皮之前拿的是哪支笔（橡皮擦完自动切回它，用户口径第 3 条） */
-export const lastDrawTool = ref<'pen' | 'marker'>('pen');
+/** 激光笔的颜色：与画笔/荧光笔一样各记各的（换工具时颜色不会串） */
+export const inkLaserColor = ref(inkPrefs.laser || LASER_DEFAULT_COLOR);
+/** 进橡皮之前拿的是哪支笔（橡皮清空本页之后切回它，用户口径第 3 条） */
+export const lastDrawTool = ref<'pen' | 'marker' | 'laser'>('pen');
 /** 当前视图（原始 / 译文 / 对照）：文档按视图分开存，所以它一变，笔迹就换一份 */
 export const inkView = ref<'original' | 'translation' | 'bilingual'>('original');
 /** 最后一次动笔的那份文档键：工具栏的撤销/重做作用于它 */
@@ -135,6 +140,7 @@ export function inkState(key: string): PageInk {
 export function resetInk(paper: string): void {
   paperId = paper;
   pages.clear();
+  clearLaser();          // 激光笔迹是按论文的临时笔迹，换论文就一起丢掉
   inkKey.value = null;
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
 }
@@ -270,17 +276,25 @@ export function widthFor(kind: 'pen' | 'highlighter'): number {
   return kind === 'highlighter' ? step.marker : step.pen;
 }
 
+/** 激光笔的粗细：与画笔共用同一张三档表（用户口径：二级菜单是同一套） */
+export function widthForLaser(): number {
+  return widthFor('pen');
+}
+
 export function colorFor(kind: 'pen' | 'highlighter'): string {
   return kind === 'highlighter' ? inkMarkerColor.value : inkColor.value;
 }
 
 /** 当前工具正在用的颜色（二级菜单里的"选中态"按它算） */
 export function activeInkColor(): string {
-  return inkTool.value === 'marker' ? inkMarkerColor.value : inkColor.value;
+  if (inkTool.value === 'marker') return inkMarkerColor.value;
+  if (inkTool.value === 'laser') return inkLaserColor.value;
+  return inkColor.value;
 }
 
 export function setInkColor(value: string): void {
   if (inkTool.value === 'marker') inkMarkerColor.value = value;
+  else if (inkTool.value === 'laser') inkLaserColor.value = value;
   else inkColor.value = value;
   saveInkPrefs();          /* 每换一次色就落盘：下次打开菜单直接选中它 */
 }
@@ -295,6 +309,102 @@ export function setInkWidth(value: WidthKey): void {
 export function clearPageInk(key: string | null): void {
   if (!key) return;
   commitInk(key, { ...inkState(key).doc, strokes: [] });
+}
+
+/* ------------------------------ 激光笔（只活在内存里） ------------------------------
+ * 用户口径：激光笔**不落盘、不进撤销栈** —— 它是"指给人看"的临时笔迹。
+ * 所以这一段只碰内存，一行也不许调 commitInk / scheduleInkSave（后端 image_marks 里
+ * 永远看不到它，Ctrl+Z 也不会"撤销掉激光笔"）。
+ *
+ * 计时**全局一份**（不是每笔各一个）：用户口径"整体统一计时"—— 后一笔落笔会把
+ * 所有页面的激光笔迹一起拉回不透明、并重新数 2 秒。
+ */
+const LASER_HOLD_MS = 2000;
+const LASER_FADE_MS = 2000;
+/** 按 pageKey 分开存：一页一份，切页/切视图各清各的 */
+const laserPages = new Map<string, InkStroke[]>();
+/** 激光层的整体不透明度（0..1）：所有页共用一份，画布只把它写到 style.opacity 上 */
+export const laserAlpha = ref(1);
+/** 笔迹版本号：加 / 清之后自增，画布照它重画（Map 本身不是响应式的） */
+export const laserVersion = ref(0);
+
+export function laserStrokesOf(key: string): InkStroke[] {
+  let list = laserPages.get(key);
+  if (!list) { list = []; laserPages.set(key, list); }
+  return list;
+}
+
+let laserAt = 0;
+let laserHold: ReturnType<typeof setTimeout> | null = null;
+let laserRaf = 0;
+
+/** 全模块唯一的淡出时钟：一个 hold 定时器 + 一个 rAF，有笔迹才起，清空就停 */
+function stopLaserClock(): void {
+  if (laserHold) { clearTimeout(laserHold); laserHold = null; }
+  if (laserRaf) { cancelAnimationFrame(laserRaf); laserRaf = 0; }
+}
+
+function laserFadeTick(): void {
+  laserRaf = 0;
+  const elapsed = performance.now() - laserAt;
+  if (elapsed >= LASER_HOLD_MS + LASER_FADE_MS) {
+    clearLaser();
+    return;
+  }
+  // 只在 2000..4000 这一段算比例（前面恒 1，由 hold 定时器挡住，不烧帧）
+  laserAlpha.value = Math.max(0, Math.min(1, 1 - (elapsed - LASER_HOLD_MS) / LASER_FADE_MS));
+  laserRaf = requestAnimationFrame(laserFadeTick);
+}
+
+/**
+ * 续命的最小间隔：pointermove 能有 120Hz，每来一次就 clearTimeout+setTimeout 纯属浪费；
+ * 200ms 的粒度对"手在动就不该淡"够用（淡出本身是 2000ms 起步的）。
+ */
+const LASER_TOUCH_GAP_MS = 200;
+let laserTouchAt = 0;
+
+/**
+ * 落笔 / 继续画：立刻恢复满不透明，并**重新**计时（含正在淡出的那一段）。
+ * `force` 留给"落笔 / 抬手"这种必须生效的时刻；书写途中的续命走 200ms 节流。
+ */
+export function touchLaser(force = false): void {
+  const now = performance.now();
+  if (!force && now - laserTouchAt < LASER_TOUCH_GAP_MS) return;
+  laserTouchAt = now;
+  stopLaserClock();
+  laserAt = now;
+  laserAlpha.value = 1;
+  laserHold = setTimeout(() => {
+    laserHold = null;
+    laserRaf = requestAnimationFrame(laserFadeTick);
+  }, LASER_HOLD_MS);
+}
+
+export function addLaserStroke(key: string, stroke: InkStroke): void {
+  laserStrokesOf(key).push(stroke);
+  laserVersion.value += 1;
+  touchLaser(true);      // 抬手：倒计时从"这一笔结束"重新数满 2 秒
+}
+
+/** 全部页清掉（4 秒到点 / 换论文）：alpha 回 1、时钟停掉 */
+export function clearLaser(): void {
+  stopLaserClock();
+  laserPages.clear();
+  laserAlpha.value = 1;
+  laserVersion.value += 1;
+}
+
+/** 只清一页（切视图 / 滚远回收 / 组件卸载）：别的页的激光笔迹还亮着 */
+export function dropLaserPage(key: string): void {
+  const list = laserPages.get(key);
+  if (!list || !list.length) return;
+  list.length = 0;
+  laserVersion.value += 1;
+  let alive = false;
+  laserPages.forEach((l) => { if (l.length) alive = true; });
+  if (alive) return;
+  stopLaserClock();
+  laserAlpha.value = 1;
 }
 
 /* ------------------------------ 笔记 ↔ 侧栏 ------------------------------ */
