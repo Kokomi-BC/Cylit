@@ -1165,9 +1165,12 @@ function isItemOpen(m: AgentMessage, item: TraceItem) {
   const key = itemOpenKey(m.message_id, item);
   if (openSteps.value.includes(key)) return true;
   if (closedSteps.value.includes(key)) return false;
-  /* **对话期间**（正在跑的这轮）自动展开"正在进行的最后一段"；那一段一结束就自动收起 ——
-     就是 DSH 那种跟着模型看的效果。历史消息展开思维链后内部一律折叠（用户口径 2026-10-25）。 */
-  return m.message_id === liveId.value && item.last === true && itemRunning(m, item);
+  /* **对话期间**自动展开"最后一段"（用户口径 2026-10-25）。
+     2026-12-14 复核：以前还额外要求这一段的 status 还是 running，于是最后一次**工具调用**
+     跑完立刻自己折回去 —— 用户看到的就是"最后一段工具调用没有自动展开"。
+     现在只要"这一轮是 live 且它是最后一段"就展开（跑没跑完都算）；新的一步进来之后它不再是最后一段，
+     自然收起，还是 DSH 那种跟着模型看的效果。历史消息展开思维链后内部一律折叠（口径没变）。 */
+  return m.message_id === liveId.value && item.last === true;
 }
 
 /** 这一段还在进行中吗（决定要不要替用户自动展开）。 */
@@ -1597,18 +1600,42 @@ function isNearBottom() {
 /** 用户自己想往上翻：**立刻**退出跟随。
  *  比 scroll 事件更早也更准（scroll 只在"真的滚动了"之后才来，还得与程序滚动辨别）；
  *  滚轮向上、手指往下拖都先命中这里。已经贴底、没得翻时不动 —— 免得多浮出一枚圆钮。 */
-function userScrollUp() {
+function userScrollUp(force = false) {
   const box = msgsEl.value;
   /* 已经贴底、没得往上翻时不动（容差见 USER_UP_SLOP）：否则惯性收尾的那一帧回弹会把
-     follow 打掉，圆钮跟着闪一下又消失。 */
-  if (box && box.scrollHeight - box.scrollTop - box.clientHeight <= USER_UP_SLOP) return;
+     follow 打掉，圆钮跟着闪一下又消失。
+     ~force~ 例外：滚轮落在**已经到顶**的块内滚动容器上（轨迹 ~.run-body~）时，
+     这一下明确是"读者要继续往上翻"，哪怕外层还贴着底也要立刻退出跟随 ——
+     不然内容一长高就被贴底逻辑拽回去，表现是"思维链到顶后往上翻带不动整页"。 */
+  if (!force && box && box.scrollHeight - box.scrollTop - box.clientHeight <= USER_UP_SLOP) return;
   follow.value = false;
   userPulledUp = true;
   programTop = -1;                 // 人动手了：之前那点程序滚动不再享有豁免
   if (stickRaf) { cancelAnimationFrame(stickRaf); stickRaf = 0; }
 }
+/**
+ * 事件目标往上找到**第一层能滚的容器**（止于 ~.msgs~ 自己）。
+ * 轨迹 ~.run-body~ 就是一个限高滚动容器：滚轮落在它上面时，得先问它还能不能滚。
+ */
+function innerScrollerAt(target: EventTarget | null): HTMLElement | null {
+  const box = msgsEl.value;
+  let n = target as HTMLElement | null;
+  while (n && n !== box && n instanceof HTMLElement) {
+    const cs = getComputedStyle(n);
+    if (/(auto|scroll)/.test(cs.overflowY) && n.scrollHeight - n.clientHeight > 1) return n;
+    n = n.parentElement;
+  }
+  return null;
+}
+
 function onMsgsWheel(e: WheelEvent) {
-  if (e.deltaY < 0) userScrollUp();
+  if (e.deltaY >= 0) return;
+  /* 块内容器还能往上滚 → 这一下归它，别动跟随意愿（否则只是翻思维链就把"回到最新"点亮）。
+     它已经到顶 → 强制判成"读者要往上翻"：滚轮接下来会链式带动外层，
+     这里先把跟随松掉，才不会一边滚一边被贴底逻辑拽回去。 */
+  const inner = innerScrollerAt(e.target);
+  if (inner && inner.scrollTop > 0) return;
+  userScrollUp(!!inner);
 }
 let touchY = 0;
 function onMsgsTouchStart(e: TouchEvent) {
@@ -3887,6 +3914,10 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; align-items: center; gap: 5px;
   color: var(--text-dim);
   cursor: pointer;
+  /* ⚠️ 必须显式给字号：这一行不是 ~.run-step~，靠继承拿到的是 `.msg` 的 **14px**，
+     而思考那一行（`.run-step.think`）是 12.5px —— 一行工具调用看着比一行思考"大一号"
+     （用户口径 2026-12-14：「思考文字大小和工具的大小不一样」）。 */
+  font-size: calc(12.5px * var(--ts, 1));
 }
 .tool-head:hover .step-tag { color: var(--text); }
 .tool-head svg { flex: none; }

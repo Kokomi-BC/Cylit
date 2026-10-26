@@ -15093,3 +15093,53 @@ localStorage      {"custom":{"pen":"#0f2a76","marker":"","laser":""}, …}
 校验：`npm run build` 绿（`ReaderView-eyUymGVN.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 220. 第二百二十轮：读者对话的轨迹（思维链）三处 —— 到顶不带动整页 / 工具行字偏大 / 最后一段不自动展开
+
+用户口径（一次三条）：思维链容器到顶后往上翻带不动整页；思考字和工具的大小不一样；每次**最后一段工具调用**没有自动展开。
+
+**① 到顶后往上翻带不动整页**
+
+`.run-body` 是限高滚动容器（`max-height: min(44vh, 420px)`，`overflow-y: auto`）。滚轮落在它上面时，
+`onMsgsWheel` 里那句 `userScrollUp()` 会先看外层 `.msgs` **贴不贴底**：
+块内还能滚的时候 `.msgs` 当然贴底 → 直接 early-return → `follow` 一直是 true。
+等块内滚到顶、滚轮开始链式带动外层时，跟随逻辑（MutationObserver → `followBottom`）又把外层拽回底部，
+于是"到顶再往上翻，整页不动"。
+
+改法：先判断这一下滚轮归谁。
+- 块内容器**还能往上滚** → 归它，不动跟随意愿（否则只翻思维链就把「回到最新」点亮）。
+- 块内容器**已经到顶** → `userScrollUp(true)`，强制退出跟随，外层才滚得动。
+
+**② 思考字和工具字不一样大**
+
+量出来的真相：思考那一行是 `.run-step.think`（12.5px），工具组的抬头 `.tool-head` **不是 `.run-step`**，
+靠继承拿到的是 `.msg` 的 **14px** —— 一行工具调用看着比一行思考"大一号"。给 `.tool-head` 显式补 12.5px。
+
+**③ 最后一段工具调用不自动展开**
+
+`isItemOpen` 的默认值原来是 `m.message_id === liveId && item.last && itemRunning(...)` ——
+**最后一段还在跑才展开**，所以最后一次工具调用一跑完（status 不再是 running）就自己折回去。
+用户看到的就是"最后一段工具调用没有自动展开"。
+
+改法：去掉 `itemRunning` 这一档，只留"这一轮是 live 且它是最后一段"：
+`return m.message_id === liveId.value && item.last === true;`。
+跑没跑完都留着；新的一步进来后它不再是最后一段，自然收起（还是 DSH 那种跟着看的节奏）。
+历史消息展开思维链后**内部仍然全部折叠** —— 那条 2026-10-25 的口径没动。
+
+> 中途试过更宽的写法（`return item.last === true`，历史消息也摊开最后一段），
+> 被 `frontend_check.py` 里三条钉旧口径的断言拦下来了（165/168）。
+> 那三条断言也按这次的用户口径改成"live 且是最后一段"，不再要求 `itemRunning`。
+
+### 实测（有头 Chrome + CDP）
+
+```
+字体     临时节点补上 scope 属性后量：.tool-head → 12.5px（改前 14px），.run-step.think .step-tag → 12.5px
+滚轮 A   块内容器还能滚（scrollTop 200）→ 派发 wheel：toBottom 仍 false（没有误判成"读者要离开底部"）
+滚轮 B   块内容器已到顶（scrollTop 0）→ 派发 wheel：toBottom 立刻变 true（跟随松掉，外层可滚）
+展开     历史消息仍然全折叠；"live 且是最后一段"由 frontend_check 的源码层断言钉住
+        （浏览器探针造的是历史消息，量不到"正在跑"的那一支 —— 这也是那三条断言写在源码层的原因）
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-yuMCo0wi.js`）、`frontend_check.py` 168/168。
+
+---

@@ -3258,11 +3258,13 @@ def check_trace_motion() -> None:
            "判定里含 liveId / thinking / 最后一步" if live_text else "找不到 liveThinkingAt")
     open_fn = re.search(r"function isItemOpen\((.{0,900}?)\n\}", src, re.S)
     open_text = open_fn.group(1) if open_fn else ""
-    record("motion", "手点优先：展开集合 > 收起集合 > 对话期间自动展开/结束自动收起",
+    # 2026-12-14 用户口径：「最后一段工具调用跑完就折回去」是 bug —— 现在只要这一轮是 live、
+    # 且它是最后一段就展开（不再要求 `itemRunning`）；新的一步进来后不再是最后一段，自然收起。
+    record("motion", "手点优先：展开集合 > 收起集合 > 对话期间最后一段自动展开（跑完也留着）",
            open_text.index("openSteps") < open_text.index("closedSteps") < open_text.index("liveId.value")
-           and "itemRunning" in open_text
+           and "item.last === true" in open_text and "itemRunning" not in open_text
            if all(k in open_text for k in ("openSteps", "closedSteps", "liveId.value")) else False,
-           "顺序 展开→收起→（live 且还在跑）" if open_text else "找不到 isItemOpen")
+           "顺序 展开→收起→（live 且是最后一段）" if open_text else "找不到 isItemOpen")
     record("motion", "段内开合按**实测高度**过渡（Web Animations，不是 max-height 猜）",
            src.count('<Transition name="fold" :css="false"') >= 3
            and "function foldEnter" in src and "function foldLeave" in src
