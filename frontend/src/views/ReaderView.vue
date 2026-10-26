@@ -10077,9 +10077,14 @@ function renderMarkdown(text?: string | null) {
   .reader > .aside-resizer.active::after,
   .reader > .aside-resizer.settling::after { animation: none; }
 }
-/* 侧栏收起 / 浮窗 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉 */
+/* 侧栏收起 / 窄屏（抽屉）时没有可拖的东西，把手一并收掉。
+   ⚠️ 浮窗（`.aside-float`）**不在**此列：浮窗打开时侧栏仍然开着，只是内容区换成
+   `.aside-pip` 占位面板（见上面那条），而那块面板的宽度也跟预览值走
+   （`paintAsideLiveWidth`），所以照样拖得动。以前这里有一条
+   `.reader.aside-float > .aside-resizer { display: none; }` —— 用户口径 2026-12-13：
+   打开对话浮窗后侧栏的拖宽把手就不见了（切到目录/笔记页签也一样，因为类挂在根上、
+   与页签无关）。 */
 .reader.no-aside > .aside-resizer { opacity: 0; pointer-events: none; }
-.reader.aside-float > .aside-resizer { display: none; }
 @media (min-width: 1101px) {
   /* 展开/收起期间侧栏**只被平移、不跟着变窄**：内容保持展开宽度。
      不这么做的话，选项卡会重排、公式（KaTeX）会逐帧重新排版 —— 既看着"变形"，

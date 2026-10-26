@@ -14810,3 +14810,34 @@ WAAPI setKeyframes     平均帧 6.1~6.3ms  p95 6.2~6.3ms   ← 扩展还在跑�
 没有量到明确收益前不做。
 
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BdZ4w8NG.js`）、`frontend_check.py` 168/168。
+
+### 214. 第二百一十四轮：打开对话浮窗后，侧栏的拖宽把手不见了
+
+用户口径：「打开对话浮窗后，侧栏的宽度拖动条消失的问题」。
+
+**根因是残留的一条 CSS**：`.reader.aside-float > .aside-resizer { display: none; }`。
+`.aside-float` 挂在**组件根**上、且只看 `chatFloat`（与当前页签无关），所以浮窗一开，
+不管侧栏正在显示目录还是笔记，那条 12px 把手都直接不渲染了。
+
+那条规则的理由（"浮窗时没有可拖的东西"）早就过期：现在浮窗打开时侧栏**仍然开着**，
+内容区换成 `.aside-pip` 占位面板，而这块面板的宽度本来就跟着预览值走
+（`paintAsideLiveWidth` 会同时写 `.chat-host` 与 `.aside-pip` 的行内宽度）—— 也就是说
+这条规则一直是**唯一**挡住"浮窗下也能拖宽"的东西，`paintAsideLiveWidth` 里那一支成了死代码。
+
+**做法**：删掉那条规则（`.no-aside` / 窄屏抽屉那两条保留，那两个是真的没东西可拖）。
+
+**实测**（有头 Chrome + CDP，1500×1000，真实鼠标事件拖右 120px）：
+
+```
+浮窗开着（.reader.aside-float）  display=block  opacity=1  pointer-events=auto  z=31
+                                 rect=[300,52,12,831]  elementFromPoint(306,468) → aside-resizer
+拖动中                           aside 300 → 420，.aside-pip 300 → 420（实时跟随）
+松手后                           aside 420，pip 420，aside.style.width 清空（回到 v-bind 落盘值）
+拖动帧                           平均 7.9ms / p95 8.5ms / 最长 32.7ms（181 帧）
+```
+
+灵敏度自检：把旧规则注回页面，同一套测量立刻变成 `display: none` —— 探针确实能抓到这个问题。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-IraOs0-I.js`）、`frontend_check.py` 146/146。
+
+---
