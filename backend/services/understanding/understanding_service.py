@@ -957,6 +957,34 @@ def _refresh_image_urls(paper_id: str, inventory: list[dict]) -> None:
             it["image"] = url.split("?", 1)[0] + f"?v={ver}"
 
 
+#: 「字段罗列」的一行：行首就是 `**字段：**`（标题 / 作者与机构 / 领域与关键词 那一类）
+_LABEL_LINE = re.compile(r"^\s*\*\*[^*\n]{1,24}[：:]\*\*")
+
+
+def paragraphize_labels(md: str) -> str:
+    """把**连续两行都以 `**字段：**` 开头**的块拆成独立段落（就在两行之间补一个空行）。
+
+    为什么要在后端做（用户口径 2026-12-12：「重新生成后还是没有分段，可能是后端的问题」）：
+    提示词已经要求「每个字段单独成行」，模型照做了 —— 但**单换行在 Markdown 里是软换行**，
+    渲染时按空格并成一段，屏幕上照样是一坨。线上实测那篇：`**标题：** …` / `**作者与机构：** …`
+    / `**发表会议或期刊与年份：** …` / `**领域与关键词：** …` 四行紧挨着（中间没有空行），
+    于是被并成一段；而同一份提示词另一次生成里模型自己加了空行，就正常分段 —— 不能赌模型。
+    
+    只在**相邻两行都是字段行**时补空行：正文段落里的加粗短语、列表项、表格、公式一律不动，
+    也不改库里的原文（读的时候整形，重生成与否都立刻生效）。
+    """
+    lines = (md or "").split("\n")
+    out: list[str] = []
+    prev_label = False
+    for line in lines:
+        is_label = bool(_LABEL_LINE.match(line))
+        if is_label and prev_label:
+            out.append("")
+        out.append(line)
+        prev_label = is_label
+    return "\n".join(out)
+
+
 def to_dict(row: Understanding) -> dict:
     """库里那一行 → 接口形状。引用走三级回落（见 split_refs_by_pids）：
 
@@ -987,7 +1015,9 @@ def to_dict(row: Understanding) -> dict:
     return {
         "paper_id": row.paper_id, "path": row.path,
         "label": PATH_LABELS.get(row.path, row.path),
-        "markdown": row.markdown or "",
+        # 单换行的「字段罗列」在 Markdown 里会被并成一段（见 paragraphize_labels）：
+        # 读的时候整形，老解读不必重生成也立刻分段。
+        "markdown": paragraphize_labels(row.markdown or ""),
         "refs": refs.get("codes") or [],
         "refs_resolved": live_refs,
         # 重新翻译 + 重建索引后旧 chunk id 会失效：**保留**这些引用（页码还在，照样能跳），

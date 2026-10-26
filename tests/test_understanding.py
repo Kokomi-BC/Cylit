@@ -223,3 +223,32 @@ def test_refresh_image_urls_recomputes_the_region_version(monkeypatch) -> None:
     assert inventory[2]['image'].endswith('?v=oldhashc0')      # 越界 → 不动
     assert inventory[3]['image'].endswith('?v=other')          # 别的论文 → 不动
     assert 'image' not in inventory[4]
+
+
+def test_paragraphize_labels_splits_consecutive_field_lines() -> None:
+    """连续两行都是 `**字段：**` 时补空行 —— 单换行在 Markdown 里是软换行，会被并成一段。
+
+    线上那篇（2026-12-12）就是四行紧挨着，屏幕上挤成一坨；同一份提示词另一次生成加了空行就正常，
+    所以这事不能赌模型，读的时候整形。
+    """
+    from backend.services.understanding.understanding_service import paragraphize_labels
+
+    md = (
+        "## 基本信息\n\n"
+        "**标题：** X\n"
+        "**作者与机构：** Y\n"
+        "**领域与关键词：** Z\n\n"
+        "## 背景与问题\n\n正文里也有 **加粗：** 前缀，但它不是字段行。"
+    )
+    out = paragraphize_labels(md)
+    assert "**标题：** X\n\n**作者与机构：** Y\n\n**领域与关键词：** Z" in out
+    # 正文段落里的加粗短语不动（它的上一行不是字段行）
+    assert "正文里也有 **加粗：** 前缀" in out
+
+
+def test_paragraphize_labels_keeps_blank_separated_text_unchanged() -> None:
+    """已经用空行分段的解读：一个字符都不改（重生成与老数据两条路共用这份整形）。"""
+    from backend.services.understanding.understanding_service import paragraphize_labels
+
+    md = "**标题：** X\n\n**作者与机构：** Y\n"
+    assert paragraphize_labels(md) == md
