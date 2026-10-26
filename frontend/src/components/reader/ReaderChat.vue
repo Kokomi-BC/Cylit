@@ -284,6 +284,10 @@ const chatEl = ref<HTMLElement | null>(null);
  *  两份互相打架 —— 这正是"点了回到最新也追不上"的一半来源）。圆钮的显隐直接由它反推。
  *  只有**用户的意图**能改它：往上翻 / 上翻键 = 退出；滚回底部、点圆钮、发消息、切会话 = 恢复。 */
 const BOTTOM_GAP = 56;
+/** 「没得往上翻」的容差（px）。取 2 而不是 1：触控板 / 触摸的惯性会在贴底那一帧回一点点
+ *  （亚像素），卡在 1px 上会把这一次回弹读成「读者上翻」—— 于是「回到最新」那枚圆钮
+ *  闪一帧就没了（用户报的「滚到底部那一下会闪一帧」）。 */
+const USER_UP_SLOP = 2;
 const follow = ref(true);
 
 /** 刚进消息流的那一两条：只给它们播进场动画。
@@ -317,16 +321,25 @@ let deltaTimer = 0;
 /** 程序自己刚滚到的位置 —— 见 `onMsgsScroll` 里"别把自己的滚动当成上翻"。
  *  以前用一个 600ms 的时间窗，两个方向都误伤：窗口内用户真上翻被吞掉（想翻翻不动），
  *  窗口外程序滚动的中间帧又被当成上翻（跟随就此断掉）。现在改成**认落点**：
- *  只有 scrollTop 正好落在我们刚设的那个值上，才算"这滚动是我自己干的"。 */
+ *  scrollTop 停在（或翻过）我们刚设的那个值，就算"这滚动是我自己干的"。
+ *  ⚠️ 认出一次**不清零**（以前清成 -1）：同一批增量连着来两条 scroll 事件时，
+ *  第二条就会被判成"读者上翻"，跟随当场断掉、「回到最新」圆钮闪一帧。 */
 let programTop = -1;
-let programAt = 0;
+/** 读者**自己**上翻过（滚轮向上 / 手指往下拖）：这是一次明确意图，不许滚动事件按"离底多远"
+ *  立刻撤回 —— 先退出再恢复那一下正是圆钮闪一帧的来源（用户报的「滚到底部闪一帧」）。 */
+let userPulledUp = false;
 
 function stickToBottom() {
   const el = msgsEl.value;
   if (!el) return;
-  el.scrollTop = el.scrollHeight;
+  /* 落点取「可滚到的最大值」，不是 scrollHeight（后者比最大值大一个 clientHeight）：
+     每次赋值都让浏览器做一次"越界 → 夹紧"，落点与意图之间就多了一次回弹的机会。
+     已经在底上就一个字都不写 —— 给 scrollTop 赋值会打断浏览器正在跑的惯性滚动
+     （触摸 / 触控板松手后的余量被清掉），收尾那一帧会回弹 = 「滚到底闪一下」。
+     贴底过程中位移只允许单调往前，不 overshoot、也不反复推同一个值。 */
+  const top = Math.max(0, el.scrollHeight - el.clientHeight);
+  if (Math.abs(top - el.scrollTop) >= 1) el.scrollTop = top;
   programTop = el.scrollTop;          // 读回被浏览器夹紧之后的真值
-  programAt = performance.now();
 }
 
 /** 跟随状态下"把视口拉到底"，但**等这一帧的 DOM 落完**再拉。
@@ -1586,8 +1599,11 @@ function isNearBottom() {
  *  滚轮向上、手指往下拖都先命中这里。已经贴底、没得翻时不动 —— 免得多浮出一枚圆钮。 */
 function userScrollUp() {
   const box = msgsEl.value;
-  if (box && box.scrollHeight - box.scrollTop - box.clientHeight <= 1) return;
+  /* 已经贴底、没得往上翻时不动（容差见 USER_UP_SLOP）：否则惯性收尾的那一帧回弹会把
+     follow 打掉，圆钮跟着闪一下又消失。 */
+  if (box && box.scrollHeight - box.scrollTop - box.clientHeight <= USER_UP_SLOP) return;
   follow.value = false;
+  userPulledUp = true;
   programTop = -1;                 // 人动手了：之前那点程序滚动不再享有豁免
   if (stickRaf) { cancelAnimationFrame(stickRaf); stickRaf = 0; }
 }
@@ -1619,20 +1635,25 @@ let msgsSaveTimer = 0;
 function onMsgsScroll() {
   const box = msgsEl.value;
   if (box) {
-    /* 只有**用户造成的**滚动才改跟随意愿，判据是"离底多远"。
+    /* 只有**用户造成的**滚动才改跟随意愿。
      *
-     * ① 程序自己滚的（贴底 / 回到最新 / 恢复位置）先被**落点**认出来并放过：
-     *    scrollTop 正好是我们刚设的那个值（±2px、300ms 内）。
-     *    以前用的是 600ms 时间窗，两头都误伤：窗口内用户真上翻被吞（想翻翻不动），
-     *    窗口外多帧滚动的中间帧却被当成上翻（跟随即断，圆钮反复浮出来）。
-     * ② 内容长高（scrollHeight 变大）本身**不产生滚动事件**；浏览器滚动锚定只会把
-     *    scrollTop 往上抬，"变高"不会把自己判成"上翻"。所以这里可以直接用距离：
-     *    离底 > BOTTOM_GAP = 用户翻走了（退出跟随）；回到阈值内 = 恢复跟随。 */
-    const self = programTop >= 0
-      && Math.abs(box.scrollTop - programTop) <= 2
-      && performance.now() - programAt < 300;
-    if (self) programTop = -1;
-    else follow.value = isNearBottom();
+     * ① 读者自己上翻过（`userPulledUp`）就一直是"不跟随"，直到他**真正**滚回最底
+     *    （≤ USER_UP_SLOP）。以前这里按"离底 56px 内就恢复"，于是上翻一下立刻又被
+     *    按回跟随：「回到最新」圆钮先出现再消失，看起来就是闪了一帧。
+     * ② 程序自己滚的（贴底 / 回到最新 / 恢复位置）按**落点**放过：scrollTop 停在
+     *    （或翻过）上次写下的落点，就还是我们贴着的那条底。内容长高时 scrollTop 原地
+     *    不动，所以贴着底输出时一个 scroll 事件都不会被误判成上翻。
+     * ③ 其余按离底多远判（读者自己滚回来 / 滚走了）。 */
+    const dist = box.scrollHeight - box.scrollTop - box.clientHeight;
+    if (userPulledUp && dist > USER_UP_SLOP) {
+      follow.value = false;
+    } else if (programTop >= 0 && box.scrollTop >= programTop - 2) {
+      userPulledUp = false;
+      follow.value = true;             // 停在（或翻过）程序落点 = 还贴着底
+    } else {
+      if (dist <= USER_UP_SLOP) userPulledUp = false;
+      follow.value = isNearBottom();
+    }
   }
   if (msgsSaveTimer) return;
   msgsSaveTimer = window.setTimeout(() => {
@@ -1658,9 +1679,11 @@ function restoreThreadScroll(id: string | null): boolean {
   const apply = () => {
     const m = msgsEl.value;
     if (!m) return;
+    /* ⚠️ 这里**不登记** `programTop`：恢复的是"读者上次读到哪儿"，通常并不是底。
+       一登记就会被 `onMsgsScroll` 的"落在落点上 = 还贴着底"认成正在跟随，
+       下一批增量直接把读者从上次那一行拽到最底（用户报的"切回来被拽走"）。 */
+    programTop = -1;
     m.scrollTop = y;
-    programTop = m.scrollTop;      // 恢复位置也是"程序滚动"：别被当成用户上翻
-    programAt = performance.now();
   };
   apply();
   void nextTick().then(() => { apply(); requestAnimationFrame(apply); });
@@ -1675,6 +1698,7 @@ function restoreThreadScroll(id: string | null): boolean {
  */
 async function scrollToBottom() {
   follow.value = true;
+  userPulledUp = false;               // 发消息 / 切会话 / 点圆钮：这一次是程序要把人拉回最底
   await nextTick();
   const el = msgsEl.value;
   if (!el) return;
@@ -1805,6 +1829,9 @@ async function loadConversation(id: string) {
   }
   /* ⚠️ 滚动必须在 `loading=false` **之后**：加载中列表里只有"读取会话…"那一行，
      这时 `scrollHeight` 约等于 0，滚了也白滚（进来停在顶部就是这么来的）。 */
+  /* 换了一条对话：上一条留下的"读者上翻过"不能带过来 —— 否则这条会话一路都不跟随，
+     圆钮常驻、怎么点「回到最新」都治不好（`userPulledUp` 是读者意图，只对当前这条有效）。 */
+  userPulledUp = false;
   if (!restoreThreadScroll(id)) await scrollToBottom();
   /* 跟随与否按**落点**算一次：落到底（或本来就没记录）＝继续跟随；
      落在半截＝在读历史，别让下一批增量把人拽走（那是另一个老问题）。 */
@@ -1835,6 +1862,8 @@ function startNew() {
   draft.value = '';
   lastAnchor.value = null;              // 新对话：上一条对话的划词锚点与色点一起清掉
   anchorAnswerId.value = '';
+  follow.value = true;                  // 新对话没有历史可翻：跟随与"读者上翻过"一起归零
+  userPulledUp = false;
   rollCopy();
   void nextTick(() => { resetInputHeight(); inputEl.value?.focus(); });
 }
@@ -3647,6 +3676,10 @@ defineExpose({ uploadFiles, ensureThread });
 .msgs {
   /* 底部这块空白是给**悬浮的输入区**让位的（JS 按实测高度覆盖，这里只是兜底） */
   flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 112px; overflow-wrap: anywhere;
+  /* ⚠️ 关掉浏览器的滚动锚定（见 useFollowTail 第三条约定）：它会为了"内容别跳"自己改 scrollTop，
+     和 `stickToBottom` 每帧的贴底赋值抢同一个位置 —— 表现就是滚到底之后又弹回一点、
+     或者贴着底还闪一帧。贴底由我们负责，浏览器在这里必须不插手。 */
+  overflow-anchor: none;
   /* 列向 flex：空态那一块才能"占满整块高度、把图标 + 语录**竖直居中**"（用户口径 2026-10-07）。
      消息自己还是从上往下排（块级子项在列向 flex 里本来就是撑满宽度、顺序堆叠）。 */
   display: flex; flex-direction: column;

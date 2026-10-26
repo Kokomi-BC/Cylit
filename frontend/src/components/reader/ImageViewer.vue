@@ -354,9 +354,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 整屏深底（参考图就是黑底看图）；图片本身保持白底（论文插图是白的） */
+/* 整屏深底（参考图就是黑底看图）；图片本身保持白底（论文插图是白的）。 */
+/* ⚠️ 层级必须压过**整条浮层序列**：笔记卡 / 对话浮窗 / 表格公式浮层 / 引用速览卡的 z 都来自
+   ReaderView 的 `layerZ`（从 60 起、每聚焦一次 +1，**没有上限**）。原来写的是 240 —— 那只是
+   "现在够高"，点得够多（每次点浮窗都会 +1）迟早被追平，表现就是浮窗压在大图上。
+   10000 高于全应用最高的那几档（右键菜单 360 / toast 400），浮层永远追不上；
+   代价是看图时 toast 会被这层黑底盖住 —— 要反过来就只能在 ReaderView 里给 layerZ 封顶。
+   另一半是模板上的 `Teleport to="body"`：留在阅读器内容树里会被祖先的 transform / filter /
+   isolation 建成**新的 stacking context**，那时数字写多大都出不了那个上下文。 */
 .viewer {
-  position: fixed; inset: 0; z-index: 240; overflow: hidden;
+  position: fixed; inset: 0; z-index: 10000; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   background: #0d0f13; cursor: grab;
   touch-action: none; user-select: none; -webkit-user-select: none;

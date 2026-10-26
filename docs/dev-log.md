@@ -14532,3 +14532,74 @@ UPDATE understanding SET inventory = REPLACE(inventory,
 `understanding_service._refresh_image_urls()` 在 `to_dict()` 里按 `page/index` 回查当前区域、
 重拼 `?v=<region_version>`（越界 / 别的论文 / 没有图一律不动）。本地实测：解读 payload 的四张
 表图地址由快照值变成当前值（`9/0: …?v=917d794fc0`、`9/1: …?v=95db1e12c0` 等），不用重生成解读。
+
+### 207. 第二百零七轮：七件杂事（对话闪帧 / 浮窗范围 / 大图层级 / 笔记引用 / 跳转闪烁 / 设置图标 / 解读换行）
+
+用户口径一次给了六条（第 3 条含两小项），明说「比较杂，一部分派子 agent 去干」。按文件所有权切成三份并行：
+对话侧（`ReaderChat` / `FloatingCard` / `ImageViewer` / `useFollowTail`）、阅读器主体（`ReaderView` 独家 +
+`ReaderSidePanel` + `useMarkdown`）、设置与提示词（`settings/**` + `prompts.py`）。图标注册表与 `ToastHost`
+留在协调者手里，避免同一文件被两边写。
+
+**① 对话滚到底闪一帧（偶现）。** 真凶不是「滚过头再回弹」，而是**在已经贴底时还给 `scrollTop` 赋值**：
+`scrollTop = scrollHeight` 本身是一次越界写（`scrollHeight` 比可滚到的最大值大一个 `clientHeight`），
+浏览器夹紧一次；更糟的是赋值会**打断原生惯性滚动**（触控板松手后的余量被清掉），收尾那帧就回弹 ——
+只有「流式输出的同时滚到底」才撞得上，所以是偶现。改法：落点取 `scrollHeight - clientHeight`，
+**差 <1px 就一个字都不写**；跟随判定从「离底多远」改成「`scrollTop` 相对上次程序落点是否变小」
+（内容长高时 `scrollTop` 原地不动、离底却变远，按距离判会把每批增量都读成「读者翻走了」）；
+新增 `userPulledUp`：读者上翻是明确意图，必须**真正滚回最底**（≤2px）才恢复跟随；
+`.msgs` 补上 `overflow-anchor: none`（对话容器一直漏了这条，ChatView 那边早有）。`useFollowTail` 同口径。
+
+**② 对话浮窗的可拖范围比别的浮窗小。** 定位到 `ReaderView.clampBox()`：它按 `FLOAT_EDGE=24` 要求
+**整块**留在视口里 —— 500×560 的窗在 800 高的屏上纵向只剩 [24, 216] 可走。改成与
+`FloatingCard.clampToViewport` **逐字一致**的两行（横向留 48、纵向留 32 抓得住即可）。
+四个数字必须两处一致，注释里写死了这条耦合。
+
+**③ 图片查看器被浮窗压住。** 前提纠正：`ImageViewer` 早就 `Teleport to="body"` 了，不存在 stacking context
+困住的问题；真因是 `layerZ` 从 60 起、**每次聚焦浮窗 +1、没有上限**，240 只是「现在够高」，点得够多就被追平。
+改成 `z-index: 10000`（高于右键菜单 360 / 原来 toast 400）。副作用是看图时 toast 会被黑底盖住 —— 按
+「提示永远在最上层」的既有口径把 `ToastHost` 抬到 **10100**，而不是给 `layerZ` 封顶（封顶要连带维护层序，风险大）。
+实测：笔记卡 z=62、`.viewer` z=10000、其父节点是 `BODY`、`position: fixed` —— 数字与包含块两条都成立。
+
+**④ 笔记正文里的 ref 标号（浮窗）。** 新增共享渲染层 `useMarkdown.decorateCiteMarks(html, lookup)`：
+两种编号到达 HTML 时形状不同，分两趟走 —— 数字 `[3]` 已被 `cite` 扩展画成按钮 → **升级**它；
+短码 `[A023]` 还是纯文字 → **替换**它。两趟之间用占位符隔开，否则会生成 button 套 button（单测抓到的）。
+短码 → 落点**不另造表**：先认笔记自己末尾那行 `<!-- refs:… -->`（对话「存为笔记」就是这么带过来的），
+再退到解读的 `refs_resolved / stale_refs`；笔记里有短码而解读表没预热时静默拉一次（否则没开过解读页签的人点不动）。
+点 = `focusRow(row || block, { flash, page, latex })`（与解读那枚标号同一条链），悬停 = `onCitePeekAsk`。
+**层号规则一个字没改**（`newPeekZ` / `pinCitePeek` / `takeTop`）。保存时把正文里还认得的短码并进 refs 表，
+这条笔记从此自己带着跳转信息（解读那份引用表是当前索引的快照，重建索引后就不作数了）。
+实测：笔记里 `[A023]` → 显示 `[1]`、`[A777]` → 显示 `[2]`（点不动但不抹掉）、反引号里的 `[A023]` 保持原样。
+
+**⑤ 跳转闪烁只闪标题。** 命中行是 heading 时，往后补同页、非标题、非空的最多 2 行（`FLASH_SPAN_ROWS`），
+遇下一个标题 / 空行 / 跨页即停；命中正文行时**行为不变**（不扩）。补的行挂 `data-flash-span` **属性**而不是类名：
+Vue 重排 class 时是整条 `className` 覆写，手工挂的类会被抹掉。顺手修了老问题 `locateNoteRow`：
+`card.rowId` 常常是块 id，要经 `rowAnchorId / block_rows` 才翻得成行，以前先用 `focusRow` 定位、
+再拿**未归一化**的 id 去 `flashRow`，于是「跳了但不闪」—— 改成 `focusRow(id, { flash: true })` 一条链走完。
+实测：点指向「3.2 注意力」的标号 → 标题行闪 + 紧随 1 行正文一起闪（`data-flash-span` 命中，底色同款）。
+
+**⑥ 在线解析「高级选项」的展开图标。** `::after { content:'▾' / '▴' }` 的字符三角换成
+`<AppIcon name="chevron-down" :size="14" />`，旋转挂在 `.ons-adv[open]` 上（开合只有 CSS 看得见，不为它引 ref）；
+`summary` 加 `flex + gap:6px`，所以调大字号时箭头不跟着变大、仍与文字垂直居中。截图为证：展开后箭头朝上。
+
+**⑦ 论文解读「基本信息」不换行。** 按用户选定口径**改提示词、不做前端兜底**：
+`UNDERSTAND_A_SYSTEM`【硬规则】新增第 7 条（字段罗列一个字段一行、同一行不许连写两个 `**字段：**`），
+【大致框架】「基本信息」那条原来把四项用 `/` 串成一行（模型照抄的根源）改成各占一行，
+`_SHARED` 的输出格式示例补一句；加 `test_prompt_forces_one_field_per_line` 钉住三处。已有规则（`[A023]` /
+只许用清单编号 / 章节标题条目非必要不引用 / `img:A012` / refs JSON / 不必区分来源）一个字没动。
+重生成一篇 TurboQuant 解读实测：`## 基本信息` 下面四个字段各自成段（中间空行），渲染即分行。
+
+**顺带。** 笔记侧栏「按时间排序」的图标换成真·时钟：原 `sort-time` 其实是**上下双箭头**（排序语义），
+不是「时间」；`fluentIcons` 里本来就有一个 `clock`（未加引号的键，我先前按带引号 grep 漏了），
+给它补上官方 `clock_24_filled` 的 `f` 变体后换成 `clock-fill`。
+
+**验证。** `vue-tsc --noEmit` 0 错；`npm run build` 绿（`ReaderView-BDygRxdH.js`）；后端 `pytest tests` 全绿；
+`scripts/frontend_check.py` **168 项 168 通过**；上面 ①~⑦ 逐条都有实测（探针 / 截图 / 重生成的解读）。
+
+**没做的（记在案，别当成 bug）**：
+
+* 侧栏「笔记」列表里的正文仍是纯文本（`decorateRefs` 只认数字），短码只在**浮窗**里成标号 —— 用户口径说的
+  是「笔记新增浮窗」。要统一只是把同一层渲染搬过去的事，但那里还牵一条点击→跳转的接线，留给下一轮。
+* 「从选区新建笔记」**不会自动往里塞短码**：塞在哪、塞哪一条 chunk 是产品口径，不敢替用户定；
+  从对话「存为笔记」过来的那条链本来就带 refs 表，已经能用。
+* 短码编号（按本篇出现顺序编 `[1] [2]…`）与对话那套 ref 号可能撞号：两套编号约定本身的碰撞，
+  每枚 chip 各自带 `data-ref`，点了不会串。

@@ -23,14 +23,14 @@ import type {
   Highlight, MarkdownFormula, MarkdownTable, MarkdownViewMode, Note, OriginalMode, Outline, OverlayAnchor,
   PageInfo, PageRow,
   PageTranslation, PairOrder, Paper, PaperReference, ReaderPayload, ReaderStats, TaskInfo,
-  TranslatedMarkdownPage, ViewMode, ZoomTarget,
+  TranslatedMarkdownPage, UnderstandingRefItem, ViewMode, ZoomTarget,
 } from '@/api/types';
 import { askConfirm } from '@/stores/confirm';
 import { useEventStream, type StreamStatus } from '@/composables/useEventStream';
 // 解析完成后要**强制**重取解读（`useUnderstanding` 是按论文缓存的整包，TTL 30s）
-import { loadUnderstanding } from '@/composables/useUnderstanding';
+import { loadUnderstanding, understandingEntry } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
-import { htmlWithHighlights, mdToHtml } from '@/composables/useMarkdown';
+import { decorateCiteMarks, htmlWithHighlights, mdToHtml, type CiteMarkTarget } from '@/composables/useMarkdown';
 import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMarks';
 import { HL_SWATCHES, highlightCss, paletteNameOf, swatchClassOf, swatchLabel,
   swatchStyleOf } from '@/utils/highlightColors';
@@ -2257,8 +2257,13 @@ function clampBox(b: { left: number; top: number; w: number; h: number }) {
   const vh = window.innerHeight;
   b.w = Math.round(Math.max(FLOAT_MIN_W, Math.min(b.w, vw - FLOAT_EDGE * 2)));
   b.h = Math.round(Math.max(FLOAT_MIN_H, Math.min(b.h, vh - FLOAT_EDGE * 2)));
-  b.left = Math.round(Math.max(FLOAT_EDGE, Math.min(b.left, vw - b.w - FLOAT_EDGE)));
-  b.top = Math.round(Math.max(FLOAT_EDGE, Math.min(b.top, vh - b.h - FLOAT_EDGE)));
+  /* 位置与笔记卡 / 内容浮层**同一套夹取**（逐字对齐 FloatingCard.clampToViewport）：
+     只要求"还留一条边抓得住"（横向 48、纵向 32 在屏内），不再要求整块都留在视口里。
+     用户口径（本轮第 1 项后半）：对话浮窗的可拖范围比别的浮窗小一截 —— 500×560 的窗在 800 高的屏上
+     原来纵向只剩 [24, 216] 可走，就是下面两行按 FLOAT_EDGE=24 夹"整块在内"造成的。
+     ⚠️ 这四个数字与 FloatingCard 那两行必须一致，别各写一套。 */
+  b.left = Math.round(Math.min(Math.max(b.left, 8 - b.w + 48), vw - 48));
+  b.top = Math.round(Math.min(Math.max(b.top, 4), vh - 32));
 }
 /** 落盘 / 打开时那份（同一套数学：手势里的手感必须与落定后完全一致） */
 function clampFloatBox() { clampBox(floatBox.value); }
@@ -2853,12 +2858,81 @@ const flashRowId = ref('');
 const flashNonce = ref(0);
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * 命中行之外**再补几行**一起闪。
+ *
+ * 用户口径（本轮第 4 项）：点引用只闪标题行，"看上去像只找到了标题" —— 标题下面那段正文
+ * 才是要读的东西。但也不能一路闪到下一个标题：一段正文可能十几行、上千像素，那就成了
+ * "整片亮"（ReaderPageRows 里记着的那次"整页闪"是同一个毛病）。两行 ≈ 标题 + 一段正文。
+ */
+const FLASH_SPAN_ROWS = 2;
+
+/**
+ * 命中行之后该一起闪的行。**命中行本身是正文时返回空** —— 那种情况行为一个字都不变：
+ * 用户点的是那一段，往下扩没有意义。只有命中标题（标题与它下面的正文是一个语义单元，
+ * 速览卡按 row_ids 整段画也是同一思路）才把紧随的正文补进来。
+ */
+function flashSpanIds(id: string): string[] {
+  const rows = allRows.value;
+  const i = rows.findIndex((r) => r.id === id);
+  if (i < 0 || String(rows[i].type ?? '') !== 'heading') return [];
+  const out: string[] = [];
+  const page = rows[i].page;
+  for (let k = i + 1; k < rows.length && out.length < FLASH_SPAN_ROWS; k += 1) {
+    const r = rows[k];
+    if (r.page !== page) break;                        // 跨页不扩：那一页整片亮起来最糟
+    if (String(r.type ?? '') === 'heading') break;     // 下一个标题 = 这一段结束
+    if (!String(r.translation || r.original || '').trim()) break;   // 空行 = 段落结束
+    out.push(r.id);
+  }
+  return out;
+}
+
+/**
+ * 把范围里**命中行之外**那几行点亮（命中行仍由 ReaderPageRows.rowClass 自己闪）。
+ *
+ * 为什么落到 DOM 上、而不是把一串行 id 传下去：那边接的是**单值** prop、
+ * id === props.flashRowId 严格相等，一个字符串说不了"这几行一起闪"，而那个文件不在本轮范围。
+ * 挂的是 data-flash-span **属性**而不是类名：Vue 重排 class 时是整条 className 覆写，
+ * 手工挂上去的类会被抹掉（滚动跟踪一改 currentRowId 就重排），属性不会被碰。
+ * "先摘、强制回流、再挂"与 flashFormulaNode 同一手法：连点同一处时浏览器会把
+ * "摘掉又挂回"合并成没变，动画就停在 forwards 的最后一帧上（用户看不到第二次闪）。
+ */
+function paintFlashSpan(id: string): void {
+  clearFlashSpan();
+  const root = scroller.value;
+  const ids = flashSpanIds(id);
+  if (!root || !ids.length) return;
+  for (const rowId of ids) {
+    const el = root.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(rowId)}"]`);
+    if (!el) continue;
+    delete el.dataset.flashSpan;
+    void el.offsetHeight;                              // 强制回流：让动画真的重播
+    el.dataset.flashSpan = '1';
+  }
+}
+
+/** 摘掉上一轮补的那几行：换目标 / 到时都要清，否则旧范围会一直亮着。
+ *  只在**本文正文容器**里找：多标签页时别的阅读器实例是另一棵 DOM，不该被这边顺手清掉。 */
+function clearFlashSpan(): void {
+  const root = scroller.value;
+  if (!root) return;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-flash-span]'))) {
+    delete el.dataset.flashSpan;
+  }
+}
+
 function flashRow(id: string) {
   if (!id) return;
   if (flashTimer) clearTimeout(flashTimer);
   flashNonce.value += 1;
   flashRowId.value = id;
-  flashTimer = setTimeout(() => { flashRowId.value = ''; flashTimer = null; }, 1600);
+  paintFlashSpan(id);
+  flashTimer = setTimeout(() => {
+    flashRowId.value = '';
+    clearFlashSpan();
+    flashTimer = null;
+  }, 1600);
 }
 
 /*
@@ -6454,11 +6528,15 @@ async function deleteSelectionHighlights() {
  */
 async function savePaneNote(p: NoteDraftPayload) {
   if (!p.contentMd.trim()) { toast('笔记内容不能为空', 'warn', 2200); return; }
+  /* 侧栏这边正文与标号表是一起传过来的（`withKeptNoteRefs` 已经接回原来的表），
+     所以只补"正文里新出现、表里还没有"的短码 —— 与浮层那次保存同一份落库口径。 */
+  const body = splitNoteRefs(p.contentMd);
+  const contentMd = withNoteRefs(body.text, codeRefsOf(body.text, body.refs));
   try {
     if (p.noteId) {
-      const updated = await api.put<Note>(`/notes/${p.noteId}`, { content_md: p.contentMd });
+      const updated = await api.put<Note>(`/notes/${p.noteId}`, { content_md: contentMd });
       const hit = notes.value.find((n) => n.id === p.noteId);
-      if (hit) hit.content_md = updated?.content_md ?? p.contentMd;
+      if (hit) hit.content_md = updated?.content_md ?? contentMd;
     } else {
       const hl = highlights.value.find((h) => h.id === p.highlightId) ?? null;
       if (!hl) { toast('先给这段文字加个高亮，再写笔记', 'warn', 2600); return; }
@@ -6468,7 +6546,7 @@ async function savePaneNote(p: NoteDraftPayload) {
         highlight_id: hl.id,
         selected_text: hl.text ?? '',
         start_offset: hl.start, end_offset: hl.end,
-        content_md: p.contentMd,
+        content_md: contentMd,
       });
     }
     toast('笔记已保存', 'ok', 1600);
@@ -7173,8 +7251,149 @@ function onFloatPress(ev: PointerEvent, which: 'note' | 'chat', key?: string) {
 function locateNoteRow(card: NoteCard) {
   const id = card.rowId;
   if (!id) return;
-  void focusRow(id);
-  flashRow(id);
+  /* 一条链走完定位与闪烁：`card.rowId` 常常是**块 id**（如 attentionisa-p01-b06），
+     要经 rowAnchorId / block_rows 才翻得成行 —— 以前这里先用 focusRow 定位、再拿**未归一化**
+     的 id 去 flashRow，于是"跳了但不闪"（老问题，本轮顺手修掉）。 */
+  void focusRow(id, { flash: true });
+}
+
+/* ---------------------- 笔记正文里的引用标号（短码 `[A023]` / 数字 `[3]`） ----------------------
+ * 用户口径（本轮第 3 项）：笔记正文里的短码要变成可点的标号，点了跳到正文对应位置、悬浮出速览卡。
+ *
+ * 短码 → 位置**不另造一张表**，只走两条已经存在的链路：
+ *   ① 笔记自己末尾那行 `<!-- refs:… -->`（`utils/noteRefs`）—— 对话「存为笔记」就是这么带过来的；
+ *   ② 论文解读的 `refs_resolved / stale_refs`（`/understanding`，按论文缓存）——
+ *      `[A023]` 这个编号本来就是解读的材料清单（inventory）编出来的，只有它能翻成行 / 页 / 公式。
+ * 两边都没有这一条时照样画标号（点了不跳）：它本来就是正文的一部分，抹掉会让读者以为漏了内容。
+ */
+
+/** 短码 → 引用位置（stale 先放、resolved 后放：有效的覆盖过期的那一份，与 InsightDoc.refMap 同一口径） */
+const understandingRefsByCode = computed(() => {
+  const map = new Map<string, UnderstandingRefItem>();
+  const a = understandingEntry(paperId.value).bundle.a;
+  for (const item of [...(a?.stale_refs ?? []), ...(a?.refs_resolved ?? [])]) {
+    const code = String(item?.code ?? '').toUpperCase();
+    if (code) map.set(code, item);
+  }
+  return map;
+});
+
+/** 材料类型 → 速览卡 / 悬浮提示里的短名（与 InsightDoc 的 TYPE_LABEL 同一份值域） */
+const CITE_TYPE_LABEL: Record<string, string> = {
+  formula: '公式', table: '表格', figure: '插图', unit: '段落', text: '段落',
+};
+
+/**
+ * 一张笔记卡里的编号 → 跳转目标：**先认笔记自己的 refs 表**（那是这条笔记落库时带过来的），
+ * 再退到解读那份（重新生成解读之前两者一致；换过索引之后只有笔记自己那份还站得住）。
+ */
+function noteCiteMarkOf(refs: NoteRef[], ref: string): CiteMarkTarget | null {
+  const key = String(ref || '').toUpperCase();
+  const own = refs.find((r) => String(r.ref ?? '').toUpperCase() === key);
+  if (own) {
+    return { ref: String(own.ref), row_id: own.row_id ?? null, block_id: own.block_id ?? null, page: own.page ?? null };
+  }
+  const hit = understandingRefsByCode.value.get(key);
+  if (!hit) return null;
+  return {
+    ref: hit.code,
+    row_id: hit.row_id ?? null,
+    block_id: hit.block_id ?? null,
+    page: hit.page ?? null,
+    latex: hit.latex ?? null,
+    rows: (hit.row_ids ?? hit.pids ?? []).join(','),
+    label: CITE_TYPE_LABEL[String(hit.chunk_type ?? '')] || '',
+  };
+}
+
+/** 查看态的笔记正文（带标号）。正文仍走 `{ breaks: true }`：那是作者自己敲的回车，不能接回去 */
+function noteCardHtml(card: NoteCard): string {
+  return decorateCiteMarks(mdToHtml(card.content, null, { breaks: true }),
+    (ref) => noteCiteMarkOf(card.refs, ref));
+}
+
+/** 笔记正文里出现短码、而解读那份引用表还没取过（从没开过「论文解读」页签）：去取一次。
+ *  那条链路本来就按论文缓存、并发去重，取过之后不会再发请求。 */
+const NOTE_CODE_HINT = /\[[A-Z]\d{2,4}\]/;
+watch(() => noteCards.some((c) => NOTE_CODE_HINT.test(c.content)), (has) => {
+  if (has) void loadUnderstanding(paperId.value, { silent: true });
+}, { immediate: true });
+
+/** 卡片里那枚标号（事件目标 → chip）。用 `.cite-mark` 认：这个类只出现在笔记正文的标号上 */
+function noteCiteChip(ev: Event): HTMLElement | null {
+  return ((ev.target as HTMLElement | null)?.closest?.('.cite-mark') as HTMLElement | null) ?? null;
+}
+
+/**
+ * 点标号：与「论文解读」里点标号**同一条**落点链路（`focusRow` + 闪一下），
+ * 落点优先用正文行 id —— 公式 chunk 的块 id 常常是 `row-p006-03` 这类伪块 id，翻不成行。
+ */
+function onNoteCiteClick(ev: MouseEvent) {
+  const btn = noteCiteChip(ev);
+  if (!btn) return;
+  ev.preventDefault();
+  /* 别再往下走：卡片根上的按下会锚定这张卡（那是对的），但正文背景那套"点高亮弹胶囊"不该接这一下 */
+  ev.stopPropagation();
+  const page = Number(btn.dataset.page || 0) || undefined;
+  void focusRow(btn.dataset.row || btn.dataset.block || '', {
+    page, flash: true, latex: btn.dataset.latex || undefined,
+  });
+}
+
+/** 悬浮标号：复用对话 / 解读那枚速览卡（层号规则在那里，别在这里抢 z） */
+function onNoteCitePeek(ev: PointerEvent) {
+  const btn = noteCiteChip(ev);
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const page = Number(btn.dataset.page || 0);
+  onCitePeekAsk({
+    anchor: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+    page: page > 0 ? page : null,
+    /* 行 / 块**分开给**：速览卡先用行 id 找那一行，找不到再拿块 id 过一遍 block_rows
+       （解读那边的标号把编号当块 id 传，认不出一行；这里两样都有，就都给它） */
+    rowId: btn.dataset.row || null,
+    blockId: btn.dataset.block || btn.dataset.ref || null,
+    label: btn.getAttribute('aria-label') || '',
+    latex: btn.dataset.latex || '',
+    rows: btn.dataset.rows || '',
+  });
+}
+
+function onNoteCitePeekOut(ev: PointerEvent) {
+  /* 挪到**另一枚**标号上不算走开（pointerout/pointerover 的先后顺序不保证，与正文那套同一口径） */
+  if (((ev.relatedTarget as HTMLElement | null)?.closest?.('.cite-mark'))) return;
+  onCitePeekHide();
+}
+
+/**
+ * 保存前把正文里**还认得出来**的短码接进 refs 表。
+ *
+ * 解读那份引用表是"当前索引"的一份快照：重建索引 / 重新生成解读之后就不作数了。
+ * 接进笔记自己的 refs 表之后，这条笔记**自己带着跳转信息**（`withNoteRefs` 落在正文末尾那行
+ * 注释里），编辑一次也不会把标号变哑 —— 与对话「存为笔记」是同一条继承链。
+ */
+function codeRefsOf(text: string, existing: NoteRef[]): NoteRef[] {
+  const out = [...existing];
+  const known = new Set(out.map((r) => String(r.ref ?? '').toUpperCase()));
+  for (const m of String(text || '').matchAll(/\[([A-Z]\d{2,4})\]/g)) {
+    const code = m[1].toUpperCase();
+    if (known.has(code)) continue;
+    const hit = noteCiteMarkOf(out, code);
+    if (!hit) continue;
+    known.add(code);
+    out.push({
+      ref: code,
+      ...(hit.row_id ? { row_id: String(hit.row_id) } : {}),
+      ...(hit.block_id ? { block_id: String(hit.block_id) } : {}),
+      ...(hit.page ? { page: Number(hit.page) } : {}),
+    });
+  }
+  return out;
+}
+
+/** 浮层那张卡保存时用：正文是 draft、表是卡片自己那份 */
+function noteRefsToSave(card: NoteCard): NoteRef[] {
+  return codeRefsOf(card.draft, card.refs);
 }
 
 function markOf(ev: Event): HTMLElement | null {
@@ -7279,10 +7498,13 @@ async function saveNotePopover(card: NoteCard) {
   }
   card.busy = true;
   try {
+    /* 标号表要连**正文里新出现的短码**一起落库（见 noteRefsToSave）：只写 card.refs 的话，
+       从「论文解读」抄进笔记的 [A023] 过了这一轮就再也点不动了。 */
+    const refs = noteRefsToSave(card);
     if (card.noteId) {
       /* 存「改好的正文 + 这张卡带着的标号表」：只改正文，跳转信息不丢 */
       const updated = await api.put<Note>(`/notes/${card.noteId}`, {
-        content_md: withNoteRefs(card.draft, card.refs),
+        content_md: withNoteRefs(card.draft, refs),
       });
       card.content = updated ? noteBodyText(updated.content_md) : card.draft;
       if (updated) card.refs = splitNoteRefs(updated.content_md).refs;
@@ -7295,7 +7517,7 @@ async function saveNotePopover(card: NoteCard) {
         selected_text: card.quote,
         start_offset: selection.start,
         end_offset: selection.end,
-        content_md: withNoteRefs(card.draft, card.refs),
+        content_md: withNoteRefs(card.draft, refs),
       });
       card.noteId = created?.id ?? '';
       card.content = card.draft;
@@ -8755,9 +8977,15 @@ function renderMarkdown(text?: string | null) {
       </div>
       <!-- 查看态正文：**用户自己写的笔记**走 `{ breaks: true }`（用户口径 2026-10-10）：
            不能再跑 `normalizeSoftBreaks` —— 它会把作者敲的回车接回去（"第一行第二行"），
-           那是给 PDF 抽取文本用的。 -->
+           那是给 PDF 抽取文本用的。
+           正文里的引用标号（`[A023]` / `[3]`）由 `noteCardHtml` 换成可点的 chip：
+           点它走 `focusRow`（与「论文解读」同一条落点链路），悬浮弹那枚速览卡 ——
+           所以这三个事件必须挂在**正文这一层**：卡片根上的处理器管不到 v-html 里生成的按钮。 -->
       <div v-else-if="card.mode === 'view'" class="np-view md small" data-note-view
-           v-html="mdToHtml(card.content, null, { breaks: true })" />
+           v-html="noteCardHtml(card)"
+           @click="onNoteCiteClick"
+           @pointerover="onNoteCitePeek"
+           @pointerout="onNoteCitePeekOut" />
       <!-- 底部**不再传 footer 插槽**（用户口径 2026-10-10："不要有选择的文字框"）：
            那个 footer 就算只有一行按钮，也会带出一条 1px 上线，看着像正文外面套了一圈框。
            编辑 / 保存 / 删除 / 关闭 全走头部按键（铅笔 / ✓ / 垃圾桶 / ✕）。 -->
@@ -10009,6 +10237,25 @@ function renderMarkdown(text?: string | null) {
 @keyframes katex-flash {
   0%, 40% { background-color: color-mix(in srgb, var(--accent) 16%, transparent); }
   100% { background-color: transparent; }
+}
+
+/* 闪烁范围里**跟在命中行之后的正文行**（见 flashSpanIds / paintFlashSpan）。
+ *
+ * 那一组数字是**抄** ReaderPageRows 的 .row-pair.flash-a::before 的：命中行那枚闪在那边
+ * （scoped 样式 + 它的 data-v，跨组件拿不到），补出来的这几行必须长得一模一样，
+ * 否则点标题与点段落会闪出两种亮度。改一处要同时看另一处。
+ * 挂在属性上（不是类名）的原因见 paintFlashSpan：Vue 重排 class 会整条覆盖 className。
+ * pointer-events: none —— 覆盖层不挡点击（与那一枚同一条）。 */
+.reader-content :deep(.row-pair[data-flash-span])::before {
+  content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
+  border-radius: 8px; opacity: .95;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  animation: row-flash-span 1.5s ease-out forwards;
+}
+@keyframes row-flash-span {
+  0% { opacity: .95; }
+  60% { opacity: .6; }
+  100% { opacity: 0; }
 }
 
 @media (max-width: 1100px) {

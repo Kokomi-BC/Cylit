@@ -566,6 +566,100 @@ export function htmlWithMarks(text: string, ranges: Array<{ start: number; end: 
   })), paperId).html;
 }
 
+/**
+ * 笔记正文里的**引用标号** → 可点的 chip（短码 `[A023]` 与数字 `[3]`）。
+ *
+ * 为什么不能照正文那条路给 marked 再加一条行内扩展（`[2, 4, 10]` 就是这么做的）：短码要落成
+ * "哪一行 / 哪一页 / 哪一枚公式"，那是**引用表**才有的信息（解读的 `refs_resolved`、
+ * 笔记自己末尾那行 `<!-- refs:… -->`）；而标号显示的是**序号**，得按"这一篇里第一次出现的
+ * 顺序"编，只有拿到整篇 HTML 才编得出来。Markdown 解析那条链路两样都拿不到。
+ *
+ * `[A023]` 在 Markdown 里本来就不是语法（没有同名定义时它就是普通文字），所以这层只做
+ * "认出来 + 挂数据集"：**渲染出来的文字既不增加也不丢字符**，只有序号是替进去的。
+ *
+ * 两种编号走两条路，因为它们到达这一层时形状已经不同：
+ *   - **数字标号** `[3]` 早被 `cite` 扩展画成了按钮（`data-refs`），所以是**升级**那枚按钮；
+ *   - **短码** `[A023]` 还是纯文字，所以是**替换**文字。
+ * 两条路换出来的东西都先转成占位符再拼回去：否则后一趟正则会把前一趟生成的
+ * `<button>[1]</button>` 里的方括号再包一层按钮（实测就是 button 里套 button）。
+ *
+ * 认不出来的编号：**短码**照样画（点了不跳，抹掉会让读者以为漏了内容）；**数字**原样留着
+ * （那一枚是"参考文献编号"还是 chunk 引用分不清时，不动比乱跳好 —— 与 `utils/citeRefs` 同一口径）。
+ */
+export interface CiteMarkTarget {
+  /** 原始编号（`A023` / `3`）。**不是**显示出来的序号：保存笔记时按它把跳转信息接回 refs 表 */
+  ref: string;
+  /** 正文行 id（优先落它：公式 chunk 的块 id 常常是 `row-p006-03` 这类伪块 id，翻不成行） */
+  row_id?: string | null;
+  block_id?: string | null;
+  page?: number | null;
+  /** 公式条目的 LaTeX：同一行里几枚公式靠它才分得开 */
+  latex?: string | null;
+  /** 这一条覆盖的整段行 id（逗号分隔）：速览卡据此把标题和它下面的正文一起画出来 */
+  rows?: string | null;
+  /** 悬浮提示里的短名（"段落" / "公式"），空就不写 */
+  label?: string | null;
+}
+
+/** 短码 `[A023]`：Markdown 里它就是普通文字（没有同名定义时既不链接也不成脚注） */
+const CITE_CODE = /\[([A-Z]\d{2,4})\]/g;
+/** `mdToHtml` 的 `cite` 扩展把 `[3]` 画成的按钮（`[2, 4, 10]` 那套参考文献编号也走它） */
+const CITE_REFS_BTN = /<button\b[^>]*\bdata-refs="([^"]*)"[^>]*>[\s\S]*?<\/button>/gi;
+/** 占位符：把已经换好的 chip 藏起来，免得后面的正则把它里面的 `[1]` 再包一层 */
+const CITE_HOLD = /\u0001CM(\d+)\u0001/g;
+
+export function decorateCiteMarks(
+  html: string,
+  lookup: (ref: string) => CiteMarkTarget | null,
+): string {
+  if (!html || !html.includes('[')) return html;
+  const chips: string[] = [];
+  const hold = (chip: string) => {
+    chips.push(chip);
+    return `\u0001CM${chips.length - 1}\u0001`;
+  };
+  /* ① **已经在按钮里的数字标号**（`[3]` 被 `cite` 扩展画成按钮了）就地升级：
+     认得出来就换成带落点的那一枚，认不出来原样留着（与今天的行为一致）。
+     `[2, 4, 10]` 那种是**参考文献编号**，不是 chunk 引用 —— 它不是一条，不动。
+     ⚠️ 不能事后在 `[3]` 的位置再套一枚 chip：那会得到一个 button 里套 button。 */
+  let out = html.replace(CITE_REFS_BTN, (whole, refs: string) => {
+    const list = String(refs).split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length !== 1) return whole;
+    const hit = lookup(list[0]);
+    return hit ? hold(citeButton(hit, list[0])) : whole;
+  });
+  /* ② 短码：序号按**这一篇里第一次出现**的顺序编（与「论文解读」的标号同一口径） */
+  let seq = 0;
+  out = out.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>|<a\b[^>]*>[\s\S]*?<\/a>|<button\b[\s\S]*?<\/button>)/i)
+    .map((part, index) => {
+      if (index % 2 === 1) return part;      // 代码块 / 真链接 / 保留下来的按钮都不是引用
+      return part.replace(CITE_CODE, (whole, code: string) => {
+        const hit = lookup(code);
+        /* 短码认不出来也照样画一枚（点了不跳）：它本来就是正文的一部分，
+           抹掉会让读者以为漏了内容 —— 与「论文解读」同一口径。 */
+        return hold(citeButton(hit ?? { ref: code }, String((seq += 1))));
+      });
+    })
+    .join('');
+  return out.replace(CITE_HOLD, (_m, i: string) => chips[Number(i)] ?? '');
+}
+
+/** 一枚标号：类名与「论文解读」/对话页那枚 `.cite-inline` 共用（观感只由 base.css 那一条决定） */
+function citeButton(t: CiteMarkTarget, text: string): string {
+  const anchor = String(t.row_id || t.block_id || '');
+  /* `aria-label` 而不是 `title`：title 会再弹一条浏览器灰气泡，与悬浮出来的速览卡叠在一起
+     （正文引用标号 2026-10-08 就已经踩过这一条）。 */
+  const tip = [t.label || '', t.page ? `第 ${t.page} 页` : '', anchor ? '跳到原文' : '这一条引用已不在清单里']
+    .filter(Boolean).join(' · ');
+  return `<button type="button" class="cite-inline cite-mark" aria-label="${escapeHtml(tip)}"`
+    + ` data-ref="${escapeHtml(t.ref)}"`
+    + ` data-row="${escapeHtml(String(t.row_id || ''))}"`
+    + ` data-block="${escapeHtml(String(t.block_id || ''))}"`
+    + ` data-page="${t.page ?? ''}"`
+    + ` data-latex="${escapeHtml(String(t.latex || ''))}"`
+    + ` data-rows="${escapeHtml(String(t.rows || ''))}">[${text}]</button>`;
+}
+
 /** 共用实现：区间 → 占位符 → Markdown → 占位符换回 `<mark>`。 */
 function renderWithPlaceholders(
   text: string,

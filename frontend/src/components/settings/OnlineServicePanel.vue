@@ -421,7 +421,7 @@ onMounted(() => {
 
             <!-- 低频项折叠：默认值与开关状态都不变，只是默认不占版面 -->
             <details class="ons-adv">
-              <summary>高级选项</summary>
+              <summary>高级选项<AppIcon class="ons-adv-chev" name="chevron-down" :size="14" /></summary>
               <div class="ons-adv-body">
                 <div class="ons-grid">
                   <label class="field">
@@ -558,12 +558,15 @@ onMounted(() => {
 /* 高级选项：一枚可点的细行，展开后仍是同一套字段节奏 */
 .ons-adv { border-top: 1px solid var(--divider); padding-top: 8px; }
 .ons-adv > summary {
+  display: flex; align-items: center; gap: 6px;
   cursor: pointer; list-style: none;
   font-size: calc(12px * var(--ts, 1)); color: var(--text-dim);
 }
 .ons-adv > summary::-webkit-details-marker { display: none; }
-.ons-adv > summary::after { content: '▾'; margin-left: 6px; color: var(--text-faint); }
-.ons-adv[open] > summary::after { content: '▴'; }
+/* 箭头走统一图标入口（原先 ::after 里的 ▾/▴ 是字符，字号一放大就和文字对不齐）。
+   旋转挂在 [open] 上：details 的开合只有 CSS 看得见，不为此再引一个 ref。 */
+.ons-adv > summary .ons-adv-chev { flex: none; color: var(--text-faint); transition: transform .16s ease; }
+.ons-adv[open] > summary .ons-adv-chev { transform: rotate(180deg); }
 .ons-adv > summary:hover { color: var(--text); }
 .ons-adv-body { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
 /* 右栏只有半屏宽：模型版本的选项文字很长（pipeline（版面+公式更稳，默认）），

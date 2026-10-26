@@ -554,7 +554,9 @@ function onMore(key: string, r: FeedRow) {
             data-notes-order
             @click="toggleOrder"
           >
-            <AppIcon :name="order === 'time' ? 'sort-time-fill' : 'sort-doc-fill'" :size="15" />
+            <!-- 按时间 = **时钟**（用户口径 2026-12-11）：原来的 `sort-time` 是上下双箭头，
+                 看着像"排序"，不像"时间"。按文章顺序那侧仍用 sort-doc。 -->
+            <AppIcon :name="order === 'time' ? 'clock-fill' : 'sort-doc-fill'" :size="15" />
           </button>
           <span class="spacer" />
           <!-- 多选（用户口径 2026-11-20；2026-11-21 换形态）：与对话页**同一枚圆钮、同一个图标键、同一段交互**

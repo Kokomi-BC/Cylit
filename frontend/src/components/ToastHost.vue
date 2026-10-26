@@ -59,8 +59,11 @@ function titleOf(kind?: string | null): string {
 .toast-host {
   position: fixed; top: calc(var(--header-h) + 16px + var(--toast-drop, 0px));
   right: 18px;
-  /* 400：提示永远在最上层（弹窗 250 / 菜单 300 / 右键 360 都不会盖住它） */
-  z-index: 400; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  /* 提示永远在最上层（弹窗 250 / 菜单 300 / 右键 360 都不会盖住它）。
+     ⚠️ 为什么是 10100 而不是 400：阅读器的大图查看器要压过**整条浮层序列**
+     （ReaderView 的 layerZ 从 60 起、每次聚焦 +1、没有上限），它现在是 10000；
+     大图开着时照样会弹提示（另存图片 / 复制成功），所以 toast 必须比它**再高一档**。 */
+  z-index: 10100; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   /* ⚠️ 宽度必须**给死**，不能用 max-width + 子项 width:100%：宿主是 fixed + right，
      宽度靠"收缩适应"，子项的 100% 就会算到错的基准上（实测卡片右边缘越出视口 2px）。 */
   width: min(420px, calc(100vw - 36px));

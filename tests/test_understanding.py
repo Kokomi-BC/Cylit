@@ -64,6 +64,18 @@ def test_understanding_allows_general_knowledge() -> None:
     assert "不必区分" in prompts.UNDERSTAND_A_SYSTEM
 
 
+def test_prompt_forces_one_field_per_line() -> None:
+    """「字段罗列」必须一个字段一行（用户报「基本信息」里多个字段挤成一行，糊成一坨）。
+
+    口径是**改提示词、不在前端做兜底**，所以这里钉的是提示词里的硬约束本身：
+    光有硬规则不够，框架示例也得跟着拆开 —— 模型会照着示例抄回一行。
+    """
+    text = prompts.UNDERSTAND_A_SYSTEM
+    assert "每个字段单独成行" in text
+    assert "同一行里不许连写两个" in text
+    assert "各占一行" in text
+
+
 def test_system_for_accepts_only_a() -> None:
     assert prompts.system_for("a") is prompts.UNDERSTAND_A_SYSTEM
     assert prompts.system_for() is prompts.UNDERSTAND_A_SYSTEM
