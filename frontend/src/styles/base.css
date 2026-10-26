@@ -847,6 +847,15 @@ table.data.fixed { table-layout: fixed; }
    滚轮 / 触控板照样能横移，条子不画 —— 与整块公式、设置页同一个口径。 */
 .katex:not(.katex-display) { scrollbar-width: none; }
 .katex:not(.katex-display)::-webkit-scrollbar { height: 0; width: 0; }
+/* ⚠️ 上面那条 `.katex:not(.katex-display)` 也会命中**行间公式的内层 `.katex`** —— 它确实不是
+   `.katex-display`（外层才是）。于是内层被当成"行内公式"处理：`overflow-x: auto` 让它自己变成
+   滚动容器，`max-width: 100%` 又把 `.md` / `mark.hl.block` 里那条 `width: max-content` 摁回栏宽。
+   两件事叠起来的后果（用户口径 2026-12-14：「此处能左右滑动，但是序号 4 重叠」）：
+   编号 `.tag` 是 `position: absolute; right: 0`，钉在**内层的可见框**右缘，横滑时公式从它底下穿过，
+   `(4)` 就压在公式上（实测 p017-13：内层 493、内容 509+左右各 31.5 外边距）。
+   行间公式的滚动本来就该归外层 `.katex-display`（它自己就是 `overflow-x: auto`），内层还原成普通块：
+   宽度才吃得下 `max-content`，编号也就落到公式尾巴**右侧**的留白里，跟着内容一起横滑。 */
+.katex-display > .katex { overflow-x: visible; max-width: none; }
 
 /* ---------------- KaTeX 渲染失败时的兜底（安全网） ----------------
  * `throwOnError: false` 会渲染出一个 `.katex-error` 节点（文字就是那条原始 LaTeX），并把

@@ -15042,3 +15042,54 @@ localStorage      {"custom":{"pen":"#0f2a76","marker":"","laser":""}, …}
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-85NcnVQr.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 219. 第二百一十九轮：正文里「公式能横滑，但编号 (4) 压在公式上」
+
+用户口径（配两张截图）：「此处能左右滑动，但是序号 4 重叠的问题」，并明确是**正文**、不是解读。
+
+### 根因：行内公式那条规则把**行间公式的内层 `.katex`** 也抓住了
+
+`base.css` 里为解决"行内公式带 `\\tag` 时编号压在公式上"，写过：
+
+```
+.katex:not(.katex-display) {
+  display: inline-block; max-width: 100%;
+  overflow-x: auto; overflow-y: hidden; vertical-align: middle;
+}
+.katex:not(.katex-display):has(.tag) .katex-html { padding-right: 2.2em; }
+```
+
+但行间公式的 DOM 是 `span.katex-display > span.katex > span.katex-html` —— **内层那个 `.katex`
+确实"不是 .katex-display"**，于是被当成行内公式处理了。两个后果：
+
+1. `overflow-x: auto` 让**内层**变成滚动容器（外层 `.katex-display` 那个 `overflow-x:auto` 形同虚设）；
+2. `max-width: 100%` 把 `.md` / `mark.hl.block` 里那条 `width: max-content` 摁回栏宽。
+
+编号 `.tag` 是 `position:absolute; right:0`，钉在**内层的可见框**右缘（= 栏宽），而公式内容
+（≈ 内容 474 + 右留白 34.6 + 左右外边距各 31.5）比栏宽还宽 —— 于是横滑时公式从编号底下穿过，
+`(4)` 就压在 `‖y‖₂` 上。实测那一块：内层 493 / 内容 509（含右留白）/ 两边各 31.46 外边距。
+
+### 改法：行间公式的滚动归外层，内层还原成普通块
+
+```
+.katex-display > .katex { overflow-x: visible; max-width: none; }
+```
+
+一行足够 —— 内层不再是滚动容器、不再被 `max-width:100%` 限制住，
+`width: max-content` 于是生效，编号落到公式尾巴**右侧的留白**里，并跟着内容一起横滑；
+滚动条归外层 `.katex-display`（它本来就是 `overflow-x: auto`，且不画条）。
+
+### 实测（有头 Chrome，p017-13 那条 `(4)`）
+
+```
+修复前   内层 .katex 493｜内容 .katex-html [914,509]（右缘 1423）｜.tag [1356,20] → 编号在内容里，重叠
+         外层 scrollWidth/clientWidth = 493/493（滚动其实发生在内层）
+修复后   内层 .katex 571.73（max-content 生效）｜内容 [956,509]（右缘 1465）
+         .tag [1476,20] → 编号起点在内容右缘**之后 11px**，不再压字
+         外层 572/535 → 外层可横滑；滚到最右（scrollLeft=37）时内容与编号一起左移 37px
+普通带编号公式（`(MSE) D_mse := … (1)`）截图复核：编号仍在最右、公式居中，一个像素都没变。
+```
+
+校验：`npm run build` 绿（`ReaderView-eyUymGVN.js`）、`frontend_check.py` 168/168。
+
+---
