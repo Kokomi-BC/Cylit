@@ -778,6 +778,34 @@ function onClearSlide(raw: string): void {
   void nextTick().then(() => { syncToastDrop(); });
 }
 
+/** 自定义颜色的取色器本体（常驻 input，见模板里 .ink-color-proxy） */
+const inkColorInput = ref<HTMLInputElement | null>(null);
+
+/**
+ * 打开浏览器原生取色器。
+ *
+ * 为什么不再用 <label> 包 input 让浏览器自己转发点击：那条路一旦菜单收起，挂载点被摘掉，
+ * 原生窗口当场关闭 —— 用户看到的就是「点了没反应」。现在显式调 `showPicker()`，
+ * 老浏览器没有这个 API 就退回 `click()`。
+ */
+function openInkColorPicker(): void {
+  const el = inkColorInput.value;
+  if (!el) return;
+  el.value = activeInkColor();      // 取色器从"当前这笔的颜色"开始，不是它上次的值
+  try {
+    if (typeof el.showPicker === 'function') el.showPicker();
+    else el.click();
+  } catch {
+    el.click();
+  }
+}
+
+/** input / change 都走这里：有的系统取色器只在关闭时补一个 change */
+function onInkColorPicked(ev: Event): void {
+  const v = (ev.target as HTMLInputElement).value;
+  if (v) setInkColor(v);
+}
+
 function placeInkOptions(): void {
   const el = capsuleEl.value;
   if (!el) return;
@@ -3647,10 +3675,10 @@ function onMqChange() {
 /** 批注工具（工具栏里不再有「文字选择」：框注改成在画笔/荧光笔/橡皮下**双击**正文，见 InkSurface） */
 const INK_TOOLS: Array<{ key: 'hand' | 'pen' | 'marker' | 'laser' | 'eraser'; icon: string; label: string }> = [
   { key: 'hand', icon: 'hand', label: '手：只读，可以正常划词' },
-  { key: 'pen', icon: 'pen', label: '画笔' },
+  { key: 'pen', icon: 'calligraphy-pen', label: '画笔' },
   { key: 'marker', icon: 'marker', label: '荧光笔' },
   // 激光笔：临时笔迹（不落盘、不进撤销栈）。图标复用现成的 bolt，不新增图标
-  { key: 'laser', icon: 'target-edit', label: '激光笔（停笔 1.5 秒后淡出）' },
+  { key: 'laser', icon: 'pen', label: '激光笔（停笔 1.5 秒后淡出）' },
   { key: 'eraser', icon: 'eraser', label: '橡皮：整笔擦除' },
 ];
 /** 当前工具该用哪一排色（荧光笔 = 荧光色；画笔与激光笔共用墨色那排） */
@@ -8238,6 +8266,20 @@ function renderMarkdown(text?: string | null) {
           </div>
         </div>
 
+        <!-- 自定义颜色的取色器本体：**常驻挂载**（不进那个 v-if 菜单）。菜单一收就摘挂载点的话，
+             原生取色窗口会跟着关闭；而且它的 ~input~ 也不该依赖菜单还开着。
+             ~input~ 与 ~change~ 都接：不同 Chrome 版本/系统取色器只在其中一个事件上落值，
+             只接 input 时会出现「选了颜色但没生效」（用户口径 2026-12-14「所有画笔无法使用自定义颜色」）。 -->
+        <input
+          ref="inkColorInput"
+          class="ink-color-proxy"
+          type="color"
+          :value="activeInkColor()"
+          data-ink-color-input
+          @input="onInkColorPicked"
+          @change="onInkColorPicked"
+        >
+
         <!-- 画笔的二级菜单（颜色 / 粗细）：挂在胶囊**外面** —— 胶囊自己 overflow:auto，
              放在里面的绝对定位会被裁掉（实测：DOM 有、屏幕上看不见）。 -->
         <div
@@ -8250,19 +8292,19 @@ function renderMarkdown(text?: string | null) {
           <!-- 颜色：**自选色摆最前**（用户口径），后面跟色板（画笔 = 红橙黄绿青蓝紫，荧光笔 = 荧光色）。
                自选色那枚彩虹点在「当前色不在色板里」时也带选中环，否则挑完取色器看不出选中了谁。 -->
           <div class="ink-options-row" data-ink-colors>
-            <label
+            <!-- 自选色：按钮只负责"开取色器"，取色器本体是外面那个**常驻**的 input（见 .ink-color-proxy）。
+                 为什么不把 input 塞进这里：这个菜单是 v-if 的，取色器窗口开着的期间菜单一收，
+                 挂载点被摘掉，原生窗口当场关闭 —— 表现就是「自定义颜色点了没反应」。 -->
+            <button
+              type="button"
               class="ink-color-custom"
               :class="{ active: isCustomInkColor() }"
               title="自定义颜色（浏览器取色器）"
+              data-ink-color-open
+              @click="openInkColorPicker"
             >
               <span class="ink-color-custom-dot" />
-              <input
-                type="color"
-                :value="activeInkColor()"
-                data-ink-color-input
-                @input="setInkColor(($event.target as HTMLInputElement).value)"
-              >
-            </label>
+            </button>
             <button
               v-for="c in inkPalette()"
               :key="c"
@@ -9568,6 +9610,8 @@ function renderMarkdown(text?: string | null) {
 .ink-color-custom {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; cursor: pointer; border-radius: 999px;
+  /* 它是 <button>（只负责开取色器）：把浏览器默认外观清掉，否则彩虹点会被撑成方块 */
+  border: 0; padding: 0; background: transparent; color: inherit;
 }
 /* 「当前色是自选色」时，这枚彩虹点也带一圈**同色点同款的选中环**（用户口径：自选色放第一，也要看得出选中） */
 .ink-color-custom.active { box-shadow: 0 0 0 1px var(--bg-elev), 0 0 0 3px color-mix(in srgb, var(--text) 72%, transparent); }
@@ -9576,9 +9620,11 @@ function renderMarkdown(text?: string | null) {
   background: conic-gradient(#e8384f, #f0a11a, #2aa775, #2f6fed, #8b5cf6, #e8384f);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
 }
-.ink-color-custom input {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  opacity: 0; cursor: pointer; border: 0; padding: 0;
+/* 取色器本体：常驻、不可见、不可点（真正入口是上面那枚彩虹点）。
+   不写 display:none / visibility:hidden —— Chrome 要求 showPicker() 的宿主还在渲染树上。 */
+.ink-color-proxy {
+  position: fixed; left: -9999px; top: 0;
+  width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0;
 }
 
 /* 清空本页笔迹：一条滑块（滑到右端触发，一次撤销可整个回来） */

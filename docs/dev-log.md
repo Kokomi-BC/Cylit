@@ -14939,3 +14939,48 @@ WAAPI setKeyframes     平均帧 6.1~6.3ms  p95 6.2~6.3ms   ← 扩展还在跑�
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-D5fgbMjI.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 217. 第二百一十七轮：自定义颜色点了没反应（取色器被菜单的 v-if 拆了挂载点）+ 画笔与激光笔换图标
+
+用户口径：
+1. **所有画笔都无法使用自定义颜色**；
+2. 激光笔改用「现在画笔的图标」，画笔改用 **Calligraphy Pen**。
+
+### ① 自定义颜色
+
+排查（有头 Chrome + CDP，真鼠标事件，先打桩 `HTMLInputElement.prototype.showPicker`）：
+点那枚彩虹点时，`pointerdown` / `mousedown` / `click` 都**直达 input**、`defaultPrevented=false`、焦点也落在它身上
+—— 点击链路没问题，所以问题不在"点不到"。
+
+真正的毛病是**取色器本体的位置**：它原来被塞在 `v-if="inkOptionsOpen"` 的二级菜单里。
+菜单一收（点菜单外面就收，甚至取色器开着的期间被别处收掉），挂载点被摘掉，原生取色窗口当场关闭；
+而且那条 `@input` 也只认 input 事件 —— 有些系统取色器只在关闭时补一个 `change`，
+于是"选了颜色但一点没生效"。
+
+改法（两件事一起，任一条都能拦住这个症状）：
+1. **取色器本体常驻**：`<input type="color" class="ink-color-proxy">` 移到菜单外面（`.reader-toolbar` 里），
+   任何菜单开合都不影响它；彩虹点改成 `<button type="button" data-ink-color-open>`，
+   点它显式调 `showPicker()`（没有这个 API 的老浏览器退回 `click()`）。
+2. **input 与 change 都接**：`onInkColorPicked` 同时挂 `@input` 和 `@change`。
+
+### ② 图标
+
+- 画笔 → Fluent `calligraphy_pen_24`（蘸水笔），键名 `'calligraphy-pen'`，官方 regular/filled 路径原样入库；
+- 激光笔 → Fluent `pen`（就是画笔原来那枚）。两枚都是官方 svg，没有手绘。
+
+### 实测
+
+```
+图标： [data-ink-tool="pen"]   svg path → "M7.5 2.75a.75.75 0 0 0-1.5 0v3c0 .9.67 1.64 1.54 1.74l-1…"  (calligraphy_pen)
+       [data-ink-tool="laser"] svg path → "M20.95 3.05a3.6 3.6 0 0 0-5.06 0L3.94 15c-.4.4…"        (pen)
+
+自选色：取色器 input 常驻            菜单开着 / 关着 都在 DOM 里
+       点彩虹点                     showPicker 被调到 1 次（打桩计数），菜单不会被收
+       只派发 change（不派 input）   --pen-color #e8384f → #0a7d3f，自选色选中环亮起
+       菜单收起后再派 change         --pen-color → #7b2ff7（跟菜单开合无关）
+       localStorage                 {"pen":"#7b2ff7", …}
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DZv0EqFB.js`）、`frontend_check.py` 168/168。
+
+---
