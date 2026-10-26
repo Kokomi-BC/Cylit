@@ -9783,11 +9783,9 @@ function renderMarkdown(text?: string | null) {
   backface-visibility: hidden;
   box-shadow: var(--shadow-2);
 }
-/* 手势期间卡内**一切过渡**也停掉：hover / 焦点 / 抓手药丸的补间每次重启都会把这张卡
-   的贴图标记为脏，合成层跟着重新栅格化 —— 而那正是 500×560 这一块最贵的动作。 */
-.reader.float-dragging > .chat-host.float :deep(*) {
-  transition: none !important;
-}
+/* ⚠️ 这里**不能**再写「手势期间卡内一切过渡停掉」：抓手药丸的变宽正是靠一条 220ms 的
+   transform 补间（用户口径 2026-12-12：「抓手的动画掉了」，就是这条规则干掉的）。
+   而且它得挂 1556 个后代，手势开始那一下反而多一次全卡样式重算 —— 两头不讨好，删掉。 */
 /* 卡里正在跑的动画（思考链的呼吸、等待点、流式光标）每帧都会把这张卡的贴图标记为脏 ——
    合成层跟着重新栅格化，拖动就一顿一顿。手势期间一律暂停：拖完继续跑，画面不差一帧。 */
 .reader.float-dragging > .chat-host.float :deep(*),
