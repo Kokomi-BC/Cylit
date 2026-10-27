@@ -1136,6 +1136,13 @@ export interface AgentCitation {
   /** 这一条证据（chunk）覆盖的**行身份**（`PageRow.pid`）。跨页的同一块会有多行 ——
    *  点一枚标号要把整块一起闪（见 ReaderView.focusMany）；老消息没有这个键。 */
   pids?: string[];
+  /**
+   * 这一枚标号**覆盖的编号列表**（按文档顺序）：正文里的连续组 `[a–b]` 才写它，
+   * `ref` = members[0]，`pids` / `row_id` / `page` 等取第一个成员。
+   * **单词条不写这个键**（老形状不变）—— 所以缺省时一个方括号只能是单号，
+   * 前端据此判定"这枚方括号是不是一整条 citation"（见 ReaderChat.decorateRefs）。
+   */
+  members?: number[];
 }
 
 /** 对话里上传/粘贴的图片（落盘在 `data/attachments`，消息上只存这份元数据）。 */

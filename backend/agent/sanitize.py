@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from backend.agent.cite_groups import parse_bracket_marks
 from backend.agent.citations import RefRegistry
 from backend.core.logging import get_logger
 
@@ -82,12 +83,17 @@ def sanitize_answer_text(text: str, registry: RefRegistry) -> str:
 
 
 def used_refs(text: str, registry: RefRegistry) -> list[int]:
-    """正文里实际出现的引用编号（按出现顺序去重）。"""
+    r"""正文里实际出现的引用编号（按出现顺序去重，**含多号与区间**）。
+
+    为什么不再用 `\[(\d{1,3})\]` 那条正则：实测正文里写着 `[36, 41]`（区间 `[3-5]` 同理），
+    只认单号会让整组漏过去 —— 既不算"引用过"，也不会被改写，那条消息的引用表于是与正文对不上。
+    解析统一交给 `cite_groups.parse_bracket_marks`：认不出的方括号本来就不该算引用。
+    """
     seen: list[int] = []
-    for m in re.finditer(r"\[(\d{1,3})\]", text or ""):
-        ref = int(m.group(1))
-        if ref not in seen and registry.by_ref(ref) is not None:
-            seen.append(ref)
+    for mark in parse_bracket_marks(text or ""):
+        for ref in mark.members:
+            if ref not in seen and registry.by_ref(ref) is not None:
+                seen.append(ref)
     return seen
 
 

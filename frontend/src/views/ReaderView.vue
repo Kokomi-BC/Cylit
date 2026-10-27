@@ -3187,6 +3187,29 @@ function flashSpanIds(id: string): string[] {
 }
 
 /**
+ * 标题行的落点补行：**同页下一个非 heading 行**（没有就空串）。
+ *
+ * 为什么单独一枚：引用的 `row_id` 有时正是**章节标题**那一行（实测 `p006-03` =
+ * `## 1.2 INNER-PRODUCT OPTIMAL TURBOQUANT`，正文在下一行），只闪标题就"看上去像只找到了标题"。
+ * 契约第 6 条：标题与下面那一行**一起闪**（标题跟着亮，正文必须在）。
+ * 只在 `allRows` 里查（不碰 DOM）：与 `focusMany` / `focusRow` 的落点计算同一份行数据。
+ */
+function headingTailId(id: string): string {
+  const rows = allRows.value;
+  const i = rows.findIndex((r) => r.id === id);
+  if (i < 0 || String(rows[i].type ?? '') !== 'heading') return '';
+  const page = rows[i].page;
+  for (let k = i + 1; k < rows.length; k += 1) {
+    const r = rows[k];
+    if (r.page !== page) break;                                     // 跨页不补：下一页整片亮起来最糟
+    if (String(r.type ?? '') === 'heading') break;                  // 下一个标题 = 这一段结束
+    if (!String(r.translation || r.original || '').trim()) continue; // 空行没内容，往下找
+    return r.id;
+  }
+  return '';
+}
+
+/**
  * 一次闪**一整块**：把这几行的外接矩形合成**一枚**覆盖层（跨页也算一块）。
  *
  * 为什么不再逐行铺 `::before`（用户口径 2026-12-27「多个页面内容同时闪烁改为合并为一个大的块闪烁」）：
@@ -3618,10 +3641,13 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
     /* 同一行的两面（ref 8 = 英文块、ref 9 = 它的中文译文）**都闪**：它们是同一份证据，
        用户口径是"允许两侧都闪"，重复引用交给提示词去约束（后端 CITING 已加一条
        「同一处内容只引一条」）—— 前端不再按语言收窄。 */
-    if (s.known) { rowIds.add(s.id); continue; }
+    /* 行可落：把它加进来；**落在标题上**时把标题与同页下一个非 heading 行一起加
+       （契约第 6 条：只闪标题 = 看上去像没找到正文）。只有一行目标时同样处理 ——
+       两行才会走 `paintFlashBlock` 合成一枚大块，标题与正文就亮在一块里。 */
+    if (s.known) { rowIds.add(s.id); const tail = headingTailId(s.id); if (tail) rowIds.add(tail); continue; }
     // 没有行也没有公式可精确落：退到那一页的首行（focusPage 同一条兜底）
     const firstRow = allRows.value.find((r) => r.page === s.page);
-    if (firstRow) rowIds.add(firstRow.id);
+    if (firstRow) { rowIds.add(firstRow.id); const tail = headingTailId(firstRow.id); if (tail) rowIds.add(tail); }
   }
   /* **同一块跨页**（用户口径 2026-12-27「支持跨页的同一块闪烁」）：引用带 `pids`（这条证据
      覆盖的行身份）时，把它覆盖的每一行都加进来 —— chunk 被页边界切成两半时，点在上一页那一半
@@ -3632,6 +3658,10 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
   flashRowId.value = '';
   clearFlashSpan();
+  /* 上一轮那枚**大块**也要先收掉：这一轮若只落一行（走逐行那套），
+     `paintFlashBlock` 根本不会被调用，旧的块会留在原地亮到 1.6s 定时器到点 ——
+     看上去就像"点了这一处，两处一起亮"。 */
+  clearFlashBlock();
   /* 多行（尤其是**跨页**的那几行）→ 不再逐行铺一层，而是合一枚**大块**盖住整个范围（用户口径
      2026-12-27「多个页面内容同时闪烁改为合并为一个大的块闪烁」）；只有一行时仍走行内那一层
      （与命中行同一套亮度，切换时不会跳）。公式节点照旧各自闪自己那一枚。 */

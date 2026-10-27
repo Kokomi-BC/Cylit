@@ -649,53 +649,41 @@ function escapeAttr(text: string) {
     .replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/** 一个**引用组**：单个方括号（`[3]` / `[3,7]` / `[3，7]` / `[3、7]` / `[3-5]`），
- *  或者**紧挨着的多个方括号**（`[3][7]` —— 后端新提示词之前的正文就是这么写的）。
- *  连续出现时后面那个 `+` 把它们并成**一枚 token**：合并闪烁要的是"这一处有几个编号"，
- *  拆成两枚按钮就变成"点两次、闪两轮"了。方括号里只许编号与分隔符，`[见附录]` 不算引用。 */
-const REF_GROUP_RE = /(?:\[\s*\d{1,3}(?:\s*[,，、]\s*\d{1,3}|\s*[-–—~]\s*\d{1,3})*\s*\])+/g;
+/** **一个方括号**（`[3]` / `[3–5]` / `[3，7]` / `[3、7]`）：一枚 token = 一个方括号。
+ *  **绝不**把紧挨着的多个方括号（`[3][7]`）并成一枚 —— 那是"一枚按钮含多号"，
+ *  与后端契约第 5 条冲突（正文里每个标号只有 `[n]` / `[a–b]` 两种形态，`[3][7]` 是两枚标号）。
+ *  方括号里只许编号与分隔符，`[见附录]` 不算引用。 */
+const REF_BRACKET_RE = /\[\s*\d{1,3}(?:\s*[,，、]\s*\d{1,3}|\s*[-–—~]\s*\d{1,3})*\s*\]/g;
 
 /**
- * 把一个引用组拆成「展开后的编号 + 显示成什么样」。
+ * 把**一个方括号**拆成「展开后的编号 + 显示成什么样」。
  *
- * 序号**连续展开**（`[3-5]` → 3、4、5）：合并闪烁要按编号逐条去 `byRef` 里找目标，
- * 区间只是写法。显示则尽量保留原写法 —— 单枚区间仍写 `[3-5]`（比 `[3,4,5]` 短得多），
- * 其余一律归到 `[3,7]` 这种逗号形态，也就是后端提示词定下的合并写法。
+ * 序号**连续展开**（`[3–5]` → 3、4、5）：判定与落点都要按编号逐条去 `byRef` 里找目标，
+ * 区间只是写法。显示一律**原样**（契约第 5 条：`[3–5]` 要保留 en dash，不归一成 `[3-5]`）。
  * 解析不出来（区间过宽、夹了非编号字符）返回 null：调用方原样留文本，绝不吞字。
  */
 function parseRefGroup(run: string): { nums: number[]; display: string } | null {
-  const brackets: string[] = [];
-  const bracketRe = /\[([^\]]*)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = bracketRe.exec(run)) !== null) brackets.push(m[1]);
-  if (!brackets.length) return null;
+  const inner = run.slice(1, -1);
+  if (!inner.trim()) return null;
   const nums: number[] = [];
-  let ranged = false;
-  for (const inner of brackets) {
-    for (const seg of inner.split(/[,，、]/)) {
-      const s = seg.trim();
-      if (!s) continue;
-      const span = /^(\d{1,3})\s*[-–—~]\s*(\d{1,3})$/.exec(s);
-      if (span) {
-        const lo = Math.min(Number(span[1]), Number(span[2]));
-        const hi = Math.max(Number(span[1]), Number(span[2]));
-        // 一页正文里也就几个引用：区间宽到这个程度必然是别的意思（年份、页码），别展开
-        if (hi - lo > 20) return null;
-        for (let n = lo; n <= hi; n += 1) nums.push(n);
-        ranged = true;
-        continue;
-      }
-      if (!/^\d{1,3}$/.test(s)) return null;
-      nums.push(Number(s));
+  for (const seg of inner.split(/[,，、]/)) {
+    const s = seg.trim();
+    if (!s) continue;
+    const span = /^(\d{1,3})\s*[-–—~]\s*(\d{1,3})$/.exec(s);
+    if (span) {
+      const lo = Math.min(Number(span[1]), Number(span[2]));
+      const hi = Math.max(Number(span[1]), Number(span[2]));
+      // 一页正文里也就几个引用：区间宽到这个程度必然是别的意思（年份、页码），别展开
+      if (hi - lo > 20) return null;
+      for (let n = lo; n <= hi; n += 1) nums.push(n);
+      continue;
     }
+    if (!/^\d{1,3}$/.test(s)) return null;
+    nums.push(Number(s));
   }
-  const uniq = Array.from(new Set(nums));
+  const uniq = Array.from(new Set(nums)).sort((a, b) => a - b);
   if (!uniq.length) return null;
-  // 单枚区间保持区间写法（`[3-5]` 比 `[3,4,5]` 短）；全角破折号归到半角，显示只有一种
-  const display = ranged && brackets.length === 1
-    ? `[${brackets[0].replace(/\s+/g, '').replace(/[–—~]/g, '-')}]`
-    : `[${uniq.join(',')}]`;
-  return { nums: uniq, display };
+  return { nums: uniq, display: run };
 }
 
 /**
@@ -709,12 +697,12 @@ function parseRefGroup(run: string): { nums: number[]; display: string } | null 
  * 锚点信息直接写进 `data-*`：这样点击时不必再去猜"这个编号属于哪条消息"
  * （每条消息的编号都是各自从 1 开始的，跨消息查表必然串号）。
  *
- * 相邻引用**合并成一枚按钮**（用户口径 2026-12-11）：`[3,7]` / `[3-5]` 只是少几枚按钮、
- * 少几处阅读噪声，**不决定闪什么** —— 闪哪些行看的是「落点相邻」这一条，
- * 而那条判定现在在**阅读器那边**（`ReaderView.buildCiteChain`：只有那里才有 DOM 与行数据，
- * 才认得出"整行就是一坨公式"的行）。这里只负责把编号写进 `data-refs`、
- * 把**整条消息的引用池**写进 `data-pool`，点这一枚就连池子一起交给父组件（focusMany）。
- * 历史正文里遗留的 `[3][7]` 走同一条路 —— 后端提示词换了，存量的对话记录不会跟着改写。
+ * **一个方括号 → 至多一枚按钮**（后端契约第 5 条）：方括号里的号全都能在引用表里找到、
+ * 且它们属于**同一条** citation（`members` 与该方括号展开的号一致）时，画**一枚**按钮，
+ * label **原样**（`[3–5]` 保留 en dash）；否则**每个号各自一枚**，绝不跨号、跨方括号合并 ——
+ * 相邻两枚按钮显示文本再像也是两个标号（用户口径：不同的块组合就是不同的标号）。
+ * 这里只负责把编号写进 `data-refs`、把**整条消息的引用池**写进 `data-pool`，点这一枚就连池子
+ * 一起交给父组件（`ReaderView.focusMany`：闪哪几处要看那一行的类型与 pids，只有阅读器那边有行数据）。
  */
 /**
  * markdown 的 `cite` 扩展（`useMarkdown.ts` 的 `name: "cite"`）已经画好的标号按钮：
@@ -726,21 +714,24 @@ function parseRefGroup(run: string): { nums: number[]; display: string } | null 
  * （用户 2026-12-11 实测到的正是这个）。
  */
 const MD_CITE_BTN = /<button\b[^>]*\bdata-refs="([^"]*)"[^>]*>[\s\S]*?<\/button>/gi;
-/** 占位符：已经换好的按钮先藏起来，免得后面那趟 `REF_GROUP_RE` 又把它里面的 `[1,2]` 包一层。
+/** 占位符：已经换好的按钮先藏起来，免得后面那趟 `REF_BRACKET_RE` 又把它里面的 `[1]` 包一层。
  *  与 `useMarkdown.decorateCiteMarks` 的 `CITE_HOLD` 同一手法，换个前缀免得撞车。 */
 const REF_HOLD = /\u0001CR(\d+)\u0001/g;
 
 /** 一枚引用按钮（**只有一层**）：两条来源共用 —— ① md 扩展已经画好的；② 扩展没吃到、还是纯文本的。
  *  共用是刻意的：两边各拼一份，迟早有一边忘了带编号表（这一轮的"按钮套按钮"就是这么来的）。
- *  `list` 是这一枚要代表的编号（组内顺序 = 读者看到的顺序），`display` 是它显示成什么样。 */
+ *  `cite` 是这一枚代表的那**一条** citation（组的 `ref` = members[0]，单词条就是它自己）；
+ *  `nums` 是它覆盖的编号（= `data-refs`：组写 members，单词条写自己）；
+ *  `display` 是它显示成什么样 —— **原样**（契约第 5 条：`[3–5]` 保留 en dash）。 */
 function refButtonHtml(
-  list: AgentCitation[],
+  cite: AgentCitation,
+  nums: number[],
   display: string,
   pool: CitePoolItem[],
 ): string {
-  const cite = list[0];
-  const nums = Array.from(new Set(list.map((c) => c.ref)));
-  const title = escapeAttr(cite.snippet || cite.label || `引用 ${nums[0]}`);
+  const own = Array.from(new Set(nums.map(Number).filter((n) => Number.isFinite(n) && n > 0)));
+  const shown = own.length ? own : [Number(cite.ref)];
+  const title = escapeAttr(cite.snippet || cite.label || `引用 ${shown[0]}`);
   /* 用 aria-label 而不是 title：title 会弹**浏览器原生**那一条灰气泡，
      而悬浮标号已经会弹速览卡了 —— 两个提示叠在一起（用户口径 2026-12-04）。 */
   return `<button type="button" class="cite-inline" aria-label="${title}"`
@@ -767,9 +758,64 @@ function refButtonHtml(
     + `>${display}</button>`;
 }
 
+/**
+ * 一个方括号展开的那几个号 → 它们合起来的**那一条** citation（合不成就 null）。
+ *
+ * 口径（与后端契约第 5 条同一条，也是用户刚定稿的「不同的块组合 = 不同的标号」）：
+ * 标号的**身份是它覆盖的块/行集合**，所以
+ * - `members` 存在时，必须与该方括号展开的号**集合完全一致**才算同一个标号（组的 `ref` = members[0]，
+ *   于是 members 里第 2 个号往后在 `byRef` 里查不到 —— 这一支就是它们唯一的入口）；
+ * - `members` 缺省（老形状 / 单词条）时，这个方括号只能是**单号**。
+ * 任何一条不成立就返回 null：调用方把每个号各自画一枚，**绝不跨号合并**。
+ */
+function citeOfBracket(nums: number[], byRef: Map<number, AgentCitation>): AgentCitation | null {
+  if (!nums.length) return null;
+  const found: AgentCitation[] = [];
+  for (const n of nums) {
+    const c = byRef.get(n);
+    if (c) found.push(c);
+  }
+  if (!found.length) return null;
+  const sameSet = (a: number[], b: number[]) => a.length === b.length && b.every((n) => a.includes(n));
+  // ① 有一条自己声明了「我就是这枚方括号」
+  for (const c of found) {
+    const members = Array.isArray(c.members) ? c.members.map(Number) : null;
+    if (members?.length && sameSet(members, nums)) return c;
+  }
+  /* ② 老形状：全部号都认得、且指向**同一条** —— 且它没声明 members（声明了就必须走 ① ） */
+  if (found.length !== nums.length) return null;
+  const first = found[0];
+  if (!found.every((c) => c === first)) return null;
+  if (Array.isArray(first.members) && first.members.length) return null;
+  return nums.length === 1 ? first : null;
+}
+
+/** 一个方括号（或 md 扩展画好的那一枚）该画成什么 HTML。
+ *  能认出**同一条** citation → 一枚按钮，label 原样；
+ *  否则**每个号各自一枚**按钮，认不出的号**保留原文本**（绝不吞号、绝不跨号合并）。 */
+function refButtonsFor(
+  nums: number[],
+  display: string,
+  byRef: Map<number, AgentCitation>,
+  pool: CitePoolItem[],
+): string {
+  const one = citeOfBracket(nums, byRef);
+  if (one) return refButtonHtml(one, nums, display, pool);
+  return nums.map((n) => {
+    const hit = byRef.get(n);
+    return hit ? refButtonHtml(hit, [n], `[${n}]`, pool) : `[${n}]`;
+  }).join('');
+}
+
 function decorateRefs(html: string, cites?: AgentCitation[]) {
   if (!cites?.length) return html;
-  const byRef = new Map(cites.map(c => [c.ref, c]));
+  /* 编号 → citation。老消息里同一个号可能出现两次（同一条证据被引了两遍）：
+     取**第一条**，与原来 `new Map(...)` 的覆盖顺序一致。 */
+  const byRef = new Map<number, AgentCitation>();
+  for (const c of cites) {
+    const n = Number(c?.ref);
+    if (Number.isFinite(n) && n > 0 && !byRef.has(n)) byRef.set(n, c);
+  }
   /* 引用池整段只拼一次（拼法见 `citationAnchor`）：与正文怎么切块无关，
      每条按钮上都写同一份 —— 阅读器据此按"同页 + 行号差 1"扩链。 */
   const pool: CitePoolItem[] = cites
@@ -794,39 +840,23 @@ function decorateRefs(html: string, cites?: AgentCitation[]) {
       held.push(s);
       return `\u0001CR${held.length - 1}\u0001`;
     };
-    /* ② 先**消费** md 扩展画好的按钮：编号认得全就换成自己那一枚（带编号表与引用池），
-       认不全（或 data-refs 是空的 / 坏的）就原样留着 —— 那种标号本来也没有落点，
-       与今天的行为一致。两种都要先藏进占位符，否则下一步会把它文本里的 `[1, 2]` 再包一层。 */
+    /* ① 先**消费** md 扩展画好的按钮：认出它是**同一条** citation 就换成自己那一枚
+       （带编号表与引用池）；认不出就原样留着 —— 那种标号本来也没有落点，与今天的行为一致。
+       两种都要先藏进占位符，否则下一步会把它文本里的 `[1]` 再包一层。 */
     let out = part.replace(MD_CITE_BTN, (whole, refs: string) => {
-      const nums = String(refs).split(',')
+      const nums = Array.from(new Set(String(refs).split(/[,;]/)
         .map((s) => Number(s.trim()))
-        .filter((n) => Number.isFinite(n) && n > 0);
-      const list: AgentCitation[] = [];
-      for (const n of nums) {
-        const hit = byRef.get(n);
-        if (!hit) return hold(whole);
-        list.push(hit);
-      }
-      if (!list.length) return hold(whole);
-      // md 那边只会产出 `[1]` / `[1, 2]` 这两种形态（区间、全角逗号它不吃），显示一律归到 `[1,2]`
-      const display = `[${Array.from(new Set(list.map((c) => c.ref))).join(',')}]`;
-      return hold(refButtonHtml(list, display, pool));
+        .filter((n) => Number.isFinite(n) && n > 0)));
+      if (!nums.length) return hold(whole);
+      // md 那边只产出 `[1]` / `[1, 2]`（区间、全角逗号它不吃）：号还是那几个号，显示归到无空格的写法
+      return hold(refButtonsFor(nums, `[${nums.join(',')}]`, byRef, pool));
     });
-    /* ① 扩展**没吃到**的写法（`[3][7]`、`[3-5]`、全角逗号 `[3，7]`、`[3、7]`）：扩展只兜
-       「单层方括号 + 半角逗号/分号」，其它形态到这儿还是纯文本，正则补上。 */
-    out = out.replace(REF_GROUP_RE, (whole) => {
+    /* ② 扩展**没吃到**的写法（`[3–5]` 区间、`[3][7]`、全角逗号 `[3，7]`、`[3、7]`）：扩展只兜
+       「单层方括号 + 半角逗号/分号」，其它形态到这儿还是纯文本，正则补上。
+       **一个方括号至多一枚按钮**：`[3][7]` 是两枚（跨方括号绝不合并，用户口径 2026-12-27）。 */
+    out = out.replace(REF_BRACKET_RE, (whole) => {
       const parsed = parseRefGroup(whole);
-      if (!parsed) return whole;
-      /* 组里**有一条**不是这一轮真实存在的引用，就整组按原样留文本：
-         只把认得的那几条变成按钮，会让 `[3,7]` 变成 `[3][7]` 两枚、或者干脆少一个编号，
-         读的人会以为引用被吞了 —— 宁可不接。 */
-      const list: AgentCitation[] = [];
-      for (const n of parsed.nums) {
-        const hit = byRef.get(n);
-        if (!hit) return whole;
-        list.push(hit);
-      }
-      return refButtonHtml(list, parsed.display, pool);
+      return parsed ? refButtonsFor(parsed.nums, parsed.display, byRef, pool) : whole;
     });
     return out.replace(REF_HOLD, (_m, i: string) => held[Number(i)] ?? '');
   }).join('');
@@ -939,6 +969,9 @@ function parseCitePool(raw?: string): CitePoolItem[] {
         block: String(t.block ?? ''),
         page: Number(t.page ?? 0) || 0,
         latex: String(t.latex ?? ''),
+        /* 这一条证据覆盖的**行身份**：写进 `data-pool` 却在这里丢掉的话，
+           跨页的同一块 / 连续组那几行就永远闪不出来（点 `[3–5]` 只亮第一行就是这么来的）。 */
+        pids: Array.isArray(t.pids) ? t.pids.map(String) : [],
       }))
       .filter((t) => t.ref > 0);
   } catch {

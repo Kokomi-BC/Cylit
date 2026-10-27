@@ -34,6 +34,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai_harness import Skills
 
 from backend.agent import prompts
+from backend.agent.cite_groups import plan_cite_groups
 from backend.agent.citations import RefRegistry
 from backend.agent.config import AgentConfig
 from backend.agent.deps import Deps, ReaderState, normalize_reader
@@ -876,33 +877,6 @@ class AgentRuntime:
         lines.append("把问题拆小一点（比如指定某一节、某个概念）再问一次通常能答出来。")
         return "\n".join(lines)
 
-    @staticmethod
-    def _renumber(text: str, citations: list) -> tuple[str, list[dict]]:
-        """把引用编号压成 ``1..M``，并同步改写正文里的标记。
-
-        为什么不留着 registry 的原始编号：编号是按"工具返回顺序"发的，模型只用了其中一小撮，
-        用户看到的引用表就成了 ``[63][49][33]`` 这种带洞的号 —— 表里 4 条、正文写着 ``[63]``，
-        谁也读不懂。压成 1..M 之后"正文 ``[n]`` ↔ 引用表第 n 条"是一一对应的。
-
-        ⚠️ 已知代价：论文自己的方括号编号（``as in [12]``）**只在该号恰好是本次用到的
-        ref 时**才会被改写 —— 这正是规划 R6 说的撞车，前端只把能匹配到 citation 的 ``[n]``
-        变按钮，改不掉的按普通文本留着。
-        """
-        order = [c.ref for c in citations]
-        mapping = {old: i for i, old in enumerate(order, start=1)}
-
-        def repl(match: "re.Match[str]") -> str:
-            new = mapping.get(int(match.group(1)))
-            return f"[{new}]" if new else match.group(0)
-
-        new_text = re.sub(r"\[(\d{1,3})\]", repl, text) if mapping else text
-        out: list[dict] = []
-        for old in order:
-            data = next(c for c in citations if c.ref == old).to_dict()
-            data["ref"] = mapping[old]
-            out.append(data)
-        return new_text, out
-
     async def _finalize(self, req: AskRequest, deps: Deps,
                         state: RunState) -> AsyncIterator[dict]:
         # ⚠️ 不做 strip：`done.answer` 必须与流式增量的拼接**逐字一致**（自检里就是这么断言的），
@@ -932,12 +906,16 @@ class AgentRuntime:
         citations = referenced_citations(text, deps.registry)
         # 图片先过闸：只留本论文自己的受控裁图地址（§12 规则 5）
         text = strip_foreign_images(text, deps.paper_id)
-        text, payload = self._renumber(text, citations)
-        # 正文步骤里的 `[n]` 要用**同一套映射**改写一遍：映射只由 citations 决定（不看正文），
-        # 所以逐段跑一遍得到的号与整篇跑一遍完全一致；不跑的话轨迹里的引用点下去会跳错。
+        # 编号与改写**同一套规则**：一个标号 = 一处连续材料（见 cite_groups）。
+        # 先建一份编号表，正文与轨迹里的每一段都拿它渲染 —— 编号只由"材料身份 + 正文首次
+        # 出现顺序"决定（不看段落），所以逐段渲染得到的号与整篇渲染完全一致；
+        # 不逐段渲染的话，轨迹里的标号点下去会跳错位置。
+        plan = plan_cite_groups(text, citations)
+        text = plan.render(text)
+        payload = plan.payload()
         for step in state.log.steps:
             if step.get("kind") == "text" and step.get("text"):
-                step["text"], _ = self._renumber(step["text"], citations)
+                step["text"] = plan.render(step["text"])
         # 过程轨迹收尾：整轮耗时与轮数（前端抬头那句"已完成，用时 …"与自检都读它）
         state.log.elapsed_ms = int(state.elapsed_ms or 0)
         state.log.rounds = int(state.rounds or deps.model_calls or 0)
