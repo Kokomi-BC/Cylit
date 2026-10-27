@@ -7,7 +7,11 @@
  */
 
 /** 引用池里的一项（与 ReaderChat 的 `CitePoolItem` 结构一致）。 */
-export type CiteGroupItem = { ref: number; row: string; block: string; page: number; latex: string };
+export type CiteGroupItem = {
+  ref: number; row: string; block: string; page: number; latex: string;
+  /** 这一条证据覆盖的行身份（`PageRow.pid`）：同一块跨页时有多行，点一枚标号要把整块一起闪。 */
+  pids?: string[];
+};
 
 /** 行 id 拆「页前缀 + 行号」：`p006-01` → (`p006-`, 1)。排序只靠这两段。
  *  `row-` 前缀先归一（与 `rowAnchorId` 同一条规则）：公式 / 表格类引用给的是 `row-p006-03`。 */

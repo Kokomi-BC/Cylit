@@ -133,7 +133,12 @@ const figures = ref<FigureItem[]>([]);
  * 引用里带的 snippet 只有一两句，且没有图表的地址，当兜底就够了。 */
 /** 一条引用在阅读器里的落点（对话正文那枚按钮的 `data-pool` 里的一项）。
  *  与 `ReaderChat` 里那份结构逐字相同 —— 本轮不动 `api/types.ts`，所以两边各写一次。 */
-type CitePoolItem = { ref: number; row: string; block: string; page: number; latex: string };
+type CitePoolItem = {
+  ref: number; row: string; block: string; page: number; latex: string;
+  /** 这一条证据（chunk）覆盖的**行身份**（PageRow.pid）：同一块跨页时这里会有好几行，
+   *  点一枚标号要把整块（含另一页那半截）一起闪 —— 见 focusMany 里的 pids 展开。 */
+  pids?: string[];
+};
 
 type CitePeekAsk = {
   anchor: { x: number; y: number; w: number; h: number };
@@ -3182,7 +3187,64 @@ function flashSpanIds(id: string): string[] {
 }
 
 /**
- * 把范围里**命中行之外**那几行点亮（命中行仍由 ReaderPageRows.rowClass 自己闪）。
+ * 一次闪**一整块**：把这几行的外接矩形合成**一枚**覆盖层（跨页也算一块）。
+ *
+ * 为什么不再逐行铺 `::before`（用户口径 2026-12-27「多个页面内容同时闪烁改为合并为一个大的块闪烁」）：
+ * 逐行铺只在**相邻行之间**靠 `inset: -3px -6px` 勉强接上；一旦跨页（两张页卡片之间隔着
+ * 页间距 / 白边），就会看见好几块各自闪，读起来像"点了好几个地方"。
+ * 合成一枚以后，无论跨几页、中间隔多少行，屏幕上都只有**一个块**在呼吸。
+ *
+ * 容器取第一行的 `.rows-wrap`（正文区的内容层，随滚动一起走，所以覆盖层不会被滚走）；
+ * 坐标系是**容器内容坐标**：`rect - containerRect + scroll`。
+ * 覆盖层 `pointer-events: none`，不挡划词与点击；到时由 `flashSpanTimer` 一并摘掉。
+ */
+function paintFlashBlock(ids: string[]): boolean {
+  const root = scroller.value;
+  if (!root || ids.length < 2) return false;
+  const els = ids
+    .map((id) => root.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(id)}"]`))
+    .filter((el): el is HTMLElement => !!el);
+  if (els.length < 2) return false;
+  const cont = els[0].closest<HTMLElement>('.rows-wrap') ?? root;
+  if (getComputedStyle(cont).position === 'static') cont.style.position = 'relative';
+  const base = cont.getBoundingClientRect();
+  let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    top = Math.min(top, r.top);
+    bottom = Math.max(bottom, r.bottom);
+    left = Math.min(left, r.left);
+    right = Math.max(right, r.right);
+  }
+  if (!Number.isFinite(top) || right <= left) return false;
+  /* **只在"这几行本来就是连着的一段"时才合块**：把每行自身的高度加起来，和整块高度比一比，
+     差出一个大窟窿就说明中间隔着别的行（例：点 `[3,7]` 两条相隔十几行的引用）——
+     那种情况盖一枚大块会把无关正文也框进去，仍然分头闪更诚实。
+     阈值 240px ≈ 三行正文：跨页那两张页卡片之间的间距只有几十像素，不会被误判。 */
+  const rowsHeight = els.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
+  if (bottom - top > rowsHeight + 240) return false;
+  clearFlashBlock();
+  const box = document.createElement('div');
+  box.className = 'flash-block';
+  box.dataset.flashBlock = '1';
+  box.style.top = `${Math.round(top - base.top + cont.scrollTop - 6)}px`;
+  box.style.left = `${Math.round(left - base.left + cont.scrollLeft - 8)}px`;
+  box.style.width = `${Math.round(right - left + 16)}px`;
+  box.style.height = `${Math.round(bottom - top + 12)}px`;
+  cont.appendChild(box);
+  return true;
+}
+
+/** 摘掉上一步那枚大块（换目标 / 到时都要清）。 */
+function clearFlashBlock(): void {
+  const root = scroller.value;
+  if (!root) return;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-flash-block]'))) {
+    el.remove();
+  }
+}
+
+/** 把范围里**命中行之外**那几行点亮（命中行仍由 ReaderPageRows.rowClass 自己闪）。
  *
  * 为什么落到 DOM 上、而不是把一串行 id 传下去：那边接的是**单值** prop、
  * id === props.flashRowId 严格相等，一个字符串说不了"这几行一起闪"，而那个文件不在本轮范围。
@@ -3508,6 +3570,18 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
      只有一条目标时排序是空操作。 */
   const ordered = sortCiteRows(list);
   // 把每一处解析成"哪一行 / 哪一页"（同步，不碰 DOM 的落点计算）
+  /* `pids` → 行 id：同一条证据覆盖的**全部行**（跨页时就在这两页上各有一截）。
+     ⚠️ 组的类型是 `CiteGroupItem`（utils/citeGroup），它的 `pids` 在这里单独放宽。
+     行身份用 `pid`（r-…）而不是位置 id，索引重建后也不会错位（见 reader_service 的 _finalize_page）。 */
+  const pidToRow = new Map<string, string>();
+  for (const r of allRows.value) if (r.pid) pidToRow.set(String(r.pid), r.id);
+  const pidRowIds = new Set<string>();
+  for (const t of ordered) {
+    for (const pid of Array.isArray(t.pids) ? t.pids : []) {
+      const rid = pidToRow.get(String(pid));
+      if (rid) pidRowIds.add(rid);
+    }
+  }
   const spots = ordered.map((t) => {
     const hit = resolveRefId(String(t.row || t.block || ''), t.page || undefined);
     return { ...hit, latex: String(t.latex || '') };
@@ -3547,17 +3621,25 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
     const firstRow = allRows.value.find((r) => r.page === s.page);
     if (firstRow) rowIds.add(firstRow.id);
   }
+  /* **同一块跨页**（用户口径 2026-12-27「支持跨页的同一块闪烁」）：引用带 `pids`（这条证据
+     覆盖的行身份）时，把它覆盖的每一行都加进来 —— chunk 被页边界切成两半时，点在上一页那一半
+     也会把下一页那半截一起点亮。老消息没有 `pids`，行为与从前一致。 */
+  if (pidRowIds.size) for (const rid of pidRowIds) rowIds.add(rid);
   /* 上一轮的整行闪可能还挂着（先点单枚、再点合并组）：合并闪自己有一套，先收掉，
      否则同一行上会叠两层动画、看着比别处亮一档。 */
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
   flashRowId.value = '';
   clearFlashSpan();
-  paintFlashSpanIds(Array.from(rowIds));
+  /* 多行（尤其是**跨页**的那几行）→ 不再逐行铺一层，而是合一枚**大块**盖住整个范围（用户口径
+     2026-12-27「多个页面内容同时闪烁改为合并为一个大的块闪烁」）；只有一行时仍走行内那一层
+     （与命中行同一套亮度，切换时不会跳）。公式节点照旧各自闪自己那一枚。 */
+  if (!paintFlashBlock(Array.from(rowIds))) paintFlashSpanIds(Array.from(rowIds));
   if (formulas.length) flashFormulaNode(...formulas);
   if (rowIds.size) {
     if (flashSpanTimer) clearTimeout(flashSpanTimer);
     flashSpanTimer = setTimeout(() => {
       clearFlashSpan();
+      clearFlashBlock();
       flashSpanTimer = null;
     }, 1600);
   }
@@ -11102,6 +11184,21 @@ function renderMarkdown(text?: string | null) {
  * 否则点标题与点段落会闪出两种亮度。改一处要同时看另一处。
  * 挂在属性上（不是类名）的原因见 paintFlashSpan：Vue 重排 class 会整条覆盖 className。
  * pointer-events: none —— 覆盖层不挡点击（与那一枚同一条）。 */
+/* 合并闪的那**一枚大块**（见 paintFlashBlock）：跨页、跨多行都只画这一个矩形。
+   材质与逐行那套（`row-flash-span`）同一档亮度，切换时不会觉得换了一种闪法；
+   圆角比行内那层大一点（它盖的是一个区域，不是一行）。 */
+.reader-content :deep(.flash-block) {
+  position: absolute; z-index: 3; pointer-events: none;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  animation: block-flash 1.5s ease-out forwards;
+}
+
+@keyframes block-flash {
+  0% { opacity: .95; }
+  60% { opacity: .6; }
+  100% { opacity: 0; }
+}
 .reader-content :deep(.row-pair[data-flash-span])::before {
   content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
   border-radius: 8px; opacity: .95;

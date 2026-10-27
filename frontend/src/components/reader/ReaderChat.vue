@@ -782,6 +782,9 @@ function decorateRefs(html: string, cites?: AgentCitation[]) {
       page: Number(c.page ?? 0) || 0,
       // 与 `data-latex` 同一条兜底：存量消息的公式引用只有被截到 160 字的 snippet
       latex: String(c.latex || (c.kind === 'formula' ? c.snippet || '' : '')),
+      // 这一条证据覆盖的**行身份**（chunk 的 pids）：跨页的同一块靠它认出来，
+      // 点一枚标号会把整块（含另一页那半截）一起闪；老消息没有这个字段 → 空数组。
+      pids: Array.isArray(c.pids) ? c.pids.map(String) : [],
     }));
   const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
   return parts.map((part, index) => {

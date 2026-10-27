@@ -201,6 +201,9 @@ export interface PageRow {
   continues?: boolean;
   /** 本行句子从上一页接过来（后端已清掉「……」/「承接上页」这类占位噪声） */
   continued_from_prev?: boolean;
+  /** 行身份（`r-…`，由解析侧按文本指纹分配、重建索引也不变）：引用的 `pids` 靠它翻回行，
+   *  于是"同一块跨页"能把两页上那两截一起点亮（见 ReaderView.focusMany）。 */
+  pid?: string;
 }
 
 /** 一页的页级翻译产物（两份逐块对应的 Markdown + 对齐后的行）。 */
@@ -1130,6 +1133,9 @@ export interface AgentCitation {
   latex?: string | null;
   image_urls?: string[];
   label?: string;
+  /** 这一条证据（chunk）覆盖的**行身份**（`PageRow.pid`）。跨页的同一块会有多行 ——
+   *  点一枚标号要把整块一起闪（见 ReaderView.focusMany）；老消息没有这个键。 */
+  pids?: string[];
 }
 
 /** 对话里上传/粘贴的图片（落盘在 `data/attachments`，消息上只存这份元数据）。 */
