@@ -16298,3 +16298,46 @@ payload 49 条，refs 恰好 1..49（dense=True），组 7 个（6 个两成员 
 ```
 
 `frontend_check.py` 168/168 通过、0 失败；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-crK2EdAr.js`）。
+---
+
+# 245 · 「更多菜单」统一成一份毛玻璃 + 优先右下角、避让底部（2026-12-27）
+
+用户口径：**「统一下更多菜单的样式，使用已有的毛玻璃效果然后避让底部，优先右下角弹出」**。
+
+改之前是两套：
+
+| 菜单 | 材质 | 位置 |
+|---|---|---|
+| `components/Menu.vue`（行内「更多操作」，卡片 / 表格 / 侧栏共 ~10 处） | 实心 `--bg-elev` + 1px 描边 | 已在按钮下方、`align=end` 右对齐，空间不够自动上翻 |
+| `ReaderChat` 对话行「⋯」 | 实心 `--bg-elev` + 1px 描边 | 挂在按钮**右侧、垂直居中**（那是「右侧中部」，不是右下角） |
+
+## A. 材质：抽一份 `.glass-menu`（`styles/base.css`，全站唯一一处）
+
+照抄 `ContextMenu.vue` 的 `.ctx-panel`（与阅读器顶部胶囊同一块玻璃）：
+`--bg-elev` 上亮下暗渐变（吃 `--glass-bar-top/bottom`，阅读器里 80/68、外面同一组兜底）
++ `blur(48px) saturate(2.6)` + **不画描边** + `--shadow-flyout`。
+
+只提供**材质**；圆角、内边距、宽度、坐标仍归各调用方 —— 那些是「这枚菜单在哪儿、多大」，不是材质。
+`Menu.vue` 与对话行「⋯」都改成 `class="… glass-menu"`，并删掉各自的 `background/border` 声明。
+
+## B. 位置：优先右下角 + 避让底部
+
+- `placeRowMenu`：锚点是**这一行**（`btn.closest(".row")`），改成 ① 右对齐到行右边、② 优先挂在行**下面**、
+  ③ 下方不够就翻到行上方、④ 两个方向都夹进视口（`pad = 8`）。旧实现是「垂直居中 + 挂到右侧」。
+- 顺手修掉一个量错：`getBoundingClientRect()` 量的是**含 `transform: scale(.98)` 的视觉盒**，
+  淡入时比真实盒子窄 2~3px → 右对齐会偏出去；改用 `offsetWidth/offsetHeight`（布局盒）。
+
+## C. 实测（无头 Chrome，读 `getComputedStyle` + `getBoundingClientRect`）
+
+```
+对话行「⋯」   背景 linear-gradient(srgb 1 1 1 / .8 → .68)   blur(48px) saturate(2.6)  border 0px
+行内「更多」  背景 linear-gradient(srgb 1 1 1 / .8 → .68)   blur(48px) saturate(2.6)  border 0px
+
+视口 900 高   行 right=293 bottom=252 → 菜单 left=161(=293-132) top=258(=252+6)  右下角
+视口 340 高   下方放不下 → 翻到行上方 top=57，bottom=190 ≤ 340-8，仍在视口内（避让底部）
+行内「更多」  锚点 bottom=424 / 视口 560 → 菜单 bottom=386 翻到上方，right 与锚点齐平
+```
+
+截图 `data/logs/menuglass.png`：对话行菜单是半透明玻璃，右侧与行右边对齐、贴在这一行下面。
+
+`frontend_check.py` 168/168 通过、0 失败；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BANBlmPc.js`）。

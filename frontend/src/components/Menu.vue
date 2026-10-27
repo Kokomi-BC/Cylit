@@ -166,7 +166,7 @@ onUnmounted(() => {
         <div
           v-if="open"
           ref="panel"
-          class="menu-panel"
+          class="menu-panel glass-menu"
           :style="{ top: pos.top + 'px', left: pos.left + 'px' }"
           role="menu"
           :aria-label="label"
@@ -200,10 +200,9 @@ onUnmounted(() => {
 .menu-panel {
   position: fixed; z-index: 300; min-width: 194px;
   padding: 5px; display: flex; flex-direction: column; gap: 1px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-flyout);
+  /* 材质走全站那一份玻璃（`styles/base.css` 的 `.glass-menu`）：与右键菜单同一块，
+     别再自己写实心底 + 描边 —— 那正是「三处菜单三种玻璃」的来源。 */
 }
 
 .menu-sep { height: 1px; margin: 4px 6px; background: var(--divider); }

@@ -165,6 +165,25 @@ html [data-hl-force="marker"] mark.hl { background: var(--hl-bg, transparent); t
   text-decoration-color: currentColor;
 }
 .cite-inline:focus-visible { outline: none; box-shadow: var(--ring); }
+/* **浮层菜单的玻璃**（全站唯一一份）：右键菜单 / 行内「更多操作」/ 对话行的「⋯」共用。
+ *
+ * 用户口径 2026-12-27：「统一下更多菜单的样式，使用已有的毛玻璃效果」—— 已有的那一份就是
+ * `ContextMenu.vue` 的 `.ctx-panel`（与顶部胶囊同一块玻璃）：上亮下暗的 `--bg-elev` 渐变本体 +
+ * 48px 饱和模糊，**不画描边**（深色下描边会变成一圈发光环），靠 `--shadow-flyout` 托起来。
+ * 比例吃 `--glass-bar-top/bottom`（阅读器里由 `.reader` 给 80/68，阅读器外走同一组兜底值），
+ * 所以浅色 / 深色 / 各套皮肤会一起变，不会出现「三处菜单三种玻璃」。
+ *
+ * ⚠️ 只提供**材质**（底色 / 模糊 / 阴影 / 无描边），圆角、内边距、宽度、坐标各调用方自己定 ——
+ * 那些是「这一枚菜单在哪儿、多大」的信息，不属于材质。 */
+.glass-menu {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--bg-elev) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
+  border: 0;
+  box-shadow: var(--shadow-flyout);
+}
 /* **高亮色块**（划词菜单、右键触摸条、换色菜单、笔记卡那枚圆点、AI 解释浮层的"标出这段"共用一份）。
  *
  * 颜色**一个都不写在这里**：只吃行内 `--hl-sw`（`utils/highlightColors.ts::swatchStyleOf` 写，

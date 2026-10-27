@@ -2286,14 +2286,20 @@ function placeRowMenu() {
   const anchor = rowMenuAnchor;
   if (!el || !anchor) return;
   const a = anchor.getBoundingClientRect();
-  const m = el.getBoundingClientRect();
+  /* 用 **布局盒**（offsetWidth/Height）而不是 `getBoundingClientRect()`：后者包含进了淡入时的
+     `transform: scale(.98)`，量出来比真实盒子窄 2~3px —— 于是「右对齐到按钮右边」会偏出几像素。 */
+  const m = { width: el.offsetWidth, height: el.offsetHeight };
+  /* 用户口径 2026-12-27：「**优先右下角弹出**，避让底部」。
+     ① 横向**右对齐**到这一枚「⋯」的右边（= 从右下角往外长）；② 纵向优先挂在它下面；
+     ③ 下方放不下就翻到上边；④ 最后两个方向都夹进视口（`pad` = 离屏幕边的最小距离）。
+     旧实现把菜单在这一行上**垂直居中**、再挂到按钮右侧 —— 那是「右侧中部」，不是右下角。 */
   const pad = 8;
-  let left = a.right + 8;
-  if (left + m.width > window.innerWidth - pad) left = a.left - m.width - 8;
-  left = Math.max(pad, left);
-  let top = a.top + a.height / 2 - m.height / 2;
-  top = Math.min(top, window.innerHeight - m.height - pad);
-  top = Math.max(pad, top);
+  const gap = 6;
+  let left = a.right - m.width;
+  let top = a.bottom + gap;
+  if (top + m.height > window.innerHeight - pad) top = a.top - gap - m.height;
+  left = Math.max(pad, Math.min(left, window.innerWidth - m.width - pad));
+  top = Math.max(pad, Math.min(top, window.innerHeight - m.height - pad));
   rowMenuStyle.value = { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` };
 }
 
@@ -3474,7 +3480,7 @@ defineExpose({ uploadFiles, ensureThread });
             <div
               v-if="rowMenu === c.conversation_id"
               :ref="setRowMenuEl"
-              class="row-menu row-menu-fly"
+              class="row-menu row-menu-fly glass-menu"
               :style="rowMenuStyle"
               @click.stop
             >
@@ -4028,15 +4034,15 @@ defineExpose({ uploadFiles, ensureThread });
 .row-menu {
   position: absolute; right: 4px; top: calc(100% - 4px); z-index: 6;
   display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 126px;
-  border-radius: 12px; background: var(--bg-elev); box-shadow: var(--shadow-flyout);
-  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 /* 「⋯」菜单的浮层形态（2026-12-27）：`position: fixed` + Teleport 到 body ——
    列表是 `overflow-y:auto`，留在行里的绝对定位会被裁掉（"菜单被底部吃掉"就是这么来的）。
    坐标由 `placeRowMenu` 算：这一行右侧、避让视口底边；放不下就翻到左侧。 */
 .row-menu.row-menu-fly {
   position: fixed; right: auto; top: auto; z-index: 60;
-  min-width: 132px; padding: 5px;
+  min-width: 132px; padding: 5px; border-radius: 12px;
+  /* 材质走全站那一份玻璃（`base.css` 的 `.glass-menu`，与右键菜单 / 行内「更多操作」同一块）。 */
 }
 .row-menu .menu-item {
   display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; padding: 0 8px;
