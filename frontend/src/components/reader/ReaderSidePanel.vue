@@ -555,16 +555,9 @@ function onMore(key: string, r: FeedRow) {
                以前是一枚圆钮在两态之间换图标 —— 看不出"现在在哪一态、还能切到哪"。
                现在两态并排摆出来，选中态由滑过去的那枚白块表达（`useSegGlide` 自动挂）。
                图标：钟 = 按修改时间、三行 = 按文章顺序（2026-12-11 口径，时钟取线稿那版）。 -->
+          <!-- 顺序（用户口径 2026-12-27）：**按文章顺序在左、按修改时间在右** ——
+               与"从文档开头往后读"的直觉一致；默认仍落在右边那枚（`order` 默认 'time'）。 -->
           <div class="seg sq" role="group" aria-label="笔记排序" data-notes-order>
-            <button
-              :class="{ active: order === 'time' }"
-              :aria-pressed="order === 'time'"
-              title="按修改时间"
-              data-notes-order-time
-              @click="setOrder('time')"
-            >
-              <AppIcon name="clock" :size="14" />
-            </button>
             <button
               :class="{ active: order === 'doc' }"
               :aria-pressed="order === 'doc'"
@@ -573,6 +566,15 @@ function onMore(key: string, r: FeedRow) {
               @click="setOrder('doc')"
             >
               <AppIcon name="sort-doc-fill" :size="14" />
+            </button>
+            <button
+              :class="{ active: order === 'time' }"
+              :aria-pressed="order === 'time'"
+              title="按修改时间"
+              data-notes-order-time
+              @click="setOrder('time')"
+            >
+              <AppIcon name="clock" :size="14" />
             </button>
           </div>
           <span class="spacer" />
