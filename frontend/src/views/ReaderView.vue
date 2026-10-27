@@ -3618,7 +3618,10 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
   await nextTick();
   const el = scroller.value;
   if (el) spyLockUntil = performance.now() + 1200;   // 平滑滚动期间别让滚动跟踪把当前行改到别处
-  const formulas: HTMLElement[] = [];
+  /* 命中的公式节点**连同它所在的行**一起记着（`rowId` 可能为空：无行可落的块）。
+     为什么要行：一组里既有公式又有相邻正文时，要收进**同一枚**大块一起亮
+     （用户口径 2026-12-27「公式如果单独存在则单独闪；那一段包含了公式与相邻的几行，则一起闪」）。 */
+  const formulaSpots: { node: HTMLElement; rowId: string }[] = [];
   const rowIds = new Set<string>();
   let scrolled = false;
   for (const s of spots) {
@@ -3637,7 +3640,8 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
       /* +8px：让这条链从阅读线**下面一点**开始（见 scrollNodeToLine 的 drop）。 */
       if (to) { scrollNodeToLine(el, to, true, CHAIN_SCROLL_DROP); scrolled = true; }
     }
-    if (formulaNode) { formulas.push(formulaNode); continue; }
+    /* 认出来了先**只记下来**，要不要单独闪它取决于这一轮还有没有别的落点（见下面的 spotsTotal）。 */
+    if (formulaNode) { formulaSpots.push({ node: formulaNode, rowId: s.known ? s.id : '' }); continue; }
     /* 同一行的两面（ref 8 = 英文块、ref 9 = 它的中文译文）**都闪**：它们是同一份证据，
        用户口径是"允许两侧都闪"，重复引用交给提示词去约束（后端 CITING 已加一条
        「同一处内容只引一条」）—— 前端不再按语言收窄。 */
@@ -3653,6 +3657,20 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
      覆盖的行身份）时，把它覆盖的每一行都加进来 —— chunk 被页边界切成两半时，点在上一页那一半
      也会把下一页那半截一起点亮。老消息没有 `pids`，行为与从前一致。 */
   if (pidRowIds.size) for (const rid of pidRowIds) rowIds.add(rid);
+  /* **公式单独一处**才单独闪**：只有一个落点时，仍只点亮那一枚 KaTeX（老口径：公式不许退化成整行闪）。
+     一旦还有第二个落点（相邻正文行 / 同块跨页的另一半 / 合并组里的另一块），就把公式所在的**行**
+     也纳入那枚大块、并且**不再单独叠一层** —— 否则同一处会同时亮"块 + 公式"两层，看上去像两处。 */
+  const spotsTotal = rowIds.size + formulaSpots.length;
+  let formulasToFlash = formulaSpots.map((f) => f.node);
+  if (spotsTotal > 1) {
+    for (const f of formulaSpots) {
+      if (!f.rowId) continue;
+      rowIds.add(f.rowId);
+      const tail = headingTailId(f.rowId);
+      if (tail) rowIds.add(tail);
+    }
+    formulasToFlash = [];
+  }
   /* 上一轮的整行闪可能还挂着（先点单枚、再点合并组）：合并闪自己有一套，先收掉，
      否则同一行上会叠两层动画、看着比别处亮一档。 */
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
@@ -3666,7 +3684,7 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
      2026-12-27「多个页面内容同时闪烁改为合并为一个大的块闪烁」）；只有一行时仍走行内那一层
      （与命中行同一套亮度，切换时不会跳）。公式节点照旧各自闪自己那一枚。 */
   if (!paintFlashBlock(Array.from(rowIds))) paintFlashSpanIds(Array.from(rowIds));
-  if (formulas.length) flashFormulaNode(...formulas);
+  if (formulasToFlash.length) flashFormulaNode(...formulasToFlash);
   if (rowIds.size) {
     if (flashSpanTimer) clearTimeout(flashSpanTimer);
     flashSpanTimer = setTimeout(() => {
