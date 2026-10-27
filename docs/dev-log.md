@@ -15803,3 +15803,63 @@ scrollLeft=149  激活项 x=-52 w=49   指示块 x=62   ✘（托盘左沿，压
 
 线上 = `d118be7`，`dist/index.html` sha256 两边同为 `7eaab5b3…`，`cylit-api` online、`/health` 200；
 GitHub `e869d32..d118be7`，`unpushed=0`；deploy 分支与 `/tmp` 包已清。
+### 234. 第二百三十四轮：分隔线真的画出来 + 作者区不许一列一行 + 提示词精简 7.6%
+
+用户口径：「前端没有显示分割线」「作者名字排成一列的问题（用规则约束一下）」「最后精简一下提示词」。
+
+## A. 分隔线：数据有了，前端把它**藏起来**了
+
+上一轮转录已经产出 `---`（脚注分隔线），但阅读器里看不见。实测（CDP）：`<hr>` 在 DOM 里、
+`width=481 height=12`，而 `border-top=0px none`、`background=rgba(0,0,0,0)` —— 一条透明的东西。
+两处来源：
+
+1. `components/reader/ReaderRow.vue` 有一条 `.rr-body :deep(hr) { border:0; height:12px; margin:0; background:none }`，
+   注释写着「`---` 在正文里也不画横线（用户口径：移除分割线），只当一段空白」—— 旧决定，本轮**反转**；
+   `components/insight/InsightDoc.vue` 同款（解读文档里也是空白）。
+2. `base.css` 里从来没有 `hr` 的样式：Chrome 的 UA 样式（`border: 1px inset`）在本站 tokens 下算出来就是 0px。
+
+改法：`base.css` 新增 `.md hr`（1px、`var(--divider)`、左对齐 33% 宽 / 96–220px —— 印刷脚注线的样子），
+并把上面两条「藏起来」的规则删掉。实测：`hr` 现在 `w=158 h=1 bg=color(srgb .05 .13 .15 / .08)`，截图里看得见。
+
+## B. 作者区排成一列：模型按解析器的**一行一个人**抄
+
+页图上是 4 列网格，但解析器给的文本逐行给出，模型（按「每一行都必须逐字来自给你的文本」）就抄成 8 行。
+新增第 9 条，试了三稿（都在真机上验证过）：
+
+| 稿 | 写法 | 实测结果 |
+| --- | --- | --- |
+| ① 一行 + ` · ` / 网格用表格 | 表格 + `<br>` | 单元格里的 `<br>` 被**转义成字面量**（`cell0 = 'Ashish Vaswani*<br>Google Brain<br>…'`）→ 弃 |
+| ② 网格用表格（禁 `<br>`） | 3 行表格 | 模型仍旧一人一行 + 逗号 |
+| ③ **写成一个自然段** | `姓名 (机构, 邮箱), 姓名 (…)` | ✅ 两侧都成段；补一条「标点跟随页图语言」后原文那侧是 ASCII 括号 |
+
+定稿：`作者区 / 机构区写成**一段**，不要一列一行`，各人连成一句、机构与邮箱放人名后的括号里，
+并列短项才用 ` · `，并明确「不要表格、不要 `<br>`」。生产 `attention-cleanroom` 第 1 页实测：
+
+```
+A: Ashish Vaswani* (Google Brain, avaswani@google.com), Noam Shazeer* (Google Brain, noam@google.com), …
+B: Ashish Vaswani*（Google Brain，avaswani@google.com）、Noam Shazeer*（Google Brain，noam@google.com）、…
+```
+
+## C. 提示词精简（同样的约束，更少的字）
+
+| prompt | 字数 |
+| --- | --- |
+| `SYSTEM_PROMPT`（融合） | 5708 → **4997**（-12.5%） |
+| `TRANSLATE_SYSTEM` | 4445 → **3900**（-12.3%） |
+| `TRANSCRIBE_SYSTEM` | 3709 → 3680（-0.8%，新增了作者/arXiv 两条，其余压缩） |
+| `BLOCK_TRANSLATE_SYSTEM` | 2962 → 2962（未动） |
+| 合计 | 16824 → **15539**（-7.6%） |
+
+怎么精简的：跨页衔接那两段把四行示例压成两句（保留 `carry_md` 少抄漏译/多抄重复那条），
+页边界痕迹三条并一条，插图规则里两处「实测例子」压成一行，`BLOCK_HEAD_NOTE` 从 6 行压到 4 行。
+所有被 `tests/test_page_translate.py` 盯着的关键短语都保留（`carry_md` / `通信瓶` / `跳过这半句` /
+`唯一保留的横线` / `原样输出 ---` / `不要一列一行`）。
+
+### 校验
+
+`pytest` 全绿；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-WLlVAUpg.js`）；
+`frontend_check.py` **168/168 通过、0 失败**（第一次跑有一项「页面视图：点图跳页」偶发失败 ——
+探针自己注释里写过这条是"写 URL → 滚动 → 高亮"三段异步，重跑即过）。
+
+线上 = `7abed78`（前端 `716a9df` 那次一起发的），`dist/index.html` sha256 `9222e38…`，
+`cylit-api` online、`/health` 200；生产 `attention-cleanroom` 第 1 页已按新规则重跑（A+B，rows 12 → 11）。
