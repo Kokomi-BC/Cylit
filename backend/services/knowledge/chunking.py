@@ -185,6 +185,8 @@ def row_units(paper_id: str, *, authors: str = "",
         "semantic_break_side": str(r.get("semantic_break_side") or ""),
         "semantic_break_sides": list(r.get("semantic_break_sides") or []),
         "semantic_type": str(r.get("semantic_type") or ""),
+        # v3「并入」：这一行要并进的那一行 id（跨页 / 不连续的组合同一块就靠它）
+        "semantic_merge_into": str(r.get("semantic_merge_into") or ""),
     } for i, r in enumerate(raw_rows)]
 
     body_start = first_body_index([{"type": r["type"], "text": r["original"]} for r in rows])
