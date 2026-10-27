@@ -122,6 +122,16 @@ async function run() {
       res.segTray = ts.backgroundColor;
       res.segActiveBg = as.backgroundColor;
       res.segActiveShadow = as.boxShadow !== 'none';
+      /* 2026-12-27 起"选中项"的材质由**滑块**表达（.glide-thumb.seg-glide，与侧栏页签同一枚）：
+         按钮自己不再铺白底，所以这里量的是滑块 —— 它必须盖住 active 且自带阴影。 */
+      const segThumb = seg.querySelector('.glide-thumb');
+      res.segActiveW = Math.round(segActive.getBoundingClientRect().width);
+      res.segThumb = segThumb ? {
+        w: Math.round(segThumb.getBoundingClientRect().width),
+        x: Math.round(segThumb.getBoundingClientRect().left),
+        activeX: Math.round(segActive.getBoundingClientRect().left),
+        shadow: getComputedStyle(segThumb).boxShadow !== 'none',
+      } : null;
     }
     /* 侧栏页签托盘：同一门语言（同样无描边、同一个托盘色） */
     const sideTabs = d.querySelector('.side-tabs');
@@ -3889,12 +3899,16 @@ def main() -> int:
                len(tabs) > 1 and "目录" in tabs[0] and data.get("chatTabIndex") == 1, f"{tabs[:3]}…")
         record("reader", "正文行渲染", data.get("rows", 0) > 0, f"{data.get('rows')} 行")
         record("reader", "公式渲染成 KaTeX", data.get("katex", 0) > 0, f"{data.get('katex')} 个")
-        record("reader", "视图胶囊三层（托盘无描边 + 选中项是白 pill + 有阴影）",
+        seg_thumb = data.get("segThumb") or {}
+        record("reader", "视图胶囊三层（托盘无描边 + 选中项由滑块表达：滑块盖住 active 且带阴影）",
                data.get("segBorderless") is True
-               and data.get("segActiveBg") == data.get("elev")
-               and data.get("segActiveShadow") is True,
-               f"托盘 {data.get('segTray')} / 选中 {data.get('segActiveBg')}"
-               "（工具条那枚托盘是玻璃胶囊内的半透明底，不按 --bg-sunken 判定）")
+               and data.get("segActiveBg") == "rgba(0, 0, 0, 0)"
+               and seg_thumb.get("shadow") is True
+               and abs((seg_thumb.get("w") or 0) - (data.get("segActiveW") or 0)) <= 1
+               and abs((seg_thumb.get("x") or 0) - (seg_thumb.get("activeX") or 0)) <= 1,
+               f"托盘 {data.get('segTray')} / 选中项底色 {data.get('segActiveBg')}"
+               f" / 滑块 {seg_thumb.get('w')}px@{seg_thumb.get('x')}"
+               f"（active {data.get('segActiveW')}px@{seg_thumb.get('activeX')}，阴影 {seg_thumb.get('shadow')}）")
         record("reader", "侧栏页签托盘同语言（无描边 + 同一个托盘色）",
                data.get("sideBorderless") is True and data.get("sideTray") == data.get("sunken"),
                f"{data.get('sideTray')}")

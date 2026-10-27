@@ -170,6 +170,10 @@ function nameSize(key: DisplayCategory): string {
   box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
 }
 /* 「自定义」是状态不是选项：五类不一致时它亮着，点了没反应 */
+/* 挂了指示块的托盘里，选中项**自己不再铺底**：那枚抬起的白块是滑过来的共用指示块
+   （`useSegGlide` 自动插入的 `.glide-thumb.seg-glide`，材质见 base.css）。
+   写在组件内 = 权重高过上面那条 `.seg-btn.on`，不受样式加载顺序影响。 */
+.seg.has-glide .seg-btn.on { background: transparent; box-shadow: none; }
 .seg-btn.is-state { cursor: default; }
 .seg-btn.is-state:hover { color: var(--text-dim); }
 

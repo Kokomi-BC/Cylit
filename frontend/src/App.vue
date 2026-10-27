@@ -12,7 +12,7 @@
  * （`components/AppSidebar.vue`）：改造前导航在首页、顶栏是"什么都能开"的标签条，
  * 于是首页/设置这类页面也被当成标签堆在顶栏里，既关不掉也点不亮。
  */
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
 import AppSidebar from '@/components/AppSidebar.vue';
 import TabHost from '@/components/TabHost.vue';
@@ -21,6 +21,13 @@ import TabBar from '@/components/TabBar.vue';
 import ToastHost from '@/components/ToastHost.vue';
 import { isPaperRoute, routeKey } from '@/stores/tabs';
 import { railCollapsed } from '@/stores/shellPrefs';
+import { useSegGlide } from '@/composables/useSegGlide';
+
+/* 全站的分段控件（`.seg`）统一由一枚滑块表达选中 —— 用户口径 2026-12-27「为类似设计的切换按钮
+   添加动画」。挂在 body 上：README 式的三十多枚不用逐个 `ref`，新页面自动跟上；
+   已经手动挂过指示块的那几处（标签条 / 侧栏页签 / 工具条胶囊）由 `useSegGlide` 内部跳过。 */
+const rescanSegGlide = useSegGlide(() => (typeof document === 'undefined' ? null : document.body));
+onMounted(() => rescanSegGlide());
 
 const route = useRoute();
 

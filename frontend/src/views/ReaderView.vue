@@ -10416,7 +10416,9 @@ function renderMarkdown(text?: string | null) {
   border-color: transparent;
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
-.reader-capsule .cap-group .seg button.active { background: var(--bg-elev); box-shadow: var(--shadow-1); }
+/* 胶囊里"选中项"的材质**不再由按钮自己铺**：那枚抬起的白块是滑过来的共用指示块
+   （.seg.has-glide 的 .glide-thumb，见 base.css）。静止时两者等宽等高、像素完全一样；
+   区别是切换时它**滑过去**（用户口径 2026-12-27「为类似设计的切换按钮添加动画」）。 */
 /* 胶囊里紧凑一档：32px 的控件缩到 28px，整条胶囊能短 ~10%，仍然是可点尺寸 */
 .reader-capsule .cap-group .btn.icon { width: 28px; height: 28px; }
 .reader-capsule .cap-group .seg { height: 28px; }
@@ -10429,27 +10431,8 @@ function renderMarkdown(text?: string | null) {
 .reader-capsule .cap-group .btn:not(.icon):not(.primary):not(.tool-on):hover:not(:disabled) { color: var(--accent-hover); }
 .reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: calc(12px * var(--ts, 1)); }
 
-/* ---- 挂了滑动指示块的 .seg（常规胶囊 + 设置面板两处） ----
- * 放在上面那条胶囊规则**之后**：两者权重相同（4 个类 + 1 个元素，再加本组件的 scope 属性），
- * 谁在后面谁赢 —— 所以"选中项不铺白底"这条必须写在它后面。
- *
- * 为什么选中项要**中和掉白底 + 阴影**：抬起来的那一枚已经是滑过来的共用指示块了，
- * 按钮自己再铺一层就是白上叠白，而且它的过渡会把指示块的位移盖住（切视图时看不到滑块在走）。
- * 只中和带 `.has-glide` 的容器，全局 `.seg` 一个字不动。 */
-.seg.has-glide { position: relative; }
-.seg.has-glide > button { position: relative; z-index: 1; }
-.seg.has-glide > button.active { background: transparent; box-shadow: none; }
-
-/* ⚠️ **胶囊里那一枚不中和**（`.reader-capsule .cap-group .seg button.active` 保留自己的白底 + 阴影）：
- * ① 视觉上完全没有重复 —— 指示块是一枚和按钮**等宽等高**的白块，指示块 z-index 0、按钮 z-index 1，
- *    静止时它正好被按钮那枚白底盖住；只有在两枚按钮**之间**滑过的那一瞬才露出来，那就是滑块本身；
- * ② 那条"选中项是白 pill + 有阴影"是前台自检（`frontend_check.py` 的「视图胶囊三层」）盯着的
- *    计算样式，中和掉会让那一条断言失败。 */
-
-/* 几何：上下各让 3px（= .seg 自己的 padding）就正好对上按钮盒 —— **不写死 height**，
-   因为常规胶囊里那枚 .seg 被改成 28px 高（按钮 22px），设置面板里才是 var(--control-h)；
-   一条 top/bottom 把两种尺寸都覆盖了，不必两处各记一组数字。 */
-.seg-glide { top: 3px; bottom: 3px; border-radius: var(--radius-ctl); }
+/* 挂了滑动指示块的 .seg：几何与"选中项不铺白底"那条规则都在 base.css 的
+   `.seg.has-glide` 一组里 —— `useSegGlide` 会自动给每个 .seg 挂一枚指示块，规则只能有一份。 */
 .reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .reader-capsule .cap-group .badge { height: 20px; }
 /* 「Aa」：字号 + 页图缩放合成一个入口（用户口径：缩放和字号合并），
@@ -11057,19 +11040,20 @@ function renderMarkdown(text?: string | null) {
 /* 两枚「翻页」圆按钮：**浮在胶囊两端**、不占布局（有内容才出现，所以不会让页签跳动）。
    与其余玻璃件同一配方、不画描边 —— 半透明 + 模糊，页签滚到它底下时文字照样透出来
    （用户口径：「文字可以在按钮下面显示」）。 */
+/* 页签条的左右滚动钮：**平的**——不要渐变、不要毛玻璃、不要浮起的阴影
+   （用户口径 2026-12-27「不需要点击阴影」：那枚 24px 圆钮原来带 --shadow-flyout + backdrop 饱和，
+   在托盘边沿处看起来像一枚浮起来的彩色圆片，还压在页签上）。
+   现在只剩一个跟托盘同色的实心圆 + 图标，悬浮才上一点底色。 */
 .side-scroll-btn {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
   width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-dim); cursor: pointer;
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--text) 10%, transparent),
-    color-mix(in srgb, var(--text) 6%, transparent));
-  backdrop-filter: blur(48px) saturate(2.6);
-  -webkit-backdrop-filter: blur(48px) saturate(2.6);
-  box-shadow: var(--shadow-flyout);
+  background: var(--bg-sunken);
+  box-shadow: none;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.side-scroll-btn:hover { color: var(--accent-text); }
+.side-scroll-btn:hover { color: var(--accent-text); background: var(--bg-hover); }
 .side-scroll-btn.left { left: 4px; }
 .side-scroll-btn.right { right: 4px; }
 /* 正文区是**唯一**的滚动容器。

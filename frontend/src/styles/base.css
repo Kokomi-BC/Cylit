@@ -773,6 +773,27 @@ table.data.fixed { table-layout: fixed; }
   transition: transform var(--dur) var(--ease), width var(--dur) var(--ease);
 }
 
+/* ---- 分段控件（.seg）的滑动指示块 ----
+ * 谁用：`useSegGlide(根元素)` 会自动给根下**每一个** `.seg` 插一枚 `.glide-thumb.seg-glide`，
+ * 并给容器加 `.has-glide`（阅读器工具条 / 侧栏目录那枚 / 对话页筛选 / 设置面板 / 首页偏好…）。
+ * 只给"多选一"的小托盘用：多选圆钮（.multi-btn）与单选输入不算。
+ *
+ * 为什么选中项要**中和掉白底 + 阴影**（用户口径 2026-12-27「为类似设计的切换按钮添加动画」）：
+ * 抬起来的那一枚已经是滑过来的共用指示块了，按钮自己再铺一层就是白上叠白，而且按钮的过渡会把
+ * 指示块的位移盖住 —— 切视图时看不到滑块在走，只剩"旧的白块消失、新的白块出现"。
+ * 静止时两者的像素完全一样（指示块与按钮等宽等高），所以中和不改观感、只让动画看得见。
+ * 只中和带 `.has-glide` 的容器：全局 `.seg` 一个字不动。 */
+.seg.has-glide { position: relative; }
+.seg.has-glide > .glide-thumb { position: absolute; }
+.seg.has-glide > button { position: relative; z-index: 1; }
+.seg.has-glide > button.active,
+.seg.has-glide > .active,
+.seg.has-glide > .on { background: transparent; box-shadow: none; }
+/* 几何：上下各让 3px（= .seg 自己的 padding）就正好对上按钮盒 —— **不写死 height**：
+   常规胶囊里那枚 .seg 是 28px 高（按钮 22px），设置面板里才是 var(--control-h)，
+   一条 top/bottom 把两种尺寸都覆盖了，不必两处各记一组数字。 */
+.seg-glide { top: 3px; bottom: 3px; border-radius: var(--radius-ctl); }
+
 /* ---------------- Markdown 渲染 ---------------- */
 /* 排版规则（与"折行/间距"有关的两条，2026-10-07）：
  *   `line-break: strict` —— 中文**禁则处理**：不让 `。，、）】」` 这类标点跑到行首

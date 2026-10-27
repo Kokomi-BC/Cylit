@@ -73,10 +73,16 @@ export function useGlideThumb(opts: GlideThumbOptions): GlideThumb {
       left = a.left - b.left + box.scrollLeft - box.clientLeft;
     }
 
-    /* 夹在容器**可见范围**里：激活项被滚出视野 / 被拖到边上时，指示块停在边上不跟出去 */
+    /* 夹在容器**内容范围**里（不是可见范围！）。
+     *
+     * 为什么不再按"可见范围"夹（用户口径 2026-12-27「侧栏指示器错位：当前标签不在视角范围内」）：
+     * 指示块是容器**内容**的一部分，激活项被滚出视野时它应该跟着一起滚走。按可见范围夹的话，
+     * 它会被顶回边缘、停在**别的页签**底下 —— 实测：侧栏页签滚到最右（scrollLeft=149）时，
+     * 激活项在 x=-52，而指示块被夹在 x=62（托盘左沿），看起来就是"指示器错位"。
+     * 夹到 scrollWidth 只是防病态数据，滚出视野时不会露出来。 */
     const inset = opts.inset ?? 0;
-    const lo = box.scrollLeft + inset;
-    const hi = Math.max(lo, box.scrollLeft + box.clientWidth - inset - width);
+    const lo = inset;
+    const hi = Math.max(lo, box.scrollWidth - inset - width);
     const nextX = Math.round(Math.min(Math.max(left, lo), hi));
 
     /* 值没变**就不写**：写进去会触发一次 MutationObserver（容器里多了一条 class 变化），
