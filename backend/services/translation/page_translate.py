@@ -1799,6 +1799,7 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         row.pop("semantic_break_side", None)
         row.pop("semantic_break_sides", None)
         row.pop("semantic_merge_into", None)
+        row.pop("semantic_merge_text", None)
     if not rows or not entries:
         return stats
 
@@ -1816,17 +1817,12 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
             stats["rejected"].append({"anchor": anchor[:40], "reason": why, "side": ""})
             continue
         # v3：**并入**语义（`merge_into`）—— 这一块不切断单元，而是并进"以那段原文开头"的单元。
-        # 目标必须能唯一定位、而且**在它之前**（并进未来的块会让单元首尾颠倒）；定位不到就整条丢掉，
-        # 宁可少一条并入，也不许把两块无关的正文粘在一起。
+        # ⚠️ 这里**只把锚点原文记在行上**，不解析成行 id：目标可能在**别的页**（跨页续接正是
+        # 头号场景），而本函数只看得到本页的行。解析统一在分块层做（`chunking.apply_row_merges`
+        # 手上有全文行）。锚点原文本身仍然要经过本行定位校验（上面那一步），所以不会记脏数据。
         merge_target = str(entry.get("merge_into") or "").strip()
-        if merge_target:
-            t_side, t_idx, t_why = _locate_anchor(rows, anchor_key(merge_target))
-            if t_side is None or t_idx >= idx:
-                stats["rejected"].append({"anchor": anchor[:40],
-                                          "reason": t_why or "merge_not_before",
-                                          "side": side})
-                continue
-            rows[idx]["semantic_merge_into"] = str(rows[t_idx].get("id") or "")
+        if merge_target and anchor_key(merge_target) != key:
+            rows[idx]["semantic_merge_text"] = merge_target
             stats["merged"] = stats.get("merged", 0) + 1
             continue
         reason = _break_reject_reason(rows, idx, side)

@@ -404,15 +404,15 @@ def test_merge_into_links_blocks_instead_of_cutting_them() -> None:
 
     stats = apply_semantic_breaks(rows, anchors)
     assert stats.get('merged') == 1
-    assert rows[1].get('semantic_merge_into') == 'p001-01'
+    # 行上只记**锚点原文**（目标可能在别的页，本函数看不到那张行表）
+    assert rows[1].get('semantic_merge_text') == 'We describe the model architecture next.'
     assert not rows[1].get('semantic_break'), '并入的块不该同时被当成硬边界'
 
-    # 目标在后面 → 整条丢掉（把两块无关正文粘在一起比少并一次更糟）
-    forward = normalize_breaks([{'start': 'which consists of an encoder',
-                                'merge_into': 'Training used eight GPUs'}])
-    rows2 = [dict(r, semantic_break=None, semantic_merge_into=None) for r in rows]
-    stats2 = apply_semantic_breaks(rows2, forward)
-    assert not stats2.get('merged')
+    # 锚点指向自己 → 不算并入
+    rows2 = [dict(r, semantic_break=None, semantic_merge_text=None) for r in rows]
+    same = normalize_breaks([{'start': 'which consists of an encoder',
+                              'merge_into': 'which consists of an encoder'}])
+    assert not apply_semantic_breaks(rows2, same).get('merged')
 
     # chunking：两个 chunk 被并成一个（行集合取并集、按行序）
     chunks = [
@@ -420,8 +420,11 @@ def test_merge_into_links_blocks_instead_of_cutting_them() -> None:
         {'key': 'c2', 'section_key': 's1', 'rows': [{'id': 'p002-01', 'index': 1}]},
         {'key': 'c3', 'section_key': 's1', 'rows': [{'id': 'p002-02', 'index': 2}]},
     ]
-    linked = [{'id': 'p001-01', 'index': 0}, {'id': 'p002-01', 'index': 1,
-               'semantic_merge_into': 'p001-01'}, {'id': 'p002-02', 'index': 2}]
+    # 并入的目标**用锚点原文定位**（于是可以跨页）：p002-01 并进以 "We describe…" 开头的那一块
+    linked = [{'id': 'p001-01', 'index': 0, 'original': 'We describe the model architecture next.'},
+              {'id': 'p002-01', 'index': 1, 'original': 'which consists of an encoder and a decoder.',
+               'semantic_merge_text': 'We describe the model architecture next.'},
+              {'id': 'p002-02', 'index': 2, 'original': 'Training used eight GPUs in total.'}]
     assert apply_row_merges(chunks, linked) == 1
     assert len(chunks) == 2
     assert [r['id'] for r in chunks[0]['rows']] == ['p001-01', 'p002-01']
@@ -431,7 +434,10 @@ def test_merge_into_links_blocks_instead_of_cutting_them() -> None:
         {'key': 'c1', 'section_key': 's1', 'rows': [{'id': 'a', 'index': 0}]},
         {'key': 'c2', 'section_key': 's2', 'rows': [{'id': 'b', 'index': 1}]},
     ]
-    assert apply_row_merges(chunks2, [{'id': 'b', 'index': 1, 'semantic_merge_into': 'a'}]) == 0
+    assert apply_row_merges(chunks2, [
+        {'id': 'a', 'index': 0, 'original': 'Alpha paragraph.'},
+        {'id': 'b', 'index': 1, 'original': 'Beta paragraph.', 'semantic_merge_text': 'Alpha paragraph.'},
+    ]) == 0
     assert len(chunks2) == 2
 
 

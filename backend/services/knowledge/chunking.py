@@ -185,8 +185,9 @@ def row_units(paper_id: str, *, authors: str = "",
         "semantic_break_side": str(r.get("semantic_break_side") or ""),
         "semantic_break_sides": list(r.get("semantic_break_sides") or []),
         "semantic_type": str(r.get("semantic_type") or ""),
-        # v3「并入」：这一行要并进的那一行 id（跨页 / 不连续的组合同一块就靠它）
-        "semantic_merge_into": str(r.get("semantic_merge_into") or ""),
+        # v3「并入」：这一行要并进的那个单元的**开头原文片段**（跨页 / 不连续就靠它；
+        # 解析成行 id 要等全文行都到齐，见 apply_row_merges）
+        "semantic_merge_text": str(r.get("semantic_merge_text") or ""),
     } for i, r in enumerate(raw_rows)]
 
     body_start = first_body_index([{"type": r["type"], "text": r["original"]} for r in rows])
@@ -894,6 +895,11 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
     return out
 
 
+def _merge_key(text: str) -> str:
+    """并入锚点的规范化：只留字母数字与汉字（与 `anchor_key` 同一口径，但这里不依赖翻译侧模块）。"""
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(text or "")).lower()
+
+
 def apply_row_merges(chunks: list[dict], rows: list[dict]) -> int:
     """把 `semantic_merge_into` 指定的两块**并成一个 chunk**（用户口径 2026-12-27）。
 
@@ -907,14 +913,27 @@ def apply_row_merges(chunks: list[dict], rows: list[dict]) -> int:
     if not chunks:
         return 0
     by_row: dict[str, dict] = {}
+    by_start: list[tuple[int, str, dict]] = []      # (行下标, 规范化后的一侧文本, 行) 供锚点匹配
     for chunk in chunks:
         for row in chunk.get("rows") or []:
             by_row[str(row.get("id") or "")] = chunk
+    for row in rows:
+        for side in ("original", "translation"):
+            key = _merge_key(str(row.get(side) or ""))
+            if key:
+                by_start.append((int(row.get("index") or 0), key, row))
     merged = 0
     for row in rows:
-        target_id = str(row.get("semantic_merge_into") or "")
-        if not target_id:
+        target_text = str(row.get("semantic_merge_text") or "").strip()
+        if not target_text:
             continue
+        want = _merge_key(target_text)
+        hits = [r for i, key, r in by_start
+                if key.startswith(want) and i < int(row.get("index") or 0)]
+        if len(hits) != 1:                                  # 0 条 = 没定位到；多条 = 太普适，都不猜
+            log.info("并入跳过（%s）：%s", "未定位" if not hits else "锚点不唯一", target_text[:40])
+            continue
+        target_id = str(hits[0].get("id") or "")
         here = by_row.get(str(row.get("id") or ""))
         there = by_row.get(target_id)
         if not here or not there or here is there:
