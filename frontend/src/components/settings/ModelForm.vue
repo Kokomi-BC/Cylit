@@ -22,7 +22,7 @@
  *
  * 安全口径：明文只在「新建密钥」输入框的局部状态里，提交后立刻清空；不回显、不落 storage。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import type { ModelConfig, ModelPreset } from '@/api/types';
 import { api } from '@/api/client';
 import { reportError, toast } from '@/stores/app';
@@ -67,8 +67,10 @@ const props = withDefaults(defineProps<{
   /** 配合 initialStep：顺手把「计费」折叠块展开，让分时段单价列表一眼可见 */
   focusPrice?: boolean;
   /** 已有的「显示名称」清单（父级从当前所有模型配置去重后传进来）：同名会被抽屉归成一组，
-   *  所以这里要能"选一个已有名字"而不是每次都手打一遍。 */
-  existingNames?: Array<{ name: string; count: number }>;
+   *  所以这里要能"选一个已有名字"而不是每次都手打一遍。
+   *  **带 provider**：这份"记忆"是按供应商分开的（用户口径）—— 换一家提供方，看到的就该是那一家用过的名字，
+   *  不然选了个属于别家的名字，落进抽屉只会多出一个孤零零的单条组。 */
+  existingNames?: Array<{ name: string; count: number; provider: string }>;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -359,11 +361,23 @@ const namePopOpen = ref(false);
 const nameFieldEl = ref<HTMLElement | null>(null);
 const namePopStyle = ref<Record<string, string>>({});
 
-/** 按当前输入做「包含」过滤（大小写不敏感），空串时全列：边打字边收窄，不用另给搜索框。 */
-const filteredNames = computed<Array<{ name: string; count: number }>>(() => {
-  const q = form.name.trim().toLowerCase();
-  if (!q) return props.existingNames;
-  return props.existingNames.filter((n) => n.name.toLowerCase().includes(q));
+/** 下拉里的搜索词：**独立于**「显示名称」输入框 —— 名字常常很长（带 · 后缀），
+ *  一边看着输入框一边筛太别扭，所以下拉自带一个搜索框，打开即聚焦、直接打字。 */
+const nameQuery = ref('');
+const nameSearchEl = ref<HTMLInputElement | null>(null);
+
+/** 当前提供方用过的名字（用户口径：每个供应商分别记忆）。换提供方就换一份，互不串。 */
+const namesOfProvider = computed<Array<{ name: string; count: number; provider: string }>>(() => {
+  const provider = String(form.provider || '').trim().toLowerCase();
+  if (!provider) return [];
+  return props.existingNames.filter((n) => String(n.provider || '').toLowerCase() === provider);
+});
+
+/** 搜索框再收窄一次（大小写不敏感，空词全列） */
+const filteredNames = computed<Array<{ name: string; count: number; provider: string }>>(() => {
+  const q = nameQuery.value.trim().toLowerCase();
+  if (!q) return namesOfProvider.value;
+  return namesOfProvider.value.filter((n) => n.name.toLowerCase().includes(q));
 });
 
 /** 显示名称是下游「同名批量配置」的分组键：手打一个字不一样就成不了组，所以要能挑已有名字。 */
@@ -496,7 +510,12 @@ function placeNamePop(): void {
 
 function toggleNamePop(): void {
   if (namePopOpen.value) { namePopOpen.value = false; return; }
+  /* 每次打开都是一次新查询：上一次搜的词留着，看起来像"这家只有这几条" */
+  nameQuery.value = '';
   placeNamePop();
+  /* 打开就聚焦搜索框（点箭头的人下一步一定是打字或扫一眼列表）。
+     nextTick 是必须的：弹层还没挂上时 ref 是 null。 */
+  void nextTick(() => nameSearchEl.value?.focus());
 }
 
 function onDocPointer(ev: MouseEvent): void {
@@ -1572,18 +1591,33 @@ const advSummary = computed<string>(() => {
           <!-- 已有名称下拉：定位方式同 .model-pop（fixed），但状态独立 —— 两个下拉互不干扰 -->
           <!-- Esc 也挂在这里：焦点 Tab 到选项上时，输入框那个 @keydown.esc 已经收不到了 -->
           <div v-if="namePopOpen" class="name-pop" :style="namePopStyle" data-name-pop @keydown.esc="namePopOpen = false">
-            <div class="name-pop-head">已有名称</div>
-            <button
-              v-for="n in filteredNames" :key="n.name" type="button" class="name-opt"
-              :class="{ on: (form.name || '').trim() === n.name }" data-name-option
-              @click="pickName(n.name)"
-            >
-              <span class="truncate">{{ n.name }}</span>
-              <span class="name-opt-count">{{ n.count }} 个配置</span>
-            </button>
-            <p class="hint-line" v-if="!filteredNames.length" data-name-pop-empty>
-              没有匹配的已有名称 —— 直接手打一个新名字就行。
-            </p>
+            <div class="name-pop-head">
+              <span>已有名称</span>
+              <span class="spacer"></span>
+              <span class="tiny faint" data-name-pop-provider>{{ namesOfProvider.length }} 条</span>
+            </div>
+            <div class="name-search">
+              <AppIcon name="search" :size="13" />
+              <input
+                ref="nameSearchEl" v-model="nameQuery" type="text" spellcheck="false"
+                placeholder="搜索这家提供方用过的名字" data-name-search
+                @keydown.esc.stop="namePopOpen = false"
+              />
+            </div>
+            <div class="name-list">
+              <button
+                v-for="n in filteredNames" :key="n.name" type="button" class="name-opt"
+                :class="{ on: (form.name || '').trim() === n.name }" data-name-option
+                @click="pickName(n.name)"
+              >
+                <span class="truncate">{{ n.name }}</span>
+                <span class="name-opt-count">{{ n.count }} 个配置</span>
+              </button>
+              <p class="hint-line" v-if="!filteredNames.length" data-name-pop-empty>
+                {{ namesOfProvider.length ? '没有匹配的已有名称' : '这家提供方还没有同名的配置' }}
+                —— 直接手打一个新名字就行。
+              </p>
+            </div>
           </div>
         </Teleport>
       </section>
@@ -2008,10 +2042,24 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .name-pop {
   position: fixed; z-index: 260; max-width: calc(100vw - 24px);
   display: flex; flex-direction: column; min-height: 0; padding: 6px;
-  max-height: calc(var(--control-h) * 7); overflow-y: auto; overscroll-behavior: contain;
+  max-height: calc(var(--control-h) * 8); overflow: hidden;
   border: 1px solid var(--border-strong); border-radius: var(--r-md);
   background: var(--bg-elev); box-shadow: var(--shadow-2);
 }
+/* 搜索框不跟着列表滚：它是"再看一眼别的名字"的入口，跟着滚走等于每次都要滚回去 */
+.name-search {
+  flex: none; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+  padding: 0 8px; height: calc(var(--control-h) - 8px);
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-sunken);
+}
+.name-search input {
+  flex: 1 1 auto; min-width: 0; border: 0; background: transparent; box-shadow: none;
+  font-size: calc(12.5px * var(--ts, 1)); color: var(--text);
+}
+.name-search input:focus { outline: none; box-shadow: none; }
+.name-search svg { color: var(--text-faint); flex: none; }
+/* 选项列表自己滚（与 .mp-list 同一个理由：定高 + 内部滚动） */
+.name-list { flex: 1 1 auto; min-height: 0; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
 .name-pop-head {
   flex: none; padding: 2px 8px 6px;
   font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; color: var(--text-faint);

@@ -798,18 +798,24 @@ async function removeModel(m: ModelRow): Promise<void> {
 
 /* ---------------------------- 新建 / 编辑（统一走 ModelForm） ---------------------------- */
 
-/** 给表单第 3 步「显示名称」的候选清单：按显示名称去重（同名 = 抽屉里的同一组），带条数。
- *  条数降序、同数按名字排 —— 常用的名字自然浮到前面。空名跳过：它们本来就不成组。
- *  **不过滤"当前这条"**：用户就是要看见全部（选中自己那条等于没改）。 */
-const existingNameOptions = computed<Array<{ name: string; count: number }>>(() => {
-  const byName = new Map<string, number>();
+/** 给表单第 3 步「显示名称」的候选清单：按 **provider + 显示名称** 去重（同名 = 抽屉里的同一组），带条数。
+ *
+ *  为什么把 provider 也带进键（用户口径「每个供应商分别记忆」）：名字是**按供应商起**的，
+ *  两家都叫「思考模式」的配置各自成组，混成一张全量清单只会让人选到一个属于别家的名字 ——
+ *  落进抽屉只会多出一条孤零零的单条组。表单那边再按当前 provider 过滤一次（换提供方就换一份）。
+ *  条数降序、同数按名字排；空名跳过（它们本来就不成组）。**不过滤"当前这条"**：选中自己那条等于没改。 */
+const existingNameOptions = computed<Array<{ name: string; count: number; provider: string }>>(() => {
+  const byKey = new Map<string, { name: string; count: number; provider: string }>();
   for (const m of (state.models || []) as ModelRow[]) {
     const n = String(m.name || '').trim();
     if (!n) continue;
-    byName.set(n, (byName.get(n) || 0) + 1);
+    const provider = String(m.provider || '').trim().toLowerCase();
+    const key = provider + '\u0000' + n;
+    const hit = byKey.get(key);
+    if (hit) hit.count += 1;
+    else byKey.set(key, { name: n, count: 1, provider });
   }
-  return [...byName.entries()]
-    .map(([name, count]) => ({ name, count }))
+  return [...byKey.values()]
     .sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name, 'zh-CN'));
 });
 

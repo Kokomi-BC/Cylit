@@ -15361,3 +15361,33 @@ warning  A items=[] + 无默认价 → has_price=False **warning=None**（用户
 > CDP 记录：用 `Input.dispatchMouseEvent` 打的真实鼠标事件在这条路上收不到（页面监听里一条都没有，
 > 与 `Page.bringToFront` 无关），所以最终用"同序列的 `MouseEvent('mousedown')` + `click()`"验证 ——
 > 页面侧只认事件本身，`isTrusted` 没参与判断，结论仍然成立。
+
+### 225. 第二百二十五轮：「已有名称」下拉加搜索框，并且**按供应商分别记忆**
+
+用户口径：「模型名称支持搜索，然后每个供应商分别记忆。」（承 224：这一份清单就是第 3 步「显示名称」的候选）
+
+原来那张清单是**全量**的（所有 provider 的名字混在一起），筛选也只能靠"在显示名称输入框里打一半"——
+而名字往往很长（`DeepSeek V4.1 Flash · 思考模式（默认） · generation`），一边看输入框一边筛很别扭。
+
+改法：
+- **按供应商分别记**：`ModelPanel.existingNameOptions` 的去重键从 `name` 改成 `provider + \u0000 + name`，
+  每条带上 `provider`；表单侧再按当前 `form.provider` 过滤（`namesOfProvider`）。
+  换提供方就换一份 —— 否则选到一条属于别家的名字，落进抽屉只会多出一个孤零零的单条组；
+  这家还没有同名配置时，空态明说「这家提供方还没有同名的配置」；
+- **自带搜索框**：下拉里一个 `[data-name-search]`，打开即聚焦（`nextTick` 后 focus，弹层没挂上时 ref 是 null），
+  每次打开清空上一次的词（留着会让人以为"这家只有这几条"）；
+- 下拉改成`头部 + 搜索框 + 列表`三层，**列表自己滚**（`.name-list`，max-height 240），搜索框不跟着滚走；
+  头右侧显示这家共几条（`data-name-pop-provider`）。
+
+### 实测（有头 Chrome + CDP，本机 8710；新建模型 → 第 3 步 → 点箭头）
+
+```
+deepseek   头='3 条'，列表 = 论文问答 / 思考模式·generation / 思考模式·vision（**dashscope 的两条不在**）
+           搜索框在、且打开即聚焦（focused=true）
+搜「思考」   剩 2 条（generation / vision），空态不出现
+搜「zzz」   0 条，空态='没有匹配的已有名称 —— 直接手打一个新名字就行。'
+换 dashscope 上一步×2 → 选 dashscope → 第 3 步 → 点箭头：头='2 条'，列表只有
+            通义千问 · RAG 检索（…）· embedding / · reranker  ← 按供应商分别记忆
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-CPOxES83.js`）、`frontend_check.py` **168/168**。
