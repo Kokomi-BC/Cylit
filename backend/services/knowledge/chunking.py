@@ -194,6 +194,8 @@ def row_units(paper_id: str, *, authors: str = "",
         # 结构行 = 表体/图本身，或**IR 认证过的**图注行；其余 `caption` 行是正文（判据见 load 的说明）
         row["structural"] = (row["type"] in ("table", "figure")
                              or (row["type"] == "caption" and row["id"] in verified))
+    # 脚注行（页内 `---` 之后）**不进正文块**：先标，后面所有"该进正文的行"都按 skip_reason 过滤
+    mark_footnote_rows(rows)
     _assign_sections(rows, section_tree(paper_id, rows))
     # 参考文献**整节**不入库：turboquant 的条目行是 `para`（不是 `ref`），只按行类型判会漏掉
     # 整节参考文献（用户口径 §11：REFERENCES 子树不进普通 RAG chunk，不因为语义锚点而变）。
@@ -202,6 +204,39 @@ def row_units(paper_id: str, *, authors: str = "",
                 strip_presentation(str(row.get("section_title") or "")).strip()):
             row["skip_reason"] = "ref_section"
     return rows
+
+
+#: 脚注行标记（页内 `---` 之后的行，由 `mark_footnote_rows` 打上）：
+#: 论文底部那几条批注不进正文 chunk（用户口径 2026-12-27「支持去除页面底部的批注」）。
+FOOTNOTE_SKIP = "footnote"
+
+
+def mark_footnote_rows(rows: list[dict]) -> int:
+    """把**页内 `---` 之后、下一个标题之前**的行标成 `skip_reason=footnote`。
+
+    为什么要它：脚注（`*Equal contribution…` / `†Work performed…` / 会议行）混进正文块，
+    检索时会以"正文证据"的身份被召回 —— 它们既不是论点也不是方法，只是版面补充。
+    判据只认转录里那条 `---`（模型只在脚注分隔线处写它），不靠"以星号开头"这种启发式；
+    与前端 `.row-pair.is-footnote` 用的是同一套规则（读模型里那行就是脚注）。
+    返回标了多少行，供索引报告用。
+    """
+    marked = 0
+    after: dict[int, bool] = {}
+    for row in rows:
+        page = int(row.get("page") or 0)
+        text = str(row.get("original") or "").strip()
+        if re.fullmatch(r"-{3,}", text):
+            after[page] = True
+            continue
+        if not after.get(page):
+            continue
+        if row.get("type") in ("heading", "formula"):
+            after[page] = False
+            continue
+        if not row.get("skip_reason"):
+            row["skip_reason"] = FOOTNOTE_SKIP
+            marked += 1
+    return marked
 
 
 def _skip_reason(row: dict, index: int, body_start: int, authors: str) -> str:
@@ -857,6 +892,47 @@ def unit_records(rows: list[dict], chunks: list[dict], *, use_breaks: bool = Tru
     return out
 
 
+def apply_row_merges(chunks: list[dict], rows: list[dict]) -> int:
+    """把 `semantic_merge_into` 指定的两块**并成一个 chunk**（用户口径 2026-12-27）。
+
+    语义：某一行标了 `semantic_merge_into = <另一行的 id>`，表示"这两块属于同一个单元"。
+    模型可以指向**前一页**、也可以指向**不连续**的块（两路调用都带完整前文，看得见）。
+    做法：按行序把被连起来的 chunk 头尾接成一串（行集合取并集、按行序排列），
+    **不跨小节**（TOC 子树不同就不并，记一条告警）—— 与其余不变量保持一致。
+
+    返回合并了多少次，写进索引报告。没有这样的行时一个都不动（存量产物行为不变）。
+    """
+    if not chunks:
+        return 0
+    by_row: dict[str, dict] = {}
+    for chunk in chunks:
+        for row in chunk.get("rows") or []:
+            by_row[str(row.get("id") or "")] = chunk
+    merged = 0
+    for row in rows:
+        target_id = str(row.get("semantic_merge_into") or "")
+        if not target_id:
+            continue
+        here = by_row.get(str(row.get("id") or ""))
+        there = by_row.get(target_id)
+        if not here or not there or here is there:
+            continue
+        if str(here.get("section_key") or "") != str(there.get("section_key") or ""):
+            log.info("并入跳过（跨小节）：%s → %s", row.get("id"), target_id)
+            continue
+        first, second = sorted((here, there), key=lambda c: (c["rows"][0]["index"] if c.get("rows") else 0))
+        first["rows"] = sorted(list(first.get("rows") or []) + list(second.get("rows") or []),
+                               key=lambda r: r["index"])
+        first["key"] = str(first.get("key") or "") + "+" + str(second.get("key") or "")
+        if "chars" in first or "chars" in second:
+            first["chars"] = int(first.get("chars") or 0) + int(second.get("chars") or 0)
+        for r in first["rows"]:
+            by_row[str(r.get("id") or "")] = first
+        chunks.remove(second)
+        merged += 1
+    return merged
+
+
 def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: int,
           use_breaks: bool = True, break_walls: bool = True,
           unit_max_chars: int = UNIT_MAX_CHARS,
@@ -874,6 +950,8 @@ def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: 
     chunks, stats = assemble(rows, tree, target=target, hard=hard, floor=floor,
                              use_breaks=use_breaks, break_walls=break_walls,
                              unit_max_chars=unit_max_chars, road=road)
+    # 模型标的"并入"（跨页 / 不连续）在这里落地：并完再算单元，于是单元也自然跟着合并
+    merge_count = apply_row_merges(chunks, rows)
     units = unit_records(rows, chunks, use_breaks=use_breaks,
                          unit_max_chars=unit_max_chars, road=road)
     by_parent: dict[str, list[str]] = {}
@@ -882,6 +960,7 @@ def build(rows: list[dict], tree: list[dict], *, target: int, hard: int, floor: 
     for chunk in chunks:
         chunk["unit_ids"] = by_parent.get(str(chunk.get("key")), [])
     report = validate(chunks, rows, hard=hard, units=units, road=road)
+    stats["merged_chunks"] = merge_count
     return {"chunks": chunks, "units": units, "stats": stats, "report": report}
 
 

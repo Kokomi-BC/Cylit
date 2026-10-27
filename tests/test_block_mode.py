@@ -376,3 +376,76 @@ def test_await_a_page_gives_up_when_path_a_is_not_running(monkeypatch) -> None:
     assert ts.await_a_page(store, "selfcheck", 4, timeout=30, required=False) is None
     with pytest.raises(ValidationError):
         ts.await_a_page(store, "selfcheck", 4, timeout=30, required=True)
+
+
+def test_merge_into_links_blocks_instead_of_cutting_them() -> None:
+    """`merge_into`（2026-12-27）：这一块不是新单元，而是更早那个单元的续接（可跨页 / 不连续）。
+
+    模块分工：`apply_semantic_breaks` 认锚点并把目标行 id 落到 `semantic_merge_into`；
+    `chunking.apply_row_merges` 按它把两个 chunk 并成一个。两边各自测一遍。
+    """
+    from backend.services.knowledge.chunking import apply_row_merges
+    from backend.services.translation.page_translate import apply_semantic_breaks, normalize_breaks
+
+    rows = [
+        {'id': 'p001-01', 'type': 'para', 'level': 0, 'original': 'We describe the model architecture next.',
+         'translation': '接下来我们描述模型架构。'},
+        {'id': 'p002-01', 'type': 'para', 'level': 0, 'original': 'which consists of an encoder and a decoder.',
+         'translation': '它由一个编码器和一个解码器组成。'},
+        {'id': 'p002-02', 'type': 'para', 'level': 0, 'original': 'Training used eight GPUs in total.',
+         'translation': '训练一共用了 8 块 GPU。'},
+    ]
+    anchors = normalize_breaks([{
+        'start': 'which consists of an encoder',
+        'type': 'other',
+        'merge_into': 'We describe the model architecture next.',
+    }])
+    assert anchors[0]['merge_into'] == 'We describe the model architecture next.'
+
+    stats = apply_semantic_breaks(rows, anchors)
+    assert stats.get('merged') == 1
+    assert rows[1].get('semantic_merge_into') == 'p001-01'
+    assert not rows[1].get('semantic_break'), '并入的块不该同时被当成硬边界'
+
+    # 目标在后面 → 整条丢掉（把两块无关正文粘在一起比少并一次更糟）
+    forward = normalize_breaks([{'start': 'which consists of an encoder',
+                                'merge_into': 'Training used eight GPUs'}])
+    rows2 = [dict(r, semantic_break=None, semantic_merge_into=None) for r in rows]
+    stats2 = apply_semantic_breaks(rows2, forward)
+    assert not stats2.get('merged')
+
+    # chunking：两个 chunk 被并成一个（行集合取并集、按行序）
+    chunks = [
+        {'key': 'c1', 'section_key': 's1', 'rows': [{'id': 'p001-01', 'index': 0}]},
+        {'key': 'c2', 'section_key': 's1', 'rows': [{'id': 'p002-01', 'index': 1}]},
+        {'key': 'c3', 'section_key': 's1', 'rows': [{'id': 'p002-02', 'index': 2}]},
+    ]
+    linked = [{'id': 'p001-01', 'index': 0}, {'id': 'p002-01', 'index': 1,
+               'semantic_merge_into': 'p001-01'}, {'id': 'p002-02', 'index': 2}]
+    assert apply_row_merges(chunks, linked) == 1
+    assert len(chunks) == 2
+    assert [r['id'] for r in chunks[0]['rows']] == ['p001-01', 'p002-01']
+
+    # 跨小节不并
+    chunks2 = [
+        {'key': 'c1', 'section_key': 's1', 'rows': [{'id': 'a', 'index': 0}]},
+        {'key': 'c2', 'section_key': 's2', 'rows': [{'id': 'b', 'index': 1}]},
+    ]
+    assert apply_row_merges(chunks2, [{'id': 'b', 'index': 1, 'semantic_merge_into': 'a'}]) == 0
+    assert len(chunks2) == 2
+
+
+def test_footnote_rows_stay_out_of_chunks() -> None:
+    """`---` 之后的脚注（`*Equal contribution…` / 会议行）不参与分块（用户口径 2026-12-27）。"""
+    from backend.services.knowledge.chunking import mark_footnote_rows
+
+    rows = [
+        {'id': 'p1', 'page': 1, 'type': 'para', 'original': 'Body paragraph.', 'skip_reason': ''},
+        {'id': 'p2', 'page': 1, 'type': 'para', 'original': '---', 'skip_reason': ''},
+        {'id': 'p3', 'page': 1, 'type': 'para', 'original': '*Equal contribution.', 'skip_reason': ''},
+        {'id': 'p4', 'page': 1, 'type': 'para', 'original': '31st Conference on NIPS.', 'skip_reason': ''},
+        {'id': 'p5', 'page': 2, 'type': 'para', 'original': 'Next page body.', 'skip_reason': ''},
+    ]
+    marked = mark_footnote_rows(rows)
+    assert marked == 2
+    assert [r['skip_reason'] for r in rows] == ['', '', 'footnote', 'footnote', '']

@@ -261,6 +261,11 @@ _BREAKS_RULES_TEMPLATE = """【breaks：语义边界锚点（给**检索分块**
     要求它能在 __MD__ 里**唯一定位**（同一个片段在本页出现两次就会被判无效）；
   · `type` = 这条边界属于哪一类，取值之一：__TYPES__（拿不准就写 `other`）。
     `type` 只是留给后续「论文理解」的标签，**不参与切分判定** —— 不确定也要给出 `start`。
+- **并入（`merge_into`，可选）**：如果这一块**不是**新单元，而是上一页/更早某页那个单元的续接
+  （典型：一句话被页边界切断、或"不连续但同属一个讨论"的两段），就**别把它当边界**，改成写
+  `{"start": <本块开头>, "merge_into": <那个单元开头 12~40 字的原文片段>}`。
+  `merge_into` 必须能在**你已经看过的前文或本页**里唯一定位、并且在**本块之前**；
+  指向后文/定位不到的那条会被丢掉。没有这种关系就别写这个字段（默认不写 = 一条普通边界）。
 - **该标**（典型边界）：定义 → 新定义；背景 → 方法；方法 → 实验；问题 → 解决方案；
   一段推导 → 下一段推导；算法描述 → 实验结果；一个独立论点 → 下一个独立论点；
   新小节的**标题行本身**（表示这个小节从这里开始）。
@@ -459,7 +464,8 @@ PAGE_SCHEMA_A = {
         "original_md": {"type": "string"},
         "breaks": {"type": "array", "items": {
             "type": "object",
-            "properties": {"start": {"type": "string"}, "type": {"type": "string"}},
+            "properties": {"start": {"type": "string"}, "type": {"type": "string"},
+                           "merge_into": {"type": "string"}},
             "required": ["start"],
         }},
     },
@@ -1288,14 +1294,22 @@ def normalize_breaks(raw) -> list[dict]:
     items = [raw] if isinstance(raw, (str, dict)) else list(raw)
     out: list[dict] = []
     for item in items:
+        merge_into = ""
         if isinstance(item, dict):
             start = str(item.get("start") or "").strip()
             btype = normalize_break_type(item.get("type"))
+            # v3（2026-12-27）：**并入某个已有的语义单元**。值 = 那个单元开头的原文片段
+            # （可以来自前一页 / 更早的页 —— 两路调用都带完整前文，模型看得到）。
+            # 有了它，"跨页续接"与"不连续但同属一个讨论"就不必靠行号相邻去猜。
+            merge_into = str(item.get("merge_into") or "").strip()
         else:
             start = str(item or "").strip()
             btype = ""
         if start:
-            out.append({"start": start, "type": btype})
+            entry = {"start": start, "type": btype}
+            if merge_into:
+                entry["merge_into"] = merge_into
+            out.append(entry)
     return out
 
 
@@ -1781,6 +1795,7 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         row.pop("semantic_type", None)
         row.pop("semantic_break_side", None)
         row.pop("semantic_break_sides", None)
+        row.pop("semantic_merge_into", None)
     if not rows or not entries:
         return stats
 
@@ -1796,6 +1811,20 @@ def apply_semantic_breaks(rows: list[dict], breaks: list | None) -> dict:
         side, idx, why = _locate_anchor(rows, key, heading_only=heading_only)
         if side is None:
             stats["rejected"].append({"anchor": anchor[:40], "reason": why, "side": ""})
+            continue
+        # v3：**并入**语义（`merge_into`）—— 这一块不切断单元，而是并进"以那段原文开头"的单元。
+        # 目标必须能唯一定位、而且**在它之前**（并进未来的块会让单元首尾颠倒）；定位不到就整条丢掉，
+        # 宁可少一条并入，也不许把两块无关的正文粘在一起。
+        merge_target = str(entry.get("merge_into") or "").strip()
+        if merge_target:
+            t_side, t_idx, t_why = _locate_anchor(rows, anchor_key(merge_target))
+            if t_side is None or t_idx >= idx:
+                stats["rejected"].append({"anchor": anchor[:40],
+                                          "reason": t_why or "merge_not_before",
+                                          "side": side})
+                continue
+            rows[idx]["semantic_merge_into"] = str(rows[t_idx].get("id") or "")
+            stats["merged"] = stats.get("merged", 0) + 1
             continue
         reason = _break_reject_reason(rows, idx, side)
         if reason:
