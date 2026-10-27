@@ -512,9 +512,13 @@ async function deletePicked() {
 /* ── 右键笔记卡：在**鼠标点**上开一张菜单（用户口径 2026-12-27） ─────────────────────
  * 与卡片右上角那枚「更多」是**同一套动作**，只是入口不同：鼠标在哪儿，菜单就从那儿往右下展开。
  * 「定位 / 浮层打开」在卡片上是两枚独立圆钮，这里一并收进右键菜单（右键时手不用再去瞄准小圆钮）。 */
-const noteCtx = ref<{ x: number; y: number; r: FeedRow } | null>(null);
+/** 右键的鼠标点（菜单按它从右下角展开）与**被右键的那一行**分开存：
+ *  `ContextMenu.pick()` 是先 `emit('close')` 再 `emit('select')`，把两者放进同一个 ref 的话，
+ *  `@close` 清空之后 `select` 那一侧就拿不到行了 —— 症状是「菜单弹出来、点项没反应」。 */
+const noteCtx = ref<{ x: number; y: number } | null>(null);
+const noteCtxRow = ref<FeedRow | null>(null);
 const noteCtxItems = computed(() => {
-  const r = noteCtx.value?.r;
+  const r = noteCtxRow.value;
   const items: { key: string; label: string; icon?: string; danger?: boolean; sep?: boolean }[] = [
     { key: 'locate', label: '定位', icon: 'locate' },
   ];
@@ -529,12 +533,14 @@ const noteCtxItems = computed(() => {
 
 function openNoteCtx(ev: MouseEvent, r: FeedRow) {
   if (batch.value) return;               // 批量态：右键不抢勾选框的手势
-  noteCtx.value = { x: ev.clientX, y: ev.clientY, r };
+  noteCtxRow.value = r;
+  noteCtx.value = { x: ev.clientX, y: ev.clientY };
 }
 
 function onNoteCtx(key: string) {
-  const r = noteCtx.value?.r;
+  const r = noteCtxRow.value;
   noteCtx.value = null;
+  noteCtxRow.value = null;
   if (!r) return;
   if (key === 'locate') locate(r.anchorId, r.page);
   else if (key === 'open') openPopover(r, 'view');

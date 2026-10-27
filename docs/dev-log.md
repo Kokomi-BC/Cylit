@@ -16501,3 +16501,36 @@ settings 提供方「密钥操作」 原来是 `align="end"`（右对齐 = 往�
 ```
 
 全仓 `align="end"` 已清零（grep 无命中）。
+---
+
+# 249 · 右键菜单「弹得出来、点项没反应」——`close` 比 `select` 先到（2026-12-27）
+
+用户报：**「笔记对话的右键菜单似乎无法使用」**。
+
+## 根因
+
+`ContextMenu.pick()` 是**先收菜单再做动作**：
+
+```
+emit("close");            // ① 调用方 @close 立刻把上下文清掉
+emit("select", key);      // ② select 这一侧再去读上下文 → null
+```
+
+而我第一版把「鼠标点」和「被右键的那一条」塞进了**同一个 ref**：`@close="convCtx = null"` 一执行，
+`onConvCtx` 里 `convCtx.value?.conv` 就是 `null` → `if (!conv) return;` 静默返回。
+菜单本身能弹（`items` 是 computed，渲染时还在），点上去什么都没发生 —— 正是"无法使用"。
+
+## 改法
+
+把「鼠标点」与「被右键的对象」拆成两个 ref（`convCtx` / `convCtxTarget`、`noteCtx` / `noteCtxRow`），
+`@close` 只清前者，动作从后者取；`onSelect` 收尾时两个一起清。两个组件同改。
+
+## 实测（合成 `contextmenu` + 真点菜单项，读 DOM 结果）
+
+```
+对话行 菜单弹出 items=[重命名, 浮层打开, 多选, 删除] → 点「重命名」→ .chat .rename-input 出现 True
+笔记卡 菜单弹出 items=[定位, 浮层打开, 编辑, 多选, 删除] → 点「多选」→ 批量条 True、勾选框 True
+菜单点完 ~400ms 内自行收起（panels 1 → 0），不是"点完还赖在屏幕上"
+```
+
+`frontend_check.py` 168/168 通过、0 失败。

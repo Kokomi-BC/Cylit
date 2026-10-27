@@ -2262,8 +2262,11 @@ function toggleAll() {
 
 /** 会话行右上角那枚「⋯」展开了哪一条（同一时刻只开一个） */
 const rowMenu = ref<string>('');
-/** 右键会话行时的鼠标点 + 那一条会话（`ContextMenu` 按这个点从**右下角**展开）。 */
-const convCtx = ref<{ x: number; y: number; conv: AgentConversation } | null>(null);
+/** 右键会话行时的鼠标点（`ContextMenu` 按这个点从**右下角**展开）。 */
+const convCtx = ref<{ x: number; y: number } | null>(null);
+/** ⚠️ 被右键的**那一条**必须单独存：`ContextMenu.pick()` 是先 `emit('close')` 再 `emit('select')`（它要先收菜单
+ *  再做动作），所以 `@close` 一旦把上下文清掉，`select` 那一侧就拿到 null —— 表现是「菜单弹出来、点项没反应」。 */
+const convCtxTarget = ref<AgentConversation | null>(null);
 /** 右键菜单的项：与「⋯」那一枚**同一套动作**，顺序也一致（危险项单独一组，靠 `sep` 隔开）。 */
 const convCtxItems = computed(() => [
   { key: 'rename', label: '重命名', icon: 'edit' },
@@ -2274,12 +2277,14 @@ const convCtxItems = computed(() => [
 
 function openConvCtx(ev: MouseEvent, conv: AgentConversation) {
   rowMenu.value = '';                    // 两种入口别叠着（「⋯」那枚在鼠标下方，右键时先收掉）
-  convCtx.value = { x: ev.clientX, y: ev.clientY, conv };
+  convCtxTarget.value = conv;
+  convCtx.value = { x: ev.clientX, y: ev.clientY };
 }
 
 function onConvCtx(key: string) {
-  const conv = convCtx.value?.conv;
+  const conv = convCtxTarget.value;
   convCtx.value = null;
+  convCtxTarget.value = null;
   if (!conv) return;
   if (key === 'rename') startRename(conv);
   else if (key === 'float') void shareToFloat(conv);
