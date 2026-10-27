@@ -15743,3 +15743,63 @@ B p2   head = '此后，大量工作不断拓展循环语言模型与编码器-�
 > 副作用交代：生产第 1 页重建后行数 12 → 10（arXiv 行不再出现、脚注区多一行 `---`），行号随之平移；
 > 该论文 `highlight`/`note` 计数为 0，没有标注被顶到别的行上。另外 A 路这次把页脚 `31st Conference …` 也按"页脚"丢了（本地那次留着）——
 > 属模型对同一条规则的执行差异，未强行干预。
+### 233. 第二百三十三轮：指示块不再夹回可见范围（侧栏页签错位）+ 滚动钮去阴影 + 全站 `.seg` 统一滑动指示块
+
+用户口径：「侧栏指示器在的错位问题（即当前标签不在视角范围内错位），并且不需要点击阴影」
++「为类似设计的切换按钮添加动画」。
+
+## A. 错位的根因：指示块被夹进**可见范围**
+
+`useGlideThumb.remeasure` 原来把位移夹在 `[scrollLeft + inset, scrollLeft + clientWidth - inset - w]` ——
+即"容器**可见**范围"。但指示块是容器**内容**的一部分：激活项横向滚出视野时，它被顶回边缘、
+停在**别的页签**底下。实测（`attention-is-all-you-need`，托盘 226px / 内容 375px）：
+
+```
+scrollLeft=0    激活项 x=97  w=49   指示块 x=97   ✔
+scrollLeft=149  激活项 x=-52 w=49   指示块 x=62   ✘（托盘左沿，压在「笔记」底下）
+改后 scrollLeft=149  激活项 x=-84  指示块 x=-84  ✔（跟着内容一起滚出去）
+```
+
+改成夹在**内容**范围（`[inset, scrollWidth - inset - w]`）后，滚出视野就是滚出视野，不再露半个白块。
+
+## B. 点击阴影：`.side-scroll-btn` 原来是一枚"浮起来的圆片"
+
+左右滚动钮带 `linear-gradient` + `backdrop-filter: blur(48px) saturate(2.6)` + `box-shadow: --shadow-flyout`，
+压在托盘边沿上看起来就是一枚彩色悬浮圆片（用户截图里那枚青色的就是它）。现在改成：
+`background: var(--bg-sunken)`、`box-shadow: none`、去掉 backdrop 滤镜，悬浮才上 `--bg-hover`。
+实测 `getComputedStyle`：`shadow=none`、`bg=rgb(247,249,250)`、`filter=none`。
+
+## C. "类似设计的切换按钮"统一加动画：`composables/useSegGlide.ts`
+
+- 新增 `useSegGlide(root)`：扫根下**每一个** `.seg`，没有指示块的插一枚
+  `<span class="glide-thumb seg-glide">`、容器加 `has-glide`；激活项一变（class 变化，`.active` 与 `.on` 两种写法都认）
+  或容器尺寸一变就重量（`offsetLeft` / `offsetWidth` = 布局位置，不受 hover/press 的 transform 影响）。
+- `App.vue` 只挂一行（`document.body`）：全站三十多枚 `.seg` 不用逐个 `ref`，新页面自动跟上；
+  已经手动挂过的（标签条 / 侧栏页签 / 工具条胶囊 / 设置面板两处）由 `useGlideThumb` 继续管，
+  `useSegGlide` 见容器里已有 `.glide-thumb` 就跳过 —— 两套不会往同一个托盘里插第二枚。
+- 开销压在三处：观察者合批 120ms、缓存已挂托盘（不每次重扫整棵树）、只在**新增节点**时才重扫。
+
+## D. 选中项不再自己铺白底（这是动画看得见的前提）
+
+`.seg.has-glide > .active/.on` 中和掉 `background` 与 `box-shadow`，材质交给滑过来的那枚指示块。
+静止时两者等宽等高、像素完全一样，区别只在切换时它**滑过去**。
+顺手修掉两个让中和失效的地方：`ReaderView` 里 `.reader-capsule .cap-group .seg button.active`
+（权重 0,5,1 > 0,4,1，胶囊那枚一直是白的）与 `ReaderSettingsPanel` 的 `.seg-btn.on`（组件内规则）。
+规则收进 `base.css` 一份（`.seg.has-glide` / `.seg-glide`），`ReaderView` 不再单独写一套。
+
+### 实测
+
+```
+侧栏页签      滚出视野后 指示块 x == 激活项 x（-84 == -84）
+滚动钮        shadow=none / bg=rgb(247,249,250) / backdrop=none
+工具条胶囊    thumb 44px@… == active 44px，active 背景 rgba(0,0,0,0)，thumb 有阴影
+目录页胶囊    thumb 32 == active 32，背景透明
+设置面板 5 枚 thumb 30/26 == active 30/26，点「大」→ transform 29px → 57px（rect 230 → 258）
+```
+
+前台自检那条断言跟着换了口径：原来是「选中项是白 pill + 有阴影」（量 `.active` 的背景），
+现在是「选中项由**滑块**表达：`.active` 背景透明 + 同一位置有一枚带阴影、等宽的 `.glide-thumb`」。
+`frontend_check.py` **165/165 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DuRorcVE.js`）。
+
+线上 = `d118be7`，`dist/index.html` sha256 两边同为 `7eaab5b3…`，`cylit-api` online、`/health` 200；
+GitHub `e869d32..d118be7`，`unpushed=0`；deploy 分支与 `/tmp` 包已清。
