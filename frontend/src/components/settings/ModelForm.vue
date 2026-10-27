@@ -66,6 +66,8 @@ const props = withDefaults(defineProps<{
   initialStep?: number;
   /** 配合 initialStep：顺手把「计费」折叠块展开，让分时段单价列表一眼可见 */
   focusPrice?: boolean;
+  /** 本次是批量配置的第几条（> 1 = 一张表单写回 N 个同名配置）：只在顶部说清范围，不改任何字段语义 */
+  batchCount?: number;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -82,6 +84,7 @@ const props = withDefaults(defineProps<{
   rulesError: '',
   initialStep: 0,
   focusPrice: false,
+  batchCount: 0,
 });
 
 const emit = defineEmits<{
@@ -1244,6 +1247,12 @@ const advSummary = computed<string>(() => {
     @close="emit('close')"
   >
     <div class="flow">
+      <!-- 批量配置：同名多配置一次写回（父级循环 PUT，后端没有批量接口）。
+           先把范围说清 —— 尤其是「类型不改」：这一组之所以成组就是因为同名被不同用途用着。 -->
+      <p class="hint-line warn batch-banner" v-if="batchCount > 1" data-batch-banner>
+        批量配置：本次会把这里填的内容写入 {{ batchCount }} 个同名配置；类型（任务用途）不会被改。
+      </p>
+
       <!-- 步骤条：一行文字 + 18px 序号圆，只有走过的步骤能点回去 -->
       <nav class="steps" aria-label="步骤">
         <template v-for="(s, i) in STEPS" :key="s.id">
@@ -1580,16 +1589,24 @@ const advSummary = computed<string>(() => {
             <span class="spacer"></span>
             <span class="tiny faint" data-billing-summary>{{ billingSummary }}</span>
           </button>
-          <!-- 「计费」总开关放在折叠体**外面**：折叠着也要一眼看出这个模型算不算钱。
-               关掉不是隐藏，是明说「这个模型不计费」—— 提交时四个单价 null、时段清空。 -->
-          <label class="check-row">
-            <input type="checkbox" v-model="billingOn" data-billing-toggle />
-            <span>该模型计费（关闭 = 不计费，调用记为未计费）</span>
-          </label>
-          <p class="hint-line" v-if="!billingOn" data-billing-off>
-            该模型不计费：调用记成未计费（cost 为空），也不能给它设限额
-          </p>
           <template v-if="billingOpen">
+            <!-- 「计费」总开关折进折叠体里（用户口径：默认折叠在计费菜单内）——折叠按钮右侧那行
+                 摘要仍然会说「不计费」，所以收起时也不会看不出这个模型算不算钱。
+                 关掉不是隐藏，是明说「这个模型不计费」—— 提交时四个单价 null、时段清空。
+                 造型是 switch：真身仍是原生 checkbox（键盘、焦点、无障碍全白拿），轨道与圆点是纯装饰。 -->
+            <label class="sw-row">
+              <span class="sw">
+                <input
+                  type="checkbox" role="switch" v-model="billingOn" data-billing-toggle
+                  :aria-checked="billingOn"
+                />
+                <span class="sw-track" aria-hidden="true"><span class="sw-knob"></span></span>
+              </span>
+              <span>该模型计费（关闭 = 不计费，调用记为未计费）</span>
+            </label>
+            <p class="hint-line" v-if="!billingOn" data-billing-off>
+              该模型不计费：调用记成未计费（cost 为空），也不能给它设限额
+            </p>
             <label class="field billing-cur">
               <span>币种</span>
               <select v-model="form.currency" data-billing-currency>
@@ -1850,7 +1867,9 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .hint-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--text-faint); }
 .hint-line.warn { color: var(--warn); }
 .hint-line.empty { padding: 2px 0; }
-.err-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger); }
+/* pre-line：批量配置的失败清单是多行（一行总账 + 每行「名称 — 后端 message」），
+   既有单行文案里没有换行符，所以这个改动对它们没有可见影响。 */
+.err-line { margin: 0; font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--danger); white-space: pre-line; }
 .warn-line {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0;
   font-size: calc(11.5px * var(--ts, 1)); line-height: 1.5; color: var(--warn);
@@ -1916,6 +1935,29 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .types { height: auto; flex-wrap: wrap; gap: 2px; }
 .types button { height: calc(var(--control-h) - 6px); padding: 0 11px; font-size: calc(12.5px * var(--ts, 1)); }
 .check-row { display: flex; align-items: center; gap: 8px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); cursor: pointer; }
+/* 切换开关：原生 checkbox 铺满整块并透明（键盘 Tab / 空格照旧可用），
+   .sw-track 画胶囊、.sw-knob 画圆点，选中态用 --accent —— 不引入新颜色。 */
+.sw-row { display: flex; align-items: center; gap: 8px; font-size: calc(12.5px * var(--ts, 1)); color: var(--text); cursor: pointer; min-width: 0; }
+.sw { position: relative; display: inline-flex; flex: none; width: 32px; height: 18px; }
+.sw input {
+  position: absolute; inset: 0; z-index: 1; margin: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer;
+}
+.sw-track {
+  position: absolute; inset: 0; border-radius: 999px;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.sw-knob {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--text-faint);
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.sw input:checked + .sw-track { background: var(--accent); border-color: var(--accent); }
+.sw input:checked + .sw-track .sw-knob { transform: translateX(14px); background: var(--text-on-accent); }
+.sw input:focus-visible + .sw-track { outline: none; box-shadow: var(--ring); }
+/* 批量横幅：排在步骤条上方，只借 .hint-line 的观感，间距自己给一点（否则会贴住步骤条） */
+.batch-banner { margin: 0 0 10px; }
 .reasoning { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .adv-toggle {
   display: flex; align-items: center; gap: 6px; width: 100%;

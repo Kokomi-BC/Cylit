@@ -40,6 +40,9 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'changed'): void;
   (e: 'focus-type', type: string): void;
+  /* 同名多配置组的「批量配置」：把整组交给父级表单，一次写回每个配置（后端只支持逐个 PUT，
+     所以父级循环调用既有接口，这里只负责"点了哪一组"）。 */
+  (e: 'configure-group', models: ModelConfig[]): void;
 }>();
 
 function errText(err: unknown): string {
@@ -530,10 +533,25 @@ function toggleGroup(g: RelGroup): void {
   else relExpanded.add(g.key);
 }
 
-/** 右侧只有一枚「去配置」：单配置组直接跳它那一条，多配置组先展开再看。 */
+/** 右侧那枚「去配置」：单配置组直接跳它那一条，多配置组是**批量配置**入口。
+ *  以前多配置组点它是"展开/收起"，什么也没配置（用户抱怨的正是这个）；展开移到点标题行后，
+ *  这枚按钮才真的"去配置"，而且一次去配整组。 */
 function groupGo(g: RelGroup): void {
   if (g.models.length === 1) goConfigure(g.models[0]);
-  else toggleGroup(g);
+}
+
+/** 批量配置这一组：models.slice() 而不是引用 —— 父级表单会拿着这份清单逐条 PUT，
+ *  抽屉这边随时可能因为 refresh 重建 relGroups，别让它跟着抖。 */
+function groupBatch(g: RelGroup): void {
+  emit('configure-group', g.models.slice());
+}
+
+/** 标题行的键盘入口：焦点落在行内那枚按钮上时**不抢**（否则回车会同时展开和批量配置）。 */
+function onGroupKey(ev: KeyboardEvent, g: RelGroup): void {
+  if (ev.target !== ev.currentTarget) return;
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  ev.preventDefault();
+  toggleGroup(g);
 }
 
 /** 标题栏：M 个模型（N 个配置）—— 只有一个配置时括号没有信息量，省掉。 */
@@ -914,7 +932,17 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
 
                   <!-- 多配置合并：一行说清「同一个名字被几处用着」，展开才逐条给详情 -->
                   <template v-else>
-                    <div class="rel-main">
+                    <!-- 标题行 = 展开/收起的开关（鼠标点、键盘 Enter/Space 都行）：展开这件事
+                         以前挤在右侧那枚按钮上，而那枚按钮该干的是"去配置"。 -->
+                    <div
+                      class="rel-main"
+                      role="button"
+                      tabindex="0"
+                      :aria-expanded="relExpanded.has(g.key)"
+                      :title="relExpanded.has(g.key) ? '收起这组配置' : '展开这组配置'"
+                      @click="toggleGroup(g)"
+                      @keydown="onGroupKey($event, g)"
+                    >
                       <span class="pd-dot" :class="groupDot(g)" />
                       <img v-if="modelIcon(g.models[0])" class="rel-ico" :src="modelIcon(g.models[0])" alt="">
                       <span v-else class="rel-ico-fallback"><AppIcon name="model" :size="13" /></span>
@@ -924,11 +952,11 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
                       <button
                         class="btn sm ghost"
                         data-rel-go
-                        :aria-expanded="relExpanded.has(g.key)"
-                        :title="relExpanded.has(g.key) ? '收起这组配置' : '展开这组配置'"
-                        @click="groupGo(g)"
+                        data-rel-batch
+                        :title="'批量配置这 ' + String(g.models.length) + ' 个配置'"
+                        @click.stop="groupBatch(g)"
                       >
-                        <AppIcon name="edit" :size="13" />去配置
+                        <AppIcon name="edit" :size="13" />批量配置
                       </button>
                     </div>
                     <div class="rel-meta">
@@ -1171,6 +1199,9 @@ button.kr-name:hover { color: var(--accent-text); }
 .rel-main { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; }
 /* 合并行上面只有"名称 + 几个配置"，没有真实 id 抢地方 —— 名称可以吃满，别为了 40% 早早截断 */
 .rel-row.merged .rel-main .rel-name { flex: 1 1 auto; max-width: none; }
+/* 合并行的标题行本身是展开/收起开关：鼠标上是手型，键盘聚焦时给一圈 ring（和抽屉里其它控件一致） */
+.rel-row.merged .rel-main { cursor: pointer; border-radius: var(--r-sm); }
+.rel-row.merged .rel-main:focus-visible { outline: none; box-shadow: var(--ring); }
 .rel-meta {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   padding: 0 0 2px 14px; /* 14 = 点 + 间距：与上面名称左对齐 */

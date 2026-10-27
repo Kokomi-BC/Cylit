@@ -15217,3 +15217,62 @@ warning  A items=[] + 无默认价 → has_price=False **warning=None**（用户
 > （设置页的 ⋯ 是嵌套浮层，脚本反复点进提供方抽屉）。后端 warning 与 HTTP 层已实证，
 > 关窗那一步依赖的只是 `warning` 有没有值（`ModelPanel.submitForm` 902-933 读过了），
 > 但"手点一遍"这件事仍未做，留成待办。
+
+### 222. 第二百二十二轮：同名模型的批量配置（在提供方抽屉里发起）+ 计费开关改成切换开关并折进计费块
+
+**① 多配置组的「去配置」其实什么也没配**
+
+提供方抽屉的「关联模型」按 **provider + 自定义名称** 合并成组（`relGroups`，同名键 `n:<name>`）。
+多配置组右侧那枚「去配置」走 `groupGo(g)`：`g.models.length === 1` 才 `goConfigure`，否则只是
+`toggleGroup(g)` **展开/收起** —— 用户口径「实现同名模型批量配置（在这里配置）」说的就是这枚按钮在空转。
+
+改法：`groupGo` 只留单配置分支；新增 `groupBatch(g)` → `emit('configure-group', g.models.slice())`
+（`slice()` 是因为父级拿着清单逐条 PUT，抽屉这边 `refresh` 会重建 `relGroups`）。
+展开/收起搬到**标题行**（`role="button"` + `tabindex` + `aria-expanded` + Enter/Space，
+`ev.target !== ev.currentTarget` 时不抢，免得回车同时展开又批量配置）；那颗按钮改文案「批量配置」。
+
+父级（`ModelPanel`）：`openBatch(models)` 用**第一条**当底开「编辑模型」表单，`formBatch` 记录整组；
+`submitForm` 顶部一旦 `formBatch.length > 1` 就走 `submitBatch`：逐条
+`PUT /models/{id}` + `PUT /models/{id}/price-rules`，单条失败 `continue` 不中断，
+最后一行总账「N 个成功 / M 个失败」+ 每行「名称 — 后端 message」（表单留着可重试）。
+**不新增批量接口**：后端只有逐个 PUT，前端不该为界面便利造第二套语义。
+
+> 批量时 `delete body.model_type`：这一组之所以成组就是同一个名字被不同用途用着，
+> 把 `models[0]` 的类型写回整组等于删配置 —— 与横幅「类型（任务用途）不会被改」必须一致。
+
+表单顶部加横幅 `data-batch-banner`：「批量配置：本次会把这里填的内容写入 N 个同名配置；类型（任务用途）不会被改」。
+
+**② 计费开关：原生方框 → 切换开关，并折进计费块**
+
+上一轮那颗开关是 `<label class="check-row"><input type="checkbox">`，并且刻意放在**折叠体外面**
+（"折叠着也要一眼看出算不算钱"）。用户口径改成：**切换开关造型**，且**默认折叠在计费菜单内**。
+
+改法：开关与 `data-billing-off` 提示一起挪进 `<template v-if="billingOpen">`；
+造型换成 `.sw`（32×18 的底 + 透明的原生 checkbox 铺满 + `.sw-track` 胶囊 + `.sw-knob` 圆点），
+选中走 `--accent`、圆点 `translateX(14px)`；`role="switch"` + `:aria-checked`；
+`:focus-visible` 用 `var(--ring)`。折叠按钮右侧那行 `data-billing-summary` 照旧会说「不计费」，
+所以收起时也不会看不出这个模型算不算钱。
+
+### 实测（有头 Chrome + CDP，本机 8710）
+
+为了点得通，先在本机造了两条**同名**配置（`批量验证 · 同名组`，类型 agent / vision），验完已删：
+
+```
+同名组    mergedGroups = [{name: '批量验证 · 同名组', count: '2 个配置'}]
+入口      [data-rel-batch] title = '批量配置这 2 个配置'
+横幅      '批量配置：本次会把这里填的内容写入 2 个同名配置；类型（任务用途）不会被改。'
+开关      折叠时 DOM 里没有这个 input（toggleBeforeExpand=false）；展开「计费」后：
+          role=switch、type=checkbox、opacity=0（真身透明）、aria-checked=false、
+          .sw-track 32×18、.sw-knob 在、closest('.billing') 命中
+保存      modalClosed=true；toast='成功 / 已写入 2 个配置'
+落库      agent-9c422b68 type=agent、vision-16d08671 type=vision（**类型没被抹平**），
+          两条 name/model_name/base_url/parameters 一致 —— 一份表单写进了两条
+清理      两条配置 DELETE 200，库里回到原来 5 条
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-CVG5WYgB.js`）、`frontend_check.py` **168/168**。
+
+> 取舍（写在 `submitBatch` 注释里）：`flash(id)` 逐个调用但 `highlightId` 是单值，
+> 刷新后最终只有最后一条保持高亮 —— 宁可这样，也不引入"多行同时高亮"的第二种状态。
+> 另外批量时 `is_default` / `enabled` 也照表单值写回 N 条（"照填的内容写进 N 个"的直译），
+> 勾了「设为该任务的默认模型」就会让这 N 条在各自类型下都成为默认。

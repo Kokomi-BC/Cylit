@@ -800,6 +800,10 @@ async function removeModel(m: ModelRow): Promise<void> {
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
+/** 同名多配置的批量清单：长度 > 1 时 submitForm 走「一条表单写回 N 个配置」那条路。
+ *  单个配置一律是 []，老路径一个字都不动。只在 openBatch 里被填满，其余入口都要清空，
+ *  否则上一次的批量标记会漏到下一次单条编辑上。 */
+const formBatch = ref<ModelRow[]>([]);
 const formDefaultType = ref('agent');
 /** 保存失败的文案：透给表单第五步的「保存结果」那一行（saveError），每次打开表单时清空 */
 const formError = ref('');
@@ -818,6 +822,7 @@ let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 function openCreate(type = 'agent'): void {
   formMode.value = 'create';
   formTarget.value = null;
+  formBatch.value = [];
   formDefaultType.value = type;
   formError.value = '';
   formWarning.value = '';
@@ -831,7 +836,30 @@ function openCreate(type = 'agent'): void {
 function openEdit(m: ModelRow): void {
   formMode.value = 'edit';
   formTarget.value = m;
+  formBatch.value = [];        // 单条编辑：把上一次批量留下的标记清掉
   formDefaultType.value = m.model_type || 'agent';
+  formError.value = '';
+  formWarning.value = '';
+  formRulesError.value = '';
+  formSavedId.value = '';
+  formInitialStep.value = 0;
+  formFocusPrice.value = false;
+  formOpen.value = true;
+}
+
+/**
+ * 抽屉里同名多配置那一行的「批量配置」：同一份表单依次写回这一组的每个配置。
+ *
+ * 表单的初始值取**第一条**：同名 + 同提供方，用户想统一改的正是那些共同字段（类型不写回，见下）。
+ * 类型（任务用途）不进批量：这一组之所以成组就是因为同名被多处用着，抹平类型等于删配置。
+ */
+function openBatch(models: ModelRow[]): void {
+  if (!models.length) return;
+  formMode.value = 'edit';
+  formTarget.value = models[0];
+  formBatch.value = models;
+  /* 与 openEdit 同一套复位：只多了一条「本次是批量」，其余字段的初值语义不变 */
+  formDefaultType.value = models[0].model_type || 'agent';
   formError.value = '';
   formWarning.value = '';
   formRulesError.value = '';
@@ -848,7 +876,7 @@ function openEdit(m: ModelRow): void {
 function openEditPrice(id: string): void {
   const m = ((state.models || []) as ModelRow[]).find((x) => x.id === id);
   if (!m) return;
-  openEdit(m);
+  openEdit(m);                  // openEdit 内部已经把 formBatch 清空，这里不必再来一次
   formInitialStep.value = 4;
   formFocusPrice.value = true;
 }
@@ -860,6 +888,56 @@ function flash(id: string): void {
     if (highlightId.value === id) highlightId.value = '';
     highlightTimer = null;
   }, 2800);
+}
+
+/**
+ * 批量写回：把同一份表单内容依次写到这一组的每个配置上。
+ *
+ * 为什么循环而不是新加批量接口：后端只有 PUT /models/{id}（逐个），前端不该为界面便利造第二套语义。
+ * 单条失败**不中断**：写成功的就留着（回滚只是骗自己），失败清单一次报全，表单不关，改完可直接重试
+ * —— 与限额卡片的批量 report 是同一种写法（一行总账 + 每行「名称 — 后端 message」）。
+ *
+ * 类型（model_type）**不写回**：同名多配置之所以成组，就是同一个名字被不同用途用着，
+ * 抹平类型等于删配置。表单横幅也是这么跟用户说的。
+ */
+async function submitBatch(
+  payload: Record<string, any>,
+  rules: { items: Record<string, any>[] } | null,
+): Promise<void> {
+  const list = formBatch.value.slice();
+  const body: Record<string, any> = { ...payload };
+  delete body.model_type;
+  const ok: string[] = [];
+  const fails: Array<{ name: string; message: string }> = [];
+  for (const m of list) {
+    const id = String(m.id || '');
+    const label = String(m.name || m.model_name || id || '（未命名）');
+    if (!id) { fails.push({ name: label, message: '缺少配置 id，跳过' }); continue; }
+    try {
+      await api.put('/models/' + id, body);
+      if (rules) await api.put('/models/' + id + '/price-rules', rules);
+    } catch (err) {
+      fails.push({ name: label, message: String((err as any)?.message ?? err) });
+      continue;                     // 单条失败不中断：后面的配置照写
+    }
+    ok.push(label);
+  }
+  if (fails.length) {
+    formError.value = [
+      String(ok.length) + ' 个成功 / ' + String(fails.length) + ' 个失败',
+      ...fails.map((f) => f.name + ' — ' + f.message),
+    ].join('\n');
+    toast('批量配置有 ' + String(fails.length) + ' 个失败', 'error', 6000);
+    await refresh();
+    return;                         // 表单留着：失败清单和已填内容都在，改完直接重试
+  }
+  formBatch.value = [];
+  formOpen.value = false;
+  await refresh();
+  toast('已写入 ' + String(ok.length) + ' 个配置', 'ok');
+  /* 逐个 flash：highlightId 只有一个，最终亮着的是最后一个，但刷新后每一行都点过一次
+     （宁可这样，也不引入"多行同时高亮"的第二种状态） */
+  for (const m of list) flash(String(m.id));
 }
 
 /**
@@ -881,6 +959,11 @@ async function submitForm(
   formWarning.value = '';
   formRulesError.value = '';
   try {
+    /* 同名多配置批量：一条表单写回 N 个配置（各自 PUT，互不牵连），与单条路径完全分开 */
+    if (formBatch.value.length > 1) {
+      await submitBatch(payload, rules);
+      return;
+    }
     const editId = formMode.value === 'edit' && formTarget.value ? String(formTarget.value.id) : '';
     let modelId = editId || formSavedId.value;
     let created: any = null;
@@ -1226,6 +1309,7 @@ onBeforeUnmount(() => {
     <ProviderDrawer
       :provider="drawerProvider" :open="drawerOpen" :initial-tab="drawerTab"
       @close="closeDrawer" @changed="onDrawerChanged" @focus-type="onFocusType"
+      @configure-group="openBatch"
     />
 
     <ModelForm
@@ -1235,6 +1319,7 @@ onBeforeUnmount(() => {
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
       :rules-warning="formWarning" :rules-error="formRulesError"
       :initial-step="formInitialStep" :focus-price="formFocusPrice"
+      :batch-count="formBatch.length"
       @close="formOpen = false" @submit="submitForm"
     />
   </div>
