@@ -36,6 +36,7 @@ import { markRanges, rangeOffsets, renderedText, segments } from '@/utils/domMar
 import { HL_SWATCHES, highlightCss, paletteNameOf, swatchClassOf, swatchLabel,
   swatchStyleOf } from '@/utils/highlightColors';
 import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
+import { pickCiteGroup, sortCiteRows } from '@/utils/citeGroup';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
@@ -187,21 +188,19 @@ function clearPeekTimers(): void {
 
 /** 一张卡的指纹：行 / 块 / 页码 / **覆盖的那几行** 任一相同就算同一处引用 */
 function peekSig(ask: CitePeekAsk): string {
-  /* 为什么把 rows 也算进来（用户口径 2026-12-11 起卡片会画整条相邻链）：合并标号 `[1,4]`
-     与单枚 `[1]` 的卡片头是同一行（都取链头 `p006-01`），但覆盖范围不同 —— 只比行的话
-     后者会命中前者那张卡，看到的是上一次（少两行）的内容。 */
+  /* 为什么把 rows 也算进来（合并标号 `[1,4]` 会画那两处）：两种写法的卡片头可能是同一行
+     （都取这一组里最上面那行），但覆盖范围不同 —— 只比行的话，后者会命中前者那张卡，
+     看到的是上一次（少一处）的内容。 */
   return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? '', String(ask.rows || '')].join('|');
 }
 
 /**
- * 速览卡的 ask → 补上"这条链覆盖哪几行"。
+ * 速览卡的 ask → 补上"这个方括号覆盖哪几行"。
  *
- * 为什么在阅读器这边算：与点击**必须是同一枚纯函数**（`buildCiteChain`），否则会出现
- * 「正文闪了三行、卡片只给一行」（用户口径 2026-12-11）。而且只有这里认得出公式行 ——
- * 对话正文那边连 DOM 都看不见。
+ * 为什么在阅读器这边算：与点击**必须是同一枚纯函数**（`pickCiteGroup`），否则会出现
+ * 「正文闪一处、卡片画另一处」（用户口径 2026-12-11「正文闪了三行、卡片只给一行」）。
  *
- * 公式行**可以**进卡片的 rows：卡片只是把内容画出来，没有"闪"那种"同一块地方"的问题；
- * 但它的**成员判定**仍然按 `isFormulaRow` 走，与点击完全同一套（点它 → 卡片也只画它自己）。
+ * 公式行**可以**进卡片的 rows：卡片只是把内容画出来，没有"闪"那种"同一块地方"的问题。
  */
 function withCiteChain(ask: CitePeekAsk): CitePeekAsk {
   const pool = Array.isArray(ask.pool) ? ask.pool : [];
@@ -209,23 +208,22 @@ function withCiteChain(ask: CitePeekAsk): CitePeekAsk {
   const refs = (Array.isArray(ask.refs) ? ask.refs : [])
     .map((n) => Number(n))
     .filter((n) => Number.isFinite(n) && n > 0);
-  /* 没给编号时用"池子里落在这一行上的那一条"顶上 —— 至少还能按它扩出整条链，
-     而不是把一整条链缩成一行（点击那边一定是带编号的，这条只为兜底）。 */
+  /* 没给编号时用"池子里落在这一行上的那一条"顶上（点击那边一定带编号，这条只为兜底）。 */
   const picked = refs.length
     ? refs
     : pool.filter((p) => p.row && p.row === ask.rowId).map((p) => p.ref);
   if (!picked.length) return ask;
-  const chain = buildCiteChain(picked, pool, (item) => isFormulaRow(item.row));
+  const chain = pickCiteGroup(picked, pool);
   /* 一个都没在池子里找到：保持原样（退回"这一行"），**不要**拿整个池子去铺卡片 ——
      池子是这条消息的全部引用，那会把几十行无关内容画进卡片。 */
   if (!chain.length) return ask;
-  const ordered = sortChainRows(chain);
+  const ordered = sortCiteRows(chain);
   const head = ordered[0];
   const rows = ordered.map((c) => c.row).filter(Boolean);
   return {
     ...ask,
-    /* 卡片头（标题 / 锚点 / 定位）取**链头**，不是鼠标下这一枚：相邻两枚按钮共用一条链时，
-       卡片内容不该随鼠标落在链的哪一枚上而变来变去。 */
+    /* 卡片头（标题 / 锚点 / 定位）取这一组在文档顺序里的**第一行**：方括号合并了
+       `[3,4]` 时，卡片内容是那两行合起来的一段，头就取最上面那行。 */
     page: head.page || ask.page,
     rowId: head.row || ask.rowId || null,
     blockId: head.block || ask.blockId || null,
@@ -3436,106 +3434,9 @@ async function focusRow(
   if (save) saveProgressDebounced();
 }
 
-/* ---- 相邻链：**纯函数**（吃数据、吐数据，不碰 DOM、不碰 Vue 状态） ----
- * 为什么整段挪到阅读器这边（用户口径 2026-12-…「13 和 14 是同一块地方闪烁」）：
- * 链的成员判定要多知道一件事 —— **这一行是不是"整行就是一坨公式"**。
- * 那种行在行号上照样与下一行相邻（生产库那条会话里 ref 13 落在 p005-05，整行就是
- * `C(f_X,b):=min…` 那条显示公式；ref 14 落在紧跟的 p005-06 正文段），于是旧的"相邻链"
- * 把 p005-04 + p005-05 + p005-06 连成一条 —— 点 13 和点 14 闪的是同一块地方，
- * 而 14 还会把页面往下带一点（滚动落到了另一行）。
- * 公式行的正确语义（用户已经定过「公式单独闪」）：**不参与链、不做桥**，点它只闪它自己。
- * 这一条判定要看那一行里到底画了什么（`.katex-display` + 去掉公式后的可见文本），
- * 只有阅读器这边有 DOM 与行数据，所以链的判定一起搬过来（`isFormulaRow` 由调用方注入，
- * 于是这三个函数本身仍是纯函数，可以整段拎出来单测）。 */
-
-/** 行 id 拆「页前缀 + 行号」：`p006-01` → (`p006-`, 1)。判"段落上相邻"只靠这两段。
- *  `row-` 前缀先归一（与 `rowAnchorId` 同一条规则）：公式 / 表格类引用给的是 `row-p006-03`，
- *  不归一就跟同页的 `p006-04` 认不成邻。 */
-function citeRowKeyOf(id?: string | null): { prefix: string; num: number } | null {
-  const m = /^(.*?)(\d+)$/.exec(String(id || '').replace(/^row-/, ''));
-  return m ? { prefix: m[1], num: Number(m[2]) } : null;
-}
-
-/**
- * 点一组编号 → 该**一起闪 / 一起显示**的那几处（相邻链）。
- *
- * 三条口径（用户要求）：
- * - 判据是**落点**相邻，不是标号相邻：同页（页前缀相同）+ 行号差 1 才连一条边，边串起来
- *   就是一条链（3-4-5 传递成一组）；方括号只是排版上的合并（`[3,7]` 的两行若相隔很远，
- *   点过去只该闪 3 那条链和 7 那条链，不该把中间十几行一起点亮）。
- * - 只在本轮**真实被引用的行**之间连边：没被引用的邻行不参与，否则点一枚会把旁边无关的
- *   段落一起点亮（"连坐"用户明确否掉了）。
- * - **公式行不参与、也不做桥**：它自己单独成链；换句话讲 `p005-04` 与 `p005-06` 中间隔着
- *   一条公式行时，两行差 2，谁也连不上谁（这正是用户看到"13/14 闪同一块"的那条链断掉的地方）。
- * - **没有数量上限**：同一页连续多少条被引用，就整条连下去（用户口径：合并/闪烁不该有上限，
- *   上限交给提示词去约束写法，前端不许自己吃掉更长的一条）。
- */
-function buildCiteChain(
-  refs: number[],
-  pool: CitePoolItem[],
-  isFormulaRow: (item: CitePoolItem) => boolean,
-): CitePoolItem[] {
-  const byRef = new Map<number, CitePoolItem>();
-  for (const item of pool) if (!byRef.has(item.ref)) byRef.set(item.ref, item);
-  /* 能参与连边的行：有行号、且不是公式行。公式行干脆不进这张表 —— 它既不能当成员
-     （不与别人合并），也不能当桥。 */
-  const lanes = new Map<string, Array<{ item: CitePoolItem; num: number }>>();
-  for (const item of pool) {
-    const key = citeRowKeyOf(item.row);
-    if (!key) continue;
-    if (isFormulaRow(item)) continue;
-    const lane = lanes.get(key.prefix) ?? [];
-    lane.push({ item, num: key.num });
-    lanes.set(key.prefix, lane);
-  }
-  for (const lane of lanes.values()) lane.sort((a, b) => a.num - b.num);
-
-  const out: CitePoolItem[] = [];
-  const seen = new Set<number>();
-  const push = (item: CitePoolItem) => {
-    if (seen.has(item.ref)) return;
-    seen.add(item.ref);
-    out.push(item);
-  };
-  for (const ref of Array.isArray(refs) ? refs : []) {
-    const self = byRef.get(Number(ref));
-    if (!self) continue;
-    push(self);                                   // 点的那一处永远在里面（也排在最前：滚动落点跟着它）
-    if (isFormulaRow(self)) continue;             // 公式行只闪自己：不往两边扩、也不替别人做桥
-    const key = citeRowKeyOf(self.row);
-    const lane = key ? lanes.get(key.prefix) : undefined;
-    if (!lane) continue;
-    const at = lane.findIndex((e) => e.item.ref === self.ref);
-    if (at < 0) continue;
-    // 行号差 1 才接上，断了就停（链式：3-4-5 连成一条，与再往外的 7 之间差 2 就断开）
-    for (let i = at - 1; i >= 0 && lane[i + 1].num - lane[i].num === 1; i -= 1) push(lane[i].item);
-    for (let i = at + 1; i < lane.length && lane[i].num - lane[i - 1].num === 1; i += 1) push(lane[i].item);
-  }
-  return out;
-}
-
-/** 链按论文顺序（页前缀 → 行号）排：速览卡是当一整段读的（标题在上、正文在下），
- *  顺序错读起来就是跳的。认不出行号的（`fig:p…` 合成锚点、只有块 id 的）一律排到最后 ——
- *  `mapSpanId` 认不出会丢掉，全丢光时它自己退回锚点那一行。 */
-function sortChainRows(items: CitePoolItem[]): CitePoolItem[] {
-  /* `fig:p<页>:n<图号>` 是我们自己拼的合成锚点（见 ReaderChat.citationAnchor），不是正文行 id：
-     给它排序键只会让它按"图号数字"挤到段落行前面去，所以一律当没有序。 */
-  const keyed = items.map((item, i) => ({
-    item, i, key: /^fig:/.test(item.row) ? null : citeRowKeyOf(item.row),
-  }));
-  keyed.sort((a, b) => {
-    if (a.key && b.key) {
-      // 页前缀直接比字符串：`p006-` / `p007-` 是补零的，字典序与页序一致
-      if (a.key.prefix !== b.key.prefix) return a.key.prefix < b.key.prefix ? -1 : 1;
-      if (a.key.num !== b.key.num) return a.key.num - b.key.num;
-      return a.i - b.i;
-    }
-    if (a.key) return -1;
-    if (b.key) return 1;
-    return a.i - b.i;
-  });
-  return keyed.map((e) => e.item);
-}
+/* 一组引用怎么凑、怎么排：见 `@/utils/citeGroup`（纯函数，单测直接 import 那份源码）。
+   口径：**方括号里有几个号就闪几处**，不再按"落点相邻"自己扩链 —— 相邻的两段正文
+   （如 p005-02 / p005-03）连成一条时，点 2 和点 10 闪的、滚的完全一样，两枚标号就废了。 */
 
 /* ---- 公式行：整行只有一条显示公式的那种行 ----
  * 用户口径：那几行在正文里"是公式"，点它只闪那一枚公式（与「公式单独闪」一致）。 */
@@ -3568,11 +3469,14 @@ function isFormulaRow(id: string): boolean {
 }
 
 /**
- * 一次闪**多处**（正文里点一枚引用标号 → 它那条「落点相邻」的链；方括号合并出来的多目标
- * 也走这里）。链的算法在 `buildCiteChain`（纯函数），这里只负责"落到 DOM 上闪"。
+ * 一次闪**多处**：被点的那个方括号里有几个号，就闪几处（`pickCiteGroup`，纯函数，
+ * 在 `@/utils/citeGroup`）；单号方括号只闪那一处。这里只负责"落到 DOM 上闪"。
  *
- * 参数只有两样：被点的**编号** + 这条消息的**整个引用池**。正文那边不再算链 ——
- * 它看不见 DOM，认不出公式行（这正是"13 和 14 闪同一块"的根因）。
+ * 为什么不按"落点相邻"自己扩链（老规则）：相邻的两段正文（生产库 `p005-02` / `p005-03`
+ * 就是同一小节的两段）会被连成一条，于是点 2 和点 10 闪的、滚的完全一样 ——
+ * 用户看到的就是"2 和 10 是同一段内容"。合并写法的唯一来源是模型写的方括号。
+ *
+ * 参数只有两样：被点的**编号** + 这条消息的**整个引用池**。
  *
  * 三条口径（用户要求）：
  * - 落点只跟**第一条**走：滚动只发生一次，镜头不会从一处拽到另一处（那是"挨个点"的老毛病）；
@@ -3583,7 +3487,7 @@ function isFormulaRow(id: string): boolean {
  *   只带页码的历史引用（插图 / 表格）落到那一页的**首行**，与 `focusPage` 同一口径 ——
  *   整页亮一片正是用户反复抱怨的那件事。
  *
- * 两处都**没有数量上限**：链有多长就闪多长（上限只由"这一页被引用了哪几行"决定）。
+ * 方括号里有多少号就闪多少处（提示词已要求没有数量上限）。
  * 摘除统一在 1.6s 后，与行闪 / 单枚公式闪同一节奏。
  */
 async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
@@ -3592,25 +3496,24 @@ async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
   const refs = (Array.isArray(payload?.refs) ? payload.refs : [])
     .map((n) => Number(n))
     .filter((n) => Number.isFinite(n) && n > 0);
-  /* 先算链（同步）。没有编号可点时（兜底路径给的是"只有它自己一项"的池子）就把池子里的
-     每一处各自闪一次 —— 「各自闪自己」不需要另一条代码路径。
+  /* 方括号 → 该闪的那几处（同步）。没有编号可点时（兜底路径给的是"只有它自己一项"的池子）
+     就把池子里的每一处各自闪一次 —— 「各自闪自己」不需要另一条代码路径。
      ⚠️ 有编号却一个都没在池子里找到时**什么都不闪**，绝不退回"闪整个池子"：
      池子是这条消息**全部**引用（几十条），那等于整页乱亮。 */
-  const chain = pool.length ? buildCiteChain(refs, pool, (item) => isFormulaRow(item.row)) : [];
-  const list = chain.length ? chain : (refs.length ? [] : pool);
+  const group = pool.length ? pickCiteGroup(refs, pool) : [];
+  const list = group.length ? group : (refs.length ? [] : pool);
   if (!list.length) return;
-  /* 顺序 = **文档顺序**（`sortChainRows`）：滚动落点与目录高亮都取"这条链最上面那一行"。
-     用户口径：「页面跳转以最顶部的为主而不是最底下的，避免页面遮挡顶部内容」——
-     以前落点跟着**被点的那一条**走，点链尾时整条链的上几行会跑到阅读线以上（甚至被顶部
-     工具条压住）。只有一条目标时排序是空操作，行为与从前一致。 */
-  const ordered = sortChainRows(list);
+  /* 顺序 = **文档顺序**（`sortCiteRows`）：滚动落点与目录高亮都取"这一组最上面那一行"。
+     用户口径：「页面跳转以最顶部的为主而不是最底下的，避免页面遮挡顶部内容」。
+     只有一条目标时排序是空操作。 */
+  const ordered = sortCiteRows(list);
   // 把每一处解析成"哪一行 / 哪一页"（同步，不碰 DOM 的落点计算）
   const spots = ordered.map((t) => {
     const hit = resolveRefId(String(t.row || t.block || ''), t.page || undefined);
     return { ...hit, latex: String(t.latex || '') };
   });
   const head = spots[0];
-  /* 当前行只跟第一条（= 链头，与滚动落点同一处：镜头停在哪，目录就亮哪）。 */
+  /* 当前行只跟第一条（= 这一组的第一行，与滚动落点同一处：镜头停在哪，目录就亮哪）。 */
   if (head.known) currentRowId.value = head.id;
   mobilePane.value = '';
   await nextTick();
