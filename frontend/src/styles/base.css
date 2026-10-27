@@ -752,6 +752,27 @@ table.data.fixed { table-layout: fixed; }
 .icon { flex: none; display: block; vertical-align: middle; }
 .icon.inline { display: inline-block; vertical-align: -2px; }
 
+/* ---------------- 滑动指示块（三处切换器共用的**一枚**抬起块） ----------------
+ * 顶部论文标签条（TabBar）、阅读器侧栏页签、顶部胶囊（原文/译文/对照）是同一套物理：
+ * 托盘（浅底）→ 抬起的白块（选中项）→ 文字。选中项不再是"每项一份 active 样式"，
+ * 而是**一枚**绝对定位的块滑过去 —— 位置 / 宽度由 `composables/useGlideThumb.ts` 算，
+ * 材质与过渡只有这里一份（三处各写一份，夹边规则与重播手法迟早走散）。
+ *
+ * 材质取 `--bg-elev` + `--shadow-1`：与 `.seg button.active`、"有没有被选中靠白 pill 与
+ * 阴影表达"那套三层胶囊**逐字对齐**（见上面 .seg 的注释）。这两条不要在这里改成本地色。
+ * 几何（top / height / 圆角）由各处的类自己给 —— 托盘高度三处并不一样。
+ *
+ * 过渡只写在 transform 与 width 上：transform 走合成器；width 是**绝对定位元素自身**的，
+ * 不会带动兄弟节点。定位用 left: 0 + translate3d，所以块本身始终是一个盒子。 */
+.glide-thumb {
+  position: absolute; left: 0; top: 0; z-index: 0;
+  border-radius: var(--radius-ctl);
+  background: var(--bg-elev); box-shadow: var(--shadow-1);
+  /* 它只是一块背景：别挡住底下标签的点击、关闭键与悬停 */
+  pointer-events: none;
+  transition: transform var(--dur) var(--ease), width var(--dur) var(--ease);
+}
+
 /* ---------------- Markdown 渲染 ---------------- */
 /* 排版规则（与"折行/间距"有关的两条，2026-10-07）：
  *   `line-break: strict` —— 中文**禁则处理**：不让 `。，、）】」` 这类标点跑到行首

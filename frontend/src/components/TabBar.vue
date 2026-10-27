@@ -19,6 +19,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import AppIcon from '@/components/AppIcon.vue';
+import { useGlideThumb } from '@/composables/useGlideThumb';
 import { BRAND_ICON } from '@/utils/brand';
 import {
   closeOtherTabs, closeTab, routeKey, tabLocation, tabs, tabsState,
@@ -29,6 +30,19 @@ const router = useRouter();
 
 
 const strip = ref<HTMLElement | null>(null);
+
+/* 滑动高亮：**全托盘共用一枚**指示块，激活标签一变就滑过去。
+ * 量位置 / 夹边 / 重量时机都在 `useGlideThumb` 里（顶部胶囊、侧栏页签用的是同一份），
+ * 材质与过渡在 `styles/base.css` 的 `.glide-thumb`，这里只给几何（见 .tab-glide）。
+ * 「只有一枚标签」时不给激活项 = 不显示指示块，那枚标签改用 .no-glide 那条兜底样式自己铺底。 */
+const {
+  thumbStyle: glideStyle, thumbVisible: glideOn, remeasure: syncGlide,
+} = useGlideThumb({
+  container: strip,
+  active: () => (tabs.value.length > 1
+    ? strip.value?.querySelector<HTMLElement>('.tab.active') ?? null
+    : null),
+});
 
 const menuFor = ref('');
 const dragKey = ref('');
@@ -85,6 +99,13 @@ function onWheel(ev: WheelEvent) {
   syncScrollState();
 }
 
+/** 托盘被滚动（滚轮 / 两端圆钮 / revealActive）后：刷新按钮显隐，并让指示块重算"可见范围"
+ *  （它被夹在托盘边上时，滚一下就该跟着松开 —— 平时的位置本身不会变，所以这里不产生过渡）。 */
+function onScroll() {
+  syncScrollState();
+  syncGlide();
+}
+
 /** 把激活标签滚进视野：按需滚最小距离（不用 `scrollIntoView`，它会把整页也带着滚）。
  *  可视窗口两端各让开一枚圆钮的宽度，免得激活的那枚正好落在按钮底下。 */
 function revealActive() {
@@ -117,7 +138,8 @@ onUnmounted(() => {
 
 /** 切标签 / 开关标签之后：先让激活的那枚可见，再刷新按钮状态 */
 watch([currentKey, () => tabs.value.length], () => {
-  void nextTick(() => { revealActive(); syncScrollState(); });
+  // 先滚（revealActive 会改 scrollLeft），再量：指示块要落在**滚完之后**的可见范围里
+  void nextTick(() => { revealActive(); syncScrollState(); syncGlide(); });
 });
 
 async function go(key: string) {
@@ -155,6 +177,8 @@ function onDrop(target: string) {
   if (fi < 0 || ti < 0) return;
   const [moved] = list.splice(fi, 1);
   list.splice(ti, 0, moved);
+  // 换序后激活的那枚换了位置：重量一次（量的是布局位置，标签自己还在跑 FLIP 也不影响）
+  void nextTick(syncGlide);
 }
 
 function onContextMenu(key: string, ev: MouseEvent) {
@@ -182,32 +206,42 @@ function onContextMenu(key: string, ev: MouseEvent) {
         @click="scrollStep(-1)"
       ><AppIcon name="chevron-left" :size="13" /></button>
 
-      <nav ref="strip" class="tab-strip" aria-label="打开的论文标签" @scroll="syncScrollState">
-        <RouterLink
-          v-for="t in tabs"
-          :key="t.key"
-          class="tab"
-          :class="{ active: t.key === currentKey }"
-          :to="tabLocation(t)"
-          :title="t.title"
-          draggable="true"
-          @dragstart="onDragStart(t.key, $event)"
-          @dragover.prevent
-          @drop="onDrop(t.key)"
-          @contextmenu="onContextMenu(t.key, $event)"
-        >
-          <AppIcon :name="t.icon" :size="13" />
-          <span class="tab-title truncate">{{ t.title }}</span>
-          <button class="tab-close" title="关闭标签页" @click="onClose(t.key, $event)">
-            <AppIcon name="close" :size="11" />
-          </button>
+      <nav
+        ref="strip" class="tab-strip" :class="{ 'no-glide': !glideOn }"
+        aria-label="打开的论文标签" @scroll="onScroll"
+      >
+        <!-- 滑动高亮：**整个托盘只有这一枚**，激活标签一变就 translateX + width 挪过去。
+             放在标签之前（DOM 顺序在前 = 画在文字底下，不用 z-index 打架）；
+             位置写的是**托盘内容坐标**，所以托盘横滚时它跟着标签一起走。 -->
+        <span v-if="glideOn" class="glide-thumb tab-glide" :style="glideStyle" aria-hidden="true" />
+        <!-- 增删换序走 TransitionGroup：进 = 淡入 + 轻微上移；出 = 淡出并收窄；
+             换序时邻居的位移由 .tab-move 的 transform 过渡接住（见样式）。 -->
+        <TransitionGroup name="tab" @after-leave="syncGlide">
+          <RouterLink
+            v-for="t in tabs"
+            :key="t.key"
+            class="tab"
+            :class="{ active: t.key === currentKey }"
+            :to="tabLocation(t)"
+            :title="t.title"
+            draggable="true"
+            @dragstart="onDragStart(t.key, $event)"
+            @dragover.prevent
+            @drop="onDrop(t.key)"
+            @contextmenu="onContextMenu(t.key, $event)"
+          >
+            <AppIcon :name="t.icon" :size="13" />
+            <span class="tab-title truncate">{{ t.title }}</span>
+            <button class="tab-close" title="关闭标签页" @click="onClose(t.key, $event)">
+              <AppIcon name="close" :size="11" />
+            </button>
 
-          <span v-if="menuFor === t.key" class="tab-menu" @click.stop>
-            <button :disabled="!canCloseAll" @click="closeOtherTabs(t.key); menuFor = ''">关闭其它标签</button>
-            <button @click="closeTab(t.key); menuFor = ''">关闭标签</button>
-          </span>
-        </RouterLink>
-
+            <span v-if="menuFor === t.key" class="tab-menu" @click.stop>
+              <button :disabled="!canCloseAll" @click="closeOtherTabs(t.key); menuFor = ''">关闭其它标签</button>
+              <button @click="closeTab(t.key); menuFor = ''">关闭标签</button>
+            </span>
+          </RouterLink>
+        </TransitionGroup>
       </nav>
 
       <button
@@ -284,6 +318,9 @@ function onContextMenu(key: string, ev: MouseEvent) {
  * 宽度跟着内容走（标签少时不会拉成一根长条），放不下就横向滚；
  * `3px + 32px` 让托盘正好 38px —— 与阅读器里那枚页签开关同高。 */
 .tab-strip {
+  /* 指示块的定位基准（也是它被裁剪 / 夹边的范围）：一枚绝对定位的块住在托盘内容里，
+     托盘横滚时它跟着标签一起走，所以不用在 scroll 里反复重写它的位置。 */
+  position: relative;
   display: flex; align-items: center; gap: 3px;
   flex: 0 1 auto; width: fit-content; max-width: 100%; min-width: 0;
   padding: 3px; border: 0; border-radius: 10px;
@@ -304,19 +341,55 @@ function onContextMenu(key: string, ev: MouseEvent) {
      ascent + descent 高出内容盒，上下缘被切掉，就是用户报的「胶囊把字裁了」。 */
   border-radius: 7px; color: var(--text-dim);
   font-size: calc(13px * var(--ts, 1)); font-weight: 500; line-height: 1.45; white-space: nowrap;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
-/* 没选中**不画底**：托盘本身已经有浅底，再给每枚叠一层只会糊成一片。 */
-.tab:hover { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); text-decoration: none; }
-.tab.active { background: var(--bg-elev); color: var(--accent-text); font-weight: 600; box-shadow: var(--shadow-1); }
+/* 没选中**不画底**：托盘本身已经有浅底，再给每枚叠一层只会糊成一片。
+   悬停 / 按下都只碰 transform 与颜色 —— 位移交给 GPU，托盘不会跟着重排。 */
+.tab:hover { color: var(--text); text-decoration: none; }
+.tab:not(.active):hover { background: color-mix(in srgb, var(--text) 9%, transparent); transform: translateY(-1px); }
+.tab:not(.active):active { transform: translateY(-1px) scale(.97); }
+.tab.active:active { transform: scale(.97); }
+/* 激活项**只改文字**：那枚抬起的白块已经是滑过来的共用指示块（.glide-thumb），
+   这里再铺一层底就会白上叠白、并且让指示块的过渡被盖住。 */
+.tab.active { color: var(--accent-text); font-weight: 600; }
+/* 指示块缺席时（只有一枚标签 / 还没量到位置）才由标签自己铺底 —— 见模板上的 .no-glide。 */
+.tab-strip.no-glide .tab.active { background: var(--bg-elev); box-shadow: var(--shadow-1); }
 .tab-title { max-width: 130px; cursor: default; }
 
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px;
   background: transparent; color: var(--text-faint); cursor: pointer; flex: none;
+  /* 平时压一档透明度：标签条上最该抢眼的是标题，× 是"伸手才用"的东西。
+     它不可点性没有变（仍然常驻、仍然 18px 热区），只是不再一直亮着。 */
+  opacity: .5;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
+.tab:hover .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--bg-pressed); color: var(--text); }
+
+/* 指示块的**几何**（材质与过渡在 base.css 的 .glide-thumb，三处共用一份）：
+   3px = 托盘内边距，32px = 标签高度，7px = 与标签同心的圆角（比托盘小一档）。 */
+.tab-glide { top: 3px; height: 32px; border-radius: 7px; }
+
+/* ---- 增删 / 换序的过渡 ----
+   进：淡入 + 轻微上移缩放；出：淡出并**收窄**（max-width 与左右内边距收回去）。
+   为什么出要收窄：leave 的元素要到动画结束才被摘掉，只做淡出的话，邻居是在被摘掉的那一刻
+   硬跳一格；收窄是从第一帧起就把它占的位置还回去，剩下的标签平滑滑过来。
+   两条都只碰 transform / opacity，另加 max-width 与内边距这一对**只属于离场元素自己**的收缩。 */
+.tab-enter-active,
+.tab-leave-active {
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease),
+    max-width var(--dur) var(--ease), padding var(--dur) var(--ease),
+    background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.tab-enter-from,
+.tab-leave-to { opacity: 0; transform: translateY(5px) scale(.96); }
+.tab-leave-active { overflow: hidden; max-width: 0; padding-left: 0; padding-right: 0; }
+/* 拖拽换序 / 关掉中间那枚：邻居的位移由 TransitionGroup 的 move 类接住（FLIP，只走 transform） */
+.tab-move { transition: transform var(--dur) var(--ease); }
 
 /* 最右的「+」：打开论文库。与托盘同一门语言（圆角方块），但**不铺底**——
    它是动作不是状态，压在浅底托盘旁边再叠一层浅底只会显得像第二枚标签。 */
