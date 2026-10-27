@@ -504,14 +504,17 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                     counters["reasoning_tokens"] += again.reasoning_tokens
                     if len(_empty_blocks(again, a_blocks)) <= len(miss):
                         result = again
-            # 块数不对**不能将就**：数组短一块 = 那一块被并进邻块，读模型按序号配对，
-            # 这一页从那一块之后整页错位（实测第 7 页：B 15 块 / A 16 块）。
-            # 重试也救不回来就**让这一页失败** —— 任务里能看到，重跑一次就好，比静默错位强。
+            # 块数不对**不能将就**：数组短一块 = 那一块被并进邻块；数组短了、或者某块是空串，
+            # 落盘的 translation_md 都会少一块 —— 读模型按序号配对，这一页从那一块之后整页错位
+            # （实测第 7 页：B 交回来 15 块 / A 16 块，末尾「**Residual Dropout**」那块没了）。
+            # 重试也救不回来就**让这一页失败** —— 任务里能看到、重跑一次就好，比静默错位强。
             got_blocks = len(list(getattr(result, "blocks", None) or []))
-            if got_blocks != len(a_blocks):
+            still_empty = _empty_blocks(result, a_blocks)
+            if got_blocks != len(a_blocks) or still_empty:
                 raise ValidationError(
-                    f"第 {page_no} 页：块数对不上（A {len(a_blocks)} 块 / B {got_blocks} 块），"
-                    "拒绝写入错位的译文")
+                    f"第 {page_no} 页：块对不上（A {len(a_blocks)} 块 / B {got_blocks} 块"
+                    + (f"，第 {still_empty} 块是空串" if still_empty else "")
+                    + "），拒绝写入错位的译文")
 
         counters["prompt_tokens"] += result.prompt_tokens
         counters["completion_tokens"] += result.completion_tokens
