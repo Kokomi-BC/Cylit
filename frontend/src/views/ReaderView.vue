@@ -11179,16 +11179,31 @@ function renderMarkdown(text?: string | null) {
    （用户口径 2026-12-27「不需要点击阴影」：那枚 24px 圆钮原来带 --shadow-flyout + backdrop 饱和，
    在托盘边沿处看起来像一枚浮起来的彩色圆片，还压在页签上）。
    现在只剩一个跟托盘同色的实心圆 + 图标，悬浮才上一点底色。 */
+/* 侧栏顶部那两枚**左右指示器**（页签条滚出视野时才出现）：
+   2026-12-27 用户口径「侧栏顶部的左右指示器丢失了毛玻璃效果」—— 上一轮把它们改成了实心
+   `--bg-sunken` + 无阴影，压在玻璃页签条上就是一块「死白/死灰」的塑料片。
+   恢复**与胶囊同一块玻璃**（`--text` 的淡渐变 + 48px 饱和模糊），但**保留"去阴影"**那条口径：
+   24px 的小圆钮再挂一枚 flyout 投影只会脏，玻璃本身就够把它和页签分开。 */
 .side-scroll-btn {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
   width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-dim); cursor: pointer;
-  background: var(--bg-sunken);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--text) 10%, transparent),
+    color-mix(in srgb, var(--text) 6%, transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: none;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.side-scroll-btn:hover { color: var(--accent-text); background: var(--bg-hover); }
+/* hover 只加浓这一层玻璃，不铺实心底 —— 一铺就把毛玻璃盖掉了（与别的玻璃钮同一条口径）。 */
+.side-scroll-btn:hover {
+  color: var(--accent-text);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--text) 16%, transparent),
+    color-mix(in srgb, var(--text) 10%, transparent));
+}
 .side-scroll-btn.left { left: 4px; }
 .side-scroll-btn.right { right: 4px; }
 /* 正文区是**唯一**的滚动容器。

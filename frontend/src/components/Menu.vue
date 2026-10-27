@@ -30,13 +30,17 @@ const props = withDefaults(defineProps<{
   items: MenuItem[];
   /** 触发按钮的无障碍名称（也是 tooltip）。 */
   label?: string;
-  /** 浮层对齐方向。 */
-  align?: 'start' | 'end';
+  /** 浮层对齐方向：
+   *  - `auto`（默认）：从触发按钮的**右下角**往外长（左边缘贴按钮右边），右边放不下才翻到左侧 ——
+   *    用户口径 2026-12-27「更多菜单优先朝着右下角展开（**可以跨越侧栏**）」；
+   *  - `end`：右对齐按钮右边（往左长，老行为）；`start`：左对齐按钮左边。
+   *  三种最后都夹进视口。 */
+  align?: 'start' | 'end' | 'auto';
   /** 优先向上弹出（表格末行）；上方空间不够时会自动改回向下。 */
   up?: boolean;
   /** 触发按钮尺寸：跟随所在工具条的控件高度（sm = 26px，md = 32px）。 */
   size?: 'sm' | 'md';
-}>(), { label: '更多操作', align: 'end', up: false, size: 'sm' });
+}>(), { label: '更多操作', align: 'auto', up: false, size: 'sm' });
 
 const emit = defineEmits<{ (e: 'select', key: string): void }>();
 
@@ -47,7 +51,9 @@ const trigger = ref<HTMLElement | null>(null);
 /** 浮层坐标（fixed，相对视口）。 */
 const pos = ref({ top: 0, left: 0 });
 
-const GAP = 6;
+/* 4px：用户口径 2026-12-27「没有紧挨着更多按钮」—— 6px 加上浮层自己的 5px 内边距，
+   读起来离按钮太远；贴到 4px 才像「从这枚按钮上长出来」。 */
+const GAP = 4;
 const EDGE = 8;
 
 /** 按触发按钮的位置摆浮层：优先请求的方向放不下就翻转，并夹到视口内。 */
@@ -65,7 +71,14 @@ async function place() {
   if (up && above < panelH + GAP) up = false;
   if (!up && below < panelH + GAP && above > below) up = true;
   const top = up ? r.top - GAP - panelH : r.bottom + GAP;
-  const rawLeft = props.align === 'end' ? r.right - panelW : r.left;
+  /* 横向：默认 `auto` = 从按钮**右下角**往外长（左边贴按钮右边）；右边放不下就翻到按钮左侧。
+     `end` / `start` 是老的对齐口径，保留给显式要求的调用方。三者最后都夹进视口。 */
+  let rawLeft: number;
+  if (props.align === 'end') rawLeft = r.right - panelW;
+  else if (props.align === 'start') rawLeft = r.left;
+  else rawLeft = r.right + GAP + panelW > window.innerWidth - EDGE
+    ? r.left - GAP - panelW
+    : r.right + GAP;
   pos.value = {
     top: Math.max(EDGE, Math.min(top, window.innerHeight - panelH - EDGE)),
     left: Math.max(EDGE, Math.min(rawLeft, window.innerWidth - panelW - EDGE)),

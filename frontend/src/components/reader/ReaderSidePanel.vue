@@ -662,10 +662,10 @@ function onMore(key: string, r: FeedRow) {
             >
               <AppIcon name="pip" :size="13" />
             </button>
+            <!-- 不传 `align`：走默认的**右下角**展开，允许跨出侧栏右边（用户口径 2026-12-27）。 -->
             <Menu
               :items="moreItems(r)"
               label="更多"
-              align="end"
               data-item-more
               @select="onMore($event, r)"
             />

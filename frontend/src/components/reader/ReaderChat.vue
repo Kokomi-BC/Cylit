@@ -2294,8 +2294,11 @@ function placeRowMenu() {
      ③ 下方放不下就翻到上边；④ 最后两个方向都夹进视口（`pad` = 离屏幕边的最小距离）。
      旧实现把菜单在这一行上**垂直居中**、再挂到按钮右侧 —— 那是「右侧中部」，不是右下角。 */
   const pad = 8;
-  const gap = 6;
-  let left = a.right - m.width;
+  const gap = 4;
+  /* **右下角**优先：先按「左边缘贴按钮右边」算，右边放不下才翻到按钮左侧
+     （用户口径 2026-12-27「更多菜单优先朝着右下角展开（可以跨越侧栏）」）。 */
+  let left = a.right + gap;
+  if (left + m.width > window.innerWidth - pad) left = a.left - gap - m.width;
   let top = a.bottom + gap;
   if (top + m.height > window.innerHeight - pad) top = a.top - gap - m.height;
   left = Math.max(pad, Math.min(left, window.innerWidth - m.width - pad));
@@ -2331,8 +2334,9 @@ onUnmounted(() => {
 /** 点「⋯」：同一行再点一次收起；换一行则重新算坐标 */
 function toggleRowMenu(id: string, ev: MouseEvent) {
   if (rowMenu.value === id) { rowMenu.value = ''; return; }
-  const btn = ev.currentTarget as HTMLElement | null;
-  rowMenuAnchor = (btn?.closest('.row') as HTMLElement | null) ?? btn;
+  /* 锚点就是**这一枚「⋯」按钮本身**（用户口径 2026-12-27「没有紧挨着更多按钮」）：
+     挂到整行上时，行的右边比按钮宽 3px、行底比按钮低十几像素 —— 菜单看起来就离按钮很远。 */
+  rowMenuAnchor = ev.currentTarget as HTMLElement | null;
   rowMenu.value = id;
   rowMenuStyle.value = {};
   void nextTick(placeRowMenu);
@@ -2403,7 +2407,11 @@ async function runDelete() {
   try {
     await api.post('/agent/conversations/batch-delete', { conversation_ids: job.ids });
     conversations.value = conversations.value.filter(c => !job.ids.includes(c.conversation_id));
-    if (currentId.value && job.ids.includes(currentId.value)) startNew();
+    /* 删完**一律落到一条新对话**（用户口径 2026-12-27「删除对话不跳转到新对话」）：
+       以前只在「删的正是当前打开的那条」时才 startNew，而用户多半是在**列表**上点行的「⋯」删除，
+       那时 currentId 是空的 —— 于是删完停在列表上，看着像点了没反应。
+       删掉最后一条 / 批量删也一样：新对话是空草稿，发第一句才落库（startNew 自己会切到 thread 级）。 */
+    startNew();
     picked.value = [];
     batch.value = false;
     confirming.value = null;
