@@ -16100,3 +16100,44 @@ breaks_a[0] = {start: 'transduction problems such as language m',
 `frontend_check.py` **168/168 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-C3aFsayV.js`）。
 线上 = `d66bf19`，`dist/index.html` sha256 `016c8d5…`，`cylit-api` online、`/health` 200；
 GitHub `43ab059..d66bf19`（此前 500 的三个提交也一起推上去了），`unpushed=0`。
+### 241. 第二百四十一轮：闪烁加一条**细主题色描边** + 对话「⋯」菜单改成**右侧浮层并避让底部**
+
+用户口径（截图两条）：「闪烁加一条细主题色边框」「侧栏对话的更多菜单放在右侧悬浮显示且避让底部」。
+
+## A. 闪烁的描边
+
+三处共用同一档：`box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)`
+（用 inset 阴影而不是 `border`：**盒子尺寸不变**，落点与外接框计算都不受影响）。
+
+- 合并大块 `.flash-block`（`ReaderView`）
+- 整行闪 `.row-pair.flash-a/b::before`（`ReaderPageRows`）—— 注释里原来那句"别再往这层加描边"
+  已按新口径改掉（2026-11 撤掉的是**竖条**，本轮要的是**细边框**）
+- 多行补闪 `.row-pair[data-flash-span]::before`（`ReaderView`）
+
+实测：`getComputedStyle(box).boxShadow = color(srgb .059 .482 .541 / .55) 0px 0px 0px 1px inset`。
+
+## B. 对话「⋯」菜单：右侧浮层 + 避让底部
+
+以前：`position: absolute; top: calc(100% - 4px)`，在行**下方**展开 —— 列表是 `overflow-y:auto`，
+滚到底时最后几条的菜单直接被裁掉 / 盖住下面的行（截图正是这种）。
+
+现在：
+
+1. **Teleport 到 body** + `position: fixed`（`placeRowMenu` 算坐标）—— 跳出列表的滚动裁剪；
+2. 纵向与这一行**居中**，超出视口就顶到 `innerHeight - 菜单高 - 8`；
+3. 横向放在这一行**右侧**（`row.right + 8`），放不下就翻到左侧（侧栏贴屏幕右边也不出界）；
+4. 开着时点外面 / 滚列表 / 改窗口大小都收起（`pointerdown` + `scroll` 捕获 + `resize`）。
+
+顺带修掉一个坑：菜单在 `v-for` 里，**字符串 ref 会变成数组**，`getBoundingClientRect` 直接报错 ——
+改成函数式 ref（`setRowMenuEl`），坐标才真的算得出来（第一版就是因此没生效）。
+
+### 实测（CDP）
+
+```
+常规窗口     锚点在 x=260（⋯ 宽 30）→ 菜单 x=301（在右侧）、y=332（与行居中）、父节点 = BODY
+压到 360px 高 菜单 y=217 高 135 → bottom=352，离底边 8px（正好是设计的 pad），完全在视口内
+```
+
+`frontend_check.py` **168/168 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DQF7INqX.js`）。
+线上 = `c199b19`，`dist/index.html` sha256 `71ab999…`，`cylit-api` online、`/health` 200；
+GitHub `6b77f09..c199b19`，`unpushed=0`。
