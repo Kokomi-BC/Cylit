@@ -15863,3 +15863,51 @@ B: Ashish Vaswani*（Google Brain，avaswani@google.com）、Noam Shazeer*（Goo
 
 线上 = `7abed78`（前端 `716a9df` 那次一起发的），`dist/index.html` sha256 `9222e38…`，
 `cylit-api` online、`/health` 200；生产 `attention-cleanroom` 第 1 页已按新规则重跑（A+B，rows 12 → 11）。
+### 235. 第二百三十五轮：选中页签悬浮不再压灰 + 笔记排序改成**两态滑块**
+
+用户口径（截图）：「侧栏标签点击后发灰的问题」「笔记的切换按钮改为滑块切换按钮」。
+
+## A. 发灰 = 点完鼠标还停在上面，`:hover` 一直生效
+
+`.side-tab:hover { background: var(--bg-hover) }` 与选中态用的是**同一块白底**：白块是滑过来的
+指示块（`.glide-thumb`，z-index 0），页签自身 position:relative、叠在它上面 —— 点完鼠标没移开，
+灰底就压在白块上，看起来"点完变灰了"。实测（CDP）：`active.bg = rgba(0,0,0,0)`、滑块 `w=49` 与
+页签同宽，说明灰是 hover 叠上来的那一层。
+
+改法（与 `TabBar` 早就用的 `.tab:not(.active):hover` 同一口径）：
+
+- `ReaderView`：`.side-tab:hover` → **`.side-tab:not(.active):hover`**。
+- `base.css`：`.seg.has-glide > button.active:hover / .active:hover / .on:hover { background: transparent }`
+  —— 所有滑块驱动的分段控件（工具条胶囊、目录页、设置面板、笔记排序…）选中那枚悬浮也都不再压底。
+
+## B. 笔记排序：一枚圆钮换图标 → 两态分段控件
+
+原来是**一枚** `.multi-btn` 圆钮，点一下在"按修改时间 / 按文章顺序"之间换图标 —— 看不出现在在哪一态、
+也看不出还能切到哪。现在两态并排：
+
+```html
+<div class="seg sq" role="group" aria-label="笔记排序" data-notes-order>
+  <button data-notes-order-time :class="{active: order==='time'}" @click="setOrder('time')"><clock/></button>
+  <button data-notes-order-doc  :class="{active: order==='doc'}"  @click="setOrder('doc')"><sort-doc/></button>
+</div>
+```
+
+`toggleOrder()` → `setOrder(next)`（直接点名，不再靠取反）；持久化仍是 `cyl.notes.order`。
+指示块由 `useSegGlide` 自动挂上（上一轮那套），不需要再写一份。
+
+### 实测（CDP，`?side=notes`）
+
+```
+笔记排序托盘  seg sq has-glide，2 枚按钮；thumb 32px@x=11 == active 32px@x=11，active 背景透明
+点「按文章顺序」 thumb → x=45（与 active 同位置），aria-pressed=true
+点回「按修改时间」 thumb → x=11
+侧栏页签      构建后 CSS 里是 .side-tab[data-v-…]:not(.active):hover（选中那枚不再有 hover 底色）
+```
+
+`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BZewKPlT.js` / `ReaderView-5FZ9k8J0.css`）；
+`frontend_check.py` **168/168 通过、0 失败**。
+
+线上 = `29978a2`，`dist/index.html` sha256 `676f7fb…`，`cylit-api` online、`/health` 200。
+
+> 备注：这次 `git push` 撞上 GitHub 一次 5xx（`The requested URL returned error: 500`），
+> 部署不受影响；补推见下一条提交之后。
