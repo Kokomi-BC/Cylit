@@ -15655,3 +15655,47 @@ golden 随提示词两轮变更重新生成（3566 → 3750 → 3896 → **4090*
 > 而探针那篇论文（`attention-is-all-you-need`）当前首屏 `scrollTop=0`、第一条 display 公式在 y=3405
 > （实测 `katexVisible = 0`）。我把这条被跳过的行为**单独直测**过（见上，剪贴板拿到 `$$…$$`），功能正常。
 > 之前的 168/168 是首屏恰好滚在公式上的那些 run —— 计数会随阅读位置在这两组之间摆动。
+
+### 231. 第二百三十一轮：合并闪烁的判据从「落点相邻」改成「同一个方括号」，相邻两段不再连成一片
+
+用户报「服务器的 2 和 10 为什么是同一段内容」（截图：那一句话里 `…做 QR 分解）[10]。旋转后 `\boldsymbol{\Pi}x`
+均匀分布在单位球面上 [2]`）。
+
+**查证（生产库 `conversation 319ecea3…` 的那条 assistant 消息，`citations_json` 62 条）**：
+
+| ref | row_id | 正文（页 5 的两行原文） |
+| --- | --- | --- |
+| 10 | `p005-02` | Let x ∈ S^{d-1} be a (worst-case) vector … We can generate Π by applying QR decomposition on a random matrix with i.i.d Normal entries. |
+| 2 | `p005-03` | The resulting rotated vector, Π·x, is uniformly distributed on the unit sphere S^{d-1}. As shown in Lemma 1, each coordinate … |
+
+两处**不是同一段**（不同 `pid`、不同 `index`、各自一整段），只是行号相邻（同页 + 差 1）。
+第 229/230 轮那条"落点相邻就自己扩链"的规则把它们连成一条，于是**点 2 和点 10 闪的是同两行、
+滚动落点也都取链头 `p005-02`** —— 从用户视角看就是"两枚标号同一段内容"，分不出谁指哪儿。
+
+**改法（用户选定）**：合并写法的**唯一**来源是模型写在方括号里的号。
+
+- 新增 `frontend/src/utils/citeGroup.ts`（纯函数，单测直接 import 这份源码，不再维护拷贝）：
+  `pickCiteGroup(refs, pool)` = 方括号里有几个号就取几处（编号去重、池子里没有的跳过）；
+  `sortCiteRows` = 按页前缀 + 行号排（滚动落点 / 卡片头取**第一行**）；`citeRowKeyOf` 一并搬过去。
+- `ReaderView`：删掉 `buildCiteChain`（整段落点相邻扩链 + 公式行不做桥那套）与本地 `sortChainRows`，
+  `focusMany`（点击闪）与 `withCiteChain`（速览卡）都改成 `pickCiteGroup` —— 点 `[2]` 只闪 `p005-03`、
+  点 `[10]` 只闪 `p005-02`、点 `[2,10]` 才两段一起闪。提示词早已要求「同一处的材料写在同一个方括号里
+  （没有数量上限）」，所以合并意图不再需要前端去猜。
+- `isFormulaRow` 留着：它现在只负责"整行就是公式的那种行，没有 latex 也认得出那一枚 `.katex-display`"。
+
+**实测（`node .tmpbuild/chain-test.ts`，池子取生产库那条会话的真实 ref→row）**：
+
+```
+PASS 点 [2] → 只有 ref 2（p005-03）        PASS 点 [10] → 只有 ref 10（p005-02）
+PASS 2 与 10 不再闪同一块： [2] → p005-03 / [10] → p005-02
+PASS 点 [2,10] → 两段都在（文档顺序 p005-02 在前）
+PASS 点 [15,16,17] → 3 处（无上限）        PASS 点 [8,9] → 两枚都在
+PASS 点 [15] 不会把 p006-03 带进来          PASS 点 [11]（紧邻 p005-02）只闪自己
+PASS 点 [12,1] → 落点 p005-04（组内最上面那行）
+PASS fig: 合成锚点排到最后                  PASS 池子里没有这个号 → 空（不拿整池铺）
+```
+
+`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DmEOllyS.js`）、`frontend_check.py` **165/165 通过、0 失败**（跳过项同上）。
+线上 = `1bc5c97`，`dist/index.html` sha256 两边同为 `9b6887af…`，`pm2 cylit-api online`；
+GitHub `56d482f..1bc5c97`，`unpushed=0`。
+
