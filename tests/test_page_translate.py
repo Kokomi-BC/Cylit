@@ -616,6 +616,29 @@ def test_transcribe_prompt_keeps_footnote_rule_and_drops_arxiv_stamp():
     assert "原样输出 `---`" in pt.BLOCK_TRANSLATE_SYSTEM
 
 
+def test_empty_block_guard_finds_blocks_that_would_lose_a_sentence():
+    """块模式：原文（剪完页首那截后）还有正文、译文却是空串 → 必须被认出来（否则静默丢句）。
+
+    生产库 attention-cleanroom 第 2 页实测：上一页 carry 走掉了开头 84 字符，B 于是把整块
+    输出成 `""`，而块里还留着「Numerous efforts have since continued …」，中文里那句话就没了。
+    """
+    from backend.services.translation.page_translate import EMPTY_BLOCK_RETRY_NOTE
+    from backend.services.translation.translation_service import _empty_blocks
+
+    class Res:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+    blocks = [{"text": "Numerous efforts have since continued …"}, {"text": "Recurrent models …"}]
+    assert _empty_blocks(Res(["", "循环模型……"]), blocks) == [0]
+    # 剪完什么都不剩的块（text 空）**不算**丢句：那是"整块已被上一页译完"的合法写法
+    assert _empty_blocks(Res(["", ""]), [{"text": "  "}, {"text": "x"}]) == [1]
+    # 缺块（数组比清单短）同样算
+    assert _empty_blocks(Res([]), blocks) == [0, 1]
+    assert _empty_blocks(Res(["a", "b"]), blocks) == []
+    assert "空字符串" in EMPTY_BLOCK_RETRY_NOTE and "彻底消失" in EMPTY_BLOCK_RETRY_NOTE
+
+
 def test_edge_facts_tell_model_what_to_do_when_lookahead_cannot_help():
     """【下一页开头】里看不到后半截（图/表/公式）时，要明确"停在断处"，别写「……」也别硬凑。"""
     from backend.services.translation.page_translate import render_edge_facts

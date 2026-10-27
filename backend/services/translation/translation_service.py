@@ -39,7 +39,8 @@ from backend.services.task.scheduler import (
 )
 from backend.services.translation.brief import generate_brief
 from backend.services.translation.page_translate import (
-    BLOCK_HEAD_NOTE, CONTEXT_MAX_CHARS, PATH_VERSION, PageStore, a_page_lookahead,
+    BLOCK_HEAD_NOTE, CONTEXT_MAX_CHARS, EMPTY_BLOCK_RETRY_NOTE, PATH_VERSION, PageStore,
+    a_page_lookahead,
     build_outline_skeleton, build_page_payload, build_path_payload,
     build_stable_prefix, call_page, drop_declared_fragment, effective_max_tokens,
     format_block_list, history_context, list_pages, load_page_image,
@@ -80,6 +81,22 @@ def save_terms(paper_id: str, terms: list[dict]) -> int:
                 "source_term": t["source_term"], "target_term": t["target_term"],
                 "note": t.get("note")} for t in terms if t.get("source_term")]
     return writer.write_terms(payload)
+
+
+def _empty_blocks(result, a_blocks: list[dict]) -> list[int]:
+    """块模式里**原文有正文、译文却是空串**的块号（会被下游当成"整块已译完"而丢句）。
+
+    `a_blocks` 是送进 prompt 的那份（第 1 块已剪掉上一页借走的那截），所以"剪完还有没有正文"
+    与模型看到的完全一致 —— 判据不靠猜：原文非空 + 译文空 = 丢句。
+    """
+    got = list(getattr(result, "blocks", None) or [])
+    out: list[int] = []
+    for i, src in enumerate(a_blocks):
+        if not str(src.get("text") or "").strip():
+            continue
+        if i >= len(got) or not str(got[i]).strip():
+            out.append(i)
+    return out
 
 
 #: 每一路对应的任务类型。`None` = 融合模式（同一次调用产出两侧，保留作**对照臂 / 回滚**：
@@ -427,9 +444,13 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                                         path=path, src_tail=coord_tail)
         image = load_page_image(paper_id, page_no)
 
-        def invoke(mt: int):
-            """两条 prompt 路径共用一个调用点：重试阶梯必须走**同一份** prompt / 页图。"""
-            return call_page(provider, prompt, image, max_tokens=mt,
+        def invoke(mt: int, note: str = ""):
+            """两条 prompt 路径共用一个调用点：重试阶梯必须走**同一份** prompt / 页图。
+
+            `note` 只用于"块模式空块重试"（`EMPTY_BLOCK_RETRY_NOTE`）：追加在**页面级尾部**，
+            稳定前缀一个字不动，所以缓存照旧命中。
+            """
+            return call_page(provider, prompt + note, image, max_tokens=mt,
                              path=("b" if block_mode else path), block_mode=block_mode)
 
         try:
@@ -443,6 +464,27 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             max_tokens_current = escalated
             counters["escalations"] += 1
             result = invoke(escalated)
+
+        # 块模式的"空块"防线：第 1 块的开头那截已被上一页译完时，模型很容易顺手把
+        # **整块**写成空字符串（生产库 attention-cleanroom 第 2 页实测丢过一整句
+        # 「Numerous efforts have since continued …」）。只在"原文剪完还有正文、
+        # 译文却是空"时重试一次，取缺得少的那个结果 —— 不重试就等于静默丢句。
+        if block_mode:
+            miss = _empty_blocks(result, a_blocks)
+            if miss:
+                log.warning("第 %d 页：第 %s 块原文非空但译文为空（会丢句），追加说明重试一次",
+                            page_no, miss)
+                try:
+                    again = invoke(max_tokens_current, EMPTY_BLOCK_RETRY_NOTE)
+                except Exception as exc:  # noqa: BLE001 —— 重试失败就用第一版，别把整页判死
+                    log.warning("第 %d 页空块重试失败：%s", page_no, str(exc)[:160])
+                else:
+                    counters["empty_block_retries"] = counters.get("empty_block_retries", 0) + 1
+                    counters["prompt_tokens"] += again.prompt_tokens
+                    counters["completion_tokens"] += again.completion_tokens
+                    counters["reasoning_tokens"] += again.reasoning_tokens
+                    if len(_empty_blocks(again, a_blocks)) <= len(miss):
+                        result = again
 
         counters["prompt_tokens"] += result.prompt_tokens
         counters["completion_tokens"] += result.completion_tokens
