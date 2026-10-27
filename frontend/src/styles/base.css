@@ -798,6 +798,15 @@ table.data.fixed { table-layout: fixed; }
    一条 top/bottom 把两种尺寸都覆盖了，不必两处各记一组数字。 */
 .seg-glide { top: 3px; bottom: 3px; border-radius: var(--radius-ctl); }
 
+/* ---------------- 脚注区（论文式的紧凑小字号） ----------------
+ * 谁加这个类：`ReaderPageRows` 里 `---`（脚注分隔线）之后、下一个标题之前的行（`.row-pair.is-footnote`）。
+ * 为什么这样：脚注在论文里就是分隔线之下的小一号字；以前按正文排，读者翻页时脚注比正文还抢眼
+ * （用户口径 2026-12-27「脚注最好使用特殊类似论文的紧凑小字号，避免抢走正文的阅读注意力」）。
+ * 写在 base.css 而不是组件里：`.rr-body` 是 `ReaderRow` 的节点，组件 scoped 样式够不到它。
+ * 两侧（原文 / 译文）同时收，否则对照时一侧大一侧小。 */
+.row-pair.is-footnote .rr-body { font-size: .84em; line-height: 1.55; color: var(--text-dim); }
+.row-pair.is-footnote .rr-body p { margin: 0 0 .25em; }
+
 /* ---------------- Markdown 渲染 ---------------- */
 /* 排版规则（与"折行/间距"有关的两条，2026-10-07）：
  *   `line-break: strict` —— 中文**禁则处理**：不让 `。，、）】」` 这类标点跑到行首
@@ -814,9 +823,9 @@ table.data.fixed { table-layout: fixed; }
  * 于是转录里那条 `---` 在阅读器里等于**没有**（用户口径 2026-12-27「前端没有显示分割线」）。
  * 宽度按印刷脚注线的习惯只占一小截（左对齐），一眼能看出"这是脚注区的分隔线"。 */
 .md hr {
-  border: 0; height: 1px; margin: 12px 0;
-  width: 33%; min-width: 96px; max-width: 220px;
-  background: var(--divider);
+  border: 0; height: 1px; margin: 14px 0;
+  width: 42%; min-width: 140px; max-width: 280px;
+  background: color-mix(in srgb, var(--text) 38%, transparent);
 }
 .md ul, .md ol { margin: .35em 0; padding-left: 1.4em; }
 .md blockquote { margin: .5em 0; padding: .2em .8em; border-left: 3px solid var(--border-strong); color: var(--text-dim); }

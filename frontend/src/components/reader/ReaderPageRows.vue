@@ -101,6 +101,28 @@ const rowClass = (id: string) => ({
   current: id === props.currentRowId,
   [flashKind.value]: id === props.flashRowId,
 });
+/**
+ * **脚注行**：页内 `---`（转录取的脚注分隔线）之后、直到下一个标题之前的那些行。
+ *
+ * 为什么要有这个概念：论文的脚注（`*Equal contribution…` / `†Work performed…` / 会议行）
+ * 在版面里是**分隔线之下的小字号**，而我们的转录把它按正文排 —— 于是脚注比正文还抢眼
+ * （用户口径 2026-12-27「脚注最好使用特殊类似论文的紧凑小字号，避免抢走正文的阅读注意力」）。
+ * 判据只用转录里那条 `---`（模型只在脚注分隔线处写它），不靠"以星号开头"这种启发式。
+ */
+const footnoteRows = computed(() => {
+  const out = new Set<string>();
+  for (const g of props.groups) {
+    let after = false;
+    for (const r of g.rows ?? []) {
+      const text = String(r.original ?? '').trim();
+      if (/^-{3,}$/.test(text)) { after = true; continue; }
+      if (!after) continue;
+      if (r.type === 'heading' || r.type === 'formula') { after = false; continue; }
+      out.add(r.id);
+    }
+  }
+  return out;
+});
 /** 整页闪：目标引用没有行锚点（插图 / 表格 / 纯页码引用）时，亮的是整页 */
 const pageClass = (page: number) => ({ [flashKind.value]: props.flashRowId === `page:${page}` });
 /* 页头原来的「结构对齐」徽章**已按用户要求删除**：它只是在说"模型给的块数与解析器不一致、
@@ -277,7 +299,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             :data-row-id="r.id"
             :data-row-type="r.type"
             class="row-pair"
-            :class="rowClass(r.id)"
+            :class="[rowClass(r.id), { 'is-footnote': footnoteRows.has(r.id) }]"
           >
             <!-- 左栏是页图时，插图仍要出现在**译文列**的图注上方（页图缩放后往往看不清） -->
             <figure
@@ -311,7 +333,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
           :data-row-id="r.id"
           :data-row-type="r.type"
           class="row-pair"
-          :class="{ 'two-col': textCompare, wide: isWide(r), ...rowClass(r.id) }"
+          :class="{ 'two-col': textCompare, wide: isWide(r), 'is-footnote': footnoteRows.has(r.id), ...rowClass(r.id) }"
         >
           <!-- 插图：按论文的排法——**图在上、图注在下**，通栏居中（对照时跨两列） -->
           <figure
