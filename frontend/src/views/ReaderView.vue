@@ -11014,7 +11014,10 @@ function renderMarkdown(text?: string | null) {
 /* 悬浮走主题色（用户口径 2026-12-03：鼠标停在侧栏页签上时文字要变主题色，不是正文黑）。
    选中态是 --accent-text，悬浮用深一档的 --accent-hover —— 两者都离得开正文色，
    又不会让人误以为已经选中了这一页。 */
-.side-tab:hover { background: var(--bg-hover); color: var(--accent-hover); }
+/* 悬浮只在**没选中**的页签上铺底：选中那枚的白块是滑过来的指示块（.glide-thumb），
+   再叠一层 --bg-hover 就把它压成灰的 —— 用户口径 2026-12-27「侧栏标签点击后发灰」，
+   因为点完鼠标还停在上面，:hover 一直生效。与 TabBar 的 .tab:not(.active):hover 同一口径。 */
+.side-tab:not(.active):hover { background: var(--bg-hover); color: var(--accent-hover); }
 /* 汉字**只在当前页显示**（用户口径：其余页签移除汉字、只留图标，整条胶囊因此紧凑一截）；
    当前页那枚**横向放宽 + 文字缩小一号** —— 图标在上、文字在下时，窄胶囊会把内容挤成一小团，
    加宽并收小字号才像个"选中态"。 */

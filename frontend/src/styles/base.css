@@ -789,6 +789,10 @@ table.data.fixed { table-layout: fixed; }
 .seg.has-glide > button.active,
 .seg.has-glide > .active,
 .seg.has-glide > .on { background: transparent; box-shadow: none; }
+/* 选中那枚**悬浮也不铺底**：白块是滑过来的指示块，再叠一层 --bg-hover 就把它压成灰的
+   （与 `.side-tab:not(.active):hover`、`.tab:not(.active):hover` 同一口径）。 */
+.seg.has-glide > button.active:hover, .seg.has-glide > .active:hover,
+.seg.has-glide > .on:hover { background: transparent; }
 /* 几何：上下各让 3px（= .seg 自己的 padding）就正好对上按钮盒 —— **不写死 height**：
    常规胶囊里那枚 .seg 是 28px 高（按钮 22px），设置面板里才是 var(--control-h)，
    一条 top/bottom 把两种尺寸都覆盖了，不必两处各记一组数字。 */

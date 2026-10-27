@@ -411,9 +411,11 @@ type NotesOrder = 'time' | 'doc';
 const ORDER_KEY = 'cyl.notes.order';
 const order = ref<NotesOrder>(localStorage.getItem(ORDER_KEY) === 'doc' ? 'doc' : 'time');
 /** 点一下切换：时间 ↔ 文章顺序。图标由模板按 `order` 换（钟 / 三行），不弹菜单。 */
-function toggleOrder() {
-  order.value = order.value === 'time' ? 'doc' : 'time';
-  localStorage.setItem(ORDER_KEY, order.value);
+/** 切排序（两态分段控件直接点名，不再靠"取反"）。 */
+function setOrder(next: NotesOrder) {
+  if (order.value === next) return;
+  order.value = next;
+  localStorage.setItem(ORDER_KEY, next);
 }
 /** 文章顺序：先按页，再按锚点 id 里的自然序号（`p004-02` 这种靠 `numeric` 比较）；没有页的排最后。 */
 function docOrder(x: FeedRow, y: FeedRow): number {
@@ -549,19 +551,30 @@ function onMore(key: string, r: FeedRow) {
           <!-- 条数（纯文本）+ 一枚**排序图标按钮**（用户口径 2026-11-21 二轮：不要二级菜单，
                点一下就在两种口径间切换，图标本身跟着变：钟 = 按修改时间、三行 = 按文章顺序）。
                选择记在本地（`cyl.notes.order`），与上一版同一个键。 -->
-          <button
-            class="multi-btn"
-            :title="order === 'time' ? '按修改时间（点击改为按文章顺序）' : '按文章顺序（点击改为按修改时间）'"
-            :aria-label="order === 'time' ? '按修改时间，点击切换为按文章顺序' : '按文章顺序，点击切换为按修改时间'"
-            :aria-pressed="order === 'doc'"
-            data-notes-order
-            @click="toggleOrder"
-          >
-            <!-- 按时间 = **时钟**（用户口径 2026-12-11）：原来的 `sort-time` 是上下双箭头，
-                 看着像"排序"，不像"时间"。按文章顺序那侧仍用 sort-doc。
-                 2026-12-14 用户口径：时钟要**线稿**，实心那版太重（`clock-fill` → `clock`）。 -->
-            <AppIcon :name="order === 'time' ? 'clock' : 'sort-doc-fill'" :size="15" />
-          </button>
+          <!-- 排序 = **两枚图标的分段控件**（用户口径 2026-12-27「笔记的切换按钮改为滑块切换按钮」）：
+               以前是一枚圆钮在两态之间换图标 —— 看不出"现在在哪一态、还能切到哪"。
+               现在两态并排摆出来，选中态由滑过去的那枚白块表达（`useSegGlide` 自动挂）。
+               图标：钟 = 按修改时间、三行 = 按文章顺序（2026-12-11 口径，时钟取线稿那版）。 -->
+          <div class="seg sq" role="group" aria-label="笔记排序" data-notes-order>
+            <button
+              :class="{ active: order === 'time' }"
+              :aria-pressed="order === 'time'"
+              title="按修改时间"
+              data-notes-order-time
+              @click="setOrder('time')"
+            >
+              <AppIcon name="clock" :size="14" />
+            </button>
+            <button
+              :class="{ active: order === 'doc' }"
+              :aria-pressed="order === 'doc'"
+              title="按文章顺序"
+              data-notes-order-doc
+              @click="setOrder('doc')"
+            >
+              <AppIcon name="sort-doc-fill" :size="14" />
+            </button>
+          </div>
           <span class="spacer" />
           <!-- 多选（用户口径 2026-11-20；2026-11-21 换形态）：与对话页**同一枚圆钮、同一个图标键、同一段交互**
                （点开进入批量态 → 卡片行首出现勾选框 → 顶部「全选 / 已选 N / 取消 / 删除」）。
