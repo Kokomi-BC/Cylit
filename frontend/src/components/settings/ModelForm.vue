@@ -387,9 +387,26 @@ function pickName(name: string): void {
   namePopOpen.value = false;
 }
 
+/**
+ * 在「显示名称」里**打字就自动弹候选**（用户口径：输入模型名称时自动弹出候选框）。
+ *
+ * 两个细节：
+ * - 输入框的文本就是筛选词（`nameQuery` 跟着它走），所以打「思考」就直接收窄到那两条；
+ * - **一条都匹配不上就不弹 / 收起**：用户常要手打一个全新的名字，那种时候弹一张
+ *   "没有匹配的已有名称"的空面板，只会挡在输入框下面碍事。
+ * - 不抢焦点：这条路是"边打字边看"，焦点必须留在输入框里（点箭头那条才聚焦搜索框）。
+ */
+function syncNamePopWhileTyping(): void {
+  if (!String(form.provider || '').trim()) return;      // 还没定提供方：没有可记忆的清单
+  nameQuery.value = form.name;
+  if (!filteredNames.value.length) { namePopOpen.value = false; return; }
+  placeNamePop();
+}
+
 /** 手打过就置 touched：之后换 Model ID 不再自动改写它（原来的 @input 语义）。 */
 function onNameInput(): void {
   nameTouched.value = true;
+  syncNamePopWhileTyping();
 }
 
 const modelCandidates = computed<string[]>(() => {
@@ -521,17 +538,19 @@ function toggleNamePop(): void {
 function onDocPointer(ev: MouseEvent): void {
   const t = ev.target as HTMLElement | null;
   if (!t || typeof t.closest !== 'function') return;
-  /* 两个下拉各收各的：点在 A 里只影响 A，不要把 B 一起收掉（mousedown 早于 click） */
-  if (!t.closest('.model-pop') && !t.closest('.model-field')) modelPopOpen.value = false;
-  if (!t.closest('.name-pop') && !t.closest('.name-field')) namePopOpen.value = false;
+  /* 两个下拉各收各的：点在 A 里只影响 A，不要把 B 一起收掉（mousedown 早于 click）。
+     ⚠️ 认的是 **data-* 属性**不是类名：两个下拉的类名是同一套（.model-pop，用户口径"样式完全一致"），
+     再用类名判断就分不出点的是哪一个，会互相收掉。 */
+  if (!t.closest('.model-field') && !t.closest('[data-model-pop]')) modelPopOpen.value = false;
+  if (!t.closest('.name-field') && !t.closest('[data-name-pop]')) namePopOpen.value = false;
 }
 
 /** 视口变化/滚动时收起下拉；但**在列表内部滚动**不算（否则一滚就没了）。 */
 function onViewport(ev?: Event): void {
   const t = ev?.target as HTMLElement | null;
   const inside = (sel: string): boolean => !!(t && typeof t.closest === 'function' && t.closest(sel));
-  if (modelPopOpen.value && !inside('.model-pop')) modelPopOpen.value = false;
-  if (namePopOpen.value && !inside('.name-pop')) namePopOpen.value = false;
+  if (modelPopOpen.value && !inside('[data-model-pop]')) modelPopOpen.value = false;
+  if (namePopOpen.value && !inside('[data-name-pop]')) namePopOpen.value = false;
 }
 
 onMounted(() => {
@@ -1512,7 +1531,8 @@ const advSummary = computed<string>(() => {
             <div class="mf-input" ref="nameFieldEl">
               <input
                 v-model="form.name" placeholder="界面上显示的名字" data-model-name
-                @input="onNameInput"
+                autocomplete="off" spellcheck="false"
+                @input="onNameInput" @focus="syncNamePopWhileTyping"
                 @keydown.esc="namePopOpen = false"
               />
               <button type="button" class="mf-caret" title="选择已有名称" data-name-pop-toggle @click="toggleNamePop">
@@ -1590,32 +1610,30 @@ const advSummary = computed<string>(() => {
 
           <!-- 已有名称下拉：定位方式同 .model-pop（fixed），但状态独立 —— 两个下拉互不干扰 -->
           <!-- Esc 也挂在这里：焦点 Tab 到选项上时，输入框那个 @keydown.esc 已经收不到了 -->
-          <div v-if="namePopOpen" class="name-pop" :style="namePopStyle" data-name-pop @keydown.esc="namePopOpen = false">
-            <div class="name-pop-head">
-              <span>已有名称</span>
-              <span class="spacer"></span>
-              <span class="tiny faint" data-name-pop-provider>{{ namesOfProvider.length }} 条</span>
-            </div>
-            <div class="name-search">
+          <!-- 与上面那个 Model ID 下拉**同一套类**（.model-pop / .mp-search / .mp-list / .mp-opt）：
+               用户口径「和底部的下拉框样式完全一致」—— 不写第二份样式，要改就一起改。
+               区分两个下拉靠 data-name-pop / .name-field，不靠类名（类名一合并它们会互相收掉）。 -->
+          <div v-if="namePopOpen" class="model-pop" :style="namePopStyle" data-name-pop @keydown.esc="namePopOpen = false">
+            <div class="mp-search">
               <AppIcon name="search" :size="13" />
               <input
                 ref="nameSearchEl" v-model="nameQuery" type="text" spellcheck="false"
-                placeholder="搜索这家提供方用过的名字" data-name-search
+                placeholder="搜索已有名称" data-name-search
                 @keydown.esc.stop="namePopOpen = false"
               />
             </div>
-            <div class="name-list">
+            <div class="mp-list">
               <button
-                v-for="n in filteredNames" :key="n.name" type="button" class="name-opt"
-                :class="{ on: (form.name || '').trim() === n.name }" data-name-option
-                @click="pickName(n.name)"
+                v-for="n in filteredNames" :key="n.name" type="button"
+                class="mp-opt" :class="{ on: (form.name || '').trim() === n.name }"
+                data-name-option @click="pickName(n.name)"
               >
-                <span class="truncate">{{ n.name }}</span>
-                <span class="name-opt-count">{{ n.count }} 个配置</span>
+                <span class="mp-radio" aria-hidden="true"></span>
+                <span class="mp-id truncate">{{ n.name }}</span>
+                <span class="mp-count">{{ n.count }} 个配置</span>
               </button>
-              <p class="hint-line" v-if="!filteredNames.length" data-name-pop-empty>
+              <p class="mp-empty" v-if="!filteredNames.length" data-name-pop-empty>
                 {{ namesOfProvider.length ? '没有匹配的已有名称' : '这家提供方还没有同名的配置' }}
-                —— 直接手打一个新名字就行。
               </p>
             </div>
           </div>
@@ -2034,47 +2052,11 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .mp-id { flex: 1 1 auto; min-width: 0; }
 .mp-empty { margin: 0; padding: 8px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
 
-/* 「显示名称」的已有名称下拉：值与 .model-pop 同源，改一处要同时看另一处。
-   刻意不共用类名 —— onDocPointer / onViewport 靠 .model-pop / .name-pop 区分是哪个下拉，
-   合并成一个类名会让两个下拉互相收掉。差别只有一处：这里是**自己滚**（没有 .mp-list 那层容器）。 */
-.name-pop {
-  position: fixed; z-index: 260; max-width: calc(100vw - 24px);
-  display: flex; flex-direction: column; min-height: 0; padding: 6px;
-  max-height: calc(var(--control-h) * 8); overflow: hidden;
-  border: 1px solid var(--border-strong); border-radius: var(--r-md);
-  background: var(--bg-elev); box-shadow: var(--shadow-2);
-}
-/* 搜索框不跟着列表滚：它是"再看一眼别的名字"的入口，跟着滚走等于每次都要滚回去 */
-.name-search {
-  flex: none; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
-  padding: 0 8px; height: calc(var(--control-h) - 8px);
-  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-sunken);
-}
-.name-search input {
-  flex: 1 1 auto; min-width: 0; border: 0; background: transparent; box-shadow: none;
-  font-size: calc(12.5px * var(--ts, 1)); color: var(--text);
-}
-.name-search input:focus { outline: none; box-shadow: none; }
-.name-search svg { color: var(--text-faint); flex: none; }
-/* 选项列表自己滚（与 .mp-list 同一个理由：定高 + 内部滚动） */
-.name-list { flex: 1 1 auto; min-height: 0; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
-.name-pop-head {
-  flex: none; padding: 2px 8px 6px;
-  font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; color: var(--text-faint);
-}
-/* 行高 / hover / 选中态与 .mp-opt 同值 */
-.name-opt {
-  display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px;
-  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text);
-  font-size: calc(13px * var(--ts, 1)); text-align: left; cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.name-opt:hover { background: var(--bg-hover); }
-.name-opt.on { background: var(--accent-soft); color: var(--accent-text); }
-.name-opt:focus-visible { outline: none; box-shadow: var(--ring); }
-.name-opt .truncate { flex: 1 1 auto; min-width: 0; }
-.name-opt-count { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
-.name-opt.on .name-opt-count { color: inherit; }
+/* 「显示名称」的已有名称下拉**复用 .model-pop 那一整套**（用户口径「和底部的下拉框样式完全一致」）：
+   容器、搜索行、选项行、hover/选中态一律不另写，要改就一起改。
+   所以这里只剩一条它自己需要的东西：右侧「N 个配置」的淡色标注。 */
+.mp-count { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.mp-opt.on .mp-count { color: inherit; }
 /* ④ 任务用途 */
 .types { height: auto; flex-wrap: wrap; gap: 2px; }
 .types button { height: calc(var(--control-h) - 6px); padding: 0 11px; font-size: calc(12.5px * var(--ts, 1)); }

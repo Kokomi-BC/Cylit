@@ -15421,3 +15421,40 @@ steps     ['选择提供方','连接与认证','选择模型','4 参数与计费
 ```
 
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-D8H9CVAE.js`）、`frontend_check.py` **168/168**。
+
+### 227. 第二百二十七轮：「已有名称」下拉去掉标题行、样式改成与 Model ID 下拉**完全一致**
+
+上一轮那张自己写样式的 `.name-pop`（自带「已有名称」标题 + 「N 条」计数 + 自己的搜索框/选项行样式）
+在用户看来是"多长出来的一张脸"。用户口径：「移除已有模型几个字，然后和底部的下拉框样式完全一致。」
+
+改法：**不写第二份样式，直接复用 Model ID 那一整套类** ——
+容器 `.model-pop`、搜索行 `.mp-search`、列表 `.mp-list`、选项 `.mp-opt` + `.mp-radio`、
+空态 `.mp-empty`。标题行（「已有名称」+「N 条」）整块删掉；只在选项右侧保留一枚
+`.mp-count`（「N 个配置」），这是这张清单独有的信息，样式取淡色小字。
+原来那一整段 `.name-pop / .name-pop-head / .name-search / .name-list / .name-opt*` 的 CSS 全部删除。
+
+⚠️ 一处必要的连带改动：`onDocPointer` / `onViewport` 原来靠**类名**区分两个下拉
+（`.model-pop` vs `.name-pop`）。类名合并之后那样判断就分不出点的是哪一个（会互相收掉），
+所以改成认 **`[data-model-pop]` / `[data-name-pop]` 属性**（属性本来就在，探针也用它们）。
+
+### 实测（有头 Chrome + CDP，同一页把两张下拉的 computed style 对着比）
+
+```
+               名称下拉（data-name-pop）             Model ID 下拉（data-model-pop）
+容器 padding     6px                                  6px
+容器 radius      22px                                 22px
+容器 background  rgb(255,255,255)                     rgb(255,255,255)
+容器 shadow      rgba(13,32,38,.06) 0 2px 6px …        同值
+搜索行 height    32px                                 32px
+搜索行背景        rgb(247,249,250)                     rgb(247,249,250)
+搜索行 radius    14px                                 14px
+搜索行 input     12.5px / rgb(23,27,29)               同值
+选项行 height    36px                                 36px
+选项行 padding   0 8px                                0 8px
+选项字号/圆角/间距 13px / 14px / 8px                   同值
+单选圈           14×14                                14×14
+标题行           hasHead = false                      （本来就没有）
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BMK8D7_Y.js`）、`frontend_check.py` **168/168**
+（本地 8710 中途挂过一次 —— `/health` 返 000、无 LISTENING，重启后重跑通过）。
