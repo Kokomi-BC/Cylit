@@ -14,7 +14,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
 import { useTabActive } from '@/stores/tabHost';
 import { clearDocSelection, lockFloatSelection, releaseFloatSelection } from '@/utils/floatDrag';
-import type { CSSProperties } from 'vue';
+import type { CSSProperties, Ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, assetUrl, downloadBlob, sseUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
@@ -27,6 +27,7 @@ import type {
 } from '@/api/types';
 import { askConfirm } from '@/stores/confirm';
 import { useEventStream, type StreamStatus } from '@/composables/useEventStream';
+import { useGlideThumb } from '@/composables/useGlideThumb';
 // 解析完成后要**强制**重取解读（`useUnderstanding` 是按论文缓存的整包，TTL 30s）
 import { loadUnderstanding, understandingEntry } from '@/composables/useUnderstanding';
 import { useHotkeys } from '@/composables/useHotkeys';
@@ -129,6 +130,10 @@ const figures = ref<FigureItem[]>([]);
  *
  * 内容从**阅读器自己的 payload** 里取（行 / 表格 / 插图），所以三类都能出 ——
  * 引用里带的 snippet 只有一两句，且没有图表的地址，当兜底就够了。 */
+/** 一条引用在阅读器里的落点（对话正文那枚按钮的 `data-pool` 里的一项）。
+ *  与 `ReaderChat` 里那份结构逐字相同 —— 本轮不动 `api/types.ts`，所以两边各写一次。 */
+type CitePoolItem = { ref: number; row: string; block: string; page: number; latex: string };
+
 type CitePeekAsk = {
   anchor: { x: number; y: number; w: number; h: number };
   page?: number | null;
@@ -141,6 +146,10 @@ type CitePeekAsk = {
   latex?: string | null;
   /** 引用覆盖的整段行 id（逗号分隔）：有它才能把「标题 + 下面的正文」一起画出来 */
   rows?: string | null;
+  /** 被点的那几个编号（方括号组里可能有好几个） */
+  refs?: number[] | null;
+  /** 整条消息的引用池：**有它就说明 rows 要在这里现算**（见 `withCiteChain`） */
+  pool?: CitePoolItem[] | null;
 };
 
 /** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
@@ -163,6 +172,9 @@ let peekHideTimer = 0;
 /** 悬浮多久才弹（与「参考文献浮层」同一条口径：停一下才弹，扫过去不打扰） */
 const PEEK_SHOW_MS = 320;
 const PEEK_HIDE_MS = 240;
+/** 速览卡里"链"来的 rows 的**防御性**上限：纯粹防病态数据（整页几百行）把卡片撑爆，
+ *  **不是产品限额** —— 同一页连续多少行被引用，就画多少行（用户口径：合并没有数量上限）。 */
+const PEEK_SPAN_CHAIN_MAX = 60;
 
 function loosePeekCard(): PeekCard | null {
   return peekCards.find((c) => !c.pinned) ?? null;
@@ -181,7 +193,49 @@ function peekSig(ask: CitePeekAsk): string {
   return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? '', String(ask.rows || '')].join('|');
 }
 
+/**
+ * 速览卡的 ask → 补上"这条链覆盖哪几行"。
+ *
+ * 为什么在阅读器这边算：与点击**必须是同一枚纯函数**（`buildCiteChain`），否则会出现
+ * 「正文闪了三行、卡片只给一行」（用户口径 2026-12-11）。而且只有这里认得出公式行 ——
+ * 对话正文那边连 DOM 都看不见。
+ *
+ * 公式行**可以**进卡片的 rows：卡片只是把内容画出来，没有"闪"那种"同一块地方"的问题；
+ * 但它的**成员判定**仍然按 `isFormulaRow` 走，与点击完全同一套（点它 → 卡片也只画它自己）。
+ */
+function withCiteChain(ask: CitePeekAsk): CitePeekAsk {
+  const pool = Array.isArray(ask.pool) ? ask.pool : [];
+  if (!pool.length) return ask;                      // 老消息 / 解读标号：走原来的单行口径
+  const refs = (Array.isArray(ask.refs) ? ask.refs : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  /* 没给编号时用"池子里落在这一行上的那一条"顶上 —— 至少还能按它扩出整条链，
+     而不是把一整条链缩成一行（点击那边一定是带编号的，这条只为兜底）。 */
+  const picked = refs.length
+    ? refs
+    : pool.filter((p) => p.row && p.row === ask.rowId).map((p) => p.ref);
+  if (!picked.length) return ask;
+  const chain = buildCiteChain(picked, pool, (item) => isFormulaRow(item.row));
+  /* 一个都没在池子里找到：保持原样（退回"这一行"），**不要**拿整个池子去铺卡片 ——
+     池子是这条消息的全部引用，那会把几十行无关内容画进卡片。 */
+  if (!chain.length) return ask;
+  const ordered = sortChainRows(chain);
+  const head = ordered[0];
+  const rows = ordered.map((c) => c.row).filter(Boolean);
+  return {
+    ...ask,
+    /* 卡片头（标题 / 锚点 / 定位）取**链头**，不是鼠标下这一枚：相邻两枚按钮共用一条链时，
+       卡片内容不该随鼠标落在链的哪一枚上而变来变去。 */
+    page: head.page || ask.page,
+    rowId: head.row || ask.rowId || null,
+    blockId: head.block || ask.blockId || null,
+    latex: head.latex || ask.latex || null,
+    rows: rows.length ? rows.join(',') : null,
+  };
+}
+
 function onCitePeekAsk(ask: CitePeekAsk): void {
+  ask = withCiteChain(ask);
   clearPeekTimers();
   /* 已经有同一处的卡（钉住的也算）：不再开第二张 —— 否则先钉住一张、再悬浮同一处，
      会叠出两张一模一样的内容（用户口径 2026-12-04）。 */
@@ -300,8 +354,13 @@ function peekViewOf(card: PeekCard) {
   if (spanRows.length === 1 && String(spanRows[0]?.type ?? '') === 'heading') {
     const all = allRows.value;
     const i0 = all.findIndex((r) => r.id === spanRows[0].id);
+    /* 这一条兜底补几行：**标题 + 下面的正文**，老口径是 3 行（标题 + 两行）。
+       但 rows 要是**从链来的**（`withCiteChain` 现算的），就绝不能拿这个 3 去裁它 ——
+       用户口径：合并/闪烁链**同一页没有数量上限**，链给了几行就画几行。
+       于是链来的那一份只留一个**防御性**上限（病态数据别把卡片撑爆），不是产品限额。 */
+    const spanCap = Array.isArray(ask.pool) && ask.pool.length ? PEEK_SPAN_CHAIN_MAX : 3;
     if (i0 >= 0) {
-      for (let k = i0 + 1; k < all.length && spanRows.length < 3; k += 1) {
+      for (let k = i0 + 1; k < all.length && spanRows.length < spanCap; k += 1) {
         const nx = all[k];
         if (!nx || nx.page !== spanRows[0].page) break;
         if (String(nx.type ?? '') === 'heading') break;
@@ -1510,6 +1569,51 @@ const SIDE_TABS = computed<Array<{
 /* 侧栏页签**一行到底、不换行**（用户口径）：放不下就左右滚，见 `.side-tabs` 的样式。
    这两个小工具负责"滚得动"和"切过去看得见"。 */
 const railTabsEl = ref<HTMLElement | null>(null);
+
+/* ---- 滑动指示块（侧栏页签 / 常规胶囊 / 设置面板两处，共用同一枚实现） ----
+ * 材质与过渡在 `styles/base.css` 的 `.glide-thumb`，量位置 / 夹边 / 重量时机在
+ * `composables/useGlideThumb`（顶部论文标签条用的也是同一份）—— 这里只负责
+ * ① 绑容器 ② 给几何（顶部 / 高度 / 圆角，见样式里的 `.side-glide` / `.seg-glide`）。
+ * 只动 transform 与 width：指示块是一枚绝对定位的块，切页签 / 切视图时**正文一个像素都不动**
+ * （用户口径：只要指示器的滑块，页面 / 内容一律不做动画）。 */
+const {
+  thumbStyle: tabGlideStyle, thumbVisible: tabGlideOn,
+} = useGlideThumb({
+  container: railTabsEl,
+  active: () => railTabsEl.value?.querySelector<HTMLElement>('.side-tab.active') ?? null,
+});
+
+/** 生成一枚**函数 ref**：把容器绑到对应的 ref 上。
+ *  为什么不用字符串 ref：设置面板里那两个 `.seg` 是 `CapPanel` 的**插槽内容**，
+ *  "这个 ref 记在谁的实例上"取决于子组件的渲染实例；函数 ref 闭包在本组件里，
+ *  谁的实例都不影响，也不会因为面板换一种挂法就悄悄失效。
+ *  ⚠️ 每处都**先建成常量**再给模板：模板里现造箭头函数，每次渲染都是新身份，
+ *  Vue 会当成"换了一个 ref"→ 先置 null 再回填，容器观察者跟着反复解绑重绑（白量一遍）。 */
+function glideBox(box: Ref<HTMLElement | null>) {
+  return (el: unknown): void => { box.value = (el as HTMLElement | null) ?? null; };
+}
+
+/** 常规胶囊里「原文 / 译文 / 对照」那一枚 `.seg`（容器一出现就量，见组件的 watch(container)） */
+const capSegEl = ref<HTMLElement | null>(null);
+const bindCapSeg = glideBox(capSegEl);
+const { thumbStyle: capSegGlideStyle, thumbVisible: capSegGlideOn } = useGlideThumb({
+  container: capSegEl,
+  active: () => capSegEl.value?.querySelector<HTMLElement>('button.active') ?? null,
+});
+/** 设置面板里的「视图」（只在批注模式下出现：那时胶囊里没有这一行，面板补上） */
+const panelViewSegEl = ref<HTMLElement | null>(null);
+const bindPanelViewSeg = glideBox(panelViewSegEl);
+const { thumbStyle: panelViewGlideStyle, thumbVisible: panelViewGlideOn } = useGlideThumb({
+  container: panelViewSegEl,
+  active: () => panelViewSegEl.value?.querySelector<HTMLElement>('button.active') ?? null,
+});
+/** 设置面板里的「文字列侧」（只在页图旁有文字列时出现） */
+const panelSideSegEl = ref<HTMLElement | null>(null);
+const bindPanelSideSeg = glideBox(panelSideSegEl);
+const { thumbStyle: panelSideGlideStyle, thumbVisible: panelSideGlideOn } = useGlideThumb({
+  container: panelSideSegEl,
+  active: () => panelSideSegEl.value?.querySelector<HTMLElement>('button.active') ?? null,
+});
 
 /** 鼠标滚轮：横向滚动容器默认只吃水平轴（触控板/Shift+滚轮），普通鼠标滚轮会去滚页面 —— 转成横向。
  *  这里用 `behavior: 'instant'`：容器上开了 CSS 的 `scroll-behavior: smooth`，滚轮要跟手、不能补间。 */
@@ -3213,10 +3317,13 @@ function flashFormulaNode(...nodes: HTMLElement[]): void {
 }
 
 /** 把某个节点停在**阅读线**上（行与公式共用同一套坐标换算） */
-function scrollNodeToLine(el: HTMLElement, node: HTMLElement, smooth: boolean): void {
+function scrollNodeToLine(el: HTMLElement, node: HTMLElement, smooth: boolean, drop = 0): void {
   const base = el.getBoundingClientRect().top - el.scrollTop;
   const top = node.getBoundingClientRect().top - base;
-  el.scrollTo({ top: Math.max(0, top - readingLine() + 2), behavior: smooth ? 'smooth' : 'auto' });
+  /* `drop`：落点再往**下**让这么多像素（scrollTop 少给 → 内容更靠下）。
+     合并引用（`focusMany`）用它，好让"这条链的最上面那一行"稳稳落在阅读线以下、
+     不被顶部工具条压住 —— 单条落点（`focusRow`）不传，行为与从前逐像素一致。 */
+  el.scrollTo({ top: Math.max(0, top - readingLine() + 2 - drop), behavior: smooth ? 'smooth' : 'auto' });
 }
 
 /**
@@ -3329,35 +3436,181 @@ async function focusRow(
   if (save) saveProgressDebounced();
 }
 
+/* ---- 相邻链：**纯函数**（吃数据、吐数据，不碰 DOM、不碰 Vue 状态） ----
+ * 为什么整段挪到阅读器这边（用户口径 2026-12-…「13 和 14 是同一块地方闪烁」）：
+ * 链的成员判定要多知道一件事 —— **这一行是不是"整行就是一坨公式"**。
+ * 那种行在行号上照样与下一行相邻（生产库那条会话里 ref 13 落在 p005-05，整行就是
+ * `C(f_X,b):=min…` 那条显示公式；ref 14 落在紧跟的 p005-06 正文段），于是旧的"相邻链"
+ * 把 p005-04 + p005-05 + p005-06 连成一条 —— 点 13 和点 14 闪的是同一块地方，
+ * 而 14 还会把页面往下带一点（滚动落到了另一行）。
+ * 公式行的正确语义（用户已经定过「公式单独闪」）：**不参与链、不做桥**，点它只闪它自己。
+ * 这一条判定要看那一行里到底画了什么（`.katex-display` + 去掉公式后的可见文本），
+ * 只有阅读器这边有 DOM 与行数据，所以链的判定一起搬过来（`isFormulaRow` 由调用方注入，
+ * 于是这三个函数本身仍是纯函数，可以整段拎出来单测）。 */
+
+/** 行 id 拆「页前缀 + 行号」：`p006-01` → (`p006-`, 1)。判"段落上相邻"只靠这两段。
+ *  `row-` 前缀先归一（与 `rowAnchorId` 同一条规则）：公式 / 表格类引用给的是 `row-p006-03`，
+ *  不归一就跟同页的 `p006-04` 认不成邻。 */
+function citeRowKeyOf(id?: string | null): { prefix: string; num: number } | null {
+  const m = /^(.*?)(\d+)$/.exec(String(id || '').replace(/^row-/, ''));
+  return m ? { prefix: m[1], num: Number(m[2]) } : null;
+}
+
 /**
- * 一次闪**多处**（正文里点一枚引用标号 → 它那条「段落上相邻」的引用链，见
- * ReaderChat 的 `buildAdjacentChains`；方括号合并出来的多目标也走这里）。
+ * 点一组编号 → 该**一起闪 / 一起显示**的那几处（相邻链）。
+ *
+ * 三条口径（用户要求）：
+ * - 判据是**落点**相邻，不是标号相邻：同页（页前缀相同）+ 行号差 1 才连一条边，边串起来
+ *   就是一条链（3-4-5 传递成一组）；方括号只是排版上的合并（`[3,7]` 的两行若相隔很远，
+ *   点过去只该闪 3 那条链和 7 那条链，不该把中间十几行一起点亮）。
+ * - 只在本轮**真实被引用的行**之间连边：没被引用的邻行不参与，否则点一枚会把旁边无关的
+ *   段落一起点亮（"连坐"用户明确否掉了）。
+ * - **公式行不参与、也不做桥**：它自己单独成链；换句话讲 `p005-04` 与 `p005-06` 中间隔着
+ *   一条公式行时，两行差 2，谁也连不上谁（这正是用户看到"13/14 闪同一块"的那条链断掉的地方）。
+ * - **没有数量上限**：同一页连续多少条被引用，就整条连下去（用户口径：合并/闪烁不该有上限，
+ *   上限交给提示词去约束写法，前端不许自己吃掉更长的一条）。
+ */
+function buildCiteChain(
+  refs: number[],
+  pool: CitePoolItem[],
+  isFormulaRow: (item: CitePoolItem) => boolean,
+): CitePoolItem[] {
+  const byRef = new Map<number, CitePoolItem>();
+  for (const item of pool) if (!byRef.has(item.ref)) byRef.set(item.ref, item);
+  /* 能参与连边的行：有行号、且不是公式行。公式行干脆不进这张表 —— 它既不能当成员
+     （不与别人合并），也不能当桥。 */
+  const lanes = new Map<string, Array<{ item: CitePoolItem; num: number }>>();
+  for (const item of pool) {
+    const key = citeRowKeyOf(item.row);
+    if (!key) continue;
+    if (isFormulaRow(item)) continue;
+    const lane = lanes.get(key.prefix) ?? [];
+    lane.push({ item, num: key.num });
+    lanes.set(key.prefix, lane);
+  }
+  for (const lane of lanes.values()) lane.sort((a, b) => a.num - b.num);
+
+  const out: CitePoolItem[] = [];
+  const seen = new Set<number>();
+  const push = (item: CitePoolItem) => {
+    if (seen.has(item.ref)) return;
+    seen.add(item.ref);
+    out.push(item);
+  };
+  for (const ref of Array.isArray(refs) ? refs : []) {
+    const self = byRef.get(Number(ref));
+    if (!self) continue;
+    push(self);                                   // 点的那一处永远在里面（也排在最前：滚动落点跟着它）
+    if (isFormulaRow(self)) continue;             // 公式行只闪自己：不往两边扩、也不替别人做桥
+    const key = citeRowKeyOf(self.row);
+    const lane = key ? lanes.get(key.prefix) : undefined;
+    if (!lane) continue;
+    const at = lane.findIndex((e) => e.item.ref === self.ref);
+    if (at < 0) continue;
+    // 行号差 1 才接上，断了就停（链式：3-4-5 连成一条，与再往外的 7 之间差 2 就断开）
+    for (let i = at - 1; i >= 0 && lane[i + 1].num - lane[i].num === 1; i -= 1) push(lane[i].item);
+    for (let i = at + 1; i < lane.length && lane[i].num - lane[i - 1].num === 1; i += 1) push(lane[i].item);
+  }
+  return out;
+}
+
+/** 链按论文顺序（页前缀 → 行号）排：速览卡是当一整段读的（标题在上、正文在下），
+ *  顺序错读起来就是跳的。认不出行号的（`fig:p…` 合成锚点、只有块 id 的）一律排到最后 ——
+ *  `mapSpanId` 认不出会丢掉，全丢光时它自己退回锚点那一行。 */
+function sortChainRows(items: CitePoolItem[]): CitePoolItem[] {
+  /* `fig:p<页>:n<图号>` 是我们自己拼的合成锚点（见 ReaderChat.citationAnchor），不是正文行 id：
+     给它排序键只会让它按"图号数字"挤到段落行前面去，所以一律当没有序。 */
+  const keyed = items.map((item, i) => ({
+    item, i, key: /^fig:/.test(item.row) ? null : citeRowKeyOf(item.row),
+  }));
+  keyed.sort((a, b) => {
+    if (a.key && b.key) {
+      // 页前缀直接比字符串：`p006-` / `p007-` 是补零的，字典序与页序一致
+      if (a.key.prefix !== b.key.prefix) return a.key.prefix < b.key.prefix ? -1 : 1;
+      if (a.key.num !== b.key.num) return a.key.num - b.key.num;
+      return a.i - b.i;
+    }
+    if (a.key) return -1;
+    if (b.key) return 1;
+    return a.i - b.i;
+  });
+  return keyed.map((e) => e.item);
+}
+
+/* ---- 公式行：整行只有一条显示公式的那种行 ----
+ * 用户口径：那几行在正文里"是公式"，点它只闪那一枚公式（与「公式单独闪」一致）。 */
+
+/** 「整行就是一坨公式」的阈值：**去掉公式之后**还剩多少个可见字符。
+ *  40 是量出来的：`p005-05` 去掉公式只剩 0 个字，而真正的正文行（p005-06）去掉公式
+ *  还有九十几字 —— 中间空得很大，取整十就好，不必精调。 */
+const FORMULA_ROW_TEXT_MAX = 40;
+
+/** 合并闪（`focusMany`）的落点比阅读线再往**下**让多少像素。
+ *  为什么不让到线上：落点是"这条链最上面那一行"，正好压在阅读线上时，顶部工具条 / 悬浮胶囊
+ *  会盖掉那一行的一半；往下让 8px（约半个字高）就整条链都在线下了。 */
+const CHAIN_SCROLL_DROP = 8;
+
+/** 这一行**是不是"整行就是一坨公式"**。判据两条，缺一不可：
+ *  ① 行内有 `.katex-display`（**显示**公式；行内 `$x$` 到处都是，光看有没有公式会把
+ *     正文行全判成公式行）；
+ *  ② 去掉公式之后剩下的可见文本很短（见 `FORMULA_ROW_TEXT_MAX`）。
+ *  查不到这一行（那一页还没渲染出来）时当正文行：宁可不合并，也不要漏闪。 */
+function isFormulaRow(id: string): boolean {
+  const rowId = rowAnchorId(String(id || ''));
+  if (!rowId) return false;
+  const el = scroller.value?.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(rowId)}"]`);
+  if (!el || !el.querySelector('.katex-display')) return false;
+  /* 克隆一份再抠公式：直接量 `textContent` 会把 KaTeX 的 annotation / 近似重复的
+     文本节点都算进去（那本来就是"公式"本身，不是正文）。 */
+  const clone = el.cloneNode(true) as HTMLElement;
+  for (const node of Array.from(clone.querySelectorAll('.katex-display, .katex'))) node.remove();
+  return String(clone.textContent || '').replace(/\s+/g, '').length <= FORMULA_ROW_TEXT_MAX;
+}
+
+/**
+ * 一次闪**多处**（正文里点一枚引用标号 → 它那条「落点相邻」的链；方括号合并出来的多目标
+ * 也走这里）。链的算法在 `buildCiteChain`（纯函数），这里只负责"落到 DOM 上闪"。
+ *
+ * 参数只有两样：被点的**编号** + 这条消息的**整个引用池**。正文那边不再算链 ——
+ * 它看不见 DOM，认不出公式行（这正是"13 和 14 闪同一块"的根因）。
  *
  * 三条口径（用户要求）：
  * - 落点只跟**第一条**走：滚动只发生一次，镜头不会从一处拽到另一处（那是"挨个点"的老毛病）；
- * - 能认出那一枚 KaTeX 的（公式类引用）**各自闪自己那一枚** —— 同一行里两条公式才不会糊成"整行闪"；
- * - 只剩行可落的，收成一个 id 列表挂 `data-flash-span`（`paintFlashSpanIds`，一套 CSS 多行同时亮；
- *   相邻行那一层 `::before` 自带 `inset: -3px -6px`，视觉上本来就接成一条 —— 不要另造"合并块"）；
+ * - 能认出那一枚 KaTeX 的（公式类引用）**各自闪自己那一枚** —— 同一行里两条公式才不会糊成
+ *   "整行闪"；整行就是公式的那种行没有 latex 也能认出 `.katex-display`，同样只闪那一枚；
+ * - 只剩行可落的，收成一个 id 列表挂 `data-flash-span`（`paintFlashSpanIds`，一套 CSS 多行
+ *   同时亮；相邻行那一层 `::before` 自带 `inset: -3px -6px`，视觉上本来就接成一条）；
  *   只带页码的历史引用（插图 / 表格）落到那一页的**首行**，与 `focusPage` 同一口径 ——
  *   整页亮一片正是用户反复抱怨的那件事。
  *
+ * 两处都**没有数量上限**：链有多长就闪多长（上限只由"这一页被引用了哪几行"决定）。
  * 摘除统一在 1.6s 后，与行闪 / 单枚公式闪同一节奏。
  */
-async function focusMany(
-  targets: Array<{ block?: string; row?: string; page?: number; latex?: string }>,
-) {
-  const list = Array.isArray(targets)
-    ? targets.filter((t) => t && (t.row || t.block || t.page || t.latex))
-    : [];
+async function focusMany(payload: { refs?: number[]; pool?: CitePoolItem[] }) {
+  const pool = (Array.isArray(payload?.pool) ? payload.pool : [])
+    .filter((t) => t && (t.row || t.block || t.page || t.latex));
+  const refs = (Array.isArray(payload?.refs) ? payload.refs : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  /* 先算链（同步）。没有编号可点时（兜底路径给的是"只有它自己一项"的池子）就把池子里的
+     每一处各自闪一次 —— 「各自闪自己」不需要另一条代码路径。
+     ⚠️ 有编号却一个都没在池子里找到时**什么都不闪**，绝不退回"闪整个池子"：
+     池子是这条消息**全部**引用（几十条），那等于整页乱亮。 */
+  const chain = pool.length ? buildCiteChain(refs, pool, (item) => isFormulaRow(item.row)) : [];
+  const list = chain.length ? chain : (refs.length ? [] : pool);
   if (!list.length) return;
-  // 先把每条目标解析成"哪一行 / 哪一页"（同步，不碰 DOM），落点与闪烁都基于这一份
-  const spots = list.map((t) => {
-    const hit = resolveRefId(String(t.row || t.block || ''), t.page);
+  /* 顺序 = **文档顺序**（`sortChainRows`）：滚动落点与目录高亮都取"这条链最上面那一行"。
+     用户口径：「页面跳转以最顶部的为主而不是最底下的，避免页面遮挡顶部内容」——
+     以前落点跟着**被点的那一条**走，点链尾时整条链的上几行会跑到阅读线以上（甚至被顶部
+     工具条压住）。只有一条目标时排序是空操作，行为与从前一致。 */
+  const ordered = sortChainRows(list);
+  // 把每一处解析成"哪一行 / 哪一页"（同步，不碰 DOM 的落点计算）
+  const spots = ordered.map((t) => {
+    const hit = resolveRefId(String(t.row || t.block || ''), t.page || undefined);
     return { ...hit, latex: String(t.latex || '') };
   });
   const head = spots[0];
-  /* 当前行只跟第一条（与 focusRow 一致：认到行才改）。合并组的几处通常就在同一段里，
-     但即便跨段，目录高亮也该停在**点进去的那一处**上。 */
+  /* 当前行只跟第一条（= 链头，与滚动落点同一处：镜头停在哪，目录就亮哪）。 */
   if (head.known) currentRowId.value = head.id;
   mobilePane.value = '';
   await nextTick();
@@ -3371,12 +3624,21 @@ async function focusMany(
     /* 行内 / 页内认出那枚 KaTeX（门槛在 findFormula 里：签名太短不做匹配）。
        `rowLessLatex` 只对"无行可落"的块有值，与 focusRow 那条支路同一个来源。 */
     const latex = s.latex || s.rowLessLatex;
-    const formulaNode = latex && node ? findFormula(node, latex) : null;
+    let formulaNode = latex && node ? findFormula(node, latex) : null;
+    /* 整行就是公式的那种行（`isFormulaRow`）：没有 latex 也认得出那一枚显示公式 ——
+       直接闪它，别退化成整行闪（用户口径：公式单独闪）。 */
+    if (!formulaNode && node && s.known && isFormulaRow(s.id)) {
+      formulaNode = node.querySelector<HTMLElement>('.katex-display');
+    }
     if (!scrolled && el) {
       const to = formulaNode || node;
-      if (to) { scrollNodeToLine(el, to, true); scrolled = true; }
+      /* +8px：让这条链从阅读线**下面一点**开始（见 scrollNodeToLine 的 drop）。 */
+      if (to) { scrollNodeToLine(el, to, true, CHAIN_SCROLL_DROP); scrolled = true; }
     }
     if (formulaNode) { formulas.push(formulaNode); continue; }
+    /* 同一行的两面（ref 8 = 英文块、ref 9 = 它的中文译文）**都闪**：它们是同一份证据，
+       用户口径是"允许两侧都闪"，重复引用交给提示词去约束（后端 CITING 已加一条
+       「同一处内容只引一条」）—— 前端不再按语言收窄。 */
     if (s.known) { rowIds.add(s.id); continue; }
     // 没有行也没有公式可精确落：退到那一页的首行（focusPage 同一条兜底）
     const firstRow = allRows.value.find((r) => r.page === s.page);
@@ -3398,6 +3660,7 @@ async function focusMany(
   }
   saveProgressDebounced();
 }
+
 
 /**
  * 这条锚点上挂的高亮是不是**公式** → 它的 LaTeX（否则空串）。
@@ -8580,7 +8843,10 @@ function renderMarkdown(text?: string | null) {
           </template>
 
           <div v-if="!inkOn" class="cap-group">
-            <div class="seg">
+            <!-- 滑动指示块（与侧栏页签、设置面板共用 base.css 的 .glide-thumb）：
+                 选中项不再自己铺白底，白底 + 一档投影由滑过来的这一枚表达。 -->
+            <div class="seg has-glide" :ref="bindCapSeg">
+              <span v-if="capSegGlideOn" class="glide-thumb seg-glide" :style="capSegGlideStyle" aria-hidden="true" />
               <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
               <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
               <button :class="{ active: viewMode === 'bilingual' }" @click="setViewMode('bilingual')">对照</button>
@@ -8780,7 +9046,8 @@ function renderMarkdown(text?: string | null) {
                常规模式下胶囊里已经有 原文/译文/对照，这里再放一份就是重复（用户口径 2026-10-17）。 -->
           <div v-if="inkOn" class="cap-row">
             <span class="cap-row-label">视图</span>
-            <div class="seg" title="视图">
+            <div class="seg has-glide" title="视图" :ref="bindPanelViewSeg">
+              <span v-if="panelViewGlideOn" class="glide-thumb seg-glide" :style="panelViewGlideStyle" aria-hidden="true" />
               <button :class="{ active: viewMode === 'original' }" @click="setViewMode('original')">原文</button>
               <button :class="{ active: viewMode === 'translation' }" @click="setViewMode('translation')">译文</button>
               <button :class="{ active: viewMode === 'bilingual' }" @click="setViewMode('bilingual')">对照</button>
@@ -8831,7 +9098,8 @@ function renderMarkdown(text?: string | null) {
 
           <div v-if="pageLeft" class="cap-row">
             <span class="cap-row-label">文字列侧</span>
-            <div class="seg" title="页图旁的文字列">
+            <div class="seg has-glide" title="页图旁的文字列" :ref="bindPanelSideSeg">
+              <span v-if="panelSideGlideOn" class="glide-thumb seg-glide" :style="panelSideGlideStyle" aria-hidden="true" />
               <button :class="{ active: pageSide === 'zh' }" @click="setPageSide('zh')">译文</button>
               <button :class="{ active: pageSide === 'en' }" @click="setPageSide('en')">原文</button>
             </div>
@@ -8903,6 +9171,10 @@ function renderMarkdown(text?: string | null) {
               <AppIcon name="chevron-left" :size="13" />
             </button>
             <div ref="railTabsEl" class="side-tabs" @scroll="syncTabsScroll" @wheel="onSideTabsWheel">
+              <!-- 滑动指示块：**整条托盘只有这一枚**，当前页签一变就 translateX + width 滑过去。
+                   放在页签之前（DOM 顺序在前 = 画在文字底下，不用 z-index 打架）；位置写的是
+                   **托盘内容坐标**，所以托盘横滚（overflow-x:auto）时它跟着页签一起走。 -->
+              <span v-if="tabGlideOn" class="glide-thumb side-glide" :style="tabGlideStyle" aria-hidden="true" />
               <button
                 v-for="t in SIDE_TABS"
                 :key="t.k"
@@ -10253,6 +10525,28 @@ function renderMarkdown(text?: string | null) {
 .reader-capsule .cap-group .seg button:not(.active):hover { color: var(--accent-hover); }
 .reader-capsule .cap-group .btn:not(.icon):not(.primary):not(.tool-on):hover:not(:disabled) { color: var(--accent-hover); }
 .reader-capsule .cap-group .seg button { height: 22px; padding: 0 10px; font-size: calc(12px * var(--ts, 1)); }
+
+/* ---- 挂了滑动指示块的 .seg（常规胶囊 + 设置面板两处） ----
+ * 放在上面那条胶囊规则**之后**：两者权重相同（4 个类 + 1 个元素，再加本组件的 scope 属性），
+ * 谁在后面谁赢 —— 所以"选中项不铺白底"这条必须写在它后面。
+ *
+ * 为什么选中项要**中和掉白底 + 阴影**：抬起来的那一枚已经是滑过来的共用指示块了，
+ * 按钮自己再铺一层就是白上叠白，而且它的过渡会把指示块的位移盖住（切视图时看不到滑块在走）。
+ * 只中和带 `.has-glide` 的容器，全局 `.seg` 一个字不动。 */
+.seg.has-glide { position: relative; }
+.seg.has-glide > button { position: relative; z-index: 1; }
+.seg.has-glide > button.active { background: transparent; box-shadow: none; }
+
+/* ⚠️ **胶囊里那一枚不中和**（`.reader-capsule .cap-group .seg button.active` 保留自己的白底 + 阴影）：
+ * ① 视觉上完全没有重复 —— 指示块是一枚和按钮**等宽等高**的白块，指示块 z-index 0、按钮 z-index 1，
+ *    静止时它正好被按钮那枚白底盖住；只有在两枚按钮**之间**滑过的那一瞬才露出来，那就是滑块本身；
+ * ② 那条"选中项是白 pill + 有阴影"是前台自检（`frontend_check.py` 的「视图胶囊三层」）盯着的
+ *    计算样式，中和掉会让那一条断言失败。 */
+
+/* 几何：上下各让 3px（= .seg 自己的 padding）就正好对上按钮盒 —— **不写死 height**，
+   因为常规胶囊里那枚 .seg 被改成 28px 高（按钮 22px），设置面板里才是 var(--control-h)；
+   一条 top/bottom 把两种尺寸都覆盖了，不必两处各记一组数字。 */
+.seg-glide { top: 3px; bottom: 3px; border-radius: var(--radius-ctl); }
 .reader-capsule .cap-group .btn:not(.icon) { height: 28px; font-size: calc(12px * var(--ts, 1)); }
 .reader-capsule .cap-group .badge { height: 20px; }
 /* 「Aa」：字号 + 页图缩放合成一个入口（用户口径：缩放和字号合并），
@@ -10806,6 +11100,9 @@ function renderMarkdown(text?: string | null) {
 }
 .toc-bar .seg { flex: none; }
 .side-tabs {
+  /* position: relative —— 滑动指示块是这一条的**内容**，必须跟着页签一起横滚，
+     所以定位基准只能是它自己（挂到外层的 .side-tabs-wrap 上就会固定在视野里、不跟着滚）。 */
+  position: relative;
   display: flex; align-items: center; gap: 2px;   /* 图标之间更紧凑（用户口径） */
   height: var(--cap-h); padding: 3px;
   /* 与 base.css 的 `.seg`、顶栏标签条**同一门语言、同一组颜色**：三层、**无描边** ——
@@ -10837,8 +11134,14 @@ function renderMarkdown(text?: string | null) {
    加宽并收小字号才像个"选中态"。 */
 .side-tab.active {
   padding: 0 14px;
-  background: var(--bg-elev); color: var(--accent-text); box-shadow: var(--shadow-1);
+  /* 选中态**只改文字**：那枚抬起的白块已经是滑过来的共用指示块（.glide-thumb，
+     见模板里那枚 .side-glide）；这里再铺一层底就是白上叠白，指示块的过渡也会被盖住
+     （与 TabBar 的 .tab.active 同一条口径）。 */
+  color: var(--accent-text);
 }
+/* 指示块的**几何**（材质与过渡在 base.css 的 .glide-thumb，四处共用一份）：
+   3px = 托盘内边距，32px = 页签高度，999px = 与页签同一门语言的全圆角。 */
+.side-glide { top: 3px; height: 32px; border-radius: 999px; }
 .side-label { display: none; font-size: calc(10.5px * var(--ts, 1)); line-height: 1; }
 .side-tab.active .side-label { display: block; font-weight: 600; }
 /* 角标挪到**右上角**（绝对定位）：页签是「图标 +（只在当前页才有的）文字」，
@@ -10915,6 +11218,7 @@ function renderMarkdown(text?: string | null) {
   background: color-mix(in srgb, var(--accent) 11%, transparent);
   animation: row-flash-span 1.5s ease-out forwards;
 }
+
 @keyframes row-flash-span {
   0% { opacity: .95; }
   60% { opacity: .6; }

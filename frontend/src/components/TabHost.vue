@@ -15,7 +15,9 @@
  *   每个视图拿到的是**自己标签**的那份 location（只有激活的那个会被路由变化刷新）；
  * · **可见性**：宿主 `provide(TAB_ACTIVE)`，视图据此摘掉页面级监听、停掉阅读计时（见 `useTabActive`）。
  */
-import { computed, defineComponent, h, onBeforeUnmount, provide, ref, watch, type Component } from 'vue';
+import {
+  computed, defineComponent, h, nextTick, onBeforeUnmount, provide, ref, watch, type Component,
+} from 'vue';
 import {
   routeLocationKey, useRoute, useRouter,
   type RouteLocationNormalizedLoaded, type RouteLocationRaw,
@@ -100,7 +102,12 @@ watch(
   },
 );
 
-/** 真正渲染一个标签的那棵视图树（`provide` 只在 per-view 组件作用域里才成立） */
+/* 切标签**只切显示**，不给页面做进入动画（用户口径 2026-12-11：「我指的是指示器的滑块动画，
+ *  而不是页面的动画」）。整棵阅读器淡入 / 位移会让人以为"页面又加载了一次"，
+ *  而这个宿主的全部理由恰恰是"永不卸载、切回来是一帧"—— 两种手感是冲突的。
+ *  指示器那一枚滑块在标签条上（components/TabBar.vue），与内容无关。 */
+
+/** 真正渲染一个标签的那棵视图树（provide 只在 per-view 组件作用域里才成立） */
 const TabView = defineComponent({
   props: {
     loc: { type: Object, required: true },
