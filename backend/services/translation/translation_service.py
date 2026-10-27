@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.core.config import get_settings
 from backend.core.errors import ValidationError
@@ -141,7 +141,8 @@ BLOCK_WAIT_SECONDS = 600.0
 
 
 def await_a_page(a_store: PageStore, paper_id: str, page: int, *,
-                 timeout: float = BLOCK_WAIT_SECONDS, required: bool) -> dict | None:
+                 timeout: float = BLOCK_WAIT_SECONDS, required: bool,
+                 fresh_after: datetime | None = None) -> dict | None:
     """等 A 路把第 `page` 页写到盘上（块模式：B 的输入来自 A，**A 必须领先**）。
 
     - `required=True`：拿不到就抛 —— 那是本页的**块清单**，没有它这一页无从下手；
@@ -160,9 +161,21 @@ def await_a_page(a_store: PageStore, paper_id: str, page: int, *,
         a_store.reload()
         payload = a_store.page(page)
         if payload and str(payload.get("original_md") or "").strip():
-            if waited:
-                log.info("块模式：A 路第 %d 页已就绪（等了 %.1fs）", page, time.time() - started)
-            return payload
+            # 盘上那一页是**上一轮**的（两路同时 retranslate 时必然遇到，见 run_path_task 的
+            # `fresh_after`）：拿它当块清单，中英就整页错一行（实测 p1 的 EN/ZH 差一行）。
+            # 宁可继续等 A 重写完 —— 等到超时才算失败，也不会静默错位。
+            if fresh_after is not None:
+                stamp = str(payload.get("updated_at") or "")
+                try:
+                    stale = bool(stamp) and datetime.fromisoformat(stamp) < fresh_after
+                except ValueError:
+                    stale = False
+                if stale:
+                    payload = None
+            if payload:
+                if waited:
+                    log.info("块模式：A 路第 %d 页已就绪（等了 %.1fs）", page, time.time() - started)
+                return payload
         if time.time() >= deadline or _active_path_task(paper_id, "a") is None:
             break
         if not waited:
@@ -217,6 +230,11 @@ def run_path_task(ctx, path: str | None = None) -> dict:
     # （见 `BLOCK_TRANSLATE_SYSTEM`）。显式传 `blocks_from_a=False` 才退回旧的两路契约。
     # A 路缺页会**等**（`await_a_page`），等不到才让那一页失败 —— 不静默降级成另一种契约。
     block_mode = path == "b" and params.get("blocks_from_a", True) is not False
+    # **两路同时 retranslate 的竞态**：B 起步时盘上还躺着上一轮的 A 产物，拿它当块清单
+    # 会让整页错一行（实测 attention-cleanroom 第 1 页：EN 的 *Equal contribution… 对上了
+    # ZH 的「† 在 Google Brain…」）。所以 force 模式下只认**本任务开始之后**写下的那一页。
+    fresh_after = (datetime.now(timezone.utc).replace(tzinfo=None)
+                   if (force and block_mode) else None)
     # 块模式等 A 路产物的上限（秒）：任务参数可覆盖，默认见 `BLOCK_WAIT_SECONDS`。
     wait_s = float(params.get("block_wait_seconds") or BLOCK_WAIT_SECONDS)
 
@@ -394,7 +412,8 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             # **块模式**：B 的输入全部来自 A 路 —— 先等它把本页写到盘上，再等**下一页开头**。
             # "等"不是浪费：A 路本来就是这两路里的长杆（实测 18~27s/页 vs 块模式 B 7s/页），
             # 让 A 领先一页，B 既拿到稳定的块清单，又能用**同一份转录**的下一页把页尾半句收完整。
-            a_payload = await_a_page(a_store, paper_id, page_no, timeout=wait_s, required=True)
+            a_payload = await_a_page(a_store, paper_id, page_no, timeout=wait_s, required=True,
+                                      fresh_after=fresh_after)
             a_blocks = split_blocks(str(a_payload.get("original_md") or ""))
             if not a_blocks:
                 raise ValidationError(f"A 路第 {page_no} 页的转录产物是空的（块模式无法翻译）")
@@ -415,7 +434,7 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             lookahead = ""
             if page_no < page_total:
                 nxt = await_a_page(a_store, paper_id, page_no + 1,
-                                   timeout=wait_s, required=False)
+                                   timeout=wait_s, required=False, fresh_after=fresh_after)
                 if nxt:
                     lookahead = a_page_lookahead(str(nxt.get("original_md") or ""))
             prompt = render_block_prompt(

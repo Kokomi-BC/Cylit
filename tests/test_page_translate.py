@@ -787,3 +787,42 @@ def test_prompt_forbids_copying_figure_internal_text():
     assert "这类**短标注**" not in SYSTEM_PROMPT
 
 
+
+
+def test_block_mode_ignores_stale_a_page_when_retranslating(monkeypatch):
+    """两路同时 retranslate：B 不能拿**上一轮**的 A 产物当块清单（整页会错一行）。
+
+    实测（attention-cleanroom 第 1 页）：A 重跑后 11 块、B 读到的还是旧的 10 块，
+    于是原文那一列对上了译文里的下一行。修法：force 模式下只认本任务开始之后写下的那一页。
+    """
+    from datetime import datetime
+
+    from backend.services.translation import translation_service as ts
+
+    class FakeStore:
+        def __init__(self, payload):
+            self.payload = payload
+        def reload(self):
+            return None
+        def page(self, page):
+            return self.payload
+
+    stale = {'original_md': 'stale page', 'updated_at': '2020-01-01T00:00:00'}
+    monkeypatch.setattr(ts, '_active_path_task', lambda paper_id, path: None)
+
+    # 没有 fresh_after：旧产物照用（resume 模式的正常行为）
+    assert ts.await_a_page(FakeStore(stale), 'p', 1, required=True) is stale
+
+    # 有 fresh_after（本任务开始得更晚）：旧产物算过期，等不到就抛，绝不静默错位
+    fresh = datetime.fromisoformat('2026-01-01T00:00:00')
+    try:
+        ts.await_a_page(FakeStore(stale), 'p', 1, timeout=0, required=True, fresh_after=fresh)
+    except Exception as exc:
+        assert '转录产物' in str(exc)
+    else:
+        raise AssertionError('过期页没被拒绝')
+
+    # 新鲜的页照用
+    ok_page = {'original_md': 'new page', 'updated_at': '2026-06-01T00:00:00'}
+    assert ts.await_a_page(FakeStore(ok_page), 'p', 1, timeout=0, required=True,
+                           fresh_after=fresh) is ok_page
