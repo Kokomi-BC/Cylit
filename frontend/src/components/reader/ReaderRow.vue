@@ -140,7 +140,10 @@ const emptyLabel = computed(() => {
 .t-table .rr-body :deep(table) { white-space: nowrap; }
 .rr-empty { font-size: 1em; color: var(--text-faint); }
 /* `---` 在正文里也不画横线（用户口径：移除分割线），只当一段空白 —— 与 Markdown 视图同一口径 */
-.rr-body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
+/* ⚠️ 这条以前是 `.rr-body :deep(hr) { border: 0; height: 12px; background: none }` —— 等于把
+   Markdown 的 `---` **藏起来**（用户口径 2026-12-27「前端没有显示分割线」）。
+   现在线的几何与颜色统一由 base.css 的 `.md hr` 给（1px、--divider、左对齐一小截），
+   这里一个字都不覆盖 —— 留着旧规则只会把它再藏一次。 */
 .rrow.compact .rr-body { font-size: .96em; line-height: 1.7; }
 /* 搜索命中：全量高亮。用**主题色**而不是黄色 —— 黄/绿/蓝/粉已经被用户高亮占了，
    主题色一眼就能区分"这是搜索标出来的"；`:deep` 是因为标记是运行时插进 v-html 里的。 */

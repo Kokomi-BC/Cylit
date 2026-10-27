@@ -608,7 +608,11 @@ def test_transcribe_prompt_keeps_footnote_rule_and_drops_arxiv_stamp():
 
     for prompt in (pt.TRANSCRIBE_SYSTEM, pt.TRANSLATE_SYSTEM, pt.SYSTEM_PROMPT):
         assert "脚注横线" not in prompt            # 不再把脚注横线列进丢弃清单
-    assert "唯一要保留的横线是脚注区上方那条短横线" in pt.TRANSCRIBE_SYSTEM
+    assert "唯一保留的横线是脚注区上方那条短横线" in pt.TRANSCRIBE_SYSTEM
+    # 作者区/机构区要写成一段（不能一列一行），并列短项才用 ` · `（用户口径 2026-12-27）
+    assert "作者区 / 机构区写成" in pt.TRANSCRIBE_SYSTEM
+    assert "不要一列一行" in pt.TRANSCRIBE_SYSTEM
+    assert "不要写表格、不要 `<br>`" in pt.TRANSCRIBE_SYSTEM
     assert "arXiv:1706.03762v5 [cs.CL] 6 Dec 2017" in pt.TRANSCRIBE_SYSTEM
     assert "arXiv 预印本标记" in pt.TRANSCRIBE_SYSTEM
     assert "arXiv 预印本标记" in pt.TRANSLATE_SYSTEM

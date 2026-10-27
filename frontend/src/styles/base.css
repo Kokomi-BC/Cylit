@@ -804,6 +804,16 @@ table.data.fixed { table-layout: fixed; }
  *    那是"内容层"的事，CSS 看不见 `\n`。 */
 .md { line-break: strict; text-autospace: normal; }
 .md p { margin: .35em 0; }
+/* Markdown 分隔线（`---`，来自转录取的**脚注分隔线**）：这条线必须自己画。
+ * 为什么：Chrome 对 `<hr>` 的 UA 样式是 `border: 1px inset` + `background: transparent`，
+ * 在本文的 tokens 下实测渲染成「四条边 0px / 透明底」（高度 12px 全是 margin）——
+ * 于是转录里那条 `---` 在阅读器里等于**没有**（用户口径 2026-12-27「前端没有显示分割线」）。
+ * 宽度按印刷脚注线的习惯只占一小截（左对齐），一眼能看出"这是脚注区的分隔线"。 */
+.md hr {
+  border: 0; height: 1px; margin: 12px 0;
+  width: 33%; min-width: 96px; max-width: 220px;
+  background: var(--divider);
+}
 .md ul, .md ol { margin: .35em 0; padding-left: 1.4em; }
 .md blockquote { margin: .5em 0; padding: .2em .8em; border-left: 3px solid var(--border-strong); color: var(--text-dim); }
 .md pre { background: var(--bg-sunken); padding: 8px 10px; border-radius: var(--radius-sm); overflow: auto; }

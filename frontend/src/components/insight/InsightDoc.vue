@@ -455,6 +455,6 @@ onMounted(() => { void nextTick(assignAnchors); });
    让 .katex 成为 inline-block：行盒按它的外接框让位，上下不再互相压。
    实测：4 条 h≈41–44px 的公式（行高 23px）改动前 4 条全压住上一行，改动后 0 条。 */
 .body :deep(.katex) { display: inline-block; }
-.body :deep(hr) { border: 0; height: 12px; margin: 0; background: none; }
+/* 分隔线（`---`）由 base.css 的 `.md hr` 统一画（以前这里把它藏成 12px 空白）。 */
 /* 表格：与阅读器 / Markdown 视图**共用** base.css 的那套三线表（见 `.md table`），不在这里另写一套 */
 </style>
