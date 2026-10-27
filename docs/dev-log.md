@@ -15699,3 +15699,47 @@ PASS fig: 合成锚点排到最后                  PASS 池子里没有这个�
 线上 = `1bc5c97`，`dist/index.html` sha256 两边同为 `9b6887af…`，`pm2 cylit-api online`；
 GitHub `56d482f..1bc5c97`，`unpushed=0`。
 
+
+### 232. 第二百三十二轮：转录的三处页级错误（arXiv 水印没丢 / 脚注横线被丢 / 页首半句被跳过）+ 块模式空块防线
+
+用户口径（三连问）：「为什么不使用 markdown 横线格式」→「arXiv:1706.03762v5 [cs.CL] 6 Dec 2017 没有丢弃的问题」→
+「缺少了一句话（翻译和转录都有）」→「给下一页的一段是为了补全图片中页交界的内容」。
+
+## A. 三处根因都在页级提示词，不在数据
+
+| 现象 | 根因（代码位置） |
+| --- | --- |
+| 转录里没有任何 `---` | `TRANSCRIBE_SYSTEM`/`TRANSLATE_SYSTEM` 第 7（6）条**明文要求丢掉「脚注横线」** —— 分隔线从来没有进过 original_md（A/B 两路产物里 `---` 行数都是 0） |
+| arXiv 预印本标记被抄成一行标题（本地 `p001-02` = `# arXiv:1706.03762v5 [cs.CL] 6 Dec 2017`） | 同一条第 7 条只写了「页眉、页脚、水印」，没点名 arXiv 那种横排行/侧边竖排串，模型就当成正文抄了 |
+| 第 2 页开头少一句（`transduction problems such as language modeling and machine translation [35, 2, 5].`） | `page_continuity` 判出 `head=True`，`render_edge_facts` 给**两路**都写了「承接上一页的句子…**这句已由上一页译完，本页跳过它、从下一句开始**」。但 **A 路没有 carry 机制**（A 的 prompt 明确「页尾照原样停在断处」），上一页从没写过这半句 → A 把整句跳过；B（块模式）照 A 的块清单译，缺口原样继承 |
+
+## B. 改法
+
+- **页边界措辞按路分叉**：`render_edge_facts(edges, *, path="b")`。A 路页首 =「这半句**必须原样转录出来**，
+  不要当新段落、也不许跳过」；A 路页尾 =「照原样停在断处，不要补句号」；B 路保持原来的「已由上一页译完…跳过它」
+  与「用【下一页开头】把整句收完」。`render_page_prompt` 把 `path` 透下去。
+- **横线口径**：脚注区上方那条短横线不再丢 —— 写成**单独一行的 `---`**（前后空行、独立成块）；
+  页与页之间的分隔线照旧不要（两条规则都写清了区别，避免以后又混）。B 块模式补一条「清单里本身就是 `---` 的块原样输出」（否则撞上"译文不能是空串"）。
+- **水印口径**：第 7 条点名 arXiv 预印本标记（横排行 + 页边竖排串）丢弃；脚注文字（`*Equal contribution…`）属于正文照旧保留。
+- **块模式空块防线**（`_empty_blocks` + `EMPTY_BLOCK_RETRY_NOTE`）：第 1 块页首那截被上一页 carry 走之后，
+  模型会把**整块**写成 `""`（生产库第 2 页实测丢了「Numerous efforts have since continued …」整句）。
+  现在只要「原文剪完还有正文、译文却是空」，就追加一句说明**重试一次**，取缺得少的那个结果（不重试 = 静默丢句）。
+  `BLOCK_HEAD_NOTE` 同步收紧：判据是"剪完之后还剩不剩正文"，不是"开头那截被借走了"。
+
+## C. 实测（生产 `attention-cleanroom`，重跑第 1~2 页 A+B；本地 `attention-is-all-you-need` 同口径）
+
+```
+A p1   arXiv 行: 无         脚注前 `---`: 有（单独一块）     B p1 同两项一致
+A p2   head = 'transduction problems such as language modeling and machine translation [35, 2, 5]. Numerous efforts …'  ← 缺口补回
+B p1   carry_md = 'transduction problems … [35, 2, 5].'
+B p1   intro 行译文 = '…已被牢固确立为序列建模与转换问题（如语言建模和机器翻译 [35, 2, 5]）的当前最优方法。'  ← 交界那句在本页收完整
+B p2   head = '此后，大量工作不断拓展循环语言模型与编码器-解码器架构的边界 [38, 24, 15]。'（开头 84 字符被剪掉，无重复）
+读模型 p1 = 10 行，其中 p001-06 就是 `---`（mdToHtml('---') = '<hr>'）
+```
+
+`pytest` 全绿（含新增：A 路不得收到"已由上一页译完"、脚注/arXiv 口径、空块防线）；本地 `frontend_check.py` **165/165、0 失败**。
+线上 = `718dffb`，前端产物未变动（`dist/index.html` sha256 仍 `9b6887af…`），`cylit-api` online、`/health` 200；GitHub 已同步。
+
+> 副作用交代：生产第 1 页重建后行数 12 → 10（arXiv 行不再出现、脚注区多一行 `---`），行号随之平移；
+> 该论文 `highlight`/`note` 计数为 0，没有标注被顶到别的行上。另外 A 路这次把页脚 `31st Conference …` 也按"页脚"丢了（本地那次留着）——
+> 属模型对同一条规则的执行差异，未强行干预。
