@@ -16008,3 +16008,59 @@ TRANSLATE_ZH  completed 15/15  成功 15 页，失败 0 页，用时 127.49s
 （第一次跑出现过一次 PDF 划词整段报 None 的偶发失败，重跑即 168/168 —— 那一段本来就依赖真实的 PDF 文字层选择时序。）
 
 线上 = `5d9a22b`，`dist/index.html` sha256 `c03f9e0…`，`cylit-api` online、`/health` 200；GitHub `a506b15..5d9a22b`，`unpushed=0`。
+### 239. 第二百三十九轮：译文不再跨页收句（与英文逐块对齐）+ 分块支持「模型并入」（跨页 / 不连续）+ 脚注不进索引
+
+用户口径两条：
+1. 「关于分块…改由模型分块（支持不连续和不同页块的划分为同一块，支持去除页面底部的批注）」
+   → 追问后选定：**只扩展现有锚点**，跨页/不连续用新增字段表达；并补一句「模型转录和翻译是有上下文的」
+   （这正是可以这么做的前提：两路调用都带完整前文，锚点因此能指到**前一页**）。
+2. 「在保留现有翻译机制情况下…不需要对跨页的最后一句完整翻译（尽可能和英文侧对齐），
+   只需要读起来通顺即可，自行跨页断句」。
+
+## A. 跨页收句（carry）**停用**
+
+| 位置 | 改法 |
+| --- | --- |
+| `BLOCK_TRANSLATE_SYSTEM` | 删掉【页尾：这次能拿到 A 路下一页的开头】【页首：上一页可能已经译掉了本页开头】两段，换成【跨页：**只译本页的块**】——页尾停在断处、页首照译、`carry_md` 恒空 |
+| `TRANSLATE_SYSTEM`（单页臂） | 同上；【carry_md】那节改成「已停用，恒写空串」 |
+| `render_edge_facts` | 两侧口径一致：页首「照本页原文把它译出来（不要跳过、不要补前半句）」、页尾「照原样停在断处」 |
+| `translation_service` | 不再取【A 路下一页开头】、不再传 lookahead；页首去重（`drop_declared_fragment`）整段停用 |
+| `render_page_prompt(path="b")` | 也不再注入 lookahead |
+
+实测（生产 `attention-cleanroom` 第 1~2 页重跑）：
+
+```
+p1 末行  EN …approaches in sequence modeling and     ZH …已被牢固确立为序列建模和        ← 都停在断处
+p2 块0   EN transduction problems … [35, 2, 5]. …      ZH 序列转换问题，例如语言建模和机器翻译 [35, 2, 5]。…
+两侧 carry_md 都是 ""，逐块对齐 ✔
+```
+
+## B. 分块：脚注行不进索引
+
+`chunking.mark_footnote_rows`：页内 `---` 之后、下一个标题之前的行标 `skip_reason=footnote`
+（与前端 `.row-pair.is-footnote` 同一套判据）。实测生产这篇：新标出 1 行（`p008-13`），
+其余页脚注本来就被 `front_matter` 判掉了 —— **最终落在 chunk 里的脚注行：0**。
+
+## C. 分块：`merge_into`（跨页 / 不连续并入同一个块）
+
+- 提示词（A 路 breaks 规则）新增可选字段：`{"start": …, "merge_into": <那个单元开头 12~40 字原文>}`，
+  并明确「页首那半句」的例外（它不该标边界，应该用 `merge_into` 指回上一页那个单元）。
+- `normalize_breaks` 保留这个字段；`apply_semantic_breaks` **只在行上记锚点原文**（不解析成 id —— 
+  目标很可能在别的页，而它只看得到本页）；不合法就当普通边界丢弃。
+- `chunking.apply_row_merges`：在**全文行**里按原文唯一定位目标（必须在本行之前），
+  然后把两个 chunk 的行集合按行序并起来；**跨小节不并**、定位不到/不唯一也不并（记日志）。
+
+实测（生产第 2 页重跑 A 之后，模型自己写出来了）：
+
+```
+breaks_a[0] = {start: 'transduction problems such as language m',
+               merge_into: 'Recurrent neural networks, long short-term memory'}
+读模型 p002-00 → semantic_merge_text = 'Recurrent neural networks, long short-term memory'
+分块结果：p002-00 与 p001-04/05/06 落在**同一个 chunk**、没有被页边界切成新单元
+```
+
+`pytest` 全绿（新增：并入不改边界标记、按原文跨页解析、定位不到/不唯一/跨小节都不并、脚注行不进块）；
+索引已重建（205 chunk）—— 脚注与并入都已经生效。线上 = `4479795`，`/health` 200。
+
+> 说明：这篇论文里那条并入恰好落在“本来就已经被合并进同一个 chunk”的两行上，所以
+> `merged_chunks` 计数是 0（并了也没变化）；机制的可用性由单测 + 这条真实锚点共同证明。
