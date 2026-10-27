@@ -3463,21 +3463,34 @@ function refNodeOf(id: string, page: number | undefined, el: HTMLElement | null)
 
 /** 解读面板的一枚标号 → 落到哪儿、闪什么。
  *
- *  解读的标号是**一处连续材料**：一组时 `data-rows` 里有多个行 id（后端把短码合成一个方括号，
- *  前端把各 code 的行 id 取并集），点它就该像对话引用那样**一枚大块盖住整组**（`focusMany`）。
- *  只有一个行 id 时仍走 `focusRow` 那条老路（整行闪一层，行为与今天一致）。
+ *  解读的标号是**一处连续材料**：一组时 `data-rows` 里有多个行身份（后端把短码合成一个方括号，
+ *  前端把各 code 的行身份取并集），点它就该像对话引用那样**一枚大块盖住整组**（`focusMany`）。
+ *  只有一个身份时仍走 `focusRow` 那条老路（整行闪一层，行为与今天一致）。
  *
  *  为什么不能只靠 `focusRow`：它最终落到 `flashRow(id)` → `paintFlashSpan(id)`，只补标题行、
- *  永远不画 `.flash-block`；合成大块只有 `focusMany → paintFlashBlock` 这一条路。 */
+ *  永远不画 `.flash-block`；合成大块只有 `focusMany → paintFlashBlock` 这一条路。
+ *
+ *  ⚠️ `data-rows` 里可能是**两种身份**：正文行 id（`p005-04`）或行身份 pid（`r-1a2b…`）——
+ *  解读的清单条目只有 chunk 的 `pids` 时给的就是后者。`r-…` 不是行 id，`resolveRefId` 认不出，
+ *  会退到"那一页的首行"（用户 2026-12-27 实测：标号 45 的浮窗内容是对的，闪的却是**一张图**，
+ *  因为第 8 页首行正好是插图）。所以这里先用 `allRows[].pid` 建映射把 pid 翻成行 id，
+ *  翻不出来的再去掉；一个都翻不出来就老老实实走 `focusRow(id)`（让它按块 id / 页兜底）。 */
 async function focusInsightCite(id: string, page?: number, latex?: string, rows?: string) {
-  const ids = String(rows || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const pidToRow = new Map<string, string>();
+  for (const r of allRows.value) if (r.pid) pidToRow.set(String(r.pid), r.id);
+  const raw = String(rows || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const ids: string[] = [];
+  for (const one of raw) {
+    const row = pidToRow.get(one) ?? (one.startsWith('r-') ? '' : one);
+    if (row && !ids.includes(row)) ids.push(row);
+  }
   if (ids.length > 1) {
     await focusMany({
       pool: ids.map((row) => ({ ref: 0, row, block: '', page: page || 0, latex: '' })),
     });
     return;
   }
-  await focusRow(id, { page, flash: true, latex: latex || formulaLatexOf(id) });
+  await focusRow(ids[0] || id, { page, flash: true, latex: latex || formulaLatexOf(id) });
 }
 
 async function focusRow(

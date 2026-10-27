@@ -207,9 +207,18 @@ function citeMark(primary: string, group: string[], n: number): string {
      公式 chunk 的块 id 是 row-xxx 或 …-x01 这类伪块 id，阅读器翻不成行 ——
      那正是「点标号却整页闪」的原因（用户 2026-12-03）。 */
   const anchor = String(ref?.row_id || ref?.block_id || '');
+  /* 组内每一块的落点：**正文行 id 优先**（`row_ids` 是后端从 chunk 元数据补的复数形式，
+     `row_id` 是单数形式 —— 实测清单里只有后者，前者常常缺），pid 只当最后兜底。
+     为什么必须优先行 id：pid（`r-1a2b…`）在阅读器里**不是行 id**，`resolveRefId` 认不出，
+     会退到"那一页的首行" —— 用户 2026-12-27 实测：标号 45 的浮窗内容是对的、闪的却是一张**插图**
+     （第 8 页首行正好是图）。 */
   const rows: string[] = [];
   for (const r of refs) {
-    for (const id of (r.row_ids ?? r.pids ?? [])) {
+    const own = (r.row_ids?.length ? r.row_ids : undefined)
+      ?? (r.row_id ? [r.row_id] : undefined)
+      ?? r.pids
+      ?? [];
+    for (const id of own) {
       const rid = String(id || '');
       if (rid && !rows.includes(rid)) rows.push(rid);
     }

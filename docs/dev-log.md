@@ -16534,3 +16534,42 @@ emit("select", key);      // ② select 这一侧再去读上下文 → null
 ```
 
 `frontend_check.py` 168/168 通过、0 失败。
+---
+
+# 250 · 解读标号闪到图片：`data-rows` 里塞的是 pid，不是行 id（2026-12-27）
+
+用户报：**「TurboQuant 解读的 45 内容是一段文本（浮窗），但是闪烁的是图片（浮窗内容是对的）」**。
+
+## 根因（生产数据实测）
+
+标号 45 = 组 `[A091,A092]`，两条都是 page 8 的 `unit`：
+
+```
+A091  row_id p008-03  page 8  type unit   row_ids None  pids [r-bb95b7e3…]
+A092  row_id p008-04  page 8  type unit   row_ids None  pids [r-d6616f8e…]
+A089  row_id p008-00  page 8  type figure   ← 第 8 页首行（caption/figure）
+```
+
+`InsightDoc.citeMark` 取的是 `r.row_ids ?? r.pids`：这两个 code 的 `row_ids` 是 **null**、`pids` 有值，
+于是 `data-rows` 里放进了 **pid**（`r-bb95…`）。pid 在阅读器里**不是行 id**，`resolveRefId` 认不出，
+落到 `s.page` 兜底 = **第 8 页首行** —— 那正好是插图。浮窗读的是 `data-block`（= `row_id`，对的），
+所以出现"浮窗是文本、闪的是图片"。
+
+## 改法（两层）
+
+1. `InsightDoc.citeMark`：组内每一块的落点改成 **`row_ids` → `row_id` → `pids`** 的优先序，
+   行 id 优先、pid 只当最后兜底；
+2. `ReaderView.focusInsightCite`：即使拿到 pid 也先用 `allRows[].pid` 翻成行 id（翻不出来的丢掉），
+   一个都翻不出来才回退 `focusRow(id)` 让它按块 id / 页兜底 —— 双保险。
+
+## 实测（本机，同一篇 turboquant 的解读）
+
+```
+改前 data-rows：[2] → "r-d4d5aec1…,r-00370c2e…,r-d20878f7…"   51 枚按钮里 51 枚是 pid
+改后 data-rows：[2] → "p001-05,p002-01,p002-02"                pid 计数 0（60 枚按钮）
+点 [2]  → spans=[p001-05, p002-01, p002-02]（这三行本来就隔着第 2 页的插图，625px，按 240px 规则不合并）
+点 [12] → spans=[p003-05..07, p003-13..15]（中间确实隔了 5 行）
+```
+
+也就是说：现在闪的**就是那几个正文行**；能不能合成一枚大块仍由"是否连续"决定（不连续时逐行亮，
+这正是之前定下的口径）。
