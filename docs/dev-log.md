@@ -15513,3 +15513,71 @@ steps     ['选择提供方','连接与认证','选择模型','4 参数与计费
 > 没做到：笔记浮窗那两枚按钮**没在浏览器里手点**（这条路的入口要先在正文点中一处高亮才开出浮窗，
 > CDP 打的合成事件在这条链上没触发到卡片）。类型、构建、168/168 与逻辑级边界用例都过，
 > 但"真点一下撤销"这一步留给你或下一轮。
+
+### 229. 第二百二十九轮：相邻引用**合并闪烁**（按落点相邻判链）+ 公式单独闪 + 提示词改合并写法
+
+用户口径（含中途两次更正）：「实现相邻的 ref 合并引用闪烁（前端实现和写入对应的提示词），公式单独闪烁」
+→「相邻的 ref 指的是**段落上相邻**而不是标号相邻」→「不用新标号」。
+
+## 口径（最终）
+
+- **相邻 = 落点在正文里相邻**：两条引用的 `row_id`（`p006-01`/`p006-02`）**同页 + 行号差 1**，
+  并且**链式传递**（3-4-5 → 三条一组）。只用引用自带的行 id，不加后端字段、不加新语法、不要模型配合。
+- 点任意一枚 → **它那条链一起闪**；链里正文行走 `data-flash-span`（相邻行的 `::before` 自带 `inset:-3px -6px`，
+  视觉上连成一条），**链里公式各自在自己的 `.katex-display` 上单独闪**；不在同一条链里的不连坐。
+- 文本里 `[3,7]` / `[3-5]` / 相邻 `[3][7]` **合并渲染成一枚按钮**（减少噪声），但**不按方括号分组**——
+  每个目标各自按行 id 判属于哪条链。
+
+## 提示词（`backend/agent/prompts.py` 的 `CITING`）
+
+「一个论断由多条材料支撑时，把编号合并在同一个方括号里写：`[3,7]`，连续编号可用 `[3-5]`；
+不要再写成一串相邻方括号（`[3][7]`）」+「**公式类材料一律单独一个方括号**（`[5]`），
+混进合并组就只能退化成整行闪」。
+
+连带两处必须一起改，否则会漏或误伤：
+- `backend/agent/compress.py` 的 `_REF_MARK` 原来只认 `[\d{1,3}]` → `[3,7]` / `[3-5]` / 全角 `[3，7]`
+  整组会**漏进摘要**（那组编号同样只在原来那轮有效）。已扩成认合并组，实测五种写法都剥干净。
+- `tests/golden/agent_system_default.txt` 是"默认 system 逐字节不变"的金标准（护前缀缓存），
+  这次**故意**改了 `CITING` → 重新生成（3566 → 3750 字节）。`pytest` 33 passed / 206 passed 6 skipped。
+
+## 前端（`ReaderChat.vue` + `ReaderView.vue`）
+
+- `REF_GROUP_RE`：单/多方括号连写并成一个 token（`[3]` `[3,7]` `[3，7]` `[3、7]` `[3-5]` `[3][7]`）；
+  区间展开、区间过宽或夹非编号 → 原样留文本；组内有一个编号本轮不存在 → 整组留原文（all-or-nothing）。
+- `buildAdjacentChains`：按"页前缀 + 行号"排序、差 1 连边、链式传递；`chainTargets` 把组内每个编号**各自**的链
+  合并去重、自己排第一。链只在本轮真实被引用的行之间连（不连坐）。
+- 按钮带 `data-refs`（组）与 `data-targets`（每条目标的 row/block/page/latex，JSON + escapeAttr）；
+  点击 → `emit('focus-many', targets)`（**单枚也走**，因为它的链可能不止一行）。
+- `ReaderView.focusMany`：第一条 `scrollNodeToLine` 定位（`spyLockUntil`、`saveProgressDebounced` 与 `focusRow` 一致），
+  公式各自 `flashFormulaNode(...)`，纯行收 `Set` 走 `paintFlashSpanIds`，1.6s 统一摘；
+  `flashFormulaNode` 改多节点（模块级 `Set` + 单一清除定时器），逐枚保留"先摘/强制回流/再挂"的重播手法；
+  从 `focusRow` 抽出 `resolveRefId` / `refNodeOf`（`focusRow` 行为不变）。
+- **速览卡跟上链**（用户口径「鼠标悬浮的浮窗也要改」）：`onCitePeek` 直接把 `data-targets` 里那条链的
+  行 id（`orderedRowIds`，页前缀字典序 → 行号数值，`fig:p…` 合成锚点排末尾）塞进 `rows`，
+  卡片头取**链头**（不是鼠标下那一枚）；`peekSig` 把 `rows` 纳入指纹，否则 `[1,4]` 与 `[1]` 卡片头同一行会互相复用成旧内容。
+- `citationAnchor` 抽出来给 `gotoCitation` 与 `data-targets` 共用（否则合并路径会丢掉历史插图/表格的 `fig:` 落点）。
+
+### 实测（有头 Chrome + CDP；临时会话「相邻链验证」，正文「相邻两处 [1,2]，远处一处 [3]。」）
+
+ref1→`p003-00`（正文行）、ref2→`p003-01`（**显示公式**，`\tag{1}` 的 MSE 定义式）、ref3→`p002-06`（另一页）。
+
+```
+标号     2 枚：data-refs="1,2" targets=[p003-00, p003-01]｜data-refs="3" targets=[p002-06]
+点 [1,2] spanRows=[p003-00]（挂 data-flash-span）
+         flashTargets=[{cls: 'katex-display flash-target', row: 'p003-01'}]   ← 公式单独闪
+         .row-pair/.pg 上的 flash-* = 0                                        ← 没有整行/整页闪
+点 [3]   spanRows=[p002-06]；flashTargets=[]；p003-* 已被清掉
+悬浮 [1,2] 速览卡内容 = 第 3 页那段译文 + MSE 公式（tag (1)）  ← 整条链都在卡里
+```
+
+> 中途抓到一个真 bug：引用按钮被**套了两层**。`useMarkdown.ts` 里那个 `name:"cite"` 的 marked 扩展会先把
+> `[1,2]` 变成一枚只有 `data-refs` 的按钮，`decorateRefs` 又在它的文本里匹配了一次 → `<button><button>`。
+> 探针先命中的是**外层空壳**（没有 `data-targets`），所以"点了不闪、卡片说没有内容"。
+> 修法：`decorateRefs` 分两趟 —— 先**消费** md 产出的 `cite-inline` 按钮（认不全就原样保留），
+> 再对剩余纯文本跑 `REF_GROUP_RE`；按钮渲染统一到 `refButtonHtml` 一处。
+> 实测 `.cite-inline` 计数从 组数×2 变成 组数、`.cite-inline .cite-inline` = 0；把自己输出再喂一遍仍是一层（幂等）。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿、`frontend_check.py` **168/168**、`pytest` 33 passed + 206 passed 6 skipped。
+
+> 已知边界：「跨空行」判不出来 —— 只按行号差 1 连边，若两处引用中间隔着一个**空行行 id**（`p006-01` 与 `p006-03`），
+> 它们不会成链。要补得把该消息的行名册一起塞进按钮（`data-pool`），代价是每枚按钮多一份 JSON；本轮没做。

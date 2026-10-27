@@ -63,6 +63,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 第三个参数是这条引用的**完整 LaTeX**（公式引用才有）：父组件据此把落点从整行收进那一枚 KaTeX */
   (e: 'focus', blockId: string, page?: number, latex?: string): void;
+  /** 合并引用（正文里的一枚按钮带着好几处）：一次把它们**全**闪起来。
+   *  为什么不循环 emit 单个 focus：那是「滚过去 → 闪 → 再滚下一处」，镜头会来回拽；
+   *  而合并组本来就是同一处相邻的几个编号，用户要看的是它们**同时**亮。 */
+  (e: 'focus-many', targets: Array<{ block: string; row: string; page?: number; latex?: string }>): void;
   /** 悬浮正文里的引用标号：请求在旁边 peek 一眼（点标号照旧跳转，不受影响） */
   (e: 'peek', p: {
     anchor: { x: number; y: number; w: number; h: number };
@@ -71,6 +75,9 @@ const emit = defineEmits<{
     blockId?: string | null;
     label?: string | null;
     snippet?: string | null;
+    /** 这条引用覆盖的**整段行**（逗号分隔，按论文顺序）：速览卡据此画多行，
+     *  与点击时「整条相邻链一起闪」是同一份范围。单枚标号时就是它自己那一行。 */
+    rows?: string | null;
   }): void;
   (e: 'peek-hide'): void;
   (e: 'clear-selection'): void;
@@ -624,6 +631,119 @@ function escapeAttr(text: string) {
     .replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** 一个**引用组**：单个方括号（`[3]` / `[3,7]` / `[3，7]` / `[3、7]` / `[3-5]`），
+ *  或者**紧挨着的多个方括号**（`[3][7]` —— 后端新提示词之前的正文就是这么写的）。
+ *  连续出现时后面那个 `+` 把它们并成**一枚 token**：合并闪烁要的是"这一处有几个编号"，
+ *  拆成两枚按钮就变成"点两次、闪两轮"了。方括号里只许编号与分隔符，`[见附录]` 不算引用。 */
+const REF_GROUP_RE = /(?:\[\s*\d{1,3}(?:\s*[,，、]\s*\d{1,3}|\s*[-–—~]\s*\d{1,3})*\s*\])+/g;
+
+/**
+ * 把一个引用组拆成「展开后的编号 + 显示成什么样」。
+ *
+ * 序号**连续展开**（`[3-5]` → 3、4、5）：合并闪烁要按编号逐条去 `byRef` 里找目标，
+ * 区间只是写法。显示则尽量保留原写法 —— 单枚区间仍写 `[3-5]`（比 `[3,4,5]` 短得多），
+ * 其余一律归到 `[3,7]` 这种逗号形态，也就是后端提示词定下的合并写法。
+ * 解析不出来（区间过宽、夹了非编号字符）返回 null：调用方原样留文本，绝不吞字。
+ */
+function parseRefGroup(run: string): { nums: number[]; display: string } | null {
+  const brackets: string[] = [];
+  const bracketRe = /\[([^\]]*)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = bracketRe.exec(run)) !== null) brackets.push(m[1]);
+  if (!brackets.length) return null;
+  const nums: number[] = [];
+  let ranged = false;
+  for (const inner of brackets) {
+    for (const seg of inner.split(/[,，、]/)) {
+      const s = seg.trim();
+      if (!s) continue;
+      const span = /^(\d{1,3})\s*[-–—~]\s*(\d{1,3})$/.exec(s);
+      if (span) {
+        const lo = Math.min(Number(span[1]), Number(span[2]));
+        const hi = Math.max(Number(span[1]), Number(span[2]));
+        // 一页正文里也就几个引用：区间宽到这个程度必然是别的意思（年份、页码），别展开
+        if (hi - lo > 20) return null;
+        for (let n = lo; n <= hi; n += 1) nums.push(n);
+        ranged = true;
+        continue;
+      }
+      if (!/^\d{1,3}$/.test(s)) return null;
+      nums.push(Number(s));
+    }
+  }
+  const uniq = Array.from(new Set(nums));
+  if (!uniq.length) return null;
+  // 单枚区间保持区间写法（`[3-5]` 比 `[3,4,5]` 短）；全角破折号归到半角，显示只有一种
+  const display = ranged && brackets.length === 1
+    ? `[${brackets[0].replace(/\s+/g, '').replace(/[–—~]/g, '-')}]`
+    : `[${uniq.join(',')}]`;
+  return { nums: uniq, display };
+}
+
+/** 行 id 拆成「页前缀 + 行号」：`p006-01` → (`p006-`, 1)。判"段落上相邻"只靠这两段。
+ *  `row-` 前缀先归一（与 ReaderView.rowAnchorId 同一条规则）：公式 / 表格类引用给的是
+ *  `row-p006-03`，不归一就跟同页的 `p006-04` 认不成邻。 */
+function citeRowKey(id?: string | null): { prefix: string; num: number } | null {
+  const m = /^(.*?)(\d+)$/.exec(String(id || '').replace(/^row-/, ''));
+  return m ? { prefix: m[1], num: Number(m[2]) } : null;
+}
+
+/**
+ * 本轮引用之间的**相邻链**：每一个 ref → 与它"段落上相邻"的那一组引用（含它自己）。
+ *
+ * 用户口径 2026-12-11 的更正：「相邻的 ref 指的是**段落上相邻**，不是标号相邻」。
+ * 所以判据落在**落点**上：`row_id` 同页（前缀相同）+ 行号相差 1 就是一条边，
+ * 边串起来就是一条链（3-4-5 传递成一组）。标号挨不挨着（`[3,7]`）与此**无关** ——
+ * 方括号只是排版上的合并（少几枚按钮），闪哪些行由 row_id 决定，各编号各自判自己那条链。
+ *
+ * 只在本轮**真实被引用的行**之间连边：没被引用的邻行不参与，否则点一枚会把旁边无关的
+ * 段落一起点亮（"连坐"用户明确否掉了）。没有 row_id 的引用（插图 / 表格只带页码）不进链。
+ */
+function buildAdjacentChains(cites: AgentCitation[]): Map<number, AgentCitation[]> {
+  const chains = new Map<number, AgentCitation[]>();
+  const pages = new Map<string, Array<{ cite: AgentCitation; num: number }>>();
+  for (const c of cites) {
+    const key = citeRowKey(c.row_id);
+    if (!key) continue;
+    const list = pages.get(key.prefix) ?? [];
+    list.push({ cite: c, num: key.num });
+    pages.set(key.prefix, list);
+  }
+  for (const list of pages.values()) {
+    list.sort((a, b) => a.num - b.num);
+    let chain: AgentCitation[] = [];
+    for (let i = 0; i < list.length; i += 1) {
+      // 与上一枚的行号差 1 才接在同一条链上，否则从这一枚另起一条
+      if (i > 0 && list[i].num - list[i - 1].num === 1) chain.push(list[i].cite);
+      else chain = [list[i].cite];
+      // 同一条链上的成员都指向**同一份数组**（后面还会往后长，所以要在循环里反复 set）
+      for (const member of chain) chains.set(member.ref, chain);
+    }
+  }
+  return chains;
+}
+
+/** 这一枚按钮点下去要闪的那几处：组里每个编号**各自**的相邻链，按出现顺序合并去重。
+ *  组里第一个编号最先进来（悬浮速览卡取第一条，读者想看的也正是它）。
+ *  为什么要"先放它自己、再放它的链"：链是按行号升序排的，而点的是哪一枚就得先看哪一枚。 */
+function chainTargets(
+  group: AgentCitation[],
+  chains: Map<number, AgentCitation[]>,
+): AgentCitation[] {
+  const out: AgentCitation[] = [];
+  const seen = new Set<number>();
+  const push = (c: AgentCitation) => {
+    if (seen.has(c.ref)) return;
+    seen.add(c.ref);
+    out.push(c);
+  };
+  for (const c of group) {
+    push(c);
+    for (const member of chains.get(c.ref) ?? []) push(member);
+  }
+  return out;
+}
+
 /**
  * 正文里的 `[n]` → **可直接点击跳转的引用锚**（用户口径 2026-10-03）。
  *
@@ -634,31 +754,117 @@ function escapeAttr(text: string) {
  * 另外只认这一轮**真实存在**的 ref，别把正文里恰好写成 `[1]` 的普通方括号变成按钮。
  * 锚点信息直接写进 `data-*`：这样点击时不必再去猜"这个编号属于哪条消息"
  * （每条消息的编号都是各自从 1 开始的，跨消息查表必然串号）。
+ *
+ * 相邻引用**合并成一枚按钮**（用户口径 2026-12-11）：`[3,7]` / `[3-5]` 只是少几枚按钮、
+ * 少几处阅读噪声，**不决定闪什么** —— 闪哪些行看的是「落点相邻」这一条
+ * （见 `buildAdjacentChains`）：点这一枚，就把每条目标各自那条相邻链同时点亮
+ * （父组件 focusMany）。历史正文里遗留的 `[3][7]` 走同一条路 —— 后端提示词换了，
+ * 存量的对话记录不会跟着改写。
  */
+/**
+ * markdown 的 `cite` 扩展（`useMarkdown.ts` 的 `name: "cite"`）已经画好的标号按钮：
+ * **只有** `data-refs`，没有 row / block / page / latex。
+ *
+ * 对话正文这里必须把它**消费掉**再画自己那一枚，而不是在它的文本 `[1, 2]` 上再匹配一次 ——
+ * 那会套出「button 里套 button」，而点击 / 悬浮命中的是**外层那个空壳**：没有 data-targets
+ * 就既不闪公式、也不挂 data-flash-span，速览卡还只能说「这一段没有可显示的内容」
+ * （用户 2026-12-11 实测到的正是这个）。
+ */
+const MD_CITE_BTN = /<button\b[^>]*\bdata-refs="([^"]*)"[^>]*>[\s\S]*?<\/button>/gi;
+/** 占位符：已经换好的按钮先藏起来，免得后面那趟 `REF_GROUP_RE` 又把它里面的 `[1,2]` 包一层。
+ *  与 `useMarkdown.decorateCiteMarks` 的 `CITE_HOLD` 同一手法，换个前缀免得撞车。 */
+const REF_HOLD = /\u0001CR(\d+)\u0001/g;
+
+/** 一枚引用按钮（**只有一层**）：两条来源共用 —— ① md 扩展已经画好的；② 扩展没吃到、还是纯文本的。
+ *  共用是刻意的：两边各拼一份，迟早有一边忘了带 data-targets（这一轮的"按钮套按钮"就是这么来的）。
+ *  `list` 是这一枚要代表的编号（组内顺序 = 读者看到的顺序），`display` 是它显示成什么样。 */
+function refButtonHtml(
+  list: AgentCitation[],
+  display: string,
+  chains: Map<number, AgentCitation[]>,
+): string {
+  const cite = list[0];
+  const nums = Array.from(new Set(list.map((c) => c.ref)));
+  /* 点这一枚按钮时要闪的那几处 = 组里每个编号**各自**的相邻链（见 buildAdjacentChains）。
+     为什么不是"就把方括号里这几个编号一起闪"：方括号只是排版上的合并（少几枚按钮），
+     而"哪些段落该一起亮"是**落点**的事 —— `[3,7]` 的两行若相隔很远，点过去只该闪
+     3 那条链和 7 那条链，不该把中间十几行也点亮（用户口径：不相邻的不连坐）。 */
+  const targets = chainTargets(list, chains).map((c) => ({
+    row: citationAnchor(c),
+    block: c.block_id || '',
+    page: Number(c.page ?? 0) || 0,
+    latex: String(c.latex || (c.kind === 'formula' ? c.snippet || '' : '')),
+  }));
+  const title = escapeAttr(cite.snippet || cite.label || `引用 ${nums[0]}`);
+  /* 用 aria-label 而不是 title：title 会弹**浏览器原生**那一条灰气泡，
+     而悬浮标号已经会弹速览卡了 —— 两个提示叠在一起（用户口径 2026-12-04）。 */
+  return `<button type="button" class="cite-inline" aria-label="${title}"`
+    /* 老字段一律取**组内第一条**：悬浮速览卡只显示一条；点单枚时那条老路径也还要用到
+       （图注合成锚点 fig:p… 与「跨论文」守卫只在 gotoCitation 里）。 */
+    + ` data-ref="${nums[0]}" data-paper="${escapeAttr(cite.paper_id || '')}"`
+    + ` data-row="${escapeAttr(cite.row_id || '')}"`
+    + ` data-block="${escapeAttr(cite.block_id || '')}"`
+    + ` data-snippet="${escapeAttr(cite.snippet || '')}"`
+    /* 优先存 citation.latex（完整式），不是 snippet：snippet 只有 160 字。
+       但**存量消息**（没有 latex 这个键）的公式引用只有 snippet，而它的 snippet 本来就是
+       被截到 160 字的 LaTeX —— 落进 data-* 才走得到 findFormula 的前缀匹配，
+       否则老记录点过去只剩整行闪 */
+    + ` data-latex="${escapeAttr(cite.latex || (cite.kind === 'formula' ? cite.snippet || '' : ''))}"`
+    + ` data-page="${cite.page ?? ''}"`
+    /* 合并组的两份新信息：编号表（探针与以后按组做别的事）+ 每处目标的定位（点击 / 速览用）。 */
+    + ` data-refs="${nums.join(',')}"`
+    + ` data-targets="${escapeAttr(JSON.stringify(targets))}"`
+    + `>${display}</button>`;
+}
+
 function decorateRefs(html: string, cites?: AgentCitation[]) {
   if (!cites?.length) return html;
   const byRef = new Map(cites.map(c => [c.ref, c]));
+  /* 相邻链整段只算一次：它只看这一轮的 cites，与正文怎么切块无关 */
+  const chains = buildAdjacentChains(cites);
   const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
   return parts.map((part, index) => {
     if (index % 2 === 1) return part;                       // 代码块原样返回
-    return part.replace(/\[(\d{1,3})\]/g, (whole, num) => {
-      const cite = byRef.get(Number(num));
-      if (!cite) return whole;
-      const title = escapeAttr(cite.snippet || cite.label || `引用 ${num}`);
-      /* 用 aria-label 而不是 title：title 会弹**浏览器原生**那一条灰气泡，
-         而悬浮标号已经会弹速览卡了 —— 两个提示叠在一起（用户口径 2026-12-04）。 */
-      return `<button type="button" class="cite-inline" aria-label="${title}"`
-        + ` data-ref="${num}" data-paper="${escapeAttr(cite.paper_id || '')}"`
-        + ` data-row="${escapeAttr(cite.row_id || '')}"`
-        + ` data-block="${escapeAttr(cite.block_id || '')}"`
-        + ` data-snippet="${escapeAttr(cite.snippet || '')}"`
-        /* 优先存 citation.latex（完整式），不是 snippet：snippet 只有 160 字。
-           但**存量消息**（没有 latex 这个键）的公式引用只有 snippet，而它的 snippet 本来就是
-           被截到 160 字的 LaTeX —— 落进 data-* 才走得到 findFormula 的前缀匹配，
-           否则老记录点过去只剩整行闪 */
-        + ` data-latex="${escapeAttr(cite.latex || (cite.kind === 'formula' ? cite.snippet || '' : ''))}"`
-        + ` data-page="${cite.page ?? ''}">[${num}]</button>`;
+    const held: string[] = [];
+    const hold = (s: string) => {
+      held.push(s);
+      return `\u0001CR${held.length - 1}\u0001`;
+    };
+    /* ② 先**消费** md 扩展画好的按钮：编号认得全就换成自己那一枚（带 data-targets），
+       认不全（或 data-refs 是空的 / 坏的）就原样留着 —— 那种标号本来也没有落点，
+       与今天的行为一致。两种都要先藏进占位符，否则下一步会把它文本里的 `[1, 2]` 再包一层。 */
+    let out = part.replace(MD_CITE_BTN, (whole, refs: string) => {
+      const nums = String(refs).split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const list: AgentCitation[] = [];
+      for (const n of nums) {
+        const hit = byRef.get(n);
+        if (!hit) return hold(whole);
+        list.push(hit);
+      }
+      if (!list.length) return hold(whole);
+      // md 那边只会产出 `[1]` / `[1, 2]` 这两种形态（区间、全角逗号它不吃），显示一律归到 `[1,2]`
+      const display = `[${Array.from(new Set(list.map((c) => c.ref))).join(',')}]`;
+      return hold(refButtonHtml(list, display, chains));
     });
+    /* ① 扩展**没吃到**的写法（`[3][7]`、`[3-5]`、全角逗号 `[3，7]`、`[3、7]`）：扩展只兜
+       「单层方括号 + 半角逗号/分号」，其它形态到这儿还是纯文本，正则补上。 */
+    out = out.replace(REF_GROUP_RE, (whole) => {
+      const parsed = parseRefGroup(whole);
+      if (!parsed) return whole;
+      /* 组里**有一条**不是这一轮真实存在的引用，就整组按原样留文本：
+         只把认得的那几条变成按钮，会让 `[3,7]` 变成 `[3][7]` 两枚、或者干脆少一个编号，
+         读的人会以为引用被吞了 —— 宁可不接。 */
+      const list: AgentCitation[] = [];
+      for (const n of parsed.nums) {
+        const hit = byRef.get(n);
+        if (!hit) return whole;
+        list.push(hit);
+      }
+      return refButtonHtml(list, parsed.display, chains);
+    });
+    return out.replace(REF_HOLD, (_m, i: string) => held[Number(i)] ?? '');
   }).join('');
 }
 
@@ -758,6 +964,56 @@ function answerParts(m: AgentMessage): { html: string; tail: boolean }[] {
  * 顺带接管**图片**：回答里自带的 `![](...)` 也走阅读器那套图片查看器（用户口径 2026-11-19），
  * 而不是点了没反应、或被浏览器当成链接开新页。
  */
+/** 按钮上那串 `data-targets`（合并组里**每一处**的定位）→ 数组。
+ *  坏数据（手改过的 DOM、以后改了格式）一律当"没有"，退回老的单条路径 ——
+ *  引用点不动比点错地方更糟，但两者都比"点了之后抛异常"好。 */
+function parseCiteTargets(raw?: string): Array<{ block: string; row: string; page?: number; latex?: string }> {
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((t) => t && typeof t === 'object')
+      .map((t) => ({
+        block: String(t.block ?? ''),
+        row: String(t.row ?? ''),
+        // page 0 = 不知道页码（JSON 里不写 null，省得每个目标都多一个空洞）
+        page: Number(t.page ?? 0) > 0 ? Number(t.page) : undefined,
+        latex: String(t.latex ?? '') || undefined,
+      }))
+      .filter((t) => t.row || t.block || t.page || t.latex);
+  } catch {
+    return [];
+  }
+}
+
+/** 链上各目标的 `row`，**按论文顺序**去重（拼成逗号一份，ReaderView 的 peekViewOf 直接 split）。
+ *
+ *  为什么还要排序：`data-targets` 是「组里每个编号各自的链」拼起来的，跨编号就可能乱序
+ *  （`[1,4]` 的链是 1→1,2,3 与 4→4,5，但 `[2]` 这种单枚标号的链是 2→1,2,3，它自己排在最前）。
+ *  卡片是当一整段读的（标题在上、正文在下），顺序错读起来就是跳的。
+ *  认不出序的（`fig:p…` 合成锚点、只有块 id 的）一律挪到末尾：ReaderView 的 `mapSpanId`
+ *  认不出会丢掉，全丢光时它自己退回锚点那一行。 */
+function orderedRowIds(targets: Array<{ block: string; row: string; page?: number; latex?: string }>): string[] {
+  /* `fig:p<页>:n<图号>` 是我们自己拼的合成锚点（见 citationAnchor），不是正文行 id：
+     给它排序键只会让它按"图号数字"挤到段落行前面去，所以一律当没有序、排到最后。 */
+  const keyed = targets.map((t, i) => ({ t, i, key: /^fig:/.test(t.row) ? null : citeRowKey(t.row) }));
+  keyed.sort((a, b) => {
+    if (a.key && b.key) {
+      // 页前缀直接比字符串：`p006-` / `p007-` 是补零的，字典序与页序一致
+      if (a.key.prefix !== b.key.prefix) return a.key.prefix < b.key.prefix ? -1 : 1;
+      if (a.key.num !== b.key.num) return a.key.num - b.key.num;
+      return a.i - b.i;
+    }
+    if (a.key) return -1;
+    if (b.key) return 1;
+    return a.i - b.i;
+  });
+  const out: string[] = [];
+  for (const { t } of keyed) if (t.row && !out.includes(t.row)) out.push(t.row);
+  return out;
+}
+
 function onCitationClick(ev: MouseEvent) {
   const target = ev.target as HTMLElement | null;
   const img = target?.closest?.('img') as HTMLImageElement | null;
@@ -768,6 +1024,22 @@ function onCitationClick(ev: MouseEvent) {
   }
   const btn = target?.closest?.('.cite-inline') as HTMLElement | null;
   if (!btn) return;
+  /* 一枚按钮带着的是**它所在那条相邻链**（外加方括号组里其它编号各自的链，见
+     `buildAdjacentChains` / `chainTargets`）：交给阅读器**一次全闪**。
+     单枚 `[3]` 也走这条路 —— 它那条链可能不止一行，走老的 `focus` 只会闪一行；
+     构造 targets 时已经用 `citationAnchor` 把"只有页码的插图 / 表格"拼成图注锚点，
+     所以这里不缺老路径那一段兜底。 */
+  const many = parseCiteTargets(btn.dataset.targets);
+  if (many.length) {
+    const paper = btn.dataset.paper || '';
+    if (paper && paper !== props.paperId) {
+      // 与 gotoCitation 同一条口径：别的论文的块在这里没有落点，只提示、不乱跳
+      toast(`这条引用来自《${btn.getAttribute('aria-label') || paper}》，不在当前论文里`, 'warn');
+      return;
+    }
+    emit('focus-many', many);
+    return;
+  }
   const page = Number(btn.dataset.page || 0);
   gotoCitation({
     ref: Number(btn.dataset.ref || 0),
@@ -793,12 +1065,24 @@ function onCitePeek(ev: PointerEvent) {
   if (!btn) return;
   const r = btn.getBoundingClientRect();
   const page = Number(btn.dataset.page || 0);
+  /* 速览卡要和点击**同一套口径**（用户口径 2026-12-11：「鼠标悬浮的浮窗也要改」）：
+     点一枚 → 它那条相邻链一起闪；那悬浮它时卡片就得画**整条链**，
+     否则出现「正文闪了三行、卡片只给一行」。链在渲染正文时已经算好塞进 data-targets
+     （见 chainTargets），这里直接用它 —— 两处各算一遍，迟早会算出两个不同的答案。 */
+  const chain = parseCiteTargets(btn.dataset.targets);
+  const rows = orderedRowIds(chain);
+  /* 卡片头（标题 / 锚点 / 速览卡定位）取**链头**，不是鼠标下这一枚：相邻两枚按钮共用
+     一条链时，卡片内容不该随鼠标落在链的哪一枚上而变来变去。 */
+  const head = rows.length
+    ? chain.find((t) => t.row === rows[0]) ?? chain[0]
+    : undefined;
   emit('peek', {
     anchor: { x: r.left, y: r.top, w: r.width, h: r.height },
-    page: page > 0 ? page : null,
-    rowId: btn.dataset.row || null,
-    blockId: btn.dataset.block || null,
+    page: head?.page ?? (page > 0 ? page : null),
+    rowId: head ? head.row || null : btn.dataset.row || null,
+    blockId: head ? head.block || null : btn.dataset.block || null,
     label: btn.dataset.label || btn.getAttribute('aria-label') || '',
+    rows: rows.length ? rows.join(',') : null,
     /* 引用自带的片段：老引用可能既没有行 id 也没有可映射的块 id，
        这时卡片至少能显示这一两句话，而不是一句「没有可显示的内容」 */
     snippet: btn.dataset.snippet || '',
@@ -2838,19 +3122,27 @@ async function compress() {
   }
 }
 
+/** 一条引用的**落点锚**（阅读器据此找行）。
+ *
+ *  行 id 优先，其次解析块 id（阅读器过 `block_rows` 翻成行）。
+ *  插图 / 表格引用在这一版之前**没有行 id**（后端只登了页码），点过去只能整页闪：
+ *  这里用引用标题里的「图 4 / 表 1」+ 页码拼一个合成锚点，阅读器据此找到那张图所在的图注行，
+ *  闪的就跟「标号 1」一样是**图和图注**那一行。
+ *  gotoCitation（没有 data-targets 的老路径）与 data-targets（合并 / 相邻链）共用这一枚：
+ *  两处拼法一旦分叉，同一枚标号点出来的落点就会不一样。 */
+function citationAnchor(citation: AgentCitation): string {
+  const own = citation.row_id || citation.block_id || '';
+  if (own || !citation.page) return own;
+  const hit = /(?:图|表|figure|fig\.?|table)\s*(\d{1,3})/i.exec(citation.label || citation.snippet || '');
+  return hit ? `fig:p${citation.page}:n${hit[1]}` : '';
+}
+
 function gotoCitation(citation: AgentCitation) {
   if (citation.paper_id && citation.paper_id !== props.paperId) {
     toast(`这条引用来自《${citation.label || citation.paper_id}》，不在当前论文里`, 'warn');
     return;
   }
-  let anchor = citation.row_id || citation.block_id || '';
-  /* 插图 / 表格引用在这一版之前**没有行 id**（后端只登了页码），点过去只能整页闪。
-     这里用引用标题里的「图 4 / 表 1」+ 页码拼一个锚点，阅读器据此找到那张图所在的图注行，
-     闪的就跟「标号 1」一样是**图和图注**那一行。 */
-  if (!anchor && citation.page) {
-    const hit = /(?:图|表|figure|fig\.?|table)\s*(\d{1,3})/i.exec(citation.label || citation.snippet || '');
-    if (hit) anchor = `fig:p${citation.page}:n${hit[1]}`;
-  }
+  const anchor = citationAnchor(citation);
   /* 公式引用要精确到那一枚 KaTeX：新消息直接用 `latex`；**存量消息**只有 snippet，
      而公式引用的 snippet 本来就是被截到 160 字的 LaTeX —— 拿它顶（findFormula 比签名，
      截断的长式可能认不出，认不出就照旧退化成整行闪，不会报错）。 */

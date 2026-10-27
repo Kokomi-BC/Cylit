@@ -173,9 +173,12 @@ function clearPeekTimers(): void {
   if (peekHideTimer) { clearTimeout(peekHideTimer); peekHideTimer = 0; }
 }
 
-/** 一张卡的指纹：行 / 块 / 页码任一相同就算同一处引用 */
+/** 一张卡的指纹：行 / 块 / 页码 / **覆盖的那几行** 任一相同就算同一处引用 */
 function peekSig(ask: CitePeekAsk): string {
-  return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? ''].join('|');
+  /* 为什么把 rows 也算进来（用户口径 2026-12-11 起卡片会画整条相邻链）：合并标号 `[1,4]`
+     与单枚 `[1]` 的卡片头是同一行（都取链头 `p006-01`），但覆盖范围不同 —— 只比行的话
+     后者会命中前者那张卡，看到的是上一次（少两行）的内容。 */
+  return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? '', String(ask.rows || '')].join('|');
 }
 
 function onCitePeekAsk(ask: CitePeekAsk): void {
@@ -3088,9 +3091,16 @@ function flashSpanIds(id: string): string[] {
  */
 function paintFlashSpan(id: string): void {
   clearFlashSpan();
-  const root = scroller.value;
   const ids = flashSpanIds(id);
-  if (!root || !ids.length) return;
+  if (!ids.length) return;
+  paintFlashSpanIds(ids);
+}
+
+/** 把**一组**行 id 点亮（`flashRow` 的补行、合并引用的多处落点共用这一枚）。
+ *  传进来的 id 就是最终要亮的行：调用方各自决定"命中行之后的补行"还是"合并组里的那几行"。 */
+function paintFlashSpanIds(ids: string[]): void {
+  const root = scroller.value;
+  if (!root) return;
   for (const rowId of ids) {
     const el = root.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(rowId)}"]`);
     if (!el) continue;
@@ -3122,6 +3132,10 @@ function flashRow(id: string) {
     flashTimer = null;
   }, 1600);
 }
+
+/** 只挂了 `data-flash-span` 的那一套（合并引用一次闪好几行）用的定时器：
+ *  它不碰 `flashRowId` —— 那一枚是"命中行"的，合并组根本没有单一命中行。 */
+let flashSpanTimer: ReturnType<typeof setTimeout> | null = null;
 
 /*
  * 锚点归一：后端给公式/表格类 chunk 的块 id 是 row-<行 id>（见 knowledge_service 里
@@ -3168,15 +3182,32 @@ function findFormula(node: HTMLElement, latex: string): HTMLElement | null {
 }
 
 let targetFlashTimer: ReturnType<typeof setTimeout> | null = null;
+/** 这一轮正在闪的公式节点。为什么不是单个节点：合并引用（`[3,7]`）里可以有好几条公式，
+ *  它们各自闪**自己那一枚** `.katex-display`（用户口径：公式单独闪，不许退化成整行闪），
+ *  所以这里要同时挂住好几个，到点再一起摘 —— 一枚定时器，一份 Set。 */
+const flashingFormulas = new Set<HTMLElement>();
 
-/** 闪一条公式（与行闪同一节奏，同样用「先摘再挂 + 强制回流」让连点也能重播） */
-function flashFormulaNode(node: HTMLElement): void {
-  node.classList.remove('flash-target');
-  void node.offsetWidth;
-  node.classList.add('flash-target');
+/** 闪公式（一枚或多枚，与行闪同一节奏）。
+ *
+ *  「先摘、强制回流、再挂」这一步不能省：连点**同一枚**公式时，摘掉又挂回的两次写 DOM
+ *  会落在同一个任务里被样式引擎合并成"没变" —— 动画已经 forwards 停在最后一帧，
+ *  用户第二次点什么都看不到（与 flashRow 的 flashNonce 是同一个坑，只是这里靠强制回流解）。
+ *  多枚时逐枚做这一步：第一枚的回流就会把"全摘掉"写进样式，后面几枚各自重播。 */
+function flashFormulaNode(...nodes: HTMLElement[]): void {
+  // 上一轮（以及本轮）挂着的先一起摘掉：合并组换目标 / 连点同一组都要真的重播
+  for (const n of flashingFormulas) n.classList.remove('flash-target');
+  flashingFormulas.clear();
+  for (const node of nodes) {
+    if (!node) continue;
+    node.classList.remove('flash-target');
+    void node.offsetWidth;
+    node.classList.add('flash-target');
+    flashingFormulas.add(node);
+  }
   if (targetFlashTimer) clearTimeout(targetFlashTimer);
   targetFlashTimer = setTimeout(() => {
-    node.classList.remove('flash-target');
+    for (const n of flashingFormulas) n.classList.remove('flash-target');
+    flashingFormulas.clear();
     targetFlashTimer = null;
   }, 1600);
 }
@@ -3188,11 +3219,22 @@ function scrollNodeToLine(el: HTMLElement, node: HTMLElement, smooth: boolean): 
   el.scrollTo({ top: Math.max(0, top - readingLine() + 2), behavior: smooth ? 'smooth' : 'auto' });
 }
 
-async function focusRow(
-  id: string,
-  opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean; latex?: string } = {},
-) {
-  const { smooth = true, save = true } = opts;
+/**
+ * 一条引用目标 → 「落到哪一行 / 哪一页」。**纯计算**：不碰 DOM、不 await、不弹提示。
+ *
+ * 这条链有四段：合成图注锚点 `fig:p<页>:n<图号>`、`row-` 前缀归一（`rowAnchorId`）、
+ * 解析块 id → 正文行 id（`block_rows`）、无行可落的块（`row_less_blocks`）。
+ * `focusRow`（单条落点）与 `focusMany`（合并引用一次闪多处）**共用这一枚** ——
+ * 合并闪要是自己再拼一遍，`fig:` / `row-` 这些历史写法就会在两个入口里行为不一致。
+ */
+function resolveRefId(raw: string, pageHint?: number): {
+  id: string;
+  page: number | undefined;
+  known: PageRow | undefined;
+  rowLessPage: number;
+  rowLessLatex: string;
+} {
+  let id = String(raw || '');
   /* 合成锚点 `fig:p<页>:n<图号>`（见 ReaderChat.gotoCitation）：解析成那张图的**图注行** id。
      历史引用没有行 id，只能靠这条兜底 —— 认不出来就退化成整页闪。 */
   const figAnchor = /^fig:p(\d+):n(\d+)$/.exec(id);
@@ -3215,7 +3257,26 @@ async function focusRow(
   const rowLess = known ? undefined : rowLessById.value.get(id);
   const rowLessPage = Number(rowLess?.page ?? 0) || 0;
   const rowLessLatex = String(rowLess?.latex ?? '');
-  const page = opts.page ?? known?.page ?? (rowLessPage || undefined) ?? currentPage.value ?? 1;
+  const page = pageHint ?? known?.page ?? (rowLessPage || undefined) ?? currentPage.value ?? 1;
+  return { id, page, known, rowLessPage, rowLessLatex };
+}
+
+/** 目标在正文里的节点：优先那一行，其次整页（页容器）。两个都找不到 = null。
+ *  与原来 `focusRow` 里那一行查询逐字同构，只是抽出来给合并闪复用。 */
+function refNodeOf(id: string, page: number | undefined, el: HTMLElement | null): HTMLElement | null {
+  return (id ? el?.querySelector<HTMLElement>(`[data-row-id="${id}"]`) : null)
+    ?? el?.querySelector<HTMLElement>(`[data-page="${page}"]`)
+    ?? null;
+}
+
+async function focusRow(
+  id: string,
+  opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean; latex?: string } = {},
+) {
+  const { smooth = true, save = true } = opts;
+  const spot = resolveRefId(id, opts.page);
+  id = spot.id;
+  const { known, page, rowLessPage, rowLessLatex } = spot;
   if (!id && !page) return;
   /* 明确"无行可落但知道页"的块不算锚点失效：它有页可去，交给下面那条既有的"到页 + 闪整页"
      分支即可（不再弹"锚点已失效"）。 */
@@ -3228,8 +3289,7 @@ async function focusRow(
   mobilePane.value = '';
   await nextTick();
   const el = scroller.value;
-  const node = (id ? el?.querySelector<HTMLElement>(`[data-row-id="${id}"]`) : null)
-    ?? el?.querySelector<HTMLElement>(`[data-page="${page}"]`);
+  const node = refNodeOf(id, page, el);
   if (el) spyLockUntil = performance.now() + 1200;
   /* 公式引用先在这一行里找那条公式：找到就把落点与闪烁都交给它（同一行里几枚公式才分得开） */
   const formulaNode = opts.latex && node && el ? findFormula(node, opts.latex) : null;
@@ -3267,6 +3327,76 @@ async function focusRow(
      否则点引用标号会"跳过去但什么都没亮"（用户口径 2026-11-27）。 */
   if (opts.flash) void flashRow(known ? id : (page ? `page:${page}` : ''));
   if (save) saveProgressDebounced();
+}
+
+/**
+ * 一次闪**多处**（正文里点一枚引用标号 → 它那条「段落上相邻」的引用链，见
+ * ReaderChat 的 `buildAdjacentChains`；方括号合并出来的多目标也走这里）。
+ *
+ * 三条口径（用户要求）：
+ * - 落点只跟**第一条**走：滚动只发生一次，镜头不会从一处拽到另一处（那是"挨个点"的老毛病）；
+ * - 能认出那一枚 KaTeX 的（公式类引用）**各自闪自己那一枚** —— 同一行里两条公式才不会糊成"整行闪"；
+ * - 只剩行可落的，收成一个 id 列表挂 `data-flash-span`（`paintFlashSpanIds`，一套 CSS 多行同时亮；
+ *   相邻行那一层 `::before` 自带 `inset: -3px -6px`，视觉上本来就接成一条 —— 不要另造"合并块"）；
+ *   只带页码的历史引用（插图 / 表格）落到那一页的**首行**，与 `focusPage` 同一口径 ——
+ *   整页亮一片正是用户反复抱怨的那件事。
+ *
+ * 摘除统一在 1.6s 后，与行闪 / 单枚公式闪同一节奏。
+ */
+async function focusMany(
+  targets: Array<{ block?: string; row?: string; page?: number; latex?: string }>,
+) {
+  const list = Array.isArray(targets)
+    ? targets.filter((t) => t && (t.row || t.block || t.page || t.latex))
+    : [];
+  if (!list.length) return;
+  // 先把每条目标解析成"哪一行 / 哪一页"（同步，不碰 DOM），落点与闪烁都基于这一份
+  const spots = list.map((t) => {
+    const hit = resolveRefId(String(t.row || t.block || ''), t.page);
+    return { ...hit, latex: String(t.latex || '') };
+  });
+  const head = spots[0];
+  /* 当前行只跟第一条（与 focusRow 一致：认到行才改）。合并组的几处通常就在同一段里，
+     但即便跨段，目录高亮也该停在**点进去的那一处**上。 */
+  if (head.known) currentRowId.value = head.id;
+  mobilePane.value = '';
+  await nextTick();
+  const el = scroller.value;
+  if (el) spyLockUntil = performance.now() + 1200;   // 平滑滚动期间别让滚动跟踪把当前行改到别处
+  const formulas: HTMLElement[] = [];
+  const rowIds = new Set<string>();
+  let scrolled = false;
+  for (const s of spots) {
+    const node = refNodeOf(s.id, s.page, el);
+    /* 行内 / 页内认出那枚 KaTeX（门槛在 findFormula 里：签名太短不做匹配）。
+       `rowLessLatex` 只对"无行可落"的块有值，与 focusRow 那条支路同一个来源。 */
+    const latex = s.latex || s.rowLessLatex;
+    const formulaNode = latex && node ? findFormula(node, latex) : null;
+    if (!scrolled && el) {
+      const to = formulaNode || node;
+      if (to) { scrollNodeToLine(el, to, true); scrolled = true; }
+    }
+    if (formulaNode) { formulas.push(formulaNode); continue; }
+    if (s.known) { rowIds.add(s.id); continue; }
+    // 没有行也没有公式可精确落：退到那一页的首行（focusPage 同一条兜底）
+    const firstRow = allRows.value.find((r) => r.page === s.page);
+    if (firstRow) rowIds.add(firstRow.id);
+  }
+  /* 上一轮的整行闪可能还挂着（先点单枚、再点合并组）：合并闪自己有一套，先收掉，
+     否则同一行上会叠两层动画、看着比别处亮一档。 */
+  if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
+  flashRowId.value = '';
+  clearFlashSpan();
+  paintFlashSpanIds(Array.from(rowIds));
+  if (formulas.length) flashFormulaNode(...formulas);
+  if (rowIds.size) {
+    if (flashSpanTimer) clearTimeout(flashSpanTimer);
+    flashSpanTimer = setTimeout(() => {
+      clearFlashSpan();
+      flashSpanTimer = null;
+    }, 1600);
+  }
+  saveProgressDebounced();
 }
 
 /**
@@ -8963,6 +9093,7 @@ function renderMarkdown(text?: string | null) {
           :can-float="!isNarrow"
           :floating="chatFloat"
           @focus="(id: string, page?: number, latex?: string) => focusRow(id, { page, flash: true, latex })"
+          @focus-many="focusMany"
           @peek="onCitePeekAsk"
           @peek-hide="onCitePeekHide"
           @clear-selection="chatSelection = null"
