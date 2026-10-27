@@ -426,6 +426,13 @@ def test_edge_facts_are_rendered_into_prompt():
     assert "新起句子" in clean and "本页句子已结束" in clean
     assert render_edge_facts({}) == ""                     # 没有事实就不写这块
 
+    # A 路（转录）**不能**收到"已由上一页译完、跳过它"：A 没有 carry，上一页从没写过这半句。
+    a_facts = render_edge_facts({"head": True, "tail": True}, path="a")
+    assert "已由上一页译完" not in a_facts
+    assert "本页跳过它" not in a_facts
+    assert "必须原样转录出来" in a_facts
+    assert "照原样停在断处" in a_facts          # A 页尾不许补句号、也不许用下一页内容补完
+
     prompt = render_page_prompt(page=2, page_total=22, body="Body.",
                                 edges={"head": True, "tail": True})
     assert EDGE_FACTS_HEADER in prompt
@@ -588,6 +595,25 @@ def test_mark_rows_continuity_strips_page_tail_ellipsis():
     mark_rows_continuity(rows, head=False, tail=True)
     assert rows[-1]["translation"] == "将随机旋转矩阵施加于"
     assert rows[-1]["continues"] is True
+
+
+def test_transcribe_prompt_keeps_footnote_rule_and_drops_arxiv_stamp():
+    """用户口径（2026-12-27）：脚注分隔线要保留成 `---`；arXiv 预印本标记要丢掉。
+
+    旧提示词只写「丢弃页眉、页脚、页码、脚注横线、出版社水印」，两件事都做错了 ——
+    脚注那条横线被丢（转录里根本看不到分隔线），arXiv 标记却原样抄成了
+    `# arXiv:1706.03762v5 [cs.CL] 6 Dec 2017` 一行（生产库 p001-02 实测）。
+    """
+    import backend.services.translation.page_translate as pt
+
+    for prompt in (pt.TRANSCRIBE_SYSTEM, pt.TRANSLATE_SYSTEM, pt.SYSTEM_PROMPT):
+        assert "脚注横线" not in prompt            # 不再把脚注横线列进丢弃清单
+    assert "唯一要保留的横线是脚注区上方那条短横线" in pt.TRANSCRIBE_SYSTEM
+    assert "arXiv:1706.03762v5 [cs.CL] 6 Dec 2017" in pt.TRANSCRIBE_SYSTEM
+    assert "arXiv 预印本标记" in pt.TRANSCRIBE_SYSTEM
+    assert "arXiv 预印本标记" in pt.TRANSLATE_SYSTEM
+    # 块模式：清单里独立一块 `---` 要原样输出（否则会撞上"译文不能是空串"那条）
+    assert "原样输出 `---`" in pt.BLOCK_TRANSLATE_SYSTEM
 
 
 def test_edge_facts_tell_model_what_to_do_when_lookahead_cannot_help():
