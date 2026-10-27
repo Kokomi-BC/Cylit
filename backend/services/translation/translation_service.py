@@ -504,6 +504,14 @@ def run_path_task(ctx, path: str | None = None) -> dict:
                     counters["reasoning_tokens"] += again.reasoning_tokens
                     if len(_empty_blocks(again, a_blocks)) <= len(miss):
                         result = again
+            # 块数不对**不能将就**：数组短一块 = 那一块被并进邻块，读模型按序号配对，
+            # 这一页从那一块之后整页错位（实测第 7 页：B 15 块 / A 16 块）。
+            # 重试也救不回来就**让这一页失败** —— 任务里能看到，重跑一次就好，比静默错位强。
+            got_blocks = len(list(getattr(result, "blocks", None) or []))
+            if got_blocks != len(a_blocks):
+                raise ValidationError(
+                    f"第 {page_no} 页：块数对不上（A {len(a_blocks)} 块 / B {got_blocks} 块），"
+                    "拒绝写入错位的译文")
 
         counters["prompt_tokens"] += result.prompt_tokens
         counters["completion_tokens"] += result.completion_tokens
