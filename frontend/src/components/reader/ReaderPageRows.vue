@@ -476,13 +476,17 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
   60% { opacity: .6; }
   100% { opacity: 0; }
 }
-/* 整页闪（引用没有行锚点时）：同一套观感，罩在整页上 —— 只描边 + 淡底，不动内容 */
+/* 整页闪（引用没有行锚点时）：同一套观感，罩在整页上 —— 只描边 + 淡底，不动内容。
+   ⚠️ 数字与 `.row-pair.flash-*::before` **逐项相同**（11% 淡底 / 1px 55% 细描边 / 8px 圆角），
+   只有四边外扩更大（整页是张卡片，-6/-10 才不会贴住页边）：2026-12-27 用户口径
+   「闪烁样式也不太一致」说的就是这处原来是 `1.5px 45%` 的 border、12% 底、12px 圆角。
+   同样用 inset 阴影而不是 border —— border 会把这层覆盖盒再撑大 1.5px。 */
 .pg.flash-a::before,
 .pg.flash-b::before {
   content: ''; position: absolute; inset: -6px -10px; pointer-events: none;
-  border-radius: 12px; opacity: .95;
-  border: 1.5px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 8px; opacity: .95;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .pg.flash-a::before { animation: row-flash-a 1.5s ease-out forwards; }
 .pg.flash-b::before { animation: row-flash-b 1.5s ease-out forwards; }

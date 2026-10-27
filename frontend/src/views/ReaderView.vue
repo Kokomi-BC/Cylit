@@ -3227,10 +3227,12 @@ function paintFlashBlock(ids: string[]): boolean {
   const box = document.createElement('div');
   box.className = 'flash-block';
   box.dataset.flashBlock = '1';
-  box.style.top = `${Math.round(top - base.top + cont.scrollTop - 6)}px`;
-  box.style.left = `${Math.round(left - base.left + cont.scrollLeft - 8)}px`;
-  box.style.width = `${Math.round(right - left + 16)}px`;
-  box.style.height = `${Math.round(bottom - top + 12)}px`;
+  /* 四边外扩量与逐行那层的 `::before { inset: -3px -6px }` 是同一组（2026-12-27 用户口径
+     「闪烁样式也不太一致」）：同一处内容，点单行与点合并组闪出的盒子一样大。 */
+  box.style.top = `${Math.round(top - base.top + cont.scrollTop - 3)}px`;
+  box.style.left = `${Math.round(left - base.left + cont.scrollLeft - 6)}px`;
+  box.style.width = `${Math.round(right - left + 12)}px`;
+  box.style.height = `${Math.round(bottom - top + 6)}px`;
   cont.appendChild(box);
   return true;
 }
@@ -11162,19 +11164,30 @@ function renderMarkdown(text?: string | null) {
 
 /* 「就是这**一条公式**」：点解读里的公式标号时精确标到这里（同一正文行里可能有好几条公式，
    行级落点分不开 —— 用户 2026-12-03 的「56、57 为什么是同一块地方」）。
-   语言与行闪一致：**只有一层淡底**，1.6s 淡出；`:deep` 是因为 KaTeX 在子组件里渲染。
+   `:deep` 是因为 KaTeX 在子组件里渲染。
 
-   ⚠️ 这里曾经还有一根 `box-shadow: inset 3px 0 0 0`（左侧竖条）。行闪那根已经去掉了，
-   而段落里的公式闪是**另一套**（`flash-target`）—— 于是用户看到的是"段落内公式仍然有竖线"
-   （2026-12 报）。两处必须同一口径：闪烁只许用色，不许加边框/竖条。 */
+   **与行闪 / 合并大块是同一份材质**（用户口径 2026-12-27「公式闪烁没有加细线描边，样式也不太
+   一致」）：11% 主题色淡底 + `inset 0 0 0 1px` 55% 细描边 + 8px 圆角 + 1.5s 淡出。
+   改这里就要同时看 `ReaderPageRows.vue` 的 `.row-pair.flash-a/b::before`（同一套数字）。
+
+   ⚠️ 两件事别混：① 曾经这里有一根 `inset 3px 0 0 0` 的**左侧竖条**，行闪那根撤掉后它没跟着撤，
+   用户看到"段落里的公式仍然有竖线"（2026-12 报）—— 竖条不要再加回来；② 细**描边**是 2026-12-27
+   用户点名要的，与竖条不是一回事。
+
+   ⚠️ 为什么动画是 `background-color` / `box-shadow` 而不是像别的几处那样淡 `opacity`：
+   这层材质（淡底 + 描边）就画在公式**自己**身上，淡 opacity 会把公式字形一起淡掉。 */
 .reader-content :deep(.flash-target) {
-  background-color: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-radius: 6px;
-  animation: katex-flash 1.6s ease-out forwards;
+  background-color: color-mix(in srgb, var(--accent) 11%, transparent);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: katex-flash 1.5s ease-out forwards;
 }
 @keyframes katex-flash {
-  0%, 40% { background-color: color-mix(in srgb, var(--accent) 16%, transparent); }
-  100% { background-color: transparent; }
+  0%, 60% {
+    background-color: color-mix(in srgb, var(--accent) 11%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
 }
 
 /* 闪烁范围里**跟在命中行之后的正文行**（见 flashSpanIds / paintFlashSpan）。
@@ -11185,11 +11198,12 @@ function renderMarkdown(text?: string | null) {
  * 挂在属性上（不是类名）的原因见 paintFlashSpan：Vue 重排 class 会整条覆盖 className。
  * pointer-events: none —— 覆盖层不挡点击（与那一枚同一条）。 */
 /* 合并闪的那**一枚大块**（见 paintFlashBlock）：跨页、跨多行都只画这一个矩形。
-   材质与逐行那套（`row-flash-span`）同一档亮度，切换时不会觉得换了一种闪法；
-   圆角比行内那层大一点（它盖的是一个区域，不是一行）。 */
+   材质与逐行那套（`row-flash-span` / `.row-pair.flash-*::before`）**逐项相同**：
+   11% 淡底、1px 55% 细描边、8px 圆角、1.5s 淡出，四边外扩也取同一组（-3/-6，见 paintFlashBlock）——
+   否则"点一行"与"点一组"会闪出两种形状（用户口径 2026-12-27「闪烁样式也不太一致」）。 */
 .reader-content :deep(.flash-block) {
   position: absolute; z-index: 3; pointer-events: none;
-  border-radius: 12px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 11%, transparent);
   /* 一条**细主题色描边**：光靠淡底在浅背景上不够醒目（用户口径 2026-12-27）。
      用 inset 阴影而不是 border —— 不改变盒子尺寸，块的位置与尺寸仍然等于那几行的外接框。 */
@@ -11215,6 +11229,13 @@ function renderMarkdown(text?: string | null) {
   0% { opacity: .95; }
   60% { opacity: .6; }
   100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 与 ReaderPageRows 里那条同一口径：不做淡出，亮着等 JS 摘掉（见 flashSpanTimer /
+     targetFlashTimer）。只把动画关掉，材质一个字不动 —— 否则"关了动效"就只剩一种没有描边的闪。 */
+  .reader-content :deep(.flash-block),
+  .reader-content :deep(.row-pair[data-flash-span])::before { animation: none; opacity: .5; }
+  .reader-content :deep(.flash-target) { animation: none; }
 }
 
 @media (max-width: 1100px) {

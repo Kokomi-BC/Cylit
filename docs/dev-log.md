@@ -16141,3 +16141,52 @@ GitHub `43ab059..d66bf19`（此前 500 的三个提交也一起推上去了）�
 `frontend_check.py` **168/168 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-DQF7INqX.js`）。
 线上 = `c199b19`，`dist/index.html` sha256 `71ab999…`，`cylit-api` online、`/health` 200；
 GitHub `6b77f09..c199b19`，`unpushed=0`。
+---
+
+# 242 · 闪烁材质统一：公式闪补上细描边，五处一套数字（2026-12-27）
+
+用户口径：**「公式闪烁没有加细线描边，闪烁样式也不太一致」**。上一条（241）只给三处加了口径，
+公式闪与整页闪漏在外面 —— 先把五处量化出来，差异是**真的**，不是错觉：
+
+| 元素 | 底色 | 描边 | 圆角 | 时长 |
+|---|---|---|---|---|
+| `.flash-target`（公式） | `accent 16%` | **无** | 6px | 1.6s |
+| `.pg.flash-*::before`（整页兜底） | `accent 12%` | `border 1.5px 45%` | 12px | 1.5s |
+| `.flash-block`（合并大块） | `accent 11%` | `inset 1px 55%` | 12px | 1.5s |
+| `.row-pair.flash-*::before`（命中行） | `accent 11%` | `inset 1px 55%` | 8px | 1.5s |
+| `.row-pair[data-flash-span]::before`（补行） | `accent 11%` | `inset 1px 55%` | 8px | 1.5s |
+
+## A. 改法（只改材质，不动落点）
+
+五处统一成一份材质：**`accent 11%` 淡底 + `inset 0 0 0 1px`（55%）细描边 + 8px 圆角 + 1.5s 淡出**，
+只有四边外扩按"行 / 页"分两档（行 −3/−6、整页 −6/−10）—— 那是大小不同，不是材质不同。
+
+- 公式闪（`.flash-target`）动画改成淡 `background-color` + `box-shadow`，**不能**跟着别人淡 `opacity`：
+  这层材质画在公式**自己**身上，淡 opacity 会把公式字形一起淡掉。
+- 整页闪的 `border: 1.5px` 换成 `inset` 阴影：border 会把这层覆盖盒再撑大 1.5px。
+- `paintFlashBlock` 的四边外扩从 `-6/-8`（宽 +16 高 +12）改成 `-3/-6`（宽 +12 高 +6），与逐行那层
+  `::before { inset: -3px -6px }` 同一组 —— 同一处内容，点单行与点一组闪出的盒子一样大。
+- 补 `prefers-reduced-motion`：`.flash-block` / `.flash-target` / `[data-flash-span]` 只关动画、
+  材质不动（原来只覆盖了 ReaderPageRows 里那两处，关掉动效就会闪出"没有描边"的那种）。
+
+## B. 实测（无头 Chrome + iframe 探针，读 `getComputedStyle`）
+
+```
+formula   bg oklab(… / 0.11)   shadow …0.55) 0 0 0 1px inset   radius 8px  1.5s katex-flash
+rowHit    bg srgb(… / 0.11)    shadow …0.55) 0 0 0 1px inset   radius 8px  1.5s row-flash-a
+rowSpan   bg srgb(… / 0.11)    shadow …0.55) 0 0 0 1px inset   radius 8px  1.5s row-flash-span
+page      bg srgb(… / 0.11)    shadow …0.55) 0 0 0 1px inset   radius 8px  1.5s row-flash-a
+block     bg srgb(… / 0.11)    shadow …0.55) 0 0 0 1px inset   radius 8px  1.5s block-flash
+```
+
+（oklab 与 srgb 只是写法：都在 `color-mix` 嵌套上下文里，取的是同一个 `--accent` + 同一个 alpha。）
+截图 `data/logs/flashprobe.png`：整页闪那圈细描边与行内那层同一个亮度、同一个圆角。
+
+## C. 一次差点走错的排查
+
+第一版探针取 `document.querySelector(".pg")`，拿到的是**目录**里的 `<span class="pg">p3</span>`
+（`ReaderToc.vue` 的页码标，scope `3c17c36e`），量出来 "content:none / 无描边"，
+差点被当成"整页闪的 CSS 从来是死的"。改取 `.rows-wrap .pg`（`ReaderPageRows.vue`，scope `b6495c6f`）
+后立刻正常 —— **量样式前先确认选到的是哪个组件的元素**（看 `data-v-*`）。
+
+`frontend_check.py` **168/168 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BhHdIdLc.js`）。
