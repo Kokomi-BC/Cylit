@@ -316,8 +316,8 @@ TRANSCRIBE_SYSTEM = """你是学术论文的「**页面转录**」专家。每�
    **唯一保留的横线是脚注区上方那条短横线**（单独一行 `---`）；脚注文字本身属于正文，照常转录。
 8. **只转录本页页图上有的内容**：页尾被切断的半句**照原样停在断处**，不要用下一页的内容补完。
 9. **作者区 / 机构区写成**一段**，不要一列一行**（实测把 8 位作者抄成 8 行，读者只看到一列名字）：
-   各人用「、」连起来，机构与邮箱放人名后面的括号里，例如：
-   `Ashish Vaswani（Google Brain，avaswani@google.com）、Noam Shazeer（Google Brain，noam@google.com）、…`。
+   各人连成一句、机构与邮箱放人名后的括号里，**标点跟随页图语言**（原文那侧就用 `,` `(` `)`，别写全角）：
+   `Ashish Vaswani (Google Brain, avaswani@google.com), Noam Shazeer (Google Brain, noam@google.com), …`。
    页图上本来就是**并列短项**的（指标说明、并列图注），才用 ` · ` 连成一行；
    **不要写表格、不要 `<br>` 等任何 HTML**（单元格里 `<br>` 会显示成字面量）。
 
