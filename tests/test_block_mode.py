@@ -55,17 +55,22 @@ def test_block_prompt_keeps_what_b_still_owes() -> None:
         assert marker in BLOCK_TRANSLATE_SYSTEM, marker
 
 
-def test_block_prompt_collects_the_page_tail_from_path_a() -> None:
-    """页尾收句：A 路**提前转录**，把下一页开头给 B，让 B 把半句收成完整句（`carry_md`）。"""
-    for marker in ("【页尾：这次能拿到 A 路**下一页的开头**】",
-                   "把本页末尾被版面切断的那句收成完整句",
-                   "把**你实际用到的那段原文**逐字符照抄进 `carry_md`",
-                   "抄多会造成下一页重复、抄少会漏译",
-                   # 收句**不能**改变块数：它只是最后一块内部的长短变化
-                   "数组的长度**仍然必须正好 N**",
-                   # 页首去重与"一句话只出现一次"
-                   "【页首：上一页可能已经译掉了本页开头】", "空字符串"):
+def test_block_prompt_is_page_local_after_carry_retired() -> None:
+    """跨页收句**已停用**（用户口径 2026-12-27）：B 只译本页的块，页首照译、页尾停在断处。
+
+    carry 时代那四段说明（【页尾：这次能拿到 A 路下一页的开头】/ carry_md 抄法 / 页首去重 /
+    "整块已由上一页译完时输出空串"）全部下线 —— 留着就会让模型去补后半句、中文与英文对不上。
+    """
+    for marker in ("【跨页：**只译本页的块**（用户口径 2026-12-27）】",
+                   "停在断处",
+                   "照本页原文把这半截译出来",
+                   "逐块对齐"):
         assert marker in BLOCK_TRANSLATE_SYSTEM, marker
+    for gone in ("【页尾：这次能拿到 A 路**下一页的开头**】",
+                 "把本页末尾被版面切断的那句收成完整句",
+                 "【页首：上一页可能已经译掉了本页开头】",
+                 "抄多会造成下一页重复、抄少会漏译"):
+        assert gone not in BLOCK_TRANSLATE_SYSTEM, gone
 
 
 def test_block_schema_is_a_string_array() -> None:

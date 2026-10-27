@@ -43,21 +43,22 @@ def test_translate_prompt_is_chinese_only() -> None:
     assert "【translation_md：中文译文】" in TRANSLATE_SYSTEM
     assert "【original_md：原文转录】" not in TRANSLATE_SYSTEM, "B 路不该要求转录原文"
     assert "英文原文由另一条独立流水线负责" in TRANSLATE_SYSTEM
-    # carry_md 是 B 路独有的跨页机制（译文收句 + 给下一页去重）
+    # carry_md 仍在契约里，但**已停用**（2026-12-27：改成与英文逐块对齐，不再跨页收句）
     assert "【carry_md：" in TRANSLATE_SYSTEM
-    assert "tlenecks between HBM and SRAM" in TRANSLATE_SYSTEM
+    assert "已停用" in TRANSLATE_SYSTEM or "停用" in TRANSLATE_SYSTEM
 
 
 def test_translate_prompt_keeps_cross_page_rules() -> None:
-    for marker in ("跳过这半句", "绝不能两页各写一遍", "不要留半句",
-                   "**只放原文**", "排版单位"):
+    """跨页口径（2026-12-27 改版）：**页首照译、页尾停在断处**，两侧逐块对齐。"""
+    for marker in ("照本页原文译出来", "停在断处", "排版单位", "逐块对齐"):
         assert marker in TRANSLATE_SYSTEM, marker
+    assert "跳过这半句" not in TRANSLATE_SYSTEM, "carry 停用后不该再让模型跳过页首半句"
 
 
 def test_transcribe_prompt_stops_at_page_break() -> None:
     """A 路**不许**用下一页把半句补完 —— 补句是译文那一侧的事。"""
     assert "照原样停在断处" in TRANSCRIBE_SYSTEM
-    assert "不要用下一页的内容把它补完" in TRANSCRIBE_SYSTEM
+    assert "不要用下一页的内容补完" in TRANSCRIBE_SYSTEM
 
 
 # --------------------------------------------------------------------------
@@ -160,8 +161,9 @@ def test_render_page_prompt_drops_lookahead_for_path_a() -> None:
     a = render_page_prompt(**common, path="a")
     b = render_page_prompt(**common, path="b")
     fused = render_page_prompt(**common)
+    # 2026-12-27 起 carry 停用：A、B 两路都不再喂【下一页开头】（融合模式是存量臂，保留原样）
     assert "【下一页开头】的内容" not in a
-    assert "【下一页开头】的内容" in b
+    assert "【下一页开头】的内容" not in b
     assert "【下一页开头】的内容" in fused
     for text in (a, b, fused):
         assert "第 3 页 / 共 22 页" in text
