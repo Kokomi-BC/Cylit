@@ -15276,3 +15276,49 @@ warning  A items=[] + 无默认价 → has_price=False **warning=None**（用户
 > 刷新后最终只有最后一条保持高亮 —— 宁可这样，也不引入"多行同时高亮"的第二种状态。
 > 另外批量时 `is_default` / `enabled` 也照表单值写回 N 条（"照填的内容写进 N 个"的直译），
 > 勾了「设为该任务的默认模型」就会让这 N 条在各自类型下都成为默认。
+
+### 223. 第二百二十三轮：批量配置从「5 步表单」拆成轻量面板（密钥来源 / 计费两块，各自独立生效）
+
+上一轮（222）把同名多配置的批量配置做成了**复用 5 步「编辑模型」表单** —— 用户口径「分别拆成轻量面板」，
+即：不要那张大表单，只要一个小的、只放**真的需要一次改多份**的两块，并且两块**分别**生效。
+
+新建 `components/settings/ModelBatchPanel.vue`（`Modal` + 既有 `.field/.btn` 类，不引入新颜色）：
+- 标题「批量配置 · <名字>」，下面一行说清范围「N 个配置：论文问答 / 视觉读页」
+  （类型中文名由 `ModelPanel` 按 TYPE_LABEL 算好传进来，面板里不再抄第二份表）；
+- **区块 1 密钥来源**：跟随提供方默认 / 指定密钥（`GET /models/providers/{id}/keys`，`{items}` 与
+  `{keys}` 两种都认，404 降级成"只能选默认/无需密钥"）/ 无需密钥；
+- **区块 2 计费**：switch（该模型计费，造型照 ModelForm 那套 `.sw/.sw-track/.sw-knob`）+ 币种 + 四个单价。
+  空 = null、非法 = 红字禁存、**绝不写 0**；**不碰分时段**（整批替换语义，批量改它风险远大于收益），
+  面板里写一句「分时段单价仍按单条配置维护」；
+- 组内值不一致的块挂一枚「组内不一致」小标签，并且**不预选任何一项**。
+
+**「分别生效」的落点**：`keyDirty` / `billingDirty` 两个独立脏标记，`emit('save', payload)` 里
+没动过的那块是 `undefined`，父级用 `'key' in payload` 判断（**不能用 falsy**：`key_mode: 'auto'` 本身不假）。
+两块都没动 → 保存按钮 disabled。理由：组内值本来就不一致时，把"没动过的那块"一并写回去，
+等于替用户抹平他并不想改的差异 —— 那就不是"分别"了。
+
+`ModelPanel`：`openBatch` 只填 `batchTargets/name/typeLabels/providerId` 并开面板；
+`applyBatch(payload)` 合并出**只含该发字段**的 body，逐条 `PUT /models/{id}`，单条失败 `continue`，
+最后一行总账「N 个成功 / M 个失败」+ 每行「名称 — 后端 message」（面板里 `pre-line` 分行）。
+上一轮为批量加在 ModelForm 上的 `batchCount` prop 与 `[data-batch-banner]` 横幅**已删**
+（`git diff` 只有三处删除，共 −11 行）；单条编辑/新建路径回到 222 之前的样子。
+上一轮那颗计费 switch（`role="switch"` + 折叠在计费块内）**保留未回退**。
+
+### 实测（有头 Chrome + CDP；先造两条同名配置，验完已删）
+
+```
+入口     .rel-row.merged = [{name: '批量面板验证 · 同名组', count: '2 个配置'}] → [data-rel-batch] 点开
+面板     scope='2 个配置：论文问答 / 视觉读页'，两块标题 ['密钥来源','计费']
+         mixedKey=true（auto vs none）、keyMode 不预选（''）、saveDisabled=true
+空保存   两块都没动 → 点保存 = 'disabled'（没有要写的东西）
+只动计费 拨 switch + 输入 1.5 / 3 → saveEnabled=true，keyMode 仍 ''（没动过就不发）
+         落库：两条 in/out=1.5/3.0 has_price=True；key_mode **仍是 auto / none**（没被抹平）
+只动密钥 再开面板，只点「跟随提供方默认」→ 落库：两条 key_mode=auto，价格**仍是 1.5/3.0**
+关闭     panelClosed=true，toast='成功 / 已写入 2 个配置'
+清理     两条 DELETE 200，库里回到原来 5 条
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BFDSJf-u.js`）、`frontend_check.py` **168/168**。
+
+> 取舍：计费块**整块**生效 —— 只拨 switch 关掉计费时，币种也一起写 null（与"不计费"语义一致）。
+> 若要"只关价格、保留币种"，得在计费块内部再拆一层脏标记；现在不拆，是因为那是同一条语义的两半。

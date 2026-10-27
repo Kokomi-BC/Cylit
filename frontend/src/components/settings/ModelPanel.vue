@@ -35,6 +35,7 @@ import UsageChart from '@/components/settings/UsageChart.vue';
 import LimitCard from '@/components/settings/LimitCard.vue';
 import LimitBanner from '@/components/settings/LimitBanner.vue';
 import ProviderDrawer from '@/components/settings/ProviderDrawer.vue';
+import ModelBatchPanel from '@/components/settings/ModelBatchPanel.vue';
 import type { ProviderRow } from '@/components/settings/modelTypes';
 
 /** 模型类型中文标签（类型是产品概念，不是硬编码的模型名）。 */
@@ -800,10 +801,6 @@ async function removeModel(m: ModelRow): Promise<void> {
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
-/** 同名多配置的批量清单：长度 > 1 时 submitForm 走「一条表单写回 N 个配置」那条路。
- *  单个配置一律是 []，老路径一个字都不动。只在 openBatch 里被填满，其余入口都要清空，
- *  否则上一次的批量标记会漏到下一次单条编辑上。 */
-const formBatch = ref<ModelRow[]>([]);
 const formDefaultType = ref('agent');
 /** 保存失败的文案：透给表单第五步的「保存结果」那一行（saveError），每次打开表单时清空 */
 const formError = ref('');
@@ -822,7 +819,6 @@ let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 function openCreate(type = 'agent'): void {
   formMode.value = 'create';
   formTarget.value = null;
-  formBatch.value = [];
   formDefaultType.value = type;
   formError.value = '';
   formWarning.value = '';
@@ -836,7 +832,6 @@ function openCreate(type = 'agent'): void {
 function openEdit(m: ModelRow): void {
   formMode.value = 'edit';
   formTarget.value = m;
-  formBatch.value = [];        // 单条编辑：把上一次批量留下的标记清掉
   formDefaultType.value = m.model_type || 'agent';
   formError.value = '';
   formWarning.value = '';
@@ -847,26 +842,50 @@ function openEdit(m: ModelRow): void {
   formOpen.value = true;
 }
 
+/* ---------------------------- 同名多配置的「批量配置」 ----------------------------
+ * 抽屉里那一组同名配置 → 轻量面板（ModelBatchPanel），只放「密钥来源」「计费」两块，各自独立生效。
+ * 不再复用 5 步「编辑模型」表单：名称 / Base URL / 参数 / 类型都是单条语义，批量写回去等于替用户抹平差异。 */
+
+const batchOpen = ref(false);
+/** 这一组是谁：面板自己决定改哪块，父级只负责逐条 PUT */
+const batchTargets = ref<ModelRow[]>([]);
+const batchName = ref('');
+const batchTypeLabels = ref<string[]>([]);
+const batchProviderId = ref('');
+const batchBusy = ref(false);
+/** 逐条 PUT 的总账（一行总账 + 每行「名称 — 后端 message」），面板里 pre-line 显示 */
+const batchError = ref('');
+
+type BatchPayload = {
+  key?: { key_mode: string; provider_key_id: string | null };
+  billing?: {
+    currency: string | null;
+    price_in: number | null;
+    price_out: number | null;
+    price_cache_read: number | null;
+    price_cache_write: number | null;
+  };
+};
+
 /**
- * 抽屉里同名多配置那一行的「批量配置」：同一份表单依次写回这一组的每个配置。
+ * 打开批量面板：只把「这一组是谁」交给面板。
  *
- * 表单的初始值取**第一条**：同名 + 同提供方，用户想统一改的正是那些共同字段（类型不写回，见下）。
- * 类型（任务用途）不进批量：这一组之所以成组就是因为同名被多处用着，抹平类型等于删配置。
+ * 类型标签用本文件的 TYPE_LABEL 算好传进去（去重保序）—— 面板里不再抄第二份中文名表。
+ * 类型（任务用途）本身不进批量：这一组之所以成组就是因为同名被不同用途用着，抹平类型等于删配置。
  */
 function openBatch(models: ModelRow[]): void {
   if (!models.length) return;
-  formMode.value = 'edit';
-  formTarget.value = models[0];
-  formBatch.value = models;
-  /* 与 openEdit 同一套复位：只多了一条「本次是批量」，其余字段的初值语义不变 */
-  formDefaultType.value = models[0].model_type || 'agent';
-  formError.value = '';
-  formWarning.value = '';
-  formRulesError.value = '';
-  formSavedId.value = '';
-  formInitialStep.value = 0;
-  formFocusPrice.value = false;
-  formOpen.value = true;
+  batchTargets.value = models.slice();
+  batchName.value = String(models[0].name || models[0].model_name || '（未命名）');
+  batchProviderId.value = String(models[0].provider || '');
+  const labels: string[] = [];
+  for (const m of models) {
+    const label = typeLabel(m.model_type);
+    if (label && !labels.includes(label)) labels.push(label);
+  }
+  batchTypeLabels.value = labels;
+  batchError.value = '';
+  batchOpen.value = true;
 }
 
 /**
@@ -876,7 +895,7 @@ function openBatch(models: ModelRow[]): void {
 function openEditPrice(id: string): void {
   const m = ((state.models || []) as ModelRow[]).find((x) => x.id === id);
   if (!m) return;
-  openEdit(m);                  // openEdit 内部已经把 formBatch 清空，这里不必再来一次
+  openEdit(m);
   formInitialStep.value = 4;
   formFocusPrice.value = true;
 }
@@ -891,53 +910,65 @@ function flash(id: string): void {
 }
 
 /**
- * 批量写回：把同一份表单内容依次写到这一组的每个配置上。
+ * 写回：面板只发它**真的动过**的那一块，另一块是 undefined —— 所以用 `in` 判断，
+ * 别用 falsy 判断（`key_mode: 'auto'` 这类值本身不假，falsy 会把「跟随默认」当成没改漏掉）。
+ * 这是「分别生效」的落点：组内值本来就不一致时，把没动过的那块一并写回去等于替用户抹平差异。
  *
  * 为什么循环而不是新加批量接口：后端只有 PUT /models/{id}（逐个），前端不该为界面便利造第二套语义。
- * 单条失败**不中断**：写成功的就留着（回滚只是骗自己），失败清单一次报全，表单不关，改完可直接重试
+ * 单条失败**不中断**：写成功的就留着（回滚只是骗自己），失败清单一次报全，面板不关，改完直接重试
  * —— 与限额卡片的批量 report 是同一种写法（一行总账 + 每行「名称 — 后端 message」）。
  *
- * 类型（model_type）**不写回**：同名多配置之所以成组，就是同一个名字被不同用途用着，
- * 抹平类型等于删配置。表单横幅也是这么跟用户说的。
+ * body 里只有这两块真正改到的字段：name / base_url / parameters / model_type 一律不发
+ * —— 那几项是单条语义，顺手发出去就是替用户改配置。
  */
-async function submitBatch(
-  payload: Record<string, any>,
-  rules: { items: Record<string, any>[] } | null,
-): Promise<void> {
-  const list = formBatch.value.slice();
-  const body: Record<string, any> = { ...payload };
-  delete body.model_type;
+async function applyBatch(payload: BatchPayload): Promise<void> {
+  const body: Record<string, unknown> = {};
+  if ('key' in payload && payload.key) {
+    body.key_mode = payload.key.key_mode;
+    body.provider_key_id = payload.key.provider_key_id;
+  }
+  if ('billing' in payload && payload.billing) {
+    body.currency = payload.billing.currency;
+    body.price_in = payload.billing.price_in;
+    body.price_out = payload.billing.price_out;
+    body.price_cache_read = payload.billing.price_cache_read;
+    body.price_cache_write = payload.billing.price_cache_write;
+  }
+  if (!Object.keys(body).length) return;   // 两块都没动（面板那边保存本来就是禁用的）
+
+  batchBusy.value = true;
+  batchError.value = '';
   const ok: string[] = [];
   const fails: Array<{ name: string; message: string }> = [];
-  for (const m of list) {
-    const id = String(m.id || '');
-    const label = String(m.name || m.model_name || id || '（未命名）');
-    if (!id) { fails.push({ name: label, message: '缺少配置 id，跳过' }); continue; }
-    try {
-      await api.put('/models/' + id, body);
-      if (rules) await api.put('/models/' + id + '/price-rules', rules);
-    } catch (err) {
-      fails.push({ name: label, message: String((err as any)?.message ?? err) });
-      continue;                     // 单条失败不中断：后面的配置照写
+  try {
+    for (const m of batchTargets.value) {
+      const id = String(m.id || '');
+      const label = String(m.name || m.model_name || id || '（未命名）');
+      if (!id) { fails.push({ name: label, message: '缺少配置 id，跳过' }); continue; }
+      try {
+        await api.put('/models/' + id, body);
+      } catch (err) {
+        fails.push({ name: label, message: String((err as any)?.message ?? err) });
+        continue;                     // 单条失败不中断：后面的配置照写
+      }
+      ok.push(label);
     }
-    ok.push(label);
-  }
-  if (fails.length) {
-    formError.value = [
-      String(ok.length) + ' 个成功 / ' + String(fails.length) + ' 个失败',
-      ...fails.map((f) => f.name + ' — ' + f.message),
-    ].join('\n');
-    toast('批量配置有 ' + String(fails.length) + ' 个失败', 'error', 6000);
+    if (fails.length) {
+      batchError.value = [
+        String(ok.length) + ' 个成功 / ' + String(fails.length) + ' 个失败',
+        ...fails.map((f) => f.name + ' — ' + f.message),
+      ].join('\n');
+      toast('批量配置有 ' + String(fails.length) + ' 个失败', 'error', 6000);
+      await refresh();
+      return;                         // 面板留着：失败清单和用户的选择都在，改完直接重试
+    }
+    batchOpen.value = false;
+    batchTargets.value = [];
     await refresh();
-    return;                         // 表单留着：失败清单和已填内容都在，改完直接重试
+    toast('已写入 ' + String(ok.length) + ' 个配置', 'ok');
+  } finally {
+    batchBusy.value = false;
   }
-  formBatch.value = [];
-  formOpen.value = false;
-  await refresh();
-  toast('已写入 ' + String(ok.length) + ' 个配置', 'ok');
-  /* 逐个 flash：highlightId 只有一个，最终亮着的是最后一个，但刷新后每一行都点过一次
-     （宁可这样，也不引入"多行同时高亮"的第二种状态） */
-  for (const m of list) flash(String(m.id));
 }
 
 /**
@@ -959,11 +990,6 @@ async function submitForm(
   formWarning.value = '';
   formRulesError.value = '';
   try {
-    /* 同名多配置批量：一条表单写回 N 个配置（各自 PUT，互不牵连），与单条路径完全分开 */
-    if (formBatch.value.length > 1) {
-      await submitBatch(payload, rules);
-      return;
-    }
     const editId = formMode.value === 'edit' && formTarget.value ? String(formTarget.value.id) : '';
     let modelId = editId || formSavedId.value;
     let created: any = null;
@@ -1319,8 +1345,15 @@ onBeforeUnmount(() => {
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
       :rules-warning="formWarning" :rules-error="formRulesError"
       :initial-step="formInitialStep" :focus-price="formFocusPrice"
-      :batch-count="formBatch.length"
       @close="formOpen = false" @submit="submitForm"
+    />
+
+    <!-- 同名多配置的批量配置：轻量面板，只放「密钥来源」「计费」两块，各自独立生效 -->
+    <ModelBatchPanel
+      :open="batchOpen" :name="batchName" :type-labels="batchTypeLabels"
+      :provider-id="batchProviderId" :models="batchTargets"
+      :busy="batchBusy" :error="batchError"
+      @close="batchOpen = false" @save="applyBatch"
     />
   </div>
 </template>

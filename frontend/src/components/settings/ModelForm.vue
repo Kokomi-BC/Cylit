@@ -66,8 +66,6 @@ const props = withDefaults(defineProps<{
   initialStep?: number;
   /** 配合 initialStep：顺手把「计费」折叠块展开，让分时段单价列表一眼可见 */
   focusPrice?: boolean;
-  /** 本次是批量配置的第几条（> 1 = 一张表单写回 N 个同名配置）：只在顶部说清范围，不改任何字段语义 */
-  batchCount?: number;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -84,7 +82,6 @@ const props = withDefaults(defineProps<{
   rulesError: '',
   initialStep: 0,
   focusPrice: false,
-  batchCount: 0,
 });
 
 const emit = defineEmits<{
@@ -1247,12 +1244,6 @@ const advSummary = computed<string>(() => {
     @close="emit('close')"
   >
     <div class="flow">
-      <!-- 批量配置：同名多配置一次写回（父级循环 PUT，后端没有批量接口）。
-           先把范围说清 —— 尤其是「类型不改」：这一组之所以成组就是因为同名被不同用途用着。 -->
-      <p class="hint-line warn batch-banner" v-if="batchCount > 1" data-batch-banner>
-        批量配置：本次会把这里填的内容写入 {{ batchCount }} 个同名配置；类型（任务用途）不会被改。
-      </p>
-
       <!-- 步骤条：一行文字 + 18px 序号圆，只有走过的步骤能点回去 -->
       <nav class="steps" aria-label="步骤">
         <template v-for="(s, i) in STEPS" :key="s.id">
@@ -1956,8 +1947,6 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .sw input:checked + .sw-track { background: var(--accent); border-color: var(--accent); }
 .sw input:checked + .sw-track .sw-knob { transform: translateX(14px); background: var(--text-on-accent); }
 .sw input:focus-visible + .sw-track { outline: none; box-shadow: var(--ring); }
-/* 批量横幅：排在步骤条上方，只借 .hint-line 的观感，间距自己给一点（否则会贴住步骤条） */
-.batch-banner { margin: 0 0 10px; }
 .reasoning { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .adv-toggle {
   display: flex; align-items: center; gap: 6px; width: 100%;
