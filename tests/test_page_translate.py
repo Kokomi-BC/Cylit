@@ -417,8 +417,10 @@ def test_edge_facts_are_rendered_into_prompt():
     both = render_edge_facts({"head": True, "tail": True})
     assert EDGE_FACTS_HEADER in both
     assert "承接上一页的句子" in both
-    assert "已由上一页译完，本页跳过它" in both        # 页首：跳过已被上一页译完的半句
-    assert "把这句在本页译成完整句" in both            # 页尾：用搭接块把整句收在本页
+    # 2026-12-27 起 carry 停用：页首**照译**、页尾**停在断处**，两侧口径一致
+    assert "照本页原文把它译出来" in both
+    assert "已由上一页译完" not in both
+    assert "照原样停在断处" in both
     assert "仅供参考" in both
     assert "别为它牺牲中文的自然断句" in both
 
@@ -648,11 +650,9 @@ def test_edge_facts_tell_model_what_to_do_when_lookahead_cannot_help():
     from backend.services.translation.page_translate import render_edge_facts
 
     text = render_edge_facts({"head": False, "tail": True})
-    assert "把这句在本页译成完整句" in text
-    assert "不要留半句" in text
+    assert "照原样停在断处" in text
     assert "不要写「……」" in text
-    assert "停在断处" in text
-    assert "不要硬凑句号" in text
+    assert "也不要用下一页的内容补完" in text
 
 
 def test_lookahead_window_reaches_the_end_of_the_carried_sentence(monkeypatch):

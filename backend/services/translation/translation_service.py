@@ -417,26 +417,13 @@ def run_path_task(ctx, path: str | None = None) -> dict:
             a_blocks = split_blocks(str(a_payload.get("original_md") or ""))
             if not a_blocks:
                 raise ValidationError(f"A 路第 {page_no} 页的转录产物是空的（块模式无法翻译）")
-            # 页首去重：上一页（B 自己的产物）申报了它借走的原文 → 从**第 1 块**里剪掉。
-            # 块数不变（剪的是块内文本），所以序号配对不受影响；原文栏仍显示 A 的完整块。
+            # 页首去重**已停用**（carry 一并停用，用户口径 2026-12-27）：不再从第 1 块里剪掉任何东西，
+            # 本页开头那半句照译 —— 剪了中文就会比英文少半句、两栏对不上。
             head_note = ""
-            prev_payload = store.page(page_no - 1) if page_no > 1 else None
-            carried = str((prev_payload or {}).get("carry_md") or "").strip()
-            if carried:
-                first = str(a_blocks[0].get("text") or "")
-                trimmed = drop_declared_fragment(first, carried)
-                if trimmed != first:
-                    a_blocks[0] = {**a_blocks[0], "text": trimmed}
-                    head_note = BLOCK_HEAD_NOTE
-                    log.info("第 %d 页：第 1 块剪掉上一页已译完的开头 %d 字符",
-                             page_no, len(first) - len(trimmed))
-            # 页尾收句的上下文：A 路**下一页**的开头（最后一页没有）。
+            # 跨页收句**已停用**（用户口径 2026-12-27：不追求"在本页把那句译完整"，改成"与英文
+            # 逐块对齐、读起来通顺"）。所以不再取【A 路下一页开头】，也不再传 lookahead ——
+            # 给了模型就会去补，补了中文这一侧就和英文对不上。
             lookahead = ""
-            if page_no < page_total:
-                nxt = await_a_page(a_store, paper_id, page_no + 1,
-                                   timeout=wait_s, required=False, fresh_after=fresh_after)
-                if nxt:
-                    lookahead = a_page_lookahead(str(nxt.get("original_md") or ""))
             prompt = render_block_prompt(
                 page=page_no, page_total=page_total, blocks=format_block_list(a_blocks),
                 block_count=len(a_blocks), prefix=prefix, section=section,
