@@ -37,7 +37,9 @@ const emit = defineEmits<{
   /** 在浮窗里打开：由 ReaderView 弹一张可拖动的 `FloatingCard` */
   (e: 'open-float'): void;
   /** 正文里点了引用标号（`InsightDoc` 只上报，往哪跳由 ReaderView 决定） */
-  (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
+  /** `rows`：这一枚标号覆盖的**全部**行 id（逗号分隔；组标号才有，单个 code 时缺省）。
+   *  透传给阅读器，好让一组标号点下去闪整组（见 ReaderView.focusInsightCite）。 */
+  (e: 'cite', p: { code: string; block: string; page: number; latex?: string; rows?: string }): void;
   /** 悬浮标号的速览请求（宿主在阅读器那侧弹卡；点击照旧走 cite） */
   (e: 'peek', p: {
     anchor: { x: number; y: number; w: number; h: number };

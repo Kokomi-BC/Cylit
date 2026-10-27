@@ -47,7 +47,7 @@ from backend.services.translation.brief import generate_brief
 #: 输出预算与页级**同一个常量**（`page_translate.MAX_OUTPUT_TOKENS` = 模型自己的上限 384K）：
 #: 两处各写一个字面量迟早会漂，所以直接从那里拿（`page_translate` 顶层不 import 本模块，不成环）。
 from backend.services.translation.page_translate import MAX_OUTPUT_TOKENS
-from backend.services.understanding import prompts
+from backend.services.understanding import group_refs, prompts
 
 log = get_logger(__name__)
 
@@ -122,7 +122,10 @@ def _inventory_items(rows, road: str, langs: tuple[str, ...],
                       #: 这条 chunk 记住的**行身份**（与 row_ids 同序等长）。留在清单条目上
                       #: 只为一件事：落库时写进 refs_json.pids —— 重建索引后 chunk id 全变，
                       #: 它是唯一能认回同一行的桥（读路径首选它，见 split_refs_by_pids）。
-                      "pids": [str(p) for p in (meta.get("pids") or []) if p]})
+                      "pids": [str(p) for p in (meta.get("pids") or []) if p],
+                      #: 页内行号（`p005-02`，与 pids 同序等长）：只给正文标号的兜底分组用 ——
+                      #: 判"这是不是同一页上相邻的几块"靠它（见 group_refs）。不落库。
+                      "row_ids": [str(r) for r in (meta.get("row_ids") or []) if str(r).strip()]})
     return items
 
 
@@ -490,6 +493,15 @@ def build_understanding(paper_id: str, path: str, *, force: bool = False) -> dic
         parsed = parse_result(res.text or "")
     #: 贴不出来的图（那条材料没有图）就地删掉，别让前端画裂图标
     parsed["markdown"] = clean_image_refs(parsed["markdown"], inventory)
+    #: 并排的方括号归一成**一个**「连续组」标号：[A012][A013] → [A012,A013]
+    #: （一处材料只写一个标号 = 前端一枚按钮；契约见 group_refs 模块顶部）。
+    #: 几何信息（同一页且行号相接 / pids 有交集）取不到的**不合并**，原样留着 —— 绝不猜。
+    parsed["markdown"], ref_groups = group_refs.apply_ref_groups(
+        parsed["markdown"], inventory)
+    if ref_groups["groups"] or ref_groups["skipped_runs"]:
+        log.info("%s 路理解：并排标号归一 → %d 个连续组（省掉 %d 枚标号，%d 处认不出几何信息"
+                 "保持原样）", path, ref_groups["groups"], ref_groups["absorbed"],
+                 ref_groups["skipped_runs"])
     valid = code_map(inventory)
     codes = merge_ref_codes(parsed["refs"], parsed["markdown"])
     check = validate_refs(codes, valid, path=path)

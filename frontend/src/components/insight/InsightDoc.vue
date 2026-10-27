@@ -69,8 +69,13 @@ const emit = defineEmits<{
   (e: 'start'): void;
   /** 标题 anchor 已贴好（宿主据此算一次"当前小节"，否则首屏一个高亮都没有） */
   (e: 'anchors-ready'): void;
-  /** 点了正文里的引用标号：宿主负责跳到原文（阅读器滚到那一段，整页则开阅读器） */
-  (e: 'cite', p: { code: string; block: string; page: number; latex?: string }): void;
+  /**
+   * 点了正文里的引用标号：宿主负责跳到原文（阅读器滚到那一段，整页则开阅读器）。
+   *
+   * `rows` 是这一枚标号覆盖的**全部**正文行（逗号分隔）：一组连续材料（`[A012,A013]`）
+   * 落在一个方括号里时，宿主按它闪整组（组内每个短码的 row_ids 并集）。
+   */
+  (e: 'cite', p: { code: string; block: string; page: number; latex?: string; rows?: string }): void;
   /** 悬浮标号：宿主在旁边弹一张速览卡（点标号仍然走 cite，不受影响） */
   (e: 'peek', p: {
     anchor: { x: number; y: number; w: number; h: number };
@@ -127,46 +132,98 @@ function escapeAttr(text: string): string {
 }
 
 /**
- * 正文里的「[A023]」→ 可点的**跳转标号**「[1]」。
+ * 正文里的引用标号：`[A023]`（单块）或 `[A012,A013]`（同一处连续材料，**一个方括号 + 半角逗号**）。
+ *
+ * 「并排的多个方括号」`[A012][A013]` **不是**一组 —— 那是两枚标号，各编各的号。
+ */
+const CITE_GROUP = /\[([A-Z]\d{2,4}(?:\s*[,，]\s*[A-Z]\d{2,4})*)\]/g;
+
+/**
+ * 正文里的一处引用 → 可点的**跳转标号**「[n]」。
  *
  * 为什么在渲染后的 HTML 上换、而不是给 marked 加一条行内扩展（正文里的参考文献标号
  * 就是那么做的）：序号要按**这一篇里第一次出现**的顺序编（1、2、3…），还得把编号查成
  * 页码/块 id —— 那条链路是纯函数、拿不到 refs。这里只认方括号里带字母的编号，
  * 与「[2, 4]」那套参考文献标号（数字）天然不冲突；代码块里的方括号照样跳过。
  *
+ * 一组连续材料（`[A012,A013]`）只画**一枚**按钮、只占**一个**号：组不是新的短码，
+ * 只是一个方括号里并列了几个短码（`refs_json` 的 `codes` 里那几个照样都在）。
+ * 要闪的那几行 = 组内每个短码的 `row_ids`（或 `pids`）**并集**，挂在 `data-rows` 上 ——
+ * 宿主（阅读器）按它闪整组，所以点击/悬浮的上报一个字都不用改。
+ *
  * 查不到位置的编号也照样编上号（只是点了不跳）：它们本来就是模型编出来的/
  * 已被重建索引冲掉的，直接从正文里抹掉反而会让用户以为漏了内容。
+ * 组里**只要有一个**短码查不到位置，就整组不合并、逐码各画一枚 —— 绝不吞号。
  */
 function decorateCites(html: string): string {
   const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/i);
   const order = new Map<string, number>();
+  /** 编号键 → 号。单块用短码本身，组用**排序后的**短码串（同一组出现两次仍是同一个号）。 */
+  const numberOf = (key: string): number => {
+    let n = order.get(key);
+    if (!n) {
+      n = order.size + 1;
+      order.set(key, n);
+    }
+    return n;
+  };
   return parts.map((part, index) => {
     if (index % 2 === 1) return part;                      // 代码块原样返回
-    return part.replace(/\[([A-Z]\d{2,4})\]/g, (whole, code: string) => {
-      let n = order.get(code);
-      if (!n) {
-        n = order.size + 1;
-        order.set(code, n);
+    return part.replace(CITE_GROUP, (whole, group: string) => {
+      const codes = String(group).split(/[,，]/).map((c) => c.trim().toUpperCase()).filter(Boolean);
+      if (!codes.length) return whole;
+      /* 组里有一个短码查不到位置 → 退回"逐码一枚"（今天的行为：不合并、不吞号） */
+      const allKnown = codes.length > 1 && codes.every((c) => !!refMap.value.get(c));
+      if (!allKnown) {
+        return codes.map((code) => citeMark(code, [code], numberOf(code))).join('');
       }
-      const ref = refMap.value.get(code);
-      const where = ref?.page ? '第 ' + ref.page + ' 页' : '';
-      const kind = TYPE_LABEL[String(ref?.chunk_type ?? '')] || '';
-      const tip = [where, kind].filter(Boolean).join(' · ');
-      const title = ref ? (tip ? tip + ' · 跳到原文' : '跳到原文') : '这一条引用已不在清单里';
-      /* 落点优先用**正文行 id**（后端从 chunk 元数据补的），块 id 只当兜底：
-         公式 chunk 的块 id 是 row-xxx 或 …-x01 这类伪块 id，阅读器翻不成行 ——
-         那正是「点标号却整页闪」的原因（用户 2026-12-03）。 */
-      const anchor = String(ref?.row_id || ref?.block_id || '');
-      return '<button type="button" class="cite-inline ins-cite"'
-        /* aria-label 而不是 title：title 会弹浏览器原生那一条灰气泡，而悬浮标号本来就会弹速览卡 */
-        + ' aria-label="' + escapeAttr(title) + '"'
-        + ' data-code="' + code + '"'
-        + ' data-block="' + escapeAttr(anchor) + '"'
-        + ' data-page="' + (ref?.page ?? '') + '"'
-        + ' data-latex="' + escapeAttr(String(ref?.latex ?? '')) + '"'
-        + ' data-rows="' + escapeAttr((ref?.row_ids ?? ref?.pids ?? []).join(',')) + '">[' + n + ']</button>';
+      return citeMark(codes[0], codes, numberOf([...codes].sort().join(',')));
     });
   }).join('');
+}
+
+/**
+ * 一枚标号按钮。`group` 是这一枚代表的短码（单块只有一个，组是括号里那几个）。
+ *
+ * `data-block` 取**第一个**短码的落点（跳转只去一处，镜头别来回拽）；
+ * `data-rows` 是组内所有短码的行 id 并集（去重，按文档顺序）—— 宿主据此闪整组。
+ */
+function citeMark(primary: string, group: string[], n: number): string {
+  const refs = group
+    .map((code) => refMap.value.get(code))
+    .filter((r): r is UnderstandingRefItem => !!r);
+  const ref = refMap.value.get(primary);
+  /* 页码去重：同一页上相邻的几块写进一个括号时，"第 3 页、第 3 页"是废话 */
+  const pages: number[] = [];
+  for (const r of refs) {
+    const page = Number(r.page) || 0;
+    if (page > 0 && !pages.includes(page)) pages.push(page);
+  }
+  const where = pages.map((p) => '第 ' + p + ' 页').join('、');
+  const kind = TYPE_LABEL[String(ref?.chunk_type ?? '')] || '';
+  const tip = [where, kind].filter(Boolean).join(' · ');
+  const title = ref ? (tip ? tip + ' · 跳到原文' : '跳到原文') : '这一条引用已不在清单里';
+  /* 落点优先用**正文行 id**（后端从 chunk 元数据补的），块 id 只当兜底：
+     公式 chunk 的块 id 是 row-xxx 或 …-x01 这类伪块 id，阅读器翻不成行 ——
+     那正是「点标号却整页闪」的原因（用户 2026-12-03）。 */
+  const anchor = String(ref?.row_id || ref?.block_id || '');
+  const rows: string[] = [];
+  for (const r of refs) {
+    for (const id of (r.row_ids ?? r.pids ?? [])) {
+      const rid = String(id || '');
+      if (rid && !rows.includes(rid)) rows.push(rid);
+    }
+  }
+  /* 公式的 LaTeX 只在**单独一个短码**时带：多码组里带上第一条公式，点了会闪到别的块上去 */
+  const latex = group.length === 1 ? String(ref?.latex ?? '') : '';
+  return '<button type="button" class="cite-inline ins-cite"'
+    /* aria-label 而不是 title：title 会弹浏览器原生那一条灰气泡，而悬浮标号本来就会弹速览卡 */
+    + ' aria-label="' + escapeAttr(title) + '"'
+    + ' data-code="' + primary + '"'
+    + ' data-block="' + escapeAttr(anchor) + '"'
+    + ' data-page="' + (pages.length ? pages[0] : '') + '"'
+    + ' data-latex="' + escapeAttr(latex) + '"'
+    + ' data-rows="' + escapeAttr(rows.join(',')) + '">[' + n + ']</button>';
 }
 
 /** 点标号：只上报，不自己滚 —— 整页那侧根本没有阅读器，滚不动的活儿得宿主决定 */
@@ -197,6 +254,7 @@ function onCiteClick(ev: MouseEvent) {
     block: btn.dataset.block || '',
     page: page > 0 ? page : 0,
     latex: btn.dataset.latex || '',
+    rows: btn.dataset.rows || '',
   });
 }
 

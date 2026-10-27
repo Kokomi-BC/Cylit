@@ -819,7 +819,10 @@ const statusCls = computed(() => (props.provider?.status === 'ok' ? 'ok'
                         <span v-if="timeText(k.last_tested_at)" class="kr-time">最近测试 {{ timeText(k.last_tested_at) }}</span>
                       </div>
                     </div>
-                    <Menu :items="keyMenuItems(k)" label="密钥操作" align="end" @select="onKeyMenu(k, $event)" />
+                    <!-- 不传 `align`：走默认的右下角展开、紧贴触发按钮（用户口径 2026-12-27
+                         「每个更多菜单都要紧挨着触发它的按钮或者位置」）。`align="end"` 是右对齐 =
+                         往左长，会压住按钮本身。 -->
+                    <Menu :items="keyMenuItems(k)" label="密钥操作" @select="onKeyMenu(k, $event)" />
                   </li>
                 </ul>
 

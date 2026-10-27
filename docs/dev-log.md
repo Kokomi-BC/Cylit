@@ -16438,3 +16438,66 @@ hover 只加浓这层玻璃（10/6% → 16/10%），不铺 `--bg-hover` 实心�
    而用户多半是在**列表**上点行的「⋯」删除，那时 `currentId` 是空的 → 删完停在列表上，看着像点了没反应。
    现在删完**一律** `startNew()`（空草稿，发第一句才落库）。
    实测：列表上删一条 → `listVisible=false`、`textarea` 出现、占位符「与Cyli深度交流」、空态文案正常。
+### 更正（同日，用户第二次澄清）
+
+我上一版把这条**理解反了**：用户说的是「删除对话**不**跳到新对话」——要的就是"删完留在原地"，
+我却做成了"删完一律 `startNew()`"。现已改成：
+
+- 删的正好是**当前打开**的那条 → 清空这一轮（`currentId/messages/usage/draft/锚点`）并 **`backToList()` 回列表**；
+- 删的是别的条 → 原地不动；
+- **任何情况下都不再创建新对话**（新对话只由「＋ 新对话」或直接发问产生）。
+
+实测：列表 11 行 → 删掉一条 → `list=true, rows=10, textarea=false`（停在列表，没有新对话）。
+---
+
+# 248 · 解读标号也「一处连续材料一个标号」+ 右键菜单 + 每个「更多」都紧贴触发点（2026-12-27）
+
+## A. 解读侧移植合并规则（用户口径：移植全套）
+
+**后端**（新 `backend/services/understanding/group_refs.py`，343 行纯函数）：`parse_code_brackets` 扫 `[A012]` /
+`[A012,A013]`（围栏与行内代码跳过）；`split_runs` 取只隔空白的极大方括号段；`group_code_runs` 在 run 内按
+「同页且前块**末行** ↔ 后块**首行** |Δ|≤1，或 pids 有交集」切极大连续子序列；`apply_ref_groups` 在落库前归一
+并回 stats（`groups/merged_codes/absorbed/skipped_runs`）。**只合不拆**（模型写对的组原样保留 → 幂等）；
+组里有认不出的 code → 整 run 原样；`refs_json` / `codes` / `validate_refs` 结构一字未动。
+提示词 `_SHARED` 第 3 条改成「一处连续材料只写一个标号；同一处的几块写成一个方括号、用半角逗号并列」。
+
+**前端**（`InsightDoc.vue`）：`CITE_GROUP` 认 `[A012,A013]`；组内 code **全部**能在 `refMap` 查到位置才渲染**一枚**
+按钮（编号键 = 排序后 codes 拼串 → 同一组出现两次同号），`data-rows` 取组内各 code 行 id 的并集；
+有一个查不到就逐 code 一枚（不吞号）。
+
+**点组要闪整组**（上一版只闪第一个 code）：`InsightDoc → InsightPanel → ReaderSidePanel.locate(…, rows)`
+现在把 `rows` 透传，`ReaderView.focusInsightCite` 在 `rows` 有多个行 id 时走 `focusMany`（合成一枚 `.flash-block`），
+单个仍走 `focusRow`。
+
+实测（本机重跑 turboquant 解读，新代码 + 新提示词）：
+
+```
+chars 10596  single-labels 34  group-labels 26
+组的例子：[A003,A008,A009] [A025,A051] [A020,A028] [A185,A191,A192] …
+面板：60 枚按钮，其中 26 枚是多行组；点 [2]（A003，3 个 pid）→ blocks=1 h=85 covered=[p001-00, p001-01]
+```
+
+后端单测 `tests/test_insight_ref_groups.py` 24 项全绿；解读相关既有测试全绿。
+
+## B. 右键菜单（对话行 / 笔记卡）
+
+两处都接 `ContextMenu`（就是给正文用的那枚毛玻璃右键菜单：按**鼠标点**定位、靠边自动内挪、Esc/点外面/滚动即收）：
+
+- 对话行：`@contextmenu.prevent` → 重命名 / 浮层打开 / 多选 / 删除（与「⋯」同一套 handler）；
+- 笔记卡：定位 / 浮层打开 / 编辑 / 多选 / 删除（批量态下不抢勾选手势）。
+
+实测（合成 `contextmenu` 事件，读面板与鼠标点的差）：两条菜单都是毛玻璃 `blur(48px) saturate(2.6)`，
+项也齐（对话 4 项 / 笔记 5 项）。
+
+## C. 「每个更多菜单都要紧挨着触发它的按钮或者位置」
+
+把四处入口逐一量了（差 = 浮层左上 − 触发点右下）：
+
+```
+library 论文卡「更多」   dx=4  dy=4
+侧栏笔记卡「更多」      dx=6  dy=1
+对话行「⋯」             dx=4  dy=4
+settings 提供方「密钥操作」 原来是 `align="end"`（右对齐 = 往左长、压住按钮）→ 去掉，走默认右下角
+```
+
+全仓 `align="end"` 已清零（grep 无命中）。

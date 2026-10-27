@@ -3461,6 +3461,25 @@ function refNodeOf(id: string, page: number | undefined, el: HTMLElement | null)
     ?? null;
 }
 
+/** 解读面板的一枚标号 → 落到哪儿、闪什么。
+ *
+ *  解读的标号是**一处连续材料**：一组时 `data-rows` 里有多个行 id（后端把短码合成一个方括号，
+ *  前端把各 code 的行 id 取并集），点它就该像对话引用那样**一枚大块盖住整组**（`focusMany`）。
+ *  只有一个行 id 时仍走 `focusRow` 那条老路（整行闪一层，行为与今天一致）。
+ *
+ *  为什么不能只靠 `focusRow`：它最终落到 `flashRow(id)` → `paintFlashSpan(id)`，只补标题行、
+ *  永远不画 `.flash-block`；合成大块只有 `focusMany → paintFlashBlock` 这一条路。 */
+async function focusInsightCite(id: string, page?: number, latex?: string, rows?: string) {
+  const ids = String(rows || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length > 1) {
+    await focusMany({
+      pool: ids.map((row) => ({ ref: 0, row, block: '', page: page || 0, latex: '' })),
+    });
+    return;
+  }
+  await focusRow(id, { page, flash: true, latex: latex || formulaLatexOf(id) });
+}
+
 async function focusRow(
   id: string,
   opts: { smooth?: boolean; save?: boolean; page?: number; flash?: boolean; latex?: string } = {},
@@ -9331,8 +9350,7 @@ function renderMarkdown(text?: string | null) {
           :tasks="tasks"
           :paper-id="paperId"
           :insight-running="understandingRunning"
-          @focus="(id: string, page?: number, latex?: string) => focusRow(
-            id, { page, flash: true, latex: latex || formulaLatexOf(id) })"
+          @focus="(id: string, page?: number, latex?: string, rows?: string) => focusInsightCite(id, page, latex, rows)"
           @cite-peek="onCitePeekAsk"
           @cite-peek-hide="onCitePeekHide"
           @copy="copyFormula"

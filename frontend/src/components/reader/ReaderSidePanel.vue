@@ -28,6 +28,7 @@ import ProgressBar from '@/components/ProgressBar.vue';
 import InsightPanel from '@/components/insight/InsightPanel.vue';
 import ReaderSettingsPanel from './ReaderSettingsPanel.vue';
 import ReferenceList from './ReferenceList.vue';
+import ContextMenu from '@/components/ContextMenu.vue';
 import ReaderFormulaList from './ReaderFormulaList.vue';
 import ReaderTableList from './ReaderTableList.vue';
 
@@ -94,7 +95,9 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   /** latex：公式类引用的 LaTeX —— 行级落点分不开「这一段」与「这一段里的那条公式」 */
-  (e: 'focus', rowId: string, page?: number, latex?: string): void;
+  /** `rows`：解读标号那**一组**覆盖的全部行 id（逗号分隔）。一枚按钮 = 一处连续材料，
+   *  点它要把整组一起闪（见 ReaderView.focusInsightCite）；没有组时缺省。 */
+  (e: 'focus', rowId: string, page?: number, latex?: string, rows?: string): void;
   /** 悬浮标号：把速览请求交给阅读器（那里才有整篇的行 / 图 / 表） */
   (e: 'cite-peek', p: {
     anchor: { x: number; y: number; w: number; h: number };
@@ -140,9 +143,9 @@ const emit = defineEmits<{
   }>): void;
 }>();
 
-function locate(id?: string | null, page?: number | null, latex?: string | null) {
+function locate(id?: string | null, page?: number | null, latex?: string | null, rows?: string | null) {
   if (!id && !page) return;
-  emit('focus', id ?? '', page ?? undefined, latex || undefined);
+  emit('focus', id ?? '', page ?? undefined, latex || undefined, rows || undefined);
 }
 
 /**
@@ -506,6 +509,40 @@ async function deletePicked() {
 /* ------------------------ 「更多」菜单（编辑 / 多选 / 删除） ------------------------ */
 /** 批注没有「正文可改」（它没有挂高亮、也没有笔记对象），所以不出现「编辑」那一项 ——
  *  与以前卡片上那枚铅笔的条件一致（`r.kind !== 'annotation'`）。 */
+/* ── 右键笔记卡：在**鼠标点**上开一张菜单（用户口径 2026-12-27） ─────────────────────
+ * 与卡片右上角那枚「更多」是**同一套动作**，只是入口不同：鼠标在哪儿，菜单就从那儿往右下展开。
+ * 「定位 / 浮层打开」在卡片上是两枚独立圆钮，这里一并收进右键菜单（右键时手不用再去瞄准小圆钮）。 */
+const noteCtx = ref<{ x: number; y: number; r: FeedRow } | null>(null);
+const noteCtxItems = computed(() => {
+  const r = noteCtx.value?.r;
+  const items: { key: string; label: string; icon?: string; danger?: boolean; sep?: boolean }[] = [
+    { key: 'locate', label: '定位', icon: 'locate' },
+  ];
+  if (r && r.kind !== 'annotation') {
+    items.push({ key: 'open', label: '浮层打开', icon: 'pip' });
+    items.push({ key: 'edit', label: '编辑', icon: 'edit' });
+  }
+  items.push({ key: 'pick', label: '多选', icon: 'list-check' });
+  items.push({ key: 'del', label: '删除', icon: 'trash', danger: true, sep: true });
+  return items;
+});
+
+function openNoteCtx(ev: MouseEvent, r: FeedRow) {
+  if (batch.value) return;               // 批量态：右键不抢勾选框的手势
+  noteCtx.value = { x: ev.clientX, y: ev.clientY, r };
+}
+
+function onNoteCtx(key: string) {
+  const r = noteCtx.value?.r;
+  noteCtx.value = null;
+  if (!r) return;
+  if (key === 'locate') locate(r.anchorId, r.page);
+  else if (key === 'open') openPopover(r, 'view');
+  else if (key === 'edit') openPopover(r, 'edit');
+  else if (key === 'pick') { batch.value = true; if (!isPicked(r)) picked.value = [...picked.value, r.key]; }
+  else if (key === 'del') removeRow(r);
+}
+
 function moreItems(r: FeedRow) {
   return [
     ...(r.kind === 'annotation' ? [] : [{ key: 'edit', label: '编辑', icon: 'edit' }]),
@@ -535,7 +572,7 @@ function onMore(key: string, r: FeedRow) {
       :running="props.insightRunning"
       @started="emit('insight-queued')"
       @open-float="emit('open-insight-float')"
-      @cite="(c) => locate(c.block, c.page || undefined, c.latex)"
+      @cite="(c) => locate(c.block, c.page || undefined, c.latex, c.rows)"
       @peek="(p) => emit('cite-peek', p)"
       @peek-hide="emit('cite-peek-hide')"
     />
@@ -620,6 +657,7 @@ function onMore(key: string, r: FeedRow) {
         v-for="r in merged"
         :key="r.key"
         class="item note-row"
+        @contextmenu.prevent="openNoteCtx($event, r)"
         :class="[r.kind, { editing: editKey === r.key, pick: batch && isPicked(r), picking: batch }]"
         :style="r.color ? ({ '--hl': highlightCss(r.color) } as CSSProperties) : undefined"
         :data-note-id="r.noteId || undefined"
@@ -707,6 +745,16 @@ function onMore(key: string, r: FeedRow) {
                @click="onNoteRefClick" />
         </template>
       </div>
+      <!-- **右键**笔记卡：鼠标在哪儿，菜单就从那儿往右下展开（用户口径 2026-12-27）。
+           与「更多」那一枚同一套动作，只是入口不同；`ContextMenu` 自带靠边内挪 / Esc / 滚动即收。 -->
+      <ContextMenu
+        :open="Boolean(noteCtx)"
+        :x="noteCtx?.x ?? 0"
+        :y="noteCtx?.y ?? 0"
+        :items="noteCtxItems"
+        @select="onNoteCtx"
+        @close="noteCtx = null"
+      />
     </template>
 
     <!-- 引用文献（用户口径 2026-10-07 第三条）：正文里的 `[2, 4, 10]` 点开就是这里，

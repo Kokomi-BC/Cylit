@@ -38,6 +38,7 @@ import type {
 import AppIcon from '@/components/AppIcon.vue';
 import { vendorColorIcon } from '@/assets/model-icons';
 import ConfirmModal from '@/components/ConfirmModal.vue';
+import ContextMenu from '@/components/ContextMenu.vue';
 import ChatErrorCard from '@/components/reader/ChatErrorCard.vue';
 
 /** 一条引用在阅读器里的落点（正文那枚按钮的 `data-pool` 里的一项）。整条消息的引用
@@ -2261,6 +2262,30 @@ function toggleAll() {
 
 /** 会话行右上角那枚「⋯」展开了哪一条（同一时刻只开一个） */
 const rowMenu = ref<string>('');
+/** 右键会话行时的鼠标点 + 那一条会话（`ContextMenu` 按这个点从**右下角**展开）。 */
+const convCtx = ref<{ x: number; y: number; conv: AgentConversation } | null>(null);
+/** 右键菜单的项：与「⋯」那一枚**同一套动作**，顺序也一致（危险项单独一组，靠 `sep` 隔开）。 */
+const convCtxItems = computed(() => [
+  { key: 'rename', label: '重命名', icon: 'edit' },
+  ...(showFloatBtn.value ? [{ key: 'float', label: '浮层打开', icon: 'pip' }] : []),
+  { key: 'pick', label: '多选', icon: 'list-check' },
+  { key: 'del', label: '删除', icon: 'trash', danger: true, sep: true },
+]);
+
+function openConvCtx(ev: MouseEvent, conv: AgentConversation) {
+  rowMenu.value = '';                    // 两种入口别叠着（「⋯」那枚在鼠标下方，右键时先收掉）
+  convCtx.value = { x: ev.clientX, y: ev.clientY, conv };
+}
+
+function onConvCtx(key: string) {
+  const conv = convCtx.value?.conv;
+  convCtx.value = null;
+  if (!conv) return;
+  if (key === 'rename') startRename(conv);
+  else if (key === 'float') void shareToFloat(conv);
+  else if (key === 'pick') toggleBatch();
+  else if (key === 'del') askDeleteOne(conv);
+}
 /** 菜单浮层的坐标（`position: fixed`，见 `placeRowMenu`）：只在打开时算一次 */
 const rowMenuStyle = ref<Record<string, string>>({});
 const rowMenuEl = ref<HTMLElement | null>(null);
@@ -2407,11 +2432,19 @@ async function runDelete() {
   try {
     await api.post('/agent/conversations/batch-delete', { conversation_ids: job.ids });
     conversations.value = conversations.value.filter(c => !job.ids.includes(c.conversation_id));
-    /* 删完**一律落到一条新对话**（用户口径 2026-12-27「删除对话不跳转到新对话」）：
-       以前只在「删的正是当前打开的那条」时才 startNew，而用户多半是在**列表**上点行的「⋯」删除，
-       那时 currentId 是空的 —— 于是删完停在列表上，看着像点了没反应。
-       删掉最后一条 / 批量删也一样：新对话是空草稿，发第一句才落库（startNew 自己会切到 thread 级）。 */
-    startNew();
+    /* 删完**不跳新对话**（用户口径 2026-12-27；上一版理解反了，做成了「总是开一条新对话」）：
+       删的正好是当前打开的那条 → 清空这一轮、**回到列表**；删的是别条 → 原地不动。
+       新对话只由「＋ 新对话」（`startNew`）或直接发问产生，删除不该顺手造一个空草稿。
+       为什么要顺手清 currentId / messages：不清的话列表回来时右侧还挂着已删会话的消息与用量。 */
+    if (currentId.value && job.ids.includes(currentId.value)) {
+      currentId.value = null;
+      messages.value = [];
+      usage.value = null;
+      draft.value = '';
+      lastAnchor.value = null;
+      anchorAnswerId.value = '';
+      backToList();
+    }
     picked.value = [];
     batch.value = false;
     confirming.value = null;
@@ -3443,7 +3476,8 @@ defineExpose({ uploadFiles, ensureThread });
         </div>
 
         <div v-for="c in conversations" :key="c.conversation_id" class="row"
-             :class="{ on: c.conversation_id === currentId, pick: isPicked(c) }">
+             :class="{ on: c.conversation_id === currentId, pick: isPicked(c) }"
+             @contextmenu.prevent="openConvCtx($event, c)">
           <button v-if="batch" class="tick" :class="{ on: isPicked(c) }"
                   :title="isPicked(c) ? '取消选择' : '选择'"
                   @click="togglePick(c)">
@@ -3979,6 +4013,18 @@ defineExpose({ uploadFiles, ensureThread });
 
     <div v-if="dragging" class="drop-hint"><AppIcon name="image" :size="16" />松手即上传</div>
 
+    <!-- **右键**会话行：在同一套动作上再给一条"鼠标就在这儿"的入口（用户口径 2026-12-27
+         「实现右键对话以及笔记，能在鼠标位置的右下角弹出菜单」）。用 `ContextMenu` 而不是
+         「⋯」那枚 flyout：它按**鼠标点**定位（左上加 2px 起画 = 右下角展开）、靠边自动往里挪、
+         Esc / 点外面 / 滚动就收 —— 那套行为那边已经写好了。 -->
+    <ContextMenu
+      :open="Boolean(convCtx)"
+      :x="convCtx?.x ?? 0"
+      :y="convCtx?.y ?? 0"
+      :items="convCtxItems"
+      @select="onConvCtx"
+      @close="convCtx = null"
+    />
     <ConfirmModal :open="Boolean(confirming)" danger title="删除对话"
                   :body="confirming?.body || ''" :target="confirming?.target || ''"
                   confirm-label="删除" :busy="confirmBusy"
