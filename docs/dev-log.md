@@ -16064,3 +16064,39 @@ breaks_a[0] = {start: 'transduction problems such as language m',
 
 > 说明：这篇论文里那条并入恰好落在“本来就已经被合并进同一个 chunk”的两行上，所以
 > `merged_chunks` 计数是 0（并了也没变化）；机制的可用性由单测 + 这条真实锚点共同证明。
+### 240. 第二百四十轮：多处/跨页一起闪 → 合成**一枚大块**；引用按 `pids` 展开到整块
+
+用户口径：①「多个页面内容同时闪烁改为合并为一个大的块闪烁（跨页的同个也是如此）」
+②「支持跨页的同一块闪烁」。
+
+## A. 为什么以前会闪成好几块
+
+合并闪（`focusMany`）原来把每个落点都挂成 `data-flash-span`，靠行内那层 `::before`
+（`inset: -3px -6px`）在**相邻行之间**勉强接起来。一旦跨页（两张 `.pg` 页卡片之间隔着页间距），
+就变成几块各闪各的；`pids` 也没被用上 —— 一条证据（chunk）跨页时，引用只带**首行**，
+点一枚标号只闪第一页那半截。
+
+## B. 改法
+
+1. **合一枚大块**（`paintFlashBlock`）：取所有目标行的外接矩形，在正文容器（`.rows-wrap`）里
+   插一枚 `.flash-block`（`position: absolute`、`pointer-events: none`、`--accent` 11%、圆角 12px、
+   `block-flash` 1.5s），一处覆盖整段 —— 跨页也只是盖得更长，不再出现"好几块"。
+   只有**一行**时仍走原来的行内那层（与命中行同一档亮度，切换不跳）。
+2. **只在"本来就是连着的一段"时才合块**：`Σ行高` 与整块高度差超过 240px（≈三行正文）就说明
+   中间隔着无关正文（例：点 `[3,7]` 两条相隔十几行的引用）→ 退回逐行闪，别把无关内容框进来。
+   跨页那两张页卡片的间距只有几十像素，不会被误判。
+3. **跨页同一块**：`Citation.pids`（这条 chunk 覆盖的行身份）已在前端引用池里，`focusMany` 用
+   `pid → 行 id` 展开（`allRows[].pid`；用行身份而不是位置 id，重建索引也不错位），
+   于是"同一块被页边界切成两半"时，点任意一枚标号都会把两页上那两截一起点亮。
+
+## C. 实测（CDP）
+
+```
+跨页外接框   页 1 末行 p001-09 + 页 2 首行 p002-00 → 高 116px、宽 489px（含页卡片之间的间距）
+覆盖层样式   bg color(srgb .06 .48 .54 / .11) · radius 12px · pointer-events none · animation block-flash
+生产引用     conversation 里带 pids 的消息 3 条，例如 ref 12（chunk）覆盖 3 行行身份
+```
+
+`frontend_check.py` **168/168 通过、0 失败**；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-C3aFsayV.js`）。
+线上 = `d66bf19`，`dist/index.html` sha256 `016c8d5…`，`cylit-api` online、`/health` 200；
+GitHub `43ab059..d66bf19`（此前 500 的三个提交也一起推上去了），`unpushed=0`。
