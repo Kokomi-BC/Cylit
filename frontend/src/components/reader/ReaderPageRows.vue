@@ -115,7 +115,11 @@ const footnoteRows = computed(() => {
     let after = false;
     for (const r of g.rows ?? []) {
       const text = String(r.original ?? '').trim();
-      if (/^-{3,}$/.test(text)) { after = true; continue; }
+      /* 两种形状都认：`---` 自成一块（模型照提示词写了空行），或者 `---` 与脚注正文
+         挤在同一块里（实测 attention-cleanroom 第 1 页就是这样：`---\n*Equal contribution…`）。
+         后者也要把它连同后面的行标成脚注 —— 否则样式只在"模型听话的那几页"生效。 */
+      if (/^-{3,}\s*$/.test(text)) { after = true; continue; }
+      if (/^-{3,}\s*\n/.test(text)) { after = true; out.add(r.id); continue; }
       if (!after) continue;
       if (r.type === 'heading' || r.type === 'formula') { after = false; continue; }
       out.add(r.id);
