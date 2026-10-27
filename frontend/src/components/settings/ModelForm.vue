@@ -66,6 +66,9 @@ const props = withDefaults(defineProps<{
   initialStep?: number;
   /** 配合 initialStep：顺手把「计费」折叠块展开，让分时段单价列表一眼可见 */
   focusPrice?: boolean;
+  /** 已有的「显示名称」清单（父级从当前所有模型配置去重后传进来）：同名会被抽屉归成一组，
+   *  所以这里要能"选一个已有名字"而不是每次都手打一遍。 */
+  existingNames?: Array<{ name: string; count: number }>;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -82,6 +85,7 @@ const props = withDefaults(defineProps<{
   rulesError: '',
   initialStep: 0,
   focusPrice: false,
+  existingNames: () => [],
 });
 
 const emit = defineEmits<{
@@ -349,6 +353,31 @@ const modelPopOpen = ref(false);
 const modelFieldEl = ref<HTMLElement | null>(null);
 const modelPopStyle = ref<Record<string, string>>({});
 
+/** 「显示名称」的已有名称下拉：状态与 modelPop **各自独立** —— 两个下拉是两种用途，
+ *  共用一份 state 会互相收掉（打开一个就把另一个关了）。 */
+const namePopOpen = ref(false);
+const nameFieldEl = ref<HTMLElement | null>(null);
+const namePopStyle = ref<Record<string, string>>({});
+
+/** 按当前输入做「包含」过滤（大小写不敏感），空串时全列：边打字边收窄，不用另给搜索框。 */
+const filteredNames = computed<Array<{ name: string; count: number }>>(() => {
+  const q = form.name.trim().toLowerCase();
+  if (!q) return props.existingNames;
+  return props.existingNames.filter((n) => n.name.toLowerCase().includes(q));
+});
+
+/** 显示名称是下游「同名批量配置」的分组键：手打一个字不一样就成不了组，所以要能挑已有名字。 */
+function pickName(name: string): void {
+  form.name = name;
+  nameTouched.value = true;
+  namePopOpen.value = false;
+}
+
+/** 手打过就置 touched：之后换 Model ID 不再自动改写它（原来的 @input 语义）。 */
+function onNameInput(): void {
+  nameTouched.value = true;
+}
+
 const modelCandidates = computed<string[]>(() => {
   const q = modelQuery.value.trim().toLowerCase();
   if (!q) return probeOptions.value;
@@ -407,7 +436,7 @@ async function fetchRemoteModels(): Promise<void> {
 /** 进第 3 步自动拉一次列表（同一家/同一端点只自动试一次，失败后交给「重试」）。 */
 const autoProbeKey = ref('');
 watch([step, () => form.provider, () => form.base_url], () => {
-  if (step.value !== 3) { modelPopOpen.value = false; return; }
+  if (step.value !== 3) { modelPopOpen.value = false; namePopOpen.value = false; return; }
   if (probeBusy.value || probeOptions.value.length) return;
   const key = [props.mode, form.provider, form.base_url].join('|');
   if (autoProbeKey.value === key) return;
@@ -449,19 +478,41 @@ function toggleModelPop(): void {
   placeModelPop();
 }
 
+/** 与 placeModelPop 同一套算法（贴字段下沿 + 视口内收边），只是写另一份 style。 */
+function placeNamePop(): void {
+  const el = nameFieldEl.value;
+  const vw = typeof window === 'undefined' ? 1024 : window.innerWidth;
+  if (!el) { namePopOpen.value = true; return; }
+  const r = el.getBoundingClientRect();
+  const width = Math.min(Math.max(r.width, 240), vw - 24);
+  const left = Math.max(12, Math.min(r.left, vw - width - 12));
+  namePopStyle.value = {
+    top: String(Math.round(r.bottom + 4)) + 'px',
+    left: String(Math.round(left)) + 'px',
+    width: String(Math.round(width)) + 'px',
+  };
+  namePopOpen.value = true;
+}
+
+function toggleNamePop(): void {
+  if (namePopOpen.value) { namePopOpen.value = false; return; }
+  placeNamePop();
+}
+
 function onDocPointer(ev: MouseEvent): void {
   const t = ev.target as HTMLElement | null;
   if (!t || typeof t.closest !== 'function') return;
-  if (t.closest('.model-pop') || t.closest('.model-field')) return;
-  modelPopOpen.value = false;
+  /* 两个下拉各收各的：点在 A 里只影响 A，不要把 B 一起收掉（mousedown 早于 click） */
+  if (!t.closest('.model-pop') && !t.closest('.model-field')) modelPopOpen.value = false;
+  if (!t.closest('.name-pop') && !t.closest('.name-field')) namePopOpen.value = false;
 }
 
 /** 视口变化/滚动时收起下拉；但**在列表内部滚动**不算（否则一滚就没了）。 */
 function onViewport(ev?: Event): void {
-  if (!modelPopOpen.value) return;
   const t = ev?.target as HTMLElement | null;
-  if (t && typeof t.closest === 'function' && t.closest('.model-pop')) return;
-  modelPopOpen.value = false;
+  const inside = (sel: string): boolean => !!(t && typeof t.closest === 'function' && t.closest(sel));
+  if (modelPopOpen.value && !inside('.model-pop')) modelPopOpen.value = false;
+  if (namePopOpen.value && !inside('.name-pop')) namePopOpen.value = false;
 }
 
 onMounted(() => {
@@ -873,6 +924,7 @@ function resetTransient(): void {
   autoProbeKey.value = '';
   modelQuery.value = '';
   modelPopOpen.value = false;
+  namePopOpen.value = false;
   keys.value = [];
   unassignedKeys.value = [];
   keysLoading.value = false;
@@ -1434,13 +1486,23 @@ const advSummary = computed<string>(() => {
         </p>
 
         <div class="fields">
-          <div class="fgroup">
-            <label class="field">显示名称
+          <!-- .name-field 不是样式钩子（与 .model-field 同理）：onDocPointer 靠它判断「点在字段里不算点外面」 -->
+          <div class="fgroup name-field">
+            <div class="mf-head"><span class="mf-label">显示名称</span><span class="spacer"></span></div>
+            <!-- 观感照抄同一列的 Model ID：同高、同圆角、同 hover，只是右侧箭头开的是「已有名称」 -->
+            <div class="mf-input" ref="nameFieldEl">
               <input
                 v-model="form.name" placeholder="界面上显示的名字" data-model-name
-                @input="nameTouched = true"
+                @input="onNameInput"
+                @keydown.esc="namePopOpen = false"
               />
-            </label>
+              <button type="button" class="mf-caret" title="选择已有名称" data-name-pop-toggle @click="toggleNamePop">
+                <AppIcon name="chevron-down" :size="14" />
+              </button>
+            </div>
+            <p class="hint-line" v-if="existingNames.length" data-name-hint>
+              同名会归成一组，便于「批量配置」；也可以直接手打一个新名字。
+            </p>
           </div>
 
           <!-- .model-field 不是样式钩子：onDocPointer 靠它判断「点在字段里不算点外面」 -->
@@ -1505,6 +1567,23 @@ const advSummary = computed<string>(() => {
               </button>
               <p class="mp-empty" v-if="!modelCandidates.length">没有匹配的模型 ID</p>
             </div>
+          </div>
+
+          <!-- 已有名称下拉：定位方式同 .model-pop（fixed），但状态独立 —— 两个下拉互不干扰 -->
+          <!-- Esc 也挂在这里：焦点 Tab 到选项上时，输入框那个 @keydown.esc 已经收不到了 -->
+          <div v-if="namePopOpen" class="name-pop" :style="namePopStyle" data-name-pop @keydown.esc="namePopOpen = false">
+            <div class="name-pop-head">已有名称</div>
+            <button
+              v-for="n in filteredNames" :key="n.name" type="button" class="name-opt"
+              :class="{ on: (form.name || '').trim() === n.name }" data-name-option
+              @click="pickName(n.name)"
+            >
+              <span class="truncate">{{ n.name }}</span>
+              <span class="name-opt-count">{{ n.count }} 个配置</span>
+            </button>
+            <p class="hint-line" v-if="!filteredNames.length" data-name-pop-empty>
+              没有匹配的已有名称 —— 直接手打一个新名字就行。
+            </p>
           </div>
         </Teleport>
       </section>
@@ -1922,6 +2001,34 @@ label.field > input, label.field > select, label.field > textarea { max-width: n
 .mp-opt.on .mp-radio { border-color: var(--accent); border-width: 4px; }
 .mp-id { flex: 1 1 auto; min-width: 0; }
 .mp-empty { margin: 0; padding: 8px; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+
+/* 「显示名称」的已有名称下拉：值与 .model-pop 同源，改一处要同时看另一处。
+   刻意不共用类名 —— onDocPointer / onViewport 靠 .model-pop / .name-pop 区分是哪个下拉，
+   合并成一个类名会让两个下拉互相收掉。差别只有一处：这里是**自己滚**（没有 .mp-list 那层容器）。 */
+.name-pop {
+  position: fixed; z-index: 260; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; min-height: 0; padding: 6px;
+  max-height: calc(var(--control-h) * 7); overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  background: var(--bg-elev); box-shadow: var(--shadow-2);
+}
+.name-pop-head {
+  flex: none; padding: 2px 8px 6px;
+  font-size: calc(11.5px * var(--ts, 1)); font-weight: 650; color: var(--text-faint);
+}
+/* 行高 / hover / 选中态与 .mp-opt 同值 */
+.name-opt {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text);
+  font-size: calc(13px * var(--ts, 1)); text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.name-opt:hover { background: var(--bg-hover); }
+.name-opt.on { background: var(--accent-soft); color: var(--accent-text); }
+.name-opt:focus-visible { outline: none; box-shadow: var(--ring); }
+.name-opt .truncate { flex: 1 1 auto; min-width: 0; }
+.name-opt-count { flex: none; font-size: calc(11.5px * var(--ts, 1)); color: var(--text-faint); }
+.name-opt.on .name-opt-count { color: inherit; }
 /* ④ 任务用途 */
 .types { height: auto; flex-wrap: wrap; gap: 2px; }
 .types button { height: calc(var(--control-h) - 6px); padding: 0 11px; font-size: calc(12.5px * var(--ts, 1)); }

@@ -798,6 +798,21 @@ async function removeModel(m: ModelRow): Promise<void> {
 
 /* ---------------------------- 新建 / 编辑（统一走 ModelForm） ---------------------------- */
 
+/** 给表单第 3 步「显示名称」的候选清单：按显示名称去重（同名 = 抽屉里的同一组），带条数。
+ *  条数降序、同数按名字排 —— 常用的名字自然浮到前面。空名跳过：它们本来就不成组。
+ *  **不过滤"当前这条"**：用户就是要看见全部（选中自己那条等于没改）。 */
+const existingNameOptions = computed<Array<{ name: string; count: number }>>(() => {
+  const byName = new Map<string, number>();
+  for (const m of (state.models || []) as ModelRow[]) {
+    const n = String(m.name || '').trim();
+    if (!n) continue;
+    byName.set(n, (byName.get(n) || 0) + 1);
+  }
+  return [...byName.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name, 'zh-CN'));
+});
+
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formTarget = ref<ModelConfig | null>(null);
@@ -1345,6 +1360,7 @@ onBeforeUnmount(() => {
       :secrets="state.secrets" :busy="rowBusy('submit')" :save-error="formError"
       :rules-warning="formWarning" :rules-error="formRulesError"
       :initial-step="formInitialStep" :focus-price="formFocusPrice"
+      :existing-names="existingNameOptions"
       @close="formOpen = false" @submit="submitForm"
     />
 

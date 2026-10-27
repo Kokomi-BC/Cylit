@@ -15322,3 +15322,42 @@ warning  A items=[] + 无默认价 → has_price=False **warning=None**（用户
 
 > 取舍：计费块**整块**生效 —— 只拨 switch 关掉计费时，币种也一起写 null（与"不计费"语义一致）。
 > 若要"只关价格、保留币种"，得在计费块内部再拆一层脏标记；现在不拆，是因为那是同一条语义的两半。
+
+### 224. 第二百二十四轮：编辑模型时「显示名称」可以从已有名称里选（同名才成得了组）
+
+用户口径：「模型配置里的**模型名称**可以选择已有的模型名称。」
+
+要改的是「编辑模型 → 第 3 步 → **显示名称**」（`data-model-name`）—— 它原来只能手打，
+而抽屉里的「同名组」正是按**显示名称完全相同**归并（`relGroups` 的 `n:<name>`）：
+手打差一个字就成不了组，也就没有「批量配置」这条入口。Model ID 那个字段本来就有「获取模型列表」，没动。
+
+改法：
+- `ModelForm` 新 prop `existingNames: Array<{name, count}>`（父级去重后传入）；
+- 「显示名称」从 `<label class="field">` 换成 `div.fgroup.name-field` + `.mf-input` + `.mf-caret` 箭头
+  （与同一步里 Model ID 那套同观感、同高度），点箭头弹出 `.name-pop`「已有名称」：每条名字 + 「N 个配置」，
+  按当前输入做**包含**过滤（大小写不敏感），点一条 = 填入并置 `nameTouched`（之后换 Model ID 不再被自动覆盖）；
+- 与 modelPop **各自一份 state**（`namePopOpen / nameFieldEl / namePopStyle`）：共用一个开关会互相收掉；
+  `onDocPointer` / `onViewport` 改成"各收各的"（点在对面那个字段里，收的是对面那个）；
+  下拉与 `modelPop` 同一个 `Teleport to body`（`.modal-mask` 的 backdrop-filter 会给 fixed 造 containing block）；
+- `ModelPanel` 加 `existingNameOptions` computed（trim 去重、空名跳过、条数降序 + `localeCompare('zh-CN')`）并传下去。
+
+### 实测（有头 Chrome + CDP，本机 8710；新建模型 → deepseek → 第 3 步）
+
+```
+列表      已有名称 5 条，各带「1 个配置」：通义千问…embedding / …reranker /
+          DeepSeek V4.1 Flash · 论文问答 / … generation / … vision
+提示      '同名会归成一组，便于「批量配置」；也可以直接手打一个新名字。'
+选中      点第一条 → data-model-name 的 value 立刻变成该名字，下拉收起（closed=true）
+再开      点箭头 → 重新打开（reopened=true）
+点外面    mousedown 落在 .modal-mask → 关闭（closedByOutside=true）
+```
+
+> 关于"两个下拉互不干扰"：实测**打开名字下拉会把 Model ID 下拉收掉**（因为它们各自把"点在自己区域之外"
+> 当作关闭信号，而被点的正是对面那块）。这比"两个同时飘在屏幕上"更合理，所以按现状保留 ——
+> 独立的是 state，不是"同时可见"。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-CHyNrt8Q.js`）、`frontend_check.py` **168/168**。
+
+> CDP 记录：用 `Input.dispatchMouseEvent` 打的真实鼠标事件在这条路上收不到（页面监听里一条都没有，
+> 与 `Page.bringToFront` 无关），所以最终用"同序列的 `MouseEvent('mousedown')` + `click()`"验证 ——
+> 页面侧只认事件本身，`isTrusted` 没参与判断，结论仍然成立。
