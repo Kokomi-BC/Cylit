@@ -15945,3 +15945,45 @@ B: Ashish Vaswani*（Google Brain，avaswani@google.com）、Noam Shazeer*（Goo
 
 线上 = `9705c75`，`dist/index.html` sha256 `df85fb7…`，`cylit-api` online、`/health` 200；
 GitHub 这次恢复了：`e585302..9705c75` 已推（上一条留的 2 个提交一起推上去了），`unpushed=0`。
+### 237. 第二百三十七轮：整篇重跑 Attention Is All You Need（15 页 A+B）+ 跑出来的三处链路缺陷
+
+用户口径：「重新转录和翻译完整的 transform 那篇论文，确保这条链路能跑通」。
+生产 `attention-cleanroom` 全量 `retranslate`（A 路 15 页 + B 路 15 页，同一个请求）。
+
+## A. 跑通了（结果）
+
+```
+TRANSCRIBE_EN completed 15/15  成功 15 页，失败 0 页，用时 198.79s
+TRANSLATE_ZH  completed 15/15  成功 15 页，失败 0 页，用时 127.49s
+随后自动：INDEX 204 chunk（向量 204 条）· UNDERSTAND_A 完成 · paper.status=indexed
+读模型：15 页 / 160 行 / **0 行缺译文**
+```
+
+关键页抽查：p1 `---` 在 `p001-06`（自成一块）· 作者区一段（`p001-01`）· p2 页首句
+`transduction problems … [35, 2, 5]` 在 `p002-00` —— 前几轮修的几处都还在。
+
+## B. 跑出来的第一处缺陷：两路同时 retranslate，B 拿到**上一轮**的 A 页
+
+同一个请求里 A、B 同时起步，B 的 `await_a_page` 看到盘上已有一页就立刻用 —— 那是上一轮的产物。
+实测 p1：A 重跑后 11 块、B 按旧 10 块译，读模型里 EN 的 `*Equal contribution…` 对上了 ZH 的
+「† 在 Google Brain…」——整页错一行。
+
+修法（`await_a_page(..., fresh_after=)`）：force + 块模式时，只认**本任务开始之后**写下的那一页；
+**A 路正在跑**才启用这条（否则"只补中文翻译"会整页失败 —— 第一版就是这么错的，单测盯住了两种情形）。
+
+## C. 第二处：B 交回来的块数/空块会让落盘少一块
+
+实测 p7：A 16 块，B 却把末尾「**Residual Dropout**」那块并进上一块（15 块），`translation_md` 于是少一段。
+原来只防了"某块是空串"，且重试后仍然将就。现在：重试一次后**块数仍不等或仍有空块 → 该页失败**
+（任务里能看到、重跑一次就好），绝不写入会错位的译文。p7 重跑后 16 块齐了，最后一行
+`**Residual Dropout** …` ↔ `**残差 Dropout** …` 对得上。
+
+## D. 一处不是缺陷、但差点被我误判的
+
+用 `split_blocks(original_md)` 数块时会看到 A 比 B 多一块（p7 16/15）—— 那是 A 页首那半句
+（`the input sequence centered around…`）**已被上一页 carry 走并译完**，B 那一块本来就该是空的。
+读模型按产物里的 `blocks` 配对，`p007-00` EN「A single convolutional layer…」↔ ZH「核宽度为 $k<n$ 的单个卷积层…」
+是对的。**判对齐要看读模型的行，不要看裸 md 的块数。**
+
+`pytest` 全绿（新增两条：过期 A 页在 A 正在跑时被拒、A 没在跑时照用）；
+线上 = `3489da5`，`/health` 200；GitHub 这轮又撞上 500（见提交说明），恢复后补推。
