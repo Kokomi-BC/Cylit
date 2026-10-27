@@ -15911,3 +15911,37 @@ B: Ashish Vaswani*（Google Brain，avaswani@google.com）、Noam Shazeer*（Goo
 
 > 备注：这次 `git push` 撞上 GitHub 一次 5xx（`The requested URL returned error: 500`），
 > 部署不受影响；补推见下一条提交之后。
+### 236. 第二百三十六轮：脚注分隔线做成**明显的一条**+ 脚注区按论文样式收紧（小字号 / 紧凑行距 / 淡一档）
+
+用户口径：「使用类似论文的明显的分割线，底部的脚注最好使用特殊类似论文的紧凑小字号样式，
+避免抢走正文的阅读注意力」。
+
+## A. 分隔线：从 8% 淡线做成看得见的一条
+
+`base.css` 的 `.md hr` 从 `33% / 96–220px / var(--divider)`（8% 墨）改成
+`42% / 140–280px / color-mix(var(--text) 38%)` —— 与论文里那条脚注线同一观感：短、实、压得住。
+实测（CDP）：`w=202 h=1 bg=color(srgb .09 .11 .11 / .38)`。
+
+## B. 脚注区：小一号字 + 紧凑行距 + 淡一档颜色
+
+1. **哪几行算脚注**（`ReaderPageRows.footnoteRows`）：页内 `---`（转录取的脚注分隔线）之后，
+   直到下一个 `heading` / `formula` 之前的行。判据只用转录里那条 `---`，不靠"以 `*` 开头"这种启发式
+   （星号在 Markdown 里可能只是斜体）。命中的行加 `.row-pair.is-footnote`。
+2. **样式**（写在 `base.css`，因为 `.rr-body` 是 `ReaderRow` 的节点、组件 scoped 样式够不到）：
+   ```
+   .row-pair.is-footnote .rr-body { font-size: .84em; line-height: 1.55; color: var(--text-dim); }
+   ```
+   两侧（原文 / 译文）同时收，否则对照时一侧大一侧小。
+
+### 实测（CDP，Attention Is All You Need 第 1 页）
+
+```
+正文行     13px / 行高 23.14 / color rgb(23,27,29)
+脚注行     10.92px / 行高 16.93 / color rgb(91,100,105)   （p001-07 / 08 / 09：*同等贡献、†、‡）
+分隔线     202px × 1px，38% 墨（截图里在"1 引言"那段与脚注之间）
+```
+
+`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-Cib7rHkf.js`）；`frontend_check.py` **168/168 通过、0 失败**。
+
+线上 = `9705c75`，`dist/index.html` sha256 `df85fb7…`，`cylit-api` online、`/health` 200；
+GitHub 这次恢复了：`e585302..9705c75` 已推（上一条留的 2 个提交一起推上去了），`unpushed=0`。
