@@ -7,7 +7,8 @@
  *                 默认密钥自动选中（key_mode=auto），可换某一把或「+ 新建密钥」
  * 3 选择模型    → 先拉 POST /models/probe-models 再搜索选 Model ID；拉不到就手填。
  *                 **显示名称 name 与 Model ID model_name 是两个字段**，不互相猜
- * 4 任务用途    → model_type 单选；「设为该任务默认模型」单独勾选、**默认不勾**
+ * 4 参数与计费  → **任务用途只读**（用户口径 2026-12：配置是按模型分类走的，从哪张卡进来就是哪一类，
+ *                 表单再问一遍只会让人把配置挪到别的分类里）；「设为该分类默认模型」单独勾选、默认不勾
  * 5 测试并保存  → 配置填写 / 连接测试 / 保存结果 三块各自独立；保存失败保留全部输入
  *
  * 后端降级：新接口（/models/providers、/models/providers/{id}/keys）在老进程上可能
@@ -105,7 +106,7 @@ const STEPS = [
   { id: 1, label: '选择提供方' },
   { id: 2, label: '连接与认证' },
   { id: 3, label: '选择模型' },
-  { id: 4, label: '任务用途' },
+  { id: 4, label: '参数与计费' },
   { id: 5, label: '测试并保存' },
 ] as const;
 
@@ -134,7 +135,6 @@ function advance(): void {
 
 type AuthKind = 'bearer' | 'none';
 
-const FORM_TYPES = ['generation', 'agent', 'embedding', 'reranker', 'vision'];
 
 const form = reactive({
   name: '',
@@ -155,7 +155,7 @@ const form = reactive({
   price_cache_write: '',
 });
 
-const typesList = computed<string[]>(() => (props.types && props.types.length ? props.types : FORM_TYPES));
+/* typesList 删掉了：任务用途不再由表单选（见第 4 步模板里的说明）。需要"全部类型"的地方仍在父级。 */
 
 function labelOf(t: string): string {
   return props.typeLabels?.[t] || t;
@@ -1622,21 +1622,19 @@ const advSummary = computed<string>(() => {
         </Teleport>
       </section>
 
-      <!-- ④ 任务用途 -->
+      <!-- ④ 参数与计费 -->
+      <!-- 任务用途**不给改**（用户口径 2026-12）：配置是按模型分类来的 —— 从哪张卡进来就是哪一类，
+           在这里再选一次，等于允许把配置挪进别的分类，而抽屉/卡片的"同名同组"正是按分类排的。
+           所以这里只把既成事实写出来，选择权留给"从哪里进来"。 -->
       <section v-else-if="step === 4" class="step-body" data-step="4">
-        <p class="sh-sub">这个模型干什么用（决定它出现在哪个任务分类里）</p>
-        <div class="seg types" role="group" aria-label="任务类型">
-          <button
-            v-for="t in typesList" :key="t" type="button"
-            :class="{ active: form.model_type === t }"
-            :data-type="t"
-            @click="form.model_type = t"
-          >{{ labelOf(t) }}</button>
-        </div>
+        <p class="sh-sub">这一类的参数与计费（任务用途由进入的分类卡决定）</p>
+        <p class="edit-target" data-type-readonly>
+          任务用途：{{ labelOf(form.model_type) }}
+        </p>
 
         <label class="check-row">
           <input type="checkbox" v-model="form.is_default" data-default-check />
-          <span>设为该任务的默认模型</span>
+          <span>设为该分类的默认模型</span>
         </label>
         <p class="hint-line">{{ isDefaultHint }}</p>
 
