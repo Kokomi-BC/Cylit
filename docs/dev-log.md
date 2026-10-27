@@ -15987,3 +15987,24 @@ TRANSLATE_ZH  completed 15/15  成功 15 页，失败 0 页，用时 127.49s
 
 `pytest` 全绿（新增两条：过期 A 页在 A 正在跑时被拒、A 没在跑时照用）；
 线上 = `3489da5`，`/health` 200；GitHub 这轮又撞上 500（见提交说明），恢复后补推。
+### 238. 第二百三十八轮：笔记排序两态的顺序 —— **文章顺序在左、修改时间在右**
+
+用户口径：「笔记的按顺序排序放在按时间排序的左侧」。上一轮做两态滑块时按"钟在前"摆的（时间、文章顺序），
+现在按用户要的顺序换过来：**左 = 按文章顺序（三行图标）、右 = 按修改时间（时钟）**，
+与"从文档开头往后读"的直觉一致；**默认选中仍是右边那枚**（`cyl.notes.order` 默认 `time`），行为不变。
+
+只换了模板里两枚 `<button>` 的先后（`data-notes-order-doc` 在前、`data-notes-order-time` 在后），
+指示块由 `useSegGlide` 自动挂，滑动方向随之反过来，不需要额外代码。
+
+### 实测（CDP，`?side=notes`）
+
+```
+按钮顺序    按文章顺序 x=11  →  按修改时间 x=45      （左 = 文章顺序 ✔）
+默认选中    按修改时间，thumb x=45（右）
+点左边那枚  thumb → x=11，与 active 同位置
+```
+
+`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-Bo6cnA1s.js`）；`frontend_check.py` **168/168 通过、0 失败**。
+（第一次跑出现过一次 PDF 划词整段报 None 的偶发失败，重跑即 168/168 —— 那一段本来就依赖真实的 PDF 文字层选择时序。）
+
+线上 = `5d9a22b`，`dist/index.html` sha256 `c03f9e0…`，`cylit-api` online、`/health` 200；GitHub `a506b15..5d9a22b`，`unpushed=0`。
