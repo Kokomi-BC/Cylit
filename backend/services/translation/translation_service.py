@@ -160,23 +160,23 @@ def await_a_page(a_store: PageStore, paper_id: str, page: int, *,
         # 本实例的 `_data` 是构造时读进来的，不丢缓存就永远看不到对路刚落盘的页。
         a_store.reload()
         payload = a_store.page(page)
+        # A 路**此刻还在跑**（两路同时 retranslate / 或 B 追一个正在重跑 A 的任务）：
+        # 盘上那一页可能是上一轮的，拿它当块清单会让中英整页错一行（实测 p1 差一行）→ 宁可等。
+        # A 路没在跑时就不挑新鲜度：那是"只补中文翻译"的正常用法，盘上有什么就用什么。
+        a_running = _active_path_task(paper_id, "a") is not None
         if payload and str(payload.get("original_md") or "").strip():
-            # 盘上那一页是**上一轮**的（两路同时 retranslate 时必然遇到，见 run_path_task 的
-            # `fresh_after`）：拿它当块清单，中英就整页错一行（实测 p1 的 EN/ZH 差一行）。
-            # 宁可继续等 A 重写完 —— 等到超时才算失败，也不会静默错位。
-            if fresh_after is not None:
+            stale = False
+            if fresh_after is not None and a_running:
                 stamp = str(payload.get("updated_at") or "")
                 try:
                     stale = bool(stamp) and datetime.fromisoformat(stamp) < fresh_after
                 except ValueError:
                     stale = False
-                if stale:
-                    payload = None
-            if payload:
+            if not stale:
                 if waited:
                     log.info("块模式：A 路第 %d 页已就绪（等了 %.1fs）", page, time.time() - started)
                 return payload
-        if time.time() >= deadline or _active_path_task(paper_id, "a") is None:
+        if time.time() >= deadline or not a_running:
             break
         if not waited:
             waited = True
