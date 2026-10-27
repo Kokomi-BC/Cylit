@@ -16341,3 +16341,57 @@ payload 49 条，refs 恰好 1..49（dense=True），组 7 个（6 个两成员 
 截图 `data/logs/menuglass.png`：对话行菜单是半透明玻璃，右侧与行右边对齐、贴在这一行下面。
 
 `frontend_check.py` 168/168 通过、0 失败；`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BANBlmPc.js`）。
+---
+
+# 246 · 为什么「ref 重建上线了，回答还是满屏标号」——只重启了 API，没重启 Agent（2026-12-27）
+
+用户问：**「TurboQuant 服务器上最新的对话，为什么 agent 仍然使用了大量的标号，有些标号是可以合并的」**。
+
+## A. 根因（实测，不是猜）
+
+生产上有**两个独立进程**：
+
+| 进程 | 入口 | 端口 | 职责 |
+|---|---|---|---|
+| `cylit-api` | `cli/pr.py serve --port 8710` | 8710 | 解析 / 翻译 / 任务 / 论文接口 |
+| `cylit-agent` | `cli/pr.py agent` → `backend.agent.service:create_app` | **8711** | **问答流水线**（工具调用、`_finalize`、`plan_cite_groups`、`prompts.CITING`） |
+
+证据：
+
+```
+脚本/参数        : /root/Cylit/.venv/bin/python  cli/pr.py agent
+进程启动时间     : PID 246260  Sun Oct 25 14:25:21 2026      ← 两天前
+代码文件 mtime   : backend/agent/{runtime,cite_groups,prompts}.py  2026-10-27 22:34:33
+最新那条回答     : 2026-10-27 15:32:51 UTC（= 23:32 +0800），citations 44 条，members 0 组
+```
+
+也就是：**代码写进磁盘了，但 8711 那个进程从两天前起就没重启过** —— 它跑的还是 `_renumber` 那一版，
+所以正文照旧是一串 `[1][2][3]`，payload 里一个 `members` 都没有。d242–d245 四次部署都只
+`pm2 restart cylit-api`，前端与翻译/接口侧是新的，**问答侧一次都没生效**。
+
+## B. 处置
+
+```
+pm2 restart cylit-agent --update-env
+→ PID 1037870  Tue Oct 27 23:45:55 2026（晚于代码 mtime）  8711/health = 200  online  错误日志空
+```
+
+顺带把部署口径改掉：**以后部署 = `pm2 restart cylit-api cylit-agent`**，只重启一个就等于半个上线。
+
+## C. 用同一条回答复核「新代码会怎么做」
+
+把库里那条回答（53 个标号 / 44 条引用）直接喂给现在这套 `plan_cite_groups`：
+
+```
+现在（旧进程产出）：53 个标号，0 组
+新代码重算        ：40 个标号，11 组（[1–2] [5–6] [8–9] [12–14] [17–18] [19–20] [25–27] [31–32] …）
+```
+
+剩下的 40 个**是真合不了**：run 内相邻两枚的目标经常是「同页差好几行」或「跨页」，
+例如 `[1][10][11]` = 第 3 页 / 第 5 页 / 第 3 页，`[15][16]` = p005-00 与 p005-07 —— 合成一枚就成了
+「一个标号亮三处不相邻的地方」，正是用户明确否掉的那种。
+
+## D. 还欠一步验证
+
+重启之后**还没有新的回答**，所以「模型自己会不会照新提示词写 `[12-14]`」还没有实测样本；
+下次在页面上重问一句就能看到（正文里应出现区间形状，payload 里出现 `members`）。
