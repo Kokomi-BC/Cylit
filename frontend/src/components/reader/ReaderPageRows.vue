@@ -453,12 +453,16 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
  * （用户 2026-12-03 报的「标号 1 也是整页」：那一条落的行正好 354px 高）。
  * ⚠️ 曾经在这层上加过一根 3px 的左侧竖条（`box-shadow: inset 3px 0 0 0`）当"从这里开始"的定位感，
  * **2026-11 用户口径撤掉了**：点定位时页面里"侧边闪一根竖线"是干扰，定位只要淡底亮一下。
- * 别再往这层加描边 / 竖条 / 分隔线 —— 这一层的唯一职责是"亮一下再淡出"。 */
+ * 别再往这层加竖条 / 分隔线 —— 这一层的唯一职责是"亮一下再淡出"。
+ *
+ * 2026-12-27 用户口径：**加一条细主题色边框**（与合并大块 .flash-block 同一档），
+ * 淡底在浅背景上不够醒目；用 inset 阴影而不是 border，盒子尺寸不变（不影响落点计算）。 */
 .row-pair.flash-a::before,
 .row-pair.flash-b::before {
   content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
   border-radius: 8px; opacity: .95;
   background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .row-pair.flash-a::before { animation: row-flash-a 1.5s ease-out forwards; }
 .row-pair.flash-b::before { animation: row-flash-b 1.5s ease-out forwards; }

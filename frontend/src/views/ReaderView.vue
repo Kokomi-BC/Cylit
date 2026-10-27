@@ -11191,6 +11191,9 @@ function renderMarkdown(text?: string | null) {
   position: absolute; z-index: 3; pointer-events: none;
   border-radius: 12px;
   background: color-mix(in srgb, var(--accent) 11%, transparent);
+  /* 一条**细主题色描边**：光靠淡底在浅背景上不够醒目（用户口径 2026-12-27）。
+     用 inset 阴影而不是 border —— 不改变盒子尺寸，块的位置与尺寸仍然等于那几行的外接框。 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
   animation: block-flash 1.5s ease-out forwards;
 }
 
@@ -11203,6 +11206,8 @@ function renderMarkdown(text?: string | null) {
   content: ''; position: absolute; inset: -3px -6px; pointer-events: none;
   border-radius: 8px; opacity: .95;
   background: color-mix(in srgb, var(--accent) 11%, transparent);
+  /* 与合并大块同一条**细主题色描边**（同一门口径，别一处有色框一处没有） */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
   animation: row-flash-span 1.5s ease-out forwards;
 }
 

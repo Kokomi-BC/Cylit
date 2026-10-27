@@ -2228,6 +2228,76 @@ function toggleAll() {
 
 /** 会话行右上角那枚「⋯」展开了哪一条（同一时刻只开一个） */
 const rowMenu = ref<string>('');
+/** 菜单浮层的坐标（`position: fixed`，见 `placeRowMenu`）：只在打开时算一次 */
+const rowMenuStyle = ref<Record<string, string>>({});
+const rowMenuEl = ref<HTMLElement | null>(null);
+let rowMenuAnchor: HTMLElement | null = null;
+
+/**
+ * 把「⋯」菜单摆到**这一行的右侧**，并**避让视口底边**（用户口径 2026-12-27：
+ * 「侧栏对话的更多菜单放在右侧悬浮显示且避让底部」——以前是 `top: 100%` 往下展开，
+ * 列表滚到底时最后几条的菜单直接被裁掉/盖住下面的行）。
+ *
+ * 做法：纵向与这一行居中，超出视口就往上顶到 `内高 - 菜单高 - 8`；
+ * 横向先放右侧 `row.right + 8`，放不下就翻到左侧（侧栏贴着屏幕右边时也不出界）。
+ * 用 `position: fixed` + `Teleport to=body`：列表是 `overflow-y:auto`，
+ * 留在行里的绝对定位会被列表容器裁掉，这正是"菜单被底部吃掉"的成因。
+ */
+/** 函数式 ref：菜单在 v-for 里（字符串 ref 会变成数组，取 getBoundingClientRect 会报错） */
+function setRowMenuEl(el: unknown) {
+  rowMenuEl.value = (el as HTMLElement | null) ?? null;
+}
+
+function placeRowMenu() {
+  const el = rowMenuEl.value;
+  const anchor = rowMenuAnchor;
+  if (!el || !anchor) return;
+  const a = anchor.getBoundingClientRect();
+  const m = el.getBoundingClientRect();
+  const pad = 8;
+  let left = a.right + 8;
+  if (left + m.width > window.innerWidth - pad) left = a.left - m.width - 8;
+  left = Math.max(pad, left);
+  let top = a.top + a.height / 2 - m.height / 2;
+  top = Math.min(top, window.innerHeight - m.height - pad);
+  top = Math.max(pad, top);
+  rowMenuStyle.value = { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` };
+}
+
+/** 菜单开着时：点外面、滚列表、改窗口大小都收起来（浮层在 body 上，不跟着列表走） */
+function onDocPointerDown(ev: Event) {
+  const t = ev.target as HTMLElement | null;
+  if (t?.closest('.row-menu-fly') || t?.closest('[data-conv-more]')) return;
+  rowMenu.value = '';
+}
+function closeRowMenuOnMove() { rowMenu.value = ''; }
+watch(rowMenu, (open) => {
+  const on = typeof window !== 'undefined';
+  if (open && on) {
+    window.addEventListener('pointerdown', onDocPointerDown, true);
+    window.addEventListener('resize', closeRowMenuOnMove);
+    document.addEventListener('scroll', closeRowMenuOnMove, true);
+  } else {
+    window.removeEventListener('pointerdown', onDocPointerDown, true);
+    window.removeEventListener('resize', closeRowMenuOnMove);
+    document.removeEventListener('scroll', closeRowMenuOnMove, true);
+  }
+});
+onUnmounted(() => {
+  window.removeEventListener('pointerdown', onDocPointerDown, true);
+  window.removeEventListener('resize', closeRowMenuOnMove);
+  document.removeEventListener('scroll', closeRowMenuOnMove, true);
+});
+
+/** 点「⋯」：同一行再点一次收起；换一行则重新算坐标 */
+function toggleRowMenu(id: string, ev: MouseEvent) {
+  if (rowMenu.value === id) { rowMenu.value = ''; return; }
+  const btn = ev.currentTarget as HTMLElement | null;
+  rowMenuAnchor = (btn?.closest('.row') as HTMLElement | null) ?? btn;
+  rowMenu.value = id;
+  rowMenuStyle.value = {};
+  void nextTick(placeRowMenu);
+}
 
 /** 浮层打开 = **把这个会话拎成浮窗**（`⋯` 菜单里那一枚；不是"分享"） */
 async function shareToFloat(conv: AgentConversation) {
@@ -3361,27 +3431,36 @@ defineExpose({ uploadFiles, ensureThread });
               class="ico ico-more"
               title="更多"
               data-conv-more
-              @click.stop="rowMenu = rowMenu === c.conversation_id ? '' : c.conversation_id"
+              @click.stop="toggleRowMenu(c.conversation_id, $event)"
             >
               <AppIcon name="more-vert" :size="18" />
             </button>
           </div>
-          <div v-if="rowMenu === c.conversation_id" class="row-menu" @click.stop>
-            <button class="menu-item" @click.stop="rowMenu = ''; startRename(c)">
-              <AppIcon name="edit" :size="12" />重命名
-            </button>
-            <!-- 位置照旧（重命名下面那一条），但**不叫"分享"**（用户口径 2026-11-19）：
-                 它是"把这个会话拎成浮窗"，名字就用「浮层打开」。 -->
-            <button v-if="showFloatBtn" class="menu-item" @click.stop="shareToFloat(c)">
-              <AppIcon name="pip" :size="13" />浮层打开
-            </button>
-            <button class="menu-item" @click.stop="rowMenu = ''; toggleBatch()">
-              <AppIcon name="list-check" :size="12" />多选
-            </button>
-            <button class="menu-item danger" @click.stop="rowMenu = ''; askDeleteOne(c)">
-              <AppIcon name="trash" :size="12" />删除
-            </button>
-          </div>
+          <!-- 「⋯」菜单：**浮到这一行的右侧**、并避让视口底边（见 placeRowMenu） -->
+          <Teleport to="body">
+            <div
+              v-if="rowMenu === c.conversation_id"
+              :ref="setRowMenuEl"
+              class="row-menu row-menu-fly"
+              :style="rowMenuStyle"
+              @click.stop
+            >
+              <button class="menu-item" @click.stop="rowMenu = ''; startRename(c)">
+                <AppIcon name="edit" :size="12" />重命名
+              </button>
+              <!-- 位置照旧（重命名下面那一条），但**不叫"分享"**（用户口径 2026-11-19）：
+                   它是"把这个会话拎成浮窗"，名字就用「浮层打开」。 -->
+              <button v-if="showFloatBtn" class="menu-item" @click.stop="shareToFloat(c)">
+                <AppIcon name="pip" :size="13" />浮层打开
+              </button>
+              <button class="menu-item" @click.stop="rowMenu = ''; toggleBatch()">
+                <AppIcon name="list-check" :size="12" />多选
+              </button>
+              <button class="menu-item danger" @click.stop="rowMenu = ''; askDeleteOne(c)">
+                <AppIcon name="trash" :size="12" />删除
+              </button>
+            </div>
+          </Teleport>
         </div>
       </div>
 
@@ -3918,6 +3997,13 @@ defineExpose({ uploadFiles, ensureThread });
   display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 126px;
   border-radius: 12px; background: var(--bg-elev); box-shadow: var(--shadow-flyout);
   border: 1px solid var(--border);
+}
+/* 「⋯」菜单的浮层形态（2026-12-27）：`position: fixed` + Teleport 到 body ——
+   列表是 `overflow-y:auto`，留在行里的绝对定位会被裁掉（"菜单被底部吃掉"就是这么来的）。
+   坐标由 `placeRowMenu` 算：这一行右侧、避让视口底边；放不下就翻到左侧。 */
+.row-menu.row-menu-fly {
+  position: fixed; right: auto; top: auto; z-index: 60;
+  min-width: 132px; padding: 5px;
 }
 .row-menu .menu-item {
   display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; padding: 0 8px;
