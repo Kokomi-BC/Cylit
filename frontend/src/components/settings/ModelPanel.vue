@@ -804,8 +804,10 @@ async function removeModel(m: ModelRow): Promise<void> {
  *  两家都叫「思考模式」的配置各自成组，混成一张全量清单只会让人选到一个属于别家的名字 ——
  *  落进抽屉只会多出一条孤零零的单条组。表单那边再按当前 provider 过滤一次（换提供方就换一份）。
  *  条数降序、同数按名字排；空名跳过（它们本来就不成组）。**不过滤"当前这条"**：选中自己那条等于没改。 */
-const existingNameOptions = computed<Array<{ name: string; count: number; provider: string }>>(() => {
-  const byKey = new Map<string, { name: string; count: number; provider: string }>();
+const existingNameOptions = computed<Array<{
+  name: string; count: number; provider: string; source: ModelRow;
+}>>(() => {
+  const byKey = new Map<string, { name: string; count: number; provider: string; source: ModelRow }>();
   for (const m of (state.models || []) as ModelRow[]) {
     const n = String(m.name || '').trim();
     if (!n) continue;
@@ -813,7 +815,8 @@ const existingNameOptions = computed<Array<{ name: string; count: number; provid
     const key = provider + '\u0000' + n;
     const hit = byKey.get(key);
     if (hit) hit.count += 1;
-    else byKey.set(key, { name: n, count: 1, provider });
+    /* 顺手带上这一组的**代表配置**（第一条）：表单选中这个名字后要拿它预填计费 / 推理强度 / 时段 */
+    else byKey.set(key, { name: n, count: 1, provider, source: m });
   }
   return [...byKey.values()]
     .sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name, 'zh-CN'));
@@ -864,7 +867,8 @@ function openEdit(m: ModelRow): void {
 }
 
 /* ---------------------------- 同名多配置的「批量配置」 ----------------------------
- * 抽屉里那一组同名配置 → 轻量面板（ModelBatchPanel），只放「密钥来源」「计费」两块，各自独立生效。
+ * 抽屉里那一组同名配置 → 轻量面板（ModelBatchPanel），只放「密钥来源」「计费」「推理强度」「计价规则」四块，
+ * 各自独立生效。
  * 不再复用 5 步「编辑模型」表单：名称 / Base URL / 参数 / 类型都是单条语义，批量写回去等于替用户抹平差异。 */
 
 const batchOpen = ref(false);
@@ -886,6 +890,10 @@ type BatchPayload = {
     price_cache_read: number | null;
     price_cache_write: number | null;
   };
+  /** 只发档位表：parameters 是整对象替换，合并得按每条自己来（见 applyBatch） */
+  levels?: Array<{ value: string; desc: string }>;
+  /** PriceRuleEditor + toRuleItem 的产物，PUT /models/{id}/price-rules 的 body（整批替换） */
+  rules?: { items: Record<string, unknown>[] };
 };
 
 /**
@@ -939,8 +947,10 @@ function flash(id: string): void {
  * 单条失败**不中断**：写成功的就留着（回滚只是骗自己），失败清单一次报全，面板不关，改完直接重试
  * —— 与限额卡片的批量 report 是同一种写法（一行总账 + 每行「名称 — 后端 message」）。
  *
- * body 里只有这两块真正改到的字段：name / base_url / parameters / model_type 一律不发
+ * body 里只有这几块真正改到的字段：name / base_url / model_type 一律不发
  * —— 那几项是单条语义，顺手发出去就是替用户改配置。
+ * parameters 是唯一的例外：推理强度就住在里面，所以 levels 存在时按**每条自己合并**（见循环里那段），
+ * 而不是发一份共享的 parameters。
  */
 async function applyBatch(payload: BatchPayload): Promise<void> {
   const body: Record<string, unknown> = {};
@@ -955,7 +965,9 @@ async function applyBatch(payload: BatchPayload): Promise<void> {
     body.price_cache_read = payload.billing.price_cache_read;
     body.price_cache_write = payload.billing.price_cache_write;
   }
-  if (!Object.keys(body).length) return;   // 两块都没动（面板那边保存本来就是禁用的）
+  const levels = 'levels' in payload ? payload.levels : undefined;
+  const rules = 'rules' in payload && payload.rules ? payload.rules : null;
+  if (!Object.keys(body).length && !levels && !rules) return;   // 四块都没动（面板那边保存本来就是禁用的）
 
   batchBusy.value = true;
   batchError.value = '';
@@ -966,11 +978,30 @@ async function applyBatch(payload: BatchPayload): Promise<void> {
       const id = String(m.id || '');
       const label = String(m.name || m.model_name || id || '（未命名）');
       if (!id) { fails.push({ name: label, message: '缺少配置 id，跳过' }); continue; }
+      /* parameters 是**整对象替换**：所以每条都得自己合并一份 ——
+         共享同一份 parameters 会把这条配置自己的 device / timeout 键一并抹掉。
+         levels 空表 = 清除档位（别留一个空数组：那与"没配"不是一回事）。 */
+      const ownBody: Record<string, unknown> = { ...body };
+      if (levels) {
+        const params: Record<string, any> = { ...(m.parameters || {}) };
+        if (levels.length) params.reasoning_levels = levels;
+        else delete params.reasoning_levels;
+        ownBody.parameters = params;
+      }
       try {
-        await api.put('/models/' + id, body);
+        if (Object.keys(ownBody).length) await api.put('/models/' + id, ownBody);
       } catch (err) {
         fails.push({ name: label, message: String((err as any)?.message ?? err) });
         continue;                     // 单条失败不中断：后面的配置照写
+      }
+      if (rules) {
+        /* 分时段整批替换：这一条失败也只是这一条没写进去，不中断后面的 */
+        try {
+          await api.put('/models/' + id + '/price-rules', rules);
+        } catch (err) {
+          fails.push({ name: label, message: '时段单价 — ' + String((err as any)?.message ?? err) });
+          continue;
+        }
       }
       ok.push(label);
     }

@@ -71,7 +71,7 @@ const props = withDefaults(defineProps<{
    *  所以这里要能"选一个已有名字"而不是每次都手打一遍。
    *  **带 provider**：这份"记忆"是按供应商分开的（用户口径）—— 换一家提供方，看到的就该是那一家用过的名字，
    *  不然选了个属于别家的名字，落进抽屉只会多出一个孤零零的单条组。 */
-  existingNames?: Array<{ name: string; count: number; provider: string }>;
+  existingNames?: Array<{ name: string; count: number; provider: string; source?: ModelConfig | null }>;
 }>(), {
   target: null,
   defaultType: 'agent',
@@ -380,11 +380,65 @@ const filteredNames = computed<Array<{ name: string; count: number; provider: st
   return namesOfProvider.value.filter((n) => n.name.toLowerCase().includes(q));
 });
 
-/** 显示名称是下游「同名批量配置」的分组键：手打一个字不一样就成不了组，所以要能挑已有名字。 */
-function pickName(name: string): void {
-  form.name = name;
+/** 刚继承过来的那个名字（空 = 没继承过）：只用来显示一行提示，不参与任何提交 */
+const inheritName = ref('');
+
+/**
+ * 把那条同名配置的**配置值**预填进来（用户口径：在其他地方填入对应模型名称时，自动继承对应配置）。
+ *
+ * 只继承"同一个模型在哪都一样"的三项：计费（币种 + 四个单价）、推理强度档位、分时段单价。
+ * **密钥来源不继承** —— 那是提供方 / 密钥库的事，跟着名字一起搬会把别人的密钥搬过来。
+ * 继承的是**可改的初值**，不是锁定：之后用户改哪一项就覆盖哪一项（沿用 nameTouched 那套手感）。
+ */
+function inheritFrom(source: ModelConfig): void {
+  /* 计费：空 = 空，绝不写 0（0 与"没配价"在后端是两件事） */
+  form.currency = source.currency || '';
+  form.price_in = priceText(source.price_in);
+  form.price_out = priceText(source.price_out);
+  form.price_cache_read = priceText(source.price_cache_read);
+  form.price_cache_write = priceText(source.price_cache_write);
+  /* 开关初值要等时段读完才算得出（与 init 同一套口径），这里先按"有没有默认价"落着 */
+  billingOn.value = priceConfigured.value;
+  if (billingOn.value) billingOpen.value = true;
+
+  /* 推理强度：写回 parameters.reasoning_levels，再让 syncReasoning 把它读成档位表
+     —— writeParams 记了 writtenText，那条 watch 会跳过这一次，所以必须显式同步一次 */
+  const raw = (source.parameters || {}).reasoning_levels;
+  const rows = Array.isArray(raw)
+    ? raw.map((it: any) => ({ value: String(it?.value ?? ''), desc: String(it?.desc ?? '') }))
+      .filter((r) => !!r.value)
+    : [];
+  writeParams((next) => {
+    if (rows.length) next.reasoning_levels = rows;
+    else delete next.reasoning_levels;
+  });
+  syncReasoning();
+
+  /* 分时段单价：整批替换语义，所以要么读到、要么留空。读不到就留空 + **不报错**
+     （这是"继承初值"，不该因为它弹一条红字拦住人；草稿空着本来也不会写回去）。 */
+  const id = String(source.id || '');
+  priceRules.value = [];
+  priceRulesLoaded.value = false;
+  priceRulesUnsupported.value = false;
+  priceRulesError.value = '';
+  if (!id) return;
+  void loadPriceRules(id).then(() => {
+    if (priceRulesError.value) priceRulesError.value = '';
+    billingOn.value = priceConfigured.value || priceRules.value.length > 0;
+    if (billingOn.value) billingOpen.value = true;
+  });
+}
+
+/** 显示名称是下游「同名批量配置」的分组键：手打一个字不一样就成不了组，所以要能挑已有名字。
+ *  选中已有名字 = 认领"那个配置是什么养的"：顺手继承它的计费 / 推理强度 / 时段（见 inheritFrom）。 */
+function pickName(entry: { name: string; source?: ModelConfig | null }): void {
+  form.name = entry.name;
   nameTouched.value = true;
   namePopOpen.value = false;
+  inheritName.value = '';
+  if (!entry.source) return;
+  inheritFrom(entry.source);
+  inheritName.value = entry.name;
 }
 
 /**
@@ -979,6 +1033,7 @@ function resetTransient(): void {
   priceRulesLoaded.value = false;
   priceRulesUnsupported.value = false;
   priceRulesError.value = '';
+  inheritName.value = '';
   connEditing.value = false;
   advanced.value = false;
   billingOpen.value = false;
@@ -1539,8 +1594,8 @@ const advSummary = computed<string>(() => {
                 <AppIcon name="chevron-down" :size="14" />
               </button>
             </div>
-            <p class="hint-line" v-if="existingNames.length" data-name-hint>
-              同名会归成一组，便于「批量配置」；也可以直接手打一个新名字。
+            <p class="hint-line" v-if="inheritName" data-name-inherit>
+              已继承「{{ inheritName }}」的计费与推理强度
             </p>
           </div>
 
@@ -1626,7 +1681,7 @@ const advSummary = computed<string>(() => {
               <button
                 v-for="n in filteredNames" :key="n.name" type="button"
                 class="mp-opt" :class="{ on: (form.name || '').trim() === n.name }"
-                data-name-option @click="pickName(n.name)"
+                data-name-option @click="pickName(n)"
               >
                 <span class="mp-radio" aria-hidden="true"></span>
                 <span class="mp-id truncate">{{ n.name }}</span>

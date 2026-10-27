@@ -1,21 +1,26 @@
 <script setup lang="ts">
 /**
- * 「批量配置」轻量面板：同名多配置组里**只放真的需要一次改多份**的两块 —— 密钥来源、计费。
+ * 「批量配置」轻量面板：同名多配置组里**只放真的需要一次改多份**的四块 ——
+ * 密钥来源、计费、推理强度、计价规则。
  *
  * 为什么不复用「编辑模型」那张 5 步表单（上一轮的做法，已按用户口径拆掉）：
  * 那张表单的五个步骤里，名称 / Base URL / 参数 / 模型类型**都是单条语义**，
  * 批量写回去等于替用户把所有配置改成一个样子（尤其 model_type —— 这一组之所以成组，
- * 就是同一个名字被不同用途用着，抹平类型等于删配置）。真正"同一组想统一改"的只有这两块。
+ * 就是同一个名字被不同用途用着，抹平类型等于删配置）。真正"同一组想统一改"的只有这几块。
  *
- * **两块各自有脏标记，这是本组件最重要的约定**：
+ * **每块各自有脏标记，这是本组件最重要的约定**：
  * 组内值本来就不一致时，把"没动过的那块"一并写回去，等于替用户抹平他并不想改的差异 ——
- * 那就不是"分别拆成轻量面板"了。所以只有用户真的动过的块才会进 payload（另一块是 undefined，
+ * 那就不是"分别拆成轻量面板"了。所以只有用户真的动过的块才会进 payload（其余块是 undefined，
  * 父级用 `in` 判断，别用 falsy 判断：`key_mode: 'auto'` 这种值本身不假）。
  */
 import { computed, reactive, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import type { ModelConfig } from '@/api/types';
 import Modal from '@/components/Modal.vue';
+import AppIcon from '@/components/AppIcon.vue';
+import PriceRuleEditor from '@/components/settings/PriceRuleEditor.vue';
+import { BUILTIN_EFFORTS, EFFORT_VALUE_PLACEHOLDER } from '@/utils/reasoning';
+import { draftOf, ruleDraftError, toRuleItem, type PriceRuleDraft } from '@/utils/priceRule';
 import type { KeyRow } from './modelTypes';
 
 /** 与 ModelPanel 里那份 ModelRow 同形（它是组件内私有类型，SFC 不能导出类型，故按同一形状写一遍；
@@ -49,8 +54,14 @@ type BatchBilling = {
   price_cache_write: number | null;
 };
 
+type BatchLevel = { value: string; desc: string };
+/** 只发档位表：父级写回时 parameters 是**整对象替换**，device / timeout 这些键得由父级按每条自己合并 */
+type BatchRules = { items: Record<string, unknown>[] };
+/** 没动过的块不出现（父级用「'key' in payload」判断，别用 falsy：key_mode 的 'auto' 本身不假） */
+type BatchPayload = { key?: BatchKey; billing?: BatchBilling; levels?: BatchLevel[]; rules?: BatchRules };
+
 const emit = defineEmits<{
-  (e: 'save', payload: { key?: BatchKey; billing?: BatchBilling }): void;
+  (e: 'save', payload: BatchPayload): void;
   (e: 'close'): void;
 }>();
 
@@ -174,6 +185,99 @@ const priceError = computed<string>(() => {
 
 function markBilling(): void { billingDirty.value = true; }
 
+/* ---------------------------- 区块 3：推理强度 ---------------------------- */
+
+type LevelRow = { value: string; desc: string };
+const levels = ref<LevelRow[]>([]);
+const levelsDirty = ref(false);
+
+/** 一条配置声明的档位表（老后端没有 parameters 时当空表） */
+function levelsOf(m: ModelRow): LevelRow[] {
+  const raw = (m.parameters || {}).reasoning_levels;
+  return Array.isArray(raw)
+    ? raw.map((it: any) => ({ value: String(it?.value ?? ''), desc: String(it?.desc ?? '') }))
+    : [];
+}
+
+/** 空表与「没有这个键」等价（都是没配档位），别把它算成一次"组内不一致" */
+function levelsSig(m: ModelRow): string {
+  const rows = levelsOf(m);
+  return rows.length ? JSON.stringify(rows.map((r) => [r.value, r.desc])) : '';
+}
+const levelsMixed = computed<boolean>(() => new Set(props.models.map(levelsSig)).size > 1);
+
+function markLevels(): void { levelsDirty.value = true; }
+
+function addLevel(): void { levels.value.push({ value: '', desc: '' }); markLevels(); }
+function removeLevel(i: number): void { levels.value.splice(i, 1); markLevels(); }
+
+function moveLevel(i: number, delta: number): void {
+  const j = i + delta;
+  if (j < 0 || j >= levels.value.length) return;
+  levels.value.splice(j, 0, ...levels.value.splice(i, 1));
+  markLevels();
+}
+
+/** 内置档位与 ModelForm 的「填入内置档位」同一个来源（@/utils/reasoning），不抄第二份表 */
+function fillBuiltinLevels(): void {
+  levels.value = BUILTIN_EFFORTS.map((v) => ({ value: v, desc: '' }));
+  markLevels();
+}
+
+/** 口径照 ModelForm.levelError：每行都要有值，同一条配置内不许重复 */
+const levelError = computed<string>(() => {
+  if (!levelsDirty.value) return '';
+  const seen = new Set<string>();
+  for (let i = 0; i < levels.value.length; i += 1) {
+    const v = levels.value[i].value.trim();
+    if (!v) return '推理强度第 ' + String(i + 1) + ' 行还没填值';
+    if (seen.has(v)) return '推理强度「' + v + '」重复了，同一模型内的值要唯一';
+    seen.add(v);
+  }
+  return '';
+});
+
+/* ---------------------------- 区块 4：计价规则 ---------------------------- */
+
+const ruleRows = ref<PriceRuleDraft[]>([]);
+const rulesDirty = ref(false);
+/** 复位 / 预填期间置真：编辑器是**就地改行**的（输入框直接 v-model 到 row 上），
+ *  脏标记只能靠深监听，而这个开关让"不是用户动的那一次赋值"不算动过。 */
+let applyingRules = false;
+/** 预填的取消令牌：面板关了又开、或者这一批换了，晚到的响应不许覆盖新状态 */
+let rulesToken = 0;
+
+watch(ruleRows, () => { if (!applyingRules) rulesDirty.value = true; }, { deep: true, flush: 'sync' });
+
+function setRuleRows(rows: PriceRuleDraft[]): void {
+  applyingRules = true;
+  ruleRows.value = rows;
+  applyingRules = false;
+}
+
+/** 组内时段规则是否一致：列表接口只给条数（price_rule_count），逐条内容要单独 GET ——
+ *  条数不同一定不一致；条数相同按一致处理，再由 loadRules 把代表配置的规则读来预填。 */
+function rulesSig(m: ModelRow): string { return String(m.price_rule_count ?? 0); }
+const rulesMixed = computed<boolean>(() => new Set(props.models.map(rulesSig)).size > 1);
+
+/** 读代表配置的规则来预填。读不到就留空、**不报错**：这一块只有被用户动过才写回，
+ *  空表本身不造成任何改动，而摆一条"读失败"只会让人以为批量面板坏了。 */
+async function loadRules(modelId: string): Promise<void> {
+  const token = rulesToken;
+  try {
+    const data = await api.get<{ items?: Record<string, any>[] }>(
+      '/models/' + encodeURIComponent(modelId) + '/price-rules',
+    );
+    if (token !== rulesToken) return;
+    const items = Array.isArray(data?.items) ? data.items : [];
+    setRuleRows(items.map((row) => draftOf(row)));
+  } catch {
+    /* 降级：留空（与 ModelForm 的 loadPriceRules 同一套"读不到就留空"口径） */
+  }
+}
+
+const ruleError = computed<string>(() => (rulesDirty.value ? ruleDraftError(ruleRows.value) : ''));
+
 /* ---------------------------- 打开时复位 ---------------------------- */
 
 /** 组内一致时按第一条预填；不一致时**不预选**（那正是「组内不一致」标签要说的） */
@@ -204,6 +308,14 @@ function reset(): void {
     billingOn.value = false;
   }
 
+  levelsDirty.value = false;
+  rulesDirty.value = false;
+  rulesToken += 1;                     // 作废还在路上的那一次预填
+  if (first && !levelsMixed.value) levels.value = levelsOf(first);
+  else levels.value = [];              // 不一致 → 表格留空（正是「组内不一致」标签要说的）
+  setRuleRows([]);
+  if (first && !rulesMixed.value) void loadRules(String(first.id || ''));
+
   void loadKeys(props.providerId);
 }
 
@@ -215,13 +327,16 @@ const scopeLine = computed<string>(() => {
   return String(props.models.length) + ' 个配置' + (labels ? '：' + labels : '');
 });
 
-/** 两块都没动 → 不能保存（没有要写的东西，按下去只会发一堆空 body） */
-const dirty = computed<boolean>(() => keyDirty.value || billingDirty.value);
-const canSave = computed<boolean>(() => dirty.value && !props.busy && !keyError.value && !priceError.value);
+/** 四块都没动 → 不能保存（没有要写的东西，按下去只会发一堆空 body） */
+const dirty = computed<boolean>(() => (
+  keyDirty.value || billingDirty.value || levelsDirty.value || rulesDirty.value
+));
+const canSave = computed<boolean>(() => dirty.value && !props.busy
+  && !keyError.value && !priceError.value && !levelError.value && !ruleError.value);
 
 function save(): void {
   if (!canSave.value) return;
-  const payload: { key?: BatchKey; billing?: BatchBilling } = {};
+  const payload: BatchPayload = {};
   if (keyDirty.value) {
     payload.key = {
       key_mode: keyMode.value,
@@ -237,6 +352,16 @@ function save(): void {
       price_cache_read: billingOn.value ? parsePrice(prices.price_cache_read).value : null,
       price_cache_write: billingOn.value ? parsePrice(prices.price_cache_write).value : null,
     };
+  }
+  if (levelsDirty.value) {
+    /* 只发档位表：parameters 在父级是整对象替换，别的键（device / timeout）由它按每条自己合并 */
+    payload.levels = levels.value
+      .map((r) => ({ value: r.value.trim(), desc: (r.desc || '').trim() }))
+      .filter((r) => !!r.value);
+  }
+  if (rulesDirty.value) {
+    /* 分时段是**整批替换**：动过这一块 = 把这一套规则写给每一条配置（空表 = 清空全部时段） */
+    payload.rules = { items: ruleRows.value.map((row) => toRuleItem(row)) };
   }
   emit('save', payload);
 }
@@ -280,7 +405,6 @@ function save(): void {
         <p class="hint-line" v-if="keysUnavailable" data-batch-keys-unavailable>
           密钥接口不可用（404）：只能选「跟随提供方默认」或「无需密钥」。
         </p>
-        <p class="hint-line" v-if="keyMixed">组内各配置的密钥来源不同，所以没有预选；这一块不改就不写回。</p>
         <p class="err-line" v-if="keyError" data-batch-key-error>{{ keyError }}</p>
       </section>
 
@@ -305,10 +429,6 @@ function save(): void {
           <span>该模型计费（关闭 = 不计费，调用记为未计费）</span>
         </label>
 
-        <p class="hint-line" v-if="!billingOn" data-batch-billing-off>
-          该模型不计费：调用记成未计费（cost 为空），也不能给它设限额
-        </p>
-
         <label class="field">
           <span>币种</span>
           <select v-model="billingCurrency" data-batch-billing-currency @change="markBilling">
@@ -330,9 +450,59 @@ function save(): void {
         </div>
 
         <p class="err-line" v-if="priceError" data-batch-price-error>{{ priceError }}</p>
-        <p class="hint-line" data-batch-price-rules-note>
-          分时段单价仍按单条配置维护（整批替换语义，批量改它风险远大于收益）。
-        </p>
+      </section>
+
+      <!-- ③ 推理强度：厂商档位名并不统一，所以档位逐模型配；这里只统一"这一组认哪几档" -->
+      <section class="bsec" data-batch-levels>
+        <div class="bsec-head">
+          <span class="bsec-title">推理强度</span>
+          <span class="spacer"></span>
+          <span class="mixed-tag" v-if="levelsMixed" data-batch-mixed="levels">组内不一致</span>
+        </div>
+
+        <div class="lv-row" v-for="(r, i) in levels" :key="i">
+          <input
+            v-model="r.value" class="mono" :placeholder="EFFORT_VALUE_PLACEHOLDER"
+            :aria-label="'推理强度第 ' + (i + 1) + ' 档的值'"
+            :data-batch-level="'value:' + i" @input="markLevels"
+          />
+          <input
+            v-model="r.desc" placeholder="说明（可空）"
+            :aria-label="'推理强度第 ' + (i + 1) + ' 档的说明'"
+            :data-batch-level="'desc:' + i" @input="markLevels"
+          />
+          <button type="button" class="btn icon sm ghost" title="上移" :disabled="i === 0" data-batch-level-up @click="moveLevel(i, -1)">
+            <AppIcon name="chevron-up" :size="14" />
+          </button>
+          <button type="button" class="btn icon sm ghost" title="下移" :disabled="i === levels.length - 1" data-batch-level-down @click="moveLevel(i, 1)">
+            <AppIcon name="chevron-down" :size="14" />
+          </button>
+          <button type="button" class="btn icon sm ghost lv-del" title="删除这一档" data-batch-level-del @click="removeLevel(i)">
+            <AppIcon name="trash" :size="14" />
+          </button>
+        </div>
+
+        <div class="lv-foot">
+          <button type="button" class="btn sm ghost" data-batch-levels-add @click="addLevel">
+            <AppIcon name="add" :size="14" />添加档位
+          </button>
+          <button type="button" class="btn sm ghost" data-batch-levels-fill @click="fillBuiltinLevels">填入内置档位</button>
+        </div>
+
+        <p class="err-line" v-if="levelError" data-batch-level-error>{{ levelError }}</p>
+      </section>
+
+      <!-- ④ 计价规则：**整批替换**语义（动过这一块 = 把这一套时段写给每一条配置） -->
+      <section class="bsec" data-batch-rules>
+        <div class="bsec-head">
+          <span class="bsec-title">计价规则</span>
+          <span class="spacer"></span>
+          <span class="mixed-tag" v-if="rulesMixed" data-batch-mixed="rules">组内不一致</span>
+        </div>
+
+        <PriceRuleEditor v-model:rows="ruleRows" />
+
+        <p class="err-line" v-if="ruleError" data-batch-rules-error>{{ ruleError }}</p>
       </section>
 
       <!-- 父级逐条 PUT 的总账：一行总账 + 每行「名称 — 后端 message」，必须能分行 -->
@@ -387,6 +557,13 @@ function save(): void {
 .sw input:checked + .sw-track { background: var(--accent); border-color: var(--accent); }
 .sw input:checked + .sw-track .sw-knob { transform: translateX(14px); background: var(--text-on-accent); }
 .sw input:focus-visible + .sw-track { outline: none; box-shadow: var(--ring); }
+
+/* 与 ModelForm 的 .lv-row/.lv-foot 同一套造型（scoped 样式不跨组件，故原样抄一份） */
+.lv-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto auto auto; gap: 6px; align-items: center; }
+.lv-row input { width: 100%; height: var(--control-h-sm); min-width: 0; font-size: calc(12.5px * var(--ts, 1)); }
+.lv-row input:focus-visible { outline: none; box-shadow: var(--ring); }
+.lv-row .lv-del:hover:not(:disabled) { color: var(--danger); }
+.lv-foot { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .price-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; min-width: 0; }
 .unit { font-style: normal; font-size: calc(11px * var(--ts, 1)); font-weight: 400; color: var(--text-faint); }

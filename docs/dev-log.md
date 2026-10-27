@@ -15458,3 +15458,58 @@ steps     ['选择提供方','连接与认证','选择模型','4 参数与计费
 
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-BMK8D7_Y.js`）、`frontend_check.py` **168/168**
 （本地 8710 中途挂过一次 —— `/health` 返 000、无 LISTENING，重启后重跑通过）。
+
+### 228. 第二百二十八轮：①确认对话 ref 真的精确闪公式（实测）②笔记浮窗的撤销 / 重做 ③批量面板加推理强度与计价规则、填名字自动继承、清理冗余说明
+
+**① 对话页的段内公式精确闪烁 —— 已实现，这轮把它量出来了**
+
+先把「存量消息 vs 新消息」两条路都造出来：临时建一个会话，塞一条助手消息，正文
+「见公式 [1]（存量写法：只有 snippet）与 [2]（新写法：带 latex）」，两条引用都指向
+**同一个正文行 `p003-01`**（第 3 页那条带 `\tag{1}` 的 MSE 定义式）。
+
+有头 Chrome 实测：
+
+```
+标号        两个 .cite-inline 都带 data-latex，长度 105（new 来自 citation.latex，old 来自 snippet 兜底）
+点 [1]      .flash-target = 'katex-display flash-target'，isDisplay=true，落在 row p003-01，框 493×28
+            .row-pair/.pg 上的 flash-* 类 = **空**（没有整行/整页闪）
+点 [2]      同上（同一个节点、同一尺寸）
+```
+
+即：落点收在**那一枚 `.katex-display`** 上，不是整行、也不是整页。库里 5 条带公式引用的老消息
+（`citations_json` 里没有 `latex` 键）走的就是 `snippet` 兜底那条路，同样精确。
+（临时会话验完已删。）
+
+**② 笔记编辑浮窗：撤销 / 重做**
+
+`ReaderView.vue` 的 `NoteCard` 加 `hist / histIdx / histTimer`（**每张卡各一份**，多卡同时开着也不串），
+头部插两枚按钮（删除 · 色点 · ⋯ · **撤销 · 重做** · 保存 · ✕，图标用 fluentIcons 已有的 `undo`/`redo`）。
+规则都写在函数注释里：
+
+- 输入走 `@input`（不用 `watch(draft)`：watch 分不清"用户打字"与"撤销自己写回"，撤一步会再落一条快照，撤不完）；
+- **500ms 防抖合并**：连着打字只算一段（逐字符入栈的话撤销要点十几次）；
+- 站在历史中间改字 → **截断未来**（否则重做会把刚放弃的旧内容请回来）；
+- 栈上限 60，从头部丢；
+- `noteUndo` 先补落"还没落盘的那一段"再退一步（刚敲完就按 Ctrl+Z 时，退掉的正好是刚写的那段）；
+- 写回后光标落到**这张卡**文本末尾（`nextTick` + `setSelectionRange`，`textarea[data-note-edit]` 限本卡 DOM）；
+- 快捷键 Ctrl/Cmd+Z、Ctrl/Cmd+Shift+Z、Ctrl+Y 都 `preventDefault`（原生 undo 与 v-model 会打架）；
+- 保存成功 / 关卡片清定时器 / 丢弃草稿回查看态 / 已有卡被服务端内容替换 —— 这四处都重置历史。
+
+**③ 批量面板加两块 + 填名字自动继承 + 清理冗余说明**（用户口径「批量修改推理强度和计价规则；
+在其他地方填入对应模型名称时自动继承对应配置；移除冗余说明」）
+
+- `ModelBatchPanel` 从两块变四块：新增 **推理强度**（档位表，内置档位与 ModelForm 同源）与
+  **计价规则**（复用 `PriceRuleEditor`）；仍然每块一个脏标记，没动过的不进 payload；
+- `applyBatch`：`parameters` 是**整对象替换**，所以档位按**每条配置自己**合并
+  （`{...m.parameters, reasoning_levels}`，空表 delete 掉这个键）；分时段走 `PUT /models/{id}/price-rules`；
+- `ModelForm.pickName` 在选中已有名字时**继承**：计费（币种 + 四单价）、推理强度（档位表）、
+  分时段单价（照那条配置的 id 读回）—— **密钥来源不继承**（那是提供方/密钥库的事）；
+- 冗余说明删四条：显示名称下那句「同名会归成一组…」、批量面板的「组内各配置的密钥来源不同…」、
+  「该模型不计费：调用记成未计费…」、「分时段单价仍按单条配置维护…」。标签、错误行、空态都留着。
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-CBe4zLNw.js` / `SettingsView-CNPPhnq-.js`）、
+`frontend_check.py` **168/168**。
+
+> 没做到：笔记浮窗那两枚按钮**没在浏览器里手点**（这条路的入口要先在正文点中一处高亮才开出浮窗，
+> CDP 打的合成事件在这条链上没触发到卡片）。类型、构建、168/168 与逻辑级边界用例都过，
+> 但"真点一下撤销"这一步留给你或下一轮。

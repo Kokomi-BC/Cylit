@@ -6868,6 +6868,13 @@ type NoteCard = {
   /** 正文（**已摘掉**末尾那行 `<!-- refs:[…] -->` 的显示版） */
   content: string;
   draft: string;
+  /** 编辑框的**撤销栈**（快照 = 某一刻的整份 draft）。**每张卡各一份**：多张卡能同时开着、
+   *  同时编辑，共用一个全局栈就是"在 A 卡撤销、B 卡的字没了"（见 `noteHistPush` 那一段说明）。 */
+  hist: string[];
+  /** 当前停在哪条快照上。`histIdx - 1` = 撤销的去处，`histIdx + 1` = 重做的去处 */
+  histIdx: number;
+  /** 输入合并用的定时器：打字时只排一个，停手才落快照（关卡片 / 重置时要清掉） */
+  histTimer: ReturnType<typeof setTimeout> | null;
   /** 这条笔记的标号跳转表：保存时按它把注释接回去，`[1]` 才不会因为编辑一次就点不动 */
   refs: NoteRef[];
   anchor: { x: number; y: number; w?: number; h?: number } | null;
@@ -6969,6 +6976,7 @@ function focusNoteCard(key: string) {
 function onNoteCardClose(card: NoteCard) {
   if (card.mode !== 'view' && card.noteId) {
     card.draft = card.content;      // 丢弃这次改动
+    noteHistReset(card);            // 同 backToView：放弃的草稿不该还能撤回来
     card.mode = 'view';
     card.confirmDel = false;
     card.confirmBack = false;
@@ -6984,6 +6992,9 @@ function closeNoteCard(key: string) {
   closeNoteColorMenu();             // 卡片都关了，卡内那些弹窗 / 贴着按钮的菜单都不该留在屏幕上
   const i = noteCards.findIndex((c) => c.key === key);
   if (i < 0) return;
+  /* 卡片这就没了，那个"停手 500ms 后落快照"的定时器不能再跑：它会往一个已经作废的栈里写，
+     若 key 又被重新打开占了名字，还会把上一张卡的内容推进新卡的历史 */
+  noteHistClearTimer(noteCards[i]);
   noteCards.splice(i, 1);
   if (activeNoteKey.value === key || !noteCards.some((c) => c.key === activeNoteKey.value)) {
     activeNoteKey.value = noteCards[noteCards.length - 1]?.key ?? '';
@@ -7092,7 +7103,10 @@ function openNotePopover(opts: {
       // 卡里只放正文；跳转表随卡片存一份，保存时再接回去（见 utils/noteRefs）
       existing.content = noteBodyText(note.content_md ?? '');
       existing.refs = splitNoteRefs(note.content_md ?? '').refs;
-      if (mode !== 'edit') existing.draft = existing.content;
+      if (mode !== 'edit') {
+        existing.draft = existing.content;
+        noteHistReset(existing);     // draft 被换成服务端那份，旧历史的前提已经不成立
+      }
       existing.created = String(rawTime?.created_at ?? rawTime?.updated_at ?? '');
       existing.rowId = note.block_id ?? existing.rowId;
       existing.quote = note.selected_text ?? existing.quote;
@@ -7120,6 +7134,8 @@ function openNotePopover(opts: {
     const prev = prevNoteCardOrigin();
     if (prev) anchor = { x: prev.left + 8 + NOTE_CASCADE, y: prev.top + NOTE_CASCADE - 8, w: 0, h: 0 };
   }
+  /* 打开时那份正文：content / draft / 历史第一条快照都用它，别算三遍（`noteBodyText` 要跑正则） */
+  const initialDraft = noteBodyText(note?.content_md ?? '');
   const card: NoteCard = {
     key,
     memoryKey,
@@ -7133,9 +7149,13 @@ function openNotePopover(opts: {
     created: String(rawTime?.created_at ?? rawTime?.updated_at ?? ''),
     quote: note?.selected_text ?? hl?.text
       ?? (selection.anchored ? (selection.anchorText || selection.text) : ''),
-    content: noteBodyText(note?.content_md ?? ''),
-    draft: noteBodyText(note?.content_md ?? ''),
+    content: initialDraft,
+    draft: initialDraft,
     refs: splitNoteRefs(note?.content_md ?? '').refs,
+    /* 历史从一个快照起步（就是打开时那份）：第一次撤销应当是"退回到刚打开的样子" */
+    hist: [initialDraft],
+    histIdx: 0,
+    histTimer: null,
     anchor,
     center,
     busy: false,
@@ -7188,6 +7208,114 @@ function noteEditRows(card: NoteCard): number {
   return Math.min(16, Math.max(4, lines + 2));
 }
 
+/* ------------------ 笔记编辑框：撤销 / 重做（用户口径 2026-12-08：「笔记编辑浮窗实现撤回和前进按钮」）------------------
+ * **历史按卡片各存一份**（`NoteCard.hist`）：多张卡能同时开着、同时编辑，共用一条全局栈就是
+ * "在 A 卡点撤销、B 卡的字变了"，比没有撤销更糟。
+ * 快照**不是每敲一个字一条**：那样按一次撤销只退一个字符，等于没有 —— 所以输入先攒着，
+ * 停手 `NOTE_HIST_DELAY` 才落一条（`noteHistPush`），撤销才落在"看得见的一段"的边界上。
+ */
+/** 栈顶上限：连续写一小时也吃不满这点内存；再长只是让撤销退得更远，用户反而找不到刚才那句 */
+const NOTE_HIST_MAX = 60;
+/** 停手多久算"一段"。500ms 与正常打字的停顿对齐：比这短会把一句话拆成好几段来撤，
+ *  比这长则会把"改完一句、回头再改半句"两次改动粘成一条 */
+const NOTE_HIST_DELAY = 500;
+
+/** 清掉还没落盘的定时器（关卡片 / 重置历史 / 主动落盘都要清：它稍后还会往栈里写一次） */
+function noteHistClearTimer(card: NoteCard) {
+  if (card.histTimer !== null) { clearTimeout(card.histTimer); card.histTimer = null; }
+}
+
+/** 把**现在**这份 draft 落成一条快照。与当前快照相同就跳过 —— 不跳的话会堆出一串一样的条目，
+ *  撤销点几下都是"没反应"，用户以为按钮坏了 */
+function noteHistCommit(card: NoteCard) {
+  noteHistClearTimer(card);
+  const text = card.draft;
+  if (card.hist[card.histIdx] === text) return;
+  /* 站在历史中间改了字 = **新的未来**：原来那条"未来"分支再也到不了，必须截断，
+     否则重做会把用户刚放弃的旧内容又请回来 */
+  if (card.histIdx < card.hist.length - 1) card.hist.splice(card.histIdx + 1);
+  card.hist.push(text);
+  card.histIdx = card.hist.length - 1;
+  /* 超上限从**头部**丢：丢的是最早的快照（退不到那么远），最近的一定还能退 */
+  const over = card.hist.length - NOTE_HIST_MAX;
+  if (over > 0) {
+    card.hist.splice(0, over);
+    card.histIdx = Math.max(0, card.histIdx - over);
+  }
+}
+
+/** 重置成"只有当前这一份"：建卡 / 保存成功 / 丢掉草稿回查看态都走它 */
+function noteHistReset(card: NoteCard) {
+  noteHistClearTimer(card);
+  card.hist = [card.draft];
+  card.histIdx = 0;
+}
+
+/** 输入事件（模板上是 `@input`，此时 v-model **已经**把 draft 改好了）。
+ *  ⚠️ 不用 watch(draft)：watch 分不清"用户打字"和"撤销自己写回"，撤销那一下会再落一条快照，
+ *  一路撤下去永远撤不完（栈里全是自己刚写回的值）。 */
+function noteHistPush(card: NoteCard) {
+  noteHistClearTimer(card);       // 每次输入都往后推 —— 连着打字只算一段
+  card.histTimer = setTimeout(() => {
+    card.histTimer = null;
+    noteHistCommit(card);
+  }, NOTE_HIST_DELAY);
+}
+
+/** 撤到上一条快照。**先把还没落盘的那一段补进去**：刚敲完就按 Ctrl+Z 时，若直接退到上一条，
+ *  屏幕会停在"这一段输入之前"的那份，可用户眼里那句还没写完的话本来就在 —— 看着像撤销失灵。
+ *  补进去之后退一步，退掉的正好是"刚写的这一段"。 */
+function noteUndo(card: NoteCard) {
+  noteHistCommit(card);
+  if (card.histIdx <= 0) return;
+  card.histIdx -= 1;
+  card.draft = card.hist[card.histIdx];
+  noteEditCaretToEnd(card);
+}
+
+/** 前进到下一条快照（撤销的反向）。同样先落盘：在历史中间改过字的话"未来"已被截断，
+ *  这一落就前进不动，行为与按钮的 disabled 一致 */
+function noteRedo(card: NoteCard) {
+  noteHistCommit(card);
+  if (card.histIdx >= card.hist.length - 1) return;
+  card.histIdx += 1;
+  card.draft = card.hist[card.histIdx];
+  noteEditCaretToEnd(card);
+}
+
+/** 可撤销：能往前退一条，或者**还有一段没落盘**（落盘之后就能退）。按钮 :disabled 用它 */
+function noteCanUndo(card: NoteCard): boolean {
+  return card.histIdx > 0 || card.draft !== (card.hist[card.histIdx] ?? '');
+}
+/** 可重做：后面还有快照，**且**当前 draft 没被改过 —— 改过就等于开了新分支，那条未来已经作废 */
+function noteCanRedo(card: NoteCard): boolean {
+  return card.histIdx < card.hist.length - 1 && card.draft === (card.hist[card.histIdx] ?? '');
+}
+
+/** 写回 draft 之后把光标放到**这张卡**文本的末尾：v-model 重设值会把光标丢到开头，
+ *  接着打字就从头插进去了。`textarea[data-note-edit]` 每张卡只有一枚，但必须限在**这张卡**的 DOM 里找 ——
+ *  多张卡同时开着时，全页第一枚不一定是刚操作的那张（查看态那枚「编辑」键也带 data-note-edit，故带上标签名）。 */
+function noteEditCaretToEnd(card: NoteCard) {
+  void nextTick().then(() => {
+    const ta = noteCardEl(card.key)?.querySelector<HTMLTextAreaElement>('textarea[data-note-edit]');
+    if (!ta) return;
+    const len = ta.value.length;
+    ta.focus();
+    try { ta.setSelectionRange(len, len); } catch { /* 只读 / 已卸载：忽略 */ }
+  });
+}
+
+/** 编辑框里的撤销 / 重做快捷键。**必须 preventDefault**：textarea 的原生 undo 只认它自己那份
+ *  输入历史，而 draft 已经被 v-model 改过 —— 原生撤一步、Vue 再把值同步回来，屏幕上是
+ *  "撤一半又弹回去"。别的组合键一概不拦（Ctrl+A/C/V 与输入法都还归浏览器）。 */
+function onNoteEditKeydown(card: NoteCard, ev: KeyboardEvent) {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+  const k = ev.key.toLowerCase();
+  if (k === 'z' && !ev.shiftKey) { ev.preventDefault(); noteUndo(card); return; }
+  if (k === 'z' && ev.shiftKey) { ev.preventDefault(); noteRedo(card); return; }
+  if (k === 'y' && !ev.shiftKey) { ev.preventDefault(); noteRedo(card); return; }
+}
+
 /** 笔记卡里点色点 = **给这处高亮换色**（用户口径 2026-10-10："选色 + 写 + 保存"同一张卡）。
  *  与保存分开：换色只动高亮，不动笔记文本，所以立刻生效。 */
 async function setNoteColor(card: NoteCard, color: string) {
@@ -7217,6 +7345,7 @@ function backToView(card: NoteCard) {
   card.confirmBack = false;
   if (!card.noteId) { closeNoteCard(card.key); return; }
   card.draft = card.content;
+  noteHistReset(card);            // 草稿被放弃 = 这段历史也该跟着作废，否则一撤就把丢掉的内容请回来
   card.mode = 'view';
 }
 
@@ -7725,6 +7854,9 @@ async function saveNotePopover(card: NoteCard) {
       if (created?.id) card.memoryKey = noteMemoryKeyOf(created.id, card.highlightId);
       toast('笔记已保存', 'ok', 1600);
     }
+    /* 落库成功 = 历史从这里重新开始：库里已经认下这一份，之前那些"未保存状态"再撤回来
+       只会让人以为改回去了，一不留神又把旧内容存一遍 */
+    noteHistReset(card);
     card.mode = 'view';
     await refreshAnnotations();
   } catch (err) { reportError(err, '保存笔记失败'); } finally { card.busy = false; }
@@ -9175,6 +9307,22 @@ function renderMarkdown(text?: string | null) {
           <span class="np-color-dot hl-swatch" :class="swatchClassOf(card.color)"
                 :style="colorDotStyle(card.color)" />
         </button>
+        <!-- 撤销 / 重做（用户口径 2026-12-08：编辑浮窗要有「撤回 / 前进」）。位置紧挨保存左边：
+             编辑态从左到右 = 删除 · 色点 · ⋯ · 撤销 · 重做 · 保存 · ✕。
+             `@mousedown.prevent` 是关键：不拦的话点按钮会把焦点从 textarea 抢走，
+             连点两次撤销之后还得先点回输入框才能接着写。 -->
+        <button v-if="card.mode !== 'view'" class="np-head-save hist" type="button"
+                :disabled="!noteCanUndo(card)" title="撤销（Ctrl/⌘+Z）"
+                aria-label="撤销" data-note-undo
+                @mousedown.prevent @click="noteUndo(card)">
+          <AppIcon name="undo" :size="13" />
+        </button>
+        <button v-if="card.mode !== 'view'" class="np-head-save hist" type="button"
+                :disabled="!noteCanRedo(card)" title="重做（Ctrl/⌘+Shift+Z 或 Ctrl+Y）"
+                aria-label="重做" data-note-redo
+                @mousedown.prevent @click="noteRedo(card)">
+          <AppIcon name="redo" :size="13" />
+        </button>
         <button v-if="card.mode !== 'view'" class="np-head-save" type="button"
                 :disabled="card.busy" title="保存笔记" data-note-save
                 @click="saveNotePopover(card)">
@@ -9191,12 +9339,16 @@ function renderMarkdown(text?: string | null) {
            要看按的是哪一段，看浮层**贴着哪儿**就够了。 -->
       <!-- 提示文案已删（用户口径 2026-10-10："去掉多余文字说明"）：**卡片本身就是输入框** ——
            空着就是"写一条"，有内容就是"编辑"；标题里已经有"已高亮"，正文里再解释一遍是噪音。 -->
+      <!-- 正文这个 textarea 是**这张卡**的编辑框（用户口径 2026-10-10；这里也是撤销的历史来源）。
+           `@input` 而不是 watch(draft)：watch 分不清"用户打字"和"撤销自己写回"（见 noteHistPush）。 -->
       <textarea
         v-if="card.mode !== 'view'"
         v-model="card.draft"
         class="np-edit"
         :rows="noteEditRows(card)"
         data-note-edit
+        @input="noteHistPush(card)"
+        @keydown="onNoteEditKeydown(card, $event)"
       />
       <!-- 垃圾桶的二次确认：同一块卡内弹窗（用户口径 2026-11-28 十五轮），只问删除 / 取消 -->
       <div v-if="card.confirmDel" class="np-confirm" data-note-confirm-del>
@@ -10806,6 +10958,14 @@ function renderMarkdown(text?: string | null) {
 .np-head-save:not(.danger) { color: var(--accent-text); }
 .np-head-save.edit:hover:not(:disabled) { color: var(--accent-hover); }
 .np-head-save.locate:hover:not(:disabled) { color: var(--accent-hover); }
+
+/* 撤销 / 重做：几何、底色、按下反馈全照 `.np-head-save`（25px 圆钮、中性淡底），只**不染主题色** ——
+   主题色在这张卡里是「✓ 保存」的语义，两枚偶尔才用的辅助键跟着亮会抢它。
+   ⚠️ 必须写在这条后面：与 `.np-head-save:not(.danger)` 权重相同（0,2,0），靠顺序取胜。
+   不可用时由 `.np-head-save:disabled` 统一给 .45 透明 + default 光标。 */
+.np-head-save.hist { color: var(--text-dim); }
+.np-head-save.hist:hover:not(:disabled) { color: var(--text); }
+.np-head-save.hist:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* 删除的二次确认**不再是一块贴在按钮上的 fixed 菜单**（用户口径 2026-11-28 十五轮）：
    它现在与「返回」那块确认走同一个卡内弹窗（`card.confirmDel` + `.np-confirm`），
