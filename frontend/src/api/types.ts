@@ -1125,6 +1125,9 @@ export interface AgentCitation {
   block_id?: string | null;
   row_id?: string | null;
   snippet?: string;
+  /** 公式引用的**完整 LaTeX**：正文 `[n]` 要靠它精确到那一行里的哪一枚公式；
+   *  老消息没有这个键（只有 160 字残片 snippet），前端按 kind==='formula' 回退 */
+  latex?: string | null;
   image_urls?: string[];
   label?: string;
 }

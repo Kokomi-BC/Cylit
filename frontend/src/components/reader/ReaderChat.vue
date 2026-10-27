@@ -61,7 +61,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'focus', blockId: string, page?: number): void;
+  /** 第三个参数是这条引用的**完整 LaTeX**（公式引用才有）：父组件据此把落点从整行收进那一枚 KaTeX */
+  (e: 'focus', blockId: string, page?: number, latex?: string): void;
   /** 悬浮正文里的引用标号：请求在旁边 peek 一眼（点标号照旧跳转，不受影响） */
   (e: 'peek', p: {
     anchor: { x: number; y: number; w: number; h: number };
@@ -482,6 +483,18 @@ const menuOpen = ref(false);
 const subStage = ref<'model' | 'effort' | null>(null);
 /** 子菜单的视口坐标 —— 它是 `position: fixed`，由被点那行的 rect 算出来 */
 const subPos = ref({ left: 0, top: 0 });
+/**
+ * 子菜单的层级：**跟着对话卡自己的 z 走**，不写死档位。
+ *
+ * 卡片 z 来自 ReaderView 那条共用序列（`nextLayerZ`：从 60 起、**每聚焦一次 +1、没有上限**），
+ * 所以写死 90 只是"迟早会被超过去" —— 用户 2026-12-08 的截图正是：推理等级子菜单被对话浮窗
+ * 压住（那一次阅读里点开过三十多次浮层，`chatZ` 早就越过 90）。+2 才压得住卡片本身与它的
+ * 两枚角把手（那两枚是 `chatZ + 1`）。
+ *
+ * 为什么不用 prop 从 ReaderView 收上来：子菜单 **Teleport 到 body**，继承不到卡片的层级；
+ * 打开那一刻直接量 `closest('.chat-host')` 的计算 z 最省事，也不怕层序之后又变。
+ */
+const subZ = ref(92);
 const subEl = ref<HTMLElement | null>(null);
 /** 子菜单宽度 / 高度上限（夹视口用；宽 200 是这里定死的） */
 const SUB_W = 200;
@@ -639,6 +652,11 @@ function decorateRefs(html: string, cites?: AgentCitation[]) {
         + ` data-row="${escapeAttr(cite.row_id || '')}"`
         + ` data-block="${escapeAttr(cite.block_id || '')}"`
         + ` data-snippet="${escapeAttr(cite.snippet || '')}"`
+        /* 优先存 citation.latex（完整式），不是 snippet：snippet 只有 160 字。
+           但**存量消息**（没有 latex 这个键）的公式引用只有 snippet，而它的 snippet 本来就是
+           被截到 160 字的 LaTeX —— 落进 data-* 才走得到 findFormula 的前缀匹配，
+           否则老记录点过去只剩整行闪 */
+        + ` data-latex="${escapeAttr(cite.latex || (cite.kind === 'formula' ? cite.snippet || '' : ''))}"`
         + ` data-page="${cite.page ?? ''}">[${num}]</button>`;
     });
   }).join('');
@@ -758,6 +776,8 @@ function onCitationClick(ev: MouseEvent) {
     block_id: btn.dataset.block || null,
     row_id: btn.dataset.row || null,
     page: page > 0 ? page : null,
+    // data-latex 为空（非公式引用）时留空串：gotoCitation 里靠 kind/snippet 判定要不要带上
+    latex: btn.dataset.latex || '',
     label: btn.getAttribute('aria-label') || '',
   } as AgentCitation);
 }
@@ -2679,6 +2699,7 @@ function openSub(stage: 'model' | 'effort', ev: MouseEvent) {
   const row = (ev.currentTarget as HTMLElement | null)?.getBoundingClientRect();
   if (!row) return;
   subRow = row;
+  subZ.value = subZOf(ev.currentTarget as HTMLElement | null);
   // 先按视口坐标摆一次（多数情况这一下就是准的），渲染出来再由 placeSub 量真位置校正
   subPos.value = { left: row.right + 8, top: row.top };
   subStage.value = stage;
@@ -2693,6 +2714,18 @@ function toggleSub(stage: 'model' | 'effort', ev: MouseEvent) {
 
 /** 被点那一行的视口矩形（子菜单的两趟定位都拿它当锚） */
 let subRow: DOMRect | null = null;
+
+/**
+ * 子菜单该用的 z：**对话卡当前的计算 z + 2**。
+ *
+ * 停靠态（贴在侧栏里）卡片没有 z（`z-index: auto`），回落 92 这一档 —— 那时侧栏是 30，
+ * 正文里的浮层也不在这儿弹出，够用。取不到卡片时同样走这条兜底，绝不返回 NaN。
+ */
+function subZOf(el: HTMLElement | null): number {
+  const host = el?.closest<HTMLElement>('.chat-host') ?? null;
+  const z = Number(host ? window.getComputedStyle(host).zIndex : NaN);
+  return Number.isFinite(z) ? z + 2 : 92;
+}
 
 /**
  * 子菜单落点：**量一次真实位置再把差值补回去**。
@@ -2818,7 +2851,11 @@ function gotoCitation(citation: AgentCitation) {
     const hit = /(?:图|表|figure|fig\.?|table)\s*(\d{1,3})/i.exec(citation.label || citation.snippet || '');
     if (hit) anchor = `fig:p${citation.page}:n${hit[1]}`;
   }
-  emit('focus', anchor, citation.page ?? undefined);
+  /* 公式引用要精确到那一枚 KaTeX：新消息直接用 `latex`；**存量消息**只有 snippet，
+     而公式引用的 snippet 本来就是被截到 160 字的 LaTeX —— 拿它顶（findFormula 比签名，
+     截断的长式可能认不出，认不出就照旧退化成整行闪，不会报错）。 */
+  const latex = String(citation.latex || (citation.kind === 'formula' ? citation.snippet || '' : ''));
+  emit('focus', anchor, citation.page ?? undefined, latex || undefined);
 }
 
 /* 窗口一改宽窄，行宽就变 → 之前量出的像素高度会失效（长思考被裁）。清掉实测值，
@@ -3407,8 +3444,10 @@ defineExpose({ uploadFiles, ensureThread });
           <span class="foot-stat foot-pct" :title="contextTitle">{{ contextText }}</span>
 
           <!-- 模型选择改成**一个下拉框**（用户口径 2026-12-07）：点一下直接把模型列出来，
-               按提供方分组、每组带厂商图标；不再先弹「模型 / 推理等级」两行的中转层。
-               推理等级降级为列表底部的一行（still 侧向飞出，不丢功能）。 -->
+               按提供方分组排序，但**不再画分组标题**（用户口径 2026-12-08：那行小写厂商 id
+               既占高度又不好看 —— 每一条自己带厂商图标和「厂商 · 模型 id」副标题，够认了）；
+               也不再先弹「模型 / 推理等级」两行的中转层。推理等级是列表底部的一行
+               （still 侧向飞出，不丢功能）。 -->
           <div v-if="menuOpen" class="pick-pop pick-pop-model" @mouseenter="hoverPick" @mouseleave="leavePick">
             <div class="pick-model-list">
               <div v-if="modelReadonly" class="pick-empty">
@@ -3417,10 +3456,6 @@ defineExpose({ uploadFiles, ensureThread });
               </div>
               <template v-else>
                 <template v-for="g in modelGroups" :key="g.provider">
-                  <div class="pick-group">
-                    <img v-if="vendorIco(g.provider)" class="pv-ico" :src="vendorIco(g.provider)" alt="">
-                    <span class="truncate">{{ g.provider }}</span>
-                  </div>
                   <button v-for="m in g.items" :key="m.id" class="pick-item"
                           :class="{ on: m.id === activeModel?.id }"
                           :disabled="savingPick || m.enabled === false"
@@ -3450,7 +3485,7 @@ defineExpose({ uploadFiles, ensureThread });
                它与所有浮层同层比较，正文里任何指示器都盖不住它。 -->
           <Teleport to="body">
           <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub"
-               :style="{ left: `${subPos.left}px`, top: `${subPos.top}px` }"
+               :style="{ left: `${subPos.left}px`, top: `${subPos.top}px`, zIndex: subZ }"
                @mouseenter="hoverPick" @mouseleave="leavePick">
             <div v-if="subStage === 'model'" class="pick-sub-list">
               <div v-if="modelReadonly" class="pick-empty">
@@ -3459,10 +3494,6 @@ defineExpose({ uploadFiles, ensureThread });
               </div>
               <template v-else>
                 <template v-for="g in modelGroups" :key="g.provider">
-                  <div class="pick-group">
-                    <img v-if="vendorIco(g.provider)" class="pv-ico" :src="vendorIco(g.provider)" alt="">
-                    <span class="truncate">{{ g.provider }}</span>
-                  </div>
                 <button v-for="m in g.items" :key="m.id" class="pick-item"
                         :class="{ on: m.id === activeModel?.id }"
                         :disabled="savingPick || m.enabled === false"
@@ -4208,19 +4239,16 @@ defineExpose({ uploadFiles, ensureThread });
 /* 第二级：**侧向飞出**的子菜单。`position: fixed`（坐标由被点那行的 rect 算出），
    压在遮罩(8)与根浮层(9)之上；宽度定死 200px，内容长了在列表内部滚。 */
 .pick-sub {
-  /* 传送到 body 之后按**全局**层级比高低：
-     90 高于浮窗/笔记卡（60 / 有焦点 62）与它们的角把手（61 / 63），
-     又低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）——
-     子菜单只该压住正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
-  position: fixed; z-index: 90; width: 200px; box-sizing: border-box; isolation: isolate;
+  /* 传送到 body 之后按**全局**层级比高低 —— 所以它的 z 是**算出来的**（见 `subZOf`：
+     对话卡当前的计算 z + 2，模板里写成行内样式）；这里的 92 只是取不到卡片时的兜底。
+     以前写死 90（注释算的是"高于浮窗 60/62、角把手 61/63"），而浮窗那一档来自 ReaderView 的
+     `nextLayerZ`（从 60 起、每次聚焦 +1、**没有上限**）—— 点开三十多次浮层之后 90 就被反超，
+     子菜单被自己的卡片压住（用户 2026-12-08 的截图）。
+     仍然低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）：子菜单只该压住
+     正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
+  position: fixed; z-index: 92; width: 200px; box-sizing: border-box; isolation: isolate;
   padding: 3px; border-radius: 11px; border: 1px solid var(--border);
   background: var(--bg-elev); box-shadow: var(--shadow-flyout);
-}
-/* 提供方分组标题：一枚小图标 + 厂商 id，比正文小一档、不加底色（它只是分隔，不是条目） */
-.pick-group {
-  display: flex; align-items: center; gap: 5px; min-width: 0;
-  padding: 6px 8px 3px; color: var(--text-faint);
-  font-size: calc(11px * var(--ts, 1)); font-weight: 600; letter-spacing: .01em;
 }
 /* 下拉框本体：定高 + 内部滚动（模型多了不能把浮层顶出屏幕） */
 .pick-pop-model { width: 280px; }

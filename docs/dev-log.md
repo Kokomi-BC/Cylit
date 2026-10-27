@@ -15143,3 +15143,77 @@ localStorage      {"custom":{"pen":"#0f2a76","marker":"","laser":""}, …}
 校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-yuMCo0wi.js`）、`frontend_check.py` 168/168。
 
 ---
+
+### 221. 第二百二十一轮：对话 ref 精确闪公式 / 模型编辑未配价「存不了」+ 计费开关 / 子菜单层级 / 去供应商分组文字
+
+四项，都是先量到根因再动手（前两项派给子代理，后两项我自己落）。
+
+**① 对话正文的 `[n]` 只闪整段，精确不到那一枚公式**
+
+三条引用路径里只有对话这条没有 LaTeX：后端 `agent/citations.py` 的 `Citation` 压根没有
+`latex` 字段（`to_dict()` 自然也不下发），前端 `AgentCitation` 同样没有，`gotoCitation`
+只 `emit('focus', anchor, page)`。而 `focusRow` 的精确分支是 `if (opts.latex) findFormula(...)` ——
+没有 latex 就只能走 `flashRow`（整行淡底 + `flashSpanIds` 补的那两行）= 用户看到的"整段亮"。
+解读面板 / 笔记卡片那条路早就带着 latex（`split_live_refs` → `data-latex`），所以只有对话侧退化。
+
+改法：`Citation` 加 `latex: str = ""`（`to_dict()` **非空才写**，与 pids 同口径，老形状不变；
+同 key 复用编号时"空不覆盖非空"）；formula 列表工具那条 `registry.assign` 传 `latex=latex`；
+`AgentCitation` 加 `latex?`；`decorateRefs` 写 `data-latex`、`onCitationClick` 带回、
+`gotoCitation` 透传第三个参数（ReaderView 那处 `@focus` 本来就是三参数）。
+
+> **存量消息**（库里没有 latex 键）靠 `kind === 'formula' ? snippet : ''` 兜底：公式引用的
+> snippet 本来就是被截到 160 字的 LaTeX，`findFormula` 比的是签名（前缀包含也算），认得出。
+> `formulaSig` 的 12 字符阈值没动 —— 签名不足 12 的短公式（`x^2`）照旧退化成整行闪，
+> 那是既有语义（行内到处是单符号公式，放宽就撞车）。
+
+**② 模型编辑「未配置价格就无法保存」**
+
+保存其实一直是成功的。服务端日志里是一串成对的
+`PUT /models/xxx → 200` + `PUT /models/xxx/price-rules → 200`（连着十几对，就是反复点"保存"点出来的）。
+拦在最后一步：`price_rules.replace()` 结尾**无条件**
+
+```python
+if not out["default"]["has_price"]:
+    out["warning"] = NO_DEFAULT_PRICE_WARNING
+```
+
+哪怕一条时段都没有；而 `ModelPanel.submitForm()` 收到 warning 就 toast + `return`
+（`formOpen = false` 在它后面）—— 弹窗永远关不掉，看起来就是"存不了"。
+改成 `if cleaned and not out["default"]["has_price"]`：**只有这次真的留下了时段**，
+"时段之外仍不计费"才有话可说。
+
+顺带按用户口径加**「计费」开关**（纯界面口径，不加库字段、不迁移）：
+关 = 四个单价一律传 `null`、`composeRules()` 短路（edit 发 `{items: []}` 清空、新建发 `null`）、
+`.price-rules` 整块 `v-if="billingOn"`、价格框 `disabled`，并留一句"该模型不计费：调用记成未计费，
+也不能给它设限额"。初值 = `priceConfigured || 已有分时段条数 > 0`（新建 = 开）。
+
+**③ 推理等级子菜单被对话浮窗压住**
+
+`.pick-sub` 是 Teleport 到 body 的，层级写死 `z-index: 90`（注释里按"浮窗 60/62、角把手 61/63"算的）。
+但浮窗那一档来自 ReaderView 的 `nextLayerZ`：**从 60 起、每次聚焦 +1、没有上限** ——
+一次阅读里点开三十多次浮层之后 90 就被反超。改法：不再写死，打开时量卡片自己的计算 z
+（`closest('.chat-host')`），子菜单落到 **它 +2**（+1 是角把手）；停靠态取不到（aside 是 30）回落 92。
+
+**④ 一级菜单里那行小写 `deepseek`**
+
+`.pick-group`（图标 + `g.provider` 原样，后端存的就是小写 id）在两级模型列表里各有一份，
+两处一起删、连样式一起删。分组信息不丢：每一条自己带厂商图标和 `deepseek · deepseek-flash` 副标题。
+
+### 实测（有头 Chrome + CDP，本机 8710）
+
+```
+子菜单   focusin 连顶 45 次 → chat-host 计算 z = 106（> 90，旧写法必被压）
+        .pick-sub 行内 z = 108 = 106 + 2；elementFromPoint(子菜单内一点) 命中的是子菜单自己 → 确实压在上面
+分组文字 .pick-group 计数 = 0；一级下拉子节点只剩 ['pick-item on']（一行模型 + 一行推理等级）
+warning  A items=[] + 无默认价 → has_price=False **warning=None**（用户"存不了"那条路）
+        B items=1（真留下时段）+ 无默认价 → warning='默认价未配置，时段之外的调用仍按未计费处理'
+        C 再清回 [] → warning=None（测试时段已清掉）
+```
+
+校验：`vue-tsc` 0 错、`npm run build` 绿（`ReaderView-EU0bamLL.js`）、`frontend_check.py` **168/168**；
+后端 `test_model_pricing_rules.py` 31 passed、`test_model_billing.py` 51 passed。
+
+> 没做到：设置页那条"⋯ → 编辑配置 → 关掉计费 → 保存 → 弹窗关掉"没有脚本点通
+> （设置页的 ⋯ 是嵌套浮层，脚本反复点进提供方抽屉）。后端 warning 与 HTTP 层已实证，
+> 关窗那一步依赖的只是 `warning` 有没有值（`ModelPanel.submitForm` 902-933 读过了），
+> 但"手点一遍"这件事仍未做，留成待办。

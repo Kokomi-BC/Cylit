@@ -26,7 +26,8 @@ from backend.services.model import billing
 #: 接口里那句说明（前端直接展示，别在两处各写一句）
 NOTE = "默认单价用于时段之外的时刻（含周末）；时段规则只在工作日生效"
 
-#: 没有默认价时 PUT 返回的警告（保存允许，但要说清"时段之外仍然不计费"）
+#: **这次真的存下了时段**、但模型没配默认价时 PUT 返回的警告（保存允许，但要说清"时段之外仍不计费"）
+#: ⚠️ 只在"留下了时段"时才给 —— 为什么不再无条件提示，见 ``replace`` 的 docstring。
 NO_DEFAULT_PRICE_WARNING = "默认价未配置，时段之外的调用仍按未计费处理"
 
 
@@ -169,6 +170,15 @@ def replace(model_config_id: str, payload: Any) -> dict:
 
     模型**没有默认价**也允许保存（用户可能先配时段、再配默认价），但响应里带
     ``warning`` 说清"时段之外的调用仍按未计费处理" —— 静默保存才是坑。
+
+    ``warning`` 的条件是**这次真的存下了时段**（清洗后的 ``cleaned`` 非空）**且**默认价
+    没配，两者缺一都不给。为什么不再无条件提示：``items: []`` 是"清空全部时段"的常规
+    写法（模型表单里「不计费」开关就走这条路，见 ModelForm.vue），此时一条时段都没留下，
+    也就没有任何东西"被丢下没保存"，"时段之外仍不计费"在没有时段时根本无所指；而调用方
+    会把 warning 当成"这次没存成"的证据（``ModelPanel.submitForm`` 收到它就留着表单不关），
+    于是"改个名字、顺手关掉计费"这类再普通不过的保存看起来像失败了。默认价没配这件事
+    ``describe()`` 的 ``has_price`` / ``priced_now`` 已经如实说了，不需要 warning 再说一遍 ——
+    这条 warning 只负责"时段留下了一半"这一种情况。
     """
     from backend.repositories.mysql.models import ModelPriceRule
     from backend.repositories.mysql.session import session_scope
@@ -185,7 +195,8 @@ def replace(model_config_id: str, payload: Any) -> dict:
             sess.add(ModelPriceRule(id=new_id("rule"), model_config_id=str(model_config_id),
                                     created_at=stamp, updated_at=stamp, **rule))
     out = describe(model_config_id)
-    if not out["default"]["has_price"]:
+    # 只有真的留下了时段，"时段之外仍不计费"才有话可说（见 docstring 最后一段）
+    if cleaned and not out["default"]["has_price"]:
         out["warning"] = NO_DEFAULT_PRICE_WARNING
     return out
 

@@ -1990,6 +1990,9 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             cit = ctx.deps.registry.assign(
                 key=f"formula:{page_no}:{raw.get('row_id')}:{_latex_key(latex)}", kind="formula",
                 page=page_no, row_id=raw.get("row_id"), snippet=_clip(latex, 160),
+                # snippet 是截到 160 字的残片，认不出长公式；LaTeX 原样登进去，前端才能
+                # 精确到那一枚 KaTeX（与解读面板 / 笔记卡片同一精度）
+                latex=latex,
                 label=_locate(page_no, None, "formula"),
                 ids=(f"f{page_no:03d}",) if page_no else ())
             page_items.append({

@@ -709,6 +709,11 @@ const PRICE_LABEL: Record<PriceField, string> = {
 
 const billingOpen = ref(false);
 
+/** 「计费」总开关：关 = 这个模型不计费（四个单价一律传 null、时段一并清空）。
+ *  库里**没有**这个字段，它是纯界面口径 —— 「没配价」本来就已经等价于未计费
+ *  （billing 的 priced 语义不动），开关只是把「空着四个框」这件容易漏的事说成人话。 */
+const billingOn = ref(true);
+
 const CURRENCY_SYMBOL: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€' };
 
 /** 厂商的默认币种：编辑时后端给的 currency_effective 最准（它已经把链子算完了） */
@@ -737,9 +742,13 @@ function priceText(v: unknown): string {
 }
 
 const priceErrors = computed<string[]>(() =>
-  PRICE_FIELDS
-    .filter((key) => !parsePrice(form[key]).ok)
-    .map((key) => PRICE_LABEL[key] + '必须是非负数字（可以填小数，如 0.28）'));
+  /* 不计费态：四个价比一律按 null 提交（见 submit），框本身也 disabled —— 这里不再校验。
+     否则「先填了半截再关掉开关」会被一条自己已经改不了的报错卡在保存上。 */
+  !billingOn.value
+    ? []
+    : PRICE_FIELDS
+      .filter((key) => !parsePrice(form[key]).ok)
+      .map((key) => PRICE_LABEL[key] + '必须是非负数字（可以填小数，如 0.28）'));
 
 const priceError = computed<string>(() => priceErrors.value[0] || '');
 
@@ -773,6 +782,8 @@ const priceCalc = computed<{ text: string; warn: boolean }>(() => {
 
 /** 折叠状态下的一句话摘要（时段条数也挂在这一行上：折叠着也要看得出"这个模型有峰谷价"） */
 const billingSummary = computed<string>(() => {
+  /* 折叠着也要看得出「这个模型不算钱」：开关关掉的摘要不提时段（提交时会被清空） */
+  if (!billingOn.value) return '不计费';
   const rules = ruleCount.value ? ruleCount.value + ' 个时段' : '无时段';
   if (priceError.value) return '单价非法 · ' + rules;
   if (priceConfigured.value) {
@@ -841,6 +852,10 @@ function retryPriceRules(): void {
 /** 提交给父组件的时段 body；null = 这次不碰时段 */
 function composeRules(): { items: Record<string, unknown>[] } | null {
   if (priceRulesUnsupported.value) return null;
+  /* 「不计费」开关关掉 = 这次就是把时段清空（PUT 整批替换的空数组写法），**草稿一律不发**：
+     草稿是用户关开关之前填的东西，发出去等于「嘴上说不计费、库里还留着峰谷价」，
+     而 priced 只看默认价，那种半死状态没人看得出来。新建模式没有 id，返回 null。 */
+  if (!billingOn.value) return props.mode === 'edit' ? { items: [] } : null;
   if (props.mode === 'edit' && !priceRulesLoaded.value) return null;
   /* 编辑时**空数组也要发**：那正是"清空全部时段"的唯一写法（PUT 是整批替换） */
   if (!priceRules.value.length) return props.mode === 'edit' ? { items: [] } : null;
@@ -877,6 +892,7 @@ function resetTransient(): void {
   connEditing.value = false;
   advanced.value = false;
   billingOpen.value = false;
+  billingOn.value = true;          // 初值 = 开；编辑已有模型时 init() 读到价再改（见下）
   testState.value = 'idle';
   testMessage.value = '';
   saveState.value = 'idle';
@@ -936,6 +952,10 @@ async function init(): Promise<void> {
     reached.value = 3;
     await loadKeys(form.provider);
     await loadPriceRules(String((props.target as ModelConfig).id || ''));
+    /* 「计费」开关的初值要等时段读完才算得出：库里已经有价（默认价齐全 或 有分时段）
+       才开着；两样都没有 = 这个模型本来就不计费，别默认替用户打开 —— 不然界面在撒谎，
+       而用户一保存就把「我压根没配价」当成「我选了不计费」。 */
+    billingOn.value = priceConfigured.value || priceRules.value.length > 0;
     return;
   }
 
@@ -981,7 +1001,9 @@ function applyInitialStep(): void {
     /* 步骤条只允许点回走过的步；跳过去的那几步按"已到达"记，否则 goStep 会把人拦回来 */
     reached.value = Math.max(reached.value, n);
   }
-  if (props.focusPrice) billingOpen.value = true;
+  /* 「编辑高峰价」这类入口是奔着配价来的：折叠块和计费开关都先打开，
+     否则从「未计费」的模型点进来会看到一块空面板。 */
+  if (props.focusPrice) { billingOpen.value = true; billingOn.value = true; }
 }
 
 /** 选一家提供方：清掉跨提供方的选择（密钥 + 已填 Model ID），再进第二步。 */
@@ -1161,13 +1183,15 @@ function submit(): void {
     fail(priceError.value);
     return;
   }
-  /* 时段规则读不到就别发 PUT：整批替换，空数组 = 清空已有规则 */
-  if (props.mode === 'edit' && !priceRulesLoaded.value && !priceRulesUnsupported.value) {
+  /* 时段规则读不到就别发 PUT：整批替换，空数组 = 清空已有规则。
+     不计费态例外：那时无论读没读到都要清空（composeRules 直接给 {items: []}）。 */
+  if (billingOn.value && props.mode === 'edit' && !priceRulesLoaded.value && !priceRulesUnsupported.value) {
     billingOpen.value = true;
     fail(priceRulesError.value || '时段单价还没读到，先点「重新读取」再保存（时段是整批替换，发空数组会清空已有规则）');
     return;
   }
-  const ruleError = ruleDraftError(priceRules.value);
+  /* 不计费态不校验草稿：那些行根本不会发出去（见 composeRules） */
+  const ruleError = billingOn.value ? ruleDraftError(priceRules.value) : '';
   if (ruleError) {
     billingOpen.value = true;
     fail(ruleError);
@@ -1185,12 +1209,14 @@ function submit(): void {
     is_default: !!form.is_default,
     parameters,
     /* 计费：五个键**每次都发**——后端"不传 = 不动"，显式 null 才代表"清空"。
-       空框在这里就是 null（未计费），不会变成 0（0 是"免费"，两回事）。 */
+       空框在这里就是 null（未计费），不会变成 0（0 是"免费"，两回事）。
+       不计费开关关掉时四个价一律 null（哪怕框里还留着旧文本：那是关开关前的残留，
+       不该偷偷变成价格）；币种照旧发，它跟计不计费无关，换回来时还得是原来那个。 */
     currency: form.currency || null,
-    price_in: parsePrice(form.price_in).value,
-    price_out: parsePrice(form.price_out).value,
-    price_cache_read: parsePrice(form.price_cache_read).value,
-    price_cache_write: parsePrice(form.price_cache_write).value,
+    price_in: billingOn.value ? parsePrice(form.price_in).value : null,
+    price_out: billingOn.value ? parsePrice(form.price_out).value : null,
+    price_cache_read: billingOn.value ? parsePrice(form.price_cache_read).value : null,
+    price_cache_write: billingOn.value ? parsePrice(form.price_cache_write).value : null,
   };
   if (props.mode === 'edit') payload.enabled = !!form.enabled;
   saveState.value = 'saving';
@@ -1546,7 +1572,7 @@ const advSummary = computed<string>(() => {
              币种空串 = 跟随厂商，所以要把解析出来的实际币种写在选项里。 -->
         <div class="billing">
           <button
-            type="button" class="adv-toggle" data-billing-toggle
+            type="button" class="adv-toggle" data-billing-collapse
             :aria-expanded="billingOpen" @click="billingOpen = !billingOpen"
           >
             <AppIcon :name="billingOpen ? 'chevron-up' : 'chevron-down'" :size="14" />
@@ -1554,6 +1580,15 @@ const advSummary = computed<string>(() => {
             <span class="spacer"></span>
             <span class="tiny faint" data-billing-summary>{{ billingSummary }}</span>
           </button>
+          <!-- 「计费」总开关放在折叠体**外面**：折叠着也要一眼看出这个模型算不算钱。
+               关掉不是隐藏，是明说「这个模型不计费」—— 提交时四个单价 null、时段清空。 -->
+          <label class="check-row">
+            <input type="checkbox" v-model="billingOn" data-billing-toggle />
+            <span>该模型计费（关闭 = 不计费，调用记为未计费）</span>
+          </label>
+          <p class="hint-line" v-if="!billingOn" data-billing-off>
+            该模型不计费：调用记成未计费（cost 为空），也不能给它设限额
+          </p>
           <template v-if="billingOpen">
             <label class="field billing-cur">
               <span>币种</span>
@@ -1567,29 +1602,31 @@ const advSummary = computed<string>(() => {
             <div class="billing-grid">
               <label class="field">
                 <span>输入 Token 单价<em class="unit">每百万 Token</em></span>
-                <input v-model="form.price_in" inputmode="decimal" data-price="price_in" placeholder="如 2（算得出钱的前提）" />
+                <input v-model="form.price_in" inputmode="decimal" data-price="price_in" :disabled="!billingOn" placeholder="如 2（算得出钱的前提）" />
               </label>
               <label class="field">
                 <span>输出 Token 单价<em class="unit">每百万 Token</em></span>
-                <input v-model="form.price_out" inputmode="decimal" data-price="price_out" placeholder="如 8（算得出钱的前提）" />
+                <input v-model="form.price_out" inputmode="decimal" data-price="price_out" :disabled="!billingOn" placeholder="如 8（算得出钱的前提）" />
               </label>
               <label class="field">
                 <span>缓存读<em class="unit">每百万 Token · 可选</em></span>
-                <input v-model="form.price_cache_read" inputmode="decimal" data-price="price_cache_read" placeholder="可选，服务商提供该计价规则时填写" />
+                <input v-model="form.price_cache_read" inputmode="decimal" data-price="price_cache_read" :disabled="!billingOn" placeholder="可选，服务商提供该计价规则时填写" />
               </label>
               <label class="field">
                 <span>缓存写<em class="unit">每百万 Token · 可选</em></span>
-                <input v-model="form.price_cache_write" inputmode="decimal" data-price="price_cache_write" placeholder="可选，服务商提供该计价规则时填写" />
+                <input v-model="form.price_cache_write" inputmode="decimal" data-price="price_cache_write" :disabled="!billingOn" placeholder="可选，服务商提供该计价规则时填写" />
               </label>
             </div>
 
             <p class="calc-line" :class="{ warn: priceCalc.warn }" v-if="priceCalc.text" data-billing-calc>{{ priceCalc.text }}</p>
             <p class="err-line" v-if="priceError" data-billing-error>{{ priceError }}</p>
             <p class="warn-line" v-else-if="priceHalf" data-billing-half>只配了一半 → 仍按未计费处理：费用统计里不会出现金额。</p>
-            <p class="hint-line" v-else-if="!priceConfigured" data-billing-none>未配置单价：该模型的调用会被记为未计费，费用统计为 0 条。</p>
+            <!-- 不计费态上面已经有一句专门的说法，这里不再叠一句「未配置单价」 -->
+            <p class="hint-line" v-else-if="billingOn && !priceConfigured" data-billing-none>未配置单价：该模型的调用会被记为未计费，费用统计为 0 条。</p>
 
-            <!-- 分时段单价：上面四个价是**时段之外**的价，这里配的是例外覆盖（只对工作日生效） -->
-            <div class="price-rules">
+            <!-- 分时段单价：上面四个价是**时段之外**的价，这里配的是例外覆盖（只对工作日生效）。
+                 不计费态整块不渲染：草稿反正不会发出去（见 composeRules），摆着只会让人以为能存。 -->
+            <div class="price-rules" v-if="billingOn">
               <div class="pr-head">
                 <span class="pr-title" data-price-rules-title>{{ rulesSectionTitle }}</span>
                 <span class="spacer"></span>
