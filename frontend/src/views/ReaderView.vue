@@ -338,8 +338,10 @@ function foreignPeekView(ask: CitePeekAsk, target: ReturnType<typeof citeBlockTa
     latex: fields?.latex || String(ask.latex || '').trim(),
     page,
     rowId: String(ask.rowId || ''),
-    /** 跳转用的锚点：行 id 优先（别篇的行 id 与 block id 都是它自己那篇的编号） */
-    anchorId: String(ask.rowId || ask.blockId || ''),
+    /** 跳转用的锚点：**表格引用落到表体那一行**（引用带的是表注行，闪表注等于没闪到表）。 */
+    anchorId: String(fields?.tableRow || ask.rowId || ask.blockId || ''),
+    /** 闪烁/落点用的行 id：与 anchorId 同义，单独给一个名字免得和"引用原本的行"混在一起 */
+    flashRowId: String(fields?.tableRow || ask.rowId || ''),
     anchor: ask.anchor,
     /** 卡片里所有 markdown 都用**这条引用自己的** paper_id 渲染（图片 / 公式路径才对得上） */
     paperId: target.paperId,
@@ -440,6 +442,7 @@ function briefPeekView(card: PeekCard) {
     anchor: ask.anchor,
     /** 跳转：论文级引用没有落点，落到那一篇的第 1 页（同篇则回到顶部） */
     anchorId: '',
+    flashRowId: '',
     paperId: pid,
     foreign,
     source: foreign ? '来自《' + src + '》' : '',
@@ -754,6 +757,8 @@ function peekViewOf(card: PeekCard) {
     caption,
     /** 表格本体（行 id 或「同页 + 表号」认出来的那一张）：卡片里画真表格，而不是只有表注 */
     table: String(tbl?.markdown || '').trim(),
+    /** 表格引用闪**表体那一行**（跨页合并表取第一半），不是引用自带的表注行 */
+    flashRowId: String((tbl as any)?.row_ids?.[0] || tbl?.row_id || rowId || ''),
     latex,
     page, rowId,
     anchor: ask.anchor,
@@ -779,16 +784,19 @@ function jumpFromPeek(card: PeekCard): void {
      阅读器的 applyDeepLink 有三级解析 —— 行 id 直接命中 → 用 block_rows 把块 id 翻成行 →
      都不行退到那一页。所以这里给的行 / 块 id 是**那篇的**编号，能精确到块就精确，
      认不出也至少落到它那一页。 */
+  /* 落点一律用 `flashRowId`：表格引用给的是**表体那一行**（跨页合并表是第一半），
+     否则点「定位到原文」只会闪到表注（用户 2026-12-28 报的就是这个）。 */
+  const target = String(v.flashRowId || v.rowId || '');
   if (v.foreign) {
     /* 论文级引用没有落点（anchorId 空）：落到**那一篇的第 1 页**，而不是带着空锚点去解析 */
-    void router.push(openTab(readerTarget(v.paperId, v.anchorId, v.page || undefined)) as never);
+    void router.push(openTab(readerTarget(v.paperId, target || v.anchorId, v.page || undefined)) as never);
     return;
   }
-  if (!v.rowId) {
+  if (!target) {
     void focusRow(allRows.value[0]?.id ?? '', { page: 1, flash: true });
     return;
   }
-  void focusRow(v.rowId, { page: v.page || undefined, flash: true });
+  void focusRow(target, { page: v.page || undefined, flash: true });
 }
 const brief = ref<BriefPayload | null>(null);
 const glossary = ref<GlossaryTerm[]>([]);

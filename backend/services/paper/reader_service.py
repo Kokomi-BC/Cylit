@@ -1993,6 +1993,7 @@ def _table_for(paper_id: str, page: int, *texts: str) -> dict | None:
         if len(hits) == 1:
             it = hits[0]
             return {"id": it.get("id"), "page": it.get("page"), "number": it.get("number"),
+                    "row_id": it.get("row_id"), "row_ids": it.get("row_ids"),
                     "caption": it.get("caption"), "caption_original": it.get("caption_original"),
                     "markdown": it.get("markdown"), "rows": it.get("rows"),
                     "cols": it.get("cols"), "source": it.get("source")}

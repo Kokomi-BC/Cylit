@@ -147,6 +147,9 @@ export interface BlockDetailLike {
   table?: {
     markdown?: string | null;
     number?: string | null;
+    /** 表体所在行（合并后的跨页表是**第一半**那一行）：定位/闪烁要落在它上面 */
+    row_id?: string | null;
+    row_ids?: string[] | null;
     caption?: string | null;
     caption_original?: string | null;
     rows?: number | null;
@@ -170,6 +173,8 @@ export interface PeekBlockFields {
   captionEn: string;
   /** 表格的 Markdown（只有表注行 / 表体行带 table 时才有）：卡片里画成真表格，不是一句表注 */
   table: string;
+  /** 表体那一行（跨页表取第一半）：点「定位到原文」要落到/闪到它，而不是表注那行 */
+  tableRow: string;
   /** 插图地址（后端 figure.image_url；没有时退回 Markdown 图片的 src。模板照旧走 `assetUrl`） */
   imageUrl: string;
   page: number;
@@ -250,6 +255,7 @@ export function blockPeekFields(detail: BlockDetailLike | null | undefined): Pee
     caption,
     captionEn,
     table: String(d.table?.markdown ?? '').trim(),
+    tableRow: String(d.table?.row_ids?.[0] ?? d.table?.row_id ?? '').trim(),
     imageUrl,
     page: Number(d.page ?? 0) || 0,
   };

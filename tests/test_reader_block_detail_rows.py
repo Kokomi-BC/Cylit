@@ -465,6 +465,8 @@ def test_caption_row_carries_the_table(monkeypatch, caption_page):
     assert got["type"] == "caption" or got["text"].startswith("Table 1")
     assert got["table"] == {
         "id": "t001-0000", "page": 1, "number": "1",
+        # 表体所在行：浮窗「定位到原文」要闪**这一行**，不是表注那行（用户 2026-12-28）
+        "row_id": "p001-01", "row_ids": None,
         "caption": "表 1：不同层类型的最大路径长度。",
         "caption_original": "Table 1: Maximum path lengths.",
         "markdown": TABLE_MD, "rows": 1, "cols": 2, "source": "translation",

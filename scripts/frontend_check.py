@@ -3662,6 +3662,25 @@ async function run() {
     Object.assign(res, await peek({ 'data-paper': '__PAPER__', 'data-row': '', 'data-block': '' }));
     /* (2) 表格引用：引用落在**表注行**时，卡片里必须画出表体 */
     res.table = await peek({ 'data-paper': '__PAPER__', 'data-row': '__TABLE_ROW__' });
+    /* (2b) 点「定位到原文」闪的必须是**表体那一行**（引用自带的是表注行） */
+    const tj = await hover({ 'data-paper': '__PAPER__', 'data-row': '__TABLE_ROW__' });
+    if (tj.card) {
+      const jump = tj.card.querySelector('[data-peek-jump]');
+      if (jump) {
+        jump.click();
+        await sleep(900);
+        res.tableFlash = [...d.querySelectorAll('[data-row-id]')]
+          .filter((r) => /flash-/.test(r.className))
+          .map((r) => r.getAttribute('data-row-id'));
+        res.tableFlashCurrent = (() => {
+          const c = d.querySelector('[data-row-id][class*="current"]');
+          return c ? c.getAttribute('data-row-id') : null;
+        })();
+      }
+      tj.card.querySelectorAll('.fc-btn').forEach((b) => b.click());
+      await sleep(300);
+    }
+    if (tj.btn) tj.btn.remove();
     /* (3) 插图引用：中文侧只能有中文图注，英文侧只能有英文图注 */
     const fig = await hover({ 'data-paper': '__PAPER__', 'data-row': '__FIG_ROW__' });
     if (fig.card) {
@@ -3724,6 +3743,10 @@ def check_paper_peek(browser: str, base: str, paper: str, budget_ms: int) -> Non
            f"表格={tbl.get('hasTable')}，{tbl.get('cols')} 列｜{str(tbl.get('text'))[:34]}")
     record("paperpeek", "表格卡里正文不再重复画同一张表",
            (tbl.get("bodyLen") or 0) <= 200, f"正文 {tbl.get('bodyLen')} 字")
+    flashed = res.get("tableFlash") or []
+    record("paperpeek", "表格引用点「定位到原文」闪的是**表体那一行**（不是表注那行）",
+           "p006-00" not in flashed and "p006-01" in flashed,
+           f"闪到={flashed}｜当前行={res.get('tableFlashCurrent')}")
     fig_zh = res.get("figZh") or ""
     fig_en = res.get("figEn") or ""
     record("paperpeek", "插图卡中文侧**只**有中文图注（不再中英各一句）",
