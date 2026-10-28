@@ -216,9 +216,10 @@ const fileInput = ref<HTMLInputElement | null>(null);
 /** 三段分组：顺序与上面那句注释一一对应。
  *
  * 为什么把分组从注释搬进界面（用户口径 2026-12「补齐技能开关及说明」）：十几行平铺时，
- * 「联网搜索」和「标注与笔记」看起来是同一类东西 —— 分组小标题 + 一句「这一段在干什么」
+ * 「联网搜索」和「标注与笔记」看起来是同一类东西 —— 分组 + 一句「这一段在干什么」
  * 才说得清每个开关管的是哪一类能力。**只写分组在干什么，不写单个技能的能力**：
- * 单个技能的说明只能来自 SKILL.md（见下面那条警告）。 */
+ * 单个技能的说明只能来自 SKILL.md（见下面那条警告）。
+ * 分类标题后来按用户口径移除（2026-12）：「移除技能分类的标题」—— 每段只剩那说明句。 */
 const SKILL_GROUPS: { title: string; note: string; names: string[] }[] = [
   {
     title: '联网取外援',
@@ -656,10 +657,11 @@ onMounted(() => {
         </label>
 
         <div class="skill-list" v-if="filteredSkills.length">
-          <!-- 按三段分组：每组一个标题 + 一句「这一段在干什么」，行本身结构不变 -->
+          <!-- 按三段分组：**只留一句「这一段在干什么」，不摆分类标题**
+               （用户口径 2026-12：「移除技能分类的标题」—— 标题与每组第一行技能名
+               抢同一级的注意力，而分组真正有用的是那句说明）。行本身结构不变。 -->
           <template v-for="g in skillGroups" :key="g.title">
           <div class="skill-group" data-skill-group>
-            <span class="skill-group-title">{{ g.title }}</span>
             <span class="skill-group-note">{{ g.note }}</span>
           </div>
           <template v-for="s in g.rows" :key="s.name">
@@ -921,14 +923,13 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
-/* 分组小标题：三段之间靠它分界（不是装饰线 —— 用户要的是「这一段管什么」）。
-   第一组不留上边距，免得标题和搜索框贴出一段空档。 */
+/* 分组之间只靠这一句说明分界（分类标题已移除）：它要顶得住「分段」的活，
+   所以给它一点上边距；第一组不留，免得和搜索框贴出一段空档。 */
 .skill-group {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
   padding: 14px 2px 2px;
 }
 .skill-group:first-child { padding-top: 2px; }
-.skill-group-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .skill-group-note { font-size: 12px; color: var(--text-faint); }
 /* 一条技能 = **横向两块**（用户口径 2026-12）：
    左 = 名字 / 英文 ID / 说明（竖着排、可换行），右 = 固定五格操作区。
