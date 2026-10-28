@@ -73,6 +73,8 @@ description: 使用 paper_search(query, top_k, mode) 检索当前论文，或使
 
 `kb_search` 返回的片段来自别的论文时，**你并没有读过那篇**：只能按片段说明"某篇提到了 X"，
 并给出 `paper_id` / 页码让用户自己去看。不要复述细节、不要编造它的结论。
+要真读那一篇，就给读工具传 `paper_id`（`page_markdown_get` / `translate_get` /
+`page_image_get` / `figure_list` / `figure_image_get` / `formula_get`），页码与 index 按那一篇算。
 
 ## 和别的技能的分工
 

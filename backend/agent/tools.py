@@ -1879,7 +1879,8 @@ async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
 
     **不要**用它回答"这篇论文怎么说的"——那要用 paper_search，只查当前论文。
     拿到结果后如果要读内容，用 `paper_id` + `page` 判断；当前这一篇可以直接用
-    page_markdown_get，别的论文只能靠返回的片段说明，不要假装读过。
+    page_markdown_get，**别的论文要真读也给它传 `paper_id`**（不传就只能按片段说明，
+    别假装读过）。
 
     **一次可以查几个词**：`kb_search(queries=["random rotation", "QJL"])`。
     回执按 query 分组（`groups`），顺序与你给的词一致；某一条失败只挂在那一条上。
@@ -1958,7 +1959,8 @@ async def kb_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         return _grouped_receipt(
             groups, wanted=len(wanted), left=left, repeats=repeats,
             cap=BATCH_QUERY_MAX,
-            hint="每组查自己的词；跨库命中只能当线索，别假装读过那篇论文。")
+            hint="每组查自己的词；跨库命中只能当线索，别假装读过那篇论文；"
+                 "要读正文就给读工具传 paper_id。")
 
     return await _guarded(ctx, "kb_search",
                           {"query": _clip(query, 60), "queries": list(queries or []),

@@ -17066,3 +17066,77 @@ prose  assistant 760  rowH [23, 23]      wrap 760/760 不滚（表 616 < 760，�
 
 `vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` **169 项全过**（本轮新增一条源码层回归项：
 「表格横向滚动：表宽跟栏宽解耦（max-content），窄了在 .tbl-wrap 里滚」—— 谁把它改回 `width: 100%` 立刻红）。
+
+# 262 · 第二阶段：背景首轮注入 / 目录分页与只列已入库 / 按 paper_id 读指定论文（2026-12-28 追补七）
+
+用户给了一份《CyLit 第二阶段改造》需求，三条，并点明三个最该盯紧的地方（原话）：①背景注入到底发生在什么时候；
+②目录浏览必须有真实的分页查询；③paper_id 不能只加进提示词。这一条按这三件事验收，另加一条自己查出来的磁盘残留。
+
+## 一、论文背景：从「模型自己去拿」改成「首轮自动注入」
+
+落点在 `AgentRuntime.ask()`：`deps.first_turn = not req.history` 之后、`_stream_model` 之前调 `_inject_archive(deps, archive)`，
+把**已经取到的那份** `host.archive()` 结果用 `prompts.archive_block` 渲染一次存进 `deps.archive_text`；
+随后 `_user_prompt → prompts.turn_notes → prompts.archive_background` 把它拼进**第一条用户消息**。
+
+- **不进 system**：只有首轮才有的内容放 system，第 2 轮「system + 全部历史」整段前缀缓存作废（runtime.py 原有约束）。
+- 三道闸防重复：`first_turn` + `paper_id` 非空 + `archive_injected != paper_id`（同篇幂等、换篇重渲染、绝不沿用旧文本；文本与标记**成对**更新）。
+- 降级：`_fetch_archive` 把 host 异常吞成 `log.info` + `{}`（背景少了不影响问答）；档案为空也跳过注入。
+  ⚠️ 这是一处**行为变更**：以前 host 抖动会让整轮回 `HOST_ERROR` 帧，现在照常答。
+- 提示词同步：`BASE` 里「背景要自己去拿」改成「已在首轮注入、不要为同一份背景再调 `paper_archive_get`」；
+  `ABSTRACT_RULES` 标题与正文一并改；golden 按**逐 hunk 归因**刷新（只 2 个 hunk，都落在这处改动上）。
+
+## 二、论文目录：数据层真分页 + 只列已入库
+
+`library_list` 四层打通：`paper_service.list_papers`（`offset/limit` 在 SQL 里，不在工具里切片）→ `GET /papers` →
+`HostClient.library` → 工具。分类计数走 `folder_service`（真实 `paper.folder_id`，一篇一个分类）。
+排序稳定性靠给每个排序分支末尾加 `Paper.id.asc()` —— 否则同一秒的论文次序由数据库随便定，翻页会漏一篇重一篇。
+
+**只列已入库**（用户口径：`in_knowledge_base = 1`）：`list_papers(in_kb: bool|None)` —— `None` 时先数一次 `total_unfiltered`
+再原样返回（响应键集与旧版**逐字段相同**），True/False 时才过滤；`library_list` 默认 `in_kb=True`，回执加
+`scope` / `hidden_not_in_kb`（没列出来的那批）/ `categories_scope=all_papers`（分类计数是全库口径，不随过滤变）。
+真库实测：裸 11 篇、`in_kb=true` 3 篇、`in_kb=false` 8 篇，3 + 8 = 11。
+
+## 三、按 paper_id 读指定论文
+
+七个读工具（`paper_search` / `page_markdown_get` / `translate_get` / `page_image_get` / `figure_list` /
+`figure_image_get` / `formula_get`）都在**末尾**追加可选 `paper_id`；不传走原路（回执逐字段相等、不多一次 archive、
+轨迹 digest 不多 `paper_id` 键，三条都有专测）。
+
+串读防护选了「单 registry + 去重键带 `paper_id` + `Citation.paper_id` 记来源」，**没有**做 per-paper registry 字典：
+`runtime` 只读 `deps.registry`，per-paper 会让同一个回答里 `[1]` 有歧义、还会把另一篇的证据整段丢掉。
+顺带堵了三条更隐蔽的通道：检索缓存按论文分槽（否则同名 query 直接回另一篇的回执）、`deps.page_total` 不被别篇改写、
+`block_get` 按 ref 自己那篇取数且行跨度记来源（`p003-00` 这种行 id 每篇都一样）。
+不存在的 id → `{"ok": False, "error": …}`，**绝不静默退回当前论文**；跨篇页数只取目标论文的 archive。
+
+## 四、顺带查出来的：删论文的磁盘残留
+
+`delete_paper(hard=True)` 原来只删「本次刚移入的那份」，对**已软删**的论文再 hard 删时 `root.exists()` 已 False →
+`trash=None` → 早先搬进 trash 的那份永远留着；`clear_trash()` 只覆盖「还在回收站里」的论文，`sweep_orphans()` 又只管 MySQL。
+真机实测：`data/trash` **1025 个目录 / 672.5 MB / 6 个 paper_id**，其中 5 个 id 在库里已不存在（`it-delete` 670 个、`it-purge` 351 个…）。
+
+- 修：hard 分支按 `paper_id` 删掉**全部** trash 目录（复用 `_trash_dirs()`），并写进 steps；
+  `sweep_orphans` 新增 `report[disk]`（trash 孤儿组 + `data/papers` 孤儿目录），`apply=True` 才删，uploads 只报不删。
+- 一次性清理（用户批准）：删 1024 个目录 / 671.2 MB，保留在库的 `wait-check`；`data/papers/_smoke` 与 uploads 源 PDF 按范围没动。
+- 高危隐患一并修掉：`tests/test_delete_paper.py::test_sweep_orphans_reports_then_deletes` **没有 data_dir 隔离**，
+  而 sweep 现在会清磁盘 —— 任何一次全量 pytest 都会去删真机目录。已把 `data_dir` 挂到已有的 autouse fixture 上，
+  并做前后对账（`data/papers` 208,908,081 B / 12 目录前后逐字节一致，`_smoke` 存活）。
+- `cli/pr.py orphans` 补打印 disk 段（原来 `--apply` 会静默删盘）。
+
+## 实测
+
+```
+全量 pytest：1949 passed / 0 failed（不再用 -k 躲任何一条）
+prod 真模型四问（/v1/ask + 内部令牌，SSE 逐帧解析工具轨迹）：
+  P1 「大概讲什么」        → paper_search + block_get，3 轮，**没有 paper_archive_get**
+  P1b「不要检索，只用背景」 → **0 次工具调用**，1 轮，答出标题/领域/2.7 倍常数/KV 3.5bit 近乎无损
+  P2 「库里有哪几篇」      → library_list ×1，答「已入库共 2 篇（第 1/1 页，每页 20 篇，没有下一页）」
+  P3 「读另一篇第 2 页译文」 → translate_get 第 2 页，模型主动声明「不是当前这篇」，内容确实是那篇的引言段
+```
+
+## 代价与遗留
+
+- 跨篇读每次多一次 `archive` 往返（只在真传了别的 id 时），没做缓存；`_read_target` 把所有 HostError 都说成
+  「不存在或没有可读内容」（原因里带状态码，不会误报成正文）。
+- `test_sweep_orphans_reports_then_deletes` 的**数据库侧**仍作用真库（磁盘已隔离）：要连库隔离得引入临时库方案。
+- `docs/agent-接入规划.md` 与 dev-log 老表格里仍写着已删的 `GET /agent/library`（历史记录，不回改）。
+- GitHub 仍积压（代理连不上），改动只在本地与 prod 一处。

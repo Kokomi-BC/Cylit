@@ -834,35 +834,6 @@ def formulas(paper_id: str, *, page: int | None = None, query: str | None = None
 
 
 # --------------------------------------------------------------------------
-# 书架（`library_list`）
-# --------------------------------------------------------------------------
-
-#: 一次最多列几篇（模型只要"挑出相关的几篇"，不需要整库）
-LIBRARY_LIMIT = 30
-
-
-def library(*, q: str | None = None, status: str | None = None,
-            limit: int = LIBRARY_LIMIT) -> dict:
-    """书架检索（标题 / 作者的模糊匹配）——"我库里有谁讲过 X"的第一步。
-
-    只回元数据，不回正文：模型据此挑出候选论文，再用 `kb_search` 去找具体段落。
-    """
-    data = paper_service.list_papers(q=q or None, status=status or None,
-                                     page_size=max(1, min(int(limit or LIBRARY_LIMIT), 100)))
-    items = []
-    for row in data.get("items") or []:
-        items.append({
-            "paper_id": row.get("id"), "title": row.get("title") or "",
-            "authors": _clip(row.get("authors") or "", 160),
-            "venue": row.get("venue") or "", "year": row.get("year") or 0,
-            "status": row.get("status") or "",
-            "page_count": int(row.get("page_count") or 0),
-            "tags": list(row.get("tags") or []),
-        })
-    return {"total": int(data.get("total") or 0), "returned": len(items), "items": items}
-
-
-# --------------------------------------------------------------------------
 # 笔记 / 高亮 / 批注（`notes_search`）
 # --------------------------------------------------------------------------
 

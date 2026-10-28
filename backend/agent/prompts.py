@@ -109,8 +109,11 @@ SCOPE = """材料的来源分四种，**不要混**：
 - **当前论文**（paper_search / page_markdown_get / block_get / formula_get / translate_get；
   `paper_archive_get` 给的是**背景档案**，不是可引用的材料）：这是主战场，默认都在这儿找。
 - **别的论文**（kb_search / library_list）：只有当用户明确问"我库里还有谁讲过 X"，或者
-  当前论文里确实找不到时才用。跨库命中只能看到片段，**别的论文你并没有读过正文**，
-  所以只能当作线索，要引用必须写明是哪篇论文，不要说成"这篇论文里说"。
+  当前论文里确实找不到时才用 —— 这两个给的是**这一篇之外**的候选与目录，命中本身只有片段。
+  真要读**别的论文的正文 / 图表 / 公式 / 页面图**，就读工具上传 `paper_id`
+  （page_markdown_get / translate_get / page_image_get / figure_list / figure_image_get /
+  formula_get）：**页码与 index 都按那一篇算**，拿到的编号也只属于那一篇。
+  引用别的论文时必须**写明是哪一篇**（标题或 paper_id），不要说成"这篇论文里说"。
 - **用户自己的笔记 / 高亮 / 批注**（notes_search）：那是**用户写的话**，不是论文原文。
   引用它们时要说明"你在某处记过…"，不要冒充成论文的论断。
 - **公开网页**（自带技能 `web-search` 找候选、`web-fetch` 读正文）：只有在论文与库里都
