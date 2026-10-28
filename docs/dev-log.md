@@ -17355,3 +17355,52 @@ prod：/blocks/attentioncle-p01-b01 → 200；/blocks/p002-00 → 200（回退�
 - 跨篇没有块到行的映射（手里没有那篇的 `block_rows`），跳转能到哪一级取决于目标阅读器加载后再解析；
   深链同时给 `?row=&page=`，最差落在那一页。
 - 别篇的公式卡没做 `onlyFormula` 去重：公式块的 text 若本身就是行间公式，可能与上方 latex 区各显示一遍。
+
+# 267 · 跨篇引用的两条遗留补齐：插图缩略图 + 深链补落行（2026-12-28 追补十二）
+
+266 收尾时留了两条：① 跨篇插图引用只有文字/图注、没有缩略图；② 跨篇跳转只能到页、落不到块。
+
+## ① 插图缩略图：`block_detail` 带回 `figure`
+
+以前给不出图是因为：图块在解析产物里只是**文字**，而图片地址要 `/figures/region/{page}/{index}` 里的 index，
+块侧没有这层映射。现在：
+
+- `figures_payload` 每条**多给 `index`**（与 image_url 同一轮 enumerate，下游照抄、不解析 URL、不拼第二种地址）；
+- `_figure_for(paper_id, block_id)`：**只认 id 精确相等**（块 id / 行 id == figures 里某条的 block_id）。
+  「这一页只有一张图所以就是它」这种按页兜底**一律不做**（缺了就说缺），figures 自己抛错也只丢字段、不 500；
+- 按 `paper_id` 加进程内 TTL 缓存（30s；`invalidate_cache` 顺带清），避免每个块请求重算整篇产物；
+- 块分支与行回退支都带 `figure`（末尾）。
+
+## ② 深链补落行：等 `block_rows` 就绪再解析一次
+
+`applyDeepLink` 是三级解析（行 id 直命 → `block_rows` 把块 id 翻成行 → 都认不出就落页）。跨篇跳转时
+目标阅读器刚挂载、`block_rows` 还没到，于是必然走第三级落页。现在加**一次性**重试：
+
+- 触发：锚点存在 && 行表里查不到 && `rowMapReady` 仍为 false && 已进落页分支；
+- 表本来就在、只是查不到这一枚（公式/插图/表格）→ **不重试**；
+- 取出即清（只此一次），不改 URL、不再走 `applyDeepLink`（直接 focus + save:false），
+  用户已经跨页走开的就放弃这一跳（安全方向：宁可不拽）。
+
+## 实测（本机真库 + 真 DOM，不是看代码）
+
+```
+造一条指向别篇图注行 p004-00 的引用 → 浮窗显示《图 2》缩略图 + 中文图注（去重后只出现一次）
+  + 来源标记「第 4 页 · 图注 · 来自《Attention Is All You…》」
+点定位按钮 → 切到那篇并落在第 4 页那一带
+prod：/blocks/p004-00 → figure{index:0, image_url:/…/figures/region/4/0?card=1&v=c12d7ccfc0}
+      /blocks/p004-01（同页、非图注）→ figure = None   ← 不猜的证据
+全量 pytest 2032 passed / 0 failed；frontend_check 169 项全过；临时会话已删（43/113 恢复）
+```
+
+## 顺带修掉的一处观感问题
+
+图注块（`type=caption`）的正文就是那句图注，卡片里会在「图注」与「正文」各显示一遍。
+`blockPeekFields` 现在把两边归一（去粗体标记与空白）后相等的那侧从正文里去掉 —— 只按内容相等判定，
+不动「正文该显示什么」的其它规则。
+
+## 已知取舍
+
+- figure 缓存是 TTL 30s，不是按产物 mtime：重译/重导入后最多 30s 内可能给出旧 `v=` 地址（图还是那张，只是版本号旧）；
+  要精确得让导入/翻译路径调 `invalidate_cache(paper_id)`；
+- 图注行没被结构化标出来（锚在 `fig-pXXX-YY` 那种兜底 id）时，普通行查不到图 —— **这是有意的**：宁可无图也不配错图；
+- 行回退支的 `formula` 仍恒为 None（行与 Formula 表没有对应行），公式行只能拿到 `original` 里的 `$$…$$` 文本。
