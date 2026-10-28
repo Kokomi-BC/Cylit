@@ -8,6 +8,7 @@ description: 使用 paper_search(query, top_k, mode) 检索当前论文，或使
 本技能负责定位论文中的相关内容，先判断检索范围，再选择对应工具。
 - 当前论文： 使用 paper_search(query, top_k, mode) 定位本文中的相关段落。
 - 整个知识库： 使用 kb_search(query, top_k) 搜索知识库中的相关论文片段，并结合 paper_id 与页码识别来源。
+- 指定论文： 给 paper_search(query, top_k, mode, `paper_id="…"`) 就只在那一篇里检索；读那一篇的正文用 page_markdown_get(pages, `paper_id=…`) / translate_get(pages, `paper_id=…`)，页码按那篇算。
 检索结果只是候选位置，不代表已经完整阅读对应论文。后续引用或回答时，必须继续读取相关论文内容。不得使用跨库检索结果替代当前论文的证据，也不得将检索到的片段描述成已经完整阅读的内容。
 
 ## 批量：一次给几条，别一条一来回

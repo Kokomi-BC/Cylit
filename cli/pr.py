@@ -425,6 +425,20 @@ def cmd_orphans(args) -> int:
               f"{', '.join(str(x) for x in (conv.get('sample') or [])[:3])}")
     if report.get("vector_chunks"):
         print(f"  {'lancedb':<14} {'':>5}    → 删了 {report['vector_chunks']} 条向量")
+    # 磁盘侧：trash 里"论文行已经没了"的目录 / papers 下没有论文行的目录（--apply 才删）
+    disk = report.get("disk") or {}
+    for key, label in (("trash", "trash 孤儿"), ("papers", "papers 孤儿")):
+        info = disk.get(key) or {}
+        if not info.get("dirs"):
+            continue
+        tail = f" → 删了 {info['deleted']} 个目录" if args.apply else ""
+        print(f"  {label:<14} {info['papers']:>5} 篇 / {info['dirs']} 个目录"
+              f" / {int(info['bytes']) / 1048576:.1f} MB{tail}   e.g. "
+              f"{', '.join(str(x) for x in (info.get('sample') or [])[:3])}")
+    ups = disk.get("uploads") or {}
+    if ups.get("files"):
+        print(f"  {'uploads':<14} {ups['files']:>5} 个文件"
+              f" / {int(ups['bytes']) / 1048576:.1f} MB（源 PDF，只报告不删）")
     print(f"共 {total} 行；没有孤儿就是干净的。" if total else "共 0 行 —— 干净。")
     return 0
 

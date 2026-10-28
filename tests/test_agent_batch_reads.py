@@ -119,7 +119,11 @@ class FakeHost:
             return None, None
         return b"PNG", "image/png"
 
-    async def library(self, *, q=None, status=None):
+    # **kwargs：目录口径（page / page_size / folder / in_kb）在本文件一律忽略 —— 这个桩
+    # 固定喂 120 篇造数，两条用例只断言 returned / unprocessed / note（"还有 N 篇没列"），
+    # 不测过滤与分页本身，所以吞掉 in_kb 不会让它们变成"通过了但没测"的东西；
+    # 口径相关的真链路在 tests/test_agent_library_browse.py 里（真 ASGI + 真库）。
+    async def library(self, *, q=None, status=None, **kwargs):
         self.calls.append(("library", q))
         return {"total": 120,
                 "items": [{"paper_id": f"p{i}", "title": f"论文 {i}", "authors": "A",

@@ -164,9 +164,29 @@ class HostClient:
                    if v not in (None, "")}
         return dict(await self.post("/agent/websearch/fetch", payload) or {})
 
-    async def library(self, *, q: str | None = None, status: str | None = None) -> dict:
-        params = {k: v for k, v in (("q", q), ("status", status)) if v}
-        return dict(await self.get("/agent/library", params or None) or {})
+    async def library(self, *, q: str | None = None, status: str | None = None,
+                      folder: str | None = None, page: int = 1,
+                      page_size: int = 20, in_kb: bool | None = None) -> dict:
+        """书架检索（library_list 的后端）：**数据层分页** + 分类计数。
+
+        走 GET /papers（它本来就按页切、folder=none 表示未分类）与 GET /folders
+        （分类 + 每类论文数，计数的唯一实现在 folder_service）；旧的那条
+        /agent/library 只收 q/status，拿不到页码与分类。
+
+        page / page_size 的默认值归这里：工具只在模型显式改过时才传，两处都填一个
+        就变成"第二处默认值"了（与 tools.LIBRARY_PAGE_DEFAULT 同口径，有测试钉住）。
+        """
+        params = {k: v for k, v in (("q", q), ("status", status),
+                                    ("folder", folder)) if v}
+        # `in_kb` 不是"有没有值"而是三态：True / False / None（= 不过滤）。
+        # False 是有意义的值，所以不能进上面那个 `if v` 的推导式。
+        if in_kb is not None:
+            params["in_kb"] = "true" if in_kb else "false"
+        params["page"] = max(1, int(page or 1))
+        params["page_size"] = max(1, int(page_size or 20))
+        data = dict(await self.get("/papers", params) or {})
+        data["categories"] = dict(await self.get("/folders") or {})
+        return data
 
     # ⚠️ 本类里**不要再出现第二个叫 notes 的方法**：Python 的类体按顺序赋值，后来者会
     # **静默覆盖**前者，"调用方传 kind 就 TypeError"这种错要到真机跑一遍才看得见

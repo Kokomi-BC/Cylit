@@ -9,6 +9,7 @@ description: 按指定页码读取论文英文原文、中文译文或双语对�
 - 双语对照： 使用 page_markdown_get(pages) 获取原文与译文两侧内容。
 - 英文原文： 使用 page_markdown_get(pages)，读取返回结果中的原文侧。
 - 中文译文： 使用 translate_get(pages) 获取译文。
+- 读**别的论文**： 给 page_markdown_get / translate_get 传 `paper_id="…"`，页码按**那篇**论文算。
 整理返回结果时，保留工具提供的证据编号，按照论文原有叙述顺序组织内容，而非机械罗列文本块。公式附近的常数或可能受解析影响的信息，必要时核对原版面。
 
 ## 按页

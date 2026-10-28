@@ -6,6 +6,7 @@ MySQL 软删 → 清向量索引 → 取消任务 → 清 chunk 元数据 → �
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -269,7 +270,20 @@ def list_papers(*, q: str | None = None, status: str | None = None,
                 tag: str | None = None, include_deleted: bool = False,
                 sort: str = "last_read_at", order: str = "desc",
                 page: int = 1, page_size: int = 50,
-                folder: str | None = None) -> dict:
+                folder: str | None = None,
+                in_kb: bool | None = None) -> dict:
+    """目录查询。
+
+    ``in_kb``：按"是否已入库"过滤 —— ``True`` 只要 ``in_knowledge_base=1`` 的，
+    ``False`` 只要没入库的，``None``（**默认**）不过滤（老调用方逐字段不受影响）。
+
+    ``in_kb`` 非 None 时返回值多一个 ``total_unfiltered``：**同一批过滤条件下去掉
+    in_kb 再数一遍**得到的篇数。"被过滤掉多少"必须让调用方看得见 —— 否则模型会把
+    "只列了已入库的 3 篇"答成"你库里只有 3 篇"。（不传 in_kb 时没有这个键，
+    旧响应逐字段不变。）
+
+    ``total`` / 分页都按**过滤后**的集合算。
+    """
     with session_scope() as sess:
         query = sess.query(Paper)
         if not include_deleted:
@@ -285,6 +299,11 @@ def list_papers(*, q: str | None = None, status: str | None = None,
         if q:
             like = f"%{q}%"
             query = query.filter((Paper.title.like(like)) | (Paper.authors.like(like)))
+        # "被过滤掉多少"要在**同一批条件**（q / status / tag / folder / include_deleted）下数，
+        # 所以先按"不带 in_kb"数一次，再加过滤条件；排序/分页随后只作用在过滤后的集合上。
+        total_unfiltered = query.count() if in_kb is not None else None
+        if in_kb is not None:
+            query = query.filter(Paper.in_knowledge_base.is_(bool(in_kb)))
         if str(sort or "").strip().lower() == "folder":
             # 未分类不是"某个分类"，降序时也不该跑到最前面，所以把它单独钉到最后。
             query = query.outerjoin(PaperFolder, Paper.folder_id == PaperFolder.id)
@@ -293,14 +312,22 @@ def list_papers(*, q: str | None = None, status: str | None = None,
                 PaperFolder.sort.desc() if order == "desc" else PaperFolder.sort.asc(),
                 PaperFolder.name.desc() if order == "desc" else PaperFolder.name.asc(),
                 Paper.last_read_at.desc(),
+                # tie-breaker：同一秒（或 last_read_at 全为空）时次序不能由数据库随便定 ——
+                # 否则翻页会漏一篇、重一篇（目录分页正是按这个次序切的）。
+                Paper.id.asc(),
             )
         else:
             col = getattr(Paper, sort, Paper.created_at)
-            query = query.order_by(col.desc() if order == "desc" else col.asc())
+            query = query.order_by(col.desc() if order == "desc" else col.asc(),
+                                   Paper.id.asc())
         total = query.count()
         rows = query.offset(max(0, (page - 1) * page_size)).limit(page_size).all()
         items = [_to_dict(r) for r in rows]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    out = {"items": items, "total": total, "page": page, "page_size": page_size}
+    if total_unfiltered is not None:
+        # 只在调用方要过滤时才给：不传 in_kb 的旧响应逐字段不变（多一个键就是变了）。
+        out["total_unfiltered"] = total_unfiltered
+    return out
 
 
 #: 论文可以做结构化编辑的字段。
@@ -688,6 +715,8 @@ def sweep_orphans(*, apply: bool = False) -> dict:
     if apply:
         for pid in chunk_papers:
             report["vector_chunks"] += _drop_vector_index(pid)
+    # 磁盘侧：trash 里"论文行已经没了"的目录、papers 下没有论文行的目录（默认只看不动）
+    report["disk"] = _sweep_disk(live, apply=apply)
     report["ok"] = True
     return report
 
@@ -746,9 +775,21 @@ def delete_paper(paper_id: str, *, hard: bool = False) -> dict:
         steps.append(f"fs: 移入 trash {trash.name}")
 
     if hard:
-        # 彻底删除：无论文件是否已移入 trash 都要清 MySQL 行（支持对已软删论文再清理）
-        if trash is not None:
-            shutil.rmtree(trash, ignore_errors=True)
+        # 彻底删除：无论文件是否已移入 trash 都要清 MySQL 行（支持对已软删论文再清理）。
+        # 要清的是**这个 paper_id 的全部** trash 目录，不只是"这次刚移入的那份"：
+        # 对已经软删过的论文再 hard 删时 root 早就不在了（trash is None），只删那份新的
+        # 会把早先软删搬进 trash 的目录永远留下 —— 论文行一删 `list_trash` 就列不到它，
+        # 那些目录再没有任何人负责（本机实测 5 个 id / 1024 个目录 / 671MB 是这么攒的）。
+        removed = 0
+        for old in _trash_dirs(s).get(paper_id) or []:
+            m = _TRASH_NAME.match(old.name)
+            if not m or m.group("paper_id") != paper_id:
+                continue
+            # live=None：这篇本来就要彻底删，不做"是否还在 paper 表里"的拦截
+            if _rm_child_dir(old, s.trash_dir, paper_id, None):
+                removed += 1
+        if removed:
+            steps.append(f"fs: 清 trash 目录 {removed} 个（含早先软删搬入的）")
         with session_scope() as sess:
             sess.query(Block).filter(Block.paper_id == paper_id).delete()
             sess.query(Translation).filter(Translation.paper_id == paper_id).delete()
@@ -785,6 +826,106 @@ def _trash_dirs(s=None) -> dict[str, list[Path]]:
     for pid, _ts, path in found:
         out.setdefault(pid, []).append(path)
     return out
+
+
+# --------------------------------------------------------------------------
+# 磁盘侧的孤儿（sweep_orphans 与硬删共用这几个小工具）
+# --------------------------------------------------------------------------
+def _tree_stats(path: Path) -> tuple[int, int]:
+    """目录里的 (文件数, 字节数)。**不跟随符号链接**，读不了的条目跳过。"""
+    files = size = 0
+    for base, _dirs, names in os.walk(path, followlinks=False):
+        for name in names:
+            entry = Path(base) / name
+            try:
+                if entry.is_symlink():
+                    continue
+                size += int(entry.stat().st_size)
+            except OSError:
+                continue
+            files += 1
+    return files, size
+
+
+def _rm_child_dir(path: Path, parent: Path, paper_id: str, live: set[str] | None) -> bool:
+    """删 `parent` 的**直接子目录** `path`；`live` 里的 paper_id 一律不删。
+
+    `live=None` 表示调用方已确定这颗目录就该消失（硬删那条路），跳过在库校验。
+    其余拒绝条件都是"宁可不删"：不是直接子目录、不是普通目录、是符号链接 ——
+    rmtree 的 target 只能由 iterdir() 给出来，别让任何路径拼接把它带出 data/ 之外。
+    单个目录失败只记 log.warning：一个坏目录不该把整轮清扫带停。
+    """
+    try:
+        if Path(path).parent != Path(parent):
+            log.warning("拒绝删除非直接子目录：%s", path)
+            return False
+        if path.is_symlink() or not path.is_dir():
+            log.warning("跳过不是普通目录的条目：%s", path)
+            return False
+        if live is not None and paper_id in live:
+            log.warning("拒绝删除仍在 paper 表里的目录：%s", path)
+            return False
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError as exc:  # noqa: BLE001 —— 单个目录失败不中断整体
+        log.warning("删除目录失败（继续）：%s（%s）", path, exc)
+        return False
+    if path.exists():
+        log.warning("目录没能删干净：%s", path)
+        return False
+    return True
+
+
+def _sweep_disk(live: set[str], *, apply: bool = False, s=None) -> dict:
+    """磁盘孤儿：`trash/` 里论文行已经没了的目录、`papers/` 下没有论文行的目录。
+
+    ⚠️ 为什么会有：硬删只删"本次刚移入 trash 的那份"，对**已软删**的论文再硬删时
+    root 早就不在了、没人删早先那份；而论文行一没，`list_trash()` 就列不到它，
+    目录再没有任何人负责（本机实测这么攒下 5 个 id / 1024 个目录 / 671MB）。
+    `sweep_orphans` 原先只管 MySQL 行与向量，磁盘这块完全空着。
+
+    `apply=False`（默认）**一个字节都不动**：trash 目录是软删论文的文件本体，
+    `restore_paper` 要从这里搬回去，误删就是真丢数据。
+    `uploads/` 永远只报告不删：那是用户上传的源 PDF 落盘区，删了没有第二次机会，
+    而且它不按 paper_id 命名，没有归属可校验。
+    """
+    s = s or get_settings()
+
+    def bucket() -> dict:
+        return {"papers": 0, "dirs": 0, "bytes": 0, "sample": [], "deleted": 0}
+
+    trash = bucket()
+    for pid, dirs in sorted(_trash_dirs(s).items()):
+        if pid in live:                      # 表里还有这篇 —— 那是软删，不是孤儿
+            continue
+        trash["papers"] += 1
+        trash["dirs"] += len(dirs)
+        trash["bytes"] += sum(_tree_stats(d)[1] for d in dirs)
+        if len(trash["sample"]) < 5:
+            trash["sample"].append(pid)
+        for old in dirs:
+            m = _TRASH_NAME.match(old.name)
+            if not (apply and m):
+                continue    # 解析不出 paper_id 的目录不删（校验的第一步）
+            # 校验用的是**目录名解析出来的** id，不是上面的分组键
+            if _rm_child_dir(old, s.trash_dir, m.group("paper_id"), live):
+                trash["deleted"] += 1
+
+    papers = bucket()
+    if s.papers_dir.is_dir():
+        for entry in sorted(s.papers_dir.iterdir()):
+            if entry.is_symlink() or not entry.is_dir() or entry.name in live:
+                continue
+            papers["papers"] += 1
+            papers["dirs"] += 1
+            papers["bytes"] += _tree_stats(entry)[1]
+            if len(papers["sample"]) < 5:
+                papers["sample"].append(entry.name)
+            if apply and _rm_child_dir(entry, s.papers_dir, entry.name, live):
+                papers["deleted"] += 1
+
+    up_files, up_bytes = (_tree_stats(s.uploads_dir) if s.uploads_dir.is_dir() else (0, 0))
+    return {"trash": trash, "papers": papers,
+            "uploads": {"files": up_files, "bytes": up_bytes, "deleted": 0}}
 
 
 def list_trash() -> dict:

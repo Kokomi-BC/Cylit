@@ -29,6 +29,26 @@ def db_ready():
     return True
 
 
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    """把 `paper_service` 看的 `data_dir` 换成临时目录（**真实 data/ 一个字都不动**）。
+
+    为什么这个文件必须有它：`sweep_orphans(apply=True)` 现在也会删**磁盘**孤儿 ——
+    没有隔离时它作用在真实 `data/papers` / `data/trash` 上，一次全量 pytest 就会
+    删掉真机的孤儿目录（`data/papers/_smoke`、历史 trash 目录），不可逆。
+    `delete_paper` 把论文目录"移入 trash"也落在这里，同样不该写到真机上。
+    """
+    from backend.core.config import get_settings
+    from backend.services.paper import paper_service
+
+    root = tmp_path / "data"
+    for sub in ("papers", "trash", "uploads"):
+        (root / sub).mkdir(parents=True)
+    fake = get_settings().model_copy(update={"data_dir": root})
+    monkeypatch.setattr(paper_service, "get_settings", lambda: fake)
+    return fake
+
+
 def _tables():
     from backend.repositories.mysql.models import (Annotation, Block, Chunk, Formula, Highlight,
                                                    Note, Paper, PaperReference, ReadingProgress,
@@ -52,7 +72,8 @@ def _wipe() -> None:
 
 
 @pytest.fixture(autouse=True)
-def clean_rows(db_ready):
+def clean_rows(db_ready, data_dir):
+    """自动带上 `data_dir`：本模块每条用例都跑在 tmp 上（磁盘隔离不靠"记得加 fixture"）。"""
     _wipe()
     yield
     _wipe()

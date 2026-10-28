@@ -105,10 +105,12 @@ async def list_papers(
     page_size: int = Query(50, ge=1, le=200),
     include_deleted: bool = Query(False),
     folder: str | None = Query(None, description="按自定义分类过滤：分类 id，或 none = 未分类"),
+    in_kb: bool | None = Query(None, description="只看已入库（true）/ 只看未入库（false）；不传 = 不过滤"),
 ):
     data = paper_service.list_papers(q=q, status=status, tag=tag, sort=sort,
                                      order=order, page=page, page_size=page_size,
-                                     include_deleted=include_deleted, folder=folder)
+                                     include_deleted=include_deleted, folder=folder,
+                                     in_kb=in_kb)
     return envelope(data, request=request)
 
 

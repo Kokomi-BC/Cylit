@@ -76,9 +76,14 @@ BATCH_FIGURE_MAX = 6
 NOTES_SCOPES = ("paper", "all")
 NOTES_KINDS = ("all", "notes", "highlights", "annotations")
 
-#: `library_list` 一次最多列几条（主后端 /agent/library 自己也封顶 30 条）
+#: `library_list` 一次最多列几条（回执的硬上限，兜底用）
 LIBRARY_LIST_MAX = 50
 LIBRARY_LIST_DEFAULT = 30
+#: `library_list` 的**数据层**每页条数：这里的默认值也是"没改就不往下传"的那一档，
+#: 所以它必须与 `HostClient.library` 的 page_size 默认值相同（tests 里有钉子）。
+LIBRARY_PAGE_DEFAULT = 20
+#: 每页最多几条：再大就不是"一页"，而是把整个库塞进上下文
+LIBRARY_PAGE_MAX = 50
 
 #: 一次 `page_markdown_get` 最多读几页正文
 TEXT_PAGES_MAX = 20
@@ -895,8 +900,13 @@ def _hit_page(raw: dict) -> int | None:
     return int(raw.get("page_no") or raw.get("page") or 0) or None
 
 
-def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
+def _chunk_identity(ctx: RunContext[Deps], item: dict,
+                    paper_id: str | None = None) -> dict:
     """一条检索命中的**引用身份**：去重键 + 落点 + 片段（不碰引用表）。
+
+    ``paper_id`` 是**这一趟实际检索的那篇**（读别的论文时才传）：命中本身不一定带
+    ``paper_id`` 字段，缺了它会退回当前论文的 id —— 于是两篇论文里同一个行 id、同一段
+    片段会算成同一个 key，拿到同一个 ref，回答里的 [3] 就指到了另一篇。
 
     `paper_search` 要按这个键**先去重再截断**（top_k 数的是不同块），`_register_chunk`
     要按同一个键登记引用号 —— 两处必须用同一份算法：各写一遍就会出现
@@ -906,7 +916,7 @@ def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
     必须与 `block_get` 一致，去重比较的也必须是**这同一个数**。
     """
     chunk_id = str(item.get("chunk_id") or "")
-    paper_id = str(item.get("paper_id") or ctx.deps.paper_id)
+    paper_id = str(paper_id or item.get("paper_id") or ctx.deps.paper_id)
     # 片段优先用译文：给用户看的引用表是中文语境；原文留给模型去读
     snippet = _clip(item.get("translation") or item.get("content") or "")
     #: 这条命中覆盖的正文行：写侧把行 id 也塞进了 block_id，所以行身份从这里来
@@ -928,7 +938,8 @@ def _chunk_identity(ctx: RunContext[Deps], item: dict) -> dict:
     }
 
 
-def _block_key(ctx: RunContext[Deps], item: dict) -> str:
+def _block_key(ctx: RunContext[Deps], item: dict,
+               paper_id: str | None = None) -> str:
     """**同一个块**的键：落点 + chunk 类型 + 它覆盖的行（`paper_search` 去重用）。
 
     为什么不能拿引用的去重键 `_chunk_key` 直接去重：那里面带了**展示片段**，而同一块的
@@ -940,7 +951,7 @@ def _block_key(ctx: RunContext[Deps], item: dict) -> str:
     反过来，同一行里指向**两条不同证据**的命中（`_chunk_key` 的注释里那个 12/13 的例子）
     行覆盖面或 chunk 类型不同 → 仍然分开，不会被并成一条。
     """
-    ident = _chunk_identity(ctx, item)
+    ident = _chunk_identity(ctx, item, paper_id)
     return "block:{}:{}:{}:{}".format(
         ident["paper_id"], item.get("chunk_type") or "",
         ident["block_id"] or ident["row_id"] or ident["chunk_id"],
@@ -1028,12 +1039,22 @@ def _same_text_row(seen: list[dict], raw: dict, page: int | None) -> dict | None
     return None
 
 
-def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
-    """把一条检索命中登记进引用表，返回 citation。"""
-    ident = _chunk_identity(ctx, item)
+def _register_chunk(ctx: RunContext[Deps], item: dict,
+                    paper_id: str | None = None) -> Citation:
+    """把一条检索命中登记进引用表，返回 citation。
+
+    ``paper_id`` 是这一趟实际检索的那篇（读别的论文时才传）：去重键与引用自己的
+    paper_id 都按它算，前端才会跳到**那一篇**的同一页。
+    """
+    ident = _chunk_identity(ctx, item, paper_id)
     if ident["row_id"] and len(ident["row_ids"]) > 1:
         # Citation 只存首行（前端契约不动）；整段跨度留给 block_get 拼
         ctx.deps.row_spans[ident["row_id"]] = ident["row_ids"]
+        # 行 id（p021-06）**每篇论文都长得一样**：记下这段跨度属于哪一篇，
+        # block_get 拼段时才不会拿另一篇的同名行把这一段接歪（见 _read_rows）。
+        owner = getattr(ctx.deps, "row_span_paper", None)
+        if owner is not None:
+            owner[ident["row_id"]] = ident["paper_id"]
     return ctx.deps.registry.assign(
         key=ident["key"], kind="chunk",
         page=ident["page"], section=ident["section"], block_id=ident["block_id"],
@@ -1041,8 +1062,42 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
         snippet=ident["snippet"],
         label=_locate(ident["page"], ident["section"], item.get("chunk_type") or ""),
         ids=(ident["chunk_id"],) if ident["chunk_id"] else (),
+        # 这条证据属于哪一篇：默认就是本论文（与改造前逐字相同），读别的论文时是那一篇。
+        paper_id=ident["paper_id"],
         # 行身份（阶段 2b）：检索命中带过来的 pid，复用编号时由 assign 合并（不覆盖）。
         pids=list(item.get("pids") or []))
+
+
+def _no_paper(paper_id: str, why: str) -> dict:
+    """指名的论文读不到时的回执。**绝不静默退回当前论文**：那等于把另一篇的内容
+    当成这篇的答案，也正是「串读」。"""
+    return {"ok": False,
+            "error": f"论文 {paper_id} 不存在或没有可读内容（{why}）。"
+                     "id 要来自 library_list / kb_search 的回执；"
+                     "不要退回去读当前论文。"}
+
+
+async def _read_target(ctx: RunContext[Deps], paper_id: str | None
+                       ) -> tuple[str, int, dict | None]:
+    """这一趟**读哪一篇**：返回（论文 id、那篇的页数、出错回执或 None）。
+
+    不传（或就是当前论文）→ 当前论文 + 它已经知道的页数，一个后端请求都不多发。
+    传了 → 先取**那篇**的档案：页数与存在性都从那里来。为什么非要页数：
+    ``parse_pages`` 要靠它判断越界、摊开 ``"all"`` —— 拿当前论文的页数去解析另一篇的
+    页码，等于替它编了一个篇幅，"第 30 页"在它那儿可能根本不存在，工具却照读。
+    """
+    want = str(paper_id or "").strip()
+    mine = str(ctx.deps.paper_id or "")
+    if not want or want == mine:
+        return mine, int(ctx.deps.page_total or 0), None
+    try:
+        data = await ctx.deps.host.archive(want)
+    except HostError as exc:
+        return want, 0, _no_paper(want, exc.message)
+    if not data.get("paper_id"):
+        return want, 0, _no_paper(want, "档案是空的")
+    total = int(data.get("page_total") or data.get("page_count") or 0)
+    return want, total, None
 
 
 # --------------------------------------------------------------------------
@@ -1053,7 +1108,8 @@ def _register_chunk(ctx: RunContext[Deps], item: dict) -> Citation:
 async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                        mode: str | None = None,
                        queries: list[str] | None = None,
-                       side: str = "both") -> dict:
+                       side: str = "both",
+                       paper_id: str | None = None) -> dict:
     """在本论文内检索，返回**候选位置**（页码、章节、短片段），不返回全文。
 
     什么时候用：任何"这篇论文里怎么说的 / 讲了什么 / 为什么这么做"的问题，
@@ -1092,23 +1148,33 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
       side    —— 只看哪一面：`both`（**默认**，原文 + 译文 + 公式都收）/ `en` 原文 /
                  `zh` 译文 / `formula` 公式。每条命中都带 `side`，所以拿不准就别传 ——
                  英文论文用中文问时，译文行的术语往往和原文对不上，只查一面会少一半素材。
+      paper_id —— 要在**别的论文**里检索时给它的 id（不传 = 当前论文，行为一字不变）。
+                 回的 ref 属于那一篇，展开与引用都按那篇算；id 不存在就直接报错，
+                 不会退回去检索当前论文。
     """
-    async def _one(q: str, want: str) -> dict:
+    def _foreign(pid: str) -> bool:
+        """这一趟读的是不是**别的**论文（决定页数与缓存能不能共用当前论文那一份）。"""
+        return pid != str(ctx.deps.paper_id or "")
+
+    async def _one(q: str, want: str, pid: str) -> dict:
         k = max(1, min(int(top_k or 8), SEARCH_MAX))
         # 向后端**多要一点**原始命中：去重之后条数会少于 k（同一块的中英两条撞成一个 ref），
         # 实测 top_k=4 只回来 3 个不同位置。多要的这部分只在去重前用，回执仍按 k 截。
         fetch = min(k * SEARCH_FETCH_FACTOR, SEARCH_FETCH_MAX)
         key = (k * 3 + _search_mode_slot(mode)) * 4 + _search_side_slot(want)
-        cached = _cached(ctx, "paper_search", q, key)
+        # 缓存键带上读的是哪一篇：不带的话，在两篇论文里搜同一个词会直接命中另一篇的回执。
+        cache = "paper_search" if not _foreign(pid) else f"paper_search@{pid}"
+        cached = _cached(ctx, cache, q, key)
         if cached is not None:
             return cached
         ctx.deps.count_search()
         before = len(ctx.deps.registry)
-        data = await ctx.deps.host.search(ctx.deps.paper_id, q, top_k=fetch,
+        data = await ctx.deps.host.search(pid, q, top_k=fetch,
                                           mode=mode)
         raw_items = list(data.get("items") or [])
         total = int(data.get("page_total") or ctx.deps.page_total or 0)
-        ctx.deps.page_total = ctx.deps.page_total or total
+        if not _foreign(pid):   # 别的论文的页数绝不写进当前论文的档案
+            ctx.deps.page_total = ctx.deps.page_total or total
         # ① 按**块身份**（落点 + chunk 类型 + 覆盖的行，见 `_block_key`）去重：同一块的中英
         #    两路会各占一行 —— top_k 的预算被同一处位置吃掉，用户还看不出它们是同一条
         #    （实测：top_k=4 回 4 条，实际只有 3 个不同位置）。
@@ -1120,7 +1186,7 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         #: 仍然算同一处证据。见 `_same_text_row`（只认同页，且至少 `TEXT_FP_MIN` 字）。
         seen_text: list[dict] = []
         for raw in raw_items:
-            block = _block_key(ctx, raw)
+            block = _block_key(ctx, raw, pid)
             hit_side = _hit_side(raw)
             #: 页码只解析一次（`_hit_page` = 行 id 优先），兜底去重拿它比 —— 索引那条
             #: `page_no` 与行 id 差一页时，同一块的中英两路会被当成两处（实测 A/B）。
@@ -1155,7 +1221,7 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         items = []
         for row in uniq[:k]:
             raw = row["raw"]
-            cit = _register_chunk(ctx, raw)
+            cit = _register_chunk(ctx, raw, pid)
             item = {
                 "ref": cit.ref,
                 "page": cit.page,
@@ -1199,7 +1265,7 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
             out["hint"] = " ".join(
                 ["这些只是片段：先用 `block_get(refs=[…])` 一次展开最相关的 2~4 块；"
                  "块里上下文不够时再 `page_markdown_get` 读它所在的页。"] + notes)
-        _remember(ctx, "paper_search", q, key, out)
+        _remember(ctx, cache, q, key, out)
         return out
 
     async def _impl() -> dict:
@@ -1216,13 +1282,16 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         if not wanted:
             return {"ok": False,
                     "error": "要给 query 或 queries：queries=[\"词一\", \"词二\"] 一次查多个。"}
+        pid, _total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
         kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
         if queries is None and len(wanted) == 1:
-            return await _one(kept[0], want)   # 老用法：单个词的回执结构一个字都不变
+            return await _one(kept[0], want, pid)   # 老用法：单个词的回执结构一个字都不变
         groups: list[dict] = []
         for q in kept:
             try:
-                groups.append(await _one(q, want))
+                groups.append(await _one(q, want, pid))
             except HostError as exc:
                 groups.append({"query": q, "ok": False, "returned": 0, "items": [],
                                "error": f"取数失败：{exc.message}"})
@@ -1232,10 +1301,12 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
             hint=("每组各查自己的词：引用时按分组说清是哪个词的命中。展开片段仍用 "
                   "block_get(refs=[…])，一次给一批。"))
 
-    return await _guarded(ctx, "paper_search",
-                          {"query": _clip(query, 60), "queries": list(queries or []),
-                           "top_k": top_k, "mode": mode or "auto",
-                           "side": side or "both"}, _impl())
+    digest = {"query": _clip(query, 60), "queries": list(queries or []),
+              "top_k": top_k, "mode": mode or "auto",
+              "side": side or "both"}
+    if str(paper_id or "").strip():
+        digest["paper_id"] = _clip(paper_id, 40)   # 不传就不加这个键：老调用逐字不变
+    return await _guarded(ctx, "paper_search", digest, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -1243,7 +1314,8 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
 # --------------------------------------------------------------------------
 
 
-async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
+async def page_markdown_get(ctx: RunContext[Deps], pages: str,
+                            paper_id: str | None = None) -> dict:
     """读某几页的**块级正文**（原文；有译文时一并给出）。
 
     什么时候用：检索定位到页码之后读内容，或用户直接指定"第 5 页"。
@@ -1257,15 +1329,22 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
       pages —— 单页 ``"5"``、区间 ``"3-8"``、多页 ``"4,7"``、整篇 ``"all"``。
                只有确实需要通读时才用；一次最多 20 页，超了会被截断（返回 truncated=true）。
                页码写得随意也认：``"p4"`` / ``"pages 4-7"`` / ``"第 4 页"`` 都行。
+      paper_id —— 要读**别的论文**的正文时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码按**那一篇**的页数解析（篇幅不同，第 30 页可能它那儿没有）；
+               回的 ref 属于那一篇。id 不存在就直接报错，不会退回去读当前论文。
     """
     async def _impl() -> dict:
-        wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
-                                      limit=TEXT_PAGES_MAX)
+        pid, total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
+        wanted, clipped = parse_pages(pages, total=total, limit=TEXT_PAGES_MAX)
         if not wanted:
-            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
-        data = await ctx.deps.host.pages(ctx.deps.paper_id, ",".join(map(str, wanted)))
-        total = int(data.get("page_total") or ctx.deps.page_total or 0)
-        ctx.deps.page_total = ctx.deps.page_total or total
+            return {"ok": False, "error": pages_error(pages, total=total)}
+        data = await ctx.deps.host.pages(pid, ",".join(map(str, wanted)))
+        total = int(data.get("page_total") or total or 0)
+        foreign = pid != str(ctx.deps.paper_id or "")
+        if not foreign:
+            ctx.deps.page_total = ctx.deps.page_total or total
         budget = ctx.deps.cfg.evidence_chars
         out_pages: list[dict] = []
         truncated = clipped
@@ -1285,13 +1364,13 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
                 # `data-row-id`），`block_get` 走"按行展开"那条路；解析块才有 block_id。
                 is_row = block.get("source") == "transcript"
                 cit = ctx.deps.registry.assign(
-                    key=f"unit:{unit_id}", kind="block", page=page_no,
+                    key=f"unit:{pid}:{unit_id}", kind="block", page=page_no,
                     section=block.get("section") or None,
                     block_id=None if is_row else unit_id,
                     row_id=(block.get("row_id") or unit_id) if is_row else block.get("row_id"),
                     snippet=_clip(text), label=_locate(page_no, block.get("section"),
                                                        block.get("type") or ""),
-                    ids=(unit_id,))
+                    ids=(unit_id,), paper_id=pid)
                 entry = {"ref": cit.ref, "type": block.get("type"), "text": text}
                 if block.get("translation"):
                     entry["translation"] = str(block["translation"]).strip()
@@ -1300,7 +1379,8 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str) -> dict:
                 blocks.append(entry)
             if blocks:
                 out_pages.append({"page": page_no, "blocks": blocks})
-                ctx.deps.pages_read.append(page_no)
+                if not foreign:   # 这条判据只管当前论文：读了别篇的第 5 页不算读过这篇的
+                    ctx.deps.pages_read.append(page_no)
             if budget <= 0:
                 truncated = True
                 break
@@ -1355,6 +1435,10 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
     async def _read_rows(cit, row_id: str) -> dict | None:
         """按行读这一段（一个 chunk 可能跨好几行 → 拼成整段，而不是只给第一行）。"""
         span = ctx.deps.row_spans.get(row_id) or [row_id]
+        # 行 id 每篇论文都长得一样（p021-06）：这段跨度若是**另一篇**登记的，别拿它拼这一段
+        owner = getattr(ctx.deps, "row_span_paper", None) or {}
+        if owner.get(row_id) not in (None, cit.paper_id):
+            span = [row_id]
         texts: list[str] = []
         zh: list[str] = []
         #: 对外报的页 = **锚点行**那一页（行 id 是唯一真相源，与 `_hit_page` 同一口径）。
@@ -1368,7 +1452,8 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             page_no = _row_page(rid) or cit.page
             if not page_no:
                 continue
-            data = await ctx.deps.host.row(ctx.deps.paper_id, int(page_no), rid)
+            data = await ctx.deps.host.row(cit.paper_id or ctx.deps.paper_id,
+                                           int(page_no), rid)
             if not data:
                 continue
             # 行 id 解析不出页（老投影）时才拿行表自己的页兜底 —— 且只兜底一次
@@ -1413,7 +1498,9 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
                     "error": f"ref={one_ref} 这一条没有可展开的正文（只有定位信息）："
                              f"用 page_markdown_get 读{where}。"}
         try:
-            data = await ctx.deps.host.block(ctx.deps.paper_id, cit.block_id)
+            # 按**这条 ref 自己的论文**取块：拿当前论文去读别篇的 ref，取到的就是另一处正文
+            data = await ctx.deps.host.block(cit.paper_id or ctx.deps.paper_id,
+                                             cit.block_id)
         except HostError as exc:
             # 兜底：这个 "block_id" 其实是行 id（存量索引 96.98% 都这样）→ 按行再试一次
             row_id = _row_id_of(cit.block_id)
@@ -2076,7 +2163,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                            "offset": offset, "limit": limit}, _impl())
 
 
-async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
+async def translate_get(ctx: RunContext[Deps], pages: str,
+                        paper_id: str | None = None) -> dict:
     """取某一页（或几页）的**中文译文**（按块）。
 
     什么时候用：用户问"这段中文怎么说的 / 译文对不对"，或者你要用中文复述原文、
@@ -2084,15 +2172,23 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
 
     参数：
       pages —— ``"5"`` / ``"3-8"`` / ``"4,7"`` / ``"all"``，一次最多 20 页。
+      paper_id —— 要读**别的论文**的译文时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码按**那一篇**的页数解析；回的 ref 属于那一篇。
+               id 不存在就直接报错，不会退回去读当前论文。
     """
     async def _impl() -> dict:
-        wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
-                                      limit=TEXT_PAGES_MAX)
+        pid, total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
+        wanted, clipped = parse_pages(pages, total=total, limit=TEXT_PAGES_MAX)
         if not wanted:
-            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
-        data = await ctx.deps.host.pages(ctx.deps.paper_id, ",".join(map(str, wanted)),
+            return {"ok": False, "error": pages_error(pages, total=total)}
+        data = await ctx.deps.host.pages(pid, ",".join(map(str, wanted)),
                                          lang="zh")
-        ctx.deps.page_total = ctx.deps.page_total or int(data.get("page_total") or 0)
+        total = int(data.get("page_total") or total or 0)
+        foreign = pid != str(ctx.deps.paper_id or "")
+        if not foreign:
+            ctx.deps.page_total = ctx.deps.page_total or total
         out_pages: list[dict] = []
         missing = 0
         for page in data.get("pages") or []:
@@ -2104,20 +2200,22 @@ async def translate_get(ctx: RunContext[Deps], pages: str) -> dict:
                     missing += 1
                     continue
                 cit = ctx.deps.registry.assign(
-                    key=f"block:{block.get('id')}", kind="block", page=page_no,
+                    key=f"block:{pid}:{block.get('id')}", kind="block", page=page_no,
                     section=block.get("section") or None, block_id=block.get("id"),
                     row_id=block.get("row_id"), snippet=_clip(zh),
                     label=_locate(page_no, block.get("section"), "译文"),
-                    ids=(str(block.get("id") or ""),))
+                    ids=(str(block.get("id") or ""),), paper_id=pid)
                 blocks.append({"ref": cit.ref, "translation": zh})
             if blocks:
                 out_pages.append({"page": page_no, "blocks": blocks})
                 # 读过这一页的译文也算"读过这一页"：`page_markdown_edit` 的先读后写判据看它
-                ctx.deps.pages_read.append(page_no)
+                # （只管当前论文：读了别篇的第 5 页不算读过这篇的）
+                if not foreign:
+                    ctx.deps.pages_read.append(page_no)
         if not out_pages:
             return {"ok": False, "truncated": clipped,
                     "error": f"第 {pages} 页还没有译文（这篇论文可能没翻译，或该页未翻译）。"}
-        return {"page_total": ctx.deps.page_total or None, "truncated": clipped,
+        return {"page_total": total or None, "truncated": clipped,
                 "pages": out_pages,
                 "note": f"另有 {missing} 个块没有译文（未翻译），已跳过。" if missing else ""}
 
@@ -2213,61 +2311,172 @@ async def paper_archive_get(ctx: RunContext[Deps]) -> dict:
 
 
 async def library_list(ctx: RunContext[Deps], query: str | None = None,
-                       limit: int = 0) -> dict:
-    """列出书架上的论文（按标题 / 作者模糊匹配），返回元数据。
+                       status: str | None = None, folder: str | None = None,
+                       page: int = 1, page_size: int = LIBRARY_PAGE_DEFAULT,
+                       limit: int = 0, in_kb: bool = True) -> dict:
+    """浏览论文目录（**数据层分页**），只给目录元数据。
 
-    什么时候用：用户问"我库里有哪些关于 X 的论文 / 有没有讲过 Y 的文章"。
+    什么时候用：用户问"我库里有哪些关于 X 的论文 / 某个分类里有什么 / 下一页"。
     这是**找论文**，不是找内容；挑出候选之后用 kb_search 去找具体段落。
 
-    **条数是有上限的**（默认 30 条、最多 50 条）：书架大起来一次列全就会把上下文吃光。
-    被砍掉的条数写在回执的 `unprocessed` 与 `note` 里（「还有 N 篇没列」），
-    不是静默丢 —— 要更多就换关键词缩小范围，或显式调大 `limit`。
+    分页是**真的**：每页由主后端按 page_size 切好再下发，不是"先取全库再切片"。
+    回执里 `total` / `page` / `page_size` / `total_pages` / `has_next` / `has_prev`
+    就是这一页的位置与总量；`categories` 是全部自定义分类 + 每类论文数
+    （`id="none"` 那条是"未分类"）。讲"下一页 / 上一页 / 跳到第 N 页"时按这几个字段翻。
 
     参数：
-      query —— 关键词（标题或作者）。不传就按最近阅读顺序列。
-      limit —— 最多列几篇（0 = 默认 30，上限 50）。
+      query —— 关键词（标题或作者，模糊匹配）。不传就按最近阅读顺序列。
+      status —— 只要某个状态的论文（如 parsed）。
+      folder —— 分类 id（从回执的 `categories` 里取）；`"none"` = 未分类。
+      page —— 第几页（从 1 开始）。越界 / 非法值会被钳到合法页，并**如实**回在 `page` 里。
+      page_size —— 每页几篇（默认 20，上限 50）。
+      limit —— 老参数：本回执最多放几篇（在本页里再收窄一次）。新代码请用 page_size。
+      in_kb —— **默认 True：只列已入库的论文**（in_knowledge_base=1，也就是真的能被检索
+               到的那批）。传 False 只列**未入库**的（还在书架、但不在知识库里）；传 None
+               不过滤（回执 scope="all"）。未入库不等于被删：删论文不回填这个标记。
+
+    默认口径与"被过滤掉多少"：
+      - 回执的 scope 说明这次是哪种口径：in_knowledge_base / not_in_knowledge_base / all；
+      - hidden_not_in_kb = 同一批条件（query / status / folder）下**被 in_kb 挡掉的篇数**
+        （= total_unfiltered - total，钳到 >= 0）。它是"没列出来"的那批，**不是**被删掉的；
+        所以答"你库里只有 N 篇"之前先看它，有值就说清"另外还有 M 篇未入库"；
+      - 拿不到 total_unfiltered 时这个键**不出现**（不猜、不编 0）。
+      - total / total_pages / has_next / has_prev 都按**过滤后**的集合算；hidden_not_in_kb
+        不在 total 里，讲页码时别把它加进去。
+
+    categories_scope = "all_papers"：categories 里的计数来自分类服务，是**全库口径**，
+    不跟着 in_kb 变（也不等于本页 / 本口径的条数）。讲"这个分类有几篇"用的是它，
+    讲"这次列了几篇"用 total —— 两者对不上是正常的，别拿一个去纠正另一个。
+
+    条目只带元数据（paper_id / 标题 / 作者 / 年份 / 分类 / 状态 …）；摘要即使有也是
+    **截断版**（不超过 200 字）。目录不等于读过全文 —— 正文要用 block_get / page_markdown_get 取。
     """
+    def _int(raw, default: int) -> int:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    size = max(1, min(_int(page_size, LIBRARY_PAGE_DEFAULT), LIBRARY_PAGE_MAX))
+    keep = max(1, min(_int(limit, size), LIBRARY_PAGE_MAX)) if limit else LIBRARY_LIST_MAX
+    keep = min(keep, LIBRARY_LIST_MAX)
+    wanted = max(1, _int(page, 1))
+    folder_key = str(folder).strip() if folder else ""
+    digest = {"query": _clip(query or "", 40), "limit": keep,
+              "page": wanted, "folder": folder_key}
+
     async def _impl() -> dict:
         ctx.deps.count_search()
-        data = await ctx.deps.host.library(q=query)
+        extra: dict = {}
+        if folder_key:
+            extra["folder"] = folder_key
+        if wanted != 1:
+            extra["page"] = wanted
+        # 每页条数的默认值归宿主（HostClient.library）：只在模型改过时才传，
+        # 两处都填一个就成了"第二处默认值"
+        if size != LIBRARY_PAGE_DEFAULT:
+            extra["page_size"] = size
+        # in_kb 三态：True（默认 / 只要已入库）、False（只要未入库）、None（不过滤）。
+        # 默认值归工具这一层（宿主 / GET /papers 那边 None = 不过滤），所以 None 就不传。
+        if in_kb is not None:
+            extra["in_kb"] = bool(in_kb)
+        data: dict = {}
+        total, total_pages, current = 0, 0, wanted
+        for _attempt in range(2):
+            data = await ctx.deps.host.library(q=query, status=status, **extra)
+            total = max(0, _int(data.get("total"), 0))
+            total_pages = -(-total // size) if total else 0
+            if total_pages and current > total_pages:
+                # 页码越界：真去取最后一页（回空列表等于骗模型"这个库没东西"）
+                current = total_pages
+                extra["page"] = current
+                continue
+            break
         raw_items = list(data.get("items") or [])
-        total = int(data.get("total") or 0) or len(raw_items)
-        cap = LIBRARY_LIST_DEFAULT if not limit else max(1, min(int(limit), LIBRARY_LIST_MAX))
-        cap = min(cap, LIBRARY_LIST_MAX)
-        shown, left = _cap_batch(raw_items, cap)
-        # 服务端自己也封顶 30 条：它砍掉的那些同样要算进「没列出来的条数」
-        left = max(left, total - len(shown))
+        shown = raw_items[:keep]
+        cats_raw = data.get("categories")
+        cat_rows = list(cats_raw.get("items") or []) if isinstance(cats_raw, dict) else []
+        categories: list[dict] = []
+        for one in cat_rows:
+            cid = str(one.get("id") or "")
+            if not cid:
+                continue
+            categories.append({"id": cid, "name": str(one.get("name") or ""),
+                               "paper_count": max(0, _int(one.get("paper_count"), 0))})
+        if isinstance(cats_raw, dict):
+            # 未分类不是一个"分类"，但它得看得见（否则 total 对不上分类计数之和）
+            categories.append({"id": "none", "name": "未分类",
+                               "paper_count": max(0, _int(cats_raw.get("unclassified"), 0))})
+        names = {c["id"]: c["name"] for c in categories}
         items = []
         for raw in shown:
-            paper_id = str(raw.get("paper_id") or "")
+            paper_id = str(raw.get("paper_id") or raw.get("id") or "")
+            if not paper_id:
+                continue
+            fid = raw.get("folder_id")
+            fid = str(fid) if fid else None
             meta = "，".join(x for x in (
                 str(raw.get("authors") or ""),
-                f"{raw.get('venue')} {raw.get('year')}".strip(),
+                f"{raw.get('venue') or ''} {raw.get('year') or ''}".strip(),
                 f"{raw.get('page_count')} 页" if raw.get("page_count") else "",
             ) if x)
             cit = ctx.deps.registry.assign(
                 key=f"library:{paper_id}", kind="paper", paper_id=paper_id,
-                snippet=_clip(f"{raw.get('title')}（{meta}）", 200) if meta
+                snippet=_clip(f"{raw.get('title')}（{meta}）", SNIPPET_CHARS) if meta
                         else _clip(str(raw.get("title") or "")),
                 label=str(raw.get("title") or paper_id))
-            items.append({
+            row = {
                 "ref": cit.ref, "paper_id": paper_id, "title": raw.get("title") or "",
                 "authors": raw.get("authors") or "", "venue": raw.get("venue") or "",
-                "year": raw.get("year") or 0, "status": raw.get("status") or "",
+                "year": raw.get("year") or 0, "folder_id": fid,
+                "status": raw.get("status") or "",
+                "in_knowledge_base": bool(raw.get("in_knowledge_base")),
                 "page_count": raw.get("page_count") or 0,
                 "tags": list(raw.get("tags") or []),
                 "is_current_paper": paper_id == ctx.deps.paper_id,
-            })
-        out = {"total": total or None, "returned": len(items), "limit": cap,
-               "unprocessed": left, "items": items}
-        if left:
-            out["note"] = (f"还有 {left} 篇没列（一次最多 {cap} 篇）：换更窄的关键词，或者显式调大 limit（上限 50）。")
+            }
+            # folder_name 只从 categories 映射；映射不到就不填（不猜）
+            folder_name = names.get(fid if fid is not None else "none")
+            if folder_name:
+                row["folder_name"] = folder_name
+            abstract = _clip(str(raw.get("abstract") or ""), SNIPPET_CHARS)
+            if abstract:
+                row["abstract"] = abstract
+            items.append(row)
+        every = total or len(items)
+        scope = ("in_knowledge_base" if in_kb is True
+                 else "not_in_knowledge_base" if in_kb is False else "all")
+        # "被挡掉多少"：只在宿主真给了 total_unfiltered 时才算，拿不到就不出现这个键
+        raw_unfiltered = data.get("total_unfiltered")
+        hidden = (max(0, _int(raw_unfiltered, 0) - total)
+                  if raw_unfiltered is not None else None)
+        out = {"scope": scope, "total": every, "returned": len(items), "page": current,
+               "page_size": size, "total_pages": total_pages,
+               "has_next": bool(total_pages and current < total_pages),
+               "has_prev": current > 1, "limit": keep,
+               "unprocessed": max(0, every - len(items)),
+               # 分类计数是全库口径（folder_service），不跟着 in_kb 走 —— 见 categories_scope
+               "categories": categories, "categories_scope": "all_papers",
+               "page_info": (f"第 {current}/{total_pages} 页，共 {every} 篇（每页 {size} 篇）"
+                             if total_pages else "共 0 篇"),
+               "items": items}
+        if hidden is not None:
+            out["hidden_not_in_kb"] = hidden
+        if out["unprocessed"]:
+            out["note"] = (f"还有 {out['unprocessed']} 篇没列：用 page 翻页"
+                           f"（本页第 {current}/{total_pages or 1} 页，每页 {size} 篇），"
+                           "或者换更窄的关键词 / 指定 folder 缩小范围。")
         if not items:
-            out["hint"] = "书架上没有匹配的论文。可以换个关键词，或不带关键词看看全部。"
+            hint = ("没有匹配的论文：换个关键词、去掉 folder 过滤，"
+                    "或用 folder=\"none\" 看未分类的那批。")
+            if hidden:
+                # 这批里"没入库"的被挡掉了：答成"库里没有"就是错话
+                hint = (f"没有已入库的匹配论文（in_knowledge_base=1）；另有 {hidden} 篇"
+                        "匹配但**未入库**，要看得显式传 in_kb=false。")
+            out["hint"] = hint
         return out
 
-    return await _guarded(ctx, "library_list",
-                          {"query": _clip(query or "", 40), "limit": limit}, _impl())
+    return await _guarded(ctx, "library_list", digest, _impl())
 
 
 async def notes_search(ctx: RunContext[Deps], query: str | None = None,
