@@ -1135,6 +1135,9 @@ async def _read_target(ctx: RunContext[Deps], paper_id: str | None
 #: `scope="foreign"` 时补的那一句（只在 foreign 出现：current 加它纯属烧 token）
 _SCOPE_NOTE = "这篇不是当前打开的论文（当前是 {mine}）；引用时必须写明是哪一篇。"
 
+#: `scope="mixed"` 时补的那一句：一批里混了两篇，顶层**不许**再报单篇值
+_MIXED_SCOPE_NOTE = "这批引用来自 {n} 篇：{ids}；每条 items 的 paper_id 才是它自己的来源。"
+
 
 def _scope_of(ctx: RunContext[Deps], pid: str) -> dict:
     """这份回执读的是**哪一篇**，以及它与当前打开的那篇是什么关系。
@@ -1161,23 +1164,28 @@ def _scope_text(ctx: RunContext[Deps], pid: str) -> str:
     return head + "；" + one["scope_note"] if one.get("scope_note") else head
 
 
-def _refs_target(ctx: RunContext[Deps], refs: list[int]) -> str:
-    """一批 ref 指的是**哪一篇**论文：ref 自己带着论文身份（`Citation.paper_id`）。
+def _refs_scope(ctx: RunContext[Deps], refs: list[int]) -> dict:
+    """一批 ref 的来源：只有一篇就照旧（current / foreign），**混批时顶层必须说 mixed**。
 
-    绝不拿 `ctx.deps.paper_id` 硬填：跨篇展开时那不是读的那一篇，回执就会把来源说反。
-    一批里混了两篇（少见）时报第一处 foreign 的那篇 —— 这时要提醒的正是"别把它当这篇"。
+    ref 自己带着论文身份（`Citation.paper_id`），绝不拿 `ctx.deps.paper_id` 硬填：
+    跨篇展开时那不是读的那一篇，回执就会把来源说反。
+
+    为什么混批不能报单篇：顶层原是单值的 `paper_id` / `scope`，一批里混了两篇时它只能给
+    一个值 —— 当前论文那条也会被别篇的 `scope="foreign"` 包住（用户实测：缺失时人会警惕，
+    误标时人会直接信，所以这比"字段缺失"更严重）。多篇时改报 `scope="mixed"` +
+    `paper_ids` 列表 + `scope_note`，来源由每条 item 自己的 `paper_id` 承担。
     """
-    mine = str(ctx.deps.paper_id or "")
     seen: list[str] = []
     for one in refs:
         cit = ctx.deps.registry.by_ref(one)
-        pid = str((cit.paper_id if cit is not None else "") or mine)
-        if pid not in seen:
+        pid = str((cit.paper_id if cit is not None else "") or "")
+        if pid and pid not in seen:
             seen.append(pid)
-    for pid in seen:
-        if pid != mine:
-            return pid
-    return seen[0] if seen else mine
+    if len(seen) <= 1:
+        return _scope_of(ctx, seen[0] if seen else "")
+    return {"paper_ids": seen, "scope": "mixed",
+            "scope_note": _MIXED_SCOPE_NOTE.format(n=len(seen),
+                                                   ids="、".join(seen))}
 
 
 # --------------------------------------------------------------------------
@@ -1525,11 +1533,19 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
     一次最多 20 个；超了会截断，回执里写明「还有 N 条没处理」。
 
     回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
+    **每条 item 都带自己的 `paper_id`**；一批里混了两篇时顶层报 `scope="mixed"` + `paper_ids`
+    （顶层不再有单值 `paper_id`）—— 别用顶层去覆盖条目。
 
     参数：
       ref  —— 单个引用编号（老用法，照旧）。
       refs —— 一批引用编号。两种一起给时按「ref 在前、refs 在后」合并去重。
     """
+    def _pid(cit) -> str | None:
+        """这一条**自己**来自哪一篇；引用表里没有它 → None（不猜成当前论文）。"""
+        if cit is None:
+            return None
+        return str(cit.paper_id or ctx.deps.paper_id or "") or None
+
     async def _read_rows(cit, row_id: str) -> dict | None:
         """按行读这一段（一个 chunk 可能跨好几行 → 拼成整段，而不是只给第一行）。"""
         span = ctx.deps.row_spans.get(row_id) or [row_id]
@@ -1624,8 +1640,9 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             return {"ok": False,
                     "error": "要给 ref 或 refs：refs=[3, 5, 9] 一次展开多个块。"}
         kept, left = _cap_batch(wanted, BATCH_REF_MAX)
-        # ref 自己带着论文身份：来源从引用表来，绝不拿当前论文硬填（见 `_refs_target`）
-        scope = _scope_of(ctx, _refs_target(ctx, kept))
+        # ref 自己带着论文身份：来源从引用表来，绝不拿当前论文硬填（见 `_refs_scope`）。
+        # 混批时顶层给的是 `scope="mixed"` + `paper_ids` —— 单值会把它标成别篇（误标比缺失更糟）
+        scope = _refs_scope(ctx, kept)
         if refs is None and len(wanted) == 1:
             # 老用法（只给 ref）的回执结构一个字都不变（末尾只多两个来源键）；
             # 给了 refs 就一律走批量形态，免得模型按 `refs` 下注、拿到的却是另一种结构。
@@ -1635,13 +1652,18 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             try:
                 got = await _one(one)
             except HostError as exc:
-                got = {"ok": False, "error": f"取数失败：{exc.message}"}
+                got = {"ok": False, "error": f"取数失败：{exc.message}",
+                       "paper_id": _pid(ctx.deps.registry.by_ref(one))}
+            # 每条都追加**它自己**的 paper_id（放在末尾：单条回执合并后键序才不变）。
+            # 失败条目也要带 —— 否则它只能跟着顶层的来源被读成"那篇的"
+            cit = ctx.deps.registry.by_ref(one)
             if got.get("ok") is False:
                 # 失败只挂在这一条上：整批失败会让模型以为"这批 ref 全废了"
                 rows.append({"ref": one, "ok": False,
-                             "error": got.get("error") or "这一条读不到"})
+                             "error": got.get("error") or "这一条读不到",
+                             "paper_id": _pid(cit)})
             else:
-                rows.append(got)
+                rows.append({**got, "paper_id": _pid(cit)})
         failed = [row for row in rows if row.get("ok") is False]
         tips = [_left_note(left, BATCH_REF_MAX, "条")] if left else []
         if repeats:

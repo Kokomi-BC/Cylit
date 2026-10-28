@@ -613,3 +613,98 @@ def test_d_scoped_tools_append_the_new_keys_at_the_end() -> None:
         assert list(out)[-2:] == ["paper_id", "scope"], f"{name}：新键要追加在末尾"
         assert set(out) - {"paper_id", "scope"} == OLD_KEYS[name], \
             f"{name}：原有键被改了（现在是 {sorted(out)}）"
+
+
+# --------------------------------------------------------------------------
+# 10. `block_get` 批量：**每条 item 带自己的 paper_id**；混批时顶层不许再报单篇
+#
+# 为什么：顶层原是单值 `paper_id` / `scope`，三条 ref 来自两篇时它只能报一个 ——
+# 当前论文那条也会被别篇的 `scope="foreign"` 包住（用户实测：requested=3、scope=foreign，
+# 可 [3] 明明是当前论文的摘要）。缺失时人会警惕，误标时人会直接信，所以这比"字段缺失"更严重。
+# --------------------------------------------------------------------------
+
+
+def _page_refs(deps: Deps, paper_id: str | None = None) -> list[int]:
+    """读那一篇的第 2 页，拿回它自己的那些 ref（顺序与页内一致）。"""
+    out = asyncio.run(page_markdown_get(_ctx(deps), "2", paper_id=paper_id))
+    return [b["ref"] for b in out["pages"][0]["blocks"]]
+
+
+def test_block_get_single_ref_item_carries_the_same_paper_id() -> None:
+    """a) 单条 ref：item 带 paper_id，且与顶层一致（current 与 foreign 各一次）。"""
+    for target, scope in ((CURRENT, "current"), (OTHER, "foreign")):
+        deps = _deps(_two_papers())
+        ctx = _ctx(deps)
+        ref = _page_refs(deps, None if target == CURRENT else OTHER)[0]
+        assert deps.registry.by_ref(ref).paper_id == target, "前提：ref 属于那一篇"
+        out = asyncio.run(block_get(ctx, ref=ref))
+        # 老回执结构不变：原有键一个不少、没有新面孔（`note` 是照旧的按行兜底提示），
+        # 来源键仍追加在末尾
+        extra = {"paper_id", "scope"} | ({"scope_note"} if scope == "foreign" else set())
+        assert OLD_KEYS["block_get"] <= set(out), sorted(out)
+        assert set(out) <= OLD_KEYS["block_get"] | {"note"} | extra, sorted(out)
+        assert extra <= set(out), sorted(out)
+        tail = ["paper_id", "scope"] + (["scope_note"] if scope == "foreign" else [])
+        assert list(out)[-len(tail):] == tail, list(out)
+        assert "items" not in out, "单条调用不该被改成批量结构"
+        assert (out["paper_id"], out["scope"]) == (target, scope)
+        assert out["paper_id"] == deps.registry.by_ref(ref).paper_id, "取 ref 自己那篇，不是硬填"
+
+        # 批量形态（哪怕只有一条）里那一项也带自己的 paper_id
+        one = asyncio.run(block_get(ctx, refs=[ref]))
+        assert one["items"][0]["paper_id"] == target
+        assert one["paper_id"] == target and one["scope"] == scope
+
+
+def test_block_get_mixed_batch_names_each_source_and_the_top_level() -> None:
+    """b) 混批（别篇两条 + 当前论文一条）：每条 item 各对各的，顶层 mixed 且点名。"""
+    deps = _deps(_two_papers())
+    ctx = _ctx(deps)
+    mine = _page_refs(deps)
+    theirs = _page_refs(deps, OTHER)
+    out = asyncio.run(block_get(ctx, refs=[theirs[0], theirs[1], mine[0]]))
+    assert out["returned"] == 3 and out["failed"] == 0
+    # 条目层：每条只报自己的来源（当前论文那条**不再**被 foreign 包住）
+    assert [row["paper_id"] for row in out["items"]] == [OTHER, OTHER, CURRENT]
+    # 顶层：不再给单值，改报 mixed + 全部来源
+    assert out["scope"] == "mixed"
+    assert "paper_id" not in out, "混批时顶层给单值就一定会误标其中一条"
+    assert out["paper_ids"] == [OTHER, CURRENT], "按出现顺序列出全部来源"
+    note = out["scope_note"]
+    assert "2 篇" in note and OTHER in note and CURRENT in note, note
+    assert "paper_id" in note, "要说清来源看条目自己的 paper_id"
+
+
+def test_block_get_many_refs_from_one_foreign_paper_is_still_foreign() -> None:
+    """c) 全部来自同一篇别篇：仍是 foreign（不因为"不止一条"就变 mixed）。"""
+    deps = _deps(_two_papers())
+    out = asyncio.run(block_get(_ctx(deps), refs=_page_refs(deps, OTHER)))
+    assert out["returned"] == 2
+    assert out["scope"] == "foreign" and out["paper_id"] == OTHER
+    assert "paper_ids" not in out, "只有一篇时不给列表"
+    assert out["scope_note"] and CURRENT in out["scope_note"]
+    assert {row["paper_id"] for row in out["items"]} == {OTHER}
+
+
+def test_block_get_failed_items_also_carry_their_own_paper_id() -> None:
+    """d) 失败条目（ok=false）也带 paper_id —— 否则它会跟着顶层的来源被误标。"""
+    deps = _deps(_two_papers())
+    ctx = _ctx(deps)
+    # 行路径读不到：那篇没有这一行
+    bad_row = deps.registry.assign(key="k:row", kind="block", row_id="p999-00",
+                                   page=9, snippet="…", paper_id=OTHER).ref
+    # 块路径 404：当前论文里没有这个块（"blk404" 也不像行 id，不会按行兜底）
+    bad_block = deps.registry.assign(key="k:blk", kind="block", block_id="blk404",
+                                     page=4, snippet="…").ref
+    good = _page_refs(deps)[0]
+    out = asyncio.run(block_get(ctx, refs=[bad_row, bad_block, good]))
+    rows = {row["ref"]: row for row in out["items"]}
+    assert out["failed"] == 2 and out["returned"] == 1
+    assert rows[bad_row]["ok"] is False and rows[bad_row]["paper_id"] == OTHER
+    assert rows[bad_block]["ok"] is False and rows[bad_block]["paper_id"] == CURRENT
+    assert rows[good]["paper_id"] == CURRENT
+    assert out["scope"] == "mixed", "失败条目也算来源"
+    # 引用表里根本没有这个 ref：纸面形状仍在，值是 None（来源不明，不猜成当前论文）
+    ghost = asyncio.run(block_get(ctx, refs=[999]))
+    assert "paper_id" in ghost["items"][0] and ghost["items"][0]["paper_id"] is None
+
