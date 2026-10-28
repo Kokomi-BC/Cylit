@@ -908,13 +908,24 @@ table.data.fixed { table-layout: fixed; }
  * `border-width` 取整成 1px（`getComputedStyle` 回 1px、`getBoundingClientRect` 也只多 1px），
  * 屏幕上跟原来一模一样；自检那条"三条横线（且不细）"就是拿它抓出来的。
  * 论文印刷里顶/底线本来就要比中线粗一档，2px / 1px 正好是这个层级。 */
-.md .tbl-wrap { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+/* 横向滚动容器：表比栏宽时在这一层滚，绝不把整页顶宽。
+ * overscroll-behavior-x: contain —— 滚到表格尽头不再把横向滚动链给外层（否则触控板上
+ * 继续横划会触发页面的横向滚动/后退手势）。 */
+.md .tbl-wrap {
+  max-width: 100%; overflow-x: auto; overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
 .md table {
   --tbl-rule: color-mix(in srgb, var(--text) 60%, transparent);
   --tbl-rule-soft: color-mix(in srgb, var(--text) 30%, transparent);
   border-collapse: collapse;
   margin: .45em 0 .85em;
-  width: 100%;
+  /* 表宽**跟栏宽解耦**：先按内容撑到 max-content（单元格一律单行），容器够宽时再铺满。
+   * 以前是 width: 100% —— 表格被压进栏宽，换行位置随栏宽走，改一次页面宽度就整表重排
+   * （实测同一张 7 列表格在 340 / 420 / 520px 栏宽下行高 93 / 58 / 23px，首列 2 / 2 / 1 行）。
+   * 现在窄了就由 .tbl-wrap 横向滚动，行高恒定 —— 用户口径：对话页表格要能横向滚，不许重排。 */
+  width: max-content;
+  min-width: 100%;
   font-size: .93em;
   line-height: 1.5;
   font-variant-numeric: tabular-nums;

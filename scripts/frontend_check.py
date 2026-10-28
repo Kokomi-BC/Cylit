@@ -3455,6 +3455,22 @@ def check_markdown_shapes() -> None:
     record("markdown", "引用标号渲染成可点的按钮（代码块/公式/真链接里不抢）",
            not failed, f"{len(MD_CITES)} 种形状全过" if not failed else "；".join(failed[:3]))
 
+    # ---- 表格横向滚动（2026-10-08）：表宽跟栏宽**解耦**，窄了就在滚动容器里滚 ----
+    # 为什么钉在源码层：这是纯 CSS 的决定，量几何得开浏览器；而回归的样子非常具体 ——
+    # 谁把 width: max-content 改回 width: 100%，表格就被重新压进栏宽，换行位置随栏宽走
+    # （实测同一张 7 列表在 340 / 420 / 520px 栏宽下行高 93 / 58 / 23px、首列 2 / 2 / 1 行，
+    # 也就是用户说的"页面宽度一变就重排"）。
+    css = (frontend / "src" / "styles" / "base.css").read_text(encoding="utf-8")
+    tbl = re.search(r"\.md table \{([\s\S]*?)\n\}", css)
+    wrap = re.search(r"\.md \.tbl-wrap \{([\s\S]*?)\n\}", css)
+    tbl_body, wrap_body = (tbl.group(1) if tbl else ""), (wrap.group(1) if wrap else "")
+    record("markdown", "表格横向滚动：表宽跟栏宽解耦（max-content），窄了在 .tbl-wrap 里滚",
+           "width: max-content" in tbl_body and "min-width: 100%" in tbl_body
+           and "overflow-x: auto" in wrap_body,
+           f"table {'max-content' if 'width: max-content' in tbl_body else '缺'}"
+           f" / min-width {'100%' if 'min-width: 100%' in tbl_body else '缺'}"
+           f" / wrap overflow-x {'auto' if 'overflow-x: auto' in wrap_body else '缺'}")
+
 
 # --------------------------------------------------------------------------
 # 探针 ⑦：笔记整页（`/cylit/notes`）—— 批注 / 高亮 / 笔记合并成一个列表

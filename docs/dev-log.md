@@ -17000,3 +17000,69 @@ mark.hl.hl-round-lr { border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px
   行尾最末一个字（`评`）、行首第一个字（`估`）都完整落在带子里。
 - 真阅读器（同一行临时高亮，看完即删，库里回到 3 条）：同上。
 - `vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` **168 项全过**。
+
+# 261 · 对话页的 Markdown 表格：按内容撑开、窄了就横滚，不再随栏宽重排（2026-12-28 追补六）
+
+用户口径：「对话页的 markdown 表格支持横向滚动，避免页面宽度变化导致重排」。
+
+上一轮（260）收的是高亮圆角，这一轮是**表格**：同一张表，对话面板换个宽度就整张重排。
+
+## 改之前的实测（一张 7 列表：方法 / R@10 / R@100 / mse / prod / 延迟 (ms) / 备注）
+
+| 栏宽 | 表宽 | 行高（三行） | 首列几行 |
+|---|---|---|---|
+| 340px | 402 | 93 / 57 / 41 | 2 |
+| 420px | 420 | 58 / 40 / 41 | 2 |
+| 520px | 520 | 23 / 22 / 23 | 1 |
+| 760px | 760 | 23 / 22 / 23 | 1 |
+
+根因就是 `.md table { width: 100% }`：表被**压进栏宽**，单元格只好折行，折在哪一行由栏宽决定 ——
+于是「改一次窗口宽度，整张表换一遍样」。`.tbl-wrap` 其实早就写了 `overflow-x: auto`（当初就是为了
+「宽表不许把整页顶宽」），但表被压得刚好等于栏宽，**从来不溢出**，滚动条于是从来没出来过。
+
+## 改法（CSS 两条）
+
+```css
+.md table { width: max-content; min-width: 100%; }
+.md .tbl-wrap { max-width: 100%; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
+```
+
+- `width: max-content` —— 每列按「这一列最长的那一格不折行」撑开，表宽与栏宽**解耦**；
+- `min-width: 100%` —— 栏目够宽时表照旧铺满（跟以前一样，不会缩成一小坨）；
+- `overscroll-behavior-x: contain` —— 滚到表格尽头不再把横向滚动链给外层（否则触控板接着横划会触发页面后退手势）。
+
+这套写法不是新发明：同文件里 `.katex-display > .katex`（963 行）与 `mark.hl.block`（265 行）早就用
+`width: max-content; min-width: 100%` 处理「公式不折行、超宽了自己滚」，表格现在跟它们同一套规矩。
+
+## 改之后的实测（同一张表，四档栏宽 × 两种气泡 × 两种表 = 16 组，无头 Chrome 量 DOM）
+
+```
+tight  assistant 340  rowH [23, 22, 23]  wrap 340/518 滚动   首列 1 行
+tight  assistant 420  rowH [23, 22, 23]  wrap 420/518 滚动   首列 1 行
+tight  assistant 520  rowH [23, 22, 23]  wrap 520/520 不滚   首列 1 行
+tight  assistant 760  rowH [23, 22, 23]  wrap 760/760 不滚   首列 1 行
+prose  assistant 340  rowH [23, 23]      wrap 340/616 滚动（「做法」是整句，现在单行）
+prose  assistant 760  rowH [23, 23]      wrap 760/760 不滚（表 616 < 760，仍铺满）
+整页不溢出：doc scrollWidth == clientWidth == 1372（16 组全部）
+```
+
+行高与栏宽**彻底脱钩**：340px 与 760px 下都是 23 / 22 / 23。
+
+## 真对话面板（阅读器右侧那块，不是探针造的）
+
+```
+.chat 宽 299px → .msgs 299 → .md body 279（助手气泡）
+.tbl-wrap 279px  |  table 518px  → 溢出 239px，靠横滚看全
+单元格单行：td 高 23px（表高 99 = 表头 + 3 行）
+面板宽度没被顶大（.chat 299 / .msgs 299 一点没变）
+```
+
+## 代价（明写）
+
+整句单元格（上表的「做法」列）现在也**不折行**了：表会变宽（实测 616px），要横滚才读得全。
+这就是「不重排」的另一面 —— 表宽既然与栏宽无关，就不能靠折行把它塞窄。用户口径要的是滚动，按滚动来。
+
+## 校验
+
+`vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` **169 项全过**（本轮新增一条源码层回归项：
+「表格横向滚动：表宽跟栏宽解耦（max-content），窄了在 .tbl-wrap 里滚」—— 谁把它改回 `width: 100%` 立刻红）。
