@@ -329,12 +329,60 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
     const target = localS > 0 ? node.splitText(localS) : node;
     const width = e - s;
     if (width < (target.nodeValue ?? '').length) target.splitText(width);
-    const mark = makeMark(color, id);
-    target.parentNode?.replaceChild(mark, target);
-    mark.appendChild(target);
+    /* **按行盒再切一刀**：一段文字跨了两三行时，一条 `<mark>` 会横跨两三行，而 CSS 的
+       `border-radius` 对每一行盒子用的是**同一组角** —— "这一行的两端要圆、和相邻片接的那一侧
+       要方"这件事就表达不出来（用户口径 2026-12-28：「换行也要有圆角」）。切成一片一行之后，
+       每一片都能单独决定四个角（见 `roundRunEnds`）。切分不增删任何字符，偏移量不受影响。 */
+    const pieces = linePieces(target, width);
+    for (let i = pieces.length - 1; i >= 0; i -= 1) {
+      const [from, to] = pieces[i];
+      const slice = from > 0 ? target.splitText(from) : target;
+      if (to - from < (slice.nodeValue ?? '').length) slice.splitText(to - from);
+      const mark = makeMark(color, id);
+      slice.parentNode?.replaceChild(mark, slice);
+      mark.appendChild(slice);
+    }
     wrapped = true;
   }
   return wrapped;
+}
+
+/**
+ * 把一个文本节点（裁剪好 [0, width) 之后）按**行盒**切段，返回每段的 [start, end)。
+ *
+ * 为什么要切：见调用处 —— 一片横跨两行的带子无法只圆"行尾/行首"那两侧。
+ * 怎么切：用 `Range.getClientRects()` 拿到这段文字的每一行矩形；对"下一行的起点"做二分
+ * （每次只看 range 第一个矩形的 top 与第一行是否相同），`O(log n)` 一次，一段文字通常切 1~3 刀。
+ */
+function linePieces(node: Text, width: number): Array<[number, number]> {
+  const total = Math.min(width, (node.nodeValue ?? '').length);
+  const pieces: Array<[number, number]> = [];
+  if (total <= 0) return pieces;
+  const range = document.createRange();
+  range.setStart(node, 0);
+  range.setEnd(node, total);
+  if (range.getClientRects().length <= 1) return [[0, total]];
+  let cursor = 0;
+  for (let guard = 0; guard < 40 && cursor < total; guard += 1) {
+    range.setStart(node, cursor);
+    range.setEnd(node, total);
+    const first = range.getClientRects()[0];
+    if (!first) { pieces.push([cursor, total]); break; }
+    let lo = cursor + 1;
+    let hi = total;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      range.setStart(node, mid);
+      range.setEnd(node, total);
+      const rect = range.getClientRects()[0];
+      if (rect && Math.abs(rect.top - first.top) < 1) lo = mid + 1; else hi = mid;
+    }
+    const cut = Math.max(cursor + 1, Math.min(lo, total));
+    pieces.push([cursor, cut]);
+    cursor = cut;
+  }
+  if (cursor < total && pieces.length) pieces[pieces.length - 1][1] = total;
+  return pieces;
 }
 
 /**
@@ -518,7 +566,7 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
     }
     if (wrapRange(segs, start, end, m.color, m.id)) done += 1;
   }
-  levelRunBand(root);
+  roundRunEnds(root);
   return done;
 }
 
@@ -531,9 +579,9 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
  * 两行的带子直接连成一块厚板（2026-12-28 第三次截图）。带子跟**文字行**走、下标从带子下沿探出
  * 2~3px，是所有高亮工具的正常形态；要那个"盖住下标"的效果得拿行间缝去换，代价更大。
  */
-function levelRunBand(root: HTMLElement): void {
+function roundRunEnds(root: HTMLElement): void {
   const marks = [...root.querySelectorAll<HTMLElement>('mark.hl[data-hl]')];
-  if (marks.length < 2) return;
+  if (!marks.length) return;
   const groups = new Map<string, HTMLElement[]>();
   for (const m of marks) {
     const id = m.getAttribute('data-hl') ?? '';
@@ -542,19 +590,50 @@ function levelRunBand(root: HTMLElement): void {
     groups.set(id, list);
   }
   for (const list of groups.values()) {
-    /* 圆角**只留整条带子的首尾两片**。为什么：`mark.hl` 是 8px 圆角，而一条高亮在 DOM 里
-       是**一片片**的（被加粗 / 公式 / 链接切断），一片行内公式只有 14~20px 宽 —— 8px 圆角把
-       左右两端各咬掉 8px，那一小片就成了一个圆点，两边露出白口袋（用户口径 2026-12-28：每个
-       行内公式四周一圈白、整条看着是断的）。中间的片一律方角，相邻两片靠 1px 内边距叠在一起，
-       接缝就没了。 */
-    /* 首片只圆**左**、末片只圆**右**（各自朝外那一侧）。上一版是"首尾整片都圆、中间方角"，
-       于是首片朝内那一侧也圆 —— 那正是 `图 5：TURBOQUANT` 与它后面那枚 `prod` 之间那道
-       白缝（2026-12-28：近了看才发现缝在首片的内侧角上）。单片的高亮保持默认的整圈圆角。 */
-    if (list.length === 1) return;
+    if (list.length === 1) continue;          // 单片：保持 `mark.hl` 的默认整圈圆角
+    /* 一条带子由**一片片**组成（被加粗 / 公式 / 链接切断，又被行盒切开）。哪一侧该圆？
+          · 整条的头和尾 —— 外侧当然要圆；
+          · 这一行**行尾/行首**那一侧 —— 换行处也是"带子的端头"，用户口径 2026-12-28：
+            「换行也要有圆角」；
+          · 两个片段在同一行上相接的那一侧 —— 必须方角，否则两枚 8px 圆角各咬一口，
+            中间挖出一道白缝（同一天的"四周一圈白"就是这么来的）。
+       前两条用**量**的：这一片的左（右）边是不是贴着这一栏的左边（右边）。 */
+    const rects = list.map((m) => [...m.getClientRects()]);
+    /* "这一片是不是行尾（行首）"不能用"贴不贴边"判 —— 中文断行是**参差**的，行尾常常离右边
+       还有十来像素（下一个词放不下），那样判会把所有行尾都当成行中、一个圆角都不给。
+       改成跟**邻居比**：两片挨着、又在同一行上 → 中间就不是"带子的端头"。
+       判"同一行"用**纵向重叠**，不用顶边差：行内公式的外接框比文字高、还常常往上凸，
+       拿顶边比会把"文字 + 公式"判成两行（实测那一处就是这样漏出一条 8px 白缝）。 */
+    const sameLine = (a: DOMRect | undefined, b: DOMRect | undefined): boolean => {
+      if (!a || !b) return false;
+      const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      return overlap > Math.min(a.height, b.height) * 0.5;
+    };
+    const last = (i: number) => rects[i][rects[i].length - 1];
+    const first = (i: number) => rects[i][0];
+    const rounds: Array<{ left: boolean; right: boolean }> = list.map((m, i) => ({
+      left: i === 0 || !sameLine(last(i - 1), first(i)),
+      right: i === list.length - 1 || !sameLine(last(i), first(i + 1)),
+    }));
+    /* 第二道闸：**紧挨着的两片**必然在同一行上（几何判据，不再猜"行尾在哪"）—— 它们相接的那
+       一侧一律方角。判"行尾"那一套再准也可能漏（公式的外接框比文字高、行尾参差），漏一次就是
+       一条白缝；这一步直接按"两片是否相邻"封住，封住之后不可能再出现双圆角对接。 */
+    for (let i = 1; i < list.length; i += 1) {
+      const prev = last(i - 1);
+      const cur = first(i);
+      if (!prev || !cur) continue;
+      const touching = Math.abs(cur.left - prev.right) < 3;
+      if (touching && sameLine(prev, cur)) {
+        rounds[i - 1].right = false;
+        rounds[i].left = false;
+      }
+    }
     list.forEach((m, i) => {
-      m.classList.toggle('hl-first', i === 0);
-      m.classList.toggle('hl-last', i === list.length - 1);
-      m.classList.toggle('hl-mid', i > 0 && i < list.length - 1);
+      const { left, right } = rounds[i];
+      m.classList.toggle('hl-round-l', left && !right);
+      m.classList.toggle('hl-round-r', right && !left);
+      m.classList.toggle('hl-round-lr', left && right);
+      m.classList.toggle('hl-mid', !left && !right);
     });
   }
 }

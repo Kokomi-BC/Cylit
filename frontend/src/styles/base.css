@@ -84,7 +84,11 @@ a { color: var(--accent-text); text-decoration: none; }
  *     （用户报"pdf 添加高亮的叠加层显示文字的问题"）。
  * `inherit` 一改两治：正文里跟正文色、PDF 那一面跟 span 的透明。 */
 mark.hl {
-  border-radius: var(--r-xs); padding: 0 1px; cursor: pointer; color: inherit;
+  /* ⚠️ 水平内边距必须是 **0**：给 1px 的话，每包一片文字就把这一行的排版挤宽 2px，
+       而"按行切分"（`utils/domMarks.ts` 的 `linePieces`）是**边包边量**的 —— 量完再包会
+       让断行位置跟着变，切出来的片又跨行（实测：加 1px 时有 2 片仍然跨两行，改成 0 之后 0 片）。
+       相邻两片现在靠"同一侧方角"直接贴住，不再需要那 1px 去叠。 */
+  border-radius: var(--r-xs); padding: 0; cursor: pointer; color: inherit;
   /* 底色**只从变量取**：荧光笔 / 下划线两种画法都读 `--hl-bg` / `--hl-ink`，
      渲染处（`domMarks` / `useMarkdown` / `NotesView`）于是只用设变量，不写死 background ——
      内联 `background` 会压过下面 `html[data-hl-style="underline"]` 那条规则，切换就失效了。 */
@@ -100,10 +104,13 @@ mark.hl {
 mark { color: inherit; }
 /* 一条高亮的**中间片段**不要圆角（首尾才留）：8px 圆角会把 14~20px 宽的公式片咬成一个小圆点，
    两边露白。类由 `utils/domMarks.ts` 的 `levelRunBand` 按 `data-hl` 分组后打上。 */
+/* 一片带子四个角分四种情况（`utils/domMarks.ts` 的 `roundRunEnds` 量完再打类）：
+   · 整条的头/尾那一侧、以及**换行处**那一侧 → 圆；
+   · 两个片段在同一行相接的那一侧 → 方（都圆的话会各咬一口，中间挖出白缝）。 */
 mark.hl.hl-mid { border-radius: 0; }
-/* 整条带子的首片只圆**左**、末片只圆**右**：两侧都圆的话，首片朝内那一侧也在接缝上挖一个白角。 */
-mark.hl.hl-first { border-radius: var(--r-xs) 0 0 var(--r-xs); }
-mark.hl.hl-last { border-radius: 0 var(--r-xs) var(--r-xs) 0; }
+mark.hl.hl-round-l { border-radius: var(--r-xs) 0 0 var(--r-xs); }
+mark.hl.hl-round-r { border-radius: 0 var(--r-xs) var(--r-xs) 0; }
+mark.hl.hl-round-lr { border-radius: var(--r-xs); }
 /* 每种颜色给**两个**值：`--hl-bg` 是荧光笔的底色（带 alpha，不遮字形），
    `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。
  *
