@@ -2329,6 +2329,14 @@ let deepLinkSmooth = false;
 const deepLinkTried = ref('');
 /** 挂载流程（载数据 → 恢复位置 → 深链定位）走完没 */
 const bootDone = ref(false);
+/**
+ * 这一次深链"退化成落页"是否**只是因为 block_rows 还没到** —— 一次性重试的凭据。
+ *
+ * 跨篇跳转 / 边解析边打开的那篇都有这个时序：锚点是**那篇的**解析块 id，翻成正文行全靠
+ * 后端下发的 block_rows；表还没到时三级解析只剩第三级"到那一页"。表一到，同一枚锚点
+ * 就有行可落了。`null` = 没有待重试的（正常落行 / 本来就没有表 / 已经重试过）。
+ */
+let deepLinkRetry: { sig: string; anchor: string; landedRow: string; landedPage: number } | null = null;
 
 /** 请求里带没带深链锚点（`?row=` / 兼容的 `?block=` / `?page=`）。 */
 function hasDeepLink(): boolean {
@@ -2356,6 +2364,7 @@ async function applyDeepLink(): Promise<boolean> {
   const row = mapped ? rowById.value.get(mapped) : undefined;
   if (row) {
     deepLinkDone.value = sig;
+    deepLinkRetry = null;                 // 精确落行了，没有"等表"这回事
     currentRowId.value = row.id;
     await nextTick();
     await focusRow(row.id, { smooth, save: false, flash: true });
@@ -2380,6 +2389,12 @@ async function applyDeepLink(): Promise<boolean> {
         ? `该段落没有独立正文行（公式 / 插图 / 表格），已跳到第 ${wantPage} 页`
         : `未找到该段落的精确位置，已跳到第 ${wantPage} 页`, 'warn', 3200);
     }
+    /* 这一次落页**可能只是被"表还没到"拖累的**：锚点既不在行表里、也还没被 block_rows
+       翻成行，而那张表整个还没到 —— 记一笔一次性重试（见下面 watch(rowMapReady)）。
+       表本来就在、只是查不到这一枚 → 那是真的"这一段没有独立正文行"，不重试。 */
+    deepLinkRetry = anchor && !mapped && !rowMapReady.value
+      ? { sig, anchor, landedRow: currentRowId.value, landedPage: wantPage }
+      : null;
     return true;
   }
 
@@ -2405,6 +2420,44 @@ watch(() => `${route.query.row ?? ''}|${route.query.block ?? ''}|${route.query.p
 watch(() => allRows.value.length, () => {
   if (!bootDone.value || deepLinkDone.value) return;
   void applyDeepLink();
+});
+
+/**
+ * block_rows 晚到 → 把那次"退化成落页"的深链**再解析一次**（整段流程里只此一次）。
+ *
+ * 为什么需要：跨篇跳转（浮窗「定位到原文」/ 知识库 / 笔记）落到的那篇，锚点是**那篇的**
+ * 解析块 id，翻成正文行只能靠 block_rows；表晚到时三级解析只剩第三级"到页"，用户看到的
+ * 是"跳过去了，但停在页顶"。表一到，同一枚锚点就又有了行可落。
+ *
+ * 三条止损（缺一条就会变成新的"乱跳"）：
+ * ① 只重试一次：deepLinkRetry 取出即清，不挂在行数 / 滚动事件上循环；
+ * ② 用户已经自己滚走了就不硬拽（当前行不再是落页后那一行 → 放弃，与 applyDeepLink
+ *    里"已定位过就不再打扰用户的滚动"同一条口径）；
+ * ③ 重试**不改 URL、也不再走 applyDeepLink**（直接 focusRow，且 save: false）：
+ *    换锚点写回 query 会再触发一次深链，表现就是来回跳两下。
+ */
+watch([rowMapReady, bootDone, loading], () => {
+  /* loading 也得等：`block_rows` 是随 reader payload 一起到的，那一刻 `loadAll` 还没跑完
+     （模板还在加载态、正文行并不在 DOM 里），这会儿滚过去什么也落不到 —— 等它变 false。 */
+  if (!rowMapReady.value || !bootDone.value || loading.value || !deepLinkRetry) return;
+  const pending = deepLinkRetry;
+  deepLinkRetry = null;                                       // 只此一次
+  const raw = route.query.row ?? route.query.block;
+  const anchor = raw === undefined || raw === null ? '' : rowAnchorId(String(raw));
+  if (!anchor || anchor !== pending.anchor) return;            // 深链已经换了目标
+  if (deepLinkDone.value !== pending.sig) return;              // 已被别的路径落定过
+  /* 用户自己滚走了就别硬拽。口径与"已定位过就不再打扰用户的滚动"一致，只是允许**同页内**
+     的小幅漂移：重译 / 解析完成会整篇重载，那次 `loadAll` 自己也会按服务端进度改一次当前行，
+     拿它当"用户动了"会白丢这一跳；跨到别的页才算人真的走开了。 */
+  const here = currentRowId.value;
+  if (pending.landedRow && here && here !== pending.landedRow) {
+    const curPage = Number(rowById.value.get(here)?.page ?? 0);
+    if (curPage && curPage !== pending.landedPage) return;
+  }
+  const row = rowById.value.get(String(reader.value?.block_rows?.[anchor] ?? ''));
+  if (!row) return;
+  currentRowId.value = row.id;
+  void focusRow(row.id, { smooth: false, save: false, flash: true });
 });
 
 async function loadSide() {

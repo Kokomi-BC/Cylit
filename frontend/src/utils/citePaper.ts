@@ -113,6 +113,14 @@ export interface BlockDetailLike {
     latex_repaired?: string | null;
     latex_candidate?: unknown;
   } | null;
+  /** 插图块的那张图（后端新加的键；别的块是 null 或干脆没这个键）。
+   *  `image_url` 是**相对路径**，模板照旧走 assetUrl；图注中英各一份。 */
+  figure?: {
+    index?: number | null;
+    image_url?: string | null;
+    caption?: string | null;
+    caption_zh?: string | null;
+  } | null;
 }
 
 export interface PeekBlockFields {
@@ -124,9 +132,9 @@ export interface PeekBlockFields {
   en: string;
   /** 公式（只有公式块有）：`latex_final` → `latex_repaired` → `latex_candidate[0]` */
   latex: string;
-  /** 图注（插图块把 Markdown 图片的 alt 提出来当图注） */
+  /** 图注（后端 figure.caption_zh → figure.caption；两者都没有时退回 Markdown 图片的 alt） */
   caption: string;
-  /** 插图地址（从 Markdown 图片里提，模板再走 `assetUrl`） */
+  /** 插图地址（后端 figure.image_url；没有时退回 Markdown 图片的 src。模板照旧走 `assetUrl`） */
   imageUrl: string;
   page: number;
 }
@@ -146,6 +154,11 @@ function formulaLatexOf(f: BlockDetailLike['formula']): string {
   return '';
 }
 
+/** figure 里的图注：**中文优先**，没有就用原文图注（两边都空 = 没图注）。 */
+function figureCaptionOf(fig: BlockDetailLike['figure']): string {
+  return String(fig?.caption_zh ?? '').trim() || String(fig?.caption ?? '').trim();
+}
+
 /** Markdown 图片 → { alt, src }；没有就返回 null。 */
 const MD_IMG = /!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/;
 
@@ -159,18 +172,34 @@ const MD_IMG = /!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/;
 export function blockPeekFields(detail: BlockDetailLike | null | undefined): PeekBlockFields {
   const d = detail ?? {};
   const text = String(d.text ?? '').trim();
-  const zh = String(d.translation ?? '').trim();
+  let zh = String(d.translation ?? '').trim();
+  /* 图那一份**优先**：后端 figure 给的就是"这一段是哪张图、地址与中英图注"，
+     比从 Markdown 文字里抠更准；抠不出来（老后端 / 图块只剩文字）时才由它兜底。
+     figure 缺失或为 null 时两个值都是空串 → 下面的行为与从前逐字一致。 */
+  let imageUrl = String(d.figure?.image_url ?? '').trim();
+  let caption = figureCaptionOf(d.figure);
   let en = text;
-  let caption = '';
-  let imageUrl = '';
+  /* 图注块（`type=caption` 的行）的正文**就是**那句图注：语言不同、粗体标记不同，
+     直接比字符串对不上。归一之后相等就把它从正文里去掉 —— 否则卡片里同一句话
+     在「图注」与「正文」各出现一遍（实测跨篇插图卡就是这样重复的）。 */
+  const flat = (s: string): string => String(s || '').replace(/[*_`]/g, '').replace(/\s+/g, '').trim();
+  const dedupeCaption = (): void => {
+    const c = flat(caption);
+    if (!c) return;
+    if (flat(zh) === c) zh = '';
+    if (flat(en) === c) en = '';
+  };
   const hit = MD_IMG.exec(text);
   if (hit) {
-    caption = String(hit[1] ?? '').trim();
-    imageUrl = String(hit[2] ?? '').trim();
-    /* 只剩图片那一句时正文就该空着：图注已经在上面的 caption 里画了一次 */
+    const mdCaption = String(hit[1] ?? '').trim();
+    if (!caption) caption = mdCaption;
+    if (!imageUrl) imageUrl = String(hit[2] ?? '').trim();
+    /* 只剩图片那一句时正文就该空着：图注已经在上面的 caption 里画了一次
+       （caption 已被 figure 覆盖时按新值比，同一句同样不再进正文） */
     const rest = text.replace(hit[0], '').trim();
-    en = rest && rest !== caption ? rest : '';
+    en = rest && rest !== mdCaption && rest !== caption ? rest : '';
   }
+  dedupeCaption();
   return {
     type: String(d.type ?? '').trim(),
     zh,
