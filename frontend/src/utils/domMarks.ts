@@ -228,6 +228,39 @@ function makeMark(color: string, id: string): HTMLElement {
   return mark;
 }
 
+/**
+ * 行内公式的高亮怎么画：**高的**换成画在公式本体上（`hl-tall`），**矮的**留在外壳上并按探出量补高。
+ *
+ * 为什么要量：小公式（下标、`b = 2`）与高公式（分式、大括号）要两种不同的画法，而"高不高"
+ * 只有渲染之后才量得出来。实测（16px 正文、行高 1.78）：
+ *
+ * ```
+ * 图注 `_{\text{prod}}`      外壳 h=19.0  公式 h=18.7  差 -0.3
+ * 正文 `b \geq 0`            外壳 h=24.0  公式 h=24.2  差  0.2
+ * 正文 `D_{\text{prod}}(…)`  外壳 h=24.0  公式 h=46.5  差 22.5   ← 只有这种要换画法
+ * ```
+ *
+ * 阈值取 5：矮公式的差都在 2px 以内；高公式即便被 `mathFit` 等比缩过（46.5 → 32）也还有 8px。
+ * 两种先后顺序（先画标记后缩公式 / 先缩后画）都落在"高"这一侧，不会因为顺序而翻脸。
+ */
+const TALL_SLACK = 5;
+function bandInlineFormula(el: HTMLElement, mark: HTMLElement): void {
+  const box = el.getBoundingClientRect();
+  const shell = mark.getBoundingClientRect();
+  if (box.height - shell.height > TALL_SLACK) {
+    mark.classList.add('hl-tall');
+    return;
+  }
+  /* 矮公式：底色仍在**外壳**上（与前后文字同高、接得住），但外壳的带子常常比公式本身矮一两像素 ——
+     下标（`_\\text{prod}` 实测比带子低 1.8px）、`b = 2`（低 2.8px）于是从带子下沿探出去，
+     看着像"公式没被高亮"。行内盒子的**上下内边距只影响底色、不影响行高**，所以按量到的探出量
+     把带子补高几像素即可（上限 6px：再高就会糊到相邻行）。 */
+  const up = Math.min(6, Math.max(0, Math.ceil(shell.top - box.top)));
+  const down = Math.min(6, Math.max(0, Math.ceil(box.bottom - shell.bottom)));
+  if (up) mark.style.paddingTop = `${up}px`;
+  if (down) mark.style.paddingBottom = `${down}px`;
+}
+
 /** 被 `bandFormula` 挪过位置的编号角标（拆标记时要挪回去） */
 const MOVED_TAG = 'data-hl-moved';
 
@@ -285,13 +318,16 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
       // 但底色**不画在这个块级外壳上**（那是整行宽），而是画在 `bandFormula` 收出来的
       // `.katex-html` 上（它的大小 = 公式外接框）。
       const display = !!el.classList?.contains('katex-display');
-      /* 行内公式**不再动外壳的 padding / margin**（以前把右内边距换成等宽外边距，为的是
-         "外壳自己画底色"时色块别糊到后面那个括号上）。现在底色画在 `.katex` 本体上
-         （`base.css` 的 `mark.hl > .katex:not(.katex-display)`），外壳只是不画底色的容器；
-         再用 margin 让位，就变成公式两侧各一条白缝（用户口径 2026-12-28：高亮"不连续"）。 */
+      /* 行内公式分两种画法，**按高度分**（两边的量都在这条链路上，见下）：
+         · **矮的**（`_{\text{prod}}` 这种下标、`b = 2`）：底色留在外壳上。外壳那条带子与前后文字
+           同高同基线，接得住；换到公式本体上会缩成一小块、还低 2px —— 用户口径 2026-12-28 的
+           图注截图：`prod` / `mse` 各自变成一块小色块，整条高亮看出三段。
+         · **高的**（分式、`\left[…\right]`）：底色改画在公式本体上（`mark.hl.hl-tall` 那条 CSS）——
+           外壳是行内盒子、底色只有一个行高，公式会从带子里探出去。 */
       if (display) mark.classList.add('block');
       el.parentNode.replaceChild(mark, el);
       mark.appendChild(el);
+      if (!display) bandInlineFormula(el, mark);
       /* `bandFormula` 必须在**插进 DOM 之后**跑：`mark.hl.block .katex > .katex-html` 那条
          `inline-block` 靠 mark 这个祖先命中 —— 插进去之前它还是块级整行宽。 */
       if (display) bandFormula(el);
@@ -493,7 +529,37 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
     }
     if (wrapRange(segs, start, end, m.color, m.id)) done += 1;
   }
+  levelRunBand(root);
   return done;
+}
+
+/**
+ * 把**同一条高亮**的所有片段补成同一高度。
+ *
+ * 为什么要这一步：公式片段按自身探出量补了上下内边距（见 `bandInlineFormula`），补完之后
+ * 公式那一片比前后文字那几片高出一两像素 —— 一条带子的下沿就成了台阶（用户口径 2026-12-28：
+ * 高亮"不连续"）。同一条高亮的片段共享 `data-hl`，所以取这一条里的**最大**补高量，回写给
+ * 所有片段：整条带子一起下沉，下标被盖住，下沿是一条直线。
+ *
+ * 行内盒子的上下内边距**不进布局**（不影响行高、不发生折行位置变化），所以这一步是纯视觉的。
+ */
+function levelRunBand(root: HTMLElement): void {
+  const marks = [...root.querySelectorAll<HTMLElement>('mark.hl[data-hl]')];
+  if (marks.length < 2) return;
+  const want = new Map<string, { top: number; bottom: number }>();
+  for (const m of marks) {
+    const id = m.getAttribute('data-hl') ?? '';
+    const top = parseFloat(m.style.paddingTop || '0') || 0;
+    const bottom = parseFloat(m.style.paddingBottom || '0') || 0;
+    const cur = want.get(id) ?? { top: 0, bottom: 0 };
+    want.set(id, { top: Math.max(cur.top, top), bottom: Math.max(cur.bottom, bottom) });
+  }
+  for (const m of marks) {
+    const pad = want.get(m.getAttribute('data-hl') ?? '');
+    if (!pad) continue;
+    if (pad.top > 0) m.style.paddingTop = `${pad.top}px`;
+    if (pad.bottom > 0) m.style.paddingBottom = `${pad.bottom}px`;
+  }
 }
 
 /** 某个节点（可能是元素）在拼接文本里的起始/结束偏移量 */

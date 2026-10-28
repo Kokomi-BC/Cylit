@@ -275,20 +275,25 @@ mark.hl.block .katex-display.leqno .katex > .tag { left: 0; right: auto; }
  * ⚠️ 别把它挪到 `mark` 上：`box-decoration-break: clone` 会按行盒复制底色，公式只有第一个行盒。
  * 整块公式（`.katex-display`）不走这条 —— 那边的外壳是块级、整行宽，色带画在 `.katex-html` 上
  * （见上面 `mark.hl.block` 那段），两条是同一个解法在两种盒子上的写法。 */
-mark.hl:has(> .katex:not(.katex-display)) { background: none; padding: 0; }
-mark.hl > .katex:not(.katex-display) { background: var(--hl-bg, transparent); border-radius: var(--r-xs); }
+/* ⚠️ 只有**高公式**才换成这个画法（`.hl-tall` 由 `domMarks.ts` 现量高度加上）。矮公式继续用
+   外壳那条带子：它和前后文字同高同基线，接得住；换到公式本体上反而缩成一小块、还比文字低
+   （用户口径 2026-12-28 的图注截图：`prod` / `mse` 各成一块小色块，整条高亮看出三段）。 */
+mark.hl.hl-tall { background: none; padding: 0; }
+mark.hl.hl-tall > .katex:not(.katex-display) {
+  background: var(--hl-bg, transparent); border-radius: var(--r-xs);
+}
 /* 下划线模式同一条：线压在这枚公式盒子的底边（`text-decoration` 根本画不到公式的排版盒子上） */
-html[data-hl-style="underline"] mark.hl:has(> .katex:not(.katex-display)),
-html [data-hl-force="underline"] mark.hl:has(> .katex:not(.katex-display)) { background-image: none; }
-html[data-hl-style="underline"] mark.hl > .katex:not(.katex-display),
-html [data-hl-force="underline"] mark.hl > .katex:not(.katex-display) {
+html[data-hl-style="underline"] mark.hl.hl-tall,
+html [data-hl-force="underline"] mark.hl.hl-tall { background-image: none; }
+html[data-hl-style="underline"] mark.hl.hl-tall > .katex:not(.katex-display),
+html [data-hl-force="underline"] mark.hl.hl-tall > .katex:not(.katex-display) {
   background-color: transparent;
   background-image: linear-gradient(var(--hl-ink, var(--accent)), var(--hl-ink, var(--accent)));
   background-repeat: no-repeat; background-size: 100% max(2px, .08em);
   background-position: 0 100%;
 }
 /* 设置页预览卡里钉死「荧光笔」的那一张，把底色按回来 */
-html [data-hl-force="marker"] mark.hl > .katex:not(.katex-display) {
+html [data-hl-force="marker"] mark.hl.hl-tall > .katex:not(.katex-display) {
   background: var(--hl-bg, transparent); background-image: none;
 }
 
