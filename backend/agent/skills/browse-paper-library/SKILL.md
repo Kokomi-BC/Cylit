@@ -35,7 +35,7 @@ library_list(query="量化误差", folder="folder-xxx", status="parsed", page=1,
   回执的 `scope` 写明这次的口径：`in_knowledge_base` / `not_in_knowledge_base` / `all`。
 - 回执里的 `hidden_not_in_kb` 就是**没列出来的那一批**：同一批条件（`query` / `status` / `folder`）下
   有多少篇匹配但**未入库**。它的值**不在** `total` 里，讲数量时要分开说：
-  「已入库 3 篇；另外还有 8 篇没入库（这次没列出来）」。
+  「已入库 N 篇；另外还有 M 篇没入库（这次没列出来）」（N = 这次的 total，M = hidden_not_in_kb）。
   **不要**念成"库里只有 3 篇"，也不要说这几篇被删了 —— 未入库 ≠ 已删除（删论文不回填这个标记）。
 - 用户要看那一批（"还没入库的 / 书架里有但知识库里搜不到的"）时，显式传 `in_kb=false`，其余参数照旧；
   那时 `hidden_not_in_kb` 反过来就是"已入库、这次被挡掉"的篇数。
