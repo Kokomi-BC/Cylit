@@ -578,6 +578,7 @@ def test_split_table_across_pages_is_merged(monkeypatch, split_pages):
     md = item["markdown"]
     assert md.count("| 方法 | KV |") == 1    # 表头只留一份
     assert "Ours" in md and "KIVI" in md    # 两页的行都在
+    assert item["row_ids"] == ["p001-00", "p002-00"]   # 两半各自的行 id（正文要用）
 
 
 def test_tables_with_different_numbers_are_not_merged(monkeypatch, split_pages):

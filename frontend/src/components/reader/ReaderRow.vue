@@ -28,9 +28,14 @@ const props = defineProps<{
   pending?: boolean;
   /** 紧凑模式（窄屏 / 纯原文译文单栏时用） */
   compact?: boolean;
+  /** 这一侧改用别的 Markdown 渲染（跨页表的正文用：第一半画完整表、第二半换一句提示）。
+   *  `undefined` = 不用覆盖（照旧用 row 自己的文本）。 */
+  textOverride?: string;
 }>();
 
-const text = computed(() => (props.side === 'zh' ? props.row.translation : props.row.original));
+const text = computed(() => (props.textOverride !== undefined
+  ? props.textOverride
+  : (props.side === 'zh' ? props.row.translation : props.row.original)));
 /** 只渲染 Markdown；**高亮在 DOM 上画**（公式按整体标，见 `utils/domMarks.ts`） */
 const html = computed(() => mdToHtml(text.value ?? '', props.paperId));
 /** 本侧要画的高亮（偏移量相对**渲染后的文字**，公式算 1 个字符）。

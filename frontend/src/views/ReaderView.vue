@@ -543,6 +543,29 @@ function trimUnclosedMath(text: string): string {
   return out.trim();
 }
 
+/** 跨页表在**正文**里的呈现：第一半画合并后的完整表，第二半改成一句提示。
+ *
+ *  为什么要在正文里动它：合并只发生在表格清单那一层，正文仍逐行渲染页产物 —— 一张跨页表
+ *  于是被画两遍（两半各带一份表头）。这里把 `row_ids` 对上的两行换掉。
+ *
+ *  ⚠️ **只覆盖没有高亮的行**：高亮偏移是相对渲染后文字算的，换了文本就对不上 ——
+ *  宁可让那两行保持原样，也不让标记画错位置。
+ */
+const tableTextOverrides = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {};
+  const marked = new Set((highlights.value ?? []).map((h) => String(h.block_id ?? '')));
+  for (const t of tables.value) {
+    const ids = Array.isArray((t as any).row_ids) ? (t as any).row_ids as string[] : [];
+    if (ids.length !== 2 || !t.markdown) continue;
+    const [first, second] = ids;
+    if (!first || !second) continue;
+    if (marked.has(first) || marked.has(second)) continue;
+    out[first] = t.markdown;
+    out[second] = '_（续表：完整表格见上一页）_';
+  }
+  return out;
+});
+
 /** 这一行对应的那张表：**先认行 id 精确相等**，认不出再按「同页 + 表号相同且唯一」找一次。
  *
  *  为什么要有第二次：表格的**表注行**与**表体行**在页产物里是两行（实测 attention 第 6 页：
@@ -9891,6 +9914,7 @@ function renderMarkdown(text?: string | null) {
           :flash-nonce="flashNonce"
           :translating="translating"
           :font-size="readerFont"
+          :text-overrides="tableTextOverrides"
           @focus="focusRow"
           @zoom="zoomImage = $event"
           @pdf-failed="onPdfFailed"

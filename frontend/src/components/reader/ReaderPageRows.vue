@@ -56,6 +56,9 @@ const props = defineProps<{
   pageZoom?: number;
   /** 批注模式：每页正文上盖一层可画的画布（见 `InkSurface`） */
   inkOn?: boolean;
+  /** 逐行**文本覆盖**（跨页表用：第一半画合并后的完整表，第二半换成一句提示）。
+   *  键是行 id；有覆盖的行不看 row 自己的文本，高亮仍按原偏移画（调用方保证只在没高亮时覆盖）。 */
+  textOverrides?: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
@@ -318,6 +321,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             <ReaderRow
               :row="r"
               :side="pageRowSide"
+              :text-override="props.textOverrides?.[r.id]"
               :paper-id="props.paperId"
               :highlights="props.highlights"
               :search-term="props.searchTerm"
@@ -360,6 +364,7 @@ const zoomTarget = (m: Media, page: number): ZoomTarget => ({
             <ReaderRow
               :row="r"
               :side="s"
+              :text-override="props.textOverrides?.[r.id]"
               :paper-id="props.paperId"
               :highlights="props.highlights"
               :search-term="props.searchTerm"

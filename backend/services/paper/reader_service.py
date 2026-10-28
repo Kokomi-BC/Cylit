@@ -1372,6 +1372,8 @@ def _merge_split_tables(items: list[dict]) -> list[dict]:
                 prev["markdown"] = str(prev.get("markdown") or "").rstrip() + "\n" + "\n".join(body)
                 prev["rows"] = int(prev.get("rows") or 0) + len(body)
                 prev["pages"] = [int(prev.get("page") or 0), int(it.get("page") or 0)]
+                # 两半各自的行 id：正文那边靠它把「完整表」画在第一半、第二半改成一句提示
+                prev["row_ids"] = [prev.get("row_id"), it.get("row_id")]
                 prev["caption"] = prev.get("caption") or it.get("caption")
                 prev["caption_original"] = prev.get("caption_original") or it.get("caption_original")
                 continue
