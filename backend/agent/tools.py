@@ -1142,7 +1142,8 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                        queries: list[str] | None = None,
                        side: str = "both",
                        paper_id: str | None = None) -> dict:
-    """在本论文内检索，返回**候选位置**（页码、章节、短片段），不返回全文。
+    """检索论文正文，返回**候选位置**（页码、章节、短片段），不返回全文。
+    默认检索**当前这一篇**；要在**指定的论文**里检索就传 `paper_id`（见下面的参数说明）。
 
     什么时候用：任何"这篇论文里怎么说的 / 讲了什么 / 为什么这么做"的问题，
     先用它定位；拿到结果里的 ref 之后，**先用 `block_get(refs=[…])` 一次展开最相关的那几块**
@@ -1285,8 +1286,13 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
                          f"（另一面记在那条的 also_sides 里）；合并后这 {len(items)} 条"
                          f"各是一处位置，不再把同一块数两遍。")
         if not items:
-            base = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
-                    "仍无结果就如实说明这篇论文里找不到依据。")
+            # 指名的不是当前这一篇时别说"本论文内"：那会把另一篇的空结果说成这一篇的
+            if _foreign(pid):
+                base = ("那篇里没有检索到相关内容。可以换一个更贴近那篇用词的说法；"
+                        "仍无结果就如实说明那篇论文里找不到依据。")
+            else:
+                base = ("本论文内没有检索到相关内容。可以换一个更贴近论文用词的说法；"
+                        "仍无结果就如实说明这篇论文里找不到依据。")
             if want != "both" and raw_items:
                 base = (f"`side={want}` 一条都没留下（命中都在另一面）。"
                         f"改回 `side='both'`（默认）再查一次。")
@@ -2073,7 +2079,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                       offset: int = 0,
                       limit: int = FORMULA_PAGE_DEFAULT,
                       paper_id: str | None = None) -> dict:
-    r"""取本论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
+    r"""取论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
+    默认给的是**当前这一篇**；要取指定论文的公式就传 `paper_id`。
 
     什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
     或者卷面里的公式被 OCR 认错、需要拿到 LaTeX 原文再核对。
@@ -2421,7 +2428,8 @@ async def library_list(ctx: RunContext[Deps], query: str | None = None,
     讲"这次列了几篇"用 total —— 两者对不上是正常的，别拿一个去纠正另一个。
 
     条目只带元数据（paper_id / 标题 / 作者 / 年份 / 分类 / 状态 …）；摘要即使有也是
-    **截断版**（不超过 200 字）。目录不等于读过全文 —— 正文要用 block_get / page_markdown_get 取。
+    **截断版**（不超过 200 字）。目录不等于读过全文 —— 正文要用 block_get / page_markdown_get 取
+    （别的论文就给它们传 `paper_id`）。
     """
     def _int(raw, default: int) -> int:
         try:
