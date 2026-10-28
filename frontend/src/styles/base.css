@@ -108,9 +108,12 @@ mark { color: inherit; }
    · 整条的头/尾那一侧、以及**换行处**那一侧 → 圆；
    · 两个片段在同一行相接的那一侧 → 方（都圆的话会各咬一口，中间挖出白缝）。 */
 mark.hl.hl-mid { border-radius: 0; }
-mark.hl.hl-round-l { border-radius: var(--r-xs) 0 0 var(--r-xs); }
-mark.hl.hl-round-r { border-radius: 0 var(--r-xs) var(--r-xs) 0; }
-mark.hl.hl-round-lr { border-radius: var(--r-xs); }
+/* 圆角那两侧要**多留 3px 底色**：不留的话 8px 的圆角会啃进第一个/最后一个字（用户口径
+   2026-12-28 的图注截图：行尾那个"加"有一半在带子外面）。留白用「内边距 + 等量负外边距」——
+   底色的盒子两边各长出 3px，**排版一点不动**（文字位置、断行位置都不变，所以也不会引发重排）。 */
+mark.hl.hl-round-l { border-radius: var(--r-xs) 0 0 var(--r-xs); padding-left: 3px; margin-left: -3px; }
+mark.hl.hl-round-r { border-radius: 0 var(--r-xs) var(--r-xs) 0; padding-right: 3px; margin-right: -3px; }
+mark.hl.hl-round-lr { border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px; }
 /* 每种颜色给**两个**值：`--hl-bg` 是荧光笔的底色（带 alpha，不遮字形），
    `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。
  *

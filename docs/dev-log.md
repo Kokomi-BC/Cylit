@@ -16970,3 +16970,33 @@ mark.hl.hl-mid   { border-radius: 0; }
 ## 代价
 
 每包一片文字多两次 `getClientRects()` 量行（二分 `O(log n)`），只在**有高亮**的行上跑。
+
+# 260 · 高亮带子的圆角不再啃字（换行端补 3px 留白）（2026-12-28 追补五）
+
+用户口径（图 2 / 图 3 的图注截图）：**「就剩这个地方了」** —— 带子在换行端圆上了，但 8px 的圆角
+把行尾/行首那个字啃掉一块（图 2 行尾的「加」、行首的「图」都有一半在带子外面）。
+
+## 根因
+
+259 为了让"按行切分"量得准，把 `mark.hl` 的水平内边距设成了 **0**。于是圆角的两侧没有留白，
+8px 的弧线直接吃进第一个/最后一个字形。
+
+## 改法（CSS 三条，版面零位移）
+
+圆角那两侧各多留 3px 底色，用**内边距 + 等量负外边距**：盒子两边各长出 3px，文字位置与断行位置
+一个像素都不动（不会因为"补留白"而重新折行）。
+
+```css
+mark.hl.hl-round-l  { border-radius: var(--r-xs) 0 0 var(--r-xs); padding-left: 3px;  margin-left: -3px; }
+mark.hl.hl-round-r  { border-radius: 0 var(--r-xs) var(--r-xs) 0; padding-right: 3px; margin-right: -3px; }
+mark.hl.hl-round-lr { border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px; }
+```
+
+中间片（`hl-mid`）仍是 0 内边距 —— 相邻两片靠"同一侧方角"直接贴住，不能有留白，否则又成白缝。
+
+## 实测
+
+- 探针（`p008-02` 图注的真实 Markdown，400px 与 900px 两档栏宽）：四条视觉行都是圆头带子，
+  行尾最末一个字（`评`）、行首第一个字（`估`）都完整落在带子里。
+- 真阅读器（同一行临时高亮，看完即删，库里回到 3 条）：同上。
+- `vue-tsc --noEmit` + `npm run build` 绿；`scripts/frontend_check.py` **168 项全过**。
