@@ -12,7 +12,9 @@
 3. 行 id 的页码必须当真：不能"猜"到别的页去（那一页没有这行就是 404）；
 4. 两种 id 都不存在 → 仍抛 ``NotFoundError``（**不许**退化成空内容）；
 5. ``paper_id`` 不匹配（块存在但属于别篇）→ 仍抛 ``NotFoundError``（归属校验不绕过）；
-6. 只认"两种 id"，``fig-p002-00`` 这类不是行 id 的形状**不许**蒙对。
+6. 只认"两种 id"，``fig-p002-00`` 这类不是行 id 的形状**不许**蒙对；
+7. 插图 ``figure`` 只在**精确**对上 ``figures_payload`` 的 ``block_id`` 时给出（块分支与行
+   回退分支都要带），对不上就是 ``None`` —— 不许按"这一页只有一张图"去猜。
 
 全部离线：``paper_service.paper_paths`` 与 ``row_identity.registry_path`` 都指到
 ``tmp_path``（绝不碰真实 ``data/``），产物用真实 ``PageStore`` 写；数据库那一层换成
@@ -150,9 +152,12 @@ def test_block_id_returns_the_unchanged_branch(monkeypatch, paths):
         "col": 0, "order": 3, "bbox": [10.0, 20.0, 110.0, 40.0],
         "text": BLOCK_MD["text"], "translation": BLOCK_MD["translation"],
         "content_hash": "hash-1", "section": "s-1", "formula": None,
+        # 唯一的增量：末尾多一个 figure（这篇没有插图 -> None）
+        "figure": None,
     }
     assert list(got) == ["id", "paper_id", "page", "type", "col", "order", "bbox",
-                         "text", "translation", "content_hash", "section", "formula"]
+                         "text", "translation", "content_hash", "section", "formula",
+                         "figure"]
 
 
 def test_block_preview_is_the_text_fallback(monkeypatch, paths):
@@ -275,3 +280,130 @@ def test_non_row_id_shapes_are_rejected(monkeypatch, two_pages, shape):
 
     with pytest.raises(NotFoundError):
         reader_service.block_detail(PAPER, shape)
+
+
+# --------------------------------------------------------------------------
+# 插图：只有"精确对上 figures_payload 的 block_id"才带 figure（缺了就说缺）
+# --------------------------------------------------------------------------
+
+#: figures_payload 的替身（真实形状：image_url 里的 /region/{page}/{index} 与 index 同源）
+def figures_stub(*items):
+    return lambda paper_id: {"items": [dict(it) for it in items], "count": len(items)}
+
+
+CAPTION_ITEM = {
+    "block_id": "p001-00", "index": 2, "row_id": "p001-00", "page": 1,
+    "number": "1", "caption": "Figure 1: The pipeline.",
+    "caption_zh": "图 1：流水线。",
+    "image_url": f"/api/v1/papers/{PAPER}/figures/region/1/2?card=1&v=deadbeef",
+    "card_url": f"/api/v1/papers/{PAPER}/figures/region/1/2?card=1&v=deadbeef",
+}
+
+
+@pytest.fixture(autouse=True)
+def fresh_figure_cache():
+    """这一层是**进程内**缓存（TTL 30s）：每个用例前后都清掉，别让替身互相串。"""
+    reader_service._figure_cache.clear()
+    yield
+    reader_service._figure_cache.clear()
+
+
+def test_block_branch_carries_the_figure(monkeypatch, paths):
+    """块分支：这块 id 就是 figures 的 block_id -> 原样带出 index / image_url / caption。"""
+    bid = "attentioncle-p01-fig01"
+    use_session(monkeypatch, FakeSession(blocks={bid: block(bid, type="caption")}))
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    item = dict(CAPTION_ITEM, block_id=bid)
+    monkeypatch.setattr(reader_service, "figures_payload", figures_stub(item))
+
+    got = reader_service.block_detail(PAPER, bid)
+
+    assert got["figure"] == {
+        "index": 2,
+        "image_url": item["image_url"],
+        "caption": item["caption"],
+        "caption_zh": item["caption_zh"],
+    }
+    # 只加在末尾：原有字段与顺序一个都没动
+    assert list(got)[-1] == "figure"
+    assert got["formula"] is None and got["type"] == "caption"
+
+
+def test_paragraph_block_gets_no_figure_even_when_the_page_has_one(monkeypatch, two_pages):
+    """同页有且只有一张图，也**不许**塞给普通段落（用户口径：缺了就说缺，不要猜）。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    monkeypatch.setattr(reader_service, "figures_payload", figures_stub(CAPTION_ITEM))
+
+    got = reader_service.block_detail(PAPER, "p001-01")     # 第 1 页第 2 行，普通段落
+
+    assert got["text"] == "Beta sentence two."
+    assert got["figure"] is None
+    assert list(got)[-1] == "figure"          # 字段在，值是 None（不是"字段消失"）
+
+
+def test_row_fallback_carries_the_figure(monkeypatch, two_pages):
+    """行回退那条支（块表里没有这个 id）也必须带 figure：图注行的行 id 就是插图锚点。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    monkeypatch.setattr(reader_service, "figures_payload", figures_stub(CAPTION_ITEM))
+
+    got = reader_service.block_detail(PAPER, "p001-00")
+
+    assert (got["id"], got["page"]) == ("p001-00", 1)
+    assert got["figure"] == {
+        "index": 2,
+        "image_url": CAPTION_ITEM["image_url"],
+        "caption": CAPTION_ITEM["caption"],
+        "caption_zh": CAPTION_ITEM["caption_zh"],
+    }
+    assert list(got)[-1] == "figure"
+
+
+def test_missing_or_broken_figures_yield_none_and_never_raise(monkeypatch, two_pages):
+    """对不上就 None，而且插图层出任何问题都不许把块详情弄成 500。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+
+    # ① 这篇一张图都没有
+    monkeypatch.setattr(reader_service, "figures_payload", figures_stub())
+    got = reader_service.block_detail(PAPER, "p001-00")
+    assert got["figure"] is None and got["text"] == "Alpha sentence one."
+
+    # ② 有图，但锚在另一个 id 上（fig-p001-00 是"图号没被结构化"时的兜底 id）-> 不许按页猜
+    reader_service._figure_cache.clear()
+    monkeypatch.setattr(reader_service, "figures_payload",
+                        figures_stub(dict(CAPTION_ITEM, block_id="fig-p001-00")))
+    assert reader_service.block_detail(PAPER, "p001-00")["figure"] is None
+
+    # ③ figures_payload 自己炸了（产物坏 / 正在重写）-> 只丢这一个字段
+    reader_service._figure_cache.clear()
+
+    def boom(paper_id):
+        raise RuntimeError("产物坏了")
+
+    monkeypatch.setattr(reader_service, "figures_payload", boom)
+    got = reader_service.block_detail(PAPER, "p001-00")
+    assert got["figure"] is None and got["text"] == "Alpha sentence one."
+
+
+def test_figure_index_is_computed_once_and_dropped_by_invalidate_cache(monkeypatch, two_pages):
+    """性能：同一篇连开多个块详情只算一次 figures；invalidate_cache 之后重算。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    calls: list[str] = []
+
+    def counting(paper_id):
+        calls.append(paper_id)
+        return {"items": [dict(CAPTION_ITEM)], "count": 1}
+
+    monkeypatch.setattr(reader_service, "figures_payload", counting)
+
+    reader_service.block_detail(PAPER, "p001-00")
+    reader_service.block_detail(PAPER, "p001-01")
+    reader_service.block_detail(PAPER, "p002-00")
+    assert calls == [PAPER]
+
+    reader_service.invalidate_cache(PAPER)
+    reader_service.block_detail(PAPER, "p001-00")
+    assert calls == [PAPER, PAPER]

@@ -98,6 +98,7 @@ def invalidate_cache(paper_id: str) -> None:
     with _cache_lock:
         _cache.pop(paper_id, None)
         _cache.pop(f"{paper_id}::index", None)
+        _figure_cache.pop(paper_id, None)
 
 
 def load_page_store(paper_id: str, force: bool = False) -> PageStore:
@@ -1810,6 +1811,9 @@ def figures_payload(paper_id: str) -> dict:
             ver = figure_regions.region_version(r, paper_id)
             items.append({
                 "block_id": row_id or f"fig-p{page_no:03d}-{i:02d}",
+                # `index` 就是 ``image_url`` 里 ``/figures/region/{page}/{index}`` 的那一段
+                # （同一个 enumerate 出来的），下游要 index 时照抄这里，别去解析 URL。
+                "index": i,
                 "row_id": row_id,
                 "page": page_no, "caption": r["caption"], "bbox": r["bbox"],
                 # 侧栏的图注走中文译文（与正文里的媒体条目同一套规则）
@@ -1823,6 +1827,72 @@ def figures_payload(paper_id: str) -> dict:
                 "card_url": f"{base}?card=1" + (f"&v={ver}" if ver else ""),
             })
     return {"items": items, "count": len(items)}
+
+
+# --------------------------------------------------------------------------
+# 插图查询：块 id/行 id → 那一张图（跨篇引用浮窗用）
+# --------------------------------------------------------------------------
+
+#: 插图映射缓存：``{paper_id: (装入时刻 monotonic, {block_id: 图})}``。
+#:
+#: 为什么要缓存：``figures_payload`` 每次都要整篇算一遍（``page_products`` 本身没有缓存，
+#: 逐页读两路产物 + 算行身份；``figure_regions.all_regions`` 虽然按 IR mtime 缓存，但前面的
+#: 页产物装配才是大头）。而 ``block_detail`` 是**每个块一次**的请求 —— 跨篇引用浮窗打开一条
+#: 引用就一次。不缓存就是"每块一次全书重算"。
+#:
+#: 失效条件（三条，都不需要外部挂钩）：
+#: 1. **TTL**：``_FIGURE_CACHE_TTL`` 秒后下次访问重算；
+#: 2. ``invalidate_cache(paper_id)``（导入/重解析/重译后调用它，一并清掉这一层）；
+#: 3. 那份映射只用来"精确配对"，过期最多让 `figure` 晚 ``_FIGURE_CACHE_TTL`` 秒更新，
+#:    不会把别的块/别的页的图配上来（配对只认 id 相等，见 `_figure_for`）。
+_FIGURE_CACHE_TTL = 30.0
+_figure_cache: dict[str, tuple[float, dict[str, dict]]] = {}
+
+
+def _figure_index(paper_id: str) -> dict[str, dict]:
+    """``block_id`` → `figures_payload` 的那一条（按 ``paper_id`` 缓存，策略见 `_figure_cache`）。
+
+    只建索引、不改内容：``index`` / ``image_url`` / ``caption`` / ``caption_zh`` 全是
+    ``figures_payload`` 已经算好的那一份，这里不再拼第二种地址（用户口径：图必须和阅读器里
+    那张一模一样）。同一 ``block_id`` 出现多次时**取第一条**（先到先得，可复现）。
+    """
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _figure_cache.get(paper_id)
+        if cached and (now - cached[0]) < _FIGURE_CACHE_TTL:
+            return cached[1]
+    index: dict[str, dict] = {}
+    for item in figures_payload(paper_id).get("items") or []:
+        bid = str(item.get("block_id") or "")
+        if bid:
+            index.setdefault(bid, item)
+    with _cache_lock:
+        _figure_cache[paper_id] = (now, index)
+    return index
+
+
+def _figure_for(paper_id: str, block_id: str) -> dict | None:
+    """``block_id``（块 id 或行 id）**精确**命中的那张插图；对不上就是 ``None``。
+
+    口径（用户一直的原话：**缺了就说缺，不要猜**）：
+
+    - 只认 ``block_id == figures_payload 里某条的 block_id``；
+    - **不许**"这一页只有一张图，那就是它"这种按页兜底 —— 图注行没被结构化标出来、
+      或者块根本不是图注时，宁可 ``figure=None``（前端只显示文字/图注），也不塞一张错的图；
+    - ``figures_payload`` 自己炸了（产物坏/正在重写）也只丢这个字段，绝不让块详情 500。
+    """
+    bid = str(block_id or "")
+    if not bid:
+        return None
+    try:
+        item = _figure_index(paper_id).get(bid)
+    except Exception as exc:  # noqa: BLE001 —— 插图只是附加信息，不许影响块详情
+        log.warning("插图映射装配失败（本次不给图）：%s: %s", paper_id, exc)
+        return None
+    if item is None:
+        return None
+    return {"index": item.get("index"), "image_url": item.get("image_url"),
+            "caption": item.get("caption"), "caption_zh": item.get("caption_zh")}
 
 
 # --------------------------------------------------------------------------
@@ -1935,6 +2005,9 @@ def block_detail(paper_id: str, block_id: str) -> dict:
             row = _row_detail(paper_id, block_id)
             if row is None:
                 raise NotFoundError(f"块不存在：{block_id}")
+            # 图注行就是插图的锚点（`figures_payload` 的 block_id 取的正是行 id），
+            # 所以行回退这条路必须同样带 figure —— 否则浮窗里"图注有、图没有"的老毛病还在。
+            row["figure"] = _figure_for(paper_id, block_id)
             return row
         if b.paper_id != paper_id:
             # 归属校验照旧（单独一支）：块存在、但不是这篇的 —— **不许**借行回退交出去
@@ -1948,4 +2021,7 @@ def block_detail(paper_id: str, block_id: str) -> dict:
             "translation": md_map.get(b.id, {}).get("translation", ""),
             "content_hash": b.content_hash, "section": b.section_id,
             "formula": _formula_card(f) if f is not None else None,
+            # 新增字段只加在**末尾**（原有字段与顺序不动，见 tests/test_reader_block_detail_rows.py
+            # 那条钉字段顺序的断言）；对不上插图时是 None，不按页猜。
+            "figure": _figure_for(paper_id, b.id),
         }
